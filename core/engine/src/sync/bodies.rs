@@ -5,7 +5,7 @@
 //! a deposit. The must-hold / may-hold / must-not-hold rule itself is `read`'s; these are its
 //! inputs.
 
-use super::{BlobOf, BodyFacts, BodyMeta, HeldBlob, Opened, PartSet, Promote, SealedSet, Strip, ThingSync, Wrap};
+use super::{BlobOf, BodyFacts, BodyMeta, HeldBlob, Loss, Opened, PartSet, Promote, SealedSet, Strip, ThingSync, Wrap};
 use crate::engine::{DropFor, Engine, Tx};
 use crate::error::{Error, Result};
 use osis_base::{BlobId, CommitId, Role, SyncId, Tid, WallMs};
@@ -103,10 +103,27 @@ pub(crate) fn forget(tx: &mut Tx<'_>, c: &CommitId) -> Result<()> {
     Ok(())
 }
 
-/// Part `ai` of `m` has no body to log anywhere (`Engine::blob_gone`): held as its leftover or
-/// dropped other than as covered or invalid.
-pub(crate) fn gone_for_good(m: &crate::engine::Meta, ai: usize) -> bool {
-    m.body_gone(ai) && !m.dropped(ai).is_some_and(|d| d.as_cover() || d.why == DropFor::Invalid)
+/// Part `ai` of `c` (meta `m`) leaves every blob of its commit (spec/sync-judgement.md §2 Per
+/// blob; `Engine::blob_gone`): its body is gone here other than while invalid (no right deletes
+/// that one, and its blobs are its refetch source, spec/permissions.md §6). One dropped as covered
+/// only while a held valid snapshot of its aspect reaches it by its tables (`reachers`): a node
+/// that never held it then counts it covered too, not missing (spec/commits.md §5 Covered); one
+/// dropped under own replaces alone goes only with its whole commit.
+pub(crate) fn strips(core: &crate::engine::Core, c: &CommitId, m: &crate::engine::Meta, ai: usize) -> bool {
+    match m.dropped(ai) {
+        Some(d) if d.why == DropFor::Invalid => false,
+        Some(d) if d.as_cover() => !reachers(core, c, m, ai).is_empty(),
+        _ => m.body_gone(ai),
+    }
+}
+
+/// The held valid snapshots of part `ai`'s aspect whose tables reach it (`snapshot::reaches`):
+/// what a node lacking the part counts it covered by. One must be shown at a source before a
+/// blob stripped of it is deleted there.
+pub(crate) fn reachers(core: &crate::engine::Core, c: &CommitId, m: &crate::engine::Meta, ai: usize) -> BTreeSet<CommitId> {
+    let Some(a) = m.view.aspects.get(ai) else { return BTreeSet::new() };
+    let carries = |s: &CommitId| core.ix.commits.get(s).is_some_and(|sm| sm.view.kind.is_compaction() && sm.aspect(&a.tid, &a.ak).is_some_and(|sai| sm.valid_at(sai) && !sm.body_gone(sai) && !sm.missing(sai)));
+    core.ix.snapshots.get(&(a.tid, a.ak.clone())).into_iter().flatten().filter(|x| x.1 != *c && carries(&x.1) && crate::retention::snapshot::reaches((&x.2, &x.3), &m.header, c, a.hi)).map(|x| x.1).collect()
 }
 
 impl Engine {
@@ -409,49 +426,77 @@ impl Engine {
         self.core.ix.blob_parts.get(b).map(|x| x.parts.clone())
     }
 
-    /// Whether held blob `b` carries a part of its commit whose body is gone here for good
-    /// (spec/sync-judgement.md §2 per blob: must-not-hold, whatever sync ID it is under): held as
-    /// its leftover (purged), dropped past its bounds or destroyed. Not a part dropped as covered:
-    /// a node that never held it could not tell it from one still to arrive (issues/whole-
-    /// commits.md); nor one dropped while invalid: no right deletes it, and its blobs are the
-    /// refetch source once it turns valid (spec/permissions.md §6). `false` for a blob not opened
-    /// or sealed here.
+    /// Whether held blob `b` carries a part of its commit that strips (`strips`: its body gone
+    /// here, purged, past its bounds, destroyed, or dropped as covered by a snapshot reaching it;
+    /// spec/sync-judgement.md §2 per blob: must-not-hold, whatever sync ID it is under). `false`
+    /// for a blob not opened or sealed here.
     pub fn blob_gone(&self, b: &BlobId) -> bool {
         let Some(x) = self.core.ix.blob_parts.get(b) else { return false };
         let Some(m) = self.core.ix.commits.get(&x.commit) else { return false };
-        x.parts.iter().any(|ai| gone_for_good(m, *ai))
+        x.parts.iter().any(|ai| strips(&self.core, &x.commit, m, *ai))
     }
 
     /// Held blob `b` as a strip leaves it (`blob_gone`), to be deleted at a peer once each part
     /// of it held here has another blob of the commit there as its carrier
-    /// (spec/sync-compaction.md §1 Carriers). `None` unless it is gone here.
+    /// (spec/sync-compaction.md §1 Carriers), and each part it strips as covered a snapshot
+    /// reaching it there, `MAX_DRIFT` past its keep bound. `None` unless it is gone here.
     pub fn strip_of(&self, b: &BlobId) -> Option<Strip> {
         let x = self.core.ix.blob_parts.get(b)?;
         let m = self.core.ix.commits.get(&x.commit)?;
         if !self.blob_gone(b) {
             return None;
         }
-        Some(Strip { live: x.parts.iter().copied().filter(|ai| m.holds(*ai) && !m.body_gone(*ai)).collect() })
+        let live = x.parts.iter().copied().filter(|ai| m.holds(*ai) && !m.body_gone(*ai)).collect();
+        let mut covers = Vec::new();
+        let mut from = 0;
+        for (ai, d) in x.parts.iter().filter_map(|ai| Some((*ai, m.dropped(*ai)?))).filter(|(_, d)| d.as_cover()) {
+            let r = reachers(&self.core, &x.commit, m, ai);
+            if !r.is_empty() {
+                covers.push(r);
+                from = from.max(d.hosts_from);
+            }
+        }
+        Some(Strip { live, covers, from })
     }
 
-    /// The held blobs of `b`'s commit that beat it in the own log (spec/sync-judgement.md §2:
-    /// of the blobs of one commit, fewer sections wins while nothing this node reads is missing
-    /// from it): of its kind, not gone here, carrying every part `b` carries that this node
-    /// holds, and lacking a section of `b` this node did not open, or carrying the same sections
-    /// under a lower blob ID (readers logging one rewrite at once). `b` leaves the own log for
-    /// such an own entry; it is never deleted at a peer for a section this node cannot open.
-    pub fn blob_beaten_by(&self, b: &BlobId) -> Vec<BlobId> {
-        let Some(x) = self.core.ix.blob_parts.get(b) else { return Vec::new() };
-        let Some(m) = self.core.ix.commits.get(&x.commit) else { return Vec::new() };
-        if self.blob_gone(b) {
-            return Vec::new();
+    /// How held blob `b` of a commit loses to held blob `o` of it under `s` (spec/sync-judgement.md
+    /// §2 Per blob), neither stripping (`blob_gone`), `o` of `b`'s kind and carrying every part of
+    /// `b` this node holds; `stands`: whether each may stand as the body's log (an entry holding
+    /// the body, no deposit awaiting promotion). `Needed`: `o` also carries each part of `b` and
+    /// each section of `b` this node did not open (over what it checked, spec/sync-compaction.md
+    /// §1 Duplicates) and a part only a blob carries (`blob_only`) that `b` lacks: `b` is
+    /// must-not-hold, deleted at a source showing `o`. `Spare`: `o` may stand and lacks a section
+    /// of `b` this node did not open, or carries the same sections under a lower blob ID (readers
+    /// logging one rewrite at once), or under any where `b` may not stand: `b` leaves the own log
+    /// and is no blob logged verbatim, never deleted at a peer for it.
+    pub fn blob_loses(&mut self, s: &SyncId, b: &BlobId, o: &BlobId, stands: (bool, bool)) -> Result<Option<Loss>> {
+        let (Some(x), Some(y)) = (self.core.ix.blob_parts.get(b).cloned(), self.core.ix.blob_parts.get(o).cloned()) else { return Ok(None) };
+        if o == b || y.commit != x.commit || !y.of_kind(x.copy) || self.blob_gone(b) || self.blob_gone(o) {
+            return Ok(None);
         }
-        let held: PartSet = x.parts.iter().copied().filter(|ai| m.holds(*ai) && !gone_for_good(m, *ai)).collect();
-        let beats = |o: &BlobId, y: &BlobOf| {
-            let same = y.parts == x.parts && y.sealed == x.sealed && y.ais == x.ais;
-            y.of_kind(x.copy) && held.is_subset(&y.parts) && (!x.sealed.is_subset(&y.sealed) || (same && o < b)) && !self.blob_gone(o)
-        };
-        self.core.ix.commit_blobs.get(&x.commit).into_iter().flatten().filter(|o| *o != b).filter(|o| self.core.ix.blob_parts.get(o).is_some_and(|y| beats(o, y))).copied().collect()
+        let c = x.commit;
+        let Some(m) = self.core.ix.commits.get(&c) else { return Ok(None) };
+        if x.parts.iter().any(|ai| m.holds(*ai) && !strips(&self.core, &c, m, *ai) && !y.parts.contains(ai)) {
+            return Ok(None);
+        }
+        // a blob of the other kind holds no body here (a certificate copy beside the shared blob
+        // carries parts S's readers cannot open there, whatever this node opens of it)
+        let body_kind = self.sync_body_now(s, &c)?.is_some_and(|meta| x.of_kind(meta.copy));
+        if body_kind && x.parts.is_subset(&y.parts) && y.parts.len() > x.parts.len() && x.sealed.is_subset(&y.sealed) && let Some(only) = self.blob_only(s, &c)? && y.parts.difference(&x.parts).any(|ai| only.contains(ai)) {
+            return Ok(Some(Loss::Needed));
+        }
+        let same = y.parts == x.parts && y.sealed == x.sealed && y.ais == x.ais;
+        Ok((stands.1 && (!x.sealed.is_subset(&y.sealed) || (same && (!stands.0 || o < b)))).then_some(Loss::Spare))
+    }
+
+    /// Whether held blob `b` loses to another of `others` (`blob_loses`, each taken to stand).
+    fn loses_among(&mut self, s: &SyncId, b: &BlobId, others: &[BlobId]) -> Result<bool> {
+        for o in others {
+            if self.blob_loses(s, b, o, (true, true))?.is_some() {
+                return Ok(true);
+            }
+        }
+        Ok(false)
     }
 
     /// Whether blob `b`, as opened or sealed here, is a per-sync-ID copy.
@@ -473,7 +518,7 @@ impl Engine {
         // what a strip leaves of the body: its parts whose bodies are not gone here
         let meta = self.sync_body_now(s, c)?.map(|mut m| {
             if let Some(cm) = self.core.ix.commits.get(c) {
-                m.parts.retain(|ai| !gone_for_good(cm, *ai));
+                m.parts.retain(|ai| !strips(&self.core, c, cm, *ai));
             }
             m
         });
@@ -535,7 +580,7 @@ impl Engine {
         };
         // the body's parts whose bodies are not gone here: a strip logs the rest
         let body: Vec<usize> = match self.core.ix.commits.get(c) {
-            Some(m) => meta.parts.iter().copied().filter(|ai| !gone_for_good(m, *ai)).collect(),
+            Some(m) => meta.parts.iter().copied().filter(|ai| !strips(&self.core, c, m, *ai)).collect(),
             None => return Ok(false),
         };
         // verbatim: a held genuine blob (a certificate copy of exactly the body's parts for a
@@ -543,7 +588,7 @@ impl Engine {
         let mut carried = BTreeSet::new();
         for b in held_blobs {
             let Some(row) = self.core.ix.blob_parts.get(b).filter(|x| x.commit == *c).cloned() else { continue };
-            if self.blob_gone(b) || self.blob_beaten_by(b).iter().any(|o| held_blobs.contains(o)) {
+            if self.blob_gone(b) || self.loses_among(s, b, held_blobs)? {
                 continue;
             }
             if !row.copy {
@@ -595,7 +640,8 @@ impl Engine {
     /// spec/sync-judgement.md §1). Opened or not; one per aspect set, those this node opened
     /// first (a forger's section it could not open never stands in for a genuine one it did),
     /// then largest first, none sharing an aspect with one taken (a commit's sections never
-    /// overlap). A section it did not open goes only where every such blob lists its aspects:
+    /// overlap). A section it did not open goes only where every shared blob of `c` it opened,
+    /// its bytes held or not, lists its aspects:
     /// one a strip left out was left out by a node that opened it, and of the blobs of a commit
     /// the one with fewer sections wins (spec/sync-judgement.md §2), so rewrites stripping
     /// different parts this node cannot open meet in one blob. With the digests of those taken
@@ -603,7 +649,6 @@ impl Engine {
     fn held_sections(&mut self, c: &CommitId, held: &[HeldBlob]) -> (Vec<osis_commit::Section>, SealedSet) {
         let mut all = Vec::new();
         let mut opened = SealedSet::new();
-        let mut listed: Vec<PartSet> = Vec::new();
         for h in held {
             let b = osis_blob::blob_id(&h.bytes);
             let Some(row) = self.core.ix.blob_parts.get(&b).filter(|x| x.commit == *c && !x.copy).cloned() else { continue };
@@ -614,7 +659,6 @@ impl Engine {
             if env.id() != *c {
                 continue;
             }
-            listed.push(row.ais.clone());
             for sec in env.sections.into_iter().filter(|sec| osis_crypto::unwrap_section(&key, c, &sec.wrap).is_err()) {
                 let d = sec.digest();
                 if !row.sealed.contains(&d) {
@@ -623,6 +667,9 @@ impl Engine {
                 all.push((d, sec));
             }
         }
+        // every shared blob of it this node opened lists its sections, its bytes held or not (one
+        // that left as stripped still shows what a strip left out)
+        let listed: Vec<PartSet> = self.core.ix.commit_blobs.get(c).into_iter().flatten().filter_map(|b| self.core.ix.blob_parts.get(b)).filter(|x| !x.copy).map(|x| x.ais.clone()).collect();
         all.retain(|(d, sec)| opened.contains(d) || listed.iter().all(|ais| sec.ais.iter().all(|ai| ais.contains(ai))));
         all.sort_by_key(|(d, sec)| (!opened.contains(d), std::cmp::Reverse(sec.ais.len())));
         let mut seen = BTreeSet::new();

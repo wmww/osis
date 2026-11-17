@@ -1432,13 +1432,17 @@ impl Engine {
         })
     }
 
-    /// The held parts of durable content commit `c` that drop as covered now, for node-sync to
-    /// drop (`drop_body`; spec/commits.md §5 Covered, Own replaces, Keep bounds;
+    /// The parts of durable content commit `c` that drop as covered now, for node-sync to drop
+    /// (`drop_body`; spec/commits.md §5 Covered, Own replaces, Keep bounds;
     /// spec/sync-compaction.md §1 Own bodies): each covered by a held valid snapshot (of two
     /// covered-equal ones the higher commit ID goes) or by its author's own replaces, past its
     /// keep-at-least bound (read on the memo clock: a bound ahead wakes the reader then), never a
     /// delta this node wrote with no dead write under another's snapshot; under own replaces the
-    /// commit goes only whole. A memo-read judgement: what it read moving makes it due again.
+    /// commit goes only whole. A valid part missing here drops as covered by the same rule, under
+    /// a snapshot alone (`snapshot::covered` judges a body not held by the snapshot's tables): a
+    /// node that never received a part a strip left out reads it as one received and dropped
+    /// under that cover, missing again once no coverer carries it (`uncover`). A memo-read
+    /// judgement: what it read moving makes it due again.
     pub fn covered_drops(&mut self, c: &CommitId) -> Result<Vec<(Tid, Ak)>> {
         let Some(m) = self.core.ix.commits.get(c).cloned() else { return Ok(Vec::new()) };
         if m.view.memory || !matches!(m.view.kind, Kind::Content | Kind::ContentSnapshot) {
@@ -1450,21 +1454,23 @@ impl Engine {
         let mut parts = Vec::new();
         let mut held = 0;
         for (ai, a) in m.header.aspects.iter().enumerate() {
-            if !m.holds(ai) || m.is_dropped(ai) {
+            let missing = m.missing(ai) && m.valid_at(ai);
+            if !missing && (!m.holds(ai) || m.is_dropped(ai)) {
                 continue;
             }
-            held += 1;
-            let leftover_due = !m.bare(ai) || m.header.expires.is_some_and(|t| reached(self, t));
+            held += usize::from(!missing);
+            let leftover_due = missing || !m.bare(ai) || m.header.expires.is_some_and(|t| reached(self, t));
             let keep = keeps.get(ai).copied().unwrap_or(osis_commit::FOREVER);
             if compact::compactable(&a.ak) && leftover_due && keep < osis_commit::FOREVER && reached(self, keep) {
-                parts.push((a.tid, a.ak.clone()));
+                parts.push((a.tid, a.ak.clone(), missing));
             }
         }
         let c = *c;
         self.read(|tx| {
             let mut by_snapshot = Vec::new();
             let mut by_own = Vec::new();
-            for (tid, ak) in parts {
+            let mut unheld = Vec::new();
+            for (tid, ak, missing) in parts {
                 let snaps: Vec<CommitId> = tx.core.ix.snapshots.get(&(tid, ak.clone())).into_iter().flatten().map(|x| x.1).filter(|s| *s != c).collect();
                 let mut done = false;
                 for s in snaps {
@@ -1474,7 +1480,10 @@ impl Engine {
                     }
                 }
                 if done {
-                    by_snapshot.push((tid, ak));
+                    if missing { unheld.push((tid, ak)) } else { by_snapshot.push((tid, ak)) };
+                    continue;
+                }
+                if missing {
                     continue;
                 }
                 // `covered` asks a plain cover for its second own replace itself
@@ -1488,6 +1497,7 @@ impl Engine {
             if by_snapshot.len() + by_own.len() == held {
                 by_snapshot.extend(by_own);
             }
+            by_snapshot.extend(unheld);
             Ok(by_snapshot)
         })
     }

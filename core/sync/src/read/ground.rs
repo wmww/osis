@@ -8,7 +8,7 @@ use crate::store::{Source, Stand};
 use crate::types::{ConnId, Entry, Result};
 use osis_base::{BlobId, CommitId, SyncId, Tid, WallMs};
 use osis_engine::retention::Minting;
-use osis_engine::sync::{BodyFacts, BodyMeta, CertKind, PartSet, PieceLink, ReadCredentials, SealedSet, Strip};
+use osis_engine::sync::{BodyFacts, BodyMeta, CertKind, Loss, PartSet, PieceLink, ReadCredentials, SealedSet, Strip};
 use osis_blob::StepId;
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
@@ -20,7 +20,7 @@ use super::Why;
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Facts {
     pub body: BodyFacts,
-    /// A must-not-hold condition only the engine judges (purged, a strict subset, a superseded
+    /// A must-not-hold condition only the engine judges (purged, a superseded
     /// or ended card), if any.
     pub must_not: Option<Why>,
     /// This node's own commit (`own_commits`).
@@ -163,17 +163,13 @@ pub trait Ground {
     /// This node's own tombstones of `c`'s entries under S.
     fn own_tombstones(&mut self, s: &SyncId, c: &CommitId) -> Result<Vec<BlobId>>;
     fn blob(&mut self, b: &BlobId) -> Result<Option<BlobInfo>>;
-    /// Held blob `b` carries a part whose body is gone here (purged, dropped as covered, past its
-    /// bounds, destroyed; `Engine::strip_of`): must-not-hold wherever it is logged
+    /// Held blob `b` carries a part that strips here (purged, past its bounds, destroyed, dropped
+    /// as covered by a snapshot reaching it; `Engine::strip_of`): must-not-hold wherever it is logged
     /// (spec/sync-judgement.md §2 per blob), with what a delete of it at a peer waits for.
     fn gone(&mut self, b: &BlobId) -> Option<Strip>;
-    /// Own entry `b` loses to another of `held`, the own entries of its commit under S
-    /// (`Engine::blob_beaten_by`: fewer sections, or the same under a lower ID): it leaves the
-    /// own log, never deleted at a peer for it.
-    fn spare(&mut self, b: &BlobId, held: &BTreeSet<BlobId>) -> bool;
-    /// Held blob `b` is a strict subset of another of `held`, the blobs of its commit held under S
-    /// (`Engine::strict_subset`, spec/sync-judgement.md §2): must-not-hold.
-    fn strict_subset(&mut self, s: &SyncId, b: &BlobId, held: &BTreeSet<BlobId>) -> Result<bool>;
+    /// Held blob `b` loses to `o`, another held blob of its commit, under S (`Engine::blob_loses`,
+    /// spec/sync-judgement.md §2 Per blob); `stands`: whether each may stand as the body's log.
+    fn loses(&mut self, s: &SyncId, b: &BlobId, o: &BlobId, stands: (bool, bool)) -> Result<Option<Loss>>;
     /// `there`, the blobs of `c` held at a place, carry what only a blob carries of its body and
     /// no purge request reopens it (`Engine::neither`, spec/sync-judgement.md §3 Neither): a delete
     /// of it there stands, and nothing of it is relayed there.

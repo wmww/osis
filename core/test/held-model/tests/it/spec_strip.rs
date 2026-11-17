@@ -18,8 +18,9 @@ fn sweep(off: Off, runs: u64) -> Vec<(u64, Diff)> {
     out
 }
 
-/// Random histories reach the oracle's stores: no live part lost at K, one blob per own log, no
-/// gone part left where a node could delete it.
+/// Random histories reach the oracle's stores: no live part lost at K, nothing missing at any
+/// reader (new readers of a cover-stripped commit included), one blob per own log, no gone or
+/// covered part left where a node could delete it.
 #[test]
 fn random_histories_reach_the_oracle() {
     let f = sweep(Off::default(), 300);
@@ -36,10 +37,13 @@ fn explore() {
         ("no fewer-wins", Off { fewer: true, ..Off::default() }),
         ("no stand", Off { stand: true, ..Off::default() }),
         ("deletes on sealed", Off { sealed: true, ..Off::default() }),
+        ("no cover strip", Off { no_cover_strip: true, ..Off::default() }),
+        ("covered counts missing", Off { cover_missing: true, ..Off::default() }),
+        ("no snapshot at K", Off { snap_at_k: true, ..Off::default() }),
+        ("held blobs' lists only", Off { held_lists: true, ..Off::default() }),
     ];
     for (name, off) in offs {
         let f = sweep(off, 3000);
         eprintln!("{name}: {} of 3000 fail; first {:?}", f.len(), f.first());
     }
 }
-

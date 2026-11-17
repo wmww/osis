@@ -316,13 +316,11 @@ fn a_purged_part_of_a_commit_is_unrecoverable_from_the_sync_store_spec_commits_5
     }
 }
 
-// spec/commits.md §5 (Purge on replace) and spec/requirements.md (Deletion: one edit of one
-// aspect): a part replaced under purge on replace beside a part that stays leaves no copy in the
-// sync store. Open: a cover drops one part of a commit locally only (issues/whole-commits.md,
-// Cover strips), so the shared blob keeps the replaced part's section.
-#[test]
-#[ignore]
-fn a_part_purged_on_replace_is_unrecoverable_from_the_sync_store_spec_commits_5() {
+/// Node 0 makes thing t with `value` under purge on replace and writes one commit holding a
+/// marked `value` and a note that stays, then replaces `value`: its cover drops the marked part
+/// and strips it from the commit's blobs. Node 1 is a second device of its account. The world,
+/// t, the two-part commit and the marker.
+fn replaced_beside_a_kept_part() -> (World, Tid, CommitId, String) {
     let mut w = World::new(0);
     w.record = true;
     w.add_node();
@@ -340,7 +338,7 @@ fn a_part_purged_on_replace_is_unrecoverable_from_the_sync_store_spec_commits_5(
     w.run();
     let marker = format!("PORMARK-77e3a1b2{}", "x".repeat(300));
     let by = osis_schema::Retention { by: PurgeBy::Writer };
-    w.write(0, |e| {
+    let c = w.write(0, |e| {
         let mut m = Mutation::new();
         m.set(t, &value_ak(), &Value::Str(marker.clone())).unwrap().retention(t, &value_ak(), by).unwrap();
         m.set(t, &Ak::new("u:n.0").unwrap(), &Value::Str("kept".into())).unwrap();
@@ -354,7 +352,36 @@ fn a_part_purged_on_replace_is_unrecoverable_from_the_sync_store_spec_commits_5(
         e.commit(m).unwrap().unwrap()
     });
     w.run();
+    (w, t, c, marker)
+}
+
+// spec/commits.md §5 (Purge on replace) and spec/requirements.md (Deletion: one edit of one
+// aspect): a part replaced under purge on replace beside a part that stays leaves no copy in the
+// sync store: dropped as covered by the writer's snapshot, it strips like a purged part
+// (spec/sync-judgement.md §2 Per blob).
+#[test]
+fn a_part_purged_on_replace_is_unrecoverable_from_the_sync_store_spec_commits_5() {
+    let (mut w, _, _, marker) = replaced_beside_a_kept_part();
     for i in 0..2 {
         assert!(!w.forensic(i).iter().any(|r| r.plain.windows(16).any(|x| x == &marker.as_bytes()[..16])), "node {i}: the replaced part recovered");
     }
+}
+
+// spec/commits.md §5 (Covered: a part not held that a held valid snapshot covers by its tables
+// drops as covered), spec/sync-judgement.md §2 (Per blob): a new device reading the account
+// after the strip receives the commit without its replaced part and the snapshot covering it;
+// it counts that part covered, not missing, so it reaches quiet with nothing to fetch (the
+// harness checks every must-hold body reached at quiet) and reads both values. Fails if a part a
+// strip left out counts missing for good.
+#[test]
+fn a_new_reader_of_a_cover_stripped_commit_misses_nothing_spec_commits_5() {
+    let (mut w, t, c, marker) = replaced_beside_a_kept_part();
+    let s = w.engine(0).home_sync_id(&t).unwrap().unwrap();
+    let n = w.pair(0);
+    w.run();
+    assert!(!w.forensic(n).iter().any(|r| r.plain.windows(16).any(|x| x == &marker.as_bytes()[..16])), "the new device never saw the replaced part");
+    assert!(w.engine(n).holds_commit(&c), "the new device holds the commit");
+    assert!(!w.engine(n).read_facts(&s, &c).unwrap().missing, "no part of it counts missing");
+    assert_eq!(w.engine(n).get(&t, &value_ak()).unwrap(), Some(Value::Str("final".into())));
+    assert_eq!(w.engine(n).get(&t, &Ak::new("u:n.0").unwrap()).unwrap(), Some(Value::Str("kept".into())));
 }

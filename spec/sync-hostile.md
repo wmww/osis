@@ -19,7 +19,7 @@
 - A node keeping S unread drops its copy only when a Register verified on its path moves its head (a head a peer names, a stream or a box moves nothing).
 - A peer that drops what it pulls cannot keep a node from idle: lacking counts only what a source pulls.
 - A peer lying in its own log (hiding a cover) costs at most one logging again per change of ground (spec/sync-judgement.md §4).
-- A section a node cannot open or check, forged or left out of a copy, makes no blob a duplicate or strict subset of another there (spec/sync-compaction.md §1 Duplicates), stamped or not: every delete on that ground is one a node checking more would make, so a copy with a lower blob ID never displaces the genuine blob.
+- A section a node cannot open or check, forged or left out of a copy, makes no blob a duplicate of another there, nor one lose to another as needed (spec/sync-compaction.md §1 Duplicates), stamped or not: every delete on that ground is one a node checking more would make, so a copy with a lower blob ID never displaces the genuine blob.
 
 ## 2. Stated limits
 - A revoked node of an account holds only the closed epoch's key; a verifier not yet holding the rotation counts its proof (the account signing fork window).

@@ -42,8 +42,8 @@ impl Engine {
     /// spec/sync-judgement.md §2 must-not-hold (the clauses only the engine judges), §3 Role
     /// entries first, Dropped bodies, Neither; spec/sync-compaction.md §1 Carriers.
     /// - `must_not`: purged (a held request purges a part of the body, `purged_by`); another
-    ///   node's card commit superseded (`card_superseded`) or ended (`card_ended`). A strict
-    ///   subset is per blob (`strict_subset`).
+    ///   node's card commit superseded (`card_superseded`) or ended (`card_ended`). A blob losing
+    ///   to another is per blob (`blob_loses`).
     /// - `own`: written here. `role`: a role commit or a purge request.
     /// - `carriers`: for a covered body, per part a held valid snapshot under S covers, the
     ///   snapshots covering it (one of each must be held where the body leaves); a part dropped
@@ -185,12 +185,12 @@ impl Engine {
         v.named_device(node) && !v.roster().contains(node)
     }
 
-    /// The deltas of `c`'s body under `s` only a blob carries (spec/sync-judgement.md §2 strict
-    /// subset, §3 Neither): kept or holding a live write, and covered by no snapshot under the sync
+    /// The deltas of `c`'s body under `s` only a blob carries (spec/sync-judgement.md §2 Per
+    /// blob, §3 Neither): kept or holding a live write, and covered by no snapshot under the sync
     /// ID, established as for must-hold. `None` while that is not established (a later snapshot
     /// not judged yet) or `s` carries no body of `c`. An entry under S being fetched or pending is
     /// sync's to know; one not counted here only widens this set, toward keeping.
-    fn blob_only(&mut self, s: &SyncId, c: &CommitId) -> Result<Option<PartSet>> {
+    pub(crate) fn blob_only(&mut self, s: &SyncId, c: &CommitId) -> Result<Option<PartSet>> {
         let (Some(b), Some(h)) = (self.sync_body_now(s, c)?, self.header(c)) else { return Ok(None) };
         let keeps = self.part_keeps(c)?;
         let mut out = PartSet::new();
@@ -213,7 +213,7 @@ impl Engine {
 
     /// Held blob `x` as a carrier of `c`'s body under `s`: a blob of `c` this node opened or
     /// sealed (its delta set checked against the header, never a peer's word), not must-not-hold
-    /// (no part of it dropped here for good), of the body's kind (only a copy holds a copy's body,
+    /// (no part of it strips here, `blob_gone`), of the body's kind (only a copy holds a copy's body,
     /// spec/sync-judgement.md §1 Per-sync-ID copies).
     fn carried_by(&self, c: &CommitId, copy: bool, x: &BlobId) -> Option<Arc<BlobOf>> {
         let p = self.core.ix.blob_parts.get(x)?;
@@ -221,43 +221,14 @@ impl Engine {
     }
 
     /// Whether blob `b` holds S's body of its commit (spec/sync-judgement.md §1): a blob of the
-    /// body's kind (a per-sync-ID copy or the shared blob) carrying each of its parts whose body
-    /// is not gone here (a strip's rewrite holds the body). A blob not
+    /// body's kind (a per-sync-ID copy or the shared blob) carrying each of its parts that does not
+    /// strip here (`bodies::strips`: a strip's rewrite holds the body). A blob not
     /// opened or sealed here holds none.
     pub fn holds_body(&mut self, s: &SyncId, b: &BlobId) -> Result<bool> {
         let Some(row) = self.core.ix.blob_parts.get(b).cloned() else { return Ok(false) };
         let Some(meta) = self.sync_body_now(s, &row.commit)? else { return Ok(false) };
-        let gone = |ai: &usize| self.core.ix.commits.get(&row.commit).is_some_and(|m| super::bodies::gone_for_good(m, *ai));
+        let gone = |ai: &usize| self.core.ix.commits.get(&row.commit).is_some_and(|m| super::bodies::strips(&self.core, &row.commit, m, *ai));
         Ok(row.of_kind(meta.copy) && meta.parts.iter().filter(|ai| !gone(ai)).all(|ai| row.parts.contains(ai)))
-    }
-
-    /// spec/sync-judgement.md §2 must-not-hold: blob `b` of commit C, whose delta set is a strict
-    /// subset of another held blob of C under that sync ID (one of `held`) that is not itself
-    /// must-not-hold and whose extra deltas include one only a blob carries. A blob not opened or
-    /// sealed here is no blob of C to this node; both are of the body's kind (copy or shared).
-    /// Judged over what this node checked (spec/sync-compaction.md §1 Duplicates): the larger
-    /// holds each section of `b` this node did not open byte for byte, and its extra deltas are
-    /// among those it opened.
-    pub fn strict_subset(&mut self, s: &SyncId, b: &BlobId, held: &BTreeSet<BlobId>) -> Result<bool> {
-        let Some(mine) = self.core.ix.blob_parts.get(b).cloned() else { return Ok(false) };
-        let (c, parts) = (mine.commit, &mine.parts);
-        let Some(copy) = self.sync_body_now(s, &c)?.map(|m| m.copy) else { return Ok(false) };
-        // a blob of the other kind holds no body of it here (a certificate copy beside the shared
-        // blob carries parts S's readers cannot open there, whatever this node opens of it)
-        if !mine.of_kind(copy) {
-            return Ok(false);
-        }
-        let larger: Vec<Arc<BlobOf>> = held
-            .iter()
-            .filter(|x| *x != b)
-            .filter_map(|x| self.carried_by(&c, copy, x))
-            .filter(|o| parts.is_subset(&o.parts) && o.parts.len() > parts.len() && mine.sealed.is_subset(&o.sealed))
-            .collect();
-        if larger.is_empty() {
-            return Ok(false);
-        }
-        let Some(only) = self.blob_only(s, &c)? else { return Ok(false) };
-        Ok(larger.iter().any(|other| other.parts.difference(parts).any(|ai| only.contains(ai))))
     }
 
     /// spec/sync-judgement.md §3 Neither: a body a delete removed from S (an entry of it that is

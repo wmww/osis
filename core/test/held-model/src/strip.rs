@@ -1,6 +1,7 @@
 //! Greenfield model of the per-part strip (notes/whole-commits.md, Strip): one commit's blobs under
 //! one sync ID S, held by readers of S and a store K keeping S unread, while parts of the commit
-//! become gone (a purge request, a covering snapshot past its bounds) at the nodes that read them.
+//! become gone for good (a purge request, past its bounds) at the nodes that read them, or covered
+//! by a snapshot of their aspect (a blob of another commit under S).
 //!
 //! - `World`: the commit's parts, the ones in S's body (every reader of S opens those) and the
 //!   others (sections of things outside S's sync unit, opened only by nodes reading them
@@ -12,10 +13,18 @@
 //!   body parts, fewer sections wins in the own log (deleted at K only when identical, the higher
 //!   ID); a blob lacking a body part another blob carries, that the node still needs, is
 //!   redundant (deleted at K). A node logs a body again at K once per change of its ground (§4).
+//!   Only a writer of S logs at K; any node holding the delete keys deletes there. A blob a node
+//!   receives stale still gives it its other parts, and its section list counts for which
+//!   unopened sections every blob carries.
+//! - Covers: a node holding a covered part's snapshot drops the part as covered (it strips like a
+//!   gone one); a node that never held the part counts it covered, not missing, once it holds the
+//!   snapshot, and missing before. A strip's delete at K of a blob carrying a covered part waits
+//!   for K to show the snapshot. Late readers start holding nothing and learn the commit from K
+//!   and other readers.
 //! - The oracle reads the history alone: what each store must hold at quiescence.
 //!
-//! Abstracted: a part is one section; gone is final (no fall); a cover's snapshot is no blob
-//! here (the carrier of a covered part is outside the commit); every node is honest; the ground
+//! Abstracted: a part is one section; gone and covered are final (no fall, no keep bound); a
+//! snapshot covers one part and is valid; every node is honest; the ground
 //! of a body part (its request or snapshot) travels under S with the deletes it causes
 //! (spec/sync-judgement.md §3 Role entries first) when `World::ground_under_s`.
 use crate::gen::Rng;
@@ -29,8 +38,12 @@ pub struct World {
     pub parts: usize,
     /// S's body: the parts S's actor reads. Every reader of S opens them.
     pub body: Parts,
-    /// The parts that go (purged, or covered past their bounds).
+    /// The parts that go for good (purged, past their bounds).
     pub gone: Parts,
+    /// Body parts a snapshot of their aspect comes to cover (none of them gone).
+    pub covered: Parts,
+    /// Per node: starts holding nothing of the commit (a new reader).
+    pub late: Vec<bool>,
     /// Per node: the parts it opens (the body and some others).
     pub reads: Vec<Parts>,
     /// Per node: the parts whose delete keys it holds (a Delete of a blob needs every part's).
@@ -53,6 +66,14 @@ pub struct Off {
     pub stand: bool,
     /// Delete at K a blob that only differs in sections this node cannot open.
     pub sealed: bool,
+    /// A covered part drops locally only: no blob strips for it (the leak cover strips close).
+    pub no_cover_strip: bool,
+    /// A part never held counts missing whatever snapshot is held (the rule cover strips need).
+    pub cover_missing: bool,
+    /// A strip's delete at K needs no covering snapshot shown there.
+    pub snap_at_k: bool,
+    /// Only blobs still in the own log list which unopened sections every blob carries.
+    pub held_lists: bool,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -61,20 +82,29 @@ pub enum Event {
     Learn(usize, P),
     /// Node exchanges with K.
     Exchange(usize),
-    /// Node pulls another reader's own log.
-    Pull(usize, usize),
+    /// Node pulls another reader's own log, with its snapshots or not (they travel as other
+    /// entries: a reader may hold a rewrite before the snapshot covering its stripped part).
+    Pull(usize, usize, bool),
+    /// Node writes the snapshot covering a covered part.
+    Cover(usize, P),
 }
 
 #[derive(Clone, Debug, Default)]
 struct Store {
     blobs: BTreeMap<u32, Parts>,
     tomb: BTreeSet<u32>,
+    /// The covering snapshots held, by the part each covers.
+    snaps: Parts,
+    /// The blobs it received stale (left out of `blobs`): their section lists still count.
+    seen: BTreeMap<u32, Parts>,
 }
 
 #[derive(Clone, Debug)]
 struct NodeState {
     own: Store,
     gone: Parts,
+    /// Parts it ever held a body of.
+    had: Parts,
     /// §4: the ground (gone parts known) at which it last logged the body again at K.
     stand: Option<usize>,
 }
@@ -93,17 +123,41 @@ pub struct Net<'a> {
 impl<'a> Net<'a> {
     pub fn new(w: &'a World, off: Off) -> Net<'a> {
         let whole: Parts = (0..w.parts).collect();
-        let store = Store { blobs: [(0, whole)].into_iter().collect(), tomb: BTreeSet::new() };
-        let nodes = (0..w.reads.len()).map(|_| NodeState { own: store.clone(), gone: Parts::new(), stand: None }).collect();
+        let store = Store { blobs: [(0, whole.clone())].into_iter().collect(), tomb: BTreeSet::new(), snaps: Parts::new(), seen: BTreeMap::new() };
+        let nodes = (0..w.reads.len())
+            .map(|i| match w.late[i] {
+                true => NodeState { own: Store::default(), gone: Parts::new(), had: Parts::new(), stand: None },
+                false => NodeState { own: store.clone(), gone: Parts::new(), had: w.reads[i].intersection(&whole).copied().collect(), stand: None },
+            })
+            .collect();
         Net { w, off, nodes, k: store, k_gone: Parts::new(), next: 1, steps: 0 }
     }
 
+    /// The parts n drops as covered: those whose snapshot it holds (`Off::cover_missing`: only
+    /// those it held a body of).
+    fn covered(&self, n: usize) -> Parts {
+        let st = &self.nodes[n];
+        st.own.snaps.iter().filter(|p| self.w.covered.contains(p) && (!self.off.cover_missing || st.had.contains(p))).copied().collect()
+    }
+
     fn need(&self, n: usize) -> Parts {
-        self.w.body.difference(&self.nodes[n].gone).copied().collect()
+        let cov = self.covered(n);
+        self.w.body.iter().filter(|p| !self.nodes[n].gone.contains(p) && !cov.contains(p)).copied().collect()
+    }
+
+    /// The parts whose bodies n holds no more and no blob may carry: gone, or covered
+    /// (`Off::no_cover_strip`: gone only).
+    fn stripped(&self, n: usize) -> Parts {
+        let mut out = self.nodes[n].gone.clone();
+        if !self.off.no_cover_strip {
+            out.extend(self.covered(n));
+        }
+        out
     }
 
     fn stale(&self, n: usize, b: &Parts) -> bool {
-        b.iter().any(|p| self.w.reads[n].contains(p) && self.nodes[n].gone.contains(p))
+        let s = self.stripped(n);
+        b.iter().any(|p| self.w.reads[n].contains(p) && s.contains(p))
     }
 
     /// Blob `id` (`b`) at K is redundant beside the others of `set` in n's view, so n deletes it:
@@ -141,12 +195,14 @@ impl<'a> Net<'a> {
         let st = &self.nodes[n];
         let reads = &self.w.reads[n];
         let blobs: Vec<&Parts> = st.own.blobs.values().collect();
-        let all: Parts = blobs.iter().copied().flatten().copied().collect();
+        let listed: Vec<&Parts> = blobs.iter().copied().chain(st.own.seen.values().filter(|_| !self.off.held_lists)).collect();
+        let all: Parts = listed.iter().copied().flatten().copied().collect();
+        let stripped = self.stripped(n);
         let t: Parts = all
             .into_iter()
             .filter(|p| match reads.contains(p) {
-                true => !st.gone.contains(p),
-                false => self.off.fewer || blobs.iter().all(|b| b.contains(p)),
+                true => st.had.contains(p) && !stripped.contains(p),
+                false => self.off.fewer || listed.iter().all(|b| b.contains(p)),
             })
             .collect();
         let need = self.need(n);
@@ -166,7 +222,9 @@ impl<'a> Net<'a> {
         if self.need(n).is_empty() {
             let all: Vec<u32> = self.nodes[n].own.blobs.keys().copied().collect();
             for i in all {
-                self.nodes[n].own.blobs.remove(&i);
+                if let Some(b) = self.nodes[n].own.blobs.remove(&i) {
+                    self.nodes[n].own.seen.insert(i, b);
+                }
                 self.nodes[n].own.tomb.insert(i);
             }
             return;
@@ -182,14 +240,24 @@ impl<'a> Net<'a> {
         };
         let others: Vec<u32> = self.nodes[n].own.blobs.keys().copied().filter(|i| *i != id).collect();
         for i in others {
-            self.nodes[n].own.blobs.remove(&i);
+            if let Some(b) = self.nodes[n].own.blobs.remove(&i) {
+                self.nodes[n].own.seen.insert(i, b);
+            }
             self.nodes[n].own.tomb.insert(i);
         }
     }
 
-    fn take(&mut self, n: usize, from: &BTreeMap<u32, Parts>) {
+    fn take(&mut self, n: usize, from: &BTreeMap<u32, Parts>, snaps: &Parts) {
+        self.nodes[n].own.snaps.extend(snaps.iter().copied());
         for (id, b) in from {
-            if !self.nodes[n].own.tomb.contains(id) && !self.nodes[n].own.blobs.contains_key(id) && !self.stale(n, b) {
+            // a stale blob's other parts apply too; its section list counts
+            let opened: Parts = b.intersection(&self.w.reads[n]).copied().collect();
+            self.nodes[n].had.extend(opened);
+            if self.stale(n, b) {
+                self.nodes[n].own.seen.insert(*id, b.clone());
+                continue;
+            }
+            if !self.nodes[n].own.tomb.contains(id) && !self.nodes[n].own.blobs.contains_key(id) {
                 self.nodes[n].own.blobs.insert(*id, b.clone());
             }
         }
@@ -205,9 +273,16 @@ impl<'a> Net<'a> {
                     self.settle(n);
                 }
             }
-            Event::Pull(n, m) => {
+            Event::Pull(n, m, with) => {
                 let from = self.nodes[m].own.blobs.clone();
-                self.take(n, &from);
+                let snaps = if with { self.nodes[m].own.snaps.clone() } else { Parts::new() };
+                self.take(n, &from, &snaps);
+            }
+            Event::Cover(n, p) => {
+                if self.w.covered.contains(&p) && self.w.reads[n].contains(&p) {
+                    self.nodes[n].own.snaps.insert(p);
+                    self.settle(n);
+                }
             }
             Event::Exchange(n) => self.exchange(n),
         }
@@ -223,14 +298,19 @@ impl<'a> Net<'a> {
                 self.settle(n);
             }
         }
-        let kb = self.k.blobs.clone();
-        self.take(n, &kb);
-        // K takes n's own log
-        let own = self.nodes[n].own.blobs.clone();
-        for (id, b) in &own {
-            if !self.k.tomb.contains(id) {
-                self.k.blobs.entry(*id).or_insert_with(|| b.clone());
+        let (kb, ks) = (self.k.blobs.clone(), self.k.snaps.clone());
+        self.take(n, &kb, &ks);
+        // K takes a writer's own log, snapshots included (a reader that does not write S logs
+        // nothing there; it may still hold delete keys)
+        if self.w.writer[n] {
+            let own = self.nodes[n].own.blobs.clone();
+            for (id, b) in &own {
+                if !self.k.tomb.contains(id) {
+                    self.k.blobs.entry(*id).or_insert_with(|| b.clone());
+                }
             }
+            let snaps = self.nodes[n].own.snaps.clone();
+            self.k.snaps.extend(snaps);
         }
         // deletes at K
         let need = self.need(n);
@@ -240,7 +320,10 @@ impl<'a> Net<'a> {
                 continue;
             }
             let carried = |s: &Self| need.is_disjoint(b) || kb.iter().filter(|(i, x)| *i != id && s.k.blobs.contains_key(i) && !s.stale(n, x)).any(|(_, x)| need.intersection(b).all(|p| x.contains(p)));
-            let go = (self.stale(n, b) && (self.off.carriers || carried(self))) || self.redundant(n, *id, b, &self.k.blobs.clone());
+            // a covered part's blob goes once K shows its snapshot: a new reader learning the
+            // rest from K finds it covered there
+            let shown = self.off.snap_at_k || b.iter().filter(|p| !self.nodes[n].gone.contains(p) && self.covered(n).contains(p)).all(|p| self.k.snaps.contains(p));
+            let go = (self.stale(n, b) && shown && (self.off.carriers || carried(self))) || self.redundant(n, *id, b, &self.k.blobs.clone());
             if go {
                 self.k.blobs.remove(id);
                 self.k.tomb.insert(*id);
@@ -248,9 +331,9 @@ impl<'a> Net<'a> {
         }
         // §4: every own blob deleted there and K short of what n needs: logged again once per
         // change of ground
-        let ground = self.nodes[n].gone.len();
+        let ground = self.nodes[n].gone.len() + self.covered(n).len();
         let k_carries = self.k.blobs.values().filter(|b| !self.stale(n, b)).any(|b| need.is_subset(b));
-        if !k_carries && (self.off.stand || self.nodes[n].stand != Some(ground)) {
+        if self.w.writer[n] && !k_carries && (self.off.stand || self.nodes[n].stand != Some(ground)) {
             if let Some(r) = self.target(n) {
                 let id = self.fresh();
                 self.nodes[n].stand = Some(ground);
@@ -261,14 +344,20 @@ impl<'a> Net<'a> {
         }
     }
 
-    /// Every live body part is carried at K: no delete leaves K without one.
+    /// Every live body part is carried at K, a covered one by a blob or its snapshot: no delete
+    /// leaves K without one.
     pub fn k_carries_live(&self) -> bool {
-        self.w.body.difference(&self.w.gone).all(|p| self.k.blobs.values().any(|b| b.contains(p)))
+        self.w.body.difference(&self.w.gone).all(|p| self.k.snaps.contains(p) || self.k.blobs.values().any(|b| b.contains(p)))
     }
 
-    fn fingerprint(&self) -> Vec<(Vec<u32>, Parts)> {
-        let mut out: Vec<(Vec<u32>, Parts)> = self.nodes.iter().map(|s| (s.own.blobs.keys().copied().collect(), s.gone.clone())).collect();
-        out.push((self.k.blobs.keys().copied().collect(), self.k_gone.clone()));
+    /// Body parts n counts missing: needed, and never received.
+    fn missing(&self, n: usize) -> Parts {
+        self.need(n).difference(&self.nodes[n].had).copied().collect()
+    }
+
+    fn fingerprint(&self) -> Vec<(Vec<u32>, Parts, Parts)> {
+        let mut out: Vec<(Vec<u32>, Parts, Parts)> = self.nodes.iter().map(|s| (s.own.blobs.keys().copied().collect(), s.gone.clone(), s.own.snaps.clone())).collect();
+        out.push((self.k.blobs.keys().copied().collect(), self.k_gone.clone(), self.k.snaps.clone()));
         out
     }
 }
@@ -280,6 +369,8 @@ pub enum Diff {
     LostAtK,
     /// No quiescence within the bound.
     NoQuiet,
+    /// A node counts a live part missing at quiescence (it would fetch it for good).
+    Missing(usize, Parts),
     /// A node's own log holds a blob with a part it knows gone, or not one blob (none where S's
     /// whole body is gone).
     OwnLog(usize, Vec<Parts>),
@@ -292,15 +383,19 @@ pub fn world(r: &mut Rng, nodes: usize, parts: usize) -> World {
     let body_n = 1 + r.below(parts as u64) as usize;
     let body: Parts = (0..body_n).collect();
     let gone: Parts = (0..parts).filter(|_| r.chance(40)).collect();
+    let covered: Parts = body.iter().filter(|p| !gone.contains(p) && r.chance(40)).copied().collect();
     let reads = (0..nodes).map(|_| (0..parts).filter(|p| body.contains(p) || r.chance(50)).collect()).collect();
     let keys = (0..nodes).map(|_| (0..parts).filter(|_| r.chance(70)).collect()).collect();
     let writer = (0..nodes).map(|_| r.chance(70)).collect();
-    World { parts, body, gone, reads, keys, writer, ground_under_s: r.chance(70) }
+    // node 0 holds the commit from the start, so it reaches K
+    let late = (0..nodes).map(|i| i > 0 && r.chance(30)).collect();
+    World { parts, body, gone, covered, late, reads, keys, writer, ground_under_s: r.chance(70) }
 }
 
 pub fn history(r: &mut Rng, w: &World, len: usize) -> Vec<Event> {
     let n = w.reads.len();
     let mut learn: Vec<Event> = (0..n).flat_map(|i| w.gone.iter().filter(move |p| w.reads[i].contains(p)).map(move |p| Event::Learn(i, *p))).collect();
+    learn.extend(w.covered.iter().map(|p| Event::Cover(r.below(n as u64) as usize, *p)).collect::<Vec<_>>());
     r.shuffle(&mut learn);
     let mut out = Vec::new();
     for _ in 0..len {
@@ -309,7 +404,7 @@ pub fn history(r: &mut Rng, w: &World, len: usize) -> Vec<Event> {
         } else if r.chance(60) {
             out.push(Event::Exchange(r.below(n as u64) as usize));
         } else {
-            out.push(Event::Pull(r.below(n as u64) as usize, r.below(n as u64) as usize));
+            out.push(Event::Pull(r.below(n as u64) as usize, r.below(n as u64) as usize, r.chance(50)));
         }
     }
     out.extend(learn);
@@ -333,7 +428,7 @@ pub fn run(w: &World, h: &[Event], off: Off) -> Result<(), Diff> {
         for i in 0..n {
             net.step(Event::Exchange(i));
             for j in 0..n {
-                net.step(Event::Pull(i, j));
+                net.step(Event::Pull(i, j, true));
             }
             if !net.k_carries_live() {
                 return Err(Diff::LostAtK);
@@ -348,21 +443,32 @@ pub fn run(w: &World, h: &[Event], off: Off) -> Result<(), Diff> {
         return Err(Diff::NoQuiet);
     }
     for i in 0..n {
+        let missing = net.missing(i);
+        if !missing.is_empty() {
+            return Err(Diff::Missing(i, missing));
+        }
+    }
+    for i in 0..n {
         let blobs: Vec<Parts> = net.nodes[i].own.blobs.values().cloned().collect();
-        let known: Parts = w.gone.intersection(&w.reads[i]).copied().collect();
-        let want = usize::from(!w.body.is_subset(&w.gone));
+        // every snapshot reaches every reader at quiescence: a covered part is stripped too
+        let mut known: Parts = w.gone.intersection(&w.reads[i]).copied().collect();
+        if !off.no_cover_strip {
+            known.extend(w.covered.iter().copied());
+        }
+        let want = usize::from(!w.body.iter().all(|p| w.gone.contains(p) || (!off.no_cover_strip && w.covered.contains(p))));
         if blobs.len() != want || blobs.iter().any(|b| !b.is_disjoint(&known)) {
             return Err(Diff::OwnLog(i, blobs));
         }
     }
     let at_k: Vec<Parts> = net.k.blobs.values().cloned().collect();
     let could = |b: &Parts, p: &P| (0..n).any(|i| w.writer[i] && w.reads[i].contains(p) && b.is_subset(&w.keys[i]));
-    if at_k.iter().any(|b| b.intersection(&w.gone).any(|p| could(b, p))) {
+    let strips: Parts = w.gone.union(&w.covered).copied().collect();
+    if at_k.iter().any(|b| b.intersection(&strips).any(|p| could(b, p))) {
         return Err(Diff::AtK(at_k));
     }
     // two at K where a node holding every key of the one that should go could delete it
     if at_k.len() > 1 {
-        let wanted: Parts = (0..w.parts).filter(|p| !w.gone.contains(p)).collect();
+        let wanted: Parts = (0..w.parts).filter(|p| !strips.contains(p)).collect();
         let sole = at_k.iter().filter(|b| **b == wanted).count() == 1;
         let deletable = at_k.iter().filter(|b| **b != wanted).all(|b| (0..n).any(|i| b.is_subset(&w.keys[i]) && b.difference(&wanted).all(|p| w.reads[i].contains(p))));
         if sole && deletable {

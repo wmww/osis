@@ -395,7 +395,7 @@ impl Engine {
         // its expiry is the commit's (spec/sync-ids.md §1), from the header's own fields, checked
         // whether or not its lists resolve here: a blob framed under another expiry is no
         // encryption of the commit (it would outlive the commit, or expire with a smaller blob
-        // dropped beside it as a strict subset)
+        // dropped beside it as losing as needed)
         if prefix.expiry() != osis_commit::prefix_expiry(&env.header, &ais).map(WallMs) {
             return Err(Error::BadInput("blob prefix expiry is not its commit's"));
         }

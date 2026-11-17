@@ -7,7 +7,7 @@ Test conventions: notes/sync-test-harness.md (one harness, one fast test per spe
 
 ## Scenarios from the old sync's issues
 Each readable with `git show e1bafb8ca^:issues/<name>.md` (`refused-memory-entry-holds-label-unsettled` for the one named by sync ID).
-- unsettled-judgment-tests: a judgement staged while a fetch is out: a strict subset dropped as covered is not deleted by a node fetching the cover; a body killed by a write the holder lacks stays until its cover is there; a purged delta dropped as covered leaves at once without a carrier.
+- unsettled-judgment-tests: a judgement staged while a fetch is out: a blob losing as needed whose extra delta dropped as covered is not deleted by a node fetching the cover; a body killed by a write the holder lacks stays until its cover is there; a purged delta dropped as covered leaves at once without a carrier.
 - must-carry-liveness: deleter and holder judge a part's liveness differently (a later write only one holds): no delete and log-again loop past the bounded once.
 - chunk-of-forgotten-commit: a source showing a piece again after it was deleted through the freed set (a lost answer) gets it judged and deleted.
 - reader-copy-linked-blobs: a body whose only copies are at readers comes back with its linked chunk, tree-node and page blobs.

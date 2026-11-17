@@ -11,7 +11,7 @@ use osis_base::format::MAX_DRIFT_MS;
 use osis_base::memo::{Clock, Stamped};
 use osis_base::{BlobId, CommitId, SyncId, Tid};
 use osis_engine::retention::Minting;
-use osis_engine::sync::{BodyMeta, PieceLink, ReadCredentials};
+use osis_engine::sync::{BodyMeta, Loss, PieceLink, ReadCredentials};
 use osis_blob::StepId;
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
@@ -311,36 +311,43 @@ pub(crate) fn body(g: &mut impl Ground, mine: &Mine, s: &SyncId, c: &CommitId) -
         return Ok(j);
     }
     let own = g.own(s, c)?;
-    // per blob (spec/sync-judgement.md §2): an entry carrying a part whose body is gone here is
-    // must-not-hold, whatever the body's verdict, and one losing to another held blob of it
-    // (fewer sections this node did not open, or the same under a lower ID): either leaves, and the body counts as unlogged until the rest is logged as the strip's rewrite
+    // per blob (spec/sync-judgement.md §2): an entry carrying a part that strips here is
+    // must-not-hold, whatever the body's verdict, and one losing to another held entry of it
+    // leaves too: as needed (another carries a part only a blob carries that it lacks: a strict
+    // loss, must-not-hold), or as spare (fewer sections this node did not open, or the same under
+    // a lower ID). The body counts as unlogged until the rest is logged as the strip's rewrite
     let mut stale: Vec<BlobId> = own.iter().map(|e| e.blob).filter(|b| g.gone(b).is_some()).collect();
-    // only an entry that may stand as the body's log beats another: one holding the body, not a
-    // peer's deposit awaiting promotion
-    let kept: BTreeSet<BlobId> = own.iter().filter(|e| !stale.contains(&e.blob)).map(|e| e.blob).collect();
-    let mut winners = BTreeSet::new();
-    for e in own.iter().filter(|e| kept.contains(&e.blob) && (e.own || !e.deposited)) {
-        if g.holds_body(s, &e.blob)? {
-            winners.insert(e.blob);
-        }
-    }
-    for b in &kept {
-        if g.spare(b, &winners) {
-            stale.push(*b);
-        }
-    }
-    // a strict subset of another entry of it held here leaves too (§2); the larger one stays
     let mut held: BTreeSet<BlobId> = own.iter().map(|e| e.blob).filter(|b| !stale.contains(b)).collect();
     // a certificate copy holding none of what S names of it leaves as outside, once final
     let (unnamed, unnamed_gone, unnamed_wait) = unnamed_copies(g, mine, s, c, &held)?;
     let unnamed: Vec<BlobId> = if unnamed_gone { unnamed } else { Vec::new() };
     held.retain(|b| !unnamed.contains(b));
-    let mut subsets = Vec::new();
-    for b in &held {
-        if g.strict_subset(s, b, &held)? {
-            subsets.push(*b);
+    // only an entry that may stand as the body's log beats another as spare: one holding the
+    // body, not a peer's deposit awaiting promotion
+    let mut stands = BTreeSet::new();
+    for e in own.iter().filter(|e| held.contains(&e.blob) && (e.own || !e.deposited)) {
+        if g.holds_body(s, &e.blob)? {
+            stands.insert(e.blob);
         }
     }
+    let mut subsets = Vec::new();
+    let mut spare = Vec::new();
+    for b in &held {
+        let mut lost = None;
+        for o in held.iter().filter(|o| *o != b) {
+            lost = lost.max(g.loses(s, b, o, (stands.contains(b), stands.contains(o)))?);
+            if lost == Some(Loss::Needed) {
+                break;
+            }
+        }
+        match lost {
+            Some(Loss::Needed) => subsets.push(*b),
+            Some(Loss::Spare) => spare.push(*b),
+            None => {}
+        }
+    }
+    stale.extend(spare);
+    held.retain(|b| !stale.contains(b));
     let live: Vec<BlobId> = held.iter().copied().filter(|b| !subsets.contains(b)).collect();
     let (f, verdict) = match mine.meta(s, c) {
         None if !g.unit_settled(s)? => (None, Verdict::Unjudged),
@@ -681,20 +688,40 @@ fn deletes(g: &mut impl Ground, mine: &Mine, t: &mut Toward, src: &SrcView, seen
                 }
             }
         }
-        // a strict subset of another entry of it there (§2), which carries it there
+        // losing as needed to another entry of it there (§2 Per blob), which carries it there
         for b in present.iter().filter(|_| judged) {
-            if !out.contains(b) && g.strict_subset(s, b, &present)? {
-                out.push(*b);
+            if out.contains(b) {
+                continue;
+            }
+            for o in present.iter().filter(|o| *o != b) {
+                if g.loses(s, b, o, (true, true))? == Some(Loss::Needed) {
+                    out.push(*b);
+                    break;
+                }
             }
         }
-        // a strip (§2 per blob): an entry carrying a part whose body is gone here, once each part
-        // of it held here has another entry there not gone carrying it
+        // a strip (§2 per blob): an entry carrying a part that strips here, once each part of it
+        // held here has another entry there not gone carrying it, and each part it strips as
+        // covered a snapshot reaching it there, `MAX_DRIFT` past its keep bound
         for b in &present {
             if out.contains(b) {
                 continue;
             }
             let Some(st) = g.gone(b) else { continue };
+            if !mine.reached(st.from) {
+                continue;
+            }
             let mut carried = true;
+            for alt in &st.covers {
+                let mut any = src.full;
+                for x in alt {
+                    if any {
+                        break;
+                    }
+                    any = !g.seen(&src.at, s, x)?.present.is_empty();
+                }
+                carried &= any;
+            }
             for ai in &st.live {
                 let mut any = src.full;
                 for x in present.iter().filter(|x| *x != b) {

@@ -193,11 +193,27 @@ pub enum MustNot {
     CardEnded,
 }
 
+/// How a held blob of a commit loses to another of it (`Engine::blob_loses`, spec/sync-judgement.md
+/// §2 Per blob).
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
+pub enum Loss {
+    /// Fewer unopened sections, or the same under a lower ID: it leaves the own log only.
+    Spare,
+    /// The other carries a part only a blob carries that it lacks: must-not-hold, deleted at a
+    /// source showing the other.
+    Needed,
+}
+
 /// A held blob as a strip leaves it (`Engine::strip_of`): what a delete of it at a peer waits for.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Strip {
     /// Its parts held here: each carried there by another blob of the commit.
     pub live: PartSet,
+    /// Per part it strips as covered, the held valid snapshots reaching it (`bodies::reachers`):
+    /// one of each shown there, so a reader learning the rest from there counts it covered.
+    pub covers: Vec<BTreeSet<CommitId>>,
+    /// The latest `Dropped::hosts_from` of those parts: deleted there no earlier.
+    pub from: u64,
 }
 
 /// What forgetting and covers make of a held commit (`Engine::held_fate`).

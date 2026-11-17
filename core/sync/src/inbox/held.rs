@@ -171,7 +171,7 @@ pub struct Judged {
 /// of adds to the entries of S holding that commit stamped (`stamped`):
 /// - by a delta: a part of `need` it holds is in none of them (one stamped copy per delta);
 /// - by its bytes alone: some section it did not open or check is byte-identical to none in any
-///   one stamped entry, so it is no duplicate or strict subset of one as this node judges it
+///   one stamped entry, so it is no duplicate of one nor loses to one as needed, as this node judges it
 ///   (spec/sync-compaction.md §1 Duplicates), while no stamped entry adds only bytes (each of
 ///   its `need` parts held by another stamped entry): one bytes-only promotion per commit while
 ///   one stands.

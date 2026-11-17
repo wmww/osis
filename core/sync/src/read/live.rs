@@ -16,7 +16,7 @@ use crate::types::{ConnId, Cx, Entry, Result};
 use osis_base::memo::Feed;
 use osis_base::{BlobId, CommitId, SyncId, Tid, WallMs};
 use osis_crypto::SigningSecret;
-use osis_engine::sync::{BodyMeta, CertKind, HeldBlob, MustNot, ReadCredentials, Strip};
+use osis_engine::sync::{BodyMeta, CertKind, HeldBlob, Loss, MustNot, ReadCredentials, Strip};
 use osis_blob::{Class, DeleteItem};
 use osis_proto::Msg;
 use std::collections::{BTreeMap, BTreeSet};
@@ -364,11 +364,8 @@ impl Ground for Live<'_, '_> {
     fn gone(&mut self, b: &BlobId) -> Option<Strip> {
         self.cx.engine.strip_of(b)
     }
-    fn spare(&mut self, b: &BlobId, held: &BTreeSet<BlobId>) -> bool {
-        self.cx.engine.blob_beaten_by(b).iter().any(|o| held.contains(o))
-    }
-    fn strict_subset(&mut self, s: &SyncId, b: &BlobId, held: &BTreeSet<BlobId>) -> Result<bool> {
-        Ok(self.cx.engine.strict_subset(s, b, held)?)
+    fn loses(&mut self, s: &SyncId, b: &BlobId, o: &BlobId, stands: (bool, bool)) -> Result<Option<Loss>> {
+        Ok(self.cx.engine.blob_loses(s, b, o, stands)?)
     }
     fn neither(&mut self, s: &SyncId, c: &CommitId, there: &BTreeSet<BlobId>) -> Result<bool> {
         Ok(self.cx.engine.neither(s, c, there)?)
