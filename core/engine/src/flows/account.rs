@@ -898,7 +898,9 @@ pub(crate) fn things_of(v: &crate::engine::View) -> BTreeSet<Tid> {
 /// Judges again what moved in the epochs of the accounts due (`Indexes::epochs_due`): those whose
 /// rotations held changed, and those with a held commit a word may name otherwise
 /// (`Indexes::names_due`). The commits whose standing may have moved are found from what moved:
-/// those signed at an epoch whose standing moved, the rotation minting it, those a rotation whose
+/// those signed at an epoch whose standing moved (where only its closers moved, those an addendum
+/// keyed by a closer joining or leaving lists: `Indexes::addenda_keyed`), the rotation minting
+/// it, those a rotation whose
 /// count moved lists, and the commits due; with the listings among their names and what those
 /// name, until nothing is added. They are judged by the epoch rule over the held rotations and
 /// their names alone, go to `stale_commits`, and a role commit among them counts in the timeline
@@ -944,7 +946,19 @@ pub(crate) fn refresh_epochs(tx: &mut Tx<'_>) -> Result<bool> {
         tx.core.waits.epochs_held.extend(moved.iter().filter(|e| now.get(*e).is_some_and(|x| x.1.is_some()) && get(&was, e).is_none_or(|x| x.1.is_none())).copied());
         let mut cands: BTreeSet<CommitId> = due;
         for e in &moved {
-            cands.extend(tx.core.ix.by_epoch.get(&(p, *e)).into_iter().flatten().copied());
+            match (now.get(e), get(&was, e)) {
+                // only its closers moved (a rotation joined or left them): what an addendum keyed
+                // by one of those lists, the one thing a closer decides (`Vouching::saves`)
+                (Some((EpochStanding::Closed(a), x)), Some((EpochStanding::Closed(b), y))) if *x == y => {
+                    for r in a.symmetric_difference(&b) {
+                        for (t, s) in tx.core.ix.addenda_keyed.get(r).into_iter().flatten() {
+                            let listed = tx.core.ix.addenda.get(&(*t, *s)).into_iter().flat_map(|x| x.entries.iter()).filter(|(k, _)| k == r).flat_map(|(_, l)| l.iter());
+                            cands.extend(listed.filter(|c| tx.core.ix.commits.get(*c).is_some_and(|m| m.view.author == p && m.view.epoch == Some(*e))));
+                        }
+                    }
+                }
+                _ => cands.extend(tx.core.ix.by_epoch.get(&(p, *e)).into_iter().flatten().copied()),
+            }
             cands.insert(*e);
             // a rotation whose count moved: what its lists name
             if now.get(e).map(|x| x.1) != get(&was, e).map(|x| x.1) {

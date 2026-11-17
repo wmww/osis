@@ -7,6 +7,7 @@ use crate::flows::{CreatedAccount, Demotion, Done};
 use crate::local_peer::LocalPeer;
 use osis_base::{Ak, CommitId, Role, Tid, Value, WallMs};
 use osis_schema::core_types as ct;
+use osis_schema::Codec as _;
 use std::collections::BTreeMap;
 
 fn edge(r: Role) -> ct::Edge {
@@ -632,6 +633,57 @@ fn a_rotation_lists_its_epoch_only() {
     let (small, large) = (count(5), count(50));
     assert!(large.0 >= small.0 + 45, "the first rotation lists its epoch: {small:?} {large:?}");
     assert_eq!(small.1, large.1, "the second lists only its own epoch");
+}
+
+// spec/requirements.md Cost, notes/principles.md (Check scaling): a rotation re-judges at a
+// reader only the commits whose standing it can move. A later rotation joins the closers of an
+// epoch a removal revoked, which moves only what an addendum keyed by it lists: at a sibling and
+// at an outsider it re-judges as many commits after n writes at the revoked epoch as after 10n
+#[test]
+fn a_later_rotation_re_judges_no_revoked_epochs_history() {
+    let count = |n: usize| {
+        let (mut lp, a, t) = world(4, 3);
+        for i in 0..n {
+            write(&mut lp, 0, t, &format!("e0 {i}"));
+        }
+        lp.sync_all().unwrap();
+        remove(&mut lp, 0, a.root, 2);
+        lp.sync_all().unwrap();
+        let r = lp.peers[0].engine.rotate_account(&a.account).unwrap().unwrap();
+        let judged = |c: Vec<(&'static str, std::time::Duration, u64)>| c.into_iter().find(|x| x.0 == "rejudge: a commit").map_or(0, |x| x.2);
+        [1, 3].map(|to| {
+            osis_base::costs::take();
+            send(&mut lp, 0, to, &[r]);
+            judged(osis_base::costs::take())
+        })
+    };
+    let (small, large) = (count(5), count(50));
+    assert_eq!(small, large, "re-judged at the sibling and the outsider: {small:?} {large:?}");
+}
+
+// spec/permissions.md §5.5 (Addenda against a rotation): a writer's addendum keyed by a later
+// rotation, held before it, saves a removed node's write at the epoch the removal revoked once
+// that rotation joins the epoch's closers (the commit it lists is judged again then)
+#[test]
+fn an_addendum_keyed_by_a_later_closer_saves_once_it_arrives_spec_permissions_5_5() {
+    let (mut lp, a, t) = world(5, 3);
+    let c = write(&mut lp, 2, t, "removed's");
+    send(&mut lp, 2, 3, &[c]);
+    send(&mut lp, 2, 4, &[c]);
+    let r1 = remove(&mut lp, 0, a.root, 2).commits;
+    send(&mut lp, 0, 4, &r1);
+    assert_eq!(read(&mut lp, 4, t), Some(Value::Str("p".into())), "unnamed at the revoked epoch");
+    let r2 = lp.peers[0].engine.rotate_account(&a.account).unwrap().unwrap();
+    let mut mu = crate::Mutation::new();
+    let f = ct::Frontier { commits: [c].into() };
+    mu.op(t, &ct::ADDENDA, osis_crdt::PathOp { path: vec![osis_crdt::PathSeg::Key(Value::bytes(&r2.0))], op: osis_crdt::Op::Put(f.to_value()) }).unwrap();
+    let w = lp.peers[3].commit(mu).unwrap().unwrap();
+    send(&mut lp, 3, 4, &[w]);
+    assert_eq!(read(&mut lp, 4, t), Some(Value::Str("p".into())), "keyed by a rotation not held");
+    send(&mut lp, 0, 4, &[r2]);
+    lp.sync(3, 4).unwrap();
+    assert_eq!(read(&mut lp, 4, t), Some(Value::Str("removed's".into())), "saved once its key closes the epoch");
+    lp.peers[4].engine.check_index();
 }
 
 // spec/permissions.md §5.4, §5.5: a removed node that forks the chain from its closed epoch, its

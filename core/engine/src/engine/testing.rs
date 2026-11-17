@@ -722,6 +722,7 @@ fn tables(ix: &super::Indexes) -> Vec<(&'static str, &dyn Table)> {
         ("grant_overreach", &*ix.grant_overreach),
         ("retention", &*ix.retention),
         ("addenda", &*ix.addenda),
+        ("addenda_keyed", &*ix.addenda_keyed),
         ("boxes_to", &*ix.boxes_to),
         ("epoch_intro", &*ix.epoch_intro),
         ("keysets", &*ix.keysets),

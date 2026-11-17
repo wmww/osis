@@ -928,6 +928,10 @@ indexes! {
     /// its author's write whether its body is held or not, with the entries its body says while
     /// held (`validity::note_addenda`, `validity::forget_addendum_body`).
     pub addenda: JMap<(Tid, CommitId), Arc<osis_perm::Addendum>>,
+    /// `addenda` by the rotation or removal an entry is keyed by: (thing, addendum commit). A
+    /// rotation joining or leaving an epoch's closers moves only the commits these list
+    /// (`refresh_epochs`).
+    pub addenda_keyed: JSetMap<CommitId, (Tid, CommitId)>,
     /// Role commits with a frontier applied here and not yet answered with this node's addenda
     /// (`Engine::answer_removals`; `records::ADDENDA_DUE`).
     pub addenda_due: JSet<CommitId>,

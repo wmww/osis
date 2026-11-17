@@ -106,7 +106,7 @@ fn entries_of(h: &Header, id: &CommitId, ai: usize, d: &Decoded) -> Vec<Addendum
 /// get judged again.
 pub(crate) fn index_addenda(core: &mut Core, point: Point, parts: &AddendaParts) {
     for (t, es) in &parts.0 {
-        core.ix.addenda.insert((*t, point.commit), Arc::new(Addendum { point, entries: es.clone() }));
+        set_addendum(core, *t, point.commit, Some(Addendum { point, entries: es.clone() }));
         core.stale_things.insert(*t);
     }
 }
@@ -136,7 +136,7 @@ pub(crate) fn note_addenda(core: &mut Core, h: &Header, id: &CommitId, parts: &[
 pub(crate) fn forget_addendum_body(core: &mut Core, id: &CommitId, tid: &Tid) {
     if let Some(a) = core.ix.addenda.get(&(*tid, *id)).filter(|a| !a.entries.is_empty()) {
         let point = a.point;
-        core.ix.addenda.insert((*tid, *id), Arc::new(Addendum { point, entries: Vec::new() }));
+        set_addendum(core, *tid, *id, Some(Addendum { point, entries: Vec::new() }));
         core.stale_things.insert(*tid);
     }
 }
@@ -146,10 +146,31 @@ pub(crate) fn forget_addendum_body(core: &mut Core, id: &CommitId, tid: &Tid) {
 /// stays as judged.
 pub(crate) fn forget_addenda(core: &mut Core, id: &CommitId, aspects: &[crate::engine::AspectView]) {
     for a in aspects.iter().filter(|a| ct::is_addenda(a.ak.as_str())) {
-        if core.ix.addenda.remove(&(a.tid, *id)).is_some_and(|x| !x.entries.is_empty()) {
+        if set_addendum(core, a.tid, *id, None).is_some_and(|x| !x.entries.is_empty()) {
             core.stale_things.insert(a.tid);
         }
     }
+}
+
+/// Sets (or, `None`, removes) what commit `id` says as an addendum on `t`, with its entries'
+/// keys (`Indexes::addenda_keyed`); returns what it said before.
+fn set_addendum(core: &mut Core, t: Tid, id: CommitId, a: Option<Addendum>) -> Option<Arc<Addendum>> {
+    let was = match a {
+        Some(a) => {
+            for (r, _) in &a.entries {
+                core.ix.addenda_keyed.insert(*r, (t, id));
+            }
+            core.ix.addenda.insert((t, id), Arc::new(a))
+        }
+        None => core.ix.addenda.remove(&(t, id)),
+    };
+    let now = core.ix.addenda.get(&(t, id)).cloned();
+    for (r, _) in was.iter().flat_map(|w| w.entries.iter()) {
+        if !now.as_ref().is_some_and(|n| n.entries.iter().any(|(x, _)| x == r)) {
+            core.ix.addenda_keyed.remove(r, &(t, id));
+        }
+    }
+    was
 }
 
 /// Entries of a `roles.0` (map) fragment: (dot, key, fragment).
