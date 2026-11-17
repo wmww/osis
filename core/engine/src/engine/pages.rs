@@ -1,5 +1,5 @@
-//! Paged states (notes/local-store.md, Units). A state above `PAGE_TARGET` keeps its large
-//! collections, at any depth below struct fields, enum payloads and map entries, as pages of
+//! Paged states (notes/local-store.md, Units). A state keeps its large collections (a page or
+//! more of elements), at any depth below struct fields, enum payloads and map entries, as pages of
 //! consecutive root elements in the aspect's table, the rest as a skeleton in the unit. The
 //! store's B+tree is the index: a page's row key is its collection's set ID and the
 //! order-preserving bytes of its first dot, so the page holding a dot is the last row at or below
@@ -12,20 +12,20 @@ use super::state::{decode, encode};
 use super::{clear_table, scan_table};
 use crate::error::{Error, Result};
 use crate::retention::Killed;
-use osis_base::format::PAGE_TARGET;
 use osis_base::{Ak, Tid, Value};
 use osis_crdt::{Changes, Dot, Eid, Encoding, Fragment, PagedTouch, PathSeg, Paths, PlaceBlock, PlaceDiff, PlaceMisses, PlaceRow, PlaceTop, SeqPlace, SourceKind, Step};
 use osis_store::{Shred, Table, Transaction};
 use std::collections::BTreeMap;
 use std::ops::Range as Span;
 
-/// Encoded bytes per local page, about (a store unit is 8 KB; a larger page is split).
-const PAGE_BYTES: usize = 8 * 1024;
-/// Page target of a paged text or list: an op decodes and rewrites the pages it touches whole
-/// (one record per visible element), so they are kept small; above the store's inline limit (a
-/// quarter of its 8 KiB page), so a page write leaves its neighbours' leaf alone.
-const SEQ_PAGE_BYTES: usize = 3 * 1024;
-/// A collection with fewer elements is not paged.
+/// Encoded bytes per local page, about; a collection above it pages, a page grown past twice
+/// it splits. A write decodes and rewrites the pages it touches (and an unpaged collection
+/// whole), so this is what a one-element write costs at most. Performance switch: at 0 every
+/// element is a page of its own (a row and its overhead each), at infinity a write rewrites
+/// its whole state. Above the store's inline limit (a quarter of its 8 KiB page), so a page
+/// write leaves its neighbours' leaf alone.
+const PAGE_BYTES: usize = 3 * 1024;
+/// A collection with fewer elements is not paged (issues/few-large-elements-written-whole.md).
 pub(crate) const MIN_PAGED: usize = 64;
 /// The aspect table holding its state pages.
 const STATE_TABLE: u8 = 0;
@@ -611,10 +611,6 @@ const PREFETCH: usize = 8;
 pub const OP_RUNS: usize = 8;
 
 /// The page target of `set`'s pages.
-fn page_bytes(set: &PageSet) -> usize {
-    if is_seq(set) { SEQ_PAGE_BYTES } else { PAGE_BYTES }
-}
-
 fn is_seq(set: &PageSet) -> bool {
     matches!(set.enc, Encoding::List | Encoding::Text)
 }
@@ -1246,7 +1242,12 @@ fn big(c: &Fragment) -> bool {
     c.elem_count().is_some_and(|n| n >= MIN_PAGED)
 }
 
-/// The collections of a large state to page: every collection of at least `MIN_PAGED` elements
+/// Whether `f` (encoding to `len` bytes, about) holds a collection to page (`paged_paths`).
+fn holds_large(f: &Fragment, len: usize) -> Result<bool> {
+    Ok(len > PAGE_BYTES && !paged_paths(f)?.is_empty())
+}
+
+/// The collections of a state to page: every collection of at least `MIN_PAGED` elements
 /// encoding to more than `PAGE_BYTES`, at any depth below struct fields, enum payloads and map
 /// entries (inside a paged collection's elements too).
 fn paged_paths(f: &Fragment) -> Result<Vec<Vec<Step>>> {
@@ -1296,7 +1297,7 @@ fn index_keys(txn: &mut Transaction<'_>, kt: Table, set: &PageSet, c: &Fragment,
 fn write_set(txn: &mut Transaction<'_>, t: Table, kt: Table, set: &mut PageSet, c: &Fragment, nested: &Paths) -> Result<()> {
     let n = c.elem_count().unwrap_or(0).max(1);
     let size = encode(&c.reduced(nested))?.len().max(1);
-    let per = (n * page_bytes(set) / size).max(1);
+    let per = (n * PAGE_BYTES / size).max(1);
     let dots = c.elem_dots(None, None);
     set.loaded.clear();
     write_pieces(txn, t, set, c, nested, &dots, per, &(None, None), Shred::No)?;
@@ -1305,8 +1306,8 @@ fn write_set(txn: &mut Transaction<'_>, t: Table, kt: Table, set: &mut PageSet, 
     index_keys(txn, kt, set, c, &mut dots.iter(), true)
 }
 
-/// Writes a whole state: the unit's state field, and the pages when the state is above
-/// `PAGE_TARGET` and holds large collections (the old pages, if any, are dropped shredded).
+/// Writes a whole state: the unit's state field, and the pages when it holds large collections
+/// (`paged_paths`; the old pages, if any, are dropped shredded).
 /// `f` must be the whole state.
 pub fn write_full(txn: &mut Transaction<'_>, tid: &Tid, ak: &Ak, f: Option<&Fragment>, old_paged: bool, salt: &[u8; 32]) -> Result<(Vec<u8>, Option<StatePages>)> {
     if old_paged {
@@ -1316,7 +1317,8 @@ pub fn write_full(txn: &mut Transaction<'_>, tid: &Tid, ak: &Ak, f: Option<&Frag
     }
     let Some(f) = f else { return Ok((Vec::new(), None)) };
     let bytes = encode(f)?;
-    if bytes.len() <= PAGE_TARGET {
+    // no collection of it encodes to more than the whole
+    if bytes.len() <= PAGE_BYTES {
         return Ok((bytes, None));
     }
     let paged = paged_paths(f)?;
@@ -1388,19 +1390,19 @@ fn rewrite_set(txn: &mut Transaction<'_>, t: Table, kt: Table, set: &mut PageSet
             continue;
         }
         let bytes = page_row(&r, &page(c, nested, &r)?)?;
-        if bytes.len() <= 2 * page_bytes(set) {
+        if bytes.len() <= 2 * PAGE_BYTES {
             txn.table_put(t, &key, bytes, shred)?;
             continue;
         }
         if ds.len() < 2 {
             // one element above a page: page what grew inside it (a whole rewrite re-lays out)
-            if bytes.len() > PAGE_TARGET {
+            if holds_large(&page(c, nested, &r)?, bytes.len())? {
                 return Ok(false);
             }
             txn.table_put(t, &key, bytes, shred)?;
             continue;
         }
-        let per = ds.len().div_ceil(bytes.len().div_ceil(page_bytes(set))).max(1);
+        let per = ds.len().div_ceil(bytes.len().div_ceil(PAGE_BYTES)).max(1);
         // elements moving to another row: the old versions go shredded, so a later shred of a
         // moved element's row reaches every copy
         write_pieces(txn, t, set, c, nested, &ds, per, &r, Shred::Yes)?;
@@ -1472,9 +1474,10 @@ pub fn write_touched(txn: &mut Transaction<'_>, idx: &mut StatePages, tid: &Tid,
     if !touch.skeleton && !path_changed {
         return Ok(Some(None));
     }
-    let unit = unit_state(&f.reduced(&idx.paths), idx)?;
+    let skeleton = f.reduced(&idx.paths);
+    let unit = unit_state(&skeleton, idx)?;
     // unpaged parts grown large: written whole, which pages them
-    Ok((unit.len() <= PAGE_TARGET).then_some(Some(unit)))
+    Ok((!holds_large(&skeleton, unit.len())?).then_some(Some(unit)))
 }
 
 /// Drops the loaded pages of the paged state `f` (written already: the store holds them),
@@ -1625,7 +1628,7 @@ pub(crate) fn join_reset(txn: &mut Transaction<'_>, tid: &Tid, ak: &Ak, idx: &mu
     let skeleton = j.reduced(&idx.paths);
     moved.add(&skeleton, 1);
     let unit = unit_state(&skeleton, idx)?;
-    if relay || unit.len() > PAGE_TARGET || all && !kept && skeleton.is_empty() {
+    if relay || holds_large(&skeleton, unit.len())? || all && !kept && skeleton.is_empty() {
         let mut m = j;
         for set in idx.sets.values() {
             for pg in set_pages(txn, t, set)? {
@@ -2057,7 +2060,7 @@ mod tests {
     fn seq_value(text: bool, n: u64) -> Value {
         let items = seq_items(text, 0, n);
         let seq = if text { Value::Str(items.iter().map(|v| if let Value::Str(x) = v { x.as_str() } else { "" }).collect()) } else { Value::List(items) };
-        // padding: the state above `PAGE_TARGET`, in pages of its own
+        // padding: a large map, in pages of its own
         let pad = Value::Map((0..300).map(|i| (Value::Int(i), Value::Str("p".repeat(250)))).collect());
         Value::Map([(Value::Int(0), pad), (Value::Int(1), seq)].into_iter().collect())
     }

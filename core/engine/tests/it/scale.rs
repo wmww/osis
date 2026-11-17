@@ -69,7 +69,7 @@ fn set_key(m: &mut Mutation, t: Tid, a: &Ak, path: Vec<PathSeg>, v: Value) {
     m.op(t, a, PathOp { path, op: Op::Set(v) }).unwrap();
 }
 
-/// A 200-byte string: n entries page from a few hundred on (`PAGE_TARGET`).
+/// A 200-byte string: n entries page from `MIN_PAGED` (64) on.
 fn long(i: usize) -> Value {
     s(&format!("{i:08}{}", "v".repeat(192)))
 }
@@ -315,8 +315,7 @@ fn text_ops(n: usize) -> Vec<(u64, u64, u64)> {
 // Scale: in a paged text of n and 10n chars, each op in a new session: a read of 100 chars, an
 // insert, a delete, a move, an edit as a text session writes it, an undo, loads and writes only
 // its pages and placement rows (through the stored placement).
-// A text pages above `PAGE_TARGET` (about 70k chars), so 10n is 700k chars: writing it takes
-// most of a minute. The move is left out: issues/text-move-loads-placement.md.
+// 10n is 800k chars: writing it takes most of a minute. The move is left out: issues/text-move-loads-placement.md.
 #[test]
 #[ignore = "by hand: an 800k-char text takes most of a minute"]
 fn text_edits_are_flat() {
@@ -665,7 +664,7 @@ fn snapshot_first(n: usize) -> Work {
 // body.
 #[test]
 fn validity_flip_is_linear_and_invalid_arrival_flat_spec_permissions_5_2() {
-    let (a, b) = (validity_flip(30), validity_flip(300));
+    let (a, b) = (validity_flip(12), validity_flip(120));
     all_linear("a revoke flipping an add", &a[0], &b[0]);
     flat("a revoke flipping an add: commits re-judged", a[0].n("rejudge: a commit"), b[0].n("rejudge: a commit"));
     all_flat("an invalid add arriving", &a[1], &b[1]);
@@ -689,7 +688,7 @@ fn snapshot_join_is_flat_spec_permissions_5_2() {
 // commits, then getting the commits, does linear work, not quadratic.
 #[test]
 fn commits_after_their_snapshot_are_linear_spec_permissions_5_2() {
-    all_linear("commits after their snapshot", &snapshot_first(30), &snapshot_first(300));
+    all_linear("commits after their snapshot", &snapshot_first(12), &snapshot_first(120));
 }
 
 /// n one-element commits on t by its first admin (0); B (1) writes one, received by C (2)
@@ -1028,9 +1027,9 @@ fn role_history_join(n: usize) -> [Work; 4] {
 }
 
 /// `all_linear` (`flat` with `per_change`) but for store bytes: `roles.0` keeps a tombstone per
-/// ended entry (spec/crdt.md §5.6; role history is never compacted) and a state up to
-/// `PAGE_TARGET` is written whole (notes/engine-paged.md), so below it every write there
-/// rewrites O(history) bytes, at most `PAGE_TARGET`; paged writes are flat (`map_edit_is_flat`).
+/// ended entry (spec/crdt.md §5.6; role history is never compacted) and a map of fewer than
+/// `MIN_PAGED` entries is written whole (issues/few-large-elements-written-whole.md), so every
+/// write there rewrites O(history) bytes; paged writes are flat (`map_edit_is_flat`).
 #[track_caller]
 fn all_counted(what: &str, small: &Work, big: &Work, per_change: bool) {
     let f = if per_change { flat } else { linear };
@@ -1048,7 +1047,7 @@ fn all_counted(what: &str, small: &Work, big: &Work, per_change: bool) {
 // (`Changed::commits`).
 #[test]
 fn role_history_join_is_linear() {
-    let (a, b) = (role_history_join(30), role_history_join(300));
+    let (a, b) = (role_history_join(12), role_history_join(120));
     all_counted("a joiner ingesting a role history", &a[0], &b[0], false);
     for (i, what) in ["a grant", "a removal", "their arrival"].iter().enumerate() {
         all_counted(&format!("at the end of a role history, {what}"), &a[i + 1], &b[i + 1], true);
@@ -1337,4 +1336,38 @@ fn open_role_reads(n: usize) -> u64 {
 fn an_open_decodes_no_role_commit_record() {
     let (a, b) = (open_role_reads(3), open_role_reads(30));
     flat("open: commit records decoded", a, b);
+}
+
+/// The work of `K` one-element adds, a commit each, to a set of `n` elements (as the account
+/// root's `holds.0` gains a strong per made thing), compactions included.
+fn set_adds(n: usize) -> Work {
+    const K: usize = 10;
+    let mut lp = net(1, 0);
+    let b = lp.peers[0].backend.clone();
+    let t = new_thing(&mut lp, 0);
+    let a = crate::common::TAGS;
+    let e = |i: usize| s(&format!("{i:08}{}", "e".repeat(16)));
+    let mut m = Mutation::new();
+    m.set(t, &a, &Value::Set((0..n).map(e).collect())).unwrap();
+    lp.peers[0].commit(m).unwrap().unwrap();
+    let (_, w) = measured(&b, || {
+        for i in n..n + K {
+            let mut m = Mutation::new();
+            m.op(t, &a, PathOp { path: vec![], op: Op::Add(e(i)) }).unwrap();
+            lp.peers[0].commit(m).unwrap().unwrap();
+        }
+    });
+    let Some(Value::Set(v)) = lp.peers[0].engine.get(&t, &ak("t:tags.0")).unwrap() else { panic!() };
+    assert_eq!(v.len(), n + K);
+    w
+}
+
+// spec/requirements.md, Scale (a change costs what it changed); spec/crdt.md §8: a set gaining
+// one element per write writes the page the element lands in, not the whole set: the store
+// bytes written per add are flat from n to 10n elements (a page or two at n, about 50 KB at
+// 10n). Fails if a state below some size is written whole.
+#[test]
+fn a_set_grown_one_element_a_write_writes_what_it_gained() {
+    let (small, big) = (set_adds(150), set_adds(1500));
+    flat("an add: store bytes written", small.io.written_bytes, big.io.written_bytes);
 }

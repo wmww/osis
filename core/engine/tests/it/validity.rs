@@ -1371,7 +1371,7 @@ fn holder_churn_resets_are_flat_spec_perm_2() {
 fn unmerge_paged_matches_fresh_large_spec_crdt_4_6() {
     use osis_crdt::{Op, PathOp, PathSeg};
     {
-        // each aspect's state past `PAGE_TARGET`, so it pages
+        // each aspect's state far above a page, so it pages
         const N: usize = 140;
         const CHARS: usize = 17_000;
         let (mut lp, d, b, _) = setup();

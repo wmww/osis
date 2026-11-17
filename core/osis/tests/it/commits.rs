@@ -357,7 +357,7 @@ fn commit_work_linear_in_things_spec_requirements_decentralization() {
         }
         t
     };
-    let (small, big) = (total(commit_work(50)), total(commit_work(500)));
+    let (small, big) = (total(commit_work(100)), total(commit_work(1000)));
     // `linear` as notes/test-scale.md (Scale checks) has it: at 10n at most 15x + 15 the count at n
     let over: Vec<_> = big.iter().map(|(k, n)| (k, small.get(k).copied().unwrap_or(0), *n)).filter(|(_, s, b)| *b > 15 * s + 15).collect();
     assert!(over.is_empty(), "work at n and 10n (kind, n, 10n): {over:?}");

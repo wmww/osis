@@ -599,7 +599,7 @@ fn paged_text_edits_by_index_and_undo_spec_crdt_6_1() {
     let t = p.engine.new_thing(&mut m, me);
     // history kept: only kept writes are undone (spec/commits.md §7)
     crate::common::keep_in(&mut m, t, &crate::common::day_setting());
-    // 4-byte chars: the state is above PAGE_TARGET, so the text is paged
+    // 4-byte chars: the text is far above a page, so it is paged
     let mut model: Vec<char> = (0..20_000u32).map(|i| char::from_u32(0x1F600 + i % 64).unwrap()).collect();
     m.set(t, &TEXT_AK, &Value::Str(model.iter().collect())).unwrap();
     p.engine.commit(m).unwrap().unwrap();

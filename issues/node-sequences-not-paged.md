@@ -16,4 +16,4 @@ Remaining:
 - A whole load reads every block and chunk of the stored placement (about a whole pass's cost; first whole read of 10^5 chars about 0.13 s idle, 0.39 s at load 22).
 - Ops whose map keys or set values have struct or map parts load every page (the crdt matches them as the writer's type projects them, which the index cannot see).
 - Collections inside list elements or at a `Slots` position are not paged apart from what holds them (a list element is reached through its sequence's placement; paging inside it needs its record's anchors kept apart, osis-crdt work).
-- O(aspect state) by nature (notes/engine-paged.md, Whole rewrites): a reset of a paged collection or above it, a validity rebuild, a page or skeleton outgrowing `PAGE_TARGET` (once, re-laid out).
+- O(aspect state) by nature (notes/engine-paged.md, Whole rewrites): a reset of a paged collection or above it, a validity rebuild, a page or skeleton coming to hold a collection to page (once, re-laid out).
