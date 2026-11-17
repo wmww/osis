@@ -373,6 +373,9 @@ fn tracked_role_reads_follow_their_thing_at_n_and_10n() {
     let cost = |n: usize| {
         let a = pumped(0);
         deliver(&other, &a);
+        // the delivery's pass ends: what it brought that nothing needs (the other's profile) goes
+        // before the measure
+        a.engine(|e| e.settle_needs().unwrap());
         let ts: Vec<Tid> = (0..n).map(|_| thing(&a)).collect();
         let x = thing(&a);
         let (_set, fired_n, h) = tracked(&a);

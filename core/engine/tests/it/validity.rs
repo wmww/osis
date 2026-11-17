@@ -3390,6 +3390,9 @@ fn forge_on(lp: &mut LocalPeer, k: Tid, a: &str) -> osis_commit::CommitBlob {
     use osis_commit::{AspectWrite, CommitBuilder, Kind, MemoryBlobs, writer_ctx};
     use osis_crdt::{AnyView, Delta, Writer, create, encode_delta};
     let b = lp.peers[1].engine.tid();
+    // peer 0 learns peer 1's record again: nothing there needs it, so it went at the last pass end
+    let own = lp.peers[1].engine.get_typed(&b, &osis_schema::core_types::CREATED).unwrap().unwrap();
+    lp.peers[0].engine.learn_records(vec![own]).unwrap();
     let kind = if osis_schema::core_types::is_role_class(a) { Kind::Role } else { Kind::Content };
     // a role commit is its own source (its body goes in the probe below: header only)
     let form = if kind == Kind::Role { osis_commit::Form::Commit } else { forged_session(b) };

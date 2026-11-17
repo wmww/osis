@@ -347,7 +347,7 @@ fn note_rows(tx: &mut Tx<'_>, source: &Tid, ak: &Ak, d: Delta) -> Result<()> {
                 moved.push((target, ak.clone()));
                 // a need of the target went (a strong, or an account's `keys.0`): judged once the
                 // pass ends (`retention::needed`)
-                if !ak.ephemeral() && (kind == RefKind::Strong || ak.as_str() == "keys.0") {
+                if kind == RefKind::Strong || ak.as_str() == "keys.0" {
                     tx.core.note_lost(target);
                 }
                 if kind == RefKind::Strong {

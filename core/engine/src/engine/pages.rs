@@ -15,7 +15,7 @@ use crate::retention::Killed;
 use osis_base::{Ak, Tid, Value};
 use osis_crdt::{Changes, Dot, Eid, Encoding, Fragment, PagedTouch, PathSeg, Paths, PlaceBlock, PlaceDiff, PlaceMisses, PlaceRow, PlaceTop, SeqPlace, SourceKind, Step};
 use osis_store::{Shred, Table, Transaction};
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::ops::Range as Span;
 
 /// Encoded bytes per local page, about; a collection above it pages, a page grown past twice
@@ -423,16 +423,22 @@ pub fn ensure_touch(txn: &mut Transaction<'_>, tid: &Tid, ak: &Ak, idx: &mut Sta
             prefetch(txn, tid, ak, t, set, f, d)?;
         }
     }
-    // a set's records of the references the delta names (§5.5), through the value index
-    for (p, vs) in &touch.refs {
-        let Some(set) = idx.sets.get(p) else { return Ok(false) };
-        let mut dots = Vec::new();
-        for v in vs {
-            dots.extend(key_dots(txn, tid, ak, set, v)?);
-        }
+    // every record of the values whose read the join may move (`PagedTouch::values`), through
+    // the value index; in a map also the keys of the state's records of the delta's dots (a
+    // key-erased removal names none, and resets every record of its dot)
+    let paths: BTreeSet<&Vec<Step>> = touch.values.keys().chain(touch.elems.keys()).collect();
+    for p in paths {
         let Some(set) = idx.sets.get_mut(p) else { return Ok(false) };
-        for d in &dots {
-            ensure_dot(txn, t, set, f, d)?;
+        let mut vs: BTreeSet<Value> = touch.values.get(p).into_iter().flatten().cloned().collect();
+        if set.enc == Encoding::Map
+            && let Some(m) = f.at_steps(p)
+        {
+            vs.extend(touch.elems.get(p).into_iter().flatten().flat_map(|d| m.dot_keys(d)).cloned());
+        }
+        for v in &vs {
+            for d in key_dots(txn, tid, ak, set, v)? {
+                ensure_dot(txn, t, set, f, &d)?;
+            }
         }
     }
     Ok(true)
@@ -1753,6 +1759,53 @@ mod tests {
         let other = PageSet { salt: [8; 32], ..set };
         assert!(key_dots(&mut txn, &tid, &ak, &other, &Value::Int(6)).unwrap().is_empty(), "keyed");
         assert_ne!(k5, key_row(&other, &Value::Int(5), None));
+    }
+
+    // spec/crdt.md §5.6 (Read: a key reads as the join of its live records): a paged map's join loads every
+    // record of each key whose read it may move, so what it moves in the values as read (the
+    // reference index's count) is what it moves over the whole state. Key 0 has a second record
+    // (source 2), dot (3, 1) records under keys 1 and 250 (a forged copy), each key's first record
+    // on an early page: key-erased removals of key 0's first record and of dot (3, 1).
+    #[test]
+    fn map_join_loads_its_reach_spec_crdt_5_6() {
+        let mut rng = osis_crypto::SeededRng::from_u64(0);
+        let mut store = Store::create(Box::new(MemoryBackend::new()), Box::new(MemoryRoot::new()), StoreConfig::default(), &mut rng).unwrap();
+        let (tid, ak) = (Tid::from_bytes([7; 15]), osis_base::Ak::new("app:map.0").unwrap());
+        let ts = |n: u64| Ts::from_u64(n << 16).unwrap();
+        let mut w = Writer::new(ts(1), sess(1), 1);
+        let base = create(&mut w, &AnyView, &ints(300, 1)).unwrap();
+        let op = |base: &Fragment, src: u8, t: u64, lo: u64, path: Vec<PathSeg>, op: Op| {
+            let mut b = DeltaBuilder::new(base, Writer::new(ts(t), sess(src), lo));
+            b.apply(&PathOp { path, op }, &AnyView).unwrap();
+            b.finish().unwrap().0
+        };
+        let put = |src: u8, k: i64| op(&base, src, 2, 1, vec![PathSeg::Key(Value::Int(k))], Op::Put(Value::Int(1000 + k)));
+        // what the join moves in the values as read (`refs::Delta`): those of its reach after, less
+        // those before
+        let moved = |mut f: Fragment, d: &Fragment| {
+            let mut n: BTreeMap<Value, i64> = BTreeMap::new();
+            let pre = f.reach(d);
+            pre.each_read_value(&mut |v| *n.entry(v.clone()).or_default() -= 1);
+            f.join(d.clone());
+            f.reach_after(d, &pre).each_read_value(&mut |v| *n.entry(v.clone()).or_default() += 1);
+            n.retain(|_, c| *c != 0);
+            n
+        };
+        let mut st = base.clone();
+        for (src, k) in [(2, 0), (3, 1), (3, 250)] {
+            st.join(put(src, k));
+        }
+        let mut txn = store.transaction(&mut rng).unwrap();
+        let (unit, idx) = write_full(&mut txn, &tid, &ak, Some(&st), false, &SALT).unwrap();
+        assert!(idx.is_some_and(|i| i.sets() == 1));
+        let removals = [op(&base, 1, 3, w.range().hi, vec![], Op::Remove(Value::Int(0))), op(&put(3, 1), 4, 3, 1, vec![], Op::Remove(Value::Int(1)))];
+        for d in removals {
+            let (mut f, mut idx) = open(&unit, &SALT).unwrap();
+            let touch = touch_of(&d, Some(&idx)).unwrap();
+            assert!(ensure_touch(&mut txn, &tid, &ak, &mut idx, &mut f, &touch).unwrap());
+            assert!(!idx.whole(), "loaded in part");
+            assert_eq!(moved(f, &d), moved(st.clone(), &d));
+        }
     }
 
     // spec/crdt.md §5.5 (add v; remove v), spec/data-model.md §6 (equality of a large value is equality of its keyed content hash), spec/commits.md §5 (every local index entry derived from it):

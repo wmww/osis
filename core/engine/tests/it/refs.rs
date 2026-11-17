@@ -52,7 +52,9 @@ type Rows = BTreeSet<(Tid, Tid, String, RefKind, u64)>;
 /// R2's signal: its held valid fires' references are known references.
 const SIG: &str = "x:f~0";
 /// R2's state aspects, each counted in held history (`history_holds_targets`).
-const HELD: [&str; 5] = ["x:a.0", "x:b.0", "x:big.0", "x:e.0", "t:refs.0"];
+const HELD: [&str; 6] = ["x:a.0", "x:b.0", "x:big.0", "x:e.0", "t:refs.0", "x:m.0"];
+/// R2's paged map: past a page, its few live keys put again and written into by every writer.
+const MAP: &str = "x:m.0";
 
 fn app(ak: &str) -> bool {
     ak.starts_with("x:") || ak.starts_with("t:")
@@ -128,6 +130,13 @@ fn r2_setting(holds: bool) -> ct::RetentionSetting {
     ct::RetentionSetting { default: Some(keep(HOUR)), rules: [(ak(SIG), keep(1_000))].into_iter().collect(), history_holds_targets: holds, ..Default::default() }
 }
 
+/// R2's paged map: 200 padding entries (past a page, notes/engine-paged.md) and keys 0 to 2
+/// naming `targets`.
+fn r2_map(targets: &[Tid]) -> Value {
+    let pad = (0..200).map(|i| (Value::Int(100 + i), Value::Str("p".repeat(60))));
+    Value::Map(pad.chain((0..3).map(|i| (Value::Int(i), Value::Strong(targets[i as usize % targets.len()])))).collect())
+}
+
 /// R2's world: three nodes of their own accounts; node 0 makes two things under `r2_setting`
 /// (the first's history holding its targets) and grants nodes 1 and 2 write on the first (each
 /// holds both). Built once (`LocalPeer::cached`).
@@ -138,6 +147,7 @@ fn r2_world() -> (LocalPeer, Vec<Tid>) {
         for (i, t) in things.iter().enumerate() {
             let mut m = Mutation::new();
             m.set(*t, &ct::RETENTION, &r2_setting(i == 0)).unwrap();
+            m.set(*t, &ak(MAP), &r2_map(&things)).unwrap();
             lp.peers[0].commit(m).unwrap();
         }
         for j in 1..3 {
@@ -193,8 +203,8 @@ fn known_references_are_a_scan_of_held_values_spec_data_model_8() {
         const STEPS: u64 = 30;
         for step in 0..=STEPS {
             let t = things[rng.below(2) as usize];
-            let (kind, mut by) = (rng.below(16), rng.below(3) as usize);
-            if kind >= 10 {
+            let (kind, mut by) = (rng.below(20), rng.below(3) as usize);
+            if (10..16).contains(&kind) {
                 by = 0;
             }
             let now = lp.peers[by].engine.now();
@@ -251,6 +261,23 @@ fn known_references_are_a_scan_of_held_values_spec_data_model_8() {
                     }
                 }
                 12 => drop(m.set(t, &ct::RETENTION, &r2_setting(rng.below(2) == 0)).unwrap()),
+                16..=19 => {
+                    // R2's paged map: a key put again whatever is live there, written into or
+                    // removed (the records its writer holds), so one key holds several records,
+                    // on different pages
+                    let map = ak(MAP);
+                    let k = Value::Int(rng.below(3) as i64);
+                    if matches!(lp.peers[by].engine.get(&t, &map).unwrap(), Some(Value::Map(_))) {
+                        let (path, op) = match kind {
+                            16..=17 => (vec![osis_crdt::PathSeg::Key(k)], osis_crdt::Op::Put(nested(&mut rng, 2))),
+                            18 => (vec![osis_crdt::PathSeg::Key(k)], osis_crdt::Op::Set(nested(&mut rng, 2))),
+                            _ => (vec![], osis_crdt::Op::Remove(k)),
+                        };
+                        m.op(t, &map, osis_crdt::PathOp { path, op }).unwrap();
+                    } else {
+                        m.set(t, &map, &r2_map(&targets)).unwrap();
+                    }
+                }
                 _ => {
                     // a writer removed (its writes the admin has not seen go invalid) and granted
                     // again: a node given the removal before the grant holds its later writes
@@ -315,6 +342,14 @@ fn known_references_are_a_scan_of_held_values_spec_data_model_8() {
                 assert_eq!(by_target, scanned, "seed {seed} step {step} node {i}: rows by target");
                 let (index, scanned) = history_two_ways(e, &things, &targets);
                 assert_eq!(index, scanned, "seed {seed} step {step} node {i}: held history's strongs");
+                // the scan read each state whole: the next join meets it cold, its pages unloaded
+                e.run(|tx| {
+                    for (t, a) in things.iter().flat_map(|t| HELD.iter().map(move |a| (t, ak(a)))) {
+                        tx.evict_pages(t, &a);
+                    }
+                    Ok(())
+                })
+                .unwrap();
             }
         }
     }

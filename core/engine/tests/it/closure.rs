@@ -596,6 +596,9 @@ fn another_accounts_chain_goes_with_the_last_held_thing_needing_it_spec_commits_
     assert!(knows(&mut lp, 2, ps[1]) && knows(&mut lp, 2, ps[0]), "peer 2 met both");
     let e2 = &mut lp.peers[2].engine;
     strong(e2, d2, t, false);
+    // judged at the pass's end: T, left but not released, is held still
+    e2.settle_needs().unwrap();
+    assert!(e2.core.created(&t).is_some(), "T, left but not released, stays");
     assert!(knows(&mut lp, 2, ps[1]), "T, left but not released, still needs peer 1's chain");
     let e2 = &mut lp.peers[2].engine;
     e2.released(&[t].into()).unwrap();
@@ -895,4 +898,29 @@ fn a_strong_in_held_history_holds_its_target_until_the_body_goes_spec_data_model
         assert!(!e.closure_holds(&x), "its body dropped or the flag off: X goes");
         assert_eq!(e.left_closure().get(&x), Some(&[d].into()));
     }
+}
+
+// spec/commits.md §5 What a held thing needs: a strong in an ephemeral aspect needs its target as a
+// durable one does, and going loses that need alike. Peer 0 keeps account Q (peer 1) by such a
+// strong on its account root alone; the aspect removed, Q's chain goes at the pass's end.
+#[test]
+fn an_ephemeral_strong_going_lets_its_target_go_spec_commits_5() {
+    let mut lp = osis_engine::local_peer::LocalPeer::new_apart(2, 0, crate::common::T0).unwrap();
+    let q = lp.peers[1].engine.me();
+    let theirs: Vec<_> = lp.peers[1].engine.commit_ids();
+    crate::flows::send(&mut lp, 1, 0, &theirs);
+    let e0 = &mut lp.peers[0].engine;
+    let (d0, a) = (e0.account_root().unwrap(), osis_base::Ak::new("t:keep+.0").unwrap());
+    let mut m = Mutation::new();
+    m.set(d0, &a, &Value::Strong(q)).unwrap();
+    e0.write(m).unwrap();
+    // twice: the first pass end's drops leave what they named to the next
+    e0.settle_needs().unwrap();
+    e0.settle_needs().unwrap();
+    assert!(e0.core.created(&q).is_some(), "the ephemeral strong keeps Q's chain");
+    let mut m = Mutation::new();
+    m.remove_aspect(d0, &a).unwrap();
+    e0.write(m).unwrap();
+    e0.settle_needs().unwrap();
+    assert!(e0.core.created(&q).is_none(), "nothing held needs Q's chain");
 }

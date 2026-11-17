@@ -4,16 +4,17 @@
 //! the node closure is kept while a thing that needs it is kept: one in the node closure whose
 //! known references hold a strong to it (`refs::to`: its state, ephemeral aspects included, and
 //! held fires; a weak or ticket only points and needs nothing), an account by its `keys.0` (its inbox), one whose record names it first admin, one
-//! whose held edge write names it holder (`Held::named_on`), one a held or pending commit it
+//! whose held edge write names it holder (`Held::named_on`), an account root whose account's held
+//! chain names it a device (D bears no edge write), one a held or pending commit it
 //! authored or acted in is on (body held or not; a pending one by the things it writes on,
 //! `Indexes::pend_by`), one a pending commit awaiting its record writes on (`Wake::Record`), one in
 //! the node closure a held commit on it has a part missing on (`Meta::missing_parts`: a part the
 //! node fetches again), one in the node closure an edge write on it names holder (not by its
 //! record: the holder's sync ID carries the grant with its chain, spec/sync-judgement.md §2 A
-//! grant naming a holder). A thing is rooted, kept for itself: in the node closure or leaving it,
-//! a key actor that is no account (a node, a link key), the K of a followed link, one a key actor
-//! held here is named on (a link being redeemed, a bearer), a kept copy, or a thing an own
-//! self-removal still waits to seal under. A ticket roots nothing: a strong in the node closure
+//! grant naming a holder). A thing is rooted, kept for itself (`Root`): held (in the node closure
+//! or leaving it), a retained copy, by keys held here (a key actor whose keys this node holds,
+//! the K of a link it follows, one such a key actor is named holder on: a link being redeemed, a
+//! bearer), or a thing an own self-removal still waits to seal under. A ticket roots nothing: a strong in the node closure
 //! with a ticket for its target needs it as any strong does, so what judges the ticket stays
 //! (spec/sync-set.md §2). Nothing is rooted by whose it is: this node's account is needed by its root
 //! (D's record names it), and a thing made under the node or the account goes as any once
@@ -25,7 +26,7 @@
 //! record was learned (`apply::atomic::learn_record`) or that a commit that pends awaits
 //! (`apply::set_pending`) is noted in `Core::pass_due` until then, so a parent's record arriving
 //! before what needs it stays. A lost need waits for nothing but a pass in flight: a thing that
-//! lost one (a strong row or an account's `keys.0` row gone, `refs::note`; a signer's commit
+//! lost one (a strong row or an account's `keys.0` row gone, durable or ephemeral, `refs::note`; a signer's commit
 //! dropping a part or forgotten, `Core::note_signed`, `Core::take_meta`, or leaving pending; a
 //! commit's part no longer missing, `Core::note_on`; a holder unnamed, `Held::take_unnamed`; the
 //! last held vertex with a ticket for it no longer following its strong, `units::set_accepted`) is noted in `Core::lost_due`, judged at a pass's end or, with
@@ -116,20 +117,14 @@ impl Engine {
 /// Why a thing is kept for itself (the module doc, `rooted`).
 #[derive(Clone, Debug)]
 pub(crate) enum Root {
-    /// In the node closure.
-    Closure,
-    /// Leaving the node closure, not released yet.
-    Leaving,
-    /// A kept copy (`rotation::lost`).
-    Kept,
-    /// A secret actor whose kept copy is this one (`forget::copy_of`).
-    CopyOf(Tid),
-    /// A key actor that is no account (a node, a link key).
-    KeyActor,
-    /// The K of a link this node follows.
-    FollowedLink,
-    /// A key actor held here (a link being redeemed, a bearer) is named holder on it.
-    HeldKeyActor(Tid),
+    /// In the node closure, or leaving it and not released yet.
+    Held,
+    /// A retained copy (`rotation::lost`): of this kept actor, itself or the secret actor it is
+    /// a copy under (`forget::copy_of`).
+    Copy(Tid),
+    /// Keys held here: this key actor's (the node, a key actor held, a bearer), itself or one
+    /// named holder on it or the key of a link to it this node follows.
+    Keys(Tid),
     /// An own self-removal from it waits to be sealed under its sync IDs.
     SelfRemoval(osis_base::CommitId),
 }
@@ -137,7 +132,8 @@ pub(crate) enum Root {
 /// Why `x` needs `t` held (the module doc, `needs`).
 #[derive(Clone, Debug)]
 pub(crate) enum Need {
-    /// `t` is named holder on `x` by a held edge write (`Held::named_on`).
+    /// `t` is named holder on `x` by a held edge write (`Held::named_on`), or on account root `x`
+    /// by its account's chain (a device it names).
     Holder,
     /// A held commit `t` authored or acted in has an aspect on `x`.
     Signed(osis_base::CommitId),
@@ -151,38 +147,39 @@ pub(crate) enum Need {
     Strong(osis_base::Ak),
     /// Account `x`'s `keys.0` names `t` (its inbox).
     Inbox,
-    /// `t` is account `x`'s profile.
-    Profile,
 }
 
 /// Why `t` is kept for itself (the module doc), if it is.
 pub(crate) fn rooted(core: &Core, t: &Tid) -> Option<Root> {
     let cl = &core.ix.closure;
-    if cl.holds(t) {
-        return Some(Root::Closure);
-    }
-    if cl.left().contains_key(t) {
-        return Some(Root::Leaving);
+    if cl.holds(t) || cl.left().contains_key(t) {
+        return Some(Root::Held);
     }
     if core.ix.kept.contains_key(t) {
-        return Some(Root::Kept);
+        return Some(Root::Copy(*t));
     }
     if let Some(a) = super::forget::copy_of(core, t) {
-        return Some(Root::CopyOf(a));
+        return Some(Root::Copy(a));
     }
-    // a key actor that is no account, or the K of a link this node follows
-    if core.is_key_actor(t) && !core.is_account(t) {
-        return Some(Root::KeyActor);
+    // a key actor whose keys this node holds, the K of a link it follows (by its link key), or
+    // one such a key actor is named holder on (a link being redeemed, a bearer)
+    if holds_keys(core, t) {
+        return Some(Root::Keys(*t));
     }
-    if core.followed_links.contains(t) {
-        return Some(Root::FollowedLink);
+    if let Some((_, l)) = core.followed_links.get(t) {
+        return Some(Root::Keys(l));
     }
-    // a key actor held here (a link being redeemed, a bearer) is named on it
-    if let Some(h) = core.ix.held.holders_of(t).find(|h| core.key_actors.contains_key(h) || core.ix.bearers.contains(h)) {
-        return Some(Root::HeldKeyActor(*h));
+    if let Some(h) = core.ix.held.holders_of(t).find(|h| holds_keys(core, h)) {
+        return Some(Root::Keys(*h));
     }
     // an own self-removal from it waits to be sealed under its sync IDs (`sync::held::wait_if_own`)
     core.ix.held_wait.iter().find(|c| core.ix.commits.get(c).is_some_and(|m| m.view.aspect(t, "roles.0").is_some())).map(|c| Root::SelfRemoval(*c))
+}
+
+/// Whether this node holds key actor `a`'s keys: the node itself, a key actor held for now
+/// (`Core::key_actors`), or a link key it keeps reading as (`Indexes::bearers`).
+fn holds_keys(core: &Core, a: &Tid) -> bool {
+    core.id.tid() == *a || core.key_actors.contains_key(a) || core.ix.bearers.contains(a)
 }
 
 /// The things that need `t` held (the module doc), but `t`, each with why (one thing may come
@@ -212,7 +209,12 @@ pub(crate) fn needs(tx: &mut Tx<'_>, t: &Tid) -> Result<Vec<(Tid, Need)>> {
     // holder's sync ID carries the grant with its chain (spec/sync-judgement.md §2 A grant naming
     // a holder), so its readers read it through the holder
     let holding = core.ix.held.holders_of(t).filter(|h| core.ix.closure.holds(h) && core.first_admin(t) != Some(**h)).map(|h| (*h, Need::Holding));
-    let mut out: Vec<(Tid, Need)> = core.ix.held.named_on(t).map(|x| (*x, Need::Holder)).chain(signed).chain(pending).chain(waiting).chain(holding).collect();
+    // a device a held account's chain names (its creation device, or one a held rotation adds,
+    // on any line): its account root's holder by the chain (D bears no edge write,
+    // `Core::root_holders`)
+    let device = core.is_key_actor(t) && !core.is_account(t);
+    let devices = core.accounts.iter().filter(|(p, _)| device && core.account_view(p).is_some_and(|v| v.named_device(t))).map(|(_, a)| (a.root, Need::Holder));
+    let mut out: Vec<(Tid, Need)> = core.ix.held.named_on(t).map(|x| (*x, Need::Holder)).chain(devices).chain(signed).chain(pending).chain(waiting).chain(holding).collect();
     // a strong from a thing the node closure holds (a weak or ticket only points; one kept only
     // as a certificate needs nothing by what its state names), and an account's reference from
     // its `keys.0` (its inbox, part of its chain)
@@ -226,13 +228,6 @@ pub(crate) fn needs(tx: &mut Tx<'_>, t: &Tid) -> Result<Vec<(Tid, Need)>> {
             out.push((r.source, Need::Strong(r.ak)));
         } else if r.ak.as_str() == "keys.0" && core.is_account(&r.source) {
             out.push((r.source, Need::Inbox));
-        }
-    }
-    // an account's profile: needed by the account
-    if let Some(a) = core.first_admin(t).filter(|a| core.is_account(a)) {
-        let inbox = crate::flows::inbox::inbox_in(tx, &a)?;
-        if tx.core.profile_of(&a, inbox) == Some(*t) {
-            out.push((a, Need::Profile));
         }
     }
     out.retain(|(x, _)| x != t);

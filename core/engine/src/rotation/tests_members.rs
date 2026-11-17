@@ -1797,12 +1797,15 @@ fn build_destroyed_world() -> (LocalPeer, Tid, Tid, Tid) {
     lp.peers[0].engine.give_own_secrets(&t).unwrap();
     let x = with_own_keys(&mut lp, 0);
     let g = with_own_keys(&mut lp, 2);
+    // the granters keep the nodes they grant (a strong from the account root): nothing else
+    // needs another account's node
+    let (n1, n3) = (lp.peers[1].engine.tid(), lp.peers[3].engine.tid());
+    lp.peers[0].know(&[n1]).unwrap();
+    lp.peers[2].know(&[n3]).unwrap();
     lp.sync_all().unwrap();
     lp.peers[0].engine.grant(&x, &t, &edge(Role::Read)).unwrap();
     lp.peers[0].engine.grant(&t, &g, &edge(Role::Read)).unwrap();
-    let n1 = lp.peers[1].engine.tid();
     lp.peers[0].engine.grant(&t, &n1, &edge(Role::Read)).unwrap();
-    let n3 = lp.peers[3].engine.tid();
     lp.peers[2].engine.grant(&g, &n3, &edge(Role::Read)).unwrap();
     lp.sync_all().unwrap();
     (lp, t, x, g)

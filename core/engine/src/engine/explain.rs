@@ -76,13 +76,13 @@ fn path(core: &Core, t: &Tid) -> String {
 
 fn root(core: &Core, x: &Tid, r: &Root) -> String {
     match r {
-        Root::Closure => format!("in the node closure: {}", path(core, x)),
-        Root::Leaving => "leaving the node closure, not released yet".into(),
-        Root::Kept => "a kept copy".into(),
-        Root::CopyOf(a) => format!("the kept copy of {}", label(core, a)),
-        Root::KeyActor => "a key actor that is no account".into(),
-        Root::FollowedLink => "the K of a followed link".into(),
-        Root::HeldKeyActor(h) => format!("key actor {} held here is named holder on it", label(core, h)),
+        Root::Held if core.ix.closure.holds(x) => format!("in the node closure: {}", path(core, x)),
+        Root::Held => "leaving the node closure, not released yet".into(),
+        Root::Copy(a) if a == x => "a retained copy".into(),
+        Root::Copy(a) => format!("the retained copy of {}", label(core, a)),
+        Root::Keys(a) if a == x => "a key actor whose keys this node holds".into(),
+        Root::Keys(a) if core.followed_links.get(x).is_some_and(|(_, l)| l == *a) => format!("the K of a followed link, key {}", label(core, a)),
+        Root::Keys(a) => format!("key actor {} whose keys this node holds is named holder on it", label(core, a)),
         Root::SelfRemoval(c) => format!("an own self-removal from it (c:{}) waits to be sealed", short(c)),
     }
 }
@@ -97,7 +97,6 @@ fn need(core: &Core, x: &Tid, n: &Need) -> String {
         Need::Holding => format!("an edge write on it names {x} holder"),
         Need::Strong(ak) => format!("{x}'s {ak} holds a strong to it"),
         Need::Inbox => format!("account {x}'s keys.0 names it (its inbox)"),
-        Need::Profile => format!("it is account {x}'s profile"),
     }
 }
 

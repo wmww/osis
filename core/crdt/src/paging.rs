@@ -284,9 +284,11 @@ pub struct PagedTouch {
     pub elems: BTreeMap<Vec<Step>, Vec<Dot>>,
     /// Per paged sequence, the delta's fragment there (what its placement follows).
     pub seqs: BTreeMap<Vec<Step>, Fragment>,
-    /// Per paged set, the references its elements and value removals name: the records of each,
-    /// wherever they are, hide or are hidden by them (§5.5).
-    pub refs: BTreeMap<Vec<Step>, Vec<Value>>,
+    /// Per paged map or set, the values whose records the join reaches wherever they are: a
+    /// map's keys its records hold (a key reads as the join of its records, §5.6, so the join
+    /// reaches every record of a key it reaches, `Fragment::reach`), a set's references its
+    /// elements and value removals name (the records of each hide or are hidden by them, §5.5).
+    pub values: BTreeMap<Vec<Step>, Vec<Value>>,
 }
 
 impl Fragment {
@@ -329,6 +331,14 @@ impl Fragment {
     pub fn entry_keys(&self, d: &Dot) -> Vec<&Value> {
         match self {
             Fragment::Map(m) => m.of_dot(d).filter(|(_, e)| e.frag.is_some()).filter_map(|(id, _)| id.key()).collect(),
+            _ => Vec::new(),
+        }
+    }
+
+    /// The keys of a map's records of dot `d`, content or not.
+    pub fn dot_keys(&self, d: &Dot) -> Vec<&Value> {
+        match self {
+            Fragment::Map(m) => m.of_dot(d).filter_map(|(id, _)| id.key()).collect(),
             _ => Vec::new(),
         }
     }
@@ -453,11 +463,13 @@ fn touched_walk(d: &Fragment, t: &Paths, path: &mut Vec<Step>, out: &mut PagedTo
         if matches!(d, Fragment::Seq(_)) {
             out.seqs.insert(path.clone(), d.clone());
         }
-        if let Fragment::Set(x) = d {
-            let refs: std::collections::BTreeSet<&Value> = x.elems.values().flat_map(crate::fragment::Elem::references).collect();
-            if !refs.is_empty() {
-                out.refs.entry(path.clone()).or_default().extend(refs.into_iter().cloned());
-            }
+        let values: std::collections::BTreeSet<&Value> = match d {
+            Fragment::Map(m) => m.entries.keys().filter_map(Eid::key).collect(),
+            Fragment::Set(x) => x.elems.values().flat_map(crate::fragment::Elem::references).collect(),
+            _ => Default::default(),
+        };
+        if !values.is_empty() {
+            out.values.entry(path.clone()).or_default().extend(values.into_iter().cloned());
         }
         out.elems.entry(path.clone()).or_default().extend(dots);
         return Some(());
