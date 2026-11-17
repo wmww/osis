@@ -142,7 +142,7 @@ fn walk_from(tx: &mut Tx<'_>, who: &Tid, a: &Tid, r: Role, root: (Tid, osis_cryp
     while let Some((x, k, read)) = todo.pop() {
         if !missed && (read || tx.core.me() == Some(x)) {
             let known = if x == *a { deps.to_vec() } else { keyset_departures(tx, &x)? };
-            let deps = others(tx.core, known);
+            let deps = others(tx.core, &x, known);
             missed = uncovered(tx, &x, r, &k, &deps)?;
             if missed && !full {
                 return Ok(Some(Block::Departure));
@@ -163,7 +163,7 @@ fn walk_from(tx: &mut Tx<'_>, who: &Tid, a: &Tid, r: Role, root: (Tid, osis_cryp
                     let b = match tx.core.me() {
                         Some(p) if walk != Walk::Place => {
                             let known = keyset_departures(tx, &p)?;
-                            !others(tx.core, known).is_empty()
+                            !others(tx.core, &p, known).is_empty()
                         }
                         _ => false,
                     };
@@ -254,14 +254,17 @@ pub(crate) fn uncovered(tx: &mut Tx<'_>, x: &Tid, r: Role, k: &osis_crypto::Epoc
     })
 }
 
-/// `deps` less this node's own departures (its account's or its own): the departed party is the
-/// node itself, which holds the epoch already, so its own removal holds back none of its
+/// `deps` from `x` less this node's own departures (its account's or its own): the departed party
+/// is the node itself, which holds the epoch already, so its own removal holds back none of its
 /// encrypting (spec/crypto.md §4, Encrypting under). Counted, a node removed from holder actor M
 /// before M's new keyset reached it left M out of what it rotated and, gone from M, could never
-/// re-seal it.
-fn others(core: &Core, deps: Vec<Departure>) -> Vec<Departure> {
-    let own = |h: &Tid| core.me() == Some(*h) || *h == core.id.tid();
-    deps.into_iter().filter(|d| !own(&d.holder)).collect()
+/// re-seal it. Also less a departure made by this node's own self-removal of another holder (an
+/// actor it administers, a link key) while sync waits on it (`held_wait`, spec/crypto.md §4
+/// Exception): the self-removal carries no rotation, so counted it would keep the node from
+/// logging that very commit, and the wait it is held for would end with no peer told.
+fn others(core: &Core, x: &Tid, deps: Vec<Departure>) -> Vec<Departure> {
+    let own = |d: &Departure| core.me() == Some(d.holder) || d.holder == core.id.tid() || departures::own_leaving(core, x, d).is_some_and(|c| core.ix.held_wait.contains(&c));
+    deps.into_iter().filter(|d| !own(d)).collect()
 }
 
 /// `blocked_roles_of` with every departure of `a` this node knows.

@@ -491,6 +491,51 @@ fn removing_the_makers_only_path_parks_its_entries_spec_permissions_3() {
 }
 
 
+// spec/permissions.md §3 (Lost access: a node that lost read through its own self-removal drops
+// once the commit is held elsewhere): Alice makes T1 under T0 and grants Bob read; Bob accepts.
+// She removes T0's record edge on T1, her only path to T1, a self-removal: she keeps T1's
+// secrets and store until Bob holds the removal, so Bob's roster loses T0 as the reference's.
+#[test]
+fn a_self_removal_of_the_makers_only_path_reaches_the_reader_spec_permissions_3() {
+    let mut w = contacts();
+    let t0 = make(&mut w, 0, None, "v1");
+    let t1 = make(&mut w, 0, Some(t0), "v2");
+    strong(&mut w, 0, Some(t0), t1, true);
+    let bob = w.node(1).account.unwrap();
+    w.write(0, |e| e.grant(&t1, &bob, &edge(Role::Read))).unwrap();
+    strong(&mut w, 1, None, t1, true);
+    w.run();
+    assert!(w.engine(1).roster(&t1).contains_key(&t0), "Bob reads T0's record edge");
+    w.write(0, |e| e.demote(&t1, &osis_engine::flows::Demotion { holder: t0, new: None, retain: None })).unwrap();
+    w.run();
+    assert_eq!(value(&mut w, 0, &t1), None, "Alice lost T1");
+    let roster: Vec<Tid> = w.engine(1).roster(&t1).into_keys().collect();
+    assert_eq!(roster, vec![bob], "Bob holds the removal");
+}
+
+// spec/permissions.md §3 (Lost access, No secret taken back): Bob makes T1 under T0 and grants
+// Alice read on T0, so she reads T1 by the chain. Cut off from his sibling, one of Bob's nodes
+// removes her from T0 while the other grants her sync on T1, still boxing her T1's read secret;
+// Alice accepts T1. Her role there shows sync alone, so she keeps T1 unread and reads none of it.
+#[test]
+fn a_read_secret_boxed_beside_a_removal_goes_once_the_role_shows_sync_spec_permissions_3() {
+    let mut w = siblings();
+    let t0 = make(&mut w, 1, None, "v1");
+    let t1 = make(&mut w, 1, Some(t0), "v2");
+    strong(&mut w, 1, Some(t0), t1, true);
+    let alice = w.node(0).account.unwrap();
+    w.write(1, |e| e.grant(&t0, &alice, &edge(Role::Read))).unwrap();
+    w.run();
+    w.partition(1, 2);
+    w.write(2, |e| e.demote(&t0, &osis_engine::flows::Demotion { holder: alice, new: None, retain: None })).unwrap();
+    w.write(1, |e| e.grant(&t1, &alice, &edge(Role::Sync))).unwrap();
+    strong(&mut w, 0, None, t1, true);
+    w.heal();
+    w.run();
+    assert_eq!(value(&mut w, 0, &t1), None, "Alice reads none of T1");
+    assert_eq!(holding(&mut w, 0, &t1), Some(Holding::Unread), "she keeps T1 unread");
+}
+
 // spec/sync-inbox.md §5 (Ticket sync IDs), spec/sync-set.md §2 (What a held ticket does): Alice
 // grants Bob read on T, lowers him to sync and grants read again, each a ticket on his inbox;
 // Bob's sibling accepts T. T, entered on the tickets' word, moves to read once its role commits

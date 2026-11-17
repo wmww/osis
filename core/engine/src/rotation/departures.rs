@@ -222,7 +222,7 @@ pub fn departures_placing(tx: &mut Tx<'_>, a: &Tid) -> Result<Vec<(Departure, Op
 
 /// The commit of departure `d` from `a` when it is this node's own self-removal
 /// (`own_removal_on`). From stored commits only, so a restart keeps it.
-fn own_leaving(core: &Core, a: &Tid, d: &Departure) -> Option<osis_base::CommitId> {
+pub(super) fn own_leaving(core: &Core, a: &Tid, d: &Departure) -> Option<osis_base::CommitId> {
     own_removal_on(core, core.timelines.get(a)?, a, &d.holder)
 }
 

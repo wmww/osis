@@ -84,13 +84,15 @@ pub enum Under {
     Thing(usize),
 }
 
-/// A grant or a change of keys, for the excuse: the node that made it and what that node had
-/// surely received then (`Made::know`).
+/// A grant, a change of keys or a value write, for the excuse and lost writes: the node that
+/// made it and what that node had surely received then (`Made::know`).
 #[derive(Clone, Debug)]
 struct Event {
     thing: usize,
-    /// The holder's account for a grant to an account; `None` for a rotation.
+    /// The holder's account for a grant to an account; `None` for a rotation or a write.
     granted: Option<Tid>,
+    /// The commit of a value write; `None` for a grant or a rotation.
+    wrote: Option<CommitId>,
     node: usize,
     known: BTreeSet<usize>,
 }
@@ -119,6 +121,10 @@ pub struct Made {
     /// Per node, the events it surely received: its own, and each held by a node it shared a run
     /// with on a clean network (no partition between them, both on, no loss).
     know: Vec<BTreeSet<usize>>,
+    /// Per value write (by event), the nodes that surely received it when a node of its writer's
+    /// account next took a strong away or lowered a role (a step that may release its thing):
+    /// what a release after it could still lose (`lost_writes`).
+    froze: BTreeMap<usize, BTreeSet<usize>>,
     /// Hand commits to the reference (`World::differential`); off, a step only writes.
     pub harvest: bool,
     /// Things held by no node at some quiet run (`ran`): gone for everyone, a strong to one
@@ -143,12 +149,16 @@ impl Made {
     }
 
     fn event(&mut self, thing: usize, granted: Option<Tid>, node: usize) {
+        self.event_of(thing, granted, None, node);
+    }
+
+    fn event_of(&mut self, thing: usize, granted: Option<Tid>, wrote: Option<CommitId>, node: usize) {
         let n = self.events.len();
         if self.know.len() <= node {
             self.know.resize(node + 1, BTreeSet::new());
         }
         let known = self.know[node].clone();
-        self.events.push(Event { thing, granted, node, known });
+        self.events.push(Event { thing, granted, wrote, node, known });
         self.know[node].insert(n);
     }
 }
@@ -285,6 +295,9 @@ pub fn step(w: &mut World, s: &Step) -> String {
             }) {
                 Ok(c) => {
                     w.history.values.extend(c.map(|c| (v.clone(), c)));
+                    if let Some(c) = c {
+                        w.history.event_of(*k, None, Some(c), i);
+                    }
                     Ok(v)
                 }
                 Err(e) => Err(e.to_string()),
@@ -320,6 +333,9 @@ pub fn step(w: &mut World, s: &Step) -> String {
         }
         _ => return String::new(),
     };
+    if r.is_ok() && matches!(s, Step::Unstrong(..) | Step::Lower(..) | Step::Remove(..) | Step::Revoke(..)) {
+        freeze(w, i);
+    }
     match r {
         Ok(note) => {
             harvest(w, i);
@@ -327,6 +343,16 @@ pub fn step(w: &mut World, s: &Step) -> String {
         }
         Err(e) => format!("refused: {e}"),
     }
+}
+
+/// Node `i` may have released a thing: each value write by its account not frozen yet keeps the
+/// nodes that surely received it now (`Made::froze`).
+fn freeze(w: &mut World, i: usize) {
+    let account = w.node(i).account;
+    let h = &w.history;
+    let due: Vec<usize> = h.events.iter().enumerate().filter(|(n, e)| e.wrote.is_some() && !h.froze.contains_key(n) && w.node(e.node).account == account).map(|(n, _)| n).collect();
+    let knew: Vec<(usize, BTreeSet<usize>)> = due.into_iter().map(|n| (n, (0..h.know.len()).filter(|j| h.know[*j].contains(&n)).collect())).collect();
+    w.history.froze.extend(knew);
 }
 
 fn thing(w: &World, k: usize) -> Option<Tid> {
@@ -522,14 +548,14 @@ pub fn introduce(w: &mut World) {
 /// applies. Every commit any node holds now is handed too (what sync wrote), each node's copy of
 /// it: `harvest` keeps one copy per commit, perhaps a certificate copy (its header and some
 /// parts), and the engine joins the parts a later copy carries (spec/commits.md §4).
-pub fn reference(w: &mut World) -> Peer {
+pub fn reference(w: &mut World, lost: &BTreeSet<CommitId>) -> Peer {
     for i in 0..w.len() {
         harvest(w, i);
     }
     let mut r = Peer::new_bare(0x005e_ed0f_5eed, w.now()).expect("reference");
     let on: Vec<usize> = (0..w.len()).filter(|i| w.online(*i)).collect();
     let mut handed = Vec::new();
-    for pk in w.history.handed.clone() {
+    for pk in w.history.handed.clone().into_iter().filter(|pk| !lost.contains(&pk.id)) {
         let id = pk.id;
         handed.push(pk);
         for &i in &on {
@@ -718,7 +744,7 @@ fn excused(w: &World, m: &Model, a: Tid, k: usize) -> bool {
     let h = &w.history;
     let Some(g) = h.events.iter().rposition(|e| e.thing == k && e.granted == Some(a)) else { return false };
     let account_of = |i: usize| w.node(i).account;
-    h.events.iter().enumerate().filter(|(_, e)| e.thing == k && e.granted.is_none()).any(|(r, e)| {
+    h.events.iter().enumerate().filter(|(_, e)| e.thing == k && e.granted.is_none() && e.wrote.is_none()).any(|(r, e)| {
         let concurrent = if r > g { !e.known.contains(&g) } else { !h.events[g].known.contains(&r) };
         let mut boxed: BTreeSet<Tid> = [account_of(e.node), account_of(h.things[k].1)].into_iter().flatten().collect();
         boxed.extend(e.known.iter().filter_map(|x| h.events[*x].granted.filter(|_| h.events[*x].thing == k)));
@@ -726,12 +752,45 @@ fn excused(w: &World, m: &Model, a: Tid, k: usize) -> bool {
     })
 }
 
+/// The value writes a release lost (spec/sync-set.md §3 Nothing of R stays: a node's own writes on
+/// a thing it releases not yet held elsewhere go, and a release waits for no peer not connected):
+/// node i's write on thing k, after which i's account took a strong away or lowered a role (a step
+/// that may release k), that no other node surely received by then (`Made::froze`) whose account's
+/// node closure holds k at the end, and that no node holds at the check (i, accepting k again,
+/// fetches what others hold). The reference is not handed them. A value write alone: it changes no roster, so the
+/// model is the same either way.
+fn lost_writes(w: &mut World, m: &Model) -> BTreeSet<CommitId> {
+    let holds = |a: Option<Tid>, k: usize| {
+        a.and_then(|a| m.account(&a)).is_some_and(|a| {
+            let (c, _) = m.closure(&w.history, a);
+            c.held.contains(&m.thing(k)) || c.stored.contains(&m.thing(k))
+        })
+    };
+    let mut lost = BTreeSet::new();
+    for (n, e) in w.history.events.iter().enumerate() {
+        // a write its writer's account may have released since: who had surely received it then
+        let (Some(c), Some(knew)) = (e.wrote, w.history.froze.get(&n)) else { continue };
+        let shared = knew.iter().any(|&j| j != e.node && j < w.len() && holds(w.node(j).account, e.thing));
+        if !shared {
+            lost.insert(c);
+        }
+    }
+    let on: Vec<usize> = (0..w.len()).filter(|i| w.online(*i)).collect();
+    lost.retain(|c| !on.iter().any(|&i| w.engine(i).holds_commit(c)));
+    lost
+}
+
 /// The checks at quiet; a failing one first prints what each node reads against the reference
 /// and the model (`at_check`).
 pub fn check(w: &mut World) {
     use std::panic::{AssertUnwindSafe, catch_unwind, resume_unwind};
-    let mut r = reference(w);
-    let m = Model::of(w, &mut r);
+    let mut r = reference(w, &BTreeSet::new());
+    let mut m = Model::of(w, &mut r);
+    let lost = lost_writes(w, &m);
+    if !lost.is_empty() {
+        r = reference(w, &lost);
+        m = Model::of(w, &mut r);
+    }
     let checked = catch_unwind(AssertUnwindSafe(|| {
         closure_clauses(w, &mut r, &m);
         body_clauses(w, &mut r, &m);

@@ -57,7 +57,7 @@ fn a_reader_through_a_node_keeping_it_unread() {
         let mut w = world(seed, 3);
         w.cap = crate::harness::STORM_CAP;
         let _script = play(&mut w, &steps, format!("sims::a_reader_through_a_node_keeping_it_unread (seed {seed})"));
-        let mut r = reference(&mut w);
+        let mut r = reference(&mut w, &Default::default());
         reads_as(&mut w, &mut r, 0, 1);
     });
 }

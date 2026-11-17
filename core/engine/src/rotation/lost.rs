@@ -504,16 +504,17 @@ fn reaching(core: &Core, a: &Tid) -> BTreeSet<Tid> {
 
 /// Whether what this node holds says it lost `a` (spec/permissions.md §3: a node that learns it
 /// lost read access): an edge of it, a held key actor or an actor it reads ended or lowered on an actor whose
-/// roles reach `a` (`reaching`), or reading-only secrets of it outlived their source commit.
-/// Secrets taken with no role yet (an entry box a link's redeemer
-/// opens before its grant applies, `may_learn`) are no loss until such an edge ends or lowers.
+/// roles reach `a` (`reaching`), or reading-only secrets of it outlived their source commit, or
+/// the node holds a role on `a` (its role commits show what it may hold). Secrets taken with no
+/// role yet (an entry box a link's redeemer opens before its grant applies, `may_learn`) are no
+/// loss until such an edge ends or lowers, or a role shows.
 fn loss_seen(core: &Core, a: &Tid) -> bool {
     let ts = now_ts(core);
     // reading-only secrets whose source commit is judged no more (dropped as bad input): what
     // made them readable is gone
     let stale = core.ix.secrets.get(a).is_some_and(|e| ROLES.iter().any(|r| e.role(*r).epochs().any(|(_, i)| i.sources().any(|u| !core.waits.read_any(&u.commit)))));
     // an edge of ours ended, or lowered (to sync: it stays alive) on an actor reaching `a`
-    stale || reaching(core, a).iter().any(|x| core.timelines.on(x).is_some_and(|on| on.holders_gone(ts).keys().chain(on.holders_lowered(ts).iter()).any(|h| ours(core, h))))
+    stale || role_here(core, a).is_some() || reaching(core, a).iter().any(|x| core.timelines.on(x).is_some_and(|on| on.holders_gone(ts).keys().chain(on.holders_lowered(ts).iter()).any(|h| ours(core, h))))
 }
 
 /// Whether held actor `a` is lost and its drop is this trigger's (spec/permissions.md §3): lost
