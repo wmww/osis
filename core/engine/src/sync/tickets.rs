@@ -63,17 +63,18 @@ fn opened_in(tx: &mut Tx<'_>, t: &Tid) -> Result<Vec<(Ticket, Opened)>> {
 
 /// The node's role on `t` now (spec/sync-set.md §2 What a held ticket does), the one judgement
 /// both entering `t` by a ticket (`take_in`, `units::given_by`) and the lost-access trigger
-/// (`rotation::lost`) read: the best its role commits show (`rotation::role_here`), or, while a
-/// held strong reaches `t` with a ticket that opens here (`Closure::accepted`), such a ticket's
-/// word (the lower of its role and what it opens to, `Closure::ticket_words`) whose holder no
-/// role commit held on `t` names an edge of. A node keeping `t` unread holds only the role
-/// commits other things' certificates bring, which cannot show its own grant; where they name
-/// the ticket's holder they decide. A ticket says how to sync, never caps the role: it supplies
-/// its secret and sync ID up to the lower of its own role and this one.
+/// (`rotation::lost`) read: the best its role commits show (`rotation::role_here`) and, while a
+/// held strong reaches `t` with a ticket that opens here (`Closure::accepted`), a ticket's word
+/// where the role commits cannot decide: a sync word (`t` kept unread: the node holds only the
+/// role commits other things' certificates bring, which reach its holder through other holders
+/// without its own grant), and a read word while no held role commit reaches its holder by any
+/// path (`Held::upstream`: an edge of it on `t`, or on a thing such a commit names, and so on).
+/// A ticket says how to sync, never caps the role: it supplies its secret and sync ID up to the
+/// lower of its own role and this one.
 pub(crate) fn role_on(core: &Core, t: &Tid) -> Option<Role> {
-    let named = |h: &Tid| core.timelines.on(t).is_some_and(|o| o.held().any(|(_, _, op)| op.holder == *h));
     let words = if core.ix.closure.accepted(t) { core.ix.closure.ticket_words(t) } else { BTreeSet::new() };
-    let word = words.into_iter().filter(|(h, _)| !named(h)).map(|(_, r)| r).max();
+    let reached = if words.iter().any(|(_, r)| *r >= Role::Read) { core.ix.held.upstream(&BTreeSet::from([*t])) } else { BTreeSet::new() };
+    let word = words.into_iter().filter(|(h, r)| *r == Role::Sync || !reached.contains(h)).map(|(_, r)| r).max();
     crate::rotation::role_here(core, t).max(word)
 }
 

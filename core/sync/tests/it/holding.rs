@@ -847,4 +847,7 @@ fn a_removal_reaches_a_reader_opening_the_holder_through_a_second_thing_spec_per
     w.run();
     assert!(!w.engine(1).roster(&x).contains_key(&h), "Bob holds H's removal");
     assert_eq!(w.engine(1).role_on(&x), None, "his role commits show him no role on X");
+    w.advance(osis_proto::limits::PASS_WAIT_MS + 1);
+    w.run();
+    assert_eq!(value(&mut w, 1, &x), None, "Bob reads X no more");
 }
