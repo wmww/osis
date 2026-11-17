@@ -19,7 +19,7 @@ struct World {
 
 impl World {
     /// The world `plan` writes (each setting's stamp, option and the earlier ones its writer
-    /// holds, stamped no later), each writer carrying floors by `rule`.
+    /// holds, stamped before it), each writer carrying floors by `rule`.
     fn of(plan: &[(Ms, Opt, u64)], rule: Rule) -> World {
         let mut w = World { settings: Vec::new(), saw: Vec::new() };
         for (id, &(ts, opt, held)) in plan.iter().enumerate() {
@@ -38,7 +38,8 @@ impl World {
 }
 
 /// Every plan of up to `n` settings stamped in `0..END`, each writer holding any subset of the
-/// earlier ones (stamped at or after the latest it holds): chains, and concurrent admins.
+/// earlier ones, stamped after the latest it holds (a `ts` is above every `ts` its writer holds,
+/// spec/crdt.md §2.2), or at any stamp a concurrent one has: chains, and concurrent admins.
 fn plans(n: usize) -> Vec<Vec<(Ms, Opt, u64)>> {
     let mut all = vec![vec![]];
     let mut last: Vec<Vec<(Ms, Opt, u64)>> = vec![vec![]];
@@ -46,7 +47,7 @@ fn plans(n: usize) -> Vec<Vec<(Ms, Opt, u64)>> {
         let mut next = Vec::new();
         for p in &last {
             for held in 0..1u64 << id {
-                let from = (0..id).filter(|i| held & (1 << i) != 0).map(|i| p[i].0).max().unwrap_or(0);
+                let from = (0..id).filter(|i| held & (1 << i) != 0).map(|i| p[i].0 + 1).max().unwrap_or(0);
                 for ts in from..END {
                     for &opt in &OPTS {
                         next.push([p.clone(), vec![(ts, opt, held)]].concat());
@@ -225,8 +226,8 @@ fn purged_content_never_shows_random() {
 
 /// A setting carrying the join makes the older ones add nothing (so compaction, which drops them,
 /// loses nothing): a node holding it and any subset of what its writer held judges by its floor
-/// alone. Over every small world with distinct stamps and a third setting by a writer holding any
-/// subset (two settings in one ms: issues/purge-floor-ms-ties.md). Negative control: a join that
+/// alone. Over every small world and a third setting by a writer holding any subset, but two
+/// concurrent settings at one exact `ts` (issues/purge-floor-exact-ts-ties.md). Negative control: a join that
 /// also counts a purging setting a held floor already passes moves the floor at a node holding
 /// fewer of the settings between.
 #[test]
@@ -444,10 +445,10 @@ fn settings_of(a: Aspect, tl: &[(u64, Opt)]) -> Vec<Commit> {
         let mut before: Vec<&Commit> = out.iter().filter(|c| c.ts <= ts(h)).collect();
         before.sort_by_key(|c| c.key());
         let held: Vec<(u64, &Setting)> = before.iter().filter_map(|c| match &c.parts[0].body {
-            Body::Held(Delta::Retention(x)) => Some((wall(c.ts), x)),
+            Body::Held(Delta::Retention(x)) => Some((c.ts, x)),
             _ => None,
         }).collect();
-        let x = Setting { rules: vec![(a.name, SettingEntry { history: o, expires: None, purge_before: 0 })], default: None, written: None }.written_after(&held, at(h));
+        let x = Setting { rules: vec![(a.name, SettingEntry { history: o, expires: None, purge_before: 0 })], default: None, written: None }.written_after(&held, ts(h));
         out.push(setting_by(100 + i as CommitId, FIRST_ADMIN, h, x));
     }
     out

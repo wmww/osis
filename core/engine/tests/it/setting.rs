@@ -294,7 +294,7 @@ fn purge_then_keep_keeps_what_is_written_after_spec_commits_5() {
     lp.advance(1_000);
     let k = set(&mut lp, 0, d, &setting(&[(A, History::FOREVER)]));
     let e = lp.peers[0].engine.get(&d, &ak("retention^.0")).unwrap().and_then(|v| ct::retention_setting(&v)).unwrap();
-    assert_eq!(e.rules[&ak(A)].purge_before, Some(lp.peers[0].engine.header(&k).unwrap().ts.wall_ms().0), "the floor at its own stamp");
+    assert_eq!(e.rules[&ak(A)].purge_before, Some(lp.peers[0].engine.header(&k).unwrap().ts), "the floor at its own stamp");
     lp.advance(1_000);
     let v1 = put(&mut lp, 0, d, "one");
     put(&mut lp, 0, d, "two");
@@ -304,6 +304,25 @@ fn purge_then_keep_keeps_what_is_written_after_spec_commits_5() {
         assert!(listed(&mut lp.peers[i], &v1, d), "peer {i}: written after it");
     }
     assert!(!lp.peers[0].engine.body_not_dropped(&v0, &d, &ak(A)), "the writer covered it");
+}
+
+// spec/commits.md §5 One way: the floor is the keep's whole `ts`, so content written in the
+// same ms as the keep, before it, is under the floor too, at every node
+#[test]
+fn written_in_the_keeps_own_ms_before_it_is_floored_spec_commits_5() {
+    let (mut lp, d) = setup();
+    set(&mut lp, 0, d, &setting(&[(A, History::PurgeOnReplace)]));
+    let mut m = Mutation::new();
+    m.set(d, &ak(A), &s("zero")).unwrap();
+    let v0 = lp.peers[0].commit(m).unwrap().unwrap();
+    let k = set(&mut lp, 0, d, &setting(&[(A, History::FOREVER)]));
+    let (h0, hk) = (lp.peers[0].engine.header(&v0).unwrap().ts, lp.peers[0].engine.header(&k).unwrap().ts);
+    assert!(h0.wall_ms() == hk.wall_ms() && h0 < hk, "one ms, the write first");
+    put(&mut lp, 0, d, "one");
+    lp.sync_all().unwrap();
+    for i in 0..3 {
+        assert!(!listed(&mut lp.peers[i], &v0, d), "peer {i}: written before the floor");
+    }
 }
 
 // spec/commits.md §5 One way: concurrent admins. Alice turns purge on replace on; Carol, not
@@ -336,7 +355,7 @@ fn concurrent_admins_lose_no_purge_floor_spec_commits_5() {
     lp.deliver(2, &pk[0]).unwrap();
     let k2 = set(&mut lp, 2, d, &setting(&[(A, History::FOREVER)]));
     let joined = ct::retention_setting(&lp.peers[2].engine.get(&d, &ak("retention^.0")).unwrap().unwrap()).unwrap();
-    assert_eq!(joined.rules[&ak(A)].purge_before, Some(lp.peers[2].engine.header(&k).unwrap().ts.wall_ms().0), "the join, at the keep's stamp");
+    assert_eq!(joined.rules[&ak(A)].purge_before, Some(lp.peers[2].engine.header(&k).unwrap().ts), "the join, at the keep's stamp");
     let pk2 = pack(&mut lp, 2, &k2);
     let mut later = fresh(&base, &[&pk2, rest[0], rest[1], rest[2], rest[3]], FRESH, now);
     assert!(!listed(&mut later, &v0, d) && listed(&mut later, &v2, d), "the carried join, alone");

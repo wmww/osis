@@ -1,6 +1,8 @@
 //! The thing-level history judgment (spec/commits.md §5 The setting): history is set per thing by
 //! `retention^.0`, never per write, and judged by the current setting: the newest held valid one.
-//! One aspect of one thing; times are wall ms. `Outcome` (`model.rs`) judges every replaced body
+//! One aspect of one thing. Stamps (`Setting::ts`, `floor`, `Body::ts`) are full `ts`, compared
+//! as writes are ordered, so two in one ms stay apart; moments (replaced, now) are wall ms; the
+//! small worlds use one scale for both. `Outcome` (`model.rs`) judges every replaced body
 //! by `out`; `Eager` and `history` here are the greenfield small worlds
 //! `tests/it/spec_thing_history.rs` checks.
 //!

@@ -185,7 +185,7 @@ fn held_settings(r: &mut Rng, commits: &[Commit], thing: ThingId, ts: u64) -> Ve
         .filter(|_| !partial || r.chance(50))
         .collect();
     v.sort();
-    v.into_iter().map(|(k, x)| (wall(k.0), x)).collect()
+    v.into_iter().map(|(k, x)| (k.0, x)).collect()
 }
 
 /// The entry governing `aspect` in the newest `retention^.0` setting on `thing` stamped before
@@ -392,7 +392,7 @@ pub fn history(seed: u64, n: usize) -> Held {
             let ts = (w - back) * MS + logical;
             let held = held_settings(&mut r, &commits, thing, ts);
             let held: Vec<(u64, &Setting)> = held.iter().map(|(w, x)| (*w, x)).collect();
-            let d = Delta::Retention(setting(&mut r, w).written_after(&held, wall(ts)));
+            let d = Delta::Retention(setting(&mut r, w).written_after(&held, ts));
             Commit { parts: vec![plain_part(thing, Aspect::RETENTION, Retention::ADMIN, d)], ..base(id, author, ts) }
         } else {
             let undone = (roll < 48)

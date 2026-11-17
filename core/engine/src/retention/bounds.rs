@@ -29,25 +29,25 @@ fn delta_live_read(tx: &mut Tx<'_>, (c, tid, ak): &(CommitId, Tid, Ak)) -> Resul
 /// Before which wall ms delta `a` of `h` leaves only by purge
 /// request or expiry (spec/commits.md §5 Keep bounds; 0: no floor): the later of when it leaves
 /// history (`history::Kept::leaves_at`, replaced at wall ms `replaced`, `None`: not replaced; its
-/// oldest dead write at `written`, `written_of`) and the purge-request floor.
-pub(crate) fn kept_until(core: &Core, h: &Header, a: &osis_commit::AspectEntry, replaced: Option<u64>, written: u64) -> u64 {
+/// oldest dead write's `ts` `written`, `written_of`) and the purge-request floor.
+pub(crate) fn kept_until(core: &Core, h: &Header, a: &osis_commit::AspectEntry, replaced: Option<u64>, written: Ts) -> u64 {
     super::history::of(core, &a.tid, &a.ak).leaves_at(replaced, written).max(osis_commit::retention::purge_keep_until(h).unwrap_or(0))
 }
 
-/// The wall ms of the oldest dead write part `ai` of `c` is dated by, what the floor of its
+/// The `ts` of the oldest dead write part `ai` of `c` is dated by, what the floor of its
 /// aspect's setting is judged against (spec/commits.md §5 One way): a delta's own `ts` (its writes
 /// carry it); a snapshot's, where its own `ts` is not already before the floor, the oldest among
 /// the dead writes that date it (`dating_deaths`). Read only where the setting has a floor.
-pub(crate) fn written_of(tx: &mut Tx<'_>, h: &Header, c: &CommitId, ai: usize) -> Result<u64> {
-    let own = h.ts.wall_ms().0;
+pub(crate) fn written_of(tx: &mut Tx<'_>, h: &Header, c: &CommitId, ai: usize) -> Result<Ts> {
+    let own = h.ts;
     let Some(a) = h.aspects.get(ai) else { return Ok(own) };
     let floor = super::history::of(tx.core, &a.tid, &a.ak).floor();
-    if !h.kind.is_compaction() || own < floor || floor == 0 {
+    if !h.kind.is_compaction() || own < floor || floor == Ts::ZERO {
         return Ok(own);
     }
     let (tid, ak) = (a.tid, a.ak.clone());
     let dead = dating_deaths(tx, h, c, ai, &tid, &ak)?;
-    Ok(dead.iter().map(|w| w.stamp.ts.wall_ms().0).min().unwrap_or(own))
+    Ok(dead.iter().map(|w| w.stamp.ts).min().unwrap_or(own))
 }
 
 /// Whether `s` is a snapshot whose part on `(tid, ak)` this node holds whole (received, not
@@ -122,7 +122,7 @@ pub(crate) fn live_keep(core: &Core, c: &CommitId, ai: usize, a: &osis_commit::A
     if m.view.kind.is_compaction() || a.ak.signal() || !m.holds(ai) || m.bare(ai) || !m.valid_at(ai) {
         return 0;
     }
-    super::history::of(core, &a.tid, &a.ak).live_until(m.view.ts.wall_ms().0)
+    super::history::of(core, &a.tid, &a.ak).live_until(m.view.ts)
 }
 
 /// A keep bound and replacement (`part_bounds`) at the node's clock: a body replaced after the

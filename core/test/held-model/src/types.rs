@@ -123,7 +123,7 @@ impl EdgeWrite {
 pub struct SettingEntry {
     pub history: Opt,
     pub expires: Option<u64>,
-    /// `purge_before`: a body holding a dead write stamped before this wall ms is under purge on
+    /// `purge_before`: a body holding a dead write whose `ts` is before this one is under purge on
     /// replace (0: none). Joined over the held settings (`Setting::joined_floor`); a writer writes
     /// the join (`Setting::written_after`).
     pub purge_before: u64,
@@ -151,7 +151,7 @@ impl Setting {
     }
 
     /// The `purge_before` of aspect `name` (`None`: one no setting names) joined over `held`,
-    /// each setting with the wall ms of the write it carries, ordered by key (spec/commits.md §5
+    /// each setting with the `ts` of the write it carries, ordered by key (spec/commits.md §5
     /// One way): the greatest of every held setting's floor there and, for each one but the
     /// newest whose entry there purges on replace, the stamp of the next held one, unless a held
     /// floor there is already past its own stamp (`thing_history::joined_floor`).
@@ -161,12 +161,12 @@ impl Setting {
         held.windows(2).filter(|w| purges(w[0].1) && base <= w[0].0).map(|w| w[1].0).fold(base, u64::max)
     }
 
-    /// `self` as a writer holding `held` (ordered by key) writes it at wall ms `wall`, after each
+    /// `self` as a writer holding `held` (ordered by key) writes it at `ts`, after each
     /// (spec/commits.md §5 One way): each entry's `purge_before` is at least the floor of its AK
     /// joined over `held` and `self`; the default's at least that of every AK `self` names not
     /// and of those no setting names (a default with no history if there is none).
-    pub fn written_after(mut self, held: &[(u64, &Setting)], wall: u64) -> Setting {
-        let all: Vec<(u64, &Setting)> = held.iter().copied().chain([(wall, &self)]).collect();
+    pub fn written_after(mut self, held: &[(u64, &Setting)], ts: u64) -> Setting {
+        let all: Vec<(u64, &Setting)> = held.iter().copied().chain([(ts, &self)]).collect();
         let own: Vec<u64> = self.rules.iter().map(|(n, _)| Setting::joined_floor(&all, Some(*n))).collect();
         let lost = held.iter().flat_map(|(_, s)| s.rules.iter().map(|r| r.0)).filter(|n| !self.rules.iter().any(|x| x.0 == *n));
         let floor = lost.map(|n| Setting::joined_floor(&all, Some(n))).fold(Setting::joined_floor(&all, None), u64::max);

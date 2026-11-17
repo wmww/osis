@@ -13,7 +13,7 @@
 use crate::apply::memory::{each_page, part_weight};
 use crate::engine::{Engine, Tx};
 use crate::error::{Error, Result};
-use osis_base::{Ak, BlobId, CommitId, Link, Tid};
+use osis_base::{Ak, BlobId, CommitId, Link, Tid, Ts};
 use osis_commit::{CommitBlob, Form, Header};
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -201,7 +201,7 @@ impl Trigger {
     /// snapshot's to drop, it counts once it leaves history (`leaving::left`) or the live bound
     /// passes. One passed by a gap may have left already, uncounted then (`Est::stops`).
     fn held_counts(tx: &mut Tx<'_>, c: &CommitId, k: &(Tid, Ak), blob: &CommitBlob, ai: usize) -> Result<()> {
-        let written = tx.core.ix.commits.get(c).map_or(0, |m| m.view.ts.wall_ms().0);
+        let written = tx.core.ix.commits.get(c).map_or(Ts::ZERO, |m| m.view.ts);
         let live = super::history::of(tx.core, &k.0, &k.1).live_until(written);
         if live > tx.now().0 && !super::leaving::out_of_history(tx.core, c, &k.0, &k.1) && !super::valueless(tx.core, c, ai) {
             Trigger::live_until(tx, k.clone(), live);
@@ -623,7 +623,7 @@ struct Candidate {
 fn droppable(tx: &Tx<'_>, tid: &Tid, ak: &Ak) -> BTreeSet<CommitId> {
     let key = (*tid, ak.clone());
     let ix = &tx.core.ix;
-    if super::history::of(tx.core, tid, ak).live_until(super::history::NEVER) <= tx.now().0 {
+    if super::history::of(tx.core, tid, ak).live_until(Ts::MAX) <= tx.now().0 {
         return ix.by_aspect.get(&key).into_iter().flatten().map(|(_, c)| *c).collect();
     }
     let mut out = BTreeSet::new();

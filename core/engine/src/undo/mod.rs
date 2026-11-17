@@ -37,7 +37,7 @@ pub enum Reverted {
 /// replaced it: its thing's current setting counted from `h`'s `ts` (spec/commits.md §5), what it
 /// replaced taken as written before any floor. By the setting alone, never by what is held.
 fn keeps_now(core: &Core, h: &Header, a: &osis_commit::AspectEntry, now: u64) -> bool {
-    crate::retention::history::of(core, &a.tid, &a.ak).leaves_at(Some(h.ts.wall_ms().0), 0) > now
+    crate::retention::history::of(core, &a.tid, &a.ak).leaves_at(Some(h.ts.wall_ms().0), osis_base::Ts::ZERO) > now
 }
 
 /// The valid parts of `(tid, ak)` ordered before `at` whose headers are held, oldest first, each

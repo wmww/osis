@@ -3768,7 +3768,9 @@ fn snapshot_after_late_dated_death_not_credited_spec_commits_5() {
     // the map kept for D after replaced (the thing's setting); k1 stays
     let h = vec![Setting { by: 0, t: 0, op: 22, rule: 1 }, Send { from: 0, to: 1, back: 0 }, Send { from: 0, to: 2, back: 0 }, Typed { by: 0, t: 0, op: 22, k: 0, v: 8 }, Send { from: 0, to: 1, back: 0 }, Send { from: 0, to: 2, back: 0 }, tick.clone(), Typed { by: 0, t: 0, op: 22, k: 1, v: 5 }, Send { from: 0, to: 1, back: 0 }, Send { from: 0, to: 2, back: 0 }, tick.clone(), Undo { by: 0, back: 1 }, Send { from: 0, to: 1, back: 0 }, tick.clone(), Compact { by: 1, t: 0, op: 22 }, tick, TypedField { by: 2, t: 0, k: 0, v: 7 }];
     let played = play(0, &h);
-    let b = played.base + 1;
+    // past the setting and its writer's covers of the bodies it put under the floor `base_setting`'s
+    // purged aspects carry to the default (spec/commits.md §5 One way)
+    let b = played.base + 3;
     assert_eq!(played.packs.len(), b + 5);
     let (put, other, undo, snap, field) = (b, b + 1, b + 2, b + 3, b + 4);
     let order: Vec<usize> = (0..b).chain([other, field, snap, undo, put]).collect();

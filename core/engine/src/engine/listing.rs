@@ -141,7 +141,7 @@ fn part_body(tx: &mut Tx<'_>, c: &CommitId, ai: usize, budget: usize) -> Result<
 /// the bytes, not this part's listing; value-less writes count, so a purge tombstone of a live
 /// write does) or kept by its own aspect's history (`body_history_keep`). By headers and the state alone.
 pub(crate) fn in_kept_history(tx: &mut Tx<'_>, c: &CommitId, tid: &Tid, ak: &Ak, now: u64) -> Result<bool> {
-    let Some(written) = tx.core.ix.commits.get(c).filter(|m| m.aspect(tid, ak).is_some()).map(|m| m.view.ts.wall_ms().0) else { return Ok(false) };
+    let Some(written) = tx.core.ix.commits.get(c).filter(|m| m.aspect(tid, ak).is_some()).map(|m| m.view.ts) else { return Ok(false) };
     if crate::retention::history::of(tx.core, tid, ak).kept_whenever_replaced(written, now) {
         return Ok(true);
     }
@@ -232,7 +232,7 @@ pub(crate) fn is_listed(tx: &mut Tx<'_>, c: &CommitId, ai: usize) -> Result<bool
 pub(super) fn purged_keep(tx: &Tx<'_>, c: &CommitId, ai: usize, by: &CommitId) -> u64 {
     let Some(m) = tx.core.ix.commits.get(c) else { return 0 };
     let Some(a) = m.view.aspects.get(ai) else { return 0 };
-    let keep = crate::retention::history::of(tx.core, &a.tid, &a.ak).leaves_at(tx.core.ix.commits.get(by).map(|m| m.view.ts.wall_ms().0), m.view.ts.wall_ms().0);
+    let keep = crate::retention::history::of(tx.core, &a.tid, &a.ak).leaves_at(tx.core.ix.commits.get(by).map(|m| m.view.ts.wall_ms().0), m.view.ts);
     let h = &m.header;
     let due = h.expires.into_iter().chain(h.aspects.get(ai).filter(|a| a.ak.signal()).and_then(|a| crate::retention::signal_bound(tx.core, h, a))).min();
     due.map_or(keep, |t| keep.min(t))
@@ -283,7 +283,7 @@ fn listed_by_state(tx: &mut Tx<'_>, tid: &Tid, ak: &Ak) -> Result<BTreeSet<Commi
         drop(osis_base::costs::span("listing: commit judged"));
         let Some(m) = tx.core.ix.commits.get(&c) else { continue };
         let Some(ai) = m.aspect(tid, ak) else { continue };
-        let fixed = kept.kept_whenever_replaced(m.view.ts.wall_ms().0, now);
+        let fixed = kept.kept_whenever_replaced(m.view.ts, now);
         if !fixed && listed(tx, &c, ai)?.is_some() {
             out.insert(c);
         }

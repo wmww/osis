@@ -7,7 +7,7 @@ use crate::{codec_enum, codec_struct};
 use crate::keys::Aspect;
 use crate::path::{Path, PathError, PathErrorKind};
 use crate::statics::CORE;
-use osis_base::{Ak, CommitId, CreationRecord, Ref, Role, SyncId, Ticket, Value, WallMs, Weak};
+use osis_base::{Ak, CommitId, CreationRecord, Ref, Role, SyncId, Ticket, Ts, Value, WallMs, Weak};
 use std::collections::{BTreeMap, BTreeSet};
 
 /// Role-class aspects (spec/data-model.md §9): fixed retention, spec/commits.md §2.
@@ -266,10 +266,10 @@ codec_struct! {
     /// What a thing promises for replaced content of an aspect (`history`, absent: none
     /// promised), the expiry a writer gives its writes there as a duration from the write (none:
     /// no expiry), `final`: a writer refuses to replace a fire there, and `purge_before`: a body
-    /// holding a dead write stamped before this wall ms is under purge on replace, whatever
+    /// holding a dead write whose `ts` is before this one is under purge on replace, whatever
     /// `history` says (spec/commits.md §5 One way).
     #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-    pub struct RetentionEntry { 0 history: Option<crate::History>, 1 expires: Option<u64>, 2 r#final: bool, 3 purge_before: Option<u64> }
+    pub struct RetentionEntry { 0 history: Option<crate::History>, 1 expires: Option<u64>, 2 r#final: bool, 3 purge_before: Option<Ts> }
 }
 
 impl RetentionEntry {

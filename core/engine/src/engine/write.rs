@@ -969,7 +969,7 @@ fn commit_or_build(tx: &mut Tx<'_>, mut m: Mutation) -> Result<Option<(CommitId,
             // a fire is history from its own `ts`: one the settings held would not keep would be
             // in no history at all
             let wall = ts.wall_ms().0;
-            if !memory && !sealed && crate::retention::history::of(tx.core, &tid, &ak).leaves_at(Some(wall), wall) <= wall {
+            if !memory && !sealed && crate::retention::history::of(tx.core, &tid, &ak).leaves_at(Some(wall), ts) <= wall {
                 return Err(Error::Misuse("a fire is history: the thing's setting keeps no history for this signal"));
             }
         }
@@ -1022,12 +1022,12 @@ fn commit_or_build(tx: &mut Tx<'_>, mut m: Mutation) -> Result<Option<(CommitId,
             // carried, this write's stamp where the current one purged on replace
             // (spec/commits.md §5 One way)
             let all = crate::apply::validity::settings(tx.core, &tid);
-            let held: Vec<(u64, &osis_schema::core_types::RetentionSetting)> = all.iter().map(|(p, x)| (p.ts.wall_ms().0, &**x)).collect();
+            let held: Vec<(osis_base::Ts, &osis_schema::core_types::RetentionSetting)> = all.iter().map(|(p, x)| (p.ts, &**x)).collect();
             for o in &mut am.ops {
                 if let osis_crdt::Op::Replace(v) = &mut o.op
                     && let Some(mut s) = osis_schema::core_types::retention_setting(v)
                 {
-                    osis_commit::retention::carry_floors(&mut s, &held, plan.ts.wall_ms().0);
+                    osis_commit::retention::carry_floors(&mut s, &held, plan.ts);
                     *v = osis_schema::Codec::to_value(&s);
                 }
             }

@@ -54,7 +54,7 @@ fn row_key(tid: &Tid, ak: &Ak, p: &Place) -> Vec<u8> {
 /// replaced) is scheduled as one above it, so told late, never early: the order stays one cursor.
 fn leaves(k: &history::Kept, ts: Ts) -> u64 {
     let r = ts.wall_ms().0;
-    k.leaves_at(Some(r), u64::MAX).max(r)
+    k.leaves_at(Some(r), Ts::MAX).max(r)
 }
 
 /// Writes local row `key` (`val`; `None`: removed) in `ak`'s class.

@@ -22,7 +22,7 @@ use crate::engine::{Core, DropFor, Dropped, Engine, Hold, Missing, Owned, Tx};
 use crate::error::{Error, Result};
 use crate::events::{Cause, Event};
 use osis_commit::{Header, Kind};
-use osis_base::{Ak, CommitId, Tid};
+use osis_base::{Ak, CommitId, Tid, Ts};
 use osis_crdt::Fragment;
 use osis_schema::core_types::is_role_class;
 use osis_store::Shred;
@@ -74,7 +74,7 @@ pub(crate) const T_KEPT: u8 = 3;
 /// A signal delta's keep bound, wall ms (spec/commits.md §5 Signals): any body's keep at least
 /// (`bounds::part_keep`), replaced when written; `None`: kept for good.
 pub(crate) fn signal_bound(core: &Core, h: &Header, a: &osis_commit::AspectEntry) -> Option<u64> {
-    let t = bounds::kept_until(core, h, a, Some(h.ts.wall_ms().0), h.ts.wall_ms().0);
+    let t = bounds::kept_until(core, h, a, Some(h.ts.wall_ms().0), h.ts);
     (t < osis_commit::FOREVER).then_some(t)
 }
 
@@ -519,7 +519,7 @@ pub(crate) fn settings_changed(tx: &mut Tx<'_>) -> Result<()> {
             }
             // a live body kept for good may not be now (spec/commits.md §5 Kept while live): the
             // trigger weighs the aspect again
-            let live = kept.live_until(history::NEVER);
+            let live = kept.live_until(Ts::MAX);
             if live > tx.now().0 {
                 crate::retention::compact::Trigger::live_until(tx, (t, ak.clone()), live);
             }
@@ -1122,7 +1122,7 @@ fn on_parts(tx: &mut Tx<'_>, id: &CommitId, h: &Header, ais: BTreeSet<usize>, pu
         // while its setting keeps it (`leaving`), then by its commit's purge floor if later
         if let Some(a) = h.aspects.get(ai).filter(|a| a.ak.signal()) {
             let now = tx.now().0;
-            if history::of(tx.core, &a.tid, &a.ak).leaves_at(Some(h.ts.wall_ms().0), h.ts.wall_ms().0) > now {
+            if history::of(tx.core, &a.tid, &a.ak).leaves_at(Some(h.ts.wall_ms().0), h.ts) > now {
                 leaving::fire_held(tx, &a.tid, &a.ak, (h.ts, *id))?;
             } else {
                 match signal_bound(tx.core, h, a) {

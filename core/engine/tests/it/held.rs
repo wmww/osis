@@ -356,7 +356,7 @@ fn setting(cv: &mut Conv, f: Option<&Fragment>, snapshot: bool) -> Option<hm::Se
         Some(osis_schema::History::PurgeOnReplace) => hm::Opt::Purge,
         Some(osis_schema::History::Keep { until, after }) => hm::Opt::Keep { after: after.unwrap_or(0), until: until.map_or(0, |u| if u >= osis_commit::FOREVER { u64::MAX } else { u }) },
     };
-    let entry = |e: &ct::RetentionEntry| hm::SettingEntry { history: opt(e), expires: None, purge_before: e.purge_before.unwrap_or(0) };
+    let entry = |e: &ct::RetentionEntry| hm::SettingEntry { history: opt(e), expires: None, purge_before: e.purge_before.map_or(0, osis_base::Ts::to_u64) };
     Some(hm::Setting { rules: x.rules.iter().map(|(k, e)| (cv.aspect(k.as_str()).name, entry(e))).collect(), default: x.default.as_ref().map(entry), written })
 }
 
