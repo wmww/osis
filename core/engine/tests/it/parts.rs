@@ -654,7 +654,7 @@ fn pending_for_pages_then_unjudgeable_awaits_its_record_spec_commits_4() {
 }
 
 // A false signature from a held author goes before the linked lists are fetched: with them away it is
-// refused, it never waits for them (issues/header-list-decode-memory.md).
+// refused, it never waits for them (notes/decode-bounds.md).
 #[test]
 fn false_signature_refused_before_linked_lists() {
     use crate::common::*;

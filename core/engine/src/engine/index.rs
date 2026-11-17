@@ -514,7 +514,7 @@ pub(super) fn enc<T: Rec>(x: &T) -> Vec<u8> {
 }
 
 fn dec<T: Rec>(b: &[u8]) -> Result<T> {
-    let lim = osis_base::Limits { max_depth: 16, max_bytes: b.len() };
+    let lim = osis_base::Limits::new(16, b.len());
     let v = osis_base::decode(b, &lim).map_err(|_| Error::Corrupt("index record"))?;
     T::from(&v).ok_or(Error::Corrupt("index record"))
 }
@@ -606,7 +606,7 @@ fn write_addenda_all(tx: &mut Tx<'_>) -> Result<()> {
 /// open then rebuilds).
 pub(crate) fn load_addenda(tx: &mut Tx<'_>) -> Result<BTreeMap<CommitId, crate::apply::validity::AddendaParts>> {
     let t = tx.txn.index(ADDENDA)?;
-    let lim = |n: usize| osis_base::Limits { max_depth: 2 * osis_base::format::MAX_OBJECT_DEPTH, max_bytes: n };
+    let lim = |n: usize| osis_base::Limits::new(2 * osis_base::format::MAX_OBJECT_DEPTH, n);
     let mut out = BTreeMap::new();
     scan_table(&mut tx.txn, t, &[], None, |k, v| {
         let id = CommitId(k.as_slice().try_into().map_err(|_| Error::Corrupt("addenda row key"))?);
@@ -632,7 +632,7 @@ fn write_edges_all(tx: &mut Tx<'_>) -> Result<()> {
 pub(crate) fn load_edges(tx: &mut Tx<'_>) -> Result<BTreeMap<CommitId, crate::apply::validity::EdgeParts>> {
     let _s = osis_base::costs::span("open: edges rows");
     let t = tx.txn.index(EDGES)?;
-    let lim = |n: usize| osis_base::Limits { max_depth: 2 * osis_base::format::MAX_OBJECT_DEPTH, max_bytes: n };
+    let lim = |n: usize| osis_base::Limits::new(2 * osis_base::format::MAX_OBJECT_DEPTH, n);
     let mut out = BTreeMap::new();
     scan_table(&mut tx.txn, t, &[], None, |k, v| {
         let id = CommitId(k.as_slice().try_into().map_err(|_| Error::Corrupt("edges row key"))?);
@@ -798,7 +798,7 @@ fn parse_meta_row(row: &[u8]) -> Result<(&[u8], super::View)> {
         0 => None,
         1 => {
             let b = r.bytes()?;
-            let lim = osis_base::Limits { max_depth: osis_base::format::MAX_OBJECT_DEPTH, max_bytes: b.len() };
+            let lim = osis_base::Limits::new(osis_base::format::MAX_OBJECT_DEPTH, b.len());
             let v = osis_base::decode(b, &lim).map_err(|_| Error::Corrupt("meta row frontier"))?;
             let f = osis_schema::core_types::Frontier::from_value(&v).map_err(|_| Error::Corrupt("meta row frontier"))?;
             Some(Arc::new(osis_perm::Frontier { commits: f.commits }))
@@ -1026,7 +1026,7 @@ pub(crate) fn load(tx: &mut Tx<'_>) -> Result<()> {
         let id = CommitId(k.try_into().map_err(|_| Error::Corrupt("commit record key"))?);
         let (head, blob) = parse_head(&v)?;
         // the blob is `[header, signature, parts]`: its first item
-        let lim = osis_base::Limits { max_depth: osis_base::format::MAX_OBJECT_DEPTH, max_bytes: blob.len() };
+        let lim = osis_base::Limits::new(osis_base::format::MAX_OBJECT_DEPTH, blob.len());
         let hb = osis_base::item_prefix(blob.get(1..).unwrap_or_default(), &lim).map_err(|_| Error::Corrupt("commit record header"))?;
         // the signatures follow the header: an account's role commits' are an index
         // (`Indexes::role_sigs`), kept where an inner or merge signature is carried

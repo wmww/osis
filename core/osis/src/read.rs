@@ -100,7 +100,7 @@ pub(crate) fn ak_of<K: AspectKey>(key: &K) -> Result<Ak> {
 fn read_link(e: &mut Engine, tid: &Tid, l: &osis_base::Link, limit: usize, budget: &mut usize, bad: &mut Vec<osis_blob::Error>) -> Result<Option<Value>> {
     use osis_base::{Classified, ErrorClass};
     let too_large = Error::TooLarge { limit };
-    let x = match e.read_large_max(tid, l, *budget) {
+    let (x, decoded) = match e.read_large_max(tid, l, *budget) {
         Ok(x) => x,
         Err(osis_engine::Error::Data(osis_blob::Error::TooLarge(_))) => return Err(too_large),
         Err(osis_engine::Error::Data(err)) if err == osis_blob::Error::Missing || err.class() != ErrorClass::Local => {
@@ -109,7 +109,8 @@ fn read_link(e: &mut Engine, tid: &Tid, l: &osis_base::Link, limit: usize, budge
         }
         Err(other) => return Err(other.into()),
     };
-    let n = osis_base::cbor::encoded_len(&x);
+    // the budget bounds both what the links' bytes and their decodes take (notes/decode-bounds.md)
+    let n = osis_base::cbor::encoded_len(&x).max(decoded);
     *budget = budget.checked_sub(n).ok_or(too_large)?;
     Ok(Some(x))
 }
@@ -144,7 +145,7 @@ fn materialize_in(e: &mut Engine, tid: &Tid, v: Value, limit: usize, budget: &mu
 }
 
 /// Replaces every link by its value, dropping unreadable ones into `bad` (`materialize_in`);
-/// fails `TooLarge` past `limit` canonical bytes.
+/// fails `TooLarge` past `limit` canonical bytes, or bytes its links decode to.
 fn materialize(e: &mut Engine, tid: &Tid, v: Value, limit: usize, bad: &mut Vec<osis_blob::Error>) -> Result<Option<Value>> {
     let mut budget = limit;
     let v = materialize_in(e, tid, v, limit, &mut budget, bad)?;

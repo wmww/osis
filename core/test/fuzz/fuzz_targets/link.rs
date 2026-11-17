@@ -15,7 +15,7 @@ fuzz_target!(|data: &[u8]| {
         }
         return;
     }
-    let Ok(v) = decode(data, &Limits { max_depth: 8, max_bytes: 1 << 14 }) else { return };
+    let Ok(v) = decode(data, &Limits::new(8, 1 << 14)) else { return };
     if let Ok(l) = ShareLink::from_value(&v) {
         assert_eq!(l.to_value().unwrap(), v);
     }

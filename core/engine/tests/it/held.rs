@@ -140,7 +140,7 @@ impl History {
         if let Some(&p) = self.paged.lock().unwrap().get(&bytes) {
             return p;
         }
-        let limits = |d: &[u8]| osis_base::Limits { max_depth: osis_base::format::MAX_OBJECT_DEPTH, max_bytes: d.len() };
+        let limits = |d: &[u8]| osis_base::Limits::new(osis_base::format::MAX_OBJECT_DEPTH, d.len());
         let p = CommitBlob::decode(&bytes).is_ok_and(|b| {
             b.parts.iter().any(|p| {
                 let mut any = false;

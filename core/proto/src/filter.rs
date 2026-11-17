@@ -167,6 +167,184 @@ pub fn count_gcs(gcs: &[u8], lo: u64, hi: u64) -> Result<u64, Error> {
     values(gcs, lo, hi).try_fold(0u64, |n, v| v.map(|_| n + 1))
 }
 
+/// Entries between two index points of a `Run`: a performance switch (any value is correct): a
+/// lookup decodes at most this many entries, the index costs 16 B per this many. 1: an index
+/// point per entry (16 B each, more than the 8 B of a plain array); infinity: a scan per lookup.
+const STRIDE: u64 = 64;
+
+/// One ascending run of a peer's filter, Golomb-Rice coded as on the wire from 0 (spec/wire.md
+/// §11.2 Beacons): about `P + 2` bits an entry, with an index point every `STRIDE` entries. Built
+/// a value at a time as pages arrive, so a filter never sits decoded.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct Run {
+    bits: Vec<u8>,
+    len: usize,
+    n: u64,
+    last: u64,
+    /// Per `STRIDE` entries: the entry's value and the bit just past it.
+    index: Vec<(u64, usize)>,
+}
+
+impl Run {
+    fn put(&mut self, v: u32, n: u32) {
+        for i in (0..n).rev() {
+            if self.len.is_multiple_of(8) {
+                self.bits.push(0);
+            }
+            if (v >> i) & 1 == 1
+                && let Some(b) = self.bits.last_mut()
+            {
+                *b |= 0x80 >> (self.len % 8);
+            }
+            self.len += 1;
+        }
+    }
+
+    fn bit(&self, i: usize) -> u64 {
+        u64::from((self.bits.get(i / 8).copied().unwrap_or(0) >> (7 - (i % 8))) & 1)
+    }
+
+    /// Appends `v`, at least the last value.
+    pub fn push(&mut self, v: u64) {
+        let gap = v.saturating_sub(self.last);
+        for _ in 0..(gap >> BEACON_P) {
+            self.put(1, 1);
+        }
+        self.put(0, 1);
+        self.put((gap & ((1 << BEACON_P) - 1)) as u32, BEACON_P);
+        self.last = v;
+        if self.n.is_multiple_of(STRIDE) {
+            self.index.push((v, self.len));
+        }
+        self.n += 1;
+    }
+
+    /// The values from index point `k` on, that point's value first.
+    fn from(&self, k: usize) -> impl Iterator<Item = u64> + '_ {
+        let (first, mut pos) = self.index.get(k).copied().unwrap_or((0, self.len));
+        let mut prev = first;
+        let rest = std::iter::from_fn(move || {
+            if pos >= self.len {
+                return None;
+            }
+            let mut q = 0u64;
+            while self.bit(pos) == 1 {
+                q += 1;
+                pos += 1;
+            }
+            pos += 1;
+            let mut r = 0u64;
+            for _ in 0..BEACON_P {
+                r = (r << 1) | self.bit(pos);
+                pos += 1;
+            }
+            prev += (q << BEACON_P) | r;
+            Some(prev)
+        });
+        (k < self.index.len()).then_some(first).into_iter().chain(rest)
+    }
+
+    fn iter(&self) -> impl Iterator<Item = u64> + '_ {
+        self.from(0)
+    }
+
+    fn contains(&self, v: u64) -> bool {
+        let k = self.index.partition_point(|(x, _)| *x <= v);
+        k > 0 && self.from(k - 1).take(STRIDE as usize).take_while(|x| *x <= v).any(|x| x == v)
+    }
+
+    /// Heap bytes held.
+    pub fn bytes(&self) -> usize {
+        self.bits.capacity() + self.index.capacity() * size_of::<(u64, usize)>()
+    }
+
+    /// Entries.
+    pub fn len(&self) -> u64 {
+        self.n
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.n == 0
+    }
+
+    /// The run's values coded from 0, as one page of `[0, 2^f)` codes them (`encode_gcs`).
+    pub fn gcs(&self) -> &[u8] {
+        &self.bits
+    }
+
+    /// Appends the values of a page over `[lo, hi)` (`decode_gcs`'s checks), each at least the
+    /// last value: pages of one generation come in ascending ranges.
+    pub fn extend_from_gcs(&mut self, gcs: &[u8], lo: u64, hi: u64) -> Result<(), Error> {
+        if self.n > 0 && lo < self.last {
+            return Err(Error::Malformed("filter page below the run"));
+        }
+        for v in values(gcs, lo, hi) {
+            self.push(v?);
+        }
+        Ok(())
+    }
+}
+
+/// A peer's filter as a node holds it: ascending multisets of entries kept as their Golomb-Rice
+/// coding, so it holds about what the peer sent (notes/decode-bounds.md), not 8 B an entry.
+/// Additions come as runs; a run at least as long as the one before is merged into it, so a
+/// filter of n entries is at most log2(n) + 1 runs and each entry is coded again at most log2(n)
+/// times.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct Beacons {
+    runs: Vec<Run>,
+}
+
+impl Beacons {
+    /// Adds `run`.
+    pub fn add(&mut self, mut run: Run) {
+        while run.n > 0 && self.runs.last().is_some_and(|r| r.n <= run.n) {
+            let Some(prev) = self.runs.pop() else { break };
+            let mut merged = Run::default();
+            {
+                let (mut a, mut b) = (prev.iter().peekable(), run.iter().peekable());
+                while let Some(v) = match (a.peek(), b.peek()) {
+                    (Some(x), Some(y)) if x <= y => a.next(),
+                    (_, Some(_)) => b.next(),
+                    (Some(_), None) => a.next(),
+                    (None, None) => None,
+                } {
+                    merged.push(v);
+                }
+            }
+            run = merged;
+        }
+        if run.n > 0 {
+            run.bits.shrink_to_fit();
+            run.index.shrink_to_fit();
+            self.runs.push(run);
+        }
+    }
+
+    /// Runs held (tests: at most log2(entries) + 1).
+    pub fn runs(&self) -> usize {
+        self.runs.len()
+    }
+
+    pub fn contains(&self, v: u64) -> bool {
+        self.runs.iter().any(|r| r.contains(v))
+    }
+
+    /// Entries held.
+    pub fn len(&self) -> u64 {
+        self.runs.iter().map(|r| r.n).sum()
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.len() == 0
+    }
+
+    /// Heap bytes held.
+    pub fn bytes(&self) -> usize {
+        self.runs.iter().map(Run::bytes).sum::<usize>() + self.runs.capacity() * size_of::<Run>()
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -228,6 +406,52 @@ mod tests {
         assert!(count_gcs(&one, 0, 500).is_err(), "a padding bit set");
         assert!(count_gcs(&[0], 0, 500).is_err(), "8 bits of padding");
         assert_eq!(count_gcs(&[], 0, 500), Ok(0));
+    }
+
+    fn run(values: &[u64]) -> Run {
+        let mut r = Run::default();
+        r.extend_from_gcs(&encode_gcs(values, 0), 0, u64::MAX).unwrap();
+        r
+    }
+
+    // notes/decode-bounds.md: a peer's filter held as its coding answers as the multiset of its
+    // entries, whole and through many additions (duplicates, index boundaries, empty runs), in at
+    // most log2(n) + 1 runs and about what its coding took on the wire
+    #[test]
+    fn beacons_answer_as_their_entries_in_their_coded_size() {
+        let f = 21u32;
+        let mut k = 0u64;
+        let mut draw = |n: usize| {
+            let mut v: Vec<u64> = (0..n)
+                .map(|_| {
+                    k += 1;
+                    beacon_value(&osis_base::hash::hash(&k.to_le_bytes()), f as u8)
+                })
+                .collect();
+            v.sort_unstable();
+            v
+        };
+        let whole = draw(1 << 13);
+        let mut b = Beacons::default();
+        let r = run(&whole);
+        assert_eq!(r.gcs(), encode_gcs(&whole, 0).as_slice(), "a run is the wire coding");
+        b.add(r);
+        let mut all = whole.clone();
+        for n in [0, 1, 3, 64, 65, 1000, 1, 1, 3000, 129] {
+            let add = draw(n);
+            all.extend(&add);
+            b.add(run(&add));
+        }
+        all.sort_unstable();
+        assert_eq!(b.len(), all.len() as u64);
+        assert!(b.runs() <= (all.len() as f64).log2() as usize + 1, "{} runs", b.runs());
+        let set: std::collections::BTreeSet<u64> = all.iter().copied().collect();
+        for v in all.iter().copied().chain(draw(5000)).chain([0, (1 << f) - 1]) {
+            assert_eq!(b.contains(v), set.contains(&v), "{v}");
+        }
+        let coded = encode_gcs(&all, 0).len();
+        assert!(b.bytes() <= coded * 3 / 2, "{} held for {coded} coded", b.bytes());
+        assert!(b.bytes() * 4 < all.len() * 8, "far below 8 B an entry");
     }
 
     // spec/wire.md §11.2 Beacons: the width of a whole filter

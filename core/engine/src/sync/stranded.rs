@@ -331,7 +331,7 @@ impl Engine {
             if b.parts.is_empty() {
                 continue;
             }
-            out.extend(osis_base::decode(&b.encode(), &osis_base::Limits { max_depth: osis_base::format::MAX_OBJECT_DEPTH, max_bytes: osis_base::format::MAX_BLOB }).ok());
+            out.extend(osis_base::decode(&b.encode(), &osis_base::Limits::new(osis_base::format::MAX_OBJECT_DEPTH, osis_base::format::MAX_BLOB)).ok());
         }
         let records = certs.records.iter().filter_map(|t| self.core.created(t).cloned()).collect();
         Ok((out, records))

@@ -1016,6 +1016,50 @@ fn a_filter_too_dense_closes_the_connection_spec_wire_11_2() {
     assert!(!r.pipe.closed.is_empty());
 }
 
+// notes/decode-bounds.md (spec/wire.md §11.2 Beacons): a stranger's filter, whole, arriving page by
+// page, and with additions, is held as coded: about what it sent, never 8 B an entry
+#[test]
+fn a_peers_filter_is_held_as_sent_spec_wire_11_2() {
+    let entries = |n: u64, salt: u64, f: u8| {
+        let mut v: Vec<u64> = (0..n).map(|i| osis_proto::filter::beacon_value(&osis_base::hash::hash(&[salt.to_le_bytes(), i.to_le_bytes()].concat()), f)).collect();
+        v.sort_unstable();
+        v
+    };
+    let n = 1u64 << 14;
+    let f = osis_proto::filter::filter_width(n as usize);
+    let mut r = Side::new(1);
+    let (mut adv, _) = Adv::dials(&mut r, Proven::default(), [2; 32]);
+    let whole = entries(n, 0, f);
+    let mut sent = 0;
+    let pages = osis_proto::filter::pages(&whole, f, 2048);
+    assert!(pages.len() > 2);
+    let conn = adv.peer;
+    // a generation arriving grows as a vector does (up to twice its bytes, and its index); one
+    // arrived is held at its size
+    let held = |r: &Side, sent: usize, growing: bool| {
+        let (count, bytes) = r.opens.peer_filter_held(conn);
+        let bound = if growing { 3 * sent } else { sent * 3 / 2 };
+        assert!(bytes <= bound + 64, "{bytes} B held for {count} entries, {sent} B sent");
+        count
+    };
+    let id = adv.id();
+    for p in &pages {
+        sent += p.gcs.len();
+        adv.send(&mut r, Msg::Beacons { id, generation: 1, base: None, f, lo: p.lo, hi: p.hi, gcs: p.gcs.clone(), more: p.more });
+        held(&r, sent, p.more);
+    }
+    assert_eq!(held(&r, sent, false), n);
+    for g in 2..4u64 {
+        let add = entries(n / 4, g, f);
+        let gcs = osis_proto::filter::encode_gcs(&add, 0);
+        sent += gcs.len();
+        let id = adv.id();
+        adv.send(&mut r, Msg::Beacons { id, generation: g, base: Some(g - 1), f, lo: 0, hi: 1 << f, gcs, more: false });
+    }
+    assert!(r.pipe.closed.is_empty());
+    assert_eq!(held(&r, sent, false), n + n / 2);
+}
+
 // spec/sync-opens.md §5 (testing): a refused Hit is not sent again at its answer (here the peer
 // acknowledged no generation of the tester's filter), and a Lost naming no member open here (a
 // sync ID this node does not sync, or S not open) re-marks nothing.

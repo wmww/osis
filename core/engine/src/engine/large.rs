@@ -404,7 +404,7 @@ pub(crate) fn delta_links(tx: &mut Tx<'_>, dedup: &Secret32, delta: &[u8]) -> Re
 pub(crate) fn delta_roots(delta: &[u8]) -> Vec<Link> {
     let mut roots = Vec::new();
     // by heads alone: a snapshot's frontiers and facts are no values
-    let _ = osis_base::visit_links(delta, &osis_base::Limits { max_depth: osis_base::format::MAX_OBJECT_DEPTH, max_bytes: delta.len() }, &mut |l| roots.push(l));
+    let _ = osis_base::visit_links(delta, &osis_base::Limits::new(osis_base::format::MAX_OBJECT_DEPTH, delta.len()), &mut |l| roots.push(l));
     roots
 }
 
@@ -447,7 +447,7 @@ pub(crate) fn kids_of(dedup: Option<&Secret32>, link: &Link, blob: &[u8]) -> Opt
     if dedup.is_some_and(|d| osis_crypto::link_hash(d, &pt) != link.hash) {
         return None;
     }
-    let v = osis_base::decode(&pt, &osis_base::Limits { max_depth: osis_base::format::MAX_OBJECT_DEPTH, max_bytes: pt.len() }).ok()?;
+    let v = osis_base::decode(&pt, &osis_base::Limits::new(osis_base::format::MAX_OBJECT_DEPTH, pt.len())).ok()?;
     let mut out = Vec::new();
     links_in(&v, &mut out);
     Some((false, out))
@@ -518,7 +518,7 @@ fn tree_hits(tx: &mut Tx<'_>, dedup: &Secret32, roots: &[Link], blobs: &BTreeSet
 impl Engine {
     /// Reads a chunked large value of thing `tid` back whole.
     pub fn read_large(&mut self, tid: &Tid, link: &Link) -> Result<Value> {
-        self.read_large_max(tid, link, MAX_READ)
+        Ok(self.read_large_max(tid, link, MAX_READ)?.0)
     }
 
     /// The chunk trees the live states of `tid`'s aspects link. Complete when no node blob is
@@ -712,9 +712,10 @@ impl Engine {
         })
     }
 
-    /// `read_large` failing with `osis_commit::Error::TooLarge` past `max_len` canonical bytes
-    /// (the API's materialization bound).
-    pub fn read_large_max(&mut self, tid: &Tid, link: &Link, max_len: usize) -> Result<Value> {
+    /// `read_large` failing with `osis_commit::Error::TooLarge` past `max_len` canonical bytes or
+    /// bytes decoded (the API's materialization bound), with the bytes decoded
+    /// (`osis_blob::read_value`).
+    pub fn read_large_max(&mut self, tid: &Tid, link: &Link, max_len: usize) -> Result<(Value, usize)> {
         let (tid, link) = (*tid, *link);
         self.read(|tx| {
             let dedup = tx.core.dedup(&tid).ok_or(Error::UnknownThing(tid))?;

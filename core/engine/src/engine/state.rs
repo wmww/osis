@@ -56,7 +56,7 @@ pub fn stored(b: &[u8]) -> Result<Stored<'_>> {
         None => Ok(Stored::Empty),
         Some(x) if i64::from(x) == crate::engine::pages::TAG => Ok(Stored::Paged(b)),
         Some(x) if i64::from(x) == BODY => {
-            let lim = osis_base::Limits { max_depth: 2, max_bytes: b.len() };
+            let lim = osis_base::Limits::new(2, b.len());
             let v = osis_base::decode(b, &lim).map_err(|_| Error::Corrupt("state"))?;
             let Value::List(items) = v else { return Err(Error::Corrupt("state")) };
             let [Value::Int(BODY), Value::Bytes(c)] = items.as_slice() else { return Err(Error::Corrupt("state")) };
@@ -81,7 +81,7 @@ pub fn encode(f: &Fragment) -> Result<Vec<u8>> {
 }
 
 pub fn decode(b: &[u8]) -> Result<Fragment> {
-    let lim = osis_base::Limits { max_depth: 4, max_bytes: b.len() };
+    let lim = osis_base::Limits::new(4, b.len());
     let v = osis_base::decode(b, &lim).map_err(|_| Error::Corrupt("state"))?;
     let Value::List(items) = v else { return Err(Error::Corrupt("state")) };
     let [Value::Bytes(snap), Value::List(pages)] = items.as_slice() else { return Err(Error::Corrupt("state")) };

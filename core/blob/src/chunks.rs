@@ -7,7 +7,7 @@ use crate::Error;
 use crate::tree::{LinkSource, TreeReader, TreeSink, write_tree};
 use osis_base::format::{CHUNK_THRESHOLD, MAX_VALUE_DEPTH};
 use osis_base::cbor::{MAJOR_BYTES, MAJOR_TEXT, head_len};
-use osis_base::{ChunkParams, Limits, Link, Value, decode, encode};
+use osis_base::{ChunkParams, DecodeError, Limits, Link, Value, decode_charged, encode};
 use osis_crypto::Secret32;
 
 /// Chunking parameters: `FORMAT` on the wire; tests shrink them.
@@ -56,10 +56,12 @@ pub fn chunk_value(sink: &mut dyn TreeSink, params: LargeParams, v: &Value) -> R
     Ok(Value::link(write_tree(sink, params.chunk, &bytes)?))
 }
 
-/// Reads a whole large value (set element, map key, or a value read in full) and decodes it:
-/// `TooLarge` above `max_len` bytes (as soon as the root claims more), `Malformed` for a chunked
-/// value at or below the threshold.
-pub fn read_value(root: Link, dedup: &Secret32, src: &mut dyn LinkSource, params: LargeParams, max_len: usize) -> Result<Value, Error> {
+/// Reads a whole large value (set element, map key, or a value read in full) and decodes it, with
+/// the bytes its decode allocated: `TooLarge` above `max_len` canonical bytes (as soon as the root
+/// claims more) or past `max_len` bytes allocated (notes/decode-bounds.md: whatever the value's
+/// shape, a read holds at most twice its bound), `Malformed` for a chunked value at or below the
+/// threshold.
+pub fn read_value(root: Link, dedup: &Secret32, src: &mut dyn LinkSource, params: LargeParams, max_len: usize) -> Result<(Value, usize), Error> {
     let mut tree = TreeReader::new(root, params.chunk.min, max_len);
     let max = u64::try_from(max_len).unwrap_or(u64::MAX);
     let mut bytes = Vec::new();
@@ -72,7 +74,12 @@ pub fn read_value(root: Link, dedup: &Secret32, src: &mut dyn LinkSource, params
     if bytes.len() <= params.threshold {
         return Err(Error::Malformed("chunked value at or below CHUNK_THRESHOLD"));
     }
-    Ok(decode(&bytes, &Limits { max_depth: MAX_VALUE_DEPTH, max_bytes: bytes.len() })?)
+    // the bytes are all there, so a decode too large is one past the allocation bound: the
+    // reader's, not bad input
+    decode_charged(&bytes, &Limits::new(MAX_VALUE_DEPTH, bytes.len()).alloc(max_len)).map_err(|e| match e {
+        DecodeError::TooLarge => Error::TooLarge("value"),
+        e => e.into(),
+    })
 }
 
 #[cfg(test)]
@@ -123,7 +130,7 @@ mod tests {
                 continue;
             };
             let mut r = BlobReader::new(&f.dedup, &mut store);
-            assert_eq!(read_value(*l, &f.dedup, &mut r, SMALL, usize::MAX).unwrap(), Value::Bytes(d.clone()));
+            assert_eq!(read_value(*l, &f.dedup, &mut r, SMALL, usize::MAX).unwrap().0, Value::Bytes(d.clone()));
             let mut hs = HashSink::new(f.dedup.clone());
             let Value::Link(h) = chunk_value(&mut hs, SMALL, &Value::Bytes(d.clone())).unwrap() else { panic!() };
             assert_eq!(h.hash, l.hash);
@@ -143,7 +150,7 @@ mod tests {
         let mut rng = SeededRng::from_u64(0);
         let root = write_tree(&mut BlobWriter::new(&f, &mut store, &mut rng), SMALL.chunk, &encode(&Value::Bytes(vec![1; 20]))).unwrap();
         let mut r = BlobReader::new(&f.dedup, &mut store);
-        assert_eq!(read_value(root, &f.dedup, &mut r, SMALL, usize::MAX), Err(Error::Malformed("chunked value at or below CHUNK_THRESHOLD")));
+        assert_eq!(read_value(root, &f.dedup, &mut r, SMALL, usize::MAX).map(|x| x.0), Err(Error::Malformed("chunked value at or below CHUNK_THRESHOLD")));
     }
 
     // spec/data-model.md §5, §6: a large blob or string's bytes start with its canonical string
@@ -166,7 +173,7 @@ mod tests {
         let s = Value::Str("héllo wörld ✓ 𝄞 ".repeat(40));
         let Value::Link(root) = chunk_value(&mut BlobWriter::new(&f, &mut store, &mut rng), SMALL, &s).unwrap() else { panic!() };
         let mut r = BlobReader::new(&f.dedup, &mut store);
-        assert_eq!(read_value(*root, &f.dedup, &mut r, SMALL, usize::MAX).unwrap(), s);
+        assert_eq!(read_value(*root, &f.dedup, &mut r, SMALL, usize::MAX).unwrap().0, s);
     }
 
     // spec/wire.md §6: content hashes cover lengths, so a tree whose nodes lie about them has
@@ -198,10 +205,40 @@ mod tests {
         let mut hs = HashSink::new(f.dedup.clone());
         assert_ne!(write_tree(&mut hs, SMALL.chunk, &canon).unwrap().hash, liar.hash);
         let mut r = BlobReader::new(&f.dedup, &mut store);
-        assert_eq!(read_value(liar, &f.dedup, &mut r, SMALL, usize::MAX), Err(Error::Malformed("tree length")));
+        assert_eq!(read_value(liar, &f.dedup, &mut r, SMALL, usize::MAX).map(|x| x.0), Err(Error::Malformed("tree length")));
         let (honest, written, reused) = rewrite(&mut store, &f, 15, &d, Some(liar));
         assert_ne!(honest.hash, liar.hash);
         assert!(written >= 1 && written <= hs.nodes.len() && reused as u64 >= hs.chunks, "{written} written, {reused} reused");
+    }
+
+    // spec/wire.md §12 (notes/decode-bounds.md): a whole read of a writer's value holds no more
+    // than its bound, whatever the shape: a list of one-byte unknown tags (the shape costing a
+    // decode most per byte) fits the byte bound four times over but would decode to about 36
+    // times its bytes, so it is too large; an honest blob of the same bytes reads within it
+    #[test]
+    fn a_value_read_whole_holds_at_most_its_bound_spec_wire_12() {
+        let f = framing();
+        let mut store = MemoryBlobs::default();
+        let mut rng = SeededRng::from_u64(0);
+        let n = 20_000;
+        let mut hostile = Vec::new();
+        osis_base::cbor::put_array(&mut hostile, n);
+        for _ in 0..n {
+            hostile.extend_from_slice(&[0xc6, 0x00]);
+        }
+        let max = 4 * hostile.len();
+        let root = write_tree(&mut BlobWriter::new(&f, &mut store, &mut rng), SMALL.chunk, &hostile).unwrap();
+        let mut r = BlobReader::new(&f.dedup, &mut store);
+        match read_value(root, &f.dedup, &mut r, SMALL, max) {
+            Err(Error::TooLarge(_)) => {}
+            Ok((Value::List(l), spent)) => panic!("read {} items holding at least {} bytes, charged {spent}, bound {max}", l.len(), l.capacity() * size_of::<Value>()),
+            other => panic!("{other:?}"),
+        }
+        let blob = vec![7u8; hostile.len()];
+        let Value::Link(l) = write_bytes(&mut store, &f, &mut rng, &blob) else { panic!() };
+        let mut r = BlobReader::new(&f.dedup, &mut store);
+        let (v, spent) = read_value(*l, &f.dedup, &mut r, SMALL, encode(&Value::Bytes(blob.clone())).len()).unwrap();
+        assert_eq!((v, spent), (Value::Bytes(blob.clone()), blob.len()));
     }
 
     /// Writes `d` as a blob value with `f`, reusing from the tree under `old` if given; returns
@@ -217,7 +254,7 @@ mod tests {
         let root = *root;
         let (written, reused) = (bw.written().len(), bw.reused());
         let mut r = BlobReader::new(&f.dedup, store);
-        assert_eq!(read_value(root, &f.dedup, &mut r, SMALL, usize::MAX).unwrap(), Value::Bytes(d.to_vec()));
+        assert_eq!(read_value(root, &f.dedup, &mut r, SMALL, usize::MAX).unwrap().0, Value::Bytes(d.to_vec()));
         (root, written, reused)
     }
 
@@ -331,7 +368,7 @@ mod tests {
                     let root = *root;
                     prop_assert!(enc.len() > SMALL.threshold);
                     let mut r = BlobReader::new(&f.dedup, &mut store);
-                    prop_assert_eq!(read_value(root, &f.dedup, &mut r, SMALL, usize::MAX).unwrap(), Value::Bytes(d));
+                    prop_assert_eq!(read_value(root, &f.dedup, &mut r, SMALL, usize::MAX).unwrap().0, Value::Bytes(d));
                     let mut r = BlobReader::new(&f.dedup, &mut store);
                     prop_assert!(matches!(read_value(root, &f.dedup, &mut r, SMALL, enc.len() - 1), Err(Error::TooLarge(_))));
                 }

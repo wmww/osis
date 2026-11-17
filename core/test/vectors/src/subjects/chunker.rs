@@ -88,7 +88,7 @@ pub fn pages() -> VecFile {
         let Value::List(top) = osis_base::decode(&top, &osis_base::Limits::DEFAULT).unwrap() else { panic!("array") };
         let (mut elems, mut links) = (Vec::new(), Vec::new());
         for p in &rec.pages {
-            let Value::List(items) = osis_base::decode(p, &osis_base::Limits { max_depth: 4, max_bytes: osis_base::format::MAX_BLOB }).unwrap() else { panic!("page") };
+            let Value::List(items) = osis_base::decode(p, &osis_base::Limits::new(4, osis_base::format::MAX_BLOB)).unwrap() else { panic!("page") };
             if items.iter().all(|i| matches!(i, Value::Link(_))) {
                 links.push(items.len().to_string());
             } else {

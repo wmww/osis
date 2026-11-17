@@ -649,7 +649,7 @@ impl Engine {
         let Some(h) = self.header(c) else { return Ok(out) };
         let lists: Vec<osis_base::Link> = osis_commit::ListField::ALL.iter().filter_map(|f| h.links.get(*f).copied()).collect();
         for l in &lists {
-            self.tree_blobs(l, &h.actor, &mut out)?;
+            self.tree_blobs(l, &h, &mut out)?;
         }
         let id = *c;
         let found = self.read(|tx| {

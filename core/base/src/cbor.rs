@@ -19,17 +19,32 @@ const FALSE: u8 = 0xf4;
 const TRUE: u8 = 0xf5;
 const FLOAT64: u8 = 0xfb;
 
-/// Decoder limits; every decode takes them.
+/// Decoder limits; every decode takes them (notes/decode-bounds.md).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Limits {
     /// Deepest nesting: arrays, maps and tags on the deepest path (a scalar is 0).
     pub max_depth: usize,
     /// Most bytes one value may span.
     pub max_bytes: usize,
+    /// Most bytes `decode` may allocate for the value (its slots, boxes and string contents,
+    /// a dropped unknown tag's content included), refused (`TooLarge`) before allocating past it.
+    /// Bounded anyway by `max_bytes`, at about 56 B per byte: a whole-value read sets it to what
+    /// its reader may hold.
+    pub max_alloc: usize,
 }
 
 impl Limits {
-    pub const DEFAULT: Limits = Limits { max_depth: MAX_VALUE_DEPTH, max_bytes: MAX_VALUE_BYTES };
+    pub const DEFAULT: Limits = Limits::new(MAX_VALUE_DEPTH, MAX_VALUE_BYTES);
+
+    /// `max_depth` and `max_bytes`, allocation bounded by them alone.
+    pub const fn new(max_depth: usize, max_bytes: usize) -> Limits {
+        Limits { max_depth, max_bytes, max_alloc: usize::MAX }
+    }
+
+    /// These limits allocating at most `max_alloc` bytes.
+    pub const fn alloc(self, max_alloc: usize) -> Limits {
+        Limits { max_alloc, ..self }
+    }
 }
 
 impl Default for Limits {
@@ -121,7 +136,7 @@ impl CanonicalBytes {
         self.depth
     }
     pub fn to_value(&self) -> Result<Value, DecodeError> {
-        decode(&self.bytes, &Limits { max_depth: self.depth, max_bytes: self.bytes.len() })
+        decode(&self.bytes, &Limits::new(self.depth, self.bytes.len()))
     }
 }
 
@@ -361,11 +376,18 @@ pub fn has_link(v: &Value) -> bool {
 /// Input that fails can hold up to 72 n of address space, a head claiming slots its bytes never
 /// fill (32 per byte, all of it) beside those tags (40 per byte): the empty slots stay untouched.
 pub fn decode(input: &[u8], limits: &Limits) -> Result<Value, DecodeError> {
-    let (v, used) = decode_prefix(input, limits)?;
-    if used.len() != input.len() {
+    decode_charged(input, limits).map(|(v, _)| v)
+}
+
+/// `decode`, with the bytes it charged against `limits.max_alloc` (at least what the value
+/// holds on the heap): what a reader holding several values counts against one budget.
+pub fn decode_charged(input: &[u8], limits: &Limits) -> Result<(Value, usize), DecodeError> {
+    let mut d = Decoder::new(input, limits);
+    let v = d.item(0)?;
+    if d.pos != input.len() {
         return Err(DecodeError::Trailing);
     }
-    Ok(v)
+    Ok((v, d.spent))
 }
 
 /// Whether `input` is exactly one value in the profile: `decode(input, limits)`, the same error
@@ -403,7 +425,7 @@ impl<'a> Item<'a> {
 
     /// The value, built.
     pub fn to_value(self) -> Result<Value, DecodeError> {
-        decode(self.0, &Limits { max_depth: usize::MAX, max_bytes: self.0.len() })
+        decode(self.0, &Limits::new(usize::MAX, self.0.len()))
     }
 
     /// A non-negative integer.
@@ -617,7 +639,7 @@ pub struct Reader<'a>(Decoder<'a>);
 
 impl<'a> Reader<'a> {
     pub fn new(input: &'a [u8]) -> Reader<'a> {
-        Reader(Decoder::new(input, &Limits { max_depth: usize::MAX, max_bytes: input.len() }))
+        Reader(Decoder::new(input, &Limits::new(usize::MAX, input.len())))
     }
 
     /// Bytes read so far.
@@ -718,6 +740,9 @@ struct Decoder<'a> {
     deepest: usize,
     /// Items promised by the heads read so far.
     promised: usize,
+    /// Bytes `item` has allocated (or will, for what it was promised), and the most it may.
+    spent: usize,
+    max_alloc: usize,
     /// `check` met a map or set of more than one key or element holding a link.
     link_keys: bool,
 }
@@ -726,7 +751,7 @@ impl<'a> Decoder<'a> {
     fn new(input: &'a [u8], limits: &Limits) -> Decoder<'a> {
         let cut = input.len() > limits.max_bytes;
         let buf = input.get(..limits.max_bytes).unwrap_or(input);
-        Decoder { buf, cut, pos: 0, max_depth: limits.max_depth, deepest: 0, promised: 0, link_keys: false }
+        Decoder { buf, cut, pos: 0, max_depth: limits.max_depth, deepest: 0, promised: 0, spent: 0, max_alloc: limits.max_alloc, link_keys: false }
     }
 
     fn remaining(&self) -> usize {
@@ -784,6 +809,14 @@ impl<'a> Decoder<'a> {
         if self.promised > self.buf.len() { Err(self.short()) } else { Ok(()) }
     }
 
+    /// Charges `n` bytes `item` is about to allocate: past `max_alloc` the value is too large.
+    /// Charges are never returned (a dropped unknown tag's content stays charged), so what was
+    /// charged bounds the peak.
+    fn spend(&mut self, n: usize) -> Result<(), DecodeError> {
+        self.spent = self.spent.saturating_add(n);
+        if self.spent > self.max_alloc { Err(DecodeError::TooLarge) } else { Ok(()) }
+    }
+
     /// Expects a head of `major` and returns its argument.
     fn expect(&mut self, major: u8, tag: u64) -> Result<u64, DecodeError> {
         let ib = self.byte()?;
@@ -816,6 +849,8 @@ impl<'a> Decoder<'a> {
         self.enter(level)?;
         let n = self.len(ib, per)?;
         self.promise(n * per)?;
+        // a slot per item: `(Value, Value)` per map entry
+        self.spend(n.saturating_mul(per * size_of::<Value>()))?;
         Ok(n)
     }
 
@@ -828,6 +863,7 @@ impl<'a> Decoder<'a> {
         }
         let n = self.len(ib, 1)?;
         self.promise(n)?;
+        self.spend(n.saturating_mul(size_of::<Value>()))?;
         Ok(n)
     }
 
@@ -962,10 +998,12 @@ impl<'a> Decoder<'a> {
             }
             MAJOR_BYTES => {
                 let n = self.len(ib, 1)?;
+                self.spend(n)?;
                 self.take(n)?;
             }
             MAJOR_TEXT => {
                 let n = self.len(ib, 1)?;
+                self.spend(n)?;
                 std::str::from_utf8(self.take(n)?).map_err(|_| DecodeError::InvalidUtf8)?;
             }
             MAJOR_ARRAY => {
@@ -1023,20 +1061,31 @@ impl<'a> Decoder<'a> {
                 Ok(link)
             }
             TAG_STRONG | TAG_WEAK => self.fixed_bytes::<TID_LEN>(tag).map(|_| false),
-            TAG_TICKET => self.ticket(inner).map(|_| false),
+            TAG_TICKET => {
+                self.spend(size_of::<crate::refs::Ticket>())?;
+                self.ticket(inner).map(|_| false)
+            }
             TAG_RETIRED => Err(DecodeError::TagContent(tag)),
             TAG_ENUM => {
                 let (_, payload) = self.enum_head(inner)?;
-                if payload { self.check(inner + 1) } else { Ok(false) }
+                if !payload {
+                    return Ok(false);
+                }
+                self.spend(size_of::<Value>())?;
+                self.check(inner + 1)
             }
             TAG_LINK => {
                 self.enter(inner + 1)?;
+                self.spend(size_of::<Link>())?;
                 self.link_content(inner + 1).map(|_| true)
             }
             _ => {
+                self.spend(size_of::<Unknown>())?;
+                let start = self.pos;
                 let saved = std::mem::take(&mut self.deepest);
                 let link = self.check(inner)?;
                 self.deepest = self.deepest.max(saved);
+                self.spend(self.pos - start)?;
                 Ok(link)
             }
         }
@@ -1057,10 +1106,12 @@ impl<'a> Decoder<'a> {
             }
             MAJOR_BYTES => {
                 let n = self.len(ib, 1)?;
+                self.spend(n)?;
                 Ok(Value::Bytes(self.take(n)?.to_vec()))
             }
             MAJOR_TEXT => {
                 let n = self.len(ib, 1)?;
+                self.spend(n)?;
                 let s = std::str::from_utf8(self.take(n)?).map_err(|_| DecodeError::InvalidUtf8)?;
                 Ok(Value::Str(s.to_owned()))
             }
@@ -1158,23 +1209,32 @@ impl<'a> Decoder<'a> {
             }
             TAG_STRONG => Ok(Value::Strong(Tid::from_bytes(self.fixed_bytes::<TID_LEN>(tag)?))),
             TAG_WEAK => Ok(Value::Weak(Tid::from_bytes(self.fixed_bytes::<TID_LEN>(tag)?))),
-            TAG_TICKET => self.ticket(inner).map(|t| Value::Ticket(Box::new(t))),
+            TAG_TICKET => {
+                self.spend(size_of::<crate::refs::Ticket>())?;
+                self.ticket(inner).map(|t| Value::Ticket(Box::new(t)))
+            }
             TAG_RETIRED => Err(DecodeError::TagContent(tag)),
             TAG_ENUM => {
                 let (case, payload) = self.enum_head(inner)?;
+                if payload {
+                    self.spend(size_of::<Value>())?;
+                }
                 let payload = if payload { Some(Box::new(self.item(inner + 1)?)) } else { None };
                 Ok(Value::Enum(case, payload))
             }
             TAG_LINK => {
                 self.enter(inner + 1)?;
+                self.spend(size_of::<Link>())?;
                 self.link_content(inner + 1).map(Value::link)
             }
             _ => {
+                self.spend(size_of::<Unknown>())?;
                 let start = self.pos;
                 let saved = std::mem::take(&mut self.deepest);
                 self.item(inner)?;
                 let content_depth = self.deepest.saturating_sub(inner);
                 self.deepest = self.deepest.max(saved);
+                self.spend(self.pos - start)?;
                 let bytes = self.buf.get(start..self.pos).unwrap_or(&[]).to_vec();
                 let content = CanonicalBytes { bytes, depth: content_depth };
                 Unknown::new(tag, content).map(Value::unknown).ok_or(DecodeError::TagContent(tag))

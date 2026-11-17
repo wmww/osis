@@ -119,7 +119,7 @@ fn mutate_at(r: &mut Rng, v: &mut Value, k: &mut usize) -> bool {
 /// re-encoded canonically), so it reaches the decoders' semantic checks; `None` if no node
 /// changed.
 pub(crate) fn mutate_tree(r: &mut Rng, b: &[u8]) -> Option<Vec<u8>> {
-    let mut v = osis_base::decode(b, &osis_base::Limits { max_depth: 512, max_bytes: 1 << 24 }).ok()?;
+    let mut v = osis_base::decode(b, &osis_base::Limits::new(512, 1 << 24)).ok()?;
     let n = count(&v);
     for _ in 0..8 {
         let mut w = v.clone();

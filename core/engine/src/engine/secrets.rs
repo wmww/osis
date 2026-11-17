@@ -826,7 +826,7 @@ pub(crate) fn touched_keys(delta: &osis_crdt::Fragment) -> Option<(Vec<Value>, V
 
 pub(crate) fn decode_epochs(b: &[u8]) -> Result<ActorEpochs> {
     let bad = || Error::Corrupt("epochs");
-    let lim = osis_base::Limits { max_depth: 16, max_bytes: b.len() };
+    let lim = osis_base::Limits::new(16, b.len());
     let Value::List(roles) = osis_base::decode(b, &lim).map_err(|_| bad())? else { return Err(bad()) };
     let mut a = ActorEpochs::default();
     for (r, items) in ROLES.iter().zip(roles) {

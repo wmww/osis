@@ -593,7 +593,7 @@ fn cx_of(w: &MWriter) -> DeltaCtx {
     DeltaCtx { ts: ts(w.ts), own: source(&w.source), range: CounterRange { lo: w.lo, hi: w.hi() }, kind: DeltaKind::Writer }
 }
 fn fragment_value(bytes: &[u8]) -> Value {
-    let Value::List(top) = osis_base::decode(bytes, &osis_base::Limits { max_depth: 64, max_bytes: 1 << 20 }).unwrap() else { panic!() };
+    let Value::List(top) = osis_base::decode(bytes, &osis_base::Limits::new(64, 1 << 20)).unwrap() else { panic!() };
     top[3].clone()
 }
 
@@ -823,7 +823,7 @@ fn snapshot_runs_decode_to_ranges_spec_3_2() {
     assert_eq!(order(&back), order(&deleted));
     assert_eq!(snapshot_of(&back), bytes);
     // the deleted run with its flag write taken out: a run of nothing but dots
-    let v = osis_base::decode(&bytes, &osis_base::Limits { max_depth: 16, max_bytes: 1 << 20 }).unwrap();
+    let v = osis_base::decode(&bytes, &osis_base::Limits::new(16, 1 << 20)).unwrap();
     let Value::List(mut top) = v else { panic!("snapshot") };
     let Value::List(f) = &mut top[3] else { panic!("fragment") };
     let Value::List(runs) = &mut f[3] else { panic!("runs") };

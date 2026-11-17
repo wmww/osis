@@ -52,7 +52,7 @@ pub(crate) type PageVisit<'a> = dyn FnMut(&[u8], &[u8]) -> Result<()> + 'a;
 /// (`reach::walk`); a large value's root is no page, and nothing below it is visited. A delta
 /// or page that is not one CBOR value is `BadInput`.
 pub(crate) fn each_page(tx: &mut Tx<'_>, delta: &[u8], f: &mut PageVisit<'_>) -> Result<()> {
-    let limits = osis_base::Limits { max_depth: osis_base::format::MAX_OBJECT_DEPTH, max_bytes: delta.len() };
+    let limits = osis_base::Limits::new(osis_base::format::MAX_OBJECT_DEPTH, delta.len());
     osis_base::visit_links(delta, &limits, &mut |_| {}).map_err(|_| Error::BadInput("part not one CBOR value"))?;
     super::reach::walk_deltas(tx, &[delta], false, f).map(|_| ())
 }

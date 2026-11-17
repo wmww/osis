@@ -215,14 +215,14 @@ proptest! {
     #[test]
     fn depth_limit(v in value()) {
         let b = encode(&v);
-        let lim = |max_depth| Limits { max_depth, max_bytes: usize::MAX };
+        let lim = |max_depth| Limits::new(max_depth, usize::MAX);
         prop_assert!(dl(&b, &lim(v.depth())).is_ok());
         if v.depth() > 0 {
             prop_assert_eq!(dl(&b, &lim(v.depth() - 1)), Err(DecodeError::TooDeep));
         }
         // and at every size limit up to its own
         for max_bytes in [0, b.len() / 2, b.len().saturating_sub(1), b.len()] {
-            dl(&b, &Limits { max_depth: 64, max_bytes }).ok();
+            dl(&b, &Limits::new(64, max_bytes)).ok();
         }
     }
 }
@@ -332,7 +332,7 @@ fn links_equal_by_hash() {
     for _ in 0..200 {
         deep = Value::Map([(a.clone(), deep), (Value::link(Link { hash: [7; 32], blob: BlobId([2; 32]), suite: 1, key: [3; 32], salt: [0; 16], del: osis_base::Del::NONE }), Value::Int(1))].into_iter().collect());
     }
-    let lim = Limits { max_depth: 512, max_bytes: usize::MAX };
+    let lim = Limits::new(512, usize::MAX);
     let b = encode(&deep);
     assert_eq!(CanonicalBytes::parse(b.clone(), &lim).unwrap().depth(), deep.depth());
     assert_eq!(dl(&b, &lim), Ok(deep));
@@ -466,8 +466,8 @@ fn rejections() {
 #[test]
 fn limits() {
     let b = encode(&Value::Bytes(vec![0; 100]));
-    assert!(dl(&b, &Limits { max_depth: 4, max_bytes: 102 }).is_ok());
-    assert_eq!(dl(&b, &Limits { max_depth: 4, max_bytes: 101 }), Err(DecodeError::TooLarge));
+    assert!(dl(&b, &Limits::new(4, 102)).is_ok());
+    assert_eq!(dl(&b, &Limits::new(4, 101)), Err(DecodeError::TooLarge));
     let deep = vec![0x81u8; 1_000_000];
     assert_eq!(d(&deep), Err(DecodeError::TooDeep));
     // spec/data-model.md §5: 64 nested arrays around a scalar are allowed, 65 are not.
@@ -686,13 +686,13 @@ fn lying_heads_refused_before_allocating() {
         head(&mut nested, MAJOR_ARRAY, left as u64);
     }
     nested.resize(n, 0);
-    assert_eq!(dl(&nested, &Limits { max_depth: usize::MAX, max_bytes: n }), Err(DecodeError::Truncated));
+    assert_eq!(dl(&nested, &Limits::new(usize::MAX, n)), Err(DecodeError::Truncated));
     let mut maps = Vec::new();
     head(&mut maps, MAJOR_MAP, (n / 2 - 3) as u64);
     head(&mut maps, osis_base::cbor::MAJOR_UINT, 0);
     head(&mut maps, MAJOR_MAP, (n / 2 - 3) as u64);
     maps.resize(n, 0);
-    assert_eq!(dl(&maps, &Limits { max_depth: usize::MAX, max_bytes: n }), Err(DecodeError::Truncated));
+    assert_eq!(dl(&maps, &Limits::new(usize::MAX, n)), Err(DecodeError::Truncated));
     // exactly as many as the bytes: every item a byte, nothing refused
     let mut exact = Vec::new();
     head(&mut exact, MAJOR_ARRAY, 1000);
@@ -814,5 +814,68 @@ proptest! {
         prop_assert!(matches!(d(&link_bytes(&l)), Ok(Value::Link(x)) if *x == l));
         let len = (n % 70_000) as usize;
         prop_assert_eq!(w(&|o| put_array(o, len)), encode(&Value::List(vec![Value::Int(0); len]))[..head_len(len as u64)].to_vec());
+    }
+}
+
+/// The heap bytes `v` holds, by its allocations' sizes (a decoded `Vec` has exactly its count's
+/// capacity): what `decode_charged` must charge at least.
+fn heap(v: &Value) -> usize {
+    use std::mem::size_of;
+    match v {
+        Value::Str(s) => s.capacity(),
+        Value::Bytes(b) => b.capacity(),
+        Value::Ticket(t) => size_of::<Ticket>() + heap(&t.boxed),
+        Value::Enum(_, Some(p)) => size_of::<Value>() + heap(p),
+        Value::Map(m) => m.len() * size_of::<(Value, Value)>() + m.iter().map(|(k, x)| heap(k) + heap(x)).sum::<usize>(),
+        Value::List(l) => l.capacity() * size_of::<Value>() + l.iter().map(heap).sum::<usize>(),
+        Value::Set(s) => s.len() * size_of::<Value>() + s.iter().map(heap).sum::<usize>(),
+        Value::Link(_) => size_of::<Link>(),
+        Value::Unknown(u) => size_of::<Unknown>() + u.content().as_bytes().len(),
+        _ => 0,
+    }
+}
+
+/// An array of `n` copies of the item `bytes`.
+fn array_of(n: usize, bytes: &[u8]) -> Vec<u8> {
+    let mut out = Vec::new();
+    osis_base::cbor::put_array(&mut out, n);
+    for _ in 0..n {
+        out.extend_from_slice(bytes);
+    }
+    out
+}
+
+// spec/wire.md §12 (notes/decode-bounds.md): a decode allocates no more than its `max_alloc`,
+// refused before allocating past it, whatever the shape; the cheapest shapes per byte (one-byte
+// unknown tags, one-byte items, empty containers, enums, links) and honest ones alike. `check`
+// refuses exactly where `decode` does.
+#[test]
+fn decode_allocates_within_its_bound_spec_wire_12() {
+    let link = encode(&Value::link(Link { hash: [1; 32], blob: BlobId([2; 32]), suite: 1, key: [3; 32], salt: [4; 16], del: osis_base::Del::NONE }));
+    let mut map = Vec::new();
+    osis_base::cbor::put_map(&mut map, 20);
+    for k in 0..20u8 {
+        map.extend_from_slice(&[k, 0x80]);
+    }
+    let shapes: Vec<(&str, Vec<u8>)> = vec![
+        ("unknown tags", array_of(1000, &[0xc6, 0x00])),
+        ("ints", array_of(1000, &[0x00])),
+        ("empty lists", array_of(1000, &[0x80])),
+        ("enums", array_of(500, &encode(&Value::Enum(0, Some(Box::new(Value::Int(0))))))),
+        ("links", array_of(100, &link)),
+        ("strings", array_of(100, &encode(&Value::Str("abcdefgh".into())))),
+        ("tickets", array_of(50, &encode(&ticket([9; 15], Role::Read, 1)))),
+        ("maps", array_of(50, &map)),
+        ("sets", array_of(50, &encode(&Value::Set((0..10).map(Value::Int).collect())))),
+        ("blob", encode(&Value::Bytes(vec![7; 5000]))),
+    ];
+    for (name, b) in shapes {
+        let (v, spent) = osis_base::decode_charged(&b, &Limits::DEFAULT).unwrap();
+        assert!(heap(&v) <= spent, "{name}: holds {} past its charge {spent}", heap(&v));
+        // every shape here stays within a few slots per byte
+        assert!(spent <= 56 * b.len(), "{name}: {spent} for {} bytes", b.len());
+        let tight = Limits::DEFAULT.alloc(spent);
+        assert_eq!(dl(&b, &tight), Ok(v), "{name}: at its charge");
+        assert_eq!(dl(&b, &tight.alloc(spent - 1)), Err(DecodeError::TooLarge), "{name}: below it");
     }
 }

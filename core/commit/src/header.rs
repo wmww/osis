@@ -8,11 +8,11 @@ use osis_base::format::{CHUNK_THRESHOLD, DELETE_ADMIN, DELETE_WRITER, FORMAT_VER
 use osis_base::{Ak, CommitId, Limits, Link, Reader, Tid, Ts, Value};
 use osis_crdt::DeltaKind;
 use osis_base::SIGNING_KEY_ED25519;
-use osis_crypto::{Domain, KemPublicKey, Signature, VerifyingKey};
+use osis_crypto::{Domain, KemPublicKey, Secret32, Signature, VerifyingKey};
 use osis_schema::{PurgeBy, Retention};
 
 /// Decoder limits of commit structures (spec/wire.md §12).
-pub(crate) const LIMITS: Limits = Limits { max_depth: MAX_OBJECT_DEPTH, max_bytes: MAX_BLOB };
+pub(crate) const LIMITS: Limits = Limits::new(MAX_OBJECT_DEPTH, MAX_BLOB);
 // `until` meaning forever (spec/wire.md §4).
 pub const FOREVER: u64 = osis_schema::FOREVER;
 
@@ -579,6 +579,31 @@ impl Header {
     }
 
     pub(crate) fn encode_into(&self, out: &mut Vec<u8>) {
+        self.encode_with(out, &|h, out, f| h.put_position(out, f));
+    }
+
+    /// The header's canonical bytes with each list `linked` names written empty and every other
+    /// as it sits inline: what the lists that go by link are keyed by (`list_secret`), the same
+    /// before they are written and once they are linked.
+    fn skeleton(&self, linked: &dyn Fn(ListField) -> bool) -> Vec<u8> {
+        let mut out = Vec::new();
+        self.encode_with(&mut out, &|h, out, f| if linked(f) { put_array(out, 0) } else { h.put_position(out, f) });
+        out
+    }
+
+    /// The key of this header's linked lists' content hashes (spec/wire.md §4 Inline or link):
+    /// `kdf("header list", actor dedup secret, skeleton)`. Two commits differing anywhere outside
+    /// their linked lists key them apart, so a list's blobs serve one commit only and what its
+    /// header costs a node to hold is what its author delivered for it (notes/decode-bounds.md).
+    pub fn list_secret(&self, actor_dedup: &Secret32) -> Secret32 {
+        self.list_secret_for(actor_dedup, &|f| self.links.get(f).is_some())
+    }
+
+    pub(crate) fn list_secret_for(&self, actor_dedup: &Secret32, linked: &dyn Fn(ListField) -> bool) -> Secret32 {
+        osis_crypto::kdf::kdf("header list", actor_dedup.expose(), &self.skeleton(linked))
+    }
+
+    fn encode_with(&self, out: &mut Vec<u8>, position: &dyn Fn(&Header, &mut Vec<u8>, ListField)) {
         // the own-cover marker is a trailing `true`, absent on every other header
         put_array(out, if self.own_cover { 18 } else { 17 });
         put_uint(out, FORMAT_VERSION);
@@ -588,12 +613,12 @@ impl Header {
         put_uint(out, self.ts.to_u64());
         self.form.put(out);
         put_opt(out, self.expires, put_uint);
-        self.put_position(out, ListField::Aspects);
-        self.put_position(out, ListField::Purge);
+        position(self, out, ListField::Aspects);
+        position(self, out, ListField::Purge);
         put_opt(out, self.undoes, |out, c| put_bytes(out, &c.0));
         put_bytes(out, &self.blind);
-        self.put_position(out, ListField::Keys);
-        self.put_position(out, ListField::Frontier);
+        position(self, out, ListField::Keys);
+        position(self, out, ListField::Frontier);
         put_opt(out, self.ephemeral, |out, c| put_uint(out, c as u64));
         put_opt(out, self.epoch, |out, c| put_bytes(out, &c.0));
         put_opt(out, self.rotation.as_ref(), |out, r| r.put(out));

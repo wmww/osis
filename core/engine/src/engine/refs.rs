@@ -107,7 +107,7 @@ impl TicketCounts {
     }
     fn decode(v: &[u8]) -> Result<TicketCounts> {
         let bad = || Error::Corrupt("ticket row");
-        let lim = osis_base::Limits { max_depth: osis_base::format::MAX_OBJECT_DEPTH, max_bytes: v.len() };
+        let lim = osis_base::Limits::new(osis_base::format::MAX_OBJECT_DEPTH, v.len());
         let Value::List(items) = osis_base::decode(v, &lim).map_err(|_| bad())? else { return Err(bad()) };
         let mut out = BTreeMap::new();
         for pair in items.chunks(2) {

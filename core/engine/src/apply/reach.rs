@@ -121,7 +121,7 @@ fn step(tx: &mut Tx<'_>, w: &mut Walk, link: Link, at: At, arrived: bool, stack:
 }
 
 fn links_of(bytes: &[u8], stack: &mut Vec<(Link, At)>) -> std::result::Result<(), osis_base::DecodeError> {
-    let limits = osis_base::Limits { max_depth: osis_base::format::MAX_OBJECT_DEPTH, max_bytes: bytes.len() };
+    let limits = osis_base::Limits::new(osis_base::format::MAX_OBJECT_DEPTH, bytes.len());
     osis_base::visit_links(bytes, &limits, &mut |l| stack.push((l, At::Linked)))
 }
 

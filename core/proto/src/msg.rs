@@ -493,7 +493,7 @@ impl Msg {
             Some((kind, id)) => Rejected { kind, id, read: true, error },
             None => Rejected { kind: 0, id: 0, read: false, error },
         };
-        let limits = Limits { max_depth: MAX_OBJECT_DEPTH, max_bytes: MAX_MESSAGE };
+        let limits = Limits::new(MAX_OBJECT_DEPTH, MAX_MESSAGE);
         let mut items = 0usize;
         cbor::visit_items(body, &limits, &mut |_, _, _| items += 1).map_err(|e| bad(e.into()))?;
         if items > MAX_MESSAGE_ITEMS {
@@ -518,7 +518,7 @@ struct Items(Cell<usize>);
 impl Items {
     /// `bytes` decoded at `depth`, once its items fit what is left.
     fn decode(&self, bytes: &[u8], depth: usize) -> Result<Value, Error> {
-        let limits = Limits { max_depth: depth, max_bytes: MAX_MESSAGE };
+        let limits = Limits::new(depth, MAX_MESSAGE);
         let mut n = 0usize;
         cbor::visit_items(bytes, &limits, &mut |_, _, _| n += 1)?;
         let left = self.0.get().checked_sub(n).ok_or(Error::Cap("message items"))?;

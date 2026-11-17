@@ -46,7 +46,7 @@ impl Hello {
         if body.len() + 4 > MAX_HELLO_FRAME {
             return Err(Error::Cap("hello"));
         }
-        let v = cbor::decode(body, &Limits { max_depth: 2, max_bytes: body.len() })?;
+        let v = cbor::decode(body, &Limits::new(2, body.len()))?;
         let mut f = Fields::exact(v, 4, "hello")?;
         match f.next()? {
             Value::Str(s) if s == "osis" => {}

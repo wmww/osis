@@ -40,7 +40,7 @@ use osis_crypto::NodeRng;
 use osis_crypto::kdf::{members_digest, pair_key, resume_tag, resumed_tag};
 use osis_engine::sync::J;
 use osis_blob::StepId;
-use osis_proto::filter::{beacon_value, decode_gcs, filter_width, pages};
+use osis_proto::filter::{Beacons, Run, beacon_value, count_gcs, filter_width, pages};
 use osis_proto::limits::{MAX_FILTER_ENTRIES, MAX_FILTER_WIDTH, MAX_MEMBERS, MAX_OFFER_ITEMS, MAX_RESUME_TAGS, MIN_FILTER_WIDTH, NO_RECORD_ID, REPLY_BUDGET};
 use osis_proto::{Code, Id, Msg, OfferItem, SharedItem};
 use std::collections::{BTreeMap, BTreeSet};
@@ -199,8 +199,9 @@ struct OwnFilter {
 struct PeerFilter {
     generation: u64,
     f: u8,
-    /// Sorted: up to `MAX_FILTER_ENTRIES`, held while a connection holds the record.
-    values: Arc<Vec<u64>>,
+    /// Up to `MAX_FILTER_ENTRIES` and as many added, held while a connection holds the record,
+    /// as coded (about what the peer sent: notes/decode-bounds.md).
+    values: Arc<Beacons>,
     /// Entries of its whole generation, and of the additions since (at most `whole` in all).
     whole: u64,
     added: u64,
@@ -265,7 +266,8 @@ struct PeerGen {
     f: u8,
     next_lo: u64,
     held_base: bool,
-    values: Vec<u64>,
+    /// The generation's entries so far, as coded.
+    values: Run,
 }
 
 #[derive(Clone, Debug, Default)]
@@ -632,6 +634,15 @@ impl Opens {
         self.conns.get(&conn).map(|c| c.named.clone()).unwrap_or_default()
     }
 
+    /// What `conn`'s peer's filter holds here, entries and heap bytes: its latest filter and the
+    /// generation arriving (notes/decode-bounds.md: about what the peer sent of them).
+    pub fn peer_filter_held(&self, conn: ConnId) -> (u64, usize) {
+        let Some(c) = self.conns.get(&conn) else { return (0, 0) };
+        let latest = c.rec.and_then(|r| self.records.get(&r)).and_then(|r| r.peer.as_ref()).map_or((0, 0), |p| (p.values.len(), p.values.bytes()));
+        let arriving = c.peer_gen.as_ref().map_or((0, 0), |g| (g.values.len(), g.values.bytes()));
+        (latest.0 + arriving.0, latest.1 + arriving.1)
+    }
+
     /// How many of the peer's filter generations have arrived through `conn`'s record: moves at
     /// each arrival (spec/sync-inbox.md §3: a refused Deposit item waits for the next).
     pub fn filter_arrivals(&self, conn: ConnId) -> u64 {
@@ -644,7 +655,7 @@ impl Opens {
     pub fn shows_deposit_key(&self, conn: ConnId, s: &SyncId, key: &[u8; 32]) -> bool {
         let Some(r) = self.conns.get(&conn).and_then(|c| c.rec).and_then(|r| self.records.get(&r)) else { return false };
         let Some(p) = &r.peer else { return false };
-        p.values.binary_search(&beacon_value(&beacon_of(key, s, &r.r), p.f)).is_ok()
+        p.values.contains(beacon_value(&beacon_of(key, s, &r.r), p.f))
     }
 
     /// Whether streams may Pull on `conn`: the digests matched or the peer's last Members page
@@ -1678,8 +1689,7 @@ impl Opens {
         let fresh = lo == 0;
         let fits = (MIN_FILTER_WIDTH..=MAX_FILTER_WIDTH).contains(&f) && hi <= end && lo < hi;
         let follows = c.peer_gen.as_ref().is_some_and(|p| p.generation == generation && p.f == f && p.base == base && p.next_lo == lo);
-        let values = decode_gcs(gcs, lo, hi);
-        if !fits || !(fresh || follows) || values.is_err() || (!more && hi != end) {
+        if !fits || !(fresh || follows) || count_gcs(gcs, lo, hi).is_err() || (!more && hi != end) {
             ctx.wire.answer(conn, id, Msg::Error { id, code: Code::MALFORMED });
             ctx.wire.close(conn, "a filter page breaking the format");
             return;
@@ -1693,22 +1703,25 @@ impl Opens {
                 return;
             }
             let held_base = base.is_none() || held.is_some();
-            c.peer_gen = Some(PeerGen { generation, base, f, next_lo: lo, held_base, values: Vec::new() });
+            c.peer_gen = Some(PeerGen { generation, base, f, next_lo: lo, held_base, values: Run::default() });
         }
         let Some(p) = c.peer_gen.as_mut() else { return };
         p.next_lo = hi;
-        if p.held_base {
-            p.values.extend(values.unwrap_or_default());
+        if p.held_base && p.values.extend_from_gcs(gcs, lo, hi).is_err() {
+            // checked above; pages come in ascending ranges (`follows`)
+            ctx.wire.answer(conn, id, Msg::Error { id, code: Code::MALFORMED });
+            ctx.wire.close(conn, "a filter page breaking the format");
+            return;
         }
         // spec/wire.md §11.2 Beacons: a whole filter of n entries is `filter_width(n)` wide (so
         // at most 2^(f-8) entries); additions bring at most the whole one's n in all.
-        let n = p.values.len() as u64;
+        let n = p.values.len();
         let cap = match (p.base, &r.peer) {
             (None, _) => MAX_FILTER_ENTRIES.min(1 << (f - MIN_FILTER_WIDTH)),
             (Some(_), Some(old)) => old.whole.saturating_sub(old.added),
             (Some(_), None) => 0,
         };
-        let narrow = !more && p.base.is_none() && filter_width(p.values.len()).max(MIN_FILTER_WIDTH) != f;
+        let narrow = !more && p.base.is_none() && filter_width(usize::try_from(n).unwrap_or(usize::MAX)).max(MIN_FILTER_WIDTH) != f;
         if p.held_base && (n > cap || narrow) {
             ctx.wire.answer(conn, id, Msg::Error { id, code: Code::MALFORMED });
             ctx.wire.close(conn, "a filter breaking its width or entry count");
@@ -1723,22 +1736,23 @@ impl Opens {
         if !p.held_base {
             return;
         }
-        let mut values = p.values;
-        values.sort_unstable();
-        let row = records::encode_values(&values);
+        let values = p.values;
+        // the generation's row: its run, as the filter's own coding (`encode_gcs`) of its values
+        let row = values.gcs().to_vec();
         let whole = match (&mut r.peer, p.base) {
             (Some(old), Some(_)) => {
                 old.generation = p.generation;
-                old.added += values.len() as u64;
-                let all = Arc::make_mut(&mut old.values);
-                all.extend(values);
-                all.sort_unstable();
+                old.added += values.len();
+                Arc::make_mut(&mut old.values).add(values);
                 old.arrived += 1;
                 false
             }
             _ => {
                 let arrived = r.peer.as_ref().map_or(0, |o| o.arrived) + 1;
-                r.peer = Some(PeerFilter { generation: p.generation, f: p.f, whole: values.len() as u64, added: 0, values: Arc::new(values), arrived });
+                let whole = values.len();
+                let mut all = Beacons::default();
+                all.add(values);
+                r.peer = Some(PeerFilter { generation: p.generation, f: p.f, whole, added: 0, values: Arc::new(all), arrived });
                 true
             }
         };
@@ -1827,7 +1841,7 @@ impl Opens {
                 let m = t.matched(&s);
                 let b = beacon_of(&m, &s, &rr);
                 self.work.beacons += 1;
-                if pf.values.binary_search(&beacon_value(&b, pf.f)).is_err() {
+                if !pf.values.contains(beacon_value(&b, pf.f)) {
                     continue;
                 }
                 let h = bind.hit(&m, &s, &b);

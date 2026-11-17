@@ -185,11 +185,15 @@ impl CommitBuilder {
         let mut list_blobs = Vec::new();
         // header-list chunks and tree nodes: the commit's level-2 key only (spec/wire.md §5)
         let list_keys: Vec<DeleteKey> = header.keys.iter().filter(|k| k.level == DELETE_AUTHOR).copied().collect();
-        for f in ListField::ALL {
-            let Some(bytes) = header.list_bytes(f) else { continue };
-            if bytes.len() <= CHUNK_THRESHOLD {
-                continue;
-            }
+        let lists: Vec<(ListField, Vec<u8>)> = ListField::ALL.into_iter().filter_map(|f| header.list_bytes(f).map(|b| (f, b))).filter(|(_, b)| b.len() > CHUNK_THRESHOLD).collect();
+        // keyed to this header alone, before any is linked (`Header::list_secret`)
+        let list_key = if lists.is_empty() {
+            None
+        } else {
+            let dedup = secrets.dedup(&self.actor).ok_or(Error::Build("dedup secret of the actor not supplied"))?;
+            Some(header.list_secret_for(&dedup, &|f| lists.iter().any(|(g, _)| *g == f)))
+        };
+        for (f, bytes) in lists {
             // its author's record is what a reader needs to resolve the list by: the aspect list
             // of a commit carrying it must be inline (spec/commits.md §2)
             if f == ListField::Aspects && header.aspects.iter().any(|a| a.tid == header.author && a.ak.as_str() == crate::retention::CREATED) {
@@ -199,7 +203,7 @@ impl CommitBuilder {
             if bytes.len() > MAX_LIST_BYTES {
                 return Err(Error::TooLarge("header list"));
             }
-            let dedup = secrets.dedup(&self.actor).ok_or(Error::Build("dedup secret of the actor not supplied"))?;
+            let Some(dedup) = &list_key else { continue };
             let mut written = Vec::new();
             let mut prefix = || {
                 let mut salt = [0u8; 16];
@@ -207,7 +211,7 @@ impl CommitBuilder {
                 Prefix { salt, thing: self.actor, expiry: header.expires, keys: list_keys.clone() }
             };
             let mut rec = Recording { sink: &mut *sink, written: &mut written };
-            let link = write_list(&bytes, &dedup, &mut rec, &mut prefix)?;
+            let link = write_list(&bytes, dedup, &mut rec, &mut prefix)?;
             list_blobs.extend(written);
             header.links.set(f, Some(link));
         }

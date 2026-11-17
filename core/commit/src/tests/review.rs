@@ -142,16 +142,16 @@ fn one_level_2_key() {
 
 /// Links `bytes` as list `f` of a header holding nothing else.
 fn linked_as(f: ListField, bytes: &[u8], d: &osis_crypto::Secret32, m: &mut MemoryBlobs) -> Header {
+    let mut h = sample_header();
+    (h.aspects, h.purge, h.keys, h.frontier) = (vec![], vec![], vec![], None);
     let mut salt = 0u64;
-    let link = write_list(bytes, d, m, &mut || {
+    let link = write_list(bytes, &h.list_secret_for(d, &|g| g == f), m, &mut || {
         salt += 1;
         let mut s = [0; 16];
         s[..8].copy_from_slice(&salt.to_be_bytes());
         Prefix { salt: s, thing: osis_base::Tid::from_bytes([0; 15]), expiry: None, keys: vec![] }
     })
     .unwrap();
-    let mut h = sample_header();
-    (h.aspects, h.purge, h.keys, h.frontier) = (vec![], vec![], vec![], None);
     h.links.set(f, Some(link));
     h
 }

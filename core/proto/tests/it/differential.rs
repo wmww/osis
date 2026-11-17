@@ -80,7 +80,7 @@ fn opt_of(v: &Value, f: impl Fn(&Value) -> R) -> R {
 fn canonical(v: &Value, max: usize) -> Result<Value, &'static str> {
     let Value::Bytes(x) = v else { return Err("embedded bytes") };
     ok(x.len() <= max, "embedded size")?;
-    let d = cbor::decode(x, &Limits { max_depth: 512, max_bytes: MAX_MESSAGE }).map_err(|_| "embedded cbor")?;
+    let d = cbor::decode(x, &Limits::new(512, MAX_MESSAGE)).map_err(|_| "embedded cbor")?;
     ok(cbor::encode(&d) == *x, "embedded canonical")?;
     Ok(d)
 }
@@ -278,9 +278,9 @@ fn records(v: &Value) -> R {
 
 /// `None` when the kind is unknown (answered 11): a separate outcome from malformed.
 fn spec_decode(body: &[u8]) -> Result<(), &'static str> {
-    let v = cbor::decode(body, &Limits { max_depth: 512, max_bytes: MAX_MESSAGE }).map_err(|_| "cbor")?;
+    let v = cbor::decode(body, &Limits::new(512, MAX_MESSAGE)).map_err(|_| "cbor")?;
     let mut items = 0usize;
-    cbor::visit_items(body, &Limits { max_depth: 512, max_bytes: MAX_MESSAGE }, &mut |_, _, _| items += 1).map_err(|_| "cbor")?;
+    cbor::visit_items(body, &Limits::new(512, MAX_MESSAGE), &mut |_, _, _| items += 1).map_err(|_| "cbor")?;
     ok(items <= 1 << 20, "items")?;
     let all = arr(&v)?;
     ok(all.len() >= 2, "head")?;
@@ -468,7 +468,7 @@ fn mutate_embedded(v: &mut Value, r: &mut Rng) {
                     here.pop();
                 }
             }
-            Value::Bytes(b) if b.len() > 40 && cbor::decode(b, &Limits { max_depth: 512, max_bytes: MAX_MESSAGE }).is_ok_and(|d| matches!(d, Value::List(_))) => out.push(here.clone()),
+            Value::Bytes(b) if b.len() > 40 && cbor::decode(b, &Limits::new(512, MAX_MESSAGE)).is_ok_and(|d| matches!(d, Value::List(_))) => out.push(here.clone()),
             _ => {}
         }
     }
@@ -484,7 +484,7 @@ fn mutate_embedded(v: &mut Value, r: &mut Rng) {
         at = &mut l[*i];
     }
     let Value::Bytes(bytes) = at else { return };
-    let Ok(mut inner) = cbor::decode(bytes, &Limits { max_depth: 512, max_bytes: MAX_MESSAGE }) else { return };
+    let Ok(mut inner) = cbor::decode(bytes, &Limits::new(512, MAX_MESSAGE)) else { return };
     let mut k = r.below(nodes(&inner));
     mutate(&mut inner, &mut k, r);
     *bytes = cbor::encode(&inner);

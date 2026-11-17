@@ -136,7 +136,7 @@ fn reader_agrees(h: &Header, f: ListField, bytes: &[u8]) -> Result<(), TestCaseE
     if x.read_list(f, bytes, false).is_err() {
         return Ok(());
     }
-    let v = osis_base::decode(bytes, &osis_base::Limits { max_depth: osis_base::format::MAX_OBJECT_DEPTH, max_bytes: bytes.len() });
+    let v = osis_base::decode(bytes, &osis_base::Limits::new(osis_base::format::MAX_OBJECT_DEPTH, bytes.len()));
     prop_assert!(v.is_ok(), "{f:?} {bytes:02x?}: {v:?}");
     prop_assert_eq!(osis_base::encode(&v.unwrap()), bytes);
     prop_assert_eq!(x.list_bytes(f).unwrap(), bytes, "{:?}", f);
@@ -163,7 +163,7 @@ proptest! {
             }
             let e = edited(&node, s);
             if let Ok((level, kids)) = tree::parse_node(&e) {
-                prop_assert!(osis_base::decode(&e, &osis_base::Limits { max_depth: 6, max_bytes: e.len() }).is_ok(), "{:02x?}", e);
+                prop_assert!(osis_base::decode(&e, &osis_base::Limits::new(6, e.len())).is_ok(), "{:02x?}", e);
                 prop_assert_eq!(tree::node_plaintext(level, &kids).unwrap(), e);
             }
         }

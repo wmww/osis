@@ -39,7 +39,7 @@ fn pack(prefix: &str, v: &Value) -> String {
 fn unpack(s: &str, prefix: &str) -> Result<Vec<Value>> {
     let bad = || Error::Invalid("malformed pairing message".into());
     let b = s.strip_prefix(prefix).and_then(base64url::decode).ok_or_else(bad)?;
-    match decode(&b, &Limits { max_depth: 8, max_bytes: b.len() }).map_err(|_| bad())? {
+    match decode(&b, &Limits::new(8, b.len())).map_err(|_| bad())? {
         Value::List(items) if items.first() == Some(&Value::Int(1)) => Ok(items),
         _ => Err(bad()),
     }

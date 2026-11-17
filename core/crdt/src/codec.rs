@@ -16,7 +16,7 @@ use osis_base::format::{MAX_BLOB, MAX_OBJECT_DEPTH, MAX_VALUE_DEPTH};
 use osis_base::{CanonicalBytes, Limits, Link, PageCutter, Value};
 use std::collections::{BTreeMap, BTreeSet};
 
-pub(crate) const LIMITS: Limits = Limits { max_depth: MAX_OBJECT_DEPTH, max_bytes: MAX_BLOB };
+pub(crate) const LIMITS: Limits = Limits::new(MAX_OBJECT_DEPTH, MAX_BLOB);
 
 // ---- encode
 

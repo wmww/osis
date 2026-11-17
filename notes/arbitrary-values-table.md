@@ -122,6 +122,7 @@ Each only made a bug unlikely (class X); the code ends by a fixpoint, a window o
 | `INCARNATIONS_KEPT` 4096 (`store/nodelog.rs`) | R (oldest evicted: a cursor on an evicted incarnation is no cursor, one listing for that peer) | every cursor before an appending start no cursor, a listing per peer / disk grows with appending starts |
 | store `PAGE` 256 (`store/store.rs`: rows a node-log sweep or forget scan handles per call) | P (only how the work is split into transactions) | no progress / one transaction holds the whole sweep |
 | `P` 8 (filter's false-positive bits) | P | every own credential a refused 32 B Hit / 32-byte beacons sent whole; both correct |
+| `STRIDE` 64 (`proto/filter.rs`: entries between index points of a held peer filter's run) | P (a lookup decodes at most this many; the index costs 16 B per this many) | an index point per entry, more than a plain array / a scan per lookup; both correct |
 | whole-filter re-send at doubling (additions up to n of the whole) | P (receiver enforces the same limit) | re-send each change / false positives grow only |
 | `RECORD_BUDGET` 256 MiB (`store/record.rs`) | R (evict least recently used record not in use; a filter that does not fit is tested and not stored) | every connection a first contact / disk |
 
@@ -162,7 +163,7 @@ Each only made a bug unlikely (class X); the code ends by a fixpoint, a window o
 | pages run expansion `1 << 20` | R (corrupt local row) | |
 | `MAX_REUSE` 16 GiB (`engine/large.rs`) | P | |
 | `MAX_LIST_BYTES` 64 MiB (format) | R (Tess's decision; past it an author's commit fails `TooLarge` and every receiver refuses it as bad input, so a demotion's frontier over about 1.9×10^6 IDs waits for frontier heads) | lists inline only / a hostile header holds unbounded memory |
-| `MAX_READ` 1 GiB (`engine/large.rs`) | R (sign-off; larger values stream only) | |
+| `MAX_READ` 1 GiB (`engine/large.rs`) | R (sign-off; larger values stream only; bounds canonical bytes and as much again decoded, notes/decode-bounds.md) | |
 | `ENTRY_CHARGE` 1024, `FACTOR` 2 (`retention/compact.rs`, the trigger for durable and ephemeral aspects), `MAX_DELIVERED` 2^16 (`ephemeral/signal.rs`) | P/R (commented) | |
 | `QUIET_MS` = `MAX_DRIFT_MS` (`retention/compact.rs`: how long an aspect holding a leftover stays quiet before a writer covers it whatever `FACTOR` says) | O (reuses `MAX_DRIFT`; notes/engine-retention-trigger.md Cover once quiet) | one whole-aspect snapshot per expiry per writer (a collection of expiring elements pays its whole state per element) / a node that missed an expired write reads differently for good |
 | `PART_OVERHEAD` 2048 (`apply/memory.rs`, node cap charge per held part) | R, measured estimate (commented; `memory::eph_decoded_memory`) | |

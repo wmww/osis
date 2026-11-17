@@ -227,7 +227,7 @@ fn page_row(r: &Range, p: &Fragment) -> Result<Vec<u8>> {
 }
 
 fn parse_page_row(b: &[u8]) -> Result<(Range, Fragment)> {
-    let lim = osis_base::Limits { max_depth: osis_base::format::MAX_OBJECT_DEPTH, max_bytes: b.len() };
+    let lim = osis_base::Limits::new(osis_base::format::MAX_OBJECT_DEPTH, b.len());
     let v = osis_base::decode(b, &lim).map_err(|_| Error::Corrupt("state page"))?;
     let Value::List(items) = v else { return Err(Error::Corrupt("state page")) };
     let [lo, hi, Value::Bytes(p)] = items.as_slice() else { return Err(Error::Corrupt("state page")) };
@@ -265,7 +265,7 @@ fn key_row(set: &PageSet, k: &Value, d: Option<&Dot>) -> Vec<u8> {
 /// Opens a paged state: its skeleton and index, no page loaded yet.
 pub fn open(unit_state: &[u8], salt: &[u8; 32]) -> Result<(Fragment, StatePages)> {
     let bad = || Error::Corrupt("state");
-    let lim = osis_base::Limits { max_depth: osis_base::format::MAX_OBJECT_DEPTH, max_bytes: unit_state.len() };
+    let lim = osis_base::Limits::new(osis_base::format::MAX_OBJECT_DEPTH, unit_state.len());
     let v = osis_base::decode(unit_state, &lim).map_err(|_| bad())?;
     let Value::List(items) = v else { return Err(bad()) };
     let [Value::Int(t), Value::Bytes(skel), Value::List(list)] = items.as_slice() else { return Err(bad()) };
@@ -475,7 +475,7 @@ fn key_dots(txn: &mut Transaction<'_>, tid: &Tid, ak: &Ak, set: &PageSet, k: &Va
     let mut out = Vec::new();
     scan_table(txn, t, &start, Some(&end), |key, _| {
         let Some(tail) = key.get(start.len()..) else { return Ok(()) };
-        let lim = osis_base::Limits { max_depth: 8, max_bytes: tail.len() };
+        let lim = osis_base::Limits::new(8, tail.len());
         let v = osis_base::decode(tail, &lim).map_err(|_| Error::Corrupt("state key index"))?;
         out.push(dot_of(&v)?);
         Ok(())
@@ -710,7 +710,7 @@ fn dot_at(srcs: &[osis_crdt::Source], v: &Value) -> Option<Dot> {
 }
 
 fn decode_row(b: &[u8]) -> Option<Vec<Value>> {
-    let lim = osis_base::Limits { max_depth: osis_base::format::MAX_OBJECT_DEPTH, max_bytes: b.len() };
+    let lim = osis_base::Limits::new(osis_base::format::MAX_OBJECT_DEPTH, b.len());
     match osis_base::decode(b, &lim).ok()? {
         Value::List(x) => Some(x),
         _ => None,

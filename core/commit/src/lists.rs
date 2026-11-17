@@ -82,13 +82,14 @@ impl LinkSource for ListSource<'_> {
     }
 }
 
-/// Writes the chunk tree of a header list's bytes and returns its root link (empty input: one
-/// empty chunk). `prefix` gives each blob's prefix inputs (a fresh salt each call).
+/// Writes the chunk tree of a header list's bytes keyed by `dedup` (its header's `list_secret`)
+/// and returns its root link (empty input: one empty chunk). `prefix` gives each blob's prefix inputs (a fresh salt each call).
 pub(crate) fn write_list(bytes: &[u8], dedup: &Secret32, sink: &mut dyn BlobSink, prefix: &mut dyn FnMut() -> Prefix) -> Result<Link, Error> {
     tree::write_tree(&mut ListSink { dedup, sink, prefix }, ChunkParams::FORMAT, bytes)
 }
 
-/// Reads the bytes of a header list's chunk tree under `root`, checking every content hash. A
+/// Reads the bytes of a header list's chunk tree under `root`, keyed by `key` (its header's
+/// `list_secret`), checking every content hash. A
 /// non-final chunk below `CHUNK_MIN` is bad input; output above `max` bytes is refused
 /// (`TooLarge`), which also bounds the chunks visited.
 pub fn read_list(root: &Link, dedup: &Secret32, src: &mut dyn BlobSource, max: usize) -> Result<Vec<u8>, Error> {
@@ -96,15 +97,17 @@ pub fn read_list(root: &Link, dedup: &Secret32, src: &mut dyn BlobSource, max: u
 }
 
 impl Header {
-    /// Fetches and fills every linked list, keyed by the dedup secret of the header's `actor`.
-    /// A linked list at or below `CHUNK_THRESHOLD` or above `MAX_LIST_BYTES` is bad input.
+    /// Fetches and fills every linked list, keyed by `list_secret` of the dedup secret of the
+    /// header's `actor`. A linked list at or below `CHUNK_THRESHOLD` or above `MAX_LIST_BYTES` is
+    /// bad input.
     pub fn resolve(&mut self, src: &mut dyn BlobSource, actor_dedup: &Secret32) -> Result<(), Error> {
+        let key = self.list_secret(actor_dedup);
         for f in ListField::ALL {
             let Some(link) = self.links.get(f).copied() else { continue };
             if !self.list_is_empty(f) {
                 continue;
             }
-            let bytes = read_list(&link, actor_dedup, src, MAX_LIST_BYTES).map_err(|e| match e {
+            let bytes = read_list(&link, &key, src, MAX_LIST_BYTES).map_err(|e| match e {
                 Error::TooLarge(_) => Error::Invalid("linked list above MAX_LIST_BYTES"),
                 e => e,
             })?;

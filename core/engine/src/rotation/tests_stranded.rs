@@ -86,7 +86,7 @@ fn holder_keys_take_no_edge_write_off_the_chain_spec_permissions_4() {
     lp.sync_all().unwrap();
     let p1 = lp.peers[1].engine.me();
     let c = lp.peers[2].engine.grant(&x, &p1, &edge(Role::Read)).unwrap().commits[0];
-    let limits = osis_base::Limits { max_depth: osis_base::format::MAX_OBJECT_DEPTH, max_bytes: osis_base::format::MAX_BLOB };
+    let limits = osis_base::Limits::new(osis_base::format::MAX_OBJECT_DEPTH, osis_base::format::MAX_BLOB);
     let v = osis_base::decode(&lp.peers[2].engine.run(|tx| tx.get_commit(&c)).unwrap().unwrap().encode(), &limits).unwrap();
     let keys = osis_blob::HolderKeys { commits: vec![v], records: Vec::new() };
     assert_eq!(lp.peers[0].engine.take_holder_keys(&t, &keys).unwrap(), 0);

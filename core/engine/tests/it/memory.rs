@@ -182,7 +182,7 @@ fn encode_packages(pks: &[osis_engine::local_peer::Package]) -> Vec<u8> {
 }
 
 fn decode_packages(bytes: &[u8]) -> Vec<osis_engine::local_peer::Package> {
-    let lim = osis_base::Limits { max_depth: 8, max_bytes: bytes.len() };
+    let lim = osis_base::Limits::new(8, bytes.len());
     let bytes_of = |v: &Value| match v {
         Value::Bytes(x) => x.clone(),
         _ => panic!("package file"),
@@ -230,7 +230,7 @@ fn big_map_apply_memory() {
         let bytes = std::fs::read(&file).unwrap();
         let mut pks = decode_packages(&bytes);
         let (target, t) = (pks.pop().unwrap(), pks.pop().unwrap());
-        let Value::List(t) = osis_base::decode(&t.bytes, &osis_base::Limits { max_depth: 4, max_bytes: t.bytes.len() }).unwrap() else { panic!() };
+        let Value::List(t) = osis_base::decode(&t.bytes, &osis_base::Limits::new(4, t.bytes.len())).unwrap() else { panic!() };
         let (Value::Weak(t), Value::Int(now)) = (&t[0], &t[1]) else { panic!() };
         let mut p = osis_engine::local_peer::Peer::new(5, WallMs(*now as u64)).unwrap();
         for pk in &pks {

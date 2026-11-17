@@ -200,7 +200,7 @@ impl Engine {
         if blob.parts.iter().any(|p| blob.header.aspects.get(p.ai).is_none_or(|a| !aks.contains(&a.ak.as_str()))) || things.is_empty() || (read && !things.iter().all(|t| ours(self, t))) {
             return Ok(());
         }
-        let limits = osis_base::Limits { max_depth: osis_base::format::MAX_OBJECT_DEPTH, max_bytes: osis_base::format::MAX_BLOB };
+        let limits = osis_base::Limits::new(osis_base::format::MAX_OBJECT_DEPTH, osis_base::format::MAX_BLOB);
         let records: Vec<osis_base::CreationRecord> = bytes(2).iter().filter_map(|b| osis_base::decode(b, &limits).ok()).filter_map(|v| osis_base::CreationRecord::from_value(&v)).filter(|r| self.core.created(&r.tid()).is_none()).collect();
         if !records.is_empty() {
             self.learn_records(records)?;
@@ -301,7 +301,7 @@ impl OwedFire {
     }
     fn decode(b: &[u8]) -> Result<OwedFire> {
         let bad = || Error::Corrupt("owed fire");
-        let v = osis_base::decode(b, &osis_base::Limits { max_depth: osis_base::format::MAX_OBJECT_DEPTH, max_bytes: b.len() }).map_err(|_| bad())?;
+        let v = osis_base::decode(b, &osis_base::Limits::new(osis_base::format::MAX_OBJECT_DEPTH, b.len())).map_err(|_| bad())?;
         let Value::List(f) = v else { return Err(bad()) };
         let [Value::Bytes(t), Value::Str(ak), what, Value::List(to), Value::List(c)] = f.as_slice() else { return Err(bad()) };
         let what = Fire::from_value(what).ok_or_else(bad)?;
@@ -471,7 +471,7 @@ impl Engine {
         let seed = self.run(|tx| Ok(osis_crypto::Secret32::random(&mut *tx.rng)))?;
         let mut rng = osis_crypto::SeededRng::from_seed(*seed.expose());
         let prefix = osis_blob::Prefix::for_delete_keys(osis_blob::Prefix::random_salt(&mut rng), &h.blind, osis_commit::prefix_expiry(h, &ais).map(osis_base::WallMs), &groups)?;
-        let commit = osis_base::decode(&blob.encode(), &osis_base::Limits { max_depth: osis_base::format::MAX_OBJECT_DEPTH, max_bytes: osis_base::format::MAX_BLOB }).map_err(|_| Error::Corrupt("commit blob"))?;
+        let commit = osis_base::decode(&blob.encode(), &osis_base::Limits::new(osis_base::format::MAX_OBJECT_DEPTH, osis_base::format::MAX_BLOB)).map_err(|_| Error::Corrupt("commit blob"))?;
         let fire = osis_blob::SealedFire { commit, chain, records };
         let sealed = osis_blob::seal_fire(&prefix, &o.thing, &epoch, &kem, &fire, &mut rng)?;
         Ok(Some(SealedFireOut { sync_id, thing: o.thing, to: o.to.clone(), blob: sealed }))

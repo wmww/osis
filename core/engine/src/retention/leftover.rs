@@ -30,7 +30,7 @@ impl Leftover {
 
     fn decode(b: &[u8]) -> Result<Leftover> {
         let bad = || Error::Corrupt("leftover");
-        let v = osis_base::decode(b, &osis_base::Limits { max_depth: osis_base::format::MAX_OBJECT_DEPTH, max_bytes: osis_base::format::MAX_BLOB }).map_err(|_| bad())?;
+        let v = osis_base::decode(b, &osis_base::Limits::new(osis_base::format::MAX_OBJECT_DEPTH, osis_base::format::MAX_BLOB)).map_err(|_| bad())?;
         let Value::List(items) = &v else { return Err(bad()) };
         let (gives, body) = match items.as_slice() {
             [Value::Int(0), Value::Bytes(b)] => (None, b),

@@ -1,5 +1,5 @@
 # Durable deltas decode with no memory bound
-> Summary: Tess's decision B (per-blob item cap `MAX_PAGE_ITEMS`, then verify and join page by page) is built through step 5: a 10^6-key map's commit or snapshot applies in 0.23-0.35 GB. Left: the writer holds the delta whole (2.2 GB, the op API), its snapshot loads, clones and copy-indexes the whole state (2.3 GB), `covered` holds the body and the snapshot's part at it (3.5 GB at a 10^6-key body), and step 6 (root tables paged, a format change).
+> Summary: Tess's decision B (per-blob item cap `MAX_PAGE_ITEMS`, then verify and join page by page) is built through step 5: a 10^6-key map's commit or snapshot applies in 0.23-0.35 GB. Left: a reader loads an aspect's state whole before its read limit refuses it, the writer holds the delta whole (2.2 GB, the op API), its snapshot loads, clones and copy-indexes the whole state (2.3 GB), `covered` holds the body and the snapshot's part at it (3.5 GB at a 10^6-key body), and step 6 (root tables paged, a format change).
 > Priority: low
 > Tags: security, crdt, engine
 
@@ -19,5 +19,7 @@ Commit / snapshot with pages 21 / 22 MB. Write 2.2 GB, 135 s (snapshot 2.3 GB, 2
 
 - **Snapshot root tables**: they do not always fit. Measured per absorbed commit with surviving stamps: session form 8 B and 4 items (`Commits` entry), so about 10^6 commits fill `MAX_BLOB`; commit form (role commits, multi-node key actors) 107 B (`Sources` 33, `Absorbed` 54, `Commits` 6) and 12 items, about 78 000 commits. An aspect past that cannot be snapshotted (the builder refuses a delta over `MAX_BLOB`). `MAX_PAGE_ITEMS` does not count these tables (bounded by `MAX_BLOB`, decoded into small records).
 
-## Store transaction memory
-- **Store transaction memory**: bounded already. The osis pager keeps a transaction's dirty units and blobs in memory up to `StoreConfig::spill_bytes` (16 MiB), then writes them early as journal rows (each spill one backend commit); only about 48 B per unit written stays. Under the file backend each backend commit is one redb write transaction; redb 2.6 keeps its dirty pages in a write buffer capped at a tenth of its cache (default cache 1 GiB, so about 100 MiB) and writes the rest to the file before commit. Aside: osis opens redb with the default 1 GiB cache, 90% of it a read cache that a large store fills (resident memory); worth a config decision.
+## Left whole at a reader
+- A read of an aspect (`Reader::raw`, `Engine::get`) loads its state whole before the read limit refuses it (osis `materialize` checks the size after): a 10^6-key map costs about 1.9 GB to be told `TooLarge`. Linked values inside it are bounded by the limit (notes/decode-bounds.md); the state itself needs a size known before loading (the page index's lengths) or a paged read.
+
+Store transaction memory is bounded already (the pager spills past `StoreConfig::spill_bytes`, 16 MiB).

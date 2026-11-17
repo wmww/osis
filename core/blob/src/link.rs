@@ -45,7 +45,7 @@ const MAX_URLS: usize = 4;
 const FORMAT: i64 = 1;
 const LINK_PREFIX: &str = "osis://link/";
 /// Far above the largest layout the caps allow.
-const LIMITS: Limits = Limits { max_depth: 8, max_bytes: 16 * 1024 };
+const LIMITS: Limits = Limits::new(8, 16 * 1024);
 
 /// `Link := [1, seed, target, k, k_sync_id, [peer*], ? flags]` (spec/wire.md §10).
 #[derive(Clone, Debug, PartialEq, Eq)]

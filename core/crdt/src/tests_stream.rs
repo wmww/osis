@@ -690,7 +690,12 @@ fn stream_memory_big_map() {
     for name in ["delta", "snapshot"] {
         assert!(peaks[&("stream", name)] * 3 < peaks[&("whole", name)], "{peaks:?}");
     }
-    assert!(peaks[&("encode-new", "delta")] * 3 < peaks[&("encode-old", "delta")], "{peaks:?}");
+    // the encoder's output (its pages, kept by the sink) is most of either encoder's peak, so
+    // the streaming one is held to that output and a few pages beyond it, and below the old
+    let out_kib = (pages.pages.iter().map(Vec::len).sum::<usize>() + delta.len()) as u64 / 1024;
+    let slack = 4 * osis_base::format::CHUNK_MAX as u64 / 1024;
+    assert!(peaks[&("encode-new", "delta")] <= out_kib + slack, "output {out_kib} KiB: {peaks:?}");
+    assert!(peaks[&("encode-new", "delta")] < peaks[&("encode-old", "delta")], "{peaks:?}");
     let _ = std::fs::remove_dir_all(&dir);
 }
 

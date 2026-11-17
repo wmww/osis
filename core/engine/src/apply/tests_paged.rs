@@ -805,7 +805,7 @@ fn unknown_encoding(p: &mut Vec<u8>) {
             _ => false,
         }
     }
-    let lim = osis_base::Limits { max_depth: 64, max_bytes: p.len() };
+    let lim = osis_base::Limits::new(64, p.len());
     let mut v = osis_base::decode(p, &lim).unwrap();
     assert!(walk(&mut v), "no register in the page");
     *p = osis_base::encode(&v);

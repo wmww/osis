@@ -67,7 +67,7 @@ pub fn genesis_sync_id(admin: &Secret32) -> SyncId {
 }
 
 /// Limits for steps, claim sets and the structures holding them (spec/wire.md §12).
-pub(crate) const OBJECT_LIMITS: Limits = Limits { max_depth: MAX_OBJECT_DEPTH, max_bytes: MAX_MESSAGE };
+pub(crate) const OBJECT_LIMITS: Limits = Limits::new(MAX_OBJECT_DEPTH, MAX_MESSAGE);
 
 /// Largest encoded claim set with its entry boxes, so a step and its set fit one message
 /// (spec/wire.md §12).

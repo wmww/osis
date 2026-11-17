@@ -239,7 +239,7 @@ fn whole_part(ak: &str) -> bool {
 
 /// Commit ID of a blob whose header this build cannot decode: BLAKE3 of the header value.
 fn raw_id(bytes: &[u8]) -> Result<CommitId> {
-    let lim = osis_base::Limits { max_depth: osis_base::format::MAX_OBJECT_DEPTH, max_bytes: bytes.len() };
+    let lim = osis_base::Limits::new(osis_base::format::MAX_OBJECT_DEPTH, bytes.len());
     let v = osis_base::decode(bytes, &lim).map_err(|_| Error::BadInput("commit blob"))?;
     let Value::List(items) = v else { return Err(Error::BadInput("commit blob")) };
     let h = items.first().ok_or(Error::BadInput("commit blob"))?;
@@ -1844,7 +1844,7 @@ pub(crate) fn load(tx: &mut Tx<'_>, rebuild: bool) -> Result<Option<Vec<(Tid, os
     crate::sides::load(tx)?;
     let mut created = Vec::new();
     tx.scan(records::CREATED, |_, v| {
-        let lim = osis_base::Limits { max_depth: 8, max_bytes: v.len() };
+        let lim = osis_base::Limits::new(8, v.len());
         created.push(osis_base::decode(&v, &lim).ok().and_then(|v| CreationRecord::from_value(&v)).ok_or(Error::Corrupt("creation record"))?);
         Ok(())
     })?;

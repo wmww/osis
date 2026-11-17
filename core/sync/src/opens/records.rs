@@ -12,7 +12,6 @@ use crate::store::rows::tag::{FILTER, MEMBER, OPENS, WALK};
 use crate::types::{Credential, RecordId, SourceClass};
 use osis_base::SyncId;
 use osis_crypto::Epoch;
-use osis_proto::filter::{decode_gcs, encode_gcs};
 use osis_store::{Error, Transaction};
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -167,11 +166,6 @@ fn decode_member(v: &[u8]) -> Res<(Member, Option<[u8; 32]>)> {
     Ok((Member { class, own, by, until }, basis))
 }
 
-/// A generation's values as its row holds them (the filter's own coding).
-pub(super) fn encode_values(values: &[u64]) -> Vec<u8> {
-    encode_gcs(values, 0)
-}
-
 /// Record `id` as its rows hold it: none once it is gone. O(its members and its filter's
 /// entries): what a connection taking it needs.
 pub(super) fn load(t: &mut Transaction<'_>, id: &RecordId) -> Res<Option<Record>> {
@@ -192,11 +186,12 @@ pub(super) fn load(t: &mut Transaction<'_>, id: &RecordId) -> Res<Option<Record>
     }
     if let Some(p) = r.peer.as_mut() {
         let end = 1u64.checked_shl(u32::from(p.f)).unwrap_or(u64::MAX);
-        let mut values = Vec::new();
+        let mut values = osis_proto::filter::Beacons::default();
         for (_, v) in t.record_wide_rows(id, FILTER)? {
-            values.extend(decode_gcs(&v, 0, end).map_err(|_| corrupt())?);
+            let mut run = osis_proto::filter::Run::default();
+            run.extend_from_gcs(&v, 0, end).map_err(|_| corrupt())?;
+            values.add(run);
         }
-        values.sort_unstable();
         p.values = std::sync::Arc::new(values);
     }
     for (s, _, v) in t.record_tag_rows(id, MEMBER)? {

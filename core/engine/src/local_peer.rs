@@ -344,7 +344,7 @@ impl Engine {
         if let Some(h) = self.header(id) {
             let links: Vec<Link> = osis_commit::ListField::ALL.iter().filter_map(|f| h.links.get(*f).copied()).collect();
             for l in links {
-                self.tree_blobs(&l, &h.actor, &mut ids)?;
+                self.tree_blobs(&l, &h, &mut ids)?;
             }
         }
         Ok(ids.into_iter().filter(|b| self.has_blob(b)).collect())
@@ -399,7 +399,9 @@ impl Engine {
         Ok(out)
     }
 
-    pub(crate) fn tree_blobs(&mut self, root: &Link, actor: &osis_base::Tid, out: &mut BTreeSet<BlobId>) -> Result<()> {
+    /// The blobs of linked list `root` of header `h` this node holds (keyed by `h`'s
+    /// `list_secret`).
+    pub(crate) fn tree_blobs(&mut self, root: &Link, h: &osis_commit::Header, out: &mut BTreeSet<BlobId>) -> Result<()> {
         struct Rec<'e> {
             e: &'e mut Engine,
             seen: Vec<BlobId>,
@@ -412,9 +414,10 @@ impl Engine {
                 Ok(pt)
             }
         }
-        let Some(dedup) = self.core.dedup(actor) else { return Ok(()) };
+        let Some(dedup) = self.core.dedup(&h.actor) else { return Ok(()) };
+        let key = h.list_secret(&dedup);
         let mut r = Rec { e: self, seen: Vec::new() };
-        let _ = osis_commit::read_list(root, &dedup, &mut r, osis_commit::MAX_LIST_BYTES);
+        let _ = osis_commit::read_list(root, &key, &mut r, osis_commit::MAX_LIST_BYTES);
         out.extend(r.seen);
         Ok(())
     }

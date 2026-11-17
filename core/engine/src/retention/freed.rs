@@ -81,7 +81,7 @@ impl Freed {
         let author = r.tid()?;
         let blind = r.arr()?;
         let rest = r.rest();
-        let Ok(Value::Link(link)) = osis_base::decode(rest, &osis_base::Limits { max_depth: 8, max_bytes: rest.len() }) else { return Err(Error::Corrupt("freed link")) };
+        let Ok(Value::Link(link)) = osis_base::decode(rest, &osis_base::Limits::new(8, rest.len())) else { return Err(Error::Corrupt("freed link")) };
         Ok(Freed { tid, link: *link, author, blind, leaf: flags & 1 != 0, judged: flags & 2 != 0, borne: flags & 4 != 0, memory: flags & 8 != 0 })
     }
 }
