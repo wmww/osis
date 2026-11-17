@@ -834,11 +834,22 @@ fn make_leftover(tx: &mut Tx<'_>, c: &CommitId, ai: usize, o: &[Owned], extra: &
         return Ok(Some(k));
     };
     let mut at = (in_place && !snapshot::carried_meets(tx.core, &a.tid, &a.ak, o)).then(|| body.clone());
+    // a fire has no state to strip: its references go with its values, O(the fire)
+    let mut fire_refs = (a.ak.signal() && m.valid_at(ai) && crate::engine::refs::indexed(&a.ak)).then(crate::engine::refs::Delta::default);
+    if let Some(d) = &mut fire_refs {
+        d.add(&body, -1);
+    }
     strip_leftover(tx.core, &m.header, ai, &mut body);
+    if let Some(d) = &mut fire_refs {
+        d.add(&body, 1);
+    }
     if let Some(at) = &mut at {
         at.join(body.clone());
     }
     put_leftover(tx, c, ai, m, body, gives)?;
+    if let Some(d) = fire_refs {
+        crate::engine::refs::note(tx, &a.tid, &a.ak, Some(c), d)?;
+    }
     match at {
         // an expiry: the state stripped in place, the delta's body and leftover saying where
         Some(at) => crate::apply::strip_state(tx, &a.tid, &a.ak, &at, o)?,

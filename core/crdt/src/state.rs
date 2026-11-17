@@ -593,27 +593,52 @@ impl Fragment {
     /// Calls `f` on every value this fragment holds as written where a read looks: register
     /// values, set elements, list items' content, and the keys of map records holding their
     /// creation, at a position written in several encodings its chosen slot's alone (§7 Read; a
-    /// value-less write holds none; text chars and bag numbers are not values).
+    /// value-less write holds none; text chars and bag numbers are not values). What a body holds
+    /// as written: its writes into another's entry included.
     pub fn each_value(&self, f: &mut dyn FnMut(&Value)) {
-        self.values_with(false, f);
+        self.values_with(Values::Written, f);
     }
 
-    /// `values` (`all`) or `each_value`: bag contributions, the keys of map records without
-    /// their creation and the slots a read does not choose count only for the former.
-    pub(crate) fn values_with(&self, all: bool, f: &mut dyn FnMut(&Value)) {
+    /// `each_value` of what a read shows (§5): of a map, each key whose live records' join reads
+    /// (§5.6), so a record a removal or a later shape at its key hides holds none; of an enum, the
+    /// live case's payload alone (§5.4), so one under a reset case holds none; of a list, its
+    /// visible elements (§5.7). O(`each_value`)
+    /// plus the joins of same-key records.
+    pub fn each_read_value(&self, f: &mut dyn FnMut(&Value)) {
+        self.values_with(Values::Read, f);
+    }
+
+    /// `values` (`All`), `each_value` (`Written`) or `each_read_value` (`Read`): bag
+    /// contributions, the keys of map records without their creation and the slots a read does
+    /// not choose count only for `All`; hidden map records and enum payloads not for `Read`.
+    pub(crate) fn values_with(&self, mode: Values, f: &mut dyn FnMut(&Value)) {
+        let all = mode == Values::All;
         match self {
             Fragment::Register(r) => {
                 if let Some(v) = r.write.as_ref().and_then(|w| w.value.as_ref()) {
                     f(v);
                 }
             }
-            Fragment::Struct(Struct { fields: m, .. }) | Fragment::Enum(Enum { payloads: m, .. }) => m.values().for_each(|x| x.values_with(all, f)),
-            Fragment::Bag(Bag { elems, .. }) if all => elems.values().filter_map(|e| e.frag.as_deref()).for_each(|x| x.values_with(all, f)),
+            Fragment::Enum(e) if mode == Values::Read => {
+                if let Some(x) = e.case.as_ref().and_then(|c| c.case).and_then(|id| e.payloads.get(&id)) {
+                    x.values_with(mode, f);
+                }
+            }
+            Fragment::Struct(Struct { fields: m, .. }) | Fragment::Enum(Enum { payloads: m, .. }) => m.values().for_each(|x| x.values_with(mode, f)),
+            Fragment::Bag(Bag { elems, .. }) if all => elems.values().filter_map(|e| e.frag.as_deref()).for_each(|x| x.values_with(mode, f)),
             Fragment::Bag(_) => {}
             // a value removal names no value it holds; an element it hides is dead (§4.8, §5.5)
             Fragment::Set(s) => {
                 let gone = crate::fragment::removed(&s.elems);
-                s.elems.iter().filter(|(d, e)| !crate::fragment::hidden(d, e, &gone)).filter_map(|(_, e)| e.frag.as_deref()).for_each(|x| x.values_with(all, f));
+                s.elems.iter().filter(|(d, e)| !crate::fragment::hidden(d, e, &gone)).filter_map(|(_, e)| e.frag.as_deref()).for_each(|x| x.values_with(mode, f));
+            }
+            Fragment::Map(m) if mode == Values::Read => {
+                for (k, x) in m.read_records() {
+                    if x.read().is_some() {
+                        f(k);
+                        x.values_with(mode, f);
+                    }
+                }
             }
             Fragment::Map(m) => {
                 for (id, e) in &m.entries {
@@ -621,14 +646,16 @@ impl Fragment {
                         f(k);
                     }
                     if let Some(x) = e.frag.as_deref() {
-                        x.values_with(all, f);
+                        x.values_with(mode, f);
                     }
                 }
             }
             Fragment::Seq(s) => {
-                for e in s.elems().values() {
+                // as read, the visible elements alone (§5.7 Live): a write into an element whose
+                // creation a reset took holds none
+                for e in s.elems().values().filter(|e| mode != Values::Read || crate::seq::is_visible(e, s.text)) {
                     if let SeqContent::Frag(x) = &e.content {
-                        x.values_with(all, f);
+                        x.values_with(mode, f);
                     }
                 }
             }
@@ -636,7 +663,7 @@ impl Fragment {
                 if let Some(v) = s.reg.as_ref().and_then(|r| r.write.as_ref()).and_then(|w| w.value.as_ref()) {
                     f(v);
                 }
-                s.slots.values().for_each(|x| x.values_with(all, f));
+                s.slots.values().for_each(|x| x.values_with(mode, f));
             }
             Fragment::Slots(_) => match self.chosen_slot() {
                 SlotRef::Reg(r) => {
@@ -644,7 +671,7 @@ impl Fragment {
                         f(v);
                     }
                 }
-                SlotRef::Frag(x) => x.values_with(all, f),
+                SlotRef::Frag(x) => x.values_with(mode, f),
             },
         }
     }
@@ -928,29 +955,21 @@ impl Fragment {
                 let live: Vec<Value> = crate::fragment::live_elems(&s.elems).map(|(_, _, v)| v).collect();
                 Some(Value::Set(live.into_iter().rev().collect()))
             }
-            Fragment::Map(m) => {
-                let mut by_key: BTreeMap<&Value, Fragment> = BTreeMap::new();
-                for id in m.entries.keys() {
-                    let Some(k) = id.key() else { continue };
-                    if !m.is_live(id) {
-                        continue;
-                    }
-                    let Some(f) = m.record_frag(id) else { continue };
-                    match by_key.get_mut(k) {
-                        None => {
-                            by_key.insert(k, f.into_owned());
-                        }
-                        Some(g) => {
-                            // same-key entries read as their join (§5.6)
-                            g.join_into(f.into_owned(), None, &mut Changes::new());
-                        }
-                    }
-                }
-                Some(Value::Map(by_key.into_iter().filter_map(|(k, f)| Some((k.clone(), f.read()?))).collect()))
-            }
+            Fragment::Map(m) => Some(Value::Map(m.read_records().into_iter().filter_map(|(k, f)| Some((k.clone(), f.read()?))).collect())),
             Fragment::Seq(s) => seq::read(s),
         }
     }
+}
+
+/// Which values `Fragment::values_with` names.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum Values {
+    /// Every value held (`values`).
+    All,
+    /// As written where a read looks (`each_value`).
+    Written,
+    /// As a read shows them (`each_read_value`).
+    Read,
 }
 
 /// A slot of a position: the register slot (a plain register too) or another fragment.

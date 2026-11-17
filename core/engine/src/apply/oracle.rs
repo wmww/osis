@@ -24,12 +24,12 @@ pub(super) fn join_into_state(tx: &mut Tx<'_>, tid: &Tid, ak: &Ak, mut delta: Fr
     tx.core.wrote(k.clone());
     let mut st = tx.core.states.get_mut(&k).and_then(Option::take).unwrap_or_default();
     // the reference index: the tids at the join's reach, before and after
-    let refs = crate::engine::refs::indexed(ak).then(|| (crate::engine::refs::Delta::reach(&st, &delta, -1), delta.clone()));
+    let refs = crate::engine::refs::indexed(ak).then(|| (crate::engine::refs::Delta::reach(&st, &delta), delta.clone()));
     let (before, d) = (Killed::before(&st, &delta), delta.clone());
     let roots = crate::retention::compact::roots(ak, &st, &delta);
     let ch = st.join(delta);
-    let refs = refs.filter(|_| ch.is_changed()).map(|(mut d, x)| {
-        d.add(&st.reach(&x), 1);
+    let refs = refs.filter(|_| ch.is_changed()).map(|((mut d, at), x)| {
+        d.after(&st, &x, &at);
         d
     });
     if let Some(dead) = dead {

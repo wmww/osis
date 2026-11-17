@@ -307,18 +307,19 @@ fn piece_laws(x: &Fragment, y: &Fragment, honest: bool) {
     }
 }
 
-/// A join of `y` changes the values a state holds (`each_value`) only at `y`'s reach
-/// (`Fragment::reach`): `before` and `after` differ as their pieces at the reach do (the engine's
+/// A join of `y` changes the values a state reads (`each_read_value`) only at `y`'s reach
+/// (`Fragment::reach`, `reach_after`): `before` and `after` differ as their pieces at the reach do (the engine's
 /// reference index counts a join there alone, notes/engine-refs.md).
 fn reach_holds_the_change(before: &Fragment, after: &Fragment, y: &Fragment) {
     let diff = |a: &Fragment, b: &Fragment| {
         let mut m: BTreeMap<osis_base::Value, i64> = BTreeMap::new();
-        a.each_value(&mut |v| *m.entry(v.clone()).or_default() -= 1);
-        b.each_value(&mut |v| *m.entry(v.clone()).or_default() += 1);
+        a.each_read_value(&mut |v| *m.entry(v.clone()).or_default() -= 1);
+        b.each_read_value(&mut |v| *m.entry(v.clone()).or_default() += 1);
         m.retain(|_, n| *n != 0);
         m
     };
-    assert_eq!(diff(&before.reach(y), &after.reach(y)), diff(before, after), "a join changes held values only at its reach");
+    let at = before.reach(y);
+    assert_eq!(diff(&at, &after.reach_after(y, &at)), diff(before, after), "a join changes read values only at its reach");
 }
 
 /// The history joined in creation order, then twice in a random order with duplicates, by the

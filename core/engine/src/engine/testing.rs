@@ -318,6 +318,14 @@ impl Engine {
         Some(m.valid.get(ai).copied().unwrap_or(true))
     }
 
+    /// The (target, AK) of each strong `source`'s held history holds (`refs::kept`; tests: the
+    /// reference index property).
+    #[doc(hidden)]
+    pub fn history_strongs_from(&mut self, source: &Tid) -> Result<Vec<(Tid, Ak)>> {
+        let s = *source;
+        self.read(|tx| super::refs::kept::from(tx, &s))
+    }
+
     /// How many bodies of `(tid, ak)` are held.
     #[doc(hidden)]
     pub fn held_bodies(&self, tid: &Tid, ak: &Ak) -> usize {

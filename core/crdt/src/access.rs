@@ -49,7 +49,7 @@ impl Fragment {
     /// in records live or not (a write into another's entry carries no creation and reads as
     /// nothing alone, §5.6 Live; its values are still its).
     pub fn values(&self, f: &mut dyn FnMut(&Value)) {
-        self.values_with(true, f);
+        self.values_with(crate::state::Values::All, f);
     }
 
     /// The set at field `field` of this struct state (or of its struct slot), with the effective

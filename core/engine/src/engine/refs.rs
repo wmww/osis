@@ -216,9 +216,9 @@ impl Reference {
 pub(crate) struct Delta(BTreeMap<(Tid, RefKind), i64>, BTreeMap<Ticket, i64>);
 
 impl Delta {
-    /// Adds `sign` for every reference in the values `f` holds (`Fragment::each_value`).
+    /// Adds `sign` for every reference in the values `f` reads as (`Fragment::each_read_value`).
     pub(crate) fn add(&mut self, f: &Fragment, sign: i64) {
-        f.each_value(&mut |v| {
+        f.each_read_value(&mut |v| {
             drop(osis_base::costs::span("refs: value read"));
             references(v, &mut |k, t, v| {
                 *self.0.entry((t, k)).or_default() += sign;
@@ -229,11 +229,17 @@ impl Delta {
         });
     }
     /// The references at the reach of `delta` in `st` (`Fragment::reach`: all a join of it can
-    /// change), counted `sign` times.
-    pub(crate) fn reach(st: &Fragment, delta: &Fragment, sign: i64) -> Delta {
+    /// change), taken off, and that reach: the state the join leaves adds its own at
+    /// `Fragment::reach_after` of it (`Delta::after`).
+    pub(crate) fn reach(st: &Fragment, delta: &Fragment) -> (Delta, Fragment) {
+        let at = st.reach(delta);
         let mut d = Delta::default();
-        d.add(&st.reach(delta), sign);
-        d
+        d.add(&at, -1);
+        (d, at)
+    }
+    /// `reach`'s count completed by the state `st` the join of `delta` left, `at` the reach before.
+    pub(crate) fn after(&mut self, st: &Fragment, delta: &Fragment, at: &Fragment) {
+        self.add(&st.reach_after(delta, at), 1);
     }
     /// What a whole `f` holds.
     pub(crate) fn of(f: Option<&Fragment>) -> Delta {

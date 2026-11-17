@@ -438,6 +438,27 @@ impl Map {
             }
         }
     }
+    /// What each key reads as: the join of its live records (§5.6, same-key entries read as
+    /// their join).
+    pub(crate) fn read_records(&self) -> BTreeMap<&Value, Fragment> {
+        let mut by_key: BTreeMap<&Value, Fragment> = BTreeMap::new();
+        for id in self.entries.keys() {
+            let Some(k) = id.key() else { continue };
+            if !self.is_live(id) {
+                continue;
+            }
+            let Some(f) = self.record_frag(id) else { continue };
+            match by_key.get_mut(k) {
+                None => {
+                    by_key.insert(k, f.into_owned());
+                }
+                Some(g) => {
+                    g.join_into(f.into_owned(), None, &mut crate::changes::Changes::new());
+                }
+            }
+        }
+        by_key
+    }
     /// Live records of `k`, ascending (§5.6): O(log n + records of k).
     pub(crate) fn live_ids(&self, k: &Value) -> Vec<&Eid> {
         let Some(ids) = self.keys.get(k) else { return Vec::new() };
@@ -520,13 +541,55 @@ impl Fragment {
     }
 
     /// What of this fragment a join of `x` can supersede: `part_at`, but whole wherever `x`
-    /// resets the position (its own reset, or a register write, which implies one, §5.1, §7).
+    /// resets the position (its own reset, or a register write, which implies one, §5.1, §7),
+    /// and in a map every record sharing a key with those (a key reads as its records' join,
+    /// §5.6, so a write in one moves what the others read): O(the records of those keys).
     pub fn reach(&self, x: &Fragment) -> Fragment {
+        self.reach_with(x, None)
+    }
+
+    /// `reach` of `x` in the state a join of `x` left, `before` its reach in the state joined:
+    /// a key the join took out of the records `x` reaches is reached still, so the two
+    /// reaches hold the same records of each key (`each_read_value` changes only there).
+    pub fn reach_after(&self, x: &Fragment, before: &Fragment) -> Fragment {
+        self.reach_with(x, Some(before))
+    }
+
+    fn reach_with(&self, x: &Fragment, before: Option<&Fragment>) -> Fragment {
         if x.reset().is_some() || matches!(x, Fragment::Register(_) | Fragment::Slots(_)) {
             return self.clone();
         }
         match (self, x) {
-            (Fragment::Struct(s), Fragment::Struct(d)) => Fragment::Struct(Struct { meta: s.meta.clone(), fields: d.fields.iter().filter_map(|(id, df)| Some((*id, s.fields.get(id)?.reach(df)))).filter(|(_, f)| !f.is_empty()).collect() }),
+            (Fragment::Struct(s), Fragment::Struct(d)) => {
+                let prior = |id: &u64| match before {
+                    Some(Fragment::Struct(b)) => b.fields.get(id),
+                    _ => None,
+                };
+                Fragment::Struct(Struct { meta: s.meta.clone(), fields: d.fields.iter().filter_map(|(id, df)| Some((*id, s.fields.get(id)?.reach_with(df, prior(id))))).filter(|(_, f)| !f.is_empty()).collect() })
+            }
+            (Fragment::Map(s), Fragment::Map(d)) => {
+                let Fragment::Map(p) = self.part_at(x) else { return self.part_at(x) };
+                let mut keep = p.entries;
+                let prior = match before {
+                    Some(Fragment::Map(b)) => Some(b),
+                    _ => None,
+                };
+                // to a fixpoint: a record taken brings its dot's records, which bring their keys'
+                let mut todo: Vec<Value> = keep.keys().chain(d.entries.keys()).chain(prior.into_iter().flat_map(|b| b.entries.keys())).filter_map(Eid::key).cloned().collect();
+                let mut seen = BTreeSet::new();
+                while let Some(k) = todo.pop() {
+                    if !seen.insert(k.clone()) {
+                        continue;
+                    }
+                    for id in s.keys.get(&k).into_iter().flatten() {
+                        for (e, r) in s.of_dot(&id.dot) {
+                            todo.extend(e.key().filter(|x| !seen.contains(*x)).cloned());
+                            keep.entry(e.clone()).or_insert_with(|| r.clone());
+                        }
+                    }
+                }
+                Fragment::Map(Map::new(s.meta.clone(), keep))
+            }
             _ => self.part_at(x),
         }
     }

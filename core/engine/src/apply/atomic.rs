@@ -171,13 +171,13 @@ pub(crate) fn join_into_state(tx: &mut Tx<'_>, tid: &Tid, ak: &Ak, mut delta: Fr
     tx.core.wrote(k.clone());
     let mut st = tx.core.states.get_mut(&k).and_then(Option::take).unwrap_or_default();
     // the reference index: the tids at the join's reach, before and after
-    let refs = crate::engine::refs::indexed(ak).then(|| (crate::engine::refs::Delta::reach(&st, &delta, -1), delta.clone()));
+    let refs = crate::engine::refs::indexed(ak).then(|| (crate::engine::refs::Delta::reach(&st, &delta), delta.clone()));
     let before = dead.as_ref().map(|_| (Killed::before(&st, &delta), delta.clone()));
     // the large values at the join's reach, before and after (the compaction trigger's estimate)
     let roots = Some(crate::retention::compact::roots(ak, &st, &delta)).filter(|b| !b.is_empty()).map(|b| (b, delta.clone()));
     let ch = st.join(delta);
-    let refs = refs.filter(|_| ch.is_changed()).map(|(mut d, x)| {
-        d.add(&st.reach(&x), 1);
+    let refs = refs.filter(|_| ch.is_changed()).map(|((mut d, at), x)| {
+        d.after(&st, &x, &at);
         d
     });
     if let (Some(dead), Some((w, d))) = (dead, before) {
@@ -1190,12 +1190,12 @@ pub(crate) fn strip_state(tx: &mut Tx<'_>, tid: &Tid, ak: &Ak, at: &Fragment, ow
     let Some(mut st) = tx.core.states.get_mut(&k).and_then(Option::take) else { return Ok(()) };
     tx.core.touch();
     tx.core.wrote(k.clone());
-    let refs = crate::engine::refs::indexed(ak).then(|| crate::engine::refs::Delta::reach(&st, at, -1));
+    let refs = crate::engine::refs::indexed(ak).then(|| crate::engine::refs::Delta::reach(&st, at));
     let roots = crate::retention::compact::roots(ak, &st, at);
     let set = OwnedSet::of(own);
     st.strip(&|d| set.owns(d));
-    let refs = refs.map(|mut d| {
-        d.add(&st.reach(at), 1);
+    let refs = refs.map(|(mut d, before)| {
+        d.after(&st, at, &before);
         d
     });
     let after = crate::retention::compact::roots(ak, &st, at);
