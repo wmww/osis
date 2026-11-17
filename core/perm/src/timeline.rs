@@ -92,14 +92,6 @@ type RolesNow = (Arc<BTreeMap<Tid, Role>>, Ts, Option<WallMs>);
 #[derive(Default)]
 pub(crate) struct Memo {
     pub first_held: Mutex<FirstHeld>,
-    /// Debug builds: the `first_held` keys whose answer was compared with a replay in this
-    /// state of the timeline (a change of state makes a new `Memo` or clears it). An answer is
-    /// a function of that state, so comparing a key again repeats the first comparison.
-    #[cfg(debug_assertions)]
-    pub first_held_checked: Mutex<BTreeSet<(Tid, Tid, Role)>>,
-    /// Debug builds: the check's replays by (node, role) in this state of the timeline.
-    #[cfg(debug_assertions)]
-    pub first_held_replays: Mutex<BTreeMap<(Tid, Role), crate::content::BruteReplay>>,
     /// `first_held`'s replays by (node, role), to go on with.
     pub replays: Mutex<BTreeMap<(Tid, Role), crate::content::Replay>>,
     pub valid: Mutex<Valid>,
@@ -145,10 +137,6 @@ impl Clone for Memo {
         }
         Memo {
             first_held: get(&self.first_held),
-            #[cfg(debug_assertions)]
-            first_held_checked: get(&self.first_held_checked),
-            #[cfg(debug_assertions)]
-            first_held_replays: get(&self.first_held_replays),
             replays: get(&self.replays),
             valid: get(&self.valid),
             roles_end: get(&self.roles_end),
@@ -533,10 +521,6 @@ impl Timeline {
         let mut new = new.to_vec();
         new.sort_by_key(|c| c.point());
         // chain certificates list held writes; what is ever reached and what lies below moves
-        #[cfg(debug_assertions)]
-        self.memo.first_held_checked.get_mut().unwrap_or_else(|e| e.into_inner()).clear();
-        #[cfg(debug_assertions)]
-        self.memo.first_held_replays.get_mut().unwrap_or_else(|e| e.into_inner()).clear();
         self.memo.certs = std::sync::OnceLock::new();
         self.memo.on_target = std::sync::OnceLock::new();
         self.memo.held_on_target = std::sync::OnceLock::new();

@@ -906,6 +906,15 @@ impl Timelines {
         self.comps.values().map(|c| &c.tl)
     }
 
+    /// Debug builds: every component's `Timeline::check_first_held` (a whole check: the
+    /// engine runs it at the end of its history).
+    #[cfg(debug_assertions)]
+    pub fn check_first_held(&self) {
+        for tl in self.each() {
+            tl.check_first_held();
+        }
+    }
+
     /// The timeline of the component holding `thing` (and every node with a path to it).
     pub fn get(&self, thing: &Tid) -> Option<&Timeline> {
         self.of.get(thing).and_then(|i| self.comps.get(i)).map(|c| &c.tl)

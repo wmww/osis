@@ -89,6 +89,8 @@ impl Engine {
                 #[cfg(debug_assertions)]
                 index_unchecked: false,
                 #[cfg(debug_assertions)]
+                verdicts_unchecked: false,
+                #[cfg(debug_assertions)]
                 last_tx_wall: self.last_tx_wall,
                 #[cfg(debug_assertions)]
                 loading: self.loading,

@@ -3511,6 +3511,10 @@ pub struct Engine {
     /// starts clear: its original checks their shared past.
     #[cfg(debug_assertions)]
     index_unchecked: bool,
+    /// Debug builds: a transaction ran since `checked_verdicts` last did; it runs at the end of
+    /// the engine's history. A copy starts clear, as for `index_unchecked`.
+    #[cfg(debug_assertions)]
+    verdicts_unchecked: bool,
     /// Debug builds: the wall time the last transaction ran at, which the index is as of
     /// (`check_index`).
     #[cfg(debug_assertions)]
@@ -3585,7 +3589,7 @@ impl Engine {
         let id = Identity::generate(&mut *rng);
         let (session, expiring) = sessions(id.tid(), &mut *rng);
         let rows = store.row_changes();
-        let mut e = Engine { store, store_rng, blobs, blob_stamps: Default::default(), blob_seq: 1, blobs_unsettled: false, unknown_seen: 0, loads: 0, rng, core: Core::new(id, clock.clone(), session, expiring, rows), eph: crate::ephemeral::Eph::default(), clock, cfg, #[cfg(debug_assertions)] index_unchecked: false, #[cfg(debug_assertions)] last_tx_wall: None, #[cfg(debug_assertions)] loading: false, #[cfg(test)] index_poked: false, #[cfg(test)] check_every_tx: false };
+        let mut e = Engine { store, store_rng, blobs, blob_stamps: Default::default(), blob_seq: 1, blobs_unsettled: false, unknown_seen: 0, loads: 0, rng, core: Core::new(id, clock.clone(), session, expiring, rows), eph: crate::ephemeral::Eph::default(), clock, cfg, #[cfg(debug_assertions)] index_unchecked: false, #[cfg(debug_assertions)] verdicts_unchecked: false, #[cfg(debug_assertions)] last_tx_wall: None, #[cfg(debug_assertions)] loading: false, #[cfg(test)] index_poked: false, #[cfg(test)] check_every_tx: false };
         let seed_bytes = e.core.id.seed().expose().to_vec();
         // a new store: its (empty) persisted index is current
         e.run(|tx| {
@@ -3615,7 +3619,7 @@ impl Engine {
         };
         let (session, expiring) = sessions(id.tid(), &mut *rng);
         let rows = store.row_changes();
-        let mut e = Engine { store, store_rng, blobs, blob_stamps: Default::default(), blob_seq: 1, blobs_unsettled: false, unknown_seen: 0, loads: 0, rng, core: Core::new(id, clock.clone(), session, expiring, rows), eph: crate::ephemeral::Eph::default(), clock, cfg, #[cfg(debug_assertions)] index_unchecked: false, #[cfg(debug_assertions)] last_tx_wall: None, #[cfg(debug_assertions)] loading: false, #[cfg(test)] index_poked: false, #[cfg(test)] check_every_tx: false };
+        let mut e = Engine { store, store_rng, blobs, blob_stamps: Default::default(), blob_seq: 1, blobs_unsettled: false, unknown_seen: 0, loads: 0, rng, core: Core::new(id, clock.clone(), session, expiring, rows), eph: crate::ephemeral::Eph::default(), clock, cfg, #[cfg(debug_assertions)] index_unchecked: false, #[cfg(debug_assertions)] verdicts_unchecked: false, #[cfg(debug_assertions)] last_tx_wall: None, #[cfg(debug_assertions)] loading: false, #[cfg(test)] index_poked: false, #[cfg(test)] check_every_tx: false };
         e.core.node_root = node_root;
         e.load()?;
         Ok(e)
@@ -4078,6 +4082,7 @@ impl Engine {
                 #[cfg(debug_assertions)]
                 {
                     self.index_unchecked |= changed;
+                    self.verdicts_unchecked = true;
                 }
                 #[cfg(test)]
                 if changed && self.check_every_tx && !self.index_poked {
@@ -4171,7 +4176,8 @@ impl Engine {
     /// record needs is in the store, whatever blobs expiry or a drop took) and judging every
     /// part as held. Both load in a transaction that is dropped, so the store is as it was. Panics with the
     /// difference. Debug builds run it at the end of the engine's history (its drop), with the
-    /// states left unchecked (`checked_states`); tests call it where a reproducer's point is.
+    /// verdicts (`checked_verdicts`) and states (`checked_states`) left unchecked; tests call it
+    /// where a reproducer's point is.
     #[doc(hidden)]
     pub fn check_index(&mut self) {
         let r = self.checked_index();
@@ -4182,6 +4188,7 @@ impl Engine {
     fn checked_index(&mut self) -> Result<()> {
         #[cfg(debug_assertions)]
         {
+            self.checked_verdicts();
             self.checked_states()?;
             self.index_unchecked = false;
         }
@@ -4253,6 +4260,29 @@ impl Engine {
         Ok(())
     }
 
+    /// Debug builds: the whole verdict checks, run at the end of the history (not per
+    /// transaction: each costs O(everything held)) when a transaction ran since they last did.
+    /// Every held commit's flags are what judging it now gives (`validity::misjudged`: what was
+    /// not re-judged has not changed), and every re-grant bound a timeline memoizes is what a
+    /// search at every change finds (`Timeline::check_first_held`; after the judging, which asks
+    /// for most of them). Panics with the first difference.
+    #[cfg(debug_assertions)]
+    fn checked_verdicts(&mut self) {
+        if !std::mem::take(&mut self.verdicts_unchecked) {
+            return;
+        }
+        let core = &self.core;
+        osis_base::costs::paused(|| {
+            osis_perm::uncounted(|| {
+                memo::unrecorded(|| {
+                    let d = crate::apply::validity::misjudged(core);
+                    assert!(d.is_none(), "end of history: {} changed outside the re-judged set", d.unwrap_or_default());
+                    core.timelines.check_first_held();
+                })
+            })
+        });
+    }
+
     /// Debug builds: each aspect valid joins or covered drops changed since the rebuild check
     /// last read it (`Core::unchecked_states`) holds exactly the join of its held bodies
     /// (`apply::check_states`), read in a transaction dropped after. Panics with the difference; a failing read returned.
@@ -4318,7 +4348,12 @@ impl Drop for Engine {
         if self.index_poked {
             return;
         }
-        let r = if self.index_unchecked { self.checked_index() } else { self.checked_states() };
+        let r = if self.index_unchecked {
+            self.checked_index()
+        } else {
+            self.checked_verdicts();
+            self.checked_states()
+        };
         // a store that fails (a crash test's) has nothing to check
         assert!(matches!(r, Ok(()) | Err(Error::Store(_))), "end of history: {:?}", r.err());
     }

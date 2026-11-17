@@ -164,13 +164,9 @@ impl Timeline {
     pub fn first_held(&self, x: &Tid, thing: &Tid, required: Role) -> Option<Option<Point>> {
         let key = (*x, *thing, required);
         if let Some(v) = self.memo.first_held.lock().ok().and_then(|m| m.get(&key).copied()) {
-            #[cfg(debug_assertions)]
-            self.check_first_held(&key, v);
             return v;
         }
         let v = self.first_held_uncached(x, thing, required);
-        #[cfg(debug_assertions)]
-        self.check_first_held(&key, v);
         if let Ok(mut m) = self.memo.first_held.lock() {
             m.insert(key, v);
         }
@@ -237,22 +233,24 @@ impl Timeline {
         None
     }
 
-    /// Debug builds: `first_held`'s answer `v` for `key` against a replay, once per key in each
-    /// state of the timeline (`Memo::first_held_checked`); memoized answers, some carried over
-    /// `extend`, included.
+    /// Debug builds: every `first_held` answer this timeline holds (those memoized in it, some
+    /// carried over `extend`) against a search at every change (`first_held_replayed`). A whole
+    /// check, so its owner runs it once at the end of a history (the engine's drop), not per
+    /// state: per state it would walk the whole history again for every node asked.
     #[cfg(debug_assertions)]
-    fn check_first_held(&self, key: &(Tid, Tid, Role), v: Option<Option<Point>>) {
-        if self.memo.first_held_checked.lock().map_or(true, |mut s| s.insert(*key)) {
-            debug_assert_eq!(v, self.first_held_replayed(&key.0, &key.1, key.2), "first_held of {key:?}");
+    pub fn check_first_held(&self) {
+        let held: Vec<_> = self.memo.first_held.lock().map(|m| m.iter().map(|(k, v)| (*k, *v)).collect()).unwrap_or_default();
+        let mut replays = BTreeMap::new();
+        for (key, v) in held {
+            debug_assert_eq!(v, self.first_held_replayed(&mut replays, &key.0, &key.1, key.2), "first_held of {key:?}");
         }
     }
 
     /// `first_held_uncached` by a search at every change (debug check): the node's roles walked
-    /// whole after each change, kept per (node, role) like `Replay` and gone on with only as far
-    /// as `thing` needs, so checking every thing of a commit walks the history once.
+    /// whole after each change, kept per (node, role) in `replays` like `Replay` and gone on with
+    /// only as far as `thing` needs, so checking every thing of a node walks the history once.
     #[cfg(debug_assertions)]
-    fn first_held_replayed(&self, x: &Tid, thing: &Tid, required: Role) -> Option<Option<Point>> {
-        let mut replays = self.memo.first_held_replays.lock().unwrap_or_else(|e| e.into_inner());
+    fn first_held_replayed(&self, replays: &mut BTreeMap<(Tid, Role), BruteReplay>, x: &Tid, thing: &Tid, required: Role) -> Option<Option<Point>> {
         let r = replays.entry((*x, required)).or_default();
         let holds = |edges: &crate::graph::Edges, ts: Ts, p: Option<Point>, first: &mut BTreeMap<Tid, Option<Point>>| {
             for (t, role) in View::new(&self.input.records, edges, Some(ts)).roles_from(x) {

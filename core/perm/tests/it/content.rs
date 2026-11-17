@@ -180,8 +180,8 @@ fn until_gap_write_finalized_by_frontier() {
 
 /// Where a node first held a role (`first_held`, a replay of the node's roles over the history) is
 /// what a search at every change finds: random record trees, actors as holders, edges with
-/// `until` and invites, most writes by the target's key actor. Debug builds compare the two at
-/// every call.
+/// `until` and invites, most writes by the target's key actor. `check_first_held` compares the
+/// two for every answer asked.
 #[cfg(debug_assertions)]
 #[test]
 fn regrant_replay_equals_search() {
@@ -217,6 +217,7 @@ fn regrant_replay_equals_search() {
                 }
             }
         }
+        tl.check_first_held();
     }
 }
 

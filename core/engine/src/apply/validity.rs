@@ -901,19 +901,30 @@ pub(crate) fn rejudge_all(tx: &mut Tx<'_>, rebuild: bool) -> Result<Vec<(Tid, Ak
 }
 
 /// The first held commit whose flags differ from what judging it now gives (decodes every
-/// header). Debug builds check it after each re-judge; tests after an open from the persisted
-/// index (`Engine::misjudged`: every input of a judgment that comes from a body is persisted with
-/// the flag, `index::meta_row`).
+/// header): what was not re-judged has not changed. Debug builds check it at the end of an
+/// engine's history (`Engine::checked_verdicts`) and after an open from the persisted index
+/// (every input of a judgment that comes from a body is persisted with the flag,
+/// `index::meta_row`).
 pub(crate) fn misjudged(core: &Core) -> Option<String> {
-    for (id, m) in core.ix.commits.iter() {
-        let h = &m.header;
-        let now: Vec<bool> = (0..h.aspects.len()).map(|ai| part_valid(core, h, id, ai)).collect();
-        if now != m.valid {
-            let parts: Vec<_> = h.aspects.iter().zip(m.valid.iter().zip(&now)).filter(|(_, (a, b))| a != b).map(|(x, (a, _))| (x.tid, x.ak.as_str(), *a)).collect();
-            return Some(format!("validity of {id:?} ({:?} by {}): {parts:?}", h.kind, h.author));
-        }
-    }
-    None
+    core.ix.commits.iter().find_map(|(id, m)| misjudged_one(core, id, m))
+}
+
+/// `misjudged` of the commits with a part on `things` alone (debug builds, after each re-judge:
+/// those on the things whose inputs it took, so a verdict wrong only for a while is caught at the
+/// transaction it went wrong in, at the cost of the re-judge itself).
+#[cfg(debug_assertions)]
+fn misjudged_on<'a>(core: &Core, things: impl Iterator<Item = &'a Tid>) -> Option<String> {
+    let ids: BTreeSet<CommitId> = things.flat_map(|t| core.on_thing(t)).collect();
+    ids.iter().find_map(|id| core.ix.commits.get(id).and_then(|m| misjudged_one(core, id, m)))
+}
+
+fn misjudged_one(core: &Core, id: &CommitId, m: &Meta) -> Option<String> {
+    let h = &m.header;
+    let now: Vec<bool> = (0..h.aspects.len()).map(|ai| part_valid(core, h, id, ai)).collect();
+    (now != m.valid).then(|| {
+        let parts: Vec<_> = h.aspects.iter().zip(m.valid.iter().zip(&now)).filter(|(_, (a, b))| a != b).map(|(x, (a, _))| (x.tid, x.ak.as_str(), *a)).collect();
+        format!("validity of {id:?} ({:?} by {}): {parts:?}", h.kind, h.author)
+    })
 }
 
 /// One pass of `rejudge_all`.
@@ -1070,10 +1081,11 @@ fn rejudge_once(tx: &mut Tx<'_>, rebuild: bool) -> Result<Vec<(Tid, Ak)>> {
     for (id, tids) in own_fell {
         tx.core.events.diagnostic(crate::events::Diagnostic { kind: crate::events::DiagnosticKind::OwnWriteInvalid, tids, commit: Some(id), peer: None, detail: "a write of this node turned invalid".into() }, tx.core.hlc.mono());
     }
-    // what was not re-judged has not changed (debug builds: decodes every header)
+    // on the things whose inputs moved, what was not re-judged has not changed (the whole held
+    // set: at the end of the history)
     #[cfg(debug_assertions)]
     {
-        let d = misjudged(tx.core);
+        let d = misjudged_on(tx.core, things.iter().chain(&under));
         debug_assert!(d.is_none(), "{} changed outside the re-judged set", d.unwrap_or_default());
     }
     // what its body judged goes with it (`reopen`): judged again by the next pass

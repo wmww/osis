@@ -30,7 +30,7 @@ Rejected: re-judging every held delta per role commit (O(held commits) each); a 
 An addendum's validity reads its header and the timeline, never its body: `ix.addenda` holds every held commit's `addenda.0` delta from its header (`validity::note_addenda`, also at open for a body not held), with its entries only while the body is held (`forget_addendum_body` on drop or strip, before its `node/addenda` row is rewritten). So the persisted row equals what a rebuild reads (`tests_addenda::a_bodiless_addendum_is_judged_by_its_header_spec_perm_5_2`).
 
 ### Checks
-- Debug builds assert at each transaction's end that nothing stale is left and no flag changed outside the re-judged set.
+- Debug builds assert at each transaction's end that nothing stale is left, after each re-judge that no flag on the things it took changed outside the re-judged set, and at the end of the engine's history the same of every held commit (notes/test-harnesses.md, Verdict checks).
 - `Engine::misjudged` (in `Engine::check_index` and the order harness after a reopen) checks each flag is what judging gives. Judgment inputs from a body (rotation role, overreach) are persisted in the commit's `node/metas` row, so this holds with the body dropped.
 - perm `incremental::incremental_equals_from_scratch` checks reported moves against every timeline answer (`update_moved`). Arrival order: `apply/tests_order.rs`, perm `incremental` late leaves, `late_holder_judges_revoke_alike_*`.
 
