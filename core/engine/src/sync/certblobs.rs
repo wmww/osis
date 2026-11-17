@@ -276,7 +276,7 @@ impl Engine {
         let mut out = BTreeSet::new();
         for t in namers {
             let ctx = self.body_ctx(&t);
-            if !(plain && ctx.holds(&self.core, x) && self.reads(&ctx, x)) {
+            if !(plain && ctx.holds(&self.core, x) && self.reads(&ctx, x) && self.minted_above_floor(x, &t)) {
                 out.insert(t);
             }
         }
@@ -325,7 +325,34 @@ impl Engine {
     pub(crate) fn cert_records_whole(&mut self, t: &Tid) -> Result<BTreeSet<Tid>> {
         let records = self.certified_records(t)?;
         let ctx = self.body_ctx(t);
-        Ok(records.iter().filter(|x| !(ctx.holds(&self.core, x) && self.reads(&ctx, x) && self.minted_plainly(x)) && self.core.created(x).is_some()).copied().collect())
+        let mut out = BTreeSet::new();
+        for x in records.iter() {
+            if self.core.created(x).is_some() && !(ctx.holds(&self.core, x) && self.reads(&ctx, x) && self.minted_plainly(x) && self.minted_above_floor(x, t)) {
+                out.insert(*x);
+            }
+        }
+        Ok(out)
+    }
+
+    /// Whether a held minting of `x` lies at or above the floor of the epoch this node seals read
+    /// thing `t`'s content under (spec/crypto.md §4 State at a cut): always where that floor is 0
+    /// (`t` never cut). A minting below it rides only in bodies a holder granted without history
+    /// never opens, so it counts as no carrier and `x`'s record goes as a certificate, beside the
+    /// snapshots carrying `x`'s state. A minting of unknown floor (read in no section) counts as
+    /// below.
+    fn minted_above_floor(&mut self, x: &Tid, t: &Tid) -> bool {
+        let Some((_, f)) = self.core.seal_epoch(t).filter(|(_, f)| *f > 0) else { return true };
+        let mints: Vec<(osis_base::CommitId, usize)> = self.core.mintings(x).collect();
+        let x = *x;
+        self.read(|tx| {
+            for (c, ai) in &mints {
+                if crate::sync_ids::opened::part_floor(tx, c, *ai, &x)?.is_some_and(|p| p >= f) {
+                    return Ok(true);
+                }
+            }
+            Ok(false)
+        })
+        .unwrap_or(false)
     }
 
     /// Whether no held minting of `x` gives it epochs: its own-keys rotation carrying its record

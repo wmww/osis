@@ -149,10 +149,10 @@ pub(crate) fn pending_left(core: &mut Core, id: &CommitId) {
     }
 }
 
-/// Whether a commit here awaits record `t`: one pending, or a waiting part of one (what names a
-/// loose record, so it is learned).
+/// Whether something here awaits record `t`: a pending commit, a waiting part of one, or a held
+/// strong to it (`Closure::awaits_record`): what names a loose record, so it is learned.
 pub(crate) fn awaits_record(core: &Core, t: &Tid) -> bool {
-    core.ix.pend_on.contains_key(&Wake::Record(*t)) || core.waits.on_record.contains_key(t)
+    core.ix.pend_on.contains_key(&Wake::Record(*t)) || core.waits.on_record.contains_key(t) || core.ix.closure.awaits_record(t)
 }
 
 /// The first time a pending commit's `ts` comes within reach (`Wake::At`).

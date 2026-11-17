@@ -142,6 +142,11 @@ pub struct Closure {
     /// commits that judge those tickets stay while any does (`retention::needed`), whether or not
     /// they enter it.
     accepted: JSetMap<Tid, Vx>,
+    /// Per thing whose record the node does not hold, the held vertices whose strong reaches it,
+    /// as last judged: each awaits the record (spec/commits.md §4 Records), which decides whether
+    /// the strong brings the thing in, so a record blob's record of it is learned
+    /// (`apply::waits::awaits_record`).
+    unknown: JSetMap<Tid, Vx>,
     /// Fires whose carried commit is due for taking, not taken yet (`tickets::take_in`, `flows::inbox`,
     /// `Engine::take_carried`).
     pub(crate) fires_due: JSet<osis_base::CommitId>,
@@ -171,6 +176,7 @@ impl Default for Closure {
             openers: JSetMap::default(),
             by_opener: JSetMap::default(),
             accepted: JSetMap::default(),
+            unknown: JSetMap::default(),
             fires_due: JSet::default(),
             members: JSetMap::by_element(),
             left: JMap::default(),
@@ -222,7 +228,7 @@ impl Follow {
 }
 
 impl Journaled for Closure {
-    type Mark = ([usize; 4], [usize; 4], [usize; 15]);
+    type Mark = ([usize; 4], [usize; 4], [usize; 16]);
     fn commit(&mut self) {
         self.ticket_ids.commit();
         self.ticket_words.commit();
@@ -230,6 +236,7 @@ impl Journaled for Closure {
         self.openers.commit();
         self.by_opener.commit();
         self.accepted.commit();
+        self.unknown.commit();
         self.fires_due.commit();
         self.tree.commit();
         self.synced.commit();
@@ -243,7 +250,7 @@ impl Journaled for Closure {
         self.cut.commit();
     }
     fn mark(&mut self) -> Self::Mark {
-        (self.tree.mark(), self.synced.mark(), [self.out.mark(), self.inn.mark(), self.moved.mark(), self.rows.mark(), self.rejudge.mark(), self.members.mark(), self.left.mark(), self.cut.mark(), self.ticket_ids.mark(), self.by_ticket_id.mark(), self.fires_due.mark(), self.openers.mark(), self.by_opener.mark(), self.accepted.mark(), self.ticket_words.mark()])
+        (self.tree.mark(), self.synced.mark(), [self.out.mark(), self.inn.mark(), self.moved.mark(), self.rows.mark(), self.rejudge.mark(), self.members.mark(), self.left.mark(), self.cut.mark(), self.ticket_ids.mark(), self.by_ticket_id.mark(), self.fires_due.mark(), self.openers.mark(), self.by_opener.mark(), self.accepted.mark(), self.ticket_words.mark(), self.unknown.mark()])
     }
     fn rollback_to(&mut self, (t, s, m): Self::Mark) {
         self.tree.rollback_to(t);
@@ -263,6 +270,7 @@ impl Journaled for Closure {
         self.by_opener.rollback_to(m[12]);
         self.accepted.rollback_to(m[13]);
         self.ticket_words.rollback_to(m[14]);
+        self.unknown.rollback_to(m[15]);
     }
     fn name(&mut self, _name: &'static str) {
         self.tree.name("index: closure held");
@@ -276,6 +284,7 @@ impl Journaled for Closure {
         self.openers.name("index: closure ticket openers");
         self.by_opener.name("index: closure by ticket opener");
         self.accepted.name("index: closure accepted");
+        self.unknown.name("index: closure unknown");
     }
     #[cfg(test)]
     fn contents(&self) -> String {
@@ -499,6 +508,21 @@ impl Closure {
     /// Whether a held vertex's strong reaches `t` with a ticket for it held (`accepted`).
     pub(crate) fn accepted(&self, t: &Tid) -> bool {
         self.accepted.get(t).is_some_and(|v| !v.is_empty())
+    }
+
+    /// Whether a held vertex's strong reaches `t`, whose record was not held when it was judged
+    /// (`unknown`).
+    pub(crate) fn awaits_record(&self, t: &Tid) -> bool {
+        self.unknown.get(t).is_some_and(|v| !v.is_empty())
+    }
+
+    /// Sets whether `v`'s strong to `t` counts for `awaits_record`.
+    fn set_unknown(&mut self, t: Tid, v: Vx, on: bool) {
+        if on {
+            self.unknown.insert(t, v);
+        } else {
+            self.unknown.remove(&t, &v);
+        }
     }
 
     /// Sets whether `v`'s strong to `t` is one `accepted` counts; whether `t` lost its last.
@@ -1010,7 +1034,15 @@ fn judge(tx: &mut Tx<'_>, f: &mut Follow, v: Vx, y: Tid) -> Result<BTreeSet<Vx>>
     if matches!(v.0, Ctx::Unread(_) | Ctx::Ticket(_)) || !strong_to(tx, &v.1, &y)? {
         f.fx.unwant(&(v, y));
         set_accepted(tx, y, v, false);
+        tx.core.ix.closure.set_unknown(y, v, false);
         return Ok(BTreeSet::new());
+    }
+    // a strong to a thing whose record is not held awaits it: a record blob's copy of it, kept
+    // loose, is learned (spec/commits.md §4 Records)
+    let unknown = !tx.core.exists(&y) && !tx.core.is_key_actor(&y);
+    tx.core.ix.closure.set_unknown(y, v, unknown);
+    if unknown {
+        tx.core.waits.loose.want(&y);
     }
     let new = f.known && !f.before.as_ref().unwrap_or(&f.fx).wants(&(v, y));
     f.fx.want((v, y));

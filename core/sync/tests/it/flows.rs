@@ -156,13 +156,14 @@ fn a_from_now_grantee_reads_the_current_state_and_no_earlier_write_spec_crypto_4
     assert_eq!(w.engine(1).get(&t, &value_ak()).unwrap(), Some(Value::Str("after".into())), "what follows the grant");
 }
 
-// spec/crypto.md §4 (State at a cut: the snapshot's writer logs the records of the things its
-// snapshots are on), spec/sync-ids.md §1: a plain thing p under t (carried under t's sync ID,
-// as a chat's messages are) written before node 1's grant without history on t: node 1 reads
-// p's current value through t's sync ID, and no earlier write of it. Fails: node 1 holds p's
-// snapshot but not p's record, which rides only in p's minting commit, from before the cut.
+// spec/crypto.md §4 (State at a cut: a record whose minting lies below the cut goes as a
+// certificate), spec/commits.md §4 (Records: a held strong awaits its target's record): a plain
+// thing p under t (carried under t's sync ID, as a chat's messages are) written before node 1's
+// grant without history on t: node 1 reads p's current value through t's sync ID, and no earlier
+// write of it. Its record rides in p's minting, below the cut, so it reaches node 1 only by a
+// record blob, which node 1 learns for t's strong to p. A thing q made after the cut is minted
+// above it: its record goes in its minting alone.
 #[test]
-#[ignore = "issues/history-less-grant.md"]
 fn a_from_now_grantee_reads_a_plain_thing_under_it_spec_crypto_4() {
     use crate::harness::Step::*;
     use crate::harness::history::{value_ak, world};
@@ -182,4 +183,10 @@ fn a_from_now_grantee_reads_a_plain_thing_under_it_spec_crypto_4() {
         let parts = e.body(c).unwrap().map(|b| b.parts).unwrap_or_default();
         assert!(!e.header(c).is_some_and(|h| parts.iter().any(|ai| h.aspects.get(*ai).is_some_and(|a| a.ak == value_ak()))), "node 1 holds a write from before its grant");
     }
+    let _ = crate::harness::play(&mut w, &[NewIn(0, 0), Run], String::new());
+    let q = w.history.things[2].0;
+    assert!(w.engine(1).get(&q, &value_ak()).unwrap().is_some(), "q, made after the cut");
+    let s = w.engine(0).sync_id_of(&t).unwrap().unwrap();
+    let records = w.engine(0).certificate_records(&s).unwrap();
+    assert!(records.contains(&p) && !records.contains(&q), "p's record goes as a certificate, q's in its minting");
 }

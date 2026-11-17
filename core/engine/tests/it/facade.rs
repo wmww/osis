@@ -509,7 +509,7 @@ fn a_forged_record_in_a_record_blob_names_no_other_thing_spec_wire_3() {
     let (mut lp, d) = crate::flows::account_two_nodes();
     let ds = lp.peers[0].engine.sync_id_of(&d).unwrap().unwrap();
     let a = lp.peers[0].engine.account().unwrap().unwrap().0;
-    let u = thing_of(&mut lp, 0, a);
+    let u = unshared_thing(&mut lp, a);
     let real = lp.peers[0].engine.core.created(&u).cloned().unwrap();
     assert!(lp.peers[1].engine.core.created(&u).is_none(), "u not spread");
     let osis_base::CreationRecord::Thing { nonce, .. } = real.clone() else { panic!() };
@@ -529,6 +529,36 @@ fn a_forged_record_in_a_record_blob_names_no_other_thing_spec_wire_3() {
     assert!(!lp.peers[1].engine.carries_loose(&id), "its carrier gives something held");
 }
 
+/// A thing under `admin` that peer 0 makes and holds alone: no strong at peer 1 awaits its
+/// record.
+fn unshared_thing(lp: &mut LocalPeer, admin: Tid) -> Tid {
+    let e = &mut lp.peers[0].engine;
+    let mut m = Mutation::new();
+    let t = e.new_thing(&mut m, admin);
+    m.set(t, &REG, &s("new")).unwrap();
+    e.commit(m).unwrap().unwrap();
+    lp.hold_at(0, t);
+    t
+}
+
+// spec/commits.md §4 (Records: a strong to a thing from the node closure awaits its record), spec/sync-set.md
+// §2 (a strong to a thing whose record the node does not hold makes nothing held): peer 1 holds
+// a strong to u, whose record reaches it only in a record blob, never in u's minting: it learns
+// the record as the blob opens, and so holds u.
+#[test]
+fn a_held_strong_awaits_its_things_record_spec_commits_4() {
+    let (mut lp, d) = crate::flows::account_two_nodes();
+    let ds = lp.peers[0].engine.sync_id_of(&d).unwrap().unwrap();
+    let a = lp.peers[0].engine.account().unwrap().unwrap().0;
+    let u = unshared_thing(&mut lp, a);
+    lp.peers[1].engine.hold(osis_base::Strong(u)).unwrap();
+    assert!(lp.peers[1].engine.core.created(&u).is_none() && !lp.peers[1].engine.closure_holds(&u), "u unknown at peer 1");
+    let (id, bytes, wrap) = lp.peers[0].engine.seal_records(&ds, &[u].into(), &mut SeededRng::from_u64(3)).unwrap().expect("sealed");
+    assert!(matches!(lp.peers[1].engine.open_entry(&ds, &id, &wrap, &bytes, u64::MAX).unwrap(), osis_engine::sync::Opened::Records(_)));
+    assert!(lp.peers[1].engine.core.created(&u).is_some(), "learned for the strong");
+    assert!(lp.peers[1].engine.closure_holds(&u), "the strong brings u in");
+}
+
 /// Peer 0 writes on `u` and peer 1 ingests that commit alone (`u`'s record not with it): it
 /// awaits `u`'s record there.
 fn later_write_on(lp: &mut LocalPeer, u: Tid) {
@@ -546,7 +576,7 @@ fn junk_records(n: usize) -> (usize, usize, usize, bool) {
     let (mut lp, d) = crate::flows::account_two_nodes();
     let ds = lp.peers[0].engine.sync_id_of(&d).unwrap().unwrap();
     let a = lp.peers[0].engine.account().unwrap().unwrap().0;
-    let u = thing_of(&mut lp, 0, a);
+    let u = unshared_thing(&mut lp, a);
     let real = lp.peers[0].engine.core.created(&u).cloned().unwrap();
     let junk: Vec<osis_base::CreationRecord> = (0..n).map(|i| osis_base::CreationRecord::Thing { admin: a, nonce: { let mut x = [9u8; 32]; x[..8].copy_from_slice(&(i as u64).to_be_bytes()); x }, link: None, expires: None }).collect();
     let known = |lp: &LocalPeer| junk.iter().filter(|r| lp.peers[1].engine.core.created(&r.tid()).is_some()).count();

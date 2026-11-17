@@ -190,9 +190,9 @@ impl Engine {
         let mut rows = Vec::new();
         for (t, e, parts) in opened {
             for p in parts {
-                // content only: the rest is records, keys and boxes (each box sealed to its own
-                // recipient)
-                let Some(a) = header.aspects.get(p.ai).filter(|a| is_content(a.ak.as_str())) else { continue };
+                // content and mintings only: the rest is settings, keys and boxes (each box
+                // sealed to its own recipient)
+                let Some(a) = header.aspects.get(p.ai).filter(|a| floored(a.ak.as_str())) else { continue };
                 let genuine = self.core.created(&a.tid).is_some_and(|r| osis_crypto::delta_hash(&osis_crypto::dedup_secret(r.nonce()), &p.delta) == a.hash);
                 rows.push((key(&id, part_index(p.ai), t, e), value(genuine, &p.delta)));
             }
@@ -247,13 +247,20 @@ impl Engine {
     }
 }
 
-/// Records the epoch each content part of `c`, this node's own new commit, was made under: the
-/// newest current read epoch of its thing, where its floor is above 0 (a part with no record has
-/// floor 0, so a node never cut writes nothing here). What the floor clause of `passes_on` reads.
+/// Whether a part of aspect `ak` has its openings recorded (`part_floor`): content, which the
+/// floor clause of `passes_on` reads, and a minting, whose floor decides whether its body carries
+/// its thing's record to a holder granted without history (`Engine::cert_carriers`).
+fn floored(ak: &str) -> bool {
+    is_content(ak) || ak == osis_commit::retention::CREATED
+}
+
+/// Records the epoch each content part and minting of `c`, this node's own new commit, was made
+/// under: the newest current read epoch of its thing, where its floor is above 0 (a part with no
+/// record has floor 0, so a node never cut writes nothing here).
 pub(crate) fn note_own(tx: &mut Tx<'_>, c: &osis_commit::CommitBlob) -> Result<()> {
     let id = c.id();
     for p in &c.parts {
-        let Some(a) = c.header.aspects.get(p.ai).filter(|a| is_content(a.ak.as_str())) else { continue };
+        let Some(a) = c.header.aspects.get(p.ai).filter(|a| floored(a.ak.as_str())) else { continue };
         let Some((e, f)) = tx.core.seal_epoch(&a.tid) else { continue };
         if f > 0 {
             put(tx, &id, &key(&id, part_index(p.ai), &a.tid, &e), &value(true, &p.delta))?;
