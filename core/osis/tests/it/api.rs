@@ -223,7 +223,7 @@ fn a_whole_read_loads_at_most_its_bound_spec_wire_12() {
     assert!(small == big && big <= 8, "pages loaded before the refusal: {small} at 2000 keys, {big} at 8000");
 }
 
-// spec/data-model.md §5 (depth counts a value as read), §6: a large value near the depth limit
+// spec/data-model.md §5 (Depth), §6: a large value near the depth limit
 // is written and read back, a link counting as the value it reads as (no levels for a string or
 // blob); a large map key that would read too deep is refused, though its link alone would fit.
 #[test]

@@ -177,7 +177,7 @@ mod tests {
         assert_eq!(read_value(*root, &f.dedup, &mut r, SMALL, usize::MAX, MAX_VALUE_DEPTH).unwrap().0, s);
     }
 
-    // spec/data-model.md §5 (a link counts as the value it reads as): a large value reads only
+    // spec/data-model.md §5 (Depth): a large value reads only
     // within the levels left where its link sits; deeper, it is bad input (read as unreadable).
     #[test]
     fn a_large_value_reads_within_its_room_spec_data_model_5() {
