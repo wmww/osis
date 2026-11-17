@@ -430,11 +430,9 @@ fn drop_actors(tx: &mut Tx<'_>, mut lost: Vec<Tid>, dropped: &[Tid], rejudge: bo
                 let mut kept = ActorEpochs::default();
                 *kept.role_mut(Role::Sync) = r;
                 tx.core.ix.secrets.insert(*a, kept);
-                crate::flows::save_epochs(tx, a)?;
             }
             None => {
                 tx.core.ix.secrets.remove(a);
-                tx.txn.remove_local(&[crate::engine::records::SECRETS, a.as_bytes()].concat(), osis_store::Shred::Yes)?;
             }
         }
         crate::sync::stranded::drop_asks(tx, a, |_| false)?;
@@ -444,6 +442,14 @@ fn drop_actors(tx: &mut Tx<'_>, mut lost: Vec<Tid>, dropped: &[Tid], rejudge: bo
     }
     let set: BTreeSet<Tid> = lost.iter().copied().collect();
     let f = crate::retention::forget::forget(tx, crate::retention::forget::Scope::Lost(&set), &held)?;
+    // a kept sync role's history (what it supersedes, its names and floor) is what the entries
+    // still held say, as a load reads them: those it opened while it read went with the read
+    let ak = crate::flows::ak("secrets.0")?;
+    for a in &lost {
+        if tx.core.ix.secrets.contains_key(a) {
+            crate::apply::observe_state(tx, a, &ak)?;
+        }
+    }
     Ok((lost, f))
 }
 

@@ -41,6 +41,7 @@ fn explore() {
         ("covered counts missing", Off { cover_missing: true, ..Off::default() }),
         ("no snapshot at K", Off { snap_at_k: true, ..Off::default() }),
         ("held blobs' lists only", Off { held_lists: true, ..Off::default() }),
+        ("tables name occurring sessions only", Off { occurring: true, ..Off::default() }),
     ];
     for (name, off) in offs {
         let f = sweep(off, 3000);

@@ -313,6 +313,29 @@ fn a_reader_lowered_to_sync_keeps_the_thing_unread_spec_sync_set_3() {
 }
 
 
+// spec/permissions.md §3 (Lost access: what was read goes), spec/crypto.md §4 (an epoch's history
+// is what its live entries say): Bob reads T across Carol's removal from it (a rotation whose
+// history box lists what the new epoch supersedes and who departed); Alice lowers him to sync.
+// He keeps T's sync secrets, and what he holds of their history is what a fresh load of his
+// store reads.
+#[test]
+fn a_reader_lowered_to_sync_keeps_its_sync_epochs_as_a_load_reads_them_spec_permissions_3() {
+    let mut w = crate::harness::history::world(0, 3);
+    let t = make(&mut w, 0, None, "hi");
+    let (bob, carol) = (w.node(1).account.unwrap(), w.node(2).account.unwrap());
+    w.write(0, |e| e.grant(&t, &bob, &edge(Role::Read))).unwrap();
+    w.run();
+    strong(&mut w, 1, None, t, true);
+    w.write(0, |e| e.grant(&t, &carol, &edge(Role::Sync))).unwrap();
+    w.write(0, |e| e.demote(&t, &osis_engine::flows::edges::Demotion { holder: carol, new: None, retain: None })).unwrap();
+    w.run();
+    assert_eq!(value(&mut w, 1, &t), Some(Value::Str("hi".into())));
+    w.write(0, |e| e.demote(&t, &osis_engine::flows::edges::Demotion { holder: bob, new: Some(edge(Role::Sync)), retain: None })).unwrap();
+    w.run();
+    assert_eq!(holding(&mut w, 1, &t), Some(Holding::Unread), "kept unread");
+    w.engine(1).check_index();
+}
+
 // spec/sync-set.md §1, §2 (refgraph U4): a node's local part. A node of an account makes a plain
 // thing under its node root, held from there: the node writes it as itself, holds and reads it,
 // and no sync ID carries it, so its sibling never holds it.

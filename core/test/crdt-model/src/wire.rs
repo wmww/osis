@@ -239,13 +239,16 @@ impl Ctx {
         }
         Ok(())
     }
-    /// After decoding: the declared tables must be exactly what the fragment yields (§3.3 rule 1), and a
-    /// writer's delta obeys §2.3 and the writer-only rules of §3.3 rule 7. The delta is its pruned form (§3.3
+    /// After decoding: the declared tables must be exactly what the fragment yields (§3.3 rule 1; a
+    /// snapshot's, `snapshot`, then its frontier-only sessions in ascending order, §8), and a writer's
+    /// delta obeys §2.3 and the writer-only rules of §3.3 rule 7. The delta is its pruned form (§3.3
     /// rule 5).
-    fn check(&self, f: &Frag) -> Result<Frag, Error> {
+    fn check(&self, f: &Frag, snapshot: bool) -> Result<Frag, Error> {
         let mut again = Ctx::new(self.ts, self.own.clone(), self.lo);
         again.collect(f);
-        if again.sources != self.sources {
+        let (head, rest) = self.sources.split_at(again.sources.len().min(self.sources.len()));
+        let rest_ok = rest.is_empty() || (snapshot && rest.iter().all(|s| matches!(s, Source::Session(_))) && rest.windows(2).all(|w| w[0] < w[1]));
+        if again.sources != head || !rest_ok {
             return Err(Error::Bad("non-canonical sources"));
         }
         if again.commits != self.commits {
@@ -1254,24 +1257,29 @@ pub fn decode_delta(bytes: &[u8], cx: &mut Ctx) -> Result<Frag, Error> {
             cx.load_sources(sources)?;
             cx.load_commits(commits)?;
             let frag = decode(f, cx)?;
-            cx.check(&frag)
+            cx.check(&frag, false)
         }
         _ => Err(Error::Bad("delta")),
     }
 }
 
 /// Snapshot delta: `[nonce, Sources, Commits, Fragment, Frontiers, Absorbed, Facts]`, `Frontiers := [[Src, ctr]*]`, one
-/// entry per `Session` source of `Sources` in table order, `ctr` 0 where `frontiers` has none (§8). Every
-/// source `frontiers` names must occur in the fragment. The caller strips the values of expiring deltas first
+/// entry per `Session` source of `Sources` in table order, `ctr` 0 where `frontiers` has none (§8); a session
+/// `frontiers` names that does not occur in the fragment follows the fragment's sources, ascending. The caller strips the values of expiring deltas first
 /// (§4.7). `Absorbed` (absorbed commit-form commits) is always empty here, and every `Facts` entry written the
 /// narrowest (`admin`, 1): the model keeps no per-commit receipts.
 pub fn encode_snapshot(f: &Frag, frontiers: &[(Source, u64)], nonce: [u8; 16], cx: &mut Ctx) -> Vec<u8> {
     cx.collect(f);
+    let mut extra: Vec<Source> = Vec::new();
     for (s, c) in frontiers {
         assert!(matches!(s, Source::Session(_)) && *c >= 1, "frontiers name session sources");
-        assert!(cx.sources.contains(s), "a frontier names a source of the fragment");
+        if !cx.sources.contains(s) && !extra.contains(s) {
+            extra.push(s.clone());
+        }
     }
+    extra.sort();
     let frag = encode(f, cx);
+    cx.sources.extend(extra);
     let fr: Vec<(u64, u64)> = cx.sources.iter().enumerate().filter(|(_, s)| matches!(s, Source::Session(_))).map(|(i, s)| (i as u64 + 1, frontiers.iter().find(|x| x.0 == *s).map_or(0, |x| x.1))).collect();
     let fr = Item::Array(fr.into_iter().map(|(i, c)| Item::Array(vec![u(i), u(c)])).collect());
     let facts = Item::Array(cx.commits.iter().map(|_| u(1)).collect());
@@ -1325,7 +1333,7 @@ pub fn decode_snapshot(bytes: &[u8], cx: &mut Ctx) -> Result<(Frag, Vec<(Source,
             if counted.next().is_some() {
                 return Err(Error::Bad("frontier missing"));
             }
-            let frag = cx.check(&frag)?;
+            let frag = cx.check(&frag, true)?;
             // a snapshot writes nothing itself (§2.4): no stamp of this commit (`Ci` 0)
             let mut own = false;
             frag.walk(&mut |r| own |= matches!(r, Ref::Stamp(s) | Ref::Key(s) if s.dot.source == cx.own && s.ts == cx.ts));

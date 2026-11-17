@@ -39,7 +39,6 @@ use osis_keys::{KeysWrite, HolderKeys, Recipient, SecretsWrite};
 use osis_perm::At;
 use osis_schema::core_types::{self as ct, Keys, Secrets};
 use osis_schema::{RawKey, Codec};
-use osis_store::Shred;
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
 
@@ -320,15 +319,6 @@ pub(crate) fn secrets_alts(tx: &mut Tx<'_>, actor: &Tid) -> Result<osis_keys::Hi
     Ok(tx.state(actor, &ak("secrets.0")?)?.map(crate::engine::secrets::history_alts).unwrap_or_default())
 }
 
-/// Persists the epochs held for `actor` (the `k/` record node-core loads).
-pub(crate) fn save_epochs(tx: &mut Tx<'_>, actor: &Tid) -> Result<()> {
-    if let Some(e) = tx.core.ix.secrets.get(actor) {
-        let b = crate::engine::secrets::encode_epochs(e);
-        tx.txn.put_local(&[crate::engine::records::SECRETS, actor.as_bytes()].concat(), &b, Shred::Yes)?;
-    }
-    Ok(())
-}
-
 /// Re-opens the `secrets.0` of every actor that boxes to `learned` after this node learned
 /// secrets of `learned` (an actor's boxes open only once its holder's epochs are held), to a
 /// fixpoint, and has the walk judge again each held ticket boxed to an actor on the way
@@ -355,7 +345,6 @@ pub(crate) fn reopen_dependents(tx: &mut Tx<'_>, learned: Tid) -> Result<()> {
             let learned = crate::apply::ingest_secrets_keys(tx, &a, &keys, &[])?;
             // boxes of commits invalid here open for reading too (custody follows holding)
             if crate::apply::keys::reread_invalid(tx, &a)? | learned {
-                save_epochs(tx, &a)?;
                 work.push(a);
             }
         }
@@ -383,7 +372,6 @@ pub(crate) fn retake(tx: &mut Tx<'_>) -> Result<()> {
         let alts = secrets_alts(tx, &a)?;
         tx.core.touch();
         if tx.core.ingest_secrets(&a, &s, crate::engine::secrets::SecretsRead::State, &alts) {
-            save_epochs(tx, &a)?;
             reopen_dependents(tx, a)?;
         }
     }
@@ -416,7 +404,6 @@ fn reopen_all(tx: &mut Tx<'_>) -> Result<()> {
             let alts = secrets_alts(tx, a)?;
             tx.core.touch();
             if tx.core.ingest_secrets(a, &s, crate::engine::secrets::SecretsRead::State, &alts) {
-                save_epochs(tx, a)?;
                 reopen_dependents(tx, *a)?;
                 any = true;
             }

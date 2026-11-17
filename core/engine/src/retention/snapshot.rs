@@ -256,8 +256,9 @@ pub(crate) fn write_expiring(tx: &mut Tx<'_>, tid: &Tid, ak: &Ak, owed: &BTreeSe
 
 /// Whether frontiers `fr` list the session of commit `c` (header `h`, a session-form commit
 /// with own writes) and miss some of its counters below `hi`; `false` for others, and for a
-/// session `fr` does not list: the snapshot holds no write of it (spec/crdt.md §8), so it
-/// reaches none of its counters and covers what joins unchanged.
+/// session `fr` does not list: the snapshot holds no write of it and its writer held no commit of
+/// it holding a part (spec/crdt.md §8), so it reaches none of its counters and covers what joins
+/// unchanged.
 pub(super) fn unseen_by(fr: &osis_crdt::Frontiers, h: &Header, c: &CommitId, hi: u64) -> bool {
     if !h.form.counted() || !h.kind.has_own_writes() {
         return false;
@@ -841,9 +842,9 @@ fn snapshot_from_state(tx: &mut Tx<'_>, tid: &Tid, ak: &Ak, memory: bool, own_co
     let Some(mut st) = snapshot_state(tx, &tid, &ak)? else { return Ok(None) };
     let left_out = if ak.as_str() == "secrets.0" { crate::apply::keys::vouched_only(tx.core, &tid, &mut st)? } else { Default::default() };
     let valid_on = |c: &CommitId| claims(tx.core, c, &tid, &ak);
-    // frontiers cover only counters whose writes this state reflects: applied, valid, of
-    // the sessions that occur in it (spec/crdt.md §8: a session with no write left in the
-    // state is pruned with them), from the held valid snapshots' frontiers on (`frontiers_now`)
+    // frontiers cover only counters whose writes this state reflects: applied, valid, from the
+    // held valid snapshots' frontiers on (`frontiers_now`); `build_snapshot` lists the sessions
+    // occurring in it and those of the commits held (spec/crdt.md §8)
     let (frontiers, _) = frontiers_now(tx, &tid, &ak, memory, &valid_on);
     // commit-form commits whose valid writes the state reflects, every one (none left out)
     let mut absorbed = std::collections::BTreeMap::new();
@@ -857,21 +858,45 @@ fn snapshot_from_state(tx: &mut Tx<'_>, tid: &Tid, ak: &Ak, memory: bool, own_co
 }
 
 /// Writes and applies by `node` at `ts` the snapshot of `(tid, ak)` carrying `st`, its tables
-/// cut to the sources that occur in `st` (spec/crdt.md §8: a reader takes an absent source as
-/// one with no write left, so a frontier never grows with sessions gone by), with the facts of
+/// listing the sources that occur in `st` and those of the commits this node holds with a part
+/// on the aspect (`held_sources`, spec/crdt.md §8: so a covered part stays reached by the
+/// snapshot covering its cover, while no source outlives the commits held), with the facts of
 /// the commits it carries, expiring at `expires` (an expiring snapshot, `write_expiring`), an own
 /// cover when `own_cover` (`write_own_cover`).
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn build_snapshot(tx: &mut Tx<'_>, tid: Tid, ak: Ak, st: Fragment, ts: Ts, node: Tid, mut frontiers: Frontiers, mut absorbed: std::collections::BTreeMap<CommitId, Tid>, expires: Option<u64>, own_cover: bool) -> Result<CommitId> {
     let kind = if is_role_class(ak.as_str()) { Kind::RoleSnapshot } else { Kind::ContentSnapshot };
-    let traced = osis_crdt::sources_of(&st, &osis_commit::writer_ctx(Form::Commit, kind, ts, node, 0, 0))?;
-    frontiers.retain(&traced);
-    absorbed.retain(|c, _| traced.contains(&osis_crdt::Source::commit(*c)));
+    let mut listed = osis_crdt::sources_of(&st, &osis_commit::writer_ctx(Form::Commit, kind, ts, node, 0, 0))?;
+    let held = held_sources(tx.core, &tid, &ak);
+    for src in &held {
+        if src.as_session().is_some() && !frontiers.lists(src) {
+            frontiers.insert(src, 0);
+        }
+    }
+    listed.extend(held);
+    frontiers.retain(&listed);
+    absorbed.retain(|c, _| listed.contains(&osis_crdt::Source::commit(*c)));
     let facts = facts_of(tx, &tid, &ak, &st)?;
     let retention = osis_commit::retention::snapshot_retention(ak.as_str());
     let plan = CommitPlan { kind, ts, actor: node, form: Form::Commit, creates: Default::default(), purge: Vec::new(), undoes: None, frontier: None, signer: node, blind: crate::engine::write::draw_blind(&mut *tx.rng), expires, restores: false, rotation: None, reseal: None , own_cover };
     let d = Resolved { tid, ak, fragment: st, lo: 0, hi: 0, schema: None, retention: Some(retention), expires, replaces: None, original_floor: 0, frontiers: Some((frontiers, absorbed, facts)), chunks: Vec::new() };
     build_and_apply(tx, plan, vec![d])
+}
+
+/// The own sources of the commits held with a part on `(tid, ak)` that still hold some part
+/// (whatever this one's validity or whether its body is held): what a snapshot of the aspect lists
+/// beside the sources occurring in it (spec/crdt.md §8). A commit holding nothing (every part
+/// dropped) is no new reader's to count: its record alone stays no source, so a steady aspect's
+/// tables hold steady across sessions (notes/growth.md). Cost: per commit on the aspect, its
+/// parts up to the first held.
+fn held_sources(core: &Core, tid: &Tid, ak: &Ak) -> BTreeSet<osis_crdt::Source> {
+    let on = core.ix.by_aspect.get(&(*tid, ak.clone())).into_iter().flatten();
+    on.filter_map(|(_, c)| {
+        let m = core.ix.commits.get(c).filter(|m| (0..m.view.aspects.len()).any(|ai| m.holds(ai)))?;
+        let h = &m.header;
+        (h.kind.has_own_writes() && (h.form.counted() || by_id(h.kind, h.form))).then(|| h.form.own_source(h.author, *c))
+    })
+    .collect()
 }
 
 /// Whether `ak` is ever compacted (spec/commits.md §2): not role-class, `created.0`,

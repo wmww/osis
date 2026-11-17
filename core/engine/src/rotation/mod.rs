@@ -23,7 +23,7 @@ mod tests_custody;
 
 use crate::engine::{Core, Engine, Tx};
 use crate::error::{Error, Result};
-use crate::flows::{self, Done, put_keysets, put_secrets, save_epochs, secrets_in};
+use crate::flows::{self, Done, put_keysets, put_secrets, secrets_in};
 use crate::Mutation;
 use osis_base::{Role, Tid};
 use osis_keys::{ActorEpochs, Departure, HistoryBoxes, ROLES, Rotation};
@@ -513,7 +513,6 @@ pub(crate) fn record(tx: &mut Tx<'_>, a: Tid, rot: &Rotation) -> Result<()> {
     tx.core.ix.secrets.insert(a, base.into_record());
     let e = tx.core.ix.secrets.entry_or_default(a);
     rot.record(e);
-    save_epochs(tx, &a)?;
     // the history boxes the new secrets open (spec/crypto.md §4), as a rebuild reads them
     crate::apply::observe_state(tx, &a, &flows::ak("secrets.0")?)?;
     merge::settle(tx, &a).map(|_| ())

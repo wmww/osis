@@ -214,7 +214,7 @@ pub(crate) fn stream<'a>(bytes: &[u8], cx: &DeltaCtx, interner: &'a mut Interner
             }
         }
     }
-    if !found.is_empty() || !enc.check_tables() {
+    if !found.is_empty() || !enc.check_tables(snapshot) {
         return Err(NOT_CANONICAL);
     }
     Ok(Head { nonce, frontiers, absorbed, facts })

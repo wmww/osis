@@ -920,6 +920,7 @@ fn write(tx: &mut Tx<'_>, all: bool) -> Result<()> {
     put_setmap(txn, ORIGINALS, &c.ix.originals, all)?;
     put_aspect_map(txn, SNAPSHOTS, &c.ix.snapshots, all)?;
     put_map(txn, EPOCHS, &c.ix.epochs, all)?;
+    write_secrets(tx, all)?;
     // after the indexes and in their transaction: a saved walk never runs ahead of the
     // commits it covers
     let min = tx.core.walk_cache_min;
@@ -934,6 +935,29 @@ fn write(tx: &mut Tx<'_>, all: bool) -> Result<()> {
         }
         for (r, bytes) in saves.put {
             tx.txn.table_put(t, r.as_bytes(), bytes, Shred::Yes)?;
+        }
+    }
+    Ok(())
+}
+
+/// The held epochs' rows (`records::SECRETS`, shredded): what the running transaction changed of
+/// `Indexes::secrets` (`all`: every actor, and no row for one not held). The one place they are
+/// written, so the store holds what the index does by construction.
+fn write_secrets(tx: &mut Tx<'_>, all: bool) -> Result<()> {
+    let row = |a: &Tid| [records::SECRETS, a.as_bytes()].concat();
+    let mut actors: BTreeSet<Tid> = if all { tx.core.ix.secrets.keys().copied().collect() } else { tx.core.ix.secrets.logged().into_iter().collect() };
+    if all {
+        tx.scan(records::SECRETS, |k, _| {
+            actors.insert(Tid::from_bytes(k.try_into().map_err(|_| Error::Corrupt("secrets"))?));
+            Ok(())
+        })?;
+    }
+    for a in actors {
+        match tx.core.ix.secrets.get(&a) {
+            Some(e) => tx.txn.put_local(&row(&a), &super::secrets::encode_epochs(e), Shred::Yes)?,
+            None => {
+                tx.txn.remove_local(&row(&a), Shred::Yes)?;
+            }
         }
     }
     Ok(())

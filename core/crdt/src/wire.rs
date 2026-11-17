@@ -42,10 +42,11 @@ pub struct DeltaCtx {
     pub kind: DeltaKind,
 }
 
-/// Per `Session` source occurring in the snapshot's fragment, the largest counter up to which
-/// the snapshot writer applied all of that source's writes in the aspect (§8), 0 when it applied
-/// none contiguously. A source without an entry does not occur in the fragment (`lists`); on the
-/// wire every occurring source has an entry.
+/// Per `Session` source the snapshot lists (§8: each occurring in its fragment, and each of a
+/// commit with a delta on the aspect its writer held), the largest counter up to which the
+/// snapshot writer applied all of that source's writes in the aspect, 0 when it applied none
+/// contiguously. A source without an entry left no write in the fragment and was no held
+/// commit's (`lists`); on the wire every occurring source has an entry.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct Frontiers {
     pub sessions: BTreeMap<Session, u64>,
@@ -56,7 +57,8 @@ impl Frontiers {
     pub fn sources(&self) -> impl Iterator<Item = (Source, u64)> + '_ {
         self.sessions.iter().map(|(s, c)| (Source::session(*s), *c))
     }
-    /// Whether `src` has an entry: it occurs in the snapshot's fragment.
+    /// Whether `src` has an entry: it occurs in the snapshot's fragment, or its writer held a
+    /// commit of it on the aspect.
     pub fn lists(&self, src: &Source) -> bool {
         src.as_session().is_some_and(|s| self.sessions.contains_key(&s))
     }
@@ -75,8 +77,7 @@ impl Frontiers {
     pub fn insert(&mut self, src: &Source, ctr: u64) -> bool {
         src.as_session().is_some_and(|s| self.sessions.insert(s, ctr).is_none())
     }
-    /// Keeps the entries of the sources `keep` holds (a snapshot lists only sources that occur
-    /// in its fragment, §8).
+    /// Keeps the entries of the sources `keep` holds (§8: those a snapshot lists).
     pub fn retain(&mut self, keep: &std::collections::BTreeSet<Source>) {
         self.sessions.retain(|s, _| keep.contains(&Source::session(*s)));
     }
@@ -469,11 +470,28 @@ impl<'p> Enc<'p> {
     }
 
     /// Check mode, at the end: every source's first appearance came in table order and every
-    /// table entry appeared (a snapshot's frontier names no other source, §8); every commit
-    /// entry's base is its smallest counter seen (§3.3 rule 1).
-    pub(crate) fn check_tables(&mut self) -> bool {
+    /// table entry appeared but, in a snapshot (`snapshot`), its frontier-only sessions after them
+    /// in ascending order (§3.3 rule 1, §8); every commit entry's base is its smallest counter
+    /// seen.
+    pub(crate) fn check_tables(&mut self, snapshot: bool) -> bool {
         let Some(c) = self.check.as_ref() else { return false };
-        !c.bad && c.next == self.sources.len() as u64 + 1 && c.min.iter().zip(&self.commits).all(|(m, e)| *m == e.base)
+        let seen = usize::try_from(c.next - 1).unwrap_or(usize::MAX);
+        let rest = self.sources.get(seen..).unwrap_or_default();
+        let sessions: Vec<Session> = rest.iter().filter_map(Source::as_session).collect();
+        let rest_ok = rest.is_empty() || (snapshot && sessions.len() == rest.len() && sessions.is_sorted_by(|a, b| a < b));
+        !c.bad && rest_ok && c.min.iter().zip(&self.commits).all(|(m, e)| *m == e.base)
+    }
+
+    /// A snapshot's frontier-only sessions (§3.3 rule 1, §8), after the collecting pass: each
+    /// session `fr` lists that the fragment does not, at the table's end in ascending order.
+    pub(crate) fn add_frontier_sessions(&mut self, fr: &Frontiers) {
+        for s in fr.sessions.keys() {
+            let src = Source::session(*s);
+            if !self.has_source(&src) {
+                self.sources.push(src.clone());
+                self.src_idx.insert(src, self.sources.len() as u64);
+            }
+        }
     }
 
     /// `Frontiers := [[Src, ctr]*]`: one entry per `Session` source of the table, in table order,

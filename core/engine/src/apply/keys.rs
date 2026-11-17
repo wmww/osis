@@ -318,7 +318,6 @@ pub(crate) fn refresh_own_keys(tx: &mut Tx<'_>, things: &std::collections::BTree
             tx.core.ix.own_keys.insert(*t);
             if let Some(b) = base {
                 tx.core.ix.secrets.insert(*t, b.into_record());
-                crate::flows::save_epochs(tx, t)?;
                 // what its history boxes say is the state's (the derived view's is its base's)
                 super::atomic::observe_state(tx, t, &crate::flows::ak("secrets.0")?)?;
             }
@@ -549,7 +548,6 @@ pub(crate) fn invalidated(tx: &mut Tx<'_>, c: &CommitId, ai: usize) -> Result<()
     if let Some(e) = tx.core.ix.secrets.get_mut(&a.tid) {
         e.invalidate(c);
     }
-    crate::flows::save_epochs(tx, &a.tid)?;
     if let Some(Decoded::Delta(d)) = super::held_part(tx, c, ai)? {
         read_invalid(tx, c, author, a.tid, &d.fragment)?;
     }
@@ -606,7 +604,6 @@ fn read_for_reading(tx: &mut Tx<'_>, actor: &Tid, s: &ct::Secrets, from: osis_ke
     tx.core.touch();
     if tx.core.ingest_secrets(actor, s, crate::engine::secrets::SecretsRead::Pending(from), &osis_keys::HistoryAlts::new()) {
         tx.core.waits.read_from(from.commit);
-        crate::flows::save_epochs(tx, actor)?;
         return Ok(true);
     }
     if tx.core.reading_full(actor) {
@@ -668,7 +665,7 @@ pub(crate) fn revalidated(tx: &mut Tx<'_>, c: &CommitId, ai: usize) -> Result<()
     })
 }
 
-/// Edits `actor`'s epochs, saving a change. An edit that learns nothing leaves no entry: the
+/// Edits `actor`'s epochs. An edit that learns nothing leaves no entry: the
 /// index holds what is on disk.
 fn edit_epochs(tx: &mut Tx<'_>, actor: Tid, f: impl FnOnce(&mut osis_keys::ActorEpochs)) -> Result<()> {
     let before = tx.core.ix.secrets.get(&actor).cloned().unwrap_or_default();
@@ -676,7 +673,6 @@ fn edit_epochs(tx: &mut Tx<'_>, actor: Tid, f: impl FnOnce(&mut osis_keys::Actor
     f(&mut e);
     if e != before {
         tx.core.ix.secrets.insert(actor, e);
-        crate::flows::save_epochs(tx, &actor)?;
     }
     Ok(())
 }
@@ -747,7 +743,6 @@ pub(crate) fn forget_unchecked(tx: &mut Tx<'_>, id: &CommitId) -> Result<()> {
         }
         tx.core.touch();
         tx.core.ix.secrets.insert(a, e);
-        crate::flows::save_epochs(tx, &a)?;
     }
     if kept.is_empty() {
         tx.core.waits.forgot(id);
@@ -806,14 +801,12 @@ pub(crate) fn learn_secret_in(tx: &mut Tx<'_>, g: &Tid, r: Role, e: osis_crypto:
     // nothing of the thing opened by it
     if r == Role::Sync && !tx.core.epochs(&g).is_some_and(|x| x.role(Role::Read).holds_any()) {
         tx.core.ix.secrets.entry_or_default(g).role_mut(r).set_secret(e, secret);
-        crate::flows::save_epochs(tx, &g)?;
         return Ok(true);
     }
     tx.core.ix.secrets.entry_or_default(g).role_mut(r).set_secret(e, secret);
     // what the secret opens: `g`'s own history boxes, then the boxes sealed to `g`
     let (s, alts) = (crate::flows::secrets_in(tx, &g)?, crate::flows::secrets_alts(tx, &g)?);
     tx.core.ingest_secrets(&g, &s, crate::engine::secrets::SecretsRead::State, &alts);
-    crate::flows::save_epochs(tx, &g)?;
     crate::flows::reopen_dependents(tx, g)?;
     Ok(true)
 }

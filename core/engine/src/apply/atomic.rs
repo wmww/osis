@@ -925,11 +925,9 @@ pub(crate) fn ingest_secrets_keys(tx: &mut Tx<'_>, actor: &Tid, boxes: &[Value],
     Ok(learned)
 }
 
-/// `ingest_secrets_keys`, persisting what was learned and reopening the boxes sealed to `actor`.
+/// `ingest_secrets_keys`, reopening the boxes sealed to `actor`.
 fn observe_secrets_keys(tx: &mut Tx<'_>, actor: &Tid, boxes: &[Value], history: &[Value]) -> Result<()> {
-    if ingest_secrets_keys(tx, actor, boxes, history)? && let Some(e) = tx.core.ix.secrets.get(actor) {
-        let b = crate::engine::secrets::encode_epochs(e);
-        tx.txn.put_local(&[crate::engine::records::SECRETS, actor.as_bytes()].concat(), &b, Shred::Yes)?;
+    if ingest_secrets_keys(tx, actor, boxes, history)? {
         // boxes sealed to this actor elsewhere open now (role flows hook)
         crate::flows::reopen_dependents(tx, *actor)?;
     }
@@ -962,11 +960,7 @@ pub(crate) fn observe_state(tx: &mut Tx<'_>, tid: &Tid, ak: &Ak) -> Result<()> {
     let alts = tx.state(tid, ak)?.map(crate::engine::secrets::history_alts).unwrap_or_default();
     // no state (every delta stripped) holds no live entry
     let s = v.as_ref().and_then(crate::engine::secrets::secrets_value).unwrap_or_default();
-    if tx.core.ingest_secrets(tid, &s, crate::engine::secrets::SecretsRead::State, &alts)
-        && let Some(e) = tx.core.ix.secrets.get(tid)
-    {
-        let b = crate::engine::secrets::encode_epochs(e);
-        tx.txn.put_local(&[crate::engine::records::SECRETS, tid.as_bytes()].concat(), &b, Shred::Yes)?;
+    if tx.core.ingest_secrets(tid, &s, crate::engine::secrets::SecretsRead::State, &alts) {
         // boxes sealed to this actor elsewhere open now (role flows hook)
         crate::flows::reopen_dependents(tx, *tid)?;
     }

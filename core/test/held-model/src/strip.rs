@@ -16,15 +16,22 @@
 //!   Only a writer of S logs at K; any node holding the delete keys deletes there. A blob a node
 //!   receives stale still gives it its other parts, and its section list counts for which
 //!   unopened sections every blob carries.
-//! - Covers: a node holding a covered part's snapshot drops the part as covered (it strips like a
-//!   gone one); a node that never held the part counts it covered, not missing, once it holds the
-//!   snapshot, and missing before. A strip's delete at K of a blob carrying a covered part waits
-//!   for K to show the snapshot. Late readers start holding nothing and learn the commit from K
-//!   and other readers.
+//! - Covers: a node holding a covered part's snapshot drops the part as covered; it strips it
+//!   (like a gone one) only while a held snapshot reaches it by its tables. A node that never held
+//!   the part counts it covered, not missing, once it holds a snapshot reaching it, and missing
+//!   before. A strip's delete at K of a blob carrying a covered part waits for K to show a
+//!   snapshot reaching it. Late readers start holding nothing and learn the commit from K and
+//!   other readers.
+//! - Snapshots cover snapshots: a node holding one writes another of the aspect (`Recover`),
+//!   which covers it, so every holder of both drops the older. The first reaches its part by its
+//!   tables; a later one reaches it only where its writer holds the commit (its tables name every
+//!   session of a held commit with a part on the aspect, spec/crdt.md §8 Frontiers), never under
+//!   `Off::occurring` (they name only sessions with a write left).
 //! - The oracle reads the history alone: what each store must hold at quiescence.
 //!
 //! Abstracted: a part is one section; gone and covered are final (no fall, no keep bound); a
-//! snapshot covers one part and is valid; every node is honest; the ground
+//! snapshot covers one part and is valid, a later one of a part covering every earlier one; every
+//! node is honest; the ground
 //! of a body part (its request or snapshot) travels under S with the deletes it causes
 //! (spec/sync-judgement.md §3 Role entries first) when `World::ground_under_s`.
 use crate::gen::Rng;
@@ -74,6 +81,9 @@ pub struct Off {
     pub snap_at_k: bool,
     /// Only blobs still in the own log list which unopened sections every blob carries.
     pub held_lists: bool,
+    /// A snapshot's tables name only the sessions with a write left in its fragment: one covering
+    /// another snapshot never reaches the replaced part.
+    pub occurring: bool,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -87,14 +97,24 @@ pub enum Event {
     Pull(usize, usize, bool),
     /// Node writes the snapshot covering a covered part.
     Cover(usize, P),
+    /// Node, holding a snapshot of a covered part, writes another of the aspect covering it.
+    Recover(usize, P),
+}
+
+/// A snapshot of a covered part: a later one (higher ID) covers an earlier one.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct Snap {
+    id: u32,
+    /// Its tables reach the part.
+    reaches: bool,
 }
 
 #[derive(Clone, Debug, Default)]
 struct Store {
     blobs: BTreeMap<u32, Parts>,
     tomb: BTreeSet<u32>,
-    /// The covering snapshots held, by the part each covers.
-    snaps: Parts,
+    /// The covering snapshot held, by the part it covers (the latest: it covers the others).
+    snaps: BTreeMap<P, Snap>,
     /// The blobs it received stale (left out of `blobs`): their section lists still count.
     seen: BTreeMap<u32, Parts>,
 }
@@ -105,6 +125,8 @@ struct NodeState {
     gone: Parts,
     /// Parts it ever held a body of.
     had: Parts,
+    /// Parts it stripped: their bytes are gone here for good.
+    cut: Parts,
     /// §4: the ground (gone parts known) at which it last logged the body again at K.
     stand: Option<usize>,
 }
@@ -123,21 +145,47 @@ pub struct Net<'a> {
 impl<'a> Net<'a> {
     pub fn new(w: &'a World, off: Off) -> Net<'a> {
         let whole: Parts = (0..w.parts).collect();
-        let store = Store { blobs: [(0, whole.clone())].into_iter().collect(), tomb: BTreeSet::new(), snaps: Parts::new(), seen: BTreeMap::new() };
+        let store = Store { blobs: [(0, whole.clone())].into_iter().collect(), tomb: BTreeSet::new(), snaps: BTreeMap::new(), seen: BTreeMap::new() };
         let nodes = (0..w.reads.len())
             .map(|i| match w.late[i] {
-                true => NodeState { own: Store::default(), gone: Parts::new(), had: Parts::new(), stand: None },
-                false => NodeState { own: store.clone(), gone: Parts::new(), had: w.reads[i].intersection(&whole).copied().collect(), stand: None },
+                true => NodeState { own: Store::default(), gone: Parts::new(), had: Parts::new(), cut: Parts::new(), stand: None },
+                false => NodeState { own: store.clone(), gone: Parts::new(), had: w.reads[i].intersection(&whole).copied().collect(), cut: Parts::new(), stand: None },
             })
             .collect();
         Net { w, off, nodes, k: store, k_gone: Parts::new(), next: 1, steps: 0 }
     }
 
-    /// The parts n drops as covered: those whose snapshot it holds (`Off::cover_missing`: only
-    /// those it held a body of).
+    /// The parts n drops as covered: those whose snapshot it holds, held once or reached by its
+    /// tables (`Off::cover_missing`: only those it held a body of).
     fn covered(&self, n: usize) -> Parts {
         let st = &self.nodes[n];
-        st.own.snaps.iter().filter(|p| self.w.covered.contains(p) && (!self.off.cover_missing || st.had.contains(p))).copied().collect()
+        let by = |p: &P, s: &Snap| st.had.contains(p) || (!self.off.cover_missing && s.reaches);
+        st.own.snaps.iter().filter(|(p, s)| self.w.covered.contains(p) && by(p, s)).map(|(p, _)| *p).collect()
+    }
+
+    /// The covered parts n strips: those a held snapshot reaches by its tables.
+    fn reached(&self, n: usize) -> Parts {
+        let st = &self.nodes[n];
+        self.covered(n).into_iter().filter(|p| st.own.snaps.get(p).is_some_and(|s| s.reaches)).collect()
+    }
+
+    /// A strip is for good: the bytes stripped are gone here.
+    fn note_cuts(&mut self) {
+        for n in 0..self.nodes.len() {
+            if !self.off.no_cover_strip {
+                let r = self.reached(n);
+                self.nodes[n].cut.extend(r);
+            }
+        }
+    }
+
+    /// A store takes snapshots: of each part the latest, which covers the others.
+    fn take_snaps(to: &mut BTreeMap<P, Snap>, from: &BTreeMap<P, Snap>) {
+        for (p, s) in from {
+            if to.get(p).is_none_or(|x| x.id < s.id) {
+                to.insert(*p, *s);
+            }
+        }
     }
 
     fn need(&self, n: usize) -> Parts {
@@ -145,12 +193,13 @@ impl<'a> Net<'a> {
         self.w.body.iter().filter(|p| !self.nodes[n].gone.contains(p) && !cov.contains(p)).copied().collect()
     }
 
-    /// The parts whose bodies n holds no more and no blob may carry: gone, or covered
-    /// (`Off::no_cover_strip`: gone only).
+    /// The parts whose bodies n holds no more and no blob may carry: gone, or covered and reached
+    /// (`Off::no_cover_strip`: gone only), or stripped before.
     fn stripped(&self, n: usize) -> Parts {
         let mut out = self.nodes[n].gone.clone();
+        out.extend(self.nodes[n].cut.iter().copied());
         if !self.off.no_cover_strip {
-            out.extend(self.covered(n));
+            out.extend(self.reached(n));
         }
         out
     }
@@ -218,6 +267,7 @@ impl<'a> Net<'a> {
     /// fresh encryption of it is logged; every other blob leaves (tombstoned). With no body part
     /// needed, every blob leaves.
     fn settle(&mut self, n: usize) {
+        self.note_cuts();
         // nothing of S's body needed here: nothing under S is this node's to log
         if self.need(n).is_empty() {
             let all: Vec<u32> = self.nodes[n].own.blobs.keys().copied().collect();
@@ -247,8 +297,8 @@ impl<'a> Net<'a> {
         }
     }
 
-    fn take(&mut self, n: usize, from: &BTreeMap<u32, Parts>, snaps: &Parts) {
-        self.nodes[n].own.snaps.extend(snaps.iter().copied());
+    fn take(&mut self, n: usize, from: &BTreeMap<u32, Parts>, snaps: &BTreeMap<P, Snap>) {
+        Self::take_snaps(&mut self.nodes[n].own.snaps, snaps);
         for (id, b) in from {
             // a stale blob's other parts apply too; its section list counts
             let opened: Parts = b.intersection(&self.w.reads[n]).copied().collect();
@@ -275,12 +325,23 @@ impl<'a> Net<'a> {
             }
             Event::Pull(n, m, with) => {
                 let from = self.nodes[m].own.blobs.clone();
-                let snaps = if with { self.nodes[m].own.snaps.clone() } else { Parts::new() };
+                let snaps = if with { self.nodes[m].own.snaps.clone() } else { BTreeMap::new() };
                 self.take(n, &from, &snaps);
             }
             Event::Cover(n, p) => {
-                if self.w.covered.contains(&p) && self.w.reads[n].contains(&p) {
-                    self.nodes[n].own.snaps.insert(p);
+                if self.w.covered.contains(&p) && self.w.reads[n].contains(&p) && !self.nodes[n].own.snaps.contains_key(&p) {
+                    let id = self.fresh();
+                    self.nodes[n].own.snaps.insert(p, Snap { id, reaches: true });
+                    self.settle(n);
+                }
+            }
+            Event::Recover(n, p) => {
+                if self.w.reads[n].contains(&p) && self.nodes[n].own.snaps.contains_key(&p) {
+                    let id = self.fresh();
+                    // its tables name the part's session while its writer holds the commit
+                    let st = &self.nodes[n];
+                    let reaches = !self.off.occurring && (!st.had.is_empty() || !st.own.blobs.is_empty() || !st.own.seen.is_empty());
+                    self.nodes[n].own.snaps.insert(p, Snap { id, reaches });
                     self.settle(n);
                 }
             }
@@ -310,7 +371,7 @@ impl<'a> Net<'a> {
                 }
             }
             let snaps = self.nodes[n].own.snaps.clone();
-            self.k.snaps.extend(snaps);
+            Self::take_snaps(&mut self.k.snaps, &snaps);
         }
         // deletes at K
         let need = self.need(n);
@@ -320,9 +381,10 @@ impl<'a> Net<'a> {
                 continue;
             }
             let carried = |s: &Self| need.is_disjoint(b) || kb.iter().filter(|(i, x)| *i != id && s.k.blobs.contains_key(i) && !s.stale(n, x)).any(|(_, x)| need.intersection(b).all(|p| x.contains(p)));
-            // a covered part's blob goes once K shows its snapshot: a new reader learning the
-            // rest from K finds it covered there
-            let shown = self.off.snap_at_k || b.iter().filter(|p| !self.nodes[n].gone.contains(p) && self.covered(n).contains(p)).all(|p| self.k.snaps.contains(p));
+            // a covered part's blob goes once K shows a snapshot reaching it: a new reader learning
+            // the rest from K finds it covered there
+            let reached = self.reached(n);
+            let shown = self.off.snap_at_k || b.iter().filter(|p| !self.nodes[n].gone.contains(p) && reached.contains(p)).all(|p| self.k.snaps.get(p).is_some_and(|s| s.reaches));
             let go = (self.stale(n, b) && shown && (self.off.carriers || carried(self))) || self.redundant(n, *id, b, &self.k.blobs.clone());
             if go {
                 self.k.blobs.remove(id);
@@ -347,7 +409,7 @@ impl<'a> Net<'a> {
     /// Every live body part is carried at K, a covered one by a blob or its snapshot: no delete
     /// leaves K without one.
     pub fn k_carries_live(&self) -> bool {
-        self.w.body.difference(&self.w.gone).all(|p| self.k.snaps.contains(p) || self.k.blobs.values().any(|b| b.contains(p)))
+        self.w.body.difference(&self.w.gone).all(|p| self.k.snaps.contains_key(p) || self.k.blobs.values().any(|b| b.contains(p)))
     }
 
     /// Body parts n counts missing: needed, and never received.
@@ -355,9 +417,10 @@ impl<'a> Net<'a> {
         self.need(n).difference(&self.nodes[n].had).copied().collect()
     }
 
-    fn fingerprint(&self) -> Vec<(Vec<u32>, Parts, Parts)> {
-        let mut out: Vec<(Vec<u32>, Parts, Parts)> = self.nodes.iter().map(|s| (s.own.blobs.keys().copied().collect(), s.gone.clone(), s.own.snaps.clone())).collect();
-        out.push((self.k.blobs.keys().copied().collect(), self.k_gone.clone(), self.k.snaps.clone()));
+    fn fingerprint(&self) -> Vec<(Vec<u32>, Parts, Vec<u32>)> {
+        let snaps = |s: &Store| s.snaps.values().map(|x| x.id).collect();
+        let mut out: Vec<(Vec<u32>, Parts, Vec<u32>)> = self.nodes.iter().map(|s| (s.own.blobs.keys().copied().collect(), s.gone.clone(), snaps(&s.own))).collect();
+        out.push((self.k.blobs.keys().copied().collect(), self.k_gone.clone(), snaps(&self.k)));
         out
     }
 }
@@ -396,6 +459,12 @@ pub fn history(r: &mut Rng, w: &World, len: usize) -> Vec<Event> {
     let n = w.reads.len();
     let mut learn: Vec<Event> = (0..n).flat_map(|i| w.gone.iter().filter(move |p| w.reads[i].contains(p)).map(move |p| Event::Learn(i, *p))).collect();
     learn.extend(w.covered.iter().map(|p| Event::Cover(r.below(n as u64) as usize, *p)).collect::<Vec<_>>());
+    // later snapshots of the aspect, each covering the one its writer holds
+    for p in &w.covered {
+        for _ in 0..r.below(3) {
+            learn.push(Event::Recover(r.below(n as u64) as usize, *p));
+        }
+    }
     r.shuffle(&mut learn);
     let mut out = Vec::new();
     for _ in 0..len {

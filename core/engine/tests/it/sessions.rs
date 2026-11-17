@@ -46,11 +46,11 @@ fn drop_covered_by(e: &mut Engine, s: &CommitId, t: &Tid, a: &Ak) {
 }
 
 // spec/crdt.md §2.1, §8, spec/commits.md §5: a register written once per launch (each launch a
-// session): the snapshot lists the one session with a write left, covers every earlier launch's
-// body (their sessions left no trace in it) and covers an earlier snapshot that listed a session
-// since pruned; the older snapshot covers nothing newer.
+// session): the snapshot lists the session of each commit held (one write left in it), covers
+// every earlier launch's body and an earlier snapshot listing fewer; the older snapshot covers
+// nothing newer. Once the covered bodies drop, a snapshot lists only the session with a write left.
 #[test]
-fn snapshot_lists_only_traced_sessions_spec_crdt_8() {
+fn snapshot_lists_the_held_commits_sessions_spec_crdt_8() {
     let mut lp = net(1, 0);
     let t = new_thing(&mut lp, 0);
     let reg = ak("t:reg.0");
@@ -72,18 +72,26 @@ fn snapshot_lists_only_traced_sessions_spec_crdt_8() {
     let snap = e.snapshot(&t, &reg).unwrap().unwrap();
     let fr = frontiers_of(e, &snap, &t, &reg);
     let last = source_of(&lp, 0, commits.last().unwrap());
-    assert_eq!(fr.sources().map(|x| x.0).collect::<Vec<_>>(), vec![last.clone()], "one session listed: the last launch's");
-    assert_eq!(fr.of(&last), 1);
+    // the making commit's too, held for its record
+    let listed: BTreeSet<_> = fr.sources().map(|x| x.0).collect();
+    assert!(sessions.is_subset(&listed) && listed.len() == sessions.len() + 1, "every held commit's session listed");
+    assert!(sessions.iter().all(|x| fr.of(x) == 1), "each reached");
     let e = &mut lp.peers[0].engine;
     for c in &commits[..commits.len() - 1] {
         assert_eq!(e.covered(&snap, c, &t, &reg).unwrap(), Some(true), "an earlier launch's body is covered");
     }
     assert_eq!(e.covered(&snap, commits.last().unwrap(), &t, &reg).unwrap(), Some(true));
     let first_snap = first_snap.unwrap();
-    assert_eq!(frontiers_of(e, &first_snap, &t, &reg).sources().count(), 1);
-    assert_eq!(e.covered(&snap, &first_snap, &t, &reg).unwrap(), Some(true), "the newer snapshot covers the older, whose session it holds nothing of");
+    assert_eq!(frontiers_of(e, &first_snap, &t, &reg).sources().count(), 5);
+    assert_eq!(e.covered(&snap, &first_snap, &t, &reg).unwrap(), Some(true), "the newer snapshot covers the older");
     assert_eq!(e.covered(&first_snap, &snap, &t, &reg).unwrap(), Some(false), "not the other way round");
     assert_eq!(e.get(&t, &reg).unwrap(), Some(s("launch 7")));
+    drop_covered_by(e, &snap, &t, &reg);
+    lp.advance(1_000);
+    let e = &mut lp.peers[0].engine;
+    let again = e.snapshot(&t, &reg).unwrap().unwrap();
+    let kept: BTreeSet<_> = listed.difference(&sessions).cloned().chain([last]).collect();
+    assert_eq!(frontiers_of(e, &again, &t, &reg).sources().map(|x| x.0).collect::<BTreeSet<_>>(), kept, "the held commits' sessions only");
 }
 
 // spec/commits.md §5: a held body is judged by the join, whatever the frontier. W gets only the later
@@ -248,8 +256,9 @@ fn session_writing_nothing_leaves_nothing() {
 
 // spec: none (notes/growth.md, Tess's session rule). A register and a map written whole,
 // overwritten and compacted once per launch, cost what the same writes cost in one launch: the
-// snapshots hold steady (one session listed; the map also its entry's first), and the store holds
-// no more per launch.
+// snapshots hold steady (the register lists the making commit, held for its other parts, and the
+// last launch's session; the map its entry's first and the last), and the store holds no more per
+// launch.
 #[test]
 fn steady_aspect_holds_steady_across_sessions() {
     let run = |launches: bool| {
@@ -263,7 +272,7 @@ fn steady_aspect_holds_steady_across_sessions() {
             lp.advance(1_000);
             let round = overwrite_and_compact(&mut lp, t, i);
             if i >= 2 && launches {
-                assert_eq!(round.iter().map(|x| (x.1, x.2)).collect::<Vec<_>>(), vec![(1, 1), (2, 1)], "round {i}");
+                assert_eq!(round.iter().map(|x| (x.1, x.2)).collect::<Vec<_>>(), vec![(2, 1), (2, 1)], "round {i}");
                 if !last.is_empty() {
                     assert_eq!(round, last, "round {i}: the snapshots hold steady");
                 }
@@ -276,11 +285,11 @@ fn steady_aspect_holds_steady_across_sessions() {
     assert!(many <= one + one / 50, "{many} B over 24 launches, {one} B in one");
 }
 
-// spec/crdt.md §8: a snapshot's frontier entries are exactly its fragment's session sources:
-// one naming a source the fragment lacks, or one missing for a source it holds, is bad input at
-// ingest.
+// spec/crdt.md §8, §3.3 rule 1: a snapshot's frontier entries are exactly its table's sessions: one
+// for a session with no write in the fragment (a held commit's), after the fragment's sources, is
+// taken; one missing for a source the fragment holds is bad input at ingest.
 #[test]
-fn untraced_frontier_entry_is_bad_input_spec_crdt_8() {
+fn frontier_entries_are_the_tables_sessions_spec_crdt_8() {
     let mut lp = net(2, 0);
     lp.sync_all().unwrap();
     let t = new_thing(&mut lp, 0);
@@ -309,13 +318,11 @@ fn untraced_frontier_entry_is_bad_input_spec_crdt_8() {
     });
     // the one session of the fragment without its entry
     let missing = tamper(&|top| top[4] = Value::List(Vec::new()));
-    let ok = forge_snapshot_bytes(&mut lp, 0, t, &reg, now, sound.clone());
-    assert!(matches!(lp.peers[1].receive(&ok, Vec::new()).unwrap(), osis_engine::Ingested::Applied(_)));
-    for (what, bytes) in [("an untraced source listed", extra), ("a traced source unlisted", missing)] {
-        let forged = forge_snapshot_bytes(&mut lp, 0, t, &reg, now, bytes);
-        let e = lp.peers[1].receive(&forged, Vec::new()).unwrap_err();
-        assert_eq!(e.class(), osis_base::ErrorClass::BadInput, "{what}: {e}");
-    }
+    let forged = forge_snapshot_bytes(&mut lp, 0, t, &reg, now, missing);
+    let e = lp.peers[1].receive(&forged, Vec::new()).unwrap_err();
+    assert_eq!(e.class(), osis_base::ErrorClass::BadInput, "a traced source unlisted: {e}");
+    let listed = forge_snapshot_bytes(&mut lp, 0, t, &reg, now, extra);
+    assert!(matches!(lp.peers[1].receive(&listed, Vec::new()).unwrap(), osis_engine::Ingested::Applied(_)), "a session with no write listed");
     assert_eq!(lp.peers[1].engine.get(&t, &reg).unwrap(), Some(s("real")));
 }
 

@@ -198,9 +198,10 @@ fn rejects_deep_values_spec_3_3() {
     rejects(&delta(vec![], vec![], l(vec![i(0), l(vec![]), i(0), v])), &wcx(), ErrorClass::BadInput);
 }
 
-// §8: one frontier entry per session source of the fragment, in table order, 0 where
-// the writer claims nothing; a source of the fragment without an entry, an entry for a source
-// not in the fragment, or one for a commit source is bad input.
+// §8, §3.3 rule 1: one frontier entry per session source of the table, in table order, 0 where
+// the writer claims nothing; the table's sessions with no write in the fragment last, ascending;
+// a session of the table without an entry, an entry for a commit source, or a source with no
+// write out of that order or not a session is bad input.
 #[test]
 fn snapshot_frontiers_spec_8() {
     let scx = DeltaCtx { ts: ts(9 << 16), own: Source::commit(osis_base::CommitId([0; 32])), range: CounterRange::EMPTY, kind: DeltaKind::Snapshot };
@@ -231,9 +232,24 @@ fn snapshot_frontiers_spec_8() {
     assert_eq!(bad(l(vec![l(vec![i(1), i(7)])])), ErrorClass::BadInput, "the session's entry missing");
     assert_eq!(bad(l(vec![l(vec![i(1), i(7)]), l(vec![i(2), i(0)]), l(vec![i(3), i(1)])])), ErrorClass::BadInput, "a commit source");
     assert_eq!(bad(l(vec![l(vec![i(2), i(0)]), l(vec![i(1), i(7)])])), ErrorClass::BadInput, "out of table order");
-    // a frontier for a source outside the fragment is refused at the encoder
-    let extra = Snapshot { frontiers: Frontiers { sessions: BTreeMap::from([(first, 7), (crate::Session { node: tid(2), ..first }, 3)]) }, ..s.clone() };
-    assert!(encode_snapshot(&extra, &scx, None).is_err());
+    // a session with no write in the fragment (a held commit's) follows the fragment's sources,
+    // the table's frontier-only sessions in ascending order
+    let (x, y) = (crate::Session { node: tid(2), ..first }, crate::Session { node: tid(3), ..first });
+    let extra = Snapshot { frontiers: Frontiers { sessions: BTreeMap::from([(first, 7), (y, 0), (x, 3)]) }, ..s.clone() };
+    let b = encode_snapshot(&extra, &scx, None).unwrap();
+    let back = decode_snapshot(&b, &scx, &mut Interner::new(), None).unwrap();
+    assert_eq!(Snapshot { frontiers: back.frontiers.clone(), ..back.clone() }.frontiers.of(&Source::session(x)), 3);
+    assert!(back.frontiers.lists(&Source::session(y)), "listed at 0");
+    let Value::List(e) = osis_base::decode(&b, &osis_base::Limits::DEFAULT).unwrap() else { panic!() };
+    let bytes = |s: &crate::Session| Value::Bytes(s.to_bytes().to_vec());
+    assert_eq!(e[1], l(vec![bytes(&first), bytes(&session), Value::Bytes(vec![7; 32]), bytes(&x), bytes(&y)]));
+    let bad_table = |sources: Value| {
+        let mut e = e.clone();
+        e[1] = sources;
+        decode_snapshot(&osis_base::encode(&Value::List(e)), &scx, &mut Interner::new(), None).unwrap_err().class()
+    };
+    assert_eq!(bad_table(l(vec![bytes(&first), bytes(&session), Value::Bytes(vec![7; 32]), bytes(&y), bytes(&x)])), ErrorClass::BadInput, "frontier-only sessions out of order");
+    assert_eq!(bad_table(l(vec![bytes(&first), bytes(&session), Value::Bytes(vec![7; 32]), bytes(&x), Value::Bytes(vec![8; 32])])), ErrorClass::BadInput, "a commit source with no write");
 }
 
 /// spec/crdt.md §3.2 (set elements), §3.3 rule 7, §5.5: a set element of a struct type is one

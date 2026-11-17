@@ -345,9 +345,7 @@ pub(crate) fn settle(tx: &mut Tx<'_>) -> Result<bool> {
             tx.txn.remove_local(&crate::engine::records::own_keys_key(t, &id), Shred::Yes)?;
         }
         tx.core.ix.own_keys.remove(t);
-        if tx.core.ix.secrets.remove(t).is_some() {
-            tx.txn.remove_local(&[crate::engine::records::SECRETS, t.as_bytes()].concat(), Shred::Yes)?;
-        }
+        tx.core.ix.secrets.remove(t);
         crate::sync::stranded::drop_asks(tx, t, |_| false)?;
         crate::sync::held::forget_actor(tx, t)?;
         if tx.core.created(t).is_some() {

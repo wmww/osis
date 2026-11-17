@@ -453,14 +453,6 @@ pub fn sources_of(f: &Fragment, cx: &DeltaCtx) -> Result<BTreeSet<Source>, Error
     Ok(enc.sources().cloned().collect())
 }
 
-/// A snapshot's frontier entries all name sources of its fragment (§8).
-fn frontiers_traced(enc: &Enc<'_>, s: &Snapshot) -> Result<(), Error> {
-    if s.frontiers.sources().any(|(src, _)| !enc.has_source(&src)) {
-        return Err(Error::Mismatch("frontier of a source not in the fragment"));
-    }
-    Ok(())
-}
-
 /// Encodes a delta (§3.2) against its header facts.
 pub fn encode_delta(d: &Delta, cx: &DeltaCtx, pages: Option<&mut dyn PageSink>) -> Result<Vec<u8>, Error> {
     #[cfg(test)]
@@ -496,13 +488,13 @@ pub fn encode_snapshot(s: &Snapshot, cx: &DeltaCtx, pages: Option<&mut dyn PageS
 /// `[nonce, Sources, Commits, Fragment, Frontiers, Absorbed, Facts]`, both passes by `enc`.
 fn write_snapshot(mut enc: Enc, s: &Snapshot) -> Result<Vec<u8>, Error> {
     collect(&mut enc, &s.fragment)?;
+    enc.add_frontier_sessions(&s.frontiers);
     let mut out = Vec::new();
     put_array(&mut out, 7);
     put_bytes(&mut out, &s.nonce);
     enc.put_sources(&mut out);
     enc.put_commits(&mut out);
     encode_fragment(&mut enc, &mut out, &s.fragment)?;
-    frontiers_traced(&enc, s)?;
     enc.put_frontiers(&mut out, &s.frontiers);
     put_absorbed(&mut out, &s.absorbed);
     enc.put_facts(&mut out, &s.facts);
