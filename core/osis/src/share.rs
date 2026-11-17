@@ -16,6 +16,11 @@ use std::collections::{BTreeMap, BTreeSet};
 pub struct GrantOpts {
     /// The grant ends at this time.
     pub until: Option<Time>,
+    /// When `until` passes: whether the holder's nodes retain a read-only copy of what it could
+    /// read (`true`) or erase it (`false`). `None`: the thing's default as it is now
+    /// (`core::RetentionSetting::retain_copies`); a later change of the default leaves the grant
+    /// as written. `Invalid` without `until`.
+    pub retain_copy: Option<bool>,
     /// The highest role the holder may grant others, at most its own.
     pub may_grant: Option<Role>,
     /// What the holder reads of what was written before its first grant.
@@ -285,8 +290,14 @@ pub struct AccountNode {
     pub role: Role,
 }
 
-fn edge(role: Role, o: GrantOpts) -> ct::Edge {
-    ct::Edge { role, until: o.until, invite: o.may_grant, floor: None }
+/// The edge `o` grants `role` with on `t`: a timed one retains as `o` says, else as `t`'s default
+/// now (spec/permissions.md §3, Retain).
+fn edge(e: &osis_engine::Engine, t: &Tid, role: Role, o: GrantOpts) -> Result<ct::Edge> {
+    if o.until.is_none() && o.retain_copy.is_some() {
+        return Err(Error::Invalid("retain_copy is for a grant with an until".into()));
+    }
+    let retain = o.until.is_some() && o.retain_copy.unwrap_or_else(|| e.retains_by_default(t));
+    Ok(ct::Edge { role, until: o.until, invite: o.may_grant, retain, floor: None })
 }
 
 /// Whether an admin's grant of `role` to `h` on `t` would lower `h`'s grant still in the state (a
@@ -427,12 +438,13 @@ impl Osis {
             if cur.is_some_and(|x| role < x.role) || below_held(e, &target, &holder, role) {
                 return Err(Error::Invalid("a lower role takes set_role".into()));
             }
+            let new = edge(e, &target, role, opts)?;
             match (opts.reads, cur.map(|x| x.floor)) {
-                (Reads::FromNow, None) => e.grant_with(&target, &holder, &edge(role, opts), flows::edges::History::None).map_err(needs_admin),
+                (Reads::FromNow, None) => e.grant_with(&target, &holder, &new, flows::edges::History::None).map_err(needs_admin),
                 (Reads::FromNow, Some(None)) => Err(Error::Invalid(format!("{holder} already reads what was written on {target} before"))),
                 // a change keeps the floor: still from its first grant on
-                (Reads::FromNow | Reads::Kept, Some(floor)) => e.grant(&target, &holder, &ct::Edge { floor, ..edge(role, opts) }).map_err(needs_admin),
-                (Reads::Kept | Reads::All, _) => e.grant(&target, &holder, &edge(role, opts)).map_err(needs_admin),
+                (Reads::FromNow | Reads::Kept, Some(floor)) => e.grant(&target, &holder, &ct::Edge { floor, ..new }).map_err(needs_admin),
+                (Reads::Kept | Reads::All, _) => e.grant(&target, &holder, &new).map_err(needs_admin),
             }
         })?;
         Ok(())
@@ -495,7 +507,7 @@ impl Osis {
                     let cur = self.grants(target)?.get(&holder).copied().ok_or(Error::Invalid(format!("{holder} is no holder of {target}")))?;
                     match role {
                         Some(r) if r == cur.role => return Ok(()),
-                        Some(r) if r > cur.role => return self.grant(target, holder, r, GrantOpts { until: cur.until, may_grant: cur.may_grant, reads: Reads::Kept }),
+                        Some(r) if r > cur.role => return self.grant(target, holder, r, GrantOpts { until: cur.until, retain_copy: cur.until.map(|_| cur.retain_copy), may_grant: cur.may_grant, reads: Reads::Kept }),
                         _ => self.lower(target, holder, role, o)?,
                     }
                 }
@@ -514,13 +526,13 @@ impl Osis {
         Err(Error::Invalid(format!("{holder} still reaches {target}")))
     }
 
-    /// The edge `m` holds on `t` after lowering it to `role` (`None`: removed): `until` kept,
-    /// `may_grant` capped.
+    /// The edge `m` holds on `t` after lowering it to `role` (`None`: removed): `until` and what
+    /// its passing says kept, `may_grant` capped.
     fn lowered_edge(&self, t: Tid, m: Tid, role: Option<Role>) -> Result<Option<ct::Edge>> {
         let Some(role) = role else { return Ok(None) };
         let cur = self.grants(t)?.get(&m).copied().ok_or(Error::Invalid(format!("{m} is no holder of {t}")))?;
         let held = self.engine(|e| e.roster(&t).get(&m).copied());
-        Ok(Some(ct::Edge { role, until: cur.until, invite: cur.may_grant.map(|i| i.min(role)), floor: held.and_then(|x| x.floor) }))
+        Ok(Some(ct::Edge { role, until: cur.until, invite: cur.may_grant.map(|i| i.min(role)), retain: cur.until.is_some() && cur.retain_copy, floor: held.and_then(|x| x.floor) }))
     }
 
     /// Lowers or removes the grant of `m` on `t`: the demotion with this node's frontier and the

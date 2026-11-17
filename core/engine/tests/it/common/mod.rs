@@ -239,7 +239,7 @@ pub fn share(lp: &mut LocalPeer, admin: usize, t: Tid) {
 }
 
 pub fn edge(role: Role) -> ct::Edge {
-    ct::Edge { role, until: None, invite: None, floor: None }
+    ct::Edge { role, until: None, invite: None, retain: false, floor: None }
 }
 
 /// Writes `holder`'s edge on `thing`: a grant by the flow (`Engine::grant`: the holder's secrets

@@ -7,7 +7,6 @@ use crate::common;
 use common::*;
 use osis_base::Role::{Admin, Read, Write};
 use osis_base::{Role, Tid};
-use osis_perm::EdgeEnd;
 use osis_perm::{At, Class, Edge, Timeline, WriteId};
 
 fn eval(w: &World) -> Timeline {
@@ -655,17 +654,18 @@ fn says_retain() -> Option<Edge> {
     Some(Edge::kept_end())
 }
 
-fn end_of(tl: &osis_perm::Timeline, g: &Tid, m: &Tid) -> EdgeEnd {
+/// Whether `m`'s edge on `g` ended saying retain.
+fn end_of(tl: &osis_perm::Timeline, g: &Tid, m: &Tid) -> bool {
     tl.ended(g, ts(100)).get(m).unwrap().0
 }
 
 // spec/permissions.md §3, Retain: the last applied write decides: a removal's own word, last by key, never
-// a write that did not apply; an `until` ending has none and reads the default at its key; a live
-// edge has no end.
+// a write that did not apply; an `until` ending says what the grant was written with; a live edge
+// has no end.
 #[test]
 fn ended_gives_the_last_applied_word_spec_permissions_3() {
     let (mut w, n, g) = admins_of_g();
-    let z = w.nodes_salted(4, 77);
+    let z = w.nodes_salted(5, 77);
     // a removal saying retain
     w.set(n[0], g, z[0], edge(Read), 2, &[]);
     w.set(n[0], g, z[0], says_retain(), 3, &[]);
@@ -676,14 +676,18 @@ fn ended_gives_the_last_applied_word_spec_permissions_3() {
     // written expired
     w.set(n[0], g, z[2], edge(Read), 2, &[]);
     w.set(n[0], g, z[2], Some(Edge { until: Some(osis_base::WallMs(3)), ..Edge::new(Read) }), 3, &[]);
+    // written expired, to retain
+    w.set(n[0], g, z[4], edge(Read), 2, &[]);
+    w.set(n[0], g, z[4], Some(Edge { until: Some(osis_base::WallMs(3)), retain: true, ..Edge::new(Read) }), 3, &[]);
     // no authority: z[3] is nobody here, its removal saying retain does not apply
     w.set(z[3], g, n[4], says_retain(), 5, &[]);
     w.set(n[0], g, n[4], None, 6, &[]);
     let tl = eval(&w);
-    assert_eq!(end_of(&tl, &g, &z[0]), EdgeEnd::Said(true));
-    assert_eq!(end_of(&tl, &g, &z[1]), EdgeEnd::Said(false));
-    assert!(matches!(end_of(&tl, &g, &z[2]), EdgeEnd::Until(_)));
-    assert_eq!(end_of(&tl, &g, &n[4]), EdgeEnd::Said(false), "a write that did not apply");
+    assert!(end_of(&tl, &g, &z[0]));
+    assert!(!end_of(&tl, &g, &z[1]));
+    assert!(!end_of(&tl, &g, &z[2]));
+    assert!(end_of(&tl, &g, &z[4]), "an `until` written to retain");
+    assert!(!end_of(&tl, &g, &n[4]), "a write that did not apply");
     assert!(!tl.ended(&g, ts(100)).contains_key(&n[1]), "alive");
 }
 
@@ -701,7 +705,7 @@ fn ended_gives_the_role_before_the_end_spec_permissions_3() {
     w.set(n[0], g, z[2], edge(Write), 2, &[]);
     w.set(n[0], g, z[2], says_retain(), 3, &[]);
     let ended = eval(&w).ended(&g, ts(100));
-    assert_eq!(ended.get(&z[0]).map(|x| (x.0, x.2)), Some((EdgeEnd::Said(true), Role::Sync)));
+    assert_eq!(ended.get(&z[0]).map(|x| (x.0, x.2)), Some((true, Role::Sync)));
     assert_eq!(ended.get(&z[1]).map(|x| x.2), Some(Role::Sync), "demoted to sync before it ended");
     assert_eq!(ended.get(&z[2]).map(|x| x.2), Some(Write));
 }
@@ -717,7 +721,7 @@ fn self_removal_says_its_own_keep_spec_permissions_2() {
     w.set(n[4], g, n[4], says_retain(), 5, &[]);
     let tl = eval(&w);
     assert!(!tl.roster(&g, At::END).contains_key(&n[4]));
-    assert_eq!(end_of(&tl, &g, &n[4]), EdgeEnd::Said(true));
+    assert!(end_of(&tl, &g, &n[4]));
 }
 
 // spec/permissions.md §2: an invite grants: a value saying retain on an absent edge does not apply, so

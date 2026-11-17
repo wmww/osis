@@ -165,7 +165,7 @@ pub(super) fn with_own_keys(lp: &mut LocalPeer, i: usize) -> Tid {
 }
 
 pub(super) fn edge(role: Role) -> ct::Edge {
-    ct::Edge { role, until: None, invite: None, floor: None }
+    ct::Edge { role, until: None, invite: None, retain: false, floor: None }
 }
 
 pub(super) fn newest_read(lp: &LocalPeer, i: usize, t: Tid) -> Option<osis_crypto::Epoch> {
@@ -1150,6 +1150,37 @@ fn finalize_without_secret_rotates_history_added_spec_permissions_2() {
     assert!(lp.peers[2].engine.epochs(&g).unwrap().write.secret(&lacked).is_some(), "X holds it by history");
 }
 
+// spec/permissions.md §3 (Retain: a default set later changes no ending before it): A grants
+// reader X a timed read while G's default retains, so the grant carries retain; A then sets the
+// default to erase. Past the `until`, the ending still says retain: in the timeline every node
+// reads (the way a lost copy hangs on) and in A's finalize.
+#[test]
+fn a_later_default_changes_no_timed_ending_spec_permissions_3() {
+    let (mut lp, g, tids) = granted(2, &[]);
+    let set_default = |lp: &mut LocalPeer, retain: bool| {
+        let mut m = Mutation::new();
+        m.set(g, &ct::RETENTION, &ct::RetentionSetting { retain, ..Default::default() }).unwrap();
+        lp.peers[0].engine.commit(m).unwrap();
+    };
+    set_default(&mut lp, true);
+    let until = WallMs(lp.peers[0].engine.core.now().0 + 100);
+    let retain = lp.peers[0].engine.retains_by_default(&g);
+    assert!(retain, "the default when written");
+    lp.peers[0].engine.grant(&g, &tids[1], &ct::Edge { until: Some(until), retain, ..edge(Role::Read) }).unwrap();
+    set_default(&mut lp, false);
+    lp.sync_all().unwrap();
+    assert!(!lp.peers[1].engine.retains_by_default(&g), "the default is erase now");
+    for p in 0..2 {
+        lp.peers[p].clock.advance(1_000);
+    }
+    let ts = crate::flows::now_ts(&lp.peers[1].engine.core);
+    let ended = lp.peers[1].engine.core.timelines.get(&g).unwrap().ended(&g, ts);
+    assert!(ended[&tids[1]].0, "the ending says retain, as written");
+    let me = tids[0];
+    let fin = lp.peers[0].engine.run(|tx| Ok(crate::flows::edges::finalizable(tx.core, &me, &g))).unwrap();
+    assert_eq!(fin.iter().map(|x| (x.0, x.2)).collect::<Vec<_>>(), [(tids[1], true)], "A's finalize says retain");
+}
+
 /// The rotations every peer of `lp` makes on `g` per round (`ensure_rotated` at each, then a
 /// sync), until a round makes none.
 pub(super) fn rounds_to_settle(lp: &mut LocalPeer, g: Tid) -> Vec<usize> {
@@ -1534,7 +1565,7 @@ fn bad_rotation_parts_read_as_missing_spec_commits_4() {
 fn keyset_before_box_reads_only_spec_permissions_4() {
     let mut lp = synced(3);
     let (a, b, c) = (lp.peers[0].engine.me(), lp.peers[1].engine.me(), lp.peers[2].engine.me());
-    let admin = ct::Edge { role: Role::Admin, until: None, invite: None, floor: None };
+    let admin = ct::Edge { role: Role::Admin, until: None, invite: None, retain: false, floor: None };
     let mut m = Mutation::new();
     let o = lp.peers[0].engine.new_thing(&mut m, a);
     lp.peers[0].commit(m).unwrap();

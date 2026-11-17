@@ -35,11 +35,11 @@ fn written(core: &crate::engine::Core, target: &Tid, old: Option<&PermEdge>, d: 
         };
     }
     let retain = old.is_some() && d.retain.unwrap_or_else(|| crate::apply::validity::retain_default(core, target));
-    Ok(retain.then_some(Edge { role: Role::Read, until: Some(osis_base::WallMs(0)), invite: None, floor: None }))
+    Ok(retain.then_some(Edge { role: Role::Read, until: Some(osis_base::WallMs(0)), invite: None, retain: false, floor: None }))
 }
 
 fn perm_edge(e: &Edge) -> PermEdge {
-    PermEdge { role: e.role, until: e.until, invite: e.invite, floor: e.floor }
+    PermEdge { role: e.role, until: e.until, invite: e.invite, retain: e.retain, floor: e.floor }
 }
 
 /// A grant or a raise of `holder`'s edge on `target` by `who` (this node, or a held key actor
@@ -407,18 +407,9 @@ pub(crate) fn finalizable(core: &crate::engine::Core, who: &Tid, target: &Tid) -
     if ended.is_empty() {
         return Vec::new();
     }
-    // it says what the expiry would (spec/permissions.md §3, Retain): the thing's default
-    let ends = on.holders_gone(ts);
-    ended
-        .into_iter()
-        .map(|(m, e)| {
-            let keep = match ends.get(&m).map(|x| x.0) {
-                Some(osis_perm::EdgeEnd::Until(_)) => crate::apply::validity::retain_default(core, target),
-                _ => false,
-            };
-            (m, e, keep)
-        })
-        .collect()
+    // it says what the expiry would (spec/permissions.md §3, Retain): what the grant was written
+    // with
+    ended.into_iter().map(|(m, e)| (m, e, e.retain)).collect()
 }
 
 /// A finalize by `who` of the edges `ended` on `target` (`finalizable`; spec/permissions.md §2):
@@ -436,7 +427,7 @@ pub(crate) fn finalize_in(tx: &mut Tx<'_>, who: Tid, target: Tid, ended: &[(Tid,
     for (x, e, keep) in ended {
         removal(tx, &mut m, target, *x)?;
         if *keep {
-            put_edge(&mut m, target, *x, &Edge { role: Role::Read, until: Some(WallMs(0)), invite: None, floor: None })?;
+            put_edge(&mut m, target, *x, &Edge { role: Role::Read, until: Some(WallMs(0)), invite: None, retain: false, floor: None })?;
         }
         if let Some(dep) = Departure::of_change(*x, Some(e.role), None) {
             left.extend(ROLES.into_iter().filter(|r| *r <= e.role));
@@ -474,6 +465,13 @@ pub(crate) fn finalize_in(tx: &mut Tx<'_>, who: Tid, target: Tid, ended: &[(Tid,
 }
 
 impl Engine {
+    /// Whether a removal from `t`, or a grant on it ending by `until`, retains a read-only copy
+    /// unless its writer says otherwise: the `retain` of `t`'s current setting (spec/permissions.md
+    /// §3, Retain). A timed grant carries what it was written with (`Edge::retain`).
+    pub fn retains_by_default(&self, t: &Tid) -> bool {
+        crate::apply::validity::retain_default(&self.core, t)
+    }
+
     /// Grants `holder` the edge `edge` on `target`, or raises its edge (spec/permissions.md §2),
     /// as an admin of the target or by invite. Gives the target (and a plain holder) secrets of
     /// their own first where needed. Delivers the grant to the holder's inbox (a node: direct).

@@ -89,6 +89,9 @@ type edge = struct {
     until 1: option<timestamp>,
     /// The highest role the holder may grant to others.
     invite 2: option<role>,
+    /// With `until`: when it passes, the holder's nodes keep a read-only copy (spec/permissions.md
+    /// §3, Retain).
+    retain 3: bool,
     /// Granted without earlier history: the holder reads from this change of secrets on
     /// (spec/crypto.md §4).
     floor 4: option<int>,

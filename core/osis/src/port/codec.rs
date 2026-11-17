@@ -414,18 +414,18 @@ pub(crate) fn role_from(v: &Value) -> Result<Role> {
     Role::from_id(uint(v, "role")?).ok_or_else(|| bad("role"))
 }
 
-/// `grants`: `[[holder, role, Opt(until), Opt(may_grant), from_now]*]`.
+/// `grants`: `[[holder, role, Opt(until), retain_copy, Opt(may_grant), from_now]*]`.
 impl Form for Grants {
     fn to_wire(&self) -> Value {
-        Value::List(self.iter().map(|(h, g)| Value::List(vec![tid_to(h), role_to(g.role), time_to(g.until), opt(g.may_grant.map(role_to)), Value::Bool(g.from_now)])).collect())
+        Value::List(self.iter().map(|(h, g)| Value::List(vec![tid_to(h), role_to(g.role), time_to(g.until), Value::Bool(g.retain_copy), opt(g.may_grant.map(role_to)), Value::Bool(g.from_now)])).collect())
     }
     fn from_wire(v: Value) -> Result<Grants> {
         list(v, "grants")?
             .into_iter()
             .map(|g| {
-                let [h, role, until, may, from_now] = <[Value; 5]>::try_from(list(g, "grant")?).map_err(|_| bad("grant"))?;
+                let [h, role, until, retain, may, from_now] = <[Value; 6]>::try_from(list(g, "grant")?).map_err(|_| bad("grant"))?;
                 let may_grant = opt_from(may, "grant")?.map(|r| role_from(&r)).transpose()?;
-                Ok((tid(&h)?, Grant { role: role_from(&role)?, until: time_from(until, "grant")?, may_grant, from_now: bool_from(&from_now, "grant")? }))
+                Ok((tid(&h)?, Grant { role: role_from(&role)?, until: time_from(until, "grant")?, retain_copy: bool_from(&retain, "grant")?, may_grant, from_now: bool_from(&from_now, "grant")? }))
             })
             .collect()
     }

@@ -130,10 +130,11 @@ codec_enum! {
     pub enum Source { 0 Commit(c: CommitId), 1 Session(s: [u8; 31]) }
 }
 codec_struct! {
-    /// A role edge; `floor`: the read n its holder reads from, granted without
-    /// history (spec/crypto.md §4, Floors).
+    /// A role edge; `retain`: with `until`, its passing says retain (spec/permissions.md §3,
+    /// Retain); `floor`: the read n its holder reads from, granted without history
+    /// (spec/crypto.md §4, Floors).
     #[derive(Clone, Debug, PartialEq, Eq)]
-    pub struct Edge { 0 role: Role, 1 until: Option<WallMs>, 2 invite: Option<Role>, 4 floor: Option<u64> }
+    pub struct Edge { 0 role: Role, 1 until: Option<WallMs>, 2 invite: Option<Role>, 3 retain: bool, 4 floor: Option<u64> }
 }
 codec_struct! {
     /// A keyset: epoch, KEM key, suite ID of the epoch, delete key, the epochs its rotation

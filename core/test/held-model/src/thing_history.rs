@@ -1,14 +1,18 @@
 //! The thing-level history judgment (spec/commits.md §5 The setting): history is set per thing by
-//! `retention^.0`, never per write, and judged by the current setting alone: the newest held
-//! valid one. One aspect of one thing; times are wall ms. `Outcome` (`model.rs`) judges every
-//! replaced body by `out`; `Eager` and `history` here are the greenfield small worlds
+//! `retention^.0`, never per write, and judged by the current setting: the newest held valid one.
+//! One aspect of one thing; times are wall ms. `Outcome` (`model.rs`) judges every replaced body
+//! by `out`; `Eager` and `history` here are the greenfield small worlds
 //! `tests/it/spec_thing_history.rs` checks.
 //!
 //! The rule: a replaced body is in history while the current setting keeps it, counted from when
-//! it was replaced. Purge on replace is the one thing that needs the past, and the current
-//! setting carries it: an entry's `floor` (`purge_before`) puts every body written before it under
-//! purge on replace, and a writer replacing a purge-on-replace entry sets it to its own stamp
-//! (`written_after`), carrying any earlier one on.
+//! it was replaced. Purge on replace is the one thing that needs the past, and the settings carry
+//! it as a floor: a body written before the floor is under purge on replace. The floor joins by
+//! maximum over every held setting (`joined_floor`): each one's own `floor`, and for a
+//! purge-on-replace one the stamp of the next held setting (where no held floor already passes
+//! its own stamp). A writer writes the joined floor of what it holds into its setting
+//! (`written_after`), so a setting written by an admin that never held a concurrent purging one
+//! loses nothing at a node holding both, and once a setting carries the join the older ones add
+//! nothing.
 
 pub type Ms = u64;
 pub const NEVER: Ms = u64::MAX;
@@ -34,28 +38,57 @@ pub struct Setting {
     pub floor: Ms,
 }
 
-/// The setting a writer holding `prev` (its current) writes at `ts` with option `opt`: purge on
-/// replace is one way, so a writer replacing a purge-on-replace entry sets the floor to its own
-/// stamp, and every writer carries the floor it holds.
-pub fn written_after(prev: Option<&Setting>, ts: Ms, id: u32, opt: Opt) -> Setting {
-    let floor = prev.map_or(0, |p| if p.opt == Opt::Purge { ts.max(p.floor) } else { p.floor });
-    Setting { ts, id, opt, floor }
+/// The setting a writer holding `held` writes at `ts` (after every held one) with option `opt`:
+/// its floor is the joined floor of `held` and itself (`joined_floor`), so a writer replacing a
+/// purge-on-replace entry sets it to at least its own stamp. Under `Rule::NoJoin` it carries its
+/// current setting's alone.
+pub fn written_after(held: &[Setting], ts: Ms, id: u32, opt: Opt, rule: Rule) -> Setting {
+    let new = Setting { ts, id, opt, floor: 0 };
+    let floor = match rule {
+        Rule::NoJoin => newest(held).map_or(0, |p| if p.opt == Opt::Purge { ts.max(p.floor) } else { p.floor }),
+        _ => joined_floor(&[held, &[new]].concat(), rule),
+    };
+    Setting { floor, ..new }
 }
 
 /// What a node judges by (the design, and the negative controls the tests show fail).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Rule {
-    /// The floor, against the stamps of the body's writes.
+    /// The joined floor, against the stamps of the body's writes.
     Floor,
+    /// The current setting's floor alone, carried by each writer from its current setting only.
+    NoJoin,
     /// No floor: purge on replace by the current setting alone, covered at once by writers.
     NoFloor,
-    /// The floor against the body's replaced-at (which a node holding fewer bodies dates later).
+    /// The joined floor against the body's replaced-at (which a node holding fewer bodies dates
+    /// later).
     FloorByReplaced,
 }
 
-/// The current setting: the newest held, by `(ts, id)`.
-pub fn current(settings: &[Setting]) -> Option<Setting> {
+/// The newest held setting, by `(ts, id)`.
+pub fn newest(settings: &[Setting]) -> Option<Setting> {
     settings.iter().max().copied()
+}
+
+/// The floor joined over `settings` (spec/commits.md §5 One way): the greatest of every held
+/// setting's own floor and, for each purge-on-replace setting but the newest, the stamp of the
+/// next held one by key, unless a held floor is already past its own stamp (every floor is the
+/// stamp of a setting written after the purging one, so it covers all that was replaced while
+/// that one was in force). Under `Rule::NoJoin`, the newest's floor alone.
+pub fn joined_floor(settings: &[Setting], rule: Rule) -> Ms {
+    let mut s = settings.to_vec();
+    s.sort();
+    if rule == Rule::NoJoin {
+        return s.last().map_or(0, |x| x.floor);
+    }
+    let base = s.iter().map(|x| x.floor).max().unwrap_or(0);
+    let ended = s.windows(2).filter(|w| w[0].opt == Opt::Purge && base <= w[0].ts).map(|w| w[1].ts);
+    ended.fold(base, Ms::max)
+}
+
+/// The current setting a node holding `settings` judges by: the newest, with the joined floor.
+pub fn current(settings: &[Setting], rule: Rule) -> Option<Setting> {
+    newest(settings).map(|s| Setting { floor: joined_floor(settings, rule), ..s })
 }
 
 /// A register write: body `id` stamped `ts` (stamps distinct). `fire`: a signal's, replaced
@@ -79,7 +112,7 @@ pub fn replaced_at(held: &[Body], b: &Body) -> Option<Ms> {
 /// Whether `b`, replaced at `r`, is under the floor of `s`.
 fn floored(s: &Setting, rule: Rule, b: &Body, r: Ms) -> bool {
     match rule {
-        Rule::Floor => b.ts < s.floor,
+        Rule::Floor | Rule::NoJoin => b.ts < s.floor,
         Rule::NoFloor => false,
         Rule::FloorByReplaced => r < s.floor,
     }
@@ -126,7 +159,7 @@ pub fn live_until(cur: Option<Setting>, b: &Body) -> Ms {
 
 /// The history a node holding `settings` and `held` shows at `now`.
 pub fn history(settings: &[Setting], rule: Rule, held: &[Body], now: Ms) -> Vec<u32> {
-    let cur = current(settings);
+    let cur = current(settings, rule);
     let mut v: Vec<u32> = held.iter().filter(|b| replaced_at(held, b).is_some_and(|r| kept(cur, rule, b, r, now))).map(|b| b.id).collect();
     v.sort();
     v
@@ -166,7 +199,7 @@ impl Eager {
     }
     pub fn act(&mut self, rule: Rule, now: Ms) {
         let held = self.held.clone();
-        let cur = current(&self.settings);
+        let cur = current(&self.settings, rule);
         let dropped = &mut self.dropped;
         self.held.retain(|b| {
             let gone = replaced_at(&held, b).is_some_and(|r| out(cur, rule, b, r) <= now);

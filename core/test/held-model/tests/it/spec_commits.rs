@@ -265,7 +265,7 @@ fn live_delta_kept_to_its_live_bound_spec_commits_5() {
     assert_eq!(live(vec![setting(5, 0, REG, keep_after(1)), setting(6, 4, REG, Opt::None)], 3).0, dropped);
     // one way: a keep after purge on replace keeps no delta written before it
     let p = Setting { rules: vec![(REG.name, SettingEntry { history: Opt::Purge, expires: None, purge_before: 0 })], default: None, written: None };
-    let k = Setting { rules: vec![(REG.name, SettingEntry { history: keep_after(1), expires: None, purge_before: 0 })], default: None, written: None }.written_after(Some(&p), at(2));
+    let k = Setting { rules: vec![(REG.name, SettingEntry { history: keep_after(1), expires: None, purge_before: 0 })], default: None, written: None }.written_after(&[(at(0), &p)], at(2));
     assert_eq!(live(vec![setting_by(5, FIRST_ADMIN, 0, p), setting_by(6, FIRST_ADMIN, 2, k)], 3).0, dropped);
     // another aspect's keep keeps nothing here
     assert_eq!(live(vec![setting(5, 0, OTHER, KEPT)], 3).0, dropped);

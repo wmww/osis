@@ -8,7 +8,7 @@ use osis_engine::flows::Demotion;
 use osis_schema::core_types as ct;
 
 pub(crate) fn edge(role: Role) -> ct::Edge {
-    ct::Edge { role, until: None, invite: None, floor: None }
+    ct::Edge { role, until: None, invite: None, retain: false, floor: None }
 }
 
 

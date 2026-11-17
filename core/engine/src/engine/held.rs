@@ -681,7 +681,7 @@ impl<'a> On<'a> {
         self.tl.applied_on(&self.thing)
     }
     /// The holders whose edge on it ended by `ts` (`Timeline::ended`).
-    pub fn holders_gone(&self, ts: osis_base::Ts) -> BTreeMap<Tid, (osis_perm::EdgeEnd, Option<osis_perm::Point>, Role)> {
+    pub fn holders_gone(&self, ts: osis_base::Ts) -> BTreeMap<Tid, (bool, Option<osis_perm::Point>, Role)> {
         self.tl.ended(&self.thing, ts)
     }
     /// The holders whose edge on it is lowered at `ts` (`Timeline::lowered`).

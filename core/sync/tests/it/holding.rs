@@ -14,7 +14,7 @@ fn ak() -> Ak {
 }
 
 fn edge(role: Role) -> ct::Edge {
-    ct::Edge { role, until: None, invite: None, floor: None }
+    ct::Edge { role, until: None, invite: None, retain: false, floor: None }
 }
 
 /// A thing node `i` makes under `admin` (its account root when `None`), held there, value `v`.

@@ -142,16 +142,19 @@ pub struct Outcome {
 impl Outcome {
     /// The current setting's entry for `(t, a)`, as the greenfield judgment takes it: the newest
     /// held valid setting by the write it carries (spec/commits.md §5 In force), its entry
-    /// governing `a`, purge on replace reading as no history on a signal. `None`: no setting, or
-    /// a fixed-retention aspect.
+    /// governing `a` (purge on replace reading as no history on a signal), with the floor of `a`
+    /// joined over every held valid setting (One way). `None`: no setting, or a fixed-retention
+    /// aspect.
     fn current(&self, t: ThingId, a: Aspect) -> Option<thing_history::Setting> {
         if a.fixed() {
             return None;
         }
-        let (_, s) = self.settings.get(&t)?.last()?;
-        let e = s.entry(a.name)?;
-        let opt = if a.signal && e.history == Opt::Purge { Opt::None } else { e.history };
-        Some(thing_history::Setting { ts: 0, id: 0, opt, floor: e.purge_before })
+        let held = self.settings.get(&t)?;
+        let (_, s) = held.last()?;
+        let opt = s.entry(a.name).map_or(Opt::None, |e| e.history);
+        let opt = if a.signal && opt == Opt::Purge { Opt::None } else { opt };
+        let walls: Vec<(u64, &Setting)> = held.iter().map(|(k, s)| (wall(k.0), s)).collect();
+        Some(thing_history::Setting { ts: 0, id: 0, opt, floor: Setting::joined_floor(&walls, Some(a.name)) })
     }
     /// The moment a body of `(t, a)` replaced at wall ms `r`, its oldest dead write stamped at
     /// wall ms `w`, leaves history by the current setting (spec/commits.md §5 The setting). `NEVER`:
@@ -793,6 +796,11 @@ fn judge(h: &Held) -> (Outcome, Timeline) {
         for (i, p) in c.parts.iter().enumerate() {
             if let Some(Some(r)) = o.replaced_at.get(&(c.id, i)) {
                 o.deadlines.insert(o.out(p.thing, p.aspect, *r, o.oldest_dead.get(&(c.id, i)).copied().unwrap_or(wall(c.ts))));
+            }
+            // a signal's keep bound (`signal_kept`), whatever its validity: an invalid fire of
+            // `me`'s own stays until it
+            if p.aspect.signal {
+                o.deadlines.insert(o.out(p.thing, p.aspect, wall(c.ts), wall(c.ts)));
             }
             // a live delta's live bound
             if o.live_delta(c, i) {

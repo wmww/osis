@@ -314,7 +314,7 @@ fn contested(core: &Core, k: &Tid) -> bool {
 /// One way a lost actor's copy may hang on holder `via`.
 #[derive(Clone, Copy)]
 struct Way {
-    /// An ended edge's removal said retain, or its `until` passed under a default to retain, or the
+    /// An ended edge's removal said retain, or its `until` passed on a grant written to retain, or the
     /// way is alive (an edge, a record edge included, from a holder that is itself kept).
     retain: bool,
     /// The write that ended it: the node must have read the holder just before it.
@@ -329,12 +329,8 @@ fn ways(core: &Core, actors: &BTreeSet<Tid>) -> BTreeMap<Tid, BTreeMap<Tid, Way>
     for a in actors {
         let w = out.entry(*a).or_default();
         if let Some(tl) = core.timelines.get(a) {
-            let says = |e: osis_perm::EdgeEnd| match e {
-                osis_perm::EdgeEnd::Said(k) => k,
-                osis_perm::EdgeEnd::Until(_) => crate::apply::validity::retain_default(core, a),
-            };
             // an ended grant of sync read nothing to keep
-            w.extend(tl.ended(a, ts).into_iter().filter(|(_, (_, _, r))| *r >= Role::Read).map(|(h, (e, end, _))| (h, Way { retain: says(e), end })));
+            w.extend(tl.ended(a, ts).into_iter().filter(|(_, (_, _, r))| *r >= Role::Read).map(|(h, (retain, end, _))| (h, Way { retain, end })));
         }
         // the roster now at read or above (a grant of sync reads nothing to keep), its record
         // edge included while it stands

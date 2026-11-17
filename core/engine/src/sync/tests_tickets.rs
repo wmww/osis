@@ -76,7 +76,7 @@ fn ticket_after_strong(forge: bool) {
     e1.commit(m).unwrap();
     // Alice grants Bob read: her ticket reaches him as a sealed fire
     let e0 = &mut lp.peers[0].engine;
-    e0.grant(&t, &bob, &ct::Edge { role: Role::Read, until: None, invite: None, floor: None }).unwrap();
+    e0.grant(&t, &bob, &ct::Edge { role: Role::Read, until: None, invite: None, retain: false, floor: None }).unwrap();
     let honest = e0.epochs(&t).unwrap().read.newest_held().unwrap().0;
     let fires = e0.fires_owed();
     let out = e0.sealed_fire(&fires[0]).unwrap().unwrap();

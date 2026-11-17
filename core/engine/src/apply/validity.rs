@@ -28,7 +28,7 @@ pub(crate) fn edge_of(v: &Value) -> Option<Edge> {
     if e.invite.is_some_and(|i| i > e.role) {
         return None;
     }
-    Some(Edge { role: e.role, until: e.until, invite: e.invite, floor: e.floor })
+    Some(Edge { role: e.role, until: e.until, invite: e.invite, retain: e.retain, floor: e.floor })
 }
 
 fn frontier_of(f: ct::Frontier) -> Frontier {

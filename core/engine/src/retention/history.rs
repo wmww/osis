@@ -3,9 +3,12 @@
 //! asks here: keep bounds and when a body was replaced (`bounds`), listing, undo, purge on
 //! replace (`replace`), memory compaction, permanence, and node-sync's kept bodies (through
 //! `Engine::part_keeps`, `permanent`). Its source is the thing's current setting
-//! (`validity::setting_now`: the newest held valid `retention^.0` body) read for the AK, alone:
-//! no earlier setting counts. Purge on replace carries its past in the entry (`purge_before`,
-//! filled by the setting's writer, `osis_commit::retention::carry_floors`). A fixed-retention
+//! (`validity::setting_now`: the newest held valid `retention^.0` body) read for the AK. Purge on
+//! replace carries its past as a floor, joined over every held valid setting
+//! (`osis_commit::retention::joined_floor`; a writer writes the join, `carry_floors`), so a
+//! setting written by an admin that never held a concurrent purging one loses nothing here; while
+//! the older settings still add to the join they are kept (`retention^.0` in history for good).
+//! A fixed-retention
 //! aspect has no setting: `ROLE_KEEP` after replaced for a role-class aspect or `addenda.0`
 //! (compactor policy), no history for `purge.0`.
 
@@ -23,8 +26,8 @@ pub(crate) const NEVER: u64 = u64::MAX;
 pub(crate) struct Kept {
     /// The current setting's entry for the AK (purge on replace reading as no history on a signal).
     opt: Opt,
-    /// Its `purge_before` (0: none): a body holding a dead write stamped before it is under purge
-    /// on replace.
+    /// Its `purge_before` joined over the held settings (0: none): a body holding a dead write
+    /// stamped before it is under purge on replace.
     floor: u64,
     /// Fixed retention: `ROLE_KEEP` after replaced (role-class, `addenda.0`).
     role: bool,
@@ -36,8 +39,10 @@ impl Default for Kept {
     }
 }
 
-/// What history keeps of the bodies of `(tid, ak)`: the current setting read for `ak`. O(log the
-/// thing's held settings).
+/// What history keeps of the bodies of `(tid, ak)`: the current setting read for `ak`, with the
+/// floor joined over every held valid setting. `retention^.0` itself is kept for good while the
+/// older settings add to the join (`floors_unabsorbed`: no setting carries it yet, so no cover
+/// may drop them and sync holds them as must-hold). O(the thing's held settings).
 pub(crate) fn of(core: &Core, tid: &Tid, ak: &Ak) -> Kept {
     let a = ak.as_str();
     if osis_commit::retention::role_kept(a) {
@@ -46,12 +51,16 @@ pub(crate) fn of(core: &Core, tid: &Tid, ak: &Ak) -> Kept {
     if osis_commit::retention::fixed_retention(a).is_some() {
         return Kept::default();
     }
-    let Some(s) = crate::apply::validity::setting_now(core, tid) else { return Kept::default() };
-    let e = s.entry(ak);
-    let o = Opt::of(e);
+    let all = crate::apply::validity::settings(core, tid);
+    let Some((_, s)) = all.last() else { return Kept::default() };
+    let held: Vec<(u64, &osis_schema::core_types::RetentionSetting)> = all.iter().map(|(p, x)| (p.ts.wall_ms().0, &**x)).collect();
+    if a == osis_commit::retention::RETENTION && osis_commit::retention::floors_unabsorbed(&held) {
+        return Kept { opt: Opt::Keep { after: 0, until: FOREVER }, ..Kept::default() };
+    }
+    let o = Opt::of(s.entry(ak));
     // a fire is history from its own `ts`: purge on replace reads as no history there
     let opt = if ak.signal() && o == Opt::Purge { Opt::None } else { o };
-    Kept { opt, floor: e.and_then(|e| e.purge_before).unwrap_or(0), ..Kept::default() }
+    Kept { opt, floor: osis_commit::retention::joined_floor(&held, Some(ak)), ..Kept::default() }
 }
 
 /// Whether delta `a` of `h` is permanent (spec/commits.md §5): durable, no expiry, an aspect with

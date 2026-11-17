@@ -39,7 +39,7 @@
   - A grant or change also writes a new entry holding the whole grant (spec/crdt.md §5.6 `put_new`).
   - A `roles.0` delta writing inside an entry it does not create is bad input (judged from the delta and its header: the entry's dot is outside the delta's own dots).
   - A reset names the write it ends: its entry's creation. A role commit with a removal (a write leaving the holder no grant for keys: none, or `until` 0) resetting an entry whose creation the reader does not hold applies none of its edge writes until that creation is held; a commit's edge writes apply together or not at all. A reset beside a put of a live grant for its key decides nothing (the put sets the grant) and is not waited for. Limit: one whose creation the reader never gets never applies there. A reset carrying another key than its entry's creation removes no grant (spec/crdt.md §5.6).
-- A grant may carry `until: timestamp`: the grant counts as removed from `wall_ms(t) >= until`.
+- A grant may carry `until: timestamp`: the grant counts as removed from `wall_ms(t) >= until`. Such a grant carries `retain`: whether its `until` passing says retain (§3, Retain), as its writer wants, else as the thing's default when written (`retain` of its current `retention^.0` setting, spec/commits.md §5 In force); a reader reads `retain` only beside an `until`.
 - A grant **without history** carries `floor`: the n of the read rotation its commit makes (the cut, spec/crypto.md §4 Floors); its holder reads the current state (snapshots, spec/crypto.md §4 State at a cut) and is handed no commit written before it. A change of the grant keeps its `floor` unless its writer shows history (a grant with history, at its author's floor); a grant without history is written by an admin of the target, to a holder holding no role on it.
 - **An `until` passing** is a loss (§3) the node judges by its own clock, with no role commit behind it. A node whose read access only an `until` ended (walked with every grant's time ahead, it has a role):
   - First hears out each sync ID of the actor it reads (as §3, When it learns it). For each, one of these holds:
@@ -52,7 +52,7 @@
 - **Finalize**: a removal of another holder's grant carrying no frontier that is not a self-removal (below). It applies (§5.1) iff the grant is past its `until` at the removal's `ts` (as the timeline orders it: a renewal ordered before it counts, and the finalize then ends a superseded write and applies nothing) and its author holds write on the target and a role there at least the grant's (a timed admin grant needs an admin); else it applies nothing, whoever wrote it.
   - It is no explicit write: it audits nothing, so the removed holder's own timestamps still decide its writes (§5.1, §5.2).
   - It is the grant's departure for keys (spec/crypto.md §4) and carries its rotation (§3) like any removal; one finalize may remove several ended grants of one target (spec/commits.md §2).
-  - It says retain or erase as its `until` would (§3, Retain: the thing's current default).
+  - It says retain or erase as its `until` would (§3, Retain: the grant's `retain`).
   - A node with write on actor T holding a grant on T it may finalize, past its `until` by its own clock, MUST write the finalize before its next commit encrypting under T other than by sealing a box to T (spec/crypto.md §4), and boxes that holder nothing meanwhile (a grant renewing it excepted).
 - A removal says **retain or erase** (§3, Retain).
   - Its plain entry reset says erase.
@@ -139,9 +139,9 @@
     - a grant of H on A at read or above alive.
   - An ended grant says what the last write on it on the timeline (§5.1, the writes that applied) says:
     - a removal, for itself (§2);
-    - a value with another `until`, passed: the thing's current default (spec/commits.md §5 In force).
+    - a value with another `until`, passed: its `retain` (§2).
   - It retains only while the node has H: it is H, holds read or above on H now, retains H itself, or holds H's secrets above sync not dropped in the same judging (a loss of H not yet carried out; the copy is judged again when it is) (least fixpoint, so holders cannot retain each other).
-  - Everything else erases: a removal saying so, no default, a write that did not apply. A default set later changes no removal before it; it changes what an ended timed grant says (the thing keeps no earlier setting).
+  - Everything else erases: a removal saying so, a timed grant written to erase, a write that did not apply. A default set later changes no removal or ending before it.
   - **The copy** is what the node held when it dropped: state, bodies and their timers.
     - Its secrets and `secrets.0` go as above, and so does what it held of the things' sync IDs: it syncs none of them, logs and serves nothing of it, and cannot write it.
     - Its pending parts on the things' content go. A later part on it is not joined, so a purge request arriving later reaches the copy only in a commit the node takes for another part, and need not.
@@ -150,7 +150,6 @@
     - An actor the node acts as for a client (spec/sync-transport.md §6) reads the copy while it is a holder the copy hangs on, or holds a role now both on its first admin and on such a holder, a holder that is itself a copy counting by its own holders. It writes nothing there.
   - The node records per copy the holders it retains through, durably.
     - A holder leaves that record when the timeline shows its way no longer retains (as above) or the node no longer has it. A copy with none is erased as lost.
-    - A default arriving late may end a copy whose way is an `until` ending, once the node next judges that way and it then says erase; it brings none back.
     - A role on A with a secret of it again ends the copy: the node is a holder with old data, nothing more.
     - The node's user may erase a copy at any time, with what is kept only through it.
 

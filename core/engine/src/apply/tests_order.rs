@@ -31,7 +31,7 @@ fn reg() -> Ak {
 fn edge(lp: &mut LocalPeer, by: usize, t: Tid, m: Tid, role: Option<Role>, frontier: Option<Value>) -> CommitId {
     let mut mu = Mutation::new();
     let op = match role {
-        Some(role) => PathOp { path: vec![PathSeg::Key(Value::Weak(m))], op: Op::Set(ct::Edge { role, until: None, invite: None, floor: None }.to_value()) },
+        Some(role) => PathOp { path: vec![PathSeg::Key(Value::Weak(m))], op: Op::Set(ct::Edge { role, until: None, invite: None, retain: false, floor: None }.to_value()) },
         None => PathOp { path: Vec::new(), op: Op::Remove(Value::Weak(m)) },
     };
     mu.op(t, &ct::ROLES, op).unwrap();
@@ -112,7 +112,7 @@ fn sample(shape: Shape) -> usize {
         lp.peers[0].commit(m).unwrap();
         lp.hold(g);
         for (h, role) in [(b, Role::Write), (c, Role::Admin), (d, Role::Read)] {
-            lp.peers[0].engine.grant(&g, &h, &ct::Edge { role, until: None, invite: None, floor: None }).unwrap();
+            lp.peers[0].engine.grant(&g, &h, &ct::Edge { role, until: None, invite: None, retain: false, floor: None }).unwrap();
         }
         lp.sync_all().unwrap();
         // every peer's: each holds its own root's and of the others only what it needs

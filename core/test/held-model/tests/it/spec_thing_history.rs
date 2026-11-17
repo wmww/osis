@@ -8,20 +8,49 @@ use held_model::thing_history::*;
 const END: Ms = 7;
 const OPTS: [Opt; 6] = [Opt::None, Opt::Keep { after: 1, until: 0 }, Opt::Keep { after: 3, until: 0 }, Opt::Keep { after: 0, until: 4 }, Opt::Keep { after: 0, until: NEVER }, Opt::Purge];
 
-/// Every chain of up to `n` settings stamped in `0..END`, each written by a writer holding the one
-/// before it by key (`written_after`: the floor carried).
-fn chains(n: usize) -> Vec<Vec<Setting>> {
+/// The settings written on one thing, by admins that may not hold each other's: setting `id`'s
+/// writer held the settings `held[id]` names (a bit per id) when it wrote, and `saw[id]` is what it
+/// knew of, itself and transitively what those held knew.
+#[derive(Clone, Debug)]
+struct World {
+    settings: Vec<Setting>,
+    saw: Vec<u64>,
+}
+
+impl World {
+    /// The world `plan` writes (each setting's stamp, option and the earlier ones its writer
+    /// holds, stamped no later), each writer carrying floors by `rule`.
+    fn of(plan: &[(Ms, Opt, u64)], rule: Rule) -> World {
+        let mut w = World { settings: Vec::new(), saw: Vec::new() };
+        for (id, &(ts, opt, held)) in plan.iter().enumerate() {
+            let h: Vec<Setting> = w.settings.iter().filter(|s| held & (1 << s.id) != 0).copied().collect();
+            w.settings.push(written_after(&h, ts, id as u32, opt, rule));
+            let saw = h.iter().fold(1 << id, |m, s| m | w.saw[s.id as usize]);
+            w.saw.push(saw);
+        }
+        w
+    }
+    /// Whether a node holding `known` has learnt of setting `s`: it holds it, or one whose writer
+    /// knew of it.
+    fn learnt(&self, known: &[Setting], s: &Setting) -> bool {
+        known.iter().any(|k| self.saw[k.id as usize] & (1 << s.id) != 0)
+    }
+}
+
+/// Every plan of up to `n` settings stamped in `0..END`, each writer holding any subset of the
+/// earlier ones (stamped at or after the latest it holds): chains, and concurrent admins.
+fn plans(n: usize) -> Vec<Vec<(Ms, Opt, u64)>> {
     let mut all = vec![vec![]];
-    let mut last: Vec<Vec<Setting>> = vec![vec![]];
-    for id in 0..n as u32 {
+    let mut last: Vec<Vec<(Ms, Opt, u64)>> = vec![vec![]];
+    for id in 0..n {
         let mut next = Vec::new();
-        for t in &last {
-            let from = t.last().map_or(0, |s: &Setting| s.ts);
-            for ts in from..END {
-                for &opt in &OPTS {
-                    let mut t = t.clone();
-                    t.push(written_after(t.last(), ts, id, opt));
-                    next.push(t);
+        for p in &last {
+            for held in 0..1u64 << id {
+                let from = (0..id).filter(|i| held & (1 << i) != 0).map(|i| p[i].0).max().unwrap_or(0);
+                for ts in from..END {
+                    for &opt in &OPTS {
+                        next.push([p.clone(), vec![(ts, opt, held)]].concat());
+                    }
                 }
             }
         }
@@ -29,6 +58,11 @@ fn chains(n: usize) -> Vec<Vec<Setting>> {
         last = next;
     }
     all
+}
+
+/// The worlds of `plans(n)`, written by `rule`.
+fn worlds(n: usize, rule: Rule) -> Vec<World> {
+    plans(n).iter().map(|p| World::of(p, rule)).collect()
 }
 
 /// Every subset of `v`.
@@ -52,53 +86,72 @@ fn perms<T: Clone>(v: &[T]) -> Vec<Vec<T>> {
     out
 }
 
+/// Register writes 0, 1, 2 at 1, 3, 5 (value 0 replaced at 3, 1 at 5).
 fn bodies(fire: bool) -> Vec<Body> {
     [1, 3, 5].iter().enumerate().map(|(i, ts)| Body { ts: *ts, id: i as u32, fire }).collect()
 }
 
-/// The violations of purge on replace's promise in one world under `rule`: a body the oracle says
-/// was replaced under purge on replace (`purged`) shown by a node holding `held` of the bodies and
-/// `known` of the settings, one of them at or after the setting it was replaced under (a node
-/// holding none such has not learnt of the purge: what it shows is a late setting's), at any
-/// moment from its replacement.
-fn shown_purged(settings: &[Setting], all: &[Body], known: &[Setting], held: &[Body], rule: Rule) -> usize {
+/// The setting `b` was replaced under, when purge on replace's promise covers it (`purged`: the
+/// setting in force by stamp at its replacement, over every setting written, purged on replace).
+fn purged_under(w: &World, all: &[Body], b: &Body) -> Option<Setting> {
+    let r = replaced_at(all, b)?;
+    purged(&w.settings, all, b).then(|| *w.settings.iter().filter(|s| s.ts <= r).max().unwrap())
+}
+
+/// The violations of purge on replace's promise in one world under `rule`: a body replaced under
+/// purge on replace (`purged_under`) shown at any moment from its replacement by a node holding
+/// `held` of the bodies and `known` of the settings, having learnt of the setting it was replaced
+/// under (holding it, or one whose writer knew of it: a node that never heard of it shows what
+/// the settings it holds say).
+fn shown_purged(w: &World, all: &[Body], known: &[Setting], held: &[Body], rule: Rule) -> usize {
     let mut n = 0;
-    for b in held.iter().filter(|b| purged(settings, all, b)) {
-        let r = replaced_at(all, b).unwrap();
-        let under = settings.iter().filter(|s| s.ts <= r).max().unwrap();
-        if !known.iter().any(|s| s >= under) {
+    for b in held {
+        let Some(under) = purged_under(w, all, b) else { continue };
+        if !w.learnt(known, &under) {
             continue;
         }
+        let r = replaced_at(all, b).unwrap();
         n += (r..END + 6).filter(|&now| history(known, rule, held, now).contains(&b.id)).count();
     }
     n
 }
 
+/// The rules whose violations the tests count: the design first, then its negative controls.
+const RULES: [Rule; 4] = [Rule::Floor, Rule::NoJoin, Rule::NoFloor, Rule::FloorByReplaced];
+
 /// Purge on replace is one way (Tess's decision 3): content replaced under it never shows, at
-/// any node holding the setting it was replaced under or a later one, whatever else it holds
-/// (any subset of the bodies, so a replacement dated late) and in whatever order it came. Over
-/// every small world. Negative controls: with no floor, or the floor read against the dated
-/// replacement, purged content shows.
+/// any node that learnt of the setting it was replaced under, whatever else it holds (any subset
+/// of the settings, so concurrent admins' in any combination, and of the bodies, so a replacement
+/// dated late) and in whatever order it came. Over every small world: up to two settings, written
+/// in a chain or by admins not holding each other's. Negative controls: the current setting's
+/// floor alone (no join), no floor, or the floor read against the dated replacement: purged
+/// content shows.
 #[test]
 fn purged_content_never_shows() {
     let all = bodies(false);
-    let (mut reached, mut no_floor, mut by_replaced) = (0, 0, 0);
-    for t in chains(2) {
-        for known in subsets(&t).into_iter().filter(|k| !k.is_empty()) {
-            for held in subsets(&all) {
-                reached += held.iter().filter(|b| purged(&t, &all, b)).count();
-                assert_eq!(shown_purged(&t, &all, &known, &held, Rule::Floor), 0, "{t:?} known {known:?} held {held:?}");
-                no_floor += shown_purged(&t, &all, &known, &held, Rule::NoFloor);
-                by_replaced += shown_purged(&t, &all, &known, &held, Rule::FloorByReplaced);
+    let mut shown = [0; 4];
+    let mut reached = 0;
+    for (k, rule) in RULES.into_iter().enumerate() {
+        for w in worlds(2, rule) {
+            for known in subsets(&w.settings).into_iter().filter(|k| !k.is_empty()) {
+                for held in subsets(&all) {
+                    if k == 0 {
+                        reached += held.iter().filter(|b| purged_under(&w, &all, b).is_some_and(|u| w.learnt(&known, &u))).count();
+                    }
+                    let n = shown_purged(&w, &all, &known, &held, rule);
+                    assert!(k > 0 || n == 0, "{w:?} known {known:?} held {held:?}");
+                    shown[k] += n;
+                }
             }
         }
     }
-    assert!(reached > 0 && no_floor > 0 && by_replaced > 0, "reached {reached}, no floor {no_floor}, by replaced {by_replaced}");
+    assert!(reached > 0 && shown[1..].iter().all(|&n| n > 0), "reached {reached}, shown {shown:?}");
 }
 
-/// A random world: a chain of up to 5 settings and up to 7 register writes at distinct stamps
-/// in `0..20` (values or fires).
-fn random_world(r: &mut Rng) -> (Vec<Setting>, Vec<Body>) {
+/// A random plan: up to 5 settings at stamps in `0..20`, each writer holding all the earlier ones
+/// or a random subset (concurrent admins), and up to 7 register writes at distinct stamps in
+/// `0..20` (values or fires).
+fn random_plan(r: &mut Rng) -> (Vec<(Ms, Opt, u64)>, Vec<Body>) {
     let mut ts: Vec<Ms> = (0..20).collect();
     r.shuffle(&mut ts);
     let fire = r.chance(20);
@@ -107,37 +160,46 @@ fn random_world(r: &mut Rng) -> (Vec<Setting>, Vec<Body>) {
     let mut stamps: Vec<Ms> = (0..1 + r.below(5)).map(|_| r.below(20)).collect();
     stamps.sort();
     let opts = [Opt::None, Opt::Keep { after: 2, until: 0 }, Opt::Keep { after: 7, until: 0 }, Opt::Keep { after: 0, until: 12 }, Opt::Keep { after: 0, until: NEVER }, Opt::Purge, Opt::Purge];
-    let mut settings: Vec<Setting> = Vec::new();
-    for (id, t) in stamps.into_iter().enumerate() {
-        let s = written_after(settings.last(), t, id as u32, r.pick(&opts));
-        settings.push(s);
-    }
-    (settings, all)
+    let plan = stamps.into_iter().enumerate().map(|(id, t)| {
+        let every = (1u64 << id) - 1;
+        let held = if r.chance(50) { every } else { (0..id).filter(|_| r.chance(50)).fold(0, |m, i| m | 1 << i) };
+        (t, r.pick(&opts), held)
+    });
+    (plan.collect(), all)
 }
 
 /// `purged_content_never_shows` over random larger worlds, each node holding a random subset of
-/// the settings and bodies; then an eager node fed every item in a random order, late, that never
-/// shows purged content once it holds a setting at or after the one it was replaced under.
+/// the settings and bodies, the negative controls failing; then an eager node fed every item in a
+/// random order, late, that never shows purged content once it learnt of the setting it was
+/// replaced under.
 #[test]
 fn purged_content_never_shows_random() {
-    let (mut reached, mut no_floor, mut by_replaced) = (0, 0, 0);
+    let mut shown = [0; 4];
+    let mut reached = 0;
     let mut r = Rng::new(0);
     for _ in 0..4000 {
-        let (t, all) = random_world(&mut r);
+        let (plan, all) = random_plan(&mut r);
         let pick = |r: &mut Rng, v: &[Body]| -> Vec<Body> { v.iter().filter(|_| r.chance(60)).copied().collect() };
         let held = pick(&mut r, &all);
-        let known: Vec<Setting> = t.iter().filter(|_| r.chance(60)).copied().collect();
-        reached += held.iter().filter(|b| purged(&t, &all, b)).count();
-        assert_eq!(shown_purged(&t, &all, &known, &held, Rule::Floor), 0, "{t:?} known {known:?} held {held:?}");
-        no_floor += shown_purged(&t, &all, &known, &held, Rule::NoFloor);
-        by_replaced += shown_purged(&t, &all, &known, &held, Rule::FloorByReplaced);
+        let keep: Vec<bool> = plan.iter().map(|_| r.chance(60)).collect();
+        for (k, rule) in RULES.into_iter().enumerate() {
+            let w = World::of(&plan, rule);
+            let known: Vec<Setting> = w.settings.iter().zip(&keep).filter(|x| *x.1).map(|x| *x.0).collect();
+            if k == 0 {
+                reached += held.iter().filter(|b| purged_under(&w, &all, b).is_some_and(|u| w.learnt(&known, &u))).count();
+            }
+            let n = shown_purged(&w, &all, &known, &held, rule);
+            assert!(k > 0 || n == 0, "{w:?} known {known:?} held {held:?}");
+            shown[k] += n;
+        }
         // an eager node in a random arrival order
+        let w = World::of(&plan, Rule::Floor);
         #[derive(Clone, Copy)]
         enum Item {
             S(Setting),
             B(Body),
         }
-        let mut items: Vec<Item> = t.iter().map(|s| Item::S(*s)).chain(all.iter().map(|b| Item::B(*b))).collect();
+        let mut items: Vec<Item> = w.settings.iter().map(|s| Item::S(*s)).chain(all.iter().map(|b| Item::B(*b))).collect();
         r.shuffle(&mut items);
         let (mut n, mut now) = (Eager::default(), 0);
         for i in items {
@@ -151,16 +213,48 @@ fn purged_content_never_shows_random() {
                     n.body(b, Rule::Floor, now)
                 }
             }
-            for b in n.held.iter().filter(|b| purged(&t, &all, b)) {
-                let rt = replaced_at(&all, b).unwrap();
-                let under = t.iter().filter(|s| s.ts <= rt).max().unwrap();
-                if n.settings.iter().any(|s| s >= under) {
-                    assert!(!n.history(Rule::Floor, now).contains(&b.id), "{t:?} {all:?}: eager shows {b:?} at {now}");
+            for b in &n.held {
+                if purged_under(&w, &all, b).is_some_and(|u| w.learnt(&n.settings, &u)) {
+                    assert!(!n.history(Rule::Floor, now).contains(&b.id), "{w:?} {all:?}: eager shows {b:?} at {now}");
                 }
             }
         }
     }
-    assert!(reached > 0 && no_floor > 0 && by_replaced > 0, "reached {reached}, no floor {no_floor}, by replaced {by_replaced}");
+    assert!(reached > 0 && shown[1..].iter().all(|&n| n > 0), "reached {reached}, shown {shown:?}");
+}
+
+/// A setting carrying the join makes the older ones add nothing (so compaction, which drops them,
+/// loses nothing): a node holding it and any subset of what its writer held judges by its floor
+/// alone. Over every small world with distinct stamps and a third setting by a writer holding any
+/// subset (two settings in one ms: issues/purge-floor-ms-ties.md). Negative control: a join that
+/// also counts a purging setting a held floor already passes moves the floor at a node holding
+/// fewer of the settings between.
+#[test]
+fn a_carried_join_makes_older_settings_add_nothing() {
+    let unskipped = |s: &[Setting]| {
+        let mut s = s.to_vec();
+        s.sort();
+        let base = s.iter().map(|x| x.floor).max().unwrap_or(0);
+        s.windows(2).filter(|w| w[0].opt == Opt::Purge).map(|w| w[1].ts).fold(base, Ms::max)
+    };
+    let mut moved = 0;
+    for p in plans(2).into_iter().filter(|p| p.len() < 2 || p[0].0 != p[1].0) {
+        for held in 0..1u64 << p.len() {
+            for opt in [Opt::None, Opt::Keep { after: 1, until: 0 }, Opt::Purge] {
+                let mut p = p.clone();
+                p.push((END, opt, held));
+                let w = World::of(&p, Rule::Floor);
+                let c = *w.settings.last().unwrap();
+                let h: Vec<Setting> = w.settings.iter().filter(|s| held & (1 << s.id) != 0).copied().collect();
+                for s in subsets(&h) {
+                    let s = [s, vec![c]].concat();
+                    assert_eq!(joined_floor(&s, Rule::Floor), c.floor, "{w:?} holding {s:?}");
+                    moved += usize::from(unskipped(&s) != c.floor);
+                }
+            }
+        }
+    }
+    assert!(moved > 0);
 }
 
 /// Under one setting bodies leave in the order they were replaced, but for those under the floor
@@ -168,8 +262,8 @@ fn purged_content_never_shows_random() {
 /// late at worst, never early.
 #[test]
 fn leaves_in_replaced_order() {
-    for t in chains(2) {
-        let cur = current(&t);
+    for t in worlds(2, Rule::Floor).into_iter().map(|w| w.settings) {
+        let cur = current(&t, Rule::Floor);
         for ts in 0..END {
             let b = Body { ts, id: 0, fire: false };
             if cur.is_some_and(|s| ts < s.floor) {
@@ -191,8 +285,8 @@ fn kept_while_live_while_a_replacement_would_be_kept() {
     opts.push(Opt::Keep { after: 1, until: 5 });
     for prev in [None, Some(Opt::Purge)] {
         for &opt in &opts {
-            let p = prev.map(|o| written_after(None, 2, 0, o));
-            let cur = Some(written_after(p.as_ref(), 3, 1, opt));
+            let p: Vec<Setting> = prev.map(|o| written_after(&[], 2, 0, o, Rule::Floor)).into_iter().collect();
+            let cur = Some(written_after(&p, 3, 1, opt, Rule::Floor));
             for ts in 0..END {
                 let b = Body { ts, id: 0, fire: false };
                 let l = live_until(cur, &b);
@@ -211,11 +305,11 @@ fn kept_while_live_while_a_replacement_would_be_kept() {
 #[test]
 fn the_current_setting_alone_decides() {
     let held = [Body { ts: 1, id: 0, fire: false }, Body { ts: 2, id: 1, fire: false }];
-    let short = written_after(None, 0, 0, Opt::Keep { after: 1, until: 0 });
-    let long = written_after(Some(&short), 4, 1, Opt::Keep { after: 10, until: 0 });
+    let short = written_after(&[], 0, 0, Opt::Keep { after: 1, until: 0 }, Rule::Floor);
+    let long = written_after(&[short], 4, 1, Opt::Keep { after: 10, until: 0 }, Rule::Floor);
     assert!(history(&[short], Rule::Floor, &held, 4).is_empty());
     assert_eq!(history(&[short, long], Rule::Floor, &held, 4), [0]);
-    let none = written_after(Some(&long), 5, 2, Opt::None);
+    let none = written_after(&[short, long], 5, 2, Opt::None, Rule::Floor);
     assert!(history(&[short, long, none], Rule::Floor, &held, 5).is_empty());
     // an older setting held late is not current
     assert_eq!(history(&[long, short], Rule::Floor, &held, 4), [0]);
@@ -235,10 +329,10 @@ fn the_current_setting_alone_decides() {
 /// held. The floor is carried by every later setting.
 #[test]
 fn keep_after_purge_keeps_what_is_written_after() {
-    let p = written_after(None, 1, 0, Opt::Purge);
-    let k = written_after(Some(&p), 3, 1, Opt::Keep { after: 0, until: NEVER });
+    let p = written_after(&[], 1, 0, Opt::Purge, Rule::Floor);
+    let k = written_after(&[p], 3, 1, Opt::Keep { after: 0, until: NEVER }, Rule::Floor);
     assert_eq!(k.floor, 3);
-    let k2 = written_after(Some(&k), 5, 2, Opt::Keep { after: 4, until: 0 });
+    let k2 = written_after(&[k], 5, 2, Opt::Keep { after: 4, until: 0 }, Rule::Floor);
     assert_eq!(k2.floor, 3);
     let (old, new) = (Body { ts: 2, id: 0, fire: false }, Body { ts: 4, id: 1, fire: false });
     let last = Body { ts: 6, id: 2, fire: false };
@@ -248,19 +342,42 @@ fn keep_after_purge_keeps_what_is_written_after() {
     assert_eq!(history(&[k2], Rule::Floor, &[old, new, last], 7), [1]);
 }
 
+/// Concurrent admins: one turns purge on replace on, another, not holding it, writes a keep. A
+/// node holding both keeps the purged content out by the joined floor (the keep's own carries
+/// none), whichever it got first; the keep still decides what is written after it; a setting
+/// written by an admin holding both carries the join, alone too. Without the join it shows.
+#[test]
+fn concurrent_admins_lose_no_floor() {
+    let p = written_after(&[], 1, 0, Opt::Purge, Rule::Floor);
+    let k = written_after(&[], 3, 1, Opt::Keep { after: 0, until: NEVER }, Rule::Floor);
+    assert_eq!(k.floor, 0);
+    // 0 is replaced at 2, under purge on replace; 2 is written after the keep and replaced at 6
+    let held = [Body { ts: 0, id: 0, fire: false }, Body { ts: 2, id: 1, fire: false }, Body { ts: 4, id: 2, fire: false }, Body { ts: 6, id: 3, fire: false }];
+    for both in [[p, k], [k, p]] {
+        assert_eq!(joined_floor(&both, Rule::Floor), 3);
+        assert_eq!(history(&both, Rule::Floor, &held, 7), [2]);
+        assert_eq!(history(&both, Rule::NoJoin, &held, 7), [0, 1, 2], "no join: purged content shows");
+    }
+    let c = written_after(&[p, k], 5, 2, Opt::Keep { after: 0, until: NEVER }, Rule::Floor);
+    assert_eq!(c.floor, 3);
+    assert_eq!(history(&[c], Rule::Floor, &held, 7), [2]);
+}
+
 /// In any arrival order, at any pace, a node that drops at the first allowed moment shows, once
 /// every item arrived, no more than a node holding everything, but a body that arrived after a
 /// superseder of its was dropped (dated by what is held, so later: an arrival); what it lacks it
-/// dropped itself (a setting current later may keep what an earlier one let go).
+/// dropped itself (a setting current later may keep what an earlier one let go). Two settings, in
+/// a chain or concurrent, of four options.
 #[test]
 fn any_order_dropping_shows_a_subset() {
+    let opts = [OPTS[0], OPTS[1], OPTS[4], OPTS[5]];
     #[derive(Clone, Copy, Debug)]
     enum Item {
         S(Setting),
         B(Body),
     }
     for fire in [false, true] {
-        for t in chains(2).into_iter().filter(|t| t.len() == 2) {
+        for t in worlds(2, Rule::Floor).into_iter().map(|w| w.settings).filter(|t| t.len() == 2 && t.iter().all(|s| opts.contains(&s.opt))) {
             let all = bodies(fire);
             let items: Vec<Item> = t.iter().map(|s| Item::S(*s)).chain(all.iter().map(|b| Item::B(*b))).collect();
             for order in perms(&items) {
@@ -320,15 +437,17 @@ fn all_opts() -> Vec<Opt> {
     EV_OPTS.iter().map(|f| f()).collect()
 }
 /// The first admin's settings of a timeline on aspect `a`, keyed in list order, each written
-/// holding the newest before it (`Setting::written_after`: the floor carried).
+/// holding those stamped before it (`Setting::written_after`: the floor carried).
 fn settings_of(a: Aspect, tl: &[(u64, Opt)]) -> Vec<Commit> {
     let mut out: Vec<Commit> = Vec::new();
     for (i, &(h, o)) in tl.iter().enumerate() {
-        let newest = out.iter().filter(|c| c.ts <= ts(h)).max_by_key(|c| c.key()).and_then(|c| match &c.parts[0].body {
-            Body::Held(Delta::Retention(x)) => Some(x.clone()),
+        let mut before: Vec<&Commit> = out.iter().filter(|c| c.ts <= ts(h)).collect();
+        before.sort_by_key(|c| c.key());
+        let held: Vec<(u64, &Setting)> = before.iter().filter_map(|c| match &c.parts[0].body {
+            Body::Held(Delta::Retention(x)) => Some((wall(c.ts), x)),
             _ => None,
-        });
-        let x = Setting { rules: vec![(a.name, SettingEntry { history: o, expires: None, purge_before: 0 })], default: None, written: None }.written_after(newest.as_ref(), at(h));
+        }).collect();
+        let x = Setting { rules: vec![(a.name, SettingEntry { history: o, expires: None, purge_before: 0 })], default: None, written: None }.written_after(&held, at(h));
         out.push(setting_by(100 + i as CommitId, FIRST_ADMIN, h, x));
     }
     out

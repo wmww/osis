@@ -58,7 +58,7 @@ fn grant_reader(w: &mut World, t: Tid) -> Tid {
         let mut m = Mutation::new();
         let x = e.new_thing(&mut m, t);
         e.commit(m).unwrap();
-        e.grant(&t, &x, &ct::Edge { role: Role::Read, until: None, invite: None, floor: None }).unwrap();
+        e.grant(&t, &x, &ct::Edge { role: Role::Read, until: None, invite: None, retain: false, floor: None }).unwrap();
         x
     })
 }

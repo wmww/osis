@@ -409,7 +409,7 @@ fn a_reader_receives_a_part_whose_cover_was_covered_whole_spec_sync_judgement_2(
     });
     set_value(&mut w, 1, t, "v1");
     w.run();
-    w.write(2, |e| e.grant(&t, &a0, &Edge { role: Role::Read, until: None, invite: None, floor: None })).unwrap();
+    w.write(2, |e| e.grant(&t, &a0, &Edge { role: Role::Read, until: None, invite: None, retain: false, floor: None })).unwrap();
     set_value(&mut w, 2, t, "v2");
     set_value(&mut w, 1, t, "v3");
     w.write(0, |e| {
@@ -446,7 +446,7 @@ fn a_reader_counts_a_stripped_part_covered_by_its_covers_cover_spec_crdt_8() {
     });
     set_value(&mut w, 1, t, "v1");
     w.run();
-    w.write(2, |e| e.grant(&t, &a0, &Edge { role: Role::Read, until: None, invite: None, floor: None })).unwrap();
+    w.write(2, |e| e.grant(&t, &a0, &Edge { role: Role::Read, until: None, invite: None, retain: false, floor: None })).unwrap();
     set_value(&mut w, 2, t, "v2");
     set_value(&mut w, 1, t, "v3");
     w.write(0, |e| {

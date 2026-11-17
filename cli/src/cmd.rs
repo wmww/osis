@@ -473,7 +473,7 @@ fn run(ctx: &mut Ctx<'_>, cmd: Cmd) -> anyhow::Result<()> {
                 Some(r) => parse_role(&r)?,
                 None => db.grants(t)?.get(&m).map(|e| e.role).ok_or_else(|| exit(3, "no such grant"))?,
             };
-            db.grant(t, m, role, GrantOpts { until: opt_ts(&until)?, may_grant: may_grant.as_deref().map(parse_role).transpose()?, reads: parse_reads(reads.as_deref())? })?;
+            db.grant(t, m, role, GrantOpts { until: opt_ts(&until)?, retain_copy: None, may_grant: may_grant.as_deref().map(parse_role).transpose()?, reads: parse_reads(reads.as_deref())? })?;
             delivered(ctx, &granted(t))
         }
         Cmd::SetRole { t, holder, role, d } => {

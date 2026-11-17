@@ -1018,14 +1018,16 @@ fn commit_or_build(tx: &mut Tx<'_>, mut m: Mutation) -> Result<Option<(CommitId,
             if am.ops.iter().any(|o| matches!(&o.op, osis_crdt::Op::Replace(v) if osis_schema::core_types::retention_setting(v).is_some_and(|r| r.rules.values().chain(&r.default).any(bad)))) {
                 return Err(Error::Misuse("retention^.0 with an entry out of range"));
             }
-            // purge on replace is one way: the floors of the current setting carried, this
-            // write's stamp where it purged on replace (spec/commits.md §5 One way)
-            let prev = crate::apply::validity::setting_now(tx.core, &tid);
+            // purge on replace is one way: the floors joined over every held valid setting
+            // carried, this write's stamp where the current one purged on replace
+            // (spec/commits.md §5 One way)
+            let all = crate::apply::validity::settings(tx.core, &tid);
+            let held: Vec<(u64, &osis_schema::core_types::RetentionSetting)> = all.iter().map(|(p, x)| (p.ts.wall_ms().0, &**x)).collect();
             for o in &mut am.ops {
                 if let osis_crdt::Op::Replace(v) = &mut o.op
                     && let Some(mut s) = osis_schema::core_types::retention_setting(v)
                 {
-                    osis_commit::retention::carry_floors(&mut s, prev.as_deref(), plan.ts.wall_ms().0);
+                    osis_commit::retention::carry_floors(&mut s, &held, plan.ts.wall_ms().0);
                     *v = osis_schema::Codec::to_value(&s);
                 }
             }

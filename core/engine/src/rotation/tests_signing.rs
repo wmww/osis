@@ -11,7 +11,7 @@ use osis_schema::Codec as _;
 use std::collections::BTreeMap;
 
 fn edge(r: Role) -> ct::Edge {
-    ct::Edge { role: r, until: None, invite: None, floor: None }
+    ct::Edge { role: r, until: None, invite: None, retain: false, floor: None }
 }
 
 /// Delivers `ids` a millisecond on: what a node received earlier it received in an earlier

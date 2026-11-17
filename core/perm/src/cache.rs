@@ -103,6 +103,7 @@ impl W {
         self.role(e.role);
         self.opt(e.until, |w, u| w.n(u.0));
         self.opt(e.invite, W::role);
+        self.n(u64::from(e.retain));
         self.opt(e.floor, W::n);
     }
     fn wid(&mut self, w: &WriteId) {
@@ -473,8 +474,13 @@ impl<'a> R<'a> {
         let role = self.role()?;
         let until = self.opt(|r| r.n().map(WallMs))?;
         let invite = self.opt(R::role)?;
+        let retain = match self.n()? {
+            0 => false,
+            1 => true,
+            _ => return None,
+        };
         let floor = self.opt(R::n)?;
-        Some(Edge { role, until, invite, floor })
+        Some(Edge { role, until, invite, retain, floor })
     }
     fn wid(&mut self) -> Option<WriteId> {
         Some(WriteId(self.cid()?, u32::try_from(self.n()?).ok()?))

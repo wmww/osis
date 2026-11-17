@@ -4430,7 +4430,7 @@ mod tests {
     }
 
     fn edge(role: Role) -> ct::Edge {
-        ct::Edge { role, until: None, invite: None, floor: None }
+        ct::Edge { role, until: None, invite: None, retain: false, floor: None }
     }
 
     fn write(m: &mut Mutation, t: Tid, v: &str) {

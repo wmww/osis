@@ -2044,7 +2044,7 @@ fn saved_walk_keeps_keep_spec_permissions_3() {
     let back = reopen(&held, &disk, SALT);
     assert!(back.restored() > 0, "restored, not walked");
     let ended = back.get(&g).unwrap().ended(&g, ts(100));
-    assert_eq!(ended.get(&n[1]).unwrap().0, osis_perm::EdgeEnd::Said(true));
+    assert!(ended.get(&n[1]).unwrap().0);
 }
 
 thread_local! {

@@ -331,7 +331,7 @@ fn sync_units_are_the_models_spec_sync_set_2() {
                 }
                 3..=4 if g != t => {
                     let r = [Role::Sync, Role::Read, Role::Write][rng.below(3) as usize];
-                    let edge = ct::Edge { role: r, until: None, invite: None, floor: None };
+                    let edge = ct::Edge { role: r, until: None, invite: None, retain: false, floor: None };
                     let had: Option<hc::Role> = grants.get(&(g, t)).copied();
                     let m = match r { Role::Sync => hc::Role::Sync, Role::Read => hc::Role::Read, _ => hc::Role::Write };
                     if had == Some(m) {

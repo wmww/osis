@@ -401,7 +401,7 @@ fn make(w: &mut World, i: usize, under: Option<usize>) -> Result<String, String>
 /// Node `i` gives holder `h` role `g` on thing `k`; nothing accepted.
 fn give(w: &mut World, i: usize, k: usize, h: Holder, g: Gives) -> Result<String, String> {
     let (Some(t), Some(holder)) = (thing(w, k), holder_tid(w, h)) else { return Ok("skipped: no such thing or holder".into()) };
-    let edge = Edge { role: g.role(), until: None, invite: None, floor: None };
+    let edge = Edge { role: g.role(), until: None, invite: None, retain: false, floor: None };
     let r = w.write(i, |e| e.grant(&t, &holder, &edge)).map(|_| String::new()).map_err(|e| e.to_string());
     if r.is_ok() || stands(w, i, &t, &holder, Some(g.role())) {
         let account = matches!(h, Holder::Node(_)).then_some(holder);
@@ -423,7 +423,7 @@ fn give(w: &mut World, i: usize, k: usize, h: Holder, g: Gives) -> Result<String
 /// Node `i` lowers holder `h` on thing `k` to `g`, or removes it (`None`).
 fn demote(w: &mut World, i: usize, k: usize, h: Holder, g: Option<Gives>) -> Result<String, String> {
     let (Some(t), Some(holder)) = (thing(w, k), holder_tid(w, h)) else { return Ok("skipped: no such thing or holder".into()) };
-    let new = g.map(|g| Edge { role: g.role(), until: None, invite: None, floor: None });
+    let new = g.map(|g| Edge { role: g.role(), until: None, invite: None, retain: false, floor: None });
     let r = w.write(i, |e| e.demote(&t, &Demotion { holder, new, retain: None })).map(|_| String::new()).map_err(|e| e.to_string());
     if r.is_ok() && g.is_none() && matches!(h, Holder::Thing(p) if w.history.under[k] == Under::Thing(p)) {
         w.history.record_gone.insert(k);

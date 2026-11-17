@@ -170,7 +170,7 @@ fn a_joiner_leaves_k_once_its_edge_on_the_target_expired_spec_permissions_7() {
     let (mut w, link) = redeemed();
     let a1 = w.node(1).account.unwrap();
     let until = osis_base::WallMs(w.now().0 + 60_000);
-    let edge = osis_schema::core_types::Edge { role: Role::Read, until: Some(until), invite: None, floor: None };
+    let edge = osis_schema::core_types::Edge { role: Role::Read, until: Some(until), invite: None, retain: false, floor: None };
     w.write(0, |e| e.grant(&link.target, &link.k, &edge)).unwrap();
     w.run();
     assert!(w.now() >= until, "the run reached the expiry");
@@ -189,7 +189,7 @@ fn a_joiner_stays_when_k_was_granted_again_before_it_heard_spec_permissions_7() 
     let a1 = w.node(1).account.unwrap();
     w.partition(0, 1);
     w.write(0, |e| e.demote(&link.target, &osis_engine::flows::Demotion { holder: link.k, new: None, retain: None })).unwrap();
-    w.write(0, |e| e.grant(&link.target, &link.k, &osis_schema::core_types::Edge { role: Role::Read, until: None, invite: None, floor: None })).unwrap();
+    w.write(0, |e| e.grant(&link.target, &link.k, &osis_schema::core_types::Edge { role: Role::Read, until: None, invite: None, retain: false, floor: None })).unwrap();
     w.heal();
     w.run();
     assert!(w.engine(1).roster(&link.target).contains_key(&link.k), "K on the target at node 1");
@@ -206,7 +206,7 @@ fn a_joiner_leaves_k_by_its_clock_alone_spec_permissions_7() {
     let (mut w, link) = redeemed();
     let a1 = w.node(1).account.unwrap();
     let until = osis_base::WallMs(w.now().0 + 60_000);
-    let edge = osis_schema::core_types::Edge { role: Role::Read, until: Some(until), invite: None, floor: None };
+    let edge = osis_schema::core_types::Edge { role: Role::Read, until: Some(until), invite: None, retain: false, floor: None };
     w.write(0, |e| e.grant(&link.target, &link.k, &edge)).unwrap();
     w.advance(1000);
     assert!(w.engine(1).roster(&link.target).contains_key(&link.k) && w.engine(1).roster(&link.k).contains_key(&a1), "node 1 holds the edge, joined");

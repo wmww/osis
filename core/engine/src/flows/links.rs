@@ -113,7 +113,7 @@ impl Engine {
         if !self.roster(&link.target).get(&k).is_some_and(|e| e.alive_at(Some(osis_base::Ts::make(self.now(), 0).unwrap_or_default()))) {
             return Err(Error::Misuse("K's grant on the link's target is not held here"));
         }
-        let grant = Edge { role: edge.role, until: None, invite: None, floor: None };
+        let grant = Edge { role: edge.role, until: None, invite: None, retain: false, floor: None };
         // L signs with its own role, so the grant deposits only below write; a redeem is an
         // accept (spec/sync-set.md §4): strongs to K and the target in the account root, unless
         // the node closure holds them, and so D's tickets for both (`inbox::write_account_ticket`)
@@ -316,7 +316,9 @@ fn create_link_in(tx: &mut Tx<'_>, sharer: Tid, spec: &LinkSpec, l: Tid, seed: &
     let hist = crate::rotation::history_boxes(tx, &sharer, &k)?;
     let boxes = box_holder(&k, &epochs, &hist, &rcpt, &roles_up_to(spec.role), &mut *tx.rng)?.ok_or(Error::Misuse("L's keys"))?;
     let mut m = Mutation::new();
-    put_edge(&mut m, k, l, &Edge { role: spec.role, until: spec.until, invite: Some(spec.role), floor: None })?;
+    // its `until` passing says what the target's default says now (spec/permissions.md §3, Retain)
+    let retain = spec.until.is_some() && crate::apply::validity::retain_default(tx.core, &spec.target);
+    put_edge(&mut m, k, l, &Edge { role: spec.role, until: spec.until, invite: Some(spec.role), retain, floor: None })?;
     super::put_secrets(&mut m, k, &boxes, false)?;
     done.add(Engine::commit_tx(tx, m)?);
     let sync_id = super::sync_id_of(tx, &k)?.ok_or(Error::Misuse("K's sync ID"))?;
@@ -328,7 +330,7 @@ fn create_link_in(tx: &mut Tx<'_>, sharer: Tid, spec: &LinkSpec, l: Tid, seed: &
     }
     // K on the target, which K holds by a strong: K's sync unit carries the target, and so K's
     // grant on it, to a redeemer (spec/permissions.md §7 Redeem step 3)
-    let target_edge = Edge { role: spec.role, until: None, invite: None, floor: None };
+    let target_edge = Edge { role: spec.role, until: None, invite: None, retain: false, floor: None };
     // K is new: the grant demotes nobody, so it carries no frontier
     done.extend(grant_in(tx, None, spec.target, k, &target_edge, false, None)?);
     let mut m = Mutation::new();

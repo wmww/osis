@@ -1023,9 +1023,9 @@ fn record_and_reach(seed: u64) -> (Reason, Tid, Option<Value>) {
     let y = new_thing(&mut lp, 1);
     // 2 reads y
     let r = lp.peers[2].engine.me();
-    lp.peers[1].engine.grant(&y, &r, &Edge { role: Role::Read, until: None, invite: None, floor: None }).unwrap();
+    lp.peers[1].engine.grant(&y, &r, &Edge { role: Role::Read, until: None, invite: None, retain: false, floor: None }).unwrap();
     sync(&mut lp, 1, 0);
-    lp.peers[1].engine.grant(&y, &a, &Edge { role: Role::Write, until: None, invite: None, floor: None }).unwrap();
+    lp.peers[1].engine.grant(&y, &a, &Edge { role: Role::Write, until: None, invite: None, retain: false, floor: None }).unwrap();
     let grant = packages(&mut lp, 1).pop().unwrap();
     sync(&mut lp, 1, 0);
     let x = new_thing(&mut lp, 0);

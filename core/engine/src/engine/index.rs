@@ -419,13 +419,13 @@ impl<T: Rec> Rec for Option<T> {
 }
 impl Rec for osis_perm::Edge {
     fn to(&self) -> Value {
-        Value::List(vec![self.role.to(), self.until.map(|u| u.0).to(), self.invite.to(), self.floor.to()])
+        Value::List(vec![self.role.to(), self.until.map(|u| u.0).to(), self.invite.to(), Value::Bool(self.retain), self.floor.to()])
     }
     fn from(v: &Value) -> Option<Self> {
         let Value::List(x) = v else { return None };
-        let [role, until, invite, floor] = x.as_slice() else { return None };
+        let [role, until, invite, Value::Bool(retain), floor] = x.as_slice() else { return None };
         let until = <Option<u64> as Rec>::from(until)?.map(WallMs);
-        Some(osis_perm::Edge { role: Rec::from(role)?, until, invite: Rec::from(invite)?, floor: Rec::from(floor)? })
+        Some(osis_perm::Edge { role: Rec::from(role)?, until, invite: Rec::from(invite)?, retain: *retain, floor: Rec::from(floor)? })
     }
 }
 impl Rec for u64 {

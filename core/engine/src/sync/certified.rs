@@ -797,7 +797,7 @@ mod tests {
         let a1 = lp.peers[1].engine.create_account().unwrap().0;
         let a2 = lp.peers[2].engine.create_account().unwrap().0;
         lp.sync_all().unwrap();
-        let edge = ct::Edge { role: Role::Write, until: None, invite: None, floor: None };
+        let edge = ct::Edge { role: Role::Write, until: None, invite: None, retain: false, floor: None };
         let new = |lp: &mut LocalPeer, i: usize, a: Tid| {
             let e = &mut lp.peers[i].engine;
             let mut m = Mutation::new();
@@ -872,7 +872,7 @@ mod tests {
         let w = lp.peers[1].engine.create_account().unwrap().0;
         let c = lp.peers[2].engine.create_account().unwrap().0;
         lp.sync_all().unwrap();
-        let edge = |role| ct::Edge { role, until: None, invite: None, floor: None };
+        let edge = |role| ct::Edge { role, until: None, invite: None, retain: false, floor: None };
         let e = &mut lp.peers[0].engine;
         let mut m = Mutation::new();
         let t = e.new_thing(&mut m, a.account);
@@ -904,7 +904,7 @@ mod tests {
     fn a_writers_grant_of_a_private_actor_logs_nothing_of_it_spec_permissions_4() {
         let (mut lp, _, y, t, on_y) = private_world();
         let mut m = Mutation::new();
-        m.op(t, &ct::ROLES, osis_crdt::PathOp { path: vec![osis_crdt::PathSeg::Key(Value::Weak(y))], op: osis_crdt::Op::Set(osis_schema::Codec::to_value(&ct::Edge { role: Role::Read, until: None, invite: None, floor: None })) }).unwrap();
+        m.op(t, &ct::ROLES, osis_crdt::PathOp { path: vec![osis_crdt::PathSeg::Key(Value::Weak(y))], op: osis_crdt::Op::Set(osis_schema::Codec::to_value(&ct::Edge { role: Role::Read, until: None, invite: None, retain: false, floor: None })) }).unwrap();
         lp.peers[1].engine.commit_hostile(m).unwrap().unwrap();
         lp.sync_all().unwrap();
         assert!(!lp.peers[0].engine.roster(&t).contains_key(&y), "the grant applies nowhere");
@@ -934,7 +934,7 @@ mod tests {
             let mut lp = LocalPeer::fresh(1, WallMs(1_700_000_000_000));
             let a = lp.peers[0].engine.create_account().unwrap().0.account;
             let e = &mut lp.peers[0].engine;
-            let edge = ct::Edge { role: Role::Read, until: None, invite: None, floor: None };
+            let edge = ct::Edge { role: Role::Read, until: None, invite: None, retain: false, floor: None };
             let new = |e: &mut Engine| {
                 let mut m = Mutation::new();
                 let t = e.new_thing(&mut m, a);
@@ -979,7 +979,7 @@ mod tests {
             let mut lp = LocalPeer::fresh(1, WallMs(1_700_000_000_000));
             let a = lp.peers[0].engine.create_account().unwrap().0.account;
             let e = &mut lp.peers[0].engine;
-            let edge = ct::Edge { role: Role::Read, until: None, invite: None, floor: None };
+            let edge = ct::Edge { role: Role::Read, until: None, invite: None, retain: false, floor: None };
             let new = |e: &mut Engine| {
                 let mut m = Mutation::new();
                 let t = e.new_thing(&mut m, a);

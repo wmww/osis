@@ -124,8 +124,8 @@ pub struct SettingEntry {
     pub history: Opt,
     pub expires: Option<u64>,
     /// `purge_before`: a body holding a dead write stamped before this wall ms is under purge on
-    /// replace (0: none). A writer replacing a purge-on-replace entry sets it to its own stamp and
-    /// every writer carries it (`Setting::written_after`).
+    /// replace (0: none). Joined over the held settings (`Setting::joined_floor`); a writer writes
+    /// the join (`Setting::written_after`).
     pub purge_before: u64,
 }
 
@@ -145,18 +145,34 @@ impl Setting {
         self.rules.iter().find(|r| r.0 == name).map(|r| r.1).or(self.default)
     }
 
-    /// `self` as a writer holding `prev` (its current setting) writes it at wall ms `wall`
-    /// (spec/commits.md §5 One way): each entry's `purge_before` carried from the entry governing
-    /// its AKs in `prev`, its own stamp where that one purged on replace; floors of AKs losing
-    /// their own entry go to the default (one with no history if there is none).
-    pub fn written_after(mut self, prev: Option<&Setting>, wall: u64) -> Setting {
-        let Some(prev) = prev else { return self };
-        let carry = |e: &SettingEntry| if e.history == Opt::Purge { wall.max(e.purge_before) } else { e.purge_before };
-        for (name, e) in &mut self.rules {
-            e.purge_before = e.purge_before.max(prev.entry(*name).map_or(0, |p| carry(&p)));
+    /// The entry governing aspect `name` (`None`: an aspect no setting names, so the default).
+    fn governing(&self, name: Option<u32>) -> Option<SettingEntry> {
+        name.map_or(self.default, |n| self.entry(n))
+    }
+
+    /// The `purge_before` of aspect `name` (`None`: one no setting names) joined over `held`,
+    /// each setting with the wall ms of the write it carries, ordered by key (spec/commits.md §5
+    /// One way): the greatest of every held setting's floor there and, for each one but the
+    /// newest whose entry there purges on replace, the stamp of the next held one, unless a held
+    /// floor there is already past its own stamp (`thing_history::joined_floor`).
+    pub fn joined_floor(held: &[(u64, &Setting)], name: Option<u32>) -> u64 {
+        let base = held.iter().filter_map(|(_, s)| s.governing(name)).map(|e| e.purge_before).max().unwrap_or(0);
+        let purges = |s: &Setting| s.governing(name).is_some_and(|e| e.history == Opt::Purge);
+        held.windows(2).filter(|w| purges(w[0].1) && base <= w[0].0).map(|w| w[1].0).fold(base, u64::max)
+    }
+
+    /// `self` as a writer holding `held` (ordered by key) writes it at wall ms `wall`, after each
+    /// (spec/commits.md §5 One way): each entry's `purge_before` is at least the floor of its AK
+    /// joined over `held` and `self`; the default's at least that of every AK `self` names not
+    /// and of those no setting names (a default with no history if there is none).
+    pub fn written_after(mut self, held: &[(u64, &Setting)], wall: u64) -> Setting {
+        let all: Vec<(u64, &Setting)> = held.iter().copied().chain([(wall, &self)]).collect();
+        let own: Vec<u64> = self.rules.iter().map(|(n, _)| Setting::joined_floor(&all, Some(*n))).collect();
+        let lost = held.iter().flat_map(|(_, s)| s.rules.iter().map(|r| r.0)).filter(|n| !self.rules.iter().any(|x| x.0 == *n));
+        let floor = lost.map(|n| Setting::joined_floor(&all, Some(n))).fold(Setting::joined_floor(&all, None), u64::max);
+        for ((_, e), f) in self.rules.iter_mut().zip(own) {
+            e.purge_before = e.purge_before.max(f);
         }
-        let lost = prev.rules.iter().filter(|(n, _)| !self.rules.iter().any(|x| x.0 == *n)).map(|x| carry(&x.1));
-        let floor = prev.default.iter().map(carry).chain(lost).max().unwrap_or(0);
         if floor > 0 {
             let d = self.default.get_or_insert(SettingEntry { history: Opt::None, expires: None, purge_before: 0 });
             d.purge_before = d.purge_before.max(floor);
@@ -170,7 +186,7 @@ pub enum Delta {
     /// A content or snapshot fragment (spec/crdt.md §3).
     Writes(Frag),
     Edge(EdgeWrite),
-    /// A whole `retention^.0` setting (on `Aspect::RETENTION`, fixed retention).
+    /// A whole `retention^.0` setting (on `Aspect::RETENTION`).
     Retention(Setting),
     /// `addenda.0` entries: per entry the removal's commit and the commits it lists.
     Addenda(Vec<(CommitId, Vec<CommitId>)>),

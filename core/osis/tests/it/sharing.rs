@@ -91,6 +91,35 @@ fn alice_knows_bob() -> (osis::Osis, osis::Osis) {
     (alice, bob)
 }
 
+// spec/permissions.md §2, §3 Retain: a timed grant carries what its `until` passing says, the
+// thing's default when written unless told; a later default leaves it as written; `set_role`
+// moving its role keeps it. `retain_copy` without an `until` is refused.
+// spec: spec/permissions.md §3
+#[test]
+fn a_timed_grant_keeps_the_retain_it_was_written_with_spec_permissions_3() {
+    let (alice, bob) = alice_knows_bob();
+    let b = bob.me();
+    let g = alice.commit_with(|w| w.create_held()).unwrap();
+    let until = Some(osis::Time(T0 + 3_600_000));
+    let retains = |db: &osis::Osis| db.grants(g).unwrap()[&b].retain_copy;
+    alice.set_retain_copies_default(g, true).unwrap();
+    alice.grant(g, b, Role::Read, osis::GrantOpts { until, ..Default::default() }).unwrap();
+    assert!(retains(&alice), "the default when written");
+    alice.set_retain_copies_default(g, false).unwrap();
+    assert!(retains(&alice), "a later default changes nothing");
+    alice.grant(g, b, Role::Write, osis::GrantOpts { until, ..Default::default() }).unwrap();
+    assert!(!retains(&alice), "a new grant takes the default now");
+    alice.grant(g, b, Role::Admin, osis::GrantOpts { until, retain_copy: Some(true), ..Default::default() }).unwrap();
+    assert!(retains(&alice), "as told");
+    alice.set_retain_copies_default(g, false).unwrap();
+    alice.set_role(g, b, Some(Role::Read), SetRoleOpts::default()).unwrap();
+    assert!(retains(&alice), "lowering keeps it");
+    alice.set_role(g, b, Some(Role::Write), SetRoleOpts::default()).unwrap();
+    assert!(retains(&alice), "raising keeps it");
+    let no_until = osis::GrantOpts { retain_copy: Some(true), ..Default::default() };
+    assert!(matches!(alice.grant(g, b, Role::Admin, no_until), Err(Error::Invalid(_))));
+}
+
 // notes/api.md Sharing and roles: `grant` adds and raises, never lowers (`Invalid`, nothing
 // written); `set_role` to the present role writes nothing, lowers, and with `None` removes,
 // after which another removal writes nothing. Observed at the granting node.

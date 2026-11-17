@@ -338,7 +338,7 @@ Steps and claim sets (§8) and `entry_box` (a `box` value, §7) are their canoni
     | 3 | has content | `[tid] -> bool` |
     | 4 | holds | `[tid] -> bool` (its creation is held) |
     | 5 | backlinks | `[tid] -> [[thing, ak, kind]*]`, kind 0 strong, 1 weak, 2 ticket: the known references to it (spec/data-model.md §8), only from things the actor may read |
-    | 6 | grants | `[tid] -> [[holder, role, Opt(until), Opt(may_grant), from_now]*]` |
+    | 6 | grants | `[tid] -> [[holder, role, Opt(until), retain_copy, Opt(may_grant), from_now]*]` |
     | 7 | role on | `[tid] -> Opt(role)`, the actor's |
     | 8 | created | `[tid] -> Opt(stamp)` |
     | 9 | changed | `[tid] -> Opt(stamp)` |

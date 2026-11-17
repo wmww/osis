@@ -306,6 +306,42 @@ fn purge_then_keep_keeps_what_is_written_after_spec_commits_5() {
     assert!(!lp.peers[0].engine.body_not_dropped(&v0, &d, &ak(A)), "the writer covered it");
 }
 
+// spec/commits.md §5 One way: concurrent admins. Alice turns purge on replace on; Carol, not
+// holding it, writes a keep, which carries no floor. A node holding both joins the floor at the
+// keep's stamp, in either order, so content replaced under Alice's setting is not listed (by the
+// keep alone it would be); what is written after the keep is. Carol, once she holds Alice's,
+// writes the join into her next setting.
+#[test]
+fn concurrent_admins_lose_no_purge_floor_spec_commits_5() {
+    let (mut lp, d) = setup();
+    let base = base(&mut lp);
+    let p = set(&mut lp, 0, d, &setting(&[(A, History::PurgeOnReplace)]));
+    let v0 = put(&mut lp, 1, d, "zero");
+    let v1 = put(&mut lp, 1, d, "one");
+    let k = set(&mut lp, 2, d, &setting(&[(A, History::FOREVER)]));
+    let v2 = put(&mut lp, 1, d, "two");
+    let v3 = put(&mut lp, 1, d, "three");
+    let kept = ct::retention_setting(&lp.peers[2].engine.get(&d, &ak("retention^.0")).unwrap().unwrap()).unwrap();
+    assert_eq!(kept.rules[&ak(A)].purge_before, None, "written without Alice's setting");
+    let pk: Vec<Package> = [(0, &p), (1, &v0), (1, &v1), (2, &k), (1, &v2), (1, &v3)].into_iter().map(|(i, c)| pack(&mut lp, i, c)).collect();
+    let rest = [&pk[1], &pk[2], &pk[4], &pk[5]];
+    let now = lp.peers[0].engine.now();
+    let mut alone = fresh(&base, &[&pk[3], rest[0], rest[1], rest[2], rest[3]], FRESH, now);
+    assert!(listed(&mut alone, &v0, d), "the keep alone lists it: that node never heard of the purge");
+    for order in [[&pk[0], &pk[3]], [&pk[3], &pk[0]]] {
+        let mut n = fresh(&base, &[order[0], order[1], rest[0], rest[1], rest[2], rest[3]], FRESH, now);
+        assert!(!listed(&mut n, &v0, d), "replaced under purge on replace");
+        assert!(listed(&mut n, &v2, d), "written after the keep");
+    }
+    lp.deliver(2, &pk[0]).unwrap();
+    let k2 = set(&mut lp, 2, d, &setting(&[(A, History::FOREVER)]));
+    let joined = ct::retention_setting(&lp.peers[2].engine.get(&d, &ak("retention^.0")).unwrap().unwrap()).unwrap();
+    assert_eq!(joined.rules[&ak(A)].purge_before, Some(lp.peers[2].engine.header(&k).unwrap().ts.wall_ms().0), "the join, at the keep's stamp");
+    let pk2 = pack(&mut lp, 2, &k2);
+    let mut later = fresh(&base, &[&pk2, rest[0], rest[1], rest[2], rest[3]], FRESH, now);
+    assert!(!listed(&mut later, &v0, d) && listed(&mut later, &v2, d), "the carried join, alone");
+}
+
 // spec/commits.md §5 Purge on replace: content replaced under purge on replace is never listed,
 // even when its replacing write is stamped ahead of the node's clock (within drift)
 #[test]

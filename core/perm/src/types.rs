@@ -31,6 +31,8 @@ pub struct Edge {
     /// The edge counts as removed from `wall_ms(t) >= until` (spec/permissions.md §2).
     pub until: Option<WallMs>,
     pub invite: Option<Role>,
+    /// With `until`: its passing says retain (spec/permissions.md §3, Retain).
+    pub retain: bool,
     /// Granted without history: the read n the holder reads from (spec/crypto.md §4, Floors);
     /// `None` is 0.
     pub floor: Option<u64>,
@@ -38,7 +40,7 @@ pub struct Edge {
 
 impl Edge {
     pub fn new(role: Role) -> Edge {
-        Edge { role, until: None, invite: None, floor: None }
+        Edge { role, until: None, invite: None, retain: false, floor: None }
     }
     /// The value a removal saying retain writes (spec/permissions.md §3): `until` 0, gone at every
     /// clock.
@@ -48,6 +50,11 @@ impl Edge {
     /// Whether this value is a removal's saying retain.
     pub fn says_retain(&self) -> bool {
         self.until == Some(osis_base::WallMs(0))
+    }
+    /// Whether this value, once it has no alive value after it, ended saying retain: a removal's
+    /// saying so, or one whose `until` passed written to retain (spec/permissions.md §3, Retain).
+    pub fn ends_retaining(&self) -> bool {
+        self.says_retain() || self.until.is_some() && self.retain
     }
     /// Alive at `ts`; `None` is the end of time, where every edge with an `until` is gone.
     pub fn alive_at(&self, ts: Option<Ts>) -> bool {

@@ -191,7 +191,7 @@ fn forked_account_reads_the_head_held_first_spec_permissions_5_4() {
 }
 
 fn edge(r: Role) -> osis_schema::core_types::Edge {
-    osis_schema::core_types::Edge { role: r, until: None, invite: None, floor: None }
+    osis_schema::core_types::Edge { role: r, until: None, invite: None, retain: false, floor: None }
 }
 
 /// An actor of peer 1 with secrets of its own.

@@ -19,7 +19,7 @@ fn synthetic_ak(ak: &str) -> bool {
 }
 
 fn edge_value(e: &Edge) -> Value {
-    ct::Edge { role: e.role, until: e.until, invite: e.invite, floor: e.floor }.to_value()
+    ct::Edge { role: e.role, until: e.until, invite: e.invite, retain: e.retain, floor: e.floor }.to_value()
 }
 
 impl Core {
@@ -28,7 +28,7 @@ impl Core {
     /// (`Engine::clock_next`).
     pub(crate) fn roster_of(&self, thing: &Tid) -> BTreeMap<Tid, Edge> {
         if let Some(h) = self.root_holders(thing) {
-            return h.into_iter().map(|(m, role)| (m, Edge { role, until: None, invite: None, floor: None })).collect();
+            return h.into_iter().map(|(m, role)| (m, Edge { role, until: None, invite: None, retain: false, floor: None })).collect();
         }
         let now = self.now();
         let ts = osis_base::Ts::make(now, 0).unwrap_or_default();

@@ -33,7 +33,7 @@ fn granted() -> (World, Tid) {
     let mut w = contacts();
     let t = make(&mut w, 0, "hi");
     let bob = w.node(1).account.unwrap();
-    w.write(0, |e| e.grant(&t, &bob, &ct::Edge { role: Role::Read, until: None, invite: None, floor: None })).unwrap();
+    w.write(0, |e| e.grant(&t, &bob, &ct::Edge { role: Role::Read, until: None, invite: None, retain: false, floor: None })).unwrap();
     w.run();
     (w, t)
 }
@@ -141,7 +141,7 @@ fn a_forged_ticket_naming_another_accepted_things_sync_id_blocks_no_fetch_spec_s
     let mut ts = Vec::new();
     for v in ["a", "b"] {
         let t = make(&mut w, 0, v);
-        w.write(0, |e| e.grant(&t, &bob, &ct::Edge { role: Role::Read, until: None, invite: None, floor: None })).unwrap();
+        w.write(0, |e| e.grant(&t, &bob, &ct::Edge { role: Role::Read, until: None, invite: None, retain: false, floor: None })).unwrap();
         ts.push((t, v));
     }
     w.run();
@@ -229,7 +229,7 @@ fn a_card_made_after_pairing_carries_the_inbox_spec_sync_inbox_5() {
     let a0 = w.node(0).account.unwrap();
     assert!(w.engine(1).inbox_thing(&a0).is_some(), "node 1 knows account 0's inbox");
     let t = make(&mut w, 1, "hi");
-    w.write(1, |e| e.grant(&t, &a0, &ct::Edge { role: Role::Read, until: None, invite: None, floor: None })).unwrap();
+    w.write(1, |e| e.grant(&t, &a0, &ct::Edge { role: Role::Read, until: None, invite: None, retain: false, floor: None })).unwrap();
     w.run();
     assert!(w.engine(0).ticket_for(&t).unwrap().is_some(), "the ticket reached account 0");
 }
@@ -264,7 +264,7 @@ fn accepted(role: Role) -> (World, Tid) {
     let mut w = contacts();
     let t = make(&mut w, 0, "hi");
     let bob = w.node(1).account.unwrap();
-    w.write(0, |e| e.grant(&t, &bob, &ct::Edge { role, until: None, invite: None, floor: None })).unwrap();
+    w.write(0, |e| e.grant(&t, &bob, &ct::Edge { role, until: None, invite: None, retain: false, floor: None })).unwrap();
     w.run();
     accept(&mut w, t, &[]);
     (w, t)
@@ -292,10 +292,10 @@ fn a_reader_granted_again_reads_again_spec_sync_set_2() {
     for lowered in [false, true] {
         let (mut w, t) = accepted(Role::Read);
         let bob = w.node(1).account.unwrap();
-        let new = lowered.then_some(ct::Edge { role: Role::Sync, until: None, invite: None, floor: None });
+        let new = lowered.then_some(ct::Edge { role: Role::Sync, until: None, invite: None, retain: false, floor: None });
         w.write(0, |e| e.demote(&t, &osis_engine::flows::edges::Demotion { holder: bob, new, retain: None })).unwrap();
         w.run();
-        w.write(0, |e| e.grant(&t, &bob, &ct::Edge { role: Role::Read, until: None, invite: None, floor: None })).unwrap();
+        w.write(0, |e| e.grant(&t, &bob, &ct::Edge { role: Role::Read, until: None, invite: None, retain: false, floor: None })).unwrap();
         w.run();
         w.write(0, |e| {
             let mut m = Mutation::new();
@@ -361,7 +361,7 @@ fn ds_ticket_for_a_thing_kept_unread_boxes_the_newest_established_secret_spec_sy
         let mut w = contacts();
         let t = make(&mut w, 0, "hi");
         let bob = w.node(1).account.unwrap();
-        w.write(0, |e| e.grant(&t, &bob, &ct::Edge { role: Role::Sync, until: None, invite: None, floor: None })).unwrap();
+        w.write(0, |e| e.grant(&t, &bob, &ct::Edge { role: Role::Sync, until: None, invite: None, retain: false, floor: None })).unwrap();
         w.run();
         let genuine = w.engine(1).ticket_for(&t).unwrap().expect("the grant's ticket");
         let s = genuine.sync_id;

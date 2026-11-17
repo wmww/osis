@@ -4,7 +4,8 @@ use crate::header::{FOREVER, Header};
 use crate::Error;
 use osis_base::format::{DELETE_ADMIN, DELETE_AUTHOR, DELETE_WRITER, ROLE_KEEP_MS};
 use osis_base::Ts;
-use osis_schema::core_types::{is_addenda, is_role_class};
+use osis_base::Ak;
+use osis_schema::core_types::{is_addenda, is_role_class, RetentionEntry, RetentionSetting};
 use osis_schema::{AspectDefaults, History, PurgeBy, Retention};
 
 /// The fixed retention of role-class deltas: `admin` (each node keeps a replaced one
@@ -64,7 +65,7 @@ pub fn write_retention(ak: &str, defaults: Option<&AspectDefaults>, set: Option<
 /// Whether a setting's entry is one a writer can follow (spec/commits.md §5 The setting): an
 /// expiry above 0 and below forever, history bounds within range (`until` at most `FOREVER`,
 /// `after` below it).
-pub fn entry_fits(e: &osis_schema::core_types::RetentionEntry) -> bool {
+pub fn entry_fits(e: &RetentionEntry) -> bool {
     let history = match e.history {
         Some(History::Keep { until, after }) => until.is_none_or(|t| t <= FOREVER) && after.is_none_or(|d| d < FOREVER),
         _ => true,
@@ -124,7 +125,7 @@ pub enum Opt {
 
 impl Opt {
     /// What entry `e` says (none: no history promised).
-    pub fn of(e: Option<&osis_schema::core_types::RetentionEntry>) -> Opt {
+    pub fn of(e: Option<&RetentionEntry>) -> Opt {
         match e.and_then(|e| e.history) {
             Some(History::Keep { until, after }) => Opt::Keep { after: after.unwrap_or(0), until: until.unwrap_or(0) },
             Some(History::PurgeOnReplace) => Opt::Purge,
@@ -133,40 +134,57 @@ impl Opt {
     }
 }
 
-/// The `purge_before` an entry carries for its AKs: `wall` where it purges on replace (the writer
-/// replacing it stamps the floor), else its own.
-fn carried(e: &osis_schema::core_types::RetentionEntry, wall: u64) -> Option<u64> {
-    match e.history {
-        Some(History::PurgeOnReplace) => Some(e.purge_before.map_or(wall, |f| f.max(wall))),
-        _ => e.purge_before,
-    }
+/// The entry governing `ak` in `s` (`None`: an AK no setting names, so the default).
+fn governing<'a>(s: &'a RetentionSetting, ak: Option<&Ak>) -> Option<&'a RetentionEntry> {
+    ak.map_or(s.default.as_ref(), |ak| s.entry(ak))
 }
 
-/// Fills the floors of setting `s` a writer writes at wall ms `wall` while `prev` is its current
-/// setting (spec/commits.md §5 One way): each entry's `purge_before` is at least the one the
-/// entry governing its AKs in `prev` carries (`wall` where that one purges on replace); the
-/// floors of AKs losing their own entry go to the default, one with no history if there is none.
-/// So content written while purge on replace governed it stays under purge on replace in every
-/// later setting.
-pub fn carry_floors(s: &mut osis_schema::core_types::RetentionSetting, prev: Option<&osis_schema::core_types::RetentionSetting>, wall: u64) {
-    let Some(prev) = prev else { return };
-    let max = |a: Option<u64>, b: Option<u64>| a.max(b);
+/// The `purge_before` of `ak` (`None`: an AK no setting names) joined over `held`, each setting
+/// with the wall ms of the write it carries, in key order (spec/commits.md §5 One way): the
+/// greatest of every held setting's floor there and, for each one but the newest whose entry
+/// there purges on replace, the wall ms of the next held one, unless a held floor there is
+/// already past its own (every floor is the stamp of a setting written after the purging one, so
+/// it already covers what was replaced while that one was in force). 0: none. O(held).
+pub fn joined_floor(held: &[(u64, &RetentionSetting)], ak: Option<&Ak>) -> u64 {
+    let base = held.iter().filter_map(|(_, s)| governing(s, ak)?.purge_before).max().unwrap_or(0);
+    let purges = |s: &RetentionSetting| governing(s, ak).is_some_and(|e| e.history == Some(History::PurgeOnReplace));
+    held.iter().zip(held.iter().skip(1)).filter(|(a, _)| purges(a.1) && base <= a.0).map(|(_, b)| b.0).fold(base, u64::max)
+}
+
+/// Whether some floor joined over `held` is past the one its newest setting carries: a setting
+/// written by an admin that did not hold a purging one, so the older settings still add to the
+/// join (spec/commits.md §5 One way: kept until a setting carries it).
+pub fn floors_unabsorbed(held: &[(u64, &RetentionSetting)]) -> bool {
+    let Some((_, cur)) = held.last() else { return false };
+    let own = |ak: Option<&Ak>| governing(cur, ak).and_then(|e| e.purge_before).unwrap_or(0);
+    let named = held.iter().flat_map(|(_, s)| s.rules.keys());
+    named.map(Some).chain([None]).any(|ak| joined_floor(held, ak) > own(ak))
+}
+
+/// Fills the floors of setting `s` a writer writes at wall ms `wall` holding the valid settings
+/// `held` (in key order, each before it; spec/commits.md §5 One way): each entry's `purge_before`
+/// is at least the floor of its AKs joined over `held` and `s`; the default's at least that of
+/// every AK `held` names that `s` does not, and of those none names (one with no history if there
+/// is none). So content written while purge on replace governed it, by any admin's setting the
+/// writer holds, stays under purge on replace in every later setting.
+pub fn carry_floors(s: &mut RetentionSetting, held: &[(u64, &RetentionSetting)], wall: u64) {
+    let new = s.clone();
+    let all: Vec<(u64, &RetentionSetting)> = held.iter().copied().chain([(wall, &new)]).collect();
     for (ak, e) in s.rules.iter_mut() {
-        e.purge_before = max(e.purge_before, prev.entry(ak).and_then(|p| carried(p, wall)));
+        let f = joined_floor(&all, Some(ak));
+        e.purge_before = e.purge_before.max((f > 0).then_some(f));
     }
-    let lost = prev.rules.iter().filter(|(ak, _)| !s.rules.contains_key(*ak)).map(|(_, e)| carried(e, wall));
-    let floor = prev.default.iter().map(|e| carried(e, wall)).chain(lost).max().flatten();
-    if floor.is_some() {
+    let lost = held.iter().flat_map(|(_, x)| x.rules.keys()).filter(|ak| !new.rules.contains_key(*ak));
+    let floor = lost.map(|ak| joined_floor(&all, Some(ak))).fold(joined_floor(&all, None), u64::max);
+    if floor > 0 {
         let d = s.default.get_or_insert_with(Default::default);
-        d.purge_before = max(d.purge_before, floor);
+        d.purge_before = d.purge_before.max(Some(floor));
     }
 }
 
 #[cfg(test)]
 mod floor_tests {
     use super::*;
-    use osis_base::Ak;
-    use osis_schema::core_types::{RetentionEntry, RetentionSetting};
 
     fn ak(s: &str) -> Ak {
         Ak::new(s).unwrap()
@@ -179,22 +197,45 @@ mod floor_tests {
         let keep = RetentionEntry { history: Some(History::FOREVER), ..Default::default() };
         let p = RetentionSetting::of(ak("x.0"), History::PurgeOnReplace);
         let mut k = RetentionSetting::from_iter([(ak("x.0"), keep)]);
-        carry_floors(&mut k, Some(&p), 30);
+        carry_floors(&mut k, &[(10, &p)], 30);
         assert_eq!(k.rules[&ak("x.0")].purge_before, Some(30));
         assert_eq!(k.default, None);
         let mut k2 = RetentionSetting::from_iter([(ak("x.0"), keep)]);
-        carry_floors(&mut k2, Some(&k), 50);
+        carry_floors(&mut k2, &[(10, &p), (30, &k)], 50);
         assert_eq!(k2.rules[&ak("x.0")].purge_before, Some(30));
         // x.0 falls to the default: the default carries its floor
         let mut d = RetentionSetting { default: Some(keep), ..Default::default() };
-        carry_floors(&mut d, Some(&k2), 60);
+        carry_floors(&mut d, &[(50, &k2)], 60);
         assert_eq!(d.default.unwrap().purge_before, Some(30));
         let mut none = RetentionSetting::default();
-        carry_floors(&mut none, Some(&p), 70);
+        carry_floors(&mut none, &[(10, &p)], 70);
         assert_eq!(none.default, Some(RetentionEntry { purge_before: Some(70), ..Default::default() }));
         // no purge before: nothing to carry
         let mut fresh = RetentionSetting::default();
-        carry_floors(&mut fresh, Some(&RetentionSetting::of(ak("x.0"), History::FOREVER)), 10);
+        carry_floors(&mut fresh, &[(10, &RetentionSetting::of(ak("x.0"), History::FOREVER))], 10);
         assert_eq!(fresh, RetentionSetting::default());
+    }
+
+    // spec/commits.md §5 One way: concurrent admins: a keep written without the purging setting
+    // carries no floor, yet a node holding both joins one at the keep's stamp, whichever order it
+    // holds them in; a setting written holding both carries it, and then the older add nothing
+    #[test]
+    fn floors_join_over_concurrent_settings_spec_commits_5() {
+        let keep = RetentionEntry { history: Some(History::FOREVER), ..Default::default() };
+        let p = RetentionSetting::of(ak("x.0"), History::PurgeOnReplace);
+        let mut k = RetentionSetting::from_iter([(ak("x.0"), keep)]);
+        carry_floors(&mut k, &[], 30);
+        assert_eq!(k.rules[&ak("x.0")].purge_before, None);
+        let held = [(10, &p), (30, &k)];
+        assert_eq!(joined_floor(&held, Some(&ak("x.0"))), 30);
+        assert_eq!(joined_floor(&held, Some(&ak("y.0"))), 0, "another AK: no purge there");
+        assert!(floors_unabsorbed(&held));
+        let mut c = RetentionSetting::from_iter([(ak("x.0"), keep)]);
+        carry_floors(&mut c, &held, 50);
+        assert_eq!(c.rules[&ak("x.0")].purge_before, Some(30));
+        for held in [&[(10, &p), (30, &k), (50, &c)][..], &[(10, &p), (50, &c)], &[(50, &c)]] {
+            assert_eq!(joined_floor(held, Some(&ak("x.0"))), 30);
+            assert!(!floors_unabsorbed(held));
+        }
     }
 }

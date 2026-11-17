@@ -1120,8 +1120,8 @@ struct Auditor {
 /// Componentwise maximum of two edge values, alive: what a holder held across them.
 fn join(a: Option<Edge>, b: Edge) -> Edge {
     match a {
-        None => Edge { until: None, ..b },
-        Some(a) => Edge { role: a.role.max(b.role), invite: a.invite.max(b.invite), until: None, floor: a.floor.min(b.floor) },
+        None => Edge { until: None, retain: false, ..b },
+        Some(a) => Edge { role: a.role.max(b.role), invite: a.invite.max(b.invite), until: None, retain: false, floor: a.floor.min(b.floor) },
     }
 }
 

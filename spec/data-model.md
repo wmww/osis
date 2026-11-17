@@ -135,7 +135,7 @@ Values are CBOR (RFC 8949) restricted to the following profile. A decoder MUST r
 ## 9. Core schema
 The core aspects form the core schema, evolving under spec/versioning.md. `schema/core.osis` (normative, in the DSL of notes/data-model.md) gives their exact types, flags and default retentions; `creation`, `signing_key`, `signature`, `kem_key`, `sealed` are spec/wire.md §3. Rules beyond the types:
 
-- `roles.0` reads as the role timeline's roster (spec/permissions.md §5). `floor`: spec/permissions.md §2. `until` 0: a removal saying retain (spec/permissions.md §2).
+- `roles.0` reads as the role timeline's roster (spec/permissions.md §5). `floor`: spec/permissions.md §2. `until` 0: a removal saying retain; `retain`: what a timed grant's `until` passing says (spec/permissions.md §2).
 - `addenda.0` is read per delta, never as state.
 - `keys.0`: spec/crypto.md §3, spec/sync-ids.md §2; `signing` is set only on an account's (the current epoch's signing key; `key` beside it is that epoch's KEM key). `secrets.0`: spec/crypto.md §4. `sync.0`: spec/sync-ids.md §4. `reach.0`: spec/sync-transport.md §3 (a node's dialable key, its global addresses and relays). Box payloads, history box layout and AD tuples: spec/wire.md §7.
 - **References in core aspects**: every thing a core aspect's value names (schema/core.osis) is named by a weak: a creation record's `admin` and `link`, `roles.0`'s holders, box keys' holders, `left_out`'s holders, `reach.0`'s account, `keys.0`'s inbox, `caps^.0`'s things, `clients^.0`'s actors; but `holds.0` holds refs and `tickets.0` tickets.

@@ -168,19 +168,24 @@ pub fn setting(r: &mut Rng, now: u64) -> Setting {
     Setting { rules, default, written: None }
 }
 
-/// The newest `retention^.0` setting on `thing` in `commits` stamped before `ts`, of any
-/// validity: the one a writer of a setting carries floors from (`Setting::written_after`).
-fn newest_setting(commits: &[Commit], thing: ThingId, ts: u64) -> Option<Setting> {
-    commits
+/// The `retention^.0` settings on `thing` in `commits` stamped before `ts`, of any validity, in
+/// key order with the wall ms of each: what a writer of a setting carries floors from
+/// (`Setting::written_after`). Now and then the writer misses some (an admin that never got
+/// another's: concurrent admins).
+fn held_settings(r: &mut Rng, commits: &[Commit], thing: ThingId, ts: u64) -> Vec<(u64, Setting)> {
+    let partial = r.chance(30);
+    let mut v: Vec<(Key, Setting)> = commits
         .iter()
         .filter(|c| c.ts < ts)
         .flat_map(|c| c.parts.iter().map(move |p| (c, p)))
         .filter_map(|(c, p)| match &p.body {
-            Body::Held(Delta::Retention(x)) if p.thing == thing => Some((c.key(), x)),
+            Body::Held(Delta::Retention(x)) if p.thing == thing => Some((c.key(), x.clone())),
             _ => None,
         })
-        .max_by_key(|x| x.0)
-        .map(|x| x.1.clone())
+        .filter(|_| !partial || r.chance(50))
+        .collect();
+    v.sort();
+    v.into_iter().map(|(k, x)| (wall(k.0), x)).collect()
 }
 
 /// The entry governing `aspect` in the newest `retention^.0` setting on `thing` stamped before
@@ -385,7 +390,9 @@ pub fn history(seed: u64, n: usize) -> Held {
             let author = if r.chance(80) { chief } else { author };
             let back = r.below(3) * HOUR / 2;
             let ts = (w - back) * MS + logical;
-            let d = Delta::Retention(setting(&mut r, w).written_after(newest_setting(&commits, thing, ts).as_ref(), wall(ts)));
+            let held = held_settings(&mut r, &commits, thing, ts);
+            let held: Vec<(u64, &Setting)> = held.iter().map(|(w, x)| (*w, x)).collect();
+            let d = Delta::Retention(setting(&mut r, w).written_after(&held, wall(ts)));
             Commit { parts: vec![plain_part(thing, Aspect::RETENTION, Retention::ADMIN, d)], ..base(id, author, ts) }
         } else {
             let undone = (roll < 48)

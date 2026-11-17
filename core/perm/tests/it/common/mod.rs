@@ -25,7 +25,7 @@ pub fn edge(role: Role) -> Option<Edge> {
 }
 
 pub fn edge_inv(role: Role, invite: Option<Role>, until: Option<u64>) -> Option<Edge> {
-    Some(Edge { role, until: until.map(WallMs), invite, floor: None })
+    Some(Edge { role, until: until.map(WallMs), invite, retain: false, floor: None })
 }
 
 /// `n` key-actor records whose tids sort in index order (models order authors by index).
@@ -261,7 +261,7 @@ pub fn joint_world(h: &roles_model::joint::JHist, salt: u8) -> (World, Vec<Tid>,
 /// An edges-model edge value.
 pub fn model_edge(e: Option<roles_model::edges::Edge>) -> Option<Edge> {
     use roles_model::edges::NEVER;
-    e.map(|e| Edge { role: model_role(e.role).unwrap_or(Role::Read), until: (e.until != NEVER).then_some(WallMs(e.until as u64)), invite: model_role(e.invite), floor: None })
+    e.map(|e| Edge { role: model_role(e.role).unwrap_or(Role::Read), until: (e.until != NEVER).then_some(WallMs(e.until as u64)), invite: model_role(e.invite), retain: false, floor: None })
 }
 
 /// An edges-model history as a world: node 0 is the one target's first admin; the other
