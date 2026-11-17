@@ -486,6 +486,59 @@ fn the_last_reader_lowered_to_sync_keeps_the_store_for_a_later_reader_spec_sync_
     assert_eq!(value(&mut w, 1, &t1), Some(Value::Str("v2".into())), "Bob accepts later and reads");
 }
 
+// spec/sync-inbox.md §5 (Removal notice): Alice grants Bob read on T0, so he may read T1 under
+// it by the chain. One of her nodes removes him from T0 while the other, not yet knowing it,
+// grants him sync on T1, boxing him T1's read secret; Bob accepts T1 alone, and a node he pairs
+// next logs his chain for T1 there. His first node takes the removal notice before it holds
+// T0's roster, which comes later with that chain: the notice is acted on once a role commit of
+// T0 naming him is held, so he keeps T1 unread.
+#[test]
+fn a_removal_notice_taken_before_its_roster_acts_once_the_roster_comes_spec_sync_inbox_5() {
+    let mut w = contacts();
+    w.pair(0);
+    w.run();
+    let t0 = make(&mut w, 0, None, "v1");
+    let t1 = make(&mut w, 0, Some(t0), "v2");
+    let bob = w.node(1).account.unwrap();
+    w.write(0, |e| e.grant(&t0, &bob, &edge(Role::Read))).unwrap();
+    w.run();
+    w.write(2, |e| e.demote(&t0, &osis_engine::flows::Demotion { holder: bob, new: None, retain: None })).unwrap();
+    w.write(0, |e| e.grant(&t1, &bob, &edge(Role::Sync))).unwrap();
+    strong(&mut w, 1, None, t1, true);
+    w.pair(1);
+    w.run();
+    for i in [1, 3] {
+        assert_eq!(holding(&mut w, i, &t1), Some(Holding::Unread), "node {i} keeps T1 unread");
+    }
+}
+
+// spec/sync-judgement.md §3 (an entry waits for what opens its commit again), notes/sync.md
+// Arriving early: Bob accepts T ahead and drops it again just as Alice grants him read, so his
+// node receives her grant under his account root's sync ID after the release and it pends,
+// needing T's record. Its pending copy then goes while the entry stays (in a history: the commit
+// applies from a fire's copy and is forgotten between two follows of the store). Neither held
+// nor pending, the entry waits for that sync ID again (store::Follow::lost_parks), as one whose
+// held commit is forgotten does.
+#[test]
+fn an_entry_whose_pending_commit_is_forgotten_is_parked_again_spec_sync_judgement_3() {
+    let mut w = siblings();
+    w.parks = true;
+    let t = make(&mut w, 0, None, "v1");
+    let bob = w.node(1).account.unwrap();
+    strong(&mut w, 2, None, t, true);
+    w.run();
+    let g = w.write(0, |e| e.grant(&t, &bob, &edge(Role::Read))).unwrap();
+    strong(&mut w, 1, None, t, false);
+    w.run();
+    let pending: Vec<_> = g.commits.iter().copied().filter(|c| w.engine(1).pends(c)).collect();
+    assert!(!pending.is_empty(), "the grant pends at Bob's node, its thing released");
+    for c in &pending {
+        w.engine(1).forget_pending(c).unwrap();
+    }
+    w.run();
+    w.check_parks();
+}
+
 // spec/permissions.md §3 (Lost access): Alice makes T1 under T0, grants Bob sync on it, writes,
 // then removes T0's record edge on T1, her only path to T1. The removal's own entries under T0's
 // and D's sync IDs, read still, name a commit she forgets with T1: each is parked again

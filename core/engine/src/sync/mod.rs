@@ -526,6 +526,12 @@ impl Engine {
         self.core.ix.commits.removals()
     }
 
+    /// A cursor over the commits this node stops pending from now on (`memo::Removals`): its
+    /// pending copy forgotten, or held.
+    pub fn unpending_feed(&self) -> osis_base::memo::Removals<CommitId> {
+        self.core.ix.pending.removals()
+    }
+
     /// A cursor over the blobs this node comes to open or seal from now on (`blob_commit` names
     /// their commit; `memo::Feed`, a blob noted again included).
     pub fn blob_feed(&self) -> osis_base::memo::Feed<BlobId> {

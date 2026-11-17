@@ -27,9 +27,10 @@ pub struct Follow {
     /// store's entry feed and at S's start.
     parked: Parked,
     entries: Option<Feed<(SyncId, BlobId)>>,
-    /// Commits the engine stops holding: their entries under a read S wait for what they did not
-    /// before (`awaits`), with no entry of the store moving.
-    unheld: Option<Removals<CommitId>>,
+    /// Commits the engine stops holding, and commits it stops pending: their entries under a
+    /// read S wait for what they did not before (`awaits`: a commit neither held nor pending
+    /// waits for S), with no entry of the store moving.
+    unheld: Option<(Removals<CommitId>, Removals<CommitId>)>,
     /// The sync IDs pulled anew (`Store::anew_feed`): a pull anew fetches what is not held, so
     /// what is held and parked opens again here (spec/sync-judgement.md §3 Dropped bodies: it
     /// opens again each entry its store still holds).
@@ -290,8 +291,9 @@ impl Follow {
         // a commit forgotten (lost access) leaves its own entries waiting for it to open again;
         // a blob of it no entry names keeps no note (`Engine::unnamed_blob`)
         match self.unheld.as_mut() {
-            Some(f) => {
-                for c in f.removed() {
+            Some((f, p)) => {
+                let gone: Vec<CommitId> = f.removed().into_iter().chain(p.removed()).collect();
+                for c in gone {
                     for b in engine.commit_blobs(&c)?.iter() {
                         let naming = store.naming(b)?;
                         if naming.is_empty() {
@@ -306,7 +308,7 @@ impl Follow {
                     }
                 }
             }
-            None => self.unheld = Some(engine.unheld_feed()),
+            None => self.unheld = Some((engine.unheld_feed(), engine.unpending_feed())),
         }
         let moved = self.set.settle(store);
         let mut acted = !moved.is_empty();
@@ -410,8 +412,9 @@ impl Follow {
                 }
             }
         }
-        if let Some(mut f) = self.unheld.clone() {
-            for c in f.removed() {
+        if let Some((mut f, mut p)) = self.unheld.clone() {
+            let gone: Vec<CommitId> = f.removed().into_iter().chain(p.removed()).collect();
+            for c in gone {
                 for b in engine.commit_blobs(&c)?.iter() {
                     for s in store.naming(b)? {
                         if self.read.contains_key(&s) {

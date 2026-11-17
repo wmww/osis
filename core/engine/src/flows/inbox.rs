@@ -137,12 +137,20 @@ fn fire_removal(tx: &mut Tx<'_>, holder: Tid, c: CommitId, target: Tid) -> Resul
 /// disregarded), not a self-removal or finalize, within `ROLE_KEEP` of its `ts` (as long as it
 /// travels, spec/permissions.md §4 Role changes travel), fires its notice on the holder's inbox.
 /// Judged again only when a role commit writing that edge arrives, so a duplicate costs one
-/// fire, which the holder takes once.
+/// fire, which the holder takes once. The same arrivals on this node's account's own edge on a
+/// thing T take the notices it holds naming T, not taken whole yet (`removals_untaken`): a notice
+/// that came before T's roster is acted on once a role commit of T's naming it is held.
 pub(crate) fn owe_removal_notices(tx: &mut Tx<'_>) -> Result<()> {
     if tx.core.notices_due.is_empty() {
         return Ok(());
     }
     let due = std::mem::take(&mut tx.core.notices_due);
+    let me = tx.core.member();
+    for (_, t) in due.iter().filter(|(x, _)| Some(*x) == me) {
+        for c in removals_untaken(tx, t)? {
+            tx.core.ix.closure.fires_due.insert(c);
+        }
+    }
     let now = tx.now().0;
     let mut owed = Vec::new();
     for (x, t) in due {
@@ -191,8 +199,9 @@ impl Engine {
         self.core.has_own_secrets(a).then_some(*a)
     }
 
-    /// Acts on removal notice `fire` held here (spec/sync-inbox.md §5): only while this node reads
-    /// its thing T and holds T's roster, it learns the notice's records and takes its chain and
+    /// Acts on removal notice `fire` held here (spec/sync-inbox.md §5): once this node holds its
+    /// thing T's roster (as the notice arrives, or as a role commit on its holder's edge on T
+    /// arrives: `owe_removal_notices`), it learns the notice's records and takes its chain and
     /// then its role commit, each only where judged valid (`ingest_valid`): an edit write taking
     /// this node below read then applies like any, and lost access releases T or keeps the
     /// retained copy it says (spec/permissions.md §3). Any other notice changes nothing.
@@ -222,9 +231,9 @@ impl Engine {
         self.take_role_parts(&v, aks, false)
     }
 
-    /// Takes role commit parts `v` (`role_parts_value`): every part of one of `aks`; `read` the
-    /// things they are on read here, with their roster held.
-    fn take_role_parts(&mut self, v: &Value, aks: &[&str], read: bool) -> Result<()> {
+    /// Takes role commit parts `v` (`role_parts_value`): every part of one of `aks`; `roster`
+    /// the things they are on with their roster held here.
+    fn take_role_parts(&mut self, v: &Value, aks: &[&str], roster: bool) -> Result<()> {
         let Value::Map(m) = v else { return Ok(()) };
         let bytes = |k: i64| match m.get(&Value::Int(k)) {
             Some(Value::Bytes(b)) => vec![b.clone()],
@@ -234,8 +243,7 @@ impl Engine {
         let Some(commit) = bytes(0).into_iter().next() else { return Ok(()) };
         let Ok(blob) = osis_commit::CommitBlob::decode(&commit) else { return Ok(()) };
         let things: BTreeSet<Tid> = blob.parts.iter().filter_map(|p| blob.header.aspects.get(p.ai)).map(|a| a.tid).collect();
-        let ours = |e: &Engine, t: &Tid| e.core.epochs(t).is_some_and(|x| x.role(Role::Read).holds_any()) && e.core.timelines.get(t).is_some();
-        if blob.parts.iter().any(|p| blob.header.aspects.get(p.ai).is_none_or(|a| !aks.contains(&a.ak.as_str()))) || things.is_empty() || (read && !things.iter().all(|t| ours(self, t))) {
+        if blob.parts.iter().any(|p| blob.header.aspects.get(p.ai).is_none_or(|a| !aks.contains(&a.ak.as_str()))) || things.is_empty() || (roster && !things.iter().all(|t| self.core.timelines.get(t).is_some())) {
             return Ok(());
         }
         let limits = osis_base::Limits::new(osis_base::format::MAX_OBJECT_DEPTH, osis_base::format::MAX_BLOB);
