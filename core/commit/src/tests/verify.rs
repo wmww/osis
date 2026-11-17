@@ -46,7 +46,6 @@ pub(crate) fn register_delta(author: Tid, at: Ts, lo: u64, v: &str) -> Vec<u8> {
 fn delete_levels_by_retention() {
     let s = TestSecrets { admin: true };
     let lv = |by| delete_keys(&s, &t(3), &Retention { by }).unwrap().iter().map(|x| x.level).collect::<Vec<_>>();
-    assert_eq!(lv(PurgeBy::Nobody), Vec::<u8>::new());
     assert_eq!(lv(PurgeBy::Admin), vec![1]);
     assert_eq!(lv(PurgeBy::AuthorOrAdmin), vec![1, 2]);
     assert_eq!(lv(PurgeBy::Writer), vec![1, 2, 3]);
@@ -131,9 +130,6 @@ fn ephemeral_commit_holds_no_record_spec_commits_2() {
     b.header.ephemeral = Some(EphClass::Plain);
     let mut h = b.header.clone();
     h.aspects[0].ak = osis_base::Ak::new("created.0").unwrap();
-    h.aspects[0].retention = crate::retention::KEPT_RETENTION;
-    h.aspects[0].keys.clear();
-    h.keys.clear();
     assert!(h.validate().unwrap_err().to_string().contains("created.0"));
 }
 

@@ -155,7 +155,7 @@ pub fn options(now: u64) -> [Opt; 9] {
 /// A random `retention^.0` setting: an entry for one or two aspects (the signal often), a
 /// default half the time, an expiry default now and then.
 pub fn setting(r: &mut Rng, now: u64) -> Setting {
-    let entry = |r: &mut Rng| SettingEntry { history: r.pick(&options(now)), expires: r.chance(20).then(|| (1 + r.below(3)) * HOUR) };
+    let entry = |r: &mut Rng| SettingEntry { history: r.pick(&options(now)), expires: r.chance(20).then(|| (1 + r.below(3)) * HOUR), purge_before: 0 };
     let mut rules: Vec<(u32, SettingEntry)> = Vec::new();
     for _ in 0..1 + r.below(2) {
         let a = r.pick(&[REG, MAP, TEXT, SET, LIST, REC, SIG, SIG]);
@@ -165,7 +165,22 @@ pub fn setting(r: &mut Rng, now: u64) -> Setting {
         }
     }
     let default = r.chance(80).then(|| entry(r));
-    Setting { rules, default }
+    Setting { rules, default, written: None }
+}
+
+/// The newest `retention^.0` setting on `thing` in `commits` stamped before `ts`, of any
+/// validity: the one a writer of a setting carries floors from (`Setting::written_after`).
+fn newest_setting(commits: &[Commit], thing: ThingId, ts: u64) -> Option<Setting> {
+    commits
+        .iter()
+        .filter(|c| c.ts < ts)
+        .flat_map(|c| c.parts.iter().map(move |p| (c, p)))
+        .filter_map(|(c, p)| match &p.body {
+            Body::Held(Delta::Retention(x)) if p.thing == thing => Some((c.key(), x)),
+            _ => None,
+        })
+        .max_by_key(|x| x.0)
+        .map(|x| x.1.clone())
 }
 
 /// The entry governing `aspect` in the newest `retention^.0` setting on `thing` stamped before
@@ -223,7 +238,7 @@ pub fn history(seed: u64, n: usize) -> Held {
     for (k, &(t, chief)) in CONTENT.iter().enumerate() {
         if r.chance(40) {
             let d = Delta::Retention(setting(&mut r, START));
-            let part = plain_part(t, Aspect::RETENTION, Retention::FIXED, d);
+            let part = plain_part(t, Aspect::RETENTION, Retention::ADMIN, d);
             let id = new_id(&mut r);
             commits.push(Commit { id, author: chief, actor: chief, ts: (START - HOUR / 2) * MS + k as u64, expires: None, kind: CommitKind::Content, parts: vec![part], purge: vec![], frontier: None, undoes: None, boxes: vec![] });
         }
@@ -370,8 +385,8 @@ pub fn history(seed: u64, n: usize) -> Held {
             let author = if r.chance(80) { chief } else { author };
             let back = r.below(3) * HOUR / 2;
             let ts = (w - back) * MS + logical;
-            let d = Delta::Retention(setting(&mut r, w));
-            Commit { parts: vec![plain_part(thing, Aspect::RETENTION, Retention::FIXED, d)], ..base(id, author, ts) }
+            let d = Delta::Retention(setting(&mut r, w).written_after(newest_setting(&commits, thing, ts).as_ref(), wall(ts)));
+            Commit { parts: vec![plain_part(thing, Aspect::RETENTION, Retention::ADMIN, d)], ..base(id, author, ts) }
         } else {
             let undone = (roll < 48)
                 .then(|| {

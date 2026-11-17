@@ -75,7 +75,7 @@ fn status(h: &Held, o: &Outcome, by_id: &BTreeMap<CommitId, &Commit>, c: &Commit
     }
     if let Some(q) = o.purged.get(&(c.id, i)) {
         // spec/commits.md §7: listed while a body replaced at its request's `ts` would be in history
-        let kept = h.now < kept_until(c) || o.in_history(p.thing, p.aspect, wall(by_id[q].ts), h.now);
+        let kept = h.now < kept_until(c) || o.in_history(p.thing, p.aspect, wall(by_id[q].ts), wall(c.ts), h.now);
         return kept.then_some(Here::Purged);
     }
     let here = match p.body {

@@ -321,7 +321,7 @@ fn create_link_in(tx: &mut Tx<'_>, sharer: Tid, spec: &LinkSpec, l: Tid, seed: &
     done.add(Engine::commit_tx(tx, m)?);
     let sync_id = super::sync_id_of(tx, &k)?.ok_or(Error::Misuse("K's sync ID"))?;
     // a joiner's removal from K reads K's default: the target's now
-    if crate::apply::validity::retain_now(tx.core, &spec.target) {
+    if crate::apply::validity::retain_default(tx.core, &spec.target) {
         let mut m = Mutation::new();
         m.set(k, &ct::RETENTION, &ct::RetentionSetting { retain: true, ..Default::default() })?;
         done.add(Engine::commit_tx(tx, m)?);

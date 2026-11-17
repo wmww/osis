@@ -52,12 +52,12 @@
 - **Finalize**: a removal of another holder's grant carrying no frontier that is not a self-removal (below). It applies (§5.1) iff the grant is past its `until` at the removal's `ts` (as the timeline orders it: a renewal ordered before it counts, and the finalize then ends a superseded write and applies nothing) and its author holds write on the target and a role there at least the grant's (a timed admin grant needs an admin); else it applies nothing, whoever wrote it.
   - It is no explicit write: it audits nothing, so the removed holder's own timestamps still decide its writes (§5.1, §5.2).
   - It is the grant's departure for keys (spec/crypto.md §4) and carries its rotation (§3) like any removal; one finalize may remove several ended grants of one target (spec/commits.md §2).
-  - It says retain or erase as its `until` would (§3, Retain: the default in force at the expiry's key).
+  - It says retain or erase as its `until` would (§3, Retain: the thing's current default).
   - A node with write on actor T holding a grant on T it may finalize, past its `until` by its own clock, MUST write the finalize before its next commit encrypting under T other than by sealing a box to T (spec/crypto.md §4), and boxes that holder nothing meanwhile (a grant renewing it excepted).
 - A removal says **retain or erase** (§3, Retain).
   - Its plain entry reset says erase.
   - Its entry reset with the grant written anew with `until` 0 (role read, no invite), gone at every clock, says retain, and is a removal all the same (§5.1), in one commit with its rotation. A client writes `until` 0 for nothing else.
-  - It says what its remover wants, or else what the thing's default says: `retain` of the `retention^.0` setting in force (spec/commits.md §5), none erasing.
+  - It says what its remover wants, or else what the thing's default says: `retain` of its current `retention^.0` setting (spec/commits.md §5 In force), none erasing.
   - A self-removal says what its author wants, whatever the default.
   - A client removing a node from its account's D writes erase unless its user says otherwise, whatever the default.
   - A receiver reads what the removal says, never the default.
@@ -139,9 +139,9 @@
     - a grant of H on A at read or above alive.
   - An ended grant says what the last write on it on the timeline (§5.1, the writes that applied) says:
     - a removal, for itself (§2);
-    - a value with another `until`, passed: the thing's default in force at its key (first `ts` at `until`, the zero tid and commit ID, or the write's key if later).
+    - a value with another `until`, passed: the thing's current default (spec/commits.md §5 In force).
   - It retains only while the node has H: it is H, holds read or above on H now, retains H itself, or holds H's secrets above sync not dropped in the same judging (a loss of H not yet carried out; the copy is judged again when it is) (least fixpoint, so holders cannot retain each other).
-  - Everything else erases: a removal saying so, no default, a write that did not apply. A default set later changes no removal or ending before it.
+  - Everything else erases: a removal saying so, no default, a write that did not apply. A default set later changes no removal before it; it changes what an ended timed grant says (the thing keeps no earlier setting).
   - **The copy** is what the node held when it dropped: state, bodies and their timers.
     - Its secrets and `secrets.0` go as above, and so does what it held of the things' sync IDs: it syncs none of them, logs and serves nothing of it, and cannot write it.
     - Its pending parts on the things' content go. A later part on it is not joined, so a purge request arriving later reaches the copy only in a commit the node takes for another part, and need not.
@@ -332,7 +332,7 @@ A commit of account P names the epoch it is signed at (spec/wire.md §4); §5.4 
 
 ## 6. Purge rights
 - **The right**: a delta's retention names who may purge it (spec/commits.md §5), judged at the request's time. Each member of the named set holds the right on its own:
-  - **admin**: the thing's current admins (in every set but `nobody`);
+  - **admin**: the thing's current admins (in every set);
   - **author** (in `author_or_admin` and `writer`): the delta's header actor while it holds write on the thing: the actor itself and any author with write on that actor;
   - **writer**: any current writer of the thing.
   - An actor that lost write on the thing gives no author's right until it regains it.

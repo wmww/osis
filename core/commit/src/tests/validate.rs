@@ -142,42 +142,35 @@ fn validate_role_commit() {
     assert!(invalid(&x).to_string().contains("roles.0"));
 }
 
-// spec/commits.md §5 (on any other delta it is bad): `nobody` is fixed retention's alone, §6 (one per commit): a
-// `nobody` content delta or minting is bad input, `retention^.0` beside any delta is not; an expiring commit
-// carries no fixed-retention aspect.
+// spec/commits.md §6 (one per commit): an expiring commit carries no fixed-retention aspect;
+// `retention^.0` has ordinary retention, so one may expire.
 #[test]
-fn validate_nobody_and_commit_expiry() {
+fn validate_commit_expiry() {
     let sort = |x: &mut Header| x.aspects.sort_by(|a, b| crate::header::aspect_order(&a.tid, a.ak.as_str()).cmp(&crate::header::aspect_order(&b.tid, b.ak.as_str())));
     let mut h = sample_header();
     h.expires = None;
-    let mut b = h.aspects[0].clone();
-    b.ak = Ak::new("app:z.0").unwrap();
-    b.retention = retention::KEPT_RETENTION;
-    b.keys.clear();
-    let mut x = h.clone();
-    x.aspects[0] = b.clone();
-    x.keys.clear();
-    assert!(invalid(&x).to_string().contains("nobody"), "{}", invalid(&x));
-    // a minting too (spec/commits.md §5 Destruction: admins may always purge)
-    x.aspects[0].ak = Ak::new("created.0").unwrap();
-    assert!(invalid(&x).to_string().contains("nobody"), "{}", invalid(&x));
-    // and a minting is purgeable by admins alone (spec/commits.md §5 Destruction)
+    for (ak, fixed) in [("purge.0", true), ("retention^.0", false)] {
+        let mut b = h.aspects[0].clone();
+        b.ak = Ak::new(ak).unwrap();
+        b.tid = t(2);
+        let mut x = h.clone();
+        x.aspects.insert(0, b);
+        sort(&mut x);
+        x.validate().unwrap();
+        x.expires = Some(h.ts.wall_ms().0 + 1);
+        if fixed {
+            assert!(invalid(&x).to_string().contains("fixed-retention"), "{ak}");
+        } else {
+            x.validate().unwrap();
+        }
+    }
+    // a minting is purgeable by admins alone (spec/commits.md §5 Destruction)
     for by in [PurgeBy::AuthorOrAdmin, PurgeBy::Writer] {
         let mut y = h.clone();
         y.aspects[0].ak = Ak::new("created.0").unwrap();
         y.aspects[0].retention = Retention { by };
         assert!(invalid(&y).to_string().contains("created.0 not purgeable by admin"), "{by:?}: {}", invalid(&y));
     }
-    let mut rec = b.clone();
-    rec.ak = Ak::new("retention^.0").unwrap();
-    rec.retention = retention::KEPT_RETENTION;
-    rec.tid = t(2);
-    let mut x = h.clone();
-    x.aspects.insert(0, rec.clone());
-    sort(&mut x);
-    x.validate().unwrap();
-    x.expires = Some(h.ts.wall_ms().0 + 1);
-    assert!(invalid(&x).to_string().contains("fixed-retention"));
 }
 
 // spec/commits.md §5, §6: expires after ts; purge never names role-class deltas; a purge request
@@ -230,7 +223,7 @@ fn retention_encoding_spec_wire_4() {
         x.aspects[0].retention = Retention { by };
         assert_eq!(Header::decode(&x.encode()).unwrap(), x);
     }
-    for bad in [Value::Int(4), Value::List(vec![Value::Int(2), Value::Int(0)])] {
+    for bad in [Value::Int(0), Value::Int(4), Value::List(vec![Value::Int(2), Value::Int(0)])] {
         let mut v = crate::tests::header_value(&h);
         if let Value::List(items) = &mut v
             && let Some(Value::List(aspects)) = items.get_mut(7)
@@ -250,7 +243,7 @@ fn retention_rules() {
     use retention::*;
     assert_eq!(fixed_retention("secrets.0"), Some(ROLE_RETENTION));
     assert_eq!(fixed_retention("created.0"), None);
-    assert_eq!(fixed_retention("retention^.0").unwrap().by, PurgeBy::Nobody);
+    assert_eq!(fixed_retention("retention^.0"), None);
     assert_eq!(fixed_retention("app:x.0"), None);
     assert_eq!(write_retention("app:x.0", None, None).unwrap(), Retention::default());
     assert_eq!(Retention::default().by, PurgeBy::Admin);
@@ -261,8 +254,7 @@ fn retention_rules() {
     assert_eq!(write_expires("app:x.0", ts(10), Some(&d), Some(50)).unwrap(), Some(50));
     assert_eq!(write_expires("roles.0", ts(10), Some(&d), Some(50)).unwrap(), None);
     assert!(write_retention("roles.0", None, Some(Retention { by: PurgeBy::Writer })).is_err());
-    assert!(write_retention("app:x.0", None, Some(Retention { by: PurgeBy::Nobody })).is_err());
-    assert_eq!(write_retention("retention^.0", None, None).unwrap(), KEPT_RETENTION);
+    assert_eq!(write_retention("retention^.0", None, None).unwrap(), Retention::default());
     // a snapshot is `writer`, its history the thing's setting; fixed retention keeps its own
     assert_eq!(snapshot_retention("app:x.0"), Retention { by: PurgeBy::Writer });
     assert_eq!(snapshot_retention("keys.0"), ROLE_RETENTION);

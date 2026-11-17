@@ -1,10 +1,14 @@
 //! The thing-level history judgment (spec/commits.md §5 The setting): history is set per thing by
-//! `retention^.0`, never per write. One aspect of one thing; times are wall ms. `evaluate` judges
-//! every replaced body by `out` over the thing's held valid settings (`Outcome::out`); `Eager`
-//! and `history` here are the greenfield small worlds `tests/it/spec_thing_history.rs` checks.
+//! `retention^.0`, never per write, and judged by the current setting alone: the newest held
+//! valid one. One aspect of one thing; times are wall ms. `Outcome` (`model.rs`) judges every
+//! replaced body by `out`; `Eager` and `history` here are the greenfield small worlds
+//! `tests/it/spec_thing_history.rs` checks.
 //!
-//! The rule: a replaced body leaves history at the first moment, at or after it was replaced,
-//! at which the setting then in force does not keep it; from then it is out for good.
+//! The rule: a replaced body is in history while the current setting keeps it, counted from when
+//! it was replaced. Purge on replace is the one thing that needs the past, and the current
+//! setting carries it: an entry's `floor` (`purge_before`) puts every body written before it under
+//! purge on replace, and a writer replacing a purge-on-replace entry sets it to its own stamp
+//! (`written_after`), carrying any earlier one on.
 
 pub type Ms = u64;
 pub const NEVER: Ms = u64::MAX;
@@ -20,86 +24,38 @@ pub enum Opt {
     Purge,
 }
 
-/// A valid held setting: in force from `ts` until the next one by `(ts, id)`.
+/// A valid held setting, current while no held valid one sorts after it by `(ts, id)`. `floor`:
+/// a body written before it is under purge on replace (0: none).
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
 pub struct Setting {
     pub ts: Ms,
     pub id: u32,
     pub opt: Opt,
+    pub floor: Ms,
 }
 
-/// The settings in key order, each as it reads. `one_way`: once purge on replace was in force,
-/// a later keep reads as `None` (the rule that makes late dating safe; `false` shows why).
-pub fn timeline(settings: &[Setting], one_way: bool) -> Vec<Setting> {
-    let mut s = settings.to_vec();
-    s.sort();
-    let mut purged = false;
-    for x in &mut s {
-        match x.opt {
-            Opt::Purge => purged = true,
-            Opt::Keep { .. } if purged && one_way => x.opt = Opt::None,
-            _ => {}
-        }
-    }
-    s
+/// The setting a writer holding `prev` (its current) writes at `ts` with option `opt`: purge on
+/// replace is one way, so a writer replacing a purge-on-replace entry sets the floor to its own
+/// stamp, and every writer carries the floor it holds.
+pub fn written_after(prev: Option<&Setting>, ts: Ms, id: u32, opt: Opt) -> Setting {
+    let floor = prev.map_or(0, |p| if p.opt == Opt::Purge { ts.max(p.floor) } else { p.floor });
+    Setting { ts, id, opt, floor }
 }
 
-/// The moment a body replaced at `r` leaves history; `NEVER` if no held setting ends it.
-pub fn out(settings: &[Setting], one_way: bool, r: Ms) -> Ms {
-    let tl = timeline(settings, one_way);
-    // before the first setting nothing is promised: in force from the beginning of time
-    let mut spans = vec![(0, Opt::None)];
-    spans.extend(tl.iter().map(|s| (s.ts, s.opt)));
-    let mut best = NEVER;
-    for (i, (from, opt)) in spans.iter().enumerate() {
-        let to = spans.get(i + 1).map_or(NEVER, |n| n.0);
-        let bound = match opt {
-            Opt::Keep { after, until } => r.saturating_add(*after).max(*until),
-            _ => r,
-        };
-        let e = bound.max(*from).max(r);
-        if e < to {
-            best = best.min(e);
-        }
-    }
-    best
+/// What a node judges by (the design, and the negative controls the tests show fail).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Rule {
+    /// The floor, against the stamps of the body's writes.
+    Floor,
+    /// No floor: purge on replace by the current setting alone, covered at once by writers.
+    NoFloor,
+    /// The floor against the body's replaced-at (which a node holding fewer bodies dates later).
+    FloorByReplaced,
 }
 
-/// Whether a body replaced at `r` is in history at `now`: it leaves later than it was replaced
-/// (a body replaced under no history or purge on replace is out when replaced, whenever that is:
-/// AMBIGUITIES 68), and not yet.
-pub fn kept(settings: &[Setting], one_way: bool, r: Ms, now: Ms) -> bool {
-    let o = out(settings, one_way, r);
-    o > r && now < o
-}
-
-/// Until when a live body (not replaced) is kept (spec/commits.md §5 Kept while live): the
-/// latest moment up to which some span of the timeline would keep a body replaced then. A span
-/// keeps one replaced at m iff its entry's bound passes m: with a D, at every m of the span;
-/// with only a T, at every m before T. `NEVER`: the newest span keeps one with a D, or its T is
-/// `NEVER`; 0: no span keeps one (a cover drops the live body at once).
-pub fn live_until(settings: &[Setting], one_way: bool) -> Ms {
-    let tl = timeline(settings, one_way);
-    let mut end = 0;
-    for (i, s) in tl.iter().enumerate() {
-        let to = tl.get(i + 1).map_or(NEVER, |n| n.ts);
-        let Opt::Keep { after, until } = s.opt else { continue };
-        let last = if after > 0 { to } else { until.min(to) };
-        if last > s.ts {
-            end = end.max(last);
-        }
-    }
-    end
-}
-
-/// The setting in force at wall time `t` (the newest by key with `ts <= t`), as it reads.
-pub fn in_force(settings: &[Setting], one_way: bool, t: Ms) -> Opt {
-    timeline(settings, one_way).iter().rev().find(|s| s.ts <= t).map_or(Opt::None, |s| s.opt)
-}
-
-/// Whether a body replaced at `r` falls under purge on replace: the writers' duty to cover it.
-pub fn purge_owed(settings: &[Setting], one_way: bool, r: Ms) -> bool {
-    in_force(settings, one_way, r) == Opt::Purge
+/// The current setting: the newest held, by `(ts, id)`.
+pub fn current(settings: &[Setting]) -> Option<Setting> {
+    settings.iter().max().copied()
 }
 
 /// A register write: body `id` stamped `ts` (stamps distinct). `fire`: a signal's, replaced
@@ -120,11 +76,70 @@ pub fn replaced_at(held: &[Body], b: &Body) -> Option<Ms> {
     held.iter().filter(|o| !o.fire && (o.ts, o.id) > (b.ts, b.id)).map(|o| o.ts).min()
 }
 
-/// The history a node shows at `now`: its held replaced bodies still in their window.
-pub fn history(settings: &[Setting], one_way: bool, held: &[Body], now: Ms) -> Vec<u32> {
-    let mut v: Vec<u32> = held.iter().filter(|b| replaced_at(held, b).is_some_and(|r| kept(settings, one_way, r, now))).map(|b| b.id).collect();
+/// Whether `b`, replaced at `r`, is under the floor of `s`.
+fn floored(s: &Setting, rule: Rule, b: &Body, r: Ms) -> bool {
+    match rule {
+        Rule::Floor => b.ts < s.floor,
+        Rule::NoFloor => false,
+        Rule::FloorByReplaced => r < s.floor,
+    }
+}
+
+/// Whether value body `b`, replaced at `r`, is under purge on replace by `cur`: the entry purges
+/// on replace, or it was written before the floor. Writers cover it at once and every node drops
+/// it once covered, whatever it holds later.
+pub fn under_purge(cur: Option<Setting>, rule: Rule, b: &Body, r: Ms) -> bool {
+    !b.fire && cur.is_some_and(|s| s.opt == Opt::Purge || floored(&s, rule, b, r))
+}
+
+/// The moment `b`, replaced at `r`, leaves history by `cur` (a body under purge on replace, or
+/// under no keep entry, when replaced).
+pub fn out(cur: Option<Setting>, rule: Rule, b: &Body, r: Ms) -> Ms {
+    match cur {
+        Some(s) if !floored(&s, rule, b, r) => match s.opt {
+            Opt::Keep { after, until } => r.saturating_add(after).max(until).max(r),
+            _ => r,
+        },
+        _ => r,
+    }
+}
+
+/// Whether `b`, replaced at `r`, is in history at `now`: it leaves later than it was replaced
+/// (one replaced under no history or purge on replace never is: AMBIGUITIES 68), and not yet.
+pub fn kept(cur: Option<Setting>, rule: Rule, b: &Body, r: Ms, now: Ms) -> bool {
+    let o = out(cur, rule, b, r);
+    o > r && now < o
+}
+
+/// Until when live body `b` is kept (spec/commits.md §5 Kept while live): while a replacement of
+/// it then would be kept. A D: for good; a T alone: to T; else 0 (a cover drops it at once).
+pub fn live_until(cur: Option<Setting>, b: &Body) -> Ms {
+    match cur {
+        Some(s) if b.ts >= s.floor => match s.opt {
+            Opt::Keep { after, .. } if after > 0 => NEVER,
+            Opt::Keep { until, .. } => until,
+            _ => 0,
+        },
+        _ => 0,
+    }
+}
+
+/// The history a node holding `settings` and `held` shows at `now`.
+pub fn history(settings: &[Setting], rule: Rule, held: &[Body], now: Ms) -> Vec<u32> {
+    let cur = current(settings);
+    let mut v: Vec<u32> = held.iter().filter(|b| replaced_at(held, b).is_some_and(|r| kept(cur, rule, b, r, now))).map(|b| b.id).collect();
     v.sort();
     v
+}
+
+/// The oracle of what purge on replace promises, from the whole world: `b` was replaced (by every
+/// body written) while the setting then in force by stamp (every setting written) purged on
+/// replace. Read from the past the nodes never keep.
+pub fn purged(all_settings: &[Setting], all: &[Body], b: &Body) -> bool {
+    let Some(r) = replaced_at(all, b) else { return false };
+    let mut s = all_settings.to_vec();
+    s.sort();
+    !b.fire && s.iter().rev().find(|x| x.ts <= r).is_some_and(|x| x.opt == Opt::Purge)
 }
 
 /// A node that drops every body the moment it is out (the earliest any rule allows), keeps
@@ -138,31 +153,30 @@ pub struct Eager {
 }
 
 impl Eager {
-    pub fn setting(&mut self, s: Setting, one_way: bool, now: Ms) {
+    pub fn setting(&mut self, s: Setting, rule: Rule, now: Ms) {
         self.settings.push(s);
-        self.act(one_way, now);
+        self.act(rule, now);
     }
-    pub fn body(&mut self, b: Body, one_way: bool, now: Ms) {
+    pub fn body(&mut self, b: Body, rule: Rule, now: Ms) {
         if self.dropped.contains(&b.id) || self.held.contains(&b) {
             return;
         }
         self.held.push(b);
-        self.act(one_way, now);
+        self.act(rule, now);
     }
-    pub fn act(&mut self, one_way: bool, now: Ms) {
+    pub fn act(&mut self, rule: Rule, now: Ms) {
         let held = self.held.clone();
-        let (settings, dropped) = (&self.settings, &mut self.dropped);
+        let cur = current(&self.settings);
+        let dropped = &mut self.dropped;
         self.held.retain(|b| {
-            let gone = replaced_at(&held, b).is_some_and(|r| out(settings, one_way, r) <= now);
+            let gone = replaced_at(&held, b).is_some_and(|r| out(cur, rule, b, r) <= now);
             if gone {
                 dropped.push(b.id);
             }
             !gone
         });
     }
-    pub fn history(&self, one_way: bool, now: Ms) -> Vec<u32> {
-        let mut v: Vec<u32> = self.held.iter().filter(|b| replaced_at(&self.held, b).is_some_and(|r| kept(&self.settings, one_way, r, now))).map(|b| b.id).collect();
-        v.sort();
-        v
+    pub fn history(&self, rule: Rule, now: Ms) -> Vec<u32> {
+        history(&self.settings, rule, &self.held, now)
     }
 }

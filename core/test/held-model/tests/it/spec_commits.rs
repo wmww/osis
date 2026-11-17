@@ -84,15 +84,19 @@ fn purge_without_the_right_drops_nothing_spec_commits_5() {
     assert!(evaluate(&h).purged.is_empty());
 }
 
-// spec/commits.md §5 (Who and how long): fixed retention (`nobody`) has no holder: a purge of the
-// setting takes nothing, and it stays in force
+// spec/commits.md §5 (The setting): the setting has ordinary retention: an admin's purge of it
+// takes it, and with it what it keeps
 #[test]
-fn nobody_delta_stays_spec_commits_5() {
-    let cs = vec![setting(5, 0, REG, KEPT), reg(10, FIRST_ADMIN, 1, REG, Retention::PLAIN, 7), reg(11, FIRST_ADMIN, 2, REG, Retention::PLAIN, 8), purge(20, FIRST_ADMIN, 3, PurgeItem::Aspect { thing: T, aspect: Aspect::RETENTION })];
-    let o = evaluate(&held(4, cs));
-    assert!(o.purged.is_empty());
-    assert_eq!(o.fates[&(5, 0)], Fate::Keep(KeepWhy::Plain));
-    assert_eq!(o.history[&(T, REG)], [(st(1, 10, 1), 10)].into_iter().collect());
+fn a_purged_setting_keeps_nothing_spec_commits_5() {
+    let cs = |p: bool| {
+        let mut v = vec![setting(5, 0, REG, KEPT), reg(10, FIRST_ADMIN, 1, REG, Retention::PLAIN, 7), reg(11, FIRST_ADMIN, 2, REG, Retention::PLAIN, 8)];
+        v.extend(p.then(|| purge(20, FIRST_ADMIN, 3, PurgeItem::Aspect { thing: T, aspect: Aspect::RETENTION })));
+        v
+    };
+    assert_eq!(evaluate(&held(4, cs(false))).history[&(T, REG)], [(st(1, 10, 1), 10)].into_iter().collect());
+    let o = evaluate(&held(4, cs(true)));
+    assert!(o.purged.contains_key(&(5, 0)));
+    assert!(o.history.is_empty());
 }
 
 // spec/commits.md §5 (Purge), spec/crdt.md §4.7 (Copies)
@@ -236,9 +240,8 @@ fn keep_until_blocks_compaction_spec_commits_5() {
     assert!(o.history.is_empty());
 }
 
-// spec/commits.md §5 (Kept while live): a live delta is kept to the end of the last span of its
-// aspect's timeline that would keep a body replaced then (a D: the span's end, for good in the
-// newest; a T alone: T or the span's end); elsewhere a cover drops it at once
+// spec/commits.md §5 (Kept while live): a live delta is kept while the current setting would keep
+// it replaced (a D: for good; a T alone: to T); elsewhere a cover drops it at once
 #[test]
 fn live_delta_kept_to_its_live_bound_spec_commits_5() {
     let live = |settings: Vec<Commit>, now: u64| {
@@ -255,12 +258,15 @@ fn live_delta_kept_to_its_live_bound_spec_commits_5() {
     assert_eq!(live(vec![setting(5, 0, REG, Opt::Purge)], 3).0, dropped);
     // a D in the newest setting: for good
     assert_eq!(live(vec![setting(5, 0, REG, keep_after(1))], 100).0, Fate::Keep(KeepWhy::Live));
-    // a D ended by a later setting: to that setting's stamp
-    let ended = || vec![setting(5, 0, REG, keep_after(1)), setting(6, 4, REG, Opt::None)];
-    assert_eq!(live(ended(), 3), (Fate::Keep(KeepWhy::Live), true));
-    assert_eq!(live(ended(), 4).0, dropped);
-    // one way: a keep after purge on replace keeps nothing
-    assert_eq!(live(vec![setting(5, 0, REG, Opt::Purge), setting(6, 1, REG, keep_after(1))], 3).0, dropped);
+    // a T alone: to T
+    assert_eq!(live(vec![setting(5, 0, REG, keep_until(4))], 3), (Fate::Keep(KeepWhy::Live), true));
+    assert_eq!(live(vec![setting(5, 0, REG, keep_until(4))], 4).0, dropped);
+    // a newer setting decides, ahead of the clock too
+    assert_eq!(live(vec![setting(5, 0, REG, keep_after(1)), setting(6, 4, REG, Opt::None)], 3).0, dropped);
+    // one way: a keep after purge on replace keeps no delta written before it
+    let p = Setting { rules: vec![(REG.name, SettingEntry { history: Opt::Purge, expires: None, purge_before: 0 })], default: None, written: None };
+    let k = Setting { rules: vec![(REG.name, SettingEntry { history: keep_after(1), expires: None, purge_before: 0 })], default: None, written: None }.written_after(Some(&p), at(2));
+    assert_eq!(live(vec![setting_by(5, FIRST_ADMIN, 0, p), setting_by(6, FIRST_ADMIN, 2, k)], 3).0, dropped);
     // another aspect's keep keeps nothing here
     assert_eq!(live(vec![setting(5, 0, OTHER, KEPT)], 3).0, dropped);
 }

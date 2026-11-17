@@ -56,10 +56,10 @@ impl Aspect {
     pub const ADDENDA: Aspect = Aspect { name: 10, admin_only: false, signal: false };
     /// `created.0`: a thing's creation, the write that makes it exist (`Delta::Created`).
     pub const CREATED: Aspect = Aspect { name: 13, admin_only: false, signal: false };
-    /// Role-class or fixed retention (`roles.0`, `retention^.0`, `purge.0`, `addenda.0`,
-    /// `created.0`): governed by no setting, never out of history, never covered.
+    /// Role-class or fixed retention (`roles.0`, `purge.0`, `addenda.0`, `created.0`): governed
+    /// by no setting, never out of history, never covered.
     pub fn fixed(&self) -> bool {
-        matches!(self.name, 0 | 8 | 9 | 10 | 13)
+        matches!(self.name, 0 | 9 | 10 | 13)
     }
 }
 
@@ -123,20 +123,45 @@ impl EdgeWrite {
 pub struct SettingEntry {
     pub history: Opt,
     pub expires: Option<u64>,
+    /// `purge_before`: a body holding a dead write stamped before this wall ms is under purge on
+    /// replace (0: none). A writer replacing a purge-on-replace entry sets it to its own stamp and
+    /// every writer carries it (`Setting::written_after`).
+    pub purge_before: u64,
 }
 
 /// A whole `retention^.0` setting: per aspect name its entry, and the default entry for every
-/// AK with none (`retain`, the removal default, is not modeled).
+/// AK with none (`retain`, the removal default, is not modeled). `written`: the `ts` of the
+/// setting write a snapshot's body carries (`None`: the body's own commit's).
 #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, Default)]
 pub struct Setting {
     pub rules: Vec<(u32, SettingEntry)>,
     pub default: Option<SettingEntry>,
+    pub written: Option<u64>,
 }
 
 impl Setting {
     /// The entry governing aspect `name`: its own, else the default.
     pub fn entry(&self, name: u32) -> Option<SettingEntry> {
         self.rules.iter().find(|r| r.0 == name).map(|r| r.1).or(self.default)
+    }
+
+    /// `self` as a writer holding `prev` (its current setting) writes it at wall ms `wall`
+    /// (spec/commits.md §5 One way): each entry's `purge_before` carried from the entry governing
+    /// its AKs in `prev`, its own stamp where that one purged on replace; floors of AKs losing
+    /// their own entry go to the default (one with no history if there is none).
+    pub fn written_after(mut self, prev: Option<&Setting>, wall: u64) -> Setting {
+        let Some(prev) = prev else { return self };
+        let carry = |e: &SettingEntry| if e.history == Opt::Purge { wall.max(e.purge_before) } else { e.purge_before };
+        for (name, e) in &mut self.rules {
+            e.purge_before = e.purge_before.max(prev.entry(*name).map_or(0, |p| carry(&p)));
+        }
+        let lost = prev.rules.iter().filter(|(n, _)| !self.rules.iter().any(|x| x.0 == *n)).map(|x| carry(&x.1));
+        let floor = prev.default.iter().map(carry).chain(lost).max().unwrap_or(0);
+        if floor > 0 {
+            let d = self.default.get_or_insert(SettingEntry { history: Opt::None, expires: None, purge_before: 0 });
+            d.purge_before = d.purge_before.max(floor);
+        }
+        self
     }
 }
 
@@ -170,12 +195,10 @@ pub enum Body {
     Parked,
 }
 
-/// Who may purge a write (spec/commits.md §5): admins always may. `Nobody` is fixed retention's
-/// only (`retention^.0`); every other delta has one of the other three (Tess's decision 2,
+/// Who may purge a write (spec/commits.md §5): admins always may (Tess's decision 2,
 /// notes/engine-retention-history.md).
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum PurgeBy {
-    Nobody,
     Admin,
     AuthorOrAdmin,
     Writer,
@@ -195,8 +218,6 @@ impl Retention {
     pub const ADMIN: Retention = Retention { by: PurgeBy::Admin };
     /// Role-class: `admin`; the model drops no role body (ROLE_KEEP is compactor policy).
     pub const ROLE: Retention = Retention::ADMIN;
-    /// `retention^.0` (fixed retention): nobody may purge it.
-    pub const FIXED: Retention = Retention { by: PurgeBy::Nobody };
     pub fn with_by(self, by: PurgeBy) -> Retention {
         Retention { by }
     }

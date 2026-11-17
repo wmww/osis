@@ -9,8 +9,7 @@ use osis_base::format::{COMMITMENT_LEN, MAX_DRIFT_MS, PREFIX_FIXED_LEN};
 
 /// The commitment groups of a blob of `h` whose sections list aspects `ais` (every section's,
 /// opened or not): one group per distinct delete-key set among them, each in header key order,
-/// groups in order of their first aspect (spec/wire.md §5). A `nobody` aspect's set is empty,
-/// its own group. Zero aspects (a header-only blob): none. The order given does not matter.
+/// groups in order of their first aspect (spec/wire.md §5). Zero aspects (a header-only blob): none. The order given does not matter.
 pub fn prefix_groups(h: &Header, ais: impl IntoIterator<Item = usize>) -> Result<Vec<Vec<DeleteKey>>, Error> {
     let mut groups: Vec<Vec<DeleteKey>> = Vec::new();
     let mut sets: Vec<&Vec<usize>> = Vec::new();

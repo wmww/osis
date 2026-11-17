@@ -4,7 +4,7 @@
 //! stamp; the setting itself has fixed retention and binds nothing for a writer that is no admin.
 
 use crate::common::*;
-use osis_base::{CommitId, Role, Tid, Value, WallMs};
+use osis_base::{CommitId, PurgeBy, Role, Tid, Value, WallMs};
 use osis_commit::retention::fixed_retention;
 use osis_engine::local_peer::{LocalPeer, Package, Peer};
 use osis_engine::Mutation;
@@ -83,16 +83,16 @@ fn fresh(base: &[Package], order: &[&Package], seed: u64, at: WallMs) -> Peer {
     p
 }
 
-// spec/commits.md §5 Fixed retention, The setting: `retention^.0` is `nobody`, kept forever,
-// never snapshotted or undone, and written whole
+// spec/commits.md §5 The setting: `retention^.0` has ordinary retention (`admin` by default),
+// is snapshotted like any aspect, is written whole and never undone
 #[test]
-fn setting_itself_fixed_spec_commits_5() {
-    assert_eq!(fixed_retention("retention^.0"), Some(osis_commit::retention::KEPT_RETENTION));
+fn setting_itself_ordinary_spec_commits_5() {
+    assert_eq!(fixed_retention("retention^.0"), None);
     let (mut lp, d) = setup();
     let c = set(&mut lp, 0, d, &setting(&[(A, History::FOREVER)]));
     let h = lp.peers[0].engine.header(&c).unwrap();
-    assert_eq!(h.aspects.iter().find(|a| a.ak.as_str() == "retention^.0").unwrap().retention, osis_commit::retention::KEPT_RETENTION);
-    assert!(lp.peers[0].engine.snapshot(&d, &ak("retention^.0")).is_err(), "never compacted");
+    assert_eq!(h.aspects.iter().find(|a| a.ak.as_str() == "retention^.0").unwrap().retention.by, PurgeBy::Admin);
+    assert!(lp.peers[0].engine.snapshot(&d, &ak("retention^.0")).unwrap().is_some(), "compacted as any aspect");
     // a partial write would say something else alone
     let mut m = Mutation::new();
     m.op(d, &ct::RETENTION, osis_crdt::PathOp { path: vec![osis_crdt::PathSeg::Key(s("t:x"))], op: osis_crdt::Op::Set(ct::RetentionEntry::default().to_value()) }).unwrap();
@@ -198,10 +198,10 @@ fn history_follows_the_setting_in_any_order_spec_commits_5() {
     }
 }
 
-// spec/commits.md §5 The setting: a shortening hides what it ends, and a later extension does not
-// bring it back (a setting acts from its own stamp)
+// spec/commits.md §5 The setting, Dropped stays dropped: a shortening hides what it ends at once,
+// and a later extension reaches what each node still holds, never what it dropped
 #[test]
-fn shortening_hides_and_extension_does_not_bring_back_spec_commits_5() {
+fn shortening_hides_and_extension_reaches_only_what_is_held_spec_commits_5() {
     let (mut lp, d) = setup();
     set(&mut lp, 0, d, &setting(&[(A, keep(10 * HOUR))]));
     let v1 = put(&mut lp, 1, d, "one");
@@ -211,11 +211,18 @@ fn shortening_hides_and_extension_does_not_bring_back_spec_commits_5() {
     set(&mut lp, 0, d, &setting(&[]));
     lp.sync_all().unwrap();
     assert!(!listed(&mut lp.peers[2], &v1, d), "shortened: out");
+    // Alice covers and drops it (out of history); the others hold it
+    lp.peers[0].engine.snapshot(&d, &ak(A)).unwrap().unwrap();
+    lp.peers[0].engine.drop_body(&v1, &d, &ak(A)).unwrap();
+    assert!(lp.peers[2].engine.body_not_dropped(&v1, &d, &ak(A)));
     set(&mut lp, 0, d, &setting(&[(A, History::FOREVER)]));
     lp.sync_all().unwrap();
+    assert!(!lp.peers[0].engine.body_not_dropped(&v1, &d, &ak(A)), "dropped stays dropped");
     for i in 0..3 {
-        assert!(!listed(&mut lp.peers[i], &v1, d), "peer {i}: an extension reaches nothing that left");
+        let held = lp.peers[i].engine.body_not_dropped(&v1, &d, &ak(A));
+        assert_eq!(listed(&mut lp.peers[i], &v1, d), held, "peer {i}: an extension reaches what is held");
     }
+    assert!(listed(&mut lp.peers[2], &v1, d), "a reader holding it shows it again");
     // what is replaced under the extension is kept
     let v3 = put(&mut lp, 1, d, "three");
     put(&mut lp, 1, d, "four");
@@ -276,19 +283,27 @@ fn late_purge_on_replace_setting_makes_holders_cover_spec_commits_5() {
     assert!(!listed(&mut lp.peers[1], &v1, d));
 }
 
-// spec/commits.md §5 One way: once purge on replace is set for an aspect, a later keep keeps
-// nothing there
+// spec/commits.md §5 One way: a keep after purge on replace carries a floor at its own stamp, so
+// what was written before it is under purge on replace when replaced, at every node; what is
+// written after it is kept
 #[test]
-fn purge_then_keep_shows_nothing_spec_commits_5() {
+fn purge_then_keep_keeps_what_is_written_after_spec_commits_5() {
     let (mut lp, d) = setup();
     set(&mut lp, 0, d, &setting(&[(A, History::PurgeOnReplace)]));
-    set(&mut lp, 0, d, &setting(&[(A, History::FOREVER)]));
+    let v0 = put(&mut lp, 0, d, "zero");
+    lp.advance(1_000);
+    let k = set(&mut lp, 0, d, &setting(&[(A, History::FOREVER)]));
+    let e = lp.peers[0].engine.get(&d, &ak("retention^.0")).unwrap().and_then(|v| ct::retention_setting(&v)).unwrap();
+    assert_eq!(e.rules[&ak(A)].purge_before, Some(lp.peers[0].engine.header(&k).unwrap().ts.wall_ms().0), "the floor at its own stamp");
+    lp.advance(1_000);
     let v1 = put(&mut lp, 0, d, "one");
     put(&mut lp, 0, d, "two");
     lp.sync_all().unwrap();
     for i in 0..3 {
-        assert!(!listed(&mut lp.peers[i], &v1, d), "peer {i}");
+        assert!(!listed(&mut lp.peers[i], &v0, d), "peer {i}: written before the floor");
+        assert!(listed(&mut lp.peers[i], &v1, d), "peer {i}: written after it");
     }
+    assert!(!lp.peers[0].engine.body_not_dropped(&v0, &d, &ak(A)), "the writer covered it");
 }
 
 // spec/commits.md §5 Purge on replace: content replaced under purge on replace is never listed,
@@ -317,11 +332,15 @@ fn purge_on_replace_never_listed_ahead_of_the_clock_spec_commits_5() {
 fn a_replacement_ahead_of_the_clock_bounds_until_reached_spec_commits_5() {
     let (mut lp, d) = setup();
     let base = base(&mut lp);
-    let k = set(&mut lp, 0, d, &setting(&[(A, keep(10 * HOUR))]));
+    // v1 written under purge on replace, replaced after the keep: under its floor, out at its
+    // replacement, but dated (the current setting keeps history)
     let x = set(&mut lp, 0, d, &setting(&[(A, History::PurgeOnReplace)]));
     let v1 = put(&mut lp, 1, d, "one");
+    lp.advance(1_000);
+    let k = set(&mut lp, 0, d, &setting(&[(A, keep(10 * HOUR))]));
+    lp.advance(1_000);
     let v2 = put(&mut lp, 1, d, "two");
-    let pks = [pack(&mut lp, 0, &k), pack(&mut lp, 0, &x), pack(&mut lp, 1, &v1), pack(&mut lp, 1, &v2)];
+    let pks = [pack(&mut lp, 0, &x), pack(&mut lp, 1, &v1), pack(&mut lp, 0, &k), pack(&mut lp, 1, &v2)];
     let at = WallMs(lp.peers[0].engine.now().0 - HOUR / 2);
     let mut p = fresh(&base, &[&pks[0], &pks[1], &pks[2], &pks[3]], FRESH, at);
     let r = p.engine.header(&v2).unwrap().ts.wall_ms().0;
@@ -354,7 +373,7 @@ fn a_part_keeps_by_its_own_aspect_spec_commits_5() {
         m.set(d, &ak(other), &s("x")).unwrap();
         let c = lp.peers[1].commit(m).unwrap().unwrap();
         lp.advance(1_000);
-        let live = |e: &mut osis_engine::Engine| e.header(&c).unwrap().aspects.iter().map(|a| if a.ak == ak(kept) { osis_commit::retention::NEVER } else { 0 }).collect::<Vec<_>>();
+        let live = |e: &mut osis_engine::Engine| e.header(&c).unwrap().aspects.iter().map(|a| if a.ak == ak(kept) { u64::MAX } else { 0 }).collect::<Vec<_>>();
         let want = live(&mut lp.peers[1].engine);
         assert_eq!(lp.peers[1].engine.part_keeps(&c).unwrap(), want, "{kept}: the kept part kept while live, the other none");
         let mut m = Mutation::new();
@@ -750,7 +769,7 @@ fn an_unkept_part_dates_no_other_part_spec_commits_5() {
     let snap = e.snapshot(&d, &ak(other)).unwrap().unwrap();
     assert!(e.covered(&snap, &b, &d, &ak(other)).unwrap() == Some(true) && e.drop_from(&b, &d, &ak(other)).unwrap() <= e.now().0);
     let before = (e.part_keeps(&w).unwrap(), e.replaced_at(&w, &d, &ak(kept)).unwrap(), e.replaced_at(&w, &d, &ak(other)).unwrap());
-    let live: Vec<u64> = e.header(&w).unwrap().aspects.iter().map(|a| if a.ak == ak(kept) { osis_commit::retention::NEVER } else { 0 }).collect();
+    let live: Vec<u64> = e.header(&w).unwrap().aspects.iter().map(|a| if a.ak == ak(kept) { u64::MAX } else { 0 }).collect();
     assert_eq!(before, (live, None, None), "W's kept part current (kept while live), its other part undated");
     e.drop_body(&b, &d, &ak(other)).unwrap();
     assert_eq!((e.part_keeps(&w).unwrap(), e.replaced_at(&w, &d, &ak(kept)).unwrap(), e.replaced_at(&w, &d, &ak(other)).unwrap()), before, "a covered drop moved W");
@@ -880,16 +899,13 @@ fn a_snapshot_is_told_leaving_history_spec_commits_5() {
     }
 }
 
-// spec/commits.md §5 The setting: a body leaves history at the first time at or after its
-// replacement at which no setting keeps it, so bodies leave in replaced order whatever the clock.
-// Alice keeps the register 10 min after replaced and writes it; Bob replaces it; Alice then keeps
-// nothing; Carol replaces it again. A node whose clock is behind all of it gets Carol's write
-// before Bob's, so Alice's write is scheduled to leave from Carol's stamp (late: Bob's replaced
-// it first), where no setting keeps anything. Alice's second setting arriving last leaves
-// Alice's write in history (Bob replaced it under the keep, ahead of the clock): it is not told
-// as leaving. Bob's, replaced by Carol under no history, is out, told once the clock reaches it.
+// spec/commits.md §5 The setting: a body leaves history when the current setting stops keeping
+// it, told late, never early. Alice keeps the register 10 min after replaced and writes it; Bob
+// replaces it; Carol replaces it again. A node whose clock is behind all of it gets Carol's write
+// before Bob's, so Alice's write is scheduled to leave from Carol's stamp (late: Bob's replaced it
+// first): listing judges it fresh, and the row tells it once the clock passes.
 #[test]
-fn a_late_row_under_no_history_leaves_no_earlier_than_replaced_spec_commits_5() {
+fn a_late_row_leaves_no_earlier_than_replaced_spec_commits_5() {
     let (mut lp, d) = setup();
     let base = base(&mut lp);
     let early = lp.peers[0].engine.now();
@@ -897,26 +913,19 @@ fn a_late_row_under_no_history_leaves_no_earlier_than_replaced_spec_commits_5() 
     let v = put(&mut lp, 0, d, "alice");
     lp.sync_all().unwrap();
     let b = put(&mut lp, 1, d, "bob");
-    let none = set(&mut lp, 0, d, &ct::RetentionSetting::default());
     lp.sync_all().unwrap();
     let c = put(&mut lp, 2, d, "carol");
     let packs: Vec<Package> = [(0, keep), (0, v), (2, c), (1, b)].iter().map(|(i, x)| pack(&mut lp, *i, x)).collect();
     let mut p = fresh(&base, &packs.iter().collect::<Vec<_>>(), FRESH, early);
     p.engine.listen_commits(std::sync::Arc::new(|_: &Tid| true));
     p.drain_events();
-    let x = pack(&mut lp, 0, &none);
-    p.engine.ingest(&x.bytes, x.blobs.clone()).unwrap();
-    let mut told = Vec::new();
-    for e in p.drain_events() {
-        if let osis_engine::Event::Commits(ch) = e {
-            told.extend(ch.iter().filter(|x| x.tid == d).map(|x| x.id));
-        }
-    }
-    assert!(listed(&mut p, &v, d) && !told.contains(&v), "Alice's write stays in history, not told: {told:?}");
-    // Bob's is out, told (late, never early) once the clock reaches Carol's stamp
-    assert!(!listed(&mut p, &b, d));
-    p.clock.set(lp.peers[0].engine.now());
+    let told = |p: &mut Peer| -> Vec<CommitId> { p.drain_events().into_iter().filter_map(|e| if let osis_engine::Event::Commits(ch) = e { Some(ch.iter().filter(|x| x.tid == d).map(|x| x.id).collect::<Vec<_>>()) } else { None }).flatten().collect() };
+    let now = lp.peers[0].engine.now();
+    p.clock.set(now);
     p.tick().unwrap();
-    let told: Vec<CommitId> = p.drain_events().into_iter().filter_map(|e| if let osis_engine::Event::Commits(ch) = e { Some(ch.iter().filter(|x| x.tid == d).map(|x| x.id).collect::<Vec<_>>()) } else { None }).flatten().collect();
-    assert!(told.contains(&b), "{told:?}");
+    assert!(listed(&mut p, &v, d) && !told(&mut p).contains(&v), "in history, not told");
+    p.clock.set(WallMs(now.0 + 10 * 60_000 + 1_000));
+    p.tick().unwrap();
+    assert!(!listed(&mut p, &v, d));
+    assert!(told(&mut p).contains(&v), "told once out");
 }

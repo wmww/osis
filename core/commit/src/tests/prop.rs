@@ -10,7 +10,7 @@ use osis_crypto::Secret32;
 use proptest::prelude::*;
 
 fn retention() -> impl Strategy<Value = Retention> {
-    (0u64..4).prop_map(|b| Retention { by: PurgeBy::from_id(b).unwrap() })
+    (1u64..4).prop_map(|b| Retention { by: PurgeBy::from_id(b).unwrap() })
 }
 
 fn tid() -> impl Strategy<Value = Tid> {

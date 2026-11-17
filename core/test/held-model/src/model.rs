@@ -108,10 +108,14 @@ pub struct Outcome {
     /// `history()`: per aspect, the replaced writes (stamp, carrying commit) of held valid bodies
     /// in history (`Outcome::in_history` at their replaced-at), not purged. A function of the held set.
     pub history: BTreeMap<(ThingId, Aspect), BTreeSet<(Stamp, CommitId)>>,
-    /// Per thing, its held valid `retention^.0` settings in key order: its timeline (spec/commits.md §5 The setting, In force).
+    /// Per thing, its held valid `retention^.0` bodies, ordered by the write each carries: the
+    /// last is the current setting (spec/commits.md §5 The setting, In force).
     pub settings: BTreeMap<ThingId, Vec<(Key, Setting)>>,
-    /// Replaced value bodies under purge on replace: the entry governing their AK in the setting
-    /// in force at their replaced-at says so (never a signal's).
+    /// Per replaced body, the wall ms of the oldest dead write it is dated by (a fire: its own
+    /// `ts`): what the current entry's `purge_before` is judged against.
+    pub oldest_dead: BTreeMap<PartRef, u64>,
+    /// Replaced value bodies under purge on replace by the current setting (`Outcome::purges`;
+    /// never a signal's).
     pub under_purge: BTreeSet<PartRef>,
     /// Bodies under purge on replace that no valid snapshot holding the right covers, while `me`
     /// holds the right: the covering snapshot `me` owes in the transaction in which that comes to
@@ -136,41 +140,46 @@ pub struct Outcome {
 }
 
 impl Outcome {
-    /// The thing's timeline for aspect `a`, each setting as its governing entry reads.
-    fn timeline_of(&self, t: ThingId, a: Aspect) -> Vec<thing_history::Setting> {
-        let s = self.settings.get(&t).map_or(&[][..], |v| &v[..]);
-        s.iter().enumerate().map(|(i, (k, x))| thing_history::Setting { ts: wall(k.0), id: i as u32, opt: x.entry(a.name).map_or(Opt::None, |e| e.history) }).collect()
+    /// The current setting's entry for `(t, a)`, as the greenfield judgment takes it: the newest
+    /// held valid setting by the write it carries (spec/commits.md §5 In force), its entry
+    /// governing `a`, purge on replace reading as no history on a signal. `None`: no setting, or
+    /// a fixed-retention aspect.
+    fn current(&self, t: ThingId, a: Aspect) -> Option<thing_history::Setting> {
+        if a.fixed() {
+            return None;
+        }
+        let (_, s) = self.settings.get(&t)?.last()?;
+        let e = s.entry(a.name)?;
+        let opt = if a.signal && e.history == Opt::Purge { Opt::None } else { e.history };
+        Some(thing_history::Setting { ts: 0, id: 0, opt, floor: e.purge_before })
     }
-    /// The moment a body of `(t, a)` replaced at wall ms `r` leaves history (spec/commits.md §5
-    /// The setting): the first moment from `r` at which the setting in force does not keep it, one way
-    /// (purge on replace once in force, a later keep reads as none). `NEVER`: a fixed-retention
-    /// aspect, or a setting keeping it for good.
-    pub fn out(&self, t: ThingId, a: Aspect, r: u64) -> u64 {
+    /// The moment a body of `(t, a)` replaced at wall ms `r`, its oldest dead write stamped at
+    /// wall ms `w`, leaves history by the current setting (spec/commits.md §5 The setting). `NEVER`:
+    /// a fixed-retention aspect, or a setting keeping it for good.
+    pub fn out(&self, t: ThingId, a: Aspect, r: u64, w: u64) -> u64 {
         if a.fixed() {
             return NEVER;
         }
-        thing_history::out(&self.timeline_of(t, a), true, r)
+        thing_history::out(self.current(t, a), thing_history::Rule::Floor, &thing_history::Body { ts: w, id: 0, fire: a.signal }, r)
     }
-    /// Whether a body of `(t, a)` replaced at `r` is in history at `now`: it leaves later than
-    /// replaced (one under no history or purge on replace never is, AMBIGUITIES 68), and not yet.
-    pub fn in_history(&self, t: ThingId, a: Aspect, r: u64, now: u64) -> bool {
-        let o = self.out(t, a, r);
+    /// Whether a body of `(t, a)` replaced at `r` (oldest dead write at `w`) is in history at
+    /// `now`: it leaves later than replaced (one under no history or purge on replace never is,
+    /// AMBIGUITIES 68), and not yet.
+    pub fn in_history(&self, t: ThingId, a: Aspect, r: u64, w: u64, now: u64) -> bool {
+        let o = self.out(t, a, r, w);
         o > r && now < o
     }
-    /// Whether a body of `(t, a)` replaced at `r` is kept from a covered drop at `now`: where
-    /// some held setting keeps history for `a` (its own entry or the default, at any moment),
-    /// until it is out of history on the node's clock (spec/commits.md §5 Keep bounds: never
-    /// before the clock reaches `r`); elsewhere nothing is dated and a covered body drops at
-    /// once, whatever the thing's other aspects keep. Per part: `r` is the part's own
-    /// replacement, so another part of its commit, kept or not, neither dates nor keeps it.
-    /// Listing follows history.
-    pub fn kept(&self, t: ThingId, a: Aspect, r: u64, now: u64) -> bool {
-        self.in_history(t, a, r, now) || now < r && self.aspect_keeps(t, a)
+    /// Whether a body of `(t, a)` replaced at `r` (oldest dead write at `w`) is kept from a
+    /// covered drop at `now`: in history, or, where the current setting keeps history for `a`,
+    /// until the node's clock reaches `r` (spec/commits.md §5 Keep bounds); elsewhere nothing is
+    /// dated and a covered body drops at once, whatever the thing's other aspects keep. Per part:
+    /// `r` is the part's own replacement. Listing follows history.
+    pub fn kept(&self, t: ThingId, a: Aspect, r: u64, w: u64, now: u64) -> bool {
+        self.in_history(t, a, r, w, now) || now < r && self.aspect_keeps(t, a)
     }
-    /// Whether some held valid setting of `t` keeps history for `a` (the entry governing it
-    /// reads `keep`, one way: a keep after purge on replace reads as none).
+    /// Whether the current setting of `t` keeps history for `a` (the entry governing it reads `keep`).
     pub fn aspect_keeps(&self, t: ThingId, a: Aspect) -> bool {
-        thing_history::timeline(&self.timeline_of(t, a), true).iter().any(|s| matches!(s.opt, Opt::Keep { .. }))
+        self.current(t, a).is_some_and(|s| matches!(s.opt, Opt::Keep { .. }))
     }
     /// Whether part `i` of `c` is a live delta of spec/commits.md §5 Kept while live: held valid,
     /// not replaced, a content commit's (not a snapshot's; role-class parts are fixed retention),
@@ -178,21 +187,20 @@ impl Outcome {
     pub fn live_delta(&self, c: &Commit, i: usize) -> bool {
         c.kind == CommitKind::Content && !c.parts[i].aspect.signal && self.valid.get(&(c.id, i)) == Some(&true) && !self.replaced.contains(&(c.id, i))
     }
-    /// Until when a live delta of `(t, a)` (`live_delta`) is kept from a covered drop
-    /// (spec/commits.md §5 Kept while live, one way); 0: a cover drops it at once. `NEVER` for
+    /// Until when a live delta of `(t, a)` written at wall ms `w` (`live_delta`) is kept from a
+    /// covered drop (spec/commits.md §5 Kept while live); 0: a cover drops it at once. `NEVER` for
     /// fixed retention.
-    pub fn live_until(&self, t: ThingId, a: Aspect) -> u64 {
+    pub fn live_until(&self, t: ThingId, a: Aspect, w: u64) -> u64 {
         if a.fixed() {
             return NEVER;
         }
-        thing_history::live_until(&self.timeline_of(t, a), true)
+        thing_history::live_until(self.current(t, a), &thing_history::Body { ts: w, id: 0, fire: false })
     }
-    /// The entry option in force for `(t, a)` at wall ms `at` (one way).
-    pub fn in_force(&self, t: ThingId, a: Aspect, at: u64) -> Opt {
-        if a.fixed() {
-            return Opt::None;
-        }
-        thing_history::in_force(&self.timeline_of(t, a), true, at)
+    /// Whether a value body of `(t, a)` replaced at `r`, its oldest dead write at `w`, is under
+    /// purge on replace by the current setting: its entry purges on replace, or `w` is before its
+    /// `purge_before` (spec/commits.md §5 One way).
+    pub fn purges(&self, t: ThingId, a: Aspect, r: u64, w: u64) -> bool {
+        thing_history::under_purge(self.current(t, a), thing_history::Rule::Floor, &thing_history::Body { ts: w, id: 0, fire: a.signal }, r)
     }
 }
 
@@ -524,21 +532,6 @@ fn judge(h: &Held) -> (Outcome, Timeline) {
         .flat_map(|c| c.parts.iter().enumerate().map(|(i, p)| ((c.id, p.thing, p.aspect), o.valid[&(c.id, i)])))
         .collect();
 
-    // The settings (spec/commits.md §5 The setting): every held valid `retention^.0` delta
-    // of an applied commit, by key; one in an expiring commit is no setting (it carries no `expires`)
-    for c in view.iter().filter(|c| c.kind == CommitKind::Content && c.expires.is_none()) {
-        for (i, p) in c.parts.iter().enumerate() {
-            if let Body::Held(Delta::Retention(x)) = &p.body {
-                if p.aspect == Aspect::RETENTION && o.valid.get(&(c.id, i)) == Some(&true) {
-                    o.settings.entry(p.thing).or_default().push((c.key(), x.clone()));
-                }
-            }
-        }
-    }
-    for v in o.settings.values_mut() {
-        v.sort();
-    }
-
     // Purge (spec/commits.md §5, spec/permissions.md §6): an applied request drops the named
     // joined or missing deltas of applied commits and marks waiting parts value-less. A snapshot
     // has no values of its own: a request naming it takes nothing.
@@ -570,6 +563,22 @@ fn judge(h: &Held) -> (Outcome, Timeline) {
             }
         }
     }
+    // The settings (spec/commits.md §5 The setting): every held valid `retention^.0` body of an
+    // applied commit with its values (not expired, not purged), a snapshot's by the write it carries
+    for c in view.iter() {
+        for (i, p) in c.parts.iter().enumerate() {
+            if let Body::Held(Delta::Retention(x)) = &p.body {
+                if p.aspect == Aspect::RETENTION && o.valid.get(&(c.id, i)) == Some(&true) && !o.valueless.contains(&(c.id, p.thing, p.aspect)) {
+                    let key = (x.written.unwrap_or(c.ts), c.author, c.id);
+                    o.settings.entry(p.thing).or_default().push((key, x.clone()));
+                }
+            }
+        }
+    }
+    for v in o.settings.values_mut() {
+        v.sort();
+    }
+
     // destroyed: every creation joined of the thing is value-less (notes/expiry-creation-design.md §3)
     let joined = || view.iter().flat_map(|c| c.parts.iter().map(move |p| (c, p))).filter(|(_, p)| creation(p).is_some());
     o.destroyed = joined().map(|(_, p)| p.thing).filter(|&t| joined().filter(|(_, p)| p.thing == t).all(|(c, p)| o.valueless.contains(&(c.id, t, p.aspect)))).collect();
@@ -654,7 +663,8 @@ fn judge(h: &Held) -> (Outcome, Timeline) {
                 }
                 o.replaced.insert((c.id, i));
                 o.replaced_at.insert((c.id, i), Some(wall(c.ts)));
-                if o.in_history(t, a, wall(c.ts), now) && !o.purged.contains_key(&(c.id, i)) {
+                o.oldest_dead.insert((c.id, i), wall(c.ts));
+                if o.in_history(t, a, wall(c.ts), wall(c.ts), now) && !o.purged.contains_key(&(c.id, i)) {
                     o.history.entry((t, a)).or_default().extend(writes(f).iter().map(|(n, _)| (death::stamp(n).clone(), c.id)));
                 }
                 continue;
@@ -721,15 +731,17 @@ fn judge(h: &Held) -> (Outcome, Timeline) {
                         && s.parts.iter().enumerate().any(|(j, q)| snap_ok(s, j) && q.thing == t && q.aspect == a && !never_received(s, q) && body(q).is_some_and(|sf| winning(sf).contains(&death::key(n))))
                 })
             };
-            let each = gone.iter().filter(|(n, _)| c.kind != CommitKind::Snapshot || !carried_later(n)).filter_map(|(_, w)| died(w));
-            let at = each.max();
+            let dating: Vec<&(Name, Frag)> = gone.iter().filter(|(n, _)| c.kind != CommitKind::Snapshot || !carried_later(n)).collect();
+            let at = dating.iter().filter_map(|(_, w)| died(w)).max();
+            let w = dating.iter().map(|(n, _)| wall(death::stamp(n).ts)).min().unwrap_or(wall(c.ts));
             o.replaced_at.insert((c.id, i), at);
-            // under purge on replace by the setting in force when it was replaced; history() while
-            // the settings keep it (nothing dates a body nothing held supersedes: not history)
-            if at.is_some_and(|r| o.in_force(t, a, r) == Opt::Purge) {
+            o.oldest_dead.insert((c.id, i), w);
+            // under purge on replace by the current setting; history() while it keeps it (nothing
+            // dates a body nothing held supersedes: not history)
+            if at.is_some_and(|r| o.purges(t, a, r, w)) {
                 o.under_purge.insert((c.id, i));
             }
-            if at.is_some_and(|r| o.in_history(t, a, r, now)) && !o.purged.contains_key(&(c.id, i)) {
+            if at.is_some_and(|r| o.in_history(t, a, r, w, now)) && !o.purged.contains_key(&(c.id, i)) {
                 o.history.entry((t, a)).or_default().extend(gone.iter().map(|(n, _)| (death::stamp(n).clone(), c.id)));
             }
         }
@@ -780,11 +792,11 @@ fn judge(h: &Held) -> (Outcome, Timeline) {
         o.deadlines.insert(kept_until(c));
         for (i, p) in c.parts.iter().enumerate() {
             if let Some(Some(r)) = o.replaced_at.get(&(c.id, i)) {
-                o.deadlines.insert(o.out(p.thing, p.aspect, *r));
+                o.deadlines.insert(o.out(p.thing, p.aspect, *r, o.oldest_dead.get(&(c.id, i)).copied().unwrap_or(wall(c.ts))));
             }
             // a live delta's live bound
             if o.live_delta(c, i) {
-                o.deadlines.insert(o.live_until(p.thing, p.aspect));
+                o.deadlines.insert(o.live_until(p.thing, p.aspect, wall(c.ts)));
             }
         }
     }
@@ -817,7 +829,7 @@ pub fn kept_until(c: &Commit) -> u64 {
 /// Whether a signal body is kept: in history from its own `ts` (spec/commits.md §5 Signals), or
 /// before its commit's purge floor.
 pub fn signal_kept(o: &Outcome, c: &Commit, p: &Part, now: u64) -> bool {
-    now < kept_until(c) || o.in_history(p.thing, p.aspect, wall(c.ts), now)
+    now < kept_until(c) || o.in_history(p.thing, p.aspect, wall(c.ts), wall(c.ts), now)
 }
 
 /// A body's fate, and whether `me` owes it a covering snapshot (`Outcome::owed`).
@@ -917,10 +929,10 @@ fn fate(
     if c.kind != CommitKind::Snapshot && !o.replaced.contains(&pr) && o.valid.get(&pr) != Some(&true) {
         return (keep(KeepWhy::Plain), false);
     }
-    if o.live_delta(c, i) && now < o.live_until(t, a) {
+    if o.live_delta(c, i) && now < o.live_until(t, a, wall(c.ts)) {
         return (keep(KeepWhy::Live), false);
     }
-    let kept = o.replaced_at.get(&pr).copied().flatten().is_some_and(|r| o.kept(t, a, r, now));
+    let kept = o.replaced_at.get(&pr).copied().flatten().is_some_and(|r| o.kept(t, a, r, o.oldest_dead.get(&pr).copied().unwrap_or(wall(c.ts)), now));
     let under = o.under_purge.contains(&pr);
     let owes = under && by_right.is_none() && right;
     match (by_right, by_any) {

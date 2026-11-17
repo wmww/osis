@@ -540,31 +540,23 @@ fn place_requests(aspects: &mut Vec<((Tid, Ak), AspectMut)>, expires: Option<u64
 }
 
 /// The one expiry of a commit of these deltas (`entries`: thing, AK, retention, expiry; spec/commits.md
-/// §6), or `Clash` naming what cannot share a commit: different expiries, or an expiry beside
-/// `retention^.0`, which carries none.
+/// §6), or `Clash` naming what cannot share a commit: different expiries.
 /// `purge.0` takes no part in the expiry: in a commit that expires it is left out (`place_requests`).
 /// `way`: what the caller can do about it.
 fn one_commit(entries: &[(Tid, &Ak, &Retention, Option<u64>)], way: &str) -> Result<Option<u64>> {
-    let free = |ak: &Ak| ak.as_str() == osis_commit::retention::RETENTION;
     let placing = |ak: &Ak| ak.as_str() == osis_commit::retention::PURGE;
     let name = |t: &Tid, ak: &Ak, e: Option<u64>| match e {
         Some(e) => format!("{t} {ak} (expires at {e})"),
         None => format!("{t} {ak} (does not expire)"),
     };
-    let mut bound = entries.iter().filter(|e| !free(e.1) && !placing(e.1));
+    let mut bound = entries.iter().filter(|e| !placing(e.1));
     let first = bound.next();
     if let Some(a) = first
         && let Some(b) = bound.clone().find(|b| b.3 != a.3)
     {
         return Err(Error::Clash(format!("a commit has one expiry, and this write has two: {} and {}. {way}", name(&a.0, a.1, a.3), name(&b.0, b.1, b.3))));
     }
-    let expires = first.and_then(|e| e.3);
-    if let Some(at) = expires
-        && let Some(r) = entries.iter().find(|e| free(e.1))
-    {
-        return Err(Error::Clash(format!("{} {} never expires, and this commit expires at {at}. {way}", r.0, r.1)));
-    }
-    Ok(expires)
+    Ok(first.and_then(|e| e.3))
 }
 
 /// `build_and_apply` of an undo's deltas: with `plan`'s inputs and the one expiry they share
@@ -977,7 +969,7 @@ fn commit_or_build(tx: &mut Tx<'_>, mut m: Mutation) -> Result<Option<(CommitId,
             // a fire is history from its own `ts`: one the settings held would not keep would be
             // in no history at all
             let wall = ts.wall_ms().0;
-            if !memory && !sealed && crate::retention::history::of(tx.core, &tid, &ak).leaves_at(Some(wall)) <= wall {
+            if !memory && !sealed && crate::retention::history::of(tx.core, &tid, &ak).leaves_at(Some(wall), wall) <= wall {
                 return Err(Error::Misuse("a fire is history: the thing's setting keeps no history for this signal"));
             }
         }
@@ -1025,6 +1017,17 @@ fn commit_or_build(tx: &mut Tx<'_>, mut m: Mutation) -> Result<Option<(CommitId,
             let bad = |q: &osis_schema::core_types::RetentionEntry| !osis_commit::retention::entry_fits(q);
             if am.ops.iter().any(|o| matches!(&o.op, osis_crdt::Op::Replace(v) if osis_schema::core_types::retention_setting(v).is_some_and(|r| r.rules.values().chain(&r.default).any(bad)))) {
                 return Err(Error::Misuse("retention^.0 with an entry out of range"));
+            }
+            // purge on replace is one way: the floors of the current setting carried, this
+            // write's stamp where it purged on replace (spec/commits.md §5 One way)
+            let prev = crate::apply::validity::setting_now(tx.core, &tid);
+            for o in &mut am.ops {
+                if let osis_crdt::Op::Replace(v) = &mut o.op
+                    && let Some(mut s) = osis_schema::core_types::retention_setting(v)
+                {
+                    osis_commit::retention::carry_floors(&mut s, prev.as_deref(), plan.ts.wall_ms().0);
+                    *v = osis_schema::Codec::to_value(&s);
+                }
             }
         }
         let retention = am.retention.unwrap_or_default();

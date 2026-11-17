@@ -358,8 +358,8 @@ proptest::proptest! {
     }
 }
 
-// spec/commits.md §5, spec/wire.md §1: every purge class a write may carry has its syntax and code
-// (`nobody` is fixed retention's alone); the meta form round trips them; the default is
+// spec/commits.md §5, spec/wire.md §1: every purge class has its syntax and code; the meta form
+// round trips them; the default is
 // `admin`, which is unnamed.
 #[test]
 fn purge_classes_spec_commits_5() {

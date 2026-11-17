@@ -42,7 +42,7 @@ fn creation_after_writes_reads_like_creation_first_spec_commits_4() {
 // absent from T on, and what the node holds next says the same
 #[test]
 fn expired_creation_destroys_the_thing_spec_commits_6() {
-    let h = |now| held(now, vec![made(Some(3)), reg(10, FIRST_ADMIN, 1, REG, Retention::FIXED, 1)]);
+    let h = |now| held(now, vec![made(Some(3)), reg(10, FIRST_ADMIN, 1, REG, Retention::ADMIN, 1)]);
     let o = evaluate(&h(2));
     assert!(o.destroyed.is_empty());
     assert!(o.deadlines.contains(&at(3)));

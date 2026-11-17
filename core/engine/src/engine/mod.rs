@@ -2761,7 +2761,7 @@ impl Core {
                     self.drop_due.insert(*id);
                 }
             }
-            // a flip of a setting moves its thing's timeline (`retention::settings_changed`)
+            // a flip of a setting may move its thing's current setting (`retention::settings_changed`)
             if a.ak.as_str() == osis_commit::retention::RETENTION {
                 self.settings_due.insert(a.tid);
                 self.kept_things_due.insert(a.tid);

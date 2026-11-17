@@ -489,7 +489,6 @@ impl Timeline {
         let on_actor = |x: NodeId| x == actor || self.valid_as(x, actor, Role::Write, qkey, qc);
         let auth = || on_actor(q) && on_actor(qa) && self.valid_as(actor, thing, Role::Write, qkey, qc);
         match by {
-            PurgeBy::Nobody => false,
             PurgeBy::Admin => admin(),
             PurgeBy::AuthorOrAdmin => admin() || auth(),
             PurgeBy::Writer => both(Role::Write),

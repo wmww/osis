@@ -52,25 +52,19 @@ fn created_may_expire_spec_commits_6() {
     h.validate().unwrap();
 }
 
-// spec/commits.md §2, §5: a snapshot never carries `retention^.0` (kept forever, read a delta at
-// a time, its retention fixed) or `created.0` (one minting).
+// spec/commits.md §2: a snapshot never carries `created.0` (one minting); `retention^.0` is
+// snapshotted like any aspect.
 #[test]
-fn snapshot_never_carries_setting_or_record_spec_commits_2() {
-    for ak in ["retention^.0", "created.0"] {
-        let mut h = sample_header();
-        let a = &mut h.aspects[0];
-        a.ak = Ak::new(ak).unwrap();
-        a.retention = retention::KEPT_RETENTION;
-        a.keys.clear();
-        a.lo = 0;
-        a.hi = 0;
-        h.expires = None;
-        h.keys.clear();
-        h.kind = Kind::ContentSnapshot;
-        h.form = Form::Commit;
-        assert!(h.validate().unwrap_err().to_string().contains("without own writes"), "{ak}");
-    }
-    assert_eq!(retention::fixed_retention("retention^.0"), Some(retention::KEPT_RETENTION));
+fn snapshot_never_carries_record_spec_commits_2() {
+    let mut h = sample_header();
+    let a = &mut h.aspects[0];
+    a.ak = Ak::new("created.0").unwrap();
+    a.lo = 0;
+    a.hi = 0;
+    h.expires = None;
+    h.kind = Kind::ContentSnapshot;
+    h.form = Form::Commit;
+    assert!(h.validate().unwrap_err().to_string().contains("without own writes"));
 }
 
 // spec/wire.md §5: one prefix group per distinct delete-key set among the blob's aspects, in
@@ -237,7 +231,7 @@ fn list_items_cost_at_most_their_bytes_times_six() {
         b
     };
     let lists = [
-        (ListField::Aspects, array(n / 57, |i| [&[0x88][..], &tid(i), &[0x63, b'a', b'.', b'0', 1, 2, 0, 0x80], &id(0), &[0x80]].concat())),
+        (ListField::Aspects, array(n / 57, |i| [&[0x88][..], &tid(i), &[0x63, b'a', b'.', b'0', 1, 2, 1, 0x80], &id(0), &[0x80]].concat())),
         (ListField::Purge, array(n / 21, |i| [&[0x82][..], &tid(i), &[0x63, b'a', b'.', b'0']].concat())),
     ];
     for (f, bytes) in lists {
@@ -331,10 +325,10 @@ fn list_forms_refused() {
         h.read_list(f, b, false)
     };
     let name: &[u8] = &[0x63, b'a', b'.', b'0'];
-    for by in [&[0][..], &[1], &[2], &[3]] {
+    for by in [&[1][..], &[2], &[3]] {
         read(ListField::Aspects, &aspect(&[1], by, name)).unwrap();
     }
-    for by in [&[4][..], &[0x18, 1], &[0x20], &[0x82, 2, 0], &[0x81, 2]] {
+    for by in [&[0][..], &[4], &[0x18, 1], &[0x20], &[0x82, 2, 0], &[0x81, 2]] {
         assert!(read(ListField::Aspects, &aspect(&[1], by, name)).is_err(), "{by:02x?}");
     }
     for lo in [&[0x18, 1][..], &[0x19, 0, 1], &[0x1b, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff], &[0x20]] {

@@ -423,11 +423,11 @@ fn perms(n: usize) -> Vec<Vec<usize>> {
 // request falling under it; what another wrote and what the author writes later stay.
 #[test]
 fn purge_by_author_any_order_spec_perm_6() {
-    for by in PurgeBy::ALL.into_iter().filter(|b| *b != PurgeBy::Nobody) {
+    for by in PurgeBy::ALL {
         // requester: 0 the first admin, 2 an admin, 1 the author itself, 3 another writer
         for who in [0, 1, 3] {
             let want = match who {
-                0 => by.admin(),
+                0 => true,
                 1 => by.author(),
                 _ => by.writer(),
             };

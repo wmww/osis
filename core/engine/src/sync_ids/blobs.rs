@@ -607,8 +607,7 @@ impl Engine {
         }
         // nothing of it here and a lasting header on the sync ID's things: its header alone
         // (spec/commits.md §5, spec/sync-judgement.md §2)
-        let now = self.now().0;
-        let forever = |a: &crate::engine::AspectView| !h.memory && osis_commit::retention::fixed_retention(a.ak.as_str()).is_none() && crate::retention::history::of(&self.core, &a.tid, &a.ak).forever(now);
+        let forever = |a: &crate::engine::AspectView| !h.memory && osis_commit::retention::fixed_retention(a.ak.as_str()).is_none() && crate::retention::history::of(&self.core, &a.tid, &a.ak).forever(h.ts.wall_ms().0);
         if out.is_empty() && touches && (h.purges || h.aspects.iter().any(forever)) {
             let on = |core: &crate::engine::Core, t: &Tid| ctx.holds(core, t) && core.may_read(&ctx.actor, &core.reader_of(t));
             if self.run(|tx| crate::retention::lasting(tx, &id, &on))?

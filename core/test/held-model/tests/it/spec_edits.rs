@@ -32,7 +32,7 @@ fn grants() -> Vec<Commit> {
 fn world(now: u64, set: &[Commit]) -> Held {
     let mut c = grants();
     if !set.iter().any(|c| c.parts.iter().any(|p| p.aspect == Aspect::RETENTION)) {
-        c.push(setting_by(4, FIRST_ADMIN, 0, Setting { rules: vec![], default: Some(SettingEntry { history: KEPT, expires: None }) }));
+        c.push(setting_by(4, FIRST_ADMIN, 0, Setting { rules: vec![], default: Some(SettingEntry { history: KEPT, expires: None, purge_before: 0 }), written: None }));
     }
     c.extend_from_slice(set);
     held(now, c)

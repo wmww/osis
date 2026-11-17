@@ -51,7 +51,7 @@ pub fn prefixes() -> VecFile {
     let salt = [0x21; 16];
     let mut cases = vec![prefix_case("no commitments, no expiry", &Prefix::new(salt, None, vec![]).unwrap())];
     cases.push(prefix_case("one commitment, expiry", &Prefix::new(salt, Some(WallMs(1_700_000_000_000)), vec![vec![c(2, 0x22)]]).unwrap()));
-    cases.push(prefix_case("two groups, one empty (a `nobody` delta's)", &Prefix::new(salt, None, vec![vec![c(2, 0x22), c(3, 0x27)], vec![]]).unwrap()));
+    cases.push(prefix_case("two groups", &Prefix::new(salt, None, vec![vec![c(2, 0x22), c(3, 0x27)], vec![c(1, 0x29)]]).unwrap()));
     cases.push(prefix_case("ephemeral class", &Prefix::new(salt, None, vec![]).unwrap().with_class(osis_blob::Class::Ephemeral)));
     cases.push(prefix_case("relay-only class", &Prefix::new(salt, None, vec![]).unwrap().with_class(osis_blob::Class::Relay)));
     // Commitments derived from (level, delete key) pairs under the prefix salt.

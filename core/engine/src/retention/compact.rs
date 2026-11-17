@@ -41,10 +41,12 @@ pub const ENTRY_CHARGE: usize = 1024;
 /// reads differently for good).
 pub const QUIET_MS: u64 = osis_base::format::MAX_DRIFT_MS;
 
-/// Whether the trigger compacts `ak`: content (not role-class, `created.0` or `retention^.0`),
-/// no fixed retention, not a signal (no state).
+/// Whether the trigger compacts `ak`: an aspect of ordinary retention (no fixed retention, so not
+/// role-class), content or the thing's setting, but `created.0` (one minting) and a signal (no
+/// state).
 pub(crate) fn compactable(ak: &Ak) -> bool {
-    osis_schema::core_types::is_content(ak.as_str()) && osis_commit::retention::fixed_retention(ak.as_str()).is_none() && !ak.signal()
+    let a = ak.as_str();
+    (osis_schema::core_types::is_content(a) || a == osis_commit::retention::RETENTION) && osis_commit::retention::fixed_retention(a).is_none() && !ak.signal()
 }
 
 /// The trigger's state per aspect, in memory. An aspect is weighed (its bodies read) only once
@@ -199,7 +201,8 @@ impl Trigger {
     /// snapshot's to drop, it counts once it leaves history (`leaving::left`) or the live bound
     /// passes. One passed by a gap may have left already, uncounted then (`Est::stops`).
     fn held_counts(tx: &mut Tx<'_>, c: &CommitId, k: &(Tid, Ak), blob: &CommitBlob, ai: usize) -> Result<()> {
-        let live = super::history::of(tx.core, &k.0, &k.1).live_until();
+        let written = tx.core.ix.commits.get(c).map_or(0, |m| m.view.ts.wall_ms().0);
+        let live = super::history::of(tx.core, &k.0, &k.1).live_until(written);
         if live > tx.now().0 && !super::leaving::out_of_history(tx.core, c, &k.0, &k.1) && !super::valueless(tx.core, c, ai) {
             Trigger::live_until(tx, k.clone(), live);
             return Ok(());
@@ -259,7 +262,7 @@ impl Trigger {
     /// `k` keeps its live bodies until wall ms `live` (past the clock): weighed then, unless
     /// that is never.
     pub(crate) fn live_until(tx: &mut Tx<'_>, k: (Tid, Ak), live: u64) {
-        if live < osis_commit::retention::NEVER && compactable(&k.1) {
+        if live < super::history::NEVER && compactable(&k.1) {
             tx.core.compaction.at.entry(live).or_default().insert(k);
             tx.core.timer_floor = tx.core.timer_floor.min(live);
         }
@@ -620,7 +623,7 @@ struct Candidate {
 fn droppable(tx: &Tx<'_>, tid: &Tid, ak: &Ak) -> BTreeSet<CommitId> {
     let key = (*tid, ak.clone());
     let ix = &tx.core.ix;
-    if super::history::of(tx.core, tid, ak).live_until() <= tx.now().0 {
+    if super::history::of(tx.core, tid, ak).live_until(super::history::NEVER) <= tx.now().0 {
         return ix.by_aspect.get(&key).into_iter().flatten().map(|(_, c)| *c).collect();
     }
     let mut out = BTreeSet::new();

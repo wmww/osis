@@ -34,10 +34,10 @@ pub enum Reverted {
 }
 
 /// Whether part `a`'s history would be kept at wall ms `now` had a write stamped by `h`
-/// replaced it: its thing's settings counted from `h`'s `ts` (spec/commits.md §5). By the
-/// settings alone, never by what is held.
+/// replaced it: its thing's current setting counted from `h`'s `ts` (spec/commits.md §5), what it
+/// replaced taken as written before any floor. By the setting alone, never by what is held.
 fn keeps_now(core: &Core, h: &Header, a: &osis_commit::AspectEntry, now: u64) -> bool {
-    crate::retention::history::of(core, &a.tid, &a.ak).leaves_at(Some(h.ts.wall_ms().0)) > now
+    crate::retention::history::of(core, &a.tid, &a.ak).leaves_at(Some(h.ts.wall_ms().0), 0) > now
 }
 
 /// The valid parts of `(tid, ak)` ordered before `at` whose headers are held, oldest first, each
@@ -887,9 +887,10 @@ mod tests {
         lp.peers[0].engine.revert(&rm)
     }
 
-    // A removes entry `k` of `x:n.0`, which no setting keeps yet, then a setting keeps it a day
-    // (`two`'s rules plus `x:n.0`): the parts the removal replaced are out of history, so only a
-    // kept part superseding them lets its undo restore (spec/commits.md §7). The undo.
+    // A removes entry `k` of `x:n.0`, which no setting keeps yet, then a setting keeps it a
+    // millisecond (`two`'s rules plus `x:n.0`), and that passes: the parts the removal replaced
+    // are out of history, the removal live and kept, so only a kept part superseding them lets
+    // its undo restore (spec/commits.md §7). The undo.
     fn remove_k_then_keep(lp: &mut LocalPeer, t: osis_base::Tid, x: &Ak, keep: osis_schema::Retention) -> crate::error::Result<Option<osis_base::CommitId>> {
         lp.advance(10);
         let mut m = Mutation::new();
@@ -898,12 +899,12 @@ mod tests {
         lp.advance(10);
         let day = osis_schema::History::Keep { until: None, after: Some(86_400_000) };
         let mut setting = ct::RetentionSetting::of(Ak::new("x:m.0").unwrap(), day);
-        for k in ["x:r.0", "x:n.0"] {
-            setting.rules.insert(Ak::new(k).unwrap(), ct::RetentionEntry { history: Some(day), ..Default::default() });
-        }
+        setting.rules.insert(Ak::new("x:r.0").unwrap(), ct::RetentionEntry { history: Some(day), ..Default::default() });
+        setting.rules.insert(Ak::new("x:n.0").unwrap(), ct::RetentionEntry { history: Some(osis_schema::History::Keep { until: None, after: Some(1) }), ..Default::default() });
         let mut m = Mutation::new();
         m.set(t, &ct::RETENTION, &setting).unwrap();
         lp.peers[0].commit(m).unwrap();
+        lp.advance(10);
         lp.peers[0].engine.revert(&rm)
     }
 

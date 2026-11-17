@@ -494,7 +494,6 @@ fn purge_rights() {
     let tl = Timeline::evaluate(&w.held());
     let now = At::now(ts(10));
     for (by, who, expect) in [
-        (PurgeBy::Nobody, a, false),
         (PurgeBy::Admin, a, true),
         (PurgeBy::Admin, wr, false),
         (PurgeBy::Admin, dev, false),

@@ -538,16 +538,20 @@ pub(super) fn grantee_boxes_only(actor: &Tid, ak: &str, f: &Fragment, granted: &
     true
 }
 
-/// Notes the held `retention^.0` deltas among `parts` (spec/commits.md §5 The setting), each read
-/// alone: one not reading as a setting is none. No validity depends on a setting; what the
-/// thing's timeline judges is judged again (`retention::setting_changed`).
+/// Notes the held `retention^.0` bodies among `parts` (spec/commits.md §5 The setting), each read
+/// alone: one not reading as a setting is none. Each is ordered by the setting write it carries:
+/// a delta by its own key, a snapshot by its newest write's stamp, so the last is the one whose
+/// write the state holds. No validity depends on a setting; what the thing's history judges is
+/// judged again (`retention::settings_changed`).
 pub(crate) fn note_settings(core: &mut Core, h: &Header, id: &CommitId, parts: &[(usize, Decoded)]) {
     for (ai, d) in parts {
         let Some(a) = h.aspects.get(*ai).filter(|a| a.ak.as_str() == osis_commit::retention::RETENTION) else { continue };
         core.settings_due.insert(a.tid);
         core.kept_things_due.insert(a.tid);
         let Some(setting) = d.fragment().read().and_then(|v| ct::retention_setting(&v)) else { continue };
-        let p = Point { ts: h.ts, node: h.author, commit: *id };
+        let f = d.fragment();
+        let ts = if h.kind.is_compaction() { f.winners().iter().map(|w| w.stamp.ts).max().unwrap_or(h.ts) } else { h.ts };
+        let p = Point { ts, node: h.author, commit: *id };
         let put = |l: &mut Vec<(Point, Arc<ct::RetentionSetting>)>| {
             if let Err(i) = l.binary_search_by(|x| x.0.cmp(&p)) {
                 l.insert(i, (p, Arc::new(setting.clone())));
@@ -622,30 +626,26 @@ fn acts_on(tl: Option<&osis_perm::Timeline>, h: &Header, id: &CommitId) -> bool 
     tl.delta_valid(point, &h.actor, Role::Write) == Validity::Valid
 }
 
-/// Whether a removal from `tid` at key `at` retains by default: the `retain` of the setting in force
+/// Whether a removal from `tid` retains by default: the `retain` of its current setting
 /// (spec/permissions.md §3; none: it erases).
-pub(crate) fn retain_in_force(core: &Core, tid: &Tid, at: &Point) -> bool {
-    let valid = Judge::new(core).settings(tid);
-    valid.partition_point(|x| x.0 < *at).checked_sub(1).and_then(|i| valid.get(i)).is_some_and(|x| x.1.retain)
+pub(crate) fn retain_default(core: &Core, tid: &Tid) -> bool {
+    setting_now(core, tid).is_some_and(|s| s.retain)
 }
 
-/// `retain_in_force` for a write this node makes now: after every setting it holds.
-pub(crate) fn retain_now(core: &Core, tid: &Tid) -> bool {
-    retain_in_force(core, tid, &Point { ts: core.hlc.peek(), node: core.account.get().unwrap_or(Tid::from_bytes([0; 15])), commit: CommitId([0xff; 32]) })
-}
-
-/// The valid `retention^.0` settings held on `tid`, in key order: its timeline (spec/commits.md
-/// §5 In force; `retention::history`).
+/// The valid `retention^.0` bodies held on `tid`, ordered by the setting write each carries (a
+/// snapshot's by its own: `note_settings`); the last is the current setting (spec/commits.md §5
+/// In force; `retention::history`).
 /// Judged by the parts' validity flags (`Meta::valid`, set by every re-judge), from the views
 /// alone: no header is decoded.
 pub(crate) fn settings(core: &Core, tid: &Tid) -> Arc<Settings> {
     let Some(all) = core.ix.retention.get(tid) else { return Arc::default() };
-    let valid = |p: &Point| core.ix.commits.get(&p.commit).is_some_and(|m| m.view.aspect(tid, osis_commit::retention::RETENTION).is_some_and(|ai| m.valid_at(ai)));
+    let valid = |p: &Point| core.ix.commits.get(&p.commit).is_some_and(|m| m.view.aspect(tid, osis_commit::retention::RETENTION).is_some_and(|ai| m.valid_at(ai) && !m.bare(ai)));
     Arc::new(all.iter().filter(|x| valid(&x.0)).cloned().collect())
 }
 
-/// The setting this node writes under now: the newest valid one it holds on `tid` (the writer
-/// fills expiry and refuses a replace by it, spec/commits.md §5).
+/// The current setting of `tid`: the newest held valid one (spec/commits.md §5 In force), what
+/// history keeps and what this node writes under (the writer fills expiry and refuses a replace
+/// by it).
 pub(crate) fn setting_now(core: &Core, tid: &Tid) -> Option<Arc<ct::RetentionSetting>> {
     settings(core, tid).last().map(|x| x.1.clone())
 }
@@ -660,8 +660,6 @@ pub(crate) struct Judge<'a> {
     from: BTreeMap<(Tid, Role), Option<Option<Point>>>,
     /// Per (author, actor), from where the author acts for the actor whatever the commit.
     acts: BTreeMap<(Tid, Tid), Option<Option<Point>>>,
-    /// On the last thing: its valid `retention^.0` deltas, in key order, found once.
-    settings: Option<Arc<Settings>>,
     /// Per thing, the addenda on it that count (`Timeline::vouching`), found once; `None` for a
     /// thing with no timeline.
     vouchings: BTreeMap<Tid, Option<Arc<Vouching>>>,
@@ -674,7 +672,7 @@ pub(crate) type Settings = Vec<(Point, Arc<ct::RetentionSetting>)>;
 
 impl<'a> Judge<'a> {
     pub(crate) fn new(core: &'a Core) -> Judge<'a> {
-        Judge { core, last: None, from: BTreeMap::new(), acts: BTreeMap::new(), settings: None, vouchings: BTreeMap::new(), standings: BTreeMap::new() }
+        Judge { core, last: None, from: BTreeMap::new(), acts: BTreeMap::new(), vouchings: BTreeMap::new(), standings: BTreeMap::new() }
     }
 
     /// What the epoch rule says of commit `id` (`h` its header).
@@ -745,31 +743,9 @@ impl<'a> Judge<'a> {
                 let v = (too_deep(self.core, t), self.core.timelines.get(t));
                 self.last = Some((*t, v.0, v.1));
                 self.from.clear();
-                self.settings = None;
                 v
             }
         }
-    }
-
-    /// The valid `retention^.0` deltas on `t` (`Settings`), each judged once per thing.
-    fn settings(&mut self, t: &Tid) -> Arc<Settings> {
-        self.thing(t);
-        if let Some(s) = &self.settings {
-            return s.clone();
-        }
-        let core = self.core;
-        let mut valid = Settings::new();
-        for x in core.ix.retention.get(t).into_iter().flatten() {
-            let Some(m) = core.ix.commits.get(&x.0.commit) else { continue };
-            let ai = m.view.aspect(t, osis_commit::retention::RETENTION);
-            if ai.is_some_and(|ai| self.part(&m.header, &x.0.commit, ai)) {
-                debug_assert!(core.ix.held.ever_admins(t).contains(&x.0.node), "a valid setting's author is a possible admin");
-                valid.push(x.clone());
-            }
-        }
-        let s = Arc::new(valid);
-        self.settings = Some(s.clone());
-        s
     }
 
     /// `acts_for`, its `valid_from` bound found once per (author, actor); else an addendum on

@@ -331,7 +331,7 @@ fn ways(core: &Core, actors: &BTreeSet<Tid>) -> BTreeMap<Tid, BTreeMap<Tid, Way>
         if let Some(tl) = core.timelines.get(a) {
             let says = |e: osis_perm::EdgeEnd| match e {
                 osis_perm::EdgeEnd::Said(k) => k,
-                osis_perm::EdgeEnd::Until(key) => crate::apply::validity::retain_in_force(core, a, &key),
+                osis_perm::EdgeEnd::Until(_) => crate::apply::validity::retain_default(core, a),
             };
             // an ended grant of sync read nothing to keep
             w.extend(tl.ended(a, ts).into_iter().filter(|(_, (_, _, r))| *r >= Role::Read).map(|(h, (e, end, _))| (h, Way { retain: says(e), end })));

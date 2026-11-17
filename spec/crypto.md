@@ -127,7 +127,7 @@ Terms in this section depend on each other; each is defined once, under its bold
   - Expiring values: the snapshot from its whole state carries them value-less (spec/crdt.md §8). Beside it the node writes, for each expiry T of an owed body holding values that is after the `ts` it stamps it with (spec/commits.md §6), an expiring snapshot ending at T carrying the values its bodies ending at T give, so the holder reads each value until T, and no blob carries it past T.
   - An edit of a fire below the holder's floor is listed nowhere there (spec/commits.md §5 Signals): no version of a past fire reaches it.
   - A thing's record is no content (Passing on binds none): the records of the things whose state a cut's snapshots carry reach the holder as a record blob (spec/wire.md §3) under an epoch it reads, logged by the snapshot's writer; a holder applies nothing on a thing whose record it lacks.
-- **The setting**: the author of a grant without history writes next, under the cut, A's `retention^.0` setting in force as it reads alone (spec/commits.md §5 The setting: each `keep` an earlier setting's purge on replace voids, for an AK any held setting names and for the default, written as no history): the holder opens no earlier setting.
+- **The setting**: the author of a grant without history writes next, under the cut, A's current `retention^.0` setting (spec/commits.md §5 In force), its floors as they read: the holder opens no earlier setting.
 
 ### Names
 - **Edge writes** of holder M on A, at a node: the edge writes on M's edge into A (spec/permissions.md §2) the node holds, their commits resolved (Met), in key order (spec/permissions.md §5.1). Each **applies** there (the role timeline applies it) or applies nothing (invalid at its point, or dropped by an audit), and **gives** M the role its value gives for keys (Holders for keys, below; none for a removal). One **takes** there when it applies, or would apply at its point over the edge the newest write before it that applies and gives M more set, else over the start (a second finalize of a grant another removal ended first). One **stands** there when it applies, or would apply at its point over the start or the edge some write before it that applies set (only the edge it meets differs). One that applies nothing **counts** when its author held write on A just before its point (as its authority is judged there, spec/permissions.md §5.2), whatever befell the author since. M's **start** is its grant for keys before the first of them (the record edge, else none).
@@ -271,7 +271,6 @@ A **holder actor** of A is a holder for keys of A (its first admin included whil
   | 1, admin | `admin`, `author_or_admin`, `writer` | the admin secret of its thing |
   | 2, author | `author_or_admin`, `writer` | the write secret of the commit's header actor (the author chain; spec/permissions.md §5.2) |
   | 3, writer | `writer` | the write secret of its thing |
-  | none | `nobody` | none |
 
 - **Delete base**: a thing or actor without secrets of its own (§3) uses those of the last actor of its derivation chain (§3), its delete base.
 - **Delete key** of a role secret s: the Ed25519 key with seed `kdf("delete key", s)` (secret scalar a, public key A = a·B, RFC 8032).

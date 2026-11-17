@@ -28,10 +28,26 @@ fn delta_live_read(tx: &mut Tx<'_>, (c, tid, ak): &(CommitId, Tid, Ak)) -> Resul
 
 /// Before which wall ms delta `a` of `h` leaves only by purge
 /// request or expiry (spec/commits.md §5 Keep bounds; 0: no floor): the later of when it leaves
-/// history (`history::Kept::leaves_at`, replaced at wall ms `replaced`; `None`: not replaced) and
-/// the purge-request floor.
-pub(crate) fn kept_until(core: &Core, h: &Header, a: &osis_commit::AspectEntry, replaced: Option<u64>) -> u64 {
-    super::history::of(core, &a.tid, &a.ak).leaves_at(replaced).max(osis_commit::retention::purge_keep_until(h).unwrap_or(0))
+/// history (`history::Kept::leaves_at`, replaced at wall ms `replaced`, `None`: not replaced; its
+/// oldest dead write at `written`, `written_of`) and the purge-request floor.
+pub(crate) fn kept_until(core: &Core, h: &Header, a: &osis_commit::AspectEntry, replaced: Option<u64>, written: u64) -> u64 {
+    super::history::of(core, &a.tid, &a.ak).leaves_at(replaced, written).max(osis_commit::retention::purge_keep_until(h).unwrap_or(0))
+}
+
+/// The wall ms of the oldest dead write part `ai` of `c` is dated by, what the floor of its
+/// aspect's setting is judged against (spec/commits.md §5 One way): a delta's own `ts` (its writes
+/// carry it); a snapshot's, where its own `ts` is not already before the floor, the oldest among
+/// the dead writes that date it (`dating_deaths`). Read only where the setting has a floor.
+pub(crate) fn written_of(tx: &mut Tx<'_>, h: &Header, c: &CommitId, ai: usize) -> Result<u64> {
+    let own = h.ts.wall_ms().0;
+    let Some(a) = h.aspects.get(ai) else { return Ok(own) };
+    let floor = super::history::of(tx.core, &a.tid, &a.ak).floor();
+    if !h.kind.is_compaction() || own < floor || floor == 0 {
+        return Ok(own);
+    }
+    let (tid, ak) = (a.tid, a.ak.clone());
+    let dead = dating_deaths(tx, h, c, ai, &tid, &ak)?;
+    Ok(dead.iter().map(|w| w.stamp.ts.wall_ms().0).min().unwrap_or(own))
 }
 
 /// Whether `s` is a snapshot whose part on `(tid, ak)` this node holds whole (received, not
@@ -59,7 +75,8 @@ pub(crate) fn body_history_keep(tx: &mut Tx<'_>, c: &CommitId, tid: &Tid, ak: &A
     let (ai, h) = known_part(tx.core, c, tid, ak)?;
     tx.core.replaced_reads += 1;
     let r = part_replaced_at(tx, &h, c, ai)?.map(|t| t.wall_ms().0);
-    Ok(h.aspects.get(ai).map_or(0, |a| kept_until(tx.core, &h, a, r)))
+    let w = written_of(tx, &h, c, ai)?;
+    Ok(h.aspects.get(ai).map_or(0, |a| kept_until(tx.core, &h, a, r, w)))
 }
 
 /// Whether part `ai` of `c` is in kept history by its thing's setting alone at wall ms `now`
@@ -70,13 +87,16 @@ pub(crate) fn setting_keeps(tx: &mut Tx<'_>, c: &CommitId, ai: usize, now: u64) 
     let h = tx.core.ix.commits.get(c).ok_or(Error::UnknownCommit(*c))?.header.clone();
     let Some(a) = h.aspects.get(ai) else { return Ok(false) };
     let until = match part_replaced_at(tx, &h, c, ai)? {
-        Some(r) => super::history::of(tx.core, &a.tid, &a.ak).leaves_at(Some(r.wall_ms().0)),
+        Some(r) => {
+            let w = written_of(tx, &h, c, ai)?;
+            super::history::of(tx.core, &a.tid, &a.ak).leaves_at(Some(r.wall_ms().0), w)
+        }
         None => live_keep(tx.core, c, ai, a),
     };
     Ok(until > now)
 }
 
-/// The keep bound of part `ai` of `c` but for the clock: its own aspect's timeline at its own
+/// The keep bound of part `ai` of `c` but for the clock: its own aspect's current setting at its own
 /// replacement (`part_replaced_at`, spec/commits.md §5 Dated only where history is kept), and
 /// that replacement (wall ms, 0: none) for `at_clock`. A part's date and keep read only its
 /// aspect's writes and setting, so no other part of its commit keeps it (a purge-on-replace part
@@ -86,7 +106,8 @@ pub(crate) fn setting_keeps(tx: &mut Tx<'_>, c: &CommitId, ai: usize, now: u64) 
 fn part_bounds(tx: &mut Tx<'_>, h: &Header, c: &CommitId, ai: usize) -> Result<(u64, u64)> {
     let Some(a) = h.aspects.get(ai) else { return Ok((0, 0)) };
     let r = part_replaced_at(tx, h, c, ai)?.map(|t| t.wall_ms().0);
-    let k = kept_until(tx.core, h, a, r);
+    let w = written_of(tx, h, c, ai)?;
+    let k = kept_until(tx.core, h, a, r, w);
     let k = if r.is_none() { k.max(live_keep(tx.core, c, ai, a)) } else { k };
     Ok((k, r.unwrap_or(0)))
 }
@@ -101,7 +122,7 @@ pub(crate) fn live_keep(core: &Core, c: &CommitId, ai: usize, a: &osis_commit::A
     if m.view.kind.is_compaction() || a.ak.signal() || !m.holds(ai) || m.bare(ai) || !m.valid_at(ai) {
         return 0;
     }
-    super::history::of(core, &a.tid, &a.ak).live_until()
+    super::history::of(core, &a.tid, &a.ak).live_until(m.view.ts.wall_ms().0)
 }
 
 /// A keep bound and replacement (`part_bounds`) at the node's clock: a body replaced after the
@@ -185,14 +206,11 @@ fn judge_replaced_at(tx: &mut Tx<'_>, h: &Header, c: &CommitId, ai: usize) -> Re
     if held_part(tx.core, c, &tid, &ak) != Some(ai) || tx.core.ix.commits.get(c).is_none_or(|m| m.bare(ai) || !m.valid_at(ai)) {
         return Ok(None);
     }
-    let mut dead = deaths(tx, c, ai, &tid, &ak)?;
+    let dead = dating_deaths(tx, h, c, ai, &tid, &ak)?;
     if dead.is_empty() {
         return Ok(None);
     }
     let held = held_writes(tx, &tid, &ak)?;
-    if h.kind.is_compaction() {
-        dead.retain(|w| !held.carried.get(w).is_some_and(|v| v.iter().any(|(t, x)| *t > h.ts && x != c)));
-    }
     // the state is the join of the held bodies (un-merged, spec/crdt.md §4.6) and the part's own
     // writes supersede none of its winners, so another body holds each superseder, dated by its
     // own stamp whichever body holds it
@@ -203,6 +221,18 @@ fn judge_replaced_at(tx: &mut Tx<'_>, h: &Header, c: &CommitId, ai: usize) -> Re
         out = out.max(Some(d));
     }
     Ok(out)
+}
+
+/// The dead writes that date held valid part `ai` of `c` (`deaths`), a snapshot's leaving out
+/// those a held valid snapshot stamped later holds as winners (`HeldWrites::carried`: that one
+/// keeps their history).
+fn dating_deaths(tx: &mut Tx<'_>, h: &Header, c: &CommitId, ai: usize, tid: &Tid, ak: &Ak) -> Result<BTreeSet<Won>> {
+    let mut dead = deaths(tx, c, ai, tid, ak)?;
+    if h.kind.is_compaction() && !dead.is_empty() {
+        let held = held_writes(tx, tid, ak)?;
+        dead.retain(|w| !held.carried.get(w).is_some_and(|v| v.iter().any(|(t, x)| *t > h.ts && x != c)));
+    }
+    Ok(dead)
 }
 
 /// What `dated_replaced_at` reads of the held bodies of an aspect, by write (`osis_crdt::ByWrite`).
@@ -490,7 +520,7 @@ impl Engine {
 
     /// Whether aspect `a` of `h` is a permanent delta (`history::permanent`).
     pub fn permanent(&self, h: &Header, a: &osis_commit::AspectEntry) -> bool {
-        super::history::permanent(&self.core, h, a, self.now().0)
+        super::history::permanent(&self.core, h, a)
     }
 
     /// From when any node may drop held part `(tid, ak)` of `c` under a held valid writer's

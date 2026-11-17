@@ -323,11 +323,6 @@ fn more_rejected(content: &Header) -> Vec<Record> {
     x.frontier = frontier;
     out.push(reject("frontier on a role compaction snapshot", "spec/wire.md §4", &x, "frontier"));
     let mut x = content.clone();
-    x.aspects[0].retention = retention::KEPT_RETENTION;
-    x.aspects[0].keys.clear();
-    x.keys.clear();
-    out.push(reject("nobody on a content aspect", "spec/wire.md §4; spec/commits.md §5", &x, "nobody"));
-    let mut x = content.clone();
     x.keys.push(DeleteKey::new(3, &osis_crypto::DeleteSecret::derive(&s32(0x37)).verifying_key()));
     out.push(reject("delete key no aspect lists", "spec/wire.md §4", &x, "unused-key"));
     let mut x = content.clone();

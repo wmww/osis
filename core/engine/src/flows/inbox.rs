@@ -395,7 +395,7 @@ pub(crate) fn fire(tx: &mut Tx<'_>, thing: Tid, ak: &str, value: Value, to: BTre
         // a fire the thing's setting would not keep is in no history: none is written (an actor
         // that is no account takes the fires its own setting keeps, spec/sync-inbox.md §1)
         let wall = tx.core.hlc.peek().wall_ms().0;
-        if crate::retention::history::of(tx.core, &thing, &ak).leaves_at(Some(wall)) <= wall {
+        if crate::retention::history::of(tx.core, &thing, &ak).leaves_at(Some(wall), wall) <= wall {
             return Ok(());
         }
         let mut m = Mutation::new();
@@ -483,7 +483,7 @@ impl Engine {
                     // a node reading the thing fires as it writes (spec/sync-inbox.md §2)
                     if reads {
                         let wall = tx.core.hlc.peek().wall_ms().0;
-                        if crate::retention::history::of(tx.core, &o.thing, &o.ak).leaves_at(Some(wall)) > wall {
+                        if crate::retention::history::of(tx.core, &o.thing, &o.ak).leaves_at(Some(wall), wall) > wall {
                             Engine::commit_tx(tx, m)?;
                         }
                         drop_fire(tx, &o.id())?;

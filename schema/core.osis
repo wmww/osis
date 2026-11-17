@@ -303,11 +303,14 @@ type history = enum {
 };
 
 /// What a thing promises for replaced content of an aspect (absent: none promised), the expiry
-/// a writer gives its writes there, and whether a writer refuses to replace a fire (`final`).
+/// a writer gives its writes there, whether a writer refuses to replace a fire (`final`), and
+/// before when written content is purged on replace whatever `history` says (`purge_before`: set
+/// by the writer replacing a purge-on-replace entry, carried by every later one).
 type retention_entry = struct {
     history 0: option<history>,
     expires 1: option<duration>,
     final 2: bool,
+    purge_before 3: option<timestamp>,
 };
 
 type retention_setting = struct {

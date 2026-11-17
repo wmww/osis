@@ -54,7 +54,7 @@ fn history_into(h: History) -> Option<osis_schema::History> {
 /// `RetentionSetting`).
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
 pub struct Retention {
-    /// Who may purge it besides admins (never `PurgeBy::Nobody`: that is fixed retention's).
+    /// Who may purge it besides admins.
     pub by: PurgeBy,
 }
 
@@ -108,7 +108,7 @@ pub struct RetentionEntry {
 impl From<RetentionEntry> for osis_schema::core_types::RetentionEntry {
     fn from(r: RetentionEntry) -> osis_schema::core_types::RetentionEntry {
         let history = r.history.and_then(history_into);
-        osis_schema::core_types::RetentionEntry { history, expires: r.expires.map(ms), r#final: r.refuse_replace }
+        osis_schema::core_types::RetentionEntry { history, expires: r.expires.map(ms), r#final: r.refuse_replace, purge_before: None }
     }
 }
 
@@ -119,8 +119,10 @@ impl From<&osis_schema::core_types::RetentionEntry> for RetentionEntry {
 }
 
 /// What a thing keeps of replaced content and what a removal from it leaves behind: the value of
-/// `core::RETENTION`, written whole and read like any aspect by an admin of the thing. A change
-/// reaches the history nodes still hold: what left never comes back.
+/// `core::RETENTION`, written whole and read like any aspect by an admin of the thing. The newest
+/// decides what history keeps of every replaced write a node still holds, so a longer one may
+/// bring back what a node has not dropped; what was written under purge on replace never comes
+/// back.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct RetentionSetting {
     /// The entry for each aspect named.

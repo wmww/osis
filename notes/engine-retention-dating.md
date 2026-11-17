@@ -13,7 +13,7 @@
 - A text element's creation dies only by a delete stamped after the latest held undelete of the element (`ByWrite::first_superseding`), so dropping the first delete of delete, undelete, delete moves nothing.
 - Every body dates at the latest death of its writes, deltas too: a body drops only after every dead write it alone holds has left history. A snapshot first leaves out the dead writes a later held valid snapshot holds as winners (`HeldWrites::carried`: that one keeps their history; holding one as `prev` or deleted keeps none). Counting every carried write instead kept every snapshot of an aspect whose long-lived writes keep dying within D: held snapshots grew with the edit count, not the window (held-model `snapshot_replaced_at_last_death_no_later_snapshot_carries_*`). Holding more bodies dates no later; holding the same dates alike.
 - The index: the aspect's held valid bodies are read once into `osis_crdt::ByWrite`, every write each holds, winning there or not (`Fragment::held_writes`: a deleted text creation still supersedes position writes below it), with the two earliest bodies holding each. `first_superseding` reads the positions on the dead write's path in stamp order, stopping past the best date found.
-- Late arrival: a body arriving after its earliest superseder dropped is dated later, by what is held, and may show where a node holding both would not: an arrival, as a late setting is (Tess's decision 1; held-model's any-order property allows exactly that).
+- Late arrival: a body arriving after its earliest superseder dropped is dated later, by what is held, and may show where a node holding both would not: an arrival (Tess's decision 1: what a node holds decides; held-model's any-order property allows exactly that).
 - Limit: a snapshot dropped while a later one carried its dead writes is not brought back if that later one turns invalid before their D passes: those writes' history goes with it.
 
 ## Invariant: a valid covered drop moves nothing
@@ -22,7 +22,7 @@ A valid covered drop never changes whether any held body is in history, nor its 
 - a snapshot's dead writes a later snapshot S carries: S dropping adds back deaths <= r_S; a body in history has r > r_S;
 - a text creation's latest undelete: an undelete's body drops only once the undelete is dead, by a delete no earlier than the creation's date, so the creation was out and only dates earlier;
 - the state (`deaths`, `delta_live`): a cover carries every live write of B;
-- headers, which outlive every drop (a fire's `ts`, the purge floor, a purged part's request `ts`, `kept_whenever_replaced`, undo's bound), the settings timeline (`retention^.0` is never covered-dropped) and the clock (`at_clock`).
+- headers, which outlive every drop (a fire's `ts`, the purge floor, a purged part's request `ts`, `kept_whenever_replaced`, undo's bound), the current setting (a cover of a setting body carries its newest write, so reads the same setting) and the clock (`at_clock`).
 
 Each argument is per aspect. Forgetting a header is outside it: undo then counts the forgotten `ts` (notes/engine-retention-history.md Undo).
 
@@ -30,7 +30,7 @@ Tests: setting.rs `covered_drops_move_nothing_*` (random histories, covered drop
 
 ## Dated only where history is kept (spec/commits.md §5 Keep bounds)
 - A covered drop needs the body out of history on the node's clock, `out(r) <= now`, and `out(r) >= r`, so a replacement dated after the clock waits for the clock (`bounds::at_clock` adds `r` to the drop bound: `part_keep`, `part_keeps`, so `drop_from`, `settle_none`, memory drops).
-- Per part: a part is dated only where some held setting keeps history for its own aspect (`bounded`, in `part_replaced_at`), by its own writes, kept by that aspect's timeline; elsewhere it adds no bound, ahead of the clock or not (`replaced_ahead_of_the_clock_waits_only_where_kept_*`). Rejected: dating per thing (an aspect waited on unrelated aspects) or a commit's parts at the latest death of all of them (a covered drop on an unkept aspect redated another part and brought a body out of history back: `an_unkept_part_dates_no_other_part_*`).
+- Per part: a part is dated only where the current setting keeps history for its own aspect (`bounded`, in `part_replaced_at`), by its own writes, kept by that aspect's timeline; elsewhere it adds no bound, ahead of the clock or not (`replaced_ahead_of_the_clock_waits_only_where_kept_*`). Rejected: dating per thing (an aspect waited on unrelated aspects) or a commit's parts at the latest death of all of them (a covered drop on an unkept aspect redated another part and brought a body out of history back: `an_unkept_part_dates_no_other_part_*`).
 - Listing reads `body_history_keep` (the part's own history and the purge floor alone: purge on replace and no history list nothing, held-model AMBIGUITIES 68).
 - Limit: a wall clock set back is not noticed, so sync's cached keeps judged before it stand.
 

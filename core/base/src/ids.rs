@@ -531,10 +531,8 @@ impl fmt::Debug for Del {
 }
 
 /// Who may purge a write: admins always may (spec/commits.md §5); by default only they may.
-/// `Nobody` is fixed retention's (`retention^.0`) alone.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Default)]
 pub enum PurgeBy {
-    Nobody = 0,
     #[default]
     Admin = 1,
     AuthorOrAdmin = 2,
@@ -543,10 +541,9 @@ pub enum PurgeBy {
 
 impl PurgeBy {
     #[doc(hidden)]
-    pub const ALL: [PurgeBy; 4] = [PurgeBy::Nobody, PurgeBy::Admin, PurgeBy::AuthorOrAdmin, PurgeBy::Writer];
+    pub const ALL: [PurgeBy; 3] = [PurgeBy::Admin, PurgeBy::AuthorOrAdmin, PurgeBy::Writer];
     pub fn name(self) -> &'static str {
         match self {
-            PurgeBy::Nobody => "nobody",
             PurgeBy::Admin => "admin",
             PurgeBy::AuthorOrAdmin => "author_or_admin",
             PurgeBy::Writer => "writer",
@@ -555,10 +552,6 @@ impl PurgeBy {
     #[doc(hidden)]
     pub fn from_id(id: u64) -> Option<PurgeBy> {
         PurgeBy::ALL.into_iter().find(|p| *p as u64 == id)
-    }
-    /// The set holds the thing's admins.
-    pub fn admin(self) -> bool {
-        matches!(self, PurgeBy::Admin | PurgeBy::AuthorOrAdmin | PurgeBy::Writer)
     }
     /// The set holds the author.
     pub fn author(self) -> bool {

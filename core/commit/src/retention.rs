@@ -11,9 +11,6 @@ use osis_schema::{AspectDefaults, History, PurgeBy, Retention};
 /// `ROLE_KEEP`, `role_kept`).
 pub const ROLE_RETENTION: Retention = Retention { by: PurgeBy::Admin };
 
-/// `nobody`: the fixed retention of `retention^.0`, never out of history.
-pub const KEPT_RETENTION: Retention = Retention { by: PurgeBy::Nobody };
-
 /// The retention of every delta of an ephemeral commit: `writer` (spec/commits.md §2).
 pub const EPHEMERAL_RETENTION: Retention = Retention { by: PurgeBy::Writer };
 
@@ -38,12 +35,10 @@ pub fn role_kept(ak: &str) -> bool {
     is_role_class(ak) || is_addenda(ak)
 }
 
-/// Fixed retention of an AK, if it has one (role-class aspects, `addenda.0`, `retention^.0`,
-/// `purge.0`): no setting governs it.
+/// Fixed retention of an AK, if it has one (role-class aspects, `addenda.0`, `purge.0`): no
+/// setting governs it.
 pub fn fixed_retention(ak: &str) -> Option<Retention> {
-    if ak == RETENTION {
-        Some(KEPT_RETENTION)
-    } else if destroying_request(ak) {
+    if destroying_request(ak) {
         // a commit carrying a request carries no `expires` from a setting
         Some(Retention { by: PurgeBy::AuthorOrAdmin })
     } else if role_kept(ak) {
@@ -54,26 +49,16 @@ pub fn fixed_retention(ak: &str) -> Option<Retention> {
     }
 }
 
-/// Whether a delta of `ak` may carry retention `r` (spec/commits.md §5): `nobody` only with
-/// fixed retention.
-pub(crate) fn allowed(ak: &str, r: &Retention) -> Result<(), &'static str> {
-    match r.refusal() {
-        Some(m) if fixed_retention(ak).is_none() => Err(m),
-        _ => Ok(()),
-    }
-}
-
 /// Retention of a write: the fixed one, else the commit's override, else the schema's default
 /// for the AK, else the untyped default (`admin`). An override that disagrees with a
-/// fixed retention is refused, and so is `nobody`.
+/// fixed retention is refused.
 pub fn write_retention(ak: &str, defaults: Option<&AspectDefaults>, set: Option<Retention>) -> Result<Retention, Error> {
-    let r = match (fixed_retention(ak), set) {
-        (Some(f), Some(s)) if f != s => return Err(Error::Build("retention of this aspect is fixed")),
-        (Some(f), _) => return Ok(f),
-        (None, Some(s)) => s,
-        (None, None) => defaults.map(|d| d.retention).unwrap_or_default(),
-    };
-    allowed(ak, &r).map(|()| r).map_err(Error::Build)
+    match (fixed_retention(ak), set) {
+        (Some(f), Some(s)) if f != s => Err(Error::Build("retention of this aspect is fixed")),
+        (Some(f), _) => Ok(f),
+        (None, Some(s)) => Ok(s),
+        (None, None) => Ok(defaults.map(|d| d.retention).unwrap_or_default()),
+    }
 }
 
 /// Whether a setting's entry is one a writer can follow (spec/commits.md §5 The setting): an
@@ -119,14 +104,13 @@ pub fn purge_keep_until(h: &Header) -> Option<u64> {
 /// Delete levels a delta of retention `r` calls for (spec/crypto.md §7).
 pub(crate) fn delete_levels(r: &Retention) -> &'static [u8] {
     match r.by {
-        PurgeBy::Nobody => &[],
         PurgeBy::Admin => &[DELETE_ADMIN],
         PurgeBy::AuthorOrAdmin => &[DELETE_ADMIN, DELETE_AUTHOR],
         PurgeBy::Writer => &[DELETE_ADMIN, DELETE_AUTHOR, DELETE_WRITER],
     }
 }
 
-/// What one setting's entry says of an AK's replaced bodies (spec/commits.md §5 The setting).
+/// What a setting's entry says of an AK's replaced bodies (spec/commits.md §5 The setting).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Opt {
     /// No history promised.
@@ -149,168 +133,68 @@ impl Opt {
     }
 }
 
-/// One AK's timeline (spec/commits.md §5 In force): the held valid settings of its thing in key
-/// order, each as its entry for the AK reads under the one-way rule (where an earlier one purges
-/// on replace, a later keep reads as no history), from its own wall ms.
-#[derive(Clone, Debug, Default, PartialEq, Eq)]
-pub struct Timeline(Vec<(u64, Opt)>);
-
-/// When a body never leaves history: no setting ends it.
-pub const NEVER: u64 = u64::MAX;
-
-impl Timeline {
-    /// From the settings in key order, each at its wall ms with its entry for the AK.
-    pub fn new(settings: impl IntoIterator<Item = (u64, Opt)>) -> Timeline {
-        let mut purged = false;
-        Timeline(
-            settings
-                .into_iter()
-                .map(|(t, o)| match o {
-                    Opt::Purge => {
-                        purged = true;
-                        (t, o)
-                    }
-                    Opt::Keep { .. } if purged => (t, Opt::None),
-                    o => (t, o),
-                })
-                .collect(),
-        )
+/// The `purge_before` an entry carries for its AKs: `wall` where it purges on replace (the writer
+/// replacing it stamps the floor), else its own.
+fn carried(e: &osis_schema::core_types::RetentionEntry, wall: u64) -> Option<u64> {
+    match e.history {
+        Some(History::PurgeOnReplace) => Some(e.purge_before.map_or(wall, |f| f.max(wall))),
+        _ => e.purge_before,
     }
+}
 
-    /// The moment a body replaced at wall ms `r` leaves history (spec/commits.md §5 The setting): the
-    /// first t >= r at which the setting in force (before the first: none) does not keep it;
-    /// `NEVER` if none ends it.
-    fn out(&self, r: u64) -> u64 {
-        let mut best = NEVER;
-        let mut from = 0;
-        let mut opt = Opt::None;
-        for i in 0..=self.0.len() {
-            let to = self.0.get(i).map_or(NEVER, |x| x.0);
-            let bound = match opt {
-                Opt::Keep { after, until } => r.saturating_add(after).max(until),
-                _ => r,
-            };
-            let e = bound.max(from).max(r);
-            if e < to {
-                best = best.min(e);
-            }
-            if let Some(x) = self.0.get(i) {
-                (from, opt) = *x;
-            }
-        }
-        best
+/// Fills the floors of setting `s` a writer writes at wall ms `wall` while `prev` is its current
+/// setting (spec/commits.md §5 One way): each entry's `purge_before` is at least the one the
+/// entry governing its AKs in `prev` carries (`wall` where that one purges on replace); the
+/// floors of AKs losing their own entry go to the default, one with no history if there is none.
+/// So content written while purge on replace governed it stays under purge on replace in every
+/// later setting.
+pub fn carry_floors(s: &mut osis_schema::core_types::RetentionSetting, prev: Option<&osis_schema::core_types::RetentionSetting>, wall: u64) {
+    let Some(prev) = prev else { return };
+    let max = |a: Option<u64>, b: Option<u64>| a.max(b);
+    for (ak, e) in s.rules.iter_mut() {
+        e.purge_before = max(e.purge_before, prev.entry(ak).and_then(|p| carried(p, wall)));
     }
-
-    /// The first setting's wall ms later than `t`: until then a judgement at `t` of what
-    /// history keeps reads the same settings in force.
-    pub fn next_start(&self, t: u64) -> Option<u64> {
-        self.0.iter().map(|x| x.0).find(|x| *x > t)
-    }
-
-    /// The wall ms before which a body replaced at `r` is in history: `out(r)` when a setting
-    /// keeps it past `r`, else 0 (a body replaced under no history, or purge on replace, is out
-    /// when replaced, whenever that is).
-    pub fn kept_until(&self, r: u64) -> u64 {
-        let o = self.out(r);
-        if o > r { o } else { 0 }
-    }
-
-    /// Until when a live body is kept (spec/commits.md §5 Kept while live): the end of the last
-    /// span in which a body replaced at that moment would be kept (a `keep` with a D: the span's
-    /// end; with only a T: T or the span's end, the earlier). `NEVER`: the newest keeps one with
-    /// a D; 0: no span keeps one.
-    pub fn live_until(&self) -> u64 {
-        let mut end = 0;
-        for (i, (from, o)) in self.0.iter().enumerate() {
-            let to = self.0.get(i + 1).map_or(NEVER, |x| x.0);
-            if let Opt::Keep { after, until } = *o {
-                let e = if after > 0 { to } else { until.min(to) };
-                if e > *from {
-                    end = end.max(e);
-                }
-            }
-        }
-        end
-    }
-
-    /// What is in force at wall ms `t` (the newest with its wall ms at or before `t`).
-    pub fn in_force(&self, t: u64) -> Opt {
-        self.0.iter().rev().find(|x| x.0 <= t).map_or(Opt::None, |x| x.1)
-    }
-
-    /// Whether some setting keeps a body (the timeline dates bodies by when they were replaced).
-    pub fn keeps(&self) -> bool {
-        self.0.iter().any(|x| matches!(x.1, Opt::Keep { .. }))
-    }
-
-    /// Whether some setting purges on replace.
-    pub fn purges(&self) -> bool {
-        self.0.iter().any(|x| x.1 == Opt::Purge)
-    }
-
-    /// The settings, as they read, in key order.
-    pub fn spans(&self) -> &[(u64, Opt)] {
-        &self.0
+    let lost = prev.rules.iter().filter(|(ak, _)| !s.rules.contains_key(*ak)).map(|(_, e)| carried(e, wall));
+    let floor = prev.default.iter().map(|e| carried(e, wall)).chain(lost).max().flatten();
+    if floor.is_some() {
+        let d = s.default.get_or_insert_with(Default::default);
+        d.purge_before = max(d.purge_before, floor);
     }
 }
 
 #[cfg(test)]
-mod timeline_tests {
+mod floor_tests {
     use super::*;
+    use osis_base::Ak;
+    use osis_schema::core_types::{RetentionEntry, RetentionSetting};
 
-    #[test]
-    fn live_until_spec_commits_5() {
-        assert_eq!(Timeline::default().live_until(), 0);
-        assert_eq!(Timeline::new([(10, Opt::None)]).live_until(), 0);
-        assert_eq!(Timeline::new([(10, Opt::Purge)]).live_until(), 0);
-        // a D keeps a live body to the span's end, for good in the newest
-        assert_eq!(Timeline::new([(10, Opt::Keep { after: 5, until: 0 })]).live_until(), NEVER);
-        assert_eq!(Timeline::new([(10, Opt::Keep { after: 5, until: 0 }), (40, Opt::None)]).live_until(), 40);
-        // a T alone keeps it to T, or the span's end
-        assert_eq!(Timeline::new([(10, Opt::Keep { after: 0, until: 30 })]).live_until(), 30);
-        assert_eq!(Timeline::new([(10, Opt::Keep { after: 0, until: 30 }), (20, Opt::None)]).live_until(), 20);
-        assert_eq!(Timeline::new([(10, Opt::Keep { after: 0, until: 5 })]).live_until(), 0);
-        // the last kept span counts, whatever follows
-        assert_eq!(Timeline::new([(10, Opt::Keep { after: 5, until: 0 }), (20, Opt::None), (30, Opt::Keep { after: 0, until: 35 })]).live_until(), 35);
+    fn ak(s: &str) -> Ak {
+        Ak::new(s).unwrap()
     }
 
-    fn keep(after: u64, until: u64) -> Opt {
-        Opt::Keep { after, until }
-    }
-
-    // spec/commits.md §5 The setting: a setting acts from its own stamp; bodies leave in replaced order
+    // spec/commits.md §5 One way: a writer replacing purge on replace stamps the floor; every
+    // later setting carries it, an AK losing its own entry on the default
     #[test]
-    fn out_from_each_settings_stamp_spec_commits_5() {
-        let none = Timeline::new([]);
-        assert_eq!(none.out(5), 5);
-        assert_eq!(none.kept_until(5), 0);
-        let t = Timeline::new([(10, keep(5, 0))]);
-        // replaced before the setting: out when replaced, nothing later reaches it
-        assert_eq!(t.out(4), 4);
-        assert_eq!(t.kept_until(4), 0);
-        assert_eq!(t.out(12), 17);
-        // a shortening at 20 ends what is still in history then
-        let t = Timeline::new([(10, keep(50, 0)), (20, Opt::None)]);
-        assert_eq!(t.out(12), 20);
-        assert_eq!(t.out(25), 25);
-        // a later extension reaches only what is still in history
-        let t = Timeline::new([(10, keep(5, 0)), (30, keep(100, 0))]);
-        assert_eq!(t.out(12), 17);
-        assert_eq!(t.out(28), 128);
-        // forever
-        assert_eq!(Timeline::new([(10, keep(0, FOREVER))]).out(12), FOREVER);
-        assert_eq!(Timeline::new([(10, keep(0, FOREVER))]).in_force(9), Opt::None);
-    }
-
-    // spec/commits.md §5 One way: once purge on replace, a later keep keeps nothing
-    #[test]
-    fn purge_then_keep_keeps_nothing_spec_commits_5() {
-        let t = Timeline::new([(10, Opt::Purge), (20, keep(100, FOREVER))]);
-        assert_eq!(t.in_force(25), Opt::None);
-        assert_eq!(t.kept_until(25), 0);
-        assert_eq!(t.in_force(15), Opt::Purge);
-        assert_eq!(t.kept_until(15), 0);
-        // purge on replace keeps nothing even replaced ahead of any clock
-        assert_eq!(Timeline::new([(10, Opt::Purge)]).kept_until(1_000), 0);
+    fn floors_carried_spec_commits_5() {
+        let keep = RetentionEntry { history: Some(History::FOREVER), ..Default::default() };
+        let p = RetentionSetting::of(ak("x.0"), History::PurgeOnReplace);
+        let mut k = RetentionSetting::from_iter([(ak("x.0"), keep)]);
+        carry_floors(&mut k, Some(&p), 30);
+        assert_eq!(k.rules[&ak("x.0")].purge_before, Some(30));
+        assert_eq!(k.default, None);
+        let mut k2 = RetentionSetting::from_iter([(ak("x.0"), keep)]);
+        carry_floors(&mut k2, Some(&k), 50);
+        assert_eq!(k2.rules[&ak("x.0")].purge_before, Some(30));
+        // x.0 falls to the default: the default carries its floor
+        let mut d = RetentionSetting { default: Some(keep), ..Default::default() };
+        carry_floors(&mut d, Some(&k2), 60);
+        assert_eq!(d.default.unwrap().purge_before, Some(30));
+        let mut none = RetentionSetting::default();
+        carry_floors(&mut none, Some(&p), 70);
+        assert_eq!(none.default, Some(RetentionEntry { purge_before: Some(70), ..Default::default() }));
+        // no purge before: nothing to carry
+        let mut fresh = RetentionSetting::default();
+        carry_floors(&mut fresh, Some(&RetentionSetting::of(ak("x.0"), History::FOREVER)), 10);
+        assert_eq!(fresh, RetentionSetting::default());
     }
 }

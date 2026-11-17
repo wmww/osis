@@ -232,7 +232,7 @@ pub(crate) fn is_listed(tx: &mut Tx<'_>, c: &CommitId, ai: usize) -> Result<bool
 pub(super) fn purged_keep(tx: &Tx<'_>, c: &CommitId, ai: usize, by: &CommitId) -> u64 {
     let Some(m) = tx.core.ix.commits.get(c) else { return 0 };
     let Some(a) = m.view.aspects.get(ai) else { return 0 };
-    let keep = crate::retention::history::of(tx.core, &a.tid, &a.ak).leaves_at(tx.core.ix.commits.get(by).map(|m| m.view.ts.wall_ms().0));
+    let keep = crate::retention::history::of(tx.core, &a.tid, &a.ak).leaves_at(tx.core.ix.commits.get(by).map(|m| m.view.ts.wall_ms().0), m.view.ts.wall_ms().0);
     let h = &m.header;
     let due = h.expires.into_iter().chain(h.aspects.get(ai).filter(|a| a.ak.signal()).and_then(|a| crate::retention::signal_bound(tx.core, h, a))).min();
     due.map_or(keep, |t| keep.min(t))

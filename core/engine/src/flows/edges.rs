@@ -34,7 +34,7 @@ fn written(core: &crate::engine::Core, target: &Tid, old: Option<&PermEdge>, d: 
             false => Ok(d.new.clone()),
         };
     }
-    let retain = old.is_some() && d.retain.unwrap_or_else(|| crate::apply::validity::retain_now(core, target));
+    let retain = old.is_some() && d.retain.unwrap_or_else(|| crate::apply::validity::retain_default(core, target));
     Ok(retain.then_some(Edge { role: Role::Read, until: Some(osis_base::WallMs(0)), invite: None, floor: None }))
 }
 
@@ -199,10 +199,10 @@ pub(crate) fn grant_history(tx: &mut Tx<'_>, signer: Option<Tid>, target: Tid, h
         // before it (spec/crypto.md §4, State at a cut), written right after this transaction
         rotation::floors::owe_state(tx, &target)?;
     }
-    // the history setting in force, written again under the cut: the holder opens no earlier one
+    // the current history setting, written again under the cut: the holder opens no earlier one
     // (spec/crypto.md §4, Floors)
     let setting = match cut {
-        Some(_) => crate::retention::history::in_force_alone(tx.core, &target),
+        Some(_) => crate::apply::validity::setting_now(tx.core, &target).map(|s| (*s).clone()),
         None => None,
     };
     done.add(c);
@@ -407,13 +407,13 @@ pub(crate) fn finalizable(core: &crate::engine::Core, who: &Tid, target: &Tid) -
     if ended.is_empty() {
         return Vec::new();
     }
-    // it says what the expiry would (spec/permissions.md §3, Retain): the default at its key
+    // it says what the expiry would (spec/permissions.md §3, Retain): the thing's default
     let ends = on.holders_gone(ts);
     ended
         .into_iter()
         .map(|(m, e)| {
             let keep = match ends.get(&m).map(|x| x.0) {
-                Some(osis_perm::EdgeEnd::Until(key)) => crate::apply::validity::retain_in_force(core, target, &key),
+                Some(osis_perm::EdgeEnd::Until(_)) => crate::apply::validity::retain_default(core, target),
                 _ => false,
             };
             (m, e, keep)

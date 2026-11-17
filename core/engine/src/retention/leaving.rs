@@ -47,13 +47,14 @@ fn row_key(tid: &Tid, ak: &Ak, p: &Place) -> Vec<u8> {
 }
 
 /// When a body of `k` replaced at `ts` leaves history (wall ms): the first time at or after its
-/// replacement at which no setting keeps it (spec/commits.md §5 The setting), so places leave in
-/// replaced order whatever the clock. `leaves_at` reads one replaced under no history as out at
-/// once (0), also when replaced ahead of the clock; here it leaves at its replacement, which only
-/// tells it late, never early.
+/// replacement at which the current setting does not keep it (spec/commits.md §5 The setting), so
+/// places leave in replaced order whatever the clock. `leaves_at` reads one replaced under no
+/// history as out at once (0), also when replaced ahead of the clock; here it leaves at its
+/// replacement, which only tells it late, never early. A body under the setting's floor (out when
+/// replaced) is scheduled as one above it, so told late, never early: the order stays one cursor.
 fn leaves(k: &history::Kept, ts: Ts) -> u64 {
     let r = ts.wall_ms().0;
-    k.leaves_at(Some(r)).max(r)
+    k.leaves_at(Some(r), u64::MAX).max(r)
 }
 
 /// Writes local row `key` (`val`; `None`: removed) in `ak`'s class.
@@ -150,7 +151,7 @@ fn moved(tx: &mut Tx<'_>, tid: &Tid, ak: &Ak, c: &CommitId) {
     }
 }
 
-/// Place `p` of `(tid, ak)` left history at `now` (its timeline's bound passed): a value part is
+/// Place `p` of `(tid, ak)` left history at `now` (its setting's bound passed): a value part is
 /// told, a held fire's body drops; a fire its commit's purge floor keeps gets a timer at the floor.
 fn left(tx: &mut Tx<'_>, tid: &Tid, ak: &Ak, p: Place, now: u64) -> Result<()> {
     drop(osis_base::costs::span("leaving: place left"));
@@ -239,7 +240,7 @@ pub(crate) fn due(core: &Core, now: u64) -> (Vec<(Tid, Ak)>, u64) {
     (due, next)
 }
 
-/// A fire `p` of signal `(tid, ak)` held, kept past `now` by its timeline: its place joins the
+/// A fire `p` of signal `(tid, ak)` held, kept past `now` by its setting: its place joins the
 /// walk (before the cursor, the cursor moves back to it).
 pub(crate) fn fire_held(tx: &mut Tx<'_>, tid: &Tid, ak: &Ak, p: Place) -> Result<()> {
     let k = history::of(tx.core, tid, ak);
@@ -267,7 +268,7 @@ fn before(core: &Core, tid: &Tid, ak: &Ak, out: Option<Place>, p: Place) -> Opti
 }
 
 /// The settings of `tid` changed (`retention::settings_changed`): for aspect `ak`, the places
-/// that leave by the new timeline leave, and on a value aspect those it brings back come back
+/// that leave by the new setting leave, and on a value aspect those it brings back come back
 /// (a late setting; walked back from the cursor while in history); the timer rearms. An aspect
 /// turning dated has every held part dated (`date_due`, a rare path: O(the aspect's history));
 /// one turning undated loses its rows (those in history told, as they leave).
@@ -297,7 +298,7 @@ pub(crate) fn settings_changed(tx: &mut Tx<'_>, tid: &Tid, ak: &Ak) -> Result<()
             set_from(tx, tid, ak, None)
         }
         (Some((due, mut out)), true) => {
-            // back from the cursor while in history by the new timeline
+            // back from the cursor while in history by the new setting
             while let Some(p) = out {
                 if leaves(&k, p.0) <= now {
                     break;
@@ -386,7 +387,7 @@ pub(crate) fn date_due(tx: &mut Tx<'_>) -> Result<()> {
         if ak.signal() {
             continue;
         }
-        let k = kept.entry((tid, ak.clone())).or_insert_with(|| history::of(tx.core, &tid, &ak)).clone();
+        let k = *kept.entry((tid, ak.clone())).or_insert_with(|| history::of(tx.core, &tid, &ak));
         let old = tx.core.ix.dated.get(&(c, tid, ak.clone())).copied();
         let new = if k.dated() { row_at(tx, &c, &tid, &ak, how, old)? } else { None };
         if old == new {

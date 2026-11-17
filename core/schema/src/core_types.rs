@@ -264,9 +264,11 @@ impl Codec for crate::History {
 codec_struct! {
     /// What a thing promises for replaced content of an aspect (`history`, absent: none
     /// promised), the expiry a writer gives its writes there as a duration from the write (none:
-    /// no expiry), and `final`: a writer refuses to replace a fire there (spec/commits.md §5).
+    /// no expiry), `final`: a writer refuses to replace a fire there, and `purge_before`: a body
+    /// holding a dead write stamped before this wall ms is under purge on replace, whatever
+    /// `history` says (spec/commits.md §5 One way).
     #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-    pub struct RetentionEntry { 0 history: Option<crate::History>, 1 expires: Option<u64>, 2 r#final: bool }
+    pub struct RetentionEntry { 0 history: Option<crate::History>, 1 expires: Option<u64>, 2 r#final: bool, 3 purge_before: Option<u64> }
 }
 
 impl RetentionEntry {

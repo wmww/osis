@@ -337,7 +337,6 @@ impl Conv<'_> {
 fn retention(r: &osis_schema::Retention) -> hm::Retention {
     use osis_base::PurgeBy as P;
     let by = match r.by {
-        P::Nobody => hm::PurgeBy::Nobody,
         P::Admin => hm::PurgeBy::Admin,
         P::AuthorOrAdmin => hm::PurgeBy::AuthorOrAdmin,
         P::Writer => hm::PurgeBy::Writer,
@@ -345,17 +344,20 @@ fn retention(r: &osis_schema::Retention) -> hm::Retention {
     hm::Retention { by }
 }
 
-/// A `retention^.0` body as the model's setting: per AK (by its model name) its history, and the
-/// default (an expiry default is the writer's alone, not judged).
-fn setting(cv: &mut Conv, f: Option<&Fragment>) -> Option<hm::Setting> {
-    let x = ct::retention_setting(&f?.read()?)?;
+/// A `retention^.0` body as the model's setting: per AK (by its model name) its history and floor,
+/// and the default (an expiry default is the writer's alone, not judged); a snapshot's by the
+/// stamp of the write it carries.
+fn setting(cv: &mut Conv, f: Option<&Fragment>, snapshot: bool) -> Option<hm::Setting> {
+    let f = f?;
+    let x = ct::retention_setting(&f.read()?)?;
+    let written = snapshot.then(|| f.winners().iter().map(|w| w.stamp.ts.to_u64()).max()).flatten();
     let opt = |e: &ct::RetentionEntry| match e.history {
         None => hm::Opt::None,
         Some(osis_schema::History::PurgeOnReplace) => hm::Opt::Purge,
         Some(osis_schema::History::Keep { until, after }) => hm::Opt::Keep { after: after.unwrap_or(0), until: until.map_or(0, |u| if u >= osis_commit::FOREVER { u64::MAX } else { u }) },
     };
-    let entry = |e: &ct::RetentionEntry| hm::SettingEntry { history: opt(e), expires: None };
-    Some(hm::Setting { rules: x.rules.iter().map(|(k, e)| (cv.aspect(k.as_str()).name, entry(e))).collect(), default: x.default.as_ref().map(entry) })
+    let entry = |e: &ct::RetentionEntry| hm::SettingEntry { history: opt(e), expires: None, purge_before: e.purge_before.unwrap_or(0) };
+    Some(hm::Setting { rules: x.rules.iter().map(|(k, e)| (cv.aspect(k.as_str()).name, entry(e))).collect(), default: x.default.as_ref().map(entry), written })
 }
 
 /// One node, converted.
@@ -525,7 +527,7 @@ fn convert(e: &mut Engine, hist: &History) -> Input {
                 // a setting, as the model reads it; one that is none reads as an empty write
                 _ if a.ak.as_str() == osis_commit::retention::RETENTION => {
                     let f = e.body_fragment(id, &a.tid, &a.ak).unwrap();
-                    parts.push(part(hm::Body::Held(setting(&mut cv, f.as_ref()).map_or_else(|| hm::Delta::Writes(hm::Frag::empty(0)), hm::Delta::Retention))));
+                    parts.push(part(hm::Body::Held(setting(&mut cv, f.as_ref(), h.kind.is_compaction()).map_or_else(|| hm::Delta::Writes(hm::Frag::empty(0)), hm::Delta::Retention))));
                 }
                 // a stripped addendum lists nothing (spec/permissions.md §5.2 Addenda)
                 _ if aspect == hm::Aspect::ADDENDA => {
@@ -716,7 +718,12 @@ pub(crate) fn compare(e: &mut Engine, hist: &History, cov: &mut Coverage, drops:
     reach("value-less", o.valueless.iter().filter(|d| inside.contains(&(d.1, d.2))).count());
     reach("signal parts", parts().filter(|(_, p)| p.aspect.signal).count());
     // replaced bodies in history, and under purge on replace
-    reach("in history", parts().filter(|(k, _)| o.replaced_at.get(k).copied().flatten().is_some_and(|r| o.in_history(input.held.commits.iter().find(|c| c.id == k.0).map_or(0, |c| c.parts[k.1].thing), input.held.commits.iter().find(|c| c.id == k.0).map_or(hm::Aspect::ROLES, |c| c.parts[k.1].aspect), r, input.held.now))).count());
+    let in_history = |k: &hm::PartRef, r: u64| {
+        let c = input.held.commits.iter().find(|c| c.id == k.0);
+        let w = o.oldest_dead.get(k).copied().unwrap_or(0);
+        o.in_history(c.map_or(0, |c| c.parts[k.1].thing), c.map_or(hm::Aspect::ROLES, |c| c.parts[k.1].aspect), r, w, input.held.now)
+    };
+    reach("in history", parts().filter(|(k, _)| o.replaced_at.get(k).copied().flatten().is_some_and(|r| in_history(k, r))).count());
     reach("under purge on replace", parts().filter(|(k, _)| o.under_purge.contains(k)).count());
     if !inside.is_empty() {
         let cs = &input.held.commits;
@@ -872,15 +879,17 @@ pub(crate) fn compare(e: &mut Engine, hist: &History, cov: &mut Coverage, drops:
                 // a live delta is kept to its aspect's live bound (spec/commits.md §5 Kept while live)
                 if ob.live_delta(&back.commits[ci], i) {
                     reach_n(cov, "live drops judged", 1);
-                    if now < ob.live_until(thing, aspect) {
-                        diffs.push(("dropped a live body before its live bound".into(), differ(format!("commit {id:?} (#{cid}) on {t:?} {}: dropped as covered at {now}, live, the settings held keep it to {}", a.as_str(), ob.live_until(thing, aspect)), &[thing])));
+                    let live = ob.live_until(thing, aspect, hm::wall(back.commits[ci].ts));
+                    if now < live {
+                        diffs.push(("dropped a live body before its live bound".into(), differ(format!("commit {id:?} (#{cid}) on {t:?} {}: dropped as covered at {now}, live, the settings held keep it to {live}", a.as_str()), &[thing])));
                     }
                     continue;
                 }
                 let Some(Some(r)) = ob.replaced_at.get(&(cid, i)).copied() else { continue };
                 reach_n(cov, "covered drops judged", 1);
-                if ob.kept(thing, aspect, r, now) {
-                    diffs.push(("dropped a body in history".into(), differ(format!("commit {id:?} (#{cid}) on {t:?} {}: dropped as covered at {now}, replaced at {r}, the settings held keep it to {}", a.as_str(), ob.out(thing, aspect, r)), &[thing])));
+                let w = ob.oldest_dead.get(&(cid, i)).copied().unwrap_or(0);
+                if ob.kept(thing, aspect, r, w, now) {
+                    diffs.push(("dropped a body in history".into(), differ(format!("commit {id:?} (#{cid}) on {t:?} {}: dropped as covered at {now}, replaced at {r}, the setting keeps it to {}", a.as_str(), ob.out(thing, aspect, r, w)), &[thing])));
                 }
             }
         }
@@ -920,7 +929,7 @@ pub(crate) fn keep_for_d(e: &mut Engine, hist: &History) -> (usize, usize, Optio
             let Some((t, a)) = by_part.get(&(p.thing, p.aspect)) else { continue };
             let Some(Some(r)) = o.replaced_at.get(&(c.id, i)) else { continue };
             let Some(ai) = e.header(&id).and_then(|h| h.aspects.iter().position(|x| x.tid == *t && x.ak == *a)) else { continue };
-            let want = o.out(p.thing, p.aspect, *r);
+            let want = o.out(p.thing, p.aspect, *r, o.oldest_dead.get(&(c.id, i)).copied().unwrap_or(0));
             if want <= *r || want == hm::NEVER {
                 continue;
             }

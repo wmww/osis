@@ -288,42 +288,6 @@ fn a_dead_write_keeps_no_name_spec_commits_5() {
     assert_eq!(names_on(&lp, 1, t, &reg()), 1, "only the live write's");
 }
 
-// spec/commits.md §5 Purge, Without the header: a node holding a forgotten commit's name judges
-// a request by the header's facts, not a snapshot's word: writer 3 states `nobody` for writer 1's
-// admin-class write, which would block the admin's purge by ID wherever only snapshots speak.
-#[test]
-fn a_name_judges_by_the_header_not_a_snapshots_word_spec_commits_5() {
-    let (mut lp, t) = LocalPeer::cached("retention::tests_carried::four", || {
-        let mut lp = LocalPeer::fresh(4, T0);
-        lp.sync_all().unwrap();
-        let me = |lp: &LocalPeer, i: usize| lp.peers[i].engine.me();
-        let mut m = Mutation::new();
-        let a = me(&lp, 0);
-        let t = lp.peers[0].engine.new_thing(&mut m, a);
-        lp.peers[0].commit(m).unwrap();
-        lp.hold(t);
-        let edge = |role| ct::Edge { role, until: None, invite: None, floor: None };
-        for (i, role) in [(1, Role::Write), (2, Role::Read), (3, Role::Write)] {
-            let who = me(&lp, i);
-            lp.peers[0].engine.grant(&t, &who, &edge(role)).unwrap();
-        }
-        lp.sync_all().unwrap();
-        lp.advance(60_000);
-        (lp, t)
-    });
-    let (c, _) = written(&mut lp, t, PurgeBy::Admin);
-    lp.sync(1, 3).unwrap();
-    let PurgeItem::Commit { ts, src, .. } = lp.peers[1].engine.purge_item(&c, t, reg()).unwrap() else { unreachable!() };
-    lp.peers[3].engine.core.lie_facts = Some([((ts, src), osis_crdt::Fact { by: PurgeBy::Nobody, actor: None })].into());
-    lp.peers[3].engine.snapshot(&t, &reg()).unwrap().unwrap();
-    lp.advance(1_000);
-    lp.sync(3, 0).unwrap();
-    compact_forget(&mut lp, 0, t, &reg());
-    assert!(!lp.peers[0].engine.commit_ids().contains(&c));
-    purge_by_id(&mut lp, 0, t, &reg(), c).unwrap().unwrap();
-    assert_ne!(lp.peers[0].engine.get(&t, &reg()).unwrap(), Some(Value::Str("SECRET".into())), "the liar's statement blocked the admin");
-}
-
 // Security invariant (spec/requirements.md Deletion, spec/commits.md §5 Purge): a purge naming a
 // write by ID reaches its value wherever held, and only that write's, whether or not its node
 // forgot the commit. Differential: two runs of the same random writes, compactions and purges by

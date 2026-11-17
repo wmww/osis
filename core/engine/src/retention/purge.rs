@@ -224,7 +224,7 @@ pub(crate) fn stands(core: &Core, p: &Header, pc: &CommitId, a: &AspectEntry, ch
 fn signers_could(core: &Core, p: &Header, a: &Right) -> bool {
     let (held, by, actor) = (&core.ix.held, a.by, a.actor);
     let could = |who: &Tid| {
-        (by.admin() && held.ever_admins(&a.tid).contains(who))
+        held.ever_admins(&a.tid).contains(who)
             || (by.writer() && held.ever_writers(&a.tid).contains(who))
             || (by.author() && (*who == actor || held.ever_writers(&actor).contains(who)) && held.ever_writers(&a.tid).contains(&actor))
     };
@@ -254,9 +254,8 @@ pub(crate) fn snapshot_right(core: &Core, s: &CommitId, c: &CommitId, tid: &Tid,
 /// would walk the aspect on every pass.
 pub(crate) fn lasting(tx: &mut Tx<'_>, id: &CommitId, on: &dyn Fn(&Core, &Tid) -> bool) -> Result<bool> {
     let Some(m) = tx.core.ix.commits.get(id).cloned() else { return Ok(false) };
-    let now = tx.now().0;
     // a drop as invalid lasts not (an invalid delta shows nothing, spec/permissions.md §5.2)
-    if m.header.aspects.iter().enumerate().any(|(ai, a)| (m.stripped(ai) || (m.is_dropped(ai) && !m.dropped_invalid(ai))) && on(tx.core, &a.tid) && super::history::permanent(tx.core, &m.header, a, now)) {
+    if m.header.aspects.iter().enumerate().any(|(ai, a)| (m.stripped(ai) || (m.is_dropped(ai) && !m.dropped_invalid(ai))) && on(tx.core, &a.tid) && super::history::permanent(tx.core, &m.header, a)) {
         return Ok(true);
     }
     if !m.view.purges {
@@ -665,7 +664,7 @@ pub(super) fn purge_one(tx: &mut Tx<'_>, pc: &CommitId, c: &CommitId, ai: usize,
     // the part may have gone already, for another reason: its entry now reads purged
     tx.core.commits_named(a.tid, a.ak.clone(), *c);
     // a lasting header from now on (`lasting`), whichever came first (spec/commits.md §5)
-    if super::history::permanent(tx.core, &m.header, &a, tx.now().0) {
+    if super::history::permanent(tx.core, &m.header, &a) {
         tx.txn.put_local(&records::named_permanent_key(pc, &a.tid), &[], Shred::No)?;
     }
     // every held body carrying the purged values, snapshots included, is stripped of them by the

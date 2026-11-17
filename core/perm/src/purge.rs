@@ -12,7 +12,7 @@ impl Timeline {
     /// (write on it) while `actor` holds write on the thing; any current writer.
     pub fn may_purge(&self, requester: &Tid, thing: &Tid, by: PurgeBy, actor: &Tid, at: At) -> bool {
         let role = self.role(requester, thing, at);
-        (by.admin() && role == Some(Role::Admin))
+        role == Some(Role::Admin)
             || (by.writer() && role >= Some(Role::Write))
             || (by.author() && self.role(requester, actor, at) >= Some(Role::Write) && self.role(actor, thing, at) >= Some(Role::Write))
     }
@@ -24,7 +24,7 @@ impl Timeline {
     /// made in the gap as it does that request's own writes.
     pub fn purge_stands(&self, who: &Tid, thing: &Tid, by: PurgeBy, actor: &Tid, at: Point) -> bool {
         let holds = |x: &Tid, on: &Tid, need: Role| self.delta_valid(Point { node: *x, ..at }, on, need) == Validity::Valid;
-        (by.admin() && holds(who, thing, Role::Admin)) || (by.writer() && holds(who, thing, Role::Write)) || (by.author() && holds(who, actor, Role::Write) && holds(actor, thing, Role::Write))
+        holds(who, thing, Role::Admin) || (by.writer() && holds(who, thing, Role::Write)) || (by.author() && holds(who, actor, Role::Write) && holds(actor, thing, Role::Write))
     }
 
     /// §3: the roles of `actor` that `node` may rotate and re-seal at `at`: write or above

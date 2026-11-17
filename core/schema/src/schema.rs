@@ -79,14 +79,6 @@ pub struct Retention {
     pub by: PurgeBy,
 }
 
-impl Retention {
-    /// Why `self` is not a retention a write of an aspect without fixed retention may carry
-    /// (spec/commits.md §5): `nobody` is fixed retention's alone.
-    pub fn refusal(&self) -> Option<&'static str> {
-        (self.by == PurgeBy::Nobody).then_some("purgeable by nobody is fixed retention's alone")
-    }
-}
-
 /// Per-AK write defaults.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Default, Hash)]
 pub struct AspectDefaults {
@@ -238,9 +230,6 @@ impl Schema {
                 }
             };
             self.check_syntax(&def.ty, &[], &mut |m| bad(&item, m));
-            if let Some(m) = def.retention.refusal() {
-                bad(&item, format!("{m} (spec/commits.md §5)"));
-            }
             if big(def.expires) {
                 bad(&item, "time out of range".into());
             }

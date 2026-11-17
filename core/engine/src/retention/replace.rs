@@ -193,20 +193,15 @@ pub(crate) fn settle_none(tx: &mut Tx<'_>) -> Result<()> {
 }
 
 /// Whether held body `c` (part `ai`) of `(tid, ak)` is under purge on replace (spec/commits.md
-/// §5): replaced, and the setting in force when it was replaced purges on replace. Dated only
-/// when the timeline moved after the body was written (else in force then is in force at its
-/// replacement).
+/// §5): replaced, and the current setting's entry purges on replace or its floor is past the
+/// body's oldest dead write (`bounds::written_of`).
 fn under_purge(tx: &mut Tx<'_>, c: &CommitId, ai: usize, tid: &Tid, ak: &Ak, kept: &super::history::Kept) -> Result<bool> {
     if !replaced(tx, c, ai, tid, ak)? {
         return Ok(false);
     }
     let Some(h) = tx.core.ix.commits.get(c).map(|m| m.header.clone()) else { return Ok(false) };
-    let written = h.ts.wall_ms().0;
-    if kept.settled_from(written) {
-        return Ok(kept.purge_on_replace(written));
-    }
-    tx.core.replaced_reads += 1;
-    Ok(super::bounds::dated_replaced_at(tx, &h, c, ai)?.is_some_and(|r| kept.purge_on_replace(r.wall_ms().0)))
+    let w = super::bounds::written_of(tx, &h, c, ai)?;
+    Ok(kept.purge_on_replace(w))
 }
 
 /// `t` waits to be written on before this node covers its bodies or weighs them for the trigger

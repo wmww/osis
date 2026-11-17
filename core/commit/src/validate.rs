@@ -2,7 +2,7 @@
 
 use crate::cbor::strictly_ascending;
 use crate::header::{EphClass, FOREVER, Form, Header, Kind, Links, ListField, PurgeItem, aspect_order, purge_bytes};
-use crate::retention::{CREATED, EPHEMERAL_RETENTION, RETENTION, delete_levels, fixed_retention};
+use crate::retention::{CREATED, EPHEMERAL_RETENTION, delete_levels, fixed_retention};
 use crate::Error;
 use osis_base::format::DELETE_AUTHOR;
 use osis_schema::PurgeBy;
@@ -71,18 +71,12 @@ impl Header {
             if ak == CREATED && (!kind.has_own_writes() || self.ephemeral.is_some()) {
                 return Err(Error::Invalid("created.0 in a commit without own writes or an ephemeral one"));
             }
-            // kept forever and judged by its own deltas (spec/commits.md §5): never snapshotted
-            if ak == RETENTION && !kind.has_own_writes() {
-                return Err(Error::Invalid("retention^.0 in a commit without own writes"));
-            }
             // the role timeline walks every edge write (spec/commits.md §2)
             if kind == Kind::RoleSnapshot && ak == "roles.0" {
                 return Err(Error::Invalid("compaction snapshot of roles.0"));
             }
             if let Some(f) = fixed_retention(ak) {
                 ord(a.retention == f, "retention of a fixed-retention aspect")?;
-            } else if let Err(m) = crate::retention::allowed(ak, &a.retention) {
-                return Err(Error::Invalid(m));
             } else if kind == Kind::ContentSnapshot && a.retention.by != PurgeBy::Writer {
                 return Err(Error::Invalid("compaction-snapshot delta not purgeable by writer"));
             } else if ak == CREATED && a.retention.by != PurgeBy::Admin {

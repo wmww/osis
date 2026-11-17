@@ -4,7 +4,7 @@
 ## 1. Conventions
 - Every structure below is canonical CBOR in the profile of spec/data-model.md §5 unless it is given as a fixed byte layout. `[a, b]` is an array with exactly those positions; `Opt(X) := [] | [X]`; `X*` repeats X zero or more times, `X+` one or more. A decoder rejects any other length, a wrong major type, or an item outside its stated size.
 - Inside structures (not values): a tid is a 15-byte byte string, a commit ID, blob ID, step ID or hash a 32-byte byte string, a sync ID a 16-byte byte string, a time (wall ms) or `ts` an unsigned integer. A **value** (spec/data-model.md §4) embedded in a structure keeps its value encoding (tags included).
-- A role in a structure is a uint: 0 read, 1 write, 2 admin, 3 sync (ordered sync < read < write < admin). A purgeable-by class: 0 `nobody`, 1 `admin`, 2 `author_or_admin`, 3 `writer`. A delete level: 1, 2, 3 (spec/crypto.md §7).
+- A role in a structure is a uint: 0 read, 1 write, 2 admin, 3 sync (ordered sync < read < write < admin). A purgeable-by class: 1 `admin`, 2 `author_or_admin`, 3 `writer`. A delete level: 1, 2, 3 (spec/crypto.md §7).
 - An epoch in a structure is `[n, nonce]` (uint, 32-byte byte string; spec/crypto.md §4).
 - **AD tuples**: an AEAD associated-data tuple `(a, b, ...)` written in spec/crypto.md is the canonical CBOR array of its items in the encodings of this section; layouts below give each one.
 - Signed digests: a signature's digest (spec/crypto.md §2) is BLAKE3 of the canonical bytes of the array the layout names.
@@ -135,7 +135,6 @@ Aspect fields: `tid`; `ak` (text, spec/data-model.md §2, at most `MAX_AK_BYTES`
   - a role compaction snapshot of `roles.0`;
   - a role-class, `addenda.0`, `retention^.0` or `purge.0` aspect whose retention is not its fixed one (spec/commits.md §5);
   - `expires` on a commit with such an aspect;
-  - `nobody` on an aspect without fixed retention (spec/commits.md §5);
   - a content compaction snapshot's delta without fixed retention whose `by` is not writer;
   - `expires` or a purge item on a role commit;
   - a purge item naming a role-class aspect;

@@ -67,14 +67,14 @@ const T_EXPIRY: u8 = 1;
 const T_FLOOR: u8 = 2;
 /// A part kept by a purge request's header (its commit's purge floor, a purged fire's tombstone):
 /// a signal's body goes then (`signal_bound`); a value part is told at its floor, armed when it
-/// arrives (`listing::kept_passed`). Leaving history by the timeline alone is `leaving`'s one
+/// arrives (`listing::kept_passed`). Leaving history by the setting alone is `leaving`'s one
 /// timer per aspect.
 pub(crate) const T_KEPT: u8 = 3;
 
 /// A signal delta's keep bound, wall ms (spec/commits.md §5 Signals): any body's keep at least
 /// (`bounds::part_keep`), replaced when written; `None`: kept for good.
 pub(crate) fn signal_bound(core: &Core, h: &Header, a: &osis_commit::AspectEntry) -> Option<u64> {
-    let t = bounds::kept_until(core, h, a, Some(h.ts.wall_ms().0));
+    let t = bounds::kept_until(core, h, a, Some(h.ts.wall_ms().0), h.ts.wall_ms().0);
     (t < osis_commit::FOREVER).then_some(t)
 }
 
@@ -463,7 +463,7 @@ pub(crate) fn kept_purged(core: &Core, c: &CommitId, m: &crate::engine::Meta) ->
     let purged = |ai: usize| m.bare(ai) && m.header.aspects.get(ai).is_some_and(|a| held_purged(core, c, &a.tid, &a.ak, ai, now));
     let n = m.view.aspects.len();
     // a thing's first commit stays (its `created.0` part never drops)
-    let kept = |a: &osis_commit::AspectEntry| a.ak.as_str() == osis_commit::retention::CREATED || history::permanent_now(core, &m.header, a);
+    let kept = |a: &osis_commit::AspectEntry| a.ak.as_str() == osis_commit::retention::CREATED || history::permanent(core, &m.header, a);
     (0..n).any(purged) && (0..n).all(|ai| !m.holds(ai) || purged(ai)) && !m.header.aspects.iter().any(kept)
 }
 
@@ -501,9 +501,9 @@ pub(crate) fn drop_invalid(tx: &mut Tx<'_>) -> Result<()> {
 }
 
 /// The things whose `retention^.0` settings arrived, flipped or dropped this transaction
-/// (`Core::settings_due`): what their timelines judge is judged again (spec/commits.md §5
+/// (`Core::settings_due`): what their settings judge is judged again (spec/commits.md §5
 /// Convergence), from what is held, per aspect of the thing: the bodies that leave history or come
-/// back by the new timeline are told and marked (`leaving::settings_changed`: O(those bodies), no
+/// back by the new setting are told and marked (`leaving::settings_changed`: O(those bodies), no
 /// body read), and purge on replace is settled where some setting asks for it (`settle_none`: a
 /// setting arriving can make a writer owe a cover).
 pub(crate) fn settings_changed(tx: &mut Tx<'_>) -> Result<()> {
@@ -519,11 +519,11 @@ pub(crate) fn settings_changed(tx: &mut Tx<'_>) -> Result<()> {
             }
             // a live body kept for good may not be now (spec/commits.md §5 Kept while live): the
             // trigger weighs the aspect again
-            let live = kept.live_until();
+            let live = kept.live_until(history::NEVER);
             if live > tx.now().0 {
                 crate::retention::compact::Trigger::live_until(tx, (t, ak.clone()), live);
             }
-            if live != osis_commit::retention::NEVER {
+            if live != history::NEVER {
                 tx.core.compaction.weigh((t, ak.clone()));
             }
             leaving::settings_changed(tx, &t, &ak)?;
@@ -1134,10 +1134,10 @@ fn on_parts(tx: &mut Tx<'_>, id: &CommitId, h: &Header, ais: BTreeSet<usize>, pu
             tx.put_timer(t, id, ai, T_KEPT)?;
         }
         // a signal body goes at its keep bound, whole or as its leftover: by its aspect's walk
-        // while its timeline keeps it (`leaving`), then by its commit's purge floor if later
+        // while its setting keeps it (`leaving`), then by its commit's purge floor if later
         if let Some(a) = h.aspects.get(ai).filter(|a| a.ak.signal()) {
             let now = tx.now().0;
-            if history::of(tx.core, &a.tid, &a.ak).leaves_at(Some(h.ts.wall_ms().0)) > now {
+            if history::of(tx.core, &a.tid, &a.ak).leaves_at(Some(h.ts.wall_ms().0), h.ts.wall_ms().0) > now {
                 leaving::fire_held(tx, &a.tid, &a.ak, (h.ts, *id))?;
             } else {
                 match signal_bound(tx.core, h, a) {
@@ -1202,7 +1202,7 @@ fn run_timer(tx: &mut Tx<'_>, t: u64, c: &CommitId, ai: usize, kind: u8, changed
     if kind == T_FLOOR {
         replace::floor_passed(tx, c, ai);
     } else if kind == T_KEPT {
-        // a setting since may have moved the bound: judged by the timeline now
+        // a setting since may have moved the bound: judged by the setting now
         let now = tx.now().0;
         let bound = tx.core.ix.commits.get(c).map(|m| m.header.clone()).and_then(|h| Some(signal_bound(tx.core, &h, h.aspects.get(ai)?)));
         match bound {

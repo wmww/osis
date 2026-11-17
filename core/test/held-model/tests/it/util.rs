@@ -148,12 +148,12 @@ pub fn fate(h: &Held, c: CommitId) -> Fate {
 }
 /// A `retention^.0` setting `x` on `T` by `author` at hour `h`.
 pub fn setting_by(id: CommitId, author: NodeId, h: u64, x: Setting) -> Commit {
-    let p = Part { thing: T, aspect: Aspect::RETENTION, retention: Retention::FIXED, body: Body::Held(Delta::Retention(x)), stripped: Default::default(), replaces: None };
+    let p = Part { thing: T, aspect: Aspect::RETENTION, retention: Retention::ADMIN, body: Body::Held(Delta::Retention(x)), stripped: Default::default(), replaces: None };
     content(id, author, h, vec![p])
 }
 /// The first admin's setting at hour `h` giving aspect `a` the entry `opt`.
 pub fn setting(id: CommitId, h: u64, a: Aspect, opt: Opt) -> Commit {
-    setting_by(id, FIRST_ADMIN, h, Setting { rules: vec![(a.name, SettingEntry { history: opt, expires: None })], default: None })
+    setting_by(id, FIRST_ADMIN, h, Setting { rules: vec![(a.name, SettingEntry { history: opt, expires: None, purge_before: 0 })], default: None, written: None })
 }
 /// Kept `d` hours after replaced.
 pub fn keep_after(d: u64) -> Opt {
