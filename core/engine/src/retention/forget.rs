@@ -186,6 +186,11 @@ fn unreceive(tx: &mut Tx<'_>, id: &CommitId, ais: &BTreeSet<usize>, rest: Option
     if !moved {
         return Ok(());
     }
+    // what it lost counts as never received: nothing keeps its blobs out (`CipherTx::unreceived`)
+    let blobs: Vec<osis_base::BlobId> = tx.core.ix.commit_blobs.get(id).into_iter().flatten().copied().collect();
+    for b in blobs {
+        tx.blobs.unreceived(&b);
+    }
     if let Some(rest) = rest {
         tx.put_commit(id, rest, &m, Shred::Yes, None)?;
     }

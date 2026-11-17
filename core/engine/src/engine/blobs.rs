@@ -131,6 +131,20 @@ impl<'a> Cipher<'a> {
         self.forgot.push((*id, memory));
     }
 
+    /// Blob `id`'s commit forgotten as never received (`CipherTx::unreceived`), in the store's
+    /// open transaction.
+    pub fn unreceived(&mut self, id: &BlobId) {
+        let r = self.tx().unreceived(id);
+        self.failed |= r.is_err();
+    }
+
+    /// Sync ID `s` is to be pulled anew from every source (`CipherTx::refetch`), written in the
+    /// store's open transaction, so durable before the engine's store commits.
+    pub fn refetch(&mut self, s: &osis_base::SyncId) {
+        let r = self.tx().refetch(s);
+        self.failed |= r.is_err();
+    }
+
     /// Whether this transaction held, released or forgot anything (`Engine::read`'s check).
     pub fn changed(&self) -> bool {
         !self.held.is_empty() || !self.journal.is_empty() || !self.forgot.is_empty()

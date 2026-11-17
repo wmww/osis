@@ -926,3 +926,15 @@ fn p5_subtree_drop_needs_reattaching() {
     }
 }
 
+
+// spec/sync-inbox.md §5 (Nothing before the strong), spec/sync-set.md §2: an account takes a grant
+// naming it only at a strong to its thing, so its role on T1 by a chain through T0 counts only
+// once T0 is reached. Account 0, T0 = 1, T1 = 2 keyed: 0 holds sync on T0, T0 sync on T1.
+#[test]
+fn an_accounts_role_through_an_unreached_thing_counts_nothing() {
+    use Role::*;
+    let w = worldr(&[K, K, K], &[(0, 1, Sync), (1, 2, Sync)]);
+    assert!(w.roles_from_reached(0, &set(&[2])).get(&2).is_none(), "T0 unreached: no role on T1");
+    assert_eq!(w.roles_from_reached(0, &set(&[1])).get(&2), Some(&Sync), "T0 reached: sync on T1 through it");
+    assert_eq!(w.roles_from(0).get(&2), Some(&Sync), "a thing's chains are not restricted");
+}

@@ -30,6 +30,10 @@ pub struct Follow {
     /// Commits the engine stops holding: their entries under a read S wait for what they did not
     /// before (`awaits`), with no entry of the store moving.
     unheld: Option<Removals<CommitId>>,
+    /// The sync IDs pulled anew (`Store::anew_feed`): a pull anew fetches what is not held, so
+    /// what is held and parked opens again here (spec/sync-judgement.md §3 Dropped bodies: it
+    /// opens again each entry its store still holds).
+    anew: Option<Feed<SyncId>>,
     read: BTreeMap<SyncId, BTreeSet<Tid>>,
     carriers: Carriers,
 }
@@ -241,7 +245,7 @@ impl Default for Follow {
     fn default() -> Follow {
         let mut caps = Effects::new("store: caps");
         caps.want(());
-        Follow { set: SyncsFollow::default(), caps, paths: Effects::new("store: paths"), creds: Effects::new("store: read secrets"), parked: Parked::default(), entries: None, unheld: None, read: BTreeMap::new(), carriers: Carriers::default() }
+        Follow { set: SyncsFollow::default(), caps, paths: Effects::new("store: paths"), creds: Effects::new("store: read secrets"), parked: Parked::default(), entries: None, unheld: None, anew: None, read: BTreeMap::new(), carriers: Carriers::default() }
     }
 }
 
@@ -329,6 +333,20 @@ impl Follow {
                 store.serve_path(&s, &p)?;
                 charge_unvouched(engine, store, &s)?;
                 acted = true;
+            }
+        }
+        match self.anew.as_mut() {
+            Some(f) => {
+                for s in f.added() {
+                    if self.read.contains_key(&s) {
+                        acted |= open_parked(engine, store, &mut self.parked, &mut self.creds, &Awaits::Sync(s))?;
+                    }
+                }
+            }
+            None => {
+                let (f, r) = store.anew_feed();
+                r?;
+                self.anew = Some(f);
             }
         }
         // a parked entry is opened as read secrets arrive (spec/sync-streams.md §4 Fill order;

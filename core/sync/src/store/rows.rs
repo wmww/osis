@@ -23,7 +23,8 @@
 //! - `N/ s` S is owed a pull from the start, gone once streams set the sources' places of S
 //!   back to the start (`Store::reset_anew`): value empty, its copy was dropped kept
 //!   unread (`Store::set_unheld`, written with the drop; it takes nothing until judged again);
-//!   `ANEW_RAISED`, S was raised from kept unread to read (`Store::set_holdings`); `ANEW_SOME`,
+//!   `ANEW_RAISED`, S was raised from kept unread to read (`Store::set_holdings`) or a strong
+//!   in its sync unit reaches a thing whose record the engine lacks (`CipherHost::refetch`); `ANEW_SOME`,
 //!   pulled from the start only at the sources whose rows say so: told a refusal of S under
 //!   another head (spec/sync-streams.md §4 Refused; S's head moved kept unread over a refusal
 //!   told to a record's source, `path::register`), or whose room mark is owed (`Store::room_grew`,

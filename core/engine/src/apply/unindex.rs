@@ -21,6 +21,11 @@ pub(crate) fn unindex_commit(tx: &mut Tx<'_>, id: &CommitId) -> Result<()> {
 /// the sync store may keep (an own entry, opened again once the thing reads again); a release
 /// drops them, and the store's own entries of them (`sync::bodies::forget`).
 pub(crate) fn unindex_unreceived(tx: &mut Tx<'_>, id: &CommitId) -> Result<()> {
+    // never received, nothing keeps it out: fetched again where present once needed
+    let blobs: Vec<osis_base::BlobId> = tx.core.ix.commit_blobs.get(id).into_iter().flatten().copied().collect();
+    for b in blobs {
+        tx.blobs.unreceived(&b);
+    }
     unindex(tx, id, false)
 }
 

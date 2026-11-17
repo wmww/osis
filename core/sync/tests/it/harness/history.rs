@@ -121,6 +121,19 @@ pub struct Made {
     know: Vec<BTreeSet<usize>>,
     /// Hand commits to the reference (`World::differential`); off, a step only writes.
     pub harvest: bool,
+    /// Things held by no node at some quiet run (`ran`): gone for everyone, a strong to one
+    /// holds nothing from then on (spec/sync-set.md §3 A thing goes when its last reference goes).
+    gone: BTreeSet<usize>,
+    /// The reference `note_gone` reads, fed what was handed since its last quiet run (made at
+    /// the first, so a world copied before a history shares none).
+    quiet: Option<std::sync::Arc<std::sync::Mutex<Quiet>>>,
+}
+
+/// An incremental reference: the packages handed so far fed, those that did not take yet kept.
+struct Quiet {
+    peer: Peer,
+    fed: usize,
+    waiting: Vec<Package>,
 }
 
 impl Made {
@@ -145,6 +158,7 @@ pub fn ran(w: &mut World) {
     if !w.net.loss.none() || !w.liars.is_empty() {
         return;
     }
+    note_gone(w);
     let n = w.len();
     w.history.know.resize(n.max(w.history.know.len()), BTreeSet::new());
     let on: Vec<usize> = (0..n).filter(|i| w.online(*i)).collect();
@@ -167,6 +181,50 @@ pub fn ran(w: &mut World) {
         let all: BTreeSet<usize> = comp.iter().flat_map(|i| w.history.know[*i].clone()).collect();
         for i in comp {
             w.history.know[i] = all.clone();
+        }
+    }
+}
+
+/// At a quiet run with every node on and connected on a clean network, every node holds its
+/// node closure: a thing made that no account's model closure holds is held by no node, so it
+/// is gone (`Made::gone`). Judged from the history alone (a reference of what was handed).
+fn note_gone(w: &mut World) {
+    if !w.history.harvest || w.history.things.is_empty() || !w.net.cut_off.is_empty() || (0..w.len()).any(|i| !w.online(i)) {
+        return;
+    }
+    for i in 0..w.len() {
+        harvest(w, i);
+    }
+    let now = w.now();
+    let q = w.history.quiet.get_or_insert_with(|| std::sync::Arc::new(std::sync::Mutex::new(Quiet { peer: Peer::new_bare(0x005e_ed0f_5eed, now).expect("reference"), fed: 0, waiting: Vec::new() }))).clone();
+    let mut q = q.lock().unwrap();
+    let new: Vec<Package> = w.history.handed[q.fed..].to_vec();
+    q.fed = w.history.handed.len();
+    for pk in new {
+        let id = pk.id;
+        q.waiting.push(pk);
+        for i in 0..w.len() {
+            q.waiting.extend(w.engine(i).package(&id).ok().flatten());
+        }
+    }
+    let Quiet { peer, waiting, .. } = &mut *q;
+    loop {
+        let before = waiting.len();
+        waiting.retain(|pk| peer.receive_with(&pk.bytes, pk.blobs.clone(), &pk.lists).is_err());
+        if waiting.len() == before || waiting.is_empty() {
+            break;
+        }
+    }
+    peer.clock.set(now);
+    let _ = peer.tick();
+    let m = Model::of(w, peer);
+    let mut held = hc::Set::new();
+    for a in 0..m.accounts.len() {
+        held.extend(m.closure(&w.history, a).0.held);
+    }
+    for k in 0..w.history.things.len() {
+        if !held.contains(&m.thing(k)) {
+            w.history.gone.insert(k);
         }
     }
 }
@@ -589,6 +647,8 @@ impl Model {
                 }
             }
         }
+        // a gone thing is held by no strong (spec/sync-set.md §3)
+        edges.retain(|(_, y)| !h.gone.contains(&(y - 2 * na)));
         // the grants that read nothing (spec/crypto.md §4 Key access), as the reference orders them
         let keyless = r.engine.keyless_grants().iter().filter_map(|(t, g)| Some((index(g)?, index(t)?))).collect();
         Model { accounts, world: hc::World { kinds, grants, keyless }, edges }
@@ -600,7 +660,24 @@ impl Model {
     /// none where it has none (a ticket supplies up to the lower of its role and its holder's,
     /// spec/sync-set.md §2); a ticket gives its keys only where the walk enters its thing (§4).
     fn closure(&self, h: &Made, a: usize) -> (hc::Closure, hc::Set, hc::Set) {
-        let roles = self.world.roles_from(a);
+        // the account's grants count on what its node closure reaches by strongs alone (a grant
+        // naming it is taken at a strong to its thing, spec/sync-inbox.md §5 Nothing before the
+        // strong), so nothing counts through a thing it never accepted: the least fixpoint
+        let na = self.accounts.len();
+        let mut reached: hc::Set = hc::targets(&self.edges, na + a).collect();
+        loop {
+            let c = self.closure_reaching(h, a, &reached);
+            let now: hc::Set = c.0.held.iter().chain([na + a].iter()).flat_map(|x| hc::targets(&self.edges, *x)).chain(reached.iter().copied()).collect();
+            if now == reached {
+                return c;
+            }
+            reached = now;
+        }
+    }
+
+    /// `closure` with the account's grants counting on `reached` alone.
+    fn closure_reaching(&self, h: &Made, a: usize, reached: &hc::Set) -> (hc::Closure, hc::Set, hc::Set) {
+        let roles = self.world.roles_from_reached(a, reached);
         let na = self.accounts.len();
         let mut tickets = BTreeMap::from([(na + a, hc::Ticket::Open)]);
         for (&(k, acct), &given) in &h.given {

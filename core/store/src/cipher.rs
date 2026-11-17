@@ -59,6 +59,13 @@ pub trait CipherTx {
     /// The engine forgot blob `id` with its commit (`Note::forgot`): what the store logged of it
     /// as the engine's own goes.
     fn forgot(&mut self, id: &BlobId) -> Result<(), Error>;
+    /// The engine forgot blob `id`'s commit as never received (spec/sync-judgement.md §3 Dropped
+    /// bodies): what the store keeps out of it as the engine's own drop ends, in this transaction.
+    fn unreceived(&mut self, id: &BlobId) -> Result<(), Error>;
+    /// Sync ID `s` is to be pulled anew from every source, durably in this transaction: a strong
+    /// in its sync unit reaches a thing whose record the engine does not hold (spec/sync-judgement.md
+    /// §3 Dropped bodies). A store of blobs only syncs nothing.
+    fn refetch(&mut self, s: &osis_base::SyncId) -> Result<(), Error>;
     /// Records, in this transaction, an engine transaction's note (`settle` reads it back after
     /// a crash).
     fn note(&mut self, note: &Note) -> Result<(), Error>;
@@ -93,6 +100,16 @@ pub trait CipherHost: Send + Any {
     /// `CipherTx::forgot`: a store of blobs only logs nothing.
     fn forgot(&mut self, id: &BlobId) -> Result<(), Error> {
         let _ = id;
+        Ok(())
+    }
+    /// `CipherTx::unreceived`: a store of blobs only keeps nothing out.
+    fn unreceived(&mut self, id: &BlobId) -> Result<(), Error> {
+        let _ = id;
+        Ok(())
+    }
+    /// `CipherTx::refetch`: a store of blobs only syncs nothing.
+    fn refetch(&mut self, s: &osis_base::SyncId) -> Result<(), Error> {
+        let _ = s;
         Ok(())
     }
     /// Runs `f` in the store's open transaction (the engine's notes live in its local records).
@@ -187,6 +204,12 @@ impl<T: CipherHost> CipherTx for HostTx<'_, T> {
     }
     fn forgot(&mut self, id: &BlobId) -> Result<(), Error> {
         self.g.forgot(id)
+    }
+    fn refetch(&mut self, s: &osis_base::SyncId) -> Result<(), Error> {
+        self.g.refetch(s)
+    }
+    fn unreceived(&mut self, id: &BlobId) -> Result<(), Error> {
+        self.g.unreceived(id)
     }
     fn note(&mut self, n: &Note) -> Result<(), Error> {
         let (k, v) = ([NOTE, &n.seq.to_be_bytes()].concat(), encode_note(n));

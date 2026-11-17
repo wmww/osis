@@ -118,6 +118,35 @@ impl osis_store::CipherHost for Inner {
         })
     }
 
+    /// The engine forgot blob `id`'s commit as never received (a release, lost access): its own
+    /// tombstones end, so it is fetched again where present once needed (spec/sync-judgement.md
+    /// §3 Dropped bodies). A verified Delete's tombstone stays.
+    fn unreceived(&mut self, id: &BlobId) -> Res<()> {
+        self.mem.tombs.retain(|(_, b), _| b != id);
+        self.engine_tx(|t, env| {
+            let tombed: Vec<osis_base::SyncId> = t.scan_local(&[rows::TOMB_BY_BLOB, &id.0].concat(), b"", usize::MAX)?.into_iter().filter_map(|(k, _)| k.get(k.len().saturating_sub(16)..).and_then(|x| x.try_into().ok()).map(osis_base::SyncId)).collect();
+            for s in tombed {
+                if super::entries::tombstone(t, &s, id)?.is_some_and(|x| !x.deleted) {
+                    super::entries::lift(t, env, &s, id)?;
+                }
+            }
+            Ok(())
+        })
+    }
+
+    /// S is pulled anew from every source (`N/` marked as a raise is, over a mark of some sources
+    /// only), so the bodies it lacks are fetched again (spec/sync-judgement.md §3 Dropped bodies).
+    fn refetch(&mut self, s: &osis_base::SyncId) -> Res<()> {
+        self.engine_tx(|t, env| {
+            let mark = [rows::ANEW, &s.0].concat();
+            if !super::Store::anew_everywhere(t, s)? {
+                t.put_local(&mark, rows::ANEW_RAISED, Shred::No)?;
+            }
+            env.mem.anew.wrote_added(s, true, true);
+            Ok(())
+        })
+    }
+
     fn local(&mut self, f: &mut dyn FnMut(&mut Transaction<'_>) -> Res<()>) -> Res<()> {
         self.engine_tx(|t, _| Ok(f(t)?))
     }

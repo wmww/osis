@@ -188,11 +188,16 @@ pub(crate) struct Follow {
     acted: bool,
     /// Per thing a vertex of which the running settle dropped, those vertices' contexts.
     gone: std::collections::BTreeMap<Tid, BTreeSet<Ctx>>,
+    /// The edges followed before this settle's refollow (`reset` after a rollback), so an edge
+    /// is new only when neither follows it (`refetch`). `known` false: an open's first settle,
+    /// whose edges are all old (a refetch was durable before the transaction adding its strong).
+    before: Option<Effects<Edge, BTreeSet<Vx>>>,
+    known: bool,
 }
 
 impl Default for Follow {
     fn default() -> Follow {
-        Follow { fx: Effects::new("closure: edges"), reset: true, acted: false, gone: Default::default() }
+        Follow { fx: Effects::new("closure: edges"), reset: true, acted: false, gone: Default::default(), before: None, known: false }
     }
 }
 
@@ -847,7 +852,8 @@ fn settle_with(tx: &mut Tx<'_>, f: &mut Follow, rv: Vx) -> Result<()> {
     f.acted = true;
     f.gone.clear();
     if std::mem::take(&mut f.reset) {
-        f.fx = Effects::new("closure: edges");
+        let was = std::mem::replace(&mut f.fx, Effects::new("closure: edges"));
+        f.before = f.known.then_some(was);
         let all = tx.core.ix.closure.vertices();
         osis_base::costs::count("closure: refollowed", all.len() as u64);
         for v in all {
@@ -907,6 +913,8 @@ fn settle_with(tx: &mut Tx<'_>, f: &mut Follow, rv: Vx) -> Result<()> {
                     cl.left.insert(t, was);
                 }
             }
+            f.before = None;
+            f.known = true;
             return cl.settle_synced(rv);
         }
         for (v, y) in due {
@@ -939,6 +947,7 @@ fn judge(tx: &mut Tx<'_>, f: &mut Follow, v: Vx, y: Tid) -> Result<BTreeSet<Vx>>
         set_accepted(tx, y, v, false);
         return Ok(BTreeSet::new());
     }
+    let new = f.known && !f.before.as_ref().unwrap_or(&f.fx).wants(&(v, y));
     f.fx.want((v, y));
     // a thing the context does not follow by its keys, whose read secret is not established
     // here: each held ticket for it the node can open has its secret taken now the strong reaches
@@ -953,6 +962,9 @@ fn judge(tx: &mut Tx<'_>, f: &mut Follow, v: Vx, y: Tid) -> Result<BTreeSet<Vx>>
         any = taken.opened;
     }
     set_accepted(tx, y, v, any);
+    if new {
+        refetch(tx, v, y, any)?;
+    }
     let core = &*tx.core;
     let mut got = BTreeSet::new();
     f.fx.settle(&(v, y), || {
@@ -960,6 +972,28 @@ fn judge(tx: &mut Tx<'_>, f: &mut Follow, v: Vx, y: Tid) -> Result<BTreeSet<Vx>>
         got.clone()
     });
     Ok(got)
+}
+
+/// A new edge of read unit `v` to `y`, whose record the node does not hold and no ticket for
+/// which opened here: the unit's sync IDs are pulled anew from every source, so what was
+/// forgotten of `y` (a release, a body judged outside the required set before the strong
+/// arrived) is fetched again (spec/sync-judgement.md §3 Dropped bodies). Once per new edge,
+/// durable before the transaction adding it commits.
+fn refetch(tx: &mut Tx<'_>, v: Vx, y: Tid, ticketed: bool) -> Result<()> {
+    let Ctx::Read(t) = v.0 else { return Ok(()) };
+    if ticketed || tx.core.exists(&y) || tx.core.is_key_actor(&y) {
+        return Ok(());
+    }
+    // a held commit minting `y` whose part on it was never taken: nothing keeps its blobs out
+    let minting: Vec<osis_base::BlobId> = tx.core.mintings(&y).flat_map(|(c, _)| tx.core.ix.commit_blobs.get(&c).into_iter().flatten().copied().collect::<Vec<_>>()).collect();
+    for b in minting {
+        tx.blobs.unreceived(&b);
+    }
+    for s in crate::flows::sync_ids::owned_in(tx, &t)?.keys() {
+        osis_base::costs::count("closure: refetch", 1);
+        tx.blobs.refetch(s);
+    }
+    Ok(())
 }
 
 /// Notes whether `v`'s strong to `y` counts for `Closure::accepted`; `y` losing its last is

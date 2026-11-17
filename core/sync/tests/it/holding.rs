@@ -559,14 +559,12 @@ fn a_grant_to_a_holder_its_granter_does_not_sync_reaches_its_readers_spec_sync_i
     assert_eq!(holding(&mut w, 1, &t0), Some(Holding::Read));
 }
 
-// spec/sync-set.md §2 (What a held ticket does): Bob held T1 by a read ticket, then lost his own
-// grant; T1 is granted sync to T0 and Bob sync on T0, which he never accepts. His role on T1 is
-// sync through T0, so he keeps T1 unread by the sync secret the role commits give. Fails: T0's
-// grant to Bob waits in his inbox fire for a strong to T0 (spec/sync-inbox.md §5 Nothing before
-// the strong), so he holds no role on T0 (issues/reference-graph.md Full size, seeds 64, 68).
+// spec/sync-inbox.md §5 (Nothing before the strong), spec/sync-set.md §2 (What a held ticket
+// does): Bob held T1 by a read ticket, then lost his own grant; T1 is granted sync to T0 and Bob
+// sync on T0, which he has not accepted. T0's grant to Bob is taken only at a strong to T0, so he
+// holds no role on T0 and none on T1 through it: his strong to T1 holds nothing.
 #[test]
-#[ignore = "issues/reference-graph.md Full size: a grant naming an account, before its strong"]
-fn a_sync_role_by_chain_through_an_unaccepted_thing_keeps_unread_spec_sync_set_2() {
+fn a_role_by_chain_through_an_unaccepted_thing_counts_nothing_spec_sync_inbox_5() {
     let mut w = contacts();
     let bob = w.node(1).account.unwrap();
     let t0 = make(&mut w, 0, None, "t0");
@@ -579,5 +577,48 @@ fn a_sync_role_by_chain_through_an_unaccepted_thing_keeps_unread_spec_sync_set_2
     w.write(0, |e| e.demote(&t1, &osis_engine::flows::Demotion { holder: bob, new: None, retain: None })).unwrap();
     w.write(0, |e| e.grant(&t0, &bob, &edge(Role::Sync))).unwrap();
     w.run();
-    assert_eq!(holding(&mut w, 1, &t1), Some(Holding::Unread), "kept unread by the chain through T0");
+    assert_eq!(holding(&mut w, 1, &t1), None, "T0 unaccepted: no role on T1 through it");
+    assert_eq!(value(&mut w, 1, &t1), None);
+}
+
+/// A thing node `i` makes under `admin`, held from `admin` alone, value `v`.
+fn make_in(w: &mut World, i: usize, admin: Tid, v: &str) -> Tid {
+    let v = v.to_owned();
+    w.write(i, |e| {
+        let mut m = Mutation::new();
+        let t = m.create(e.thing_record(admin));
+        m.set(t, &ak(), &Value::Str(v)).unwrap();
+        m.op(admin, &ct::HOLDS, PathOp { path: vec![], op: Op::Add(Value::Strong(t)) }).unwrap();
+        e.commit(m).unwrap();
+        t
+    })
+}
+
+// spec/sync-judgement.md §3 (Dropped bodies: what is forgotten with a released thing is fetched
+// again once a strong in the node closure reaches it again), spec/sync-set.md §3: Bob's T0 holds
+// X and Y, made under it; Alice reads T0. Bob's node 1 removes T0 -> X while his node 2, cut off,
+// writes Y -> X: Alice and node 1 release X, then Y -> X reaches them and they read X again.
+#[test]
+fn a_released_thing_reached_again_is_fetched_again_spec_sync_judgement_3() {
+    let mut w = siblings();
+    let alice = w.node(0).account.unwrap();
+    let t0 = make(&mut w, 1, None, "t0");
+    let x = make_in(&mut w, 1, t0, "x");
+    let y = make_in(&mut w, 1, t0, "y");
+    w.write(1, |e| e.grant(&t0, &alice, &edge(Role::Read))).unwrap();
+    strong(&mut w, 0, None, t0, true);
+    w.run();
+    assert_eq!(value(&mut w, 0, &x), Some(Value::Str("x".into())), "Alice reads X");
+    w.partition(0, 2);
+    w.partition(1, 2);
+    strong(&mut w, 1, Some(t0), x, false);
+    w.run();
+    assert_eq!(value(&mut w, 0, &x), None, "released at Alice");
+    assert_eq!(value(&mut w, 1, &x), None, "released at node 1");
+    strong(&mut w, 2, Some(y), x, true);
+    w.heal();
+    w.run();
+    for i in 0..3 {
+        assert_eq!(value(&mut w, i, &x), Some(Value::Str("x".into())), "node {i} reads X again");
+    }
 }

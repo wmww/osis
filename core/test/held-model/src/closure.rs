@@ -83,11 +83,20 @@ impl World {
     /// transitively: a chain of actors gives the lowest role along it, and the best chain counts.
     /// `g` is admin of itself.
     pub fn roles_from(&self, g: T) -> BTreeMap<T, Role> {
+        self.roles_with(g, None)
+    }
+    /// `roles_from` for a holder that takes a grant naming it only at a strong to its thing
+    /// (an account: spec/sync-inbox.md §5 Nothing before the strong): its own grants count on
+    /// the things in `reached` alone, and nothing counts through the others.
+    pub fn roles_from_reached(&self, g: T, reached: &Set) -> BTreeMap<T, Role> {
+        self.roles_with(g, Some(reached))
+    }
+    fn roles_with(&self, g: T, reached: Option<&Set>) -> BTreeMap<T, Role> {
         let mut best = BTreeMap::from([(g, Role::Admin)]);
         loop {
             let mut changed = false;
             for (&(a, b), &r) in &self.grants {
-                if self.keyless.contains(&(a, b)) {
+                if self.keyless.contains(&(a, b)) || (a == g && reached.is_some_and(|x| !x.contains(&b))) {
                     continue;
                 }
                 if let Some(&ra) = best.get(&a) {
