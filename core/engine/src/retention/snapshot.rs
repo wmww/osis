@@ -742,15 +742,16 @@ fn holds_valueless(tx: &mut Tx<'_>, s: &CommitId, sai: usize, own: &[Owned], tid
 /// through a cover: a session write of such a node, or a commit-form write, whose commit is not
 /// held here (forgotten under a cover, or never received: a snapshot carried it here; a
 /// commit-form write's author is unknown without its header, so any such write counts). What a
-/// removal's frontier can no longer name by ID (spec/permissions.md §5.1, Own cover). Read only
-/// where a cover can stand for a commit: a forgotten one noted, or a snapshot held.
-pub(crate) fn carried_only(tx: &mut Tx<'_>, tid: &Tid, ak: &Ak, of: &dyn Fn(&Tid) -> bool) -> Result<bool> {
+/// removal's frontier can no longer name by ID (spec/permissions.md §5.1, §5.5 Own cover). Only
+/// writes stamped from `since` on (or whose stamp the state does not carry). Read only where a
+/// cover can stand for a commit: a forgotten one noted, or a snapshot held.
+pub(crate) fn carried_only(tx: &mut Tx<'_>, tid: &Tid, ak: &Ak, of: &dyn Fn(&Tid) -> bool, since: Option<Ts>) -> Result<bool> {
     let k = (*tid, ak.clone());
     if !tx.core.ix.forgotten.contains_key(&k) && tx.core.ix.snapshots.get(&k).is_none_or(|v| v.is_empty()) {
         return Ok(false);
     }
     let live = tx.state(tid, ak)?.map(|st| st.live_writes()).unwrap_or_default();
-    Ok(live.iter().any(|(d, ts)| match d.src.kind() {
+    Ok(live.iter().filter(|(_, ts)| since.is_none_or(|s| ts.is_none_or(|ts| ts >= s))).any(|(d, ts)| match d.src.kind() {
         // a session write's own commit is the held one of its stamp (spec/crdt.md §2.1)
         osis_crdt::SourceKind::Session(s) => of(&s.node) && ts.is_none_or(|ts| held_by_stamp(tx.core, tid, ak, ts, &osis_crdt::fact_source(&d.src)).is_empty()),
         osis_crdt::SourceKind::Commit(c) => !tx.core.ix.commits.contains_key(c),

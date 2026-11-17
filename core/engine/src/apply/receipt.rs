@@ -89,7 +89,7 @@ impl Engine {
         self.run(|tx| {
             let mut named = BTreeSet::new();
             for ((t, ak), nodes) in &by_aspect {
-                if !crate::retention::snapshot::carried_only(tx, t, ak, &|x| nodes.contains(x))? {
+                if !crate::retention::snapshot::carried_only(tx, t, ak, &|x| nodes.contains(x), None)? {
                     continue;
                 }
                 if crate::retention::snapshot::may_snapshot(tx, t, ak, false, tx.core.hlc.peek())? == crate::engine::write::MayWrite::Yes

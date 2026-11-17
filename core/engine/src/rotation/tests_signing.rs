@@ -2587,3 +2587,116 @@ fn a_thing_rekeyed_on_the_thiefs_side_is_read_after_a_switch_back_spec_crypto_4(
     assert_eq!(read(&mut lp, h, t), Some(Value::Str("switched back".into())));
     assert_eq!(lp.peers[h].engine.get(&t, &y).unwrap(), Some(Value::Str("on the thief's side".into())), "node 0 reads node 1's write on the side it left");
 }
+
+/// The commit IDs rotation `r`'s thing lists name, as `peer` serves them.
+fn listed(lp: &mut LocalPeer, peer: usize, r: &CommitId) -> Vec<CommitId> {
+    let b = lp.peers[peer].engine.list_blob(r, None).unwrap().unwrap_or_default();
+    if b.is_empty() {
+        return Vec::new();
+    }
+    osis_commit::thing_list::decode_list_blob(&b).unwrap().iter().flat_map(|c| match &c.list.ids {
+        osis_commit::thing_list::ListIds::Inline(v) => v.clone(),
+        _ => Vec::new(),
+    }).collect()
+}
+
+/// The own covers among `ids` (spec/wire.md §4 field 17), as `peer` holds them.
+fn own_covers(lp: &LocalPeer, peer: usize, ids: &[CommitId]) -> Vec<CommitId> {
+    ids.iter().copied().filter(|c| lp.peers[peer].engine.header(c).is_some_and(|h| h.own_cover)).collect()
+}
+
+// spec/permissions.md §5.5 (Own cover): node 2's write reaches node 0 and the outsider writer
+// (peer 3) only; peer 3 snapshots it and node 0 forgets it under that snapshot. Node 1, never
+// holding the snapshot, demotes peer 3, so the snapshot falls; node 0 then removes node 2. The
+// removal cannot list the forgotten write: its lists name node 0's own cover of the aspect,
+// carrying it from node 0's state, so the write shows at a reader outside the account (peer 4)
+// and at node 1. A later rotation writes no own cover for the epochs closed already.
+#[test]
+fn a_rotation_names_its_own_cover_of_what_it_forgot_spec_permissions_5_5() {
+    let (mut lp, a, t) = world(5, 3);
+    let (o3, o4) = (lp.peers[3].engine.me(), lp.peers[4].engine.me());
+    lp.peers[0].engine.grant(&t, &o4, &edge(Role::Read)).unwrap();
+    lp.hold_at(4, t);
+    lp.sync_all().unwrap();
+    lp.advance(1000);
+    let w = write(&mut lp, 2, t, "removed's");
+    send(&mut lp, 2, 0, &[w]);
+    send(&mut lp, 2, 3, &[w]);
+    let s = lp.peers[3].engine.snapshot(&t, &x()).unwrap().unwrap();
+    send(&mut lp, 3, 0, &[s]);
+    let e = &mut lp.peers[0].engine;
+    assert_eq!(e.covered(&s, &w, &t, &x()).unwrap(), Some(true));
+    e.drop_body(&w, &t, &x()).unwrap();
+    assert!(e.forgettable(&w).unwrap());
+    e.forget_commits(&[w]).unwrap();
+    // node 1 demotes the snapshot's writer, never having held it; node 0 has not heard yet
+    let d = lp.peers[1].engine.demote(&t, &Demotion { holder: o3, new: None, retain: None }).unwrap().commits;
+    let r = remove(&mut lp, 0, a.root, 2).commits[0];
+    let names = listed(&mut lp, 0, &r);
+    let own = own_covers(&lp, 0, &names);
+    assert_eq!(own.len(), 1, "the removal names node 0's own cover: {names:?}");
+    assert!(!names.contains(&w), "not the forgotten write");
+    assert_eq!(lp.peers[0].engine.header(&own[0]).unwrap().epoch, Some(setup_head(&lp, &a)), "signed at the epoch the removal closes");
+    send(&mut lp, 1, 0, &d);
+    for _ in 0..2 {
+        lp.sync_all().unwrap();
+    }
+    assert!(!lp.peers[4].engine.core.ix.commits.get(&s).is_some_and(|m| m.valid_at(0)), "peer 3's snapshot fell");
+    for p in [1, 4] {
+        assert_eq!(read(&mut lp, p, t), Some(Value::Str("removed's".into())), "peer {p}: the own cover carries the write");
+    }
+    let r2 = lp.peers[0].engine.rotate_account(&a.account).unwrap().unwrap();
+    let names = listed(&mut lp, 0, &r2);
+    assert!(own_covers(&lp, 0, &names).is_empty(), "a later rotation writes none: {names:?}");
+    lp.peers[4].engine.check_index();
+}
+
+// spec/requirements.md Cost, spec/wire.md §4 (`epoch`, the sealed inner signature): signing as
+// an account grows a one-field commit over the same commit by a key actor by the inner
+// signature and the epoch's ID with their heads, nothing else (131 B: more than the 100 B
+// issues/account-signing.md aimed at, which the inner signature's 95 B alone nearly fills)
+#[test]
+fn an_accounts_one_field_commit_grows_by_its_signing_fields_only_spec_wire_4() {
+    let mut lp = LocalPeer::new_bare(2, 0, WallMs(1_700_000_000_000)).unwrap();
+    lp.peers[0].engine.create_account().unwrap();
+    let size = |lp: &mut LocalPeer, k: usize| {
+        let me = if k == 0 { lp.peers[k].engine.me() } else { lp.peers[k].engine.tid() };
+        let mut m = crate::Mutation::new();
+        let t = lp.peers[k].engine.new_thing(&mut m, me);
+        lp.peers[k].commit(m).unwrap();
+        let c = write(lp, k, t, "v");
+        lp.peers[k].engine.package(&c).unwrap().unwrap().bytes.len()
+    };
+    let (account, key) = (size(&mut lp, 0), size(&mut lp, 1));
+    assert!(account > key && account <= key + osis_crypto::INNER_LEN + 32 + 8, "account {account} B, key actor {key} B");
+}
+
+// spec/requirements.md Cost (removing a node costs each thing it edited in proportion to its
+// edits there since the last removal), spec/permissions.md §5.5 (thing lists): a removal's
+// lists cost per thing edited its list tree path (`LIST_TREE_DEPTH` sibling hashes with their
+// heads, 1,088 B), its other fields and an ID per commit, nothing more: the same per thing at k
+// and 10k things (1.3 KiB for one edit and the thing's creation), 34 B per edit more
+#[test]
+fn a_removals_lists_cost_a_path_per_thing_and_an_id_per_edit_spec_permissions_5_5() {
+    let bytes = |things: usize, edits: usize| {
+        let (mut lp, a, _) = world(3, 3);
+        let me = lp.peers[0].engine.me();
+        for _ in 0..things {
+            let mut m = crate::Mutation::new();
+            let t = lp.peers[0].engine.new_thing(&mut m, me);
+            lp.peers[0].commit(m).unwrap();
+            for i in 0..edits {
+                write(&mut lp, 0, t, &format!("{i}"));
+            }
+        }
+        lp.sync_all().unwrap();
+        let r = remove(&mut lp, 0, a.root, 2).commits[0];
+        lp.peers[0].engine.list_blob(&r, None).unwrap().map_or(0, |b| b.len())
+    };
+    let (k, one, more) = (bytes(2, 1), bytes(20, 1), bytes(20, 4));
+    let per = (one - k) / 18;
+    // a sibling hash and its head; the thing, salt, rotation, index and their keys
+    let path = osis_base::format::LIST_TREE_DEPTH as usize * 34;
+    assert!(per >= path + 2 * 34 && per <= path + 2 * 34 + 160, "per thing: {per} B ({k} B at 2 things, {one} B at 20)");
+    assert_eq!((more - one) / 20 / 3, 34, "an ID per edit: {one} {more}");
+}

@@ -344,7 +344,7 @@ fn perm_epochs(w: &World, v: usize, t: u32) -> Judged<usize> {
         let ids_of = |v: &[u32]| -> BTreeSet<u32> { v.iter().map(|x| cid(*x)).collect() };
         let commit = AccountCommit { id: cid(i.id), epoch: eid(w, &i.epoch), things: [i.kind.thing()].into(), role: !i.kind.plain() };
         match &i.kind {
-            Kind::Content { .. } => commits.push(commit),
+            Kind::Content { .. } | Kind::Cover { p: true, .. } => commits.push(commit),
             Kind::Listing { thing, names } => {
                 listings.push(Listing { listing: commit.clone(), thing: *thing, commits: ids_of(names) });
                 commits.push(commit);

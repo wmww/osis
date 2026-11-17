@@ -24,13 +24,23 @@
 //!   tick come before the receiver's own acts that tick and after nothing else (`dt`).
 //! - **Honest policy.** A plain rotation's maker lists, per thing under a sync ID it opens, the
 //!   commits at the epochs it closes it holds and names (role-class commits first, plain ones in
-//!   receipt order up to the bound; plain ones past it go into its later listings; role-class ones
+//!   receipt order up to the bound; plain ones past it its later listings name by the cutoff; role-class ones
 //!   alone past it refuse the rotation, which the chain world cannot undo: such a world's
 //!   liveness is not checked). A node of P on its roster holding its preferred head's seed writes,
 //!   per thing it reads, a listing at that head naming the commits at closed epochs it names that
 //!   no held word names. A writer of a thing outside P answers each counting rotation with an
 //!   addendum naming P's plain commits there at the epochs it closes it names that no held list or
 //!   listing names. X writes at any epoch whose seed it holds and lists its own writes.
+//! - **Covers** (half the worlds): outside writers and X snapshot a thing (P's honest nodes too in
+//!   half of those); a cover carries every write showing at its writer. A node forgets another's
+//!   write a standing cover it holds carries (another's own cover aside), as if never received
+//!   (spec/commits.md §5 Forgetting); once no such cover carries it, it comes again from a holder,
+//!   received anew. An outside writer's covers fall at a random tick or never (its demotion on
+//!   the thing by an admin whose frontier names none: the role layer's, abstracted).
+//! - **Own cover** (spec/permissions.md §5.5): before its plain rotation an honest rotator
+//!   snapshots, signed at the epoch the rotation is signed at and marked as its own cover, each
+//!   thing where a write stamped since that epoch opened shows only through a cover; the
+//!   rotation's list names it.
 //!
 //! Parties: custody's (A, B, C, X, T of P; R1 and R2 outside, each maybe a writer of one thing).
 //! Things sit in one or both of two sync IDs; every node opens one or both and receives what is
@@ -49,6 +59,11 @@
 //!   writer's cutoff names at its final reading.
 //! - Monotone, at every final reading: dropping an honest list, listing or addendum never makes
 //!   more count.
+//! - Own cover, there, where the rotation counts and its rotator ends on the honest side: every
+//!   write but X's after its removal that showed at the rotator as it rotated only through a cover
+//!   (stamped since the epoch it rotates opened) shows.
+//! Safety and liveness read "shows": counts, saved by an addendum, or carried by a standing cover
+//! (one carrying X's write after its removal only by a limit: `allowed`).
 //!
 //! Negative controls (`Control`), each expected to fail.
 
@@ -67,6 +82,8 @@ pub enum Control {
     NoCutoff,
     /// Listers name only their own commits.
     OwnOnly,
+    /// A rotator writes no own cover for what it forgot.
+    NoOwnCover,
     /// A commit at an epoch that does not count never counts, named or not.
     VoidUncounted,
 }
@@ -81,17 +98,28 @@ pub enum Kind {
     List { rot: u32, thing: Thing, names: Vec<u32> },
     /// An outside writer's addendum on `thing` against custody plain rotation `against`.
     Addendum { against: u32, thing: Thing, names: Vec<u32> },
+    /// A compaction snapshot of `thing` carrying the writes `carries` (what showed at its
+    /// writer). `p`: a commit of P (signed at its item's epoch), else an outside writer's, which
+    /// stands until the writer's demotion (`World::fall`). `own`: its writer's own cover at a
+    /// rotation (only its writer forgets under it). `legit`: the writes of X after its removal
+    /// it carries by the unaware-reader limit, or that counted at its writer at an open epoch (an
+    /// unaware sibling's head boxed to X, until a merge closes it): bookkeeping for safety.
+    Cover { thing: Thing, carries: Vec<u32>, p: bool, own: bool, legit: Vec<u32> },
 }
 
 impl Kind {
     pub fn thing(&self) -> Thing {
         match self {
-            Kind::Content { thing, .. } | Kind::Listing { thing, .. } | Kind::List { thing, .. } | Kind::Addendum { thing, .. } => *thing,
+            Kind::Content { thing, .. } | Kind::Listing { thing, .. } | Kind::List { thing, .. } | Kind::Addendum { thing, .. } | Kind::Cover { thing, .. } => *thing,
         }
     }
     /// A commit of P, signed at its item's epoch.
     pub fn is_commit(&self) -> bool {
-        matches!(self, Kind::Content { .. } | Kind::Listing { .. })
+        matches!(self, Kind::Content { .. } | Kind::Listing { .. } | Kind::Cover { p: true, .. })
+    }
+    /// A role-class commit: listed whatever the bound (a refused rotation past it).
+    pub fn special(&self) -> bool {
+        matches!(self, Kind::Content { plain: false, .. } | Kind::Listing { .. })
     }
     pub fn plain(&self) -> bool {
         matches!(self, Kind::Content { plain: true, .. })
@@ -128,8 +156,25 @@ pub struct World {
     pub control: Control,
     /// An honest rotation's role-class commits alone passed the bound.
     pub refused: bool,
-    /// (rotator, commit): plain content its rotation left out past the bound.
+    /// (rotator, commit): plain content its rotation left out past the bound (its later listings
+    /// name it by the cutoff, as anything else: after a switch the cutoff may not).
     pub overflow: Vec<(usize, u32)>,
+    /// Nodes forget what a standing cover carries (spec/commits.md §5 Forgetting) and rotators
+    /// write own covers; `snapshots`: outside writers and X write snapshots at random, and P's
+    /// honest nodes too where `p_snapshots`.
+    pub covers: bool,
+    pub snapshots: bool,
+    pub p_snapshots: bool,
+    /// Per outside writer, the tick from which its covers count for nothing (its demotion on
+    /// the thing, by an admin whose frontier lists none: the role layer's, abstracted).
+    pub fall: [u32; N],
+    /// (rotation, rotator, write): a write that showed at the rotator as it rotated only through
+    /// a cover, stamped since the epoch it rotates opened (spec/permissions.md §5.5 Own cover).
+    pub obliged: Vec<(u32, usize, u32)>,
+    /// (node, write): forgotten there and not received again.
+    pub forgot: BTreeSet<(usize, u32)>,
+    /// (node, write, its receipt then, the tick it was forgotten): receipts forgetting undid.
+    pub undone: Vec<(usize, u32, u32, u32)>,
     /// Per node, per plain rotation and merge epoch held with its chain, the tick it came to be.
     since: Vec<BTreeMap<Line, u32>>,
 }
@@ -165,7 +210,13 @@ impl World {
     /// tick.
     fn dt(&self, v: usize, id: u32) -> u32 {
         let i = self.item(id);
-        2 * i.recv[v] + u32::from(i.author == v)
+        i.recv[v].saturating_mul(2).saturating_add(u32::from(i.author == v))
+    }
+    /// `dt` of the receipt `v` held at tick `at` (one forgetting undid later included).
+    fn dt_at(&self, v: usize, id: u32, at: u32) -> u32 {
+        let i = self.item(id);
+        let r = if i.recv[v] <= at { i.recv[v] } else { self.undone.iter().find(|u| u.0 == v && u.1 == id && u.2 <= at && at < u.3).map_or(NEVER, |u| u.2) };
+        r.saturating_mul(2).saturating_add(u32::from(i.author == v))
     }
     /// When `v` came to hold epoch `e` with its chain, in half ticks (`dt`): own when a rotation
     /// or certificate of `v`'s made then completed it.
@@ -261,6 +312,90 @@ pub fn judge(w: &World, j: &cu::View, held: &[bool]) -> Verdict {
     Verdict { named, pending, counts, saved }
 }
 
+/// Whether cover `k`, held, stands at a node judging `vd` at `t`: a commit of P while it counts,
+/// an outside writer's until its writer's demotion.
+fn stands(w: &World, vd: &Verdict, t: u32, k: u32) -> bool {
+    match &w.item(k).kind {
+        Kind::Cover { p: true, .. } => vd.counts[k as usize - 1],
+        Kind::Cover { p: false, .. } => t < w.fall[w.item(k).author],
+        _ => false,
+    }
+}
+
+/// The covers standing at a node (`held`, `vd`) at `t` that carry write `c`.
+fn covers_of<'a>(w: &'a World, held: &'a [bool], vd: &'a Verdict, t: u32, c: u32) -> impl Iterator<Item = &'a Item> + 'a {
+    w.items.iter().filter(move |k| held[k.id as usize - 1] && matches!(&k.kind, Kind::Cover { carries, .. } if carries.contains(&c)) && stands(w, vd, t, k.id))
+}
+
+/// Per item, whether it shows at a node (`held`, `vd`) at `t`: it counts or an addendum saves it,
+/// or (a write) a standing cover carries it.
+pub fn shows(w: &World, held: &[bool], vd: &Verdict, t: u32) -> Vec<bool> {
+    w.items.iter().map(|i| vd.saved[i.id as usize - 1] || matches!(i.kind, Kind::Content { .. }) && covers_of(w, held, vd, t, i.id).next().is_some()).collect()
+}
+
+/// An honest word names X's write `c` (or a listing of X's naming it) that its writer wrote off
+/// the honest side or after receiving what it names before it held the removal with its chain
+/// (the unaware-reader limit).
+fn word_limit(w: &World, c: u32) -> bool {
+    let removal = w.c.line(w.c.removal);
+    let carriers: Vec<u32> = std::iter::once(c).chain(w.items.iter().filter(|l| l.author == X && matches!(&l.kind, Kind::Listing { names, .. } if names.contains(&c))).map(|l| l.id)).collect();
+    w.items.iter().filter(|d| d.author != X).any(|d| {
+        let names = match &d.kind {
+            Kind::Listing { names, .. } | Kind::List { names, .. } | Kind::Addendum { names, .. } => names,
+            Kind::Content { .. } | Kind::Cover { .. } => return false,
+        };
+        let p = d.author;
+        carriers.iter().any(|k| names.contains(k) && (!w.view(p, d.t).honest_side(&w.c, p) || w.dt_at(p, *k, d.t) < w.held_dt(p, &removal)))
+    })
+}
+
+/// Whether X's write `c` after its removal, showing at a node (chain `j`, `held`, `vd`) at `t`,
+/// shows by a limit: a word by the unaware-reader limit (`word_limit`), its epoch an open head
+/// (an unaware sibling's boxed to X, until a merge closes it), or a cover carrying it so (`legit`;
+/// an X cover counting so itself).
+fn allowed(w: &World, j: &cu::View, held: &[bool], vd: &Verdict, t: u32, c: u32) -> bool {
+    let open = |k: u32| j.heads.contains(&w.item(k).epoch) && vd.counts[k as usize - 1];
+    vd.saved[c as usize - 1] && (word_limit(w, c) || open(c)) || covers_of(w, held, vd, t, c).any(|k| matches!(&k.kind, Kind::Cover { legit, .. } if legit.contains(&c)) || k.author == X && (word_limit(w, k.id) || open(k.id)))
+}
+
+/// `n`'s snapshot of `thing` at `t` signed at `epoch` (`p`: as P): it carries every write showing
+/// there; of X's after its removal, those it carries by the unaware-reader limit go in `legit`.
+fn cover(w: &mut World, n: usize, thing: Thing, epoch: Line, t: u32, p: bool, own: bool) -> u32 {
+    let removal = w.c.line(w.c.removal);
+    let j = w.view(n, t).clone();
+    let held = w.held(n, t);
+    let vd = judge(w, &j, &held);
+    let sh = shows(w, &held, &vd, t);
+    let carries: Vec<u32> = w.items.iter().filter(|i| matches!(i.kind, Kind::Content { .. }) && i.kind.thing() == thing && sh[i.id as usize - 1]).map(|i| i.id).collect();
+    let legit = carries.iter().copied().filter(|c| {
+        n != X && w.hostile(*c) && (!j.honest_side(&w.c, n) || held[*c as usize - 1] && w.dt(n, *c) < w.held_dt(n, &removal) || allowed(w, &j, &held, &vd, t, *c))
+    }).collect();
+    w.add(Kind::Cover { thing, carries, p, own, legit }, n, epoch, t)
+}
+
+/// Forgetting at `t` (spec/commits.md §5): each node drops a write of another a standing cover it
+/// holds carries (another's own cover aside), as if never received; a forgotten write no such
+/// cover carries any more comes again from a node holding it, received anew.
+fn forget(w: &mut World, t: u32) {
+    let helds: Vec<Vec<bool>> = (0..N).map(|v| w.held(v, t)).collect();
+    for v in (0..N).filter(|v| *v != Z) {
+        let held = &helds[v];
+        let vd = judge(w, w.view(v, t), held);
+        let covered = |c: u32| covers_of(w, held, &vd, t, c).any(|k| !matches!(k.kind, Kind::Cover { own: true, .. }) || k.author == v);
+        let drop: Vec<u32> = w.items.iter().filter(|i| held[i.id as usize - 1] && matches!(i.kind, Kind::Content { .. }) && i.author != v && covered(i.id)).map(|i| i.id).collect();
+        let back: Vec<u32> = w.forgot.iter().filter(|(m, c)| *m == v && w.item(*c).recv[v] == NEVER && !covered(*c) && (0..N).any(|o| o != v && helds[o][*c as usize - 1])).map(|x| x.1).collect();
+        for c in drop {
+            w.undone.push((v, c, w.items[c as usize - 1].recv[v], t));
+            w.items[c as usize - 1].recv[v] = NEVER;
+            w.forgot.insert((v, c));
+        }
+        for c in back {
+            w.items[c as usize - 1].recv[v] = t + 1;
+            w.forgot.remove(&(v, c));
+        }
+    }
+}
+
 /// Whether lister `n` (its chain `j`) names commit `c` by the cutoff (under `control`'s policy).
 fn nameable(w: &World, n: usize, j: &cu::View, c: u32, control: Control, depth: u32) -> bool {
     let i = w.item(c);
@@ -289,13 +424,37 @@ fn owed(w: &World, n: usize, t: u32, thing: Thing) -> Vec<u32> {
     let v = judge(w, j, &held);
     w.items.iter().filter(|i| held[i.id as usize - 1] && i.kind.is_commit() && i.kind.thing() == thing).filter(|i| {
         let e = &i.epoch;
-        let over = w.overflow.contains(&(n, i.id));
-        ep.held(e) && !ep.open(e) && !ep.closers(e).is_empty() && !v.named.contains(&(i.id, thing)) && !v.saved[i.id as usize - 1] && (over || nameable(w, n, j, i.id, w.control, 0))
+        ep.held(e) && !ep.open(e) && !ep.closers(e).is_empty() && !v.named.contains(&(i.id, thing)) && !v.saved[i.id as usize - 1] && nameable(w, n, j, i.id, w.control, 0)
     }).map(|i| i.id).collect()
 }
 
 /// `n`'s thing lists for its plain rotation `r`, made at `t`.
 fn lists(w: &mut World, n: usize, r: u32, t: u32) -> Vec<u32> {
+    // own cover (spec/permissions.md §5.5): per thing where a write stamped since the epoch the
+    // rotation is signed at opened shows only through a cover, a snapshot signed there, named
+    let mut own = vec![];
+    if w.covers && !w.c.hostile(r) {
+        let at = match &w.c.item(r).kind {
+            cu::Kind::Plain { at, .. } => at.clone(),
+            _ => Line::new(),
+        };
+        let opened = at.iter().map(|q| w.c.item(*q).t).max().unwrap_or(0);
+        let (j, held) = (w.view(n, t).clone(), w.held(n, t));
+        let vd = judge(w, &j, &held);
+        let sh = shows(w, &held, &vd, t);
+        let read: Vec<Thing> = (0..w.things.len()).filter(|th| w.reads(n, *th)).collect();
+        for thing in read {
+            let only: Vec<u32> = w.items.iter().filter(|i| matches!(i.kind, Kind::Content { .. }) && i.kind.thing() == thing && !held[i.id as usize - 1] && sh[i.id as usize - 1] && i.t >= opened).map(|i| i.id).collect();
+            if only.is_empty() {
+                continue;
+            }
+            let owed: Vec<(u32, usize, u32)> = only.iter().filter(|c| !w.hostile(**c)).map(|c| (r, n, *c)).collect();
+            w.obliged.extend(owed);
+            if w.control != Control::NoOwnCover {
+                own.push(cover(w, n, thing, at.clone(), t, true, true));
+            }
+        }
+    }
     let j = w.view(n, t).clone();
     let held = w.held(n, t);
     let (mut out, mut over, mut refused) = (vec![], vec![], false);
@@ -308,8 +467,8 @@ fn lists(w: &mut World, n: usize, r: u32, t: u32) -> Vec<u32> {
                 cands.iter().filter(|i| i.author == X).map(|i| i.id).collect()
             } else {
                 let mut ns: Vec<&Item> = cands.into_iter().filter(|i| nameable(w, n, &j, i.id, w.control, 0)).collect();
-                ns.sort_by_key(|i| (i.kind.plain(), i.recv[n], i.id));
-                let special = ns.iter().filter(|i| !i.kind.plain()).count();
+                ns.sort_by_key(|i| (!i.kind.special(), i.recv[n], i.id));
+                let special = ns.iter().filter(|i| i.kind.special()).count();
                 let room = match w.bound {
                     Some(b) if special > b => {
                         refused = true;
@@ -328,7 +487,8 @@ fn lists(w: &mut World, n: usize, r: u32, t: u32) -> Vec<u32> {
     }
     w.refused |= refused;
     w.overflow.extend(over);
-    out.into_iter().map(|(thing, names)| w.add(Kind::List { rot: r, thing, names }, n, Line::new(), t)).collect()
+    own.extend(out.into_iter().map(|(thing, names)| w.add(Kind::List { rot: r, thing, names }, n, Line::new(), t)));
+    own
 }
 
 /// What `n` writes at tick `t` (lists of the plain rotations it made then first).
@@ -358,6 +518,9 @@ fn act(w: &mut World, rng: &mut Rng, n: usize, t: u32) -> Vec<u32> {
             }
         }
         made.extend(out.into_iter().map(|(against, names)| w.add(Kind::Addendum { against, thing, names }, n, Line::new(), t)));
+        if w.snapshots && t < SETTLE && rng.below(3) == 0 {
+            made.push(cover(w, n, thing, Line::new(), t, false, false));
+        }
         return made;
     }
     if things.is_empty() {
@@ -374,7 +537,10 @@ fn act(w: &mut World, rng: &mut Rng, n: usize, t: u32) -> Vec<u32> {
         let c = w.add(Kind::Content { thing, plain: rng.below(3) != 0 }, X, e.clone(), t);
         made.push(c);
         if rng.below(2) == 0 {
-            made.push(w.add(Kind::Listing { thing, names: vec![c] }, X, e, t));
+            made.push(w.add(Kind::Listing { thing, names: vec![c] }, X, e.clone(), t));
+        }
+        if w.snapshots && rng.below(2) == 0 {
+            made.push(cover(w, X, thing, e, t, true, false));
         }
         return made;
     }
@@ -385,6 +551,10 @@ fn act(w: &mut World, rng: &mut Rng, n: usize, t: u32) -> Vec<u32> {
     if n != T && t < SETTLE && rng.below(4) == 0 {
         let thing = things[rng.below(things.len())];
         made.push(w.add(Kind::Content { thing, plain: rng.below(3) != 0 }, n, h.clone(), t));
+    }
+    if w.p_snapshots && n != T && t < SETTLE && rng.below(10) == 0 {
+        let thing = things[rng.below(things.len())];
+        made.push(cover(w, n, thing, h.clone(), t, true, false));
     }
     for thing in things {
         let names = owed(w, n, t, thing);
@@ -416,7 +586,7 @@ fn deliver(w: &mut World, rng: &mut Rng, ids: &[u32], t: u32) {
 }
 
 /// Layer 2 over chain world `c` (settled by `custody::settle`, its last tick `end`).
-pub fn build(mut c: cu::World, end: u32, rng: &mut Rng, control: Control) -> World {
+pub fn build(mut c: cu::World, end: u32, rng: &mut Rng, control: Control, covers: bool) -> World {
     // merges held in one tick place after its plain rotations, among themselves by epoch (a
     // differential's IDs: `MERGE_TIE` past the place among the world's merge epochs)
     let merges: BTreeSet<Line> = c.items.iter().filter(|i| matches!(i.kind, cu::Kind::Cert { .. }) && !c.seedy(i.id)).map(|i| c.mints(i.id)).collect();
@@ -456,7 +626,16 @@ pub fn build(mut c: cu::World, end: u32, rng: &mut Rng, control: Control) -> Wor
         }
     }
     let bound = [None, None, Some(2), Some(3)][rng.below(4)];
-    let mut w = World { c, end, views, items: vec![], things, opens, writer, bound, control, refused: false, overflow: vec![], since };
+    let mut fall = [NEVER; N];
+    let p_snapshots = covers && rng.below(2) == 0;
+    if covers {
+        for r in [R1, R2] {
+            if rng.below(2) == 0 {
+                fall[r] = 1 + rng.below(SETTLE as usize) as u32;
+            }
+        }
+    }
+    let mut w = World { c, end, views, items: vec![], things, opens, writer, bound, control, refused: false, overflow: vec![], covers, snapshots: covers, p_snapshots, fall, obliged: vec![], forgot: BTreeSet::new(), undone: vec![], since };
     for t in 0..fin(&w) {
         if t == SETTLE {
             for i in w.items.iter_mut() {
@@ -473,6 +652,9 @@ pub fn build(mut c: cu::World, end: u32, rng: &mut Rng, control: Control) -> Wor
                 }
             }
         }
+        if w.covers {
+            forget(&mut w, t);
+        }
         for n in [A, B, C, T, X, R1, R2] {
             let made = act(&mut w, rng, n, t);
             deliver(&mut w, rng, &made, t);
@@ -484,7 +666,8 @@ pub fn build(mut c: cu::World, end: u32, rng: &mut Rng, control: Control) -> Wor
 pub fn random_world(rng: &mut Rng, control: Control) -> World {
     let mut c = cu::random_world(rng, cu::Control::None);
     let end = cu::settle(&mut c);
-    build(c, end, rng, control)
+    let covers = rng.below(2) == 0;
+    build(c, end, rng, control, covers)
 }
 
 #[derive(Default, Debug)]
@@ -502,6 +685,14 @@ pub struct Stats {
     pub vouched: u64,
     /// Liveness checks of commits whose own writer's word does not stand there.
     pub by_others: u64,
+    /// Worlds with covers; (node, write) forgotten at the final reading; own covers written;
+    /// final readings where a write a rotator held only through a cover shows (the own-cover
+    /// checks); where only an own cover carries it.
+    pub covered: u64,
+    pub forgotten: u64,
+    pub own_covers: u64,
+    pub obliged: u64,
+    pub by_own_cover: u64,
 }
 
 impl crate::Tally for Stats {
@@ -519,6 +710,11 @@ impl crate::Tally for Stats {
         self.named += o.named;
         self.vouched += o.vouched;
         self.by_others += o.by_others;
+        self.covered += o.covered;
+        self.forgotten += o.forgotten;
+        self.own_covers += o.own_covers;
+        self.obliged += o.obliged;
+        self.by_own_cover += o.by_own_cover;
     }
 }
 
@@ -529,14 +725,17 @@ impl Stats {
             println!("  {k}: {n}");
         }
         println!("  refused {}, unaware-reader limit {}, named at a revoked epoch {}, vouched {}, liveness by others' words {}", self.refused, self.unaware, self.named, self.vouched, self.by_others);
+        println!("  with covers {}: forgotten {}, own covers {}, own-cover checks {} (shown by an own cover alone {})", self.covered, self.forgotten, self.own_covers, self.obliged, self.by_own_cover);
     }
 }
 
 pub fn check(w: &World, st: &mut Stats) {
     st.worlds += 1;
     st.refused += u64::from(w.refused);
+    st.covered += u64::from(w.covers);
+    st.forgotten += w.forgot.len() as u64;
+    st.own_covers += w.items.iter().filter(|i| matches!(i.kind, Kind::Cover { own: true, .. })).count() as u64;
     let f = fin(w);
-    let removal = w.c.line(w.c.removal);
     let mut fails: Vec<String> = vec![];
     // the honest words, for monotone
     let honest_words: Vec<u32> = w.items.iter().filter(|i| !w.hostile(i.id) && (matches!(i.kind, Kind::List { .. } | Kind::Addendum { .. }) || matches!(i.kind, Kind::Listing { .. }) && i.author != X)).map(|i| i.id).collect();
@@ -545,6 +744,7 @@ pub fn check(w: &World, st: &mut Stats) {
         let j = w.view(v, f);
         let held = w.held(v, f);
         let vd = judge(w, j, &held);
+        let sh = shows(w, &held, &vd, f);
         for d in &honest_words {
             let mut h = held.clone();
             h[*d as usize - 1] = false;
@@ -564,28 +764,16 @@ pub fn check(w: &World, st: &mut Stats) {
         if !honest_final(v) {
             continue;
         }
-        for i in w.items.iter().filter(|i| matches!(i.kind, Kind::Content { .. }) && held[i.id as usize - 1]) {
+        for i in w.items.iter().filter(|i| matches!(i.kind, Kind::Content { .. }) && (held[i.id as usize - 1] || w.forgot.contains(&(v, i.id)))) {
             let (k, thing) = (i.id as usize - 1, i.kind.thing());
             if w.hostile(i.id) {
-                if !vd.saved[k] {
+                if !sh[k] {
                     continue;
                 }
-                // a listing of X's naming it counts as it
-                let carriers: Vec<u32> = std::iter::once(i.id).chain(w.items.iter().filter(|l| l.author == X && matches!(&l.kind, Kind::Listing { names, .. } if names.contains(&i.id))).map(|l| l.id)).collect();
-                // an honest word naming it, written off the honest side or by a party that received
-                // what it names before it held the removal with its chain
-                let limit = w.items.iter().filter(|d| d.author != X).any(|d| {
-                    let names = match &d.kind {
-                        Kind::Listing { names, .. } | Kind::List { names, .. } | Kind::Addendum { names, .. } => names,
-                        Kind::Content { .. } => return false,
-                    };
-                    let p = d.author;
-                    carriers.iter().any(|k| names.contains(k) && (!w.view(p, d.t).honest_side(&w.c, p) || w.dt(p, *k) < w.held_dt(p, &removal)))
-                });
-                if limit {
+                if allowed(w, j, &held, &vd, f, i.id) {
                     st.unaware += 1;
                 } else {
-                    fails.push(format!("safety: node {} counts X's write #{} after its removal", cu::NAMES[v], i.id));
+                    fails.push(format!("safety: node {} shows X's write #{} after its removal", cu::NAMES[v], i.id));
                 }
                 continue;
             }
@@ -597,8 +785,21 @@ pub fn check(w: &World, st: &mut Stats) {
             };
             let others = !own && [A, B, C, T, R1, R2].iter().any(|p| by(*p));
             st.by_others += u64::from(others);
-            if (own || others) && !vd.saved[k] && !w.refused {
+            if (own || others) && !sh[k] && !w.refused {
                 fails.push(format!("liveness: node {} without {}'s write #{}{}", cu::NAMES[v], cu::NAMES[i.author], i.id, if own { "" } else { " (named by another's cutoff)" }));
+            }
+        }
+        // what a counting rotation's rotator showed only through a cover shows (its own cover)
+        for (r, n, c) in &w.obliged {
+            if w.refused || !honest_final(*n) || !w.reads(v, w.item(*c).kind.thing()) || !j.followed.contains(r) {
+                continue;
+            }
+            st.obliged += 1;
+            let k = *c as usize - 1;
+            if !sh[k] {
+                fails.push(format!("own cover: node {} without #{} that {}'s rotation #{r} showed only through a cover", cu::NAMES[v], c, cu::NAMES[*n]));
+            } else if !vd.saved[k] && covers_of(w, &held, &vd, f, *c).all(|x| matches!(x.kind, Kind::Cover { own: true, .. })) {
+                st.by_own_cover += 1;
             }
         }
     }
@@ -666,7 +867,7 @@ mod tests {
 
     /// A hand-built world over `c`: one thing in sync ID 0, every node opening it, R1 its writer.
     fn hand(c: cu::World, end: u32, control: Control) -> World {
-        let mut w = build(c, end, &mut Rng(0), control);
+        let mut w = build(c, end, &mut Rng(0), control, false);
         w.items.clear();
         w.overflow.clear();
         w.things = vec![vec![0]];
@@ -689,6 +890,9 @@ mod tests {
     fn play(w: &mut World, from: u32) {
         let mut rng = Rng(0);
         for t in from..fin(w) {
+            if w.covers {
+                forget(w, t);
+            }
             for n in [A, B, C, T, R1, R2] {
                 let made = act(w, &mut rng, n, t);
                 for id in made {
@@ -762,6 +966,41 @@ mod tests {
     /// B rotates plainly at the first epoch before A's removal reaches it and writes a role-class
     /// commit at its epoch; A merges the two heads: the write counts everywhere once settled, B's
     /// epoch closed and revoked by the removal beside it, by B's listing at the merge.
+    /// X's write before its removal reaches A and R1 (the thing's writer) only, R1 snapshots it
+    /// and both forget it under that snapshot; R1 is demoted as A's removal reaches the others
+    /// (R1 then fetches the write again, too late to name it).
+    /// A's removal cannot list the write: its own cover carries it, named by the removal, so it
+    /// shows at every node on the honest side. With no own cover (`NoOwnCover`) it is lost.
+    fn forgotten(control: Control) -> (World, u32) {
+        let (c, end) = removal_world();
+        let mut w = hand(c, end, control);
+        (w.covers, w.fall[R1]) = (true, 2);
+        let id = write(&mut w, X, 0, &[(A, 0), (R1, 0)]);
+        let k = cover(&mut w, R1, 0, Line::new(), 0, false, false);
+        w.items[k as usize - 1].recv = std::array::from_fn(|m| if m == Z { NEVER } else { 0 });
+        play(&mut w, 0);
+        (w, id)
+    }
+
+    #[test]
+    fn a_write_the_remover_forgot_shows_by_its_own_cover() {
+        let (w, id) = forgotten(Control::None);
+        assert!(w.forgot.contains(&(A, id)) && w.undone.iter().any(|u| u.0 == R1 && u.1 == id), "{:?}", w.forgot);
+        for v in [B, C, T, R2] {
+            let (j, held) = (w.view(v, fin(&w)), w.held(v, fin(&w)));
+            let vd = judge(&w, j, &held);
+            assert!(!held[id as usize - 1] && shows(&w, &held, &vd, fin(&w))[id as usize - 1], "{}", cu::NAMES[v]);
+        }
+        let mut st = Stats::default();
+        check(&w, &mut st);
+        assert_eq!(st.failures, 0, "{:?}", st.fail.first().map(|f| &f.0));
+        assert!(st.by_own_cover > 0);
+        let (w, _) = forgotten(Control::NoOwnCover);
+        let mut st = Stats::default();
+        check(&w, &mut st);
+        assert!(st.kinds.contains_key("own cover"), "no own cover: the write is lost: {:?}", st.kinds);
+    }
+
     #[test]
     fn a_siblings_write_at_its_epoch_counts_once_listed_after_the_merge() {
         let (mut c, _) = removal_world();
@@ -804,11 +1043,11 @@ mod tests {
     }
 
     /// 20 random worlds reaching commits named and vouched for at revoked epochs, the
-    /// unaware-reader limit and writes saved by others' words.
+    /// unaware-reader limit, writes saved by others' words and own covers.
     #[test]
     fn random_worlds_hold() {
-        let st = run_random(20, 1, Control::None);
-        assert!(st.named > 0 && st.vouched > 0 && st.unaware > 0 && st.by_others > 0, "{st:?}");
+        let st = run_random(20, 5, Control::None);
+        assert!(st.named > 0 && st.vouched > 0 && st.unaware > 0 && st.by_others > 0 && st.own_covers > 0 && st.obliged > 0, "{st:?}");
         assert_holds(&st, "random");
     }
 

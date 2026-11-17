@@ -99,7 +99,9 @@ pub(crate) fn rotate_with(tx: &mut Tx<'_>, p: Tid, also: &[CommitId], members: &
             supersedes.push(r);
         }
     }
-    let (root, lists) = thing_lists(tx, &p, &v, &supersedes, also)?;
+    let own = own_covers(tx, &p, &supersedes)?;
+    let also: Vec<CommitId> = also.iter().copied().chain(own).collect();
+    let (root, lists) = thing_lists(tx, &p, &v, &supersedes, &also)?;
     let seed = Secret32::random(&mut *tx.rng);
     let keys = AccountEpochKeys::from_seed(&seed);
     let signing = keys.signing.verifying_key();
@@ -211,6 +213,35 @@ fn commit_rotation(tx: &mut Tx<'_>, p: Tid, d: Tid, keys: &AccountEpochKeys, ros
     let c = Engine::commit_tx(tx, m)?;
     crate::rotation::record(tx, d, &d_rot)?;
     Ok(c)
+}
+
+/// The rotator's own covers before a plain rotation of `p` closing `closes` (spec/permissions.md
+/// §5.5 Own cover): a list names only what its writer holds, so for each aspect where a live
+/// write of `p` stamped since the oldest of `closes` opened stands here only through a cover
+/// (forgotten under one, or never received), this node writes, signed at its open epoch, a
+/// snapshot of the aspect from its whole state marked as its own cover; the rotation's lists
+/// name them as its own commits. An aspect it may not snapshot gets none. Only aspects where a
+/// cover stamped since then is held, or a commit stamped since then was forgotten, are read, so
+/// a later rotation writes none for epochs closed already.
+fn own_covers(tx: &mut Tx<'_>, p: &Tid, closes: &[CommitId]) -> Result<Vec<CommitId>> {
+    use crate::retention::snapshot as sn;
+    // the first epoch opened before anything; `None` sorts first
+    let since = closes.iter().map(|e| if *e == osis_commit::FIRST_EPOCH { None } else { tx.core.ix.commits.get(e).map(|m| m.view.ts) }).min().flatten();
+    let recent = |ts: &osis_base::Ts| since.is_none_or(|s| *ts >= s);
+    let mut aspects: BTreeSet<(Tid, osis_base::Ak)> = tx.core.ix.forgotten.iter().filter(|(_, ts)| recent(ts)).map(|(k, _)| k.clone()).collect();
+    aspects.extend(tx.core.ix.snapshots.iter().filter(|(_, ss)| ss.iter().any(|s| recent(&s.0))).map(|(k, _)| k.clone()));
+    let mut out = Vec::new();
+    for (t, ak) in aspects {
+        if !sn::compacted(&ak) || ak.ephemeral() || !sn::carried_only(tx, &t, &ak, &|x| x == p, since)? {
+            continue;
+        }
+        if sn::may_snapshot(tx, &t, &ak, false, tx.core.hlc.peek())? == crate::engine::write::MayWrite::Yes
+            && let Some(s) = sn::write_own_cover(tx, &t, &ak)?
+        {
+            out.push(s);
+        }
+    }
+    Ok(out)
 }
 
 /// A plain rotation's thing lists (spec/permissions.md §5.5): per thing, the commits of `p` at
