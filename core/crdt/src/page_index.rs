@@ -1,5 +1,5 @@
 //! Which leaf pages of a streamed part hold a fragment's positions (`PageIndex`), so a read of
-//! the part at those positions (`Fragment::part_at`) fetches only them (`stream_checked_some`).
+//! the part at those positions (`Fragment::positions_at`) fetches only them (`stream_checked_some`).
 //!
 //! A paged collection's leaves ascend by element (spec/crdt.md §8): a dot for a sequence, set,
 //! bag or map (a map's records by dot, a dot's records possibly straddling pages), a field ID for
@@ -7,7 +7,7 @@
 //! from below; a sequence's runs bound it from above too, by the furthest dot any run up to the
 //! leaf reaches (a run may cover dots another source's record sorts between, so a leaf's next
 //! does not bound it). So the elements found once, one or two per leaf, name the leaves holding
-//! any position. Where `part_at` takes a collection whole (below a map entry, an enum, a kind
+//! any position. Where `positions_at` takes a collection whole (below a map entry, an enum, a kind
 //! the two do not share) every leaf is named.
 
 use crate::fragment::{Encoding, Fragment};
@@ -66,7 +66,7 @@ impl Wanted {
     }
 }
 
-/// What `part_at` takes of the collection at a path.
+/// What `positions_at` takes of the collection at a path.
 enum Reach<'f> {
     None,
     All,
@@ -103,7 +103,7 @@ impl PageIndex {
         self.paths.iter().map(|(p, l)| size_of::<Leaves>() + p.len() * size_of::<Step>() + l.leaves.len() * size_of::<Leaf>()).sum()
     }
 
-    /// The leaves holding what `part_at(body)` takes of the part.
+    /// The leaves holding what `positions_at(body)` takes of the part.
     pub fn wanted(&self, body: &Fragment) -> Wanted {
         let mut out = BTreeMap::new();
         for (path, l) in &self.paths {
@@ -118,7 +118,7 @@ impl PageIndex {
 }
 
 impl Leaves {
-    /// The leaves holding the records `part_at(b)` takes here; `None`: every leaf.
+    /// The leaves holding the records `positions_at(b)` takes here; `None`: every leaf.
     fn holding(&self, b: &Fragment) -> Option<BTreeSet<PageAt>> {
         if self.empty {
             return None;
@@ -154,8 +154,8 @@ impl Leaves {
     }
 }
 
-/// What `part_at(body)` takes of the collection at `path` (`Fragment::part_at`): narrowed through
-/// struct fields; a map's records of a dot the body holds whole; anything else whole.
+/// What `positions_at(body)` takes of the collection at `path`: narrowed through struct fields;
+/// a map's records of a dot the body holds whole; anything else whole.
 fn reach<'f>(body: &'f Fragment, path: &[Step]) -> Reach<'f> {
     let mut f = body;
     for s in path {

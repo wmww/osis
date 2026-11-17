@@ -2254,7 +2254,7 @@ fn each_held_page(tx: &mut Tx<'_>, id: &CommitId, ai: usize, want: Option<osis_c
     Ok(Some(atomic::stream_stored(tx, &h, id, ai, checked(&p.delta), &dedup, want, f)?))
 }
 
-/// The held part of commit `id` on aspect `ai` at `at`'s positions (`Fragment::part_at`), with
+/// The held part of commit `id` on aspect `ai` at `at`'s positions (`Fragment::positions_at`), with
 /// what `each_held_piece` returns: its skeleton and the pages holding them (`PageIndex`, found
 /// by the first read of the part and kept per write of its record, `Core::decoded`), so a read
 /// costs the root and `at`'s pages, flat in the part's size.
@@ -2276,7 +2276,7 @@ pub(crate) fn held_part_at(tx: &mut Tx<'_>, id: &CommitId, ai: usize, at: &osis_
             Decoded::Snapshot(x) => Some((x.frontiers.clone(), x.absorbed.iter().map(|(c, t)| (*c, *t)).collect(), x.facts.clone())),
             Decoded::Delta(_) => None,
         };
-        return Ok((d.fragment().part_at(at), Some(gives)));
+        return Ok((d.fragment().positions_at(at), Some(gives)));
     }
     let wanted = kept.as_ref().map(|k| k.wanted(at));
     let want = wanted.as_ref().map(|w| move |path: &[osis_crdt::Step], x: osis_crdt::PageAt| w.wants(path, x));
@@ -2286,7 +2286,7 @@ pub(crate) fn held_part_at(tx: &mut Tx<'_>, id: &CommitId, ai: usize, at: &osis_
         if let Some(x) = &mut index {
             x.add(&p);
         }
-        part.join(atomic::piece_fragment(p).part_at(at));
+        part.join(atomic::piece_fragment(p).positions_at(at));
         Ok(())
     })?;
     if let (Some(p), Some(x), Some(_)) = (&stored, index, &gives) {

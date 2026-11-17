@@ -194,6 +194,8 @@ impl Timeline {
         }
         self.memo.forward_walks.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         let x = Arc::new(self.cert_index().reach(&self.input.records, [*n], true));
+        // counted: tests read how much a chain walk reaches
+        osis_base::costs::count("perm: chain reach walked", x.len() as u64);
         if let Ok(mut m) = self.memo.forward.lock() {
             m.insert(*n, x.clone());
         }

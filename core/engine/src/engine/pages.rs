@@ -25,8 +25,6 @@ use std::ops::Range as Span;
 /// its whole state. Above the store's inline limit (a quarter of its 8 KiB page), so a page
 /// write leaves its neighbours' leaf alone.
 const PAGE_BYTES: usize = 3 * 1024;
-/// A collection with fewer elements is not paged (issues/few-large-elements-written-whole.md).
-pub(crate) const MIN_PAGED: usize = 64;
 /// The aspect table holding its state pages.
 const STATE_TABLE: u8 = 0;
 /// The aspect table holding the index of its paged maps (by key) and sets (by value).
@@ -70,12 +68,15 @@ struct PageSet {
     /// A change of the sequence may be under way (`ensure_touch`, until `write_touched`): the
     /// stored placement may no longer be the records' (`place_whole` leaves it).
     pending: bool,
+    /// Its placement is missing or damaged, to be laid out anew by the next transaction that
+    /// writes the state, at its end (`unplaced`, `rebuild_placement`): a read never writes.
+    relay: bool,
 }
 
 impl PageSet {
     /// A set with no page loaded and its placement not read.
     fn new(id: u32, salt: [u8; 32], path: KeyedPath, enc: Encoding) -> PageSet {
-        PageSet { id, salt, path, enc, loaded: BTreeMap::new(), whole: false, place: Place::Unread, groups: Vec::new(), pending: false }
+        PageSet { id, salt, path, enc, loaded: BTreeMap::new(), whole: false, place: Place::Unread, groups: Vec::new(), pending: false, relay: false }
     }
     fn prefix(&self) -> Vec<u8> {
         self.id.to_be_bytes().to_vec()
@@ -604,9 +605,11 @@ fn walk(txn: &mut Transaction<'_>, tid: &Tid, ak: &Ak, t: Table, idx: &mut State
 // part (`ensure_touch` loads what a dry run of it misses first), an op by index resolves through
 // it (`attach_ops`, `absorb`), a read by index reads its blocks (`seq_range`); `write_touched`
 // writes what the join changed (`SeqPlace::diff`). A join or write it cannot follow (a reset, a
-// strip, a rebuild fallback, a miss) removes the top (`invalidate_placement`); a read by index
-// finding none lays it out anew from the whole sequence (`Ranged::Damaged`,
-// `rebuild_placement`). So it is exact whenever present. Rebuildable: the unit tag names its
+// strip, a rebuild fallback, a miss) removes the top (`invalidate_placement`), and the
+// transaction laying it out anew at its end from the whole sequence (`unplaced`,
+// `rebuild_placement`); a read by index finding none or a damaged one reads the sequence whole
+// (`Ranged::Damaged`) and leaves the layout to the next transaction writing the state. So it is
+// exact whenever present, and a read never writes. Rebuildable: the unit tag names its
 // rules.
 
 /// Blocks per group row of the block list.
@@ -1016,9 +1019,10 @@ fn write_placement(txn: &mut Transaction<'_>, tid: &Tid, ak: &Ak, set: &mut Page
 }
 
 /// Invalidates the stored placement of the paged sequence `set` (a write changed it in a way
-/// not followed): removes its top; the next read by index finds none and lays it out anew
-/// (`Ranged::Damaged`, `rebuild_placement`). The other rows stay until then.
+/// not followed): removes its top; the writing transaction lays it out anew at its end
+/// (`unplaced`, `rebuild_placement`). The other rows stay until then.
 fn invalidate_placement(txn: &mut Transaction<'_>, tid: &Tid, ak: &Ak, set: &mut PageSet, shred: Shred) -> Result<()> {
+    set.relay = true;
     if matches!(set.place, Place::Missing) {
         return Ok(());
     }
@@ -1055,7 +1059,9 @@ fn place_whole(txn: &mut Transaction<'_>, tid: &Tid, ak: &Ak, set: &mut PageSet,
     };
     if !ok || !p.complete() {
         attach(f, set, None);
-        return invalidate_placement(txn, tid, ak, set, Shred::No);
+        set.place = Place::Missing;
+        set.relay = true;
+        return Ok(());
     }
     if let Some(s) = f.at_steps(&at) {
         s.fill_chars(&mut p);
@@ -1157,8 +1163,9 @@ pub enum Ranged {
     Read(Vec<Step>, Vec<Dot>, usize),
     /// The path does not lead to one paged sequence (read as usual).
     Unpaged,
-    /// The sequence's placement is missing or damaged: read whole, then `rebuild_placement`.
-    Damaged(Vec<Step>),
+    /// The sequence's placement is missing or damaged: read whole (the next transaction writing
+    /// the state lays it out anew, `PageSet::relay`).
+    Damaged,
 }
 
 /// The visible elements `r` (by index, clamped) of the paged sequence at `path` (op path
@@ -1169,12 +1176,11 @@ pub fn seq_range(txn: &mut Transaction<'_>, tid: &Tid, ak: &Ak, idx: &mut StateP
     let at = walk(txn, tid, ak, t, idx, f, path)?;
     let [p] = at.as_slice() else { return Ok(Ranged::Unpaged) };
     let Some(set) = idx.sets.get_mut(p).filter(|s| is_seq(s)) else { return Ok(Ranged::Unpaged) };
-    let damaged = || Ok(Ranged::Damaged(p.clone()));
-    let Some(pl) = held(txn, tid, ak, set)? else { return damaged() };
+    let Some(pl) = held(txn, tid, ak, set)? else { return Ok(Ranged::Damaged) };
     let total = pl.shown();
     match load_range(txn, tid, ak, t, set, f, pl, r)? {
         Some(dots) => Ok(Ranged::Read(p.clone(), dots, total)),
-        None => damaged(),
+        None => Ok(Ranged::Damaged),
     }
 }
 
@@ -1197,6 +1203,7 @@ fn load_range(txn: &mut Transaction<'_>, tid: &Tid, ak: &Ak, t: Table, set: &mut
         }
         if !fill_place(txn, pt, set, &mut pl, &m.blocks, &m.chunks)? {
             set.place = Place::Missing;
+            set.relay = true;
             return Ok(None);
         }
     }
@@ -1231,10 +1238,31 @@ fn step_index(txn: &mut Transaction<'_>, tid: &Tid, ak: &Ak, t: Table, set: &mut
     Ok(true)
 }
 
-/// Lays the placement of the paged sequence at `p` out anew (its pages loaded whole).
-pub fn rebuild_placement(txn: &mut Transaction<'_>, tid: &Tid, ak: &Ak, idx: &mut StatePages, f: &Fragment, p: &[Step]) -> Result<()> {
-    let (Some(set), Some(c)) = (idx.sets.get_mut(p), f.at_steps(p)) else { return Ok(()) };
-    write_placement(txn, tid, ak, set, c, Shred::No)
+/// Notes the placement of the paged sequence at `p` damaged: missing, laid out anew by the next
+/// transaction writing the state.
+pub fn damaged(idx: &mut StatePages, p: &[Step]) {
+    if let Some(set) = idx.sets.get_mut(p) {
+        set.place = Place::Missing;
+        set.relay = true;
+    }
+}
+
+/// The paged sequences whose placement is to be laid out anew (`PageSet::relay`).
+pub fn unplaced(idx: &StatePages) -> Vec<Vec<Step>> {
+    idx.sets.iter().filter(|(_, s)| s.relay).map(|(p, _)| p.clone()).collect()
+}
+
+/// Lays the placement of the paged sequence at `p` out anew, its pages loaded whole (none for a
+/// sequence no longer in the state: a removed entry's).
+pub fn rebuild_placement(txn: &mut Transaction<'_>, tid: &Tid, ak: &Ak, idx: &mut StatePages, f: &mut Fragment, p: &[Step]) -> Result<()> {
+    let t = table(txn, tid, ak)?;
+    let Some(set) = idx.sets.get_mut(p) else { return Ok(()) };
+    ensure_set(txn, tid, ak, t, set, f)?;
+    set.relay = false;
+    match f.at_steps(p) {
+        Some(c @ Fragment::Seq(_)) => write_placement(txn, tid, ak, set, c, Shred::No),
+        _ => Ok(()),
+    }
 }
 
 // ---- writing
@@ -1244,8 +1272,9 @@ fn page(c: &Fragment, nested: &Paths, r: &Range) -> Result<Fragment> {
     Ok(c.elem_range(r.0.as_ref(), r.1.as_ref(), false).ok_or(Error::Corrupt("state page"))?.reduced(nested))
 }
 
-fn big(c: &Fragment) -> bool {
-    c.elem_count().is_some_and(|n| n >= MIN_PAGED)
+/// A collection that splits: two elements or more (one alone is a page whatever its size).
+fn splits(c: &Fragment) -> bool {
+    c.elem_count().is_some_and(|n| n >= 2)
 }
 
 /// Whether `f` (encoding to `len` bytes, about) holds a collection to page (`paged_paths`).
@@ -1253,16 +1282,28 @@ fn holds_large(f: &Fragment, len: usize) -> Result<bool> {
     Ok(len > PAGE_BYTES && !paged_paths(f)?.is_empty())
 }
 
-/// The collections of a state to page: every collection of at least `MIN_PAGED` elements
-/// encoding to more than `PAGE_BYTES`, at any depth below struct fields, enum payloads and map
-/// entries (inside a paged collection's elements too).
+/// The collections of a state to page: every collection of two elements or more whose own
+/// bytes, with the collections paged below it taken out, encode to more than `PAGE_BYTES`, at
+/// any depth below struct fields, enum payloads and map entries (inside a paged collection's
+/// elements too). By bytes alone, so a few large elements page as many small ones do, and a
+/// collection holding one paged collection and little else stays in the skeleton.
 fn paged_paths(f: &Fragment) -> Result<Vec<Vec<Step>>> {
+    let mut paged = Paths::default();
     let mut out = Vec::new();
-    for (p, c) in f.collections() {
-        if big(c) && encode(c)?.len() > PAGE_BYTES {
+    // deepest first (`collections` is in pre-order): what pages below a collection is known
+    // before its own bytes are counted
+    for (p, c) in f.collections().into_iter().rev() {
+        if !splits(c) {
+            continue;
+        }
+        let below = Paths { here: false, next: paged.below(&p).map(|x| x.next.clone()).unwrap_or_default() };
+        let own = if below.is_empty() { encode(c)?.len() } else { encode(&c.reduced(&below))?.len() };
+        if own > PAGE_BYTES {
+            paged.insert(&p);
             out.push(p);
         }
     }
+    out.reverse();
     Ok(out)
 }
 
@@ -2227,7 +2268,7 @@ mod tests {
                         idx = i.unwrap();
                     }
                     // a write the stored placement cannot follow (`write_touched`): invalidated,
-                    // the next read by index lays it out anew (`Ranged::Damaged`)
+                    // the writing transaction lays it out anew (`unplaced`)
                     1 => {
                         if let Some(set) = idx.sets.values_mut().find(|s| is_seq(s)) {
                             invalidate_placement(&mut txn, &tid, &ak, set, Shred::No).unwrap();
@@ -2326,8 +2367,9 @@ mod tests {
             if step % 6 == 5 {
                 assert!(encode(&whole(&mut txn, &unit)).unwrap() == encode(&st).unwrap(), "step {step}");
             }
-            // the stored placement, when present, is a whole pass's; when invalidated, a read
-            // lays it out anew from the whole sequence (in the one session, as the engine does)
+            // the stored placement, when present, is a whole pass's; when invalidated, it is laid
+            // out anew from the whole sequence (in the one session, as the engine's transaction
+            // end does)
             let want = vis_whole(&st);
             let read_all = |txn: &mut Transaction<'_>, unit: &[u8]| {
                 let (mut f, mut idx) = open(unit, &SALT).unwrap();
@@ -2340,11 +2382,12 @@ mod tests {
                 kept_placement += 1;
             }
             let mut got = read_all(&mut txn, &unit);
-            if let Ranged::Damaged(p) = &got {
+            if let Ranged::Damaged = &got {
+                let p = &[Step::Field(1)];
                 rebuilt += 1;
                 let (mut f, mut idx) = session.take().unwrap();
                 ensure_path(&mut txn, &tid, &ak, &mut idx, &mut f, &field()).unwrap();
-                rebuild_placement(&mut txn, &tid, &ak, &mut idx, &f, p).unwrap();
+                rebuild_placement(&mut txn, &tid, &ak, &mut idx, &mut f, p).unwrap();
                 session = Some((f, idx));
                 got = read_all(&mut txn, &unit);
             }
@@ -2735,10 +2778,7 @@ mod tests {
             let (mut f, mut idx) = open(unit, &SALT).unwrap();
             match seq_range(txn, &tid, &ak, &mut idx, &mut f, &field, 100..200).unwrap() {
                 Ranged::Read(_, dots, _) => Some(dots),
-                Ranged::Damaged(p) => {
-                    assert_eq!(p, vec![Step::Field(1)]);
-                    None
-                }
+                Ranged::Damaged => None,
                 Ranged::Unpaged => panic!("paged"),
             }
         };
@@ -2763,7 +2803,7 @@ mod tests {
             }
             assert_eq!(read(&mut txn, &unit), None, "damage {damage}");
             ensure_path(&mut txn, &tid, &ak, &mut idx, &mut f, &field).unwrap();
-            rebuild_placement(&mut txn, &tid, &ak, &mut idx, &f, &p).unwrap();
+            rebuild_placement(&mut txn, &tid, &ak, &mut idx, &mut f, &p).unwrap();
             assert_eq!(read(&mut txn, &unit).as_deref(), Some(&want[100..200]), "damage {damage}");
         }
     }
@@ -2790,9 +2830,10 @@ mod tests {
             let (mut f, mut idx) = open(unit, &SALT).unwrap();
             match seq_range(txn, &tid, &ak, &mut idx, &mut f, &field(), 0..usize::MAX).unwrap() {
                 Ranged::Read(_, dots, _) => dots,
-                Ranged::Damaged(p) => {
+                Ranged::Damaged => {
+                    let p = vec![Step::Field(1)];
                     load_all(txn, &tid, &ak, &mut idx, &mut f).unwrap();
-                    rebuild_placement(txn, &tid, &ak, &mut idx, &f, &p).unwrap();
+                    rebuild_placement(txn, &tid, &ak, &mut idx, &mut f, &p).unwrap();
                     let (mut f, mut idx) = open(unit, &SALT).unwrap();
                     let Ranged::Read(_, dots, _) = seq_range(txn, &tid, &ak, &mut idx, &mut f, &field(), 0..usize::MAX).unwrap() else { panic!("laid out anew") };
                     dots

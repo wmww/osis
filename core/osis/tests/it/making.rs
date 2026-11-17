@@ -60,7 +60,10 @@ fn grown(small: &BTreeMap<&'static str, u64>, big: &BTreeMap<&'static str, u64>)
 // thing in the account root's sync unit moves its own unit membership alone (no memo over the
 // whole unit: bodies, facts, own commits and judgements re-read only what it names) and no other
 // thing's certificates: every counted kind flat from 80 to 400 such things (the root's `holds.0`
-// paged at both: a set pages from about 75 strongs, and below that it loads no page).
+// paged at both: a set pages from about 3 KB). Among them: a role is read back from its thing
+// (`perm: roles walked`), the new leaf moves its component's whole-timeline reads once
+// (`timelines: components moved`), and what reaches its first admin gains it without a walk
+// (`perm: chain reach walked`).
 #[test]
 fn making_a_plain_thing_costs_what_it_changed_spec_sync_set_2() {
     let (small, big) = (next(80, true), next(400, true));
@@ -75,4 +78,3 @@ fn making_a_thing_with_own_keys_costs_what_it_changed_spec_sync_set_2() {
     let (small, big) = (next(4, false), next(40, false));
     assert_eq!(grown(&small, &big), [], "work of the next thing with own keys grew with the things held");
 }
-

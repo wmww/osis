@@ -645,8 +645,8 @@ fn expired_things_return_storage_to_a_fresh_nodes_spec_commits_5() {
     let (mut wf, mut wa, mut wb) = (world(0, 1), world(0, 1), world(0, 1));
     let fresh = expiry_rounds(&mut wf, 0);
     let (a, b) = (expiry_rounds(&mut wa, 2), expiry_rounds(&mut wb, 20));
-    // Interim (issues/expired-elements-stay.md): each expired strong stays in D's holds.0
-    // snapshot as a value-less record, about two removals' tombstones of bytes
+    // each expired strong stays in D's holds.0 snapshot as its value-less record (notes/crdt.md,
+    // An expired set element keeps its record), about two removals' tombstones of bytes
     as_fresh(&a, &fresh, 2 * 2, "2 rounds", &mut |f| leaked(&mut wa, 0, &mut wf, 0, f));
     as_fresh(&b, &fresh, 2 * 20, "20 rounds", &mut |f| leaked(&mut wb, 0, &mut wf, 0, f));
 }

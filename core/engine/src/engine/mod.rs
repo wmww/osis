@@ -2953,6 +2953,22 @@ impl Tx<'_> {
         Ok(())
     }
 
+    /// Transaction end: the placement of each paged sequence of a state written here that a
+    /// write could not follow, or a read found missing or damaged, is laid out anew
+    /// (`pages::unplaced`): the writer pays for it, and a read never writes.
+    pub(crate) fn settle_placements(&mut self) -> Result<()> {
+        let mut seen = BTreeSet::new();
+        for k in self.core.written.clone() {
+            if !seen.insert(k.clone()) {
+                continue;
+            }
+            let Some(ps) = self.core.pages.get(&k).map(pages::unplaced).filter(|p| !p.is_empty()) else { continue };
+            let (tid, ak) = (&k.0, &k.1);
+            self.with_pages(tid, ak, |txn, idx, f| ps.iter().try_for_each(|p| pages::rebuild_placement(txn, tid, ak, idx, f, p)))?;
+        }
+        Ok(())
+    }
+
     /// Transaction end: each unpaged state written here is stored as a body equal to it, held
     /// whole and valid (`state::Stored::Body`): the one it names already, else the aspect's
     /// newest; else whole. One rule for every writer (joins, rebuilds, drops, purges); equality
@@ -3081,30 +3097,27 @@ impl Tx<'_> {
 
     /// The visible elements `r` (by index, clamped) of the sequence at `path` (op path segments):
     /// a paged one through its placement (`pages::seq_range`), loading only the pages holding
-    /// them; else, or where the placement is missing or damaged (then rebuilt), from the whole
-    /// sequence. `None` if absent or not a sequence.
+    /// them; else, or where the placement is missing or damaged (laid out anew by the next
+    /// transaction writing the state, `settle_placements`), from the whole sequence. `None` if
+    /// absent or not a sequence.
     pub fn read_range(&mut self, tid: &Tid, ak: &Ak, path: &[osis_crdt::PathSeg], r: std::ops::Range<usize>) -> Result<Option<osis_base::Value>> {
         self.load_lazy(tid, ak)?;
-        let k = (*tid, ak.clone());
-        let mut damaged = None;
-        if self.held_in_part(tid, ak) {
-            match self.with_pages(tid, ak, |txn, idx, f| pages::seq_range(txn, tid, ak, idx, f, path, r.clone()))? {
-                // an empty sequence reads whole (its presence)
-                Some(pages::Ranged::Read(p, dots, total)) if total > 0 => {
-                    match self.cached(tid, ak).and_then(|f| f.at_steps(&p)).and_then(|s| s.read_elems(&dots)) {
-                        Some(v) => return Ok(Some(v)),
-                        None => damaged = Some(p),
+        if self.held_in_part(tid, ak)
+            // an empty sequence reads whole (its presence)
+            && let Some(pages::Ranged::Read(p, dots, total)) = self.with_pages(tid, ak, |txn, idx, f| pages::seq_range(txn, tid, ak, idx, f, path, r.clone()))?
+            && total > 0
+        {
+            match self.cached(tid, ak).and_then(|f| f.at_steps(&p)).and_then(|s| s.read_elems(&dots)) {
+                Some(v) => return Ok(Some(v)),
+                // a placement naming what its pages lack
+                None => {
+                    if let Some(idx) = self.core.pages.get_mut(&(*tid, ak.clone())) {
+                        pages::damaged(idx, &p);
                     }
                 }
-                Some(pages::Ranged::Damaged(p)) => damaged = Some(p),
-                _ => {}
             }
         }
         self.ensure_paths(tid, ak, &[path.to_vec()])?;
-        if let Some(p) = damaged {
-            self.core.wrote(k);
-            self.with_pages(tid, ak, |txn, idx, f| pages::rebuild_placement(txn, tid, ak, idx, f, &p))?;
-        }
         Ok(self.cached(tid, ak).and_then(|f| f.at(path)).filter(Fragment::present).and_then(|s| s.read_elems(&s.visible_range(r)?)))
     }
 
@@ -4009,7 +4022,7 @@ impl Engine {
                 tx.core.wrote_on.clear();
                 // every state written above stored in its form (`Tx::settle_states`)
                 if r.is_ok() {
-                    r = r.and_then(|v| tx.settle_states().map(|_| v));
+                    r = r.and_then(|v| tx.settle_placements().and_then(|()| tx.settle_states()).map(|_| v));
                 }
                 if r.is_ok() {
                     r = r.and_then(|v| Core::commit_changes(&mut tx).map(|_| v));

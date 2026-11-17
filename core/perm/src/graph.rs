@@ -664,6 +664,8 @@ impl<'a> View<'a> {
             }
         }
         crate::walk::count_reached(best.len());
+        // counted: tests read how much a role walk reaches
+        osis_base::costs::count("perm: roles walked", best.len() as u64);
         (best, expires)
     }
 
@@ -734,6 +736,7 @@ impl<'a> View<'a> {
                 }
             }
         }
+        osis_base::costs::count("perm: roles walked", best.len() as u64);
         (best, expires)
     }
 

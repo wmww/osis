@@ -774,8 +774,9 @@ fn demotion_scope_covers_audits_large_spec_permissions_5_1() {
     sharded(64_000, 0x5eed_0302, scope_run);
 }
 
-/// §1: a role on the current edges is walked once per node, at any later ts, until an edge the
-/// walk followed ends (counted); then the answer follows the clock.
+/// §1: the roles on a thing on the current edges are walked once per thing, at any later ts and
+/// for every node asked, until an edge the walk followed ends (counted); then the answer follows
+/// the clock.
 #[test]
 fn roles_now_walk_once_until_an_edge_ends() {
     let mut w = World::new();
@@ -787,15 +788,19 @@ fn roles_now_walk_once_until_an_edge_ends() {
     w.set(k, p, x, edge(Write), 0, &all);
     w.set(k, t, y, edge_inv(Read, None, Some(50)), 1, &all);
     let tl = Timeline::evaluate(&w.held());
-    let start = tl.roles_walks();
+    let start = tl.on_walks();
     for at in [10, 20, 30, 40] {
         assert_eq!(tl.role(&x, &t, At::now(ts(at))), Some(Write));
         assert_eq!(tl.role(&y, &t, At::now(ts(at))), Some(Read));
     }
-    assert_eq!(tl.roles_walks() - start, 2, "a walk per node");
+    assert_eq!(tl.on_walks() - start, 1, "a walk per thing");
+    assert_eq!(tl.role(&x, &p, At::now(ts(60))), Some(Write));
+    assert_eq!(tl.on_walks() - start, 2, "another thing, another walk");
     assert_eq!(tl.role(&y, &t, At::now(ts(60))), None, "past the until");
     assert_eq!(tl.role(&x, &t, At::now(ts(60))), Some(Write));
-    assert_eq!(tl.roles_walks() - start, 3, "only the walk that followed the edge goes again");
+    assert_eq!(tl.on_walks() - start, 3, "the walk that followed the edge goes again, once");
+    assert_eq!(tl.role(&x, &p, At::now(ts(70))), Some(Write));
+    assert_eq!(tl.on_walks() - start, 3, "one that followed no ending edge stays");
     // an earlier ts is not answered from a later one
     assert_eq!(tl.role(&y, &t, At::now(ts(40))), Some(Read));
 }

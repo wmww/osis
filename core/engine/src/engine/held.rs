@@ -604,9 +604,10 @@ impl TlStamps {
 /// What a read of `Timelines` is stamped by.
 #[derive(Hash)]
 enum Read {
-    /// The timeline of a thing's component: moved by every update that evaluated or continued
-    /// it (`osis_perm::Timelines::changed`) or was given the thing.
-    Whole(Tid),
+    /// The timeline of a component, by ID: moved by every update that evaluated, continued or
+    /// took it apart (`osis_perm::Timelines::changed`). A thing in none is read as the set of
+    /// things.
+    Whole(u64),
     /// The history of the edges into a thing (its record edge included): moved by a change of
     /// one (`osis_perm::Changed::edges`) or of its record.
     Into(Tid),
@@ -641,6 +642,8 @@ impl std::ops::Deref for Timelines {
 pub struct On<'a> {
     tl: &'a osis_perm::Timeline,
     thing: Tid,
+    /// The ID of its component.
+    comp: u64,
     stamps: &'a TlStamps,
 }
 
@@ -648,7 +651,7 @@ impl<'a> On<'a> {
     /// The whole timeline, for what depends on more than the thing's edges (a write's
     /// authority): read whole (`Timelines::get`).
     pub fn whole(&self) -> &'a osis_perm::Timeline {
-        self.stamps.read(&Read::Whole(self.thing));
+        self.stamps.read(&Read::Whole(self.comp));
         self.tl
     }
     /// The edge writes held on it, applied or not (`Timeline::held_on`).
@@ -695,21 +698,25 @@ impl<'a> On<'a> {
 }
 
 impl Timelines {
-    /// The timeline of the component holding `thing`, read whole.
+    /// The timeline of the component holding `thing`, read whole (`None` read as the set of
+    /// things).
     pub fn get(&self, thing: &Tid) -> Option<&osis_perm::Timeline> {
-        self.stamps.read(&Read::Whole(*thing));
+        match self.of.component(thing) {
+            Some(i) => self.stamps.read(&Read::Whole(i)),
+            None => self.stamps.read(&Read::Things),
+        }
         self.of.get(thing)
     }
 
     /// `thing`'s edges, read alone (`On`). `None` without a timeline, read as the set of things:
     /// a thing gains one with no edge into it changing (a write naming it that sets nothing).
     pub fn on(&self, thing: &Tid) -> Option<On<'_>> {
-        let Some(tl) = self.of.get(thing) else {
+        let (Some(tl), Some(comp)) = (self.of.get(thing), self.of.component(thing)) else {
             self.stamps.read(&Read::Things);
             return None;
         };
         self.stamps.read(&Read::Into(*thing));
-        Some(On { tl, thing: *thing, stamps: &self.stamps })
+        Some(On { tl, thing: *thing, comp, stamps: &self.stamps })
     }
 
     /// Every node's effective role on `thing` at `at` over the edges not in `skip`, each named
@@ -803,9 +810,11 @@ impl Timelines {
     /// Stamps what an update given `touched` changed (`c`), from how many things had a timeline
     /// before it (`had`).
     fn moved(&mut self, touched: &BTreeSet<Tid>, c: &osis_perm::Changed, had: usize) {
-        for t in touched.iter().chain(self.of.changed()) {
-            self.stamps.wrote(&Read::Whole(*t), true);
+        for i in self.of.changed() {
+            self.stamps.wrote(&Read::Whole(*i), true);
         }
+        // counted: tests read how many whole timelines an update moves
+        osis_base::costs::count("timelines: components moved", self.of.changed().len() as u64);
         for t in touched {
             self.stamps.wrote(&Read::Held(*t), true);
         }

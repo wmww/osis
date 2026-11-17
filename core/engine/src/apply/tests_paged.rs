@@ -99,11 +99,11 @@ fn big_map(r: &mut Rng, g: u64) -> Value {
     Value::Map((0..n).map(|i| (Value::Int((i + off) as i64), fat(i, g))).collect())
 }
 
-/// Entries of the hand-written tests' paged collections: twice the fewest that page
-/// (`MIN_PAGED`), so an un-merge or delete of some keeps the rest paged. Cost follows the entry
-/// count, so each entry is fat: together they span `WIRE_PIECES` wire chunks of the mean size
-/// (`CHUNK_MIN` plus the content-defined cut's mean gap), several state pages too.
-const ENTRIES: u64 = 2 * crate::engine::pages::MIN_PAGED as u64;
+/// Entries of the hand-written tests' paged collections: enough that an un-merge or delete of
+/// some keeps the rest paged. Cost follows the entry count, so each entry is fat: together they
+/// span `WIRE_PIECES` wire chunks of the mean size (`CHUNK_MIN` plus the content-defined cut's
+/// mean gap), several state pages too.
+const ENTRIES: u64 = 128;
 const WIRE_PIECES: usize = 3;
 const ENTRY_BYTES: usize = WIRE_PIECES * (osis_base::format::CHUNK_MIN + (1 << osis_base::format::CHUNK_MASK_BITS)) / ENTRIES as usize;
 

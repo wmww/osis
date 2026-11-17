@@ -69,7 +69,7 @@ fn set_key(m: &mut Mutation, t: Tid, a: &Ak, path: Vec<PathSeg>, v: Value) {
     m.op(t, a, PathOp { path, op: Op::Set(v) }).unwrap();
 }
 
-/// A 200-byte string: n entries page from `MIN_PAGED` (64) on.
+/// A 200-byte string: n entries page from about 15 on (3 KB).
 fn long(i: usize) -> Value {
     s(&format!("{i:08}{}", "v".repeat(192)))
 }
@@ -998,10 +998,17 @@ fn long_aspect_writes_are_flat() {
 fn role_history_join(n: usize) -> [Work; 4] {
     let mut lp = net(2, 0);
     let t = new_thing(&mut lp, 0);
+    // a history `roles.0` pages at before the measured one, so n and 10n compare paged states
+    for i in 0..PAGED_HISTORY {
+        edge_write(&mut lp.peers[0].engine, t, Tid::from_bytes([i as u8 + 100; 15]), Some(edge(Role::Read)), None);
+    }
     let base: BTreeSet<_> = lp.packages(0).unwrap().iter().map(|p| p.id).collect();
     for i in 0..n {
-        let h = Tid::from_bytes([(i % 5) as u8 + 1; 15]);
-        let e = (i / 5 % 2 == 0).then(|| edge(Role::Read));
+        // a grant, then its removal: a holder's records (a map key's) stay few, so a write
+        // reads the key's few records, not the history (a paged map's join loads every record
+        // of the keys it touches)
+        let h = Tid::from_bytes([(i / 2) as u8 + 1; 15]);
+        let e = (i % 2 == 0).then(|| edge(Role::Read));
         edge_write(&mut lp.peers[0].engine, t, h, e, None);
     }
     let pks = lp.packages(0).unwrap();
@@ -1025,18 +1032,9 @@ fn role_history_join(n: usize) -> [Work; 4] {
     [join, grant, removal, arrive]
 }
 
-/// `all_linear` (`flat` with `per_change`) but for store bytes: `roles.0` keeps a tombstone per
-/// ended entry (spec/crdt.md §5.6; role history is never compacted) and a map of fewer than
-/// `MIN_PAGED` entries is written whole (issues/few-large-elements-written-whole.md), so every
-/// write there rewrites O(history) bytes; paged writes are flat (`map_edit_is_flat`).
-#[track_caller]
-fn all_counted(what: &str, small: &Work, big: &Work, per_change: bool) {
-    let f = if per_change { flat } else { linear };
-    for k in phases(small, big) {
-        f(&format!("{what}: {k}"), small.n(k), big.n(k));
-    }
-    f(&format!("{what}: store rows written"), small.io.writes, big.io.writes);
-}
+/// Edge writes on other holders before a role history (`role_history_join`): `roles.0` (an entry
+/// each) pages from about 3 KB of entries.
+const PAGED_HISTORY: usize = 64;
 
 // spec/permissions.md §5.1; spec/requirements.md, Scale (a node that starts holding a thing
 // fetches and judges all of its role history: O(the history)): a fresh node ingesting n and 10n
@@ -1047,9 +1045,9 @@ fn all_counted(what: &str, small: &Work, big: &Work, per_change: bool) {
 #[test]
 fn role_history_join_is_linear() {
     let (a, b) = (role_history_join(12), role_history_join(120));
-    all_counted("a joiner ingesting a role history", &a[0], &b[0], false);
+    all_linear("a joiner ingesting a role history", &a[0], &b[0]);
     for (i, what) in ["a grant", "a removal", "their arrival"].iter().enumerate() {
-        all_counted(&format!("at the end of a role history, {what}"), &a[i + 1], &b[i + 1], true);
+        all_flat(&format!("at the end of a role history, {what}"), &a[i + 1], &b[i + 1]);
     }
 }
 

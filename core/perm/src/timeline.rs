@@ -85,8 +85,8 @@ type FirstHeld = BTreeMap<(Tid, Tid, Role), Option<Option<Point>>>;
 /// `delta_valid` by its arguments.
 type Valid = BTreeMap<(Point, Tid, Role), crate::content::Validity>;
 
-/// One `Memo::roles_now` entry.
-type RolesNow = (Arc<BTreeMap<Tid, Role>>, Ts, Option<WallMs>);
+/// One `Memo::on_now` entry.
+type OnNow = (Arc<BTreeMap<Tid, Role>>, Ts, Option<WallMs>);
 
 /// Memoized layer-2 answers.
 #[derive(Default)]
@@ -95,17 +95,13 @@ pub(crate) struct Memo {
     /// `first_held`'s replays by (node, role), to go on with.
     pub replays: Mutex<BTreeMap<(Tid, Role), crate::content::Replay>>,
     pub valid: Mutex<Valid>,
-    /// `roles_of` at `At::END`, per node.
-    pub roles_end: Mutex<BTreeMap<Tid, Arc<BTreeMap<Tid, Role>>>>,
-    /// `roles_of` on the current edges, per node: (the answer, from what ts, the earliest `until`
-    /// it followed). A walk per node while the edges stay and no followed edge ends.
-    pub roles_now: Mutex<BTreeMap<Tid, RolesNow>>,
-    /// Walks made for `roles_now` (a measure).
-    pub roles_walks: std::sync::atomic::AtomicU64,
     /// `roles_on` at `At::END`, per thing.
     pub on_end: Mutex<BTreeMap<Tid, Arc<BTreeMap<Tid, Role>>>>,
-    /// `roles_on` on the current edges, per thing, as `roles_now` keeps its walks.
-    pub on_now: Mutex<BTreeMap<Tid, RolesNow>>,
+    /// `roles_on` on the current edges, per thing: (the answer, from what ts, the earliest
+    /// `until` it followed). A walk per thing while the edges stay and no followed edge ends.
+    pub on_now: Mutex<BTreeMap<Tid, OnNow>>,
+    /// Walks made for `on_now` (a measure).
+    pub on_walks: std::sync::atomic::AtomicU64,
     /// What a node reaches over chained edges (`cert`), per node `closure` met: the asker (a
     /// node asks for its own certificates at every pass) and the authors on its chains; and the
     /// walks made for it (a measure).
@@ -126,6 +122,33 @@ pub(crate) struct Memo {
     pub own_named: std::sync::OnceLock<BTreeMap<(Tid, Tid), Vec<Demotion>>>,
 }
 
+impl Memo {
+    /// The answers that stand once `links` (leaf, its first admin) join as leaves `new`: a leaf
+    /// holds nothing and no write names it, so no path into another thing passes it, no write's
+    /// standing moves (the chained writes, the writes by target, the disputes stay) and every
+    /// answer on another thing stands; what reaches a leaf's first admin reaches the leaf too,
+    /// with the same role from the same change on (`forward` and the replays gain it). The
+    /// rest goes.
+    fn add_leaves(&mut self, links: &[(Tid, Tid)], new: &BTreeSet<Tid>) {
+        fn m<T>(x: &mut Mutex<T>) -> &mut T {
+            x.get_mut().unwrap_or_else(|e| e.into_inner())
+        }
+        m(&mut self.first_held).retain(|(_, t, _), v| v.is_some() && !new.contains(t));
+        m(&mut self.replays).values_mut().for_each(|r| r.add_leaves(links));
+        m(&mut self.valid).retain(|(_, t, _), _| !new.contains(t));
+        m(&mut self.on_end).retain(|t, _| !new.contains(t));
+        m(&mut self.on_now).retain(|t, _| !new.contains(t));
+        m(&mut self.certificates).retain(|(_, t), _| !new.contains(t));
+        for reach in m(&mut self.forward).values_mut() {
+            // through first admins that are new leaves too
+            while let Some(x) = links.iter().find(|(x, a)| reach.contains(a) && !reach.contains(x)).map(|l| l.0) {
+                Arc::make_mut(reach).insert(x);
+            }
+        }
+        self.own_named = std::sync::OnceLock::new();
+    }
+}
+
 /// A copy holding the same answers and measures (world copies, notes/test-harnesses.md).
 impl Clone for Memo {
     fn clone(&self) -> Memo {
@@ -139,11 +162,9 @@ impl Clone for Memo {
             first_held: get(&self.first_held),
             replays: get(&self.replays),
             valid: get(&self.valid),
-            roles_end: get(&self.roles_end),
-            roles_now: get(&self.roles_now),
-            roles_walks: n(&self.roles_walks),
             on_end: get(&self.on_end),
             on_now: get(&self.on_now),
+            on_walks: n(&self.on_walks),
             forward: get(&self.forward),
             forward_walks: n(&self.forward_walks),
             certificates: get(&self.certificates),
@@ -499,7 +520,6 @@ impl Timeline {
         self.memo.held_on_target = std::sync::OnceLock::new();
         *self.memo.forward.get_mut().unwrap_or_else(|e| e.into_inner()) = BTreeMap::new();
         *self.memo.certificates.get_mut().unwrap_or_else(|e| e.into_inner()) = BTreeMap::new();
-        *self.memo.roles_now.get_mut().unwrap_or_else(|e| e.into_inner()) = BTreeMap::new();
         self.placed = 0;
         for (j, c) in new.iter().enumerate() {
             let p = c.point();
@@ -577,13 +597,17 @@ impl Timeline {
             self.input.records.insert(*t, r);
         }
         // a first admin whose record is not held is a node, as `Input::gather` has it
+        let mut nodes = false;
         for (_, a) in &links {
             if self.input.records.link(a).is_none() {
-                self.input.nodes.insert(*a);
+                nodes |= self.input.nodes.insert(*a);
             }
         }
-        // the answers `extend` keeps: those found, on other things
-        self.reset_memo(|(_, t, _), v| v.is_some() && !new.contains(t));
+        if nodes {
+            self.reset_memo(|(_, t, _), v| v.is_some() && !new.contains(t));
+        } else {
+            self.memo.add_leaves(&links, &new);
+        }
         self.placed = 0;
         Ok(self)
     }
@@ -947,35 +971,15 @@ impl Timeline {
         self.with_roles(node, at, |view, best| view.standing(best, thing))
     }
 
-    /// Effective role (§1).
+    /// Effective role (§1): read backward from `thing` (`roles_on`), so it walks only what
+    /// reaches `thing`, never all that `node` reaches.
     pub fn role(&self, node: &Tid, thing: &Tid, at: At) -> Option<Role> {
-        self.roles_at(node, at).get(thing).copied()
+        self.roles_on(thing, at).get(node).copied()
     }
 
-    /// Effective roles of `node` at `at` on every thing it reaches (`roles_of`), walked once
-    /// per node while the answer holds for the current edges (`roles_now`) and at the end.
-    fn roles_at(&self, node: &Tid, at: At) -> Arc<BTreeMap<Tid, Role>> {
-        if at.point.is_none()
-            && let Some(ts) = at.ts
-        {
-            return self.roles_now(node, ts);
-        }
-        if at != At::END {
-            return Arc::new(self.roles_of(node, at));
-        }
-        if let Some(r) = self.memo.roles_end.lock().ok().and_then(|m| m.get(node).cloned()) {
-            return r;
-        }
-        let r = Arc::new(self.roles_of(node, at));
-        if let Ok(mut m) = self.memo.roles_end.lock() {
-            m.insert(*node, r.clone());
-        }
-        r
-    }
-
-    /// Every node's effective role on `thing` at `at`: `roles_at` read backward, by the widest
+    /// Every node's effective role on `thing` at `at`: `roles_of` read backward, by the widest
     /// paths into `thing` (`View::roles_to`), so it walks only what reaches `thing`. Walked once
-    /// per thing while the answer holds for the current edges, and at the end.
+    /// per thing while the answer holds for the current edges (counted: `on_walks`), and at the end.
     pub fn roles_on(&self, thing: &Tid, at: At) -> Arc<BTreeMap<Tid, Role>> {
         let none = BTreeSet::new();
         if at.point.is_none()
@@ -999,10 +1003,11 @@ impl Timeline {
     /// `roles_on` on the current edges at `ts`, and the earliest `until` the walk followed: the
     /// answer holds at any later ts before it. Walked once per thing while it holds.
     pub fn roles_on_now(&self, thing: &Tid, ts: Ts) -> (Arc<BTreeMap<Tid, Role>>, Option<WallMs>) {
-        let held = |e: &RolesNow| e.1 <= ts && e.2.is_none_or(|u| ts.wall_ms() < u);
+        let held = |e: &OnNow| e.1 <= ts && e.2.is_none_or(|u| ts.wall_ms() < u);
         if let Some(r) = self.memo.on_now.lock().ok().and_then(|m| m.get(thing).filter(|e| held(e)).map(|e| (e.0.clone(), e.2))) {
             return r;
         }
+        self.memo.on_walks.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         let edges = self.edges_at(None);
         let (r, expires) = View::at(&edges, Some(ts)).roles_to_expiring(thing, &BTreeSet::new());
         let r = Arc::new(r);
@@ -1016,24 +1021,6 @@ impl Timeline {
     pub fn roles_on_without(&self, thing: &Tid, at: At, skip: &BTreeSet<(Tid, Tid)>) -> BTreeMap<Tid, Role> {
         let edges = self.edges_at(at.point);
         View::at(&edges, at.ts).roles_to_expiring(thing, skip).0
-    }
-
-    /// `node`'s roles on the current edges at `ts`, walked once per node while the answer holds:
-    /// at any later ts before an `until` the walk followed (`View::roles_expiring`).
-    fn roles_now(&self, node: &Tid, ts: Ts) -> Arc<BTreeMap<Tid, Role>> {
-        use std::sync::atomic::Ordering;
-        let held = |e: &RolesNow| e.1 <= ts && e.2.is_none_or(|u| ts.wall_ms() < u);
-        if let Some(r) = self.memo.roles_now.lock().ok().and_then(|m| m.get(node).filter(|e| held(e)).map(|e| e.0.clone())) {
-            return r;
-        }
-        self.memo.roles_walks.fetch_add(1, Ordering::Relaxed);
-        let edges = self.edges_at(None);
-        let (r, expires) = View::at(&edges, Some(ts)).roles_expiring(node);
-        let r = Arc::new(r);
-        if let Ok(mut m) = self.memo.roles_now.lock() {
-            m.insert(*node, (r.clone(), ts, expires));
-        }
-        r
     }
 
     /// `node`'s roles over every grant this walk applied, the ended ones included: what it reached
@@ -1058,9 +1045,9 @@ impl Timeline {
         self.memo.forward_walks.load(std::sync::atomic::Ordering::Relaxed)
     }
 
-    /// Walks of `roles_now` so far (a measure).
-    pub fn roles_walks(&self) -> u64 {
-        self.memo.roles_walks.load(std::sync::atomic::Ordering::Relaxed)
+    /// Walks of `roles_on` on the current edges so far (a measure).
+    pub fn on_walks(&self) -> u64 {
+        self.memo.on_walks.load(std::sync::atomic::Ordering::Relaxed)
     }
 
     /// Authority class (§5.1 step 3).

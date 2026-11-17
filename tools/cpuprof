@@ -14,7 +14,7 @@ src="$dir/cpuprof.c"
 lib="${XDG_CACHE_HOME:-$HOME/.cache}/osis/cpuprof.so"
 if [ ! -f "$lib" ] || [ "$src" -nt "$lib" ]; then
     mkdir -p "$(dirname "$lib")"
-    cc -O2 -Wall -shared -fPIC -o "$lib" "$src"
+    cc -O2 -Wall -shared -fPIC -o "$lib" "$src" -ldl -lpthread
 fi
 status=0
 CPUPROF_OUT="$out" LD_PRELOAD="$lib" "$@" || status=$?

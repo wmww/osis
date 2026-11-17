@@ -160,8 +160,9 @@ pub struct Timelines {
     comps: BTreeMap<u64, Comp>,
     next: u64,
     of: BTreeMap<Tid, u64>,
-    /// Things whose component the last update evaluated or continued.
-    changed: BTreeSet<Tid>,
+    /// Components the last update evaluated, continued or took apart, by ID (never reused):
+    /// every other component's timeline is as before.
+    changed: BTreeSet<u64>,
     /// Components evaluated or continued since `to_save` last looked.
     unsaved: BTreeSet<u64>,
     /// Roots whose saved walk no component uses any more.
@@ -260,6 +261,7 @@ impl Timelines {
         let old = std::mem::replace(&mut self.trust, trust);
         let touched: Vec<u64> = self.comps.iter().filter(|(_, c)| c.inputs.1.iter().any(|id| old.names(id) || self.trust.names(id))).map(|(i, _)| *i).collect();
         let mut things = BTreeSet::new();
+        let mut gone = BTreeSet::new();
         for i in touched {
             if let Some(c) = self.comps.remove(&i) {
                 for t in &c.inputs.0 {
@@ -268,9 +270,12 @@ impl Timelines {
                 self.unsaved.remove(&i);
                 self.retire(&c.inputs, c.basis);
                 things.extend(c.inputs.0.iter().copied());
+                gone.insert(i);
             }
         }
-        self.update_touched(held, &things)
+        let c = self.update_touched(held, &things);
+        self.changed.extend(gone);
+        c
     }
 
     /// Detects disputes from here on (`take_detected`): after each update, the trustable ops
@@ -360,8 +365,8 @@ impl Timelines {
     /// `update_touched` whatever `saved` returns.
     pub fn update_touched_cached(&mut self, held: &dyn HeldSet, touched: &BTreeSet<Tid>, saved: &mut dyn FnMut(&Tid) -> Option<Vec<u8>>, salt: &[u8]) -> Changed {
         let fast = match if self.general_only { None } else { self.append(held, touched) } {
-            Some((c, things, true)) => {
-                self.changed = things;
+            Some((c, comps, true)) => {
+                self.changed = comps;
                 self.restored = 0;
                 self.run_detection();
                 return c;
@@ -389,12 +394,12 @@ impl Timelines {
         }
         let mut changed = self.update_region(held, region, saved, salt).1;
         // components `append` continued before one declined: cache hits there
-        if let Some((c, things, _)) = fast {
+        if let Some((c, comps, _)) = fast {
             changed.extended.extend(c.extended);
             changed.edges.extend(c.edges);
             changed.commits.extend(c.commits);
             changed.created.extend(c.created);
-            self.changed.extend(things);
+            self.changed.extend(comps);
         }
         self.run_detection();
         changed
@@ -406,9 +411,10 @@ impl Timelines {
     /// component goes on by `Timeline::append`. Or it is a new leaf (only its `created.0` names
     /// it) of a component that gained no commits: `Timeline::add_leaves`. `None`: the case does
     /// not apply, nothing done.
-    /// Else what changed, the things of the components continued, and whether all of them
-    /// were (else the general path must run: the ones continued are then cache hits).
-    fn append(&mut self, held: &dyn HeldSet, touched: &BTreeSet<Tid>) -> Option<(Changed, BTreeSet<Tid>, bool)> {
+    /// Else what changed, the components continued (and the lone ones they took in), and
+    /// whether all of them were (else the general path must run: the ones continued are then
+    /// cache hits).
+    fn append(&mut self, held: &dyn HeldSet, touched: &BTreeSet<Tid>) -> Option<(Changed, BTreeSet<u64>, bool)> {
         // (new commits, commits per touched thing, new nodes joining, new leaves)
         type Work = (BTreeMap<CommitId, Arc<RoleCommit>>, BTreeMap<Tid, BTreeSet<CommitId>>, BTreeMap<Tid, Option<CreationRecord>>, Vec<(Tid, CreationRecord)>);
         let mut work: BTreeMap<u64, Work> = BTreeMap::new();
@@ -515,7 +521,7 @@ impl Timelines {
         }
         self.appended = 0;
         self.placed = 0;
-        let (mut changed, mut things) = (Changed::default(), BTreeSet::new());
+        let (mut changed, mut comps) = (Changed::default(), BTreeSet::new());
         for (i, (new, per, join, leaves)) in work {
             let Some(mut c) = self.comps.remove(&i) else { continue };
             // (small walks: as `Walked::check_scratch`)
@@ -527,17 +533,17 @@ impl Timelines {
                     Err(tl) => {
                         c.tl = *tl;
                         self.comps.insert(i, c);
-                        return Some((changed, things, false));
+                        return Some((changed, comps, false));
                     }
                 }
                 self.appended += 1;
                 for (x, _) in leaves {
-                    self.adopt(&mut c, i, x, true);
+                    comps.extend(self.adopt(&mut c, i, x, true));
                     changed.extended.insert(x);
                     changed.created.insert(x);
                     changed.leaves.insert(x);
                 }
-                things.extend(c.inputs.0.iter().copied());
+                comps.insert(i);
                 self.unsaved.insert(i);
             }
             if !new.is_empty() {
@@ -548,7 +554,7 @@ impl Timelines {
                     Err(tl) => {
                         c.tl = *tl;
                         self.comps.insert(i, c);
-                        return Some((changed, things, false));
+                        return Some((changed, comps, false));
                     }
                 }
                 self.appended += 1;
@@ -558,10 +564,10 @@ impl Timelines {
                     if rec.is_some() {
                         changed.created.insert(x);
                     }
-                    self.adopt(&mut c, i, x, rec.is_some());
+                    comps.extend(self.adopt(&mut c, i, x, rec.is_some()));
                 }
                 changed.extended.extend(per.iter().filter(|(_, ids)| ids.iter().any(|x| new.contains_key(x))).map(|(t, _)| *t));
-                things.extend(c.inputs.0.iter().copied());
+                comps.insert(i);
                 self.unsaved.insert(i);
                 // held under every target, touched or not
                 for m in new.values() {
@@ -587,13 +593,14 @@ impl Timelines {
             }
             self.comps.insert(i, c);
         }
-        Some((changed, things, true))
+        Some((changed, comps, true))
     }
 
-    /// Puts `x` (in no component or alone in one) in component `c` (`i`, taken out of `comps`).
-    fn adopt(&mut self, c: &mut Comp, i: u64, x: Tid, created: bool) {
-        if let Some(j) = self.of.insert(x, i) {
-            // its lone component
+    /// Puts `x` (in no component or alone in one) in component `c` (`i`, taken out of `comps`);
+    /// the lone component it leaves, if any.
+    fn adopt(&mut self, c: &mut Comp, i: u64, x: Tid, created: bool) -> Option<u64> {
+        let lone = self.of.insert(x, i);
+        if let Some(j) = lone {
             self.comps.remove(&j);
             self.unsaved.remove(&j);
         }
@@ -601,6 +608,7 @@ impl Timelines {
         if created {
             c.inputs.2.insert(x);
         }
+        lone
     }
 
     /// Re-partitions `region` (a union of whole components, old and new) and evaluates its
@@ -609,10 +617,14 @@ impl Timelines {
         // old components by their inputs: (timeline, basis, not saved since it changed)
         let mut cache: BTreeMap<Inputs, (Timeline, usize, bool)> = BTreeMap::new();
         let old: BTreeSet<u64> = region.iter().filter_map(|t| self.of.get(t).copied()).collect();
+        // a component found again whole keeps its ID; every other old one is taken apart
+        let mut old_id: BTreeMap<Inputs, u64> = BTreeMap::new();
+        let mut kept: BTreeSet<u64> = BTreeSet::new();
         let (mut before, mut after) = (crate::graph::Edges::default(), crate::graph::Edges::default());
         let (mut history, mut records): (Vec<Change>, BTreeSet<Tid>) = (Vec::new(), BTreeSet::new());
-        for c in old {
+        for c in old.iter().copied() {
             if let Some(comp) = self.comps.remove(&c) {
+                old_id.insert(comp.inputs.clone(), c);
                 before.take_targets(comp.tl.edges());
                 history.extend_from_slice(comp.tl.history());
                 records.extend(comp.inputs.2.iter().copied());
@@ -655,7 +667,6 @@ impl Timelines {
         let mut changed = Changed::default();
         let mut new_history: Vec<Change> = Vec::new();
         let mut new_records: BTreeSet<Tid> = BTreeSet::new();
-        self.changed.clear();
         self.restored = 0;
         self.appended = 0;
         self.placed = 0;
@@ -670,6 +681,7 @@ impl Timelines {
                 x => x,
             };
             let fresh = hit.is_none();
+            let reused = if fresh { None } else { old_id.get(&inputs).copied() };
             let (tl, basis, dirty) = match hit {
                 Some(x) => x,
                 None => {
@@ -715,7 +727,6 @@ impl Timelines {
                         }
                         None => None,
                     };
-                    self.changed.extend(inputs.0.iter().copied());
                     match extended {
                         Some((tl, basis)) => {
                             changed.extended.extend(new);
@@ -734,8 +745,11 @@ impl Timelines {
             after.take_targets(tl.edges());
             new_history.extend_from_slice(tl.history());
             new_records.extend(inputs.2.iter().copied());
-            let i = self.next;
-            self.next += 1;
+            let i = reused.unwrap_or_else(|| {
+                self.next += 1;
+                self.next - 1
+            });
+            kept.extend(reused);
             for t in &inputs.0 {
                 self.of.insert(*t, i);
             }
@@ -751,6 +765,7 @@ impl Timelines {
         for (k, (_, basis, _)) in cache {
             self.retire(&k, basis);
         }
+        self.changed = old.difference(&kept).copied().collect();
         after.diff(&before, &mut changed.edges);
         let (mut keys, mut flipped) = (BTreeSet::new(), Vec::new());
         history_diff(&history.iter().collect::<Vec<_>>(), &new_history.iter().collect::<Vec<_>>(), &mut keys, &mut flipped);
@@ -920,9 +935,14 @@ impl Timelines {
         self.of.get(thing).and_then(|i| self.comps.get(i)).map(|c| &c.tl)
     }
 
-    /// Things whose timeline the last `update` evaluated (or continued): every other thing's
-    /// answers are unchanged.
-    pub fn changed(&self) -> &BTreeSet<Tid> {
+    /// Components the last update evaluated, continued or took apart, by ID (`component`; an
+    /// ID is never reused): every other component's answers are unchanged.
+    pub fn changed(&self) -> &BTreeSet<u64> {
         &self.changed
+    }
+
+    /// The ID of the component holding `thing`.
+    pub fn component(&self, thing: &Tid) -> Option<u64> {
+        self.of.get(thing).copied()
     }
 }

@@ -21,6 +21,19 @@ pub(crate) struct Replay {
     first: BTreeMap<Tid, Option<Point>>,
 }
 
+impl Replay {
+    /// Leaves `links` (leaf, its first admin) joining: a leaf's only edge in is its record edge,
+    /// so the node holds on it what it holds on its first admin, from the same change on.
+    pub(crate) fn add_leaves(&mut self, links: &[(Tid, Tid)]) {
+        while let Some((x, p)) = links.iter().find(|(x, a)| self.first.contains_key(a) && !self.first.contains_key(x)).and_then(|(x, a)| Some((*x, *self.first.get(a)?))) {
+            self.first.insert(x, p);
+        }
+        while let Some((x, r)) = links.iter().find(|(x, a)| self.best.contains_key(a) && !self.best.contains_key(x)).and_then(|(x, a)| Some((*x, *self.best.get(a)?))) {
+            self.best.insert(x, r);
+        }
+    }
+}
+
 /// `first_held_replayed`'s search for one (node, role): the edges after the first `pos` history
 /// changes (`None`: not even the initial state searched), and where each thing was first held.
 #[cfg(debug_assertions)]

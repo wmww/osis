@@ -507,10 +507,22 @@ impl Fragment {
     /// narrowed the same way), of a map every record of the dots `x` holds records of, of a set
     /// or bag the elements `x` holds, of a sequence the records holding a dot of `x`'s, each with
     /// this fragment's meta; anything else whole. A narrowed field left empty is left out (a join
-    /// drops empty children).
+    /// drops empty children). Of a set also the records of the references `x` names (they hide
+    /// or are hidden by `x`'s, §5.5): what a join of `x` supersedes.
     pub fn part_at(&self, x: &Fragment) -> Fragment {
+        self.piece_at(x, true)
+    }
+
+    /// `part_at` without a set's records of the references `x` names: `x`'s positions alone,
+    /// what a join of `x` changes the encoding of (elements join per dot). O(x), however large
+    /// the set.
+    pub fn positions_at(&self, x: &Fragment) -> Fragment {
+        self.piece_at(x, false)
+    }
+
+    fn piece_at(&self, x: &Fragment, refs: bool) -> Fragment {
         match (self, x) {
-            (Fragment::Struct(s), Fragment::Struct(d)) => Fragment::Struct(Struct { meta: s.meta.clone(), fields: d.fields.iter().filter_map(|(id, df)| Some((*id, s.fields.get(id)?.part_at(df)))).filter(|(_, f)| !f.is_empty()).collect() }),
+            (Fragment::Struct(s), Fragment::Struct(d)) => Fragment::Struct(Struct { meta: s.meta.clone(), fields: d.fields.iter().filter_map(|(id, df)| Some((*id, s.fields.get(id)?.piece_at(df, refs)))).filter(|(_, f)| !f.is_empty()).collect() }),
             (Fragment::Map(s), Fragment::Map(d)) => {
                 let mut keep: BTreeMap<Eid, Entry> = BTreeMap::new();
                 for id in d.entries.keys() {
@@ -524,7 +536,7 @@ impl Fragment {
             // or are hidden by them (§5.5)
             (Fragment::Set(s), Fragment::Set(d)) => {
                 let mut keep: BTreeMap<Dot, Elem> = d.elems.keys().filter_map(|k| Some((k.clone(), s.elems.get(k)?.clone()))).collect();
-                let refs: BTreeSet<&Value> = d.elems.values().flat_map(Elem::references).collect();
+                let refs: BTreeSet<&Value> = if refs { d.elems.values().flat_map(Elem::references).collect() } else { BTreeSet::new() };
                 if !refs.is_empty() {
                     for (k, e) in &s.elems {
                         if e.references().any(|v| refs.contains(v)) {
