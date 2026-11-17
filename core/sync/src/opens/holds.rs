@@ -97,9 +97,9 @@ pub struct Creds {
     /// The sync key of this node's step (its step kept unread, its newest recorded step read)
     /// and its epoch: what answers a Hit on a sync key, claim or static entry.
     pub step: Option<(osis_crypto::SigningSecret, Option<Epoch>)>,
-    /// At a reader, the sync proofs of its recorded steps but the newest: shown to no one, they
-    /// answer a departed store's Hit on its step (spec/sync-opens.md §6), which this side's filter
-    /// showed while that step was the newest.
+    /// At a reader, the sync proofs of its recorded steps but the newest: shown to a peer J
+    /// judges departed only, they answer a departed store's Hit on its step (spec/sync-opens.md §4
+    /// Admissible, §6).
     pub walk: Vec<Shown>,
 }
 

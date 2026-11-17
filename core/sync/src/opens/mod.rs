@@ -497,9 +497,9 @@ struct Adm {
     own: SourceClass,
     shows: Vec<Shown>,
     tests: Vec<Tested>,
-    /// Where J is departed: the walk credentials the Departed rule keeps out of `shows` (the
-    /// sync proofs of this side's recorded steps, `Creds::walk`), taken from a store only: an
-    /// open by one is ended at once, so this side registers past the store's keys
+    /// Where J is departed: the sync proofs of this side's recorded steps (`Creds::walk`, and
+    /// the newest the Departed rule keeps out of `shows`), shown in the filter and taken from a
+    /// store only: an open by one is ended at once, so this side registers past the store's keys
     /// (spec/sync-opens.md §6), whether or not S was open there at the removal.
     walk: Vec<Shown>,
     step: Option<osis_crypto::SigningSecret>,
@@ -1648,12 +1648,13 @@ impl Opens {
         c.gen_out = Some(GenOut { generation, pages: ids, refused: false, base_missing: false });
     }
 
-    /// The beacons of the credentials `ids` show (spec/sync-opens.md §5 Beacon).
+    /// The beacons of the credentials `ids` show (spec/sync-opens.md §5 Beacon), the walk proofs
+    /// shown to a departed peer included (§4 Admissible).
     fn shown_beacons(&mut self, ctx: &mut Ctx, conn: ConnId, ids: &[SyncId], r: &[u8; 32]) -> Vec<[u8; 32]> {
         let mut beacons = Vec::new();
         for s in ids {
             if let Some(adm) = self.admissible(ctx, conn, s) {
-                for sh in &adm.shows {
+                for sh in adm.shows.iter().chain(&adm.walk) {
                     self.work.beacons += 1;
                     beacons.push(beacon_of(sh.matched(), s, r));
                 }

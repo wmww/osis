@@ -122,11 +122,37 @@ fn a_reader_moves_a_removed_store_past_its_keys_spec_sync_opens_6() {
     assert!(w.store(1).entries(&s).unwrap().is_empty(), "node 1 stopped: {} entries kept", w.store(1).entries(&s).unwrap().len());
 }
 
+// spec/sync-opens.md §4 (Admissible: toward a peer J judges departed, a reader shows the sync
+// proofs of its recorded steps), §6 (A reader moves a removed store past its keys): node 1 keeps
+// t's sync ID S unread, fetched from node 0 alone, and node 2 reads it. Node 0 removes node 1
+// while cut off from it; node 2, learning the removal, has never shown node 1 its step (node 1
+// was cut off from it while that step was the newest), so only a filter showing every recorded
+// step lets node 1's Hit on its step open S there to be moved past its keys. Fails when a
+// departed peer is shown nothing: node 1 keeps its copy.
+#[test]
+fn a_reader_moves_a_removed_store_it_never_showed_its_step_spec_sync_opens_6() {
+    use crate::harness::Step::*;
+    use crate::harness::history::{Gives, Holder, world};
+    let mut w = world(0, 3);
+    w.cap = 20_000;
+    w.partition(1, 2);
+    let _ = crate::harness::play(&mut w, &[New(0), Grant(0, 0, 1, Gives::Syncs), Grant(0, 0, 2, Gives::Reads), Run], String::new());
+    let t = w.history.things[0].0;
+    let s = w.engine(0).sync_id_of(&t).unwrap().unwrap();
+    assert_eq!(w.engine(1).sync_holder(&s).unwrap(), Some(([t].into(), Holding::Unread)));
+    assert!(!w.store(1).entries(&s).unwrap().is_empty(), "node 1 keeps S");
+    w.partition(0, 1);
+    let _ = crate::harness::play(&mut w, &[Revoke(0, 0, Holder::Node(1)), Run], String::new());
+    w.rejoin(1, 2);
+    let _ = crate::harness::play(&mut w, &[Run], String::new());
+    assert!(w.store(1).entries(&s).unwrap().is_empty(), "node 1 stopped: {} entries kept", w.store(1).entries(&s).unwrap().len());
+}
+
 // spec/sync-opens.md §6 (A reader moves a removed store past its keys; whether or not S was open
 // there at the removal): node 0 lowers node 1 from write to sync and removes it at once, so node
 // 0 judges node 1 departed while still a reader source there and closes S at once; node 1 then
 // keeps S unread at the lowering's step and cannot read the removal. Its Hit on that step's sync
-// proof, which node 0's filter showed while it was the newest, opens S ended at node 0, which
+// proof, which node 0's filter shows toward a departed peer, opens S ended at node 0, which
 // registers past node 1's keys, and node 1 drops its copy.
 #[test]
 fn a_reader_moves_a_store_departed_before_it_kept_s_unread_spec_sync_opens_6() {
