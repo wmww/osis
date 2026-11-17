@@ -53,6 +53,15 @@ pub fn u64_var(var: &str) -> Option<u64> {
     Some(n)
 }
 
+/// Whether end-of-run checks run (they do unless `OSIS_NO_END_CHECKS=1`, a by-hand replay
+/// switch): the sync differential's checks at quiet (`history::check`) and each engine's
+/// end-of-history check at its drop. Skipped, a failing world can be inspected after its run
+/// instead of panicking first. Read once per process.
+pub fn end_checks() -> bool {
+    static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *ON.get_or_init(|| u64_var("OSIS_NO_END_CHECKS") != Some(1))
+}
+
 /// `var` as a string, `None` when unset or empty; panics when not in `known()`, and on any
 /// unknown `OSIS_*` variable.
 pub fn str_var(var: &str) -> Option<String> {

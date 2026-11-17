@@ -239,43 +239,56 @@ fn unnamed_copies(g: &mut impl Ground, mine: &Mine, s: &SyncId, c: &CommitId, bl
     Ok((out, matches!(v, Verdict::MustNot(_)), wait))
 }
 
-/// spec/sync-judgement.md §2: what the body is at S.
-fn classify(mine: &Mine, f: &Facts, s: &SyncId, c: &CommitId, meta: &BodyMeta, later_held: bool) -> Verdict {
+/// spec/sync-judgement.md §2: what the body is at S, with the clause that decided it (a debug
+/// trace's reason, `last_why`).
+fn classify(mine: &Mine, f: &Facts, s: &SyncId, c: &CommitId, meta: &BodyMeta, later_held: bool) -> (Verdict, &'static str) {
     if let Some(w) = f.must_not {
-        return Verdict::MustNot(w);
+        return (Verdict::MustNot(w), "its facts say must-not");
     }
     if meta.expires.is_some_and(|e| mine.reached(e.0)) {
-        return Verdict::MustNot(Why::Expired);
+        return (Verdict::MustNot(Why::Expired), "expired");
     }
     if !f.body.required {
-        return Verdict::MustNot(Why::OutsideRequired);
+        return (Verdict::MustNot(Why::OutsideRequired), "outside S's required set");
     }
     if !meta.mints.is_empty() {
-        return minted(mine, s, c, meta);
+        return (minted(mine, s, c, meta), "a minting copy, by its places among its things' mintings");
     }
     // judged invalid here: kept by none of must-hold's clauses, never logged (§3 Own store)
     if f.body.invalid {
-        return Verdict::May;
+        return (Verdict::May, "judged invalid here");
     }
     // not held here (dropped): kept by none of must-hold's clauses
     if f.body.dropped.is_some() {
-        return Verdict::May;
+        return (Verdict::May, "dropped here");
     }
     // a certificate, header-only or not: must-hold but a sole one (its author has no other blob)
     if meta.certificate || !f.body.closure {
-        return if f.body.sole_certificate { Verdict::May } else { Verdict::Must };
+        return if f.body.sole_certificate { (Verdict::May, "a sole certificate") } else { (Verdict::Must, if meta.certificate { "a certificate" } else { "outside the node closure, required" }) };
     }
     if meta.header_only {
-        return if f.body.lasting_header { Verdict::Must } else { Verdict::May };
+        return if f.body.lasting_header { (Verdict::Must, "a lasting header") } else { (Verdict::May, "a header-only copy, not lasting") };
     }
     if f.body.kept {
-        return Verdict::Must;
+        return (Verdict::Must, "kept by retention");
     }
     match f.body.covered {
-        None => Verdict::Unjudged,
-        Some(false) if !later_held => Verdict::Must,
-        Some(_) => Verdict::May,
+        None => (Verdict::Unjudged, "coverage not settled"),
+        Some(false) if !later_held => (Verdict::Must, "not covered, no later snapshot held"),
+        Some(false) => (Verdict::May, "a later snapshot is held"),
+        Some(true) => (Verdict::May, "covered by a held snapshot"),
     }
+}
+
+#[cfg(debug_assertions)]
+thread_local! {
+    static WHY: std::cell::Cell<&'static str> = const { std::cell::Cell::new("") };
+}
+
+/// Debug builds: the reason the last `body` judged gave for its verdict.
+#[cfg(debug_assertions)]
+pub(crate) fn last_why() -> &'static str {
+    WHY.with(std::cell::Cell::get)
 }
 
 /// Covered and dropped where `held` says which commits are held (spec/sync-judgement.md §3,
@@ -307,6 +320,8 @@ pub(crate) fn body(g: &mut impl Ground, mine: &Mine, s: &SyncId, c: &CommitId) -
     osis_base::costs::count("read: judged", 1);
     let mut j = Judged::default();
     if !g.reads(s) {
+        #[cfg(debug_assertions)]
+        WHY.with(|x| x.set("S is not read here"));
         j.idle = true;
         return Ok(j);
     }
@@ -349,10 +364,13 @@ pub(crate) fn body(g: &mut impl Ground, mine: &Mine, s: &SyncId, c: &CommitId) -
     stale.extend(spare);
     held.retain(|b| !stale.contains(b));
     let live: Vec<BlobId> = held.iter().copied().filter(|b| !subsets.contains(b)).collect();
+    #[allow(unused_assignments)]
+    let mut why = "no body meta at S: its unit is not settled";
     let (f, verdict) = match mine.meta(s, c) {
         None if !g.unit_settled(s)? => (None, Verdict::Unjudged),
         None => {
             let (v, wait) = outside(g, mine, s, c);
+            why = if wait.is_some() { "no body meta at S: outside, waiting for a complete pass" } else { "no body meta at S: outside S's required set" };
             j.wait = wait;
             (None, v)
         }
@@ -366,20 +384,29 @@ pub(crate) fn body(g: &mut impl Ground, mine: &Mine, s: &SyncId, c: &CommitId) -
                     break;
                 }
             }
-            let mut v = classify(mine, &f, s, c, meta, later_held);
+            let (mut v, w) = classify(mine, &f, s, c, meta, later_held);
+            why = w;
             // must-hold only what this node may log under S (§2 Loggable): else may-hold, kept
             // if it arrives, never relayed, deposited or owed
             if v == Verdict::Must && !g.may_log(s, c)? {
                 v = Verdict::May;
+                why = "must-hold but not loggable here";
             }
             if v == Verdict::MustNot(Why::OutsideRequired) {
                 let (x, wait) = outside(g, mine, s, c);
+                if wait.is_some() {
+                    why = "outside S's required set, waiting for a complete pass";
+                }
                 v = x;
                 j.wait = wait;
             }
             (Some(f), v)
         }
     };
+    #[cfg(debug_assertions)]
+    WHY.with(|x| x.set(why));
+    #[cfg(not(debug_assertions))]
+    let _ = why;
     j.verdict = verdict.clone();
     j.role = verdict == Verdict::Must && f.as_ref().is_some_and(|f| f.own && f.role);
     // a body counting missing again: its own tombstones end, an entry of it held here is taken

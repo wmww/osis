@@ -381,6 +381,8 @@ impl Read {
                 let mine = Mine { verdicts: &self.verdicts, roles: &self.roles, clock: &self.clock, metas: &self.metas, mints: &self.mints, arrived: &self.arrived, moved: &self.moved };
                 let Some((was, now)) = self.judged.try_settle(&k, || judge::body(g, &mine, &s, &c))? else { continue };
                 if self.verdicts.get(&k) != Some(&now.verdict) {
+                    #[cfg(debug_assertions)]
+                    osis_base::trace::note(|| format!("verdict {s:?} {c:?}: {:?} -> {:?} ({})", self.verdicts.get(&k).unwrap_or(&Verdict::Unjudged), now.verdict, judge::last_why()));
                     self.verdicts.insert(k, now.verdict.clone());
                     // what it calls for at each source whose stream shows it, up now or away (a
                     // start judges every body: what the sources showed before is judged then)

@@ -694,6 +694,13 @@ impl World {
         self.engine(i).why_kept(t)
     }
 
+    /// Debug builds: node `i`'s role on `t` and its secrets (`Engine::why_role`;
+    /// notes/test-harnesses.md, Why kept and row dumps).
+    #[cfg(debug_assertions)]
+    pub fn why_role(&mut self, i: usize, t: &Tid) -> String {
+        self.engine(i).why_role(t)
+    }
+
     /// Debug builds: node `i`'s local rows, its engine's (`"engine"`) and its sync store's
     /// (`"store"`), described by its engine (`Engine::describe_rows`), where the family starts
     /// with `prefix` and, with `tid`, the row names it.
@@ -715,6 +722,7 @@ impl World {
     /// its device, restarts it in place).
     pub fn write<T>(&mut self, i: usize, f: impl FnOnce(&mut Engine) -> T) -> T {
         let t = f(self.engine(i));
+        self.noted(Some(i));
         if !self.crashed(i) {
             self.deliver(i, Input::Wrote);
         }
@@ -764,6 +772,8 @@ impl World {
             self.seen.push(seen.clone());
         }
         let traced = self.tracer.as_ref().is_some_and(|t| t.traces(i));
+        // engine and node lines (`osis_base::trace`) from outside a step: a check's reads
+        self.noted(None);
         if traced && let Some(t) = self.tracer.as_mut() {
             let conn = match &input {
                 Input::Up { conn, .. } | Input::Bytes { conn, .. } => Some(*conn),
@@ -784,11 +794,13 @@ impl World {
         let n = self.nodes.get_mut(i).expect("no such node");
         let restarts = n.node.restarts();
         let mut out = n.node.handle(input);
+        let (restarted, rounds) = (n.node.restarts() > restarts, n.node.rounds());
+        self.noted(Some(i));
         if self.trace {
-            self.stepped.push((i, n.node.restarts() > restarts, out.iter().filter(|o| matches!(o, Out::Send(..))).count()));
+            self.stepped.push((i, restarted, out.iter().filter(|o| matches!(o, Out::Send(..))).count()));
         }
-        if n.node.rounds() > ROUND_CAP {
-            panic!("settle loop: {} rounds in one step ({seen:?})", n.node.rounds());
+        if rounds > ROUND_CAP {
+            panic!("settle loop: {rounds} rounds in one step ({seen:?})");
         }
         // one place of outputs (scenario one-wake-last): a step gives at most one wake, last
         let wakes = out.iter().filter(|o| matches!(o, Out::Wake(_))).count();
@@ -826,6 +838,24 @@ impl World {
     /// Stops this world's trace (`OSIS_SYNC_TRACE`): a replay that would print it again.
     pub fn untrace(&mut self) {
         self.tracer = None;
+    }
+
+    /// Debug builds, traced: hands the trace the lines the engines and nodes noted
+    /// (`osis_base::trace`: verdicts moving, lost access, refused transactions) as node `i`'s
+    /// (`None`: noted outside a step, printed as `n?`); turns the sink on for this thread.
+    fn noted(&mut self, i: Option<usize>) {
+        #[cfg(debug_assertions)]
+        if let Some(t) = self.tracer.as_mut() {
+            if !osis_base::trace::on() {
+                osis_base::trace::set(true);
+            }
+            let lines = osis_base::trace::take();
+            if i.is_none_or(|i| t.traces(i)) {
+                t.noted(i, lines);
+            }
+        }
+        #[cfg(not(debug_assertions))]
+        let _ = i;
     }
 
     /// The trace of node `i`'s step: what it holds now against before, then the step's lines.

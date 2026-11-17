@@ -784,6 +784,11 @@ fn lost_writes(w: &mut World, m: &Model) -> BTreeSet<CommitId> {
 /// and the model (`at_check`).
 pub fn check(w: &mut World) {
     use std::panic::{AssertUnwindSafe, catch_unwind, resume_unwind};
+    // a by-hand replay inspecting the world it returns (notes/test-harnesses.md, Env vars)
+    if !osis_base::testenv::end_checks() {
+        osis_base::testenv::visible(true, "history::check skipped (OSIS_NO_END_CHECKS=1)");
+        return;
+    }
     let mut r = reference(w, &BTreeSet::new());
     let mut m = Model::of(w, &mut r);
     let lost = lost_writes(w, &m);
@@ -849,9 +854,14 @@ fn closure_clauses(w: &mut World, r: &mut Peer, m: &Model) {
             let read = if keyed { c.read.contains(&x) } else { c.held.contains(&x) && m.world.opens(&keys, x) };
             let got = reads(w.engine(i), t);
             if !excused {
-                assert_eq!(got.value.is_some(), read, "node {i} reads thing {k}: {:?}, the model {}", got.value, if read { "reads it" } else { "does not" });
+                if got.value.is_some() != read {
+                    panic!("node {i} reads thing {k}: {:?}, the model {}\n{}", got.value, if read { "reads it" } else { "does not" }, why_role(w, i, t));
+                }
                 if read {
-                    assert_eq!(got, reads(&mut r.engine, t), "node {i} reads thing {k} unlike the reference");
+                    let want = reads(&mut r.engine, t);
+                    if got != want {
+                        panic!("node {i} reads thing {k} unlike the reference\n  left: {got:?}\n right: {want:?}\n{}", why_role(w, i, t));
+                    }
                 }
             }
             if keyed {
@@ -862,8 +872,8 @@ fn closure_clauses(w: &mut World, r: &mut Peer, m: &Model) {
                 // secrets no longer derive, its entries dropped and its path kept
                 // (spec/sync-judgement.md §6 Stops), which the store clause below checks
                 let stopped = want.is_none() && held == Some(Holding::Unread);
-                if !excused && !stopped {
-                    assert_eq!(held, want, "node {i}'s sync set holds thing {k} as {held:?}, the model {want:?}");
+                if !excused && !stopped && held != want {
+                    panic!("node {i}'s sync set holds thing {k} as {held:?}, the model {want:?}\n{}", why_role(w, i, t));
                 }
                 if let Some(s) = &ids[k]
                     && want.is_none()
@@ -873,6 +883,20 @@ fn closure_clauses(w: &mut World, r: &mut Peer, m: &Model) {
                 }
             }
         }
+    }
+}
+
+/// Debug builds: node `i`'s role on `t` and its secrets (`World::why_role`), for a role or read
+/// clause that fails.
+fn why_role(w: &mut World, i: usize, t: &Tid) -> String {
+    #[cfg(debug_assertions)]
+    {
+        format!("why role (node {i}):\n{}", w.why_role(i, t))
+    }
+    #[cfg(not(debug_assertions))]
+    {
+        let _ = (w, i, t);
+        String::new()
     }
 }
 

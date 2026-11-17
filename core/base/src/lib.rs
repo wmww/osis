@@ -23,6 +23,10 @@ pub mod memo;
 #[doc(hidden)]
 #[allow(clippy::panic, clippy::expect_used)]
 pub mod testenv;
+// debug builds: a per-thread line sink harness traces print (`OSIS_SYNC_TRACE`)
+#[cfg(debug_assertions)]
+#[doc(hidden)]
+pub mod trace;
 mod ids;
 mod refs;
 mod time;

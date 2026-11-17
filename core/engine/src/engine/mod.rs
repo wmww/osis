@@ -3823,8 +3823,12 @@ impl Engine {
     }
 
     /// Runs `f` in one store transaction; events go out once it is durable.
+    #[cfg_attr(debug_assertions, track_caller)]
     pub fn run<T>(&mut self, f: impl FnOnce(&mut Tx<'_>) -> Result<T>) -> Result<T> {
         let _s = osis_base::costs::span("tx");
+        // debug builds: what the transaction notes (`osis_base::trace`) is tagged if it rolls back
+        #[cfg(debug_assertions)]
+        let (trace_mark, caller) = (osis_base::trace::len(), std::panic::Location::caller());
         // a store write's outcome was unknown (its sync failed): a commit answered `Err` may have
         // landed after all, so once the store works again everything is read as an open reads
         // it, under a fresh session (that commit's counters may be taken)
@@ -4058,6 +4062,11 @@ impl Engine {
                 self.core.walks_done = None;
                 self.core.forget_reach_since(start.reached);
                 self.core.rollback_to(start);
+                #[cfg(debug_assertions)]
+                {
+                    osis_base::trace::mark_since(trace_mark, " (rolled back)");
+                    osis_base::trace::note(|| format!("tx rolled back at {}:{}: {e:?} ({e})", caller.file().rsplit("src/").next().unwrap_or(caller.file()), caller.line()));
+                }
                 Err(e)
             }
         }
@@ -4272,6 +4281,10 @@ impl Drop for Engine {
         // nor on a half-loaded core, nor when a write's outcome is unknown (the next transaction
         // would load the store again)
         if std::thread::panicking() || self.loading || self.store.writes().unknown != self.unknown_seen {
+            return;
+        }
+        // a by-hand replay inspecting a failing world (`OSIS_NO_END_CHECKS=1`)
+        if !osis_base::testenv::end_checks() {
             return;
         }
         #[cfg(test)]

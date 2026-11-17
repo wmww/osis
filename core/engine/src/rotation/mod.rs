@@ -33,6 +33,8 @@ use std::sync::Arc;
 pub use departures::{departures_placing, may_rotate};
 pub use lost::{Dropped, Leaving, LostScope, TimedLoss, LOST_HEARD_WAIT_MS};
 pub(crate) use lost::{load_kept, without_frozen};
+#[cfg(debug_assertions)]
+pub(crate) use lost::explain_due;
 pub(crate) use departures::{departures, key_role, own_self_removal};
 pub(crate) use members::{Boxing, Sealed, grant_keyless, sealed};
 pub(crate) use lost::{boxes_kept, load_lost, may_learn, may_take_role, role_here, keys_write_unapplied, touch_held};

@@ -72,10 +72,17 @@ fn opened_in(tx: &mut Tx<'_>, t: &Tid) -> Result<Vec<(Ticket, Opened)>> {
 /// A ticket says how to sync, never caps the role: it supplies its secret and sync ID up to the
 /// lower of its own role and this one.
 pub(crate) fn role_on(core: &Core, t: &Tid) -> Option<Role> {
+    let word = words_on(core, t).into_iter().filter(|(_, counts)| *counts).map(|((_, r), _)| r).max();
+    crate::rotation::role_here(core, t).max(word)
+}
+
+/// The ticket words `role_on` reads on `t`, each (holder, role) with whether it counts: none
+/// unless `t` is accepted; a sync word counts, a read word while no held role commit reaches its
+/// holder.
+pub(crate) fn words_on(core: &Core, t: &Tid) -> Vec<((Tid, Role), bool)> {
     let words = if core.ix.closure.accepted(t) { core.ix.closure.ticket_words(t) } else { BTreeSet::new() };
     let reached = if words.iter().any(|(_, r)| *r >= Role::Read) { core.ix.held.upstream(&BTreeSet::from([*t])) } else { BTreeSet::new() };
-    let word = words.into_iter().filter(|(h, r)| *r == Role::Sync || !reached.contains(h)).map(|(_, r)| r).max();
-    crate::rotation::role_here(core, t).max(word)
+    words.into_iter().map(|(h, r)| ((h, r), r == Role::Sync || !reached.contains(&h))).collect()
 }
 
 /// What the walk's ticket step took of a thing's held tickets (`take_in`).

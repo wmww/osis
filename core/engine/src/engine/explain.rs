@@ -1,13 +1,15 @@
 //! Debug-build diagnostics for tests (notes/test-harnesses.md, Why kept and row dumps): why a
 //! thing is still held (`Engine::why_kept`, read from the retention rule's own needs) and a
-//! row-level dump of the store's local rows (`Engine::rows`).
+//! row-level dump of the store's local rows (`Engine::rows`), and the node's role on a thing and
+//! its secrets (`Engine::why_role`, read from `tickets::role_on` and `rotation::lost`'s clauses).
 
 use super::testing::family;
 use super::{Core, Engine};
 use crate::error::Result;
 use crate::retention::needed::{self, Need, Root};
 use crate::sync::units::Ctx;
-use osis_base::{CommitId, Tid};
+use osis_base::{CommitId, Role, Tid};
+use std::collections::BTreeMap;
 use std::collections::BTreeSet;
 use std::fmt::Write;
 
@@ -115,6 +117,117 @@ fn held_of(core: &Core, t: &Tid) -> String {
     out.join(", ")
 }
 
+
+/// The identities whose roles are the node's (`rotation::role_here`): its account, itself, its
+/// held key actors, each named.
+fn ours(core: &Core) -> Vec<(Tid, &'static str)> {
+    let mut out: Vec<(Tid, &'static str)> = core.member().map(|m| (m, "account")).into_iter().collect();
+    out.push((core.id.tid(), "node"));
+    out.extend(core.key_actors.keys().map(|k| (*k, "key actor")));
+    out
+}
+
+/// The widest paths into `t` over the timelines' current edges (each thing's roster now, its
+/// record edge included; with no timeline, its first admin), as `View::roles_to` walks them for
+/// `role_now`: per holder reached, its role and the next step toward `t`.
+fn widest_to(core: &Core, t: &Tid) -> BTreeMap<Tid, (Role, Option<Tid>)> {
+    let at = osis_perm::At::now(crate::flows::now_ts(core));
+    let mut best: BTreeMap<Tid, (Role, Option<Tid>)> = BTreeMap::from([(*t, (Role::Admin, None))]);
+    let mut stack = vec![*t];
+    while let Some(x) = stack.pop() {
+        let Some(&(level, _)) = best.get(&x) else { continue };
+        let holders: Vec<(Tid, Role)> = match core.timelines.on(&x) {
+            Some(on) => on.roster(at).into_iter().map(|(m, e)| (m, e.role)).collect(),
+            None => core.first_admin(&x).map(|a| (a, Role::Admin)).into_iter().collect(),
+        };
+        for (h, r) in holders {
+            let v = level.min(r);
+            if best.get(&h).is_none_or(|(b, _)| v > *b) {
+                best.insert(h, (v, Some(x)));
+                stack.push(h);
+            }
+        }
+    }
+    best
+}
+
+/// One edge of a path: holder `h` on `x`, by the role commit in force or its record edge.
+fn edge(core: &Core, h: &Tid, x: &Tid) -> String {
+    let on = core.timelines.on(x);
+    let r = match &on {
+        Some(o) => o.roster(osis_perm::At::now(crate::flows::now_ts(core))).get(h).map(|e| format!("{:?}{}", e.role, e.until.map_or(String::new(), |u| format!(" until {}", u.0)))),
+        None => Some("Admin".into()),
+    };
+    let by = match on.as_ref().and_then(|o| o.in_force(h)) {
+        Some(c) => format!("c:{}", short(&c)),
+        None if core.first_admin(x) == Some(*h) => "record edge".into(),
+        None => "no edge write in force".into(),
+    };
+    format!("-[{} {by}]->", r.unwrap_or_else(|| "?".into()))
+}
+
+/// `why_role`'s lines for `t`.
+fn role_lines(tx: &mut crate::engine::Tx<'_>, t: &Tid, out: &mut String) -> Result<()> {
+    let core = &*tx.core;
+    let role = crate::sync::tickets::role_on(core, t);
+    let commits = crate::rotation::role_here(core, t);
+    let _ = write!(out, "{}: role {role:?} (role commits {commits:?})", label(core, t));
+    if let Some(h) = core.root_holders(t) {
+        let _ = write!(out, "\n  an account root: roster {}", h.iter().map(|(m, r)| format!("{}={r:?}", label(core, m))).collect::<Vec<_>>().join(", "));
+    }
+    let paths = widest_to(core, t);
+    for (id, what) in ours(core) {
+        let (now, keyed) = (core.role_now(&id, t), core.keyed_role_now(&id, t));
+        if now.is_none() && keyed.is_none() && !paths.contains_key(&id) {
+            continue;
+        }
+        let _ = write!(out, "\n  as {what} {}: role {now:?}{}", label(core, &id), if keyed != now { format!(", {keyed:?} with key access (a keyless grant on the way)") } else { String::new() });
+        if id == *t {
+            out.push_str(" (it is the thing)");
+            continue;
+        }
+        let Some((r, _)) = paths.get(&id) else {
+            out.push_str("; no current path");
+            continue;
+        };
+        let mut steps = vec![label(core, &id)];
+        let mut x = id;
+        let mut n = 0;
+        while let Some((_, Some(next))) = paths.get(&x) {
+            steps.push(edge(core, &x, next));
+            steps.push(label(core, next));
+            x = *next;
+            n += 1;
+        }
+        let kind = match (what, n) {
+            ("account", 1) => "account, direct",
+            ("account", _) => "account, chain",
+            (_, 1) => "direct",
+            _ => "chain",
+        };
+        let _ = write!(out, "; {kind} path at {r:?}: {}", steps.join(" "));
+    }
+    // the ticket's word (`tickets::words_on`, what `role_on` reads): only while a held strong
+    // reaches `t` with a ticket opening here, and a read word only while no held role commit
+    // reaches its holder
+    let accepted = core.ix.closure.accepted(t);
+    let all = core.ix.closure.ticket_words(t);
+    if accepted || !all.is_empty() {
+        let _ = write!(out, "\n  tickets: accepted (a held strong reaches it, a ticket opens) {accepted}");
+        let counted = crate::sync::tickets::words_on(core, t);
+        for (h, r) in &all {
+            let why = match counted.iter().find(|(w, _)| *w == (*h, *r)) {
+                None => "does not count: not accepted",
+                Some((_, true)) if *r == Role::Sync => "counts: a sync word",
+                Some((_, true)) => "counts: no held role commit reaches its holder",
+                Some((_, false)) => "does not count: a held role commit reaches its holder, the role commits decide",
+            };
+            let _ = write!(out, "\n    word {r:?} boxed to {}: {why}", label(core, h));
+        }
+    }
+    Ok(())
+}
+
 impl Engine {
     /// Debug builds: why `t` is still held, from the retention rule's own needs
     /// (`retention::needed::search`): rooted (in the node closure, by its path of strongs from
@@ -155,6 +268,37 @@ impl Engine {
             })
         });
         r.unwrap_or_else(|e| format!("{t}: why_kept failed: {e:?}"))
+    }
+
+    /// Debug builds: the node's role on `t` and its secrets, read from the rule's own code
+    /// (notes/test-harnesses.md, Why kept and row dumps): the role `tickets::role_on` gives and
+    /// the role commits' (`rotation::role_here`); per identity of the node (account, itself, key
+    /// actors) its role and the widest current path to `t` (direct, chain, account),
+    /// each edge by the role commit in force or the record edge; each held ticket's word and why
+    /// it counts or not; the secrets held of the actor `t`'s derive from, with that actor's role
+    /// when it is another, and `lost_due`'s clauses (without its side effects).
+    #[doc(hidden)]
+    pub fn why_role(&mut self, t: &Tid) -> String {
+        let t = *t;
+        let r = osis_base::costs::paused(|| {
+            osis_base::memo::unrecorded(|| {
+                self.read(|tx| {
+                    let mut out = String::new();
+                    role_lines(tx, &t, &mut out)?;
+                    let a = tx.core.secret_actor(&t).unwrap_or(t);
+                    if a != t {
+                        let _ = write!(out, "\n  secrets derive from {}; its role:\n  ", label(tx.core, &a));
+                        let mut sub = String::new();
+                        role_lines(tx, &a, &mut sub)?;
+                        out.push_str(&sub.replace('\n', "\n  "));
+                    }
+                    let due = crate::rotation::explain_due(tx, &a)?;
+                    let _ = write!(out, "\n  lost access ({}): {due}", label(tx.core, &a));
+                    Ok(out)
+                })
+            })
+        });
+        r.unwrap_or_else(|e| format!("{t}: why_role failed: {e:?}"))
     }
 
     /// Debug builds: the store's local rows whose family starts with `prefix` and, with `tid`,

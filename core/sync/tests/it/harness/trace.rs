@@ -1,7 +1,8 @@
 //! The opt-in per-node trace (notes/sync-test-harness.md, Trace): `OSIS_SYNC_TRACE=<nodes>[:<only>]`
 //! prints, for each delivery to a named node, what it received, what it sent (decoded messages,
 //! after any lie), and what the step applied (store entries and engine commits gained or lost),
-//! plus each script step played. `<nodes>` is `all` or node indices joined by `,`; `<only>`,
+//! plus each script step played, and what the engine and node noted (`osis_base::trace`: a
+//! body's verdict moving, lost access firing, a transaction refused). `<nodes>` is `all` or node indices joined by `,`; `<only>`,
 //! tokens joined by `,`, keeps the lines holding any of them: `t<k>` stands for thing k's sync
 //! IDs (as `S` and 6 hex digits), any other token is matched as text (`S1a2b3c`, `B..`, `Stream`).
 //! Off (unset), the world holds no tracer and pays one branch per delivery. Lines are a function
@@ -121,6 +122,12 @@ impl Tracer {
             self.lines.push(format!("n{i} -commit {}", brief(&format!("{c:?}"))));
         }
         self.held.insert(i, Held { entries, commits });
+    }
+
+    /// Lines node `i`'s engine and node noted (`World::noted`; `None`: outside a step).
+    pub fn noted(&mut self, i: Option<usize>, lines: Vec<String>) {
+        let who = i.map_or("n?".to_string(), |i| format!("n{i}"));
+        self.lines.extend(lines.into_iter().map(|l| format!("{who} {}", brief(&l))));
     }
 
     /// Node `i` restarted: its connections' frames are gone.

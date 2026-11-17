@@ -427,6 +427,12 @@ fn drop_actors(tx: &mut Tx<'_>, mut lost: Vec<Tid>, dropped: &[Tid], rejudge: bo
         // lowered to sync: its sync secrets stay, so it is kept unread, and D's sync ticket for it
         // follows (spec/sync-judgement.md §6 Read and unread move, spec/sync-set.md §1)
         let sync = tx.core.ix.secrets.get(a).filter(|_| holds_at(tx.core, a, Role::Sync)).map(|e| e.role(Role::Sync).clone()).filter(|r| r.holds_any());
+        #[cfg(debug_assertions)]
+        osis_base::trace::note(|| {
+            let went = tx.core.ix.secrets.get(a).map_or("none".into(), |e| secrets_brief(e, sync.is_some()));
+            let copy = kept.get(a).map_or(String::new(), |v| format!(", read-only copy kept via {}", v.iter().map(Tid::to_string).collect::<Vec<_>>().join(",")));
+            format!("lost access {a}: secrets dropped {went}{}{copy}", if sync.is_some() { ", sync kept (unread)" } else { "" })
+        });
         match sync {
             Some(r) => {
                 let mut kept = ActorEpochs::default();
@@ -759,4 +765,50 @@ impl Engine {
     pub fn forget_lost(&mut self, scope: LostScope<'_>) -> Result<Dropped> {
         self.run(|tx| drop_scope(tx, scope))
     }
+}
+
+/// Debug builds: the secrets `e` holds per role, as `read[3,4]`; `keep_sync`: its sync ones stay.
+#[cfg(debug_assertions)]
+pub(crate) fn secrets_brief(e: &ActorEpochs, keep_sync: bool) -> String {
+    let roles: Vec<String> = ROLES.iter().filter(|r| !(keep_sync && **r == Role::Sync)).filter_map(|r| {
+        let ns: Vec<String> = e.role(*r).epochs().filter(|(_, i)| i.secret.is_some()).map(|(ep, i)| format!("{}{}", ep.n(), if i.checked().is_some() { "" } else { "?" })).collect();
+        (!ns.is_empty()).then(|| format!("{}[{}]", format!("{r:?}").to_lowercase(), ns.join(",")))
+    }).collect();
+    if roles.is_empty() { "none".into() } else { roles.join(" ") }
+}
+
+/// Debug builds (`Engine::why_role`): `Engine::lost_due`'s judgement of `a` read without its
+/// side effects, clause by clause (`due_now`, `timed_now`).
+#[cfg(debug_assertions)]
+pub(crate) fn explain_due(tx: &mut Tx<'_>, a: &Tid) -> Result<String> {
+    let core = &*tx.core;
+    let Some(e) = core.ix.secrets.get(a) else { return Ok("not due: no secrets of it held".into()) };
+    let over = over_held(core, a);
+    let seen = loss_seen(core, a);
+    let lost = !judge(core, vec![*a]).is_empty();
+    let timed = lost_by_time(core, a);
+    let mut out = format!("held {}; over-held (a secret no role covers) {over}; loss seen {seen}; judged lost {lost}", secrets_brief(e, false));
+    if lost {
+        out.push_str(&format!("; by an until alone {timed}"));
+    }
+    if over && !lost {
+        let why = if contested(core, a) { "an unfinalized link race on it" } else { "a pending grant or contested holder reaching it (`judge`)" };
+        out.push_str(&format!(" (kept by {why})"));
+    }
+    let leaving = own_leaving(tx, a)?;
+    let waiting: Vec<String> = leaving.iter().filter(|c| tx.core.ix.held_wait.contains(c)).map(|c| format!("{c:?}")).collect();
+    if !leaving.is_empty() {
+        out.push_str(&format!("; own self-removals behind it {}, waiting for sync {waiting:?}", leaving.len()));
+    }
+    let due = due_now(tx, a)?;
+    let timed_due = timed_now(tx, a)?;
+    out.push_str(&match (due, timed_due) {
+        (true, _) => "; DUE (sync drops it once a complete pass after the cause ends: `lost_passed`)".to_string(),
+        (false, true) => "; not due: lost by an until alone, left to sync (`lost_timed`)".to_string(),
+        (false, false) if !over => "; not due: its roles cover every secret held".to_string(),
+        (false, false) if !seen => "; not due: nothing held says it lost it (no ended or lowered edge of ours reaching it, no role shown)".to_string(),
+        (false, false) if !lost => "; not due: kept (above)".to_string(),
+        (false, false) => "; not due: an own self-removal behind it waits for sync (`removal_done`)".to_string(),
+    });
+    Ok(out)
 }
