@@ -1474,7 +1474,9 @@ impl Engine {
                 let snaps: Vec<CommitId> = tx.core.ix.snapshots.get(&(tid, ak.clone())).into_iter().flatten().map(|x| x.1).filter(|s| *s != c).collect();
                 let mut done = false;
                 for s in snaps {
-                    if snapshot::drops_under(tx, &s, &c, &tid, &ak)? && !own_kept_under(tx, &s, &c, &tid, &ak)? {
+                    // a part never received holds nothing to keep: any cover drops it,
+                    // another node's own cover too (spec/commits.md §5 Covered)
+                    if snapshot::drops_under(tx, &s, &c, &tid, &ak)? && (missing || !own_kept_under(tx, &s, &c, &tid, &ak)?) {
                         done = true;
                         break;
                     }

@@ -176,7 +176,7 @@ Every delta carries **retention** on the wire: who may purge it (its purgeable-b
   - A delta with an expiry held with its values is judged by the join like any body: a snapshot carries its values value-less (spec/crdt.md §8), so covers it only once none of them lives. One not held is not covered until the node holds it value-less (past T, spec/crdt.md §4.7); from then on its leftover is judged by the join.
   - A snapshot written from a node's whole state of an aspect covers every body of it the node had applied, except a delta with an expiry holding a live value and a `secrets.0` delta writing a record the snapshot leaves out (spec/crypto.md §4).
 - A cover drops a delta's body only when it covers it and the body is past its keep bounds (judged per delta; Keep bounds): a live delta (The setting, Kept while live) as a replaced one, durable or ephemeral alike.
-- A snapshot marked as an own cover (spec/permissions.md §5.1, §5.5, Own cover) drops a body only at the node that wrote it, its removal or rotation held or not: it stands on that removal or rotation, which may fall.
+- A snapshot marked as an own cover (spec/permissions.md §5.1, §5.5, Own cover) drops a held body only at the node that wrote it, its removal or rotation held or not: it stands on that removal or rotation, which may fall. A delta never received (below) drops under it at any node, as under any cover: nothing held is lost.
 - Limit: a snapshot cannot give back what it replaced. A dropped delta's values live on as its cover's copies, which a purge request naming it holds value-less (Purge); but once dropped, a purge that later falls, or another later judgment that would read the delta alone, restores nothing beyond those copies.
 
 ### Own replaces
