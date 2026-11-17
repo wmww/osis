@@ -6,7 +6,7 @@
 The module notes (notes/sync-*.md) point here. Untested built parts: issues/sync-tests-owed.md.
 
 ## Security
-- **Role changes travel** (spec/permissions.md §4) under the holder A's own sync ID only (`Engine::held_on`), not also under the sync ID of each thing whose keys open A (an account root holding a link's K): a node reading A only that way sees A's removal late.
+- **Role changes travel** (spec/permissions.md §4, spec/sync-judgement.md §2) under the holder A's home only (`Piece::Holder`, `Engine::holder_home_on` in engine/sync/certified.rs: A when read, else its account root), not also under the sync ID of each read thing whose keys open A (`Core::keys_open`: an account root holding a link's K), nor with the role records of the grant chain by which it opens A: a node reading A only that way sees A's removal late. Needs the read things whose keys open A, followed as reads move (no reverse of `reads_now` is indexed), so `Followers::held_on` keys a set of homes.
 - **Deposit-only steps** (a refreshed seed, no newer role epoch) are issued without the waits of spec/permissions.md §3 and spec/sync-ids.md §6 (every entry it can open opened at the sources it reaches; no valid `keys.0` part of the actor missing; `flows::sync_ids::due_at`).
 - **Connection diagnostics** share one local rate bucket and never dedup (each names its connection, `dN`/`aN`): a peer opening and dropping connections pushes out real connection and dial-failure reports. Key them per remote.
 
