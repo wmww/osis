@@ -2770,8 +2770,8 @@ fn a_held_grant_again_after_a_self_removal_serves_the_state_held_spec_perm_3() {
     assert_eq!(*kept, fresh, "served after a restart");
 }
 
-// spec/permissions.md §3 (No secret taken back), spec/crypto.md §4 (an epoch's history is what
-// the live entries of its history box say): admin A removes admin W, and W, unaware, rotates G.
+// spec/permissions.md §3 (No secret taken back), spec/crypto.md §4 (Reading-only secrets: a
+// secret learned only from an invalid commit, its history boxes too): admin A removes admin W, and W, unaware, rotates G.
 // A's removal arrives: it strips W's rotation's entries and keeps W's view of G as it was (W's
 // roles give it nothing). A grants W read again: W's view of G is then what its store loaded
 // afresh gives (its own epoch with no history: `check_index`). Fails when a role kept out is

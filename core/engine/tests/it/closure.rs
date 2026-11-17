@@ -925,7 +925,7 @@ fn an_ephemeral_strong_going_lets_its_target_go_spec_commits_5() {
     assert!(e0.core.created(&q).is_none(), "nothing held needs Q's chain");
 }
 
-// spec/sync-set.md §3 Release, spec/commits.md §5 (an expired part is held as its leftover): one
+// spec/sync-set.md §3 Release, spec/commits.md §5 (any other commit keeps its header: a held leftover is a part): one
 // commit writes X's register and puts an element on held T's list, expiring; past its expiry
 // both parts are leftovers (T's list keeps the element's record, value-less). X leaves the node
 // closure and is released: the commit loses X's part only, so T reads as its held bodies give
