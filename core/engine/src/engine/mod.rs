@@ -745,7 +745,7 @@ indexes! {
     pub epochs: JMap<Tid, Arc<crate::flows::account::JudgedEpochs>>,
     /// Per held role commit at an epoch, its inner and merge signatures (spec/wire.md §4), read
     /// when the chain is built (`Core::account_view`; `note_role_sigs`). Not persisted: an open
-    /// reads them from the role commits' records.
+    /// decodes them from the signature items it reads with each record's header bytes.
     pub role_sigs: JMap<CommitId, Arc<RoleSigs>>,
     /// Held commits of accounts per (account, epoch they are signed at).
     pub by_epoch: JSetMap<(Tid, CommitId), CommitId>,

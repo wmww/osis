@@ -1310,3 +1310,31 @@ fn losing_access_forgets_what_was_lost() {
     let (a, b) = (lost_forget(3), lost_forget(30));
     assert!(a > 0 && a == b, "commits looked at, with 3 own commits elsewhere {a}, with 30 {b}");
 }
+
+/// Alice grants bob read on her thing and removes him `n` times (each a role commit at her
+/// account's epoch); the commit records an open of her store decodes.
+fn open_role_reads(n: usize) -> u64 {
+    use crate::flows::{edge_of, people, thing_of};
+    let (mut lp, ps) = people(2);
+    let d = thing_of(&mut lp, 0, ps[0]);
+    for _ in 0..n {
+        lp.peers[0].engine.grant(&d, &ps[1], &edge_of(Role::Read)).unwrap();
+        lp.advance(10);
+        lp.peers[0].engine.demote(&d, &osis_engine::flows::Demotion { holder: ps[1], new: None, retain: None }).unwrap();
+        lp.advance(10);
+    }
+    let e = &mut lp.peers[0].engine;
+    osis_base::costs::take();
+    e.reload().unwrap();
+    let cs = osis_base::costs::take();
+    e.check_index();
+    cs.iter().filter(|c| c.0 == "commit read").map(|c| c.2).sum()
+}
+
+// notes/engine-store.md `c/` (an open decodes no commit record): the role commits' signatures
+// (`Indexes::role_sigs`) come with the header bytes an open reads, at n and 10n role commits.
+#[test]
+fn an_open_decodes_no_role_commit_record() {
+    let (a, b) = (open_role_reads(3), open_role_reads(30));
+    flat("open: commit records decoded", a, b);
+}

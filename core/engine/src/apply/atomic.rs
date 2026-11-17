@@ -71,10 +71,10 @@ pub(crate) fn forget_snapshot(core: &mut Core, tid: &Tid, ak: &Ak, id: &CommitId
 /// commit at an epoch, whatever is known of its author or the things it is on when it applies.
 /// The signing chain decides which are an account's on its account root when it reads them
 /// (`Core::devices_read`), so the order commits arrive in records nothing differently.
-pub(crate) fn note_role_sigs(core: &mut Core, h: &osis_commit::Header, id: &CommitId, sigs: &osis_commit::Sigs) {
+pub(crate) fn note_role_sigs(core: &mut Core, kind: osis_commit::Kind, at_epoch: bool, id: &CommitId, sigs: &osis_commit::Sigs) {
     // a rotation is a role commit at an epoch (`osis_commit::validate`): what an open reads back
-    // from the records (`index::load`)
-    if h.kind == osis_commit::Kind::Role && h.epoch.is_some() && (sigs.inner.is_some() || !sigs.merge.is_empty()) {
+    // from the records' signature items (`index::load`)
+    if kind == osis_commit::Kind::Role && at_epoch && (sigs.inner.is_some() || !sigs.merge.is_empty()) {
         core.ix.role_sigs.insert(*id, Arc::new(crate::engine::RoleSigs { inner: sigs.inner, more: sigs.more.clone(), merge: sigs.merge.clone() }));
     }
 }
@@ -583,7 +583,7 @@ pub(crate) fn apply_verified(tx: &mut Tx<'_>, blob: &CommitBlob, parts: Parts, o
         );
     }
     index_commit(tx.core, &id, &view);
-    note_role_sigs(tx.core, &blob.header, &id, &blob.sigs);
+    note_role_sigs(tx.core, blob.header.kind, blob.header.epoch.is_some(), &id, &blob.sigs);
     validity::note_addenda(tx.core, &h, &id, &parts.whole);
     if tx.core.accounts.contains_key(&h.author) && origin == Origin::Remote {
         tx.core.signing_due = true;

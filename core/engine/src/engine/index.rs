@@ -1028,7 +1028,11 @@ pub(crate) fn load(tx: &mut Tx<'_>) -> Result<()> {
         // the blob is `[header, signature, parts]`: its first item
         let lim = osis_base::Limits { max_depth: osis_base::format::MAX_OBJECT_DEPTH, max_bytes: blob.len() };
         let hb = osis_base::item_prefix(blob.get(1..).unwrap_or_default(), &lim).map_err(|_| Error::Corrupt("commit record header"))?;
-        recs.push((id, head, Box::<[u8]>::from(hb)));
+        // the signatures follow the header: an account's role commits' are an index
+        // (`Indexes::role_sigs`), kept where an inner or merge signature is carried
+        let sigs = osis_commit::Sigs::read_stored(blob.get(1 + hb.len()..).unwrap_or_default()).map_err(|_| Error::Corrupt("commit record signatures"))?;
+        let sigs = (sigs.inner.is_some() || !sigs.merge.is_empty()).then_some(sigs);
+        recs.push((id, head, Box::<[u8]>::from(hb), sigs));
         Ok(())
     })?;
     drop(hs);
@@ -1040,7 +1044,7 @@ pub(crate) fn load(tx: &mut Tx<'_>) -> Result<()> {
         Ok(())
     })?;
     let fault = tx.core.header_fault.clone();
-    for (id, mut head, bytes) in recs {
+    for (id, mut head, bytes, sigs) in recs {
         let row = rows.remove(&id).ok_or(Error::Corrupt("meta row missing"))?;
         let (parts, view) = parse_meta_row(&row)?;
         let mut valid = Vec::with_capacity(parts.len());
@@ -1070,6 +1074,9 @@ pub(crate) fn load(tx: &mut Tx<'_>) -> Result<()> {
             return Err(Error::Corrupt("meta row"));
         }
         crate::apply::index_commit(tx.core, &id, &view);
+        if let Some(s) = &sigs {
+            crate::apply::note_role_sigs(tx.core, view.kind, view.epoch.is_some(), &id, s);
+        }
         tx.core.put_meta(id, Meta { view, header, received: head.received, origin: head.origin, repair: head.repair.clone(), signed: head.signed, valid, hold });
         crate::apply::note_stands_in(tx.core, &id);
         tx.core.index_validity(&id);
@@ -1098,14 +1105,6 @@ pub(crate) fn load(tx: &mut Tx<'_>) -> Result<()> {
     }
     for (k, v) in scan::<Tid>(tx, EPOCHS)? {
         tx.core.ix.epochs.insert(k, dec(&v)?);
-    }
-    // the role commits' signatures from their records (`Indexes::role_sigs`): a table of them
-    // would cost a store page per role commit applied (issues/role-sigs-open-reads.md)
-    let role: Vec<CommitId> = tx.core.ix.commits.iter().filter(|(_, m)| m.view.kind == osis_commit::Kind::Role && m.view.epoch.is_some()).map(|(c, _)| *c).collect();
-    for id in role {
-        if let Some(b) = tx.get_commit(&id)? {
-            crate::apply::note_role_sigs(tx.core, &b.header, &id, &b.sigs);
-        }
     }
     // the epochs as persisted are judged: every change was before the index was written
     let due: Vec<Tid> = tx.core.ix.epochs_due.iter().copied().collect();

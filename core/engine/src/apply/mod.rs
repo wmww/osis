@@ -2049,7 +2049,7 @@ pub(crate) fn load(tx: &mut Tx<'_>, rebuild: bool) -> Result<Option<Vec<(Tid, os
                 parts.push((p.ai, (*decoded_part(tx, &b.header, &id, at, p)?).clone()));
             }
             let read = PartsRead::of(&b.header, &parts);
-            atomic::note_role_sigs(tx.core, &b.header, &id, &b.sigs);
+            atomic::note_role_sigs(tx.core, b.header.kind, b.header.epoch.is_some(), &id, &b.sigs);
             validity::note_required(tx.core, &b.header, &id, &read);
             validity::note_settings(tx.core, &b.header, &id, &parts);
             validity::note_addenda(tx.core, &b.header, &id, &parts);

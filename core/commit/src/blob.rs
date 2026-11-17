@@ -110,6 +110,15 @@ impl Sigs {
         let merge = item::list(mv)?.iter().map(|s| Ok(Signature::from_value(&s.to_value()?)?)).collect::<Result<Vec<_>, Error>>()?;
         Ok(Sigs { signature, inner, more, merge })
     }
+
+    /// The signatures of a stored blob (`CommitBlob::decode_stored`'s input), from its bytes past
+    /// the array head and the header item: an open reads them with the header bytes, decoding
+    /// neither the header nor the parts.
+    pub fn read_stored(b: &[u8]) -> Result<Sigs, Error> {
+        let mut r = osis_base::cbor::Reader::new(b);
+        let mut next = || -> Result<Item, Error> { Ok(Item::parse(r.item()?, &LIMITS)?) };
+        Sigs::read(next()?, next()?, next()?)
+    }
 }
 
 impl CommitBlob {
