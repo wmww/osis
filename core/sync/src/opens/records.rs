@@ -134,7 +134,7 @@ fn encode_member(m: &Member, basis: Option<&[u8; 32]>) -> Vec<u8> {
     }
     match m.until {
         Some(p) => {
-            w.push(1);
+            w.push(if m.departed { 2 } else { 1 });
             w.extend_from_slice(&p.to_be_bytes());
         }
         None => w.push(0),
@@ -160,10 +160,15 @@ fn decode_member(v: &[u8]) -> Res<(Member, Option<[u8; 32]>)> {
         6 => Credential::J,
         _ => return Err(corrupt()),
     };
-    let until = if r.u8()? == 1 { Some(r.u64()?) } else { None };
+    let (until, departed) = match r.u8()? {
+        0 => (None, false),
+        1 => (Some(r.u64()?), false),
+        2 => (Some(r.u64()?), true),
+        _ => return Err(corrupt()),
+    };
     let basis = r.opt32()?;
     r.end()?;
-    Ok((Member { class, own, by, until }, basis))
+    Ok((Member { class, own, by, until, departed }, basis))
 }
 
 /// Record `id` as its rows hold it: none once it is gone. O(its members and its filter's

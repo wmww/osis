@@ -407,7 +407,7 @@ mod tests {
             osis_store::Named::default()
         }
         fn member(&self, conn: ConnId, s: &SyncId) -> Option<crate::opens::Member> {
-            self.0.get(&(conn, *s)).map(|class| crate::opens::Member { class: *class, own: crate::types::SourceClass::Reader, by: crate::types::Credential::SyncKey, until: None })
+            self.0.get(&(conn, *s)).map(|class| crate::opens::Member { class: *class, own: crate::types::SourceClass::Reader, by: crate::types::Credential::SyncKey, until: None, departed: false })
         }
         fn head(&self, _: ConnId, _: &SyncId) -> Option<osis_blob::StepId> {
             None

@@ -738,14 +738,18 @@ impl Engine {
         Ok(out)
     }
 
-    /// Whether read epoch `epoch` of one of `s`'s things covers every departure this node knows
-    /// from it (spec/sync-opens.md §4: a departed peer opens by a read secret only of an epoch
-    /// that does not cover its departure). False for a sync ID this node does not read.
+    /// Whether `epoch` of one of `s`'s things, of the role it is an epoch of (a read secret's read,
+    /// a sync key's or proof's sync), covers every departure this node knows from it
+    /// (spec/sync-opens.md §4 Departed: a departed peer opens only by a credential at an epoch
+    /// covering its departure). False for a sync ID this node does not read.
     pub fn covers_departures(&mut self, s: &SyncId, epoch: Epoch) -> Result<bool> {
+        use osis_base::Role;
         for t in self.sync_things_of(s)? {
             let a = self.core.reader_of(&t);
             let deps = self.departures(&a)?;
-            if !self.read(|tx| crate::rotation::uncovered(tx, &a, osis_base::Role::Read, &epoch, &deps))? {
+            // an epoch is of one role: the other finds it uncovering nothing
+            let uncovered = |tx: &mut crate::engine::Tx<'_>, r: Role| crate::rotation::uncovered(tx, &a, r, &epoch, &deps);
+            if !self.read(|tx| Ok(uncovered(tx, Role::Read)? || uncovered(tx, Role::Sync)?))? {
                 return Ok(true);
             }
         }

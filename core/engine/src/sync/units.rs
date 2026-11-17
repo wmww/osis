@@ -126,6 +126,9 @@ pub struct Closure {
     /// Per thing a held strong reaches whose read secret is not established here, the sync IDs
     /// and roles of the held tickets for it the node can open, as last judged (`judge`).
     ticket_ids: JMap<Tid, BTreeSet<(osis_base::SyncId, Role)>>,
+    /// Per thing as `ticket_ids`, each such ticket's holder and word (`tickets::Taken::words`):
+    /// what `tickets::role_on` reads.
+    ticket_words: JMap<Tid, BTreeSet<(Tid, Role)>>,
     /// Per sync ID, the things whose `ticket_ids` name it.
     by_ticket_id: JSetMap<osis_base::SyncId, Tid>,
     /// The ticket step's openers: per thing whose held tickets the walk last took, the holders
@@ -163,6 +166,7 @@ impl Default for Closure {
             rows: JSet::default(),
             rejudge: JSet::default(),
             ticket_ids: JMap::default(),
+            ticket_words: JMap::default(),
             by_ticket_id: JSetMap::default(),
             openers: JSetMap::default(),
             by_opener: JSetMap::default(),
@@ -218,9 +222,10 @@ impl Follow {
 }
 
 impl Journaled for Closure {
-    type Mark = ([usize; 4], [usize; 4], [usize; 14]);
+    type Mark = ([usize; 4], [usize; 4], [usize; 15]);
     fn commit(&mut self) {
         self.ticket_ids.commit();
+        self.ticket_words.commit();
         self.by_ticket_id.commit();
         self.openers.commit();
         self.by_opener.commit();
@@ -238,7 +243,7 @@ impl Journaled for Closure {
         self.cut.commit();
     }
     fn mark(&mut self) -> Self::Mark {
-        (self.tree.mark(), self.synced.mark(), [self.out.mark(), self.inn.mark(), self.moved.mark(), self.rows.mark(), self.rejudge.mark(), self.members.mark(), self.left.mark(), self.cut.mark(), self.ticket_ids.mark(), self.by_ticket_id.mark(), self.fires_due.mark(), self.openers.mark(), self.by_opener.mark(), self.accepted.mark()])
+        (self.tree.mark(), self.synced.mark(), [self.out.mark(), self.inn.mark(), self.moved.mark(), self.rows.mark(), self.rejudge.mark(), self.members.mark(), self.left.mark(), self.cut.mark(), self.ticket_ids.mark(), self.by_ticket_id.mark(), self.fires_due.mark(), self.openers.mark(), self.by_opener.mark(), self.accepted.mark(), self.ticket_words.mark()])
     }
     fn rollback_to(&mut self, (t, s, m): Self::Mark) {
         self.tree.rollback_to(t);
@@ -257,6 +262,7 @@ impl Journaled for Closure {
         self.openers.rollback_to(m[11]);
         self.by_opener.rollback_to(m[12]);
         self.accepted.rollback_to(m[13]);
+        self.ticket_words.rollback_to(m[14]);
     }
     fn name(&mut self, _name: &'static str) {
         self.tree.name("index: closure held");
@@ -265,6 +271,7 @@ impl Journaled for Closure {
         self.left.name("index: closure left");
         self.cut.name("index: closure cut");
         self.ticket_ids.name("index: closure ticket ids");
+        self.ticket_words.name("index: closure ticket words");
         self.by_ticket_id.name("index: closure by ticket id");
         self.openers.name("index: closure ticket openers");
         self.by_opener.name("index: closure by ticket opener");
@@ -460,6 +467,22 @@ impl Closure {
     /// The sync IDs and roles of the held tickets for `t` the node can open, as last judged.
     pub(crate) fn ticket_ids(&self, t: &Tid) -> BTreeSet<(osis_base::SyncId, Role)> {
         self.ticket_ids.get(t).cloned().unwrap_or_default()
+    }
+
+    /// The holders and words of the held tickets for `t` the node can open, as last judged.
+    pub(crate) fn ticket_words(&self, t: &Tid) -> BTreeSet<(Tid, Role)> {
+        self.ticket_words.get(t).cloned().unwrap_or_default()
+    }
+
+    /// Sets `t`'s ticket words (`ticket_words`) to `words`.
+    pub(crate) fn set_ticket_words(&mut self, t: Tid, words: BTreeSet<(Tid, Role)>) {
+        if self.ticket_words(&t) == words {
+            return;
+        }
+        match words.is_empty() {
+            true => drop(self.ticket_words.remove(&t)),
+            false => drop(self.ticket_words.insert(t, words)),
+        }
     }
 
     /// The things whose held tickets name sync ID `s`.
@@ -849,12 +872,12 @@ fn given_by(core: &Core, v: Vx, y: Tid) -> BTreeSet<Vx> {
         out.insert((e, y));
     }
     // no own keys here: entered on a ticket's word, where a ticket was taken, at the node's
-    // role (`tickets::entry_role`, read again here so a role change judges the edge again), by a
+    // role (`tickets::role_on`, read again here so a role change judges the edge again), by a
     // secret of that role held: read fetches under the tickets' sync IDs (spec/sync-inbox.md §5
     // Ticket sync IDs), none of its data held for it; sync keeps them unread
     if !keyed {
         let best = core.ix.closure.ticket_ids(&y).into_iter().map(|(_, r)| r).max();
-        let role = best.and_then(|k| super::tickets::entry_role(core, &y, k));
+        let role = best.and_then(|k| Some(super::tickets::role_on(core, &y)?.min(k)));
         let holds = |r: Role| core.ix.secrets.get(&y).is_some_and(|e| e.role(r).holds_any());
         if role >= Some(Role::Read) && holds(Role::Read) {
             out.insert((Ctx::Ticket(y), y));
@@ -940,6 +963,7 @@ fn settle_with(tx: &mut Tx<'_>, f: &mut Follow, rv: Vx) -> Result<()> {
                 // thing moving between contexts is dropped from one before it is held in the next
                 if !cl.tree.held.contains_key(&t) {
                     cl.set_ticket_ids(t, BTreeSet::new());
+                    cl.set_ticket_words(t, BTreeSet::new());
                     cl.set_openers(t, BTreeSet::new());
                 }
                 if !cl.holds(&t) {
@@ -991,7 +1015,7 @@ fn judge(tx: &mut Tx<'_>, f: &mut Follow, v: Vx, y: Tid) -> Result<BTreeSet<Vx>>
     let ticketed = !tx.core.is_key_actor(&y) && !tx.core.reads_established(&y) && !tx.core.keys_open_from(v.0, &y);
     let mut any = false;
     if ticketed {
-        let taken = super::tickets::take_in(tx, &y)?;
+        let taken = super::tickets::take_in(tx, &y, v)?;
         tx.core.ix.closure.set_ticket_ids(y, taken.ids);
         tx.core.ix.closure.set_openers(y, taken.openers);
         any = taken.opened;
@@ -1033,7 +1057,7 @@ fn refetch(tx: &mut Tx<'_>, v: Vx, y: Tid, ticketed: bool) -> Result<()> {
 
 /// Notes whether `v`'s strong to `y` counts for `Closure::accepted`; `y` losing its last is
 /// judged for what it still needs (`retention::needed`).
-fn set_accepted(tx: &mut Tx<'_>, y: Tid, v: Vx, on: bool) {
+pub(crate) fn set_accepted(tx: &mut Tx<'_>, y: Tid, v: Vx, on: bool) {
     if tx.core.ix.closure.set_accepted(y, v, on) {
         tx.core.note_lost(y);
     }

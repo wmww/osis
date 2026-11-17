@@ -100,3 +100,24 @@ fn a_head_move_restamps_own_entries_and_readers_deposit_nothing_spec_sync_judgem
         assert!(!blobs.iter().chain(w.engine(2).commit_blobs(c).unwrap().iter()).any(|b| w.store(2).entry(&s, b).unwrap().is_some_and(|e| e.own && e.deposited)), "node 2 deposits no rotation {c:?}");
     }
 }
+
+// spec/sync-opens.md §6 (a store source whose peer J judges departed is ended, and this side
+// registers there past its keys), spec/sync-judgement.md §6 (Stops): node 1 keeps t's sync ID S
+// unread and node 2 reads it. Node 0 removes node 1's account while cut off from node 1, so only
+// node 2, learning the removal from node 0, can tell node 1: it registers the removal's step
+// there, and node 1 drops its copy.
+#[test]
+fn a_reader_moves_a_removed_store_past_its_keys_spec_sync_opens_6() {
+    use crate::harness::Step::*;
+    use crate::harness::history::{Gives, Holder, world};
+    let mut w = world(0, 3);
+    w.cap = 20_000;
+    let _ = crate::harness::play(&mut w, &[New(0), Grant(0, 0, 1, Gives::Syncs), Grant(0, 0, 2, Gives::Reads), Run, Run], String::new());
+    let t = w.history.things[0].0;
+    let s = w.engine(0).home_sync_id(&t).unwrap().unwrap();
+    assert_eq!(w.engine(1).sync_holder(&s).unwrap(), Some(([t].into(), Holding::Unread)));
+    assert!(!w.store(1).entries(&s).unwrap().is_empty(), "node 1 keeps S");
+    w.partition(0, 1);
+    let _ = crate::harness::play(&mut w, &[Revoke(0, 0, Holder::Node(1)), Run], String::new());
+    assert!(w.store(1).entries(&s).unwrap().is_empty(), "node 1 stopped: {} entries kept", w.store(1).entries(&s).unwrap().len());
+}

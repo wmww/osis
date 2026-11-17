@@ -166,7 +166,7 @@ impl T {
     }
 
     fn join(&mut self, c: ConnId, s: SyncId, class: SourceClass) {
-        self.net.members.insert((c, s), Member { class, own: SourceClass::Reader, by: Credential::SyncKey, until: None });
+        self.net.members.insert((c, s), Member { class, own: SourceClass::Reader, by: Credential::SyncKey, until: None, departed: false });
         let _ = Moved::Joined(c, s, osis_sync::opens::Rejoin::Held);
         self.offers.joined(c, &s, &self.net);
         self.settle();

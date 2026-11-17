@@ -401,3 +401,25 @@ fn stripped_history_entry_leaves_nothing_spec_crypto_4() {
     assert!(!x.read.epochs().any(|(_, i)| i.names.contains(&odd)), "the stripped entry names nothing at X");
     assert_eq!(inputs(&x), inputs(&a), "X and A read the epochs alike");
 }
+
+// spec/sync-opens.md §4 (Departed: toward a departed peer a credential counts only at an epoch
+// covering every departure), spec/crypto.md §4 (Covers): a sync key's epoch is judged as the sync
+// epoch it is. W, a sync holder, is removed: the sync epoch it held covers nothing of its
+// departure, the one the removal's rotation made covers it, as does the read epoch W never held.
+#[test]
+fn a_sync_epoch_covers_a_departure_only_once_rotated_spec_sync_opens_4() {
+    let (mut lp, g, tids) = shape(Role::Sync);
+    let a = &mut lp.peers[A].engine;
+    let s = a.home_sync_id(&g).unwrap().unwrap();
+    let sync0 = a.epochs(&g).unwrap().role(Role::Sync).current();
+    a.demote(&g, &Demotion { holder: tids[W], new: None, retain: None }).unwrap();
+    let after = a.epochs(&g).unwrap();
+    let (sync1, read) = (after.role(Role::Sync).current(), after.role(Role::Read).current());
+    assert!(sync1 != sync0, "the removal rotated sync");
+    for e in &sync0 {
+        assert!(!a.covers_departures(&s, *e).unwrap(), "{e:?}, held by W, covers its departure");
+    }
+    for e in sync1.iter().chain(&read) {
+        assert!(a.covers_departures(&s, *e).unwrap(), "{e:?} does not cover W's departure");
+    }
+}

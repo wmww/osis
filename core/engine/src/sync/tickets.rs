@@ -61,23 +61,26 @@ fn opened_in(tx: &mut Tx<'_>, t: &Tid) -> Result<Vec<(Ticket, Opened)>> {
     Ok(held_in(tx, t)?.into_iter().filter_map(|k| tx.core.open_ticket(&k).map(|o| (k, o))).collect())
 }
 
-/// The role the node enters `t` at by a held ticket of role `k` (spec/sync-set.md §2 What a
-/// held ticket does): its role on `t` now, as the role commits it holds of `t` show (`None`: no
-/// role); the ticket's word, `k`, while it holds none. A ticket says how to sync, never caps the
-/// node's role: it supplies its secret and sync ID up to `k.min(entry)`, so never more than the
-/// role now. The one rule: the walk's ticket taking (`take_in`) and its judge (`units::given_by`,
-/// which reads it so a role change judges the edge again) read it alone.
-pub(crate) fn entry_role(core: &Core, t: &Tid, k: Role) -> Option<Role> {
-    match core.timelines.on(t).is_some_and(|o| o.held().next().is_some()) {
-        true => crate::rotation::role_here(core, t),
-        false => Some(k),
-    }
+/// The node's role on `t` now (spec/sync-set.md §2 What a held ticket does), the one judgement
+/// both entering `t` by a ticket (`take_in`, `units::given_by`) and the lost-access trigger
+/// (`rotation::lost`) read: the best its role commits show (`rotation::role_here`), or, while a
+/// held strong reaches `t` with a ticket that opens here (`Closure::accepted`), such a ticket's
+/// word (the lower of its role and what it opens to, `Closure::ticket_words`) whose holder no
+/// role commit held on `t` names an edge of. A node keeping `t` unread holds only the role
+/// commits other things' certificates bring, which cannot show its own grant; where they name
+/// the ticket's holder they decide. A ticket says how to sync, never caps the role: it supplies
+/// its secret and sync ID up to the lower of its own role and this one.
+pub(crate) fn role_on(core: &Core, t: &Tid) -> Option<Role> {
+    let named = |h: &Tid| core.timelines.on(t).is_some_and(|o| o.held().any(|(_, _, op)| op.holder == *h));
+    let words = if core.ix.closure.accepted(t) { core.ix.closure.ticket_words(t) } else { BTreeSet::new() };
+    let word = words.into_iter().filter(|(h, _)| !named(h)).map(|(_, r)| r).max();
+    crate::rotation::role_here(core, t).max(word)
 }
 
 /// What the walk's ticket step took of a thing's held tickets (`take_in`).
 pub(crate) struct Taken {
     /// The sync IDs of the tickets that enter, each with the role it supplies (the lower of its own
-    /// and `entry_role`).
+    /// and `role_on`).
     pub(crate) ids: BTreeSet<(SyncId, Role)>,
     /// The holders every held ticket is boxed to, opened or not.
     pub(crate) openers: BTreeSet<Tid>,
@@ -87,21 +90,26 @@ pub(crate) struct Taken {
 
 /// The walk's ticket taking at a strong to `t` whose read secret is not established
 /// (spec/sync-set.md §2): each held ticket the node can open supplies its sync ID and, where the
-/// node's `entry_role` is the ticket's own role or above, its secret; and its openers, the holders every held ticket for
+/// node's role (`role_on`) is the ticket's own role or above, its secret; and its openers, the holders every held ticket for
 /// `t` is boxed to, which the step is judged again by as they can open more
 /// (`Closure::opener_moved`). The role commits a read ticket's fires carry, and the removal
 /// notices on `t`, are noted for taking where not held (`Engine::take_ticket_fires`): what they
-/// show is what `entry_role` judges by next. O(its tickets).
-pub(crate) fn take_in(tx: &mut Tx<'_>, t: &Tid) -> Result<Taken> {
+/// show is what `role_on` judges by next. O(its tickets).
+pub(crate) fn take_in(tx: &mut Tx<'_>, t: &Tid, v: crate::sync::units::Vx) -> Result<Taken> {
     let held = held_in(tx, t)?;
     let openers = held.iter().map(|k| k.holder).collect();
     let opened: Vec<(Ticket, Opened)> = held.into_iter().filter_map(|k| tx.core.open_ticket(&k).map(|o| (k, o))).collect();
     let any = !opened.is_empty();
     let reads = opened.iter().any(|(k, o)| k.role.min(o.role) == Role::Read);
+    let words: BTreeSet<(Tid, Role)> = opened.iter().map(|(k, o)| (k.holder, k.role.min(o.role))).collect();
+    // noted before any secret is taken: taking one asks the role (`role_on`) as the trigger does
+    tx.core.ix.closure.set_ticket_words(*t, words);
+    crate::sync::units::set_accepted(tx, *t, v, any);
+    let role = role_on(tx.core, t);
     let mut ids = BTreeSet::new();
     for (k, o) in opened {
         let own = o.role.min(k.role);
-        let Some(e) = entry_role(tx.core, t, own).map(|e| e.min(own)) else { continue };
+        let Some(e) = role.map(|e| e.min(own)) else { continue };
         if e >= o.role {
             crate::apply::keys::learn_secret_in(tx, &k.target, o.role, o.epoch, o.secret)?;
         }

@@ -56,6 +56,9 @@ pub struct Member {
     pub by: Credential,
     /// Being ended: served up to this position.
     pub until: Option<Position>,
+    /// Ended for its peer's departure at a store source (spec/sync-opens.md §6): it closes on the
+    /// peer's Lost alone, and registering there waits on no role commit.
+    pub departed: bool,
 }
 
 /// A change of a connection's shared set: the driver hands each to `Streams::moved`.
@@ -817,9 +820,10 @@ impl Opens {
         }
     }
 
-    /// An ended member whose reported position is at or past its `until` closes with a Lost.
+    /// An ended member whose reported position is at or past its `until` closes with a Lost; one
+    /// ended for its peer's departure waits for the peer's.
     fn close_if_reached(&mut self, ctx: &mut Ctx, conn: ConnId, s: SyncId, moved: &mut Vec<Moved>) {
-        let Some(until) = self.member(conn, &s).and_then(|m| m.until) else { return };
+        let Some(until) = self.member(conn, &s).filter(|m| !m.departed).and_then(|m| m.until) else { return };
         if self.reported_at(conn, &s).is_some_and(|(p, _)| *p >= until) {
             self.close_member(ctx, conn, s, Close::Until, moved);
         }
@@ -1988,13 +1992,13 @@ impl Opens {
                         continue;
                     }
                     let by = cred.credential(&s);
-                    self.open(ctx, conn, s, Member { class: SourceClass::declared(a.unread), own, by, until: None }, Some(beacon), moved);
+                    self.open(ctx, conn, s, Member { class: SourceClass::declared(a.unread), own, by, until: None, departed: false }, Some(beacon), moved);
                 }
                 Sent::ByRole(s, own) if a.code == Code::OK => {
                     accepted.insert(s);
                     // An accepted ByRole opens S at its sender while J is still reader there.
                     if self.member(conn, &s).is_none() && self.admissible(ctx, conn, &s).is_some_and(|a| a.j == J::Reader && a.own == own) {
-                        self.open(ctx, conn, s, Member { class: SourceClass::declared(a.unread), own, by: Credential::J, until: None }, None, moved);
+                        self.open(ctx, conn, s, Member { class: SourceClass::declared(a.unread), own, by: Credential::J, until: None, departed: false }, None, moved);
                     }
                 }
                 // refused: tried again once something re-marks S or moves `changed_at(S)` (§5)
@@ -2146,7 +2150,7 @@ impl Opens {
         };
         if self.member(conn, &s).is_none() {
             let by = shown.credential();
-            self.open(ctx, conn, s, Member { class, own: adm.own, by, until: None }, Some(beacon), moved);
+            self.open(ctx, conn, s, Member { class, own: adm.own, by, until: None, departed: false }, Some(beacon), moved);
         }
         SharedItem { code: Code::OK, tag: Some(bind.tag(shown.matched(), &s, &beacon)), grant, sig: answer_sig, unread: adm.own.unread() }
     }
@@ -2158,7 +2162,7 @@ impl Opens {
         let ok = SharedItem { unread: adm.own.unread(), ..SharedItem::code(Code::OK) };
         if adm.j == J::Reader {
             if self.member(conn, &s).is_none() {
-                self.open(ctx, conn, s, Member { class, own: adm.own, by: Credential::J, until: None }, None, moved);
+                self.open(ctx, conn, s, Member { class, own: adm.own, by: Credential::J, until: None, departed: false }, None, moved);
             }
             return ok;
         }
@@ -2178,7 +2182,7 @@ impl Opens {
             Some((_, sh, b)) => {
                 if self.member(conn, &s).is_none() {
                     let by = sh.credential();
-                    self.open(ctx, conn, s, Member { class, own: adm.own, by, until: None }, Some(b), moved);
+                    self.open(ctx, conn, s, Member { class, own: adm.own, by, until: None, departed: false }, Some(b), moved);
                 }
                 ok
             }
@@ -2212,8 +2216,9 @@ impl Opens {
 
     /// Re-judges member S of `conn` (spec/sync-opens.md §6): J reader or sync holder stays; an
     /// open by a credential stays while it is admissible; one no longer admissible whose peer J
-    /// judges neither holder nor departed is ended (`until`), and stays ended until it closes;
-    /// any other closes at once with a Lost. One that stays, not ended, closes keeping where it
+    /// judges neither holder nor departed is ended (`until`), and stays ended until it closes; one
+    /// at a store source whose peer J judges departed is ended too and closes on the peer's Lost
+    /// alone (`Member::departed`); any other closes at once with a Lost. One that stays, not ended, closes keeping where it
     /// stopped once this side's class is not the one it declared opening S (an ended one opens
     /// again past its `until` anyway).
     fn rejudge(&mut self, ctx: &mut Ctx, conn: ConnId, s: SyncId, moved: &mut Vec<Moved>) {
@@ -2232,11 +2237,27 @@ impl Opens {
         let admissible = m.by != Credential::J
             && basis.is_some_and(|b| adm.shows.iter().any(|x| beacon_of(x.matched(), &s, &rr) == b) || adm.tests.iter().any(|t| beacon_of(&t.matched(&s), &s, &rr) == b));
         let stays = holder || admissible;
+        // a peer no longer departed: its member ends at `until` as any ended one
+        if m.departed && adm.j != J::Departed {
+            self.set_departed(conn, &s, false);
+            self.close_if_reached(ctx, conn, s, moved);
+            if self.member(conn, &s).is_none() {
+                return;
+            }
+        }
         // An ended member judged holder or admissible again stays ended: the peer's stream may be
         // past `until` already (S's entries since skipped), so it closes there and opens again.
         if stays {
             if m.own != adm.own && m.until.is_none() {
                 self.close_member(ctx, conn, s, Close::Class, moved);
+            }
+        } else if adm.j == J::Departed && m.class == SourceClass::Store {
+            // the peer keeps S unread and learns its removal only by a Register: ended, it stays
+            // while this side registers past its keys, until its own Lost
+            if !m.departed {
+                let until = m.until.unwrap_or_else(|| ctx.holds.until(&s, &m.by));
+                self.set_until(conn, &s, until, moved);
+                self.set_departed(conn, &s, true);
             }
         } else if m.by == Credential::J || adm.j == J::Departed {
             self.close_member(ctx, conn, s, Close::AtOnce, moved);
@@ -2245,6 +2266,14 @@ impl Opens {
             self.set_until(conn, &s, until, moved);
             self.close_if_reached(ctx, conn, s, moved);
         }
+    }
+
+    /// Marks ended member S as ended for its peer's departure, or not (`Member::departed`).
+    fn set_departed(&mut self, conn: ConnId, s: &SyncId, on: bool) {
+        let Some(c) = self.conns.get_mut(&conn) else { return };
+        let Some(m) = c.rec.and_then(|r| self.records.get_mut(&r)).and_then(|r| r.members.get_mut(s)) else { return };
+        m.departed = on;
+        self.dirty_member(conn, *s);
     }
 
     /// Ends member S: sets its `until`; streams hears of it (`Moved::Until`).

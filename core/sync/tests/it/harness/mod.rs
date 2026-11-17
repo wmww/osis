@@ -1322,6 +1322,15 @@ pub fn step(w: &mut World, s: &Step) -> String {
 }
 
 fn step_of(w: &mut World, s: &Step) -> String {
+    // a node a shrunk script no longer makes (its `Pair` dropped) is skipped, as history steps are
+    let named = match s {
+        Step::Partition(a, b) | Step::Cut(a, b) => vec![*a, *b],
+        Step::PowerOff(i) | Step::PowerOn(i) | Step::Skew(i, _) | Step::Disk(i, ..) | Step::Lies(i, _) | Step::Truth(i) => vec![*i],
+        _ => Vec::new(),
+    };
+    if named.iter().any(|i| *i >= w.len()) {
+        return "skipped: no such node".into();
+    }
     match s {
         Step::Run => {
             w.run();

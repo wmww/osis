@@ -154,9 +154,7 @@ impl Register {
 fn judge(engine: &mut Engine, net: &impl Net, progress: &Stamped<Key, Progress>, k: &Key) -> Result<Plan> {
     osis_base::costs::count("inbox: register judged", 1);
     let (conn, s) = k;
-    if net.member(*conn, s).is_none_or(|m| m.class != SourceClass::Store) {
-        return Ok(Plan::Nothing);
-    }
+    let Some(m) = net.member(*conn, s).filter(|m| m.class == SourceClass::Store) else { return Ok(Plan::Nothing) };
     // S's recorded path: a sync ID only tickets name records none
     let mut path = None;
     for t in engine.sync_owners(s)? {
@@ -164,7 +162,12 @@ fn judge(engine: &mut Engine, net: &impl Net, progress: &Stamped<Key, Progress>,
     }
     let Some(path) = path else { return Ok(Plan::Nothing) };
     let p = progress.get(k).copied().unwrap_or_default();
+    // a departed peer's store stops at the first step past its keys and drops everything: its
+    // holding the step's role commits serves no one (spec/sync-opens.md §6)
     let mut needs_held = |step: &StepId| -> Result<bool> {
+        if m.departed {
+            return Ok(true);
+        }
         for c in engine.step_needs(s, step)?.iter() {
             if !engine.commit_blobs(c)?.iter().any(|b| net.present(*conn, s, b)) {
                 return Ok(false);

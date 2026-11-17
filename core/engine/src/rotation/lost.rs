@@ -85,10 +85,10 @@ pub(crate) fn load_kept(tx: &mut Tx<'_>) -> Result<()> {
     Ok(())
 }
 
-/// Whether the node, a held key actor or a link key it keeps reading as holds `min` or above on
-/// `a` now (`role_here`).
+/// Whether the node holds `min` or above on `a` now (`tickets::role_on`: what its role commits
+/// show, or a held ticket's word where they cannot show its holder's grant).
 fn holds_at(core: &Core, a: &Tid, min: Role) -> bool {
-    role_here(core, a) >= Some(min)
+    crate::sync::tickets::role_on(core, a) >= Some(min)
 }
 
 /// The best role the node, a held key actor or a link key it keeps reading as holds on `a` now
@@ -128,18 +128,21 @@ pub(crate) fn may_take_role(core: &Core, a: &Tid, r: Role) -> bool {
     may_take(core, a) || r == Role::Sync && holds_at(core, a, Role::Sync)
 }
 
-/// Whether an entry box may give this node secrets of `a` (spec/sync-ids.md §3): as a box
-/// may (`may_take`), or while nothing held says the node lost `a`: no ended edge on it of the node,
-/// a held key actor or an actor it reads (a link's redeemer opens the sync ID before it holds the
-/// grant to its key; the trigger judges `a` once role commits on it apply).
-pub(crate) fn may_learn(core: &Core, a: &Tid) -> bool {
-    may_take(core, a) || core.timelines.get(a).is_none_or(|tl| !tl.ended(a, now_ts(core)).keys().any(|h| ours(core, h)))
+/// Whether an entry box or a ticket may give this node `a`'s secret of role `r`
+/// (spec/sync-ids.md §3): as a box may (`may_take_role`), or while nothing held says the node lost
+/// `a`: no ended edge on it of the node, a held key actor or an actor it reads (a link's redeemer
+/// opens the sync ID before it holds the grant to its key; the trigger judges `a` once role
+/// commits on it apply).
+pub(crate) fn may_learn(core: &Core, a: &Tid, r: Role) -> bool {
+    may_take_role(core, a, r) || core.timelines.get(a).is_none_or(|tl| !tl.ended(a, now_ts(core)).keys().any(|h| ours(core, h)))
 }
 
-/// Whether the node holds secrets of `a` its roles there no longer give (`may_hold`, lost access).
+/// Whether the node holds secrets of `a` no current role of its there covers (lost access): a
+/// sync secret below sync (`holds_at`), any other below read (`may_hold`).
 fn over_held(core: &Core, a: &Tid) -> bool {
     let Some(e) = core.ix.secrets.get(a) else { return false };
-    ROLES.iter().any(|r| e.role(*r).holds_any()) && !may_hold(core, a)
+    let need = |r: Role| if r == Role::Sync { Role::Sync } else { Role::Read };
+    ROLES.iter().any(|r| e.role(*r).holds_any() && !holds_at(core, a, need(*r)))
 }
 
 /// Whether all that ended the node's (or a held key actor's) role on `a` is an `until` passing:

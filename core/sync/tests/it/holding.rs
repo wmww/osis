@@ -720,3 +720,27 @@ fn a_reader_of_a_holder_holds_its_targets_sync_record_spec_sync_judgement_2() {
     assert_eq!(value(&mut w, 1, &t0), Some(Value::Str("t0".into())));
 }
 
+
+// spec/sync-set.md §2 (What a held ticket does), spec/permissions.md §3 (Lost access): Bob reads
+// T1, which Alice granted sync on T2 and then removed, so T1's certificates bring Bob T2's sync
+// record and the role commits naming T1 alone. Alice grants Bob sync on T2 directly and he
+// accepts it after T1: those role commits show no role of his on T2, so they neither keep his ticket out nor
+// drop the sync secrets it gives. He keeps T2 unread.
+#[test]
+fn a_sync_ticket_beside_a_removed_holders_role_commits_keeps_the_thing_unread_spec_sync_set_2() {
+    let mut w = contacts();
+    let bob = w.node(1).account.unwrap();
+    let t0 = make(&mut w, 0, None, "t0");
+    let t1 = make(&mut w, 0, None, "t1");
+    w.write(0, |e| e.grant(&t1, &bob, &edge(Role::Read))).unwrap();
+    let t2 = make_in(&mut w, 0, t0, "t2");
+    w.write(0, |e| e.grant(&t2, &t1, &edge(Role::Sync))).unwrap();
+    w.write(0, |e| e.demote(&t2, &osis_engine::flows::Demotion { holder: t1, new: None, retain: None })).unwrap();
+    w.write(0, |e| e.grant(&t2, &bob, &edge(Role::Sync))).unwrap();
+    strong(&mut w, 1, None, t1, true);
+    w.run();
+    assert_eq!(value(&mut w, 1, &t1), Some(Value::Str("t1".into())), "Bob reads T1");
+    strong(&mut w, 1, None, t2, true);
+    w.run();
+    assert_eq!(holding(&mut w, 1, &t2), Some(Holding::Unread), "Bob keeps T2 unread");
+}
