@@ -1048,11 +1048,7 @@ fn refetch(tx: &mut Tx<'_>, v: Vx, y: Tid, ticketed: bool) -> Result<()> {
     for b in minting {
         tx.blobs.unreceived(&b);
     }
-    for s in crate::flows::sync_ids::held_in(tx, &t)? {
-        osis_base::costs::count("closure: refetch", 1);
-        tx.blobs.refetch(&s);
-    }
-    Ok(())
+    crate::flows::sync_ids::pull_anew(tx, &t)
 }
 
 /// Notes whether `v`'s strong to `y` counts for `Closure::accepted`; `y` losing its last is

@@ -191,7 +191,7 @@ fn boot(seed: u64, t: WallMs) -> osis_engine::Result<(Peer, Faults)> {
     engine.create_account()?;
     engine.take_wakes();
     let events = engine.subscribe();
-    Ok((Peer { engine, clock, backend, root, blob_disk, events, restarts: 0, discarded: Vec::new(), discards: 0, redelivered: 0 }, faults))
+    Ok((Peer { engine, clock, backend, root, blob_disk, events, restarts: 0, discarded: Vec::new(), discards: 0, redelivered: 0, pulled_anew: Default::default() }, faults))
 }
 
 impl Sim {

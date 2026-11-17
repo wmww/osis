@@ -185,6 +185,20 @@ pub(crate) fn held_in(tx: &mut Tx<'_>, t: &Tid) -> Result<Vec<SyncId>> {
     Ok(crate::sync_ids::actors::held_sync_ids(tx.core, t, &m).into_iter().map(|o| o.id).collect())
 }
 
+/// `t`'s sync IDs (`held_in`) are pulled anew from every source (spec/sync-judgement.md §3
+/// Dropped bodies): what was forgotten of what they carry is fetched again. Durable before the
+/// transaction commits; a test peer's fetch stand-in reads it (`Wakes::pulled_anew`).
+pub(crate) fn pull_anew(tx: &mut Tx<'_>, t: &Tid) -> Result<()> {
+    for s in held_in(tx, t)? {
+        osis_base::costs::count("sync IDs pulled anew", 1);
+        tx.blobs.refetch(&s);
+        if let Some(w) = &mut tx.core.wakes {
+            w.pulled_anew.insert(s);
+        }
+    }
+    Ok(())
+}
+
 /// Whether a child of recorded head `head` is due at an admin holding `epochs`, its actor's
 /// deposit seed `deposit` (spec/sync-ids.md §6 Steps): the head's admin epoch, held and
 /// established here, when it holds a sync, write or admin epoch newer than the head registers,

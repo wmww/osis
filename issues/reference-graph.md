@@ -5,7 +5,7 @@
 
 ## Status
 - On main: this plan, the spec (it describes the rebuilt design, not the code), the requirements wording (Tess approved), the model (notes/closure-model.md, held-model `closure`).
-- Execution steps 1-7 have run (End gate below); left: issues/device-record-dropped-before-named.md (the one failure the end gate found, from the roots change) and a notes pass. The spec's account parts are in the account forks terms (notes/engine-validity-epochs.md: seeds boxed to device keys, the chain is D's roster, merges only join).
+- Execution is complete: steps 1-7 have run and the end gate's one NEW failure is fixed (End gate below); left: a notes pass. The spec's account parts are in the account forks terms (notes/engine-validity-epochs.md: seeds boxed to device keys, the chain is D's roster, merges only join).
 - Lane (b) built (notes/node-closure.md), the making rule (spec/sync-set.md §2 Making a thing) enforced.
 - Step 6 part 2's differential and sims (osis-sync `differential::`, `sims::`, KNOWN in tools/known_failures.txt until these go) found, each with its hand-built repro in osis-sync `tickets::` (ignored):
   - At `OSIS_FULL=1` (4 nodes, 3 accounts, 100 seeds) the differential passes every seed; the classes it found and their fixes: Full size below.
@@ -15,7 +15,7 @@
 ## End gate
 `tools/gate.sh --all` on 3352d9da5, once: exit 1 (1 NEW, 1 KNOWN). Instant checks (policy, spec_map gaps, clippy core and GUI) clean. Stage times on ostrich at load 21-24 (other agents' runs beside it), wall/CPU against limit:
 - default tests 238/115 s, 1843/1610 CPU-s; properties 213/78 s, 3115/1219 CPU-s; sims 8/46 s, 111/943 CPU-s; GUI tests 42/5 s, 109/23 CPU-s; the heavy hold 459/241 s, 5069/3795 CPU-s and the whole gate 767/299 s, 6030/4094 CPU-s, both over their caps. The build alone took 183 s wall.
-- NEW: engine `rotation::tests_custody::engine_agrees_with_custody_model_large_spec_permissions_5_4`, 4 seeds, one class: a device record dropped before the chain names it leaves signing failing. Replays on main; first fails at 54c2fda4e. Filed as issues/device-record-dropped-before-named.md, KNOWN in tools/known_failures.txt.
+- NEW: engine `rotation::tests_custody::engine_agrees_with_custody_model_large_spec_permissions_5_4`, 4 seeds, one class: a device record dropped before the chain names it leaves signing failing. Replays on main; first fails at 54c2fda4e. Fixed: a device the chain names whose card the node lacks pulls D's sync IDs anew, so a card dropped before the naming comes again (notes/node-closure.md Fetched again); the custody property passes the gate's seeds and 0 of 2,000 at large size fail.
 - KNOWN: engine `validity::unmerge_paged_matches_fresh_large_spec_crdt_4_6` (issues/osis-tests-depend-on-store-rng.md). Listed but passed: held-model `props::settled_histories_keep_their_laws_large_spec_commits_5`.
 
 Against the step 2 baseline (5b4faadfa):

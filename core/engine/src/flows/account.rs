@@ -229,7 +229,12 @@ impl AccountView {
     /// Whether the chain held here names `node` a device of this node's account: its creation
     /// device, or one a held rotation adds.
     pub(crate) fn named_device(&self, node: &Tid) -> bool {
-        self.devices.as_ref().is_some_and(|d| d.first.contains(node) || d.adds.values().any(|a| a.contains(node)))
+        self.named_devices().any(|n| n == node)
+    }
+
+    /// The devices the chain held here names (`named_device`).
+    pub(crate) fn named_devices(&self) -> impl Iterator<Item = &Tid> {
+        self.devices.iter().flat_map(|d| d.first.iter().chain(d.adds.values().flatten()))
     }
 
     /// The revocations held rotation `r` takes (`osis_perm::Rotation::takes`).
@@ -912,6 +917,20 @@ pub(crate) fn things_of(v: &crate::engine::View) -> BTreeSet<Tid> {
 /// their names alone, go to `stale_commits`, and a role commit among them counts in the timeline
 /// or not as the rule now says (`Held::set_counted`). So a rotation or a list costs the commits it
 /// moves, never the account's history. Returns whether a role commit's count moved.
+/// A device this node's account `p`'s chain `v` names whose record is not held: the account
+/// root's sync IDs, which carry its card, are pulled anew (spec/sync-judgement.md §3 Dropped
+/// bodies), so a card dropped before the chain named its device comes again, as one arriving
+/// after.
+fn fetch_devices(tx: &mut Tx<'_>, p: &Tid, v: &AccountView) -> Result<()> {
+    if !v.named_devices().any(|n| tx.core.created(n).is_none()) {
+        return Ok(());
+    }
+    match tx.core.accounts.get(p).map(|a| a.root) {
+        Some(d) => super::sync_ids::pull_anew(tx, &d),
+        None => Ok(()),
+    }
+}
+
 pub(crate) fn refresh_epochs(tx: &mut Tx<'_>) -> Result<bool> {
     let mut by_account: BTreeMap<Tid, BTreeSet<CommitId>> = BTreeMap::new();
     for c in tx.core.ix.names_due.iter().copied().collect::<Vec<_>>() {
@@ -940,6 +959,9 @@ pub(crate) fn refresh_epochs(tx: &mut Tx<'_>) -> Result<bool> {
             super::custody::derive_merges(tx, &p)?;
         }
         let Some(v) = tx.core.account_view(&p) else { continue };
+        if tx.core.account.get() == Some(p) {
+            fetch_devices(tx, &p, &v)?;
+        }
         let now = v.judged();
         let was = tx.core.ix.epochs.get(&p).cloned();
         let get = |j: &Option<Arc<JudgedEpochs>>, e: &CommitId| match j {

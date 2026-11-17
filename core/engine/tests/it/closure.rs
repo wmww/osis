@@ -1005,3 +1005,40 @@ fn a_release_keeps_an_own_leave_still_waiting_spec_commits_5() {
     crate::flows::send(&mut lp, 1, 0, &[c]);
     assert!(!lp.peers[0].engine.roster(&x).contains_key(&ps[1]), "peer 0 applies the leave");
 }
+
+// spec/commits.md §5 What a held thing needs (a device its account's held chain names),
+// spec/sync-judgement.md §3 Dropped bodies: a device's card is fetched again once the chain names
+// it, whichever came first. Peers 0 and 1 are account P's nodes; peer 0 pairs node Z. Peer 1
+// gets Z's card before the pairing rotation (it goes at the pass's end: nothing names Z yet) or
+// after it; either way the chain naming Z pulls D's sync IDs anew, which bring the card (the
+// test's stand-in for sync), and peer 1 then removes peer 0, boxing the new seed to Z.
+#[test]
+fn a_device_named_after_its_card_went_is_fetched_again_spec_commits_5() {
+    let mut lp = osis_engine::local_peer::LocalPeer::new_bare(3, 0, crate::common::T0).unwrap();
+    lp.peers[0].engine.create_account().unwrap();
+    let mut rest = lp.peers.split_off(1);
+    crate::common::pair_into(&mut lp, 0, &mut rest[0]);
+    lp.peers.extend(rest);
+    let (a, z) = (lp.peers[0].engine.tid(), lp.peers[2].engine.tid());
+    let card: Vec<_> = lp.peers[2].engine.commit_ids().into_iter().filter(|c| lp.peers[2].engine.header(c).is_some_and(|h| h.author == z && h.aspects.iter().all(|x| x.tid == z))).collect();
+    crate::flows::send(&mut lp, 2, 0, &card);
+    lp.peers[0].engine.pair(&z).unwrap();
+    let pairing: Vec<_> = lp.peers[0].engine.commit_ids().into_iter().filter(|c| !card.contains(c)).collect();
+    for card_first in [true, false] {
+        let mut lp = lp.copy().unwrap();
+        lp.peers[1].pulled_anew.clear();
+        if card_first {
+            crate::flows::send(&mut lp, 2, 1, &card);
+            lp.peers[1].engine.settle_needs().unwrap();
+            assert!(lp.peers[1].engine.core.created(&z).is_none(), "card first: nothing names Z at the pass's end");
+        }
+        crate::flows::send(&mut lp, 0, 1, &pairing);
+        lp.peers[1].engine.settle_needs().unwrap();
+        lp.peers[1].reexamine().unwrap();
+        assert!(!std::mem::take(&mut lp.peers[1].pulled_anew).is_empty(), "card first {card_first}: the chain names Z, its card not held: D is pulled anew");
+        crate::flows::send(&mut lp, 2, 1, &card);
+        lp.peers[1].engine.settle_needs().unwrap();
+        assert!(lp.peers[1].engine.core.created(&z).is_some(), "card first {card_first}: Z's card stays");
+        lp.peers[1].engine.remove_device(&a).unwrap_or_else(|e| panic!("card first {card_first}: removing peer 0 boxes to Z: {e}"));
+    }
+}

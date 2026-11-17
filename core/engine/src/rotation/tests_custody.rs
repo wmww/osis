@@ -474,6 +474,7 @@ impl Run {
             Ok(crate::apply::Ingested::Pending(_, why)) => self.note(format!("t{} {what} pending at {}: {why:?}", self.tick, cm::NAMES[to])),
             Ok(_) => {}
         }
+        self.send_cards(to);
         if std::env::var_os("CUSTODY_PROBE").is_some() {
             eprintln!("t{} probe {what} ({:.12}) at {}", self.tick, format!("{:?}", pk.id), cm::NAMES[to]);
             if let Some(v) = self.lp.peers[to].engine.core.account_view(&self.ids.p) {
@@ -488,6 +489,25 @@ impl Run {
                 eprintln!("   seeds {names:?}");
             }
             self.lp.peers[to].engine.check_index();
+        }
+    }
+
+    /// What a pull anew of D's sync IDs at `to` brings (`flows::account::fetch_devices`): the
+    /// cards of the devices its chain names that it does not hold, as D's sync ID carries them
+    /// (spec/sync-judgement.md §2: a card of a node of D), from the device itself.
+    fn send_cards(&mut self, to: usize) {
+        if std::mem::take(&mut self.lp.peers[to].pulled_anew).is_empty() {
+            return;
+        }
+        let Some(v) = self.lp.peers[to].engine.core.account_view(&self.ids.p) else { return };
+        let unheld: Vec<usize> = (0..N).filter(|j| self.lp.peers[to].engine.core.created(&self.tids[*j]).is_none() && v.named_device(&self.tids[*j])).collect();
+        for j in unheld {
+            let n = self.tids[j];
+            let card: Vec<CommitId> = self.lp.peers[j].engine.commit_ids().into_iter().filter(|c| self.lp.peers[j].engine.header(c).is_some_and(|h| h.author == n && h.aspects.iter().all(|a| a.tid == n))).collect();
+            for c in card {
+                let pk = self.lp.peers[j].engine.package(&c).unwrap().unwrap();
+                self.deliver(to, &pk, "card");
+            }
         }
     }
 

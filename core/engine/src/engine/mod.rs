@@ -1654,6 +1654,8 @@ pub struct Wakes {
     pub reread: BTreeSet<CommitId>,
     /// Every awaiting entry is fetched again (a key actor taken up: boxes may open to it).
     pub reopen_awaits: bool,
+    /// Sync IDs pulled anew (`flows::sync_ids::pull_anew`).
+    pub pulled_anew: BTreeSet<osis_base::SyncId>,
 }
 
 /// (actor, role, epoch) -> the commit that introduced it: (ts, commit ID).
