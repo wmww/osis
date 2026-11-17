@@ -66,7 +66,7 @@ pub(crate) fn fire_ticket(tx: &mut Tx<'_>, holder: Tid, c: CommitId, things: &[T
 /// A ticket for `target` of `role` (read or sync) boxed to `holder` (spec/data-model.md §8
 /// Tickets): the secret of the newest epoch of that role the node holds the target by
 /// (`held_by`), boxed as a `secrets.0` box to the holder is, naming the target's sync ID
-/// (`sync_id`; none: its home's) and this node's account's profile. `None` when no such
+/// (`sync_id`; none: the target's own, `sync_id_of`) and this node's account's profile. `None` when no such
 /// secret, sync ID or keyset of the holder is held.
 pub(crate) fn make_ticket(tx: &mut Tx<'_>, target: Tid, role: Role, holder: Tid) -> Result<Option<Ticket>> {
     make_ticket_under(tx, target, role, holder, None)
@@ -74,7 +74,7 @@ pub(crate) fn make_ticket(tx: &mut Tx<'_>, target: Tid, role: Role, holder: Tid)
 
 fn make_ticket_under(tx: &mut Tx<'_>, target: Tid, role: Role, holder: Tid, sync_id: Option<osis_base::SyncId>) -> Result<Option<Ticket>> {
     let Some(epochs) = tx.core.epochs(&target) else { return Ok(None) };
-    let Some(sync_id) = sync_id.or(super::home_sync_id(tx, &target)?) else { return Ok(None) };
+    let Some(sync_id) = sync_id.or(super::sync_id_of(tx, &target)?) else { return Ok(None) };
     let Some(e) = held_by(tx, &epochs, role, &sync_id)?.into_iter().max_by_key(|e| (e.n(), *e.nonce())) else { return Ok(None) };
     let Some(secret) = epochs.role(role).secret(&e) else { return Ok(None) };
     let Ok(rcpt) = super::recipient(tx, holder, role) else { return Ok(None) };
@@ -658,11 +658,11 @@ fn owed_account_tickets(tx: &mut Tx<'_>, t: &Tid) -> Result<Option<(Role, Vec<os
     Ok((!lacking.is_empty()).then_some((r, lacking)))
 }
 
-/// The sync IDs a node syncs `t` under at role `r`: its home's (its held `sync.0`); one it keeps
+/// The sync IDs a node syncs `t` under at role `r`: its sync ID (by its held `sync.0`); one it keeps
 /// unread, whose `sync.0` it never reads, each its held tickets name (spec/sync-inbox.md §5 Ticket
 /// sync IDs).
 fn ticket_sync_ids(tx: &mut Tx<'_>, t: &Tid, r: Role) -> Result<Vec<osis_base::SyncId>> {
-    if let Some(s) = super::home_sync_id(tx, t)? {
+    if let Some(s) = super::sync_id_of(tx, t)? {
         return Ok(vec![s]);
     }
     if r != Role::Sync {

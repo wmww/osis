@@ -554,7 +554,7 @@ fn a_writer_promotes_a_deposit_spec_sync_inbox_4() {
     w.cap = 20_000;
     let _ = crate::harness::play(&mut w, &[New(0), Grant(0, 0, 1, Gives::Syncs), Grant(0, 0, 2, Gives::Writes), Run], String::new());
     let t = w.history.things[0].0;
-    let s = w.engine(0).home_sync_id(&t).unwrap().unwrap();
+    let s = w.engine(0).sync_id_of(&t).unwrap().unwrap();
     assert_eq!(w.engine(1).sync_holder(&s).unwrap(), Some(([t].into(), Holding::Unread)));
     w.power_off(2);
     let a2 = w.node(2).account.unwrap();

@@ -119,7 +119,7 @@ fn what_a_thing_costs() {
     // spec/permissions.md §3: made under the account root it stays plain; under the account it
     // has secrets of its own and its sync ID from its creating transaction
     let e = &mut lp.peers[0].engine;
-    assert!(e.home_sync_id(&pt).unwrap().is_none() && e.home_sync_id(&kt).unwrap().is_some());
+    assert!(e.sync_id_of(&pt).unwrap().is_none() && e.sync_id_of(&kt).unwrap().is_some());
     assert_eq!((plain.commits, keyed.commits), (1, 2), "its rotation carrying its record, then what the plain one writes");
     assert!(plain.maker_rows < 1_700 && plain.reader_rows < 1_600 && plain.download < 800, "{plain:?}");
     assert!(keyed.maker_rows < 15_000 && keyed.reader_rows < 15_000 && keyed.download < 9_500, "{keyed:?}");

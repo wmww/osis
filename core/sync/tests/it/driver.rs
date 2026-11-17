@@ -309,7 +309,7 @@ fn an_own_rotation_proves_again_spec_sync_opens_1() {
 
 // spec/sync-opens.md §1 (proves once), §2 (its account by a signature at an epoch),
 // spec/permissions.md §5.4 (Roster): when another node of its account rotates it, a node keeps
-// its home throughout (D's roster is the chain's, never D's lists), takes the rotation whole and so the new seed, and proves its account again at the
+// D's sync ID throughout (D's roster is the chain's, never D's lists), takes the rotation whole and so the new seed, and proves its account again at the
 // new key.
 #[test]
 fn a_sibling_rotation_proves_again_spec_sync_opens_1() {
@@ -319,13 +319,13 @@ fn a_sibling_rotation_proves_again_spec_sync_opens_1() {
     let old = w.engine(2).account_open_key().expect("an open key");
     assert!(proven_at(&mut w, 0, 2, old), "node 2's account proved to node 0");
     let d = w.engine(2).account().unwrap().expect("an account").1;
-    let home = w.engine(2).home_sync_id(&d).unwrap().expect("a home");
-    let held = |w: &World| w.node(2).store.entries(&home).unwrap().len();
+    let ds = w.engine(2).sync_id_of(&d).unwrap().expect("D's sync ID");
+    let held = |w: &World| w.node(2).store.entries(&ds).unwrap().len();
     let entries = held(&w);
-    assert!(entries > 0, "node 2 holds its home");
+    assert!(entries > 0, "node 2 holds D's sync ID");
     let r = w.write(1, |e| e.rotate_account(&a1)).unwrap().expect("rotated");
     while w.step() {
-        assert!(w.store(2).synced(&home).is_some(), "node 2 keeps its home throughout");
+        assert!(w.store(2).synced(&ds).is_some(), "node 2 keeps D's sync ID throughout");
     }
     w.run();
     w.advance(REDIAL_MS);
@@ -333,7 +333,7 @@ fn a_sibling_rotation_proves_again_spec_sync_opens_1() {
     let new = w.engine(1).account_open_key().expect("an open key");
     assert_ne!(new, old);
     assert!(w.engine(2).commit_parts_missing()[&r].is_empty(), "node 2 holds the rotation whole");
-    assert!(held(&w) >= entries, "node 2 keeps its home");
+    assert!(held(&w) >= entries, "node 2 keeps D's sync ID");
     assert_eq!(w.engine(2).account_open_key(), Some(new), "node 2 holds the new seed");
     assert!(proven_at(&mut w, 0, 2, new), "proved again at the new epoch");
     for j in [0, 1] {

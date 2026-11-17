@@ -461,7 +461,7 @@ fn login(w: &World) -> NodeLogin {
 
 // spec/sync-set.md §5: a sync unit sourced at another node is read and written there as this
 // node's client actor; this node's own identity and process-wide calls stay its own; a read
-// this port does not carry is `Unsupported`; moved home, it reads this node's copy again.
+// this port does not carry is `Unsupported`; moved back, it reads this node's copy again.
 #[test]
 fn a_group_read_at_another_node_spec_sync_set_5() {
     let w = world(Some(Role::Write));

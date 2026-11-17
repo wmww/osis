@@ -82,7 +82,7 @@ PLANTS = [
     ("core/perm/src/lib.rs", None, "\nfn planted(b: B) { let _ = Checked(b); }\n"),
     ("core/engine/src/apply/mod.rs", None, "\nfn planted(b: B) { let _ = Checked::verified(b); }\n"),
     # known_failures
-    ("tools/known_failures.txt", None, f"planted::no_such_test_fn - {ISSUE} x\nsim-sweep:no_such_scenario - {ISSUE} x\n"
+    ("tools/known_failures.txt", None, f"osis-engine/planted::no_such_test_fn - {ISSUE} x\nsim-sweep:no_such_scenario - {ISSUE} x\n"
      f"planted::a - issues/planted-missing.md x\nplanted::b - {ISSUE} (\n"),
     # ended_names, in each kind of file it reads; the last without a final newline
     ("core/base/src/hash.rs", None, "\n// the ended_things here\n"),
@@ -106,7 +106,7 @@ PLANTS = [
     ("tools/code_refs_allow.txt", None, "planted_listed_name  placeholder\nEngine  placeholder\nplanted_listed_name  placeholder\n"),
     # union_lists: a duplicate line in each union-merged list, a key listed twice, a union list unchecked
     ("core/base/testenv-known.txt", None, f"{V}BENCH_MS\n"),
-    ("tools/known_failures.txt", None, f"planted::no_such_test_fn - {ISSUE} x\n"),
+    ("tools/known_failures.txt", None, f"osis-engine/planted::no_such_test_fn - {ISSUE} x\n"),
     (".gitattributes", None, "notes/time-limits.md merge=union\n"),
 ]
 
@@ -138,7 +138,8 @@ EXPECT = [  # regexes the output must hold
     r"core/crypto/src/lib\.rs:\d+: a world-copy hook outside tests",
     r"core/perm/src/lib\.rs:\d+: osis_crdt::Checked built outside",
     r"core/engine/src/apply/mod\.rs: 2 Checked::verified uses, want 1",
-    r"planted::no_such_test_fn: no such test",
+    r"osis-engine/planted::no_such_test_fn: no such test in osis-engine",
+    r"planted::a: want CRATE/PATH",
     r"sim-sweep:no_such_scenario: no such sim scenario",
     r"issues/planted-missing\.md: no such issue file",
     r"bad pattern '\('",

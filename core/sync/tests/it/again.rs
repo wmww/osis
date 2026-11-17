@@ -19,7 +19,7 @@ fn setup() -> (World, Tid, SyncId, CommitId) {
         let mut w = world(0, 2);
         let _ = play(&mut w, &[New(0), Grant(0, 0, 1, Gives::Syncs), Run], String::new());
         let t = w.history.things[0].0;
-        let s = w.engine(0).home_sync_id(&t).unwrap().unwrap();
+        let s = w.engine(0).sync_id_of(&t).unwrap().unwrap();
         let c = w.write(0, |e| {
             let mut m = Mutation::new();
             m.set(t, &value_ak(), &Value::Str("v".into())).unwrap();

@@ -22,7 +22,7 @@ fn three() -> (World, Tid, SyncId) {
     w.cap = 20_000;
     let _ = play(&mut w, &[New(0), Grant(0, 0, 1, Gives::Syncs), Grant(0, 0, 2, Gives::Writes), Run, Run], String::new());
     let t = w.history.things[0].0;
-    let s = w.engine(0).home_sync_id(&t).unwrap().unwrap();
+    let s = w.engine(0).sync_id_of(&t).unwrap().unwrap();
     assert!(w.engine(2).knows(&t) && w.engine(2).get(&t, &value_ak()).unwrap().is_some(), "node 2 reads t");
     assert!(!w.store(1).entries(&s).unwrap().is_empty(), "node 1 keeps S");
     (w, t, s)

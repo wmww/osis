@@ -814,7 +814,7 @@ fn own_secrets_rot(tx: &mut Tx<'_>, t: Tid, rec: Option<osis_base::CreationRecor
     let deposit = fresh_deposit_seed(tx, &mut m, t)?;
     // the rule (spec/sync-ids.md §2): role secrets of its own and its one sync ID, in this one
     // commit
-    if crate::flows::home_sync_id(tx, &t)?.is_none() {
+    if crate::flows::sync_id_of(tx, &t)?.is_none() {
         let mut readers = Vec::new();
         for r in &holders.holders {
             readers.extend(crate::flows::sync_ids::reader_key(tx, &r.holder)?);

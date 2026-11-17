@@ -138,9 +138,9 @@ pub(crate) struct Locked {
     pub remotes: Vec<crate::port::client::Remote>,
     /// Sync units read and written at another node (`unit_source`), by its address.
     pub unit_sources: std::collections::BTreeMap<Tid, Address>,
-    /// Of `unit_sources`, the sync units moving home (`unit_source`): they sync here while they
+    /// Of `unit_sources`, the sync units moving back (`unit_source`): they sync here while they
     /// catch up, still read at their node.
-    pub homing: std::collections::BTreeSet<Tid>,
+    pub moving_back: std::collections::BTreeSet<Tid>,
 }
 
 impl Locked {
@@ -640,7 +640,7 @@ impl Osis {
         if let crate::net::Net::Manual { net: m, index } = &mut net {
             *index = m.join();
         }
-        let locked = Locked { node: sync, events, seq: 0, offers: Vec::new(), out: Vec::new(), wake: None, stepped: false, secret, port: Default::default(), remotes: Vec::new(), unit_sources: Default::default(), homing: Default::default() };
+        let locked = Locked { node: sync, events, seq: 0, offers: Vec::new(), out: Vec::new(), wake: None, stepped: false, secret, port: Default::default(), remotes: Vec::new(), unit_sources: Default::default(), moving_back: Default::default() };
         let store_dir = match &store {
             Store::Dir(p) => Some(p.clone()),
             Store::Memory(_) => None,

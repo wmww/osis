@@ -63,19 +63,19 @@ fn reach(lp: &mut LocalPeer, i: usize, k: u8) -> CommitId {
 #[test]
 fn a_card_goes_once_a_later_one_is_opened_spec_sync_judgement_2() {
     let (mut lp, d) = two_nodes();
-    let home = lp.peers[0].engine.home_sync_id(&d).unwrap().unwrap();
+    let ds = lp.peers[0].engine.sync_id_of(&d).unwrap().unwrap();
     let old = reach(&mut lp, 1, 1);
     let new = reach(&mut lp, 1, 2);
     opened(&mut lp, 0, 1, &new, &[], true);
-    assert_eq!(lp.peers[0].engine.read_facts(&home, &old).unwrap().must_not, None, "a header only: kept");
+    assert_eq!(lp.peers[0].engine.read_facts(&ds, &old).unwrap().must_not, None, "a header only: kept");
     opened(&mut lp, 0, 2, &new, &[0], true);
     let e = &mut lp.peers[0].engine;
-    assert_eq!(e.read_facts(&home, &old).unwrap().must_not, Some(MustNot::CardSuperseded));
-    assert_eq!(e.read_facts(&home, &new).unwrap().must_not, None, "the newest stays");
+    assert_eq!(e.read_facts(&ds, &old).unwrap().must_not, Some(MustNot::CardSuperseded));
+    assert_eq!(e.read_facts(&ds, &new).unwrap().must_not, None, "the newest stays");
     let own = reach(&mut lp, 0, 3);
     let later = reach(&mut lp, 0, 4);
     opened(&mut lp, 0, 3, &later, &[0], true);
-    assert_eq!(lp.peers[0].engine.read_facts(&home, &own).unwrap().must_not, None, "its own card: never by this rule");
+    assert_eq!(lp.peers[0].engine.read_facts(&ds, &own).unwrap().must_not, None, "its own card: never by this rule");
 }
 
 // spec/sync-ids.md §1 (Prefix of a commit encryption: a node opening a blob refuses one whose
@@ -183,7 +183,7 @@ fn a_blob_opened_before_its_lists_resolve_is_checked_once_they_do_spec_commits_4
         let (mut lp, d) = two_nodes();
         let (t, c) = wide_commit(&mut lp, d, 2500);
         assert!(!lp.peers[0].engine.header_list_blobs(&c).unwrap().is_empty(), "the aspect list goes by link");
-        let s = lp.peers[1].engine.home_sync_id(&d).unwrap().unwrap();
+        let s = lp.peers[1].engine.sync_id_of(&d).unwrap().unwrap();
         let (b, wrap, bytes) = framed_entry(&mut lp, d, &c, junk);
         let lists: Vec<(BlobId, Vec<u8>)> = {
             let e = &mut lp.peers[0].engine;

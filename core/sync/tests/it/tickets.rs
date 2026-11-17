@@ -84,12 +84,12 @@ fn an_accepted_ticket_syncs_its_thing_spec_sync_inbox_5() {
 fn a_forged_ticket_sync_id_pulls_in_and_cuts_off_nothing_spec_sync_hostile() {
     let (mut w, t) = granted();
     let p0 = w.node(0).profile.unwrap();
-    let sp = w.engine(1).home_sync_id(&p0).unwrap().expect("Bob syncs Alice's profile");
+    let sp = w.engine(1).sync_id_of(&p0).unwrap().expect("Bob syncs Alice's profile");
     assert_eq!(w.engine(1).sync_holder(&sp).unwrap(), Some(([p0].into(), Holding::Read)));
     // Alice's inbox: own keys, read by her nodes alone
     let a0 = w.node(0).account.unwrap();
     let x = w.engine(0).inbox_thing(&a0).unwrap();
-    let sx = w.engine(0).home_sync_id(&x).unwrap().expect("the inbox's sync ID");
+    let sx = w.engine(0).sync_id_of(&x).unwrap().expect("the inbox's sync ID");
     let ks = [forged(&mut w, &t, sp), forged(&mut w, &t, sx)];
     accept(&mut w, t, &ks);
     assert_eq!(w.engine(1).get(&t, &ak()).unwrap(), Some(Value::Str("hi".into())), "Bob reads T by its genuine ticket");
@@ -117,7 +117,7 @@ fn a_forged_ticket_sync_id_pulls_in_and_cuts_off_nothing_spec_sync_hostile() {
 fn a_paired_node_enters_the_profile_by_ds_ticket_spec_sync_set_1() {
     let mut w = crate::harness::siblings();
     let p = w.node(1).profile.unwrap();
-    let s = w.engine(1).home_sync_id(&p).unwrap().expect("the profile's sync ID");
+    let s = w.engine(1).sync_id_of(&p).unwrap().expect("the profile's sync ID");
     for restart in [false, true] {
         if restart {
             w.power_off(2);

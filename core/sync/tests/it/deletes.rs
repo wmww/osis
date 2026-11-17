@@ -19,7 +19,7 @@ fn setup() -> (World, Tid, SyncId) {
         w.cap = 20_000;
         let _ = play(&mut w, &[New(0), Grant(0, 0, 1, Gives::Syncs), Grant(0, 0, 2, Gives::Writes), Grant(0, 0, 3, Gives::Writes), Run], String::new());
         let t = w.history.things[0].0;
-        let s = w.engine(0).home_sync_id(&t).unwrap().unwrap();
+        let s = w.engine(0).sync_id_of(&t).unwrap().unwrap();
         (w, (t, s))
     });
     (w, t, s)
@@ -368,7 +368,7 @@ fn a_purged_or_replaced_part_is_unrecoverable_from_the_sync_store_spec_commits_5
 #[test]
 fn a_new_reader_of_a_cover_stripped_commit_misses_nothing_spec_commits_5() {
     let (mut w, t, c, _) = replaced_beside_a_kept_part();
-    let s = w.engine(0).home_sync_id(&t).unwrap().unwrap();
+    let s = w.engine(0).sync_id_of(&t).unwrap().unwrap();
     let n = w.pair(0);
     w.run();
     assert!(w.engine(n).holds_commit(&c), "the new device holds the commit");
@@ -419,7 +419,7 @@ fn a_reader_receives_a_part_whose_cover_was_covered_whole_spec_sync_judgement_2(
         e.commit(m).unwrap()
     });
     w.run();
-    let s = w.engine(1).home_sync_id(&t).unwrap().unwrap();
+    let s = w.engine(1).sync_id_of(&t).unwrap().unwrap();
     assert!(w.engine(0).holds_commit(&c), "the reader holds the making commit");
     assert!(!w.engine(0).read_facts(&s, &c).unwrap().missing, "no part of it counts missing");
 }
@@ -456,7 +456,7 @@ fn a_reader_counts_a_stripped_part_covered_by_its_covers_cover_spec_crdt_8() {
         e.commit(m).unwrap()
     });
     w.run();
-    let s = w.engine(1).home_sync_id(&t).unwrap().unwrap();
+    let s = w.engine(1).sync_id_of(&t).unwrap().unwrap();
     assert!(w.engine(0).holds_commit(&c), "the reader holds the making commit");
     assert!(!w.engine(0).read_facts(&s, &c).unwrap().missing, "no part of it counts missing");
     assert!(w.engine(0).get(&t, &value_ak()).unwrap().is_some(), "the reader reads the value");

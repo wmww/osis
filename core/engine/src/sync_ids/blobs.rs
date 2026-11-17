@@ -479,8 +479,8 @@ impl Engine {
         Ok(out)
     }
 
-    /// What `commit_bodies_under` needs of a sync unit's root: the unit, actor and the things its home
-    /// sync ID publishes.
+    /// What `commit_bodies_under` needs of a sync unit's root: the unit, actor and the things its sync
+    /// ID publishes.
     pub fn body_ctx(&mut self, g: &Tid) -> BodyCtx {
         BodyCtx { unit: *g, actor: self.core.reader_of(g), published: self.published_view(g) }
     }

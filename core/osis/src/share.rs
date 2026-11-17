@@ -471,7 +471,7 @@ impl Osis {
     /// written under the thing here until that writer changes them (or is removed too).
     ///
     /// `Unsupported` on a client with its own actor, and on a thing this node reads at another node: move its sync unit
-    /// home first. A removal written to the copy here would never leave it.
+    /// back here first. A removal written to the copy here would never leave it.
     pub fn set_role(&self, target: Tid, holder: Tid, role: Option<Role>, o: SetRoleOpts) -> Result<()> {
         self.local_at(target, "set_role")?;
         retain_only_on_removal(role, o)?;

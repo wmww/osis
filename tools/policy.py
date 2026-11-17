@@ -351,19 +351,27 @@ def pinned_seeds():
 
 
 def known_failures():
-    names, bad = gate_failures.known(ROOT)
+    _, bad = gate_failures.known(ROOT)
     yield from bad
     sim = read(os.path.join(ROOT, "core/test/sim/src/scenarios.rs"))
-    fns = None
-    for name in names:
+    dirs = {name: m for m, name in workspace_members().items()}
+    fns = {}  # per crate, `\bfn`, its `\b` after the literal for speed (`has`)
+    for line in read(os.path.join(ROOT, gate_failures.KNOWN)).splitlines():
+        if not line.strip() or line.startswith("#"):
+            continue
+        name = line.split()[0]
         if name.startswith("sim-sweep:"):
             if f'"{name.split(":", 1)[1]}"' not in sim:
                 yield f"{gate_failures.KNOWN}: {name}: no such sim scenario"
             continue
-        if fns is None:  # `\bfn`, its `\b` after the literal for speed (`has`)
-            fns = {f for m in members for p in rs_files(m, members) for f in re.findall(r"fn(?<!\wfn) (\w+)", read(p))}
-        if name.split("::")[-1] not in fns:
-            yield f"{gate_failures.KNOWN}: {name}: no such test"
+        crate, _, path = name.rpartition("/")
+        if crate not in dirs:
+            yield f"{gate_failures.KNOWN}: {name}: want CRATE/PATH, CRATE a workspace package"
+            continue
+        if crate not in fns:
+            fns[crate] = {f for p in rs_files(dirs[crate], members) for f in re.findall(r"fn(?<!\wfn) (\w+)", read(p))}
+        if path.split("::")[-1] not in fns[crate]:
+            yield f"{gate_failures.KNOWN}: {name}: no such test in {crate}"
 
 # Line lists under git's union merge (.gitattributes `merge=union`): a hunk both sides changed keeps
 # both, so a line both sides added comes twice (`union_lists` refuses it) and a line one side removed

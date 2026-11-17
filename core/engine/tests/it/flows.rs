@@ -831,11 +831,11 @@ fn late_joiner_after_compaction_agrees_spec_crdt_8() {
 /// Peers 0 and 1 are nodes of account P (created on 1, 0 paired); peer 2 is Alice (PA): built
 /// once (`LocalPeer::cached`).
 fn nodes_and_alice() -> (LocalPeer, Tid, Tid, SyncId) {
-    let (lp, (d, pa, home)) = LocalPeer::cached("flows::nodes_and_alice", || {
-        let (lp, d, pa, home) = nodes_and_alice_built();
-        (lp, (d, pa, home))
+    let (lp, (d, pa, ds)) = LocalPeer::cached("flows::nodes_and_alice", || {
+        let (lp, d, pa, ds) = nodes_and_alice_built();
+        (lp, (d, pa, ds))
     });
-    (lp, d, pa, home)
+    (lp, d, pa, ds)
 }
 
 fn nodes_and_alice_built() -> (LocalPeer, Tid, Tid, SyncId) {
@@ -852,11 +852,11 @@ fn nodes_and_alice_built() -> (LocalPeer, Tid, Tid, SyncId) {
     lp.peers[2].know(&[p.root]).unwrap();
     spread(&mut lp);
     assert_eq!(lp.peers[0].engine.role_on(&p.root), Some(Role::Admin));
-    let home = *lp.peers[1].engine.get_typed(&p.root, &ct::SYNC).unwrap().unwrap().keys().next().unwrap();
-    // the pairing's rotation re-keyed D: its home's next step registers the new epochs
-    lp.peers[1].engine.issue_step(&p.root, &home, false).unwrap().expect("the pairing's step");
+    let ds = *lp.peers[1].engine.get_typed(&p.root, &ct::SYNC).unwrap().unwrap().keys().next().unwrap();
+    // the pairing's rotation re-keyed D: its sync ID's next step registers the new epochs
+    lp.peers[1].engine.issue_step(&p.root, &ds, false).unwrap().expect("the pairing's step");
     spread(&mut lp);
-    (lp, p.root, pa, home)
+    (lp, p.root, pa, ds)
 }
 
 /// The head step of sync ID `s` of actor `a` at peer `k`: the one no other names as its parent.
@@ -1351,7 +1351,7 @@ fn removal_refreshes_deposit_seed_spec_crypto_3() {
     let t = thing_of(&mut lp, 2, pa);
     lp.peers[2].engine.grant(&t, &pp, &edge_of(Role::Read)).unwrap();
     lp.peers[2].engine.give_own_secrets(&t).unwrap();
-    let card = lp.peers[2].engine.home_sync_id(&t).unwrap().unwrap();
+    let card = lp.peers[2].engine.sync_id_of(&t).unwrap().unwrap();
     spread(&mut lp);
     assert_ne!(pp, p);
     let old = lp.peers[2].engine.deposit_seed(&t).unwrap().unwrap();
@@ -1556,7 +1556,7 @@ fn issue_step_after_inside_removal_spec_sync_5() {
     lp.peers[2].engine.grant(&t, &p, &edge_of(Role::Admin)).unwrap();
     spread(&mut lp);
     let t0 = newest_read(&lp, 1, t).unwrap();
-    let sync_id = lp.peers[1].engine.home_sync_id(&t).unwrap().unwrap();
+    let sync_id = lp.peers[1].engine.sync_id_of(&t).unwrap().unwrap();
     lp.peers[1].engine.demote(&p, &Demotion { holder: d1, new: None, retain: None }).unwrap();
     assert!(lp.peers[1].engine.issue_step(&t, &sync_id, false).unwrap().is_none(), "the team has not rotated: nothing");
     lp.peers[1].engine.ensure_rotated(&t).unwrap();

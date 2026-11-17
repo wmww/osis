@@ -410,7 +410,7 @@ fn stripped_history_entry_leaves_nothing_spec_crypto_4() {
 fn a_sync_epoch_covers_a_departure_only_once_rotated_spec_sync_opens_4() {
     let (mut lp, g, tids) = shape(Role::Sync);
     let a = &mut lp.peers[A].engine;
-    let s = a.home_sync_id(&g).unwrap().unwrap();
+    let s = a.sync_id_of(&g).unwrap().unwrap();
     let sync0 = a.epochs(&g).unwrap().role(Role::Sync).current();
     a.demote(&g, &Demotion { holder: tids[W], new: None, retain: None }).unwrap();
     let after = a.epochs(&g).unwrap();

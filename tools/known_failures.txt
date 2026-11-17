@@ -1,7 +1,7 @@
 # Failures on main the gate marks KNOWN (notes/gate.md, The summary): one per line,
-# NAME REPRO ISSUE PATTERN. NAME: a libtest path or sim-sweep:SCENARIO; REPRO: the setting that
+# NAME REPRO ISSUE PATTERN. NAME: CRATE/LIBTEST_PATH or sim-sweep:SCENARIO; REPRO: the setting that
 # fails on main (a sim's SETUP/SEED); ISSUE: its issues/ file; PATTERN: a regex every failing
 # unit of NAME (each seed line of its panic, or its whole panic) must match
 # (tools/gate_failures.py).
-props::settled_histories_keep_their_laws_large_spec_commits_5 OSIS_HELD_START=387315248891 issues/held-model-until-no-deadline.md seed \d+: output changed before its first deadline
-validity::unmerge_paged_matches_fresh_large_spec_crdt_4_6 - issues/osis-tests-depend-on-store-rng.md one rebuild per flipped aspect\s+left: 7\s+right: 5
+held-model/props::settled_histories_keep_their_laws_large_spec_commits_5 OSIS_HELD_START=387315248891 issues/held-model-until-no-deadline.md seed \d+: output changed before its first deadline
+osis-engine/validity::unmerge_paged_matches_fresh_large_spec_crdt_4_6 - issues/osis-tests-depend-on-store-rng.md one rebuild per flipped aspect\s+left: 7\s+right: 5

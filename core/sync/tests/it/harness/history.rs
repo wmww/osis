@@ -835,7 +835,7 @@ fn at_check(w: &mut World, r: &mut Peer, m: &Model) -> String {
 /// under the sync ID of a thing with own keys the model has it neither read nor keep unread.
 fn closure_clauses(w: &mut World, r: &mut Peer, m: &Model) {
     let things = w.history.things.clone();
-    let ids: Vec<Option<osis_base::SyncId>> = things.iter().map(|(t, _)| r.engine.home_sync_id(t).ok().flatten()).collect();
+    let ids: Vec<Option<osis_base::SyncId>> = things.iter().map(|(t, _)| r.engine.sync_id_of(t).ok().flatten()).collect();
     let on: Vec<usize> = (0..w.len()).filter(|i| w.online(*i)).collect();
     for i in on {
         let Some(acct) = w.node(i).account else { continue };
@@ -918,7 +918,7 @@ fn invalid_clauses(w: &mut World) {
     let things = w.history.things.clone();
     for i in on {
         for s in w.store(i).held_ids().expect("sync IDs") {
-            let thing = things.iter().position(|(t, _)| w.engine(i).home_sync_id(t).ok().flatten() == Some(s));
+            let thing = things.iter().position(|(t, _)| w.engine(i).sync_id_of(t).ok().flatten() == Some(s));
             for e in w.store(i).entries(&s).expect("entries") {
                 let Some(c) = w.engine(i).blob_commit(&e.blob) else { continue };
                 if w.engine(i).holds_commit(&c) {

@@ -26,7 +26,7 @@ fn a_head_move_restamps_own_entries_and_readers_deposit_nothing_spec_sync_judgem
     w.cap = 20_000;
     let _ = crate::harness::play(&mut w, &[New(0), Grant(0, 0, 1, Gives::Syncs), Grant(0, 0, 2, Gives::Reads), Run, Run], String::new());
     let t = w.history.things[0].0;
-    let s = w.engine(0).home_sync_id(&t).unwrap().unwrap();
+    let s = w.engine(0).sync_id_of(&t).unwrap().unwrap();
     assert_eq!(w.engine(1).sync_holder(&s).unwrap(), Some(([t].into(), Holding::Unread)));
     assert_eq!(w.engine(2).sync_holder(&s).unwrap(), Some(([t].into(), Holding::Read)));
     w.power_off(1);
@@ -114,7 +114,7 @@ fn a_reader_moves_a_removed_store_past_its_keys_spec_sync_opens_6() {
     w.cap = 20_000;
     let _ = crate::harness::play(&mut w, &[New(0), Grant(0, 0, 1, Gives::Syncs), Grant(0, 0, 2, Gives::Reads), Run, Run], String::new());
     let t = w.history.things[0].0;
-    let s = w.engine(0).home_sync_id(&t).unwrap().unwrap();
+    let s = w.engine(0).sync_id_of(&t).unwrap().unwrap();
     assert_eq!(w.engine(1).sync_holder(&s).unwrap(), Some(([t].into(), Holding::Unread)));
     assert!(!w.store(1).entries(&s).unwrap().is_empty(), "node 1 keeps S");
     w.partition(0, 1);
@@ -136,7 +136,7 @@ fn a_reader_moves_a_store_departed_before_it_kept_s_unread_spec_sync_opens_6() {
     w.cap = 20_000;
     let _ = crate::harness::play(&mut w, &[New(0), Grant(0, 0, 1, Gives::Writes), Run], String::new());
     let t = w.history.things[0].0;
-    let s = w.engine(0).home_sync_id(&t).unwrap().unwrap();
+    let s = w.engine(0).sync_id_of(&t).unwrap().unwrap();
     let _ = crate::harness::play(&mut w, &[Lower(0, 0, Holder::Node(1), Gives::Syncs), Revoke(0, 0, Holder::Node(1)), Run], String::new());
     assert!(w.store(1).entries(&s).unwrap().is_empty(), "node 1 stopped: {} entries kept", w.store(1).entries(&s).unwrap().len());
 }

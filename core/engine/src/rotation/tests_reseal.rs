@@ -373,7 +373,7 @@ fn openings_of_a_pending_write_survive_a_restart_spec_crypto_5() {
 
 /// g's sync ID and R's entry of `w` (`entry`) under it, as the sync store holds it.
 fn r_held(lp: &mut LocalPeer, g: Tid, w: CommitId, entry: &[SealedPackage]) -> (SyncId, HeldBlob) {
-    let s = lp.peers[V].engine.home_sync_id(&g).unwrap().unwrap();
+    let s = lp.peers[V].engine.sync_id_of(&g).unwrap().unwrap();
     let e = &entry.iter().find(|p| p.id == w).unwrap().entries[0];
     let wrap = e.wraps.iter().find(|(a, _)| *a == g).unwrap().1;
     (s, HeldBlob { sync_id: s, wrap, bytes: e.blob.clone() })
@@ -462,7 +462,7 @@ fn facade_header_only_wrap_withheld_without_the_removal_spec_crypto_5() {
     body.parts.clear();
     let hdr = r.seal_to(&body, osis_blob::Class::Durable, &mut osis_crypto::SeededRng::from_u64(22)).unwrap().unwrap();
     let k = r.wrap_secret(&g, Some((&w, &[]))).unwrap().expect("R wraps its own");
-    let held = HeldBlob { sync_id: lp.peers[V].engine.home_sync_id(&g).unwrap().unwrap(), wrap: osis_crypto::wrap(&k, &hdr.id, &hdr.key, 1).unwrap(), bytes: hdr.blob.clone() };
+    let held = HeldBlob { sync_id: lp.peers[V].engine.sync_id_of(&g).unwrap().unwrap(), wrap: osis_crypto::wrap(&k, &hdr.id, &hdr.key, 1).unwrap(), bytes: hdr.blob.clone() };
     let s = held.sync_id;
     v_takes(&mut lp, &s, w, &held);
     assert!(!reads(&mut lp, V, g, "w"), "V holds w's header alone");
@@ -491,7 +491,7 @@ fn facade_copy_read_content_withheld_without_the_removal_spec_crypto_5() {
     let body = r.body(&w).unwrap().unwrap();
     let copy = r.seal_to(&body, osis_blob::Class::Durable, &mut osis_crypto::SeededRng::from_u64(24)).unwrap().unwrap();
     let k = r.wrap_secret(&g, Some((&w, &body.parts))).unwrap().expect("R wraps its own");
-    let held = HeldBlob { sync_id: lp.peers[V].engine.home_sync_id(&g).unwrap().unwrap(), wrap: osis_crypto::wrap(&k, &copy.id, &copy.key, 1).unwrap(), bytes: copy.blob.clone() };
+    let held = HeldBlob { sync_id: lp.peers[V].engine.sync_id_of(&g).unwrap().unwrap(), wrap: osis_crypto::wrap(&k, &copy.id, &copy.key, 1).unwrap(), bytes: copy.blob.clone() };
     let s = held.sync_id;
     v_takes(&mut lp, &s, w, &held);
     assert!(reads(&mut lp, V, g, "w"), "V reads w from R's copy");
@@ -520,7 +520,7 @@ fn cross_thing_copy_content_never_resealed_spec_crypto_5() {
     // content its reader actor may not read is not taken)
     lp.peers[R].engine.grant(&g, &h, &edge(Role::Read)).unwrap();
     send_skipping(&mut lp, R, V, &w_commits.iter().copied().chain([w]).collect());
-    let sh = lp.peers[V].engine.home_sync_id(&h).unwrap().expect("V syncs h");
+    let sh = lp.peers[V].engine.sync_id_of(&h).unwrap().expect("V syncs h");
     let r = &mut lp.peers[R].engine;
     let body = r.body(&w).unwrap().unwrap();
     let copy = r.seal_to(&body, osis_blob::Class::Durable, &mut osis_crypto::SeededRng::from_u64(26)).unwrap().unwrap();
@@ -528,7 +528,7 @@ fn cross_thing_copy_content_never_resealed_spec_crypto_5() {
     let copied = HeldBlob { sync_id: sh, wrap: osis_crypto::wrap(&k, &copy.id, &copy.key, 1).unwrap(), bytes: copy.blob.clone() };
     v_takes(&mut lp, &sh, w, &copied);
     assert!(reads(&mut lp, V, g, "w"), "V reads w from the copy");
-    let s = lp.peers[V].engine.home_sync_id(&g).unwrap().unwrap();
+    let s = lp.peers[V].engine.sync_id_of(&g).unwrap().unwrap();
     let mut rng = osis_crypto::SeededRng::from_u64(27);
     for arrived in [false, true] {
         if arrived {
@@ -561,7 +561,7 @@ fn copy_read_content_not_snapshotted_without_the_removal_spec_crypto_5() {
     let body = r.body(&w).unwrap().unwrap();
     let copy = r.seal_to(&body, osis_blob::Class::Durable, &mut osis_crypto::SeededRng::from_u64(28)).unwrap().unwrap();
     let k = r.wrap_secret(&g, Some((&w, &body.parts))).unwrap().expect("R wraps its own");
-    let held = HeldBlob { sync_id: lp.peers[V].engine.home_sync_id(&g).unwrap().unwrap(), wrap: osis_crypto::wrap(&k, &copy.id, &copy.key, 1).unwrap(), bytes: copy.blob.clone() };
+    let held = HeldBlob { sync_id: lp.peers[V].engine.sync_id_of(&g).unwrap().unwrap(), wrap: osis_crypto::wrap(&k, &copy.id, &copy.key, 1).unwrap(), bytes: copy.blob.clone() };
     let s = held.sync_id;
     v_takes(&mut lp, &s, w, &held);
     assert!(reads(&mut lp, V, g, "w"));
@@ -584,7 +584,7 @@ fn old_epoch_section_sealed_while_newest_unestablished_spec_crypto_5() {
     assert!(!lp.peers[V].engine.epochs(&g).unwrap().read.is_established(&e_r));
     let w0 = put(&mut lp, A, g, "w0");
     let entry = lp.sealed(A, &[w0]).unwrap();
-    let s = lp.peers[V].engine.home_sync_id(&g).unwrap().unwrap();
+    let s = lp.peers[V].engine.sync_id_of(&g).unwrap().unwrap();
     let e = &entry.iter().find(|p| p.id == w0).unwrap().entries[0];
     let held = HeldBlob { sync_id: s, wrap: e.wraps.iter().find(|(a, _)| *a == g).unwrap().1, bytes: e.blob.clone() };
     v_takes(&mut lp, &s, w0, &held);
@@ -618,7 +618,7 @@ fn planted_copy_unlocks_no_reseal_spec_crypto_5() {
     let env = osis_commit::Envelope { header: c.header.clone(), sigs: c.sigs.clone(), sections: vec![sec] };
     let f = crate::sync_ids::frame_envelope(&env, &c.header, osis_blob::Class::Durable, &mut rng, &c).unwrap();
     let mk = lp.peers[M].engine.epochs(&g).unwrap().read.newest_held().unwrap().1.clone();
-    let s = lp.peers[V].engine.home_sync_id(&g).unwrap().unwrap();
+    let s = lp.peers[V].engine.sync_id_of(&g).unwrap().unwrap();
     let planted = HeldBlob { sync_id: s, wrap: osis_crypto::wrap(&mk, &f.id, &f.key, 1).unwrap(), bytes: f.blob.clone() };
     let o = lp.peers[V].engine.open_entry(&s, &f.id, &planted.wrap, &planted.bytes, u64::MAX).unwrap();
     assert!(matches!(o, crate::sync::Opened::Commit(c, _) if c == w) && !reads(&mut lp, V, g, "w"), "V takes the planted copy, its junk delta refused: {o:?}");
@@ -646,7 +646,7 @@ fn copy_opening_of_a_pending_write_survives_a_restart_spec_crypto_5() {
     let body = r.body(&w2).unwrap().unwrap();
     let copy = r.seal_to(&body, osis_blob::Class::Durable, &mut osis_crypto::SeededRng::from_u64(32)).unwrap().unwrap();
     let k = r.wrap_secret(&g, Some((&w2, &body.parts))).unwrap().expect("R wraps its own");
-    let s = lp.peers[V].engine.home_sync_id(&g).unwrap().unwrap();
+    let s = lp.peers[V].engine.sync_id_of(&g).unwrap().unwrap();
     let held = HeldBlob { sync_id: s, wrap: osis_crypto::wrap(&k, &copy.id, &copy.key, 1).unwrap(), bytes: copy.blob.clone() };
     let _ = lp.peers[V].engine.open_entry(&s, &copy.id, &held.wrap, &held.bytes, u64::MAX).unwrap();
     assert!(lp.peers[V].engine.core.ix.pending.contains_key(&w2), "w2 waits for V's clock");
@@ -679,7 +679,7 @@ fn copy_read_below_a_cut_keeps_its_floor_spec_crypto_5() {
     let copy = ra.seal_to(&body, osis_blob::Class::Durable, &mut osis_crypto::SeededRng::from_u64(35)).unwrap().unwrap();
     let k = ra.wrap_secret(&g, Some((&w0, &body.parts))).unwrap().expect("A wraps its own");
     let entry = lp.sealed(a, &[w0]).unwrap();
-    let s = lp.peers[p].engine.home_sync_id(&g).unwrap().unwrap();
+    let s = lp.peers[p].engine.sync_id_of(&g).unwrap().unwrap();
     let copied = HeldBlob { sync_id: s, wrap: osis_crypto::wrap(&k, &copy.id, &copy.key, 1).unwrap(), bytes: copy.blob.clone() };
     lp.peers[a].engine.grant_with(&g, &tids[n], &edge(Role::Read), crate::flows::edges::History::None).unwrap();
     send_skipping(&mut lp, a, p, &BTreeSet::from([w0]));
@@ -839,7 +839,7 @@ fn j_moves_at_an_until_spec_sync_opens_4() {
     lp.peers[0].engine.grant(&g, &tids[1], &osis_schema::core_types::Edge { until: Some(until), ..edge(Role::Read) }).unwrap();
     lp.sync_all().unwrap();
     let e0 = &mut lp.peers[0].engine;
-    let s = e0.home_sync_id(&g).unwrap().expect("g's sync ID");
+    let s = e0.sync_id_of(&g).unwrap().expect("g's sync ID");
     let mut fx: osis_base::memo::Effects<(), crate::sync::J> = osis_base::memo::Effects::new("J at now");
     fx.want(());
     assert_eq!(fx.settle(&(), || e0.judge_peer(&s, &[tids[1]]).unwrap()), Some((None, crate::sync::J::Reader)));

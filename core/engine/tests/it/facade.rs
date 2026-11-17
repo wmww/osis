@@ -20,17 +20,17 @@ fn read_credentials_and_claim_key_spec_sync_ids_3() {
     let (mut lp, _) = people(1);
     let e = &mut lp.peers[0].engine;
     let (_, d) = e.account().unwrap().unwrap();
-    let home = e.home_sync_id(&d).unwrap().unwrap();
+    let ds = e.sync_id_of(&d).unwrap().unwrap();
     let ids = e.sync_ids(&d).unwrap();
     assert_eq!(ids.len(), 1);
     assert!(!ids[0].hint);
     let head = ids[0].path.steps.last().unwrap().0.clone();
     head.verify_genesis().unwrap();
-    let rc = e.read_credentials(&home).unwrap().expect("a reader of home");
+    let rc = e.read_credentials(&ds).unwrap().expect("a reader of D");
     assert_eq!(rc.head.as_ref().map(|s| s.id()), Some(head.id()));
     assert!(!rc.read_secrets.is_empty(), "a current read secret");
     assert_eq!(rc.proofs.first().map(|p| p.0), Some(head.id()), "the head's sync proof first");
-    let ck = e.claim_key(&home, &head.id()).unwrap().expect("this node is listed at genesis");
+    let ck = e.claim_key(&ds, &head.id()).unwrap().expect("this node is listed at genesis");
     let (_, Some(claims)) = &ids[0].path.steps[0] else { panic!("claim set held") };
     assert!(claims.claims.contains(&ck.verifying_key().to_bytes()));
 }
@@ -62,7 +62,7 @@ fn a_step_is_due_after_a_rotation_spec_sync_ids_6() {
     let (mut lp, ps) = people(3);
     let t = thing_of(&mut lp, 0, ps[0]);
     lp.peers[0].engine.grant(&t, &ps[1], &edge_of(Role::Read)).unwrap();
-    let s = lp.peers[0].engine.home_sync_id(&t).unwrap().unwrap();
+    let s = lp.peers[0].engine.sync_id_of(&t).unwrap().unwrap();
     let head = |lp: &mut LocalPeer| lp.peers[0].engine.sync_ids(&t).unwrap().iter().find(|o| o.id == s).unwrap().path.steps.last().unwrap().0.clone();
     assert!(lp.peers[0].engine.due_step(&s).unwrap().is_none(), "nothing newer");
     let before = head(&mut lp);
@@ -306,14 +306,14 @@ fn reach(lp: &mut LocalPeer, i: usize, k: u8) -> osis_base::CommitId {
 #[test]
 fn a_card_known_only_as_a_commit_supersedes_nothing_spec_sync_judgement_2() {
     let (mut lp, d) = crate::flows::account_two_nodes();
-    let home = lp.peers[0].engine.home_sync_id(&d).unwrap().unwrap();
+    let ds = lp.peers[0].engine.sync_id_of(&d).unwrap().unwrap();
     let old = reach(&mut lp, 1, 1);
     reach(&mut lp, 1, 2);
     let (o1, _) = (reach(&mut lp, 0, 3), reach(&mut lp, 0, 4));
     spread(&mut lp);
     let e = &mut lp.peers[0].engine;
-    assert_eq!(e.read_facts(&home, &old).unwrap().must_not, None, "a later card held but never opened here: kept");
-    assert_eq!(e.read_facts(&home, &o1).unwrap().must_not, None, "its own card: never by this rule");
+    assert_eq!(e.read_facts(&ds, &old).unwrap().must_not, None, "a later card held but never opened here: kept");
+    assert_eq!(e.read_facts(&ds, &o1).unwrap().must_not, None, "its own card: never by this rule");
 }
 
 // spec/sync-judgement.md §2 must-not-hold (another node's card commit, for `node.0` and `reach.0`,
@@ -323,18 +323,18 @@ fn a_card_known_only_as_a_commit_supersedes_nothing_spec_sync_judgement_2() {
 #[test]
 fn a_card_goes_with_its_nodes_grant_spec_sync_judgement_2() {
     let (mut lp, d) = crate::flows::account_two_nodes();
-    let home = lp.peers[0].engine.home_sync_id(&d).unwrap().unwrap();
+    let ds = lp.peers[0].engine.sync_id_of(&d).unwrap().unwrap();
     let n1 = lp.peers[1].engine.tid();
     let r = reach(&mut lp, 1, 1);
     spread(&mut lp);
     let keys = *lp.peers[0].engine.core.ix.by_aspect.get(&(n1, Ak::new("keys.0").unwrap())).unwrap().iter().next().unwrap();
     let e = &mut lp.peers[0].engine;
-    assert_eq!(e.read_facts(&home, &r).unwrap().must_not, None, "a node of the account: kept");
+    assert_eq!(e.read_facts(&ds, &r).unwrap().must_not, None, "a node of the account: kept");
     e.demote(&d, &Demotion { holder: n1, new: None, retain: None }).unwrap();
-    assert_eq!(e.read_facts(&home, &r).unwrap().must_not, Some(osis_engine::sync::MustNot::CardEnded));
-    assert_eq!(e.read_facts(&home, &keys.1).unwrap().must_not, None, "its keys.0 card stays");
+    assert_eq!(e.read_facts(&ds, &r).unwrap().must_not, Some(osis_engine::sync::MustNot::CardEnded));
+    assert_eq!(e.read_facts(&ds, &keys.1).unwrap().must_not, None, "its keys.0 card stays");
     e.pair(&n1).unwrap();
-    assert_eq!(e.read_facts(&home, &r).unwrap().must_not, None, "paired again: kept");
+    assert_eq!(e.read_facts(&ds, &r).unwrap().must_not, None, "paired again: kept");
 }
 
 // spec/sync-judgement.md §2 required set (the certificate blobs of spec/permissions.md §4): the
@@ -344,17 +344,17 @@ fn a_card_goes_with_its_nodes_grant_spec_sync_judgement_2() {
 #[test]
 fn another_nodes_card_is_in_the_required_set_spec_sync_judgement_2() {
     let (mut lp, d) = crate::flows::account_two_nodes();
-    let home = lp.peers[0].engine.home_sync_id(&d).unwrap().unwrap();
+    let ds = lp.peers[0].engine.sync_id_of(&d).unwrap().unwrap();
     let r = reach(&mut lp, 1, 1);
     spread(&mut lp);
     let e = &mut lp.peers[0].engine;
     let b = e.sync_bodies(&r).unwrap();
-    assert!(b.get(&home).is_some_and(|m| m.certificate && m.copy && !m.parts.is_empty()), "the card's certificate body under D's home: {b:?}");
-    let f = e.body_facts(&home, &r).unwrap();
+    assert!(b.get(&ds).is_some_and(|m| m.certificate && m.copy && !m.parts.is_empty()), "the card's certificate body under D's sync ID: {b:?}");
+    let f = e.body_facts(&ds, &r).unwrap();
     assert!(f.required && !f.closure, "{f:?}");
-    let (sealed, wrap) = e.seal_body(&home, &r, &[], &mut SeededRng::from_u64(1)).unwrap().expect("sealed as a certificate copy");
+    let (sealed, wrap) = e.seal_body(&ds, &r, &[], &mut SeededRng::from_u64(1)).unwrap().expect("sealed as a certificate copy");
     assert_eq!(e.blob_of(&sealed.id).map(|r| r.copy), Some(true));
-    match lp.peers[1].engine.open_entry(&home, &sealed.id, &wrap, &sealed.blob, u64::MAX).unwrap() {
+    match lp.peers[1].engine.open_entry(&ds, &sealed.id, &wrap, &sealed.blob, u64::MAX).unwrap() {
         osis_engine::sync::Opened::Commit(c, _) => assert_eq!(c, r),
         o => panic!("{o:?}"),
     }
@@ -426,18 +426,18 @@ fn following_a_link_again_under_another_seed_lets_its_old_key_go_spec_permission
 }
 
 // spec/sync-status.md §3 History complete (a complete pass of every sync ID carrying the thing):
-// a fresh node wants one pass of its home, whenever begun; history is complete once it is noted.
+// a fresh node wants one pass of D's sync ID, whenever begun; history is complete once it is noted.
 #[test]
 fn history_completes_with_a_pass_spec_sync_status_3() {
     let (mut lp, _) = people(1);
     let e = &mut lp.peers[0].engine;
     let (_, d) = e.account().unwrap().unwrap();
-    let home = e.home_sync_id(&d).unwrap().unwrap();
-    assert_eq!(e.passes_wanted().unwrap().get(&home), Some(&0), "one pass, whenever");
+    let ds = e.sync_id_of(&d).unwrap().unwrap();
+    assert_eq!(e.passes_wanted().unwrap().get(&ds), Some(&0), "one pass, whenever");
     assert!(!e.history_complete(&d).unwrap());
     let now = e.begin_pass();
-    e.note_complete_pass(&home, now).unwrap();
-    assert!(e.history_complete(&d).unwrap() && !e.passes_wanted().unwrap().contains_key(&home));
+    e.note_complete_pass(&ds, now).unwrap();
+    assert!(e.history_complete(&d).unwrap() && !e.passes_wanted().unwrap().contains_key(&ds));
 }
 
 // spec/crypto.md §4 (names): a rotation names the edge writes its rotator held that pin a holder
@@ -479,7 +479,7 @@ fn record_blob_by_hand(lp: &mut LocalPeer, i: usize, t: &Tid, records: &[osis_ba
 #[test]
 fn a_forged_record_in_a_record_blob_names_no_other_thing_spec_wire_3() {
     let (mut lp, d) = crate::flows::account_two_nodes();
-    let home = lp.peers[0].engine.home_sync_id(&d).unwrap().unwrap();
+    let ds = lp.peers[0].engine.sync_id_of(&d).unwrap().unwrap();
     let a = lp.peers[0].engine.account().unwrap().unwrap().0;
     let u = thing_of(&mut lp, 0, a);
     let real = lp.peers[0].engine.core.created(&u).cloned().unwrap();
@@ -488,13 +488,13 @@ fn a_forged_record_in_a_record_blob_names_no_other_thing_spec_wire_3() {
     let forged = osis_base::CreationRecord::Thing { admin: lp.peers[1].engine.tid(), nonce, link: None };
     assert_ne!(forged.tid(), u);
     let (id, blob, wrap) = record_blob_by_hand(&mut lp, 0, &d, std::slice::from_ref(&forged));
-    match lp.peers[1].engine.open_entry(&home, &id, &wrap, &blob, u64::MAX).unwrap() {
+    match lp.peers[1].engine.open_entry(&ds, &id, &wrap, &blob, u64::MAX).unwrap() {
         osis_engine::sync::Opened::Records(tids) => assert_eq!(tids, [forged.tid()].into()),
         o => panic!("{o:?}"),
     }
     assert!(lp.peers[1].engine.core.created(&u).is_none(), "nothing learned of u");
-    let (id, bytes, wrap) = lp.peers[0].engine.seal_records(&home, &[u].into(), &mut SeededRng::from_u64(3)).unwrap().expect("sealed");
-    assert!(matches!(lp.peers[1].engine.open_entry(&home, &id, &wrap, &bytes, u64::MAX).unwrap(), osis_engine::sync::Opened::Records(_)));
+    let (id, bytes, wrap) = lp.peers[0].engine.seal_records(&ds, &[u].into(), &mut SeededRng::from_u64(3)).unwrap().expect("sealed");
+    assert!(matches!(lp.peers[1].engine.open_entry(&ds, &id, &wrap, &bytes, u64::MAX).unwrap(), osis_engine::sync::Opened::Records(_)));
     assert!(lp.peers[1].engine.core.created(&u).is_none() && lp.peers[1].engine.carries_loose(&id), "nothing awaits u yet: loose");
     later_write_on(&mut lp, u);
     assert_eq!(lp.peers[1].engine.core.created(&u), Some(&real));
@@ -516,7 +516,7 @@ fn later_write_on(lp: &mut LocalPeer, u: Tid) {
 /// records learned, loose left, whether the genuine one was learned once awaited).
 fn junk_records(n: usize) -> (usize, usize, usize, bool) {
     let (mut lp, d) = crate::flows::account_two_nodes();
-    let home = lp.peers[0].engine.home_sync_id(&d).unwrap().unwrap();
+    let ds = lp.peers[0].engine.sync_id_of(&d).unwrap().unwrap();
     let a = lp.peers[0].engine.account().unwrap().unwrap().0;
     let u = thing_of(&mut lp, 0, a);
     let real = lp.peers[0].engine.core.created(&u).cloned().unwrap();
@@ -526,7 +526,7 @@ fn junk_records(n: usize) -> (usize, usize, usize, bool) {
     let (gb, gbytes, gwrap) = record_blob_by_hand(&mut lp, 0, &d, std::slice::from_ref(&real));
     assert_ne!(jb, gb);
     for (b, bytes, wrap) in [(&jb, &jbytes, &jwrap), (&gb, &gbytes, &gwrap)] {
-        assert!(matches!(lp.peers[1].engine.open_entry(&home, b, wrap, bytes, u64::MAX).unwrap(), osis_engine::sync::Opened::Records(_)));
+        assert!(matches!(lp.peers[1].engine.open_entry(&ds, b, wrap, bytes, u64::MAX).unwrap(), osis_engine::sync::Opened::Records(_)));
     }
     let carried = lp.peers[1].engine.loose_records();
     let learned = known(&lp);
@@ -560,7 +560,7 @@ fn a_loose_author_record_is_learned_when_its_commit_comes_spec_commits_4() {
     let b = lp.peers[1].engine.create_account().unwrap().0.account;
     let t = thing_of(&mut lp, 0, a);
     lp.peers[0].engine.give_own_secrets(&t).unwrap();
-    let s0 = lp.peers[0].engine.home_sync_id(&t).unwrap().unwrap();
+    let s0 = lp.peers[0].engine.sync_id_of(&t).unwrap().unwrap();
     let rec = lp.peers[1].engine.core.created(&b).cloned().unwrap();
     let (id, bytes, wrap) = record_blob_by_hand(&mut lp, 0, &t, std::slice::from_ref(&rec));
     assert!(matches!(lp.peers[0].engine.open_entry(&s0, &id, &wrap, &bytes, u64::MAX).unwrap(), osis_engine::sync::Opened::Records(_)));
@@ -585,7 +585,7 @@ fn a_loose_record_awaited_after_another_arrives_is_learned_spec_commits_4() {
         let b = lp.peers[1].engine.create_account().unwrap().0.account;
         let t = thing_of(&mut lp, 0, a);
         lp.peers[0].engine.give_own_secrets(&t).unwrap();
-        let s0 = lp.peers[0].engine.home_sync_id(&t).unwrap().unwrap();
+        let s0 = lp.peers[0].engine.sync_id_of(&t).unwrap().unwrap();
         let u = thing_of(&mut lp, 1, b);
         let rb = lp.peers[1].engine.core.created(&b).cloned().unwrap();
         let ru = lp.peers[1].engine.core.created(&u).cloned().unwrap();
@@ -621,9 +621,9 @@ fn own_secrets_and_the_sync_id_come_in_one_commit_spec_sync_ids_2() {
         let admin = lp.peers[0].engine.plain_admin();
         let t = thing_of(&mut lp, 0, admin);
         let e = &mut lp.peers[0].engine;
-        assert_eq!(e.home_sync_id(&t).unwrap(), None, "a plain thing has none");
+        assert_eq!(e.sync_id_of(&t).unwrap(), None, "a plain thing has none");
         let done = if by_grant { e.grant(&t, &ps[1], &edge_of(Role::Read)).unwrap() } else { e.give_own_secrets(&t).unwrap() };
-        assert!(e.home_sync_id(&t).unwrap().is_some(), "a sync ID (by grant: {by_grant})");
+        assert!(e.sync_id_of(&t).unwrap().is_some(), "a sync ID (by grant: {by_grant})");
         let secrets = Ak::new("secrets.0").unwrap();
         let sync = ct::SYNC.name();
         // the first commit with a secrets.0 part on t gives them (later ones box holders)

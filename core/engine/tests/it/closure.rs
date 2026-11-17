@@ -224,9 +224,9 @@ fn cut_work(n: usize, m: usize, edit: impl Fn(&mut Engine, Tid, Tid)) -> u64 {
 }
 
 // spec/sync-set.md §5 Sourced away, Cost: while A is sourced elsewhere, a thing entering or
-// leaving the node closure costs the same at a closure of n and of 10n; moving A away or home
+// leaving the node closure costs the same at a closure of n and of 10n; moving A away or back
 // costs what is below A (n and 10n), not the rest of the node closure. The sync set leaves A and
-// what is below it only, and takes them back home.
+// what is below it only, and takes them back.
 #[test]
 fn a_sourced_thing_costs_what_is_below_it_spec_sync_set_5() {
     let (n, m) = (6, 60);
@@ -248,10 +248,10 @@ fn a_sourced_thing_costs_what_is_below_it_spec_sync_set_5() {
         osis_base::costs::take();
         e.set_sourced([a].into(), &Default::default()).unwrap();
     };
-    let home = |e: &mut Engine, _: Tid, _: Tid| {
+    let back = |e: &mut Engine, _: Tid, _: Tid| {
         e.set_sourced(Default::default(), &Default::default()).unwrap();
     };
-    for (name, edit) in [("away", &away as &dyn Fn(&mut Engine, Tid, Tid)), ("home", &home)] {
+    for (name, edit) in [("away", &away as &dyn Fn(&mut Engine, Tid, Tid)), ("back", &back)] {
         let (a, b) = (cut_work(n, 3, edit), cut_work(m, 3, edit));
         assert!(b <= a + 2, "{name}: {a} with n = {n}, {b} with n = {m}");
         let (a, b) = (cut_work(3, n, edit), cut_work(3, m, edit));

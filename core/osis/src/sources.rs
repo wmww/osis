@@ -14,10 +14,10 @@
 //!
 //! **Hand-off** (spec/sync-set.md §5): the engine's sync set leaves a sync unit sourced at another
 //! node (`Engine::set_sourced`), so its sync IDs stop by spec/sync-set.md §3, once this node's
-//! own commits there are held elsewhere: the move away waits for nothing itself. Moving home, the
-//! sync unit syncs here again while still read at its node (`Locked::homing`), and the move answers
+//! own commits there are held elsewhere: the move away waits for nothing itself. Moving back, the
+//! sync unit syncs here again while still read at its node (`Locked::moving_back`), and the move answers
 //! once it caught up (`Engine::caught_up`: history complete, spec/sync-status.md §3, so a source
-//! gone ends it by `PASS_WAIT_MS`); only then is it recorded home. A client of this node reads
+//! gone ends it by `PASS_WAIT_MS`); only then is it recorded as read here. A client of this node reads
 //! nothing of it until then.
 
 use crate::error::{Error, Result};
@@ -207,12 +207,12 @@ impl ReadOnly {
 }
 
 /// The engine's copy of the source table (`Engine::set_sourced`): the sync set leaves a sync unit
-/// read elsewhere unless it is moving home, and a client of this node reads nothing of it, its
+/// read elsewhere unless it is moving back, and a client of this node reads nothing of it, its
 /// copy here maybe behind (`readable_by`).
 fn mirror(l: &mut Locked) -> Result<()> {
     let g = l.unit_sources.keys().copied().collect();
-    let homing = l.homing.clone();
-    Ok(l.engine().set_sourced(g, &homing)?)
+    let moving_back = l.moving_back.clone();
+    Ok(l.engine().set_sourced(g, &moving_back)?)
 }
 
 /// Writes the source table to its app record and the engine (`mirror`).
@@ -293,30 +293,30 @@ impl Osis {
     /// (`connect_node`). At a node, the sync unit's things are read there and written there, and a
     /// write on one also carried by a sync unit that syncs here or at a third node fails `Invalid`;
     /// this node keeps the copy it had and stops syncing the sync unit once its own writes there
-    /// reached another holder. Moving home answers once this node's copy caught up (a complete
+    /// reached another holder. Moving back here answers once this node's copy caught up (a complete
     /// pass of each sync ID carrying the sync unit: at most `PASS_WAIT_MS` past a holder away); until
     /// then the sync unit stays read at its node, and a call dropped before it answers leaves it so,
     /// syncing here too until a restart (moving it again ends that). `Invalid` for a node not connected, for
     /// the account root (it always syncs here), or when the sync unit moved away again before it caught up.
     pub async fn unit_source(&self, unit: Tid, to: UnitSource) -> Result<()> {
         self.local("unit_source")?;
-        let homing = self.locked(|l| -> Result<bool> {
+        let moving_back = self.locked(|l| -> Result<bool> {
             match &to {
                 UnitSource::Node(a) if !l.remotes.iter().any(|r| r.addr == *a) => Err(Error::Invalid(format!("not connected to {a} (connect_node)"))),
                 // the node's own records live on the account root: it always syncs here
                 UnitSource::Node(_) if unit == self.account_root() => Err(Error::Invalid("the account root is never sourced at another node".into())),
                 UnitSource::Node(a) => {
                     l.unit_sources.insert(unit, a.clone());
-                    l.homing.remove(&unit);
+                    l.moving_back.remove(&unit);
                     record(self, l)?;
-                    // the sync set moved: sync steps now, as moving home does
+                    // the sync set moved: sync steps now, as moving back does
                     l.handle(osis_sync::Input::Wrote);
                     Ok(false)
                 }
                 UnitSource::Local if !l.unit_sources.contains_key(&unit) => Ok(false),
                 UnitSource::Local => {
                     // syncing here again, read at its node until it caught up
-                    if l.homing.insert(unit) {
+                    if l.moving_back.insert(unit) {
                         mirror(l)?;
                         l.handle(osis_sync::Input::Wrote);
                     }
@@ -324,7 +324,7 @@ impl Osis {
                 }
             }
         })?;
-        if !homing {
+        if !moving_back {
             return Ok(());
         }
         self.waiting(move |db| {
@@ -332,14 +332,14 @@ impl Osis {
                 if !l.unit_sources.contains_key(&unit) {
                     return Some(Ok(()));
                 }
-                if !l.homing.contains(&unit) {
+                if !l.moving_back.contains(&unit) {
                     return Some(Err(Error::Invalid(format!("{unit} moved away again before it caught up"))));
                 }
                 match l.engine().caught_up(&unit) {
                     Ok(false) => None,
                     Ok(true) => {
                         l.unit_sources.remove(&unit);
-                        l.homing.remove(&unit);
+                        l.moving_back.remove(&unit);
                         Some(record(db, l))
                     }
                     Err(e) => Some(Err(e.into())),

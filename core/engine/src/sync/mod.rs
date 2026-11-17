@@ -292,7 +292,7 @@ pub(crate) struct Entered {
 /// How this node syncs one thing of N's closure (spec/sync-set.md §2).
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum ThingSync {
-    /// Read: its home sync ID.
+    /// Read: its sync ID.
     Read(Vec<SyncId>),
     /// Kept unread: by a ticket for the sync role (spec/sync.md).
     Unread(Vec<SyncId>),

@@ -97,7 +97,7 @@ impl Osis {
     /// wrote went through this node, so there is nothing elsewhere to catch up on, and a client's
     /// actor has no node to keep a copy. A role this node may not remove fails here, as does one
     /// on a thing this node reads at another node (`Unsupported`, the sessions ended, the entry
-    /// staying: move its sync unit home and call this again).
+    /// staying: move its sync unit back here and call this again).
     /// `Unsupported` on a client with its own actor.
     pub fn remove_client(&self, actor: Tid) -> Result<bool> {
         self.local("remove_client")?;

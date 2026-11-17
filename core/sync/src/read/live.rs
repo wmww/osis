@@ -148,7 +148,7 @@ impl Live<'_, '_> {
 
     /// The sync IDs with an entry of blob `b` that carry a body of `c` (`Engine::sync_body`), in
     /// order.
-    fn homes_naming(&mut self, b: &BlobId, c: &CommitId) -> Result<Vec<SyncId>> {
+    fn body_ids_naming(&mut self, b: &BlobId, c: &CommitId) -> Result<Vec<SyncId>> {
         let mut named = self.cx.store.naming(b)?;
         named.sort_unstable();
         named.dedup();
@@ -171,7 +171,7 @@ impl Live<'_, '_> {
             // the entry first: its row moves when the bytes arrive, so a reader follows them; a
             // sync ID's body asked per sync ID naming the blob, never every sync ID's
             let mut found = None;
-            for x in self.homes_naming(b, c)? {
+            for x in self.body_ids_naming(b, c)? {
                 if let Some(e) = self.cx.store.entry(&x, b).ok().flatten() {
                     found = Some((x, e));
                     break;
@@ -453,7 +453,7 @@ impl Ground for Live<'_, '_> {
                 if self.cx.store.tombstone(s, b)?.is_some() || self.cx.store.blob_len(b)?.is_none() || self.cx.engine.blob_gone(b) || skip.contains(b) {
                     continue;
                 }
-                for from in &self.homes_naming(b, c)? {
+                for from in &self.body_ids_naming(b, c)? {
                     // a peer's deposit under S is stamped only as promoted (`Ground::promotion`)
                     let Some(e) = self.cx.store.entry(from, b)?.filter(|e| from != s || !e.deposited || e.own) else { continue };
                     let Some(wrap) = self.cx.engine.rewrap(c, b, from, &e.wrap, s)? else { continue };

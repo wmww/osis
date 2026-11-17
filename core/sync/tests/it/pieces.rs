@@ -27,7 +27,7 @@ fn three(gives: Gives) -> (World, Tid, SyncId) {
     w.cap = 200_000;
     let _ = play(&mut w, &[New(0), Grant(0, 0, 1, Gives::Syncs), Grant(0, 0, 2, gives), Run], String::new());
     let t = w.history.things[0].0;
-    let s = w.engine(0).home_sync_id(&t).unwrap().unwrap();
+    let s = w.engine(0).sync_id_of(&t).unwrap().unwrap();
     (w, t, s)
 }
 
@@ -221,7 +221,7 @@ fn a_blob_framed_under_other_commitments_is_dropped_once_its_lists_resolve_spec_
     w.cap = 200_000;
     let _ = play(&mut w, &[New(0), Grant(0, 0, 1, Gives::Reads), Run], String::new());
     let t = w.history.things[0].0;
-    let s = w.engine(0).home_sync_id(&t).unwrap().unwrap();
+    let s = w.engine(0).sync_id_of(&t).unwrap().unwrap();
     // the framed blob logged newest at node 0, so the reader fetches it first (spec/sync-streams.md
     // §4 Fill order), before it knows the lists
     w.partition(0, 1);

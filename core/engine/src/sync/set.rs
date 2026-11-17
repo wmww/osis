@@ -53,12 +53,12 @@ impl Engine {
     }
 
     /// Sets the sync units the handle reads and writes at another node (spec/sync-set.md §5):
-    /// `elsewhere`, of which those also in `homing` (moved home, catching up) sync here; the
+    /// `elsewhere`, of which those also in `moving_back` (moving back, catching up) sync here; the
     /// others `sync_things` walks no path through, the account root aside: it is never cut. A
     /// client of this node reads nothing of any of them (`readable_by`). Between transactions.
-    pub fn set_sourced(&mut self, elsewhere: BTreeSet<Tid>, homing: &BTreeSet<Tid>) -> Result<()> {
+    pub fn set_sourced(&mut self, elsewhere: BTreeSet<Tid>, moving_back: &BTreeSet<Tid>) -> Result<()> {
         let root = self.account_root();
-        let cut: BTreeSet<Tid> = elsewhere.difference(homing).filter(|g| Some(**g) != root && Some(**g) != self.core.node_root).copied().collect();
+        let cut: BTreeSet<Tid> = elsewhere.difference(moving_back).filter(|g| Some(**g) != root && Some(**g) != self.core.node_root).copied().collect();
         self.core.ix.closure.set_cut(self.core.node_root, cut)?;
         self.core.sourced_elsewhere = elsewhere;
         Ok(())
@@ -70,7 +70,7 @@ impl Engine {
         Ok(self.in_sync_things(g)? && matches!(self.thing_sync(g)?, ThingSync::Read(ids) | ThingSync::Unread(ids) if !ids.is_empty()))
     }
 
-    /// spec/sync-set.md §5 (moving home): history is complete here for sync unit `g` and each
+    /// spec/sync-set.md §5 (Moving back): history is complete here for sync unit `g` and each
     /// thing of it the sync set holds (spec/sync-status.md §3): each sync ID of the sync set
     /// carrying one of them, read here, has a complete pass noted. True when none does. A memo
     /// per sync unit.
@@ -93,7 +93,7 @@ impl Engine {
         Ok(true)
     }
 
-    /// How this node syncs thing `t` of `sync_things`: its home sync ID read while a read secret
+    /// How this node syncs thing `t` of `sync_things`: its sync ID read while a read secret
     /// of it is held; a thing with secrets of its own and none is unsyncable; a plain thing has none of its own. Reads only `t`'s keys.
     pub(crate) fn thing_sync_now(&mut self, t: &Tid) -> Result<ThingSync> {
         // read: by its own keys, or on a ticket's word (its sync ID the ticket's until a held
@@ -326,13 +326,13 @@ impl Engine {
     }
 }
 
-/// The sync IDs synced for a thing owning `ids`: its home among those a held `sync.0` records
-/// (two admins giving it secrets at once made two: the higher ID, as `flows::home_sync_id`), and
+/// The sync IDs synced for a thing owning `ids`: its sync ID, the greatest a held `sync.0` records
+/// (two admins giving it secrets at once made two, as `flows::sync_id_of`), and
 /// each its tickets name that no held `sync.0` records (their issuers' word, spec/sync-inbox.md §5
 /// Ticket sync IDs): a forged one beside the genuine keeps the genuine one fetched, and a node
 /// holding one admin's record reaches the other's. Empty when it owns none.
 fn synced(ids: &[OwnedSyncId]) -> Vec<SyncId> {
     let ticket = |o: &&OwnedSyncId| o.hint && o.path.steps.is_empty();
-    let home = ids.iter().filter(|o| !ticket(o)).map(|o| o.id).max();
-    home.into_iter().chain(ids.iter().filter(ticket).map(|o| o.id)).collect()
+    let own = ids.iter().filter(|o| !ticket(o)).map(|o| o.id).max();
+    own.into_iter().chain(ids.iter().filter(ticket).map(|o| o.id)).collect()
 }

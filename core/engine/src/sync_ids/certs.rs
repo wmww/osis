@@ -146,7 +146,7 @@ impl Engine {
         let mut out = Certs::default();
         self.shared_certificates(g, &mut out);
         // the account's card (the author of every commit but the node's own) and, under D's
-        // home alone, the node's (nothing of a node goes under another sync ID)
+        // sync ID alone, the node's (nothing of a node goes under another sync ID)
         let under_d = self.core.account_and_root().is_some_and(|(_, d)| d == *g);
         for who in std::iter::once(me).chain(under_d.then(|| self.tid())) {
             let mine = BTreeSet::from([who]);
@@ -191,7 +191,7 @@ impl Engine {
         }
         // the cards of the key actors holding `g` that are neither node nor account (a link key:
         // its writes under the sync ID verify by its card, which no chain carries; a node places
-        // its own under D's home alone; an account's goes with its signing chain)
+        // its own under D's sync ID alone; an account's goes with its signing chain)
         let keys: Vec<Tid> = self.core.roster_of(g).into_keys().filter(|k| self.core.is_key_actor(k) && !self.core.is_account(k)).collect();
         for k in keys.into_iter().filter(|k| self.latest_on(k, "node.0").is_none()) {
             out.records.insert(k);
@@ -275,7 +275,7 @@ impl Engine {
 
     /// `g`'s own certificates as a read thing (`sync_certificates`): `shared_certificates`, every
     /// actor's chain certificates for `g` (`Timelines::certificates_into`: what reaches it over
-    /// chained writes, each account with its signing chain), and under D's home every node's card
+    /// chained writes, each account with its signing chain), and under D's sync ID every node's card
     /// commits (each node of D logs its own there). The same at every node judging `g`: what this
     /// node logs of its own (`certificates`) decides nothing of S's required set, else two honest
     /// nodes would delete each other's copies (spec/sync-judgement.md §2). Reads role commits,
@@ -370,7 +370,7 @@ impl Engine {
     /// (spec/permissions.md §4, a commit's author's chain: everything the commit's validity reads):
     /// of each held commit on a thing of `g`'s closure its actor may read, its author's chain to
     /// that thing and, acting for another actor, to that actor (`Indexes::chains_on`). A node
-    /// author's chain (its card) goes under D's home alone, with D's nodes' cards.
+    /// author's chain (its card) goes under D's sync ID alone, with D's nodes' cards.
     #[cfg(test)]
     fn certificate_chains(&mut self, g: &Tid) -> Vec<(Tid, Tid)> {
         let things: Vec<Tid> = self.sync_unit(g).iter().filter(|t| self.cert_reads_in(g, t)).copied().collect();

@@ -9,7 +9,7 @@ use held_model::*;
 use std::collections::{BTreeMap, BTreeSet};
 
 const ME: NodeId = 7;
-const HOME: SyncId = 1;
+const MINE: SyncId = 1;
 const L: SyncId = 2;
 const NO_SYNC_ID: SyncId = 999;
 
@@ -24,16 +24,16 @@ fn made() -> Commit {
     creation(T, RecordLink::Admin(FIRST_ADMIN), FIRST_ADMIN, ts(0), Retention::ROLE, None)
 }
 
-/// T lives under `L`, which only the grant's key opens; `ME` holds `HOME` only; the grant is copied
-/// whole under `HOME`.
+/// T lives under `L`, which only the grant's key opens; `ME` holds `MINE` only; the grant is copied
+/// whole under `MINE`.
 fn invited(key: SyncId) -> Library {
     let records = vec![Record { id: FIRST_ADMIN, link: RecordLink::Key }];
     let mut sync_ids = BTreeMap::new();
     sync_ids.insert(T, BTreeSet::from([L]));
     let mut copies = BTreeMap::new();
-    copies.insert(30, BTreeSet::from([HOME]));
+    copies.insert(30, BTreeSet::from([MINE]));
     let w = reg(40, FIRST_ADMIN, 2, REG, Retention::PLAIN, 5);
-    Library { now: at(5), me: ME, records, sync_ids, copies, commits: vec![grant(key), made(), w], keys: BTreeSet::from([HOME]) }
+    Library { now: at(5), me: ME, records, sync_ids, copies, commits: vec![grant(key), made(), w], keys: BTreeSet::from([MINE]) }
 }
 
 fn reads(lib: &Library, reading_only: bool) -> Option<Value> {
@@ -68,12 +68,12 @@ fn forged_box_changes_no_read_spec_crypto() {
     assert!(!f.keys.contains(&L));
 }
 
-// home-sync-ID sibling: the commit's whole copy under a sync ID the node holds, parts judged the same
+// sibling under another sync ID: the commit's whole copy under a sync ID the node holds, parts judged the same
 #[test]
-fn home_sync_id_sibling_copy_opens_the_sync_id_spec_crypto() {
+fn other_sync_id_sibling_copy_opens_the_sync_id_spec_crypto() {
     let mut lib = invited(L);
-    // the content write copied under HOME too: it may arrive before the record
-    lib.copies.insert(40, BTreeSet::from([HOME]));
+    // the content write copied under MINE too: it may arrive before the record
+    lib.copies.insert(40, BTreeSet::from([MINE]));
     let mut orders = 0;
     let f = settle(
         &lib,
@@ -93,10 +93,10 @@ fn present(h: &Held) -> BTreeMap<(ThingId, Aspect), Value> {
 }
 
 /// A random valid world: things under sync IDs, each created by a key actor, valid grants boxing
-/// real keys (copied under `HOME` or not), forged boxes that open nothing, writes.
+/// real keys (copied under `MINE` or not), forged boxes that open nothing, writes.
 fn world(seed: u64) -> Library {
     let mut r = Rng::new(seed);
-    let mut lib = Library { now: at(50), me: ME, keys: BTreeSet::from([HOME]), ..Default::default() };
+    let mut lib = Library { now: at(50), me: ME, keys: BTreeSet::from([MINE]), ..Default::default() };
     lib.records = vec![Record { id: 0, link: RecordLink::Key }, Record { id: 1, link: RecordLink::Key }];
     let n = 3 + r.below(3) as ThingId;
     let mut id: CommitId = 100;
@@ -118,7 +118,7 @@ fn world(seed: u64) -> Library {
         lib.sync_ids.insert(thing, ls.clone());
         let c = creation(thing, link, admin, ts(0), Retention::ROLE, None);
         if r.chance(25) {
-            lib.copies.insert(c.id, BTreeSet::from([HOME]));
+            lib.copies.insert(c.id, BTreeSet::from([MINE]));
         }
         lib.commits.push(c);
         // a grant for ME, with a box for a sync ID this thing is under
@@ -128,7 +128,7 @@ fn world(seed: u64) -> Library {
             let key = if r.chance(15) { NO_SYNC_ID } else { *ls.iter().next().unwrap() };
             g.boxes = vec![KeyBox { thing, key }];
             if r.chance(70) {
-                lib.copies.insert(id, BTreeSet::from([HOME]));
+                lib.copies.insert(id, BTreeSet::from([MINE]));
             }
             lib.commits.push(g);
         }
@@ -137,7 +137,7 @@ fn world(seed: u64) -> Library {
             id += 1;
             let w = Commit { parts: vec![Part { thing, ..part(REG, Retention::PLAIN, vec![set(2 + h, id, id as i64)]) }], ..reg(id, admin, 2 + h, REG, Retention::PLAIN, id as i64) };
             if r.chance(30) {
-                lib.copies.insert(id, BTreeSet::from([HOME]));
+                lib.copies.insert(id, BTreeSet::from([MINE]));
             }
             lib.commits.push(w);
         }

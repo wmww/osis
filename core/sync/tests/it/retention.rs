@@ -22,7 +22,7 @@ fn covered_in_history() -> (World, Tid, SyncId, CommitId) {
     w.horizon_ms = 60_000;
     let _ = play(&mut w, &[New(0), Grant(0, 0, 1, Gives::Syncs), Grant(0, 0, 2, Gives::Reads), Run], String::new());
     let t = w.history.things[0].0;
-    let s = w.engine(0).home_sync_id(&t).unwrap().unwrap();
+    let s = w.engine(0).sync_id_of(&t).unwrap().unwrap();
     let keep: ct::RetentionSetting = [(value_ak(), ct::RetentionEntry { history: Some(osis_schema::History::Keep { until: None, after: Some(HOUR_MS) }), ..Default::default() })].into_iter().collect();
     let set = |w: &mut World, v: &str| {
         w.write(0, |e| {

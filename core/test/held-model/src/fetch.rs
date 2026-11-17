@@ -1,7 +1,7 @@
 //! Fetching what judges what the node holds (notes/expiry-creation-design.md §3): which entries a
 //! node can open, what it keeps of an entry it cannot judge, and the fixed point it reaches.
 //! A sync ID holds a commit's parts on its things, or the whole commit where a copy is logged under
-//! it (a home-sync-ID sibling). An entry is delivered only under a sync ID the node holds a key for.
+//! it (a sibling under another sync ID). An entry is delivered only under a sync ID the node holds a key for.
 //! A part or commit that cannot be judged is discarded (`act`); before that, boxes opening with
 //! the node's own key are read: reading-only keys, sourced from the commit, that open further
 //! sync IDs. They go when the commit's last part applies (a valid grant's key stays) or it is judged
@@ -21,7 +21,7 @@ pub struct Library {
     pub records: Vec<Record>,
     /// The sync IDs each thing's parts are logged under.
     pub sync_ids: BTreeMap<ThingId, BTreeSet<SyncId>>,
-    /// Further sync IDs holding a whole commit (a home-sync-ID sibling copy).
+    /// Further sync IDs holding a whole commit (a sibling copy under another sync ID).
     pub copies: BTreeMap<CommitId, BTreeSet<SyncId>>,
     pub commits: Vec<Commit>,
     /// Keys the node holds from the start.

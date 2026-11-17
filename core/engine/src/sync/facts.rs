@@ -134,7 +134,7 @@ impl Engine {
             return Ok(None);
         }
         let Some((_, d)) = self.core.account_and_root() else { return Ok(None) };
-        if self.home_sync_id(&d)? != Some(*s) || !self.is_node(&node)? {
+        if self.sync_id_of(&d)? != Some(*s) || !self.is_node(&node)? {
             return Ok(None);
         }
         Ok(Some(node))

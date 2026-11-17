@@ -9,7 +9,8 @@ stages, each marked KNOWN (listed in tools/known_failures.txt, with its issue) o
 Exit 0 when every stage passed, 3 when only KNOWN failures failed, 1 on any NEW one.
 
 tools/known_failures.txt: one failure on main per line, `NAME REPRO ISSUE PATTERN`: NAME a test's
-libtest path (`order::held_set_decides_plain`) or `sim-sweep:SCENARIO`; REPRO the setting that
+crate and libtest path (`osis-engine/order::held_set_decides_plain`; failures match by the path
+alone, tools/policy.py checks the crate holds the test) or `sim-sweep:SCENARIO`; REPRO the setting that
 shows it failing on main; ISSUE its issues/ file; PATTERN (the rest of the line) a Python regex
 searched in each failing unit of NAME's text: each `seed N ... (replay: ...)` line of its panic
 (of each failing sim seed, its lines), or its whole panic when it names no seed. A failure is
@@ -70,8 +71,13 @@ def known(root=ROOT):
         except re.error as e:
             errs.append(f"{KNOWN}:{n}: bad pattern {pat!r}: {e}")
             continue
-        names.setdefault(name, []).append((issue, pat))
+        names.setdefault(test_path(name), []).append((issue, pat))
     return names, errs
+
+
+def test_path(name):
+    """NAME as a failure names it: a test's libtest path (its `CRATE/` dropped), or `sim-sweep:SCENARIO`."""
+    return name if name.startswith("sim-sweep:") else name.rpartition("/")[2]
 
 
 def cargo_failures(text):

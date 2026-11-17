@@ -49,9 +49,9 @@ Read whole, it is still one design: release, the walk and the needs follow from 
 - Remnants: spec_map.py's three stale rules (inbox blob, tied edge, home under synced group); "filing into D" (engine `Batched::role_on`), a tied demotion (sync `pass_wanted`), edge fields `tied`/`keyset` (engine `held.rs`), add with grant (app `share.rs`), NetKeep.tla's synced group and sync record.
 - tools/known_failures.txt: both lines still fail; none stale.
 
-**For the end gate**
-- `spec_map.py --gaps`, a gate step, fails on main: 48 stray anchors (tests citing text gone from sync-set §3, sync-opens §6, sync-inbox §5, sync-judgement §1) and 4 rules with no test or issue (crypto §4 encrypt under covering epoch, data-model §6 unreadable link, permissions §7 removed node's links, sync-ids §2 home sync id).
-- Names (renamed): "sync record" for a target's boxes to a holder and its `sync.0` (sync-judgement §2) is gone; the rule reads "travels under the holder's sync ID, with the target's boxes to the holder and its `sync.0`". "home" means three things in spec (the app's home thing, T's home sync ID, sync-set §5 Moving home).
+**For the end gate** (made)
+- `spec_map.py --gaps --uncited` is clean: anchors name the text that states each rule; the four rules without a test have one. Left: issues/sourced-pass-for-lists.md (leave's wait for a source, a rule the spec no longer states).
+- Names: "sync record" is gone (sync-judgement §2: a grant naming a holder travels under the holder's sync ID, with the target's boxes to it and its `sync.0`). Core's "home" is gone: a thing's sync ID is the greatest it owns (`Engine::sync_id_of`), sync-set §5's "Moving back" (`Locked::moving_back`), a holder's own read thing (`holder_own`); "home" is the app's thing alone.
 
 **Fine as is** (each follows from a principle): the refused removals of the node root's and D's strongs (the roots' invariant); D's tickets only for what is entered outside the local part (the node root's strongs are this node's); release's one wait; the retained copy (an option keeping its property); the account root never sourced away; an actor as its own inbox; nothing before the strong, and so an account root counting for role commits only at a strong; a grant naming a holder in the holder's required set, needs and fire (one fact in three places); the dial list's "unless" (a sibling's entry before its `reach.0` arrives); fetching again at a new strong (rare-path brute force, stated); a stranded notice acted on whatever the setting (an actor inbox keeps none by default).
 

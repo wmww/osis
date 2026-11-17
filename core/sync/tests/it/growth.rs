@@ -281,7 +281,7 @@ fn a_write_valid_again_before_its_author_hears_comes_from_a_store_spec_permissio
         e.commit(m).unwrap().unwrap()
     });
     w.run();
-    let s = w.engine(0).home_sync_id(&t).unwrap().unwrap();
+    let s = w.engine(0).sync_id_of(&t).unwrap().unwrap();
     let blobs = w.engine(1).commit_blobs(&x).unwrap();
     let at_store = |w: &mut World| w.store(3).entries(&s).unwrap().iter().any(|e| blobs.contains(&e.blob));
     assert!(at_store(&mut w), "node 3 holds the write");
@@ -399,7 +399,7 @@ fn a_head_move_relists_nothing_between_a_reader_and_a_store_at_n_and_10n() {
     w.cap = 200_000;
     let _ = play(&mut w, &[New(0), Grant(0, 0, 1, Gives::Syncs), Grant(0, 0, 2, Gives::Reads), Run], String::new());
     let t = w.history.things[0].0;
-    let s = w.engine(0).home_sync_id(&t).unwrap().unwrap();
+    let s = w.engine(0).sync_id_of(&t).unwrap().unwrap();
     let mut written = 0;
     let mut head_move = |w: &mut World, n: usize| {
         for i in written..n {
@@ -762,7 +762,7 @@ fn a_released_things_forgotten_commits_leave_no_own_entry_spec_sync_judgement_3(
         t
     });
     w.run();
-    let ds = w.engine(0).home_sync_id(&d).unwrap().unwrap();
+    let ds = w.engine(0).sync_id_of(&d).unwrap().unwrap();
     // the own entries of commits with a part on t, under every sync ID
     let mut logged = Vec::new();
     for (s, _) in w.store(0).syncs() {

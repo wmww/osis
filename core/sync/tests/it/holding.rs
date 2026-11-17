@@ -241,7 +241,7 @@ fn the_last_reference_gone_the_thing_is_gone_for_everyone_spec_sync_set_3() {
 /// `first` grants Alice read, the other grants her read too or, with `rotate`, rotates T; each
 /// gives T own keys and a sync ID of its own. Alice holds T with only node `first` reachable,
 /// then all heal.
-/// Whichever she took first, she ends on T's home sync ID and reads T's newest value.
+/// Whichever she took first, she ends on T's sync ID and reads T's newest value.
 fn keyed_at_once(first: usize, rotate: bool) {
     let mut w = siblings();
     let t = make(&mut w, 1, None, "hi");
@@ -265,10 +265,10 @@ fn keyed_at_once(first: usize, rotate: bool) {
         e.commit(m).unwrap();
     });
     w.run();
-    let home = w.engine(1).home_sync_id(&t).unwrap();
+    let s = w.engine(1).sync_id_of(&t).unwrap();
     assert_eq!(w.engine(1).sync_ids(&t).unwrap().len(), 2, "first {first}, rotate {rotate}: two sync IDs");
     for i in 0..3 {
-        assert_eq!(w.engine(i).home_sync_id(&t).unwrap(), home, "first {first}, rotate {rotate}: node {i}'s home");
+        assert_eq!(w.engine(i).sync_id_of(&t).unwrap(), s, "first {first}, rotate {rotate}: node {i}'s sync ID of T");
     }
     assert_eq!(w.engine(0).roster(&t).get(&alice).map(|e| e.role), Some(Role::Read));
     assert_eq!(value(&mut w, 0, &t), Some(Value::Str("after".into())), "first {first}, rotate {rotate}: Alice reads T");
@@ -285,7 +285,7 @@ fn concurrent_first_grants_by_two_nodes_reach_the_grantee_spec_permissions_3() {
 
 // spec/permissions.md §3, spec/sync-ids.md §2, spec/sync-inbox.md §5 (Ticket sync IDs): one
 // sibling grants Alice read on T while another gives T own keys by a rotation; she reads T's
-// newest value whichever sibling granted (so whether hers is the home sync ID or not).
+// newest value whichever sibling granted (so whether hers is T's sync ID or not).
 #[test]
 fn a_grant_beside_a_siblings_keying_reaches_the_grantee_spec_permissions_3() {
     for first in [1, 2] {

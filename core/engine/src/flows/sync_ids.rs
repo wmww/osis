@@ -3,7 +3,7 @@
 //! unread once it holds the role commits they register: sync orders that), the claim set's
 //! readers, the deposit seed's refresh.
 
-use super::{Done, ak, home_sync_id};
+use super::{Done, ak, sync_id_of};
 use crate::rotation;
 use crate::engine::{Core, Engine, Tx};
 use crate::error::{Error, Result};
@@ -160,7 +160,7 @@ pub(crate) fn drop_old_claims(tx: &mut Tx<'_>, m: &mut Mutation, t: Tid) -> Resu
     Ok(())
 }
 
-/// The home sync ID of `t`, a thing with own keys (spec/sync-ids.md §2): genesis step at its newest epochs,
+/// A new sync ID of `t`, a thing with own keys (spec/sync-ids.md §2): genesis step at its newest epochs,
 /// written to `sync.0` in `m`. Returns the sync ID.
 pub(crate) fn new_sync_id(tx: &mut Tx<'_>, m: &mut Mutation, t: Tid, epochs: &ActorEpochs, readers: &[ReaderKey], deposit: &Secret32) -> Result<SyncId> {
     let (step, set) = issue(tx, &t, epochs, None, readers, deposit)?;
@@ -273,10 +273,10 @@ impl Engine {
         self.run(|tx| drop_old_claims(tx, m, g))
     }
 
-    /// The home sync ID of `t` (`home_sync_id`).
-    pub fn home_sync_id(&mut self, t: &Tid) -> Result<Option<SyncId>> {
+    /// The sync ID of `t`: the greatest it owns (`flows::sync_id_of`).
+    pub fn sync_id_of(&mut self, t: &Tid) -> Result<Option<SyncId>> {
         let g = *t;
-        self.read(|tx| home_sync_id(tx, &g))
+        self.read(|tx| sync_id_of(tx, &g))
     }
 }
 

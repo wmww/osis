@@ -304,9 +304,9 @@ pub(crate) fn recipient(tx: &mut Tx<'_>, holder: Tid, role: Role) -> Result<Reci
     Ok(Recipient { holder, role, keys, floor: 0 })
 }
 
-/// The home sync ID of `tid` (two admins giving it secrets at once made two: the higher ID) of
-/// those it owns (`sync_ids::owned_in`).
-pub(crate) fn home_sync_id(tx: &mut Tx<'_>, tid: &Tid) -> Result<Option<SyncId>> {
+/// The sync ID of `tid`: the greatest of those it owns (two admins giving it secrets at once made
+/// two) (`sync_ids::owned_in`).
+pub(crate) fn sync_id_of(tx: &mut Tx<'_>, tid: &Tid) -> Result<Option<SyncId>> {
     Ok(sync_ids::owned_in(tx, tid)?.into_keys().next_back())
 }
 

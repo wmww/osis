@@ -319,7 +319,7 @@ fn create_link_in(tx: &mut Tx<'_>, sharer: Tid, spec: &LinkSpec, l: Tid, seed: &
     put_edge(&mut m, k, l, &Edge { role: spec.role, until: spec.until, invite: Some(spec.role), floor: None })?;
     super::put_secrets(&mut m, k, &boxes, false)?;
     done.add(Engine::commit_tx(tx, m)?);
-    let sync_id = super::home_sync_id(tx, &k)?.ok_or(Error::Misuse("K's sync ID"))?;
+    let sync_id = super::sync_id_of(tx, &k)?.ok_or(Error::Misuse("K's sync ID"))?;
     // a joiner's removal from K reads K's default: the target's now
     if crate::apply::validity::retain_now(tx.core, &spec.target) {
         let mut m = Mutation::new();

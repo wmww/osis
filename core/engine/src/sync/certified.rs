@@ -132,8 +132,8 @@ pub(crate) enum Piece {
     /// it (`Indexes::chains_on`): one piece per chain, however many things need it.
     Chain(Tid, Tid),
     /// Holder `t`'s chain to `x` with `x`'s boxes to `t` and `sync.0`
-    /// (`Engine::holder_piece`), under `t`'s home for each `x` an edge write names it holder on
-    /// (`Engine::holder_home_on`: role changes travel): `t` itself when read, an account's root
+    /// (`Engine::holder_piece`), under `t`'s own sync ID for each `x` an edge write names it holder on
+    /// (`Engine::holder_own_on`: role changes travel): `t` itself when read, an account's root
     /// for a thing the root reaches by strongs. Under each other read thing whose keys open `t`
     /// (`Engine::openers`), `Chain(t, x)` goes instead: the role changes alone.
     Holder(Tid, Tid),
@@ -177,11 +177,11 @@ struct Followers {
     /// Per thing with authors (`Indexes::chains_on`), what it gives.
     authored: Effects<Tid, Arc<Authored>>,
     /// Per (holder, thing), where its pieces go while an edge write names the holder on the
-    /// thing (`holder_places`), followed for each pair named while the holder has a home or an
-    /// opener.
+    /// thing (`holder_places`), followed for each pair named while the holder has its own read
+    /// thing (`holder_own`) or an opener.
     held_on: Effects<(Tid, Tid), Places>,
-    /// Per holder named on anything, the read things other than its home whose keys open it
-    /// (`openers`), written to `Certified::opened_by`.
+    /// Per holder named on anything, the read things other than its own (`holder_own`) whose keys
+    /// open it (`openers`), written to `Certified::opened_by`.
     opens: Effects<Tid, Arc<BTreeSet<Tid>>>,
     /// The (holder, thing) pairs named since the last follow (`Held::pairs_feed`); `None` until
     /// the first follow.
@@ -218,7 +218,7 @@ pub(crate) struct Certified {
     pub(crate) read: StampedSet<Tid>,
     /// Each followed thing with authors, as placed.
     authored: BTreeMap<Tid, Arc<Authored>>,
-    /// Per holder, the read things other than its home whose keys open it (`openers`), read per
+    /// Per holder, the read things other than its own (`holder_own`) whose keys open it (`openers`), read per
     /// holder by its pairs' places.
     opened_by: Stamped<Tid, Arc<BTreeSet<Tid>>>,
     /// Per (chain piece, read thing), what places it there (`By`): it goes under the read thing
@@ -454,28 +454,28 @@ impl Engine {
     /// record's, which no edge write lowers): spec/permissions.md §4 Role changes travel, a role
     /// commit with an edge write naming holder `t` goes under `t`'s own sync ID with `x`'s boxes
     /// to `t` and `sync.0`, the piece holding every edge write on its paths, a removal
-    /// included, which the target's bodies no longer carry there once `t` reads it no more. `t`'s
-    /// home is `t` when read here; for this node's account, its root read here, for an `x` the
+    /// included, which the target's bodies no longer carry there once `t` reads it no more. The thing
+    /// whose sync ID is `t`'s own is `t` when read here; for this node's account, its root read here, for an `x` the
     /// root reaches by strongs (the account root reads as its account: a node paired later holds
     /// `x`'s boxes to the account from it, as its siblings do from the fires). A read of the pair
-    /// and the home alone.
-    fn holder_home_on(&self, t: &Tid, x: &Tid) -> Option<Tid> {
-        let home = self.holder_home(t)?;
-        (home == *t || self.core.ix.closure.reaches_from(&home, x)).then_some(home)
+    /// and that thing alone.
+    fn holder_own_on(&self, t: &Tid, x: &Tid) -> Option<Tid> {
+        let own = self.holder_own(t)?;
+        (own == *t || self.core.ix.closure.reaches_from(&own, x)).then_some(own)
     }
 
     /// Where the role changes naming holder `t` on `x` go (spec/permissions.md §4 Role changes
-    /// travel), while an edge write names `t` holder on `x`, its own things aside: under its home
-    /// (`holder_home_on`) as `Piece::Holder`, and under each read thing whose keys open `t`
+    /// travel), while an edge write names `t` holder on `x`, its own things aside: under its own
+    /// sync ID (`holder_own_on`) as `Piece::Holder`, and under each read thing whose keys open `t`
     /// (`Certified::opened_by`) as `t`'s chain to `x`, an account root only for an `x` it reaches
-    /// by strongs. A read of the pair, the home and `t`'s openers alone.
+    /// by strongs. A read of the pair, `holder_own` and `t`'s openers alone.
     fn holder_places(&self, t: &Tid, x: &Tid) -> Places {
         osis_base::costs::count("certified: held on examined", 1);
         let named = x != t && self.core.ix.held.is_named(t, x) && self.core.first_admin(x) != Some(*t);
         if !named {
             return Places::default();
         }
-        let mut out: BTreeSet<(Piece, Tid)> = self.holder_home_on(t, x).map(|h| (Piece::Holder(*t, *x), h)).into_iter().collect();
+        let mut out: BTreeSet<(Piece, Tid)> = self.holder_own_on(t, x).map(|h| (Piece::Holder(*t, *x), h)).into_iter().collect();
         for o in self.core.certified.opened_by.get(t).into_iter().flat_map(|o| o.iter()) {
             osis_base::costs::count("certified: held on openers", 1);
             if self.core.account_of_root(o).is_none() || self.core.ix.closure.reaches_from(o, x) {
@@ -485,14 +485,14 @@ impl Engine {
         Arc::new(out)
     }
 
-    /// The read things other than holder `t`'s home (`holder_home`) whose keys open `t`
+    /// The read things other than holder `t`'s own (`holder_own`) whose keys open `t`
     /// (spec/sync-set.md §2 T's keys open): of the actors on the record chain of the actor `t`'s
     /// secrets derive from and those holding a role on it, each read thing whose keys open `t`,
     /// an account counting by its root (the root reads as its account). A read of that actor's
     /// roles and record chain, O(the actors holding a role on it).
     pub(crate) fn openers(&self, t: &Tid) -> BTreeSet<Tid> {
         let Some(a) = self.core.secret_actor(t) else { return BTreeSet::new() };
-        let home = self.holder_home(t);
+        let own = self.holder_own(t);
         let mut actors: BTreeSet<Tid> = self.core.roles_now(&a).keys().copied().collect();
         actors.extend(self.core.record_chain(&a).filter_map(|s| s.thing()));
         let read = &self.core.certified.read;
@@ -501,7 +501,7 @@ impl Engine {
             osis_base::costs::count("certified: openers examined", 1);
             let root = self.core.accounts.get(&c).map(|h| h.root).filter(|d| self.core.account_of_root(d) == Some(c));
             for o in std::iter::once(c).chain(root) {
-                if o != *t && Some(o) != home && read.contains(&o) && self.core.keys_open(&c, t) {
+                if o != *t && Some(o) != own && read.contains(&o) && self.core.keys_open(&c, t) {
                     out.insert(o);
                 }
             }
@@ -509,9 +509,10 @@ impl Engine {
         out
     }
 
-    /// Where holder `t`'s pieces go (`holder_home_on`): `t` when read here, else the account
-    /// root of `t` when `t` is an account held here and its root is read here.
-    fn holder_home(&self, t: &Tid) -> Option<Tid> {
+    /// The read thing whose sync ID stands for holder `t`'s own, where its pieces go
+    /// (`holder_own_on`; spec/sync-judgement.md §2): `t` when read here, else the account root of `t`
+    /// when `t` is an account held here and its root is read here.
+    fn holder_own(&self, t: &Tid) -> Option<Tid> {
         let read = &self.core.certified.read;
         if read.contains(t) {
             return Some(*t);
@@ -627,12 +628,12 @@ impl Engine {
             self.core.certified.opened_by.update(t, |_| (!now.is_empty()).then_some(now));
         }
         for (t, x) in named {
-            if self.holder_home(&t).is_some() || self.core.certified.opened_by.contains_key(&t) {
+            if self.holder_own(&t).is_some() || self.core.certified.opened_by.contains_key(&t) {
                 f.held_on.want((t, x));
             }
         }
-        // the role changes naming each holder with a home or openers (`holder_places`), per pair:
-        // its chain to the target, with the target's boxes to it and `sync.0`, under its home,
+        // the role changes naming each holder with its own read thing or openers (`holder_places`), per pair:
+        // its chain to the target, with the target's boxes to it and `sync.0`, under its own sync ID,
         // its chain alone under its openers; a pair placed nowhere is followed again once named
         // again (the feed) or once its holder has openers
         for (t, x) in f.held_on.due() {

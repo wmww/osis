@@ -45,7 +45,7 @@ fn repro_a_removal_is_logged_before_what_was_written_before_it_spec_permissions_
     w.cap = 20_000;
     let _ = crate::harness::play(&mut w, &[New(0), Grant(0, 0, 1, Gives::Syncs), Grant(0, 0, 2, Gives::Reads), Run], String::new());
     let t = w.history.things[0].0;
-    let s = w.engine(0).home_sync_id(&t).unwrap().unwrap();
+    let s = w.engine(0).sync_id_of(&t).unwrap().unwrap();
     let a2 = w.node(2).account.unwrap();
     // both written before node 0's sync next steps: one sync logs both
     let (c, r) = w.write(0, |e| {

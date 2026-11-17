@@ -80,7 +80,7 @@ fn digests(w: &mut World, t: Tid) -> (Option<[u8; 16]>, Option<[u8; 16]>) {
 #[test]
 fn a_reader_left_apart_by_a_drop_is_repaired_by_its_list_spec_sync_compaction_1() {
     let (mut w, t) = diverged();
-    let s = w.engine(0).home_sync_id(&t).unwrap().unwrap();
+    let s = w.engine(0).sync_id_of(&t).unwrap().unwrap();
     assert!(w.store(0).first_synced(&s).unwrap() && w.store(1).first_synced(&s).unwrap(), "both past their first sync of S");
     let before = snapshots(&mut w, t);
     w.heal();
@@ -161,7 +161,7 @@ fn sent() -> u64 {
 #[test]
 fn a_sender_lists_only_past_its_first_sync_spec_permissions_4() {
     let (mut w, t) = diverged();
-    let s = w.engine(0).home_sync_id(&t).unwrap().unwrap();
+    let s = w.engine(0).sync_id_of(&t).unwrap().unwrap();
     let before = snapshots(&mut w, t);
     first_synced(&mut w, 1, s, false);
     sent();
@@ -181,7 +181,7 @@ fn a_sender_lists_only_past_its_first_sync_spec_permissions_4() {
 #[test]
 fn a_list_received_mid_first_sync_is_judged_as_it_ends_spec_sync_compaction_1() {
     let (mut w, t) = diverged();
-    let s = w.engine(0).home_sync_id(&t).unwrap().unwrap();
+    let s = w.engine(0).sync_id_of(&t).unwrap().unwrap();
     let before = snapshots(&mut w, t);
     first_synced(&mut w, 0, s, false);
     sent();
@@ -238,7 +238,7 @@ fn a_false_reader_declaration_gets_no_list_spec_permissions_4() {
     w.lie(2, Some(Lie::Declare { unread: false }));
     let _ = play(&mut w, &[New(0), Grant(0, 0, 1, Gives::Reads), Grant(0, 0, 2, Gives::Syncs), Run, Run], String::new());
     let t = w.history.things[0].0;
-    let s = w.engine(0).home_sync_id(&t).unwrap().unwrap();
+    let s = w.engine(0).sync_id_of(&t).unwrap().unwrap();
     first_synced(&mut w, 1, s, true);
     sent();
     w.write(1, |e| e.flag_suspect(&t, &big(), Why::Uncovered, &[(CommitId([7; 32]), 0)]).unwrap());

@@ -361,7 +361,7 @@ pub enum Cmd {
     },
     /// Where sync unit T's calls go: shows it, or moves it to TO: `local`, or ADDR (URL#KEY) of
     /// the node connected by --connect; held in the store. Local: this store syncs it, and it is
-    /// caught up before calls come home
+    /// caught up before calls come back here
     Source { t: String, to: Option<String> },
     /// Engine internals (format not stable)
     #[command(subcommand)]

@@ -189,7 +189,7 @@ fn a_thing_is_released_after_the_pass_in_flight_spec_sync_set_3() {
     assert!(l.passes_wanted().is_empty());
 }
 
-// spec/sync-set.md §3 (R back in the node closure before then is kept as it was): a leaving sync ID listed
+// spec/sync-set.md §3 (Release: R back in the node closure before then is kept as it was): a leaving sync ID listed
 // again is neither forgotten nor shredded.
 #[test]
 fn synced_again_before_it_stops_keeps_it_spec_sync_set_3() {
