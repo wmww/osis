@@ -206,3 +206,50 @@ fn a_write_is_one_blob_however_many_read_it_spec_sync_judgement_3() {
         assert_eq!(got, vec![[1; 4]], "{gives:?}: the write's blobs at the store, the writer's of them, at the reader, the writer's of them");
     }
 }
+
+// spec/commits.md §4 (a commit blob whose prefix disagrees with its header is bad input; a blob
+// holding a part that does not match is no encryption of the commit and is not kept,
+// spec/sync-judgement.md §3 Own store): a writer frames its own commit, whose aspect list goes by
+// link, again under commitments to a key of its own (so the thing's admins cannot delete it at a
+// node keeping S unread), stamps it and serves it beside the genuine blob. A reader opening both before the
+// list arrives checks both once it does: it reads the commit and keeps no entry of the framed
+// blob. Fails if a blob opened before its lists resolve is never opened again (the reader reads
+// nothing of the commit, and keeps the framed blob as one of it).
+#[test]
+fn a_blob_framed_under_other_commitments_is_dropped_once_its_lists_resolve_spec_commits_4() {
+    let mut w = world(0, 2);
+    w.cap = 200_000;
+    let _ = play(&mut w, &[New(0), Grant(0, 0, 1, Gives::Reads), Run], String::new());
+    let t = w.history.things[0].0;
+    let s = w.engine(0).home_sync_id(&t).unwrap().unwrap();
+    // the framed blob logged newest at node 0, so the reader fetches it first (spec/sync-streams.md
+    // §4 Fill order), before it knows the lists
+    w.partition(0, 1);
+    let c = w.write(0, |e| {
+        let mut m = Mutation::new();
+        for i in 0..2500 {
+            m.set(t, &Ak::new(format!("u:a{i}.0")).unwrap(), &Value::Int(1)).unwrap();
+        }
+        e.commit(m).unwrap().unwrap()
+    });
+    let e = w.engine(0);
+    assert!(!e.header_list_blobs(&c).unwrap().is_empty(), "the aspect list goes by link");
+    let body = e.body(&c).unwrap().expect("a body");
+    let rng = &mut osis_crypto::SeededRng::from_u64(9);
+    let sealed = e.seal(&body, osis_blob::Class::Durable, &[], rng).unwrap().expect("sealed");
+    let (prefix, pt) = osis_blob::open(&sealed.blob, &sealed.key).unwrap();
+    let mine = osis_crypto::SigningSecret::from_seed(&osis_crypto::Secret32::from_bytes([5; 32])).verifying_key();
+    let p = osis_blob::Prefix::for_groups(*prefix.salt(), &body.blind, prefix.expiry(), &[vec![(1, mine)]]).unwrap().with_class(osis_blob::Class::Durable);
+    let (key, bytes) = osis_blob::frame(&p, &pt, rng).unwrap();
+    let framed = osis_blob::blob_id(&bytes);
+    let ws = e.wrap_secret(&t, Some((&c, &body.parts))).unwrap().expect("a wrap secret");
+    let wrap = osis_crypto::wrap(&ws, &framed, &key, body.order).unwrap();
+    let stamp = osis_blob::sign_stamp(&e.signers(&s, None).unwrap().stamp.expect("a writer"), &s, &framed, &wrap, false);
+    let entry = osis_sync::types::Entry { blob: framed, wrap, stamp: Some(stamp), deposited: false, own: false, role: false, class: osis_blob::Class::Durable, expires: None };
+    w.flush();
+    w.store(0).clone().log(&s, entry, Some(bytes), None).unwrap();
+    w.heal();
+    w.run();
+    assert_eq!(w.engine(1).get(&t, &Ak::new("u:a0.0").unwrap()).unwrap(), Some(Value::Int(1)), "the reader reads the commit");
+    assert!(w.store(1).entry(&s, &framed).unwrap().is_none(), "no entry of the framed blob");
+}

@@ -122,6 +122,18 @@ pub(crate) fn open_entry(engine: &mut Engine, store: &Store, s: &SyncId, b: &Blo
     Ok(o)
 }
 
+/// `open_entry` of held entry `b` of S opened again: one opening bad now (a blob opened before
+/// its header lists resolved, its prefix then refused; a part checked once its record came) is no
+/// blob of its commit and is not kept (spec/commits.md §4; spec/sync-judgement.md §3 Own store),
+/// as a pulled one opening bad never is: it leaves the store with no tombstone.
+fn open_held(engine: &mut Engine, store: &mut Store, s: &SyncId, b: &BlobId, wrap: &crate::types::Wrap, bytes: &[u8]) -> Result<Opened> {
+    let o = open_entry(engine, store, s, b, wrap, bytes)?;
+    if matches!(o, Opened::Bad) {
+        store.unlog_entry(s, b)?;
+    }
+    Ok(o)
+}
+
 /// Waiting memory commit `c`, woken by what it awaited, applied within the room of a read sync
 /// ID an entry of it is under, its carrier's own count included (spec/sync-compaction.md §2
 /// Caps: checked again each time it is applied). One still waiting stays; one past the room is
@@ -433,7 +445,7 @@ fn reopen(engine: &mut Engine, store: &mut Store, c: &CommitId) -> Result<bool> 
         let Some(bytes) = store.bytes(b)? else { continue };
         for s in store.naming(b)? {
             let Some(e) = store.entry(&s, b)? else { continue };
-            open_entry(engine, store, &s, b, &e.wrap, &bytes)?;
+            open_held(engine, store, &s, b, &e.wrap, &bytes)?;
             opened = true;
         }
     }
@@ -508,7 +520,7 @@ fn open_parked(engine: &mut Engine, store: &mut Store, parked: &mut Parked, cred
             continue;
         };
         let Some(bytes) = store.bytes(&b)? else { continue };
-        let o = open_entry(engine, store, &s, &b, &e.wrap, &bytes)?;
+        let o = open_held(engine, store, &s, &b, &e.wrap, &bytes)?;
         // still parked: what does not open yet, and a commit opened but thrown out or with a
         // section still sealed on a part it lacks
         let still = match o {

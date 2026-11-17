@@ -70,8 +70,9 @@ pub struct BlobOf {
     pub sealed: SealedSet,
     /// A per-sync-ID copy (spec/sync-judgement.md §1).
     pub copy: bool,
-    /// A section is in `sealed` only for want of a record: the blob opens again once its
-    /// commit stops pending (`apply::unpend`, through `take_redeliver`).
+    /// Opened short of a check: a section is in `sealed` for want of a record, or the header's
+    /// lists did not resolve (no section opened, its prefix unchecked). The blob opens again once
+    /// its commit stops pending (`apply::unpend`, through `take_redeliver`).
     pub unchecked: bool,
     /// Its prefix salt and the aspects its sections list: with the header, the commitments its
     /// prefix bears, kept past its bytes for a Delete by levels (spec/sync-judgement.md §3

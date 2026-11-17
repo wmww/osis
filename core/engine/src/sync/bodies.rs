@@ -854,7 +854,9 @@ impl Engine {
             sealed.insert(sec.digest());
             parts.retain(|ai| !sec.ais.contains(ai));
         }
-        let row = BlobOf { commit: id, parts, sealed, copy: opened.copy, unchecked: !unchecked.is_empty(), salt: opened.salt, ais: opened.ais.iter().copied().collect() };
+        // a blob opened before its header lists resolve here checked no commitment of its prefix
+        // and opened no section (spec/commits.md §4): it opens again, checked, once they do
+        let row = BlobOf { commit: id, parts, sealed, copy: opened.copy, unchecked: !unchecked.is_empty() || h.is_none(), salt: opened.salt, ais: opened.ais.iter().copied().collect() };
         let b = *blob;
         self.run(|tx| note_blob(tx, &b, row))?;
         Ok(Opened::Commit(id, ingested))

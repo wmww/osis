@@ -134,3 +134,77 @@ fn a_header_alone_holds_a_header_only_body_of_either_kind_spec_sync_judgement_1(
         assert!(lp.peers[0].engine.holds_body(&s, &id).unwrap(), "a header alone noted as {}", if copy { "a copy" } else { "shared" });
     }
 }
+
+/// Peer 0 writes `n` aspects on a new thing under `d` in one commit (sent to peer 1 but for
+/// the commit itself): enough that its aspect list goes by link (spec/wire.md §4).
+fn wide_commit(lp: &mut LocalPeer, d: Tid, n: usize) -> (Tid, CommitId) {
+    let e = &mut lp.peers[0].engine;
+    let mut m = Mutation::new();
+    let t = e.new_thing(&mut m, d);
+    let made = e.commit(m).unwrap().unwrap();
+    send(lp, 0, 1, &[made]);
+    let mut m = Mutation::new();
+    for i in 0..n {
+        m.set(t, &ak(&format!("x:a{i}.0")), &Value::Int(1)).unwrap();
+    }
+    (t, lp.peers[0].engine.commit(m).unwrap().unwrap())
+}
+
+/// Commit `c`'s blob as peer 0 seals it, framed again under `prefix` of its header (`None`: as
+/// sealed), with its wrap under `s` for D (peer 1 reads D): (blob ID, wrap, bytes).
+fn framed_entry(lp: &mut LocalPeer, d: Tid, c: &CommitId, junk: bool) -> (BlobId, crate::sync::Wrap, Vec<u8>) {
+    let e = &mut lp.peers[0].engine;
+    let body = e.body(c).unwrap().expect("a body");
+    let rng = &mut osis_crypto::SeededRng::from_u64(9);
+    let sealed = e.seal(&body, osis_blob::Class::Durable, &[], rng).unwrap().expect("sealed");
+    let (key, bytes) = if junk {
+        let (prefix, pt) = osis_blob::open(&sealed.blob, &sealed.key).unwrap();
+        let mine = osis_crypto::SigningSecret::from_seed(&osis_crypto::Secret32::from_bytes([5; 32])).verifying_key();
+        let p = osis_blob::Prefix::for_groups(*prefix.salt(), &body.blind, prefix.expiry(), &[vec![(1, mine)]]).unwrap().with_class(osis_blob::Class::Durable);
+        osis_blob::frame(&p, &pt, rng).unwrap()
+    } else {
+        (sealed.key.clone(), sealed.blob.clone())
+    };
+    let id = osis_blob::blob_id(&bytes);
+    let w = e.wrap_secret(&d, Some((c, &body.parts))).unwrap().expect("a wrap secret");
+    (id, osis_crypto::wrap(&w, &id, &key, body.order).unwrap(), bytes)
+}
+
+// spec/commits.md §4 (a commit blob whose prefix disagrees with its header is bad input),
+// spec/sync-ids.md §1: a blob opened before its header lists resolve is checked once they do.
+// A framer's blob of a genuine commit under commitments to a key of its own (so the thing's
+// delete-key holders cannot delete it at a node keeping S unread) is opened again as the lists
+// arrive and refused; the genuine blob opened alike is opened again and gives its parts.
+// Fails if the blob is never opened again (it stays the commit's blob, kept and served as its
+// body).
+#[test]
+fn a_blob_opened_before_its_lists_resolve_is_checked_once_they_do_spec_commits_4() {
+    for junk in [true, false] {
+        let (mut lp, d) = two_nodes();
+        let (t, c) = wide_commit(&mut lp, d, 2500);
+        assert!(!lp.peers[0].engine.header_list_blobs(&c).unwrap().is_empty(), "the aspect list goes by link");
+        let s = lp.peers[1].engine.home_sync_id(&d).unwrap().unwrap();
+        let (b, wrap, bytes) = framed_entry(&mut lp, d, &c, junk);
+        let lists: Vec<(BlobId, Vec<u8>)> = {
+            let e = &mut lp.peers[0].engine;
+            e.header_list_blobs(&c).unwrap().into_iter().map(|x| (x, e.blob(&x).unwrap().unwrap())).collect()
+        };
+        let e = &mut lp.peers[1].engine;
+        assert!(matches!(e.open_entry(&s, &b, &wrap, &bytes, u64::MAX).unwrap(), super::Opened::Commit(..)), "opened as a carrier");
+        assert!(e.pends(&c), "waits for its lists");
+        e.put_blobs(lists).unwrap();
+        assert!(e.take_redeliver().contains(&c), "junk {junk}: its carriers open again once the lists resolve");
+        let again = e.open_entry(&s, &b, &wrap, &bytes, u64::MAX).unwrap();
+        e.redelivered(&c).unwrap();
+        match junk {
+            true => {
+                assert!(matches!(again, super::Opened::Bad), "a framer's commitments: bad");
+                assert_eq!(e.blob_commit(&b), None, "no blob of the commit");
+            }
+            false => {
+                assert!(matches!(again, super::Opened::Commit(..)), "the genuine blob opens");
+                assert_eq!(e.get(&t, &ak("x:a0.0")).unwrap(), Some(Value::Int(1)), "its parts taken");
+            }
+        }
+    }
+}
