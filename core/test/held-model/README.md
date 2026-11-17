@@ -1,5 +1,5 @@
 # held-model
-> Summary: Brute-force executable spec of what a node holding a set of commits reads and keeps (apply and waits, validity with actors and invites, undo, purge, expiry, history by the thing's `retention^.0` settings, signals); a greenfield model of the reference graph plan (closure); input format, input changes and how to call it.
+> Summary: Brute-force executable spec of what a node holding a set of commits reads and keeps (apply and waits, validity with actors and invites, undo, purge, expiry, history by the thing's `retention^.0` settings, signals); a greenfield model of the reference graph plan (closure) and of connection-lived things (connlived); input format, input changes and how to call it.
 
 Written from `spec/` alone, depending on no osis crate but crdt-model (the other independent reading, whose fragments are its values: join, prune, read, un-merge, strip, death, covering), so it is an independent reading to test the engine against. Every query recomputes from scratch (`evaluate` is a pure function of `Held`). AMBIGUITIES.md lists the choices the spec left; ASSUMPTIONS.md what is out of scope.
 
@@ -57,3 +57,6 @@ A greenfield model of issues/reference-graph.md, apart from `evaluate`: keys by 
 
 ## Adapter use
 osis-node `tests/it/held.rs` maps what a node holds into `Held` and compares applied commits, validity, reads, the promise of purge on replace, bodies dropped as covered while in history or live before their live bound and `forbidden` on every content aspect (scope and normalizations in its module doc; bodies decoded from the engine's wire bytes); `order::held_set_decides` runs it on every node it judges (`Cfg::model`; also `held_model_agrees_*`), as the reference independent of the engine. The properties run 30 seeds in the default tests and in `_large` twins from `OSIS_HELD_START` (default 0), `OSIS_HELD_SEEDS` many (300, 3000 under `OSIS_FULL=1`), a thread per core: `cargo test -p held-model --test it -- --ignored _large`.
+
+## Connection-lived things (`src/connlived.rs`, `tests/it/spec_connlived.rs`)
+A greenfield model of issues/connection-lived-data.md: an oracle settling the rule on the connection graph after each event against a path-vector protocol with copy sync, messages in random order, compared at quiescence; variants for nodes keeping a thing unread (`Blind`), one table or the best route avoiding each neighbour (`alternates`), and drops held until routes settle (`settled_drops`). `explore` (by hand) prints every variant's failure count. Findings: the issue's Model section.

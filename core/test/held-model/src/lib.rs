@@ -5,6 +5,7 @@
 //! Values are crdt-model fragments: crdt-model is the one model of values (join, prune, read,
 //! un-merge, strip, death, covering). README.md: input format; AMBIGUITIES.md: the choices the spec left; ASSUMPTIONS.md: what is cut.
 pub mod closure;
+pub mod connlived;
 pub mod edits;
 pub mod fetch;
 pub mod freed;
