@@ -109,19 +109,19 @@ fn index(s: &str) -> anyhow::Result<usize> {
 }
 
 pub fn create(ctx: &mut Ctx<'_>, w: &mut osis::Write<'_>, a: &CreateArgs, did: &mut Did) -> anyhow::Result<()> {
-    let admin = a.admin.as_deref().map(|o| ctx.tid(o)).transpose()?;
+    let admin = match &a.admin {
+        Some(o) => ctx.tid(o)?,
+        None => ctx.db.account_root(),
+    };
     if !a.pairs.len().is_multiple_of(2) {
         return Err(usage("create takes AK VALUE pairs"));
     }
-    let holder = match (&a.in_, admin) {
-        (Some(h), _) => ctx.tid(h)?,
-        (None, Some(a)) if a != ctx.db.me() => a,
-        (None, _) => ctx.db.account_root(),
+    let holder = match &a.in_ {
+        Some(h) => ctx.tid(h)?,
+        None if admin == ctx.db.me() => ctx.db.account_root(),
+        None => admin,
     };
-    let t = match admin {
-        Some(a) => w.create_with_admin(a)?,
-        None => w.create()?,
-    };
+    let t = w.create(admin)?;
     // a thing is made only where something holds it (spec/sync-set.md §2 Making a thing)
     w.at(holder, osis::core::HOLDS).path(osis::p![]).add(&osis::Ref::Strong(osis::Strong(t)))?;
     for pair in a.pairs.chunks(2) {

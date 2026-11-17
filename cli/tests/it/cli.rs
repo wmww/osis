@@ -60,7 +60,7 @@ impl S {
     /// aspect's history for good.
     fn kept_thing(&self) -> String {
         let keep = "{history: #some(#keep({until: #some(9223372036854775807), after: #none})), expires: #none, final: false}";
-        let setting = format!("{{rules: {{}}, retain: false, default: #some({keep})}}");
+        let setting = format!("{{rules: {{}}, retain: false, default: #some({keep}), history_holds_targets: false}}");
         self.ok(&["create", "t:made.0", "true", "retention^.0", &setting]).line().to_string()
     }
 }
@@ -304,10 +304,9 @@ fn commits_undo_redo_plan_cli_4() {
     s.ok(&["set", &t, "a:x.0", "1"]);
     s.ok(&["set", &t, "a:x.0", "2"]);
     let h = s.ok(&["writes", "--thing", &t]).out;
-    // its own keys' two role commits (spec/permissions.md §3), its creation and the two writes
-    assert_eq!(h.lines().count(), 5, "{h}");
+    // a plain thing: its creation and the two writes
+    assert_eq!(h.lines().count(), 3, "{h}");
     assert_eq!(h.lines().filter(|l| l.contains(" content in-effect ")).count(), 3, "{h}");
-    assert_eq!(h.lines().filter(|l| l.contains(" role in-effect ")).count(), 2, "{h}");
     assert_eq!(s.ok(&["writes", "--thing", &t, "--next", "redo"]).out, "");
     let next = s.ok(&["writes", "--thing", &t, "--next", "undo"]).out;
     assert_eq!(next.lines().count(), 1, "{next}");
@@ -326,7 +325,7 @@ fn commits_undo_redo_plan_cli_4() {
     assert_eq!(s.ok(&["writes", "--thing", &t, "--kind", "revert"]).out.lines().count(), 2);
     let newest = s.ok(&["writes", "--thing", &t, "--max", "1"]).out;
     let pos = newest.split(' ').next().unwrap();
-    assert_eq!(s.ok(&["writes", "--thing", &t, "--before", pos]).out.lines().count(), 6);
+    assert_eq!(s.ok(&["writes", "--thing", &t, "--before", pos]).out.lines().count(), 4);
     s.ok(&["revert", id_of(&newest)]);
     assert_eq!(s.ok(&["get", &t, "a:x.0"]).line(), "1");
     assert_eq!(s.code(&["writes", "--thing", &t, "--kind", "nope"]), 2);
@@ -373,7 +372,8 @@ fn an_untyped_index_past_the_limit_says_so() {
 #[test]
 fn sharing_commands_local_plan_cli_4() {
     let s = S::mem();
-    let g = s.ok(&["create", "t:made.0", "true"]).line().to_string();
+    // under the account, so `me` reads it as its first admin
+    let g = s.ok(&["create", "--admin", "me", "t:made.0", "true"]).line().to_string();
     // spec/sync-inbox.md §6: `make_link` works on every node; the link names this node
     let link = s.ok(&["link", "make", &g, "write", "--single-use"]).line().to_string();
     assert!(link.starts_with("osis://link/"), "{link}");
@@ -441,9 +441,9 @@ fn watch_initial_not_counted_plan_cli_4() {
     assert_eq!((o.code, o.line(), o.err.trim()), (6, "initial - - a:b.0 7", "error: timed out after 0 change(s)"));
     let o = s.call(&["--json", "--timeout", "50ms", "watch", &t, "--count", "1"], "");
     assert_eq!(o.code, 6, "{}", o.err);
-    // the whole thing: one initial line per present aspect (`a:b.0`, `created.0`, its own keys'
-    // `keys.0`, `secrets.0` and `sync.0`), none counted
-    assert_eq!(o.out.lines().count(), 5, "{}", o.out);
+    // the whole thing: one initial line per present aspect (`a:b.0`, `created.0`: a plain thing
+    // under the account root), none counted
+    assert_eq!(o.out.lines().count(), 2, "{}", o.out);
     assert!(o.out.lines().all(|l| l.contains("\"origin\":\"initial\"")) && o.out.contains("\"value\":7}"), "{}", o.out);
     // a path inside the aspect, as `get` reads it
     s.ok(&["set", &t, "a:m.0", "{\"a\": 1, \"b\": 2}"]);
@@ -492,7 +492,7 @@ fn named_keys_with_schema_plan_cli_1() {
     assert_eq!(call(&["set", t, "todo:task.0", ".done", "true"], "").0, 0);
     assert_eq!(call(&["set", t, "todo:task.0", ".due", "#none"], "").0, 0);
     // the thing's retain default is one field of its setting
-    let (c, _, e) = call(&["set", t, "retention^.0", "{rules: {}, retain: true, default: #none}"], "");
+    let (c, _, e) = call(&["set", t, "retention^.0", "{rules: {}, retain: true, default: #none, history_holds_targets: false}"], "");
     assert_eq!(c, 0, "{e}");
     assert_eq!(call(&["get", t, "retention^.0", ".retain"], "").1, "true\n");
     assert_eq!(call(&["get", t, "todo:task.0"], "").1, "{title: \"buy\", done: true, due: #none}\n");
@@ -677,7 +677,7 @@ fn serve_survives_a_bad_socket_dir() {
 }
 
 // CLI `writes`, `fired`, `purge`: pages by place, each part in its line, a tombstone, purge by
-// commit and by author; a signal's fires; `--follow`.
+// commit and by author; a signal's fires; `--follow`; a thing destroyed.
 #[test]
 fn writes_and_purge_commands_plan_cli() {
     let s = S::mem();
@@ -723,6 +723,10 @@ fn writes_and_purge_commands_plan_cli() {
     assert!(w.code == 2 && w.err.contains("fired"), "{}", w.err);
     // --follow: what comes after it, until --count
     assert_eq!(s.code(&["--timeout", "1s", "writes", &t, "note:m.0", "--follow", "--count", "1"]), 6, "nothing new");
+    // with no AK, T is destroyed: nothing of it reads
+    assert_eq!(s.code(&["purge", &t, "--commit", one]), 2);
+    s.ok(&["purge", &t]);
+    assert_eq!(s.code(&["get", &t, "note:m.0"]), 3);
 }
 
 // CLI `write` expiry flags, `op`, `--admin` naming who stays

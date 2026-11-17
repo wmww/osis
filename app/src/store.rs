@@ -47,14 +47,14 @@ impl Account for AppAccount {
         // plain, under the account root and held by it: it and what it holds sync to every node
         // of the account (spec/sync-set.md §1)
         let root = db.account_root();
-        let g = w.create_with_admin(root)?;
+        let g = w.create(root)?;
         hold(&mut w, root, g)?;
         keep_a_day(&mut w, g)?;
         w.at(g, APP).set(&true)?;
         w.at(g, COLLECTION).set(&Collection { source: Source::Favorites, having: Default::default(), order: Order::Own, arrange: Arrange::Cards, element: None })?;
         let mut favs = Vec::new();
         for (v, name, color) in seeds() {
-            let t = w.create_with_admin(g)?;
+            let t = w.create(g)?;
             keep_a_day(&mut w, t)?;
             w.at(t, COLLECTION).set(&v)?;
             w.at(t, NAME).set(&name.to_string())?;

@@ -128,7 +128,7 @@ fn an_unknown_thing_opens_raw() {
     let d = data();
     let g = d.home().unwrap();
     let mut w = d.db.write();
-    let t = w.create_with_admin(g).unwrap();
+    let t = w.create(g).unwrap();
     hold(&mut w, g, t).unwrap();
     w.at(t, DynamicAspectKey::untyped(osis::Ak::new("mystery:thing.0").unwrap())).set(&Value::Int(3)).unwrap();
     w.commit().unwrap();
@@ -193,7 +193,7 @@ fn an_element_spec_embeds_a_view() {
     let e = create(&d, "event").unwrap();
     let g = d.home().unwrap();
     let mut wr = d.db.write();
-    let holder = wr.create_with_admin(g).unwrap();
+    let holder = wr.create(g).unwrap();
     hold(&mut wr, g, holder).unwrap();
     wr.at(holder, TAG).set(&Tag { color: None }).unwrap();
     wr.at(holder, COLLECTION)

@@ -35,7 +35,7 @@ fn shown(db: &Osis, c: Tid, id: CommitId) -> (String, bool) {
 }
 
 // notes/chat.md Create, spec/commits.md §6 (a write is one commit), spec/commits.md §5 (The
-// setting), spec/permissions.md §3, spec/sync-set.md §1: a chat is its record, its own keys, then
+// setting), spec/permissions.md §3, spec/sync-set.md §1: a chat is its own keys carrying its record, then
 // one commit holding its settings and its `retention^.0` (messages kept for good, the
 // disappearing expiry, replacements refused when editing is off, the retain default), and the
 // account root's ticket for it, this account its admin; a purge set chat cannot keep is
@@ -46,7 +46,7 @@ fn create_is_one_whole_commit_spec_commits_2() {
     let day = std::time::Duration::from_secs(86_400);
     let n = commits(&db);
     let c = create(&db, &Options { name: "room".into(), purge: PurgeBy::Admin, edit: None, disappear: Some(day), retain_copies: false }, db.account_root()).unwrap();
-    assert_eq!(commits(&db), n + 4, "its record, its rotation, its settings, the account's ticket for it");
+    assert_eq!(commits(&db), n + 3, "its rotation carrying its record, its settings, the account's ticket for it");
     let tickets = db.at(db.account_root(), osis::internals::core_types::TICKETS).get().unwrap().unwrap_or_default();
     assert!(tickets.iter().any(|k| k.target == c), "the account root's ticket for it (spec/sync-set.md §1)");
     assert_eq!(db.role_on(c).unwrap(), Some(Role::Admin));

@@ -3,7 +3,6 @@
 //! spec: spec/sync-set.md
 
 use crate::common::*;
-use osis::internals::Held as _;
 use osis::internals::costs;
 use osis::{Dispatcher, MemStore, Osis};
 use std::collections::BTreeMap;

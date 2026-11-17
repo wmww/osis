@@ -3,7 +3,6 @@
 //! and the client socket's directory rules. Real timers run here; no assert is on wall time.
 //! spec: none (API surface, notes/api.md)
 
-use osis::internals::Held as _;
 use crate::common::*;
 use osis::{Error, Osis, Runtime, Store, Value};
 use std::path::PathBuf;

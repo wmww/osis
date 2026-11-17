@@ -3,7 +3,7 @@
 //! (`connect_node`, `unit_source`) against nodes on one in-process test network
 //! (`internals::ManualNet`), one manual clock. A call on the test network runs it until quiet.
 
-use osis::internals::Held as _;
+use crate::common::Held as _;
 use crate::common::TestWrites as _;
 use crate::common::{ak, cfg, clock};
 use osis::internals::{ManualClock, ManualNet};
@@ -109,13 +109,13 @@ fn a_reader_writes_nothing_spec_wire_11() {
 }
 
 // notes/client-port.md §3: a client's actor goes with the client, so what it makes names a
-// first admin that stays (`create_with_admin`); `create()` is `Invalid`.
+// first admin that stays; one under its own actor is `Invalid`.
 #[test]
 fn a_thin_client_creates_under_a_thing_it_writes_notes_client_port() {
     let w = world(Some(Role::Admin));
     let cl = connect(&w.net, &w.c, &w.addr, &w.secret).unwrap();
     let mut x = cl.write();
-    x.create_held().unwrap();
+    x.create(cl.me()).unwrap();
     assert!(matches!(x.commit(), Err(Error::Invalid(_))));
     let mut x = cl.write();
     let n = x.create_held_with_admin(w.t).unwrap();

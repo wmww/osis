@@ -298,23 +298,20 @@ impl<'d> Write<'d> {
         i
     }
 
-    /// A new thing, the acting actor its first admin, stored with this commit. `Invalid` at
-    /// commit on a thin client's handle: its actor goes with the client, so what it makes
-    /// names who stays (`create_with_admin`).
+    /// A new thing under `admin`, its first admin, stored with this commit: a thing or account
+    /// this actor may write (`Permission` at commit otherwise). The first admin is an ordinary
+    /// admin, removable like any other (spec/permissions.md §1).
+    ///
+    /// Under a thing (usually the one that holds it) it is plain: whoever reads that thing reads
+    /// it, and it costs its record and content alone. Under an account (`me()`) it gets keys of
+    /// its own at once, about ten times the bytes and work; a plain thing gets them only at its
+    /// first grant. A thin client's own actor goes with the client, so it is refused as admin
+    /// (`Invalid` at commit).
     ///
     /// The same write must hold it: a strong to it from a thing this node holds (the account
     /// root's `holds.0` for an account-wide thing), else the commit is `Invalid`. It syncs with
     /// what holds it.
-    pub fn create(&mut self) -> Result<Tid> {
-        self.create_with_admin(self.actor)
-    }
-
-    /// `create`, with `admin` as the first admin in place of the acting actor: a thing or account
-    /// this actor may write (`Permission` at commit otherwise). Beside `create` because a thing's
-    /// first admin is fixed when it is made: a thin client's things need one that outlives the
-    /// client, and a thing made under the thing it lives in needs no grant to reach its readers. The first
-    /// admin is an ordinary admin, removable like any other (spec/permissions.md §1).
-    pub fn create_with_admin(&mut self, admin: Tid) -> Result<Tid> {
+    pub fn create(&mut self, admin: Tid) -> Result<Tid> {
         let admin = self.known(admin)?;
         let rec = self.db.engine(|e| e.thing_record(admin));
         let t = rec.tid();
@@ -434,7 +431,7 @@ impl<'d> Write<'d> {
                     if let (Some(a), CreationRecord::Thing { admin, .. }) = (acting, &rec)
                         && *admin == a
                     {
-                        return Err(Error::Invalid("a thin client's actor goes with it, so it creates nothing of its own: name a thing that stays (create_with_admin)".into()));
+                        return Err(Error::Invalid("a thin client's actor goes with it, so it creates nothing under it: name a thing that stays".into()));
                     }
                     m.create(rec);
                 }

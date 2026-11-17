@@ -281,7 +281,7 @@ impl std::ops::Deref for Osis {
 /// # let db = Osis::create(Store::Memory(MemStore::new()), Config::default()).unwrap();
 /// # let set = ReadSet::new(|_| {});
 /// # let mut w = db.write();
-/// # let t = w.create().unwrap();
+/// # let t = w.create(db.account_root()).unwrap();
 /// # w.at(db.account_root(), osis::core::HOLDS).path(osis::p![]).add(&osis::Ref::Strong(osis::Strong(t))).unwrap();
 /// # w.commit().unwrap();
 /// # let r = db.tracking(&set);
@@ -298,7 +298,7 @@ impl std::ops::Deref for Osis {
 /// # let db = Osis::create(Store::Memory(MemStore::new()), Config::default()).unwrap();
 /// # let set = ReadSet::new(|_| {});
 /// # let mut w = db.write();
-/// # let t = w.create().unwrap();
+/// # let t = w.create(db.account_root()).unwrap();
 /// # w.at(db.account_root(), osis::core::HOLDS).path(osis::p![]).add(&osis::Ref::Strong(osis::Strong(t))).unwrap();
 /// # w.commit().unwrap();
 /// # let r = db.tracking(&set);
@@ -314,7 +314,7 @@ impl std::ops::Deref for Osis {
 /// # let db = Osis::create(Store::Memory(MemStore::new()), Config::default()).unwrap();
 /// # let set = ReadSet::new(|_| {});
 /// # let mut w = db.write();
-/// # let t = w.create().unwrap();
+/// # let t = w.create(db.account_root()).unwrap();
 /// # w.at(db.account_root(), osis::core::HOLDS).path(osis::p![]).add(&osis::Ref::Strong(osis::Strong(t))).unwrap();
 /// # w.commit().unwrap();
 /// # let r = db.tracking(&set);
@@ -330,7 +330,7 @@ impl std::ops::Deref for Osis {
 /// # let db = Osis::create(Store::Memory(MemStore::new()), Config::default()).unwrap();
 /// # let set = ReadSet::new(|_| {});
 /// # let mut w = db.write();
-/// # let t = w.create().unwrap();
+/// # let t = w.create(db.account_root()).unwrap();
 /// # w.at(db.account_root(), osis::core::HOLDS).path(osis::p![]).add(&osis::Ref::Strong(osis::Strong(t))).unwrap();
 /// # w.commit().unwrap();
 /// # let r = db.tracking(&set);
@@ -346,7 +346,7 @@ impl std::ops::Deref for Osis {
 /// # let db = Osis::create(Store::Memory(MemStore::new()), Config::default()).unwrap();
 /// # let set = ReadSet::new(|_| {});
 /// # let mut w = db.write();
-/// # let t = w.create().unwrap();
+/// # let t = w.create(db.account_root()).unwrap();
 /// # w.at(db.account_root(), osis::core::HOLDS).path(osis::p![]).add(&osis::Ref::Strong(osis::Strong(t))).unwrap();
 /// # w.commit().unwrap();
 /// # let r = db.tracking(&set);
@@ -362,7 +362,7 @@ impl std::ops::Deref for Osis {
 /// # let db = Osis::create(Store::Memory(MemStore::new()), Config::default()).unwrap();
 /// # let set = ReadSet::new(|_| {});
 /// # let mut w = db.write();
-/// # let t = w.create().unwrap();
+/// # let t = w.create(db.account_root()).unwrap();
 /// # w.at(db.account_root(), osis::core::HOLDS).path(osis::p![]).add(&osis::Ref::Strong(osis::Strong(t))).unwrap();
 /// # w.commit().unwrap();
 /// # let r = db.tracking(&set);
@@ -378,7 +378,7 @@ impl std::ops::Deref for Osis {
 /// # let db = Osis::create(Store::Memory(MemStore::new()), Config::default()).unwrap();
 /// # let set = ReadSet::new(|_| {});
 /// # let mut w = db.write();
-/// # let t = w.create().unwrap();
+/// # let t = w.create(db.account_root()).unwrap();
 /// # w.at(db.account_root(), osis::core::HOLDS).path(osis::p![]).add(&osis::Ref::Strong(osis::Strong(t))).unwrap();
 /// # w.commit().unwrap();
 /// # let r = db.tracking(&set);
@@ -394,7 +394,7 @@ impl std::ops::Deref for Osis {
 /// # let db = Osis::create(Store::Memory(MemStore::new()), Config::default()).unwrap();
 /// # let set = ReadSet::new(|_| {});
 /// # let mut w = db.write();
-/// # let t = w.create().unwrap();
+/// # let t = w.create(db.account_root()).unwrap();
 /// # w.at(db.account_root(), osis::core::HOLDS).path(osis::p![]).add(&osis::Ref::Strong(osis::Strong(t))).unwrap();
 /// # w.commit().unwrap();
 /// # let r = db.tracking(&set);
@@ -410,7 +410,7 @@ impl std::ops::Deref for Osis {
 /// # let db = Osis::create(Store::Memory(MemStore::new()), Config::default()).unwrap();
 /// # let set = ReadSet::new(|_| {});
 /// # let mut w = db.write();
-/// # let t = w.create().unwrap();
+/// # let t = w.create(db.account_root()).unwrap();
 /// # w.at(db.account_root(), osis::core::HOLDS).path(osis::p![]).add(&osis::Ref::Strong(osis::Strong(t))).unwrap();
 /// # w.commit().unwrap();
 /// # let r = db.tracking(&set);
@@ -628,12 +628,12 @@ impl Osis {
         let salt = open_salt(&store, &cfg)?;
         let sync = sync_store(&store, &cfg, salt)?;
         let mut e = Engine::open(b, r, sync.cipher(), engine_cfg(), clock.clone(), rng(&cfg, salt))?;
-        let (me, home) = e.account()?.ok_or_else(|| Error::Storage("no account record".into()))?;
-        Osis::start(e, sync, clock, store, &cfg, me, home, salt)
+        let (me, root) = e.account()?.ok_or_else(|| Error::Storage("no account record".into()))?;
+        Osis::start(e, sync, clock, store, &cfg, me, root, salt)
     }
 
     #[allow(clippy::too_many_arguments)]
-    pub(crate) fn start(mut engine: Engine, sync: osis_sync::Store, clock: Arc<dyn Clock>, store: Store, cfg: &Config, me: Tid, home: Tid, salt: u64) -> Result<Osis> {
+    pub(crate) fn start(mut engine: Engine, sync: osis_sync::Store, clock: Arc<dyn Clock>, store: Store, cfg: &Config, me: Tid, account_root: Tid, salt: u64) -> Result<Osis> {
         // store files open to group or others: tightened where possible (best effort), else
         // reported
         if let Store::Dir(p) = &store {
@@ -665,7 +665,7 @@ impl Osis {
             node,
             node_root,
             me,
-            account_root: home,
+            account_root,
             limit: cfg.app.read_limit,
             idle_commit: cfg.app.idle_commit,
             text_save: cfg.app.internals.text_save.clone(),
@@ -757,7 +757,7 @@ impl ReadOnly {
     }
 
     /// The account root (spec/sync-set.md §1): the private thing beside the account that its
-    /// nodes read and hold. Account-wide things an app keeps are made under it (`create_with_admin`)
+    /// nodes read and hold. Account-wide things an app keeps are made under it (`Write::create`)
     /// and held by its `holds.0`. On a client with its own actor it is that actor.
     pub fn account_root(&self) -> Tid {
         self.acting.unwrap_or_else(|| self.inner.thin.get().map_or(self.inner.account_root, |t| t.account_root))

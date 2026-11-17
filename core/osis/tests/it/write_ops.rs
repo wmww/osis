@@ -1,7 +1,6 @@
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::indexing_slicing)]
 //! The `Write` recorder: generic helpers over value keys, ranges, clashes.
 
-use osis::internals::Held as _;
 use crate::common::TestWrites as _;
 use crate::common::*;
 use osis::{Osis, Tid, Value, p};

@@ -3,7 +3,7 @@
 //! `OSIS_LARGE_MIB=1024 cargo test --release -p osis --test it -- --ignored scale::multi_gb_value_streams --nocapture`
 //! (a store in a directory under the target dir).
 
-use osis::internals::Held as _;
+use crate::common::Held as _;
 use crate::common::{cfg, clock};
 use osis::{DynamicAspectKey, MemStore, Osis, Store, Tid, p};
 use std::io::{Read, Seek, SeekFrom};

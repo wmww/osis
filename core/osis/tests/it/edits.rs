@@ -3,7 +3,6 @@
 //! its newest text, `versions` lists its history, `Purge::Commit` deletes every version, and the
 //! writer refuses a replacement nobody would honor.
 
-use osis::internals::Held as _;
 use crate::common::TestWrites as _;
 use crate::common::*;
 use osis::internals::costs;

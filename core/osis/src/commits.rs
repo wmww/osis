@@ -584,7 +584,7 @@ impl<K: AspectKey, H: Borrow<ReadOnly>> AspectRef<'_, K, H> {
 
 impl<K: ValueKey, H: Borrow<ReadOnly>> AspectRef<'_, K, H> {
     /// A page of the commits listed at this value aspect (as `Osis::writes` of
-    /// `Scope::Aspects` naming it): those with a listed part here, each with every listed part
+    /// `Scope::Aspects` naming it, where a signal's key does not compile): those with a listed part here, each with every listed part
     /// the caller may read (`Commit::at` reads this one typed). A dynamic key of a signal lists
     /// nothing.
     pub fn writes(&self, q: &CommitQuery) -> Result<CommitPage> {

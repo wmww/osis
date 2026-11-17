@@ -119,7 +119,7 @@ mod rows {
         let g = d.home().unwrap();
         let mut x = d.db.write();
         for i in 0..n {
-            let t = x.create_with_admin(g).unwrap();
+            let t = x.create(g).unwrap();
             x.at(t, NAME).set(&format!("note {i:04}")).unwrap();
             osis_kit::store::hold(&mut x, g, t).unwrap();
             osis_kit::store::hold(&mut x, tag, t).unwrap();

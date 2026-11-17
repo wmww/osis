@@ -2,7 +2,7 @@
 //! Commit listings' relations and filters, undo, redo, revert (notes/api.md Commits; spec/commits.md
 //! §7, spec/crdt.md §4.6).
 
-use osis::internals::Held as _;
+use crate::common::Held as _;
 use osis::internals::CommitRaw as _;
 use crate::common::TestWrites as _;
 use osis::internals::Internals as _;

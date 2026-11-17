@@ -15,7 +15,7 @@ pub(crate) use serve::{Port, answer_all, serve};
 /// A client actor's rights), and is one API call, its arguments and result in `codec::Form`
 /// forms (`serve::row`, `ReadOnly::forward`), but the write rows, which carry a nonce.
 pub mod method {
-    /// `[] -> [me, node, home]`: who this session acts as, at which node.
+    /// `[] -> [me, node, account root]`: who this session acts as, at which node.
     pub const WHOAMI: u64 = 0;
     /// `[tid, ak, path] -> read result`: the value at `path` of an aspect, untyped (`[]`: the
     /// whole value).

@@ -11,14 +11,15 @@
 //! act (an account, a node, a shared space) is an **actor**.
 //!
 //! # A first write
-//! You are the first admin of a thing you create. `me()` is your account. A thing is made only where
-//! something holds it: a strong reference from a thing this node holds, written in the same write.
-//! Here the account root holds it, so every node of the account does.
+//! A thing is made under its first admin, usually the thing it lives in: whoever reads that reads
+//! it. A thing is made only where something holds it: a strong reference from a thing this node
+//! holds, written in the same write. Here the account root (private to your account, `me()`) is
+//! both, so every node of the account holds it.
 //! ```
 //! use osis::{Config, MemStore, Osis, Store, Value};
 //! let db = Osis::create(Store::Memory(MemStore::new()), Config::default())?;
 //! let mut w = db.write();
-//! let note = w.create()?;
+//! let note = w.create(db.account_root())?;
 //! w.at(db.account_root(), osis::core::HOLDS).path(osis::p![]).add(&osis::Ref::Strong(osis::Strong(note)))?;
 //! w.at(note, db.aspect_key("note:title.0")?).set(&Value::Str("Groceries".into()))?;
 //! w.commit()?;
@@ -34,7 +35,7 @@
 //! # let db = Osis::create(Store::Memory(MemStore::new()), Config::default())?;
 //! let title = db.aspect_key("note:title.0")?;
 //! let mut w = db.write();
-//! let t = w.create()?;
+//! let t = w.create(db.account_root())?;
 //! # w.at(db.account_root(), osis::core::HOLDS).path(osis::p![]).add(&osis::Ref::Strong(osis::Strong(t)))?;
 //! w.at(t, title.clone()).set(&Value::Str("Groceries".into()))?;
 //! w.commit()?;
@@ -61,7 +62,7 @@
 //! # let db = Osis::create(Store::Memory(MemStore::new()), Config::default())?;
 //! let tags = db.aspect_key("note:tags.0")?;
 //! let mut w = db.write();
-//! let t = w.create()?;
+//! let t = w.create(db.account_root())?;
 //! # w.at(db.account_root(), osis::core::HOLDS).path(osis::p![]).add(&osis::Ref::Strong(osis::Strong(t)))?;
 //! w.at(t, tags.clone()).path(p!["color"]).set(&"red".to_string())?;
 //! w.commit()?;
@@ -83,7 +84,7 @@
 //! let form = db.aspect_key("app:form.0")?;
 //! let shown = Value::Map(ValueMap::from([(Value::Int(0), Value::Str("a".into())), (Value::Int(1), Value::Int(1))]));
 //! let mut w = db.write();
-//! let t = w.create()?;
+//! let t = w.create(db.account_root())?;
 //! # w.at(db.account_root(), osis::core::HOLDS).path(osis::p![]).add(&osis::Ref::Strong(osis::Strong(t)))?;
 //! w.at(t, form.clone()).set(&shown)?;
 //! w.commit()?;
@@ -105,7 +106,7 @@
 //! # let db = Osis::create(Store::Memory(MemStore::new()), Config::default())?;
 //! let (title, typing) = (db.aspect_key("app:title.0")?, db.aspect_key("app:typing+.0")?);
 //! let mut w = db.write();
-//! let t = w.create()?;
+//! let t = w.create(db.account_root())?;
 //! # w.at(db.account_root(), osis::core::HOLDS).path(osis::p![]).add(&osis::Ref::Strong(osis::Strong(t)))?;
 //! w.at(t, title.clone()).set(&Value::Str("note".into()))?;
 //! w.commit()?;
@@ -131,7 +132,7 @@
 //! # let db = Osis::create(Store::Memory(MemStore::new()), Config::default())?;
 //! let k = db.aspect_key("app:count.0")?;
 //! let mut w = db.write();
-//! let t = w.create()?;
+//! let t = w.create(db.account_root())?;
 //! # w.at(db.account_root(), osis::core::HOLDS).path(osis::p![]).add(&osis::Ref::Strong(osis::Strong(t)))?;
 //! w.commit()?;
 //! let (tx, rx) = std::sync::mpsc::channel();
@@ -154,7 +155,7 @@
 //! # let db = Osis::create(Store::Memory(MemStore::new()), Config::default())?;
 //! let k = db.aspect_key("app:scores.0")?;
 //! let mut w = db.write();
-//! let t = w.create()?;
+//! let t = w.create(db.account_root())?;
 //! # w.at(db.account_root(), osis::core::HOLDS).path(osis::p![]).add(&osis::Ref::Strong(osis::Strong(t)))?;
 //! w.commit()?;
 //! let (tx, rx) = std::sync::mpsc::channel();
@@ -174,7 +175,7 @@
 //! # let db = Osis::create(Store::Memory(MemStore::new()), Config::default())?;
 //! let k = db.aspect_key("app:count.0")?;
 //! let mut w = db.write();
-//! let t = w.create()?;
+//! let t = w.create(db.account_root())?;
 //! # w.at(db.account_root(), osis::core::HOLDS).path(osis::p![]).add(&osis::Ref::Strong(osis::Strong(t)))?;
 //! w.commit()?;
 //! let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
@@ -196,7 +197,7 @@
 //! # let db = Osis::create(Store::Memory(MemStore::new()), Config::default())?;
 //! let k = db.aspect_key("app:count.0")?;
 //! let mut w = db.write();
-//! let t = w.create()?;
+//! let t = w.create(db.account_root())?;
 //! # w.at(db.account_root(), osis::core::HOLDS).path(osis::p![]).add(&osis::Ref::Strong(osis::Strong(t)))?;
 //! w.commit()?;
 //! let (tx, rx) = std::sync::mpsc::channel();
@@ -223,7 +224,7 @@
 //! # let db = Osis::create(Store::Memory(MemStore::new()), Config::default())?;
 //! let link = db.aspect_key("note:link.0")?;
 //! let mut w = db.write();
-//! let (a, b) = (w.create()?, w.create()?);
+//! let (a, b) = (w.create(db.account_root())?, w.create(db.account_root())?);
 //! # w.at(db.account_root(), osis::core::HOLDS).path(osis::p![]).add(&osis::Ref::Strong(osis::Strong(a)))?;
 //! # w.at(db.account_root(), osis::core::HOLDS).path(osis::p![]).add(&osis::Ref::Strong(osis::Strong(b)))?;
 //! w.at(a, link.clone()).set(&Weak(b).into())?;
@@ -249,7 +250,7 @@
 //! db.register_schema("app.osis", "revision 1; aspect app:x.0: int;")?;
 //! let k = db.aspect_key("app:x.0")?;
 //! let mut w = db.write();
-//! let t = w.create()?;
+//! let t = w.create(db.account_root())?;
 //! # w.at(db.account_root(), osis::core::HOLDS).path(osis::p![]).add(&osis::Ref::Strong(osis::Strong(t)))?;
 //! // what is replaced stays a day, so an undo can write it back
 //! let day = History::Keep { until: Time(0), after_replaced: Duration::from_secs(86_400) };
@@ -302,7 +303,7 @@
 //! # use osis::{Config, GrantOpts, MemStore, Osis, Role, Store};
 //! let db = Osis::create(Store::Memory(MemStore::new()), Config::default())?;
 //! let mut w = db.write();
-//! let g = w.create()?;
+//! let g = w.create(db.account_root())?;
 //! # w.at(db.account_root(), osis::core::HOLDS).path(osis::p![]).add(&osis::Ref::Strong(osis::Strong(g)))?;
 //! w.at(g, osis::core::NAME).set(&"Trip".to_string())?;
 //! w.commit()?;
@@ -376,7 +377,7 @@
 //! # use osis::{Body, CommitEvent, Config, MemStore, Osis, Store, Value};
 //! let db = Osis::create(Store::Memory(MemStore::new()), Config::default())?;
 //! let mut w = db.write();
-//! let t = w.create()?;
+//! let t = w.create(db.account_root())?;
 //! # w.at(db.account_root(), osis::core::HOLDS).path(osis::p![]).add(&osis::Ref::Strong(osis::Strong(t)))?;
 //! w.commit()?;
 //! let ring = db.aspect_key("app:ring+~0")?;
@@ -403,7 +404,7 @@
 //! // the thing keeps its fires for good
 //! let keep = osis::core::RetentionEntry { history: Some(osis::History::FOREVER), ..Default::default() };
 //! let mut w = db.write();
-//! let t = w.create()?;
+//! let t = w.create(db.account_root())?;
 //! # w.at(db.account_root(), osis::core::HOLDS).path(osis::p![]).add(&osis::Ref::Strong(osis::Strong(t)))?;
 //! w.at(t, osis::core::RETENTION).set(&osis::core::RetentionSetting { default: Some(keep), ..Default::default() })?;
 //! w.commit()?;
@@ -432,7 +433,7 @@
 //! let db = Osis::create(Store::Memory(MemStore::new()), Config::default())?;
 //! let k = db.aspect_key("app:body.0")?;
 //! let mut w = db.write();
-//! let t = w.create()?;
+//! let t = w.create(db.account_root())?;
 //! # w.at(db.account_root(), osis::core::HOLDS).path(osis::p![]).add(&osis::Ref::Strong(osis::Strong(t)))?;
 //! w.at(t, k.clone()).path(p![]).set_stream(&b"some bytes"[..])?;
 //! w.commit()?;
@@ -484,7 +485,6 @@ mod retention;
 mod share;
 mod syncing;
 mod sources;
-mod testing;
 mod text;
 mod commits;
 mod value_type;

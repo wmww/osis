@@ -257,10 +257,11 @@ pub enum Cmd {
         #[arg(long, value_name = "C", conflicts_with = "follow")]
         versions_of: Option<String>,
     },
-    /// Purge an aspect's history, one commit's write or an author's writes, each where this actor may
+    /// Purge an aspect's history, one commit's write or an author's writes, each where this actor
+    /// may; with no AK, destroy T for everyone (an admin; not undoable)
     Purge {
         t: String,
-        ak: String,
+        ak: Option<String>,
         /// Only this commit's write
         #[arg(long, value_name = "C", conflicts_with = "author")]
         commit: Option<String>,
@@ -377,10 +378,11 @@ pub enum Cmd {
 
 #[derive(Args, Debug, Clone)]
 pub struct CreateArgs {
-    /// First admin in place of the acting actor: a thin client's way to create, naming a thing that outlives it
+    /// First admin (default: the account root). Under a thing it is plain, read by that thing's
+    /// readers; under an account (`me`) it gets keys of its own at once, about ten times the cost
     #[arg(long, value_name = "A")]
     pub admin: Option<String>,
-    /// The thing whose holds.0 holds it by a strong (default: the --admin thing, else the account root, which the account's nodes hold)
+    /// The thing whose holds.0 holds it by a strong (default: the --admin thing; the account root for `me`)
     #[arg(long = "in", value_name = "H")]
     pub in_: Option<String>,
     /// Bind $NAME to the new tid (write scripts)

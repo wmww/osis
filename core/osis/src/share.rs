@@ -797,11 +797,11 @@ impl Osis {
     /// `Unsupported` on a client with its own actor.
     pub fn nodes(&self) -> Result<Vec<AccountNode>> {
         self.local("nodes")?;
-        let home = self.account_root();
+        let root = self.account_root();
         let node_ak = ct::NODE.name();
         self.engine(|e| -> Result<Vec<AccountNode>> {
             let mut out = Vec::new();
-            for (m, edge) in e.roster(&home) {
+            for (m, edge) in e.roster(&root) {
                 if edge.role >= Role::Read && (m == e.tid() || e.get(&m, &node_ak)?.is_some()) {
                     out.push(AccountNode { node: m, role: edge.role });
                 }
@@ -810,16 +810,16 @@ impl Osis {
         })
     }
 
-    /// Removes a node from this account. This is `set_role(home(), node, None, o)`, here because of
+    /// Removes a node from this account. This is `set_role(account_root(), node, None, o)`, here because of
     /// what it returns, which is easy to forget: this account's links still working. The node keeps
     /// their keys, so whoever holds it can read and join through each until `revoke_link`, and
     /// ending them is the caller's choice. None when `node` was not one of this account's.
     /// `Unsupported` on a client with its own actor.
     pub fn remove_node(&self, node: Tid, o: SetRoleOpts) -> Result<Vec<LinkInfo>> {
         self.local("remove_node")?;
-        let home = self.account_root();
-        let was = self.grants(home)?.contains_key(&node);
-        self.set_role(home, node, None, o)?;
+        let root = self.account_root();
+        let was = self.grants(root)?.contains_key(&node);
+        self.set_role(root, node, None, o)?;
         if was { self.links() } else { Ok(Vec::new()) }
     }
 }

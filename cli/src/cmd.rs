@@ -415,10 +415,18 @@ fn run(ctx: &mut Ctx<'_>, cmd: Cmd) -> anyhow::Result<()> {
         }
         Cmd::Purge { t, ak, commit, author } => {
             let tid = ctx.tid(&t)?;
-            let key = ctx.aspect_key(&ak)?;
             let commit = commit.as_deref().map(parse_id).transpose()?;
             let author = author.as_deref().map(|a| ctx.tid(a)).transpose()?;
             let mut w = db.write();
+            let Some(ak) = ak else {
+                if commit.is_some() || author.is_some() {
+                    return Err(usage("--commit and --author purge an aspect's writes: name the AK"));
+                }
+                w.purge(tid)?;
+                let done = w.commit()?;
+                return emit_commit(ctx, done.map(|d| d.stamp.id));
+            };
+            let key = ctx.aspect_key(&ak)?;
             let mut at = w.at(tid, key);
             match (commit, author) {
                 (Some(c), _) => at.purge(osis::Purge::Commit(c))?,

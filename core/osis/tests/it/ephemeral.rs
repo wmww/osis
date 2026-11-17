@@ -1,7 +1,6 @@
 //! Local ephemeral aspects (notes/ephemeral.md): in memory, no durable commit, no store write;
 //! restart forgets; rights as for durable writes; expiry in memory; signal aspects.
 
-use osis::internals::Held as _;
 use osis::internals::Exact as _;
 use osis::internals::CommitRaw as _;
 use crate::common::watched;

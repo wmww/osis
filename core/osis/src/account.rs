@@ -146,7 +146,7 @@ impl Osis {
     /// `Unsupported` on a client with its own actor.
     pub fn pair_offer(&self) -> Result<PairOffer> {
         self.local("pair_offer")?;
-        let (me, home, node) = (self.me(), self.account_root(), self.node());
+        let (me, root, node) = (self.me(), self.account_root(), self.node());
         // every node of the account learns the profile from the offer it paired by
         let profile = self.profile()?;
         let now = self.inner.clock.now_wall_ms().0;
@@ -157,7 +157,7 @@ impl Osis {
             x.offers.push((s, now.saturating_add(OFFER_LIFETIME_MS)));
             s
         });
-        Ok(PairOffer(pack(OFFER, &Value::List(vec![Value::Int(1), Value::bytes(me.as_bytes()), Value::bytes(home.as_bytes()), Value::bytes(node.as_bytes()), Value::bytes(profile.as_bytes()), Value::Bytes(secret.to_vec())]))))
+        Ok(PairOffer(pack(OFFER, &Value::List(vec![Value::Int(1), Value::bytes(me.as_bytes()), Value::bytes(root.as_bytes()), Value::bytes(node.as_bytes()), Value::bytes(profile.as_bytes()), Value::Bytes(secret.to_vec())]))))
     }
 
     /// Accepts a new node's request to an offer of this node: makes it an admin of the
@@ -201,13 +201,13 @@ impl Osis {
         cfg.check()?;
         let items = offer.parse()?;
         let malformed = || Error::Invalid("malformed pairing offer".into());
-        let [_, account, home, _, profile, Value::Bytes(secret)] = items.as_slice() else { return Err(malformed()) };
+        let [_, account, root, _, profile, Value::Bytes(secret)] = items.as_slice() else { return Err(malformed()) };
         let tid = |v: &Value| v.as_array().map(Tid::from_bytes).ok_or_else(malformed);
-        let (account, home, profile) = (&tid(account)?, &tid(home)?, tid(profile)?);
+        let (account, root, profile) = (&tid(account)?, &tid(root)?, tid(profile)?);
         let secret: [u8; 32] = secret.as_slice().try_into().map_err(|_| malformed())?;
         let Fresh { mut engine, clock, sync } = fresh_engine(&store, &cfg)?;
         engine.set_app_record(crate::handle::PROFILE, profile.as_bytes())?;
-        let db = Osis::start(engine, sync, clock, store, &cfg, *account, *home, 0)?;
+        let db = Osis::start(engine, sync, clock, store, &cfg, *account, *root, 0)?;
         let node = db.node();
         let pks = db.engine(|e| -> Result<Vec<Package>> {
             let ids = e.commit_ids();

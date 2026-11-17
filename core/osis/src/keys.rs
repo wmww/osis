@@ -107,7 +107,7 @@ pub mod core {
 /// # const N: osis::Aspect<i64> = osis::Aspect::new("t:n.0", &S);
 /// # let db = Osis::create(Store::Memory(MemStore::new()), Config::default()).unwrap();
 /// # let mut w = db.write();
-/// # let t = w.create().unwrap();
+/// # let t = w.create(db.account_root()).unwrap();
 /// # w.at(db.account_root(), osis::core::HOLDS).path(osis::p![]).add(&osis::Ref::Strong(osis::Strong(t))).unwrap();
 /// # let keep = osis::core::RetentionEntry { history: Some(osis::History::FOREVER), ..Default::default() };
 /// # w.at(t, osis::core::RETENTION).set(&osis::core::RetentionSetting { rules: [(osis::Ak::new("t:ping~0").unwrap(), keep)].into(), ..Default::default() }).unwrap();
@@ -144,7 +144,7 @@ pub mod core {
 /// # const N: osis::Aspect<i64> = osis::Aspect::new("t:n.0", &S);
 /// # let db = Osis::create(Store::Memory(MemStore::new()), Config::default()).unwrap();
 /// # let mut w = db.write();
-/// # let t = w.create().unwrap();
+/// # let t = w.create(db.account_root()).unwrap();
 /// # w.at(db.account_root(), osis::core::HOLDS).path(osis::p![]).add(&osis::Ref::Strong(osis::Strong(t))).unwrap();
 /// let _ = db.at(t, PING).get();
 /// ```
@@ -157,7 +157,7 @@ pub mod core {
 /// # const N: osis::Aspect<i64> = osis::Aspect::new("t:n.0", &S);
 /// # let db = Osis::create(Store::Memory(MemStore::new()), Config::default()).unwrap();
 /// # let mut w = db.write();
-/// # let t = w.create().unwrap();
+/// # let t = w.create(db.account_root()).unwrap();
 /// # w.at(db.account_root(), osis::core::HOLDS).path(osis::p![]).add(&osis::Ref::Strong(osis::Strong(t))).unwrap();
 /// let _ = db.at(t, PING).path(p![]).get::<i64>();
 /// ```
@@ -170,7 +170,7 @@ pub mod core {
 /// # const N: osis::Aspect<i64> = osis::Aspect::new("t:n.0", &S);
 /// # let db = Osis::create(Store::Memory(MemStore::new()), Config::default()).unwrap();
 /// # let mut w = db.write();
-/// # let t = w.create().unwrap();
+/// # let t = w.create(db.account_root()).unwrap();
 /// # w.at(db.account_root(), osis::core::HOLDS).path(osis::p![]).add(&osis::Ref::Strong(osis::Strong(t))).unwrap();
 /// let _ = db.at(t, PING).on_change(|_, _| {});
 /// ```
@@ -183,7 +183,7 @@ pub mod core {
 /// # const N: osis::Aspect<i64> = osis::Aspect::new("t:n.0", &S);
 /// # let db = Osis::create(Store::Memory(MemStore::new()), Config::default()).unwrap();
 /// # let mut w = db.write();
-/// # let t = w.create().unwrap();
+/// # let t = w.create(db.account_root()).unwrap();
 /// # w.at(db.account_root(), osis::core::HOLDS).path(osis::p![]).add(&osis::Ref::Strong(osis::Strong(t))).unwrap();
 /// let _ = db.at(t, PING).writes(&CommitQuery::default());
 /// ```
@@ -196,7 +196,7 @@ pub mod core {
 /// # const N: osis::Aspect<i64> = osis::Aspect::new("t:n.0", &S);
 /// # let db = Osis::create(Store::Memory(MemStore::new()), Config::default()).unwrap();
 /// # let mut w = db.write();
-/// # let t = w.create().unwrap();
+/// # let t = w.create(db.account_root()).unwrap();
 /// # w.at(db.account_root(), osis::core::HOLDS).path(osis::p![]).add(&osis::Ref::Strong(osis::Strong(t))).unwrap();
 /// let _ = db.at(t, PING).on_write(|_, _| {});
 /// ```
@@ -209,7 +209,7 @@ pub mod core {
 /// # const N: osis::Aspect<i64> = osis::Aspect::new("t:n.0", &S);
 /// # let db = Osis::create(Store::Memory(MemStore::new()), Config::default()).unwrap();
 /// # let mut w = db.write();
-/// # let t = w.create().unwrap();
+/// # let t = w.create(db.account_root()).unwrap();
 /// # w.at(db.account_root(), osis::core::HOLDS).path(osis::p![]).add(&osis::Ref::Strong(osis::Strong(t))).unwrap();
 /// let _ = db.at(t, PING).keep_alive(&1);
 /// ```
@@ -222,7 +222,7 @@ pub mod core {
 /// # const N: osis::Aspect<i64> = osis::Aspect::new("t:n.0", &S);
 /// # let db = Osis::create(Store::Memory(MemStore::new()), Config::default()).unwrap();
 /// # let mut w = db.write();
-/// # let t = w.create().unwrap();
+/// # let t = w.create(db.account_root()).unwrap();
 /// # w.at(db.account_root(), osis::core::HOLDS).path(osis::p![]).add(&osis::Ref::Strong(osis::Strong(t))).unwrap();
 /// let _ = w.at(t, PING).set(&1);
 /// ```
@@ -235,7 +235,7 @@ pub mod core {
 /// # const N: osis::Aspect<i64> = osis::Aspect::new("t:n.0", &S);
 /// # let db = Osis::create(Store::Memory(MemStore::new()), Config::default()).unwrap();
 /// # let mut w = db.write();
-/// # let t = w.create().unwrap();
+/// # let t = w.create(db.account_root()).unwrap();
 /// # w.at(db.account_root(), osis::core::HOLDS).path(osis::p![]).add(&osis::Ref::Strong(osis::Strong(t))).unwrap();
 /// let _ = w.at(t, PING).edit(&1, &2);
 /// ```
@@ -248,7 +248,7 @@ pub mod core {
 /// # const N: osis::Aspect<i64> = osis::Aspect::new("t:n.0", &S);
 /// # let db = Osis::create(Store::Memory(MemStore::new()), Config::default()).unwrap();
 /// # let mut w = db.write();
-/// # let t = w.create().unwrap();
+/// # let t = w.create(db.account_root()).unwrap();
 /// # w.at(db.account_root(), osis::core::HOLDS).path(osis::p![]).add(&osis::Ref::Strong(osis::Strong(t))).unwrap();
 /// let _ = w.at(t, PING).overwrite(&1);
 /// ```
@@ -261,7 +261,7 @@ pub mod core {
 /// # const N: osis::Aspect<i64> = osis::Aspect::new("t:n.0", &S);
 /// # let db = Osis::create(Store::Memory(MemStore::new()), Config::default()).unwrap();
 /// # let mut w = db.write();
-/// # let t = w.create().unwrap();
+/// # let t = w.create(db.account_root()).unwrap();
 /// # w.at(db.account_root(), osis::core::HOLDS).path(osis::p![]).add(&osis::Ref::Strong(osis::Strong(t))).unwrap();
 /// let _ = w.at(t, PING).remove();
 /// ```
@@ -274,7 +274,7 @@ pub mod core {
 /// # const N: osis::Aspect<i64> = osis::Aspect::new("t:n.0", &S);
 /// # let db = Osis::create(Store::Memory(MemStore::new()), Config::default()).unwrap();
 /// # let mut w = db.write();
-/// # let t = w.create().unwrap();
+/// # let t = w.create(db.account_root()).unwrap();
 /// # w.at(db.account_root(), osis::core::HOLDS).path(osis::p![]).add(&osis::Ref::Strong(osis::Strong(t))).unwrap();
 /// let _ = w.at(t, PING).path(p![]).set(&1i64);
 /// ```
@@ -287,7 +287,7 @@ pub mod core {
 /// # const N: osis::Aspect<i64> = osis::Aspect::new("t:n.0", &S);
 /// # let db = Osis::create(Store::Memory(MemStore::new()), Config::default()).unwrap();
 /// # let mut w = db.write();
-/// # let t = w.create().unwrap();
+/// # let t = w.create(db.account_root()).unwrap();
 /// # w.at(db.account_root(), osis::core::HOLDS).path(osis::p![]).add(&osis::Ref::Strong(osis::Strong(t))).unwrap();
 /// let _ = w.at(t, N).fire(&1);
 /// ```
@@ -300,7 +300,7 @@ pub mod core {
 /// # const N: osis::Aspect<i64> = osis::Aspect::new("t:n.0", &S);
 /// # let db = Osis::create(Store::Memory(MemStore::new()), Config::default()).unwrap();
 /// # let mut w = db.write();
-/// # let t = w.create().unwrap();
+/// # let t = w.create(db.account_root()).unwrap();
 /// # w.at(db.account_root(), osis::core::HOLDS).path(osis::p![]).add(&osis::Ref::Strong(osis::Strong(t))).unwrap();
 /// let _ = db.at(t, N).fired(&CommitQuery::default());
 /// ```
@@ -313,7 +313,7 @@ pub mod core {
 /// # const N: osis::Aspect<i64> = osis::Aspect::new("t:n.0", &S);
 /// # let db = Osis::create(Store::Memory(MemStore::new()), Config::default()).unwrap();
 /// # let mut w = db.write();
-/// # let t = w.create().unwrap();
+/// # let t = w.create(db.account_root()).unwrap();
 /// # w.at(db.account_root(), osis::core::HOLDS).path(osis::p![]).add(&osis::Ref::Strong(osis::Strong(t))).unwrap();
 /// let _ = db.at(t, N).on_fire(|_, _| {});
 /// ```
@@ -326,7 +326,7 @@ pub mod core {
 /// # const N: osis::Aspect<i64> = osis::Aspect::new("t:n.0", &S);
 /// # let db = Osis::create(Store::Memory(MemStore::new()), Config::default()).unwrap();
 /// # let mut w = db.write();
-/// # let t = w.create().unwrap();
+/// # let t = w.create(db.account_root()).unwrap();
 /// # w.at(db.account_root(), osis::core::HOLDS).path(osis::p![]).add(&osis::Ref::Strong(osis::Strong(t))).unwrap();
 /// # let id: osis::CommitId = "00".repeat(32).parse().unwrap();
 /// let _ = w.at(t, N).replace(id, &1);
@@ -340,7 +340,7 @@ pub mod core {
 /// # const N: osis::Aspect<i64> = osis::Aspect::new("t:n.0", &S);
 /// # let db = Osis::create(Store::Memory(MemStore::new()), Config::default()).unwrap();
 /// # let mut w = db.write();
-/// # let t = w.create().unwrap();
+/// # let t = w.create(db.account_root()).unwrap();
 /// # w.at(db.account_root(), osis::core::HOLDS).path(osis::p![]).add(&osis::Ref::Strong(osis::Strong(t))).unwrap();
 /// # let id: osis::CommitId = "00".repeat(32).parse().unwrap();
 /// let _ = db.at(t, N).versions(id, &CommitQuery::default());

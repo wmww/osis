@@ -3,7 +3,6 @@
 //! history setting and the edit's age alone, durable and ephemeral alike, never from what a node
 //! happens to hold.
 
-use osis::internals::Held as _;
 use osis::internals::CommitRaw as _;
 use crate::common::TestWrites as _;
 use osis::internals::Internals as _;

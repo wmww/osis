@@ -3,7 +3,7 @@
 //! Diagnostics, Footguns closed).
 //! spec: none (API surface, notes/api.md).
 
-use osis::internals::Held as _;
+use crate::common::Held as _;
 use crate::common::watched;
 use crate::common::TestWrites as _;
 use osis::internals::Internals as _;

@@ -3,7 +3,6 @@
 //! never timed, on a `Dispatcher::Pump` node so what a commit dispatches runs on this thread.
 //! spec: none (API surface, notes/api.md).
 
-use osis::internals::Held as _;
 use crate::common::TestWrites as _;
 use crate::common::*;
 use osis::internals::Internals as _;

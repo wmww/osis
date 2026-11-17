@@ -2,6 +2,7 @@
 //! Shared test helpers: deterministic nodes, waiting on channels (never on time).
 
 use osis::internals::Internals as _;
+use osis::internals::WriteDb as _;
 use osis::internals::schema::core_types as ct;
 use osis::{Ak, LinkInfo, SignalKey, ValueKey, MemStore, Osis, Result, Store, Subscription, Tid, Time, Write};
 use osis::internals::{ManualClock};
@@ -274,3 +275,26 @@ pub fn commit_with(db: &Osis, f: impl FnOnce(&mut osis::Write<'_>) -> osis::Resu
 }
 
 
+
+/// A thing made and held in one write (spec/sync-set.md §2 Making a thing).
+pub trait Held {
+    /// A thing under the account, held by a strong in the account root's `holds.0`.
+    fn create_held(&mut self) -> Result<Tid>;
+    /// A thing under `admin`, held where it lives: by `admin`'s `holds.0`, or the account root's
+    /// where `admin` is the account.
+    fn create_held_with_admin(&mut self, admin: Tid) -> Result<Tid>;
+}
+
+impl Held for Write<'_> {
+    fn create_held(&mut self) -> Result<Tid> {
+        let me = self.db().me();
+        self.create_held_with_admin(me)
+    }
+
+    fn create_held_with_admin(&mut self, admin: Tid) -> Result<Tid> {
+        let t = self.create(admin)?;
+        let holder = if admin == self.db().me() { self.db().account_root() } else { admin };
+        self.at(holder, osis::core::HOLDS).path(osis::p![]).add(&osis::Ref::Strong(osis::Strong(t)))?;
+        Ok(t)
+    }
+}

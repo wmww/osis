@@ -2,7 +2,7 @@
 //! `keep_alive`, and the client port's node side; nodes on one in-process test network
 //! (`internals::ManualNet`) with one manual clock, or with no network at all.
 
-use osis::internals::Held as _;
+use crate::common::Held as _;
 use crate::common::{cfg, clock, db};
 use osis::internals::proto::Msg;
 use osis::internals::proto::api::{ApiCode, Outcome};

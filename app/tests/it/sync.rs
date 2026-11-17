@@ -187,7 +187,7 @@ fn malformed_aspects_do_not_break_reads() {
     osis_app::demo::add(&a).unwrap();
     let g = a.home().unwrap();
     let bad = |w: &mut osis::Write<'_>, ak: &str, v: Value| -> osis::Result<()> {
-        let t = w.create_with_admin(g)?;
+        let t = w.create(g)?;
         osis_kit::store::hold(w, g, t)?;
         w.at(t, osis::DynamicAspectKey::untyped(Ak::new(ak).unwrap())).set(&v)?;
         Ok(())
@@ -204,7 +204,7 @@ fn malformed_aspects_do_not_break_reads() {
     // an event with a far start and a huge duration
     {
         let mut w = a.db.write();
-        let t = w.create_with_admin(g).unwrap();
+        let t = w.create(g).unwrap();
         osis_kit::store::hold(&mut w, g, t).unwrap();
         w.at(t, osis_app::event::START).set(&osis_app::event::Start::At(osis_app::event::Wall { time: i64::MAX - 1, zone: None })).unwrap();
         w.at(t, osis_app::event::END).set(&osis_app::event::End::After(i64::MAX)).unwrap();

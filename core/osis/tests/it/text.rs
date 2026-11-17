@@ -2,7 +2,6 @@
 //! notes/api.md Text editing sessions), and a keystroke never waits for a save.
 //! spec: none (API surface, notes/api.md)
 
-use osis::internals::Held as _;
 use crate::common::TestWrites as _;
 use crate::common::*;
 use osis::{DynamicAspectKey, MemStore, Osis, Scope, TextSession, Tid, Value};

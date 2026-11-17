@@ -1,7 +1,7 @@
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::indexing_slicing)]
 //! Sharing across nodes in process, commits carried by hand (notes/api.md Sharing and roles).
 
-use osis::internals::Held as _;
+use crate::common::Held as _;
 use osis::internals::Internals as _;
 use crate::common;
 use common::*;

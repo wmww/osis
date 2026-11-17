@@ -3,7 +3,6 @@
 //! aspect, a thing and the things it holds, typed and untyped; pages, `complete`, memory commits; delete for
 //! everyone and purge by author.
 
-use osis::internals::Held as _;
 use crate::common::TestWrites as _;
 use osis::internals::Internals as _;
 use crate::common::*;

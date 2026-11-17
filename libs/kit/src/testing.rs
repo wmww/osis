@@ -84,7 +84,7 @@ pub fn check_views(d: &Data) -> Vec<String> {
     let other = {
         let mut w = d.db.write();
         let home = d.home().unwrap();
-        let t = w.create_with_admin(home).unwrap();
+        let t = w.create(home).unwrap();
         crate::store::hold(&mut w, home, t).unwrap();
         w.commit().unwrap();
         t
