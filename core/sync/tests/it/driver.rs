@@ -865,3 +865,28 @@ fn dead_addresses_take_turns_at_the_redial_pace_spec_sync_opens_1() {
     assert_eq!(seen, all, "each distinct address once a turn");
     assert_eq!(turns[1], turns[0], "then again in the same order");
 }
+
+// spec/sync-status.md diagnostics (local policy: rate-limited, never dropping another source's):
+// a remote opening and dropping connections floods only its own reports; this node's own dial
+// failing past them is still reported.
+#[test]
+fn a_connection_flood_leaves_a_dial_failure_reported() {
+    let mut w = two_nodes();
+    w.power_off(1);
+    let rx = w.engine(0).subscribe();
+    let me = w.node(0).key;
+    for n in 0..200u64 {
+        let conn = ConnId(ConnId::ACCEPTED | (1_000 + n));
+        w.deliver(0, osis_sync::Input::Up { conn, peer: osis_sync::NodeKey([n as u8; 32]), rank: 0, dialed: false, listener: me });
+        w.deliver(0, osis_sync::Input::Closed { conn });
+    }
+    let mut w = configured(w);
+    w.flush();
+    let reports: Vec<String> = rx.try_iter().filter_map(|e| match e {
+        osis_engine::Event::Diagnostic(d) if d.kind == osis_engine::DiagnosticKind::Connection => Some(d.detail),
+        _ => None,
+    }).collect();
+    let flood = reports.iter().filter(|d| d.starts_with("connection a")).count();
+    assert!(flood > 0 && flood < 400, "the flood is reported, rate-limited: {flood} of 400");
+    assert!(reports.iter().any(|d| d.contains("dial to") && d.contains("failed")), "the dial failure is reported: {:?}", reports.last());
+}

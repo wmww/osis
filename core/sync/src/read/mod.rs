@@ -29,7 +29,7 @@ mod live;
 mod pieces;
 mod views;
 
-pub use ground::{BlobInfo, CertBlobsMissing, Facts, Ground, PieceAt, Seen, SrcView};
+pub use ground::{BlobInfo, CertBlobsMissing, Facts, Ground, PieceAt, Seen, SrcView, StepReady};
 pub use live::Live;
 
 use crate::opens::Opens;
@@ -93,6 +93,9 @@ pub struct Read {
     /// Per S, whether this node's step of S is due with the rotations it registers logged here
     /// (`Ground::step_ready`): issued then, whatever connections are open.
     steps: Effects<SyncId, bool>,
+    /// Per S whose deposit-only step is due, the pass place it came due at: a complete pass
+    /// begun after it ends before it is issued (`StepReady::AfterPass`).
+    step_since: BTreeMap<SyncId, u64>,
     /// Per freed link (blob, thing), what it calls for under each S carrying its thing, and
     /// whether an entry of it is still known (spec/sync-compaction.md §1 Freed links).
     freed: Effects<(BlobId, Tid), judge::Freed>,
@@ -132,6 +135,7 @@ impl Default for Read {
             toward: Effects::new("read: toward"),
             cert_blobs: Effects::new("read: certificate blobs"),
             steps: Effects::new("read: steps"),
+            step_since: BTreeMap::new(),
             freed: Effects::new("read: freed"),
             pieces: pieces::Pieces::default(),
             local: Effects::new("read: local"),
@@ -317,14 +321,34 @@ impl Read {
         for s in self.steps.due() {
             if !g.reads(&s) {
                 self.steps.unwant(&s);
+                self.step_since.remove(&s);
                 continue;
             }
-            let mut ready = false;
+            let (mut ready, mut since) = (false, None);
+            let at = &mut self.step_since;
             self.steps.try_settle(&s, || {
-                ready = g.step_ready(&s)?;
+                ready = match g.step_ready(&s)? {
+                    StepReady::No => {
+                        at.remove(&s);
+                        false
+                    }
+                    StepReady::Now => true,
+                    StepReady::AfterPass => {
+                        let w = *at.entry(s).or_insert(place);
+                        since = Some(w);
+                        g.passed(&s, w)
+                    }
+                };
                 Ok::<bool, crate::types::Error>(ready)
             })?;
+            // status runs the pass a deposit-only step waits for (`passes_wanted`)
+            if let Some(w) = since.filter(|_| !ready)
+                && self.waits.get(&s).is_none_or(|x| *x < w)
+            {
+                self.waits.insert(s, w);
+            }
             if ready && g.issue_step(&s)? {
+                self.step_since.remove(&s);
                 acted = true;
             }
         }

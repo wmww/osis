@@ -3710,6 +3710,12 @@ impl Engine {
         self.core.events.diagnostic(d, self.core.hlc.mono());
     }
 
+    /// `report`, rate-limited per `remote` it is about (a connection's address, or the kind of
+    /// remote where none is known): one remote's flood leaves other remotes' reports.
+    pub fn report_from(&mut self, d: crate::events::Diagnostic, remote: Vec<u8>) {
+        self.core.events.diagnostic_from(d, remote, self.core.hlc.mono());
+    }
+
     /// The first admin of `tid` (`None`: a key actor or an unknown thing).
     pub fn first_admin(&self, tid: &Tid) -> Option<Tid> {
         self.core.first_admin(tid)

@@ -3,7 +3,7 @@
 //! failing in the middle of a settle fails the node's step, closing every connection.
 
 use super::Why;
-use super::ground::{BlobInfo, CertBlobsMissing, Facts, Ground, PieceAt, Seen, SrcView};
+use super::ground::{BlobInfo, CertBlobsMissing, Facts, Ground, PieceAt, Seen, SrcView, StepReady};
 use osis_engine::sync::PieceLink;
 use osis_blob::StepId;
 use crate::opens::Opens;
@@ -568,18 +568,18 @@ impl Ground for Live<'_, '_> {
         }
         Ok(())
     }
-    fn step_ready(&mut self, s: &SyncId) -> Result<bool> {
-        let Some(needs) = self.cx.engine.due_step(s)? else { return Ok(false) };
-        for c in needs.iter() {
+    fn step_ready(&mut self, s: &SyncId) -> Result<StepReady> {
+        let Some(due) = self.cx.engine.due_step(s)? else { return Ok(StepReady::No) };
+        for c in due.needs.iter() {
             let mut logged = false;
             for b in self.cx.engine.commit_blobs(c)?.iter() {
                 logged |= self.cx.store.entry(s, b)?.is_some_and(|e| e.stamp.is_some());
             }
             if !logged {
-                return Ok(false);
+                return Ok(StepReady::No);
             }
         }
-        Ok(true)
+        Ok(if due.deposit_only { StepReady::AfterPass } else { StepReady::Now })
     }
     fn issue_step(&mut self, s: &SyncId) -> Result<bool> {
         Ok(self.cx.engine.issue_due_step(s)?.is_some())

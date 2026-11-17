@@ -495,7 +495,7 @@ impl Node {
                     (false, _) => "accepted".into(),
                 };
                 let detail = format!("{} up: {how}", conn_name(conn));
-                self.report_conn(detail);
+                self.report_conn(conn, detail);
                 if dialed {
                     self.driver.dials.up(conn);
                 }
@@ -714,7 +714,7 @@ impl Node {
             (None, None) => String::new(),
         };
         if !detail.is_empty() {
-            self.report_conn(detail);
+            self.report_conn(conn, detail);
         }
         let s = self.driver.sessions.remove(conn);
         self.driver.dials.ended(conn, lost, self.mono);
@@ -737,9 +737,18 @@ impl Node {
     }
 
     /// A connection came up or ended, or a dial failed (`DiagnosticKind::Connection`): for a log
-    /// (`osis serve`, `diag --follow`), never read back.
-    fn report_conn(&mut self, detail: String) {
-        self.engine.report(osis_engine::Diagnostic { kind: osis_engine::DiagnosticKind::Connection, tids: Vec::new(), commit: None, peer: None, detail });
+    /// (`osis serve`, `diag --follow`), never read back. Rate-limited per remote: a dial per
+    /// address dialed (this node's own dials, as many as its dial set), every accepted
+    /// connection together and every client one together (unproven when they come up: a remote
+    /// opening and dropping them floods only their bucket, never a dial failure).
+    fn report_conn(&mut self, conn: ConnId, detail: String) {
+        let remote = match self.driver.dials.dialed_to(conn) {
+            Some(to) => osis_blob::address_to_text(&to).into_bytes(),
+            None if conn.accepted() => b"accepted".to_vec(),
+            None if conn.0 & ConnId::CLIENT != 0 => b"client".to_vec(),
+            None => b"dialed".to_vec(),
+        };
+        self.engine.report_from(osis_engine::Diagnostic { kind: osis_engine::DiagnosticKind::Connection, tids: Vec::new(), commit: None, peer: None, detail }, remote);
     }
 
     /// Every module settled, again while one acted or the engine's per-entry values moved

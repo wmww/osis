@@ -381,16 +381,31 @@ pub trait Ground {
     }
     /// Whether this node's step of S is due and each role commit it registers is logged under S
     /// in the own store (spec/sync-ids.md §6 Steps: issued after logging the rotations it
-    /// registers, so they are stamped under the head a store keeping S unread holds).
-    fn step_ready(&mut self, s: &SyncId) -> Result<bool> {
+    /// registers, so they are stamped under the head a store keeping S unread holds), and
+    /// whether it is deposit-only.
+    fn step_ready(&mut self, s: &SyncId) -> Result<StepReady> {
         let _ = s;
-        Ok(false)
+        Ok(StepReady::No)
     }
     /// Issues the step due of S (`step_ready`): whether one was issued.
     fn issue_step(&mut self, s: &SyncId) -> Result<bool> {
         let _ = s;
         Ok(false)
     }
+}
+
+/// Whether S's step may be issued (`Ground::step_ready`).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum StepReady {
+    /// Not due, or a rotation it registers is not logged here yet.
+    #[default]
+    No,
+    /// Due by a role newer than the head registers: issued now.
+    Now,
+    /// Due by a new deposit key alone: issued once a complete pass of S begun after it came due
+    /// ended (spec/permissions.md §3: every entry it can open under S opened at the sources it
+    /// reaches, so a co-admin's newer seed there is applied first).
+    AfterPass,
 }
 
 /// What the own store has of a piece under S (`Ground::piece`).

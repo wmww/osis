@@ -179,6 +179,9 @@ const WINDOW_MS: u64 = 60_000;
 /// Distinct diagnostics remembered for dedup.
 const DEDUP: usize = 1024;
 
+/// A diagnostics rate bucket: the peer, or the local kind and the remote it is about.
+type Bucket = (Option<Tid>, Option<DiagnosticKind>, Vec<u8>);
+
 /// Subscribers and the queue of events awaiting durability.
 #[derive(Default)]
 pub struct Events {
@@ -186,9 +189,11 @@ pub struct Events {
     subs: Vec<(Sender<Event>, bool)>,
     queued: Vec<Event>,
     seen: VecDeque<(DiagnosticKind, Option<CommitId>, Vec<Tid>, String)>,
-    /// Window start and count per bucket: a peer, or a kind of local diagnostic (a flood of
-    /// one, e.g. `Mismatch` from a screen of mistyped things, hid `Callback` or `Stranded`).
-    per_peer: BTreeMap<(Option<Tid>, Option<DiagnosticKind>), (u64, usize)>,
+    /// Window start and count per bucket: a peer, or a kind of local diagnostic and the remote it
+    /// is about (a flood of one, e.g. `Mismatch` from a screen of mistyped things, hid `Callback`
+    /// or `Stranded`; one remote's connections hid this node's own dial failures). A bucket
+    /// whose window passed goes as a new one comes, so the map holds the buckets of one window.
+    per_peer: BTreeMap<Bucket, (u64, usize)>,
 }
 
 /// A world copy's (notes/test-harnesses.md, Copied worlds): the queue and the diagnostics' dedup and
@@ -253,11 +258,20 @@ impl Events {
     /// rate-limited per peer (local ones per kind); sent immediately (no durability). `now`: the
     /// monotonic clock (the rate window is a wait, spec/sync-streams.md §1 Waits).
     pub fn diagnostic(&mut self, d: Diagnostic, now: Mono) {
+        self.diagnostic_from(d, Vec::new(), now);
+    }
+
+    /// `diagnostic`, a local one rate-limited per `remote` it is about (the remote's flood
+    /// leaves other remotes' reports of its kind).
+    pub fn diagnostic_from(&mut self, d: Diagnostic, remote: Vec<u8>, now: Mono) {
         let key = (d.kind, d.commit, d.tids.clone(), d.detail.clone());
         if self.seen.contains(&key) {
             return;
         }
-        let bucket = (d.peer, d.peer.is_none().then_some(d.kind));
+        let bucket = (d.peer, d.peer.is_none().then_some(d.kind), if d.peer.is_none() { remote } else { Vec::new() });
+        if !self.per_peer.contains_key(&bucket) {
+            self.per_peer.retain(|_, (start, _)| now.0.saturating_sub(*start) < WINDOW_MS);
+        }
         let slot = self.per_peer.entry(bucket).or_insert((now.0, 0));
         if now.0.saturating_sub(slot.0) >= WINDOW_MS {
             *slot = (now.0, 0);

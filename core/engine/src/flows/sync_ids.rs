@@ -197,6 +197,8 @@ pub(crate) struct Due {
     admin: Secret32,
     deposit: Secret32,
     pub(crate) epochs: std::sync::Arc<ActorEpochs>,
+    /// Due by a new deposit key alone, no role newer than the head registers.
+    pub(crate) deposit_only: bool,
 }
 
 /// Whether this node issues a step of `g`'s sync ID `l` now (spec/sync-ids.md §6 Steps,
@@ -217,8 +219,15 @@ pub(crate) fn step_due(tx: &mut Tx<'_>, g: &Tid, l: &SyncId, fresh: bool) -> Res
     let Some(epochs) = tx.core.epochs(g) else { return Ok(None) };
     let Some(deposit) = deposit_seed_of(tx, g)? else { return Ok(None) };
     let Some(head_admin) = due_at(&epochs, &head, &deposit, fresh) else { return Ok(None) };
+    // a deposit-only step waits for a newer seed held but not applied (spec/permissions.md §3):
+    // stepping to this one would register a key a departed party may know
+    let at = RoleKey::ALL.map(|r| osis_keys::registered_epoch(&epochs, r, head.keys.get(r)));
+    let deposit_only = !fresh && !osis_keys::newer_than_head(&epochs, at);
+    if deposit_only && crate::rotation::keys_write_unapplied(tx, g)? {
+        return Ok(None);
+    }
     let admin = epochs.role(Role::Admin).secret(&head_admin).cloned().ok_or(Error::Misuse("head admin secret"))?;
-    Ok(Some(Due { head, admin, deposit, epochs }))
+    Ok(Some(Due { head, admin, deposit, epochs, deposit_only }))
 }
 
 /// The step due of `g`'s sync ID `l` (`step_due`), put into `m`: a child of its recorded head at

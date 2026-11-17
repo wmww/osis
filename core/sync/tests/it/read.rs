@@ -14,7 +14,7 @@ use osis_engine::sync_ids::HeadKeys;
 use osis_engine::retention::{End, Minting, Standing};
 use osis_engine::sync::{BodyFacts, BodyMeta, CertKind, Loss, ReadCredentials, Strip};
 use osis_blob::{Class, Step, StepId, StepKeys};
-use osis_sync::read::{BlobInfo, Facts, Ground, PieceAt, Read, CertBlobsMissing, Seen, SrcView, Verdict, Why};
+use osis_sync::read::{BlobInfo, Facts, Ground, PieceAt, Read, CertBlobsMissing, Seen, SrcView, StepReady, Verdict, Why};
 use osis_engine::sync::PieceLink;
 use osis_base::Tid;
 use osis_sync::inbox::Promotion;
@@ -195,6 +195,9 @@ struct Fake {
     forgotten: Vec<CommitId>,
     /// Per commit, sync IDs holding an entry or tombstone of a blob of it (`known_under`).
     known: Stamped<CommitId, BTreeSet<SyncId>>,
+    /// Per S, whether its step may be issued (`step_ready`), and the steps issued.
+    step: Stamped<SyncId, StepReady>,
+    issued: Vec<SyncId>,
 }
 
 impl Ground for Fake {
@@ -428,6 +431,14 @@ impl Ground for Fake {
     }
     fn heard_out(&mut self, s: &SyncId) -> Result<bool> {
         Ok(self.heard.get(s).copied().unwrap_or(false))
+    }
+    fn step_ready(&mut self, s: &SyncId) -> Result<StepReady> {
+        Ok(self.step.get(s).copied().unwrap_or_default())
+    }
+    fn issue_step(&mut self, s: &SyncId) -> Result<bool> {
+        self.issued.push(*s);
+        self.step.remove(s);
+        Ok(true)
     }
     fn stand(&mut self, at: &Source, s: &SyncId, c: &CommitId) -> Result<Option<Stand>> {
         Ok(self.stands.get(&(*at, *s, *c)).cloned())
@@ -2554,4 +2565,34 @@ fn a_copy_holding_no_named_delta_leaves_for_a_header_copy_spec_sync_judgement_2(
     assert!(w.g.k.held.contains_key(&(S, new)), "K took the header-only copy");
     assert!(w.sent().any(|m| *m == Sent::Delete(KC, old)), "the copy deleted at K");
     assert!(!w.sent().any(|m| *m == Sent::Delete(KC, new)), "the header-only copy deleted at K");
+}
+
+// spec/permissions.md §3 (next-step triggers): a step due by a newer role is issued at once; a
+// deposit-only one only past a complete pass of S begun after it came due (status runs it), so a
+// co-admin's newer seed logged under S is opened first and the node never steps back to a key a
+// departed party knows. Its seed refreshed again while it waits (a co-admin refreshing at will)
+// keeps the place it came due at, so one pass bounds the wait.
+#[test]
+fn a_deposit_only_step_waits_a_complete_pass_spec_permissions_3() {
+    let mut w = W::new();
+    w.g.done.insert(S, 0);
+    w.g.step.insert(S, StepReady::Now);
+    w.hold(cid(60), &[S], uncovered());
+    assert_eq!(w.g.issued, vec![S], "due by a newer role: issued at once");
+    w.g.place = 5;
+    w.g.step.insert(S, StepReady::AfterPass);
+    w.hold(cid(61), &[S], uncovered());
+    assert_eq!(w.g.issued, vec![S], "deposit-only: waits");
+    assert_eq!(w.read.passes_wanted().get(&S), Some(&5), "a pass of S begun after place 5 is wanted");
+    for place in 6..40 {
+        w.g.place = place;
+        w.g.step.insert(S, StepReady::AfterPass);
+        w.hold(cid(place as u8 + 100), &[S], uncovered());
+    }
+    assert_eq!(w.g.issued, vec![S], "refreshed again while it waits: still waiting");
+    assert_eq!(w.read.passes_wanted().get(&S), Some(&5), "for the pass it first came due before");
+    w.pass(5);
+    assert_eq!(w.g.issued, vec![S], "a pass begun at its place counts not");
+    w.pass(6);
+    assert_eq!(w.g.issued, vec![S, S], "issued once the pass ended");
 }

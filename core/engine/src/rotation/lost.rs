@@ -205,30 +205,34 @@ impl Engine {
     /// (node-sync holds back a deposit-only step meanwhile). Anyone can send a pending commit
     /// naming any aspect, so an unsigned one never counts: it would hold the step back for good.
     pub fn keys_write_unapplied(&mut self, g: &Tid) -> Result<bool> {
-        let a = self.core.secret_actor(g).unwrap_or(*g);
-        let keys = osis_base::Ak::new("keys.0").map_err(|_| crate::Error::Misuse("ak"))?;
-        let core = &self.core;
-        let missing = |x: &Tid| {
-            let part = |m: &crate::engine::Meta| m.aspect(x, &keys).is_some_and(|ai| m.valid_at(ai) && matches!(m.missing_as(ai), Some(crate::engine::Missing::Plain | crate::engine::Missing::ToFetch)));
-            core.ix.by_aspect.get(&(*x, keys.clone())).into_iter().flatten().any(|(_, c)| core.ix.commits.get(c).is_some_and(part))
-        };
-        let below: Vec<Tid> = core.record_chain(g).map_while(|s| s.thing()).take_while(|x| *x != a).collect();
-        if below.iter().chain([&a]).any(missing) {
+        let g = *g;
+        self.read(|tx| keys_write_unapplied(tx, &g))
+    }
+}
+
+/// `Engine::keys_write_unapplied` inside a transaction.
+pub(crate) fn keys_write_unapplied(tx: &mut crate::engine::Tx<'_>, g: &Tid) -> Result<bool> {
+    let a = tx.core.secret_actor(g).unwrap_or(*g);
+    let keys = osis_base::Ak::new("keys.0").map_err(|_| crate::Error::Misuse("ak"))?;
+    let core = &*tx.core;
+    let missing = |x: &Tid| {
+        let part = |m: &crate::engine::Meta| m.aspect(x, &keys).is_some_and(|ai| m.valid_at(ai) && matches!(m.missing_as(ai), Some(crate::engine::Missing::Plain | crate::engine::Missing::ToFetch)));
+        core.ix.by_aspect.get(&(*x, keys.clone())).into_iter().flatten().any(|(_, c)| core.ix.commits.get(c).is_some_and(part))
+    };
+    let below: Vec<Tid> = core.record_chain(g).map_while(|s| s.thing()).take_while(|x| *x != a).collect();
+    if below.iter().chain([&a]).any(missing) {
+        return Ok(true);
+    }
+    let ids: Vec<osis_base::CommitId> = core.ix.pending.iter().filter(|(_, r)| **r != crate::Reason::Parked).map(|(c, _)| *c).collect();
+    for id in ids {
+        let Some(p) = tx.txn.get_pending(&id)? else { continue };
+        let Ok(blob) = osis_commit::CommitBlob::decode_stored(&p.bytes) else { continue };
+        let h = &blob.header;
+        if h.aspect_index(&a, "keys.0").is_some() && tx.core.role_now(&h.author, &a) == Some(Role::Admin) && authentic(tx.core, &blob, &id, &a, crate::apply::kept_verdict(&p)) {
             return Ok(true);
         }
-        let ids: Vec<osis_base::CommitId> = self.core.ix.pending.iter().filter(|(_, r)| **r != crate::Reason::Parked).map(|(c, _)| *c).collect();
-        self.read(|tx| {
-            for id in ids {
-                let Some(p) = tx.txn.get_pending(&id)? else { continue };
-                let Ok(blob) = osis_commit::CommitBlob::decode_stored(&p.bytes) else { continue };
-                let h = &blob.header;
-                if h.aspect_index(&a, "keys.0").is_some() && tx.core.role_now(&h.author, &a) == Some(Role::Admin) && authentic(tx.core, &blob, &id, &a, crate::apply::kept_verdict(&p)) {
-                    return Ok(true);
-                }
-            }
-            Ok(false)
-        })
     }
+    Ok(false)
 }
 
 /// Whether pending `blob` is signed by its author and its `secrets.0` parts on `x` are the ones its

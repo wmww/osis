@@ -5,10 +5,6 @@
 
 The module notes (notes/sync-*.md) point here. Untested built parts: issues/sync-tests-owed.md.
 
-## Security
-- **Deposit-only steps** (a refreshed seed, no newer role epoch) are issued without the waits of spec/permissions.md §3 and spec/sync-ids.md §6 (every entry it can open opened at the sources it reaches; no valid `keys.0` part of the actor missing; `flows::sync_ids::due_at`).
-- **Connection diagnostics** share one local rate bucket and never dedup (each names its connection, `dN`/`aN`): a peer opening and dropping connections pushes out real connection and dial-failure reports. Key them per remote.
-
 ## Data loss
 - **A reader's copy under a superseded stamp** (spec/sync-judgement.md §3 Reader that is not a writer, notes/sync-inbox.md) is not deposited once the source's head moved: `Live::deposit` ran only while the reader saw the old head (relay under stamp); nothing deposits after the head event. Seen in a World: a writer writes an ephemeral value, rotates write and goes off while the reader is partitioned; the node keeping S unread restarts and loses it.
 

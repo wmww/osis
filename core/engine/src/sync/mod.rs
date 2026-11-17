@@ -951,11 +951,11 @@ impl Engine {
     /// epoch newer than its recorded head registers, or a refreshed deposit seed. Sync issues it
     /// (`issue_due_step`) once each of those commits is logged under S here, so they are stamped
     /// under the head a store keeping S unread holds.
-    pub fn due_step(&mut self, s: &SyncId) -> Result<Option<Arc<Vec<CommitId>>>> {
+    pub fn due_step(&mut self, s: &SyncId) -> Result<Option<DueStep>> {
         let Some((t, _)) = self.recorded_owner(s)? else { return Ok(None) };
         // the head and deposit seed as `issue_due_step` reads them (one derivation, `step_due`)
         let Some(due) = self.read(|tx| crate::flows::sync_ids::step_due(tx, &t, s, false))? else { return Ok(None) };
-        let epochs = due.epochs;
+        let (epochs, deposit_only) = (due.epochs, due.deposit_only);
         let mut out = std::collections::BTreeSet::new();
         for r in [Role::Sync, Role::Write, Role::Admin] {
             let re = epochs.role(r);
@@ -967,7 +967,7 @@ impl Engine {
                 }
             }
         }
-        Ok(Some(Arc::new(out.into_iter().collect())))
+        Ok(Some(DueStep { needs: Arc::new(out.into_iter().collect()), deposit_only }))
     }
 
     /// Issues the step due of `s` (`due_step`, `issue_step`), recorded in its thing's `sync.0`.
@@ -1105,4 +1105,14 @@ mod tests_clock {
         e.set_now(t);
         assert!(e.reached(t));
     }
+}
+
+/// A step of a sync ID due here (`Engine::due_step`).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct DueStep {
+    /// The role commits it registers, each to be logged under the sync ID first.
+    pub needs: Arc<Vec<CommitId>>,
+    /// Due by a new deposit key alone (spec/permissions.md §3): it waits a complete pass of the
+    /// sync ID begun after it came due, so every entry the node can open there is opened first.
+    pub deposit_only: bool,
 }

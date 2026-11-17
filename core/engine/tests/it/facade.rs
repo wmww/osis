@@ -68,7 +68,7 @@ fn a_step_is_due_after_a_rotation_spec_sync_ids_6() {
     let before = head(&mut lp);
     let done = lp.peers[0].engine.demote(&t, &Demotion { holder: ps[1], new: None, retain: None }).unwrap();
     let needs = lp.peers[0].engine.due_step(&s).unwrap().expect("the rotation's step is due");
-    assert!(needs.contains(done.commits.last().unwrap()), "it registers the removal's rotation");
+    assert!(needs.needs.contains(done.commits.last().unwrap()) && !needs.deposit_only, "it registers the removal's rotation");
     let step = lp.peers[0].engine.issue_due_step(&s).unwrap().expect("issued");
     assert_eq!((step.prev, head(&mut lp).id()), (Some(before.id()), step.id()), "a child of the recorded head, recorded");
     let sync = lp.peers[0].engine.epochs(&t).unwrap().sync.newest_held().map(|(_, x)| x.clone()).unwrap();
@@ -78,7 +78,7 @@ fn a_step_is_due_after_a_rotation_spec_sync_ids_6() {
     assert_eq!((fresh.prev, head(&mut lp).id()), (Some(step.id()), fresh.id()));
     // a refreshed deposit seed: due by the seed `issue_due_step` reads, and issued from it
     lp.peers[0].engine.refresh_deposit_seed(&t).unwrap();
-    assert!(lp.peers[0].engine.due_step(&s).unwrap().is_some(), "a new deposit key is due");
+    assert!(lp.peers[0].engine.due_step(&s).unwrap().is_some_and(|d| d.deposit_only), "a new deposit key is due");
     let seeded = lp.peers[0].engine.issue_due_step(&s).unwrap().expect("issued by the same reading");
     assert_eq!(seeded.prev, Some(fresh.id()));
     assert!(lp.peers[0].engine.due_step(&s).unwrap().is_none(), "nothing due after it");
@@ -655,4 +655,32 @@ fn a_destroyed_thing_owes_no_role_commit_spec_commits_5() {
     lp.advance(osis_base::format::ROLE_KEEP_MS + 1_000);
     lp.peers[0].tick().unwrap();
     assert!(!lp.peers[0].engine.role_duty_due(&t).unwrap(), "past the floor: nothing owed on t");
+}
+
+// spec/permissions.md §3 (next-step triggers: a deposit-only step waits while an unapplied
+// `keys.0` write of the actor signed by a current admin is held): admin A refreshes T's seed
+// twice, the second time after a party departed and with its clock ahead, so co-admin B holds the
+// first refresh applied and the second pending. B's seed then derives a deposit key other than
+// the head's, but one the departed party knows: stepping to it would let that party deposit.
+// Nothing is due at B until the second refresh applies; then its step is at the newest key.
+#[test]
+fn a_deposit_only_step_waits_for_a_seed_held_pending_spec_permissions_3() {
+    let (mut lp, ps) = people(2);
+    let t = thing_of(&mut lp, 0, ps[0]);
+    lp.peers[0].engine.grant(&t, &ps[1], &edge_of(Role::Admin)).unwrap();
+    spread(&mut lp);
+    let s = lp.peers[0].engine.sync_id_of(&t).unwrap().unwrap();
+    let first = *lp.peers[0].engine.refresh_deposit_seed(&t).unwrap().commits.last().unwrap();
+    crate::flows::send(&mut lp, 0, 1, &[first]);
+    lp.peers[0].clock.advance(3 * osis_base::format::MAX_DRIFT_MS / 2);
+    let second = *lp.peers[0].engine.refresh_deposit_seed(&t).unwrap().commits.last().unwrap();
+    let pk = lp.peers[0].engine.package(&second).unwrap().unwrap();
+    assert!(matches!(lp.deliver(1, &pk).unwrap(), osis_engine::Ingested::Pending(_, osis_engine::Reason::Drift)), "the second refresh waits at B");
+    assert!(lp.peers[1].engine.due_step(&s).unwrap().is_none(), "nothing due while it waits");
+    assert!(lp.peers[1].engine.issue_due_step(&s).unwrap().is_none(), "no step to the first refresh's key");
+    lp.peers[1].clock.advance(3 * osis_base::format::MAX_DRIFT_MS / 2);
+    lp.peers[1].reexamine().unwrap();
+    let step = lp.peers[1].engine.issue_due_step(&s).unwrap().expect("due once it applied");
+    let again = lp.peers[0].engine.issue_due_step(&s).unwrap().expect("A's own step");
+    assert_eq!(step.keys.deposit, again.keys.deposit, "B's step is at the newest deposit key");
 }
