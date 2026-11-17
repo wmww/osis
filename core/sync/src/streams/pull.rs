@@ -185,9 +185,18 @@ struct Batch {
 #[derive(Clone, Debug)]
 struct ReplyInfo {
     whole: bool,
+    /// The members a whole reply lists from the start (`covered`).
+    covered: BTreeSet<SyncId>,
     more: bool,
     joins: BTreeMap<SyncId, Option<Cursor>>,
     asked: Vec<(SyncId, u64)>,
+}
+
+/// The members a whole reply covers (spec/sync-streams.md §4 Applying): each shared now whose
+/// join is not waiting for a later Pull. One that joined after the Pull went out is joined by its
+/// own join, whatever the server listed.
+fn covered(members: &BTreeMap<SyncId, crate::opens::Member>, p: &Pulling, asked: &[(SyncId, u64)]) -> BTreeSet<SyncId> {
+    members.keys().filter(|s| p.joins.get(s).is_none_or(|j| asked.contains(&(**s, j.generation)))).copied().collect()
 }
 
 #[derive(Clone, Debug)]
@@ -221,7 +230,7 @@ pub(super) struct Pulling {
     rejoin_at: BTreeMap<SyncId, Mono>,
     inline: u64,
     pub(super) inline_check: bool,
-    /// A whole listing from the start (trimmed or not) under way: what it listed so far.
+    /// A whole listing from the start under way: per member its first page covers, what it listed so far.
     listing: Option<BTreeMap<SyncId, BTreeSet<BlobId>>>,
     /// Joins from the start under way: what each listed so far.
     join_listing: BTreeMap<SyncId, BTreeSet<BlobId>>,
@@ -624,11 +633,12 @@ impl Streams {
     fn on_pull_reply(&mut self, ctx: &mut Ctx, conn: ConnId, r: PullReply, asked: Vec<(SyncId, u64)>) {
         let members = ctx.shared.members(conn);
         let Some(p) = self.pull.get_mut(&conn) else { return };
+        let covered = covered(members, p, &asked);
         // a listing from the start shows again what the source holds of S: its room mark goes
         // as the listing starts, before any of its bodies is judged (spec/sync-streams.md §4
         // Full); what it refuses again marks it again
         let from_start: Vec<SyncId> = match r.whole {
-            true => members.keys().copied().collect(),
+            true => covered.iter().copied().collect(),
             false => asked.iter().filter(|(s, g)| p.joins.get(s).is_some_and(|j| j.generation == *g && j.cursor.is_none())).map(|(s, _)| *s).collect(),
         };
         let src = p.src;
@@ -685,7 +695,7 @@ impl Streams {
                 }
             }
         }
-        let info = ReplyInfo { whole: r.whole, more: r.more, joins, asked };
+        let info = ReplyInfo { whole: r.whole, covered, more: r.more, joins, asked };
         let batch = Batch { events: r.events, cursor: r.cursor.map(osis_proto::Cursor::into_bytes), report: r.report, reply: Some(info), owed: Vec::new() };
         self.stage(ctx, conn, batch);
     }
@@ -1217,12 +1227,15 @@ impl Streams {
     /// record source all in one transaction.
     fn apply(&mut self, ctx: &mut Ctx, conn: ConnId, batch: Batch) {
         let members: BTreeSet<SyncId> = ctx.shared.members(conn).keys().copied().collect();
+        // the members a reply's whole listing covers, as still shared
+        let covered: BTreeSet<SyncId> = batch.reply.iter().flat_map(|r| r.covered.intersection(&members).copied()).collect();
         let Some(p) = self.pull.get_mut(&conn) else { return };
         let src = p.src;
         if batch.reply.as_ref().is_some_and(|r| r.whole) && p.listing.is_none() {
-            p.listing = Some(BTreeMap::new());
-            // the whole listing covers every member: joins from the start are part of it
-            p.join_listing.clear();
+            // the whole listing covers the members its first page does: their joins from the
+            // start are part of it
+            p.listing = Some(covered.iter().map(|s| (*s, BTreeSet::new())).collect());
+            p.join_listing.retain(|s, _| !covered.contains(s));
         }
         let mut listing = p.listing.take();
         let mut join_listing = std::mem::take(&mut p.join_listing);
@@ -1250,8 +1263,8 @@ impl Streams {
                     if concerns(ctx, self.pull.get(&conn), s, b) {
                         ops.push((at, Op::Add(*s, *b)));
                     }
-                    if let Some(l) = listing.as_mut() {
-                        l.entry(*s).or_default().insert(*b);
+                    if let Some(l) = listing.as_mut().and_then(|l| l.get_mut(s)) {
+                        l.insert(*b);
                     }
                     if let Some(l) = join_listing.get_mut(s) {
                         l.insert(*b);
@@ -1285,7 +1298,7 @@ impl Streams {
         let place = self.place(ctx.store, src);
         let cursor = (batch.cursor.is_some() || batch.reply.as_ref().is_some_and(|r| r.whole)) && !mid_listing;
         let was_cursor = place.cursor.clone();
-        let was: BTreeMap<SyncId, (bool, Option<Option<Cursor>>)> = batch.reply.iter().flat_map(|r| if r.whole { members.iter().copied().collect::<Vec<_>>() } else { r.asked.iter().map(|(s, _)| *s).collect() }).map(|s| (s, (place.at_stream.contains(&s), place.join_from(&s).cloned()))).collect();
+        let was: BTreeMap<SyncId, (bool, Option<Option<Cursor>>)> = batch.reply.iter().flat_map(|r| if r.whole { covered.iter().copied().collect::<Vec<_>>() } else { r.asked.iter().map(|(s, _)| *s).collect() }).map(|s| (s, (place.at_stream.contains(&s), place.join_from(&s).cloned()))).collect();
         if cursor {
             place.cursor = batch.cursor.clone();
         }
@@ -1293,8 +1306,8 @@ impl Streams {
         let mut listed: BTreeMap<SyncId, BTreeSet<BlobId>> = BTreeMap::new();
         if let Some(r) = &batch.reply {
             if r.whole {
-                // every member from the start: each at the stream now
-                for s in members.iter().filter(|s| !matches!(r.joins.get(s), Some(None))) {
+                // every member it covers from the start: each at the stream now
+                for s in covered.iter().filter(|s| !matches!(r.joins.get(s), Some(None))) {
                     place.at_stream.insert(*s);
                     place.joining.remove(s);
                     place.stopped.remove(s);
@@ -1331,8 +1344,10 @@ impl Streams {
             if !r.more
                 && let Some(seen) = listing.take()
             {
-                for s in &members {
-                    listed.insert(*s, seen.get(s).cloned().unwrap_or_default());
+                for (s, l) in seen {
+                    if members.contains(&s) {
+                        listed.insert(s, l);
+                    }
                 }
             }
         }

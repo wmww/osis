@@ -671,9 +671,16 @@ impl Node {
         }
     }
 
-    /// Hands each member opens reported moved to streams (and counts it for `max_peers`), then
-    /// streams' reported positions to opens.
+    /// Hands each member opens reported moved to every module that follows members (and counts
+    /// it for `max_peers`), then streams' reported positions to opens.
     fn moved(&mut self, moved: &mut Vec<Moved>, out: &mut Vec<Out>) {
+        self.hand(moved, out);
+        self.reports(out);
+    }
+
+    /// Each member in `moved` to status, read, inbox, dials and streams: the one place a moved
+    /// member goes, whatever moved it.
+    fn hand(&mut self, moved: &mut Vec<Moved>, out: &mut Vec<Out>) {
         let mut cx = cx!(self, out);
         for m in moved.drain(..) {
             self.status.moved(&self.driver.sessions, &self.opens, &m);
@@ -683,22 +690,16 @@ impl Node {
             self.driver.dials.sharing(c, !self.opens.members(c).is_empty());
             self.streams.moved(&mut cx, &mut self.driver.sessions, &self.opens, m, &mut self.driver.reported);
         }
-        self.reports(out);
     }
 
-    /// Streams' reported positions to opens; the members that closes go back to streams, until
-    /// nothing is left.
+    /// Streams' reported positions to opens; the members that closes are handed on (`hand`),
+    /// until nothing is left.
     fn reports(&mut self, out: &mut Vec<Out>) {
         let mut moved = Vec::new();
         while !self.driver.reported.is_empty() {
             let mut cx = cx!(self, out);
             self.opens.on_reported(&mut cx, &mut self.driver.sessions, &self.unread, &mut self.driver.reported, &mut moved);
-            for m in moved.drain(..) {
-                let c = m.conn();
-                self.read.moved(&m, &self.opens);
-                self.driver.dials.sharing(c, !self.opens.members(c).is_empty());
-                self.streams.moved(&mut cx, &mut self.driver.sessions, &self.opens, m, &mut self.driver.reported);
-            }
+            self.hand(&mut moved, out);
         }
     }
 

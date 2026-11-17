@@ -952,7 +952,25 @@ impl World {
                 None => break,
             }
         }
+        self.sources_are_members();
         self.unlogged_must_holds();
+    }
+
+    /// At quiet, every source status counts of S at a node is a connection up on which S is a
+    /// member (spec/sync-status.md §1: the sources connected now), whatever closed the member.
+    fn sources_are_members(&mut self) {
+        let mut stale = Vec::new();
+        for i in (0..self.nodes.len()).filter(|i| self.online(*i)) {
+            let up: BTreeSet<ConnId> = self.net.links.keys().filter(|(m, _)| *m == i).map(|(_, c)| *c).collect();
+            for (s, st) in self.node(i).node.status() {
+                for c in st.sources.keys() {
+                    if !up.contains(c) || !self.node(i).node.opens().members(*c).contains_key(&s) {
+                        stale.push((i, s, *c));
+                    }
+                }
+            }
+        }
+        assert!(stale.is_empty(), "sources status counts that are no member at quiet (node, S, conn): {stale:?}");
     }
 
     /// At quiet, each node logs every body it judges must-hold under S, wherever a reader can

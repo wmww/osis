@@ -715,6 +715,39 @@ fn a_join_in_pages_keeps_its_position_spec_sync_streams_4() {
     assert_eq!(a.reported_at(t), a.reported_at(s));
 }
 
+// spec/sync-streams.md §4 (Applying: a whole reply covers the members its Pull went out for;
+// Joining): T joins while b's first Pull, a whole listing of S alone, is out; the reply puts S at
+// the stream, not T, whose join is still owed. That join's Pull is lost with the connection, and
+// the reconnect joins T from the start: a's entry under T is listed.
+#[test]
+fn a_member_joined_while_a_whole_listing_is_out_joins_from_the_start_spec_sync_streams_4() {
+    let mut p = Pair::new();
+    let (s, t) = (sid(1), sid(2));
+    for side in [&mut p.a, &mut p.b] {
+        side.hold(s, Holding::Read);
+        side.hold(t, Holding::Read);
+    }
+    p.a.log(s, 100);
+    let x = p.a.log(t, 200);
+    p.shared_read(s);
+    p.run_with(|ab, m| ab && matches!(m, Msg::PullReply(r) if r.whole));
+    let (_, reply) = p.held.pop().expect("the whole reply held back");
+    p.a.join(p.now, t);
+    p.b.join(p.now, t);
+    let Frame::Ans(id, _) = reply else { panic!("a reply") };
+    p.b.with(p.now, |st, cx| st.message(cx, C, Incoming::Reply(To::Streams, id, reply.msg())));
+    p.run_with(|ab, m| !ab && matches!(m, Msg::Pull(q) if q.joins.iter().any(|(j, _)| *j == t)));
+    assert!(!knows(&p.b, p.b.src(), t, x), "T's join lost");
+    p.a.streams.closed(C);
+    p.b.streams.closed(C);
+    for side in [&mut p.a, &mut p.b] {
+        side.join(p.now, s);
+        side.join(p.now, t);
+    }
+    p.run();
+    assert!(knows(&p.b, p.b.src(), t, x), "T joined from the start after the reconnect");
+}
+
 // spec/sync-streams.md §4 (joining): a join of a member the server does not share is answered so; one refused while S stays a member is joined again `resync_ms` later, SN_joinans.
 #[test]
 fn a_refused_join_is_joined_again_later_spec_sync_streams_4() {

@@ -140,3 +140,26 @@ fn a_reader_moves_a_store_departed_before_it_kept_s_unread_spec_sync_opens_6() {
     let _ = crate::harness::play(&mut w, &[Lower(0, 0, Holder::Node(1), Gives::Syncs), Revoke(0, 0, Holder::Node(1)), Run], String::new());
     assert!(w.store(1).entries(&s).unwrap().is_empty(), "node 1 stopped: {} entries kept", w.store(1).entries(&s).unwrap().len());
 }
+
+// spec/sync-status.md §1 (the sources of S: peers with S open on a connection up now): node 1
+// keeps S unread, node 2 reads it, and node 0 removes node 1 while cut off from it. Node 2 ends
+// S toward node 1 and closes it once node 1 reports reaching its end (a close opens makes on a
+// report, not on a message): at quiet neither node counts the other a source of S on a
+// connection where S is no member (`World::run` checks every node).
+#[test]
+fn a_member_closed_on_a_report_is_no_source_spec_sync_status_1() {
+    use crate::harness::Step::*;
+    use crate::harness::history::{Gives, Holder, world};
+    let mut w = world(0, 3);
+    w.cap = 20_000;
+    let _ = crate::harness::play(&mut w, &[New(0), Grant(0, 0, 1, Gives::Syncs), Grant(0, 0, 2, Gives::Reads), Run], String::new());
+    let t = w.history.things[0].0;
+    let s = w.engine(0).sync_id_of(&t).unwrap().unwrap();
+    w.partition(0, 1);
+    let _ = crate::harness::play(&mut w, &[Revoke(0, 0, Holder::Node(1)), Run], String::new());
+    for i in 1..3 {
+        let sources: Vec<_> = w.node(i).node.status_of(&s).map(|x| x.sources.into_keys().collect()).unwrap_or_default();
+        assert!(sources.iter().all(|c| w.node(i).node.opens().members(*c).contains_key(&s)), "node {i}'s sources of S are members");
+    }
+    assert!(w.store(1).entries(&s).unwrap().is_empty(), "node 1 stopped");
+}
