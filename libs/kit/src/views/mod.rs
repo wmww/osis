@@ -89,7 +89,7 @@ pub fn grow_tag(d: &Data, t: Tid, n: usize) {
     let g = d.home().expect("grow: home");
     let mut w = d.db.write();
     for i in 0..n {
-        let x = w.create(g).expect("grow: a thing");
+        let x = w.create(g, None).expect("grow: a thing");
         w.at(x, osis::core::NAME).set(&format!("grown {i}")).expect("grow: a name");
         w.hold(g, x).expect("grow: held");
         w.hold(t, x).expect("grow: tagged");

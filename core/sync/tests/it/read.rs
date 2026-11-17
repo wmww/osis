@@ -2046,8 +2046,8 @@ fn a_thing_published_under_an_actor_judges_what_it_moved_spec_sync_2() {
 /// lacks it).
 const T: Tid = Tid::from_bytes([7; 15]);
 
-fn minting(c: u8, valued: bool, end: End, expires: Option<u64>) -> Minting {
-    Minting { commit: cid(c), standing: Standing { valued, end }, expires, by: osis_base::PurgeBy::Admin, actor: T }
+fn minting(c: u8, valued: bool, end: End) -> Minting {
+    Minting { commit: cid(c), standing: Standing { valued, end } }
 }
 
 /// A peer's entry `b` in the own store (pulled from a reader).
@@ -2072,29 +2072,6 @@ impl W {
     }
 }
 
-// spec/commits.md §5 (A thing's mintings travel with its record: a node logs a thing's witness
-// only where no entry there holds a minting of the same standing, a header-only copy goes where an
-// entry there holds a minting of the witness's standing expiring later and it stands lower):
-// T's copy minted with `expires` 100 (a peer's entry here and at K) and its durable witness: the
-// witness is logged, and once it is held there the lower copy leaves here and is deleted at K.
-#[test]
-fn the_witness_is_logged_and_a_lower_copy_goes_spec_commits_5() {
-    let mut w = W::new();
-    w.g.own.insert((S, cid(1)), vec![peer_entry(11)]);
-    w.g.k.held.insert((S, BlobId([11; 32])), cid(1));
-    w.g.logged.push((S, cid(1), BlobId([11; 32])));
-    w.mintings(&[minting(1, true, End::At(100, None), Some(100)), minting(2, true, End::Never, None)]);
-    assert_eq!(w.read.verdict(&S, &cid(2)), Some(Verdict::Must));
-    assert_eq!(w.logs(S, cid(2)), 1, "the witness logged");
-    assert_eq!(w.read.verdict(&S, &cid(1)), Some(Verdict::MustNot(Why::Superseded)));
-    assert!(w.own_blobs(S, cid(1)).is_empty(), "the lower copy left the own store");
-    w.exchange();
-    w.exchange();
-    assert_eq!(w.at_k(S, cid(1)), 0, "deleted at K");
-    assert_eq!(w.at_k(S, cid(2)), 1, "the witness kept at K");
-    assert_eq!(w.logs(S, cid(2)), 1);
-}
-
 // spec/commits.md §5 (A thing's mintings travel with its record: logged only where no entry there
 // holds a minting of the same standing, the copies under a sync ID are its witness and its ties):
 // two durable mintings of T tie; one held there keeps the witness (the lower commit ID) unlogged
@@ -2103,7 +2080,7 @@ fn the_witness_is_logged_and_a_lower_copy_goes_spec_commits_5() {
 fn a_tie_held_keeps_the_witness_unlogged_spec_commits_5() {
     let mut w = W::new();
     w.g.own.insert((S, cid(2)), vec![peer_entry(12)]);
-    w.mintings(&[minting(1, true, End::Never, None), minting(2, true, End::Never, None)]);
+    w.mintings(&[minting(1, true, End::Never), minting(2, true, End::Never)]);
     assert_eq!(w.read.verdict(&S, &cid(1)), Some(Verdict::May));
     assert_eq!(w.read.verdict(&S, &cid(2)), Some(Verdict::May));
     w.exchange();
@@ -2115,81 +2092,13 @@ fn a_tie_held_keeps_the_witness_unlogged_spec_commits_5() {
     assert_eq!(w.logs(S, cid(1)), 1, "no tie held: the witness is logged");
 }
 
-// spec/commits.md §5 (A thing's mintings travel with its record: a lower copy goes only where an
-// entry holds a minting of the witness's standing expiring later (none: never), one lacking a
-// request ranks a minting no lower than one holding it does): T's durable copy, dropped here by a
-// request stamped at 50 a peer may lack, stands below the witness expiring at 100 and is kept; one
-// expiring at 80 instead goes.
-#[test]
-fn a_lower_copy_goes_only_below_a_later_expiry_spec_commits_5() {
-    let by = osis_engine::retention::Point { ts: osis_base::Ts::make(WallMs(50), 0).unwrap(), node: Tid::from_bytes([9; 15]), commit: cid(9) };
-    for (expires, goes) in [(None, false), (Some(80), true)] {
-        let mut w = W::new();
-        w.g.own.insert((S, cid(2)), vec![peer_entry(12)]);
-        w.mintings(&[minting(1, true, End::At(100, None), Some(100)), minting(2, true, End::At(50, Some(by)), expires)]);
-        assert_eq!(w.logs(S, cid(1)), 1, "the witness logged");
-        let want = if goes { Verdict::MustNot(Why::Superseded) } else { Verdict::May };
-        assert_eq!(w.read.verdict(&S, &cid(2)), Some(want), "expires {expires:?}");
-        assert_eq!(w.own_blobs(S, cid(2)).is_empty(), goes, "expires {expires:?}");
-    }
-}
-
-// spec/commits.md §5 (A thing's mintings travel with its record: a kept copy stands in for a
-// dropped one only if it cannot decide the thing's fate any earlier, so a lower copy goes only
-// below one whose purge rights are contained in its own): T's copy expiring at 80, purgeable by
-// `by` with actor `actor`, below its durable witness purgeable by the witness's set: it goes only
-// where whoever may purge the witness may purge it.
-#[test]
-fn a_lower_copy_goes_only_below_one_no_wider_to_purge_spec_commits_5() {
-    use osis_base::PurgeBy::*;
-    let (a, b) = (T, Tid::from_bytes([8; 15]));
-    let cases = [
-        ((Admin, a), (Admin, b), true),
-        ((AuthorOrAdmin, a), (Admin, a), false),
-        ((AuthorOrAdmin, a), (AuthorOrAdmin, a), true),
-        ((AuthorOrAdmin, a), (AuthorOrAdmin, b), false),
-        ((AuthorOrAdmin, a), (Writer, a), true),
-        ((Writer, a), (AuthorOrAdmin, a), false),
-        ((Writer, a), (Writer, b), false),
-        ((Writer, a), (Writer, a), true),
-    ];
-    for ((wby, wactor), (lby, lactor), goes) in cases {
-        let mut w = W::new();
-        w.g.own.insert((S, cid(2)), vec![peer_entry(12)]);
-        let witness = Minting { by: wby, actor: wactor, ..minting(1, true, End::Never, None) };
-        let lower = Minting { by: lby, actor: lactor, ..minting(2, true, End::At(80, None), Some(80)) };
-        w.mintings(&[witness, lower]);
-        assert_eq!(w.logs(S, cid(1)), 1, "the witness logged");
-        let want = if goes { Verdict::MustNot(Why::Superseded) } else { Verdict::May };
-        let case = format!("witness {wby:?} {wactor:?}, lower {lby:?} {lactor:?}");
-        assert_eq!(w.read.verdict(&S, &cid(2)), Some(want), "{case}");
-        assert_eq!(w.own_blobs(S, cid(2)).is_empty(), goes, "{case}");
-    }
-}
-
-// spec/commits.md §5 (A thing's mintings travel with its record: the lower copy goes only below
-// one expiring no earlier): T's copy value-less (a purge dropped it, held here) and durable,
-// below a witness expiring at 100, is kept; one expiring at 100 too goes.
-#[test]
-fn a_lower_copy_goes_below_an_expiry_no_earlier_spec_commits_5() {
-    for (expires, goes) in [(None, false), (Some(100), true), (Some(101), false)] {
-        let mut w = W::new();
-        w.g.own.insert((S, cid(2)), vec![peer_entry(12)]);
-        w.mintings(&[minting(1, true, End::At(100, None), Some(100)), minting(2, false, expires.map_or(End::Never, |x| End::At(x, None)), expires)]);
-        assert_eq!(w.logs(S, cid(1)), 1, "the witness logged");
-        let want = if goes { Verdict::MustNot(Why::Superseded) } else { Verdict::May };
-        assert_eq!(w.read.verdict(&S, &cid(2)), Some(want), "expires {expires:?}");
-        assert_eq!(w.own_blobs(S, cid(2)).is_empty(), goes, "expires {expires:?}");
-    }
-}
-
 // spec/commits.md §5 (A thing's mintings travel with its record: a copy of a destroyed thing's
 // witness a node logged before and that went is logged again while the sync ID needs the thing):
 // T destroyed (its one minting value-less), its witness's own entry gone, is logged again.
 #[test]
 fn a_destroyed_things_witness_that_went_is_logged_again_spec_commits_5() {
     let mut w = W::new();
-    w.mintings(&[minting(1, false, End::At(50, None), Some(50))]);
+    w.mintings(&[minting(1, false, End::At(50, None))]);
     assert_eq!(w.read.verdict(&S, &cid(1)), Some(Verdict::Must));
     assert_eq!(w.logs(S, cid(1)), 1);
     let b = w.own_blobs(S, cid(1))[0];
@@ -2204,7 +2113,7 @@ fn a_destroyed_things_witness_that_went_is_logged_again_spec_commits_5() {
 #[test]
 fn a_minting_copy_leaving_the_required_set_leaves_nothing_ranked_spec_commits_5() {
     let mut w = W::new();
-    w.mintings(&[minting(1, true, End::Never, None), minting(2, true, End::Never, None)]);
+    w.mintings(&[minting(1, true, End::Never), minting(2, true, End::Never)]);
     assert_eq!(w.read.mintings_ranked(), 2);
     for (c, left) in [(1, 1), (2, 0)] {
         w.g.bodies.insert(cid(c), Arc::new(BTreeMap::new()));

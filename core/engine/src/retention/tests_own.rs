@@ -121,8 +121,8 @@ fn forgotten_goes_with_its_thing_spec_commits_5() {
     let e = &mut lp.peers[0].engine;
     let me = e.me();
     let mut m = Mutation::new();
-    let t = e.new_thing(&mut m, me);
-    // the creating commit's expiry is its thing's (spec/commits.md §6)
+    // the creating commit's expiry is its thing's (spec/commits.md §5 Destruction)
+    let t = e.new_expiring_thing(&mut m, me, Some(osis_base::WallMs(T0.0 + 100_000)));
     m.set(t, &ak("x:b.0"), &Value::Int(0)).unwrap();
     m.expires_all(osis_base::WallMs(T0.0 + 100_000));
     e.commit(m).unwrap();

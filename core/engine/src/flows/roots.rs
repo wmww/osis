@@ -38,7 +38,7 @@ impl Engine {
     pub(crate) fn make_node_root(&mut self) -> Result<()> {
         let node = self.tid();
         self.run(|tx| {
-            let rec = crate::identity::thing_record(node, &mut *tx.rng);
+            let rec = crate::identity::thing_record(node, None, &mut *tx.rng);
             let root = rec.tid();
             tx.core.node_root = Some(root);
             tx.txn.put_local(records::NODE_ROOT, root.as_bytes(), Shred::No)?;

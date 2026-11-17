@@ -120,42 +120,28 @@ pub(crate) struct Mine<'a> {
     pub moved: &'a Stamped<CommitId, u64>,
 }
 
-/// A header-only copy of a minting under S whose closure lacks its thing, by its standing among
-/// the thing's held mintings (spec/commits.md §5 A thing's mintings travel with its record).
+/// A header-only copy of a minting under S whose closure lacks its thing, by its place among the
+/// thing's held mintings (spec/commits.md §5 A thing's mintings travel with its record).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum Mint {
     /// The witness, with no entry under S holding another minting of its standing: logged.
     Log,
     /// Kept where held, not logged.
     Keep,
-    /// Lower than the witness, where an entry under S holds a minting of the witness's standing
-    /// that may stand in for it: must-not-hold.
-    Gone,
 }
 
 /// Each minting of `ms` (a thing's held mintings) under S where `held` says which have an entry
-/// there: the witness is logged unless another minting of its standing is held there; one
-/// standing lower goes where a minting of the witness's standing that may stand in for it
-/// (`Minting::stands_in_for`) is held there; the rest are kept. One lacking a request ranks a
-/// minting no lower than one holding it does, so what is left reads the thing live while it is.
+/// there: the witness is logged unless another minting of its standing is held there; the rest
+/// are kept.
 pub(crate) fn rank(ms: &[Minting], mut held: impl FnMut(&CommitId) -> Result<bool>) -> Result<BTreeMap<CommitId, Mint>> {
     let mut out = BTreeMap::new();
     let Some(w) = osis_engine::retention::highest(ms) else { return Ok(out) };
-    let mut top = Vec::new();
-    for m in ms.iter().filter(|m| m.standing == w.standing) {
-        if held(&m.commit)? {
-            top.push(*m);
-        }
+    let mut tie = false;
+    for m in ms.iter().filter(|m| m.standing == w.standing && m.commit != w.commit) {
+        tie |= held(&m.commit)?;
     }
     for m in ms {
-        let v = if m.commit == w.commit {
-            if top.iter().any(|x| x.commit != m.commit) { Mint::Keep } else { Mint::Log }
-        } else if m.standing < w.standing && top.iter().any(|x| x.stands_in_for(m)) {
-            Mint::Gone
-        } else {
-            Mint::Keep
-        };
-        out.insert(m.commit, v);
+        out.insert(m.commit, if m.commit == w.commit && !tie { Mint::Log } else { Mint::Keep });
     }
     Ok(out)
 }
@@ -174,13 +160,12 @@ pub(crate) fn mintings(g: &mut impl Ground, metas: &Stamped<(SyncId, CommitId), 
 /// A header-only minting copy's verdict from its places among its things' mintings (`Mint`): the
 /// most any thing gives it; unjudged while a thing's is not settled.
 fn minted(mine: &Mine, s: &SyncId, c: &CommitId, meta: &BodyMeta) -> Verdict {
-    let mut v = Verdict::MustNot(Why::Superseded);
+    let mut v = Verdict::May;
     for t in &meta.mints {
         match mine.mints.get(&(*s, *c, *t)) {
             None => return Verdict::Unjudged,
             Some(Mint::Log) => v = Verdict::Must,
-            Some(Mint::Keep) if v != Verdict::Must => v = Verdict::May,
-            Some(_) => {}
+            Some(Mint::Keep) => {}
         }
     }
     v

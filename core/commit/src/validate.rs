@@ -85,6 +85,9 @@ impl Header {
                 return Err(Error::Invalid(m));
             } else if kind == Kind::ContentSnapshot && a.retention.by != PurgeBy::Writer {
                 return Err(Error::Invalid("compaction-snapshot delta not purgeable by writer"));
+            } else if ak == CREATED && a.retention.by != PurgeBy::Admin {
+                // only an admin destroys a thing (spec/commits.md §5 Destruction)
+                return Err(Error::Invalid("created.0 not purgeable by admin"));
             }
             // levels as listed (ascending, since keys sort by level first): exactly those the
             // retention calls for

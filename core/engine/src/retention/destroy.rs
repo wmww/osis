@@ -17,7 +17,7 @@ use crate::engine::records;
 use crate::engine::{Core, DropFor, Tx};
 use crate::error::Result;
 use crate::events::{Cause, Event};
-use osis_base::{Ak, CommitId, PurgeBy, Tid};
+use osis_base::{Ak, CommitId, Tid};
 use osis_commit::Header;
 use osis_perm::Point;
 use osis_store::Shred;
@@ -66,35 +66,13 @@ pub struct Standing {
     pub end: End,
 }
 
-/// A held minting of a thing: its commit, its standing, its commit's `expires` (`None`: never),
-/// and who may purge it: its retention's set and its header actor (spec/permissions.md §6).
+/// A held minting of a thing: its commit and its standing. Every minting carries the thing's
+/// record, so its expiry, and is purgeable by admins alone (spec/commits.md §5 Destruction): a
+/// node holds its mintings at one standing, but for the transaction one arrives in.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Minting {
     pub commit: CommitId,
     pub standing: Standing,
-    pub expires: Option<u64>,
-    pub by: PurgeBy,
-    pub actor: Tid,
-}
-
-impl Minting {
-    /// Whether this minting, kept, may stand in for `lower`, dropped (spec/commits.md §5, A thing's
-    /// mintings travel with its record): it cannot end before `lower` could. It expires no
-    /// earlier (`None`: never), and whoever may purge it may purge `lower`: `lower`'s set holds
-    /// the admins where this one's does, its author where this one's does with the same actor,
-    /// every writer where this one's does. No request ends one minting alone: the only purge
-    /// item on `created.0` is the whole aspect (`Header::validate`), so whatever ends this one ends
-    /// `lower`.
-    pub fn stands_in_for(&self, lower: &Minting) -> bool {
-        let expires = match (self.expires, lower.expires) {
-            (None, _) => true,
-            (Some(_), None) => false,
-            (Some(a), Some(b)) => a >= b,
-        };
-        let (k, d) = (self.by, lower.by);
-        let rights = (!k.admin() || d.admin()) && (!k.author() || (d.author() && self.actor == lower.actor)) && (!k.writer() || d.writer());
-        expires && rights
-    }
 }
 
 /// `t`'s destruction (spec/commits.md §5 Destruction): the end of its witness, the point by which
@@ -122,8 +100,6 @@ impl Destruction {
 struct Held {
     at: (CommitId, usize),
     expires: Option<u64>,
-    class: PurgeBy,
-    actor: Tid,
     by: Vec<Point>,
 }
 
@@ -144,7 +120,7 @@ fn per_minting(core: &Core, t: &Tid) -> Vec<Held> {
         let m = core.ix.commits.get(&c)?;
         let a = m.header.aspects.get(ai)?;
         let by = requests.iter().filter(|(pc, p)| super::purge::stands(core, p, pc, a, &m.header, &c)).map(|(pc, p)| Point { ts: p.ts, node: p.author, commit: *pc }).collect();
-        Some(Held { at: (c, ai), expires: m.header.expires, class: a.retention.by, actor: m.header.actor, by })
+        Some(Held { at: (c, ai), expires: m.header.expires, by })
     });
     held.collect()
 }
@@ -154,10 +130,10 @@ fn per_minting(core: &Core, t: &Tid) -> Vec<Held> {
 pub fn mintings(core: &Core, t: &Tid) -> Vec<Minting> {
     let per = per_minting(core, t);
     per.into_iter()
-        .map(|Held { at: (commit, ai), expires, class, actor, by }| {
+        .map(|Held { at: (commit, ai), expires, by }| {
             let expiry = expires.map_or(End::Never, |x| End::At(x, None));
             let request = by.into_iter().min().map_or(End::Never, |p| End::At(p.ts.wall_ms().0, Some(p)));
-            Minting { commit, standing: Standing { valued: !core.minting_gone(&commit, ai), end: expiry.min(request) }, expires, by: class, actor }
+            Minting { commit, standing: Standing { valued: !core.minting_gone(&commit, ai), end: expiry.min(request) } }
         })
         .collect()
 }
@@ -178,7 +154,7 @@ pub fn highest(ms: &[Minting]) -> Option<Minting> {
 
 /// The held requests standing over a minting of `t` (spec/commits.md §5 Destruction): with its
 /// witness, what tells another node `t` was destroyed, a node holding an earlier witness too. Only
-/// a right holder makes one: an admin, or a writer for its own minting or for one of class `writer`.
+/// a right holder makes one: an admin.
 pub(crate) fn destroying_requests(core: &Core, t: &Tid) -> BTreeSet<CommitId> {
     per_minting(core, t).into_iter().flat_map(|h| h.by).map(|p| p.commit).collect()
 }

@@ -485,7 +485,7 @@ fn a_forged_record_in_a_record_blob_names_no_other_thing_spec_wire_3() {
     let real = lp.peers[0].engine.core.created(&u).cloned().unwrap();
     assert!(lp.peers[1].engine.core.created(&u).is_none(), "u not spread");
     let osis_base::CreationRecord::Thing { nonce, .. } = real.clone() else { panic!() };
-    let forged = osis_base::CreationRecord::Thing { admin: lp.peers[1].engine.tid(), nonce, link: None };
+    let forged = osis_base::CreationRecord::Thing { admin: lp.peers[1].engine.tid(), nonce, link: None, expires: None };
     assert_ne!(forged.tid(), u);
     let (id, blob, wrap) = record_blob_by_hand(&mut lp, 0, &d, std::slice::from_ref(&forged));
     match lp.peers[1].engine.open_entry(&ds, &id, &wrap, &blob, u64::MAX).unwrap() {
@@ -520,7 +520,7 @@ fn junk_records(n: usize) -> (usize, usize, usize, bool) {
     let a = lp.peers[0].engine.account().unwrap().unwrap().0;
     let u = thing_of(&mut lp, 0, a);
     let real = lp.peers[0].engine.core.created(&u).cloned().unwrap();
-    let junk: Vec<osis_base::CreationRecord> = (0..n).map(|i| osis_base::CreationRecord::Thing { admin: a, nonce: { let mut x = [9u8; 32]; x[..8].copy_from_slice(&(i as u64).to_be_bytes()); x }, link: None }).collect();
+    let junk: Vec<osis_base::CreationRecord> = (0..n).map(|i| osis_base::CreationRecord::Thing { admin: a, nonce: { let mut x = [9u8; 32]; x[..8].copy_from_slice(&(i as u64).to_be_bytes()); x }, link: None, expires: None }).collect();
     let known = |lp: &LocalPeer| junk.iter().filter(|r| lp.peers[1].engine.core.created(&r.tid()).is_some()).count();
     let (jb, jbytes, jwrap) = record_blob_by_hand(&mut lp, 0, &d, &junk);
     let (gb, gbytes, gwrap) = record_blob_by_hand(&mut lp, 0, &d, std::slice::from_ref(&real));

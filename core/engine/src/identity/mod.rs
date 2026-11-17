@@ -57,13 +57,14 @@ pub fn key_actor_tid(seed: &Secret32) -> Tid {
 
 /// A fresh record for a link's actor K of `admin`, made for `target` (spec/permissions.md §7).
 pub fn link_record(admin: Tid, target: Tid, rng: &mut dyn CryptoRngCore) -> CreationRecord {
-    let CreationRecord::Thing { nonce, .. } = thing_record(admin, rng) else { unreachable!() };
-    CreationRecord::Thing { admin, nonce, link: Some(target) }
+    let CreationRecord::Thing { nonce, .. } = thing_record(admin, None, rng) else { unreachable!() };
+    CreationRecord::Thing { admin, nonce, link: Some(target), expires: None }
 }
 
-/// A fresh record for a thing whose first admin is `admin` (32 random nonce bytes).
-pub fn thing_record(admin: Tid, rng: &mut dyn CryptoRngCore) -> CreationRecord {
+/// A fresh record for a thing whose first admin is `admin` (32 random nonce bytes), ending at
+/// `expires` (wall ms; `None`: never).
+pub fn thing_record(admin: Tid, expires: Option<u64>, rng: &mut dyn CryptoRngCore) -> CreationRecord {
     let mut nonce = [0u8; 32];
     rng.fill_bytes(&mut nonce);
-    CreationRecord::Thing { admin, nonce, link: None }
+    CreationRecord::Thing { admin, nonce, link: None, expires }
 }

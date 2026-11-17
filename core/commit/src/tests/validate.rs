@@ -161,6 +161,13 @@ fn validate_nobody_and_commit_expiry() {
     // a minting too (spec/commits.md §5 Destruction: admins may always purge)
     x.aspects[0].ak = Ak::new("created.0").unwrap();
     assert!(invalid(&x).to_string().contains("nobody"), "{}", invalid(&x));
+    // and a minting is purgeable by admins alone (spec/commits.md §5 Destruction)
+    for by in [PurgeBy::AuthorOrAdmin, PurgeBy::Writer] {
+        let mut y = h.clone();
+        y.aspects[0].ak = Ak::new("created.0").unwrap();
+        y.aspects[0].retention = Retention { by };
+        assert!(invalid(&y).to_string().contains("created.0 not purgeable by admin"), "{by:?}: {}", invalid(&y));
+    }
     let mut rec = b.clone();
     rec.ak = Ak::new("retention^.0").unwrap();
     rec.retention = retention::KEPT_RETENTION;

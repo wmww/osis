@@ -75,8 +75,8 @@ pub(crate) enum WriteOp {
 /// Writes that become one commit (two: below), all or nothing. Reads meanwhile do not see them. What cannot share
 /// a commit fails `commit` with `Invalid`, naming what clashed; writing it as several commits is up
 /// to the app:
-/// - A commit has one expiry: `expires`, else what its keys say, which must then agree. A thing
-///   created in an expiring commit is destroyed at that expiry, whole.
+/// - A commit has one expiry: `expires`, else that of a thing it creates (`create`), else what
+///   its keys say, which must then agree.
 /// - A commit is durable or ephemeral (keys marked `+`; a purge is durable whatever it names), and
 ///   an ephemeral signal (keys marked `+~`) is a commit of its own. A new thing is durable, so ephemeral writes on it go in a later commit.
 ///
@@ -302,6 +302,11 @@ impl<'d> Write<'d> {
     /// this actor may write (`Permission` at commit otherwise). The first admin is an ordinary
     /// admin, removable like any other (spec/permissions.md §1).
     ///
+    /// With `expires` the thing ends then, whole, at every node, and nothing can keep it longer:
+    /// the expiry is part of what makes its tid. This commit expires with it, so its other writes
+    /// go then too (`Invalid` at once when the time is not in the future, and at commit beside
+    /// another expiry).
+    ///
     /// Under a thing (usually the one that holds it) it is plain: whoever reads that thing reads
     /// it, and it costs its record and content alone. Under an account (`me()`) it gets keys of
     /// its own at once, about ten times the bytes and work; a plain thing gets them only at its
@@ -311,9 +316,10 @@ impl<'d> Write<'d> {
     /// The same write must hold it: a strong to it from a thing this node holds (the account
     /// root's `holds.0` for an account-wide thing), else the commit is `Invalid`. It syncs with
     /// what holds it.
-    pub fn create(&mut self, admin: Tid) -> Result<Tid> {
+    pub fn create(&mut self, admin: Tid, expires: Option<Expiry>) -> Result<Tid> {
         let admin = self.known(admin)?;
-        let rec = self.db.engine(|e| e.thing_record(admin));
+        let at = expires.map(|e| expiry_at(self.db, e)).transpose()?;
+        let rec = self.db.engine(|e| e.thing_record(admin, at.map(|t| osis_base::WallMs(t.0))));
         let t = rec.tid();
         self.ops.push(WriteOp::Create(rec));
         self.created.push(t);
@@ -342,8 +348,7 @@ impl<'d> Write<'d> {
     /// ignores what is written on it later. It cannot be undone. What depends on it
     /// lives on: rights others held through it stand as they were, and what a destroyed account
     /// signed still verifies. Only an admin of the thing may purge it (`Permission` otherwise); an
-    /// account purges itself. An expiring commit that creates a thing destroys it the same way when
-    /// it expires.
+    /// account purges itself. A thing created with an expiry is destroyed the same way then.
     pub fn purge(&mut self, tid: Tid) -> Result<()> {
         let t = self.known(tid)?;
         self.ops.push(WriteOp::PurgeThing(t));
@@ -392,7 +397,15 @@ impl<'d> Write<'d> {
             return db.remote_write(&at, self.wire()?);
         }
         let limit = db.inner.limit;
-        let expires = self.expires.map(|e| expiry_at(db, e)).transpose()?;
+        // a thing made here expiring sets the commit's expiry, which `expires` must then agree with
+        let made = self.ops.iter().find_map(|o| match o {
+            WriteOp::Create(r) => r.expires().map(Time),
+            _ => None,
+        });
+        let expires = match (self.expires.map(|e| expiry_at(db, e)).transpose()?, made) {
+            (Some(a), Some(b)) if a != b => return Err(Error::Invalid(format!("this write creates a thing expiring at {}, and expires at {}: a commit has one expiry", b.0, a.0))),
+            (a, b) => a.or(b),
+        };
         let r = db.locked(|l| {
             // the source invariant's second half: under the lock this commit takes, every thing it
             // writes is still this engine's. A write decided Local before a move fails here, never

@@ -39,11 +39,15 @@ fn list_reader_bounds() {
     assert_eq!(read_list(&mins, &d, &mut m, MAX_LIST_BYTES).unwrap().len(), 4 * min.len());
 }
 
-// spec/commits.md §5, §6: `created.0` has ordinary retention, so its commit may expire.
+// spec/commits.md §5 Destruction, §6: `created.0` is `admin` and no fixed retention, so its
+// commit may expire (with its record).
 #[test]
 fn created_may_expire_spec_commits_6() {
     let mut h = sample_header();
     h.aspects[0].ak = Ak::new("created.0").unwrap();
+    h.aspects[0].retention = Retention { by: PurgeBy::Admin };
+    h.aspects[0].keys = vec![0];
+    h.keys.truncate(1);
     h.expires = Some(h.ts.wall_ms().0 + 1);
     h.validate().unwrap();
 }

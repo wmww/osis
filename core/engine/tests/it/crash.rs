@@ -345,7 +345,7 @@ fn a_write_failing_past_the_closures_settle_leaves_it_followed() {
         m
     };
     let mut m = Mutation::new();
-    let rec = e.thing_record(d);
+    let rec = e.thing_record(d, None);
     let x = m.create(rec.clone());
     let y = m.create(rec);
     m.op(d, &ct::HOLDS, PathOp { path: vec![], op: Op::Add(Value::Strong(x)) }).unwrap();

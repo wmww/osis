@@ -5,8 +5,8 @@
 //! `check_request`). It goes once no held snapshot of the aspect carries a write stamped with it:
 //! a held snapshot leaving (`atomic::forget_snapshot`) or the commit held again marks the aspect
 //! (`Core::forgotten_names_due`), judged at the transaction's end (`settle_due`). Only a
-//! value-carrying write keeps one: a purge acts on values alone, so a removal's tombstone keeps
-//! none. So names are bounded by the live values held snapshots carry; a dead write's goes with
+//! value-carrying write not past its expiry keeps one: a purge acts on values alone, so a
+//! removal's tombstone keeps none, nor an expired write held value-less. So names are bounded by the live values held snapshots carry; a dead write's goes with
 //! the last snapshot holding it. Durable rows `records::FORGOTTEN_NAMES`; an ephemeral aspect's in memory, as its
 //! data.
 //!
@@ -85,7 +85,8 @@ fn key(tid: &Tid, ak: &Ak, c: &CommitId) -> Vec<u8> {
 /// snapshot is held (one may carry them; `settle_due` keeps it only if one does).
 pub(crate) fn note(tx: &mut Tx<'_>, id: &CommitId) -> Result<()> {
     let Some(h) = tx.core.ix.commits.get(id).map(|m| m.header.clone()) else { return Ok(()) };
-    if !h.kind.has_own_writes() {
+    // past its expiry a write has no value for a purge to act on
+    if !h.kind.has_own_writes() || h.expires.is_some_and(|t| t <= tx.now().0) {
         return Ok(());
     }
     let src = h.form.own_source(h.author, *id);
@@ -153,8 +154,9 @@ pub(crate) fn settle_due(tx: &mut Tx<'_>) -> Result<()> {
             continue;
         }
         let carried = carried(tx, &tid, &ak)?;
+        let now = tx.now().0;
         for (c, n) in names {
-            if tx.core.ix.commits.contains_key(&c) || !carried.contains(&(n.ts, n.src.clone())) {
+            if tx.core.ix.commits.contains_key(&c) || !carried.contains(&(n.ts, n.src.clone())) || n.expires.is_some_and(|t| t <= now) {
                 drop_name(tx, &tid, &ak, &c)?;
             }
         }

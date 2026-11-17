@@ -339,7 +339,7 @@ fn create_link_in(tx: &mut Tx<'_>, sharer: Tid, spec: &LinkSpec, l: Tid, seed: &
     // (spec/permissions.md §7)
     let d = tx.core.account_and_root().map(|(_, d)| d).ok_or(Error::Misuse("not a node of an account"))?;
     let mut m = Mutation::new();
-    let keep = m.create(crate::identity::thing_record(d, &mut *tx.rng));
+    let keep = m.create(crate::identity::thing_record(d, None, &mut *tx.rng));
     for t in [keep, k] {
         m.op(d, &ct::HOLDS, PathOp { path: Vec::new(), op: Op::Add(Value::Strong(t)) })?;
     }

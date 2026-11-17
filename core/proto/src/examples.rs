@@ -155,7 +155,7 @@ pub fn messages() -> Vec<(&'static str, Msg)> {
                 id: 30,
                 sync_id: l,
                 holder: Tid::from_bytes([0x0d; 15]),
-                keys: osis_blob::HolderKeys { commits: vec![Value::List(vec![Value::List(vec![]), Value::Int(1), Value::List(vec![])])], records: vec![CreationRecord::Thing { admin: Tid::from_bytes([0x0e; 15]), nonce: [0x0f; 32], link: None }] },
+                keys: osis_blob::HolderKeys { commits: vec![Value::List(vec![Value::List(vec![]), Value::Int(1), Value::List(vec![])])], records: vec![CreationRecord::Thing { admin: Tid::from_bytes([0x0e; 15]), nonce: [0x0f; 32], link: None, expires: None }] },
             },
         ),
         ("suspect", Msg::Suspect { id: 31, sync_id: l, entries: vec![SuspectEntry { thing: Tid::from_bytes([0x0c; 15]), ak: osis_base::Ak::new("t:reg.0").expect("an AK"), digest: [0x0d; 16] }] }),

@@ -388,6 +388,9 @@ pub struct CreateArgs {
     /// Bind $NAME to the new tid (write scripts)
     #[arg(long = "as", value_name = "NAME")]
     pub as_: Option<String>,
+    /// The thing ends then, whole, and its commit with it
+    #[command(flatten)]
+    pub e: ExpiryFlags,
     /// AK VALUE pairs
     #[arg(value_name = "AK VALUE", allow_hyphen_values = true)]
     pub pairs: Vec<String>,

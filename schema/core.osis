@@ -22,12 +22,15 @@ type signing_key = enum {
 /// `link`, only beside `admin`: the thing is a share link's actor, made for this target.
 /// `account`, only ever set to true and only beside `key`: the thing is an account, whose keys
 /// change by rotations (spec/crypto.md §9).
+/// `expires`, only beside `admin`: the wall ms the thing ends at, whole, whatever any later
+/// creation of it says.
 type creation = struct {
     admin 0: weak,
     key 1: signing_key,
     nonce 2: blob,
     link 3: weak,
     account 4: bool,
+    expires 5: timestamp,
 };
 
 guaranteed aspect created.0: creation;

@@ -84,7 +84,7 @@ pub fn check_views(d: &Data) -> Vec<String> {
     let other = {
         let mut w = d.db.write();
         let home = d.home().unwrap();
-        let t = w.create(home).unwrap();
+        let t = w.create(home, None).unwrap();
         w.hold(home, t).unwrap();
         w.commit().unwrap();
         t

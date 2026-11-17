@@ -898,7 +898,7 @@ mod tests {
     use osis_perm::{Edge, EdgeOp};
 
     fn thing(admin: Tid, n: u8) -> CreationRecord {
-        CreationRecord::Thing { admin, nonce: [n; 32], link: None }
+        CreationRecord::Thing { admin, nonce: [n; 32], link: None, expires: None }
     }
     fn actor(n: u8) -> CreationRecord {
         CreationRecord::KeyActor { alg: 1, public_key: vec![n; 32], nonce: [n; 32], account: false }

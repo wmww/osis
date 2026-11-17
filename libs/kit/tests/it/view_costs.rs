@@ -119,7 +119,7 @@ mod rows {
         let g = d.home().unwrap();
         let mut x = d.db.write();
         for i in 0..n {
-            let t = x.create(g).unwrap();
+            let t = x.create(g, None).unwrap();
             x.at(t, NAME).set(&format!("note {i:04}")).unwrap();
             x.hold(g, t).unwrap();
             x.hold(tag, t).unwrap();

@@ -402,7 +402,7 @@ fn a_reader_receives_a_part_whose_cover_was_covered_whole_spec_sync_judgement_2(
     let (t, c) = w.write(1, |e| {
         let d = e.account_root().unwrap();
         let mut m = Mutation::new();
-        let t = m.create(e.thing_record(d));
+        let t = m.create(e.thing_record(d, None));
         m.set(t, &value_ak(), &Value::Str("v0".into())).unwrap();
         m.op(d, &ct::HOLDS, osis_crdt::PathOp { path: Vec::new(), op: osis_crdt::Op::Add(Value::Strong(t)) }).unwrap();
         (t, e.commit(m).unwrap().unwrap())
@@ -437,7 +437,7 @@ fn a_reader_counts_a_stripped_part_covered_by_its_covers_cover_spec_crdt_8() {
     let (t, c) = w.write(1, |e| {
         let d = e.account_root().unwrap();
         let mut m = Mutation::new();
-        let t = m.create(e.thing_record(d));
+        let t = m.create(e.thing_record(d, None));
         let x: ct::RetentionSetting = [(value_ak(), ct::RetentionEntry { history: Some(osis_schema::History::PurgeOnReplace), ..Default::default() })].into_iter().collect();
         m.set(t, &ct::RETENTION, &x).unwrap();
         m.set(t, &value_ak(), &Value::Str("v0".into())).unwrap();

@@ -3153,12 +3153,12 @@ fn inflated_snapshot_claims_count_nothing_spec_crdt_8() {
 /// A content commit signed by peer `by`'s key carrying only `created.0` of `rec`'s thing at `ts`,
 /// its delta `ops` run from counter `lo` (the record's view, else untyped), purgeable by `admin`.
 fn forge_created(lp: &mut LocalPeer, by: usize, rec: &osis_base::CreationRecord, ts: osis_base::Ts, lo: u64, ops: &[osis_crdt::PathOp], typed: bool) -> Result<Vec<u8>, String> {
-    forge_minting(lp, by, rec, ts, lo, ops, typed, osis_schema::Retention::default())
+    forge_minting(lp, by, rec, ts, lo, ops, typed, osis_schema::Retention::default(), rec.expires())
 }
 
-/// `forge_created` with retention `retention`.
+/// `forge_created` with retention `retention`, in a commit expiring at `expires`.
 #[allow(clippy::too_many_arguments)]
-fn forge_minting(lp: &mut LocalPeer, by: usize, rec: &osis_base::CreationRecord, ts: osis_base::Ts, lo: u64, ops: &[osis_crdt::PathOp], typed: bool, retention: osis_schema::Retention) -> Result<Vec<u8>, String> {
+fn forge_minting(lp: &mut LocalPeer, by: usize, rec: &osis_base::CreationRecord, ts: osis_base::Ts, lo: u64, ops: &[osis_crdt::PathOp], typed: bool, retention: osis_schema::Retention, expires: Option<u64>) -> Result<Vec<u8>, String> {
     use osis_commit::{AspectWrite, CommitBuilder, Kind, MemoryBlobs, writer_ctx};
     use osis_crdt::{DeltaBuilder, Delta, Writer, encode_delta};
     let view = osis_schema::core_schema().view("created.0").unwrap();
@@ -3175,20 +3175,75 @@ fn forge_minting(lp: &mut LocalPeer, by: usize, rec: &osis_base::CreationRecord,
     aw.retention = retention;
     let mut cb = CommitBuilder::new(Kind::Content, ts, author, author, form);
     cb.aspects.push(aw);
+    cb.expires = expires;
     let forge_key = lp.peers[by].engine.sign_forged(&mut cb);
     Ok(cb.build(&forge_key, &Dedup(rec.clone()), &mut MemoryBlobs::default(), &mut osis_crypto::SeededRng::from_u64(0)).map_err(|e| format!("{e:?}"))?.commit.encode())
 }
 
-// spec/commits.md §5 (Destruction: an admin's request on `created.0` drops every minting, as
-// `nobody` is fixed retention's alone and bad on a minting), spec/requirements.md (purging a
-// thing's creation destroys it): Bob, a writer holding x's record, mints x again by
-// every purgeable-by; Alice, x's admin, purges x's creation, and x is destroyed at her node
-// whatever Bob's minting said.
-#[test]
-fn no_minting_keeps_a_thing_from_its_admins_purge_spec_commits_5() {
-    use osis_base::PurgeBy;
+/// Bob's minting of `rec` at peer 1, stamped `k` ms from now: one write setting the record,
+/// purgeable by `by`, in a commit expiring at `expires`.
+fn reminting(lp: &mut LocalPeer, rec: &osis_base::CreationRecord, k: u64, lo: u64, by: osis_base::PurgeBy, expires: Option<u64>) -> Vec<u8> {
     use osis_crdt::{Op, PathOp};
-    for by in PurgeBy::ALL {
+    let ts = osis_base::Ts::make(WallMs(lp.peers[1].engine.now().0 + k), 0).unwrap();
+    forge_minting(lp, 1, rec, ts, lo, &[PathOp { path: Vec::new(), op: Op::Set(rec.to_value()) }], true, osis_schema::Retention { by }, expires).unwrap()
+}
+
+/// Peer 0's purge of `x`'s creation.
+fn destroy(lp: &mut LocalPeer, x: Tid) -> osis_base::CommitId {
+    let e = &mut lp.peers[0].engine;
+    let mut m = Mutation::new();
+    let now = e.now();
+    m.set(x, &osis_schema::core_types::PURGE, &now).unwrap();
+    m.purge(osis_commit::PurgeItem::Aspect { tid: x, ak: osis_schema::core_types::CREATED.name() });
+    e.commit(m).unwrap().unwrap()
+}
+
+// spec/commits.md §5 (Destruction: a commit carrying a minting expires exactly at its record's
+// `expires`; a minting never restores a thing), spec/requirements.md (data may carry an expiry at
+// which every node drops it): Alice makes x expiring at T, so its record carries T. Bob, a
+// writer holding the record, mints x again in a commit that does not expire or expires later,
+// before T and after it: each is refused, and x is gone at T and stays gone. A minting expiring
+// at T applies and changes nothing.
+#[test]
+fn a_minting_never_extends_an_expiring_thing_spec_commits_5() {
+    use osis_base::PurgeBy::Admin;
+    let (mut lp, d, _, _) = setup();
+    let t = lp.peers[0].engine.now().0 + 10_000;
+    let mut m = Mutation::new();
+    let x = m.create(lp.peers[0].engine.thing_record(d, Some(WallMs(t))));
+    lp.peers[0].engine.hold_where_it_lives(&mut m, x, d);
+    m.set(x, &REG, &s("x")).unwrap();
+    m.expires_all(WallMs(t));
+    lp.peers[0].commit(m).unwrap().unwrap();
+    lp.sync_all().unwrap();
+    let rec = lp.peers[1].engine.get_typed(&x, &osis_schema::core_types::CREATED).unwrap().unwrap();
+    assert_eq!(rec.expires(), Some(t), "the record carries the expiry");
+    let applied = |lp: &mut LocalPeer, b: &[u8]| matches!(lp.peers[0].receive(b, Vec::new()), Ok(Ingested::Applied(_)));
+    for (lo, expires) in [(9000, None), (9100, Some(t + 1_000_000))] {
+        let b = reminting(&mut lp, &rec, 1, lo, Admin, expires);
+        assert!(!applied(&mut lp, &b), "expires {expires:?}: refused before T");
+    }
+    let same = reminting(&mut lp, &rec, 2, 9200, Admin, Some(t));
+    assert!(applied(&mut lp, &same), "a minting expiring with its record applies");
+    lp.advance(10_001);
+    lp.peers[0].tick().unwrap();
+    assert!(!lp.peers[0].engine.knows(&x), "x gone at T");
+    let b = reminting(&mut lp, &rec, 1, 9300, Admin, None);
+    assert!(!applied(&mut lp, &b), "refused after T");
+    lp.peers[0].tick().unwrap();
+    assert!(!lp.peers[0].engine.knows(&x), "x stays gone");
+}
+
+// spec/commits.md §5 (Destruction: a minting never restores a thing: while it is destroyed a
+// minting of it is a part on an unknown thing), spec/requirements.md (purging a thing's creation
+// destroys it): Bob, a writer holding x's record, mints x again, stamped before or after Alice
+// destroys x, arriving at Carol before or after Alice's request.
+// x is destroyed at every node in both orders, and a minting arriving while it is destroyed waits
+// as a part on an unknown thing, never applied.
+#[test]
+fn a_minting_never_restores_a_destroyed_thing_spec_commits_5() {
+    use osis_base::PurgeBy;
+    for first in [false, true] {
         let (mut lp, d, _, _) = setup();
         let mut m = Mutation::new();
         let x = lp.peers[0].engine.new_thing(&mut m, d);
@@ -3196,20 +3251,25 @@ fn no_minting_keeps_a_thing_from_its_admins_purge_spec_commits_5() {
         lp.peers[0].commit(m).unwrap().unwrap();
         lp.sync_all().unwrap();
         let rec = lp.peers[1].engine.get_typed(&x, &osis_schema::core_types::CREATED).unwrap().unwrap();
-        let ts = osis_base::Ts::make(WallMs(lp.peers[1].engine.now().0 + 1), 0).unwrap();
-        // a `nobody` one builds no commit (osis-commit's `validate_nobody_and_commit_expiry`: one
-        // arriving is bad input)
-        if let Ok(again) = forge_minting(&mut lp, 1, &rec, ts, 9000, &[PathOp { path: Vec::new(), op: Op::Set(rec.to_value()) }], true, osis_schema::Retention { by }) {
-            assert!(matches!(lp.peers[0].receive(&again, Vec::new()), Ok(Ingested::Applied(_))), "{by:?}: the minting applies");
-        }
+        let before = reminting(&mut lp, &rec, 1, 9000, PurgeBy::Admin, None);
         lp.advance(1_000);
-        let e = &mut lp.peers[0].engine;
-        let mut m = Mutation::new();
-        let now = e.now();
-        m.set(x, &osis_schema::core_types::PURGE, &now).unwrap();
-        m.purge(osis_commit::PurgeItem::Aspect { tid: x, ak: osis_schema::core_types::CREATED.name() });
-        e.commit(m).unwrap().unwrap();
-        assert!(!lp.peers[0].engine.knows(&x), "{by:?}: x destroyed");
+        let q = destroy(&mut lp, x);
+        let after = reminting(&mut lp, &rec, 1, 9100, PurgeBy::Admin, None);
+        if first {
+            assert!(matches!(lp.peers[2].receive(&before, Vec::new()), Ok(Ingested::Applied(_))), "live: a minting applies");
+            send(&mut lp, 0, 2, &[q]);
+        } else {
+            send(&mut lp, 0, 2, &[q]);
+            assert!(matches!(lp.peers[2].receive(&before, Vec::new()), Ok(Ingested::Pending(_, osis_engine::Reason::UnknownCreated(_)))), "destroyed: a minting stamped before waits");
+        }
+        assert!(matches!(lp.peers[2].receive(&after, Vec::new()), Ok(Ingested::Pending(_, osis_engine::Reason::UnknownCreated(_)))), "first {first}: destroyed, a minting stamped after waits");
+        for b in [&before, &after] {
+            let _ = lp.peers[0].receive(b, Vec::new());
+        }
+        lp.sync_all().unwrap();
+        for i in 0..3 {
+            assert!(!lp.peers[i].engine.knows(&x), "first {first}: x destroyed at peer {i}");
+        }
     }
 }
 

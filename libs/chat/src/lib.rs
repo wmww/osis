@@ -68,7 +68,7 @@ pub fn create(db: &Osis, o: &Options, holder: Tid) -> Result<Tid> {
     let msg = RetentionEntry { history: Some(History::FOREVER), expires: o.disappear, refuse_replace: o.edit.is_none() };
     let setting = RetentionSetting { rules: BTreeMap::from([(MSG.name(), msg)]), default: None, retain_copies: o.retain_copies, history_holds_targets: false };
     let mut w = db.write();
-    let c = w.create(holder)?;
+    let c = w.create(holder, None)?;
     w.at(c, RETENTION).set(&setting)?;
     w.at(c, SETTINGS).set(&schema::Settings { name: o.name.clone(), edit: o.edit.clone().unwrap_or(EditMode::Purge), purge })?;
     w.hold(holder, c)?;

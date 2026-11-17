@@ -22,7 +22,7 @@ impl Account for Small {
         }
         let mut w = db.write();
         let root = db.account_root();
-        let t = w.create(root)?;
+        let t = w.create(root, None)?;
         // its strongs are what undoing a delete writes back
         keep_a_day(&mut w, t)?;
         w.hold(root, t)?;
@@ -52,7 +52,7 @@ fn kit_alone_opens_things() {
     assert_eq!(view_type(&d, t), "note");
     let g = d.home().unwrap();
     let mut w = d.db.write();
-    let u = w.create(g).unwrap();
+    let u = w.create(g, None).unwrap();
     w.hold(g, u).unwrap();
     w.at(u, osis::DynamicAspectKey::untyped(osis::Ak::new("x:y.0").unwrap())).set(&osis::Value::Int(1)).unwrap();
     w.commit().unwrap();

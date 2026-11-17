@@ -444,7 +444,7 @@ fn own_rounds(w: &mut World, rounds: usize) -> Held {
             let mut ts = Vec::new();
             for from in [d, root] {
                 let mut m = Mutation::new();
-                let t = m.create(e.thing_record(from));
+                let t = m.create(e.thing_record(from, None));
                 strong(&mut m, from, t, true);
                 e.commit(m).unwrap();
                 ts.push((t, from));
@@ -601,6 +601,56 @@ fn releasing_own_things_returns_storage_to_a_fresh_nodes_spec_sync_set_3() {
     assert_eq!(a.0.get("cv/"), b.0.get("cv/"), "cv/ flat");
 }
 
+/// Node 0 makes a thing under its account root D expiring a second later, held from D and
+/// written in the same commit (a disappearing message), and lets it expire, `rounds` times; then
+/// as `own_rounds` ends.
+fn expiry_rounds(w: &mut World, rounds: usize) -> Held {
+    use osis_schema::core_types::{HOLDS, TICKETS};
+    let (root, d) = (w.engine(0).node_root().unwrap(), w.engine(0).account_root().unwrap());
+    for _ in 0..rounds {
+        let t = w.write(0, |e| {
+            let at = osis_base::WallMs(e.now().0 + 1_000);
+            let mut m = Mutation::new();
+            let t = m.create(e.thing_record(d, Some(at)));
+            m.op(d, &HOLDS, osis_crdt::PathOp { path: vec![], op: osis_crdt::Op::Add(Value::Strong(t)) }).unwrap();
+            m.set(t, &value_ak(), &Value::Str("brief".into())).unwrap();
+            m.expires_all(at);
+            e.commit(m).unwrap();
+            t
+        });
+        w.run();
+        w.advance(2_000);
+        w.run();
+        assert!(!w.engine(0).knows(&t), "expired");
+    }
+    w.write(0, |e| {
+        for (t, ak) in [(d, HOLDS.name()), (d, TICKETS.name()), (root, HOLDS.name())] {
+            e.snapshot(&t, &ak).unwrap();
+        }
+    });
+    w.run();
+    w.advance(TOMBSTONE_LIFETIME_MS + 2 * DAY_MS);
+    w.run();
+    held(w, 0)
+}
+
+// S1, its expiry arm, spec/commits.md §5 (Destruction: a thing goes by ordinary expiry at its
+// record's; Forgetting: a part not held on a thing whose record is not held, a forgotten name
+// past its expiry), spec/requirements.md (data may carry an expiry at which every node drops it):
+// a thing made to expire with its holding strong, written and expired, leaves its rows and blobs
+// as a fresh node's of the same account, at 2 and 20 rounds: but the expired strongs in D's
+// snapshot, a few bytes each.
+#[test]
+fn expired_things_return_storage_to_a_fresh_nodes_spec_commits_5() {
+    let (mut wf, mut wa, mut wb) = (world(0, 1), world(0, 1), world(0, 1));
+    let fresh = expiry_rounds(&mut wf, 0);
+    let (a, b) = (expiry_rounds(&mut wa, 2), expiry_rounds(&mut wb, 20));
+    // Interim (issues/expired-elements-stay.md): each expired strong stays in D's holds.0
+    // snapshot as a value-less record, about two removals' tombstones of bytes
+    as_fresh(&a, &fresh, 2 * 2, "2 rounds", &mut |f| leaked(&mut wa, 0, &mut wf, 0, f));
+    as_fresh(&b, &fresh, 2 * 20, "20 rounds", &mut |f| leaked(&mut wb, 0, &mut wf, 0, f));
+}
+
 /// Node 0 makes A under its account root, keeping 10 minutes of history whose strongs hold
 /// their targets (`history_holds_targets`), and B, held by A alone: A's strong to B is removed
 /// (B held by A's history), then the root's to A. `rounds` times; then as `own_rounds` ends.
@@ -617,14 +667,14 @@ fn history_rounds(w: &mut World, rounds: usize) -> Held {
     for _ in 0..rounds {
         let (a, b) = w.write(0, |e| {
             let mut m = Mutation::new();
-            let a = m.create(e.thing_record(d));
+            let a = m.create(e.thing_record(d, None));
             strong(&mut m, d, a, true);
             e.commit(m).unwrap();
             let mut m = Mutation::new();
             m.set(a, &ct::RETENTION, &setting).unwrap();
             e.commit(m).unwrap();
             let mut m = Mutation::new();
-            let b = m.create(e.thing_record(d));
+            let b = m.create(e.thing_record(d, None));
             strong(&mut m, a, b, true);
             e.commit(m).unwrap();
             let mut m = Mutation::new();

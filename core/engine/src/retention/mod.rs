@@ -1386,9 +1386,10 @@ impl Engine {
         let covered = |ai: usize| m.dropped(ai).is_some_and(|d| d.why == DropFor::Cover);
         // a fire out of history (or expired) is past every bound and listed nowhere
         let spent = |ai: usize| m.header.aspects.get(ai).is_some_and(|a| a.ak.signal()) && m.dropped(ai).is_some_and(|d| d.why == DropFor::Other);
-        // a part missing on a thing whose record is not held reads nothing here (one a release
-        // forgot, or never received): it arrives again with its commit, as at a fresh node
-        let unheld = |ai: usize| m.missing(ai) && m.view.aspects.get(ai).is_some_and(|a| self.core.created(&a.tid).is_none());
+        // a part not held on a thing whose record is not held reads nothing here (one a release
+        // forgot, a destroyed thing's, or never received): it arrives again with its commit, as
+        // at a fresh node
+        let unheld = |ai: usize| !m.holds(ai) && m.view.aspects.get(ai).is_some_and(|a| self.core.created(&a.tid).is_none());
         let gone = |ai: usize| covered(ai) || m.dropped_invalid(ai) || spent(ai) || unheld(ai);
         if matches!(m.view.kind, Kind::Content | Kind::ContentSnapshot) && !m.view.purges && (0..m.view.aspects.len()).all(gone) {
             return Ok(true);

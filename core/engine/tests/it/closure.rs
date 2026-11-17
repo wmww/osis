@@ -19,7 +19,7 @@ fn strong(e: &mut Engine, from: Tid, to: Tid, on: bool) {
 
 /// A plain thing made under `admin`, strongly referenced from `from` in the same transaction.
 fn make(e: &mut Engine, admin: Tid, from: Tid) -> Tid {
-    let rec = e.thing_record(admin);
+    let rec = e.thing_record(admin, None);
     let mut m = Mutation::new();
     let t = m.create(rec);
     m.op(from, &ct::HOLDS, PathOp { path: vec![], op: Op::Add(Value::Strong(t)) }).unwrap();
@@ -367,7 +367,7 @@ fn sync_units_are_the_models_spec_sync_set_2() {
 /// `make` refused or not: a thing under `admin`, strongly referenced from `from` (none: from
 /// nothing) in the same commit.
 fn try_make(e: &mut Engine, admin: Tid, from: Option<Tid>) -> osis_engine::Result<Tid> {
-    let rec = e.thing_record(admin);
+    let rec = e.thing_record(admin, None);
     let mut m = Mutation::new();
     let t = m.create(rec);
     if let Some(f) = from {
@@ -866,7 +866,7 @@ fn a_strong_in_held_history_holds_its_target_until_the_body_goes_spec_data_model
         let mut m = Mutation::new();
         m.set(t, &ct::RETENTION, &setting(holds)).unwrap();
         e.commit(m).unwrap();
-        let rec = e.thing_record(d);
+        let rec = e.thing_record(d, None);
         let mut m = Mutation::new();
         let x = m.create(rec);
         m.op(t, &ct::HOLDS, PathOp { path: vec![], op: Op::Add(Value::Strong(x)) }).unwrap();

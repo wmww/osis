@@ -23,7 +23,7 @@ fn make(w: &mut World, i: usize, admin: Option<Tid>, v: &str) -> Tid {
     w.write(i, |e| {
         let d = e.account_root().unwrap();
         let mut m = Mutation::new();
-        let t = m.create(e.thing_record(admin.unwrap_or(d)));
+        let t = m.create(e.thing_record(admin.unwrap_or(d), None));
         m.set(t, &ak(), &Value::Str(v)).unwrap();
         m.op(d, &ct::HOLDS, PathOp { path: vec![], op: Op::Add(Value::Strong(t)) }).unwrap();
         e.commit(m).unwrap();
@@ -345,7 +345,7 @@ fn a_thing_under_the_node_root_stays_on_its_node_spec_sync_set_2() {
     let x = w.write(1, |e| {
         let root = e.node_root().unwrap();
         let mut m = Mutation::new();
-        let x = m.create(e.thing_record(root));
+        let x = m.create(e.thing_record(root, None));
         m.set(x, &ak(), &Value::Str("mine".into())).unwrap();
         m.op(root, &ct::HOLDS, PathOp { path: vec![], op: Op::Add(Value::Strong(x)) }).unwrap();
         e.commit(m).unwrap();
@@ -738,7 +738,7 @@ fn make_in(w: &mut World, i: usize, admin: Tid, v: &str) -> Tid {
     let v = v.to_owned();
     w.write(i, |e| {
         let mut m = Mutation::new();
-        let t = m.create(e.thing_record(admin));
+        let t = m.create(e.thing_record(admin, None));
         m.set(t, &ak(), &Value::Str(v)).unwrap();
         m.op(admin, &ct::HOLDS, PathOp { path: vec![], op: Op::Add(Value::Strong(t)) }).unwrap();
         e.commit(m).unwrap();

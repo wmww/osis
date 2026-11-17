@@ -13,8 +13,9 @@ use std::ops::Range;
 pub struct Did {
     /// Tids bound by `create` (name, tid); the unnamed one of a single command is "".
     pub created: Vec<(String, Tid)>,
-    /// The expiry asked for so far.
-    pub expires: Option<Expiry>,
+    /// The expiry asked for so far, as asked and as a time (one script line asking `in` resolves
+    /// it for every line, so a thing created with it expires with the commit).
+    pub expires: Option<(Expiry, Expiry)>,
 }
 
 /// Parses a path (empty: the whole aspect). `[n]` on an untyped position: for a read, a list index if the saved value
@@ -65,14 +66,20 @@ fn expiry(e: &ExpiryFlags) -> anyhow::Result<Option<Expiry>> {
 }
 
 /// A line's expiry is its commit's: lines of one script asking for different ones are refused.
-fn commit_expiry(w: &mut osis::Write<'_>, did: &mut Did, e: Option<Expiry>) -> anyhow::Result<()> {
-    let Some(e) = e else { return Ok(()) };
-    if did.expires.is_some_and(|x| x != e) {
-        return Err(usage("a commit has one expiry: this script asks for two, so run them as separate commands"));
-    }
-    did.expires = Some(e);
-    w.expires(e);
-    Ok(())
+/// The expiry as a time.
+fn commit_expiry(ctx: &Ctx<'_>, w: &mut osis::Write<'_>, did: &mut Did, e: Option<Expiry>) -> anyhow::Result<Option<Expiry>> {
+    let Some(e) = e else { return Ok(None) };
+    let at = match did.expires {
+        Some((x, _)) if x != e => return Err(usage("a commit has one expiry: this script asks for two, so run them as separate commands")),
+        Some((_, at)) => at,
+        None => match e {
+            Expiry::In(d) => Expiry::At(Time(ctx.db.now()?.0.saturating_add(u64::try_from(d.as_millis()).unwrap_or(u64::MAX)))),
+            at => at,
+        },
+    };
+    did.expires = Some((e, at));
+    w.expires(at);
+    Ok(Some(at))
 }
 
 fn with_flags<'w, 'd>(mut a: AspectWrite<'w, 'd, DynamicAspectKey>, f: &WriteFlags, key: &DynamicAspectKey) -> anyhow::Result<AspectWrite<'w, 'd, DynamicAspectKey>> {
@@ -121,7 +128,8 @@ pub fn create(ctx: &mut Ctx<'_>, w: &mut osis::Write<'_>, a: &CreateArgs, did: &
         None if admin == ctx.db.me() => ctx.db.account_root(),
         None => admin,
     };
-    let t = w.create(admin)?;
+    let expires = commit_expiry(ctx, w, did, expiry(&a.e)?)?;
+    let t = w.create(admin, expires)?;
     // a thing is made only where something holds it (spec/sync-set.md §2 Making a thing)
     w.hold(holder, t)?;
     for pair in a.pairs.chunks(2) {
@@ -254,7 +262,7 @@ pub fn apply(ctx: &mut Ctx<'_>, w: &mut osis::Write<'_>, c: &ScriptCmd, did: &mu
 
 fn apply_one(ctx: &mut Ctx<'_>, w: &mut osis::Write<'_>, c: &ScriptCmd, did: &mut Did) -> anyhow::Result<()> {
     if let ScriptCmd::Set(SetArgs { w: f, .. }) | ScriptCmd::Overwrite(SetArgs { w: f, .. }) | ScriptCmd::Fire(FireArgs { w: f, .. }) | ScriptCmd::Op(OpArgs { w: f, .. }) = c {
-        commit_expiry(w, did, expiry(&f.e)?)?;
+        commit_expiry(ctx, w, did, expiry(&f.e)?)?;
     }
     match c {
         ScriptCmd::Create(a) => create(ctx, w, a, did),

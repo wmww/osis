@@ -4,7 +4,7 @@
 ## 1. Things and tids
 - Every datum is an **aspect** of a **thing**. A thing holds aspects and nothing else.
 - A **tid** is 120 bits: the first 120 bits of BLAKE3 over the canonical encoding of the thing's **creation record** (spec/wire.md §3). Text form: 20 characters of unpadded base64url, prefixed `osis://` where ambiguous or user-visible.
-- Creation record of a thing: (first admin's tid, 32-byte random nonce) (spec/permissions.md §1), with a `link` field naming the target on a link's actor K (spec/permissions.md §7). Of a **key actor** (account, node, link key), which holds admin on itself: (algorithm-tagged signing public key, 32-byte nonce), with an `account` flag on an account (spec/permissions.md §1). A link key's nonce derives from its seed (spec/crypto.md §3).
+- Creation record of a thing: (first admin's tid, 32-byte random nonce) (spec/permissions.md §1), with a `link` field naming the target on a link's actor K (spec/permissions.md §7) and an `expires` field on a thing that expires (spec/commits.md §5 Destruction). Of a **key actor** (account, node, link key), which holds admin on itself: (algorithm-tagged signing public key, 32-byte nonce), with an `account` flag on an account (spec/permissions.md §1). A link key's nonce derives from its seed (spec/crypto.md §3).
 - A node checks a creation record by hashing when it receives the thing's data.
 - A tid is never a value: a value names a thing only by a reference (§8), which may dangle, and the thing may lack the expected aspects.
 - A received record that hashes to a tid the node already holds a different record for is bad input: keep the held record, ignore the new one, report a diagnostic. Never panic on it.

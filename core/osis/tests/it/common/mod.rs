@@ -292,7 +292,7 @@ impl Held for Write<'_> {
     }
 
     fn create_held_with_admin(&mut self, admin: Tid) -> Result<Tid> {
-        let t = self.create(admin)?;
+        let t = self.create(admin, None)?;
         let holder = if admin == self.db().me() { self.db().account_root() } else { admin };
         self.hold(holder, t)?;
         Ok(t)

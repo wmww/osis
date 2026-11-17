@@ -62,7 +62,7 @@ fn make(a: &Node, b: &Node, home: Tid, keyed: bool, label: &str, show: bool) -> 
     let before: std::collections::BTreeSet<_> = a.db.engine(|e| e.commit_ids()).into_iter().collect();
     costs::take();
     let mut w = a.db.write();
-    let t = if keyed { w.create(a.db.me()).unwrap() } else { w.create(home).unwrap() };
+    let t = if keyed { w.create(a.db.me(), None).unwrap() } else { w.create(home, None).unwrap() };
     keep_all(&mut w, t);
     w.hold(home, t).unwrap();
     w.commit().unwrap();
@@ -116,7 +116,7 @@ fn what_a_thing_costs_as_the_app_makes_it() {
     let (a, b) = (Node { db: a, store: sa }, Node { db: b, store: sb });
     let root = a.db.account_root();
     let mut w = a.db.write();
-    let home = w.create(root).unwrap();
+    let home = w.create(root, None).unwrap();
     w.hold(root, home).unwrap();
     w.commit().unwrap();
     deliver(&a.db, &b.db);

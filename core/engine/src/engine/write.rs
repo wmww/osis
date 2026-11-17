@@ -530,15 +530,6 @@ pub(crate) fn framing_for(core: &Core, memory: bool, plan: &CommitPlan, publishe
     Ok(Framing { thing: *tid, dedup, expiry: plan.expires.map(WallMs), class, keys: keys.iter().map(|k| Ok((k.level, k.verifying_key()?))).collect::<std::result::Result<_, osis_commit::Error>>()? })
 }
 
-/// A creation takes its commit's other deltas' expiry (a one-commit disappearing message).
-fn fit_creations(aspects: &mut [((Tid, Ak), AspectMut)]) {
-    let other = |ak: &Ak| ak.as_str() != CREATED.ak() && ak.as_str() != osis_commit::retention::RETENTION;
-    let expires = aspects.iter().filter(|((_, ak), _)| other(ak)).find_map(|(_, am)| am.expires);
-    for (_, am) in aspects.iter_mut().filter(|((_, ak), _)| ak.as_str() == CREATED.ak()) {
-        am.expires = am.expires.or(expires);
-    }
-}
-
 /// A request's delta on its thing (spec/commits.md §5 Purge): `purge.0`, which carries no expiry,
 /// where the commit has none; in a commit that `expires`, the commit's other deltas on the thing
 /// carry it (`check_request` refuses it naming what it would not reach).
@@ -728,8 +719,17 @@ impl Engine {
     /// held where it lives (`hold_where_it_lives`).
     #[doc(hidden)]
     pub fn new_thing(&mut self, m: &mut Mutation, admin: Tid) -> Tid {
-        let t = m.create(self.thing_record(admin));
+        self.new_expiring_thing(m, admin, None)
+    }
+
+    /// Tests: `new_thing` ending at `expires`; `m` expires then.
+    #[doc(hidden)]
+    pub fn new_expiring_thing(&mut self, m: &mut Mutation, admin: Tid, expires: Option<WallMs>) -> Tid {
+        let t = m.create(self.thing_record(admin, expires));
         self.hold_where_it_lives(m, t, admin);
+        if let Some(at) = expires {
+            m.expires_all(at);
+        }
         t
     }
 
@@ -737,7 +737,7 @@ impl Engine {
     /// committed first, so the commit that makes it can carry its creation alone.
     #[doc(hidden)]
     pub fn held_record(&mut self, admin: Tid) -> Result<CreationRecord> {
-        let rec = self.thing_record(admin);
+        let rec = self.thing_record(admin, None);
         let mut m = Mutation::new();
         self.hold_where_it_lives(&mut m, rec.tid(), admin);
         self.commit(m)?;
@@ -763,10 +763,10 @@ impl Engine {
         }
     }
 
-    /// The creation record of a new thing whose first admin is `admin` (`Mutation::create`
-    /// writes it).
-    pub fn thing_record(&mut self, admin: Tid) -> CreationRecord {
-        crate::identity::thing_record(admin, &mut *self.rng)
+    /// The creation record of a new thing whose first admin is `admin`, ending at `expires`
+    /// (`None`: never; `Mutation::create` writes it, its commit expiring then).
+    pub fn thing_record(&mut self, admin: Tid, expires: Option<WallMs>) -> CreationRecord {
+        crate::identity::thing_record(admin, expires.map(|t| t.0), &mut *self.rng)
     }
 
     /// Commits `m` as one commit; `None` when it changes nothing. `Clash` when its deltas cannot
@@ -793,8 +793,8 @@ pub(crate) fn commit_in(tx: &mut Tx<'_>, m: Mutation) -> Result<Option<CommitId>
 /// `commit_in`'s commits. A thing `m` makes under an account is due own keys
 /// (`Core::own_keys_due`); one due that `m` writes content on gets them first: its record in its
 /// own-keys rotation where `m` makes it (`rotation::own_secrets_new`), then the rest of `m` under
-/// its own keys, the last commit returned. Except where `m` expires: a role commit never does, so
-/// the record goes alone with `m`'s expiry (`fit_creations`). One `m` makes without content goes
+/// its own keys, the last commit returned. Except an expiring thing's: a role commit never
+/// expires, so its record goes alone, in a commit expiring with it. One `m` makes without content goes
 /// with `m` as it is, keyed at the transaction's end or by its maker first (a link's K, its sync
 /// ID listing L).
 fn keyed_first(tx: &mut Tx<'_>, mut m: Mutation) -> Result<Option<CommitId>> {
@@ -804,8 +804,6 @@ fn keyed_first(tx: &mut Tx<'_>, mut m: Mutation) -> Result<Option<CommitId>> {
         }
     }
     let content = |t: &Tid| m.aspects.keys().any(|(x, ak)| x == t && ak.as_str() != CREATED.ak() && !is_role_class(ak.as_str()));
-    // an expiring write's creation expires with it (`fit_creations`)
-    let expires = m.aspects.iter().filter(|((_, ak), _)| ak.as_str() != CREATED.ak() && ak.as_str() != osis_commit::retention::RETENTION).find_map(|(_, am)| am.expires);
     let now: Vec<Tid> = tx.core.own_keys_due.iter().filter(|t| content(t)).copied().collect();
     if now.is_empty() {
         return Ok(commit_or_build(tx, m)?.map(|(id, _)| id));
@@ -815,15 +813,15 @@ fn keyed_first(tx: &mut Tx<'_>, mut m: Mutation) -> Result<Option<CommitId>> {
     records.signer = m.signer;
     for t in &now {
         tx.core.own_keys_due.remove(t);
-        match (m.creates.remove(t), expires) {
-            (Some(r), None) => {
+        match m.creates.remove(t) {
+            // a role commit never expires: an expiring record goes alone, in a commit expiring with it
+            Some(r) if r.expires().is_some() => {
+                records.creates.insert(*t, r);
+            }
+            Some(r) => {
                 crate::rotation::own_secrets_new(tx, r, &[], &mut done)?;
             }
-            (Some(r), Some(_)) => {
-                records.creates.insert(*t, r);
-                records.aspects.entry((*t, Ak::new(CREATED.ak()).map_err(|_| Error::Misuse("ak"))?)).or_default().expires = expires;
-            }
-            (None, _) => {}
+            None => {}
         }
     }
     if !records.creates.is_empty() {
@@ -890,10 +888,15 @@ fn commit_or_build(tx: &mut Tx<'_>, mut m: Mutation) -> Result<Option<(CommitId,
         let unheld: Vec<Tid> = m.aspects.keys().map(|(t, _)| *t).filter(|t| !m.creates.contains_key(t) && !tx.core.is_key_actor(t) && !tx.core.ix.closure.holds(t)).collect();
         tx.core.wrote_on.extend(unheld);
     }
+    // every minting's commit expires with its record (spec/commits.md §5 Destruction)
     for (&t, rec) in &m.creates {
+        if rec.expires().is_some_and(|x| x <= ts.wall_ms().0) && !tx.core.skip_writer_rules {
+            return Err(Error::Clash(format!("{t} expires at {}, which has passed", rec.expires().unwrap_or(0))));
+        }
         let e = m.aspects.entry((t, Ak::new(CREATED.ak()).map_err(|_| Error::Misuse("ak"))?)).or_default();
         e.schema = Some(core_schema.clone());
         e.ops.push(PathOp { path: Vec::new(), op: Op::Set(rec.to_value()) });
+        e.expires = rec.expires();
     }
     let dead: Vec<(Tid, Ak)> = m.dead_resets.keys().chain(m.fresh_resets.keys()).chain(&m.sweeps).cloned().collect();
     for k in dead {
@@ -978,10 +981,15 @@ fn commit_or_build(tx: &mut Tx<'_>, mut m: Mutation) -> Result<Option<(CommitId,
                 return Err(Error::Misuse("a fire is history: the thing's setting keeps no history for this signal"));
             }
         }
+        // a role commit never expires, so it creates no expiring thing
+        if ak.as_str() == CREATED.ak() && !tx.core.skip_writer_rules && let Some(want) = base.creates.get(&tid).map(CreationRecord::expires)
+            && e != want
+        {
+            return Err(Error::Clash(format!("{tid} expires, and a commit of roles does not: create it in a write of its own")));
+        }
         (am.retention, am.expires) = (Some(r), e);
         aspects.push(((tid, ak), am));
     }
-    fit_creations(&mut aspects);
     let entries: Vec<(Tid, &Ak, &Retention, Option<u64>)> = aspects.iter().filter_map(|((t, ak), am)| Some((*t, ak, am.retention.as_ref()?, am.expires))).collect();
     let expires = one_commit(&entries, "Write them as separate commits")?;
     place_requests(&mut aspects, expires);

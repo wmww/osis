@@ -111,7 +111,7 @@ fn collections_of_everything_summarize() {
     let v = Collection { source: Source::Everything, having: Default::default(), order: Order::Name, arrange: Arrange::Cards, element: None };
     let g = d.home().unwrap();
     let mut w = d.db.write();
-    let (a, b) = (w.create(g).unwrap(), w.create(g).unwrap());
+    let (a, b) = (w.create(g, None).unwrap(), w.create(g, None).unwrap());
     for (x, n) in [(a, "One"), (b, "Two")] {
         w.at(x, COLLECTION).set(&v).unwrap();
         w.at(x, NAME).set(&n.to_string()).unwrap();

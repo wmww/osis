@@ -70,8 +70,9 @@ impl crate::Classified for TidParseError {
 pub enum CreationRecord {
     /// Ordinary thing (spec/permissions.md §1): `admin` holds its record edge (admin) from the
     /// start, fixed by the tid; a 32-byte random nonce; `link`: it is a share link's actor K,
-    /// made for this target (spec/permissions.md §7).
-    Thing { admin: Tid, nonce: [u8; 32], link: Option<Tid> },
+    /// made for this target (spec/permissions.md §7); `expires`: the wall ms the thing ends at,
+    /// whatever any minting of it says (spec/commits.md §5 Destruction).
+    Thing { admin: Tid, nonce: [u8; 32], link: Option<Tid>, expires: Option<u64> },
     /// Key actor (admin of itself): `signing_key` enum case and key bytes, and a 32-byte nonce;
     /// `account`: an account, whose key is its first epoch's (spec/permissions.md §1). Only
     /// `alg` 1 (ed25519, 32 bytes) is readable in this build; other cases can be built (a later
@@ -79,12 +80,13 @@ pub enum CreationRecord {
     KeyActor { alg: u64, public_key: Vec<u8>, nonce: [u8; 32], account: bool },
 }
 
-// spec/wire.md §3: `creation = struct { admin 0: weak, key 1: signing_key, nonce 2: blob, link 3: weak, account 4: bool }`.
+// spec/wire.md §3: `creation = struct { admin 0: weak, key 1: signing_key, nonce 2: blob, link 3: weak, account 4: bool, expires 5: timestamp }`.
 const REC_ADMIN: i64 = 0;
 const REC_KEY: i64 = 1;
 const REC_NONCE: i64 = 2;
 const REC_LINK: i64 = 3;
 const REC_ACCOUNT: i64 = 4;
+const REC_EXPIRES: i64 = 5;
 /// `signing_key` case ed25519 (spec/wire.md §3).
 pub const SIGNING_KEY_ED25519: u64 = 1;
 
@@ -93,11 +95,14 @@ impl CreationRecord {
     pub fn to_value(&self) -> Value {
         let mut m = crate::ValueMap::new();
         match self {
-            CreationRecord::Thing { admin, nonce, link } => {
+            CreationRecord::Thing { admin, nonce, link, expires } => {
                 m.insert(Value::Int(REC_ADMIN), Value::Weak(*admin));
                 m.insert(Value::Int(REC_NONCE), Value::Bytes(nonce.to_vec()));
                 if let Some(t) = link {
                     m.insert(Value::Int(REC_LINK), Value::Weak(*t));
+                }
+                if let Some(t) = expires {
+                    m.insert(Value::Int(REC_EXPIRES), Value::Int(i64::try_from(*t).unwrap_or(i64::MAX)));
                 }
             }
             CreationRecord::KeyActor { alg, public_key, nonce, account } => {
@@ -111,7 +116,7 @@ impl CreationRecord {
         }
         Value::Map(m)
     }
-    /// Reads a record: exactly one of admin and key, a 32-byte nonce, `link` only beside admin, `account` only `true` beside key, no other field, key an ed25519 `signing_key` of 32 bytes. `None` is bad input (an unknown key case included:
+    /// Reads a record: exactly one of admin and key, a 32-byte nonce, `link` and `expires` only beside admin, `account` only `true` beside key, no other field, key an ed25519 `signing_key` of 32 bytes. `None` is bad input (an unknown key case included:
     /// callers that must park it check the enum case themselves).
     pub fn from_value(v: &Value) -> Option<CreationRecord> {
         let Value::Map(m) = v else { return None };
@@ -129,8 +134,13 @@ impl CreationRecord {
             Some(Value::Bool(true)) if m.contains_key(&Value::Int(REC_KEY)) => true,
             _ => return None,
         };
-        match (m.get(&Value::Int(REC_ADMIN)), m.get(&Value::Int(REC_KEY)), m.len() - usize::from(link.is_some()) - usize::from(account)) {
-            (Some(Value::Weak(admin)), None, 2) => Some(CreationRecord::Thing { admin: *admin, nonce, link }),
+        let expires = match m.get(&Value::Int(REC_EXPIRES)) {
+            None => None,
+            Some(Value::Int(t)) if *t >= 0 && m.contains_key(&Value::Int(REC_ADMIN)) => Some(t.unsigned_abs()),
+            _ => return None,
+        };
+        match (m.get(&Value::Int(REC_ADMIN)), m.get(&Value::Int(REC_KEY)), m.len() - usize::from(link.is_some()) - usize::from(account) - usize::from(expires.is_some())) {
+            (Some(Value::Weak(admin)), None, 2) => Some(CreationRecord::Thing { admin: *admin, nonce, link, expires }),
             (None, Some(Value::Enum(SIGNING_KEY_ED25519, Some(p))), 2) => match p.as_ref() {
                 Value::Bytes(pk) if pk.len() == 32 => {
                     Some(CreationRecord::KeyActor { alg: SIGNING_KEY_ED25519, public_key: pk.clone(), nonce, account })
@@ -157,6 +167,14 @@ impl CreationRecord {
     /// Whether this is a share link's actor K (spec/permissions.md §7).
     pub fn is_link(&self) -> bool {
         self.link_target().is_some()
+    }
+    /// The wall ms the thing ends at, whatever any minting of it says; `None`: it never expires
+    /// (spec/commits.md §5 Destruction). Every minting's commit carries it as its `expires`.
+    pub fn expires(&self) -> Option<u64> {
+        match self {
+            CreationRecord::Thing { expires, .. } => *expires,
+            CreationRecord::KeyActor { .. } => None,
+        }
     }
     /// The target a link's actor K was made for, as its creator says (spec/permissions.md §7).
     pub fn link_target(&self) -> Option<Tid> {
@@ -613,9 +631,9 @@ mod tests {
     // exactly these bytes.
     #[test]
     fn creation_record_bytes() {
-        let r = CreationRecord::Thing { admin: Tid::from_bytes([7; 15]), nonce: [1; 32], link: None };
+        let r = CreationRecord::Thing { admin: Tid::from_bytes([7; 15]), nonce: [1; 32], link: None, expires: None };
         let rb = hex(&format!("a2 00 d90655 4f{} 02 5820{}", "07".repeat(15), "01".repeat(32)));
-        let l = CreationRecord::Thing { admin: Tid::from_bytes([7; 15]), nonce: [1; 32], link: Some(Tid::from_bytes([8; 15])) };
+        let l = CreationRecord::Thing { admin: Tid::from_bytes([7; 15]), nonce: [1; 32], link: Some(Tid::from_bytes([8; 15])), expires: None };
         assert_ne!(l.tid(), r.tid(), "the link's target is in the tid");
         assert!(l.is_link() && !r.is_link());
         assert_eq!(l.link_target(), Some(Tid::from_bytes([8; 15])));
@@ -643,6 +661,21 @@ mod tests {
             m.insert(Value::Int(REC_ACCOUNT), Value::Bool(true));
         }
         assert!(CreationRecord::from_value(&f).is_none(), "account beside admin");
+        // `expires`: field 5, a uint beside admin only, in the tid
+        let e = CreationRecord::Thing { admin: Tid::from_bytes([7; 15]), nonce: [1; 32], link: None, expires: Some(5) };
+        assert_ne!(e.tid(), r.tid(), "the expiry is in the tid");
+        assert_eq!((e.expires(), r.expires(), k.expires()), (Some(5), None, None));
+        assert_eq!(CreationRecord::from_value(&e.to_value()), Some(e.clone()));
+        let eb = hex(&format!("a3 00 d90655 4f{} 02 5820{} 05 05", "07".repeat(15), "01".repeat(32)));
+        assert_eq!(encode(&e.to_value()), eb);
+        let field = |base: &CreationRecord, v: Value| {
+            let Value::Map(mut m) = base.to_value() else { panic!() };
+            m.insert(Value::Int(REC_EXPIRES), v);
+            CreationRecord::from_value(&Value::Map(m))
+        };
+        assert!(field(&k, Value::Int(5)).is_none(), "expires beside key");
+        assert!(field(&r, Value::Int(-1)).is_none(), "negative expires");
+        assert!(field(&r, Value::Bool(true)).is_none(), "expires no uint");
         let kb = hex(&format!("a2 01 d90651 82 01 5820{} 02 5820{}", "09".repeat(32), "01".repeat(32)));
         for (rec, bytes) in [(r, rb), (k, kb)] {
             assert_eq!(encode(&rec.to_value()), bytes);
@@ -656,8 +689,8 @@ mod tests {
     #[test]
     fn creation_record_rejects() {
         let admin = Tid::from_bytes([7; 15]);
-        let r = CreationRecord::Thing { admin, nonce: [1; 32], link: None };
-        assert_ne!(r.tid(), CreationRecord::Thing { admin, nonce: [2; 32], link: None }.tid());
+        let r = CreationRecord::Thing { admin, nonce: [1; 32], link: None, expires: None };
+        assert_ne!(r.tid(), CreationRecord::Thing { admin, nonce: [2; 32], link: None, expires: None }.tid());
         assert_eq!(CreationRecord::from_value(&Value::Int(0)), None);
         let Value::Map(m) = r.to_value() else { unreachable!() };
         let key = |alg, len| Value::Enum(alg, Some(Box::new(Value::Bytes(vec![9; len]))));

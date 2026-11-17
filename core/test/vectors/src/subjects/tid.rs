@@ -13,7 +13,7 @@ const SPEC: &str = "spec/wire.md §3";
 pub fn thing() -> VecFile {
     let admin = Tid::from_bytes([1; 15]);
     let nonce = [2u8; 32];
-    let rec = CreationRecord::Thing { admin, nonce, link: None };
+    let rec = CreationRecord::Thing { admin, nonce, link: None, expires: None };
     let bytes = encode(&rec.to_value());
     let tid = rec.tid();
     assert_eq!(osis_base::hash::hash(&bytes)[..15], tid.as_bytes()[..], "tid is BLAKE3 of the record");
@@ -28,16 +28,21 @@ pub fn thing() -> VecFile {
             .with("text", tid.to_string())
             .with("uri", tid.to_uri()),
     ];
-    // Field numbers of spec/wire.md §3: 0 admin, 1 key, 2 nonce.
+    // a thing that expires: field 5, in the tid
+    let brief = CreationRecord::Thing { admin, nonce, link: None, expires: Some(1_700_000_000_000) };
+    let (bb, bt) = (encode(&brief.to_value()), brief.tid());
+    cases.push(Record::new().with("case", "thing that expires").with("spec", SPEC).with("admin", hex(admin.as_bytes())).with("nonce", hex(&nonce)).with("expires", "1700000000000").with("record", hex(&bb)).with("tid", hex(bt.as_bytes())).with("text", bt.to_string()).with("uri", bt.to_uri()));
+    // Field numbers of spec/wire.md §3: 0 admin, 1 key, 2 nonce, 5 expires.
     let key = Value::Enum(1, Some(Box::new(Value::Bytes(vec![3; 32]))));
+    let keyed_expiry = BTreeMap::from([(Value::Int(1), key.clone()), (Value::Int(2), Value::Bytes(nonce.to_vec())), (Value::Int(5), Value::Int(1))]);
     let both = BTreeMap::from([
         (Value::Int(0), Value::Weak(admin)),
         (Value::Int(1), key),
         (Value::Int(2), Value::Bytes(nonce.to_vec())),
     ]);
     let neither = BTreeMap::from([(Value::Int(2), Value::Bytes(nonce.to_vec()))]);
-    let extra = BTreeMap::from([(Value::Int(0), Value::Weak(admin)), (Value::Int(2), Value::Bytes(nonce.to_vec())), (Value::Int(5), Value::Weak(admin))]);
-    for (name, m) in [("both admin and key", both), ("neither admin nor key", neither), ("an unknown field", extra)] {
+    let extra = BTreeMap::from([(Value::Int(0), Value::Weak(admin)), (Value::Int(2), Value::Bytes(nonce.to_vec())), (Value::Int(6), Value::Weak(admin))]);
+    for (name, m) in [("both admin and key", both), ("neither admin nor key", neither), ("an unknown field", extra), ("expires beside key", keyed_expiry)] {
         let v = Value::Map(m.into_iter().collect());
         assert!(CreationRecord::from_value(&v).is_none(), "{name} must be rejected");
         cases.push(Record::new().with("case", name).with("spec", SPEC).with("record", hex(&encode(&v))).with("reject", "creation-fields"));

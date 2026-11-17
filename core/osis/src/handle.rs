@@ -267,7 +267,7 @@ impl std::ops::Deref for Osis {
 /// # let db = Osis::create(Store::Memory(MemStore::new()), Config::default()).unwrap();
 /// # let set = ReadSet::new(|_| {});
 /// # let mut w = db.write();
-/// # let t = w.create(db.account_root()).unwrap();
+/// # let t = w.create(db.account_root(), None).unwrap();
 /// # w.hold(db.account_root(), t).unwrap();
 /// # w.commit().unwrap();
 /// # let r = db.tracking(&set);
@@ -284,7 +284,7 @@ impl std::ops::Deref for Osis {
 /// # let db = Osis::create(Store::Memory(MemStore::new()), Config::default()).unwrap();
 /// # let set = ReadSet::new(|_| {});
 /// # let mut w = db.write();
-/// # let t = w.create(db.account_root()).unwrap();
+/// # let t = w.create(db.account_root(), None).unwrap();
 /// # w.hold(db.account_root(), t).unwrap();
 /// # w.commit().unwrap();
 /// # let r = db.tracking(&set);
@@ -300,7 +300,7 @@ impl std::ops::Deref for Osis {
 /// # let db = Osis::create(Store::Memory(MemStore::new()), Config::default()).unwrap();
 /// # let set = ReadSet::new(|_| {});
 /// # let mut w = db.write();
-/// # let t = w.create(db.account_root()).unwrap();
+/// # let t = w.create(db.account_root(), None).unwrap();
 /// # w.hold(db.account_root(), t).unwrap();
 /// # w.commit().unwrap();
 /// # let r = db.tracking(&set);
@@ -316,7 +316,7 @@ impl std::ops::Deref for Osis {
 /// # let db = Osis::create(Store::Memory(MemStore::new()), Config::default()).unwrap();
 /// # let set = ReadSet::new(|_| {});
 /// # let mut w = db.write();
-/// # let t = w.create(db.account_root()).unwrap();
+/// # let t = w.create(db.account_root(), None).unwrap();
 /// # w.hold(db.account_root(), t).unwrap();
 /// # w.commit().unwrap();
 /// # let r = db.tracking(&set);
@@ -332,7 +332,7 @@ impl std::ops::Deref for Osis {
 /// # let db = Osis::create(Store::Memory(MemStore::new()), Config::default()).unwrap();
 /// # let set = ReadSet::new(|_| {});
 /// # let mut w = db.write();
-/// # let t = w.create(db.account_root()).unwrap();
+/// # let t = w.create(db.account_root(), None).unwrap();
 /// # w.hold(db.account_root(), t).unwrap();
 /// # w.commit().unwrap();
 /// # let r = db.tracking(&set);
@@ -348,7 +348,7 @@ impl std::ops::Deref for Osis {
 /// # let db = Osis::create(Store::Memory(MemStore::new()), Config::default()).unwrap();
 /// # let set = ReadSet::new(|_| {});
 /// # let mut w = db.write();
-/// # let t = w.create(db.account_root()).unwrap();
+/// # let t = w.create(db.account_root(), None).unwrap();
 /// # w.hold(db.account_root(), t).unwrap();
 /// # w.commit().unwrap();
 /// # let r = db.tracking(&set);
@@ -364,7 +364,7 @@ impl std::ops::Deref for Osis {
 /// # let db = Osis::create(Store::Memory(MemStore::new()), Config::default()).unwrap();
 /// # let set = ReadSet::new(|_| {});
 /// # let mut w = db.write();
-/// # let t = w.create(db.account_root()).unwrap();
+/// # let t = w.create(db.account_root(), None).unwrap();
 /// # w.hold(db.account_root(), t).unwrap();
 /// # w.commit().unwrap();
 /// # let r = db.tracking(&set);
@@ -380,7 +380,7 @@ impl std::ops::Deref for Osis {
 /// # let db = Osis::create(Store::Memory(MemStore::new()), Config::default()).unwrap();
 /// # let set = ReadSet::new(|_| {});
 /// # let mut w = db.write();
-/// # let t = w.create(db.account_root()).unwrap();
+/// # let t = w.create(db.account_root(), None).unwrap();
 /// # w.hold(db.account_root(), t).unwrap();
 /// # w.commit().unwrap();
 /// # let r = db.tracking(&set);
@@ -396,7 +396,7 @@ impl std::ops::Deref for Osis {
 /// # let db = Osis::create(Store::Memory(MemStore::new()), Config::default()).unwrap();
 /// # let set = ReadSet::new(|_| {});
 /// # let mut w = db.write();
-/// # let t = w.create(db.account_root()).unwrap();
+/// # let t = w.create(db.account_root(), None).unwrap();
 /// # w.hold(db.account_root(), t).unwrap();
 /// # w.commit().unwrap();
 /// # let r = db.tracking(&set);

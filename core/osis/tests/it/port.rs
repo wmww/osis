@@ -115,7 +115,7 @@ fn a_thin_client_creates_under_a_thing_it_writes_notes_client_port() {
     let w = world(Some(Role::Admin));
     let cl = connect(&w.net, &w.c, &w.addr, &w.secret).unwrap();
     let mut x = cl.write();
-    x.create(cl.me()).unwrap();
+    x.create(cl.me(), None).unwrap();
     assert!(matches!(x.commit(), Err(Error::Invalid(_))));
     let mut x = cl.write();
     let n = x.create_held_with_admin(w.t).unwrap();

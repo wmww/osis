@@ -38,7 +38,7 @@ fn samples() -> Vec<(&'static str, &'static str, Value)> {
     };
     let sync_ids: SyncIds = BTreeMap::from([(SyncId([22; 16]), SyncEntry { steps: BTreeMap::from([([23; 32], StepRecord { step: vec![24; 10], claims: None })]) })]);
     vec![
-        ("created thing", "created.0", CREATED.encode(&CreationRecord::Thing { admin: tid(1), nonce: [2; 32], link: None })),
+        ("created thing", "created.0", CREATED.encode(&CreationRecord::Thing { admin: tid(1), nonce: [2; 32], link: None, expires: None })),
         ("created key actor", "created.0", CREATED.encode(&CreationRecord::KeyActor { alg: 1, public_key: vec![3; 32], nonce: [4; 32], account: false })),
         ("holders", "roles.0", ROLES.encode(&holders)),
         ("keys", "keys.0", KEYS.encode(&keys)),

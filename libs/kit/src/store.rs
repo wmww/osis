@@ -654,7 +654,7 @@ impl Data {
         }
         let g = self.home()?;
         let mut w = self.db.write();
-        let win = w.create(g)?;
+        let win = w.create(g, None)?;
         w.at(g, WINDOWS).path(p![Weak(self.db.node())]).set(&Strong(win))?;
         w.commit()?;
         Ok(win)
@@ -679,7 +679,7 @@ impl Data {
     pub fn create_with(&self, start: impl FnOnce(&Data, &mut osis::Write<'_>, Tid) -> Result<()>) -> Result<Tid> {
         let g = self.home()?;
         let mut w = self.db.write();
-        let t = w.create(g)?;
+        let t = w.create(g, None)?;
         keep_a_day(&mut w, t)?;
         w.at(t, NAME).set(&String::new())?;
         start(self, &mut w, t)?;

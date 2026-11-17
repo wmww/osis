@@ -381,7 +381,7 @@ fn make(w: &mut World, i: usize, under: Option<usize>) -> Result<String, String>
         let d = root_of(e)?;
         let admin = admin.unwrap_or(d);
         let mut m = Mutation::new();
-        let t = m.create(e.thing_record(admin));
+        let t = m.create(e.thing_record(admin, None));
         m.set(t, &value_ak(), &Value::Str(v.clone()))?;
         strong_in(&mut m, admin, t, true)?;
         Ok((t, d, e.commit(m)?))

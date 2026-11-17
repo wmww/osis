@@ -1789,7 +1789,7 @@ fn build_destroyed_world() -> (LocalPeer, Tid, Tid, Tid) {
     let mut lp = LocalPeer::new(4, 0, T0).unwrap();
     let me = lp.peers[0].engine.me();
     let mut m = Mutation::new();
-    let t = lp.peers[0].engine.new_thing(&mut m, me);
+    let t = lp.peers[0].engine.new_expiring_thing(&mut m, me, Some(WallMs(T0.0 + 50_000)));
     m.set(t, &osis_base::Ak::new("x:a.0").unwrap(), &osis_base::Value::Int(0)).unwrap();
     m.expires_all(WallMs(T0.0 + 50_000));
     lp.peers[0].commit(m).unwrap();
@@ -1881,7 +1881,7 @@ fn frozen_holder_through_a_keyless_grant_is_boxed_nothing_spec_crypto_4() {
     let mut lp = LocalPeer::new(2, 0, T0).unwrap();
     let me = lp.peers[0].engine.me();
     let mut m = Mutation::new();
-    let t = lp.peers[0].engine.new_thing(&mut m, me);
+    let t = lp.peers[0].engine.new_expiring_thing(&mut m, me, Some(WallMs(T0.0 + 50_000)));
     m.set(t, &osis_base::Ak::new("x:a.0").unwrap(), &osis_base::Value::Int(0)).unwrap();
     m.expires_all(WallMs(T0.0 + 50_000));
     lp.peers[0].commit(m).unwrap();
@@ -1913,7 +1913,7 @@ fn frozen_holder_keyed_at_the_role_of_its_keyed_paths_spec_crypto_4() {
     let mut lp = LocalPeer::new(2, 0, T0).unwrap();
     let me = lp.peers[0].engine.me();
     let mut m = Mutation::new();
-    let [t, t2, u] = [(); 3].map(|_| lp.peers[0].engine.new_thing(&mut m, me));
+    let [t, t2, u] = [(); 3].map(|_| lp.peers[0].engine.new_expiring_thing(&mut m, me, Some(WallMs(T0.0 + 50_000))));
     for x in [t, t2, u] {
         m.set(x, &osis_base::Ak::new("x:a.0").unwrap(), &osis_base::Value::Int(0)).unwrap();
     }

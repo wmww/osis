@@ -45,7 +45,7 @@ fn under_d(lp: &mut LocalPeer) -> Tid {
     let e = &mut lp.peers[0].engine;
     let d = e.account_root().unwrap();
     let mut m = Mutation::new();
-    let t = m.create(e.thing_record(d));
+    let t = m.create(e.thing_record(d, None));
     m.set(t, &REG, &s("new")).unwrap();
     m.op(d, &ct::HOLDS, holds(t, true)).unwrap();
     e.commit(m).unwrap();

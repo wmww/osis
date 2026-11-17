@@ -61,9 +61,6 @@ pub enum Why {
     OutsideRequired,
     CardSuperseded,
     CardEnded,
-    /// A header-only copy of a minting its thing's witness supersedes (spec/commits.md §5 A
-    /// thing's mintings travel with its record).
-    Superseded,
 }
 
 #[derive(Clone)]

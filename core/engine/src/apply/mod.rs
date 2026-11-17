@@ -264,6 +264,10 @@ fn minted_record(h: &Header, id: &CommitId, p: &osis_commit::Part, tid: &Tid, in
     if !crate::engine::write::is_minting(&d.fragment, &rec) {
         return Err(Error::BadInput("created.0 is not one minting of its record"));
     }
+    // a minting never extends a thing: its commit ends with the record (spec/commits.md §5 Destruction)
+    if rec.expires() != h.expires {
+        return Err(Error::BadInput("created.0 in a commit not expiring with its record"));
+    }
     Ok(rec)
 }
 
@@ -741,8 +745,8 @@ fn thing_wait(
     chain_rec: &dyn Fn(&Tid, &crate::engine::Core) -> Option<CreationRecord>,
 ) -> Option<Reason> {
     // a destroyed thing is unknown, but for what judges its destruction written before it
-    // (`retention::destroy`)
-    let destroyed = || !crate::retention::destroy::judges_destruction(a.ak.as_str()) || a.ak.as_str() != osis_commit::retention::CREATED && crate::retention::destroy::Destruction::of(core, &a.tid).is_some_and(|e| e.after(h));
+    // (`retention::destroy`); a minting never restores it, so one waits while it is destroyed
+    let destroyed = || !crate::retention::destroy::judges_destruction(a.ak.as_str()) || a.ak.as_str() == osis_commit::retention::CREATED || crate::retention::destroy::Destruction::of(core, &a.tid).is_some_and(|e| e.after(h));
     if record(&a.tid).is_none() || core.destroyed(&a.tid) && destroyed() {
         return Some(Reason::UnknownCreated(a.tid));
     }
@@ -2472,7 +2476,7 @@ mod tests {
             let mut m = Mutation::new();
             let mut cur = x;
             for _ in 0..depth {
-                cur = m.create(p1.engine.thing_record(cur));
+                cur = m.create(p1.engine.thing_record(cur, None));
             }
             m.op(cur, &ct::ROLES, PathOp { path: vec![PathSeg::Key(Value::Weak(a1))], op: Op::Set(adm.to_value()) }).unwrap();
             assert!(matches!(p1.commit(m), Err(crate::Error::Permission { .. })), "depth {depth}");
