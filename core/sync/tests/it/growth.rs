@@ -426,10 +426,6 @@ fn a_head_move_relists_nothing_between_a_reader_and_a_store_at_n_and_10n() {
 
 /// Node 0 makes a plain thing under its account root D held from D, a thing with own keys under
 /// its account (held from D), and a plain thing under its node root held from it, writes each,
-/// removes every strong to them and lets them go (a run releases them); then the tombstone
-/// lifetime and two days pass. `rounds` times; what it holds then.
-/// Node 0 makes a plain thing under its account root D held from D, a thing with own keys under
-/// its account (held from D), and a plain thing under its node root held from it, writes each,
 /// removes every strong to them and runs (a pass releases them), `rounds` times; then snapshots
 /// the roots' `holds.0` and D's `tickets.0` (what the trigger leaves held moves in a cycle; a
 /// snapshot ends it at the same place) and lets the tombstone lifetime and two days pass. What
@@ -486,34 +482,128 @@ fn own_rounds(w: &mut World, rounds: usize) -> Held {
     held(w, 0)
 }
 
-// S1, its own-things arm (notes/refgraph-tests.md; issues/reference-graph.md Storage),
-// spec/sync-set.md §3 (Nothing of R stays): what a node makes under its account root, its account
-// and its node root, written and then released, leaves its rows and blobs as a fresh node's of the
-// same account once tombstones have aged out, at 2 and 20 rounds, but for the schemas it learned
-// (`d/`, the node's own).
-#[test]
-#[ignore = "issues/storage-owners.md 2: a bp/ row per round (a certificate copy whose sync ID went); c/ and cv/ one row over, flat; then accept 12's tombstone bytes in c/"]
-fn releasing_own_things_returns_storage_to_a_fresh_nodes_spec_sync_set_3() {
-    let fresh = own_rounds(&mut world(0, 1), 0);
-    let learned = |mut h: Held| {
-        h.0.remove("d/");
-        h
+/// What a set removal's tombstone may add to the roots' snapshots, in their records (`c/`) and
+/// in their blobs: spec/requirements.md Scale, a few bytes per removal (issues/storage-owners.md
+/// 12: no cover can drop one).
+const TOMBSTONE_BYTES: usize = 32;
+
+/// `h` holds what a fresh node of the same account holds (`fresh`), after `removals` set
+/// removals in the roots: every family's rows, but the schemas it learned (`d/`, the node's
+/// own) and `cv/` (`handed`), the same count of blobs, and no more bytes than the removals'
+/// tombstones add to the snapshot records (`c/`) and blobs. `cv/` holds at most one row per
+/// held commit (one per held part dropped as covered whose coverer went: the trigger's
+/// snapshots a fresh node never took); the caller checks it flat.
+#[track_caller]
+fn as_fresh(h: &Held, fresh: &Held, removals: usize, what: &str) {
+    let rest = |c: &Census| {
+        let mut c = c.clone();
+        c.remove("d/");
+        c.remove("cv/");
+        if let Some(x) = c.get_mut("c/") {
+            x.1 = 0;
+        }
+        c
     };
-    for n in [2, 20] {
-        assert_eq!(learned(own_rounds(&mut world(0, 1), n)), fresh, "{n} rounds");
+    let snap = |c: &Census| c.get("c/").copied().unwrap_or_default();
+    let tombs = removals * TOMBSTONE_BYTES;
+    assert_eq!((rest(&h.0), &h.1), (rest(&fresh.0), &fresh.1), "{what}: rows by family");
+    assert!(snap(&h.0).0 == snap(&fresh.0).0 && snap(&h.0).1 <= snap(&fresh.0).1 + tombs, "{what}: c/ {:?}, a fresh node's {:?}, {removals} removals", snap(&h.0), snap(&fresh.0));
+    assert!(h.0.get("cv/").map_or(0, |x| x.0) <= snap(&fresh.0).0, "{what}: cv/ {:?}", h.0.get("cv/"));
+    for (d, (a, b)) in ["engine", "store"].iter().zip(h.2.iter().zip(&fresh.2)) {
+        assert!(a.0 == b.0 && a.1 <= b.1 + tombs as u64, "{what}: {d} blobs (count, bytes) {a:?}, a fresh node's {b:?}");
     }
 }
 
-// S1's forgotten names (spec/commits.md §5 Forgetting): the roots' snapshots carry a tombstone per
-// strong or ticket removed (spec/crdt.md §5.5), a reset no purge acts on, so it keeps no removal's
-// name: `fn/` stays a fresh node's at 2 and 20 rounds. The rest of S1 is the ignored test above.
+// S1, its own-things arm (notes/refgraph-tests.md; issues/reference-graph.md Storage),
+// spec/sync-set.md §3 (Nothing of R stays): what a node makes under its account root, its account
+// and its node root, written and then released, leaves its rows and blobs as a fresh node's of the
+// same account once tombstones have aged out, at 2 and 20 rounds: but the roots' set tombstones,
+// a few bytes per removal (three strongs and the keyed thing's ticket a round), and `cv/` (flat).
 #[test]
-fn releasing_own_things_leaves_no_forgotten_names_spec_commits_5() {
-    let names = |h: Held| h.0.get("fn/").copied();
-    let fresh = names(own_rounds(&mut world(0, 1), 0));
-    for n in [2, 20] {
-        assert_eq!(names(own_rounds(&mut world(0, 1), n)), fresh, "{n} rounds");
+fn releasing_own_things_returns_storage_to_a_fresh_nodes_spec_sync_set_3() {
+    let fresh = own_rounds(&mut world(0, 1), 0);
+    let (a, b) = (own_rounds(&mut world(0, 1), 2), own_rounds(&mut world(0, 1), 20));
+    as_fresh(&a, &fresh, 2 * 4, "2 rounds");
+    as_fresh(&b, &fresh, 20 * 4, "20 rounds");
+    assert_eq!(a.0.get("cv/"), b.0.get("cv/"), "cv/ flat");
+}
+
+/// Each node's roots snapshotted (`own_rounds`), then the inbox lifetime, the role keep and the
+/// tombstone lifetime and two days: what each node holds.
+fn settled(w: &mut World) -> Vec<Held> {
+    use osis_base::format::{INBOX_LIFETIME_MS, ROLE_KEEP_MS};
+    use osis_schema::core_types::{HOLDS, TICKETS};
+    for i in 0..w.len() {
+        let (root, d) = (w.engine(i).node_root().unwrap(), w.engine(i).account_root().unwrap());
+        w.write(i, |e| {
+            for (t, ak) in [(d, HOLDS.name()), (d, TICKETS.name()), (root, HOLDS.name())] {
+                e.snapshot(&t, &ak).unwrap();
+            }
+        });
     }
+    w.run();
+    w.advance(INBOX_LIFETIME_MS.max(ROLE_KEEP_MS) + TOMBSTONE_LIFETIME_MS + 2 * DAY_MS);
+    w.run();
+    (0..w.len()).map(|i| held(w, i)).collect()
+}
+
+/// Node 0 makes a thing under its account root, writes it, and gives node 1's account read on
+/// it: node 1 accepts (`accept`, a strong from its account root) or declines (no accept, the
+/// fire left in its inbox); node 0 writes again, removes node 1's account, and both let the thing
+/// go (node 0 its strong, node 1 its accept). `rounds` times; then `settled`.
+fn grant_rounds(rounds: usize, accept: bool) -> Vec<Held> {
+    use crate::harness::history::Holder;
+    let mut w = world(0, 2);
+    w.cap = 2_000_000;
+    for k in 0..rounds {
+        let give = if accept { Grant(0, k, 1, Gives::Reads) } else { Give(0, k, Holder::Node(1), Gives::Reads) };
+        let mut steps = vec![New(0), Write(0, k), give, Run, Write(0, k), Run, Remove(0, k, 1), Run];
+        if accept {
+            steps.push(Unstrong(1, None, k));
+        }
+        steps.extend([Unstrong(0, None, k), Run]);
+        let _ = play(&mut w, &steps, String::new());
+        w.advance(1_000);
+    }
+    settled(&mut w)
+}
+
+/// `grant_rounds` at 2 and 20 rounds: the maker as a fresh world's node 0 (`as_fresh`), each
+/// round's set removals at most `removals`; the grantee the same at 20 rounds as at 2, but for
+/// the removals' tombstones (as a fresh world's: issues/storage-owners.md 15, 16) and, accepted,
+/// one header opening (`ou/`) per released thing (issues/storage-owners.md 17).
+fn grants_as_fresh(accept: bool, removals: usize) {
+    let fresh = grant_rounds(0, accept);
+    let (a, b) = (grant_rounds(2, accept), grant_rounds(20, accept));
+    as_fresh(&a[0], &fresh[0], 2 * removals, "the maker, 2 rounds");
+    as_fresh(&b[0], &fresh[0], 20 * removals, "the maker, 20 rounds");
+    let openings = |h: &Held| {
+        let mut h = h.clone();
+        (h.0.remove("ou/").map_or(0, |x| x.0), h)
+    };
+    let ((x, a1), (y, b1)) = (openings(&a[1]), openings(&b[1]));
+    as_fresh(&b1, &a1, 18 * removals, "the grantee, 20 rounds against 2");
+    assert!(y <= x + if accept { 18 } else { 0 }, "the grantee: ou/ {x} rows at 2 rounds, {y} at 20");
+    for (i, (x, y)) in a.iter().zip(&b).enumerate() {
+        assert_eq!(x.0.get("cv/"), y.0.get("cv/"), "node {i}: cv/ flat");
+    }
+}
+
+// S1, its grant, fire, accept and revoke arm (notes/refgraph-tests.md; issues/reference-graph.md
+// Storage), spec/sync-set.md §3: a thing granted to another account, its fire accepted, written,
+// the grantee removed and both sides letting it go, leaves the maker as a fresh world's and the
+// grantee flat once the inbox lifetime, the role keep and tombstones have passed, at 2 and 20
+// rounds.
+#[test]
+#[ignore = "issues/storage-owners.md 18: the grantee keeps every thing it was granted and removed from"]
+fn a_granted_and_revoked_thing_returns_storage_to_a_fresh_worlds_spec_sync_set_3() {
+    grants_as_fresh(true, 4);
+}
+
+// S1, its decline arm: as the grant arm, the fire never accepted.
+#[test]
+fn a_declined_grant_returns_storage_to_a_fresh_worlds_spec_sync_set_3() {
+    grants_as_fresh(false, 4);
 }
 
 // spec/sync-judgement.md §3 (Restart and forgetting: an own entry logs a commit held here),
@@ -560,3 +650,4 @@ fn a_released_things_forgotten_commits_leave_no_own_entry_spec_sync_judgement_3(
         assert!(w.store(0).entry(s, b).unwrap().is_none(), "an own entry of a forgotten commit under {s:?}");
     }
 }
+

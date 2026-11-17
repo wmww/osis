@@ -1009,7 +1009,10 @@ fn rejudge_once(tx: &mut Tx<'_>, rebuild: bool) -> Result<Vec<(Tid, Ak)>> {
                     }
                 } else {
                     fell.entry((x.tid, x.ak.clone())).or_default().push((id, ai));
-                    falls.push((x.tid, x.ak.clone()));
+                    // a held part's fall: one missing here (a release's) marks nothing
+                    if m.holds(ai) {
+                        falls.push((x.tid, x.ak.clone()));
+                    }
                 }
                 if x.ak.as_str() == "secrets.0" {
                     secrets_flips.push((id, ai, *b));

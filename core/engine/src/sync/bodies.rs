@@ -378,6 +378,32 @@ impl Engine {
         self.core.ix.blob_parts.get(b).cloned()
     }
 
+    /// Sync ID S is about to be shredded, and `blobs` are those no other sync ID's entry or
+    /// tombstone names (spec/sync-set.md §3, Nothing of R stays): what this node noted of each
+    /// that only S's entries own goes. A per-sync-ID copy is S's (sealed for its sync ID's thing,
+    /// spec/sync-judgement.md §1), whether its commit is held or not, and a held commit's
+    /// openings (`ou/`) under things whose record is not held with it (those under the released
+    /// thing); a blob of a commit neither held nor pending (forgotten with lost access, its entries
+    /// parked for the access to return) is its entries'. A shared blob of a held commit stays the
+    /// commit's. Before the shred, so a crash between does both again.
+    pub fn shredding(&mut self, blobs: &[BlobId]) -> Result<()> {
+        let ix = &self.core.ix;
+        let gone: Vec<BlobId> = blobs.iter().filter(|b| ix.blob_parts.get(b).is_some_and(|x| x.copy || !(ix.commits.contains_key(&x.commit) || ix.pending.contains_key(&x.commit)))).copied().collect();
+        if gone.is_empty() {
+            return Ok(());
+        }
+        self.run(|tx| {
+            for b in &gone {
+                let Some(c) = tx.core.ix.blob_parts.get(b).map(|x| x.commit) else { continue };
+                unnote_blob(tx, b)?;
+                if tx.core.ix.commits.contains_key(&c) {
+                    crate::sync_ids::opened::forget_unheld(tx, &c)?;
+                }
+            }
+            Ok(())
+        })
+    }
+
     /// The parts blob `b` holds of its commit, as this node opened or sealed it.
     pub fn blob_parts(&self, b: &BlobId) -> Option<PartSet> {
         self.core.ix.blob_parts.get(b).map(|x| x.parts.clone())

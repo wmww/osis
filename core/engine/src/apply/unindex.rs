@@ -86,8 +86,10 @@ fn unindex(tx: &mut Tx<'_>, id: &CommitId, marks: bool) -> Result<()> {
         super::atomic::forget_snapshot(core, &a.tid, &a.ak, id);
         // a memory commit's aspect holds no durable one (ephemeral aspects): one row per aspect;
         // an invalid part replaced nothing (`undo::parts_before` skips it), so it stands for none;
-        // nor does a fire: a signal reads absent before and after any write (spec/commits.md §7)
-        if marks && m.valid_at(ai) && !a.ak.signal() && core.ix.forgotten.get(&k).is_none_or(|t| *t < v.ts) {
+        // nor does a fire: a signal reads absent before and after any write (spec/commits.md §7);
+        // nor a part on a thing whose record is not held (a release forgot it): the row goes with
+        // the thing, so none is written for one gone
+        if marks && m.valid_at(ai) && !a.ak.signal() && core.created(&a.tid).is_some() && core.ix.forgotten.get(&k).is_none_or(|t| *t < v.ts) {
             if !v.memory {
                 tx.txn.put_local(&records::aspect_key(records::FORGOTTEN, &a.tid, &a.ak), &v.ts.to_u64().to_be_bytes(), Shred::No)?;
             }

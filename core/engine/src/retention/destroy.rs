@@ -341,6 +341,7 @@ pub(super) fn forget_aspect_rows(tx: &mut Tx<'_>, t: &Tid, ak: &Ak) -> Result<()
         tx.txn.remove_local(&records::aspect_key(p, t, ak), Shred::Yes)?;
     }
     super::suspect::forget(tx, t, ak, Shred::Yes)?;
+    crate::sync::falls::forget(tx, t, ak)?;
     for p in [records::LEFTOVER, records::PURGES_NAMED] {
         tx.remove_scanned(&records::aspect_key(p, t, ak), |_| Ok(true))?;
     }

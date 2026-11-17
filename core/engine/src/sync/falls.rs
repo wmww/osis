@@ -32,6 +32,15 @@ pub(crate) fn fell(tx: &mut Tx<'_>, t: &Tid, ak: &Ak) -> Result<()> {
     Ok(())
 }
 
+/// `(t, ak)` is forgotten as on a node that never held a part of it: its mark goes
+/// (`retention::destroy::forget_aspect_rows`).
+pub(crate) fn forget(tx: &mut Tx<'_>, t: &Tid, ak: &Ak) -> Result<()> {
+    if tx.core.ix.falls.remove(&(*t, ak.clone())).is_some() {
+        tx.txn.remove_local(&records::aspect_key(FALLS, t, ak), Shred::No)?;
+    }
+    Ok(())
+}
+
 impl Engine {
     /// The fall mark of `(t, ak)`; reads only its key.
     pub fn fall_mark(&self, t: &Tid, ak: &Ak) -> u64 {

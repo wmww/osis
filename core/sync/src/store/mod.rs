@@ -711,6 +711,37 @@ impl Store {
         self.lock().mem.unnamed.feed()
     }
 
+    /// The blobs an entry or tombstone of S names and no entry or tombstone of another sync ID
+    /// does (durable or in memory): what S's shred takes from this node whole (`Engine::shredding`).
+    pub fn alone_under(&self, s: &SyncId) -> Result<Vec<BlobId>> {
+        let mut g = self.lock();
+        let range = (*s, BlobId([0; 32]))..=(*s, BlobId([0xff; 32]));
+        let mut of_s: BTreeSet<BlobId> = g.mem.entries.range(range.clone()).map(|((_, b), _)| *b).collect();
+        of_s.extend(g.mem.tombs.range(range).map(|((_, b), _)| *b));
+        let elsewhere_mem: BTreeSet<BlobId> = of_s.iter().filter(|b| g.mem.by_blob.get(b).is_some_and(|ss| ss.iter().any(|x| x != s)) || g.mem.tombs.keys().any(|(x, y)| y == *b && x != s)).copied().collect();
+        g.read(|t, _| {
+            for p in [rows::ENTRY, rows::TOMB] {
+                for (k, _) in t.scan_local(&[p, &s.0[..]].concat(), b"", usize::MAX)? {
+                    of_s.insert(rows::tail_ids(&k)?.1);
+                }
+            }
+            let mut out = Vec::new();
+            for b in of_s {
+                if elsewhere_mem.contains(&b) {
+                    continue;
+                }
+                let mut alone = true;
+                for p in [rows::BY_BLOB, rows::TOMB_BY_BLOB] {
+                    alone &= t.scan_local(&[p, &b.0[..]].concat(), b"", usize::MAX)?.iter().all(|(k, _)| k.ends_with(&s.0));
+                }
+                if alone {
+                    out.push(b);
+                }
+            }
+            Ok(out)
+        })
+    }
+
     /// Whether an entry under any sync ID names blob `b` (durable or in memory).
     pub fn named(&self, b: &BlobId) -> Result<bool> {
         let mut g = self.lock();

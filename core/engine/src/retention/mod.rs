@@ -1352,7 +1352,9 @@ impl Engine {
     /// it covered, dropped as invalid or a fire dropped out of history, nothing waiting. A content
     /// commit or content snapshot every part of which dropped as covered (by any writer's cover),
     /// as invalid or as a fire out of history or expired (a stranger's open fires, each its own
-    /// commit, would leave a header for good), no purge
+    /// commit, would leave a header for good), or missing on a thing whose record is not held (a
+    /// release's marked part: the commit of a thing made and released beside a write on a root
+    /// stayed for good once that write was covered), no purge
     /// request (else each write another writer compacts, and each snapshot under a later one,
     /// would leave a header for good: `growth::several_writers_grow_nothing`; and a writer,
     /// removed or not, could pile up invalid headers for good:
@@ -1374,7 +1376,10 @@ impl Engine {
         let covered = |ai: usize| m.dropped(ai).is_some_and(|d| d.why == DropFor::Cover);
         // a fire out of history (or expired) is past every bound and listed nowhere
         let spent = |ai: usize| m.header.aspects.get(ai).is_some_and(|a| a.ak.signal()) && m.dropped(ai).is_some_and(|d| d.why == DropFor::Other);
-        let gone = |ai: usize| covered(ai) || m.dropped_invalid(ai) || spent(ai);
+        // a part missing on a thing whose record is not held reads nothing here (one a release
+        // forgot, or never received): it arrives again with its commit, as at a fresh node
+        let unheld = |ai: usize| m.missing(ai) && m.view.aspects.get(ai).is_some_and(|a| self.core.created(&a.tid).is_none());
+        let gone = |ai: usize| covered(ai) || m.dropped_invalid(ai) || spent(ai) || unheld(ai);
         if matches!(m.view.kind, Kind::Content | Kind::ContentSnapshot) && !m.view.purges && (0..m.view.aspects.len()).all(gone) {
             return Ok(true);
         }

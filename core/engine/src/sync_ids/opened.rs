@@ -422,6 +422,26 @@ pub(crate) fn part_floor(tx: &mut Tx<'_>, c: &CommitId, ai: usize, t: &Tid) -> R
     })
 }
 
+/// Removes the openings of held commit `c` under things whose record is not held: a copy's,
+/// under its released sync ID's thing (`Engine::shredding`), are as at a node that never opened
+/// it.
+pub(crate) fn forget_unheld(tx: &mut Tx<'_>, c: &CommitId) -> Result<()> {
+    let prefix = [records::OPENED_UNDER, c.0.as_slice()].concat();
+    let mut rows = Vec::new();
+    tx.scan(&prefix, |k, _| {
+        if let Some(t) = k.get(4..19).and_then(|b| <[u8; 15]>::try_from(b).ok()) {
+            rows.push(([prefix.as_slice(), k].concat(), Tid::from_bytes(t)));
+        }
+        Ok(())
+    })?;
+    for (k, t) in rows {
+        if tx.core.created(&t).is_none() {
+            tx.txn.remove_local(&k, Shred::Yes)?;
+        }
+    }
+    Ok(())
+}
+
 /// Removes the openings of commit `c` (`Tx::remove_commit`, a pending copy thrown out).
 pub(crate) fn forget(tx: &mut Tx<'_>, c: &CommitId) -> Result<()> {
     let prefix = [records::OPENED_UNDER, c.0.as_slice()].concat();

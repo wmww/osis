@@ -51,7 +51,7 @@ pub trait Ground {
     fn holder(&mut self, s: &SyncId) -> Result<Option<Held>>;
     /// Whether S has a source now (`Status::sourced`): a pass with none ends at once.
     fn sourced(&mut self, s: &SyncId) -> bool;
-    /// Shreds S's rows (`Store::shred`).
+    /// Shreds S's rows (`Store::shred`), the engine's notes of S's copies first (`Engine::shredding`).
     fn shred(&mut self, s: &SyncId) -> Result<()>;
     /// Whether a role commit on `t` is held but uncounted, its epoch revoked and no list naming
     /// it held (`Engine::uncounted_role_on`).
@@ -356,6 +356,8 @@ impl Ground for Live<'_, '_> {
         self.status.sourced(s)
     }
     fn shred(&mut self, s: &SyncId) -> Result<()> {
+        let alone = self.cx.store.alone_under(s)?;
+        self.cx.engine.shredding(&alone)?;
         self.cx.store.shred(s)
     }
     fn uncounted_role(&mut self, t: &Tid) -> bool {
