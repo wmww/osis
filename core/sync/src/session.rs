@@ -51,6 +51,32 @@ const UNANSWERED: u64 = (WINDOW + 2 * MAX_MESSAGE + 4) as u64;
 /// (spec/sync-streams.md §1 Stall).
 const OTHER_BYTES: u64 = CLOSING + UNANSWERED;
 
+/// What a node holds out for every connection together (spec/sync-transport.md §5 Served
+/// connections, local policy): bytes written and not taken by the transport, with the reply
+/// allowances of the requests it is answering; never passed. Each connection's share is this over
+/// the connections up. At 0 nothing is answered or sent; at infinity memory grows with the
+/// connections (each bounded alone, `CLOSING`). It must take the costliest reply
+/// (`REPLY_BUDGET` with its frame) whole, as one holding nothing may take one past its share.
+pub const OUT_BOUND: u64 = 256 << 20;
+
+/// What a node holds received for every connection together (spec/sync-transport.md §5 Served
+/// connections, local policy): bytes of frames received and not yet run or answered, partial ones
+/// included; past it the connection holding the most closes. At 0 every connection closes at its
+/// first bytes; at infinity memory grows with the connections (each bounded alone,
+/// `UNANSWERED` and one partial frame while it reads).
+pub const IN_BOUND: u64 = 256 << 20;
+
+/// A peer's request waiting for room (`Session::fits`): reading stops behind it.
+#[derive(Clone, Debug)]
+struct Held {
+    id: RequestId,
+    m: Msg,
+    /// Its reply allowance.
+    allowance: u64,
+    /// Since when it waits.
+    since: Mono,
+}
+
 /// One message received, by role.
 #[derive(Clone, Debug)]
 pub enum Incoming {
@@ -210,8 +236,8 @@ pub struct Session {
     /// its own events.
     moved: Mono,
     other: u64,
-    /// The peer's requests not answered yet, with their costs.
-    unanswered: BTreeMap<RequestId, u64>,
+    /// The peer's requests not answered yet, with their costs and frame lengths.
+    unanswered: BTreeMap<RequestId, (u64, u64)>,
     unanswered_bytes: u64,
     bytes: Vec<u8>,
     /// Why a module closes this connection.
@@ -232,6 +258,28 @@ pub struct Session {
     quiet: Option<u64>,
     /// A client connection (`client`): the dialer proves nothing.
     client: bool,
+    /// The reply allowances of the peer's requests handed on and not answered (`OUT_BOUND`),
+    /// and their sum.
+    admitted: BTreeMap<RequestId, u64>,
+    reserved: u64,
+    /// Frame bytes of the peer's requests not answered (`IN_BOUND`).
+    unanswered_len: u64,
+    /// The peer's request waiting for room: nothing behind it is read meanwhile.
+    held: Option<Held>,
+    /// What `Sessions` lets this connection hold out (`fits`): the bound's room left beside the
+    /// others' holdings, its share, and whether a request elsewhere waits for the bound's room
+    /// (none goes past it). Unbounded on a session outside `Sessions`.
+    room: u64,
+    share: u64,
+    blocked: bool,
+    /// When the transport last took bytes of it.
+    last_taken: Mono,
+    /// Whether the transport was last told to read it.
+    told_reading: bool,
+    /// Own requests stopped for room (`pump`).
+    starved: bool,
+    /// Its holdings as `Sessions` last counted them (out, in).
+    counted: (u64, u64),
 }
 
 impl Session {
@@ -281,6 +329,17 @@ impl Session {
             probe: None,
             quiet: None,
             client: false,
+            admitted: BTreeMap::new(),
+            reserved: 0,
+            unanswered_len: 0,
+            held: None,
+            room: u64::MAX,
+            share: u64::MAX,
+            blocked: false,
+            last_taken: cx.mono,
+            told_reading: true,
+            starved: false,
+            counted: (0, 0),
         };
         s.write(Hello::new(cx.now.0, challenge).encode());
         s
@@ -302,6 +361,16 @@ impl Session {
         let mut ins = Vec::new();
         let (mut own, mut other) = (false, 0u64);
         loop {
+            // a request waiting for room: read no further until it goes
+            if let Some(h) = &self.held {
+                if !self.fits(h.allowance) {
+                    break;
+                }
+                if let Some(h) = self.held.take() {
+                    self.run_request(h.id, h.m, h.allowance, cx, &mut ins)?;
+                }
+                continue;
+            }
             let body = match self.frames.next_frame() {
                 Ok(Some(b)) => b,
                 Ok(None) => break,
@@ -322,7 +391,7 @@ impl Session {
             }
         }
         // bytes of a reply to the oldest request still arriving
-        if let (Some(oldest), Some(part)) = (self.oldest(), self.frames.partial()) {
+        if let (false, Some(oldest), Some(part)) = (bytes.is_empty(), self.oldest(), self.frames.partial()) {
             own |= peek_head(part).is_some_and(|(kind, id)| id == oldest && osis_proto::msg::flow(kind) == Some(Flow::Reply));
         }
         if own {
@@ -349,8 +418,12 @@ impl Session {
     /// Answers the peer's request `to`.
     pub fn answer(&mut self, to: RequestId, mut m: Msg) {
         m.set_id(to);
-        if let Some(cost) = self.unanswered.remove(&to) {
+        if let Some((cost, len)) = self.unanswered.remove(&to) {
             self.unanswered_bytes -= cost;
+            self.unanswered_len -= len;
+        }
+        if let Some(a) = self.admitted.remove(&to) {
+            self.reserved -= a;
         }
         self.write(m.encode());
     }
@@ -361,7 +434,8 @@ impl Session {
     pub fn push(&mut self, m: Msg) -> bool {
         let body = m.encode();
         let u = self.unwritten();
-        if u > 0 && u + body.len() as u64 + 4 > REPLY_BUDGET as u64 {
+        let len = body.len() as u64 + 4;
+        if u > 0 && u + len > REPLY_BUDGET as u64 || !self.fits(len) {
             return false;
         }
         self.write(body);
@@ -422,6 +496,9 @@ impl Session {
     /// `Sessions`).
     pub fn taken(&mut self, total: u64, mono: Mono) {
         self.mono = self.mono.max(mono);
+        if total.min(self.written) > self.taken {
+            self.last_taken = self.mono;
+        }
         self.taken = self.taken.max(total.min(self.written));
         let Some(oldest) = self.oldest() else { return };
         let taken = self.taken;
@@ -446,6 +523,31 @@ impl Session {
 
     fn unwritten(&self) -> u64 {
         self.written - self.taken
+    }
+
+    /// What it holds out for the connection (`OUT_BOUND`): bytes written and not taken, and the
+    /// reply allowances of the requests it is answering.
+    pub fn out_held(&self) -> u64 {
+        self.unwritten() + self.reserved
+    }
+
+    /// What it holds received for the connection (`IN_BOUND`): frame bytes not yet run, partial
+    /// ones included, and those of the requests it has not answered.
+    pub fn in_held(&self) -> u64 {
+        self.frames.pending() as u64 + self.unanswered_len
+    }
+
+    /// Whether the transport should read the connection: no request waits for room.
+    pub fn reading(&self) -> bool {
+        self.held.is_none()
+    }
+
+    /// Whether `add` more bytes held out fit (spec/sync-transport.md §5 Served connections):
+    /// within the bound's room and this connection's share, none waiting for that room before
+    /// it; one holding nothing may go past its share.
+    fn fits(&self, add: u64) -> bool {
+        let h = self.out_held();
+        !self.blocked && h.saturating_add(add) <= self.room && (h.saturating_add(add) <= self.share || h == 0)
     }
 
     fn oldest(&self) -> Option<RequestId> {
@@ -503,7 +605,12 @@ impl Session {
 
     /// Sends waiting requests while below `WINDOW` (so one always goes), in the order made.
     fn pump(&mut self) {
+        self.starved = false;
         while self.in_flight < WINDOW as u64 {
+            if self.waiting.front().is_some_and(|(_, b)| !self.fits(b.len() as u64 + 4)) {
+                self.starved = true;
+                return;
+            }
             let Some((id, body)) = self.waiting.pop_front() else { return };
             if self.order.is_empty() {
                 self.moved();
@@ -625,12 +732,28 @@ impl Session {
             self.error(id, Code::MALFORMED);
             return Err(Close("request id reused"));
         }
-        let cost = len + allowance(&m);
+        let a = allowance(&m);
+        let cost = len + a;
         if self.unanswered_bytes + cost > UNANSWERED {
             return Err(Close("too many requests unanswered"));
         }
-        self.unanswered.insert(id, cost);
+        self.unanswered.insert(id, (cost, len));
         self.unanswered_bytes += cost;
+        self.unanswered_len += len;
+        // within the bound's room and this connection's share, else it waits and reading stops
+        // (spec/sync-transport.md §5 Served connections)
+        if !self.fits(a) {
+            self.held = Some(Held { id, m, allowance: a, since: self.mono });
+            return Ok(());
+        }
+        self.run_request(id, m, a, cx, ins)
+    }
+
+    /// The peer's request `id`, its reply allowance `a` now held out until it is answered:
+    /// answered here (Ping, Prove) or handed on.
+    fn run_request(&mut self, id: RequestId, m: Msg, a: u64, cx: &mut Cx, ins: &mut Vec<Incoming>) -> Result<(), Close> {
+        self.admitted.insert(id, a);
+        self.reserved += a;
         match m {
             Msg::Ping { .. } => self.answer(id, Msg::Pong { id, wall_ms: self.now.0 }),
             Msg::Prove { proofs, rotations, .. } => self.proved_to(id, proofs, rotations, cx, ins)?,
@@ -808,6 +931,11 @@ fn rotations(cx: &mut Cx, mut room: usize) -> Result<Vec<osis_base::Value>, Clos
 /// leaves at the end of the step (`take_sends`). Also the deadlines: each session's (the stall
 /// clock, the peer's Hello) and each dial's not up yet; work per step is in proportion to the
 /// sessions the step touched.
+///
+/// And the node-wide bounds on what connections hold (spec/sync-transport.md §5 Served
+/// connections): the totals held out and received, kept by recounting the session last lent out
+/// (`get_mut`: every change to a session goes through it), each lent session told its room and
+/// share; the requests waiting for room, in the order they began to (`admit`).
 #[derive(Clone, Debug, Default)]
 pub struct Sessions {
     conns: BTreeMap<ConnId, Session>,
@@ -819,6 +947,17 @@ pub struct Sessions {
     deadline: BTreeMap<ConnId, Mono>,
     /// Dials not up yet (their deadline is in `deadlines`).
     dials: BTreeSet<ConnId>,
+    /// Held out and received over every session, as counted (`recount`).
+    out_total: u64,
+    in_total: u64,
+    /// The session lent out last, not recounted yet.
+    lent: Option<ConnId>,
+    /// Sessions with a request waiting for room, in the order they began to wait.
+    waiting: VecDeque<ConnId>,
+    /// Sessions whose own requests stopped for room.
+    starved: BTreeSet<ConnId>,
+    /// A waiting request does not fit the bound's room: nothing else goes past it.
+    room_blocked: bool,
 }
 
 impl Sessions {
@@ -827,11 +966,124 @@ impl Sessions {
     }
 
     pub fn get_mut(&mut self, conn: ConnId) -> Option<&mut Session> {
+        self.recount();
         let (now, mono) = (self.now, self.mono);
+        let n = self.conns.len().max(1) as u64;
         let s = self.conns.get_mut(&conn)?;
         self.touched.insert(conn);
         (s.now, s.mono) = (s.now.max(now), s.mono.max(mono));
+        s.room = OUT_BOUND.saturating_sub(self.out_total - s.counted.0);
+        s.share = OUT_BOUND / n;
+        s.blocked = self.room_blocked;
+        self.lent = Some(conn);
         Some(s)
+    }
+
+    /// The session lent out last counted again: the totals, the waiting order, the starved.
+    fn recount(&mut self) {
+        let Some(c) = self.lent.take() else { return };
+        let Some(s) = self.conns.get_mut(&c) else { return };
+        let now = (s.out_held(), s.in_held());
+        self.out_total = self.out_total - s.counted.0 + now.0;
+        self.in_total = self.in_total - s.counted.1 + now.1;
+        s.counted = now;
+        let waits = s.held.is_some();
+        // one waiting for the bound's room: nothing else goes past it
+        if s.held.as_ref().is_some_and(|h| self.out_total.saturating_add(h.allowance) > OUT_BOUND) {
+            self.room_blocked = true;
+        }
+        if waits != self.waiting.contains(&c) {
+            match waits {
+                true => self.waiting.push_back(c),
+                false => self.waiting.retain(|w| *w != c),
+            }
+        }
+        match s.starved {
+            true => self.starved.insert(c),
+            false => self.starved.remove(&c),
+        };
+    }
+
+    /// The requests waiting for room that fit now, each handed on with what its connection
+    /// reads after it, in the order they began to wait (spec/sync-transport.md §5 Served
+    /// connections): one that does not fit the bound's room stops those after it; one past only
+    /// its own share (its bytes not taken yet) waits alone. Then own requests stopped for room
+    /// go where they fit. Each result as `Session::receive`'s.
+    pub fn admit(&mut self, cx: &mut Cx) -> Vec<(ConnId, Result<Vec<Incoming>, Close>)> {
+        self.recount();
+        self.room_blocked = false;
+        let mut out = Vec::new();
+        for c in self.waiting.clone() {
+            let Some(s) = self.get_mut(c) else { continue };
+            s.blocked = false;
+            let Some(need) = s.held.as_ref().map(|h| h.allowance) else { continue };
+            if s.fits(need) {
+                let r = s.receive(&[], cx);
+                out.push((c, r));
+            } else if s.out_held().saturating_add(need) > s.room {
+                self.recount();
+                self.room_blocked = true;
+                break;
+            }
+        }
+        self.recount();
+        for c in self.starved.clone() {
+            if let Some(s) = self.get_mut(c) {
+                s.pump();
+            }
+        }
+        self.recount();
+        out
+    }
+
+    /// The connection holding the most received while every connection together holds more
+    /// than `IN_BOUND`: to close (spec/sync-transport.md §5 Served connections).
+    pub fn over_in(&mut self) -> Option<ConnId> {
+        self.recount();
+        if self.in_total <= IN_BOUND {
+            return None;
+        }
+        self.conns.iter().max_by_key(|(c, s)| (s.in_held(), std::cmp::Reverse(**c))).map(|(c, _)| *c)
+    }
+
+    /// The connections to close for the first request waiting for the bound's room once it has
+    /// waited half the stall time (spec/sync-transport.md §5 Served connections): first those
+    /// whose bytes the transport took none of while it waited, then the rest, the one holding
+    /// the most first in each, until it fits; the waiting one itself among them.
+    fn room_closes(&mut self, now: Mono) -> Vec<ConnId> {
+        self.recount();
+        let Some((c, since, need)) = self.room_wait() else { return Vec::new() };
+        if since.after(STALL_TIMEOUT_MS / 2) > now {
+            return Vec::new();
+        }
+        let mut order: Vec<(bool, u64, ConnId)> = self.conns.iter().map(|(k, s)| (s.last_taken > since, s.out_held(), *k)).collect();
+        order.sort_by_key(|(took, held, k)| (*took, std::cmp::Reverse(*held), *k));
+        let own = self.conns.get(&c).map_or(0, Session::out_held);
+        let (mut total, mut n) = (self.out_total, self.conns.len() as u64);
+        let mut out = Vec::new();
+        for (_, held, k) in order {
+            let fits = total + need <= OUT_BOUND && (own + need <= OUT_BOUND / n.max(1) || own == 0);
+            if fits {
+                break;
+            }
+            out.push(k);
+            if k == c {
+                break;
+            }
+            total -= held;
+            n -= 1;
+        }
+        out
+    }
+
+    /// The first waiting request that does not fit the bound's room: its connection, since when
+    /// it waits, its allowance.
+    fn room_wait(&self) -> Option<(ConnId, Mono, u64)> {
+        self.waiting.iter().find_map(|c| {
+            let s = self.conns.get(c)?;
+            let h = s.held.as_ref()?;
+            (self.out_total.saturating_add(h.allowance) > OUT_BOUND).then_some((*c, h.since, h.allowance))
+        })
     }
 
     pub fn conns(&self) -> impl Iterator<Item = ConnId> + '_ {
@@ -851,24 +1103,33 @@ impl Sessions {
     }
 
     /// The driver's: a connection up.
-    pub(crate) fn insert(&mut self, s: Session) {
+    pub fn insert(&mut self, s: Session) {
         let conn = s.conn;
+        self.recount();
         self.dials.remove(&conn);
         self.track(conn, None);
         self.conns.insert(conn, s);
         self.touched.insert(conn);
+        // counted from nothing as it is lent next
+        self.lent = Some(conn);
     }
 
     /// The driver's: a connection ended, or a dial failed.
-    pub(crate) fn remove(&mut self, conn: ConnId) -> Option<Session> {
+    pub fn remove(&mut self, conn: ConnId) -> Option<Session> {
+        self.recount();
         self.dials.remove(&conn);
         self.track(conn, None);
         self.touched.remove(&conn);
-        self.conns.remove(&conn)
+        self.waiting.retain(|w| *w != conn);
+        self.starved.remove(&conn);
+        let s = self.conns.remove(&conn)?;
+        self.out_total -= s.counted.0;
+        self.in_total -= s.counted.1;
+        Some(s)
     }
 
     /// The driver's: the transport took `total` bytes of `conn`'s so far.
-    pub(crate) fn taken(&mut self, conn: ConnId, total: u64) {
+    pub fn taken(&mut self, conn: ConnId, total: u64) {
         if let Some(s) = self.get_mut(conn) {
             s.taken(total, s.mono);
         }
@@ -877,7 +1138,7 @@ impl Sessions {
     /// The driver's: the connections and dials whose deadline passed by `now`, each to close.
     pub fn tick(&mut self, now: Mono) -> Vec<(ConnId, Close)> {
         self.mono = self.mono.max(now);
-        let mut out = Vec::new();
+        let mut out: Vec<(ConnId, Close)> = self.room_closes(now).into_iter().map(|c| (c, Close("holds the most while a request waits for room"))).collect();
         while let Some((at, conn)) = self.deadlines.first().copied().filter(|(at, _)| *at <= now) {
             self.deadlines.remove(&(at, conn));
             self.deadline.remove(&conn);
@@ -898,12 +1159,13 @@ impl Sessions {
     /// No request outstanding and no Hello awaited on any connection, no dial waiting
     /// (spec/sync-status.md §3 idle): exactly when no deadline is kept. As of the last step's end.
     pub fn idle(&self) -> bool {
-        self.deadlines.is_empty()
+        self.deadlines.is_empty() && self.waiting.is_empty()
     }
 
-    /// The earliest deadline.
+    /// The earliest deadline, a wait for the bound's room's included.
     pub fn next_wake(&self) -> Option<Mono> {
-        self.deadlines.first().map(|(at, _)| *at)
+        let room = self.room_wait().map(|(_, since, _)| since.after(STALL_TIMEOUT_MS / 2));
+        self.deadlines.first().map(|(at, _)| *at).into_iter().chain(room).min()
     }
 
     /// The driver's: the sessions this step touched that a module closed (their closes go with
@@ -914,13 +1176,21 @@ impl Sessions {
 
     /// The driver's: the bytes of every session the step touched as sends, their deadlines
     /// taken again.
-    pub(crate) fn take_sends(&mut self, out: &mut Vec<Out>) {
+    pub fn take_sends(&mut self, out: &mut Vec<Out>) {
+        self.recount();
+        #[cfg(debug_assertions)]
+        debug_assert_eq!((self.out_total, self.in_total), self.conns.values().fold((0, 0), |(o, i), s| (o + s.out_held(), i + s.in_held())), "the totals held, as counted");
         for c in std::mem::take(&mut self.touched) {
             let Some(s) = self.conns.get_mut(&c) else { continue };
             let bytes = s.take_bytes();
             let d = s.deadline();
             if !bytes.is_empty() {
                 out.push(Out::Send(c, bytes));
+            }
+            // reading stops while a request waits for room, and goes on after it
+            if s.reading() != s.told_reading {
+                s.told_reading = s.reading();
+                out.push(Out::Read(c, s.told_reading));
             }
             self.track(c, d);
         }

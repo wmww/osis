@@ -99,6 +99,7 @@ impl Tracer {
                     self.frames.retain(|(n, c, _), _| (*n, *c) != (i, *conn));
                     self.lines.push(format!("n{i} close {}", c(*conn)));
                 }
+                Out::Read(conn, on) => self.lines.push(format!("n{i} read {} {on}", c(*conn))),
                 Out::Wake(_) => {}
             }
         }

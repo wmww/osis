@@ -240,6 +240,8 @@ pub struct Net {
     rng_seed: u64,
     ephemerals: u64,
     draws: u64,
+    /// Ends their node stopped reading (`Links::read`), with the bytes and close held for them.
+    paused: BTreeMap<(usize, ConnId), Vec<Input>>,
 }
 
 /// splitmix64: one deterministic draw.
@@ -283,7 +285,32 @@ impl Net {
             self.delayed.insert((due, self.held), (to, input));
             self.held_until.insert((to, tc), due);
         } else {
-            self.queue.push_back((to, input));
+            self.enqueue(to, input);
+        }
+    }
+
+    /// `input` to node `to` now, or held while it reads its end no more.
+    fn enqueue(&mut self, to: usize, input: Input) {
+        if let Input::Bytes { conn, .. } | Input::Closed { conn } = &input
+            && let Some(held) = self.paused.get_mut(&(to, *conn))
+        {
+            return held.push(input);
+        }
+        self.queue.push_back((to, input));
+    }
+
+    /// Node `n` reads its end `conn` (`on`) or stops reading it: what was held for it goes, in
+    /// order.
+    fn read(&mut self, n: usize, conn: ConnId, on: bool) {
+        match on {
+            false => {
+                self.paused.entry((n, conn)).or_default();
+            }
+            true => {
+                for i in self.paused.remove(&(n, conn)).unwrap_or_default() {
+                    self.queue.push_back((n, i));
+                }
+            }
         }
     }
 
@@ -294,7 +321,7 @@ impl Net {
                 break;
             }
             let (to, input) = e.remove();
-            self.queue.push_back((to, input));
+            self.enqueue(to, input);
         }
     }
 
@@ -365,6 +392,7 @@ impl Net {
     }
 
     fn close(&mut self, from: usize, conn: ConnId) {
+        self.paused.remove(&(from, conn));
         if let Some((to, tc)) = self.links.remove(&(from, conn)) {
             self.links.remove(&(to, tc));
             self.push(to, tc, Input::Closed { conn: tc }, 0);
@@ -412,6 +440,10 @@ impl Links for NodeLinks<'_> {
 
     fn send(&mut self, conn: ConnId, bytes: &[u8]) {
         self.net.send(self.node, conn, bytes);
+    }
+
+    fn read(&mut self, conn: ConnId, on: bool) {
+        self.net.read(self.node, conn, on);
     }
 
     fn close(&mut self, conn: ConnId) {
@@ -1084,6 +1116,7 @@ impl World {
         self.net.queue.retain(|(n, _)| *n != i);
         self.net.delayed.retain(|_, (n, _)| *n != i);
         self.net.held_until.retain(|(n, _), _| *n != i);
+        self.net.paused.retain(|(n, _), _| *n != i);
         if let Some(l) = self.liars.get_mut(&i) {
             *l = Liar::new(l.lie);
         }

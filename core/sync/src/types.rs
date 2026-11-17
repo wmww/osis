@@ -131,6 +131,9 @@ pub enum Out {
     Send(ConnId, Vec<u8>),
     Dial(ConnId, Address),
     Close(ConnId),
+    /// Read the connection's bytes (true) or stop reading them (false) until told again: a
+    /// connection is read until told not to (spec/sync-transport.md §5 Served connections).
+    Read(ConnId, bool),
     /// Tick the node at `at` on its monotonic clock: replaces any earlier wake (each step gives
     /// at most one, last).
     Wake(Mono),

@@ -11,11 +11,11 @@ impl Node {
     pub fn engine(&mut self) -> &mut Engine;   // the osis handle's writes and reads; then handle(Wrote)
     pub fn status(&self) / status_of(s) / idle() / wait(scope) / redeem(link);
 }
-pub fn apply(out: Vec<Out>, links: &mut impl Links);   // Out: Send, Dial, Close, Wake
+pub fn apply(out: Vec<Out>, links: &mut impl Links);   // Out: Send, Dial, Close, Read (stop or go on reading a connection), Wake
 ```
 `handle`, in order: the engine's reload check; the input routed to its module (bytes: `Session::receive`, then each message to the module `Incoming::to` names, notes/sync-session.md); the compaction trigger (`Engine::compactions`, spec/sync-compaction.md §1); **settle**; `Opens::flush`; the reload check again; dials; keep or close; closes; sessions' bytes; one `Wake`, the earliest of every module's `next_wake`, `Engine::next_timer` and the memo clock's next `until`.
 
-- **Settle**: every module's `settle` (each returns whether it acted) in the order leave, store, unread, opens, read, inbox, streams, status, life, again while one acted. Opens comes before the other sending modules so they act on this round's shared set; status's complete passes ask `Streams::pull_again` at the end of a round.
+- **Settle**: first the requests that waited for room and fit now (`Sessions::admit`, notes/sync-session.md Hostile peers), then every module's `settle` (each returns whether it acted) in the order leave, store, unread, opens, read, inbox, streams, status, life, again while one acted. Opens comes before the other sending modules so they act on this round's shared set; status's complete passes ask `Streams::pull_again` at the end of a round.
 - **The loop ends** because "acted" means only that a module changed something another reads (a store row, an engine write, a member moved), each an `Effects` value moving to a new settled value; a round runs again only while values move. Two modules undoing each other would loop forever: nothing in the product bounds it; the harness fails a step past `ROUND_CAP` (16) rounds (`Node::rounds`, tests only).
 - **Pass ends**: status tells each complete pass to the engine and calls `Engine::pass_end` on S's owner: re-seals, history adds, withdraws and, for the account root D, the account's owed rotations (`signing_due`, spec/permissions.md §3, §5.5). The engine's `signing_due` flag is set by an account commit from elsewhere and at open; a restart judges it only at D's next pass, which only a new role commit on D wants.
 - **Members moving**: opens' `Moved` values go at once to status, read, inbox, the dials (`sharing`) and streams; streams' `Reported` go back to opens (`reports`) until nothing is left.

@@ -46,6 +46,9 @@ pub trait Links {
     fn dial(&mut self, conn: ConnId, to: &Address);
     fn send(&mut self, conn: ConnId, bytes: &[u8]);
     fn close(&mut self, conn: ConnId);
+    /// Reads `conn`'s bytes (`on`) or stops reading them until told again (`Out::Read`); a
+    /// connection up is read.
+    fn read(&mut self, conn: ConnId, on: bool);
     /// The node's one wake, on its monotonic clock (`Engine::mono`): replaces any earlier one.
     fn wake(&mut self, at: Mono);
 }
@@ -62,6 +65,7 @@ pub fn apply(out: Vec<Out>, links: &mut impl Links) {
             Out::Send(c, bytes) => links.send(c, &bytes),
             Out::Dial(c, to) => links.dial(c, &to),
             Out::Close(c) => closes.push(c),
+            Out::Read(c, on) => links.read(c, on),
             Out::Wake(at) => wake = Some(wake.map_or(at, |w| w.min(at))),
         }
     }
@@ -187,9 +191,10 @@ enum Act {
     Status,
     Pull,
     Life,
+    Admit,
 }
 
-const ACTS: [&str; 12] = ["inbox start", "engine follow", "leave", "store", "unread", "opens", "read", "inbox", "streams", "status", "pull again", "life"];
+const ACTS: [&str; 13] = ["inbox start", "engine follow", "leave", "store", "unread", "opens", "read", "inbox", "streams", "status", "pull again", "life", "admit"];
 
 /// The `Act`s of one round, a bit each.
 #[derive(Clone, Copy)]
@@ -598,8 +603,32 @@ impl Node {
 
     fn bytes(&mut self, conn: ConnId, bytes: &[u8], out: &mut Vec<Out>) {
         let Some(s) = self.driver.sessions.get_mut(conn) else { return };
+        let r = s.receive(bytes, &mut cx!(self, out));
+        self.dispatch(conn, r, out);
+        // past the node-wide bound on bytes received, the connection holding the most closes
+        // (spec/sync-transport.md §5 Served connections)
+        while let Some(c) = self.driver.sessions.over_in() {
+            out.push(Out::Close(c));
+            self.closed(c, "holds the most received past the node's bound", out);
+        }
+    }
+
+    /// The requests that waited for room and fit now, each handed on with what its connection
+    /// reads after it (`Sessions::admit`). Whether one went.
+    fn admit(&mut self, out: &mut Vec<Out>) -> bool {
+        let admitted = self.driver.sessions.admit(&mut cx!(self, out));
+        let any = !admitted.is_empty();
+        for (conn, r) in admitted {
+            self.dispatch(conn, r, out);
+        }
+        any
+    }
+
+    /// What `conn`'s session read (`Session::receive`), each message to its module; a close
+    /// closes the connection.
+    fn dispatch(&mut self, conn: ConnId, r: std::result::Result<Vec<Incoming>, crate::session::Close>, out: &mut Vec<Out>) {
         let mut close = None;
-        match s.receive(bytes, &mut cx!(self, out)) {
+        match r {
             Ok(ms) => {
                 let mut moved = Vec::new();
                 for m in ms {
@@ -722,11 +751,13 @@ impl Node {
         loop {
             self.rounds += 1;
             let mut acts = Acts(0);
+            // requests that waited for room the last round freed
+            let mut acted = acts.by(Act::Admit, self.admit(out));
             let mut cx = cx!(self, out);
             let sessions = &mut self.driver.sessions;
             // inbox's start first: what it has the engine follow is part of the sync set, so only
             // then does the engine let go of what it keeps for sync IDs not read
-            let mut acted = acts.by(Act::InboxStart, self.inbox.start(&mut cx)?);
+            acted |= acts.by(Act::InboxStart, self.inbox.start(&mut cx)?);
             if acted {
                 cx.engine.forget_unread()?;
             }

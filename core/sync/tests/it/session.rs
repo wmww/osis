@@ -11,7 +11,7 @@ use osis_proto::limits::{MAX_MESSAGE, NO_RECORD_ID, REPLY_BUDGET, SMALL_REPLY, T
 use osis_proto::prove::ActorProof;
 use osis_proto::{Code, FrameDecoder, Hello, Msg, OFFSET_DIAGNOSTIC_MS, Prover, Pull, PullReply, encode_frame};
 use osis_store::{MemoryBackend, MemoryRoot};
-use osis_sync::session::{Close, Incoming, PINGS, STALL_TIMEOUT_MS, DIAL_TIMEOUT_MS, Session, Sessions, To};
+use osis_sync::session::{Close, Incoming, IN_BOUND, OUT_BOUND, PINGS, STALL_TIMEOUT_MS, DIAL_TIMEOUT_MS, Session, Sessions, To};
 use osis_sync::types::Cx;
 use osis_sync::{ConnId, NodeKey, Out, Store};
 use std::sync::Arc;
@@ -697,4 +697,140 @@ fn a_quiet_peer_answers_the_probe_first_spec_sync_opens_1() {
     assert!(!p.ds.quiet(), "a frame came before the Pong: asked again");
     p.flow();
     assert!(p.ds.quiet(), "nothing before the Pong");
+}
+
+/// `n` listener sessions in one `Sessions`, each past a scripted dialer's Hello.
+fn served(n: u64) -> (End, Sessions) {
+    let (_, mut l) = ends();
+    let mut ss = Sessions::default();
+    for i in 1..=n {
+        let mut s = Session::new(ConnId(ConnId::ACCEPTED | i), EPH, false, 1, LISTEN, &mut l.cx());
+        s.take_bytes();
+        assert!(s.receive(&encode_frame(&Hello::new(T0.0, [3; 32]).encode()), &mut l.cx()).expect("hello").is_empty());
+        ss.insert(s);
+        // its Hello taken: it holds nothing
+        ss.taken(ConnId(ConnId::ACCEPTED | i), u64::MAX);
+    }
+    (l, ss)
+}
+
+/// A Fetch of the costliest reply.
+fn big_fetch(id: u32) -> Vec<u8> {
+    frame(&Msg::Fetch { id: TOP_BIT | id, sync_id: osis_base::SyncId([1; 16]), max_reply: REPLY_BUDGET as u64, ids: vec![osis_base::BlobId([2; 32])] })
+}
+
+/// A reply to Fetch `id` as large as its allowance lets (the module's answer).
+fn big_reply(id: u32) -> Msg {
+    Msg::FetchReply { id: TOP_BIT | id, items: vec![osis_proto::msg::Fetched { blob_id: osis_base::BlobId([2; 32]), entry: Some((vec![7; REPLY_BUDGET - 1024], [0; osis_proto::msg::WRAP_LEN], None)) }] }
+}
+
+/// Every connection's holdings out, summed.
+fn out_held(ss: &Sessions) -> u64 {
+    ss.conns().map(|c| ss.get(c).map_or(0, Session::out_held)).sum()
+}
+
+/// Hands `bytes` to `c` and answers each request it hands on at once, as large as allowed.
+fn feed(l: &mut End, ss: &mut Sessions, c: ConnId, bytes: &[u8]) -> usize {
+    let s = ss.get_mut(c).expect("up");
+    let ins = s.receive(bytes, &mut l.cx()).expect("kept");
+    answer_all(ss, c, ins)
+}
+
+fn answer_all(ss: &mut Sessions, c: ConnId, ins: Vec<Incoming>) -> usize {
+    let s = ss.get_mut(c).expect("up");
+    let mut n = 0;
+    for i in ins {
+        if let Incoming::Request(id, _) = i {
+            s.answer(id, big_reply(id & !TOP_BIT));
+            n += 1;
+        }
+    }
+    n
+}
+
+// spec/sync-transport.md §5 (Served connections): what a node holds out for the connections
+// it serves together (bytes written and not taken, reply allowances of the requests it answers)
+// never passes the bound. A flood of peers each asking the costliest reply and reading nothing
+// gets answers only while they fit; the rest wait, in order, and the node stops reading each
+// waiting connection; once a transport takes bytes the first waiting goes. Fails if each
+// connection is bounded alone (every request answered: memory grows with the connections).
+#[test]
+fn served_connections_hold_out_within_the_bound_spec_sync_transport_5() {
+    let n = 40;
+    let (mut l, mut ss) = served(n);
+    let conns: Vec<ConnId> = ss.conns().collect();
+    let mut answered = 0;
+    for (k, c) in conns.iter().enumerate() {
+        for j in 0..3u32 {
+            answered += feed(&mut l, &mut ss, *c, &big_fetch(k as u32 * 8 + j));
+            assert!(out_held(&ss) <= OUT_BOUND, "held out {} past the bound", out_held(&ss));
+        }
+    }
+    let costliest = REPLY_BUDGET as u64 + 64;
+    assert!(answered as u64 >= OUT_BOUND / costliest - 1 && answered < 3 * n as usize, "answered {answered} of {}", 3 * n);
+    let mut out = Vec::new();
+    ss.take_sends(&mut out);
+    let paused: Vec<ConnId> = out.iter().filter_map(|o| match o {
+        Out::Read(c, false) => Some(*c),
+        _ => None,
+    }).collect();
+    assert!(!paused.is_empty() && paused.iter().all(|c| !ss.get(*c).expect("up").reading()), "waiting connections are not read");
+    // the first connection's transport takes everything: the first waiting request goes
+    let first = conns[0];
+    ss.taken(first, u64::MAX);
+    let admitted = ss.admit(&mut l.cx());
+    assert!(!admitted.is_empty(), "room freed: a waiting request goes");
+    let (c, r) = admitted.into_iter().next().expect("one");
+    assert_eq!(Some(&c), paused.first(), "the first to wait goes first");
+    answer_all(&mut ss, c, r.expect("kept"));
+    assert!(out_held(&ss) <= OUT_BOUND);
+}
+
+// spec/sync-transport.md §5 (Served connections): bytes received and not yet run over every
+// connection, partial frames included, past the node's bound: the connection holding the most
+// is named to close. Fails if each connection is bounded alone.
+#[test]
+fn served_connections_hold_received_within_the_bound_spec_sync_transport_5() {
+    let (mut l, mut ss) = served(40);
+    let conns: Vec<ConnId> = ss.conns().collect();
+    // a frame that claims the largest body and never ends
+    let mut partial = (MAX_MESSAGE as u32).to_be_bytes().to_vec();
+    partial.extend(vec![0x82; MAX_MESSAGE - 4096]);
+    let mut over = None;
+    for (k, c) in conns.iter().enumerate() {
+        let mut p = partial.clone();
+        p.extend(vec![0; k]);
+        ss.get_mut(*c).expect("up").receive(&p, &mut l.cx()).expect("partial");
+        if let Some(x) = ss.over_in() {
+            over = Some((k, x));
+            break;
+        }
+    }
+    let (k, x) = over.expect("past the bound");
+    assert_eq!(x, conns[k], "the one holding the most");
+    assert!((k as u64 + 1) * (MAX_MESSAGE as u64 - 4096) > IN_BOUND);
+}
+
+// spec/sync-transport.md §5 (Served connections): while a request waits for the bound's room, at
+// half the requester's stall time the node closes connections until it fits, first those whose
+// bytes the transport took none of while it waited, the one holding the most first.
+#[test]
+fn a_wait_for_room_closes_the_holders_at_half_the_stall_time_spec_sync_transport_5() {
+    let (mut l, mut ss) = served(40);
+    let conns: Vec<ConnId> = ss.conns().collect();
+    for (k, c) in conns.iter().enumerate() {
+        feed(&mut l, &mut ss, *c, &big_fetch(k as u32));
+    }
+    let mut out = Vec::new();
+    ss.take_sends(&mut out);
+    let wake = ss.next_wake().expect("a wait for room");
+    assert_eq!(wake, Mono(T0.0 + STALL_TIMEOUT_MS / 2));
+    // one holder's transport took its bytes meanwhile: it goes last
+    let took = conns[0];
+    ss.set_now(T0, Mono(T0.0 + 1));
+    let hello = encode_frame(&Hello::new(T0.0, [3; 32]).encode()).len() as u64;
+    ss.taken(took, hello + 1);
+    assert!(ss.tick(Mono(wake.0 - 1)).is_empty(), "not yet");
+    let closed: Vec<ConnId> = ss.tick(wake).into_iter().map(|(c, _)| c).collect();
+    assert!(!closed.is_empty() && !closed.contains(&took), "closed {closed:?}");
 }

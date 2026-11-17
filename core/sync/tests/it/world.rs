@@ -62,6 +62,9 @@ impl Links for Record {
     fn close(&mut self, conn: ConnId) {
         self.0.push(format!("close {}", conn.0));
     }
+    fn read(&mut self, conn: ConnId, on: bool) {
+        self.0.push(format!("read {} {on}", conn.0));
+    }
     fn wake(&mut self, at: osis_base::Mono) {
         self.0.push(format!("wake {}", at.0));
     }

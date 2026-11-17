@@ -130,7 +130,7 @@ impl Net {
                         match o {
                             Out::Dial(conn, _) => downs.push(conn),
                             Out::Wake(at) => l.wake = Some(at),
-                            Out::Send(..) | Out::Close(_) => {}
+                            Out::Send(..) | Out::Close(_) | Out::Read(..) => {}
                         }
                     }
                     for conn in downs {
@@ -438,6 +438,8 @@ struct Fabric {
     /// Deliveries so far, against `cap`.
     deliveries: u64,
     cap: u64,
+    /// Ends their node stopped reading (`Links::read`), with the bytes held for them meanwhile.
+    paused: BTreeMap<(usize, ConnId), Vec<Vec<u8>>>,
 }
 
 /// Deliveries one `run` may make before it panics as a storm. At 0 nothing runs; at infinity a
@@ -451,7 +453,7 @@ pub const MANUAL_HORIZON_MS: u64 = 3_600_000;
 impl ManualNet {
     /// A network whose nodes run on `clock` (give each node the same clock, `Knobs::clock`).
     pub fn new(clock: Arc<ManualClock>) -> ManualNet {
-        ManualNet(Arc::new(Mutex::new(Fabric { clock, nodes: Vec::new(), queue: VecDeque::new(), wakes: BTreeMap::new(), links: BTreeMap::new(), sent: BTreeMap::new(), ups: BTreeMap::new(), accepted: 0, offline: Default::default(), sockets: BTreeMap::new(), main: Default::default(), lose: None, deliveries: 0, cap: MANUAL_CAP })))
+        ManualNet(Arc::new(Mutex::new(Fabric { clock, nodes: Vec::new(), queue: VecDeque::new(), wakes: BTreeMap::new(), links: BTreeMap::new(), sent: BTreeMap::new(), ups: BTreeMap::new(), accepted: 0, offline: Default::default(), sockets: BTreeMap::new(), main: Default::default(), lose: None, deliveries: 0, cap: MANUAL_CAP, paused: BTreeMap::new() })))
     }
 
     /// A new node's place (`Osis::start`).
@@ -594,6 +596,8 @@ impl Fabric {
     fn cut(&mut self, a: usize, c: ConnId) {
         if let Some((b, d)) = self.links.remove(&(a, c)) {
             self.links.remove(&(b, d));
+            self.paused.remove(&(a, c));
+            self.paused.remove(&(b, d));
             self.queue.push_back((a, Input::Closed { conn: c }));
             self.queue.push_back((b, Input::Closed { conn: d }));
         }
@@ -638,14 +642,33 @@ impl Links for FabricLinks<'_> {
         let total = f.sent.entry((self.node, conn)).or_default();
         *total += bytes.len() as u64;
         let total = *total;
-        f.queue.push_back((t, Input::Bytes { conn: c, bytes: bytes.to_vec() }));
+        match f.paused.get_mut(&(t, c)) {
+            Some(held) => held.push(bytes.to_vec()),
+            None => f.queue.push_back((t, Input::Bytes { conn: c, bytes: bytes.to_vec() })),
+        }
         f.queue.push_back((self.node, Input::Taken { conn, bytes: total }));
+    }
+
+    fn read(&mut self, conn: ConnId, on: bool) {
+        let f = &mut *self.f;
+        match on {
+            false => {
+                f.paused.entry((self.node, conn)).or_default();
+            }
+            true => {
+                for bytes in f.paused.remove(&(self.node, conn)).unwrap_or_default() {
+                    f.queue.push_back((self.node, Input::Bytes { conn, bytes }));
+                }
+            }
+        }
     }
 
     fn close(&mut self, conn: ConnId) {
         let f = &mut *self.f;
+        f.paused.remove(&(self.node, conn));
         if let Some((t, c)) = f.links.remove(&(self.node, conn)) {
             f.links.remove(&(t, c));
+            f.paused.remove(&(t, c));
             f.queue.push_back((t, Input::Closed { conn: c }));
         }
     }

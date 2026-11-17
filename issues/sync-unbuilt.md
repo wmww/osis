@@ -6,7 +6,6 @@
 The module notes (notes/sync-*.md) point here. Untested built parts: issues/sync-tests-owed.md.
 
 ## Security
-- **Served connections' node-wide bound** (spec/sync-transport.md §5 Served connections: requests wait for room, reading paused, the largest holders closed): each connection is bounded alone, so memory grows with connections; needs `Sessions` to hold answers back.
 - **Role changes travel** (spec/permissions.md §4) under the holder A's own sync ID only (`Engine::held_on`), not also under the sync ID of each thing whose keys open A (an account root holding a link's K): a node reading A only that way sees A's removal late.
 - **Deposit-only steps** (a refreshed seed, no newer role epoch) are issued without the waits of spec/permissions.md §3 and spec/sync-ids.md §6 (every entry it can open opened at the sources it reaches; no valid `keys.0` part of the actor missing; `flows::sync_ids::due_at`).
 - **Connection diagnostics** share one local rate bucket and never dedup (each names its connection, `dN`/`aN`): a peer opening and dropping connections pushes out real connection and dial-failure reports. Key them per remote.

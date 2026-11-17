@@ -43,6 +43,9 @@ struct Live {
     unix: bool,
     /// Accepted by a listener of this set under this key.
     took: Option<(Listening, [u8; 32])>,
+    /// Whether its reader reads (`Links::read`): stopped, the transport's flow control holds the
+    /// peer back.
+    reading: tokio::sync::watch::Sender<bool>,
     tasks: [JoinHandle<()>; 2],
 }
 
@@ -256,8 +259,15 @@ impl<T: Transport> TransportLinks<T> {
         let Link { peer_key, rank, tx, mut rx, peer, .. } = l;
         let unix = matches!(peer, osis_transport::Peer::Unix { .. });
         let ev = self.tx.clone();
+        let (reading, mut gate) = tokio::sync::watch::channel(true);
         let reader = tokio::spawn(async move {
-            while let Some(b) = rx.recv().await {
+            loop {
+                // nothing is read while the node stops reading (a request of the peer's waits
+                // for room)
+                if gate.wait_for(|on| *on).await.is_err() {
+                    return;
+                }
+                let Some(b) = rx.recv().await else { break };
                 if ev.send(Event::Bytes(conn, b)).is_err() {
                     return;
                 }
@@ -274,7 +284,7 @@ impl<T: Transport> TransportLinks<T> {
                 }
             }
         });
-        self.live.insert(conn, Live { tx, unix, took, tasks: [reader, taken] });
+        self.live.insert(conn, Live { tx, unix, took, reading, tasks: [reader, taken] });
         Input::Up { conn, peer: NodeKey(peer_key), rank, dialed, listener: NodeKey(listener) }
     }
 }
@@ -289,6 +299,12 @@ impl<T: Transport> Links for TransportLinks<T> {
                 let _ = ev.send(Event::Dialed(conn, r, to.key));
             }),
         );
+    }
+
+    fn read(&mut self, conn: ConnId, on: bool) {
+        if let Some(l) = self.live.get(&conn) {
+            l.reading.send_replace(on);
+        }
     }
 
     fn send(&mut self, conn: ConnId, bytes: &[u8]) {
