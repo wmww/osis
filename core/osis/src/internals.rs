@@ -127,6 +127,10 @@ pub struct Knobs {
     pub net: Option<crate::net::ManualNet>,
     /// A thin client's scratch node (`sources::scratch`): it dials its node's socket.
     pub(crate) thin: bool,
+    /// The node neither listens for other nodes nor finds them on the local network: it syncs
+    /// only with those it dials (`Config::dial`): a thin client's scratch node, and a test that
+    /// serves its socket on a real runtime without opening a network port.
+    pub no_listen: bool,
 }
 
 /// The hooks on `Osis` (`use osis::internals::Internals;`).

@@ -206,10 +206,10 @@ pub fn recv<T>(rx: &Receiver<T>) -> T {
 /// needs; a strong to a key actor enters nothing). Nothing when it keeps it already.
 pub fn know(db: &Osis, who: Tid) {
     let root = db.account_root();
-    if who == db.me() || db.engine(|e| e.references_from(&root).unwrap().iter().any(|r| r.target == who && r.kind == osis::RefKind::Strong && r.ak.as_str() == "holds.0")) {
+    if who == db.me() || db.holds(root, who).unwrap() {
         return;
     }
-    db.commit_with(|w| w.at(root, osis::core::HOLDS).path(osis::p![]).add(&osis::Ref::Strong(osis::Strong(who)))).unwrap();
+    db.commit_with(|w| w.hold(root, who)).unwrap();
 }
 
 /// Delivers every commit `from` holds to `to` (the engine-level path `LocalPeer` uses), `to`
@@ -294,7 +294,7 @@ impl Held for Write<'_> {
     fn create_held_with_admin(&mut self, admin: Tid) -> Result<Tid> {
         let t = self.create(admin)?;
         let holder = if admin == self.db().me() { self.db().account_root() } else { admin };
-        self.at(holder, osis::core::HOLDS).path(osis::p![]).add(&osis::Ref::Strong(osis::Strong(t)))?;
+        self.hold(holder, t)?;
         Ok(t)
     }
 }

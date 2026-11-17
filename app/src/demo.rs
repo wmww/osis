@@ -2,7 +2,7 @@
 //! per account (marked `osis_app:demo.0` on home).
 
 use crate::contact::{EMAILS, Labeled, ORG, Org, PHONES};
-use osis_kit::store::{Data, hold, keep_a_day};
+use osis_kit::store::{Data, keep_a_day};
 use crate::event::{END, End, LOCATION, START, Start, Wall};
 use crate::schema::{COLOR, DEMO};
 use osis_kit::schema::FAVORITES;
@@ -25,10 +25,10 @@ impl Ctx<'_, '_> {
         let t = self.w.create(self.home)?;
         keep_a_day(self.w, t)?;
         self.w.at(t, NAME).set(&name.to_string())?;
-        hold(self.w, self.home, t)?;
+        self.w.hold(self.home, t)?;
         for g in tags {
             if let Some(g) = self.names.get(g).copied() {
-                hold(self.w, g, t)?;
+                self.w.hold(g, t)?;
             }
         }
         self.names.insert(key, t);
@@ -39,7 +39,7 @@ impl Ctx<'_, '_> {
         let t = self.thing(key, name, &[])?;
         self.w.at(t, TAG).set(&Tag { color: Some(color.into()) })?;
         if let Some(p) = parent.and_then(|p| self.names.get(p).copied()) {
-            hold(self.w, p, t)?;
+            self.w.hold(p, t)?;
         }
         Ok(t)
     }

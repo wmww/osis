@@ -6,8 +6,8 @@
 
 #![forbid(unsafe_code)]
 
-use osis::core::{HOLDS, RETENTION, RetentionEntry, RetentionSetting};
-use osis::{Body, Commit, CommitFrom, CommitId, CommitKind, CommitPos, CommitQuery, Error, GrantOpts, History, Osis, Purge, PurgeBy, ReadOnly, Ref, Result, Retention, Role, Strong, Tid, Time};
+use osis::core::{RETENTION, RetentionEntry, RetentionSetting};
+use osis::{Body, Commit, CommitFrom, CommitId, CommitKind, CommitPos, CommitQuery, Error, GrantOpts, History, Osis, Purge, PurgeBy, ReadOnly, Result, Retention, Role, Tid, Time};
 use std::collections::{BTreeMap, BTreeSet};
 use std::time::Duration;
 
@@ -71,7 +71,7 @@ pub fn create(db: &Osis, o: &Options, holder: Tid) -> Result<Tid> {
     let c = w.create(db.me())?;
     w.at(c, RETENTION).set(&setting)?;
     w.at(c, SETTINGS).set(&schema::Settings { name: o.name.clone(), edit: o.edit.clone().unwrap_or(EditMode::Purge), purge })?;
-    w.at(holder, HOLDS).path(osis::p![]).add(&Ref::Strong(Strong(c)))?;
+    w.hold(holder, c)?;
     w.commit()?;
     Ok(c)
 }

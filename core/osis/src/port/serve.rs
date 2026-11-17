@@ -374,7 +374,7 @@ fn row(h: &crate::Osis, method: u64, args: Value, limit: usize) -> Result<Value>
         }),
         method::ASPECTS => thing(h, args, |r, t| r.aspects(t)),
         method::HAS_CONTENT => thing(h, args, |r, t| r.knows(t)),
-        method::HOLDS => thing(h, args, |r, t| Ok(r.holds(t))),
+        method::HAS_RECORD => thing(h, args, |r, t| Ok(r.has_record(t))),
         method::GRANTS => thing(h, args, |r, t| Ok(r.grants(t))),
         method::ROLE_ON => thing(h, args, |r, t| r.role_on(t)),
         method::HOLDERS => thing(h, args, |r, t| Ok(crate::share::holders_in(r, t))),

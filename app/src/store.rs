@@ -7,7 +7,7 @@ use osis::core::NAME;
 use osis::core::HOLDS;
 use osis::{Osis, Ref, Result, Tid, Weak};
 use osis_kit::schema::{Arrange, COLLECTION, Collection, CollectionOrder as Order, CollectionSource as Source, FAVORITES};
-use osis_kit::store::{Account, Data, Registry, hold, keep_a_day};
+use osis_kit::store::{Account, Data, Registry, keep_a_day};
 use std::sync::Arc;
 
 /// Finds or makes the app's home.
@@ -48,7 +48,7 @@ impl Account for AppAccount {
         // of the account (spec/sync-set.md §1)
         let root = db.account_root();
         let g = w.create(root)?;
-        hold(&mut w, root, g)?;
+        w.hold(root, g)?;
         keep_a_day(&mut w, g)?;
         w.at(g, APP).set(&true)?;
         w.at(g, COLLECTION).set(&Collection { source: Source::Favorites, having: Default::default(), order: Order::Own, arrange: Arrange::Cards, element: None })?;
@@ -59,7 +59,7 @@ impl Account for AppAccount {
             w.at(t, COLLECTION).set(&v)?;
             w.at(t, NAME).set(&name.to_string())?;
             w.at(t, COLOR).set(&color.to_string())?;
-            hold(&mut w, g, t)?;
+            w.hold(g, t)?;
             favs.push(Weak(t));
         }
         w.at(g, FAVORITES).set(&favs)?;

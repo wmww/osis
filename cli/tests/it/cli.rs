@@ -184,7 +184,7 @@ fn commands_run_through_the_daemon_plan_cli() {
     let one = ok(&["chat", "post", &c, "one"]).trim().to_string();
     let mut o = osis::internals::Opening::dir(&d);
     o.runtime = osis::Runtime::Own;
-    o.direct_sync = false;
+    o.app.internals.no_listen = true;
     let held = osis::internals::open(o).unwrap();
     held.listen_socket().unwrap();
     let read = ok(&["chat", "read", &c]);

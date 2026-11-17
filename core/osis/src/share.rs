@@ -90,7 +90,7 @@ pub struct SetRoleOpts {
     pub retain_copy: Option<bool>,
 }
 
-/// How a link made by `Osis::make_link` ends. The link names the node that made it and its relays,
+/// How a link made by `Osis::make_link` ends. The link names the node that made it (by its key),
 /// and the nodes it dials by `Config::dial`, so a redeemer reaches the thing at any of them that
 /// holds the link's actor: anyone holding the link can dial them, also after the link ends (this
 /// node until `Osis::rotate_peer_address`); dialing opens nothing the link no longer grants.
@@ -266,14 +266,6 @@ impl Address {
         Address(osis_blob::Address { url: url.0.clone(), key })
     }
 
-    /// This address as a `peer://` relay item (`<hex key>@<socket address>`), when its URL is
-    /// `peer://` and one socket address.
-    pub(crate) fn relay_item(&self) -> Option<String> {
-        let it = osis_transport::p2p::items(&self.0.url).ok()?;
-        let [addr] = it.direct.as_slice() else { return None };
-        it.relays.is_empty().then(|| osis_transport::p2p::Relay { key: self.0.key, addr: *addr }.item())
-    }
-
     /// Where to dial.
     pub fn url(&self) -> Url {
         Url(self.0.url.clone())
@@ -366,7 +358,7 @@ impl ReadOnly {
         if let Some(at) = self.remote(target, "holders")? {
             return self.forward(&at, crate::port::method::HOLDERS, (target,));
         }
-        Ok(self.read_answer(|| crate::track::thing_key("holders", target), crate::watch::Filter::Due(crate::watch::Watch::Roles), move |r| holders_in(r, target)))
+        Ok(self.read_answer(|| crate::track::thing_key("holders", target), crate::watch::Filter::Due(crate::watch::Watch::RoleGraph), move |r| holders_in(r, target)))
     }
 
     /// Holds `t` on this node: a strong in its node root (spec/sync-set.md §1), so its node closure
@@ -425,7 +417,7 @@ impl Osis {
     /// a client with its own actor.
     pub fn grant(&self, target: Tid, holder: Tid, role: Role, opts: GrantOpts) -> Result<()> {
         self.local_at(target, "grant")?;
-        if !self.holds(target) {
+        if !self.has_record(target) {
             return Err(Error::UnknownThing { tid: target });
         }
         self.locked(|l| {
@@ -632,10 +624,10 @@ impl Osis {
         Ok(ShareLink(link.to_text().map_err(bad("link"))?))
     }
 
-    /// A link's first-contact peers (spec/wire.md §10): this node by its dialable key and relays,
+    /// A link's first-contact peers (spec/wire.md §10): this node by its dialable key,
     /// then the nodes it dials by configured address (`Config::dial`).
     fn link_peers(&self) -> Vec<osis_blob::DialHint> {
-        self.locked(|l| osis_blob::link_peers(l.secret.public_key(), &self.inner.relays, &l.node.config().dial))
+        self.locked(|l| osis_blob::link_peers(l.secret.public_key(), &[], &l.node.config().dial))
     }
 
     /// Redeems a link: reaches what it names and joins it, returning the thing. Returns once

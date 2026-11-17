@@ -9,6 +9,7 @@ use crate::read::Reader;
 use crate::track::thing_key;
 use crate::watch::{Delivery, Filter, Subscription, Watch};
 use osis_base::{Ak, RefKind, Tid};
+use crate::core::HOLDS;
 
 /// Backlinks a page holds when the query names no limit, and at most. Resource bound: 0 returns
 /// nothing, infinity reads every backlink of a thing in one call under the node lock.
@@ -93,6 +94,31 @@ impl ReadOnly {
         }
         let q2 = q.clone();
         self.read_answer(|| format!("{} {q:?}", thing_key("backlinks", tid)), watch(self, tid, q.aspect.as_ref()), move |r| r.backlinks(tid, &q2))
+    }
+}
+
+impl ReadOnly {
+    /// Whether `holder` holds `t`: a strong to `t` in `holder`'s `holds.0` (`Write::hold`). One
+    /// reference looked up, never the whole set; a tracked read hears only a reference to `t` in a
+    /// `holds.0` appearing or going. `false` when the handle may not read `holder`.
+    pub fn holds(&self, holder: Tid, t: Tid) -> Result<bool> {
+        self.local_at(holder, "holds")?;
+        if self.tracking.is_some() {
+            self.engine(|e| e.watch_references());
+        }
+        let on = HOLDS.name();
+        let at = watch(self, t, Some(&on));
+        self.read_answer(|| format!("holds {holder} {t}"), at, move |r| r.holds_strong(holder, t, &on))
+    }
+}
+
+impl Reader<'_> {
+    /// Whether `holder`'s `holds.0` holds a strong to `t`, as the acting actor reads it.
+    fn holds_strong(&mut self, holder: Tid, t: Tid, on: &Ak) -> Result<bool> {
+        if self.hidden(holder) {
+            return Ok(false);
+        }
+        Ok(self.e.references(&t, &holder, on, RefKind::Strong)?)
     }
 }
 

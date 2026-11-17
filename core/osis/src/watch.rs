@@ -117,10 +117,12 @@ pub(crate) enum Watch {
     Thing(Tid),
     /// A commit on the thing was added or judged otherwise (when it was made or last changed).
     CommitsOf(Tid),
-    /// A roster or a key changed: `role_on`'s reach is the role graph, not one thing.
-    Roles,
+    /// What the role graph decides (`role_on`, `holders`): no slot; followed as an `Effects`
+    /// value alone (`Filter::follows`), which moves exactly when what the read read moved, so a
+    /// role change elsewhere reads nothing again.
+    RoleGraph,
     /// The thing's backlinks (a reference index row naming it), on one aspect where given; with
-    /// an acting actor (`true`), also what it may read: a roster or key change anywhere, as `Roles`.
+    /// an acting actor (`true`), what it may read is followed too, as `RoleGraph`.
     Backlinks(Tid, Option<Ak>, bool),
 }
 
@@ -159,17 +161,16 @@ impl Filter {
             Filter::Status => vec![Slot::Status],
             Filter::Text | Filter::Remote => Vec::new(),
             Filter::Due(Watch::CommitsOf(t)) => vec![Slot::CommitsOf(*t)],
-            Filter::Due(Watch::Roles) => vec![Slot::Roles],
-            Filter::Due(Watch::Backlinks(t, on, false)) => vec![Slot::Backlinks(*t, on.clone())],
-            Filter::Due(Watch::Backlinks(t, on, true)) => vec![Slot::Backlinks(*t, on.clone()), Slot::Roles],
+            Filter::Due(Watch::RoleGraph) => Vec::new(),
+            Filter::Due(Watch::Backlinks(t, on, _)) => vec![Slot::Backlinks(*t, on.clone())],
         }
     }
 
     /// Whether a tracked read heard here is followed as an `Effects` value too (`Dispatch::follow`):
-    /// one the role graph decides (`Slot::Roles`), which the clock moves with no event; a grants
-    /// read is followed per thing (`Filter::Grants`).
+    /// one the role graph decides (`Watch::RoleGraph`), heard by nothing else; a grants read is
+    /// followed per thing (`Filter::Grants`), so an `until` passing, which no event tells, reaches it.
     pub(crate) fn follows(&self) -> bool {
-        matches!(self, Filter::Due(Watch::Roles | Watch::Backlinks(_, _, true)))
+        matches!(self, Filter::Due(Watch::RoleGraph | Watch::Backlinks(_, _, true)))
     }
 
     /// The things a commit listener is on, for the engine (`Engine::listen_commits`).

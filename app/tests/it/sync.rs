@@ -2,17 +2,11 @@
 //! path of core's tests) and over malformed synced data.
 use osis::internals::Internals as _;
 use osis::core::{BODY};
-use osis::{Ak, MemStore, Osis, Store, Tid, Value, Time};
+use osis::{Ak, Tid, Value, Time};
 use osis::internals::{ManualClock};
 use osis_kit::store::Data;
 use std::sync::Arc;
-
-fn cfg(seed: u64, clock: &Arc<ManualClock>) -> osis::internals::Opening {
-    let mut c = osis::internals::Opening::at(Store::Memory(MemStore::new()));
-    c.app.internals.seed = Some(seed);
-    c.app.internals.clock = Some(clock.clone());
-    c
-}
+use crate::common::{cfg, deliver};
 
 /// Two nodes of one account, paired; nothing synced yet beyond the pairing.
 fn two() -> (Data, Data) {
@@ -28,13 +22,6 @@ fn two_clocked() -> (Data, Data, Arc<ManualClock>) {
     let (_, reply) = a.pair_accept(j.request()).unwrap();
     let b = j.finish(&reply).unwrap();
     (osis_app::store::data(a), osis_app::store::data(b), clock)
-}
-
-fn deliver(from: &Osis, to: &Osis) {
-    let pks = from.engine(|e| e.commit_ids().iter().filter_map(|id| e.package(id).unwrap()).collect::<Vec<_>>());
-    for pk in pks {
-        to.engine(|e| e.ingest(&pk.bytes, pk.blobs.clone()).unwrap());
-    }
 }
 
 fn sync(a: &Data, b: &Data) {
@@ -188,7 +175,7 @@ fn malformed_aspects_do_not_break_reads() {
     let g = a.home().unwrap();
     let bad = |w: &mut osis::Write<'_>, ak: &str, v: Value| -> osis::Result<()> {
         let t = w.create(g)?;
-        osis_kit::store::hold(w, g, t)?;
+        w.hold(g, t)?;
         w.at(t, osis::DynamicAspectKey::untyped(Ak::new(ak).unwrap())).set(&v)?;
         Ok(())
     };
@@ -205,7 +192,7 @@ fn malformed_aspects_do_not_break_reads() {
     {
         let mut w = a.db.write();
         let t = w.create(g).unwrap();
-        osis_kit::store::hold(&mut w, g, t).unwrap();
+        w.hold(g, t).unwrap();
         w.at(t, osis_app::event::START).set(&osis_app::event::Start::At(osis_app::event::Wall { time: i64::MAX - 1, zone: None })).unwrap();
         w.at(t, osis_app::event::END).set(&osis_app::event::End::After(i64::MAX)).unwrap();
         w.commit().unwrap();

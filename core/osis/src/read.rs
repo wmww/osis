@@ -373,7 +373,7 @@ impl Reader<'_> {
     }
 
     /// Whether the thing's creation is held: what a write or grant needs.
-    pub(crate) fn holds(&self, tid: Tid) -> bool {
+    pub(crate) fn has_record(&self, tid: Tid) -> bool {
         !self.hidden(tid) && self.e.knows(&tid)
     }
 
@@ -457,7 +457,7 @@ impl ReadOnly {
         if let Some(at) = self.remote(tid, "role_on")? {
             return self.forward(&at, crate::port::method::ROLE_ON, (tid,));
         }
-        self.read_answer(|| thing_key("role_on", tid), Filter::Due(Watch::Roles), move |r| r.role_on(tid))
+        self.read_answer(|| thing_key("role_on", tid), Filter::Due(Watch::RoleGraph), move |r| r.role_on(tid))
     }
 
     /// Whether the thing is here with content. `false` for an unknown thing and for one with no
@@ -470,8 +470,8 @@ impl ReadOnly {
         self.read_answer(|| thing_key("has_content", tid), thing(tid), move |r| r.knows(tid))
     }
 
-    pub(crate) fn holds(&self, tid: Tid) -> bool {
-        self.read_local(|r| r.holds(tid))
+    pub(crate) fn has_record(&self, tid: Tid) -> bool {
+        self.read_local(|r| r.has_record(tid))
     }
 
     /// When the thing was created: the oldest valid commit carrying its creation; `None` while it

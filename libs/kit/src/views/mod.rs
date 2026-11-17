@@ -91,8 +91,8 @@ pub fn grow_tag(d: &Data, t: Tid, n: usize) {
     for i in 0..n {
         let x = w.create(g).expect("grow: a thing");
         w.at(x, osis::core::NAME).set(&format!("grown {i}")).expect("grow: a name");
-        crate::store::hold(&mut w, g, x).expect("grow: held");
-        crate::store::hold(&mut w, t, x).expect("grow: tagged");
+        w.hold(g, x).expect("grow: held");
+        w.hold(t, x).expect("grow: tagged");
     }
     w.commit().expect("grow: a commit");
 }

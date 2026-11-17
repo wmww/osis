@@ -121,8 +121,8 @@ mod rows {
         for i in 0..n {
             let t = x.create(g).unwrap();
             x.at(t, NAME).set(&format!("note {i:04}")).unwrap();
-            osis_kit::store::hold(&mut x, g, t).unwrap();
-            osis_kit::store::hold(&mut x, tag, t).unwrap();
+            x.hold(g, t).unwrap();
+            x.hold(tag, t).unwrap();
         }
         x.commit().unwrap();
         tag

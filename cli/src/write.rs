@@ -123,7 +123,7 @@ pub fn create(ctx: &mut Ctx<'_>, w: &mut osis::Write<'_>, a: &CreateArgs, did: &
     };
     let t = w.create(admin)?;
     // a thing is made only where something holds it (spec/sync-set.md §2 Making a thing)
-    w.at(holder, osis::core::HOLDS).path(osis::p![]).add(&osis::Ref::Strong(osis::Strong(t)))?;
+    w.hold(holder, t)?;
     for pair in a.pairs.chunks(2) {
         let key = ctx.aspect_key(&pair[0])?;
         let v = ctx.value(&pair[1], key.value_type().map(|t| t.get()).as_ref())?;

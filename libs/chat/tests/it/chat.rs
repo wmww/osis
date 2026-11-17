@@ -134,7 +134,7 @@ fn since_goes_by_arrival() {
     deliver(&alice, &bob);
     // bob accepts the chat: he writes only what he holds (spec/sync-set.md §2 Writing)
     let mut w = bob.write();
-    w.at(bob.account_root(), osis::core::HOLDS).path(osis::p![]).add(&osis::Ref::Strong(osis::Strong(c))).unwrap();
+    w.hold(bob.account_root(), c).unwrap();
     w.commit().unwrap();
     c0.advance(10);
     let late = post(&bob, c, "made offline");

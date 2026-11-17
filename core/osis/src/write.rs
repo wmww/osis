@@ -11,7 +11,7 @@ use crate::error::{Error, Result};
 use crate::handle::Osis;
 use crate::keys::DynamicAspectKey;
 use crate::read::{Reader, ak_of};
-use osis_base::{Ak, CreationRecord, Tid, Value, Time};
+use osis_base::{Ak, CreationRecord, Ref, Strong, Tid, Value, Time, Weak};
 use osis_commit::PurgeItem;
 use osis_crdt::{AnyView, Op, PathOp, PathSeg, diff_values};
 use crate::commit_id::CommitId;
@@ -177,7 +177,7 @@ impl<'d> Write<'d> {
     /// `t`, failing `UnknownThing` when it is not held; one at another node is that node's to
     /// judge, at commit.
     fn known(&self, t: Tid) -> Result<Tid> {
-        if self.created.contains(&t) || matches!(self.db.source(t)?, crate::sources::Source::Node(_)) || self.db.holds(t) { Ok(t) } else { Err(Error::UnknownThing { tid: t }) }
+        if self.created.contains(&t) || matches!(self.db.source(t)?, crate::sources::Source::Node(_)) || self.db.has_record(t) { Ok(t) } else { Err(Error::UnknownThing { tid: t }) }
     }
 
     /// The things the ops name: where the write goes.
@@ -318,6 +318,24 @@ impl<'d> Write<'d> {
         self.ops.push(WriteOp::Create(rec));
         self.created.push(t);
         Ok(t)
+    }
+
+    /// `holder` holds `t`: a strong to `t` in `holder`'s `holds.0`, so `t` syncs with `holder`
+    /// wherever `holder` is held (spec/sync-set.md §2) and stays while some held thing holds it.
+    /// Holding a thing made in this write is what keeps it (`create`); holding one granted here
+    /// accepts it (spec/sync-set.md §4). This node's own hold, held by no other node of the
+    /// account, is `Osis::hold`: a commit of the node's, never part of a write.
+    pub fn hold(&mut self, holder: Tid, t: Tid) -> Result<()> {
+        self.at(holder, crate::core::HOLDS).path(osis_schema::p![]).add(&Ref::Strong(Strong(t)))
+    }
+
+    /// `holder` holds `t` no more: every reference to `t` in `holder`'s `holds.0` goes, strong or
+    /// weak. What no held thing holds then leaves every node (spec/sync-set.md §3).
+    pub fn unhold(&mut self, holder: Tid, t: Tid) -> Result<()> {
+        for r in [Ref::Strong(Strong(t)), Ref::Weak(Weak(t))] {
+            self.at(holder, crate::core::HOLDS).path(Path(vec![Step::Elem(Codec::to_value(&r))])).remove()?;
+        }
+        Ok(())
     }
 
     /// Destroys `tid` for everyone by purging its creation: every node drops the thing, whole, and

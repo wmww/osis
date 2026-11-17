@@ -26,7 +26,7 @@ pub enum Runtime {
     Own,
 }
 
-/// Whether a node with direct sync on (`Config::direct_sync`) finds other nodes on its local
+/// Whether a node with a runtime finds other nodes on its local
 /// network and is found by them, by a small UDP datagram it broadcasts there every so often.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Lan {
@@ -198,14 +198,13 @@ impl crate::Osis {
             Net::Off => {}
             Net::Manual { net, index } => {
                 net.bind(*index, self.downgrade());
-                if cfg.direct_sync {
+                if !cfg.app.internals.no_listen {
                     net.listen(*index, secret.public_key());
                     self.publish_reach(secret.public_key(), &[], &[]);
                 }
             }
             Net::Driver { .. } => {
                 let Some((handle, rx)) = driver else { return Ok(()) };
-                let relays: Vec<String> = cfg.relays.iter().filter_map(crate::share::Address::relay_item).collect();
                 let mut lan = osis_transport::lan::LanConfig::default();
                 if let Lan::On { also_announce_to } = &cfg.lan {
                     lan.to.extend(also_announce_to.iter().copied());
@@ -213,7 +212,8 @@ impl crate::Osis {
                 let multi = osis_transport::Multi { quic: osis_transport::Quic::new(), p2p: osis_transport::P2p::new(osis_transport::QuicUdp::new()).lan(lan), unix_dial: cfg.app.internals.thin };
                 let clock: Arc<dyn Clock> = self.inner.clock.clone();
                 let links = TransportLinks::new(Arc::new(multi), clock);
-                let start = Start { listen: cfg.direct_sync.then(|| (peer_urls(&relays), secret)), discover: cfg.direct_sync && matches!(cfg.lan, Lan::On { .. }) };
+                let listen = !cfg.app.internals.no_listen;
+                let start = Start { listen: listen.then(|| (peer_urls(), secret)), discover: listen && matches!(cfg.lan, Lan::On { .. }) };
                 let db = self.downgrade();
                 handle.spawn(drive(db, links, rx, start));
             }
@@ -310,11 +310,9 @@ async fn published(db: &WeakOsis, key: [u8; 32], addrs: &[osis_blob::Address]) {
 }
 
 /// The dialable listener's URLs, tried in order: the fixed port when free (another node on this
-/// host may hold it), else any; every address, then `relays`.
-fn peer_urls(relays: &[String]) -> Vec<String> {
-    [osis_transport::p2p::PORT, 0]
-        .map(|port| osis_transport::peer_url(&std::iter::once(format!("[::]:{port}")).chain(relays.iter().cloned()).collect::<Vec<_>>()))
-        .to_vec()
+/// host may hold it), else any; every address.
+fn peer_urls() -> Vec<String> {
+    [osis_transport::p2p::PORT, 0].map(|port| osis_transport::peer_url(&[format!("[::]:{port}")])).to_vec()
 }
 
 /// The driver task: steps the node on each input its links report (blocking work in place, the

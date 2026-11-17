@@ -63,9 +63,9 @@ pub fn drive<T>(net: &ManualNet, f: impl std::future::Future<Output = T>) -> T {
 /// account root's `holds.0`: spec/commits.md §5 What a held thing needs).
 pub fn deliver(from: &Osis, to: &Osis) {
     let (root, who) = (to.account_root(), from.me());
-    if who != to.me() && !to.engine(|e| e.references_from(&root).unwrap().iter().any(|r| r.target == who && r.kind == osis::RefKind::Strong && r.ak.as_str() == "holds.0")) {
+    if who != to.me() && !to.holds(root, who).unwrap() {
         let mut w = to.write();
-        w.at(root, osis::core::HOLDS).path(osis::p![]).add(&osis::Ref::Strong(osis::Strong(who))).unwrap();
+        w.hold(root, who).unwrap();
         w.commit().unwrap();
     }
     let pks = from.engine(|e| e.commit_ids().iter().filter_map(|id| e.package(id).unwrap()).collect::<Vec<_>>());

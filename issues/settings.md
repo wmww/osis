@@ -55,7 +55,7 @@ node root (local, holds.0)
 - Stay: favorites, arrangements and `viewed_as` (the user's data, not settings); `Config` and `AppConfig` fields that describe one running process.
 
 ## Not now
-- New settings. `direct_sync` and `relays` are future candidates: `create` would have to take initial values, so a node that must not show its address is private from its first moment.
+- New settings. Whether a node listens for others and which relays it uses (no `Config` field today) are future candidates: `create` would have to take initial values, so a node that must not show its address is private from its first moment.
 - Device-only settings: a local thing on the node root, read before the node's value.
 
 ## Spec and notes to update

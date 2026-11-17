@@ -85,7 +85,7 @@ pub fn check_views(d: &Data) -> Vec<String> {
         let mut w = d.db.write();
         let home = d.home().unwrap();
         let t = w.create(home).unwrap();
-        crate::store::hold(&mut w, home, t).unwrap();
+        w.hold(home, t).unwrap();
         w.commit().unwrap();
         t
     };
@@ -371,7 +371,7 @@ fn held(d: &Data, g: Tid, t: Tid, add: bool) -> bool {
         return false;
     }
     let mut w = d.db.write();
-    let changed = if add { crate::store::hold(&mut w, g, t) } else { crate::store::unhold(&mut w, g, t) };
+    let changed = if add { w.hold(g, t) } else { w.unhold(g, t) };
     changed.is_ok() && w.commit().is_ok()
 }
 

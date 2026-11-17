@@ -125,7 +125,7 @@ impl ReadOnly {
         // the first node holding it answers; an unreachable one stops the search, so a later
         // one never answers for it
         for a in &ask {
-            if self.forward(a, crate::port::method::HOLDS, (t,))? {
+            if self.forward(a, crate::port::method::HAS_RECORD, (t,))? {
                 return Ok(Source::Node(a.clone()));
             }
         }
@@ -235,7 +235,8 @@ fn scratch(mut cfg: AppConfig) -> Result<Osis> {
             _ => crate::Runtime::Own,
         }
     };
-    let c = crate::Config { app: cfg, runtime, dial: Vec::new(), direct_sync: false, relays: Vec::new(), lan: crate::Lan::Off };
+    let mut c = crate::Config { app: cfg, runtime, dial: Vec::new(), lan: crate::Lan::Off };
+    c.app.internals.no_listen = true;
     Osis::create(crate::Store::Memory(crate::MemStore::new()), c)
 }
 

@@ -2,7 +2,7 @@
 use osis::core::NAME;
 use osis::{Osis, Result, Tid};
 use osis_kit::facets::create;
-use osis_kit::store::{Account, Data, Registry, hold, keep_a_day};
+use osis_kit::store::{Account, Data, Registry, keep_a_day};
 use osis_kit::view::{Block, Cx, WindowState};
 use osis_kit::views::page;
 use std::sync::{Arc, Mutex};
@@ -25,7 +25,7 @@ impl Account for Small {
         let t = w.create(root)?;
         // its strongs are what undoing a delete writes back
         keep_a_day(&mut w, t)?;
-        hold(&mut w, root, t)?;
+        w.hold(root, t)?;
         w.commit()?;
         *g = Some(t);
         Ok(t)
@@ -53,7 +53,7 @@ fn kit_alone_opens_things() {
     let g = d.home().unwrap();
     let mut w = d.db.write();
     let u = w.create(g).unwrap();
-    hold(&mut w, g, u).unwrap();
+    w.hold(g, u).unwrap();
     w.at(u, osis::DynamicAspectKey::untyped(osis::Ak::new("x:y.0").unwrap())).set(&osis::Value::Int(1)).unwrap();
     w.commit().unwrap();
     assert_eq!(view_type(&d, u), "raw");

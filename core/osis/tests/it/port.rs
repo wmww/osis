@@ -538,7 +538,7 @@ fn a_socket_client_over_a_real_socket_spec_sync_transport_6() {
     let dir = Dir::new("port-real-socket");
     let mut o = osis::internals::Opening::at(osis::Store::Dir(dir.0.clone()));
     o.runtime = osis::Runtime::Own;
-    o.direct_sync = false;
+    o.app.internals.no_listen = true;
     let a = osis::internals::create(o).unwrap();
     a.listen_socket().unwrap();
     let t = a.commit_with(|x| {

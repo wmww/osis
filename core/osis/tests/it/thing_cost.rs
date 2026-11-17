@@ -6,7 +6,7 @@
 
 use crate::common::*;
 use osis::internals::{Internals as _, MemStoreMeasures as _, costs};
-use osis::{MemStore, Osis, Ref, Strong, Tid};
+use osis::{MemStore, Osis, Tid};
 use std::collections::BTreeMap;
 
 type Census = BTreeMap<String, (usize, usize)>;
@@ -63,7 +63,7 @@ fn make(a: &Node, b: &Node, home: Tid, keyed: bool, label: &str, show: bool) -> 
     let mut w = a.db.write();
     let t = if keyed { w.create(a.db.me()).unwrap() } else { w.create(home).unwrap() };
     keep_all(&mut w, t);
-    w.at(home, osis::core::HOLDS).path(osis::p![]).add(&Ref::Strong(Strong(t))).unwrap();
+    w.hold(home, t).unwrap();
     w.commit().unwrap();
     a.db.settle();
     let maker_ops = ops();
@@ -116,7 +116,7 @@ fn what_a_thing_costs_as_the_app_makes_it() {
     let root = a.db.account_root();
     let mut w = a.db.write();
     let home = w.create(root).unwrap();
-    w.at(root, osis::core::HOLDS).path(osis::p![]).add(&Ref::Strong(Strong(home))).unwrap();
+    w.hold(root, home).unwrap();
     w.commit().unwrap();
     deliver(&a.db, &b.db);
     let show = std::env::var_os("THING_COST").is_some();

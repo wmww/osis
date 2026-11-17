@@ -1,7 +1,6 @@
 //! What a user can observe, read as the opener's tree (toolkit-free).
 use osis::core::{BODY, NAME, TAG, Tag};
 use osis::{DynamicAspectKey, Role, Tid, Value};
-use osis_kit::store::hold;
 use osis_app::store::data as make;
 use osis_kit::facets::create;
 use osis_kit::schema::{Arrange, COLLECTION, Collection, CollectionOrder, CollectionSource, ElementSpec};
@@ -129,7 +128,7 @@ fn an_unknown_thing_opens_raw() {
     let g = d.home().unwrap();
     let mut w = d.db.write();
     let t = w.create(g).unwrap();
-    hold(&mut w, g, t).unwrap();
+    w.hold(g, t).unwrap();
     w.at(t, DynamicAspectKey::untyped(osis::Ak::new("mystery:thing.0").unwrap())).set(&Value::Int(3)).unwrap();
     w.commit().unwrap();
     let n = open(&d, t);
@@ -194,12 +193,12 @@ fn an_element_spec_embeds_a_view() {
     let g = d.home().unwrap();
     let mut wr = d.db.write();
     let holder = wr.create(g).unwrap();
-    hold(&mut wr, g, holder).unwrap();
+    wr.hold(g, holder).unwrap();
     wr.at(holder, TAG).set(&Tag { color: None }).unwrap();
     wr.at(holder, COLLECTION)
         .set(&Collection { source: CollectionSource::Holds, having: Default::default(), order: CollectionOrder::Own, arrange: Arrange::Cards, element: Some(ElementSpec { view_type: "note".into(), config: BTreeMap::from([("compact".to_string(), "true".to_string())]) }) })
         .unwrap();
-    hold(&mut wr, holder, e).unwrap();
+    wr.hold(holder, e).unwrap();
     wr.commit().unwrap();
     let n = open(&d, holder);
     let col = content(&n);

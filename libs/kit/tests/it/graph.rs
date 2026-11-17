@@ -115,7 +115,7 @@ fn collections_of_everything_summarize() {
     for (x, n) in [(a, "One"), (b, "Two")] {
         w.at(x, COLLECTION).set(&v).unwrap();
         w.at(x, NAME).set(&n.to_string()).unwrap();
-        osis_kit::store::hold(&mut w, g, x).unwrap();
+        w.hold(g, x).unwrap();
     }
     w.commit().unwrap();
     assert_eq!(d.summary(a).unwrap().sub, "1 item");

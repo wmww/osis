@@ -542,18 +542,6 @@ fn created_not_a_snapshot_spec_commits_2() {
     assert_eq!(b.created(t).unwrap(), None);
 }
 
-// notes/api.md Handle: a relay is a node at one socket address; any other form is refused.
-// spec: none (API surface, notes/api.md)
-#[test]
-fn relays_need_a_socket_address() {
-    let key = [7u8; 32];
-    for (url, ok) in [("peer://192.0.2.1:4040", true), ("peer://[2001:db8::1]:9", true), ("quic://example.org:4040", false), ("peer://example.org:4040", false), ("peer://x", false)] {
-        let mut c = osis::internals::Opening::memory();
-        c.relays = vec![osis::Address::new(&url.parse().unwrap(), key)];
-        assert_eq!(osis::internals::create(c).is_ok(), ok, "{url}");
-    }
-}
-
 // notes/api.md Reads: `aspects` lists what reads as present: a register whose live write was
 // purged reads absent, and is not listed.
 // spec: none (API surface, notes/api.md)

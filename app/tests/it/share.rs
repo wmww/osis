@@ -1,32 +1,16 @@
 //! Two accounts (commits delivered by hand, as in `sync`): who can see a thing, tagging (adds or
 //! nests only: sharing a tag is `add_with_grant`, notes/tags.md, Sharing a tag), undo across accounts.
-use osis::internals::Internals as _;
 use osis::core::NAME;
-use osis::{GrantOpts, MemStore, Osis, Role, Store, Time};
+use osis::{GrantOpts, Role, Time};
 use osis::internals::{ManualClock};
 use osis_kit::store::Data;
 use std::sync::Arc;
+use crate::common::{cfg, deliver};
 use osis_kit::view::{Cx, WindowState};
 
 fn reach(d: &Data, t: osis::Tid) -> osis::Result<osis_kit::facets::about::Reach> {
     let w = WindowState::default();
     osis_kit::facets::about::reach(&Cx::new(d, &w, false), t)
-}
-
-fn cfg(seed: u64, clock: &Arc<ManualClock>) -> osis::internals::Opening {
-    let mut c = osis::internals::Opening::at(Store::Memory(MemStore::new()));
-    c.app.internals.seed = Some(seed);
-    c.app.internals.clock = Some(clock.clone());
-    c
-}
-
-/// Every commit `from` holds that `to` takes (another account's private commits it cannot use
-/// are refused; that is fine here).
-fn deliver(from: &Osis, to: &Osis) {
-    let pks = from.engine(|e| e.commit_ids().iter().filter_map(|id| e.package(id).unwrap()).collect::<Vec<_>>());
-    for pk in pks {
-        let _ = to.engine(|e| e.ingest(&pk.bytes, pk.blobs.clone()));
-    }
 }
 
 fn sync(a: &Data, b: &Data) {
@@ -45,6 +29,14 @@ fn two_people() -> (Data, Data) {
     b.home().unwrap();
     sync(&a, &b);
     (a, b)
+}
+
+/// `d` accepts `t`, granted to it: its home holds `t` (a node writes only what it holds,
+/// spec/sync-set.md §2 Writing).
+fn accept(d: &Data, t: osis::Tid) {
+    let mut w = d.db.write();
+    w.hold(d.home().unwrap(), t).unwrap();
+    w.commit().unwrap();
 }
 
 /// A tag Alice made in the app and shared with Bob (`role`).
@@ -78,6 +70,7 @@ fn reach_through_someone_elses_tag() {
     let (a, b) = two_people();
     let tag = shared_tag(&a, &b, Role::Write);
     sync(&a, &b);
+    accept(&b, tag);
     let nb = osis_kit::facets::create(&b, "note").unwrap();
     b.add_tag(nb, tag).unwrap();
     b.db.grant(nb, tag, Role::Write, GrantOpts::default()).unwrap();
@@ -122,6 +115,7 @@ fn undo_is_mine_and_keeps_the_thing() {
     w.at(n, NAME).set(&"alice".to_string()).unwrap();
     w.commit().unwrap();
     sync(&a, &b);
+    accept(&b, tag);
     let mut w = b.db.write();
     w.at(n, NAME).set(&"bob".to_string()).unwrap();
     w.commit().unwrap();

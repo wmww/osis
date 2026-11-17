@@ -2,6 +2,7 @@
 //! osis-app's test binary.
 
 mod chat;
+mod common;
 mod data;
 mod edit;
 mod share;

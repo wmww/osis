@@ -2,24 +2,11 @@
 //! replies and the sender's name. Redeeming a new chat's link needs a peer: checked by hand; a link
 //! to something already held does not.
 use osis::internals::Internals as _;
-use osis::{GrantOpts, LinkOpts, MemStore, Osis, Role, Store, Time};
+use osis::{GrantOpts, LinkOpts, Osis, Role, Time};
 use osis::internals::{ManualClock};
 use osis_app::facets::log as chat;
 use std::sync::Arc;
-
-fn cfg(seed: u64, clock: &Arc<ManualClock>) -> osis::internals::Opening {
-    let mut c = osis::internals::Opening::at(Store::Memory(MemStore::new()));
-    c.app.internals.seed = Some(seed);
-    c.app.internals.clock = Some(clock.clone());
-    c
-}
-
-fn deliver(from: &Osis, to: &Osis) {
-    let pks = from.engine(|e| e.commit_ids().iter().filter_map(|id| e.package(id).unwrap()).collect::<Vec<_>>());
-    for pk in pks {
-        let _ = to.engine(|e| e.ingest(&pk.bytes, pk.blobs.clone()));
-    }
-}
+use crate::common::{cfg, deliver};
 
 /// Sets the profile's name.
 fn set_name(db: &Osis, name: &str) -> osis::Result<()> {
@@ -190,3 +177,4 @@ fn quotes_read_flat_in_history() {
     assert!(lines.iter().all(|l| l.reply_to.as_ref().is_some_and(|(_, q)| q.ends_with(": fixed"))), "{lines:?}");
     assert_eq!(small, big, "listing work for {QUOTES} quotes of the first message, 30 against 300 messages back");
 }
+

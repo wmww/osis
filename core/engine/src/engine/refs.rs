@@ -460,6 +460,13 @@ pub(crate) fn to_page(tx: &mut Tx<'_>, target: &Tid, on: Option<&Ak>, after: Opt
     Ok(out)
 }
 
+/// Whether `source`'s value on `ak` references `target` by `kind`: one row probed.
+pub(crate) fn has(tx: &mut Tx<'_>, target: &Tid, source: &Tid, ak: &Ak, kind: RefKind) -> Result<bool> {
+    let to = tx.txn.index(TO)?;
+    drop(osis_base::costs::span("refs: row read"));
+    Ok(tx.txn.table_get(to, &to_key(target, source, ak, kind))?.is_some())
+}
+
 /// Whether `source` holds a strong to `target`, in any aspect: one probe per aspect holding a
 /// reference to `target` (aspect names are static), never its other referrers.
 pub(crate) fn strong_from(tx: &mut Tx<'_>, source: &Tid, target: &Tid) -> Result<bool> {

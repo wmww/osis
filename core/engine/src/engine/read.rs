@@ -51,6 +51,11 @@ impl Engine {
         self.read(|tx| super::refs::to_page(tx, target, on, after, n))
     }
 
+    /// Whether `source`'s value on `ak` references `target` by `kind` (the reference index's row).
+    pub fn references(&mut self, target: &Tid, source: &Tid, ak: &Ak, kind: osis_base::RefKind) -> Result<bool> {
+        self.read(|tx| super::refs::has(tx, target, source, ak, kind))
+    }
+
     /// Turns `Event::References` on for this open; it stays on (as `watch_commits`).
     pub fn watch_references(&mut self) {
         self.core.refs_watched = true;

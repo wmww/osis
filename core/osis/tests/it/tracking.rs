@@ -359,3 +359,59 @@ fn read_counts_say_what_a_pass_read_twice() {
     rs.sweep();
     assert_eq!((by(&rs, "t:a.0"), by(&rs, "t:b.0")), (Some(1), None), "a second pass starts over");
 }
+
+// notes/api.md Tracked reads: a tracked `role_on` or `holders` reads again only when what it read
+// moved. At n and 10n tracked things, a grant on another thing calls none of their listeners
+// and reads none of them again.
+#[test]
+fn tracked_role_reads_follow_their_thing_at_n_and_10n() {
+    let other = db(9);
+    let cost = |n: usize| {
+        let a = pumped(0);
+        deliver(&other, &a);
+        let ts: Vec<Tid> = (0..n).map(|_| thing(&a)).collect();
+        let x = thing(&a);
+        let (_set, fired_n, h) = tracked(&a);
+        for t in &ts {
+            assert_eq!(h.role_on(*t).unwrap(), Some(osis::Role::Admin));
+            assert!(!h.holders(*t).unwrap().is_empty());
+        }
+        a.settle();
+        costs::take();
+        a.grant(x, other.me(), osis::Role::Read, Default::default()).unwrap();
+        a.settle();
+        let cs = costs::take();
+        assert_eq!(fired_n.swap(0, Ordering::SeqCst), 0, "their answers stand");
+        (count(&cs, "watch: dispatched"), count(&cs, "watch: follows"))
+    };
+    assert_eq!(cost(10), cost(100));
+}
+
+// notes/api.md Tracked reads: `holds(h, t)` hears a reference to `t` in a `holds.0` alone. At n and
+// 10n tracked memberships of things the account root holds, holding one more calls and reads
+// again none of them; taking one out calls its own.
+#[test]
+fn tracked_holds_hears_its_element_at_n_and_10n() {
+    let cost = |n: usize| {
+        let a = pumped(0);
+        let root = a.account_root();
+        let ts: Vec<Tid> = (0..n).map(|_| thing(&a)).collect();
+        let (_set, fired_n, h) = tracked(&a);
+        for t in &ts {
+            assert!(h.holds(root, *t).unwrap());
+        }
+        a.settle();
+        costs::take();
+        let x = thing(&a);
+        let cs = costs::take();
+        assert_eq!(fired(&a, &fired_n), 0, "another element");
+        assert!(a.holds(root, x).unwrap());
+        let mut w = a.write();
+        w.unhold(root, ts[0]).unwrap();
+        w.commit().unwrap();
+        assert_eq!(fired(&a, &fired_n), 1, "its own element");
+        assert!(!h.holds(root, ts[0]).unwrap());
+        (count(&cs, "watch: dispatched"), count(&cs, "refs: row read"))
+    };
+    assert_eq!(cost(10), cost(100));
+}

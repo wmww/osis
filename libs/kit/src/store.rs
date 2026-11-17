@@ -19,7 +19,7 @@ use crate::view::{Summary, TICK};
 use osis::ReadSet;
 use crate::schema::{ARRANGED, Arrange, COLLECTION, Collection, FAVORITES, MODE, Mode, OPEN, THEME, VIEWED_AS, WINDOWS};
 use osis::core::{HOLDS, NAME, TAG};
-use osis::{BacklinkQuery, Codec, Config, Address, Osis, ReadOnly, Ref, Result, Runtime, Step, Store, Strong, Tid, Weak, p};
+use osis::{BacklinkQuery, Config, Address, Osis, ReadOnly, Ref, Result, Runtime, Store, Strong, Tid, Weak, p};
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::Path;
 
@@ -528,14 +528,14 @@ impl Data {
     /// A strong grants nothing, so tagging shares nothing (notes/tags.md, Sharing a tag).
     pub fn add_tag(&self, t: Tid, tag: Tid) -> Result<()> {
         let mut w = self.db.write();
-        hold(&mut w, tag, t)?;
+        w.hold(tag, t)?;
         w.commit()?;
         Ok(())
     }
     /// Takes `t` out of `tag` (home still holds it): every reference to it in the tag's `holds.0`.
     pub fn remove_tag(&self, t: Tid, tag: Tid) -> Result<()> {
         let mut w = self.db.write();
-        unhold(&mut w, tag, t)?;
+        w.unhold(tag, t)?;
         w.commit()?;
         Ok(())
     }
@@ -683,7 +683,7 @@ impl Data {
         keep_a_day(&mut w, t)?;
         w.at(t, NAME).set(&String::new())?;
         start(self, &mut w, t)?;
-        hold(&mut w, g, t)?;
+        w.hold(g, t)?;
         w.commit()?;
         self.set_open(Some(t))?;
         Ok(t)
@@ -700,25 +700,12 @@ impl Data {
         let mut w = self.db.write();
         for h in self.held_by(t)?.iter().copied() {
             if self.db.role_on(h)? >= Some(osis::Role::Write) {
-                unhold(&mut w, h, t)?;
+                w.unhold(h, t)?;
             }
         }
         w.commit()?;
         if was { self.set_open(None) } else { Ok(()) }
     }
-}
-
-/// In `w`: a strong to `t` in `holder`'s `holds.0`.
-pub fn hold(w: &mut osis::Write<'_>, holder: Tid, t: Tid) -> Result<()> {
-    w.at(holder, HOLDS).path(p![]).add(&Ref::Strong(Strong(t)))
-}
-
-/// In `w`: every reference to `t` in `holder`'s `holds.0` removed, strong or weak.
-pub fn unhold(w: &mut osis::Write<'_>, holder: Tid, t: Tid) -> Result<()> {
-    for r in [Ref::Strong(Strong(t)), Ref::Weak(Weak(t))] {
-        w.at(holder, HOLDS).path(osis::Path(vec![Step::Elem(r.to_value())])).remove()?;
-    }
-    Ok(())
 }
 
 /// In `w`, by the admin creating `t`: `t`'s setting keeping what any aspect replaces a day after,
@@ -771,7 +758,7 @@ impl Data {
         if !self.things()?.contains(&got) {
             let g = self.home()?;
             let mut w = self.db.write();
-            hold(&mut w, g, got)?;
+            w.hold(g, got)?;
             w.commit()?;
         }
         Ok(got)

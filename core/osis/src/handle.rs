@@ -60,21 +60,13 @@ pub struct Config {
     /// at that address with that key. A dial candidate only: what syncs is decided by what both
     /// nodes hold, never by this list, and nothing of it is stored.
     pub dial: Vec<Address>,
-    /// Sync directly with other nodes that read the same data (default on): this node listens,
-    /// tells them how to reach it and relays for them, and finds nodes on its local network (`lan`).
-    /// Turn it off to sync only with the nodes in `dial`.
-    pub direct_sync: bool,
-    /// Nodes that relay for this one, which it tells those nodes it can be reached through: each
-    /// `peer://<ip>:<port>#<key>`, a node listening there with that key (any other form is
-    /// `Invalid`).
-    pub relays: Vec<Address>,
-    /// Finding other nodes on the local network, with `direct_sync` and a runtime (default on).
+    /// Finding other nodes on the local network, with a runtime (default on).
     pub lan: crate::Lan,
 }
 
 impl Default for Config {
     fn default() -> Config {
-        Config { app: AppConfig::default(), runtime: Runtime::None, dial: Vec::new(), direct_sync: true, relays: Vec::new(), lan: crate::Lan::default() }
+        Config { app: AppConfig::default(), runtime: Runtime::None, dial: Vec::new(), lan: crate::Lan::default() }
     }
 }
 
@@ -85,8 +77,7 @@ impl Config {
     }
 
     /// `Invalid` for what would silently do nothing: nodes to dial with no runtime to reach them,
-    /// LAN targets with nothing to announce (no runtime, no direct sync) or naming no place, a
-    /// relay not named by one socket address.
+    /// LAN targets with nothing to announce (no runtime) or naming no place.
     pub(crate) fn check(&self) -> Result<()> {
         if !self.dial.is_empty() && !self.online() {
             return Err(Error::Invalid("Config.dial with Runtime::None: nothing would sync; set Config.runtime".into()));
@@ -95,12 +86,9 @@ impl Config {
             if let Some(a) = also_announce_to.iter().find(|a| a.ip().is_unspecified() || a.port() == 0) {
                 return Err(Error::Invalid(format!("LAN announcement target {a}: needs an address and a port")));
             }
-            if !also_announce_to.is_empty() && (matches!(self.runtime, Runtime::None) || !self.direct_sync) {
-                return Err(Error::Invalid("LAN announcement targets with no runtime or direct sync: nothing would announce".into()));
+            if !also_announce_to.is_empty() && matches!(self.runtime, Runtime::None) {
+                return Err(Error::Invalid("LAN announcement targets with no runtime: nothing would announce".into()));
             }
-        }
-        if let Some(r) = self.relays.iter().find(|r| r.relay_item().is_none()) {
-            return Err(Error::Invalid(format!("relay {r}: needs peer://<ip>:<port>#<key>")));
         }
         Ok(())
     }
@@ -188,8 +176,6 @@ pub(crate) struct Inner {
     pub timers: bool,
     /// Where sync's outputs go.
     pub net: crate::net::Net,
-    /// This node's relays as `peer://` relay items (`Config::relays`).
-    pub relays: Vec<String>,
     /// The store's directory (its client socket is named by it).
     pub store_dir: Option<std::path::PathBuf>,
     /// Futures waiting on sync (`wait_synced`, `redeem`): polled again after each step.
@@ -282,7 +268,7 @@ impl std::ops::Deref for Osis {
 /// # let set = ReadSet::new(|_| {});
 /// # let mut w = db.write();
 /// # let t = w.create(db.account_root()).unwrap();
-/// # w.at(db.account_root(), osis::core::HOLDS).path(osis::p![]).add(&osis::Ref::Strong(osis::Strong(t))).unwrap();
+/// # w.hold(db.account_root(), t).unwrap();
 /// # w.commit().unwrap();
 /// # let r = db.tracking(&set);
 ///
@@ -299,7 +285,7 @@ impl std::ops::Deref for Osis {
 /// # let set = ReadSet::new(|_| {});
 /// # let mut w = db.write();
 /// # let t = w.create(db.account_root()).unwrap();
-/// # w.at(db.account_root(), osis::core::HOLDS).path(osis::p![]).add(&osis::Ref::Strong(osis::Strong(t))).unwrap();
+/// # w.hold(db.account_root(), t).unwrap();
 /// # w.commit().unwrap();
 /// # let r = db.tracking(&set);
 ///
@@ -315,7 +301,7 @@ impl std::ops::Deref for Osis {
 /// # let set = ReadSet::new(|_| {});
 /// # let mut w = db.write();
 /// # let t = w.create(db.account_root()).unwrap();
-/// # w.at(db.account_root(), osis::core::HOLDS).path(osis::p![]).add(&osis::Ref::Strong(osis::Strong(t))).unwrap();
+/// # w.hold(db.account_root(), t).unwrap();
 /// # w.commit().unwrap();
 /// # let r = db.tracking(&set);
 ///
@@ -331,7 +317,7 @@ impl std::ops::Deref for Osis {
 /// # let set = ReadSet::new(|_| {});
 /// # let mut w = db.write();
 /// # let t = w.create(db.account_root()).unwrap();
-/// # w.at(db.account_root(), osis::core::HOLDS).path(osis::p![]).add(&osis::Ref::Strong(osis::Strong(t))).unwrap();
+/// # w.hold(db.account_root(), t).unwrap();
 /// # w.commit().unwrap();
 /// # let r = db.tracking(&set);
 ///
@@ -347,7 +333,7 @@ impl std::ops::Deref for Osis {
 /// # let set = ReadSet::new(|_| {});
 /// # let mut w = db.write();
 /// # let t = w.create(db.account_root()).unwrap();
-/// # w.at(db.account_root(), osis::core::HOLDS).path(osis::p![]).add(&osis::Ref::Strong(osis::Strong(t))).unwrap();
+/// # w.hold(db.account_root(), t).unwrap();
 /// # w.commit().unwrap();
 /// # let r = db.tracking(&set);
 ///
@@ -363,7 +349,7 @@ impl std::ops::Deref for Osis {
 /// # let set = ReadSet::new(|_| {});
 /// # let mut w = db.write();
 /// # let t = w.create(db.account_root()).unwrap();
-/// # w.at(db.account_root(), osis::core::HOLDS).path(osis::p![]).add(&osis::Ref::Strong(osis::Strong(t))).unwrap();
+/// # w.hold(db.account_root(), t).unwrap();
 /// # w.commit().unwrap();
 /// # let r = db.tracking(&set);
 ///
@@ -379,7 +365,7 @@ impl std::ops::Deref for Osis {
 /// # let set = ReadSet::new(|_| {});
 /// # let mut w = db.write();
 /// # let t = w.create(db.account_root()).unwrap();
-/// # w.at(db.account_root(), osis::core::HOLDS).path(osis::p![]).add(&osis::Ref::Strong(osis::Strong(t))).unwrap();
+/// # w.hold(db.account_root(), t).unwrap();
 /// # w.commit().unwrap();
 /// # let r = db.tracking(&set);
 ///
@@ -395,7 +381,7 @@ impl std::ops::Deref for Osis {
 /// # let set = ReadSet::new(|_| {});
 /// # let mut w = db.write();
 /// # let t = w.create(db.account_root()).unwrap();
-/// # w.at(db.account_root(), osis::core::HOLDS).path(osis::p![]).add(&osis::Ref::Strong(osis::Strong(t))).unwrap();
+/// # w.hold(db.account_root(), t).unwrap();
 /// # w.commit().unwrap();
 /// # let r = db.tracking(&set);
 ///
@@ -411,7 +397,7 @@ impl std::ops::Deref for Osis {
 /// # let set = ReadSet::new(|_| {});
 /// # let mut w = db.write();
 /// # let t = w.create(db.account_root()).unwrap();
-/// # w.at(db.account_root(), osis::core::HOLDS).path(osis::p![]).add(&osis::Ref::Strong(osis::Strong(t))).unwrap();
+/// # w.hold(db.account_root(), t).unwrap();
 /// # w.commit().unwrap();
 /// # let r = db.tracking(&set);
 ///
@@ -674,7 +660,6 @@ impl Osis {
             undo: Mutex::new(()),
             timers: !matches!(cfg.runtime, Runtime::None),
             net,
-            relays: cfg.relays.iter().filter_map(Address::relay_item).collect(),
             store_dir,
             waiters: Mutex::new(Vec::new()),
             thin: std::sync::OnceLock::new(),
@@ -831,28 +816,23 @@ impl ReadOnly {
 
     /// Queues the engine's events for the dispatcher, then what `moved` names that none of them
     /// told (`Dispatch::moved`): a roster event for each watched roster that reads otherwise, and
-    /// for each followed tracked read that does, a call, unless a roster event reaches it
-    /// (every such read listens at `Slot::Roles`).
+    /// a call to each followed tracked read that does (no event reaches those).
     fn drain(&self, l: &mut Locked, (mut rosters, ids): (Vec<Tid>, Vec<u64>)) {
-        let mut roles_told = false;
         while let Ok(e) = l.events.try_recv() {
             if let Event::Roster { thing } | Event::Created { thing } = &e {
                 rosters.retain(|t| t != thing);
-                roles_told = true;
             }
             l.seq += 1;
             self.inner.dispatch.send(l.seq, Msg::Event(e));
         }
-        roles_told |= !rosters.is_empty();
         for thing in rosters {
             l.seq += 1;
             self.inner.dispatch.send(l.seq, Msg::Event(Event::Roster { thing }));
         }
-        if !roles_told {
-            for id in ids {
-                l.seq += 1;
-                self.inner.dispatch.send(l.seq, Msg::Deliver(id, crate::watch::Delivery::Due));
-            }
+        // a tracked read the role graph decides hears only its own answer moving
+        for id in ids {
+            l.seq += 1;
+            self.inner.dispatch.send(l.seq, Msg::Deliver(id, crate::watch::Delivery::Due));
         }
     }
 }
