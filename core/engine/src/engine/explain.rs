@@ -78,7 +78,6 @@ fn root(core: &Core, x: &Tid, r: &Root) -> String {
     match r {
         Root::Closure => format!("in the node closure: {}", path(core, x)),
         Root::Leaving => "leaving the node closure, not released yet".into(),
-        Root::Accepted => "reached by a held strong with a ticket for it held".into(),
         Root::Kept => "a kept copy".into(),
         Root::CopyOf(a) => format!("the kept copy of {}", label(core, a)),
         Root::KeyActor => "a key actor that is no account".into(),

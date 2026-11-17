@@ -30,10 +30,10 @@ VARIABLES
     removedAt,  \* the epoch whose rotation removed K (None: not removed)
     regrantAt,  \* the epoch G re-granted K at (None: not re-granted)
     msgs,       \* boxes in flight to K (epochs)
-    secrets,    \* K's sync record: its sync secrets by epoch
+    secrets,    \* K's sync secrets by epoch
     head,       \* K's head step (-1: none)
     store,      \* the steps whose content K holds
-    listed,     \* K's synced group lists the thing
+    listed,     \* a strong in K's node closure reaches the thing
     relisted,   \* the account listed it again once
     stops       \* times K dropped its copy at a head past its keys (bounded by MaxStops)
 vars == <<epoch, removedAt, regrantAt, msgs, secrets, head, store, listed, relisted, stops>>

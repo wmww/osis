@@ -2,20 +2,20 @@
 //! spec/permissions.md §4): another account's chain (its record, its `keys.0` commits, its
 //! inbox's), and a released thing's record and role-class state, whoever's it is. A thing outside
 //! the node closure is kept while a thing that needs it is kept: one in the node closure whose
-//! durable state holds a strong to it (`refs::to`; a weak or ticket only points and needs
-//! nothing), an account by its `keys.0` (its inbox), one whose record names it first admin, one
+//! known references hold a strong to it (`refs::to`: its state, ephemeral aspects included, and
+//! held fires; a weak or ticket only points and needs nothing), an account by its `keys.0` (its inbox), one whose record names it first admin, one
 //! whose held edge write names it holder (`Held::named_on`), one a held or pending commit it
 //! authored or acted in is on (body held or not; a pending one by the things it writes on,
 //! `Indexes::pend_by`), one a pending commit awaiting its record writes on (`Wake::Record`), one in
 //! the node closure a held commit on it has a part missing on (`Meta::missing_parts`: a part the
 //! node fetches again), one in the node closure an edge write on it names holder (not by its
 //! record: the holder's sync ID carries the grant with its chain, spec/sync-judgement.md §2 A
-//! grant naming a holder). A thing is rooted, kept for
-//! itself: in the node closure or leaving it, reached by a held strong with a ticket for it held
-//! (`Closure::accepted`: what judges the ticket stays, spec/sync-set.md §2), a key actor that is
-//! no account (a node, a link key), the K of a followed link, one a key actor held here is named
-//! on (a link being redeemed, a bearer), a kept copy, or a thing an own self-removal still waits
-//! to seal under. Nothing is rooted by whose it is: this node's account is needed by its root
+//! grant naming a holder). A thing is rooted, kept for itself: in the node closure or leaving it,
+//! a key actor that is no account (a node, a link key), the K of a followed link, one a key actor
+//! held here is named on (a link being redeemed, a bearer), a kept copy, or a thing an own
+//! self-removal still waits to seal under. A ticket roots nothing: a strong in the node closure
+//! with a ticket for its target needs it as any strong does, so what judges the ticket stays
+//! (spec/sync-set.md §2). Nothing is rooted by whose it is: this node's account is needed by its root
 //! (D's record names it), and a thing made under the node or the account goes as any once
 //! released. A pairing node takes the account up (`Engine::paired`) in the hold of the engine
 //! that applied what pairing sent, before any pass ends. Everything else goes whole, as never
@@ -27,8 +27,8 @@
 //! before what needs it stays. A lost need waits for nothing but a pass in flight: a thing that
 //! lost one (a strong row or an account's `keys.0` row gone, `refs::note`; a signer's commit
 //! dropping a part or forgotten, `Core::note_signed`, `Core::take_meta`, or leaving pending; a
-//! commit's part no longer missing, `Core::note_on`; a holder unnamed, `Held::take_unnamed`; an
-//! accepted ticket's strong gone) is noted in `Core::lost_due`, judged at a pass's end or, with
+//! commit's part no longer missing, `Core::note_on`; a holder unnamed, `Held::take_unnamed`; the
+//! last held vertex with a ticket for it no longer following its strong, `units::set_accepted`) is noted in `Core::lost_due`, judged at a pass's end or, with
 //! none in flight, at once (`Engine::settle_lost`). A release judges what it released, and what
 //! each was named holder on, in its own transaction
 //! (`Engine::released`). Either way at the end of a transaction (`Engine::run`, in turn with
@@ -120,8 +120,6 @@ pub(crate) enum Root {
     Closure,
     /// Leaving the node closure, not released yet.
     Leaving,
-    /// Reached by a held strong with a ticket for it held (`Closure::accepted`).
-    Accepted,
     /// A kept copy (`rotation::lost`).
     Kept,
     /// A secret actor whose kept copy is this one (`forget::copy_of`).
@@ -149,7 +147,7 @@ pub(crate) enum Need {
     Missing(osis_base::CommitId),
     /// `x` is in the node closure and an edge write on `t` names it holder.
     Holding,
-    /// `x` is in the node closure and its durable aspect holds a strong to `t`.
+    /// `x` is in the node closure and its aspect holds a strong to `t`.
     Strong(osis_base::Ak),
     /// Account `x`'s `keys.0` names `t` (its inbox).
     Inbox,
@@ -165,9 +163,6 @@ pub(crate) fn rooted(core: &Core, t: &Tid) -> Option<Root> {
     }
     if cl.left().contains_key(t) {
         return Some(Root::Leaving);
-    }
-    if cl.accepted(t) {
-        return Some(Root::Accepted);
     }
     if core.ix.kept.contains_key(t) {
         return Some(Root::Kept);
@@ -192,7 +187,7 @@ pub(crate) fn rooted(core: &Core, t: &Tid) -> Option<Root> {
 
 /// The things that need `t` held (the module doc), but `t`, each with why (one thing may come
 /// more than once): those naming it, those in the node closure whose state holds a strong to it
-/// (`refs::to`, durable aspects; an account's `keys.0` naming its inbox too), those a held commit
+/// (`refs::to`; an account's `keys.0` naming its inbox too), those a held commit
 /// it authored (an account's: `Indexes::by_epoch`) or acted in (`Indexes::by_actor`) has an
 /// aspect on, its parts held or not (a header alone is judged by its author's chain), those a
 /// pending commit it signed (`Indexes::pend_by`) or awaiting its record (`Wake::Record`) writes

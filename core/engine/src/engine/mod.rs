@@ -808,7 +808,7 @@ indexes! {
     /// author: when the last goes, `chains_on` loses (author, actor).
     pub acting_on: JSetMap<(Tid, Tid, Tid), CommitId>,
     /// `by_thing` for role commits alone: what an account's chain reads of its role commits on
-    /// its account root (`Core::devices_read`), so filing into D moves no account's chain.
+    /// its account root (`Core::devices_read`), so a content write on D (its `holds.0`, its tickets) moves no account's chain.
     pub role_on: JSetMap<(Tid, Tid), CommitId>,
     /// Held commits carrying a purge request, per thing they have a delta on (a request has one
     /// on each thing it names, spec/commits.md §5): what finds a thing's requests

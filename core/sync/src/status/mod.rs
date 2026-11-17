@@ -186,7 +186,7 @@ pub trait Ground: Net {
     fn removal_done(&mut self, c: &CommitId) -> Result<()>;
     /// Whether the engine wants a complete pass of S, and the pass place the pass must begin
     /// after (spec/permissions.md §3 Complete pass: the newest role commit of one of S's actors
-    /// from elsewhere it applied, a tied demotion's scope; spec/sync-status.md §3).
+    /// from elsewhere it applied; spec/sync-status.md §3).
     fn pass_wanted(&mut self, s: &SyncId) -> Result<Option<u64>>;
     /// Begins a pass: the next pass place (`Engine::begin_pass`), one count with role arrivals and
     /// leaves, so a pass counts for a want only when begun above its place.

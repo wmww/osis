@@ -39,8 +39,8 @@
 //! Normalizations: a waiting commit's held parts carry no writes or edges (the model only needs
 //! that they are held); a part an applied commit misses, or holds waiting alone (spec/commits.md
 //! §4), is missing; a leftover's value-less carriers are taken as stripped by the node, also for
-//! a value that arrived value-less; an edge's `tied` and `keyset` are dropped (carried,
-//! never an authority).
+//! a value that arrived value-less; an edge's `floor` is dropped (it gives keys, never
+//! a role).
 
 use held_model as hm;
 use osis_base::{Ak, CommitId, CreationRecord, Tid, Value};
@@ -313,7 +313,7 @@ impl Conv<'_> {
         }
         out
     }
-    /// A role edge write (`tied`, `keyset` dropped: carried, never an authority).
+    /// A role edge write (`floor` dropped: it gives keys, never a role).
     fn edge(&mut self, holder: &Tid, e: Option<&osis_perm::Edge>) -> hm::EdgeWrite {
         hm::EdgeWrite { holder: self.id(holder), role: e.map(|e| role_of(e.role)), invite: e.and_then(|e| e.invite).map(role_of), until: e.and_then(|e| e.until).map(|u| u.0) }
     }
@@ -799,9 +799,9 @@ pub(crate) fn compare(e: &mut Engine, hist: &History, cov: &mut Coverage, drops:
             }
         }
     }
-    // `roles.0` reads: each known thing's roster (its edges alive now, record edges included;
-    // `tied` carried, never an authority) as the model's walk ends; but this node's account's
-    // account root, whose roster is its signing chain's (spec/permissions.md §5.4, Roster)
+    // `roles.0` reads: each known thing's roster (its edges alive now, record edges included) as
+    // the model's walk ends; but this node's account's account root, whose roster is its signing
+    // chain's (spec/permissions.md §5.4, Roster)
     if !by_part.is_empty() {
         let last = tl.applied().last().map_or(&tl.initial, |a| &a.after);
         let own_d = e.core.account_and_root().map(|x| x.1);
