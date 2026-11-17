@@ -2046,3 +2046,32 @@ fn an_answer_after_the_testers_class_moved_opens_nothing_at_the_old_class_spec_s
         assert_eq!(own, want, "moved {moved}");
     }
 }
+
+// spec/sync-opens.md §6 (a member at a store source whose peer J judges departed is ended and
+// closes only on the peer's Lost; judged not departed again, it is an ended member like any
+// other): a reader judges its store peer departed, then a sync holder again (granted anew). Its
+// stream already past `until`, the member closes with a Lost naming `until` without waiting for
+// the peer's: the store, served nothing past `until` and moved by no Register while the reader
+// waits for it to hold the step's role commits, would otherwise never send one.
+#[test]
+fn a_departed_store_granted_again_closes_at_its_until_spec_sync_opens_6() {
+    let st = StepKeys::new(1, 0);
+    let mut r = Side::new(1);
+    let mut k = Side::new(2);
+    r.table.set(S, Some(reader(&S, &read_secret(1, 0), &st, &[], &[], &[])));
+    k.table.set(S, Some(store(&st)));
+    let mut p = Pair::new(r, k, account(1), account(2));
+    p.run();
+    assert_eq!(p.a.opens.members(p.ca)[&S].class, SourceClass::Store);
+    p.a.table.judge_as(S, tid(2), J::Departed);
+    p.a.settle();
+    let until = p.a.table.until;
+    assert_eq!(p.a.opens.members(p.ca)[&S].until, Some(until));
+    p.a.reported(p.ca, S, until);
+    assert!(p.a.open(p.ca, &S), "departed: closes on the peer's Lost alone");
+    p.a.sent();
+    p.a.table.judge_as(S, tid(2), J::SyncHolder);
+    p.a.settle();
+    assert!(!p.a.open(p.ca, &S));
+    assert!(matches!(&of_kind(&p.a.sent(), 38)[..], [Msg::Lost { items, .. }] if items[0] == (S, osis_proto::Cursor::new(until.to_be_bytes().to_vec()).ok())));
+}

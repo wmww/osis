@@ -90,7 +90,7 @@ Reference-graph rules (tickets, retention needs and roots, the closure walk, `ac
 | closure walk: no key actor entered | guard removed | 0; `closure::the_node_closure_follows_strongs_*` (a strong from the node root enters the node thing) |
 | needs: a record another part of a pending commit awaits (`Wake::Record`) | dropped | 0: deleted (`pend_by` holds the first awaited record; the next is due once the commit pends on it) |
 | cover drops: a missing part counted leftover-due | dropped | 0: deleted (a missing part is never a bare leftover) |
-| opens: a peer no longer departed ends at `until` | dropped | 0, reached by no default test: its one scenario fails on main (issues/regranted-store-refills-from-no-reader.md) |
+| opens: a peer no longer departed ends at `until` | dropped | 0; `opens::a_departed_store_granted_again_closes_at_its_until_*` |
 
 ## Harness footguns
 - A role commit past `grant`'s refusal needs `m.unchecked` plus `skip_writer_rules`.
