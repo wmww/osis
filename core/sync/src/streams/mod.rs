@@ -73,10 +73,10 @@ pub const ASKED_MS: u64 = crate::session::STALL_TIMEOUT_MS;
 /// What opening a pulled body did at a node reading S.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Opening {
-    /// It opened to what no entry keeps: a piece, a sealed fire, records.
+    /// It opened to what no entry keeps: a piece, a sealed fire.
     Taken,
-    /// It opened to a commit held here: the entry is kept as it came, the reader's own store's
-    /// copy of the body (spec/sync-judgement.md §3 Own store: a held blob goes on verbatim);
+    /// It opened to a commit held here, or a certificate blob: the entry is kept as it came, the
+    /// reader's own store's copy of the body (spec/sync-judgement.md §3 Own store: a held blob goes on verbatim);
     /// `gave`: it brought something new, else it stays charged to its bringer unless stamped
     /// (spec/sync-ids.md §5 Peer budget: it gives nothing held).
     Held { gave: bool },
@@ -496,7 +496,11 @@ pub fn opening(engine: &mut Engine, store: &crate::store::Store, s: &SyncId, e: 
         Ok(o) if crate::store::pends(engine, &e.blob, &o) => Ok(Opening::Pends),
         Ok(Opened::Commit(c, _)) if engine.holds_memory(&c) => Ok(Opening::Memory(engine.memory_charge(&c)?)),
         Ok(Opened::Commit(_, i)) => Ok(Opening::Held { gave: !matches!(i, osis_engine::Ingested::Duplicate(_)) }),
-        Ok(Opened::Linked | Opened::Records(_) | Opened::Lists(_)) => Ok(Opening::Taken),
+        // a certificate blob is kept as it came, counted as the own store's and charged to no
+        // one, as a start's open of it does (spec/permissions.md §4 Logging certificates: one
+        // logged by any node counts; read keeps one per set of certificates, `cert_blobs`)
+        Ok(Opened::Records(_) | Opened::Lists(_)) => Ok(Opening::Held { gave: true }),
+        Ok(Opened::Linked) => Ok(Opening::Taken),
         Ok(Opened::NotOpen) | Err(crate::types::Error::Engine(osis_engine::Error::NotBuilt(_))) => Ok(Opening::NotOpen),
         Ok(Opened::Bad) => Ok(Opening::Bad),
         Err(e) => Err(e),

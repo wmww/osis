@@ -526,16 +526,29 @@ impl Ground for Live<'_, '_> {
         };
         let missing = if self.cx.engine.cert_wrap(s, r.as_ref())? { carried.clone() } else { BTreeSet::new() };
         let mut out = CertBlobsMissing { missing, ..CertBlobsMissing::default() };
+        // every certificate blob of the kind in the own store counts, whoever sealed it
+        let mut held: BTreeMap<BlobId, (Entry, BTreeSet<Tid>)> = BTreeMap::new();
         for (b, tids) in self.cx.engine.cert_blobs(s, r).iter() {
-            let Some(e) = self.cx.store.entry(s, b)?.filter(|e| e.own) else {
+            let Some(e) = self.cx.store.entry(s, b)? else {
                 out.gone.insert(*b);
                 continue;
             };
-            if tids.is_disjoint(&carried) {
+            let tids: BTreeSet<Tid> = tids.intersection(&carried).copied().collect();
+            if tids.is_empty() {
                 out.unneeded.insert(*b);
                 continue;
             }
-            if !self.under_head(s, &e)? {
+            held.insert(*b, (e, tids));
+        }
+        // one losing to another leaves: the other carries all it carries of S's, and more, or
+        // the same under a lower ID (spec/permissions.md §4 Logging certificates)
+        for (b, (e, tids)) in &held {
+            let loses = held.iter().any(|(o, (_, x))| o != b && x.is_superset(tids) && (x.len() > tids.len() || o < b));
+            if loses {
+                out.unneeded.insert(*b);
+                continue;
+            }
+            if !self.under_head(s, e)? {
                 out.stale.insert(*b);
             }
             out.missing.retain(|t| !tids.contains(t));

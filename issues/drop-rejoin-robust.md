@@ -1,5 +1,5 @@
 # Dropped bodies coming back: make it simple and robust
-> Summary: Tess's rule stands (a drop a later validity flip undoes counts as never received; the body rejoins from any copy; none left means gone alike); build it robustly, spending download and CPU freely in this rare case. Built: one rebuild path, leftovers as held bodies, the debug rebuild check. Left: holders log again (3), brute-force refetch (4), a reference model (6), revoker snapshots (7).
+> Summary: Tess's rule stands (a drop a later validity flip undoes counts as never received; the body rejoins from any copy; none left means gone alike). Built: one rebuild path, leftovers as held bodies, the debug rebuild check. Left, none built: holders log a purged body again (3), brute-force refetch by ID (4), a reference model (6), revoker snapshots (7).
 > Priority: normal
 > Tags: engine, tests
 

@@ -1,7 +1,8 @@
 //! Keeping S unread end to end, in a world of product nodes: a grant of sync on a thing with own
 //! keys kept unread, a write logged there, pulled and held, then the removal's step registered and the copy
-//! dropped, through the engine facade and the modules wherever they are built; and the inbox
-//! module's deliveries in a node (re-sent only at expiry, not at a restart).
+//! dropped, through the engine facade and the modules wherever they are built; the inbox
+//! module's deliveries in a node (re-sent only at expiry, not at a restart); and the record blobs
+//! readers keep in their own stores.
 
 use crate::harness::World;
 use osis_base::{Ak, Role, Value};
@@ -188,4 +189,44 @@ fn a_member_closed_on_a_report_is_no_source_spec_sync_status_1() {
         assert!(sources.iter().all(|c| w.node(i).node.opens().members(*c).contains_key(&s)), "node {i}'s sources of S are members");
     }
     assert!(w.store(1).entries(&s).unwrap().is_empty(), "node 1 stopped");
+}
+
+// spec/permissions.md §4 (Logging certificates: a record blob logged by any node counts once
+// opened, while held in the own store): two readers of S each sealing a record blob of the same
+// records at once (each before it saw the other's) settle, with the writer, on one record blob in
+// every own store: one carrying all another carries, and more or under a lower ID, wins; none
+// logs another of its own.
+#[test]
+fn readers_logging_the_same_records_settle_on_one_record_blob_spec_permissions_4() {
+    use crate::harness::Step::*;
+    use crate::harness::history::{Gives, world};
+    let mut w = world(0, 3);
+    let _ = crate::harness::play(&mut w, &[New(0), Grant(0, 0, 1, Gives::Reads), Grant(0, 0, 2, Gives::Reads), Run], String::new());
+    let t = w.history.things[0].0;
+    let s = w.engine(0).sync_id_of(&t).unwrap().unwrap();
+    let records: std::collections::BTreeSet<osis_base::Tid> = w.engine(0).cert_blobs(&s, None).values().flatten().copied().collect();
+    assert!(!records.is_empty(), "S carries records");
+    let held = |w: &mut World, i: usize| -> Vec<osis_base::BlobId> {
+        let noted = w.engine(i).cert_blobs(&s, None);
+        w.store(i).entries(&s).unwrap().into_iter().map(|e| e.blob).filter(|b| noted.contains_key(b)).collect()
+    };
+    for i in [1, 2] {
+        let (blob, bytes, wrap) = w.engine(i).seal_records(&s, &records, &mut osis_crypto::SeededRng::from_u64(i as u64)).unwrap().expect("sealed");
+        let e = osis_sync::types::Entry { blob, wrap, stamp: None, deposited: true, own: true, role: false, class: osis_blob::Class::Durable, expires: None };
+        w.store(i).clone().log(&s, e, Some(bytes), None).unwrap();
+    }
+    // each reader comes back holding its own
+    for i in [1, 2] {
+        w.power_off(i);
+        w.power_on(i);
+    }
+    w.run();
+    let one = held(&mut w, 0);
+    assert_eq!(one.len(), 1, "one record blob at the writer: {one:?}");
+    for i in [1, 2] {
+        assert_eq!(held(&mut w, i), one, "node {i} holds the same one record blob");
+        let noted = w.engine(i).cert_blobs(&s, None);
+        assert_eq!(noted.keys().copied().collect::<Vec<_>>(), one, "node {i} notes only it");
+        assert!(noted.values().all(|x| x.is_superset(&records)), "it carries every record");
+    }
 }

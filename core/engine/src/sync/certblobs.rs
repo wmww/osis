@@ -1,11 +1,12 @@
-//! Certificate blobs of this node's own under a sync ID (spec/sync-judgement.md §1): record
-//! blobs (spec/wire.md §3), the raw creation records a sync ID's chain certificates name that no
-//! closure body there carries, and list blobs (spec/wire.md §4, List tree), the thing lists of
-//! one rotation for the things the sync ID carries lists of (`sync::listed`); each sealed as one
-//! blob of what is missing, and taken when one opens. Each one sealed here is kept per (sync ID,
-//! kind: records or a rotation's lists) with what it carries (`CERT_BLOBS` rows: one per blob
-//! this node logged), so read knows what its own store carries across a restart, and a reader of
-//! one rotation's list blobs reads that key alone.
+//! Certificate blobs in this node's own store under a sync ID (spec/sync-judgement.md §1):
+//! record blobs (spec/wire.md §3), the raw creation records a sync ID's chain certificates name
+//! that no closure body there carries, and list blobs (spec/wire.md §4, List tree), the thing
+//! lists of one rotation for the things the sync ID carries lists of (`sync::listed`); each sealed
+//! as one blob of what is missing, and taken when one opens. Each one sealed here or opened from
+//! a peer is kept per (sync ID, kind: records or a rotation's lists) with what it carries
+//! (`CERT_BLOBS` rows: one per blob), so read knows what its own store carries across a restart,
+//! whoever logged it (spec/permissions.md §4: a record blob logged by any node counts), and a
+//! reader of one rotation's list blobs reads that key alone.
 
 use super::Wrap;
 use crate::engine::{Engine, Tx};
@@ -77,6 +78,17 @@ fn note(tx: &mut Tx<'_>, s: &SyncId, r: CertKind, b: &BlobId, tids: BTreeSet<Tid
     Ok(())
 }
 
+impl Engine {
+    /// Certificate blob `b` of kind `r`, opened under `s`, carries `tids` (`certblobs`).
+    pub(crate) fn note_cert_blob(&mut self, s: &SyncId, r: CertKind, b: &BlobId, tids: BTreeSet<Tid>) -> Result<()> {
+        if self.core.ix.cert_blobs.get(&(*s, r)).is_some_and(|m| m.get(b) == Some(&tids)) {
+            return Ok(());
+        }
+        let (s, b) = (*s, *b);
+        self.run(|tx| note(tx, &s, r, &b, tids))
+    }
+}
+
 /// The keys of `s` in `Indexes::cert_blobs`.
 fn under(s: &SyncId) -> std::ops::RangeInclusive<(SyncId, CertKind)> {
     (*s, None)..=(*s, Some(CommitId([0xff; 32])))
@@ -100,7 +112,7 @@ pub(crate) fn forget(tx: &mut Tx<'_>, s: &SyncId) -> Result<()> {
     Ok(())
 }
 
-/// The row of certificate blob `b` of kind `r` under `s` goes (no own entry holds it any more).
+/// The row of certificate blob `b` of kind `r` under `s` goes (the own store holds it no more).
 pub(crate) fn forget_blob(tx: &mut Tx<'_>, s: &SyncId, r: CertKind, b: &BlobId) -> Result<()> {
     let k = (*s, r);
     let Some(m) = tx.core.ix.cert_blobs.get(&k).cloned() else { return Ok(()) };
@@ -290,7 +302,8 @@ impl Engine {
         Ok(false)
     }
 
-    /// The certificate blobs of kind `r` sealed here under `s`, each with what it carries.
+    /// The certificate blobs of kind `r` noted under `s` (sealed here or opened), each with what
+    /// it carries.
     pub fn cert_blobs(&self, s: &SyncId, r: CertKind) -> Arc<CertBlobs> {
         self.core.ix.cert_blobs.get(&(*s, r)).cloned().unwrap_or_default()
     }
@@ -360,9 +373,8 @@ impl Engine {
     /// Takes a record blob's plaintext `plain`, the plaintext of blob `b` (a record proves itself
     /// by its hash): the records something here awaits are learned, with those on their record
     /// chains; the rest are kept loose, carried by `b` (spec/commits.md §4 Pending storage), and
-    /// learned once something awaits them (`Engine::promote_loose`). Nothing of the blob is kept
-    /// here: a peer's record blob is not kept in the own store, so it leaves no row
-    /// (`cert_blobs` holds what this node sealed). `None` when `plain` is no record blob.
+    /// learned once something awaits them (`Engine::promote_loose`). `None` when `plain` is no
+    /// record blob.
     pub(crate) fn take_record_blob(&mut self, b: &BlobId, plain: &[u8]) -> Result<Option<BTreeSet<Tid>>> {
         let Ok(recs) = osis_commit::record_blob::decode_record_blob(plain) else { return Ok(None) };
         let tids: BTreeSet<Tid> = recs.iter().map(|r| r.tid()).collect();

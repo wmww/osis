@@ -235,10 +235,10 @@ pub trait Ground {
     fn set_stand(&mut self, at: &Source, s: &SyncId, c: &CommitId, stand: &Stand) -> Result<()>;
 
     /// Of kind `r` (records: `None`; a rotation's thing lists: `Some(r)`), what S carries as
-    /// certificates that no own certificate blob of that kind there carries (spec/permissions.md
-    /// §4 Logging certificates: the records missing; spec/sync-judgement.md §1 List blobs), and
-    /// the certificate blobs of that kind sealed here under S that the own store holds no more,
-    /// and those it holds.
+    /// certificates that no certificate blob of that kind in the own store carries, whoever
+    /// logged it (spec/permissions.md §4 Logging certificates: the records missing;
+    /// spec/sync-judgement.md §1 List blobs), and what becomes of each such blob the engine
+    /// noted under S.
     fn cert_blobs_missing(&mut self, s: &SyncId, r: CertKind) -> Result<CertBlobsMissing> {
         let _ = (s, r);
         Ok(CertBlobsMissing::default())
@@ -423,16 +423,16 @@ pub enum PieceAt {
 /// `Ground::cert_blobs_missing`, of one kind under one S.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct CertBlobsMissing {
-    /// Records, or things whose lists of the rotation, S carries that no own certificate blob of
-    /// the kind carries: one blob of them is logged.
+    /// Records, or things whose lists of the rotation, S carries that no certificate blob of
+    /// the kind in the own store carries: one blob of them is logged.
     pub missing: BTreeSet<osis_base::Tid>,
-    /// Certificate blobs of the kind sealed here under S that the own store holds no more.
+    /// Certificate blobs of the kind noted under S that the own store holds no more.
     pub gone: BTreeSet<osis_base::BlobId>,
-    /// Certificate blobs of the kind sealed here under S that the own store holds and that are
-    /// not stamped under S's head write key where this node holds it
-    /// (`Ground::stands`): stamped in place.
+    /// Certificate blobs of the kind the own store holds under S that are not stamped under S's
+    /// head write key where this node holds it (`Ground::stands`): stamped in place.
     pub stale: BTreeSet<osis_base::BlobId>,
-    /// Certificate blobs of the kind sealed here under S that the own store holds and that carry
-    /// nothing S carries now: they leave it (`Ground::unlog`).
+    /// Certificate blobs of the kind the own store holds under S that carry nothing S carries
+    /// now, or lose to another there (all it carries of S's, and more or under a lower ID): they
+    /// leave it (`Ground::unlog`).
     pub unneeded: BTreeSet<osis_base::BlobId>,
 }
