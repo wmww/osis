@@ -282,15 +282,15 @@ enum Due {
 /// The roles of `a` that `who` may rotate, but `kept` (`Keep`), whose rotation is due
 /// (spec/crypto.md §4, encrypting under): blocked (`blocked_roles_of`), or some current epoch,
 /// not only the newest, does not cover a known departure (one whose secret this node lacks
-/// covers nothing: it is superseded unread), or some current epoch, held or not, has a stale box
-/// (rule 2) or a box to an actor whose grant is keyless (the knowing re-key, rule 4), or is
-/// orphaned (`orphaned`), or is a derived read epoch this node wrote under (`merge::due`); one
-/// due only for current epochs whose secret this node lacks, where
-/// its new epoch boxes a rotator (`boxes_rotator`). With `Due::PassEnd` also when an unsuperseded
-/// epoch is not current here and `who` withdraws it, or when a current read epoch's floor is
-/// below a holder's (`floors::low_floor_due`). A fork alone is due nothing else: it stands until
-/// the role next rotates (spec/crypto.md §4). No secret of the role is needed; the commit
-/// must be `wrappable`, else the rotation waits for a re-seal.
+/// judged by order, `uncovered`), or some current epoch, held or not, has a stale box (rule 2)
+/// or a box to an actor whose grant is keyless (the knowing re-key, rule 4), or is orphaned
+/// (`orphaned`), or is a derived read epoch this node wrote under (`merge::due`); one due only
+/// for current epochs whose secret this node lacks, where its new epoch boxes a rotator
+/// (`boxes_rotator`). With `Due::PassEnd` also when an unsuperseded epoch is not current here
+/// and `who` withdraws it, or when a current read epoch's floor is below a holder's
+/// (`floors::low_floor_due`). A fork alone is due nothing else: it stands until the role next
+/// rotates (spec/crypto.md §4). No secret of the role is needed; the commit must be
+/// `wrappable`, else the rotation waits for a re-seal.
 fn rotation_due(tx: &mut Tx<'_>, who: &Tid, a: &Tid, mode: Due, kept: &BTreeSet<Role>) -> Result<BTreeSet<Role>> {
     let may = may_rotate(tx.core, who, a);
     let Some(epochs) = tx.core.epochs(a) else { return Ok(BTreeSet::new()) };
@@ -301,20 +301,20 @@ fn rotation_due(tx: &mut Tx<'_>, who: &Tid, a: &Tid, mode: Due, kept: &BTreeSet<
     for r in roles {
         let held = tx.core.names_held(a);
         let mut due = blocked.contains(&r);
-        // any current epoch, not only the newest, missing a known departure; a
-        // fork made unaware of it stays current otherwise and may win the (n, nonce) order, and a
-        // holder actor anchored on it never moves to the knowing one. Judged from the state, so
-        // for current epochs whose secret this node lacks too; such an
-        // epoch covers nothing here, and one orphaned has no re-sealer: a rotation due only for
-        // those is made where its new epoch reaches a rotator (`boxes_rotator`)
-        let current: Vec<(osis_crypto::Epoch, bool)> = epochs.role(r).current().into_iter().map(|e| (e, !osis_keys::uncovered(&epochs, r, &e, &deps, &held).is_empty())).collect();
+        // any current epoch, not only the newest, missing a known departure: a fork made unaware
+        // of it stays current otherwise and may win the (n, nonce) order, and a holder actor
+        // anchored on it never moves to the knowing one. One whose secret this node lacks is
+        // judged by order (`uncovered`): ordered after the departure, its rotator may have known
+        // it, and the rotators boxed at it judge it. A rotation due only for current epochs whose
+        // secret this node lacks (so judged, or orphaned: no re-sealer) is made where its new
+        // epoch reaches a rotator (`boxes_rotator`)
+        let current: Vec<(osis_crypto::Epoch, Option<bool>)> = epochs.role(r).current().into_iter().map(|e| (e, epochs.role(r).secret(&e).map(|_| !osis_keys::uncovered(&epochs, r, &e, &deps, &held).is_empty()))).collect();
         let mut unread = false;
-        for (e, uncovered) in current {
+        for (e, uncovered_held) in current {
             due = due || members::keyless_at(tx, a, r, &e)? || members::stale_at(tx, a, r, &e)?;
-            if epochs.role(r).secret(&e).is_some() {
-                due = due || uncovered;
-            } else {
-                unread = unread || uncovered || orphaned(tx, a, r, &e)?;
+            match uncovered_held {
+                Some(u) => due = due || u,
+                None => unread = unread || uncovered(tx, a, r, &e, &deps)? || orphaned(tx, a, r, &e)?,
             }
         }
         due = due || unread && boxes_rotator(tx, who, a, r)?;
@@ -344,11 +344,11 @@ fn orphaned(tx: &mut Tx<'_>, a: &Tid, r: Role, e: &osis_crypto::Epoch) -> Result
 }
 
 /// Whether a rotation of `a` by `who` would box a holder that may rotate `r` at `r`, so that
-/// rotator reads its new epoch (spec/crypto.md §4, Encrypting under). A rotation due only for
-/// current epochs whose secret this node lacks (covering nothing here, or orphaned) is made only
-/// then: else its epoch is one every other rotator lacks alike, which rotates again, for good (a
-/// rotator holding `r` only through a holder actor with no keyset to seal to, which every
-/// rotation leaves out: `orphaned_rotations_do_not_trade_spec_crypto_4`).
+/// that rotator reads its new epoch (spec/crypto.md §4, Encrypting under). A rotation due only
+/// for current epochs whose secret this node lacks (ordered before a departure, or orphaned) is
+/// made only then: else its epoch is one every other rotator lacks alike, which rotates again,
+/// for good (a rotator holding `r` only through a holder actor with no keyset to seal to, which
+/// every rotation leaves out: `orphaned_rotations_do_not_trade_spec_crypto_4`).
 fn boxes_rotator(tx: &mut Tx<'_>, who: &Tid, a: &Tid, r: Role) -> Result<bool> {
     let boxing = recipients(tx, who, a, &[])?;
     Ok(boxing.holders.iter().any(|h| h.role >= r && may_rotate(tx.core, &h.holder, a).contains(&r)))

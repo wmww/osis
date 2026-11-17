@@ -2584,6 +2584,56 @@ fn orphaned_rotations_do_not_trade_spec_crypto_4() {
     assert!(writes(&lp, 1) && writes(&lp, 2), "H's writers hold D's write epoch through T");
 }
 
+// spec/crypto.md §4 (Encrypting under: a current epoch whose secret the node lacks, ordered
+// after a departure, is the rotators' boxed at it to judge): rotations stop once every epoch is
+// covered where it is read. D's admins are A (direct) and T, a plain thing of team H (no
+// keyset: every rotation leaves it out); H's writers W1, W2 read D directly, so each may rotate
+// D's write role and holds only the write epochs it makes. D's maker leaves; W1 rotates. Each
+// write epoch boxes A, which judges it; W2, lacking W1's, rotated, then W1, lacking W2's, for good.
+#[test]
+fn a_rotator_lacking_an_epoch_leaves_it_to_its_readers_spec_crypto_4() {
+    let mut lp = synced(4);
+    let [o, w1, w2, a] = [0, 1, 2, 3].map(|i| lp.peers[i].engine.me());
+    let h = with_own_keys(&mut lp, 0);
+    lp.peers[0].engine.grant(&h, &w1, &edge(Role::Write)).unwrap();
+    lp.peers[0].engine.grant(&h, &w2, &edge(Role::Write)).unwrap();
+    let t = {
+        let mut m = Mutation::new();
+        let t = lp.peers[0].engine.new_thing(&mut m, h);
+        lp.peers[0].commit(m).unwrap();
+        lp.hold(t);
+        t
+    };
+    let d = with_own_keys(&mut lp, 0);
+    lp.peers[0].engine.grant(&d, &w1, &edge(Role::Read)).unwrap();
+    lp.peers[0].engine.grant(&d, &w2, &edge(Role::Read)).unwrap();
+    lp.peers[0].engine.grant(&d, &a, &edge(Role::Admin)).unwrap();
+    lp.peers[0]
+        .engine
+        .run(|tx| {
+            let mut m = Mutation::new();
+            crate::flows::put_edge(&mut m, d, t, &edge(Role::Admin))?;
+            tx.core.skip_writer_rules = true;
+            let c = crate::engine::Engine::commit_tx(tx, m);
+            tx.core.skip_writer_rules = false;
+            c.map(|_| ())
+        })
+        .unwrap();
+    lp.peers[0].engine.demote(&d, &Demotion { holder: o, new: None, retain: None }).unwrap();
+    lp.sync_all().unwrap();
+    let rounds = |lp: &mut LocalPeer| {
+        let mut made = 0;
+        for i in [1, 2, 3] {
+            made += lp.peers[i].engine.ensure_rotated(&d).unwrap().0.commits.len();
+            lp.sync_all().unwrap();
+        }
+        made
+    };
+    assert!(rounds(&mut lp) >= 1, "the maker's departure is rotated");
+    let later: usize = (0..3).map(|_| rounds(&mut lp)).sum();
+    assert_eq!(later, 0, "rotations go on once every epoch is covered where it is read");
+}
+
 // spec/crypto.md §4 Current (a derived epoch written under): T is plain under F (own keys; peer 0
 // its first admin, peer 1 an admin). Peer 0 gives T secrets of its own by granting t1 (peer 2,
 // no member of F) while peer 1 hears nothing; peer 1 rotates F (removing peer 3) and writes T,

@@ -1124,9 +1124,9 @@ fn second_admin_ignorant_fork_in_cycle_spec_crypto_4() {
 // spec/crypto.md §4 (rotating needs only the right to rotate; History box), spec/permissions.md §3: P writes A
 // only through holder actor M (first admin: peer 2). A's first admin rotates A's read leaving M
 // out (Seal found no keyset; here by hand), so P holds A's write but no current read. E, a
-// writer of A, leaves by itself: the read epoch P lacks covers nothing, so P rotates read and
-// write, superseding it unread, wrapped under the read secret it holds; A's first admin, holding
-// it, adds it to P's epoch's history.
+// writer of A, leaves by itself: the read epoch P lacks, ordered before that, cannot cover it,
+// so P rotates read and write, superseding it unread, wrapped under the read secret it holds;
+// A's first admin, holding it, adds it to P's epoch's history.
 #[test]
 fn rotator_lacking_read_rotates_read_too_spec_permissions_3() {
     let mut lp = synced(5);

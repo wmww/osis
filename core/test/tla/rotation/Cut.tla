@@ -138,7 +138,9 @@ ViewFresh(v, x) ==
                        /\ ~\E j \in Est(v) : <<x, e, i>> \in C[j].unbox},
         EntsIn(held[v]), K)
 Covers(v, e) == e \in Sec(v) /\ Departed(v) \subseteq C[e].knows
-Due(v) == Departed(v) # {} /\ \E e \in Cur(v) : ~Covers(v, e)
+\* due: a current epoch misses a departure v knows; one whose secret v lacks is judged by order,
+\* the model's order being the order of making (made without it, it cannot cover it)
+Due(v) == Departed(v) # {} /\ \E e \in Cur(v) : ~(Departed(v) \subseteq C[e].knows)
 ListedAt(v, e) == UNION {y[2] : y \in {z \in EntsIn(held[v]) : z[1] = e}}
 \* epochs a held rotation lists but may not carry
 Dropped(v) == {f \in Mine(v) : \E e \in held[v] \cap EIds : f \in C[e].lists /\ ~CarryAt(v, f, e)}
@@ -204,7 +206,7 @@ LowDue(v) == MayRotate(v) /\ Unsup(v) \subseteq Est(v) /\ \E e \in Cur(v), x \in
 \* the rotation a low floor makes due (a merge of every current epoch)
 Merge(v) == /\ LowDue(v) /\ nmerge < MaxMerge
             /\ Add(NewRot(v, FALSE, "", "")) /\ nmerge' = nmerge + 1 /\ UNCHANGED <<nrot, ndue, nhost, nhostf>>
-\* the knowing re-key: a current epoch misses a departure v knows (or v lacks its secret)
+\* the knowing re-key: a current epoch misses a departure v knows (Due)
 DueRot(v) == /\ MayRotate(v) /\ Due(v) /\ ndue < MaxDue
              /\ Add(NewRot(v, FALSE, "", "")) /\ ndue' = ndue + 1 /\ UNCHANGED <<nrot, nmerge, nhost, nhostf>>
 \* a grant without history (m: its re-add, by a node holding its removal)

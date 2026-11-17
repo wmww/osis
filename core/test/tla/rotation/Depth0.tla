@@ -17,7 +17,8 @@
 (* (a superset of the built cases: a self-removal, Authority failing).      *)
 (* Rotating needs only the right to rotate (notes/keys.md): a rotation        *)
 (* supersedes every current epoch, those whose secret the rotator lacks too  *)
-(* (such an epoch covers nothing at it: it rotates), and any holder of an    *)
+(* (made before a departure it knows, such an epoch makes it rotate: Order), *)
+(* and any holder of an                                                       *)
 (* earlier secret that no history entry of a current epoch it holds lists    *)
 (* adds one (HistAdd), unless that epoch is blocked at it.                   *)
 (* Every rule judges the boxes a node holds valid. Role cycles (rule 4,      *)
@@ -504,7 +505,7 @@ MayRot(x, y, a) == IsAdm(y, a) \/ (y \in Learners /\ Through(y, a) /\ ~OffPath(x
 OtherDue(x, a) ==
   LET e == NewestV(x, a)
   IN \/ e \in BlockedEnc(x)
-     \/ \E f \in Cur(x, a) : ~Covers(x, f, a) \/ StaleAt(x, f)
+     \/ \E f \in Cur(x, a) : (IF f \in Sec(x) THEN ~Covers(x, f, a) ELSE Before(x, f)) \/ StaleAt(x, f)
      \/ \E f \in Cur(x, a) : Keyless(x, f) \/ GoneBox(x, f)
 \* a plain thing given secrets of its own: x wrote it under a derived secret
 \* that no history of a current epoch carries (x lacked the own-secrets

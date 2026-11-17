@@ -16,7 +16,8 @@
 (* control).                                                                 *)
 (* HMissA: h's rotations leave a out (an honest epoch a lacks).              *)
 (* Each honest node rotates up to MaxH times, plus up to MaxDue rotations a  *)
-(* known uncovered removal (or a current epoch it cannot open) makes due.    *)
+(* known uncovered removal makes due (a current epoch it cannot open judged  *)
+(* by order: made without the removal).                                      *)
 (* Commits arrive at each node in any order. Validity: a rogue's rotation is *)
 (* valid at a node unless it holds that rogue's removal by a and the         *)
 (* removal's frontier does not list it. Secrets: boxes, re-seals, then       *)
@@ -104,9 +105,10 @@ RogueLeave(x) ==
   /\ Add(Alone(x, x, {}, TRUE), x)
   /\ UNCHANGED <<content, nw, nh, rs>>
 
-\* a current epoch of v does not cover a removal v knows of (one whose secret v lacks covers
-\* nothing: its history box is closed): a rotation is due
-Due(v) == RemOf(v) # {} /\ \E e \in Current(v) : e \notin Secrets(v) \/ ~(RemOf(v) \subseteq eps[e].knows)
+\* a current epoch of v does not cover a removal v knows of: a rotation is due. One whose
+\* secret v lacks is judged by order, the model's order being the order of making: made
+\* without the removal it cannot cover it; made knowing it, its readers judge it
+Due(v) == RemOf(v) # {} /\ \E e \in Current(v) : ~(RemOf(v) \subseteq eps[e].knows)
 
 \* an honest node rotates holding any secret to wrap under, no current one needed
 HonestRotate(v) ==

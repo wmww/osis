@@ -1938,7 +1938,7 @@ fn two_writer_lockout_recovered_spec_perm_3() {
     }
 }
 
-// spec/crypto.md §4 (rotating needs only the right to rotate; an epoch whose secret a node lacks covers nothing): the vandal rotates to itself, then leaves. Its leaving carries no rotation; the
+// spec/crypto.md §4 (rotating needs only the right to rotate; an epoch whose secret a node lacks, ordered before a departure, cannot cover it): the vandal rotates to itself, then leaves. Its leaving carries no rotation; the
 // admin, lacking every current secret, finds its departure uncovered and rotates before its
 // next write, superseding the vandal's epoch unread. Nobody else need act.
 #[test]
@@ -2317,17 +2317,16 @@ fn chat_by_record_spec_perm_1() {
     m.set(o, &ak("t:reg+.0"), &s("back")).unwrap();
     let r = lp.peers[0].engine.write(m);
     assert!(r.is_err(), "{r:?}");
-    // writer 2 rotates O to itself; the remaining admin, knowing a departure (account 0's) the
-    // vandal's epoch cannot be seen to cover, rotates over it unread at its next sync, and
-    // removing writer 2 rotates again
+    // writer 2 rotates O to itself. Its epoch, made after account 0's departure, is its
+    // readers' to judge, whatever departure the remaining admin knows: that admin holds no
+    // current read epoch and rotates nothing for it, and removing writer 2 rotates over it unread
     let e0 = newest_read(&lp, 1, o).unwrap();
     lp.peers[2].engine.rotate_boxing_only(&[o], &[Role::Read, Role::Write], &[ps[2]]).unwrap().unwrap();
     spread_sealed(&mut lp);
-    let e1 = newest_read(&lp, 1, o).unwrap();
-    assert_eq!(e1.n(), e0.n() + 2, "rotated above the vandal's epoch, listing it");
+    assert_eq!(newest_read(&lp, 1, o), None, "the vandal's epoch boxes the vandal alone");
     lp.peers[1].engine.demote(&o, &remove(ps[2])).unwrap();
     let e2 = newest_read(&lp, 1, o).unwrap();
-    assert_eq!(e2.n(), e1.n() + 1);
+    assert_eq!(e2.n(), e0.n() + 2, "rotated above the vandal's epoch, listing it");
     spread_sealed(&mut lp);
     assert_eq!(newest_read(&lp, 3, o), Some(e2));
     assert_eq!(lp.peers[2].engine.role_on(&o), None);

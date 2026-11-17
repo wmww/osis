@@ -149,7 +149,12 @@ Covers(n, e, h) ==
   IN /\ e \in Sec(n) /\ AuthHolds(n, ep.author)
      /\ \E x \in ents : x.e = e /\ x.bound /\ Met(n, x.names) /\ Pins(held[n], x.names, h, ep.commit, AuthHolds(n, ep.author))
 CoversAll(n, e) == \A h \in Departed(n) : Covers(n, e, h)
-NeedRot(n) == \E e \in Current(n) : ~CoversAll(n, e)
+\* an epoch whose secret n lacks is judged by order: one whose rotation commit is ordered before
+\* a held write taking a departed holder down cannot cover it; one after, its readers judge
+EpTs(e) == IF e = 0 THEN 0 ELSE (CHOOSE c \in cs \cup Static : c.id = Ep(e).commit).ts
+OrderedBefore(n, e) == \E h \in Departed(n), c \in cs \cup Static :
+                         c.id \in held[n] /\ c.kind \in {"chg", "self"} /\ c.h = h /\ c.val < READ /\ EpTs(e) < c.ts
+NeedRot(n) == \E e \in Current(n) : IF e \in Sec(n) THEN ~CoversAll(n, e) ELSE OrderedBefore(n, e)
 \* withdraw: an unsuperseded epoch not current at n, by its maker, or by anyone when its maker
 \* may not rotate
 Withdraw(n) == \E e \in Unsup(n) \ Current(n) : Ep(e).author = n \/ Role(n, Ep(e).author) < ADMIN
