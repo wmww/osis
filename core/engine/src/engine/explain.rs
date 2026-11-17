@@ -90,7 +90,6 @@ fn need(core: &Core, x: &Tid, n: &Need) -> String {
     let x = label(core, x);
     match n {
         Need::Holder => format!("{x} has a held edge write naming it holder"),
-        Need::Signed(c) => format!("held commit c:{} on {x} is signed (authored or acted in) by it", short(c)),
         Need::Pending(c) => format!("pending commit c:{} on {x} is signed by it or awaits its record", short(c)),
         Need::Missing(c) => format!("held commit c:{} on it has a part missing on {x}", short(c)),
         Need::Holding => format!("an edge write on it names {x} holder"),

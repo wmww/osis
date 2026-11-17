@@ -100,9 +100,9 @@ pub(crate) struct Taken {
 /// (spec/sync-set.md §2): each held ticket the node can open supplies its sync ID and, where the
 /// node's role (`role_on`) is the ticket's own role or above, its secret; and its openers, the holders every held ticket for
 /// `t` is boxed to, which the step is judged again by as they can open more
-/// (`Closure::opener_moved`). With a read ticket opening, the commits fires carry on `t` are due
-/// (its ticket fires' `grant`, `flows::inbox::removals_due`): what they show is what `role_on`
-/// judges by next. O(its tickets).
+/// (`Closure::opener_moved`). With a read ticket opening, the commits its ticket fires' `grant`
+/// carry on `t` are due, and its removal notices are judged at the transaction's end
+/// (`Core::removals_due`): what they show is what `role_on` judges by next. O(its tickets).
 pub(crate) fn take_in(tx: &mut Tx<'_>, t: &Tid, v: crate::sync::units::Vx) -> Result<Taken> {
     let held = held_in(tx, t)?;
     let openers = held.iter().map(|k| k.holder).collect();
@@ -133,8 +133,8 @@ pub(crate) fn take_in(tx: &mut Tx<'_>, t: &Tid, v: crate::sync::units::Vx) -> Re
                 tx.core.ix.closure.fires_due.insert(c);
             }
         }
-        crate::flows::inbox::removals_due(tx, t)?;
     }
+    tx.core.removals_due.insert(*t);
     Ok(Taken { ids, openers, opened: any })
 }
 

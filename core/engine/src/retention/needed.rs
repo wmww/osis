@@ -5,9 +5,8 @@
 //! known references hold a strong to it (`refs::to`: its state, ephemeral aspects included, and
 //! held fires; a weak or ticket only points and needs nothing), an account by its `keys.0` (its inbox), one whose record names it first admin, one
 //! whose held edge write names it holder (`Held::named_on`), an account root whose account's held
-//! chain names it a device (D bears no edge write), one a held or pending commit it
-//! authored or acted in is on (body held or not; a pending one by the things it writes on,
-//! `Indexes::pend_by`), one a pending commit first awaiting its record writes on (`pend_by` too),
+//! chain names it a device (D bears no edge write), one a pending commit it authored or acted
+//! in, or first awaiting its record, writes on (`Indexes::pend_by`),
 //! one in the node closure a held commit on it has a part missing on (`Meta::missing_parts`: a
 //! part the node fetches again), one in the node closure an edge write on it names holder (not by its
 //! record: the holder's sync ID carries the grant with its chain, spec/sync-judgement.md §2 A
@@ -29,7 +28,7 @@
 //! (`apply::set_pending`) is noted in `Core::pass_due` until then, so a parent's record arriving
 //! before what needs it stays. A lost need waits for nothing but a pass in flight: a thing that
 //! lost one (a strong row or an account's `keys.0` row gone, durable or ephemeral, `refs::note`; a signer's commit
-//! dropping a part or forgotten, `Core::note_signed`, `Core::take_meta`, or leaving pending; a
+//! leaving pending; a
 //! commit's part no longer missing, `Core::note_on`; a holder unnamed, `Held::take_unnamed`; the
 //! last held vertex with a ticket for it no longer following its strong, `units::set_accepted`) is noted in `Core::lost_due`, judged at a pass's end or, with
 //! none in flight, at once (`Engine::settle_lost`). A release judges what it released, and what
@@ -134,8 +133,6 @@ pub(crate) enum Need {
     /// `t` is named holder on `x` by a held edge write (`Held::named_on`), or on account root `x`
     /// by its account's chain (a device it names).
     Holder,
-    /// A held commit `t` authored or acted in has an aspect on `x`.
-    Signed(osis_base::CommitId),
     /// A pending commit `t` signed, or one awaiting `t`'s record first, writes on `x`.
     Pending(osis_base::CommitId),
     /// `x` is in the node closure and a held commit on `t` has a part missing on it.
@@ -163,9 +160,7 @@ pub(crate) fn rooted(core: &Core, t: &Tid) -> Option<Root> {
 
 /// The things that need `t` held (the module doc), but `t`, each with why (one thing may come
 /// more than once): those naming it, those in the node closure whose state holds a strong to it
-/// (`refs::to`; an account's `keys.0` naming its inbox too), those a held commit
-/// it authored (an account's: `Indexes::by_epoch`) or acted in (`Indexes::by_actor`) has an
-/// aspect on, its parts held or not (a header alone is judged by its author's chain), those a
+/// (`refs::to`; an account's `keys.0` naming its inbox too), those a
 /// pending commit it signed or whose first awaited record it is (`Indexes::pend_by`) writes on
 /// (a record only another part awaits is due once the commit pends on it), and, in the node
 /// closure, those a held commit on it has a part missing on and those an edge write on it names
@@ -173,10 +168,6 @@ pub(crate) fn rooted(core: &Core, t: &Tid) -> Option<Root> {
 /// both read it.
 pub(crate) fn needs(tx: &mut Tx<'_>, t: &Tid) -> Result<Vec<(Tid, Need)>> {
     let core = &*tx.core;
-    let lo = osis_base::CommitId([0; 32]);
-    let authored = core.ix.by_epoch.range((*t, lo)..).take_while(|((a, _), _)| a == t).flat_map(|(_, cs)| cs.iter());
-    let acted = core.ix.by_actor.range((*t, Tid::from_bytes([0; 15]))..).take_while(|((a, _), _)| a == t).flat_map(|(_, cs)| cs.iter());
-    let signed = authored.chain(acted).flat_map(|c| core.ix.commits.get(c).into_iter().flat_map(move |m| m.view.aspects.iter().map(move |a| (a.tid, Need::Signed(*c)))));
     // a pending commit it signed or whose record it awaits first (`pend_by`), on the things it
     // writes on (`Wake::Thing`), as if held
     let pending = core.ix.pend_by.get(t).into_iter().flatten().flat_map(|c| core.ix.pend_keys.get(c).into_iter().flat_map(|ws| ws.iter()).filter_map(move |w| if let crate::apply::Wake::Thing(x) = w { Some((*x, Need::Pending(*c))) } else { None }));
@@ -193,7 +184,7 @@ pub(crate) fn needs(tx: &mut Tx<'_>, t: &Tid) -> Result<Vec<(Tid, Need)>> {
     // `Core::root_holders`)
     let device = core.is_key_actor(t) && !core.is_account(t);
     let devices = core.accounts.iter().filter(|(p, _)| device && core.account_view(p).is_some_and(|v| v.named_device(t))).map(|(_, a)| (a.root, Need::Holder));
-    let mut out: Vec<(Tid, Need)> = core.ix.held.named_on(t).map(|x| (*x, Need::Holder)).chain(devices).chain(signed).chain(pending).chain(waiting).chain(holding).collect();
+    let mut out: Vec<(Tid, Need)> = core.ix.held.named_on(t).map(|x| (*x, Need::Holder)).chain(devices).chain(pending).chain(waiting).chain(holding).collect();
     // a strong from a thing the node closure holds (a weak or ticket only points; one kept only
     // as a certificate needs nothing by what its state names), and an account's reference from
     // its `keys.0` (its inbox, part of its chain)

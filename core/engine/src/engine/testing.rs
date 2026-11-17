@@ -761,7 +761,6 @@ fn tables(ix: &super::Indexes) -> Vec<(&'static str, &dyn Table)> {
         ("forgotten_names", &*ix.forgotten_names),
         ("own_held", &*ix.own_held),
         ("own_replaces", &*ix.own_replaces),
-        ("signed", &*ix.signed),
         ("sealed", &*ix.sealed),
         ("role_sigs", &*ix.role_sigs),
         ("leaving", &*ix.leaving),

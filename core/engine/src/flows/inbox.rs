@@ -138,14 +138,14 @@ fn fire_removal(tx: &mut Tx<'_>, holder: Tid, c: CommitId, target: Tid) -> Resul
 /// travels, spec/permissions.md §4 Role changes travel), fires its notice on the holder's inbox.
 /// Judged again only when a role commit writing that edge arrives, so a duplicate costs one
 /// fire, which the holder takes once. A role commit on this node's account's own edge on a thing
-/// holds that thing's roster here, so the notices naming it are due (`removals_due`).
+/// holds that thing's roster here: the notices naming it are judged (`removals_due`), with those
+/// of the things `Core::removals_due` notes.
 pub(crate) fn owe_removal_notices(tx: &mut Tx<'_>) -> Result<()> {
-    if tx.core.notices_due.is_empty() {
-        return Ok(());
-    }
     let due = std::mem::take(&mut tx.core.notices_due);
     let me = tx.core.member();
-    for (_, t) in due.iter().filter(|(x, _)| Some(*x) == me) {
+    let mut things = std::mem::take(&mut tx.core.removals_due);
+    things.extend(due.iter().filter(|(x, _)| Some(*x) == me).map(|(_, t)| *t));
+    for t in &things {
         removals_due(tx, t)?;
     }
     let now = tx.now().0;
@@ -196,19 +196,13 @@ impl Engine {
         self.core.has_own_secrets(a).then_some(*a)
     }
 
-    /// Removal notice `fire` arriving here (spec/sync-inbox.md §5 Carried commits): due now where
-    /// its thing's roster is held here; each strong to the thing is judged again, so one reaching
-    /// it takes it at the strong (`tickets::take_in`).
+    /// Removal notice `fire` arriving here (spec/sync-inbox.md §5 Carried commits): the notices
+    /// naming its things are judged at the transaction's end (`removals_due`).
     fn notice_arrives(&mut self, fire: &CommitId) -> Result<()> {
         let id = *fire;
         self.run(|tx| {
             let Some(b) = fire_commit(tx, &id)? else { return Ok(()) };
-            for a in &b.header.aspects {
-                if tx.core.timelines.get(&a.tid).is_some() && !held_whole(tx, &b) {
-                    tx.core.ix.closure.fires_due.insert(id);
-                }
-                tx.core.ix.closure.rejudge(a.tid);
-            }
+            tx.core.removals_due.extend(b.header.aspects.iter().map(|a| a.tid));
             Ok(())
         })
     }
@@ -746,10 +740,18 @@ fn fire_parts(tx: &mut Tx<'_>, c: &CommitId) -> Result<Option<Value>> {
 
 /// Notes for taking (`Closure::fires_due`, `Engine::take_fire`) the removal notices on this
 /// node's account's inbox naming `t` whose commit is not held whole (spec/sync-inbox.md §5
-/// Carried commits): at a strong to `t` (`tickets::take_in`) and as `t`'s roster comes
-/// (`owe_removal_notices`). O(the notices the inbox keeps, `INBOX_LIFETIME`): a notice names its
-/// thing only inside its commit.
-pub(crate) fn removals_due(tx: &mut Tx<'_>, t: &Tid) -> Result<()> {
+/// Carried commits), once `t`'s roster is held here or a strong in the node closure reaches `t`
+/// where a read ticket for it opens. Judged at a transaction's end (`owe_removal_notices`) for
+/// each thing a notice arriving names (`Engine::notice_arrives`), whose tickets were taken at a
+/// strong (`tickets::take_in`) or whose roster a role commit on this node's account's edge on it
+/// brings. O(the notices the inbox keeps, `INBOX_LIFETIME`): a notice names its thing only
+/// inside its commit.
+fn removals_due(tx: &mut Tx<'_>, t: &Tid) -> Result<()> {
+    let cl = &tx.core.ix.closure;
+    let read_ticket = cl.accepted(t) && cl.ticket_words(t).iter().any(|(_, r)| *r == Role::Read);
+    if tx.core.timelines.get(t).is_none() && !read_ticket {
+        return Ok(());
+    }
     let Some(a) = tx.core.member() else { return Ok(()) };
     let Some(inbox) = inbox_in(tx, &a)? else { return Ok(()) };
     let fires: Vec<CommitId> = tx.core.ix.by_aspect.get(&(inbox, super::ak(REMOVAL_FIRE)?)).into_iter().flatten().map(|x| x.1).collect();

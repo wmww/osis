@@ -1,6 +1,6 @@
 //! What a stranger's open fires leave on the node they reach (spec/commits.md §5 The setting,
 //! spec/sync-inbox.md §2, §4): only a setting entry naming an open signal keeps its fires, and a
-//! sealed fire's records and chain go with the last of its fires.
+//! sealed fire's records and chain go at the pass end, its fires staying.
 
 use crate::common::{ak, s, set_setting};
 use crate::flows::send;
@@ -102,10 +102,10 @@ type Rows = (usize, usize);
 type Census = std::collections::BTreeMap<String, Rows>;
 
 // spec/sync-inbox.md §4 A sealed fire, spec/commits.md §5 Forgetting, What a held thing needs: a
-// stranger's fires go whole once out of history, and with the last of them its chain (its
-// records, its and its inbox's `keys.0` commits), which nothing held needs then (a weak a fire
-// carries to its account needs nothing): N strangers each firing on a named and an unnamed open signal leave peer
-// 0's rows exactly as before.
+// stranger's fires go whole once out of history, and its chain (its records, its and its
+// inbox's `keys.0` commits) with the pass end, which nothing held needs (a weak a fire carries
+// to its account needs nothing): N strangers each firing on a named and an unnamed open signal
+// leave peer 0's rows exactly as before.
 #[test]
 fn strangers_fires_leave_no_row_spec_sync_inbox_4() {
     for n in [1, 3] {
@@ -157,4 +157,21 @@ fn a_fire_flood_leaves_no_row_past_its_setting_spec_sync_inbox_1() {
     lp.peers[0].tick().unwrap();
     settle(&mut lp, &notes);
     assert_eq!(changed(&base, &lp.peers[0].engine.local_census().unwrap()), vec![], "named fires leave no row past their entry");
+}
+
+// spec/commits.md §5 What a held thing needs (another account's chain goes with the last held
+// thing holding a strong to it or that it holds a role on): a stranger's fire kept in history
+// keeps nothing of the stranger, whose chain goes at the pass end; the fire stays listed, across
+// a restart, its blob carrying the chain any other reader verifies it by (spec/sync-inbox.md §2).
+#[test]
+fn a_kept_fire_keeps_nothing_of_its_sender_spec_commits_5() {
+    let (mut lp, inbox) = strangers(1);
+    let p1 = lp.peers[1].engine.me();
+    let note = fire(&mut lp, 1, inbox, NOTE, "note");
+    assert!(lp.peers[0].engine.core.created(&p1).is_some(), "its record came with the fire");
+    lp.peers[0].engine.settle_needs().unwrap();
+    assert!(lp.peers[0].engine.core.created(&p1).is_none(), "{}", lp.peers[0].engine.why_kept(&p1));
+    assert!(listed(&mut lp, &note, inbox, NOTE));
+    lp.peers[0].restart(7).unwrap();
+    assert!(listed(&mut lp, &note, inbox, NOTE), "listed after a restart");
 }

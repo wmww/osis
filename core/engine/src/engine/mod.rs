@@ -559,21 +559,6 @@ pub(crate) fn decode_stored_header(id: &CommitId, bytes: &[u8]) -> Option<Header
     Header::decode_stored(bytes).ok()
 }
 
-/// The author and actor of a held durable commit with a part not dropped on a thing other than
-/// that signer (`Indexes::signed`).
-fn signers_elsewhere(m: &Meta) -> Vec<Tid> {
-    if m.view.memory {
-        return Vec::new();
-    }
-    let mut out: Vec<Tid> = Vec::new();
-    for k in [m.view.author, m.view.actor] {
-        if !out.contains(&k) && m.view.aspects.iter().enumerate().any(|(ai, a)| a.tid != k && !m.is_dropped(ai)) {
-            out.push(k);
-        }
-    }
-    out
-}
-
 fn fallback_header(v: &View) -> Header {
     Header {
         author: v.author,
@@ -818,9 +803,6 @@ indexes! {
     /// `validity::acts_for` when the actor's timeline changes, a demotion's frontier, the
     /// actors this node acts for (`Core::acting`).
     pub by_actor: JSetMap<(Tid, Tid), CommitId>,
-    /// Per author or actor, its held durable commits with a part not dropped on another thing
-    /// (`signers_elsewhere`): what a key actor's record verifies (`retention::needed`).
-    pub signed: JMap<Tid, u64>,
     /// Node- and session-form ranges per (tid, ak, own source): (lo, commit) -> hi. Keyed by
     /// commit too: equivocating commits of one range are all held (spec/commits.md §4).
     pub ranges: JNested<(Tid, Ak, osis_crdt::Source), (u64, CommitId), u64>,
@@ -1305,7 +1287,7 @@ pub struct Core {
     /// one arrived (a record learned or awaited). `None` after an open: every held record and
     /// awaited record is judged then.
     pub pass_due: Option<BTreeSet<Tid>>,
-    /// Things that lost a need (a reference to it gone, a commit it signed moved or left pending,
+    /// Things that lost a need (a reference to it gone, a commit it signed left pending,
     /// a holder unnamed, an accepted ticket's strong gone): judged once the pass in flight ends,
     /// or at once with none in flight (`Engine::settle_lost`).
     pub lost_due: BTreeSet<Tid>,
@@ -1368,6 +1350,10 @@ pub struct Core {
     /// removal notices their applied writes owe are judged at its end
     /// (`flows::inbox::owe_removal_notices`).
     pub notices_due: BTreeSet<(Tid, Tid)>,
+    /// Things whose removal notices on this node's inbox are judged at its end
+    /// (`flows::inbox::removals_due`): a notice naming one arrived, or its tickets were taken at a
+    /// strong.
+    pub removals_due: BTreeSet<Tid>,
     /// Freed rows (thing, blob) added this transaction: judged at its end, once their states are
     /// rebuilt (`retention::freed::settle_due`).
     pub freed_due: BTreeSet<(Tid, osis_base::BlobId)>,
@@ -1602,6 +1588,7 @@ impl Core {
             kept_things_due: self.kept_things_due.clone(),
             own_keys_due: self.own_keys_due.clone(),
             notices_due: self.notices_due.clone(),
+            removals_due: self.removals_due.clone(),
             freed_due: self.freed_due.clone(),
             forgotten_names_due: self.forgotten_names_due.clone(),
             handed_due: self.handed_due.clone(),
@@ -2121,6 +2108,7 @@ impl Core {
             kept_things_due: _,
             own_keys_due: _,
             notices_due: _,
+            removals_due: _,
             freed_due: _,
             forgotten_names_due: _,
             handed_due: _,
@@ -2437,6 +2425,7 @@ impl Core {
             kept_things_due: BTreeSet::new(),
             own_keys_due: BTreeSet::new(),
             notices_due: BTreeSet::new(),
+            removals_due: BTreeSet::new(),
             freed_due: BTreeSet::new(),
             forgotten_names_due: BTreeSet::new(),
             handed_due: BTreeSet::new(),
@@ -2579,8 +2568,6 @@ impl Core {
             self.note_on(&m);
         }
         self.index_missing(&id, &had, &now);
-        let was = self.ix.commits.get(&id).map(signers_elsewhere).unwrap_or_default();
-        self.note_signed(&was, &signers_elsewhere(&m));
         self.index_own(&id, &m, true);
         let had = self.ix.commits.get(&id).map(covers_of).unwrap_or_default();
         self.index_covers(&id, &had, &covers_of(&m));
@@ -2632,15 +2619,11 @@ impl Core {
         let m = self.ix.commits.remove(id)?;
         osis_base::costs::count("meta: parts indexed", m.view.aspects.len() as u64);
         self.note_kept(id, &m);
-        // its signers' chains may be needed by nothing more (`retention::needed`)
-        self.note_lost(m.view.author);
-        self.note_lost(m.view.actor);
         let had = missing_of(&m);
         if !had.is_empty() {
             self.note_on(&m);
         }
         self.index_missing(id, &had, &BTreeSet::new());
-        self.note_signed(&signers_elsewhere(&m), &[]);
         self.note_rotation(&m);
         self.index_own(id, &m, false);
         self.index_covers(id, &covers_of(&m), &BTreeSet::new());
@@ -2683,27 +2666,6 @@ impl Core {
         }
         for s in now.difference(was) {
             self.ix.covered_under.insert(*s, *id);
-        }
-    }
-
-    /// Moves `Indexes::signed` from a commit's signers `was` to `now` (`signers_elsewhere`). A
-    /// signer losing one is judged again for whether anything held needs it (`retention::needed`).
-    fn note_signed(&mut self, was: &[Tid], now: &[Tid]) {
-        for k in now.iter().filter(|k| !was.contains(k)) {
-            let n = self.ix.signed.get(k).copied().unwrap_or(0);
-            self.ix.signed.insert(*k, n + 1);
-        }
-        for k in was.iter().filter(|k| !now.contains(k)) {
-            match self.ix.signed.get(k).copied().unwrap_or(0) {
-                0 | 1 => {
-                    self.ix.signed.remove(k);
-                    self.note_lost(*k);
-                }
-                n => {
-                    self.note_lost(*k);
-                    self.ix.signed.insert(*k, n - 1);
-                }
-            }
         }
     }
 
@@ -3944,6 +3906,7 @@ impl Engine {
                     r = Err(e);
                 }
                 tx.core.notices_due.clear();
+                tx.core.removals_due.clear();
                 if r.is_ok() && tx.core.header_fault.load(std::sync::atomic::Ordering::Relaxed) {
                     r = Err(Error::Corrupt("commit record header"));
                 }
