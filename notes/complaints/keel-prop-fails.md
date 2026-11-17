@@ -1,4 +1,0 @@
-# keel-prop-fails
-- `git bisect run` over a day of engine commits costs a 3-5 minute rebuild per step: about 30 minutes per property. The order seed's history crashed the generator (`UnknownThing` in `order.rs` play) over about 30 commits in the range, so most steps were skips and the first bad commit could not be found.
-- Both failures were the debug index and rebuild checks that 9c62ac943 made unsampled and ran at each engine's drop. A failure at drop names no peer or step: calling `check_index` on every peer after each step of the history found the peer and step at once.
-- The order harness's `OSIS_ORDER_SHRINK` reruns every order of every held set for each candidate (more than 10 minutes on a 60-step history) and did not honor `OSIS_SHRINK_MATCH` (now it does). It drifted to a second failure in the same seed. A throwaway probe that shrank with a narrower `Cfg` (random and partial orders only) took about 10 minutes.

@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Run a command that uses every core under the box-wide heavy lock, logging what it cost.
 
-  tools/heavy [--limit NAME] CMD [ARGS...]   wait for the lock, run CMD, release; exits with CMD's code
+  tools/heavy [--limit NAME] [--log FILE] CMD [ARGS...]   wait for the lock, run CMD, release; exits with CMD's code
   tools/heavy --report [--since HOURS]   the lock's use and the box's CPU from the log
 
 One all-core run at a time per box (notes/build.md): the gate's tests (one hold per gate),
@@ -9,6 +9,8 @@ release checks, by-hand property and sim runs, TLC and roles-model runs. Builds 
 test runs stay unlocked. The lock is ${XDG_RUNTIME_DIR:-/tmp}/osis-gate.lock (flock(2), the same lock as
 flock(1)); the command inherits it, so it stays held while the command runs even if this wrapper
 dies. The command sees HEAVY_HELD=1; a tools/heavy inside it refuses (it would wait on itself).
+--log FILE sends the command's stdout and stderr to FILE, making its directory first: a shell
+redirect into a missing directory fails before tools/heavy starts, so nothing runs (exit 1).
 
 Log: ~/.cache/osis/heavy.log, one JSON object per line. Every line carries the box's cumulative
 CPU jiffies (`busy`, `all` from /proc/stat), so any two lines give the box's utilization between
@@ -75,13 +77,16 @@ def via():
     return os.path.basename(argv[0])
 
 
-def run(cmd, name):
+def run(cmd, name, out=None):
     # the lock is per open file: a hold inside a hold would wait on itself forever
     if os.environ.get("HEAVY_HELD"):
         sys.exit("heavy: already inside a hold (HEAVY_HELD): run the command directly")
     top = git("rev-parse", "--show-toplevel") or os.getcwd()
     who = dict(who=top, branch=git("rev-parse", "--abbrev-ref", "HEAD"), sess=os.environ.get("CLAUDE_CODE_SESSION_ID", ""),
                via=via(), cmd=shlex.join(cmd)[:500])
+    if out:
+        os.makedirs(os.path.dirname(os.path.abspath(out)), exist_ok=True)
+        out = open(out, "w")
     fd = os.open(LOCK, os.O_RDWR | os.O_CREAT, 0o666)
     t0, (b0, a0) = time.time(), stat()
     try:
@@ -103,11 +108,11 @@ def run(cmd, name):
     env = dict(os.environ, HEAVY_HELD="1")
     try:
         try:
-            p = subprocess.Popen(cmd, pass_fds=(fd,), env=env)
+            p = subprocess.Popen(cmd, pass_fds=(fd,), env=env, stdout=out, stderr=out)
         except OSError as e:
             if e.errno != errno.ENOEXEC:
                 raise
-            p = subprocess.Popen(["sh", *cmd], pass_fds=(fd,), env=env)  # a script without a #! line, as a shell runs it
+            p = subprocess.Popen(["sh", *cmd], pass_fds=(fd,), env=env, stdout=out, stderr=out)  # a script without a #! line, as a shell runs it
     except OSError as e:
         log("rel", held=round(time.time() - t1, 1), cpu=0, rc=127)
         sys.exit(f"heavy: {cmd[0]}: {e}")
@@ -185,9 +190,11 @@ if __name__ == "__main__":
     a = sys.argv[1:]
     if a[:1] == ["--report"]:
         report(float(a[2]) if a[1:2] == ["--since"] and len(a) > 2 else 0)
-    elif a[:1] == ["--limit"] and len(a) > 2:
-        sys.exit(run(a[2:], a[1]))
-    elif not a or a[0].startswith("-"):
+        sys.exit()
+    opts = {"--limit": "heavy", "--log": None}
+    while a[:1] and a[0] in opts and len(a) > 2:
+        opts[a[0]] = a[1]
+        a = a[2:]
+    if not a or a[0].startswith("-"):
         sys.exit(__doc__)
-    else:
-        sys.exit(run(a, "heavy"))
+    sys.exit(run(a, opts["--limit"], opts["--log"]))

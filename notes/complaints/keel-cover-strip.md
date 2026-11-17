@@ -1,3 +1,0 @@
-# keel-cover-strip
-- The held-model `strip` sweep's 0 of 3000 depended on its world generator's RNG stream: adding fields to `World` reshuffled the worlds and exposed 13 failures of the existing rules (a stale blob refused whole, its section list ignored). A model whose findings flip with the generator's draw order was under-sampled; widen worlds before trusting a zero.
-- `growth::a_lowered_writers_invalid_writes_leave_nothing_*` failed on an unrelated deposit lingering by blob ID order once the cover strip changed event order; finding it took eprintln probes over store entries (no harness helper lists a node's entries of one commit with their deposit/own flags).

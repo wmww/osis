@@ -15,10 +15,26 @@ their text as read before the edit (never from git, so uncommitted work survives
 build ends, before any test runs; a file changed during the build (someone else edited it) is left
 alone and the path of the original's copy, kept beside it, is printed. Tests run from the built
 binaries, so the tree is never mutated while they run. A mutation that storms runs each seed to
-its timeout: set OSIS_SEED_TIMEOUT_SECS to a few times a seed's normal CPU-s for seeded tests."""
+its timeout: set OSIS_SEED_TIMEOUT_SECS to a few times a seed's normal CPU-s for seeded tests.
+
+Each mutation's test output goes whole to a file (MUTATE_OUT, a directory, or a fresh one under
+TMPDIR), printed on stderr with each failing test's panic message, so a failure under a plant is
+read without rebuilding it."""
 import json, os, shutil, subprocess, sys, tempfile
 
 VAR = "OSIS_MUTANT"
+
+
+def panics(text):
+    """Each failing test's name and the message line after its panic, as libtest prints them."""
+    name, lines = None, text.splitlines()
+    for k, l in enumerate(lines):
+        if l.startswith("---- ") and l.endswith(" stdout ----"):
+            name = l[5:-12]
+        elif " panicked at " in l and name:
+            msg = lines[k + 1] if k + 1 < len(lines) else ""
+            yield f"{name}: {msg} (at {l.split(' panicked at ')[1].rstrip(':')})"
+            name = None
 
 
 def main(argv):
@@ -76,15 +92,27 @@ def main(argv):
             continue
         if m.get("reason") == "compiler-artifact" and m.get("executable") and m.get("profile", {}).get("test"):
             bins.append((m["executable"], os.path.dirname(m["manifest_path"])))
+    out_dir = os.environ.get("MUTATE_OUT") or tempfile.mkdtemp(prefix="mutate-")
+    os.makedirs(out_dir, exist_ok=True)
     for i, row in enumerate(rows):
         env = dict(os.environ, **({VAR: str(i)} if len(muts) > 1 else {}))
-        failed = []
+        failed, out = [], []
         for exe, cwd in bins:
             r = subprocess.run([exe, *test_args], cwd=cwd, env=env, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
-            failed += [l.split()[1] for l in r.stdout.splitlines() if l.startswith("test ") and l.rstrip().endswith("FAILED")]
-            if r.returncode != 0 and not failed:
+            out.append(f"==== {exe} (exit {r.returncode})\n{r.stdout}")
+            fails = [l.split()[1] for l in r.stdout.splitlines() if l.startswith("test ") and l.rstrip().endswith("FAILED")]
+            failed += fails
+            if r.returncode != 0 and not fails:
                 failed.append(f"{os.path.basename(exe)} exited {r.returncode}")
+        log = os.path.join(out_dir, f"mutant-{i}.log")
+        with open(log, "w") as f:
+            f.write("".join(out))
         print(f"{row} {', '.join(failed) if failed else 'none'} |", flush=True)
+        if failed:
+            print(f"mutate: mutation {i}'s output: {log}", file=sys.stderr)
+            for line in panics("".join(out)):
+                print(f"  {line}", file=sys.stderr)
+        sys.stderr.flush()
     return 0
 
 

@@ -1,3 +1,0 @@
-# keel-thing-commits
-- A pre-existing order bug (a sync-only holder never took the sync secret from a box applied after its lowering) showed only as an rng shift: `holding::a_ticket_enters_at_the_lower_of_its_role_and_the_holders_spec_sync_set_2` failed once one record commit fewer drew one blind fewer. Found by adding one extra rng draw on main; a fixture that hides an order dependence behind seed-stable rng costs a long bisect.
-- Debug prints in a sync test can't reach `pub(crate)` engine state (`has_own_secrets`, `ticket_ids`, `mintings`); a probe had to go into engine code behind an env var.

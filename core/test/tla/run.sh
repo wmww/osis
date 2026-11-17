@@ -2,8 +2,10 @@
 # Run one TLA+ module's TLC instances. Usage: run.sh <module> [cfg...]
 #   <module>: sync, sides, rotation, reseal, joint, jointrule, depth0, lockout, cut, finalize, cover, tail, account, withdrawn, planted, netstream, netshared, netblind, netopen, nethold, netkeep
 #   no cfg: the module's instances listed below (each module under 3 min at
-#   one worker); with cfg names: those instances instead (the larger ones
-#   in the module's README, by hand), judged only if listed below.
+#   one worker, but depth0: 10-20 min); with cfg names: those instances instead
+#   (the larger ones in the module's README, by hand), judged only if listed
+#   below. Modules of one directory run one after another: two at once there
+#   fail TLC's parse ("Module-Table lookup failure").
 # The branch that edits a model (or its spec sections) runs its module.
 # TLC_WORKERS (default 1); TLC_KEEP_LOGS=<dir> copies each TLC log there.
 # Downloads tla2tools.jar into ~/.cache/tla/ if missing. Exits non-zero on a

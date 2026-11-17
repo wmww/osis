@@ -1048,7 +1048,28 @@ impl World {
                 }
             }
         }
-        assert!(lost.is_empty(), "must-hold bodies a caught-up reader lacks at quiet (holder, reader, S, commit): {lost:?}");
+        let first = lost.first().map(|&(i, j, s, c)| self.lost_body(i, j, &s, &c)).unwrap_or_default();
+        assert!(lost.is_empty(), "must-hold bodies a caught-up reader lacks at quiet (holder, reader, S, commit): {lost:?}\nthe first: {first}");
+    }
+
+    /// What holder `i` and reader `j` each hold of commit `c` under `s`, for a failing must-hold
+    /// check: the reader's verdict and read facts, the commit's missing parts, and per blob each
+    /// side's entry and whether the engine holds the body.
+    fn lost_body(&mut self, i: usize, j: usize, s: &osis_base::SyncId, c: &osis_base::CommitId) -> String {
+        let mut out = String::new();
+        for (who, n) in [("holder", i), ("reader", j)] {
+            let held = self.engine(n).holds_commit(c);
+            let verdict = self.node(n).node.verdict(s, c);
+            let facts = if held { format!("{:?}", self.engine(n).read_facts(s, c)) } else { "-".into() };
+            let missing = self.engine(n).commit_parts_missing().get(c).cloned();
+            out += &format!("\n  {who} {n}: holds commit {held}, verdict {verdict:?}, missing parts {missing:?}, facts {facts}");
+            for b in self.engine(i).commit_blobs(c).unwrap().iter() {
+                let entry = self.store(n).entry(s, b).unwrap().is_some();
+                let body = self.engine(n).holds_body(s, b).unwrap();
+                out += &format!("\n    blob {b:?}: entry {entry}, holds body {body}");
+            }
+        }
+        out
     }
 
     /// Moves the clock by `ms` (tests about time only) and runs every wake up to then.
