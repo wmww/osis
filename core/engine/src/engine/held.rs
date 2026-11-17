@@ -816,18 +816,22 @@ impl Timelines {
 
     /// Brings `keyless` up to date with an update's changes (`c`, the records that came or went
     /// `records`): each component holding the target of a changed edge of an actor (a holder
-    /// that is no key actor) or such a record is judged anew. Elsewhere no actor grant's standing
-    /// or order moved, and components only merging or splitting change no component's grants.
+    /// that is no key actor) or such a record is judged anew, a new leaf's aside (its record edge
+    /// is in no cycle: it holds nothing). Elsewhere no actor grant's standing or order moved, and
+    /// components only merging or splitting change no component's grants.
     fn rekey(&mut self, c: &osis_perm::Changed, records: &BTreeSet<Tid>) {
         let of = &self.of;
         let actor = |h: &Tid, t: &Tid| of.get(t).is_some_and(|tl| !tl.records().is_key(h));
         let mut comps: Vec<&osis_perm::Timeline> = Vec::new();
-        for t in c.edges.iter().filter(|(h, t)| actor(h, t)).map(|(_, t)| t).chain(records) {
+        for t in c.edges.iter().filter(|(h, t)| actor(h, t)).map(|(_, t)| t).chain(records.difference(&c.leaves)) {
             if let Some(tl) = of.get(t)
                 && !comps.iter().any(|x| std::ptr::eq(*x, tl))
             {
                 comps.push(tl);
             }
+        }
+        if comps.is_empty() {
+            return;
         }
         let within = |t: &Tid| of.get(t).is_some_and(|tl| comps.iter().any(|x| std::ptr::eq(*x, tl)));
         let old: BTreeSet<(Tid, Tid)> = self.keyless.iter().filter(|(t, _)| within(t)).copied().collect();

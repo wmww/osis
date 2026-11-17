@@ -1104,6 +1104,8 @@ pub struct Core {
     pub(crate) certified: crate::sync::certified::Certified,
     /// The thing lists each read thing's sync IDs carry, per rotation (`sync::listed`).
     pub(crate) listed: crate::sync::listed::Listed,
+    /// The records each read thing's sync IDs carry as certificates (`sync::certblobs`).
+    pub(crate) cert_records: crate::sync::certblobs::CertRecords,
     /// `rotation::departures` per actor (`memo`).
     pub(crate) departures: memo::Memo<Tid, Vec<osis_keys::Departure>>,
     /// The holders lacking a box of each actor (`rotation::reseal_candidates`, `memo`): O(roster)
@@ -1499,6 +1501,7 @@ impl Core {
             holders_named: self.holders_named.clone(),
             certified: self.certified.clone(),
             listed: self.listed.clone(),
+            cert_records: self.cert_records.clone(),
             departures: self.departures.clone(),
             reseal_scans: self.reseal_scans.clone(),
             store_rows: self.store_rows.clone(),
@@ -2074,6 +2077,7 @@ impl Core {
             // indexes again
             certified: _,
             listed: _,
+            cert_records: _,
             key_roles: _,
             wrap_blocks: _,
             read_facts: _,
@@ -2318,6 +2322,7 @@ impl Core {
             holders_named: memo::Memo::new("holders named: read"),
             certified: Default::default(),
             listed: Default::default(),
+            cert_records: Default::default(),
             departures: memo::Memo::new("departures"),
             reseal_scans: memo::Memo::new("reseal: scan"),
             rotation_seq: 0,

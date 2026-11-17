@@ -66,6 +66,8 @@ pub(crate) fn keyless_in(tl: &osis_perm::Timeline) -> BTreeSet<(Tid, Tid)> {
             }
         }
     }
+    // counted: tests read that making a thing judges no component's grants anew
+    osis_base::costs::count("keys: grants judged for key access", grants.len() as u64);
     osis_keys::key_access(grants)
 }
 

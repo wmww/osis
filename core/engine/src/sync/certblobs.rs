@@ -10,6 +10,7 @@
 use super::Wrap;
 use crate::engine::{Engine, Tx};
 use crate::error::{Error, Result};
+use osis_base::memo::{Effects, Feed, Quiet, Stamped, Unrecorded};
 use osis_base::{BlobId, CommitId, CreationRecord, SyncId, Tid};
 use osis_crypto::NodeRng;
 use osis_store::Shred;
@@ -128,21 +129,137 @@ fn seal_cert_blob(w: &osis_crypto::Secret32, plain: &[u8], rng: &mut dyn NodeRng
     Ok((id, blob, wrap))
 }
 
+/// The keys followed, taken out of `CertRecords` while they settle (their function reads the
+/// engine whole).
+#[derive(Clone)]
+struct Followers {
+    /// Per record named (`Certified::namers`), the read things naming it whose sync IDs carry it
+    /// as a certificate (`Engine::cert_carriers`).
+    carriers: Effects<Tid, Arc<BTreeSet<Tid>>>,
+    /// The records named from the first follow on.
+    named: Option<Feed<Tid>>,
+    /// The follow's fixed point (`certified`'s inside it).
+    quiet: Quiet,
+}
+
+impl Default for Followers {
+    fn default() -> Self {
+        Followers { carriers: Effects::new("sync: certificate record carriers"), named: None, quiet: Quiet::default() }
+    }
+}
+
+/// Per read thing, the records its sync IDs carry as certificates (`Engine::certificate_records`),
+/// followed per record: a record named, held or minted anew judges itself alone, never the other
+/// records its namers name. Bounded by what is held: a row per read thing naming a record its
+/// closure does not carry.
+#[derive(Clone, Default)]
+pub(crate) struct CertRecords {
+    followers: Followers,
+    /// Per record, the read things carrying it, as placed.
+    carriers: BTreeMap<Tid, Arc<BTreeSet<Tid>>>,
+    pub(crate) rows: Stamped<Tid, Arc<BTreeSet<Tid>>>,
+    /// Whether a row moved since the running follow began.
+    wrote: bool,
+}
+
+impl CertRecords {
+    /// Record `x`'s carriers are `now`: the rows of the read things it came to or left.
+    fn place(&mut self, x: Tid, now: Arc<BTreeSet<Tid>>) {
+        let was = match now.is_empty() {
+            true => self.carriers.remove(&x),
+            false => self.carriers.insert(x, now.clone()),
+        }
+        .unwrap_or_default();
+        for (t, add) in was.difference(&now).map(|t| (*t, false)).chain(now.difference(&was).map(|t| (*t, true))) {
+            self.wrote = true;
+            self.rows.update(t, |row| {
+                let mut row = row.unwrap_or_default();
+                let edit = Arc::make_mut(&mut row);
+                match add {
+                    true => edit.insert(x),
+                    false => edit.remove(&x),
+                };
+                (!edit.is_empty()).then_some(row)
+            });
+        }
+    }
+}
+
 impl Engine {
     /// The records sync ID `s` carries as certificates (spec/permissions.md §4): those its
     /// certificates name (`certified_records`) whose `created.0` no closure body there carries
     /// (a thing of the closure its actor reads, minted by no commit giving it epochs:
-    /// `minted_plainly`), held here.
+    /// `minted_plainly`), held here. A read of the rows of `s`'s read things alone.
     pub fn certificate_records(&mut self, s: &SyncId) -> Result<Arc<BTreeSet<Tid>>> {
+        self.follow_cert_records()?;
         let mut out = BTreeSet::new();
         for t in self.read_things_of(s)? {
-            out.extend(self.records_of(&t)?);
+            out.extend(self.core.cert_records.rows.get(&t).into_iter().flat_map(|x| x.iter().copied()));
         }
         Ok(Arc::new(out))
     }
 
-    /// The records read thing `t`'s sync IDs carry as certificates (`certificate_records`).
-    fn records_of(&mut self, t: &Tid) -> Result<BTreeSet<Tid>> {
+    /// The read things naming record `x` (`Certified::namers`) whose sync IDs carry it as a
+    /// certificate: held here, and no closure body of the thing carries it (`certificate_records`).
+    /// Reads per (namer, `x`).
+    fn cert_carriers(&mut self, x: &Tid) -> Arc<BTreeSet<Tid>> {
+        // counted: tests read that a make judges the records it moved, not every record named
+        osis_base::costs::count("certificate records: judged", 1);
+        let namers: Vec<Tid> = self.core.certified.namers.get(x).into_iter().flat_map(|n| n.iter().copied()).collect();
+        if namers.is_empty() || self.core.created(x).is_none() {
+            return Arc::default();
+        }
+        let plain = self.minted_plainly(x);
+        let mut out = BTreeSet::new();
+        for t in namers {
+            let ctx = self.body_ctx(&t);
+            if !(plain && ctx.holds(&self.core, x) && self.reads(&ctx, x)) {
+                out.insert(t);
+            }
+        }
+        Arc::new(out)
+    }
+
+    /// Brings `Certified` and then `CertRecords` up to date with what moved since the last call:
+    /// the records whose carriers' reads moved, and those named since. Whether a row of either
+    /// moved.
+    pub(crate) fn follow_cert_records(&mut self) -> Result<bool> {
+        let f = &self.core.cert_records.followers;
+        if f.quiet.holds(f.carriers.idle()) && self.certificates_quiet() {
+            return Ok(false);
+        }
+        let _u = Unrecorded::start();
+        let from = Quiet::begin();
+        let moved = self.follow_certificates()?;
+        self.core.cert_records.wrote = false;
+        let mut f = std::mem::take(&mut self.core.cert_records.followers);
+        let came: Vec<Tid> = match f.named.as_mut() {
+            Some(feed) => feed.added(),
+            None => {
+                f.named = Some(self.core.certified.namers.feed());
+                self.core.certified.namers.keys().copied().collect()
+            }
+        };
+        for x in came {
+            f.carriers.want(x);
+        }
+        // followed while named; once not, again as the feed gives it
+        for x in f.carriers.due() {
+            let Some((_, now)) = f.carriers.settle(&x, || self.cert_carriers(&x)) else { continue };
+            if now.is_empty() && self.core.certified.namers.get(&x).is_none() {
+                f.carriers.unwant(&x);
+            }
+            self.core.cert_records.place(x, now);
+        }
+        f.quiet.ended(from, true);
+        self.core.cert_records.followers = f;
+        Ok(self.core.cert_records.wrote | moved)
+    }
+
+    /// The records read thing `t`'s sync IDs carry as certificates, derived whole
+    /// (`cert_carriers` the other way): for tests.
+    #[cfg(test)]
+    pub(crate) fn cert_records_whole(&mut self, t: &Tid) -> Result<BTreeSet<Tid>> {
         let records = self.certified_records(t)?;
         let ctx = self.body_ctx(t);
         Ok(records.iter().filter(|x| !(ctx.holds(&self.core, x) && self.reads(&ctx, x) && self.minted_plainly(x)) && self.core.created(x).is_some()).copied().collect())
@@ -184,13 +301,8 @@ impl Engine {
         // under the thing reading `s` whose certificates these are, else any reading it (a
         // record proves itself by its hash)
         let things = self.read_things_of(s)?;
-        let mut thing = None;
-        for t in &things {
-            if self.records_of(t)?.is_superset(records) {
-                thing = Some(*t);
-                break;
-            }
-        }
+        self.follow_cert_records()?;
+        let thing = things.iter().find(|t| self.core.cert_records.rows.get(*t).is_some_and(|row| row.is_superset(records))).copied();
         let Some(t) = thing.or_else(|| things.first().copied()) else { return Ok(None) };
         let recs: Vec<osis_base::CreationRecord> = records.iter().filter_map(|x| self.core.created(x).cloned()).collect();
         if recs.is_empty() {

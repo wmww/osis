@@ -634,7 +634,8 @@ impl Engine {
     }
 
     /// The records read thing `t`'s certificates name (`Certs::records`), a read of `t`'s entry
-    /// alone.
+    /// alone: for tests (`Certified::namers` is what the follows read).
+    #[cfg(test)]
     pub(crate) fn certified_records(&mut self, t: &Tid) -> Result<Arc<BTreeSet<Tid>>> {
         self.follow_certificates()?;
         Ok(self.core.certified.records.get(t).cloned().unwrap_or_default())
@@ -679,6 +680,13 @@ mod tests {
             assert_eq!(got, want, "{step}: certificates of {t:?}");
         }
         super::super::listed::tests::check(e, step);
+        // the records each read thing's sync IDs carry as certificates, as followed per record
+        e.follow_cert_records().unwrap();
+        assert!(e.core.cert_records.rows.keys().all(|t| things.contains(t)), "{step}: a certificate record row of a thing not read");
+        for t in things.iter() {
+            let got = e.core.cert_records.rows.get(t).map(|x| (**x).clone()).unwrap_or_default();
+            assert_eq!(got, e.cert_records_whole(t).unwrap(), "{step}: certificate records of {t:?}");
+        }
     }
 
     /// Thing `t`'s certificates as `e`'s rows keep them.

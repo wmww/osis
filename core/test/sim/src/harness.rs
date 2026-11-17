@@ -6,7 +6,7 @@ use crate::check::{self, Checker};
 use crate::dice::Dice;
 use crate::workload;
 use osis_base::{Classified, Clock, CommitId, ErrorClass, ManualClock, Role, Tid, Value, WallMs};
-use osis_crdt::{Op, PathOp, PathSeg};
+use osis_crdt::{Op, PathOp};
 use osis_crypto::SeededRng;
 use osis_engine::local_peer::{Package, Peer};
 use osis_engine::{Engine, Ingested, Mutation};
@@ -216,6 +216,15 @@ impl Sim {
             let (peer, faults) = boot(s.dice.u64(), WallMs(wall_of(clock, 0))).map_err(|e| s.fail(format!("node {i} create: {e}")))?;
             s.nodes.push(Node { peer, faults, clock, up: true });
         }
+        // each account keeps the others' chains, which it then has: a node it grants or is
+        // granted by (`Peer::know`)
+        let all: Vec<Tid> = s.nodes.iter().map(|n| n.peer.engine.me()).collect();
+        for i in 0..s.nodes.len() {
+            let r = s.node(i)?.peer.know(&all);
+            r.map_err(|e| s.fail(format!("node {i} know: {e}")))?;
+            s.drain(i)?;
+        }
+        s.sync_all()?;
         Ok(s)
     }
 
@@ -311,14 +320,20 @@ impl Sim {
         Ok(t)
     }
 
-    /// Node `i` writes node `j`'s edge on `thing` (spec/permissions.md §2).
+    /// Node `i` writes node `j`'s edge on `thing` (spec/permissions.md §2); node `j` holds `thing`
+    /// from its node root, as a node keeps and writes only what it holds (spec/sync-set.md §2).
     pub fn grant(&mut self, i: usize, thing: Tid, j: usize, role: Role) -> Res<CommitId> {
         let holder = self.tid(j)?;
         let edge = ct::Edge { role, until: None, invite: None, floor: None };
-        let mut m = Mutation::new();
-        m.op(thing, &ct::ROLES, PathOp { path: vec![PathSeg::Key(Value::Weak(holder))], op: Op::Set(edge.to_value()) }).map_err(|e| self.fail(e.to_string()))?;
-        let id = self.commit(i, m)?;
-        id.ok_or_else(|| self.fail("grant changed nothing"))
+        let r = self.engine(i)?.grant(&thing, &holder, &edge);
+        let done = r.map_err(|e| self.fail(format!("node {i} grant: {e}")))?;
+        self.drain(i)?;
+        if !self.engine(j)?.closure_holds(&thing) {
+            let r = self.engine(j)?.hold(osis_base::Strong(thing));
+            r.map_err(|e| self.fail(format!("node {j} hold: {e}")))?;
+            self.drain(j)?;
+        }
+        done.commits.last().copied().ok_or_else(|| self.fail("grant changed nothing"))
     }
 
     /// Node `i` removes node `j`'s edge on `thing` (spec/permissions.md §5).

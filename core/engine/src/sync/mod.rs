@@ -474,6 +474,7 @@ impl Engine {
         let moved = self.follow_held_writes()? | moved;
         // `listed` follows `certified` first: one follow of each
         let moved = self.follow_lists()? | moved;
+        let moved = self.follow_cert_records()? | moved;
         // a body's facts read every value above
         let moved = osis_base::memo::Cutoff::refresh_in(self, |e| &e.core.read_facts, |e, (s, c)| e.read_facts_now(s, c))? | moved;
         Ok(osis_base::memo::Cutoff::refresh_in(self, |e| &e.core.held_fates, |e, c| e.held_fate_now(c))? | moved)

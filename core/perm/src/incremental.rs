@@ -70,6 +70,9 @@ pub struct Changed {
     pub commits: BTreeSet<CommitId>,
     /// Things whose `created.0` record came or went.
     pub created: BTreeSet<Tid>,
+    /// Of `created`, the new leaves (`Timeline::add_leaves`): only their record names them and
+    /// they are first admin of nothing, so their record edge closes no cycle of grants.
+    pub leaves: BTreeSet<Tid>,
 }
 
 impl Changed {
@@ -532,6 +535,7 @@ impl Timelines {
                     self.adopt(&mut c, i, x, true);
                     changed.extended.insert(x);
                     changed.created.insert(x);
+                    changed.leaves.insert(x);
                 }
                 things.extend(c.inputs.0.iter().copied());
                 self.unsaved.insert(i);
