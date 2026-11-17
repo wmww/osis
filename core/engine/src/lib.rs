@@ -20,8 +20,6 @@ pub mod rotation;
 pub mod sides;
 pub mod sync;
 pub mod undo;
-#[cfg(test)]
-mod tests_copy;
 
 pub use apply::{Creation, Ingested, Reason};
 pub use apply::reach::Wants;

@@ -8,7 +8,7 @@ use osis_base::memo::Memo;
 use crate::engine::Engine;
 use crate::error::Result;
 use osis_commit::Decoded;
-use osis_base::{Ak, BlobId, ChainStep, CommitId, Tid};
+use osis_base::{Ak, ChainStep, CommitId, Tid};
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
 
@@ -182,7 +182,7 @@ impl Engine {
         // or listed or referenced there; their records and frozen permission history, which no
         // body under the sync ID carries once their destruction dropped their own (spec/permissions.md
         // §4, spec/commits.md §5 Destruction)
-        let needed = self.destroyed_needed(g).unwrap_or_else(|_| self.destroyed_upstream(g));
+        let needed = self.destroyed_upstream(g);
         for e in needed {
             out.records.insert(e);
             out.records.extend(self.core.record_chain(&e).filter_map(|s| s.thing()));
@@ -394,12 +394,6 @@ impl Engine {
             }
             out.extend(more);
         }
-    }
-
-    /// The destroyed things held here whose evidence the closure of `g` needs (spec/commits.md §5
-    /// Destruction): on an authority path into it (`destroyed_upstream`).
-    pub fn destroyed_needed(&mut self, g: &Tid) -> Result<BTreeSet<Tid>> {
-        Ok(self.destroyed_upstream(g))
     }
 
     /// What goes with `t`'s record, added to `out` (spec/commits.md §5, A thing's mintings travel
@@ -626,12 +620,6 @@ impl Engine {
     /// §5): applied, not pending, each aspect valid, and, for a role commit, each of its
     /// edge ops applied (an aspect is valid while any op on it is: the loser of a single-use
     /// redemption race keeps its valid removal of L beside its void grant).
-    /// The parts of applied, not pending commit `c` valid here (`None`: not applied or pending).
-    pub fn valid_parts(&self, c: &CommitId) -> Option<BTreeSet<usize>> {
-        let m = self.core.ix.commits.get(c).filter(|_| !self.core.ix.pending.contains_key(c))?;
-        Some((0..m.header.aspects.len()).filter(|ai| m.valid_at(*ai)).collect())
-    }
-
     pub fn judged_valid(&self, c: &CommitId, parts: &[usize]) -> bool {
         judged_valid(&self.core, c, parts)
     }
@@ -658,33 +646,6 @@ impl Engine {
         }))
     }
 
-    /// Blobs a certificate copy of `parts` of commit `c` needs beside its body (spec/sync.md
-    /// §3): the trees of the header's linked lists (a demotion's frontier among them) and of the
-    /// large values its deltas link, as far as held.
-    pub fn linked_blobs(&mut self, c: &CommitId, parts: &Parts) -> Result<BTreeSet<BlobId>> {
-        let mut out = BTreeSet::new();
-        let Some(h) = self.header(c) else { return Ok(out) };
-        let lists: Vec<osis_base::Link> = osis_commit::ListField::ALL.iter().filter_map(|f| h.links.get(*f).copied()).collect();
-        for l in &lists {
-            self.tree_blobs(l, &h, &mut out)?;
-        }
-        let id = *c;
-        let found = self.read(|tx| {
-            let mut found = BTreeSet::new();
-            for (ai, d) in crate::apply::held_parts_at(tx, &id, &|ai| parts.contains(&ai))? {
-                let (Some(a), Decoded::Delta(d)) = (h.aspects.get(ai), &d) else { continue };
-                let mut roots = Vec::new();
-                d.fragment.values(&mut |v| crate::engine::large::links_in(v, &mut roots));
-                let Some(dedup) = tx.core.dedup(&a.tid) else { continue };
-                let mut trees = crate::engine::large::Trees::default();
-                crate::engine::large::tree_blobs(tx, &dedup, &roots, &mut trees)?;
-                found.extend(trees.blobs);
-            }
-            Ok(found)
-        })?;
-        out.extend(found);
-        Ok(out)
-    }
 }
 
 /// `Engine::judged_valid`: parts `parts` of `c` are valid here and, for a role commit, every edge

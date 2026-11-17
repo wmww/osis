@@ -279,7 +279,7 @@ COPY_HOOKS = re.compile(r"\btest_copy\b|\btest_copy_boxed\b|\bcopying::|\btest_s
 COPY_DEFS = {"core/base/src/copying.rs", "core/crypto/src/rng.rs", "core/store/src/memory.rs", "core/store/src/root.rs",
              "core/store/src/backend.rs", "core/store/src/pager.rs", "core/store/src/store.rs", "core/engine/src/engine/testing.rs",
              "core/engine/src/engine/mod.rs", "core/base/src/memo/mod.rs", "core/base/src/memo/effects.rs", "core/engine/src/events/mod.rs",
-             "core/engine/src/local_peer.rs", "core/engine/src/tests_copy.rs",
+             "core/engine/src/local_peer.rs",
              "core/store/src/cipher.rs",
              "core/sync/src/driver/mod.rs", "core/sync/src/store/mod.rs", "core/sync/src/store/cipher.rs"}
 

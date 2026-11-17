@@ -37,3 +37,8 @@ mod refs;
 mod tickets;
 mod strangers;
 mod thing_cost;
+mod copies;
+mod resnapshot;
+mod apply_order;
+mod own_replaces;
+mod account_commits;

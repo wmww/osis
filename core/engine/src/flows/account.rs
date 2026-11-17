@@ -1235,17 +1235,6 @@ impl Engine {
         k.signing.clone()
     }
 
-    /// Signs `blob`'s (changed) header as this node's account: for tests forging a commit.
-    #[doc(hidden)]
-    pub fn resign_forged(&self, blob: &mut CommitBlob) {
-        let id = blob.header.id();
-        let (key, inner) = match self.core.me().and_then(|me| self.core.account_signing(&me).ok().flatten()) {
-            Some((_, k)) => (k.signing.clone(), Some(osis_crypto::seal_inner(&k.inner, &id.0, &self.core.id.tid(), &self.core.id.keys().signing))),
-            None => (self.core.id.keys().signing.clone(), None),
-        };
-        blob.sigs = osis_commit::Sigs::signed(&id, &key, inner, Vec::new(), Vec::new());
-    }
-
     /// The KEM secrets of account `p`'s epochs held here: what opens what is sealed to it
     /// (spec/crypto.md §5).
     pub fn account_kems(&self, p: &Tid) -> Vec<osis_crypto::KemSecret> {

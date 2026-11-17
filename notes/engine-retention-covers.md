@@ -21,7 +21,7 @@ A node drops a delta it wrote none of whose writes is dead only under its own co
 - **Cost** (spec/requirements.md Scale, the cost the app chooses): a snapshot of the aspect per replacing edit, in practice by the editor alone: it logs the snapshot with the edit, so other writers find the body covered (notes/growth.md).
 - Privacy: erased data persists in its body at a writer for no transaction, at a reader until a writer's snapshot arrives, at a node keeping S unread until a right holder next syncs. The read state loses it at the kill.
 - Rejected: writer-side purge per edit (Tess's fallback if this proves costly): a purge cannot express a partial replacement, its commit keeps its blobs `ROLE_KEEP`, and every edit leaves a leftover.
-- Tests: held-model `spec_commits.rs` `none_*`, engine `setting.rs`, `held.rs`, `retention/tests_own.rs`.
+- Tests: held-model `spec_commits.rs` `none_*`, engine `setting.rs`, `held.rs`, `own_replaces.rs`.
 
 ## Frontiers and covering (`retention/snapshot.rs`)
 - **Frontiers** list the sessions occurring in the state (`osis_crdt::sources_of`; a 0 entry for a session with no contiguous prefix applied, spec/crdt.md §8), each covering its counters applied and valid on the aspect (`snapshot::frontiers_now`): from the held valid snapshots' frontiers on, then held commits while they join without a hole, a held valid own whole replace passing a hole below it. Why both: a commit forgotten once covered takes its counter range with it, and a walk from counter 1 would stop at that hole for good. A part held value-less for a purge is passed: the snapshot carries its writes value-less, and `covered_join` alone keeps a node lacking the body from counting it covered by that copy (spec/commits.md §5 Covered).

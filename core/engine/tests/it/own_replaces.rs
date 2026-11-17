@@ -1,17 +1,11 @@
 //! Own replaces (spec/commits.md §5 Own replaces, Forgetting): what a node judges covered and
 //! what it keeps of what it forgot.
-#![allow(clippy::unwrap_used, clippy::indexing_slicing)]
 
-use crate::local_peer::LocalPeer;
-use crate::Mutation;
+use osis_engine::local_peer::LocalPeer;
+use osis_engine::Mutation;
 use osis_base::{Ak, CommitId, Tid, Value};
 use osis_commit::CommitBlob;
-
-const T0: osis_base::WallMs = osis_base::WallMs(1_700_000_000_000);
-
-fn ak(s: &str) -> Ak {
-    Ak::new(s).unwrap()
-}
+use crate::common::{T0, ak};
 
 /// Two peers sharing a thing of peer 0.
 fn thing() -> (LocalPeer, Tid) {
@@ -176,11 +170,11 @@ fn invalid_own_replaces_give_back_what_they_covered_spec_commits_5() {
     assert_eq!(lp.peers[2].engine.get(&t, &a).unwrap(), Some(Value::Int(7)));
     lp.advance(1000);
     let bob = lp.peers[1].engine.me();
-    lp.peers[0].engine.demote(&t, &crate::flows::Demotion { holder: bob, new: None, retain: None }).unwrap();
+    lp.peers[0].engine.demote(&t, &osis_engine::flows::Demotion { holder: bob, new: None, retain: None }).unwrap();
     lp.advance(1000);
     lp.sync(0, 2).unwrap();
     let e2 = &lp.peers[2].engine;
-    let ai = e2.core.ix.commits.get(&c).unwrap().aspect(&t, &a).unwrap();
+    let ai = e2.core.ix.commits.get(&c).unwrap().view.aspect(&t, a.as_str()).unwrap();
     assert!(e2.core.ix.commits.get(&c).unwrap().missing(ai), "C is missing again");
     let pk = lp.peers[0].engine.package(&c).unwrap().unwrap();
     lp.deliver(2, &pk).unwrap();
@@ -223,12 +217,12 @@ fn one_own_replace_left_covers_nothing_spec_commits_5() {
     lp.peers[2].engine.drop_body(&c, &t, &a).unwrap();
     lp.advance(1000);
     let bob = lp.peers[1].engine.me();
-    lp.peers[0].engine.demote(&t, &crate::flows::Demotion { holder: bob, new: None, retain: None }).unwrap();
+    lp.peers[0].engine.demote(&t, &osis_engine::flows::Demotion { holder: bob, new: None, retain: None }).unwrap();
     lp.advance(1000);
     lp.sync(0, 2).unwrap();
     assert_eq!(lp.peers[0].engine.covered(&q1, &c, &t, &a).unwrap(), Some(false), "Alice: one own replace covers nothing");
     let e2 = &lp.peers[2].engine;
-    let ai = e2.core.ix.commits.get(&c).unwrap().aspect(&t, &a).unwrap();
+    let ai = e2.core.ix.commits.get(&c).unwrap().view.aspect(&t, a.as_str()).unwrap();
     assert!(e2.core.ix.commits.get(&c).unwrap().missing(ai), "Eve: C is missing again");
     assert_eq!(lp.peers[2].engine.get(&t, &a).unwrap(), Some(Value::Int(6)), "Eve reads as Alice");
     assert_eq!(lp.peers[0].engine.get(&t, &a).unwrap(), Some(Value::Int(6)));
@@ -290,13 +284,13 @@ fn any_two_held_own_replaces_keep_a_drop_spec_commits_5() {
     lp.peers[2].engine.drop_body(&c, &t, &a).unwrap();
     lp.advance(1000);
     let bob = lp.peers[1].engine.me();
-    lp.peers[0].engine.demote(&t, &crate::flows::Demotion { holder: bob, new: None, retain: None }).unwrap();
+    lp.peers[0].engine.demote(&t, &osis_engine::flows::Demotion { holder: bob, new: None, retain: None }).unwrap();
     lp.advance(1000);
     lp.sync(0, 2).unwrap();
     assert_eq!(lp.peers[0].engine.covered(&q0, &c, &t, &a).unwrap(), Some(true), "Alice: two own replaces cover C");
     let e2 = &mut lp.peers[2].engine;
     assert_eq!(e2.covered(&q0, &c, &t, &a).unwrap(), Some(true), "Eve: the same two");
-    let ai = e2.core.ix.commits.get(&c).unwrap().aspect(&t, &a).unwrap();
+    let ai = e2.core.ix.commits.get(&c).unwrap().view.aspect(&t, a.as_str()).unwrap();
     assert!(!e2.core.ix.commits.get(&c).unwrap().missing(ai), "Eve: C stays dropped");
     assert_eq!(lp.peers[2].engine.get(&t, &a).unwrap(), Some(Value::Int(7)), "Eve reads as Alice");
     assert_eq!(lp.peers[0].engine.get(&t, &a).unwrap(), Some(Value::Int(7)));

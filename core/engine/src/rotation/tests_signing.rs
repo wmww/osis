@@ -875,6 +875,21 @@ fn node_knowing_a_removal_seals_its_account_at_no_epoch_before_its_rotation_spec
 // rotates X leaving T out, and L opens nothing N3 writes under X.
 #[test]
 fn an_ignorant_fork_ordered_after_a_removal_covers_nothing_spec_crypto_4() {
+    ignorant_fork(true);
+}
+
+// spec/crypto.md §4 (Encrypting under; Account keysets): as the ignorant fork above, but N3
+// never receives N2's commits: it holds L's removal, r1 and T's keyset boxing P at r2, which it
+// cannot open (only r2's seed does). Sealing T there is judged by T's box to N3's own account at
+// an epoch whose rotation it does not hold, so it shows no cover of L's removal: N3 rotates X
+// leaving T out, and L opens nothing N3 writes under X.
+#[test]
+fn a_keyset_boxing_the_account_at_an_epoch_not_held_is_not_sealed_to_spec_crypto_4() {
+    ignorant_fork(false);
+}
+
+/// The ignorant fork: N3 (peer 2) receives N2's commits when `n2_at_n3`.
+fn ignorant_fork(n2_at_n3: bool) {
     use super::tests::{with_own_keys, held_by, newest_read, openable};
     let (mut lp, a, _) = world(6, 5);
     let p = a.account;
@@ -898,48 +913,15 @@ fn an_ignorant_fork_ordered_after_a_removal_covers_nothing_spec_crypto_4() {
     assert_ne!(p2, p0, "T's admin moves T onto r2");
     // L holds r2's seed: D's epoch it sits under boxes L
     known.extend(osis_keys::ROLES.into_iter().flat_map(|r| [(p, r, p0), (p, r, p2)]));
-    send(&mut lp, 3, 2, &n2);
+    if n2_at_n3 {
+        send(&mut lp, 3, 2, &n2);
+    }
     send(&mut lp, 5, 2, &rt.commits);
     lp.advance(1000);
     send(&mut lp, 0, 2, &r1.commits);
-    assert_eq!(read_box_at(&mut lp, 2, t, p), Some(p2), "N3 holds T boxing P at r2");
-    let _ = lp.peers[2].engine.ensure_rotated(&x).unwrap();
-    let w = newest_read(&lp, 2, x).unwrap();
-    assert!(!openable(&mut lp, 2, &[t, x], l, known).contains(&(x, Role::Read, w)), "L opens nothing N3 writes under X");
-}
-
-// spec/crypto.md §4 (Encrypting under; Account keysets): as the ignorant fork above, but N3
-// never receives N2's commits: it holds L's removal, r1 and T's keyset boxing P at r2, which it
-// cannot open (only r2's seed does). Sealing T there is judged by T's box to N3's own account at
-// an epoch whose rotation it does not hold, so it shows no cover of L's removal: N3 rotates X
-// leaving T out, and L opens nothing N3 writes under X.
-#[test]
-fn a_keyset_boxing_the_account_at_an_epoch_not_held_is_not_sealed_to_spec_crypto_4() {
-    use super::tests::{with_own_keys, held_by, newest_read, openable};
-    let (mut lp, a, _) = world(6, 5);
-    let p = a.account;
-    let t = with_own_keys(&mut lp, 5);
-    lp.peers[5].engine.grant(&t, &p, &edge(Role::Read)).unwrap();
-    lp.sync_all().unwrap();
-    let x = with_own_keys(&mut lp, 2);
-    lp.sync_all().unwrap();
-    lp.peers[2].engine.grant(&x, &t, &edge(Role::Read)).unwrap();
-    lp.sync_all().unwrap();
-    let l = lp.peers[1].engine.tid();
-    let p0 = read_box_at(&mut lp, 5, t, p).unwrap();
-    let mut known = held_by(&lp, 1, &[t, x]);
-    let r1 = remove(&mut lp, 0, a.root, 1);
-    lp.advance(1000);
-    remove(&mut lp, 3, a.root, 4);
-    let n2 = lp.peers[3].engine.commit_ids();
-    send(&mut lp, 3, 5, &n2);
-    let (rt, _) = lp.peers[5].engine.ensure_rotated(&t).unwrap();
-    let p2 = read_box_at(&mut lp, 5, t, p).unwrap();
-    assert_ne!(p2, p0, "T's admin moves T onto r2");
-    known.extend(osis_keys::ROLES.into_iter().flat_map(|r| [(p, r, p0), (p, r, p2)]));
-    send(&mut lp, 5, 2, &rt.commits);
-    lp.advance(1000);
-    send(&mut lp, 0, 2, &r1.commits);
+    if n2_at_n3 {
+        assert_eq!(read_box_at(&mut lp, 2, t, p), Some(p2), "N3 holds T boxing P at r2");
+    }
     let _ = lp.peers[2].engine.ensure_rotated(&x).unwrap();
     let w = newest_read(&lp, 2, x).unwrap();
     assert!(!openable(&mut lp, 2, &[t, x], l, known).contains(&(x, Role::Read, w)), "L opens nothing N3 writes under X");

@@ -32,7 +32,7 @@ An addendum's validity reads its header and the timeline, never its body: `ix.ad
 ### Checks
 - Debug builds assert at each transaction's end that nothing stale is left, after each re-judge that no flag on the things it took changed outside the re-judged set, and at the end of the engine's history the same of every held commit (notes/test-harnesses.md, Verdict checks).
 - `Engine::misjudged` (in `Engine::check_index` and the order harness after a reopen) checks each flag is what judging gives. Judgment inputs from a body (rotation role, overreach) are persisted in the commit's `node/metas` row, so this holds with the body dropped.
-- perm `incremental::incremental_equals_from_scratch` checks reported moves against every timeline answer (`update_moved`). Arrival order: `apply/tests_order.rs`, perm `incremental` late leaves, `late_holder_judges_revoke_alike_*`.
+- perm `incremental::incremental_equals_from_scratch` checks reported moves against every timeline answer (`update_moved`). Arrival order: engine it `apply_order`, perm `incremental` late leaves, `late_holder_judges_revoke_alike_*`.
 
 ### Possible holders (`Held::ever_admins`, `ever_writers`)
 The one helper for "could this signer ever have held the role" where the answer must not depend on arrival (purge rights; spec/commits.md §4); a timeline read would. A least set grown from the thing through first admins and grants signed by members, of any validity, so it only grows. One set over the thing and its members, not one per member thing (a member could name the holder on the thing anyway; per-thing sets took 20 s per call on a chain of 1000 nested holders).

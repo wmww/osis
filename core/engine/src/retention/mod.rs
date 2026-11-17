@@ -560,13 +560,7 @@ pub(crate) fn valid_again(tx: &mut Tx<'_>, parts: &[(CommitId, usize)]) -> Resul
 fn reopen(tx: &mut Tx<'_>, c: &CommitId, ai: usize) -> Result<Option<crate::engine::Meta>> {
     let Some(mut m) = tx.core.ix.commits.get(c).cloned() else { return Ok(None) };
     reopen_in(tx, c, &mut m, ai);
-    tx.in_class(m.view.memory, |tx| {
-        if let Some(blob) = tx.get_commit(c)? {
-            tx.put_commit(c, &blob, &m, Shred::No, None)?;
-        }
-        Ok(())
-    })?;
-    tx.core.put_meta(*c, m.clone());
+    tx.in_class(m.view.memory, |tx| tx.put_meta_record(c, m.clone()))?;
     Ok(Some(m))
 }
 
@@ -621,13 +615,7 @@ fn drop_as_invalid(tx: &mut Tx<'_>, c: &CommitId, ai: usize) -> Result<Option<cr
     }
     *d = Dropped { why: DropFor::Invalid, role: d.role, overreach: d.overreach, keysets: std::mem::take(&mut d.keysets), ..Dropped::default() };
     tx.core.stale_commits.insert(*c);
-    tx.in_class(m.view.memory, |tx| {
-        if let Some(blob) = tx.get_commit(c)? {
-            tx.put_commit(c, &blob, &m, Shred::No, None)?;
-        }
-        Ok(())
-    })?;
-    tx.core.put_meta(*c, m.clone());
+    tx.in_class(m.view.memory, |tx| tx.put_meta_record(c, m.clone()))?;
     Ok(Some(m))
 }
 
@@ -821,10 +809,7 @@ fn make_leftover(tx: &mut Tx<'_>, c: &CommitId, ai: usize, o: &[Owned], extra: &
             // as bare as `unstrip` left it; a whole replace by the leftover, as a load reads it
             let whole = l.gives.is_none() && snapshot::whole_replace(&m, &a.ak, &l.fragment);
             m.set_hold(ai, Hold::Leftover { whole, valued: false });
-            if let Some(blob) = tx.get_commit(c)? {
-                tx.put_commit(c, &blob, &m, Shred::No, None)?;
-            }
-            tx.core.put_meta(*c, m);
+            tx.put_meta_record(c, m)?;
             crate::apply::rebuild(tx, &a.tid, &a.ak)?;
         } else if m.missing(ai) {
             drop_part_for(tx, c, ai, DropFor::Other)?;
@@ -1536,11 +1521,7 @@ impl Engine {
 }
 
 #[cfg(test)]
-mod tests_own;
-#[cfg(test)]
 mod tests_carried;
-#[cfg(test)]
-mod tests_resnapshot;
 #[cfg(test)]
 mod tests {
     #![allow(clippy::unwrap_used)]
@@ -2052,19 +2033,7 @@ mod tests {
     // (`check_index` compares them).
     #[test]
     fn whole_replace_through_a_purges_fall_and_rise_spec_commits_5() {
-        let mut lp = LocalPeer::fresh(3, WallMs(1_700_000_000_000));
-        lp.sync_all().unwrap();
-        let (a, x, w) = (lp.peers[0].engine.me(), lp.peers[1].engine.me(), lp.peers[2].engine.me());
-        let (reg, other) = (Ak::new("x:a.0").unwrap(), Ak::new("x:b.0").unwrap());
-        let mut m = Mutation::new();
-        let t = lp.peers[0].engine.new_thing(&mut m, a);
-        m.set(t, &other, &Value::Int(0)).unwrap();
-        lp.peers[0].commit(m).unwrap();
-        lp.hold(t);
-        let write = ct::Edge { role: Role::Write, until: None, invite: None, retain: false, floor: None };
-        lp.peers[0].engine.grant(&t, &x, &ct::Edge { role: Role::Admin, ..write.clone() }).unwrap();
-        lp.peers[0].engine.grant(&t, &w, &write).unwrap();
-        lp.sync_all().unwrap();
+        let (mut lp, t, x, w, reg, other) = purger_and_writer();
         lp.advance(10);
         let mut m = Mutation::new();
         m.set(t, &reg, &Value::Str("secret".into())).unwrap();
@@ -2075,14 +2044,7 @@ mod tests {
         assert_eq!(hold(&lp), Hold::Body { whole: true });
         // x purges it; the owner removes x before hearing of it, so the purge falls
         lp.advance(10);
-        let mut m = Mutation::new();
-        m.purge_commit(c, t, reg.clone());
-        m.set(t, &other, &Value::Int(1)).unwrap();
-        let p1 = lp.peers[1].commit(m).unwrap().unwrap();
-        let p1 = lp.peers[1].engine.package(&p1).unwrap().unwrap();
-        lp.advance(10);
-        let d = lp.peers[0].engine.demote(&t, &Demotion { holder: x, new: None, retain: None }).unwrap();
-        let ds: Vec<_> = d.commits.iter().map(|c| lp.peers[0].engine.package(c).unwrap().unwrap()).collect();
+        let (p1, ds) = falling_purge(&mut lp, t, c, &reg, &other, x);
         lp.deliver(2, &p1).unwrap();
         assert_eq!(hold(&lp), Hold::Leftover { whole: true, valued: false }, "purged");
         assert!(own(&lp));
@@ -2104,13 +2066,8 @@ mod tests {
         lp.peers[2].engine.check_index();
     }
 
-    // spec/commits.md §5 (own replaces; purge): an own replace gone missing at its purge's fall
-    // is no cover: a body dropped under it and one other own replace is missing again, as at a
-    // node that holds the same commits and never saw the fall. W writes C0, then whole replaces
-    // C2, C3; C0 is dropped as covered; the admin X purges C2; the owner removes X before hearing
-    // of it, so the purge falls and C2 is missing.
-    #[test]
-    fn own_replace_missing_at_a_fall_uncovers_spec_commits_5() {
+    /// T of admin A (0) with admin X (1) and writer W (2), `other` set: (lp, T, X, W, reg, other).
+    fn purger_and_writer() -> (LocalPeer, osis_base::Tid, osis_base::Tid, osis_base::Tid, Ak, Ak) {
         let mut lp = LocalPeer::fresh(3, WallMs(1_700_000_000_000));
         lp.sync_all().unwrap();
         let (a, x, w) = (lp.peers[0].engine.me(), lp.peers[1].engine.me(), lp.peers[2].engine.me());
@@ -2124,6 +2081,31 @@ mod tests {
         lp.peers[0].engine.grant(&t, &x, &ct::Edge { role: Role::Admin, ..write.clone() }).unwrap();
         lp.peers[0].engine.grant(&t, &w, &write).unwrap();
         lp.sync_all().unwrap();
+        (lp, t, x, w, reg, other)
+    }
+
+    /// X purges part `reg` of `c`; the owner removes X before hearing of it, so the purge falls
+    /// where the removal follows it: the purge's package and the removal's.
+    fn falling_purge(lp: &mut LocalPeer, t: osis_base::Tid, c: CommitId, reg: &Ak, other: &Ak, x: osis_base::Tid) -> (crate::local_peer::Package, Vec<crate::local_peer::Package>) {
+        let mut m = Mutation::new();
+        m.purge_commit(c, t, reg.clone());
+        m.set(t, other, &Value::Int(1)).unwrap();
+        let p1 = lp.peers[1].commit(m).unwrap().unwrap();
+        let p1 = lp.peers[1].engine.package(&p1).unwrap().unwrap();
+        lp.advance(10);
+        let d = lp.peers[0].engine.demote(&t, &Demotion { holder: x, new: None, retain: None }).unwrap();
+        let ds: Vec<_> = d.commits.iter().map(|c| lp.peers[0].engine.package(c).unwrap().unwrap()).collect();
+        (p1, ds)
+    }
+
+    // spec/commits.md §5 (own replaces; purge): an own replace gone missing at its purge's fall
+    // is no cover: a body dropped under it and one other own replace is missing again, as at a
+    // node that holds the same commits and never saw the fall. W writes C0, then whole replaces
+    // C2, C3; C0 is dropped as covered; the admin X purges C2; the owner removes X before hearing
+    // of it, so the purge falls and C2 is missing.
+    #[test]
+    fn own_replace_missing_at_a_fall_uncovers_spec_commits_5() {
+        let (mut lp, t, x, _, reg, other) = purger_and_writer();
         let cs: Vec<CommitId> = (0..3)
             .map(|v| {
                 lp.advance(10);
@@ -2138,14 +2120,7 @@ mod tests {
         let hold = |lp: &LocalPeer, c: &CommitId| lp.peers[2].engine.core.ix.commits[c].hold[0].clone();
         assert!(matches!(hold(&lp, &c0), Hold::Dropped(_)), "covered by C2, C3");
         lp.advance(10);
-        let mut m = Mutation::new();
-        m.purge_commit(c2, t, reg.clone());
-        m.set(t, &other, &Value::Int(1)).unwrap();
-        let p = lp.peers[1].commit(m).unwrap().unwrap();
-        let p = lp.peers[1].engine.package(&p).unwrap().unwrap();
-        lp.advance(10);
-        let d = lp.peers[0].engine.demote(&t, &Demotion { holder: x, new: None, retain: None }).unwrap();
-        let ds: Vec<_> = d.commits.iter().map(|c| lp.peers[0].engine.package(c).unwrap().unwrap()).collect();
+        let (p, ds) = falling_purge(&mut lp, t, c2, &reg, &other, x);
         lp.deliver(2, &p).unwrap();
         assert!(matches!(hold(&lp, &c0), Hold::Dropped(_)), "C2 purged is still an own replace");
         for d in &ds {

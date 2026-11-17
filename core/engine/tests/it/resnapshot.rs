@@ -1,26 +1,20 @@
 //! The re-snapshot a writer owes after a purge (spec/commits.md §5 Purge) is written whatever
 //! happens between the purge and the write: a stop, or delete keys that come only later.
-#![allow(clippy::unwrap_used, clippy::indexing_slicing)]
 
-use crate::Mutation;
-use crate::local_peer::LocalPeer;
+use osis_engine::Mutation;
+use osis_engine::local_peer::LocalPeer;
 use osis_base::{Ak, CommitId, PurgeBy, Role, Tid, Value};
 use osis_schema::Retention;
 use osis_schema::core_types as ct;
-
-const T0: osis_base::WallMs = osis_base::WallMs(1_700_000_000_000);
+use crate::common::{T0, edge};
 
 fn reg() -> Ak {
     Ak::new("x:a.0").unwrap()
 }
 
-fn edge(role: Role) -> ct::Edge {
-    ct::Edge { role, until: None, invite: None, retain: false, floor: None }
-}
-
 /// Admin 0 and writer 1 on a thing of 0. With `keys`, 1 holds every commit of 0; without, all but
 /// those carrying the thing's `keys.0` (its delete keys), returned for later.
-fn world(keys: bool) -> (LocalPeer, Tid, Vec<crate::local_peer::Package>) {
+fn world(keys: bool) -> (LocalPeer, Tid, Vec<osis_engine::local_peer::Package>) {
     let key = if keys { "retention::tests_resnapshot::keys" } else { "retention::tests_resnapshot::no_keys" };
     let (lp, (t, rest)) = LocalPeer::cached(key, || {
         let mut lp = LocalPeer::fresh(2, T0);

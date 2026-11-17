@@ -608,11 +608,7 @@ impl Engine {
         self.run(|tx| {
             let Some(mut meta) = tx.core.ix.commits.get(&id).cloned() else { return Ok(()) };
             meta.repair = Some(fresh.clone());
-            if let Some(blob) = tx.get_commit(&id)? {
-                tx.put_commit(&id, &blob, &meta, osis_store::Shred::No, None)?;
-            }
-            tx.core.put_meta(id, meta);
-            Ok(())
+            tx.put_meta_record(&id, meta)
         })?;
         Ok(Some(id))
     }

@@ -3289,6 +3289,15 @@ impl Tx<'_> {
         self.write_state(tid, ak, f, shred)
     }
 
+    /// `m` as `id`'s meta, its stored record rewritten under it (the blob unchanged).
+    pub(crate) fn put_meta_record(&mut self, id: &CommitId, m: Meta) -> Result<()> {
+        if let Some(blob) = self.get_commit(id)? {
+            self.put_commit(id, &blob, &m, Shred::No, None)?;
+        }
+        self.core.put_meta(*id, m);
+        Ok(())
+    }
+
     /// Writes a commit record (`index::record_head`: received, origin, dropped parts and what
     /// they keep; then its blob), and for a role commit its `node/edges` row (`edges`: what the caller already
     /// read of `blob` with `edge_parts_of`, else decoded here).

@@ -82,13 +82,6 @@ impl OwnCommits {
 }
 
 impl Engine {
-    /// What is kept per sync ID asked (tests: what a release leaves): sync IDs whose own
-    /// commits are kept, own-commit candidates followed, sync IDs whose pass want is kept.
-    #[doc(hidden)]
-    pub fn kept_per_sync_id(&self) -> (usize, usize, usize) {
-        let o = &self.core.own_commits;
-        (o.candidates.len(), o.candidates.values().map(|x| x.1.len()).sum(), self.core.pass_wanted.len())
-    }
 
     /// `s`'s scope: the sync units of the things reading it and the authors this node writes as
     /// (its account, itself, the link key of a link it follows: a join, spec/permissions.md §7).

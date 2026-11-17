@@ -2504,21 +2504,7 @@ fn removal_by_demoted_admin_pins_nothing_spec_crypto_4() {
 // A's epoch and re-seal M at it.
 #[test]
 fn applied_name_void_elsewhere_through_holder_actor_spec_crypto_4() {
-    let mut lp = synced(6);
-    let tids: Vec<Tid> = (0..6).map(|i| lp.peers[i].engine.me()).collect();
-    let g = with_own_keys(&mut lp, 0);
-    let k = with_own_keys(&mut lp, 5);
-    lp.peers[5].engine.grant(&k, &tids[3], &edge(Role::Admin)).unwrap();
-    lp.sync_all().unwrap();
-    lp.peers[0].engine.grant(&g, &k, &edge(Role::Admin)).unwrap();
-    for (i, r) in [(1, Role::Admin), (2, Role::Read), (4, Role::Admin)] {
-        lp.peers[0].engine.grant(&g, &tids[i], &edge(r)).unwrap();
-    }
-    lp.sync_all().unwrap();
-    let before = commit_ids(&mut lp, 5);
-    lp.peers[5].engine.demote(&k, &Demotion { holder: tids[3], new: Some(edge(Role::Write)), retain: None }).unwrap();
-    let dem: BTreeSet<_> = commit_ids(&mut lp, 5).difference(&before).copied().collect();
-    lp.sync(5, 0).unwrap();
+    let (mut lp, tids, g, dem) = through_holder_actor();
     lp.peers[3].clock.advance(5_000);
     lp.peers[3].engine.demote(&g, &Demotion { holder: tids[1], new: None, retain: None }).unwrap();
     lp.peers[1].clock.advance(10_000);
@@ -2540,13 +2526,9 @@ fn applied_name_void_elsewhere_through_holder_actor_spec_crypto_4() {
     assert!(!(opens && removed_reader_reads(&mut lp, g, &tids, 4)), "A encrypts under its epoch, which V re-sealed to M");
 }
 
-// spec/crypto.md §4 (Met: a departs mark only where its commit's writes take): as
-// `applied_name_void_elsewhere_through_holder_actor`, Q (lacking D) demotes P to write (Dp)
-// instead, and P's removal of M (L) carries its rotation, which names L by its departs mark. V,
-// holding Dp, not D, judges L void (P a writer at its point) while P's rotation stands (a
-// writer rotates read): the mark must not be met there by its commit alone.
-#[test]
-fn departs_mark_void_elsewhere_through_holder_actor_spec_crypto_4() {
+/// The holder-actor world of `applied_name_void_elsewhere_through_holder_actor`: Q (3) admin
+/// of g through k, O2 (5) demoting Q to write on k (D, returned), D at A (0) alone.
+fn through_holder_actor() -> (LocalPeer, Vec<Tid>, Tid, BTreeSet<osis_base::CommitId>) {
     let mut lp = synced(6);
     let tids: Vec<Tid> = (0..6).map(|i| lp.peers[i].engine.me()).collect();
     let g = with_own_keys(&mut lp, 0);
@@ -2562,6 +2544,17 @@ fn departs_mark_void_elsewhere_through_holder_actor_spec_crypto_4() {
     lp.peers[5].engine.demote(&k, &Demotion { holder: tids[3], new: Some(edge(Role::Write)), retain: None }).unwrap();
     let dem: BTreeSet<_> = commit_ids(&mut lp, 5).difference(&before).copied().collect();
     lp.sync(5, 0).unwrap();
+    (lp, tids, g, dem)
+}
+
+// spec/crypto.md §4 (Met: a departs mark only where its commit's writes take): as
+// `applied_name_void_elsewhere_through_holder_actor`, Q (lacking D) demotes P to write (Dp)
+// instead, and P's removal of M (L) carries its rotation, which names L by its departs mark. V,
+// holding Dp, not D, judges L void (P a writer at its point) while P's rotation stands (a
+// writer rotates read): the mark must not be met there by its commit alone.
+#[test]
+fn departs_mark_void_elsewhere_through_holder_actor_spec_crypto_4() {
+    let (mut lp, tids, g, dem) = through_holder_actor();
     lp.peers[3].clock.advance(5_000);
     lp.peers[3].engine.demote(&g, &Demotion { holder: tids[1], new: Some(edge(Role::Write)), retain: None }).unwrap();
     lp.peers[1].clock.advance(10_000);
@@ -2581,16 +2574,11 @@ fn departs_mark_void_elsewhere_through_holder_actor_spec_crypto_4() {
     assert!(!(opens && removed_reader_reads(&mut lp, g, &tids, 4)), "A encrypts under P's epoch, which V re-sealed to M");
 }
 
-// spec/crypto.md §4 (orphaned): a rotation due only because an epoch is orphaned is made only
-// when its new epoch boxes a holder that may rotate the role, so orphaned rotations do not trade
-// back and forth. D's admin is T, a thing of team H with no keyset (granted past the writer
-// rules: a plain holder actor, as a thing whose only keyset part turned invalid is), so every
-// rotation leaves T out; H's writers W1, W2 read D directly and write it through T. D's maker
-// leaves: W1 rotates (its departure), a write epoch boxed to nobody that may rotate write, so
-// orphaned at W2, whose rotation would be orphaned at W1 again.
-#[test]
-fn orphaned_rotations_do_not_trade_spec_crypto_4() {
-    let mut lp = synced(3);
+/// D (0's) whose admin is T, a plain thing of team H (granted past the writer rules); H's writers
+/// W1 (1), W2 (2) read D; with a peer 3, it is a direct admin of D. D's maker (0) has left.
+/// (lp, H, T, D).
+fn admin_through_a_plain_thing(n: usize) -> (LocalPeer, Tid, Tid, Tid) {
+    let mut lp = synced(n);
     let (o, w1, w2) = (lp.peers[0].engine.me(), lp.peers[1].engine.me(), lp.peers[2].engine.me());
     let h = with_own_keys(&mut lp, 0);
     lp.peers[0].engine.grant(&h, &w1, &edge(Role::Write)).unwrap();
@@ -2605,6 +2593,10 @@ fn orphaned_rotations_do_not_trade_spec_crypto_4() {
     let d = with_own_keys(&mut lp, 0);
     lp.peers[0].engine.grant(&d, &w1, &edge(Role::Read)).unwrap();
     lp.peers[0].engine.grant(&d, &w2, &edge(Role::Read)).unwrap();
+    if n > 3 {
+        let a = lp.peers[3].engine.me();
+        lp.peers[0].engine.grant(&d, &a, &edge(Role::Admin)).unwrap();
+    }
     lp.peers[0]
         .engine
         .run(|tx| {
@@ -2618,6 +2610,19 @@ fn orphaned_rotations_do_not_trade_spec_crypto_4() {
         .unwrap();
     lp.peers[0].engine.demote(&d, &Demotion { holder: o, new: None, retain: None }).unwrap();
     lp.sync_all().unwrap();
+    (lp, h, t, d)
+}
+
+// spec/crypto.md §4 (orphaned): a rotation due only because an epoch is orphaned is made only
+// when its new epoch boxes a holder that may rotate the role, so orphaned rotations do not trade
+// back and forth. D's admin is T, a thing of team H with no keyset (granted past the writer
+// rules: a plain holder actor, as a thing whose only keyset part turned invalid is), so every
+// rotation leaves T out; H's writers W1, W2 read D directly and write it through T. D's maker
+// leaves: W1 rotates (its departure), a write epoch boxed to nobody that may rotate write, so
+// orphaned at W2, whose rotation would be orphaned at W1 again.
+#[test]
+fn orphaned_rotations_do_not_trade_spec_crypto_4() {
+    let (mut lp, h, t, d) = admin_through_a_plain_thing(3);
     assert!(!lp.peers[1].engine.core.has_own_secrets(&t), "T is plain");
     let mut made = 0;
     for _ in 0..4 {
@@ -2650,35 +2655,7 @@ fn orphaned_rotations_do_not_trade_spec_crypto_4() {
 // write epoch boxes A, which judges it; W2, lacking W1's, rotated, then W1, lacking W2's, for good.
 #[test]
 fn a_rotator_lacking_an_epoch_leaves_it_to_its_readers_spec_crypto_4() {
-    let mut lp = synced(4);
-    let [o, w1, w2, a] = [0, 1, 2, 3].map(|i| lp.peers[i].engine.me());
-    let h = with_own_keys(&mut lp, 0);
-    lp.peers[0].engine.grant(&h, &w1, &edge(Role::Write)).unwrap();
-    lp.peers[0].engine.grant(&h, &w2, &edge(Role::Write)).unwrap();
-    let t = {
-        let mut m = Mutation::new();
-        let t = lp.peers[0].engine.new_thing(&mut m, h);
-        lp.peers[0].commit(m).unwrap();
-        lp.hold(t);
-        t
-    };
-    let d = with_own_keys(&mut lp, 0);
-    lp.peers[0].engine.grant(&d, &w1, &edge(Role::Read)).unwrap();
-    lp.peers[0].engine.grant(&d, &w2, &edge(Role::Read)).unwrap();
-    lp.peers[0].engine.grant(&d, &a, &edge(Role::Admin)).unwrap();
-    lp.peers[0]
-        .engine
-        .run(|tx| {
-            let mut m = Mutation::new();
-            crate::flows::put_edge(&mut m, d, t, &edge(Role::Admin))?;
-            tx.core.skip_writer_rules = true;
-            let c = crate::engine::Engine::commit_tx(tx, m);
-            tx.core.skip_writer_rules = false;
-            c.map(|_| ())
-        })
-        .unwrap();
-    lp.peers[0].engine.demote(&d, &Demotion { holder: o, new: None, retain: None }).unwrap();
-    lp.sync_all().unwrap();
+    let (mut lp, _, _, d) = admin_through_a_plain_thing(4);
     let rounds = |lp: &mut LocalPeer| {
         let mut made = 0;
         for i in [1, 2, 3] {

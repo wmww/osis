@@ -153,14 +153,6 @@ impl Engine {
         })
     }
 
-    /// What the parts of `blob` could cost decoded (`part_bound`), from their bytes alone: (the
-    /// sum, the largest), a part that is not one CBOR value counting `u64::MAX`. No part past
-    /// the room given is decoded (`ingest_memory`), so one whose bound passes a sync ID's whole
-    /// cap is never held under it.
-    pub fn memory_bound(blob: &CommitBlob) -> (u64, u64) {
-        blob.parts.iter().map(|p| part_bound(p).unwrap_or(u64::MAX)).fold((0, 0), |(s, m), b| (s.saturating_add(b), m.max(b)))
-    }
-
     /// Whether memory commit `id` is held here (any part, or pending).
     pub fn holds_memory(&self, id: &CommitId) -> bool {
         self.core.ix.commits.get(id).is_some_and(|m| m.view.memory)

@@ -486,12 +486,6 @@ impl Engine {
         self.grant_signed(None, *target, *holder, edge, false, history)
     }
 
-    /// `grant`, signed as a held key actor (a link key).
-    #[cfg(test)]
-    pub fn grant_as(&mut self, signer: &Tid, target: &Tid, holder: &Tid, edge: &Edge) -> Result<Done> {
-        self.grant_signed(Some(*signer), *target, *holder, edge, false, History::All)
-    }
-
     /// `grant_in` with the frontier of what this node received when the grant audits: an admin's
     /// grant below the edge as restored (spec/permissions.md §5.1 step 4), such as a lower invite
     /// or a role below one the holder lost with no explicit write on the edge since. Invariant: an

@@ -1050,16 +1050,6 @@ impl Engine {
         self.core.ix.held.holders_of(t).next().is_some()
     }
 
-    /// The pass place the newest role commit on `actor` applied from elsewhere arrived at.
-    pub fn role_arrival_place(&self, actor: &Tid) -> Option<u64> {
-        self.role_arrival(actor)
-    }
-
-    /// Causes a pass wait runs from, kept (rows `jc/`; bound checks).
-    pub fn causes_judged(&self) -> usize {
-        self.core.ix.cause_at.len()
-    }
-
     /// The pass place now: a pass begun after this call begins above it.
     pub fn pass_place(&self) -> u64 {
         self.core.place

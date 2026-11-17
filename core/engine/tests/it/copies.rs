@@ -1,17 +1,13 @@
 //! World copies (notes/test-harnesses.md, Copied worlds): a copied `LocalPeer` goes on exactly as the
 //! original, and the two share nothing.
 
-#![allow(clippy::unwrap_used, clippy::indexing_slicing)]
-use crate::Mutation;
-use crate::flows::Demotion;
-use crate::local_peer::LocalPeer;
+use osis_engine::Mutation;
+use osis_engine::flows::Demotion;
+use osis_engine::local_peer::LocalPeer;
 use osis_base::{Ak, CommitId, Role, Tid, Value, WallMs};
 use osis_crdt::{Op, PathOp, PathSeg};
 use osis_schema::core_types as ct;
-
-fn edge(role: Role) -> ct::Edge {
-    ct::Edge { role, until: None, invite: None, retain: false, floor: None }
-}
+use crate::common::edge;
 
 fn put(lp: &mut LocalPeer, who: usize, t: Tid, x: &Ak, k: &str, v: i64) -> Option<CommitId> {
     lp.advance(7);

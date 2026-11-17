@@ -689,8 +689,8 @@ pub(crate) fn usable_role_now(tx: &mut crate::engine::Tx<'_>, who: &Tid, t: &Tid
 
 impl crate::Engine {
     /// [`holds_delete_keys_in`], for tests.
-    #[cfg(test)]
-    pub(crate) fn holds_delete_keys(&mut self, t: &Tid) -> Result<bool> {
+    #[doc(hidden)]
+    pub fn holds_delete_keys(&mut self, t: &Tid) -> Result<bool> {
         let t = *t;
         self.run(|tx| holds_delete_keys_in(tx, &t))
     }

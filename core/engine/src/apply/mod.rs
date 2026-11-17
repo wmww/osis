@@ -17,15 +17,11 @@ mod tests_validity;
 #[cfg(test)]
 mod tests_addenda;
 #[cfg(test)]
-mod tests_order;
-#[cfg(test)]
 mod oracle;
 #[cfg(test)]
 mod tests_paged;
 #[cfg(test)]
 mod tests_steps;
-#[cfg(test)]
-mod tests_account;
 
 pub(crate) use unindex::{unindex_commit, unindex_unreceived, unjudge_part};
 pub use waits::Wake;
@@ -810,7 +806,9 @@ fn ingest_class(tx: &mut Tx<'_>, mut blob: CommitBlob, origin: Origin) -> Result
     }
     let received = tx.now();
     let _s = osis_base::costs::span("examine");
-    let out = match examine(tx, &mut blob, &id, &BTreeSet::new(), origin, &mut known)? {
+    let exam = examine(tx, &mut blob, &id, &BTreeSet::new(), origin, &mut known)?;
+    let awaits = matches!(exam, Exam::Awaits(_));
+    let out = match exam {
         Exam::Ready(mut parts) => {
             let w = parts.waiting.take();
             tx.core.waits.unawaits(&id);
@@ -824,8 +822,12 @@ fn ingest_class(tx: &mut Tx<'_>, mut blob: CommitBlob, origin: Origin) -> Result
             }
             Ingested::Applied(id)
         }
-        Exam::Pending(r) => {
-            // parts past their expiry (or purged ones that cannot be stripped) count as never received: examined again without them
+        Exam::Pending(r) | Exam::Awaits(r) => {
+            // parts past their expiry (or purged ones that cannot be stripped) count as never
+            // received: examined again without them. One that awaits stays pending as any commit
+            // that waits, its signature's verdict with it, while a carrier holds it
+            // (spec/commits.md §4 Unjudgeable, Pending storage): every arrival that applies
+            // examines it again (`reexamine`)
             let (h, n) = (blob.header.clone(), blob.parts.len());
             crate::retention::pending_drops(tx, &id, &mut blob, &h)?;
             if blob.parts.len() != n {
@@ -833,20 +835,9 @@ fn ingest_class(tx: &mut Tx<'_>, mut blob: CommitBlob, origin: Origin) -> Result
             }
             pend(tx, &id, PendingKind::Pending, known, &blob.encode(), r.clone(), Some(&blob.header))?;
             keys::read_pending_boxes(tx, &blob, &id)?;
-            Ingested::Pending(id, r)
-        }
-        Exam::Awaits(r) => {
-            // kept pending as any commit that waits, its signature's verdict with it, while a
-            // carrier holds it (spec/commits.md §4 Unjudgeable, Pending storage): every arrival
-            // that applies examines it again (`reexamine`)
-            let (h, n) = (blob.header.clone(), blob.parts.len());
-            crate::retention::pending_drops(tx, &id, &mut blob, &h)?;
-            if blob.parts.len() != n {
-                return ingest_class(tx, blob, origin);
+            if awaits {
+                tx.core.waits.awaits(id, blob.header.aspects.iter().map(|a| a.tid).collect());
             }
-            pend(tx, &id, PendingKind::Pending, known, &blob.encode(), r.clone(), Some(&blob.header))?;
-            keys::read_pending_boxes(tx, &blob, &id)?;
-            tx.core.waits.awaits(id, blob.header.aspects.iter().map(|a| a.tid).collect());
             Ingested::Pending(id, r)
         }
     };

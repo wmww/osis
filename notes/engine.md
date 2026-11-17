@@ -81,7 +81,6 @@ osis-engine (`core/engine/src`; each file's doc comment says more):
 | `local_peer.rs` | `LocalPeer`: engines exchanging commits directly (`Package`, `SealedPackage`; the simulator's seed, notes/test-sim.md) |
 | `sides.rs` | this node's sides in admin disputes (notes/disputes.md) |
 | `error.rs` | `Error` with the three classes (notes/architecture.md §3) |
-| `tests_copy.rs` | world copies (notes/test-harnesses.md, Copied worlds) |
 
 
 ## Public surface (engine)
