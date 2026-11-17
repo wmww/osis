@@ -131,9 +131,10 @@ pub(crate) enum Piece {
     /// holds, and whose actor reads, a thing with a held commit of `a` writing `x` or acting for
     /// it (`Indexes::chains_on`): one piece per chain, however many things need it.
     Chain(Tid, Tid),
-    /// Read thing `t`'s chain to `x` with `x`'s boxes to `t` and sync record
-    /// (`Engine::holder_piece`), under `t` for each `x` an edge write names it holder on
-    /// (`Engine::holds_on`: role changes travel).
+    /// Holder `t`'s chain to `x` with `x`'s boxes to `t` and sync record
+    /// (`Engine::holder_piece`), under `t`'s home for each `x` an edge write names it holder on
+    /// (`Engine::holder_home_on`: role changes travel): `t` itself when read, an account's root
+    /// for a thing the root reaches by strongs.
     Holder(Tid, Tid),
     /// Account `p`'s signing chain (`Engine::account_piece`), under each read thing one of whose
     /// pieces names `p` (`Certs::accounts`): a rotation re-derives this piece alone, not every
@@ -163,9 +164,10 @@ struct Followers {
     read_feed: Option<Feed<Tid>>,
     /// Per thing with authors (`Indexes::chains_on`), what it gives.
     authored: Effects<Tid, Arc<Authored>>,
-    /// Per (read thing, thing), whether an edge write names the read thing holder on the thing
-    /// (`holds_on`), followed for each pair named while the read thing is read.
-    held_on: Effects<(Tid, Tid), bool>,
+    /// Per (holder, thing), the read thing its piece goes under while an edge write names the
+    /// holder on the thing (`holder_home_on`), followed for each pair named while the holder has
+    /// a home.
+    held_on: Effects<(Tid, Tid), Option<Tid>>,
     /// The (holder, thing) pairs named since the last follow (`Held::pairs_feed`); `None` until
     /// the first follow.
     pairs_feed: Option<Feed<(Tid, Tid)>>,
@@ -201,7 +203,7 @@ pub(crate) struct Certified {
     pub(crate) read: StampedSet<Tid>,
     /// Each followed thing with authors, as placed.
     authored: BTreeMap<Tid, Arc<Authored>>,
-    /// Per read thing, the things it is named holder on, as placed (`holds_on`).
+    /// Per holder, the things it is named holder on, as placed (`holder_home_on`).
     held_on: BTreeMap<Tid, BTreeSet<Tid>>,
     /// Per (chain piece, read thing), the things with authors that place it there: it goes under
     /// the read thing while any does.
@@ -431,15 +433,32 @@ impl Engine {
         Arc::new(Authored { chains, under })
     }
 
-    /// Whether read thing `t` is named holder on `x` by an edge write, its own things aside (a
-    /// first admin's edge is its record's, which no edge write lowers): spec/permissions.md §4
-    /// Role changes travel, a role commit with an edge write naming holder `t` goes under `t`'s
-    /// own sync ID, as `t`'s piece for its target (`Piece::Holder(t, x)`) holds every edge write
-    /// on its paths, a removal included, which the target's bodies no longer carry there once `t`
-    /// reads it no more. A read of the pair alone.
-    fn holds_on(&self, t: &Tid, x: &Tid) -> bool {
+    /// The read thing holder `t`'s piece for `x` goes under (`Piece::Holder(t, x)`), while an
+    /// edge write names `t` holder on `x`, its own things aside (a first admin's edge is its
+    /// record's, which no edge write lowers): spec/permissions.md §4 Role changes travel, a role
+    /// commit with an edge write naming holder `t` goes under `t`'s own sync ID with `x`'s boxes
+    /// to `t` and sync record, the piece holding every edge write on its paths, a removal
+    /// included, which the target's bodies no longer carry there once `t` reads it no more. `t`'s
+    /// home is `t` when read here; for this node's account, its root read here, for an `x` the
+    /// root reaches by strongs (the account root reads as its account: a node paired later holds
+    /// `x`'s boxes to the account from it, as its siblings do from the fires). A read of the pair
+    /// and the home alone.
+    fn holder_home_on(&self, t: &Tid, x: &Tid) -> Option<Tid> {
         osis_base::costs::count("certified: held on examined", 1);
-        self.core.certified.read.contains(t) && x != t && self.core.ix.held.is_named(t, x) && self.core.first_admin(x) != Some(*t)
+        let home = self.holder_home(t)?;
+        let named = x != t && self.core.ix.held.is_named(t, x) && self.core.first_admin(x) != Some(*t);
+        (named && (home == *t || self.core.ix.closure.reaches_from(&home, x))).then_some(home)
+    }
+
+    /// Where holder `t`'s pieces go (`holder_home_on`): `t` when read here, else the account
+    /// root of `t` when `t` is an account held here and its root is read here.
+    fn holder_home(&self, t: &Tid) -> Option<Tid> {
+        let read = &self.core.certified.read;
+        if read.contains(t) {
+            return Some(*t);
+        }
+        let d = self.core.accounts.get(t)?.root;
+        (read.contains(&d) && self.core.account_of_root(&d) == Some(*t)).then_some(d)
     }
 
     /// Piece `p`'s certificates.
@@ -510,8 +529,11 @@ impl Engine {
             if now {
                 self.core.certified.read.insert(t);
                 self.core.certified.place(Piece::Own(t), t, &mut f.pieces);
-                for x in self.core.ix.held.named_on(&t) {
-                    f.held_on.want((t, *x));
+                // its own pairs, and an account root's its account's
+                let holders = std::iter::once(t).chain(self.core.account_of_root(&t));
+                let pairs: Vec<(Tid, Tid)> = holders.flat_map(|h| self.core.ix.held.named_on(&h).map(move |x| (h, *x)).collect::<Vec<_>>()).collect();
+                for k in pairs {
+                    f.held_on.want(k);
                 }
                 continue;
             }
@@ -523,28 +545,30 @@ impl Engine {
             }
         }
         for (t, x) in named {
-            if self.core.certified.read.contains(&t) {
+            if self.holder_home(&t).is_some() {
                 f.held_on.want((t, x));
             }
         }
-        // the role changes naming each read thing holder (`holds_on`), per pair: its chain to the
-        // target, with the target's boxes to it and sync record; a pair that holds no more is followed again once named again (the feed)
+        // the role changes naming each holder with a home (`holder_home_on`), per pair: its chain
+        // to the target, with the target's boxes to it and sync record, under its home; a pair
+        // that holds no more is followed again once named again (the feed)
         for (t, x) in f.held_on.due() {
-            let Some((_, now)) = f.held_on.settle(&(t, x), || self.holds_on(&t, &x)) else { continue };
+            let Some((was, now)) = f.held_on.settle(&(t, x), || self.holder_home_on(&t, &x)) else { continue };
+            if now.is_none() {
+                f.held_on.unwant(&(t, x));
+            }
             let on = self.core.certified.held_on.entry(t).or_default();
-            if now {
-                if on.insert(x) {
-                    self.core.certified.place_chain(Piece::Holder(t, x), t, t, &mut f.pieces);
-                }
-                continue;
+            if let Some(h) = was.flatten() {
+                on.remove(&x);
+                self.core.certified.unplace_chain(Piece::Holder(t, x), h, h, &mut f.pieces);
             }
-            f.held_on.unwant(&(t, x));
-            let had = on.remove(&x);
-            if on.is_empty() {
+            let on = self.core.certified.held_on.entry(t).or_default();
+            if let Some(h) = now {
+                on.insert(x);
+                self.core.certified.place_chain(Piece::Holder(t, x), h, h, &mut f.pieces);
+            }
+            if self.core.certified.held_on.get(&t).is_some_and(|on| on.is_empty()) {
                 self.core.certified.held_on.remove(&t);
-            }
-            if had {
-                self.core.certified.unplace_chain(Piece::Holder(t, x), t, t, &mut f.pieces);
             }
         }
         let authors = f.feeds.as_mut().map(|a| a.added()).unwrap_or_default();

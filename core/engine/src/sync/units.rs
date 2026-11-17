@@ -624,6 +624,13 @@ impl Closure {
         }
     }
 
+    /// Whether a vertex of `g`'s read sync unit has a strong to `t` that enters it, read, kept
+    /// unread or on a ticket's word (spec/permissions.md §4 Role changes travel: an account root
+    /// counts for its account on a thing it reaches by strongs).
+    pub(crate) fn reaches_from(&self, g: &Tid, t: &Tid) -> bool {
+        [Ctx::Read(*t), Ctx::Unread(*t), Ctx::Ticket(*t)].into_iter().any(|c| self.inn.get(&(c, *t)).is_some_and(|i| i.iter().any(|w| w.0 == Ctx::Read(*g))))
+    }
+
     /// Each held vertex's edge to `target` is judged again at the next settle: a ticket for it
     /// appeared among the known references (`judge` takes its secret).
     pub(crate) fn rejudge(&mut self, target: Tid) {

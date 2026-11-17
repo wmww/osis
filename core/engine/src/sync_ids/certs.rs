@@ -248,7 +248,11 @@ impl Engine {
     #[cfg(test)]
     pub(crate) fn sync_certificates(&mut self, g: &Tid) -> Certs {
         let mut out = self.own_piece(g);
-        let held_on: Vec<(Tid, Tid)> = self.core.ix.held.named_on(g).filter(|x| *x != g && self.core.first_admin(x) != Some(*g)).map(|x| (*g, *x)).collect();
+        let mut held_on: Vec<(Tid, Tid)> = self.core.ix.held.named_on(g).filter(|x| *x != g && self.core.first_admin(x) != Some(*g)).map(|x| (*g, *x)).collect();
+        // an account root's, for its account held here, on the things it reaches by strongs
+        if let Some(p) = self.core.account_of_root(g).filter(|p| self.core.accounts.get(p).is_some_and(|a| a.root == *g)) {
+            held_on.extend(self.core.ix.held.named_on(&p).filter(|x| **x != p && self.core.first_admin(x) != Some(p) && self.core.ix.closure.reaches_from(g, x)).map(|x| (p, *x)));
+        }
         for (a, x) in self.certificate_chains(g) {
             out.extend(self.chain_piece(&a, &x));
         }
@@ -309,13 +313,16 @@ impl Engine {
         out
     }
 
-    /// What read thing `t`'s readers need of `x` an edge write names `t` holder on (spec/sync-judgement.md
+    /// What holder `t`'s readers need of `x` an edge write names `t` holder on (spec/sync-judgement.md
     /// §2 role commits naming an actor): `t`'s chain to `x` (`chain_piece`), the `secrets.0` parts
     /// on `x` boxing a secret to `t`, and `x`'s sync record (its `sync.0` parts), so a reader of
-    /// `t` holds the grant and `x`'s sync ID with no ticket (the chain carries `x`'s keys).
+    /// `t` holds the grant and `x`'s sync ID with no ticket (the chain carries `x`'s keys). An
+    /// account's, under its root, is the boxes and sync record alone: its nodes read `x`'s chain
+    /// under `x`'s own sync ID once the boxes' history opens it, and a chain named under the root
+    /// only while the thing is held left its copies there carrying more than the root names after.
     /// Each valid part held, O(`x`'s held `secrets.0` and `sync.0` commits).
     pub(crate) fn holder_piece(&mut self, t: &Tid, x: &Tid) -> Certs {
-        let mut out = self.chain_piece(t, x);
+        let mut out = if self.core.is_account(t) { Certs::default() } else { self.chain_piece(t, x) };
         let on = BTreeSet::from([*x]);
         for ak in ["secrets.0", "sync.0"] {
             let Ok(k) = Ak::new(ak) else { continue };

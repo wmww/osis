@@ -86,13 +86,34 @@ fn a_node_pairs_another_after_removing_its_pairer_spec_sync_inbox_1() {
     let n = w.pair(2);
     w.run();
     assert!(w.engine(n).account_root().is_some());
-    // the new node holds every thing with a sync ID its sibling holds, with its current sync and
-    // read secrets (the contact's card link K included, held through D)
+    // the contact's card link K included, held through D
+    holds_as_sibling(&mut w, n, 2);
+}
+
+// spec/sync-judgement.md §2 (a grant naming a holder travels under the holder's sync ID with the
+// target's sync record; an account's under its account root): a node paired once the inbox's
+// fires are gone holds every thing its sibling holds with its current secrets. The commits giving
+// the contact's card link K its epochs are wrapped under epochs the account took only by its
+// inbox's ticket fire, and D's ticket gives K's current read secret alone: without K's boxes to
+// the account under D the new node opens neither K's sync secret nor its history.
+#[test]
+fn a_node_paired_after_the_fires_expire_holds_its_siblings_secrets_spec_sync_judgement_2() {
+    let mut w = crate::harness::contacts();
+    w.advance(2 * osis_base::format::INBOX_LIFETIME_MS);
+    w.run();
+    let n = w.pair(1);
+    w.run();
+    holds_as_sibling(&mut w, n, 1);
+}
+
+/// New node `n` holds every thing with a sync ID its sibling `sib` holds, with its current sync
+/// and read secrets.
+fn holds_as_sibling(w: &mut World, n: usize, sib: usize) {
     let has = w.engine(n).things_with_sync_ids();
-    for t in w.engine(2).things_with_sync_ids() {
+    for t in w.engine(sib).things_with_sync_ids() {
         assert!(has.contains(&t), "{t:?} lacks a `sync.0` at the new node");
-        let (a, b) = (w.engine(2).epochs(&t).unwrap(), w.engine(n).epochs(&t).unwrap());
-        for r in [osis_base::Role::Sync, osis_base::Role::Read] {
+        let (a, b) = (w.engine(sib).epochs(&t).unwrap(), w.engine(n).epochs(&t).unwrap());
+        for r in [Role::Sync, Role::Read] {
             for e in a.role(r).current() {
                 assert!(b.role(r).secret(&e).is_some(), "{t:?} {r:?} {} lacks its secret at the new node", e.n());
             }
