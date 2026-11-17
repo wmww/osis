@@ -13,7 +13,7 @@ use osis_base::{BlobId, Classified, Clock, CommitId, Link, ManualClock, Tid, Wal
 use osis_commit::CommitBlob;
 use osis_crypto::SeededRng;
 use osis_store::{MemoryBackend, MemoryRoot};
-use std::collections::{BTreeSet, HashMap};
+use std::collections::{BTreeSet, HashMap, HashSet};
 use std::hash::{DefaultHasher, Hash, Hasher};
 use std::sync::Arc;
 use std::sync::mpsc::Receiver;
@@ -98,6 +98,25 @@ fn misses(core: &crate::engine::Core, id: &CommitId, bytes: &[u8]) -> bool {
 }
 
 impl Peer {
+    /// Which of `on` anything held or pending here needs (`retention::needed::needs`): a package
+    /// on them this node dropped at a pass end is wanted no more than then while that stands
+    /// (`LocalPeer::sync`).
+    fn needed<'a>(&mut self, on: impl IntoIterator<Item = &'a Tid>) -> Result<BTreeSet<Tid>> {
+        let on: BTreeSet<Tid> = on.into_iter().copied().collect();
+        if on.is_empty() {
+            return Ok(on);
+        }
+        self.engine.read(|tx| {
+            let mut out = BTreeSet::new();
+            for t in on {
+                if !crate::retention::needed::needs(tx, &t)?.is_empty() {
+                    out.insert(t);
+                }
+            }
+            Ok(out)
+        })
+    }
+
     /// Receives a package and stands in for node-sync's carriers and fetches: a carrier of what
     /// pends is ingested again when the engine names its commit, a copy of a missing part when
     /// `Wakes` names it. The test's `Engine::ingest` is what
@@ -438,9 +457,22 @@ struct SyncMemo {
     sent: HashMap<usize, (ReadPoint, Hashed)>,
     /// (receiver, package hash): delivered as a duplicate that changed nothing, at this point.
     duplicate: HashMap<(usize, u64), ReadPoint>,
+    /// (receiver, package hash): delivered, then dropped at the end of its pass (whole or some
+    /// parts) on things outside the receiver's node closure, needed by nothing held there
+    /// (`Engine::settle_needs`), with which of those things something needed then
+    /// (`Peer::needed`): offered again only once that moved, as a real node fetches only what
+    /// its sync set carries. Without it every pass delivered other accounts' roots again, to
+    /// drop them again at its end.
+    dropped: HashMap<(usize, u64), BTreeSet<Tid>>,
+    /// Per receiver: the packages delivered (not as duplicates) since its last pass end.
+    in_pass: HashMap<usize, Vec<(u64, CommitId, Vec<Tid>)>>,
 }
 
-type Hashed = Arc<Vec<(Package, u64)>>;
+/// A package as sent: with a hash of it and the things its commit is on.
+type Sent = (Package, u64, Vec<Tid>);
+
+/// A sender's packages (`Sent`).
+type Hashed = Arc<Vec<Sent>>;
 
 impl LocalPeer {
     /// `n` fresh nodes, each its own account, seeds derived from `seed`, all at wall time `t`,
@@ -626,10 +658,7 @@ impl LocalPeer {
         self.know_all()?;
         self.sync_changed(from, to)?;
         // the pass ended: what it brought that `to` needs nothing of goes
-        match self.peers.get_mut(to) {
-            Some(p) => p.engine.settle_needs(),
-            None => Ok(()),
-        }
+        self.pass_end(to)
     }
 
     /// `packages`, hashed, kept while `from`'s engine stands.
@@ -643,33 +672,91 @@ impl LocalPeer {
             (&pk.id, &pk.bytes, &pk.blobs).hash(&mut h);
             h.finish()
         };
-        let v: Hashed = Arc::new(self.packages(from)?.into_iter().map(|pk| { let n = hash(&pk); (pk, n) }).collect());
+        let pks = self.packages(from)?;
+        let on = |pk: &Package| self.peers.get(from).and_then(|p| p.engine.header(&pk.id)).map(|h| h.aspects.iter().map(|a| a.tid).collect()).unwrap_or_default();
+        let v: Hashed = Arc::new(pks.into_iter().map(|pk| { let n = hash(&pk); let t = on(&pk); (pk, n, t) }).collect());
         self.memo.sent.insert(from, (at, v.clone()));
         Ok(v)
     }
 
-    /// `sync`; whether any delivery was more than a duplicate.
+    /// `sync`; whether any delivery was more than a duplicate. A package `to` dropped at an
+    /// earlier pass end goes only once which of its things `to` needs moved since, checked again
+    /// after the rest (what arrived may need it: a thing whose record awaits its parent's).
     fn sync_changed(&mut self, from: usize, to: usize) -> Result<bool> {
         osis_base::testenv::checkpoint();
         let mut changed = false;
-        for (pk, hash) in self.packages_hashed(from)?.iter() {
-            let key = (to, *hash);
-            let at = self.peers.get(to).map(|p| p.engine.point());
-            if at.is_some() && self.memo.duplicate.get(&key).copied() == at {
-                continue;
-            }
-            // once a no-op duplicate there, never sent again while `to` holds every body of it:
-            // what a sync sends is what the receiver lacks (a body-less part may come back late)
-            if self.memo.duplicate.contains_key(&key) && self.peers.get(to).is_some_and(|p| p.engine.holds_whole(&pk.id)) {
-                continue;
-            }
-            let dup = matches!(self.deliver(to, pk)?, Ingested::Duplicate(_));
-            changed |= !dup;
-            if let Some(after) = self.peers.get(to).map(|p| p.engine.point()).filter(|a| dup && Some(*a) == at) {
-                self.memo.duplicate.insert(key, after);
+        let pks = self.packages_hashed(from)?;
+        let dropped: Vec<&Sent> = pks.iter().filter(|pk| self.memo.dropped.contains_key(&(to, pk.1))).collect();
+        let still = self.still_dropped(to, &dropped)?;
+        let mut held_back = Vec::new();
+        for pk in pks.iter() {
+            if still.contains(&pk.1) {
+                held_back.push(pk);
+            } else {
+                changed |= self.offer(to, pk)?;
             }
         }
-        Ok(changed)
+        loop {
+            let still = self.still_dropped(to, &held_back)?;
+            let (later, now): (Vec<&Sent>, Vec<&Sent>) = held_back.into_iter().partition(|pk| still.contains(&pk.1));
+            if now.is_empty() {
+                return Ok(changed);
+            }
+            for pk in now {
+                changed |= self.offer(to, pk)?;
+            }
+            held_back = later;
+        }
+    }
+
+    /// The hashes of those of `pks` that `to` dropped at a pass end and whose things it needs as
+    /// it did then.
+    fn still_dropped(&mut self, to: usize, pks: &[&Sent]) -> Result<HashSet<u64>> {
+        let Some(p) = self.peers.get_mut(to) else { return Ok(HashSet::new()) };
+        if pks.is_empty() {
+            return Ok(HashSet::new());
+        }
+        let needed = p.needed(pks.iter().flat_map(|pk| pk.2.iter()))?;
+        let dropped = &self.memo.dropped;
+        Ok(pks.iter().filter(|pk| dropped.get(&(to, pk.1)).is_some_and(|was| pk.2.iter().all(|t| needed.contains(t) == was.contains(t)))).map(|pk| pk.1).collect())
+    }
+
+    /// Delivers `pk` to `to` but where it came back a duplicate that changed nothing at `to` as
+    /// it stands, or `to` holds every body of it after such a duplicate; whether it changed
+    /// anything.
+    fn offer(&mut self, to: usize, (pk, hash, on): &Sent) -> Result<bool> {
+        let key = (to, *hash);
+        let at = self.peers.get(to).map(|p| p.engine.point());
+        if at.is_some() && self.memo.duplicate.get(&key).copied() == at {
+            return Ok(false);
+        }
+        // once a no-op duplicate there, never sent again while `to` holds every body of it:
+        // what a sync sends is what the receiver lacks (a body-less part may come back late)
+        if self.memo.duplicate.contains_key(&key) && self.peers.get(to).is_some_and(|p| p.engine.holds_whole(&pk.id)) {
+            return Ok(false);
+        }
+        let dup = matches!(self.deliver(to, pk)?, Ingested::Duplicate(_));
+        if let Some(after) = self.peers.get(to).map(|p| p.engine.point()).filter(|a| dup && Some(*a) == at) {
+            self.memo.duplicate.insert(key, after);
+        }
+        if !dup {
+            self.memo.dropped.remove(&key);
+            self.memo.in_pass.entry(to).or_default().push((*hash, pk.id, on.clone()));
+        }
+        Ok(!dup)
+    }
+
+    /// Peer `to`'s pass ended (`Engine::settle_needs`): what it delivered that `to` dropped, on
+    /// things outside its node closure, is noted (`SyncMemo::dropped`).
+    fn pass_end(&mut self, to: usize) -> Result<()> {
+        let Some(p) = self.peers.get_mut(to) else { return Ok(()) };
+        p.engine.settle_needs()?;
+        let gone: Vec<(u64, Vec<Tid>)> = self.memo.in_pass.remove(&to).unwrap_or_default().into_iter().filter(|(_, id, on)| !p.engine.core.ix.pending.contains_key(id) && !p.engine.holds_whole(id) && !on.iter().any(|t| p.engine.closure_holds(t))).map(|(h, _, on)| (h, on)).collect();
+        let needed = p.needed(gone.iter().flat_map(|(_, on)| on.iter()))?;
+        for (hash, on) in gone {
+            self.memo.dropped.insert((to, hash), on.into_iter().filter(|t| needed.contains(t)).collect());
+        }
+        Ok(())
     }
 
     /// Every peer keeps every other's account (`know_all`), then syncs every ordered pair until a
@@ -698,8 +785,8 @@ impl LocalPeer {
     /// Every peer's passes ended (`Engine::settle_needs`): what they brought that nothing held
     /// needs goes.
     pub fn settle_needs(&mut self) -> Result<()> {
-        for p in &mut self.peers {
-            p.engine.settle_needs()?;
+        for i in 0..self.peers.len() {
+            self.pass_end(i)?;
         }
         Ok(())
     }

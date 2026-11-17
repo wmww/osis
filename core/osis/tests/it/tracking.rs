@@ -28,11 +28,16 @@ fn pumped(seed: u64) -> Osis {
 
 /// A plain thing in the account root's sync unit: many of them add no sync IDs.
 fn thing(db: &Osis) -> Tid {
+    things(db, 1)[0]
+}
+
+/// `n` plain things (`thing`), made in one commit.
+fn things(db: &Osis, n: usize) -> Vec<Tid> {
     let mut w = db.write();
-    let t = w.create_held_with_admin(db.account_root()).unwrap();
+    let ts = (0..n).map(|_| w.create_held_with_admin(db.account_root()).unwrap()).collect();
     w.commit().unwrap();
     db.settle();
-    t
+    ts
 }
 
 fn tracked(db: &Osis) -> (ReadSet, Arc<AtomicUsize>, osis::ReadOnly) {
@@ -66,8 +71,7 @@ fn dispatch_counts_matched_listeners_at_n_and_10n() {
         let t = thing(&db);
         set(&db, t, "t:a.0", 0);
         let mut subs = Vec::new();
-        for i in 0..others {
-            let o = thing(&db);
+        for (i, o) in things(&db, others).into_iter().enumerate() {
             match i % 4 {
                 0 => subs.push(db.at(o, untyped("t:a.0")).on_change(|_, _| {}).unwrap()),
                 1 => subs.push(db.on_thing_change(o, |_, _| {}).unwrap()),

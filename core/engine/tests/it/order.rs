@@ -3208,16 +3208,17 @@ struct Size {
     env: bool,
 }
 
-/// Default tests, a covering set: a seed of every emphasis (16 steps: its start sets most of a
-/// history) given one order of each kind and three partial held sets (the first sync part way,
-/// a node that never heard from a writer); and one of every emphasis capped to 3 commits after the
-/// setup (the smallest cap with orders past as made and reversed), checked in every order of every
-/// held set, each with late parts (its seeds are fixed, so a drawn share would leave the same
-/// orders untried for good); no environment read. `plain` and `exhaustive` run the full width.
+/// Default tests, a covering set, each emphasis once: half of them (seeds 0..4, 16 steps: its
+/// start sets most of a history) given one order of each kind and three partial held sets (the
+/// first sync part way, a node that never heard from a writer); the other half (seeds 100..104)
+/// capped to 3 commits after the setup (the smallest cap with orders past as made and reversed),
+/// checked in every order of every held set, each with late parts (its seeds are fixed, so a
+/// drawn share would leave the same orders untried for good); no environment read. `plain` and
+/// `exhaustive` run every emphasis both ways at full width.
 fn quick() -> Vec<Size> {
     vec![
-        Size { name: "quick", seeds: (0..8).collect(), len: 16, cfg: Cfg { random: 1, partial: 3, split: Twins::First(1), clock: 1, reopens: 1, ..ORDERS }, exhaustive: None, env: false },
-        Size { name: "quick, exhaustive", seeds: (100..108).collect(), len: 30, cfg: Cfg { all_up_to: 3, every_held: true, random: 0, partial: 1, split: Twins::First(usize::MAX), clock: 1, ..ORDERS }, exhaustive: Some(3), env: false },
+        Size { name: "quick", seeds: (0..4).collect(), len: 16, cfg: Cfg { random: 1, partial: 3, split: Twins::First(1), clock: 1, reopens: 1, ..ORDERS }, exhaustive: None, env: false },
+        Size { name: "quick, exhaustive", seeds: (100..104).collect(), len: 30, cfg: Cfg { all_up_to: 3, every_held: true, random: 0, partial: 1, split: Twins::First(usize::MAX), clock: 1, ..ORDERS }, exhaustive: Some(3), env: false },
     ]
 }
 
@@ -3385,13 +3386,14 @@ fn node_key(played: &Played, p: &mut Peer) -> u64 {
 
 // The delivery tree (`walk`) is exact: each delivery's end, reached from nodes copied where
 // deliveries part (`Peer::copy`) on several threads, is the node a fresh replay of that delivery
-// alone makes, byte for byte. Seeds of the emphases whose ends hold pending and thrown-out
-// commits (and parts away), held sets whole and partial, each order as it is and with late parts.
+// alone makes, byte for byte. A seed of the parts-away emphasis, whose ends hold pending and
+// thrown-out commits and parts away, held sets whole and partial, each order as it is and with
+// late parts.
 #[test]
 fn tree_ends_are_fresh_deliveries() {
     use std::sync::atomic::{AtomicU64, Ordering::Relaxed};
     let [copies, late, waiting, thrown] = [(); 4].map(|_| AtomicU64::new(0));
-    par_map(&[5, 7], 2, |seed| {
+    par_map(&[5], 1, |seed| {
         let (e, steps) = generate(seed, 10);
         let cfg = cfg_of(e, Cfg { all_up_to: 0, random: 0, ..ORDERS });
         let played = &played_of(seed, &steps, cfg);

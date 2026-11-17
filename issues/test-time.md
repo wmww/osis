@@ -3,7 +3,13 @@
 > Priority: normal
 > Tags: tests, performance, sync, engine
 
-The reference graph rebuild (issues/reference-graph.md) replaces the sync differential and sim set and requires fewer and faster default tests than its baseline (5b4faadfa: 3,493 default tests, 7,030 G instructions, 2,372 CPU-s; `~/osis-refgraph-baseline/pertest`). Measure again after it before acting on the figures below, which predate it.
+The reference graph rebuild (issues/reference-graph.md) requires fewer and faster default tests than its baseline (5b4faadfa: 3,493 default tests, 7,030 G instructions, 2,372 CPU-s; `~/osis-refgraph-baseline/pertest`). Now 3,060 tests, about 6,980 G, 2,100 CPU-s (notes/test-harnesses.md, Default-test cost): under it by under 1% of instructions, so each new default test needs a cut beside it. The figures below predate the rebuild where they name the old differential.
+
+## Where it goes now (pertest, per test process)
+- Engine `it` 2,010 G: `order::held_set_decides` 261 G (its default covering set: each emphasis once), `tree_ends_are_fresh_deliveries` 36, `judgment_vectors` 61, the paged write tests 38-44 each (a restart per step, each an engine drop's index check over a 20,000-char history). Order tests grew 3-5x since the baseline (`reopens_alike` about 40% of a small one: a reload after every ingest).
+- osis-sync `it` 1,810 G: the differential 161 G (6 seeds), the sims 32-68 G each, the forensic purge test 118 G (an attack per device is most of it), `deletes` tests 30-40 G each, nearly all their shared 4-node world (`world_of`'s `introduce`: 12 redeems over real sync, about 25 G), built per process.
+- Engine lib 1,710 G: rotation tests 2-4 G each, mostly their cached `synced`/`granted` fixtures; custody 73 G, `rotation_holds` 61 G (its coverage floor needs 8 seeds).
+- The engine drop's index check (`Engine::check_index`, issues/index-check-rebuild-cost.md): about 12% of the engine tests.
 
 ## Budget
 - Gate: 5 minutes wall but its lock wait (notes/time-limits.md, Limits, `gate`), about 4000 CPU-s on ostrich at its usual 85%; each stage's limit is its share (the hold 105 u: 241 s, 3795 CPU-s). Measured: the whole gate about 15 min (8000 CPU-s), the hold 11 min, every stage about 2x its share, builds after a rebase 7x. Other agents' unlocked builds take 25-35% of the box during the hold and count against its wall.

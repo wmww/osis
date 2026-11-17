@@ -577,17 +577,25 @@ pub struct CommitSecrets<'c> {
     /// Delete keys published in `keys.0` of delete bases whose secret of that role is not held
     /// ([`published_keys`]).
     pub published: &'c BTreeMap<(Tid, Role), VerifyingKey>,
+    /// The delete keys found for things outside the commit, by the thing and role: the things a
+    /// commit writes mostly share a delete base, and the node's state does not move while one
+    /// commit's framings are made.
+    pub keys: &'c KeyCache,
 }
 
-/// The delete base of `tid` ([`Core::delete_base`]); a thing `created` in this commit is plain,
-/// so it uses that of the next actor up its record chain.
-fn base_of(core: &Core, created: &crate::engine::write::Creates, tid: &Tid) -> Option<DeleteBase> {
+/// [`CommitSecrets::keys`].
+pub(crate) type KeyCache = std::cell::RefCell<BTreeMap<(Tid, Role), Option<VerifyingKey>>>;
+
+/// Where the delete base of `tid` is found ([`Core::delete_base`]): a thing `created` in this
+/// commit is plain, so it uses that of the next actor up its record chain, a key actor created
+/// here (`Ok`) or the first thing outside the commit (`Err`).
+fn base_of(created: &crate::engine::write::Creates, tid: &Tid) -> Option<std::result::Result<DeleteBase, Tid>> {
     match osis_base::record_chain(*tid, |t| created.get(t).map(CreationRecord::record_link)).end() {
         ChainStep::Key(k) => match created.get(&k)? {
-            CreationRecord::KeyActor { public_key, .. } => VerifyingKey::from_slice(public_key).ok().map(DeleteBase::KeyActor),
+            CreationRecord::KeyActor { public_key, .. } => VerifyingKey::from_slice(public_key).ok().map(|k| Ok(DeleteBase::KeyActor(k))),
             _ => None,
         },
-        ChainStep::Unknown(t) => core.delete_base(&t),
+        ChainStep::Unknown(t) => Some(Err(t)),
         ChainStep::Up { .. } | ChainStep::TooDeep => None,
     }
 }
@@ -596,14 +604,19 @@ fn base_of(core: &Core, created: &crate::engine::write::Creates, tid: &Tid) -> O
 /// bases of `tids` whose secret of that role this node does not hold: a writer that is no admin
 /// lists the admin one.
 pub(crate) fn published_keys(tx: &mut crate::engine::Tx<'_>, created: &crate::engine::write::Creates, tids: impl IntoIterator<Item = Tid>) -> Result<BTreeMap<(Tid, Role), VerifyingKey>> {
+    // the roles of a delete base whose secret this node does not hold
+    let unheld = |base: Option<DeleteBase>| -> Vec<(Tid, Role)> {
+        let Some(DeleteBase::Actor(b, e)) = base else { return Vec::new() };
+        [Role::Admin, Role::Write].into_iter().filter(|r| e.as_ref().is_none_or(|e| e.role(*r).newest_held().is_none())).map(|r| (b, r)).collect()
+    };
     let mut need = std::collections::BTreeSet::new();
+    // each thing outside the commit found once: the things a commit writes mostly share one base
+    let mut outside: BTreeMap<Tid, Vec<(Tid, Role)>> = BTreeMap::new();
     for t in tids {
-        for r in [Role::Admin, Role::Write] {
-            if let Some(DeleteBase::Actor(b, e)) = base_of(tx.core, created, &t)
-                && e.is_none_or(|e| e.role(r).newest_held().is_none())
-            {
-                need.insert((b, r));
-            }
+        match base_of(created, &t) {
+            Some(Ok(b)) => need.extend(unheld(Some(b))),
+            Some(Err(up)) => need.extend(outside.entry(up).or_insert_with(|| unheld(tx.core.delete_base(&up))).iter().copied()),
+            None => {}
         }
     }
     let mut out = BTreeMap::new();
@@ -624,9 +637,9 @@ pub(crate) fn published_keys(tx: &mut crate::engine::Tx<'_>, created: &crate::en
 /// Whether a content write on `tid` can list its admin and write delete keys (`CommitSecrets`,
 /// `published` from `published_keys`): what every write on it needs, whatever its retention, so a
 /// write and [`usable_role`] agree.
-pub(crate) fn holds_listed_keys(core: &Core, created: &crate::engine::write::Creates, published: &BTreeMap<(Tid, Role), VerifyingKey>, tid: &Tid) -> bool {
+pub(crate) fn holds_listed_keys(core: &Core, created: &crate::engine::write::Creates, published: &BTreeMap<(Tid, Role), VerifyingKey>, keys: &KeyCache, tid: &Tid) -> bool {
     // a node that joined no account writes only its own card, as itself
-    let s = CommitSecrets { core, actor: core.me().unwrap_or(core.id.tid()), created, published };
+    let s = CommitSecrets { core, actor: core.me().unwrap_or(core.id.tid()), created, published, keys };
     osis_commit::Secrets::admin_key(&s, tid).is_some() && osis_commit::Secrets::write_key(&s, tid).is_some()
 }
 
@@ -635,7 +648,7 @@ pub(crate) fn holds_listed_keys(core: &Core, created: &crate::engine::write::Cre
 pub(crate) fn holds_delete_keys_in(tx: &mut crate::engine::Tx<'_>, t: &Tid) -> Result<bool> {
     let created = Default::default();
     let published = published_keys(tx, &created, [*t])?;
-    Ok(holds_listed_keys(tx.core, &created, &published, t))
+    Ok(holds_listed_keys(tx.core, &created, &published, &KeyCache::default(), t))
 }
 
 /// Whether this node waits for a `retention^.0` setting on `t` while it holds none valid: a held
@@ -716,9 +729,13 @@ impl CommitSecrets<'_> {
     /// The delete key of role `r` of `tid`'s delete base: a key actor's signing key, else from
     /// the newest held secret of the role, else the published one.
     fn key(&self, tid: &Tid, r: Role) -> Option<VerifyingKey> {
-        match base_of(self.core, self.created, tid)? {
+        let of = |base: DeleteBase| match base {
             DeleteBase::KeyActor(k) => Some(k),
             DeleteBase::Actor(b, e) => e.and_then(|e| newest_delete_key(&e, r)).or_else(|| self.published.get(&(b, r)).copied()),
+        };
+        match base_of(self.created, tid)? {
+            Ok(base) => of(base),
+            Err(t) => *self.keys.borrow_mut().entry((t, r)).or_insert_with(|| self.core.delete_base(&t).and_then(of)),
         }
     }
 }

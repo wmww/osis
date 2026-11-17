@@ -99,7 +99,8 @@ impl Engine {
             let mut b = CommitBuilder::new(Kind::ContentSnapshot, ts, me, actor, Form::Commit);
             b.aspects = writes;
             b.ephemeral = Some(EphClass::Relay);
-            let secrets = CommitSecrets { core: tx.core, actor, created: &creates, published: &published };
+            let keys = crate::engine::secrets::KeyCache::default();
+            let secrets = CommitSecrets { core: tx.core, actor, created: &creates, published: &published, keys: &keys };
             let account = tx.core.account_signing(&me)?;
             b.account = account.as_ref().map(|(epoch, k)| osis_commit::AccountSigner { epoch: *epoch, inner: k.inner.clone(), node: tx.core.id.tid(), node_key: tx.core.id.keys().signing.clone(), more: Vec::new() });
             let signing = account.as_ref().map_or(&tx.core.id.keys().signing, |(_, k)| &k.signing);

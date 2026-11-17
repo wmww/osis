@@ -515,14 +515,15 @@ pub(crate) fn settle(core: &Core, memory: bool, kind: Kind, ts: Ts, tid: &Tid, a
 /// Blob framing of one aspect's delta in a commit of `plan` with retention `retention`
 /// (spec/crypto.md §7): its thing's dedup secret, the commit's expiry, the delete keys the
 /// retention calls for, of the class of `memory` (a memory commit's blobs are held in memory,
-/// spec/wire.md §5). `published`: [`super::secrets::published_keys`] of the commit's things.
-pub(crate) fn framing_for(core: &Core, memory: bool, plan: &CommitPlan, published: &BTreeMap<(Tid, osis_base::Role), osis_crypto::VerifyingKey>, tid: &Tid, retention: &Retention) -> Result<Framing> {
+/// spec/wire.md §5). `published`: [`super::secrets::published_keys`] of the commit's things;
+/// `keys`: the commit's [`super::secrets::KeyCache`].
+pub(crate) fn framing_for(core: &Core, memory: bool, plan: &CommitPlan, published: &BTreeMap<(Tid, osis_base::Role), osis_crypto::VerifyingKey>, keys: &super::secrets::KeyCache, tid: &Tid, retention: &Retention) -> Result<Framing> {
     // a role is of use once its delete keys are here (spec/crypto.md §7): until then this node
     // writes nothing on the thing, whatever the delta's retention (`secrets::usable_role`)
-    if !super::secrets::holds_listed_keys(core, &plan.creates, published, tid) {
+    if !super::secrets::holds_listed_keys(core, &plan.creates, published, keys, tid) {
         return Err(Error::Permission { tid: *tid });
     }
-    let secrets = CommitSecrets { core, actor: plan.actor, created: &plan.creates, published };
+    let secrets = CommitSecrets { core, actor: plan.actor, created: &plan.creates, published, keys };
     let keys = osis_commit::delete_keys(&secrets, tid, retention)?;
     let dedup = osis_commit::Secrets::dedup(&secrets, tid).ok_or(Error::UnknownThing(*tid))?;
     let class = if memory { osis_blob::Class::Ephemeral } else { osis_blob::Class::Durable };
@@ -645,6 +646,7 @@ pub(crate) fn build_and_apply(tx: &mut Tx<'_>, plan: CommitPlan, deltas: Vec<Res
 fn build(tx: &mut Tx<'_>, plan: CommitPlan, deltas: Vec<Resolved>) -> Result<osis_commit::Built> {
     let node = plan.signer;
     let published = super::secrets::published_keys(tx, &plan.creates, deltas.iter().map(|d| d.tid))?;
+    let keys = super::secrets::KeyCache::default();
     let mut writes = Vec::with_capacity(deltas.len());
     for d in deltas {
         let (retention, expires) = settle(tx.core, tx.txn.is_memory(), plan.kind, plan.ts, &d.tid, &d.ak, d.schema.as_deref(), d.replaces.is_some(), d.retention, d.expires)?;
@@ -652,7 +654,7 @@ fn build(tx: &mut Tx<'_>, plan: CommitPlan, deltas: Vec<Resolved>) -> Result<osi
         if expires != plan.expires && !plan.restores {
             return Err(Error::Misuse("a commit's deltas share one expiry"));
         }
-        let framing = framing_for(tx.core, tx.txn.is_memory(), &plan, &published, &d.tid, &retention)?;
+        let framing = framing_for(tx.core, tx.txn.is_memory(), &plan, &published, &keys, &d.tid, &retention)?;
         let cx = writer_ctx(plan.form, plan.kind, plan.ts, node, d.lo, d.hi);
         let mut blobs = TxBlobs::new(&mut tx.blobs, tx.txn.is_memory());
         let mut nonce = [0u8; osis_crdt::NONCE_LEN];
@@ -704,7 +706,7 @@ fn build(tx: &mut Tx<'_>, plan: CommitPlan, deltas: Vec<Resolved>) -> Result<osi
     b.account = account.as_ref().map(|(epoch, k)| osis_commit::AccountSigner { epoch: *epoch, inner: k.inner.clone(), node: tx.core.id.tid(), node_key: tx.core.id.keys().signing.clone(), more });
     let built = {
         let core: &Core = tx.core;
-        let secrets = CommitSecrets { core, actor: plan.actor, created: &plan.creates, published: &published };
+        let secrets = CommitSecrets { core, actor: plan.actor, created: &plan.creates, published: &published, keys: &keys };
         let mut seed = [0u8; 32];
         tx.rng.fill_bytes(&mut seed);
         let mut list_rng = osis_crypto::SeededRng::from_seed(seed);
@@ -994,6 +996,7 @@ fn commit_or_build(tx: &mut Tx<'_>, mut m: Mutation) -> Result<Option<(CommitId,
     let mut next_ctr = 1u64;
     let mut deltas: Vec<Resolved> = Vec::new();
     let published = super::secrets::published_keys(tx, &plan.creates, aspects.iter().map(|k| k.0.0))?;
+    let keys = super::secrets::KeyCache::default();
     for ((tid, ak), mut am) in aspects {
         // a `retention^.0` delta is read alone: it writes the whole value
         if ak.as_str() == osis_commit::retention::RETENTION && !tx.core.skip_writer_rules {
@@ -1018,7 +1021,7 @@ fn commit_or_build(tx: &mut Tx<'_>, mut m: Mutation) -> Result<Option<(CommitId,
         }
         let retention = am.retention.unwrap_or_default();
         let framing = match kind {
-            Kind::Content => Some(framing_for(tx.core, memory, &plan, &published, &tid, &retention)?),
+            Kind::Content => Some(framing_for(tx.core, memory, &plan, &published, &keys, &tid, &retention)?),
             _ => None,
         };
         // what the ops address (map keys, fields, set values: a large one by its link, as the

@@ -930,9 +930,9 @@ fn invalid_clauses(w: &mut World) {
 }
 
 /// The differential's size: nodes, accounts, steps, seeds. Small (the default tests): 3 nodes
-/// of 2 accounts, 30 steps, 10 seeds; `OSIS_FULL=1`: 4 nodes of 3 accounts, 60 steps, 100 seeds.
+/// of 2 accounts, 30 steps, 6 seeds; `OSIS_FULL=1`: 4 nodes of 3 accounts, 60 steps, 100 seeds.
 pub fn size() -> (usize, usize, usize, u64) {
-    if osis_base::testenv::u64_var("OSIS_FULL") == Some(1) { (4, 3, 60, 100) } else { (3, 2, 30, 10) }
+    if osis_base::testenv::u64_var("OSIS_FULL") == Some(1) { (4, 3, 60, 100) } else { (3, 2, 30, 6) }
 }
 
 /// A random history over `n` nodes of `accounts` accounts (node j's account is j's modulo

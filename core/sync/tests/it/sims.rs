@@ -1,6 +1,6 @@
 //! The simulation set (notes/refgraph-tests.md, Differential and sim set): short scripted
-//! scenarios with fault schedules over three nodes of three accounts, each over 4 seeds at small
-//! size, 40 under `OSIS_FULL=1` (the seed draws the world's IDs, keys and the network's faults),
+//! scenarios with fault schedules over three nodes of three accounts, each over a seed per
+//! variant it draws by seed at small size (at least an even and an odd one), 40 under `OSIS_FULL=1` (the seed draws the world's IDs, keys and the network's faults),
 //! checked at quiet by the differential's oracle (`history::check`: every node holds its node
 //! closure) plus the scenario's stated outcome.
 //!
@@ -13,8 +13,9 @@ use crate::harness::lies::Lie;
 use crate::harness::{DiskFault, Loss, Step, World, play};
 use osis_base::testenv::Seeds;
 
-fn seeds() -> Seeds {
-    let n = if osis_base::testenv::u64_var("OSIS_FULL") == Some(1) { 40 } else { 4 };
+/// Seeds `0..variants` at small size (`variants`: the scenario's choices by seed, at least 2).
+fn seeds(variants: u64) -> Seeds {
+    let n = if osis_base::testenv::u64_var("OSIS_FULL") == Some(1) { 40 } else { variants.max(2) };
     Seeds::from_env("OSIS_SYNC_SEED", "OSIS_SYNC_SEEDS", 0..n)
 }
 
@@ -33,10 +34,10 @@ fn end() -> Vec<Step> {
     vec![Lossy(Loss::NONE), Truth(0), Truth(1), Truth(2), Heal, PowerOn(0), PowerOn(1), PowerOn(2), Run]
 }
 
-/// Plays `start`, `body(seed)`, `end` on a fresh world of three nodes per seed, then the oracle
-/// and `outcome`.
-fn sim(name: &str, body: impl Fn(u64) -> Vec<Step> + Sync, outcome: impl Fn(&mut World) + Sync) {
-    seeds().run(name, |s| format!("OSIS_SYNC_SEED={s} OSIS_SYNC_SEEDS=1"), |seed| {
+/// Plays `start`, `body(seed)`, `end` on a fresh world of three nodes per seed (`seeds(variants)`),
+/// then the oracle and `outcome`.
+fn sim(name: &str, variants: u64, body: impl Fn(u64) -> Vec<Step> + Sync, outcome: impl Fn(&mut World) + Sync) {
+    seeds(variants).run(name, |s| format!("OSIS_SYNC_SEED={s} OSIS_SYNC_SEEDS=1"), |seed| {
         let steps: Vec<Step> = start().into_iter().chain(body(seed)).chain(end()).collect();
         let mut w = world(seed, 3);
         w.cap = crate::harness::STORM_CAP;
@@ -52,7 +53,7 @@ fn sim(name: &str, body: impl Fn(u64) -> Vec<Step> + Sync, outcome: impl Fn(&mut
 // keeping the thing unread by its sync-only ticket alone.
 #[test]
 fn a_reader_through_a_node_keeping_it_unread() {
-    seeds().run("a_reader_through_a_node_keeping_it_unread", |s| format!("OSIS_SYNC_SEED={s} OSIS_SYNC_SEEDS=1"), |seed| {
+    seeds(2).run("a_reader_through_a_node_keeping_it_unread", |s| format!("OSIS_SYNC_SEED={s} OSIS_SYNC_SEEDS=1"), |seed| {
         let steps: Vec<Step> = [start(), vec![PowerOff(1)], writes(2), vec![PowerOff(0), PowerOn(1), Run]].concat();
         let mut w = world(seed, 3);
         w.cap = crate::harness::STORM_CAP;
@@ -70,6 +71,7 @@ fn a_reader_through_a_node_keeping_it_unread() {
 fn crashes_and_restarts_in_place() {
     sim(
         "crashes_and_restarts_in_place",
+        2,
         |seed| [vec![Disk(1, seed % 7, DiskFault::Crash), Disk(2, seed % 5, DiskFault::Crash)], writes(2), vec![New(0), Disk(0, seed % 3, DiskFault::Crash), Give(0, 1, crate::harness::history::Holder::Node(1), Gives::Reads), PowerOff(1), Run, PowerOn(1), Strong(1, None, 1)], writes(2)].concat(),
         |w| assert!(w.crashes > 0),
     );
@@ -83,6 +85,7 @@ fn crashes_and_restarts_in_place() {
 fn lost_and_repeated_messages() {
     sim(
         "lost_and_repeated_messages",
+        2,
         |seed| {
             let hold: Vec<Step> = if seed % 2 == 1 { vec![Lies(2, Lie::Hold)] } else { Vec::new() };
             [hold, vec![Lossy(Loss { drop: 100, dup: 100, delay: 300, delay_ms: 5_000 })], writes(4)].concat()
@@ -100,6 +103,7 @@ fn lost_and_repeated_messages() {
 fn a_peer_refusing_role_entries() {
     sim(
         "a_peer_refusing_role_entries",
+        4,
         |seed| {
             let lie = [Lie::RefuseRoles, Lie::Full, Lie::Forget, Lie::Withhold][(seed % 4) as usize];
             [vec![Lies(2, lie)], writes(2), vec![Remove(0, 0, 1), Rotate(0, 0), Run, Grant(0, 0, 1, Gives::Writes)], writes(2)].concat()
@@ -114,6 +118,7 @@ fn a_peer_refusing_role_entries() {
 fn store_failures() {
     sim(
         "store_failures",
+        3,
         |seed| {
             let skew = [0i64, 600_000, -600_000][(seed % 3) as usize];
             [vec![Skew(1, skew), Disk(1, seed % 6, DiskFault::Fail), Disk(2, seed % 4, DiskFault::Unsynced)], writes(4), vec![PowerOff(2), PowerOn(2)], writes(2)].concat()

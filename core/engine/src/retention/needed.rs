@@ -269,7 +269,7 @@ pub(crate) fn search(tx: &mut Tx<'_>, t: &Tid, reached: &mut Reached) -> Result<
 
 /// Whether something rooted needs `t` (`search`); when not, `reached` holds `t` and every
 /// thing needing it, none rooted.
-fn needed(tx: &mut Tx<'_>, t: &Tid, reached: &mut Reached) -> Result<bool> {
+pub(crate) fn needed(tx: &mut Tx<'_>, t: &Tid, reached: &mut Reached) -> Result<bool> {
     Ok(search(tx, t, reached)?.is_some())
 }
 
