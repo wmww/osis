@@ -7,7 +7,7 @@ Spec: spec/sync-set.md, spec/sync-inbox.md §5 (tickets). Model: notes/closure-m
 
 ## Roots
 - The node root is made at the node's first start (`Engine::make_node_root`, local record `records::NODE_ROOT`), first admin the node; the node writes it and every thing made under it as itself (`Core::nodes_own`: the record chain reaches the node; `made_nodes_own` for things a commit makes): no account holds a role there.
-- The account's creation writes D's strongs to the profile, the inbox and the node thing, and the node root's to D, in its transaction; pairing writes the new node's strong to D (`Engine::paired`).
+- The account's creation writes D's strongs to the profile and the inbox, and the node root's to D, in its transaction; pairing writes the node root's strong to D (`Engine::paired`). No strong reaches a node thing: the walk enters no key actor, and retention keeps every device the account's chain names, a removed one too, as the minter of rotations it follows (`retention::needed`, `AccountView::named_device`).
 - A local commit after which the node root no longer strongly references D, or D the profile or the inbox, is refused however it was written (remove, whole set, removed aspect, undo, purge): `commit_in` compares those strongs in the index before and after (`roots::kept`, `still_kept`), O(1).
 
 ## The structure (`Closure`, an index: journaled, built again by an open)

@@ -1392,11 +1392,11 @@ fn create_account_in(tx: &mut Tx<'_>, record: CreationRecord, d_record: Creation
     // the profile and the inbox have own keys from the account's creation (spec/sync-set.md §1)
     rotation::own_secrets(tx, profile, &mut done)?;
     super::inbox::make_inbox(tx, inbox, &mut done)?;
-    // the account root strongly references the profile, the inbox and this node's node thing,
-    // and the node root the account root (spec/sync-set.md §1)
+    // the account root strongly references the profile and the inbox, and the node root the
+    // account root (spec/sync-set.md §1)
     let mut m = Mutation::new();
     m.sign_as(p);
-    for t in [profile, inbox, me] {
+    for t in [profile, inbox] {
         m.op(d, &ct::HOLDS, PathOp { path: vec![], op: Op::Add(Value::Strong(t)) })?;
     }
     done.add(Engine::commit_tx(tx, m)?);

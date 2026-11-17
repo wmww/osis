@@ -837,9 +837,6 @@ indexes! {
     pub pend_by: JSetMap<Tid, CommitId>,
     /// `pend_by`'s keys per pending commit.
     pub pend_needs: JMap<CommitId, Arc<Vec<Tid>>>,
-    /// Link keys this node keeps reading as, their seed forgotten (`Engine::keep_bearer`,
-    /// spec/permissions.md §7, Bearer use).
-    pub bearers: JSet<Tid>,
     pub void: JSet<CommitId>,
     /// Freed links judged freed, by (blob, thing) (`retention::freed`): what sync deletes.
     pub freed: JMap<(osis_base::BlobId, Tid), Arc<crate::retention::freed::Freed>>,

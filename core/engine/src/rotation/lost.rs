@@ -22,9 +22,6 @@ const TIMED_LOST: &[u8] = b"T/";
 /// its copy hangs on, concatenated, recorded at the drop (durably, spec/permissions.md §3).
 const KEPT_COPY: &[u8] = b"K/";
 
-/// The link keys this node keeps reading as (`Engine::keep_bearer`): `B/` + tid, no value.
-const BEARERS: &[u8] = b"B/";
-
 /// Judges each of `tids` held again (its secrets' stamp moves): what made the node read it may
 /// be gone with nothing else of it moving (the reading-only secrets a commit dropped as bad input
 /// gave, an account it left). The drop follows that value (`Engine::lost_due`).
@@ -36,7 +33,7 @@ pub(crate) fn touch_held(tx: &mut Tx<'_>, tids: impl IntoIterator<Item = Tid>) {
     }
 }
 
-/// Loads the timed-loss records and the bearers.
+/// Loads the timed-loss records.
 pub(crate) fn load_lost(tx: &mut Tx<'_>) -> Result<()> {
     let mut v = Vec::new();
     tx.scan(TIMED_LOST, |k, val| {
@@ -45,8 +42,6 @@ pub(crate) fn load_lost(tx: &mut Tx<'_>) -> Result<()> {
         Ok(())
     })?;
     tx.core.ix.timed_lost.extend(v);
-    let b = tx.scan_keys(BEARERS, "bearer record", Tid::from_bytes)?;
-    tx.core.ix.bearers.extend(b);
     Ok(())
 }
 
@@ -91,11 +86,11 @@ fn holds_at(core: &Core, a: &Tid, min: Role) -> bool {
     crate::sync::tickets::role_on(core, a) >= Some(min)
 }
 
-/// The best role the node, a held key actor or a link key it keeps reading as holds on `a` now
+/// The best role the node or a held key actor holds on `a` now
 /// (any path with key access, `until` honoured: `Core::keyed_role_now`).
 pub(crate) fn role_here(core: &Core, a: &Tid) -> Option<Role> {
     let at = |m: &Tid| core.keyed_role_now(m, a);
-    core.member().into_iter().chain([core.id.tid()]).map(|m| at(&m)).chain(core.key_actors.keys().chain(core.ix.bearers.iter()).map(at)).max().flatten()
+    core.member().into_iter().chain([core.id.tid()]).map(|m| at(&m)).chain(core.key_actors.keys().map(at)).max().flatten()
 }
 
 /// Whether the node (`holds_at`) reads `a` now: read or above.
@@ -459,18 +454,6 @@ fn drop_actors(tx: &mut Tx<'_>, mut lost: Vec<Tid>, dropped: &[Tid], rejudge: bo
     Ok((lost, f))
 }
 
-/// Drops the bearers named on something that no longer hold a role on any of it: the link ended,
-/// what they read went with it, and a new link is a new key (spec/permissions.md §7).
-fn drop_ended_bearers(tx: &mut Tx<'_>) -> Result<()> {
-    let core = &*tx.core;
-    let ended: Vec<Tid> = core.ix.bearers.iter().filter(|l| core.ix.held.named_on(l).next().is_some() && !core.ix.held.named_on(l).any(|t| core.role_now(l, t).is_some())).copied().collect();
-    for l in ended {
-        tx.txn.remove_local(&[BEARERS, l.as_bytes()].concat(), osis_store::Shred::No)?;
-        tx.core.ix.bearers.remove(&l);
-    }
-    Ok(())
-}
-
 /// Which lost actors `Engine::forget_lost` drops.
 #[derive(Clone, Copy, Debug)]
 pub enum LostScope<'a> {
@@ -579,9 +562,6 @@ fn drop_scope(tx: &mut Tx<'_>, scope: LostScope<'_>) -> Result<Dropped> {
         _ => &[],
     };
     let (actors, forgotten) = drop_actors(tx, lost, dropped, rejudge)?;
-    if !actors.is_empty() {
-        drop_ended_bearers(tx)?;
-    }
     prune_timed(tx)?;
     Ok(Dropped { actors, forgotten })
 }
@@ -641,17 +621,6 @@ impl Engine {
             }
             prune_timed(tx)?;
             Ok(out)
-        })
-    }
-
-    /// Keeps reading as link key `l`, whose seed this node forgets (spec/permissions.md §7, Bearer
-    /// use: a contact card): what `l` reads stays held and followed for as long as `l` holds its
-    /// role, and goes with it (`l`'s edge removed: the link ended).
-    pub fn keep_bearer(&mut self, l: &Tid) -> Result<()> {
-        self.run(|tx| {
-            tx.txn.put_local(&[BEARERS, l.as_bytes()].concat(), &[], osis_store::Shred::No)?;
-            tx.core.ix.bearers.insert(*l);
-            crate::flows::retake(tx)
         })
     }
 

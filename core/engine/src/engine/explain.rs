@@ -80,9 +80,6 @@ fn root(core: &Core, x: &Tid, r: &Root) -> String {
         Root::Held => "leaving the node closure, not released yet".into(),
         Root::Copy(a) if a == x => "a retained copy".into(),
         Root::Copy(a) => format!("the retained copy of {}", label(core, a)),
-        Root::Keys(a) if a == x => "a key actor whose keys this node holds".into(),
-        Root::Keys(a) if core.followed_links.get(x).is_some_and(|(_, l)| l == *a) => format!("the K of a followed link, key {}", label(core, a)),
-        Root::Keys(a) => format!("key actor {} whose keys this node holds is named holder on it", label(core, a)),
         Root::SelfRemoval(c) => format!("an own self-removal from it (c:{}) waits to be sealed", short(c)),
     }
 }

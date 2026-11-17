@@ -106,6 +106,6 @@ A map by area; rustdoc has the full list.
 - notes/engine-retention.md: index of the retention notes; bodies, invalid bodies, bodies coming back.
 - notes/engine-suspects.md: suspect flags and their repair.
 - notes/engine-roles.md: role commits in the engine (edge writes, `secrets.0` and `keys.0`, established epochs, writer-side role rules, rotation invariants).
-- notes/engine-lost-access.md: the lost-access trigger, forgetting, kept copies, bearers, self-removal drops.
+- notes/engine-lost-access.md: the lost-access trigger, forgetting, kept copies, self-removal drops.
 - notes/engine-refs.md: the reference index.
 - notes/engine-paged.md: paged state, sequence placement, streamed apply and readers, large values, freed links and repair, costs.

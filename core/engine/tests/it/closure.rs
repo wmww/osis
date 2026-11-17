@@ -950,3 +950,58 @@ fn a_release_keeps_the_leftover_of_a_commit_on_a_thing_still_held_spec_sync_set_
     assert!(!e.closure_holds(&x));
     e.check_index();
 }
+
+// spec/commits.md §5 What a held thing needs (held for itself: a retained copy), spec/sync-set.md
+// §3 Release: a retained copy stays once released. Peer 0 makes X, with Y under it (X's strong to
+// it), and grants peer 1 read on X, which peer 1 holds. Peer 0 removes peer 1 saying retain: peer
+// 1 drops X's secrets and keeps a copy, X leaves its node closure and is released; at the pass's
+// end X and Y still read as they did.
+#[test]
+fn a_retained_copy_stays_once_released_spec_commits_5() {
+    let (mut lp, ps) = people(2);
+    let x = crate::flows::thing_of(&mut lp, 0, ps[0]);
+    let e0 = &mut lp.peers[0].engine;
+    let y = make(e0, x, x);
+    let mut m = Mutation::new();
+    m.set(y, &crate::common::REG, &Value::Str("y".into())).unwrap();
+    e0.commit(m).unwrap();
+    e0.grant(&x, &ps[1], &crate::flows::edge_of(osis_base::Role::Read)).unwrap();
+    crate::flows::spread(&mut lp);
+    let reg = crate::common::ak("t:reg.0");
+    let before = [x, y].map(|t| lp.peers[1].engine.get(&t, &reg).unwrap());
+    assert!(before.iter().all(Option::is_some), "peer 1 reads X and Y");
+    lp.peers[0].engine.demote(&x, &osis_engine::flows::Demotion { holder: ps[1], new: None, retain: Some(true) }).unwrap();
+    crate::flows::spread(&mut lp);
+    let e1 = &mut lp.peers[1].engine;
+    e1.role_duties().unwrap();
+    assert_eq!(e1.kept_copies(), vec![x], "a copy of X kept");
+    let left: BTreeSet<Tid> = e1.left_closure().into_keys().collect();
+    assert!(left.contains(&x), "X left the node closure");
+    e1.released(&left).unwrap();
+    e1.settle_needs().unwrap();
+    assert_eq!([x, y].map(|t| e1.get(&t, &reg).unwrap()), before, "the copy reads as it did: {}", e1.why_kept(&y));
+}
+
+// spec/commits.md §5 What a held thing needs (held for itself: under an own self-removal still to
+// be sealed), spec/permissions.md §3 Lost access: a thing released while the node's own leave from
+// it waits to be held elsewhere keeps that leave, so it still reaches the others. Peer 1 reads and
+// holds peer 0's X, leaves it and stops holding it; X is released before the leave is held
+// elsewhere. At the pass's end peer 1 still holds the leave, and peer 0 applies it once it arrives.
+#[test]
+fn a_release_keeps_an_own_leave_still_waiting_spec_commits_5() {
+    let (mut lp, ps) = people(2);
+    let x = crate::flows::thing_of(&mut lp, 0, ps[0]);
+    lp.peers[0].engine.grant(&x, &ps[1], &crate::flows::edge_of(osis_base::Role::Read)).unwrap();
+    crate::flows::spread(&mut lp);
+    let e1 = &mut lp.peers[1].engine;
+    let c = e1.demote(&x, &osis_engine::flows::Demotion { holder: ps[1], new: None, retain: None }).unwrap().commits[0];
+    assert!(e1.waiting_removals().contains(&c), "the leave waits");
+    e1.unhold(osis_base::Strong(x)).unwrap();
+    let left: BTreeSet<Tid> = e1.left_closure().into_keys().collect();
+    assert!(left.contains(&x), "X left the node closure");
+    e1.released(&left).unwrap();
+    e1.settle_needs().unwrap();
+    assert!(e1.commit_ids().contains(&c), "the leave stays: {}", e1.why_kept(&x));
+    crate::flows::send(&mut lp, 1, 0, &[c]);
+    assert!(!lp.peers[0].engine.roster(&x).contains_key(&ps[1]), "peer 0 applies the leave");
+}

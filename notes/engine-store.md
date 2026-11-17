@@ -20,7 +20,7 @@ Layouts in `engine/records.rs` (and the module named); all are `*_local` store r
 | `k/`+actor | opened epochs of an actor (`established`, `claims`, `snapshot`; never re-inferred). A plain thing's leftover epochs here are reading-only overlays on its derived ones (`Core::own_epochs`/`epochs`) |
 | `b/`+commit+tid | pending boxes kept sealed by forgetting (`apply/keys.rs` `SEALED`; notes/engine-lost-access.md) |
 | `q/`+aspect | suspect flags: le64 wall ms last raised, then per body its commit, aspect index and `Why` bits (`retention/suspect.rs`) |
-| `T/`, `K/`, `B/` | timed losses, kept copies, bearers (`rotation/lost.rs`) |
+| `T/`, `K/` | timed losses, kept copies (`rotation/lost.rs`) |
 | `d/`+AK | the local schema of each app AK (canonical form) |
 | `u/`+name | API records (profile, contact card, node key, sources) |
 | `sides` | sides taken in admin disputes (`sides.rs`): per (edge write, holder) trusted and chosen flags |

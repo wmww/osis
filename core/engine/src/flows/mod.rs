@@ -365,7 +365,7 @@ pub(crate) fn reopen_dependents(tx: &mut Tx<'_>, learned: Tid) -> Result<()> {
 /// Re-opens the `secrets.0` of every actor whose applied boxes gave secrets `rotation::may_take_role`
 /// kept out (`Waits::untaken`) where the node's roles now give them: a box applied before the
 /// grant that makes it the node's (a rotation by another admin, a re-seal) is taken once the grant
-/// applies. Called wherever roles may have grown (`apply::rejudged`, a bearer kept).
+/// applies. Called wherever roles may have grown (`apply::rejudged`).
 /// Invariant: nothing opens here that `ingest_view` would not take now (each box is judged by
 /// `may_take_role` again as it opens; the list only says which actors to try), and the work is one
 /// `may_take_role` per listed actor and role kept out, never per held actor (`retake: judged`).

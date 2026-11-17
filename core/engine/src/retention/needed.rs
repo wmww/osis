@@ -12,9 +12,11 @@
 //! node fetches again), one in the node closure an edge write on it names holder (not by its
 //! record: the holder's sync ID carries the grant with its chain, spec/sync-judgement.md §2 A
 //! grant naming a holder). A thing is rooted, kept for itself (`Root`): held (in the node closure
-//! or leaving it), a retained copy, by keys held here (a key actor whose keys this node holds,
-//! the K of a link it follows, one such a key actor is named holder on: a link being redeemed, a
-//! bearer), or a thing an own self-removal still waits to seal under. A ticket roots nothing: a strong in the node closure
+//! or leaving it), a retained copy, or a thing an own self-removal still waits to seal under.
+//! Keys held here root nothing: the node itself is needed by its node root (its first admin), and
+//! a link being redeemed keeps its sync ID in the sync set, so what a pass end drops of K comes
+//! again with the next pass, and the join is written once a pass brought what it needs
+//! (`Engine::redeemable`). A ticket roots nothing: a strong in the node closure
 //! with a ticket for its target needs it as any strong does, so what judges the ticket stays
 //! (spec/sync-set.md §2). Nothing is rooted by whose it is: this node's account is needed by its root
 //! (D's record names it), and a thing made under the node or the account goes as any once
@@ -119,12 +121,9 @@ impl Engine {
 pub(crate) enum Root {
     /// In the node closure, or leaving it and not released yet.
     Held,
-    /// A retained copy (`rotation::lost`): of this kept actor, itself or the secret actor it is
+    /// A retained copy (`rotation::lost`) under this kept actor, itself or the secret actor it is
     /// a copy under (`forget::copy_of`).
     Copy(Tid),
-    /// Keys held here: this key actor's (the node, a key actor held, a bearer), itself or one
-    /// named holder on it or the key of a link to it this node follows.
-    Keys(Tid),
     /// An own self-removal from it waits to be sealed under its sync IDs.
     SelfRemoval(osis_base::CommitId),
 }
@@ -155,31 +154,11 @@ pub(crate) fn rooted(core: &Core, t: &Tid) -> Option<Root> {
     if cl.holds(t) || cl.left().contains_key(t) {
         return Some(Root::Held);
     }
-    if core.ix.kept.contains_key(t) {
-        return Some(Root::Copy(*t));
-    }
     if let Some(a) = super::forget::copy_of(core, t) {
         return Some(Root::Copy(a));
     }
-    // a key actor whose keys this node holds, the K of a link it follows (by its link key), or
-    // one such a key actor is named holder on (a link being redeemed, a bearer)
-    if holds_keys(core, t) {
-        return Some(Root::Keys(*t));
-    }
-    if let Some((_, l)) = core.followed_links.get(t) {
-        return Some(Root::Keys(l));
-    }
-    if let Some(h) = core.ix.held.holders_of(t).find(|h| holds_keys(core, h)) {
-        return Some(Root::Keys(*h));
-    }
     // an own self-removal from it waits to be sealed under its sync IDs (`sync::held::wait_if_own`)
     core.ix.held_wait.iter().find(|c| core.ix.commits.get(c).is_some_and(|m| m.view.aspect(t, "roles.0").is_some())).map(|c| Root::SelfRemoval(*c))
-}
-
-/// Whether this node holds key actor `a`'s keys: the node itself, a key actor held for now
-/// (`Core::key_actors`), or a link key it keeps reading as (`Indexes::bearers`).
-fn holds_keys(core: &Core, a: &Tid) -> bool {
-    core.id.tid() == *a || core.key_actors.contains_key(a) || core.ix.bearers.contains(a)
 }
 
 /// The things that need `t` held (the module doc), but `t`, each with why (one thing may come

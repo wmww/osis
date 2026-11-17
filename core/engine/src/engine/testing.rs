@@ -769,7 +769,6 @@ fn tables(ix: &super::Indexes) -> Vec<(&'static str, &dyn Table)> {
         ("addenda_due", &*ix.addenda_due),
         ("rotations_due", &*ix.rotations_due),
         ("resnapshots_owed", &*ix.resnapshots_owed),
-        ("bearers", &*ix.bearers),
         ("freed", &*ix.freed),
         ("kept", &*ix.kept),
         ("timed_lost", &*ix.timed_lost),
