@@ -51,7 +51,7 @@ The only other rule is spec/crdt.md §4.6's writer rule: an undo or undelete cop
 - So every held minting of a thing stands alike (same expiry, same requests): the witness is the lowest commit ID; no copy stands lower than another (sync's `rank` logs the witness or keeps a tie, nothing more).
 Purging or expiring every minting **destroys** the thing.
 - **Who**: any admin at the request, as any purge right (spec/permissions.md §6). Not by standing on the first admin alone: a removed admin could then destroy a thing for everyone.
-- Every node drops the thing whole in the transaction that made its last minting value-less (`retention/destroy.rs`), incremental (a disappearing message is destroyed often); headers stay, as for any purge. Each holder drops what the destruction makes must-not-hold from its own store (spec/sync-judgement.md §2), and a destroyed thing with secrets of its own tells it under its own sync IDs before emptying them (spec/sync-judgement.md §5). No wait before dropping (Tess): a destruction that later falls brings the thing back only where a copy is held.
+- Every node drops the thing's states and content parts in the transaction that made its last minting value-less (`retention/destroy.rs`), incremental (a disappearing message is destroyed often); headers stay, as for any purge. Each holder deletes what the destruction makes must-not-hold, in its own store and at peers keeping S unread (spec/sync-judgement.md §2); the thing's own sync IDs are synced and stopped as any held thing's (spec/sync-judgement.md §5). No wait before dropping (Tess): a destruction that later falls brings the thing back only where a copy is held.
 - **A minting** needs no authority, like its record (spec/permissions.md §1). A purge item on `created.0` reaches every minting whatever its `ts` (`purge::stamped_before`).
 - **Nobody writes a thing after its destruction** (Tess): a part on it stamped after (`wall_ms(ts) >= T`, or after the dropping request) is a part on an unknown thing, `roles.0` and `purge.0` included (`destroy::Destruction`, `thing_wait`; `destroy_thing` drops such parts already held). Honest writers refuse the same (`Core::writable`). So "a later write recreates" holds only for things not destroyed.
 - **Judged by the history before it**: a request's right over a minting is judged without the edge writes on the thing stamped after it (`purge::holds_right`, a walk over `Held::upstream` while one is held and the signers could ever hold the right; a request that destroyed nothing pays it on every role pass). Otherwise the verdict cycles: a later demotion of its author makes the destruction fall where it arrived first and is dropped as written after it where it arrived second. A demotion stamped before still undoes it.
@@ -76,8 +76,6 @@ Purging or expiring every minting **destroys** the thing.
 - Rejected: cutting authority through a destroyed thing at its destruction: the same history must travel for past writes, and everything reached through it would lose its readers and admins at once, against "things it created live on".
 
 **No `delete` call**: undoing a creation reverts its commit (the strong it wrote goes, the creation stays live, a later write recreates). Destruction is `Write::purge` or expiry; a thing no strong reaches is released, not destroyed (spec/sync-set.md §3).
-
-**`retention^.0`** keeps fixed retention: every node must date history by the same settings.
 
 ## 4. Open limits
 - issues/eph-expired-anchors-fill-cap.md: unpruned expired creations stay as anchors for live neighbours.

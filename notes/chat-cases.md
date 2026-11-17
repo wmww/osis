@@ -206,7 +206,8 @@ Cells: `yes`/`no` forced; `opt` app's clean choice; `opt*` a modified client def
 | Is protection per message, at once, rather than after a window? | yes | no! core j |
 | Can a chat have forward secrecy at all? | yes | core m |
 
-## Realms (notes/realms.md: servers, teams and roles are realms; a channel is a chat a realm holds write on)
+## Realms (parked: notes/realms.md, issues/realms-design.md)
+Nothing here is designed: each answer is what today's core would give if servers, teams and roles were realms as notes/realms.md proposes (a channel a chat a realm holds write on).
 
 | case | want | chat |
 |---|---|---|
@@ -237,7 +238,7 @@ Cells: `yes`/`no` forced; `opt` app's clean choice; `opt*` a modified client def
 | Mentions in channels not synced? | yes | core h |
 | Threads without a new chat per thread? | yes | yes⁵³ |
 | A document anyone in the realm can edit, synced to every member? | yes | yes⁵⁴ |
-| Can a member remove another member's document from the realm's auto-synced content? | no | yes⁵⁴! |
+| Can a member remove another member's document from the realm's auto-synced content? | no | opt⁵⁴ |
 | The same chat in two realms? | yes | yes |
 | Move a chat between realms without copying it? | yes | yes |
 | A realm inside a realm, members inherited? | yes | yes |
@@ -266,11 +267,11 @@ Cells: `yes`/`no` forced; `opt` app's clean choice; `opt*` a modified client def
 13. Needs your contact card's keys; the remedy is a new card.
 14. Needs two nodes keeping the chat unread listed, or direct member-to-member contact, for the replacement to be learned.
 20. From held headers: an expired delta carries `expires`, a purged one is named by a purge request; after header forgetting both are residue.
-26. admins may always purge, and `nobody` is bad on a message (spec/commits.md §5): a modified sender's message goes like any.
+26. admins may always purge (spec/commits.md §5 Who and how long): a modified sender's message goes like any.
 27. an edit is a replacement of the message purging its older versions in the same commit.
 28. the header-only blob of a purged permanent delta is kept forever and reaches new devices, with its purge commit (spec/commits.md §5).
 30. nothing is compacted; messages keep at least forever.
-31. `nobody` is bad on content and admins may always purge (spec/commits.md §5): junk is what an admin's purge by author erases.
+31. admins may always purge (spec/commits.md §5 Who and how long): junk is what an admin's purge by author erases.
 33. Segments: the admin creates a new chat, grants everyone plus the newcomer, and the old chat points to it (admin-only); old members' apps stitch the two. No core change; Tess's primary path is core n (notes/chat.md Left out).
 34. The new chat carries no pointer back; a tid is a bare reference and the old chat's sync ID and the peers keeping it live under its own sync ID.
 35. The pointer is a set, so old members stitch every branch; each newcomer sees only its branch; admins merge with a further segment.
@@ -291,6 +292,6 @@ Cells: `yes`/`no` forced; `opt` app's clean choice; `opt*` a modified client def
 51. Grant the private channel only to a role realm. Left: the nodes keeping it unread see its sync ID, a device-removal frontier head names its tid under public sync IDs (frontier-study format), and a purge across children shows their tids.
 52. Entry counts are drowned by certificates (no kind in the log); a latest-time register per child on the parent, written by posters, is the cheap source.
 53. Threads and forum posts are reply chains inside the channel, grouped by the app.
-54. A thing the realm reads (made under it, or granted to it) is in the realm's sync unit while the realm's `holds.0` strongly references it; one with own keys syncs under its own sync ID too. Any member writes the realm, so any member may remove the strong: the thing leaves the realm's sync unit, and goes where nothing else references it (spec/sync-set.md §3).
+54. A thing the realm reads (made under it, or granted to it) is in the realm's sync unit while a strong on the realm references it; one with own keys syncs under its own sync ID too. Whether writers may remove one is the realm schema's choice (Tess): strongs in an admin-only aspect (`^`, spec/data-model.md §2) only admins remove; in `holds.0` any member may, and the thing leaves the realm's sync unit, going where nothing else references it (spec/sync-set.md §3).
 55. Every thing's role history is kept forever and readable by its holders.
 56. Rights: lower the top realm's role on each child, one commit per child; one step only as a client-honored flag.

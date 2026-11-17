@@ -8,7 +8,7 @@ A link is the whole authority to read and to delete its blob: whoever holds the 
 
 ## The link
 - `LINK := [content hash, blob ID, suite || key, salt, [DeleteKey*]]` (spec/data-model.md §5, §6) everywhere a LINK stands: value roots, tree-node children, page links, link pages, header lists, a linked frontier, a `ThingList`.
-- Del is the keys of the blob's one commitment group, by level ascending (empty for a `nobody` delta's blob). It is the writer's claim, never authority: a holder of the blob checks it against the prefix before using it (reuse, deleting by the sync ID's delete key, dropping its copy); a node not holding the blob deletes by level only and the node keeping it unread checks.
+- Del is the keys of the blob's one commitment group, by level ascending. It is the writer's claim, never authority: a holder of the blob checks it against the prefix before using it (reuse, deleting by the sync ID's delete key, dropping its copy); a node not holding the blob deletes by level only and the node keeping it unread checks.
 - Derived, not carried: link blind (`kdf("link blind", blob key)`), thing blind (link blind and the tid of the source being walked). Not carried: expiry and class (a deleter needs neither).
 - The salt is carried so a holder of a tree's interior nodes deletes every leaf without fetching any chunk (deleting a dropped 1 GB value needs its node blobs, about 0.3% of its bytes). Deriving it from the key instead: issues/link-salt-from-key.md.
 - Cost: a link encodes in 125 B with no Del, 233 B with three keys (`cbor::link_len`); a `[Link+]` reaches `PAGE_TARGET` at 280 to 520 links. Link depth: 3 levels (4 with keys), counted by tree-node and value depth limits.
