@@ -128,12 +128,8 @@ fn unindex(tx: &mut Tx<'_>, id: &CommitId, marks: bool) -> Result<()> {
     if void {
         tx.txn.remove_local(&[records::VOID, &id.0[..]].concat(), Shred::No)?;
     }
-    // its retention timers (memory rows: an expiry's per part, no keep bound's)
-    if let Some(t) = m.header.expires {
-        for ai in 0..m.header.aspects.len() {
-            tx.txn.remove_local(&records::timer_key(t, id, ai), Shred::No)?;
-        }
-    }
+    // its retention timers
+    tx.remove_timers_of(id, None)?;
     // its writes off the value-less list: a copy arriving again applies as new (a batched
     // rebuild still to run strips their values first, `apply::run_batched`)
     for (ai, a) in m.header.aspects.iter().enumerate() {

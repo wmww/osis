@@ -1105,9 +1105,9 @@ fn rejudge_once(tx: &mut Tx<'_>, rebuild: bool) -> Result<Vec<(Tid, Ak)>> {
                     super::atomic::rebuild(tx, tid, ak)
                 })?;
             }
-            // a request's right rests on the same timelines (spec/permissions.md §6)
-            let things: BTreeSet<Tid> = things.union(&under).copied().collect();
-            for (tid, ak) in crate::retention::purged_aspects(tx, &things, &whole)? {
+            // a request's right rests on its signers' roles as a write's validity does
+            // (spec/permissions.md §6): the requests among the commits re-judged
+            for (tid, ak) in crate::retention::purged_aspects(tx, &things, authored.iter().chain(&whole))? {
                 crate::retention::rejudge_purges(tx, &tid, &ak, &mut flipped)?;
             }
         }

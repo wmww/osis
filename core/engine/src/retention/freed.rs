@@ -90,11 +90,27 @@ fn key(b: &BlobId, t: &Tid) -> Vec<u8> {
     [records::FREED, &b.0, t.as_bytes()].concat()
 }
 
+/// The `FREED_OF` row of `key(b, t)`.
+fn key_of(b: &BlobId, t: &Tid) -> Vec<u8> {
+    [records::FREED_OF, t.as_bytes(), &b.0].concat()
+}
+
+/// Removes row `(b, t)`, shredded, with its index entries.
+fn remove_row(tx: &mut Tx<'_>, b: &BlobId, t: &Tid) -> Result<()> {
+    tx.txn.remove_local(&key(b, t), Shred::Yes)?;
+    tx.txn.remove_local(&key_of(b, t), Shred::Yes)?;
+    tx.core.ix.freed.remove(&(*b, *t));
+    Ok(())
+}
+
 /// A row a link's blob key may have been committed in (one waiting for a node blob) is
 /// overwritten and removed shredded (spec/commits.md §5: a dropped body's keys go).
 /// A judged row is indexed (`Indexes::freed`): sync deletes it wherever an entry of it is.
 fn put(tx: &mut Tx<'_>, f: &Freed) -> Result<()> {
-    tx.in_class(f.memory, |tx| Ok(tx.txn.put_local(&f.key(), &f.encode(), Shred::Yes)?))?;
+    tx.in_class(f.memory, |tx| {
+        tx.txn.put_local(&f.key(), &f.encode(), Shred::Yes)?;
+        Ok(tx.txn.put_local(&key_of(&f.link.blob, &f.tid), &[], Shred::Yes)?)
+    })?;
     if f.judged {
         tx.core.ix.freed.insert((f.link.blob, f.tid), Arc::new(f.clone()));
     }
@@ -102,9 +118,7 @@ fn put(tx: &mut Tx<'_>, f: &Freed) -> Result<()> {
 }
 
 fn remove(tx: &mut Tx<'_>, f: &Freed) -> Result<()> {
-    tx.txn.remove_local(&f.key(), Shred::Yes)?;
-    tx.core.ix.freed.remove(&(f.link.blob, f.tid));
-    Ok(())
+    remove_row(tx, &f.link.blob, &f.tid)
 }
 
 /// Loads the judged rows into `Indexes::freed` (an open or reload).
@@ -312,15 +326,16 @@ fn judge_blobs(tx: &mut Tx<'_>, blobs: &BTreeSet<BlobId>) -> Result<(Judgment, V
 /// link are this node's to drop. The blobs to release.
 /// `aspects`, `parts`: those forgotten, sources no more though still indexed meanwhile.
 pub(crate) fn lost(tx: &mut Tx<'_>, things: &BTreeSet<Tid>, roots: BTreeMap<Tid, Vec<Link>>, aspects: &BTreeSet<(Tid, Ak)>, parts: &BTreeMap<CommitId, BTreeSet<usize>>) -> Result<BTreeSet<BlobId>> {
-    // rare (a role change): a scan of every row, keeping those of `things` alone
-    tx.remove_scanned(records::FREED, |k| {
-        let mut r = Rd::new(k);
-        let _blob: [u8; 32] = r.arr()?;
-        Ok(things.contains(&r.tid()?))
-    })?;
-    let gone: Vec<(BlobId, Tid)> = tx.core.ix.freed.keys().filter(|(_, t)| things.contains(t)).copied().collect();
-    for k in gone {
-        tx.core.ix.freed.remove(&k);
+    // the rows of `things` alone, found by thing
+    for t in things {
+        let mut blobs = Vec::new();
+        tx.scan(&[records::FREED_OF, t.as_bytes()].concat(), |k, _| {
+            blobs.push(BlobId(Rd::new(k).arr()?));
+            Ok(())
+        })?;
+        for b in blobs {
+            remove_row(tx, &b, t)?;
+        }
     }
     // their waits go too: nothing is fetched for a thing lost
     tx.core.freed_waits.retain(|_, s| {
@@ -414,8 +429,7 @@ impl Engine {
         }
         self.run(|tx| {
             for (t, b) in done {
-                tx.txn.remove_local(&key(b, t), Shred::Yes)?;
-                tx.core.ix.freed.remove(&(*b, *t));
+                remove_row(tx, b, t)?;
             }
             Ok(())
         })

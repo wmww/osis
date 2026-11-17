@@ -171,7 +171,8 @@ pub enum Body {
 }
 
 /// Who may purge a write (spec/commits.md §5): admins always may. `Nobody` is fixed retention's
-/// only (`created.0`, `retention^.0`); content has the other three (Tess's decision 2, notes/engine-retention-history.md).
+/// only (`retention^.0`); every other delta has one of the other three (Tess's decision 2,
+/// notes/engine-retention-history.md).
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum PurgeBy {
     Nobody,
@@ -194,7 +195,7 @@ impl Retention {
     pub const ADMIN: Retention = Retention { by: PurgeBy::Admin };
     /// Role-class: `admin`; the model drops no role body (ROLE_KEEP is compactor policy).
     pub const ROLE: Retention = Retention::ADMIN;
-    /// `created.0` and `retention^.0` (fixed retention): nobody may purge them.
+    /// `retention^.0` (fixed retention): nobody may purge it.
     pub const FIXED: Retention = Retention { by: PurgeBy::Nobody };
     pub fn with_by(self, by: PurgeBy) -> Retention {
         Retention { by }

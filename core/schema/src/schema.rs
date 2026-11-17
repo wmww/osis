@@ -80,10 +80,10 @@ pub struct Retention {
 }
 
 impl Retention {
-    /// Why `self` is not a retention a write of a content aspect may carry (spec/commits.md §5):
-    /// `nobody` is for `created.0` and fixed retention alone.
+    /// Why `self` is not a retention a write of an aspect without fixed retention may carry
+    /// (spec/commits.md §5): `nobody` is fixed retention's alone.
     pub fn refusal(&self) -> Option<&'static str> {
-        (self.by == PurgeBy::Nobody).then_some("purgeable by nobody is for created.0 and fixed retention alone")
+        (self.by == PurgeBy::Nobody).then_some("purgeable by nobody is fixed retention's alone")
     }
 }
 

@@ -54,7 +54,7 @@ fn history_into(h: History) -> Option<osis_schema::History> {
 /// `RetentionSetting`).
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
 pub struct Retention {
-    /// Who may purge it besides admins (`PurgeBy::Nobody` only on a thing's creation record).
+    /// Who may purge it besides admins (never `PurgeBy::Nobody`: that is fixed retention's).
     pub by: PurgeBy,
 }
 

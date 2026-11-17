@@ -127,7 +127,7 @@ Encoding: spec/wire.md §4. Fields:
 Every delta carries **retention** on the wire: who may purge it (its purgeable-by); its commit carries its expiry (§6). What history keeps of a replaced body is its thing's setting (The setting). The writer fills purgeable-by from the schema's default per AK (spec/data-model.md §2), and a commit may set it per aspect; an untyped write (no schema for the AK) defaults to `admin`. Retention is immutable: to change it, purge and write again.
 
 ### Who and how long
-- **Purgeable by**: a set: `admin` (the thing's admins), `author_or_admin` (the delta's author and admins), `writer` (every writer, so both too). Admins may always purge. `nobody` (none) is the fixed retention of `retention^.0` (Fixed retention) and may be given to `created.0` (Destruction); on any other delta it is bad (§2).
+- **Purgeable by**: a set: `admin` (the thing's admins), `author_or_admin` (the delta's author and admins), `writer` (every writer, so both too). Admins may always purge. `nobody` (none) is the fixed retention of `retention^.0` (Fixed retention); on any other delta it is bad (§2).
   - A member of the set may drop the delta's body: by purge request (spec/permissions.md §6) and by deleting its blobs at peers that keep them unread (spec/sync-ids.md §6). Delete keys follow it (spec/crypto.md §7).
   - A **right holder** is a node that holds the right now.
 - **Keep bounds**: a body in history (The setting) has a **keep at least** until it leaves history; a role-class body has a keep at least of `ROLE_KEEP` after replaced (Fixed retention). Purge on replace has no bound: it is a duty to cover (Purge on replace).
@@ -272,7 +272,7 @@ Every delta carries **retention** on the wire: who may purge it (its purgeable-b
 - No schema enters the bounds; a snapshot names the schema of the last applied delta of the aspect in `(ts, ID)` order that names one, else none.
 
 ### Destruction
-- `created.0` has ordinary retention (its schema default is `admin`) and may carry `nobody`; it never leaves history.
+- `created.0` has ordinary retention (its schema default is `admin`); it never leaves history. So an admin's request on `created.0` drops every minting.
 - A record is identity and `created.0` is existence: a thing is known by its creation record, from a `created.0` delta or a record blob (spec/wire.md §3), and parts on it are judged by it; when it is destroyed, authority that passed through it stands as its frozen history says.
 - A **minting** is a `created.0` delta; it needs no authority (spec/permissions.md §1). A node writes to a thing other than a key actor only while it holds a minting of it: one known by a record alone cannot be told from one that was destroyed.
 - A thing whose every held minting is held value-less (expired, or purged by a request holding the right, spec/permissions.md §6) is **destroyed**. A purge item on `created.0` names every minting of its thing, whatever its `ts`: a thing is destroyed or not, so the only such item is the whole aspect (one by commit or by author is bad input, spec/wire.md §4).
@@ -287,7 +287,7 @@ Every delta carries **retention** on the wire: who may purge it (its purgeable-b
 - A destroyed thing reads as absent to every read and write, its held record and request included.
 - Nothing is kept per destroyed thing beyond what the ordinary rules keep. A copy of the creation arriving destroys the thing again.
 - A destruction that falls brings the thing back only where a copy of it is still held or fetchable.
-- Limit: anyone holding a thing's record may mint it again, stamped at any `ts` (an honest writer mints once, in its first commit). A durable minting keeps an expiring thing existing past its expiry or brings it back after it, and one whose retention the destroying request has no right over (`nobody`, another's `author`) keeps it from being destroyed by purge or brings it back. It never destroys a thing whose witness is held (A thing's mintings travel with its record), and travels only while it is the witness. It carries no content: the thing's other parts expire and are purged as before, and what a destruction dropped is back only where a copy is still held; brought back, the thing takes writes as any live thing, by its roster.
+- Limit: anyone holding a thing's record may mint it again, stamped at any `ts` (an honest writer mints once, in its first commit). A durable minting keeps an expiring thing existing past its expiry or brings it back after it, and one whose retention a non-admin's destroying request has no right over (`admin`, another's `author_or_admin`) keeps that request from destroying it or brings it back; none outlasts an admin's. It never destroys a thing whose witness is held (A thing's mintings travel with its record), and travels only while it is the witness. It carries no content: the thing's other parts expire and are purged as before, and what a destruction dropped is back only where a copy is still held; brought back, the thing takes writes as any live thing, by its roster.
 
 ## 6. Expiry
 - `expires: T` (wall ms, `T > wall_ms(ts)`, else invalid), one per commit: every delta of it expires at T. A commit carrying a fixed-retention aspect (§5) carries none. A content compaction snapshot carrying one is an expiring snapshot (spec/crdt.md §8): its copies end at T.

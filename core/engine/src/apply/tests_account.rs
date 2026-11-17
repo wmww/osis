@@ -14,7 +14,7 @@ mod tests {
             self.0.iter().find(|r| r.tid() == *t).map(|r| osis_crypto::dedup_secret(r.nonce()))
         }
         fn admin_key(&self, _: &Tid) -> Option<osis_crypto::VerifyingKey> {
-            None
+            Some(osis_crypto::DeleteSecret::derive(&Secret32::from_bytes([3; 32])).verifying_key())
         }
         fn chain_key(&self) -> Option<osis_crypto::VerifyingKey> {
             None
@@ -39,9 +39,7 @@ mod tests {
             let f = create(&mut w, &view, &rec.to_value()).unwrap();
             let r = w.range();
             let bytes = encode_delta(&Delta { nonce: [7; 16], fragment: f }, &writer_ctx(Form::Commit, Kind::Role, ts, pt, r.lo, r.hi), None).unwrap();
-            let mut aw = AspectWrite::new(rec.tid(), ak.clone(), r.lo, r.hi, bytes);
-            aw.retention = osis_commit::retention::KEPT_RETENTION;
-            cb.aspects.push(aw);
+            cb.aspects.push(AspectWrite::new(rec.tid(), ak.clone(), r.lo, r.hi, bytes));
             w = Writer::new(ts, Source::commit(CommitId([0; 32])), r.hi);
         }
         let node = KeyActorKeys::from_seed(&Secret32::from_bytes([seed ^ 2; 32]));

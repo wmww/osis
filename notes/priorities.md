@@ -16,7 +16,7 @@
 6. **Bounded memory on decode and read.** The rule and its mechanisms are built (notes/decode-bounds.md); left: a read loading an aspect's state whole before its limit refuses it, writers and snapshots holding a large delta whole, and the low-priority tail. Issues: durable-decode-bound, large-value-depth, tree-reach-memory.
 7. **Account signing leftovers.** Listing gaps, the witnesses' cutoff, the open-head limit snapshots stretch. Issues: account-signing, session-sources, account-side-shared.
 8. **Sync leftovers.** Stubs, owed tests, timers. Issues: sync-unbuilt, sync-tests-owed, sync-pending-leftovers, sync-parks-check, sync-models-lag, sync-link-first-contact, dial-candidates, opens-hit-index-cost, clock-reads-unstamped, timed-loss-wait.
-9. **Retention and purge long tail.** Issues: purge-api-gaps, purge-join-reads-requests, seq-retention-dating, forget-whole-scans, destroyed-thing-reminted, destroyed-upstream-cost, waiting-snapshot-carried-bound.
+9. **Retention and purge long tail.** Issues: destroyed-upstream-cost (a cost scaling with every held holder), purge-api-gaps, seq-retention-dating, waiting-snapshot-carried-bound, destroyed-thing-reminted (accepted limit: expiry and non-admin purge).
 10. **Long tail of core bugs and costs.** The remaining `normal`/`low` core issues (grep `> Tags:` for engine, sync, crdt, store, perm, keys); take them when they fit beside other work or block a higher item.
 
 ## Parked on Tess

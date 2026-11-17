@@ -135,7 +135,7 @@ Aspect fields: `tid`; `ak` (text, spec/data-model.md §2, at most `MAX_AK_BYTES`
   - a role compaction snapshot of `roles.0`;
   - a role-class, `addenda.0`, `retention^.0` or `purge.0` aspect whose retention is not its fixed one (spec/commits.md §5);
   - `expires` on a commit with such an aspect;
-  - `nobody` on an aspect other than `created.0` without fixed retention (spec/commits.md §5);
+  - `nobody` on an aspect without fixed retention (spec/commits.md §5);
   - a content compaction snapshot's delta without fixed retention whose `by` is not writer;
   - `expires` or a purge item on a role commit;
   - a purge item naming a role-class aspect;

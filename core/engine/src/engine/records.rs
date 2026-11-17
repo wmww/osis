@@ -32,8 +32,8 @@ pub const LEFTOVER: &[u8] = b"w/";
 /// Purge requests with an item on a whole aspect or an author's deltas on it, which any delta
 /// arriving may fall under: `p/` + aspect key.
 pub const PURGES: &[u8] = b"p/";
-/// A purge request that dropped a permanent delta on a thing (`retention::lasting`): `z/` + commit
-/// ID + tid, empty.
+/// A purge request that dropped a permanent delta on a thing (`retention::lasting`): `z/` + tid +
+/// commit ID, empty (thing first: a forgetting clears its things' rows by prefix).
 pub const NAMED_PERMANENT: &[u8] = b"z/";
 /// Purge requests naming a commit's deltas: `pn/` + aspect key + commit ID, the requests.
 pub const PURGES_NAMED: &[u8] = b"pn/";
@@ -52,8 +52,14 @@ pub const HANDED: &[u8] = b"cv/";
 /// Freed links (`retention::freed`): `fl/` + blob ID + tid, flags, the author's tid and the link,
 /// in the class of the body that freed them.
 pub const FREED: &[u8] = b"fl/";
-/// Timers: `x/` + T (8 bytes, big endian) + commit ID + aspect index (4 bytes).
+/// Each freed link again by its thing: `ft/` + tid + blob ID, empty, in its row's class (a
+/// forgetting finds its things' rows by prefix).
+pub const FREED_OF: &[u8] = b"ft/";
+/// Timers: `x/` + T (8 bytes, big endian) + commit ID + aspect index (4 bytes), the kind.
 pub const TIMER: &[u8] = b"x/";
+/// Each timer again by its part: `xc/` + commit ID + aspect index + T, empty (a forgetting finds
+/// its parts' timers by prefix).
+pub const TIMER_OF: &[u8] = b"xc/";
 /// History rows (`Indexes::leaving`): `hr/` + aspect key + replaced-at (`Ts`, 8 bytes) +
 /// commit ID, empty.
 pub const LEAVING: &[u8] = b"hr/";
@@ -167,7 +173,7 @@ pub fn leftover_key(tid: &Tid, ak: &Ak, id: &CommitId, ai: usize) -> Vec<u8> {
 }
 
 pub fn named_permanent_key(id: &CommitId, tid: &Tid) -> Vec<u8> {
-    [NAMED_PERMANENT, &id.0[..], tid.as_bytes()].concat()
+    [NAMED_PERMANENT, tid.as_bytes(), &id.0[..]].concat()
 }
 
 pub fn own_keys_key(tid: &Tid, id: &CommitId) -> Vec<u8> {
@@ -184,6 +190,11 @@ pub fn timer_key(t: u64, id: &CommitId, ai: usize) -> Vec<u8> {
     k.extend_from_slice(&id.0);
     k.extend_from_slice(&(ai as u32).to_be_bytes());
     k
+}
+
+/// The `TIMER_OF` row of timer `timer_key(t, id, ai)`.
+pub fn timer_of_key(t: u64, id: &CommitId, ai: usize) -> Vec<u8> {
+    [TIMER_OF, &id.0[..], &(ai as u32).to_be_bytes(), &t.to_be_bytes()].concat()
 }
 
 /// Parses a timer key's tail (after `x/`).

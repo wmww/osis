@@ -3151,8 +3151,14 @@ fn inflated_snapshot_claims_count_nothing_spec_crdt_8() {
 }
 
 /// A content commit signed by peer `by`'s key carrying only `created.0` of `rec`'s thing at `ts`,
-/// its delta `ops` run from counter `lo` (the record's view, else untyped).
+/// its delta `ops` run from counter `lo` (the record's view, else untyped), purgeable by `admin`.
 fn forge_created(lp: &mut LocalPeer, by: usize, rec: &osis_base::CreationRecord, ts: osis_base::Ts, lo: u64, ops: &[osis_crdt::PathOp], typed: bool) -> Result<Vec<u8>, String> {
+    forge_minting(lp, by, rec, ts, lo, ops, typed, osis_schema::Retention::default())
+}
+
+/// `forge_created` with retention `retention`.
+#[allow(clippy::too_many_arguments)]
+fn forge_minting(lp: &mut LocalPeer, by: usize, rec: &osis_base::CreationRecord, ts: osis_base::Ts, lo: u64, ops: &[osis_crdt::PathOp], typed: bool, retention: osis_schema::Retention) -> Result<Vec<u8>, String> {
     use osis_commit::{AspectWrite, CommitBuilder, Kind, MemoryBlobs, writer_ctx};
     use osis_crdt::{DeltaBuilder, Delta, Writer, encode_delta};
     let view = osis_schema::core_schema().view("created.0").unwrap();
@@ -3166,11 +3172,45 @@ fn forge_created(lp: &mut LocalPeer, by: usize, rec: &osis_base::CreationRecord,
     let (f, r) = b.finish().ok_or("empty")?;
     let bytes = encode_delta(&Delta { nonce: [7; 16], fragment: f }, &writer_ctx(form, Kind::Content, ts, author, r.lo, r.hi), None).map_err(|e| format!("{e:?}"))?;
     let mut aw = AspectWrite::new(rec.tid(), ak("created.0"), r.lo, r.hi, bytes);
-    aw.retention = osis_commit::retention::KEPT_RETENTION;
+    aw.retention = retention;
     let mut cb = CommitBuilder::new(Kind::Content, ts, author, author, form);
     cb.aspects.push(aw);
     let forge_key = lp.peers[by].engine.sign_forged(&mut cb);
-    Ok(cb.build(&forge_key, &Dedup(rec.clone()), &mut MemoryBlobs::default(), &mut osis_crypto::SeededRng::from_u64(0)).unwrap().commit.encode())
+    Ok(cb.build(&forge_key, &Dedup(rec.clone()), &mut MemoryBlobs::default(), &mut osis_crypto::SeededRng::from_u64(0)).map_err(|e| format!("{e:?}"))?.commit.encode())
+}
+
+// spec/commits.md §5 (Destruction: an admin's request on `created.0` drops every minting, as
+// `nobody` is fixed retention's alone and bad on a minting), spec/requirements.md (purging a
+// thing's creation destroys it): Bob, a writer holding x's record, mints x again by
+// every purgeable-by; Alice, x's admin, purges x's creation, and x is destroyed at her node
+// whatever Bob's minting said.
+#[test]
+fn no_minting_keeps_a_thing_from_its_admins_purge_spec_commits_5() {
+    use osis_base::PurgeBy;
+    use osis_crdt::{Op, PathOp};
+    for by in PurgeBy::ALL {
+        let (mut lp, d, _, _) = setup();
+        let mut m = Mutation::new();
+        let x = lp.peers[0].engine.new_thing(&mut m, d);
+        m.set(x, &REG, &s("x")).unwrap();
+        lp.peers[0].commit(m).unwrap().unwrap();
+        lp.sync_all().unwrap();
+        let rec = lp.peers[1].engine.get_typed(&x, &osis_schema::core_types::CREATED).unwrap().unwrap();
+        let ts = osis_base::Ts::make(WallMs(lp.peers[1].engine.now().0 + 1), 0).unwrap();
+        // a `nobody` one builds no commit (osis-commit's `validate_nobody_and_commit_expiry`: one
+        // arriving is bad input)
+        if let Ok(again) = forge_minting(&mut lp, 1, &rec, ts, 9000, &[PathOp { path: Vec::new(), op: Op::Set(rec.to_value()) }], true, osis_schema::Retention { by }) {
+            assert!(matches!(lp.peers[0].receive(&again, Vec::new()), Ok(Ingested::Applied(_))), "{by:?}: the minting applies");
+        }
+        lp.advance(1_000);
+        let e = &mut lp.peers[0].engine;
+        let mut m = Mutation::new();
+        let now = e.now();
+        m.set(x, &osis_schema::core_types::PURGE, &now).unwrap();
+        m.purge(osis_commit::PurgeItem::Aspect { tid: x, ak: osis_schema::core_types::CREATED.name() });
+        e.commit(m).unwrap().unwrap();
+        assert!(!lp.peers[0].engine.knows(&x), "{by:?}: x destroyed");
+    }
 }
 
 // spec/commits.md §2 (created one minting): Bob's

@@ -2144,8 +2144,6 @@ fn a_lower_copy_goes_only_below_one_no_wider_to_purge_spec_commits_5() {
     use osis_base::PurgeBy::*;
     let (a, b) = (T, Tid::from_bytes([8; 15]));
     let cases = [
-        ((Nobody, a), (Admin, a), true),
-        ((Admin, a), (Nobody, a), false),
         ((Admin, a), (Admin, b), true),
         ((AuthorOrAdmin, a), (Admin, a), false),
         ((AuthorOrAdmin, a), (AuthorOrAdmin, a), true),

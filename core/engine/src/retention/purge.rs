@@ -384,9 +384,12 @@ pub(crate) fn known_purged(tx: &mut Tx<'_>, ch: &Header, c: &CommitId, ai: usize
     Ok(purged_by(tx, ch, c, ai)?.is_some())
 }
 
-/// The aspects a timeline change on `things` or a change to commits `whole` may change purges of:
-/// those with a held request (`aspect_requests`), each once.
-pub(crate) fn purged_aspects(tx: &mut Tx<'_>, things: &BTreeSet<Tid>, whole: &BTreeSet<CommitId>) -> Result<BTreeSet<(Tid, Ak)>> {
+/// The aspects whose purges a re-judge may change, each once: those of `things` (timelines
+/// evaluated from scratch) with a held request (`aspect_requests`), and those named by a request of
+/// `commits` (re-judged: their signer's role may have moved on a thing they are on, or another
+/// input of theirs changed). A request's right rests only on its signers' roles on what it names
+/// (`right_holds`), so a role moving for anyone else re-judges none.
+pub(crate) fn purged_aspects<'a>(tx: &mut Tx<'_>, things: &BTreeSet<Tid>, commits: impl IntoIterator<Item = &'a CommitId>) -> Result<BTreeSet<(Tid, Ak)>> {
     let mut out = BTreeSet::new();
     for t in things {
         tx.scan(&[records::PURGES, t.as_bytes()].concat(), |k, _| {
@@ -401,9 +404,9 @@ pub(crate) fn purged_aspects(tx: &mut Tx<'_>, things: &BTreeSet<Tid>, whole: &BT
             Ok(())
         })?;
     }
-    for c in whole {
-        let Some(h) = tx.core.ix.commits.get(c).filter(|m| m.view.purges).map(|m| m.header.clone()) else { continue };
-        out.extend(h.purge.iter().map(|i| (*i.tid(), i.ak().clone())));
+    for c in commits {
+        let Some(m) = tx.core.ix.commits.get(c).filter(|m| m.view.purges) else { continue };
+        out.extend(m.header.purge.iter().map(|i| (*i.tid(), i.ak().clone())));
     }
     Ok(out)
 }

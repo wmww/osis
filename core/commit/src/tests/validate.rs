@@ -142,8 +142,8 @@ fn validate_role_commit() {
     assert!(invalid(&x).to_string().contains("roles.0"));
 }
 
-// spec/commits.md §5 (on any other delta it is bad): `nobody` is for `created.0` and fixed retention alone, §6 (one per commit): a
-// `nobody` content delta is bad input, `retention^.0` beside any delta is not; an expiring commit
+// spec/commits.md §5 (on any other delta it is bad): `nobody` is fixed retention's alone, §6 (one per commit): a
+// `nobody` content delta or minting is bad input, `retention^.0` beside any delta is not; an expiring commit
 // carries no fixed-retention aspect.
 #[test]
 fn validate_nobody_and_commit_expiry() {
@@ -157,6 +157,9 @@ fn validate_nobody_and_commit_expiry() {
     let mut x = h.clone();
     x.aspects[0] = b.clone();
     x.keys.clear();
+    assert!(invalid(&x).to_string().contains("nobody"), "{}", invalid(&x));
+    // a minting too (spec/commits.md §5 Destruction: admins may always purge)
+    x.aspects[0].ak = Ak::new("created.0").unwrap();
     assert!(invalid(&x).to_string().contains("nobody"), "{}", invalid(&x));
     let mut rec = b.clone();
     rec.ak = Ak::new("retention^.0").unwrap();

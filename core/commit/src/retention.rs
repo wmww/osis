@@ -54,18 +54,18 @@ pub fn fixed_retention(ak: &str) -> Option<Retention> {
     }
 }
 
-/// Whether a delta of `ak` may carry retention `r` (spec/commits.md §5): `nobody` only on
-/// `created.0` and with fixed retention.
+/// Whether a delta of `ak` may carry retention `r` (spec/commits.md §5): `nobody` only with
+/// fixed retention.
 pub(crate) fn allowed(ak: &str, r: &Retention) -> Result<(), &'static str> {
     match r.refusal() {
-        Some(m) if ak != CREATED && fixed_retention(ak).is_none() => Err(m),
+        Some(m) if fixed_retention(ak).is_none() => Err(m),
         _ => Ok(()),
     }
 }
 
 /// Retention of a write: the fixed one, else the commit's override, else the schema's default
 /// for the AK, else the untyped default (`admin`). An override that disagrees with a
-/// fixed retention is refused, and so is `nobody` but on `created.0`.
+/// fixed retention is refused, and so is `nobody`.
 pub fn write_retention(ak: &str, defaults: Option<&AspectDefaults>, set: Option<Retention>) -> Result<Retention, Error> {
     let r = match (fixed_retention(ak), set) {
         (Some(f), Some(s)) if f != s => return Err(Error::Build("retention of this aspect is fixed")),

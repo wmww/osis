@@ -875,7 +875,6 @@ fn purge_rejudge(n: usize) -> [Work; 3] {
 // request), and every counted phase (bodies read by that rebuild, commits re-judged, store
 // bytes) grows at most linearly.
 #[test]
-#[ignore = "issues/purge-join-reads-requests.md"]
 fn purge_rejudge_is_linear_in_requests_spec_permissions_6() {
     let (a, b) = (purge_rejudge(30), purge_rejudge(300));
     all_flat("a join", &a[0], &b[0]);
@@ -1308,6 +1307,69 @@ fn lost_forget(n: usize) -> u64 {
 fn losing_access_forgets_what_was_lost() {
     let (a, b) = (lost_forget(3), lost_forget(30));
     assert!(a > 0 && a == b, "commits looked at, with 3 own commits elsewhere {a}, with 30 {b}");
+}
+
+/// `lost_forget`'s two people, bob's own thing holding `n` rows of each table a forgetting
+/// clears of what it forgets: expiry timers (writes expiring tomorrow), purge requests' named
+/// permanent drops and freed links (8 KiB values kept forever, each purged), and commits pending
+/// (alice's writes on a second thing bob reads, stamped past his drift). The store rows bob's drop
+/// of the lost secrets reads.
+fn lost_forget_rows(n: usize) -> u64 {
+    use crate::flows::{edge_of, people, spread, thing_of};
+    let (mut lp, ps) = people(2);
+    let (reg, big) = (ak("t:reg.0"), ak("x:b.0"));
+    let d = thing_of(&mut lp, 0, ps[0]);
+    let other = thing_of(&mut lp, 0, ps[0]);
+    for t in [d, other] {
+        lp.peers[0].engine.grant(&t, &ps[1], &edge_of(Role::Read)).unwrap();
+    }
+    let mine = thing_of(&mut lp, 1, ps[1]);
+    let e = &mut lp.peers[1].engine;
+    let mut m = Mutation::new();
+    m.set(mine, &ct::RETENTION, &ct::RetentionSetting { default: Some(ct::RetentionEntry { history: Some(osis_schema::History::FOREVER), ..Default::default() }), ..Default::default() }).unwrap();
+    e.commit(m).unwrap().unwrap();
+    let tomorrow = osis_base::WallMs(e.now().0 + 86_400_000);
+    for v in 0..n {
+        let e = &mut lp.peers[1].engine;
+        let mut m = Mutation::new();
+        m.set(mine, &reg, &Value::Int(v as i64)).unwrap().expires(mine, &reg, tomorrow).unwrap();
+        e.commit(m).unwrap().unwrap();
+        let mut x = vec![0u8; 8 << 10];
+        osis_crypto::RngCore::fill_bytes(&mut SeededRng::from_u64(v as u64), &mut x);
+        let mut m = Mutation::new();
+        m.set(mine, &big, &Value::Bytes(x)).unwrap();
+        let c = e.commit(m).unwrap().unwrap();
+        let mut m = Mutation::new();
+        m.purge(e.purge_item(&c, mine, big.clone()).unwrap());
+        m.set(mine, &ct::PURGE, &e.now()).unwrap();
+        e.commit(m).unwrap().unwrap();
+        lp.advance(1);
+    }
+    spread(&mut lp);
+    lp.peers[0].engine.demote(&d, &osis_engine::flows::Demotion { holder: ps[1], new: None, retain: None }).unwrap();
+    spread(&mut lp);
+    lp.peers[0].clock.advance(2 * osis_base::format::MAX_DRIFT_MS);
+    for v in 0..n {
+        let mut m = Mutation::new();
+        m.set(other, &reg, &Value::Int(v as i64)).unwrap();
+        let c = lp.peers[0].engine.commit(m).unwrap().unwrap();
+        let pk = lp.peers[0].engine.package(&c).unwrap().unwrap();
+        assert!(matches!(lp.deliver(1, &pk).unwrap(), osis_engine::Ingested::Pending(_, osis_engine::Reason::Drift)));
+    }
+    let (lost, w) = measured_at(&mut lp, 1, |lp| lp.peers[1].engine.drop_lost_secrets().unwrap());
+    assert!(lost.contains(&d), "{lost:?}");
+    assert_eq!(lp.peers[1].engine.get(&d, &reg).unwrap(), None, "forgotten");
+    assert_eq!(lp.peers[1].engine.pending().len(), n, "alice's writes on the other thing wait on");
+    lp.peers[1].engine.check_index();
+    w.n("store rows read")
+}
+
+// spec/permissions.md §3 (Lost access): forgetting what a lost read reached reads what it
+// forgets, not every timer, pending commit, purge drop or freed link held elsewhere: the store
+// rows read are flat at n and 10n of each on another thing.
+#[test]
+fn losing_access_reads_no_rows_of_what_stays() {
+    flat("forget: store rows read", lost_forget_rows(3), lost_forget_rows(30));
 }
 
 /// Alice grants bob read on her thing and removes him `n` times (each a role commit at her

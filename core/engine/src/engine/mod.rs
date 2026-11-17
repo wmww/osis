@@ -2878,7 +2878,32 @@ impl Tx<'_> {
     pub(crate) fn put_timer(&mut self, t: u64, c: &CommitId, ai: usize, kind: u8) -> Result<()> {
         let memory = self.is_memory_commit(c);
         self.core.timer_floor = self.core.timer_floor.min(t);
-        self.in_class(memory, |tx| Ok(tx.txn.put_local(&records::timer_key(t, c, ai), &[kind], Shred::No)?))
+        self.in_class(memory, |tx| {
+            tx.txn.put_local(&records::timer_key(t, c, ai), &[kind], Shred::No)?;
+            Ok(tx.txn.put_local(&records::timer_of_key(t, c, ai), &[], Shred::No)?)
+        })
+    }
+
+    /// Removes timer `t` of commit `c`'s part `ai`.
+    pub(crate) fn remove_timer(&mut self, t: u64, c: &CommitId, ai: usize) -> Result<()> {
+        self.txn.remove_local(&records::timer_key(t, c, ai), Shred::No)?;
+        self.txn.remove_local(&records::timer_of_key(t, c, ai), Shred::No)?;
+        Ok(())
+    }
+
+    /// Removes every timer of commit `c` (`ai`: of that part alone), found by part
+    /// (`records::TIMER_OF`): O(the commit's timers).
+    pub(crate) fn remove_timers_of(&mut self, c: &CommitId, ai: Option<usize>) -> Result<()> {
+        let mut found = Vec::new();
+        self.scan(&[records::TIMER_OF, &c.0[..]].concat(), |k, _| {
+            let mut r = records::Rd::new(k);
+            found.push((r.u32()? as usize, r.u64()?));
+            Ok(())
+        })?;
+        for (x, t) in found.into_iter().filter(|(x, _)| ai.is_none_or(|ai| ai == *x)) {
+            self.remove_timer(t, c, x)?;
+        }
+        Ok(())
     }
 
     /// Loads the state of `(tid, ak)` into the cache: a paged state lazily (its skeleton; pages

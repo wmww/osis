@@ -72,7 +72,7 @@ fn demotion_audits_edge_admin_grants_spec_permissions_5_1() {
 // on 41 drops #6.
 #[test]
 fn commit_audits_all_its_writes_before_restart_spec_permissions_5_1() {
-    let mint = |t, link, k| held_model::gen::creation(t, link, FIRST_ADMIN, ts(0) - 10 + k, Retention::FIXED, None);
+    let mint = |t, link, k| held_model::gen::creation(t, link, FIRST_ADMIN, ts(0) - 10 + k, Retention::ROLE, None);
     for things in [[40, 41], [41, 40]] {
         let r = Commit {
             parts: things.map(|t| edge_on(7, 1, 2, t, EdgeWrite::role(FIRST_ADMIN, Some(Role::Read)), None).parts.remove(0)).to_vec(),

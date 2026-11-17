@@ -219,11 +219,14 @@ pub(crate) fn forget(tx: &mut Tx<'_>, scope: Scope<'_>, held: &BTreeMap<Tid, u64
     let mut aspects: BTreeSet<(Tid, Ak)> = BTreeSet::new();
     // every aspect held of a thing reached, forgotten or not
     let mut all: Vec<(Tid, Ak)> = Vec::new();
+    // the things reached that do not stay, held or not
+    let mut reached: BTreeSet<Tid> = BTreeSet::new();
     for t in cands {
         let f = *memo.entry(t).or_insert_with(|| fate(tx.core, scope, &t));
         if f == Fate::Stays {
             continue;
         }
+        reached.insert(t);
         let mut held: BTreeSet<Ak> = tx.core.aspects_of(&t).map(|((_, ak), _)| ak.clone()).collect();
         tx.scan(&[records::ASPECTS, t.as_bytes()].concat(), |k, _| {
             held.insert(Rd::new(k).ak()?);
@@ -242,6 +245,8 @@ pub(crate) fn forget(tx: &mut Tx<'_>, scope: Scope<'_>, held: &BTreeMap<Tid, u64
     // the links of the parts forgotten, by thing: the pieces they reach may go (`freed::lost`)
     let mut links: BTreeMap<Tid, Vec<osis_base::Link>> = BTreeMap::new();
     let mut boxes = BoxesGone::new();
+    // the things of each commit forgotten whole
+    let mut whole_things: Vec<(CommitId, BTreeSet<Tid>)> = Vec::new();
     let ids: BTreeSet<CommitId> = aspects.iter().flat_map(|k| tx.core.ix.by_aspect.get(k).into_iter().flatten().map(|x| x.1)).collect();
     osis_base::costs::count("forget: forgettings", u64::from(!out.things.is_empty()));
     osis_base::costs::count("forget: commits scanned", ids.len() as u64);
@@ -264,6 +269,7 @@ pub(crate) fn forget(tx: &mut Tx<'_>, scope: Scope<'_>, held: &BTreeMap<Tid, u64
         // whole when no part it keeps stays: a leftover is held outside the blob's parts
         let keeps = (0..m.view.aspects.len()).any(|ai| !ais.contains(&ai) && m.holds(ai));
         if rest.is_some() && !keeps {
+            whole_things.push((id, m.view.aspects.iter().map(|a| a.tid).collect::<BTreeSet<_>>()));
             crate::apply::unindex_unreceived(tx, &id)?;
             // a release's blobs go with it, the store's own entries of them too (`bodies::forget`);
             // losing access keeps them: an own entry naming one waits for the access to return
@@ -279,10 +285,13 @@ pub(crate) fn forget(tx: &mut Tx<'_>, scope: Scope<'_>, held: &BTreeMap<Tid, u64
     for (h, ai, bodies) in boxes.into_values() {
         crate::apply::keys::forget_dropped(tx, &h, ai, &bodies)?;
     }
-    // pending and parked commits (and late parts waiting under an applied commit's ID)
-    let mut pend = Vec::new();
-    tx.each_pending(|id, p| pend.push((id, p)))?;
-    for (id, p) in pend {
+    // pending and parked commits (and late parts waiting under an applied commit's ID) on the
+    // things reached, found by the things their headers write on (`apply::Wake::Thing`), and those
+    // whose header is not read yet (`Wake::Open`, examined at the open's first run)
+    let wakes = std::iter::once(crate::apply::Wake::Open).chain(reached.iter().map(|t| crate::apply::Wake::Thing(*t)));
+    let ids: BTreeSet<CommitId> = wakes.flat_map(|w| tx.core.ix.pend_on.get(&w).into_iter().flatten().copied().collect::<Vec<_>>()).collect();
+    for id in ids {
+        let Some(p) = tx.txn.get_pending(&id)? else { continue };
         // unreadable by this build: its header names nothing we can judge
         let Ok(blob) = CommitBlob::decode_stored(&p.bytes) else { continue };
         // a kept copy's content takes nothing new: what waits goes too
@@ -342,17 +351,25 @@ pub(crate) fn forget(tx: &mut Tx<'_>, scope: Scope<'_>, held: &BTreeMap<Tid, u64
         crate::sync::held::forget_actor(tx, t)?;
     }
     // timers of forgotten parts
-    let hit = |c: &CommitId, ai: usize| out.commits.contains(c) || parts.get(c).is_some_and(|s| s.contains(&ai));
-    tx.remove_scanned(records::TIMER, |k| {
-        let (_, c, ai) = records::parse_timer(k)?;
-        Ok(hit(&c, ai))
-    })?;
-    // what a purge request dropped there (`retention::lasting`)
-    tx.remove_scanned(records::NAMED_PERMANENT, |k| {
-        let mut r = Rd::new(k);
-        let (c, t) = (CommitId(r.arr()?), r.tid()?);
-        Ok(out.commits.contains(&c) || out.things.contains(&t))
-    })?;
+    for (c, ais) in &parts {
+        if out.commits.contains(c) {
+            tx.remove_timers_of(c, None)?;
+        } else {
+            for ai in ais {
+                tx.remove_timers_of(c, Some(*ai))?;
+            }
+        }
+    }
+    // what a purge request dropped there (`retention::lasting`): on the things, and of the
+    // requests forgotten whole
+    for t in &out.things {
+        tx.remove_scanned(&[records::NAMED_PERMANENT, t.as_bytes()].concat(), |_| Ok(true))?;
+    }
+    for (c, things) in &whole_things {
+        for t in things {
+            tx.txn.remove_local(&records::named_permanent_key(c, t), Shred::Yes)?;
+        }
+    }
     // sync IDs of forgotten things, from their `sync.0` (kept), but those a kept thing owns
     // (`sync_ids::actors::owns`; the forgotten ones' secrets are gone, so judged from the owner's
     // side): another's sync ID a forgotten thing's admin named takes nothing of its owner's here

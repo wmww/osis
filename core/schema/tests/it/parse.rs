@@ -359,7 +359,7 @@ proptest::proptest! {
 }
 
 // spec/commits.md §5, spec/wire.md §1: every purge class a write may carry has its syntax and code
-// (`nobody` is for `created.0` and fixed retention alone); the meta form round trips them; the default is
+// (`nobody` is fixed retention's alone); the meta form round trips them; the default is
 // `admin`, which is unnamed.
 #[test]
 fn purge_classes_spec_commits_5() {

@@ -1163,8 +1163,8 @@ fn purged_changed(tx: &mut Tx<'_>, purged: BTreeSet<(Tid, Ak)>, changed: &mut BT
     }
 }
 
-/// A due timer: its store key, commit, aspect index and kind (`T_EXPIRY`, `T_FLOOR`, `T_KEPT`).
-type Due = (Vec<u8>, CommitId, usize, u8);
+/// A due timer: its time, commit, aspect index and kind (`T_EXPIRY`, `T_FLOOR`, `T_KEPT`).
+type Due = (u64, CommitId, usize, u8);
 
 /// The timers due by the wall clock, and when the first of the others is (`u64::MAX`: none).
 fn due_timers(tx: &mut Tx<'_>) -> Result<(Vec<Due>, u64)> {
@@ -1182,7 +1182,7 @@ fn due_timers(tx: &mut Tx<'_>) -> Result<(Vec<Due>, u64)> {
                 return Ok((due, t));
             }
             from = [tail, &[0]].concat();
-            due.push((tail.to_vec(), c, ai, v.first().copied().unwrap_or(0)));
+            due.push((t, c, ai, v.first().copied().unwrap_or(0)));
         }
         if n < 64 {
             return Ok((due, u64::MAX));
@@ -1190,10 +1190,9 @@ fn due_timers(tx: &mut Tx<'_>) -> Result<(Vec<Due>, u64)> {
     }
 }
 
-/// Runs due timer `key` (`records::timer_key`) of part `ai` of `c`, of `kind`; the
-/// aspects it changed go to `changed`.
-fn run_timer(tx: &mut Tx<'_>, key: &[u8], c: &CommitId, ai: usize, kind: u8, changed: &mut BTreeSet<(Tid, Ak)>) -> Result<()> {
-    tx.txn.remove_local(key, Shred::No)?;
+/// Runs due timer `t` of part `ai` of `c`, of `kind`; the aspects it changed go to `changed`.
+fn run_timer(tx: &mut Tx<'_>, t: u64, c: &CommitId, ai: usize, kind: u8, changed: &mut BTreeSet<(Tid, Ak)>) -> Result<()> {
+    tx.remove_timer(t, c, ai)?;
     // a value part's keep bound changes nothing held, only its listing
     if kind == T_KEPT && tx.core.ix.commits.get(c).and_then(|m| m.view.aspects.get(ai)).is_some_and(|a| !a.ak.signal()) {
         return crate::engine::listing::kept_passed(tx, c, ai);
@@ -1244,7 +1243,7 @@ pub(crate) fn expire_waiting(tx: &mut Tx<'_>, id: &CommitId, pending: &osis_comm
     }
     let mut changed = BTreeSet::new();
     for ai in ais {
-        run_timer(tx, &records::timer_key(t, id, ai), id, ai, T_EXPIRY, &mut changed)?;
+        run_timer(tx, t, id, ai, T_EXPIRY, &mut changed)?;
     }
     if !changed.is_empty() {
         tx.core.events.queue(Event::Changed { cause: Cause::Expiry, changed: changed.into_iter().collect() });
@@ -1272,10 +1271,10 @@ impl Engine {
             // their rebuilds once per aspect (`run_batched`); an expiry strips a state in place
             // only while no rebuild of it is asked (`apply::strip_state`)
             crate::apply::run_batched(tx, |tx| {
-                for (k, c, ai, kind) in due {
+                for (t, c, ai, kind) in due {
                     // a memory commit's timer is memory work: what it writes stays in memory
                     let memory = tx.is_memory_commit(&c);
-                    tx.in_class(memory, |tx| run_timer(tx, &[records::TIMER, &k].concat(), &c, ai, kind, &mut changed))?;
+                    tx.in_class(memory, |tx| run_timer(tx, t, &c, ai, kind, &mut changed))?;
                 }
                 for (tid, ak) in leave {
                     let memory = ak.ephemeral();

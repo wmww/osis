@@ -116,9 +116,9 @@ pub fn creation(t: ThingId, link: RecordLink, author: NodeId, ts: u64, retention
     Commit { id: CREATION_ID + t, author, actor: author, ts, expires, kind: CommitKind::Content, parts: vec![part], purge: vec![], frontier: None, undoes: None , boxes: vec![] }
 }
 
-/// Every `CREATIONS` thing's creation, an hour before `START`, kept for good.
+/// Every `CREATIONS` thing's creation, an hour before `START`, durable and purgeable by admins.
 pub fn creations() -> Vec<Commit> {
-    CREATIONS.iter().enumerate().map(|(k, &(t, link, author))| creation(t, link, author, (START - HOUR) * MS + k as u64, Retention::FIXED, None)).collect()
+    CREATIONS.iter().enumerate().map(|(k, &(t, link, author))| creation(t, link, author, (START - HOUR) * MS + k as u64, Retention::ROLE, None)).collect()
 }
 
 /// Whether `c` creates a thing.
@@ -209,8 +209,8 @@ pub fn history(seed: u64, n: usize) -> Held {
     // the things' creations: a destruction (expiry, purge) needs a purgeable one
     for (k, &(t, link, author)) in CREATIONS.iter().enumerate() {
         let ts = (START - HOUR) * MS + k as u64;
-        let retention = if r.chance(50) { Retention::FIXED } else { Retention::ROLE };
-        let expires = (retention.by != PurgeBy::Nobody && r.chance(4)).then(|| START + (2 + r.below(9)) * HOUR);
+        let retention = if r.chance(50) { Retention::PLAIN } else { Retention::ROLE };
+        let expires = r.chance(4).then(|| START + (2 + r.below(9)) * HOUR);
         commits.push(creation(t, link, author, ts, retention, expires));
     }
     let mut new_id = |r: &mut Rng| loop {

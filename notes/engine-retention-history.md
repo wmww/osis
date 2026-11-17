@@ -13,7 +13,7 @@
 
 ## Tess's decisions
 1. "Never comes back" is a property of the timeline: a setting arriving late may re-show a body a node still holds; no per-node marks.
-2. Admins may always purge: purgeable-by is `admin` (the default), `author_or_admin` or `writer` (`nobody` only for `created.0` and fixed retention); no per-write keep-forever. Shortening needs only the admin right and reaches every body; bodies leave an aspect in replaced order (one threshold per thing and AK).
+2. Admins may always purge: purgeable-by is `admin` (the default), `author_or_admin` or `writer` (`nobody` only for fixed retention, so no minting outlasts an admin's purge of `created.0`); no per-write keep-forever. Shortening needs only the admin right and reaches every body; bodies leave an aspect in replaced order (one threshold per thing and AK).
 3. Purge on replace is one way: where an earlier setting purges an AK on replace, a later `keep` there reads as no history (model-checked: without it late dating lets purged content show).
 4. Out-of-history bodies drop under any valid writer's cover: data nobody promised is not kept for good.
 5. Who-may-purge, edits off (`final`) and the expiry default are writer defaults only, no validity rule: a commit is valid with what it carries, and a change reaches later writes only.
