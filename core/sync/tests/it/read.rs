@@ -2566,3 +2566,46 @@ fn a_deposit_only_step_waits_a_complete_pass_spec_permissions_3() {
     assert_eq!(w.g.issued, vec![S, S], "issued once the pass ended");
 }
 
+
+/// The judgements (`read: judged`) both nodes make as node 1, reading thing 0 by a grant, comes
+/// to hold a sync ticket for it too, with `n` things made under thing 0 (each a body under its
+/// sync ID): the ticket moves what thing 0's read things and credentials are derived from (its
+/// ticket sync IDs), not what they are.
+fn judged_per_ticket(n: usize) -> u64 {
+    use crate::harness::Step::*;
+    use crate::harness::history::{Gives, world};
+    use osis_base::{Ak, Role, Value};
+    let mut w = world(0, 2);
+    let mut steps = vec![New(0), Grant(0, 0, 1, Gives::Reads), Run];
+    steps.extend((0..n).flat_map(|_| [NewIn(0, 0), Run]));
+    for s in &steps {
+        crate::harness::step(&mut w, s);
+    }
+    let (t, a1) = (w.history.things[0].0, w.node(1).account.unwrap());
+    let k = w.engine(0).ticket_of(&t, Role::Sync, &a1).unwrap().expect("a ticket");
+    w.run();
+    osis_base::costs::take();
+    w.write(1, |e| {
+        let d = e.account_root().unwrap();
+        let mut m = osis_engine::Mutation::new();
+        let h = e.new_thing(&mut m, d);
+        m.set(h, &Ak::new("x:k.0").unwrap(), &Value::Ticket(Box::new(k))).unwrap();
+        m.op(d, &osis_schema::core_types::HOLDS, osis_crdt::PathOp { path: vec![], op: osis_crdt::Op::Add(Value::Strong(h)) }).unwrap();
+        e.commit(m)
+    })
+    .unwrap();
+    w.run();
+    osis_base::costs::take().iter().filter(|(k, _, _)| *k == "read: judged").map(|(_, _, n)| n).sum()
+}
+
+// spec/sync-judgement.md §3 (driven by events): a ticket for a thing read already moves what its
+// sync ID's read things (`Engine::read_things_of`) and stamp key (`Engine::step_write_key`) are
+// derived from, not their answers, so it judges none of the bodies under that sync ID: the same
+// judgements at n and 10n bodies (the ticket's own commit alone). Either read whole (the sync ID's
+// things, or its credentials) judges every body again.
+#[test]
+fn a_ticket_for_a_thing_read_judges_none_of_its_bodies_at_n_and_10n() {
+    let (a, b) = (judged_per_ticket(2), judged_per_ticket(20));
+    assert_eq!(a, b, "judgements per ticket grow with the bodies held");
+    assert!(a <= 4, "{a}");
+}

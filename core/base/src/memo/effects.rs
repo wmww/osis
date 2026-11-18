@@ -141,6 +141,11 @@ impl<K: Hash + Eq + Clone + std::fmt::Debug, V: Clone + PartialEq + std::fmt::De
         self.pending.is_empty()
     }
 
+    /// The keys followed that `pick` names.
+    pub(super) fn followed_where(&self, pick: impl Fn(&K) -> bool) -> Vec<K> {
+        self.followed.keys().filter(|k| pick(k)).cloned().collect()
+    }
+
     /// Whether `k` is followed.
     pub fn wants(&self, k: &K) -> bool {
         self.followed.contains_key(k)

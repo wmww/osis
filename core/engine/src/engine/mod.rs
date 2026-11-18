@@ -1445,6 +1445,12 @@ pub struct Core {
     pub(crate) sync_rows: crate::sync::rows::SyncRows,
     /// `Engine::pass_wanted` per sync ID asked (`memo::Cutoff`), refreshed by `follow`.
     pub(crate) pass_wanted: memo::Cutoff<SyncId, Option<u64>>,
+    /// `Engine::read_things_of` per sync ID asked (`memo::Cutoff`), refreshed by `follow` and
+    /// before the memos reading it.
+    pub(crate) read_things: memo::Cutoff<SyncId, Arc<Vec<Tid>>>,
+    /// `Engine::step_write_key` per (sync ID, step) asked (`memo::Cutoff`), refreshed by
+    /// `follow`.
+    pub(crate) step_write_keys: memo::Cutoff<(SyncId, osis_blob::StepId), crate::sync::set::WriteKey>,
     /// `Engine::setting_wants` (`memo`).
     pub(crate) setting_wants: memo::Memo<(), Arc<BTreeMap<SyncId, u64>>>,
     /// `Engine::published_under` for every actor, followed per thing with a sync ID
@@ -1628,6 +1634,8 @@ impl Core {
             sync_ids: self.sync_ids.clone(),
             sync_rows: self.sync_rows.clone(),
             pass_wanted: self.pass_wanted.clone(),
+            read_things: self.read_things.clone(),
+            step_write_keys: self.step_write_keys.clone(),
             setting_wants: self.setting_wants.clone(),
             published: self.published.clone(),
             own_commits: self.own_commits.clone(),
@@ -2089,6 +2097,8 @@ impl Core {
             sync_ids: _,
             sync_rows: _,
             pass_wanted: _,
+            read_things: _,
+            step_write_keys: _,
             setting_wants: _,
             links: _,
             caught_up: _,
@@ -2471,6 +2481,8 @@ impl Core {
             sync_ids: memo::Memo::new("sync IDs of"),
             sync_rows: Default::default(),
             pass_wanted: memo::Cutoff::new("sync: pass wanted"),
+            read_things: memo::Cutoff::new("sync: read things"),
+            step_write_keys: memo::Cutoff::new("sync: step write keys"),
             setting_wants: memo::Memo::new("sync: setting wants"),
             published: Default::default(),
             own_commits: Default::default(),

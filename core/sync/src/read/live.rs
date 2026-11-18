@@ -73,7 +73,7 @@ pub struct Live<'a, 'b> {
 /// it applies the stamp knows the key.
 fn stamp_key(cx: &mut Cx, s: &SyncId) -> Result<Option<SigningSecret>> {
     let Some(head) = cx.store.head_id(s)? else { return Ok(None) };
-    Ok(cx.engine.read_credentials(s)?.and_then(|c| c.keys.get(&head).and_then(|k| k.write.clone())))
+    Ok(cx.engine.step_write_key(s, &head)?)
 }
 
 /// The entry this node logs of its own under `s`: stamped where it writes S's served head, else
@@ -364,9 +364,10 @@ impl Ground for Live<'_, '_> {
         // write key is held (`registers_step`), anything else under the served head
         let mut w = None;
         if let Some(c) = self.cx.engine.blob_commit(b) {
-            let creds = self.cx.engine.read_credentials(s)?;
             for p in self.step_parents(s, &c)? {
-                w = w.or_else(|| creds.as_ref().and_then(|cr| cr.keys.get(&p.id())).and_then(|k| k.write.clone()));
+                if w.is_none() {
+                    w = self.cx.engine.step_write_key(s, &p.id())?;
+                }
             }
         }
         let Some(w) = w.or(stamp_key(self.cx, s)?) else { return Ok(()) };

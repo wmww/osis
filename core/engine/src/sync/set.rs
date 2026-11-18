@@ -167,6 +167,28 @@ impl Engine {
         Ok(Some(Arc::new(c)))
     }
 
+    /// The write key this node holds at step `step` of `s` (`read_credentials`' keys there,
+    /// `write`): what it stamps under at that step. Kept per (sync ID, step) from its first ask
+    /// (`Core::step_write_keys`, a `memo::Cutoff`, refreshed by `follow`): every entry of `s`
+    /// judged reads it, while what it is derived from (the things opening `s`, their sync IDs
+    /// and epochs) moves at each ticket, link or key of theirs.
+    pub fn step_write_key(&mut self, s: &SyncId, step: &StepId) -> Result<Option<SigningSecret>> {
+        Ok(osis_base::memo::Cutoff::get_in(self, |e| &e.core.step_write_keys, &(*s, *step), |e, (s, step)| e.step_write_key_now(s, step))?.0)
+    }
+
+    /// `step_write_key` derived anew: as `credentials_of` keys each step, the last thing opening
+    /// `s` whose recorded path has `step`.
+    pub(crate) fn step_write_key_now(&mut self, s: &SyncId, step: &StepId) -> Result<WriteKey> {
+        let mut out = None;
+        for t in self.opening_things(s)? {
+            let Some(o) = self.owned_sync_ids(&t)?.iter().find(|o| o.id == *s).cloned() else { continue };
+            if let Some((st, _)) = o.path.steps.iter().find(|(st, _)| st.id() == *step) {
+                out = self.head_write_key(&t, st);
+            }
+        }
+        Ok(WriteKey(out))
+    }
+
     /// Adds what thing `t` of `s` (owning it as `o`) opens and acts with to `c`.
     fn credentials_of(&mut self, c: &mut ReadCredentials, s: &SyncId, t: &Tid, o: &OwnedSyncId) -> Result<()> {
         if let Some((st, _)) = o.path.steps.last() {
@@ -323,6 +345,22 @@ impl Engine {
         let Some(root) = self.core.node_root else { return Ok(Arc::default()) };
         let c = self.get_typed(&root, &ct::CAPS)?.unwrap_or_default();
         Ok(Arc::new(Caps { policy: c.policy, things: c.things.into_iter().map(|(t, x)| (t.0, ThingCaps { entries: x.entries, bytes: x.bytes })).collect() }))
+    }
+}
+
+/// A write key, told apart by its public key (`Core::step_write_keys`' rows).
+#[derive(Clone)]
+pub(crate) struct WriteKey(pub(crate) Option<SigningSecret>);
+
+impl PartialEq for WriteKey {
+    fn eq(&self, o: &WriteKey) -> bool {
+        self.0.as_ref().map(SigningSecret::verifying_key) == o.0.as_ref().map(SigningSecret::verifying_key)
+    }
+}
+
+impl std::fmt::Debug for WriteKey {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        self.0.as_ref().map(SigningSecret::verifying_key).fmt(f)
     }
 }
 

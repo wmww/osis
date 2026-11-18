@@ -160,6 +160,7 @@ impl Engine {
     /// memo of bodies is asked: a hit asks neither, and its reads of them hold only once they are
     /// (notes/engine.md, Derived values: `Spread`).
     fn follow_bodies(&mut self) -> Result<()> {
+        self.follow_read_things()?;
         self.follow_published();
         self.follow_certificates()?;
         Ok(())
@@ -294,15 +295,23 @@ impl Engine {
     }
 
     /// The things reading `s` here: those of `s`'s things (`sync_things_of`) whose
-    /// `ThingSync::Read` lists it. What arrives under `s` is judged for each.
+    /// `ThingSync::Read` lists it. What arrives under `s` is judged for each. Kept per sync ID
+    /// from its first ask (`Core::read_things`, a `memo::Cutoff`): what it is derived from (the
+    /// things naming `s`, their sync IDs and holdings) moves at every ticket, link or `sync.0`
+    /// of them, its answer far less often, and every judgement at `s` reads it.
     pub(crate) fn read_things_of(&mut self, s: &SyncId) -> Result<Vec<Tid>> {
+        Ok(osis_base::memo::Cutoff::get_in(self, |e| &e.core.read_things, s, |e, s| e.read_things_now(s))?.to_vec())
+    }
+
+    /// `read_things_of` derived anew.
+    pub(crate) fn read_things_now(&mut self, s: &SyncId) -> Result<Arc<Vec<Tid>>> {
         let mut out = Vec::new();
         for t in self.sync_things_of(s)? {
             if matches!(self.thing_sync_now(&t)?, ThingSync::Read(ids) if ids.contains(s)) {
                 out.push(t);
             }
         }
-        Ok(out)
+        Ok(Arc::new(out))
     }
 
     /// The things whose read secrets open and act for `s` here: those reading it, else those of

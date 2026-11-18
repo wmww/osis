@@ -75,6 +75,14 @@ impl<K: Hash + Eq + Ord + Clone + std::fmt::Debug, V: Clone + PartialEq + std::f
         }
     }
 
+    /// Stops following every key `drop` names (`unfollow`).
+    pub fn unfollow_where(&self, drop: impl Fn(&K) -> bool) {
+        let keys = self.fx.borrow().followed_where(drop);
+        for k in &keys {
+            self.unfollow(k);
+        }
+    }
+
     /// Key `k`'s value, up to date (`refresh_in`, `k` followed from now on): a read of its row
     /// alone.
     pub fn get_in<C, E>(ctx: &mut C, me: impl Fn(&C) -> &Self, k: &K, f: impl Fn(&mut C, &K) -> Result<V, E>) -> Result<V, E> {

@@ -457,6 +457,7 @@ impl Engine {
     // Held parts and bodies
 
     /// Brings the facade values kept per entry (`Core::published`, per thing with a sync ID;
+    /// `Core::read_things` per sync ID; `Core::step_write_keys` per sync ID and step;
     /// `Core::wrap_blocks`, per actor and walk; `Core::held_writes_rows`, per aspect; each read
     /// thing's certificates per piece and commit, `certified`; its thing lists per rotation,
     /// `listed`; `Core::read_facts`, per sync ID and commit; `Core::held_fates`, per commit) up to date with what moved since
@@ -469,6 +470,8 @@ impl Engine {
     pub fn follow(&mut self) -> Result<bool> {
         let moved = self.take_carried()? | self.follow_published();
         self.follow_rows()?;
+        let moved = self.follow_read_things()? | moved;
+        let moved = osis_base::memo::Cutoff::refresh_in(self, |e| &e.core.step_write_keys, |e, (s, step)| e.step_write_key_now(s, step))? | moved;
         let moved = osis_base::memo::Cutoff::refresh_in(self, |e| &e.core.pass_wanted, |e, s| e.pass_wanted_fresh(s))? | moved;
         self.follow_own()?;
         let moved = osis_base::memo::Cutoff::refresh_in(self, |e| &e.core.wrap_blocks, |e, (a, walk)| e.wrap_blocked_read(a, *walk))? | moved;
@@ -479,6 +482,13 @@ impl Engine {
         // a body's facts read every value above
         let moved = osis_base::memo::Cutoff::refresh_in(self, |e| &e.core.read_facts, |e, (s, c)| e.read_facts_now(s, c))? | moved;
         Ok(osis_base::memo::Cutoff::refresh_in(self, |e| &e.core.held_fates, |e, c| e.held_fate_now(c))? | moved)
+    }
+
+    /// Brings the read things kept per sync ID (`read_things_of`) up to date: whether any moved.
+    /// Before each memo reading them is asked (`follow_bodies`, `read_credentials`, `dial_peers`,
+    /// `roster_holders`): a hit asks none of them.
+    pub(crate) fn follow_read_things(&mut self) -> Result<bool> {
+        osis_base::memo::Cutoff::refresh_in(self, |e| &e.core.read_things, |e, s| e.read_things_now(s))
     }
 
     /// What `read` judges `c`'s body under `s` on beside `BodyFacts` (`ReadFacts`). Kept per
@@ -680,6 +690,7 @@ impl Engine {
     /// for a sync ID it left while a read secret of its thing is held, which sync keeps syncing
     /// until a complete pass after it left (spec/sync-set.md §3).
     pub fn read_credentials(&mut self, s: &SyncId) -> Result<Option<Arc<ReadCredentials>>> {
+        self.follow_read_things()?;
         osis_base::memo::Memo::get_in(self, |e| &e.core.read_credentials, s, |e| e.read_credentials_now(s))
     }
 
@@ -918,6 +929,7 @@ impl Engine {
     /// `reach.0` (the driver never dials its own key). A memo per sync ID; for dialing only, never
     /// proof.
     pub fn dial_peers(&mut self, s: &SyncId) -> Result<Arc<Vec<Address>>> {
+        self.follow_read_things()?;
         osis_base::memo::Memo::get_in(self, |e| &e.core.dial_peers, s, |e| e.dial_peers_now(s))
     }
 
@@ -928,6 +940,7 @@ impl Engine {
     /// (its granters, whom the rosters do not name). The nodes `dial_peers` lists, by who they
     /// are, whether or not an address is known. A memo per sync ID.
     pub fn roster_holders(&mut self, s: &SyncId) -> Result<Arc<RosterHolders>> {
+        self.follow_read_things()?;
         osis_base::memo::Memo::get_in(self, |e| &e.core.roster_holders, s, |e| e.roster_holders_now(s))
     }
 

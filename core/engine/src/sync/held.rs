@@ -189,6 +189,8 @@ impl Engine {
     pub fn forget_read(&mut self, s: &SyncId) -> Result<()> {
         self.core.own_commits.unfollow(s);
         self.core.pass_wanted.unfollow(s);
+        self.core.read_things.unfollow(s);
+        self.core.step_write_keys.unfollow_where(|(x, _)| x == s);
         if !self.core.ix.passes.contains_key(s) && !super::certblobs::any(&self.core, s) {
             return Ok(());
         }

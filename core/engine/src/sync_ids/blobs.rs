@@ -910,11 +910,8 @@ impl Engine {
                 k.sync_established = self.established(g, &e, Role::Sync, &ep);
                 k.epochs[0] = Some(ep);
             }
-            // stamps and deletes are encrypting under: never from a reading-only secret
-            if let Some((ep, s, checked)) = matching(&e, RoleKey::Write, &head.keys.write) {
-                if checked && self.established(g, &e, Role::Write, &ep) {
-                    k.write = Some(s);
-                }
+            if let Some((ep, w)) = self.head_write(g, &e, head) {
+                k.write = w;
                 k.epochs[1] = Some(ep);
             }
             if let Some((ep, s, checked)) = matching(&e, RoleKey::Delete, &head.keys.delete) {
@@ -931,6 +928,21 @@ impl Engine {
             }
         }
         Ok(k)
+    }
+
+    /// `head_keys`' write key alone (`Engine::step_write_key`): read by `g`'s epochs, never its
+    /// deposit seed.
+    pub(crate) fn head_write_key(&self, g: &Tid, head: &Step) -> Option<SigningSecret> {
+        let e = self.epochs(g)?;
+        self.head_write(g, &e, head)?.1
+    }
+
+    /// The epoch of `head`'s write key held of `g`'s epochs `e`, and the key where this node
+    /// stamps under it: stamps and deletes are encrypting under, never from a reading-only
+    /// secret, and only in an established epoch.
+    fn head_write(&self, g: &Tid, e: &ActorEpochs, head: &Step) -> Option<(Epoch, Option<SigningSecret>)> {
+        let (ep, s, checked) = matching(e, RoleKey::Write, &head.keys.write)?;
+        Some((ep, (checked && self.established(g, e, Role::Write, &ep)).then_some(s)))
     }
 
     /// Whether `ep` of role `r` is established for `g`: in its own epochs, or, for a thing that
