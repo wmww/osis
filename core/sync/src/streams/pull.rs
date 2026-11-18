@@ -219,8 +219,10 @@ pub(super) struct Pulling {
     fetches: BTreeMap<Id, (SyncId, Vec<BlobId>, u8)>,
     queue: BTreeMap<(u8, u64, u64), (SyncId, BlobId)>,
     arrivals: u64,
-    /// What this source answered without, until it announces it again.
-    failed: BTreeSet<BlobId>,
+    /// Entries this source answered without (or gave wrong bytes of), until it announces the
+    /// entry again: per sync ID, as owed (the same blob announced under another sync ID is
+    /// another entry).
+    failed: BTreeSet<(SyncId, BlobId)>,
     /// Bodies settled (taken, opened, refused) while messages are in hand.
     pub(super) settled: BTreeSet<(SyncId, BlobId)>,
     /// Of those, the ones that opened to what no entry keeps (`Opening::Taken`): what the
@@ -769,7 +771,7 @@ impl Streams {
                 continue;
             }
             if let Some(p) = self.pull.get_mut(&conn) {
-                p.failed.remove(b);
+                p.failed.remove(&(*s, *b));
             }
             if let Some(bytes) = blob {
                 self.take_body(ctx, conn, *s, *b, *wrap, *stamp, bytes);
@@ -852,7 +854,7 @@ impl Streams {
         }
         let Some(p) = self.pull.get_mut(&conn) else { return };
         // an earlier take of the same body settled it here; it is not held now
-        p.failed.remove(&b);
+        p.failed.remove(&(s, b));
         p.settled.remove(&(s, b));
         p.taken.remove(&(s, b));
         if !p.queue.values().any(|x| *x == (s, b)) {
@@ -906,7 +908,7 @@ impl Streams {
     fn take_body(&mut self, ctx: &mut Ctx, conn: ConnId, s: SyncId, b: BlobId, wrap: Wrap, stamp: Option<Stamp>, bytes: &[u8]) {
         if osis_blob::blob_id(bytes) != b {
             if let Some(p) = self.pull.get_mut(&conn) {
-                p.failed.insert(b);
+                p.failed.insert((s, b));
             }
             return;
         }
@@ -923,7 +925,7 @@ impl Streams {
             Some(Holding::Read) => match ctx.ground.open(&s, &e, bytes) {
                 Ok(Opening::Bad) => {
                     if let Some(p) = self.pull.get_mut(&conn) {
-                        p.failed.insert(b);
+                        p.failed.insert((s, b));
                     }
                     return;
                 }
@@ -1118,7 +1120,7 @@ impl Streams {
             let mut ids = Vec::new();
             let mut drop = Vec::new();
             for (k, (s, b)) in &p.queue {
-                if p.settled.contains(&(*s, *b)) || p.failed.contains(b) || !ctx.shared.members(conn).contains_key(s) {
+                if p.settled.contains(&(*s, *b)) || p.failed.contains(&(*s, *b)) || !ctx.shared.members(conn).contains_key(s) {
                     drop.push(*k);
                     continue;
                 }
@@ -1176,7 +1178,7 @@ impl Streams {
         }
         let Some(p) = self.pull.get_mut(&conn) else { return };
         if items.is_empty() {
-            p.failed.extend(ids.iter().copied());
+            p.failed.extend(ids.iter().map(|b| (s, *b)));
         }
         for b in ids.iter().filter(|b| items.is_empty() || seen.contains(b)) {
             if self.asked.get(b).is_some_and(|(x, _)| *x == conn) {
@@ -1188,7 +1190,7 @@ impl Streams {
                 Some((bytes, wrap, stamp)) => self.take_body(ctx, conn, s, f.blob_id, wrap, stamp, &bytes),
                 None => {
                     if let Some(p) = self.pull.get_mut(&conn) {
-                        p.failed.insert(f.blob_id);
+                        p.failed.insert((s, f.blob_id));
                     }
                 }
             }
@@ -1203,7 +1205,7 @@ impl Streams {
             let Some(p) = self.pull.get(&conn) else { return };
             let Some(front) = p.pending.front() else { break };
             let members = ctx.shared.members(conn);
-            let ready = front.owed.iter().all(|(s, b)| p.settled.contains(&(*s, *b)) || p.failed.contains(b) || !members.contains_key(s) || ctx.store.bytes(b).ok().flatten().is_some());
+            let ready = front.owed.iter().all(|(s, b)| p.settled.contains(&(*s, *b)) || p.failed.contains(&(*s, *b)) || !members.contains_key(s) || ctx.store.bytes(b).ok().flatten().is_some());
             if !ready {
                 return;
             }
@@ -1216,7 +1218,7 @@ impl Streams {
             // what failed here matters only to messages in hand (an announcement again clears it)
             if p.pending.is_empty() {
                 let failed = std::mem::take(&mut p.failed);
-                p.queue.retain(|_, (_, b)| !failed.contains(b));
+                p.queue.retain(|_, x| !failed.contains(x));
             }
         }
     }

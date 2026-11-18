@@ -1755,6 +1755,41 @@ fn the_next_source_takes_over_when_one_fails_spec_sync_streams_4() {
     assert!(p.b.streams.caught_up(C, &s) && p.b.streams.caught_up(D, &s));
 }
 
+// spec/sync-streams.md §4 (Bodies: what a Fetch answered with nothing counts as not held at that
+// source until it announces the entry again): a body the source failed to give under S, owed by a
+// message in hand behind another, stays failed there when the same blob is announced under
+// another sync ID, so the message applies once the one before it does.
+#[test]
+fn a_failed_body_stays_failed_when_announced_under_another_sync_id_spec_sync_streams_4() {
+    let mut p = Pair::new();
+    let (s1, s2, s3) = (sid(1), sid(2), sid(3));
+    // b joins s3 first: its listing, owing z, is in hand before s1's, owing x
+    p.a.log(s3, 40_001);
+    let x = p.a.log(s1, 40_000);
+    for s in [s3, s1, s2] {
+        p.shared_read(s);
+    }
+    p.run_with(|ab, m| ab && m.kind() == 20);
+    let mut held = std::mem::take(&mut p.held);
+    assert_eq!(held.len(), 2, "z's and x's Fetches answered, held");
+    let at = |held: &[(bool, Frame)], b: BlobId| held.iter().position(|(_, f)| matches!(f.msg(), Msg::FetchReply { items, .. } if items.iter().any(|i| i.blob_id == b))).unwrap();
+    // a answers x's Fetch with none
+    let (_, Frame::Ans(id, _)) = held.remove(at(&held, x)) else { panic!() };
+    p.b.with(p.now, |st, c| st.message(c, C, Incoming::Reply(To::Streams, id, Msg::FetchReply { id, items: Vec::new() })));
+    // then announces x under s2; b fetches it there
+    assert_eq!(p.a.log(s2, 40_000), x);
+    p.run_with(|ab, m| ab && m.kind() == 20);
+    held.append(&mut p.held);
+    assert_eq!(held.len(), 2, "z's Fetch, then x's under s2");
+    for (_, f) in held {
+        let Frame::Ans(id, _) = f else { panic!() };
+        let m = f.msg();
+        p.b.with(p.now, |st, c| st.message(c, C, Incoming::Reply(To::Streams, id, m)));
+    }
+    p.run();
+    assert!(p.b.streams.caught_up(C, &s1), "x failed at a under s1: its message applied");
+}
+
 // spec/sync-streams.md §4 (Bodies: what a Fetch answered with nothing is not asked there again
 // until announced again; Refused), hostile source: one listing bodies it refuses to give, and
 // telling refusals of entries this side never held, leaves nothing kept here once its messages
