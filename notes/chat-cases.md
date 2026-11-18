@@ -251,8 +251,8 @@ Nothing here is designed: each answer is what today's core would give if servers
 
 - **e** Sender card in invite requests (Tess: yes).
 - **h** Wake relay for background notifications (Tess: does not block).
-- **j** Per-sender key chains (Signal sender keys): per-message erasure, at the cost of a per-sender state per device and either a per-sender marker the nodes keeping the chat unread can link or trial decryption.
-- **m** Erasable per-device KEM keys with per-device boxes (MLS-sized): what real member forward secrecy would need; against spec/crypto.md §3 and spec/requirements.md, Cost.
+- **j** Per-sender key chains (Signal sender keys): per-message erasure, at the cost of a per-sender state per node and either a per-sender marker the nodes keeping the chat unread can link or trial decryption.
+- **m** Erasable per-node KEM keys with per-node boxes (MLS-sized): what real member forward secrecy would need; against spec/crypto.md §3 and spec/requirements.md, Cost.
 - **n** History-less grant: a cut (a read rotation at the add carrying no history), a floor per read epoch that history entries and boxes respect, role commits opened by every holder under roles secrets (notes/history-less-grant.md, model-checked); segments (footnote 33) are the fallback without core change.
 - **o** A node that stops fetching short of old messages (issues/partial-history-fetch.md); fetch is newest first (spec/sync-judgement.md §2).
 - **r** Pure readers place nothing under big sync IDs: no chain certificates or node card from a reader unless asked (realms past a few thousand members).
@@ -269,7 +269,7 @@ Nothing here is designed: each answer is what today's core would give if servers
 20. From held headers: an expired delta carries `expires`, a purged one is named by a purge request; after header forgetting both are residue.
 26. admins may always purge (spec/commits.md §5 Who and how long): a modified sender's message goes like any.
 27. an edit is a replacement of the message purging its older versions in the same commit.
-28. the header-only blob of a purged permanent delta is kept forever and reaches new devices, with its purge commit (spec/commits.md §5).
+28. the header-only blob of a purged permanent delta is kept forever and reaches new nodes, with its purge commit (spec/commits.md §5).
 30. nothing is compacted; messages keep at least forever.
 31. admins may always purge (spec/commits.md §5 Who and how long): junk is what an admin's purge by author erases.
 33. Segments: the admin creates a new chat, grants everyone plus the newcomer, and the old chat points to it (admin-only); old members' apps stitch the two. No core change; Tess's primary path is core n (notes/chat.md Left out).
@@ -277,7 +277,7 @@ Nothing here is designed: each answer is what today's core would give if servers
 35. The pointer is a set, so old members stitch every branch; each newcomer sees only its branch; admins merge with a further segment.
 36. About 15 KB per member (grant boxes plus chain certificates under the new sync ID): about 15 MB at 1000, estimated.
 38. admins may always purge (spec/commits.md §5): no setting makes a message undeletable.
-39. the header's actor is checked by validity (spec/permissions.md §5.2: the signing device holds write on the actor at the commit's key), so a valid commit's actor is its sender; that the actor itself could write on the chat is the ordinary validity of the device's write only when its path runs through the actor.
+39. the header's actor is checked by validity (spec/permissions.md §5.2: the signing node holds write on the actor at the commit's key), so a valid commit's actor is its sender; that the actor itself could write on the chat is the ordinary validity of the node's write only when its path runs through the actor.
 40. with frontier heads (unbuilt); without them a kick lists about 34 B per message the member ever sent (3.4 MB at 10^5) and caps near 1.9x10^6 messages.
 41. The removal and the top realm's rotation are one commit (2.7 KB per member); each channel re-keys on any writer's next sync pass (about 11 KB, eager, may fork). Cutting sync, write and deposit keys needs an admin of each channel to register a step at each node keeping it unread; until then the removed member reads ciphertext and can log entries.
 42. At 1000: 2.7 MB plus about 11 KB per channel, spread over members' passes. At 100,000 with tiers of 1000: the tier (2.7 MB), the top realm (100 boxes), then channels; estimated.
@@ -289,9 +289,9 @@ Nothing here is designed: each answer is what today's core would give if servers
 48. A sibling chat the members write carries the reactions; the app shows them under the announcement.
 49. Adding a channel is a grant for the realm on the chat, needing admin on the chat and on the realm's layout; a member creates a chat and asks an admin to add it.
 50. Names and categories are a chat-app layout aspect on the realm, naming each channel by a weak, so nothing of a channel is in the realm's sync unit; a member's app syncs a channel by holding a strong to it (spec/sync-set.md §1).
-51. Grant the private channel only to a role realm. Left: the nodes keeping it unread see its sync ID, a device-removal frontier head names its tid under public sync IDs (frontier-study format), and a purge across channels shows their tids.
+51. Grant the private channel only to a role realm. Left: the nodes keeping it unread see its sync ID, a node-removal frontier head names its tid under public sync IDs (frontier-study format), and a purge across channels shows their tids.
 52. Entry counts are drowned by certificates (no kind in the log); a latest-time register per channel on the realm, written by posters, is the cheap source.
 53. Threads and forum posts are reply chains inside the channel, grouped by the app.
 54. A thing the realm reads (minted with it as admin, or granted to it) is in the realm's sync unit while a strong on the realm references it; an independent one syncs under its own sync ID too. Whether writers may remove one is the realm schema's choice (Tess): strongs in an admin-only aspect (`^`, spec/data-model.md §2) only admins remove; in `holds.0` any member may, and the thing leaves the realm's sync unit, going where nothing else references it (spec/sync-set.md §3).
 55. Every thing's role history is kept forever and readable by its holders.
-56. Rights: lower the top realm's role on each child, one commit per child; one step only as a client-honored flag.
+56. Rights: lower the top realm's role on each channel, one commit per channel; one step only as a client-honored flag.
