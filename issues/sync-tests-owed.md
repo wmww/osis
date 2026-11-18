@@ -7,7 +7,7 @@ Test conventions: notes/sync-test-harness.md (one harness, one fast test per spe
 
 ## Reference graph properties with no sync world test
 Each needs a sync world (three nodes, contacts or siblings, inbox delivery) unless it says otherwise.
-- D's deposit seed is fresh after a device removal: the removed node's deposit to the inbox is refused (an account removal from a thing: engine `flows::removal_refreshes_deposit_seed_*`).
+- D's deposit seed is fresh after a node removal: the removed node's deposit to the inbox is refused (an account removal from a thing: engine `flows::removal_refreshes_deposit_seed_*`).
 
 ## Scenarios from the old sync's issues
 Each readable with `git show e1bafb8ca^:issues/<name>.md` (`refused-memory-entry-holds-label-unsettled` for the one named by sync ID).

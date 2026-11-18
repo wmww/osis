@@ -1,5 +1,5 @@
 # What a node pays for holding many things with their own sync ID
-> Summary: Perf investigation, not started. Under the reference graph (spec/sync-set.md §2) sharing a tag of notes gives every note its own keys and sync ID, so a node holding tens of thousands of sync IDs is ordinary use. The protocol's idle cost is stated not to grow with them (spec/sync-streams.md §4 Costs); a node's local work, the cost of making them and key changes cascading through them are unmeasured. Count each at n and 10n.
+> Summary: Perf investigation, not started. Under the reference graph (spec/sync-set.md §2) sharing a tag of notes makes every note independent, with its own sync ID, so a node holding tens of thousands of sync IDs is ordinary use. The protocol's idle cost is stated not to grow with them (spec/sync-streams.md §4 Costs); a node's local work, the cost of making them and key changes cascading through them are unmeasured. Count each at n and 10n.
 > Priority: normal
 > Tags: sync, engine, perf
 

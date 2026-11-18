@@ -4,7 +4,7 @@
 > Tags: tests, engine, sync
 
 ## Case it would need
-A read ticket held with no grant to take (one from D's `tickets.0`, written by another device of the account), a strong reaching T, and the account removed from T before this node held any role commit on T. Only the read-ticket clause takes the notice then; without it the node waits for a roster that no peer will send, since they judge it departed.
+A read ticket held with no grant to take (one from D's `tickets.0`, written by another node of the account), a strong reaching T, and the account removed from T before this node held any role commit on T. Only the read-ticket clause takes the notice then; without it the node waits for a roster that no peer will send, since they judge it departed.
 
 ## Open
 - Build that case as a hand-built test, or show it cannot happen and drop the clause from the spec and from `removals_due`.

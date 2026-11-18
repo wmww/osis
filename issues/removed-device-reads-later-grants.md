@@ -4,8 +4,8 @@
 > Tags: security, crypto, engine, tess-call
 
 ## The gap
-- spec/crypto.md §5 (Who wraps under what, the exception): a commit giving read epochs of an actor is wrapped under the epoch they supersede with the greatest n whose roles secret the node holds.
-- A party removed from the actor at the rotation minting e holds the roles secret of the epoch e supersedes. Every grant and re-seal giving e is wrapped there, so the removed party opens their role parts (`roles.0`, `keys.0`, `secrets.0`: who was granted, the sealed boxes) as it opens e's rotation, for as long as it opens S: until S's step for e reaches the peers it uses (admin-only, so for a writer's removal until an admin next writes).
+- spec/crypto.md §5 (Who wraps under what, the exception): a commit giving read epochs of a thing is wrapped under the epoch they supersede with the greatest n whose roles secret the node holds.
+- A party removed from the thing at the rotation minting e holds the roles secret of the epoch e supersedes. Every grant and re-seal giving e is wrapped there, so the removed party opens their role parts (`roles.0`, `keys.0`, `secrets.0`: who was granted, the sealed boxes) as it opens e's rotation, for as long as it opens S: until S's step for e reaches the peers it uses (admin-only, so for a writer's removal until an admin next writes).
 - Not accepted in the spec (Tess); tolerated in code for now.
 
 ## Why it exists

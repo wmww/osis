@@ -1,5 +1,5 @@
 # Settings: one private thing per account and per node
-> Summary: Build plan (design decided with Tess, restated in reference graph terms): settings are ordinary aspects on a private account settings thing, plus a node data thing per node, both plain things under the account root, so they sync among the account's nodes and nobody else reads them. A node's `node.0` points to its data thing; windows are local things on the node root. Adds a place and moves misplaced state; adds no new settings. Tess's direction: per-node settings sync by default, referenced from both the account's shared data and the local node root, so either finds them; easy to change or make configurable later.
+> Summary: Build plan (design decided with Tess, restated in reference graph terms): settings are ordinary aspects on a private account settings thing, plus a node data thing per node, both dependent things minted with admin the account root, so they sync among the account's nodes and nobody else reads them. A node's `node.0` points to its data thing; windows are local things on the node root. Adds a place and moves misplaced state; adds no new settings. Tess's direction: per-node settings sync by default, referenced from both the account's shared data and the local node root, so either finds them; easy to change or make configurable later.
 > Priority: normal
 > Tags: api, app, kit, spec
 
@@ -25,28 +25,28 @@ node data thing
 node root (local, holds.0)
 └─ ui:windows.0 things                 → local window things
 ```
-- **Account settings thing**: plain, made under the account root (its keys derive from D's, so P's nodes read it). `Osis::create` makes it, references it from D and sets `settings.0` in the account's creation transaction, so it cannot be made twice.
-- **Node data thing**: plain, made under the account root, so any node of the account writes it.
+- **Account settings thing**: dependent, minted with admin D, the account root (its keys derive from D's, so P's nodes read it). `Osis::create` makes it, references it from D and sets `settings.0` in the account's creation transaction, so it cannot be made twice.
+- **Node data thing**: dependent, minted with admin D, so any node of the account writes it.
   - Not on the node thing: a node thing is written only by that node (spec/permissions.md §1), which rules out remote edits.
   - Not D's own aspects: reading D opens the account's tickets, so anything there could never be shared.
-  - Its tid names no node and only `node.0` links them, so granting a role on it later does not reveal a device.
+  - Its tid names no node and only `node.0` links them, so granting a role on it later does not reveal a node.
 - **Creating a node data thing**: the node itself, on first open as a node of the account, is the only creator. Its creation nonce is `kdf("node data", node seed, account tid)` (as a link key derives its own, spec/crypto.md §3). The thing with D's strong to it, then the pointer: on open, make the thing unless held, then write the pointer if absent. A crash between them repeats nothing and leaves no stray thing.
 
 ## Reading and writing
 - A setting's value is this node's value, else the account's, else the caller's built-in default. Any key may be set at either level; settings declare no scope.
 - Defaults are never written to osis.
 - API, to pass notes/api-design.md: `settings() -> Tid`, `node_data(node) -> Option<Tid>` (`None` until that node's `node.0` is held), and `setting(key)`: the resolved value with one listener over both levels, firing when the resolved value changes. Writes and clears are the ordinary `at(tid, key)` calls.
-- Client port rows are the main actor's only at first (not in `method::for_client`). A client with its own actor reads settings only if granted a role, as for any thing.
+- Client port rows are the main actor's only at first (not in `method::for_client`). A client with its own client actor reads settings only if granted a role, as for any thing.
 - A node applies its settings from listeners or engine changes, including changes made elsewhere while it was offline.
-- Limit: a node of several accounts follows its main account's settings.
-- Limit: any node of the account can change any other's settings, as it can already act as the account. A remote change can cut a node off the network; then only someone at that device can fix it.
+- A node of several accounts follows its main account's settings.
+- Any node of the account can change any other's settings, as it can already act as the account. A remote change can cut a node off the network; then only someone at that node can fix it.
 
 ## Windows
-- A window is its own thing, any number per node, held by the node root's `holds.0`: in no sync unit, its state never leaves the device.
+- A window is its own thing, any number per node, held by the node root's `holds.0`: in no sync unit, its state never leaves the node.
 - Sharing a window later is granting a role on it and referencing it from a shared thing.
 
 ## Node removal
-`remove_node` removes D's strong to the node's data thing, which releases it everywhere. The node's windows were only ever on that device. A removed node reads built-in defaults.
+`remove_node` removes D's strong to the node's data thing, which releases it everywhere. The node's windows were only ever on that node. A removed node reads built-in defaults.
 
 ## What moves
 - `caps^.0` and `clients^.0`: the plan wanted them on the node data thing (a sibling changes an offline node's caps); spec/sync-set.md §1 puts them on the local node root.
@@ -56,7 +56,7 @@ node root (local, holds.0)
 
 ## Not now
 - New settings. Whether a node listens for others and which relays it uses (no `Config` field today) are future candidates: `create` would have to take initial values, so a node that must not show its address is private from its first moment.
-- Device-only settings: a local thing on the node root, read before the node's value.
+- Node-only settings: a local thing on the node root, read before the node's value.
 
 ## Spec and notes to update
 - spec/data-model.md §9 and `schema/core.osis`: `settings.0`, `node.0`'s `data` field. spec/crypto.md §3 and spec/wire.md §3: the derived nonce.

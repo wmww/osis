@@ -1,4 +1,4 @@
-# The About facet lists a link's actor as a person
+# The About facet lists a link key as a person
 > Summary: `compute_reach` (behind the `reach` memo) in libs/kit/src/facets/about.rs walks `grants` and names every non-tag holder, so a link's K shows as "someone"; it should use `holders`' `kind` (Actor, Link, Key) and read a link's joiners through K.
 > Priority: low
 > Tags: kit, app

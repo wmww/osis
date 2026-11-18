@@ -25,7 +25,7 @@ The module notes (notes/sync-*.md) point here. Untested built parts: issues/sync
 ## Cost
 - **Unjudgeable bodies fetched again** (spec/commits.md §4, spec/sync-judgement.md §3 Dropped bodies): needs byte-less entries (`Streams::fetch_again`, notes/sync-read.md); until then an awaiting entry keeps its bytes.
 - **Sole certificates** (spec/sync-judgement.md §2 may-hold): `BodyFacts::sole_certificate` is always false, so such a certificate is must-hold (logged, relayed, owed). Build it from the author's other blobs under S, or drop the clause if §2's chain-certificate rule covers it.
-- **`SETTLE_MS`** (spec/wire.md §2, a MAY wait: spec/permissions.md §3, §4): nothing waits it, so every holder copies another node's demotion or `keys.0` at once (3.3 KB per holder per removal, notes/certificates.md), and every admin gives a plain thing with holders secrets of its own at its pass end (`own_secrets_candidates`), concurrent ones forking.
+- **`SETTLE_MS`** (spec/wire.md §2, a MAY wait: spec/permissions.md §3, §4): nothing waits it, so every holder copies another node's demotion or `keys.0` at once (3.3 KB per holder per removal, notes/certificates.md), and every admin makes a dependent thing with holders independent at its pass end (`own_secrets_candidates`), concurrent ones forking.
 - `Rank::Never` (a keyset without history) has no facade call; when built, an entry ranked never is neither held nor taken, so `pull::concerns` keeps no presence of it (spec/sync-judgement.md §3 `known` must count it).
 - **Past-cap registers** keep `past_cap` per sync ID in memory, lost at a restart (spec/sync-ids.md §6 Storage caps: at most once per interval).
 
