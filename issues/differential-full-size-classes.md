@@ -1,7 +1,7 @@
 # Full-size sync differential: open failure classes
 > Summary: `OSIS_FULL=1 differential::histories_hold_their_closure` over seeds 0..199 fails 7 at caefa1d35 (114, 131, 138, 146, 169, 180, 189). Two classes are understood: a holder boxed after a thing's keying never gets the history its boxes open (146, seed-0 reproducer below), and a connection whose sources never catch up while idle (114). A fix for the first (branch `keel-diff-200-wip`) regresses the run to 14 failures. Chain reads (138, 169), a keyless read (180) and 131 are unstudied.
 > Priority: normal
-> Tags: sync, engine, tests, tess-call
+> Tags: sync, engine, tests
 
 Seed numbers move whenever commit bytes change (worlds are seeded by ID): work from scripts, and turn each class into a hand test (notes/principles.md, Never pin a seed). Replay: `OSIS_FULL=1 OSIS_SYNC_SEED=<n> OSIS_SYNC_SEEDS=1`. Run the 200 seeds as four `tools/heavy` holds of 50 (about 4 minutes each on an idle box).
 
@@ -25,3 +25,6 @@ Seed numbers move whenever commit bytes change (worlds are seeded by ID): work f
 
 ## Stale status sources after a power cycle
 - Not reached by seeds 0..199. `Node::closed` returns early only when it holds no session for the connection; a session goes only in `closed` itself, which then closes it in streams and opens and hands its members on, and opens learns of a connection only through its session's messages. So that early return skips nothing, and the stale path is elsewhere; no reproducer, so no hand test.
+
+## Decision (Keel)
+Class 3, where a holder boxed after a keying gets the history box: the grant re-boxes the history itself. A grant with history passes the grantee every earlier epoch it may read, including a plain thing's derived epoch before its keying, by the existing passing-on rule (spec/crypto.md §5). Certificates and fires stay as they are, and the giving commit is logged once. Branch `keel-diff-200-wip` took the other option (carrying keys in certificates and fires), which raised the 200-seed count from 7 to 14. Don't build on it.
