@@ -96,7 +96,7 @@ Wire is maker to second node (back in brackets); stored is logical, engine rows 
 - **Sync-step verifications [M]**: none for a single small commit; 525 world-wide for 100 makes in 100 commits (7 in a step whose make compacted D's `holds.0`). Not traced.
 - **Decodes [M]**: each part decoded once per node in the engine (`part decode` equals the parts).
 - **Hashes [C]** (not counted by `costs`): at the maker, a delta hash per part, the commit ID, the account digest, the blob ID, the stamp's entry digest; at a receiver, the blob ID, the entry digest and the verdict hash per stamp check, the commit ID, a delta hash per part.
-- **Memory per thing held [E]**, from the structs: a `Meta` per commit with its `View` (an `AspectView` of about 120 B per aspect), entries in `by_aspect`, `ranges`, `by_thing`, `by_actor`, `commit_blobs`, `blob_parts`; `Held::created` and `first_admin_of` per thing; `derived_written` per dependent thing at its maker: of the order of 1-2 KB per small thing made alone, about half batched. Counter rows (51 B per aspect written) stay in memory until the session ends.
+- **Memory per thing held [E]**, from the structs: a `Meta` per commit with its `View` (an `AspectView` of about 120 B per aspect), entries in `by_aspect`, `ranges`, `by_thing`, `by_actor`, `commit_blobs`, `blob_parts`; `Held::created` and `mint_admin_of` per thing; `derived_written` per dependent thing at its maker: of the order of 1-2 KB per small thing made alone, about half batched. Counter rows (51 B per aspect written) stay in memory until the session ends.
 
 ### What each cost is
 (a) a job nothing else does, (b) a second copy or a pointer bigger than its data, (c) a job something present could do, (d) removed by a decided change.
