@@ -668,7 +668,7 @@ fn a_loose_record_awaited_after_another_arrives_is_learned_spec_commits_4() {
     }
 }
 
-// spec/sync-ids.md §2 (One sync ID per actor): a commit that gives a thing role secrets of its own also
+// spec/sync-ids.md §2 (One sync ID per independent thing): a commit that makes a thing independent also
 // creates its sync ID and records it in `sync.0`, in that one commit. A thing given secrets of its
 // own, by `make_independent` or by its first grant, has its sync ID, and the first commit
 // with a `secrets.0` part on it carries a `sync.0` write too.

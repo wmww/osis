@@ -1816,7 +1816,7 @@ impl Run {
                 let e = &self.lp.peers[v].engine;
                 let counts = e.core.ix.commits.get(&c).is_some_and(|m| e.core.standing(&c, &m.view) == osis_perm::EpochStanding::Counts);
                 // an honest node of P holding X's write before X's removal may name it (its
-                // cutoff: spec/permissions.md §5.5, Limit), which counts wherever its word does
+                // cutoff: spec/permissions.md §5.5, Several heads), which counts wherever its word does
                 let removal_at = |n: usize| self.w.item(removal).recv[n];
                 let excused = [A, B, C, T].iter().any(|n| i.recv[*n] < removal_at(*n));
                 if self.w.hostile(i.id) && counts && !excused {

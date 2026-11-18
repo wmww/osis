@@ -2,7 +2,7 @@
 //! spec/sync-compaction.md §1 Repair). Node 0 writes thing 0, node 1's account reads it. Node 1
 //! takes a paged commit of node 0's with a page away and then the request purging it: the part
 //! goes at once and node 1 flags the aspect, holding less than node 0 with no body left to fetch
-//! (notes/engine-suspects.md, The limit it backstops). Its list reaches node 0, which snapshots.
+//! (notes/engine-suspects.md, What it backstops). Its list reaches node 0, which snapshots.
 
 use crate::harness::Step::*;
 use crate::harness::history::{Gives, world};

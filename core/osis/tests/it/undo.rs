@@ -227,7 +227,7 @@ fn takings_undo_while_kept_spec_commits_7() {
     let late = commit_with(&db, |w| w.at(t, l.clone()).path(osis::p![]).splice(2..2, &[Value::Int(3)])).stamp.id;
     c.advance(61_000);
     // past T nothing of the list undoes: refused for `late`, or, once its body dropped as covered
-    // and its commits forgotten, nothing left to undo (spec/commits.md §5 Forgetting Limit:
+    // and its commits forgotten, nothing left to undo (spec/commits.md §5 Forgetting:
     // forgetting narrows undo, never widens it)
     let target = db.undo_target(&list);
     assert!(matches!(target, Ok(None)) || target == Err(gone(late)), "past T: {target:?}");
