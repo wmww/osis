@@ -7,12 +7,7 @@ Test conventions: notes/sync-test-harness.md (one harness, one fast test per spe
 
 ## Reference graph properties with no sync world test
 Each needs a sync world (three nodes, contacts or siblings, inbox delivery) unless it says otherwise.
-- A thing leaving a sync unit, its log-again arm: a node whose view still holds X there (a strong to X it wrote that the deleter has not seen) logs it again, and all settle (spec/sync-set.md §3 A thing leaving a sync unit; held-model `p2_per_holder_delete_keeps_concurrent_readd`). Dropping and deleting is `holding::a_removal_reaches_a_reader_opening_the_holder_through_a_second_thing_*`.
-- An ephemeral strong holds while a connected peer holds the value; with nobody connected a restart drops it; once every holder restarted it is released everywhere (engine `an_ephemeral_strong_going_lets_its_target_go_*` has the one-node arm).
-- A forged removal notice, one that checks against no roster held, changes nothing (the release and retained-copy arms: engine `tickets::a_removal_notice_releases_or_keeps_the_retained_copy_*`).
-- A stranded node with no writer connected fires `stranded@~0` (osis-sync `inbox::stranded` `Reports::report`, untested). The writer's side is engine `tests_stranded::a_writer_taking_a_stranded_notice_reseals_its_holder_*`.
 - D's deposit seed is fresh after a device removal: the removed node's deposit to the inbox is refused (an account removal from a thing: engine `flows::removal_refreshes_deposit_seed_*`).
-- Releasing everything after redeem rounds returns storage to a fresh world's (the growth tests' arms cover grant, accept, decline, expiry and history; issues/storage-owners.md). A growth arm costs 30 to 50 G instructions: fold redeem into an existing arm's rounds rather than adding one.
 
 ## Scenarios from the old sync's issues
 Each readable with `git show e1bafb8ca^:issues/<name>.md` (`refused-memory-entry-holds-label-unsettled` for the one named by sync ID).

@@ -225,6 +225,8 @@ impl Reports {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::store::Store;
+    use osis_base::WallMs;
     use osis_proto::Code;
 
     // spec/permissions.md §4 (stranded), spec/wire.md §11.2: a peer counts as told only on its Ok
@@ -245,5 +247,84 @@ mod tests {
         r.out.insert((ConnId(2), 7), (s, key, acct));
         assert!(r.answered(ConnId(2), 7, &Msg::Ok { id: 7 }));
         assert!(told(&r) && r.unsaved.contains(&s), "Ok: told, written at the next settle");
+    }
+
+    /// A `Net` with no connection.
+    struct Alone;
+
+    impl Net for Alone {
+        fn named(&self, _: ConnId) -> osis_store::Named {
+            osis_store::Named::default()
+        }
+        fn member(&self, _: ConnId, _: &SyncId) -> Option<crate::opens::Member> {
+            None
+        }
+        fn head(&self, _: ConnId, _: &SyncId) -> Option<osis_blob::StepId> {
+            None
+        }
+        fn present(&self, _: ConnId, _: &SyncId, _: &osis_base::BlobId) -> bool {
+            false
+        }
+        fn shown(&self, _: &SyncId, _: &osis_base::BlobId) -> bool {
+            false
+        }
+        fn filter_generation(&self, _: ConnId) -> u64 {
+            0
+        }
+        fn shows_deposit_key(&self, _: ConnId, _: &SyncId, _: &[u8; 32]) -> bool {
+            false
+        }
+        fn source(&self, conn: ConnId) -> crate::store::Source {
+            crate::store::Source::Conn(conn)
+        }
+        fn request(&mut self, _: ConnId, _: Msg) -> Option<RequestId> {
+            None
+        }
+        fn answer(&mut self, _: ConnId, _: RequestId, _: Msg) {}
+    }
+
+    // spec/sync-inbox.md §5 (Stranded notice: fired by a stranded node with no writer of it
+    // connected), spec/permissions.md §4 (Stranded: once per sync key of the newest step): peer 0
+    // rotates g's read leaving out reader m (peer 1), who takes it and is stranded. With nobody
+    // connected m fires a stranded notice, once: a second settle and a start over the same store
+    // fire none. (The writer's side: osis-engine `a_writer_taking_a_stranded_notice_reseals_its_holder`.)
+    #[test]
+    fn a_stranded_node_with_no_writer_connected_fires_once_spec_sync_inbox_5() {
+        use osis_engine::local_peer::LocalPeer;
+        let mut lp = LocalPeer::new(2, 0, WallMs(1_000_000)).unwrap();
+        lp.sync_all().unwrap();
+        let m = lp.peers[1].engine.me();
+        let mut mu = osis_engine::Mutation::new();
+        let me = lp.peers[0].engine.me();
+        let g = lp.peers[0].engine.new_thing(&mut mu, me);
+        lp.peers[0].commit(mu).unwrap();
+        lp.peers[0].engine.give_own_secrets(&g).unwrap();
+        lp.hold(g);
+        let edge = osis_schema::core_types::Edge { role: osis_base::Role::Read, until: None, invite: None, retain: false, floor: None };
+        lp.peers[0].engine.grant(&g, &m, &edge).unwrap();
+        lp.sync_all().unwrap();
+        lp.peers[0].engine.rotate_leaving_out(&g, &[osis_base::Role::Read], &[m]).unwrap().unwrap();
+        lp.sync(0, 1).unwrap();
+        let e = &mut lp.peers[1].engine;
+        let s = e.sync_ids(&g).unwrap()[0].id;
+        let st = Arc::new(e.stranded(&s).unwrap().expect("m is stranded"));
+        let (backend, root) = (osis_store::MemoryBackend::new(), osis_store::MemoryRoot::new());
+        let mut store = Store::open(Box::new(backend.clone()), Box::new(root.clone()), Box::new(osis_crypto::SeededRng::from_u64(1))).unwrap();
+        let policy = crate::types::Policy::default();
+        let fired = |e: &mut osis_engine::Engine, store: &mut Store, r: &mut Reports| {
+            let before = e.fires_owed().len();
+            let mut h = Here { engine: e, status: None, store, now: WallMs(1_000_000), mono: osis_base::Mono(0), policy: &policy };
+            r.now = Arc::new(BTreeMap::from([(s, st.clone())]));
+            r.dirty = true;
+            r.settle(&mut h, &mut Alone).unwrap();
+            h.engine.fires_owed().len() - before
+        };
+        let mut r = Reports::default();
+        assert_eq!(fired(e, &mut store, &mut r), 1, "a stranded notice fired");
+        assert_eq!(fired(e, &mut store, &mut r), 0, "once at this key");
+        let mut store = Store::open(Box::new(backend), Box::new(root), Box::new(osis_crypto::SeededRng::from_u64(2))).unwrap();
+        let mut r = Reports::default();
+        r.start(&mut Here { engine: e, status: None, store: &mut store, now: WallMs(1_000_000), mono: osis_base::Mono(0), policy: &policy }).unwrap();
+        assert_eq!(fired(e, &mut store, &mut r), 0, "nor again after a start");
     }
 }

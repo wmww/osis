@@ -931,6 +931,46 @@ fn an_ephemeral_strong_going_lets_its_target_go_spec_commits_5() {
     assert!(e0.core.created(&q).is_none(), "nothing held needs Q's chain");
 }
 
+// spec/data-model.md §8 What counts (an ephemeral aspect's references while the node holds its
+// value), spec/sync-set.md §3: peers 0 and 1, one account's nodes, hold X by an ephemeral strong
+// on D alone. Peer 0 restarts and loses the value, so X is released there, until peer 1, still
+// holding the value, gives it back (as a connected peer's join lists its live ephemeral
+// entries); once both have restarted with nobody holding it, X is released at both.
+#[test]
+fn an_ephemeral_strong_holds_while_a_peer_holds_its_value_spec_data_model_8() {
+    let mut lp = crate::common::net_one(2);
+    let d = lp.peers[0].engine.account_root().unwrap();
+    let a = osis_base::Ak::new("t:keep+.0").unwrap();
+    let x = make(&mut lp.peers[0].engine, d, d);
+    let mut m = Mutation::new();
+    m.set(d, &a, &Value::Strong(x)).unwrap();
+    let eph = lp.peers[0].engine.write(m).unwrap().unwrap().id;
+    strong(&mut lp.peers[0].engine, d, x, false);
+    lp.sync_all().unwrap();
+    let give = |lp: &mut osis_engine::local_peer::LocalPeer, from: usize, to: usize| {
+        let b = lp.peers[from].engine.memory_blob(&eph).unwrap().expect("held in memory");
+        lp.peers[to].engine.ingest_memory(&b.encode(), u64::MAX).unwrap();
+    };
+    give(&mut lp, 0, 1);
+    let held = |lp: &mut osis_engine::local_peer::LocalPeer, i: usize| {
+        let e = &mut lp.peers[i].engine;
+        e.settle_needs().unwrap();
+        e.settle_needs().unwrap();
+        e.closure_holds(&x)
+    };
+    assert!(held(&mut lp, 0), "the ephemeral strong holds X");
+    assert!(held(&mut lp, 1), "and at peer 1");
+    lp.peers[0].restart(1).unwrap();
+    assert!(!held(&mut lp, 0), "the value lost at a restart: X released");
+    give(&mut lp, 1, 0);
+    lp.sync(1, 0).unwrap();
+    assert!(held(&mut lp, 0), "peer 1 gives the value back: X held again");
+    lp.peers[0].restart(2).unwrap();
+    lp.peers[1].restart(3).unwrap();
+    lp.sync_all().unwrap();
+    assert!(!held(&mut lp, 0) && !held(&mut lp, 1), "every holder restarted: X released at both");
+}
+
 // spec/commits.md §5 What a held thing needs, spec/data-model.md §8 Held history: a strong in
 // held history needs its target as a current one does. Peer 0's T keeps history holding its
 // targets; its strong to account Q (peer 1, never entered) removed, Q's chain stays while the

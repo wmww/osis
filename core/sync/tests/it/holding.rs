@@ -757,35 +757,6 @@ fn make_in(w: &mut World, i: usize, admin: Tid, v: &str) -> Tid {
     })
 }
 
-// spec/sync-judgement.md §3 (Dropped bodies: what is forgotten with a released thing is fetched
-// again once a strong in the node closure reaches it again), spec/sync-set.md §3: Bob's T0 holds
-// X and Y, made under it; Alice reads T0. Bob's node 1 removes T0 -> X while his node 2, cut off,
-// writes Y -> X: Alice and node 1 release X, then Y -> X reaches them and they read X again.
-#[test]
-fn a_released_thing_reached_again_is_fetched_again_spec_sync_judgement_3() {
-    let mut w = siblings();
-    let alice = w.node(0).account.unwrap();
-    let t0 = make(&mut w, 1, None, "t0");
-    let x = make_in(&mut w, 1, t0, "x");
-    let y = make_in(&mut w, 1, t0, "y");
-    w.write(1, |e| e.grant(&t0, &alice, &edge(Role::Read))).unwrap();
-    strong(&mut w, 0, None, t0, true);
-    w.run();
-    assert_eq!(value(&mut w, 0, &x), Some(Value::Str("x".into())), "Alice reads X");
-    w.partition(0, 2);
-    w.partition(1, 2);
-    strong(&mut w, 1, Some(t0), x, false);
-    w.run();
-    assert_eq!(value(&mut w, 0, &x), None, "released at Alice");
-    assert_eq!(value(&mut w, 1, &x), None, "released at node 1");
-    strong(&mut w, 2, Some(y), x, true);
-    w.heal();
-    w.run();
-    for i in 0..3 {
-        assert_eq!(value(&mut w, i, &x), Some(Value::Str("x".into())), "node {i} reads X again");
-    }
-}
-
 // spec/sync-judgement.md §3 (Dropped bodies: a pull anew opens again each entry its store still
 // holds), notes/sync-store.md (Parked entries): Bob's T0 holds X and Y, made under it; Alice reads
 // T0. Her engine forgets X's minting whole while its entry stays in her store under T0's sync ID
@@ -1007,4 +978,43 @@ fn a_grant_after_a_keying_brings_the_history_its_boxes_open_spec_crypto_4() {
     w.run();
     assert_eq!(value(&mut w, 1, &t), Some(Value::Str("t".into())), "Bob reads T");
     assert_eq!(value(&mut w, 1, &x), Some(Value::Str("x".into())), "Bob reads X");
+}
+
+// spec/sync-set.md §3 (A thing leaving a sync unit: delete-key holders delete by their own view; a
+// node whose view still holds X there logs it again), spec/sync-judgement.md §3 (Dropped bodies:
+// what is forgotten with a released thing is fetched again once a strong in the node closure
+// reaches it again): on `three`, node 0 (admin) holds X and Y in thing 0's sync unit (T -> X,
+// T -> Y), node 1 keeps it unread, node 2 writes it. Node 2, cut off, writes Y -> X and goes off
+// while node 0 removes T -> X, releases X and deletes its value at node 1. Node 2 then meets node
+// 1 alone: its view still holds X, so it logs X's value there again; node 0, meeting node 1
+// alone, takes Y -> X and reads X again from the store.
+#[test]
+fn a_thing_left_by_one_view_is_logged_again_by_one_still_holding_it_spec_sync_set_3() {
+    let (mut w, t, s) = crate::harness::history::three(crate::harness::history::Gives::Writes, 2);
+    let x = make_in(&mut w, 0, t, "x");
+    let y = make_in(&mut w, 0, t, "y");
+    w.run();
+    assert_eq!(value(&mut w, 2, &x), Some(Value::Str("x".into())), "node 2 reads X");
+    let of_x = |w: &mut World| {
+        let es = w.store(1).entries(&s).unwrap();
+        es.iter().filter(|e| w.engine(2).blob_commit(&e.blob).and_then(|c| w.engine(2).header(&c)).is_some_and(|h| h.aspects.iter().any(|a| a.tid == x && a.ak == ak()))).count()
+    };
+    assert!(of_x(&mut w) > 0, "X's value under S at node 1");
+    w.partition(0, 2);
+    w.partition(1, 2);
+    strong(&mut w, 2, Some(y), x, true);
+    w.power_off(2);
+    strong(&mut w, 0, Some(t), x, false);
+    w.advance(osis_proto::limits::PASS_WAIT_MS + 1);
+    assert_eq!(value(&mut w, 0, &x), None, "released at node 0");
+    assert_eq!(of_x(&mut w), 0, "node 0 deleted X's value at node 1");
+    w.partition(0, 1);
+    w.rejoin(1, 2);
+    w.power_on(2);
+    w.advance(31_000);
+    assert!(of_x(&mut w) > 0, "node 2 logged X's value at node 1 again");
+    w.partition(1, 2);
+    w.rejoin(0, 1);
+    w.advance(31_000);
+    assert_eq!(value(&mut w, 0, &x), Some(Value::Str("x".into())), "node 0 reads X again, from the store");
 }

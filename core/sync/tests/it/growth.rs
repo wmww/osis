@@ -747,12 +747,17 @@ fn settled(w: &mut World) -> Vec<Held> {
 /// Node 0 makes a thing under its account root, writes it, and gives node 1's account read on
 /// it: node 1 accepts (`accept`, a strong from its account root) or declines (no accept, the
 /// fire left in its inbox); node 0 writes again, removes node 1's account, and both let the thing
-/// go (node 0 its strong, node 1 its accept). `rounds` times; then `settled`.
-fn grant_rounds(rounds: usize, accept: bool) -> (World, Vec<Held>) {
+/// go (node 0 its strong, node 1 its accept). `rounds` times, the first by `redeem_round` with
+/// `redeem`; then `settled`.
+fn grant_rounds(rounds: usize, accept: bool, redeem: bool) -> (World, Vec<Held>) {
     use crate::harness::history::Holder;
     let mut w = world(0, 2);
     w.cap = 2_000_000;
     for k in 0..rounds {
+        if redeem && k == 0 {
+            redeem_round(&mut w);
+            continue;
+        }
         let give = if accept { Grant(0, k, 1, Gives::Reads) } else { Give(0, k, Holder::Node(1), Gives::Reads) };
         let mut steps = vec![New(0), Write(0, k), give, Run, Write(0, k), Run, Remove(0, k, 1), Run];
         if accept {
@@ -766,14 +771,63 @@ fn grant_rounds(rounds: usize, accept: bool) -> (World, Vec<Held>) {
     (w, held)
 }
 
+/// `grant_rounds`' first accepting round, by a link: node 0 makes thing 0, writes it and makes a
+/// read link to it, which node 1 redeems; node 0 writes again, ends the link and takes K off the
+/// thing (node 1's account leaves K), and both let everything go: node 0 the thing and K,
+/// node 1 the strongs its redeem wrote to both (spec/sync-set.md §4 A redeem is an accept).
+fn redeem_round(w: &mut World) {
+    use osis_schema::core_types::HOLDS;
+    let strongs = |w: &mut World, i: usize| -> std::collections::BTreeSet<Tid> {
+        let d = w.engine(i).account_root().unwrap();
+        w.engine(i).get_typed(&d, &HOLDS).unwrap().unwrap_or_default().into_iter().filter_map(|r| match r {
+            osis_base::Ref::Strong(s) => Some(s.0),
+            _ => None,
+        }).collect()
+    };
+    let _ = play(w, &[New(0), Write(0, 0), Run], String::new());
+    let t = w.history.things[0].0;
+    let before = strongs(w, 0);
+    let link = w.make_link(0, t, Role::Read);
+    // the link's seed thing, held from D: no API lets it go once the link is revoked
+    // (issues/redeem-leaves-a-blob.md), so the sharer drops its strong here by hand
+    let seed: Vec<Tid> = strongs(w, 0).difference(&before).copied().collect();
+    w.redeem(1, &link);
+    w.run();
+    assert_eq!(w.redeem(1, &link), osis_sync::types::Waiting::Done, "redeemed");
+    let _ = play(w, &[Write(0, 0), Run], String::new());
+    let l = osis_engine::identity::key_actor_tid(&link.seed);
+    w.write(0, |e| {
+        e.finalize_link(&link.k, &l)?;
+        e.demote(&t, &Demotion { holder: link.k, new: None, retain: None })
+    })
+    .unwrap();
+    w.run();
+    for i in [0, 1] {
+        let held = strongs(w, i);
+        let go: Vec<Tid> = [t, link.k].into_iter().chain(seed.iter().copied()).filter(|x| held.contains(x)).collect();
+        w.write(i, |e| {
+            let d = e.account_root().unwrap();
+            let mut m = Mutation::new();
+            for x in &go {
+                m.op(d, &HOLDS, osis_crdt::PathOp { path: vec![], op: osis_crdt::Op::Remove(Value::Strong(*x)) }).unwrap();
+            }
+            e.commit(m).unwrap();
+        });
+    }
+    w.run();
+    w.advance(1_000);
+}
+
 /// `grant_rounds` at 2 and 20 rounds: each node as a fresh world's (`as_fresh`), each round's
 /// set removals at most `removals` a node.
-fn grants_as_fresh(accept: bool, removals: usize) {
-    let (mut wf, fresh) = grant_rounds(0, accept);
-    let ((mut wa, a), (mut wb, b)) = (grant_rounds(2, accept), grant_rounds(20, accept));
+fn grants_as_fresh(accept: bool, redeem: bool, removals: usize) {
+    let (mut wf, fresh) = grant_rounds(0, accept, false);
+    let ((mut wa, a), (mut wb, b)) = (grant_rounds(2, accept, redeem), grant_rounds(20, accept, redeem));
+    // the redeem round's set removals: the link's seed thing's and K's strongs and tickets beside the thing's
+    let extra = if redeem { 4 } else { 0 };
     for (i, who) in ["the maker", "the grantee"].iter().enumerate() {
-        as_fresh(&a[i], &fresh[i], 2 * removals, &format!("{who}, 2 rounds"), &mut |f| leaked(&mut wa, i, &mut wf, i, f));
-        as_fresh(&b[i], &fresh[i], 20 * removals, &format!("{who}, 20 rounds"), &mut |f| leaked(&mut wb, i, &mut wf, i, f));
+        as_fresh(&a[i], &fresh[i], 2 * removals + extra, &format!("{who}, 2 rounds"), &mut |f| leaked(&mut wa, i, &mut wf, i, f));
+        as_fresh(&b[i], &fresh[i], 20 * removals + extra, &format!("{who}, 20 rounds"), &mut |f| leaked(&mut wb, i, &mut wf, i, f));
         assert_eq!(a[i].0.get("cv/"), b[i].0.get("cv/"), "{who}: cv/ flat");
     }
 }
@@ -784,13 +838,23 @@ fn grants_as_fresh(accept: bool, removals: usize) {
 // inbox lifetime, the role keep and tombstones have passed, at 2 and 20 rounds.
 #[test]
 fn a_granted_and_revoked_thing_returns_storage_to_a_fresh_worlds_spec_sync_set_3() {
-    grants_as_fresh(true, 4);
+    grants_as_fresh(true, false, 4);
+}
+
+// Its redeem arm (spec/sync-set.md §4 A redeem is an accept): as the grant arm, the first round
+// granting by a link redeemed and ended (`redeem_round`). Fails: the grantee keeps one blob of
+// the sharer's account creation commit more than a fresh world (issues/redeem-leaves-a-blob.md);
+// run by hand until fixed, then fold it into the grant arm (`grant_rounds` with `redeem`).
+#[test]
+#[ignore = "issues/redeem-leaves-a-blob.md"]
+fn repro_a_redeemed_and_ended_link_returns_storage_to_a_fresh_worlds_spec_sync_set_3() {
+    grants_as_fresh(true, true, 4);
 }
 
 // S1, its decline arm (spec/sync-set.md §4 (Declining)): as the grant arm, the fire never accepted.
 #[test]
 fn a_declined_grant_returns_storage_to_a_fresh_worlds_spec_sync_set_3() {
-    grants_as_fresh(false, 4);
+    grants_as_fresh(false, false, 4);
 }
 
 // spec/sync-judgement.md §3 (Restart and forgetting: an own entry logs a commit held here),

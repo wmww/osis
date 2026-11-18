@@ -248,3 +248,46 @@ fn a_sealed_fire_is_one_fire_of_its_thing_spec_sync_inbox_4() {
         }
     }
 }
+
+// spec/sync-inbox.md §5 (Carried commits: a removal notice's commit is taken as an arriving
+// commit, each part only where judged valid): peer 2, a reader of g and no admin, forges Bob's
+// (peer 1's) removal from g, built as a hostile sender would, and fires its notice sealed on
+// Bob's inbox. Bob, taking it, checks it against the roster he holds: he still reads g, and holds
+// nothing of the forged commit.
+#[test]
+fn a_forged_removal_notice_changes_nothing_spec_sync_inbox_5() {
+    let (mut lp, g, tids) = granted(3, &[(1, Role::Read), (2, Role::Read)]);
+    let bob = tids[1];
+    let reg = osis_base::Ak::new("t:reg.0").unwrap();
+    let mut m = crate::Mutation::new();
+    m.set(g, &reg, &osis_base::Value::Str("before".into())).unwrap();
+    lp.peers[0].commit(m).unwrap().unwrap();
+    lp.sync_all().unwrap();
+    assert!(lp.peers[1].engine.get(&g, &reg).unwrap().is_some(), "Bob reads g");
+    let e2 = &mut lp.peers[2].engine;
+    let before = e2.fires_owed();
+    let c = e2
+        .run(|tx| {
+            let mut m = crate::Mutation::new();
+            crate::flows::put_edge(&mut m, g, bob, &edge(Role::Sync))?;
+            m.unchecked();
+            tx.core.skip_writer_rules = true;
+            let c = crate::engine::Engine::commit_tx(tx, m);
+            tx.core.skip_writer_rules = false;
+            let c = c?.expect("built");
+            crate::flows::inbox::fire_removal(tx, bob, c, g)?;
+            Ok(c)
+        })
+        .unwrap();
+    let id = *e2.fires_owed().iter().find(|x| !before.contains(x)).expect("owed");
+    let out = e2.sealed_fire(&id).unwrap().expect("sealed");
+    let e1 = &mut lp.peers[1].engine;
+    let opened = e1.open_entry(&out.sync_id, &osis_blob::blob_id(&out.blob), &[0; 57], &out.blob, u64::MAX).unwrap();
+    assert!(matches!(opened, crate::sync::Opened::Commit(..)), "the notice itself is a fire like any: {opened:?}");
+    e1.take_carried().unwrap();
+    e1.role_duties().unwrap();
+    e1.settle_needs().unwrap();
+    assert_eq!(e1.role_on(&g), Some(Role::Read), "Bob's role stands");
+    assert_eq!(e1.get(&g, &reg).unwrap(), Some(osis_base::Value::Str("before".into())), "he reads g as before");
+    assert!(e1.header(&c).is_none(), "nothing of the forged commit is held");
+}

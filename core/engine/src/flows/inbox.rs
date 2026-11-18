@@ -120,7 +120,7 @@ fn held_by(tx: &mut Tx<'_>, epochs: &osis_keys::ActorEpochs, r: Role, s: &osis_b
 /// below read (spec/sync-inbox.md §5): its value, the commit's `roles.0` parts on `target` with
 /// their author's chain, is made when the fire is first sealed, `c` applied by then.
 /// One already owed stays as it is.
-fn fire_removal(tx: &mut Tx<'_>, holder: Tid, c: CommitId, target: Tid) -> Result<()> {
+pub(crate) fn fire_removal(tx: &mut Tx<'_>, holder: Tid, c: CommitId, target: Tid) -> Result<()> {
     let Some(inbox) = inbox_in(tx, &holder)? else { return Ok(()) };
     let to = fire_to(tx, &holder);
     let o = OwedFire { thing: inbox, ak: super::ak(REMOVAL_FIRE)?, what: Fire::Removal { commit: c, target }, to, commit: None };
