@@ -391,6 +391,7 @@ pub(crate) fn without_frozen(core: &Core, blob: osis_commit::CommitBlob) -> osis
 fn drop_actors(tx: &mut Tx<'_>, mut lost: Vec<Tid>, dropped: &[Tid], rejudge: bool) -> Result<(Vec<Tid>, Forgotten)> {
     // an account this node was removed from: what it read as it goes too
     lost.extend(std::mem::take(&mut tx.core.left));
+    let lost = with_unread_below(tx.core, lost);
     if lost.is_empty() && dropped.is_empty() && !(rejudge && !tx.core.ix.kept.is_empty()) {
         return Ok((lost, Forgotten::default()));
     }
@@ -457,6 +458,30 @@ fn drop_actors(tx: &mut Tx<'_>, mut lost: Vec<Tid>, dropped: &[Tid], rejudge: bo
         }
     }
     Ok((lost, f))
+}
+
+/// `lost` and each thing with secrets of its own below one of them by record links (through plain
+/// things and such things alike) that the node does not read now (`readable`): keyed while the
+/// node read it by derivation from a lost actor, what it held of it was read by that actor's
+/// secrets, so it is a local unit the node can no longer read and goes with them
+/// (spec/permissions.md §3 Lost access; a sync role on it keeps its sync secrets). A thing it
+/// reads stops the walk. O(the things below the lost actors down to those it reads).
+fn with_unread_below(core: &Core, mut lost: Vec<Tid>) -> Vec<Tid> {
+    let mut seen: BTreeSet<Tid> = lost.iter().copied().collect();
+    let mut work = lost.clone();
+    while let Some(a) = work.pop() {
+        for c in core.ix.held.first_admin_of(&a).copied().collect::<Vec<_>>() {
+            let keyed = core.ix.own_keys.contains(&c);
+            if (keyed && readable(core, &c)) || !seen.insert(c) {
+                continue;
+            }
+            if keyed {
+                lost.push(c);
+            }
+            work.push(c);
+        }
+    }
+    lost
 }
 
 /// Which lost actors `Engine::forget_lost` drops.

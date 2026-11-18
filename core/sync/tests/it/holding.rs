@@ -765,6 +765,29 @@ fn a_removed_record_edge_reaches_its_first_admins_readers_spec_permissions_4() {
     }
 }
 
+// spec/permissions.md §3 (Lost access: a node drops every local unit it can no longer read),
+// spec/sync.md §3: Bob's node 2 makes T0 and grants Alice read; his node 1 makes T1 under T0;
+// Alice holds both. Node 1 removes Alice from T0 while node 2, not yet knowing, grants her sync
+// on T1 (T1 keyed). Alice holds sync alone on T1 and nothing on T0: she reads neither.
+#[test]
+fn a_reader_removed_as_a_sibling_keys_a_thing_below_reads_it_no_more_spec_permissions_3() {
+    let mut w = siblings();
+    let alice = w.node(0).account.unwrap();
+    let t0 = make(&mut w, 2, None, "t0");
+    w.write(2, |e| e.grant(&t0, &alice, &edge(Role::Read))).unwrap();
+    w.run();
+    strong(&mut w, 0, None, t0, true);
+    let t1 = make_in(&mut w, 1, t0, "t1");
+    strong(&mut w, 0, None, t1, true);
+    w.run();
+    assert_eq!(value(&mut w, 0, &t1), Some(Value::Str("t1".into())), "Alice reads T1 through T0");
+    w.write(1, |e| e.demote(&t0, &osis_engine::flows::Demotion { holder: alice, new: None, retain: None })).unwrap();
+    w.write(2, |e| e.grant(&t1, &alice, &edge(Role::Sync))).unwrap();
+    w.run();
+    assert_eq!(value(&mut w, 0, &t0), None, "Alice reads T0 no more");
+    assert_eq!(value(&mut w, 0, &t1), None, "Alice reads T1 no more: {}", w.why_role(0, &t1));
+}
+
 /// A thing node `i` makes under `admin`, held from `admin` alone, value `v`.
 fn make_in(w: &mut World, i: usize, admin: Tid, v: &str) -> Tid {
     let v = v.to_owned();
