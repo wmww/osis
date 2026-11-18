@@ -22,7 +22,6 @@ use osis_base::memo::Memo;
 use super::records;
 use crate::error::{Error, Result};
 use osis_base::{Ak, BlobId, CommitId, Link, Tid};
-use osis_crdt::Fragment;
 use osis_crypto::Secret32;
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::sync::Arc;
@@ -38,11 +37,15 @@ pub(crate) enum Source {
 fn roots_of(tx: &mut Tx<'_>, t: &Tid, s: &Source) -> Result<Vec<Link>> {
     let mut roots: Vec<Link> = Vec::new();
     match s {
-        Source::State(ak) => {
-            if let Some(v) = tx.state(t, ak)?.and_then(Fragment::read) {
-                links_in(&v, &mut roots);
-            }
-        }
+        // a piece at a time, each read as the whole reads there (`Tx::each_piece`)
+        Source::State(ak) => tx.reading(t, ak, None, |tx| {
+            tx.each_piece(t, ak, true, &mut |f| {
+                if let Some(v) = f.read() {
+                    links_in(&v, &mut roots);
+                }
+                Ok(false)
+            })
+        })?,
         Source::Body(c) => {
             let Some(on) = tx.core.ix.commits.get(c).map(|m| m.view.aspects_on(t).filter(|ai| m.holds(*ai)).collect::<Vec<usize>>()) else { return Ok(roots) };
             osis_base::costs::count("tree refs: parts read", on.len() as u64);
@@ -53,6 +56,17 @@ fn roots_of(tx: &mut Tx<'_>, t: &Tid, s: &Source) -> Result<Vec<Link>> {
     }
     roots.sort_unstable_by_key(|l| l.blob);
     roots.dedup();
+    // this crate's tests: the pieces' roots are the whole read's
+    #[cfg(test)]
+    if let Source::State(ak) = s {
+        let mut whole = Vec::new();
+        if let Some(v) = osis_base::costs::paused(|| tx.reading(t, ak, None, |tx| Ok(tx.state(t, ak)?.and_then(osis_crdt::Fragment::read))))? {
+            links_in(&v, &mut whole);
+        }
+        whole.sort_unstable_by_key(|l| l.blob);
+        whole.dedup();
+        assert_eq!(roots, whole, "state roots by pieces vs whole");
+    }
     Ok(roots)
 }
 

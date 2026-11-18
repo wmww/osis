@@ -618,35 +618,21 @@ pub(crate) fn covered_join(tx: &mut Tx<'_>, s: &CommitId, c: &CommitId, tid: &Ti
         return Ok(Some(false));
     }
     let is_snapshot = m.header.kind.is_compaction();
-    let decoded = crate::apply::held_part(tx, c, cai)?;
-    let body_facts = match &decoded {
-        Some(osis_commit::Decoded::Snapshot(x)) => Some((x.facts.clone(), x.absorbed.clone())),
-        _ => None,
-    };
-    let mut body: Option<Fragment> = decoded.map(osis_commit::Decoded::into_fragment);
-    // a snapshot never carries an expiring delta's values (spec/crdt.md §8): held with its
-    // values, the join below judges it (covered once no value of it lives); not held and not
-    // value-less, the frontier alone would wrongly say covered
-    if body.is_none() && m.header.aspects.get(cai).is_some_and(|_| m.header.expires.is_some()) && !super::valueless(tx.core, c, cai) {
-        return Ok(Some(false));
-    }
     // a valid snapshot body's copies all count (spec/permissions.md §5.2): it must carry them
     // all; an invalid one gives nothing, its copies of writes a received valid delta supplies
     // are left out
-    if is_snapshot && !crate::apply::copies::snapshot_valid(tx.core, c, tid, ak) {
-        let core = &*tx.core;
-        if let Some(b) = &mut body {
-            b.remove_writes(&|d| crate::apply::copies::any_delta(core, tid, ak, d, &|_, m, ai| !m.missing(ai) && m.valid_at(ai)));
-        }
-    }
-    let held = body.is_some();
-    let mut joined = Fragment::default();
-    if let Some(b) = body {
-        joined.join(b);
-    }
-    let (mut part, gives) = crate::apply::held_part_at(tx, s, sai, &joined)?;
+    let strip = is_snapshot && !crate::apply::copies::snapshot_valid(tx.core, c, tid, ak);
+    let body = covered_body(tx, s, sai, c, cai, strip, tid, ak)?;
+    let (held, gives) = (body.held, body.gives);
+    let body_facts = body.facts;
     // counted: tests read how much of the snapshot a judgment walks
-    osis_base::costs::count_with("covered: snapshot part bytes", || part.approx_bytes() as u64);
+    osis_base::costs::count("covered: snapshot part bytes", body.part_bytes);
+    // a snapshot never carries an expiring delta's values (spec/crdt.md §8): held with its
+    // values, the join below judges it (covered once no value of it lives); not held and not
+    // value-less, the frontier alone would wrongly say covered
+    if !held && m.header.aspects.get(cai).is_some_and(|_| m.header.expires.is_some()) && !super::valueless(tx.core, c, cai) {
+        return Ok(Some(false));
+    }
     // the snapshot not held: nothing is established
     let Some(g) = &gives else { return Ok(None) };
     if let Some((fr, abs, facts)) = g {
@@ -655,7 +641,7 @@ pub(crate) fn covered_join(tx: &mut Tx<'_>, s: &CommitId, c: &CommitId, tid: &Ti
         // (spec/commits.md §5 Covered): a cover never leaves another class or actor standing
         // for them where the header is not held. Judged on the commits both carry, each as
         // stated (a fact left out is the narrowest, the actor the author where it names none)
-        let both: Vec<_> = if held { stamps_of(&joined).intersection(&stamps_of(&part)).cloned().collect() } else { Vec::new() };
+        let both: Vec<_> = if held { body.stamps.intersection(&body.part_stamps).cloned().collect() } else { Vec::new() };
         let cover = |k: &(Ts, osis_crdt::Source)| stated(facts, &|x| abs.iter().find(|a| a.0 == *x).map(|a| a.1), k);
         let same = match &body_facts {
             Some((bf, babs)) => both.iter().all(|k| stated(bf, &|x| babs.get(x).copied(), k) == cover(k)),
@@ -706,17 +692,123 @@ pub(crate) fn covered_join(tx: &mut Tx<'_>, s: &CommitId, c: &CommitId, tid: &Ti
     }
     // the snapshot holds the body's live writes as the body does, judged on its part at the
     // body's positions: with its writes under the body's dots taken out and the body joined
-    // back, its canonical bytes are unchanged. A copy the snapshot holds otherwise leaves the
-    // body uncovered whichever wins the copy order (spec/crdt.md §4.1): the body is kept. A
-    // value-less write of the body has no payload to hold: the snapshot's copy stays and the
-    // join decides (a valued copy takes it).
-    let before = crate::engine::state::encode(&part)?;
-    let mut valueless = std::collections::BTreeSet::new();
-    joined.valueless_dots(&mut valueless);
-    let ix = joined.copy_index();
-    part.remove_writes(&|d| ix.holds(d) && !valueless.contains(d));
-    part.join(joined);
-    Ok(Some(crate::engine::state::encode(&part)? == before))
+    // back, its canonical bytes are unchanged (`covered_body`, a group of pieces at a time). A
+    // copy the snapshot holds otherwise leaves the body uncovered whichever wins the copy order
+    // (spec/crdt.md §4.1): the body is kept. A value-less write of the body has no payload to
+    // hold: the snapshot's copy stays and the join decides (a valued copy takes it).
+    Ok(Some(body.unchanged))
+}
+
+/// What `covered_join` reads of body `c` (part `cai`) against snapshot `s` (part `sai`).
+struct CoveredBody {
+    held: bool,
+    /// The snapshot's frontiers, `Absorbed` and facts (`held_part_at`); `None`: not held.
+    gives: Option<Option<crate::engine::Gives>>,
+    /// A snapshot body's facts and `Absorbed`.
+    facts: Option<(osis_crdt::Facts, BTreeMap<CommitId, Tid>)>,
+    /// The stamps of the body's writes, and of the snapshot's at the body's positions.
+    stamps: BTreeSet<(Ts, osis_crdt::Source)>,
+    part_stamps: BTreeSet<(Ts, osis_crdt::Source)>,
+    part_bytes: u64,
+    /// Some group was judged.
+    judged: bool,
+    /// The snapshot's part at the body's positions, its writes under the body's dots taken
+    /// out (but value-less ones) and the body joined back, encodes as before.
+    unchanged: bool,
+}
+
+/// Reads body `c` a piece at a time (`each_held_piece`; `strip`: an invalid snapshot's copies
+/// of what a valid delta supplies taken out): its writes by dot, value-less ones and stamps,
+/// then judges it against the snapshot's part at its positions (`held_part_at`) in groups of
+/// its pages, each with its skeleton (where pages meet: their paths' records and resets), so a
+/// judgment holds the skeleton and pages of about the two parts' root bytes, not the body.
+/// Positions join independently (spec/crdt.md §4.1), so the groups' judgments are the whole
+/// body's. A body that fits one group is read once.
+#[allow(clippy::too_many_arguments)]
+fn covered_body(tx: &mut Tx<'_>, s: &CommitId, sai: usize, c: &CommitId, cai: usize, strip: bool, tid: &Tid, ak: &Ak) -> Result<CoveredBody> {
+    let root = |tx: &mut Tx<'_>, x: &CommitId, ai: usize| -> Result<usize> { Ok(tx.get_commit(x)?.and_then(|b| b.part(ai).map(|p| p.delta.len())).unwrap_or(0)) };
+    let room = root(tx, s, sai)?.saturating_add(root(tx, c, cai)?);
+    let mut out = CoveredBody { held: false, gives: None, facts: None, stamps: BTreeSet::new(), part_stamps: BTreeSet::new(), part_bytes: 0, judged: false, unchanged: true };
+    let (mut ix, mut valueless) = (osis_crdt::CopyIndex::default(), BTreeSet::new());
+    let mut skeleton: Option<Fragment> = None;
+    // the body joined while it fits one group
+    let (mut whole, mut size, mut fits, mut whole_only) = (Fragment::default(), 0usize, true, false);
+    let read = |tx: &mut Tx<'_>, mut f: Fragment| {
+        if strip {
+            let core = &*tx.core;
+            f.remove_writes(&|d| crate::apply::copies::any_delta(core, tid, ak, d, &|_, m, ai| !m.missing(ai) && m.valid_at(ai)));
+        }
+        f
+    };
+    let body_gives = crate::apply::each_held_page(tx, c, cai, None, &mut |tx, p| {
+        let f = match p {
+            osis_crdt::Piece::Skeleton(f) => f,
+            osis_crdt::Piece::Page { path, fragment, .. } => {
+                // a page below a map entry meets the snapshot's whole record there
+                // (`Fragment::positions_at`), every page of it: judged in one group
+                whole_only |= path.iter().any(|s| matches!(s, osis_crdt::Step::Entry(_)));
+                fragment
+            }
+        };
+        let f = read(tx, f);
+        f.valueless_dots(&mut valueless);
+        ix.extend(f.copy_index());
+        out.stamps.extend(stamps_of(&f));
+        // the skeleton, in every group, counts in none
+        if skeleton.is_none() {
+            skeleton = Some(f.clone());
+        } else {
+            size = size.saturating_add(f.approx_bytes());
+        }
+        if fits {
+            whole.join(f);
+            fits = whole_only || size <= room;
+            if !fits {
+                whole = Fragment::default();
+            }
+        }
+        Ok(())
+    })?;
+    out.held = body_gives.is_some();
+    out.facts = body_gives.flatten().map(|(_, abs, facts)| (facts, abs.into_iter().collect()));
+    let judge = |tx: &mut Tx<'_>, out: &mut CoveredBody, group: Fragment| -> Result<()> {
+        let (mut part, gives) = crate::apply::held_part_at(tx, s, sai, &group)?;
+        osis_base::costs::peak("covered: body group held", group.approx_bytes() as u64);
+        out.part_bytes = out.part_bytes.saturating_add(part.approx_bytes() as u64);
+        out.part_stamps.extend(stamps_of(&part));
+        if !std::mem::replace(&mut out.judged, true) {
+            out.gives = gives;
+        }
+        let before = crate::engine::state::encode(&part)?;
+        part.remove_writes(&|d| ix.holds(d) && !valueless.contains(d));
+        part.join(group);
+        out.unchanged &= crate::engine::state::encode(&part)? == before;
+        Ok(())
+    };
+    if fits {
+        judge(tx, &mut out, whole)?;
+        return Ok(out);
+    }
+    let skeleton = skeleton.unwrap_or_default();
+    let (mut group, mut size, mut first) = (skeleton.clone(), 0usize, true);
+    crate::apply::each_held_piece(tx, c, cai, &mut |tx, f| {
+        // the skeleton heads every group
+        if std::mem::take(&mut first) {
+            return Ok(());
+        }
+        let f = read(tx, f);
+        size = size.saturating_add(f.approx_bytes());
+        group.join(f);
+        if size > room {
+            judge(tx, &mut out, std::mem::replace(&mut group, skeleton.clone()))?;
+            size = 0;
+        }
+        Ok(())
+    })?;
+    if size > 0 || !out.judged {
+        judge(tx, &mut out, group)?;
+    }
+    Ok(out)
 }
 
 /// Whether held snapshot `s` (part `sai` on `(tid, ak)`) holds a write of `own` value-less. Its

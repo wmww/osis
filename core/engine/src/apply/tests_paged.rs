@@ -1300,3 +1300,47 @@ fn covered_paged_fill_purged_spec_commits_5() {
     }
     assert!(seen[0].iter().any(|l| l.starts_with("covered Ok(Some(true))")) && seen[0].iter().any(|l| l == "drop Ok(())"), "the snapshot covers the fill: {:?}", &seen[0][seen[0].len() - 5..]);
 }
+
+// notes/decode-bounds.md (a node holds a bounded piece of what it reads for itself), spec/wire.md
+// §12: finding a paged state's tree roots holds its skeleton and a page with its keys' records at
+// a time (the roots as the whole read's), and judging a paged body covered holds a group of its
+// pages about the two parts' root bytes: both flat in the size, never the whole.
+#[test]
+fn internal_reads_hold_a_piece_at_a_time_spec_wire_12() {
+    let a = aks()[0].clone();
+    let peaks = |n: u64| {
+        let mut w = world(false);
+        let t = w.t;
+        let Value::Map(mut v) = fat_map(n, 0) else { unreachable!() };
+        // two large values: links the roots find
+        for i in 0..2u8 {
+            v.insert(Value::Str(format!("large-{i}")), Value::Bytes((0..osis_base::format::CHUNK_THRESHOLD + 100).map(|j| (j * 7 + usize::from(i)) as u8).collect()));
+        }
+        let mut m = Mutation::new();
+        m.set(t, &a, &Value::Map(v)).unwrap();
+        let fill = w.lp.peers[0].commit(m).unwrap().unwrap();
+        let snap = w.lp.peers[0].engine.snapshot(&t, &a).unwrap().unwrap();
+        let e = &mut w.lp.peers[0].engine;
+        let whole = e.state(&t, &a).unwrap().unwrap().approx_bytes() as u64;
+        let body = e.run(|tx| crate::apply::held_fragment(tx, &fill, 0)).unwrap().unwrap().approx_bytes() as u64;
+        // as after a restart: nothing of the state loaded, no roots counted
+        e.core.states.clear();
+        e.core.pages.clear();
+        e.core.tree_roots = osis_base::memo::Memo::new("tree roots");
+        e.core.tree_reach.clear();
+        e.core.covers = osis_base::memo::Memo::new("covered");
+        osis_base::costs::take();
+        e.tree_refs(&t, &std::collections::BTreeSet::new()).unwrap();
+        assert!(!e.core.states.contains_key(&(t, a.clone())), "the roots left none of the state loaded");
+        assert_eq!(e.covered(&snap, &fill, &t, &a).unwrap(), Some(true));
+        let c: BTreeMap<_, _> = osis_base::costs::take().into_iter().map(|x| (x.0, x.2)).collect();
+        let (roots, group) = (c.get("paged state: piece held").copied().unwrap_or(0), c.get("covered: body group held").copied().unwrap_or(0));
+        assert!(roots > 0 && group > 0, "n={n}: {c:?}");
+        [roots, whole, group, body]
+    };
+    let (small, big) = (peaks(ENTRIES), peaks(4 * ENTRIES));
+    let says = format!("[state piece held, state, body group held, body]: {small:?} at {ENTRIES} entries, {big:?} at {}", 4 * ENTRIES);
+    // a state page is about `PAGE_BYTES`; a body's wire pages vary with their content-defined cuts
+    assert!(big[0] <= 2 * small[0] && big[0] * 8 < big[1], "a state piece, flat in the size: {says}");
+    assert!(big[2] * 3 < big[3], "a body group, far below the body: {says}");
+}

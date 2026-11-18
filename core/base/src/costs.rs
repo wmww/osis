@@ -39,6 +39,17 @@ pub fn count(name: &'static str, n: u64) {
     }
 }
 
+/// Raises phase `name`'s count to `n` where below it: the most held at once, not a sum.
+pub fn peak(name: &'static str, n: u64) {
+    if ON.with(Cell::get) {
+        COSTS.with(|c| {
+            let mut c = c.borrow_mut();
+            let e = c.entry(name).or_default();
+            e.1 = e.1.max(n);
+        });
+    }
+}
+
 /// Whether this thread records (tests that `take`): a diagnostic costing more than a count runs
 /// only then.
 pub fn on() -> bool {

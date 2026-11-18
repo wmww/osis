@@ -335,6 +335,18 @@ impl Fragment {
         }
     }
 
+    /// What a read of key or value `k` joins of root element `d`, alone in the collection: a
+    /// map's records of `d` keyed `k` and the key-erased one (§5.6), a set's element `d` (§5.5);
+    /// `None` for other encodings or where it holds none.
+    pub fn key_records(&self, d: &Dot, k: &Value) -> Option<Fragment> {
+        let f = match self {
+            Fragment::Map(m) => Fragment::Map(Map::new(Meta::default(), m.of_dot(d).filter(|(id, _)| id.key().is_none_or(|x| x == k)).map(|(id, e)| (id.clone(), e.clone())).collect())),
+            Fragment::Set(s) => Fragment::Set(Set::new(Meta::default(), s.elems.get(d).map(|e| (d.clone(), e.clone())).into_iter().collect())),
+            _ => return None,
+        };
+        (f.elem_count() != Some(0)).then_some(f)
+    }
+
     /// The keys of a map's records of dot `d`, content or not.
     pub fn dot_keys(&self, d: &Dot) -> Vec<&Value> {
         match self {

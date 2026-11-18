@@ -79,7 +79,7 @@ impl Engine {
             return Ok(None);
         }
         let v = match ak.as_str() {
-            "aspects.0" => Some(Value::Set(self.aspects(&tid)?.into_iter().map(|a| Value::Str(a.as_str().to_string())).collect())),
+            "aspects.0" => Some(Value::Set(self.aspects_within(&tid, max)?.into_iter().map(|a| Value::Str(a.as_str().to_string())).collect())),
             "roles.0" => {
                 let r = self.core.roster_of(&tid);
                 (!r.is_empty()).then(|| Value::Map(r.iter().map(|(m, e)| (Value::Weak(*m), edge_value(e))).collect()))
@@ -155,6 +155,11 @@ impl Engine {
 
     /// AKs present on the thing (`aspects.0`).
     pub fn aspects(&mut self, tid: &Tid) -> Result<Vec<Ak>> {
+        self.aspects_within(tid, None)
+    }
+
+    /// `aspects`, each state read within `max` (`Tx::present_within`).
+    pub fn aspects_within(&mut self, tid: &Tid, max: Option<usize>) -> Result<Vec<Ak>> {
         let tid = *tid;
         if !self.core.exists(&tid) {
             return Ok(Vec::new());
@@ -169,7 +174,7 @@ impl Engine {
             })?;
             let mut out = Vec::new();
             for ak in aks {
-                if tx.state(&tid, &ak)?.is_some_and(Fragment::present) {
+                if tx.present_within(&tid, &ak, max)? {
                     out.push(ak);
                 }
             }
@@ -255,7 +260,7 @@ pub(crate) fn has_content_in(tx: &mut super::Tx<'_>, tid: &Tid) -> Result<bool> 
         Ok(())
     })?;
     for ak in aks.iter().filter(|a| ct::counts_as_content(a.as_str())) {
-        if tx.state(tid, ak)?.is_some_and(Fragment::present) {
+        if tx.present_within(tid, ak, None)? {
             return Ok(true);
         }
     }

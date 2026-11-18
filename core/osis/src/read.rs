@@ -336,7 +336,7 @@ impl Reader<'_> {
         if self.hidden(tid) {
             return Ok(Vec::new());
         }
-        Ok(self.e.aspects(&tid)?)
+        Ok(self.e.aspects_within(&tid, Some(self.limit))?)
     }
 
     /// What actor `t` is, from its creation record.

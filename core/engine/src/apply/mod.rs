@@ -2225,7 +2225,7 @@ pub(crate) fn each_held_piece(tx: &mut Tx<'_>, id: &CommitId, ai: usize, f: &mut
 
 /// `each_held_piece` handing over the pieces themselves, only the pages `want` names (a
 /// stripped part's leftover is one skeleton).
-fn each_held_page(tx: &mut Tx<'_>, id: &CommitId, ai: usize, want: Option<osis_crdt::Want<'_>>, f: &mut dyn FnMut(&mut Tx<'_>, osis_crdt::Piece) -> Result<()>) -> Result<Option<Option<crate::engine::Gives>>> {
+pub(crate) fn each_held_page(tx: &mut Tx<'_>, id: &CommitId, ai: usize, want: Option<osis_crdt::Want<'_>>, f: &mut dyn FnMut(&mut Tx<'_>, osis_crdt::Piece) -> Result<()>) -> Result<Option<Option<crate::engine::Gives>>> {
     let Some((h, stripped)) = tx.core.ix.commits.get(id).map(|m| (m.header.clone(), m.stripped(ai))) else { return Ok(None) };
     let Some(a) = h.aspects.get(ai) else { return Ok(None) };
     if stripped {

@@ -3230,6 +3230,48 @@ impl Tx<'_> {
         Ok(out)
     }
 
+    /// The pieces of the state of `(tid, ak)` as a read sees each, within the running read's
+    /// bound (`reading`): an unpaged or wholly loaded state is one piece, a paged one its skeleton,
+    /// then its pages one at a time, never joined into the cache (`pages::each_piece`; with `keys`
+    /// each reads as the whole does there, and a collection paged inside another's elements reads
+    /// whole, one piece). `each` returns whether to stop.
+    pub(crate) fn each_piece(&mut self, tid: &Tid, ak: &Ak, keys: bool, each: &mut dyn FnMut(&Fragment) -> Result<bool>) -> Result<()> {
+        self.load_lazy(tid, ak)?;
+        if self.held_in_part(tid, ak) {
+            let k = (*tid, ak.clone());
+            let bound = self.bound.take();
+            let r = match (self.core.pages.get_mut(&k), self.core.states.get(&k)) {
+                (Some(idx), Some(Some(f))) => {
+                    idx.bound = bound;
+                    pages::each_piece(&mut self.txn, tid, ak, idx, f, keys, each)
+                }
+                _ => Ok(None),
+            };
+            self.bound = bound;
+            if r?.is_some() {
+                return Ok(());
+            }
+        }
+        if let Some(f) = self.state(tid, ak)? {
+            each(f)?;
+        }
+        Ok(())
+    }
+
+    /// Whether the state of `(tid, ak)` is present (`Fragment::present`), holding at most `max`
+    /// of it (`reading`): its pieces up to the first present one (`each_piece`; a state is
+    /// present iff a write in it survives, and each piece holds what prunes its writes).
+    pub fn present_within(&mut self, tid: &Tid, ak: &Ak, max: Option<usize>) -> Result<bool> {
+        self.reading(tid, ak, max, |tx| {
+            let mut present = false;
+            tx.each_piece(tid, ak, false, &mut |f| {
+                present = f.present();
+                Ok(present)
+            })?;
+            Ok(present)
+        })
+    }
+
     /// Whether `(tid, ak)` has a state: a valid write on it applied here. What a thing has is
     /// read here (or from an index derived from states: `Indexes::sync_recorded`),
     /// never from `Indexes::by_aspect`, which any signer's header adds to.

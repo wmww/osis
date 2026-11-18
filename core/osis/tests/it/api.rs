@@ -195,7 +195,7 @@ fn materialization_bound_spec_data_model_6() {
 #[test]
 fn a_whole_read_loads_at_most_its_bound_spec_wire_12() {
     let limit = 256 * 1024;
-    let pages_read = |n: i64| -> u64 {
+    let pages_read = |n: i64| -> (u64, u64) {
         let c = clock();
         let store = MemStore::new();
         let k = osis::DynamicAspectKey::untyped(ak("t:big.0"));
@@ -211,16 +211,23 @@ fn a_whole_read_loads_at_most_its_bound_spec_wire_12() {
         let mut cf = cfg(0, store, &c);
         cf.app.read_limit = limit;
         let db = osis::internals::open(cf).unwrap();
+        // listing the thing's aspects reads each state to its first present piece
         osis::internals::costs::take();
+        assert!(db.aspects(t).unwrap().contains(&ak("t:big.0")));
+        let c = osis::internals::costs::take();
+        let n_of = |name: &str| c.iter().find(|x| x.0 == name).map_or(0, |x| x.2);
+        assert_eq!(n_of("state page load"), 0, "n={n}: the listing loads no page into the state");
+        let listed = n_of("paged state: piece held");
         let got = db.at(t, k.clone()).get();
         assert!(got == Err(Error::TooLarge { limit }), "n={n}: {:?}", got.map(|v| v.map(|v| osis::internals::schema::osis_base::cbor::encoded_len(&v))));
         let read = osis::internals::costs::take().into_iter().find(|x| x.0 == "state page load").map_or(0, |x| x.2);
         assert!(db.engine(|e| e.core.states.values().flatten().all(|f| f.approx_bytes() < limit)), "n={n}: the read left none of it loaded");
         assert_eq!(db.at(t, k.clone()).path(p![osis::Step::Key(Value::Int(7))]).get::<Value>().unwrap(), Some(Value::Int(7)));
-        read
+        (read, listed)
     };
     let (small, big) = (pages_read(2_000), pages_read(8_000));
-    assert!(small == big && big <= 8, "pages loaded before the refusal: {small} at 2000 keys, {big} at 8000");
+    assert!(small.0 == big.0 && big.0 <= 8, "pages loaded before the refusal: {small:?} at 2000 keys, {big:?} at 8000");
+    assert!(small.1 > 0 && small.1 == big.1 && big.1 < limit as u64 / 2, "the most a listing held (a page): {} B at 2000 keys, {} B at 8000", small.1, big.1);
 }
 
 // spec/data-model.md §5 (Depth), §6: a large value near the depth limit

@@ -128,4 +128,8 @@ impl CopyIndex {
     pub fn holds(&self, d: &Dot) -> bool {
         self.0.contains(d)
     }
+    /// Adds `o`'s writes: the index of a fragment joined a piece at a time.
+    pub fn extend(&mut self, o: CopyIndex) {
+        self.0.extend(o.0);
+    }
 }

@@ -276,7 +276,7 @@ mod tests {
         let (small, large) = (judge(500), judge(5_000));
         let each = (BODIES - 1) as u64;
         assert!(small.0 > 0 && large.0 > 5 * small.0, "the first judgment streams the snapshot whole: {small:?} {large:?}");
-        assert_eq!((small.2, large.2), (2 * each, 2 * each), "the rest stream the skeleton and the body's page");
+        assert_eq!((small.2, large.2), (3 * each, 3 * each), "the rest stream the body, the snapshot's skeleton and the body's page");
         assert!(large.1 / each < large.0 / 4, "a page and the root, far below the snapshot: {large:?}");
         assert_eq!(small.3, large.3, "the part walked is flat in the snapshot's size");
         assert!(large.4 > 5 * small.4 && large.4 < large.0 as usize / 100, "the index grows with the pages, far below the snapshot: {small:?} {large:?}");

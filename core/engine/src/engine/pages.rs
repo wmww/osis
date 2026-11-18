@@ -362,6 +362,68 @@ pub fn load_all(txn: &mut Transaction<'_>, tid: &Tid, ak: &Ak, idx: &mut StatePa
     Ok(())
 }
 
+/// Whether a collection is paged inside another's elements (its path runs through pages).
+fn nested(idx: &StatePages) -> bool {
+    idx.sets.keys().any(|p| idx.sets.keys().any(|q| q.len() < p.len() && p.starts_with(q)))
+}
+
+/// The pieces of the paged state with skeleton `f`, as a read of the whole sees each, one at a
+/// time and never joined into `f`: the skeleton (`f` reduced), then each page below the
+/// skeleton's spine along its path (`Fragment::spine`: what pruning and an enum's case there
+/// depend on). With `keys`, a page of a map or set also holds the records of the keys or values
+/// its records hold that lie on other pages (a key reads as the join of its records, spec/crdt.md
+/// §5.6; a value's records hide each other, §5.5; found through the index), so each piece reads
+/// as the whole does there; `Ok(None)` when a collection is paged inside another's elements (a
+/// key's records then reach into pages below: the caller reads whole). Each page and what it
+/// pulls is charged against what `idx.bound` leaves, then dropped: the walk holds the skeleton,
+/// a page and its keys' records. `each` returns whether to stop; the result is whether it did.
+pub fn each_piece(txn: &mut Transaction<'_>, tid: &Tid, ak: &Ak, idx: &StatePages, f: &Fragment, keys: bool, each: &mut dyn FnMut(&Fragment) -> Result<bool>) -> Result<Option<bool>> {
+    if keys && nested(idx) {
+        return Ok(None);
+    }
+    let s0 = f.reduced(&idx.paths);
+    if each(&s0)? {
+        return Ok(Some(true));
+    }
+    let t = table(txn, tid, ak)?;
+    for (p, set) in &idx.sets {
+        let spine = s0.spine(p, None);
+        for key in set_rows(txn, t, set)? {
+            let Some(row) = txn.table_get(t, &key)? else { continue };
+            let mut bound = idx.bound;
+            let mut range = (None, None);
+            let pg = charge(&mut bound, row.len(), || {
+                let (r, p) = parse_page_row(&row)?;
+                range = r;
+                Ok(p)
+            })?;
+            let mut g = spine.clone();
+            if keys && is_keyed(set) {
+                let inside = |d: &Dot| range.0.as_ref().is_none_or(|lo| d >= lo) && range.1.as_ref().is_none_or(|hi| d < hi);
+                let vs: BTreeSet<Value> = pg.elem_dots(None, None).iter().flat_map(|d| indexed(&pg, set.enc, d)).collect();
+                for v in &vs {
+                    for d in key_dots(txn, tid, ak, set, v)?.into_iter().filter(|d| !inside(d)) {
+                        let (_, other) = row_below(txn, t, &[set.row_key(Some(&d)), vec![0]].concat())?;
+                        let mut b = bound;
+                        let o = charge(&mut b, other.len(), || Ok(parse_page_row(&other)?.1))?;
+                        if let Some(r) = o.key_records(&d, v) {
+                            let r = charge(&mut bound, 0, || Ok(r))?;
+                            g.join(Fragment::wrap(&set.path, r));
+                        }
+                    }
+                }
+            }
+            g.join(Fragment::wrap(&set.path, pg));
+            // counted: tests read the most a walk holds
+            osis_base::costs::peak("paged state: piece held", g.approx_bytes() as u64);
+            if each(&g)? {
+                return Ok(Some(true));
+            }
+        }
+    }
+    Ok(Some(false))
+}
+
 /// Loads the page of `set` holding `d` (the last row at or below it).
 fn ensure_dot(txn: &mut Transaction<'_>, t: Table, set: &mut PageSet, bound: &mut Bound, f: &mut Fragment, d: &Dot) -> Result<()> {
     if set.whole || set.loaded_page(d).is_some() {
@@ -1625,8 +1687,7 @@ fn set_rows(txn: &mut Transaction<'_>, t: Table, set: &PageSet) -> Result<Vec<Ve
 /// noted per join as a whole join notes them (the skeleton's, then each page's).
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn join_reset(txn: &mut Transaction<'_>, tid: &Tid, ak: &Ak, idx: &mut StatePages, f: &Fragment, d: &Fragment, moved: &mut super::refs::Delta, mut dead: Option<&mut Killed>) -> Result<Reset> {
-    let nested = idx.sets.keys().any(|p| idx.sets.keys().any(|q| q.len() < p.len() && p.starts_with(q)));
-    if nested || idx.sets.values().any(is_seq) || !idx.sets.keys().all(|p| d.steps_through(p)) {
+    if nested(idx) || idx.sets.values().any(is_seq) || !idx.sets.keys().all(|p| d.steps_through(p)) {
         return Ok(Reset::Whole);
     }
     let s0 = f.reduced(&idx.paths);
