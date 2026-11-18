@@ -14,5 +14,5 @@ Today (spec/data-model.md §2, spec/sync-inbox.md §2, spec/permissions.md §5.2
 
 ## To do
 - Check that the box and the ticket are the only ways a grant reaches a holder its granter does not administer (role changes also travel under the holder's sync ID by deposit, spec/permissions.md §4).
-- spec/requirements.md Terms defines an actor as "a thing that can hold roles"; say what holds by its admins' doing and what by anyone's. Name the refusal in the API by the setting, never by keys.
+- spec/requirements.md Permissions states the rule (a thing takes messages or grants from parties holding no role on it only where its admins allow); bring the subsystem specs to it. Name the refusal in the API by the setting, never by keys.
 - How an app opens a thing, and what the default is for the kinds it makes.

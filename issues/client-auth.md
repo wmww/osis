@@ -6,5 +6,5 @@
 **Question for Tess**: does "cryptographically authenticated" accept today's bearer secret inside TLS, or must the client sign with the actor's key?
 
 - To build: a credential names the actor it acts as, the main one included if the node's operator chooses.
-- notes/client-port.md Rejected ("Thin nodes", phrased as a default) argues from one threat model; machine, transport and acting actor are independent (spec/requirements.md Terms).
+- notes/client-port.md Rejected ("Thin nodes", phrased as a default) argues from one threat model; machine, transport and acting actor are independent (spec/requirements.md Concepts).
 - Acting as several actors in one process: issues/grant-rename-multi-actor.md (`act_as`).

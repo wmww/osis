@@ -3,7 +3,7 @@
 
 ## Rules
 How to judge this shape, and the standing rules: notes/api-design.md.
-- Vocabulary (spec/requirements.md Terms): thing, aspect, reference (strong, weak, ticket), tag, holder (who has a role), actor, role, node, peer, serving, account. Sync IDs are internal: they appear in nothing public. Engine and spec rule text keep theirs; every old word left is in issues/deprecated-terms.md.
+- Vocabulary (spec/requirements.md Concepts): thing, aspect, reference (strong, weak, ticket), tag, holder (who has a role), actor, role, node, peer, serving, account. Sync IDs are internal: they appear in nothing public. Engine and spec rule text keep theirs; every old word left is in issues/deprecated-terms.md.
 - Decided words (Tess): **ephemeral** is for `+` aspects. `Tid` and `Ak` stay, and an aspect key is the whole string; a domain word plus a generic one is fine (one concept under two terms is not). "Keep" splits: a removed holder's copy is retained, `keep_alive`, `History::Keep`. History: no promise is the default and unnamed (`history: None`), the delete-on-change mode is named for what it does (`History::PurgeOnReplace`, documented as costing more per change and rarely right; public docs never say compaction). A grant's power to grant on is `may_grant`. A role says who may, `sync` where the data goes (`grant` and `share` not bundled: revisit if the app finds it awkward).
 - Undo: per actor by default, plus a view of every change in scope from which an admin may revert others' (notes/crdt.md).
 - Async futures resolve by a channel from the handle's background runtime (tokio by default, or a `Handle` the app passes).

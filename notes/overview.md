@@ -5,7 +5,7 @@ osis (Open Structured Information System) is a decentralized data layer optimize
 
 ## Where things live
 The repo is meant to become a small monorepo of projects worked on independently (Tess): core (with cli and schema), `libs/` (what some but not all users of osis want: chat, the kit UI toolkit) and app (notes/app.md), each with its own checks (the gate picks them by changed paths, notes/build.md).
-- `spec/`: what a compatible implementation needs (start at spec/overview.md). Requirements, accepted limits and usage rules are spec/requirements.md. A design that cannot meet an item gets no footnote: the item is changed to say what actually holds. Until a stable release, spec edits need no Tess's sign-off; changes to or conflicts with spec/requirements.md go to Tess.
+- `spec/`: what a compatible implementation needs (start at spec/overview.md). The concepts and the properties they must have are spec/requirements.md. A design that cannot meet an item gets no footnote: it is an issue to fix, or the item is changed (Tess) to the property that should hold. Until a stable release, spec edits need no Tess's sign-off; changes to or conflicts with spec/requirements.md go to Tess.
 - `notes/`: why the spec is what it is, rejected alternatives, policies and implementation hints.
 - `issues/`: unsolved problems and decisions pending with Tess (`grep -l tess-call issues/*`); each has Summary, Priority (`grep -l 'Priority: critical' issues/*`) and Tags lines. Tags: `security`, `performance`, `tests`, `tess-call`, component names.
 - `docs/explainer/`: slide-deck site (notes/explainer.md), updated only on request.
