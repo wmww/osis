@@ -1,3 +1,0 @@
-# keel-no-resurrect
-- The brief's item 2 alone (refuse every minting while a destroying request is held) left "which request destroys" judged per minting class: either a writer minting with `writer` could destroy an admin-only thing, or a reader's `admin` minting blocked a non-admin purge, by arrival. Fixed by making `created.0` `admin` only; worth stating such holes in briefs as open questions rather than as expected outcomes.
-- `schema/core.osis` has no `uint`; the embedded schema failing to parse only shows as a panic in the first test that loads it (a parse check at build time would catch it sooner).

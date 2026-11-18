@@ -8,3 +8,4 @@ core/test/fuzz/corpus/
 notes/testing-map.md
 .playwright-cli/
 __pycache__/
+proptest-regressions/

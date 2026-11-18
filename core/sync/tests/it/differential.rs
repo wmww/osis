@@ -57,10 +57,19 @@ const TWICE_EVERY: u64 = 4;
 // everywhere.
 #[test]
 fn histories_hold_their_closure() {
-    let (n, accounts, len, seeds) = size();
-    let seeds = Seeds::from_env("OSIS_SYNC_SEED", "OSIS_SYNC_SEEDS", 0..seeds);
-    seeds.run("histories_hold_their_closure", |s| format!("OSIS_SYNC_SEED={s} OSIS_SYNC_SEEDS=1"), |seed| {
-        let h = history(seed, n, accounts, len, seed % 2 == 1);
+    let (n, accounts, len, _) = size();
+    worlds("histories_hold_their_closure", |seed| history(seed, n, accounts, len, seed % 2 == 1));
+}
+
+/// `holds` for each seed of `OSIS_SYNC_SEED`/`OSIS_SYNC_SEEDS` (default: the size's range) on
+/// the history `steps_of(seed)`, each failure shrunk under `OSIS_SYNC_SHRINK=1`. A shrunk script
+/// replays over many worlds, or shrinks further from where a seed timeout cut it, in a scratch
+/// test: `differential::worlds("scratch", |_| vec![New(2), ..])` (notes/sync-test-harness.md,
+/// Replaying a script).
+pub(crate) fn worlds(name: &str, steps_of: impl Fn(u64) -> Vec<Step> + Sync) {
+    let seeds = Seeds::from_env("OSIS_SYNC_SEED", "OSIS_SYNC_SEEDS", 0..size().3);
+    seeds.run(name, |s| format!("OSIS_SYNC_SEED={s} OSIS_SYNC_SEEDS=1"), |seed| {
+        let h = steps_of(seed);
         let replay = format!("differential::holds({seed}, &script, String::new(), false)");
         let twice = seed.is_multiple_of(TWICE_EVERY);
         shrinking(

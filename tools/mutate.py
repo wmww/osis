@@ -10,7 +10,8 @@ OLD must occur exactly once in FILE; NEW must be non-empty and differ from OLD. 
 plain edit. Several are built once: each OLD, an expression, becomes
 `(if <OSIS_MUTANT is i> { NEW } else { OLD })`, and the built binaries run once per mutation
 with OSIS_MUTANT=i (a build per mutation of a crate low in the tree costs minutes; a statement
-or pattern that is not an expression fails the one build: probe it alone). Files are put back from
+or pattern that is not an expression fails to build: its compiler errors are printed, its row says
+"does not build", and the others are built again without it). Files are put back from
 their text as read before the edit (never from git, so uncommitted work survives) as soon as the
 build ends, before any test runs; a file changed during the build (someone else edited it) is left
 alone and the path of the original's copy, kept beside it, is printed. Tests run from the built
@@ -91,7 +92,7 @@ def main(argv):
             sys.exit(f"mutate: OLD occurs {texts[path].count(old)} times in {path}; it must occur once: {old!r}")
         if not new or new == old:
             sys.exit("mutate: NEW must be non-empty and differ from OLD")
-    mutated = dict(texts)
+    mutated, subs = dict(texts), []
     for i, (path, old, new) in enumerate(muts):
         if len(muts) == 1:
             sub = new
@@ -102,6 +103,12 @@ def main(argv):
         if mutated[path].count(old) != 1:
             sys.exit(f"mutate: {old!r} overlaps another mutation of {path}")
         mutated[path] = mutated[path].replace(old, sub)
+        subs.append((path, sub))
+    # each mutation's lines in its mutated file, to name the one a build error points into
+    sites = []
+    for path, sub in subs:
+        lo = mutated[path][: mutated[path].index(sub)].count("\n") + 1
+        sites.append((path, lo, lo + sub.count("\n")))
     saved = {}
     for path in texts:
         # beside the file, so one left behind is seen
@@ -123,8 +130,25 @@ def main(argv):
                 print(f"mutate: {path} changed during the build; left as it is, the original is at {saved[path]}", file=sys.stderr)
     rows = [f"| `{path}`: `{old}` -> `{new}` |" for path, old, new in muts]
     if build.returncode != 0:
-        for row in rows:
-            print(f"{row} does not build |")
+        errors = []
+        for line in build.stdout.splitlines():
+            try:
+                m = json.loads(line)
+            except ValueError:
+                continue
+            if m.get("reason") == "compiler-message" and m["message"].get("level") == "error":
+                errors.append(m["message"])
+                print(m["message"].get("rendered", ""), file=sys.stderr)
+        # the mutations whose substituted lines an error points into
+        bad = {i for e in errors for sp in e.get("spans", []) for i, (path, lo, hi) in enumerate(sites)
+               if os.path.abspath(sp["file_name"]) == os.path.abspath(path) and sp["line_start"] <= hi and sp["line_end"] >= lo}
+        for i in sorted(bad) or range(len(rows)):
+            print(f"{rows[i]} does not build |")
+        rest_muts = [m for i, m in enumerate(muts) if i not in bad]
+        if bad and rest_muts:
+            # the others built again without the broken ones (one more build, not a lost batch)
+            print(f"mutate: {len(bad)} mutation(s) do not build; building the other {len(rest_muts)} again", file=sys.stderr)
+            return main([x for m in rest_muts for x in m] + ["--", *rest])
         return 0
     bins = []
     for line in build.stdout.splitlines():
