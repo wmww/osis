@@ -8,8 +8,8 @@ The rule (Tess): no API behaviour depends on it. Docs may state the cost differe
 Docs to rewrite to that: `Write::create` (core/osis/src/write.rs), `osis create --admin` (cli/src/args.rs), `Osis::hold` (core/osis/src/share.rs); notes/api.md and notes/chat.md quote byte figures for app-facing choices.
 
 Behaviour that differs:
-- **Removing the last admin** of a dependent thing is refused (`flows::edges::leaves_no_admin`, spec/permissions.md §1); on an independent one the same write goes through and leaves it adminless. One rule for both is owed (Tess: either, but the same).
-- **A thing made under an account** is independent at birth (spec/permissions.md §3, spec/sync-set.md §2) and in no sync unit unless a ticket carries it; one made under the account root is dependent and synced with it. `osis create --admin me` reaches it. An account is a key actor; why nothing may derive from its epochs is not written down. Make it an ordinary case or keep apps from reaching it.
+- **Removing the last admin** of a dependent thing is refused (`flows::edges::leaves_no_admin`, spec/permissions.md §1); on an independent one the same write goes through and leaves it adminless. One rule for both is owed (Tess: either, but the same). Proposed (notes/write-path-design.md §5): allowed for every thing, freezing its roster; waiting on Tess (issues/actors-one-mechanism.md, Questions for Tess).
+- **A thing made under an account** is independent at birth (spec/permissions.md §3, spec/sync-set.md §2), because an account is in no sync unit. It becomes an ordinary dependent once the account is an ordinary independent thing (notes/write-path-design.md §5); until then `osis create --admin me` reaches it.
 - **Sharing what a tag holds**: a strong grants nothing, so an app sharing a tag of n things makes n grants itself (issues/many-sync-ids-cost.md). To check whether that counts.
 
 The first admin staying special after it is removed (to study):

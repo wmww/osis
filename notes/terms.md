@@ -20,9 +20,9 @@ The concepts and their properties are spec/requirements.md (Concepts). This note
 - Sync words (sync unit, sync ID, closure, ticket, release, store, peer, source): spec/requirements.md Concepts and spec/sync-set.md, with the rows of issues/deprecated-terms.md.
 
 ## Built, and being moved to
-Some concepts in the repo are what is built today and are being redesigned (issues/actors-one-mechanism.md; first on notes/priorities.md). Until that lands:
+Some concepts in the repo are what is built today and are being redesigned (issues/actors-one-mechanism.md, designed in notes/account-membership-design.md and notes/write-path-design.md; first on notes/priorities.md). Until that lands:
 - **Built**: an account is a key actor whose nodes are kept by its signing chain (epochs, custody, merges, sides, thing lists); the **account root** is the independent thing beside it that its nodes share; a commit header names an `author` and one `actor` it acts for; the engine finds any chain of grants that gives a write its right; a commit's evidence travels as **chain certificates** logged where its author writes; an account's profile and inbox are things minted with the account.
-- **Moving to**: an account is an ordinary independent thing whose members are signers (a key per node, or one shared); a commit states its actors and is judged along them alone; the evidence for every possible actor is part of the sync unit; a thing is opened to messages and grants from strangers by its admins.
+- **Moving to**: an account is an ordinary independent thing whose members are signers (a key per node, or one shared); a commit states its actors and is judged along them alone; the evidence a unit's commits need is part of the sync unit (for the paths its held commits state, or for every actor that could write there: with Tess, issues/actors-one-mechanism.md); a thing is opened to messages and grants from strangers by its admins.
 - **Never call an old concept by a new name** (Tess). The account root is not "the home realm", a key actor is not "a signer", chain certificates are not "the sync unit's evidence": where the built thing is still the old concept, keep its word, and make only the edits that are right looking forward. A section may be marked for deletion or rewriting once a named change lands; that is allowed, not required.
 
 ## Writing about them

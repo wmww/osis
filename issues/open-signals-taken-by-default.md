@@ -12,7 +12,10 @@ Today (spec/data-model.md §2, spec/sync-inbox.md §2, spec/permissions.md §5.2
 - **It is one switch with taking tickets.** A granter that does not administer the holder reaches it only by its public keys: the box is sealed to its KEM key and the ticket is a fire of its open `ticket@~` signal. Off: only its own admins make it a holder, publishing its keys in that commit, and another's grant to it is refused at the granter. On: as today. No grant waits for the holder's side to publish keys.
 - **Keys follow the switch**: a thing neither a holder nor opened publishes no KEM keys (notes/thing-cost.md, Fewer KEM keys held), and a node keeping it unread has nothing a stranger can deposit against.
 
+## Designed
+The checks and the rule written precisely enough for the spec (the setting, open fires, public material following the switch, what a node keeping the thing unread enforces, what the thing takes, the granter's node, what a member may do without the switch): notes/write-path-design.md §4. Found: the box and the ticket are not the only routes (a deposit under the holder's sync ID with its public deposit seed is another), so the deposit seed and sync ID are published to strangers only while the thing is open.
+
 ## To do
-- Check that the box and the ticket are the only ways a grant reaches a holder its granter does not administer (role changes also travel under the holder's sync ID by deposit, spec/permissions.md §4).
-- spec/requirements.md Permissions states the rule (a thing takes messages or grants from parties holding no role on it only where its admins allow); bring the subsystem specs to it. Name the refusal in the API by the setting, never by keys.
+- Whether granting to a thing not opened needs write on it or any role (the requirements say "holding no role"): issues/actors-one-mechanism.md, Questions for Tess.
+- Bring spec/requirements.md Permissions and the subsystem specs to the rule. Name the refusal in the API by the setting, never by keys.
 - How an app opens a thing, and what the default is for the kinds it makes.
