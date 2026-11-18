@@ -25,6 +25,7 @@ What `cargo doc` shows is for someone who has never seen this project.
 - No lists of undefined terms: they tell a new reader nothing.
 - Rendered docs never cite notes/ or issues/; ordinary comments may. API users mostly need not care how things are implemented, so a spec reference is rarely wanted; where one really helps, link it if possible.
 - Less is more. Don't define every word; often the fix is to say less. Judge each case.
+- Performance (Tess): state a cost only in the few places where it matters to the choice the reader is making, in what they can see ("a thing shared directly or given another admin"), with no internal term or concept beyond what the cost needs. Hedge and compare ("may be up to ten times lighter"), never measured figures ("1.9 KB instead of 18 KB"): the docs stay true while the implementation is tuned.
 
 ## Patterns to flag and fix
 - `do_x()` beside `do_y()`, where Y is a superset of X: remove `do_x()`.
