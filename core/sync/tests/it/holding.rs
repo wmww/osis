@@ -744,8 +744,8 @@ fn a_role_by_chain_through_an_unaccepted_thing_counts_nothing_spec_sync_inbox_5(
     assert_eq!(value(&mut w, 1, &t1), None);
 }
 
-// spec/permissions.md §4 (Role changes travel), spec/sync-judgement.md §2 (a role commit with an
-// edge write naming holder A is in A's own sync ID's required set): Bob's node 2 makes T2 under
+// spec/permissions.md §4 (Role changes travel), spec/sync-judgement.md §2 (role commits naming an
+// actor: one with an edge write naming holder A is in A's own sync ID's required set): Bob's node 2 makes T2 under
 // his T0, grants Alice sync on it (T2 keyed) and removes T0's record edge there. That removal
 // names T0 by an edge write, so it travels under T0's sync ID: Bob's node 1, reading T2 only
 // through T0, takes it and reads T2 no more, as node 2.
