@@ -2,12 +2,12 @@
 > Summary: Why spec/data-model.md looks the way it does (tids, CBOR profile, large values, AK grammar, closures), the schema DSL as implemented in osis-schema, storage layering, rejected options. Mostly Tess's decisions; shapes of `any` and the core aspects' types are proposals.
 
 ## Tids
-- Self-certifying tids bind a thing to its first admin so nobody can publish a competing creation. The nonce keeps a bare tid from revealing its first admin and seeds the dedup secret. A reference carries the bare tid (inside a strong, weak or ticket); the record is checked only when the thing's data arrives.
-- Created only by the tid generator (takes the first admin; nonce from system entropy) or by parsing. No collision checking. In Rust: a wrapper around a private u128. Uniformly distributed, so hashing a tid is free.
+- Self-certifying tids bind a thing to its mint admin so nobody can publish a competing creation. The nonce keeps a bare tid from revealing its mint admin and seeds the dedup secret. A reference carries the bare tid (inside a strong, weak or ticket); the record is checked only when the thing's data arrives.
+- Created only by the tid generator (takes the mint admin; nonce from system entropy) or by parsing. No collision checking. In Rust: a wrapper around a private u128. Uniformly distributed, so hashing a tid is free.
 - Margin: a second record for a given tid costs 2^120; for any of N known tids 2^120/N (N = 2^30: 2^90 hashes, roughly $10^8–10^9 at Bitcoin-ASIC efficiency in 2026, far more on GPUs). Below Bitcoin addresses (160 bits), above retired Tor v2 names (80 bits). Adequate, not generous.
 - A crafted collision pair (2^60, about $10^4 on rented GPUs) can be replayed against every node, hence "keep what we have, diagnostic, never panic"; both records of such a pair are the attacker's own. Panic only if the local generator produces a tid the node already holds.
-- Storage: the first admin kept as an index into a local table of known actors.
-- Rejected: key inside the tid (256 bits); bare tid plus first admin told by the source node (unverifiable); (first admin, local id) pairs (about 240 bits displayed).
+- Storage: the mint admin kept as an index into a local table of known things.
+- Rejected: key inside the tid (256 bits); bare tid plus mint admin told by the source node (unverifiable); (mint admin, local id) pairs (about 240 bits displayed).
 
 ## Values and CBOR
 - CBOR: IETF standard, deterministic profile exists, tags cover osis types, diagnostic notation lets generic tools print any value. DAG-CBOR only allows string map keys. dCBOR's numeric reduction encodes 1.0 as 1, erasing the int/float distinction. Floats are always 8 bytes so a float's bytes are its bit pattern (Tess's rule).
@@ -47,7 +47,7 @@
 - Generated constant names: the AK's name segments joined by `_`, upper-cased, the first dropped when every key of the schema shares it, `_V<n>` appended for a version above 0 (`note:last_opened.0` -> `LAST_OPENED`); not injective (`a:b_c.0` and `a_b:c.0`, `x:y.1` and `x:y_v1.0`, keys differing only in tid or markers), so codegen refuses a schema whose names collide (also with `SCHEMA`).
 
 ## Closures
-Example: a spreadsheet thing holds strongs to two axis things, each holding strongs to its row or column things, each holding strongs to its cells (each cell in two closures). Nothing belongs anywhere by its first admin (Tess): an app writes each strong (spec/sync-set.md §2 Making a thing).
+Example: a spreadsheet thing holds strongs to two axis things, each holding strongs to its row or column things, each holding strongs to its cells (each cell in two closures). Nothing belongs anywhere by its mint admin (Tess): an app writes each strong (spec/sync-set.md §2 Making a thing).
 
 ## Schema DSL (`*.osis` files; implemented in osis-schema)
 Rust-like syntax, hand-written recursive-descent parser (no parser libraries, Tess's decision); grammar in `core/schema/src/parse.rs`. Two passes: the first collects items, the second types field defaults against the then-known types. `///` docs attach to the next item (type, field, case, aspect), `//!` to the schema, and are kept in the schema value. Errors carry file, line, column; validation errors point at the item. No `load_schema!()` proc macro (compile time; codegen covers it).

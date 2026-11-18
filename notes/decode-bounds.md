@@ -11,7 +11,7 @@
 | an aspect's state, read whole or at a path | writers (as stored) | `Tx::load_lazy`, `pages::join_row` under `Tx::reading` | the reader's bound: each piece charged its bytes or decode, whichever is more (`pages::charge`) |
 | an aspect's state, read for itself (presence for `aspects.0` and content, tree roots) | writers (as stored) | `Tx::each_piece`, `pages::each_piece` | a piece at a time: the skeleton, then a page with its keys' records; presence under the reader's bound |
 | a body judged covered | writer | `retention::snapshot::covered_body` | a group of its pages about the two parts' root bytes, with its skeleton, and per write a dot |
-| a commit's linked header lists | signer | `Header::resolve` | the bytes of its own lists: a list's tree is keyed to its header (list key) |
+| a commit's linked header lists | author | `Header::resolve` | the bytes of its own lists: a list's tree is keyed to its header (list key) |
 | a demotion's frontier | signer | `osis_commit::frontier_ids` | its bytes: 32 B an ID held against 34 sent, one copy |
 | the trees a thing's sources link | writers | `tree_refs::Reach` | what opens each counted link and its counts, about 350 B a link |
 | a peer's filter | stranger | `Opens::beacons`, records load | its coding (`osis_proto::filter::Beacons`) |
@@ -32,5 +32,5 @@
 - Holding linked lists as bytes: saves about 5x and leaves the count of commits sharing one list unbounded.
 
 ## Left
-- Total over connections: per-connection state grows with peers, the requirements' stated limit; the node-wide bound is issues/sync-unbuilt.md (Security).
+- Total over connections: per-connection state grows with peers; the node-wide bound is issues/sync-unbuilt.md (Security).
 - A snapshot's writer loads, clones and encodes the whole state; a write replacing a whole position loads the state there whole; `covered` holds a body paged below a map entry whole; tree roots read a nested paged state whole: issues/durable-decode-bound.md.

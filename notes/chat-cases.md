@@ -12,7 +12,7 @@ Cells: `yes`/`no` forced; `opt` app's clean choice; `opt*` a modified client def
 | Can a chat admin hide a message from honest clients? | yes | opt |
 | Can a chat admin erase one message from nodes keeping the chat unread and honest devices? | yes | opt³⁸ |
 | Can an admin of a member's account (their other device) edit that member's messages? | yes | yes |
-| Can an admin of a team that is a member edit a team member's messages? | no | no |
+| Can an admin of an organization that is a member edit the messages of the organization's members? | no | no |
 | Can a member make a message appear as written by Bob? | no | no |
 | Can a member make messages appear from a fake account that was never a member? | no | no |
 | Does such a fake account's content cost every member storage until an admin removes it? | no | yes! |
@@ -207,7 +207,7 @@ Cells: `yes`/`no` forced; `opt` app's clean choice; `opt*` a modified client def
 | Can a chat have forward secrecy at all? | yes | core m |
 
 ## Realms (parked: notes/realms.md, issues/realms-design.md)
-Nothing here is designed: each answer is what today's core would give if servers, teams and roles were realms as notes/realms.md proposes (a channel a chat a realm holds write on).
+Nothing here is designed: each answer is what today's core would give if servers, organizations and roles were realms as notes/realms.md proposes (a channel a chat a realm holds write on).
 
 | case | want | chat |
 |---|---|---|
@@ -232,7 +232,7 @@ Nothing here is designed: each answer is what today's core would give if servers
 | Can any member create a channel that appears in the directory? | opt | opt⁴⁹ |
 | Does the sidebar show channel names without reading each channel? | yes | yes⁵⁰ |
 | Can non-members see that a private channel exists? | no | opt⁵¹ |
-| Can a member post as a realm (the role actor)? | no | opt³⁹ |
+| Can a member post as a realm (the header's actor)? | no | opt³⁹ |
 | Can a member choose which channels to sync, with none by default? | yes | opt⁵⁰ |
 | Unread counts for channels not synced? | yes | opt⁵² |
 | Mentions in channels not synced? | yes | core h |
@@ -252,7 +252,7 @@ Nothing here is designed: each answer is what today's core would give if servers
 - **e** Sender card in invite requests (Tess: yes).
 - **h** Wake relay for background notifications (Tess: does not block).
 - **j** Per-sender key chains (Signal sender keys): per-message erasure, at the cost of a per-sender state per device and either a per-sender marker the nodes keeping the chat unread can link or trial decryption.
-- **m** Erasable per-device KEM keys with per-device boxes (MLS-sized): what real member forward secrecy would need; against spec/crypto.md §3 and requirements line 48.
+- **m** Erasable per-device KEM keys with per-device boxes (MLS-sized): what real member forward secrecy would need; against spec/crypto.md §3 and spec/requirements.md, Cost.
 - **n** History-less grant: a cut (a read rotation at the add carrying no history), a floor per read epoch that history entries and boxes respect, role commits opened by every holder under roles secrets (notes/history-less-grant.md, model-checked); segments (footnote 33) are the fallback without core change.
 - **o** A node that stops fetching short of old messages (issues/partial-history-fetch.md); fetch is newest first (spec/sync-judgement.md §2).
 - **r** Pure readers place nothing under big sync IDs: no chain certificates or node card from a reader unless asked (realms past a few thousand members).
@@ -279,19 +279,19 @@ Nothing here is designed: each answer is what today's core would give if servers
 38. admins may always purge (spec/commits.md §5): no setting makes a message undeletable.
 39. the header's actor is checked by validity (spec/permissions.md §5.2: the signing device holds write on the actor at the commit's key), so a valid commit's actor is its sender; that the actor itself could write on the chat is the ordinary validity of the device's write only when its path runs through the actor.
 40. with frontier heads (unbuilt); without them a kick lists about 34 B per message the member ever sent (3.4 MB at 10^5) and caps near 1.9x10^6 messages.
-41. The removal and the top realm's rotation are one commit (2.7 KB per member); each child re-keys on any writer's next sync pass (about 11 KB, eager, may fork). Cutting sync, write and deposit keys needs an admin of each child to register a step at each node keeping it unread; until then the removed member reads ciphertext and can log entries.
-42. At 1000: 2.7 MB plus about 11 KB per child, spread over members' passes. At 100,000 with tiers of 1000: the tier (2.7 MB), the top realm (100 boxes), then children; estimated.
+41. The removal and the top realm's rotation are one commit (2.7 KB per member); each channel re-keys on any writer's next sync pass (about 11 KB, eager, may fork). Cutting sync, write and deposit keys needs an admin of each channel to register a step at each node keeping it unread; until then the removed member reads ciphertext and can log entries.
+42. At 1000: 2.7 MB plus about 11 KB per channel, spread over members' passes. At 100,000 with tiers of 1000: the tier (2.7 MB), the top realm (100 boxes), then channels; estimated.
 43. All three roles rotate on every realm and chat the mod administered, admins only; the ex-mod keeps delete keys until each sync ID is stepped.
 44. Every syncing node logs its chain (11.5 KB per account) and card (1.5 KB) under each sync ID it reads: about 13 MB once at 1000; about 1.4 GB at 100,000.
 45. By rights no: a role is the maximum over paths and `until` only ends a grant. Mods write a muted set with a time; honest clients hide and mods purge; a modified client posts on.
-46. Messages on a thing under the chat with an admin grant for the delete role (spec/permissions.md §1): purge without roster or lock; one more rotation per kick.
+46. Messages on a thing minted with admin the chat, with an admin grant for the delete role (spec/permissions.md §1): purge without roster or lock; one more rotation per kick.
 47. Admin passes only through admin, and admins of a realm manage its roster; direct per-channel admin grants avoid it at one grant per channel.
 48. A sibling chat the members write carries the reactions; the app shows them under the announcement.
 49. Adding a channel is a grant for the realm on the chat, needing admin on the chat and on the realm's layout; a member creates a chat and asks an admin to add it.
 50. Names and categories are a chat-app layout aspect on the realm, naming each channel by a weak, so nothing of a channel is in the realm's sync unit; a member's app syncs a channel by holding a strong to it (spec/sync-set.md §1).
-51. Grant the private channel only to a role realm. Left: the nodes keeping it unread see its sync ID, a device-removal frontier head names its tid under public sync IDs (frontier-study format), and a purge across children shows their tids.
-52. Entry counts are drowned by certificates (no kind in the log); a latest-time register per child on the parent, written by posters, is the cheap source.
+51. Grant the private channel only to a role realm. Left: the nodes keeping it unread see its sync ID, a device-removal frontier head names its tid under public sync IDs (frontier-study format), and a purge across channels shows their tids.
+52. Entry counts are drowned by certificates (no kind in the log); a latest-time register per channel on the realm, written by posters, is the cheap source.
 53. Threads and forum posts are reply chains inside the channel, grouped by the app.
-54. A thing the realm reads (made under it, or granted to it) is in the realm's sync unit while a strong on the realm references it; one with own keys syncs under its own sync ID too. Whether writers may remove one is the realm schema's choice (Tess): strongs in an admin-only aspect (`^`, spec/data-model.md §2) only admins remove; in `holds.0` any member may, and the thing leaves the realm's sync unit, going where nothing else references it (spec/sync-set.md §3).
+54. A thing the realm reads (minted with it as admin, or granted to it) is in the realm's sync unit while a strong on the realm references it; an independent one syncs under its own sync ID too. Whether writers may remove one is the realm schema's choice (Tess): strongs in an admin-only aspect (`^`, spec/data-model.md §2) only admins remove; in `holds.0` any member may, and the thing leaves the realm's sync unit, going where nothing else references it (spec/sync-set.md §3).
 55. Every thing's role history is kept forever and readable by its holders.
 56. Rights: lower the top realm's role on each child, one commit per child; one step only as a client-honored flag.
