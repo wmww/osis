@@ -77,12 +77,12 @@ fn a_destroyed_thing_is_held_and_released_as_any_thing_spec_commits_5() {
 }
 
 // spec/commits.md §5 (Destruction: a destroyed thing keeps its record while a held thing needs
-// it: a dependent, by a held creation record naming it mint admin): t, under the account and
+// it: a thing relying on it, by a held creation record naming it mint admin): t, minted with the account as admin and
 // held from D, is u's mint admin; u is held from the node root. t destroyed and released from
 // the node closure keeps its record while u lives; u destroyed and released too, t keeps nothing
 // once the pass ends (it lost its last need), its chain topping at this node's own account.
 #[test]
-fn a_dependent_keeps_a_destroyed_things_record_spec_commits_5() {
+fn a_thing_relying_on_a_destroyed_thing_keeps_its_record_spec_commits_5() {
     let (mut lp, ps) = people(1);
     let t = thing_of(&mut lp, 0, ps[0]);
     let u = thing_of(&mut lp, 0, t);
