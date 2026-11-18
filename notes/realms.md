@@ -58,7 +58,7 @@ Removing a member rotates R in the removal commit. A thing never looks inside it
 A shared tag is already an actor (notes/tags.md, Sharing a tag) and may also carry `realm.0`; one thing may be both.
 
 ## What realms make unnecessary for chat
-- **"A chat is a faction"**: a chat is a thing a realm holds write on or administers. A plain 1:1 or group chat is no realm; a server or team is a realm, a channel a chat in it, a mod role a realm holding admin on it or on some chats.
+- **"A chat is a faction"**: a chat is a thing a realm holds write on or administers. A plain 1:1 or group chat is no realm; a server or an organization is a realm, a channel a chat in it, a mod role a realm holding admin on it or on some chats.
 - **The directory aspect** (`faction:children^.0`): the contents list is R's grants. A chat app wanting categories, order or names of channels it has not synced keeps its own layout aspect on R.
 - **Tied content**: a document in the realm is a grant to R; removing its strong from R does not revoke.
 - **Chat core asks become realm asks**: pure readers placing nothing under big sync IDs matters more, since realms gather any number of things.
@@ -76,6 +76,6 @@ A realm being a tag too; realms administered by one account ("family", I stay ad
 2. **Who renames the realm**: writers, like shared tags, until admin-only details exist.
 3. **Default role on joining**: write (taking part needs write, spec/requirements.md); read for "viewer" invites.
 4. **Keep on removal**: keep by default, matching chat: an honest client cannot force erasure, and silent erasure of someone's own messages reads as data loss. Admins may choose erase per removal.
-5. **Things created in a realm**: the realm is mint admin (they stay when the maker leaves, like a team drive) rather than the maker sharing them in; things that already exist are shared in.
+5. **Things created in a realm**: the realm is mint admin (they stay when the maker leaves, like a shared drive) rather than the maker sharing them in; things that already exist are shared in.
 6. **No single controlling account by default**: a realm's admins are equals (an actor whose admins are its grants, the mint admin removable); a realm one account controls is allowed too.
 7. **Serving**: a node that cannot read a realm keeps its sync ID as any other (spec/sync.md): nothing realm-specific.
