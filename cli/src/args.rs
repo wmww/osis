@@ -378,8 +378,8 @@ pub enum Cmd {
 
 #[derive(Args, Debug, Clone)]
 pub struct CreateArgs {
-    /// Mint admin (default: the account root). Under a thing it is plain, read by that thing's
-    /// readers; under an account (`me`) it gets keys of its own at once, about ten times the cost
+    /// Mint admin (default: the account root). With a thing as admin it is read by that thing's
+    /// readers, and until first shared directly may be up to ten times lighter than with an account (`me`)
     #[arg(long, value_name = "A")]
     pub admin: Option<String>,
     /// The thing whose holds.0 holds it by a strong (default: the --admin thing; the account root for `me`)

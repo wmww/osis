@@ -298,7 +298,7 @@ impl<'d> Write<'d> {
         i
     }
 
-    /// A new thing minted with admin `admin`, its mint admin, stored with this commit: a thing or account
+    /// A new thing with admin `admin` (its mint admin), stored with this commit: a thing or account
     /// this actor may write (`Permission` at commit otherwise). The mint admin is an ordinary
     /// admin, removable like any other (spec/permissions.md §1).
     ///
@@ -307,11 +307,10 @@ impl<'d> Write<'d> {
     /// go then too (`Invalid` at once when the time is not in the future, and at commit beside
     /// another expiry).
     ///
-    /// Under a thing (usually the one that holds it) it is plain: whoever reads that thing reads
-    /// it, and it costs its record and content alone. Under an account (`me()`) it gets keys of
-    /// its own at once, about ten times the bytes and work; a dependent thing gets them only at its
-    /// first grant. A thin client's own actor goes with the client, so it is refused as admin
-    /// (`Invalid` at commit).
+    /// With a thing as admin (usually the one that holds it), whoever reads that thing reads it, and
+    /// until it is first shared directly it may be up to ten times lighter to make and sync than one
+    /// with an account (`me()`) as admin. A thin client's own actor goes with the client, so it is
+    /// refused as admin (`Invalid` at commit).
     ///
     /// The same write must hold it: a strong to it from a thing this node holds (the account
     /// root's `holds.0` for an account-wide thing), else the commit is `Invalid`. It syncs with

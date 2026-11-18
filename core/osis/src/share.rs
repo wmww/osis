@@ -365,9 +365,9 @@ impl ReadOnly {
         Ok(self.read_answer(|| crate::track::thing_key("holders", target), crate::watch::Filter::Due(crate::watch::Watch::RoleGraph), move |r| holders_in(r, target)))
     }
 
-    /// Holds `t` on this node: a strong in its node root (spec/sync-set.md §1), so its node closure
-    /// takes `t` in, entering an independent thing by a ticket it holds (accepting it,
-    /// spec/sync-set.md §4). This node alone holds it so, and writes no ticket for its account.
+    /// Holds `t` on this node: a strong in its node root (spec/sync-set.md §1), so this node syncs
+    /// and keeps `t`, accepting a ticket for it that it holds (spec/sync-set.md §4). This node alone
+    /// holds it so, and writes no ticket for its account.
     /// `Unsupported` on a client with its own actor.
     pub fn hold(&self, t: Tid) -> Result<()> {
         self.local("hold")?;

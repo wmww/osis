@@ -5,7 +5,7 @@
 
 The rule (Tess): no API behaviour depends on it. Docs may state the cost difference where it matters, hedged and without the internal terms (notes/api-design.md, Public docs). The mint admin of an independent thing has no significance: any trick treating it specially must be unobservable.
 
-Docs to rewrite to that: `Write::create` (core/osis/src/write.rs), `osis create --admin` (cli/src/args.rs), `Osis::hold` (core/osis/src/share.rs); notes/api.md and notes/chat.md quote byte figures for app-facing choices.
+notes/api.md and notes/chat.md quote byte figures for app-facing choices.
 
 Behaviour that differs:
 - **Removing the last admin** of a dependent thing is refused (`flows::edges::leaves_no_admin`, spec/permissions.md §1); on an independent one the same write goes through and leaves it adminless. One rule for both is owed (Tess: either, but the same). Proposed (notes/write-path-design.md §5): allowed for every thing, freezing its roster; waiting on Tess (issues/actors-one-mechanism.md, Questions for Tess).
