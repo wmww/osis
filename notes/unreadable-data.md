@@ -13,7 +13,7 @@
 - Whether a node keeps S is visible to anyone holding S's public values (its filter goes to every connection; Behind's 13 against 14), and a depositor holding an organization's `keys.0` learns whether a node holds the organization's inbox (spec/sync-hostile.md §2).
 
 ## Does not learn
-AKs, tids other than the things its dialers proved and the things it keeps unread, thing or aspect counts, authors, role grants, rosters, another account's node identities, retention bounds. What it deleted (a delete, an expiry, a replaced entry) it forgets: its store shreds every removal, so a later compromise of that node, even one that also holds the read secret, recovers no deleted wrap (notes/sync-reasons.md, Nodes; notes/local-store.md).
+AKs, tids other than the key actors its dialers proved and the things it keeps unread, thing or aspect counts, authors, role grants, rosters, another account's node identities, retention bounds. What it deleted (a delete, an expiry, a replaced entry) it forgets: its store shreds every removal, so a later compromise of that node, even one that also holds the read secret, recovers no deleted wrap (notes/sync-reasons.md, Nodes; notes/local-store.md).
 
 ## Costs
 - Padmé padding costs at most about 12% under 256 B, 6% up to 64 KB, 3% above; 1-4% on average.
