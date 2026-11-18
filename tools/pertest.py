@@ -9,6 +9,7 @@
       time (default: half the hardware threads); write OUT as tab-separated lines: binary, test,
       instructions, CPU-s, exit code. MATCH keeps the tests whose "binary test" contains one of
       them (binary is `<package> <target>`, e.g. `osis-engine it`). --jobs 1 takes no lock.
+      PERTEST_KEEP_BINS=1 keeps OUT.bins/ (several GB) for a whole-binary `tools/icount BIN -q`.
   tools/pertest.py top OUT [N]          per-binary totals, then the N costliest tests (default 30)
   tools/pertest.py compare OLD NEW [N]  per-binary totals of both, then the N largest moves by
                                         test (default 30); tests in one file only are listed apart
@@ -79,8 +80,9 @@ def run(out, jobs, match):
     try:
         return subprocess.call(lock + me)
     finally:
-        # the copies go however the run ends
-        shutil.rmtree(copy, ignore_errors=True)
+        # the copies go however the run ends, unless kept for a whole-binary count after
+        if not os.environ.get("PERTEST_KEEP_BINS"):
+            shutil.rmtree(copy, ignore_errors=True)
         if os.path.exists(out + ".todo"):
             os.remove(out + ".todo")
 
