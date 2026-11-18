@@ -43,6 +43,21 @@ pub(crate) fn take_boxes(tx: &mut Tx<'_>, h: &Header) -> Result<()> {
     Ok(())
 }
 
+/// Opens every seed box to this node held here of account `p` (with account root `d`), each by
+/// `take_boxes`: its rotations' and re-seals', role commits of P on P or on D. A node taking `p`
+/// up holds what every box to it it holds carries, those it opened before it last left among
+/// them, so custody is a function of the held commits. O(P's role commits on P and D), at a
+/// take-up alone.
+pub(crate) fn take_held_boxes(tx: &mut Tx<'_>, p: &Tid, d: &Tid) -> Result<()> {
+    let held: BTreeSet<osis_base::CommitId> = [(*p, *p), (*d, *p)].iter().filter_map(|k| tx.core.ix.role_on.get(k)).flatten().copied().collect();
+    for c in held {
+        if let Some(h) = tx.core.ix.commits.get(&c).and_then(|m| m.header.decoded()) {
+            take_boxes(tx, &h)?;
+        }
+    }
+    Ok(())
+}
+
 /// Header `h`'s seed boxes with the signing key of the epoch whose seed they carry: a rotation's
 /// (the epoch it mints) or a re-seal's.
 pub(crate) fn seed_boxes_of(h: &Header) -> Option<(&VerifyingKey, &[SeedBox])> {

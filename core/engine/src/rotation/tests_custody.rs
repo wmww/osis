@@ -30,6 +30,14 @@
 //! held: P left out of a t epoch was re-sealed; X's do not; no honest node rotates in the last
 //! round.
 //!
+//! Re-adds: where C removes T, A may re-add T in the settle (the model's `readd`, T online from
+//! tick 2 or the settle), through the engine's pairing (`Engine::pair`, then `paired` at T: its
+//! take-up, `hold_account`); the rotation and the seeds its box to T carries besides its own are
+//! mirrored, and must be the model's. Where the model waits for A's line to carry T's removal and
+//! its act would merge, making no plain rotation, the pairing merges first and pairs on the
+//! merge (the model's act, then its re-add); where it would not merge, the pairing is refused,
+//! making nothing. Settled on the honest side, T is on A's roster and its own.
+//!
 //! Not mirrored: listings and thing lists (the engine's names; checked by the write rules), X's
 //! writes on t. So a mirrored t rotation's history also carries the t epochs the engine's
 //! history box lists (current at its maker by words the mirror leaves out).
@@ -130,12 +138,24 @@ pub(super) struct Reached {
     as_z: bool,
     left: bool,
     warned: bool,
+    readd: bool,
+    readd_waited: bool,
+    readd_merged: bool,
+    readd_refused: bool,
+}
+
+/// What an act changes before its pass end: a removal (a plain rotation), a re-add (a pairing).
+#[derive(Clone, Copy, Debug)]
+enum Change {
+    None,
+    Removes(usize),
+    Pairs(usize),
 }
 
 /// What the model's `act` made, read off the mirror copy.
-/// A plain rotation as the policy compares it: signed at, removes, takes, answers (each a line: a
-/// merge's for a certificate), boxed (but its maker).
-type PlainAct = (Line, BTreeSet<usize>, BTreeSet<u32>, BTreeSet<Line>, BTreeSet<usize>);
+/// A plain rotation as the policy compares it: signed at, removes, adds, takes, answers (each a
+/// line: a merge's for a certificate), boxed (but its maker).
+type PlainAct = (Line, BTreeSet<usize>, BTreeSet<usize>, BTreeSet<u32>, BTreeSet<Line>, BTreeSet<usize>);
 
 #[derive(Debug, Default)]
 struct Policy {
@@ -668,30 +688,30 @@ impl Run {
     fn policy(&mut self, n: usize, removes: Option<usize>, write: bool) -> Policy {
         self.sync_recv();
         let mut wc = self.w.clone();
-        let before = wc.items.len();
         let made = cm::act(&mut wc, n, self.now(), removes, write);
-        let mut p = Policy::default();
-        for id in made {
-            let i = wc.item(id).clone();
-            let bx: BTreeSet<usize> = (0..N).filter(|m| i.boxed[*m] && *m != n).collect();
-            match &i.kind {
-                MK::Plain { at, removes, takes, answers, .. } => p.plain = Some((at.clone(), removes.iter().copied().collect(), takes.iter().copied().collect(), answers.iter().map(|q| answered(&wc, *q)).collect(), bx)),
-                MK::Cert { .. } => p.cert = Some((wc.mints(id), bx)),
-                MK::Reseal { e, .. } => {
-                    for d in bx {
-                        p.reseals.insert((e.clone(), d));
-                    }
-                }
-                MK::TRot { .. } => p.trot = true,
-                MK::TReseal { .. } => {}
-                MK::Content => p.writes.push((i.epoch.clone(), i.on_t.is_some())),
-                MK::Listing { .. } => {}
-            }
-        }
-        // writes on t name the t epoch the model encrypts under
-        let _ = before;
-        p
+        policy_of(&wc, n, &made)
     }
+}
+
+/// What the model's items `made` by node n on mirror copy `wc` are, as the policy compares them.
+fn policy_of(wc: &cm::World, n: usize, made: &[u32]) -> Policy {
+    let mut p = Policy::default();
+    for id in made {
+        let i = wc.item(*id);
+        let bx: BTreeSet<usize> = (0..N).filter(|m| i.boxed[*m] && *m != n).collect();
+        match &i.kind {
+            MK::Plain { at, removes, adds, takes, answers } => p.plain = Some((at.clone(), removes.iter().copied().collect(), adds.iter().copied().collect(), takes.iter().copied().collect(), answers.iter().map(|q| answered(wc, *q)).collect(), bx)),
+            MK::Cert { .. } => p.cert = Some((wc.mints(*id), bx)),
+            MK::Reseal { e, .. } => p.reseals.extend(bx.into_iter().map(|d| (e.clone(), d))),
+            MK::TRot { .. } => p.trot = true,
+            MK::TReseal { .. } | MK::Listing { .. } => {}
+            MK::Content => p.writes.push((i.epoch.clone(), i.on_t.is_some())),
+        }
+    }
+    p
+}
+
+impl Run {
 
     /// The model's t epoch node n writes on t under, now.
     fn t_epoch(&mut self, n: usize) -> Option<u32> {
@@ -707,8 +727,69 @@ impl Run {
             return Vec::new();
         }
         self.take_up(n);
-        let t = self.tick;
         let model = self.policy(n, removes, write);
+        self.act_with(n, removes.map_or(Change::None, Change::Removes), write, model)
+    }
+
+    /// A's settle act while it owes T's re-add (roles-model `honest_act`): the model's `readd`,
+    /// played as the engine's pairing of y (`Engine::pair`, then `paired` at y: `hold_account`).
+    /// Where the model waits for its line to carry y's removal, the engine's pairing merges first
+    /// and pairs on the merge (the model's act merging, then its re-add) or, where the model's
+    /// act cannot merge, refuses, making nothing; then n acts as at a pass end.
+    fn readd(&mut self, n: usize, y: usize) -> Vec<u32> {
+        self.check_left();
+        if self.left[n] {
+            return Vec::new();
+        }
+        self.take_up(n);
+        self.sync_recv();
+        let now = self.now();
+        let mut wc = self.w.clone();
+        let made = cm::readd(&mut wc, n, now, y);
+        if !made.is_empty() {
+            self.reached.readd = true;
+            let model = policy_of(&wc, n, &made);
+            return self.act_with(n, Change::Pairs(y), false, model);
+        }
+        if wc.readd_waits > self.w.readd_waits {
+            self.w.readd_waits += 1;
+            self.reached.readd_waited = true;
+            let mut wc = self.w.clone();
+            let m1 = cm::act(&mut wc, n, now, None, false);
+            let cert = |id: &u32| matches!(wc.item(*id).kind, MK::Cert { .. });
+            let merges = m1.iter().any(cert);
+            let kinds: Vec<String> = m1.iter().map(|id| format!("{:?}", wc.item(*id).kind)).collect();
+            self.note(format!("t{} {} waits to re-add {}: the model acts {kinds:?}", self.tick, cm::NAMES[n], cm::NAMES[y]));
+            if merges && !m1.iter().any(|id| matches!(wc.item(*id).kind, MK::Plain { .. })) {
+                let m2 = cm::readd(&mut wc, n, now, y);
+                if !m2.is_empty() {
+                    self.reached.readd = true;
+                    self.reached.readd_merged = true;
+                    let model = policy_of(&wc, n, &[m1, m2].concat());
+                    return self.act_with(n, Change::Pairs(y), false, model);
+                }
+            }
+            if !merges {
+                // no merge to make: the pairing is refused, making nothing
+                self.lp.advance(1);
+                match self.lp.peers[n].engine.pair(&self.tids[y]) {
+                    Err(crate::Error::Misuse(_)) => {}
+                    r => self.fail(&format!("t{} {} pairing {} beside its removal: engine {:?}, model waits (cannot merge)", self.tick, cm::NAMES[n], cm::NAMES[y], r.map(|x| x.1))),
+                }
+                let made = self.fresh(n);
+                if !made.is_empty() {
+                    self.fail(&format!("t{} {}'s refused pairing made {made:?}", self.tick, cm::NAMES[n]));
+                }
+                self.reached.readd_refused = true;
+            }
+        }
+        let model = self.policy(n, None, false);
+        self.act_with(n, Change::None, false, model)
+    }
+
+    /// `act`'s engine side, against the model's act `model`.
+    fn act_with(&mut self, n: usize, change: Change, write: bool, model: Policy) -> Vec<u32> {
+        let t = self.tick;
         if std::env::var_os("CUSTODY_TRACE").is_some() {
             let j = self.judge(n);
             eprintln!("t{t} {} to act: model {model:?}; taken {:?} heads {:?} pref {:?} roster {:?}", cm::NAMES[n], j.taken, j.heads, j.preferred, j.roster);
@@ -716,11 +797,18 @@ impl Run {
         let te = self.t_epoch(n);
         let t_known = self.t_epochs_at(n);
         self.lp.advance(1);
-        if let Some(y) = removes {
-            let node = self.tids[y];
-            if let Err(e) = self.lp.peers[n].engine.remove_device(&node) {
-                self.fail(&format!("t{t}: {} removing {}: {e}", cm::NAMES[n], cm::NAMES[y]));
+        let mut pairing = None;
+        match change {
+            Change::None => {}
+            Change::Removes(y) => {
+                if let Err(e) = self.lp.peers[n].engine.remove_device(&self.tids[y]) {
+                    self.fail(&format!("t{t}: {} removing {}: {e}", cm::NAMES[n], cm::NAMES[y]));
+                }
             }
+            Change::Pairs(y) => match self.lp.peers[n].engine.pair(&self.tids[y]) {
+                Ok((_, all)) => pairing = Some((y, all)),
+                Err(e) => self.fail(&format!("t{t}: {} pairing {}: {e}", cm::NAMES[n], cm::NAMES[y])),
+            },
         }
         if let Err(e) = self.lp.peers[n].engine.signing_due() {
             self.fail(&format!("t{t}: {} signing: {e}", cm::NAMES[n]));
@@ -742,14 +830,14 @@ impl Run {
                 let id = if r.is_merge() { self.add_cert(n, &c) } else { self.add_plain(n, &c, false) };
                 if r.is_merge() {
                     cert = Some(id);
-                    // the seeds its boxes carry besides the merge's (`add_cert`)
-                    for x in self.w.items[id as usize..].iter().filter(|x| self.eid[x.id as usize - 1] == c) {
-                        if let MK::Reseal { e, .. } = &x.kind {
-                            reseals.extend((0..N).filter(|d| x.boxed[*d]).map(|d| (e.clone(), d)));
-                        }
-                    }
                 } else {
                     plain = Some(id);
+                }
+                // the seeds its boxes carry besides its own (`add_cert`, `add_plain`)
+                for x in self.w.items[id as usize..].iter().filter(|x| self.eid[x.id as usize - 1] == c) {
+                    if let MK::Reseal { e, .. } = &x.kind {
+                        reseals.extend((0..N).filter(|d| x.boxed[*d]).map(|d| (e.clone(), d)));
+                    }
                 }
                 made.push(id);
             } else if h.author == self.ids.p && h.reseal.is_some() {
@@ -774,7 +862,7 @@ impl Run {
         // the plain rotation and the certificate: the model's
         let got = plain.map(|id| self.plain_of(id));
         if got != model.plain {
-            self.fail(&format!("t{t} {} acting (removes {removes:?}): plain rotation engine {got:?}, model {:?}", cm::NAMES[n], model.plain));
+            self.fail(&format!("t{t} {} acting ({change:?}): plain rotation engine {got:?}, model {:?}", cm::NAMES[n], model.plain));
         }
         let got = cert.map(|id| (self.w.mints(id), (0..N).filter(|m| self.w.item(id).boxed[*m] && *m != n).collect::<BTreeSet<usize>>()));
         if got != model.cert {
@@ -791,7 +879,22 @@ impl Run {
             }
             None => self.extras[n].extend(sides),
         }
-        self.note(format!("t{t} {} acts (removes {removes:?}): made {made:?}", cm::NAMES[n]));
+        self.note(format!("t{t} {} acts ({change:?}): made {made:?}", cm::NAMES[n]));
+        // the pairing's commits go to y directly, which takes the account up again
+        if let Some((y, all)) = pairing {
+            for c in all {
+                if !self.lp.peers[y].engine.core.ix.commits.contains_key(&c) {
+                    let pk = self.lp.peers[n].engine.package(&c).unwrap().unwrap();
+                    self.deliver(y, &pk, "pairing");
+                }
+            }
+            if let Err(e) = self.lp.peers[y].engine.paired(&self.ids.p) {
+                self.fail(&format!("t{t}: {} paired by {}: {e}", cm::NAMES[y], cm::NAMES[n]));
+            }
+            self.left[y] = false;
+            self.note(format!("t{t} {} paired again", cm::NAMES[y]));
+            self.note_extras(y);
+        }
         if write {
             let mut writes = Vec::new();
             for (thing, on_t) in [(self.ids.u, false), (self.ids.t, true)] {
@@ -889,12 +992,11 @@ impl Run {
         Some(of.into_iter().map(|of| self.add(MK::TReseal { of, sealed: sealed.clone() }, k, k, at.clone(), None, *c, pk.take(), [false; N], reach)).collect())
     }
 
-    /// Plain rotation item `id` as the policy compares it: signed at, removes, takes, answers,
-    /// boxed (but its maker).
+    /// Plain rotation item `id` as the policy compares it (`PlainAct`).
     fn plain_of(&self, id: u32) -> PlainAct {
         let i = self.w.item(id);
-        let MK::Plain { at, removes, takes, answers, .. } = &i.kind else { unreachable!() };
-        (at.clone(), removes.iter().copied().collect(), takes.iter().copied().collect(), answers.iter().map(|q| answered(&self.w, *q)).collect(), (0..N).filter(|m| i.boxed[*m] && *m != i.author).collect())
+        let MK::Plain { at, removes, adds, takes, answers } = &i.kind else { unreachable!() };
+        (at.clone(), removes.iter().copied().collect(), adds.iter().copied().collect(), takes.iter().copied().collect(), answers.iter().map(|q| answered(&self.w, *q)).collect(), (0..N).filter(|m| i.boxed[*m] && *m != i.author).collect())
     }
 
     /// Engine plain rotation `c` made by k (honest), mirrored.
@@ -917,11 +1019,35 @@ impl Run {
         let boxed = self.boxed_by(&seed, &r.seeds);
         let reach = self.reach_of(k, c);
         let pk = self.lp.peers[k].engine.package(c).unwrap();
+        let newcomers = adds.clone();
         let id = self.add(MK::Plain { at: at.clone(), removes, adds, takes, answers }, k, k, at, None, *c, pk, boxed, reach);
         self.w.items[id as usize - 1].script = script;
-        self.key_line.insert(r.signing_key.to_bytes(), self.w.line(id));
+        let line = self.w.line(id);
+        self.key_line.insert(r.signing_key.to_bytes(), line.clone());
         self.epoch_key.insert(*c, r.signing_key.to_bytes());
+        // the seeds a newcomer's box carries besides the rotation's: items at its own epoch
+        for m in newcomers.into_iter().filter(|m| boxed[*m]) {
+            let bx: [bool; N] = std::array::from_fn(|x| x == m);
+            for e in self.box_lines(m, &seed, &r.signing_key, &r.seeds) {
+                if !e.is_empty() && e != line {
+                    self.add(MK::Reseal { e, tagged: false }, k, k, line.clone(), None, *c, None, bx, reach);
+                }
+            }
+        }
         id
+    }
+
+    /// The lines of the seeds `boxes` (of the epoch with key `key` and seed `seed`) carry to party
+    /// m, opened with m's key, its first (the epoch's own) left out.
+    fn box_lines(&self, m: usize, seed: &Secret32, key: &osis_crypto::VerifyingKey, boxes: &[SeedBox]) -> Vec<Line> {
+        let tag = osis_crypto::seed_tag(seed, &self.tids[m]);
+        let kem = self.lp.peers[m].engine.core.id.keys().kem.clone();
+        let Some(b) = boxes.iter().find(|b| b.tag == tag) else { return Vec::new() };
+        let seeds = osis_crypto::open_seeds(&kem, &self.ids.p, key, &b.sealed).unwrap_or_else(|| self.fail("a newcomer's box does not open"));
+        seeds.iter().skip(1).map(|s| {
+            let k = AccountEpochKeys::from_seed(s).signing.verifying_key().to_bytes();
+            self.key_line.get(&k).cloned().unwrap_or_else(|| self.fail("a newcomer's box carries a seed of no mirrored epoch"))
+        }).collect()
     }
 
     /// Records certificate commit `c`'s merge epoch: its line from its tips.
@@ -1430,6 +1556,13 @@ impl Run {
             self.floor[C] = 3 + self.rng.below(5) as u32;
         }
         self.floor[T] = cm::SETTLE;
+        // where C removes T, A may re-add it in the settle (and T may be online from tick 2)
+        if c_mode == 1 {
+            self.w.readd = [None, Some(0), Some(1), Some(2)][self.rng.below(4)];
+            if self.w.readd.is_some() && self.rng.below(2) == 1 {
+                self.floor[T] = 2;
+            }
+        }
         let (x0, a0) = (self.rng.below(2) == 1, self.rng.below(2) == 1);
         let steps = 3 + self.rng.below(5) as u32;
         self.goto(0);
@@ -1550,7 +1683,7 @@ impl Run {
                         self.flush();
                         switch(self, n);
                         if n != T {
-                            let ids = self.act(n, None, false);
+                            let ids = self.honest_act(n, round);
                             for id in &ids {
                                 let reach = self.reach[id];
                                 for (m, r) in reach.into_iter().enumerate() {
@@ -1573,7 +1706,7 @@ impl Run {
                         switch(self, n);
                     }
                     for n in [A, B, C] {
-                        made.extend(self.act(n, None, false));
+                        made.extend(self.honest_act(n, round));
                     }
                     t += 1;
                     self.goto(t);
@@ -1599,6 +1732,15 @@ impl Run {
         self.compare();
     }
 
+    /// n's act in settle round `round` (roles-model `honest_act`): A's re-add of T from round
+    /// `readd` on, until it is made, else its act at the end of a pass.
+    fn honest_act(&mut self, n: usize, round: u32) -> Vec<u32> {
+        if n == A && self.w.readd.is_some_and(|k| round >= k) && !self.w.items.iter().any(|i| i.author == A && self.w.adds(i.id).contains(&T)) {
+            return self.readd(A, T);
+        }
+        self.act(n, None, false)
+    }
+
     /// The model's properties on what the engines settled at (roles-model `custody::check`):
     /// bounded rotations, one roster source, secrecy, warned, settled.
     fn settled(&mut self) {
@@ -1610,7 +1752,7 @@ impl Run {
         for n in [A, B, C] {
             let mut seen: BTreeSet<(u8, u32)> = BTreeSet::new();
             for i in w.items.iter().filter(|i| i.author == n && matches!(i.kind, MK::Plain { .. }) && !i.script) {
-                let evs: Vec<(u8, u32)> = w.removes(i.id).iter().map(|y| (0, *y as u32)).chain(w.takes(i.id).iter().map(|r| (1, *r))).chain(w.answers(i.id).iter().map(|q| (2, *q))).collect();
+                let evs: Vec<(u8, u32)> = w.removes(i.id).iter().map(|y| (0, *y as u32)).chain(w.adds(i.id).iter().map(|y| (3, *y as u32))).chain(w.takes(i.id).iter().map(|r| (1, *r))).chain(w.answers(i.id).iter().map(|q| (2, *q))).collect();
                 if !evs.iter().any(|e| !seen.contains(e)) {
                     self.fail(&format!("bounded: {}'s rotation #{} carries no new event", cm::NAMES[n], i.id));
                 }
@@ -1710,6 +1852,13 @@ impl Run {
         }
         if heads.len() > 1 {
             self.fail(&format!("agree: honest-side nodes settled on different heads {heads:?}"));
+        }
+        // a re-add takes: T, re-added on the honest side, is a node of P at A and at itself
+        if self.w.items.iter().any(|i| i.author == A && self.w.adds(i.id).contains(&T)) && honest_side(self, A) {
+            let t = self.tids[T];
+            if !self.view(A).roster().contains(&t) || self.left[T] || !self.view(T).roster().contains(&t) {
+                self.fail("readd: T re-added, settled off its roster at A or at itself");
+            }
         }
     }
 }
@@ -1954,10 +2103,45 @@ fn a_t_epoch_its_makers_rotation_closes_stays_current_spec_permissions_5_5() {
     assert!(!made.iter().any(|id| matches!(r.w.item(*id).kind, MK::TRot { .. })), "no re-key of t: {made:?}");
 }
 
+// spec/crypto.md §9 (Custody): a node holds a seed iff it opened a box to its own key, whatever
+// counts, and keeps it until it leaves P. C removes T (c1); X rotates on c1 (x, boxed to T) and
+// beside x (x2, kept to itself), and certifies their merge (xm, boxed to T, which never holds
+// x2); A removes X beside c1 and merges the two (m). T, holding all but x2, leaves P (no line
+// keeps it); A pairs it again on m. Back in P, T holds what the boxes to it it holds carry, x's
+// and xm's seeds among them: custody follows holding, not the path T took.
+#[test]
+fn a_re_added_node_holds_the_seeds_its_held_boxes_carry_spec_crypto_9() {
+    let mut r = Run::new(0);
+    r.lp.advance(1);
+    let c1 = r.act(C, Some(T), false)[0];
+    r.send(c1, X);
+    let bx: [bool; N] = std::array::from_fn(|m| [T, X].contains(&m));
+    let x = r.x_rotation(&r.w.line(c1), vec![], vec![], X, vec![], vec![], bx, false).unwrap();
+    let only_x: [bool; N] = std::array::from_fn(|m| m == X);
+    let x2 = r.x_rotation(&r.w.line(c1), vec![], vec![], X, vec![], vec![], only_x, true).unwrap();
+    let (lx, lx2) = (r.w.line(x), r.w.line(x2));
+    let xm = r.x_cert(&lx, &lx2, X).unwrap();
+    let rm = r.act(A, Some(X), false)[0];
+    r.w.removal = rm;
+    r.send(c1, A);
+    let m = r.act(A, None, false);
+    assert!(m.iter().any(|id| matches!(r.w.item(*id).kind, MK::Cert { .. })), "A merges c1 and its removal of X");
+    for id in [rm, c1, x, xm].into_iter().chain(m) {
+        r.send(id, T);
+    }
+    r.compare();
+    assert!(r.left[T], "T left P");
+    let made = r.readd(A, T);
+    assert!(made.iter().any(|id| r.w.adds(*id).contains(&T)), "A re-adds T");
+    // fails inside where T, re-added, lacks x's or xm's seed
+    r.compare();
+    assert!(r.seeds[T].contains(&lx) && r.seeds[T].contains(&r.w.mints(xm)), "T holds x's and xm's seeds again");
+}
+
 fn tally(runs: &[Reached]) {
     let count = |f: fn(&Reached) -> bool| runs.iter().filter(|r| f(r)).count();
     eprintln!(
-        "custody: {} worlds; lockstep {}, X's side taken first {}, own removal {}, switched back {}, certificates {} (twins {}), X certifies {}, X re-seals {}, t re-keyed {}, listing cycle {}, withheld {}, as Z {}, left {}, warned {}",
+        "custody: {} worlds; lockstep {}, X's side taken first {}, own removal {}, switched back {}, certificates {} (twins {}), X certifies {}, X re-seals {}, t re-keyed {}, listing cycle {}, withheld {}, as Z {}, left {}, warned {}, T re-added {} (waiting {}, merging first {}, a pairing refused {})",
         runs.len(),
         count(|r| r.lockstep),
         count(|r| r.x_side),
@@ -1973,6 +2157,10 @@ fn tally(runs: &[Reached]) {
         count(|r| r.as_z),
         count(|r| r.left),
         count(|r| r.warned),
+        count(|r| r.readd),
+        count(|r| r.readd_waited),
+        count(|r| r.readd_merged),
+        count(|r| r.readd_refused),
     );
 }
 

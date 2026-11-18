@@ -1165,7 +1165,8 @@ impl Engine {
 
     /// `hold_account`: this node becomes a node of `p` (`Core::member`: the account and its seeds
     /// held, both set before anything is judged or opened, as an open sets them), so every box
-    /// opens by the roles the node holds as `p`, as a rebuild opens it. `judge`: the account's
+    /// opens by the roles the node holds as `p`, as a rebuild opens it, every seed box to it held
+    /// here among them (`custody::take_held_boxes`: a re-added node's from before it left). `judge`: the account's
     /// epochs judged again in the same transaction. The
     /// epoch rule reads D (`AccountView::devices`, and the seeds opening inner signatures) only
     /// at a node holding the account, so its judgment of the chain moves whenever the account is
@@ -1187,6 +1188,7 @@ impl Engine {
         let r = self.run(|tx| {
             match judge {
                 true => {
+                    super::custody::take_held_boxes(tx, &p, &d)?;
                     super::signing::judge_account_again(tx, p, d)?;
                     super::signing::answer_again(tx, &p)?;
                 }
