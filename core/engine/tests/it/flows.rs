@@ -242,6 +242,50 @@ pub(crate) fn big(marker: &str) -> String {
     format!("{marker}{}", "x".repeat(400))
 }
 
+const SEALED_MARK: &str = "SEALED-MARK-9c41";
+
+// spec/sync-judgement.md §1 (Sealed sections), spec/requirements.md Deletion: bob's commit makes
+// y under t, held from his account root alone, with a value beside a write to x, which alice
+// reads through t. She derives y's read secret but does not hold y: of the sealed commit she
+// opens x's section and takes y's record alone, never y's value, and no disk of hers ever holds
+// it. Fails if a node opens the sections of a thing it merely has the secret for.
+#[test]
+fn a_section_of_a_thing_not_held_leaves_nothing_on_disk_spec_sync_judgement_1() {
+    let mut lp = LocalPeer::of(vec![forensic_peer(0, &osis_store::Faults::new()), forensic_peer(1, &osis_store::Faults::new())], 0).unwrap();
+    let pa = lp.peers[0].engine.create_account().unwrap().0.account;
+    lp.peers[1].engine.create_account().unwrap();
+    spread(&mut lp);
+    let d = lp.peers[1].engine.account_root().unwrap();
+    // a thing under `admin` held from `from`, its value `v`, beside `also` written "x2"
+    let make = |lp: &mut LocalPeer, admin: Tid, from: Tid, v: &str, also: Option<Tid>| {
+        let e = &mut lp.peers[1].engine;
+        let mut m = Mutation::new();
+        let t = m.create(e.thing_record(admin, None));
+        m.set(t, &REG, &s(v)).unwrap();
+        m.op(from, &ct::HOLDS, osis_crdt::PathOp { path: vec![], op: osis_crdt::Op::Add(Value::Strong(t)) }).unwrap();
+        if let Some(x) = also {
+            m.set(x, &REG, &s("x2")).unwrap();
+        }
+        (t, lp.peers[1].commit(m).unwrap().unwrap())
+    };
+    let (t, _) = make(&mut lp, d, d, "t", None);
+    let (x, _) = make(&mut lp, t, t, "x", None);
+    lp.peers[1].engine.grant(&t, &pa, &edge_of(Role::Read)).unwrap();
+    lp.hold_at(0, t);
+    spread(&mut lp);
+    assert_eq!(lp.peers[0].engine.get(&x, &ak("t:reg.0")).unwrap(), Some(s("x")), "alice reads x");
+    let (y, c) = make(&mut lp, t, d, &big(SEALED_MARK), Some(x));
+    let mut ids = lp.role_duties(1).unwrap();
+    ids.push(c);
+    let pks = lp.sealed(1, &ids).unwrap();
+    lp.deliver_sealed(0, &pks).unwrap();
+    let a = &mut lp.peers[0];
+    assert_eq!(a.engine.get(&x, &ak("t:reg.0")).unwrap(), Some(s("x2")), "alice reads x's write");
+    assert!(!a.engine.closure_holds(&y), "alice does not hold y");
+    assert_eq!(found_in(a, SEALED_MARK.as_bytes()), vec![], "y's value on alice's disk");
+    assert_eq!(a.engine.get(&y, &ak("t:reg.0")).unwrap(), None, "alice holds no value of y");
+}
+
 /// Things of a removal: `d` (bob read, removed), `f` (read by bob only through `d`; `f` and `d`
 /// read each other, a role cycle that keeps neither once bob is out), `e` (read by bob directly
 /// and through `d`), `mine` (bob's own).

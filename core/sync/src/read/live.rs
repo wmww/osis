@@ -565,17 +565,20 @@ impl Ground for Live<'_, '_> {
             out.missing = carried;
         }
         // at a store, each blob shown there losing to another shown there, once this node's
-        // view is S's sources' (spec/sync-ids.md §6 Delete)
-        if self.heard_out(s)? {
-            for src in &stores {
-                let Some(head) = src.head else { continue };
-                let shown: Vec<BlobId> = rows.keys().copied().filter(|b| self.blob_shown(&src.at, s, b)).collect();
-                for b in &shown {
-                    if shown.iter().any(|o| beats(o, b)) {
-                        out.deletes.insert((src.at, src.conn, head, *b));
-                    }
+        // view is S's sources' (spec/sync-ids.md §6 Delete; that view read last, only where a
+        // blob loses)
+        let mut deletes = BTreeSet::new();
+        for src in &stores {
+            let Some(head) = src.head else { continue };
+            let shown: Vec<BlobId> = rows.keys().copied().filter(|b| self.blob_shown(&src.at, s, b)).collect();
+            for b in &shown {
+                if shown.iter().any(|o| beats(o, b)) {
+                    deletes.insert((src.at, src.conn, head, *b));
                 }
             }
+        }
+        if !deletes.is_empty() && self.heard_out(s)? {
+            out.deletes = deletes;
         }
         Ok(out)
     }

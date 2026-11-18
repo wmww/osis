@@ -184,9 +184,16 @@ impl Trial {
         wraps.iter().filter(|w| w.len() == WRAP_LEN && w.first().map(|c| c ^ k0) == Some(SUITE_1)).filter_map(|w| unwrap_under(&self.wrap, id, w).ok().map(|x| x.0)).collect()
     }
 
-    /// `unwrap_section` with this key as the read secret.
+    /// `unwrap_section` with this key as the read secret; its tag checked first
+    /// (`Keystream::authentic`).
     pub fn unwrap_section(&self, commit: &CommitId, wrap: &[u8]) -> Result<Secret32, Error> {
-        unwrap_section_under(self.section.get_or_init(|| section_key(&self.key)), commit, wrap)
+        let sk = self.section.get_or_init(|| section_key(&self.key));
+        let (nonce, sealed) = wrap.split_at_checked(aead::NONCE_LEN).ok_or(Error::Malformed("section wrap length"))?;
+        let nonce: &[u8; aead::NONCE_LEN] = nonce.try_into().map_err(|_| Error::Malformed("section wrap length"))?;
+        if !aead::Keystream::new(sk.expose(), nonce).authentic(&commit.0, sealed) {
+            return Err(Error::Decrypt);
+        }
+        unwrap_section_under(sk, commit, wrap)
     }
 }
 

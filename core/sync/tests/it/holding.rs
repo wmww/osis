@@ -921,30 +921,25 @@ fn make_beside(w: &mut World, admin: Tid, v: &str, x: Tid, by: osis_base::PurgeB
 // spec/sync-judgement.md §1 (Sealed sections), spec/commits.md §5 (Purge): Bob's commit makes Y
 // under T0, held from his account root alone, with a value beside a write to X, which Alice
 // holds through T0. She can derive Y's read secret but does not hold Y, so Y's purge request
-// never reaches her: she takes Y's record alone, never its value, and no disk of hers ever holds
-// it, before the purge or after; she reads X. Fails if a node opens the sections of a thing it
-// merely has the secret for.
+// never reaches her: she takes Y's record alone, never its value, before the purge or after; she
+// reads X. Fails if a node opens the sections of a thing it merely has the secret for. That no
+// disk of hers holds the value: flows::a_section_of_a_thing_not_held_leaves_nothing_on_disk
+// (osis-engine), the forensic attack on a node of a smaller history.
 #[test]
 fn a_section_of_a_thing_not_held_stays_sealed_spec_sync_judgement_1() {
-    let mut w = World::new(0);
-    w.record = true;
-    w.add_node();
-    w.add_node();
-    crate::harness::history::introduce(&mut w);
-    w.run();
+    let mut w = contacts();
     let alice = w.node(0).account.unwrap();
     let t0 = make(&mut w, 1, None, "t0");
     let x = make_in(&mut w, 1, t0, "x");
     w.write(1, |e| e.grant(&t0, &alice, &edge(Role::Read))).unwrap();
     strong(&mut w, 0, None, t0, true);
     w.run();
-    let marker = format!("SEALED-MARK-9c41{}", "x".repeat(200));
-    let (y, c) = make_beside(&mut w, t0, &marker, x, osis_base::PurgeBy::Writer);
+    let (y, c) = make_beside(&mut w, t0, "y", x, osis_base::PurgeBy::Writer);
     w.run();
-    let found = |w: &mut World| w.forensic(0).iter().any(|r| r.plain.windows(16).any(|b| b == &marker.as_bytes()[..16]));
+    let of_y = |w: &mut World| w.engine(0).all_aspects().unwrap().iter().filter(|(t, _)| *t == y).count();
     assert_eq!(value(&mut w, 0, &x), Some(Value::Str("x2".into())), "Alice reads X");
     assert!(!w.engine(0).closure_holds(&y), "Alice does not hold Y");
-    assert!(!found(&mut w), "Alice holds Y's value");
+    assert_eq!(of_y(&mut w), 0, "Alice holds a state of Y");
     w.advance(10);
     w.write(1, |e| {
         let mut m = Mutation::new();
@@ -956,7 +951,7 @@ fn a_section_of_a_thing_not_held_stays_sealed_spec_sync_judgement_1() {
     w.run();
     w.advance(osis_proto::limits::PASS_WAIT_MS + 1);
     w.run();
-    assert!(!found(&mut w), "Alice holds Y's purged value");
+    assert_eq!(of_y(&mut w), 0, "Alice holds a state of Y after its purge");
     assert_eq!(value(&mut w, 0, &x), Some(Value::Str("x2".into())), "Alice still reads X");
 }
 

@@ -470,7 +470,7 @@ fn list_edits_match_whole(with_large: bool) {
         }
         let mut ids = Vec::new();
         for (i, p) in [&mut cold, &mut whole].into_iter().enumerate() {
-            p.restart(1000 + step).unwrap();
+            p.engine.forget_cached(&t, &a);
             if i == 1 {
                 assert!(p.engine.get(&t, &a).unwrap().is_some());
             }
@@ -500,6 +500,9 @@ fn list_edits_match_whole(with_large: bool) {
         }
     }
     assert!(at_window >= 20 && stale_edits >= 4, "{at_window} at their window, {stale_edits} stale");
+    let got = cold.engine.get_full(&t, &a).unwrap();
+    cold.restart(1).unwrap();
+    assert_eq!(cold.engine.get_full(&t, &a).unwrap(), got, "after a restart");
 }
 
 // spec/data-model.md §6: an edit replacing a large item the list no longer holds (deleted
@@ -611,10 +614,9 @@ fn paged_text_edits_by_index_and_undo_spec_crdt_6_1() {
         (x % n.max(1) as u64) as usize
     };
     let mut done = Vec::new();
-    let mut session = 100;
-    let mut restart = |p: &mut Peer| {
-        session += 1;
-        p.restart(session).unwrap();
+    // a new session (`forget_cached`; a restart at the end)
+    let restart = |p: &mut Peer| {
+        p.engine.forget_cached(&t, &a);
         osis_base::costs::take();
     };
     for step in 0..12 {
@@ -665,7 +667,7 @@ fn paged_text_edits_by_index_and_undo_spec_crdt_6_1() {
         let pages = c.iter().find(|c| c.0 == "state page load").map_or(0, |c| c.2);
         assert!(pages <= 4 && !c.iter().any(|c| c.0.starts_with("paged op whole")), "after undo, step {step}: {pages} pages loaded, {c:?}");
     }
-    restart(&mut p);
+    p.restart(1).unwrap();
     assert_eq!(p.engine.get(&t, &a).unwrap(), Some(Value::Str(model.iter().collect())));
 }
 
@@ -691,10 +693,9 @@ fn paged_text_reset_then_edits_by_index_spec_crdt_5_7() {
         x ^= x << 17;
         (x % n.max(1) as u64) as usize
     };
-    let session = std::cell::Cell::new(200);
+    // a new session (`forget_cached`; a restart at the end)
     let restart = |p: &mut Peer| {
-        session.set(session.get() + 1);
-        p.restart(session.get()).unwrap();
+        p.engine.forget_cached(&t, &a);
         osis_base::costs::take();
     };
     // pages loaded, and whether an op on the pages loaded gave up and loaded whole
@@ -752,6 +753,8 @@ fn paged_text_reset_then_edits_by_index_spec_crdt_5_7() {
     m.set(t, &TEXT_AK, &Value::Str(model.iter().collect())).unwrap();
     p.engine.commit(m).unwrap().unwrap();
     edits(&mut p, &mut model, "after remove_aspect");
+    p.restart(1).unwrap();
+    assert_eq!(p.engine.get(&t, &a).unwrap(), Some(Value::Str(model.iter().collect())), "after a restart");
 }
 
 // spec/crdt.md §4.6 (read as it did just before that commit): never wipes others' writes it has seen: a struct

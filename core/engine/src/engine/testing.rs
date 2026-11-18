@@ -483,6 +483,16 @@ impl Engine {
         self.core.ix.epoch_intro.iter().any(|(k, v)| k.0 == *t && v.1 == *c)
     }
 
+    /// Drops the cached state of `(tid, ak)` and its loaded pages: a new session holds neither.
+    /// Tests of what an operation loads, each in a new session without a restart (each restart
+    /// is an end of history, checked whole).
+    #[doc(hidden)]
+    pub fn forget_cached(&mut self, tid: &Tid, ak: &Ak) {
+        let k = (*tid, ak.clone());
+        self.core.states.remove(&k);
+        self.core.pages.remove(&k);
+    }
+
     /// The state of `(tid, ak)` loaded afresh from the store, the cache left as it was. Tests:
     /// a cached state the store does not hold.
     #[cfg(test)]
