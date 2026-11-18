@@ -484,6 +484,24 @@ pub fn world(seed: u64, n: usize) -> World {
     world_of(seed, n, n)
 }
 
+/// `world(0, 3)` where node 0 makes thing 0 and grants node 1's account sync (it keeps the thing
+/// unread) and node 2's `gives`, then runs `runs` times; built once per process (`fixture_with`).
+/// The world, the thing and its sync ID.
+pub fn three(gives: Gives, runs: usize) -> (World, Tid, osis_base::SyncId) {
+    let (w, (t, s)) = super::fixture_with(&format!("three {gives:?} {runs}"), || {
+        let mut w = world(0, 3);
+        w.cap = 2_000_000;
+        let mut steps = vec![Step::New(0), Step::Grant(0, 0, 1, Gives::Syncs), Step::Grant(0, 0, 2, gives)];
+        steps.extend(std::iter::repeat_n(Step::Run, runs));
+        let _ = super::play(&mut w, &steps, String::new());
+        let t = w.history.things[0].0;
+        let s = w.engine(0).sync_id_of(&t).unwrap().unwrap();
+        w.cap = super::RULE_CAP;
+        (w, (t, s))
+    });
+    (w, t, s)
+}
+
 /// A world of `accounts` accounts over `nodes` nodes: one node each, each account every other's
 /// contact (`introduce`), then a node paired to each account in turn (`World::pair`), quiet,
 /// handing its commits to the reference from now on. Nodes find each other only as the product

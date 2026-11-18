@@ -1328,7 +1328,7 @@ pub struct Core {
     /// transaction.
     pub none_due: BTreeSet<(Tid, Ak)>,
     /// Things whose `retention^.0` deltas arrived, flipped or dropped this transaction: what their
-    /// timeline judges is judged again at its end (`retention::settings_changed`).
+    /// settings judge is judged again at its end (`retention::settings_changed`).
     pub settings_due: BTreeSet<Tid>,
     /// Things whose `retention^.0` parts moved in `Indexes::missing` this transaction: their
     /// setting waits are judged at its end (`sync::setting::judge_due`).

@@ -1981,13 +1981,10 @@ fn classes(w: &crate::harness::World, i: usize, j: usize, s: &SyncId) -> Vec<Sou
 #[test]
 fn a_sources_class_follows_what_the_peer_holds_spec_sync_opens_4() {
     use crate::harness::Step::*;
-    use crate::harness::history::{Gives, value_ak, world};
+    use crate::harness::history::{Gives, three, value_ak};
     use osis_engine::Mutation;
     use SourceClass::{Reader, Store};
-    let mut w = world(0, 3);
-    let _ = crate::harness::play(&mut w, &[New(0), Grant(0, 0, 1, Gives::Syncs), Grant(0, 0, 2, Gives::Syncs), Run, Run, Run], String::new());
-    let t = w.history.things[0].0;
-    let s = w.engine(0).sync_id_of(&t).unwrap().unwrap();
+    let (mut w, t, s) = three(Gives::Syncs, 3);
     let all = |w: &crate::harness::World| [(0, 1), (0, 2), (1, 0), (1, 2), (2, 0), (2, 1)].map(|(i, j)| ((i, j), classes(w, i, j, &s)));
     let want = |two: SourceClass| [((0, 1), vec![Store]), ((0, 2), vec![two]), ((1, 0), vec![Reader]), ((1, 2), vec![two]), ((2, 0), vec![Reader]), ((2, 1), vec![Store])];
     assert_eq!(all(&w), want(Store), "both keep S unread");

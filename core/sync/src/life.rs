@@ -196,12 +196,6 @@ impl Life {
         }
         Ok(acted)
     }
-
-    /// Tests: whether a holder duty follows `t`.
-    #[doc(hidden)]
-    pub fn holder_duties_follow(&self, t: &Tid) -> bool {
-        self.leaves.wants(t)
-    }
 }
 
 /// Held actor `a`'s drop is due (`Life::drop_lost`): lost, its complete pass done; or lost by an

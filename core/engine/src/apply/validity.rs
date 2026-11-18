@@ -560,7 +560,7 @@ pub(crate) fn note_settings(core: &mut Core, h: &Header, id: &CommitId, parts: &
 }
 
 /// A `retention^.0` part of commit `id` on `t` no longer held (dropped, forgotten, unindexed):
-/// a setting not held is in no timeline (spec/commits.md §5 In force).
+/// a setting not held is in force nowhere (spec/commits.md §5 In force).
 pub(crate) fn forget_setting(core: &mut Core, t: &Tid, id: &CommitId) {
     let Some(mut settings) = core.ix.retention.get(t).cloned() else { return };
     settings.retain(|x| x.0.commit != *id);

@@ -737,7 +737,7 @@ impl Opens {
 
     /// `wait_for` judged by the rosters held here (`Engine::roster_holders`) on who each peer may
     /// be (`awaited`): the one rule every duty reads (leave, a self-removal's drop, read's
-    /// emptying, a pass with no source). A removed node of this account is no one to
+    /// repairs, a pass with no source). A removed node of this account is no one to
     /// wait for; a node of another account whose key epoch closed is still that account, until
     /// a rotation past that epoch carrying a removal (spec/permissions.md §5.5 Revoked). `own`: this account's own nodes count (a self-removal skips them,
     /// and a peer proving only this account: its node unproven, a dialer lacking this node's

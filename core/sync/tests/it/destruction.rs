@@ -6,9 +6,8 @@
 //! node, holds over a restart, a write after it counts nowhere, a node away past the purge's
 //! floor learns it, and the copies of a thing's mintings under a sync ID lacking it converge.
 
-use crate::harness::Step::*;
-use crate::harness::history::{Gives, value_ak, world};
-use crate::harness::{World, play};
+use crate::harness::World;
+use crate::harness::history::{self, Gives, value_ak};
 use osis_base::format::ROLE_KEEP_MS;
 use osis_base::{CommitId, SyncId, Tid, Value};
 use osis_commit::PurgeItem;
@@ -18,11 +17,8 @@ use osis_schema::core_types as ct;
 /// Node 0 makes thing 0 (a value, held from its D) and gives it a sync ID of its own, granting
 /// node 1's account sync and node 2's write; both accept (after the first run) and sync.
 fn three() -> (World, Tid, SyncId) {
-    let mut w = world(0, 3);
+    let (mut w, t, s) = history::three(Gives::Writes, 2);
     w.cap = 20_000;
-    let _ = play(&mut w, &[New(0), Grant(0, 0, 1, Gives::Syncs), Grant(0, 0, 2, Gives::Writes), Run, Run], String::new());
-    let t = w.history.things[0].0;
-    let s = w.engine(0).sync_id_of(&t).unwrap().unwrap();
     assert!(w.engine(2).knows(&t) && w.engine(2).get(&t, &value_ak()).unwrap().is_some(), "node 2 reads t");
     assert!(!w.store(1).entries(&s).unwrap().is_empty(), "node 1 keeps S");
     (w, t, s)

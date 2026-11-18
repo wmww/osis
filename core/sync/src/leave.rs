@@ -337,14 +337,10 @@ impl Ground for Live<'_, '_> {
             _ => Vec::new(),
         })
     }
+    /// `Engine::released`: the store's own entries of what it forgets go with it.
     fn release(&mut self, ts: &BTreeSet<Tid>) -> Result<()> {
-        release(self.cx.engine, ts)
+        Ok(self.cx.engine.released(ts)?)
     }
-}
-
-/// `Ground::release` (`Engine::released`: the store's own entries of what it forgets go with it).
-pub(crate) fn release(engine: &mut osis_engine::Engine, ts: &BTreeSet<Tid>) -> Result<()> {
-    Ok(engine.released(ts)?)
 }
 
 /// Each of this node's own commits with an entry under read S is held elsewhere: one of its

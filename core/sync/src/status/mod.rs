@@ -737,7 +737,7 @@ impl Status {
         heard_out(srcs.iter().map(|(c, src)| (!net.full(*c, s) && !net.refusing(src.at, s), net.caught_since(*c, s).is_some())))
     }
 
-    /// S heard out for what waits on it (a lifecycle duty, emptying a destroyed thing's sync ID):
+    /// S heard out for what waits on it (read's repairs and store deletes, spec/sync-ids.md §6):
     /// at once when no peer is to be waited for on it (`Opens::waited`: none has it open or in its
     /// kept record, none the rosters name has a record not acknowledging it), so a node alone
     /// waits for none; else `heard_out`.

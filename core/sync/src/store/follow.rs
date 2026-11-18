@@ -314,7 +314,7 @@ impl Follow {
                 for (s, b) in f.added() {
                     if self.read.contains_key(&s) {
                         let e = store.entry(&s, &b)?;
-                        park(engine, &mut self.parked, &mut self.creds, s, b, e.as_ref())?;
+                        park(engine, &mut self.parked, &mut self.creds, s, b, e.as_ref());
                     }
                 }
             }
@@ -333,7 +333,7 @@ impl Follow {
                     for s in naming {
                         if self.read.contains_key(&s) {
                             let e = store.entry(&s, &b)?;
-                            park(engine, &mut self.parked, &mut self.creds, s, b, e.as_ref())?;
+                            park(engine, &mut self.parked, &mut self.creds, s, b, e.as_ref());
                         }
                     }
                 }
@@ -369,7 +369,7 @@ impl Follow {
         for (s, _, now) in &moved {
             if matches!(now, Some((_, Holding::Read))) {
                 for e in store.entries(s)? {
-                    park(engine, &mut self.parked, &mut self.creds, *s, e.blob, Some(&e))?;
+                    park(engine, &mut self.parked, &mut self.creds, *s, e.blob, Some(&e));
                 }
             }
         }
@@ -440,7 +440,7 @@ impl Follow {
         if let Some(mut f) = self.entries.clone() {
             for (s, b) in f.added() {
                 if self.read.contains_key(&s) {
-                    park(engine, &mut parked, &mut creds, s, b, store.entry(&s, &b)?.as_ref())?;
+                    park(engine, &mut parked, &mut creds, s, b, store.entry(&s, &b)?.as_ref());
                 }
             }
         }
@@ -448,7 +448,7 @@ impl Follow {
             for b in u.moved(engine)? {
                 for s in store.naming(&b)? {
                     if self.read.contains_key(&s) {
-                        park(engine, &mut parked, &mut creds, s, b, store.entry(&s, &b)?.as_ref())?;
+                        park(engine, &mut parked, &mut creds, s, b, store.entry(&s, &b)?.as_ref());
                     }
                 }
             }
@@ -459,7 +459,7 @@ impl Follow {
                 if engine.blob_commit(&e.blob).is_none() {
                     continue;
                 }
-                let a = awaits(engine, s, &e)?;
+                let a = awaits(engine, s, &e);
                 if !a.is_empty() && parked.of.get(&(*s, e.blob)).is_none_or(|p| !a.is_subset(p)) {
                     lost.push((*s, e.blob));
                 }
@@ -514,8 +514,8 @@ fn charge_unvouched(engine: &mut Engine, store: &mut Store, s: &SyncId) -> Resul
 /// established only once the rotation's header and list count; a commit held from a certificate
 /// copy, the rest of which opens once its thing's secrets arrive). An own entry naming no commit
 /// (a certificate blob sealed here from what is held) waits for nothing.
-fn awaits(engine: &mut Engine, s: &SyncId, e: &crate::types::Entry) -> Result<BTreeSet<Awaits>> {
-    Ok(match engine.blob_commit(&e.blob) {
+fn awaits(engine: &mut Engine, s: &SyncId, e: &crate::types::Entry) -> BTreeSet<Awaits> {
+    match engine.blob_commit(&e.blob) {
         Some(c) => {
             let mut a: BTreeSet<Awaits> = engine.blob_awaits_secrets(&e.blob).into_iter().map(Awaits::Thing).collect();
             if !engine.holds_commit(&c) && !engine.pends(&c) {
@@ -525,18 +525,17 @@ fn awaits(engine: &mut Engine, s: &SyncId, e: &crate::types::Entry) -> Result<BT
         }
         None if !e.own => BTreeSet::from([Awaits::Sync(*s)]),
         None => BTreeSet::new(),
-    })
+    }
 }
 
 /// Parks entry `b` of S (`e`: held now) under what it waits for, else unparks it (gone, or
 /// taken).
-fn park(engine: &mut Engine, parked: &mut Parked, creds: &mut Effects<Awaits, Keys>, s: SyncId, b: BlobId, e: Option<&crate::types::Entry>) -> Result<()> {
+fn park(engine: &mut Engine, parked: &mut Parked, creds: &mut Effects<Awaits, Keys>, s: SyncId, b: BlobId, e: Option<&crate::types::Entry>) {
     let now = match e {
-        Some(e) => awaits(engine, &s, e)?,
+        Some(e) => awaits(engine, &s, e),
         None => BTreeSet::new(),
     };
     parked.set(creds, s, b, now);
-    Ok(())
 }
 
 /// Opens the entries parked under `a`, the only ones its read secrets may open; one that gives
@@ -570,7 +569,7 @@ fn open_these(engine: &mut Engine, store: &mut Store, parked: &mut Parked, creds
         // section still sealed on a part it lacks
         let still = match o {
             Opened::NotOpen => parked.of.get(&(s, b)).cloned().unwrap_or_default(),
-            Opened::Commit(..) => awaits(engine, &s, &e)?,
+            Opened::Commit(..) => awaits(engine, &s, &e),
             _ => BTreeSet::new(),
         };
         parked.set(creds, s, b, still);

@@ -85,7 +85,7 @@ impl Held {
             if matches!(was, Some(Act::Offer)) && now != Act::Offer {
                 offers.remove(&k.0, &k.1);
             }
-            self.act(h, offers, &k, &now)?;
+            self.act(offers, &k, &now);
         }
         for s in std::mem::take(&mut self.clear_due) {
             acted |= self.clear(h, &s)?;
@@ -93,8 +93,7 @@ impl Held {
         Ok(acted)
     }
 
-    fn act(&mut self, h: &mut Here<'_>, offers: &mut Offers, k: &Key, now: &Act) -> Result<()> {
-        let _ = h;
+    fn act(&mut self, offers: &mut Offers, k: &Key, now: &Act) {
         let (s, _) = k;
         if matches!(now, Act::Promote | Act::Offer | Act::Waiting { .. }) || matches!(self.acts.get(k), Some(Act::Offer | Act::Waiting { .. })) {
             self.clear_due.insert(*s);
@@ -103,13 +102,12 @@ impl Held {
             Act::Gone | Act::Nothing => {
                 self.judged.unwant(k);
                 self.acts.remove(k);
-                return Ok(());
+                return;
             }
             Act::Offer => offers.add(*s, k.1, Target::Stores),
             Act::Promote | Act::Waiting { .. } => {}
         }
         self.acts.insert(*k, now.clone());
-        Ok(())
     }
 
     /// Clears S's deposits past the bounds (spec/sync-inbox.md §4 Clearing deposits) when this

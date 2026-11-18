@@ -3,7 +3,7 @@
 //! deleted is repaired by the node whose own commit links it.
 
 use crate::harness::Step::*;
-use crate::harness::history::{Gives, world};
+use crate::harness::history::{self, Gives, world};
 use crate::harness::{World, play};
 use osis_base::{Ak, BlobId, CommitId, SyncId, Tid, Value};
 use osis_engine::Mutation;
@@ -20,14 +20,10 @@ fn big(seed: u64) -> Vec<u8> {
     v
 }
 
-/// Node 0 makes thing 0 and grants node 1's account sync (it keeps the thing unread) and node 2's
-/// `gives`.
+/// `history::three(gives, 1)` with room for large values.
 fn three(gives: Gives) -> (World, Tid, SyncId) {
-    let mut w = world(0, 3);
+    let (mut w, t, s) = history::three(gives, 1);
     w.cap = 200_000;
-    let _ = play(&mut w, &[New(0), Grant(0, 0, 1, Gives::Syncs), Grant(0, 0, 2, gives), Run], String::new());
-    let t = w.history.things[0].0;
-    let s = w.engine(0).sync_id_of(&t).unwrap().unwrap();
     (w, t, s)
 }
 

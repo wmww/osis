@@ -3,7 +3,7 @@
 //! reads it (`writers`: writes it too).
 
 use crate::harness::Step::*;
-use crate::harness::history::{Gives, value_ak, world};
+use crate::harness::history::{self, Gives, value_ak, world};
 use crate::harness::{World, play};
 use osis_base::format::TOMBSTONE_LIFETIME_MS;
 use osis_base::{Ak, CommitId, Role, Tid, Value};
@@ -15,10 +15,8 @@ use std::collections::BTreeMap;
 const DAY_MS: u64 = 86_400_000;
 
 fn setup(gives: Gives) -> (World, Tid) {
-    let mut w = world(0, 3);
+    let (mut w, t, _) = history::three(gives, 1);
     w.cap = 200_000;
-    let _ = play(&mut w, &[New(0), Grant(0, 0, 1, Gives::Syncs), Grant(0, 0, 2, gives), Run], String::new());
-    let t = w.history.things[0].0;
     (w, t)
 }
 

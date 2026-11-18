@@ -546,15 +546,11 @@ fn register_refusals_spec_sync_ids_6() {
 // deposit (what readers pull).
 #[test]
 fn a_writer_promotes_a_deposit_spec_sync_inbox_4() {
-    use crate::harness::Step::*;
-    use crate::harness::history::{Gives, value_ak, world};
+    use crate::harness::history::{Gives, three, value_ak};
     use osis_base::{Role, Value};
     use osis_engine::Mutation;
-    let mut w = world(0, 3);
+    let (mut w, t, s) = three(Gives::Writes, 1);
     w.cap = 20_000;
-    let _ = crate::harness::play(&mut w, &[New(0), Grant(0, 0, 1, Gives::Syncs), Grant(0, 0, 2, Gives::Writes), Run], String::new());
-    let t = w.history.things[0].0;
-    let s = w.engine(0).sync_id_of(&t).unwrap().unwrap();
     assert_eq!(w.engine(1).sync_holder(&s).unwrap(), Some(([t].into(), Holding::Unread)));
     w.power_off(2);
     let a2 = w.node(2).account.unwrap();
