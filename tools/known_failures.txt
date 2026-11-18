@@ -6,3 +6,6 @@
 held-model/props::settled_histories_keep_their_laws_large_spec_commits_5 OSIS_HELD_START=387315248891 issues/held-model-until-no-deadline.md seed \d+: output changed before its first deadline
 osis-engine/validity::unmerge_paged_matches_fresh_large_spec_crdt_4_6 - issues/osis-tests-depend-on-store-rng.md one rebuild per flipped aspect\s+left: 7\s+right: 5
 osis-app/fields::a_tile_tells_of_emails_it_cannot_read - issues/app-tile-unreadable-emails-test.md Err\(osis::Error::TooLarge
+osis-engine/apply::tests_paged::paged_apply_matches_whole_large_spec_crdt_8 OSIS_PAGED_APPLY_START=874943289199 issues/paged-apply-differs-from-whole.md step \d+: page-by-page apply differs from whole
+osis-engine/rotation::tests_property::rotation_holds_large_spec_crypto_4 OSIS_ROTATION_START=874943289279 issues/rotation-holds-sync-holder-opens.md \(now Some\(Sync\)\) opens Tid\(\S+\) Read epoch .* \(Admin\) encrypts under
+osis-engine/order::held_set_decides_plain OSIS_ORDER_SEED=874943289203 issues/held-set-decides-plain-record-only.md RecordOnly \(replay: .*after the sync exchange: shows other than the node keeping every body
