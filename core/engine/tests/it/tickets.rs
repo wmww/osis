@@ -66,6 +66,81 @@ fn a_grant_reaches_its_grantee_as_a_ticket_spec_sync_inbox_5() {
     assert_eq!(e1.account_ticket_due(&t).unwrap(), None, "D's ticket written");
 }
 
+// spec/sync-inbox.md §2 (A fire not yet taken by any peer is kept durably by its sender and
+// survives a restart; the sender seals it again; then it ends): Alice's grant owes a ticket fire
+// on Bob's inbox. It stays owed through her restart; once
+// Bob's inbox rotates its read keyset and she holds the new `keys.0`, it seals to the new keyset,
+// which Bob opens; taken, it ends, through a restart too.
+#[test]
+fn a_fires_delivery_outlives_a_restart_follows_a_key_change_and_ends_when_taken_spec_sync_inbox_2() {
+    let (mut lp, ps) = people(2);
+    let e0 = &mut lp.peers[0].engine;
+    let d0 = e0.account_root().unwrap();
+    let mut m = Mutation::new();
+    let t = e0.new_thing(&mut m, d0);
+    m.op(d0, &ct::HOLDS, PathOp { path: vec![], op: Op::Add(Value::Strong(t)) }).unwrap();
+    e0.commit(m).unwrap();
+    e0.grant(&t, &ps[1], &edge_of(Role::Read)).unwrap();
+    let fires = e0.fires_owed();
+    assert_eq!(fires.len(), 1, "one ticket fired");
+    let id = fires[0];
+    lp.peers[0].restart(1).unwrap();
+    assert_eq!(lp.peers[0].engine.fires_owed(), fires, "owed through a restart");
+    let inbox = lp.peers[1].engine.inbox_thing(&ps[1]).unwrap();
+    let old = crate::flows::newest_read(&lp, 1, inbox).unwrap();
+    assert_eq!(lp.peers[0].engine.fire_epoch(&id).unwrap(), Some(old));
+    lp.peers[1].engine.rotate_leaving_out(&inbox, &[Role::Read], &[]).unwrap().expect("the inbox rotates");
+    let new = crate::flows::newest_read(&lp, 1, inbox).unwrap();
+    assert_ne!(old, new);
+    lp.sync(1, 0).unwrap();
+    assert_eq!(lp.peers[0].engine.fire_epoch(&id).unwrap(), Some(new), "sealed again to the new keyset");
+    let out = lp.peers[0].engine.sealed_fire(&id).unwrap().expect("sealed");
+    let opened = lp.peers[1].engine.open_entry(&out.sync_id, &osis_blob::blob_id(&out.blob), &[0; 57], &out.blob, u64::MAX).unwrap();
+    assert!(matches!(opened, osis_engine::sync::Opened::Commit(..)), "{opened:?}");
+    assert!(lp.peers[1].engine.ticket_for(&t).unwrap().is_some(), "Bob holds the ticket");
+    lp.peers[0].engine.fire_taken(&id).unwrap();
+    assert!(lp.peers[0].engine.fires_owed().is_empty(), "taken: ended");
+    lp.peers[0].restart(2).unwrap();
+    assert!(lp.peers[0].engine.fires_owed().is_empty(), "ended for good");
+}
+
+// spec/sync-inbox.md §5 (Removal notice: taken as a carried commit, checked against the roster
+// held; it releases T or keeps the retained copy the removal says), spec/permissions.md §3
+// (Retain): Bob reads X by Alice's grant; she removes him saying erase, or retain, and only her
+// removal notice, sealed on his inbox, reaches him. Erased, X leaves his node closure and goes;
+// retained, his copy reads as before.
+#[test]
+fn a_removal_notice_releases_or_keeps_the_retained_copy_spec_sync_inbox_5() {
+    for retain in [false, true] {
+        let (mut lp, ps) = people(2);
+        let x = crate::flows::thing_of(&mut lp, 0, ps[0]);
+        lp.peers[0].engine.grant(&x, &ps[1], &edge_of(Role::Read)).unwrap();
+        crate::flows::spread(&mut lp);
+        let reg = crate::common::ak("t:reg.0");
+        let before = lp.peers[1].engine.get(&x, &reg).unwrap();
+        assert!(before.is_some(), "Bob reads X");
+        let owed = lp.peers[0].engine.fires_owed();
+        lp.peers[0].engine.demote(&x, &osis_engine::flows::Demotion { holder: ps[1], new: None, retain: Some(retain) }).unwrap();
+        let id = *lp.peers[0].engine.fires_owed().iter().find(|f| !owed.contains(f)).expect("a removal notice owed");
+        let out = lp.peers[0].engine.sealed_fire(&id).unwrap().expect("sealed");
+        let e1 = &mut lp.peers[1].engine;
+        let opened = e1.open_entry(&out.sync_id, &osis_blob::blob_id(&out.blob), &[0; 57], &out.blob, u64::MAX).unwrap();
+        assert!(matches!(opened, osis_engine::sync::Opened::Commit(..)), "retain {retain}: {opened:?}");
+        e1.take_carried().unwrap();
+        assert_eq!(e1.role_on(&x), None, "retain {retain}: the removal applied");
+        e1.role_duties().unwrap();
+        let left: BTreeSet<_> = e1.left_closure().into_keys().collect();
+        e1.released(&left).unwrap();
+        e1.settle_needs().unwrap();
+        if retain {
+            assert_eq!(e1.kept_copies(), vec![x], "a copy kept");
+            assert_eq!(e1.get(&x, &reg).unwrap(), before, "the copy reads as it did");
+        } else {
+            assert!(!e1.closure_holds(&x) && e1.get(&x, &reg).unwrap().is_none(), "erased: released");
+        }
+    }
+}
+
 /// The ticket lookup work (`tickets: rows read`) of the last of `n` grants' tickets reaching an
 /// account that accepted all `n` things first: the fires sit on one inbox signal.
 fn last_arrival_work(n: usize) -> u64 {

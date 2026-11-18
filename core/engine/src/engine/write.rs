@@ -838,7 +838,7 @@ pub(crate) fn sealed_commit(tx: &mut Tx<'_>, mut m: Mutation) -> Result<osis_com
 }
 
 /// `commit_in`, or for a sealed mutation the built commit, unapplied.
-fn commit_or_build(tx: &mut Tx<'_>, mut m: Mutation) -> Result<Option<(CommitId, Option<osis_commit::CommitBlob>)>> {
+pub(crate) fn commit_or_build(tx: &mut Tx<'_>, mut m: Mutation) -> Result<Option<(CommitId, Option<osis_commit::CommitBlob>)>> {
     let sealed = m.sealed;
     let node = match m.signer {
         Some(k) if tx.core.key_actors.contains_key(&k) || tx.core.accounts.contains_key(&k) => k,

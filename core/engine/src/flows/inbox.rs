@@ -54,7 +54,7 @@ pub(crate) fn fire_ticket(tx: &mut Tx<'_>, holder: Tid, c: CommitId, things: &[T
         let v = Value::Ticket(Box::new(ticket));
         // fired as a write where the node holds and reads the inbox (`fire`), else sealed with
         // the grant
-        if tx.core.ix.closure.holds(&inbox) && tx.core.epochs(&inbox).is_some_and(|e| e.role(Role::Read).holds_any()) {
+        if tx.core.ix.closure.holds(&inbox) && reads_now(tx.core, &inbox) {
             fire(tx, inbox, TICKET_FIRE, osis_schema::codec::rt::struct_value(vec![(0, v)]), to.clone())?;
         } else {
             save(tx, OwedFire { thing: inbox, ak: super::ak(TICKET_FIRE)?, what: Fire::Ticket { ticket: v, commit: c, target: *t }, to: to.clone(), commit: None })?;
@@ -371,11 +371,22 @@ fn drop_fire(tx: &mut Tx<'_>, id: &FireId) -> Result<()> {
     Ok(())
 }
 
-fn save(tx: &mut Tx<'_>, o: OwedFire) -> Result<()> {
+pub(crate) fn save(tx: &mut Tx<'_>, o: OwedFire) -> Result<()> {
     let id = o.id();
     tx.txn.put_local(&[FIRES, &id].concat(), &o.encode(), Shred::No)?;
     tx.core.ix.fires.insert(id, Arc::new(o));
     Ok(())
+}
+
+/// Whether this node reads `t` as a fire goes (spec/sync-inbox.md §2): it holds a read secret of
+/// `t`, of a current read epoch where one is established. A stranded node does not (spec/permissions.md
+/// §4): its fires go sealed, to the keyset it cannot read.
+fn reads_now(core: &crate::engine::Core, t: &Tid) -> bool {
+    core.epochs(t).is_some_and(|e| {
+        let r = e.role(Role::Read);
+        let current = r.current();
+        r.holds_any() && (current.is_empty() || current.iter().any(|x| r.secret(x).is_some()))
+    })
 }
 
 /// Fires open signal `ak` on `thing` with `value` (spec/sync-inbox.md §2): a node reading the
@@ -385,7 +396,7 @@ pub(crate) fn fire(tx: &mut Tx<'_>, thing: Tid, ak: &str, value: Value, to: BTre
     let ak = super::ak(ak)?;
     // fired as a write where the node holds and reads the thing; at anything else it fires sealed
     // (a node writes only what it holds, spec/sync-set.md §2 Writing)
-    if tx.core.ix.closure.holds(&thing) && tx.core.epochs(&thing).is_some_and(|e| e.role(osis_base::Role::Read).holds_any()) {
+    if tx.core.ix.closure.holds(&thing) && reads_now(tx.core, &thing) {
         // a fire the thing's setting would not keep is in no history: none is written (an actor
         // that is no account takes the fires its own setting keeps, spec/sync-inbox.md §1)
         let ts = tx.core.hlc.peek();
@@ -468,7 +479,7 @@ impl Engine {
                     },
                 };
                 let o = (*o).clone();
-                let reads = self.core.epochs(&o.thing).is_some_and(|e| e.role(osis_base::Role::Read).holds_any());
+                let reads = reads_now(&self.core, &o.thing);
                 let made = self.run(|tx| {
                     let mut m = Mutation::new();
                     m.op(o.thing, &o.ak, PathOp { path: Vec::new(), op: Op::Set(value) })?;
@@ -595,12 +606,18 @@ impl Engine {
         // (spec/sync-judgement.md §2, a grant naming a holder travels under the holder's sync
         // ID): taken with the fire, whatever keeps the fire itself
         let grant = self.holder_grant(t, &commit);
+        // a stranded notice: a writer of `t` acts on it as it takes it, whatever `t`'s history
+        // setting (spec/sync-inbox.md §5 Stranded notice)
+        let stranded = self.stranded_notice(t, &commit);
         // its delta came under the keyset it is sealed to: an opening under that epoch, as a
         // section's (spec/crypto.md §5 Passing on)
         self.note_opened(&commit.header, &[(*t, under, commit.parts.iter().collect())]);
         let Some(ingested) = self.ingest_sealed_fire(records, &chain, commit)? else { return Ok(Opened::Bad) };
         if let Some(g) = grant {
             self.take_role_parts(&g, GRANT_PARTS)?;
+        }
+        if let Some((s, holder, keys)) = stranded {
+            self.take_stranded(&s, &holder, &keys)?;
         }
         if parts.iter().any(|ai| removal.get(*ai) == Some(&true)) {
             self.notice_arrives(&id)?;
@@ -609,6 +626,23 @@ impl Engine {
         let b = *b;
         self.run(|tx| crate::sync::bodies::note_blob(tx, &b, row))?;
         Ok(Opened::Commit(id, ingested))
+    }
+
+    /// The report stranded notice `fire` on `t` carries (`Engine::fire_stranded`): its sync ID,
+    /// holder and holder keys. `None` for any other fire, or one that does not decode.
+    fn stranded_notice(&self, t: &Tid, fire: &osis_commit::CommitBlob) -> Option<(osis_base::SyncId, Tid, osis_blob::HolderKeys)> {
+        let h = &fire.header;
+        let p = fire.parts.first().filter(|p| h.aspects.get(p.ai).is_some_and(|a| a.ak.as_str() == STRANDED_FIRE))?;
+        let dedup = self.core.dedup(t)?;
+        let mut interner = osis_crdt::Interner::new();
+        let Value::Map(m) = osis_commit::verify_part(h, &fire.id(), p, &dedup, &mut interner, None).ok()?.into_fragment().read()? else { return None };
+        let (Some(Value::Bytes(s)), Some(Value::Weak(holder)), Some(Value::List(commits)), Some(Value::List(records))) = (m.get(&Value::Int(0)), m.get(&Value::Int(1)), m.get(&Value::Int(2)), m.get(&Value::Int(3))) else { return None };
+        let limits = osis_base::Limits::new(osis_base::format::MAX_OBJECT_DEPTH, osis_base::format::MAX_BLOB);
+        let decoded = |l: &[Value]| l.iter().map(|x| if let Value::Bytes(b) = x { osis_base::decode(b, &limits).ok() } else { None }).collect::<Option<Vec<Value>>>();
+        let commits = Value::List(decoded(commits)?);
+        let records = Value::List(decoded(records)?);
+        let keys = osis_blob::HolderKeys::from_values(&commits, &records).ok()?;
+        Some((osis_base::SyncId(s.as_slice().try_into().ok()?), *holder, keys))
     }
 
     /// The role parts sealed fire `fire` on `t` carries (`Fire::Ticket`'s `grant`) when its ticket
