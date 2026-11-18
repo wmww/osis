@@ -1,19 +1,19 @@
 # What a node learns about data it cannot read
-> Summary: The full list of what a node keeping a sync ID unread learns and what it must not, the padding and wrap costs, and an index of the choices elsewhere that keep the list this short (each with where its reason lives). The requirement: spec/requirements.md, Data a node cannot read; the stated limits: spec/sync-hostile.md §2. Neighbours: notes/sync-reasons.md, notes/sync-access.md, notes/networking.md (transport keys).
+> Summary: The full list of what a node keeping a sync ID unread learns and what it must not, the padding and wrap costs, and an index of the choices elsewhere that keep the list this short (each with where its reason lives). The requirement: spec/requirements.md, Data a node cannot read; the leaks accepted: spec/sync-hostile.md §2. Neighbours: notes/sync-reasons.md, notes/sync-access.md, notes/networking.md (transport keys).
 
 ## Learns
 - Of each thing it keeps unread, the tickets it holds: the tid, its sync ID and sync secret, and the issuer's profile tid (spec/sync-ids.md §2 What a sync holder learns, spec/data-model.md §8 Tickets).
 - Overlaps between sync IDs (shared commit blobs and certificate copies; inbox, list and record blobs and per-sync-ID copies share nothing). Nesting only as far as overlap shows it.
 - Blob counts, padded sizes, each blob's class (durable, ephemeral, relay-only), which entries carry a filler wrap (chunk, tree-node and page blobs), the delete-key commitments per level (which kinds of right may delete), expiry times, arrival times, deletions and pending deletion times.
 - Which sync IDs one connection opens (so: holds a credential of), and client addresses.
-- Which actors dial it: a dialer proves its account and the key actors it acts for to every key it chose to dial (spec/sync-opens.md §2), so the node links them to the sync IDs the connection opens; a node key only between nodes of one account.
+- Which accounts and key actors dial it: a dialer proves its account and the key actors it acts for to every key it chose to dial (spec/sync-opens.md §2), so the node links them to the sync IDs the connection opens; a node key only between nodes of one account.
 - The roster bucket of each step's claim set (and of a rotation commit, by its padded size), which claim slots were used, when, and how many steps behind the claimant was (two late nodes of one account use one slot); roughly how many key actors read the thing (static entries are not points about half the time).
 - Which entries were deposited and when (a grant or a non-writer's write).
 - Header-only lasting blobs: one more small stamped entry with no commitments close to a deletion it already sees (notes/sync-convergence.md).
-- Whether a node keeps S is visible to anyone holding S's public values (its filter goes to every connection; Behind's 13 against 14), and a depositor holding a team's `keys.0` learns whether a node holds the team's inbox (spec/sync-hostile.md §2).
+- Whether a node keeps S is visible to anyone holding S's public values (its filter goes to every connection; Behind's 13 against 14), and a depositor holding an organization's `keys.0` learns whether a node holds the organization's inbox (spec/sync-hostile.md §2).
 
 ## Does not learn
-AKs, tids other than its dialers' proven actors and the things it keeps unread, thing or aspect counts, authors, role grants, rosters, another account's node identities, retention bounds. What it deleted (a delete, an expiry, a replaced entry) it forgets: its store shreds every removal, so a later compromise of that node, even one that also holds the read secret, recovers no deleted wrap (notes/sync-reasons.md, Nodes; notes/local-store.md).
+AKs, tids other than the things its dialers proved and the things it keeps unread, thing or aspect counts, authors, role grants, rosters, another account's node identities, retention bounds. What it deleted (a delete, an expiry, a replaced entry) it forgets: its store shreds every removal, so a later compromise of that node, even one that also holds the read secret, recovers no deleted wrap (notes/sync-reasons.md, Nodes; notes/local-store.md).
 
 ## Costs
 - Padmé padding costs at most about 12% under 256 B, 6% up to 64 KB, 3% above; 1-4% on average.

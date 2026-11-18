@@ -1,5 +1,5 @@
 # Retained copy
-> Summary: Why a removed holder's copy is kept or erased by the `retain` field of `retention^.0` and the removal's stated value (spec/permissions.md §3): why an `until` 0 grant over a header bit, which removal decides, filling, node removals and any-path keeping, costs, and the accepted limits (Tess).
+> Summary: Why a removed holder's copy is kept or erased by the `retain` field of `retention^.0` and the removal's stated value (spec/permissions.md §3): why an `until` 0 grant over a header bit, which removal decides, filling, node removals and any-path keeping, costs, and the rare corners accepted (Tess).
 
 Principle (Tess: keep the rules simple and consistent, state rare corners): **the write states the value**; a plain reset is erase, reset plus a grant with `until` 0 is retain, and a timed grant carries what its `until` passing says (`retain`); only the writer reads the thing's current default.
 
@@ -10,7 +10,7 @@ Principle (Tess: keep the rules simple and consistent, state rare corners): **th
 - Node removal erases whatever the account's default (a removal from `Osis`'s own account writes erase unless told otherwise), and a copy kept through the account hangs on the account, so it goes too. Any-path: a copy stays while one way keeps. A holder whose loss is not carried out yet (an `until` left to sync, a pending grant) still counts as had (`keeps`, `not_dropped`), and the copy is judged again when it drops; otherwise a copy judged while its holder's drop waits erases where judging both together keeps. A self-removal states its own value (Tess: no protocol rule stops it; the app just does not offer it).
 - Kick cost is unchanged: nothing per body. Keeping costs the removed node nothing new and is cheaper than erasing (no shredding).
 
-## Accepted limits
+## Rare corners
 - Every other removal reads the default, so under a default to retain a revoked link's L leaves a dead grant until finalizing resets it (one extra commit), and a removed thin client's dead grant is a way that keeps past its account's later erasing kick; a node's grant with an `until` carries the account's default when written.
 - A purge after the removal usually does not reach the copy (no sync ID to hear it by), though one in a commit the node takes for another part applies, and a purge pending at the drop goes with its commit unless another part holds it. Only ever less kept.
 - A hostile source can erase a copy-to-be only by hiding a second way that keeps, or a renewal of an `until`; a removal cannot apply without the value it resets, so hiding that value delays the loss instead. A denial only.

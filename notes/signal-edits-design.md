@@ -21,7 +21,7 @@
 - **Retention:** each version carries its own purgeable-by; what history keeps is the thing's setting for the AK, one window for every version, each from its own `ts`.
 - **Old text gone:** the edit commit carries an ordinary purge request naming the earlier versions, and stays honored. A request reaches only deltas expiring no later than its commit, and the purge floor ends at that expiry. A request goes under `purge.0`, which carries no expiry; in a commit that expires the engine leaves `purge.0` out and the request rides the commit's own deltas on the thing, refused (`Invalid`) when it names anything but commits expiring no later or the commit writes nothing there. A disappearing message's edit purging its old text is so one commit.
 - **Edits off:** `final` on the AK's entry of the thing's `retention^.0` setting: a writer refuses `replace` there (`Invalid`). No validity rule: an edit written anyway is honored (Tess, notes/engine-retention-history.md Tess's decisions, 5).
-- **Limits:**
+- **What stays visible:**
   - A purge takes only the commits it names. A version racing a purge of O, or written after it, still shows (no more than a new message could do); a deletion meant to hold names the versions too, or purges by author on the aspect.
   - An original past its keep is not listed, so its versions stand alone at their own places. This happens at every node, also under one shared `after D`: O's `ts` is earlier, so it ends first. A node that never held O's header reads the same. Permanent deltas keep lasting headers, so chat is unaffected.
   - A purged edit with an earlier expiry than older versions lets them show again when its tombstone ends. Purging old text means naming the earlier versions in the same commit, which is what the API does.

@@ -20,7 +20,7 @@ The engine side answers for a leaving S by its things' held read secrets, not th
 - A restart of the modules must not see things leave that did not: the engine keeps its followed links across a reload (`load_fresh`), else the sync IDs of links being redeemed would leave and wait a pass at every reload. A start follows the sync set whole before anything is judged left (`Inbox::start`, then `Engine::forget_unread`, then leave).
 
 ## released (engine, core/engine/src/retention/release.rs, retention/forget.rs `Scope::Local`)
-- Forgets the things given that the node closure does not hold, and each thing whose secret actor is one of them, but those the node closure holds; same machinery as lost access (`retention::forget::forget`), fate `Local`: commits left with no part are deleted and fetched again, others keep their other parts. Event cause `Released`. Each released thing leaves `left_closure` in the same transaction.
+- Forgets the things given that the node closure does not hold, and each thing whose independent is one of them, but those the node closure holds; same machinery as lost access (`retention::forget::forget`), fate `Local`: commits left with no part are deleted and fetched again, others keep their other parts. Event cause `Released`. Each released thing leaves `left_closure` in the same transaction.
 - Cost: incremental, as for lost access (notes/engine-lost-access.md, Forgetting): the commits on what left, no reload; once per settle.
 
 ## Reasons

@@ -19,7 +19,7 @@ Part of moving agent orchestration onto osis; useful for any remote control of m
 - **queued**: a request with no run yet. **Taken**: it has one.
 
 ## Data model
-Per box, one thing with own keys (the box's security context) whose readers are everyone who may see the box; outpost is its admin. In it:
+Per box, one independent thing (the box's security context) whose readers are everyone who may see the box; outpost is its admin. In it:
 - **The box thing**: `specs` (durable, rewritten when they change) and `vitals` (ephemeral, an expiring write outpost renews, `osis::KeepAlive`). Vitals present = the box is up; when outpost dies they lapse.
 - **The console**: a thing on which the box's commanders hold write and nothing else. Its one aspect is the request signal: durable (`~`, not `+`), so a request fired while the box is offline waits, and the record of what was asked is kept as long as the console's `retention^.0` says.
 - **Runs**: one thing per taken request, written by outpost only. State as a value; output as a durable signal on the run, one fire per chunk (each write small however long the run; chunks kept or expired per the run's `retention^.0`, read as the signal's history). The box thing lists no runs (a growing list on it is the scaling problem); the context thing's `holds.0` holds them by strongs.
@@ -62,7 +62,7 @@ Runs, output chunks and console requests each need a default: kept for a duratio
 One outpost, local backend, one box. Requests `exec`, `input`, `cancel`. Specs and vitals. A control CLI to fire requests and follow runs (maybe just `osis` commands). No first-class tools, no other backends, no UI.
 
 ## Open
-- How outpost reaches osis: a client of the local `osis serve` daemon over its socket (notes/cli.md) with its own actor (notes/client-port.md), or its own store.
+- How outpost reaches osis: a client of the local `osis serve` daemon over its socket (notes/cli.md) with its own client actor (notes/client-port.md), or its own store.
 - Who may fire what: write on the console is the only grant. Does outpost apply per-sender rules on top (some senders `exec`, others later kinds only), or is that more boxes too?
 - Removing a queued request: purge by its sender (needs the request's purgeable-by to allow it) or an edit to a withdrawn form.
 - Output: chunk size and flush interval; whether live output should also go ephemeral for low-latency tailing, with durable chunks for the record.

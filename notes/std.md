@@ -21,7 +21,7 @@ Four kinds, three types:
 ## Contact (schema/contact.osis)
 The schema says what each aspect holds; the reasons:
 - Many small aspects, so a thing with only emails is a contact.
-- A **profile** is the same aspects on the account's profile thing (`Osis::profile()`: the contact card's target, a thing with own keys and its own sync ID), so everyone holding the card reads it and keeps receiving changes (the import is a redeem, spec/sync-set.md §4). `Osis::profile_of(account)` gives the profile a card import brought. The override is field by field (tests/it/contact.rs `view`).
+- A **profile** is the same aspects on the account's profile thing (`Osis::profile()`: the contact card's target, an independent thing with its own sync ID), so everyone holding the card reads it and keeps receiving changes (the import is a redeem, spec/sync-set.md §4). `Osis::profile_of(account)` gives the profile a card import brought. The override is field by field (tests/it/contact.rs `view`).
 - Entries are keyed maps, not lists: concurrent additions merge and one entry's label is editable alone.
 - Left out of vCard on purpose: photo (a file type later), gender, language, timezone, geo, keys, sound, logo, categories (tags), and UID and revision bookkeeping, which belongs to the importing app.
 
@@ -33,7 +33,7 @@ The schema says what each aspect holds; the reasons:
 - Left out of iCalendar: attendees and RSVP, sub-daily frequencies, BYSETPOS and the rarer BY rules, RDATE, attachments, priority, transparency, sequence numbers, todos and journals.
 
 ## Tests (core/osis's `it` binary in `cargo test`; by hand `--ignored`)
-- core/osis/tests/it/notes.rs: two nodes, offline edits merging, undo across nodes; a notebook (a tag that is first admin of its notes) shared and unshared, a private tag on a shared note staying private; a large body streamed; local undo, redo and history.
+- core/osis/tests/it/notes.rs: two nodes, offline edits merging, undo across nodes; a notebook (a tag that is mint admin of its notes) shared and unshared, a private tag on a shared note staying private; a large body streamed; local undo, redo and history.
 - core/osis/tests/it/tags.rs: notes/tags.md end to end (per-item share through one roster, sub-tags chaining rosters, only what you may share, cards under a tag with demotion and invites).
 - core/osis/tests/it/contact.rs: profile filled, read through the card and updated; a linked contact overriding it; a contact without a profile.
 - core/osis/tests/it/event.rs: the civil-date conversion; a timed series with a skip and an override, an all-day span, a flight across zones, all in a read-only shared calendar.
