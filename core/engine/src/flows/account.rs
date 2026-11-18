@@ -1270,6 +1270,14 @@ impl Engine {
             // custody of the account (spec/crypto.md §9, Custody)
             self.run(|tx| {
                 let mut inner = Done::default();
+                // a re-add descends from the removal (spec/permissions.md §5.4): the pairing is
+                // made on a line carrying every removal of the node taken here, merging first
+                if !re_adds(tx.core, &p, &n) {
+                    inner.add(super::signing::merge_heads(tx, p)?);
+                    if !re_adds(tx.core, &p, &n) {
+                        return Err(Error::Misuse("the node's removal is on a head this node cannot merge yet"));
+                    }
+                }
                 let r = super::signing::rotate_with(tx, p, &[], &super::signing::Members { adds: vec![n], removes: Vec::new() }, &mut inner)?.ok_or(Error::Misuse("the account's open epoch cannot be rotated here yet"))?;
                 inner.add(Some(r));
                 Ok(inner)
@@ -1354,6 +1362,14 @@ impl Core {
         let e = v.epochs.get(&h.epoch?)?;
         self.inner_signer(a, &e.signing, &h.id(), inner)
     }
+}
+
+/// Whether a rotation at account `p`'s preferred head adding `n` re-adds it after every removal
+/// of `n` taken here: each is on the preferred head's line.
+fn re_adds(core: &Core, p: &Tid, n: &Tid) -> bool {
+    let Some(v) = core.account_view(p) else { return true };
+    let h = v.preferred();
+    v.taken().iter().all(|r| !v.removes(r).contains(n) || v.on_line(r, &h))
 }
 
 fn create_account_in(tx: &mut Tx<'_>, record: CreationRecord, d_record: CreationRecord, keys: &AccountEpochKeys) -> Result<(Tid, Done)> {

@@ -131,6 +131,8 @@ pub enum Control {
     StaleShut,
     /// A merge carries its maker's takes and answers.
     MergeCarries,
+    /// A re-add does not wait for its line to carry the removal.
+    ReaddBeside,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
@@ -198,6 +200,8 @@ pub struct World {
     /// The settle round from which A re-adds T where C removed it (`None`: never), once its
     /// preferred line carries the removal (`readd`).
     pub readd: Option<u32>,
+    /// Set by `readd`: the times A's re-add waited for its line to carry T's removal.
+    pub readd_waits: u32,
     /// Per node, the tick it is online from (offline: it sends and receives nothing before).
     pub floor: [u32; N],
     pub control: Control,
@@ -895,7 +899,11 @@ pub fn act(w: &mut World, n: usize, now: u32, removes: Option<usize>, write: boo
 pub fn readd(w: &mut World, n: usize, now: u32, y: usize) -> Vec<u32> {
     let j = judge(w, n, now);
     let removed = j.taken.iter().filter(|r| w.removes(**r).contains(&y));
-    if j.roster.contains(&y) || removed.clone().any(|r| !j.preferred.contains(r)) {
+    if j.roster.contains(&y) {
+        return vec![];
+    }
+    if removed.clone().any(|r| !j.preferred.contains(r)) && w.control != Control::ReaddBeside {
+        w.readd_waits += 1;
         return vec![];
     }
     act_with(w, n, now, None, Some(y), false)
@@ -1488,6 +1496,8 @@ pub struct Stats {
     pub unaware_leak: u64,
     /// Worlds where A re-added T.
     pub readds: u64,
+    /// Worlds where A's re-add waited for its line to carry T's removal.
+    pub readd_waits: u64,
 }
 
 impl crate::Tally for Stats {
@@ -1513,6 +1523,7 @@ impl crate::Tally for Stats {
         self.own_window += o.own_window;
         self.unaware_leak += o.unaware_leak;
         self.readds += o.readds;
+        self.readd_waits += o.readd_waits;
     }
 }
 
@@ -1523,8 +1534,8 @@ impl Stats {
             println!("  {k}: {n}");
         }
         println!(
-            "  lockstep {}, X's side taken first {} (own removal {}), switches checked {}, B on X's side for good {}, twin certificates {}, multi-tip merges {}, listing-cycle shape {}, withholding {}, signing as Z {}, own window {}, unaware-sibling seeds at X {}, T re-added {}",
-            self.lockstep, self.x_side, self.own_removal, self.switched, self.b_stays, self.twin_certs, self.merges, self.cycle, self.withheld, self.forged, self.own_window, self.unaware_leak, self.readds
+            "  lockstep {}, X's side taken first {} (own removal {}), switches checked {}, B on X's side for good {}, twin certificates {}, multi-tip merges {}, listing-cycle shape {}, withholding {}, signing as Z {}, own window {}, unaware-sibling seeds at X {}, T re-added {} (after waiting {})",
+            self.lockstep, self.x_side, self.own_removal, self.switched, self.b_stays, self.twin_certs, self.merges, self.cycle, self.withheld, self.forged, self.own_window, self.unaware_leak, self.readds, self.readd_waits
         );
     }
 }
@@ -1715,6 +1726,7 @@ pub fn check(w0: &World, st: &mut Stats) {
     // a re-add takes: T, re-added on the honest side, is a node of P there once settled
     if w.items.iter().any(|i| i.author == A && w.adds(i.id).contains(&T)) {
         st.readds += 1;
+        st.readd_waits += u64::from(w.readd_waits > 0);
         for v in [A, T] {
             if fin(A).honest_side(w, A) && (!fin(v).roster.contains(&T) || fin(T).out(T)) {
                 fails.push(format!("readd: node {} settled without T on its roster", NAMES[v]));
@@ -2030,6 +2042,34 @@ mod tests {
         to(&mut w, &[rx], &[B], 2);
         let made = act(&mut w, B, 2, Some(T), false);
         w.item(made[0]).boxed
+    }
+
+    /// C removes T (c1) while A rotates beside it (a0, A's own: placed first, so A prefers its
+    /// line). A's re-add of T waits while its line does not carry c1; A then merges, and the
+    /// re-add on the merge puts T back on A's roster. A re-add beside c1 (`ReaddBeside`) re-adds
+    /// nothing: T stays off, the merge included.
+    fn readd_beside(control: Control) -> (bool, View) {
+        let mut w = World { control, ..World::default() };
+        let a0 = plain(&mut w, A, A, &Line::new(), &[], &[], &PS, 1);
+        let c1 = plain(&mut w, C, C, &Line::new(), &[T], &[], &[A, B, C], 1);
+        to(&mut w, &[c1], &[A], 2);
+        let waited = readd(&mut w, A, 2, T).is_empty();
+        if waited {
+            act(&mut w, A, 3, None, false);
+            assert!(!readd(&mut w, A, 4, T).is_empty(), "the merge carries c1: A re-adds T");
+        }
+        act(&mut w, A, 5, None, false);
+        let j = judge(&w, A, 6);
+        assert!(j.heads.len() == 1 && j.preferred.contains(&a0) && j.preferred.contains(&c1), "{j:?}");
+        (waited, j)
+    }
+
+    #[test]
+    fn a_readd_waits_for_its_line_to_carry_the_removal() {
+        let (waited, j) = readd_beside(Control::None);
+        assert!(waited && j.roster.contains(&T), "{j:?}");
+        let (waited, j) = readd_beside(Control::ReaddBeside);
+        assert!(!waited && !j.roster.contains(&T), "readd-beside: T stays off: {j:?}");
     }
 
     #[test]

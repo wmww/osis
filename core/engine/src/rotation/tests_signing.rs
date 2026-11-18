@@ -1326,6 +1326,41 @@ fn a_re_added_nodes_write_before_its_re_add_counts_by_its_own_listing_spec_permi
     }
 }
 
+// spec/permissions.md §5.5 (Honest nodes of P; a re-add descends from the removal, §5.4): a
+// pairing is made only on a line carrying the paired node's removals the pairer took. Node 0
+// pairs node 3 (rotation s) while node 1 removes node 2 (r, boxed to nodes 0 and 1); nodes 0
+// and 3 then hold two heads, s's preferred. Node 3, lacking r's seed, cannot merge: pairing node 2 again is refused,
+// making nothing. Node 0 merges first and pairs on the merge: node 2 joins
+#[test]
+fn a_pairing_waits_for_a_line_carrying_the_nodes_removal_spec_permissions_5_5() {
+    let mut lp = LocalPeer::new_bare(4, 0, WallMs(1_700_000_000_000)).unwrap();
+    let (a, _) = lp.peers[0].engine.create_account().unwrap();
+    for i in 1..3 {
+        pair(&mut lp, &a, i);
+    }
+    lp.sync_all().unwrap();
+    lp.advance(5);
+    pair(&mut lp, &a, 3);
+    let removal = remove(&mut lp, 1, a.root, 2);
+    let r = *removal.commits.last().unwrap();
+    for k in [0, 3] {
+        send(&mut lp, 1, k, &removal.commits);
+        let v = lp.peers[k].engine.core.account_view(&a.account).unwrap();
+        assert!(v.heads().len() == 2 && v.taken().contains(&r) && !v.on_line(&r, &v.preferred()), "peer {k}: the removal taken, off the preferred head");
+    }
+    let node = lp.peers[2].engine.tid();
+    let before = lp.peers[3].engine.commit_ids().len();
+    assert!(matches!(lp.peers[3].engine.pair(&node), Err(crate::Error::Misuse(_))), "node 3 cannot merge: refused");
+    assert_eq!(lp.peers[3].engine.commit_ids().len(), before, "node 3 made nothing");
+    let (done, all) = lp.peers[0].engine.pair(&node).unwrap();
+    let v = lp.peers[0].engine.core.account_view(&a.account).unwrap();
+    assert!(v.heads().len() == 1 && v.on_line(&r, &v.preferred()), "node 0 merged first");
+    assert!(done.commits.iter().all(|c| all.contains(c)));
+    send(&mut lp, 0, 2, &all);
+    lp.peers[2].engine.paired(&a.account).unwrap();
+    assert!(crate::flows::signing::signs_for(&lp.peers[2].engine.core, &a.root), "node 2 re-added");
+}
+
 // spec/permissions.md §5.4 (Roster): only a removal that counts puts its node beside it.
 // The laptop (node 2), not yet holding its own removal, removes the tablet (node 1); the phone
 // (node 0) has removed the laptop and gets that removal alone, after its rotation closed the

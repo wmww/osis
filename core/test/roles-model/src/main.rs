@@ -1,4 +1,4 @@
-//! Search driver for the roles model: `[samples] [edges|joint|disputes|disputes-random|digest|addenda|addenda-exh|addenda-covers|forget|epochs|epochs-no-cutoff|epochs-own-only|epochs-void-uncounted|epochs-no-own-cover|epochs-open-carried|epochs-no-reanswer|custody|custody-exh|custody-judged|custody-roster-bare|custody-merge-random|custody-stale-shut|custody-merge-carries]`.
+//! Search driver for the roles model: `[samples] [edges|joint|disputes|disputes-random|digest|addenda|addenda-exh|addenda-covers|forget|epochs|epochs-no-cutoff|epochs-own-only|epochs-void-uncounted|epochs-no-own-cover|epochs-open-carried|epochs-no-reanswer|custody|custody-exh|custody-judged|custody-roster-bare|custody-merge-random|custody-stale-shut|custody-merge-carries|custody-readd-beside]`.
 
 use roles_model::{edges, joint};
 
@@ -35,6 +35,7 @@ fn main() {
                 "custody-merge-random" => ("random", Control::MergeRandom),
                 "custody-stale-shut" => ("random", Control::StaleShut),
                 "custody-merge-carries" => ("random", Control::MergeCarries),
+                "custody-readd-beside" => ("random", Control::ReaddBeside),
                 _ => ("random", Control::None),
             };
             if run(samples, mode, control) > 0 {
