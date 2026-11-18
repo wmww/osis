@@ -250,6 +250,7 @@ pub(crate) fn sealed(tx: &mut Tx<'_>, who: &Tid, a: &Tid, m: &Tid, role: Role) -
 /// (`seal_blocked`), the roles above the cut included: what a rotation leaving `m`
 /// out records (`left_out`).
 pub(crate) fn sealing(tx: &mut Tx<'_>, who: &Tid, a: &Tid, m: &Tid, role: Role) -> Result<(Sealed, BTreeMap<Role, BTreeSet<Epoch>>)> {
+    let Some(role) = keyed_role(tx.core, a, m, role) else { return Ok((Sealed::Out, BTreeMap::new())) };
     let (mut sealed, blocked) = sealing_at(tx, who, a, m, role)?;
     if let Sealed::Boxed(r) = &mut sealed {
         r.floor = super::floors::holder_floor(tx.core, a, m);
@@ -257,10 +258,20 @@ pub(crate) fn sealing(tx: &mut Tx<'_>, who: &Tid, a: &Tid, m: &Tid, role: Role) 
     Ok((sealed, blocked))
 }
 
-/// `sealing`, the recipient's floor 0.
+/// `sealed` for a grant of `role` to `m` with key access (`grant_keyless` judged it): up to
+/// `role` itself, which the grant's own edge gives `m` with key access, not capped at the key
+/// access the held grants give it (a raise of a holder keyed lower boxes the raised roles).
+pub(crate) fn sealed_granted(tx: &mut Tx<'_>, who: &Tid, a: &Tid, m: &Tid, role: Role) -> Result<Sealed> {
+    let (mut sealed, _) = sealing_at(tx, who, a, m, role)?;
+    if let Sealed::Boxed(r) = &mut sealed {
+        r.floor = super::floors::holder_floor(tx.core, a, m);
+    }
+    Ok(sealed)
+}
+
+/// `sealing` at `role` as given (key access judged by the caller), the recipient's floor 0.
 fn sealing_at(tx: &mut Tx<'_>, who: &Tid, a: &Tid, m: &Tid, role: Role) -> Result<(Sealed, BTreeMap<Role, BTreeSet<Epoch>>)> {
     let mut blocked = BTreeMap::new();
-    let Some(role) = keyed_role(tx.core, a, m, role) else { return Ok((Sealed::Out, blocked)) };
     if tx.core.is_account(m) {
         return sealed_to_account(tx, who, a, m, role);
     }

@@ -125,7 +125,7 @@ pub(crate) fn grant_history(tx: &mut Tx<'_>, signer: Option<Tid>, target: Tid, h
     // keyset is not granted (its boxes would say nothing)
     let rcpt = match keyless {
         true => None,
-        false => match rotation::sealed(tx, &who, &target, &holder, edge.role)? {
+        false => match rotation::sealed_granted(tx, &who, &target, &holder, edge.role)? {
             // boxed at the floor this grant gives (spec/crypto.md §4, A party's floor): its own
             // (a change keeping it), at least its author's
             rotation::Sealed::Boxed(r) => Some(osis_keys::Recipient { floor: edge.floor.unwrap_or(0).max(rotation::floors::holder_floor(tx.core, &target, &who)), ..r }),

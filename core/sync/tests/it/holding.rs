@@ -985,3 +985,26 @@ fn a_thing_made_beside_its_strong_opens_once_held_spec_sync_judgement_1() {
         assert_eq!(value(&mut w, 0, &z), Some(Value::Str("z".into())), "accepted first {accepted_first}: Alice reads Z");
     }
 }
+
+// spec/crypto.md §4 (Key access: a grant's holder boxed with the grant itself held; History box:
+// a grant writes it again): Alice makes T under her root and X under T, both plain; she grants
+// Bob's account sync on X and on T (keying each), X sync on T (keyless: X lies under T), then Bob
+// read on T, and Bob accepts T. What was written before T's keying is sealed under T's derived
+// epochs, and the keying commit wraps under them: the read grant boxes Bob at read with the
+// history entry carrying them (not only at sync, his key access before the grant), so he reads
+// T and X.
+#[test]
+fn a_grant_after_a_keying_brings_the_history_its_boxes_open_spec_crypto_4() {
+    let mut w = contacts();
+    let bob = w.node(1).account.unwrap();
+    let t = make(&mut w, 0, None, "t");
+    let x = make_in(&mut w, 0, t, "x");
+    w.write(0, |e| e.grant(&x, &bob, &edge(Role::Sync))).unwrap();
+    w.write(0, |e| e.grant(&t, &bob, &edge(Role::Sync))).unwrap();
+    w.write(0, |e| e.grant(&t, &x, &edge(Role::Sync))).unwrap();
+    w.write(0, |e| e.grant(&t, &bob, &edge(Role::Read))).unwrap();
+    strong(&mut w, 1, None, t, true);
+    w.run();
+    assert_eq!(value(&mut w, 1, &t), Some(Value::Str("t".into())), "Bob reads T");
+    assert_eq!(value(&mut w, 1, &x), Some(Value::Str("x".into())), "Bob reads X");
+}
