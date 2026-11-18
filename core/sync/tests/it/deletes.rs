@@ -1,19 +1,29 @@
 //! Deletes by level at a node keeping S unread (spec/sync-ids.md §6 Delete, spec/crypto.md §7):
 //! a writer that is no admin of S deletes there what it may purge, by the delete keys of the
-//! levels it holds, never what it holds no level key for. Node 0 (admin) makes thing 0; node 1's
-//! account keeps it unread; nodes 2 and 3 write it.
+//! levels it holds, never what it holds no level key for. On `three`: node 0 (admin) makes thing
+//! 0, node 1's account keeps it unread, node 2 writes it; `four` adds a second writer, node 3.
+//! What each delete may do is judged locally (tests/it/read.rs on a fake ground; the engine's
+//! `blob_gone`, `strip_of`, `blob_loses`: osis-engine `sync::tests_facts`); these are the
+//! end-to-end arms.
 
 use crate::harness::Step::*;
-use crate::harness::history::{Gives, value_ak, world};
+use crate::harness::history::{Gives, three as three_of, value_ak, world};
 use crate::harness::{World, edge, fixture_with, play};
 use osis_base::format::MAX_DRIFT_MS;
 use osis_base::{Ak, BlobId, CommitId, PurgeBy, Role, SyncId, Tid, Value};
 use osis_engine::Mutation;
 use osis_schema::core_types as ct;
 
-/// The common start, built once per process (`fixture_with`).
-fn setup() -> (World, Tid, SyncId) {
-    let (w, (t, s)) = fixture_with("deletes setup", || {
+/// Node 0 admin, node 1 keeping S unread, node 2 a writer (`history::three`, shared).
+fn three() -> (World, Tid, SyncId) {
+    let (mut w, t, s) = three_of(Gives::Writes, 2);
+    w.cap = 20_000;
+    (w, t, s)
+}
+
+/// `three` with node 3 a second writer, built once per process (`fixture_with`).
+fn four() -> (World, Tid, SyncId) {
+    let (w, (t, s)) = fixture_with("deletes four", || {
         let mut w = world(0, 4);
         w.cap = 20_000;
         let _ = play(&mut w, &[New(0), Grant(0, 0, 1, Gives::Syncs), Grant(0, 0, 2, Gives::Writes), Grant(0, 0, 3, Gives::Writes), Run], String::new());
@@ -33,14 +43,21 @@ fn write(w: &mut World, i: usize, t: Tid, ak: &Ak, by: PurgeBy) -> CommitId {
     })
 }
 
-fn purge(w: &mut World, i: usize, t: Tid, c: CommitId) {
+/// Node `i` purges `aks` of commit `c` on thing `t`.
+fn purge_of(w: &mut World, i: usize, t: Tid, c: CommitId, aks: &[Ak]) {
     w.write(i, |e| {
         let mut m = Mutation::new();
         let now = e.now();
         m.set(t, &ct::PURGE, &now).unwrap();
-        m.purge_commit(c, t, value_ak());
+        for ak in aks {
+            m.purge_commit(c, t, ak.clone());
+        }
         e.commit(m).unwrap().unwrap();
     });
+}
+
+fn purge(w: &mut World, i: usize, t: Tid, c: CommitId) {
+    purge_of(w, i, t, c, &[value_ak()]);
 }
 
 /// Node 1's entries of `c` under S (blobs `by` opened to `c`).
@@ -49,41 +66,19 @@ fn at_unread(w: &mut World, by: usize, s: &SyncId, c: &CommitId) -> Vec<BlobId> 
     es.into_iter().filter(|e| w.engine(by).blob_commit(&e.blob) == Some(*c)).map(|e| e.blob).collect()
 }
 
-// spec/sync-ids.md §6 (Delete), spec/crypto.md §7: a writer's purge of its own write
-// reaches a node keeping S unread with no admin connected: the entry is deleted there by the
-// writer's level keys (level 2 with the sync key, or level 3 with the write key), and stays
-// deleted across restarts.
-#[test]
-fn a_writers_purge_of_its_own_write_deletes_it_at_a_node_keeping_s_unread_spec_sync_ids_6() {
-    for by in [PurgeBy::AuthorOrAdmin, PurgeBy::Writer] {
-        let (mut w, t, s) = setup();
-        let c = write(&mut w, 2, t, &value_ak(), by);
-        w.run();
-        let held = at_unread(&mut w, 2, &s, &c);
-        assert!(!held.is_empty(), "{by:?}: node 1 holds the write");
-        w.power_off(0);
-        purge(&mut w, 2, t, c);
-        w.run();
-        let gone = |w: &mut World| held.iter().all(|b| w.store(1).entry(&s, b).unwrap().is_none());
-        assert!(gone(&mut w), "{by:?}: the writer's purge deleted it at node 1");
-        for i in 1..3 {
-            w.power_off(i);
-            w.power_on(i);
-        }
-        w.power_on(0);
-        w.run();
-        assert!(gone(&mut w), "{by:?}: still gone after restarts");
-        assert_eq!(w.engine(3).get(&t, &value_ak()).unwrap(), None, "{by:?}: the other writer reads the purge");
-    }
+fn gone_at_unread(w: &mut World, s: &SyncId, held: &[BlobId]) -> bool {
+    held.iter().all(|b| w.store(1).entry(s, b).unwrap().is_none())
 }
 
-// spec/sync-ids.md §6 (Delete), spec/crypto.md §7: one commit's two deltas under different
-// retention frame two commitment groups (levels 1, 2 and levels 1, 2, 3); the groups the writer
-// signs for are those the blob's prefix bears, and its purge of both deletes the blob at the node
-// keeping S unread with its level-2 key, which alone covers both.
+// spec/sync-ids.md §6 (Delete), spec/crypto.md §7: a writer's purge of its own write reaches a
+// node keeping S unread with no admin connected: the entry is deleted there by the writer's level
+// keys, and stays deleted across restarts. The commit's two deltas under different retention
+// frame two commitment groups (levels 1, 2 and levels 1, 2, 3); the groups the writer signs for
+// are those the blob's prefix bears, and its level-2 key alone covers both. (Level 3 by a writer
+// that is not the author: `a_writer_deletes_only_what_it_may_purge_spec_sync_judgement_3`.)
 #[test]
-fn a_writers_delete_covers_every_commitment_group_spec_sync_ids_6() {
-    let (mut w, t, s) = setup();
+fn a_writers_purge_of_its_own_write_deletes_it_at_a_node_keeping_s_unread_spec_sync_ids_6() {
+    let (mut w, t, s) = three();
     let other = Ak::new("u:n.0").unwrap();
     let c = w.write(2, |e| {
         let mut m = Mutation::new();
@@ -94,7 +89,6 @@ fn a_writers_delete_covers_every_commitment_group_spec_sync_ids_6() {
     w.run();
     let held = at_unread(&mut w, 2, &s, &c);
     assert!(!held.is_empty(), "node 1 holds the write");
-    // the groups the writer signs for are those the blob's prefix bears
     for b in &held {
         let bytes = w.store(1).bytes(b).unwrap().unwrap();
         let real = osis_blob::clear_prefix(&bytes).unwrap().unwrap();
@@ -104,15 +98,17 @@ fn a_writers_delete_covers_every_commitment_group_spec_sync_ids_6() {
         assert_eq!(set(&basis.prefix), set(&real), "the writer's groups are the prefix's");
     }
     w.power_off(0);
-    w.write(2, |e| {
-        let mut m = Mutation::new();
-        let now = e.now();
-        m.set(t, &ct::PURGE, &now).unwrap();
-        m.purge_commit(c, t, value_ak()).purge_commit(c, t, other.clone());
-        e.commit(m).unwrap().unwrap();
-    });
+    purge_of(&mut w, 2, t, c, &[value_ak(), other]);
     w.run();
-    assert!(held.iter().all(|b| w.store(1).entry(&s, b).unwrap().is_none()), "the writer deleted it at node 1");
+    assert!(gone_at_unread(&mut w, &s, &held), "the writer's purge deleted it at node 1");
+    for i in 1..3 {
+        w.power_off(i);
+        w.power_on(i);
+    }
+    w.power_on(0);
+    w.run();
+    assert!(gone_at_unread(&mut w, &s, &held), "still gone after restarts");
+    assert_eq!(w.engine(0).get(&t, &value_ak()).unwrap(), None, "the admin reads the purge");
 }
 
 // spec/sync-judgement.md §3 (Deletes: a holder of the needed delete key or level keys),
@@ -122,7 +118,7 @@ fn a_writers_delete_covers_every_commitment_group_spec_sync_ids_6() {
 // (it holds no level key there).
 #[test]
 fn a_writer_deletes_only_what_it_may_purge_spec_sync_judgement_3() {
-    let (mut w, t, s) = setup();
+    let (mut w, t, s) = four();
     let other = Ak::new("u:n.0").unwrap();
     let anyone = write(&mut w, 3, t, &value_ak(), PurgeBy::Writer);
     let authors = write(&mut w, 3, t, &other, PurgeBy::AuthorOrAdmin);
@@ -147,7 +143,7 @@ fn a_writer_deletes_only_what_it_may_purge_spec_sync_judgement_3() {
 /// Delete is the only one; `restart` restarts the purger while node 1 is still away. Node 1 comes
 /// back: whether every entry of the commit left it.
 fn purged_while_away(purger: usize, restart: bool) -> bool {
-    let (mut w, t, s) = setup();
+    let (mut w, t, s) = three();
     let c = write(&mut w, 2, t, &value_ak(), PurgeBy::AuthorOrAdmin);
     w.run();
     let held = at_unread(&mut w, 2, &s, &c);
@@ -163,27 +159,24 @@ fn purged_while_away(purger: usize, restart: bool) -> bool {
     }
     w.power_on(1);
     w.run();
-    held.iter().all(|b| w.store(1).entry(&s, b).unwrap().is_none())
+    gone_at_unread(&mut w, &s, &held)
 }
 
 // spec/sync-judgement.md §3 (Deletes; What a source holds): a delete owed at a source keeping S
-// unread is owed while its stream shows the entry, up or away: a purge (by the admin's delete key
-// or the writer's level key) made while node 1 is away deletes the entry there once it is back.
+// unread is owed while its stream shows the entry, up or away: the admin's purge (by its delete
+// key) made while node 1 is away deletes the entry there once it is back. (By a writer's level
+// key: the next test, which also restarts the purger.)
 #[test]
 fn a_purge_made_while_the_unread_store_is_away_deletes_there_on_return_spec_sync_judgement_3() {
-    for purger in [0, 2] {
-        assert!(purged_while_away(purger, false), "{purger}: the purge deleted it at node 1 on return");
-    }
+    assert!(purged_while_away(0, false), "the purge deleted it at node 1 on return");
 }
 
 // spec/sync-judgement.md §3 (Deletes; Dropped bodies): the owed delete survives a restart of the
-// purger while node 1 is away; the writer signs it from the prefix salt and aspects it kept of
-// the dropped blob (`BlobOf`), its bytes gone.
+// purging writer while node 1 is away; it signs from the prefix salt and aspects it kept of the
+// dropped blob (`BlobOf`), its bytes gone. (An admin's delete key needs no kept blob.)
 #[test]
 fn an_owed_delete_survives_the_purgers_restart_spec_sync_judgement_3() {
-    for purger in [0, 2] {
-        assert!(purged_while_away(purger, true), "{purger}: the purge deleted it at node 1 after the purger's restart");
-    }
+    assert!(purged_while_away(2, true), "the purge deleted it at node 1 after the purger's restart");
 }
 
 // spec/sync-judgement.md §3 (What a source holds), scaling: a store source coming back judges
@@ -192,17 +185,17 @@ fn an_owed_delete_survives_the_purgers_restart_spec_sync_judgement_3() {
 #[test]
 fn a_source_coming_back_judges_only_what_is_owed_there() {
     let toward = |n: usize| {
-        let (mut w, t, _) = setup();
+        let (mut w, t, _) = three();
         for i in 0..n {
             write(&mut w, 2, t, &Ak::new(format!("u:n.{i}")).unwrap(), PurgeBy::Writer);
         }
         w.run();
         osis_base::costs::take();
-        for j in [0, 2, 3] {
+        for j in [0, 2] {
             w.partition(1, j);
         }
         w.run();
-        for j in [0, 2, 3] {
+        for j in [0, 2] {
             w.rejoin(1, j);
         }
         w.run();
@@ -218,7 +211,7 @@ fn a_source_coming_back_judges_only_what_is_owed_there() {
 // sync set.
 #[test]
 fn a_sync_id_kept_unread_by_ticket_stays_synced_across_a_restart_spec_sync_set_2() {
-    let (mut w, t, s) = setup();
+    let (mut w, t, s) = three();
     let unread = Some((std::collections::BTreeSet::from([t]), osis_engine::sync::Holding::Unread));
     assert_eq!(w.engine(1).sync_holder(&s).unwrap(), unread, "kept unread before");
     w.power_off(1);
@@ -231,13 +224,12 @@ fn a_sync_id_kept_unread_by_ticket_stays_synced_across_a_restart_spec_sync_set_2
 // entered the thing, keeps it kept unread.
 #[test]
 fn a_sync_id_kept_unread_outlives_its_inbox_ticket_spec_sync_set_1() {
-    let (mut w, t, s) = setup();
+    let (mut w, t, s) = three();
     w.advance(osis_base::format::INBOX_LIFETIME_MS + 86_400_000);
     w.run();
     let unread = Some((std::collections::BTreeSet::from([t]), osis_engine::sync::Holding::Unread));
     assert_eq!(w.engine(1).sync_holder(&s).unwrap(), unread, "kept unread past the inbox's lifetime");
 }
-
 
 /// Node 2 writes `value_ak` (marked) and `u:n.0` in one commit, both purgeable by any writer.
 fn two_parts(w: &mut World, t: Tid, marker: &str) -> CommitId {
@@ -256,7 +248,7 @@ fn two_parts(w: &mut World, t: Tid, marker: &str) -> CommitId {
 // old blob from the node keeping S unread once the rewrite is there; the other part still reads.
 #[test]
 fn a_purge_of_one_part_rewrites_the_blob_everywhere_spec_sync_judgement_2() {
-    let (mut w, t, s) = setup();
+    let (mut w, t, s) = three();
     let c = two_parts(&mut w, t, "a");
     w.run();
     let old = at_unread(&mut w, 2, &s, &c);
@@ -268,7 +260,7 @@ fn a_purge_of_one_part_rewrites_the_blob_everywhere_spec_sync_judgement_2() {
     assert!(!now.contains(&old[0]), "the old blob left node 1");
     assert!(!now.is_empty(), "node 1 holds the rewrite");
     let mut logged = std::collections::BTreeSet::new();
-    for i in [0, 2, 3] {
+    for i in [0, 2] {
         let es: Vec<BlobId> = w.store(i).entries(&s).unwrap().into_iter().map(|e| e.blob).filter(|b| w.engine(2).blob_commit(b) == Some(c)).collect();
         assert_eq!(es.len(), 1, "node {i} logs one blob of the commit");
         assert_eq!(w.engine(i).blob_parts(&es[0]).map(|p| p.len()), Some(1), "node {i}: the rewrite holds the other part alone");
@@ -282,8 +274,13 @@ fn a_purge_of_one_part_rewrites_the_blob_everywhere_spec_sync_judgement_2() {
 /// Node 0 makes thing t with `value` under purge on replace and writes one commit holding a
 /// marked `value` and a note that stays, then replaces `value`: its cover drops the marked part
 /// and strips it from the commit's blobs. Node 1 is a second device of its account. The world,
-/// t, the two-part commit and the marker.
+/// t, the two-part commit and the marker; built once per process (`fixture_with`).
 fn replaced_beside_a_kept_part() -> (World, Tid, CommitId, String) {
+    let (w, (t, c, marker)) = fixture_with("deletes replaced beside a kept part", build_replaced);
+    (w, t, c, marker)
+}
+
+fn build_replaced() -> (World, (Tid, CommitId, String)) {
     let mut w = World::new(0);
     w.record = true;
     w.add_node();
@@ -315,7 +312,7 @@ fn replaced_beside_a_kept_part() -> (World, Tid, CommitId, String) {
         e.commit(m).unwrap().unwrap()
     });
     w.run();
-    (w, t, c, marker)
+    (w, (t, c, marker))
 }
 
 // spec/commits.md §5 (Dropping a body; Purge on replace),
@@ -323,37 +320,32 @@ fn replaced_beside_a_kept_part() -> (World, Tid, CommitId, String) {
 // spec/sync-judgement.md §2 (Per blob): a part of a two-part commit purged, and one replaced under
 // purge on replace beside a part that stays (dropped as covered by the writer's snapshot, it
 // strips like a purged part), leave no copy an attacker holding either device recovers, sync
-// stores included; the parts beside them still read. One world for both: an attack per device.
+// stores included; the parts beside them still read, and the same attack recovers the kept one
+// (it finds live content). One world for both: an attack per device.
 #[test]
 fn a_purged_or_replaced_part_is_unrecoverable_from_the_sync_store_spec_commits_5() {
-    let (mut w, _, _, replaced) = replaced_beside_a_kept_part();
-    let a = w.node(0).account.unwrap();
-    let u = w.write(0, |e| {
-        let mut m = Mutation::new();
-        let u = e.new_thing(&mut m, a);
-        e.commit(m).unwrap();
-        u
-    });
-    w.run();
+    let (mut w, t, _, replaced) = replaced_beside_a_kept_part();
+    let (gone, stays) = (Ak::new("u:p.0").unwrap(), Ak::new("u:k.0").unwrap());
     let purged = format!("PURGED-MARK-5e1f{}", "x".repeat(300));
+    let kept = format!("KEPT-MARK-3b7c90{}", "x".repeat(300));
     let c = w.write(0, |e| {
         let mut m = Mutation::new();
-        m.set(u, &value_ak(), &Value::Str(purged.clone())).unwrap();
-        m.set(u, &Ak::new("u:n.0").unwrap(), &Value::Str("kept".into())).unwrap();
+        m.set(t, &gone, &Value::Str(purged.clone())).unwrap();
+        m.set(t, &stays, &Value::Str(kept.clone())).unwrap();
         e.commit(m).unwrap().unwrap()
     });
     w.run();
-    let found = |w: &mut World, i: usize, marker: &str| w.forensic(i).iter().any(|r| r.plain.windows(16).any(|x| x == &marker.as_bytes()[..16]));
-    assert!(found(&mut w, 1, &purged), "the attack finds live content");
     w.advance(10);
-    purge(&mut w, 0, u, c);
+    purge_of(&mut w, 0, t, c, &[gone]);
     w.run();
     for i in 0..2 {
         let attack = w.forensic(i);
+        let found = |marker: &str| attack.iter().any(|r| r.plain.windows(16).any(|x| x == &marker.as_bytes()[..16]));
+        assert!(found(&kept), "node {i}: the attack finds the live part");
         for (what, marker) in [("purged", &purged), ("replaced", &replaced)] {
-            assert!(!attack.iter().any(|r| r.plain.windows(16).any(|x| x == &marker.as_bytes()[..16])), "node {i}: the {what} part recovered");
+            assert!(!found(marker), "node {i}: the {what} part recovered");
         }
-        assert_eq!(w.engine(i).get(&u, &Ak::new("u:n.0").unwrap()).unwrap(), Some(Value::Str("kept".into())), "node {i} reads the other part");
+        assert_eq!(w.engine(i).get(&t, &stays).unwrap(), Some(Value::Str(kept.clone())), "node {i} reads the other part");
     }
 }
 
@@ -393,7 +385,8 @@ fn set_value(w: &mut World, i: usize, t: Tid, v: &str) {
 // covered in turn by a snapshot whose tables no longer name the part's session (no write of it
 // is left). A blob stripped of it would leave node 0 counting it never received with no source
 // for it; unstripped, node 0 receives the making commit whole (the harness checks every must-hold
-// body reached at quiet). Fails if a part dropped as covered strips under no purge on replace.
+// body reached at quiet). It passes with that strip too: node 0 counts the part covered either way
+// (the next test), so no test catches it (issues/strip-rule-gaps.md).
 #[test]
 fn a_reader_receives_a_part_whose_cover_was_covered_whole_spec_sync_judgement_2() {
     covers_cover(false);

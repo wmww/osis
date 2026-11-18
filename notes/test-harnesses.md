@@ -92,6 +92,8 @@ Reference-graph rules (tickets, retention needs and roots, the closure walk, `ac
 | cover drops: a missing part counted leftover-due | dropped | 0: deleted (a missing part is never a bare leftover) |
 | opens: a peer no longer departed ends at `until` | dropped | 0; `opens::a_departed_store_granted_again_closes_at_its_until_*` |
 
+Delete and strip rules, planted against osis-sync `it` (and the engine lib where that caught none): `blob_gone` (the deletes strip tests), `blob_loses` needed (`sync::tests_facts::a_blob_loses_*`) and spare (`deletes::a_purge_of_one_part_rewrites_*`), the carrier and cover waits and both `MAX_DRIFT` waits (`read::` fake-ground tests; the covered drop's drift also `retention::a_body_out_of_history_stays_*`), the cover clause of `strips` (`deletes::a_purged_or_replaced_part_is_unrecoverable_*`), `strip_of`'s covers (`sync::tests_facts::a_strip_names_*`), the commit blob's level basis (`deletes::a_writers_purge_*`, `an_owed_delete_*`, `a_writer_deletes_only_*`, `opens::a_sources_class_*`). Caught by none: `strips` without its purge-on-replace test, and `cert_delete_basis` dropped (issues/strip-rule-gaps.md).
+
 ## Harness footguns
 - A role commit past `grant`'s refusal needs `m.unchecked` plus `skip_writer_rules`.
 - `costs::take` counts per thread: in a `LocalPeer` test it mixes every peer's work; scope the window to one peer's applies.
