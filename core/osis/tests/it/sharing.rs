@@ -206,7 +206,8 @@ fn leave_ends_only_own_ways_and_refuses_before_writing() {
 }
 
 // spec/permissions.md §6 (a node does not sign a purge request): a purge request that would drop
-// none of the held deltas it names is refused `Permission`, nothing written; under the default
+// none of the held deltas it names is refused `Permission { needs: Admin }` (admins may always
+// purge; a writer it refuses holds write), nothing written; under the default
 // (admins only) a writer purges none, not even its own; one written `author_or_admin` it purges.
 // A superseded write forgotten is an unknown commit (`Invalid`), as one never received.
 #[test]
@@ -222,7 +223,7 @@ fn purge_without_the_right_is_refused_spec_permissions_6() {
         let n = commits(&bob);
         let mut x = bob.write();
         x.at(g, k()).purge(what).unwrap();
-        matches!(x.commit(), Err(Error::Permission { tid, .. }) if tid == g) && commits(&bob) == n
+        matches!(x.commit(), Err(Error::Permission { tid, needs: Role::Admin }) if tid == g) && commits(&bob) == n
     };
     assert!(refused(osis::Purge::Commit(hers)), "another's write by commit");
     assert!(refused(osis::Purge::Author(alice.me())), "another's writes by author");

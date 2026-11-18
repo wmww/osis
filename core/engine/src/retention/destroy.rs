@@ -165,6 +165,12 @@ pub(crate) fn apply_destructions(tx: &mut Tx<'_>) -> Result<()> {
     unnamed(tx.core);
     let dirty: BTreeSet<Tid> = tx.core.valueless_dirty.iter().filter(|(_, ak)| ak.as_str() == CREATED).map(|(t, _)| *t).collect();
     let (due, fell): (BTreeSet<Tid>, BTreeSet<Tid>) = dirty.into_iter().partition(|t| tx.core.destroyed(t));
+    for t in &due {
+        note(tx, t, true)?;
+    }
+    for t in &fell {
+        note(tx, t, false)?;
+    }
     if due.is_empty() && fell.is_empty() {
         return Ok(());
     }
@@ -183,6 +189,37 @@ pub(crate) fn apply_destructions(tx: &mut Tx<'_>) -> Result<()> {
     crate::apply::rejudged(tx, held_changed)?;
     if !changed.is_empty() {
         tx.core.events.queue(Event::Changed { cause: Cause::Expiry, changed: changed.into_iter().collect() });
+    }
+    Ok(())
+}
+
+/// Notes `t` held destroyed or not (`Indexes::destroyed`, rows `records::DESTROYED`).
+pub(crate) fn note(tx: &mut Tx<'_>, t: &Tid, destroyed: bool) -> Result<()> {
+    let key = [records::DESTROYED, t.as_bytes()].concat();
+    if destroyed {
+        if tx.core.ix.destroyed.insert(*t) {
+            tx.txn.put_local(&key, &[], Shred::No)?;
+        }
+    } else if tx.core.ix.destroyed.remove(t) {
+        tx.txn.remove_local(&key, Shred::Yes)?;
+    }
+    Ok(())
+}
+
+/// The things held destroyed at open: from their rows, or rebuilding, from their mintings (the
+/// rows written again).
+pub(crate) fn load(tx: &mut Tx<'_>, fast: bool) -> Result<()> {
+    let rows = tx.scan_keys(records::DESTROYED, "destroyed", Tid::from_bytes)?;
+    if fast {
+        tx.core.ix.destroyed.extend(rows);
+        return Ok(());
+    }
+    let things: Vec<Tid> = tx.core.ix.held.things().copied().collect();
+    for t in rows {
+        tx.txn.remove_local(&[records::DESTROYED, t.as_bytes()].concat(), Shred::Yes)?;
+    }
+    for t in things.iter().filter(|t| tx.core.destroyed(t)).copied().collect::<Vec<_>>() {
+        note(tx, &t, true)?;
     }
     Ok(())
 }

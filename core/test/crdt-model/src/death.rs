@@ -87,19 +87,9 @@ pub fn supersedes(s: &Frag, w: &Frag) -> bool {
 }
 
 /// Whether a state holds write `n` by dot (spec/commits.md §5 live write), given the state's `keys`: the write
-/// itself, or for a sequence element's creation the element's record (also one holding only others' writes).
+/// itself (a sequence element's creation only while its record holds it, not a record left for others' writes).
 pub fn holds(state_keys: &BTreeSet<Name>, n: &Name) -> bool {
-    let k = key(n);
-    if state_keys.contains(&k) {
-        return true;
-    }
-    match k.as_slice() {
-        [.., Step::Elem(_), Step::Created(_)] => {
-            let rec = &k[..k.len() - 1];
-            state_keys.iter().any(|m| m.starts_with(rec))
-        }
-        _ => false,
-    }
+    state_keys.contains(&key(n))
 }
 
 /// Canonical bytes of a fragment (§3.3): its wire encoding, deleted chars dropped.

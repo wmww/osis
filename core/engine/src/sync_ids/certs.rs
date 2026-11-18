@@ -380,11 +380,12 @@ impl Engine {
 
     /// The destroyed actors held here on an authority path into `g`'s sync unit (spec/commits.md
     /// §5 Destruction): named first admin or holder on a live thing of the unit, or on such a
-    /// destroyed actor. A walk of the held holders, few beside the unit's things, and up from the
-    /// destroyed ones among them.
+    /// destroyed actor. A walk of the destroyed things held (`Indexes::destroyed`), never of every
+    /// holder.
     pub fn destroyed_upstream(&self, g: &Tid) -> BTreeSet<Tid> {
         let held = &self.core.ix.held;
-        let destroyed: Vec<Tid> = held.holders().filter(|e| self.core.destroyed(e)).copied().collect();
+        let destroyed: Vec<Tid> = self.core.ix.destroyed.iter().copied().collect();
+        osis_base::costs::count("destroyed upstream: actors examined", destroyed.len() as u64);
         let mut out = BTreeSet::new();
         // to a fixpoint: a destroyed actor counts once it is named on a live closure thing or on one counted
         loop {

@@ -90,7 +90,7 @@ impl From<osis_engine::Error> for Error {
     fn from(e: osis_engine::Error) -> Error {
         use osis_engine::Error as N;
         match e {
-            N::Permission { tid } => Error::Permission { tid, needs: Role::Write },
+            N::Permission { tid, needs } => Error::Permission { tid, needs },
             N::UnknownThing(tid) => Error::UnknownThing { tid },
             N::Path(p) => p.into(),
             N::Store(osis_store::Error::Backend(osis_store::BackendError::InUse)) => Error::InUse,

@@ -1,6 +1,6 @@
 //! The node's error, with the three classes of notes/architecture.md §3.
 
-use osis_base::{Classified, CommitId, ErrorClass, Tid};
+use osis_base::{Classified, CommitId, ErrorClass, Role, Tid};
 
 #[derive(Debug)]
 pub enum Error {
@@ -12,8 +12,9 @@ pub enum Error {
     Keys(osis_keys::Error),
     Crypto(osis_crypto::Error),
     Path(osis_schema::PathError),
-    /// This node may not write that aspect (local writes, checked before signing).
-    Permission { tid: Tid },
+    /// This node may not write that aspect (local writes, checked before signing): it needs
+    /// `needs` on `tid`.
+    Permission { tid: Tid, needs: Role },
     /// The thing's `created.0` record is not held.
     UnknownThing(Tid),
     /// No commit with this ID is held (or its body was dropped).
@@ -42,7 +43,7 @@ osis_base::impl_error!(Error {
     Keys(e) => ("keys: {e}"),
     Crypto(e) => ("crypto: {e}"),
     Path(e) => ("value: {e}"),
-    Permission { tid } => ("no permission to write {tid}"),
+    Permission { tid, needs } => ("needs {needs:?} on {tid}"),
     UnknownThing(t) => ("unknown thing {t}"),
     UnknownCommit(c) => ("unknown commit {c:?}"),
     NotKept(c) => ("undoing {c:?} needs content not in kept history"),

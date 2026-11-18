@@ -180,6 +180,29 @@ fn kept_part_is_told_leaving_at_its_bound_api_commits() {
     assert_eq!(bodies(&db, u, &k), vec![Body::Held(Some(s("b"))), Body::Held(Some(s("d")))]);
 }
 
+// spec/commits.md §7 (Listed parts: a purged part is listed while it would be listed unpurged):
+// a replaced part past its keep bound has left the listing; a purge naming it then lists nothing
+// again, by commit or by author.
+#[test]
+fn a_purge_lists_no_part_that_had_left_the_listing_spec_commits_7() {
+    let c = clock();
+    let db = osis::internals::create(cfg(0, osis::MemStore::new(), &c)).unwrap();
+    typed_any(&db, &["t:kept.0"]);
+    let t = thing(&db);
+    let k = ak("t:kept.0");
+    let a = commit_with(&db, |w| w.at(t, kept(&db, &k)).set(&s("a"))).stamp.id;
+    commit_with(&db, |w| w.at(t, kept(&db, &k)).set(&s("b")));
+    c.advance(2 * 86_400_000);
+    db.engine(|e| e.tick().unwrap());
+    assert_eq!(bodies(&db, t, &k), vec![Body::Held(Some(s("b")))], "a left the listing");
+    commit_with(&db, |w| w.at(t, untyped(k.clone())).purge(osis::Purge::Commit(a)));
+    assert_eq!(bodies(&db, t, &k), vec![Body::Held(Some(s("b")))], "purged by commit: a stays unlisted");
+    let me = db.me();
+    commit_with(&db, |w| w.at(t, untyped(k.clone())).purge(osis::Purge::Author(me)));
+    let got = bodies(&db, t, &k);
+    assert!(got.len() == 1 && matches!(got[0], Body::Purged { .. }), "purged by author: b alone listed, as purged: {got:?}");
+}
+
 // spec: none (API surface); notes/api.md Commits (the commit): a commit writing two things lists at an aspect of one with
 // both parts; `at` decodes a part typed, a mismatching body reading `Held(None)` with a `Mismatch`
 // diagnostic; and `w.commit()` returns the commit as a listing then shows it.

@@ -853,7 +853,7 @@ fn snapshot_from_state(tx: &mut Tx<'_>, tid: &Tid, ak: &Ak, memory: bool, own_co
     }
     let ts = tx.core.hlc.next();
     if may_snapshot(tx, &tid, &ak, memory, ts)? != MayWrite::Yes {
-        return Err(Error::Permission { tid });
+        return Err(Error::Permission { tid, needs: osis_base::Role::Write });
     }
     let node = tx.core.writer_for(&tid)?;
     if tx.state(&tid, &ak)?.is_none() {

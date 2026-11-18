@@ -349,13 +349,6 @@ pub(crate) fn holders_in(r: &crate::read::Reader<'_>, target: Tid) -> Vec<Holder
     out
 }
 
-fn needs_admin(e: osis_engine::Error) -> Error {
-    match e {
-        osis_engine::Error::Permission { tid } => Error::Permission { tid, needs: Role::Admin },
-        e => e.into(),
-    }
-}
-
 impl ReadOnly {
     /// Everyone who holds a role on `target`, directly or through an actor that holds one (an account
     /// through a team, a joiner through a link), nearest first. An actor with several ways in is
@@ -440,11 +433,11 @@ impl Osis {
             }
             let new = edge(e, &target, role, opts)?;
             match (opts.reads, cur.map(|x| x.floor)) {
-                (Reads::FromNow, None) => e.grant_with(&target, &holder, &new, flows::edges::History::None).map_err(needs_admin),
+                (Reads::FromNow, None) => e.grant_with(&target, &holder, &new, flows::edges::History::None).map_err(Error::from),
                 (Reads::FromNow, Some(None)) => Err(Error::Invalid(format!("{holder} already reads what was written on {target} before"))),
                 // a change keeps the floor: still from its first grant on
-                (Reads::FromNow | Reads::Kept, Some(floor)) => e.grant(&target, &holder, &ct::Edge { floor, ..new }).map_err(needs_admin),
-                (Reads::Kept | Reads::All, _) => e.grant(&target, &holder, &new).map_err(needs_admin),
+                (Reads::FromNow | Reads::Kept, Some(floor)) => e.grant(&target, &holder, &ct::Edge { floor, ..new }).map_err(Error::from),
+                (Reads::Kept | Reads::All, _) => e.grant(&target, &holder, &new).map_err(Error::from),
             }
         })?;
         Ok(())
@@ -542,7 +535,7 @@ impl Osis {
         // an account's default does not reach its nodes (spec/permissions.md §2)
         let retain = o.retain_copy.or((t == self.inner.account_root).then_some(false));
         let fd = flows::Demotion { holder: m, new, retain };
-        self.engine(|e| e.demote(&t, &fd).map_err(needs_admin))?;
+        self.engine(|e| e.demote(&t, &fd))?;
         Ok(())
     }
 
@@ -632,7 +625,7 @@ impl Osis {
         let me = self.me();
         let peers = self.link_peers();
         let spec = flows::LinkSpec { target, role, until: opts.until.map(|t| osis_base::WallMs(t.0)), peers, single_use: opts.single_use };
-        let (link, _, _) = self.engine(|e| e.create_link(&me, &spec)).map_err(needs_admin)?;
+        let (link, _, _) = self.engine(|e| e.create_link(&me, &spec))?;
         Ok(ShareLink(link.to_text().map_err(bad("link"))?))
     }
 
@@ -724,7 +717,7 @@ impl Osis {
     /// need a new link to invite anyone.
     fn remove_joiner(&self, k: Tid, joiner: Tid, o: SetRoleOpts) -> Result<()> {
         let l = self.link_key(k)?;
-        self.engine(|e| e.revoke_joiner(&k, &l, &joiner, o.retain_copy).map_err(needs_admin))?;
+        self.engine(|e| e.revoke_joiner(&k, &l, &joiner, o.retain_copy))?;
         Ok(())
     }
 

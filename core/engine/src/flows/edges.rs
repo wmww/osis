@@ -88,7 +88,7 @@ pub(crate) fn grant_history(tx: &mut Tx<'_>, signer: Option<Tid>, target: Tid, h
     if !admin {
         let ok = old.is_none() && invite.is_some_and(|i| edge.role <= i && edge.invite.is_none_or(|x| x <= i));
         if !ok || below || history == History::None {
-            return Err(Error::Permission { tid: target });
+            return Err(Error::Permission { tid: target, needs: Role::Admin });
         }
     }
     // a holder reading the target already holds its history: a cut gives it nothing to withhold
@@ -103,7 +103,7 @@ pub(crate) fn grant_history(tx: &mut Tx<'_>, signer: Option<Tid>, target: Tid, h
     }
     if !tx.core.has_own_secrets(&target) && !tx.core.is_key_actor(&target) {
         if !admin {
-            return Err(Error::Permission { tid: target });
+            return Err(Error::Permission { tid: target, needs: Role::Admin });
         }
         rotation::own_secrets(tx, target, &mut done)?;
     }
@@ -290,7 +290,7 @@ pub(crate) fn demote_in(tx: &mut Tx<'_>, signer: Option<Tid>, target: Tid, d: &D
     let selfr = old.is_some() && crate::apply::validity::self_removal(tx.core, &who, &target, &holder, ts);
     let admin = crate::engine::secrets::usable_role_now(tx, &who, &target)? == Some(Role::Admin);
     if !selfr && !admin || selfr && !gone.is_empty() {
-        return Err(Error::Permission { tid: target });
+        return Err(Error::Permission { tid: target, needs: Role::Admin });
     }
     // a plain thing's only holder for keys is its first admin (a grant gives it secrets
     // of its own first): lowering the first admin's edge would leave it no admin, refused

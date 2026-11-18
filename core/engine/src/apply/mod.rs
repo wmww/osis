@@ -870,7 +870,7 @@ fn settled_boxes(tx: &Tx<'_>, id: &CommitId) -> bool {
 fn pend(tx: &mut Tx<'_>, id: &CommitId, kind: PendingKind, signed: Option<osis_commit::Signed>, bytes: &[u8], reason: Reason, h: Option<&Header>) -> Result<()> {
     tx.core.touch();
     tx.txn.put_pending(id, kind, signed.map(osis_commit::Signed::to_bytes), bytes)?;
-    // unchanged at a look that keeps it waiting: what read it holds (`Core::waiting_carries`)
+    // unchanged at a look that keeps it waiting: what read it holds (`Core::waiting_carried`)
     set_pending(tx.core, id, Some((reason, h)));
     Ok(())
 }
@@ -1169,7 +1169,7 @@ pub(crate) fn apply_local(tx: &mut Tx<'_>, blob: &CommitBlob, signed: osis_commi
             apply_verified(tx, &b, parts, Origin::Local, received)?;
             // never emit a delta others would un-merge
             if !tx.core.skip_writer_rules && tx.core.ix.commits.get(&id).is_some_and(|m| m.valid.iter().any(|v| !v)) {
-                return Err(Error::Permission { tid: b.header.aspects.first().map_or(b.header.author, |a| a.tid) });
+                return Err(Error::Permission { tid: b.header.aspects.first().map_or(b.header.author, |a| a.tid), needs: osis_base::Role::Write });
             }
             Ok(())
         }
@@ -2075,6 +2075,7 @@ pub(crate) fn load(tx: &mut Tx<'_>, rebuild: bool) -> Result<Option<Vec<(Tid, os
     }
     // each examined once by the open's `reexamine`
     tx.core.waits.open_due = true;
+    crate::retention::destroy::load(tx, fast)?;
     // with every commit's validity (a rebuild's re-judging below re-derives what flips)
     let things: BTreeSet<Tid> = tx.core.ix.keyset_parts.keys().copied().collect();
     keys::refresh_own_keys(tx, &things, false)?;
@@ -2493,7 +2494,7 @@ mod tests {
             let r = p0.commit(m);
             assert_eq!(r.is_ok(), ok, "{r:?}");
             if !ok {
-                assert!(matches!(r, Err(crate::Error::Permission { tid }) if tid == cur));
+                assert!(matches!(r, Err(crate::Error::Permission { tid, .. }) if tid == cur));
                 assert_eq!(p0.engine.commit_ids().len(), before);
             }
         }

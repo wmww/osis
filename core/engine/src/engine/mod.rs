@@ -859,6 +859,11 @@ indexes! {
     pub valueless: JMap<(Tid, Ak), Vec<Owned>>,
     /// Actors with secrets of their own whose epochs this node holds.
     pub secrets: JMap<Tid, ActorEpochs>,
+    /// Things held destroyed (`Core::destroyed`), rows `records::DESTROYED`: kept where a
+    /// destruction lands or falls (`retention::destroy::apply_destructions`) and where a thing is
+    /// released, derived from the mintings when the index is rebuilt. What
+    /// `Engine::destroyed_upstream` walks.
+    pub destroyed: JSet<Tid>,
     /// Things with secrets of their own here (`apply::keys::refresh_own_keys`): a held commit's
     /// valid `keys.0` part wrote a keyset.
     pub own_keys: JSet<Tid>,
@@ -1307,10 +1312,10 @@ pub struct Core {
     /// When each held part was replaced, per (commit, aspect index)
     /// (`retention::bounds::dated_replaced_at`, `memo`).
     pub(crate) replaced_dates: memo::Memo<(CommitId, usize), Option<osis_base::Ts>>,
-    /// Whether a waiting snapshot part, per (commit, aspect index), carries a copy of a value its
-    /// aspect's value-less list names (`retention::pending`, `memo`): judged again
-    /// only when that list changes.
-    pub(crate) waiting_carries: memo::Memo<(CommitId, usize), bool>,
+    /// What a waiting snapshot part carries, per (commit, aspect index), as a held snapshot's
+    /// bound (`retention::snapshot::Carried`; `None`: no snapshot it can join): decoded once while
+    /// its commit waits (`retention::pending`, `memo`).
+    pub(crate) waiting_carried: memo::Memo<(CommitId, usize), Option<crate::retention::snapshot::Carried>>,
     /// `Engine::part_keeps` per commit but for the clock (`retention::bounds::commit_bounds`,
     /// `memo`).
     pub(crate) part_bounds: memo::Memo<CommitId, Arc<Vec<(u64, u64)>>>,
@@ -1575,7 +1580,7 @@ impl Core {
             held_writes: self.held_writes.clone(),
             held_writes_rows: self.held_writes_rows.clone(),
             replaced_dates: self.replaced_dates.clone(),
-            waiting_carries: self.waiting_carries.clone(),
+            waiting_carried: self.waiting_carried.clone(),
             part_bounds: self.part_bounds.clone(),
             tree_roots: self.tree_roots.clone(),
             tree_reach: self.tree_reach.clone(),
@@ -2083,7 +2088,7 @@ impl Core {
             node_root: _,
             held_writes: _,
             replaced_dates: _,
-            waiting_carries: _,
+            waiting_carried: _,
             part_bounds: _,
             tree_roots: _,
             departures: _,
@@ -2412,7 +2417,7 @@ impl Core {
             held_writes: memo::Memo::new("held writes"),
             held_writes_rows: memo::Cutoff::new("held writes: rows"),
             replaced_dates: memo::Memo::new("replaced at"),
-            waiting_carries: memo::Memo::new("waiting snapshot: judged"),
+            waiting_carried: memo::Memo::new("waiting snapshot: bound"),
             part_bounds: memo::Memo::new("part bounds"),
             tree_roots: memo::Memo::new("tree roots"),
             tree_reach: HashMap::new(),

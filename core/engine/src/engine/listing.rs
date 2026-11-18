@@ -172,10 +172,10 @@ fn listed_part(tx: &mut Tx<'_>, c: &CommitId, ai: usize, budget: usize, itself: 
 }
 
 /// Whether part `ai` of `c` is listed, with its validity and what is here of it; its body not
-/// read. A purged part is listed while it would be unpurged, judged as if the purge had replaced
-/// it: not past its expiry, and in the read by its value-less writes or kept by its keep rule
-/// counted from the request's `ts` (its body is gone, so no death of its writes can be judged
-/// from it).
+/// read. A purged part is listed while it would be unpurged: not past its expiry, and in the read
+/// by its value-less writes or kept by its keep rule counted from its own `ts` (its body is gone,
+/// so no death of its writes can be judged from it; its own `ts` is never later than its death, so
+/// a purge never lists a part retention no longer kept).
 pub(super) fn listed(tx: &mut Tx<'_>, c: &CommitId, ai: usize) -> Result<Option<(bool, Here)>> {
     let me = tx.core.me();
     let Some(m) = tx.core.ix.commits.get(c) else { return Ok(None) };
@@ -200,9 +200,9 @@ pub(super) fn listed(tx: &mut Tx<'_>, c: &CommitId, ai: usize) -> Result<Option<
     let kept = match &here {
         Here::Dropped => false,
         _ if !valid => true,
-        Here::Purged(by) => {
+        Here::Purged(_) => {
             let due = tx.core.ix.commits.get(c).is_some_and(|m| past_due(tx.core, &m.header, ai, now));
-            !due && (now < purged_keep(tx, c, ai, by) || crate::retention::bounds::delta_live(tx, c, &tid, &ak)?)
+            !due && (now < purged_keep(tx, c, ai) || crate::retention::bounds::delta_live(tx, c, &tid, &ak)?)
         }
         _ => in_kept_history(tx, c, &tid, &ak, now)?,
     };
@@ -227,12 +227,12 @@ pub(crate) fn is_listed(tx: &mut Tx<'_>, c: &CommitId, ai: usize) -> Result<bool
     Ok(listed(tx, c, ai)?.is_some())
 }
 
-/// The keep bound of part `ai` of `c` purged by `by`: its keep rule counted from the request's
-/// `ts`, never past its own expiry or (a signal's) keep bound, where it would leave unpurged.
-pub(super) fn purged_keep(tx: &Tx<'_>, c: &CommitId, ai: usize, by: &CommitId) -> u64 {
+/// The keep bound of purged part `ai` of `c`: its keep rule counted from its own `ts`, never past
+/// its own expiry or (a signal's) keep bound, where it would leave unpurged.
+pub(super) fn purged_keep(tx: &Tx<'_>, c: &CommitId, ai: usize) -> u64 {
     let Some(m) = tx.core.ix.commits.get(c) else { return 0 };
     let Some(a) = m.view.aspects.get(ai) else { return 0 };
-    let keep = crate::retention::history::of(tx.core, &a.tid, &a.ak).leaves_at(tx.core.ix.commits.get(by).map(|m| m.view.ts.wall_ms().0), m.view.ts);
+    let keep = crate::retention::history::of(tx.core, &a.tid, &a.ak).leaves_at(Some(m.view.ts.wall_ms().0), m.view.ts);
     let h = &m.header;
     let due = h.expires.into_iter().chain(h.aspects.get(ai).filter(|a| a.ak.signal()).and_then(|a| crate::retention::signal_bound(tx.core, h, a))).min();
     due.map_or(keep, |t| keep.min(t))
@@ -249,7 +249,7 @@ fn keep_bound(tx: &mut Tx<'_>, c: &CommitId, ai: usize) -> Result<Option<u64>> {
     }
     Ok(match part_here(tx, c, ai)? {
         Here::Dropped => None,
-        Here::Purged(by) => Some(purged_keep(tx, c, ai, &by)),
+        Here::Purged(_) => Some(purged_keep(tx, c, ai)),
         _ => Some(crate::retention::bounds::body_history_keep(tx, c, &tid, &ak)?),
     })
 }

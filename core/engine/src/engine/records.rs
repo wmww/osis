@@ -66,6 +66,8 @@ pub const LEAVING: &[u8] = b"hr/";
 /// History cursors (`Indexes::leave_from`): `hf/` + aspect key, the due wall ms (8 bytes), then
 /// 0, or 1 + the last place out (`Ts`, commit ID).
 pub const LEAVE_FROM: &[u8] = b"hf/";
+/// Things held destroyed (`Indexes::destroyed`): `dt/` + tid, empty.
+pub const DESTROYED: &[u8] = b"dt/";
 /// Commits voided by overlapping session ranges: `o/` + commit ID.
 pub const VOID: &[u8] = b"o/";
 /// `ad/<commit>`: explicit demotions this node has not answered with addenda yet

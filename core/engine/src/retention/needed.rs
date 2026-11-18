@@ -297,6 +297,7 @@ pub(crate) fn settle(tx: &mut Tx<'_>) -> Result<bool> {
         crate::engine::index::put_edges(tx, &id, &parts, Shred::Yes)?;
     }
     for t in &gone {
+        super::destroy::note(tx, t, false)?;
         crate::sync_ids::opened::forget_thing(tx, t)?;
         // its keyset notes go with it, though a held commit keeps its other parts
         let keyed: Vec<osis_base::CommitId> = tx.core.ix.keyset_parts.get(t).into_iter().flatten().copied().collect();

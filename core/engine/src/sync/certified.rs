@@ -1009,4 +1009,50 @@ mod tests {
         eprintln!("work of the last grant at n and 10n: {small} {large}");
         assert_eq!(small, large, "the last grant's work");
     }
+
+    // spec/commits.md §5 (Destruction: what a thing needing a destroyed thing needs of it travels
+    // with it), spec/sync-set.md §2 Cost: read thing T holds destroyed actor H; n other actors
+    // hold a role on other things. Granting one more such actor costs no look at the held actors:
+    // the destroyed ones a sync ID's certificates walk are the same at n and 10n, H found each time.
+    #[test]
+    fn destroyed_upstream_walks_the_destroyed_actors_alone_spec_commits_5() {
+        let work = |n: usize| {
+            let mut lp = LocalPeer::fresh(1, WallMs(1_700_000_000_000));
+            let a = lp.peers[0].engine.create_account().unwrap().0.account;
+            let e = &mut lp.peers[0].engine;
+            let edge = ct::Edge { role: Role::Read, until: None, invite: None, retain: false, floor: None };
+            let new = |e: &mut Engine| {
+                let mut m = Mutation::new();
+                let t = e.new_thing(&mut m, a);
+                m.set(t, &acting_ak(), &Value::Int(0)).unwrap();
+                e.commit(m).unwrap();
+                t
+            };
+            let (t, h) = (new(e), new(e));
+            e.grant(&t, &h, &edge).unwrap();
+            let mut m = Mutation::new();
+            let now = e.now();
+            m.set(h, &ct::PURGE, &now).unwrap();
+            m.purge(osis_commit::PurgeItem::Aspect { tid: h, ak: ct::CREATED.name() });
+            e.commit(m).unwrap().unwrap();
+            assert!(e.core.destroyed(&h), "H destroyed");
+            for _ in 0..n {
+                let (x, y) = (new(e), new(e));
+                e.grant(&x, &y, &edge).unwrap();
+            }
+            e.follow_certificates().unwrap();
+            let (x, y) = (new(e), new(e));
+            osis_base::costs::take();
+            e.grant(&x, &y, &edge).unwrap();
+            e.follow_certificates().unwrap();
+            let c: u64 = osis_base::costs::take().into_iter().filter(|(k, _, _)| *k == "destroyed upstream: actors examined").map(|(_, _, c)| c).sum();
+            assert!(e.read_things().unwrap().contains(&t), "T read");
+            assert_eq!(e.destroyed_upstream(&t), BTreeSet::from([h]), "H is upstream of T");
+            check(e, "granted");
+            c
+        };
+        let (small, large) = (work(4), work(40));
+        eprintln!("actors examined at n and 10n: {small} {large}");
+        assert_eq!(small, large, "the last grant's work");
+    }
 }

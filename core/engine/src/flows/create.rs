@@ -14,7 +14,7 @@ impl Engine {
     pub fn create_with_admin(&mut self, admin: &Tid) -> Result<(Tid, Done)> {
         let a = *admin;
         if a != self.core.writer()? && self.role_on(&a) < Some(Role::Write) {
-            return Err(Error::Permission { tid: a });
+            return Err(Error::Permission { tid: a, needs: Role::Write });
         }
         let mut m = Mutation::new();
         let t = self.new_thing(&mut m, a);

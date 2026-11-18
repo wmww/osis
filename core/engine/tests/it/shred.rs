@@ -1545,17 +1545,19 @@ fn waiting_snapshot_drops_a_purged_copy_spec_commits_5() {
     }
 }
 
-/// Waiting snapshots judged for carried copies (`waiting snapshot: judged`) during `f`.
-fn judged(f: impl FnOnce()) -> u64 {
+/// Waiting snapshot parts decoded (`waiting snapshot: decoded`) during `f`.
+fn decoded(f: impl FnOnce()) -> u64 {
     osis_base::costs::take();
     f();
-    osis_base::costs::take().iter().find(|x| x.0 == "waiting snapshot: judged").map_or(0, |x| x.2)
+    osis_base::costs::take().iter().find(|x| x.0 == "waiting snapshot: decoded").map_or(0, |x| x.2)
 }
 
 /// `n` snapshots on an aspect with a purged write, none carrying it, pending for their `ts` at
-/// peer 1: how many are judged by a `reexamine` with nothing changed, by the next purge on that
-/// aspect, by an expiring write there, and by its expiry.
-fn waiting_snapshots_judged(n: usize) -> [u64; 4] {
+/// peer 1, each looked at once since stored (a purge wakes them; the first look decodes again, as
+/// its pending entry is noted after the bound): how many are decoded by a `reexamine` with nothing
+/// changed, by the next purge on that aspect (of a write none carries), by an expiring write
+/// there, and by its expiry.
+fn waiting_snapshots_decoded(n: usize) -> [u64; 4] {
     let mut lp = net2();
     lp.sync_all().unwrap();
     let a = lp.peers[0].engine.me();
@@ -1579,21 +1581,22 @@ fn waiting_snapshots_judged(n: usize) -> [u64; 4] {
         let sp = lp.peers[0].engine.package(&snap).unwrap().unwrap();
         assert!(matches!(lp.deliver(1, &sp).unwrap(), osis_engine::Ingested::Pending(_, osis_engine::Reason::Drift)));
     }
+    purge(&mut lp, "first look");
     lp.peers[1].reexamine().unwrap();
     assert_eq!(lp.peers[1].engine.pending().len(), n);
-    let idle = judged(|| lp.peers[1].reexamine().unwrap());
-    let purged = judged(|| {
+    let idle = decoded(|| lp.peers[1].reexamine().unwrap());
+    let purged = decoded(|| {
         purge(&mut lp, "gone too");
         lp.peers[1].reexamine().unwrap();
     });
-    let expiring = judged(|| {
+    let expiring = decoded(|| {
         let mut m = Mutation::new();
         m.set(t, &REG, &s("brief")).unwrap();
         m.expires(t, &REG, osis_base::WallMs(lp.peers[1].engine.now().0 + 1_000)).unwrap();
         lp.peers[1].commit(m).unwrap().unwrap();
         lp.peers[1].reexamine().unwrap();
     });
-    let expired = judged(|| {
+    let expired = decoded(|| {
         lp.peers[1].clock.advance(2_000);
         lp.peers[1].tick().unwrap();
     });
@@ -1601,13 +1604,13 @@ fn waiting_snapshots_judged(n: usize) -> [u64; 4] {
     [idle, purged, expiring, expired]
 }
 
-// notes/principles.md (Check scaling): a waiting snapshot is decoded to judge its carried copies
-// when stored and when its aspect's value-less list changes, never by a `reexamine` with nothing
-// changed: n and 10n waiting snapshots cost the same there.
+// notes/principles.md (Check scaling), spec/crdt.md §4.7 (Copies): a waiting snapshot's carried
+// copies are judged by its bound, as a held snapshot's (`Carried`), decoded once while it waits:
+// a purge or an expiry of writes none of them carries decodes none, at n and 10n.
 #[test]
-fn waiting_snapshots_judged_only_when_their_list_changes_spec_commits_5() {
-    assert_eq!(waiting_snapshots_judged(3), [0, 3, 0, 3], "judged once at each change of the list: a purge, an expiry");
-    assert_eq!(waiting_snapshots_judged(30), [0, 30, 0, 30]);
+fn waiting_snapshots_decoded_once_while_they_wait_spec_commits_5() {
+    assert_eq!(waiting_snapshots_decoded(3), [0, 0, 0, 0]);
+    assert_eq!(waiting_snapshots_decoded(30), [0, 0, 0, 0]);
 }
 
 

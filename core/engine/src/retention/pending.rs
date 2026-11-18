@@ -53,20 +53,23 @@ pub(crate) fn pending_drops(tx: &mut Tx<'_>, id: &CommitId, blob: &mut osis_comm
 /// slot emptied (`emptied`); it joins as that leftover, frontiers, `Absorbed` and facts kept. One
 /// that cannot be read yet (a page away, parked) is stripped once it can, at the latest when it
 /// joins (`drop_gone`). Called at every look at the stored copy (`reexamine`), so a request
-/// applied while it waits reaches it; the judgment is a memo (`Core::waiting_carries`) reading
-/// the list and the commit's pending entry, so the part is decoded when stored, at the first
-/// look after, when its aspect's list changed (a purge, an expiry), and at each look while it
-/// cannot be read; the answer lives while the commit waits.
+/// applied while it waits reaches it. Judged as a held snapshot is (`snapshot::Carried::meets`):
+/// the part's bound is decoded once while its commit waits (a memo, `Core::waiting_carried`,
+/// reading the commit's pending entry, which is noted after the first judgment: the first look
+/// after storing decodes again), at the first look its aspect's list is not empty, and at each
+/// look while it cannot be read; the part is decoded again only where the bound may hold a
+/// listed write.
 fn strip_carried_waiting(tx: &mut Tx<'_>, id: &CommitId, blob: &mut osis_commit::CommitBlob, h: &Header, ai: usize) -> Result<()> {
     let Some(a) = h.aspects.get(ai) else { return Ok(()) };
     let Some(part) = blob.parts.iter().find(|p| p.ai == ai && p.delta != emptied()).cloned() else { return Ok(()) };
-    let carries = osis_base::memo::Memo::get_in(tx, |tx| &tx.core.waiting_carries, &(*id, ai), |tx| {
+    let Some(list) = tx.core.ix.valueless.get(&(a.tid, a.ak.clone())).filter(|l| !l.is_empty()).cloned() else { return Ok(()) };
+    let bound = osis_base::memo::Memo::get_in(tx, |tx| &tx.core.waiting_carried, &(*id, ai), |tx| {
         // read for the answer's life: its commit leaving the pending set moves it, so the memo's
         // sweep drops it (bounded by what waits); a look re-pending it unchanged does not (`pend`)
         let _ = tx.core.ix.pending.get(id);
-        carried(tx, id, &part, h, ai).map(|l| l.is_some())
+        bound(tx, id, &part, h, ai)
     });
-    if carries != Ok(true) {
+    if !bound.is_ok_and(|b| b.is_some_and(|b| b.meets(&list))) {
         return Ok(());
     }
     let Ok(Some(l)) = carried(tx, id, &part, h, ai) else { return Ok(()) };
@@ -78,6 +81,17 @@ fn strip_carried_waiting(tx: &mut Tx<'_>, id: &CommitId, blob: &mut osis_commit:
     // node-sync forgets the blobs holding it (`Engine::spent_copy`)
     rewrite_stored(tx, id, |b| empty_slot(b, ai))?;
     Ok(())
+}
+
+/// What snapshot part `part` (aspect `ai` of commit `id`, header `h`) carries (`Carried`);
+/// `None` when it is no snapshot it can join, `Err` when it cannot be read yet.
+fn bound(tx: &mut Tx<'_>, id: &CommitId, part: &osis_commit::Part, h: &Header, ai: usize) -> std::result::Result<Option<super::snapshot::Carried>, ()> {
+    let Some(a) = h.aspects.get(ai) else { return Ok(None) };
+    let Some(dedup) = tx.core.dedup(&a.tid) else { return Err(()) };
+    let Some(Decoded::Snapshot(snap)) = verify_waiting(tx, id, part, h, &dedup)? else { return Ok(None) };
+    let mut c = super::snapshot::Carried::default();
+    c.add(&snap.fragment);
+    Ok(Some(c))
 }
 
 /// Snapshot part `part` (aspect `ai` of commit `id`, header `h`) stripped of the copies its
@@ -134,6 +148,7 @@ fn take_slot(b: &mut osis_commit::CommitBlob, ai: usize) -> bool {
 /// Part `part` of commit `id` (header `h`) checked and decoded as `apply::examine` would, `Err`
 /// when it cannot be read yet (a page away; parked: this build cannot read it), `Ok(None)` when bad.
 fn verify_waiting(tx: &mut Tx<'_>, id: &CommitId, part: &osis_commit::Part, h: &Header, dedup: &osis_crypto::Secret32) -> std::result::Result<Option<Decoded>, ()> {
+    osis_base::costs::count("waiting snapshot: decoded", 1);
     let mut interner = osis_crdt::Interner::new();
     let mut blobs = crate::engine::blobs::TxBlobs::new(&mut tx.blobs, tx.txn.is_memory());
     let mut paged = osis_blob::BlobReader::new(dedup, &mut blobs);

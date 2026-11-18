@@ -207,7 +207,7 @@ pub(crate) fn check_request(core: &Core, p: &Header, pc: &CommitId) -> Result<()
             rights.entry((t.by as u64, t.actor)).or_insert_with(|| holds_right_t(core, p, pc, &t));
         }
         if !rights.is_empty() && !rights.values().any(|r| *r) {
-            return Err(Error::Permission { tid: *item.tid() });
+            return Err(Error::Permission { tid: *item.tid(), needs: osis_base::Role::Admin });
         }
     }
     Ok(())

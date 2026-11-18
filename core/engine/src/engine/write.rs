@@ -296,7 +296,7 @@ pub(crate) fn check_role_with(core: &Core, node: Tid, records: Records<'_>, tid:
         return Ok(());
     }
     let role = role_with(core, node, records, tid, ts);
-    if role >= Some(need) && (ak == CREATED.ak() || core.skip_writer_rules || within_depth(core, records, tid)) { Ok(()) } else { Err(Error::Permission { tid: *tid }) }
+    if role >= Some(need) && (ak == CREATED.ak() || core.skip_writer_rules || within_depth(core, records, tid)) { Ok(()) } else { Err(Error::Permission { tid: *tid, needs: need }) }
 }
 
 /// Whether this node may write on a held thing now (`may_write`).
@@ -376,7 +376,7 @@ pub(crate) fn may_write_on(tx: &mut Tx<'_>, tid: &Tid) -> Result<MayWrite> {
 /// May `node` act for `actor` at `ts`: it is the actor or holds write on it? A receiver judges a
 /// commit invalid otherwise (`validity::acts_for`, spec/permissions.md §5.2).
 pub(crate) fn check_acts(core: &Core, node: Tid, records: Records<'_>, actor: &Tid, ts: Ts) -> Result<()> {
-    if node == *actor || role_with(core, node, records, actor, ts) >= Some(Role::Write) { Ok(()) } else { Err(Error::Permission { tid: *actor }) }
+    if node == *actor || role_with(core, node, records, actor, ts) >= Some(Role::Write) { Ok(()) } else { Err(Error::Permission { tid: *actor, needs: Role::Write }) }
 }
 
 /// Whether `tid`'s record chain, through the records not yet held, reaches a key actor
@@ -521,7 +521,7 @@ pub(crate) fn framing_for(core: &Core, memory: bool, plan: &CommitPlan, publishe
     // a role is of use once its delete keys are here (spec/crypto.md §7): until then this node
     // writes nothing on the thing, whatever the delta's retention (`secrets::usable_role`)
     if !super::secrets::holds_listed_keys(core, &plan.creates, published, keys, tid) {
-        return Err(Error::Permission { tid: *tid });
+        return Err(Error::Permission { tid: *tid, needs: Role::Write });
     }
     let secrets = CommitSecrets { core, actor: plan.actor, created: &plan.creates, published, keys };
     let keys = osis_commit::delete_keys(&secrets, tid, retention)?;
@@ -938,7 +938,7 @@ pub(crate) fn commit_or_build(tx: &mut Tx<'_>, mut m: Mutation) -> Result<Option
         // a content write is written under the setting: one known and not held yet is waited
         // for, never read as none (`secrets::usable_role`, spec/commits.md §5 The setting)
         if kind == Kind::Content && !sealed && super::secrets::awaits_setting(tx.core, &tid) {
-            return Err(Error::Permission { tid });
+            return Err(Error::Permission { tid, needs: Role::Write });
         }
         let (r, e) = {
             if let Some(o) = am.replaces {

@@ -85,7 +85,7 @@ impl Engine {
         let check = touched.iter().try_for_each(|(t, ak)| check_authority(&self.core, actor, &Default::default(), t, ak.as_str(), ts));
         let r = check.and_then(|()| f(self));
         r.map_err(|e| match (e, shown) {
-            (Error::Permission { tid }, Some(s)) if !self.readable_by(&actor, &tid) => Error::Permission { tid: s },
+            (Error::Permission { tid, needs }, Some(s)) if !self.readable_by(&actor, &tid) => Error::Permission { tid: s, needs },
             (e, _) => e,
         })
     }

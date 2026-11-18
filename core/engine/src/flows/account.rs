@@ -1342,7 +1342,7 @@ impl Engine {
         if !self.core.devices_roster(p).contains(&node) {
             self.core.accounts.remove(p);
             self.core.account.set(None);
-            return Err(Error::Permission { tid: d });
+            return Err(Error::Permission { tid: d, needs: Role::Write });
         }
         self.save_account(p, &d)?;
         // the node root's strong to the account root (spec/sync-set.md §1)

@@ -192,8 +192,8 @@ pub(crate) fn settle(tx: &mut Tx<'_>) -> Result<()> {
             tx.core.commits_named(*tid, ak.clone(), o);
         }
         // a listed tombstone ends by time alone
-        if let Some((_, Here::Purged(by))) = listed(tx, c, ai)? {
-            let t = purged_keep(tx, c, ai, &by);
+        if let Some((_, Here::Purged(_))) = listed(tx, c, ai)? {
+            let t = purged_keep(tx, c, ai);
             if tx.now().0 < t && t < osis_commit::FOREVER {
                 tx.put_timer(t, c, ai, crate::retention::T_KEPT)?;
             }

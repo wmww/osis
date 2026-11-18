@@ -16,13 +16,23 @@ pub(crate) enum Rec<'a> {
 
 impl Rec<'_> {
     /// A set or bag element or map entry tombstone: it holds the remover's reset, not the
-    /// creation, so it is no live write (spec/commits.md §5); a sequence record never is one (an
-    /// anchor, spec/crdt.md §5.7).
+    /// creation, so it is no live write (spec/commits.md §5). A sequence record is none: its
+    /// creation counts while held (an anchor, spec/crdt.md §5.7, `Rec::created`), its other
+    /// writes always.
     fn tomb(self) -> bool {
         match self {
             Rec::Elem(_, x) => x.frag.is_none() && x.gone.is_none(),
             Rec::Entry(_, e) => e.created.is_none(),
             Rec::Seq(..) => false,
+        }
+    }
+
+    /// Whether a sequence record holds its creation: once a reset pruned it, the record holds
+    /// only others' writes, none of its creator's (spec/commits.md §5).
+    fn created(self) -> bool {
+        match self {
+            Rec::Seq(_, e) => e.created.is_some(),
+            _ => true,
         }
     }
 }
@@ -109,10 +119,13 @@ impl Visit for Writes {
             }
             Rec::Entry(id, e) => self.0.push((id.dot.origin().clone(), e.created.as_ref().map(|c| c.ts))),
             Rec::Seq(d, e) => {
+                let creator = !self.1 || r.created();
                 for k in 0..e.span {
                     let piece = (e.span > 1).then(|| crate::seq_span::piece(d, e, k, 1));
                     let (d, e) = piece.as_ref().map_or((d, e), |(d, e)| (d, e));
-                    self.0.push((d.origin().clone(), e.created.as_ref().map(|(st, _)| st.ts)));
+                    if creator {
+                        self.0.push((d.origin().clone(), e.created.as_ref().map(|(st, _)| st.ts)));
+                    }
                     let stamps = e.created.iter().map(|x| &x.0).chain(e.pos.iter().map(|x| &x.0)).chain(e.deleted.iter().map(|x| &x.0));
                     stamps.for_each(|s| _ = self.stamp(s));
                 }
@@ -145,7 +158,7 @@ impl Visit for Any<'_> {
             _ if self.1 && r.tomb() => false,
             Rec::Elem(d, _) | Rec::Entry(Eid { dot: d, .. }, _) => self.range(d, 1),
             // a range record's creations are its elements' dots, its other stamps shared
-            Rec::Seq(d, e) => self.range(d, e.span) || e.pos.iter().any(|(st, _, _)| st.dot != *d && self.range(&st.dot, 1)) || e.deleted.as_ref().is_some_and(|(st, _)| self.range(&st.dot, 1)),
+            Rec::Seq(d, e) => ((!self.1 || r.created()) && self.range(d, e.span)) || e.pos.iter().any(|(st, _, _)| st.dot != *d && self.range(&st.dot, 1)) || e.deleted.as_ref().is_some_and(|(st, _)| self.range(&st.dot, 1)),
         };
         if hit { Next::Stop } else { Next::On }
     }
@@ -162,7 +175,8 @@ impl Fragment {
 
     /// `holds_owned` of the writes the fragment holds (spec/commits.md §5, live writes): an
     /// element or entry tombstone, whose creation is gone, counts for its reset only; a
-    /// sequence element's record counts (an anchor, spec/crdt.md §5.7).
+    /// sequence element's record counts for its creator while it holds the creation (an anchor,
+    /// spec/crdt.md §5.7), for its other writes always.
     pub fn holds_owned_write(&self, owned: &dyn Fn(&Source, u64, u64) -> bool) -> bool {
         walk(&mut Any(owned, true), self)
     }
@@ -181,9 +195,9 @@ impl Fragment {
         w.0
     }
 
-    /// `writes` less element and entry tombstones (spec/commits.md §5, live writes; as
-    /// `holds_owned_write` judges them): a tombstone holds the remover's reset, listed as its
-    /// own stamp, not the creation.
+    /// `writes` less element and entry tombstones and the identity of a sequence record whose
+    /// creation is gone (spec/commits.md §5, live writes; as `holds_owned_write` judges them):
+    /// each holds others' writes, listed as their own stamps, not the creation.
     pub fn live_writes(&self) -> Vec<(Dot, Option<osis_base::Ts>)> {
         let mut w = Writes(Vec::new(), true);
         walk(&mut w, self);

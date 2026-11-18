@@ -479,7 +479,7 @@ pub(super) fn live(tx: &mut Tx<'_>, c: &CommitId, ai: usize) -> Result<bool> {
 /// write it carries (by dot) is there, judged a piece of it at a time against the state's part
 /// it meets. Not held (dropped or never received), which writes it carried are not known here: it
 /// is live while the state holds a write stamped at or before its `ts` (the header's `ts` bounds
-/// what it carried) or one without a `ts` (a sequence record whose creation is gone): an
+/// what it carried) or one without a `ts` (an element identity whose record carries none): an
 /// over-approximation, so its delete at peers waits for a carrier (spec/sync-compaction.md §1).
 pub(super) fn snapshot_live(tx: &mut Tx<'_>, h: &Header, c: &CommitId, ai: usize) -> Result<bool> {
     let Some(a) = h.aspects.get(ai) else { return Ok(false) };

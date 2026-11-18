@@ -1432,3 +1432,22 @@ mod valid_order {
         assert_eq!(un, never, "expired then invalid: as never held");
     }
 }
+
+/// spec/commits.md §5 (live writes: a sequence element record counts for its creator while it
+/// holds the creation): node 1 types a char, node 2 deletes it at t = 3, a reset at t = 2 prunes
+/// the creation; the record stays for the delete flag, which is node 2's live write, and holds
+/// none of node 1's.
+#[test]
+fn a_record_without_its_creation_holds_no_live_write_of_its_creator_spec_commits_5() {
+    let d = Dot::new(n(1), 1);
+    let mut f = one(d.clone(), char_at(d.clone(), 1, Anchor::Head, 'a'));
+    f.join(one(d.clone(), SeqElem { deleted: Some((st(3, 2, 1), true)), ..SeqElem::bare() }));
+    f.join(seq_of(BTreeMap::new(), Some(st(2, 3, 1))));
+    f.prune(None, &mut crate::Changes::new());
+    assert_eq!(records(&f), 1, "the record stays for its delete flag");
+    let of = |b: u8| move |s: &crate::stamp::Source, _: u64, _: u64| *s == n(b);
+    assert!(f.holds_owned_write(&of(2)), "the delete is node 2's live write");
+    assert!(!f.holds_owned_write(&of(1)), "the creation is gone: no live write of node 1");
+    let ours = |w: Vec<(Dot, Option<osis_base::Ts>)>| w.iter().any(|(x, _)| x.src == n(1));
+    assert!(ours(f.writes()) && !ours(f.live_writes()), "live_writes agrees");
+}

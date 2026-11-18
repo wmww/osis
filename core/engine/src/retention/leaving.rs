@@ -5,7 +5,7 @@
 //! (`Indexes::leave_from`, `leave_due`). The places: a signal's fires by `ts` (`by_aspect`: a fire
 //! is replaced when written); a value aspect's rows (`Indexes::leaving`), one per held valid
 //! part replaced on a dated aspect (`history::Kept::dated`), no earlier than its replaced-at (a purged part
-//! at its request's `ts`), kept for parts out of history too (a late setting may bring them
+//! at its own `ts`), kept for parts out of history too (a late setting may bring them
 //! back). A window passing walks the places that leave; a setting change those that leave or come
 //! back; each once, reading no body and walking none that stays.
 //!
@@ -318,7 +318,7 @@ pub(crate) fn settings_changed(tx: &mut Tx<'_>, tid: &Tid, ak: &Ak) -> Result<()
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
 pub(crate) enum Dating {
     /// Its meta changed: its row goes if it is no longer held whole and valid (a purged part's
-    /// is its request's `ts`), else stays.
+    /// is its own `ts`), else stays.
     Kept,
     /// A write of it (or, a snapshot's, maybe of it) died under writes stamped up to this
     /// (`Killed::at`): its row is set no earlier, never moved earlier, no body read.
@@ -330,7 +330,7 @@ pub(crate) enum Dating {
 }
 
 /// The row of value part `(tid, ak)` of `c` by `how` (`old`: its row now): a held valid part with
-/// values by `how`, a purged one at its request's `ts`; `None`: no row (not held, invalid, live
+/// values by `how`, a purged one at its own `ts`; `None`: no row (not held, invalid, live
 /// when dated whole).
 fn row_at(tx: &mut Tx<'_>, c: &CommitId, tid: &Tid, ak: &Ak, how: Dating, old: Option<Ts>) -> Result<Option<Ts>> {
     let Some(m) = tx.core.ix.commits.get(c) else { return Ok(None) };
@@ -346,8 +346,7 @@ fn row_at(tx: &mut Tx<'_>, c: &CommitId, tid: &Tid, ak: &Ak, how: Dating, old: O
             Dating::Full(_) => super::bounds::dated_replaced_at(tx, &h, c, ai),
         };
     }
-    let by = super::purged_by(tx, &h, c, ai)?;
-    Ok(by.and_then(|b| tx.core.ix.commits.get(&b)).map(|m| m.view.ts))
+    Ok(super::purged_by(tx, &h, c, ai)?.map(|_| h.ts))
 }
 
 /// At a transaction's end: the rows of the parts whose date may have moved (`Core::to_date`: a
