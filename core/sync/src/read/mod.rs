@@ -203,6 +203,7 @@ impl Read {
     /// the own role commits re-judges what waits on them) before anything acts, so the order the
     /// keys come in (a start judges every one) never lets an act skip a rule.
     pub fn settle_on(&mut self, g: &mut impl Ground) -> Result<bool> {
+        g.refresh()?;
         let added = g.commits_added();
         self.clock.set(g.now().0);
         // the lists feed runs from the first settle, before any S is first followed
@@ -375,6 +376,7 @@ impl Read {
         // the own judgement of each body, to its fixpoint
         let mut judged: Moved<(SyncId, CommitId), Judged> = BTreeMap::new();
         loop {
+            g.refresh()?;
             let due = self.judged.due();
             if due.is_empty() {
                 break;

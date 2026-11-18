@@ -108,6 +108,11 @@ pub trait Ground {
     fn unfollow_facts(&mut self, s: &SyncId, c: &CommitId) {
         let _ = (s, c);
     }
+    /// Brings the ground's rows kept per key up to date before judging (a judgement depends on a
+    /// row as last refreshed).
+    fn refresh(&mut self) -> Result<()> {
+        Ok(())
+    }
     /// Thing `t`'s held mintings with their standings and expiries (`Engine::mintings_of`,
     /// spec/commits.md §5 A thing's mintings travel with its record).
     fn mintings(&mut self, t: &Tid) -> Arc<Vec<Minting>>;
@@ -145,10 +150,11 @@ pub trait Ground {
         let _ = (s, c, e);
         Ok(true)
     }
-    /// Whether blob `b` holds S's body of its commit (`Engine::holds_body`): only such an entry
-    /// is the body's log; a certificate copy of fewer parts is not.
-    fn holds_body(&mut self, s: &SyncId, b: &BlobId) -> Result<bool> {
-        let _ = (s, b);
+    /// Whether blob `b` holds `meta`, S's body of its commit as read settled it
+    /// (`Engine::body_held_by`): only such an entry is the body's log; a certificate copy of fewer
+    /// parts is not.
+    fn holds_body(&mut self, meta: &BodyMeta, b: &BlobId) -> Result<bool> {
+        let _ = (meta, b);
         Ok(true)
     }
     /// Whether a peer's deposited entry `b` of `c` under S is promoted (spec/sync-inbox.md §4,

@@ -622,6 +622,14 @@ impl Transaction<'_> {
     }
     /// A catalog row to memory when `mem` or already there, else to the durable store.
     pub(crate) fn cat_put_to(&mut self, key: &[u8], val: Vec<u8>, shred: Shred, mem: bool) -> Result<(), Error> {
+        // the same bytes again change nothing: no reader moves
+        let same = match self.mem.o.cat.get(key) {
+            Some(v) => *v == val,
+            None => self.durable_get(key)?.is_some_and(|v| v == val),
+        };
+        if same {
+            return Ok(());
+        }
         self.st.s.row(key, true);
         if mem || self.mem.o.cat.contains_key(key) {
             debug_assert!(self.durable_get(key)?.is_none(), "a memory row over a durable one");
@@ -636,14 +644,44 @@ impl Transaction<'_> {
         btree::get(self, c, key)
     }
     pub(crate) fn cat_remove(&mut self, key: &[u8], shred: Shred) -> Result<bool, Error> {
-        self.st.s.row(key, false);
         let removed = self.mem.cat_remove(key);
         let c = self.catalog();
-        Ok(btree::remove(self, c, key, shred.on())? || removed)
+        let removed = btree::remove(self, c, key, shred.on())? || removed;
+        // removing an absent row changes nothing: no reader moves
+        if removed {
+            self.st.s.row(key, false);
+        }
+        Ok(removed)
     }
     /// Catalog entries under `prefix`, from `prefix || from` on.
     pub(crate) fn cat_scan(&mut self, prefix: &[u8], from: &[u8], limit: usize) -> Result<Vec<KeyValue>, Error> {
         self.st.s.read_prefix(prefix);
+        self.cat_rows(prefix, from, limit)
+    }
+    /// Whether some catalog key under `prefix` passes `exact` (given the key after the prefix).
+    /// Read by its witness: the first such key alone, so another coming or going moves nothing
+    /// while it stands; with none, the prefix (anything coming under it).
+    pub(crate) fn cat_any(&mut self, prefix: &[u8], exact: impl Fn(&[u8]) -> bool) -> Result<bool, Error> {
+        let mut from = Vec::new();
+        loop {
+            let rows = self.cat_rows(prefix, &from, PAGE)?;
+            let n = rows.len();
+            for (k, _) in rows {
+                let rest = k.get(prefix.len()..).unwrap_or_default();
+                if exact(rest) {
+                    self.st.s.read(&k);
+                    return Ok(true);
+                }
+                from = [rest, &[0]].concat();
+            }
+            if n < PAGE {
+                self.st.s.read_prefix(prefix);
+                return Ok(false);
+            }
+        }
+    }
+    /// `cat_scan`'s rows, read by no memo.
+    fn cat_rows(&mut self, prefix: &[u8], from: &[u8], limit: usize) -> Result<Vec<KeyValue>, Error> {
         let c = self.catalog();
         let start = [prefix, from].concat();
         let end = crate::backend::prefix_end(prefix);

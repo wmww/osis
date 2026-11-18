@@ -31,9 +31,9 @@ pub use cutoff::Cutoff;
 pub use spread::Spread;
 pub use effects::{Effects, Feed, Removals};
 
-/// Absent keys share a stamp per bucket of their hash (`Table::absent`). Performance switch: at 1
-/// every removal moves what read any absent or unstamped key; at infinity every removed key keeps a
-/// stamp of its own, so the stamps grow with every key ever removed.
+/// Keys without a stamp of their own share one per bucket of their hash (`Table::absent`).
+/// Performance switch: at 1 every pruning moves what read any key without a stamp; at infinity
+/// each would keep one, which stamps never written cannot (nothing names them).
 const ABSENT_BUCKETS: usize = 64;
 
 /// The change stamps of one container: one per key with a stamp of its own, one per bucket of
@@ -43,16 +43,19 @@ const ABSENT_BUCKETS: usize = 64;
 struct Table {
     /// Counts changes: the whole container's stamp.
     ver: u64,
-    /// Per bucket of key hashes, `ver` at the last removal of a key in it: the stamp of every key
-    /// of the bucket without one of its own (an absent key costs nothing to keep). A key without
-    /// one may be present (there before the stamps were, since `wrote_all`, or put back by an
-    /// undo, which stamps as a removal), so every removal moves its bucket: falling back to a
-    /// bucket stamp some reader saw would make that reader's answer hold again over another value.
+    /// Per bucket of key hashes, the stamp of every key of the bucket without one of its own: a
+    /// key never written since the stamps were (absent, or present from before: an open, a
+    /// `wrote_all`), or one whose removal stamp was pruned (`prune`), which moves its bucket.
     absent: [u64; ABSENT_BUCKETS],
-    /// `ver` at the last write of each key present, by the key's hash, and at the last write
+    /// `ver` at the last write or removal of each key, by the key's hash, and at the last write
     /// under each prefix read (`Stamps::read_prefix`). Two keys sharing a hash share a stamp: a
-    /// write of one moves what read the other, never the reverse of that.
+    /// write of one moves what read the other, never the reverse of that. A removed key keeps
+    /// its stamp, so a removal moves what read that key alone.
     keys: HashMap<u64, u64, Ids>,
+    /// The keys of `keys` stamped by a removal. Bounded by the keys stamped otherwise (at least
+    /// `ABSENT_BUCKETS`): past that they are pruned into their buckets (`prune`), so the stamps
+    /// stay proportional to what the container holds, whatever it removed.
+    removed: std::collections::HashSet<u64, Ids>,
     /// The prefixes read (`read_prefix`), by length: a byte key's write (`wrote_bytes`) stamps
     /// each of them it starts with.
     prefixes: BTreeMap<usize, std::collections::HashSet<u64>>,
@@ -73,6 +76,8 @@ enum Logged {
     /// A key written or removed (`present`), by hash; the key itself when it was added through
     /// `Stamps::wrote_added` (`Feed`) or removed through `Stamps::wrote_removed` (`Removals`).
     Key { h: u64, present: bool, added: Option<Arc<dyn std::any::Any + Send + Sync>> },
+    /// Key `h`'s removal stamp was pruned (`Table::prune`): its bucket moved.
+    Bucket(u64),
     /// The container changed but no key's value (`Stamps::moved`).
     Whole,
     /// The container changed in a way no key names (`Stamps::wrote_all`, a drop).
@@ -83,6 +88,7 @@ impl std::fmt::Debug for Logged {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             Logged::Key { h, present, added } => write!(f, "Key({h:x}, {present}, {})", added.is_some()),
+            Logged::Bucket(h) => write!(f, "Bucket({h:x})"),
             Logged::Whole => write!(f, "Whole"),
             Logged::All => write!(f, "All"),
         }
@@ -92,7 +98,7 @@ impl std::fmt::Debug for Logged {
 impl Default for Table {
     #[track_caller]
     fn default() -> Table {
-        Table { ver: 0, absent: [0; ABSENT_BUCKETS], keys: HashMap::default(), prefixes: BTreeMap::new(), log: Default::default(), marks: BTreeMap::new(), name: None, born: std::panic::Location::caller() }
+        Table { ver: 0, absent: [0; ABSENT_BUCKETS], keys: HashMap::default(), removed: Default::default(), prefixes: BTreeMap::new(), log: Default::default(), marks: BTreeMap::new(), name: None, born: std::panic::Location::caller() }
     }
 }
 
@@ -109,15 +115,26 @@ impl Table {
         self.ver += 1;
         self.log(Logged::Key { h, present, added });
         let v = self.ver;
+        self.keys.insert(h, v);
         if present {
-            self.keys.insert(h, v);
-        } else {
-            // the key reads at its bucket's stamp from now on, moved to this change: the stamp
-            // it read at before its own (present with none) may be the bucket's still (`absent`)
+            self.removed.remove(&h);
+        } else if self.removed.insert(h) && self.removed.len() > (self.keys.len() - self.removed.len()).max(ABSENT_BUCKETS) {
+            self.prune();
+        }
+    }
+
+    /// Drops every removal stamp: each key falls back to its bucket's stamp, moved to now, so
+    /// what read it (or any key of the bucket without a stamp) moves. Amortized over the
+    /// removals since the last prune, as many as the keys stamped otherwise.
+    fn prune(&mut self) {
+        self.ver += 1;
+        let v = self.ver;
+        for h in std::mem::take(&mut self.removed) {
             self.keys.remove(&h);
             if let Some(a) = self.absent.get_mut(bucket(h)) {
                 *a = v;
             }
+            self.log(Logged::Bucket(h));
         }
     }
 
@@ -306,6 +323,7 @@ impl Stamps {
         t.ver += 1;
         t.absent = [t.ver; ABSENT_BUCKETS];
         t.keys.clear();
+        t.removed.clear();
         t.log(Logged::All);
     }
 
@@ -447,6 +465,7 @@ impl Drop for Stamps {
         t.ver = u64::MAX;
         t.absent = [u64::MAX; ABSENT_BUCKETS];
         t.keys.clear();
+        t.removed.clear();
         t.log(Logged::All);
     }
 }
@@ -1713,8 +1732,8 @@ mod tests {
         stamps.wrote_bytes(b"abc", false);
         ask(&stamps);
         assert_eq!(runs("test prefix"), 2, "a key under it came, one went");
-        // a removal moves the absent keys of its bucket alone, whether the key removed had a
-        // stamp of its own or not
+        // a removal moves what read the key removed alone, whether it had a stamp of its own
+        // or not; removals pruned past the bound move their buckets
         let absent: Memo<u64, bool> = Memo::new("test absent");
         let keys: Vec<u64> = (0..200).collect();
         for k in &keys {
@@ -1735,12 +1754,16 @@ mod tests {
             }
         };
         ask(&stamps);
-        let ran = runs("test absent");
-        assert!(ran > 0 && ran < 20, "written and removed again: only its bucket moved: {ran}");
+        assert_eq!(runs("test absent"), 1, "written and removed again: its reader alone");
         stamps.wrote(&1000u64, false);
         ask(&stamps);
-        let ran = runs("test absent");
-        assert!(ran > 0 && ran < 20, "only the removed key's bucket moved: {ran}");
+        assert_eq!(runs("test absent"), 0, "a key no one read removed");
+        for k in 2000..2000 + ABSENT_BUCKETS as u64 {
+            stamps.wrote(&k, false);
+        }
+        assert!(lock(&stamps.0).removed.len() <= ABSENT_BUCKETS, "removal stamps pruned");
+        ask(&stamps);
+        assert!(runs("test absent") > 0, "a prune moves the buckets");
     }
 
     // spec: none (internal). `Stamped::update` hands its value over owned: a shared value it

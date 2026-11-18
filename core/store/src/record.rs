@@ -342,6 +342,13 @@ impl Transaction<'_> {
         }
     }
 
+    /// Whether some record holds module `tag`'s row `key` about `l`: moves only as that turns
+    /// (`cat_any`: a record's row coming or going while another stands moves nothing).
+    pub fn records_any_row(&mut self, l: &SyncId, tag: u8, key: &[u8]) -> Result<bool, Error> {
+        let prefix = [ROW_INDEX, &l.0, &[tag], key].concat();
+        self.cat_any(&prefix, |rest| rest.len() == std::mem::size_of::<RecordId>())
+    }
+
     /// Module `tag`'s row `key` about record `id` as a whole (no sync ID), in this transaction;
     /// counted in the record's bytes, gone with the record. A record that is gone takes nothing.
     pub fn record_put_wide_row(&mut self, id: &RecordId, tag: u8, key: &[u8], val: Vec<u8>) -> Result<(), Error> {

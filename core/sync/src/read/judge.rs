@@ -325,9 +325,11 @@ pub(crate) fn body(g: &mut impl Ground, mine: &Mine, s: &SyncId, c: &CommitId) -
     // only an entry that may stand as the body's log beats another as spare: one holding the
     // body, not a peer's deposit awaiting promotion
     let mut stands = BTreeSet::new();
-    for e in own.iter().filter(|e| held.contains(&e.blob) && (e.own || !e.deposited)) {
-        if g.holds_body(s, &e.blob)? {
-            stands.insert(e.blob);
+    if let Some(meta) = mine.meta(s, c) {
+        for e in own.iter().filter(|e| held.contains(&e.blob) && (e.own || !e.deposited)) {
+            if g.holds_body(meta, &e.blob)? {
+                stands.insert(e.blob);
+            }
         }
     }
     let mut subsets = Vec::new();
@@ -452,7 +454,7 @@ pub(crate) fn body(g: &mut impl Ground, mine: &Mine, s: &SyncId, c: &CommitId) -
         let mut waits = false;
         for e in own.iter().filter(|e| live.contains(&e.blob)) {
             // an entry of fewer parts (a certificate copy the body outgrew) is no log of it
-            if !g.holds_body(s, &e.blob)? {
+            if !mine.meta(s, c).map_or(Ok(false), |m| g.holds_body(m, &e.blob))? {
                 continue;
             }
             if e.deposited && !e.own {

@@ -13,7 +13,7 @@ use crate::status::{NetView, Status};
 use crate::streams::Streams;
 use crate::unread::Unread;
 use crate::types::{ConnId, Cx, Entry, Result};
-use osis_base::memo::Feed;
+use osis_base::memo::{Cutoff, Feed};
 use osis_base::{BlobId, CommitId, SyncId, Tid, WallMs};
 use osis_crypto::SigningSecret;
 use osis_engine::sync::{BodyMeta, CertKind, HeldBlob, Loss, MustNot, ReadCredentials, Strip};
@@ -33,6 +33,19 @@ pub struct Feeds {
     /// held (`entries_added`).
     entries: Option<EntryFeeds>,
     syncs: Option<Feed<SyncId>>,
+    blobs: BlobsAt,
+}
+
+/// Per judged (S, commit), the blobs of the commit S has an entry, a tombstone or a source's
+/// presence of (`Live::blobs_at`): a row each, so a blob of the commit coming under another sync
+/// ID (a copy sealed or opened there) moves no judgement at S.
+#[derive(Clone)]
+struct BlobsAt(Cutoff<(SyncId, CommitId), Arc<Vec<BlobId>>>);
+
+impl Default for BlobsAt {
+    fn default() -> Self {
+        BlobsAt(Cutoff::new("read: blobs at S"))
+    }
 }
 
 /// `Feeds::entries`: the store's entries, blobs opened or sealed, commits held.
@@ -146,6 +159,22 @@ impl Live<'_, '_> {
         Ok(self.cx.engine.seal_body(s, c, &held, self.cx.rng)?)
     }
 
+    /// `c`'s blobs that S has an entry or a tombstone of, or a source of S shows (`BlobsAt`), in
+    /// `commit_blobs` order: a read of that row alone.
+    fn blobs_at(&mut self, s: &SyncId, c: &CommitId) -> Result<Arc<Vec<BlobId>>> {
+        Cutoff::get_in(self, |l| &l.feeds.blobs.0, &(*s, *c), |l, (s, c)| l.derive_blobs_at(s, c))
+    }
+
+    fn derive_blobs_at(&mut self, s: &SyncId, c: &CommitId) -> Result<Arc<Vec<BlobId>>> {
+        let mut out = Vec::new();
+        for b in self.cx.engine.commit_blobs(c)?.iter() {
+            if self.cx.store.entry(s, b)?.is_some() || self.cx.store.tombstone(s, b)?.is_some() || self.streams.known().present(s, b) {
+                out.push(*b);
+            }
+        }
+        Ok(Arc::new(out))
+    }
+
     /// The sync IDs with an entry of blob `b` that carry a body of `c` (`Engine::sync_body`), in
     /// order.
     fn body_ids_naming(&mut self, b: &BlobId, c: &CommitId) -> Result<Vec<SyncId>> {
@@ -252,6 +281,10 @@ impl Ground for Live<'_, '_> {
     }
     fn unfollow_facts(&mut self, s: &SyncId, c: &CommitId) {
         self.cx.engine.unfollow_facts(s, c);
+        self.feeds.blobs.0.unfollow(&(*s, *c));
+    }
+    fn refresh(&mut self) -> Result<()> {
+        Cutoff::refresh_in(self, |l| &l.feeds.blobs.0, |l, (s, c)| l.derive_blobs_at(s, c)).map(drop)
     }
     fn unfollow_fate(&mut self, c: &CommitId) {
         self.cx.engine.unfollow_fate(c);
@@ -292,7 +325,7 @@ impl Ground for Live<'_, '_> {
         // held, so where they do, no other sync ID's entries are read (a commit logged under
         // many sync IDs judges each without the others)
         let mut own = Vec::new();
-        for b in self.cx.engine.commit_blobs(c)?.iter() {
+        for b in self.blobs_at(s, c)?.iter() {
             if self.cx.store.entry(s, b)?.is_some() && self.cx.store.blob_len(b)?.is_some() {
                 own.push(*b);
             }
@@ -308,7 +341,7 @@ impl Ground for Live<'_, '_> {
     }
     fn own(&mut self, s: &SyncId, c: &CommitId) -> Result<Vec<Entry>> {
         let mut out = Vec::new();
-        for b in self.cx.engine.commit_blobs(c)?.iter() {
+        for b in self.blobs_at(s, c)?.iter() {
             out.extend(self.cx.store.entry(s, b)?);
         }
         Ok(out)
@@ -316,8 +349,8 @@ impl Ground for Live<'_, '_> {
     fn stands(&mut self, s: &SyncId, c: &CommitId, e: &Entry) -> Result<bool> {
         Ok(self.under_head(s, e)? || self.registers_step(s, c, e)?)
     }
-    fn holds_body(&mut self, s: &SyncId, b: &BlobId) -> Result<bool> {
-        Ok(self.cx.engine.holds_body(s, b)?)
+    fn holds_body(&mut self, meta: &BodyMeta, b: &BlobId) -> Result<bool> {
+        Ok(self.cx.engine.body_held_by(meta, b))
     }
     fn promotion(&mut self, s: &SyncId, c: &CommitId, b: &BlobId) -> Result<crate::inbox::Promotion> {
         crate::inbox::promotion(self.cx.engine, self.cx.store, s, c, b)
@@ -347,7 +380,7 @@ impl Ground for Live<'_, '_> {
     }
     fn own_tombstones(&mut self, s: &SyncId, c: &CommitId) -> Result<Vec<BlobId>> {
         let mut out = Vec::new();
-        for b in self.cx.engine.commit_blobs(c)?.iter() {
+        for b in self.blobs_at(s, c)?.iter() {
             if self.cx.store.tombstone(s, b)?.is_some() {
                 out.push(*b);
             }
@@ -425,8 +458,9 @@ impl Ground for Live<'_, '_> {
         Ok(out)
     }
     fn present_anywhere(&mut self, s: &SyncId, c: &CommitId) -> Result<bool> {
+        let blobs = self.blobs_at(s, c)?;
         let known = self.streams.known();
-        Ok(self.cx.engine.commit_blobs(c)?.iter().any(|b| known.present(s, b)))
+        Ok(blobs.iter().any(|b| known.present(s, b)))
     }
     fn seen(&mut self, at: &Source, s: &SyncId, c: &CommitId) -> Result<Seen> {
         let mut seen = Seen::default();

@@ -225,10 +225,18 @@ impl Engine {
     /// strip here (`bodies::strips`: a strip's rewrite holds the body). A blob not
     /// opened or sealed here holds none.
     pub fn holds_body(&mut self, s: &SyncId, b: &BlobId) -> Result<bool> {
-        let Some(row) = self.core.ix.blob_parts.get(b).cloned() else { return Ok(false) };
-        let Some(meta) = self.sync_body_now(s, &row.commit)? else { return Ok(false) };
+        let Some(c) = self.core.ix.blob_parts.get(b).map(|row| row.commit) else { return Ok(false) };
+        let Some(meta) = self.sync_body_now(s, &c)? else { return Ok(false) };
+        Ok(self.body_held_by(&meta, b))
+    }
+
+    /// `holds_body` of `meta`, a body of `b`'s commit as the caller holds it (sync read's settled
+    /// bodies): reads `b`'s parts and what strips of the commit alone, never how the body was
+    /// derived.
+    pub fn body_held_by(&self, meta: &super::BodyMeta, b: &BlobId) -> bool {
+        let Some(row) = self.core.ix.blob_parts.get(b) else { return false };
         let gone = |ai: &usize| self.core.ix.commits.get(&row.commit).is_some_and(|m| super::bodies::strips(&self.core, &row.commit, m, *ai));
-        Ok(row.of_kind(meta.copy) && meta.parts.iter().filter(|ai| !gone(ai)).all(|ai| row.parts.contains(ai)))
+        row.of_kind(meta.copy) && meta.parts.iter().filter(|ai| !gone(ai)).all(|ai| row.parts.contains(ai))
     }
 
     /// spec/sync-judgement.md §3 Neither: a body a delete removed from S (an entry of it that is

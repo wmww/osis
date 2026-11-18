@@ -306,7 +306,7 @@ impl Known {
     /// Whether any source's stream showed `b` present under S.
     pub fn present(&self, s: &SyncId, b: &BlobId) -> bool {
         self.stamps.read(&("p", s, b));
-        self.by_blob.contains_key(&(*s, *b)) || self.read(|t| Ok(!t.records_with_row(s, PRESENT, &b.0, 1)?.is_empty()))
+        self.by_blob.contains_key(&(*s, *b)) || self.read(|t| t.records_any_row(s, PRESENT, &b.0))
     }
 
     /// Every presence row, of every source (a start judges what each shows; O(rows)).

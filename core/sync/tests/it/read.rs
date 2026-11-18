@@ -1708,6 +1708,42 @@ fn work_follows_sources() {
     assert!(costs[0].1 <= 4, "{costs:?}");
 }
 
+/// The judgements one delivered commit costs (`read: judged`) with `n` other bodies held and
+/// judged under S: the delivery makes body `c0` loggable (its ground row leaves), and brings a
+/// body of its own.
+fn judged_per_delivery(n: u16) -> u64 {
+    let id = |i: u16| {
+        let mut b = [7u8; 32];
+        b[..2].copy_from_slice(&i.to_be_bytes());
+        CommitId(b)
+    };
+    let mut w = W::new();
+    for i in 0..n {
+        w.g.facts.insert((S, id(i)), uncovered());
+        w.g.bodies.insert(id(i), Arc::new([(S, meta())].into()));
+        w.g.added.push(id(i));
+    }
+    let c0 = id(n);
+    w.g.unloggable.insert((S, c0), ());
+    w.hold(c0, &[S], uncovered());
+    w.exchange();
+    osis_base::costs::take();
+    w.g.unloggable.remove(&(S, c0));
+    w.hold(id(n + 1), &[S], uncovered());
+    osis_base::costs::take().iter().filter(|(k, _, _)| *k == "read: judged").map(|(_, _, n)| n).sum()
+}
+
+// spec/sync-judgement.md §3 (driven by events): a delivered commit judges what it moved: a
+// ground row leaving moves the judgements that read that row alone, never those that read
+// another row of its container absent: the same judgements at n and 10n bodies held.
+#[test]
+fn a_delivery_judges_what_it_moved_at_n_and_10n_bodies() {
+    let (a, b) = (judged_per_delivery(64), judged_per_delivery(640));
+    assert_eq!(a, b, "judgements per delivered commit grow with the bodies held");
+    // the two bodies it moved, each judged again as its own entries move
+    assert!(a <= 8, "{a}");
+}
+
 /// The judgements (`read: judged`, `read: toward` settles) node 0 and node 1 make for a write and
 /// a grant on thing 0, after `n` writes on each of 3 other things node 0 made (other sync IDs),
 /// each run to quiet: through the product's sync over the real engine.
@@ -2529,3 +2565,4 @@ fn a_deposit_only_step_waits_a_complete_pass_spec_permissions_3() {
     w.pass(6);
     assert_eq!(w.g.issued, vec![S, S], "issued once the pass ended");
 }
+

@@ -299,3 +299,45 @@ fn using_a_record_moves_no_reader_of_module_rows() {
     assert_eq!(ask(&mut t, 6), (None, 1));
     assert_eq!(runs(), 1, "a row read");
 }
+
+// spec: none (notes/local-store.md, Stamps): whether any record holds a row (`records_any_row`)
+// moves only as the answer can turn: a row put again with the same bytes, or another record's row
+// coming or going while one stands, runs no reader again, at n and 10n records holding it; the
+// row read as witness leaving does
+#[test]
+fn any_row_moves_only_as_it_can_turn() {
+    use osis_base::memo::Memo;
+    for n in [3usize, 30] {
+        let (_d, mut rng, mut s) = fresh(cfg());
+        let ids: Vec<RecordId> = (0..n + 1).map(|i| create(&mut s, &mut rng, i as u8, i as u8)).collect();
+        let memo: Memo<u8, bool> = Memo::new("test any row");
+        let mut t = s.transaction(&mut rng).unwrap();
+        let ask = |t: &mut osis_store::Transaction<'_>| Memo::get_in(&mut (&memo, t), |c| c.0, &0, |(_, t)| t.records_any_row(&l(1), b'k', &[5; 32])).unwrap();
+        let runs = || osis_base::costs::take().iter().filter(|x| x.0 == "test any row").map(|x| x.2).sum::<u64>();
+        osis_base::costs::take();
+        assert!(!ask(&mut t));
+        for id in &ids[..n] {
+            t.record_put_row(id, b'k', &l(1), &[5; 32], vec![1]).unwrap();
+        }
+        assert!(ask(&mut t));
+        assert_eq!(runs(), 2, "absent, then a row came");
+        // the witness: the first record by key order holding the row
+        let w = *ids[..n].iter().min().unwrap();
+        let x = *ids.iter().find(|i| **i != w).unwrap();
+        t.record_put_row(&ids[n], b'k', &l(1), &[5; 32], vec![1]).unwrap();
+        for id in &ids {
+            t.record_put_row(id, b'k', &l(1), &[5; 32], vec![1]).unwrap();
+        }
+        for id in ids.iter().filter(|i| **i != w && **i != x) {
+            assert!(t.record_remove_row(id, b'k', &l(1), &[5; 32]).unwrap());
+        }
+        assert!(ask(&mut t));
+        assert_eq!(runs(), 0, "{n} records: rows came and went while the witness stood");
+        assert!(t.record_remove_row(&w, b'k', &l(1), &[5; 32]).unwrap());
+        assert!(ask(&mut t));
+        assert_eq!(runs(), 1, "the witness went: another stands");
+        assert!(t.record_remove_row(&x, b'k', &l(1), &[5; 32]).unwrap());
+        assert!(!ask(&mut t));
+        assert_eq!(runs(), 1, "the last went");
+    }
+}

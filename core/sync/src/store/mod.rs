@@ -340,7 +340,7 @@ impl Inner {
                     t.record_remove_row(rec, ROOM_AT, s, b"")?;
                 }
             }
-            let ended = full && !conns_left && t.records_with_row(s, ROOM_AT, b"", 1)?.is_empty();
+            let ended = full && !conns_left && !t.records_any_row(s, ROOM_AT, b"")?;
             if ended {
                 for (k, _) in t.scan_local(&[rows::ROOM, &s.0].concat(), b"", usize::MAX)? {
                     t.remove_local(&k, Shred::No)?;
@@ -472,7 +472,7 @@ impl Store {
         inner.room = inner.write(|t, _| {
             let mut kept = BTreeMap::new();
             for (k, r) in room {
-                if t.records_with_row(&k.0, ROOM_AT, b"", 1)?.is_empty() {
+                if !t.records_any_row(&k.0, ROOM_AT, b"")? {
                     t.remove_local(&room_key(&k.0, k.1), Shred::No)?;
                 } else {
                     kept.insert(k, r);

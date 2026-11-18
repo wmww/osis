@@ -189,9 +189,9 @@ mod tests {
     use crate::Mutation;
     use osis_base::{Ak, Value, WallMs};
 
-    // A stored commit's record and parts are decoded once per write of the record: reading it
-    // again, and other commits arriving, decode nothing of it; a write of its record does, and a
-    // removal leaves nothing to read.
+    // A stored commit's record and parts are decoded once per change of the record: reading it
+    // again, other commits arriving and its record written again with the same bytes decode
+    // nothing of it; a removal leaves nothing to read, and undone decodes again.
     #[test]
     fn a_stored_commit_is_decoded_once_per_record_write() {
         let mut lp = crate::local_peer::LocalPeer::fresh(1, WallMs(1_700_000_000_000));
@@ -222,7 +222,7 @@ mod tests {
         assert_eq!(decodes(e), (0, 0), "another commit leaves it decoded");
         let (blob, meta) = (e.run(|tx| tx.get_commit(&c)).unwrap().unwrap(), e.core.ix.commits.get(&c).cloned().unwrap());
         e.run(|tx| tx.put_commit(&c, &blob, &meta, osis_store::Shred::No, None)).unwrap();
-        assert_eq!(decodes(e), (1, 1), "a write of its record decodes again");
+        assert_eq!(decodes(e), (0, 0), "its record written again with the same bytes moved nothing");
         let failed = e.run(|tx| {
             tx.remove_commit(&c)?;
             assert!(crate::apply::held_part(tx, &c, 0)?.is_none(), "a removed record reads as gone");

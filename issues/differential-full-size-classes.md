@@ -1,5 +1,5 @@
 # Full-size sync differential: open failure classes
-> Summary: `OSIS_FULL=1 differential::histories_hold_their_closure` over seeds 0..199 fails 5 (131, 138, 169, 180, 189). A reader lacking a keying commit its holder logs (189) has a shrunk script; chain reads (138, 169), a keyless read (180) and 131 are unstudied.
+> Summary: `OSIS_FULL=1 differential::histories_hold_their_closure` over seeds 0..199 fails 6 (131, 138, 169, 180, 183, 189). A reader lacking a keying commit its holder logs (189) has a shrunk script; chain reads (138, 169, 183), a keyless read (180) and 131 are unstudied.
 > Priority: normal
 > Tags: sync, engine, tests
 
@@ -10,7 +10,7 @@ Seed numbers move whenever commit bytes change (worlds are seeded by ID): work f
 - Ruled out: the history path. A grant with history writes the history entry of each epoch it boxes (`osis_keys::box_holder`), a plain thing's derived epochs from before its keying included, and boxes the holder up to the grant's own role (spec/crypto.md §4 Key access). No keyless grant or raise is in this script.
 
 ## Reads the model rejects
-- 138, 169: the node reads by its role commits through a chain path (a grant to a thing, then record edges) that held-model's closure does not count.
+- 138, 169, 183: the node reads by its role commits through a chain path (a grant to a thing, then record edges) that held-model's closure does not count.
 - 180: the node reads a value while holding no secret of the thing, through a keyless grant chain (`None with key access`).
 - 131: a node reads a thing unlike the reference.
 - None studied: first decide whether the model or the engine is right in each. Shrinks of these stop at the 150-candidate cap at 20 to 50 steps.

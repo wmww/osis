@@ -207,7 +207,7 @@ pub(crate) fn register(t: &mut Transaction<'_>, env: &mut Env<'_>, s: &SyncId, s
     };
     append(t, env, s, step, keep_claims)?;
     let mark = [rows::ANEW, &s.0].concat();
-    if t.get_local(&mark)?.is_none() && !t.records_with_row(s, rows::tag::TOLD, b"", 1)?.is_empty() {
+    if t.get_local(&mark)?.is_none() && t.records_any_row(s, rows::tag::TOLD, b"")? {
         t.put_local(&mark, rows::ANEW_SOME, Shred::No)?;
     }
     Ok((Code::OK, past, true))
