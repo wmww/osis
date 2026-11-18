@@ -450,7 +450,7 @@ impl Engine {
     }
 
     /// The read thing holder `t`'s piece for `x` goes under (`Piece::Holder(t, x)`), while an
-    /// edge write names `t` holder on `x` (`Held::is_holder_by_write`: a first admin's record
+    /// edge write names `t` holder on `x` (`Held::is_holder_by_write`: a mint admin's record
     /// edge alone names none, an edge write lowering or removing it does): spec/permissions.md
     /// §4 Role changes travel, a role
     /// commit with an edge write naming holder `t` goes under `t`'s own sync ID with `x`'s boxes

@@ -1237,7 +1237,7 @@ fn undo_revives_no_purged_value_spec_crdt_4_6() {
 }
 
 // spec/requirements.md Deletion (granularity is one edit of one aspect; who may purge it):
-// 1 writes message `e`; 0 (the first admin) reacts to `e` and posts message `m2` in one delta `d`, then
+// 1 writes message `e`; 0 (the mint admin) reacts to `e` and posts message `m2` in one delta `d`, then
 // edits `m2` in `c`. 1, `e`'s author, purges `e`. Only `e`'s values go: `d` and `c` are 0's edits,
 // which 1 has no right to purge, and `d`'s reaction keeps `e` under its own copy of the key.
 #[test]

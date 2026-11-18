@@ -5,8 +5,8 @@ use held_model::gen::{creations, CREATIONS, RECORDS};
 use held_model::*;
 use std::collections::BTreeMap;
 
-pub const T: ThingId = 10; // first admin: node 0
-pub const FIRST_ADMIN: NodeId = 0;
+pub const T: ThingId = 10; // mint admin: node 0
+pub const MINT_ADMIN: NodeId = 0;
 pub const W0: u64 = 1_000_000_000;
 
 /// The ts of wall `h` hours after `W0`.
@@ -134,7 +134,7 @@ pub fn held(now_h: u64, mut commits: Vec<Commit>) -> Held {
     }
     let more: Vec<Commit> = creations().into_iter().filter(|x| !commits.iter().any(|c| c.id == x.id)).collect();
     commits.extend(more);
-    Held { now: at(now_h), me: FIRST_ADMIN, records: RECORDS.to_vec(), commits, dots: vec![] }
+    Held { now: at(now_h), me: MINT_ADMIN, records: RECORDS.to_vec(), commits, dots: vec![] }
 }
 pub fn missing(mut c: Commit, i: usize) -> Commit {
     c.parts[i].body = Body::Missing;
@@ -151,9 +151,9 @@ pub fn setting_by(id: CommitId, author: NodeId, h: u64, x: Setting) -> Commit {
     let p = Part { thing: T, aspect: Aspect::RETENTION, retention: Retention::ADMIN, body: Body::Held(Delta::Retention(x)), stripped: Default::default(), replaces: None };
     content(id, author, h, vec![p])
 }
-/// The first admin's setting at hour `h` giving aspect `a` the entry `opt`.
+/// The mint admin's setting at hour `h` giving aspect `a` the entry `opt`.
 pub fn setting(id: CommitId, h: u64, a: Aspect, opt: Opt) -> Commit {
-    setting_by(id, FIRST_ADMIN, h, Setting { rules: vec![(a.name, SettingEntry { history: opt, expires: None, purge_before: 0 })], default: None, written: None })
+    setting_by(id, MINT_ADMIN, h, Setting { rules: vec![(a.name, SettingEntry { history: opt, expires: None, purge_before: 0 })], default: None, written: None })
 }
 /// Kept `d` hours after replaced.
 pub fn keep_after(d: u64) -> Opt {

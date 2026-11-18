@@ -220,12 +220,12 @@ fn keyless_holder_never_resealed_spec_crypto_4() {
     assert_eq!(settle(&mut lp, &[0], &[b, p, q]), 0);
 }
 
-// spec/crypto.md §4 (Key access), model `D0_fa_flip`, spec/permissions.md §1: T's first admin is
+// spec/crypto.md §4 (Key access), model `D0_fa_flip`, spec/permissions.md §1: T's mint admin is
 // X, so T's grant on X closes a cycle through the record edge and is keyless (X boxes T nothing).
 // Another admin of T removes X's record edge: T's grant is the only link left, it gains key
 // access, and X's admin re-seals T; nothing leaks to X's side meanwhile and nobody is locked out.
 #[test]
-fn grant_on_first_admin_keyless_until_record_edge_goes_spec_crypto_4() {
+fn grant_on_mint_admin_keyless_until_record_edge_goes_spec_crypto_4() {
     let mut lp = synced(2);
     let d = lp.peers[1].engine.me();
     let x = with_own_keys(&mut lp, 0);
@@ -787,7 +787,7 @@ fn lacking_carried_keyset_spec_crypto_4() {
 // is encrypting under its epoch): D never reads T.
 #[test]
 fn grant_to_unrotated_holder_stated_limit_spec_permissions_3() {
-    // granter: 0 T's admin reading M, 2 M's admin and T's first admin, 0 by invite on T whose first admin is 3; whether
+    // granter: 0 T's admin reading M, 2 M's admin and T's mint admin, 0 by invite on T whose mint admin is 3; whether
     // the granter has learned D's departure
     for (g, first, knows) in [(0, 0, false), (0, 0, true), (2, 2, true), (0, 3, false), (0, 3, true)] {
         let (mut lp, (m, t)) = LocalPeer::cached(&format!("rotation::tests_members::grant_to_unrotated/{first}/{}", first != g), || {
@@ -1122,11 +1122,11 @@ fn second_admin_ignorant_fork_in_cycle_spec_crypto_4() {
 }
 
 // spec/crypto.md §4 (rotating needs only the right to rotate; History box), spec/permissions.md §3: P writes A
-// only through holder actor M (first admin: peer 2). A's first admin rotates A's read leaving M
+// only through holder actor M (mint admin: peer 2). A's mint admin rotates A's read leaving M
 // out (Seal found no keyset; here by hand), so P holds A's write but no current read. E, a
 // writer of A, leaves by itself: the read epoch P lacks, ordered before that, cannot cover it,
 // so P rotates read and write, superseding it unread, wrapped under the read secret it holds;
-// A's first admin, holding it, adds it to P's epoch's history.
+// A's mint admin, holding it, adds it to P's epoch's history.
 #[test]
 fn rotator_lacking_read_rotates_read_too_spec_permissions_3() {
     let mut lp = synced(5);
@@ -1162,7 +1162,7 @@ fn rotator_lacking_read_rotates_read_too_spec_permissions_3() {
 }
 
 /// The write-lacking shape of `rotator_lacking_read_rotates_read_too_spec_permissions_3`: P is A's
-/// admin only through holder actor M (first admin: peer 2), and A's first admin rotates A's write leaving
+/// admin only through holder actor M (mint admin: peer 2), and A's mint admin rotates A's write leaving
 /// M out, so P holds A's read and admin but no current write; F (5) is an admin of A. Returns
 /// the peers and A, M.
 fn lacking_write() -> (LocalPeer, Tid, Tid) {
@@ -1189,7 +1189,7 @@ fn lacking_write() -> (LocalPeer, Tid, Tid) {
 
 // spec/crypto.md §4 (rotating needs only the right to rotate; History box), spec/permissions.md §3: F, an admin
 // of A, leaves by itself. P rotates all three roles of A, the write epoch it lacks superseded
-// unread; A's first admin, holding it, adds it to P's write epoch's history.
+// unread; A's mint admin, holding it, adds it to P's write epoch's history.
 #[test]
 fn rotator_lacking_write_rotates_history_added_spec_permissions_3() {
     let (mut lp, a, m) = lacking_write();
@@ -1229,7 +1229,7 @@ fn removal_lacking_rotated_secret_rotates_spec_permissions_3() {
 }
 
 // spec/permissions.md §3, spec/crypto.md §4 (Seal; rotating needs only the right to rotate): P
-// is A's admin only through holder actor M (first admin: peer 2), which rotates M leaving P out,
+// is A's admin only through holder actor M (mint admin: peer 2), which rotates M leaving P out,
 // so P holds M's new keyset but not its secret. P's removal of F carries A's rotation all the
 // same, sealing M to that keyset's KEM key: valid at every node, the departure covered.
 #[test]
@@ -1253,7 +1253,7 @@ fn removal_through_a_holder_it_cannot_open_rotates_spec_crypto_4() {
     assert_ne!(lp.peers[1].engine.epochs(&a), epochs, "with its rotation");
     assert!(blocked_at(&mut lp, 1, a).is_empty(), "the departure covered at P");
     lp.sync_all().unwrap();
-    assert!(blocked_at(&mut lp, 0, a).is_empty(), "A's first admin holds P's rotation, covering");
+    assert!(blocked_at(&mut lp, 0, a).is_empty(), "A's mint admin holds P's rotation, covering");
 }
 
 /// Delivers peer `from`'s commits `ids` to peer `to` without any `keys.0` or `secrets.0` delta on
@@ -1774,7 +1774,7 @@ fn keyless_route_is_no_rotator_spec_crypto_4() {
 }
 
 /// A destroyed holder actor's world (spec/crypto.md §4, Holder actors, Destroyed): peer 0 makes T,
-/// expiring at `T0 + 50 s` (first admin peer 0, secrets of its own) and X (secrets of its own),
+/// expiring at `T0 + 50 s` (mint admin peer 0, secrets of its own) and X (secrets of its own),
 /// grants T read on X; peer 2 makes G and peer 0 grants G read on T; peer 1 reads T, and peer
 /// 3 reads G. Synced: T, X, G. Built once, copied (`LocalPeer::cached`).
 fn destroyed_world() -> (LocalPeer, Tid, Tid, Tid) {

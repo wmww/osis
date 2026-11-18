@@ -558,13 +558,13 @@ impl Core {
         d.minter.into_values().chain(d.certifiers.into_values().flatten()).chain(d.adds.into_values().flatten()).chain(d.removes.into_values().flatten()).chain(d.first).collect()
     }
 
-    /// The account `d` is the account root of: its first admin, an account, when that account
+    /// The account `d` is the account root of: its mint admin, an account, when that account
     /// wrote `account.0` on it. Only a commit signed as the account counts:
     /// any signer's header can name the aspect, and an account root reads as its account wherever
     /// chains and lists are placed (`Engine::cert_reads_in`), so a thing another writer marked
     /// would carry the account's private lists to its own readers.
     pub(crate) fn account_of_root(&self, d: &Tid) -> Option<Tid> {
-        let p = self.first_admin(d).filter(|p| self.is_account(p))?;
+        let p = self.mint_admin(d).filter(|p| self.is_account(p))?;
         let ak = osis_base::Ak::new("account.0").ok()?;
         let by_p = |(_, c): &(osis_base::Ts, CommitId)| self.ix.commits.get(c).is_some_and(|m| m.view.author == p);
         self.ix.by_aspect.get(&(*d, ak))?.iter().any(by_p).then_some(p)

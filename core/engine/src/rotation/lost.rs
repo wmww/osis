@@ -470,7 +470,7 @@ fn with_unread_below(core: &Core, mut lost: Vec<Tid>) -> Vec<Tid> {
     let mut seen: BTreeSet<Tid> = lost.iter().copied().collect();
     let mut work = lost.clone();
     while let Some(a) = work.pop() {
-        for c in core.ix.held.first_admin_of(&a).copied().collect::<Vec<_>>() {
+        for c in core.ix.held.mint_admin_of(&a).copied().collect::<Vec<_>>() {
             let keyed = core.ix.own_keys.contains(&c);
             if (keyed && readable(core, &c)) || !seen.insert(c) {
                 continue;
@@ -761,14 +761,14 @@ impl Engine {
 
     /// Whether a client of this node, `actor`, reads `t` as a kept copy (notes/client-port.md §3):
     /// it is a holder the copy hangs on, or an app of the account, holding a role on the account
-    /// that is its first admin, with a role now on such a holder (through a holder that is itself
+    /// that is its mint admin, with a role now on such a holder (through a holder that is itself
     /// kept, too).
     /// Invariant: a copy is the account's: a role on a holder alone, as one of the holders
     /// the account holds a role through, reads nothing of it, nor does any other client; no write right follows.
     pub fn copy_readable_by(&self, actor: &Tid, t: &Tid) -> bool {
         let core = &self.core;
         let Some(a) = crate::retention::forget::copy_of(core, t) else { return false };
-        let app = core.first_admin(actor).is_some_and(|p| core.role_now(actor, &p).is_some());
+        let app = core.mint_admin(actor).is_some_and(|p| core.role_now(actor, &p).is_some());
         let mut seen = BTreeSet::from([a]);
         let mut todo = vec![a];
         while let Some(x) = todo.pop() {

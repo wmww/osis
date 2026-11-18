@@ -57,7 +57,7 @@ instances=(
   "jointrule rotation JointRule JR_any.cfg fail"      # negative control: blocked by any keyset leaves M out needlessly
   "depth0 rotation Depth0MC D0_nc.cfg pass"      # rule 4, no key cycles (notes/key-access.md)
   "depth0 rotation Depth0MC D0_nc3.cfg pass"
-  "depth0 rotation Depth0MC D0_fa_flip.cfg pass" # first admin removed: a keyless grant turns keyed
+  "depth0 rotation Depth0MC D0_fa_flip.cfg pass" # mint admin removed: a keyless grant turns keyed
   "depth0 rotation Depth0MC D0_fa_dmerge.cfg pass" # liveness: a derived write is merged
   "depth0 rotation Depth0MC D0_rm_np_travel.cfg pass" # a removed writer below a holder actor: its removal travels with the knowing keyset (spec/crypto.md §4, Carried demotions)
   "depth0 rotation Depth0MC D0_rm_np.cfg fail"    # negative control: without travel W seals the knowing keyset it cannot open

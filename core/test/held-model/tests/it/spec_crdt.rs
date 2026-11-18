@@ -4,9 +4,9 @@ use held_model::gen::{MAP, REG, TEXT};
 use held_model::*;
 
 fn demoted(mut cs: Vec<Commit>, demote: bool) -> Held {
-    cs.insert(0, edge(5, FIRST_ADMIN, 0, 1, Some(Role::Write), None));
+    cs.insert(0, edge(5, MINT_ADMIN, 0, 1, Some(Role::Write), None));
     if demote {
-        cs.push(edge(20, FIRST_ADMIN, 3, 1, None, Some(vec![])));
+        cs.push(edge(20, MINT_ADMIN, 3, 1, None, Some(vec![])));
     }
     held(4, cs)
 }
@@ -14,7 +14,7 @@ fn demoted(mut cs: Vec<Commit>, demote: bool) -> Held {
 // spec/crdt.md §4.6 (Un-merge): an invalid write is removed; what it beat shows again
 #[test]
 fn unmerge_removes_invalid_register_write_spec_crdt_4_6() {
-    let cs = vec![reg(10, FIRST_ADMIN, 1, REG, Retention::PLAIN, 1), reg(11, 1, 2, REG, Retention::PLAIN, 2)];
+    let cs = vec![reg(10, MINT_ADMIN, 1, REG, Retention::PLAIN, 1), reg(11, 1, 2, REG, Retention::PLAIN, 2)];
     assert_eq!(read(&demoted(cs.clone(), false), REG), int(2));
     assert_eq!(read(&demoted(cs, true), REG), int(1));
 }
@@ -27,7 +27,7 @@ fn unmerge_keeps_writes_nested_in_invalid_entry_spec_crdt_4_6() {
         content(10, 1, 1, vec![part(MAP, Retention::PLAIN, vec![
             created(1, 10, 3), put(1, 10, 10, 3, 4)
         ])]),
-        content(11, FIRST_ADMIN, 2, vec![part(MAP, Retention::PLAIN, vec![put(2, 11, 10, 3, 9)])]),
+        content(11, MINT_ADMIN, 2, vec![part(MAP, Retention::PLAIN, vec![put(2, 11, 10, 3, 9)])]),
     ];
     assert_eq!(read(&demoted(cs.clone(), false), MAP), map(&[(3, 9)]));
     let never = demoted(cs[1..].to_vec(), true);
@@ -41,7 +41,7 @@ fn unmerged_text_creation_places_nothing_spec_crdt_4_6() {
     let a = (10, 1);
     let cs = vec![
         content(10, 1, 1, vec![part(TEXT, Retention::PLAIN, vec![ins(1, 10, 1, None, Some(1))])]),
-        content(11, FIRST_ADMIN, 2, vec![part(TEXT, Retention::PLAIN, vec![ins(2, 11, 1, Some(a), Some(2))])]),
+        content(11, MINT_ADMIN, 2, vec![part(TEXT, Retention::PLAIN, vec![ins(2, 11, 1, Some(a), Some(2))])]),
     ];
     assert_eq!(read(&demoted(cs.clone(), false), TEXT), text(&[1, 2]));
     assert_eq!(read(&demoted(cs, true), TEXT), text(&[2]));
@@ -51,9 +51,9 @@ fn unmerged_text_creation_places_nothing_spec_crdt_4_6() {
 #[test]
 fn superseded_write_is_replaced_spec_crdt_4_8() {
     let cs = vec![
-        reg(10, FIRST_ADMIN, 1, REG, Retention::PLAIN, 1),
-        reg(11, FIRST_ADMIN, 3, REG, Retention::PLAIN, 2),
-        reg(12, FIRST_ADMIN, 2, REG, Retention::PLAIN, 3),
+        reg(10, MINT_ADMIN, 1, REG, Retention::PLAIN, 1),
+        reg(11, MINT_ADMIN, 3, REG, Retention::PLAIN, 2),
+        reg(12, MINT_ADMIN, 2, REG, Retention::PLAIN, 3),
     ];
     let o = evaluate(&held(4, cs));
     assert!(o.replaced.contains(&(10, 0)) && o.replaced.contains(&(12, 0)));
@@ -63,7 +63,7 @@ fn superseded_write_is_replaced_spec_crdt_4_8() {
 // spec/crdt.md §4.8 (Revival): an invalid superseder supersedes nothing
 #[test]
 fn invalid_superseder_kills_nothing_spec_crdt_4_8() {
-    let cs = vec![reg(10, FIRST_ADMIN, 1, REG, Retention::PLAIN, 1), reg(11, 1, 2, REG, Retention::PLAIN, 2)];
+    let cs = vec![reg(10, MINT_ADMIN, 1, REG, Retention::PLAIN, 1), reg(11, 1, 2, REG, Retention::PLAIN, 2)];
     assert!(evaluate(&demoted(cs.clone(), false)).replaced.contains(&(10, 0)));
     assert!(!evaluate(&demoted(cs, true)).replaced.contains(&(10, 0)));
 }
@@ -75,8 +75,8 @@ fn invalid_superseder_kills_nothing_spec_crdt_4_8() {
 fn charless_creation_deleted_in_its_commit_is_received_spec_crdt_4_5() {
     let a = (11, 1);
     let cs = vec![
-        content(10, FIRST_ADMIN, 1, vec![part(TEXT, Retention::PLAIN, vec![ins(1, 10, 1, None, Some(1))])]),
-        content(11, FIRST_ADMIN, 2, vec![part(TEXT, Retention::PLAIN, vec![
+        content(10, MINT_ADMIN, 1, vec![part(TEXT, Retention::PLAIN, vec![ins(1, 10, 1, None, Some(1))])]),
+        content(11, MINT_ADMIN, 2, vec![part(TEXT, Retention::PLAIN, vec![
             ins(2, 11, 1, None, None),
             ins(2, 11, 2, Some(a), Some(2)),
         ])]),

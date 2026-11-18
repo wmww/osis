@@ -411,7 +411,7 @@ ENDED_NAMES = re.compile(
     r"\bretention(::|/)end\b|\b(DropFor|DropWhy|Held|Status)::Ended\b|\b(WriteOp|Part)::End\b|\bEnding\b"
     r"|\b(ENDING_REQUESTS|EndedIn|NoLeakEnded|judges_ending|end_ended|end_thing|expand_ended|kept_when_ended)\b"
     r"|\b(?:\w+_)?(ended|ending)_(things?|actors?|kept|due|needed|upstream|certificate|records|evidence|requests?|world|setup|work|first)\b"
-    r"|\b(ended|ending|an ended|an ending) (things?|actors?|accounts?|first admins?|key actors?|requests?|evidence)\b"
+    r"|\b(ended|ending|an ended|an ending) (things?|actors?|accounts?|mint admins?|key actors?|requests?|evidence)\b"
     r"|\b(ended|ending) by (purge|release|expiry)\b|\bthe ending (travels|falls|fell|stands|keeps)\b|\bfn end\(&mut self, tid\b"
     r"|\bmod end\b|::end::|\bfn ended\(&self, \w+: &Tid\)|\bended\(&?(?!self\))[A-Za-z_][\w.]*(\(\))?\)")
 

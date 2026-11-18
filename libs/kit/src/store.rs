@@ -3,7 +3,7 @@
 //!
 //! Home (found by the app: `Account`) is a plain thing made under the account root and held by
 //! its `holds.0`, so it syncs to the account's nodes (favorites, the collections). Every thing the
-//! app makes is made under home (its first admin, whose keys it takes) and held by home's
+//! app makes is made under home (its mint admin, whose keys it takes) and held by home's
 //! `holds.0`; a tag holds what it tags in its own `holds.0`. Nodes that start before syncing each
 //! make one: every home the app reports is read, and writes go to the smallest tid (notes/app.md
 //! kit and app).

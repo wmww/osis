@@ -113,7 +113,7 @@ fn pending_until_created_spec_commits_4() {
 
 // spec/commits.md §4 (Unjudgeable): only a grant leads from its holder to a thing (a path climbs
 // grants, spec/permissions.md §1); a removal names its holder and leads nowhere. 1 makes t and u,
-// u's first admin t, removes from t the grant 0 never had, then grants 0 read; 0 forges one commit
+// u's mint admin t, removes from t the grant 0 never had, then grants 0 read; 0 forges one commit
 // granting itself admin on both. A node holding all but the grant: nothing leads from 0 to t or u
 // (the removal names 0), so it keeps nothing of the forgery; with the grant it does, and holds it
 // invalid: both rosters stay as 1 wrote them.
@@ -158,7 +158,7 @@ fn a_removal_leads_no_author_to_a_thing_spec_commits_4() {
     assert!(matches!(r, Ingested::Pending(_, Reason::MissingChain(x)) if x == a), "{r:?}");
     assert!(!lp.peers[2].engine.commit_ids().contains(&forged.id));
     assert_eq!(rosters(&mut lp), before);
-    // a grant leads from g's first admin to t, and through t's record to u
+    // a grant leads from g's mint admin to t, and through t's record to u
     lp.deliver(2, &grant).unwrap();
     let before = rosters(&mut lp);
     assert_eq!(before[0].get(&a).map(|e| e.role), Some(Role::Read));

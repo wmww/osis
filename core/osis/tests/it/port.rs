@@ -109,7 +109,7 @@ fn a_reader_writes_nothing_spec_wire_11() {
 }
 
 // notes/client-port.md §3: a client's actor goes with the client, so what it makes names a
-// first admin that stays; one under its own actor is `Invalid`.
+// mint admin that stays; one under its own actor is `Invalid`.
 #[test]
 fn a_thin_client_creates_under_a_thing_it_writes_notes_client_port() {
     let w = world(Some(Role::Admin));

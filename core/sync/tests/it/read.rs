@@ -2054,7 +2054,7 @@ fn a_freed_link_is_dropped_deleted_at_stores_then_done_spec_sync_compaction_1() 
 
 /// The bodies and judgements read settles (`read: bodies`, `read: judged`) and the engine's settles of what is published and certified
 /// (`sync_ids::published`, `sync::certified`) node 0 makes for one more thing published under an
-/// actor G of its account (a thing with a sync ID whose first admin is G, in no other sync unit: its `sync.0` and
+/// actor G of its account (a thing with a sync ID whose mint admin is G, in no other sync unit: its `sync.0` and
 /// `created.0` commits go under G's sync IDs as published), after `n` such things, run to quiet.
 fn judged_per_publish(n: usize) -> u64 {
     let mut w = crate::harness::history::world(0, 1);

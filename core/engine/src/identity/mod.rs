@@ -61,7 +61,7 @@ pub fn link_record(admin: Tid, target: Tid, rng: &mut dyn CryptoRngCore) -> Crea
     CreationRecord::Thing { admin, nonce, link: Some(target), expires: None }
 }
 
-/// A fresh record for a thing whose first admin is `admin` (32 random nonce bytes), ending at
+/// A fresh record for a thing whose mint admin is `admin` (32 random nonce bytes), ending at
 /// `expires` (wall ms; `None`: never).
 pub fn thing_record(admin: Tid, expires: Option<u64>, rng: &mut dyn CryptoRngCore) -> CreationRecord {
     let mut nonce = [0u8; 32];

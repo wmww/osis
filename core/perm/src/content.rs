@@ -22,8 +22,8 @@ pub(crate) struct Replay {
 }
 
 impl Replay {
-    /// Leaves `links` (leaf, its first admin) joining: a leaf's only edge in is its record edge,
-    /// so the node holds on it what it holds on its first admin, from the same change on.
+    /// Leaves `links` (leaf, its mint admin) joining: a leaf's only edge in is its record edge,
+    /// so the node holds on it what it holds on its mint admin, from the same change on.
     pub(crate) fn add_leaves(&mut self, links: &[(Tid, Tid)]) {
         while let Some((x, p)) = links.iter().find(|(x, a)| self.first.contains_key(a) && !self.first.contains_key(x)).and_then(|(x, a)| Some((*x, *self.first.get(a)?))) {
             self.first.insert(x, p);

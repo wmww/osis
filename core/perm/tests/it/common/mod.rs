@@ -84,7 +84,7 @@ impl World {
             t
         }).collect()
     }
-    /// A thing whose first admin is `admin`.
+    /// A thing whose mint admin is `admin`.
     pub fn thing(&mut self, admin: Tid) -> Tid {
         let (t, r) = thing_record(admin, self.created.len() as u64 ^ u64::from(admin.as_bytes()[0]) << 32);
         self.created.insert(t, r);
@@ -199,7 +199,7 @@ pub fn model_role(r: roles_model::Role) -> Option<Role> {
 }
 
 /// A joint-model history's actors in `w` (nodes `nodes`): their tids (each one's record names
-/// its first admin, `JHist::admins`) and the key actor at the top of each one's record chain.
+/// its mint admin, `JHist::admins`) and the key actor at the top of each one's record chain.
 /// The model's other genesis edges are writes by that key actor at t=0 (`joint_genesis`, from
 /// `ids` when given); the record edge is in force by the record alone.
 pub fn joint_actors(w: &mut World, h: &roles_model::joint::JHist, nodes: &[Tid]) -> (Vec<Tid>, Vec<Tid>) {
@@ -258,7 +258,7 @@ pub fn model_edge(e: Option<roles_model::edges::Edge>) -> Option<Edge> {
     e.map(|e| Edge { role: model_role(e.role).unwrap_or(Role::Read), until: (e.until != NEVER).then_some(WallMs(e.until as u64)), invite: model_role(e.invite), retain: false, floor: None })
 }
 
-/// An edges-model history as a world: node 0 is the one target's first admin; the other
+/// An edges-model history as a world: node 0 is the one target's mint admin; the other
 /// genesis edges are its writes at t=0.
 pub fn edges_world(h: &roles_model::edges::EHist, salt: u8) -> (World, Vec<Tid>, Tid) {
     let mut w = World::new();

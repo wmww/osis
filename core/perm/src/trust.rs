@@ -129,7 +129,7 @@ impl Input {
         let i = ops.partition_point(|e| (e.0, e.1) < (point, k));
         match i.checked_sub(1).and_then(|i| ops.get(i)) {
             Some(e) => e.2,
-            None => (self.records.first_admin(&target) == Some(holder)).then_some(RECORD_EDGE),
+            None => (self.records.mint_admin(&target) == Some(holder)).then_some(RECORD_EDGE),
         }
     }
 
@@ -173,7 +173,7 @@ impl Input {
         let mut seen: BTreeSet<Tid> = BTreeSet::from([holder]);
         let mut stack = vec![holder];
         while let Some(e) = stack.pop() {
-            let next: Vec<Tid> = self.records.first_admin(&e).into_iter().chain(ix.chained.admins.get(&e).into_iter().flatten().copied()).collect();
+            let next: Vec<Tid> = self.records.mint_admin(&e).into_iter().chain(ix.chained.admins.get(&e).into_iter().flatten().copied()).collect();
             for y in next {
                 if seen.insert(y) {
                     stack.push(y);
@@ -205,7 +205,7 @@ pub(crate) fn demoting(w: &Walked, records: &Records, c: &RoleCommit, k: usize) 
     let before = w.history.iter().take(i).rev().find(|h| (h.holder, h.target) == (op.holder, op.target));
     let old = match before {
         Some(h) => h.edge,
-        None => (records.first_admin(&op.target) == Some(op.holder)).then_some(RECORD_EDGE),
+        None => (records.mint_admin(&op.target) == Some(op.holder)).then_some(RECORD_EDGE),
     };
     lowers(op.edge.as_ref(), old.as_ref()) && op.edge != old
 }

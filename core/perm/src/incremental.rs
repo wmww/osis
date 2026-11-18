@@ -1,5 +1,5 @@
 //! Incremental evaluation (notes/perm-impl.md): the timeline split into connected components of
-//! things (edges join holder, target and author; a record joins a thing and its first admin),
+//! things (edges join holder, target and author; a record joins a thing and its mint admin),
 //! each cached by its exact
 //! inputs. A held-set change touches only the components whose inputs changed: continued in
 //! place (`Timeline::append`, `add_leaves`), from the old walk (`Timeline::extend`), from a
@@ -56,7 +56,7 @@ pub struct Changed {
     pub evaluated: BTreeSet<Tid>,
     /// Things of components whose walk only went on: the targets of the commits added, and
     /// things added by a `created.0` record alone (a new leaf). Authority changed only on what
-    /// is reachable from them (things they are first admin of, targets of their edges).
+    /// is reachable from them (things they are mint admin of, targets of their edges).
     pub extended: BTreeSet<Tid>,
     /// The (holder, target) edges whose value now or at any point of the walk differs after
     /// the update, however the walk got there: a late write's or a dropped one's effects on
@@ -71,7 +71,7 @@ pub struct Changed {
     /// Things whose `created.0` record came or went.
     pub created: BTreeSet<Tid>,
     /// Of `created`, the new leaves (`Timeline::add_leaves`): only their record names them and
-    /// they are first admin of nothing, so their record edge closes no cycle of grants.
+    /// they are mint admin of nothing, so their record edge closes no cycle of grants.
     pub leaves: BTreeSet<Tid>,
 }
 
@@ -209,7 +209,7 @@ pub struct SaveDone {
 }
 
 /// The unions of the partition that thing `t`'s held inputs make (`created` its record,
-/// `commits` those held on it): with its first admin; each edge write's author and holder with
+/// `commits` those held on it): with its mint admin; each edge write's author and holder with
 /// its target.
 fn joins(t: Tid, created: Option<&CreationRecord>, commits: &[Arc<RoleCommit>], mut join: impl FnMut(Tid, Tid)) {
     if let Some(CreationRecord::Thing { admin, .. }) = created {
@@ -433,7 +433,7 @@ impl Timelines {
             }
             unseen(x, rec.is_some()).then_some(rec)
         };
-        // A thing whose `created.0` is all that names it joins its first admin's component.
+        // A thing whose `created.0` is all that names it joins its mint admin's component.
         let leaf = |x: &Tid| held.created(x).filter(|r| matches!(r, CreationRecord::Thing { .. }) && unseen(x, false) && r.tid() == *x);
         let mut joining: BTreeMap<Tid, u64> = BTreeMap::new();
         let mut unplaced = Vec::new();
@@ -490,7 +490,7 @@ impl Timelines {
         if unplaced.iter().any(|t| !joining.contains_key(t)) {
             return None;
         }
-        // each leaf in its first admin's component, through first admins that are new leaves too
+        // each leaf in its mint admin's component, through mint admins that are new leaves too
         let new_leaves: BTreeSet<Tid> = leaves.iter().map(|l| l.0).collect();
         let mut at: BTreeMap<Tid, u64> = BTreeMap::new();
         while !leaves.is_empty() {
@@ -503,7 +503,7 @@ impl Timelines {
                         leaves.push((x, rec));
                         continue;
                     }
-                    // (a first admin joining now moves components)
+                    // (a mint admin joining now moves components)
                     None if joining.contains_key(&admin) => return None,
                     None => *self.of.get(&admin)?,
                 };

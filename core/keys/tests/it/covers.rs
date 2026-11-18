@@ -37,7 +37,7 @@ fn naming(n: Name) -> Names {
     Names { list: [n].into(), departs: None }
 }
 
-/// Actor `a` (first admin P) after its own-secrets switch boxing `extra` holders too.
+/// Actor `a` (mint admin P) after its own-secrets switch boxing `extra` holders too.
 fn switched(a: Tid, p: Tid, pe: &ActorEpochs, extra: &[Recipient], rg: &mut osis_crypto::SeededRng) -> (ActorEpochs, Secrets) {
     let mut view = ActorEpochs::derived(pe, &a);
     let mut holders = vec![admin_rcpt(p, pe)];

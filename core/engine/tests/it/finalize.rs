@@ -1,6 +1,6 @@
 //! Finalizing timed edges (spec/permissions.md §2 Finalize, §5.1; spec/crypto.md §4): an edge
 //! past its `until` is no departure for keys until a node with write (an admin for an admin edge)
-//! removes it with no frontier, a finalize, carrying the rotation. Peers: 0 is first admin of `t` (account A),
+//! removes it with no frontier, a finalize, carrying the rotation. Peers: 0 is mint admin of `t` (account A),
 //! 1 and 3 write on it (W, W2), 2 is the timed guest G, whose clock lags: it reads on as long as
 //! keys let it, so what it reads shows what the writers' keys gave it.
 
@@ -12,7 +12,7 @@ use osis_engine::Mutation;
 use osis_schema::core_types as ct;
 use std::collections::BTreeSet;
 
-/// A timed share: `t` (first admin: peer 0), write to peers 1 and 3, read to peer 2 until `until`
+/// A timed share: `t` (mint admin: peer 0), write to peers 1 and 3, read to peer 2 until `until`
 /// (`role`: G's role). Returns (lp, t, accounts, until).
 /// Built once per `role` (`LocalPeer::cached`).
 fn shared(role: Role) -> (LocalPeer, Tid, Vec<Tid>, WallMs) {
@@ -55,7 +55,7 @@ fn holds(lp: &LocalPeer, i: usize, t: Tid, m: Tid) -> bool {
     lp.peers[i].engine.core.key_holders(&t).iter().any(|(x, _)| *x == m)
 }
 
-/// Re-seal rounds by the first admin and the writers (spec/permissions.md §3), spread after each.
+/// Re-seal rounds by the mint admin and the writers (spec/permissions.md §3), spread after each.
 fn reseal(lp: &mut LocalPeer, t: Tid) {
     for _ in 0..2 {
         for i in [0, 1, 3] {
@@ -126,7 +126,7 @@ fn an_explicit_removal_after_a_void_finalize_removes_spec_permissions_2() {
 }
 
 // spec/permissions.md §2 (Finalize): an ended admin edge needs an admin: a writer neither
-// finalizes it nor has a finalize of it apply; the first admin's does.
+// finalizes it nor has a finalize of it apply; the mint admin's does.
 #[test]
 fn a_writer_cannot_finalize_an_ended_admin_edge_spec_permissions_2() {
     let (mut lp, t, ps, until) = shared(Role::Admin);
@@ -139,7 +139,7 @@ fn a_writer_cannot_finalize_an_ended_admin_edge_spec_permissions_2() {
         assert!(holds(&lp, i, t, ps[2]), "peer {i}: a writer's finalize of an admin edge applies nothing");
     }
     let (a, _) = lp.peers[0].engine.ensure_rotated(&t).unwrap();
-    assert_eq!(a.commits.len(), 1, "the first admin finalizes it");
+    assert_eq!(a.commits.len(), 1, "the mint admin finalizes it");
     spread(&mut lp);
     for i in 0..4 {
         assert!(!holds(&lp, i, t, ps[2]), "peer {i}");

@@ -1,5 +1,5 @@
 //! Content another wrote, encrypted again (spec/crypto.md §5 Passing on; `sync_ids::opened`).
-//! Peers: 0 = A (first admin), 1 = a2 (admin), 2 = M (reader), 3 = R (admin), 4 = V (admin).
+//! Peers: 0 = A (mint admin), 1 = a2 (admin), 2 = M (reader), 3 = R (admin), 4 = V (admin).
 //! a2 removes M (W, with its rotation); R, holding W, rotates read (e_R, naming W, boxing V and
 //! not M) and writes "w" under e_R. What M observes: whether it reads "w".
 

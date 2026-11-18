@@ -488,7 +488,7 @@ fn add(lp: &mut LocalPeer, by: usize, t: Tid, asp: &osis_schema::Aspect<Value>, 
     lp.peers[by].commit(m).unwrap().unwrap()
 }
 
-/// Peer 0 first admin of a new thing, the others granted `roles` on it, synced.
+/// Peer 0 mint admin of a new thing, the others granted `roles` on it, synced.
 fn shared_thing(lp: &mut LocalPeer, roles: &[Role]) -> Tid {
     let t = new_thing(lp, 0);
     for (i, r) in roles.iter().enumerate() {
@@ -573,7 +573,7 @@ fn late_delta_deaths_are_flat_spec_crdt_4_8() {
     }
 }
 
-/// n one-element commits by the first admin (0) and one add by writer B (1); admin C (2), who
+/// n one-element commits by the mint admin (0) and one add by writer B (1); admin C (2), who
 /// never saw it, revokes B: (the revoke arriving at 0, flipping the add invalid; B's add written
 /// after the revoke arriving invalid). No peer writes addenda (`net_off`): 0's would keep B's add.
 fn validity_flip(n: usize) -> [Work; 2] {
@@ -609,7 +609,7 @@ fn validity_flip(n: usize) -> [Work; 2] {
     [flip, arrive]
 }
 
-/// B (1) holds n set elements as the first admin's delta; the first admin adds one and
+/// B (1) holds n set elements as the mint admin's delta; the mint admin adds one and
 /// snapshots; B joins the snapshot, then one ordinary delta: (the join, the delta).
 fn snapshot_join(n: usize, asp: &osis_schema::Aspect<Value>) -> [Work; 2] {
     let mut lp = net(2, 0);
@@ -632,7 +632,7 @@ fn snapshot_join(n: usize, asp: &osis_schema::Aspect<Value>) -> [Work; 2] {
     [join, delta]
 }
 
-/// A fresh node gets the first admin's snapshot of a set of n one-element commits, then the
+/// A fresh node gets the mint admin's snapshot of a set of n one-element commits, then the
 /// commits: the work of the commits.
 fn snapshot_first(n: usize) -> Work {
     use crate::common::TAGS;
@@ -691,7 +691,7 @@ fn commits_after_their_snapshot_are_linear_spec_permissions_5_2() {
     all_linear("commits after their snapshot", &snapshot_first(12), &snapshot_first(120));
 }
 
-/// n one-element commits on t by its first admin (0); B (1) writes one, received by C (2)
+/// n one-element commits on t by its mint admin (0); B (1) writes one, received by C (2)
 /// alone; 0 removes B and C's addendum keeps B's add (held at 0 if `with`). Team T (3) holds
 /// write on t and gains a member E (4): the work of that grant arriving at 0.
 fn addenda_rejudge(n: usize, with: bool) -> Work {
@@ -832,9 +832,9 @@ fn judging_every_body_reads_each_once_spec_commits_5() {
     flat("replaced reads per judgment", w1.n("replaced reads") / j1, w2.n("replaced reads") / j2);
 }
 
-/// An aspect of n messages kept forever by the first admin, r requests by admin X naming n/r
+/// An aspect of n messages kept forever by the mint admin, r requests by admin X naming n/r
 /// of them each: (a join of a new writer, X's removal (the requests fall), X's re-grant (they
-/// rise)) at the first admin.
+/// rise)) at the mint admin.
 fn purge_rejudge(n: usize) -> [Work; 3] {
     use osis_schema::{Aspect, StaticSchema};
     static S: StaticSchema = StaticSchema::new("purgecost.osis", "revision 1; purgeable_by(author, admin) aspect l:msg.0: string;\n");
@@ -884,7 +884,7 @@ fn purge_rejudge_is_linear_in_requests_spec_permissions_6() {
     }
 }
 
-/// B (1) gets the first admin's writes of one purge-on-replace key only through k snapshots,
+/// B (1) gets the mint admin's writes of one purge-on-replace key only through k snapshots,
 /// each dropped at its cover once the next replaces it: B's demotion frontier for the first
 /// admin, in listed commits and encoded bytes.
 fn dropped_frontier(k: usize) -> (usize, usize) {
@@ -954,9 +954,9 @@ fn grant_is_flat_in_content_commits() {
 static LONG: osis_schema::StaticSchema = osis_schema::StaticSchema::new("long.osis", "revision 1; purgeable_by(author, admin) aspect l:msg.0: string;\n");
 const MSGS: osis_schema::Aspect<Value> = osis_schema::Aspect::new("l:msg.0", &LONG);
 
-/// One aspect kept forever, n 200-byte writes by 4 writers (the first admin and 3 granted write),
-/// every node holding them: (one more write at writer 1, it arriving at the first admin, the
-/// first admin removing writer 2 (a fall of its writes)).
+/// One aspect kept forever, n 200-byte writes by 4 writers (the mint admin and 3 granted write),
+/// every node holding them: (one more write at writer 1, it arriving at the mint admin, the
+/// mint admin removing writer 2 (a fall of its writes)).
 fn long_aspect(n: usize) -> [Work; 3] {
     let mut lp = net(4, 0);
     lp.sync_all().unwrap();
@@ -992,8 +992,8 @@ fn long_aspect_writes_are_flat() {
     all_linear("a writer removed", &a[2], &b[2]);
 }
 
-/// n edge writes on one thing by its first admin (5 holders granted and removed in turn), then
-/// a fresh node ingesting them one by one: (its work; then the first admin's grant to a new
+/// n edge writes on one thing by its mint admin (5 holders granted and removed in turn), then
+/// a fresh node ingesting them one by one: (its work; then the mint admin's grant to a new
 /// holder, its removal of a holder, and the joiner ingesting those two).
 fn role_history_join(n: usize) -> [Work; 4] {
     let mut lp = net(2, 0);

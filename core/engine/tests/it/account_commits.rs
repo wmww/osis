@@ -23,7 +23,7 @@ impl osis_commit::Secrets for Dedup {
     }
 }
 
-/// An account's first commit: its own record and a thing it is first admin of, signed with
+/// An account's first commit: its own record and a thing it is mint admin of, signed with
 /// `key` at `epoch`, with an inner signature by a node when `inner`.
 fn account_commit(seed: u8, key: &AccountEpochKeys, epoch: CommitId, inner: bool, ts: Ts) -> (Tid, Vec<u8>) {
     let first = AccountEpochKeys::from_seed(&Secret32::from_bytes([seed; 32]));

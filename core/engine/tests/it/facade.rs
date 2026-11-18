@@ -501,7 +501,7 @@ fn a_record_blob_of_another_prefix_is_bad_spec_crypto_7() {
 // spec/wire.md §3 (creation record; Record blob), spec/permissions.md §4 (Chain certificates),
 // spec/commits.md §4 (Pending storage): a record's tid is the hash of its encoding, records go raw
 // in a record blob. A reader of S framing a record blob cannot plant a false record for a thing it
-// names: a record altered to name another first admin is a record of another tid, and the
+// names: a record altered to name another mint admin is a record of another tid, and the
 // receiver learns nothing of the thing; the genuine record, sealed by its holder, is kept loose
 // until a commit here awaits it, then learned as it is.
 #[test]

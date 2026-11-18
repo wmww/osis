@@ -1,4 +1,4 @@
-//! Share links (spec/permissions.md §7, spec/wire.md §10): K an actor whose first admin is the sharer's actor, with
+//! Share links (spec/permissions.md §7, spec/wire.md §10): K an actor whose mint admin is the sharer's actor, with
 //! secrets of its own, a holder of the target with the link's role; L a key actor from the
 //! link's seed with (r, invite r) on K, listed in K's sync ID steps by static entry. Redeem (an
 //! invite grant signed as L, single use with L's self-removal in the same commit), bearer use,
@@ -28,9 +28,9 @@ pub const LINK_SEED: &str = "link:seed.0";
 pub struct HeldLink {
     pub k: Tid,
     pub l: Tid,
-    /// K's first admin (the sharer's actor). Only a seed thing made under this node's account
+    /// K's mint admin (the sharer's actor). Only a seed thing made under this node's account
     /// root counts: its readers are the account's nodes alone.
-    pub first_admin: Tid,
+    pub mint_admin: Tid,
     pub target: Tid,
     pub single_use: bool,
     /// This node wrote the seed: it made the link, so its redeemer dials this node (the link's
@@ -51,7 +51,7 @@ pub struct LinkSpec {
 
 impl Engine {
     /// Creates a link to `spec.target` for actor `sharer` (an actor this node is admin of):
-    /// K (first admin `sharer`, secrets of its own, its sync ID listing L by
+    /// K (mint admin `sharer`, secrets of its own, its sync ID listing L by
     /// static entry), L (key actor from a fresh seed, `created.0` and `keys.0` signed by itself),
     /// L's edge (r, invite r, `until`) on K with its boxes, K's edge on the target, and a
     /// thing under the account root keeping the seed. Returns the link and the seed thing.
@@ -162,11 +162,11 @@ impl Engine {
     }
 
     /// Whether this account holds link actor `k` by a live grant (a join, its own or a sibling's;
-    /// K's first admin holds it by K's record): a redeem of its link writes no other
+    /// K's mint admin holds it by K's record): a redeem of its link writes no other
     /// (spec/permissions.md §7). Reads the clock up to that grant's `until`.
     pub fn joined_link(&mut self, k: &Tid) -> bool {
         let Some(me) = self.core.me() else { return false };
-        if self.first_admin(k) == Some(me) {
+        if self.mint_admin(k) == Some(me) {
             return false;
         }
         let edge = self.core.timelines.get(k).and_then(|tl| tl.edges_at(None).get(&me, k).copied());
@@ -203,12 +203,12 @@ impl Engine {
                 && let (Some(Value::Weak(k)), Some(Value::Bytes(b))) = (m.get(&Value::Int(0)), m.get(&Value::Int(1)))
                 && let Ok(seed) = <[u8; 32]>::try_from(b.as_slice())
                 && let (Some(Value::Weak(target)), Some(Value::Bool(single_use))) = (m.get(&Value::Int(2)), m.get(&Value::Int(3)))
-                && self.first_admin(&t).is_some_and(|a| Some(a) == self.account_root())
-                && let Some(first_admin) = self.first_admin(k)
+                && self.mint_admin(&t).is_some_and(|a| Some(a) == self.account_root())
+                && let Some(mint_admin) = self.mint_admin(k)
             {
                 let ids: Vec<osis_base::CommitId> = self.core.on_thing(&t).collect();
                 let here = ids.iter().any(|c| self.core.ix.commits.get(c).is_some_and(|m| m.origin == crate::events::Origin::Local && m.view.aspect(&t, LINK_SEED).is_some()));
-                out.push(HeldLink { k: *k, l: crate::identity::key_actor_tid(&Secret32::from_bytes(seed)), first_admin, target: *target, single_use: *single_use, here });
+                out.push(HeldLink { k: *k, l: crate::identity::key_actor_tid(&Secret32::from_bytes(seed)), mint_admin, target: *target, single_use: *single_use, here });
             }
         }
         out.sort();

@@ -589,7 +589,7 @@ pub(crate) fn resolve_unresolved(tx: &mut Tx<'_>) -> Result<bool> {
 }
 
 /// Whether `t`'s record chain is not known to end at a key actor within `MAX_CHAIN_DEPTH` links,
-/// first-admin links counted (spec/permissions.md §1): deeper, or a creation record on it is not
+/// mint-admin links counted (spec/permissions.md §1): deeper, or a creation record on it is not
 /// held (unknown counts as invalid, so forgetting a record never makes a deep delta valid).
 /// O(`MAX_CHAIN_DEPTH`).
 pub(crate) fn too_deep(core: &Core, t: &Tid) -> bool {

@@ -199,7 +199,7 @@ pub fn net_off(n: usize, seed: u64) -> LocalPeer {
     lp
 }
 
-/// A new plain thing of peer `i`: its first admin `Engine::plain_admin`, held where it lives and
+/// A new plain thing of peer `i`: its mint admin `Engine::plain_admin`, held where it lives and
 /// by every other peer (`LocalPeer::hold`), which keeps it once granted a role (`set_edge`).
 pub fn new_thing(lp: &mut LocalPeer, i: usize) -> Tid {
     new_thing_keeping(lp, i, &[])

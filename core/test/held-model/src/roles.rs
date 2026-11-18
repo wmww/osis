@@ -53,7 +53,7 @@ pub enum Class {
     EdgeAdmin,
 }
 
-/// The creation records known: first admins.
+/// The creation records known: mint admins.
 #[derive(Clone, Debug, Default)]
 pub struct World {
     pub links: BTreeMap<ThingId, RecordLink>,
@@ -66,7 +66,7 @@ impl World {
     pub fn known(&self, t: ThingId) -> bool {
         self.links.contains_key(&t)
     }
-    pub fn first_admin(&self, t: ThingId) -> Option<NodeId> {
+    pub fn mint_admin(&self, t: ThingId) -> Option<NodeId> {
         match self.links.get(&t) {
             Some(RecordLink::Admin(o)) => Some(*o),
             _ => None,
@@ -77,7 +77,7 @@ impl World {
     pub fn chain_above(&self, t: ThingId) -> Vec<NodeId> {
         let mut v = Vec::new();
         let mut x = t;
-        while let Some(o) = self.first_admin(x) {
+        while let Some(o) = self.mint_admin(x) {
             if o == t || v.contains(&o) {
                 break;
             }

@@ -127,9 +127,9 @@ fn restart_forgets_ephemeral_spec_requirements_ephemeral() {
 }
 
 // notes/ephemeral.md Rights: a node with no write on a thing can neither create one under it
-// nor write ephemeral data on it; a new thing's role is its first admin's. spec/permissions.md §1
+// nor write ephemeral data on it; a new thing's role is its mint admin's. spec/permissions.md §1
 #[test]
-fn rights_through_first_admin_spec_permissions_1() {
+fn rights_through_mint_admin_spec_permissions_1() {
     let (a, _c) = setup(3);
     let (b, _c2) = setup(4);
     let mut w = a.write();

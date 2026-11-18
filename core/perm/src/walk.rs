@@ -120,7 +120,7 @@ impl Input {
             }
         }
         // Who can hold a class: key actors, authors, and holders that may be nodes (the
-        // commits' by `append`; a first admin whose record is not held).
+        // commits' by `append`; a mint admin whose record is not held).
         let mut nodes: BTreeSet<Tid> = things.iter().filter(|t| records.is_key(t)).copied().collect();
         for (_, o) in records.links() {
             if let RecordLink::Admin(a) = o
@@ -160,9 +160,9 @@ impl Input {
         let mut stack: Vec<Tid> = seen.iter().copied().collect();
         while let Some(e) = stack.pop() {
             let next: Vec<Tid> = if forward {
-                self.records.first_admin_of(&e).iter().chain(self.ever.targets.get(&e).into_iter().flatten()).copied().collect()
+                self.records.mint_admin_of(&e).iter().chain(self.ever.targets.get(&e).into_iter().flatten()).copied().collect()
             } else {
-                self.records.first_admin(&e).into_iter().chain(self.ever.holders.get(&e).into_iter().flatten().copied()).collect()
+                self.records.mint_admin(&e).into_iter().chain(self.ever.holders.get(&e).into_iter().flatten().copied()).collect()
             };
             for y in next {
                 if seen.insert(y) {
@@ -174,17 +174,17 @@ impl Input {
     }
 
     /// Whether a node (author, or holder that may be one) can join with the commits naming it:
-    /// one here already, or one that reaches nothing here (no edge of it as holder, first admin
+    /// one here already, or one that reaches nothing here (no edge of it as holder, mint admin
     /// of nothing), so before those commits no walk meets it (it is in no audit's reach).
     fn may_be_node(&self, t: &Tid) -> bool {
-        self.nodes.contains(t) || (self.records.link(t).is_none() && self.records.first_admin_of(t).is_empty() && !self.ever.targets.contains_key(t))
+        self.nodes.contains(t) || (self.records.link(t).is_none() && self.records.mint_admin_of(t).is_empty() && !self.ever.targets.contains_key(t))
     }
 
     /// Whether `new` (commits not held here) can join this input without changing anything but
     /// the commits and new nodes that reach nothing here (`append`): no thing without a record
     /// here getting one (`Timeline::extend`'s conditions).
     pub fn can_append(&self, new: &[Arc<RoleCommit>]) -> bool {
-        new.iter().all(|c| !self.commits.contains_key(&c.id) && self.may_be_node(&c.author) && c.ops.iter().all(|o| self.records.first_admin(&o.holder).is_some() || self.may_be_node(&o.holder)))
+        new.iter().all(|c| !self.commits.contains_key(&c.id) && self.may_be_node(&c.author) && c.ops.iter().all(|o| self.records.mint_admin(&o.holder).is_some() || self.may_be_node(&o.holder)))
     }
 
     /// Adds role commits `new` not held here (all of `gather`'s, or ones `can_append`
@@ -203,7 +203,7 @@ impl Input {
                 *e = (*e).min(c.point());
             }
             for o in &c.ops {
-                if self.records.first_admin(&o.holder).is_none() {
+                if self.records.mint_admin(&o.holder).is_none() {
                     node(o.holder);
                 }
                 if self.records.is_key(&o.target) {
@@ -971,14 +971,14 @@ impl Walked {
         }
         Some(Readers { dep, audited, a, f })
     }
-    /// Things (thing, first admin) whose record is new, none named by the walk's items before
+    /// Things (thing, mint admin) whose record is new, none named by the walk's items before
     /// log position `cut` (the walk goes on from there, or `cut` is the log's end): before it
-    /// every node's role on one is its role on its first admin at every point (its record edge
+    /// every node's role on one is its role on its mint admin at every point (its record edge
     /// is its only edge), so a from-scratch walk records on it there exactly the first
-    /// admin's demotions, in the same items. Sets each one's demotions to its first admin's
+    /// admin's demotions, in the same items. Sets each one's demotions to its mint admin's
     /// recorded before `cut`, with their undo entries, and forgets those recorded on it from
     /// `cut` on (the walk goes on before them). `None`: one has a demotion before `cut`, or a
-    /// first admin neither known nor one of them (cycle).
+    /// mint admin neither known nor one of them (cycle).
     pub(crate) fn alias_leaves(&mut self, leaves: &[(Tid, Tid)], nodes: &BTreeSet<Tid>, cut: usize) -> Option<()> {
         if leaves.is_empty() {
             return Some(());
@@ -988,7 +988,7 @@ impl Walked {
         for (l, o) in leaves {
             deps.entry(*o).or_default().push(*l);
         }
-        // top-down: first admins before their leaves
+        // top-down: mint admins before their leaves
         let mut done: BTreeSet<Tid> = BTreeSet::new();
         let mut order = Vec::new();
         while order.len() < leaves.len() {
@@ -1003,7 +1003,7 @@ impl Walked {
                 return None;
             }
         }
-        // how many demotions each first admin outside them has before `cut`
+        // how many demotions each mint admin outside them has before `cut`
         let mut count: BTreeMap<(Tid, Tid), usize> = BTreeMap::new();
         for u in self.log.get(..cut).unwrap_or_default() {
             if let Undo::Demotion((x, n)) = u {
@@ -1233,12 +1233,12 @@ impl Roles {
 
 impl Input {
     /// `Dense` over every entity a role can be held on: nodes, things with a record and their
-    /// first admins, both ends of every edge any held write can set.
+    /// mint admins, both ends of every edge any held write can set.
     pub(crate) fn dense(&self, edges: &Edges) -> Dense {
         let mut all: BTreeSet<Tid> = self.nodes.clone();
         for (t, _) in self.records.links() {
             all.insert(*t);
-            all.extend(self.records.first_admin_of(t));
+            all.extend(self.records.mint_admin_of(t));
         }
         all.extend(self.ever.targets.keys().copied());
         all.extend(self.ever.holders.keys().copied());

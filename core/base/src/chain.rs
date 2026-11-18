@@ -1,6 +1,6 @@
 //! The record-chain walk (spec/permissions.md §1): every walk up creation records goes through
 //! `record_chain`, so the chain's stop rules and its depth limit live in one place. The chain goes
-//! up first-admin links (derivation and the depth cap count them); it says nothing about
+//! up mint-admin links (derivation and the depth cap count them); it says nothing about
 //! authority, which is the role timeline's (a record edge may be removed).
 
 use crate::format::MAX_CHAIN_DEPTH;
@@ -9,7 +9,7 @@ use crate::ids::{CreationRecord, Tid};
 /// What a thing's creation record puts above it.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum RecordLink {
-    /// An ordinary thing's first admin: the record chain goes on to that actor.
+    /// An ordinary thing's mint admin: the record chain goes on to that actor.
     Admin(Tid),
     /// A key actor: the top of its chain.
     Key,
@@ -18,14 +18,14 @@ pub enum RecordLink {
 impl CreationRecord {
     /// What the record puts above its thing.
     pub fn record_link(&self) -> RecordLink {
-        self.first_admin().map_or(RecordLink::Key, RecordLink::Admin)
+        self.mint_admin().map_or(RecordLink::Key, RecordLink::Admin)
     }
 }
 
 /// One step of a record-chain walk. Every step but `Up` ends the walk.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum ChainStep {
-    /// `thing`'s first admin is `admin`, where the walk goes on.
+    /// `thing`'s mint admin is `admin`, where the walk goes on.
     Up { thing: Tid, admin: Tid },
     /// `thing` is a key actor: the top.
     Key(Tid),
@@ -93,7 +93,7 @@ mod tests {
         Tid::from_bytes([i; crate::format::TID_LEN])
     }
 
-    /// A chain of `n` things below `top`: `tid(1)` deepest, `tid(n)`'s first admin `top`.
+    /// A chain of `n` things below `top`: `tid(1)` deepest, `tid(n)`'s mint admin `top`.
     fn chain(n: u8, top: Option<RecordLink>) -> BTreeMap<Tid, RecordLink> {
         let mut m: BTreeMap<Tid, RecordLink> = (1..n).map(|i| (tid(i), RecordLink::Admin(tid(i + 1)))).collect();
         m.insert(tid(n), RecordLink::Admin(tid(0)));

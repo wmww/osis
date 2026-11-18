@@ -253,7 +253,7 @@ impl Engine {
 
     /// Takes a report's holder keys of `holder` (spec/permissions.md §4, spec/wire.md §11.2): only
     /// what is on the holder's authority chain as judged while taking them (the holder, then
-    /// each one's first admin and current holders, transitively, judged again as what is taken
+    /// each one's mint admin and current holders, transitively, judged again as what is taken
     /// extends it): records of chain things, `keys.0` deltas on the holder and on the authors of
     /// the holder's `keys.0` commits carried (their cards), `roles.0` deltas on chain things; each
     /// commit, projected to those deltas, kept only if judged valid with every edge write it makes
@@ -304,12 +304,12 @@ impl Engine {
     }
 
     /// The authority chain of `holder` (spec/permissions.md §4): the holder, then each one's
-    /// first admin and current holders, transitively, as held here.
+    /// mint admin and current holders, transitively, as held here.
     fn authority_chain(&self, holder: &Tid) -> BTreeSet<Tid> {
         let mut out = BTreeSet::from([*holder]);
         let mut todo = vec![*holder];
         while let Some(x) = todo.pop() {
-            let up = self.core.created(&x).and_then(CreationRecord::first_admin).into_iter().chain(self.core.key_holders(&x).into_iter().map(|h| h.0));
+            let up = self.core.created(&x).and_then(CreationRecord::mint_admin).into_iter().chain(self.core.key_holders(&x).into_iter().map(|h| h.0));
             for y in up {
                 if out.insert(y) {
                     todo.push(y);

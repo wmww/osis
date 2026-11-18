@@ -33,7 +33,7 @@ impl World {
     fn new() -> World {
         World { a: tid(1), p: tid(2), m: tid(3), l: tid(4), pe: actor_epochs(0x20), me: actor_epochs(0x30), lseed: Secret32::from_bytes([0x40; 32]) }
     }
-    /// First admin P (its secrets held: symmetric boxes), read holder M, write key-actor holder L.
+    /// Mint admin P (its secrets held: symmetric boxes), read holder M, write key-actor holder L.
     fn holders(&self) -> Vec<Recipient> {
         vec![
             Recipient { holder: self.p, role: Role::Admin, keys: HolderKeys::from_keys(&keys_of(&self.pe)).unwrap().with_own(&self.pe), floor: 0 },
@@ -44,7 +44,7 @@ impl World {
 }
 
 // spec/crypto.md §3: giving a plain thing secrets of its own is a rotation of all three roles from
-// the derived epochs; the history boxes carry the derived secrets. §4 box forms: the first admin gets
+// the derived epochs; the history boxes carry the derived secrets. §4 box forms: the mint admin gets
 // symmetric boxes, an actor holder sealed boxes naming its keyset, a key-actor holder sealed
 // boxes naming none; one box per (role, epoch) each.
 #[test]
@@ -61,7 +61,7 @@ fn own_secrets_switch() {
     let derived_read = thing_role_secret(w.pe.read.secret(&ep(1, 0x20)).unwrap(), Role::Read, &w.a);
     let de = Epoch::derive(&w.a, Role::Read, 1, &derived_read).unwrap();
     assert_eq!(rot.wrap_epoch(), Some(de));
-    // First admin: a symmetric box of 49 bytes per role (spec/wire.md §7).
+    // Mint admin: a symmetric box of 49 bytes per role (spec/wire.md §7).
     for r in ROLES {
         match &s.boxes[&box_key(w.p, r, &e(r))] {
             SecretBox::Symmetric(b) => assert_eq!(b.wrap.len(), 49),

@@ -1080,7 +1080,7 @@ fn an_expiry_passed_while_pending_sets_no_timer_spec_commits_4() {
     assert!(lp.peers[1].engine.next_timer().unwrap().is_none_or(|x| x > now), "nothing due once it passed");
 }
 
-/// Peer 0 makes `n` things (each by its own commit; thing i's first admin peer 0 or, mostly, an
+/// Peer 0 makes `n` things (each by its own commit; thing i's mint admin peer 0 or, mostly, an
 /// earlier one, so a record chain may be away), then `m` commits, commit i writing two of them and
 /// `u_i` (one of `m` things peer 1 syncs from the start: a part that applies, written by no other
 /// commit), the clock moving between. Peer 1 is given those commits straight (`Engine::ingest`,

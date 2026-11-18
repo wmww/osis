@@ -217,7 +217,7 @@ pub fn creation(p: &Part) -> Option<RecordLink> {
 
 /// The records the node knows (spec/permissions.md §1: a record proves itself by its hash):
 /// `Held::records`, and each held creation's whose commit is not parked and whose author and
-/// first admin records are known (a node holds no part whose author or chain record it lacks).
+/// mint admin records are known (a node holds no part whose author or chain record it lacks).
 fn records(h: &Held, parked: &BTreeSet<CommitId>) -> World {
     let mut world = World::new(&h.records);
     loop {

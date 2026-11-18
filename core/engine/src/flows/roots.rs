@@ -33,7 +33,7 @@ impl Engine {
         self.commit(m).map(|_| ())
     }
 
-    /// The node root, made at the node's first start (`bootstrap`): a thing whose first admin
+    /// The node root, made at the node's first start (`bootstrap`): a thing whose mint admin
     /// is the node, its commits the node's own.
     pub(crate) fn make_node_root(&mut self) -> Result<()> {
         let node = self.tid();

@@ -437,7 +437,7 @@ fn ev_timelines(n: usize, stamps: &[u64], opts: &[Opt]) -> Vec<Vec<(u64, Opt)>> 
 fn all_opts() -> Vec<Opt> {
     EV_OPTS.iter().map(|f| f()).collect()
 }
-/// The first admin's settings of a timeline on aspect `a`, keyed in list order, each written
+/// The mint admin's settings of a timeline on aspect `a`, keyed in list order, each written
 /// holding those stamped before it (`Setting::written_after`: the floor carried).
 fn settings_of(a: Aspect, tl: &[(u64, Opt)]) -> Vec<Commit> {
     let mut out: Vec<Commit> = Vec::new();
@@ -449,13 +449,13 @@ fn settings_of(a: Aspect, tl: &[(u64, Opt)]) -> Vec<Commit> {
             _ => None,
         }).collect();
         let x = Setting { rules: vec![(a.name, SettingEntry { history: o, expires: None, purge_before: 0 })], default: None, written: None }.written_after(&held, ts(h));
-        out.push(setting_by(100 + i as CommitId, FIRST_ADMIN, h, x));
+        out.push(setting_by(100 + i as CommitId, MINT_ADMIN, h, x));
     }
     out
 }
 /// Body `id` at hour `h`: a register write on `REG`, or a fire on `SIG`.
 fn body(id: CommitId, h: u64, fire: bool) -> Commit {
-    reg(id, FIRST_ADMIN, h, if fire { SIG } else { REG }, Retention::PLAIN, id as i64)
+    reg(id, MINT_ADMIN, h, if fire { SIG } else { REG }, Retention::PLAIN, id as i64)
 }
 /// Bodies 10, 11, 12 at hours 1, 3, 5 (values: 10 replaced at 3, 11 at 5).
 fn bodies3(fire: bool) -> Vec<Commit> {
@@ -532,9 +532,9 @@ fn ev_the_newest_setting_alone_decides() {
                 }
             }
             // two admins at hour 2: node 1's key is the later
-            let grant = edge(5, FIRST_ADMIN, 0, 1, Some(Role::Admin), None);
+            let grant = edge(5, MINT_ADMIN, 0, 1, Some(Role::Admin), None);
             let s = |id, by, opt| setting_by(id, by, 2, Setting { rules: vec![(REG.name, SettingEntry { history: opt, expires: None, purge_before: 0 })], default: None, written: None });
-            let (lo, hi) = (s(100, FIRST_ADMIN, older), s(101, 1, newer));
+            let (lo, hi) = (s(100, MINT_ADMIN, older), s(101, 1, newer));
             for now in 6..12 {
                 let at_once = |cs: Vec<Commit>| view(&held(now, [vec![grant.clone()], cs, bodies()].concat()));
                 let a = at_once(vec![lo.clone(), hi.clone()]);
@@ -623,7 +623,7 @@ fn ev_only_valid_settings_are_in_force_and_none_judges_validity() {
     let bodies = || vec![body(10, 1, false), body(11, 3, false)];
     // just after the grant: a write at its `ts` is concurrent with it (spec/permissions.md §5.2, Position)
     let by_writer = Commit { ts: ts(0) + 1, ..setting_by(19, 1, 0, Setting { rules: vec![(REG.name, SettingEntry { history: KEPT, expires: Some(HOUR), purge_before: 0 })], default: None, written: None }) };
-    let grant = |role| edge(5, FIRST_ADMIN, 0, 1, Some(role), None);
+    let grant = |role| edge(5, MINT_ADMIN, 0, 1, Some(role), None);
     let h = held(4, [vec![grant(Role::Write), by_writer.clone()], bodies()].concat());
     assert!(listed(&h, REG).is_empty(), "a writer's setting is none");
     assert!(evaluate(&h).settings.is_empty());
@@ -666,7 +666,7 @@ fn covered3(fire: bool) -> Vec<Commit> {
     let mut v = bodies3(fire);
     if !fire {
         for (id, h) in [(10, 1), (11, 3), (12, 5)] {
-            v.push(snap(id + 20, FIRST_ADMIN, h, REG, Retention::WRITER, vec![set(h, id, id as i64)]));
+            v.push(snap(id + 20, MINT_ADMIN, h, REG, Retention::WRITER, vec![set(h, id, id as i64)]));
         }
     }
     v

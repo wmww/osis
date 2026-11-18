@@ -1,5 +1,5 @@
 # Behaviour depends on whether a thing has own keys
-> Summary: Tess: whether a thing derives its keys from its first admin (dependent) or has its own (independent) may change cost, never behaviour; promotion is implicit, and once independent the first admin is an admin like any other. Three behaviours differ today, and the first admin stays special in two ways.
+> Summary: Tess: whether a thing derives its keys from its mint admin (dependent) or has its own (independent) may change cost, never behaviour; promotion is implicit, and once independent the mint admin is an admin like any other. Three behaviours differ today, and the mint admin stays special in two ways.
 > Priority: normal
 > Tags: api, cli, perm, engine
 
@@ -12,9 +12,9 @@ Behaviour that differs:
 - **A thing made under an account** is independent at birth (spec/permissions.md §3, spec/sync-set.md §2), because an account is in no sync unit. It becomes an ordinary dependent once the account is an ordinary independent thing (notes/write-path-design.md §5); until then `osis create --admin me` reaches it.
 - **Sharing what a tag holds**: a strong grants nothing, so an app sharing a tag of n things makes n grants itself (issues/many-sync-ids-cost.md). To check whether that counts.
 
-The first admin staying special after it is removed (to study):
-- **Depth**: a delta on a thing more than `MAX_CHAIN_DEPTH` (64) links down its record chain is invalid (spec/permissions.md §1), however many of the things between are independent or have removed their first admins.
-- **The record names it for good**: the tid commits to the first admin, so every holder of the record learns who made the thing under what, after that admin is gone.
+The mint admin staying special after it is removed (to study):
+- **Depth**: a delta on a thing more than `MAX_CHAIN_DEPTH` (64) links down its record chain is invalid (spec/permissions.md §1), however many of the things between are independent or have removed their mint admins.
+- **The record names it for good**: the tid commits to the mint admin, so every holder of the record learns who made the thing under what, after that admin is gone.
 
 ## Terms (Tess; the rename is one pass, issues/deprecated-terms.md)
 - **dependent thing** (derives its secrets) and **independent thing** (has its own), for plain and own keys / keyed / secrets of its own.

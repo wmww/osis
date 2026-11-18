@@ -372,7 +372,7 @@ fn an_untyped_index_past_the_limit_says_so() {
 #[test]
 fn sharing_commands_local_plan_cli_4() {
     let s = S::mem();
-    // under the account, so `me` reads it as its first admin
+    // under the account, so `me` reads it as its mint admin
     let g = s.ok(&["create", "--admin", "me", "t:made.0", "true"]).line().to_string();
     // spec/sync-inbox.md §6: `make_link` works on every node; the link names this node
     let link = s.ok(&["link", "make", &g, "write", "--single-use"]).line().to_string();
@@ -739,7 +739,7 @@ fn expiry_admin_and_splice_commands() {
     assert!(two.code == 2 && two.err.contains("one expiry"), "{}", two.err);
     assert_eq!(s.call(&["write"], &format!("set --expires-in 1h {t} a:x.0 1\nset {t} a:y.0 1\n")).code, 0, "the flag is the commit's, whichever line gives it");
     assert_eq!(s.call(&["write"], &format!("set {t} a:x.0 1\nset {t} a:cursor+.0 1\n")).code, 7, "durable beside ephemeral");
-    // spec/permissions.md §1: `--admin G` makes G the first admin, which `grants` lists
+    // spec/permissions.md §1: `--admin G` makes G the mint admin, which `grants` lists
     let made = s.ok(&["create", "--admin", &g, "t:x.0", "1"]).line().to_string();
     let gs = s.ok(&["grants", &made]).out;
     assert!(gs.lines().any(|l| l.starts_with(&format!("{g} admin "))), "{gs}");

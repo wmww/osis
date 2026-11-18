@@ -31,11 +31,11 @@ fn kem_of(k: &KemKey) -> Result<KemPublicKey> {
 }
 
 /// The readers of `t`'s read epoch `e` (spec/sync-ids.md §3): holders of read boxes at `e`, its
-/// first admin included while its record edge stands; a node by its KEM key, another key actor
+/// mint admin included while its record edge stands; a node by its KEM key, another key actor
 /// by static entry, an actor by its newest read keyset.
 pub(crate) fn readers(tx: &mut Tx<'_>, t: &Tid, e: &Epoch) -> Result<Vec<ReaderKey>> {
     let mut holders: Vec<Tid> = Vec::new();
-    if let Some(o) = tx.core.first_admin(t).filter(|a| tx.core.key_holders(t).iter().any(|(m, _)| m == a)) {
+    if let Some(o) = tx.core.mint_admin(t).filter(|a| tx.core.key_holders(t).iter().any(|(m, _)| m == a)) {
         holders.push(o);
     }
     let secrets = super::secrets_in(tx, t)?;

@@ -24,7 +24,7 @@ pub(crate) fn walk_sides(p: &mut osis_engine::local_peer::Peer) -> usize {
     ds.len()
 }
 
-/// Admins `a` (peer 0) and `b` (peer 1) of thing `t` (first admin `c`, peer 2) remove each
+/// Admins `a` (peer 0) and `b` (peer 1) of thing `t` (mint admin `c`, peer 2) remove each
 /// other, neither having seen the other's removal: `b` removes `a` at a later time (`w`), `a`
 /// removes `b` stamped earlier (`r`: the thief backdating, or a clock behind). Peer 2 and any
 /// peers after it hold neither yet.

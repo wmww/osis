@@ -1,7 +1,7 @@
 //! Clients of this node by a secret (notes/client-port.md §3): `clients^.0` on the node root
 //! (spec/data-model.md §9, spec/sync-set.md §1) lists a client actor per client, by a weak, with
 //! the hash of its bearer secret
-//! and its end. The node mints the actor (an actor whose first admin is the account, like a link's K) and
+//! and its end. The node mints the actor (an actor whose mint admin is the account, like a link's K) and
 //! acts as it for the client's session (the client port, spec/wire.md §11.2); what the client may read and write is
 //! that actor's grants, nothing else. Only the node writes its node root.
 

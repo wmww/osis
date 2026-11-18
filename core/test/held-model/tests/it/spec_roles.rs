@@ -13,7 +13,7 @@ fn timed(holder: NodeId, role: Role, until_h: u64) -> EdgeWrite {
 #[test]
 fn self_removal_needs_no_authority_and_audits_nothing_spec_permissions_2() {
     let hd = held(5, vec![
-        edge(5, FIRST_ADMIN, 0, 1, Some(Role::Write), None),
+        edge(5, MINT_ADMIN, 0, 1, Some(Role::Write), None),
         reg(10, 1, 1, REG, Retention::PLAIN, 1),
         edge(6, 1, 2, 1, None, None),
         reg(11, 1, 3, Aspect::plain(5), Retention::PLAIN, 2),
@@ -30,10 +30,10 @@ fn self_removal_needs_no_authority_and_audits_nothing_spec_permissions_2() {
 fn until_ends_an_edge_and_finalize_applies_only_past_it_spec_permissions_2() {
     let cs = |fin_h: u64| {
         vec![
-            edge_on(5, FIRST_ADMIN, 0, T, timed(1, Role::Write, 3), None),
+            edge_on(5, MINT_ADMIN, 0, T, timed(1, Role::Write, 3), None),
             reg(10, 1, 1, REG, Retention::PLAIN, 1),
             reg(11, 1, 4, Aspect::plain(5), Retention::PLAIN, 2),
-            edge(6, FIRST_ADMIN, fin_h, 1, None, None),
+            edge(6, MINT_ADMIN, fin_h, 1, None, None),
         ]
     };
     let o = evaluate(&held(5, cs(2)));
@@ -49,7 +49,7 @@ fn invite_grant_up_to_the_invite_spec_permissions_2() {
     let inv = EdgeWrite { holder: 1, role: Some(Role::Write), invite: Some(Role::Write), until: None };
     let cs = |role: Role| {
         vec![
-            edge_on(5, FIRST_ADMIN, 0, T, inv, None),
+            edge_on(5, MINT_ADMIN, 0, T, inv, None),
             edge(6, 1, 1, 2, Some(role), None),
             reg(10, 2, 2, REG, Retention::PLAIN, 1),
         ]
@@ -72,13 +72,13 @@ fn link_redeem_and_finalize_spec_permissions_7() {
     };
     let cs = |fin: Option<Vec<CommitId>>| {
         let mut v = vec![
-            edge_on(5, FIRST_ADMIN, 0, T, EdgeWrite::role(LINK_K, Some(Role::Write)), None),
-            edge_on(6, FIRST_ADMIN, 0, LINK_K, l, None),
+            edge_on(5, MINT_ADMIN, 0, T, EdgeWrite::role(LINK_K, Some(Role::Write)), None),
+            edge_on(6, MINT_ADMIN, 0, LINK_K, l, None),
             redeem.clone(),
             reg(10, 3, 2, REG, Retention::PLAIN, 1),
         ];
         if let Some(f) = fin {
-            v.push(edge_on(8, FIRST_ADMIN, 3, LINK_K, EdgeWrite::role(LINK_L, None), Some(f)));
+            v.push(edge_on(8, MINT_ADMIN, 3, LINK_K, EdgeWrite::role(LINK_L, None), Some(f)));
         }
         held(5, v)
     };
@@ -112,16 +112,16 @@ fn record_edge_through_an_account_spec_permissions_1() {
 // thing 12 only through it, removes the account's record edge on 12 without a frontier: a
 // self-removal (the account's edge disregarded, 2 has no authority on 12), not a finalize
 #[test]
-fn record_edge_removed_by_an_admin_of_the_first_admin_spec_permissions_2() {
+fn record_edge_removed_by_an_admin_of_the_mint_admin_spec_permissions_2() {
     let on12 = |id, author, h| Commit { parts: vec![Part { thing: 12, ..part(REG, Retention::PLAIN, vec![set(h, id, 1)]) }], ..content(id, author, h, vec![]) };
     let o = evaluate(&held(5, vec![on12(10, 2, 1), edge_on(6, 2, 2, 12, EdgeWrite::role(ACCOUNT, None), None), on12(11, 2, 3)]));
     assert!(o.valid[&(6, 0)], "the removal applies");
     assert!(o.valid[&(10, 0)] && !o.valid[&(11, 0)]);
 }
 
-// spec/permissions.md §1: the first admin's record edge is an edge like any
+// spec/permissions.md §1: the mint admin's record edge is an edge like any
 #[test]
-fn first_admin_is_an_edge_spec_permissions_1() {
+fn mint_admin_is_an_edge_spec_permissions_1() {
     let on13 = |id, author, h| Commit { parts: vec![Part { thing: 13, ..part(REG, Retention::PLAIN, vec![set(h, id, 1)]) }], ..content(id, author, h, vec![]) };
     let cs = |remove: bool| {
         let mut v = vec![edge_on(5, 3, 0, 13, EdgeWrite::role(1, Some(Role::Admin)), None), on13(10, 3, 2)];

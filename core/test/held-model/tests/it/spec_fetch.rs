@@ -13,26 +13,26 @@ const MINE: SyncId = 1;
 const L: SyncId = 2;
 const NO_SYNC_ID: SyncId = 999;
 
-/// The grant (first admin 0 gives `ME` read on T) with its key box.
+/// The grant (mint admin 0 gives `ME` read on T) with its key box.
 fn grant(key: SyncId) -> Commit {
-    let mut c = edge(30, FIRST_ADMIN, 1, ME, Some(Role::Read), None);
+    let mut c = edge(30, MINT_ADMIN, 1, ME, Some(Role::Read), None);
     c.boxes = vec![KeyBox { thing: T, key }];
     c
 }
 
 fn made() -> Commit {
-    creation(T, RecordLink::Admin(FIRST_ADMIN), FIRST_ADMIN, ts(0), Retention::ROLE, None)
+    creation(T, RecordLink::Admin(MINT_ADMIN), MINT_ADMIN, ts(0), Retention::ROLE, None)
 }
 
 /// T lives under `L`, which only the grant's key opens; `ME` holds `MINE` only; the grant is copied
 /// whole under `MINE`.
 fn invited(key: SyncId) -> Library {
-    let records = vec![Record { id: FIRST_ADMIN, link: RecordLink::Key }];
+    let records = vec![Record { id: MINT_ADMIN, link: RecordLink::Key }];
     let mut sync_ids = BTreeMap::new();
     sync_ids.insert(T, BTreeSet::from([L]));
     let mut copies = BTreeMap::new();
     copies.insert(30, BTreeSet::from([MINE]));
-    let w = reg(40, FIRST_ADMIN, 2, REG, Retention::PLAIN, 5);
+    let w = reg(40, MINT_ADMIN, 2, REG, Retention::PLAIN, 5);
     Library { now: at(5), me: ME, records, sync_ids, copies, commits: vec![grant(key), made(), w], keys: BTreeSet::from([MINE]) }
 }
 
@@ -185,25 +185,25 @@ fn forged_boxes_change_no_read_at_any_size_spec_crypto() {
 // keeps no bytes
 #[test]
 fn woken_part_joins_spec_commits_4() {
-    let w = reg(10, FIRST_ADMIN, 1, REG, Retention::PLAIN, 1);
-    let mut lib = Library { now: at(5), me: ME, keys: BTreeSet::from([L]), records: vec![Record { id: FIRST_ADMIN, link: RecordLink::Key }], ..Default::default() };
+    let w = reg(10, MINT_ADMIN, 1, REG, Retention::PLAIN, 1);
+    let mut lib = Library { now: at(5), me: ME, keys: BTreeSet::from([L]), records: vec![Record { id: MINT_ADMIN, link: RecordLink::Key }], ..Default::default() };
     lib.sync_ids.insert(T, BTreeSet::from([L]));
     lib.commits.push(w);
     let early = settle(&lib, &mut |_| {}, true);
     assert_eq!(early.held.commits.iter().filter(|c| c.id == 10).count(), 0);
-    lib.commits.push(creation(T, RecordLink::Admin(FIRST_ADMIN), FIRST_ADMIN, ts(0), Retention::ROLE, None));
+    lib.commits.push(creation(T, RecordLink::Admin(MINT_ADMIN), MINT_ADMIN, ts(0), Retention::ROLE, None));
     let done = settle(&lib, &mut |_| {}, true);
     assert!(evaluate(&done.held).applied.contains(&(CREATION_ID + T)));
     assert_eq!(evaluate(&done.held).reads.get(&(T, REG)).cloned().flatten(), int(1));
 }
 
-/// Writer 1's body 10, replaced by the first admin's 15 and covered by 1's snapshot 20 (a cover
+/// Writer 1's body 10, replaced by the mint admin's 15 and covered by 1's snapshot 20 (a cover
 /// drops only a body nothing reads on its own: a replaced one), and `c`.
 fn covered(c: Commit) -> (Held, Commit) {
     let b = Commit { parts: vec![Part { ..part(REG, Retention::WRITER, vec![set(1, 10, 1)]) }], ..reg(10, 1, 1, REG, Retention::WRITER, 1) };
-    let x = reg(15, FIRST_ADMIN, 2, REG, Retention::WRITER, 2);
+    let x = reg(15, MINT_ADMIN, 2, REG, Retention::WRITER, 2);
     let s = snap(20, 1, 3, REG, Retention::WRITER, vec![set(2, 15, 2)]);
-    let g = edge(5, FIRST_ADMIN, 0, 1, Some(Role::Write), None);
+    let g = edge(5, MINT_ADMIN, 0, 1, Some(Role::Write), None);
     (held(5, vec![g, b, x, s]), c)
 }
 
@@ -211,7 +211,7 @@ fn covered(c: Commit) -> (Held, Commit) {
 // reads as if the commit had come first
 #[test]
 fn delete_during_a_content_wait_reads_alike_spec_sync_6() {
-    let c = reg(30, FIRST_ADMIN, 2, Aspect::plain(5), Retention::PLAIN, 9);
+    let c = reg(30, MINT_ADMIN, 2, Aspect::plain(5), Retention::PLAIN, 9);
     let (h, c) = covered(c);
     let o = evaluate(&h);
     assert!(matches!(o.fates[&(10, 0)], Fate::MayDrop(DropWhy::Covered { by: 20 })));
@@ -227,7 +227,7 @@ fn delete_during_a_content_wait_reads_alike_spec_sync_6() {
 // not arrived at all. Not specific to a wait: the node could not tell before it came.
 #[test]
 fn delete_during_a_demotion_wait_counts_as_never_received_spec_sync_6() {
-    let c = edge(6, FIRST_ADMIN, 2, 1, None, Some(vec![10]));
+    let c = edge(6, MINT_ADMIN, 2, 1, None, Some(vec![10]));
     let (h, c) = covered(c);
     let o = evaluate(&h);
     let mut dropped = act(&h, &o, Some((10, 0)));

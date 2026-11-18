@@ -321,7 +321,7 @@ fn created_late_every_order() {
 /// §1, §5.1: a record edge removed by another admin (cut, stored nowhere) and the record of
 /// a thing below arriving before, between or after the commits: by re-partition and by touched
 /// things, every arrival order of the record and four commits equals from scratch (the record
-/// edge in force from the start, its removal holding, the removed first admin's grant void).
+/// edge in force from the start, its removal holding, the removed mint admin's grant void).
 #[test]
 fn record_edge_cut_late_record_every_order_spec_permissions_1() {
     let mut w = World::new();
@@ -368,7 +368,7 @@ fn record_edge_cut_late_record_every_order_spec_permissions_1() {
                 prev = held;
             }
             let full = Timeline::evaluate(&prev);
-            assert_eq!(full.role(&n[0], &g, At::END), None, "the removed first admin");
+            assert_eq!(full.role(&n[0], &g, At::END), None, "the removed mint admin");
             assert!(!full.is_applied(&WriteId(c3, 0)));
             assert_eq!(full.role(&n[2], &d, At::END), Some(osis_base::Role::Read));
             for t in [g, d] {
@@ -1105,7 +1105,7 @@ fn check_more(held: &osis_perm::MemoryHeldSet, inc: &Timelines, nodes: &[Tid]) -
     None
 }
 
-/// Random histories over a record chain (P's first admin the key, Q's P, R's Q), two nested
+/// Random histories over a record chain (P's mint admin the key, Q's P, R's Q), two nested
 /// teams and a thing as holder, with `until` on every role, invites of every level, removals,
 /// widenings, two-op commits; half the commits arrive late, one to three at a time, in random
 /// order through `update_touched`, with restarts from saved walks now and then; equal to an
@@ -1314,7 +1314,7 @@ fn late_writes_read_later_placed_spec_permissions_5_1() {
 
 /// §1, §5.1: a thing an earlier write names (as holder) whose `created.0` arrives late, and one
 /// named as target: the walk goes on from the first item naming it (before it, a node's role on
-/// it is its role on its first admin), not evaluated anew; equal to an evaluation from scratch.
+/// it is its role on its mint admin), not evaluated anew; equal to an evaluation from scratch.
 #[test]
 fn created_late_after_writes_naming_it_spec_permissions_5_1() {
     use osis_base::Role::{Admin, Read, Write};
@@ -1663,7 +1663,7 @@ fn adversarial_falls(rng: &mut Rng, at: &str, seen: &mut Seen) {
 }
 
 /// §1, §5.1 step 4: a thing named as a holder by a write that a later fall drops (a node
-/// until its `created.0` names its first admin) gets its `created.0` late: the walk goes on from the
+/// until its `created.0` names its mint admin) gets its `created.0` late: the walk goes on from the
 /// dropped write, which is dropped again; and with a late write before it in the same update.
 /// Equal to an evaluation from scratch, not evaluated anew.
 #[test]
@@ -1826,7 +1826,7 @@ fn creation_histories(rng: &mut Rng, at: &str, seen: &mut Seen) {
     w.set(k, base[1], base[2], edge(if rng.below(2) == 0 { Admin } else { Write }), 1, &[]);
     let start = w.created.clone();
     let start_commits: BTreeSet<_> = w.commits.iter().map(|c| c.id).collect();
-    // new things, first admins among everything so far (chains, siblings, deep trees)
+    // new things, mint admins among everything so far (chains, siblings, deep trees)
     let mut things: Vec<Tid> = base.to_vec();
     let mut fresh = Vec::new();
     for _ in 0..6 + rng.below(14) {
@@ -1904,7 +1904,7 @@ fn creation_histories(rng: &mut Rng, at: &str, seen: &mut Seen) {
         // The general path may report more: when several old components merge it continues
         // the one with the most commits, then things, and names the others' things. Each
         // must be a node bringing nothing, or below a thing the fast path names by record
-        // edges (authority there follows its first admin's).
+        // edges (authority there follows its mint admin's).
         let fa: BTreeSet<Tid> = a.evaluated.union(&a.extended).copied().collect();
         let fb: BTreeSet<Tid> = b.evaluated.union(&b.extended).copied().collect();
         let covered = |x: &Tid| {
@@ -1948,7 +1948,7 @@ fn creation_histories(rng: &mut Rng, at: &str, seen: &mut Seen) {
 
 /// §5.1: a lone node's first commit joins it to a component without commits (a record chain):
 /// the general path continues the larger component and reports the node and the commit's
-/// target, as `append` does, not the target's first admins (seed 7301 of
+/// target, as `append` does, not the target's mint admins (seed 7301 of
 /// `creation_fast_equals_general_large`: it continued the node's walk and reported them all).
 #[test]
 fn merge_continues_the_larger_component_spec_permissions_5_1() {
@@ -1976,9 +1976,9 @@ fn merge_continues_the_larger_component_spec_permissions_5_1() {
     }
 }
 
-/// §1, §5.1: a leaf whose first admin has no record held (a node so far only the target of
+/// §1, §5.1: a leaf whose mint admin has no record held (a node so far only the target of
 /// a commit) joins that component by the fast path; the next growth of the component that
-/// the fast path declines continues the walk (a first admin without a record is a node to
+/// the fast path declines continues the walk (a mint admin without a record is a node to
 /// `Timeline::add_leaves` as to `Input::gather`, so none "comes" at the extension), as the
 /// general path does (`creation_fast_equals_general_large` seed 0x5005eed0a02 sample 11: the
 /// fast path evaluated the component instead).
@@ -2107,10 +2107,10 @@ fn update_moved(inc: &mut Timelines, held: &osis_perm::MemoryHeldSet, prev: &osi
     if !MOVES.get() {
         return inc.update_touched(held, &t);
     }
-    // holder -> target and first admin -> thing, of any validity: `Held::named_on`, `Held::first_admin_of`
+    // holder -> target and mint admin -> thing, of any validity: `Held::named_on`, `Held::mint_admin_of`
     let mut down: BTreeMap<Tid, BTreeSet<Tid>> = BTreeMap::new();
     let mut up: BTreeMap<Tid, BTreeSet<Tid>> = BTreeMap::new();
-    let mut first_admin_of: BTreeMap<Tid, BTreeSet<Tid>> = BTreeMap::new();
+    let mut mint_admin_of: BTreeMap<Tid, BTreeSet<Tid>> = BTreeMap::new();
     let mut link = |a: Tid, b: Tid| {
         down.entry(a).or_default().insert(b);
         up.entry(b).or_default().insert(a);
@@ -2128,7 +2128,7 @@ fn update_moved(inc: &mut Timelines, held: &osis_perm::MemoryHeldSet, prev: &osi
     for (x, r) in &held.created {
         if let osis_base::RecordLink::Admin(o) = r.record_link() {
             link(o, *x);
-            first_admin_of.entry(o).or_default().insert(*x);
+            mint_admin_of.entry(o).or_default().insert(*x);
         }
         if matches!(r, osis_base::CreationRecord::KeyActor { .. }) {
             nodes.insert(*x);
@@ -2153,7 +2153,7 @@ fn update_moved(inc: &mut Timelines, held: &osis_perm::MemoryHeldSet, prev: &osi
     let after = answers(inc, &nodes, &things, &points);
     let holders: BTreeSet<Tid> = c.edges.iter().map(|p| p.0).chain(c.created.iter().copied()).collect();
     let targets: BTreeSet<Tid> = c.edges.iter().map(|p| p.1).chain(c.created.iter().copied()).collect();
-    let (subjects, reached, below) = (closure(holders, &up), closure(targets, &down), closure(c.created.clone(), &first_admin_of));
+    let (subjects, reached, below) = (closure(holders, &up), closure(targets, &down), closure(c.created.clone(), &mint_admin_of));
     let covered = |n: &Tid, t: &Tid| c.evaluated.contains(t) || below.contains(t) || subjects.contains(n) && reached.contains(t);
     for (k, a) in &after {
         assert!(*a == before[k] || covered(&k.0, &k.1), "an answer about {:?} on {:?} moved unreported: edges {:?}, created {:?}\nwas {}\nnow {a}", k.0, k.1, c.edges, c.created, before[k]);

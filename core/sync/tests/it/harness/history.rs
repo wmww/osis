@@ -112,7 +112,7 @@ pub struct Made {
     pub handed: Vec<Package>,
     handed_ids: BTreeSet<CommitId>,
     written: u64,
-    /// Things whose record edge a removal took (the roster then shows no first admin either).
+    /// Things whose record edge a removal took (the roster then shows no mint admin either).
     record_gone: BTreeSet<usize>,
     /// (thing, account) pairs given a role directly, with the best role given: their tickets.
     given: BTreeMap<(usize, Tid), Role>,
@@ -622,8 +622,8 @@ impl Model {
         self.accounts.iter().position(|x| x == a)
     }
 
-    /// The model from the history: kinds (a plain thing derives from its nearest first admin
-    /// with own keys), grants (the reference's rosters, each thing's first admin as admin, each
+    /// The model from the history: kinds (a plain thing derives from its nearest mint admin
+    /// with own keys), grants (the reference's rosters, each thing's mint admin as admin, each
     /// account admin of its root), strongs (the reference's `holds.0` of every root and thing).
     pub fn of(w: &mut World, r: &mut Peer) -> Model {
         let mut accounts: Vec<Tid> = Vec::new();
@@ -642,7 +642,7 @@ impl Model {
         let index = |t: &Tid| -> Option<usize> {
             accounts.iter().position(|x| x == t).or_else(|| roots.iter().position(|x| x == t).map(|a| na + a)).or_else(|| things.iter().position(|x| x == t).map(|k| 2 * na + k))
         };
-        let first_admin = |k: usize| match h.under[k] {
+        let mint_admin = |k: usize| match h.under[k] {
             Under::Root(d) => index(&d).expect("a known account root"),
             Under::Thing(p) => 2 * na + p,
         };
@@ -670,7 +670,7 @@ impl Model {
             // shows, or removes it (`record_gone`)
             let roster = r.engine.roster(t);
             if roster.is_empty() && !h.record_gone.contains(&k) {
-                grants.insert((first_admin(k), 2 * na + k), hc::Role::Admin);
+                grants.insert((mint_admin(k), 2 * na + k), hc::Role::Admin);
             }
             for (holder, e) in roster {
                 if let Some(g) = index(&holder) {

@@ -310,7 +310,7 @@ fn below_held(e: &osis_engine::Engine, t: &Tid, h: &Tid, role: Role) -> bool {
 /// `UnknownActor` unless `h` is known here as an actor a grant can box: a thing with a first
 /// admin, or a key actor (a node or a link key) whose `keys.0` is held.
 fn known_actor(e: &mut osis_engine::Engine, h: Tid) -> Result<()> {
-    if !e.knows(&h) || (e.first_admin(&h).is_none() && e.get_typed(&h, &ct::KEYS)?.is_none()) {
+    if !e.knows(&h) || (e.mint_admin(&h).is_none() && e.get_typed(&h, &ct::KEYS)?.is_none()) {
         return Err(Error::UnknownActor { tid: h });
     }
     Ok(())
@@ -411,7 +411,7 @@ impl Osis {
     /// (it left, or its grant ended and was removed) undoes what it wrote with that role that this
     /// node had not received.
     ///
-    /// A thing's first grant to anyone but its first admin also gives it keys of its own, so every
+    /// A thing's first grant to anyone but its mint admin also gives it keys of its own, so every
     /// holder of a role on it can read it.
     ///
     /// Needs admin on the target (or a `may_grant` of at least `role`, for someone with no grant yet;
@@ -691,7 +691,7 @@ impl Osis {
             .collect())
     }
 
-    /// The links whose seed thing is the account's and whose K's first admin it is (a co-reader can reference a
+    /// The links whose seed thing is the account's and whose K's mint admin it is (a co-reader can reference a
     /// seed thing from a shared thing: it names no link of ours).
     fn held_links(&self) -> Result<Vec<flows::HeldLink>> {
         let me = self.me();
@@ -767,7 +767,7 @@ impl Osis {
         let p = link.target;
         let mut started = false;
         Ok(self.waiting(move |db| {
-            let found = db.engine(|e| e.first_admin(&p).filter(|a| e.account_holder_keys(a).is_ok()));
+            let found = db.engine(|e| e.mint_admin(&p).filter(|a| e.account_holder_keys(a).is_ok()));
             if let Some(a) = found {
                 return Some(db.engine(|e| e.set_app_record(&format!("{PROFILE_OF}{a}"), p.to_string().as_bytes())).map(|()| a).map_err(Into::into));
             }
@@ -832,7 +832,7 @@ fn retain_only_on_removal(role: Option<Role>, o: SetRoleOpts) -> Result<()> {
 /// `Osis::held_links`, on this engine.
 fn account_links(e: &mut osis_engine::Engine, me: Tid) -> Result<Vec<flows::HeldLink>> {
     let held = e.held_links()?.to_vec();
-    Ok(held.into_iter().filter(|h| h.first_admin == me && e.first_admin(&h.k) == Some(me)).collect())
+    Ok(held.into_iter().filter(|h| h.mint_admin == me && e.mint_admin(&h.k) == Some(me)).collect())
 }
 
 /// App record prefix: `profile/<account tid>` -> profile tid text, written by `import_contact`.

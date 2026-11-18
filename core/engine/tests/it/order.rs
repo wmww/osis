@@ -72,7 +72,7 @@ pub(crate) enum Step {
     Leave { by: usize, t: usize },
     /// A compaction snapshot of one aspect (`op` as in `Write`).
     Compact { by: usize, t: usize, op: u8 },
-    /// A new thing whose first admin is thing `parent`, with a write in its creation commit or not.
+    /// A new thing whose mint admin is thing `parent`, with a write in its creation commit or not.
     New { by: usize, parent: usize, write: bool },
     /// `by` puts entry `k` (a struct, or a text when `text`) on `t`, sends that commit to
     /// `other` alone, `other` writes inside the entry and, when `compact`, compacts the aspect:
@@ -135,7 +135,7 @@ pub(crate) enum Step {
     BigDemote { by: usize, t: usize, holder: usize },
     // for the judgment vectors and scripted examples (`generate` draws `NewTop`, `Setting`,
     // `PurgeSet`, `Two` and `TwoEdges` too):
-    /// A new thing whose first admin is peer `by` itself: no edge of G reaches it.
+    /// A new thing whose mint admin is peer `by` itself: no edge of G reaches it.
     NewTop { by: usize },
     /// A bare edge write past the writer's rules (`Engine::commit_hostile`):
     /// `holder`'s edge on `t` set to `role` with `invite`, or removed.
@@ -176,15 +176,15 @@ pub(crate) enum Step {
     /// with things nobody holds, so it goes by link.
     LinkedDemote { by: usize, t: usize, holder: usize },
     // record-only things and the flows (`random_step` never draws these):
-    /// `by` makes a thing by its record alone, whose first admin is itself, or thing `under` (needing
-    /// write on it), with a write on it: a plain thing deriving from its first admin, whose
+    /// `by` makes a thing by its record alone, whose mint admin is itself, or thing `under` (needing
+    /// write on it), with a write on it: a plain thing deriving from its mint admin, whose
     /// record edge no entry holds.
     RecordOnly { by: usize, under: Option<usize> },
     /// `by` grants `holder` (a peer, or 3: G) `role` on `t` through `Engine::grant`: a plain
     /// target gets secrets of its own first.
     GrantFlow { by: usize, t: usize, holder: usize, role: Role },
     /// `by` removes `holder`'s edge (a peer, or 3: G) on `t`, or lowers it to write, through
-    /// `Engine::demote`: a first admin's record edge included (a removal of no entry,
+    /// `Engine::demote`: a mint admin's record edge included (a removal of no entry,
     /// spec/permissions.md §2).
     RemoveFlow { by: usize, t: usize, holder: usize, lower: bool },
 }
@@ -755,7 +755,7 @@ fn setup(seed: u64, addenda: bool) -> (LocalPeer, (Vec<Tid>, Tid)) {
     (lp, (ids, g))
 }
 
-/// Plays `steps` on three peers: 0 is G's first admin and gives 1 write and 2 admin on it. The
+/// Plays `steps` on three peers: 0 is G's mint admin and gives 1 write and 2 admin on it. The
 /// peers write no addenda (`play_with` for histories carrying them).
 /// A new plain thing's record at peer `by`, held by the account root's strong in a commit of its
 /// own (spec/sync-set.md §2 Making a thing), so the commit making it is on it alone. That commit
@@ -768,7 +768,7 @@ fn held_record(lp: &mut LocalPeer, by: usize, seen: &mut BTreeSet<CommitId>) -> 
     rec
 }
 
-/// Peer `by`'s new thing `t` outside G (its first admin `by`'s account or account
+/// Peer `by`'s new thing `t` outside G (its mint admin `by`'s account or account
 /// root) shared as G is: every other peer and the nodes under test (`reader`, `Played::reader`)
 /// hold it and read it, granted through the flow (`write`: that peer granted write instead).
 /// Each peer's hold is on its node root, which no other node syncs: marked `seen`, never played;
@@ -852,7 +852,7 @@ pub(crate) fn play_with(seed: u64, steps: &[Step], addenda: bool) -> Played {
     let mut tally = Tally::default();
     // each made thing's creating commit (`Forged` tells of it)
     let mut made_by: BTreeMap<Tid, (usize, CommitId)> = BTreeMap::new();
-    // each record-only thing's first admin
+    // each record-only thing's mint admin
     let mut firsts: BTreeMap<Tid, Tid> = BTreeMap::new();
     // the blobs of `BadPart`, with what their authors' own copies dropped
     let mut forged: BTreeMap<CommitId, Vec<u8>> = BTreeMap::new();
@@ -889,7 +889,7 @@ pub(crate) fn play_with(seed: u64, steps: &[Step], addenda: bool) -> Played {
         let th = |t: usize| things[t % things.len()];
         // why this step made no commit, when refused
         let mut no: Option<String> = None;
-        // a `RemoveFlow` of a first admin's edge
+        // a `RemoveFlow` of a mint admin's edge
         let mut record = false;
         let acted = match st_ {
             Step::Aim(_) | Step::Old(_) | Step::Typed { .. } | Step::NestedItem { .. } => unreachable!("aimed and twinned above"),
@@ -2659,7 +2659,7 @@ impl Seen {
             (Emphasis::Purges, "a permanent delta purged by name and one by author", |s| s.tombstones > 0 && s.by_author > 0),
             (Emphasis::Keeps, "kept writes on a register, a set and a map, and held-model judging a covered drop of a replaced body", |s| ["t:kept.0", "t:keptset.0", "t:keptmap.0"].iter().all(|a| s.aspects.contains_key(*a)) && s.model.reached.get("covered drops judged").is_some_and(|n| *n > 0)),
             (Emphasis::Settings, "a setting fell", |s| s.fallen > 0),
-            (Emphasis::RecordOnly, "a first admin's record edge removed", |s| s.tally.kinds.get("RemoveFlow(record)").is_some_and(|x| x.1 > 0)),
+            (Emphasis::RecordOnly, "a mint admin's record edge removed", |s| s.tally.kinds.get("RemoveFlow(record)").is_some_and(|x| x.1 > 0)),
             (Emphasis::Lists, "list elements written, some by a writer predating the undo expiry rule", |s| s.aspects.contains_key("t:listtext.0") && s.tally.kinds.iter().any(|(k, x)| k.ends_with("(old)") && x.1 > 0)),
             (Emphasis::PartsAway, "parts held away and parts left out as covered", |s| s.withheld > 0 && s.covered_away > 0),
             (Emphasis::Settled, "a settled history judged before its exchange, and held-model judging a live body dropped as covered", |s| s.settled > 0 && s.model.reached.get("live drops judged").is_some_and(|n| *n > 0)),
@@ -3057,7 +3057,7 @@ fn generate(seed: u64, len: usize) -> (Emphasis, Vec<Step>) {
         }
         Emphasis::Settings => {
             let op = required.pick(&KEPT_OPS);
-            // the first admin's setting stands and 1 writes; Carol's, a second on, falls when Alice
+            // the mint admin's setting stands and 1 writes; Carol's, a second on, falls when Alice
             // demotes her as of the setup (Carol has no writes before it)
             h.extend([Setting { by: 0, t: 0, op, rule: 3 }, Advance { who: None, ms: 1_000 }, Setting { by: 2, t: 0, op, rule: 2 }, PurgeSet { by: 1, t: 0, op, v: 1, fits: false }, Sync { from: 2, to: 0 }, Demote { by: 0, t: 0, holder: 2, at: 0, to_read: false }]);
         }
@@ -3066,8 +3066,8 @@ fn generate(seed: u64, len: usize) -> (Emphasis, Vec<Step>) {
             let v = 2 * lists.below(5) as u8;
             h.extend([Old(Box::new(Typed { by: 0, t: 0, op: 32, k: 0, v })), Typed { by: 1, t: 0, op: 33, k: 0, v: v + 1 }]);
         }
-        // a record-only thing (thing 1), another admin, and its first admin's record edge removed
-        // two two-part commits by G's first admin (`withhold` holds one in part), every peer
+        // a record-only thing (thing 1), another admin, and its mint admin's record edge removed
+        // two two-part commits by G's mint admin (`withhold` holds one in part), every peer
         // given them, then its snapshots of both aspects covering them (`covered_away` leaves
         // those parts out)
         Emphasis::PartsAway => {
@@ -3598,7 +3598,7 @@ fn setup_grant(played: &Played, to: usize) -> usize {
 ///
 /// A thing with a `retention^.0` delta in the history settles nothing: one dropped while invalid
 /// and missing again changes what its thing keeps until its copy comes back, and no compaction
-/// carries it (the setup's, by the first admin, never falls).
+/// carries it (the setup's, by the mint admin, never falls).
 fn settling(mut played: Played, steps: &[Step]) -> Played {
     let tail = settled(Vec::new());
     let Some(at) = steps.len().checked_sub(tail.len()).filter(|&at| steps[at..] == tail[..]) else { return played };
@@ -4526,7 +4526,7 @@ fn purge_of_a_part_dropped_while_invalid_reads_alike_by_the_resnapshot_spec_comm
 }
 
 // spec/commits.md §4 Unjudgeable: 2 makes a record-only thing t2 and removes from it G's grant it
-// never had, then makes u under t2; 0 (G's first admin) forges one commit putting 2 write on t2
+// never had, then makes u under t2; 0 (G's mint admin) forges one commit putting 2 write on t2
 // and u. The removal names G but leads nowhere, so nothing leads from 0 to t2 or u: every node
 // keeps nothing of the forgery, as held-model says (`receive::a_removal_leads_no_author_to_a_thing_spec_commits_4`).
 #[test]

@@ -323,7 +323,7 @@ fn files() -> Vec<(&'static str, String)> {
 }
 
 /// The roles model's pinned reference scenarios played on the engine (core/test/roles-model):
-/// peer 0 is G's first admin, 1 writes, 2 is admin (`order::play`'s setup).
+/// peer 0 is G's mint admin, 1 writes, 2 is admin (`order::play`'s setup).
 fn models() -> Vec<Scenario> {
     use Step::*;
     let w = |by, v| Write { by, t: 0, op: 0, k: 0, v };
@@ -374,9 +374,9 @@ fn models() -> Vec<Scenario> {
             orders: None,
         },
         Scenario {
-            name: "concurrent cross removals, the first admin removes the earlier unseen",
+            name: "concurrent cross removals, the mint admin removes the earlier unseen",
             spec: "spec/permissions.md §5.1",
-            source: "roles-model joint::concurrent_cross_removals (the first admin's removal of x drops x's removal of y)",
+            source: "roles-model joint::concurrent_cross_removals (the mint admin's removal of x drops x's removal of y)",
             steps: vec![Edge { by: 0, t: 0, holder: 1, role: Some(Role::Admin) }, Sync { from: 0, to: 1 }, tick.clone(), Edge { by: 1, t: 0, holder: 2, role: None }, tick.clone(), Edge { by: 2, t: 0, holder: 1, role: None }, tick.clone(), Edge { by: 0, t: 0, holder: 1, role: None }],
             orders: None,
         },
@@ -586,7 +586,7 @@ fn remerges() -> Vec<Scenario> {
     }]
 }
 
-/// One history over two sync IDs (`lay`'s `second`): one commit, a part under each. H's first admin
+/// One history over two sync IDs (`lay`'s `second`): one commit, a part under each. H's mint admin
 /// is 0, so only H's own edge gives 1 a role on it.
 fn sync_ids() -> Vec<Scenario> {
     use Step::*;

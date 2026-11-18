@@ -63,8 +63,8 @@ fn tagging_shares_nothing() {
 }
 
 /// Who can see a thing reached through someone else's tag (here a grant given by hand): Bob's
-/// note in Alice's tag names Alice (the tag's first admin); Alice's note shared with Bob names her
-/// (its first admin).
+/// note in Alice's tag names Alice (the tag's mint admin); Alice's note shared with Bob names her
+/// (its mint admin).
 #[test]
 fn reach_through_someone_elses_tag() {
     let (a, b) = two_people();
@@ -80,7 +80,7 @@ fn reach_through_someone_elses_tag() {
     let na = osis_kit::facets::create(&a, "note").unwrap();
     a.db.grant(na, b.db.me(), Role::Read, GrantOpts::default()).unwrap();
     sync(&a, &b);
-    assert_eq!(reach(&b, na).unwrap().people.len(), 1, "Alice, its first admin");
+    assert_eq!(reach(&b, na).unwrap().people.len(), 1, "Alice, its mint admin");
 }
 
 /// A grant that ends later still counts now: who can see it must not hide a current reader.

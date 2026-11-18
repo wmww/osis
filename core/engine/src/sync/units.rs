@@ -836,7 +836,7 @@ impl Core {
     }
 
     /// Whether `y` has own keys here (spec/sync-set.md §2): by the role commits held of it, or by
-    /// an established secret of its own (not one derived from its first admin's). A ticket's
+    /// an established secret of its own (not one derived from its mint admin's). A ticket's
     /// secret establishes nothing (it may be anyone's): a thing without own keys whose tickets the
     /// walk took is entered on their word (`given_by`), read fetching under their sync IDs
     /// (`Ctx::Ticket`) until the role commits arrive, sync kept unread (`Ctx::Unread`).
@@ -845,7 +845,7 @@ impl Core {
     }
 
     /// Whether the node holds an established read secret of `y`'s own (not one derived from its
-    /// first admin's, which a thing whose keyset the node lacks reads as): until then a held ticket's
+    /// mint admin's, which a thing whose keyset the node lacks reads as): until then a held ticket's
     /// secret is taken at each strong reaching it, since a secret held but not established may be
     /// anyone's (a ticket's epoch is its maker's to choose) and must not keep an honest one out.
     pub(crate) fn reads_established(&self, y: &Tid) -> bool {

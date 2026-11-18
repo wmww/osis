@@ -817,7 +817,7 @@ mod tests {
     #![allow(clippy::unwrap_used, clippy::indexing_slicing)]
     use crate::flows::Demotion;
 
-    /// A thing whose first admin is `admin`, made by peer `i`, held by every peer.
+    /// A thing whose mint admin is `admin`, made by peer `i`, held by every peer.
     fn thing_of(lp: &mut LocalPeer, i: usize, admin: Tid) -> Tid {
         let e = &mut lp.peers[i].engine;
         let mut m = Mutation::new();
@@ -923,7 +923,7 @@ mod tests {
         assert!(!lp.peers[1].engine.commit_ids().contains(&g), "waits for a's record");
     }
 
-    /// Peer 0 is first admin of thing `t` (`x:a.0` = 1); peer 1 is the grantee, holding nothing of peer 0;
+    /// Peer 0 is mint admin of thing `t` (`x:a.0` = 1); peer 1 is the grantee, holding nothing of peer 0;
     /// peers 2.. are throwaway authors unknown to the grantee.
     fn grantee_world(n: usize) -> (LocalPeer, Tid) {
         LocalPeer::cached(&format!("apply::keys::grantee_world/{n}"), || grantee_build(n))
@@ -1298,7 +1298,7 @@ mod tests {
     }
 
     // spec/crypto.md §4 (Reading-only secrets): a box opens whether or not its commit counts. Admin
-    // A of T, demoted by T's first admin O, rotates T's read role; writer W holds the rotation
+    // A of T, demoted by T's mint admin O, rotates T's read role; writer W holds the rotation
     // before the demotion and writes under A's epoch. Reader R and O hold the demotion first, so
     // A's rotation is invalid on arrival there, yet W's write, sealed as a sync ID carries it,
     // opens and reads by value at both.
@@ -1338,7 +1338,7 @@ mod tests {
     // X on G's plain thing T (T's first `keys.0`, a rotation from derived epochs) after G's first
     // admin removed A. Once A's grant is invalid, every node derives T from G again (encrypting under
     // G's epoch rotated past A, not A's), delete base G, open = rebuild; peer 3 had A's commit
-    // applied valid first (Y: a reader of G). The first admin's own grant then gives T secrets of its own everywhere.
+    // applied valid first (Y: a reader of G). The mint admin's own grant then gives T secrets of its own everywhere.
     #[test]
     fn keyset_of_invalid_rotation_leaves_thing_plain_spec_crypto_3() {
         let mut lp = LocalPeer::fresh(4, WallMs(1_700_000_000_000));
@@ -1381,7 +1381,7 @@ mod tests {
             lp.peers[i].engine.rebuild_index().unwrap();
             assert_eq!(d0.first_diff(&lp.peers[i].engine.index_digest()), None, "peer {i}: open = rebuild");
         }
-        // the first admin's grant: secrets of T's own, from G's derived epochs
+        // the mint admin's grant: secrets of T's own, from G's derived epochs
         lp.peers[0].engine.grant(&t, &x, &edge(Role::Read)).unwrap();
         lp.sync_all().unwrap();
         let own = lp.peers[0].engine.core.epochs(&t).unwrap().role(Role::Read).newest().unwrap();

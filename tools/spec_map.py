@@ -143,7 +143,7 @@ RULES = [
     ("spec/data-model.md", "5", "cbor profile", "A decoder MUST reject anything outside it"),
     ("spec/data-model.md", "6", "chunk threshold", "MUST be chunked; one at or below it MUST NOT be"),
     ("spec/data-model.md", "6", "unreadable link", "A read that materializes a link it cannot read"),
-    ("spec/permissions.md", "1", "first admin removable", "Admins are equal and may remove each other, the mint admin included"),
+    ("spec/permissions.md", "1", "mint admin removable", "Admins are equal and may remove each other, the mint admin included"),
     ("spec/permissions.md", "1", "role-class by admins", "are written only by its admins"),
     ("spec/permissions.md", "2", "invite scope", "Invite holders cannot change or remove any other edge"),
     ("spec/permissions.md", "3", "required rotation", "MUST do so before it next encrypts"),

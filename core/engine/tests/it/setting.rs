@@ -18,7 +18,7 @@ fn keep(after: u64) -> History {
     History::Keep { until: None, after: Some(after) }
 }
 
-/// Alice (0) is first admin of D, Bob (1) writes, Carol (2) is an admin: built once
+/// Alice (0) is mint admin of D, Bob (1) writes, Carol (2) is an admin: built once
 /// (`LocalPeer::cached`).
 fn setup() -> (LocalPeer, Tid) {
     LocalPeer::cached("setting::setup", || setup_seeded(0))

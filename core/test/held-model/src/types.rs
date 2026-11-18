@@ -324,13 +324,13 @@ impl Commit {
 pub enum RecordLink {
     /// A key actor (node, link key): admin of itself.
     Key,
-    /// Its first admin (a key actor or a thing that is an actor): holds its record edge.
+    /// Its mint admin (a key actor or a thing that is an actor): holds its record edge.
     Admin(NodeId),
 }
 
 impl RecordLink {
-    /// The first admin the record names; a key actor has none.
-    pub fn first_admin(self) -> Option<NodeId> {
+    /// The mint admin the record names; a key actor has none.
+    pub fn mint_admin(self) -> Option<NodeId> {
         match self {
             RecordLink::Key => None,
             RecordLink::Admin(a) => Some(a),

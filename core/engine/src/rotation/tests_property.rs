@@ -6,7 +6,7 @@
 //! actors in cycles (a peer reading G only through them leaves the last), a rotator lacking a
 //! role's secret, and an admin acting while some departures are withheld from it. Forgers and
 //! vandals are hostile: their nodes act no more, and an honest admin removes them (and the
-//! actors they are first admin of) before settling, the re-key from their lockouts. Every node
+//! actors they are mint admin of) before settling, the re-key from their lockouts. Every node
 //! settles under the walk's side of each admin dispute. The seed picks an emphasis (seed mod 4:
 //! forks, departures, forgeries, cycles); every feature stays on its own draws.
 
@@ -55,7 +55,7 @@ struct Made {
 struct Run {
     lp: LocalPeer,
     tids: Vec<Tid>,
-    /// Each actor with the peer that made it (its first admin, never lowered).
+    /// Each actor with the peer that made it (its mint admin, never lowered).
     actors: Vec<(Tid, usize)>,
     /// Every secret each peer held or made at any point: what a departed peer keeps.
     ever: Vec<BTreeSet<Key>>,
@@ -489,7 +489,7 @@ fn rotation_history(seed: u64) -> Reached {
                     if !rot.is_empty() {
                         // boxing nobody, itself included, is no honest node's rotation: a
                         // vandal's lockout (notes/keys.md, Lockouts), so its node is hostile
-                        // from here on, and never the actor's first admin (whom nobody removes)
+                        // from here on, and never the actor's mint admin (whom nobody removes)
                         let nobody = run.rng.next(8) == 0 && i != o;
                         if run.rotate(i, t, &rot, nobody) && nobody {
                             run.hostile.insert(i);
@@ -514,7 +514,7 @@ fn rotation_history(seed: u64) -> Reached {
         run.sync_some(all);
         run.lp.advance(run.rng.next(2_000));
     }
-    // the deep peer leaves the last actor (its first admin removes it, half the time synced to
+    // the deep peer leaves the last actor (its mint admin removes it, half the time synced to
     // everyone before X acts), so a blind sealer of G meets a stale box below what it seals
     if let Some(d) = deep.filter(|d| !run.hostile.contains(d)) {
         let (t, o) = run.actors[k - 1];
@@ -566,7 +566,7 @@ fn rotation_history(seed: u64) -> Reached {
     }
     // the re-key after a hostile node's lockout (notes/keys.md, Lockouts): an honest admin
     // removes each hostile peer still holding an edge on an actor, and each holder actor whose
-    // first admin is hostile (no keyset of it may ever know a departure from it)
+    // mint admin is hostile (no keyset of it may ever know a departure from it)
     run.lp.sync_all().unwrap();
     for (t, o) in run.actors.clone() {
         let Some(a) = (0..N).find(|p| !run.hostile.contains(p) && run.lp.peers[*p].engine.core.role_now(&run.tids[*p], &t) == Some(Role::Admin)) else { continue };
@@ -699,23 +699,23 @@ fn check(run: &mut Run, seed: u64, rotated: bool) {
     for (t, o) in run.actors.clone() {
         let direct: Vec<(usize, Role)> = (0..N).filter(|p| !run.hostile.contains(p)).filter_map(|p| run.key_role(o, &t, p).map(|r| (p, r))).collect();
         let role = |p: usize| direct.iter().find(|x| x.0 == p).map(|x| x.1);
-        // a hostile first admin is never removed and acts no more: nothing recovers its lockouts
+        // a hostile mint admin is never removed and acts no more: nothing recovers its lockouts
         // (notes/keys.md, Lockouts), so the actor need not settle
         if rotated && !run.hostile.contains(&o) {
             let blocked = super::tests::blocked_at(&mut run.lp, o, t);
-            assert!(blocked.is_empty(), "seed {seed}: the first admin of {t:?} settles with {blocked:?} blocked");
+            assert!(blocked.is_empty(), "seed {seed}: the mint admin of {t:?} settles with {blocked:?} blocked");
             assert!(super::tests::all_boxed(&mut run.lp, o, &[t]), "seed {seed}: a holder of {t:?} with key access lacks a box");
         }
         for r in ROLES {
             let ep = |p: usize| run.lp.peers[p].engine.epochs(&t).unwrap_or_default().role(r).clone();
             let at_o = ep(o).current();
-            // every holder at r agrees on the current epochs, each established by the first admin;
+            // every holder at r agrees on the current epochs, each established by the mint admin;
             // a node holding none of r's secrets reads supersession from keysets alone, without
             // the history boxes (spec/crypto.md §4, Supersedes), so may count more
             // a holder of sync alone reads nothing, so holds no secret (spec/permissions.md §3)
             let holds = r.max(Role::Read);
             for &(p, _) in direct.iter().filter(|x| x.1 >= holds) {
-                assert!(at_o.iter().all(|x| ep(o).is_established(x)), "seed {seed}: {t:?} {r:?}: the first admin counts current {at_o:?}, not all established there");
+                assert!(at_o.iter().all(|x| ep(o).is_established(x)), "seed {seed}: {t:?} {r:?}: the mint admin counts current {at_o:?}, not all established there");
                 assert_eq!(ep(p).current(), at_o, "seed {seed}: {t:?} {r:?}: peers {o} and {p} count different current epochs (rotated: {rotated})");
             }
             // every holder ends reading everything: it holds each current epoch a holder that
@@ -803,7 +803,7 @@ fn dump(run: &mut Run, o: usize, d: usize, k: Key, own: &BTreeSet<Key>, limit: &
         out.push(format!("peer {i}: {t:?}{}", if run.hostile.contains(&i) { " (hostile)" } else { "" }));
     }
     for (i, (t, ow)) in run.actors.iter().enumerate() {
-        out.push(format!("actor {i}: {t:?}, first admin peer {ow}"));
+        out.push(format!("actor {i}: {t:?}, mint admin peer {ow}"));
     }
     if let Some(m) = run.made.get(&k) {
         let maker = run.lp.peers[o].engine.core.ix.epoch_intro.get(&k).and_then(|(_, c)| run.lp.peers[o].engine.core.ix.commits.get(c)).map(|c| name(run, &c.header.author));

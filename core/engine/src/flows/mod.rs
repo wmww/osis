@@ -192,11 +192,11 @@ impl Core {
         })
     }
 
-    /// The first admin of `tid` (spec/permissions.md §1): the next actor up its record chain,
+    /// The mint admin of `tid` (spec/permissions.md §1): the next actor up its record chain,
     /// whose secrets a plain `tid` derives from (spec/crypto.md §3). None for a key actor or an
     /// unknown thing.
-    pub(crate) fn first_admin(&self, tid: &Tid) -> Option<Tid> {
-        self.created(tid)?.first_admin()
+    pub(crate) fn mint_admin(&self, tid: &Tid) -> Option<Tid> {
+        self.created(tid)?.mint_admin()
     }
 
     pub fn is_key_actor(&self, tid: &Tid) -> bool {
@@ -204,7 +204,7 @@ impl Core {
     }
 
     /// `a`'s record chain through standing record edges (spec/permissions.md §1): `a`, then its
-    /// first admin while `a`'s record edge stands here (any role), and so on up, the top
+    /// mint admin while `a`'s record edge stands here (any role), and so on up, the top
     /// included (a key actor, or a thing whose record is not held). The one walk for node rules
     /// that read the record chain as standing: inboxes, `sync.0` cross-publishing, inbox stamps
     /// and copies (spec/sync-ids.md §2, spec/sync-judgement.md §1; spec/data-model.md §9).
@@ -223,7 +223,7 @@ impl Core {
     }
 
     /// Current holders of `actor` with their role and `until` (alive edges), its record edge
-    /// included while it stands (with no timeline here, nothing wrote it: the first admin alone).
+    /// included while it stands (with no timeline here, nothing wrote it: the mint admin alone).
     pub fn current_holders(&self, actor: &Tid) -> Vec<(Tid, Role, Option<WallMs>)> {
         if let Some(h) = self.root_holders(actor) {
             return h.into_iter().map(|(m, r)| (m, r, None)).collect();
@@ -231,7 +231,7 @@ impl Core {
         let ts = now_ts(self);
         match self.timelines.on(actor) {
             Some(on) => on.roster(At::now(ts)).into_iter().map(|(m, e)| (m, e.role, e.until)).collect(),
-            None => self.first_admin(actor).map(|a| (a, Role::Admin, None)).into_iter().collect(),
+            None => self.mint_admin(actor).map(|a| (a, Role::Admin, None)).into_iter().collect(),
         }
     }
 
@@ -268,7 +268,7 @@ impl Core {
         }
         match self.timelines.on(actor) {
             Some(on) => on.holders().into_iter().filter_map(|(m, e)| Some((m, crate::rotation::key_role(Some(&e))?))).collect(),
-            None => self.first_admin(actor).map(|a| (a, Role::Admin)).into_iter().collect(),
+            None => self.mint_admin(actor).map(|a| (a, Role::Admin)).into_iter().collect(),
         }
     }
 

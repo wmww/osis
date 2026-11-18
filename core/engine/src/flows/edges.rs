@@ -97,7 +97,7 @@ pub(crate) fn grant_history(tx: &mut Tx<'_>, signer: Option<Tid>, target: Tid, h
     }
     let mut done = Done::default();
     // a thing is made a holder only with secrets of its own; a target gets them on its first
-    // holder other than its first admin (spec/permissions.md §3)
+    // holder other than its mint admin (spec/permissions.md §3)
     if !tx.core.is_key_actor(&holder) && !tx.core.has_own_secrets(&holder) {
         rotation::own_secrets(tx, holder, &mut done)?;
     }
@@ -238,7 +238,7 @@ pub(crate) fn reset_current(tx: &Tx<'_>, m: &mut Mutation, target: Tid, holder: 
 }
 
 /// The removal of `holder`'s edge on `target` in `m`: a reset of its current entry. A holder
-/// with none (a first admin's record edge, stored nowhere, or an edge already removed) gets an
+/// with none (a mint admin's record edge, stored nowhere, or an edge already removed) gets an
 /// entry of this delta reset in it: a removal naming the holder whose creation every reader
 /// holds (spec/permissions.md §2), so it applies in any arrival order.
 pub(crate) fn removal(tx: &Tx<'_>, m: &mut Mutation, target: Tid, holder: Tid) -> Result<()> {
@@ -292,8 +292,8 @@ pub(crate) fn demote_in(tx: &mut Tx<'_>, signer: Option<Tid>, target: Tid, d: &D
     if !selfr && !admin || selfr && !gone.is_empty() {
         return Err(Error::Permission { tid: target, needs: Role::Admin });
     }
-    // a plain thing's only holder for keys is its first admin (a grant gives it secrets
-    // of its own first): lowering the first admin's edge would leave it no admin, refused
+    // a plain thing's only holder for keys is its mint admin (a grant gives it secrets
+    // of its own first): lowering the mint admin's edge would leave it no admin, refused
     // (spec/permissions.md §1)
     if !tx.core.has_own_secrets(&target) && !tx.core.is_key_actor(&target) {
         let lowered: Vec<(Tid, Option<Role>)> = std::iter::once((holder, rotation::key_role(new_p.as_ref()))).chain(gone.iter().map(|(x, _)| (*x, None))).collect();

@@ -127,7 +127,7 @@ fn ours(core: &Core) -> Vec<(Tid, &'static str)> {
 }
 
 /// The widest paths into `t` over the timelines' current edges (each thing's roster now, its
-/// record edge included; with no timeline, its first admin), as `View::roles_to` walks them for
+/// record edge included; with no timeline, its mint admin), as `View::roles_to` walks them for
 /// `role_now`: per holder reached, its role and the next step toward `t`.
 fn widest_to(core: &Core, t: &Tid) -> BTreeMap<Tid, (Role, Option<Tid>)> {
     let at = osis_perm::At::now(crate::flows::now_ts(core));
@@ -137,7 +137,7 @@ fn widest_to(core: &Core, t: &Tid) -> BTreeMap<Tid, (Role, Option<Tid>)> {
         let Some(&(level, _)) = best.get(&x) else { continue };
         let holders: Vec<(Tid, Role)> = match core.timelines.on(&x) {
             Some(on) => on.roster(at).into_iter().map(|(m, e)| (m, e.role)).collect(),
-            None => core.first_admin(&x).map(|a| (a, Role::Admin)).into_iter().collect(),
+            None => core.mint_admin(&x).map(|a| (a, Role::Admin)).into_iter().collect(),
         };
         for (h, r) in holders {
             let v = level.min(r);
@@ -159,7 +159,7 @@ fn edge(core: &Core, h: &Tid, x: &Tid) -> String {
     };
     let by = match on.as_ref().and_then(|o| o.in_force(h)) {
         Some(c) => format!("c:{}", short(&c)),
-        None if core.first_admin(x) == Some(*h) => "record edge".into(),
+        None if core.mint_admin(x) == Some(*h) => "record edge".into(),
         None => "no edge write in force".into(),
     };
     format!("-[{} {by}]->", r.unwrap_or_else(|| "?".into()))

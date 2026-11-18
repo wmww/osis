@@ -62,7 +62,7 @@ pub enum Event {
     Changed { cause: Cause, changed: Vec<(Tid, Ak)> },
     /// The role timeline's roster of `thing` may have changed.
     Roster { thing: Tid },
-    /// A creation record arrived: `thing`'s first-admin edge, the start of its roster.
+    /// A creation record arrived: `thing`'s mint-admin edge, the start of its roster.
     Created { thing: Tid },
     /// A reference index row naming each of these targets on that aspect appeared or went
     /// (`refs`): their backlinks changed. Only once a backlinks watch was asked for

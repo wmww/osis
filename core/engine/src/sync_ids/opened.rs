@@ -144,21 +144,21 @@ impl Core {
         Some((ep, e.read.floor(&ep)))
     }
 
-    /// Whether read epoch `ep` of thing `t` (own, or derived from its first admin's) is
+    /// Whether read epoch `ep` of thing `t` (own, or derived from its mint admin's) is
     /// established here (spec/crypto.md §4).
     fn read_established(&self, t: &Tid, ep: &Epoch) -> bool {
         let own = |e: &ActorEpochs| e.read.is_established(ep);
         if self.epochs(t).or_else(|| self.ix.secrets.get(t).map(|x| std::sync::Arc::new(x.clone()))).is_some_and(|e| own(&e)) {
             return true;
         }
-        let Some(up) = self.created(t).and_then(osis_base::CreationRecord::first_admin) else { return false };
+        let Some(up) = self.created(t).and_then(osis_base::CreationRecord::mint_admin) else { return false };
         self.epochs(&up).is_some_and(|o| own(&ActorEpochs::derived(&o, t)))
     }
 }
 
 impl Engine {
     /// The read epochs of thing `t` held here with their secrets: its own (or its derived ones),
-    /// those derived from its first admin's, and those derived down a section's chain
+    /// those derived from its mint admin's, and those derived down a section's chain
     /// (`chain_epochs`): every secret `open_commit` tries.
     pub(crate) fn read_epochs(&self, t: &Tid, chain: &[Tid]) -> Vec<(Epoch, osis_crypto::Secret32)> {
         let mut out: Vec<(Epoch, osis_crypto::Secret32)> = self.epochs(t).map(|e| e.read.held().map(|(ep, s)| (ep, s.clone())).collect()).unwrap_or_default();
@@ -169,7 +169,7 @@ impl Engine {
                 }
             }
         };
-        if let Some(up) = self.core.created(t).and_then(osis_base::CreationRecord::first_admin)
+        if let Some(up) = self.core.created(t).and_then(osis_base::CreationRecord::mint_admin)
             && let Some(o) = self.epochs(&up)
         {
             from(&o);

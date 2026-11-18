@@ -77,8 +77,8 @@ fn a_destroyed_thing_is_held_and_released_as_any_thing_spec_commits_5() {
 }
 
 // spec/commits.md §5 (Destruction: a destroyed thing keeps its record while a held thing needs
-// it: a dependent, by a held creation record naming it first admin): t, under the account and
-// held from D, is u's first admin; u is held from the node root. t destroyed and released from
+// it: a dependent, by a held creation record naming it mint admin): t, under the account and
+// held from D, is u's mint admin; u is held from the node root. t destroyed and released from
 // the node closure keeps its record while u lives; u destroyed and released too, t keeps nothing
 // once the pass ends (it lost its last need), its chain topping at this node's own account.
 #[test]
@@ -95,7 +95,7 @@ fn a_dependent_keeps_a_destroyed_things_record_spec_commits_5() {
     e.commit(m).unwrap();
     e.released(&[t].into()).unwrap();
     assert!(!e.closure_holds(&t), "t released");
-    assert!(keeps(&mut lp, &t), "u names t first admin: t keeps its record");
+    assert!(keeps(&mut lp, &t), "u names t mint admin: t keeps its record");
     assert_eq!(lp.peers[0].engine.get_typed(&u, &REG).unwrap(), Some(s("new")), "u reads on");
     purge(&mut lp, u);
     let e = &mut lp.peers[0].engine;

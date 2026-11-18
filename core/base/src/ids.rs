@@ -187,9 +187,9 @@ impl CreationRecord {
     pub fn is_account(&self) -> bool {
         matches!(self, CreationRecord::KeyActor { account: true, .. })
     }
-    /// The first admin (spec/permissions.md §1): the next actor up the record chain, whose
+    /// The mint admin (spec/permissions.md §1): the next actor up the record chain, whose
     /// secrets a plain thing derives from (none for a key actor).
-    pub fn first_admin(&self) -> Option<Tid> {
+    pub fn mint_admin(&self) -> Option<Tid> {
         match self {
             CreationRecord::Thing { admin, .. } => Some(*admin),
             CreationRecord::KeyActor { .. } => None,

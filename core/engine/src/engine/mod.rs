@@ -2288,7 +2288,7 @@ impl Core {
     }
 
     /// Whether `t`, made among `creates`, is the node's own (`nodes_own`): it is the node, or its
-    /// first admin is the node's own, held or made beside it.
+    /// mint admin is the node's own, held or made beside it.
     pub(crate) fn made_nodes_own(&self, t: &Tid, creates: &write::Creates) -> bool {
         let mut at = *t;
         for _ in 0..=creates.len() {
@@ -2296,7 +2296,7 @@ impl Core {
             if at == self.id.tid() {
                 return true;
             }
-            let Some(a) = r.first_admin() else { return false };
+            let Some(a) = r.mint_admin() else { return false };
             at = a;
         }
         false
@@ -3849,12 +3849,12 @@ impl Engine {
         self.core.events.diagnostic_from(d, remote, self.core.hlc.mono());
     }
 
-    /// The first admin of `tid` (`None`: a key actor or an unknown thing).
-    pub fn first_admin(&self, tid: &Tid) -> Option<Tid> {
-        self.core.first_admin(tid)
+    /// The mint admin of `tid` (`None`: a key actor or an unknown thing).
+    pub fn mint_admin(&self, tid: &Tid) -> Option<Tid> {
+        self.core.mint_admin(tid)
     }
 
-    /// `tid`, then its first admins up the record chain: at
+    /// `tid`, then its mint admins up the record chain: at
     /// most `MAX_CHAIN_DEPTH` links (`osis_base::record_chain`).
     pub fn record_chain(&self, tid: &Tid) -> impl Iterator<Item = Tid> + '_ {
         self.core.record_chain(tid).filter_map(|s| s.thing())

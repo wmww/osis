@@ -2403,7 +2403,7 @@ mod tests {
     }
 
     // spec/permissions.md §1 (record edge; record chain; max_chain_depth), §5: a writer creates A under X, B under A and C under B in one commit;
-    // the commit is valid wherever applied. Under a first admin the writer may not write, the same
+    // the commit is valid wherever applied. Under a mint admin the writer may not write, the same
     // tree fails the local check, as does a chain of new things past MAX_CHAIN_DEPTH.
     #[test]
     fn tree_created_in_one_commit_spec_perm_1() {
@@ -2443,7 +2443,7 @@ mod tests {
             assert!(p0.engine.creation(&t).is_some());
             assert_eq!(p0.engine.get(&t, &reg).unwrap(), Some(Value::Int(i as i64 + 1)));
         }
-        // the first admin's tree: the last thing's delete keys derive from its base actor's secrets
+        // the mint admin's tree: the last thing's delete keys derive from its base actor's secrets
         // through the two created above it (spec/crypto.md §3, §7)
         let mut m = Mutation::new();
         let d = p0.engine.new_thing(&mut m, x);

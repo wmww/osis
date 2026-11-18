@@ -45,7 +45,7 @@ impl Core {
     }
 
     /// The epochs this node holds for `tid`: its own, opened ones, or derived from those of the
-    /// next actor up its record chain (first admin) for a plain thing. A plain thing's
+    /// next actor up its record chain (mint admin) for a plain thing. A plain thing's
     /// epochs learned from a rotation since found invalid (`stale_epochs`) are added for reading
     /// only.
     pub(crate) fn epochs(&self, tid: &Tid) -> Option<Arc<ActorEpochs>> {
@@ -107,7 +107,7 @@ impl Core {
         if !self.ix.own_keys.contains(tid) || self.ix.secrets.get(tid).is_some() {
             return None;
         }
-        let up = self.created(tid)?.first_admin()?;
+        let up = self.created(tid)?.mint_admin()?;
         let derived = ActorEpochs::derived(&self.chain_epochs(&up)?, tid);
         let mut out = ActorEpochs::default();
         for (ep, info) in derived.role(Role::Read).epochs() {
@@ -402,10 +402,10 @@ impl Core {
         learned
     }
 
-    /// The epochs the next actor up `actor`'s record chain (its first admin) derives for it,
+    /// The epochs the next actor up `actor`'s record chain (its mint admin) derives for it,
     /// established as that actor's are now (spec/crypto.md §3, §4).
     pub(crate) fn base_derived(&self, actor: &Tid) -> Option<ActorEpochs> {
-        let up = self.created(actor).and_then(CreationRecord::first_admin)?;
+        let up = self.created(actor).and_then(CreationRecord::mint_admin)?;
         let base = self.epochs(&up)?;
         Some(ActorEpochs::derived(&base, actor))
     }
@@ -962,7 +962,7 @@ mod tests {
     #[test]
     fn whole_read_keeps_only_what_live_entries_say() {
         let mut lp = crate::local_peer::LocalPeer::fresh(1, osis_base::WallMs(1_700_000_000_000));
-        // a thing the node reads (its first admin): boxes give it secrets (`rotation::may_take`)
+        // a thing the node reads (its mint admin): boxes give it secrets (`rotation::may_take`)
         let e = &mut lp.peers[0].engine;
         let mut m = crate::Mutation::new();
         let me = e.me();

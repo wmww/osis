@@ -4,7 +4,7 @@
 //! differential runs exposed each): `joint` judges a demotion against the edge restored as
 //! if the holder still held its role (spec §5.1) and treats removing a holder one is admin of
 //! as a self-removal only without authority on the target (§2). No model exempts the
-//! demoter's chain writes: only its frontier covers them (§5.1). Every actor's first admin
+//! demoter's chain writes: only its frontier covers them (§5.1). Every actor's mint admin
 //! holds its record edge (admin) in genesis, removable like any edge (§1). Modules by spec
 //! section:
 //! - `joint`: §5.1 steps 1-5 over several actors (record edges, actor holders, mutual

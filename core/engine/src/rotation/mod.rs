@@ -729,9 +729,9 @@ fn finalize_due(tx: &mut Tx<'_>, who: Tid, a: Tid, keep: Option<Keep<'_>>, done:
 /// Gives `t` secrets of its own (spec/permissions.md §3, spec/crypto.md §3): a rotation of all
 /// three roles from its derived epochs (those of the next actor up its record chain: rotated
 /// first where this node can, the history boxes carry them), boxed to its current holders (its
-/// first admin included; not one whose grant this node may finalize, `ended_holders`), with a
+/// mint admin included; not one whose grant this node may finalize, `ended_holders`), with a
 /// `keys.0` carrying the keysets and a fresh deposit seed, delivered by inbox to each holder it
-/// boxes (none held a box before it), the first admin included: this node may not sync it, and
+/// boxes (none held a box before it), the mint admin included: this node may not sync it, and
 /// its sync IDs must learn the thing's own secrets (spec/permissions.md §3, Own secrets add only).
 /// Nothing when it has them already.
 pub(crate) fn own_secrets(tx: &mut Tx<'_>, t: Tid, done: &mut Done) -> Result<()> {
@@ -789,11 +789,11 @@ fn own_secrets_rot(tx: &mut Tx<'_>, t: Tid, rec: Option<osis_base::CreationRecor
         return Ok(None);
     }
     let who = tx.core.writer()?;
-    // its boxes make its first admin a holder actor of `t`, which has secrets of its own first, as
+    // its boxes make its mint admin a holder actor of `t`, which has secrets of its own first, as
     // a grant's holder does (spec/permissions.md §3): a plain one has no keyset to be sealed at, so
     // it is left out and its holders lose `t` (where this node administers it). Up the record
     // chain only, so the recursion ends (holders may form cycles, record chains do not).
-    let up = tx.core.first_admin(&t).filter(|m| tx.core.key_holders(&t).iter().any(|(h, _)| h == m));
+    let up = tx.core.mint_admin(&t).filter(|m| tx.core.key_holders(&t).iter().any(|(h, _)| h == m));
     if let Some(m) = up
         && !tx.core.is_key_actor(&m)
         && !tx.core.is_account(&m)
@@ -831,7 +831,7 @@ fn own_secrets_rot(tx: &mut Tx<'_>, t: Tid, rec: Option<osis_base::CreationRecor
 }
 
 /// The plain things whose secrets derive from `a` that this node, an admin of each, sees with a
-/// current holder other than its first admin, or holding a role with key access on an actor with
+/// current holder other than its mint admin, or holding a role with key access on an actor with
 /// secrets of its own (spec/permissions.md §3: such a thing is left by its only keyset part
 /// turning invalid, spec/crypto.md §3); each gets secrets of its own again. A plain holder actor has no keyset to
 /// be sealed at, so no rotation of what it holds a role on boxes it: its members read nothing new
@@ -842,7 +842,7 @@ pub(crate) fn own_secrets_candidates(core: &Core, a: &Tid) -> Vec<Tid> {
     // a scan per call; only plain targets and holders go further
     let mut out = BTreeSet::new();
     for ((x, _), m) in core.ix.holder_keys.iter() {
-        if !out.contains(x) && plain(x) && core.key_holders(x).iter().any(|(h, _)| Some(*h) != core.first_admin(x)) {
+        if !out.contains(x) && plain(x) && core.key_holders(x).iter().any(|(h, _)| Some(*h) != core.mint_admin(x)) {
             out.insert(*x);
         }
         // a plain thing holds its plain record children by derivation: only an actor with secrets
@@ -1219,7 +1219,7 @@ impl Engine {
     }
 
     /// Gives `thing` secrets of its own (spec/permissions.md §3), with its one sync ID in the same
-    /// commit (spec/sync-ids.md §2): before its first holder other than its first admin, or before it
+    /// commit (spec/sync-ids.md §2): before its first holder other than its mint admin, or before it
     /// is made a holder of anything.
     pub fn give_own_secrets(&mut self, thing: &Tid) -> Result<Done> {
         let t = *thing;
@@ -1231,7 +1231,7 @@ impl Engine {
     }
 
     /// The plain things whose secrets derive from `actor` that this node administers and sees
-    /// with a current holder other than their first admin, or holding a role with key access on
+    /// with a current holder other than their mint admin, or holding a role with key access on
     /// an actor with secrets of its own (spec/permissions.md §3): each is
     /// due secrets of its own again (`give_own_secrets_again`), decided at the end of a complete
     /// pass of `actor`'s sync IDs (node-sync's).

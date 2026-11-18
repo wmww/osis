@@ -46,7 +46,7 @@ fn settle_all(lp: &mut LocalPeer, g: Tid) {
     panic!("no fixpoint in 8 rounds");
 }
 
-/// Peers: 0 = admin A (`g`'s first admin), 1 = reader P (with history), 2 = N (granted without
+/// Peers: 0 = admin A (`g`'s mint admin), 1 = reader P (with history), 2 = N (granted without
 /// history by A once `g` has `before` read epochs past its first). Returns the peers, `g`, the
 /// tids and the cut's epoch.
 fn cut_world(before: usize) -> (LocalPeer, Tid, Vec<Tid>, Epoch) {

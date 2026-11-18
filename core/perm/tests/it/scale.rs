@@ -12,8 +12,8 @@ use osis_perm::{At, EdgeOp, Frontier, HeldSet, RoleCommit, Timeline, Timelines, 
 use roles_model::Rng;
 use std::collections::{BTreeMap, BTreeSet};
 
-/// An organization: key actor K is first admin of root actor R (10 admins), first admin of
-/// 20 teams; each team is first admin of 10 docs; 300 holder nodes; `n` edge writes (grants,
+/// An organization: key actor K is mint admin of root actor R (10 admins), mint admin of
+/// 20 teams; each team is mint admin of 10 docs; 300 holder nodes; `n` edge writes (grants,
 /// changes, removals on teams and docs) by admins, a few percent received late.
 fn org(n: usize) -> (World, Vec<Tid>, Tid, Vec<Tid>) {
     let mut rng = Rng(0x5eed_0401);
@@ -157,7 +157,7 @@ fn late_walks(n: usize) -> Vec<u64> {
     {
         let (mut w, nodes, ..) = org(n);
         let mid = n as u64 / 2;
-        // a thing with a first admin that is a thing, and a node holding an edge on it just
+        // a thing with a mint admin that is a thing, and a node holding an edge on it just
         // before the middle (by the last write on it)
         let held_before = |t: Tid| {
             let mut last: BTreeMap<Tid, Option<osis_perm::Edge>> = BTreeMap::new();
@@ -212,7 +212,7 @@ fn repro_late_write_rejudges_flat() {
 }
 
 // spec/requirements.md Scale, spec/permissions.md §1 (record chain; max_chain_depth): a
-// record chain of depth d (each thing's first admin the previous), one holder granted at the top,
+// record chain of depth d (each thing's mint admin the previous), one holder granted at the top,
 // 100 edge writes at the leaf: the walk steps through each commit once at any depth.
 #[test]
 fn deep_record_chain_walks_each_commit_once() {
@@ -353,7 +353,7 @@ fn record_leaves_walk_nothing_per_leaf() {
     assert_eq!(per, [(2, 0), (2, 0)], "the two role commits walked once; a leaf walks nothing");
 }
 
-/// One thing whose first admin writes `n` edges on it (50 holders granted read, then removed,
+/// One thing whose mint admin writes `n` edges on it (50 holders granted read, then removed,
 /// in turns of 50: each removal audits), the last 20 arriving one by one through
 /// `update_touched`: the commits walked and the history and undo-log entries moved
 /// (`osis_perm::entries_moved`) over those 20, and how many were placed without walking again.

@@ -427,7 +427,7 @@ fn a_keyless_grant_reads_nothing_through_it_spec_crypto_4() {
 
 // spec/sync-set.md §2 (What a held ticket does), §4 (Declining is doing nothing): Alice's T1 is
 // made under T0 and held from it; Bob keeps T1 unread by a sync ticket, then is granted read on
-// T0, T1's first admin, which gives him read on T1 by chain. A ticket's secret is taken only at a
+// T0, T1's mint admin, which gives him read on T1 by chain. A ticket's secret is taken only at a
 // strong to its thing, so until he accepts T0 he holds no secret of T0, no role commit of T1 and
 // no read secret of T1: T1 stays unread. Accepting T0, he reads T1.
 #[test]
@@ -716,10 +716,10 @@ fn a_grant_to_a_holder_its_granter_does_not_sync_reaches_its_readers_spec_sync_i
     assert_eq!(holding(&mut w, 1, &t0), Some(Holding::Read));
     // T3's chain was needed by T4 alone (spec/commits.md §5 What a held thing needs): released
     // with it
-    assert!(w.engine(0).first_admin(&t3).is_some(), "Alice holds T3's record while T4 is held");
+    assert!(w.engine(0).mint_admin(&t3).is_some(), "Alice holds T3's record while T4 is held");
     strong(&mut w, 0, None, t4, false);
     w.run();
-    assert_eq!(w.engine(0).first_admin(&t3), None, "T3's record goes with T4");
+    assert_eq!(w.engine(0).mint_admin(&t3), None, "T3's record goes with T4");
 }
 
 // spec/sync-inbox.md §5 (Nothing before the strong), spec/sync-set.md §2 (What a held ticket
@@ -750,7 +750,7 @@ fn a_role_by_chain_through_an_unaccepted_thing_counts_nothing_spec_sync_inbox_5(
 // names T0 by an edge write, so it travels under T0's sync ID: Bob's node 1, reading T2 only
 // through T0, takes it and reads T2 no more, as node 2.
 #[test]
-fn a_removed_record_edge_reaches_its_first_admins_readers_spec_permissions_4() {
+fn a_removed_record_edge_reaches_its_mint_admins_readers_spec_permissions_4() {
     let mut w = siblings();
     let alice = w.node(0).account.unwrap();
     let t0 = make(&mut w, 1, None, "t0");

@@ -3,7 +3,7 @@ use crate::local_peer::LocalPeer;
 use crate::Mutation;
 use osis_base::{Tid, Value};
 
-/// A thing whose first admin is `admin`, made and committed by peer 0.
+/// A thing whose mint admin is `admin`, made and committed by peer 0.
 fn thing(lp: &mut LocalPeer, admin: Tid) -> Tid {
     let mut m = Mutation::new();
     let t = lp.peers[0].engine.new_thing(&mut m, admin);
@@ -369,11 +369,11 @@ mod tests {
             assert_eq!(lp.peers[r].engine.get(&d, &x).unwrap(), None, "peer {r}");
         }
     }
-    // spec/permissions.md §1: the cap counts first-admin links (the record chain), whether the
+    // spec/permissions.md §1: the cap counts mint-admin links (the record chain), whether the
     // things were made with a write or by their record alone: a chain at `MAX_CHAIN_DEPTH`
     // links applies; one link more is invalid, at the writer and at receivers.
     #[test]
-    fn record_chain_through_first_admins_capped_spec_permissions_1() {
+    fn record_chain_through_mint_admins_capped_spec_permissions_1() {
         use osis_base::format::MAX_CHAIN_DEPTH;
         let mut lp = LocalPeer::fresh(2, WallMs(1_700_000_000_000));
         lp.sync_all().unwrap();
@@ -695,7 +695,7 @@ mod keys_tests {
     }
 
     // spec/crypto.md §4 (Carried: a keyset's rotation commit; held keyset), spec/commits.md §5:
-    // admin P rotates read (removing R); the first admin grants X at that epoch, compacts and drops P's
+    // admin P rotates read (removing R); the mint admin grants X at that epoch, compacts and drops P's
     // rotation bodies. The epoch's introducer stays P's rotation (not the later grant), at open and
     // after a rebuild; the keyset stays held.
     #[test]

@@ -1,4 +1,4 @@
-//! Creating a thing (spec/permissions.md §1): its `created.0`, which names its first admin, and
+//! Creating a thing (spec/permissions.md §1): its `created.0`, which names its mint admin, and
 //! the strong that holds it (spec/sync-set.md §2 Making a thing). A plain one derives its secrets from the first
 //! admin's (spec/crypto.md §3).
 
@@ -9,7 +9,7 @@ use crate::Mutation;
 use osis_base::{Role, Tid};
 
 impl Engine {
-    /// Creates a thing whose first admin is `admin` (this node, or an actor it holds write on):
+    /// Creates a thing whose mint admin is `admin` (this node, or an actor it holds write on):
     /// a commit carrying its `created.0` and the strong that holds it (`hold_where_it_lives`).
     pub fn create_with_admin(&mut self, admin: &Tid) -> Result<(Tid, Done)> {
         let a = *admin;

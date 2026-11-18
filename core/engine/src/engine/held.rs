@@ -28,16 +28,16 @@ enum Undo {
 pub struct Held {
     commits: BTreeMap<Tid, Vec<Arc<RoleCommit>>>,
     created: BTreeMap<Tid, CreationRecord>,
-    /// Holder -> things it is named on (edge writes, a creation record naming its first admin), with counts.
+    /// Holder -> things it is named on (edge writes, a creation record naming its mint admin), with counts.
     holders: BTreeMap<Tid, BTreeMap<Tid, usize>>,
     /// Thing -> holders named on it (the same pairs as `holders`).
     named: BTreeMap<Tid, BTreeSet<Tid>>,
     /// Thing -> holders an edge write puts a grant for on it, with counts: the edges a path may
     /// climb (a removal names a holder but gives it none).
     granted: BTreeMap<Tid, BTreeMap<Tid, usize>>,
-    /// First admin -> the things whose creation record names it: the record chain's
+    /// Mint admin -> the things whose creation record names it: the record chain's
     /// links down (spec/permissions.md §1).
-    first_admin_of: BTreeMap<Tid, BTreeSet<Tid>>,
+    mint_admin_of: BTreeMap<Tid, BTreeSet<Tid>>,
     /// Commit -> its edge commit held here.
     ids: BTreeMap<CommitId, Arc<RoleCommit>>,
     log: Vec<Undo>,
@@ -74,7 +74,7 @@ enum Row<'a> {
     Holder(&'a Tid),
     Named(&'a Tid),
     Granted(&'a Tid),
-    FirstAdminOf(&'a Tid),
+    MintAdminOf(&'a Tid),
     Id(&'a CommitId),
 }
 
@@ -93,14 +93,14 @@ impl Held {
         self.records_read.read_all();
         self.created.keys()
     }
-    /// The held things whose record names `t` as first admin (one link down the record
+    /// The held things whose record names `t` as mint admin (one link down the record
     /// chain).
-    pub fn first_admin_of(&self, t: &Tid) -> impl Iterator<Item = &Tid> {
-        self.rest.read(&Row::FirstAdminOf(t));
-        self.first_admin_of.get(t).into_iter().flatten()
+    pub fn mint_admin_of(&self, t: &Tid) -> impl Iterator<Item = &Tid> {
+        self.rest.read(&Row::MintAdminOf(t));
+        self.mint_admin_of.get(t).into_iter().flatten()
     }
     /// The actors named as a holder on some thing (edge writes, a creation record naming its
-    /// first admin).
+    /// mint admin).
     pub fn holders(&self) -> impl Iterator<Item = &Tid> {
         self.rest.read(&Row::Holders);
         self.holders.keys()
@@ -110,7 +110,7 @@ impl Held {
         self.rest.read(&Row::Commits(t));
         self.commits.get(t).map(Vec::as_slice).unwrap_or_default()
     }
-    /// Things `holder` is named on as a holder (edge writes, a creation record naming its first admin).
+    /// Things `holder` is named on as a holder (edge writes, a creation record naming its mint admin).
     pub fn named_on(&self, holder: &Tid) -> impl Iterator<Item = &Tid> {
         self.rest.read(&Row::Holder(holder));
         self.holders.get(holder).into_iter().flat_map(|m| m.keys())
@@ -123,7 +123,7 @@ impl Held {
     }
 
     /// Whether an edge write on `thing` (of any validity) names `holder`: `is_named` but for a
-    /// creation record naming its first admin alone. O(the edge commits on `thing`).
+    /// creation record naming its mint admin alone. O(the edge commits on `thing`).
     pub fn named_by_write(&self, holder: &Tid, thing: &Tid) -> bool {
         self.commits_on(thing).iter().any(|r| r.ops.iter().any(|o| o.target == *thing && o.holder == *holder))
     }
@@ -131,7 +131,7 @@ impl Held {
     /// Whether `holder` is named on `thing` by an edge write (`named_by_write`), not by `thing`'s
     /// record alone: where holder rules apply (spec/sync-judgement.md §2 A grant naming a holder).
     pub fn is_holder_by_write(&self, holder: &Tid, thing: &Tid) -> bool {
-        self.is_named(holder, thing) && (self.created(thing).and_then(CreationRecord::first_admin) != Some(*holder) || self.named_by_write(holder, thing))
+        self.is_named(holder, thing) && (self.created(thing).and_then(CreationRecord::mint_admin) != Some(*holder) || self.named_by_write(holder, thing))
     }
 
     /// A reader's cursor over the (holder, thing) pairs a naming is added to from now on
@@ -140,7 +140,7 @@ impl Held {
         self.pairs.feed()
     }
 
-    /// Holders named on `thing` (edge writes, a creation record naming its first admin).
+    /// Holders named on `thing` (edge writes, a creation record naming its mint admin).
     pub fn holders_of(&self, thing: &Tid) -> impl Iterator<Item = &Tid> {
         self.rest.read(&Row::Named(thing));
         self.named.get(thing).into_iter().flatten()
@@ -162,13 +162,13 @@ impl Held {
             if !out.insert(t) {
                 continue;
             }
-            stack.extend(self.first_admin_of(&t).copied());
+            stack.extend(self.mint_admin_of(&t).copied());
             stack.extend(self.named_on(&t).copied());
         }
         out
     }
 
-    /// `from` and everything authority comes to them from: their first admins and the
+    /// `from` and everything authority comes to them from: their mint admins and the
     /// holders named on them, transitively (the search `reach` answers forward). A changed edge
     /// to holder `z` changes the roles only of `upstream({z})`.
     pub fn upstream(&self, from: &BTreeSet<Tid>) -> BTreeSet<Tid> {
@@ -193,7 +193,7 @@ impl Held {
         let mut stack: Vec<Tid> = from.iter().copied().collect();
         while let Some(t) = stack.pop() {
             if out.insert(t) {
-                stack.extend(self.first_admin_of(&t).copied());
+                stack.extend(self.mint_admin_of(&t).copied());
             }
         }
         out
@@ -206,7 +206,7 @@ impl Held {
     }
 
     /// `t`'s possible admins (spec/commits.md §4): the least set holding `t` and, with each member, its
-    /// first admin and any holder named with admin on it by an edge write a member signed; of any validity and whatever followed. So a forger is in it only if a
+    /// mint admin and any holder named with admin on it by an edge write a member signed; of any validity and whatever followed. So a forger is in it only if a
     /// member named it, and held inputs only grow, so it does, whatever the order: use it where
     /// "could this signer ever have been admin" must not depend on arrival (a timeline read does).
     /// A member need not hold admin on the thing it signs for: it could as well have named the holder
@@ -263,30 +263,30 @@ impl Held {
         self.records_read.wrote(&t, r.is_some());
         let old = match r {
             Some(r) => {
-                if let Some(up) = r.first_admin() {
-                    self.first_admin_of.entry(up).or_default().insert(t);
-                    self.rest.wrote(&Row::FirstAdminOf(&up), true);
+                if let Some(up) = r.mint_admin() {
+                    self.mint_admin_of.entry(up).or_default().insert(t);
+                    self.rest.wrote(&Row::MintAdminOf(&up), true);
                 }
                 self.created.insert(t, r)
             }
             None => self.created.remove(&t),
         };
         let same = matches!((&old, self.created.get(&t)), (Some(o), Some(n)) if o == n);
-        if let Some(up) = old.as_ref().and_then(|o| o.first_admin())
-            && self.created.get(&t).is_none_or(|n| n.first_admin() != Some(up))
-            && let Some(s) = self.first_admin_of.get_mut(&up)
+        if let Some(up) = old.as_ref().and_then(|o| o.mint_admin())
+            && self.created.get(&t).is_none_or(|n| n.mint_admin() != Some(up))
+            && let Some(s) = self.mint_admin_of.get_mut(&up)
         {
             s.remove(&t);
             if s.is_empty() {
-                self.first_admin_of.remove(&up);
+                self.mint_admin_of.remove(&up);
             }
-            self.rest.wrote(&Row::FirstAdminOf(&up), self.first_admin_of.contains_key(&up));
+            self.rest.wrote(&Row::MintAdminOf(&up), self.mint_admin_of.contains_key(&up));
         }
         if same {
             // the same record: nothing perm reads changed
             return old;
         }
-        // a thing's first admin is named on it by its record (spec/permissions.md §1)
+        // a thing's mint admin is named on it by its record (spec/permissions.md §1)
         let genesis = |r: Option<&CreationRecord>| match r {
             Some(CreationRecord::Thing { admin, .. }) => vec![(*admin, t)],
             _ => Vec::new(),
@@ -312,7 +312,7 @@ impl Held {
             if add {
                 *n += 1;
                 // every naming added feeds the pair, not only its first: an edge write naming a
-                // first admin its record names already makes it a holder by write
+                // mint admin its record names already makes it a holder by write
                 // (`is_holder_by_write`)
                 self.pairs.wrote_added(&(m, t), true, true);
                 self.named.entry(t).or_default().insert(m);
@@ -500,7 +500,7 @@ impl Held {
 impl Journaled for Held {
     #[cfg(test)]
     fn contents(&self) -> String {
-        format!("{:?} {:?} {:?} {:?} {:?} {:?} {:?} {:?}", self.commits, self.created, self.holders, self.named, self.granted, self.first_admin_of, self.ids, self.uncounted)
+        format!("{:?} {:?} {:?} {:?} {:?} {:?} {:?} {:?}", self.commits, self.created, self.holders, self.named, self.granted, self.mint_admin_of, self.ids, self.uncounted)
     }
     type Mark = usize;
     fn commit(&mut self) {
@@ -969,7 +969,7 @@ mod tests {
                 2 => tids(&mut h.holders_of(t)),
                 3 => tids(&mut h.named_on(t)),
                 4 => tids(&mut h.granted_on(t)),
-                _ => tids(&mut h.first_admin_of(t)),
+                _ => tids(&mut h.mint_admin_of(t)),
             }
         };
         let memo: Memo<(u8, Tid), Vec<[u8; 32]>> = Memo::new("test held read");
@@ -1004,7 +1004,7 @@ mod tests {
         osis_base::costs::take();
         h.add_commit(c2.clone());
         check(&h);
-        // what reads g alone (and the first admins, unnamed on either commit) stays
+        // what reads g alone (and the mint admins, unnamed on either commit) stays
         assert_eq!(runs(), 5, "of t: its commits (twice), holders and grants; its new holder's things");
         let m = h.mark();
         h.set_counted(c2.id, false);
@@ -1277,7 +1277,7 @@ mod tests {
                     assert_eq!(h.ever_writers(&t.tid()), writers);
                 }
             }
-            assert!(want.contains(&a[0]), "the first admin's first admin");
+            assert!(want.contains(&a[0]), "the mint admin's mint admin");
         }
     }
 }

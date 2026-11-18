@@ -404,7 +404,7 @@ mod tests {
         e(Admin, Admin, NEVER)
     }
 
-    /// Edge histories with explicit genesis edges (0 holds none here, 1 is the first admin).
+    /// Edge histories with explicit genesis edges (0 holds none here, 1 is the mint admin).
     struct B(EHist);
     impl B {
         fn new(genesis: &[Option<Edge>]) -> Self {
@@ -543,7 +543,7 @@ mod tests {
         assert!(s.applied >> late & 1 == 1, "{}", b.0);
     }
 
-    /// Joint walk: doc D (A0) with admins n0 and n1 (n0 its first admin), doc U (A1) with admin n1
+    /// Joint walk: doc D (A0) with admins n0 and n1 (n0 its mint admin), doc U (A1) with admin n1
     /// only. n0 and n1 remove each other on D; n1 also grants n2 write on U, unseen by n0.
     /// Trusting n0's removal changes D only; U reads alike on both sides.
     #[test]
@@ -571,14 +571,14 @@ mod tests {
     }
 
     /// A removed admin's self-grant below (notes/disputes.md, The walk, seeds): doc
-    /// A1 has A0 as first admin; n1, admin of A0, grants itself admin on A1 and removes n0
+    /// A1 has A0 as mint admin; n1, admin of A0, grants itself admin on A1 and removes n0
     /// from A0, both unseen by n0, who then removes n1 from A0 (R). The plain walk keeps n1
     /// (its earlier-stamped removal wins) and raises the dispute (R, n1); trusting R seeds
     /// the self-grant too, so n1 holds nothing on A1 there. A self-removal is no seed.
     #[test]
     fn self_grant_below_is_a_seed() {
         let w = |author, t, id, target, holder, role| JWrite { author, t, id, target, holder, role };
-        // entities: n0, n1, A0, A1; A0's first admin n0, A1's A0
+        // entities: n0, n1, A0, A1; A0's mint admin n0, A1's A0
         let mut genesis = vec![vec![NI; 2]; 4];
         genesis[0][0] = Admin;
         genesis[1][0] = Admin;

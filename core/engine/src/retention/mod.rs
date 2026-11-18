@@ -1824,7 +1824,7 @@ mod tests {
             let x = Ak::new("x:v.0").unwrap();
             let none = osis_schema::Retention { by: osis_schema::PurgeBy::Writer };
             let edge = |role| ct::Edge { role, until: None, invite: None, retain: false, floor: None };
-            // bob writes `t` by his write on its first admin `g`, which holds it: `t` keeps g's
+            // bob writes `t` by his write on its mint admin `g`, which holds it: `t` keeps g's
             // secrets
             let mut m = Mutation::new();
             let g = lp.peers[0].engine.new_thing(&mut m, alice);
@@ -1884,7 +1884,7 @@ mod tests {
     }
 
     // spec/sync-judgement.md §1 entitlement: a thing's reader actor is the nearest actor up its record
-    // chain with secrets of its own, through first-admin links: a plain thing's is its first
+    // chain with secrets of its own, through mint-admin links: a plain thing's is its first
     // admin's, and so is that of a thing below it; once a grant
     // gives it secrets of its own, its own.
     #[test]

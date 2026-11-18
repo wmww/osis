@@ -21,7 +21,7 @@ fn edge_role(tl: &Timeline, holder: Tid, t: Tid) -> Option<Role> {
     tl.roster(&t, At::END).get(&holder).map(|e| e.role)
 }
 
-/// n0 is G's first admin; A1..A3 admins, M writer.
+/// n0 is G's mint admin; A1..A3 admins, M writer.
 fn admins_of_g() -> (World, Vec<Tid>, Tid) {
     let mut w = World::new();
     let n = w.nodes(5);
@@ -222,7 +222,7 @@ fn received_chain_write_covered_spec_permissions_5_1() {
     assert_eq!(tl.roster(&g, At::END).get(&n[1]).and_then(|e| e.invite), Some(Write));
 }
 
-/// Link K: L (node 1) holds (write, invite write) on K (first admin: sharer 0); J, Z joiners, Y holder.
+/// Link K: L (node 1) holds (write, invite write) on K (mint admin: sharer 0); J, Z joiners, Y holder.
 fn link(l_edge: Option<Edge>) -> (World, Vec<Tid>, Tid) {
     let mut w = World::new();
     let n = w.nodes(5);
@@ -323,7 +323,7 @@ fn invite_holder_limits() {
     assert_eq!(eval(&w).invite(&i, &k, At::END), Some(Write));
 }
 
-/// §2: invitees vouching for each other fail: I1's backdated grant of I2 (removed by the first admin,
+/// §2: invitees vouching for each other fail: I1's backdated grant of I2 (removed by the mint admin,
 /// unseen) drops, so I2's re-add of I1 never applies.
 #[test]
 fn invitees_vouching_for_each_other() {
@@ -374,7 +374,7 @@ fn audits_below_the_edge_as_restored_spec_permissions_5_1() {
 }
 
 /// Finding: drops are sticky. Admin 1 removes 2 without having received 2's grant of 3; the
-/// first admin removes 1 without having received that removal: it drops and 2 is back, but 2's
+/// mint admin removes 1 without having received that removal: it drops and 2 is back, but 2's
 /// grant stays dropped (re-grant repairs).
 #[test]
 fn sticky_drop_outlives_its_cause() {
@@ -409,12 +409,12 @@ fn held_order_irrelevant() {
     assert_eq!(tl.dropped(), tr.dropped());
 }
 
-/// §2 self-removal / §5.1: A is the first admin of G and doc T; X admin of G, G admin of
+/// §2 self-removal / §5.1: A is the mint admin of G and doc T; X admin of G, G admin of
 /// T; X grants Y admin on T unseen by A. A removes G from T: with admin on T by T's record
 /// edge this is an explicit demotion, not a self-removal, so Y's grant is dropped. When G's
-/// first admin is someone else, the same.
+/// mint admin is someone else, the same.
 #[test]
-fn holder_removal_by_first_admin_of_both() {
+fn holder_removal_by_mint_admin_of_both() {
     for a_first_of_g in [true, false] {
         let mut w = World::new();
         let n = w.nodes(4);
@@ -427,18 +427,18 @@ fn holder_removal_by_first_admin_of_both() {
         let grant = w.set(x, t, y, edge(Admin), 3, &[]);
         let rm = w.set(a, t, g, None, 10, &[]);
         let tl = eval(&w);
-        assert_eq!(role(&tl, y, t), None, "A first admin of G {a_first_of_g}");
+        assert_eq!(role(&tl, y, t), None, "A mint admin of G {a_first_of_g}");
         assert!(tl.dropped().contains_key(&WriteId(grant, 0)));
         assert_eq!(tl.applied()[&WriteId(rm, 0)].attr, osis_perm::Attr::By(Class::Edge));
     }
 }
 
-/// §1: a first admin is an ordinary admin: another admin removes it (its record edge, stored
+/// §1: a mint admin is an ordinary admin: another admin removes it (its record edge, stored
 /// nowhere, ends like any edge), a third grants it read, and its own removal of the remover
 /// afterwards applies nothing.
-// spec/permissions.md §1 (first admin removable)
+// spec/permissions.md §1 (mint admin removable)
 #[test]
-fn first_admin_removable_by_admins() {
+fn mint_admin_removable_by_admins() {
     let (mut w, n, g) = admins_of_g();
     let tl = eval(&w);
     assert_eq!(edge_role(&tl, n[0], g), Some(Admin), "the record edge is in the roster");
@@ -455,11 +455,11 @@ fn first_admin_removable_by_admins() {
     assert_eq!(edge_role(&tl, n[1], g), Some(Admin));
 }
 
-/// §1: a first admin that removes its own record edge leaves by self-removal (audits nothing),
+/// §1: a mint admin that removes its own record edge leaves by self-removal (audits nothing),
 /// and a later explicit write on the edge restores it for the audit.
-// spec/permissions.md §1 (first admin removable), §2 (self-removal)
+// spec/permissions.md §1 (mint admin removable), §2 (self-removal)
 #[test]
-fn first_admin_leaves_by_self_removal() {
+fn mint_admin_leaves_by_self_removal() {
     let (mut w, n, g) = admins_of_g();
     let leave = w.set(n[0], g, n[0], None, 2, &[]);
     let tl = eval(&w);
@@ -616,12 +616,12 @@ fn unseen_leave_stands_spec_permissions_5_1() {
     assert!(residue(&tl).is_empty());
 }
 
-// spec/permissions.md §1 (mint admin): O's record names n0 as its first admin, an edge in
+// spec/permissions.md §1 (mint admin): O's record names n0 as its mint admin, an edge in
 // force from the start. n0 grants n1 admin; n1 removes n0. n0's later grants and re-grants
 // through the record do nothing: the record gives no power once the edge is gone. On D, whose
-// first admin is O, n1 (admin of O) holds admin through D's record edge: its grant on D applies.
+// mint admin is O, n1 (admin of O) holds admin through D's record edge: its grant on D applies.
 #[test]
-fn removed_first_admin_has_nothing_left() {
+fn removed_mint_admin_has_nothing_left() {
     let mut w = World::new();
     let n = w.nodes(3);
     let o = w.thing(n[0]);
@@ -633,7 +633,7 @@ fn removed_first_admin_has_nothing_left() {
     assert_eq!(edge_role(&tl, n[0], o), Some(Admin));
     for x in &n[..2] {
         assert_eq!(tl.class(x, &o, At::END), Class::Edge);
-        assert_eq!(tl.class(x, &d, At::END), Class::Edge, "admin of D's first admin");
+        assert_eq!(tl.class(x, &d, At::END), Class::Edge, "admin of D's mint admin");
     }
     let all: Vec<(Tid, u64)> = n.iter().map(|x| (*x, 3)).collect();
     w.set(n[1], o, n[0], None, 2, &all);
@@ -641,7 +641,7 @@ fn removed_first_admin_has_nothing_left() {
     let r0 = w.set(n[0], o, n[0], edge(Admin), 7, &all);
     let gd = w.set(n[1], d, n[2], edge(Write), 8, &all);
     let tl = eval(&w);
-    assert_eq!(role(&tl, n[0], o), None, "the first admin is removed like any");
+    assert_eq!(role(&tl, n[0], o), None, "the mint admin is removed like any");
     assert_eq!((role(&tl, n[0], d), tl.class(&n[0], &d, At::END)), (None, Class::None));
     assert_eq!(role(&tl, n[1], o), Some(Admin));
     assert!(!tl.is_applied(&WriteId(g0, 0)) && !tl.is_applied(&WriteId(r0, 0)));
@@ -750,7 +750,7 @@ fn eval_with(w: &World, t: &Trust) -> Timeline {
 }
 
 /// §5.1 Trust: a removed admin taking a thing back by backdating (the hole of one authority
-/// class). n0, G's first admin, grants n1; n1 removes n0 at 10; n0 then signs a removal of n1
+/// class). n0, G's mint admin, grants n1; n1 removes n0 at 10; n0 then signs a removal of n1
 /// stamped 5, which the plain walk applies (n1 out, n0 back, also on a thing below). That
 /// removal is unlisted by n1's, so n1's removal is the one open dispute (R, n0). A node
 /// trusting it seeds D with n0's backdated removal: n1 stays admin, n0 holds nothing, above
@@ -792,8 +792,8 @@ fn backdated_takeback_settled_by_trust_spec_permissions_5_1() {
     assert_eq!(back_again.disputes(), tl.disputes());
 }
 
-/// §5.1 Trust, seeds (a self-grant below, notes/disputes.md, The walk): X, admin of A0 (first admin
-/// n1), grants itself admin on A1 (first admin A0) and removes n1, both unseen by n1, who then
+/// §5.1 Trust, seeds (a self-grant below, notes/disputes.md, The walk): X, admin of A0 (mint admin
+/// n1), grants itself admin on A1 (mint admin A0) and removes n1, both unseen by n1, who then
 /// removes X from A0 (R). The plain walk keeps X everywhere (its removal is stamped first) and
 /// raises (R, X). Trusting R seeds the self-grant too: X holds nothing on A1. With X lowering
 /// its own edge on A1 instead, R's audit drops that write either way (a seed or not: the
@@ -941,7 +941,7 @@ fn accomplice_seeded_spec_permissions_5_1() {
 }
 
 /// §5.1 Trust, seeds follow chained edges (§4): a writer's edge write widens no trusted op's
-/// seeds. n0 (T's first admin) grants M (first admin n1) and X admin on T, and W write on M;
+/// seeds. n0 (T's mint admin) grants M (mint admin n1) and X admin on T, and W write on M;
 /// X grants Y write on T, unseen by n0, who then removes M from T (R, trusted). Neither X nor
 /// Z is reached from M or T by a chained edge, so X's grant and n1's grant on Z are no seeds.
 /// W, a writer of M, names X admin on M; Z's writer names T a holder of Z: both writes are
@@ -977,7 +977,7 @@ fn forged_edge_widens_no_seeds_spec_permissions_5_1() {
 }
 
 /// §5.1 Trust, seeds follow chained edges (§4), which follow the walk's order: n1 (H's first
-/// admin) names H admin on T, before or after n0 (T's first admin) makes n1 admin of T. M
+/// admin) names H admin on T, before or after n0 (T's mint admin) makes n1 admin of T. M
 /// (writer of H) holds admin on T from n0 and grants Y write on T, unseen by n1, whose trusted
 /// removal of M from H puts in question what H reaches. Written after its authority, H's edge
 /// on T applies and is chained, so M's grant is a seed and drops; written before, no walk

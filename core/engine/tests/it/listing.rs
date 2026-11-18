@@ -18,7 +18,7 @@ fn reg() -> Ak {
     ak("t:reg.0")
 }
 
-/// Alice (0) is first admin of D, Bob (1) and Dan (3) write, Carol (2) is an admin.
+/// Alice (0) is mint admin of D, Bob (1) and Dan (3) write, Carol (2) is an admin.
 /// Built once (`LocalPeer::cached`).
 fn setup() -> (LocalPeer, Tid, [Tid; 4]) {
     let (lp, (d, ids)) = LocalPeer::cached("listing::setup", || {
@@ -424,7 +424,7 @@ fn perms(n: usize) -> Vec<Vec<usize>> {
 #[test]
 fn purge_by_author_any_order_spec_perm_6() {
     for by in PurgeBy::ALL {
-        // requester: 0 the first admin, 2 an admin, 1 the author itself, 3 another writer
+        // requester: 0 the mint admin, 2 an admin, 1 the author itself, 3 another writer
         for who in [0, 1, 3] {
             let want = match who {
                 0 => true,

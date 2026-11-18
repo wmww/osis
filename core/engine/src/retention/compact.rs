@@ -1221,7 +1221,7 @@ mod tests {
         let [b, c] = [1, 2].map(|i| lp.peers[i].engine.me());
         let a = lp.peers[0].engine.plain_admin();
         let edge = |role| ct::Edge { role, until: None, invite: None, retain: false, floor: None };
-        // bob writes `t` by write on its first admin `k`, whose secrets `t` keeps, holding both
+        // bob writes `t` by write on its mint admin `k`, whose secrets `t` keeps, holding both
         let mut m = Mutation::new();
         let k = lp.peers[0].engine.new_thing(&mut m, a);
         lp.peers[0].commit(m).unwrap();

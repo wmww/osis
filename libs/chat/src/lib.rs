@@ -51,7 +51,7 @@ impl Default for Options {
     }
 }
 
-/// A new chat, made under `holder` (its first admin: the app's home, the account root) and held by
+/// A new chat, made under `holder` (its mint admin: the app's home, the account root) and held by
 /// it, its settings written before anyone is granted: every message kept for good (expiry ends a
 /// disappearing one), replacements refused when editing is off, who may delete a message. One
 /// commit makes it whole (record, `retention^.0`, settings, the strong in `holder`'s `holds.0`).

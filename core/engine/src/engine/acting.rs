@@ -43,7 +43,7 @@ impl Engine {
     }
 
     /// Fails `Permission` unless `actor` itself may do all of a confined `m`: every aspect's write,
-    /// every creation (write on the first admin). A purge needs write: what it drops receivers
+    /// every creation (write on the mint admin). A purge needs write: what it drops receivers
     /// judge by this node's and the actor's rights together (spec/permissions.md §6).
     pub(crate) fn check_confined(&self, m: &Mutation, actor: &Tid) -> Result<()> {
         let ts = self.acting_ts();
@@ -100,7 +100,7 @@ impl Engine {
         out
     }
 
-    /// Mints an actor whose first admin is `admin` with secrets of its own (and `keys.0`), as a link's K is
+    /// Mints an actor whose mint admin is `admin` with secrets of its own (and `keys.0`), as a link's K is
     /// minted, and commits what `also` builds for it, all in one transaction: a crash or a
     /// failure leaves both or neither (`flows::links` shares the shape).
     pub fn mint_actor(&mut self, admin: &Tid, also: impl FnOnce(Tid) -> Result<Mutation>) -> Result<(Tid, Done)> {

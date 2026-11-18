@@ -143,7 +143,7 @@ fn absent_edge_removal_hist() -> joint::JHist {
     use roles_model::Role::{Admin, None as Gone};
     const LATE: u32 = roles_model::shrink::LATE;
     let w = |author, t, id, holder| JWrite { author, t, id, target: 0, holder, role: Gone };
-    // entities: n0, n1, A0, A1; n0 is A0's first admin, n1 A1's
+    // entities: n0, n1, A0, A1; n0 is A0's mint admin, n1 A1's
     let mut genesis = vec![vec![Gone; 2]; 4];
     genesis[0][0] = Admin;
     genesis[1][1] = Admin;
@@ -167,7 +167,7 @@ pub(crate) fn absent_edge_removal_spread_hist() -> joint::JHist {
     use roles_model::Role::{Admin, None as Gone, Read};
     const LATE: u32 = roles_model::shrink::LATE;
     let w = |author, t, id, holder, role| JWrite { author, t, id, target: 0, holder, role };
-    // entities: n0, n1, n2, A0, A1; n0 is A0's first admin, n1 A1's
+    // entities: n0, n1, n2, A0, A1; n0 is A0's mint admin, n1 A1's
     let mut genesis = vec![vec![Gone; 2]; 5];
     genesis[0][0] = Admin;
     genesis[1][1] = Admin;
@@ -190,7 +190,7 @@ fn joint_kept_standing_spread_agrees() {
     assert_eq!(joint_diff(&h), None);
 }
 
-/// An edges-model history: node 0 is first admin of the one target T; genesis edges are its writes at t=0.
+/// An edges-model history: node 0 is mint admin of the one target T; genesis edges are its writes at t=0.
 struct EdgesWorld {
     w: World,
     nodes: Vec<Tid>,

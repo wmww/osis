@@ -20,7 +20,7 @@ fn admin(p: Tid, pe: &ActorEpochs) -> Recipient {
     Recipient { holder: p, role: Role::Admin, keys: HolderKeys::from_keys(&keys_of(pe)).unwrap().with_own(pe), floor: 0 }
 }
 
-/// Actor A (first admin P) after its own-secrets switch, boxing `extra` too.
+/// Actor A (mint admin P) after its own-secrets switch, boxing `extra` too.
 fn switched(extra: &[Recipient], rg: &mut osis_crypto::SeededRng) -> (Tid, Tid, ActorEpochs, ActorEpochs, Secrets) {
     let (a, p, pe) = (tid(1), tid(2), actor_epochs(0x20));
     let mut view = ActorEpochs::derived(&pe, &a);

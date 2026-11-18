@@ -266,7 +266,7 @@ pub fn role_of(core: &Core, node: &Tid, tid: &Tid, ts: Ts) -> Option<Role> {
 pub(crate) type Records<'a> = &'a dyn Fn(&Tid) -> Option<&'a CreationRecord>;
 
 /// The role `node` has on `tid` at `ts`: a thing not yet held (`records`) has its record edge
-/// alone, so a node's role on it is its role on its first admin (spec/permissions.md §1).
+/// alone, so a node's role on it is its role on its mint admin (spec/permissions.md §1).
 pub(crate) fn role_with(core: &Core, node: Tid, records: Records<'_>, tid: &Tid, ts: Ts) -> Option<Role> {
     match record_chain(*tid, |t| records(t).map(CreationRecord::record_link)).next() {
         Some(ChainStep::Up { admin, .. }) if admin == node => Some(Role::Admin),
@@ -279,7 +279,7 @@ pub(crate) fn role_with(core: &Core, node: Tid, records: Records<'_>, tid: &Tid,
 }
 
 /// May `node` (this node or a key actor it signs as) write `ak` of `tid` at `ts`? Things
-/// created by the commit take their first admin's, through first admins the commit creates too.
+/// created by the commit take their mint admin's, through mint admins the commit creates too.
 pub(crate) fn check_authority(core: &Core, node: Tid, creates: &Creates, tid: &Tid, ak: &str, ts: Ts) -> Result<()> {
     check_authority_with(core, node, &|t| creates.get(t), tid, ak, ts)
 }
@@ -707,7 +707,7 @@ fn build(tx: &mut Tx<'_>, plan: CommitPlan, deltas: Vec<Resolved>) -> Result<osi
 }
 
 impl Engine {
-    /// Tests: a new thing whose first admin is `admin`, created by `m` (spec/data-model.md §1) and
+    /// Tests: a new thing whose mint admin is `admin`, created by `m` (spec/data-model.md §1) and
     /// held where it lives (`hold_where_it_lives`).
     #[doc(hidden)]
     pub fn new_thing(&mut self, m: &mut Mutation, admin: Tid) -> Tid {
@@ -755,7 +755,7 @@ impl Engine {
         }
     }
 
-    /// The creation record of a new thing whose first admin is `admin`, ending at `expires`
+    /// The creation record of a new thing whose mint admin is `admin`, ending at `expires`
     /// (`None`: never; `Mutation::create` writes it, its commit expiring then).
     pub fn thing_record(&mut self, admin: Tid, expires: Option<WallMs>) -> CreationRecord {
         crate::identity::thing_record(admin, expires.map(|t| t.0), &mut *self.rng)
@@ -791,7 +791,7 @@ pub(crate) fn commit_in(tx: &mut Tx<'_>, m: Mutation) -> Result<Option<CommitId>
 /// ID listing L).
 fn keyed_first(tx: &mut Tx<'_>, mut m: Mutation) -> Result<Option<CommitId>> {
     for (t, r) in &m.creates {
-        if r.first_admin().is_some_and(|a| tx.core.is_account(&a)) {
+        if r.mint_admin().is_some_and(|a| tx.core.is_account(&a)) {
             tx.core.own_keys_due.insert(*t);
         }
     }

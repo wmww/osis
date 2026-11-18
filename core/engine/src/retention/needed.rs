@@ -3,7 +3,7 @@
 //! inbox's), and a released thing's record and role-class state, whoever's it is. A thing outside
 //! the node closure is kept while a thing that needs it is kept: one in the node closure whose
 //! known references hold a strong to it (`refs::to`: its state, ephemeral aspects included, and
-//! held fires; a weak or ticket only points and needs nothing), an account by its `keys.0` (its inbox), one whose record names it first admin, one
+//! held fires; a weak or ticket only points and needs nothing), an account by its `keys.0` (its inbox), one whose record names it mint admin, one
 //! whose held edge write names it holder (`Held::named_on`), an account root whose account's held
 //! chain names it a device (D bears no edge write), one a pending commit it authored or acted
 //! in, or first awaiting its record, writes on (`Indexes::pend_by`),
@@ -12,7 +12,7 @@
 //! record: the holder's sync ID carries the grant with its chain, spec/sync-judgement.md §2 A
 //! grant naming a holder). A thing is rooted, kept for itself (`Root`): held (in the node closure
 //! or leaving it), a retained copy, or a thing an own self-removal still waits to seal under.
-//! Keys held here root nothing: the node itself is needed by its node root (its first admin), and
+//! Keys held here root nothing: the node itself is needed by its node root (its mint admin), and
 //! a link being redeemed keeps its sync ID in the sync set, so what a pass end drops of K comes
 //! again with the next pass, and the join is written once a pass brought what it needs
 //! (`Engine::redeemable`). A ticket roots nothing: a strong in the node closure

@@ -17,7 +17,7 @@ fn on(thing: ThingId, mut c: Commit) -> Commit {
 // the commit is thrown out whole, to be fetched again
 #[test]
 fn unknown_author_record_throws_the_commit_out_spec_commits_4() {
-    let mut hd = held(5, vec![edge(5, FIRST_ADMIN, 0, 1, Some(Role::Write), None), reg(10, 1, 1, REG, Retention::PLAIN, 1)]);
+    let mut hd = held(5, vec![edge(5, MINT_ADMIN, 0, 1, Some(Role::Write), None), reg(10, 1, 1, REG, Retention::PLAIN, 1)]);
     assert!(evaluate(&hd).applied.contains(&10));
     hd.records.retain(|t| t.id != 1);
     let o = evaluate(&hd);
@@ -30,8 +30,8 @@ fn unknown_author_record_throws_the_commit_out_spec_commits_4() {
 // thing with no creation held is not held, alone; a commit holding only such parts is thrown out
 #[test]
 fn part_on_unknown_thing_is_not_held_spec_commits_4() {
-    let mut c = reg(10, FIRST_ADMIN, 1, REG, Retention::PLAIN, 1);
-    c.parts.push(on(UNKNOWN, reg(10, FIRST_ADMIN, 1, REG, Retention::PLAIN, 2)).parts.remove(0));
+    let mut c = reg(10, MINT_ADMIN, 1, REG, Retention::PLAIN, 1);
+    c.parts.push(on(UNKNOWN, reg(10, MINT_ADMIN, 1, REG, Retention::PLAIN, 2)).parts.remove(0));
     let hd = held(5, vec![c.clone()]);
     let o = evaluate(&hd);
     assert!(o.applied.contains(&10));
@@ -47,7 +47,7 @@ fn part_on_unknown_thing_is_not_held_spec_commits_4() {
     assert_eq!(o.revisit, [10].into());
     // a part on an unknown thing is not held whatever its expiry: no header applies
     let mut late = held(5, vec![]);
-    let mut c = on(UNKNOWN, reg(11, FIRST_ADMIN, 1, REG, Retention::PLAIN, 2));
+    let mut c = on(UNKNOWN, reg(11, MINT_ADMIN, 1, REG, Retention::PLAIN, 2));
     c.expires = Some(at(3));
     late.commits.push(c);
     let o = evaluate(&late);
@@ -75,7 +75,7 @@ fn author_with_no_way_to_the_thing_waits_spec_commits_4() {
     let w = reg(10, 2, 1, REG, Retention::PLAIN, 1);
     let o = evaluate(&held(5, vec![w.clone()]));
     assert!(!o.applied.contains(&10));
-    let o = evaluate(&held(5, vec![w, edge(5, FIRST_ADMIN, 2, 2, Some(Role::Write), None)]));
+    let o = evaluate(&held(5, vec![w, edge(5, MINT_ADMIN, 2, 2, Some(Role::Write), None)]));
     assert!(o.applied.contains(&10));
     assert!(!o.valid[&(10, 0)], "applied, invalid: the grant came after it");
 }
@@ -83,7 +83,7 @@ fn author_with_no_way_to_the_thing_waits_spec_commits_4() {
 // spec/commits.md §4 (A held part waits), spec/versioning.md §2: a parked part waits alone
 #[test]
 fn parked_part_waits_alone_spec_commits_4() {
-    let mut c = reg(10, FIRST_ADMIN, 1, REG, Retention::PLAIN, 1);
+    let mut c = reg(10, MINT_ADMIN, 1, REG, Retention::PLAIN, 1);
     c.parts.push(part(Aspect::plain(5), Retention::PLAIN, vec![]));
     c.parts[1].body = Body::Parked;
     let hd = held(5, vec![c]);
@@ -96,8 +96,8 @@ fn parked_part_waits_alone_spec_commits_4() {
 // spec/commits.md §4 (Unjudgeable): a role commit's part on an unknown thing goes alone
 #[test]
 fn role_commit_part_on_unknown_thing_goes_alone_spec_commits_4() {
-    let mut c = edge(5, FIRST_ADMIN, 0, 1, Some(Role::Write), None);
-    c.parts.push(on(UNKNOWN, edge(5, FIRST_ADMIN, 0, 2, Some(Role::Write), None)).parts.remove(0));
+    let mut c = edge(5, MINT_ADMIN, 0, 1, Some(Role::Write), None);
+    c.parts.push(on(UNKNOWN, edge(5, MINT_ADMIN, 0, 2, Some(Role::Write), None)).parts.remove(0));
     let o = evaluate(&held(5, vec![c, reg(10, 1, 1, REG, Retention::PLAIN, 1)]));
     assert!(o.applied.contains(&5) && o.valid[&(5, 0)]);
     assert!(!o.valid[&(5, 1)]);
@@ -105,14 +105,14 @@ fn role_commit_part_on_unknown_thing_goes_alone_spec_commits_4() {
     assert!(o.valid[&(10, 0)]);
 }
 
-/// A thing nothing leads to from node 0 (first admin node 1): a part of node 0's on it waits.
+/// A thing nothing leads to from node 0 (mint admin node 1): a part of node 0's on it waits.
 const AWAY: ThingId = 11;
 
 // spec/commits.md §5 (A waiting part past its expiry), §4: a parked part goes and decides
 // nothing; the commit applies without it
 #[test]
 fn waiting_part_past_expiry_goes_spec_commits_5() {
-    let mut c = reg(10, FIRST_ADMIN, 1, REG, Retention::PLAIN, 1);
+    let mut c = reg(10, MINT_ADMIN, 1, REG, Retention::PLAIN, 1);
     c.parts.push(part(Aspect::plain(5), Retention::PLAIN, vec![]));
     c.parts[1].body = Body::Parked;
     c.expires = Some(at(3));
@@ -128,8 +128,8 @@ fn waiting_part_past_expiry_goes_spec_commits_5() {
 // not held, whether or not it has expired; the commit holding only it is thrown out
 #[test]
 fn part_no_way_to_the_thing_is_not_held_spec_commits_4() {
-    let mut c = reg(10, FIRST_ADMIN, 1, REG, Retention::PLAIN, 1);
-    c.parts.push(on(AWAY, reg(10, FIRST_ADMIN, 1, REG, Retention::PLAIN, 2)).parts.remove(0));
+    let mut c = reg(10, MINT_ADMIN, 1, REG, Retention::PLAIN, 1);
+    c.parts.push(on(AWAY, reg(10, MINT_ADMIN, 1, REG, Retention::PLAIN, 2)).parts.remove(0));
     c.expires = Some(at(3));
     let hd = held(2, vec![c]);
     let o = evaluate(&hd);
@@ -142,7 +142,7 @@ fn part_no_way_to_the_thing_is_not_held_spec_commits_4() {
 // before and after its expiry alike: nothing of it is held to go at its expiry
 #[test]
 fn only_part_unjudgeable_is_thrown_out_spec_commits_4() {
-    let mut c = on(AWAY, reg(10, FIRST_ADMIN, 1, REG, Retention::PLAIN, 2));
+    let mut c = on(AWAY, reg(10, MINT_ADMIN, 1, REG, Retention::PLAIN, 2));
     c.expires = Some(at(3));
     for now in [2, 3] {
         let o = evaluate(&held(now, vec![c.clone()]));
@@ -158,9 +158,9 @@ fn only_part_unjudgeable_is_thrown_out_spec_commits_4() {
 // whole history at once), and when a header-only copy comes before the blob.
 #[test]
 fn purge_whose_only_part_waits_applies_spec_commits_4() {
-    let mut p = purge(20, FIRST_ADMIN, 2, PurgeItem::Author { thing: T, aspect: REG, author: FIRST_ADMIN });
+    let mut p = purge(20, MINT_ADMIN, 2, PurgeItem::Author { thing: T, aspect: REG, author: MINT_ADMIN });
     p.parts[0].body = Body::Parked;
-    let w = reg(10, FIRST_ADMIN, 1, REG, Retention::PLAIN, 7);
+    let w = reg(10, MINT_ADMIN, 1, REG, Retention::PLAIN, 7);
     let parked = held(3, vec![w.clone(), p.clone()]);
     let header = held(3, vec![w, missing(p, 0)]);
     for hd in [&parked, &header] {

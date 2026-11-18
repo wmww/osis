@@ -71,7 +71,7 @@ impl Chained {
             if x == *a {
                 return true;
             }
-            for y in records.first_admin(&x).into_iter().chain(self.at.get(&(x, min)).into_iter().flatten().copied()) {
+            for y in records.mint_admin(&x).into_iter().chain(self.at.get(&(x, min)).into_iter().flatten().copied()) {
                 if seen.insert(y) {
                     stack.push(y);
                 }
@@ -139,9 +139,9 @@ impl CertIndex {
         let mut stack: Vec<Tid> = seen.iter().copied().collect();
         while let Some(e) = stack.pop() {
             let next: Vec<Tid> = if forward {
-                records.first_admin_of(&e).iter().chain(self.targets.get(&e).into_iter().flatten()).copied().collect()
+                records.mint_admin_of(&e).iter().chain(self.targets.get(&e).into_iter().flatten()).copied().collect()
             } else {
-                records.first_admin(&e).into_iter().chain(self.holders.get(&e).into_iter().flatten().copied()).collect()
+                records.mint_admin(&e).into_iter().chain(self.holders.get(&e).into_iter().flatten().copied()).collect()
             };
             for y in next {
                 if seen.insert(y) {

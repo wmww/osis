@@ -35,7 +35,7 @@ fn revoke(lp: &mut LocalPeer, admin: usize, t: Tid, holder: Tid) {
     set_edge(&mut lp.peers[admin].engine, t, holder, None, Some(f.clone()));
 }
 
-/// Alice (0) is first admin of D and grants Bob (1) and Carol (2) write: built once
+/// Alice (0) is mint admin of D and grants Bob (1) and Carol (2) write: built once
 /// (`LocalPeer::cached`).
 fn setup() -> (LocalPeer, Tid, Tid, Tid) {
     let (lp, (d, b, c)) = LocalPeer::cached("validity::setup", || {
@@ -780,7 +780,7 @@ fn frontier_of(src: &osis_crdt::Source, ctr: u64) -> osis_crdt::Frontiers {
 }
 
 // spec/permissions.md §5.2 (a valid s vouches for every write it carries; its writes join like any write), spec/crdt.md §5.6 (the records of a dot are one entry; creation by stamp): a writer's snapshot carrying two entries under Bob's dots dated before his
-// grant shows them (nothing judges them as Bob's), with the first admin's write it carries; one
+// grant shows them (nothing judges them as Bob's), with the mint admin's write it carries; one
 // copying a dot of Bob's held commit under another key and an older `ts` loses its creation to
 // Bob's, so only Bob's entry shows.
 #[test]
@@ -1070,7 +1070,7 @@ fn sticky_residue_spec_perm_5_1() {
     let mut lp = net(3, 0);
     lp.sync_all().unwrap();
     let (n0, n1) = (lp.peers[0].engine.me(), lp.peers[1].engine.me());
-    // first admins: A0 n1, A1 n0, A2 A0; A1 admin on A0, A2 write on A1
+    // mint admins: A0 n1, A1 n0, A2 A0; A1 admin on A0, A2 write on A1
     let a0 = new_thing(&mut lp, 1);
     let a1 = new_thing(&mut lp, 0);
     let a2 = {
@@ -1121,7 +1121,7 @@ fn write_reg(lp: &mut LocalPeer, i: usize, t: Tid, v: &str) -> osis_engine::Resu
 }
 
 // spec/permissions.md §1 (a path climbs role grants, record edges included), §4 (chain certificates): n0 is first
-// admin of A, A writes B, B admin of C (n1 first admin of B and C). n0's write on C applies at n0 and a receiver; a
+// admin of A, A writes B, B admin of C (n1 mint admin of B and C). n0's write on C applies at n0 and a receiver; a
 // node with no path may not write C. A fresh reader of C given n0's certificates for C but A's
 // raw record (the record-link step) holds nothing of the write until that record arrives.
 #[test]
@@ -1170,7 +1170,7 @@ fn record_then_edge_chain_applies_spec_perm_1() {
     assert_eq!(fresh.peers[0].engine.get(&c, &ak("t:reg.0")).unwrap(), Some(s("n0")));
 }
 
-// spec/permissions.md §1 (`MAX_CHAIN_DEPTH`): n0 is first admin of a chain of things down to one
+// spec/permissions.md §1 (`MAX_CHAIN_DEPTH`): n0 is mint admin of a chain of things down to one
 // link past the cap. Record links count on a path as perm's effective role counts them: an edge on C to
 // the thing at the cap or past it lets n0 write C, and the write applies at n0 and a receiver.
 #[test]
@@ -1203,7 +1203,7 @@ fn record_chain_depth_edge_chain_spec_perm_1() {
 }
 
 // spec/permissions.md §1, §4: n0 reaches C only through edges n0 -> G1 -> G2 -> C while it is
-// first admin of thousands of things that are first admins of more (more than any walk-size cap): its write on C
+// mint admin of thousands of things that are mint admins of more (more than any walk-size cap): its write on C
 // applies (the chain search goes backward from C, never through the things below n0).
 #[test]
 #[ignore = "by hand"]
@@ -1910,7 +1910,7 @@ fn greater_forged_copy_keeps_original_body_spec_commits_5() {
 }
 
 // spec/requirements.md, Threat model ("malicious readers can only waste storage"); spec/permissions.md
-// §5.2: a reader's snapshot carrying the first admin's register write under a counter the first admin never
+// §5.2: a reader's snapshot carrying the mint admin's register write under a counter the mint admin never
 // used, stamped now, changes nothing: its author could not write the aspect.
 #[test]
 fn snapshot_forging_unused_dot_changes_nothing_spec_perm_5_2() {
@@ -1942,7 +1942,7 @@ fn snapshot_forging_unused_dot_changes_nothing_spec_perm_5_2() {
 }
 
 // spec/permissions.md §5.2, spec/commits.md §5: a commit-form commit C's body dropped (covered by
-// the first admin's snapshot), a reader's snapshot then carrying an extra element under `Commit(C)`
+// the mint admin's snapshot), a reader's snapshot then carrying an extra element under `Commit(C)`
 // changes nothing: its author could not write the aspect.
 #[test]
 fn snapshot_forging_dropped_commit_dot_changes_nothing_spec_perm_5_2() {
@@ -2000,8 +2000,8 @@ fn snapshot_covers_write_inside_earlier_entry_spec_commits_5() {
     assert_eq!(lp.peers[0].engine.covered(&snap, &c, &t, &map).unwrap(), Some(true));
 }
 
-// spec/requirements.md, Threat model; spec/permissions.md §5.2 (compaction snapshot; judged as its author's delta of that aspect): a reader's snapshot of the first admin's state plus an entry
-// at a counter the first admin never used gives nothing, before or after the first admin's commit, across a
+// spec/requirements.md, Threat model; spec/permissions.md §5.2 (compaction snapshot; judged as its author's delta of that aspect): a reader's snapshot of the mint admin's state plus an entry
+// at a counter the mint admin never used gives nothing, before or after the mint admin's commit, across a
 // restart, and covers nothing although it copies the commit exactly.
 #[test]
 fn reader_snapshot_gives_nothing_either_order_spec_perm_5_2() {
@@ -3502,7 +3502,7 @@ fn stranger_card_makes_no_node_spec_perm_4() {
 
 // spec/sync-ids.md §4 (owner): a thing's sync IDs are its `sync.0` state: a stranger's header-only commit
 // listing `sync.0` on a thing (it applies, its part invalid) gives the thing no sync ID here:
-// it is not a thing with a sync ID, nor published under its first admin's sync ID.
+// it is not a thing with a sync ID, nor published under its mint admin's sync ID.
 #[test]
 fn stranger_sync_id_listing_sync_ids_nothing_spec_sync_2() {
     let mut lp = net_bare(2, 0);

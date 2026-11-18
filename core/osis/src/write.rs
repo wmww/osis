@@ -298,8 +298,8 @@ impl<'d> Write<'d> {
         i
     }
 
-    /// A new thing under `admin`, its first admin, stored with this commit: a thing or account
-    /// this actor may write (`Permission` at commit otherwise). The first admin is an ordinary
+    /// A new thing under `admin`, its mint admin, stored with this commit: a thing or account
+    /// this actor may write (`Permission` at commit otherwise). The mint admin is an ordinary
     /// admin, removable like any other (spec/permissions.md §1).
     ///
     /// With `expires` the thing ends then, whole, at every node, and nothing can keep it longer:

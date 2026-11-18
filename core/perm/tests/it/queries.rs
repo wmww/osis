@@ -186,7 +186,7 @@ fn chained_writes_hold_the_applied_and_grow_large() {
 }
 
 /// §4: a demotion goes along with its demoted author's other paths. X writes on G by
-/// its admin edge; a later grant makes X an admin of G's first admin P; removing X's G edge after
+/// its admin edge; a later grant makes X an admin of G's mint admin P; removing X's G edge after
 /// that is no fall, so X's write unseen by the remover stands from certificates too.
 #[test]
 fn certificates_carry_chain_at_demotion_spec_permissions_4() {

@@ -677,7 +677,7 @@ impl Engine {
     }
 
     /// Every read secret an entry of `s` is tried under (`open_entry`): held, current or not, its
-    /// thing's and those derived from its first admin's. A parked entry waits on these alone.
+    /// thing's and those derived from its mint admin's. A parked entry waits on these alone.
     pub fn opening_secrets(&mut self, s: &SyncId) -> Result<Vec<osis_crypto::Secret32>> {
         let mut out = Vec::new();
         for t in self.opening_things(s)? {

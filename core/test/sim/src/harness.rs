@@ -307,7 +307,7 @@ impl Sim {
         Ok(r)
     }
 
-    /// Node `i` creates a thing whose first admin is `admin` (default: itself) and adds it to the write
+    /// Node `i` creates a thing whose mint admin is `admin` (default: itself) and adds it to the write
     /// targets.
     pub fn create_thing(&mut self, i: usize, admin: Option<Tid>) -> Res<Tid> {
         let me = self.tid(i)?;

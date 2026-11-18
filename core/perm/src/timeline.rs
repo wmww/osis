@@ -123,10 +123,10 @@ pub(crate) struct Memo {
 }
 
 impl Memo {
-    /// The answers that stand once `links` (leaf, its first admin) join as leaves `new`: a leaf
+    /// The answers that stand once `links` (leaf, its mint admin) join as leaves `new`: a leaf
     /// holds nothing and no write names it, so no path into another thing passes it, no write's
     /// standing moves (the chained writes, the writes by target, the disputes stay) and every
-    /// answer on another thing stands; what reaches a leaf's first admin reaches the leaf too,
+    /// answer on another thing stands; what reaches a leaf's mint admin reaches the leaf too,
     /// with the same role from the same change on (`forward` and the replays gain it). The
     /// rest goes.
     fn add_leaves(&mut self, links: &[(Tid, Tid)], new: &BTreeSet<Tid>) {
@@ -140,7 +140,7 @@ impl Memo {
         m(&mut self.on_now).retain(|t, _| !new.contains(t));
         m(&mut self.certificates).retain(|(_, t), _| !new.contains(t));
         for reach in m(&mut self.forward).values_mut() {
-            // through first admins that are new leaves too
+            // through mint admins that are new leaves too
             while let Some(x) = links.iter().find(|(x, a)| reach.contains(a) && !reach.contains(x)).map(|l| l.0) {
                 Arc::make_mut(reach).insert(x);
             }
@@ -403,11 +403,11 @@ impl Timeline {
     /// point `p` where the walk meets anything new (a new commit, or an item naming a thing
     /// whose record is new, one below it, or a new node), the walk is the same but for the
     /// demotions on those things: their record edge is their only edge there, so a node's role
-    /// on one is its role on its first admin (`Walked::alias_leaves`); a new node reaches
-    /// nothing walked there (it is first admin only of such things). So the final walk takes
+    /// on one is its role on its mint admin (`Walked::alias_leaves`); a new node reaches
+    /// nothing walked there (it is mint admin only of such things). So the final walk takes
     /// those, is rolled back to `p` (or to the first write a drop found after it dropped, D
     /// keeping what was found before) and goes on from there instead of starting over. `None`
-    /// when that does not hold (a node gone that has no record now, a new node first admin of a
+    /// when that does not hold (a node gone that has no record now, a new node mint admin of a
     /// thing walked before, a record changed under its ID) or a trusted op is held (seeds and
     /// void ops are read from the whole held set, `crate::trust`): evaluate.
     pub fn extend(mut self, held: &dyn HeldSet) -> Option<Timeline> {
@@ -421,7 +421,7 @@ impl Timeline {
             Some(f) => self.walked.marks.get(self.items.list_before(f)).map_or(self.walked.log.len(), |m| m.0),
             None => self.walked.log.len(),
         };
-        let leaves: Vec<(Tid, Tid)> = below.iter().filter_map(|t| input.records.first_admin(t).map(|o| (*t, o))).collect();
+        let leaves: Vec<(Tid, Tid)> = below.iter().filter_map(|t| input.records.mint_admin(t).map(|o| (*t, o))).collect();
         // the record edges of the records new here: in force from the start, which the walk's
         // undo entries (logged with the record unknown) do not restore
         let fresh: Vec<(Tid, Tid)> = leaves.iter().filter(|(t, _)| self.input.records.link(t).is_none()).map(|(t, a)| (*a, *t)).collect();
@@ -460,7 +460,7 @@ impl Timeline {
     /// (from `added`): the things whose record is new and every thing below them, and the
     /// first point where an item walked here names one of them or a new node (`None`: none
     /// does, and no commit is new). `None` when a record is gone, a node is gone that has no
-    /// record now, or a new node is first admin of a thing not among them.
+    /// record now, or a new node is mint admin of a thing not among them.
     fn joined(&self, input: &Input, added: Option<Point>) -> Option<(BTreeSet<Tid>, Option<Point>)> {
         if !self.input.records.links().all(|(t, o)| input.records.link(t) == Some(*o)) {
             return None;
@@ -468,7 +468,7 @@ impl Timeline {
         let mut below: BTreeSet<Tid> = input.records.links().filter(|(t, _)| self.input.records.link(t).is_none()).map(|(t, _)| *t).collect();
         let mut stack: Vec<Tid> = below.iter().copied().collect();
         while let Some(t) = stack.pop() {
-            for y in input.records.first_admin_of(&t) {
+            for y in input.records.mint_admin_of(&t) {
                 if below.insert(*y) {
                     stack.push(*y);
                 }
@@ -478,7 +478,7 @@ impl Timeline {
             return None;
         }
         let came: Vec<Tid> = input.nodes.difference(&self.input.nodes).filter(|n| !below.contains(n)).copied().collect();
-        if came.iter().any(|n| input.records.first_admin_of(n).iter().any(|y| !below.contains(y))) {
+        if came.iter().any(|n| input.records.mint_admin_of(n).iter().any(|y| !below.contains(y))) {
             return None;
         }
         let mut named = below.clone();
@@ -570,8 +570,8 @@ impl Timeline {
     }
 
     /// This timeline with things `leaves` new here that only their `created.0` names (no item
-    /// names them, they are first admin of nothing held): `extend` without gathering the held
-    /// set again. The walk is the same but for their demotions, which are their first admins'
+    /// names them, they are mint admin of nothing held): `extend` without gathering the held
+    /// set again. The walk is the same but for their demotions, which are their mint admins'
     /// (`Walked::alias_leaves`). `Err(self)`, unchanged, when one is known here, a key actor,
     /// or the records cycle.
     pub fn add_leaves(mut self, leaves: &[(Tid, CreationRecord)]) -> Result<Timeline, Box<Timeline>> {
@@ -579,7 +579,7 @@ impl Timeline {
         let links: Option<Vec<(Tid, Tid)>> = leaves
             .iter()
             .map(|(t, r)| match r {
-                CreationRecord::Thing { admin, .. } if records.link(t).is_none() && records.first_admin_of(t).is_empty() && !self.input.nodes.contains(t) => Some((*t, *admin)),
+                CreationRecord::Thing { admin, .. } if records.link(t).is_none() && records.mint_admin_of(t).is_empty() && !self.input.nodes.contains(t) => Some((*t, *admin)),
                 _ => None,
             })
             .collect();
@@ -596,7 +596,7 @@ impl Timeline {
         for (t, r) in leaves {
             self.input.records.insert(*t, r);
         }
-        // a first admin whose record is not held is a node, as `Input::gather` has it
+        // a mint admin whose record is not held is a node, as `Input::gather` has it
         let mut nodes = false;
         for (_, a) in &links {
             if self.input.records.link(a).is_none() {
@@ -898,7 +898,7 @@ impl Timeline {
     /// the point of the change since which it has held such an edge without a break (`None`:
     /// since before every change: its record edge). O(the walk's history of `thing`).
     pub fn standing_since(&self, thing: &Tid) -> BTreeMap<Tid, Option<Point>> {
-        let mut out: BTreeMap<Tid, Option<Point>> = self.input.records.first_admin(thing).map(|a| (a, None)).into_iter().collect();
+        let mut out: BTreeMap<Tid, Option<Point>> = self.input.records.mint_admin(thing).map(|a| (a, None)).into_iter().collect();
         for c in self.walked.history.iter().filter(|c| c.target == *thing) {
             if c.edge.is_some_and(|e| !e.says_retain()) {
                 out.entry(c.holder).or_insert(Some(c.point));
@@ -933,7 +933,7 @@ impl Timeline {
     /// The holders whose edge on `thing`, alive at `ts`, gives a role below one an earlier write
     /// of it (or its record edge) gave: lowered, not ended (`ended`). O(the walk's history).
     pub fn lowered(&self, thing: &Tid, ts: Ts) -> BTreeSet<Tid> {
-        let mut top: BTreeMap<Tid, Role> = self.input.records.first_admin(thing).map(|a| (a, RECORD_EDGE.role)).into_iter().collect();
+        let mut top: BTreeMap<Tid, Role> = self.input.records.mint_admin(thing).map(|a| (a, RECORD_EDGE.role)).into_iter().collect();
         for c in self.walked.history.iter().filter(|c| c.target == *thing) {
             if let Some(e) = c.edge {
                 let r = top.entry(c.holder).or_insert(e.role);
@@ -950,7 +950,7 @@ impl Timeline {
     /// saying retain gives none: the role before it). O(the walk's history): only a node that lost
     /// access asks (spec/permissions.md §3, Retain).
     pub fn ended(&self, thing: &Tid, ts: Ts) -> BTreeMap<Tid, (bool, Option<Point>, Role)> {
-        let mut out: BTreeMap<Tid, (bool, Option<Point>, Role)> = self.input.records.first_admin(thing).map(|a| (a, (RECORD_EDGE.ends_retaining(), None, RECORD_EDGE.role))).into_iter().collect();
+        let mut out: BTreeMap<Tid, (bool, Option<Point>, Role)> = self.input.records.mint_admin(thing).map(|a| (a, (RECORD_EDGE.ends_retaining(), None, RECORD_EDGE.role))).into_iter().collect();
         for c in self.walked.history.iter().filter(|c| c.target == *thing) {
             match (c.edge, out.get_mut(&c.holder)) {
                 (Some(e), x) => {

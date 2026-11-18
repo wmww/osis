@@ -1,6 +1,6 @@
 //! Joint walk over several actors (spec/permissions.md §5.1): one timeline over every edge
 //! write of every actor, ordered by (t, author node, commit ID). Nodes are key actors; each
-//! actor's record names its first admin (a node or a lower actor), whose record edge (admin)
+//! actor's record names its mint admin (a node or a lower actor), whose record edge (admin)
 //! is in the genesis edges before every write and removable like any edge
 //! (spec/permissions.md §1); an edge (holder: node or actor, target actor, role). Effective
 //! role: max over paths of the min along the path, paths climbing edges, computed as a
@@ -40,7 +40,7 @@ pub struct JWrite {
 #[derive(Clone, Debug)]
 pub struct JHist {
     pub nodes: usize,
-    /// Each actor's first admin entity (a node, or a lower actor): `genesis[admins[x]][x]` is
+    /// Each actor's mint admin entity (a node, or a lower actor): `genesis[admins[x]][x]` is
     /// its record edge, admin.
     pub admins: Vec<usize>,
     /// [holder entity][target actor].
@@ -440,12 +440,12 @@ fn ent_name(nodes: usize, e: usize) -> String {
     }
 }
 
-/// A trace: actors with their first admins, genesis edges, then each write in walk order with
+/// A trace: actors with their mint admins, genesis edges, then each write in walk order with
 /// its index, author, commit ID and who received it when.
 impl std::fmt::Display for JHist {
     fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
         let nm = |e: usize| ent_name(self.nodes, e);
-        let admins: Vec<String> = (0..self.actors()).map(|x| format!("A{x} first admin {}", nm(self.admins[x]))).collect();
+        let admins: Vec<String> = (0..self.actors()).map(|x| format!("A{x} mint admin {}", nm(self.admins[x]))).collect();
         writeln!(f, "nodes n0..n{}; {}", self.nodes - 1, admins.join(", "))?;
         for (m, row) in self.genesis.iter().enumerate() {
             for (x, r) in row.iter().enumerate().filter(|(_, r)| **r != Role::None) {
@@ -662,7 +662,7 @@ impl crate::trust::Trusting for JHist {
     }
 }
 
-/// A random history: every actor's first admin a node or a lower actor, holding the record
+/// A random history: every actor's mint admin a node or a lower actor, holding the record
 /// edge (admin) in genesis before every write, removable; other edges start at random
 /// (earlier history every node saw); writes by any node, many lowering admins; a third of the
 /// receipts never happen, and a quarter of the writes that grant no admin are late
@@ -838,7 +838,7 @@ mod tests {
     use super::*;
     use Role::{Admin, None};
 
-    /// Nodes 0..5; actors A (first admin node 0) and B (first admin node 1), entities 5 and 6.
+    /// Nodes 0..5; actors A (mint admin node 0) and B (mint admin node 1), entities 5 and 6.
     const NODES: usize = 5;
     const A: usize = 0;
     const B: usize = 1;
@@ -847,7 +847,7 @@ mod tests {
 
     struct Jb(JHist);
     impl Jb {
-        /// Actors with their first admin entities (record edges in genesis) and more genesis
+        /// Actors with their mint admin entities (record edges in genesis) and more genesis
         /// edges.
         fn new(admins: Vec<usize>, edges: &[(usize, usize, Role)]) -> Self {
             let na = admins.len();
@@ -901,8 +901,8 @@ mod tests {
     }
 
     /// Mutual roles: A and B are admins of each other; node 2 is an admin of A, hence
-    /// of B. 2 grants node 3 admin on B; A's first admin removes 2 from A. The grant falls iff
-    /// the first admin had not received it; both walks terminate.
+    /// of B. 2 grants node 3 admin on B; A's mint admin removes 2 from A. The grant falls iff
+    /// the mint admin had not received it; both walks terminate.
     #[test]
     fn mutual_roles() {
         for seen in [false, true] {
@@ -921,9 +921,9 @@ mod tests {
 
     /// Concurrent removals across mutual actors: x (admin of A) removes y from B at t=2, y
     /// (admin of B, so of A) removes x from A at t=3, neither having seen the other. The
-    /// earlier wins: y has no authority left at t=3. If A's first admin then removes x without
+    /// earlier wins: y has no authority left at t=3. If A's mint admin then removes x without
     /// having received x's removal of y, that removal falls, y's removal of x applies and the
-    /// first admin's removal finds x already gone.
+    /// mint admin's removal finds x already gone.
     #[test]
     fn concurrent_cross_removals() {
         let (x, y) = (2, 3);
@@ -965,7 +965,7 @@ mod tests {
         }
     }
 
-    /// Two edge-admin paths to one doc D (actor 2, first admin node 0): node 3 is admin of
+    /// Two edge-admin paths to one doc D (actor 2, mint admin node 0): node 3 is admin of
     /// teams T1 and T2 (actors 0 and 1), both admins of D. 3 grants node 4 admin on D at t=1,
     /// seen by nobody. Removing T1's path (t=3) leaves 3's class on D at edge admin: no audit.
     /// Removing T2's (t=4) drops the grant unless that remover had received it.
@@ -985,7 +985,7 @@ mod tests {
         }
     }
 
-    /// A record edge path plus an edge: actor P (first admin node 0) is the first admin of doc
+    /// A record edge path plus an edge: actor P (mint admin node 0) is the mint admin of doc
     /// G (actor 1); node 3 has an admin edge on G and becomes a P admin at t=2. Its grant on G
     /// at t=1 is edge class. Edge removed first (t=3): 3 keeps admin on G through P's record
     /// edge, no fall, no audit; the P removal (t=4) takes it and audits the grant. P removal
@@ -1008,7 +1008,7 @@ mod tests {
     }
 
     /// Self-removal through an actor: node 2, admin of A, removes A's write edge on B (admin
-    /// of the holder is its only authority). Audited like a write on A: A's first admin
+    /// of the holder is its only authority). Audited like a write on A: A's mint admin
     /// removing 2 from A without having seen it hands A its edge back; having seen it, the
     /// removal stands.
     #[test]
@@ -1024,7 +1024,7 @@ mod tests {
         }
     }
 
-    /// Transitive record-edge audit: P (first admin node 0) is the first admin of Q, Q of D.
+    /// Transitive record-edge audit: P (mint admin node 0) is the mint admin of Q, Q of D.
     /// Node 3 is admin of P, so of D through the record edges, and grants node 4 admin on D at
     /// t=1, seen by nobody. Removing 3 from P (t=3) drops the grant, two record edges below P;
     /// unless 3 keeps admin on D by an admin edge on Q, where its class on D does not fall and
@@ -1046,12 +1046,12 @@ mod tests {
         }
     }
 
-    /// Node 0 is first admin of group G and doc T; X is admin of G, G admin of T. X grants Y
+    /// Node 0 is mint admin of group G and doc T; X is admin of G, G admin of T. X grants Y
     /// admin on T, unseen by 0. Node 0, admin of G by G's record edge but also admin of T by
     /// T's, removes G from T: an explicit demotion (not a self-removal), so X's unseen grant is
     /// dropped.
     #[test]
-    fn group_removal_by_first_admin_of_both() {
+    fn group_removal_by_mint_admin_of_both() {
         let (g, t) = (0, 1);
         let mut b = Jb::new(vec![0, 0], &[(1, g, Admin), (NODES + g, t, Admin)]);
         let grant = b.set(1, t, 2, Admin, 3, &[]);
@@ -1062,12 +1062,12 @@ mod tests {
         assert_order_independent(&b.0);
     }
 
-    /// A first admin is an ordinary admin (spec/permissions.md §1): node 0, first admin of A,
+    /// A mint admin is an ordinary admin (spec/permissions.md §1): node 0, mint admin of A,
     /// grants node 2 admin at t=1; 2 removes 0's record edge at t=3 without having received
     /// 0's grant of node 3 at t=2. The removal applies, 0 holds nothing on A, its unseen grant
     /// drops, and its later grant of itself (t=4) is no write (no authority left).
     #[test]
-    fn first_admin_removed_by_another_admin() {
+    fn mint_admin_removed_by_another_admin() {
         let mut b = Jb::new(vec![0, 1], &[]);
         b.set(0, A, 2, Admin, 1, &[(2, 1)]);
         let grant = b.set(0, A, 3, Admin, 2, &[]);

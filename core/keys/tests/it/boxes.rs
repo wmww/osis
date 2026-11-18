@@ -23,7 +23,7 @@ struct Forked {
     rng: osis_crypto::SeededRng,
 }
 
-/// Actor A (first admin P, symmetric) after its own-secrets switch and a read fork.
+/// Actor A (mint admin P, symmetric) after its own-secrets switch and a read fork.
 fn forked() -> Forked {
     let (a, p) = (tid(1), tid(2));
     let mut g = rng(0);

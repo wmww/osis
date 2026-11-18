@@ -1,5 +1,5 @@
 //! One-level model of edges with `until`, invite power and self-removal (spec/permissions.md
-//! §2, §5.1, §7). One thing T; node 0 is T's first admin (its record edge, admin, in genesis
+//! §2, §5.1, §7). One thing T; node 0 is T's mint admin (its record edge, admin, in genesis
 //! before every write and removable like any edge); every node is a key actor (admin of
 //! itself, so effective invite = its edge's invite). An edge is (role, until, invite ≤ role).
 //! A commit (normally one op; a redemption has two) is ordered by (t, author, commit ID) and
@@ -350,7 +350,7 @@ impl EHist {
         self.keep(&keep, genesis)
     }
 
-    /// Removed actors: x whose edge only the first admin (node 0) and x itself write, node 0
+    /// Removed actors: x whose edge only the mint admin (node 0) and x itself write, node 0
     /// last, by a plain removal at T_x. Returns the history without each such x's commits node
     /// 0 had not received before T_x (what its frontier does not cover), or None if there is
     /// no such x. Those commits should leave no trace. (When another admin removed x first,
@@ -664,7 +664,7 @@ impl crate::shrink::Shrink for EHist {
                 out.push(h);
             }
         }
-        // An unused node other than the first admin.
+        // An unused node other than the mint admin.
         for k in (1..n).filter(|_| n > 2) {
             if self.genesis[k].is_none() && self.writes.iter().all(|w| w.author != k && w.ops.iter().all(|&(x, _)| x != k)) {
                 let mut h = self.clone();
@@ -759,7 +759,7 @@ fn rand_lower(rng: &mut Rng, e: Option<Edge>) -> Option<Edge> {
     Some(Edge { role, until, invite })
 }
 
-/// A random history: node 0 the first admin (genesis: a full admin edge), the others starting
+/// A random history: node 0 the mint admin (genesis: a full admin edge), the others starting
 /// with random edges or none; a quarter of the writes by node 0.
 pub fn random_hist(rng: &mut Rng) -> EHist {
     let n = 3 + rng.below(4);
@@ -820,7 +820,7 @@ pub fn random(samples: u64, seed: u64) -> Stats {
     })
 }
 
-/// Exhaustive: first admin 0, admin 1, inviter 2 (write, invite write), outsider 3. Every set
+/// Exhaustive: mint admin 0, admin 1, inviter 2 (write, invite write), outsider 3. Every set
 /// of `k` commits from a menu: author × target (1-3) × edge (plus a redemption by 2: add 3 and
 /// remove itself), times {2,4,6}, receipts in `recv_opts` at the nodes in `recv_at`
 /// (others receive at 0).
@@ -999,7 +999,7 @@ impl crate::trust::Trusting for EHist {
 /// full admin edge (admin, invite admin, no `until`), self-removals and finalizes are free.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum Who {
-    /// Only the first admin (node 1).
+    /// Only the mint admin (node 1).
     OneRemover,
     /// Node a lowers x only if a < x; grants too.
     Rank,
@@ -1017,7 +1017,7 @@ pub enum Net {
     Offline,
 }
 
-/// A random history shaped for the dispute searches: node 0 the first admin by its record edge
+/// A random history shaped for the dispute searches: node 0 the mint admin by its record edge
 /// (genesis: before every write, removable), other nodes starting with random edges (earlier
 /// history every node saw). Commits as in `random_hist` plus finalizes, limited by `who`,
 /// received by `net`.
@@ -1077,7 +1077,7 @@ pub fn random_shaped(rng: &mut Rng, who: Who, net: Net) -> EHist {
     h
 }
 
-/// Exhaustive dispute search: first admin 0, admin 1, inviter 2 (write, invite write),
+/// Exhaustive dispute search: mint admin 0, admin 1, inviter 2 (write, invite write),
 /// outsider 3. Every set of `k` commits from a menu: author (0-2) × holder × edge in `edges`,
 /// a finalize by each author of each other holder, a redemption by 2; times {2,4,6}; receipts
 /// in `recv_opts` at nodes 0 and 1 (others receive at 0).
@@ -1113,7 +1113,7 @@ mod tests {
 
     struct B(EHist);
     impl B {
-        /// Node 0 is the first admin: its record edge (admin) is in genesis whatever `genesis`
+        /// Node 0 is the mint admin: its record edge (admin) is in genesis whatever `genesis`
         /// says for it.
         fn new(genesis: &[Option<Edge>]) -> Self {
             let mut genesis = genesis.to_vec();
@@ -1154,7 +1154,7 @@ mod tests {
         }
     }
 
-    // Link: sharer 0 is K's first admin; L = 1; joiners J = 2, Z = 3; Y = 4 an existing holder.
+    // Link: sharer 0 is K's mint admin; L = 1; joiners J = 2, Z = 3; Y = 4 an existing holder.
     const L: usize = 1;
     const J: usize = 2;
     const Z: usize = 3;
@@ -1257,8 +1257,8 @@ mod tests {
         assert_eq!(roles(&b.0)[i], NONE);
     }
 
-    /// Two invitees vouching for each other: I1 (removed by the first admin at t=5) mints a grant
-    /// of I2 backdated to t=4 that the first admin never received; I2 re-adds I1 at t=6. The grant
+    /// Two invitees vouching for each other: I1 (removed by the mint admin at t=5) mints a grant
+    /// of I2 backdated to t=4 that the mint admin never received; I2 re-adds I1 at t=6. The grant
     /// is dropped, so I2 never had an edge and its re-add of I1 never applies.
     #[test]
     fn invitees_vouching_for_each_other() {
@@ -1285,7 +1285,7 @@ mod tests {
         assert_eq!((o.auth(i), o.auth(Z)), (NONE, NONE));
     }
 
-    /// An inviter re-adding a holder the first admin removed: legitimate if the first admin had seen it
+    /// An inviter re-adding a holder the mint admin removed: legitimate if the mint admin had seen it
     /// when revoking the inviter's invite, dropped otherwise; backdated before the removal
     /// it is no add (the holder still had an edge).
     #[test]
@@ -1317,7 +1317,7 @@ mod tests {
     }
 
     /// Finding: drops are sticky. Admin 1 removes 2 at t=4 without having received 2's
-    /// grant of 3, which the first admin had; the first admin removes 1 at t=6 without having received
+    /// grant of 3, which the mint admin had; the mint admin removes 1 at t=6 without having received
     /// that removal. It is dropped and 2 is back, but 2's grant stays dropped: a removed
     /// admin's dropped write still costs 3 its edge (for an inviter and an admin alike).
     #[test]
@@ -1333,7 +1333,7 @@ mod tests {
     }
 
     /// The same revives a used single-use link: admin E removes L without having received
-    /// its redemption; the first admin removes E without having received that. The redemption
+    /// its redemption; the mint admin removes E without having received that. The redemption
     /// stays dropped, so J is out and L's edge, invite included, is back.
     #[test]
     fn sticky_drop_revives_single_use_link() {

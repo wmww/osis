@@ -33,14 +33,14 @@ fn lists_on_profile() -> bool {
 impl Core {
     /// Account `a`'s profile (spec/permissions.md §1): the thing created with `a` (in the commit
     /// creating it, which `a` authors: a record needs no authority, so another author's commit
-    /// carrying `a`'s record again creates no profile of `a`'s) whose first admin is `a`, other
+    /// carrying `a`'s record again creates no profile of `a`'s) whose mint admin is `a`, other
     /// than its account root and its inbox (`inbox`, as `a`'s `keys.0` names it). `None` until
     /// that commit is held here.
     pub(crate) fn profile_of(&self, a: &Tid, inbox: Option<Tid>) -> Option<Tid> {
         let created = ct::CREATED.name();
         let by = self.ix.by_aspect.get(&(*a, created.clone()))?;
         let meta = by.iter().filter_map(|(_, c)| self.ix.commits.get(c)).find(|m| m.header.author == *a)?;
-        meta.view.aspects.iter().filter(|x| x.ak == created && x.tid != *a && Some(x.tid) != inbox).map(|x| x.tid).find(|x| self.first_admin(x) == Some(*a) && self.account_of_root(x).is_none())
+        meta.view.aspects.iter().filter(|x| x.ak == created && x.tid != *a && Some(x.tid) != inbox).map(|x| x.tid).find(|x| self.mint_admin(x) == Some(*a) && self.account_of_root(x).is_none())
     }
 }
 

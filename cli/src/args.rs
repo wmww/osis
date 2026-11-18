@@ -378,7 +378,7 @@ pub enum Cmd {
 
 #[derive(Args, Debug, Clone)]
 pub struct CreateArgs {
-    /// First admin (default: the account root). Under a thing it is plain, read by that thing's
+    /// Mint admin (default: the account root). Under a thing it is plain, read by that thing's
     /// readers; under an account (`me`) it gets keys of its own at once, about ten times the cost
     #[arg(long, value_name = "A")]
     pub admin: Option<String>,

@@ -157,7 +157,7 @@ pub(crate) fn under(core: &Core, actors: &BTreeSet<Tid>) -> BTreeSet<Tid> {
         if lost_reader(core, actors, &t).is_none() || !out.insert(t) {
             continue;
         }
-        todo.extend(core.ix.held.first_admin_of(&t).copied());
+        todo.extend(core.ix.held.mint_admin_of(&t).copied());
     }
     out
 }

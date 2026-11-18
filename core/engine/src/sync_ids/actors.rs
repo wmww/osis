@@ -1,5 +1,5 @@
 //! Actors, entitlement and closure (spec/sync-ids.md §2, spec/sync-judgement.md §1, spec/sync-set.md §2): a thing's reader actor (the thing if it
-//! has secrets of its own, else its first admin), who may read it, and the sync IDs of a thing with
+//! has secrets of its own, else its mint admin), who may read it, and the sync IDs of a thing with
 //! own keys (`sync.0`).
 
 use osis_base::memo::{Memo, Stamped};

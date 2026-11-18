@@ -39,7 +39,7 @@ fn grants(core: &Core, also: &[Tid]) -> Vec<osis_keys::Grant<Order>> {
     }
     for t in also {
         if core.timelines.get(t).is_none()
-            && let Some(a) = core.first_admin(t).filter(actors)
+            && let Some(a) = core.mint_admin(t).filter(actors)
         {
             grants.push(Grant { order: (1, None), target: *t, holder: a });
         }
@@ -125,7 +125,7 @@ pub(crate) fn grant_keyless(core: &mut Core, target: &Tid, holder: &Tid) -> bool
         return key_access(core).contains(&(*target, *holder));
     }
     // the grants held with this one last, and the record edges of both ends (an actor whose
-    // first admin is the target closes a cycle through its record edge, though it holds nothing
+    // mint admin is the target closes a cycle through its record edge, though it holds nothing
     // yet)
     let mut gs = grants(core, &[*target, *holder]);
     gs.push(Grant { order: (2, None), target: *target, holder: *holder });

@@ -240,7 +240,7 @@ impl Engine {
         framed(key, &env, &resolved, class, rng, &c).map(Some)
     }
 
-    /// The derivation chain a section lists for thing `t` (spec/wire.md §4): from its first admin
+    /// The derivation chain a section lists for thing `t` (spec/wire.md §4): from its mint admin
     /// up to and including the actor its read secret derives from; empty for a thing with
     /// secrets of its own or a key actor.
     fn section_chain(&self, t: &Tid) -> Vec<Tid> {
@@ -256,7 +256,7 @@ impl Engine {
                         return out;
                     }
                 }
-                // a key actor above `t` is the first admin the step before pushed: listed once
+                // a key actor above `t` is the mint admin the step before pushed: listed once
                 _ => return out,
             }
         }
@@ -794,16 +794,16 @@ impl Engine {
         })
     }
 
-    /// Held read secrets of a thing with own keys, newest first; then those derived from its first admin's (a
+    /// Held read secrets of a thing with own keys, newest first; then those derived from its mint admin's (a
     /// thing that got secrets of its own, or one under a key actor this node holds: the rotation
     /// that gave it its own is wrapped under the derived epoch, spec/crypto.md §5).
     /// Each epoch's roles secret follows its secret (spec/crypto.md §4, Roles secrets), and one
     /// held without its secret stands alone.
     pub fn read_secrets(&self, g: &Tid) -> Vec<Secret32> {
         let mut v: Vec<Secret32> = self.epochs(g).map(|e| e.read.opening_newest_first()).unwrap_or_default();
-        // the first admin's epochs; a thing whose `created.0` is not here yet (a link's
-        // account) may have any key actor held as first admin
-        let firsts: Vec<Arc<osis_keys::ActorEpochs>> = match self.core.created(g).map(osis_base::CreationRecord::first_admin) {
+        // the mint admin's epochs; a thing whose `created.0` is not here yet (a link's
+        // account) may have any key actor held as mint admin
+        let firsts: Vec<Arc<osis_keys::ActorEpochs>> = match self.core.created(g).map(osis_base::CreationRecord::mint_admin) {
             Some(Some(up)) => self.epochs(&up).or_else(|| self.core.key_actors.get(&up).map(|id| Arc::new(osis_keys::ActorEpochs::key_actor(id.seed())))).into_iter().collect(),
             Some(None) => Vec::new(),
             None => self.core.key_actors.values().map(|id| Arc::new(osis_keys::ActorEpochs::key_actor(id.seed()))).collect(),
@@ -952,7 +952,7 @@ impl Engine {
         if e.role(r).is_established(ep) {
             return true;
         }
-        let Some(up) = self.core.created(g).and_then(osis_base::CreationRecord::first_admin) else { return false };
+        let Some(up) = self.core.created(g).and_then(osis_base::CreationRecord::mint_admin) else { return false };
         self.epochs(&up).is_some_and(|o| ActorEpochs::derived(&o, g).role(r).is_established(ep))
     }
 }
@@ -999,10 +999,10 @@ mod tests {
     
 
     // spec/crypto.md §3, spec/wire.md §4: a record chain of two plain things under the node: O,
-    // whose first admin is the node, derives from the node's epochs and T, whose first admin is
+    // whose mint admin is the node, derives from the node's epochs and T, whose mint admin is
     // O, from O's; a section on T lists the chain up to the node, one on O the node.
     #[test]
-    fn derives_through_a_first_admin_spec_crypto_3() {
+    fn derives_through_a_mint_admin_spec_crypto_3() {
         use crate::Mutation;
         let mut lp = crate::local_peer::LocalPeer::fresh(1, WallMs(1_700_000_000_000));
         let e = &mut lp.peers[0].engine;

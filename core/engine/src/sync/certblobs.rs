@@ -496,7 +496,7 @@ impl Engine {
 }
 
 /// The records named by `seeds` not known here, with those on their record chains (each
-/// `Thing`'s first admin), from `batch` or the loose records.
+/// `Thing`'s mint admin), from `batch` or the loose records.
 pub(crate) fn with_chains(core: &crate::engine::Core, seeds: Vec<Tid>, batch: &BTreeMap<Tid, CreationRecord>) -> Vec<CreationRecord> {
     let mut out: BTreeMap<Tid, CreationRecord> = BTreeMap::new();
     let mut stack = seeds;

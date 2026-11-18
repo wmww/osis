@@ -26,7 +26,6 @@ Spec, notes and issues read in the words of notes/terms.md. Code does not yet, a
 - **Spec and note names kept because code or a tool cites them**: the "Limit" items of spec/permissions.md §5.2 (a cover) and §5.5 (cited by core/engine/src/rotation/tests_custody.rs), spec/commits.md §4 **Limits**, notes/sync-access.md "Limits (accepted)" (core/test/tla/rotation/README.md), notes/engine-suspects.md "The limit it backstops" (core/sync/tests/it/suspect.rs); spec/sync-ids.md **One sync ID per actor** (core/engine/tests/it/facade.rs, tools/spec_map.py). Reword each with its citer.
 - **A clash**: spec/commits.md §5 **Dependents on a destroyed thing** (the things whose authority runs through it; cited by core/test/held-model/tests/it/spec_records.rs) against "dependent thing". Give the older sense another word everywhere.
 - **API docs** to the rule of notes/api-design.md (Public docs, Performance): `Write::create`, `osis create --admin`, `Osis::hold` (issues/behaviour-depends-on-own-keys.md).
-- notes/first-admins.md keeps its file name until its citations move with it.
 
 ## Writing rules for any later pass (Tess)
 - Not word replacement: read each use and rewrite what carries the wrong implication or is plain confusing, e.g. wherever "actor or not" is treated as a property a thing has outside any commit, a mint admin as special to an app, or a team as a kind of thing.

@@ -1,6 +1,6 @@
 //! Authority over one edge state (spec/permissions.md §1, §2, §5.1 step 3): effective role as
 //! the widest path over role edges, effective invite, authority class. Record edges
-//! (spec/permissions.md §1) are virtual: a first admin's edge on its thing is read from the
+//! (spec/permissions.md §1) are virtual: a mint admin's edge on its thing is read from the
 //! creation record (`Records`) unless an edge write set it (`Edges` holds the value written, or
 //! that it was removed), so plain things cost the edge state nothing.
 
@@ -29,12 +29,12 @@ pub struct Standing {
 /// The value of a record edge in force (spec/permissions.md §1): admin, no `until`, no invite.
 pub const RECORD_EDGE: Edge = Edge { role: Role::Admin, until: None, invite: None, retain: false, floor: None };
 
-/// Record links of every thing with a verified `created.0`: each thing's first admin (or that
-/// it is a key actor), and the things each actor is first admin of.
+/// Record links of every thing with a verified `created.0`: each thing's mint admin (or that
+/// it is a key actor), and the things each actor is mint admin of.
 #[derive(Clone, Debug, Default)]
 pub struct Records {
     link: BTreeMap<Tid, RecordLink>,
-    first_admin_of: BTreeMap<Tid, Vec<Tid>>,
+    mint_admin_of: BTreeMap<Tid, Vec<Tid>>,
 }
 
 impl Records {
@@ -53,7 +53,7 @@ impl Records {
     pub fn insert(&mut self, t: Tid, rec: &CreationRecord) {
         let link = rec.record_link();
         if let RecordLink::Admin(a) = link {
-            self.first_admin_of.entry(a).or_default().push(t);
+            self.mint_admin_of.entry(a).or_default().push(t);
         }
         self.link.insert(t, link);
     }
@@ -67,15 +67,15 @@ impl Records {
     pub fn is_key(&self, t: &Tid) -> bool {
         self.link(t) == Some(RecordLink::Key)
     }
-    /// The things `a` is first admin of (its record edges' targets).
-    pub fn first_admin_of(&self, a: &Tid) -> &[Tid] {
-        self.first_admin_of.get(a).map_or(&[], |v| v.as_slice())
+    /// The things `a` is mint admin of (its record edges' targets).
+    pub fn mint_admin_of(&self, a: &Tid) -> &[Tid] {
+        self.mint_admin_of.get(a).map_or(&[], |v| v.as_slice())
     }
-    /// The first admin of `t` (its record edge's holder) when its record is held and names one.
-    pub fn first_admin(&self, t: &Tid) -> Option<Tid> {
-        self.first_admin_ref(t).copied()
+    /// The mint admin of `t` (its record edge's holder) when its record is held and names one.
+    pub fn mint_admin(&self, t: &Tid) -> Option<Tid> {
+        self.mint_admin_ref(t).copied()
     }
-    fn first_admin_ref(&self, t: &Tid) -> Option<&Tid> {
+    fn mint_admin_ref(&self, t: &Tid) -> Option<&Tid> {
         match self.link.get(t) {
             Some(RecordLink::Admin(a)) => Some(a),
             _ => None,
@@ -83,7 +83,7 @@ impl Records {
     }
     /// Whether (`holder`, `target`) is `target`'s record edge.
     pub fn is_record_edge(&self, holder: &Tid, target: &Tid) -> bool {
-        self.first_admin(target) == Some(*holder)
+        self.mint_admin(target) == Some(*holder)
     }
 }
 
@@ -348,14 +348,14 @@ impl<'a> EdgesAt<'a> {
     pub fn holders<'s>(&'s self, target: &'s Tid) -> impl Iterator<Item = (&'s Tid, &'s Edge)> + 's {
         let over = &self.over;
         let base = self.base.holders(target).filter(move |(m, _)| over.get(m, target).is_none());
-        let record = self.records.first_admin_ref(target).filter(|a| !self.written(a, target)).map(|a| (a, &RECORD_EDGE));
+        let record = self.records.mint_admin_ref(target).filter(|a| !self.written(a, target)).map(|a| (a, &RECORD_EDGE));
         base.chain(over.of_target(target).filter_map(|(m, e)| e.as_ref().map(|e| (m, e)))).chain(record)
     }
     /// Targets of `holder`'s edges.
     pub fn targets<'s>(&'s self, holder: &'s Tid) -> impl Iterator<Item = &'s Tid> + 's {
         let over = self.over.of_holder(holder);
         let base = self.base.targets(holder).filter(move |t| over.binary_search_by(|x| x.1.cmp(t)).is_err());
-        let record = self.records.first_admin_of(holder).iter().filter(move |t| !self.written(holder, t));
+        let record = self.records.mint_admin_of(holder).iter().filter(move |t| !self.written(holder, t));
         base.chain(over.iter().filter_map(|x| x.2.as_ref().map(|_| &x.1))).chain(record)
     }
     /// Every edge, record edges in force included (O(things)).
@@ -594,7 +594,7 @@ impl<'a> View<'a> {
         if let Some((_, t, Some(e))) = patch {
             f(t, e);
         }
-        for t in self.records.first_admin_of(holder) {
+        for t in self.records.mint_admin_of(holder) {
             if !self.written(holder, t) {
                 f(t, &RECORD_EDGE);
             }
@@ -618,7 +618,7 @@ impl<'a> View<'a> {
         if let Some((m, _, Some(e))) = patch {
             f(m, e);
         }
-        if let Some(a) = self.records.first_admin_ref(target)
+        if let Some(a) = self.records.mint_admin_ref(target)
             && !self.written(a, target)
         {
             f(a, &RECORD_EDGE);

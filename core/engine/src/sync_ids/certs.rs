@@ -379,7 +379,7 @@ impl Engine {
     }
 
     /// The destroyed actors held here on an authority path into `g`'s sync unit (spec/commits.md
-    /// §5 Destruction): named first admin or holder on a live thing of the unit, or on such a
+    /// §5 Destruction): named mint admin or holder on a live thing of the unit, or on such a
     /// destroyed actor. A walk of the destroyed things held (`Indexes::destroyed`), never of every
     /// holder.
     pub fn destroyed_upstream(&self, g: &Tid) -> BTreeSet<Tid> {

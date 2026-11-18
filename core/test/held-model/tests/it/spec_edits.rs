@@ -26,13 +26,13 @@ fn purge_of(id: CommitId, author: NodeId, h: u64, target: CommitId) -> Commit {
     purge(id, author, h, PurgeItem::Commit { commit: target, thing: T, aspect: SIG })
 }
 fn grants() -> Vec<Commit> {
-    vec![edge(1, FIRST_ADMIN, 0, A, Some(Role::Write), None), edge(2, FIRST_ADMIN, 0, B, Some(Role::Write), None), edge(3, FIRST_ADMIN, 0, X, Some(Role::Admin), None)]
+    vec![edge(1, MINT_ADMIN, 0, A, Some(Role::Write), None), edge(2, MINT_ADMIN, 0, B, Some(Role::Write), None), edge(3, MINT_ADMIN, 0, X, Some(Role::Admin), None)]
 }
 /// The grants, `set`, and unless `set` holds a `retention^.0` setting, one keeping every AK for good.
 fn world(now: u64, set: &[Commit]) -> Held {
     let mut c = grants();
     if !set.iter().any(|c| c.parts.iter().any(|p| p.aspect == Aspect::RETENTION)) {
-        c.push(setting_by(4, FIRST_ADMIN, 0, Setting { rules: vec![], default: Some(SettingEntry { history: KEPT, expires: None, purge_before: 0 }), written: None }));
+        c.push(setting_by(4, MINT_ADMIN, 0, Setting { rules: vec![], default: Some(SettingEntry { history: KEPT, expires: None, purge_before: 0 }), written: None }));
     }
     c.extend_from_slice(set);
     held(now, c)
@@ -173,7 +173,7 @@ fn u_validity() -> Vec<Commit> {
     u.push(edge(41, X, 4, A, None, Some(vec![10, 11, 12]))); // kick, all stay
     u.push(edge(42, X, 4, A, None, Some(vec![10]))); // the original stays, the edits fall
     u.push(edge(43, X, 4, A, None, Some(vec![11]))); // the edit stays, the original falls
-    u.push(edge(44, FIRST_ADMIN, 5, X, None, Some(vec![]))); // the kicker's kicks fall: A's writes return
+    u.push(edge(44, MINT_ADMIN, 5, X, None, Some(vec![]))); // the kicker's kicks fall: A's writes return
     u
 }
 
@@ -210,7 +210,7 @@ fn an_invalid_original_loses_its_place_and_returns_with_it() {
 #[test]
 fn a_valid_edit_of_an_invalid_original_stands_alone_until_it_validates() {
     let s = [fire(10, A, 1), edit(11, A, 3, 10)];
-    let granted_at = |h| held(9, vec![edge(1, FIRST_ADMIN, h, A, Some(Role::Write), None), setting(4, 0, SIG, KEPT), s[0].clone(), s[1].clone()]);
+    let granted_at = |h| held(9, vec![edge(1, MINT_ADMIN, h, A, Some(Role::Write), None), setting(4, 0, SIG, KEPT), s[0].clone(), s[1].clone()]);
     assert_eq!(shown(&granted_at(2)), vec![(11, 11, val(11))]);
     assert_eq!(shown(&granted_at(0)), vec![(10, 11, val(11))]);
 }

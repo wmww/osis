@@ -726,14 +726,14 @@ fn a_commit_waiting_for_a_part_keeps_what_it_is_on_spec_commits_5() {
 }
 
 /// Peer 1 reads and holds X, made by peer 0 under its account root D (outside peer 1's node
-/// closure, needed as X's first admin), once a pass brought what peer 0 holds: the world and D.
+/// closure, needed as X's mint admin), once a pass brought what peer 0 holds: the world and D.
 fn held_under_d() -> (osis_engine::local_peer::LocalPeer, Tid) {
     let mut lp = crate::common::net(2, 0);
     let d = lp.peers[0].engine.account_root().unwrap();
     let x = crate::common::new_shared(&mut lp, 0);
     lp.sync(0, 1).unwrap();
     let e1 = &mut lp.peers[1].engine;
-    assert!(e1.closure_holds(&x) && !e1.closure_holds(&d) && e1.core.created(&d).is_some(), "D held as X's first admin, outside the node closure");
+    assert!(e1.closure_holds(&x) && !e1.closure_holds(&d) && e1.core.created(&d).is_some(), "D held as X's mint admin, outside the node closure");
     (lp, d)
 }
 
@@ -799,7 +799,7 @@ fn a_node_writes_only_what_it_holds_spec_sync_set_2() {
 // spec/commits.md §5 What a held thing needs: a weak only points and keeps nothing; a strong
 // keeps. Peer 0 (never met Q) refers to Q from its account root and takes Q's commits: by a weak
 // to Q, nothing needs Q's chain at the pass's end and it goes; by a strong to Q's profile (a
-// contact), the profile needs Q (its first admin) and Q's chain stays.
+// contact), the profile needs Q (its mint admin) and Q's chain stays.
 #[test]
 fn a_weak_to_an_account_keeps_nothing_a_strong_to_its_profile_keeps_its_chain_spec_commits_5() {
     let mut lp = osis_engine::local_peer::LocalPeer::new_apart(2, 0, crate::common::T0).unwrap();

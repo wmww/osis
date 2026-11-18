@@ -82,9 +82,9 @@ pub fn set(ts: u64, id: CommitId, v: i64) -> Frag {
 }
 
 pub const NODES: u64 = 4;
-/// An account actor whose first admin is node 2, the first admin of thing 12.
+/// An account actor whose mint admin is node 2, the mint admin of thing 12.
 pub const ACCOUNT: ThingId = 20;
-/// A link: K (an actor whose first admin is node 0, with an edge on thing 10) and L (a key actor).
+/// A link: K (an actor whose mint admin is node 0, with an edge on thing 10) and L (a key actor).
 pub const LINK_K: ThingId = 21;
 pub const LINK_L: NodeId = 30;
 /// The records held apart from creations: the nodes and L (key actors), and the account's (thing
@@ -97,8 +97,8 @@ pub const RECORDS: [Record; 6] = [
     Record { id: LINK_L, link: RecordLink::Key },
     Record { id: ACCOUNT, link: RecordLink::Admin(2) },
 ];
-/// The things made by a creation (thing, its first admin, the node creating it): with a node or
-/// the account as first admin.
+/// The things made by a creation (thing, its mint admin, the node creating it): with a node or
+/// the account as mint admin.
 pub const CREATIONS: [(ThingId, RecordLink, NodeId); 6] = [
     (10, RecordLink::Admin(0), 0),
     (11, RecordLink::Admin(1), 1),

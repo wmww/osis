@@ -1027,7 +1027,7 @@ pub fn random(samples: u64, seed: u64) -> Stats {
 
 // ---------- exhaustive ----------
 
-/// The small family, every combination: thing A0 (first admin n0 = Alice), n1 Bob and n2
+/// The small family, every combination: thing A0 (mint admin n0 = Alice), n1 Bob and n2
 /// Carol writers, n3 Dave a writer or a reader. Up to three role writes by Alice at t=3, 6,
 /// 9, each one of: remove Bob, remove Carol, remove Dave, re-grant Bob write; each received
 /// by Carol and Dave at t+1 or never. Bob writes at t=1 or 4 and at 7 (or not), each
@@ -1178,7 +1178,7 @@ mod tests {
     use super::*;
     use Role::{Admin, None, Read, Write};
 
-    /// Nodes: n0 Alice (first admin of A0 and A1), n1 Bob, n2 Carol, n3 Dave (writers on A0),
+    /// Nodes: n0 Alice (mint admin of A0 and A1), n1 Bob, n2 Carol, n3 Dave (writers on A0),
     /// n4 Eve (reader). A1: Dave writes there, nobody else.
     const NN: usize = 5;
     const ALICE: usize = 0;

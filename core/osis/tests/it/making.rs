@@ -62,7 +62,7 @@ fn grown(small: &BTreeMap<&'static str, u64>, big: &BTreeMap<&'static str, u64>)
 // thing's certificates: every counted kind flat from 80 to 400 such things (the root's `holds.0`
 // paged at both: a set pages from about 3 KB). Among them: a role is read back from its thing
 // (`perm: roles walked`), the new leaf moves its component's whole-timeline reads once
-// (`timelines: components moved`), and what reaches its first admin gains it without a walk
+// (`timelines: components moved`), and what reaches its mint admin gains it without a walk
 // (`perm: chain reach walked`).
 #[test]
 fn making_a_plain_thing_costs_what_it_changed_spec_sync_set_2() {

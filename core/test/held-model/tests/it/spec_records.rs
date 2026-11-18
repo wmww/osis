@@ -7,10 +7,10 @@ use crate::util::*;
 use held_model::gen::{creation, ACCOUNT, CREATION_ID, REG};
 use held_model::*;
 
-/// T's creation by its first admin at hour 0, `admin` with no history promised, expiring at
+/// T's creation by its mint admin at hour 0, `admin` with no history promised, expiring at
 /// hour `expires`.
 fn made(expires: Option<u64>) -> Commit {
-    creation(T, RecordLink::Admin(FIRST_ADMIN), FIRST_ADMIN, ts(0), Retention::ROLE, expires.map(at))
+    creation(T, RecordLink::Admin(MINT_ADMIN), MINT_ADMIN, ts(0), Retention::ROLE, expires.map(at))
 }
 
 fn without(mut h: Held, id: CommitId) -> Held {
@@ -23,7 +23,7 @@ fn without(mut h: Held, id: CommitId) -> Held {
 // comes the commit reads as if both came together
 #[test]
 fn creation_after_writes_reads_like_creation_first_spec_commits_4() {
-    let both = held(5, vec![made(None), reg(10, FIRST_ADMIN, 1, REG, Retention::PLAIN, 1)]);
+    let both = held(5, vec![made(None), reg(10, MINT_ADMIN, 1, REG, Retention::PLAIN, 1)]);
     assert_eq!(read(&both, REG), int(1));
     let early = without(both.clone(), CREATION_ID + T);
     let o = evaluate(&early);
@@ -34,7 +34,7 @@ fn creation_after_writes_reads_like_creation_first_spec_commits_4() {
     assert!(late.commits.iter().all(|c| c.id != 10), "thrown out whole");
     // the creation comes; the commit thrown out is fetched again
     late.commits.push(made(None));
-    late.commits.push(reg(10, FIRST_ADMIN, 1, REG, Retention::PLAIN, 1));
+    late.commits.push(reg(10, MINT_ADMIN, 1, REG, Retention::PLAIN, 1));
     assert_eq!(evaluate(&late).reads, evaluate(&both).reads);
 }
 
@@ -42,7 +42,7 @@ fn creation_after_writes_reads_like_creation_first_spec_commits_4() {
 // absent from T on, and what the node holds next says the same
 #[test]
 fn expired_creation_destroys_the_thing_spec_commits_6() {
-    let h = |now| held(now, vec![made(Some(3)), reg(10, FIRST_ADMIN, 1, REG, Retention::ADMIN, 1)]);
+    let h = |now| held(now, vec![made(Some(3)), reg(10, MINT_ADMIN, 1, REG, Retention::ADMIN, 1)]);
     let o = evaluate(&h(2));
     assert!(o.destroyed.is_empty());
     assert!(o.deadlines.contains(&at(3)));
@@ -63,13 +63,13 @@ fn expired_creation_destroys_the_thing_spec_commits_6() {
 #[test]
 fn purged_creation_destroys_the_thing_spec_commits_5() {
     let item = PurgeItem::Aspect { thing: T, aspect: Aspect::CREATED };
-    let w = reg(10, FIRST_ADMIN, 1, REG, Retention::PLAIN, 1);
-    let hd = held(5, vec![made(None), w.clone(), purge(20, FIRST_ADMIN, 2, item)]);
+    let w = reg(10, MINT_ADMIN, 1, REG, Retention::PLAIN, 1);
+    let hd = held(5, vec![made(None), w.clone(), purge(20, MINT_ADMIN, 2, item)]);
     let o = evaluate(&hd);
     assert_eq!(o.destroyed, [T].into());
     assert!(o.applied.contains(&20), "the request stands, its own part on the thing forgotten");
     assert_eq!(read(&hd, REG), None);
-    let other = held(5, vec![made(None), w, edge(5, FIRST_ADMIN, 0, 2, Some(Role::Write), None), purge(20, 2, 2, item)]);
+    let other = held(5, vec![made(None), w, edge(5, MINT_ADMIN, 0, 2, Some(Role::Write), None), purge(20, 2, 2, item)]);
     assert!(evaluate(&other).destroyed.is_empty());
     assert_eq!(read(&other, REG), int(1));
 }
@@ -80,8 +80,8 @@ fn purged_creation_destroys_the_thing_spec_commits_5() {
 #[test]
 fn destruction_is_judged_from_the_edges_it_keeps_spec_permissions_6() {
     let item = PurgeItem::Aspect { thing: T, aspect: Aspect::CREATED };
-    let w = reg(10, FIRST_ADMIN, 1, REG, Retention::PLAIN, 1);
-    let grant = edge(5, FIRST_ADMIN, 0, 2, Some(Role::Admin), None);
+    let w = reg(10, MINT_ADMIN, 1, REG, Retention::PLAIN, 1);
+    let grant = edge(5, MINT_ADMIN, 0, 2, Some(Role::Admin), None);
     let by_grant = held(5, vec![made(None), grant.clone(), w.clone(), purge(20, 2, 2, item)]);
     let o = evaluate(&by_grant);
     assert_eq!(o.destroyed, [T].into(), "a grant on the thing gives the right to destroy it");
@@ -93,10 +93,10 @@ fn destruction_is_judged_from_the_edges_it_keeps_spec_permissions_6() {
     next.commits.push(made(None));
     assert_eq!(evaluate(&next).destroyed, [T].into(), "a stale copy brings nothing back while the purge is held");
     assert_eq!(read(&next, REG), None);
-    // the grantee removes the first admin before its request: the destruction falls in either order
+    // the grantee removes the mint admin before its request: the destruction falls in either order
     // its frontier lists the grant the removal rests on, else the audit drops it
-    let removal = edge(6, 2, 1, FIRST_ADMIN, None, Some(vec![5]));
-    let by_first = purge(20, FIRST_ADMIN, 2, item);
+    let removal = edge(6, 2, 1, MINT_ADMIN, None, Some(vec![5]));
+    let by_first = purge(20, MINT_ADMIN, 2, item);
     let raced = held(5, vec![made(None), grant.clone(), removal.clone(), w.clone(), by_first.clone()]);
     assert!(evaluate(&raced).destroyed.is_empty(), "removal held first");
     let first = held(5, vec![made(None), grant, w, by_first]);
@@ -113,7 +113,7 @@ fn destruction_is_judged_from_the_edges_it_keeps_spec_permissions_6() {
 // thing: never read, whether the expired creation is held or not
 #[test]
 fn write_after_the_destruction_is_ignored_spec_commits_6() {
-    let late = reg(10, FIRST_ADMIN, 4, REG, Retention::PLAIN, 2);
+    let late = reg(10, MINT_ADMIN, 4, REG, Retention::PLAIN, 2);
     let hd = held(5, vec![made(Some(3)), late]);
     let o = evaluate(&hd);
     assert_eq!(o.fates[&(10, 0)], Fate::MustDrop(DropWhy::Destroyed));
@@ -121,14 +121,14 @@ fn write_after_the_destruction_is_ignored_spec_commits_6() {
     let mut next = act(&hd, &o, None);
     assert_eq!(read(&next, REG), None);
     // the creation forgotten, a write arriving later is to an unknown thing
-    next.commits.push(reg(11, FIRST_ADMIN, 4, REG, Retention::PLAIN, 3));
+    next.commits.push(reg(11, MINT_ADMIN, 4, REG, Retention::PLAIN, 3));
     let o = evaluate(&next);
     assert_eq!(o.revisit, [11].into());
     assert_eq!(read(&next, REG), None);
 }
 
 // spec/permissions.md §1 (mint admin), notes/expiry-creation-design.md §3 (Dependents, B):
-// what depends on a destroyed thing lives on: thing 12, whose first admin is the account, reads on
+// what depends on a destroyed thing lives on: thing 12, whose mint admin is the account, reads on
 // after the account's creation expires, its chain proved by the account's raw record
 #[test]
 fn things_a_destroyed_thing_created_live_on_spec_permissions_1() {
@@ -146,12 +146,12 @@ fn things_a_destroyed_thing_created_live_on_spec_permissions_1() {
 #[test]
 fn purging_one_creation_leaves_the_others_of_its_commit_spec_commits_5() {
     const OTHER: ThingId = 14;
-    let w = |id, thing, v: i64| Commit { parts: vec![Part { thing, ..part(REG, Retention::PLAIN, vec![set(1, id, v)]) }], ..reg(id, FIRST_ADMIN, 1, REG, Retention::PLAIN, v) };
+    let w = |id, thing, v: i64| Commit { parts: vec![Part { thing, ..part(REG, Retention::PLAIN, vec![set(1, id, v)]) }], ..reg(id, MINT_ADMIN, 1, REG, Retention::PLAIN, v) };
     let mut c = made(None);
     let other = Part { thing: OTHER, ..c.parts[0].clone() };
     c.parts.push(other);
     let item = PurgeItem::Aspect { thing: T, aspect: Aspect::CREATED };
-    let hd = held(5, vec![c, w(10, T, 1), w(11, OTHER, 2), purge(20, FIRST_ADMIN, 2, item)]);
+    let hd = held(5, vec![c, w(10, T, 1), w(11, OTHER, 2), purge(20, MINT_ADMIN, 2, item)]);
     let o = evaluate(&hd);
     assert_eq!(o.destroyed, [T].into());
     assert_eq!(o.reads.get(&(T, REG)).cloned().flatten(), None);

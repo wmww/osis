@@ -109,7 +109,7 @@ impl Engine {
         self.core.ix.snapshots.get(&(*tid, ak.clone())).into_iter().flatten().map(|s| s.4.len()).collect()
     }
 
-    /// Tests: the first admin of a plain thing this node makes: its account root where it acts as
+    /// Tests: the mint admin of a plain thing this node makes: its account root where it acts as
     /// its account (a thing made under an account has own keys, spec/permissions.md §3), else
     /// what it acts as.
     #[doc(hidden)]
