@@ -1,0 +1,32 @@
+# Terms
+> Summary: The one set of words for osis's concepts (Tess): each word, what it means, what it is never used for, and the old words it replaces; which concepts are built and which are the design being moved to; how to write about them. Read before writing any spec, note, issue, comment or API doc.
+
+The concepts and their properties are spec/requirements.md (Concepts). This note fixes the words. Old words still in the repo, and what removing each takes: issues/deprecated-terms.md.
+
+## Words
+- **Thing**: anything with an identity. A role is **on a thing**; say "thing" wherever any thing will do, never "actor".
+- **Role** (sync, read, write, admin) and **holder**: a thing with a role on something. "Holder" is relative to what the role is on; no thing is "a holder" by nature.
+- **Mint admin**: the admin a thing's creation record names, fixed in its tid (replaces *first admin*). It is an ordinary admin, removable like any other, and of no significance once the thing is independent: nothing an app can observe may treat it specially (issues/behaviour-depends-on-own-keys.md). A thing is **minted with admin X**; say that, or "one of X's dependents". Never *made under X*, *created under X*, *under X*: the positional picture is not kept to elsewhere, and what holds a thing (strong references) is another matter. No "parent" or "child".
+- **Dependent thing**: one whose secrets derive from its mint admin's (replaces *plain thing*). **Independent thing**: one with secrets of its own (replaces *thing with own keys*, *keyed thing*, *thing with secrets of its own*). A thing is minted dependent and becomes independent when it needs to (its first grant, its own sync ID); that promotion is implicit and one-way. These two words are internal: they never appear in the `osis` API or its docs, and no API behaviour depends on which a thing is, only cost (notes/api-design.md, Public docs).
+- **Its independent**: for any thing, the nearest independent thing up its chain of mint admins, itself if independent (replaces *reader actor*). A dependent thing's *base actor* is its mint admin: say mint admin.
+- **Actor**: a part played in a commit, not a kind of thing. A commit's actors are the things it is made through: the key that signs it, then each thing whose role it uses, in order, ending before the things it writes. No thing "is" or "is not" an actor outside a commit. Never write "an actor" for a thing that holds roles (say thing or holder), for a thing with its own secrets (independent thing), or as a kind things belong to.
+- **Signer**: a key that signs commits: a node's own, one several nodes share, a link's. Part of the design being moved to (below). The built concept is the **key actor** (an account, a node, a link key: a thing whose creation record holds a signing key); keep that word wherever the text is about what is built.
+- **Node**: a running osis instance with its own key and store. Never "device" in core (app UI text may say device).
+- **Account**: the identity nodes act as and where others reach it. In the design being moved to, an account is a kind of realm.
+- **Profile**: the public face of a thing (a name, a picture), what a write is shown as; a separate thing its owner names by a reference.
+- **Realm**: a place holding a body of things in ways users reach: by convention the mint admin of what is made in it, with members that are its holders. Every account's home is one. **Tag**: a collection that points at things by strong references and administers nothing. The line between them is convention apps follow, not a rule of core (notes/realms.md).
+- **Home**: the user's realm, one per account, described by the schema: neither core's nor any one app's.
+- No **team**: it is not a term and names no kind of thing. For an example say "an organization" or "a shared space"; for the concept, a holder, or a realm.
+- Sync words (sync unit, sync ID, closure, ticket, release, store, peer, source): spec/requirements.md Concepts and spec/sync-set.md, with the rows of issues/deprecated-terms.md.
+
+## Built, and being moved to
+Some concepts in the repo are what is built today and are being redesigned (issues/actors-one-mechanism.md; first on notes/priorities.md). Until that lands:
+- **Built**: an account is a key actor whose nodes are kept by its signing chain (epochs, custody, merges, sides, thing lists); the **account root** is the independent thing beside it that its nodes share; a commit header names an `author` and one `actor` it acts for; the engine finds any chain of grants that gives a write its right; a commit's evidence travels as **chain certificates** logged where its author writes; an account's profile and inbox are things minted with the account.
+- **Moving to**: an account is an ordinary independent thing whose members are signers (a key per node, or one shared); a commit states its actors and is judged along them alone; the evidence for every possible actor is part of the sync unit; a thing is opened to messages and grants from strangers by its admins.
+- **Never call an old concept by a new name** (Tess). The account root is not "the home realm", a key actor is not "a signer", chain certificates are not "the sync unit's evidence": where the built thing is still the old concept, keep its word, and make only the edits that are right looking forward. A section may be marked for deletion or rewriting once a named change lands; that is allowed, not required.
+
+## Writing about them
+- A rename reads as if the text was written that way: no aliases, no "formerly X", no "(was Y)".
+- No **Limit** items, in the requirements or anywhere (Tess): a fact that makes a stated property untrue means the property is the weaker one, so state that; a fact that contradicts nothing is stated plainly as what holds, or dropped where it is nobody's concern. Keep every fact a subsystem spec needs; lose only the framing.
+- Requirements state concepts and properties, never the build (notes/principles.md, Requirements state concepts and properties).
+- API docs state a cost only where it matters to the reader's choice, hedged and comparative, in what the reader can see (notes/api-design.md, Public docs).

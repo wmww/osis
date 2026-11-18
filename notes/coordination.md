@@ -50,7 +50,7 @@ How to run them (Tess):
 - Hostile-only shapes inside data the writer may write: `Priority: low`; fix only when easy, else state the limit where the area's note or spec lives.
 - App work (libs/kit/, app/) is planned with Tess in a separate UX session (notes/app.md) and counts toward the slots. With no app session active, the core coordinator fixes app breakage itself. What kit/app needs from core becomes an issue tagged `core-ask`.
 - Names: each coordinator picks a name and pronouns once it knows the codebase (check the registry), records both here and says them in chat. Sub-agents are `<coordinator>-<branch>` in briefs, reports and complaints.
-- Registry: **Lodestar**, she/her. **Tiller**, he/him. **Wren**, they/them. **Sorrel**, they/them. **Fathom**, they/them. **Kestrel**, they/them. **Petrel**, they/them. **Halyard**, they/them. **Bowline**, they/them (app). **Capstan**, they/them. **Sextant**, they/them (reference graph design). **Keel**, they/them.
+- Registry: **Lodestar**, she/her. **Tiller**, he/him. **Wren**, they/them. **Sorrel**, they/them. **Fathom**, they/them. **Kestrel**, they/them. **Petrel**, they/them. **Halyard**, they/them. **Bowline**, they/them (app). **Capstan**, they/them. **Sextant**, they/them (reference graph design). **Keel**, they/them. **Gimbal**, they/them (design session with Tess: studies and the terms pass).
 
 ## Test budget
 Seed breadth belongs to the release checks, not to branches (Tess: cut testing time without letting issues slip): reading and targeted new tests find most bugs, rerunning ranges almost none (notes/test-design.md, What finds bugs).
