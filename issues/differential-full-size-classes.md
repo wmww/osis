@@ -1,5 +1,5 @@
 # Full-size sync differential: open failure classes
-> Summary: `OSIS_FULL=1 differential::histories_hold_their_closure` over seeds 0..199 fails 5 (113, 138, 169, 180, 189). Studied: S's required set hanging on other paths (189, fix parked: it exposes three more), a grant on an unaccepted thing counting through certificates (138, the model is right, no fix yet), content kept with no secret (169, 180), stale status sources (113, reached once record-edge removals travel).
+> Summary: `OSIS_FULL=1 differential::histories_hold_their_closure` over seeds 0..199 fails 5 on main at 8b8fb50e8 (138, 169, 180, 183, 189; 113 passes there). Studied: S's required set hanging on other paths (189, fix parked: it exposes three more), a grant on an unaccepted thing counting through certificates (138, the model is right, no fix yet), content kept with no secret (169, 180), stale status sources (113, reached once record-edge removals travel).
 > Priority: normal
 > Tags: sync, engine, tests
 
