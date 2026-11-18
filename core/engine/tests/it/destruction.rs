@@ -40,7 +40,7 @@ fn keeps(lp: &mut LocalPeer, t: &Tid) -> bool {
     e.core.created(t).is_some()
 }
 
-/// A plain thing under D with a value, held by a strong in D's `holds.0`.
+/// A dependent thing minted with admin D with a value, held by a strong in D's `holds.0`.
 fn under_d(lp: &mut LocalPeer) -> Tid {
     let e = &mut lp.peers[0].engine;
     let d = e.account_root().unwrap();

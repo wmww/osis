@@ -44,7 +44,7 @@ impl Account for AppAccount {
             return Ok(*g);
         }
         let mut w = db.write();
-        // plain, under the account root and held by it: it and what it holds sync to every node
+        // dependent, minted with the account root as admin and held by it: it and what it holds sync to every node
         // of the account (spec/sync-set.md §1)
         let root = db.account_root();
         let g = w.create(root, None)?;

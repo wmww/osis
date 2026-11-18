@@ -35,7 +35,7 @@ pub fn newest_of<'a>(epochs: impl IntoIterator<Item = &'a Epoch>) -> Option<Epoc
 pub enum Provenance {
     /// A key actor's fixed epoch.
     Fixed,
-    /// Derived from an established epoch of the base actor (a plain thing).
+    /// Derived from an established epoch of the mint admin (a dependent thing).
     Derived,
     /// A valid rotation commit of it (this node's own included) or a `secrets.0` compaction
     /// snapshot keying it is held, within headroom, and, its secret held, some history entry of
@@ -44,7 +44,7 @@ pub enum Provenance {
 }
 
 impl Provenance {
-    /// Set directly (`Fixed` in the record, `Derived` by the view from the base actor), never
+    /// Set directly (`Fixed` in the record, `Derived` by the view from the mint admin), never
     /// recomputed by `establish`.
     pub fn sticky(self) -> bool {
         matches!(self, Provenance::Fixed | Provenance::Derived)
@@ -98,7 +98,7 @@ pub struct EpochInfo {
     pub reading: BTreeSet<Unchecked>,
     /// A derived epoch's order n where it differs from its n: the base epoch's (past the cap,
     /// `derived_n`). It orders (`RoleEpochs::is_newer`) by this, so derived epochs order as the
-    /// base actor's (spec/crypto.md §3, §4).
+    /// mint admin's (spec/crypto.md §3, §4).
     pub order: Option<u64>,
 }
 
@@ -512,8 +512,8 @@ impl RoleEpochs {
     /// Sets the floors this node reads (spec/crypto.md §4, Floors): `makers` the floor of each
     /// epoch's maker where it is known, `own` this node's. Each epoch's floor is the greatest its
     /// live history entries opened here write (only a holder of its secret writes one, so no
-    /// other party sets it), at most its n; a fixed epoch's, or one a thing with secrets of its own
-    /// adopted from its base actor, is 0 (a plain thing's view reads its base epochs' floors,
+    /// other party sets it), at most its n; a fixed epoch's, or one an independent thing
+    /// adopted from its mint admin, is 0 (a dependent thing's view reads its base epochs' floors,
     /// `derived`); one with no entry opened has none known.
     pub fn set_floors(&mut self, makers: BTreeMap<Epoch, u64>, own: u64) {
         let known = self
@@ -687,11 +687,11 @@ impl RoleEpochs {
     }
 }
 
-/// The n of the epochs derived from a base epoch at `n` (spec/crypto.md §3): the base actor's, capped
+/// The n of the epochs derived from a base epoch at `n` (spec/crypto.md §3): the mint admin's, capped
 /// so that a thing's own chain starts at most at `MAX_FREE_N` and a holder holding no secret of
-/// the base actor establishes it within headroom, whatever n a writer of the base actor jumped to. Derived
-/// epochs still order as the base actor's (`EpochInfo::order`): a re-registrar steps a plain group's
-/// sync IDs on each base actor rotation, a writer picks the base actor's newest fork.
+/// the mint admin establishes it within headroom, whatever n a writer of the mint admin jumped to. Derived
+/// epochs still order as the mint admin's (`EpochInfo::order`): a re-registrar steps a dependent group's
+/// sync IDs on each mint admin rotation, a writer picks the mint admin's newest fork.
 fn derived_n(n: u64) -> u64 {
     n.min(MAX_FREE_N - 1)
 }
@@ -769,7 +769,7 @@ impl ActorEpochs {
         Ok(a)
     }
 
-    /// The epoch and secret of role `r` of plain thing `tid` derived from base actor epoch `e`
+    /// The epoch and secret of role `r` of dependent thing `tid` derived from mint admin epoch `e`
     /// with secret `s` (spec/crypto.md §3): one entry of `derived`.
     pub fn derived_epoch(tid: &Tid, r: Role, e: &Epoch, s: &Secret32) -> (Epoch, Secret32) {
         let ds = thing_role_secret(s, r, tid);
@@ -778,10 +778,10 @@ impl ActorEpochs {
         (de, ds)
     }
 
-    /// A plain thing's derived role secrets `kdf("thing <role>", base actor's secret, tid)`, one per
-    /// epoch of the base actor, forks included, each at the epoch with n `derived_n` of the base actor's
+    /// A dependent thing's derived role secrets `kdf("thing <role>", mint admin's secret, tid)`, one per
+    /// epoch of the mint admin, forks included, each at the epoch with n `derived_n` of the mint admin's
     /// that the nonce rule gives it (spec/crypto.md §3). Established (`Derived`) where the
-    /// base actor's is. A base epoch whose secret is not held stays known as a placeholder at that
+    /// mint admin's is. A base epoch whose secret is not held stays known as a placeholder at that
     /// n (`placeholder_nonce`) that no secret names, so that what it supersedes stays superseded.
     pub fn derived(base: &ActorEpochs, tid: &Tid) -> ActorEpochs {
         let mut a = ActorEpochs::default();
@@ -819,9 +819,9 @@ impl ActorEpochs {
                 };
                 a.role_mut(r).map.insert(*de, info);
             }
-            // a plain thing's content is the base actor's: each derived epoch reads its base
+            // a dependent thing's content is the mint admin's: each derived epoch reads its base
             // epoch's floor (spec/crypto.md §4, Floors), so what a cut keeps from a holder
-            // stays kept on every plain thing below it
+            // stays kept on every dependent thing below it
             if let Some(f) = &o.floors {
                 let through = |m: &BTreeMap<Epoch, u64>| m.iter().filter_map(|(e, x)| ids.get(e).map(|d| (d.0, *x))).collect();
                 a.role_mut(r).floors = Some(Box::new(Floors { known: through(&f.known), makers: through(&f.makers), own: f.own }));
@@ -1062,7 +1062,7 @@ mod tests {
         assert!(r.is_established(&a) && r.is_established(&b));
     }
 
-    // spec/crypto.md §3: derived secrets take the base actor's n at the epochs the nonce rule names;
+    // spec/crypto.md §3: derived secrets take the mint admin's n at the epochs the nonce rule names;
     // a key actor's are fixed; a base epoch without a secret stays a placeholder, so what it
     // supersedes stays superseded.
     #[test]
@@ -1094,9 +1094,9 @@ mod tests {
         assert_eq!(d.read.held().count(), 2);
     }
 
-    // spec/crypto.md §3: derived epochs keep the base actor's n below the cap, so each base actor rotation
-    // gives a newer derived epoch (a plain group's sync IDs are stepped on it, spec/sync-ids.md §6);
-    // base epochs past the cap (a writer of the base actor jumped them) all derive at the cap, so a
+    // spec/crypto.md §3: derived epochs keep the mint admin's n below the cap, so each mint admin rotation
+    // gives a newer derived epoch (a dependent group's sync IDs are stepped on it, spec/sync-ids.md §6);
+    // base epochs past the cap (a writer of the mint admin jumped them) all derive at the cap, so a
     // thing's own chain starts at most at `MAX_FREE_N`; placeholders there stay distinct.
     #[test]
     fn derived_n_follows_base_below_cap() {
@@ -1207,7 +1207,7 @@ mod tests {
                 let e = ep(base + rnd(4), rnd(3) as u8);
                 es.push(e);
                 let i = r.observe(e);
-                // order n: free, or a function of n as in a derived map (capped n, base actor's order)
+                // order n: free, or a function of n as in a derived map (capped n, mint admin's order)
                 i.order = match (free, rnd(3)) {
                     (true, 0) => Some(base + rnd(5)),
                     (false, 0) => Some(e.n() * 3 + 7),

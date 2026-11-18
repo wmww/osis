@@ -346,9 +346,9 @@ fn jumped_epochs_keep_rotation_possible() {
     assert!(v.read.is_established(&next) && !v.read.is_established(&skip));
 }
 
-// spec/crypto.md §3, §4 (Established): headroom, e's n at most 2^62: a writer of the base actor jumped its epochs past `MAX_FREE_N`;
+// spec/crypto.md §3, §4 (Established): headroom, e's n at most 2^62: a writer of the mint admin jumped its epochs past `MAX_FREE_N`;
 // a thing switching to secrets of its own still starts its chain at `MAX_FREE_N` at most (derived
-// epochs are capped below it), so a holder holding no secret of the base actor establishes the switch from the
+// epochs are capped below it), so a holder holding no secret of the mint admin establishes the switch from the
 // rotation commit alone and the headroom rule needs nothing it cannot check.
 #[test]
 fn switch_under_jumped_base_establishes_at_holders() {

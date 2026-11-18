@@ -303,7 +303,7 @@ fn purged_part_lists_until_its_expiry_spec_commits_7() {
 
 // spec/requirements.md (Decentralization: a commit holds at least 2 000 changes, of values of
 // any size): the worst shape for the floor, one change on each of 2 000 different things (each its
-// own keys and framing), with one large value beside them (in blobs of its own, past `MAX_BLOB`
+// own secrets and framing), with one large value beside them (in blobs of its own, past `MAX_BLOB`
 // itself), is one commit within `MAX_BLOB` that another node applies whole.
 #[test]
 fn changes_on_as_many_things_spec_requirements_decentralization() {
@@ -313,7 +313,7 @@ fn changes_on_as_many_things_spec_requirements_decentralization() {
     while things.len() < n {
         let mut w = a.write();
         let k = (n - things.len()).min(500);
-        // plain: made under the account root, whose keys they take
+        // plain: minted with the account root as admin, whose keys they take
         things.extend((0..k).map(|_| w.create_held_with_admin(a.account_root()).unwrap()));
         w.commit().unwrap();
     }
@@ -379,7 +379,7 @@ fn commit_work(n: usize) -> std::collections::BTreeMap<String, u64> {
     costs::take();
     let r0 = osis_perm::roles_reached();
     let mut w = a.write();
-    // plain: made under the account root, whose keys they take
+    // plain: minted with the account root as admin, whose keys they take
     let things: Vec<_> = (0..n).map(|_| w.create_held_with_admin(a.account_root()).unwrap()).collect();
     w.commit().unwrap();
     deliver(&a, &b);

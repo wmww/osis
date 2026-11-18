@@ -433,7 +433,7 @@ fn grantee_waits_for_grant_spec_commits_4() {
 fn role_commits_before_their_creation_pend_then_apply_spec_commits_4() {
     let (mut lp, ps) = crate::flows::people(3);
     let t = crate::flows::thing_of(&mut lp, 0, ps[0]);
-    lp.peers[0].engine.give_own_secrets(&t).unwrap();
+    lp.peers[0].engine.make_independent(&t).unwrap();
     lp.peers[0].engine.grant(&t, &ps[1], &crate::flows::edge_of(Role::Read)).unwrap();
     lp.peers[0].engine.grant(&t, &ps[1], &crate::flows::edge_of(Role::Write)).unwrap();
     // 2 reads t

@@ -56,7 +56,7 @@ fn a_grant_reaches_its_grantee_as_a_ticket_spec_sync_inbox_5() {
     let mut m = Mutation::new();
     m.op(d1, &ct::HOLDS, PathOp { path: vec![], op: Op::Add(Value::Strong(t)) }).unwrap();
     e1.commit(m).unwrap();
-    assert!(!e1.closure_holds(&t), "no own keys here yet: none of its data held for it");
+    assert!(!e1.closure_holds(&t), "not independent here yet: none of its data held for it");
     assert_eq!(e1.sync_set().unwrap().ids.get(&k.sync_id), Some(&([t].into(), osis_engine::sync::Holding::Read)), "accepted: the ticket's sync ID read");
     lp.sync_all().unwrap();
     let e1 = &mut lp.peers[1].engine;

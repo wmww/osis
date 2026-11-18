@@ -304,7 +304,7 @@ fn commits_undo_redo_plan_cli_4() {
     s.ok(&["set", &t, "a:x.0", "1"]);
     s.ok(&["set", &t, "a:x.0", "2"]);
     let h = s.ok(&["writes", "--thing", &t]).out;
-    // a plain thing: its creation and the two writes
+    // a dependent thing: its creation and the two writes
     assert_eq!(h.lines().count(), 3, "{h}");
     assert_eq!(h.lines().filter(|l| l.contains(" content in-effect ")).count(), 3, "{h}");
     assert_eq!(s.ok(&["writes", "--thing", &t, "--next", "redo"]).out, "");
@@ -441,7 +441,7 @@ fn watch_initial_not_counted_plan_cli_4() {
     assert_eq!((o.code, o.line(), o.err.trim()), (6, "initial - - a:b.0 7", "error: timed out after 0 change(s)"));
     let o = s.call(&["--json", "--timeout", "50ms", "watch", &t, "--count", "1"], "");
     assert_eq!(o.code, 6, "{}", o.err);
-    // the whole thing: one initial line per present aspect (`a:b.0`, `created.0`: a plain thing
+    // the whole thing: one initial line per present aspect (`a:b.0`, `created.0`: a dependent thing
     // under the account root), none counted
     assert_eq!(o.out.lines().count(), 2, "{}", o.out);
     assert!(o.out.lines().all(|l| l.contains("\"origin\":\"initial\"")) && o.out.contains("\"value\":7}"), "{}", o.out);

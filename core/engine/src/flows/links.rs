@@ -20,7 +20,7 @@ use osis_blob::ShareLink;
 use osis_schema::core_types::{self as ct, Edge};
 use std::sync::Arc;
 
-/// The untyped aspect of the thing under the account root that keeps a link's seed.
+/// The untyped aspect of the thing minted with the account root as admin that keeps a link's seed.
 pub const LINK_SEED: &str = "link:seed.0";
 
 /// A link whose seed this node holds (`Engine::held_links`).
@@ -28,7 +28,7 @@ pub const LINK_SEED: &str = "link:seed.0";
 pub struct HeldLink {
     pub k: Tid,
     pub l: Tid,
-    /// K's mint admin (the sharer's actor). Only a seed thing made under this node's account
+    /// K's mint admin (the sharer's actor). Only a seed thing minted with this node's account as admin
     /// root counts: its readers are the account's nodes alone.
     pub mint_admin: Tid,
     pub target: Tid,
@@ -54,7 +54,7 @@ impl Engine {
     /// K (mint admin `sharer`, secrets of its own, its sync ID listing L by
     /// static entry), L (key actor from a fresh seed, `created.0` and `keys.0` signed by itself),
     /// L's edge (r, invite r, `until`) on K with its boxes, K's edge on the target, and a
-    /// thing under the account root keeping the seed. Returns the link and the seed thing.
+    /// thing minted with the account root as admin keeping the seed. Returns the link and the seed thing.
     pub fn create_link(&mut self, sharer: &Tid, spec: &LinkSpec) -> Result<(ShareLink, Tid, Done)> {
         // redeeming reads K's sync ID as L (its roster shows K's grant on the target), which a
         // role below read does not give (spec/permissions.md §7)
@@ -98,7 +98,7 @@ impl Engine {
         let ts = osis_base::Ts::make(self.now(), 0).unwrap_or_default();
         // the target is the link text's word: K's grant on it held first (step 3)
         let on_target = self.roster(&link.target).get(&link.k).is_some_and(|e| e.alive_at(Some(ts)));
-        on_target && self.roster(&link.k).get(&l).is_some_and(|e| e.alive_at(Some(ts))) && self.core.has_own_secrets(&link.k)
+        on_target && self.roster(&link.k).get(&l).is_some_and(|e| e.alive_at(Some(ts))) && self.core.is_independent(&link.k)
     }
 
     fn redeem_in(&mut self, l: Tid, link: &ShareLink, grantee: Tid, single_use: bool) -> Result<Done> {
@@ -107,7 +107,7 @@ impl Engine {
         if !edge.alive_at(Some(osis_base::Ts::make(self.now(), 0).unwrap_or_default())) {
             return Err(Error::Misuse("the link expired"));
         }
-        if !self.core.has_own_secrets(&k) {
+        if !self.core.is_independent(&k) {
             return Err(Error::Misuse("K's keyset is not held here yet"));
         }
         if !self.roster(&link.target).get(&k).is_some_and(|e| e.alive_at(Some(osis_base::Ts::make(self.now(), 0).unwrap_or_default()))) {
@@ -188,7 +188,7 @@ impl Engine {
         self.demote(k, &crate::flows::Demotion { holder: *l, new: None, retain: Some(false) })
     }
 
-    /// The links whose seed this node holds (a `link:seed.0` on a thing under the account root, readable on
+    /// The links whose seed this node holds (a `link:seed.0` on a thing minted with the account root as admin, readable on
     /// every node of the sharer; `Core::links`).
     pub fn held_links(&mut self) -> Result<Arc<Vec<HeldLink>>> {
         osis_base::memo::Memo::get_in(self, |e| &e.core.links, &(), Self::held_links_read)
@@ -301,7 +301,7 @@ fn create_link_in(tx: &mut Tx<'_>, sharer: Tid, spec: &LinkSpec, l: Tid, seed: &
     key_actor_keys(&mut m, l, &lkeys)?;
     let lc = Engine::commit_tx(tx, m)?;
     done.add(lc);
-    // K, with secrets of its own
+    // K, independent
     let mut m = Mutation::new();
     let k = m.create(crate::identity::link_record(sharer, spec.target, &mut *tx.rng));
     done.add(Engine::commit_tx(tx, m)?);
@@ -334,7 +334,7 @@ fn create_link_in(tx: &mut Tx<'_>, sharer: Tid, spec: &LinkSpec, l: Tid, seed: &
     let mut m = Mutation::new();
     m.op(k, &ct::HOLDS, PathOp { path: Vec::new(), op: Op::Add(Value::Strong(spec.target)) })?;
     done.add(Engine::commit_tx(tx, m)?);
-    // the seed on a thing made under the account root, which holds it and K by strongs: every
+    // the seed on a thing minted with the account root as admin, which holds it and K by strongs: every
     // node of the account holds the seed, may finalize and serves K's sync ID to redeemers
     // (spec/permissions.md §7)
     let d = tx.core.account_and_root().map(|(_, d)| d).ok_or(Error::Misuse("not a node of an account"))?;

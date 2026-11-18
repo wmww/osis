@@ -96,12 +96,12 @@ pub(crate) fn grant_history(tx: &mut Tx<'_>, signer: Option<Tid>, target: Tid, h
         return Err(Error::Misuse("a grant without history is for a holder that holds no role on the target"));
     }
     let mut done = Done::default();
-    // a thing is made a holder only with secrets of its own; a target gets them on its first
+    // a thing is made a holder only once independent; a target gets them on its first
     // holder other than its mint admin (spec/permissions.md §3)
-    if !tx.core.is_key_actor(&holder) && !tx.core.has_own_secrets(&holder) {
+    if !tx.core.is_key_actor(&holder) && !tx.core.is_independent(&holder) {
         rotation::own_secrets(tx, holder, &mut done)?;
     }
-    if !tx.core.has_own_secrets(&target) && !tx.core.is_key_actor(&target) {
+    if !tx.core.is_independent(&target) && !tx.core.is_key_actor(&target) {
         if !admin {
             return Err(Error::Permission { tid: target, needs: Role::Admin });
         }
@@ -248,8 +248,8 @@ pub(crate) fn removal(tx: &Tx<'_>, m: &mut Mutation, target: Tid, holder: Tid) -
     Ok(())
 }
 
-/// Whether lowering `lowered` on plain `target` would leave it no admin (spec/permissions.md §1:
-/// refused; signed anyway, the thing stays plain and nobody administers it). Over the edges on
+/// Whether lowering `lowered` on dependent `target` would leave it no admin (spec/permissions.md §1:
+/// refused; signed anyway, the thing stays dependent and nobody administers it). Over the edges on
 /// `target` (`edge_holders`): a destroyed admin there still administers it (spec/commits.md §5).
 fn leaves_no_admin(core: &crate::engine::Core, target: &Tid, lowered: &[(Tid, Option<Role>)]) -> bool {
     !core.edge_holders(target).into_iter().any(|(m, r)| r == Role::Admin && lowered.iter().all(|(x, n)| *x != m || *n == Some(Role::Admin)))
@@ -292,13 +292,13 @@ pub(crate) fn demote_in(tx: &mut Tx<'_>, signer: Option<Tid>, target: Tid, d: &D
     if !selfr && !admin || selfr && !gone.is_empty() {
         return Err(Error::Permission { tid: target, needs: Role::Admin });
     }
-    // a plain thing's only holder for keys is its mint admin (a grant gives it secrets
+    // a dependent thing's only holder for keys is its mint admin (a grant gives it secrets
     // of its own first): lowering the mint admin's edge would leave it no admin, refused
     // (spec/permissions.md §1)
-    if !tx.core.has_own_secrets(&target) && !tx.core.is_key_actor(&target) {
+    if !tx.core.is_independent(&target) && !tx.core.is_key_actor(&target) {
         let lowered: Vec<(Tid, Option<Role>)> = std::iter::once((holder, rotation::key_role(new_p.as_ref()))).chain(gone.iter().map(|(x, _)| (*x, None))).collect();
         if leaves_no_admin(tx.core, &target, &lowered) && !tx.core.skip_writer_rules {
-            return Err(Error::Misuse("this would leave a plain thing with no admin: grant another admin first"));
+            return Err(Error::Misuse("this would leave a dependent thing with no admin: grant another admin first"));
         }
     }
     let mut done = Done::default();
@@ -341,7 +341,7 @@ pub(crate) fn demote_in(tx: &mut Tx<'_>, signer: Option<Tid>, target: Tid, d: &D
             pending.push(dep);
         }
     }
-    if !selfr && !left.is_empty() && tx.core.has_own_secrets(&target) {
+    if !selfr && !left.is_empty() && tx.core.is_independent(&target) {
         // boxing to the remaining holders encrypts under their keysets: the cascade first (no
         // finalize of an edge this commit removes; no rotation of a role of the target the
         // holders leave, which would box them at it: this commit rotates it)
@@ -438,7 +438,7 @@ pub(crate) fn finalize_in(tx: &mut Tx<'_>, who: Tid, target: Tid, ended: &[(Tid,
     let mut unreached = Vec::new();
     let may = rotation::may_rotate(tx.core, &who, &target);
     let roles: BTreeSet<Role> = left.into_iter().filter(|r| may.contains(r) && !kept.contains(r)).collect();
-    if !roles.is_empty() && tx.core.has_own_secrets(&target) {
+    if !roles.is_empty() && tx.core.is_independent(&target) {
         let held = tx.core.epochs(&target).ok_or(Error::Misuse("no secrets held for the target"))?;
         let skip: Vec<(Tid, Option<Role>)> = ended.iter().map(|(x, _, _)| (*x, None)).collect();
         let holders = rotation::recipients(tx, &who, &target, &skip)?;
@@ -473,7 +473,7 @@ impl Engine {
     }
 
     /// Grants `holder` the edge `edge` on `target`, or raises its edge (spec/permissions.md §2),
-    /// as an admin of the target or by invite. Gives the target (and a plain holder) secrets of
+    /// as an admin of the target or by invite. Gives the target (and a dependent holder) secrets of
     /// their own first where needed. Delivers the grant to the holder's inbox (a node: direct).
     pub fn grant(&mut self, target: &Tid, holder: &Tid, edge: &Edge) -> Result<Done> {
         self.grant_signed(None, *target, *holder, edge, false, History::All)

@@ -510,7 +510,7 @@ pub(crate) fn deliver_rotation(tx: &mut Tx<'_>, a: Tid, c: Option<osis_base::Com
 /// Records a rotation this node made (spec/crypto.md §4: its own epochs are established).
 pub(crate) fn record(tx: &mut Tx<'_>, a: Tid, rot: &Rotation) -> Result<()> {
     tx.core.touch();
-    // a plain thing's: derived from its base actor, with what an invalid rotation gave it for reading
+    // a dependent thing's: derived from its mint admin, with what an invalid rotation gave it for reading
     let base = tx.core.epochs(&a).map(Arc::unwrap_or_clone).or_else(|| tx.core.ix.secrets.get(&a).cloned()).unwrap_or_default();
     tx.core.ix.secrets.insert(a, base.into_record());
     let e = tx.core.ix.secrets.entry_or_default(a);
@@ -619,7 +619,7 @@ fn rotate_above(tx: &mut Tx<'_>, who: Tid, mut rotated: Vec<Tid>, keep: Option<K
     let mut entered: BTreeSet<Tid> = rotated.iter().copied().collect();
     while let Some(x) = rotated.pop() {
         for y in above(tx.core, &x) {
-            if tx.core.has_own_secrets(&y) && !may_rotate(tx.core, &who, &y).is_empty() && entered.insert(y) {
+            if tx.core.is_independent(&y) && !may_rotate(tx.core, &who, &y).is_empty() && entered.insert(y) {
                 rotated.extend(rotate_below(tx, who, y, keep, Due::Encrypt, done)?);
             }
         }
@@ -627,12 +627,12 @@ fn rotate_above(tx: &mut Tx<'_>, who: Tid, mut rotated: Vec<Tid>, keep: Option<K
     Ok(())
 }
 
-/// The actor whose epochs `a` follows: itself with secrets of its own, else a plain thing follows
+/// The actor whose epochs `a` follows: itself if independent, else a dependent thing follows
 /// the next actor up its record chain that has them.
 fn secret_actor_up(core: &Core, a: &Tid) -> Option<Tid> {
     for step in core.record_chain(a) {
         let t = step.thing()?;
-        if core.has_own_secrets(&t) {
+        if core.is_independent(&t) {
             return Some(t);
         }
         match step {
@@ -678,7 +678,7 @@ fn rotate_below(tx: &mut Tx<'_>, who: Tid, a: Tid, keep: Option<Keep<'_>>, mode:
 /// The holder actors of `x` the downward cascade enters (`rotate_below`): keyed ones with secrets
 /// of their own that `who` may rotate, in the order the walk pops them.
 fn below(core: &Core, who: &Tid, x: &Tid) -> Vec<Tid> {
-    let ms: Vec<Tid> = core.key_holders(x).into_iter().map(|m| m.0).filter(|m| m != x && !core.is_key_actor(m) && core.has_own_secrets(m)).collect();
+    let ms: Vec<Tid> = core.key_holders(x).into_iter().map(|m| m.0).filter(|m| m != x && !core.is_key_actor(m) && core.is_independent(m)).collect();
     let mut out: Vec<Tid> = ms.into_iter().filter(|m| members::keyed(core, x, m) && !may_rotate(core, who, m).is_empty()).collect();
     out.reverse();
     out
@@ -738,11 +738,11 @@ pub(crate) fn own_secrets(tx: &mut Tx<'_>, t: Tid, done: &mut Done) -> Result<()
     own_secrets_listing(tx, t, &[], done)
 }
 
-/// Gives each thing this transaction made under an account and keyed no other way secrets of
-/// its own, at the transaction's end (spec/permissions.md §3; one its maker keyed itself, as a
+/// Gives each thing this transaction minted with an account as admin and made independent no other way independent, at
+/// the transaction's end (spec/permissions.md §3; one its maker made independent itself, as a
 /// link's K, or whose creation went since, is skipped).
-pub(crate) fn own_keys_due(tx: &mut Tx<'_>) -> Result<()> {
-    for t in std::mem::take(&mut tx.core.own_keys_due) {
+pub(crate) fn own_secrets_due(tx: &mut Tx<'_>) -> Result<()> {
+    for t in std::mem::take(&mut tx.core.own_secrets_due) {
         if tx.core.created(&t).is_some() {
             own_secrets(tx, t, &mut Done::default())?;
         }
@@ -759,9 +759,9 @@ pub(crate) fn own_secrets_listing(tx: &mut Tx<'_>, t: Tid, also: &[crate::flows:
     Ok(())
 }
 
-/// Makes the thing of `rec` with secrets of its own (`own_secrets_listing`): its record goes in
+/// Makes the thing of `rec` independent (`own_secrets_listing`): its record goes in
 /// the rotation commit (spec/permissions.md §3), held here ahead of it so the rotation is built
-/// as for a held plain thing. Its tid.
+/// as for a held dependent thing. Its tid.
 pub(crate) fn own_secrets_new(tx: &mut Tx<'_>, rec: osis_base::CreationRecord, also: &[crate::flows::sync_ids::ReaderKey], done: &mut Done) -> Result<Tid> {
     let t = rec.tid();
     if tx.core.created(&t).is_some() {
@@ -785,19 +785,19 @@ fn own_secrets_rot(tx: &mut Tx<'_>, t: Tid, rec: Option<osis_base::CreationRecor
         crate::apply::atomic::learn_record(tx, r.clone())?;
         tx.core.update_timelines();
     }
-    if tx.core.has_own_secrets(&t) || tx.core.is_key_actor(&t) {
+    if tx.core.is_independent(&t) || tx.core.is_key_actor(&t) {
         return Ok(None);
     }
     let who = tx.core.writer()?;
-    // its boxes make its mint admin a holder actor of `t`, which has secrets of its own first, as
-    // a grant's holder does (spec/permissions.md §3): a plain one has no keyset to be sealed at, so
+    // its boxes make its mint admin a holder actor of `t`, which is made independent first, as
+    // a grant's holder does (spec/permissions.md §3): a dependent one has no keyset to be sealed at, so
     // it is left out and its holders lose `t` (where this node administers it). Up the record
     // chain only, so the recursion ends (holders may form cycles, record chains do not).
     let up = tx.core.mint_admin(&t).filter(|m| tx.core.key_holders(&t).iter().any(|(h, _)| h == m));
     if let Some(m) = up
         && !tx.core.is_key_actor(&m)
         && !tx.core.is_account(&m)
-        && !tx.core.has_own_secrets(&m)
+        && !tx.core.is_independent(&m)
         && tx.core.role_now(&who, &m) == Some(Role::Admin)
     {
         own_secrets(tx, m, done)?;
@@ -830,31 +830,31 @@ fn own_secrets_rot(tx: &mut Tx<'_>, t: Tid, rec: Option<osis_base::CreationRecor
     Ok(Some((c, rot, to)))
 }
 
-/// The plain things whose secrets derive from `a` that this node, an admin of each, sees with a
-/// current holder other than its mint admin, or holding a role with key access on an actor with
-/// secrets of its own (spec/permissions.md §3: such a thing is left by its only keyset part
-/// turning invalid, spec/crypto.md §3); each gets secrets of its own again. A plain holder actor has no keyset to
+/// The dependent things whose secrets derive from `a` that this node, an admin of each, sees with a
+/// current holder other than its mint admin, or holding a role with key access on an independent
+/// thing (spec/permissions.md §3: such a thing is left by its only keyset part
+/// turning invalid, spec/crypto.md §3); each is made independent again. A dependent holder actor has no keyset to
 /// be sealed at, so no rotation of what it holds a role on boxes it: its members read nothing new
 /// there, and rotators reaching it only through it hold no epoch there (`boxes_rotator`).
 pub(crate) fn own_secrets_candidates(core: &Core, a: &Tid) -> Vec<Tid> {
     let Some(me) = core.me() else { return Vec::new() };
-    let plain = |t: &Tid| !core.has_own_secrets(t) && !core.is_key_actor(t) && core.secret_actor(t) == Some(*a) && core.role_now(&me, t) == Some(Role::Admin);
-    // a scan per call; only plain targets and holders go further
+    let plain = |t: &Tid| !core.is_independent(t) && !core.is_key_actor(t) && core.secret_actor(t) == Some(*a) && core.role_now(&me, t) == Some(Role::Admin);
+    // a scan per call; only dependent targets and holders go further
     let mut out = BTreeSet::new();
     for ((x, _), m) in core.ix.holder_keys.iter() {
         if !out.contains(x) && plain(x) && core.key_holders(x).iter().any(|(h, _)| Some(*h) != core.mint_admin(x)) {
             out.insert(*x);
         }
-        // a plain thing holds its plain record children by derivation: only an actor with secrets
+        // a dependent thing holds the dependent things minted with it by derivation: only an actor with secrets
         // of its own seals to its holders
-        if !out.contains(m) && plain(m) && core.has_own_secrets(x) && core.key_holders(x).iter().any(|(h, _)| h == m) && members::keyed(core, x, m) {
+        if !out.contains(m) && plain(m) && core.is_independent(x) && core.key_holders(x).iter().any(|(h, _)| h == m) && members::keyed(core, x, m) {
             out.insert(*m);
         }
     }
     out.into_iter().collect()
 }
 
-/// `own_secrets` for a plain thing with current holders, delivering the rotation by inbox to
+/// `own_secrets` for a dependent thing with current holders, delivering the rotation by inbox to
 /// each holder it boxes (they hold no box at the derived epochs it wraps under) and placing it
 /// first under the sync IDs above the thing (its new `keys.0`).
 fn own_secrets_delivered(tx: &mut Tx<'_>, t: Tid) -> Result<Done> {
@@ -1221,7 +1221,7 @@ impl Engine {
     /// Gives `thing` secrets of its own (spec/permissions.md §3), with its one sync ID in the same
     /// commit (spec/sync-ids.md §2): before its first holder other than its mint admin, or before it
     /// is made a holder of anything.
-    pub fn give_own_secrets(&mut self, thing: &Tid) -> Result<Done> {
+    pub fn make_independent(&mut self, thing: &Tid) -> Result<Done> {
         let t = *thing;
         self.run(|tx| {
             let mut done = Done::default();
@@ -1230,10 +1230,10 @@ impl Engine {
         })
     }
 
-    /// The plain things whose secrets derive from `actor` that this node administers and sees
+    /// The dependent things whose secrets derive from `actor` that this node administers and sees
     /// with a current holder other than their mint admin, or holding a role with key access on
-    /// an actor with secrets of its own (spec/permissions.md §3): each is
-    /// due secrets of its own again (`give_own_secrets_again`), decided at the end of a complete
+    /// an independent thing (spec/permissions.md §3): each is
+    /// due to be made independent again (`make_independent_again`), decided at the end of a complete
     /// pass of `actor`'s sync IDs (node-sync's).
     pub fn own_secrets_candidates(&self, actor: &Tid) -> Vec<Tid> {
         own_secrets_candidates(&self.core, actor)
@@ -1241,7 +1241,7 @@ impl Engine {
 
     /// Gives `t`, one of `own_secrets_candidates`, secrets of its own again, delivered to the
     /// holders it boxes and placed under the sync IDs above it.
-    pub fn give_own_secrets_again(&mut self, t: &Tid) -> Result<Done> {
+    pub fn make_independent_again(&mut self, t: &Tid) -> Result<Done> {
         let t = *t;
         self.run(|tx| own_secrets_delivered(tx, t))
     }

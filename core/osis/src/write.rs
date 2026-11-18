@@ -298,7 +298,7 @@ impl<'d> Write<'d> {
         i
     }
 
-    /// A new thing under `admin`, its mint admin, stored with this commit: a thing or account
+    /// A new thing minted with admin `admin`, its mint admin, stored with this commit: a thing or account
     /// this actor may write (`Permission` at commit otherwise). The mint admin is an ordinary
     /// admin, removable like any other (spec/permissions.md §1).
     ///
@@ -309,7 +309,7 @@ impl<'d> Write<'d> {
     ///
     /// Under a thing (usually the one that holds it) it is plain: whoever reads that thing reads
     /// it, and it costs its record and content alone. Under an account (`me()`) it gets keys of
-    /// its own at once, about ten times the bytes and work; a plain thing gets them only at its
+    /// its own at once, about ten times the bytes and work; a dependent thing gets them only at its
     /// first grant. A thin client's own actor goes with the client, so it is refused as admin
     /// (`Invalid` at commit).
     ///

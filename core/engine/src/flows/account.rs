@@ -1400,7 +1400,7 @@ fn create_account_in(tx: &mut Tx<'_>, record: CreationRecord, d_record: Creation
     rotation::record(tx, d, &rot)?;
     let mut done = Done::default();
     done.add(c);
-    // the profile and the inbox have own keys from the account's creation (spec/sync-set.md §1)
+    // the profile and the inbox are independent from the account's creation (spec/sync-set.md §1)
     rotation::own_secrets(tx, profile, &mut done)?;
     super::inbox::make_inbox(tx, inbox, &mut done)?;
     // the account root strongly references the profile and the inbox, and the node root the

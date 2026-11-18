@@ -18,7 +18,7 @@
 //! (`Engine::redeemable`). A ticket roots nothing: a strong in the node closure
 //! with a ticket for its target needs it as any strong does, so what judges the ticket stays
 //! (spec/sync-set.md §2). Nothing is rooted by whose it is: this node's account is needed by its root
-//! (D's record names it), and a thing made under the node or the account goes as any once
+//! (D's record names it), and a thing minted with the node or the account as admin goes as any once
 //! released. A pairing node takes the account up (`Engine::paired`) in the hold of the engine
 //! that applied what pairing sent, before any pass ends. Everything else goes whole, as never
 //! received, when the pass that brought it ends or its last need went (`settle`).
@@ -304,9 +304,9 @@ pub(crate) fn settle(tx: &mut Tx<'_>) -> Result<bool> {
         let keyed: Vec<osis_base::CommitId> = tx.core.ix.keyset_parts.get(t).into_iter().flatten().copied().collect();
         for id in keyed {
             tx.core.ix.keyset_parts.remove(t, &id);
-            tx.txn.remove_local(&crate::engine::records::own_keys_key(t, &id), Shred::Yes)?;
+            tx.txn.remove_local(&crate::engine::records::own_secrets_key(t, &id), Shred::Yes)?;
         }
-        tx.core.ix.own_keys.remove(t);
+        tx.core.ix.independent.remove(t);
         tx.core.ix.secrets.remove(t);
         crate::sync::stranded::drop_asks(tx, t, |_| false)?;
         crate::sync::held::forget_actor(tx, t)?;

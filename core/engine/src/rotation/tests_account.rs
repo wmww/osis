@@ -227,7 +227,7 @@ fn a_rotations_judgment_grows_with_the_rotations_spec_permissions_5_5() {
     assert!(large <= 13 * small, "bytes at 10n: {large}, at n: {small}");
 }
 
-/// An actor of peer 1 with secrets of its own.
+/// An independent actor of peer 1.
 fn actor_of(lp: &mut LocalPeer, a: &Tid) -> Tid {
     let e = &mut lp.peers[1].engine;
     let me = e.me();

@@ -37,7 +37,7 @@ fn shown(db: &Osis, c: Tid, id: CommitId) -> (String, bool) {
 // notes/chat.md Create, spec/commits.md §6 (a write is one commit), spec/commits.md §5 (The
 // setting), spec/permissions.md §3: a chat is one commit holding its record, its settings, its
 // `retention^.0` (messages kept for good, the disappearing expiry, replacements refused when
-// editing is off, the retain default) and its holder's strong; plain under its holder until its
+// editing is off, the retain default) and its holder's strong; dependent, minted with its holder, until its
 // first grant gives it keys of its own; this account its admin.
 #[test]
 fn create_is_one_whole_commit_spec_commits_2() {
@@ -47,7 +47,7 @@ fn create_is_one_whole_commit_spec_commits_2() {
     let c = create(&db, &Options { name: "room".into(), purge: PurgeBy::Admin, edit: None, disappear: Some(day), retain_copies: false }, db.account_root()).unwrap();
     assert_eq!(commits(&db), n + 1, "one commit");
     let keys = |db: &Osis, c: Tid| db.engine(|e| e.get_typed(&c, &osis::internals::core_types::KEYS).unwrap().is_some());
-    assert!(!keys(&db, c), "plain until shared");
+    assert!(!keys(&db, c), "dependent until shared");
     assert_eq!(db.role_on(c).unwrap(), Some(Role::Admin));
     let s = db.at(c, SETTINGS).get().unwrap().unwrap();
     assert_eq!((s.name.as_str(), s.purge), ("room", Some(Deletes::Admins)));

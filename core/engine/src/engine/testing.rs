@@ -109,11 +109,11 @@ impl Engine {
         self.core.ix.snapshots.get(&(*tid, ak.clone())).into_iter().flatten().map(|s| s.4.len()).collect()
     }
 
-    /// Tests: the mint admin of a plain thing this node makes: its account root where it acts as
-    /// its account (a thing made under an account has own keys, spec/permissions.md §3), else
+    /// Tests: the mint admin of a dependent thing this node makes: its account root where it acts as
+    /// its account (a thing minted with an account as admin is independent, spec/permissions.md §3), else
     /// what it acts as.
     #[doc(hidden)]
-    pub fn plain_admin(&self) -> Tid {
+    pub fn dependents_admin(&self) -> Tid {
         let me = self.me();
         match self.core.account_and_root() {
             Some((p, d)) if p == me => d,
@@ -765,7 +765,7 @@ fn tables(ix: &super::Indexes) -> Vec<(&'static str, &dyn Table)> {
         ("boxes_to", &*ix.boxes_to),
         ("epoch_intro", &*ix.epoch_intro),
         ("keysets", &*ix.keysets),
-        ("own_keys", &*ix.own_keys),
+        ("independent", &*ix.independent),
         ("destroyed", &*ix.destroyed),
         ("keyset_parts", &*ix.keyset_parts),
         ("holder_keys", &*ix.holder_keys),
@@ -1106,7 +1106,7 @@ mod tests {
         use osis_base::{Value, WallMs};
         let mut lp = crate::local_peer::LocalPeer::fresh(1, WallMs(1_700_000_000_000));
         let e = &mut lp.peers[0].engine;
-        let me = e.plain_admin();
+        let me = e.dependents_admin();
         let mut m = crate::Mutation::new();
         let (one, many) = (e.new_thing(&mut m, me), e.new_thing(&mut m, me));
         m.set(one, &Ak::new("x:a.0").unwrap(), &Value::Str("PLANTED-ONE".into())).unwrap();

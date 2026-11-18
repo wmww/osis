@@ -59,7 +59,7 @@ pub struct Mutation {
     /// Map entries to reset whatever their liveness here (spec/crdt.md §5.6): an explicit removal
     /// of an edge already removed (role flows).
     pub(crate) dead_resets: BTreeMap<(Tid, Ak), Vec<(osis_crdt::Dot, Value)>>,
-    /// Map keys holding no entry to reset anyway (spec/permissions.md §2: a removal of a first
+    /// Map keys holding no entry to reset anyway (spec/permissions.md §2: a removal of a mint
     /// admin's record edge, stored nowhere): each gets an entry of the delta's own, at a fresh
     /// counter, holding nothing but the reset, so the removal names its key and its creation is
     /// the delta itself.
@@ -725,7 +725,7 @@ impl Engine {
         t
     }
 
-    /// Tests: the record of a new thing under `admin`, its holding strong (`hold_where_it_lives`)
+    /// Tests: the record of a new thing minted with admin `admin`, its holding strong (`hold_where_it_lives`)
     /// committed first, so the commit that makes it can carry its creation alone.
     #[doc(hidden)]
     pub fn held_record(&mut self, admin: Tid) -> Result<CreationRecord> {
@@ -736,7 +736,7 @@ impl Engine {
         Ok(rec)
     }
 
-    /// Tests: writes in `m` the strong that holds `t`, made under `admin` (spec/sync-set.md §2
+    /// Tests: writes in `m` the strong that holds `t`, minted with admin `admin` (spec/sync-set.md §2
     /// Making a thing): from `admin` where that is a thing `m` makes or the node holds, else from
     /// the account root (what an account's node writes, it writes as the account), else from the
     /// node root.
@@ -769,34 +769,34 @@ impl Engine {
 }
 
 /// Commits `m` in `tx` as one commit (`one_commit`); none when it changes nothing. Except: a thing
-/// made under an account (in no sync unit) has secrets of its own before any content is written
-/// on it (spec/permissions.md §3), as `Engine::mint_actor` mints (`keyed_first`). Refused when it
+/// minted with an account as admin (in no sync unit) is independent before any content is written
+/// on it (spec/permissions.md §3), as `Engine::mint_actor` mints (`independent_first`). Refused when it
 /// would take away a strong the node's roots keep (`roots::kept`), however it is written.
 pub(crate) fn commit_in(tx: &mut Tx<'_>, m: Mutation) -> Result<Option<CommitId>> {
     if m.sealed {
         return Err(Error::Misuse("a sealed fire is built by `sealed_commit`"));
     }
     let kept = crate::flows::roots::kept(tx)?;
-    let r = keyed_first(tx, m)?;
+    let r = independent_first(tx, m)?;
     crate::flows::roots::still_kept(tx, &kept)?;
     Ok(r)
 }
 
-/// `commit_in`'s commits. A thing `m` makes under an account is due own keys
-/// (`Core::own_keys_due`); one due that `m` writes content on gets them first: its record in its
-/// own-keys rotation where `m` makes it (`rotation::own_secrets_new`), then the rest of `m` under
-/// its own keys, the last commit returned. Except an expiring thing's: a role commit never
+/// `commit_in`'s commits. A thing `m` mints with an account as admin is due to become
+/// independent (`Core::own_secrets_due`); one due that `m` writes content on gets them first: its record in its
+/// own-secrets rotation where `m` makes it (`rotation::own_secrets_new`), then the rest of `m` under
+/// its own secrets, the last commit returned. Except an expiring thing's: a role commit never
 /// expires, so its record goes alone, in a commit expiring with it. One `m` makes without content goes
-/// with `m` as it is, keyed at the transaction's end or by its maker first (a link's K, its sync
+/// with `m` as it is, made independent at the transaction's end or by its maker first (a link's K, its sync
 /// ID listing L).
-fn keyed_first(tx: &mut Tx<'_>, mut m: Mutation) -> Result<Option<CommitId>> {
+fn independent_first(tx: &mut Tx<'_>, mut m: Mutation) -> Result<Option<CommitId>> {
     for (t, r) in &m.creates {
         if r.mint_admin().is_some_and(|a| tx.core.is_account(&a)) {
-            tx.core.own_keys_due.insert(*t);
+            tx.core.own_secrets_due.insert(*t);
         }
     }
     let content = |t: &Tid| m.aspects.keys().any(|(x, ak)| x == t && ak.as_str() != CREATED.ak() && !is_role_class(ak.as_str()));
-    let now: Vec<Tid> = tx.core.own_keys_due.iter().filter(|t| content(t)).copied().collect();
+    let now: Vec<Tid> = tx.core.own_secrets_due.iter().filter(|t| content(t)).copied().collect();
     if now.is_empty() {
         return Ok(commit_or_build(tx, m)?.map(|(id, _)| id));
     }
@@ -804,7 +804,7 @@ fn keyed_first(tx: &mut Tx<'_>, mut m: Mutation) -> Result<Option<CommitId>> {
     let mut records = Mutation::new();
     records.signer = m.signer;
     for t in &now {
-        tx.core.own_keys_due.remove(t);
+        tx.core.own_secrets_due.remove(t);
         match m.creates.remove(t) {
             // a role commit never expires: an expiring record goes alone, in a commit expiring with it
             Some(r) if r.expires().is_some() => {

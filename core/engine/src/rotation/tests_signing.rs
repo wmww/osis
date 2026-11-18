@@ -309,7 +309,7 @@ fn an_offline_siblings_write_counts_by_its_listing_spec_permissions_5_5() {
 }
 
 // spec/permissions.md §5.5 (Listings), spec/sync-set.md §2 Writing: node 2 makes thing u under the
-// account (held through D's strong, its own keys made at the setup epoch) and writes it; the
+// account (held through D's strong, made independent at the setup epoch) and writes it; the
 // rotator never received any of it. The rotation closes that epoch, so at node 2 u's keys and D's
 // strong to it count only once named, and u is out of the node closure until node 2's listings on
 // D and on u name them: the listings go (each leaves its thing held), and node 2 reads its write.
@@ -861,13 +861,13 @@ fn read_box_at(lp: &mut LocalPeer, i: usize, a: Tid, m: Tid) -> Option<osis_cryp
 // L opens nothing of it; once T's admin moves T onto P's new epoch, she seals T again.
 #[test]
 fn lost_node_opens_nothing_through_a_team_its_account_reads_spec_crypto_4() {
-    use super::tests::{all_boxed, with_own_keys, held_by, leaked, newest_read, openable, settle};
+    use super::tests::{all_boxed, independent_thing, held_by, leaked, newest_read, openable, settle};
     let (mut lp, a, _) = world(3, 2);
     let p = a.account;
-    let t = with_own_keys(&mut lp, 2);
+    let t = independent_thing(&mut lp, 2);
     lp.peers[2].engine.grant(&t, &p, &edge(Role::Read)).unwrap();
     lp.sync_all().unwrap();
-    let x = with_own_keys(&mut lp, 0);
+    let x = independent_thing(&mut lp, 0);
     lp.sync_all().unwrap();
     lp.peers[0].engine.grant(&x, &t, &edge(Role::Read)).unwrap();
     lp.sync_all().unwrap();
@@ -893,10 +893,10 @@ fn lost_node_opens_nothing_through_a_team_its_account_reads_spec_crypto_4() {
 // out of X until that rotation arrives.
 #[test]
 fn node_knowing_a_removal_seals_its_account_at_no_epoch_before_its_rotation_spec_crypto_4() {
-    use super::tests::{with_own_keys, newest_read, openable};
+    use super::tests::{independent_thing, newest_read, openable};
     let (mut lp, a, _) = world(3, 3);
     let p = a.account;
-    let x = with_own_keys(&mut lp, 2);
+    let x = independent_thing(&mut lp, 2);
     lp.sync_all().unwrap();
     let l = lp.peers[1].engine.tid();
     let p1 = read_box_at(&mut lp, 2, x, p).unwrap();
@@ -934,13 +934,13 @@ fn a_keyset_boxing_the_account_at_an_epoch_not_held_is_not_sealed_to_spec_crypto
 
 /// The ignorant fork: N3 (peer 2) receives N2's commits when `n2_at_n3`.
 fn ignorant_fork(n2_at_n3: bool) {
-    use super::tests::{with_own_keys, held_by, newest_read, openable};
+    use super::tests::{independent_thing, held_by, newest_read, openable};
     let (mut lp, a, _) = world(6, 5);
     let p = a.account;
-    let t = with_own_keys(&mut lp, 5);
+    let t = independent_thing(&mut lp, 5);
     lp.peers[5].engine.grant(&t, &p, &edge(Role::Read)).unwrap();
     lp.sync_all().unwrap();
-    let x = with_own_keys(&mut lp, 2);
+    let x = independent_thing(&mut lp, 2);
     lp.sync_all().unwrap();
     lp.peers[2].engine.grant(&x, &t, &edge(Role::Read)).unwrap();
     lp.sync_all().unwrap();
@@ -978,7 +978,7 @@ fn ignorant_fork(n2_at_n3: bool) {
 // N2 seals P at it.
 #[test]
 fn a_removal_by_a_node_removed_later_stands_spec_permissions_5_4() {
-    use super::tests::with_own_keys;
+    use super::tests::independent_thing;
     let (mut lp, a, _) = world(3, 3);
     let p = a.account;
     let r1 = remove(&mut lp, 0, a.root, 1);
@@ -989,7 +989,7 @@ fn a_removal_by_a_node_removed_later_stands_spec_permissions_5_4() {
     let roster = lp.peers[2].engine.roster(&a.root);
     assert!(!roster.contains_key(&l) && !roster.contains_key(&n1), "both removals hold");
     assert!(lp.peers[2].engine.signing_due().unwrap().commits.is_empty(), "nothing more is due");
-    let x = with_own_keys(&mut lp, 2);
+    let x = independent_thing(&mut lp, 2);
     let _ = lp.peers[2].engine.ensure_rotated(&x).unwrap();
     assert!(read_box_at(&mut lp, 2, x, p).is_some(), "N2 seals P into its own thing");
 }
@@ -2640,7 +2640,7 @@ fn a_box_at_a_revoked_account_epoch_is_read_spec_crypto_4() {
 // only while each current epoch of it is boxed to its account at an epoch that counts there, and a
 // rotation's history carries the established epochs its rotator holds. Node 2 removes node 0 and
 // node 0 removes node 2; node 1 takes node 2's removal first and re-keys t (held by an outsider,
-// so with secrets of its own) at that side's epoch, whose seed node 0 never holds, and writes
+// so independent) at that side's epoch, whose seed node 0 never holds, and writes
 // there. Its user switches to node 0's removal: its box at the side it left is stale, so it
 // re-keys t again, its history carrying the epoch it left, and node 0 reads both its writes
 #[test]

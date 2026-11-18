@@ -321,7 +321,7 @@ fn demotion_scope_walks_at_most_the_history() {
     assert!(b[2] <= 15 * a[2] && b[2] <= *commits, "{a:?} -> {b:?}");
 }
 
-// spec/requirements.md Scale (no operation O(total data)), spec/permissions.md §1 (record edge; applies by the tid alone): n plain things under one actor: evaluating walks only the role
+// spec/requirements.md Scale (no operation O(total data)), spec/permissions.md §1 (record edge; applies by the tid alone): n dependent things under one actor: evaluating walks only the role
 // commits, not the leaves; one more leaf through `update_touched` walks nothing.
 #[test]
 fn record_leaves_walk_nothing_per_leaf() {

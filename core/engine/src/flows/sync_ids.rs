@@ -160,7 +160,7 @@ pub(crate) fn drop_old_claims(tx: &mut Tx<'_>, m: &mut Mutation, t: Tid) -> Resu
     Ok(())
 }
 
-/// A new sync ID of `t`, a thing with own keys (spec/sync-ids.md §2): genesis step at its newest epochs,
+/// A new sync ID of `t`, an independent thing (spec/sync-ids.md §2): genesis step at its newest epochs,
 /// written to `sync.0` in `m`. Returns the sync ID.
 pub(crate) fn new_sync_id(tx: &mut Tx<'_>, m: &mut Mutation, t: Tid, epochs: &ActorEpochs, readers: &[ReaderKey], deposit: &Secret32) -> Result<SyncId> {
     let (step, set) = issue(tx, &t, epochs, None, readers, deposit)?;

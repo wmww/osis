@@ -61,7 +61,7 @@ impl Ask {
 /// This node stranded on a sync ID it reads (spec/permissions.md §4): what its report names.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Stranding {
-    /// The sync ID's actor (its thing's reader actor).
+    /// The sync ID's actor (its thing's independent).
     pub actor: Tid,
     /// The holder this node reads the actor through, as it judges it.
     pub holder: Tid,

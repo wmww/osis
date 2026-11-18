@@ -94,11 +94,11 @@ impl Engine {
     }
 
     /// How this node syncs thing `t` of `sync_things`: its sync ID read while a read secret
-    /// of it is held; a thing with secrets of its own and none is unsyncable; a plain thing has none of its own. Reads only `t`'s keys.
+    /// of it is held; an independent thing and none is unsyncable; a dependent thing has none of its own. Reads only `t`'s keys.
     pub(crate) fn thing_sync_now(&mut self, t: &Tid) -> Result<ThingSync> {
-        // read: by its own keys, or on a ticket's word (its sync ID the ticket's until a held
+        // read: by its own secrets, or on a ticket's word (its sync ID the ticket's until a held
         // `sync.0` records it, spec/sync-inbox.md §5 Ticket sync IDs)
-        if (self.core.has_own_secrets(t) || self.core.ix.closure.on_ticket(t))
+        if (self.core.is_independent(t) || self.core.ix.closure.on_ticket(t))
             && self.holds_read(t)
         {
             let ids = synced(&self.owned_sync_ids(t)?);
@@ -121,7 +121,7 @@ impl Engine {
                 return Ok(ThingSync::Unread(ids));
             }
         }
-        Ok(if self.core.has_own_secrets(t) { ThingSync::Unsyncable } else { ThingSync::Plain })
+        Ok(if self.core.is_independent(t) { ThingSync::Unsyncable } else { ThingSync::Dependent })
     }
 
     /// The sync set, whole (`sync_things` and `thing_sync` of each), each sync ID's entry folded
@@ -139,7 +139,7 @@ impl Engine {
                     set.unsyncable.insert(*t);
                     continue;
                 }
-                ThingSync::Plain => continue,
+                ThingSync::Dependent => continue,
             };
             for s in ids {
                 by_sync.entry(s).or_default().insert(*t, h);
@@ -269,7 +269,7 @@ impl Engine {
 
     /// The claim key of this node for step `step` of `s` (spec/sync-ids.md §3): from the X25519
     /// half of a read KEM key it holds (its node key, its account's epoch keys, the read keysets
-    /// of the actors holding the thing's reader actor that it holds), the one the step's claim set
+    /// of the actors holding the thing's independent that it holds), the one the step's claim set
     /// lists. `None` when no held key is listed (or the claim set is not held).
     pub fn claim_key(&mut self, s: &SyncId, step: &StepId) -> Result<Option<SigningSecret>> {
         let Some((t, o)) = self.read_sync_id(s)? else { return Ok(None) };

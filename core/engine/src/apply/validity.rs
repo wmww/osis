@@ -367,7 +367,7 @@ pub(crate) fn note_notices(core: &mut Core, id: &CommitId) {
 /// Does a path of held grants and record links lead from `author` to a thing on `chain`
 /// (spec/commits.md §4 Unjudgeable)? A path climbs role grants and record links, as perm's
 /// effective role counts them (spec/permissions.md §1): a removal names a holder but leads
-/// nowhere. Searched backward from `chain`, as perm's `roles_to_any`: from a thing to its first
+/// nowhere. Searched backward from `chain`, as perm's `roles_to_any`: from a thing to its mint
 /// admin and to the holders granted on it, so the search stays within what has authority over the
 /// chain.
 pub(crate) fn reaches(core: &Core, author: &Tid, chain: &[Tid]) -> bool {
@@ -1113,7 +1113,7 @@ fn rejudge_once(tx: &mut Tx<'_>, rebuild: bool) -> Result<Vec<(Tid, Ak)>> {
     }
     // after the rebuilds: a keyset or secrets flip reads its aspect's state
     super::keys::rebuild_keysets(tx, &keyset_flips)?;
-    super::keys::refresh_own_keys(tx, &keyset_flips, true)?;
+    super::keys::refresh_independent(tx, &keyset_flips, true)?;
     for (c, ai, now_valid) in secrets_flips {
         if now_valid {
             super::keys::revalidated(tx, &c, ai)?;

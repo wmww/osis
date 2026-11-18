@@ -1,4 +1,4 @@
-//! The account's tickets (spec/sync-set.md §1): D's ticket for each thing with own keys the walk
+//! The account's tickets (spec/sync-set.md §1): D's ticket for each independent thing the walk
 //! enters at a strong outside the node root's local part, at a current epoch.
 //!
 //! Each thing entering the node closure (`Engine::closure_feed`) is followed by one `Effects` key

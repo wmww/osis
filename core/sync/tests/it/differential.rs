@@ -47,8 +47,8 @@ pub(crate) fn holds(seed: u64, steps: &[Step], replay: String, twice: bool) -> W
 const TWICE_EVERY: u64 = 4;
 
 // spec: none (property: spec/requirements.md Convergence; spec/sync-set.md §1-§4: a node holds
-// exactly its node closure): histories of making things under the account root or under other
-// things, strongs added and removed from roots and things, grants of sync, read and write to
+// exactly its node closure): histories of minting things with the account root or other
+// things as admin, strongs added and removed from roots and things, grants of sync, read and write to
 // accounts and to things (chains), lowering, revoking, rotating, accepting by a strong (or
 // declining by none), pairing, and on every second seed power loss, partitions, lost, repeated
 // and held-back messages, device faults and clock skew, healed and run to quiet (within the

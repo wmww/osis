@@ -181,7 +181,7 @@ impl Engine {
                 }
                 Some(ThingSync::Read(ids)) => ids.into_iter().map(|s| (s, Holding::Read)).collect(),
                 Some(ThingSync::Unread(ids)) => ids.into_iter().map(|s| (s, Holding::Unread)).collect(),
-                Some(ThingSync::Unsyncable | ThingSync::Plain) => Vec::new(),
+                Some(ThingSync::Unsyncable | ThingSync::Dependent) => Vec::new(),
             };
             r.moved(&t, ids);
         }

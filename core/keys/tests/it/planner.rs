@@ -168,10 +168,10 @@ fn jumped_person(b: u8) -> ActorEpochs {
 }
 
 // spec/crypto.md §3, §4, spec/sync-ids.md §6: past the cap derived epochs all sit at n 2^62 − 1 but
-// order as the base actor's, so after P's rotation removing a node the plain group U's head (its
+// order as the mint admin's, so after P's rotation removing a node the dependent group U's head (its
 // epochs before) is stepped every time, not by nonce luck.
 #[test]
-fn jumped_base_rotation_steps_plain_group() {
+fn jumped_mint_admin_rotation_steps_dependent_group() {
     let (p, u) = (tid(2), tid(11));
     let s1 = Secret32::from_bytes([0x51; 32]);
     for b in 0..32u8 {
@@ -189,7 +189,7 @@ fn jumped_base_rotation_steps_plain_group() {
     }
 }
 
-// spec/crypto.md §3, §4: concurrent base actor forks past the cap; U's newest derived epoch is the one
+// spec/crypto.md §3, §4: concurrent mint admin forks past the cap; U's newest derived epoch is the one
 // derived from P's newest (greater n), whatever the derived nonces.
 #[test]
 fn jumped_base_forks_derive_base_newest() {
@@ -213,7 +213,7 @@ fn jumped_base_forks_derive_base_newest() {
         let de = Epoch::derive(&u, Role::Read, osis_keys::MAX_FREE_N - 1, &ds).unwrap();
         assert_eq!(d.read.newest(), Some(de), "seed {b}");
         assert_eq!(wrap_epoch(&d.read), Some(de), "seed {b}");
-        // nested: V under plain U carries P's order through U's derived epochs
+        // nested: V minted with dependent U carries P's order through U's derived epochs
         let v = tid(12);
         let vs = osis_crypto::thing_role_secret(&ds, Role::Read, &v);
         let ve = Epoch::derive(&v, Role::Read, osis_keys::MAX_FREE_N - 1, &vs).unwrap();

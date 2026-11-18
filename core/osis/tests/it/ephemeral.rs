@@ -139,7 +139,7 @@ fn rights_through_mint_admin_spec_permissions_1() {
     deliver(&a, &b);
     assert_eq!(b.role_on(t).unwrap(), None);
     let before = durable_marks(&b);
-    // a thing under another actor's thing
+    // a thing minted with another actor's thing as admin
     let mut w = b.write();
     w.create_held_with_admin(t).unwrap();
     assert!(matches!(w.commit(), Err(Error::Permission { .. })));

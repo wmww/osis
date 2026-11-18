@@ -4,7 +4,7 @@
 //! custody worlds, the model judging the same commits. Peers are the model's parties: A, B, C,
 //! X and T account P's nodes, R1 and R2 readers with accounts of their own (R1 a writer of P's
 //! thing t, so t keeps epochs of its own, R2 a reader of it; both hold it), Z a bare peer whose keys X uses as a key actor it made
-//! up. P's plain thing u carries the writes the model makes at P epochs.
+//! up. P's dependent thing u carries the writes the model makes at P epochs.
 //!
 //! Every commit an engine makes that the model knows becomes an item of a mirror
 //! `custody::World`: plain rotations and merge certificates (their lines read from the engine's
@@ -58,7 +58,7 @@ fn x() -> Ak {
     Ak::new("x:a.0").unwrap()
 }
 
-/// The setup's actors: account P, its account root D, thing t (R1 writes it), plain thing u.
+/// The setup's actors: account P, its account root D, thing t (R1 writes it), dependent thing u.
 #[derive(Clone, Copy)]
 struct Ids {
     p: Tid,

@@ -671,7 +671,7 @@ fn validity_flip_is_linear_and_invalid_arrival_flat_spec_permissions_5_2() {
 }
 
 // spec/permissions.md §5.2 (copies; also where the receiver holds the write's own delta); spec/
-// requirements.md, Scale: B holds n and 10n set elements as one delta, then joins the first
+// requirements.md, Scale: B holds n and 10n set elements as one delta, then joins the mint
 // admin's snapshot of them (a snapshot is O(state): linear), then one ordinary delta (flat), in an
 // unbounded and a keep-at-least set.
 #[test]
@@ -885,7 +885,7 @@ fn purge_rejudge_is_linear_in_requests_spec_permissions_6() {
 }
 
 /// B (1) gets the mint admin's writes of one purge-on-replace key only through k snapshots,
-/// each dropped at its cover once the next replaces it: B's demotion frontier for the first
+/// each dropped at its cover once the next replaces it: B's demotion frontier for the mint
 /// admin, in listed commits and encoded bytes.
 fn dropped_frontier(k: usize) -> (usize, usize) {
     let mut lp = net(2, 0);

@@ -860,23 +860,23 @@ indexes! {
     pub reseal_asks: JMap<(Tid, Tid), crate::sync::stranded::Ask>,
     /// Deltas whose value-carrying writes are held value-less (expired, purged).
     pub valueless: JMap<(Tid, Ak), Vec<Owned>>,
-    /// Actors with secrets of their own whose epochs this node holds.
+    /// Independent things whose epochs this node holds.
     pub secrets: JMap<Tid, ActorEpochs>,
     /// Things held destroyed (`Core::destroyed`), rows `records::DESTROYED`: kept where a
     /// destruction lands or falls (`retention::destroy::apply_destructions`) and where a thing is
     /// released, derived from the mintings when the index is rebuilt. What
     /// `Engine::destroyed_upstream` walks.
     pub destroyed: JSet<Tid>,
-    /// Things with secrets of their own here (`apply::keys::refresh_own_keys`): a held commit's
+    /// Things independent here (`apply::keys::refresh_independent`): a held commit's
     /// valid `keys.0` part wrote a keyset.
-    pub own_keys: JSet<Tid>,
-    /// Derived read epochs of things this node sealed a section under while the thing was plain
+    pub independent: JSet<Tid>,
+    /// Derived read epochs of things this node sealed a section under while the thing was dependent
     /// here, until a rotation of it carries them (`rotation::merge`; `records::DERIVED_WRITTEN`).
     /// A key emptied stays until the next open: removing it would move every memo that read an
     /// absent key (each actor's rotation run). `check_index` compares the non-empty keys.
     pub derived_written: JMap<Tid, BTreeSet<osis_crypto::Epoch>>,
     /// Held commits whose `keys.0` part on a thing wrote a keyset in its body, any validity
-    /// (`records::OWN_KEYS`): thing -> commits.
+    /// (`records::OWN_SECRETS`): thing -> commits.
     pub keyset_parts: JSetMap<Tid, CommitId>,
     /// Things with a `sync.0` state (`Engine::things_with_sync_ids`), kept with the state
     /// (`Tx::derive`).
@@ -1063,7 +1063,7 @@ pub struct Core {
     /// join (`apply::atomic`, `Memo::amend`). A pass reads it many times and it grows with the
     /// roster.
     pub(crate) secrets_read: memo::Memo<Tid, Arc<osis_schema::core_types::Secrets>>,
-    /// `Engine::head_keys` per (thing with own keys, step) (`memo`): deriving them is some curve work.
+    /// `Engine::head_keys` per (independent thing, step) (`memo`): deriving them is some curve work.
     pub(crate) head_keys: memo::Memo<(Tid, osis_blob::StepId), crate::sync_ids::HeadKeys>,
     /// `Engine::read_credentials` per sync ID (`memo`): sync reads them at each entry it judges,
     /// and they derive a key per held sync secret.
@@ -1352,10 +1352,10 @@ pub struct Core {
     /// Things whose settings moved: whether their history holds targets is judged at the next
     /// closure settle (`refs::kept::settle`).
     pub kept_things_due: BTreeSet<Tid>,
-    /// Things this transaction's own commits made under an account and gave no own keys yet:
-    /// given them before a content write on them (`write::keyed_first`), else at its end
-    /// (`rotation::own_keys_due`).
-    pub own_keys_due: BTreeSet<Tid>,
+    /// Things this transaction's own commits minted with an account as admin and did not make independent yet:
+    /// given them before a content write on them (`write::independent_first`), else at its end
+    /// (`rotation::own_secrets_due`).
+    pub own_secrets_due: BTreeSet<Tid>,
     /// Edges (holder, target) a role commit this transaction applied or joined writes: the
     /// removal notices their applied writes owe are judged at its end
     /// (`flows::inbox::owe_removal_notices`).
@@ -1602,7 +1602,7 @@ impl Core {
             drop_due: self.drop_due.clone(),
             kept_due: self.kept_due.clone(),
             kept_things_due: self.kept_things_due.clone(),
-            own_keys_due: self.own_keys_due.clone(),
+            own_secrets_due: self.own_secrets_due.clone(),
             notices_due: self.notices_due.clone(),
             removals_due: self.removals_due.clone(),
             freed_due: self.freed_due.clone(),
@@ -2132,7 +2132,7 @@ impl Core {
             drop_due: _,
             kept_due: _,
             kept_things_due: _,
-            own_keys_due: _,
+            own_secrets_due: _,
             notices_due: _,
             removals_due: _,
             freed_due: _,
@@ -2280,7 +2280,7 @@ impl Core {
     }
 
     /// Whether `t` is the node's own, written by it alone (spec/sync-set.md §1): its node thing,
-    /// its node root and what is made under it, whose record chain reaches the node (no
+    /// its node root and what is minted with it, whose record chain reaches the node (no
     /// account holds a role there).
     pub(crate) fn nodes_own(&self, t: &Tid) -> bool {
         let node = self.id.tid();
@@ -2449,7 +2449,7 @@ impl Core {
             drop_due: BTreeSet::new(),
             kept_due: BTreeSet::new(),
             kept_things_due: BTreeSet::new(),
-            own_keys_due: BTreeSet::new(),
+            own_secrets_due: BTreeSet::new(),
             notices_due: BTreeSet::new(),
             removals_due: BTreeSet::new(),
             freed_due: BTreeSet::new(),
@@ -4009,12 +4009,12 @@ impl Engine {
                 // the persisted index follows the in-memory indexes in the same transaction
                 let mut r = f(&mut tx);
                 _after = memo::Unrecorded::start();
-                // a thing made under an account has own keys by its creating transaction's end
+                // a thing minted with an account as admin is independent by its creating transaction's end
                 // (spec/permissions.md §3)
-                if r.is_ok() && !tx.core.own_keys_due.is_empty() {
-                    r = r.and_then(|v| crate::rotation::own_keys_due(&mut tx).map(|_| v));
+                if r.is_ok() && !tx.core.own_secrets_due.is_empty() {
+                    r = r.and_then(|v| crate::rotation::own_secrets_due(&mut tx).map(|_| v));
                 }
-                tx.core.own_keys_due.clear();
+                tx.core.own_secrets_due.clear();
                 // explicit demotions applied get this node's addenda (spec/permissions.md §5.2),
                 // on what the node closure holds as this transaction leaves it (a node writes only
                 // what it holds, spec/sync-set.md §2 Writing)

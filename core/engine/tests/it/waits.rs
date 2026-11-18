@@ -993,7 +993,7 @@ fn record_work(n: usize) -> (u64, usize) {
             assert!(matches!(r, Ingested::Pending(_, Reason::MissingChain(_) | Reason::UnknownCreated(_))), "{r:?}");
         }
         let me = lp.peers[k].engine.me();
-        recs.push([me, lp.peers[k].engine.plain_admin(), t].iter().filter_map(|x| lp.peers[k].engine.core.created(x).cloned()).collect::<Vec<_>>());
+        recs.push([me, lp.peers[k].engine.dependents_admin(), t].iter().filter_map(|x| lp.peers[k].engine.core.created(x).cloned()).collect::<Vec<_>>());
     }
     let e0 = lp.peers[1].engine.examined();
     lp.peers[1].engine.learn_records(recs.swap_remove(0)).unwrap();
@@ -1091,7 +1091,7 @@ fn once_each(seed: u64, n: usize, m: usize) -> (Vec<Option<Value>>, Vec<Option<V
     let mut lp = net_one(2); // 1 a node of 0's account
     let us: Vec<Tid> = (0..m).map(|_| new_thing(&mut lp, 0)).collect();
     sync(&mut lp, 0, 1);
-    let me = lp.peers[0].engine.plain_admin();
+    let me = lp.peers[0].engine.dependents_admin();
     let mut things = us.clone();
     let mut ids = Vec::new();
     for _ in 0..n {

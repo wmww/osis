@@ -2,7 +2,7 @@
 //! the widest path over role edges, effective invite, authority class. Record edges
 //! (spec/permissions.md §1) are virtual: a mint admin's edge on its thing is read from the
 //! creation record (`Records`) unless an edge write set it (`Edges` holds the value written, or
-//! that it was removed), so plain things cost the edge state nothing.
+//! that it was removed), so dependent things cost the edge state nothing.
 
 use crate::held::HeldSet;
 use crate::types::{earliest, mark, put, Edge};

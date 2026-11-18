@@ -121,7 +121,7 @@ impl Engine {
         self.core.key_holders(&d).into_iter().map(|(n, _)| n).filter(|n| self.core.own_node(n)).collect()
     }
 
-    /// The accounts holding a role on `t`'s reader actor, directly or through the actors holding
+    /// The accounts holding a role on `t`'s independent, directly or through the actors holding
     /// it (every role is sync or above), by the rosters held here.
     fn holder_accounts(&self, t: &Tid) -> BTreeSet<Tid> {
         self.core.holder_accounts_of(self.core.reader_of(t))

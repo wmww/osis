@@ -976,7 +976,7 @@ fn forged_edge_widens_no_seeds_spec_permissions_5_1() {
     }
 }
 
-/// §5.1 Trust, seeds follow chained edges (§4), which follow the walk's order: n1 (H's first
+/// §5.1 Trust, seeds follow chained edges (§4), which follow the walk's order: n1 (H's mint
 /// admin) names H admin on T, before or after n0 (T's mint admin) makes n1 admin of T. M
 /// (writer of H) holds admin on T from n0 and grants Y write on T, unseen by n1, whose trusted
 /// removal of M from H puts in question what H reaches. Written after its authority, H's edge

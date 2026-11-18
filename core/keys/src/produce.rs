@@ -22,7 +22,7 @@ pub enum HolderKeys {
     KeyActor { kem: KemPublicKey, seed: Option<Secret32> },
     /// The holder's keysets per role to seal to, each with its KEM key (one; several ascending:
     /// a joint box, spec/crypto.md §4 Seal), and role secrets of the holder the writer holds
-    /// (symmetric boxes, e.g. a thing's base actor).
+    /// (symmetric boxes, e.g. a thing's mint admin).
     Actor { keysets: BTreeMap<Role, Vec<(Epoch, KemPublicKey)>>, own: BTreeMap<Role, (Epoch, Secret32)> },
     /// An account at its epoch (spec/crypto.md §3): the epoch's name and KEM key, and its keys
     /// when the writer holds it (symmetric boxes).
@@ -243,7 +243,7 @@ fn removals(carried: &BTreeMap<Role, BTreeSet<Epoch>>, held_secrets: &Secrets) -
 /// `actor` the rotator holds), the keyset listing every current and unsuperseded epoch, and the removal of the role's boxes at the epochs whose
 /// secret is held. No current secret is needed: an epoch the rotator cannot open is superseded
 /// unread, and a holder of its secret adds it to the new epoch's history (`history_adds`).
-/// `held` is the rotator's established view of the actor (a plain thing's derived epochs for the
+/// `held` is the rotator's established view of the actor (a dependent thing's derived epochs for the
 /// switch to secrets of its own); `held_secrets` the actor's `secrets.0`. Records no holder actor
 /// left out (`rotate_leaving_out`).
 pub fn rotate(actor: &Tid, roles: &BTreeSet<Role>, held: &ActorEpochs, held_secrets: &Secrets, holders: &[Recipient], names: &Names, rng: &mut dyn CryptoRngCore) -> Result<Rotation, Error> {
@@ -267,7 +267,7 @@ pub fn rotate_leaving_out(actor: &Tid, roles: &BTreeSet<Role>, held: &ActorEpoch
         // current and unsuperseded: an epoch whose names this node does not meet is current
         // wherever its secret is not held, so it counts for n and is listed
         let current: BTreeSet<Epoch> = re.current().into_iter().chain(re.unsuperseded()).collect();
-        // no epoch of any role at all: a plain thing's first (spec/crypto.md §3), n counted
+        // no epoch of any role at all: a dependent thing's first (spec/crypto.md §3), n counted
         // as 0; an actor with epochs of other roles but none current of this one cannot rotate it
         let n = match current.iter().map(Epoch::n).max() {
             Some(n) => n,
@@ -301,7 +301,7 @@ pub fn rotate_leaving_out(actor: &Tid, roles: &BTreeSet<Role>, held: &ActorEpoch
         let roles = re.held_roles().into_iter().filter(|(e, _)| e.n() <= n).collect();
         let entry = HistoryEntry { earlier: earlier.clone(), names: names.to_value(), floor, roles };
         secrets.history.insert(history_key(r, &epoch), seal_history(&secret, actor, r, &epoch, &entry)?);
-        // the keyset lists its current epochs but derived ones (held only where the base actor's
+        // the keyset lists its current epochs but derived ones (held only where the mint admin's
         // secret is: superseded through the history box)
         let listed: BTreeSet<Epoch> = current.iter().filter(|e| re.provenance(e) != Some(Provenance::Derived)).copied().collect();
         let mut ks = keyset(&epoch, &secret, &listed, names);

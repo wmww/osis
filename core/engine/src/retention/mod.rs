@@ -1883,15 +1883,15 @@ mod tests {
         assert_eq!(end(false), keys_first, "bob covers once the keys come");
     }
 
-    // spec/sync-judgement.md §1 entitlement: a thing's reader actor is the nearest actor up its record
-    // chain with secrets of its own, through mint-admin links: a plain thing's is its first
+    // spec/sync-judgement.md §1 entitlement: a thing's independent is the nearest independent thing up its record
+    // chain, through mint-admin links: a dependent thing's is its mint
     // admin's, and so is that of a thing below it; once a grant
     // gives it secrets of its own, its own.
     #[test]
-    fn reader_actor_up_the_record_chain_spec_sync_3() {
+    fn its_independent_up_the_record_chain_spec_sync_3() {
         let mut lp = LocalPeer::fresh(2, WallMs(1_700_000_000_000));
         lp.sync_all().unwrap();
-        let (a, b) = (lp.peers[0].engine.plain_admin(), lp.peers[1].engine.me());
+        let (a, b) = (lp.peers[0].engine.dependents_admin(), lp.peers[1].engine.me());
         let e = &mut lp.peers[0].engine;
         let p = e.create_with_admin(&a).unwrap().0;
         let r = e.create_with_admin(&p).unwrap().0;
@@ -1900,10 +1900,10 @@ mod tests {
         let s = e.new_thing(&mut m, a);
         lp.peers[0].commit(m).unwrap().unwrap();
         let readers = |e: &crate::Engine| [p, q, r, s].map(|t| e.core.reader_of(&t));
-        assert_eq!(readers(&lp.peers[0].engine), [a; 4], "plain: every reader actor is A");
+        assert_eq!(readers(&lp.peers[0].engine), [a; 4], "dependent: every independent is A");
         let e = &mut lp.peers[0].engine;
         e.grant(&p, &b, &ct::Edge { role: Role::Read, until: None, invite: None, retain: false, floor: None }).unwrap();
-        assert!(e.core.ix.own_keys.contains(&p), "the grant gave P secrets of its own");
+        assert!(e.core.ix.independent.contains(&p), "the grant gave P secrets of its own");
         assert_eq!(readers(&lp.peers[0].engine), [p, p, p, a], "P's own, S still A's");
     }
 

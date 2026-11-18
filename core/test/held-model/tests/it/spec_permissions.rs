@@ -20,7 +20,7 @@ fn demotion_frontier_keeps_listed_writes_spec_permissions_5_2() {
 }
 
 // spec/permissions.md §5.2: a demotion from admin to write takes the admin-only writes before it
-// and leaves the plain ones: each need judged by its own demotions
+// and leaves the dependent ones: each need judged by its own demotions
 #[test]
 fn demotion_to_write_takes_only_admin_writes_spec_permissions_5_2() {
     let cs = vec![

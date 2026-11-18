@@ -17,7 +17,7 @@ fn strong(e: &mut Engine, from: Tid, to: Tid, on: bool) {
     e.check_closure();
 }
 
-/// A plain thing made under `admin`, strongly referenced from `from` in the same transaction.
+/// A dependent thing minted with admin `admin`, strongly referenced from `from` in the same transaction.
 fn make(e: &mut Engine, admin: Tid, from: Tid) -> Tid {
     let rec = e.thing_record(admin, None);
     let mut m = Mutation::new();
@@ -30,7 +30,7 @@ fn make(e: &mut Engine, admin: Tid, from: Tid) -> Tid {
 
 // spec/sync-set.md §1, §2: a new account's node holds its node root, the account root, the
 // profile and the inbox; a key actor (the node thing, the account) is never entered, by a strong
-// from the node root or the account root alike. A plain thing under the
+// from the node root or the account root alike. A dependent thing under the
 // account root referenced from it is held in its sync unit; removing the strong takes it out and
 // notes it as left with the sync unit it was in.
 #[test]
@@ -134,7 +134,7 @@ fn removal_costs_what_it_held_spec_sync_set_2() {
 }
 
 // spec/sync-set.md §3 Release: a thing that leaves waits for each sync ID that carried it when it
-// left. X is plain under A (own keys, under D), so in D's and A's sync units; one write removing
+// left. X is dependent, minted with admin A (independent, minted with admin D), so in D's and A's sync units; one write removing
 // A -> X takes it out of both, and both are noted, whatever order the walk drops them in.
 #[test]
 fn a_thing_leaving_two_units_at_once_notes_both_spec_sync_set_3() {
@@ -142,7 +142,7 @@ fn a_thing_leaving_two_units_at_once_notes_both_spec_sync_set_3() {
     let e = &mut lp.peers[0].engine;
     let d = e.account_root().unwrap();
     let a = make(e, d, d);
-    e.give_own_secrets(&a).unwrap();
+    e.make_independent(&a).unwrap();
     let x = make(e, a, a);
     assert_eq!(e.units_holding(&x), [d, a].into());
     strong(e, a, x, false);
@@ -177,7 +177,7 @@ fn the_roots_kept_strongs_stay_spec_sync_set_1() {
 // spec/sync-set.md §2 Not carried: X in D's sync unit strongly references Y, a thing this node
 // never got, so D's keys do not open it and nothing else holds it: the strong is named, from X's
 // written strongs and in the whole list; a strong to a held thing is not. So is the node root's
-// strong to a thing never got: the local part holds only plain things the node opens.
+// strong to a thing never got: the local part holds only dependent things the node opens.
 #[test]
 fn a_strong_nothing_carries_is_named_spec_sync_set_2() {
     let (mut lp, _) = people(1);
@@ -203,8 +203,8 @@ fn a_strong_nothing_carries_is_named_spec_sync_set_2() {
     assert_eq!(all, want);
 }
 
-/// The `closure:` and sync set work of `edit` on a closure of `n` plain things under D beside A
-/// (own keys, under D) holding `m` plain things, A sourced at another node, the sync set followed
+/// The `closure:` and sync set work of `edit` on a closure of `n` dependent things minted with admin D beside A
+/// (independent, minted with admin D) holding `m` dependent things, A sourced at another node, the sync set followed
 /// before and after.
 fn cut_work(n: usize, m: usize, edit: impl Fn(&mut Engine, Tid, Tid)) -> u64 {
     let (mut lp, _) = people(1);
@@ -214,7 +214,7 @@ fn cut_work(n: usize, m: usize, edit: impl Fn(&mut Engine, Tid, Tid)) -> u64 {
         make(e, d, d);
     }
     let a = make(e, d, d);
-    e.give_own_secrets(&a).unwrap();
+    e.make_independent(&a).unwrap();
     for _ in 0..m {
         make(e, a, a);
     }
@@ -269,7 +269,7 @@ fn a_sourced_thing_costs_what_is_below_it_spec_sync_set_5() {
     let d = e.account_root().unwrap();
     let x = make(e, d, d);
     let a = make(e, d, d);
-    e.give_own_secrets(&a).unwrap();
+    e.make_independent(&a).unwrap();
     let y = make(e, a, a);
     e.set_sourced([a].into(), &Default::default()).unwrap();
     e.check_closure();
@@ -286,7 +286,7 @@ fn a_sourced_thing_costs_what_is_below_it_spec_sync_set_5() {
 // reaches by strongs through things T's keys open, chains of grants giving the lowest role and the
 // best chain counting; NotCarried names exactly the strongs in the node closure to a thing it does
 // not hold. A random walk of edits (strongs added and removed, grants made, lowered and revoked
-// between things) over 3 things with own keys and 4 plain ones on one node; after each, every
+// between things) over 3 independent things and 4 dependent ones on one node; after each, every
 // sync unit and the NotCarried list equal held-model `closure`'s on the world rebuilt from the
 // edits.
 #[test]
@@ -298,14 +298,14 @@ fn sync_units_are_the_models_spec_sync_set_2() {
         let (mut lp, _) = people(1);
         let e = &mut lp.peers[0].engine;
         let (d, p) = (e.account_root().unwrap(), e.me());
-        // model things 0..3 keyed (under the account, held by D), 3..7 plain under keyed i % 3
+        // model things 0..3 independent (minted with the account as admin, held by D), 3..7 dependent, minted with admin independent i % 3
         let mut tids: Vec<Tid> = (0..3).map(|_| make(e, p, d)).collect();
-        let mut kinds = vec![hc::Kind::Keyed; 3];
+        let mut kinds = vec![hc::Kind::Independent; 3];
         let mut edges = hc::Edges::new();
         for i in 0..4 {
             let k = i % 3;
             tids.push(make(e, tids[k], tids[k]));
-            kinds.push(hc::Kind::Plain(k));
+            kinds.push(hc::Kind::Dependent(k));
             edges.insert((k, 3 + i));
         }
         let mut grants = BTreeMap::new();
@@ -360,7 +360,7 @@ fn sync_units_are_the_models_spec_sync_set_2() {
                 let got: BTreeSet<usize> = e.sync_unit(kt).iter().filter_map(ix).collect();
                 assert_eq!(got, hc::unit(&w, k, &edges), "seed {seed} step {step}: the sync unit of {k}");
             }
-            // the node reads every thing with own keys (it made them): roots D's strongs to them
+            // the node reads every independent thing (it made them): roots D's strongs to them
             let n = hc::NodeView { roots: [0, 1, 2].into(), tickets: (0..3).map(|k| (k, hc::Ticket::Open)).collect() };
             let held = hc::closure(&w, &edges, &n, hc::Walk::Units).held;
             let want: BTreeSet<(usize, usize)> = edges.iter().copied().filter(|(x, y)| held.contains(x) && !held.contains(y)).collect();
@@ -370,7 +370,7 @@ fn sync_units_are_the_models_spec_sync_set_2() {
     }
 }
 
-/// `make` refused or not: a thing under `admin`, strongly referenced from `from` (none: from
+/// `make` refused or not: a thing minted with admin `admin`, strongly referenced from `from` (none: from
 /// nothing) in the same commit.
 fn try_make(e: &mut Engine, admin: Tid, from: Option<Tid>) -> osis_engine::Result<Tid> {
     let rec = e.thing_record(admin, None);
@@ -384,11 +384,11 @@ fn try_make(e: &mut Engine, admin: Tid, from: Option<Tid>) -> osis_engine::Resul
 
 // spec/sync-set.md §2 Making a thing: the commits of one storage transaction must
 // leave every thing they make, but a key actor, in the node closure at its end, or nothing
-// applies. X and U have own keys: a plain thing under X referenced by X is made; one nothing
+// applies. X and U are independent: a dependent thing minted with admin X referenced by X is made; one nothing
 // references, or one from U referenced only by X (X's keys do not open it), is refused and
 // leaves no commit; a thing made in one commit and held by the next of its transaction is made,
 // and refused with that commit holding nothing; a link (its key actor held by nothing, its seed
-// thing under the account root with its strong) is made; the account's creation was.
+// thing minted with the account root as admin with its strong) is made; the account's creation was.
 #[test]
 fn a_thing_is_made_only_where_it_is_held_spec_sync_set_2() {
     let (mut lp, ps) = people(1);
@@ -401,7 +401,7 @@ fn a_thing_is_made_only_where_it_is_held_spec_sync_set_2() {
     let made = try_make(e, x, Some(x)).unwrap();
     assert!(e.closure_holds(&made));
     let before = e.commit_ids().len();
-    for (name, admin, from) in [("held by nothing", x, None), ("plain from U, referenced by X", u, Some(x))] {
+    for (name, admin, from) in [("held by nothing", x, None), ("dependent on U, referenced by X", u, Some(x))] {
         let r = try_make(e, admin, from);
         assert!(matches!(r, Err(osis_engine::Error::NotHeld(_))), "{name}: {r:?}");
         assert_eq!(e.commit_ids().len(), before, "{name}: nothing applies");
@@ -419,8 +419,8 @@ fn a_thing_is_made_only_where_it_is_held_spec_sync_set_2() {
     e.create_link(&p, &spec).unwrap();
 }
 
-// spec/sync-set.md §2 (Sync unit; T's keys open): nested sharing. X and Y have own keys, X is granted read on Y,
-// and X -> Y -> B with B plain from Y. A reader of X (account 1, holding X by a strong) holds Y and
+// spec/sync-set.md §2 (Sync unit; T's keys open): nested sharing. X and Y are independent, X is granted read on Y,
+// and X -> Y -> B with B dependent on Y. A reader of X (account 1, holding X by a strong) holds Y and
 // B, with no ticket for Y, in X's sync unit, and has Y's sync ID in its sync set.
 #[test]
 fn nested_sharing_holds_what_the_shared_thing_reads_spec_sync_set_2() {
@@ -619,7 +619,7 @@ fn another_accounts_chain_goes_with_the_last_held_thing_needing_it_spec_commits_
 
 // spec/sync-set.md §2 Cost: taking up an opener (a key actor, as a bearer does) and making a
 // link cost what the new opener can open, never the node closure or every held actor: counted
-// (`closure:` and `reopen:`) with n and 10n things with own keys held.
+// (`closure:` and `reopen:`) with n and 10n independent things held.
 #[test]
 fn a_take_up_costs_what_the_opener_opens_spec_sync_set_2() {
     let work = |n: usize| {
@@ -698,7 +698,7 @@ fn what_nothing_needs_goes_whatever_the_arrival_order_spec_commits_5() {
 }
 
 // spec/commits.md §5 What a held thing needs: a held commit waiting for a part keeps what it is on.
-// Peer 0 makes U under G (read by a fresh observer) in one commit, U's record with G's strong to
+// Peer 0 mints U with admin G (read by a fresh observer) in one commit, U's record with G's strong to
 // it; the observer gets the commit without its part on G, which it then counts missing. At the
 // pass's end U stays (the commit waits for that part, which may reference U), so the part, fetched
 // again as counted missing, shows G's strong to U and U's record.
@@ -750,7 +750,7 @@ fn a_strong_from_outside_the_node_closure_needs_nothing_spec_commits_5() {
 }
 
 // spec/commits.md §5 What a held thing needs: a part missing keeps what its commit is on only on a
-// thing in the node closure (one the node fetches again). Peer 0 makes T under D with D's strong to
+// thing in the node closure (one the node fetches again). Peer 0 mints T with admin D with D's strong to
 // it in one commit; peer 1, holding D outside its node closure, gets the commit without its part
 // on D: at the pass's end T goes.
 #[test]
@@ -825,8 +825,8 @@ fn a_weak_to_an_account_keeps_nothing_a_strong_to_its_profile_keeps_its_chain_sp
 }
 
 // spec/sync-set.md §3 (Nothing of R stays), spec/commits.md §5 (What a held thing needs): a node's
-// own things are released whole as another's are. A plain thing under the account root, a thing
-// with own keys under the account and a plain thing under the node root, each written and then
+// own things are released whole as another's are. A dependent thing minted with the account root as admin, an
+// independent thing minted with the account as admin and a dependent thing minted with the node root as admin, each written and then
 // released, keep no record, secret or part here: their record chains topping at this node or
 // its account keep nothing of them.
 #[test]

@@ -27,7 +27,7 @@ fn role_before_delete_keys_reads_as_read_spec_crypto_7() {
         let t = w.create_held().unwrap();
         w.at(t, osis::DynamicAspectKey::untyped(ak("t:x.0"))).set(&s("one")).unwrap();
         w.commit().unwrap();
-        // made under the account, `t` has secrets of its own from its creation: its keysets go in
+        // minted with the account as admin, `t` is independent from its creation: its keysets go in
         // that commit
         alice.grant(t, carol.me(), Role::Read, Default::default()).unwrap();
         alice.grant(t, bob.me(), role, Default::default()).unwrap();

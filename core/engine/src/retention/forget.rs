@@ -66,7 +66,7 @@ enum Fate {
 #[derive(Default)]
 pub struct Forgotten {
     pub things: BTreeSet<Tid>,
-    /// Sync IDs of forgotten things with own keys.
+    /// Sync IDs of forgotten independent things.
     pub sync_ids: BTreeSet<SyncId>,
     /// Commits deleted whole.
     pub commits: BTreeSet<CommitId>,
@@ -81,8 +81,8 @@ pub(crate) fn read_path(core: &Core, t: &Tid) -> bool {
 }
 
 /// `t` when the secrets of `lost` are dropped: forgotten when its secrets derive from a lost
-/// actor's and no held path reads it; one counting as plain here whose own secrets went (a
-/// ticket's) loses what they read, its content, and keeps what a plain thing keeps.
+/// actor's and no held path reads it; one counting as dependent here whose own secrets went (a
+/// ticket's) loses what they read, its content, and keeps what a dependent thing keeps.
 fn fate(core: &Core, scope: Scope<'_>, t: &Tid) -> Fate {
     let lost = match scope {
         Scope::Lost(l) => l,
@@ -100,7 +100,7 @@ fn fate(core: &Core, scope: Scope<'_>, t: &Tid) -> Fate {
 }
 
 /// The lost actor whose secrets read `t`: `t` itself, its own secrets dropped (held of a thing
-/// counting as plain here, a ticket's among them), or the actor its secrets derive from.
+/// counting as dependent here, a ticket's among them), or the actor its secrets derive from.
 fn lost_reader(core: &Core, lost: &BTreeSet<Tid>, t: &Tid) -> Option<Tid> {
     if lost.contains(t) {
         return Some(*t);
@@ -148,7 +148,7 @@ fn lost_aspects<'a>(core: &Core, scope: Scope<'_>, aspects: impl Iterator<Item =
 }
 
 /// The things whose secrets derive from one of `actors` (`Core::secret_actor`): each actor and
-/// what lies below it down the record chains, to the next actor with secrets of its own.
+/// what lies below it down the record chains, to the next independent thing.
 /// O(the things found).
 pub(crate) fn under(core: &Core, actors: &BTreeSet<Tid>) -> BTreeSet<Tid> {
     let mut out = BTreeSet::new();

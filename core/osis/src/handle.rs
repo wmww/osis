@@ -744,7 +744,7 @@ impl ReadOnly {
     }
 
     /// The account root (spec/sync-set.md §1): the private thing beside the account that its
-    /// nodes read and hold. Account-wide things an app keeps are made under it (`Write::create`)
+    /// nodes read and hold. Account-wide things an app keeps are minted with it (`Write::create`)
     /// and held by its `holds.0`. On a client with its own actor it is that actor.
     pub fn account_root(&self) -> Tid {
         self.acting.unwrap_or_else(|| self.inner.thin.get().map_or(self.inner.account_root, |t| t.account_root))

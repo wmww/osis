@@ -1,5 +1,5 @@
 //! Secrets the engine holds (spec/crypto.md §3–§4): the node's own role secrets, derived secrets
-//! of plain things, epochs of actors with secrets of their own opened from `secrets.0` (kept
+//! of dependent things, epochs of independent things opened from `secrets.0` (kept
 //! in the store per actor), dedup secrets from creation records, delete keys
 //! (spec/crypto.md §7), and the `Secrets` osis-commit asks for when building a commit.
 
@@ -45,7 +45,7 @@ impl Core {
     }
 
     /// The epochs this node holds for `tid`: its own, opened ones, or derived from those of the
-    /// next actor up its record chain (mint admin) for a plain thing. A plain thing's
+    /// next actor up its record chain (mint admin) for a dependent thing. A dependent thing's
     /// epochs learned from a rotation since found invalid (`stale_epochs`) are added for reading
     /// only.
     pub(crate) fn epochs(&self, tid: &Tid) -> Option<Arc<ActorEpochs>> {
@@ -55,7 +55,7 @@ impl Core {
     fn derive_epochs(&self, tid: &Tid) -> Option<ActorEpochs> {
         let d = self.chain_epochs(tid).or_else(|| self.unboxed_epochs(tid));
         let Some(x) = self.stale_epochs(tid) else { return d };
-        // no base actor's epochs held: the leftovers alone, still reading-only
+        // no mint admin's epochs held: the leftovers alone, still reading-only
         let mut d = d.unwrap_or_default();
         for r in ROLES {
             for (ep, info) in x.role(r).epochs() {
@@ -78,7 +78,7 @@ impl Core {
     }
 
     /// The epochs `tid`'s derive from (spec/crypto.md §3): those of the first actor up its record
-    /// chain whose epochs this node holds, itself first, and the plain things from `tid` up to
+    /// chain whose epochs this node holds, itself first, and the dependent things from `tid` up to
     /// below it, nearest first (empty: `tid`'s own).
     pub(crate) fn derivation(&self, tid: &Tid) -> Option<(ActorEpochs, Vec<Tid>)> {
         let mut chain = Vec::new();
@@ -88,7 +88,7 @@ impl Core {
             if let Some(e) = held {
                 return Some((e, chain));
             }
-            if self.ix.own_keys.contains(&cur) {
+            if self.ix.independent.contains(&cur) {
                 return None;
             }
             match step {
@@ -104,7 +104,7 @@ impl Core {
     /// nodes open its sync ID with them; the rotation boxing it is wrapped under them (spec/crypto.md
     /// §5).
     fn unboxed_epochs(&self, tid: &Tid) -> Option<ActorEpochs> {
-        if !self.ix.own_keys.contains(tid) || self.ix.secrets.get(tid).is_some() {
+        if !self.ix.independent.contains(tid) || self.ix.secrets.get(tid).is_some() {
             return None;
         }
         let up = self.created(tid)?.mint_admin()?;
@@ -119,7 +119,7 @@ impl Core {
     }
 
     /// `own_record` established (spec/crypto.md §4): a function of what this node holds now (its
-    /// applied commits, `NamesHeld`, and the base actor's establishment, `adopt_derived`), so
+    /// applied commits, `NamesHeld`, and the mint admin's establishment, `adopt_derived`), so
     /// nothing about establishment is stored or invalidated.
     pub(crate) fn own_epochs(&self, tid: &Tid) -> Option<ActorEpochs> {
         let mut e = self.own_record(tid)?.clone();
@@ -134,20 +134,20 @@ impl Core {
         NamesHeld { core: self, actor: *actor, logs: std::cell::OnceCell::new() }
     }
 
-    /// The opened epochs of `tid` when they make it an actor with secrets of its own here: it is
-    /// in `own_keys`, is no known thing, or, no keyset part of it held (`keyset_parts`), holds an epoch
+    /// The opened epochs of `tid` when they make it an independent thing here: it is
+    /// in `independent`, is no known thing, or, no keyset part of it held (`keyset_parts`), holds an epoch
     /// with a held valid rotation commit or snapshot, a valid `secrets.0` part or an inbox hint of
     /// its delete keys. Not by this node's own rotation alone: that commit may have turned
     /// invalid. Its `Rotated` establishment is not computed: `own_epochs` is the view.
     pub(crate) fn own_record(&self, tid: &Tid) -> Option<&ActorEpochs> {
         let e = self.ix.secrets.get(tid)?;
         let thing = matches!(self.created(tid), Some(CreationRecord::Thing { .. }));
-        if self.ix.own_keys.contains(tid) || !thing {
+        if self.ix.independent.contains(tid) || !thing {
             return Some(e);
         }
-        // a held keyset part decides: all invalid, the thing is plain (a valid grant boxing under
+        // a held keyset part decides: all invalid, the thing is dependent (a valid grant boxing under
         // that keyset's epochs counts for nothing; its derived epochs may predate a rotation of
-        // the base actor)
+        // the mint admin)
         if self.ix.keyset_parts.get(tid).is_some_and(|s| !s.is_empty()) {
             return None;
         }
@@ -155,8 +155,8 @@ impl Core {
         (rotated() || self.valid_secrets_part(tid)).then_some(e)
     }
 
-    /// Whether a held role commit's `secrets.0` part on `tid` is valid (only a thing with
-    /// secrets of its own has boxes: a grant whose target's `keys.0` is not held yet).
+    /// Whether a held role commit's `secrets.0` part on `tid` is valid (only an independent
+    /// thing has boxes: a grant whose target's `keys.0` is not held yet).
     fn valid_secrets_part(&self, tid: &Tid) -> bool {
         let Ok(ak) = osis_base::Ak::new("secrets.0") else { return false };
         self.ix.by_aspect.get(&(*tid, ak.clone())).into_iter().flatten().any(|(_, c)| {
@@ -164,7 +164,7 @@ impl Core {
         })
     }
 
-    /// The opened epochs of a plain thing `tid` that are not its own (`own_epochs`): what a
+    /// The opened epochs of a dependent thing `tid` that are not its own (`own_epochs`): what a
     /// rotation since found invalid gave it (spec/crypto.md §3, §4), kept for reading.
     fn stale_epochs(&self, tid: &Tid) -> Option<&ActorEpochs> {
         if self.own_record(tid).is_some() {
@@ -191,7 +191,7 @@ impl Core {
             if let Some(e) = self.own_epochs(&cur) {
                 return Some(DeleteBase::Actor(cur, Some(e)));
             }
-            if self.ix.own_keys.contains(&cur) {
+            if self.ix.independent.contains(&cur) {
                 return Some(DeleteBase::Actor(cur, None));
             }
             if let CreationRecord::KeyActor { public_key, .. } = self.created(&cur)? {
@@ -414,11 +414,11 @@ impl Core {
     /// those derived from an established epoch of the next actor up its record chain are
     /// established (spec/crypto.md §4), so the rotation from them establishes
     /// and sync IDs registered under them can be stepped, and supersede what they derive from the
-    /// base actor's (spec/crypto.md §3). A derived epoch's ID names its secret, so only a base
+    /// mint admin's (spec/crypto.md §3). A derived epoch's ID names its secret, so only a base
     /// actor epoch whose secret is held matches. Computed whenever the view is (`own_epochs`),
-    /// never stored: the base actor's epochs change with what is held. The derived epochs it
+    /// never stored: the mint admin's epochs change with what is held. The derived epochs it
     /// holds: those its own state keys, and the read epochs this node wrote it under while it
-    /// was plain here (`wrote_derived`: current until a rotation's history carries them).
+    /// was dependent here (`wrote_derived`: current until a rotation's history carries them).
     fn adopt_derived(&self, actor: &Tid, epochs: &mut ActorEpochs) {
         let Some(d) = self.base_derived(actor) else { return };
         for r in ROLES {
@@ -550,7 +550,7 @@ impl osis_keys::Held for NamesHeld<'_> {
 
 /// The delete base of a thing (spec/crypto.md §7).
 pub(crate) enum DeleteBase {
-    /// An actor with secrets of its own, with its epochs when held.
+    /// An independent thing, with its epochs when held.
     Actor(Tid, Option<ActorEpochs>),
     /// A key actor: its signing key is its delete key at every level.
     KeyActor(VerifyingKey),
@@ -589,7 +589,7 @@ pub struct CommitSecrets<'c> {
 pub(crate) type KeyCache = std::cell::RefCell<BTreeMap<(Tid, Role), Option<VerifyingKey>>>;
 
 /// Where the delete base of `tid` is found ([`Core::delete_base`]): a thing `created` in this
-/// commit is plain, so it uses that of the next actor up its record chain, a key actor created
+/// commit is dependent, so it uses that of the next actor up its record chain, a key actor created
 /// here (`Ok`) or the first thing outside the commit (`Err`).
 fn base_of(created: &crate::engine::write::Creates, tid: &Tid) -> Option<std::result::Result<DeleteBase, Tid>> {
     match osis_base::record_chain(*tid, |t| created.get(t).map(CreationRecord::record_link)).end() {

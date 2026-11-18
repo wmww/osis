@@ -67,7 +67,7 @@ mod tests {
         let team = lp.peers[2].engine.new_thing(&mut m, c);
         lp.peers[2].commit(m).unwrap();
         lp.hold(team);
-        lp.peers[2].engine.give_own_secrets(&team).unwrap();
+        lp.peers[2].engine.make_independent(&team).unwrap();
         lp.sync_all().unwrap();
         let done = lp.peers[1].engine.grant(&t, &team, &read).unwrap();
         let id = *done.commits.last().unwrap();

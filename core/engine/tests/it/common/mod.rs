@@ -151,7 +151,7 @@ pub fn net_apart(n: usize, seed: u64) -> LocalPeer {
 }
 
 /// `n` peers, the nodes of one account (peer 0 made it, the others paired, nothing else synced):
-/// each holds what another makes under the account root (`new_thing`) once it holds its record
+/// each holds what another mints with the account root as admin (`new_thing`) once it holds its record
 /// and the root's strong to it. Built once per `n` (`LocalPeer::cached`).
 pub fn net_one(n: usize) -> LocalPeer {
     LocalPeer::cached(&format!("common::net_one/{n}"), || {
@@ -199,7 +199,7 @@ pub fn net_off(n: usize, seed: u64) -> LocalPeer {
     lp
 }
 
-/// A new plain thing of peer `i`: its mint admin `Engine::plain_admin`, held where it lives and
+/// A new dependent thing of peer `i`: its mint admin `Engine::dependents_admin`, held where it lives and
 /// by every other peer (`LocalPeer::hold`), which keeps it once granted a role (`set_edge`).
 pub fn new_thing(lp: &mut LocalPeer, i: usize) -> Tid {
     new_thing_keeping(lp, i, &[])
@@ -208,7 +208,7 @@ pub fn new_thing(lp: &mut LocalPeer, i: usize) -> Tid {
 /// `new_thing` whose setting also keeps `extra` (each AK's history beside `test_setting`'s).
 pub fn new_thing_keeping(lp: &mut LocalPeer, i: usize, extra: &[(&str, osis_schema::History)]) -> Tid {
     let p = lp.peer(i).unwrap();
-    let admin = p.engine.plain_admin();
+    let admin = p.engine.dependents_admin();
     let mut m = Mutation::new();
     let t = p.engine.new_thing(&mut m, admin);
     m.set(t, &REG, &s("new")).unwrap();

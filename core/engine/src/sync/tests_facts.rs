@@ -135,7 +135,7 @@ fn a_header_alone_holds_a_header_only_body_of_either_kind_spec_sync_judgement_1(
     }
 }
 
-/// Peer 0 writes `n` aspects on a new thing under `d` in one commit (sent to peer 1 but for
+/// Peer 0 writes `n` aspects on a new thing minted with admin `d` in one commit (sent to peer 1 but for
 /// the commit itself): enough that its aspect list goes by link (spec/wire.md §4).
 fn wide_commit(lp: &mut LocalPeer, d: Tid, n: usize) -> (Tid, CommitId) {
     let e = &mut lp.peers[0].engine;

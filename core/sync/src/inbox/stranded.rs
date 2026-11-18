@@ -298,7 +298,7 @@ mod tests {
         let me = lp.peers[0].engine.me();
         let g = lp.peers[0].engine.new_thing(&mut mu, me);
         lp.peers[0].commit(mu).unwrap();
-        lp.peers[0].engine.give_own_secrets(&g).unwrap();
+        lp.peers[0].engine.make_independent(&g).unwrap();
         lp.hold(g);
         let edge = osis_schema::core_types::Edge { role: osis_base::Role::Read, until: None, invite: None, retain: false, floor: None };
         lp.peers[0].engine.grant(&g, &m, &edge).unwrap();

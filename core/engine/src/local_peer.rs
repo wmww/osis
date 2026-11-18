@@ -3,7 +3,7 @@
 //! seeded rng; delivery is explicit and order is the caller's. `Package` is plaintext (a test of
 //! what arrives regardless of keys), its parts noted opened under the receiver's newest current
 //! read epoch of their thing as if sealed so (`Engine::note_delivered`); `SealedPackage` is what a
-//! sync ID carries: each body sealed and wrapped under its reader actor's read secret as node-sync
+//! sync ID carries: each body sealed and wrapped under its independent's read secret as node-sync
 //! places it, opened only with the read secrets the receiver holds.
 
 use crate::engine::{Config, Engine, ReadPoint};
@@ -30,7 +30,7 @@ pub struct Package {
 }
 
 /// A commit as sync IDs carry it (spec/sync-ids.md §1-§3): its one sealed blob with a wrap under
-/// each reader actor among its parts, and the blobs the commit references (already sealed
+/// each independent among its parts, and the blobs the commit references (already sealed
 /// under link keys). Readers the sender holds no current read secret for get no wrap.
 #[derive(Clone, Debug)]
 pub struct SealedPackage {
@@ -39,7 +39,7 @@ pub struct SealedPackage {
     pub blobs: Vec<(BlobId, Vec<u8>)>,
 }
 
-/// The sealed blob with its wraps: per reader actor among the commit's parts, the wrap under
+/// The sealed blob with its wraps: per independent among the commit's parts, the wrap under
 /// that actor's read secret (as a sync ID of it would carry it).
 #[derive(Clone, Debug)]
 pub struct SealedEntry {
@@ -377,7 +377,7 @@ impl Engine {
     }
 
     /// A held commit sealed as sync IDs carry it (`SealedPackage`): its blob framed with a fresh
-    /// key (`seal`, one section per reader actor) and wrapped under `wrap_secret` of each reader
+    /// key (`seal`, one section per reader) and wrapped under `wrap_secret` of each reader
     /// actor, as node-sync places it; no wrap for a reader whose read role a known departure
     /// leaves uncovered (`LocalPeer::sealed` rotates first, as node-sync's `uncovered` does). `None`: not held, or a reader's current secret not held.
     pub fn seal_package(&mut self, id: &CommitId, rng: &mut dyn osis_crypto::CryptoRngCore) -> Result<Option<SealedPackage>> {
@@ -385,7 +385,7 @@ impl Engine {
         let Some(b) = self.body(id)? else { return Ok(None) };
         let Some(s) = self.seal(&b, osis_blob::Class::of_marker(self.header(id).and_then(|h| h.ephemeral)), &[], rng)? else { return Ok(None) };
         let mut wraps = Vec::new();
-        for a in self.reader_actors(id) {
+        for a in self.independents(id) {
             if !self.core.is_key_actor(&a) && self.run(|tx| { let deps = crate::rotation::departures(tx, &a)?; crate::rotation::blocked_roles_of(tx, &tx.core.writer()?, &a, &deps, crate::rotation::Walk::Place) })?.contains(&osis_base::Role::Read) {
                 continue;
             }
@@ -395,8 +395,8 @@ impl Engine {
         Ok(Some(SealedPackage { id: *id, entries: vec![SealedEntry { id: s.id, blob: s.blob, wraps }], blobs: pk.blobs }))
     }
 
-    /// The reader actors of a held commit's parts, distinct, in part order.
-    pub fn reader_actors(&mut self, id: &CommitId) -> Vec<osis_base::Tid> {
+    /// The independents of a held commit's parts, distinct, in part order.
+    pub fn independents(&mut self, id: &CommitId) -> Vec<osis_base::Tid> {
         let Some(h) = self.header(id) else { return Vec::new() };
         let mut out = Vec::new();
         for a in &h.aspects {

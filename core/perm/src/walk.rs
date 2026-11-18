@@ -974,7 +974,7 @@ impl Walked {
     /// Things (thing, mint admin) whose record is new, none named by the walk's items before
     /// log position `cut` (the walk goes on from there, or `cut` is the log's end): before it
     /// every node's role on one is its role on its mint admin at every point (its record edge
-    /// is its only edge), so a from-scratch walk records on it there exactly the first
+    /// is its only edge), so a from-scratch walk records on it there exactly the mint
     /// admin's demotions, in the same items. Sets each one's demotions to its mint admin's
     /// recorded before `cut`, with their undo entries, and forgets those recorded on it from
     /// `cut` on (the walk goes on before them). `None`: one has a demotion before `cut`, or a

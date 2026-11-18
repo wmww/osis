@@ -197,7 +197,7 @@ impl Trial {
     }
 }
 
-/// A section wrap: a random nonce, then the section key sealed under the reader actor's section
+/// A section wrap: a random nonce, then the section key sealed under the thing's section
 /// key (spec/wire.md §4).
 pub const SECTION_WRAP_LEN: usize = aead::NONCE_LEN + 32 + TAG_LEN;
 
@@ -217,7 +217,7 @@ pub fn open_section(commit: &CommitId, key: &Secret32, ciphertext: &[u8]) -> Res
     aead::open(key.expose(), &aead::ZERO_NONCE, &commit.0, ciphertext)
 }
 
-/// Wraps a section key under a reader actor's read secret: a fresh random nonce (carried in the
+/// Wraps a section key under a thing's read secret: a fresh random nonce (carried in the
 /// wrap: a rewrite seals the same commit's section again under the same read secret with another
 /// key, so nothing fixed by the commit may be the nonce), AD = the commit ID (spec/wire.md §4).
 pub fn wrap_section(read_secret: &Secret32, commit: &CommitId, key: &Secret32, rng: &mut dyn CryptoRngCore) -> Result<[u8; SECTION_WRAP_LEN], Error> {
@@ -231,7 +231,7 @@ pub fn wrap_section(read_secret: &Secret32, commit: &CommitId, key: &Secret32, r
 }
 
 /// Opens a section wrap under a read secret; a reader tries the secrets of the section's
-/// reader actor newest first.
+/// thing newest first.
 pub fn unwrap_section(read_secret: &Secret32, commit: &CommitId, wrap: &[u8]) -> Result<Secret32, Error> {
     unwrap_section_under(&section_key(read_secret), commit, wrap)
 }

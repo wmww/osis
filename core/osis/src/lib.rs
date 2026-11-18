@@ -11,7 +11,7 @@
 //! act (an account, a node, a shared space) is an **actor**.
 //!
 //! # A first write
-//! A thing is made under its mint admin, usually the thing it lives in: whoever reads that reads
+//! A thing is minted with an admin, its mint admin, usually the thing it lives in: whoever reads that reads
 //! it. A thing is made only where something holds it: a strong reference from a thing this node
 //! holds, written in the same write. Here the account root (private to your account, `me()`) is
 //! both, so every node of the account holds it.

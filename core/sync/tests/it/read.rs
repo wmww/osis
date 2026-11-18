@@ -2063,7 +2063,7 @@ fn judged_per_publish(n: usize) -> u64 {
         let mut m = osis_engine::Mutation::new();
         let g = e.new_thing(&mut m, account);
         e.commit(m).expect("made");
-        e.give_own_secrets(&g).expect("secrets of its own");
+        e.make_independent(&g).expect("secrets of its own");
         g
     });
     w.run();
@@ -2072,7 +2072,7 @@ fn judged_per_publish(n: usize) -> u64 {
             let mut m = osis_engine::Mutation::new();
             let t = e.new_thing(&mut m, g);
             e.commit(m).expect("made");
-            e.give_own_secrets(&t).expect("secrets of its own");
+            e.make_independent(&t).expect("secrets of its own");
         });
         w.run();
     };
@@ -2568,7 +2568,7 @@ fn a_deposit_only_step_waits_a_complete_pass_spec_permissions_3() {
 
 
 /// The judgements (`read: judged`) both nodes make as node 1, reading thing 0 by a grant, comes
-/// to hold a sync ticket for it too, with `n` things made under thing 0 (each a body under its
+/// to hold a sync ticket for it too, with `n` things minted with thing 0 as admin (each a body under its
 /// sync ID): the ticket moves what thing 0's read things and credentials are derived from (its
 /// ticket sync IDs), not what they are.
 fn judged_per_ticket(n: usize) -> u64 {

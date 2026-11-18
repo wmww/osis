@@ -252,7 +252,7 @@ impl Engine {
     /// The records sync ID `s` carries as certificates (spec/permissions.md §4): those its
     /// certificates name (`certified_records`) whose `created.0` no closure body there carries
     /// (a thing of the closure its actor reads, minted by no commit giving it epochs:
-    /// `minted_plainly`), held here. A read of the rows of `s`'s read things alone.
+    /// `minted_dependent`), held here. A read of the rows of `s`'s read things alone.
     pub fn certificate_records(&mut self, s: &SyncId) -> Result<Arc<BTreeSet<Tid>>> {
         self.follow_cert_records()?;
         let mut out = BTreeSet::new();
@@ -272,7 +272,7 @@ impl Engine {
         if namers.is_empty() || self.core.created(x).is_none() {
             return Arc::default();
         }
-        let plain = self.minted_plainly(x);
+        let plain = self.minted_dependent(x);
         let mut out = BTreeSet::new();
         for t in namers {
             let ctx = self.body_ctx(&t);
@@ -327,7 +327,7 @@ impl Engine {
         let ctx = self.body_ctx(t);
         let mut out = BTreeSet::new();
         for x in records.iter() {
-            if self.core.created(x).is_some() && !(ctx.holds(&self.core, x) && self.reads(&ctx, x) && self.minted_plainly(x) && self.minted_above_floor(x, t)) {
+            if self.core.created(x).is_some() && !(ctx.holds(&self.core, x) && self.reads(&ctx, x) && self.minted_dependent(x) && self.minted_above_floor(x, t)) {
                 out.insert(*x);
             }
         }
@@ -355,11 +355,11 @@ impl Engine {
         .unwrap_or(false)
     }
 
-    /// Whether no held minting of `x` gives it epochs: its own-keys rotation carrying its record
+    /// Whether no held minting of `x` gives it epochs: its own-secrets rotation carrying its record
     /// (spec/permissions.md §3) is wrapped under the derived epoch it supersedes (spec/crypto.md
     /// §5), so it carries the record to that epoch's holders alone and counts as no carrier
     /// (spec/permissions.md §4 Logging certificates).
-    fn minted_plainly(&self, x: &Tid) -> bool {
+    fn minted_dependent(&self, x: &Tid) -> bool {
         let Ok(secrets) = osis_base::Ak::new("secrets.0") else { return true };
         !self.core.mintings(x).any(|(c, _)| self.core.ix.commits.get(&c).is_some_and(|m| m.aspect(x, &secrets).is_some()))
     }

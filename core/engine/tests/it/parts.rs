@@ -714,7 +714,7 @@ fn true_record_replaces_junk_under_a_linked_header_spec_commits_4() {
     let known = packages(&mut lp, 0);
     let e = &mut lp.peers[0].engine;
     let mut m = Mutation::new();
-    let t = e.new_thing(&mut m, e.plain_admin());
+    let t = e.new_thing(&mut m, e.dependents_admin());
     link_aspects(&mut m, t);
     let id = e.commit(m).unwrap().unwrap();
     assert!(e.header(&id).unwrap().links.aspects.is_some(), "the aspect list goes by link");

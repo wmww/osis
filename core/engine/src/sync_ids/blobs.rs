@@ -13,7 +13,7 @@ use std::collections::BTreeSet;
 use std::sync::Arc;
 
 /// A held commit as one blob (spec/sync-judgement.md §1): every held part, each sealed to its thing's
-/// reader actor (`Engine::seal`).
+/// independent (`Engine::seal`).
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Body {
     pub commit: CommitId,
@@ -97,7 +97,7 @@ impl OpenedBlob {
 }
 
 /// Frames the opened form of a commit as a copy: every part in one section under the blob key
-/// (tests and tools: a node seals with `Engine::seal`, per reader actor, or `Engine::seal_to`).
+/// (tests and tools: a node seals with `Engine::seal`, per independent, or `Engine::seal_to`).
 pub fn seal_plain(plaintext: &[u8], class: osis_blob::Class, rng: &mut dyn CryptoRngCore) -> Result<Sealed> {
     let c = CommitBlob::decode(plaintext)?;
     let key = osis_crypto::BlobKey::fresh(rng);
@@ -241,18 +241,18 @@ impl Engine {
     }
 
     /// The derivation chain a section lists for thing `t` (spec/wire.md §4): from its mint admin
-    /// up to and including the actor its read secret derives from; empty for a thing with
-    /// secrets of its own or a key actor.
+    /// up to and including the actor its read secret derives from; empty for an independent
+    /// thing or a key actor.
     fn section_chain(&self, t: &Tid) -> Vec<Tid> {
         let mut out = Vec::new();
-        if self.core.ix.own_keys.contains(t) || Some(*t) == self.core.me() {
+        if self.core.ix.independent.contains(t) || Some(*t) == self.core.me() {
             return out;
         }
         for step in self.core.record_chain(t) {
             match step {
                 osis_base::ChainStep::Up { admin: up, .. } => {
                     out.push(up);
-                    if self.core.ix.own_keys.contains(&up) || Some(up) == self.core.me() {
+                    if self.core.ix.independent.contains(&up) || Some(up) == self.core.me() {
                         return out;
                     }
                 }
@@ -303,7 +303,7 @@ impl Engine {
     /// salt and blob ID): one section per thing (its role parts, `osis_keys::under_roles`, in one of their own under
     /// the epoch's roles secret, spec/crypto.md §4 Roles secrets) among the commit's held parts that may go under
     /// an epoch of this node's choosing (`opened::passes_on`, spec/crypto.md §5 Passing on), each
-    /// under that thing's read secret (a plain thing's derives from its base actor's by tid,
+    /// under that thing's read secret (a dependent thing's derives from its mint admin's by tid,
     /// spec/crypto.md §3, so a thing given secrets of its own later opens its earlier sections by
     /// its history; `wrap_secret`: the newest current epoch, a rotation's under the epoch it
     /// supersedes); for the other parts the sections of `extra` (held sections of the commit,
@@ -312,7 +312,7 @@ impl Engine {
     /// is left out (one another wrote that this node read only under an epoch not established
     /// here; a key actor's own record or card, whose current secret it lacks, which travels as a
     /// certificate copy), unless the body needs it (`b.parts`): then `None`, nothing is sealed
-    /// now. A plain thing's derived epoch sealed under is noted (`note_sealed`, spec/crypto.md
+    /// now. A dependent thing's derived epoch sealed under is noted (`note_sealed`, spec/crypto.md
     /// §4 Current).
     pub fn seal(&mut self, b: &Body, class: osis_blob::Class, extra: &[Section], rng: &mut dyn CryptoRngCore) -> Result<Option<Sealed>> {
         let pt = self.body_plaintext(b)?;
@@ -379,7 +379,7 @@ impl Engine {
     }
 
     /// Opens a commit blob (spec/wire.md §4): each section under the read secrets of its thing
-    /// (own, or derived from its base actor's; `read_secrets`, newest first), those derived through
+    /// (own, or derived from its mint admin's; `read_secrets`, newest first), those derived through
     /// the derivation chain the section lists (the thing's record may be inside the section) and
     /// the blob key (a copy's, `seal_to`), the rest left sealed; checks the prefix against the
     /// header and the sections' aspects (spec/commits.md §4).
@@ -518,7 +518,7 @@ impl Engine {
     }
 
     /// The bodies a sync ID must hold from its thing's sync unit (spec/sync-judgement.md §1): held
-    /// commits touching the sync unit with a part its reader actor may read. A sync ID also
+    /// commits touching the sync unit with a part its independent may read. A sync ID also
     /// carries the `sync.0` and `created.0` writes of the things with a sync ID it is the nearest
     /// record-chain actor with a sync ID of (spec/sync-ids.md §2).
     /// Without plaintexts (`body_plaintext`), from a memo per commit (`Core::bodies`): a pass after a
@@ -551,7 +551,7 @@ impl Engine {
     }
 
     /// The parts of commit `id` (its held parts, or `parts`) the actor of `ctx` may read
-    /// (spec/sync-judgement.md §1): those on things whose reader actor it may read.
+    /// (spec/sync-judgement.md §1): those on things whose independent it may read.
     pub fn readable_parts(&self, ctx: &BodyCtx, id: &CommitId, parts: &[usize]) -> Vec<usize> {
         let Some(m) = self.core.ix.commits.get(id) else { return Vec::new() };
         let h = &m.header;
@@ -559,9 +559,9 @@ impl Engine {
     }
 
     /// The parts of copy `c`, opened under a sync ID of `g`, that the sync ID carries no more
-    /// (spec/sync-judgement.md §1: a sync ID carries the parts its thing's reader actor may read,
+    /// (spec/sync-judgement.md §1: a sync ID carries the parts its thing's independent may read,
     /// and certificate copies of role-class parts on any thing): content (`is_content`) on a thing
-    /// under an actor with secrets of its own that `g`'s reader actor may not read now, left by a
+    /// under an independent thing that `g`'s independent may not read now, left by a
     /// revocation since the per-sync-ID copy was placed (spec/permissions.md §3). With any,
     /// `open_entry` takes none of the copy (`Opened::NotOpen`): those parts come from a body under
     /// their own thing's sync ID, which read fetches as missing once this node may hold it.
@@ -573,7 +573,7 @@ impl Engine {
     pub fn copy_stale(&self, g: &Tid, c: &CommitBlob) -> BTreeSet<usize> {
         let actor = self.core.reader_of(g);
         let h = &c.header;
-        let stale = |a: &osis_commit::AspectEntry| osis_schema::core_types::is_content(a.ak.as_str()) && self.core.secret_actor(&a.tid).is_some_and(|x| self.core.ix.own_keys.contains(&x)) && !self.actor_reads(&actor, &a.tid);
+        let stale = |a: &osis_commit::AspectEntry| osis_schema::core_types::is_content(a.ak.as_str()) && self.core.secret_actor(&a.tid).is_some_and(|x| self.core.ix.independent.contains(&x)) && !self.actor_reads(&actor, &a.tid);
         c.parts.iter().map(|p| p.ai).filter(|ai| h.aspects.get(*ai).is_some_and(stale)).collect()
     }
 
@@ -583,7 +583,7 @@ impl Engine {
         self.actor_reads(&ctx.actor, t)
     }
 
-    /// Whether the reader actor of sync unit `g`'s thing may read `t` (`reads`).
+    /// Whether the independent of sync unit `g`'s thing may read `t` (`reads`).
     pub fn reads_in(&self, g: &Tid, t: &Tid) -> bool {
         let actor = self.core.reader_of(g);
         self.actor_reads(&actor, t)
@@ -593,7 +593,7 @@ impl Engine {
         self.core.may_read(actor, &self.core.reader_of(t))
     }
 
-    /// Whether the reader actor of sync unit `g`'s thing reads `t` as every node judges it, for placing chain
+    /// Whether the independent of sync unit `g`'s thing reads `t` as every node judges it, for placing chain
     /// certificates alone (spec/sync-judgement.md §1: an account root reads as its account,
     /// whichever node judges it): any account root reads what its account reads, so
     /// the chains placed under a sync ID are the same at every node. Never an access, sealing,
@@ -607,14 +607,14 @@ impl Engine {
     }
 
     /// The parts of `h` a sync ID of `ctx`'s sync unit carries in its bodies (spec/sync-judgement.md
-    /// §1): those on things of the sync unit its reader actor may read. A chain certificate's part on any other thing goes
+    /// §1): those on things of the sync unit its independent may read. A chain certificate's part on any other thing goes
     /// there as a certificate copy (spec/permissions.md §4).
     pub fn body_carried(&self, ctx: &BodyCtx, h: &osis_commit::Header) -> std::collections::BTreeSet<usize> {
         h.aspects.iter().enumerate().filter(|(_, a)| ctx.holds(&self.core, &a.tid) && self.reads(ctx, &a.tid)).map(|(i, _)| i).collect()
     }
 
     /// The body of commit `id` a sync ID of `ctx`'s sync unit must hold (`sync_id_bodies_meta`):
-    /// with the parts its reader actor may read among those inside the sync unit (or published there),
+    /// with the parts its independent may read among those inside the sync unit (or published there),
     /// when there are any; else, for a lasting commit, its header alone.
     pub fn commit_bodies_under(&mut self, ctx: &BodyCtx, id: &CommitId) -> Result<Vec<Body>> {
         self.bodies_under(ctx, id, false)
@@ -794,7 +794,7 @@ impl Engine {
         })
     }
 
-    /// Held read secrets of a thing with own keys, newest first; then those derived from its mint admin's (a
+    /// Held read secrets of an independent thing, newest first; then those derived from its mint admin's (a
     /// thing that got secrets of its own, or one under a key actor this node holds: the rotation
     /// that gave it its own is wrapped under the derived epoch, spec/crypto.md §5).
     /// Each epoch's roles secret follows its secret (spec/crypto.md §4, Roles secrets), and one
@@ -998,7 +998,7 @@ mod tests {
     use super::*;
     
 
-    // spec/crypto.md §3, spec/wire.md §4: a record chain of two plain things under the node: O,
+    // spec/crypto.md §3, spec/wire.md §4: a record chain of two dependent things minted with the node as admin: O,
     // whose mint admin is the node, derives from the node's epochs and T, whose mint admin is
     // O, from O's; a section on T lists the chain up to the node, one on O the node.
     #[test]
@@ -1006,7 +1006,7 @@ mod tests {
         use crate::Mutation;
         let mut lp = crate::local_peer::LocalPeer::fresh(1, WallMs(1_700_000_000_000));
         let e = &mut lp.peers[0].engine;
-        let me = e.plain_admin();
+        let me = e.dependents_admin();
         let (o, _) = e.create_with_admin(&me).unwrap();
         let mut m = Mutation::new();
         let t = e.new_thing(&mut m, o);

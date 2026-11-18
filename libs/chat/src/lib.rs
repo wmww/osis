@@ -51,12 +51,12 @@ impl Default for Options {
     }
 }
 
-/// A new chat, made under `holder` (its mint admin: the app's home, the account root) and held by
+/// A new chat, minted with admin `holder` (its mint admin: the app's home, the account root) and held by
 /// it, its settings written before anyone is granted: every message kept for good (expiry ends a
 /// disappearing one), replacements refused when editing is off, who may delete a message. One
 /// commit makes it whole (record, `retention^.0`, settings, the strong in `holder`'s `holds.0`).
-/// Until its first grant or link it is plain, read by whoever reads `holder`; that first share
-/// gives it keys of its own. Changing a setting later writes `retention^.0` whole; a participant
+/// Until its first grant or link it is dependent, read by whoever reads `holder`; that first share
+/// makes it independent. Changing a setting later writes `retention^.0` whole; a participant
 /// who has not seen it writes as before (its messages keep the expiry they were written with).
 pub fn create(db: &Osis, o: &Options, holder: Tid) -> Result<Tid> {
     let purge = match o.purge {

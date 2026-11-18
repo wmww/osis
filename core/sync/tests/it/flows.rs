@@ -148,20 +148,20 @@ fn a_from_now_grantee_reads_the_current_state_and_no_earlier_write_spec_crypto_4
 }
 
 // spec/crypto.md §4 (State at a cut: a record whose minting lies below the cut goes as a
-// certificate), spec/commits.md §4 (Records: a held strong awaits its target's record): a plain
+// certificate), spec/commits.md §4 (Records: a held strong awaits its target's record): a dependent
 // thing p under t (carried under t's sync ID, as a chat's messages are) written before node 1's
 // grant without history on t: node 1 reads p's current value through t's sync ID, and no earlier
 // write of it. Its record rides in p's minting, below the cut, so it reaches node 1 only by a
 // record blob, which node 1 learns for t's strong to p. A thing q made after the cut is minted
 // above it: its record goes in its minting alone.
 #[test]
-fn a_from_now_grantee_reads_a_plain_thing_under_it_spec_crypto_4() {
+fn a_from_now_grantee_reads_a_dependent_thing_minted_with_it_spec_crypto_4() {
     use crate::harness::Step::*;
     use crate::harness::history::{value_ak, world};
     let mut w = world(0, 2);
     let _ = crate::harness::play(&mut w, &[New(0), NewIn(0, 0), Write(0, 1), Run], String::new());
     let (t, p) = (w.history.things[0].0, w.history.things[1].0);
-    assert!(w.engine(0).sync_id_of(&p).unwrap().is_none(), "p is plain");
+    assert!(w.engine(0).sync_id_of(&p).unwrap().is_none(), "p is dependent");
     let before: Vec<osis_base::CommitId> = w.history.values.values().copied().collect();
     let now = w.engine(0).get(&p, &value_ak()).unwrap().expect("a current value");
     let a1 = w.node(1).account.unwrap();

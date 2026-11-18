@@ -451,7 +451,7 @@ fn a_rotation_logs_with_it_the_commits_it_names_spec_crypto_4() {
     let (mut lp, ps) = people(3);
     let t = thing_of(&mut lp, 0, ps[0]);
     let e = &mut lp.peers[0].engine;
-    e.give_own_secrets(&t).unwrap();
+    e.make_independent(&t).unwrap();
     e.grant(&t, &ps[1], &edge_of(Role::Read)).unwrap();
     e.grant(&t, &ps[2], &edge_of(Role::Read)).unwrap();
     let first = *e.demote(&t, &Demotion { holder: ps[1], new: None, retain: None }).unwrap().commits.last().unwrap();
@@ -529,7 +529,7 @@ fn a_forged_record_in_a_record_blob_names_no_other_thing_spec_wire_3() {
     assert!(!lp.peers[1].engine.carries_loose(&id), "its carrier gives something held");
 }
 
-/// A thing under `admin` that peer 0 makes and holds alone: no strong at peer 1 awaits its
+/// A thing minted with admin `admin` that peer 0 makes and holds alone: no strong at peer 1 awaits its
 /// record.
 fn unshared_thing(lp: &mut LocalPeer, admin: Tid) -> Tid {
     let e = &mut lp.peers[0].engine;
@@ -617,7 +617,7 @@ fn a_loose_author_record_is_learned_when_its_commit_comes_spec_commits_4() {
     let a = lp.peers[0].engine.create_account().unwrap().0.account;
     let b = lp.peers[1].engine.create_account().unwrap().0.account;
     let t = thing_of(&mut lp, 0, a);
-    lp.peers[0].engine.give_own_secrets(&t).unwrap();
+    lp.peers[0].engine.make_independent(&t).unwrap();
     let s0 = lp.peers[0].engine.sync_id_of(&t).unwrap().unwrap();
     let rec = lp.peers[1].engine.core.created(&b).cloned().unwrap();
     let (id, bytes, wrap) = record_blob_by_hand(&mut lp, 0, &t, std::slice::from_ref(&rec));
@@ -642,7 +642,7 @@ fn a_loose_record_awaited_after_another_arrives_is_learned_spec_commits_4() {
         let a = lp.peers[0].engine.create_account().unwrap().0.account;
         let b = lp.peers[1].engine.create_account().unwrap().0.account;
         let t = thing_of(&mut lp, 0, a);
-        lp.peers[0].engine.give_own_secrets(&t).unwrap();
+        lp.peers[0].engine.make_independent(&t).unwrap();
         let s0 = lp.peers[0].engine.sync_id_of(&t).unwrap().unwrap();
         let u = thing_of(&mut lp, 1, b);
         let rb = lp.peers[1].engine.core.created(&b).cloned().unwrap();
@@ -670,17 +670,17 @@ fn a_loose_record_awaited_after_another_arrives_is_learned_spec_commits_4() {
 
 // spec/sync-ids.md §2 (One sync ID per actor): a commit that gives a thing role secrets of its own also
 // creates its sync ID and records it in `sync.0`, in that one commit. A thing given secrets of its
-// own, by `give_own_secrets` or by its first grant, has its sync ID, and the first commit
+// own, by `make_independent` or by its first grant, has its sync ID, and the first commit
 // with a `secrets.0` part on it carries a `sync.0` write too.
 #[test]
 fn own_secrets_and_the_sync_id_come_in_one_commit_spec_sync_ids_2() {
     for by_grant in [false, true] {
         let (mut lp, ps) = people(2);
-        let admin = lp.peers[0].engine.plain_admin();
+        let admin = lp.peers[0].engine.dependents_admin();
         let t = thing_of(&mut lp, 0, admin);
         let e = &mut lp.peers[0].engine;
-        assert_eq!(e.sync_id_of(&t).unwrap(), None, "a plain thing has none");
-        let done = if by_grant { e.grant(&t, &ps[1], &edge_of(Role::Read)).unwrap() } else { e.give_own_secrets(&t).unwrap() };
+        assert_eq!(e.sync_id_of(&t).unwrap(), None, "a dependent thing has none");
+        let done = if by_grant { e.grant(&t, &ps[1], &edge_of(Role::Read)).unwrap() } else { e.make_independent(&t).unwrap() };
         assert!(e.sync_id_of(&t).unwrap().is_some(), "a sync ID (by grant: {by_grant})");
         let secrets = Ak::new("secrets.0").unwrap();
         let sync = ct::SYNC.name();

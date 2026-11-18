@@ -101,7 +101,7 @@ fn a_link_text_never_moves_another_things_sync_id_spec_sync_set_2() {
     let stolen = ShareLink { k_sync_id: own, ..real };
     w.write(1, |e| e.follow_link(&stolen)).unwrap();
     assert_eq!(*w.engine(1).sync_set().unwrap(), *set, "the sync set is as before");
-    assert_eq!(w.engine(1).thing_sync(&stolen.k).unwrap(), osis_engine::sync::ThingSync::Plain, "K has no sync ID of its own here");
+    assert_eq!(w.engine(1).thing_sync(&stolen.k).unwrap(), osis_engine::sync::ThingSync::Dependent, "K has no sync ID of its own here");
 }
 
 // spec/permissions.md §7 (Redeem: the link has ended, and the redeemer stops there, when a held

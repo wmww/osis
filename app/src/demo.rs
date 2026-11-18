@@ -21,7 +21,7 @@ struct Ctx<'a, 'w> {
 
 impl Ctx<'_, '_> {
     fn thing(&mut self, key: &'static str, name: &str, tags: &[&str]) -> Result<Tid> {
-        // made under home and held by it, as a thing made in the app: its changes can be undone
+        // minted with home as admin and held by it, as a thing made in the app: its changes can be undone
         let t = self.w.create(self.home, None)?;
         keep_a_day(self.w, t)?;
         self.w.at(t, NAME).set(&name.to_string())?;

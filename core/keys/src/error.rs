@@ -8,7 +8,7 @@ pub enum Error {
     Crypto(osis_crypto::Error),
     /// A box or history box whose contents contradict its key.
     Mismatch(&'static str),
-    /// A role with no epoch to rotate from (the caller passes the derived epochs of a plain thing).
+    /// A role with no epoch to rotate from (the caller passes the derived epochs of a dependent thing).
     NoEpoch(Role),
     /// The writer lacks a secret it must box or seal under.
     NoSecret(Role),

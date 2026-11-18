@@ -149,7 +149,7 @@ RULES = [
     ("spec/permissions.md", "3", "required rotation", "MUST do so before it next encrypts"),
     ("spec/permissions.md", "3", "holder actors", "boxes a holder actor M at the keysets Seal gives"),
     ("spec/permissions.md", "3", "removal logged first", "MUST, in the same sync and before anything else it logs"),
-    ("spec/permissions.md", "1", "last admin of a plain thing", "MUST NOT remove or lower the last admin edge of a dependent thing"),
+    ("spec/permissions.md", "1", "last admin of a dependent thing", "MUST NOT remove or lower the last admin edge of a dependent thing"),
     ("spec/permissions.md", "2", "finalize", "MUST write the finalize before its next commit encrypting under T"),
     ("spec/permissions.md", "3", "drop lost secrets", "MUST drop those role secrets"),
     ("spec/permissions.md", "4", "stranded", "A stranded node MUST send a Stranded message"),

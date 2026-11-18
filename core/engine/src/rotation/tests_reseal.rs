@@ -557,11 +557,11 @@ fn facade_copy_read_content_withheld_without_the_removal_spec_crypto_5() {
 #[test]
 fn cross_thing_copy_content_never_resealed_spec_crypto_5() {
     let (mut lp, g, w_commits, e_r, w, entry) = shape(false);
-    let h = super::tests::with_own_keys(&mut lp, R);
+    let h = super::tests::independent_thing(&mut lp, R);
     let v_tid = lp.peers[V].engine.me();
     lp.peers[R].engine.grant(&h, &v_tid, &edge(Role::Admin)).unwrap();
     // h's actor reads g, so h's sync ID may carry w as a copy (spec/permissions.md §3: a copy of
-    // content its reader actor may not read is not taken)
+    // content its independent may not read is not taken)
     lp.peers[R].engine.grant(&g, &h, &edge(Role::Read)).unwrap();
     send_skipping(&mut lp, R, V, &w_commits.iter().copied().chain([w]).collect());
     let sh = lp.peers[V].engine.sync_id_of(&h).unwrap().expect("V syncs h");
@@ -714,7 +714,7 @@ fn copy_read_below_a_cut_keeps_its_floor_spec_crypto_5() {
     let mut lp = super::tests::synced(3);
     let tids: Vec<Tid> = (0..3).map(|i| lp.peers[i].engine.me()).collect();
     let (a, p, n) = (0, 1, 2);
-    let g = super::tests::with_own_keys(&mut lp, a);
+    let g = super::tests::independent_thing(&mut lp, a);
     lp.peers[a].engine.grant(&g, &tids[p], &edge(Role::Admin)).unwrap();
     lp.sync_all().unwrap();
     let w0 = put(&mut lp, a, g, "w0");

@@ -137,7 +137,7 @@ fn r2_map(targets: &[Tid]) -> Value {
     Value::Map(pad.chain((0..3).map(|i| (Value::Int(i), Value::Strong(targets[i as usize % targets.len()])))).collect())
 }
 
-/// R2's world: three nodes of their own accounts; node 0 makes two things under `r2_setting`
+/// R2's world: three nodes of their own accounts; node 0 mints two things with admin `r2_setting`
 /// (the first's history holding its targets) and grants nodes 1 and 2 write on the first (each
 /// holds both). Built once (`LocalPeer::cached`).
 fn r2_world() -> (LocalPeer, Vec<Tid>) {
@@ -356,8 +356,8 @@ fn known_references_are_a_scan_of_held_values_spec_data_model_8() {
 }
 
 // spec/data-model.md §8 What counts: core aspects name things by weaks, so none of
-// them holds anything. Y is made under X and both are held by the account root; G, a thing with
-// own keys nothing holds, is granted read on X. Every reference a core aspect holds is a weak, and
+// them holds anything. Y is minted with admin X and both are held by the account root; G, an independent thing
+// nothing holds, is granted read on X. Every reference a core aspect holds is a weak, and
 // removing the strong to X takes X out of the node closure though Y's `created.0` names it, and G
 // is held by none though X's roster and boxes name it.
 #[test]
@@ -371,7 +371,7 @@ fn core_aspects_hold_nothing_spec_data_model_8() {
     m.op(d, &ct::HOLDS, osis_crdt::PathOp { path: vec![], op: osis_crdt::Op::Add(Value::Strong(y)) }).unwrap();
     let g = e.new_thing(&mut m, e.me());
     e.commit(m).unwrap();
-    e.give_own_secrets(&x).unwrap();
+    e.make_independent(&x).unwrap();
     e.grant(&x, &g, &ct::Edge { role: osis_base::Role::Read, until: None, invite: None, retain: false, floor: None }).unwrap();
     let mut m = Mutation::new();
     m.op(d, &ct::HOLDS, osis_crdt::PathOp { path: vec![], op: osis_crdt::Op::Remove(Value::Strong(g)) }).unwrap();

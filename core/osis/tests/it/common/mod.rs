@@ -278,9 +278,9 @@ pub fn commit_with(db: &Osis, f: impl FnOnce(&mut osis::Write<'_>) -> osis::Resu
 
 /// A thing made and held in one write (spec/sync-set.md §2 Making a thing).
 pub trait Held {
-    /// A thing under the account, held by a strong in the account root's `holds.0`.
+    /// A thing minted with the account as admin, held by a strong in the account root's `holds.0`.
     fn create_held(&mut self) -> Result<Tid>;
-    /// A thing under `admin`, held where it lives: by `admin`'s `holds.0`, or the account root's
+    /// A thing minted with admin `admin`, held where it lives: by `admin`'s `holds.0`, or the account root's
     /// where `admin` is the account.
     fn create_held_with_admin(&mut self, admin: Tid) -> Result<Tid>;
 }

@@ -5,17 +5,17 @@
 //! One structure holds both (`Closure`): a spanning tree over vertices (context, thing) rooted at
 //! (local, node root). A context is the node root's local part, a sync unit read (`Ctx::Read`) or
 //! one kept unread (`Ctx::Unread`). A vertex's out-list (`out_of`) is what the walk takes from
-//! it: in the local part its strongs to plain things; in T's read sync unit its strongs to
-//! things T's keys open; from either, a strong to a thing with own keys the context does not
+//! it: in the local part its strongs to dependent things; in T's read sync unit its strongs to
+//! things T's keys open; from either, a strong to an independent thing the context does not
 //! follow enters that thing's sync unit by the secrets the node holds of it, and so does a strong
-//! to a thing with own keys inside a read sync unit (its own sync unit is part of the one it is
+//! to an independent thing inside a read sync unit (its own sync unit is part of the one it is
 //! in, so entering it holds nothing more and records which sync units hold what). A sync unit kept
 //! unread is its root alone: the node cannot read what it holds. So T's sync unit is the things of
 //! context `Read(T)`, and the node closure is every thing of any context.
 //!
 //! Work follows change (spec/sync-set.md §2 Cost): each held vertex's edge to each target of its
-//! strongs is followed by an `Effects` key, due when what its judgement read moved (the target's
-//! own keys, the roles and secrets it is judged by); a strong appearing or going is told by the
+//! strongs is followed by an `Effects` key, due when what its judgement read moved (whether the target
+//! is independent, the roles and secrets it is judged by); a strong appearing or going is told by the
 //! reference index (`note_row`). A settle at each transaction's end diffs the due
 //! edges into the tree. An edge added costs what it brings in. An edge removed that is no tree
 //! edge costs O(1); a tree edge removed runs two searches in step, stopping at the first answer
@@ -34,7 +34,7 @@ use std::collections::{BTreeSet, VecDeque};
 use std::sync::Arc;
 
 /// Where the walk is: the node root's local part, a sync unit entered read or kept unread, or a
-/// thing entered on a ticket's word (`Ticket`: no own keys here, synced under its tickets' sync
+/// thing entered on a ticket's word (`Ticket`: not independent here, synced under its tickets' sync
 /// IDs to fetch its role commits, none of its data held for it).
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum Ctx {
@@ -813,35 +813,35 @@ impl Core {
         self.reads_now(t, &a)
     }
 
-    /// Whether the node opens plain thing `y` (spec/sync-set.md §2 local part): it holds a read
-    /// secret of the thing with own keys `y`'s secrets derive from, or the keys of the key actor
+    /// Whether the node opens dependent thing `y` (spec/sync-set.md §2 local part): it holds a read
+    /// secret of the independent thing `y`'s secrets derive from, or the keys of the key actor
     /// they derive from (itself, its account, a key actor it holds). A tid the node holds no
     /// record of opens nothing.
-    pub(crate) fn opens_plain(&self, y: &Tid) -> bool {
+    pub(crate) fn opens_dependent(&self, y: &Tid) -> bool {
         let Some(a) = self.secret_actor(y) else { return false };
-        if self.has_own_secrets(&a) {
+        if self.is_independent(&a) {
             return self.epochs(&a).is_some_and(|e| e.role(Role::Read).holds_any());
         }
         a == self.id.tid() || Some(a) == self.member() || self.key_actors.contains_key(&a)
     }
 
-    /// Whether context `c` follows a strong to `y` by its own keys: the local part a plain
+    /// Whether context `c` follows a strong to `y` by its own secrets: the local part a dependent
     /// thing the node opens, a read sync unit what its root's keys open.
     pub(crate) fn keys_open_from(&self, c: Ctx, y: &Tid) -> bool {
         match c {
-            Ctx::Local => !self.has_own_secrets(y) && self.opens_plain(y),
+            Ctx::Local => !self.is_independent(y) && self.opens_dependent(y),
             Ctx::Read(t) => self.keys_open(&t, y),
             Ctx::Unread(_) | Ctx::Ticket(_) => false,
         }
     }
 
-    /// Whether `y` has own keys here (spec/sync-set.md §2): by the role commits held of it, or by
+    /// Whether `y` is independent here (spec/sync-set.md §2): by the role commits held of it, or by
     /// an established secret of its own (not one derived from its mint admin's). A ticket's
-    /// secret establishes nothing (it may be anyone's): a thing without own keys whose tickets the
+    /// secret establishes nothing (it may be anyone's): a thing that is not independent whose tickets the
     /// walk took is entered on their word (`given_by`), read fetching under their sync IDs
     /// (`Ctx::Ticket`) until the role commits arrive, sync kept unread (`Ctx::Unread`).
-    pub(crate) fn keyed(&self, y: &Tid) -> bool {
-        self.has_own_secrets(y) || self.ix.secrets.get(y).is_some_and(|e| Role::ALL.iter().any(|r| e.role(*r).held_established().next().is_some()))
+    pub(crate) fn counts_independent(&self, y: &Tid) -> bool {
+        self.is_independent(y) || self.ix.secrets.get(y).is_some_and(|e| Role::ALL.iter().any(|r| e.role(*r).held_established().next().is_some()))
     }
 
     /// Whether the node holds an established read secret of `y`'s own (not one derived from its
@@ -852,7 +852,7 @@ impl Core {
         self.ix.secrets.get(y).is_some_and(|e| e.role(Role::Read).held_established().next().is_some())
     }
 
-    /// How the walk enters thing `y` with own keys at a strong from a context that does not
+    /// How the walk enters independent thing `y` at a strong from a context that does not
     /// follow it (spec/sync-set.md §2): read where the node holds a read secret of it, kept
     /// unread where it holds a sync secret only, else not at all.
     pub(crate) fn enter(&self, y: &Tid) -> Option<Ctx> {
@@ -889,23 +889,23 @@ fn given_by(core: &Core, v: Vx, y: Tid) -> BTreeSet<Vx> {
     if matches!(c, Ctx::Unread(_) | Ctx::Ticket(_)) || x == y || core.is_key_actor(&y) {
         return out;
     }
-    let keyed = core.keyed(&y);
+    let independent = core.counts_independent(&y);
     let follows = match c {
-        Ctx::Local => !keyed && core.opens_plain(&y),
+        Ctx::Local => !independent && core.opens_dependent(&y),
         Ctx::Read(t) => core.keys_open(&t, &y),
         Ctx::Unread(_) | Ctx::Ticket(_) => false,
     };
     if follows {
         out.insert((c, y));
     }
-    if keyed && Ctx::Read(y) != c && let Some(e) = core.enter(&y) {
+    if independent && Ctx::Read(y) != c && let Some(e) = core.enter(&y) {
         out.insert((e, y));
     }
-    // no own keys here: entered on a ticket's word, where a ticket was taken, at the node's
+    // not independent here: entered on a ticket's word, where a ticket was taken, at the node's
     // role (`tickets::role_on`, read again here so a role change judges the edge again), by a
     // secret of that role held: read fetches under the tickets' sync IDs (spec/sync-inbox.md §5
     // Ticket sync IDs), none of its data held for it; sync keeps them unread
-    if !keyed {
+    if !independent {
         let best = core.ix.closure.ticket_ids(&y).into_iter().map(|(_, r)| r).max();
         let role = best.and_then(|k| Some(super::tickets::role_on(core, &y)?.min(k)));
         let holds = |r: Role| core.ix.secrets.get(&y).is_some_and(|e| e.role(r).holds_any());

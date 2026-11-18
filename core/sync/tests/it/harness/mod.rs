@@ -1348,7 +1348,7 @@ pub enum Step {
     Lies(usize, Lie),
     /// A node tells the truth again.
     Truth(usize),
-    /// The differential's writes (`history`), each by node i: makes a thing under its account
+    /// The differential's writes (`history`), each by node i: mints a thing with its account as admin
     /// root (`New`) or under thing k (`NewIn`), a value written, held by a strong from where it
     /// was made; writes thing k; gives a holder a role on thing k (`Give`: nothing accepted);
     /// `Grant`, a rule test's shorthand: gives node j's account the role and node j accepts;

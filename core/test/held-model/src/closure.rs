@@ -6,8 +6,8 @@
 //!
 //! Abstracted: a strong's place inside a value is an OR-set of edges per source thing (an add is
 //! a commit, a remove names the adds its writer saw), so what a set of commits says is a function
-//! of the set. A keyed thing's tid is its sync ID. A plain thing's kind names the keyed thing its
-//! secrets derive from (through any chain of plain things it was made under). A grant `(g, t)`
+//! of the set. An independent thing's tid is its sync ID. A dependent thing's kind names the independent thing its
+//! secrets derive from (through any chain of dependent mint admins). A grant `(g, t)`
 //! with a role is an entry of `t`'s role record naming the actor `g`, last commit wins.
 //!
 //! Left out: validity (every commit is valid and its writer allowed), admin disputes, key
@@ -24,10 +24,10 @@ pub type Edges = BTreeSet<(T, T)>;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Kind {
-    /// Own keys: a sync ID.
-    Keyed,
-    /// Plain, its secrets deriving from this keyed thing's.
-    Plain(T),
+    /// Independent: a sync ID.
+    Independent,
+    /// Dependent, its secrets deriving from this independent thing's.
+    Dependent(T),
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
@@ -76,10 +76,10 @@ pub fn keyless_of(order: &[(T, T)]) -> BTreeSet<(T, T)> {
 }
 
 impl World {
-    pub fn keyed(&self, x: T) -> bool {
-        self.kinds[x] == Kind::Keyed
+    pub fn independent(&self, x: T) -> bool {
+        self.kinds[x] == Kind::Independent
     }
-    /// The role `g` holds on each keyed thing for keys, by grants with key access followed
+    /// The role `g` holds on each independent thing for keys, by grants with key access followed
     /// transitively: a chain of actors gives the lowest role along it, and the best chain counts.
     /// `g` is admin of itself.
     pub fn roles_from(&self, g: T) -> BTreeMap<T, Role> {
@@ -112,7 +112,7 @@ impl World {
             }
         }
     }
-    /// The keys of `t`: the keyed things `t` holds read or above on, itself included.
+    /// The keys of `t`: the independent things `t` holds read or above on, itself included.
     pub fn keys_of(&self, t: T) -> Set {
         self.roles_from(t).into_iter().filter(|&(_, r)| r >= Role::Read).map(|(u, _)| u).collect()
     }
@@ -120,16 +120,16 @@ impl World {
     pub fn ring(&self, reads: &Set) -> Set {
         reads.iter().flat_map(|&r| self.keys_of(r)).collect()
     }
-    /// The keyed things a node reading every thing in `reads` holds a sync secret of: those they
+    /// The independent things a node reading every thing in `reads` holds a sync secret of: those they
     /// hold sync or above on.
     pub fn sync_ring(&self, reads: &Set) -> Set {
-        reads.iter().flat_map(|&r| self.roles_from(r).into_keys().filter(|&u| self.keyed(u))).collect()
+        reads.iter().flat_map(|&r| self.roles_from(r).into_keys().filter(|&u| self.independent(u))).collect()
     }
-    /// Whether `keys` open `x`: its secrets come from a keyed thing among them.
+    /// Whether `keys` open `x`: its secrets come from an independent thing among them.
     pub fn opens(&self, keys: &Set, x: T) -> bool {
         match self.kinds[x] {
-            Kind::Keyed => keys.contains(&x),
-            Kind::Plain(k) => keys.contains(&k),
+            Kind::Independent => keys.contains(&x),
+            Kind::Dependent(k) => keys.contains(&k),
         }
     }
     /// This world with the role commits of `held` applied over its grants, the latest per entry.
@@ -189,7 +189,7 @@ pub fn edges(all: &[Commit], held: &BTreeSet<C>) -> Edges {
 
 // ---- Sync units ----
 
-/// The sync unit walk from keyed `t`: a thing reached by a strong is in it, and followed, iff `keys`
+/// The sync unit walk from independent `t`: a thing reached by a strong is in it, and followed, iff `keys`
 /// open it; any other stops the walk and is not in it. `sync unit` passes `t`'s keys; any other
 /// `keys` is a variant.
 pub fn unit_with(w: &World, t: T, keys: &Set, e: &Edges) -> Set {
@@ -243,14 +243,14 @@ impl Carry {
 }
 
 /// Nodes exchanging commits per sync ID and logging them in a store per sync ID. A node syncs
-/// each keyed thing it reads (`subs`) and each keyed thing their sync units hold; it holds the
+/// each independent thing it reads (`subs`) and each independent thing their sync units hold; it holds the
 /// commits some sync ID it syncs carries by its own view, and drops the rest (unsynced writes
 /// included). Nothing is lost in transit.
 #[derive(Clone, Debug)]
 pub struct Sync {
     pub world: World,
     pub commits: Vec<Commit>,
-    /// Per node: the keyed things it holds tickets or keys for.
+    /// Per node: the independent things it holds tickets or keys for.
     pub subs: Vec<Set>,
     pub has: Vec<BTreeSet<C>>,
     /// Per sync ID: the entries logged there.
@@ -278,7 +278,7 @@ impl Sync {
     }
     pub fn syncs(&self, n: usize) -> Set {
         let (w, e) = self.view(n);
-        self.subs[n].iter().flat_map(|&s| unit(&w, s, &e)).filter(|&x| w.keyed(x)).collect()
+        self.subs[n].iter().flat_map(|&s| unit(&w, s, &e)).filter(|&x| w.independent(x)).collect()
     }
     pub fn carry(&self, n: usize, s: T) -> Carry {
         let (w, e) = self.view(n);
@@ -376,7 +376,7 @@ impl Sync {
         let (w, e) = (self.world.with_roles(&self.commits, &all), edges(&self.commits, &all));
         (0..self.has.len())
             .map(|n| {
-                let mine: Set = self.subs[n].iter().flat_map(|&s| unit(&w, s, &e)).filter(|&x| w.keyed(x)).collect();
+                let mine: Set = self.subs[n].iter().flat_map(|&s| unit(&w, s, &e)).filter(|&x| w.independent(x)).collect();
                 let lacks = mine
                     .iter()
                     .flat_map(|&s| {
@@ -422,17 +422,17 @@ pub struct Closure {
     /// What some way of obtaining covers: the sync units entered and the local sync unit (the node
     /// root's strongs walked by the node's keys).
     pub carried: Set,
-    /// The node's keys: those of every keyed thing read. An open ticket gives its keys only where
+    /// The node's keys: those of every independent thing read. An open ticket gives its keys only where
     /// the walk enters its thing (spec/sync-set.md §4 Declining is doing nothing).
     pub keys: Set,
-    /// The keyed things whose sync secret the node's keys give (they hold sync or above there).
+    /// The independent things whose sync secret the node's keys give (they hold sync or above there).
     pub synced: Set,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Walk {
-    /// Sync unit by sync unit: within a sync unit by its strongs; into a keyed thing the sync unit's keys cannot
-    /// open only by keys or a ticket the node holds; a plain thing the sync unit's keys cannot open
+    /// Sync unit by sync unit: within a sync unit by its strongs; into an independent thing the sync unit's keys cannot
+    /// open only by keys or a ticket the node holds; a dependent thing the sync unit's keys cannot open
     /// stops the walk.
     Units,
     /// The words "the node closure walks strongs": every thing the node can open is followed.
@@ -440,7 +440,7 @@ pub enum Walk {
 }
 
 /// The node closure: the walk below with the node's keys and sync secrets, the least sets that
-/// the keyed things it reads yield (a ticket's secret is taken only at a strong to its thing, so
+/// the independent things it reads yield (a ticket's secret is taken only at a strong to its thing, so
 /// keys grow only as the walk enters things).
 pub fn closure(w: &World, e: &Edges, n: &NodeView, walk: Walk) -> Closure {
     let (mut ring, mut sync) = (Set::new(), Set::new());
@@ -455,18 +455,18 @@ pub fn closure(w: &World, e: &Edges, n: &NodeView, walk: Walk) -> Closure {
     }
 }
 
-/// The walk with keys `ring` and sync secrets `sync`: a keyed thing reached is read where `ring`
+/// The walk with keys `ring` and sync secrets `sync`: an independent thing reached is read where `ring`
 /// holds its keys or an open ticket for it is held, else kept unread where `sync` holds its sync
 /// secret or a sync-only ticket for it is held.
 fn walk_with(w: &World, e: &Edges, n: &NodeView, walk: Walk, ring: &Set, sync: &Set) -> Closure {
     let opened = |k: &T| ring.contains(k) || n.tickets.get(k) == Some(&Ticket::Open);
     let synced = |k: &T| sync.contains(k) || n.tickets.get(k) == Some(&Ticket::SyncOnly);
     let mut c = Closure::default();
-    let mut keyed = vec![];
+    let mut independents = vec![];
     let mut stack = vec![];
     for &r in &n.roots {
-        if w.keyed(r) {
-            keyed.push(r);
+        if w.independent(r) {
+            independents.push(r);
         } else if w.opens(ring, r) && c.held.insert(r) {
             stack.push(r);
         }
@@ -476,8 +476,8 @@ fn walk_with(w: &World, e: &Edges, n: &NodeView, walk: Walk, ring: &Set, sync: &
             // The local sync unit.
             while let Some(x) = stack.pop() {
                 for y in targets(e, x) {
-                    if w.keyed(y) {
-                        keyed.push(y);
+                    if w.independent(y) {
+                        independents.push(y);
                     } else if w.opens(ring, y) && c.held.insert(y) {
                         stack.push(y);
                     }
@@ -485,16 +485,16 @@ fn walk_with(w: &World, e: &Edges, n: &NodeView, walk: Walk, ring: &Set, sync: &
             }
             c.carried = c.held.clone();
             let mut done = Set::new();
-            while let Some(k) = keyed.pop() {
+            while let Some(k) = independents.pop() {
                 let open = opened(&k);
                 if !(open || synced(&k)) || !done.insert(k) {
                     continue;
                 }
                 let p = unit(w, k, e);
                 if open {
-                    c.read.extend(p.iter().copied().filter(|&x| w.keyed(x)));
+                    c.read.extend(p.iter().copied().filter(|&x| w.independent(x)));
                     for &m in &p {
-                        keyed.extend(targets(e, m).filter(|&y| w.keyed(y) && !p.contains(&y)));
+                        independents.extend(targets(e, m).filter(|&y| w.independent(y) && !p.contains(&y)));
                     }
                     c.held.extend(&p);
                 } else {
@@ -508,10 +508,10 @@ fn walk_with(w: &World, e: &Edges, n: &NodeView, walk: Walk, ring: &Set, sync: &
             c.stored.retain(|x| !c.read.contains(x));
         }
         Walk::Literal => {
-            let mut stack: Vec<T> = stack.into_iter().chain(keyed).collect();
+            let mut stack: Vec<T> = stack.into_iter().chain(independents).collect();
             let mut seen: Set = stack.iter().copied().collect();
             while let Some(x) = stack.pop() {
-                let follow = if w.keyed(x) {
+                let follow = if w.independent(x) {
                     if opened(&x) {
                         c.read.insert(x);
                         c.held.insert(x);
@@ -529,7 +529,7 @@ fn walk_with(w: &World, e: &Edges, n: &NodeView, walk: Walk, ring: &Set, sync: &
                 };
                 if follow {
                     for y in targets(e, x) {
-                        if (w.opens(ring, y) || w.keyed(y)) && seen.insert(y) {
+                        if (w.opens(ring, y) || w.independent(y)) && seen.insert(y) {
                             stack.push(y);
                         }
                     }

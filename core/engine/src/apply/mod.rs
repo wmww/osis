@@ -1872,8 +1872,8 @@ pub(crate) fn load(tx: &mut Tx<'_>, rebuild: bool) -> Result<Option<Vec<(Tid, os
     tx.core.ix.secrets.extend(secrets);
     // the `keys.0` parts that wrote a keyset, kept once their bodies dropped or went missing
     let mut parts = Vec::new();
-    tx.scan(records::OWN_KEYS, |k, _| {
-        let bad = || Error::Corrupt("own keys");
+    tx.scan(records::OWN_SECRETS, |k, _| {
+        let bad = || Error::Corrupt("own secrets");
         let (t, c) = k.split_at_checked(15).ok_or_else(bad)?;
         parts.push((Tid::from_bytes(t.try_into().map_err(|_| bad())?), CommitId(c.try_into().map_err(|_| bad())?)));
         Ok(())
@@ -2078,7 +2078,7 @@ pub(crate) fn load(tx: &mut Tx<'_>, rebuild: bool) -> Result<Option<Vec<(Tid, os
     crate::retention::destroy::load(tx, fast)?;
     // with every commit's validity (a rebuild's re-judging below re-derives what flips)
     let things: BTreeSet<Tid> = tx.core.ix.keyset_parts.keys().copied().collect();
-    keys::refresh_own_keys(tx, &things, false)?;
+    keys::refresh_independent(tx, &things, false)?;
     // derived indexes from states (secrets: persisted, read again on a rebuild)
     let mut aspects = Vec::new();
     tx.scan(crate::engine::records::ASPECTS, |k, _| {
@@ -2409,7 +2409,7 @@ mod tests {
     fn tree_created_in_one_commit_spec_perm_1() {
         let mut lp = LocalPeer::fresh(2, WallMs(1_700_000_000_000));
         lp.sync_all().unwrap();
-        let (a0, a1) = (lp.peers[0].engine.plain_admin(), lp.peers[1].engine.me());
+        let (a0, a1) = (lp.peers[0].engine.dependents_admin(), lp.peers[1].engine.me());
         let reg = Ak::new("x:a.0").unwrap();
         let mut things = Vec::new();
         for _ in 0..2 {
@@ -2443,7 +2443,7 @@ mod tests {
             assert!(p0.engine.creation(&t).is_some());
             assert_eq!(p0.engine.get(&t, &reg).unwrap(), Some(Value::Int(i as i64 + 1)));
         }
-        // the mint admin's tree: the last thing's delete keys derive from its base actor's secrets
+        // the mint admin's tree: the last thing's delete keys derive from its mint admin's secrets
         // through the two created above it (spec/crypto.md §3, §7)
         let mut m = Mutation::new();
         let d = p0.engine.new_thing(&mut m, x);

@@ -33,7 +33,7 @@ fn kdf_key(purpose: &str, secret: &[u8]) -> Zeroizing<[u8; 32]> {
 pub const PREFIX: &str = "osis v1 ";
 
 // kdf purposes (without `PREFIX`).
-/// Plain thing role secrets from the base actor's (spec/crypto.md §3); `thing_purpose` picks one.
+/// Dependent thing role secrets from the mint admin's (spec/crypto.md §3); `thing_purpose` picks one.
 pub const THING_SYNC: &str = "thing sync";
 pub const THING_READ: &str = "thing read";
 pub const THING_WRITE: &str = "thing write";
@@ -73,7 +73,7 @@ pub const EPOCH: &str = "epoch";
 pub const ROLES: &str = "roles";
 /// Wrap key from a sync ID read secret (spec/crypto.md §5).
 pub const WRAP: &str = "wrap";
-/// Section wrap key from a reader actor's read secret (spec/wire.md §4).
+/// Section wrap key from a thing's read secret (spec/wire.md §4).
 pub const SECTION: &str = "section";
 /// Keyed content hashes (spec/crypto.md §6).
 pub const DELTA: &str = "delta";

@@ -193,7 +193,7 @@ impl Core {
     }
 
     /// The mint admin of `tid` (spec/permissions.md §1): the next actor up its record chain,
-    /// whose secrets a plain `tid` derives from (spec/crypto.md §3). None for a key actor or an
+    /// whose secrets a dependent `tid` derives from (spec/crypto.md §3). None for a key actor or an
     /// unknown thing.
     pub(crate) fn mint_admin(&self, tid: &Tid) -> Option<Tid> {
         self.created(tid)?.mint_admin()
@@ -278,10 +278,10 @@ impl Core {
         matches!(self.created(m), Some(CreationRecord::Thing { .. })) && self.destroyed(m)
     }
 
-    /// Whether `tid` has role secrets of its own (else a plain thing derives them from its first
+    /// Whether `tid` is independent (else a dependent thing derives its role secrets from its mint
     /// admin's, spec/crypto.md §3).
-    pub(crate) fn has_own_secrets(&self, tid: &Tid) -> bool {
-        self.ix.own_keys.contains(tid)
+    pub(crate) fn is_independent(&self, tid: &Tid) -> bool {
+        self.ix.independent.contains(tid)
     }
 }
 
@@ -306,7 +306,7 @@ pub(crate) fn recipient(tx: &mut Tx<'_>, holder: Tid, role: Role) -> Result<Reci
                 None => mk,
             }
         }
-        (false, None) => return Err(Error::Misuse("the holder has no secrets of its own")),
+        (false, None) => return Err(Error::Misuse("the holder is not independent")),
     };
     Ok(Recipient { holder, role, keys, floor: 0 })
 }

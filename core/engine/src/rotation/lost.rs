@@ -460,8 +460,8 @@ fn drop_actors(tx: &mut Tx<'_>, mut lost: Vec<Tid>, dropped: &[Tid], rejudge: bo
     Ok((lost, f))
 }
 
-/// `lost` and each thing with secrets of its own below one of them by record links (through plain
-/// things and such things alike) that the node does not read now (`readable`): keyed while the
+/// `lost` and each independent thing below one of them by record links (through dependent
+/// things and such things alike) that the node does not read now (`readable`): independent while the
 /// node read it by derivation from a lost actor, what it held of it was read by that actor's
 /// secrets, so it is a local unit the node can no longer read and goes with them
 /// (spec/permissions.md §3 Lost access; a sync role on it keeps its sync secrets). A thing it
@@ -471,11 +471,11 @@ fn with_unread_below(core: &Core, mut lost: Vec<Tid>) -> Vec<Tid> {
     let mut work = lost.clone();
     while let Some(a) = work.pop() {
         for c in core.ix.held.mint_admin_of(&a).copied().collect::<Vec<_>>() {
-            let keyed = core.ix.own_keys.contains(&c);
-            if (keyed && readable(core, &c)) || !seen.insert(c) {
+            let independent = core.ix.independent.contains(&c);
+            if (independent && readable(core, &c)) || !seen.insert(c) {
                 continue;
             }
-            if keyed {
+            if independent {
                 lost.push(c);
             }
             work.push(c);

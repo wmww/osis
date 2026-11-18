@@ -9,7 +9,7 @@
 //! admin and every holder with key access is boxed.
 
 #![allow(clippy::unwrap_used)]
-use super::tests::{Key, Rng, all_boxed, blocked_at, edge, with_own_keys, held_by, newest_read, opens_in, settle, synced};
+use super::tests::{Key, Rng, all_boxed, blocked_at, edge, independent_thing, held_by, newest_read, opens_in, settle, synced};
 use crate::flows::Demotion;
 use crate::local_peer::LocalPeer;
 use osis_base::{Role, Tid};
@@ -38,7 +38,7 @@ fn world(seed: u64) -> World {
     let tids: Vec<Tid> = (0..=V).map(|i| lp.peers[i].engine.me()).collect();
     let depth = 2 + rng.next(2) as usize;
     let adm: Vec<usize> = (0..=depth).map(|_| rng.next(V as u64) as usize).collect();
-    let xs: Vec<Tid> = adm.iter().map(|&a| with_own_keys(&mut lp, a)).collect();
+    let xs: Vec<Tid> = adm.iter().map(|&a| independent_thing(&mut lp, a)).collect();
     lp.sync_all().unwrap();
     let at = 1 + rng.next(2) as usize;
     let mut log = vec![format!("depth {depth}, admins {adm:?}, V reads X{at}")];
@@ -186,7 +186,7 @@ fn churn_below_rotates_g_once_per_rotation_below_spec_crypto_4() {
     for lag in [0, 2] {
         let mut lp = synced(6);
         let tids: Vec<Tid> = (0..6).map(|i| lp.peers[i].engine.me()).collect();
-        let [g, a, m] = [0, 2, 3].map(|i| with_own_keys(&mut lp, i));
+        let [g, a, m] = [0, 2, 3].map(|i| independent_thing(&mut lp, i));
         lp.peers[0].engine.grant(&g, &tids[1], &edge(Role::Write)).unwrap();
         for t in &tids[4..6] {
             lp.peers[3].engine.grant(&m, t, &edge(Role::Read)).unwrap();

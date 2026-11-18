@@ -26,12 +26,12 @@ fn pumped(seed: u64) -> Osis {
     pumped_at(seed, &clock())
 }
 
-/// A plain thing in the account root's sync unit: many of them add no sync IDs.
+/// A dependent thing in the account root's sync unit: many of them add no sync IDs.
 fn thing(db: &Osis) -> Tid {
     things(db, 1)[0]
 }
 
-/// `n` plain things (`thing`), made in one commit.
+/// `n` dependent things (`thing`), made in one commit.
 fn things(db: &Osis, n: usize) -> Vec<Tid> {
     let mut w = db.write();
     let ts = (0..n).map(|_| w.create_held_with_admin(db.account_root()).unwrap()).collect();

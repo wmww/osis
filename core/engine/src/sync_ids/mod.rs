@@ -1,5 +1,5 @@
 //! Sync IDs (spec/sync-judgement.md §1): which blobs go under which sync ID (closure,
-//! entitlement), sections per reader actor, wraps, stamps and deposits, the keys a peer's head
+//! entitlement), sections per independent, wraps, stamps and deposits, the keys a peer's head
 //! calls for, delete keys, certificate blobs. Synchronous functions over the `Engine`.
 
 pub(crate) mod actors;

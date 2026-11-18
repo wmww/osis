@@ -1,5 +1,5 @@
-//! What one thing costs (notes/thing-cost.md; spec/requirements.md Cost, spec/sync-set.md §2 Cost): a plain thing made under the account root and a
-//! thing with its own keys made under the account, for the maker and for the account's second
+//! What one thing costs (notes/thing-cost.md; spec/requirements.md Cost, spec/sync-set.md §2 Cost): a dependent thing minted with the account root as admin and an
+//! independent thing minted with the account as admin, for the maker and for the account's second
 //! node: commits, store rows by family, bytes a peer downloads, KEM and signature operations.
 
 use crate::common::{REG, s};
@@ -47,7 +47,7 @@ fn blob_bytes(lp: &LocalPeer, i: usize) -> i64 {
     (p.backend.held_split().1 + p.blob_disk.0.held_split().1) as i64
 }
 
-/// Peer 0 makes a thing under `admin` (as `flows::thing_of`); peer 1, its account's second node,
+/// Peer 0 mints a thing with admin `admin` (as `flows::thing_of`); peer 1, its account's second node,
 /// receives the commits. Prints the breakdown when `show`.
 fn make(lp: &mut LocalPeer, admin: Tid, label: &str, show: bool) -> (Cost, Tid) {
     let (c0, r0) = (lp.peers[0].engine.census().unwrap(), lp.peers[1].engine.census().unwrap());
@@ -103,31 +103,31 @@ fn make(lp: &mut LocalPeer, admin: Tid, label: &str, show: bool) -> (Cost, Tid) 
     (cost, t)
 }
 
-// What a plain and a keyed thing cost (notes/thing-cost.md). Each kind is made once first, so
+// What a dependent and an independent thing cost (notes/thing-cost.md). Each kind is made once first, so
 // neither pays a first write's rows; the second is measured. Bounds are the measured figures
 // rounded up: a change that grows a thing's cost fails here and says by how much.
 #[test]
 fn what_a_thing_costs() {
     let (mut lp, _) = account_two_nodes();
     let (p, d) = lp.peers[0].engine.account().unwrap().unwrap();
-    make(&mut lp, d, "plain warm-up", false);
-    make(&mut lp, p, "keyed warm-up", false);
+    make(&mut lp, d, "dependent warm-up", false);
+    make(&mut lp, p, "independent warm-up", false);
     let show = std::env::var_os("THING_COST").is_some();
-    let (plain, pt) = make(&mut lp, d, "plain (under the account root)", show);
-    let (keyed, kt) = make(&mut lp, p, "keyed (under the account)", show);
-    eprintln!("plain: {plain:?}\nkeyed: {keyed:?}");
-    // spec/permissions.md §3: made under the account root it stays plain; under the account it
-    // has secrets of its own and its sync ID from its creating transaction
+    let (dependent, pt) = make(&mut lp, d, "dependent (minted with the account root)", show);
+    let (independent, kt) = make(&mut lp, p, "independent (minted with the account)", show);
+    eprintln!("dependent: {dependent:?}\nindependent: {independent:?}");
+    // spec/permissions.md §3: minted with the account root as admin it stays dependent; with the
+    // account it is independent and has its sync ID from its creating transaction
     let e = &mut lp.peers[0].engine;
     assert!(e.sync_id_of(&pt).unwrap().is_none() && e.sync_id_of(&kt).unwrap().is_some());
-    assert_eq!((plain.commits, keyed.commits), (1, 2), "its rotation carrying its record, then what the plain one writes");
-    assert!(plain.maker_rows < 1_700 && plain.reader_rows < 1_700 && plain.download < 800, "{plain:?}");
-    assert!(keyed.maker_rows < 15_000 && keyed.reader_rows < 15_300 && keyed.download < 9_500, "{keyed:?}");
-    assert_eq!(keyed.maker_ops.get("kem: keygen"), Some(&4), "a KEM key per role");
-    assert!(!keyed.reader_ops.keys().any(|k| k.starts_with("kem")), "the account's node opens symmetric boxes");
+    assert_eq!((dependent.commits, independent.commits), (1, 2), "its rotation carrying its record, then what the dependent one writes");
+    assert!(dependent.maker_rows < 1_700 && dependent.reader_rows < 1_700 && dependent.download < 800, "{dependent:?}");
+    assert!(independent.maker_rows < 15_000 && independent.reader_rows < 15_300 && independent.download < 9_500, "{independent:?}");
+    assert_eq!(independent.maker_ops.get("kem: keygen"), Some(&4), "a KEM key per role");
+    assert!(!independent.reader_ops.keys().any(|k| k.starts_with("kem")), "the account's node opens symmetric boxes");
 }
 
-// What a second account reading a keyed thing costs (notes/thing-cost.md): peer 0 grants peer
+// What a second account reading an independent thing costs (notes/thing-cost.md): peer 0 grants peer
 // 1's account read on it; the grant's commits, what peer 1 stores and downloads, KEM operations.
 #[test]
 fn what_a_reader_costs() {

@@ -39,7 +39,7 @@ fn role_duties_judged(n: usize) -> (u64, u64, u64) {
             let mut m = osis_engine::Mutation::new();
             let t = e.new_thing(&mut m, a);
             e.commit(m).unwrap();
-            e.give_own_secrets(&t).unwrap();
+            e.make_independent(&t).unwrap();
         });
     }
     w.run();

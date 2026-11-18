@@ -135,7 +135,7 @@ fn account_two_nodes_built() -> (LocalPeer, Tid) {
     (lp, p.root)
 }
 
-// spec/permissions.md §1, spec/crypto.md §3: an account root D has secrets of its own and a
+// spec/permissions.md §1, spec/crypto.md §3: an account root D is independent and has a
 // sync ID; pairing grants a node on D and the node opens D's secrets.
 #[test]
 fn account_and_pairing_spec_perm_1() {
@@ -256,7 +256,7 @@ fn a_section_of_a_thing_not_held_leaves_nothing_on_disk_spec_sync_judgement_1() 
     lp.peers[1].engine.create_account().unwrap();
     spread(&mut lp);
     let d = lp.peers[1].engine.account_root().unwrap();
-    // a thing under `admin` held from `from`, its value `v`, beside `also` written "x2"
+    // a thing minted with admin `admin` held from `from`, its value `v`, beside `also` written "x2"
     let make = |lp: &mut LocalPeer, admin: Tid, from: Tid, v: &str, also: Option<Tid>| {
         let e = &mut lp.peers[1].engine;
         let mut m = Mutation::new();
@@ -1340,13 +1340,13 @@ fn inside_member_departure_leaves_holder_out_spec_perm_3() {
     assert!(lp.peers[1].engine.epochs(&c).is_none_or(|e| e.read.secret(&top).is_none()), "o0 does not");
 }
 
-// spec/permissions.md §3, spec/crypto.md §4 (orphaned): a doc whose mint admin is a plain thing T
+// spec/permissions.md §3, spec/crypto.md §4 (orphaned): a doc whose mint admin is a dependent thing T
 // in team H gets secrets of its own on its first grant; T gets its own first, so the rotation
 // boxes T and H's writer reads and writes the doc. Left out (T has no keyset), the doc's write
 // epoch was orphaned at that writer, whose rotation was orphaned at the admin: they rotated it
 // back and forth for good.
 #[test]
-fn plain_mint_admin_gets_secrets_before_its_thing_spec_perm_3() {
+fn dependent_mint_admin_gets_secrets_before_its_thing_spec_perm_3() {
     let (mut lp, ps) = people(3);
     let h = thing_of(&mut lp, 0, ps[0]);
     lp.peers[0].engine.grant(&h, &ps[1], &edge_of(Role::Write)).unwrap();
@@ -1356,7 +1356,7 @@ fn plain_mint_admin_gets_secrets_before_its_thing_spec_perm_3() {
     lp.peers[0].engine.grant(&doc, &ps[2], &edge_of(Role::Read)).unwrap();
     spread(&mut lp);
     for i in 0..3 {
-        assert!(lp.peers[i].engine.get(&t, &ak("keys.0")).unwrap().is_some(), "peer {i}: T has secrets of its own");
+        assert!(lp.peers[i].engine.get(&t, &ak("keys.0")).unwrap().is_some(), "peer {i}: T is independent");
     }
     for i in 0..2 {
         let (done, _) = lp.peers[i].engine.ensure_rotated(&doc).unwrap();
@@ -1393,7 +1393,7 @@ fn removal_refreshes_deposit_seed_spec_crypto_3() {
     let pp = lp.peers[1].engine.me();
     let t = thing_of(&mut lp, 2, pa);
     lp.peers[2].engine.grant(&t, &pp, &edge_of(Role::Read)).unwrap();
-    lp.peers[2].engine.give_own_secrets(&t).unwrap();
+    lp.peers[2].engine.make_independent(&t).unwrap();
     let card = lp.peers[2].engine.sync_id_of(&t).unwrap().unwrap();
     spread(&mut lp);
     assert_ne!(pp, p);
@@ -2112,7 +2112,7 @@ fn vandal_with_second_path_recovered_spec_perm_3() {
     let (mut lp, ps) = people(3);
     let d = thing_of(&mut lp, 0, ps[0]);
     let t = thing_of(&mut lp, 1, ps[1]);
-    lp.peers[1].engine.give_own_secrets(&t).unwrap();
+    lp.peers[1].engine.make_independent(&t).unwrap();
     spread(&mut lp);
     for p in [ps[1], ps[2], t] {
         lp.peers[0].engine.grant(&d, &p, &edge_of(Role::Write)).unwrap();
@@ -2138,7 +2138,7 @@ fn vandal_with_second_path_recovered_spec_perm_3() {
 fn rekey_reseals_holder_actor_spec_perm_3() {
     let (mut lp, ps) = people(4);
     let t = thing_of(&mut lp, 3, ps[3]);
-    lp.peers[3].engine.give_own_secrets(&t).unwrap();
+    lp.peers[3].engine.make_independent(&t).unwrap();
     spread(&mut lp);
     let (d, e0, _) = locked_out(&mut lp, &ps[..3], 0);
     lp.peers[0].engine.grant(&d, &t, &edge_of(Role::Read)).unwrap();
@@ -2189,7 +2189,7 @@ fn rekey_alike_in_either_order_spec_perm_3() {
 fn lockout_bundled_with_own_rotation_recovered_spec_perm_3() {
     let (mut lp, ps) = people(3);
     let t = thing_of(&mut lp, 1, ps[1]);
-    lp.peers[1].engine.give_own_secrets(&t).unwrap();
+    lp.peers[1].engine.make_independent(&t).unwrap();
     let (d, _, _) = locked_out(&mut lp, &ps, 0);
     let rv = lp.peers[1].engine.rotate_boxing_only(&[d, t], &[Role::Read, Role::Write], &[ps[1]]).unwrap().unwrap();
     spread_sealed(&mut lp);
@@ -2322,7 +2322,7 @@ fn frontier_lists_covered_deltas_of_every_retention_spec_perm_5_1() {
 
 // spec/permissions.md §1 (mint admin), §3; spec/wire.md §3: account 0
 // creates O (a chat) with itself as mint admin: its creation commit
-// carries `created.0` alone on O, and O, made under an account, has secrets of its own from then. It grants account 1 admin, accounts 2 and 3 write. Its admins are
+// carries `created.0` alone on O, and O, minted with an account as admin, is independent from then. It grants account 1 admin, accounts 2 and 3 write. Its admins are
 // equal: account 1 removes account 0's record edge, stored nowhere. Writer 2 rotates
 // O to itself; the remaining admin recovers. O's admin grants on a thing below O through its record
 // chain.
@@ -2381,7 +2381,7 @@ fn chat_by_record_spec_perm_1() {
     assert_eq!(newest_read(&lp, 3, o), Some(e2));
     assert_eq!(lp.peers[2].engine.role_on(&o), None);
     assert_eq!(sealed_write(&mut lp, 3, o, "member"), BTreeSet::from([1]));
-    // a thing under O, which account 1 holds: O's admin grants on it
+    // a thing minted with admin O, which account 1 holds: O's admin grants on it
     lp.peers[1].engine.hold(osis_base::Strong(o)).unwrap();
     let t = thing_of(&mut lp, 1, o);
     lp.peers[1].engine.grant(&t, &ps[3], &edge_of(Role::Write)).unwrap();
@@ -2420,14 +2420,14 @@ fn record_edge_removal_any_order_spec_perm_2() {
     }
 }
 
-// spec/permissions.md §3, spec/crypto.md §3: a plain thing (here under account 0's root D)
+// spec/permissions.md §3, spec/crypto.md §3: a dependent thing (here under account 0's root D)
 // derives from its mint admin; the first grant gives it secrets of its own first (its rotation
 // before the grant, history carrying the derived epochs), and once the mint admin is removed it
 // opens nothing written since.
 #[test]
-fn first_grant_on_plain_thing_rotates_first_spec_perm_3() {
+fn first_grant_on_dependent_thing_rotates_first_spec_perm_3() {
     let (mut lp, ps) = people(3);
-    let d = lp.peers[0].engine.plain_admin();
+    let d = lp.peers[0].engine.dependents_admin();
     let (o, _) = lp.peers[0].engine.create_with_admin(&d).unwrap();
     lp.hold(o);
     let mut m = Mutation::new();
@@ -2448,14 +2448,14 @@ fn first_grant_on_plain_thing_rotates_first_spec_perm_3() {
     assert_eq!(sealed_write(&mut lp, 1, o, "after"), BTreeSet::new(), "the removed mint admin opens nothing new");
 }
 
-// spec/permissions.md §1 (last admin of a plain thing): the last admin edge of a plain thing is not removed (refused
+// spec/permissions.md §1 (last admin of a dependent thing): the last admin edge of a dependent thing is not removed (refused
 // locally); signed anyway (here by a node of its mint admin, the account root, removing it) it
-// applies, the thing stays plain, the mint admin still reads it by derivation, and nobody
+// applies, the thing stays dependent, the mint admin still reads it by derivation, and nobody
 // writes it.
 #[test]
-fn last_admin_of_plain_thing_refused_spec_perm_1() {
+fn last_admin_of_dependent_thing_refused_spec_perm_1() {
     let (mut lp, _) = people(2);
-    let n = lp.peers[0].engine.plain_admin();
+    let n = lp.peers[0].engine.dependents_admin();
     let (o, _) = lp.peers[0].engine.create_with_admin(&n).unwrap();
     lp.hold(o);
     let mut m = Mutation::new();
@@ -2472,7 +2472,7 @@ fn last_admin_of_plain_thing_refused_spec_perm_1() {
     for i in 0..2 {
         assert!(!lp.peers[i].engine.roster(&o).contains_key(&n), "peer {i}");
     }
-    assert_eq!(lp.peers[0].engine.get(&o, &ak("keys.0")).unwrap(), None, "still plain");
+    assert_eq!(lp.peers[0].engine.get(&o, &ak("keys.0")).unwrap(), None, "still dependent");
     assert_eq!(lp.peers[0].engine.get(&o, &ak("t:reg.0")).unwrap(), Some(s("v")), "read by derivation");
     assert_eq!(lp.peers[0].engine.role_on(&o), None);
     let mut m = Mutation::new();

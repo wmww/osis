@@ -177,7 +177,7 @@ pub(crate) enum Step {
     LinkedDemote { by: usize, t: usize, holder: usize },
     // record-only things and the flows (`random_step` never draws these):
     /// `by` makes a thing by its record alone, whose mint admin is itself, or thing `under` (needing
-    /// write on it), with a write on it: a plain thing deriving from its mint admin, whose
+    /// write on it), with a write on it: a dependent thing deriving from its mint admin, whose
     /// record edge no entry holds.
     RecordOnly { by: usize, under: Option<usize> },
     /// `by` grants `holder` (a peer, or 3: G) `role` on `t` through `Engine::grant`: a plain
@@ -757,13 +757,13 @@ fn setup(seed: u64, addenda: bool) -> (LocalPeer, (Vec<Tid>, Tid)) {
 
 /// Plays `steps` on three peers: 0 is G's mint admin and gives 1 write and 2 admin on it. The
 /// peers write no addenda (`play_with` for histories carrying them).
-/// A new plain thing's record at peer `by`, held by the account root's strong in a commit of its
+/// A new dependent thing's record at peer `by`, held by the account root's strong in a commit of its
 /// own (spec/sync-set.md §2 Making a thing), so the commit making it is on it alone. That commit
 /// is on the peer's account root, which no other account syncs: marked `seen`, never played.
 fn held_record(lp: &mut LocalPeer, by: usize, seen: &mut BTreeSet<CommitId>) -> osis_base::CreationRecord {
     let e = &mut lp.peers[by].engine;
     let before: BTreeSet<CommitId> = e.commit_ids().into_iter().collect();
-    let rec = e.held_record(e.plain_admin()).unwrap();
+    let rec = e.held_record(e.dependents_admin()).unwrap();
     seen.extend(e.commit_ids().into_iter().filter(|c| !before.contains(c)));
     rec
 }
@@ -4565,7 +4565,7 @@ fn a_creation_pruned_under_a_later_delete_is_replaced_spec_commits_5() {
 
 
 // spec/sync-set.md §3 Release, spec/commits.md §5 (What a held thing needs: what a node holds
-// outside its node closure is a function of what it holds): admin 2 makes a thing under G,
+// outside its node closure is a function of what it holds): admin 2 mints a thing with admin G,
 // holding it from G's `holds.0` in the same commit; admin 0 removes 2 with no frontier, so that
 // write is invalid. A node given the creation first holds the thing for a while, one given the
 // removal first never does: once the pass ends, each has released what left its node closure,

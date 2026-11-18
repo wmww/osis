@@ -670,7 +670,7 @@ fn aspects_agrees_with_reads_after_a_purge() {
 fn the_empty_path_is_the_whole_value() {
     let db = db(0);
     let (k, l) = (ak("t:x.0"), ak("t:s.0"));
-    // plain in the account root's sync unit: entering a thing with own keys writes the account's
+    // dependent, in the account root's sync unit: entering an independent thing writes the account's
     // ticket for it beside the next write
     let t = db.commit_with(|w| {
         let t = w.create_held_with_admin(db.account_root())?;

@@ -248,8 +248,8 @@ pub(crate) fn rebuild_keysets(tx: &mut Tx<'_>, actors: &std::collections::BTreeS
 }
 
 /// Notes the `keys.0` parts of role commit `h` whose bodies write a keyset, whatever their
-/// validity (`records::OWN_KEYS`: a fact of the body, kept once it drops or goes missing), then
-/// re-derives `own_keys` of their things.
+/// validity (`records::OWN_SECRETS`: a fact of the body, kept once it drops or goes missing), then
+/// re-derives `independent` of their things.
 fn note_keyset_parts(tx: &mut Tx<'_>, h: &Header, id: &CommitId, parts: &super::PartsRead<'_>) -> Result<()> {
     if !h.kind.is_role() {
         return Ok(());
@@ -263,19 +263,19 @@ fn note_keyset_parts(tx: &mut Tx<'_>, h: &Header, id: &CommitId, parts: &super::
         }
         if tx.core.ix.keyset_parts.insert(a.tid, id) {
             tx.core.touch();
-            tx.txn.put_local(&crate::engine::records::own_keys_key(&a.tid, &id), &[], Shred::No)?;
+            tx.txn.put_local(&crate::engine::records::own_secrets_key(&a.tid, &id), &[], Shred::No)?;
         }
         things.insert(a.tid);
     }
-    refresh_own_keys(tx, &things, true)
+    refresh_independent(tx, &things, true)
 }
 
-/// Re-derives whether each of `things` has secrets of its own (spec/crypto.md §3): a held
+/// Re-derives whether each of `things` is independent (spec/crypto.md §3): a held
 /// commit's valid `keys.0` part wrote a keyset in its body (held, or dropped or missing since).
 /// Called once a part is noted, after validity flips and at load (`!regain`). A thing that loses
-/// it (that commit turned invalid) derives from its base actor again; what it learned stays for
+/// it (that commit turned invalid) derives from its mint admin again; what it learned stays for
 /// reading (`Core::epochs`). One that regains it starts its epochs again from those.
-pub(crate) fn refresh_own_keys(tx: &mut Tx<'_>, things: &std::collections::BTreeSet<Tid>, regain: bool) -> Result<()> {
+pub(crate) fn refresh_independent(tx: &mut Tx<'_>, things: &std::collections::BTreeSet<Tid>, regain: bool) -> Result<()> {
     for t in things {
         let ids: Vec<CommitId> = tx.core.ix.keyset_parts.get(t).into_iter().flatten().copied().collect();
         let mut own = false;
@@ -284,12 +284,12 @@ pub(crate) fn refresh_own_keys(tx: &mut Tx<'_>, things: &std::collections::BTree
                 // forgotten
                 tx.core.touch();
                 tx.core.ix.keyset_parts.remove(t, &id);
-                tx.txn.remove_local(&crate::engine::records::own_keys_key(t, &id), Shred::No)?;
+                tx.txn.remove_local(&crate::engine::records::own_secrets_key(t, &id), Shred::No)?;
                 continue;
             };
             own |= m.view.aspect(t, "keys.0").is_some_and(|ai| m.valid_at(ai));
         }
-        if own == tx.core.ix.own_keys.contains(t) {
+        if own == tx.core.ix.independent.contains(t) {
             continue;
         }
         tx.core.touch();
@@ -297,7 +297,7 @@ pub(crate) fn refresh_own_keys(tx: &mut Tx<'_>, things: &std::collections::BTree
             // epochs kept from a rotation found invalid earlier: start again from the derived
             // ones (`Core::epochs`), so a stale derived epoch stays current nowhere; only those
             // the kept epochs know (its history listed them), never one derived from a base epoch
-            // its rotations never saw (a later rotation of the base actor: no own epoch
+            // its rotations never saw (a later rotation of the mint admin: no own epoch
             // supersedes it, so it would stay current, unboxed)
             let derived = |e: &osis_keys::ActorEpochs| {
                 tx.core.base_derived(t).is_some_and(|d| ROLES.iter().any(|r| d.role(*r).epochs().any(|(ep, i)| i.established.is_some() && i.secret.is_some() && e.role(*r).get(ep).is_some())))
@@ -315,14 +315,14 @@ pub(crate) fn refresh_own_keys(tx: &mut Tx<'_>, things: &std::collections::BTree
                 }
                 out
             });
-            tx.core.ix.own_keys.insert(*t);
+            tx.core.ix.independent.insert(*t);
             if let Some(b) = base {
                 tx.core.ix.secrets.insert(*t, b.into_record());
                 // what its history boxes say is the state's (the derived view's is its base's)
                 super::atomic::observe_state(tx, t, &crate::flows::ak("secrets.0")?)?;
             }
         } else {
-            tx.core.ix.own_keys.remove(t);
+            tx.core.ix.independent.remove(t);
         }
     }
     Ok(())
@@ -858,7 +858,7 @@ mod tests {
     fn refused_boxes_read_when_a_grant_applies_spec_crypto_4() {
         let mut lp = LocalPeer::fresh(2, WallMs(1_700_000_000_000));
         lp.sync_all().unwrap();
-        let me = lp.peers[0].engine.plain_admin();
+        let me = lp.peers[0].engine.dependents_admin();
         let b = lp.peers[1].engine.me();
         let thing = |lp: &mut LocalPeer| {
             let mut m = Mutation::new();
@@ -893,7 +893,7 @@ mod tests {
     }
 
     // spec/crypto.md §4 (Reading-only secrets): pending boxes are read for reading only, apply::waits: what a pending
-    // commit's boxes teach depends only on what its wait follows. Here the grant on `a` (first
+    // commit's boxes teach depends only on what its wait follows. Here the grant on `a` (mint
     // admin `u`, whose epochs the grantee holds) waits for `a`'s record; `u`'s establishment
     // changing (computed from applied commits and roles) wakes no wait, so reading the boxes again
     // must give nothing new: no derived establishment from `u`.
@@ -1333,14 +1333,14 @@ mod tests {
         }
     }
 
-    // spec/crypto.md §3 (secrets of its own): a thing has secrets of its own while a valid `keys.0` part wrote a
+    // spec/crypto.md §3 (secrets of its own): a thing is independent while a valid `keys.0` part wrote a
     // keyset, §4 (Reading-only secrets): secrets of an invalid commit are kept for reading only: admin A of G grants
-    // X on G's plain thing T (T's first `keys.0`, a rotation from derived epochs) after G's first
+    // X on G's dependent thing T (T's first `keys.0`, a rotation from derived epochs) after G's mint
     // admin removed A. Once A's grant is invalid, every node derives T from G again (encrypting under
     // G's epoch rotated past A, not A's), delete base G, open = rebuild; peer 3 had A's commit
     // applied valid first (Y: a reader of G). The mint admin's own grant then gives T secrets of its own everywhere.
     #[test]
-    fn keyset_of_invalid_rotation_leaves_thing_plain_spec_crypto_3() {
+    fn keyset_of_invalid_rotation_leaves_thing_dependent_spec_crypto_3() {
         let mut lp = LocalPeer::fresh(4, WallMs(1_700_000_000_000));
         lp.sync_all().unwrap();
         let tid = |lp: &mut LocalPeer, i: usize| lp.peers[i].engine.me();
@@ -1357,9 +1357,9 @@ mod tests {
         lp.peers[1].clock.advance(120_000);
         lp.peers[1].engine.grant(&t, &x, &edge(Role::Read)).unwrap();
         let rot = lp.peers[1].engine.core.epochs(&t).unwrap().role(Role::Read).newest().unwrap();
-        assert!(lp.peers[1].engine.core.ix.own_keys.contains(&t));
+        assert!(lp.peers[1].engine.core.ix.independent.contains(&t));
         lp.sync(1, 3).unwrap();
-        assert!(lp.peers[3].engine.core.ix.own_keys.contains(&t), "applied valid at peer 3");
+        assert!(lp.peers[3].engine.core.ix.independent.contains(&t), "applied valid at peer 3");
         lp.sync_all().unwrap();
         let derived = |lp: &LocalPeer, i: usize| {
             let core = &lp.peers[i].engine.core;
@@ -1367,8 +1367,8 @@ mod tests {
         };
         for i in 0..4 {
             let core = &lp.peers[i].engine.core;
-            assert!(!core.ix.own_keys.contains(&t), "peer {i}: plain again");
-            assert!(!core.has_own_secrets(&t), "peer {i}");
+            assert!(!core.ix.independent.contains(&t), "peer {i}: dependent again");
+            assert!(!core.is_independent(&t), "peer {i}");
             let held = core.epochs(&t).unwrap_or_default();
             // X holds nothing of G
             if i != 2 {
@@ -1388,7 +1388,7 @@ mod tests {
         assert_ne!(own, rot);
         for i in 0..4 {
             let core = &lp.peers[i].engine.core;
-            assert!(core.ix.own_keys.contains(&t), "peer {i}: own keys");
+            assert!(core.ix.independent.contains(&t), "peer {i}: independent");
             if i != 1 {
                 assert_eq!(core.epochs(&t).unwrap().role(Role::Read).newest(), Some(own), "peer {i}");
             }
@@ -1398,7 +1398,7 @@ mod tests {
         }
     }
 
-    // spec/crypto.md §4 (Established: derived from an established epoch of the base actor):
+    // spec/crypto.md §4 (Established: derived from an established epoch of the mint admin):
     // establishment is a function of the held commits, so reopen equals rebuild. B opens T's
     // epoch derived from G's e1 (T's first rotation's history box) while e1 is not established
     // (its rotation names C's self-removal, not held); once C's commit arrives, e1 and the

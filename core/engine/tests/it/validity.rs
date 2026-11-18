@@ -568,7 +568,7 @@ pub(crate) fn forge_by(by: &osis_engine::Engine, rec: osis_base::CreationRecord,
 fn void_grant_by_leaver_keeps_no_secrets_spec_perm_3() {
     let mut lp = net(3, 0);
     lp.sync_all().unwrap();
-    // made under the account: secrets of its own from its creation
+    // minted with the account as admin: secrets of its own from its creation
     let d = {
         let me = lp.peers[0].engine.me();
         let mut m = Mutation::new();
@@ -1120,7 +1120,7 @@ fn write_reg(lp: &mut LocalPeer, i: usize, t: Tid, v: &str) -> osis_engine::Resu
     lp.peers[i].commit(m)
 }
 
-// spec/permissions.md §1 (a path climbs role grants, record edges included), §4 (chain certificates): n0 is first
+// spec/permissions.md §1 (a path climbs role grants, record edges included), §4 (chain certificates): n0 is mint
 // admin of A, A writes B, B admin of C (n1 mint admin of B and C). n0's write on C applies at n0 and a receiver; a
 // node with no path may not write C. A fresh reader of C given n0's certificates for C but A's
 // raw record (the record-link step) holds nothing of the write until that record arrives.

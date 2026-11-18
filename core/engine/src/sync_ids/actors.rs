@@ -1,6 +1,6 @@
-//! Actors, entitlement and closure (spec/sync-ids.md §2, spec/sync-judgement.md §1, spec/sync-set.md §2): a thing's reader actor (the thing if it
-//! has secrets of its own, else its mint admin), who may read it, and the sync IDs of a thing with
-//! own keys (`sync.0`).
+//! Actors, entitlement and closure (spec/sync-ids.md §2, spec/sync-judgement.md §1, spec/sync-set.md §2): a thing's independent (the thing if it
+//! is independent, else its mint admin's), who may read it, and the sync IDs of an independent
+//! thing (`sync.0`).
 
 use osis_base::memo::{Memo, Stamped};
 use crate::engine::{Core, Engine};
@@ -87,7 +87,7 @@ impl Core {
         !self.holds_own_sync(g) || owns(self.epochs(g).as_deref(), id, steps)
     }
 
-    /// The reader actor of `t`, whose read role reads its deltas: `t` with secrets of its own,
+    /// The independent of `t`, whose read role reads its deltas: `t` if independent,
     /// else the nearest record-chain actor that has them (a key actor is its own).
     pub fn reader_of(&self, t: &Tid) -> Tid {
         // the actor whose secrets `t`'s derive from, up the record chain
@@ -99,7 +99,7 @@ impl Core {
     pub fn secret_actor(&self, t: &Tid) -> Option<Tid> {
         for step in self.record_chain(t) {
             let cur = step.thing()?;
-            if self.ix.own_keys.contains(&cur) || Some(cur) == self.me() {
+            if self.ix.independent.contains(&cur) || Some(cur) == self.me() {
                 return Some(cur);
             }
             match step {

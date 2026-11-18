@@ -217,7 +217,7 @@ impl Engine {
     }
 
     /// The epochs this node holds for actor `tid` (its own, opened ones with their
-    /// establishment, or derived from its base actor's).
+    /// establishment, or derived from its mint admin's).
     pub fn epochs(&self, tid: &Tid) -> Option<Arc<osis_keys::ActorEpochs>> {
         self.core.epochs(tid).or_else(|| self.core.ix.secrets.get(tid).map(|x| Arc::new(x.clone())))
     }

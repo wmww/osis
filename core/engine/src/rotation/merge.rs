@@ -1,8 +1,8 @@
-//! Derived writes merged (spec/crypto.md §4 Current): a node that seals a section of a plain
-//! thing under a derived read epoch keeps that epoch, and the derived epoch of each plain thing up
-//! the derivation chain it derives through (`records::DERIVED_WRITTEN`). Once such a thing has
-//! secrets of its own here, a kept epoch is one of its current epochs (`Core::own_epochs` adopts
-//! it, base actor's secret held) until a rotation's history carries it: its rotation is due
+//! Derived writes merged (spec/crypto.md §4 Current): a node that seals a section of a dependent
+//! thing under a derived read epoch keeps that epoch, and the derived epoch of each dependent thing up
+//! the derivation chain it derives through (`records::DERIVED_WRITTEN`). Once such a thing is
+//! independent here, a kept epoch is one of its current epochs (`Core::own_epochs` adopts
+//! it, mint admin's secret held) until a rotation's history carries it: its rotation is due
 //! (`due`), and that rotation's history box carries the derived secret to the thing's holders. So
 //! a write made by a node that had not yet heard of the thing's own secrets is read by them.
 
@@ -16,7 +16,7 @@ use std::collections::BTreeSet;
 
 impl Core {
     /// Whether this node sealed a section under `t`'s derived read epoch `e` (or one deriving
-    /// through it) while `t` was plain here, and no rotation of `t` has carried `e` since.
+    /// through it) while `t` was dependent here, and no rotation of `t` has carried `e` since.
     pub(crate) fn wrote_derived(&self, t: &Tid, e: &Epoch) -> bool {
         self.ix.derived_written.get(t).is_some_and(|s| s.contains(e))
     }
@@ -24,7 +24,7 @@ impl Core {
 
 impl Engine {
     /// Notes that a section of `t` was sealed under its read epoch `e` (`Engine::seal`): where `t`
-    /// is plain here, the derived epochs `e` derives through are written under.
+    /// is dependent here, the derived epochs `e` derives through are written under.
     pub(crate) fn note_sealed(&mut self, t: &Tid, e: &Epoch) -> Result<()> {
         if self.core.reader_of(t) == *t || self.core.wrote_derived(t, e) {
             return Ok(());
@@ -35,7 +35,7 @@ impl Engine {
         }
         self.run(|tx| {
             for (x, de) in &through {
-                // no view changes: a plain thing's epochs are its derived ones
+                // no view changes: a dependent thing's epochs are its derived ones
                 if !tx.core.wrote_derived(x, de) {
                     tx.core.ix.derived_written.upsert(*x, BTreeSet::new, |s| {
                         s.insert(*de);
@@ -48,8 +48,8 @@ impl Engine {
     }
 }
 
-/// The derived read epochs `e` of plain thing `t` derives through: `t`'s, then that of each plain
-/// thing up its derivation chain, from the base actor epoch whose derivation `e` is (none found:
+/// The derived read epochs `e` of dependent thing `t` derives through: `t`'s, then that of each dependent
+/// thing up its derivation chain, from the mint admin epoch whose derivation `e` is (none found:
 /// empty).
 fn derived_through(core: &Core, t: &Tid, e: &Epoch) -> Vec<(Tid, Epoch)> {
     let Some((base, chain)) = core.derivation(t) else { return Vec::new() };
@@ -86,10 +86,10 @@ pub(crate) fn due(tx: &mut Tx<'_>, a: &Tid) -> Result<bool> {
 /// Lets go of the derived read epochs of `a` this node wrote under that a rotation's history
 /// carries here (established, superseded); its view is kept (that history box keys them). Run
 /// as this node records its own rotation of `a` (`rotation::record`), so one it made needs no
-/// later write. Returns `a`'s view, `None` while `a` is plain here or nothing is kept.
+/// later write. Returns `a`'s view, `None` while `a` is dependent here or nothing is kept.
 pub(crate) fn settle(tx: &mut Tx<'_>, a: &Tid) -> Result<Option<osis_keys::ActorEpochs>> {
     let Some(written) = tx.core.ix.derived_written.get(a).cloned() else { return Ok(None) };
-    // plain here: its epochs are still the derived ones
+    // dependent here: its epochs are still the derived ones
     let Some(view) = tx.core.own_epochs(a) else { return Ok(None) };
     let carried: Vec<Epoch> = written.iter().filter(|e| view.read.is_established(e) && !view.read.is_current(e)).copied().collect();
     if !carried.is_empty() {

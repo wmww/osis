@@ -70,7 +70,7 @@ fn lossy() -> NetFaults {
 }
 
 /// Two nodes of one account: an account actor with node 0 as mint admin and node 1 as admin
-/// (spec/permissions.md §1), a data thing under the account; both write it concurrently under a
+/// (spec/permissions.md §1), a data thing minted with the account as admin; both write it concurrently under a
 /// lossy, reordering, duplicating network; they converge.
 pub fn two_nodes(s: Seeds) -> Res<Report> {
     let seed = s.seed;

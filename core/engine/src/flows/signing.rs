@@ -51,7 +51,7 @@ impl AccountRotation {
 /// A rotation's thing lists by leaf: index, sibling hashes, list.
 pub(crate) type Lists = Vec<(u64, Vec<[u8; 32]>, ThingList)>;
 
-/// A thing's listed commits: role-class and purge-request ones, then plain ones by receipt.
+/// A thing's listed commits: role-class and purge-request ones, then dependent ones by receipt.
 type PerThing = (BTreeSet<CommitId>, Vec<(osis_base::WallMs, CommitId)>);
 
 /// The membership changes of D a rotation carries (spec/permissions.md §1, §5.4): the devices it
@@ -248,7 +248,7 @@ fn own_covers(tx: &mut Tx<'_>, p: &Tid, closes: &[CommitId]) -> Result<Vec<Commi
 /// the epochs it closes (`closes`) that no word held names, by the cutoff, and `also`; the list
 /// tree's root and each list with its path.
 fn thing_lists(tx: &mut Tx<'_>, p: &Tid, v: &super::account::AccountView, closes: &[CommitId], also: &[CommitId]) -> Result<([u8; 32], Lists)> {
-    // per thing: role-class and purge-request commits, then plain ones by receipt
+    // per thing: role-class and purge-request commits, then dependent ones by receipt
     let mut per: BTreeMap<Tid, PerThing> = BTreeMap::new();
     let mut listed = nameable(tx, p, v, closes, true)?;
     for c in also {

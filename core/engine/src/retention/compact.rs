@@ -1219,7 +1219,7 @@ mod tests {
         let mut lp = LocalPeer::fresh(3, osis_base::WallMs(1_700_000_000_000));
         lp.sync_all().unwrap();
         let [b, c] = [1, 2].map(|i| lp.peers[i].engine.me());
-        let a = lp.peers[0].engine.plain_admin();
+        let a = lp.peers[0].engine.dependents_admin();
         let edge = |role| ct::Edge { role, until: None, invite: None, retain: false, floor: None };
         // bob writes `t` by write on its mint admin `k`, whose secrets `t` keeps, holding both
         let mut m = Mutation::new();

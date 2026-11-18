@@ -221,12 +221,12 @@ fn mixed() -> CommitBlob {
     build(b, &mut MemoryBlobs::default()).unwrap().commit
 }
 
-// spec/wire.md §4, spec/sync-judgement.md §1: one blob per commit, one section per reader actor; a
+// spec/wire.md §4, spec/sync-judgement.md §1: one blob per commit, one section per reader; a
 // reader opens its section and nothing else (invariant: a non-reader learns only the `ai`
 // list and the size), the opened parts verify alone, a sealed section is copied verbatim into
 // a fresh encryption and still opens there; the prefix groups are the distinct key sets.
 #[test]
-fn sections_per_reader_actor() {
+fn sections_per_reader() {
     let c = mixed();
     let reader = |ai: usize| u8::from(ai.is_multiple_of(3));
     let secret = |r: &u8| Secret32::from_bytes([*r + 1; 32]);

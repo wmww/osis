@@ -54,7 +54,7 @@ use osis_store::Shred;
 pub type Rows = Vec<(Vec<u8>, Vec<u8>)>;
 
 /// A section's opening, per part: its epoch with the thing it is an epoch of (the part's,
-/// derived for a plain thing; a copy's, the sync ID's) and the hash of the delta it carried,
+/// derived for a dependent thing; a copy's, the sync ID's) and the hash of the delta it carried,
 /// checked against the header when `genuine`. An epoch names no thing (a rotation commit's
 /// keyset may name another thing's epoch), so the thing is part of the opening.
 fn key(c: &CommitId, ai: u32, t: &Tid, e: &Epoch) -> Vec<u8> {
@@ -131,7 +131,7 @@ fn value(genuine: bool, delta: &[u8]) -> Vec<u8> {
 
 impl Core {
     /// The floor of read epoch `ep` of thing `t` as this node reads it (spec/crypto.md §4,
-    /// Floors; a plain thing's, its base epoch's): 0 where unknown.
+    /// Floors; a dependent thing's, its base epoch's): 0 where unknown.
     pub(crate) fn read_floor(&self, t: &Tid, ep: &Epoch) -> u64 {
         self.epochs(t).map_or(0, |e| e.read.floor(ep))
     }
@@ -414,7 +414,7 @@ fn above_floor(tx: &Tx<'_>, t: &Tid, mut under: Vec<Opening>, floor: Option<u64>
     (!under.is_empty()).then_some(under)
 }
 
-/// A wrap under an epoch this node chooses: of thing `thing` (the sync ID's), whose reader actor
+/// A wrap under an epoch this node chooses: of thing `thing` (the sync ID's), whose independent
 /// is `actor`, at that epoch's floor `floor`.
 pub(super) struct Wrapping {
     pub thing: Tid,

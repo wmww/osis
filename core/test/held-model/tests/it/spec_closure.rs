@@ -5,9 +5,9 @@ use held_model::closure::*;
 use held_model::gen::Rng;
 use std::collections::{BTreeMap, BTreeSet};
 
-const K: Kind = Kind::Keyed;
+const K: Kind = Kind::Independent;
 fn p(k: T) -> Kind {
-    Kind::Plain(k)
+    Kind::Dependent(k)
 }
 fn worldr(kinds: &[Kind], grants: &[(T, T, Role)]) -> World {
     World { kinds: kinds.to_vec(), grants: grants.iter().map(|&(g, t, r)| ((g, t), r)).collect(), ..World::default() }
@@ -35,7 +35,7 @@ fn tickets(open: &[T], sync_only: &[T]) -> BTreeMap<T, Ticket> {
     open.iter().map(|&t| (t, Ticket::Open)).chain(sync_only.iter().map(|&t| (t, Ticket::SyncOnly))).collect()
 }
 
-/// Every world of keyed 0, 1 and plain 2, 3, 4 (keys from 0 or 1), each of 0 and 1 holding no
+/// Every world of independent 0, 1 and dependent 2, 3, 4 (keys from 0 or 1), each of 0 and 1 holding no
 /// role, sync or read on the other, and any strongs among `cand`.
 fn p1_worlds(cand: &[(T, T)]) -> Vec<(World, Edges)> {
     let roles = [None, Some(Role::Sync), Some(Role::Read)];
@@ -81,11 +81,11 @@ fn p1_units_agree_exhaustive() {
 }
 
 /// P1 needs the walk to read T's keys, not the reader's. By the reader's keys, a reader of T and
-/// U carries U's plain things under T, a reader of T alone does not, and a shared store under T
+/// U carries U's dependent things under T, a reader of T alone does not, and a shared store under T
 /// flips each round for good. By T's keys it settles at once.
 #[test]
 fn p1_by_readers_keys_undoes_forever() {
-    // T=0, U=1; B=2 and C=3 plain from U; T -> B -> C.
+    // T=0, U=1; B=2 and C=3 dependent on U; T -> B -> C.
     let w = world(&[K, K, p(1), p(1)], &[]);
     let e = es(&[(0, 2), (2, 3)]);
     let by = |reads: &[T]| unit_with(&w, 0, &w.ring(&set(reads)), &e);
@@ -109,7 +109,7 @@ fn p1_by_readers_keys_undoes_forever() {
     assert_eq!(flips(&|_| unit(&w, 0, &e)), 1, "by T's keys: one change, then settled");
 }
 
-/// A random world of keyed 0, 1 and plain 2..6, and a commit history on it: adds, removes naming
+/// A random world of independent 0, 1 and dependent 2..6, and a commit history on it: adds, removes naming
 /// an earlier add on the same source, and role commits of 0 and 1 on each other.
 fn random_history(r: &mut Rng, len: usize) -> (World, Vec<Commit>) {
     let kinds: Vec<Kind> = [K, K].into_iter().chain((2..6).map(|_| p(r.below(2) as T))).collect();
@@ -207,7 +207,7 @@ fn p2_carrying_settles_any_order() {
 /// node or store holding its data.
 #[test]
 fn p2_per_holder_delete_keeps_concurrent_readd() {
-    // T=0; A=1, P=2 plain from T.
+    // T=0; A=1, P=2 dependent on T.
     let w = world(&[K, p(0), p(0)], &[]);
     for everyone in [false, true] {
         let mut s = Sync::new(w.clone(), vec![set(&[0]); 2], true);
@@ -232,13 +232,13 @@ fn p2_per_holder_delete_keeps_concurrent_readd() {
     }
 }
 
-/// P2/(d): a plain thing in two sync units gets each edit only under the sync IDs its writer syncs. A
+/// P2/(d): a dependent thing in two sync units gets each edit only under the sync IDs its writer syncs. A
 /// (keys from T) is in T's sync unit and Z's (Z granted read on T); a node syncing only Z writes
 /// A -> B. A node syncing only T gets it exactly where a node syncing both relays it: by
 /// exchanging with both, or through the two stores alone.
 #[test]
 fn p2_two_units_reach_only_through_a_bridge() {
-    // T=0, Z=1 keyed; A=2, B=3 plain from T.
+    // T=0, Z=1 independent; A=2, B=3 dependent on T.
     let w = world(&[K, K, p(0), p(0)], &[(1, 0)]);
     for bridge in [None, Some(false), Some(true)] {
         let mut s = Sync::new(w.clone(), vec![set(&[0]), set(&[1]), if bridge.is_some() { set(&[0, 1]) } else { set(&[]) }], true);
@@ -259,12 +259,12 @@ fn p2_two_units_reach_only_through_a_bridge() {
 }
 
 /// P2 FAILS by the plan's words, (b): a revocation never reaches a node that syncs only the
-/// grantee where the target is plain or the grant is a chain. Z granted read on T, A plain from
+/// grantee where the target is dependent or the grant is a chain. Z granted read on T, A dependent on
 /// T, Z -> A; node 0 syncs T and Z and holds Z's delete key, node 1 syncs Z only. Node 0 revokes
 /// Z's read on T: by its view A left Z's sync unit and the role commit, on T, is carried under Z by
 /// nothing, so node 1 never gets it, keeps A, logs A under Z again each time node 0 deletes it,
 /// for good. Carrying a role commit under the sync ID of the actor it names (`certify_revokes`)
-/// settles it. A keyed target granted directly settles either way: node 1 syncs Y itself while
+/// settles it. An independent target granted directly settles either way: node 1 syncs Y itself while
 /// it holds Y, and gets the revocation there.
 #[test]
 fn p2_revocation_reaches_grantee_only_node() {
@@ -273,11 +273,11 @@ fn p2_revocation_reaches_grantee_only_node() {
     // deletes under, the thing node 1 must drop)
     type Case = (Vec<Kind>, Vec<Commit>, Commit, Set, Set, T, T);
     let cases: [(&str, Case); 3] = [
-        // T=0, Z=1 keyed; A=2, B=3 plain from T; Z read on T; Z -> A -> B.
-        ("plain", (vec![K, K, p(0), p(0)], vec![role(0, 1, read), add(1, 2), add(2, 3)], role(0, 1, None), set(&[0, 1]), set(&[1]), 1, 2)),
-        // X=0, W=1, Y=2 keyed, B=3 plain from Y; X read on W, W read on Y; X -> Y -> B.
+        // T=0, Z=1 independent; A=2, B=3 dependent on T; Z read on T; Z -> A -> B.
+        ("dependent", (vec![K, K, p(0), p(0)], vec![role(0, 1, read), add(1, 2), add(2, 3)], role(0, 1, None), set(&[0, 1]), set(&[1]), 1, 2)),
+        // X=0, W=1, Y=2 independent, B=3 dependent on Y; X read on W, W read on Y; X -> Y -> B.
         ("chain", (vec![K, K, K, p(2)], vec![role(1, 0, read), role(2, 1, read), add(0, 2), add(2, 3)], role(1, 0, None), set(&[0, 1, 2]), set(&[0]), 0, 2)),
-        // X=0, Y=1 keyed, B=2 plain from Y; X read on Y; X -> Y -> B.
+        // X=0, Y=1 independent, B=2 dependent on Y; X read on Y; X -> Y -> B.
         ("direct", (vec![K, K, p(1)], vec![role(1, 0, read), add(0, 1), add(1, 2)], role(1, 0, None), set(&[0, 1]), set(&[0]), 0, 1)),
     ];
     for (name, (kinds, setup, revoke, s0, s1, del, gone)) in cases {
@@ -301,15 +301,15 @@ fn p2_revocation_reaches_grantee_only_node() {
     }
 }
 
-/// P2 and (d) by sync, random: keyed 0, 1, 2 and plain 3..7, three nodes syncing what they read,
+/// P2 and (d) by sync, random: independent 0, 1, 2 and dependent 3..7, three nodes syncing what they read,
 /// strong adds and removes, exchanges and store visits in any order, delete keys anywhere. Five
 /// modes: grants and revocations racing the rest, with role commits carried under the actor they
 /// name (`certify_revokes`) or by the plan's words, each with and without a fourth node reading
 /// every sync ID; and fixed grants with no such node.
 /// - With `certify_revokes` every run settles (no two nodes undo each other), and with the fourth
 ///   node every node agrees with every sync ID it syncs.
-/// - Fixed grants: every run settles, and every split traces to a plain thing's edit missing at a
-///   node (the plan's limit; an edit of a keyed thing reaches each holder, as each syncs it).
+/// - Fixed grants: every run settles, and every split traces to a dependent thing's edit missing at a
+///   node (the plan's limit; an edit of an independent thing reaches each holder, as each syncs it).
 /// - By the plan's words some runs never settle or end with a node keeping what a revocation
 ///   took out (counted; the minimal case is `p2_revocation_reaches_grantee_only_node`).
 #[test]
@@ -351,7 +351,7 @@ fn p2_sync_settles_random() {
                     }
                     let x = r.pick(&mine);
                     let vis: Vec<C> = s.has[n].iter().copied().filter(|&c| s.commits[c].from == x && matches!(s.commits[c].op, Op::Add(_))).collect();
-                    if !fixed && w.keyed(x) && r.chance(50) {
+                    if !fixed && w.independent(x) && r.chance(50) {
                         let g = (x + 1 + r.below(2) as T) % 3;
                         s.write(n, role(x, g, [None, Some(Role::Sync), Some(Role::Read), Some(Role::Read)][r.below(4) as usize]));
                     } else if !vis.is_empty() && r.chance(30) {
@@ -374,8 +374,8 @@ fn p2_sync_settles_random() {
         }
         if fixed && !ok {
             split += 1;
-            let plain = s.missing().iter().any(|(_, _, lacks)| lacks.iter().any(|&c| !w.keyed(s.commits[c].from)));
-            assert!(plain, "a split with no plain thing's edit missing: {}", ctx());
+            let dependent = s.missing().iter().any(|(_, _, lacks)| lacks.iter().any(|&c| !w.independent(s.commits[c].from)));
+            assert!(dependent, "a split with no dependent thing's edit missing: {}", ctx());
         }
         if !fix {
             stuck += (!settled || bridge && !ok) as usize;
@@ -385,7 +385,7 @@ fn p2_sync_settles_random() {
     eprintln!("p2: {split} of {} runs with fixed grants split; {stuck} of {} runs by the plan's words never settle or keep a revoked thing", runs / 5, 2 * runs / 5);
 }
 
-/// P3, the plan's worked case: Alice makes X and Y (both keyed), X has a strong to Y; Bob has
+/// P3, the plan's worked case: Alice makes X and Y (both independent), X has a strong to Y; Bob has
 /// tickets for both, Carol for X only. Bob holds Y; Carol does not, and holds what she would
 /// without the strong.
 #[test]
@@ -400,13 +400,13 @@ fn p3_worked_case() {
     assert_eq!(c, closure(&w, &es(&[]), &carol, Walk::Units));
 }
 
-/// (a) Nested sharing: Y with own keys, X granted read on Y, X -> Y. Y and its plain things are
+/// (a) Nested sharing: Y independent, X granted read on Y, X -> Y. Y and its dependent things are
 /// in X's sync unit: every reader of X holds and reads them with no ticket for Y, a node keeping X
 /// unread holds X alone (it reads none of X's strongs; Y's commits go under X's sync ID), and by sync a node reading X only gets Y's commits under X and syncs Y.
 /// Without the grant only a holder of Y's ticket holds Y.
 #[test]
 fn p3_nested_sharing() {
-    // X=0, Y=1 keyed; B=2 plain from Y; X -> Y -> B.
+    // X=0, Y=1 independent; B=2 dependent on Y; X -> Y -> B.
     let e = es(&[(0, 1), (1, 2)]);
     let reader = NodeView { roots: set(&[0]), tickets: tickets(&[0], &[]) };
     let store = NodeView { roots: set(&[0]), tickets: tickets(&[], &[0]) };
@@ -433,7 +433,7 @@ fn p3_nested_sharing() {
     }
 }
 
-/// (b) Removing the strong X -> Y, or Z -> A for a plain A in two sync units, takes the thing out of
+/// (b) Removing the strong X -> Y, or Z -> A for a dependent A in two sync units, takes the thing out of
 /// the sync unit for every reader alike: each drops it once the removal reaches it, the delete-key
 /// holder deletes its entries, and nothing logs them again. (Revoking the grant: see
 /// `p2_revocation_reaches_grantee_only_node`.)
@@ -470,7 +470,7 @@ fn p3_unlinking_takes_it_out_for_every_reader() {
 #[test]
 fn p3_grant_chains() {
     use Role::*;
-    // X=0, W=1, Y=2 keyed; X -> Y.
+    // X=0, W=1, Y=2 independent; X -> Y.
     let e = es(&[(0, 2)]);
     let reader = NodeView { roots: set(&[0]), tickets: tickets(&[0], &[]) };
     let cases: [(&[(T, T, Role)], bool); 7] = [
@@ -494,7 +494,7 @@ fn p3_grant_chains() {
     }
 }
 
-/// Every small node world: keyed 0, 1, plain 2, 3 (keys from 0 or 1), grants of read, strongs
+/// Every small node world: independent 0, 1, dependent 2, 3 (keys from 0 or 1), grants of read, strongs
 /// among a candidate set, node root strongs and tickets.
 fn p3_worlds() -> Vec<(World, Edges, NodeView)> {
     let cand = [(0, 1), (0, 2), (2, 3), (3, 1), (1, 2)];
@@ -519,8 +519,8 @@ fn p3_worlds() -> Vec<(World, Edges, NodeView)> {
     out
 }
 
-/// P3: a node reads a keyed thing only by keys it holds and stores one unread only inside a sync unit
-/// it holds a sync-only ticket for; a strong into or out of a keyed thing that it has neither a
+/// P3: a node reads an independent thing only by keys it holds and stores one unread only inside a sync unit
+/// it holds a sync-only ticket for; a strong into or out of an independent thing that it has neither a
 /// ticket nor keys for, and that no sync unit it stores unread may hold, never changes what it holds.
 #[test]
 fn p3_strong_never_changes_what_no_ticket_holds_exhaustive() {
@@ -545,9 +545,9 @@ fn p3_strong_never_changes_what_no_ticket_holds_exhaustive() {
 }
 
 /// P3: what a node's closure holds is carried under a sync ID it syncs (or is its local sync unit).
-/// Walked sync unit by sync unit it is; walked by "the closure walks strongs", a plain thing the sync unit's
+/// Walked sync unit by sync unit it is; walked by "the closure walks strongs", a dependent thing the sync unit's
 /// keys cannot open but the node can leads to things no sync ID it syncs carries. Minimal: X, U
-/// keyed with open tickets, both node roots; X -> L -> M, L and M plain from U; X holds no role on U.
+/// independent with open tickets, both node roots; X -> L -> M, L and M dependent on U; X holds no role on U.
 #[test]
 fn p3_held_is_carried_exhaustive() {
     let mut literal_fails = 0;
@@ -568,14 +568,14 @@ fn p3_held_is_carried_exhaustive() {
     assert_eq!(closure(&w, &e, &n, Walk::Units).held, set(&[0, 1]));
 }
 
-/// P3, the making rule: the commit must leave the new thing in the node closure. X and U keyed
-/// with open tickets: a plain thing from X under X is admitted; a plain thing from U referenced
-/// only by X is refused, though a held thing references it (X's keys do not open it); a keyed
-/// thing under X whose keys the maker holds is admitted, and other readers of X hold it only once
+/// P3, the making rule: the commit must leave the new thing in the node closure. X and U independent
+/// with open tickets: a dependent thing from X under X is admitted; a dependent thing from U referenced
+/// only by X is refused, though a held thing references it (X's keys do not open it); an independent
+/// thing minted with admin X whose keys the maker holds is admitted, and other readers of X hold it only once
 /// X is granted read on it.
 #[test]
 fn p3_making_rule() {
-    // X=0, U=1, Q=4 keyed; M=2 plain from X, N=3 plain from U.
+    // X=0, U=1, Q=4 independent; M=2 dependent on X, N=3 dependent on U.
     let w = world(&[K, K, p(0), p(1), K], &[]);
     let maker = NodeView { roots: set(&[0]), tickets: tickets(&[0, 1, 4], &[]) };
     let other = NodeView { roots: set(&[0]), tickets: tickets(&[0], &[]) };
@@ -930,7 +930,7 @@ fn p5_subtree_drop_needs_reattaching() {
 
 // spec/sync-inbox.md §5 (Nothing before the strong), spec/sync-set.md §2: an account takes a grant
 // naming it only at a strong to its thing, so its role on T1 by a chain through T0 counts only
-// once T0 is reached. Account 0, T0 = 1, T1 = 2 keyed: 0 holds sync on T0, T0 sync on T1.
+// once T0 is reached. Account 0, T0 = 1, T1 = 2 independent: 0 holds sync on T0, T0 sync on T1.
 #[test]
 fn an_accounts_role_through_an_unreached_thing_counts_nothing() {
     use Role::*;

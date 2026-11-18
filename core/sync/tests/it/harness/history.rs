@@ -76,10 +76,10 @@ pub fn value_ak() -> Ak {
     Ak::new("u:v.0").expect("aspect key")
 }
 
-/// Where a history thing was made: under its maker's account root, or under thing k (its first
-/// admin either way, whose keys a plain thing's derive from).
+/// A history thing's mint admin: its maker's account root, or thing k (whose keys a dependent
+/// thing's derive from).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum Under {
+pub enum MintAdmin {
     Root(Tid),
     Thing(usize),
 }
@@ -103,9 +103,9 @@ pub struct Made {
     /// Things made (`Step::New`, `Step::NewIn`), by index, with the node that made them.
     pub things: Vec<(Tid, usize)>,
     /// Where each thing was made.
-    pub under: Vec<Under>,
-    /// Each thing has own keys: a grant or rotation on it applied.
-    pub keyed: Vec<bool>,
+    pub minted_with: Vec<MintAdmin>,
+    /// Each thing is independent: a grant or rotation on it applied.
+    pub independent: Vec<bool>,
     /// Each value written, with the commit that wrote it (values are unique).
     pub values: BTreeMap<String, CommitId>,
     /// Commits handed to the reference, in the order seen.
@@ -317,9 +317,9 @@ pub fn step(w: &mut World, s: &Step) -> String {
         Step::Revoke(_, k, h) => demote(w, i, *k, *h, None),
         Step::Rotate(_, k) => {
             let Some(t) = thing(w, *k) else { return "skipped: no such thing".into() };
-            let r = w.write(i, |e| e.give_own_secrets_again(&t)).map(|_| String::new()).map_err(|e| e.to_string());
+            let r = w.write(i, |e| e.make_independent_again(&t)).map(|_| String::new()).map_err(|e| e.to_string());
             if r.is_ok() {
-                w.history.keyed[*k] = true;
+                w.history.independent[*k] = true;
                 w.history.event(*k, None, i);
             }
             r
@@ -366,10 +366,10 @@ fn holder_tid(w: &World, h: Holder) -> Option<Tid> {
     }
 }
 
-/// Node `i` makes a thing under its account root (`None`) or under thing `k`, held there by a
+/// Node `i` mints a thing with its account root (`None`) or thing `k` as admin, held there by a
 /// strong in the same commit, a value written.
-fn make(w: &mut World, i: usize, under: Option<usize>) -> Result<String, String> {
-    let admin = match under {
+fn make(w: &mut World, i: usize, mint_admin: Option<usize>) -> Result<String, String> {
+    let admin = match mint_admin {
         Some(k) => match thing(w, k) {
             Some(t) => Some(t),
             None => return Ok("skipped: no such thing".into()),
@@ -389,8 +389,8 @@ fn make(w: &mut World, i: usize, under: Option<usize>) -> Result<String, String>
         Ok((t, d, c)) => {
             let h = &mut w.history;
             h.things.push((t, i));
-            h.under.push(under.map_or(Under::Root(d), Under::Thing));
-            h.keyed.push(false);
+            h.minted_with.push(mint_admin.map_or(MintAdmin::Root(d), MintAdmin::Thing));
+            h.independent.push(false);
             h.values.extend(c.map(|c| (v, c)));
             Ok(format!("thing {}", h.things.len() - 1))
         }
@@ -406,10 +406,10 @@ fn give(w: &mut World, i: usize, k: usize, h: Holder, g: Gives) -> Result<String
     if r.is_ok() || stands(w, i, &t, &holder, Some(g.role())) {
         let account = matches!(h, Holder::Node(_)).then_some(holder);
         let hist = &mut w.history;
-        hist.keyed[k] = true;
+        hist.independent[k] = true;
         // a thing granted a role gets secrets of its own first (spec/permissions.md §3)
         if let Holder::Thing(j) = h {
-            hist.keyed[j] = true;
+            hist.independent[j] = true;
         }
         if let Some(a) = account {
             let best = hist.given.entry((k, a)).or_insert(g.role());
@@ -425,7 +425,7 @@ fn demote(w: &mut World, i: usize, k: usize, h: Holder, g: Option<Gives>) -> Res
     let (Some(t), Some(holder)) = (thing(w, k), holder_tid(w, h)) else { return Ok("skipped: no such thing or holder".into()) };
     let new = g.map(|g| Edge { role: g.role(), until: None, invite: None, retain: false, floor: None });
     let r = w.write(i, |e| e.demote(&t, &Demotion { holder, new, retain: None })).map(|_| String::new()).map_err(|e| e.to_string());
-    if r.is_ok() && g.is_none() && matches!(h, Holder::Thing(p) if w.history.under[k] == Under::Thing(p)) {
+    if r.is_ok() && g.is_none() && matches!(h, Holder::Thing(p) if w.history.minted_with[k] == MintAdmin::Thing(p)) {
         w.history.record_gone.insert(k);
     }
     // a change taking the holder below read rotates the read role
@@ -622,8 +622,8 @@ impl Model {
         self.accounts.iter().position(|x| x == a)
     }
 
-    /// The model from the history: kinds (a plain thing derives from its nearest mint admin
-    /// with own keys), grants (the reference's rosters, each thing's mint admin as admin, each
+    /// The model from the history: kinds (a dependent thing derives from its nearest independent
+    /// mint admin), grants (the reference's rosters, each thing's mint admin as admin, each
     /// account admin of its root), strongs (the reference's `holds.0` of every root and thing).
     pub fn of(w: &mut World, r: &mut Peer) -> Model {
         let mut accounts: Vec<Tid> = Vec::new();
@@ -642,20 +642,20 @@ impl Model {
         let index = |t: &Tid| -> Option<usize> {
             accounts.iter().position(|x| x == t).or_else(|| roots.iter().position(|x| x == t).map(|a| na + a)).or_else(|| things.iter().position(|x| x == t).map(|k| 2 * na + k))
         };
-        let mint_admin = |k: usize| match h.under[k] {
-            Under::Root(d) => index(&d).expect("a known account root"),
-            Under::Thing(p) => 2 * na + p,
+        let mint_admin = |k: usize| match h.minted_with[k] {
+            MintAdmin::Root(d) => index(&d).expect("a known account root"),
+            MintAdmin::Thing(p) => 2 * na + p,
         };
-        let mut kinds = vec![hc::Kind::Keyed; 2 * na];
+        let mut kinds = vec![hc::Kind::Independent; 2 * na];
         for k in 0..things.len() {
             let mut x = k;
             kinds.push(loop {
-                if h.keyed[x] {
-                    break if x == k { hc::Kind::Keyed } else { hc::Kind::Plain(2 * na + x) };
+                if h.independent[x] {
+                    break if x == k { hc::Kind::Independent } else { hc::Kind::Dependent(2 * na + x) };
                 }
-                match h.under[x] {
-                    Under::Root(d) => break hc::Kind::Plain(index(&d).expect("a known account root")),
-                    Under::Thing(p) => x = p,
+                match h.minted_with[x] {
+                    MintAdmin::Root(d) => break hc::Kind::Dependent(index(&d).expect("a known account root")),
+                    MintAdmin::Thing(p) => x = p,
                 }
             });
         }
@@ -878,8 +878,8 @@ fn at_check(w: &mut World, r: &mut Peer, m: &Model) -> String {
 
 /// `check`'s closure clauses, per online node of an account and history thing: it reads the
 /// thing (a value) exactly when the model reads it, then as the reference; its sync set holds a
-/// thing with own keys read or kept unread exactly as the model does; it keeps no store entry
-/// under the sync ID of a thing with own keys the model has it neither read nor keep unread.
+/// independent thing read or kept unread exactly as the model does; it keeps no store entry
+/// under the sync ID of an independent thing the model has it neither read nor keep unread.
 fn closure_clauses(w: &mut World, r: &mut Peer, m: &Model) {
     let things = w.history.things.clone();
     let ids: Vec<Option<osis_base::SyncId>> = things.iter().map(|(t, _)| r.engine.sync_id_of(t).ok().flatten()).collect();
@@ -892,8 +892,8 @@ fn closure_clauses(w: &mut World, r: &mut Peer, m: &Model) {
         for (k, (t, _)) in things.iter().enumerate() {
             let x = m.thing(k);
             let excused = excused(w, m, acct, k);
-            let keyed = m.world.keyed(x);
-            let read = if keyed { c.read.contains(&x) } else { c.held.contains(&x) && m.world.opens(&keys, x) };
+            let independent = m.world.independent(x);
+            let read = if independent { c.read.contains(&x) } else { c.held.contains(&x) && m.world.opens(&keys, x) };
             let got = reads(w.engine(i), t);
             if !excused {
                 if got.value.is_some() != read {
@@ -906,7 +906,7 @@ fn closure_clauses(w: &mut World, r: &mut Peer, m: &Model) {
                     }
                 }
             }
-            if keyed {
+            if independent {
                 let want = if c.read.contains(&x) { Some(Holding::Read) } else if c.stored.contains(&x) { Some(Holding::Unread) } else { None };
                 let held: Vec<Holding> = set.ids.values().filter(|(ts, _)| ts.contains(t)).map(|(_, h)| *h).collect();
                 let held = held.iter().copied().max_by_key(|h| matches!(h, Holding::Read));
@@ -965,7 +965,7 @@ fn body_clauses(w: &mut World, r: &mut Peer, m: &Model) {
     let views: Vec<(hc::Closure, hc::Set)> = (0..m.accounts.len()).map(|a| m.closure(&w.history, a)).collect();
     for (k, (t, _)) in things.iter().enumerate() {
         let x = m.thing(k);
-        let read = views.iter().any(|(c, keys)| if m.world.keyed(x) { c.read.contains(&x) } else { c.held.contains(&x) && m.world.opens(keys, x) });
+        let read = views.iter().any(|(c, keys)| if m.world.independent(x) { c.read.contains(&x) } else { c.held.contains(&x) && m.world.opens(keys, x) });
         if !read || !(0..w.len()).any(|i| w.engine(i).closure_holds(t)) {
             continue;
         }
@@ -1009,10 +1009,10 @@ pub fn size() -> (usize, usize, usize, u64) {
 pub fn history(seed: u64, n: usize, accounts: usize, len: usize, faults: bool) -> Vec<Step> {
     let mut rng = SeededRng::from_u64(seed ^ 0x6869_7374);
     let mut pick = |m: usize| (rng.next_u64() % m.max(1) as u64) as usize;
-    /// A sketch of a thing: its maker's account, whether it has own keys, the roles given.
+    /// A sketch of a thing: its maker's account, whether it is independent, the roles given.
     struct Sketch {
         account: usize,
-        keyed: bool,
+        independent: bool,
         given: BTreeMap<Holder, Gives>,
     }
     let mut acct: Vec<usize> = (0..n).map(|j| j % accounts.max(1)).collect();
@@ -1036,10 +1036,10 @@ pub fn history(seed: u64, n: usize, accounts: usize, len: usize, faults: bool) -
                 let ws = if things.is_empty() { Vec::new() } else { writers(&things, k) };
                 if !ws.is_empty() && pick(3) == 0 {
                     let i = ws[pick(ws.len())];
-                    things.push(Sketch { account: acct[i], keyed: false, given: BTreeMap::new() });
+                    things.push(Sketch { account: acct[i], independent: false, given: BTreeMap::new() });
                     Step::NewIn(i, k)
                 } else {
-                    things.push(Sketch { account: acct[node], keyed: false, given: BTreeMap::new() });
+                    things.push(Sketch { account: acct[node], independent: false, given: BTreeMap::new() });
                     Step::New(node)
                 }
             }
@@ -1057,9 +1057,9 @@ pub fn history(seed: u64, n: usize, accounts: usize, len: usize, faults: bool) -
                     let i = ad[pick(ad.len())];
                     let g = [Gives::Syncs, Gives::Reads, Gives::Writes][pick(3)];
                     let others: Vec<usize> = (0..accounts).filter(|a| *a != things[k].account).collect();
-                    let keyed: Vec<usize> = (0..things.len()).filter(|x| *x != k && things[*x].keyed).collect();
-                    let h = if !keyed.is_empty() && (others.is_empty() || pick(4) == 0) { Holder::Thing(keyed[pick(keyed.len())]) } else if others.is_empty() { Holder::Node(i) } else { Holder::Node(others[pick(others.len())]) };
-                    things[k].keyed = true;
+                    let independent: Vec<usize> = (0..things.len()).filter(|x| *x != k && things[*x].independent).collect();
+                    let h = if !independent.is_empty() && (others.is_empty() || pick(4) == 0) { Holder::Thing(independent[pick(independent.len())]) } else if others.is_empty() { Holder::Node(i) } else { Holder::Node(others[pick(others.len())]) };
+                    things[k].independent = true;
                     things[k].given.insert(h, g);
                     Step::Give(i, k, h, g)
                 }
@@ -1112,7 +1112,7 @@ pub fn history(seed: u64, n: usize, accounts: usize, len: usize, faults: bool) -
                     Step::Revoke(ad[pick(ad.len())], k, h)
                 }
             }
-            71..=73 if things[k].keyed => {
+            71..=73 if things[k].independent => {
                 let ws = writers(&things, k);
                 if ws.is_empty() { Step::Run } else { Step::Rotate(ws[pick(ws.len())], k) }
             }

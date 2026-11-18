@@ -425,8 +425,8 @@ fn a_head_move_relists_nothing_between_a_reader_and_a_store_at_n_and_10n() {
     assert!(b.0 <= a.0 + 64 && b.1 <= a.1 + 64, "bytes (store to reader, reader to store) across a head move: {a:?} at n, {b:?} at 10n");
 }
 
-/// Node 0 makes a plain thing under its account root D held from D, a thing with own keys under
-/// its account (held from D), and a plain thing under its node root held from it, writes each,
+/// Node 0 mints a dependent thing with its account root D as admin held from D, an independent thing with
+/// its account as admin (held from D), and a dependent thing minted with its node root as admin held from it, writes each,
 /// removes every strong to them and runs (a pass releases them), `rounds` times; then snapshots
 /// the roots' `holds.0` and D's `tickets.0` (what the trigger leaves held moves in a cycle; a
 /// snapshot ends it at the same place) and lets the tombstone lifetime and two days pass. What
@@ -585,10 +585,10 @@ fn leaked(_: &mut World, _: usize, _: &mut World, _: usize, _: &[String]) -> Str
     String::new()
 }
 
-// Releasing everything, its own-things arm (issues/storage-owners.md), spec/sync-set.md §3 (Nothing of R stays): what a node makes under its account root, its account
+// Releasing everything, its own-things arm (issues/storage-owners.md), spec/sync-set.md §3 (Nothing of R stays): what a node mints with its account root as admin, its account
 // and its node root, written and then released, leaves its rows and blobs as a fresh node's of the
 // same account once tombstones have aged out, at 2 and 20 rounds: but the roots' set tombstones,
-// a few bytes per removal (three strongs and the keyed thing's ticket a round), and `cv/` (flat).
+// a few bytes per removal (three strongs and the independent thing's ticket a round), and `cv/` (flat).
 // A mismatch prints the rows a fresh node lacks and why each thing they name is kept (`leaked`:
 // notes/test-harnesses.md, Why kept and row dumps).
 #[test]
@@ -601,7 +601,7 @@ fn releasing_own_things_returns_storage_to_a_fresh_nodes_spec_sync_set_3() {
     assert_eq!(a.0.get("cv/"), b.0.get("cv/"), "cv/ flat");
 }
 
-/// Node 0 makes a thing under its account root D expiring a second later, held from D and
+/// Node 0 mints a thing with its account root D as admin expiring a second later, held from D and
 /// written in the same commit (a disappearing message), and lets it expire, `rounds` times; then
 /// as `own_rounds` ends.
 fn expiry_rounds(w: &mut World, rounds: usize) -> Held {
@@ -651,7 +651,7 @@ fn expired_things_return_storage_to_a_fresh_nodes_spec_commits_5() {
     as_fresh(&b, &fresh, 2 * 20, "20 rounds", &mut |f| leaked(&mut wb, 0, &mut wf, 0, f));
 }
 
-/// Node 0 makes A under its account root, keeping 10 minutes of history whose strongs hold
+/// Node 0 mints A with its account root as admin, keeping 10 minutes of history whose strongs hold
 /// their targets (`history_holds_targets`), and B, held by A alone: A's strong to B is removed
 /// (B held by A's history), then the root's to A. `rounds` times; then as `own_rounds` ends.
 fn history_rounds(w: &mut World, rounds: usize) -> Held {
@@ -744,7 +744,7 @@ fn settled(w: &mut World) -> Vec<Held> {
     (0..w.len()).map(|i| held(w, i)).collect()
 }
 
-/// Node 0 makes a thing under its account root, writes it, and gives node 1's account read on
+/// Node 0 mints a thing with its account root as admin, writes it, and gives node 1's account read on
 /// it: node 1 accepts (`accept`, a strong from its account root) or declines (no accept, the
 /// fire left in its inbox); node 0 writes again, removes node 1's account, and both let the thing
 /// go (node 0 its strong, node 1 its accept). `rounds` times, the first by `redeem_round` with
@@ -858,7 +858,7 @@ fn a_declined_grant_returns_storage_to_a_fresh_worlds_spec_sync_set_3() {
 }
 
 // spec/sync-judgement.md §3 (Restart and forgetting: an own entry logs a commit held here),
-// spec/sync-set.md §3 (Nothing of R stays): node 0 makes a thing with own keys under its
+// spec/sync-set.md §3 (Nothing of R stays): node 0 makes an independent thing under its
 // account, held from D, and releases it; no own entry of a commit forgotten then stays under any
 // sync ID, D's included (its creation commit's and role commit's certificate copies there, which
 // go once nothing held needs the thing).

@@ -112,12 +112,12 @@ fn unindex(tx: &mut Tx<'_>, id: &CommitId, marks: bool) -> Result<()> {
     }
     super::validity::forget_addenda(core, id, &v.aspects);
     crate::engine::edits::unindex_commit(core, id, v);
-    // its keyset parts' rows (`records::OWN_KEYS`: kept while the commit is held)
+    // its keyset parts' rows (`records::OWN_SECRETS`: kept while the commit is held)
     let keyed: BTreeSet<Tid> = v.aspects.iter().filter(|a| a.ak.as_str() == "keys.0").map(|a| a.tid).filter(|t| core.ix.keyset_parts.get(t).is_some_and(|s| s.contains(id))).collect();
     for t in &keyed {
         core.touch();
         core.ix.keyset_parts.remove(t, id);
-        tx.txn.remove_local(&records::own_keys_key(t, id), Shred::No)?;
+        tx.txn.remove_local(&records::own_secrets_key(t, id), Shred::No)?;
     }
     let void = core.ix.void.remove(id);
     super::set_pending(core, id, None);
@@ -149,7 +149,7 @@ fn unindex(tx: &mut Tx<'_>, id: &CommitId, marks: bool) -> Result<()> {
     // parts still held, as a drop re-derives it (`keys::forget_dropped`)
     let keys: BTreeSet<Tid> = v.aspects.iter().filter(|a| a.ak.as_str() == "keys.0").map(|a| a.tid).collect();
     super::keys::rebuild_keysets(tx, &keys)?;
-    super::keys::refresh_own_keys(tx, &keys, false)?;
+    super::keys::refresh_independent(tx, &keys, false)?;
     // the reading-only secrets its invalid boxes gave go with it (`keys::read_invalid`)
     if tx.core.waits.read_any(id) {
         super::keys::forget_unchecked(tx, id)?;

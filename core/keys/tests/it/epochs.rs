@@ -43,7 +43,7 @@ impl World {
     }
 }
 
-// spec/crypto.md §3: giving a plain thing secrets of its own is a rotation of all three roles from
+// spec/crypto.md §3: giving a dependent thing secrets of its own is a rotation of all three roles from
 // the derived epochs; the history boxes carry the derived secrets. §4 box forms: the mint admin gets
 // symmetric boxes, an actor holder sealed boxes naming its keyset, a key-actor holder sealed
 // boxes naming none; one box per (role, epoch) each.
@@ -98,7 +98,7 @@ fn own_secrets_switch() {
     let applied = |v: &mut ActorEpochs| assert!(rot.secrets.applied(v, osis_base::CommitId([1; 32]), &rot.keys).unwrap());
     applied(&mut ma);
     // the history box hands M the derived secret at the epoch it names (unestablished here: M
-    // holds no secret of the base actor)
+    // holds no secret of the mint admin)
     assert_eq!(ma.read.secret(&de), Some(&derived_read));
     assert!(!ma.read.is_established(&de));
     assert_eq!(ma.read.newest_held().unwrap().0, e(Role::Read));

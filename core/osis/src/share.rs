@@ -307,7 +307,7 @@ fn below_held(e: &osis_engine::Engine, t: &Tid, h: &Tid, role: Role) -> bool {
     e.role_on(t) == Some(Role::Admin) && e.key_role(t, h).is_some_and(|r| role < r)
 }
 
-/// `UnknownActor` unless `h` is known here as an actor a grant can box: a thing with a first
+/// `UnknownActor` unless `h` is known here as an actor a grant can box: a thing with a mint
 /// admin, or a key actor (a node or a link key) whose `keys.0` is held.
 fn known_actor(e: &mut osis_engine::Engine, h: Tid) -> Result<()> {
     if !e.knows(&h) || (e.mint_admin(&h).is_none() && e.get_typed(&h, &ct::KEYS)?.is_none()) {
@@ -366,7 +366,7 @@ impl ReadOnly {
     }
 
     /// Holds `t` on this node: a strong in its node root (spec/sync-set.md §1), so its node closure
-    /// takes `t` in, entering a thing with own keys by a ticket it holds (accepting it,
+    /// takes `t` in, entering an independent thing by a ticket it holds (accepting it,
     /// spec/sync-set.md §4). This node alone holds it so, and writes no ticket for its account.
     /// `Unsupported` on a client with its own actor.
     pub fn hold(&self, t: Tid) -> Result<()> {

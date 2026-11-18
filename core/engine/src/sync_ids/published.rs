@@ -56,7 +56,7 @@ impl PublishedView {
 
 impl Engine {
     /// The actor whose sync ID publishes thing with a sync ID `h` (spec/sync-ids.md §2, §4): the
-    /// nearest actor with a sync ID with secrets of its own up `h`'s record chain whose record edges up
+    /// nearest independent thing with a sync ID up `h`'s record chain whose record edges up
     /// to it stand here (`Core::standing_chain`); an account has no sync ID, so what is under it
     /// publishes under its account root's. `None` for a thing without a sync ID.
     pub(crate) fn publisher(&self, h: &Tid) -> Option<Tid> {
@@ -64,7 +64,7 @@ impl Engine {
         if !core.ix.sync_recorded.contains(h) {
             return None;
         }
-        let up = core.standing_chain(h).into_iter().skip(1).map(|a| core.accounts.get(&a).map_or(a, |x| x.root)).find(|a| core.ix.sync_recorded.contains(a) && core.ix.own_keys.contains(a));
+        let up = core.standing_chain(h).into_iter().skip(1).map(|a| core.accounts.get(&a).map_or(a, |x| x.root)).find(|a| core.ix.sync_recorded.contains(a) && core.ix.independent.contains(a));
         up.filter(|a| a != h)
     }
 

@@ -2,7 +2,7 @@
 //! opened form, the commit's held parts (spec/wire.md §4).
 //!
 //! Confidentiality invariants (spec/wire.md §4, spec/sync-judgement.md §1):
-//! - a section holds the parts of one reader actor, sealed under a fresh random section key
+//! - a section holds the parts of one reader, sealed under a fresh random section key
 //!   that encrypts this one plaintext (nonce zero, used once) and nothing else ever: a rewrite
 //!   seals the section again under a new key;
 //! - the section key is wrapped under `kdf("section", read secret)` of that actor with a random

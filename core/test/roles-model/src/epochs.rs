@@ -26,8 +26,8 @@
 //!   a rotation first, `World::before`), and a commit of P is received once its epoch is held
 //!   with its chain (`dt`).
 //! - **Honest policy.** A plain rotation's maker lists, per thing under a sync ID it opens, the
-//!   commits at the epochs it closes it holds and names (role-class commits first, plain ones in
-//!   receipt order up to the bound; plain ones past it its later listings name by the cutoff; role-class ones
+//!   commits at the epochs it closes it holds and names (role-class commits first, dependent ones in
+//!   receipt order up to the bound; dependent ones past it its later listings name by the cutoff; role-class ones
 //!   alone past it refuse the rotation, which the chain world cannot undo: such a world's
 //!   liveness is not checked). As an epoch comes to count at it (and only then), a node of P on
 //!   its roster holding its preferred head's seed writes, per thing it reads, a listing at that

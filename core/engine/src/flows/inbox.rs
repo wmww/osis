@@ -21,7 +21,7 @@ pub const REMOVAL_FIRE: &str = Ak::check("removal@~0", true);
 /// Stranded notices.
 pub const STRANDED_FIRE: &str = Ak::check("stranded@~0", true);
 
-/// Gives the account's new inbox `i` own keys and its history setting: each of its three signals
+/// Makes the account's new inbox `i` independent and gives it its history setting: each of its three signals
 /// kept its lifetime (spec/sync-inbox.md §1), in the account's creation.
 pub(crate) fn make_inbox(tx: &mut Tx<'_>, i: Tid, done: &mut Done) -> Result<()> {
     crate::rotation::own_secrets(tx, i, done)?;
@@ -183,17 +183,17 @@ pub(crate) fn inbox_in(tx: &mut Tx<'_>, a: &Tid) -> Result<Option<Tid>> {
     if tx.core.is_account(a) {
         return Ok(crate::engine::Core::keys_in(tx, a)?.and_then(|k| k.inbox).map(Tid::from));
     }
-    Ok(tx.core.has_own_secrets(a).then_some(*a))
+    Ok(tx.core.is_independent(a).then_some(*a))
 }
 
 impl Engine {
-    /// Account `a`'s inbox thing, as its `keys.0` names it (spec/sync-inbox.md §1); an actor with
-    /// own keys that is no account is its own inbox.
+    /// Account `a`'s inbox thing, as its `keys.0` names it (spec/sync-inbox.md §1); an independent
+    /// thing that is no account is its own inbox.
     pub fn inbox_thing(&mut self, a: &Tid) -> Option<Tid> {
         if self.core.is_account(a) {
             return self.get_typed(a, &ct::KEYS).ok().flatten().and_then(|k| k.inbox).map(Tid::from);
         }
-        self.core.has_own_secrets(a).then_some(*a)
+        self.core.is_independent(a).then_some(*a)
     }
 
     /// Removal notice `fire` arriving here (spec/sync-inbox.md §5 Carried commits): the notices

@@ -100,7 +100,7 @@ impl Engine {
         out
     }
 
-    /// Mints an actor whose mint admin is `admin` with secrets of its own (and `keys.0`), as a link's K is
+    /// Mints an independent actor whose mint admin is `admin` (with `keys.0`), as a link's K is
     /// minted, and commits what `also` builds for it, all in one transaction: a crash or a
     /// failure leaves both or neither (`flows::links` shares the shape).
     pub fn mint_actor(&mut self, admin: &Tid, also: impl FnOnce(Tid) -> Result<Mutation>) -> Result<(Tid, Done)> {

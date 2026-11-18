@@ -296,10 +296,10 @@ pub enum ThingSync {
     Read(Vec<SyncId>),
     /// Kept unread: by a ticket for the sync role (spec/sync.md).
     Unread(Vec<SyncId>),
-    /// Secrets of its own, neither a read nor a sync secret held (`Unsyncable`).
+    /// Independent, neither a read nor a sync secret held (`Unsyncable`).
     Unsyncable,
-    /// No secrets of its own: it travels under the sync IDs of the sync units holding it.
-    Plain,
+    /// Dependent: it travels under the sync IDs of the sync units holding it.
+    Dependent,
 }
 
 /// How a node holds a sync ID (spec/sync.md §3).

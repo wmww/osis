@@ -437,7 +437,7 @@ fn covers_cover(purge_on_replace: bool) {
     assert!(w.engine(0).get(&t, &value_ak()).unwrap().is_some(), "the reader reads the value");
 }
 
-/// A thing node 0 makes under its account root, held there.
+/// A thing node 0 mints with its account root as admin, held there.
 fn make_held(w: &mut World) -> Tid {
     w.write(0, |e| {
         let d = e.account_root().unwrap();

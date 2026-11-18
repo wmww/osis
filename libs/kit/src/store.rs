@@ -1,9 +1,9 @@
 //! The account's own state (notes/app.md Layers), toolkit-free: its home, favorites, the look, the
 //! open thing, and the universe of things.
 //!
-//! Home (found by the app: `Account`) is a plain thing made under the account root and held by
+//! Home (found by the app: `Account`) is a dependent thing minted with the account root as admin and held by
 //! its `holds.0`, so it syncs to the account's nodes (favorites, the collections). Every thing the
-//! app makes is made under home (its mint admin, whose keys it takes) and held by home's
+//! app makes is minted with home as admin (its mint admin, whose keys it takes) and held by home's
 //! `holds.0`; a tag holds what it tags in its own `holds.0`. Nodes that start before syncing each
 //! make one: every home the app reports is read, and writes go to the smallest tid (notes/app.md
 //! kit and app).
@@ -674,7 +674,7 @@ impl Data {
         w.commit()?;
         Ok(())
     }
-    /// A new thing made under home and held by it, with an empty `name.0` and whatever `start`
+    /// A new thing minted with home as admin and held by it, with an empty `name.0` and whatever `start`
     /// writes, opened on this node.
     pub fn create_with(&self, start: impl FnOnce(&Data, &mut osis::Write<'_>, Tid) -> Result<()>) -> Result<Tid> {
         let g = self.home()?;

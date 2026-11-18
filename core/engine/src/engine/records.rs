@@ -78,8 +78,8 @@ pub const ADDENDA_DUE: &[u8] = b"ad/";
 pub const ROTATIONS_DUE: &[u8] = b"rd/";
 /// Commits whose `keys.0` part on a thing wrote a keyset in its body (`Indexes::keyset_parts`;
 /// kept while the commit is held, whatever becomes of the body): `g/` + tid + commit ID.
-pub const OWN_KEYS: &[u8] = b"g/";
-/// Derived read epochs this node sealed a section under while their thing was plain here, not
+pub const OWN_SECRETS: &[u8] = b"g/";
+/// Derived read epochs this node sealed a section under while their thing was dependent here, not
 /// yet carried by a rotation of it (`Indexes::derived_written`, `rotation::merge`): `dw/` + tid +
 /// the epoch's n (8 bytes, big endian) + nonce, empty.
 pub const DERIVED_WRITTEN: &[u8] = b"dw/";
@@ -178,8 +178,8 @@ pub fn named_permanent_key(id: &CommitId, tid: &Tid) -> Vec<u8> {
     [NAMED_PERMANENT, tid.as_bytes(), &id.0[..]].concat()
 }
 
-pub fn own_keys_key(tid: &Tid, id: &CommitId) -> Vec<u8> {
-    [OWN_KEYS, tid.as_bytes(), &id.0[..]].concat()
+pub fn own_secrets_key(tid: &Tid, id: &CommitId) -> Vec<u8> {
+    [OWN_SECRETS, tid.as_bytes(), &id.0[..]].concat()
 }
 
 pub fn commit_key(id: &CommitId) -> Vec<u8> {

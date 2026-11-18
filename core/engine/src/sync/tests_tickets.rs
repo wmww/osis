@@ -87,12 +87,12 @@ fn ticket_after_strong(forge: bool) {
     assert!(e1.epochs(&t).is_some_and(|x| x.read.secret(&honest).is_some()), "the honest secret is taken (forged first: {forge})");
 }
 
-// spec/sync-set.md §2 (counts as independent; a read secret a ticket gives establishes nothing): a forged ticket for a plain thing P of another account, with a
-// strong to P from a thing whose keys do not open it, gives P no own keys here: the forged
+// spec/sync-set.md §2 (counts as independent; a read secret a ticket gives establishes nothing): a forged ticket for a dependent thing P of another account, with a
+// strong to P from a thing whose keys do not open it, does not make P independent here: the forged
 // secret is taken but P is not entered read, so the node closure does not hold it (nor writes
 // D's ticket for it), and with the strong gone nothing of it is left.
 #[test]
-fn a_forged_ticket_keeps_no_plain_thing_held_spec_sync_set_2() {
+fn a_forged_ticket_keeps_no_dependent_thing_held_spec_sync_set_2() {
     let (mut lp, [_, bob]) = two();
     let e0 = &mut lp.peers[0].engine;
     let d0 = e0.account_root().unwrap();
@@ -109,7 +109,7 @@ fn a_forged_ticket_keeps_no_plain_thing_held_spec_sync_set_2() {
     m.op(profile, &ct::HOLDS, PathOp { path: vec![], op: Op::Add(Value::Strong(p)) }).unwrap();
     e1.commit(m).unwrap();
     assert!(e1.core.ix.secrets.get(&p).is_some_and(|e| e.holds_any()), "the forged secret is taken at the strong");
-    assert!(!e1.closure_holds(&p), "P has no own keys here: not held");
+    assert!(!e1.closure_holds(&p), "P is not independent here: not held");
     assert_eq!(e1.account_ticket_due(&p).unwrap(), None, "no ticket of D's owed for it");
     let mut m = Mutation::new();
     m.op(profile, &ct::HOLDS, PathOp { path: vec![], op: Op::Remove(Value::Strong(p)) }).unwrap();
@@ -119,7 +119,7 @@ fn a_forged_ticket_keeps_no_plain_thing_held_spec_sync_set_2() {
 
 // spec/permissions.md §3 Lost access (drop those role secrets and every local unit it can no
 // longer read), spec/sync-set.md §2 (a read secret a ticket gives establishes nothing): Bob holds
-// T's read secret from his ticket and reads T's value, while T counts as plain here (he holds no
+// T's read secret from his ticket and reads T's value, while T counts as dependent here (he holds no
 // keyset commit of it); his timed grant ends and its secrets go: so does what they read.
 #[test]
 fn a_tickets_secret_takes_what_it_read_when_it_goes_spec_permissions_3() {
@@ -155,7 +155,7 @@ fn a_tickets_secret_takes_what_it_read_when_it_goes_spec_permissions_3() {
         lp.deliver(1, &pk).unwrap();
     }
     let e1 = &mut lp.peers[1].engine;
-    assert!(!e1.core.has_own_secrets(&t), "T counts as plain here");
+    assert!(!e1.core.is_independent(&t), "T counts as dependent here");
     assert_eq!(e1.get(&t, &ak).unwrap(), Some(Value::Str("v".into())), "Bob reads T by his ticket's secret");
     lp.advance(hour + crate::rotation::LOST_HEARD_WAIT_MS + 1);
     let e1 = &mut lp.peers[1].engine;

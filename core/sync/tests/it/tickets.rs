@@ -14,7 +14,7 @@ fn ak() -> Ak {
     Ak::new("x:v.0").unwrap()
 }
 
-/// A thing node `i` makes under its account root, which holds it, with value `v`.
+/// A thing node `i` mints with its account root as admin, which holds it, with value `v`.
 fn make(w: &mut World, i: usize, v: &str) -> Tid {
     let v = v.to_owned();
     w.write(i, |e| {
@@ -89,7 +89,7 @@ fn a_forged_ticket_sync_id_pulls_in_and_cuts_off_nothing_spec_sync_hostile() {
     let p0 = w.node(0).profile.unwrap();
     let sp = w.engine(1).sync_id_of(&p0).unwrap().expect("Bob syncs Alice's profile");
     assert_eq!(w.engine(1).sync_holder(&sp).unwrap(), Some(([p0].into(), Holding::Read)));
-    // Alice's inbox: own keys, read by her nodes alone
+    // Alice's inbox: independent, read by her nodes alone
     let a0 = w.node(0).account.unwrap();
     let x = w.engine(0).inbox_thing(&a0).unwrap();
     let sx = w.engine(0).sync_id_of(&x).unwrap().expect("the inbox's sync ID");

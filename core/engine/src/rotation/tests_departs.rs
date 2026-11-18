@@ -7,7 +7,7 @@
 //! down (spec/crypto.md §4, Covers) and the self-removal reading (spec/permissions.md §2).
 
 #![allow(clippy::unwrap_used)]
-use super::tests::{edge, with_own_keys, newest_read, send_skipping, synced};
+use super::tests::{edge, independent_thing, newest_read, send_skipping, synced};
 use crate::flows::Demotion;
 use crate::Mutation;
 use crate::local_peer::LocalPeer;
@@ -27,7 +27,7 @@ fn shape(w_role: Role) -> (LocalPeer, Tid, Vec<Tid>) {
     let (lp, (g, tids)) = LocalPeer::cached(&format!("rotation::tests_departs::shape/{w_role:?}"), || {
         let mut lp = synced(3);
         let tids: Vec<Tid> = (0..3).map(|i| lp.peers[i].engine.me()).collect();
-        let g = with_own_keys(&mut lp, A);
+        let g = independent_thing(&mut lp, A);
         lp.peers[A].engine.grant(&g, &tids[W], &edge(w_role)).unwrap();
         lp.peers[A].engine.grant(&g, &tids[X], &edge(Role::Admin)).unwrap();
         lp.sync_all().unwrap();
@@ -208,11 +208,11 @@ fn self_removal_backdated_rotation_spec_crypto_4() {
 fn leaver_through_keyless_grant_spec_crypto_4() {
     let mut lp = synced(3);
     let tids: Vec<Tid> = (0..3).map(|i| lp.peers[i].engine.me()).collect();
-    let g = with_own_keys(&mut lp, A);
+    let g = independent_thing(&mut lp, A);
     lp.peers[A].engine.grant(&g, &tids[W], &edge(Role::Write)).unwrap();
     lp.peers[A].engine.grant(&g, &tids[X], &edge(Role::Admin)).unwrap();
     lp.sync_all().unwrap();
-    let h = with_own_keys(&mut lp, W);
+    let h = independent_thing(&mut lp, W);
     lp.peers[W].engine.grant(&h, &g, &edge(Role::Read)).unwrap();
     lp.sync_all().unwrap();
     lp.peers[A].clock.advance(1);
@@ -247,7 +247,7 @@ fn dropped_lowering_takes_nothing_spec_crypto_4() {
     let none = BTreeSet::new();
     let mut lp = synced(4);
     let tids: Vec<Tid> = (0..4).map(|i| lp.peers[i].engine.me()).collect();
-    let g = with_own_keys(&mut lp, o);
+    let g = independent_thing(&mut lp, o);
     for t in &tids[1..] {
         lp.peers[o].engine.grant(&g, t, &edge(Role::Admin)).unwrap();
     }
@@ -288,8 +288,8 @@ fn dropped_lowering_takes_nothing_spec_crypto_4() {
 fn holder_actor_demoted_by_its_own_admin_spec_crypto_4() {
     let mut lp = synced(3);
     let p2 = lp.peers[2].engine.me();
-    let a = with_own_keys(&mut lp, 0);
-    let m = with_own_keys(&mut lp, 1);
+    let a = independent_thing(&mut lp, 0);
+    let m = independent_thing(&mut lp, 1);
     lp.sync_all().unwrap();
     lp.peers[0].engine.grant(&a, &m, &edge(Role::Admin)).unwrap();
     lp.peers[0].engine.grant(&a, &p2, &edge(Role::Read)).unwrap();
@@ -327,8 +327,8 @@ fn holder_actor_demoted_by_its_own_admin_spec_crypto_4() {
 #[test]
 fn own_group_removal_is_a_self_removal_spec_permissions_2() {
     let mut lp = synced(2);
-    let a = with_own_keys(&mut lp, 0);
-    let m = with_own_keys(&mut lp, 1);
+    let a = independent_thing(&mut lp, 0);
+    let m = independent_thing(&mut lp, 1);
     lp.sync_all().unwrap();
     lp.peers[0].engine.grant(&a, &m, &edge(Role::Admin)).unwrap();
     lp.sync_all().unwrap();
@@ -345,7 +345,7 @@ fn own_group_removal_is_a_self_removal_spec_permissions_2() {
 #[test]
 fn account_leaving_a_thing_it_administers_spec_permissions_2() {
     let mut lp = synced(2);
-    let g = with_own_keys(&mut lp, 0);
+    let g = independent_thing(&mut lp, 0);
     let u = lp.peers[1].engine.me();
     lp.sync_all().unwrap();
     lp.peers[0].engine.grant(&g, &u, &edge(Role::Admin)).unwrap();

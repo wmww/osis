@@ -236,7 +236,7 @@ pub(crate) fn standing_moved(core: &mut Core, t: &Tid) {
 
 /// The things waiting in `Indexes::cover_waits` that this transaction may have made writable here:
 /// those with a thing on their record chain whose `created.0`, `keys.0` or `secrets.0` commits,
-/// opened epochs or own keys changed (the journals of what it changed: O(what
+/// opened epochs or independence changed (the journals of what it changed: O(what
 /// changed), nothing when nothing waits). Each that may be written on now leaves the waits with
 /// its purge-on-replace aspects due (`settle_none`) and the trigger's owed weighings woken
 /// (`compact::Trigger::wake`) and its owed re-snapshots due (`Indexes::resnapshots_owed`), so
@@ -245,7 +245,7 @@ pub(crate) fn standing_moved(core: &mut Core, t: &Tid) {
 pub(crate) fn wake_covers(tx: &mut Tx<'_>) -> Result<()> {
     let core = &*tx.core;
     let mut moved: BTreeSet<Tid> = core.ix.secrets.before().into_keys().copied().collect();
-    moved.extend(core.ix.own_keys.logged());
+    moved.extend(core.ix.independent.logged());
     for (id, old) in core.ix.commits.before() {
         let Some(m) = core.ix.commits.get(id).or(old) else { continue };
         moved.extend(m.view.aspects.iter().filter(|a| matches!(a.ak.as_str(), "created.0" | "keys.0" | "secrets.0")).map(|a| a.tid));
