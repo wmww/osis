@@ -1,4 +1,4 @@
-//! Search driver for the roles model: `[samples] [edges|joint|disputes|disputes-random|digest|addenda|addenda-exh|addenda-covers|forget|epochs|epochs-no-cutoff|epochs-own-only|epochs-void-uncounted|epochs-no-own-cover|epochs-open-carried|custody|custody-exh|custody-judged|custody-roster-bare|custody-merge-random|custody-stale-shut|custody-merge-carries]`.
+//! Search driver for the roles model: `[samples] [edges|joint|disputes|disputes-random|digest|addenda|addenda-exh|addenda-covers|forget|epochs|epochs-no-cutoff|epochs-own-only|epochs-void-uncounted|epochs-no-own-cover|epochs-open-carried|epochs-no-reanswer|custody|custody-exh|custody-judged|custody-roster-bare|custody-merge-random|custody-stale-shut|custody-merge-carries]`.
 
 use roles_model::{edges, joint};
 
@@ -19,6 +19,7 @@ fn main() {
                 "epochs-void-uncounted" => Control::VoidUncounted,
                 "epochs-no-own-cover" => Control::NoOwnCover,
                 "epochs-open-carried" => Control::OpenCarried,
+                "epochs-no-reanswer" => Control::NoReanswer,
                 _ => Control::None,
             };
             if run(samples, control) > 0 {

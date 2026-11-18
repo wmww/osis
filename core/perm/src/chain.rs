@@ -769,6 +769,11 @@ impl<E: Ord + Copy> Chain<E> {
         self.counting.iter().copied().filter(|r| !(self.rots.contains_key(e) && self.on(*r, *e))).collect()
     }
 
+    /// Whether counting rotation `r` closes epoch `e` (`closers`): `e` does not descend from it.
+    pub fn closes(&self, r: &E, e: &E) -> bool {
+        self.counting.contains(r) && !(self.rots.contains_key(e) && self.on(*r, *e))
+    }
+
     /// Whether epoch `e` is open: it is a head.
     pub fn open(&self, e: &E) -> bool {
         self.heads.contains(e)

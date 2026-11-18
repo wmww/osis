@@ -297,6 +297,19 @@ fn thing_lists(tx: &mut Tx<'_>, p: &Tid, v: &super::account::AccountView, closes
     Ok((root, leaves.into_iter().zip(paths).map(|((i, l), path)| (i, path.siblings, l)).collect()))
 }
 
+/// This node took up account `p` (`Engine::hold_account`: paired, a removed node paired again):
+/// it answers again, as a node of `p`, each head's rotation (spec/permissions.md §5.5, Listings),
+/// which closes every closed epoch but those descending from it, so its listings name all it
+/// owes; as an outsider it answered with addenda alone, so its own commits at the epochs closed
+/// meanwhile wait on its word.
+pub(crate) fn answer_again(tx: &mut Tx<'_>, p: &Tid) -> Result<()> {
+    let Some(v) = tx.core.account_view(p) else { return Ok(()) };
+    for h in v.heads().into_iter().filter(|h| *h != osis_commit::FIRST_EPOCH) {
+        note_rotation_due(tx, &h)?;
+    }
+    Ok(())
+}
+
 /// Rotation `r` of an account is due this node's answer, kept across restarts
 /// (`records::ROTATIONS_DUE`).
 pub(crate) fn note_rotation_due(tx: &mut Tx<'_>, r: &CommitId) -> Result<()> {
@@ -359,16 +372,28 @@ fn nameable(tx: &mut Tx<'_>, p: &Tid, v: &super::account::AccountView, epochs: &
 
 /// The cutoff as this node applies it (spec/permissions.md §5.5, Cutoff): it names a commit it
 /// received before the earliest closer of its epoch held that ends it (`ends`; at an epoch with
-/// none, every one), or (`departures` set: a node of the account) one it made itself, per its
-/// inner signature, a word only where it names each commit that word names. So a node's own word
-/// carries nothing its cutoff names no longer (one written while it followed another side).
+/// none, every one), receipts of one millisecond in exact order (`Received`), or (`departures`
+/// set: a node of the account) one it made itself, per its inner signature, a word only where it
+/// names each commit that word names. So a node's own word carries nothing its cutoff names no
+/// longer (one written while it followed another side).
 struct Cutoff {
     me: Tid,
     departures: Option<Departures>,
     /// Per epoch, the receipt of its earliest closer that ends it (`None`: none ends it).
-    earliest: BTreeMap<CommitId, Option<Option<osis_base::WallMs>>>,
+    earliest: BTreeMap<CommitId, Option<Option<Received>>>,
     /// Per commit judged, whether it is named.
     judged: BTreeMap<CommitId, bool>,
+}
+
+/// When a commit was received, in exact order: its receipt's millisecond, then (`ts`, author,
+/// commit ID) among one millisecond's (spec/permissions.md §5.5, Cutoff).
+#[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+struct Received(osis_base::WallMs, osis_base::Ts, Tid, CommitId);
+
+impl Received {
+    fn of(c: &CommitId, m: &crate::engine::Meta) -> Received {
+        Received(m.received, m.view.ts, m.view.author, *c)
+    }
 }
 
 impl Cutoff {
@@ -392,12 +417,12 @@ impl Cutoff {
             Some(x) => *x,
             None => {
                 let ending: Vec<CommitId> = v.closers(&e).into_iter().filter(|r| ends(v, self.departures.as_ref(), &e, r)).collect();
-                let x = (!ending.is_empty()).then(|| ending.iter().filter_map(|r| v.held_at(r)).min());
+                let x = (!ending.is_empty()).then(|| ending.iter().flat_map(|r| v.minting(r)).filter_map(|r| tx.core.ix.commits.get(&r).map(|rm| Received::of(&r, rm))).min());
                 self.earliest.insert(e, x);
                 x
             }
         };
-        if bound.is_none_or(|x| x.is_some_and(|x| m.received < x)) {
+        if bound.is_none_or(|x| x.is_some_and(|x| Received::of(c, m) < x)) {
             return Ok(true);
         }
         if self.departures.is_none() || tx.get_commit(c)?.as_ref().and_then(|b| tx.core.inner_node(b)) != Some(self.me) {
@@ -495,8 +520,10 @@ fn answer_rotation(tx: &mut Tx<'_>, r: &CommitId) -> Result<bool> {
 /// first those another listing written brings back, then each alone, in a step undone if its
 /// thing stays out.
 fn listing(tx: &mut Tx<'_>, p: Tid, v: &super::account::AccountView, r: &CommitId) -> Result<bool> {
-    if tx.core.accounts.get(&p).is_none_or(|a| !tx.core.on_root_roster(&a.root)) {
-        return Ok(true);
+    let Some(d) = tx.core.accounts.get(&p).map(|a| a.root) else { return Ok(true) };
+    // off D's roster it writes nothing for the account: owed until it is on it again
+    if !tx.core.on_root_roster(&d) {
+        return Ok(false);
     }
     if tx.core.account_signing(&p).ok().flatten().is_none() {
         return Ok(false);
@@ -725,7 +752,7 @@ pub(crate) fn rotations_due(tx: &mut Tx<'_>, done: &mut Done) -> Result<Vec<Comm
     let Some(p) = tx.core.member() else { return Ok(Vec::new()) };
     let Some(d) = tx.core.accounts.get(&p).map(|a| a.root) else { return Ok(Vec::new()) };
     let Some(v) = tx.core.account_view(&p) else { return Ok(Vec::new()) };
-    if !signs_for(tx.core, &d, &v) {
+    if !signs_for(tx.core, &d) {
         return Ok(Vec::new());
     }
     let held = tx.core.accounts.get(&p).cloned().ok_or(Error::Misuse("not an account held here"))?;
@@ -741,11 +768,10 @@ pub(crate) fn rotations_due(tx: &mut Tx<'_>, done: &mut Done) -> Result<Vec<Comm
 }
 
 /// Whether this node writes its account's chain (rotations, seed re-seals): it is on D's
-/// roster (a node off it would mint a seed it boxes to none but itself), and it took no
-/// revocation of itself.
-pub(crate) fn signs_for(core: &crate::engine::Core, d: &Tid, v: &super::account::AccountView) -> bool {
-    let me = core.id.tid();
-    core.on_root_roster(d) && !v.taken().iter().any(|r| v.removes(r).contains(&me))
+/// roster (a node off it would mint a seed it boxes to none but itself). A revocation of itself
+/// it took keeps it off unless the line re-adds it (`Chain::roster`).
+pub(crate) fn signs_for(core: &crate::engine::Core, d: &Tid) -> bool {
+    core.on_root_roster(d)
 }
 
 impl Engine {

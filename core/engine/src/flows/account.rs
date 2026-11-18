@@ -81,9 +81,6 @@ pub(crate) struct AccountView {
     /// node of the merge's line no taken removal hits (`osis_perm::Chain::standing_certifiers`);
     /// elsewhere every one. Another stands with nothing, whatever its epoch does: it counts not.
     standing_certs: BTreeSet<CommitId>,
-    /// Per held epoch but the first, when this node came to hold it (a merge: its first
-    /// certificate).
-    held_at: BTreeMap<CommitId, osis_base::WallMs>,
     /// The counting epochs by name: what a write or seal reads, so neither walks the chain (its
     /// length is the account's to choose).
     by_name: BTreeMap<Epoch, CommitId>,
@@ -140,9 +137,9 @@ impl AccountView {
 
     /// What the epoch rule says per held epoch (`JudgedEpochs::epochs`).
     /// A merge certificate counts as its epoch does.
-    fn judged(&self) -> BTreeMap<CommitId, (EpochStanding<CommitId>, Option<bool>)> {
+    fn judged(&self) -> BTreeMap<CommitId, (EpochStanding, Option<bool>)> {
         let c = self.rule.chain();
-        let certs = self.certs.iter().map(|(id, m)| (*id, (EpochStanding::Closed(BTreeSet::new()), c.holds(m).then(|| c.counts(m) && self.standing_certs.contains(id)))));
+        let certs = self.certs.iter().map(|(id, m)| (*id, (EpochStanding::Closed, c.holds(m).then(|| c.counts(m) && self.standing_certs.contains(id)))));
         self.epochs.keys().map(|e| (*e, (self.rule.unnamed(e), (*e != FIRST_EPOCH && c.holds(e)).then(|| c.counts(e))))).chain(certs).collect()
     }
 
@@ -373,11 +370,6 @@ impl AccountView {
         self.epochs.get(e).map(|x| x.signing)
     }
 
-    /// When this node came to hold epoch `e` (a merge: its first certificate).
-    pub(crate) fn held_at(&self, e: &CommitId) -> Option<osis_base::WallMs> {
-        self.held_at.get(e).copied()
-    }
-
     /// The held rotation commits minting epoch `e`: a plain rotation itself, a merge's
     /// certificates.
     pub(crate) fn minting(&self, e: &CommitId) -> Vec<CommitId> {
@@ -422,13 +414,12 @@ impl AccountView {
 /// What the epoch rule (spec/permissions.md §5.4, §5.5) says of an account's held commits, as
 /// last judged (`refresh_epochs`) and persisted with the index, so an open builds no signing
 /// chain and reads no list: per held epoch, what a commit signed at it that no word names stands
-/// as, and for a rotation held with its chain whether it counts; and the held commits at closed
-/// epochs that a counting thing list or listing names. An addendum's saving is §5.2's fixpoint
-/// (`Timeline::vouching`).
+/// as, and for a rotation held with its chain whether it counts. The held commits at closed
+/// epochs a counting thing list or listing names are `Indexes::named`'s. An addendum's saving is
+/// §5.2's fixpoint (`Timeline::vouching`).
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct JudgedEpochs {
-    epochs: BTreeMap<CommitId, (EpochStanding<CommitId>, Option<bool>)>,
-    named: BTreeSet<CommitId>,
+    epochs: BTreeMap<CommitId, (EpochStanding, Option<bool>)>,
     /// The chain is read in doubt (`AccountView::doubt`), so the user was told.
     doubt: bool,
     /// At a node of the account: the signing keys of its epochs whose seeds are held here
@@ -438,15 +429,16 @@ pub struct JudgedEpochs {
 }
 
 impl JudgedEpochs {
-    /// What the rule says of commit `id` signed at `epoch` (`standing_in`).
-    fn standing(&self, id: &CommitId, epoch: &CommitId) -> EpochStanding<CommitId> {
+    /// What the rule says of commit `id` signed at `epoch` (`standing_in`), `named` by a
+    /// counting word or not.
+    fn standing(&self, id: &CommitId, epoch: &CommitId, named: bool) -> EpochStanding {
         if let Some((_, Some(counts))) = self.epochs.get(id) {
-            return if *counts { EpochStanding::Counts } else { EpochStanding::Closed(BTreeSet::new()) };
+            return if *counts { EpochStanding::Counts } else { EpochStanding::Closed };
         }
-        if self.named.contains(id) {
+        if named {
             return EpochStanding::Counts;
         }
-        self.epochs.get(epoch).map_or(EpochStanding::Closed(BTreeSet::new()), |x| x.0.clone())
+        self.epochs.get(epoch).map_or(EpochStanding::Closed, |x| x.0)
     }
 
     /// Whether epoch `e` is among those judged.
@@ -466,17 +458,8 @@ impl JudgedEpochs {
     }
 
     /// What a commit at `epoch` no word names stands as.
-    pub(crate) fn unnamed_at(&self, epoch: &CommitId) -> EpochStanding<CommitId> {
-        self.epochs.get(epoch).map_or(EpochStanding::Closed(BTreeSet::new()), |x| x.0.clone())
-    }
-
-    /// Without `id` among the named (it is held no more).
-    pub(crate) fn unnamed(&self, id: &CommitId) -> Option<JudgedEpochs> {
-        self.named.contains(id).then(|| {
-            let mut j = self.clone();
-            j.named.remove(id);
-            j
-        })
+    pub(crate) fn unnamed_at(&self, epoch: &CommitId) -> EpochStanding {
+        self.epochs.get(epoch).map_or(EpochStanding::Closed, |x| x.0)
     }
 
     pub(crate) fn to_value(&self) -> osis_base::Value {
@@ -485,12 +468,12 @@ impl JudgedEpochs {
         let epochs = Value::List(self.epochs.iter().map(|(e, (s, r))| {
             let s = match s {
                 EpochStanding::Counts => Value::Bool(true),
-                EpochStanding::Closed(c) => Value::List(c.iter().map(id).collect()),
+                EpochStanding::Closed => Value::Bool(false),
             };
             Value::List(vec![id(e), s, Value::uint(r.map_or(0, |c| 1 + u64::from(c)))])
         }).collect());
         let keyed = Value::List(self.keyed.iter().map(|k| Value::bytes(k)).collect());
-        Value::List(vec![epochs, Value::List(self.named.iter().map(id).collect()), Value::Bool(self.doubt), keyed])
+        Value::List(vec![epochs, Value::Bool(self.doubt), keyed])
     }
 
     pub(crate) fn from_value(v: &osis_base::Value) -> Option<JudgedEpochs> {
@@ -500,19 +483,18 @@ impl JudgedEpochs {
             _ => None,
         };
         let Value::List(top) = v else { return None };
-        let [Value::List(xs), Value::List(named), Value::Bool(doubt), Value::List(keyed)] = top.as_slice() else { return None };
+        let [Value::List(xs), Value::Bool(doubt), Value::List(keyed)] = top.as_slice() else { return None };
         let keyed = keyed.iter().map(|k| match k {
             Value::Bytes(b) => b.as_slice().try_into().ok(),
             _ => None,
         }).collect::<Option<BTreeSet<[u8; 32]>>>()?;
-        let named = named.iter().map(id).collect::<Option<BTreeSet<CommitId>>>()?;
         let mut epochs = BTreeMap::new();
         for x in xs {
             let Value::List(f) = x else { return None };
             let [e, s, r] = f.as_slice() else { return None };
             let s = match s {
                 Value::Bool(true) => EpochStanding::Counts,
-                Value::List(c) => EpochStanding::Closed(c.iter().map(id).collect::<Option<_>>()?),
+                Value::Bool(false) => EpochStanding::Closed,
                 _ => return None,
             };
             let r = match r {
@@ -523,17 +505,18 @@ impl JudgedEpochs {
             };
             epochs.insert(id(e)?, (s, r));
         }
-        Some(JudgedEpochs { epochs, named, doubt: *doubt, keyed })
+        Some(JudgedEpochs { epochs, doubt: *doubt, keyed })
     }
 }
 
 /// What the epoch rule says of account commit `id` signed at `epoch` under `judged` (`None`: no
-/// rotation of the account judged yet, its first epoch alone open).
-fn standing_in(judged: Option<&JudgedEpochs>, id: &CommitId, epoch: &CommitId) -> EpochStanding<CommitId> {
+/// rotation of the account judged yet, its first epoch alone open), `named` by a counting word or
+/// not (`Indexes::named`).
+fn standing_in(judged: Option<&JudgedEpochs>, named: bool, id: &CommitId, epoch: &CommitId) -> EpochStanding {
     match judged {
-        Some(j) => j.standing(id, epoch),
+        Some(j) => j.standing(id, epoch, named),
         None if *epoch == FIRST_EPOCH => EpochStanding::Counts,
-        None => EpochStanding::Closed(BTreeSet::new()),
+        None => EpochStanding::Closed,
     }
 }
 
@@ -810,7 +793,7 @@ impl Core {
             }
             _ => certs.keys().copied().collect(),
         };
-        let mut v = AccountView { rule, rotations, chosen, received, devices, roster, epochs, certs, standing_certs, held_at, by_name: BTreeMap::new(), carrying, revoked };
+        let mut v = AccountView { rule, rotations, chosen, received, devices, roster, epochs, certs, standing_certs, by_name: BTreeMap::new(), carrying, revoked };
         // a name repeated (two rotations minting one key) is read as its lowest ID
         for (id, e) in v.epochs.iter().filter(|(id, _)| v.rule.chain().epoch_counts(id)) {
             if let Some(name) = v.name(e) {
@@ -822,12 +805,12 @@ impl Core {
 
     /// What the epoch rule (spec/permissions.md §5.5) says of held commit `id` (`view` its view):
     /// `Counts` for every commit of an author other than an account.
-    pub(crate) fn standing(&self, id: &CommitId, view: &crate::engine::View) -> EpochStanding<CommitId> {
+    pub(crate) fn standing(&self, id: &CommitId, view: &crate::engine::View) -> EpochStanding {
         self.standing_by(id, &view.author, view.epoch)
     }
 
     /// `standing` from commit `id`'s header (one not indexed yet).
-    pub(crate) fn standing_of(&self, id: &CommitId, h: &osis_commit::Header) -> EpochStanding<CommitId> {
+    pub(crate) fn standing_of(&self, id: &CommitId, h: &osis_commit::Header) -> EpochStanding {
         self.standing_by(id, &h.author, h.epoch)
     }
 
@@ -837,9 +820,15 @@ impl Core {
         self.standing_by(id, author, epoch) == EpochStanding::Counts
     }
 
-    fn standing_by(&self, id: &CommitId, author: &Tid, epoch: Option<CommitId>) -> EpochStanding<CommitId> {
+    /// Whether rotation `r` of account `author` counts and closes `epoch`, which its commit `id`
+    /// is signed at (`Epochs::closes`): an addendum against `r` may save `id`'s plain deltas.
+    pub(crate) fn closes(&self, r: &CommitId, id: &CommitId, author: &Tid, epoch: &CommitId) -> bool {
+        self.account_view(author).is_some_and(|v| v.rule.closes(r, id, epoch))
+    }
+
+    fn standing_by(&self, id: &CommitId, author: &Tid, epoch: Option<CommitId>) -> EpochStanding {
         let Some(e) = epoch else { return EpochStanding::Counts };
-        standing_in(self.ix.epochs.get(author).map(|j| &**j), id, &e)
+        standing_in(self.ix.epochs.get(author).map(|j| &**j), self.ix.named.contains(author, id), id, &e)
     }
 
     /// The epoch this node signs as `p` at and its keys: the preferred head, when it holds its seed
@@ -974,23 +963,17 @@ pub(crate) fn refresh_epochs(tx: &mut Tx<'_>) -> Result<bool> {
         tx.core.waits.epochs_held.extend(moved.iter().filter(|e| now.get(*e).is_some_and(|x| x.1.is_some()) && get(&was, e).is_none_or(|x| x.1.is_none())).copied());
         let mut cands: BTreeSet<CommitId> = due;
         for e in &moved {
-            match (now.get(e), get(&was, e)) {
-                // only its closers moved (a rotation joined or left them): what an addendum keyed
-                // by one of those lists, the one thing a closer decides (`Vouching::saves`)
-                (Some((EpochStanding::Closed(a), x)), Some((EpochStanding::Closed(b), y))) if *x == y => {
-                    for r in a.symmetric_difference(&b) {
-                        for (t, s) in tx.core.ix.addenda_keyed.get(r).into_iter().flatten() {
-                            let listed = tx.core.ix.addenda.get(&(*t, *s)).into_iter().flat_map(|x| x.entries.iter()).filter(|(k, _)| k == r).flat_map(|(_, l)| l.iter());
-                            cands.extend(listed.filter(|c| tx.core.ix.commits.get(*c).is_some_and(|m| m.view.author == p && m.view.epoch == Some(*e))));
-                        }
-                    }
-                }
-                _ => cands.extend(tx.core.ix.by_epoch.get(&(p, *e)).into_iter().flatten().copied()),
-            }
+            cands.extend(tx.core.ix.by_epoch.get(&(p, *e)).into_iter().flatten().copied());
             cands.insert(*e);
-            // a rotation whose count moved: what its lists name
+            // a rotation whose count moved: what its lists name, and (it joined or left the
+            // closers of every epoch it closes) what an addendum keyed by it lists, the one thing
+            // a closer decides (`Vouching::saves`)
             if now.get(e).map(|x| x.1) != get(&was, e).map(|x| x.1) {
                 cands.extend(super::lists::named_by(tx, e)?.into_iter().map(|(c, _)| c));
+                for (t, s) in tx.core.ix.addenda_keyed.get(e).into_iter().flatten() {
+                    let listed = tx.core.ix.addenda.get(&(*t, *s)).into_iter().flat_map(|x| x.entries.iter()).filter(|(k, _)| k == e).flat_map(|(_, l)| l.iter());
+                    cands.extend(listed.filter(|c| tx.core.ix.commits.get(*c).is_some_and(|m| m.view.author == p)));
+                }
                 // invariant: every rotation that counts here is due this node's answer once it
                 // counts. One read as void when it arrived (its minter not known yet: the seed
                 // its inner signature opens with still to come) was answered by nothing, and the
@@ -1051,34 +1034,30 @@ pub(crate) fn refresh_epochs(tx: &mut Tx<'_>) -> Result<bool> {
         }
         let listings: Vec<osis_perm::Listing<CommitId, Tid>> = listings.into_iter().filter_map(|((s, t), commits)| Some(osis_perm::Listing { listing: commit_of(&s)?, thing: t, commits })).collect();
         let rule = Epochs::new(FIRST_EPOCH, v.rotations.iter().cloned(), v.chosen, &v.received, v.devices.as_ref(), &v.carrying, &lists, &listings);
-        let mut named: BTreeSet<CommitId> = was.as_ref().map(|j| j.named.clone()).unwrap_or_default();
-        for c in &cands {
-            named.remove(c);
-            if let Some(ac) = commit_of(c)
-                && !now.contains_key(c)
-                && rule.unnamed(&ac.epoch) != EpochStanding::Counts
-                && rule.counts(&ac)
-            {
-                named.insert(*c);
-            }
+        // a row per candidate, so naming one more costs one row whatever the history
+        let names: Vec<(CommitId, bool)> = cands.iter().map(|c| (*c, commit_of(c).is_some_and(|ac| !now.contains_key(c) && rule.unnamed(&ac.epoch) != EpochStanding::Counts && rule.counts(&ac)))).collect();
+        let mut named_moved = false;
+        for (c, n) in names {
+            named_moved |= if n { tx.core.ix.named.insert(p, c) } else { tx.core.ix.named.remove(&p, &c) };
         }
         let doubt = v.doubt();
         let keyed: BTreeSet<[u8; 32]> = tx.core.account_keys(&p).into_keys().collect();
         let more_keyed = keyed.iter().any(|e| was.as_ref().is_none_or(|j| !j.keyed.contains(e)));
-        let judged = Arc::new(JudgedEpochs { epochs: now, named, doubt: doubt.is_some(), keyed });
-        if was.as_deref() == Some(&*judged) {
+        let judged = Arc::new(JudgedEpochs { epochs: now, doubt: doubt.is_some(), keyed });
+        if was.as_deref() == Some(&*judged) && !named_moved {
             continue;
         }
 
         if let Some((lines, side)) = doubt.filter(|_| !was.as_ref().is_some_and(|j| j.doubt)) {
             tx.core.events.queue(crate::events::Event::AccountDisputed { account: p, lines, side });
         }
-        // the first epoch alone, open, named nothing, is what no entry says: the index is a
-        // function of what is held, a rotation dropped included
-        if judged.epochs.len() == 1 && judged.named.is_empty() && !judged.doubt && judged.keyed.is_empty() && get(&None, &FIRST_EPOCH) == judged.epochs.get(&FIRST_EPOCH).cloned() {
-            tx.core.ix.epochs.remove(&p);
-        } else {
-            tx.core.ix.epochs.insert(p, judged.clone());
+        // the first epoch alone, open, is what no entry says: the index is a function of what is
+        // held, a rotation dropped included
+        let trivial = judged.epochs.len() == 1 && !judged.doubt && judged.keyed.is_empty() && get(&None, &FIRST_EPOCH) == judged.epochs.get(&FIRST_EPOCH).cloned();
+        match was.as_deref() == Some(&*judged) {
+            true => {}
+            false if trivial => drop(tx.core.ix.epochs.remove(&p)),
+            false => drop(tx.core.ix.epochs.insert(p, judged.clone())),
         }
         // a seed of the account come to be held: the boxes sealed to the account open now
         if more_keyed {
@@ -1090,7 +1069,7 @@ pub(crate) fn refresh_epochs(tx: &mut Tx<'_>) -> Result<bool> {
                 continue;
             }
             if m.view.kind.is_role() {
-                let counts = m.view.epoch.is_some_and(|e| judged.standing(&c, &e) == EpochStanding::Counts);
+                let counts = m.view.epoch.is_some_and(|e| judged.standing(&c, &e, tx.core.ix.named.contains(&p, &c)) == EpochStanding::Counts);
                 moved_roles |= tx.core.ix.held.edge_commit(&c).is_some();
                 tx.core.ix.held.set_counted(c, counts);
             }
@@ -1207,7 +1186,10 @@ impl Engine {
         let (p, d) = (*p, *d);
         let r = self.run(|tx| {
             match judge {
-                true => super::signing::judge_account_again(tx, p, d)?,
+                true => {
+                    super::signing::judge_account_again(tx, p, d)?;
+                    super::signing::answer_again(tx, &p)?;
+                }
                 false => super::reopen_all(tx)?,
             }
             super::take_up_opener(tx, p)

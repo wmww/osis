@@ -129,12 +129,13 @@ impl Timeline {
     /// addendum), listing what its body says while held and nothing otherwise: its validity
     /// never depends on its body. `standing`: what the epoch rule says of an addendum's commit
     /// (§5.5; `Counts` for an author with no epochs): one at a closed epoch is valid only where a
-    /// counting addendum against a closer of its epoch lists it, so the fixpoint runs through
+    /// counting addendum against a closer of its epoch lists it (`closes(c, r)`: rotation `r`
+    /// closes the epoch commit `c` is signed at, `Epochs::closes`), so the fixpoint runs through
     /// every account's epochs at once (it stays monotone: addenda save plain content only, which
     /// no timeline or epoch reads).
-    pub fn vouching(&self, thing: &Tid, addenda: &[Addendum], standing: impl Fn(&CommitId) -> EpochStanding<CommitId>) -> Vouching {
+    pub fn vouching(&self, thing: &Tid, addenda: &[Addendum], standing: impl Fn(&CommitId) -> EpochStanding, closes: impl Fn(&CommitId, &CommitId) -> bool) -> Vouching {
         // (addendum, its author held write at its key, its standing, valid so far)
-        let mut st: Vec<(&Addendum, bool, EpochStanding<CommitId>, bool)> = addenda.iter().map(|a| (a, self.role(&a.point.node, thing, At::before(Point::start(a.point.ts))) >= Some(Role::Write), standing(&a.point.commit), false)).collect();
+        let mut st: Vec<(&Addendum, bool, EpochStanding, bool)> = addenda.iter().map(|a| (a, self.role(&a.point.node, thing, At::before(Point::start(a.point.ts))) >= Some(Role::Write), standing(&a.point.commit), false)).collect();
         loop {
             let mut changed = false;
             for i in 0..st.len() {
@@ -143,10 +144,10 @@ impl Timeline {
                     continue;
                 }
                 let a = *a;
-                let counted = |b: &&(&Addendum, bool, EpochStanding<CommitId>, bool)| b.1 && b.3;
+                let counted = |b: &&(&Addendum, bool, EpochStanding, bool)| b.1 && b.3;
                 let epoch = match s {
                     EpochStanding::Counts => true,
-                    EpochStanding::Closed(closers) => st.iter().filter(counted).any(|b| saves(b.0, &a.point.commit, closers)),
+                    EpochStanding::Closed => st.iter().filter(counted).any(|b| saves(b.0, &a.point.commit, &|r| closes(&a.point.commit, r))),
                 };
                 let v = epoch && (self.delta_valid(a.point, thing, Role::Write) == Validity::Valid || st.iter().filter(counted).any(|b| self.vouches(thing, b.0, a.point)));
                 if v && let Some(x) = st.get_mut(i) {
@@ -324,11 +325,11 @@ impl Vouching {
         self.counting.iter().filter(move |a| tl.vouches(&self.thing, a, at)).map(|a| (a.point.node, a.point))
     }
 
-    /// Whether a counting addendum against one of `closers` (the counting rotations closing the
-    /// epoch commit `c` is signed at, `EpochStanding::Closed`) lists `c`: it saves `c`'s plain deltas
-    /// on the thing (spec/permissions.md §5.5, Addenda against a rotation).
-    pub fn saves(&self, c: &CommitId, closers: &BTreeSet<CommitId>) -> bool {
-        self.counting.iter().any(|a| saves(a, c, closers))
+    /// Whether a counting addendum against a rotation `closes` tells closes the epoch commit `c`
+    /// is signed at (`EpochStanding::Closed`) lists `c`: it saves `c`'s plain deltas on the thing
+    /// (spec/permissions.md §5.5, Addenda against a rotation).
+    pub fn saves(&self, c: &CommitId, closes: &dyn Fn(&CommitId) -> bool) -> bool {
+        self.counting.iter().any(|a| saves(a, c, closes))
     }
 
     pub fn is_empty(&self) -> bool {
@@ -336,8 +337,8 @@ impl Vouching {
     }
 }
 
-/// Whether addendum `a` has an entry keyed by one of `closers` listing `c`. Reads no `ts`: a
-/// rotation is ordered by nothing (spec/permissions.md §5.5).
-fn saves(a: &Addendum, c: &CommitId, closers: &BTreeSet<CommitId>) -> bool {
-    a.entries.iter().any(|(r, lists)| closers.contains(r) && lists.contains(c))
+/// Whether addendum `a` has an entry keyed by a rotation `closes` tells closes `c`'s epoch,
+/// listing `c`. Reads no `ts`: a rotation is ordered by nothing (spec/permissions.md §5.5).
+fn saves(a: &Addendum, c: &CommitId, closes: &dyn Fn(&CommitId) -> bool) -> bool {
+    a.entries.iter().any(|(r, lists)| lists.contains(c) && closes(r))
 }

@@ -241,16 +241,19 @@ fn addenda_fixpoint_runs_through_closed_epochs_spec_permissions_5_5() {
     let names = |r, c: osis_base::CommitId| (r, Arc::new(BTreeSet::from([c])));
     let by_x = Addendum { point: ax, entries: vec![names(r2, wy.commit), names(r1, ax.commit)] };
     let by_a = Addendum { point: aa, entries: vec![names(r1, ax.commit)] };
-    let standing = |c: &osis_base::CommitId| match *c {
-        c if c == ax.commit => EpochStanding::Closed(BTreeSet::from([r1])),
-        c if c == wy.commit => EpochStanding::Closed(BTreeSet::from([r2])),
-        _ => EpochStanding::Counts,
+    // ax's epoch closed by r1 alone, wy's by r2 alone
+    let closer = |c: &osis_base::CommitId| match *c {
+        c if c == ax.commit => Some(r1),
+        c if c == wy.commit => Some(r2),
+        _ => None,
     };
-    let v = tl.vouching(&d, &[by_x.clone(), by_a], standing);
+    let standing = |c: &osis_base::CommitId| if closer(c).is_some() { EpochStanding::Closed } else { EpochStanding::Counts };
+    let closes = |c: &osis_base::CommitId, r: &osis_base::CommitId| closer(c) == Some(*r);
+    let v = tl.vouching(&d, &[by_x.clone(), by_a], standing, closes);
     assert!(v.valid(&ax.commit) && v.valid(&aa.commit));
-    assert!(v.saves(&wy.commit, &BTreeSet::from([r2])), "X's saved addendum saves Y's write");
-    assert!(!v.saves(&wy.commit, &BTreeSet::from([r1])), "only against a closer of its epoch");
-    let alone = tl.vouching(&d, &[by_x], standing);
+    assert!(v.saves(&wy.commit, &|r| *r == r2), "X's saved addendum saves Y's write");
+    assert!(!v.saves(&wy.commit, &|r| *r == r1), "only against a closer of its epoch");
+    let alone = tl.vouching(&d, &[by_x], standing, closes);
     assert!(!alone.valid(&ax.commit), "an addendum at a closed epoch does not save itself");
-    assert!(!alone.saves(&wy.commit, &BTreeSet::from([r2])));
+    assert!(!alone.saves(&wy.commit, &|r| *r == r2));
 }

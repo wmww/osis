@@ -44,6 +44,7 @@ const SNAPSHOTS: &[u8] = b"node/snapshots";
 /// Per account with a rotation judged, what the epoch rule says of its commits
 /// (`Indexes::epochs`): an open builds no signing chain.
 const EPOCHS: &[u8] = b"node/epochs";
+const NAMED: &[u8] = b"node/named";
 /// What each addendum commit says (`validity::AddendaParts`), by commit ID.
 pub(super) const ADDENDA: &[u8] = b"node/addenda";
 /// Per role commit, what perm's adaptation reads of its held `roles.0` parts (`validity::EdgeParts`): written with the commit record (`Tx::put_commit`), so an open
@@ -918,6 +919,7 @@ fn write(tx: &mut Tx<'_>, all: bool) -> Result<()> {
     put_setmap(txn, ORIGINALS, &c.ix.originals, all)?;
     put_aspect_map(txn, SNAPSHOTS, &c.ix.snapshots, all)?;
     put_map(txn, EPOCHS, &c.ix.epochs, all)?;
+    put_setmap(txn, NAMED, &c.ix.named, all)?;
     write_secrets(tx, all)?;
     // after the indexes and in their transaction: a saved walk never runs ahead of the
     // commits it covers
@@ -1128,6 +1130,9 @@ pub(crate) fn load(tx: &mut Tx<'_>) -> Result<()> {
     }
     for (k, v) in scan::<Tid>(tx, EPOCHS)? {
         tx.core.ix.epochs.insert(k, dec(&v)?);
+    }
+    for ((p, c), _) in scan::<(Tid, CommitId)>(tx, NAMED)? {
+        tx.core.ix.named.insert(p, c);
     }
     // the epochs as persisted are judged: every change was before the index was written
     let due: Vec<Tid> = tx.core.ix.epochs_due.iter().copied().collect();

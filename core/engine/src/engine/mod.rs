@@ -733,6 +733,9 @@ indexes! {
     /// Per account with a rotation judged, what the epoch rule says of its commits
     /// (`JudgedEpochs`; `Core::refresh_epochs` re-judges what moved). Persisted.
     pub epochs: JMap<Tid, Arc<crate::flows::account::JudgedEpochs>>,
+    /// Per account, its held commits at closed epochs that a counting thing list or listing
+    /// names (`Core::refresh_epochs`): a row each, as the history it grows with. Persisted.
+    pub named: JSetMap<Tid, CommitId>,
     /// Per held role commit at an epoch, its inner and merge signatures (spec/wire.md §4), read
     /// when the chain is built (`Core::account_view`; `note_role_sigs`). Not persisted: an open
     /// decodes them from the signature items it reads with each record's header bytes.

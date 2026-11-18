@@ -21,15 +21,18 @@
 //!   holds that ends e (at a node of P: one descending from e, or whose line removes a node the
 //!   roster does not hold again that e's line does not remove; elsewhere every closer); its own
 //!   commits always, its own listings only where it names each commit they name. Receipts in one
-//!   tick come before the receiver's own acts that tick and after nothing else, and a commit of P
-//!   is received once its epoch is held with its chain (`dt`).
+//!   tick come before the receiver's own acts that tick and after nothing else, a commit and a
+//!   closer received in one tick in exact order (`ts`, author, commit ID: the tick each was made,
+//!   a rotation first, `World::before`), and a commit of P is received once its epoch is held
+//!   with its chain (`dt`).
 //! - **Honest policy.** A plain rotation's maker lists, per thing under a sync ID it opens, the
 //!   commits at the epochs it closes it holds and names (role-class commits first, plain ones in
 //!   receipt order up to the bound; plain ones past it its later listings name by the cutoff; role-class ones
 //!   alone past it refuse the rotation, which the chain world cannot undo: such a world's
 //!   liveness is not checked). As an epoch comes to count at it (and only then), a node of P on
 //!   its roster holding its preferred head's seed writes, per thing it reads, a listing at that
-//!   head naming the commits at closed epochs it names that no held word names, and a writer of a
+//!   head naming the commits at closed epochs it names that no held word names (and so as it
+//!   comes back onto its roster: off it, it answered nothing), and a writer of a
 //!   thing outside P answers each counting rotation with an addendum naming P's plain commits
 //!   there at the epochs it closes it names that no held list or listing names. X writes at any
 //!   epoch whose seed it holds and lists its own writes.
@@ -48,7 +51,9 @@
 //!   epoch counting only for what a word or its cutoff names (`judge_as`), as once the head
 //!   closes; else it waits. So a cover carries nothing that counts only at an open head.
 //!
-//! Parties: custody's (A, B, C, X, T of P; R1 and R2 outside, each maybe a writer of one thing).
+//! Parties: custody's (A, B, C, X, T of P; R1 and R2 outside, each maybe a writer of one thing;
+//! T removed by C and re-added by A in some worlds). A node offline in custody sends nothing
+//! before its floor.
 //! Things sit in one or both of two sync IDs; every node opens one or both and receives what is
 //! on a thing it reads. A list or listing on a thing reaches its readers; rotations reach as
 //! custody delivers them. Honest commits until the settle; after custody's settle two more rounds
@@ -95,6 +100,9 @@ pub enum Control {
     VoidUncounted,
     /// Honest snapshots carry what counts only at an open head (no Carrying).
     OpenCarried,
+    /// A node coming back onto its roster does not answer the rotations that came to count
+    /// while it was off it.
+    NoReanswer,
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -239,6 +247,18 @@ impl World {
         let own = self.c.items.iter().any(|i| i.author == v && i.t == t && self.c.is_rot(i.id) && self.c.mints(i.id) == *e);
         2 * t + u32::from(own)
     }
+    /// Whether `v` received item `id` (its receipt `dt`, `dt_at`) before it held epoch `e` with
+    /// its chain, in exact order (spec/permissions.md §5.5, Cutoff): receipts of one tick by
+    /// (`ts`, author, commit ID), the author P's alike, so by the tick each was made, a rotation
+    /// first.
+    fn before(&self, id: u32, dt: u32, v: usize, e: &Line) -> bool {
+        let h = self.held_dt(v, e);
+        dt < h || dt == h && h != u32::MAX && self.item(id).t < self.minted_t(e)
+    }
+    /// The tick epoch `e` was minted at: its rotation's, a merge's earliest certificate's.
+    fn minted_t(&self, e: &Line) -> u32 {
+        self.c.items.iter().filter(|i| self.c.is_rot(i.id) && self.c.mints(i.id) == *e).map(|i| i.t).min().unwrap_or(0)
+    }
     fn add(&mut self, kind: Kind, author: usize, epoch: Line, t: u32) -> u32 {
         let id = self.items.len() as u32 + 1;
         let mut recv = [NEVER; N];
@@ -365,7 +385,7 @@ fn word_limit(w: &World, c: u32) -> bool {
             Kind::Content { .. } | Kind::Cover { .. } => return false,
         };
         let p = d.author;
-        carriers.iter().any(|k| names.contains(k) && (!w.view(p, d.t).honest_side(&w.c, p) || w.dt_at(p, *k, d.t) < w.held_dt(p, &removal)))
+        carriers.iter().any(|k| names.contains(k) && (!w.view(p, d.t).honest_side(&w.c, p) || w.before(*k, w.dt_at(p, *k, d.t), p, &removal)))
     })
 }
 
@@ -403,7 +423,7 @@ fn cover(w: &mut World, n: usize, thing: Thing, epoch: Line, t: u32, p: bool, ow
     }
     let carries: Vec<u32> = w.items.iter().filter(|i| on(i) && sh[i.id as usize - 1]).map(|i| i.id).collect();
     let legit = carries.iter().copied().filter(|c| {
-        n != X && w.hostile(*c) && (!j.honest_side(&w.c, n) || held[*c as usize - 1] && w.dt(n, *c) < w.held_dt(n, &removal) || allowed_as(w, &j, &held, &vd, t, *c, false))
+        n != X && w.hostile(*c) && (!j.honest_side(&w.c, n) || held[*c as usize - 1] && w.before(*c, w.dt(n, *c), n, &removal) || allowed_as(w, &j, &held, &vd, t, *c, false))
     }).collect();
     Some(w.add(Kind::Cover { thing, carries, p, own, legit }, n, epoch, t))
 }
@@ -447,8 +467,8 @@ fn nameable(w: &World, n: usize, j: &cu::View, c: u32, control: Control, depth: 
     if control == Control::NoCutoff {
         return true;
     }
-    let tau = ep.closers(&i.epoch).into_iter().filter(|q| n >= OWN || ep.ends(&i.epoch, q)).map(|q| w.held_dt(n, &q)).min();
-    tau.is_none_or(|t| w.dt(n, c) < t)
+    let dt = w.dt(n, c);
+    ep.closers(&i.epoch).into_iter().filter(|q| n >= OWN || ep.ends(&i.epoch, q)).all(|q| w.before(c, dt, n, &q))
 }
 
 /// The commits on `thing` `n` holds at a closed epoch it names that no held word names.
@@ -538,7 +558,13 @@ fn act(w: &mut World, rng: &mut Rng, n: usize, t: u32) -> Vec<u32> {
     // listers and witnesses answer as an epoch comes to count at them (a rotation held with its
     // chain, or its side moving), never again as what they hold changes: what a cutoff names was
     // received before the closer, with its epoch's chain
-    let answers = t == 0 || j.counting.iter().any(|e| !w.view(n, t - 1).counting.contains(e));
+    // a node coming back onto its roster answers then, as off it it answered nothing (under
+    // `NoReanswer` what came to count while it was off, its re-add among them, stays unanswered)
+    let back = t > 0 && w.view(n, t - 1).out(n) && !j.out(n);
+    let answers = match w.control {
+        Control::NoReanswer => t == 0 || !back && j.counting.iter().any(|e| !w.view(n, t - 1).counting.contains(e)),
+        _ => t == 0 || back || j.counting.iter().any(|e| !w.view(n, t - 1).counting.contains(e)),
+    };
     if n >= OWN {
         // an outside writer's addenda
         let Some(thing) = w.writer[n] else { return made };
@@ -587,7 +613,7 @@ fn act(w: &mut World, rng: &mut Rng, n: usize, t: u32) -> Vec<u32> {
         return made;
     }
     let h = j.preferred.clone();
-    if n != T && t < SETTLE && rng.below(4) == 0 {
+    if t < SETTLE && rng.below(4) == 0 {
         let thing = things[rng.below(things.len())];
         made.push(w.add(Kind::Content { thing, plain: rng.below(3) != 0 }, n, h.clone(), t));
     }
@@ -605,7 +631,8 @@ fn act(w: &mut World, rng: &mut Rng, n: usize, t: u32) -> Vec<u32> {
 }
 
 /// Deliver `ids` made at `t` to the readers of their things: before the settle at a random delay
-/// or not until it, from then on the next tick.
+/// (never before its author's custody floor: offline, it sends nothing) or not until it, from
+/// then on the next tick.
 fn deliver(w: &mut World, rng: &mut Rng, ids: &[u32], t: u32) {
     for id in ids {
         let (author, thing) = (w.item(*id).author, w.item(*id).kind.thing());
@@ -616,7 +643,7 @@ fn deliver(w: &mut World, rng: &mut Rng, ids: &[u32], t: u32) {
             } else {
                 match rng.below(6) {
                     0 => NEVER,
-                    k => t + k as u32,
+                    k => (t + k as u32).max(w.c.floor[author]),
                 }
             };
             w.items[*id as usize - 1].recv[m] = at;
@@ -732,6 +759,8 @@ pub struct Stats {
     pub own_covers: u64,
     pub obliged: u64,
     pub by_own_cover: u64,
+    /// Liveness checks of writes by a node removed and re-added (off its roster at some tick).
+    pub readded: u64,
 }
 
 impl crate::Tally for Stats {
@@ -754,6 +783,7 @@ impl crate::Tally for Stats {
         self.own_covers += o.own_covers;
         self.obliged += o.obliged;
         self.by_own_cover += o.by_own_cover;
+        self.readded += o.readded;
     }
 }
 
@@ -764,7 +794,7 @@ impl Stats {
             println!("  {k}: {n}");
         }
         println!("  refused {}, unaware-reader limit {}, named at a revoked epoch {}, vouched {}, liveness by others' words {}", self.refused, self.unaware, self.named, self.vouched, self.by_others);
-        println!("  with covers {}: forgotten {}, own covers {}, own-cover checks {} (shown by an own cover alone {})", self.covered, self.forgotten, self.own_covers, self.obliged, self.by_own_cover);
+        println!("  with covers {}: forgotten {}, own covers {}, own-cover checks {} (shown by an own cover alone {}), writes of re-added nodes checked {}", self.covered, self.forgotten, self.own_covers, self.obliged, self.by_own_cover, self.readded);
     }
 }
 
@@ -817,6 +847,7 @@ pub fn check(w: &World, st: &mut Stats) {
                 continue;
             }
             let own = i.author != X && honest_final(i.author);
+            st.readded += u64::from(own && w.views[i.author].iter().any(|j| j.out(i.author)));
             let by = |p: usize| honest_final(p) && w.reads(p, thing) && (p < OWN || w.writer[p] == Some(thing) && i.kind.plain()) && i.recv[p] != NEVER && {
                 let jp = w.view(p, f);
                 let ep = Epoch { w: &w.c, j: jp };
@@ -1128,6 +1159,54 @@ mod tests {
         let mut st = Stats::default();
         check(&w, &mut st);
         assert!(st.kinds.contains_key("safety"), "open-carried: C's snapshot carries X's write past the merge: {:?}", st.kinds);
+    }
+
+    /// C removes T as A removes X (both at 1, delivered at 2); T, offline, wrote at the first
+    /// epoch at 0, reaching the others at 3, after its removal. A merges at 2 and re-adds T at 3
+    /// (delivered at 4): T comes back onto its roster after holding its removal, and its own
+    /// listing names its write, which counts at every node on the honest side. With no answer on
+    /// coming back (`NoReanswer`) nothing names it.
+    fn readded(control: Control) -> (World, u32) {
+        let (mut c, _) = removal_world();
+        let bx: [bool; N] = std::array::from_fn(|m| [A, B, C].contains(&m));
+        let rt = c.add(cu::Kind::Plain { at: Line::new(), removes: vec![T], adds: vec![], takes: vec![], answers: vec![] }, C, C, Line::new(), None, 1, bx);
+        let deliver = |c: &mut cu::World, made: &[u32], at: u32| {
+            for id in made {
+                let by = c.items[*id as usize - 1].author;
+                for m in (0..N).filter(|m| *m != by && *m != Z) {
+                    c.items[*id as usize - 1].recv[m] = at;
+                }
+            }
+        };
+        deliver(&mut c, &[rt], 2);
+        let merge = cu::act(&mut c, A, 2, None, false);
+        assert!(!merge.is_empty(), "A merges the two removals");
+        deliver(&mut c, &merge, 3);
+        let readd = cu::readd(&mut c, A, 3, T);
+        assert!(!readd.is_empty(), "A re-adds T");
+        deliver(&mut c, &readd, 4);
+        let mut w = hand(c, 6, control);
+        let id = write(&mut w, T, 0, &[(A, 3), (B, 3), (C, 3), (X, 3), (R1, 3), (R2, 3)]);
+        play(&mut w, 1);
+        assert!(w.view(T, 2).out(T) && !w.view(T, fin(&w)).out(T), "T off its roster, then on it");
+        (w, id)
+    }
+
+    #[test]
+    fn a_re_added_nodes_write_from_before_its_re_add_counts_by_its_own_listing() {
+        let (w, id) = readded(Control::None);
+        for v in [A, B, C, T, R1, R2] {
+            let vd = judge(&w, w.view(v, fin(&w)), &w.held(v, fin(&w)));
+            assert!(vd.counts[id as usize - 1], "{}", cu::NAMES[v]);
+        }
+        let mut st = Stats::default();
+        check(&w, &mut st);
+        assert_eq!(st.failures, 0, "{:?}", st.fail.first().map(|f| &f.0));
+        assert!(st.readded > 0);
+        let (w, _) = readded(Control::NoReanswer);
+        let mut st = Stats::default();
+        check(&w, &mut st);
+        assert!(st.kinds.contains_key("liveness"), "no re-answer: T's write is lost: {:?}", st.kinds);
     }
 
     fn assert_holds(st: &Stats, what: &str) {

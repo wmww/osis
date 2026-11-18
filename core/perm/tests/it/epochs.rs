@@ -72,8 +72,10 @@ impl<T: Ord + Copy> Judged<T> {
     /// A counting addendum on `thing` against a closer of `id`'s epoch lists it.
     fn vouched(&self, id: &u32, thing: &T) -> bool {
         let Some(c) = self.commits.get(id).filter(|c| c.things.contains(thing)) else { return false };
-        let EpochStanding::Closed(closers) = self.e.standing(c) else { return false };
-        self.addenda.iter().any(|a| a.thing == *thing && a.commits.contains(id) && closers.contains(&a.against))
+        if self.e.standing(c) != EpochStanding::Closed {
+            return false;
+        }
+        self.addenda.iter().any(|a| a.thing == *thing && a.commits.contains(id) && self.e.closes(&a.against, id, &c.epoch))
     }
     /// Whether a delta of `id` on `thing` passes the epoch rule; `plain`: a plain-content delta.
     fn delta_counts(&self, id: &u32, thing: &T, plain: bool) -> bool {

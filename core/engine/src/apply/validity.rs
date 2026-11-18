@@ -658,7 +658,7 @@ pub(crate) struct Judge<'a> {
     /// thing with no timeline.
     vouchings: BTreeMap<Tid, Option<Arc<Vouching>>>,
     /// Per commit, what the epoch rule says of it (`Core::standing`), found once.
-    standings: BTreeMap<CommitId, EpochStanding<CommitId>>,
+    standings: BTreeMap<CommitId, EpochStanding>,
 }
 
 /// A thing's `retention^.0` deltas: each one's key and what it says.
@@ -670,12 +670,12 @@ impl<'a> Judge<'a> {
     }
 
     /// What the epoch rule says of commit `id` (`h` its header).
-    fn standing(&mut self, h: &Header, id: &CommitId) -> EpochStanding<CommitId> {
+    fn standing(&mut self, h: &Header, id: &CommitId) -> EpochStanding {
         if h.epoch.is_none() {
             return EpochStanding::Counts;
         }
         let core = self.core;
-        self.standings.entry(*id).or_insert_with(|| core.standing_of(id, h)).clone()
+        *self.standings.entry(*id).or_insert_with(|| core.standing_of(id, h))
     }
 
     /// Whether part `a` of commit `id` passes the epoch rule (spec/permissions.md §5.5): the
@@ -683,7 +683,10 @@ impl<'a> Judge<'a> {
     fn counts(&mut self, h: &Header, id: &CommitId, a: &osis_commit::AspectEntry) -> bool {
         match self.standing(h, id) {
             EpochStanding::Counts => true,
-            EpochStanding::Closed(closers) => !closers.is_empty() && plain_part(h, a) && self.vouching(&a.tid).is_some_and(|v| v.saves(id, &closers)),
+            EpochStanding::Closed => {
+                let (core, e) = (self.core, h.epoch.unwrap_or(osis_commit::FIRST_EPOCH));
+                plain_part(h, a) && self.vouching(&a.tid).is_some_and(|v| v.saves(id, &|r| core.closes(r, id, &h.author, &e)))
+            }
         }
     }
 
@@ -709,7 +712,8 @@ impl<'a> Judge<'a> {
             // an addendum at a closed epoch counts only once another saves it: one fixpoint
             // over every account's epochs (spec/permissions.md §5.5)
             let standing = |c: &CommitId| core.ix.commits.get(c).map_or(EpochStanding::Counts, |m| core.standing(c, &m.view));
-            Arc::new(tl.vouching(t, &all, standing))
+            let closes = |c: &CommitId, r: &CommitId| core.ix.commits.get(c).is_some_and(|m| m.view.epoch.is_some_and(|e| core.closes(r, c, &m.view.author, &e)));
+            Arc::new(tl.vouching(t, &all, standing, closes))
         });
         self.vouchings.insert(*t, v.clone());
         v

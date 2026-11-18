@@ -53,16 +53,16 @@ pub struct Listing<E, T> {
 }
 
 /// What the epoch rule says of one held commit of the account, before §5.2 judges it.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub enum EpochStanding<E> {
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum EpochStanding {
     /// It counts whole: its epoch is open, a counting list or listing names it, or
     /// (a rotation) the chain counts it.
     Counts,
-    /// It does not count. A counting addendum on a thing against one of `closers` (the counting
-    /// rotations closing its epoch; none for a rotation)
-    /// listing it saves its plain deltas there (spec/permissions.md §5.5, the addenda fixpoint
-    /// of §5.2).
-    Closed(BTreeSet<E>),
+    /// It does not count. A counting addendum on a thing against a counting rotation closing its
+    /// epoch (`Epochs::closes`; none closes a rotation's) listing it saves its plain deltas there
+    /// (spec/permissions.md §5.5, the addenda fixpoint of §5.2). Which rotations close it is the
+    /// chain's, so a standing is one fact whatever the account's length.
+    Closed,
 }
 
 /// One account's epochs as a node judges them: the chain and the held words naming the
@@ -74,8 +74,8 @@ pub struct Epochs<E, T> {
     chain: Chain<E>,
     /// The held epochs that are open (the heads).
     open: BTreeSet<E>,
-    /// Per held epoch that is not open (counting or void), its closers.
-    closers: BTreeMap<E, BTreeSet<E>>,
+    /// The held epochs that are not open (counting or void).
+    closed: BTreeSet<E>,
     /// The closed epochs a closer carrying a removal closes.
     revoked: BTreeSet<E>,
     /// (commit, thing): a counting thing list or counting listing names the commit on the thing.
@@ -93,9 +93,14 @@ impl<E: Ord + Copy, T: Ord + Copy> Epochs<E, T> {
                 let chain = Chain::new(root, rotations, chosen, received, devices);
         let held: Vec<E> = held.into_iter().filter(|e| chain.holds(e)).collect();
         let open = held.iter().filter(|e| chain.open(e)).copied().collect();
-        let mut e = Epochs { chain, open, closers: BTreeMap::new(), revoked: BTreeSet::new(), named: BTreeSet::new() };
-        e.closers = held.iter().filter(|x| !e.open.contains(x)).map(|x| (*x, e.chain.closers(x).into_iter().collect())).collect();
-        e.revoked = e.closers.iter().filter(|(_, cs)| !cs.is_disjoint(carriers)).map(|(x, _)| *x).collect();
+        let mut e = Epochs { chain, open, closed: BTreeSet::new(), revoked: BTreeSet::new(), named: BTreeSet::new() };
+        e.closed = held.iter().filter(|x| !e.open.contains(x)).copied().collect();
+        // the counting carriers, latest received first: an older epoch's revocation is found at
+        // the first, so this is linear in the epochs, not in epochs times carriers
+        let order: BTreeMap<E, usize> = received.iter().enumerate().map(|(i, r)| (*r, i)).collect();
+        let mut carrying: Vec<E> = carriers.iter().copied().filter(|r| e.chain.counts(r)).collect();
+        carrying.sort_by_key(|r| std::cmp::Reverse(order.get(r).copied()));
+        e.revoked = e.closed.iter().filter(|x| carrying.iter().any(|r| e.chain.closes(r, x))).copied().collect();
         e.named = lists.iter().filter(|l| e.chain.counts(&l.rotation)).flat_map(|l| l.commits.iter().map(|c| (*c, l.thing))).collect();
         // Least fixpoint: a listing at a closed epoch speaks only once it is itself named.
         loop {
@@ -127,7 +132,7 @@ impl<E: Ord + Copy, T: Ord + Copy> Epochs<E, T> {
             return self.chain.counts(&c.id);
         }
         if !self.revoked.contains(&c.epoch) {
-            return self.open.contains(&c.epoch) || self.closers.contains_key(&c.epoch);
+            return self.open.contains(&c.epoch) || self.closed.contains(&c.epoch);
         }
         c.things.iter().any(|t| self.named.contains(&(c.id, *t)))
     }
@@ -138,20 +143,27 @@ impl<E: Ord + Copy, T: Ord + Copy> Epochs<E, T> {
     }
 
     /// What the epoch rule says of `c` (`EpochStanding`).
-    pub fn standing(&self, c: &AccountCommit<E, T>) -> EpochStanding<E> {
+    pub fn standing(&self, c: &AccountCommit<E, T>) -> EpochStanding {
         if self.counts(c) {
             return EpochStanding::Counts;
         }
-        EpochStanding::Closed(if self.chain.holds(&c.id) { BTreeSet::new() } else { self.closers.get(&c.epoch).cloned().unwrap_or_default() })
+        EpochStanding::Closed
     }
 
     /// What a commit signed at `e` that no word names stands as (its `standing`, a rotation
     /// aside): it counts at an open epoch and at a closed one not revoked.
-    pub fn unnamed(&self, e: &E) -> EpochStanding<E> {
-        match self.revoked.contains(e) || !self.open.contains(e) && !self.closers.contains_key(e) {
+    pub fn unnamed(&self, e: &E) -> EpochStanding {
+        match self.revoked.contains(e) || !self.open.contains(e) && !self.closed.contains(e) {
             false => EpochStanding::Counts,
-            true => EpochStanding::Closed(self.closers.get(e).cloned().unwrap_or_default()),
+            true => EpochStanding::Closed,
         }
+    }
+
+    /// Whether rotation `r` counts and closes held epoch `epoch` that commit `id` is signed at:
+    /// an addendum against `r` may save `id`'s plain deltas (`EpochStanding::Closed`). None closes
+    /// a rotation, which counts by the chain alone.
+    pub fn closes(&self, r: &E, id: &E, epoch: &E) -> bool {
+        !self.chain.holds(id) && self.chain.holds(epoch) && self.chain.closes(r, epoch)
     }
 }
 

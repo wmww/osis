@@ -46,11 +46,14 @@
 //!   other's history) is boxed to P at an epoch that does not count there or lacks a taken
 //!   revocation the head carries, the history carrying its counting t epochs; it writes at its
 //!   preferred head (on t under its newest current t epoch) and lists its own writes at every
-//!   other epoch.
+//!   other epoch. A re-add (`readd`) is a plain rotation adding back a device a revocation it
+//!   took removes, boxing it the seeds it holds of the line it makes (as a pairing does), made
+//!   only once its preferred line carries that removal (an addition beside it re-adds nothing).
 //!
 //! Parties: account P with A (removes X at tick 1, may rotate plainly at 0), B (may be offline,
 //! unaware: rotates boxing X), C (may be apart: removes T at tick 1 and rotates t at that epoch,
-//! the listing-cycle shape), X (the thief, holding every old key and every header: forks from
+//! the listing-cycle shape; A may re-add T in the settle, T then online from tick 2 or the
+//! settle), X (the thief, holding every old key and every header: forks from
 //! any epoch whose seed it holds, revokes A, B or C, signs as X or as Z, adds Z or itself, claims
 //! to take a revocation (A's removal of it, or one it keeps to itself for good), answers honest
 //! rotations, certifies merges of any epochs whose seeds it holds, re-seals its seeds to honest
@@ -67,8 +70,8 @@
 //!   included).
 //! - One roster source: an honest rotation leaves out of its boxes only devices removed by a
 //!   revocation its maker took (one held, even with its chain, but not taken removes no one).
-//! - Rotations are bounded: each honest plain rotation carries an event (removal, take, answer)
-//!   none of its maker's earlier ones carries, a removal or answer in one only (a take recurs in
+//! - Rotations are bounded: each honest plain rotation carries an event (removal, re-add, take,
+//!   answer) none of its maker's earlier ones carries, any but a take in one only (a take recurs in
 //!   the header of a rotation owed for another event, on a line not carrying it), and none
 //!   rotates in the settle's last round.
 //! - Merge secrecy: X holds the seed (or t epoch) of no epoch minted by an honest node that had
@@ -81,6 +84,8 @@
 //!   write counts (on t too, at P's nodes and R1: the thing listing opens); X's writes do not.
 //! - Certificates of one epoch judge alike: dropping all but one held certificate of a merge
 //!   epoch that stands there, received when the first was, changes nothing a node reads.
+//! - A re-add takes: where A re-added T and settled on the honest side, T is on A's roster and
+//!   on its own.
 //!
 //! Negative controls (`Control`), each expected to fail.
 
@@ -190,6 +195,11 @@ pub struct World {
     pub b_switch: Option<u32>,
     /// What X keeps to itself for good.
     pub withheld: BTreeSet<u32>,
+    /// The settle round from which A re-adds T where C removed it (`None`: never), once its
+    /// preferred line carries the removal (`readd`).
+    pub readd: Option<u32>,
+    /// Per node, the tick it is online from (offline: it sends and receives nothing before).
+    pub floor: [u32; N],
     pub control: Control,
     pub sched: Sched,
     /// Set by `settle`: an honest node rotated in the last round.
@@ -874,6 +884,24 @@ pub fn t_epoch(w: &World, j: &View) -> Option<u32> {
 /// Honest node `n` acts at `now` (the policy in the module doc). `removes`: the world's script
 /// has it remove that node, in a plain rotation of its own, then act as at the end of a pass.
 pub fn act(w: &mut World, n: usize, now: u32, removes: Option<usize>, write: bool) -> Vec<u32> {
+    act_with(w, n, now, removes, None, write)
+}
+
+/// Honest node `n` adds device `y` back, removed by a revocation it took, in a plain rotation of
+/// its own boxing `y` the seeds it holds of the line it makes (as a pairing does), then acts as
+/// at the end of a pass. It waits (makes nothing) while its preferred line does not carry every
+/// taken removal of `y`: an addition beside a removal re-adds nothing (spec/permissions.md
+/// §5.4, re-added).
+pub fn readd(w: &mut World, n: usize, now: u32, y: usize) -> Vec<u32> {
+    let j = judge(w, n, now);
+    let removed = j.taken.iter().filter(|r| w.removes(**r).contains(&y));
+    if j.roster.contains(&y) || removed.clone().any(|r| !j.preferred.contains(r)) {
+        return vec![];
+    }
+    act_with(w, n, now, None, Some(y), false)
+}
+
+fn act_with(w: &mut World, n: usize, now: u32, removes: Option<usize>, adds: Option<usize>, write: bool) -> Vec<u32> {
     let mut made = vec![];
     let j = judge(w, n, now);
     if j.out(n) || !j.keys.holds(w, &j.preferred) {
@@ -901,19 +929,31 @@ pub fn act(w: &mut World, n: usize, now: u32, removes: Option<usize>, write: boo
     // answer is owed only where none of its own answers)
     let own_carries = |r: u32| j.held.iter().any(|i| w.item(*i).author == n && matches!(w.item(*i).kind, Kind::Plain { .. }) && j.carries(w, &w.line(*i), r));
     let owed_take = takes.iter().any(|r| !own_carries(*r));
-    let carries = w.control == Control::MergeCarries && mergeable && removes.is_none();
+    let change = removes.is_some() || adds.is_some();
+    let carries = w.control == Control::MergeCarries && mergeable && !change;
     let mut boxed = [false; N];
     for m in &j.roster {
         boxed[*m] = Some(*m) != removes;
     }
+    if let Some(y) = adds {
+        boxed[y] = true;
+    }
     let mut head = h.clone();
-    let rotated_for_removal = !carries && removes.is_some();
-    if !carries && (removes.is_some() || !answers.is_empty() || owed_take && !mergeable) {
-        let id = w.add(Kind::Plain { at: h.clone(), removes: removes.into_iter().collect(), adds: vec![], takes: takes.clone(), answers: answers.clone() }, n, n, h.clone(), None, now, boxed);
+    if !carries && (change || !answers.is_empty() || owed_take && !mergeable) {
+        let id = w.add(Kind::Plain { at: h.clone(), removes: removes.into_iter().collect(), adds: adds.into_iter().collect(), takes: takes.clone(), answers: answers.clone() }, n, n, h.clone(), None, now, boxed);
         made.push(id);
         head = w.line(id);
-        // then what it owes at the end of the pass, its removal taken
-        if rotated_for_removal {
+        if let Some(y) = adds {
+            // a newcomer to the line gets every seed its maker holds of the epochs on it
+            let mut nb = [false; N];
+            nb[y] = true;
+            let line_seeds: Vec<Line> = secrets(w, &j).0.into_iter().filter(|f| !f.is_empty() && f.is_subset(&head) && *f != head && w.single(f)).collect();
+            for f in line_seeds {
+                made.push(w.add(Kind::Reseal { e: f, tagged: false }, n, n, head.clone(), None, now, nb));
+            }
+        }
+        // then what it owes at the end of the pass, its change taken
+        if change {
             made.extend(act(w, n, now, None, write));
             return made;
         }
@@ -1247,8 +1287,15 @@ pub fn gen_world(p: &mut impl Pick, small: bool, control: Control) -> World {
     if c_mode > 0 {
         floor[C] = if small { 4 } else { 3 + p.pick(5) as u32 };
     }
-    // T reads only, offline through the fight
+    // T reads only, offline through the fight; where C removes it, A may re-add it in the settle
+    // (and T may be online from tick 2)
     floor[T] = SETTLE;
+    if c_mode == 1 && !small {
+        w.readd = [None, Some(0), Some(1), Some(2)][p.pick(4)];
+        if w.readd.is_some() && p.pick(2) == 1 {
+            floor[T] = 2;
+        }
+    }
     let x0 = p.pick(2) == 1;
     let a0 = !small && p.pick(2) == 1;
     let steps = if small { 2 } else { 3 + p.pick(5) as u32 };
@@ -1325,11 +1372,24 @@ pub fn gen_world(p: &mut impl Pick, small: bool, control: Control) -> World {
             }
         }
     }
+    w.floor = floor;
     w
 }
 
 pub fn random_world(rng: &mut Rng, control: Control) -> World {
     gen_world(rng, false, control)
+}
+
+/// `n`'s act in settle round `round`: A's re-add of T from round `readd` on, while it owes it
+/// (`readd`), else its act at the end of a pass.
+fn honest_act(w: &mut World, n: usize, round: u32, t: u32) -> Vec<u32> {
+    if n == A && w.readd.is_some_and(|k| round >= k) && !w.items.iter().any(|i| i.author == A && w.adds(i.id).contains(&T)) {
+        let made = readd(w, A, t, T);
+        if !made.is_empty() {
+            return made;
+        }
+    }
+    act(w, n, t, None, false)
 }
 
 /// Everything but what X withholds delivered at `SETTLE`; P's users on X's side switch to A's
@@ -1365,7 +1425,7 @@ pub fn settle(w: &mut World) -> u32 {
                     if n == T {
                         continue;
                     }
-                    let ids = act(w, n, t, None, false);
+                    let ids = honest_act(w, n, round, t);
                     for id in &ids {
                         for m in 0..N {
                             if reaches(w, *id, m) {
@@ -1382,7 +1442,7 @@ pub fn settle(w: &mut World) -> u32 {
                     switch(w, n, round, t);
                 }
                 for n in [A, B, C] {
-                    made.extend(act(w, n, t, None, false));
+                    made.extend(honest_act(w, n, round, t));
                 }
                 for id in &made {
                     for m in 0..N {
@@ -1426,6 +1486,8 @@ pub struct Stats {
     pub own_window: u64,
     /// Worlds where X holds an honest seed minted by an unaware node (the stated limit).
     pub unaware_leak: u64,
+    /// Worlds where A re-added T.
+    pub readds: u64,
 }
 
 impl crate::Tally for Stats {
@@ -1450,6 +1512,7 @@ impl crate::Tally for Stats {
         self.forged += o.forged;
         self.own_window += o.own_window;
         self.unaware_leak += o.unaware_leak;
+        self.readds += o.readds;
     }
 }
 
@@ -1460,8 +1523,8 @@ impl Stats {
             println!("  {k}: {n}");
         }
         println!(
-            "  lockstep {}, X's side taken first {} (own removal {}), switches checked {}, B on X's side for good {}, twin certificates {}, multi-tip merges {}, listing-cycle shape {}, withholding {}, signing as Z {}, own window {}, unaware-sibling seeds at X {}",
-            self.lockstep, self.x_side, self.own_removal, self.switched, self.b_stays, self.twin_certs, self.merges, self.cycle, self.withheld, self.forged, self.own_window, self.unaware_leak
+            "  lockstep {}, X's side taken first {} (own removal {}), switches checked {}, B on X's side for good {}, twin certificates {}, multi-tip merges {}, listing-cycle shape {}, withholding {}, signing as Z {}, own window {}, unaware-sibling seeds at X {}, T re-added {}",
+            self.lockstep, self.x_side, self.own_removal, self.switched, self.b_stays, self.twin_certs, self.merges, self.cycle, self.withheld, self.forged, self.own_window, self.unaware_leak, self.readds
         );
     }
 }
@@ -1517,7 +1580,7 @@ pub fn check(w0: &World, st: &mut Stats) {
     for n in [A, B, C] {
         let mut seen: BTreeSet<(u8, u32)> = BTreeSet::new();
         for i in w.items.iter().filter(|i| i.author == n && matches!(i.kind, Kind::Plain { .. }) && !i.script) {
-            let evs: Vec<(u8, u32)> = w.removes(i.id).iter().map(|y| (0, *y as u32)).chain(w.takes(i.id).iter().map(|r| (1, *r))).chain(w.answers(i.id).iter().map(|q| (2, *q))).collect();
+            let evs: Vec<(u8, u32)> = w.removes(i.id).iter().map(|y| (0, *y as u32)).chain(w.takes(i.id).iter().map(|r| (1, *r))).chain(w.answers(i.id).iter().map(|q| (2, *q))).chain(w.adds(i.id).iter().map(|y| (3, *y as u32))).collect();
             if !evs.iter().any(|e| !seen.contains(e)) {
                 fails.push(format!("bounded: node {}'s rotation {} carries no new event", NAMES[n], i.id));
             }
@@ -1649,6 +1712,15 @@ pub fn check(w0: &World, st: &mut Stats) {
     if switched {
         st.switched += 1;
     }
+    // a re-add takes: T, re-added on the honest side, is a node of P there once settled
+    if w.items.iter().any(|i| i.author == A && w.adds(i.id).contains(&T)) {
+        st.readds += 1;
+        for v in [A, T] {
+            if fin(A).honest_side(w, A) && (!fin(v).roster.contains(&T) || fin(T).out(T)) {
+                fails.push(format!("readd: node {} settled without T on its roster", NAMES[v]));
+            }
+        }
+    }
     // honest nodes on one side agree
     let sides: BTreeSet<BTreeSet<Line>> = (0..N).filter(|v| *v != Z && *v != X).filter(|v| !fin(*v).out(*v) && fin(*v).honest_side(w, *v)).map(|v| fin(v).heads.clone()).collect();
     if sides.len() > 1 {
@@ -1697,7 +1769,7 @@ pub fn check(w0: &World, st: &mut Stats) {
 }
 
 pub fn print_world(w: &World) {
-    println!("  {:?} {:?} b_switch {:?} removal {} withheld {:?}", w.sched, w.control, w.b_switch, w.removal, w.withheld);
+    println!("  {:?} {:?} b_switch {:?} removal {} withheld {:?} readd {:?}", w.sched, w.control, w.b_switch, w.removal, w.withheld, w.readd);
     for i in &w.items {
         let recv: Vec<String> = i.recv.iter().map(|r| if *r == NEVER { "-".into() } else { r.to_string() }).collect();
         let bx: Vec<&str> = (0..N).filter(|m| i.boxed[*m]).map(|m| NAMES[m]).collect();

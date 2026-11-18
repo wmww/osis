@@ -437,6 +437,53 @@ fn a_writers_addendum_keeps_what_it_received_spec_permissions_5_5() {
     assert_eq!(read(&mut lp, 3, t), Some(Value::Str("seen outside".into())), "vouched for by the writer");
 }
 
+/// The outsider's (peer 2's) persisted judgment of account P (`node/epochs`) once P's removal of
+/// node 1 names node 1's `n` writes there: the row each change of it writes again.
+fn judged_row(n: usize) -> usize {
+    let (mut lp, a, t) = world(3, 2);
+    let ws: Vec<CommitId> = (0..n).map(|i| write(&mut lp, 1, t, &format!("w{i}"))).collect();
+    send(&mut lp, 1, 0, &ws);
+    send(&mut lp, 1, 2, &ws);
+    let done = remove(&mut lp, 0, a.root, 1);
+    send(&mut lp, 0, 2, &done.commits);
+    assert_eq!(read(&mut lp, 2, t), Some(Value::Str(format!("w{}", n - 1))), "named by the removal's list, at its revoked epoch");
+    let e = &lp.peers[2].engine;
+    osis_base::encode(&e.core.ix.epochs.get(&a.account).unwrap().to_value()).len()
+}
+
+// spec/requirements.md Scale (no operation O(history)): an account's judgment row does not grow
+// with the commits named at its revoked epochs (each named commit is a row of its own), so naming
+// one more writes no row of the account's history
+#[test]
+fn an_accounts_judgment_row_holds_none_of_its_named_history_spec_permissions_5_5() {
+    let (small, large) = (judged_row(5), judged_row(50));
+    assert!(large <= small + 64, "row bytes at 10n named: {large}, at n: {small}");
+}
+
+// spec/permissions.md §5.5 (Cutoff): receipts of one millisecond are in exact order, (`ts`,
+// author, commit ID). The soon removed node's write and its removal reach the outside writer
+// (peer 2) in one millisecond, the write first: stamped before the removal, it was received
+// before it, so the writer's addendum names it
+#[test]
+fn a_write_received_in_its_closers_millisecond_is_named_by_its_order_spec_permissions_5_5() {
+    let (mut lp, a, t) = world(3, 2);
+    let w = write(&mut lp, 1, t, "seen outside");
+    lp.advance(10);
+    let done = remove(&mut lp, 0, a.root, 1);
+    lp.advance(1);
+    let at = lp.peers[2].engine.now();
+    for (from, id) in [(1, w), (0, done.commits[0])] {
+        let pk = lp.peers[from].engine.package(&id).unwrap().unwrap();
+        lp.deliver(2, &pk).unwrap();
+    }
+    for id in [w, done.commits[0]] {
+        assert_eq!(lp.peers[2].engine.core.ix.commits[&id].received, at, "received in one millisecond");
+    }
+    let ad = *lp.peers[2].engine.commit_ids().last().unwrap();
+    assert!(lp.peers[2].engine.header(&ad).unwrap().aspects.iter().any(|x| x.ak.as_str() == "addenda.0"), "the writer answers the rotation, naming the write");
+    assert_eq!(read(&mut lp, 2, t), Some(Value::Str("seen outside".into())));
+}
+
 // spec/crypto.md §9 (Merges), spec/permissions.md §5.4-5.5: two nodes removing a third at once
 // fork the chain; an outsider follows the rotation it held first and is told of nothing. Both
 // nodes then merge the two heads at once, none designated: a merge is a function of its tips, so
@@ -1244,6 +1291,39 @@ fn a_re_added_nodes_later_rotation_is_authorized_spec_permissions_5_4() {
     let v = lp.peers[0].engine.core.account_view(&a.account).unwrap();
     assert_eq!(v.authorized_by(&rot), Some(node), "minted by the re-added node after its re-add");
     assert_eq!(v.preferred(), rot, "node 0 follows it");
+}
+
+// spec/permissions.md §5.5 (Listings): a node removed and paired again answers its rotations
+// again. Node 2, offline, writes at the setup epoch; node 0 removes it, the write reaching node 0
+// and the outsider only after; node 2 learns its removal and leaves, node 0 pairs it again: it
+// writes the chain again, and its own listing names the write, which then counts at node 0 and
+// the outsider
+#[test]
+fn a_re_added_nodes_write_before_its_re_add_counts_by_its_own_listing_spec_permissions_5_5() {
+    let (mut lp, a, t) = world(4, 3);
+    let w = write(&mut lp, 2, t, "gap");
+    let done = remove(&mut lp, 0, a.root, 2);
+    for k in [1, 3] {
+        send(&mut lp, 0, k, &done.commits);
+    }
+    send(&mut lp, 2, 0, &[w]);
+    send(&mut lp, 2, 3, &[w]);
+    assert_eq!(read(&mut lp, 3, t), Some(Value::Str("p".into())), "unnamed at the revoked epoch");
+    send(&mut lp, 0, 2, &done.commits);
+    assert!(!lp.peers[2].engine.core.accounts.contains_key(&a.account), "node 2 left");
+    assert!(lp.peers[2].engine.header(&w).is_some(), "node 2 keeps its own write");
+    let node = lp.peers[2].engine.tid();
+    let (re, all) = lp.peers[0].engine.pair(&node).unwrap();
+    send(&mut lp, 0, 2, &all);
+    lp.peers[2].engine.paired(&a.account).unwrap();
+    assert!(crate::flows::signing::signs_for(&lp.peers[2].engine.core, &a.root), "re-added, node 2 writes the chain again, its own removal taken");
+    for k in [1, 3] {
+        send(&mut lp, 0, k, &re.commits);
+    }
+    lp.sync_all().unwrap();
+    for k in [0, 3] {
+        assert_eq!(read(&mut lp, k, t), Some(Value::Str("gap".into())), "peer {k}: named by node 2's listing");
+    }
 }
 
 // spec/permissions.md §5.4 (Roster): only a removal that counts puts its node beside it.

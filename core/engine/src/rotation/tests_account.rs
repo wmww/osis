@@ -191,6 +191,42 @@ fn forked_account_reads_the_head_held_first_spec_permissions_5_4() {
     assert!(e.account_disputes().is_empty(), "a fork nothing rejects tells nothing");
 }
 
+/// An outsider holding a line of `n` rotations of an account from its first epoch, each removing
+/// a device: the bytes of its judgment of the account as persisted (`node/epochs`), which every
+/// rotation writes again.
+fn judged_bytes(n: u8) -> usize {
+    let mut lp = peers(2);
+    let (a, bytes) = created(&mut lp);
+    let held = lp.peers[0].engine.core.accounts.get(&a.account).unwrap().clone();
+    let e = &mut lp.peers[1].engine;
+    assert!(matches!(e.ingest(&bytes, Vec::new()).unwrap(), Ingested::Applied(_)));
+    let rec = e.core.created(&a.account).unwrap().clone();
+    let mut prev = (FIRST_EPOCH, AccountEpochKeys::from_seed(held.keys.values().next().unwrap().seed()));
+    for i in 0..n {
+        let next = AccountEpochKeys::from_seed(&Secret32::from_bytes([i; 32]));
+        let header = RotationHeader { signing_key: next.signing.verifying_key(), kem_key: next.kem.public().clone(), supersedes: vec![prev.0], names: Vec::new(), takes: Vec::new(), revokes: true, devices: Vec::new(), list_root: [0; 32], seeds: Vec::new() };
+        lp.advance(1);
+        let e = &mut lp.peers[1].engine;
+        let r = rotation_at(rec.clone(), (prev.0, &prev.1), &[], &next, header, Ts::make(e.now(), 0).unwrap());
+        let id = CommitBlob::decode(&r).unwrap().id();
+        assert!(matches!(e.ingest(&r, Vec::new()).unwrap(), Ingested::Applied(_)));
+        prev = (id, next);
+    }
+    let e = &lp.peers[1].engine;
+    assert_eq!(e.core.account_view(&a.account).unwrap().preferred(), prev.0, "the line counts");
+    osis_base::encode(&e.core.ix.epochs.get(&a.account).unwrap().to_value()).len()
+}
+
+// spec/requirements.md Scale (no operation O(history)): what a rotation writes of an account's
+// judgment grows with its rotations, not their square: at 10n revoking rotations it is near 10
+// times that at n (each revoked epoch's standing is a fact of its own, never a list of the
+// rotations closing it)
+#[test]
+fn a_rotations_judgment_grows_with_the_rotations_spec_permissions_5_5() {
+    let (small, large) = (judged_bytes(8), judged_bytes(80));
+    assert!(large <= 13 * small, "bytes at 10n: {large}, at n: {small}");
+}
+
 /// An actor of peer 1 with secrets of its own.
 fn actor_of(lp: &mut LocalPeer, a: &Tid) -> Tid {
     let e = &mut lp.peers[1].engine;

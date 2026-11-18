@@ -107,9 +107,7 @@ fn unindex(tx: &mut Tx<'_>, id: &CommitId, marks: bool) -> Result<()> {
     if let Some(e) = v.epoch {
         core.ix.role_sigs.remove(id);
         core.ix.by_epoch.remove(&(v.author, e), id);
-        if let Some(j) = core.ix.epochs.get(&v.author).and_then(|j| j.unnamed(id)) {
-            core.ix.epochs.insert(v.author, std::sync::Arc::new(j));
-        }
+        core.ix.named.remove(&v.author, id);
         core.ix.names_due.remove(id);
     }
     super::validity::forget_addenda(core, id, &v.aspects);

@@ -1,0 +1,4 @@
+# keel-readd
+- I built roles-model with `cargo build --release` once by reflex (the README's `cargo run --bin roles-model` gives no profile); the searches then ran from `target/debug/roles-model`. A line in the README's Searches saying "the dev profile, never --release" would stop it.
+- One `tools/heavy` hold of the custody search, its five controls and `custody-exh` went 609 s against the 598 s wall limit at load 14: my own unlocked engine test run was beside it. Split the exhaustive search into its own hold, and don't run a crate's tests beside it.
+- `rostered` kept in the persisted `JudgedEpochs` failed the index-rebuild check at once (a rebuild judges the account before take-up): state that is not a function of held commits has no place in the index; caught by every engine test, so cheap.
