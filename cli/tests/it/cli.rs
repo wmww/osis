@@ -59,7 +59,7 @@ impl S {
     /// A thing whose setting (`retention^.0`, written in its creating commit) keeps every
     /// aspect's history for good.
     fn kept_thing(&self) -> String {
-        let keep = "{history: #some(#keep({until: #some(9223372036854775807), after: #none})), expires: #none, final: false}";
+        let keep = "{history: #some(#keep({until: #some(9223372036854775807), after: #none})), expires: #none, final: false, purge_before: #none}";
         let setting = format!("{{rules: {{}}, retain: false, default: #some({keep}), history_holds_targets: false}}");
         self.ok(&["create", "t:made.0", "true", "retention^.0", &setting]).line().to_string()
     }
