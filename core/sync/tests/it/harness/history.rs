@@ -801,6 +801,26 @@ fn lost_writes(w: &mut World, m: &Model) -> BTreeSet<CommitId> {
     lost
 }
 
+/// The compaction snapshots a release lost with the value writes `lost` (`lost_writes`): on the
+/// value of a thing a lost write is on, by that write's author, held by no node at the check.
+/// A writer's snapshot carries its own writes, so one no node holds goes with them (spec/sync-set.md
+/// §3 Nothing of R stays); a later reader holding none of it has nothing to fetch.
+fn snapshots_lost(w: &mut World, r: &mut Peer, lost: &BTreeSet<CommitId>) -> BTreeSet<CommitId> {
+    let on: Vec<usize> = (0..w.len()).filter(|i| w.online(*i)).collect();
+    let h = &w.history;
+    let by: BTreeSet<(Tid, Tid)> = h.events.iter().filter(|e| e.wrote.is_some_and(|c| lost.contains(&c))).filter_map(|e| Some((h.things[e.thing].0, w.node(e.node).account?))).collect();
+    let mut out = BTreeSet::new();
+    for (t, author) in by {
+        for b in r.engine.body_page(&t, &value_ak(), true, 0, usize::MAX).unwrap_or_default() {
+            let snapshot = r.engine.header(&b.id).is_some_and(|h| h.kind.is_compaction() && h.author == author);
+            if snapshot && !on.iter().any(|&i| w.engine(i).holds_commit(&b.id)) {
+                out.insert(b.id);
+            }
+        }
+    }
+    out
+}
+
 /// The checks at quiet; a failing one first prints what each node reads against the reference
 /// and the model (`at_check`).
 pub fn check(w: &mut World) {
@@ -812,8 +832,9 @@ pub fn check(w: &mut World) {
     }
     let mut r = reference(w, &BTreeSet::new());
     let mut m = Model::of(w, &mut r);
-    let lost = lost_writes(w, &m);
+    let mut lost = lost_writes(w, &m);
     if !lost.is_empty() {
+        lost.extend(snapshots_lost(w, &mut r, &lost));
         r = reference(w, &lost);
         m = Model::of(w, &mut r);
     }
