@@ -744,6 +744,27 @@ fn a_role_by_chain_through_an_unaccepted_thing_counts_nothing_spec_sync_inbox_5(
     assert_eq!(value(&mut w, 1, &t1), None);
 }
 
+// spec/permissions.md §4 (Role changes travel), spec/sync-judgement.md §2 (a role commit with an
+// edge write naming holder A is in A's own sync ID's required set): Bob's node 2 makes T2 under
+// his T0, grants Alice sync on it (T2 keyed) and removes T0's record edge there. That removal
+// names T0 by an edge write, so it travels under T0's sync ID: Bob's node 1, reading T2 only
+// through T0, takes it and reads T2 no more, as node 2.
+#[test]
+fn a_removed_record_edge_reaches_its_first_admins_readers_spec_permissions_4() {
+    let mut w = siblings();
+    let alice = w.node(0).account.unwrap();
+    let t0 = make(&mut w, 1, None, "t0");
+    w.run();
+    let t2 = make_in(&mut w, 2, t0, "t2");
+    w.write(2, |e| e.grant(&t2, &alice, &edge(Role::Sync))).unwrap();
+    w.write(2, |e| e.demote(&t2, &osis_engine::flows::Demotion { holder: t0, new: None, retain: None })).unwrap();
+    w.run();
+    for i in [1, 2] {
+        assert!(!w.engine(i).roster(&t2).contains_key(&t0), "node {i} sees T0's record edge removed");
+        assert_eq!(value(&mut w, i, &t2), None, "node {i} reads T2 no more");
+    }
+}
+
 /// A thing node `i` makes under `admin`, held from `admin` alone, value `v`.
 fn make_in(w: &mut World, i: usize, admin: Tid, v: &str) -> Tid {
     let v = v.to_owned();

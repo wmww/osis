@@ -450,8 +450,9 @@ impl Engine {
     }
 
     /// The read thing holder `t`'s piece for `x` goes under (`Piece::Holder(t, x)`), while an
-    /// edge write names `t` holder on `x`, its own things aside (a first admin's edge is its
-    /// record's, which no edge write lowers): spec/permissions.md §4 Role changes travel, a role
+    /// edge write names `t` holder on `x` (`Held::is_holder_by_write`: a first admin's record
+    /// edge alone names none, an edge write lowering or removing it does): spec/permissions.md
+    /// §4 Role changes travel, a role
     /// commit with an edge write naming holder `t` goes under `t`'s own sync ID with `x`'s boxes
     /// to `t` and `sync.0`, the piece holding every edge write on its paths, a removal
     /// included, which the target's bodies no longer carry there once `t` reads it no more. The thing
@@ -465,13 +466,13 @@ impl Engine {
     }
 
     /// Where the role changes naming holder `t` on `x` go (spec/permissions.md §4 Role changes
-    /// travel), while an edge write names `t` holder on `x`, its own things aside: under its own
+    /// travel), while an edge write names `t` holder on `x` (`Held::is_holder_by_write`): under its own
     /// sync ID (`holder_own_on`) as `Piece::Holder`, and under each read thing whose keys open `t`
     /// (`Certified::opened_by`) as `t`'s chain to `x`, an account root only for an `x` it reaches
     /// by strongs. A read of the pair, `holder_own` and `t`'s openers alone.
     fn holder_places(&self, t: &Tid, x: &Tid) -> Places {
         osis_base::costs::count("certified: held on examined", 1);
-        let named = x != t && self.core.ix.held.is_named(t, x) && self.core.first_admin(x) != Some(*t);
+        let named = x != t && self.core.ix.held.is_holder_by_write(t, x);
         if !named {
             return Places::default();
         }

@@ -249,10 +249,10 @@ impl Engine {
     #[cfg(test)]
     pub(crate) fn sync_certificates(&mut self, g: &Tid) -> Certs {
         let mut out = self.own_piece(g);
-        let mut held_on: Vec<(Tid, Tid)> = self.core.ix.held.named_on(g).filter(|x| *x != g && self.core.first_admin(x) != Some(*g)).map(|x| (*g, *x)).collect();
+        let mut held_on: Vec<(Tid, Tid)> = self.core.ix.held.named_on(g).filter(|x| *x != g && self.core.ix.held.is_holder_by_write(g, x)).map(|x| (*g, *x)).collect();
         // an account root's, for its account held here, on the things it reaches by strongs
         if let Some(p) = self.core.account_of_root(g).filter(|p| self.core.accounts.get(p).is_some_and(|a| a.root == *g)) {
-            held_on.extend(self.core.ix.held.named_on(&p).filter(|x| **x != p && self.core.first_admin(x) != Some(p) && self.core.ix.closure.reaches_from(g, x)).map(|x| (p, *x)));
+            held_on.extend(self.core.ix.held.named_on(&p).filter(|x| **x != p && self.core.ix.held.is_holder_by_write(&p, x) && self.core.ix.closure.reaches_from(g, x)).map(|x| (p, *x)));
         }
         for (a, x) in self.certificate_chains(g) {
             out.extend(self.chain_piece(&a, &x));
@@ -264,7 +264,7 @@ impl Engine {
         // things it reaches by strongs
         let holders: Vec<Tid> = self.core.ix.held.holders().copied().filter(|t| self.openers(t).contains(g)).collect();
         for t in holders {
-            let on: Vec<Tid> = self.core.ix.held.named_on(&t).copied().filter(|x| *x != t && self.core.first_admin(x) != Some(t) && (self.core.account_of_root(g).is_none() || self.core.ix.closure.reaches_from(g, x))).collect();
+            let on: Vec<Tid> = self.core.ix.held.named_on(&t).copied().filter(|x| *x != t && self.core.ix.held.is_holder_by_write(&t, x) && (self.core.account_of_root(g).is_none() || self.core.ix.closure.reaches_from(g, x))).collect();
             for x in on {
                 out.extend(self.chain_piece(&t, &x));
             }
