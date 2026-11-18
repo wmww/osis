@@ -1,7 +1,7 @@
 //! Holding across nodes (spec/sync-set.md §1-§4): what a strong, a ticket and a role each do once sync carries them. Each on a
 //! fixture copy; the closure's own rules are engine `closure::`, the whole by the differential.
 
-use crate::harness::{World, contacts, siblings};
+use crate::harness::{World, contacts, edge, fixture_with, siblings};
 use osis_base::{Ak, Role, Tid, Value};
 use osis_crdt::{Op, PathOp};
 use osis_engine::Mutation;
@@ -10,10 +10,6 @@ use osis_schema::core_types as ct;
 
 fn ak() -> Ak {
     Ak::new("x:v.0").unwrap()
-}
-
-fn edge(role: Role) -> ct::Edge {
-    ct::Edge { role, until: None, invite: None, retain: false, floor: None }
 }
 
 /// A thing node `i` makes under `admin` (its account root when `None`), held there, value `v`.
@@ -27,6 +23,19 @@ fn make(w: &mut World, i: usize, admin: Option<Tid>, v: &str) -> Tid {
         m.op(d, &ct::HOLDS, PathOp { path: vec![], op: Op::Add(Value::Strong(t)) }).unwrap();
         e.commit(m).unwrap();
         t
+    })
+}
+
+/// Node 0 makes T (`make`) and grants node 1's account (Bob) read on it; run. Built once per
+/// process (`fixture_with`): the world, T and Bob.
+fn granted() -> (World, (Tid, Tid)) {
+    fixture_with("holding granted", || {
+        let mut w = contacts();
+        let t = make(&mut w, 0, None, "hi");
+        let bob = w.node(1).account.unwrap();
+        w.write(0, |e| e.grant(&t, &bob, &edge(Role::Read))).unwrap();
+        w.run();
+        (w, (t, bob))
     })
 }
 
@@ -116,11 +125,7 @@ fn a_strong_to_a_thing_never_fetched_holds_nothing_spec_sync_set_3() {
 // sync set and store hold nothing of it); declining is never accepting; accepting is the strong.
 #[test]
 fn nothing_is_fetched_before_the_strong_spec_sync_inbox_5() {
-    let mut w = contacts();
-    let t = make(&mut w, 0, None, "hi");
-    let bob = w.node(1).account.unwrap();
-    w.write(0, |e| e.grant(&t, &bob, &edge(Role::Read))).unwrap();
-    w.run();
+    let (mut w, (t, _)) = granted();
     let k = w.engine(1).ticket_for(&t).unwrap().expect("the ticket reached Bob");
     w.advance(10 * osis_sync::types::RESYNC_MS);
     assert!(!w.engine(1).sync_set().unwrap().ids.contains_key(&k.sync_id), "not synced before the strong");
@@ -179,11 +184,7 @@ fn the_accounts_tickets_follow_what_it_accepts_spec_sync_set_1() {
 /// Alice gives Bob read on T; before Bob accepts she lowers him to sync (`lowered`) or removes
 /// him; Bob accepts; run.
 fn accepted_after_a_change(lowered: bool) -> (World, Tid) {
-    let mut w = contacts();
-    let t = make(&mut w, 0, None, "hi");
-    let bob = w.node(1).account.unwrap();
-    w.write(0, |e| e.grant(&t, &bob, &edge(Role::Read))).unwrap();
-    w.run();
+    let (mut w, (t, bob)) = granted();
     let new = lowered.then(|| edge(Role::Sync));
     w.write(0, |e| e.demote(&t, &osis_engine::flows::edges::Demotion { holder: bob, new, retain: None })).unwrap();
     w.run();
@@ -236,11 +237,7 @@ fn a_key_change_keeps_a_sync_only_holder_spec_sync_set_2() {
 // Bob's; once Bob drops his too, T is gone at both.
 #[test]
 fn the_last_reference_gone_the_thing_is_gone_for_everyone_spec_sync_set_3() {
-    let mut w = contacts();
-    let t = make(&mut w, 0, None, "hi");
-    let bob = w.node(1).account.unwrap();
-    w.write(0, |e| e.grant(&t, &bob, &edge(Role::Read))).unwrap();
-    w.run();
+    let (mut w, (t, _)) = granted();
     strong(&mut w, 1, None, t, true);
     w.run();
     assert_eq!(value(&mut w, 1, &t), Some(Value::Str("hi".into())));
@@ -316,11 +313,7 @@ fn a_grant_beside_a_siblings_keying_reaches_the_grantee_spec_permissions_3() {
 // keeps T unread.
 #[test]
 fn a_reader_lowered_to_sync_keeps_the_thing_unread_spec_sync_set_3() {
-    let mut w = contacts();
-    let t = make(&mut w, 0, None, "hi");
-    let bob = w.node(1).account.unwrap();
-    w.write(0, |e| e.grant(&t, &bob, &edge(Role::Read))).unwrap();
-    w.run();
+    let (mut w, (t, bob)) = granted();
     strong(&mut w, 1, None, t, true);
     w.run();
     assert_eq!(value(&mut w, 1, &t), Some(Value::Str("hi".into())));

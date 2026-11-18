@@ -7,11 +7,10 @@
 use crate::harness::Step::*;
 use crate::harness::history::{Gives, value_ak, world};
 use crate::harness::lies::Lie;
-use crate::harness::{World, fixture_with, play};
+use crate::harness::{World, edge, fixture_with, play};
 use osis_base::{Ak, BlobId, CommitId, Role, SyncId, Tid, Value};
 use osis_engine::Mutation;
 use osis_engine::flows::Demotion;
-use osis_schema::core_types as ct;
 
 /// Thing 0 kept unread at node 1, its value written by node 0 and held at node 1.
 fn setup() -> (World, Tid, SyncId, CommitId) {
@@ -58,7 +57,7 @@ fn grant_reader(w: &mut World, t: Tid) -> Tid {
         let mut m = Mutation::new();
         let x = e.new_thing(&mut m, t);
         e.commit(m).unwrap();
-        e.grant(&t, &x, &ct::Edge { role: Role::Read, until: None, invite: None, retain: false, floor: None }).unwrap();
+        e.grant(&t, &x, &edge(Role::Read)).unwrap();
         x
     })
 }

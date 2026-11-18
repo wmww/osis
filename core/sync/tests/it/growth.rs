@@ -4,12 +4,11 @@
 
 use crate::harness::Step::*;
 use crate::harness::history::{self, Gives, value_ak, world};
-use crate::harness::{World, play};
+use crate::harness::{World, edge, play};
 use osis_base::format::TOMBSTONE_LIFETIME_MS;
 use osis_base::{Ak, CommitId, Role, Tid, Value};
 use osis_engine::Mutation;
 use osis_engine::flows::Demotion;
-use osis_schema::core_types::Edge;
 use std::collections::BTreeMap;
 
 const DAY_MS: u64 = 86_400_000;
@@ -179,7 +178,7 @@ fn lowered_writes(n: usize) -> (World, Tid, Vec<CommitId>, Vec<Held>) {
     w.partition(0, 1);
     w.partition(0, 2);
     let a1 = w.node(1).account.unwrap();
-    w.write(0, |e| e.demote(&t, &Demotion { holder: a1, new: Some(Edge { role: Role::Read, until: None, invite: None, retain: false, floor: None }), retain: None })).unwrap();
+    w.write(0, |e| e.demote(&t, &Demotion { holder: a1, new: Some(edge(Role::Read)), retain: None })).unwrap();
     w.run();
     let mut bad = Vec::new();
     for i in 0..n {
@@ -242,7 +241,7 @@ fn a_lowered_writers_invalid_writes_leave_nothing_and_return_on_regrant_spec_com
         assert_ne!(w.engine(i).get(&t, &value_ak()).unwrap(), Some(Value::Str("w0019".into())));
     }
     let a1 = w.node(1).account.unwrap();
-    w.write(0, |e| e.grant(&t, &a1, &Edge { role: Role::Write, until: None, invite: None, retain: false, floor: None })).unwrap();
+    w.write(0, |e| e.grant(&t, &a1, &edge(Role::Write))).unwrap();
     w.run();
     for i in 0..3 {
         assert_eq!(w.engine(i).get(&t, &value_ak()).unwrap(), Some(Value::Str("w0019".into())), "node {i} reads the re-granted writer's last write");
@@ -272,7 +271,7 @@ fn a_write_valid_again_before_its_author_hears_comes_from_a_store_spec_permissio
         w.partition(a, b);
     }
     let a1 = w.node(1).account.unwrap();
-    w.write(0, |e| e.demote(&t, &Demotion { holder: a1, new: Some(Edge { role: Role::Read, until: None, invite: None, retain: false, floor: None }), retain: None })).unwrap();
+    w.write(0, |e| e.demote(&t, &Demotion { holder: a1, new: Some(edge(Role::Read)), retain: None })).unwrap();
     w.run();
     let key = Ak::new("u:k.0").unwrap();
     let x = w.write(1, |e| {
@@ -293,7 +292,7 @@ fn a_write_valid_again_before_its_author_hears_comes_from_a_store_spec_permissio
     w.run();
     assert_ne!(w.engine(2).get(&t, &key).unwrap(), Some(Value::Str("x".into())), "node 2 judges the write invalid");
     assert!(at_store(&mut w), "node 3 keeps its entry (none deleted for being invalid)");
-    w.write(0, |e| e.grant(&t, &a1, &Edge { role: Role::Write, until: None, invite: None, retain: false, floor: None })).unwrap();
+    w.write(0, |e| e.grant(&t, &a1, &edge(Role::Write))).unwrap();
     w.run();
     assert_eq!(w.engine(2).get(&t, &key).unwrap(), Some(Value::Str("x".into())), "node 2 reads the write valid again, from node 3");
 }
@@ -360,7 +359,7 @@ fn a_request_given_force_again_reaches_a_node_that_forgot_it_spec_perm_6() {
     w.run();
     w.partition(0, 1);
     let a1 = w.node(1).account.unwrap();
-    let read = || Some(Edge { role: Role::Read, until: None, invite: None, retain: false, floor: None });
+    let read = || Some(edge(Role::Read));
     for x in [t, u] {
         w.write(0, |e| e.demote(&x, &Demotion { holder: a1, new: read(), retain: None })).unwrap();
     }
@@ -378,7 +377,7 @@ fn a_request_given_force_again_reaches_a_node_that_forgot_it_spec_perm_6() {
     w.run();
     assert!(!w.engine(0).holds_commit(&q), "node 0 forgot the invalid commit");
     assert_eq!(w.engine(0).get(&u, &y).unwrap(), mine, "its request void at node 0");
-    w.write(0, |e| e.grant(&u, &a1, &Edge { role: Role::Write, until: None, invite: None, retain: false, floor: None })).unwrap();
+    w.write(0, |e| e.grant(&u, &a1, &edge(Role::Write))).unwrap();
     w.run();
     for i in 0..2 {
         assert_eq!(w.engine(i).get(&u, &y).unwrap(), None, "node {i} reads the purge given force");

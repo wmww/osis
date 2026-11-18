@@ -5,10 +5,9 @@
 
 use crate::harness::Step::*;
 use crate::harness::history::{Gives, value_ak, world};
-use crate::harness::{World, fixture_with, play};
+use crate::harness::{World, edge, fixture_with, play};
 use osis_base::format::MAX_DRIFT_MS;
 use osis_base::{Ak, BlobId, CommitId, PurgeBy, Role, SyncId, Tid, Value};
-use osis_schema::core_types::Edge;
 use osis_engine::Mutation;
 use osis_schema::core_types as ct;
 
@@ -397,31 +396,7 @@ fn set_value(w: &mut World, i: usize, t: Tid, v: &str) {
 // body reached at quiet). Fails if a part dropped as covered strips under no purge on replace.
 #[test]
 fn a_reader_receives_a_part_whose_cover_was_covered_whole_spec_sync_judgement_2() {
-    let mut w = crate::harness::siblings();
-    let a0 = w.node(0).account.unwrap();
-    let (t, c) = w.write(1, |e| {
-        let d = e.account_root().unwrap();
-        let mut m = Mutation::new();
-        let t = m.create(e.thing_record(d, None));
-        m.set(t, &value_ak(), &Value::Str("v0".into())).unwrap();
-        m.op(d, &ct::HOLDS, osis_crdt::PathOp { path: Vec::new(), op: osis_crdt::Op::Add(Value::Strong(t)) }).unwrap();
-        (t, e.commit(m).unwrap().unwrap())
-    });
-    set_value(&mut w, 1, t, "v1");
-    w.run();
-    w.write(2, |e| e.grant(&t, &a0, &Edge { role: Role::Read, until: None, invite: None, retain: false, floor: None })).unwrap();
-    set_value(&mut w, 2, t, "v2");
-    set_value(&mut w, 1, t, "v3");
-    w.write(0, |e| {
-        let d = e.account_root().unwrap();
-        let mut m = Mutation::new();
-        m.op(d, &ct::HOLDS, osis_crdt::PathOp { path: Vec::new(), op: osis_crdt::Op::Add(Value::Strong(t)) }).unwrap();
-        e.commit(m).unwrap()
-    });
-    w.run();
-    let s = w.engine(1).sync_id_of(&t).unwrap().unwrap();
-    assert!(w.engine(0).holds_commit(&c), "the reader holds the making commit");
-    assert!(!w.engine(0).read_facts(&s, &c).unwrap().missing, "no part of it counts missing");
+    covers_cover(false);
 }
 
 // spec/crdt.md §8 (or that the writer holds with a delta on the aspect), spec/commits.md
@@ -432,21 +407,28 @@ fn a_reader_receives_a_part_whose_cover_was_covered_whole_spec_sync_judgement_2(
 // covered, not missing, and reads the value. Fails if a snapshot lists only what occurs in it.
 #[test]
 fn a_reader_counts_a_stripped_part_covered_by_its_covers_cover_spec_crdt_8() {
+    covers_cover(true);
+}
+
+/// The two tests above: the making commit's value under purge on replace or not.
+fn covers_cover(purge_on_replace: bool) {
     let mut w = crate::harness::siblings();
     let a0 = w.node(0).account.unwrap();
     let (t, c) = w.write(1, |e| {
         let d = e.account_root().unwrap();
         let mut m = Mutation::new();
         let t = m.create(e.thing_record(d, None));
-        let x: ct::RetentionSetting = [(value_ak(), ct::RetentionEntry { history: Some(osis_schema::History::PurgeOnReplace), ..Default::default() })].into_iter().collect();
-        m.set(t, &ct::RETENTION, &x).unwrap();
+        if purge_on_replace {
+            let x: ct::RetentionSetting = [(value_ak(), ct::RetentionEntry { history: Some(osis_schema::History::PurgeOnReplace), ..Default::default() })].into_iter().collect();
+            m.set(t, &ct::RETENTION, &x).unwrap();
+        }
         m.set(t, &value_ak(), &Value::Str("v0".into())).unwrap();
         m.op(d, &ct::HOLDS, osis_crdt::PathOp { path: Vec::new(), op: osis_crdt::Op::Add(Value::Strong(t)) }).unwrap();
         (t, e.commit(m).unwrap().unwrap())
     });
     set_value(&mut w, 1, t, "v1");
     w.run();
-    w.write(2, |e| e.grant(&t, &a0, &Edge { role: Role::Read, until: None, invite: None, retain: false, floor: None })).unwrap();
+    w.write(2, |e| e.grant(&t, &a0, &edge(Role::Read))).unwrap();
     set_value(&mut w, 2, t, "v2");
     set_value(&mut w, 1, t, "v3");
     w.write(0, |e| {
@@ -491,7 +473,7 @@ fn strips_of_two_parts_by_nodes_apart_meet_at_a_node_reading_neither_spec_sync_j
     for (i, ts) in [(1, vec![a, c]), (2, vec![b, c]), (3, vec![c])] {
         let to = w.node(i).account.unwrap();
         for t in ts {
-            w.write(0, |e| e.grant(&t, &to, &Edge { role: Role::Write, until: None, invite: None, retain: false, floor: None })).unwrap();
+            w.write(0, |e| e.grant(&t, &to, &edge(Role::Write))).unwrap();
             w.write(i, |e| {
                 let d = e.account_root().unwrap();
                 let mut m = Mutation::new();

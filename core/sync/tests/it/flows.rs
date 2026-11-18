@@ -1,15 +1,10 @@
 //! Flows between nodes of different accounts end to end through the product's sync, nothing
 //! carried by hand after the contact exchange (`introduce`).
 
-use crate::harness::World;
+use crate::harness::{World, edge};
 use osis_base::{Role, Value};
 use osis_engine::Mutation;
 use osis_engine::flows::Demotion;
-use osis_schema::core_types as ct;
-
-pub(crate) fn edge(role: Role) -> ct::Edge {
-    ct::Edge { role, until: None, invite: None, retain: false, floor: None }
-}
 
 
 // spec/permissions.md §3 (Re-seal: a node that may rotate re-seals a current holder without a box

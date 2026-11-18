@@ -1279,6 +1279,11 @@ pub fn fixture_with<T: Clone + Send + 'static>(key: &str, build: impl FnOnce() -
     (w, x)
 }
 
+/// A plain edge of `role`: no `until`, invite, retain or floor.
+pub fn edge(role: osis_base::Role) -> osis_schema::core_types::Edge {
+    osis_schema::core_types::Edge { role, until: None, invite: None, retain: false, floor: None }
+}
+
 /// Two nodes, each with an account of its own, quiet.
 pub fn two_nodes() -> World {
     fixture("two_nodes", || {

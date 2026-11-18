@@ -2,7 +2,7 @@
 //! the redeemer dials the sharer node by the link's hints, opens K by the link key's static entry,
 //! takes the head's entry box, pulls K and joins.
 
-use crate::harness::{World, two_nodes};
+use crate::harness::{World, edge, two_nodes};
 use osis_base::Role;
 use osis_blob::ShareLink;
 use osis_sync::types::Waiting;
@@ -189,7 +189,7 @@ fn a_joiner_stays_when_k_was_granted_again_before_it_heard_spec_permissions_7() 
     let a1 = w.node(1).account.unwrap();
     w.partition(0, 1);
     w.write(0, |e| e.demote(&link.target, &osis_engine::flows::Demotion { holder: link.k, new: None, retain: None })).unwrap();
-    w.write(0, |e| e.grant(&link.target, &link.k, &osis_schema::core_types::Edge { role: Role::Read, until: None, invite: None, retain: false, floor: None })).unwrap();
+    w.write(0, |e| e.grant(&link.target, &link.k, &edge(Role::Read))).unwrap();
     w.heal();
     w.run();
     assert!(w.engine(1).roster(&link.target).contains_key(&link.k), "K on the target at node 1");
