@@ -1087,6 +1087,10 @@ impl World {
     /// side's entry and whether the engine holds the body.
     fn lost_body(&mut self, i: usize, j: usize, s: &osis_base::SyncId, c: &osis_base::CommitId) -> String {
         let mut out = String::new();
+        if let Some(h) = self.engine(i).header(c) {
+            let parts: Vec<String> = h.aspects.iter().enumerate().map(|(ai, a)| format!("{ai} {:?} {}", a.tid, a.ak.as_str())).collect();
+            out += &format!("\n  {:?} by {:?}: {}; S's things at the reader {:?}", h.kind, h.author, parts.join(", "), self.store(j).syncs().into_iter().find(|(x, _)| x == s).map(|(_, (t, _))| t));
+        }
         for (who, n) in [("holder", i), ("reader", j)] {
             let held = self.engine(n).holds_commit(c);
             let verdict = self.node(n).node.verdict(s, c);
