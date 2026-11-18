@@ -29,7 +29,7 @@
   - Any other record lacking its creation is left: the creation may arrive, or turn valid. A payload of an enum case that is not current is left (spec/crdt.md §5.4).
   - A reset so repeated stays if the first remover turns out invalid.
 - **Repair**: a node that may write an aspect of a thing in a sync ID's sync unit, past its first sync there (spec/sync-streams.md §5), acts on each entry of a suspect list a connected peer sent it for the sync ID (spec/permissions.md §4) whose digest differs from the node's own digest of that aspect, if it holds state of the aspect.
-  - The list's **reporter** is the account the peer proved that holds read or above on the sync ID's actor, as the node judges it; a list from a peer proving none is not acted on.
+  - The list's **reporter** is the account the peer proved that holds read or above on the sync ID's thing, as the node judges it; a list from a peer proving none is not acted on.
   - It writes a snapshot of the aspect from its whole state (spec/commits.md §2) and logs it like any must-hold body, unless it already wrote one from that same state for that reporter, which it remembers durably.
   - It judges each entry once per suspect list (an aspect named twice is one entry). The last list a peer sent for the sync ID before the node's first sync there ended is judged as that sync ends.
   - It SHOULD report every entry it judged (a diagnostic), repaired or not.

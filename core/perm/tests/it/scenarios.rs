@@ -616,7 +616,7 @@ fn unseen_leave_stands_spec_permissions_5_1() {
     assert!(residue(&tl).is_empty());
 }
 
-// spec/permissions.md §1 (first admin): O's record names n0 as its first admin, an edge in
+// spec/permissions.md §1 (mint admin): O's record names n0 as its first admin, an edge in
 // force from the start. n0 grants n1 admin; n1 removes n0. n0's later grants and re-grants
 // through the record do nothing: the record gives no power once the edge is gone. On D, whose
 // first admin is O, n1 (admin of O) holds admin through D's record edge: its grant on D applies.

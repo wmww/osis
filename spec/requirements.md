@@ -8,7 +8,7 @@ Each item is a property that must hold, hard unless its section says goal. A pro
 - **Reference**: a value pointing at a thing. A **strong** reference says its target belongs with the thing holding it; a **weak** one only points; a **ticket** also carries what is needed to sync its target. Holding a reference grants nothing.
 - **Closure** of a thing: it and everything it references strongly, directly or through other things. Its **sync unit**: the part of its closure it can itself read, which is what syncs as one.
 - **Commit**: one signed, atomic edit. **Part**: what a commit writes on one aspect.
-- A thing is **created** by its creation record, which names its first admin, and **destroyed** when its creation is purged or expires. A node **releases** a thing when nothing it holds references it strongly any more; a released thing is not destroyed.
+- A thing is **created** by its creation record, which names its mint admin, and **destroyed** when its creation is purged or expires. A node **releases** a thing when nothing it holds references it strongly any more; a released thing is not destroyed.
 - **Role**: sync, read, write or admin, held by one thing on another. A **holder** is a thing with a role on something. Sync stores and serves data without reading it.
 - **Node**: a running osis instance with its own key and store. It reads what it holds keys for and stores and serves the rest encrypted, in any mix; nothing else separates nodes. A node is **untrusted** for data it cannot read.
 - **Account**: the identity a person's (or anything else's) nodes act as, and where others reach it.
@@ -126,7 +126,7 @@ Binds released formats only; until a stable release formats change in place.
 
 ## Permissions
 - Roles that things hold on things, and nothing else. A role M holds on A reaches the parties holding roles on M; A never depends on who they are.
-- A thing's first admin is fixed in its identity and is an ordinary admin, removable like any other. Sharing a thing, or changing its admins, never changes its identity or how it behaves, only what it costs.
+- A thing's mint admin is fixed in its identity and is an ordinary admin, removable like any other. Sharing a thing, or changing its admins, never changes its identity or how it behaves, only what it costs.
 - Referencing a thing grants no rights, and removing a reference revokes none. A grant lasts until it expires or someone who may remove it does.
 - Readers only read. A thing takes messages, or grants of roles to it, from parties holding no role on it only where its admins allow; an account does.
 - Every write states its actors, from the key that signs it to a holder of the role it uses on what it writes, and is judged along them alone. Anyone who may read the write can verify each step.

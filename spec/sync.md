@@ -2,7 +2,7 @@
 > Summary: Overview of sync: its words, the one-node model, the two ways a node holds a sync ID (read, kept unread), the principle of each area and the map of the sync spec files.
 
 ## 1. Words
-- **Sync ID** (S): the unit nodes sync, made by a thing with role secrets of its own (spec/sync-ids.md §2). Each such thing has exactly one, for its life.
+- **Sync ID** (S): the unit nodes sync, made by an independent thing (spec/sync-ids.md §2). Each independent thing has exactly one, for its life.
 - **Entry**: a blob held under S in a node's own store, with its wrap and its stamp or deposit flag (spec/sync-ids.md §5). A node **logs** an entry in its own store; an entry is **held at** a peer when that peer's stream showed it there (spec/sync-streams.md §4); a peer **pulls** what it lacks.
 - **Peer**: another node a node has a connection to. A **source** of S at a node: a peer with S open on a connection up now (spec/sync-opens.md §4). Connections, peers and sources are the only network roles; no node is of a kind.
 - **Node closure**: what a node holds, walked from its node root by strongs (spec/sync-set.md §2); its **sync set** is the sync IDs it syncs; a sync ID carries its thing's **sync unit**.
@@ -34,7 +34,7 @@ Each area has one principle; every rule in its file follows from it, and a rule 
 
 | area | file | principle |
 |---|---|---|
-| 1. What a node holds | spec/sync-set.md | A node holds exactly its node closure: what its node root reaches by strongs, entering a thing with own keys only by a ticket it can open or keys it holds; a sync ID carries exactly its thing's sync unit; nothing else decides. |
+| 1. What a node holds | spec/sync-set.md | A node holds exactly its node closure: what its node root reaches by strongs, entering an independent thing only by a ticket it can open or keys it holds; a sync ID carries exactly its thing's sync unit; nothing else decides. |
 | 2. Sync IDs | spec/sync-ids.md | A sync ID belongs to its thing: made once from the thing's own secrets, its keys derived from the thing's current role secrets, its path of steps verifiable from genesis by any node without trusting a peer. |
 | 3. Connections and opens | spec/sync-opens.md | Each side opens S toward a peer only on its own proof, judged on what it holds now, that the peer may hold S; who dialed proves nothing. |
 | 4. Judgement per sync ID | spec/sync-judgement.md, spec/sync-compaction.md | A reader's store of S holds what its own judgement says S needs, and a body leaves it only for a reason every holder sees after one exchange (expiry, purge, a right holder's covering snapshot, or S not needing it); a node acts at a peer only over what that peer's stream showed, deletes there only by a Delete signed for the right, and every delete and every logging again is bounded by a change of ground. A node keeping S unread judges nothing but signatures. |

@@ -2320,7 +2320,7 @@ fn frontier_lists_covered_deltas_of_every_retention_spec_perm_5_1() {
     }
 }
 
-// spec/permissions.md §1 (first admin), §3; spec/wire.md §3: account 0
+// spec/permissions.md §1 (mint admin), §3; spec/wire.md §3: account 0
 // creates O (a chat) with itself as first admin: its creation commit
 // carries `created.0` alone on O, and O, made under an account, has secrets of its own from then. It grants account 1 admin, accounts 2 and 3 write. Its admins are
 // equal: account 1 removes account 0's record edge, stored nowhere. Writer 2 rotates

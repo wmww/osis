@@ -1163,7 +1163,7 @@ mod tests {
         assert_eq!(lp.peers[1].engine.get(&t, &osis_base::Ak::new("x:a.0").unwrap()).unwrap(), None);
     }
 
-    // spec/permissions.md §3 (unapplied `keys.0` write of the actor signed by a current admin): only one
+    // spec/permissions.md §3 (unapplied `keys.0` write of the thing signed by a current admin): only one
     // signed by an admin of the actor counts; one whose author nobody can check (anyone can send
     // it) would hold the step back for good.
     #[test]

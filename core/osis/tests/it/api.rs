@@ -336,7 +336,7 @@ fn local_rights_check_spec_permissions_1() {
     assert!(matches!(w.commit(), Err(Error::Permission { .. })));
 }
 
-// spec/permissions.md §1 (record edge; names as first admin), §5; notes/api.md Writes: one commit
+// spec/permissions.md §1 (record edge; names as mint admin), §5; notes/api.md Writes: one commit
 // creates A, B under A and C under B; another node applying the commit holds all three.
 // A thing under one the writer may not write is still refused.
 #[test]

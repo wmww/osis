@@ -87,7 +87,7 @@ fn ticket_after_strong(forge: bool) {
     assert!(e1.epochs(&t).is_some_and(|x| x.read.secret(&honest).is_some()), "the honest secret is taken (forged first: {forge})");
 }
 
-// spec/sync-set.md §2 (own keys; a read secret a ticket gives establishes nothing): a forged ticket for a plain thing P of another account, with a
+// spec/sync-set.md §2 (counts as independent; a read secret a ticket gives establishes nothing): a forged ticket for a plain thing P of another account, with a
 // strong to P from a thing whose keys do not open it, gives P no own keys here: the forged
 // secret is taken but P is not entered read, so the node closure does not hold it (nor writes
 // D's ticket for it), and with the strong gone nothing of it is left.
