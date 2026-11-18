@@ -25,6 +25,31 @@ pub struct Effects<K, V> {
     pending: HashSet<K>,
     /// What the followed keys' last values read, per container (`Arc::as_ptr` of its table).
     tables: HashMap<usize, Indexed<K>, Ids>,
+    #[cfg(debug_assertions)]
+    checks: Checks<K>,
+}
+
+/// Debug builds, on a thread that turned them on (`memo::check_effects`): keys `due` gives
+/// though nothing they read moved, after the due ones, so their settle compares the value with
+/// the one kept, to find a read the function made without its stamp (a field in no container,
+/// the time read unstamped). Two schedules, by powers, as `Memo`'s comparison: a key whose
+/// container's log named another key of it, at its 1st, 4th, 16th, ... such `due` (a missed
+/// read that moves with a stamped one); every followed key at the 16th, 256th, ... `due` (one
+/// that moves alone).
+#[cfg(debug_assertions)]
+#[derive(Clone)]
+struct Checks<K> {
+    /// `due` calls.
+    calls: u64,
+    /// The keys the last `due` gave to compare.
+    keys: HashSet<K>,
+}
+
+#[cfg(debug_assertions)]
+impl<K> Default for Checks<K> {
+    fn default() -> Self {
+        Checks { calls: 0, keys: HashSet::new() }
+    }
 }
 
 struct Followed<V> {
@@ -32,6 +57,28 @@ struct Followed<V> {
     /// The value last settled (`None`: never since it was wanted).
     value: Option<V>,
     deps: Vec<Dep>,
+    /// Debug builds: `due` calls that found a container it read written, its own reads not
+    /// (`Checks`).
+    #[cfg(debug_assertions)]
+    moved: u64,
+}
+
+impl<V> Followed<V> {
+    fn new(seq: u64, value: Option<V>, deps: Vec<Dep>) -> Self {
+        Followed {
+            seq,
+            value,
+            deps,
+            #[cfg(debug_assertions)]
+            moved: 0,
+        }
+    }
+}
+
+/// Whether the `n`th event of a schedule by powers of `2^step` is one to compare at.
+#[cfg(debug_assertions)]
+fn at_power(n: u64, step: u32) -> bool {
+    n.is_power_of_two() && n.trailing_zeros().is_multiple_of(step)
 }
 
 /// The followed keys that read one container, and this reader's mark in its log.
@@ -55,9 +102,17 @@ impl<K> Drop for Indexed<K> {
     }
 }
 
-impl<K: Hash + Eq + Clone, V: Clone + PartialEq> Effects<K, V> {
+impl<K: Hash + Eq + Clone + std::fmt::Debug, V: Clone + PartialEq + std::fmt::Debug> Effects<K, V> {
     pub fn new(name: &'static str) -> Self {
-        Effects { name, followed: HashMap::new(), seq: 0, pending: HashSet::new(), tables: HashMap::default() }
+        Effects {
+            name,
+            followed: HashMap::new(),
+            seq: 0,
+            pending: HashSet::new(),
+            tables: HashMap::default(),
+            #[cfg(debug_assertions)]
+            checks: Checks::default(),
+        }
     }
 
     /// Follows `k`: its next `settle` reports it (nothing was acted on yet). A key followed
@@ -67,7 +122,7 @@ impl<K: Hash + Eq + Clone, V: Clone + PartialEq> Effects<K, V> {
             return;
         }
         self.seq += 1;
-        self.followed.insert(k.clone(), Followed { seq: self.seq, value: None, deps: Vec::new() });
+        self.followed.insert(k.clone(), Followed::new(self.seq, None, Vec::new()));
         self.pending.insert(k);
     }
 
@@ -97,7 +152,8 @@ impl<K: Hash + Eq + Clone, V: Clone + PartialEq> Effects<K, V> {
     }
 
     /// The followed keys whose last value read a stamp written since, and those never settled,
-    /// in want order. A key stays due until it is settled.
+    /// in want order. A key stays due until it is settled. Debug builds add, after them, keys
+    /// whose settle compares with the value kept (`Checks`).
     pub fn due(&mut self) -> Vec<K> {
         let mut maybe: HashSet<K> = std::mem::take(&mut self.pending);
         for ix in self.tables.values_mut() {
@@ -125,13 +181,73 @@ impl<K: Hash + Eq + Clone, V: Clone + PartialEq> Effects<K, V> {
         crate::costs::count("effects: candidates", maybe.len() as u64);
         // a logged write of a key read, before the read or by a key sharing its hash, moved
         // nothing: the stamps say which did
-        let mut due: Vec<(u64, K)> = maybe.into_iter().filter_map(|k| self.followed.get(&k).filter(|f| f.value.is_none() || !f.deps.iter().all(Dep::holds)).map(|f| (f.seq, k))).collect();
+        let mut due: Vec<(u64, K)> = Vec::new();
+        #[cfg(debug_assertions)]
+        let mut check: Vec<(u64, K)> = Vec::new();
+        for k in maybe {
+            let Some(f) = self.followed.get_mut(&k) else { continue };
+            if f.value.is_none() || !f.deps.iter().all(Dep::holds) {
+                due.push((f.seq, k));
+            } else {
+                #[cfg(debug_assertions)]
+                if super::effect_checks() {
+                    f.moved += 1;
+                    if at_power(f.moved, 2) {
+                        check.push((f.seq, k));
+                    }
+                }
+            }
+        }
         if crate::costs::on() {
             self.count_causes(&due);
         }
         due.sort_by_key(|(s, _)| *s);
         self.pending.extend(due.iter().map(|(_, k)| k.clone()));
-        due.into_iter().map(|(_, k)| k).collect()
+        #[allow(unused_mut)]
+        let mut out: Vec<K> = due.into_iter().map(|(_, k)| k).collect();
+        #[cfg(debug_assertions)]
+        if super::effect_checks() {
+            self.checks.calls += 1;
+            if self.checks.calls > 1 && at_power(self.checks.calls, 4) {
+                let given: HashSet<&K> = out.iter().chain(check.iter().map(|(_, k)| k)).collect();
+                let rest: Vec<(u64, K)> = self.followed.iter().filter(|(k, f)| !given.contains(k) && !self.pending.contains(*k) && f.value.is_some()).map(|(k, f)| (f.seq, k.clone())).collect();
+                check.extend(rest);
+            }
+            check.sort_by_key(|(s, _)| *s);
+            self.checks.keys = check.iter().map(|(_, k)| k.clone()).collect();
+            out.extend(check.into_iter().map(|(_, k)| k));
+        }
+        out
+    }
+
+    /// Whether `k`'s settle is a debug comparison (`Checks`): given by the last `due` though
+    /// nothing it read moved, and still so. Always false in release builds.
+    pub fn checking(&self, k: &K) -> bool {
+        #[cfg(debug_assertions)]
+        {
+            self.checks.keys.contains(k) && self.followed.get(k).is_some_and(|f| f.value.is_some() && f.deps.iter().all(Dep::holds))
+        }
+        #[cfg(not(debug_assertions))]
+        {
+            let _ = k;
+            false
+        }
+    }
+
+    /// A debug comparison's end (`Checks`): the value settled now must be the one kept, since
+    /// nothing it read moved.
+    fn compared(&mut self, k: &K, checking: bool, now: &V) {
+        if !checking {
+            return;
+        }
+        #[cfg(debug_assertions)]
+        {
+            self.checks.keys.remove(k);
+            let kept = self.followed.get(k).and_then(|f| f.value.as_ref());
+            assert!(kept == Some(now), "effects {}: {k:?} kept {kept:?}, a settle with nothing it read written gives {now:?}: it read something unstamped", self.name);
+        }
+        #[cfg(not(debug_assertions))]
+        let _ = (k, now);
     }
 
     /// `f`'s value for `k`, recorded as `k`'s: `Some((acted, now))` when it differs from the
@@ -139,25 +255,40 @@ impl<K: Hash + Eq + Clone, V: Clone + PartialEq> Effects<K, V> {
     /// `k` is due again once something `f` read is written. A key not followed is not kept: its
     /// value is reported as new.
     pub fn settle(&mut self, k: &K, f: impl FnOnce() -> V) -> Option<(Option<V>, V)> {
-        let _s = crate::costs::span(self.name);
-        let (now, frame) = recorded_frame(f);
+        let checking = self.checking(k);
+        let (now, frame) = self.run(checking, f);
+        self.compared(k, checking, &now);
         self.record(k, now, frame)
+    }
+
+    /// `f` run recorded; a debug comparison's run counts no costs.
+    fn run<T>(&self, checking: bool, f: impl FnOnce() -> T) -> (T, super::Frame) {
+        if checking {
+            return crate::costs::paused(|| recorded_frame(f));
+        }
+        let _s = crate::costs::span(self.name);
+        recorded_frame(f)
     }
 
     /// `settle` with a function that may fail: on `Err` nothing is recorded and `k` stays due,
     /// its value forgotten (the next settle reports it as new), so a failed read is tried again
     /// at the next `due` with no retry kept by the caller.
     pub fn try_settle<E>(&mut self, k: &K, f: impl FnOnce() -> Result<V, E>) -> Result<Option<(Option<V>, V)>, E> {
-        let _s = crate::costs::span(self.name);
-        let (out, frame) = recorded_frame(f);
+        let checking = self.checking(k);
+        let (out, frame) = self.run(checking, f);
         self.settled(k, out, frame)
     }
 
     /// `try_settle` of a value computed (with what it read, `frame`) while this was not borrowed:
-    /// for an owner inside what the function reads (`Spread::refresh_in`).
+    /// for an owner inside what the function reads (`Cutoff::refresh_in`, which runs a
+    /// comparison's function with costs paused, `checking`).
     pub(super) fn settled<E>(&mut self, k: &K, out: Result<V, E>, frame: super::Frame) -> Result<Option<(Option<V>, V)>, E> {
+        let checking = self.checking(k);
         match out {
-            Ok(now) => Ok(self.record(k, now, frame)),
+            Ok(now) => {
+                self.compared(k, checking, &now);
+                Ok(self.record(k, now, frame))
+            }
             Err(e) => {
                 if let Some(old) = self.followed.get_mut(k) {
                     old.value = None;
@@ -305,7 +436,7 @@ fn cloned_table(t: &Arc<Mutex<Table>>, at: u64) -> Arc<Mutex<Table>> {
 impl<K: Hash + Eq + Clone, V: Clone> Clone for Effects<K, V> {
     fn clone(&self) -> Self {
         let dep = |d: &Dep| Dep { table: if crate::copying::in_copy() { copied(&d.table) } else { d.table.clone() }, ..d.clone() };
-        let followed = self.followed.iter().map(|(k, f)| (k.clone(), Followed { seq: f.seq, value: f.value.clone(), deps: f.deps.iter().map(dep).collect() })).collect();
+        let followed = self.followed.iter().map(|(k, f)| (k.clone(), Followed { seq: f.seq, value: f.value.clone(), deps: f.deps.iter().map(dep).collect(), #[cfg(debug_assertions)] moved: f.moved })).collect();
         let tables = self
             .tables
             .values()
@@ -314,7 +445,15 @@ impl<K: Hash + Eq + Clone, V: Clone> Clone for Effects<K, V> {
                 (Arc::as_ptr(&table) as usize, Indexed { table, at: ix.at, whole: ix.whole.clone(), keys: ix.keys.clone(), buckets: ix.buckets.clone(), reads: ix.reads })
             })
             .collect();
-        Effects { name: self.name, followed, seq: self.seq, pending: self.pending.clone(), tables }
+        Effects {
+            name: self.name,
+            followed,
+            seq: self.seq,
+            pending: self.pending.clone(),
+            tables,
+            #[cfg(debug_assertions)]
+            checks: self.checks.clone(),
+        }
     }
 }
 
@@ -702,5 +841,69 @@ mod tests {
         assert_eq!(e.due(), Vec::<u8>::new());
         c.set(40);
         assert_eq!(e.due(), [1], "the clock went back: every reader");
+    }
+
+    // spec: none (internal). The time a judgement reads (`Clock::now`) holds only as far as the
+    // judgement bounded it: unbounded (outside every `at` and `bound`), any move of the clock
+    // moves it; inside an `at` or while a `bound` lives, only reaching that deadline does.
+    #[test]
+    fn a_time_read_unbounded_moves_with_the_clock() {
+        let mut c = Clock::default();
+        c.set(10);
+        let mut e: Effects<u8, u64> = Effects::new("test time");
+        let read = |c: &Clock, k: u8| match k {
+            1 => c.now() / 100,
+            2 => c.at(|now| (now / 100, Some(100))),
+            3 => {
+                let _b = c.bound(|_| Some(100));
+                c.now() / 100
+            }
+            _ => c.at(|now| (now / 100, Some(100))) + c.now() / 100,
+        };
+        for k in 1..=4 {
+            e.want(k);
+        }
+        for k in e.due() {
+            e.settle(&k, || read(&c, k));
+        }
+        c.set(11);
+        assert_eq!(e.due(), [1, 4], "unbounded: every move; bounded: not before 100");
+        for k in [1, 4] {
+            e.settle(&k, || read(&c, k));
+        }
+        c.set(100);
+        assert_eq!(e.due(), [1, 2, 3, 4]);
+    }
+
+    // spec: none (internal: notes/engine.md, Derived values). Debug builds with the comparison
+    // on (`check_effects`): a settled value that read something unstamped (a plain cell) fails
+    // at a comparison once that moved alone, never while it holds.
+    #[cfg(debug_assertions)]
+    #[test]
+    fn a_read_without_its_stamp_fails_the_comparison() {
+        super::super::check_effects(true);
+        let m: Stamped<u8, u8> = Stamped::default();
+        let plain = std::cell::Cell::new(1u8);
+        let mut e: Effects<u8, u8> = Effects::new("test effects");
+        e.want(1);
+        e.want(2);
+        let read = |k: u8| m.get(&k).copied().unwrap_or(0) + if k == 1 { plain.get() } else { 0 };
+        let settle = |e: &mut Effects<u8, u8>| {
+            for k in e.due() {
+                e.settle(&k, || read(k));
+            }
+        };
+        for _ in 0..20 {
+            settle(&mut e);
+        }
+        plain.set(2);
+        let caught = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            for _ in 0..300 {
+                settle(&mut e);
+            }
+        }));
+        super::super::check_effects(false);
+        let msg = caught.expect_err("the stale value is found").downcast::<String>().map(|s| *s).unwrap_or_default();
+        assert!(msg.contains("test effects: 1 kept Some(1)") && msg.contains("unstamped"), "{msg}");
     }
 }

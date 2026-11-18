@@ -87,7 +87,7 @@ impl Ground for Live<'_, '_> {
         self.opens.reported_at(conn, s).map(|(p, _)| *p)
     }
     fn until(&self, conn: ConnId, s: &SyncId) -> Option<Position> {
-        self.opens.members(conn).get(s).and_then(|m| m.until)
+        self.opens.member(conn, s).and_then(|m| m.until)
     }
     fn records_holding(&mut self, s: &SyncId) -> Result<BTreeSet<RecordId>> {
         self.opens.records_holding(self.cx.engine, self.cx.store, s)

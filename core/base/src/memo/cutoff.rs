@@ -20,7 +20,7 @@ pub struct Cutoff<K, V> {
     quiet: Cell<Quiet>,
 }
 
-impl<K: Hash + Eq + Ord + Clone, V: Clone + PartialEq> Cutoff<K, V> {
+impl<K: Hash + Eq + Ord + Clone + std::fmt::Debug, V: Clone + PartialEq + std::fmt::Debug> Cutoff<K, V> {
     pub fn new(name: &'static str) -> Self {
         Cutoff { fx: RefCell::new(Effects::new(name)), rows: RefCell::new(Stamped::named(name)), quiet: Cell::default() }
     }
@@ -38,7 +38,9 @@ impl<K: Hash + Eq + Ord + Clone, V: Clone + PartialEq> Cutoff<K, V> {
         let due = me(ctx).fx.borrow_mut().due();
         let (mut moved, mut failed) = (false, None);
         for k in due {
-            let (out, frame) = recorded_frame(|| f(ctx, &k));
+            let checking = me(ctx).fx.borrow().checking(&k);
+            let mut run = || recorded_frame(|| f(ctx, &k));
+            let (out, frame) = if checking { crate::costs::paused(run) } else { run() };
             match me(ctx).fx.borrow_mut().settled(&k, out, frame) {
                 Ok(Some((_, now))) => {
                     me(ctx).rows.borrow_mut().insert(k, now);

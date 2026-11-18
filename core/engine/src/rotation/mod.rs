@@ -885,7 +885,7 @@ pub(crate) fn reseal_candidates(tx: &mut Tx<'_>, a: &Tid) -> Result<Vec<(Tid, BT
 fn reseal_scan(tx: &mut Tx<'_>, a: &Tid) -> Result<Vec<(Tid, BTreeSet<Role>)>> {
     // the roles at now it reads (`may_rotate`, `ended_holders`) hold until the clock reaches the
     // next `until` or role commit in `a`'s component, which holds its holders
-    tx.core.time.until(tx.core.horizon(std::iter::once(*a)));
+    let _horizon = tx.core.bound_to_horizon(std::iter::once(*a));
     let me = tx.core.writer()?;
     let may = may_rotate(tx.core, &me, a);
     if may.is_empty() {

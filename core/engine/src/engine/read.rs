@@ -30,11 +30,11 @@ impl Core {
         if let Some(h) = self.root_holders(thing) {
             return h.into_iter().map(|(m, role)| (m, Edge { role, until: None, invite: None, retain: false, floor: None })).collect();
         }
-        let now = self.now();
-        let ts = osis_base::Ts::make(now, 0).unwrap_or_default();
-        let r = self.timelines.on(thing).map(|on| on.roster(At::now(ts))).unwrap_or_default();
-        self.time.until(r.values().filter_map(|e| e.until).map(|u| u.0).filter(|u| *u > now.0).min());
-        r
+        self.time.at(|now| {
+            let r = self.timelines.on(thing).map(|on| on.roster(At::now(crate::flows::ts_at(now)))).unwrap_or_default();
+            let until = r.values().filter_map(|e| e.until).map(|u| u.0).filter(|u| *u > now).min();
+            (r, until)
+        })
     }
 }
 

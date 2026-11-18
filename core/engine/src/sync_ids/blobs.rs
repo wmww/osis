@@ -782,7 +782,7 @@ impl Engine {
             // the roles at now it reads (`finalizable`, `may_rotate`) hold until the clock
             // reaches the next `until` or role commit in the components of `a` and this
             // node's account
-            tx.core.time.until(tx.core.horizon(std::iter::once(a).chain(tx.core.writer().ok())));
+            let _horizon = tx.core.bound_to_horizon(std::iter::once(a).chain(tx.core.writer().ok()));
             // a node removed from its account wraps nothing as it (it may still hold the read
             // secrets through the pass its drop waits for)
             let Ok(who) = tx.core.writer() else { return Ok(true) };

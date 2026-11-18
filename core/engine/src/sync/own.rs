@@ -12,7 +12,7 @@ use std::sync::Arc;
 
 /// What decides a sync ID's candidates: its read things (whose sync units' members come by
 /// `Closure::member_feed`) and the authors written as.
-#[derive(Clone, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) struct Scope {
     things: BTreeSet<Tid>,
     authors: BTreeSet<Tid>,

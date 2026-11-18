@@ -475,9 +475,14 @@ impl Dep {
 /// What the memo computing on this thread has read so far.
 #[derive(Default)]
 pub(crate) struct Frame {
+    /// A memo or `Effects` computing (`recorded_frame`), not an `Unrecorded` hold.
+    computing: bool,
     deps: Vec<Dep>,
     /// Each dep's place in `deps`, by `Dep::id`.
     seen: HashMap<(usize, Option<u64>), usize, Ids>,
+    /// `Clock` bounds held over this frame (`Clock::bound`, `Clock::at`): while one is, the
+    /// time it reads is that bound's (`Clock::now`).
+    bounded: u32,
 }
 
 /// The hasher of the memo's own maps keyed by ids already spread (a table's address, a key's
@@ -588,6 +593,29 @@ thread_local! {
     static COMPARING: Cell<u32> = const { Cell::new(0) };
 }
 
+#[cfg(debug_assertions)]
+thread_local! {
+    /// Whether `Effects` on this thread compare (`check_effects`).
+    static EFFECT_CHECKS: Cell<bool> = const { Cell::new(false) };
+}
+
+/// Debug builds: from now on, `Effects` on this thread give keys whose settle compares the
+/// value with the one kept, though nothing it read moved, to find a read made without its stamp
+/// (`effects::Checks`). Off by default: a comparison's settle warms caches and runs owners'
+/// functions, so tests that count work leave it off; random-history worlds turn it on.
+pub fn check_effects(on: bool) {
+    #[cfg(debug_assertions)]
+    EFFECT_CHECKS.set(on);
+    #[cfg(not(debug_assertions))]
+    let _ = on;
+}
+
+/// Whether `Effects` on this thread compare (`check_effects`).
+#[cfg(debug_assertions)]
+pub(crate) fn effect_checks() -> bool {
+    EFFECT_CHECKS.get()
+}
+
 /// Whether a memo's debug comparison is running on this thread: what it reads is the
 /// comparison's, so a memo hit inside it counts toward no comparison of its own (`Checks`).
 pub fn comparing() -> bool {
@@ -600,14 +628,20 @@ pub fn comparing() -> bool {
 struct Open(usize);
 
 impl Open {
-    fn start() -> Open {
+    fn start(computing: bool) -> Open {
         RECORDING.fetch_add(1, Ordering::Relaxed);
         Open(FRAMES.with(|fr| {
             let mut fr = fr.borrow_mut();
-            fr.push(Frame::default());
+            fr.push(Frame { computing, ..Frame::default() });
             fr.len() - 1
         }))
     }
+}
+
+/// Whether a memo or `Effects` settle is computing on this thread, its reads recorded (not
+/// inside `unrecorded`): a read outside every stamped container here is a read it misses.
+pub fn computing() -> bool {
+    RECORDING.load(Ordering::Relaxed) != 0 && FRAMES.with(|fr| fr.borrow().last().is_some_and(|f| f.computing))
 }
 
 impl Drop for Open {
@@ -625,7 +659,7 @@ pub struct Unrecorded {
 
 impl Unrecorded {
     pub fn start() -> Unrecorded {
-        Unrecorded { _open: FRAMES.with(|fr| !fr.borrow().is_empty()).then(Open::start) }
+        Unrecorded { _open: FRAMES.with(|fr| !fr.borrow().is_empty()).then(|| Open::start(false)) }
     }
 }
 
@@ -637,7 +671,7 @@ fn recorded<T>(f: impl FnOnce() -> T) -> (T, Arc<[Dep]>) {
 
 /// Runs `f` and returns its frame.
 pub(crate) fn recorded_frame<T>(f: impl FnOnce() -> T) -> (T, Frame) {
-    let _open = Open::start();
+    let _open = Open::start(true);
     let out = f();
     let frame = FRAMES.with(|fr| fr.borrow_mut().pop()).unwrap_or_default();
     (out, frame)
@@ -1146,6 +1180,37 @@ impl Clock {
         self.now
     }
 
+    /// The time, for a reader that judges by it: inside a memo or `Effects` settle computing
+    /// (`computing`), the time as a bound held over its frame reads it (`bound`, `at`: the
+    /// answer holds until that deadline), else a read of the time whole (`get`): an answer that
+    /// bounds nothing moves at every move of the clock, never stays past what it judged by. A
+    /// memo computing inside a bound opens a frame of its own, bounded by nothing.
+    pub fn now(&self) -> u64 {
+        if computing() && !FRAMES.with(|fr| fr.borrow().last().is_some_and(|f| f.bounded > 0)) {
+            self.stamps.read_all();
+        }
+        self.now
+    }
+
+    /// Reads the clock up to the deadline `f` gives from the time (`until`) and, while the
+    /// guard lives, has the frame computing read the time as holding until then (`now`): for a
+    /// judgement whose every time-relative read holds until that deadline.
+    pub fn bound(&self, f: impl FnOnce(u64) -> Option<u64>) -> Bound {
+        self.until(f(self.now));
+        Bound::hold()
+    }
+
+    /// `f`'s answer at the time, for a reader whose answer holds until the time `f` gives with
+    /// it (`None`: at every later time): `until` of that, so the reader moves when the clock
+    /// reaches it; the time `f` reads inside (`now`) is the one it is given.
+    pub fn at<T>(&self, f: impl FnOnce(u64) -> (T, Option<u64>)) -> T {
+        let held = Bound::hold();
+        let (out, t) = f(self.now);
+        drop(held);
+        self.until(t);
+        out
+    }
+
     /// The earliest time an `until` reader's answer stops holding, if any is ahead: when a driver
     /// next sets the clock to move something. A reader gone since leaves a wake that moves nothing.
     pub fn next(&self) -> Option<u64> {
@@ -1168,6 +1233,37 @@ impl Clock {
             self.stamps.moved();
         }
         self.now = now;
+    }
+}
+
+/// A `Clock` bound over the frame computing when it was made (`Clock::bound`): the frame's
+/// reads of the time hold to it while the guard lives.
+pub struct Bound(Option<usize>);
+
+impl Bound {
+    fn hold() -> Bound {
+        if !computing() {
+            return Bound(None);
+        }
+        Bound(FRAMES.with(|fr| {
+            let mut fr = fr.borrow_mut();
+            let i = fr.len().checked_sub(1)?;
+            let f = fr.get_mut(i)?;
+            f.bounded += 1;
+            Some(i)
+        }))
+    }
+}
+
+impl Drop for Bound {
+    fn drop(&mut self) {
+        if let Some(i) = self.0 {
+            FRAMES.with(|fr| {
+                if let Some(f) = fr.borrow_mut().get_mut(i) {
+                    f.bounded = f.bounded.saturating_sub(1);
+                }
+            });
+        }
     }
 }
 

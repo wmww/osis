@@ -28,7 +28,7 @@ impl Views {
     pub fn moved(&mut self, m: &Moved, opens: &Opens) {
         match m {
             Moved::Joined(conn, s, _) => {
-                let store = opens.members(*conn).get(s).is_some_and(|x| x.class == SourceClass::Store);
+                let store = opens.member(*conn, s).is_some_and(|x| x.class == SourceClass::Store);
                 let at = opens.record(*conn).map_or(Source::Conn(*conn), Source::Record);
                 if let Some(old) = self.by_conn.insert((*conn, *s), at) {
                     self.drop_conn(*s, old, *conn);

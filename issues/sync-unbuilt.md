@@ -18,7 +18,7 @@ The module notes (notes/sync-*.md) point here. Untested built parts: issues/sync
 - **Wraps**: a peer's entry counting as lacking for its wrap (Duplicates, spec/sync-ids.md §6 Wraps).
 - **Ephemeral refused for the memory cap** (`Ingested::TooLarge`, spec/sync-compaction.md §2 Caps) comes again only with its next listing, not once S's held bytes drop: streams must keep the refusal per S with the usage then, as `room` does.
 - **Fill order again** (spec/sync-streams.md §4 Fill order, 4): a body queued as not opening keeps its place when a read secret of S arrives; it should park under S's read secrets and be ranked again, as the store's parked entries are.
-- **Inbox**: clearing at sources keeping S unread needs streams' `known` to carry each entry's deposited flag and blob size; opens' members are not stamped, so a source's step moving reaches Register only at its next join.
+- **Inbox**: clearing at sources keeping S unread needs streams' `known` to carry each entry's deposited flag and blob size.
 - **A grant's `profile` ticket** to an account the granter may not hold as a contact (spec/sync-inbox.md §5 Delivery of a grant): the `ticket@~0` fire carries none, so a stranger cannot dial the granter by it.
 - **Opens**: static entries claimed in the walk's tests (`Tested::Static` always has no step).
 

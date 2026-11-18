@@ -508,8 +508,11 @@ pub fn three(gives: Gives, runs: usize) -> (World, Tid, osis_base::SyncId) {
 /// does: whom each dials is `Engine::dial_peers` (contacts' dial lists). Drawn per seed (IDs,
 /// keys and tie-breaks); built once per (seed, shape) per process and copied
 /// (`osis_base::copying::cached`: a history plays twice, and several tests share seeds). Its
-/// setup has its own delivery cap (`RULE_CAP` per node); a test's count starts after it.
+/// setup has its own delivery cap (`RULE_CAP` per node); a test's count starts after it. A random
+/// history counts no work: its thread runs the memo effects' debug comparison
+/// (`osis_base::memo::check_effects`).
 pub fn world_of(seed: u64, accounts: usize, nodes: usize) -> World {
+    osis_base::memo::check_effects(true);
     osis_base::copying::cached(
         &format!("history world {seed} {accounts} {nodes}"),
         || {

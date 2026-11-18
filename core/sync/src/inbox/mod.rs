@@ -89,7 +89,7 @@ impl Net for Links<'_> {
         self.opens.named(conn)
     }
     fn member(&self, conn: ConnId, s: &SyncId) -> Option<Member> {
-        self.opens.members(conn).get(s).cloned()
+        self.opens.member(conn, s).cloned()
     }
     fn head(&self, conn: ConnId, s: &SyncId) -> Option<StepId> {
         self.streams.known().head(self.streams.source(self.opens, conn), s)

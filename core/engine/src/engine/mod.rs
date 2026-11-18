@@ -1770,13 +1770,19 @@ impl Core {
         v.demotions.iter().all(held) && (!v.demotes || self.ix.epoch_intro.get(k).is_some_and(|x| held(&x.1)))
     }
 
-    /// The first time after now that a grant's `until` or a role commit's `ts` falls due on what
-    /// reaches `actors` (wall ms): until then the clock alone moves no role on them. Read by the
-    /// edges into each actor and what holds a role on it (`Timelines::roles_on`, `on`), so a
-    /// change elsewhere in their components moves nothing here.
-    pub fn horizon(&self, actors: impl Iterator<Item = Tid>) -> Option<u64> {
-        let now = self.now().0;
-        let at = osis_perm::At::now(crate::flows::now_ts(self));
+    /// Bounds the clock (`Clock::bound`) at the first time after now that a grant's `until` or a
+    /// role commit's `ts` falls due on what reaches `actors`: until then the clock alone moves
+    /// no role on them, so the roles at now a judgement reads while the guard lives
+    /// (`Core::now`) hold to it. Read by the edges into each actor and what holds a role on it
+    /// (`Timelines::roles_on`, `on`), so a change elsewhere in their components moves nothing
+    /// here.
+    pub fn bound_to_horizon(&self, actors: impl Iterator<Item = Tid>) -> osis_base::memo::Bound {
+        self.time.bound(|now| self.horizon_at(now, actors))
+    }
+
+    /// `bound_to_horizon`'s deadline, after `now`.
+    fn horizon_at(&self, now: u64, actors: impl Iterator<Item = Tid>) -> Option<u64> {
+        let at = osis_perm::At::now(osis_base::Ts::make(WallMs(now), 0).unwrap_or_default());
         let mut seen: BTreeSet<Tid> = BTreeSet::new();
         let mut out: Option<u64> = None;
         let mut later = |t: u64| {
@@ -2303,7 +2309,7 @@ impl Core {
 
     fn new(id: Identity, clock: Arc<dyn Clock>, session: osis_crdt::Session, expiring: osis_crdt::Session, store_rows: memo::Changes) -> Core {
         let key_salt = osis_base::hash::derive_key("osis node key index", id.seed().expose());
-        Core {
+        let mut core = Core {
             id,
             hlc: Hlc::new(clock, Ts::default()),
             states: HashMap::new(),
@@ -2475,10 +2481,21 @@ impl Core {
             node_root: None,
             wrote_on: Vec::new(),
             sourced_elsewhere: BTreeSet::new(),
-        }
+        };
+        // the memo clock starts at the wall clock: a load judges at the time it runs
+        let now = core.hlc.wall().0;
+        core.time.set(now);
+        core
     }
 
+    /// The time. Inside a memo or `Effects` settle computing, the memo clock's (`Clock::now`:
+    /// bounded by the `until` the judgement read, else a read of it whole), so a judgement
+    /// moves when the time passes what it judged by; elsewhere the wall clock, which the memo
+    /// clock follows (set at each transaction and read).
     pub fn now(&self) -> WallMs {
+        if osis_base::memo::computing() {
+            return WallMs(self.time.now());
+        }
         self.hlc.wall()
     }
 
@@ -3909,7 +3926,7 @@ impl Engine {
         if self.blobs_unsettled {
             memo::unrecorded(|| self.settle_blobs())?;
         }
-        let now = self.now().0;
+        let now = self.core.hlc.wall().0;
         self.core.time.set(now);
         let start = self.core.mark();
         let txn = self.store.transaction(&mut self.store_rng)?;
@@ -3957,7 +3974,7 @@ impl Engine {
             memo::unrecorded(|| self.settle_blobs())?;
         }
         let _after;
-        let now = self.now().0;
+        let now = self.core.hlc.wall().0;
         self.core.time.set(now);
         #[cfg(debug_assertions)]
         {

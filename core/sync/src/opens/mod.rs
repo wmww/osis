@@ -438,6 +438,10 @@ pub struct Opens {
     /// acknowledgement passes or falls below `changed_at(S)` or S's `changed_at` moves, whole as
     /// records are evicted or `acks` loads (`wait_for`: leave, status and life follow it).
     peers: osis_base::memo::Stamps,
+    /// Stamped per (connection, S) as the connection's member S opens, changes (ended,
+    /// departed) or goes, the connection taking or letting go its record included (`member`:
+    /// inbox and read judge by it).
+    member_stamps: osis_base::memo::Stamps,
     /// Kept records by `acked_pos` (`wait_for`); none before the first settle loads it.
     acks: Option<Acks>,
     /// Per S, the connections whose walk stopped there (spec/sync-ids.md §6 Stranded there), each
@@ -470,6 +474,7 @@ impl Default for Opens {
             fx: holds::Fx::default(),
             reports: osis_base::memo::Stamps::named("opens: reports"),
             peers: osis_base::memo::Stamps::named("opens: peers"),
+            member_stamps: osis_base::memo::Stamps::named("opens: members"),
             acks: None,
             stops: osis_base::memo::Stamped::default(),
             dropped: BTreeSet::new(),
@@ -621,8 +626,25 @@ impl Opens {
         Ok(acted)
     }
 
+    /// `conn`'s members (stamped whole: a judgement of one reads `member`).
     pub fn members(&self, conn: ConnId) -> &BTreeMap<SyncId, Member> {
+        self.member_stamps.read_all();
+        self.members_unstamped(conn)
+    }
+
+    /// `conn`'s member S (stamped per (connection, S)).
+    pub fn member(&self, conn: ConnId, s: &SyncId) -> Option<&Member> {
+        self.member_stamps.read(&(conn, *s));
+        self.members_unstamped(conn).get(s)
+    }
+
+    fn members_unstamped(&self, conn: ConnId) -> &BTreeMap<SyncId, Member> {
         self.conns.get(&conn).and_then(|c| c.rec).and_then(|r| self.records.get(&r)).map_or(&NO_MEMBERS, |r| &r.members)
+    }
+
+    /// Member S of `conn` opened, changed or went (`member_stamps`).
+    fn member_moved(&self, conn: ConnId, s: &SyncId, present: bool) {
+        self.member_stamps.wrote(&(conn, *s), present);
     }
 
     /// The peer's record: where streams, read and store keep their per-peer rows (none for a
@@ -893,6 +915,7 @@ impl Opens {
         let Some(r) = self.records.get(&rid) else { return };
         let walk: Vec<SyncId> = r.walk.keys().copied().collect();
         for (s, m) in &r.members {
+            self.member_stamps.wrote(&(conn, *s), false);
             moved.push(Moved::Left(conn, *s, LeftAt { reported: c.reported.get(s).map(|(p, _)| *p), until: m.until, how: Leaving::Connection }));
             self.unfollowed.insert((conn, *s));
             if let Some(set) = self.holding.get_mut(s) {
@@ -1128,6 +1151,9 @@ impl Opens {
                     self.stops.remove(&s);
                 }
                 // the record rows of S go with S in the store
+                for c in self.conns.keys() {
+                    self.member_stamps.wrote(&(*c, s), false);
+                }
                 for r in self.records.values_mut() {
                     r.walk.remove(&s);
                     r.members.remove(&s);
@@ -1321,6 +1347,7 @@ impl Opens {
             self.index_stop(conn, s, Some(x));
         }
         for s in &members {
+            self.member_moved(conn, s, true);
             self.holding.entry(*s).or_default().insert(conn);
             moved.push(Moved::Joined(conn, *s, Rejoin::Held));
         }
@@ -2204,10 +2231,6 @@ impl Opens {
 
     // ---- members, ending and Lost (§6) ----
 
-    fn member(&self, conn: ConnId, s: &SyncId) -> Option<&Member> {
-        self.members(conn).get(s)
-    }
-
     fn open(&mut self, ctx: &mut Ctx, conn: ConnId, s: SyncId, m: Member, beacon: Option<[u8; 32]>, moved: &mut Vec<Moved>) {
         let Some(c) = self.conns.get(&conn) else { return };
         let Some(rid) = c.rec else { return };
@@ -2220,6 +2243,7 @@ impl Opens {
         r.basis.insert(s, beacon);
         let rejoin = r.stopped.remove(&s).unwrap_or(Rejoin::From(None));
         self.dirty(rid).members.insert(s);
+        self.member_moved(conn, &s, true);
         self.holding.entry(s).or_default().insert(conn);
         self.peers.wrote(&s, true);
         moved.push(Moved::Joined(conn, s, rejoin));
@@ -2284,7 +2308,11 @@ impl Opens {
     fn set_departed(&mut self, conn: ConnId, s: &SyncId, on: bool) {
         let Some(c) = self.conns.get_mut(&conn) else { return };
         let Some(m) = c.rec.and_then(|r| self.records.get_mut(&r)).and_then(|r| r.members.get_mut(s)) else { return };
+        if m.departed == on {
+            return;
+        }
         m.departed = on;
+        self.member_moved(conn, s, true);
         self.dirty_member(conn, *s);
     }
 
@@ -2296,6 +2324,7 @@ impl Opens {
             return;
         }
         m.until = Some(until);
+        self.member_stamps.wrote(&(conn, *s), true);
         c.ending.insert(*s);
         moved.push(Moved::Until(conn, *s));
         self.dirty_member(conn, *s);
@@ -2336,6 +2365,7 @@ impl Opens {
         let Some(c) = self.conns.get_mut(&conn) else { return };
         let Some(r) = c.rec.and_then(|r| self.records.get_mut(&r)) else { return };
         let Some(m) = r.members.remove(&s) else { return };
+        self.member_stamps.wrote(&(conn, s), false);
         self.unfollowed.insert((conn, s));
         let at = LeftAt { reported: c.reported.get(&s).map(|(p, _)| *p), until: m.until, how: if stop.is_some() { Leaving::Kept } else { Leaving::Forgot } };
         c.reported.forget(&s);

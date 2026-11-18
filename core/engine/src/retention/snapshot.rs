@@ -685,7 +685,7 @@ pub(crate) fn covered_join(tx: &mut Tx<'_>, s: &CommitId, c: &CommitId, tid: &Ti
         // bare leftover stays, `drops_as_covered`), or written by a node holding a request this
         // one does not, gives no value, and the body counted covered would never be fetched
         // again (spec/commits.md §5 Covered)
-        if !own && !m.header.expires.is_some_and(|t| t <= tx.now().0) && holds_valueless(tx, s, sai, &super::writes_of(&m.header, c, cai), tid, ak)? {
+        if !own && !m.header.expires.is_some_and(|t| tx.core.time.until(Some(t)) >= t) && holds_valueless(tx, s, sai, &super::writes_of(&m.header, c, cai), tid, ak)? {
             return Ok(Some(false));
         }
         return Ok(Some(true));

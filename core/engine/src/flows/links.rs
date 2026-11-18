@@ -145,7 +145,7 @@ impl Engine {
     /// `until` passing moves it.
     pub fn link_ended(&mut self, link: &ShareLink) -> bool {
         let l = crate::identity::key_actor_tid(&link.seed);
-        self.core.time.until(self.core.horizon([link.k, link.target].into_iter()));
+        let _horizon = self.core.bound_to_horizon([link.k, link.target].into_iter());
         self.edge_gone(&link.k, &l) || self.edge_gone(&link.target, &link.k)
     }
 
@@ -157,7 +157,7 @@ impl Engine {
     /// next `until` or role commit of K's and the target's components.
     pub fn joined_link_ended(&mut self, k: &Tid) -> bool {
         let Some(target) = self.core.created(k).and_then(|r| r.link_target()) else { return false };
-        self.core.time.until(self.core.horizon([*k, target].into_iter()));
+        let _horizon = self.core.bound_to_horizon([*k, target].into_iter());
         self.joined_link(k) && self.edge_gone(&target, k)
     }
 
@@ -169,10 +169,8 @@ impl Engine {
         if self.first_admin(k) == Some(me) {
             return false;
         }
-        let ts = super::now_ts(&self.core);
         let edge = self.core.timelines.get(k).and_then(|tl| tl.edges_at(None).get(&me, k).copied());
-        self.core.time.until(edge.and_then(|e| e.until).map(|u| u.0));
-        edge.is_some_and(|e| e.alive_at(Some(ts)))
+        self.core.time.at(|now| (edge.is_some_and(|e| e.alive_at(Some(super::ts_at(now)))), edge.and_then(|e| e.until).map(|u| u.0)))
     }
 
     /// This account's leave of link actor `k` (`joined_link_ended`): a self-removal of its grant

@@ -34,6 +34,17 @@ impl<K: Hash + Eq + Ord + Clone, V: Clone + PartialEq> Spread<K, V> {
         if me(ctx).fx.borrow_mut().due().is_empty() {
             return Ok(false);
         }
+        if me(ctx).fx.borrow().checking(&()) {
+            // a debug comparison (`Effects` checks): nothing the map read moved
+            let (fresh, frame) = crate::costs::paused(|| recorded_frame(|| f(ctx)));
+            let this = me(ctx);
+            let fresh = fresh.map(|fresh| {
+                let values = this.values.borrow();
+                assert!(values.len() == fresh.len() && fresh.iter().all(|(k, v)| values.get(k) == Some(v)), "spread {}: a derivation with nothing it read written differs from the entries kept: it read something unstamped", this.fx.borrow().name());
+            });
+            this.fx.borrow_mut().settled(&(), fresh, frame)?;
+            return Ok(false);
+        }
         let _s = crate::costs::span(me(ctx).fx.borrow().name());
         let (out, frame) = recorded_frame(|| f(ctx));
         let this = me(ctx);

@@ -357,7 +357,7 @@ struct Follows {
     answers: HashMap<u64, Follow>,
 }
 
-#[derive(Clone, PartialEq, Eq, Hash)]
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
 enum Followed {
     Grants(Tid),
     Answer(u64),

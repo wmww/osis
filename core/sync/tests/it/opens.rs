@@ -7,7 +7,8 @@ use crate::harness::scripted::*;
 use osis_base::SyncId;
 use osis_engine::sync::J;
 use osis_proto::{Code, Msg, OfferItem};
-use osis_sync::opens::{Leaving, Moved, Peer, Rejoin};
+use osis_base::memo::Effects;
+use osis_sync::opens::{Leaving, Member, Moved, Peer, Rejoin};
 use osis_sync::session::Proven;
 use osis_sync::types::{Credential, SourceClass};
 
@@ -2042,6 +2043,39 @@ fn an_answer_after_the_testers_class_moved_opens_nothing_at_the_old_class_spec_s
         let want = if moved { None } else { Some(SourceClass::Store) };
         assert_eq!(own, want, "moved {moved}");
     }
+}
+
+// spec/sync-opens.md §6 (A member at a store source (§4 Source) whose peer J judges departed is
+// ended too), spec/sync-ids.md §6 (Register): what inbox's register plan reads of a member
+// (`Opens::member`) moves when only its departure flips. A reader's store peer, judged departed,
+// then a sync holder (still ended at its `until`), is judged departed again: `departed` alone
+// moves, and a judgement that read the member is due.
+#[test]
+fn a_departure_alone_moves_what_read_the_member_spec_sync_opens_6() {
+    let st = StepKeys::new(1, 0);
+    let mut r = Side::new(1);
+    let mut k = Side::new(2);
+    r.table.set(S, Some(reader(&S, &read_secret(1, 0), &st, &[], &[], &[])));
+    k.table.set(S, Some(store(&st)));
+    let mut p = Pair::new(r, k, account(1), account(2));
+    p.run();
+    p.a.table.judge_as(S, tid(2), J::Departed);
+    p.a.settle();
+    p.a.table.judge_as(S, tid(2), J::SyncHolder);
+    p.a.settle();
+    let was = p.a.opens.member(p.ca, &S).cloned().expect("ended, open");
+    assert!(was.until.is_some() && !was.departed);
+    let mut fx: Effects<(), Option<Member>> = Effects::new("test: member read");
+    fx.want(());
+    for key in fx.due() {
+        fx.settle(&key, || p.a.opens.member(p.ca, &S).cloned());
+    }
+    assert!(fx.due().is_empty());
+    p.a.table.judge_as(S, tid(2), J::Departed);
+    p.a.settle();
+    let now = p.a.opens.member(p.ca, &S).cloned().expect("open");
+    assert_eq!(now, Member { departed: true, ..was }, "only the departure moved");
+    assert_eq!(fx.due(), [()], "a judgement of the member is due");
 }
 
 // spec/sync-opens.md §6 (whose peer J judges departed is ended too; closes only on the peer's Lost)

@@ -343,7 +343,7 @@ impl Status {
     pub fn moved(&mut self, sessions: &Sessions, opens: &Opens, m: &Moved) {
         match *m {
             Moved::Joined(conn, s, _) => {
-                let Some(member) = opens.members(conn).get(&s) else { return };
+                let Some(member) = opens.member(conn, &s) else { return };
                 let proven = sessions.get(conn).map(|x| x.proven());
                 let src = Src { class: member.class, at: opens.record(conn).map_or(Source::Conn(conn), Source::Record), account: proven.and_then(|p| p.account()), own_node: proven.is_some_and(|p| p.node.is_some()) };
                 self.joined(s, conn, src);
@@ -881,6 +881,6 @@ fn pass_now(g: &mut impl Ground, clock: &Clock, work: &mut Work, s: &SyncId, p: 
     PassNow { read, done }
 }
 
-fn whole<T: Default + PartialEq>(fx: &mut Effects<(), Arc<T>>, f: impl FnOnce() -> Arc<T>) -> Option<Arc<T>> {
+fn whole<T: Default + PartialEq + std::fmt::Debug>(fx: &mut Effects<(), Arc<T>>, f: impl FnOnce() -> Arc<T>) -> Option<Arc<T>> {
     fx.settle(&(), f).map(|(_, now)| now)
 }

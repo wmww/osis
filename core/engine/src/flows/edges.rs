@@ -646,7 +646,7 @@ impl Engine {
     /// time alone moves it).
     pub fn may_remove(&mut self, target: &Tid, holder: &Tid) -> Result<Option<Removal>> {
         let Some(me) = self.core.me() else { return Ok(None) };
-        self.core.time.until(self.core.horizon([*target, *holder].into_iter()));
+        let _horizon = self.core.bound_to_horizon([*target, *holder].into_iter());
         if crate::apply::validity::self_removal(&self.core, &me, target, holder, now_ts(&self.core)) {
             return Ok(Some(Removal::SelfRemoval));
         }

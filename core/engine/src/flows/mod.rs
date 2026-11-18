@@ -134,7 +134,12 @@ pub(crate) fn put_edge(m: &mut Mutation, target: Tid, holder: Tid, e: &ct::Edge)
 }
 
 pub(crate) fn now_ts(core: &Core) -> osis_base::Ts {
-    osis_base::Ts::make(core.now(), 0).unwrap_or_default()
+    ts_at(core.now().0)
+}
+
+/// Wall ms `now` as a `ts`.
+pub(crate) fn ts_at(now: u64) -> osis_base::Ts {
+    osis_base::Ts::make(WallMs(now), 0).unwrap_or_default()
 }
 
 impl Core {
@@ -170,9 +175,10 @@ impl Core {
         if let Some(h) = self.root_holders(tid) {
             return h.get(node).copied();
         }
-        let (role, until) = self.timelines.role_now(node, tid, now_ts(self));
-        self.time.until(until.map(|u| u.0));
-        role
+        self.time.at(|now| {
+            let (role, until) = self.timelines.role_now(node, tid, ts_at(now));
+            (role, until.map(|u| u.0))
+        })
     }
 
     /// Every actor's effective role on `tid` now, read on the memo clock as `role_now` is.
@@ -180,9 +186,10 @@ impl Core {
         if let Some(h) = self.root_holders(tid) {
             return Arc::new(h);
         }
-        let (roles, until) = self.timelines.roles_now(tid, now_ts(self));
-        self.time.until(until.map(|u| u.0));
-        roles
+        self.time.at(|now| {
+            let (roles, until) = self.timelines.roles_now(tid, ts_at(now));
+            (roles, until.map(|u| u.0))
+        })
     }
 
     /// The first admin of `tid` (spec/permissions.md §1): the next actor up its record chain,
