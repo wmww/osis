@@ -35,7 +35,7 @@ An addendum's validity reads its header and the timeline, never its body: `ix.ad
 - perm `incremental::incremental_equals_from_scratch` checks reported moves against every timeline answer (`update_moved`). Arrival order: engine it `apply_order`, perm `incremental` late leaves, `late_holder_judges_revoke_alike_*`.
 
 ### Possible holders (`Held::ever_admins`, `ever_writers`)
-The one helper for "could this signer ever have held the role" where the answer must not depend on arrival (purge rights; spec/commits.md §4); a timeline read would. A least set grown from the thing through first admins and grants signed by members, of any validity, so it only grows. One set over the thing and its members, not one per member thing (a member could name the holder on the thing anyway; per-thing sets took 20 s per call on a chain of 1000 nested holders).
+The one helper for "could this author ever have held the role" where the answer must not depend on arrival (purge rights; spec/commits.md §4); a timeline read would. A least set grown from the thing through mint admins and grants signed by members, of any validity, so it only grows. One set over the thing and its members, not one per member thing (a member could name the holder on the thing anyway; per-thing sets took 20 s per call on a chain of 1000 nested holders).
 
 ## Un-merge and the one rebuild path
 ### Un-merge is skipping invalid bodies
@@ -72,7 +72,7 @@ A write's own delta is the one carrying its dot (`copies::any_delta`). A valid s
 - **Own delta invalid**: its body gives nothing; a held valid snapshot's copies stay. Dropping that snapshot rebuilds the aspect. A cover must carry a valid snapshot's copies too (`covered`), so it never drops a voucher's vouching.
 - **Own delta never received**: the write is in the state only through a held valid snapshot (nothing indexes which). When that snapshot falls or drops, the rebuild keeps the write only where another held valid body carries it, alike with a node that got the demotion first (`demoted_compactor_snapshot_by_frontier_*`, `invalidated_copy_of_shared_dot_goes_alike_*`).
 
-Tess's scenario (spec/requirements.md Permissions, Limit): a removed holder's unseen write compacted by an honest writer before it learned of the removal stays wherever that snapshot is held (`removed_holder_write_compacted_earlier_stays_alike_*`) until an admin's reset or revert.
+Tess's scenario (spec/requirements.md Permissions: edits a remaining writer vouches for having received are kept): a removed holder's unseen write compacted by an honest writer before it learned of the removal stays wherever that snapshot is held (`removed_holder_write_compacted_earlier_stays_alike_*`) until an admin's reset or revert.
 
 ## Uncovering
 ### The test
@@ -95,7 +95,7 @@ Whenever a cover on the aspect may stop carrying: it turns invalid, arrives agai
 
 ### Fetching it back
 - The body counts missing again (`facts.missing`), so read fetches it where a source shows it (spec/sync-judgement.md §3 Dropped bodies; `Streams::fetch_again` is not built: issues/sync-unbuilt.md). A holder finds the body uncovered, so must-hold, and logs it again (`coverer_demoted_after_cover_drop_alike_*`, `covered_drop_coverer_and_remover_revoked_alike_*`).
-- Limit (spec/permissions.md §5.2): with no copy anywhere the write is gone at every node alike. Usually only a reader holds it then.
+- With no copy anywhere the write is gone at every node alike (spec/permissions.md §5.2). Usually only a reader holds it then.
 - The order harness drops covered bodies at every sync step (`order.rs` `drop_covered`) and checks a reopen reads alike, so open-equals-rebuild covers un-drops.
 
 ## Flips against dropped data
