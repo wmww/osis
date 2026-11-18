@@ -511,13 +511,18 @@ impl Opens {
     /// `Proved` (Resume or NoRecord, then Digest); Resume, Resumed, Digest, Members, Beacons,
     /// Offer, Shared, Lost.
     pub fn on_message(&mut self, cx: &mut Cx, sessions: &mut Sessions, unread: &Unread, conn: ConnId, m: Incoming, moved: &mut Vec<Moved>) {
+        self.live(cx, sessions, unread, |o, ctx| o.message(ctx, conn, m, moved));
+    }
+
+    /// `f` over the node's own holds, sessions and store.
+    fn live<T>(&mut self, cx: &mut Cx, sessions: &mut Sessions, unread: &Unread, f: impl FnOnce(&mut Self, &mut Ctx) -> T) -> T {
         let mono = cx.mono;
         let mut fx = std::mem::take(&mut self.fx);
         let mut store = cx.store.clone();
         let mut holds = NodeHolds { cx, unread, fx: &mut fx };
-        let mut ctx = Ctx { holds: &mut holds, wire: sessions, store: &mut store, mono };
-        self.message(&mut ctx, conn, m, moved);
+        let out = f(self, &mut Ctx { holds: &mut holds, wire: sessions, store: &mut store, mono });
         self.fx = fx;
+        out
     }
 
     /// The end of the node's step: what changed of each record is written, records past the
@@ -600,26 +605,16 @@ impl Opens {
         if reported.is_empty() {
             return;
         }
-        let mono = cx.mono;
-        let mut fx = std::mem::take(&mut self.fx);
-        let mut store = cx.store.clone();
-        let mut holds = NodeHolds { cx, unread, fx: &mut fx };
-        let mut ctx = Ctx { holds: &mut holds, wire: sessions, store: &mut store, mono };
-        for r in reported.drain(..) {
-            self.reported(&mut ctx, r, moved);
-        }
-        self.fx = fx;
+        self.live(cx, sessions, unread, |o, ctx| {
+            for r in reported.drain(..) {
+                o.reported(ctx, r, moved);
+            }
+        });
     }
 
     /// Whether anything acted (a member that moved is in `moved`).
     pub fn settle(&mut self, cx: &mut Cx, sessions: &mut Sessions, unread: &Unread, moved: &mut Vec<Moved>) -> Result<bool> {
-        let mono = cx.mono;
-        let mut fx = std::mem::take(&mut self.fx);
-        let mut store = cx.store.clone();
-        let mut holds = NodeHolds { cx, unread, fx: &mut fx };
-        let mut ctx = Ctx { holds: &mut holds, wire: sessions, store: &mut store, mono };
-        let acted = self.tick(&mut ctx, moved);
-        self.fx = fx;
+        let acted = self.live(cx, sessions, unread, |o, ctx| o.tick(ctx, moved));
         if let Some(e) = self.fault.take() {
             return Err(e.into());
         }
