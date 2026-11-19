@@ -200,6 +200,10 @@ pub struct Rules {
     /// redone without it, its drops unmade (notes/write-path-design.md §1, A removal is judged
     /// in the world its list makes). False: its drops stay (`Reading::stray`).
     pub void_unapplied: bool,
+    /// Reading of the audit (notes/path-model-findings.md, To model next 4): a lowering puts in
+    /// question the held writes before it resting on its edge, as a trusted write's seeds do, in
+    /// place of the applied ones.
+    pub audit_held: bool,
     /// Which unapplied lowerings that made drops a round voids.
     pub void_order: VoidOrder,
     /// Honest writing in `Sim` (a policy, not a judging rule): a remover and a voucher name what
@@ -223,6 +227,7 @@ impl Rules {
             leave_in_question: false,
             void_unapplied: false,
             void_order: VoidOrder::Earliest,
+            audit_held: false,
             stands: false,
         }
     }
@@ -241,6 +246,7 @@ impl Rules {
             leave_in_question: true,
             void_unapplied: true,
             void_order: VoidOrder::Earliest,
+            audit_held: false,
             stands: true,
         }
     }
@@ -669,7 +675,10 @@ fn drops(w: &World, rules: &Rules, v: &View, d0: &Set, vouched: &Vouched, void: 
             let mut q = vec![];
             if falls {
                 let exempt = if rules.exempt_chain { chain(w, &v.held, i) } else { Set::new() };
-                q = p.applied.iter().copied().filter(|&j| rests_on(w, rules, j, e) && !exempt.contains(&j) && !listed(w, v, vouched, i, j)).collect();
+                // in question: the applied writes before it (`audit_held`: the held ones not yet
+                // dropped or void) resting on its edge
+                let before: Vec<Id> = if rules.audit_held { order.iter().copied().take_while(|&j| j != i).filter(|j| !dropped.contains(j) && !void.contains(j)).collect() } else { p.applied.clone() };
+                q = before.into_iter().filter(|&j| rests_on(w, rules, j, e) && !exempt.contains(&j) && !listed(w, v, vouched, i, j)).collect();
             }
             p.state.insert(e, new);
             if !leave {

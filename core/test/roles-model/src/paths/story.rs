@@ -867,6 +867,21 @@ pub fn check(m: &Sim, rules: &Rules, st: &mut Stats) {
             }
         }
     }
+    // one set of drops: the audit reading the held writes in place of the applied ones reads
+    // every node alike (notes/path-model-findings.md, To model next 4)
+    let other = Rules { audit_held: !rules.audit_held, ..*rules };
+    for (&n, (v, rd)) in rds.iter().chain(plain.iter()) {
+        st.count("drops");
+        let o = judge(w, &other, v);
+        if o.applied != rd.applied || o.valid != rd.valid || o.roles != rd.roles {
+            let k = match (plain.contains_key(&n), o.roles == rd.roles) {
+                (false, _) => "drops differ, trusting",
+                (true, true) => "drops differ, trusting nothing, same roles",
+                (true, false) => "drops differ, trusting nothing",
+            };
+            st.note(k, m, format!("node {n}: the audit over the held writes reads otherwise: applied {:?} / {:?}", rd.applied, o.applied));
+        }
+    }
     // alike: two nodes read a commit they both hold in a unit they both sync alike
     for (&n, (vn, rn)) in &rds {
         for (&o, (vo, ro)) in rds.range(n + 1..) {
@@ -977,6 +992,7 @@ pub fn mode_rules(mode: &str) -> Option<Rules> {
         "-first-applied" => Rules { regrant: Regrant::FirstApplied, ..f },
         "-once" => Rules { rewrite: false, ..f },
         "-leave" => Rules { leave_in_question: false, ..f },
+        "-audit-held" => Rules { audit_held: true, ..f },
         _ => return None,
     })
 }

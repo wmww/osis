@@ -1400,3 +1400,25 @@ fn a_node_trusting_nothing_is_shown_the_removal_as_a_dispute() {
     let rd = fixed(&w, &[r]);
     assert!(rd.void.is_empty() && !rd.shows(tg) && !rd.shows(rx) && rd.role(H, A) == Admin && rd.role(X, A) == Gone);
 }
+
+/// Two readings of a lowering's drops (notes/path-model-findings.md 18): the audit puts in
+/// question the applied writes before it, a trusted write's seeds the held ones. X, stolen,
+/// backdates its own leave to 1 and removes H at 5 (honestly stamped, listing every grant); H
+/// removes X at 6. Over the applied writes, H's removal drops the leave, X's removal of H then
+/// applies, so H's removal is void and the leave stands; over the held writes it drops the leave
+/// and X's removal of H too, and applies. Same roles here (X left either way); where X had made
+/// an honest grant after 1, the first reading loses it. Trusting H's removal, both read alike.
+#[test]
+fn the_audit_over_the_held_writes_differs_only_where_nothing_is_trusted() {
+    let (mut w, gx, gb) = paired();
+    let rx = w.edge(X, 5, &[], A, H, Gone, &[gx, gb]);
+    let r = w.edge(H, 6, &[], A, X, Gone, &[]);
+    let leave = w.edge(X, 1, &[], A, X, Gone, &[]);
+    w.rely(leave, H);
+    let applied = fixed(&w, &[]);
+    assert!(applied.voided.contains(&r) && applied.applied.contains(&leave) && !applied.applied.contains(&rx));
+    let held = fixed_but(&w, &[], |x| x.audit_held = true);
+    assert!(held.applied.contains(&r) && held.dropped.is_superset(&Set::from([leave, rx])));
+    assert_eq!((applied.role(H, A), applied.role(X, A)), (held.role(H, A), held.role(X, A)));
+    assert_eq!(fixed(&w, &[r]).applied, fixed_but(&w, &[r], |x| x.audit_held = true).applied);
+}
