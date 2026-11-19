@@ -403,6 +403,9 @@ fn an_expiring_request_reaches_only_earlier_expiries_spec_commits_5() {
     let permanent = write(&mut lp, "kept", None);
     let brief = write(&mut lp, "brief", Some(t + HOUR));
     let later = write(&mut lp, "later", Some(t + 3 * HOUR));
+    // peer 1 holds them first: what a sync carries of a commit purged whole is the product's
+    // call (spec/sync-judgement.md §1)
+    lp.sync_all().unwrap();
     let mut m = Mutation::new();
     m.retention(d, &log(), r).unwrap();
     m.set(d, &log(), &s("edit")).unwrap();

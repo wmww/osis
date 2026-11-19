@@ -637,7 +637,8 @@ fn snapshot_join(n: usize, asp: &osis_schema::Aspect<Value>) -> [Work; 2] {
 fn snapshot_first(n: usize) -> Work {
     use crate::common::TAGS;
     let mut lp = net(2, 0);
-    let t = new_thing(&mut lp, 0);
+    // peer 1 a reader: content of a thing outside its node closure waits (spec/commits.md §4)
+    let t = crate::common::new_shared(&mut lp, 0);
     let base: BTreeSet<_> = lp.packages(0).unwrap().iter().map(|p| p.id).collect();
     for i in 0..n {
         add(&mut lp, 0, t, &TAGS, format!("e{i}"));

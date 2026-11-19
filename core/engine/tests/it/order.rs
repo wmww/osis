@@ -686,6 +686,12 @@ fn fresh_holding(now: WallMs, g: Tid) -> Peer {
     p
 }
 
+/// The account every node under test is (`fresh_base`), forked at `now`, holding nothing yet:
+/// the judging node of the judgment vectors (tests/it/judgment.rs), granted in the setup.
+pub(crate) fn judge_at(now: WallMs) -> Peer {
+    under_test(fresh_base().fork(FRESH).unwrap(), now)
+}
+
 /// The account `fresh_holding` forks, made once per process.
 fn fresh_base() -> std::sync::MutexGuard<'static, Peer> {
     static BASE: std::sync::OnceLock<std::sync::Mutex<Peer>> = std::sync::OnceLock::new();

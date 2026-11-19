@@ -385,6 +385,8 @@ fn bad_part_beside_good_ones_holds_nothing_back_spec_commits_4() {
     let (p_one, p_two, p_bad) = (on("t:one.0"), on("t:two.0"), on("t:bad.0"));
     let read = |deliveries: &[&[u8]]| {
         let mut lp2 = net(2, 0);
+        // peer 1 holds g: content of a thing outside its node closure waits (spec/commits.md §4)
+        lp2.hold_at(1, g);
         for pk in &setup {
             lp2.deliver(1, pk).unwrap();
         }
@@ -411,6 +413,8 @@ fn bad_part_beside_good_ones_holds_nothing_back_spec_commits_4() {
         }
         // the bad part alone, and a junk copy of its slot: refused, nothing kept
         let mut lp2 = net(2, 0);
+        // peer 1 holds g: content of a thing outside its node closure waits (spec/commits.md §4)
+        lp2.hold_at(1, g);
         for pk in &setup {
             lp2.deliver(1, pk).unwrap();
         }

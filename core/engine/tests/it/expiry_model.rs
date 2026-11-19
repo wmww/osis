@@ -102,13 +102,16 @@ fn holders() -> [Holder; 4] {
     ]
 }
 
-/// Six peers; peer 0's new thing `t`, peer 1 granted write on it, all synced: built once.
+/// Six peers; peer 0's new thing `t`, peer 1 granted write on it, the others read, all synced:
+/// built once.
 fn six() -> (LocalPeer, Tid) {
     LocalPeer::cached("expiry_model::six", || {
         let mut lp = net(6, 0);
         let t = new_thing(&mut lp, 0);
         let w = lp.peers[1].engine.me();
         set_edge(&mut lp.peers[0].engine, t, w, Some(edge(osis_base::Role::Write)), None);
+        // the others read t: content of a thing outside a node closure waits (spec/commits.md §4)
+        crate::common::share(&mut lp, 0, t);
         lp.sync_all().unwrap();
         (lp, t)
     })

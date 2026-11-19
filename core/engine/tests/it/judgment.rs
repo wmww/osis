@@ -8,13 +8,10 @@
 use crate::order::{Played, Step, play};
 use osis_base::{CommitId, Role, WallMs};
 use osis_crypto::{Secret32, SeededRng};
-use osis_engine::local_peer::{LocalPeer, Peer};
+use osis_engine::local_peer::{LocalPeer, Package};
 use osis_vectors::file::{Record as Rec, VecFile};
 use std::collections::{BTreeMap, BTreeSet};
 
-/// The judging node's rng seed: one apart from the history's three peers (`order::play` at 0
-/// seeds them 0 to 2; its own identity is never observed).
-const FRESH: u64 = 3;
 /// Fields of a case that are inputs; every other field is expected output.
 const INPUTS: [&str; 7] = ["case", "spec", "source", "read-secret", "now", "entries", "order"];
 /// Header fields that are not expected lines.
@@ -74,7 +71,12 @@ fn lay(played: &Played, second: bool) -> Laid {
     let mut refs = BTreeSet::new();
     let mut seen = BTreeSet::new();
     let mut setup = 0;
-    for (ci, pk) in played.packs.iter().enumerate() {
+    // the judging node's grants on the things outside G (`Played::access`), as the first entries
+    // after the setup (a node is granted a thing before it fetches it), counted with the setup's
+    // last commit
+    let access: Vec<Package> = played.access.iter().map(|(_, pk)| pk.clone()).collect();
+    let laid_packs: Vec<(usize, &Package)> = played.packs[..played.base].iter().enumerate().chain(access.iter().map(|pk| (played.base.saturating_sub(1), pk))).chain(played.packs.iter().enumerate().skip(played.base)).collect();
+    for (ci, pk) in laid_packs {
         let cb = osis_commit::CommitBlob::decode(&pk.bytes).unwrap();
         // bare headers name no list by link in these histories: the aspects are at hand
         let under = |ai: usize| second && cb.header.aspects[ai].tid != played.things[0] && played.things.contains(&cb.header.aspects[ai].tid);
@@ -97,7 +99,7 @@ fn lay(played: &Played, second: bool) -> Laid {
                 of.push(ci);
             }
         }
-        if ci < played.base {
+        if ci < played.base && !access.iter().any(|a| a.id == pk.id) {
             setup = ents.len();
         }
     }
@@ -146,13 +148,15 @@ fn judged(bytes: &[u8], reads: &[Secret32], now: WallMs, order: &[Tok]) -> Vec<(
 }
 
 /// Delivers `order` of the entries to a fresh node at `now` within one pass (its end never
-/// comes, `Engine::settle_needs`: the node keeps all it took, holding nothing itself, so what it
-/// judges is a function of the entries alone, spec/commits.md §5 What a held thing needs); what
-/// it judges, as the expected fields of a case (README.md, `judgment/`).
+/// comes, `Engine::settle_needs`): the order harness's node under test (`order::judge_at`,
+/// granted read in the setup and in its first entries), holding every thing an entry writes on,
+/// so what it judges is a function of the entries alone (spec/commits.md §4 Outside the node
+/// closure, §5 What a held thing needs); what it judges, as the expected fields of a case
+/// (README.md, `judgment/`).
 fn replay(bytes: &[u8], reads: &[Secret32], now: WallMs, order: &[Tok]) -> Vec<(String, String)> {
     let ents = entries(bytes);
     // a fresh node at `now`: built once per `now` (`LocalPeer::cached`)
-    let mut p = LocalPeer::cached(&format!("judgment::fresh/{}", now.0), || (LocalPeer::of(vec![Peer::new(FRESH, now).unwrap()], 0).unwrap(), ())).0.peers.remove(0);
+    let mut p = LocalPeer::cached(&format!("judgment::fresh/{}", now.0), || (LocalPeer::apart(vec![crate::order::judge_at(now)], 0), ())).0.peers.remove(0);
     let mut ids = BTreeSet::new();
     // a filler wrap opens under no read secret (spec/crypto.md §5)
     // an entry delivers its sync ID's section: the one sealed under the read secret its wrap
@@ -166,6 +170,17 @@ fn replay(bytes: &[u8], reads: &[Secret32], now: WallMs, order: &[Tok]) -> Vec<(
             (o.commit.encode(), o.commit)
         })
     };
+    // it holds every thing an entry it opens writes on, as a node holding the sync IDs does: only
+    // content of a thing in the node closure applies (spec/commits.md §4 Outside the node closure)
+    let mut held = BTreeSet::new();
+    for i in 0..ents.len() {
+        if let Some((_, cb)) = open(i) {
+            held.extend(cb.header.aspects.iter().map(|a| a.tid));
+        }
+    }
+    for t in held {
+        p.engine.hold(osis_base::Strong(t)).unwrap();
+    }
     for t in order {
         match *t {
             Tok::In(i) => match open(i) {

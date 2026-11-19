@@ -52,6 +52,10 @@ fn fight_built(n: usize) -> Fight {
     let t = thing_of(&mut lp, 2, c);
     lp.peers[2].engine.grant(&t, &a, &edge_of(Role::Admin)).unwrap();
     lp.peers[2].engine.grant(&t, &b, &edge_of(Role::Admin)).unwrap();
+    // the other peers read t: content of a thing outside a node closure waits (spec/commits.md §4)
+    for p in &ps[3..] {
+        lp.peers[2].engine.grant(&t, p, &edge_of(Role::Read)).unwrap();
+    }
     spread(&mut lp);
     lp.advance(1000);
     // b's clock runs ahead; a has not seen b's removal when it writes its own

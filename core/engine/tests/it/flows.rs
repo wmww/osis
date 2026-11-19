@@ -1678,11 +1678,8 @@ fn linked_frontier_spec_perm_5_1() {
     assert!(osis_base::encode(&osis_schema::Codec::to_value(&frontier)).len() > osis_base::format::CHUNK_THRESHOLD);
     let demotion = set_edge(&mut lp.peers[0].engine, t, x, None, Some(frontier));
     assert!(lp.peers[0].engine.header(&demotion).unwrap().links.frontier.is_some(), "the header frontier goes by link");
-    // peer 2: everything but the demotion; then the demotion without its blobs
-    let mut ids = lp.peers[0].engine.commit_ids();
-    ids.retain(|c| *c != demotion);
-    for id in ids {
-        let pk = lp.peers[0].engine.package(&id).unwrap().unwrap();
+    // peer 2: what its sync IDs carry but the demotion; then the demotion without its blobs
+    for pk in crate::common::packages_to(&mut lp, 0, 2).into_iter().filter(|p| p.id != demotion) {
         lp.deliver(2, &pk).unwrap();
     }
     let pk = lp.peers[0].engine.package(&demotion).unwrap().unwrap();
