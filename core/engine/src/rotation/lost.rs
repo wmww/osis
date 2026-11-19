@@ -661,9 +661,13 @@ impl Engine {
     /// `Life`, one key per held actor) is due again when anything it read moves; the memo clock is
     /// read up to the next `until` on the actors reaching `a`, so an `until` passing wakes it.
     pub fn lost_due(&mut self, a: &Tid) -> Result<bool> {
-        for x in reaching(&self.core, a) {
-            self.core.roster_of(&x);
+        let reach = reaching(&self.core, a);
+        for x in &reach {
+            self.core.roster_of(x);
         }
+        // the roles at now it reads (`loss_seen`, `judge`) hold until the clock reaches the next
+        // `until` or role commit on what reaches `a`
+        let _horizon = self.core.bound_to_horizon(reach.into_iter());
         let a = *a;
         let due = self.core.ix.secrets.contains_key(&a) && self.read(|tx| due_now(tx, &a))?;
         // a loss judged afresh once it ends: a later one waits its own pass (`lost_passed`); a

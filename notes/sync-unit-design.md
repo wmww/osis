@@ -93,17 +93,16 @@ A dependent thing X of H becomes independent by one role commit P (`keys.0`, `se
 - **With the account redesign**: a removal of a signer is one entry under each unit where the signer could write or invite, in that unit's required set for the unit's life whether or not the unit holds a commit of the signer. The copy comes with the edge writes joining the holder the signer was removed from to the unit's thing, so the unit's readers judge it required from what the unit holds. Who logs it and how the units are found: §12, cases 2 and 6.
 
 ## 8. Costs, counted
-Throwaway debug tests on the sync harness (`history::world(0, 3)`, script steps, `osis_base::costs`, `net.between`, `local_census`, store `scan_local`), not kept; every figure below is **[measured]** on main at 6e38bcd03 unless marked. Sizes n and 10n: 5 and 50 independent things, each made by node 0, kept unread by node 1 and read by node 2 ("flat"); and one root with 4 and 40 members promoted from dependents ("closure"). "Per unit" is the difference divided by the units added.
+Debug tests on the sync harness (`history::world(0, 3)`, script steps, `osis_base::costs`, `net.between`, `local_census`, store `scan_local`); every figure below is **[measured]** on main at 6e38bcd03 by throwaway tests unless marked (those counted store rows the harness's own checks at quiet read too, and a time sweep that read a page of each index per step: read their row counts as high). Those marked idle.rs are core/sync/tests/it/idle.rs's worlds (2 and 20 things). Sizes n and 10n: 5 and 50 independent things, each made by node 0, kept unread by node 1 and read by node 2 ("flat"); and one root with 4 and 40 members promoted from dependents ("closure"). "Per unit" is the difference divided by the units added.
 
 | | at n | at 10n | per unit | grows? |
 |---|---|---|---|---|
 | Idle reconnect, writer and reader (flat): deliveries | 39 | 39 | 0 | no |
 | same, and writer with a node keeping all unread: bytes [measured: core/sync/tests/it/idle.rs] | 2088 | 2108 | 0.4 | no: integer widths |
-| same: store rows read / `status: stranded` / `inbox: register judged` / `opens standing` | 16499 / 77 / 33 / 33 | 30648 / 392 / 168 / 168 | 314 / 7 / 3 / 3 | **defect**: work per shared sync ID with nothing out of date (spec/sync.md §2) |
+| same, writer and reader, at 2 and 20 things [measured: idle.rs]: store rows read / `status: stranded` / `inbox: register judged` / `opens standing` | 1477 / 56 / 24 / 24 | 2818 / 182 / 78 / 78 | 75 / 7 / 3 / 3 | **defect**: each member re-judged at a reconnect (issues/many-sync-ids-cost.md) |
 | One small commit (flat): deliveries, bytes | 29, 3926 | 29, 3926 | 0 | no |
-| same: store rows read / `status: stranded` | 15469 / 101 | 26003 / 416 | 234 / 7 | **defect**: a commit's work grows with sync IDs held |
-| same in the closure world: store rows read | 16761 | 32508 | 437 | same |
-| Reader restart, connected (flat): deliveries, bytes | 76, 5.7 KB | 82, 22.5 KB | 0.1, 373 B | bytes per sync ID |
+| same, at 2 and 20 things [measured: idle.rs]: store rows read / `status: stranded` | 2115 / 84 | 2312 / 192 | 11 / 6 | **defect**: caught up kept per connection (issues/many-sync-ids-cost.md) |
+| Reader restart, connected (flat): deliveries, bytes | 76, 5.7 KB | 82, 22.5 KB | 0.1, 373 B | bytes per sync ID; recount |
 | First sync of a closure, reader: deliveries | 65 | 209 | 4.0 | inherent in form (a unit is opened and listed), the constant is high |
 | same: bytes (both ways) | 258 KB | 1955 KB | 47 KB, 23 KB of it reader to maker | the role commits are inherent (notes/thing-cost.md: 9.4 KB per independent thing); the bytes sent back are not explained |
 | same: signs / transactions / step verifications / stamp verifications | 54 / 243 / 81 / 76 | 327 / 1757 / 657 / 658 | 7.6 / 42 / 16 / 16 | to study |

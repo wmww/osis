@@ -1202,6 +1202,9 @@ impl Engine {
         }
         self.core.roster_of(actor);
         let a = *actor;
+        // the roles at now it reads (`finalizable`, `may_rotate`) hold until the clock reaches the
+        // next `until` or role commit on what reaches `a` and the actor it follows
+        let _horizon = self.core.bound_to_horizon(std::iter::once(a).chain(secret_actor_up(&self.core, &a)));
         let owed = self.read(|tx| {
             let me = tx.core.writer()?;
             owed_below(tx, me, a)

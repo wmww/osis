@@ -1,6 +1,6 @@
 //! Work per sync ID held at idle (spec/sync-streams.md §4 Costs; spec/sync.md §2): node 0 makes
 //! `n` things, node 1's account keeps each unread, node 2's reads each; what an idle reconnect
-//! costs, counted at n and 10n things, never timed.
+//! and one small commit cost, counted at n and 10n things, never timed.
 
 use crate::harness::Step::*;
 use crate::harness::history::{Gives, world};
@@ -52,4 +52,38 @@ fn an_idle_reconnect_sends_the_same_at_10n_spec_sync_streams_4() {
     for (i, who) in ["a reader", "a node keeping them unread"].iter().enumerate() {
         assert!(large[i] <= small[i] + 32, "with {who}: {} bytes at n, {} at 10n", small[i], large[i]);
     }
+}
+
+/// The named counters' sum over one small commit by node 0 on thing 0, run to quiet.
+fn commit(w: &mut World, named: &[&str]) -> u64 {
+    osis_base::costs::take();
+    let _ = play(w, &[Write(0, 0), Run], String::new());
+    osis_base::costs::take().into_iter().filter(|(k, ..)| named.contains(k)).map(|(.., n)| n).sum()
+}
+
+// spec/sync.md §2 (Work in proportion to change: No rule re-derives a whole sync ID, store or
+// connection on a timer): time passing re-judges no held actor's duties (a role commit owed, a
+// lost access to drop) unless a grant's `until` or a role commit's `ts` falls due on what reaches
+// it: a small commit after an hour with nothing due judges as many at n as at 10n things.
+#[test]
+fn time_passing_rejudges_no_duty_per_thing_spec_sync_2() {
+    let at = |n| {
+        let mut w = things(n);
+        w.jump(3_600_000);
+        commit(&mut w, &["life: role duty owed", "life: lost access"])
+    };
+    let (small, large) = (at(N), at(10 * N));
+    assert!(large <= small, "duties judged: {small} at n, {large} at 10n");
+}
+
+// spec/sync.md §2 (Work in proportion to change: Each event re-judges only what it touches): a
+// small commit on one sync ID re-judges no other sync ID's stranding (issues/many-sync-ids-cost.md:
+// caught up is kept per connection, so each S on a connection the commit's stream crosses is
+// judged again).
+#[test]
+#[ignore = "issues/many-sync-ids-cost.md"]
+fn repro_a_commit_judges_one_stranding() {
+    let at = |n| commit(&mut things(n), &["status: stranded"]);
+    let (small, large) = (at(N), at(10 * N));
+    assert!(large <= small, "strandings judged: {small} at n, {large} at 10n");
 }
