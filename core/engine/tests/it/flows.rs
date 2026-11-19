@@ -25,6 +25,18 @@ pub(crate) fn send(lp: &mut LocalPeer, from: usize, to: usize, ids: &[CommitId])
     }
 }
 
+/// Delivers commits `ids` of peer `from` to peer `to` as a sync carries them
+/// (`LocalPeer::packages_under`): each holding the parts the sync IDs `to` syncs as it arrives
+/// carry and its certificate parts; one with neither is not sent.
+pub(crate) fn send_carried(lp: &mut LocalPeer, from: usize, to: usize, ids: &[CommitId]) {
+    for id in ids {
+        let synced = lp.synced(to).unwrap();
+        let Some(parts) = lp.peers[from].engine.sent_parts(id, &synced).unwrap() else { continue };
+        let pk = lp.peers[from].engine.package_of_parts(id, &parts).unwrap().unwrap();
+        lp.deliver(to, &pk).unwrap();
+    }
+}
+
 /// `spread` as sync IDs carry commits (`SealedPackage`): each peer opens only what the read
 /// secrets it holds unwrap.
 pub(crate) fn spread_sealed(lp: &mut LocalPeer) {
