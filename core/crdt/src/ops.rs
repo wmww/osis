@@ -33,12 +33,6 @@ impl Writer {
         let lo = lo.max(1);
         Writer { ts, src, lo, next: lo, keyed: false, copied: BTreeSet::new(), seen: Vec::new() }
     }
-    /// Continues a delta whose counters below `next` are taken: commit-level writes keep its
-    /// delta stamp `lo` (§2.3), creations and position writes go on from `next`.
-    pub fn resume(mut self, next: u64) -> Writer {
-        self.next = self.next.max(next);
-        self
-    }
     /// Whether map removals carry the removed record's key (role-class aspects only,
     /// §5.6); else a removal is the dot's key-erased record.
     pub fn keyed_removals(mut self, on: bool) -> Writer {
@@ -75,12 +69,6 @@ impl Writer {
     /// The record a removal of entry record `id` writes (§5.6).
     pub(crate) fn removal(&self, id: &Eid) -> Eid {
         if self.keyed { id.clone() } else { Eid::erased(id.dot.clone()) }
-    }
-    pub fn ts(&self) -> osis_base::Ts {
-        self.ts
-    }
-    pub fn source(&self) -> &Source {
-        &self.src
     }
     /// Stamp of every commit-level write (register values, resets, flags, case, `W`).
     pub fn delta_stamp(&self) -> Stamp {

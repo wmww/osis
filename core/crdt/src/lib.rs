@@ -86,7 +86,6 @@ pub use stream::{Checked, Head, PageAt, Piece, Want, decode_checked, stream_chec
 pub use page_index::{PageIndex, Wanted};
 pub use page::{MemoryPages, PageError, PageParams, PageSink, PageSource, Unpaged};
 pub use paging::{PagedTouch, Paths, Step};
-pub use access::Held;
 pub use state::SlotRef;
 pub use seq::{Anchor, Seq, SeqContent, SeqElem};
 pub use seq_diff::{EditWindow, changes, edit_window};

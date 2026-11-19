@@ -305,11 +305,6 @@ impl<K: Hash + Eq + Clone + std::fmt::Debug, V: Clone + PartialEq + std::fmt::De
         }
     }
 
-    /// This effects' name (`costs`).
-    pub(super) fn name(&self) -> &'static str {
-        self.name
-    }
-
     fn record(&mut self, k: &K, now: V, frame: super::Frame) -> Option<(Option<V>, V)> {
         let Some(old) = self.followed.get_mut(k) else { return Some((None, now)) };
         let was = old.value.replace(now.clone());

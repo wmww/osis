@@ -26,11 +26,6 @@ impl DeleteSecret {
         DeleteSecret { seed, esk, vk }
     }
 
-    /// The Ed25519 seed.
-    pub fn seed(&self) -> &Secret32 {
-        &self.seed
-    }
-
     /// The delete verification key, listed in headers and published in `keys.0`.
     pub fn verifying_key(&self) -> VerifyingKey {
         self.vk

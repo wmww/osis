@@ -26,9 +26,7 @@ use std::sync::{Arc, Mutex, MutexGuard};
 
 mod cutoff;
 mod effects;
-mod spread;
 pub use cutoff::Cutoff;
-pub use spread::Spread;
 pub use effects::{Effects, Feed, Removals};
 
 /// Keys without a stamp of their own share one per bucket of their hash (`Table::absent`).
@@ -333,10 +331,6 @@ impl Stamps {
         lock(&self.0).stamp(Some(hash(k)))
     }
 
-    /// Counts the container's changes: equal at two times, nothing in it changed between.
-    pub fn changes(&self) -> u64 {
-        lock(&self.0).ver
-    }
 
     /// Key `k` is read: the memo computing, if any, depends on it.
     pub fn read<Q: Hash + ?Sized>(&self, k: &Q) {
@@ -415,11 +409,6 @@ impl Reader {
     pub fn read<Q: Hash + ?Sized>(&self, k: &Q) {
         if RECORDING.load(Ordering::Relaxed) != 0 {
             Stamps::record_on(&self.0, Some(hash(k)));
-        }
-    }
-    pub fn read_all(&self) {
-        if RECORDING.load(Ordering::Relaxed) != 0 {
-            Stamps::record_on(&self.0, None);
         }
     }
 }
@@ -1183,11 +1172,6 @@ impl Default for Clock {
 }
 
 impl Clock {
-    pub fn get(&self) -> u64 {
-        self.stamps.read_all();
-        self.now
-    }
-
     /// The time, for a reader whose answer holds until `t` (`None`: at every later time). A `t`
     /// already reached is no wake: the answer holds until the clock goes back.
     pub fn until(&self, t: Option<u64>) -> u64 {
@@ -1201,7 +1185,7 @@ impl Clock {
 
     /// The time, for a reader that judges by it: inside a memo or `Effects` settle computing
     /// (`computing`), the time as a bound held over its frame reads it (`bound`, `at`: the
-    /// answer holds until that deadline), else a read of the time whole (`get`): an answer that
+    /// answer holds until that deadline), else a read of the time whole: an answer that
     /// bounds nothing moves at every move of the clock, never stays past what it judged by. A
     /// memo computing inside a bound opens a frame of its own, bounded by nothing.
     pub fn now(&self) -> u64 {
@@ -1580,7 +1564,7 @@ mod tests {
         let mut clock = Clock::default();
         clock.set(100);
         let (whole, until, ever): (Memo<(), u64>, Memo<(), u64>, Memo<(), u64>) = (Memo::new("test whole"), Memo::new("test until"), Memo::new("test ever"));
-        let ask = |c: &Clock| (whole.get(&(), || c.get()), until.get(&(), || u64::from(c.until(Some(200)) >= 200)), ever.get(&(), || c.until(None).min(1)));
+        let ask = |c: &Clock| (whole.get(&(), || c.now()), until.get(&(), || u64::from(c.until(Some(200)) >= 200)), ever.get(&(), || c.until(None).min(1)));
         let ran = || {
             let c = crate::costs::take();
             let n = |name: &str| c.iter().filter(|x| x.0 == name).map(|x| x.2).sum::<u64>();

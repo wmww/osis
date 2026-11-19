@@ -158,7 +158,7 @@ impl Engine {
 
     /// Brings the per-entry values a body reads (`published`, `certified`) up to date before a
     /// memo of bodies is asked: a hit asks neither, and its reads of them hold only once they are
-    /// (notes/engine.md, Derived values: `Spread`).
+    /// (notes/engine.md, Derived values: Per-key rows).
     fn follow_bodies(&mut self) -> Result<()> {
         self.follow_read_things()?;
         self.follow_published();

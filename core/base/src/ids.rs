@@ -504,11 +504,6 @@ impl Del {
         Some(d)
     }
 
-    /// The key at `level`, if any.
-    pub fn get(&self, level: u8) -> Option<&[u8; 32]> {
-        self.0.get(usize::from(level).checked_sub(1)?)?.as_ref()
-    }
-
     /// `(level, key)` by level ascending.
     pub fn iter(&self) -> impl Iterator<Item = (u8, [u8; 32])> + '_ {
         (1u8..).zip(self.0.iter()).filter_map(|(l, k)| k.map(|k| (l, k)))
@@ -781,12 +776,12 @@ mod tests {
         assert!(!format!("{l:?}").contains("abab"));
     }
 
-    // spec/data-model.md §5: Del holds at most one key per level 1 to 3, read back by level.
+    // spec/data-model.md §5: Del holds at most one key per level 1 to 3.
     #[test]
     fn del_levels() {
         let d = Del::from_keys([(3, [3; 32]), (1, [1; 32])]).unwrap();
         assert_eq!(d.iter().collect::<Vec<_>>(), vec![(1, [1; 32]), (3, [3; 32])]);
-        assert_eq!((d.len(), d.get(2), d.get(3)), (2, None, Some(&[3; 32])));
+        assert_eq!(d.len(), 2);
         assert_eq!(Del::from_keys([(1, [1; 32]), (1, [2; 32])]), None);
         assert_eq!(Del::from_keys([(0, [1; 32])]), None);
         assert_eq!(Del::from_keys([(4, [1; 32])]), None);

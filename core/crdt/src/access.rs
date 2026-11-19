@@ -33,57 +33,12 @@ impl crate::fragment::Struct {
 
 use std::collections::BTreeMap;
 
-/// What a state holds of one set element (`Fragment::set_elem`).
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum Held {
-    Live,
-    /// A tombstone, a record without a live value, or pruned: absent under an effective reset
-    /// above its creation stamp (§4.2).
-    Dead,
-    /// Absent and not pruned: its creation has not arrived.
-    Unknown,
-}
-
 impl Fragment {
     /// Calls `f` on every value the fragment holds: register values, map keys, at any depth,
     /// in records live or not (a write into another's entry carries no creation and reads as
     /// nothing alone, §5.6 Live; its values are still its).
     pub fn values(&self, f: &mut dyn FnMut(&Value)) {
         self.values_with(crate::state::Values::All, f);
-    }
-
-    /// The set at field `field` of this struct state (or of its struct slot), with the effective
-    /// reset above its elements (§4.2); `None` when the state is no struct.
-    fn struct_set(&self, field: u64) -> Option<(Option<&crate::fragment::Set>, Option<Stamp>)> {
-        let (s, e) = match self {
-            Fragment::Struct(s) => (s, None),
-            Fragment::Slots(sl) => match sl.slots.get(&crate::fragment::Encoding::Struct) {
-                Some(Fragment::Struct(s)) => (s, self.reset()),
-                _ => return None,
-            },
-            _ => return None,
-        };
-        let e = crate::stamp::max_opt(e, s.meta.reset.clone());
-        match s.fields.get(&field) {
-            Some(Fragment::Set(set)) => Some((Some(set), crate::stamp::max_opt(e, set.meta.reset.clone()))),
-            None => Some((None, e)),
-            Some(_) => None,
-        }
-    }
-
-    /// The set element of value `v` created at `at` in the set at struct field `field` of this
-    /// state (§4.2, §5.5): live, dead (also once a reset or a removal of `v` above `at` pruned
-    /// it), or not held. `Unknown` when the state has no such struct of sets.
-    pub fn set_elem(&self, field: u64, at: &Stamp, v: &Value) -> Held {
-        let Some((set, e)) = self.struct_set(field) else { return Held::Unknown };
-        let gone = set.map(|s| crate::fragment::removed(&s.elems)).unwrap_or_default();
-        let removed = gone.get(v).is_some_and(|rs| rs.iter().any(|r| r.hides(&at.dot, at)));
-        match set.and_then(|s| s.elems.get(&at.dot)) {
-            Some(el) if !crate::fragment::hidden(&at.dot, el, &gone) && el.frag.as_deref().and_then(Fragment::read).is_some() => Held::Live,
-            Some(_) => Held::Dead,
-            None if removed || e.is_some_and(|e| e > *at) => Held::Dead,
-            None => Held::Unknown,
-        }
     }
 
     /// The stamp of a register's write (`None`: no register, or none written).

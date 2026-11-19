@@ -159,14 +159,6 @@ impl Value {
     pub fn is_reference(&self) -> bool {
         matches!(self, Value::Strong(_) | Value::Weak(_) | Value::Ticket(_))
     }
-    /// The target of a strong, a weak or a ticket.
-    pub fn target(&self) -> Option<Tid> {
-        match self {
-            Value::Strong(t) | Value::Weak(t) => Some(*t),
-            Value::Ticket(t) => Some(t.target),
-            _ => None,
-        }
-    }
     pub fn as_list(&self) -> Option<&[Value]> {
         match self {
             Value::List(l) => Some(l),

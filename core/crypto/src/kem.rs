@@ -264,15 +264,6 @@ pub fn sealed_to_value(sealed: &[u8]) -> Value {
     agility_value(sealed)
 }
 
-/// Box bytes of a `sealed` value; another case parks.
-pub fn sealed_from_value(v: &Value) -> Result<&[u8], Error> {
-    let b = agility_bytes(v, None)?;
-    if b.len() < SEALED_OVERHEAD {
-        return Err(Error::Malformed("sealed box length"));
-    }
-    Ok(b)
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -459,7 +450,6 @@ mod tests {
         let b1 = seal_with(k.public(), b"ad", b"p", &eph, &[4; 32]).unwrap();
         assert_eq!(b1, seal_with(k.public(), b"ad", b"p", &eph, &[4; 32]).unwrap());
         assert_eq!(b1[..32], X25519Secret::from_secret(&eph).public());
-        assert_eq!(sealed_from_value(&sealed_to_value(&b1)), Ok(&b1[..]));
     }
 
     proptest::proptest! {

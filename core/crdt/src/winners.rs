@@ -73,15 +73,6 @@ pub struct Won {
 pub struct Winners(BTreeMap<Vec<Place>, BTreeSet<(Kind, Stamp)>>);
 
 impl Winners {
-    pub fn contains(&self, w: &Won) -> bool {
-        self.0.get(&w.path).is_some_and(|s| s.contains(&(w.kind, w.stamp.clone())))
-    }
-    pub fn len(&self) -> usize {
-        self.0.values().map(BTreeSet::len).sum()
-    }
-    pub fn is_empty(&self) -> bool {
-        self.0.is_empty()
-    }
     pub fn iter(&self) -> impl Iterator<Item = Won> + '_ {
         self.0.iter().flat_map(|(p, s)| s.iter().map(move |(k, st)| Won { path: p.clone(), kind: *k, stamp: st.clone() }))
     }
@@ -135,13 +126,6 @@ impl<T: Default> ByWrite<T> {
 impl<T> ByWrite<T> {
     pub fn get(&self, w: &Won) -> Option<&T> {
         self.0.get(&w.path)?.get(&(w.kind, w.stamp.clone()))
-    }
-    /// How many writes are noted.
-    pub fn len(&self) -> usize {
-        self.0.values().map(BTreeMap::len).sum()
-    }
-    pub fn is_empty(&self) -> bool {
-        self.0.is_empty()
     }
     /// The least `date` among the writes here that supersede `w` (`supersedes`; `date` is given
     /// each one's stamp and note, `None`: not counted), given that no write dates before its

@@ -67,13 +67,6 @@ pub fn count_by(name: &'static str, by: &'static str, n: u64) {
     }
 }
 
-/// `count` of `n()`, computed only while this thread records.
-pub fn count_with(name: &'static str, n: impl FnOnce() -> u64) {
-    if ON.with(Cell::get) {
-        count(name, n());
-    }
-}
-
 /// The time and count per phase since the last `take` on this thread; the first call turns
 /// recording on for this thread (and returns nothing).
 pub fn take() -> Vec<(&'static str, Duration, u64)> {

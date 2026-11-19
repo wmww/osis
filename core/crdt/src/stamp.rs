@@ -271,9 +271,6 @@ impl CounterRange {
     pub fn contains(&self, ctr: u64) -> bool {
         self.lo <= ctr && ctr < self.hi
     }
-    pub fn is_empty(&self) -> bool {
-        self.hi <= self.lo
-    }
 }
 
 /// `max` of two optional stamps (`None` is −∞).

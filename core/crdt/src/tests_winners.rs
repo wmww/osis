@@ -236,7 +236,7 @@ fn winners_check(seed: u64, types: &[Ty], honest: bool) {
             assert_eq!(got, unsuperseded(&raw(x)), "winners are the writes held that none held supersedes: {x:?}");
         }
         let both: Vec<Raw> = raw(&a).into_iter().chain(raw(&b)).collect();
-        let want: BTreeSet<Won> = raw(&a).into_iter().filter(|w| a.winners().contains(&w.w) && superseded(w, &both)).map(|w| w.w).collect();
+        let want: BTreeSet<Won> = raw(&a).into_iter().filter(|w| a.winners().iter().any(|x| x == w.w) && superseded(w, &both)).map(|w| w.w).collect();
         let dead = a.winners().minus(&ab.winners());
         assert_eq!(dead, want, "dead in a join: the winners the other side's writes supersede");
         let mut other: ByWrite<()> = ByWrite::default();
@@ -388,7 +388,7 @@ fn text_creation_dies_at_delete_kept_in_record_spec_4_8() {
     let mut un = Seq::empty(true);
     let Place::Item(d) = gone[0].path[0].clone() else { panic!() };
     un.elems_mut().insert(d, SeqElem { deleted: Some((Stamp::new(ts(3), x(), 30), false)), ..SeqElem::bare() });
-    assert!(join(&ab, &Fragment::Seq(un)).winners().contains(&gone[0]));
+    assert!(join(&ab, &Fragment::Seq(un)).winners().iter().any(|x| x == gone[0]));
 }
 
 /// §5.6 (the records of a dot are one entry): one put writes k1 and k2 under one stamp; k1's value

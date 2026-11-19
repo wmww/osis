@@ -143,9 +143,6 @@ impl VerifyingKey {
     pub fn to_value(&self) -> Value {
         agility_value(&self.to_bytes())
     }
-    pub fn from_value(v: &Value) -> Result<VerifyingKey, Error> {
-        VerifyingKey::from_slice(agility_bytes(v, Some(32))?)
-    }
 }
 
 /// Whether `b` encodes its y below p = 2^255 - 19 (the sign bit aside). That is all of
@@ -299,11 +296,10 @@ mod tests {
         let pk = sk.verifying_key();
         let [_, _, _, _, _, _, hi, lo] = osis_base::format::TAG_ENUM.to_be_bytes();
         assert_eq!(osis_base::encode(&pk.to_value())[..5], [0xd9, hi, lo, 0x82, 0x01]);
-        assert_eq!(VerifyingKey::from_value(&pk.to_value()), Ok(pk));
         let sig = sk.sign(Domain::Stamp, &[0; 32]);
         assert_eq!(Signature::from_value(&sig.to_value()), Ok(sig));
-        let other = Value::Enum(2, Some(Box::new(Value::Bytes(vec![0; 32]))));
-        let e = VerifyingKey::from_value(&other).unwrap_err();
+        let other = Value::Enum(2, Some(Box::new(Value::Bytes(vec![0; 64]))));
+        let e = Signature::from_value(&other).unwrap_err();
         assert_eq!((e, e.class()), (Error::UnknownCase(2), osis_base::ErrorClass::Parked));
         assert!(Signature::from_value(&pk.to_value()).is_err());
     }

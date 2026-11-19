@@ -23,9 +23,6 @@ impl Hasher {
     pub fn new() -> Hasher {
         Hasher(blake3::Hasher::new())
     }
-    pub fn new_keyed(key: &[u8; 32]) -> Hasher {
-        Hasher(blake3::Hasher::new_keyed(key))
-    }
     pub fn update(&mut self, data: &[u8]) -> &mut Hasher {
         self.0.update(data);
         self
@@ -56,7 +53,6 @@ mod tests {
         assert_eq!(h[..4], [0xaf, 0x13, 0x49, 0xb9]);
         assert_eq!(Hasher::new().update(b"ab").update(b"c").finalize(), hash(b"abc"));
         let k = [7u8; 32];
-        assert_eq!(Hasher::new_keyed(&k).update(b"x").finalize(), keyed_hash(&k, b"x"));
         assert_ne!(keyed_hash(&k, b"x"), hash(b"x"));
         assert_ne!(derive_key("osis v1 a", b"m"), derive_key("osis v1 b", b"m"));
         let mut out = [0u8; 64];

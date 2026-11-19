@@ -12,7 +12,7 @@ use std::hash::Hash;
 /// (every key due, not only the one asked) and `refresh_in`: a memo or `Effects` key reading a
 /// row depends on the row as last refreshed, so whoever checks such a reader without asking the
 /// cutoff first (an `Effects` owner's `due`: sync's modules, through `Engine::follow`) refreshes
-/// it before, as for `Spread`.
+/// it before.
 pub struct Cutoff<K, V> {
     fx: RefCell<Effects<K, V>>,
     rows: RefCell<Stamped<K, V>>,
@@ -54,16 +54,6 @@ impl<K: Hash + Eq + Ord + Clone + std::fmt::Debug, V: Clone + PartialEq + std::f
         quiet.ended(from, failed.is_none());
         me(ctx).quiet.set(quiet);
         failed.map_or(Ok(moved), Err)
-    }
-
-    /// The keys followed.
-    pub fn len(&self) -> usize {
-        super::unrecorded(|| self.rows.borrow().len())
-    }
-
-    /// Whether no key is followed.
-    pub fn is_empty(&self) -> bool {
-        self.len() == 0
     }
 
     /// Stops following `k`: its row goes (a reader of it moves), and a later `get_in` derives it
