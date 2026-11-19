@@ -894,8 +894,12 @@ fn purge_whose_only_part_is_parked_applies_spec_commits_4() {
         let w = f.lp.peers[0].engine.package(&w).unwrap().unwrap();
         let me = f.lp.peers[0].engine.me();
         let b = forge_with(&mut f, &[(x, "t:future.0", Made::Parked, None)], vec![osis_commit::PurgeItem::Author { tid: x, ak: ak("t:reg.0"), actor: me }]);
-        let mut p = Peer::new(FRESH, f.lp.peers[0].engine.now()).unwrap();
-        for pk in f.setup.iter().chain([&w]) {
+        // a node holding x, granted read on it: it keeps what it is given of x
+        let mut p = f.lp.fresh_reader(0, x, FRESH);
+        // what peer 0 sends it: what the sync IDs it syncs carry
+        let synced = p.engine.sync_set().unwrap().ids.keys().copied().collect();
+        let setup = f.lp.packages_under(0, &synced).unwrap();
+        for pk in setup.iter().chain([&w]) {
             p.engine.ingest(&pk.bytes, pk.blobs.clone()).unwrap();
         }
         assert_eq!(p.engine.get(&x, &ak("t:reg.0")).unwrap(), Some(s("ok")));
