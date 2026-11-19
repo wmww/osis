@@ -715,8 +715,9 @@ impl Stats {
         const SHRUNK: u64 = 20_000;
         println!("{name}: {} worlds, checks {:?}, largest {:?}, noted {:?}, failing checks {:?}", self.worlds, self.checked, self.most, self.noted, self.fails);
         for (k, (what, spec)) in &self.first {
+            let tag = if self.fails.contains_key(k) { "FAIL" } else { "NOTED" };
             if self.worlds > SHRUNK {
-                println!("FAIL {k} (not shrunk): {what}\n{spec:?}");
+                println!("{tag} {k} (not shrunk): {what}\n{spec:?}");
                 continue;
             }
             let small = shrink(spec, rules, k);
@@ -724,7 +725,7 @@ impl Stats {
             let m = Sim::build(&small.setup, rules, &small.moves, &mut Rng(small.rng));
             check(&m, rules, &mut st);
             let what = st.first.get(k).map_or(what.clone(), |x| x.0.clone());
-            println!("FAIL {k} (shrunk): {what}\n{:?} moves {:?}\n{}", small.setup, small.moves, trace(&m));
+            println!("{tag} {k} (shrunk): {what}\n{:?} moves {:?}\n{}", small.setup, small.moves, trace(&m));
         }
     }
     fn fail(&mut self, prop: &'static str, m: &Sim, what: String) {
