@@ -33,7 +33,7 @@ Each item is a property that must hold, hard unless its section says goal. A pro
 - No unit that must be synced whole. References overlap, nest, may be cyclic and change over time. Syncing one row or one column of a table must each be efficient without duplicating the table at rest or in transfer.
 - Deterministic: what a node reads and which writes it counts as valid are functions of the data it holds and its trust set (Permissions). A node missing some data reads as if it never had it until it arrives.
 - Convergence: nodes that exchange what they hold come to read alike, whatever the order, duplication or partial receipt, at the latest once a writer of that data has synced with them. No ordered delivery.
-- A commit may touch any number of things, of any reader sets, with values of any size. A node applies all the parts of a commit it may read on things it holds at once, or none; a part on a thing it starts holding later joins then.
+- A commit may touch thousands of things, of any reader sets, with values of any size; a write too large for one commit is refused whole, never split. A node applies all the parts of a commit it may read on things it holds at once, or none; a part on a thing it starts holding later joins then.
 - Each part of a commit is authorized on its own thing. Revoking the author on one thing removes only that part.
 - A wrong local clock harms only that node's own writes.
 

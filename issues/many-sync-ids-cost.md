@@ -1,15 +1,24 @@
 # What a node pays for holding many things with their own sync ID
-> Summary: Perf investigation, not started. Under the reference graph (spec/sync-set.md §2) sharing a tag of notes makes every note independent, with its own sync ID, so a node holding tens of thousands of sync IDs is ordinary use. The protocol's idle cost is stated not to grow with them (spec/sync-streams.md §4 Costs); a node's local work, the cost of making them and key changes cascading through them are unmeasured. Count each at n and 10n.
+> Summary: Central since a closure is many sync IDs (notes/sync-unit-scope.md). Partly counted (notes/sync-unit-design.md §8): idle protocol round trips do not grow, but an idle reconnect sends about 108-143 B and reads about 310-370 store rows per shared sync ID, a small commit reads 230-440 more store rows per sync ID held, and a first sync costs about 4 deliveries and 47 KB per unit. Left: fix those by design, and count making many at once, a removal's cascade and start-up.
 > Priority: normal
 > Tags: sync, engine, perf
 
-Nothing bounds how many sync IDs one commit is carried under (nothing limits the sync units a thing is in): measure that too.
+Nothing bounds how many sync IDs one commit is carried under today; with a unit being one independent thing and its dependents a commit is under one per unit it writes.
 
-To count (work, in a debug test, at n and 10n sync IDs; no timing runs: notes/principles.md, Check scaling):
-- **A node's local work per connection** with nothing out of date: the agreement digest over the shared set and the filter (spec/sync-opens.md §3, §5), what is read per member at a reconnect, what a pass's end does per sync ID.
-- **Making n of them at once** (sharing a tag of n notes): one keys commit and a sealed secret per holder each (a seal to a KEM key is over 1 KB), a genesis step each, a ticket each for a holder that is not carried them.
-- **Removing one reader from a thing that holds roles on n others**: each of the n changes its keys (spec/permissions.md §3, the rotations required through a holder actor). Commits, bytes and what each remaining holder fetches.
-- **Storage held per sync ID with no content**: steps, claim sets, store rows, record members per peer.
-- **Start-up and the closure walk** with n pieces.
+## Counted (debug, at n and 10n; tables and method in notes/sync-unit-design.md §8)
+- **Idle reconnect** (nothing out of date): deliveries flat (39). Bytes grow: one side's Pull names a join with an 80-byte cursor for every shared sync ID (108 B each with a reader, 143 B with a node keeping them unread), against spec/sync-streams.md §4 Costs and Joining (a connection that takes a record pulls its members with no join for a member at the stream's cursor). Cause not found. Local work grows too: about 314-369 store rows read, 7 `status: stranded`, 3 `inbox: register judged`, 3 `opens standing`, 10-22 `perm: roles walked` per shared sync ID.
+- **One small commit**: deliveries and bytes flat (29; 3926 B over three nodes). Local work grows with the sync IDs held: 234 store rows read per sync ID (437 in a closure of nested things), 7 `status: stranded`, 1 each of `life: lost access` and `life: role duty owed`.
+- **A reader's restart while connected**: 373 B and about 1280 store rows read per sync ID.
+- **First sync of a closure** (a root with n independent members, the built model): per member 4.0 deliveries, 47 KB (23 KB of it sent by the new reader back to the maker, unexplained), 7.6 signs, 42 transactions, 16 step verifications and 16 stamp verifications. Kept unread under the root's one sync ID: 1.9 deliveries, 17 KB, 2 entries per member.
+- **Held per sync ID** with one small value and two grants: a node keeping it unread 37 store rows (4.3 KB) and 6.2 blobs (35.9 KB); a reader 48 rows (5.2 KB), 8.2 blobs (43 KB) and 29.7 KB of engine rows. Six rows of about 500 B exist per sync ID whatever it holds. About half of a sync ID's entries name blobs also held under other sync IDs (certificate copies).
 
-Each count that grows faster than n, or that is paid while nothing changes, gets its own issue and a fix by design (notes/principles.md, Fast by construction).
+## To fix (each grows with the wrong thing: notes/principles.md, Fast by construction)
+- The join per member at an idle reconnect.
+- Per-sync-ID work at a reconnect with nothing out of date and at a commit on one sync ID (`status: stranded`, `inbox: register`, `opens standing`, the store rows behind them).
+- The deliveries per unit at a first sync: opens found in one round should batch (spec/sync-streams.md §4 Joining).
+
+## Still to count
+- **Making n at once** (sharing a tag of n notes): one keys commit and a sealed secret per holder each (a seal to a KEM key is over 1 KB), a genesis step each.
+- **Removing one reader from a thing that holds roles on n others**: each of the n changes its keys (spec/permissions.md §3 Required rotation). Commits, bytes, steps registered per store, and what each remaining holder fetches.
+- **A first sync through a node keeping the closure unread only**, and a first sync by a newly paired node without the pairing's own cost (measured together: 102 deliveries and 148 KB per sync ID world-wide, the account's rotation reaching every sync ID).
+- **Start-up and the closure walk** with n units.

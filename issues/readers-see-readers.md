@@ -13,3 +13,7 @@ Costs and points to design:
 - How a reader learns of its own removal, and of a writer's (it holds writers' grants).
 - The count of readers shows unless padded (claim sets at nodes keeping the thing unread are padded already).
 - With intermediary things as the only tool today (a thing per recipient holding the role), each recipient costs an independent thing: not the answer.
+
+Checked against the path and membership designs (notes/write-path-design.md §2, Readers hidden from each other): no conflict with validity, evidence, vouching, the last-admin rule or the public actor, since every edge a content path names is a writer-level grant, which readers still open. Sealing by the value an edge write sets (at or below read, and ending an entry at or below read: for writers only) keeps every write a reader's walk needs open. Two points for this design:
+- An act made at read through a holder shows that reader-level edge to the target's readers as evidence: leave such acts to writers, or accept that their maker shows.
+- A removal of a signer logged under every unit it could read names its account to the readers of units the account only reads: seal that entry for writers there, or do not log it where the signer could not write (issues/actors-one-mechanism.md, Questions for Tess, 1).

@@ -13,9 +13,9 @@ Today (spec/data-model.md §2, spec/sync-inbox.md §2, spec/permissions.md §5.2
 - **Keys follow the switch**: a thing neither a holder nor opened publishes no KEM keys (notes/thing-cost.md, Fewer KEM keys held), and a node keeping it unread has nothing a stranger can deposit against.
 
 ## Designed
-The checks and the rule written precisely enough for the spec (the setting, open fires, public material following the switch, what a node keeping the thing unread enforces, what the thing takes, the granter's node, what a member may do without the switch): notes/write-path-design.md §4. Found: the box and the ticket are not the only routes (a deposit under the holder's sync ID with its public deposit seed is another), so the deposit seed and sync ID are published to strangers only while the thing is open.
+The rule written precisely enough for the spec, in the words external signal, external fire and externally grantable (notes/terms.md): notes/write-path-design.md §4 (the setting, external fires, what enabling publishes, what a node keeping the thing unread enforces, what the thing takes, the granter's node when refused, no grant waiting on the grantee's side) and §3 (the card: where a thing's inbox and public keys are named, and what an outsider holds to grant to it). Found: the box and the ticket are not the only routes (a deposit under the holder's sync ID with its deposit seed is another), so the deposit seed and sync ID are published only in a card.
+- Decided (Tess): without the switch, write on a thing gives the right to grant to it; a reader may not.
 
 ## To do
-- Whether granting to a thing not opened needs write on it or any role (the requirements say "holding no role"): issues/actors-one-mechanism.md, Questions for Tess.
-- Bring spec/requirements.md Permissions and the subsystem specs to the rule. Name the refusal in the API by the setting, never by keys.
-- How an app opens a thing, and what the default is for the kinds it makes.
+- Bring spec/requirements.md Permissions and the subsystem specs to the rule, once the model has checked it (notes/write-path-design.md §6). Name the refusal in the API by the setting, never by keys.
+- How an app enables a signal, and the default for the kinds of thing the first-party schema makes: the schema library's.
