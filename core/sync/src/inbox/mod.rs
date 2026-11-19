@@ -42,7 +42,7 @@ pub use offers::{BACKOFF_MAX_MS, BACKOFF_MIN_MS, Judge, Offers, Target, backoff_
 pub use osis_engine::sync::Signers;
 pub use register::{Plan, Progress, plan};
 
-use crate::opens::{Leaving, Member, Moved, Opens, Rejoin};
+use crate::opens::{Member, Moved, Opens};
 use crate::session::{Incoming, RequestId, Sessions, To};
 use crate::store::{Source, Store};
 use crate::streams::Streams;
@@ -252,10 +252,6 @@ impl Inbox {
     /// members, and goes on its connection once agreed.
     pub fn moved(&mut self, m: &Moved, net: &impl Net) {
         match *m {
-            // Interim (issues/many-sync-ids-cost.md): a kept record's members carried one by one
-            // at its take and release; inbox follows the record
-            Moved::Joined(_, _, Rejoin::Taken) => {}
-            Moved::Left(_, _, at) if at.how == Leaving::Connection && matches!(at.src, Source::Record(_)) => {}
             Moved::Joined(conn, s, _) => {
                 osis_base::costs::count("inbox: members moved", 1);
                 self.offers.joined(conn, &s, net);

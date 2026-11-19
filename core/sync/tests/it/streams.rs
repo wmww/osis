@@ -234,7 +234,7 @@ impl Side {
     }
 
     fn leave(&mut self, now: u64, s: SyncId) {
-        self.leave_as(now, s, Leaving::Connection);
+        self.leave_as(now, s, Leaving::Kept);
     }
 
     /// Member S leaves C as opens says (`how`, spec/sync-opens.md §6 Where it stopped).
@@ -878,7 +878,8 @@ fn the_class_a_source_joined_lasts_with_what_it_showed_spec_sync_opens_3() {
     p.b.leave(p.now, s);
     join(&mut p.b, p.now, SourceClass::Store);
     assert!(p.b.streams.known().kept(src, &s), "joined keeping S unread");
-    p.b.leave(p.now, s);
+    let rec = p.b.open.record.unwrap();
+    p.b.with(p.now, |st, ctx| st.member_moved(ctx, Moved::Released(C, rec)));
     assert!(p.b.streams.known().kept(src, &s), "away");
     p.b.restart_all(7);
     assert!(p.b.streams.known().kept(src, &s), "after a restart");
@@ -2545,10 +2546,10 @@ fn a_reader_passes_on_only_a_verified_new_relay_only_entry_spec_sync_compaction_
     }
 }
 
-// spec/sync-streams.md §4 (Joining: a member rejoins from where it stood), notes/growth.md (no
-// per-session growth): a member at the stream that leaves and rejoins from where it stood moves
-// no stored position: its side commits only the rejoin's reply (the stream's cursor), no row of
-// the member.
+// spec/sync-streams.md §4 (Joining: a connection that takes a record pulls its members from where
+// the record holds them), notes/growth.md (no per-session growth): a record let go and taken again,
+// its member at the stream, moves no stored position: its side commits only the new connection's
+// reply (the stream's cursor), no row of the member.
 #[test]
 fn a_rejoin_from_where_it_stood_writes_no_place_spec_sync_streams_4() {
     let mut p = Pair::new();
@@ -2556,11 +2557,14 @@ fn a_rejoin_from_where_it_stood_writes_no_place_spec_sync_streams_4() {
     p.a.log(s, 100);
     p.shared_read(s);
     p.run();
+    let rec = p.b.open.record.unwrap();
     let before = p.b.store.committed();
-    p.b.leave(p.now, s);
-    p.b.join(p.now, s);
+    p.b.with(p.now, |st, ctx| st.member_moved(ctx, Moved::Released(C, rec)));
+    p.a.streams.closed(C);
+    p.a.join(p.now, s);
+    p.b.with(p.now, |st, ctx| st.member_moved(ctx, Moved::Taken(C, rec, false)));
     p.run();
-    assert_eq!(p.b.store.committed(), before + 1, "commits for a leave and a rejoin from where S stood");
+    assert_eq!(p.b.store.committed(), before + 1, "commits for a release and a take from where S stood");
 }
 
 // spec/sync-streams.md §4 (Joining), SN_cursor: a member that left at the stream's cursor, still

@@ -512,7 +512,7 @@ impl Streams {
         let from = match rejoin {
             // a pull from the start since (fetched anew) stands over where a Lost said it stopped
             Rejoin::From(c) => Some(if place.join_from(&s) == Some(&None) { None } else { c }),
-            Rejoin::Held | Rejoin::Taken => {
+            Rejoin::Held => {
                 if let Some(c) = place.stopped.get(&s).filter(|c| first.as_ref() != Some(*c)) {
                     Some(c.clone())
                 } else if let Some(c) = place.joining.get(&s) {

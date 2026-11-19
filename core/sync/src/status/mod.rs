@@ -36,7 +36,7 @@ mod live;
 
 pub use live::{Live, NetView};
 
-use crate::opens::{LeftAt, Moved, Opens, Rejoin};
+use crate::opens::{LeftAt, Moved, Opens};
 use crate::read::{Read, Verdict};
 use crate::session::Sessions;
 use crate::store::Source;
@@ -380,10 +380,6 @@ impl Status {
             Up { conn, account: proven.and_then(|p| p.account()), own_node: proven.is_some_and(|p| p.node.is_some()) }
         };
         match *m {
-            // Interim (issues/many-sync-ids-cost.md): a kept record's members carried one by one
-            // at its take; status follows the record (`Taken`)
-            Moved::Joined(_, _, Rejoin::Taken) => {}
-            Moved::Left(_, _, at) if at.how == crate::opens::Leaving::Connection && matches!(at.src, Source::Record(_)) => {}
             Moved::Joined(conn, s, _) => {
                 let Some(member) = opens.member(conn, &s) else { return };
                 let src = opens.record(conn).map_or(Source::Conn(conn), Source::Record);

@@ -43,7 +43,7 @@ mod serve;
 
 pub use known::{Known, Row as KnownRow};
 
-use crate::opens::{Leaving, Member, Moved, Opens, Rejoin, Reported};
+use crate::opens::{Member, Moved, Opens, Reported};
 use crate::session::{Incoming, Sessions, To};
 use crate::store::{Source, Store};
 use crate::types::{ConnId, Cx, Entry, Error, Position, RecordId, Result};
@@ -358,10 +358,6 @@ impl Streams {
     pub fn member_moved(&mut self, ctx: &mut Ctx, m: Moved) {
         let conn = m.conn();
         match m {
-            // Interim (issues/many-sync-ids-cost.md): a kept record's members carried one by one
-            // to the modules still following members per connection; streams follows the record
-            Moved::Joined(_, _, Rejoin::Taken) => {}
-            Moved::Left(_, _, at) if at.how == Leaving::Connection && matches!(at.src, Source::Record(_)) => {}
             Moved::Taken(conn, rid, _) => {
                 self.taken(ctx, conn, rid);
                 self.run(ctx, conn);

@@ -66,8 +66,8 @@ pub struct Member {
 pub enum Moved {
     /// S became a member on `conn` (newly open, or open again), rejoining from where opens says.
     Joined(ConnId, SyncId, Rejoin),
-    /// S stopped being a member on `conn` (closed, or the connection ended), with where the peer
-    /// stood then.
+    /// S stopped being a member on `conn` (closed, or the connection of a record kept nowhere
+    /// ended), with where the peer stood then.
     Left(ConnId, SyncId, LeftAt),
     /// Member S's `until` was set or cleared.
     Until(ConnId, SyncId),
@@ -101,11 +101,8 @@ pub struct LeftAt {
 }
 
 /// How a member left a connection's shared set.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Leaving {
-    /// The connection let its record go: the record keeps the member.
-    #[default]
-    Connection,
     /// Closed, where it stopped kept while the connection lasts.
     Kept,
     /// Closed keeping nothing of where it stopped: what its source showed goes, and its rejoin is
@@ -1113,8 +1110,8 @@ impl Opens {
         }
     }
 
-    /// `conn` lets its record go: each member leaves it (the record keeps them); a record kept
-    /// nowhere goes.
+    /// `conn` lets its record go: a kept one keeps its members where they stand (`Released`);
+    /// one kept nowhere goes, each member closing with it.
     fn release(&mut self, conn: ConnId, moved: &mut Vec<Moved>) {
         let Some(c) = self.conns.get_mut(&conn) else { return };
         let Some(rid) = c.rec.take() else { return };
@@ -1127,8 +1124,10 @@ impl Opens {
         let walk: Vec<SyncId> = r.walk.keys().copied().collect();
         for (s, m) in &r.members {
             self.member_stamps.wrote(&(conn, *s), false);
-            moved.push(Moved::Left(conn, *s, LeftAt { src, reported: c.reported.get(s).map(|(p, _)| *p), until: m.until, how: Leaving::Connection }));
             self.peers.wrote(s, true);
+            if let Source::Conn(_) = src {
+                moved.push(Moved::Left(conn, *s, LeftAt { src, reported: c.reported.get(s).map(|(p, _)| *p), until: m.until, how: Leaving::Kept }));
+            }
         }
         // where members closed on this connection stopped lasts the connection
         moved.extend(r.stopped.keys().map(|s| Moved::Forgot(conn, *s)));
@@ -1616,14 +1615,13 @@ impl Opens {
         if let Some(src) = self.source_of(conn) {
             self.connected.wrote(&src, true);
         }
+        // a record kept nowhere is new with its connection: no member yet
+        debug_assert!(kept || members.is_empty(), "a record kept nowhere taken with members");
         if kept {
             moved.push(Moved::Taken(conn, id, fresh));
         }
         for s in &members {
             self.member_stamps.wrote(&(conn, *s), true);
-            // Interim (issues/many-sync-ids-cost.md): read, status and inbox still follow members
-            // per connection, so a kept record's members are carried to them one by one
-            moved.push(Moved::Joined(conn, *s, if kept { Rejoin::Taken } else { Rejoin::Held }));
         }
         if fresh || renamed {
             for s in members {
