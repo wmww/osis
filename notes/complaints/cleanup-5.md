@@ -1,5 +1,0 @@
-# cleanup-5
-- `tools/mutate.py` refuses a site whose text is not unique as an expression (`*work > self.p.len.max(1024)` sits in two places): a plain edit then costs a build per mutation. A multi-line plain edit prints a table row split over lines, which a script reading the rows drops.
-- A mutation changing a closure's text (`(0..n).map(move |i| ..)` to `(1..n)...`) does not build: mutate.py's `if` wraps two closure types. Mutate a value inside the closure instead.
-- `large_text_batch`'s doc said the builder kept its "layered view"; no op of it ever held a layer (the splitting delete first makes the view a copy for good), so no deterministic test held one. A tally of the claimed path (`keeps_layer`) found it at once: tally the branch a test's name claims before trusting the name.
-- Redb's clean close commits its allocator state (to_vec of every bitmap): most of any FileDevice test that closes a written store. `std::mem::forget` of a store to model a power cut fails the reopen (the file lock stays held).
