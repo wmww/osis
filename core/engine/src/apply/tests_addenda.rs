@@ -1341,3 +1341,28 @@ fn an_edit_received_in_time_that_applies_late_is_vouched_for_spec_perm_5_2() {
     let carol = lp.peers[2].engine.me();
     assert_eq!(addenda(&lp, 2, t2).iter().filter(|(a, _)| *a == carol).count(), 1, "Carol vouches once it applies");
 }
+
+// spec/permissions.md §5.2 (addenda; writing): what is owed is re-derived. Carol holds the
+// removal and Bob's edit but writes nothing (writing off); after a restart, her next transaction
+// writes the addendum she owes, and the edit stands at every node.
+#[test]
+fn an_addendum_owed_across_a_restart_is_written_spec_perm_5_2() {
+    let (mut lp, t) = world(3, &[Role::Write, Role::Write]);
+    let e = write(&mut lp, 1, t, "x:e.0", 7);
+    lp.sync(1, 2).unwrap();
+    lp.advance(1);
+    lp.peers[2].engine.write_addenda(false);
+    remove(&mut lp, 0, t, 1);
+    lp.sync(0, 2).unwrap();
+    assert!(addenda(&lp, 2, t).is_empty(), "nothing written while off");
+    lp.peers[2].restart(7).unwrap();
+    let mut m = Mutation::new();
+    let me = lp.peers[2].engine.me();
+    lp.peers[2].engine.new_thing(&mut m, me);
+    lp.peers[2].commit(m).unwrap();
+    assert_eq!(addenda(&lp, 2, t).iter().filter(|(a, _)| *a == me).count(), 1, "written after the restart");
+    lp.sync_all().unwrap();
+    for p in 0..3 {
+        assert!(valid(&lp, p, &e, t, "x:e.0"), "peer {p}: the edit stands");
+    }
+}

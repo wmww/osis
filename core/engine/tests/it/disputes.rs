@@ -273,8 +273,9 @@ fn a_witness_leaves_out_what_would_void_the_removal_spec_perm_5_1() {
 /// role writes on `t` (granting peer 3 write and lowering it to read in turn), then removes H;
 /// H, having received none of it, removes X (R); W receives all, sides with R, and vouches for
 /// X's writes on peer 3, leaving out X's removal of H (R does not apply with it listed). The
-/// leaving-out walks (`flows::vouches::leaving_out`) of a grant by W on `t` after that.
-fn leaving_out_walks_per_write(k: usize) -> u64 {
+/// leaving-out walks (`flows::vouches::leaving_out`) of a grant by W on `t` after that, and the
+/// world.
+fn leaving_out_walks_per_write(k: usize) -> (u64, LocalPeer, Tid) {
     let mut lp = LocalPeer::fresh(4, osis_base::WallMs(1_700_000_000_000));
     lp.sync_all().unwrap();
     let [h, x, w, p3] = [0, 1, 2, 3].map(|i| lp.peers[i].engine.me());
@@ -322,7 +323,8 @@ fn leaving_out_walks_per_write(k: usize) -> u64 {
     // the first write after the vouch may take the leaving out anew (the one taken before the
     // vouch counted); every later one keeps it
     write(&mut lp);
-    write(&mut lp)
+    let walks = write(&mut lp);
+    (walks, lp, t)
 }
 
 // spec/permissions.md §5.1 Vouches (Writing: the writers' leaving out; "may keep"),
@@ -331,7 +333,24 @@ fn leaving_out_walks_per_write(k: usize) -> u64 {
 // it anew walks once per candidate).
 #[test]
 fn a_fights_leaving_out_costs_a_write_the_same_at_k_and_10k_candidates_spec_perm_5_1() {
-    let (small, big) = (leaving_out_walks_per_write(2), leaving_out_walks_per_write(20));
+    let (small, big) = (leaving_out_walks_per_write(2).0, leaving_out_walks_per_write(20).0);
     println!("vouches: leaving-out walks per write: {small} at k, {big} at 10k");
     assert_eq!(small, big);
+}
+
+// spec/permissions.md §5.1 Vouches (Writing: "may keep"; what is owed is re-derived at an open):
+// in the fight above, W's kept leaving out is memory only; after a restart W takes it anew from
+// the same inputs and writes no second vouch, at the open or at its next writes.
+#[test]
+fn a_fights_leaving_out_taken_anew_after_a_restart_writes_nothing_more_spec_perm_5_1() {
+    let (_, mut lp, t) = leaving_out_walks_per_write(4);
+    let [x, w, p3] = [1, 2, 3].map(|i| lp.peers[i].engine.me());
+    lp.peers[2].restart(7).unwrap();
+    for _ in 0..2 {
+        lp.peers[2].engine.grant(&t, &p3, &edge_of(Role::Admin)).unwrap();
+        lp.advance(1000);
+    }
+    let held: Vec<_> = lp.peers[2].engine.core.ix.held.vouches_on(&t).filter(|v| v.author == w).cloned().collect();
+    assert_eq!(held.len(), 1, "W writes no second vouch after a restart");
+    assert_eq!(lp.peers[2].engine.core.timelines.role(&x, &t, osis_perm::At::END), None, "R still applies at W");
 }
