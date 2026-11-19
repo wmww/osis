@@ -682,9 +682,18 @@ impl Transaction<'_> {
     }
     /// `cat_scan`'s rows, read by no memo.
     fn cat_rows(&mut self, prefix: &[u8], from: &[u8], limit: usize) -> Result<Vec<KeyValue>, Error> {
+        let end = crate::backend::prefix_end(prefix);
+        self.cat_range(prefix, from, end, limit)
+    }
+    /// Catalog entries under `prefix` below `end`, read as a scan of the prefix.
+    pub(crate) fn cat_scan_to(&mut self, prefix: &[u8], end: Vec<u8>, limit: usize) -> Result<Vec<KeyValue>, Error> {
+        self.st.s.read_prefix(prefix);
+        self.cat_range(prefix, b"", Some(end), limit)
+    }
+    /// `cat_rows` up to `end` (exclusive; none: the catalog's end), read by no memo.
+    fn cat_range(&mut self, prefix: &[u8], from: &[u8], end: Option<Vec<u8>>, limit: usize) -> Result<Vec<KeyValue>, Error> {
         let c = self.catalog();
         let start = [prefix, from].concat();
-        let end = crate::backend::prefix_end(prefix);
         let mem = crate::overlay::range(Some(&self.mem.o.cat), &start, end.as_deref(), limit);
         let durable = btree::range(self, c, &start, end.as_deref(), limit)?;
         let rows = if mem.is_empty() { durable } else { crate::overlay::merge(mem, durable, limit) };
@@ -1026,6 +1035,14 @@ impl Transaction<'_> {
     pub fn scan_local(&mut self, prefix: &[u8], from: &[u8], limit: usize) -> Result<Vec<KeyValue>, Error> {
         let p = [&[kind::LOCAL], prefix].concat();
         Ok(self.cat_scan(&p, from, limit)?.into_iter().map(|(k, v)| (k.get(1..).unwrap_or_default().to_vec(), v)).collect())
+    }
+
+    /// Local records with keys starting with `prefix`, below `prefix || before`: a time-ordered
+    /// index read up to a time reads only the rows due by then.
+    pub fn scan_local_before(&mut self, prefix: &[u8], before: &[u8], limit: usize) -> Result<Vec<KeyValue>, Error> {
+        let p = [&[kind::LOCAL], prefix].concat();
+        let end = [&p[..], before].concat();
+        Ok(self.cat_scan_to(&p, end, limit)?.into_iter().map(|(k, v)| (k.get(1..).unwrap_or_default().to_vec(), v)).collect())
     }
 
     // Blob ciphertexts (already opaque; deleted for space).

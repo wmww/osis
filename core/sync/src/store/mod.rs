@@ -1860,39 +1860,27 @@ impl Store {
         let mut acted = g.mem.sweep(now);
         acted |= g.write(|t, env| {
             let mut acted = false;
-            for (k, _) in t.scan_local(rows::EXPIRY, b"", PAGE)? {
-                if time_of(&k)? > now.0 {
-                    break;
-                }
+            for (k, _) in due(t, rows::EXPIRY, Some(now.0))? {
                 let (s, b) = rows::tail_ids(&k)?;
                 t.remove_local(&k, Shred::No)?;
                 entries::remove(t, env, &s, &b, Removal::Expired)?;
                 acted = true;
             }
-            for (k, _) in t.scan_local(rows::TOMB_AT, b"", PAGE)? {
-                if time_of(&k)?.saturating_add(TOMBSTONE_LIFETIME_MS) > now.0 {
-                    break;
-                }
+            for (k, _) in due(t, rows::TOMB_AT, now.0.checked_sub(TOMBSTONE_LIFETIME_MS))? {
                 let (s, b) = rows::tail_ids(&k)?;
                 t.remove_local(&k, Shred::No)?;
                 entries::lift(t, env, &s, &b)?;
                 acted = true;
             }
-            for (k, _) in t.scan_local(rows::CLAIMS_DUE, b"", PAGE)? {
-                if time_of(&k)? > now.0 {
-                    break;
-                }
+            for (k, _) in due(t, rows::CLAIMS_DUE, Some(now.0))? {
                 let mut r = R::new(k.get(rows::CLAIMS_DUE.len() + 8..).unwrap_or_default());
                 let (s, i) = (SyncId(r.array()?), r.u32()?);
                 t.remove_local(&k, Shred::No)?;
                 path::drop_claims(t, env, &s, i)?;
                 acted = true;
             }
-            for (k, _) in t.scan_local(rows::AGING, b"", PAGE)? {
+            for (k, _) in due(t, rows::AGING, now.0.checked_sub(TOMBSTONE_LIFETIME_MS))? {
                 let at = time_of(&k)?;
-                if at.saturating_add(TOMBSTONE_LIFETIME_MS) > now.0 {
-                    break;
-                }
                 let mut r = R::new(k.get(rows::AGING.len() + 8..).unwrap_or_default());
                 let (s, tag) = (SyncId(r.array()?), r.u8()?);
                 let key = r.bytes()?.to_vec();
@@ -1944,6 +1932,13 @@ impl Store {
 }
 
 /// The time a time-keyed sweep row starts with.
+/// A page of the rows of time-ordered index `prefix` (keys `prefix || time || ...`) whose time
+/// is at most `through` (none: nothing is due): only those are read.
+fn due(t: &mut Transaction<'_>, prefix: &[u8], through: Option<u64>) -> Result<Vec<osis_store::KeyValue>> {
+    let Some(end) = through.and_then(|x| x.checked_add(1)) else { return Ok(Vec::new()) };
+    Ok(t.scan_local_before(prefix, &end.to_be_bytes(), PAGE)?)
+}
+
 fn time_of(k: &[u8]) -> Result<u64> {
     let mut r = R::new(k.get(2..).unwrap_or_default());
     r.u64()

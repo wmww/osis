@@ -352,14 +352,13 @@ impl Transaction<'_> {
     /// Drops deletion events past `TOMBSTONE_LIFETIME` at `now` (at most `PAGE` a call).
     /// Whether more remain to look at.
     pub fn log_sweep(&mut self, now: u64) -> Result<bool, Error> {
-        let rows = self.cat_scan(DELETED, b"", PAGE)?;
+        // only the deletion events past their lifetime are read: keys `DELETED || at || pos`
+        let Some(end) = now.checked_sub(TOMBSTONE_LIFETIME_MS).and_then(|x| x.checked_add(1)) else { return Ok(false) };
+        let rows = self.cat_scan_to(DELETED, [DELETED, &end.to_be_bytes()].concat(), PAGE)?;
         let full = rows.len() == PAGE;
         for (k, _) in rows {
             let mut r = R::new(k.get(2..).ok_or(Error::Corrupt("node log"))?);
-            let (at, pos) = (r.u64()?, r.u64()?);
-            if at.saturating_add(TOMBSTONE_LIFETIME_MS) > now {
-                return Ok(false);
-            }
+            let (_at, pos) = (r.u64()?, r.u64()?);
             let Some(v) = self.cat_get(&pos_key(EVENT, pos))? else {
                 self.cat_remove(&k, Shred::Yes)?;
                 continue;

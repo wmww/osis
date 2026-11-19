@@ -979,6 +979,30 @@ fn expiry_leaves_no_tombstone_spec_sync_ids_6() {
     assert_eq!(events_of(&st, &s.id), [NodeEvent::Head(s.id)]);
 }
 
+// spec/sync.md §2 (Work in proportion to change), spec/sync-ids.md §6 (Expiry): settling the time
+// reads only what is due: entries expiring later and tombstones younger than their lifetime cost
+// it nothing, at n as at 10n of them.
+#[test]
+fn settling_the_time_reads_only_what_is_due_spec_sync_ids_6() {
+    let rows = |n: usize| {
+        let dev = Dev::new();
+        let s = Sid::new(10);
+        let mut st = unread(&dev, &s);
+        for i in 0..n {
+            let (b, x) = blob(100 + i, Class::Durable, Some(10_000 + i as u64), &[]);
+            st.take_stamped(&s.id, &stamped(&s, b, false), x, &[]).unwrap();
+            let (b, x) = blob(100 + n + i, Class::Durable, None, &[]);
+            st.take_stamped(&s.id, &stamped(&s, b, false), x, &[]).unwrap();
+            st.take_delete(&s.id, &[DeleteItem::sign(&s.delete(), &s.id, b)], true).unwrap();
+        }
+        osis_base::costs::take();
+        st.settle_at(WallMs(500)).unwrap();
+        osis_base::costs::take().into_iter().filter(|(k, ..)| *k == "store rows read").map(|(.., n)| n).sum::<u64>()
+    };
+    let (small, large) = (rows(10), rows(100));
+    assert_eq!(small, large, "rows read settling the time with 10 and 100 rows not due");
+}
+
 // spec/sync-ids.md §5 (Tombstones): a tombstone is kept `TOMBSTONE_LIFETIME`, then the blob ID may
 // come back.
 #[test]
