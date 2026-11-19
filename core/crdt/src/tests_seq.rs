@@ -151,7 +151,8 @@ pub(crate) struct Follows {
 /// characters with `Derived` dots, §7, and text edits of those, the position's text slot taken
 /// alone) and bootstrapped from a snapshot (deleted stretches arrive as range records, deleted
 /// chars without content); then edited by a new writer through the wire: an insert anchored at a
-/// random placed element (hidden ones inside range records and embedded ones included), then a
+/// random placed element (half the time, while there are any, one inside a range record, so the
+/// insert splits it, or an embedded one), then a
 /// random text op (undelete of part of a deleted run, delete, move, insert, now and then a
 /// replace), `n` times. After every join the read equals the model's text slot and the cached
 /// placement a whole pass (`check_lin`).
@@ -243,7 +244,19 @@ pub(crate) fn snapshot_then_edit(mut r: crate::testutil::SeedRng, upgraded: bool
             _ => Vec::new(),
         };
         w.next_commit((1 << 30) + 2 * k + 1);
-        let anchor: Option<&MDot> = order.get(r.below(order.len() + 1));
+        // half the time, when any, at a rare anchor: inside a range record (before its last
+        // element: a split) or an embedded char
+        let rare: Vec<&MDot> = match &ours {
+            Fragment::Seq(st) => order
+                .iter()
+                .filter(|x| {
+                    let d = crate::testutil::dot(x);
+                    d.src.is_derived() || crate::seq_span::find(st.elems(), &d).is_some_and(|(k, e)| d.ctr - k.ctr + 1 < e.span)
+                })
+                .collect(),
+            _ => Vec::new(),
+        };
+        let anchor: Option<&MDot> = if !rare.is_empty() && r.chance(1, 2) { Some(rare[r.below(rare.len())]) } else { order.get(r.below(order.len() + 1)) };
         let mut d = MFrag::Seq { text: true, c: Composite { reset: None, w: None, w_valueless: false }, elems: Default::default() };
         let cs = crdt_model::r#gen::random_text(&mut r, 3);
         if !cs.is_empty() {
@@ -266,39 +279,33 @@ pub(crate) fn snapshot_then_edit(mut r: crate::testutil::SeedRng, upgraded: bool
 /// inserts anchored at them, are followed too. §6, §8 (pages are joined independently),
 /// `seq_place`: a placement held in part (a node's stored one: blocks and dot-map chunks loaded on
 /// a miss) over records held in part (pages loaded on a miss) follows the joins a whole one
-/// follows, and what it writes back reads as a whole pass. Fixed seeds.
+/// follows, and what it writes back reads as a whole pass. Histories plain and upgraded in turn
+/// until both rare kinds (splits, `Derived` dots) were met a few times.
 #[test]
 fn snapshot_edits_follow_cache_spec_6() {
-    let (mut split, mut partial, mut derived) = (Follows::default(), Follows::default(), Follows::default());
-    for seed in (1..48).step_by(2) {
-        for upgraded in [false, true] {
-            if upgraded && seed >= 24 {
-                continue;
-            }
-            let x = snapshot_then_edit(crate::testutil::fixed(seed), upgraded, 30);
-            if !upgraded {
-                split.joins += x.joins;
-                split.kept += x.kept;
-                split.split += x.split;
-                split.missed += x.missed;
-            } else {
-                derived.derived += x.derived;
-                derived.missed_derived += x.missed_derived;
-            }
-            if seed < 24 {
-                partial.whole += x.whole;
-                partial.partial += x.partial;
-                partial.loaded += x.loaded;
-                partial.blocks += x.blocks;
-            }
-        }
+    let mut t = Follows::default();
+    let mut runs = 0;
+    while (t.split < 3 || t.derived < 3) && runs < 60 {
+        let x = snapshot_then_edit(crate::testutil::rng(runs / 2), runs % 2 == 1, 30);
+        runs += 1;
+        t.joins += x.joins;
+        t.kept += x.kept;
+        t.split += x.split;
+        t.missed += x.missed;
+        t.derived += x.derived;
+        t.missed_derived += x.missed_derived;
+        t.whole += x.whole;
+        t.partial += x.partial;
+        t.loaded += x.loaded;
+        t.blocks += x.blocks;
     }
-    assert!(split.split > 0 && split.missed * 30 <= split.split, "{split:?}");
-    assert!(split.kept * 10 >= split.joins * 9, "{split:?}");
-    assert!(partial.whole >= 500 && partial.partial * 100 >= partial.whole * 98, "{partial:?}");
+    assert!(t.split >= 3 && t.derived >= 3, "{runs} histories: {t:?}");
+    // every join of a kind the cache follows is followed (whole and held in part); the rest
+    // (resets, records partly new) are few
+    assert!(t.missed == 0 && t.missed_derived == 0 && t.partial == t.whole, "{t:?}");
+    assert!(t.kept * 10 >= t.joins * 9, "{t:?}");
     // the blocks the joins look at, not every block
-    assert!(partial.loaded * 2 < partial.blocks, "{partial:?}");
-    assert!(derived.derived >= 10 && derived.missed_derived * 20 <= derived.derived, "{derived:?}");
+    assert!(t.loaded * 2 < t.blocks, "{t:?}");
 }
 
 /// What decoding a snapshot of `f` gives: the chars of deleted elements dropped (§3.3 rule 5),
@@ -1003,6 +1010,56 @@ fn moved_row_keeps_key_spec_6_1() {
     check(vec![(w6.clone(), pa.clone(), None), (c1.clone(), pa.clone(), None)], vec![(st(8, 4, 1), Anchor::Head, None), (w6.clone(), pa.clone(), Some(c1.clone()))]);
     // forged: the copy alone (X stays under p, its key drops)
     check(vec![(w6.clone(), pa.clone(), None), (c1.clone(), pa.clone(), None)], vec![(w6, pa.clone(), Some(c1.clone()))]);
+}
+
+/// `base` read (its placement cached), then `d` joined: the cached placement is a whole pass
+/// (`check_lin`), and the state places and reads as the element by element join does.
+#[track_caller]
+fn joins_as_flat(base: Fragment, d: Fragment) {
+    let mut a = base.clone();
+    let _ = a.read();
+    a.join(d.clone());
+    crate::testutil::check_lin(&a);
+    alike(&a, &joined(&expanded(&base), &expanded(&d)));
+}
+
+/// §6.1 sibling order, `seq_lin`: a delta placing a new element N and moving X under one anchor
+/// by one sibling key (X's write carries N's creation stamp as its key, as a forged copy may)
+/// orders them by dot, N's below X's, though N is placed first.
+#[test]
+fn equal_keys_in_one_delta_go_by_dot_spec_6_1() {
+    let (p, n, x) = (Dot::new(node(1), 1), Dot::new(node(2), 1), Dot::new(node(3), 1));
+    let at_p = Anchor::Dot(p.clone());
+    let base = seq_of(BTreeMap::from([(p.clone(), char_at(p, 1, Anchor::Head, 'p')), (x.clone(), char_at(x.clone(), 2, Anchor::Head, 'x'))]), None);
+    let ne = char_at(n.clone(), 5, at_p.clone(), 'n');
+    let key = ne.pos[0].0.clone();
+    let mv = SeqElem { pos: vec![(st(6, 4, 1), at_p, Some(key))], ..SeqElem::bare() };
+    let d = seq_of(BTreeMap::from([(n, ne), (x, mv)]), None);
+    assert_eq!(reads(&joined(&base, &d)), txt("pnx"));
+    joins_as_flat(base, d);
+}
+
+/// §4.2, §6, `seq_lin`: a range record over held records with a gap between them (elements
+/// the state lacks) is partly new: the placement places the new elements too.
+#[test]
+fn range_over_a_gap_places_the_gap_spec_6() {
+    let range = |c: u64, at: Anchor, span: u64| {
+        let s = Stamp { ts: ts(1 << 16), dot: Dot::new(node(1), c) };
+        SeqElem { created: Some((s.clone(), at.clone())), pos: vec![(s, at, None)], deleted: Some((st(2, 2, 1), true)), span, ..SeqElem::bare() }
+    };
+    let q = Dot::new(node(3), 1);
+    let base = seq_of(BTreeMap::from([(Dot::new(node(1), 1), range(1, Anchor::Head, 4)), (Dot::new(node(1), 7), range(7, Anchor::Dot(Dot::new(node(1), 6)), 4)), (q.clone(), char_at(q, 3, Anchor::Head, 'q'))]), None);
+    joins_as_flat(base, one(Dot::new(node(1), 1), range(1, Anchor::Head, 10)));
+}
+
+/// §2.2, §7, `seq_lin`: a new `Derived(S, 5)` record splits a range of `S` there; the cached
+/// placement takes it as a whole pass does.
+#[test]
+fn derived_record_inside_a_range_places_spec_7() {
+    let d = Dot::new(crate::stamp::Source::derived(Dot::new(node(1), 5)).unwrap(), 1);
+    let emb = one(d.clone(), char_at(d, 4, Anchor::Head, 'q'));
+    let ten = joined(&long_text(10), &one(Dot::new(node(1), 1), SeqElem { deleted: Some((st(2, 2, 1), true)), span: 10, ..SeqElem::bare() }));
+    joins_as_flat(via_snapshot(&ten), emb);
 }
 
 /// A state's part at a delta's positions judges the delta as the whole state does (`covered`,
