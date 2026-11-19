@@ -288,6 +288,10 @@ pub struct Rules {
     pub last_hop: bool,
     /// Which held writes are dispute candidates.
     pub candidates: Candidates,
+    /// A trusted write's seeds are the writes resting on its edge whose need there its own value
+    /// does not meet, as its audit reads them (a demotion to write keeps the invites under it).
+    /// False (control `-seeds-all`): every unlisted write resting on its edge.
+    pub seeds_by_need: bool,
 }
 
 /// The dispute candidates (`disputes`): held edge writes of another holder's edge giving it below
@@ -327,6 +331,7 @@ impl Rules {
             remains_kept: false,
             last_hop: false,
             candidates: Candidates::All,
+            seeds_by_need: false,
         }
     }
     /// The design: every fix the notes state, a removal judged in the world its list makes
@@ -355,6 +360,7 @@ impl Rules {
             remains_kept: true,
             last_hop: true,
             candidates: Candidates::Explicit,
+            seeds_by_need: true,
         }
     }
 }
@@ -1098,15 +1104,19 @@ fn walk(w: &World, rules: &Rules, v: &View, d0: &Set, vouched: &Vouched) -> Walk
     }
 }
 
-/// A trusted lowering's seeds: each held edge-class commit ordered before it, resting on its
-/// edge, that its list does not name, with the trusted write that drops it.
+/// A trusted write's seeds: each held edge-class commit ordered before it, resting on its edge,
+/// that its list does not name and (`seeds_by_need`) whose need there its value does not meet,
+/// with the trusted write that drops it.
 fn seeds(w: &World, rules: &Rules, v: &View, active: &Set, vouched: &Vouched) -> BTreeMap<Id, Id> {
     let mut d = BTreeMap::new();
     for &r in active {
-        let Some(h) = w.sets(r) else { continue };
+        let (Some(h), Kind::Edge { role, until, invite, .. }) = (w.sets(r), &w.commits[r].kind) else { continue };
+        let after = alive((*role, *until), w.commits[r].ts);
+        let after_inv = give_invite(after, *invite);
         let exempt = if rules.exempt_chain { chain(w, &v.held, r) } else { Set::new() };
         for &j in &v.held {
-            if w.edge_class(j) && w.key(j) < w.key(r) && rests_on(w, rules, j, h) && !exempt.contains(&j) && !listed(w, v, vouched, r, j) {
+            let unmet = || !rules.seeds_by_need || !need(w, rules, j, h, true).met(after, after_inv);
+            if w.edge_class(j) && w.key(j) < w.key(r) && rests_on(w, rules, j, h) && !exempt.contains(&j) && !listed(w, v, vouched, r, j) && unmet() {
                 d.entry(j).or_insert(r);
             }
         }

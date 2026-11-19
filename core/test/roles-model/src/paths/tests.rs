@@ -1146,7 +1146,7 @@ fn each_fix_is_needed() {
 
 #[test]
 fn small_family_sample_holds() {
-    assert_holds(&family_run(&Rules::fixed(), 2017), "family");
+    assert_holds(&family_run(&Rules::fixed(), 4001), "family");
 }
 
 fn var(k: &str) -> Option<u64> {
@@ -1170,7 +1170,7 @@ fn random_worlds_hold_large() {
 }
 
 /// Every 157th world of the small family (`-- 0 paths-exh` runs all of them by hand): a stride
-/// coprime with every dimension's size (2, 4, 5, 48), so no dimension is fixed or tied to
+/// coprime with every dimension's size (2, 4, 5, 6, 49; `family_on_every_core` refuses one that is not), so no dimension is fixed or tied to
 /// another (an even stride keeps `h_t1` false in every world).
 #[test]
 #[ignore = "property"]
@@ -2188,4 +2188,31 @@ fn an_honest_holder_leave_is_no_dispute() {
     let all = Rules { candidates: Candidates::All, ..Rules::fixed() };
     assert_eq!(disputes(&w, &all, &View::all(&w)), vec![leave]);
     assert!(!judge(&w, &all, &View::all(&w).trusting(&[leave])).shows(gz));
+}
+
+// ---- Seeds by need: a demotion to write (a kiosk) ----
+
+/// A2 holds admin on T1 inviting read; X, a writer of A2, invites G to read T1 through A2; B, not
+/// having received the invite, demotes A2 on T1 to write inviting read (a kiosk: a holder kept at
+/// write). The invite's need on (A2, T1) is read as an invite, which the demotion still gives:
+/// its audit keeps it at a node trusting nothing, and a trusted demotion's seeds (its value's
+/// unmet needs) keep it too, so both read alike and nothing is shown. Control (seeds every
+/// unlisted write resting on the edge): the trusting node drops the invite and the demotion is
+/// shown as a dispute.
+#[test]
+fn a_trusted_demotion_to_write_keeps_the_invites_under_it() {
+    let mut w = account();
+    w.edge(H, 1, &[], A, B, Admin, &[]);
+    w.push(H, 1, &[A], T1, Kind::set(A2, Admin).inviting(Role::Read));
+    w.edge(K, 1, &[], A2, X, Write, &[]);
+    let gi = w.push(X, 4, &[A2], T1, Kind::set(G, Role::Read));
+    let kiosk = w.push(B, 6, &[A], T1, Kind::set(A2, Write).inviting(Role::Read));
+    for t in [&[][..], &[kiosk]] {
+        let rd = fixed(&w, t);
+        assert!(rd.applied.contains(&kiosk) && rd.applied.contains(&gi) && rd.role(G, T1) == Role::Read, "{t:?} {rd:?}");
+    }
+    assert!(disputes(&w, &Rules::fixed(), &View::all(&w)).is_empty());
+    let all = Rules { seeds_by_need: false, ..Rules::fixed() };
+    assert_eq!(judge(&w, &all, &View::all(&w).trusting(&[kiosk])).role(G, T1), Gone);
+    assert_eq!(disputes(&w, &all, &View::all(&w)), vec![kiosk]);
 }
