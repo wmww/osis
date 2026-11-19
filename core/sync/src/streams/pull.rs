@@ -199,6 +199,9 @@ fn covered(members: &BTreeMap<SyncId, crate::opens::Member>, p: &Pulling, asked:
     members.keys().filter(|s| p.joins.get(s).is_none_or(|j| asked.contains(&(**s, j.generation)))).copied().collect()
 }
 
+/// A body queued for fetching: its sync ID, blob and the announcement's wrap and stamp.
+type Queued = (SyncId, BlobId, Option<(Wrap, Option<Stamp>)>);
+
 #[derive(Clone, Debug)]
 pub(super) struct Pulling {
     pub src: Source,
@@ -222,7 +225,10 @@ pub(super) struct Pulling {
     in_hand: BTreeMap<SyncId, usize>,
     replies: usize,
     fetches: BTreeMap<Id, (SyncId, Vec<BlobId>, u8)>,
-    queue: BTreeMap<(u8, u64, u64), (SyncId, BlobId)>,
+    /// Bodies to fetch, by fill order: each with the wrap and stamp it was announced under, when
+    /// one was (`refetch`'s come with the reply), so one whose bytes arrive meanwhile under another
+    /// sync ID is taken with them at its turn, not fetched again.
+    queue: BTreeMap<(u8, u64, u64), Queued>,
     arrivals: u64,
     /// Entries this source answered without (or gave wrong bytes of), until it announces the
     /// entry again: per sync ID, as owed (the same blob announced under another sync ID is
@@ -749,11 +755,11 @@ impl Streams {
         let again: Vec<(SyncId, BlobId)> = p.settled.iter().filter(|(s, b)| from_start.contains(s) && ctx.store.holding(s) == Some(Holding::Unread) && ctx.store.bytes(b).ok().flatten().is_none()).copied().collect();
         for (s, b) in again {
             p.settled.remove(&(s, b));
-            if !p.queue.values().any(|x| *x == (s, b))
+            if !p.queue.values().any(|x| (x.0, x.1) == (s, b))
                 && let Some(c) = class(Rank::Unopened, false)
             {
                 p.arrivals += 1;
-                p.queue.insert((c.0, c.1, u64::MAX - p.arrivals), (s, b));
+                p.queue.insert((c.0, c.1, u64::MAX - p.arrivals), (s, b, None));
             }
         }
         p.seq = 0;
@@ -871,11 +877,11 @@ impl Streams {
             } else if let Some(c) = self.wanted(ctx, conn, s, b, wrap, *stamp) {
                 batch.owed.push((*s, *b));
                 if let Some(p) = self.pull.get_mut(&conn)
-                    && !p.queue.values().any(|x| *x == (*s, *b))
+                    && !p.queue.values().any(|x| (x.0, x.1) == (*s, *b))
                 {
                     p.arrivals += 1;
                     let key = (c.0, c.1, u64::MAX - p.arrivals);
-                    p.queue.insert(key, (*s, *b));
+                    p.queue.insert(key, (*s, *b, Some((*wrap, *stamp))));
                 }
             }
         }
@@ -922,6 +928,23 @@ impl Streams {
         }
     }
 
+    /// A queued body whose bytes arrived since it was announced (under another sync ID, or from
+    /// another source): taken with them under its announced wrap, as `wanted` takes one held at
+    /// its announcement.
+    #[allow(clippy::too_many_arguments)]
+    fn take_held(&mut self, ctx: &mut Ctx, conn: ConnId, s: SyncId, b: BlobId, wrap: Wrap, stamp: Option<Stamp>, bytes: &[u8]) {
+        let tomb = ctx.store.tombstone(&s, &b).ok().flatten().is_some();
+        match ctx.store.holding(&s) {
+            Some(Holding::Unread) if tomb => self.tell(conn, s, Event::Refused(b, Code::TOMBSTONED)),
+            Some(Holding::Unread) if stamp.is_some() => return self.take_body(ctx, conn, s, b, wrap, stamp, bytes),
+            Some(Holding::Read) if !tomb && ctx.store.entry(&s, &b).ok().flatten().is_none() => return self.take_body(ctx, conn, s, b, wrap, stamp, bytes),
+            _ => {}
+        }
+        if let Some(p) = self.pull.get_mut(&conn) {
+            p.settled.insert((s, b));
+        }
+    }
+
     /// A stamp new to entry `b` of S held here under the same wrap, applied in stream order (the
     /// step's commit a writer logged before stamping under it is held by then): the store logs it
     /// on an entry held unstamped (stamped in place at a writer, spec/sync-inbox.md §2), judged as
@@ -950,10 +973,10 @@ impl Streams {
         p.failed.remove(&(s, b));
         p.settled.remove(&(s, b));
         p.taken.remove(&(s, b));
-        if !p.queue.values().any(|x| *x == (s, b)) {
+        if !p.queue.values().any(|x| (x.0, x.1) == (s, b)) {
             p.arrivals += 1;
             let key = (2, u64::MAX, u64::MAX - p.arrivals);
-            p.queue.insert(key, (s, b));
+            p.queue.insert(key, (s, b, None));
         }
         self.fetch(ctx, conn);
         self.track(ctx, conn);
@@ -1071,7 +1094,7 @@ impl Streams {
                 if took {
                     p.taken.insert((s, b));
                 }
-                p.queue.retain(|_, x| *x != (s, b));
+                p.queue.retain(|_, x| (x.0, x.1) != (s, b));
             }
         }
         if self.asked.get(&b).is_some_and(|(c, _)| *c == conn) {
@@ -1199,8 +1222,11 @@ impl Streams {
     }
 
     /// Sends Fetches while fewer than `FETCHES_OUT` are out: one sync ID's bodies of one fill
-    /// class at a time, the best first, order 0 before anything else; a blob asked at another
-    /// source stays queued here until that ask is past `ASKED_MS` (spec/sync-streams.md §4 Bodies).
+    /// class at a time, the best first, order 0 before anything else; a blob asked anywhere (here
+    /// under another sync ID, or at another source) stays queued until that ask is answered or
+    /// past `ASKED_MS`, and one whose bytes arrived meanwhile is taken with them under its
+    /// announced wrap, never fetched again (spec/sync-streams.md §4 Bodies: only blob IDs its
+    /// store lacks are fetched).
     fn fetch(&mut self, ctx: &mut Ctx, conn: ConnId) {
         loop {
             let Some(p) = self.pull.get(&conn) else { return };
@@ -1211,12 +1237,19 @@ impl Streams {
             let mut pick: Option<(SyncId, u8)> = None;
             let mut ids = Vec::new();
             let mut drop = Vec::new();
-            for (k, (s, b)) in &p.queue {
+            let mut held = Vec::new();
+            for (k, (s, b, announced)) in &p.queue {
                 if p.settled.contains(&(*s, *b)) || p.failed.contains(&(*s, *b)) || !ctx.shared.members(conn).contains_key(s) {
                     drop.push(*k);
                     continue;
                 }
-                if self.asked.get(b).is_some_and(|(c, at)| *c != conn && at.after(ASKED_MS) > ctx.mono) {
+                if self.asked.get(b).is_some_and(|(_, at)| at.after(ASKED_MS) > ctx.mono) {
+                    continue;
+                }
+                if let Some((wrap, stamp)) = *announced
+                    && let Some(bytes) = ctx.store.bytes(b).ok().flatten()
+                {
+                    held.push((*k, *s, *b, wrap, stamp, bytes));
                     continue;
                 }
                 match pick {
@@ -1237,6 +1270,16 @@ impl Streams {
             let Some(p) = self.pull.get_mut(&conn) else { return };
             for k in drop {
                 p.queue.remove(&k);
+            }
+            if !held.is_empty() {
+                for (k, s, b, wrap, stamp, bytes) in held {
+                    if let Some(p) = self.pull.get_mut(&conn) {
+                        p.queue.remove(&k);
+                    }
+                    self.take_held(ctx, conn, s, b, wrap, stamp, &bytes);
+                }
+                self.drain(ctx, conn);
+                continue;
             }
             let Some((s, c)) = pick else { return };
             let blobs: Vec<BlobId> = ids.iter().map(|(_, b)| *b).collect();
@@ -1310,7 +1353,7 @@ impl Streams {
             // what failed here matters only to messages in hand (an announcement again clears it)
             if p.pending.is_empty() {
                 let failed = std::mem::take(&mut p.failed);
-                p.queue.retain(|_, x| !failed.contains(x));
+                p.queue.retain(|_, x| !failed.contains(&(x.0, x.1)));
             }
         }
     }

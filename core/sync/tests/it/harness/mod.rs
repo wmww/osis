@@ -224,6 +224,10 @@ pub struct Net {
     /// The frames each node sent each other node, per message kind (`Hello`, a `Msg` variant):
     /// (count, bytes with the length prefix). `census` prints it.
     pub frames: BTreeMap<(usize, usize, &'static str), (u64, u64)>,
+    /// Set: each blob each node was sent with its entry in a FetchReply by each other node, and
+    /// how many times (`fetched`); off, no frame is decoded for it.
+    pub count_fetched: bool,
+    pub fetched: BTreeMap<(usize, usize), BTreeMap<osis_base::BlobId, u64>>,
     /// Each end's sent bytes split into frames for `frames`, and whether its Hello went by.
     splitters: BTreeMap<(usize, ConnId), (FrameDecoder, bool)>,
     /// Bytes each end sent on each connection: the transport takes them at once (no buffer), so
@@ -371,6 +375,15 @@ impl Net {
             let t = self.frames.entry((from, to, kind)).or_default();
             t.0 += 1;
             t.1 += 4 + body.len() as u64;
+            if self.count_fetched
+                && kind == "FetchReply"
+                && let Ok(osis_proto::Msg::FetchReply { items, .. }) = osis_proto::Msg::decode(&body)
+            {
+                let per = self.fetched.entry((from, to)).or_default();
+                for f in items.iter().filter(|f| f.entry.is_some()) {
+                    *per.entry(f.blob_id).or_default() += 1;
+                }
+            }
         }
         let w = self.written.entry((from, conn)).or_default();
         *w += bytes.len() as u64;

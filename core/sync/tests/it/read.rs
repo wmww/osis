@@ -155,6 +155,8 @@ struct Fake {
     holdings_feed: Vec<SyncId>,
     unsettled: Stamped<SyncId, ()>,
     unpullable: Stamped<SyncId, ()>,
+    /// Sync IDs whose first sync here has not ended (`Ground::first_synced`).
+    first_syncing: Stamped<SyncId, ()>,
     /// Bodies this node may not log under their sync ID (`Ground::may_log`).
     unloggable: Stamped<(SyncId, CommitId), ()>,
     /// Blobs held with other parts than `{0}`, as a copy, or without bytes (`None`).
@@ -352,6 +354,9 @@ impl Ground for Fake {
     }
     fn unit_settled(&mut self, s: &SyncId) -> Result<bool> {
         Ok(!self.unsettled.contains_key(s))
+    }
+    fn first_synced(&mut self, s: &SyncId) -> Result<bool> {
+        Ok(!self.first_syncing.contains_key(s))
     }
     fn pullable(&mut self, s: &SyncId) -> Result<bool> {
         Ok(!self.unpullable.contains_key(s))

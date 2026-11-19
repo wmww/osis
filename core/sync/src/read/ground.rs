@@ -131,6 +131,9 @@ pub trait Ground {
     /// A reader can pull S from here: this node publishes `reach.0`, or a connection shares S
     /// (spec/sync-judgement.md §3 Own store).
     fn pullable(&mut self, s: &SyncId) -> Result<bool>;
+    /// S's first sync here ended (`Store::first_synced`, spec/sync-streams.md §5; a stamped read),
+    /// or S's thing was made here (nothing to sync first).
+    fn first_synced(&mut self, s: &SyncId) -> Result<bool>;
     /// This node may log `c`'s body under S now (`Engine::may_log`, spec/sync-judgement.md §2
     /// Loggable): must-hold only while it may.
     fn may_log(&mut self, s: &SyncId, c: &CommitId) -> Result<bool>;
@@ -452,4 +455,7 @@ pub struct CertBlobsMissing {
     /// Deletes owed at sources keeping S unread, once S's sources are heard out: each blob there
     /// losing to another blob there (spec/sync-ids.md §6 Delete).
     pub deletes: BTreeSet<(Source, StepId, osis_base::BlobId)>,
+    /// What is missing waits for S's first sync here, or a complete pass begun after this pass
+    /// place (`read::cert_blobs_missing`): a source's blob, pulled, may carry it.
+    pub wait: Option<u64>,
 }

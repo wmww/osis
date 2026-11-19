@@ -319,6 +319,14 @@ impl Ground for Live<'_, '_> {
         }
         Ok(self.cx.engine.publishes_reach()?)
     }
+    fn first_synced(&mut self, s: &SyncId) -> Result<bool> {
+        if self.cx.store.first_synced(s)? {
+            return Ok(true);
+        }
+        // S's thing made here: nothing to sync first
+        let things = self.things(s);
+        Ok(things.iter().any(|t| self.cx.engine.minted_here(t)))
+    }
     fn may_log(&mut self, s: &SyncId, c: &CommitId) -> Result<bool> {
         // S's own entries first, read by key: what may be logged only grows with the blobs
         // held, so where they do, no other sync ID's entries are read (a commit logged under

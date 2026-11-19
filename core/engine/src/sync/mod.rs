@@ -946,6 +946,12 @@ impl Engine {
         self.core.ix.blob_parts.get(b).map(|x| x.commit)
     }
 
+    /// Whether thing `t` was made here: a held minting of it is this node's own commit. Such a
+    /// node has no first sync of `t`'s sync ID to wait for (spec/sync-streams.md §5).
+    pub fn minted_here(&self, t: &Tid) -> bool {
+        crate::retention::destroy::mintings(&self.core, t).iter().any(|m| self.core.ix.commits.get(&m.commit).is_some_and(|x| x.origin == crate::events::Origin::Local))
+    }
+
     /// Whether commit `c` is held here (applied or judged).
     pub fn holds_commit(&mut self, c: &CommitId) -> bool {
         self.core.ix.commits.contains_key(c)

@@ -501,7 +501,21 @@ pub(crate) fn body(g: &mut impl Ground, mine: &Mine, s: &SyncId, c: &CommitId) -
             restamp.extend(peer);
         }
         restamp.extend(promoted);
-        let log = !stands && restamp.is_empty() && !waits;
+        let mut log = !stands && restamp.is_empty() && !waits;
+        // another's body (or certificate) is logged here only once S's first sync here ended,
+        // or a complete pass of S begun after what decides the body last moved did (none
+        // connected to sync it from: at once): a source's entry of it, pulled, stands as the log
+        // (spec/sync-judgement.md §3 Own store; spec/sync-streams.md §5), so a new reader logs no
+        // copy of what its sources hold
+        if log && !f.as_ref().is_some_and(|f| f.own) && !g.first_synced(s)? {
+            let since = mine.arrived.get(&(*s, *c)).copied().unwrap_or(0).max(mine.moved.get(c).copied().unwrap_or(0));
+            if !g.passed(s, since) {
+                #[cfg(debug_assertions)]
+                osis_base::trace::note(|| format!("log held back {s:?} {c:?}: first sync, a pass after {since}"));
+                log = false;
+                j.wait = j.wait.max(Some(since));
+            }
+        }
         if (log || !restamp.is_empty()) && g.pullable(s)? {
             if log {
                 j.acts.insert(Act::Log);

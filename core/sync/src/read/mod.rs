@@ -111,6 +111,10 @@ pub struct Read {
     arrived: Stamped<(SyncId, CommitId), u64>,
     moved: Stamped<CommitId, u64>,
     waits: Stamped<SyncId, u64>,
+    /// Per S whose certificate blobs are followed, the pass place they were first followed at:
+    /// what a new reader logs of them waits for a complete pass begun after it, unless S's
+    /// first sync here ended (`cert_blobs_missing`).
+    cert_since: BTreeMap<SyncId, u64>,
     /// The engine's commits held, followed from the first settle (`Live`).
     commits: Option<osis_base::memo::Feed<CommitId>>,
     /// The acts owed each source, carried out on its record's connection (`read/owed.rs`).
@@ -141,6 +145,7 @@ impl Default for Read {
             arrived: Stamped::default(),
             moved: Stamped::default(),
             waits: Stamped::default(),
+            cert_since: BTreeMap::new(),
             commits: None,
             owed: owed::Owed::default(),
             feeds: live::Feeds::default(),
@@ -195,6 +200,7 @@ impl Read {
     /// carries, unless already followed.
     fn follow_cert_blobs(&mut self, g: &mut impl Ground, s: &SyncId) -> Result<()> {
         if !self.cert_blobs.wants(&(*s, None)) {
+            self.cert_since.insert(*s, g.place());
             self.cert_blobs.want((*s, None));
             for r in g.list_rotations(s)? {
                 self.cert_blobs.want((*s, Some(r)));
@@ -296,11 +302,18 @@ impl Read {
         for (s, r) in self.cert_blobs.due() {
             if !g.reads(&s) {
                 self.cert_blobs.unwant(&(s, r));
+                self.cert_since.remove(&s);
                 unread.insert(s);
                 continue;
             }
             // pullable read inside: a sync ID a reader cannot pull yet is due again once it can
-            let Some((was, now)) = self.cert_blobs.try_settle(&(s, r), || cert_blobs_missing(g, &s, r).map(Arc::new))? else { continue };
+            let since = self.cert_since.get(&s).copied().unwrap_or(0);
+            let Some((was, now)) = self.cert_blobs.try_settle(&(s, r), || cert_blobs_missing(g, &s, r, since).map(Arc::new))? else { continue };
+            if let Some(w) = now.wait
+                && self.waits.get(&s).is_none_or(|x| *x < w)
+            {
+                self.waits.insert(s, w);
+            }
             // one S needs no more leaves the own store, no tombstone (spec/sync-judgement.md §3
             // Own store); what the engine kept of it goes once no source shows it either
             for b in &now.unneeded {
@@ -752,8 +765,15 @@ impl Read {
 /// `Ground::cert_blobs_missing` while a reader can pull S, else nothing (`pullable` read inside,
 /// so S is due again once it can; read only where there is something to do, so a source flip
 /// moves no key with nothing to do).
-fn cert_blobs_missing(g: &mut impl Ground, s: &SyncId, r: CertKind) -> Result<CertBlobsMissing> {
-    let x = g.cert_blobs_missing(s, r)?;
+fn cert_blobs_missing(g: &mut impl Ground, s: &SyncId, r: CertKind, since: u64) -> Result<CertBlobsMissing> {
+    let mut x = g.cert_blobs_missing(s, r)?;
+    // logged here only once S's first sync here ended, or a complete pass of S begun after S's
+    // certificate blobs were first followed did (none connected to sync it from: at once): a
+    // source's blob, pulled, carries them (spec/sync-judgement.md §3 Own store)
+    if !x.missing.is_empty() && !g.first_synced(s)? && !g.passed(s, since) {
+        x.missing.clear();
+        x.wait = Some(since);
+    }
     if x == CertBlobsMissing::default() || g.pullable(s)? {
         return Ok(x);
     }
