@@ -94,11 +94,6 @@ impl Chunker {
         None
     }
 
-    /// Bytes fed since the last boundary.
-    pub fn pending(&self) -> usize {
-        self.n
-    }
-
     /// Starts a new chunk.
     pub fn reset(&mut self) {
         self.h = 0;
@@ -223,6 +218,23 @@ mod tests {
         lens
     }
 
+    /// `PageCutter`'s page lengths for elements of `sizes`, each fed in pieces of `split`.
+    fn cut_pages(d: &[u8], sizes: &[usize], split: usize, p: ChunkParams) -> Vec<usize> {
+        let (mut c, mut got, mut pos) = (PageCutter::new(p), Vec::new(), 0);
+        for &s in sizes {
+            d[pos..pos + s].chunks(split).for_each(|piece| c.feed(piece));
+            pos += s;
+            let n = c.pending();
+            if c.end_element() {
+                got.push(n);
+            }
+        }
+        if c.pending() > 0 {
+            got.push(c.pending());
+        }
+        got
+    }
+
     /// Reference page rule straight from spec/wire.md §6: page lengths for elements of `sizes`.
     fn pages_reference(d: &[u8], sizes: &[usize], p: ChunkParams) -> Vec<usize> {
         let (mut out, mut h, mut n, mut hit, mut pos) = (Vec::new(), 0u64, 0usize, false, 0usize);
@@ -296,22 +308,7 @@ mod tests {
         fn pages_match_rule(seed: u64, sizes in prop::collection::vec(1usize..400, 0..100), split in 1usize..50) {
             let d = data(seed, sizes.iter().sum());
             for p in [SMALL, MID] {
-                let mut c = PageCutter::new(p);
-                let (mut got, mut pos) = (Vec::new(), 0);
-                for &s in &sizes {
-                    for piece in d[pos..pos + s].chunks(split) {
-                        c.feed(piece);
-                    }
-                    pos += s;
-                    let n = c.pending();
-                    if c.end_element() {
-                        got.push(n);
-                    }
-                }
-                if c.pending() > 0 {
-                    got.push(c.pending());
-                }
-                prop_assert_eq!(got, pages_reference(&d, &sizes, p));
+                prop_assert_eq!(cut_pages(&d, &sizes, split, p), pages_reference(&d, &sizes, p));
             }
         }
     }
@@ -354,22 +351,7 @@ mod tests {
             assert_eq!(incremental(&d, MID, &[1, 7, 299, 64]), l);
             for (size, split) in [(1, 1), (5, 2), (300, 7), (301, 300)] {
                 let sizes: Vec<usize> = (0..d.len() / size).map(|_| size).collect();
-                let mut c = PageCutter::new(MID);
-                let (mut got, mut pos) = (Vec::new(), 0);
-                for &s in &sizes {
-                    for piece in d[pos..pos + s].chunks(split) {
-                        c.feed(piece);
-                    }
-                    pos += s;
-                    let n = c.pending();
-                    if c.end_element() {
-                        got.push(n);
-                    }
-                }
-                if c.pending() > 0 {
-                    got.push(c.pending());
-                }
-                assert_eq!(got, pages_reference(&d, &sizes, MID), "elements of {size}, pieces of {split}");
+                assert_eq!(cut_pages(&d, &sizes, split, MID), pages_reference(&d, &sizes, MID), "elements of {size}, pieces of {split}");
             }
         }
     }
