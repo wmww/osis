@@ -357,10 +357,11 @@ fn page_items_cap_spec_8() {
         }
         osis_base::encode(&Value::List(top))
     };
-    let zeros = |n: usize| Value::List(vec![Value::Int(0); n]);
-    // the fragment `[0, [], 0, [0 * n]]` counts n + 5 items
+    // a text string counts its head and a byte each, so the cap is met without millions of
+    // values: the fragment `[0, [], 0, "x" * n]` counts n + 5 items
+    let text = |n: usize| Value::Str("x".repeat(n));
     let over = MAX_PAGE_ITEMS - 4;
-    for (val, capped) in [(zeros(over), true), (zeros(over - 1), false), (Value::Str("x".repeat(MAX_PAGE_ITEMS)), true)] {
+    for (val, capped) in [(text(over), true), (text(over - 1), false)] {
         for snapshot in [false, true] {
             let bytes = root(&val, snapshot);
             let mut pages = MemoryPages::new();
@@ -377,10 +378,10 @@ fn page_items_cap_spec_8() {
         let e = unpage(&root(&val, true), &mut crate::Unpaged).unwrap_err();
         assert!(!is_cap(&e), "ephemeral deltas are not counted: {e}");
     }
-    // a page: the set's element array links to one page of too many items
-    for (n, capped) in [(MAX_PAGE_ITEMS, true), (MAX_PAGE_ITEMS - 1, false)] {
+    // a page: the set's element array links to one page of too many items (`["x" * n]`: n + 2)
+    for (n, capped) in [(MAX_PAGE_ITEMS - 1, true), (MAX_PAGE_ITEMS - 2, false)] {
         let mut pages = MemoryPages::new();
-        let link = pages.put(&osis_base::encode(&zeros(n))).unwrap();
+        let link = pages.put(&osis_base::encode(&Value::List(vec![text(n)]))).unwrap();
         let top = Value::List(vec![Value::Bytes(vec![0; 16]), none(), none(), Value::List(vec![Value::Int(6), none(), none(), Value::List(vec![Value::link(link)])]), none(), none(), none()]);
         let e = unpage(&osis_base::encode(&top), &mut pages).unwrap_err();
         assert_eq!(is_cap(&e), capped, "{e}");
@@ -834,12 +835,17 @@ fn bare(f: &Fragment) -> u64 {
 fn sweep_is_bounded_and_finishes_spec_sync_7() {
     let (x, y, z) = (node(1), node(2), node(3));
     // x wrote a text, y undeletes all of it, z replaces it concurrently: every char is hidden
-    let n = osis_base::format::MAX_DELTA_BARE + 3;
-    // x's creation is held nowhere (the replace pruned it), its delta reflected
+    let cap = osis_base::format::MAX_DELTA_BARE;
+    let n = cap + 3;
+    // x's creation is held nowhere (the replace pruned it), its delta reflected: a range record
+    // of all but the last four chars (one record however long), then four records of one, so
+    // the cap falls one record past the range and records are left after it in that sweep
     let mut undel = Seq::empty(true);
     let at = Writer::new(ts(9), y.clone(), 1).delta_stamp();
-    for c in 1..=n {
-        undel.elems_mut().insert(Dot::new(x.clone(), c), SeqElem { deleted: Some((at.clone(), false)), undel: Some('a'), ..SeqElem::bare() });
+    let hidden = |span, c| SeqElem { deleted: Some((at.clone(), false)), undel: Some(c), span, ..SeqElem::bare() };
+    undel.elems_mut().insert(Dot::new(x.clone(), 1), hidden(cap - 1, 'a'));
+    for c in cap..=n {
+        undel.elems_mut().insert(Dot::new(x.clone(), c), hidden(1, 'b'));
     }
     let mut st = replace(&mut Writer::new(ts(7), z.clone(), 1), &TyView(Ty::Text), &s("c")).unwrap();
     st.join(Fragment::Seq(undel));
@@ -850,7 +856,7 @@ fn sweep_is_bounded_and_finishes_spec_sync_7() {
     for k in 0.. {
         let w = Writer::new(ts(20 + k), z.clone(), 9);
         let Some(sw) = st.sweep(&w.delta_stamp(), &reflected) else { break };
-        assert!(bare(&sw) <= osis_base::format::MAX_DELTA_BARE, "step {k}: {} elements", bare(&sw));
+        assert_eq!(bare(&sw), if k == 0 { cap } else { 3 }, "step {k}: the cap, then the rest");
         encode_delta(&Delta { nonce: [0; 16], fragment: sw.clone() }, &ctx_of(&w), None).expect("a valid writer delta");
         st.join(sw);
         steps += 1;
