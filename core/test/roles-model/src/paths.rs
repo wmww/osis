@@ -944,7 +944,10 @@ fn unjustified(w: &World, rules: &Rules, v: &View, rd: &Reading) -> Set {
 }
 
 /// Disputes (spec/permissions.md §5.1): held lowerings of another holder's edge that the
-/// settled walk does not apply, no seed dropped, and that apply once trusted.
+/// settled walk does not apply, no seed dropped, and that apply once trusted. The spec asks too
+/// that it then lower its edge; a removal whose edge another write already lowered where it is
+/// trusted, and whose seeds still change the reading, would raise nothing (finding 21), so the
+/// model asks only that it apply.
 pub fn disputes(w: &World, rules: &Rules, v: &View) -> Vec<Id> {
     let rd = judge(w, rules, v);
     let mut out = vec![];
@@ -955,7 +958,7 @@ pub fn disputes(w: &World, rules: &Rules, v: &View) -> Vec<Id> {
         }
         let mut t = v.clone();
         t.trust.insert(r);
-        if judge(w, rules, &t).lowered.contains(&r) {
+        if judge(w, rules, &t).applied.contains(&r) {
             out.push(r);
         }
     }

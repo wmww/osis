@@ -67,7 +67,8 @@ pub struct Setup {
     /// H received it before its removal.
     pub x_role_seen: bool,
     /// 0: X holds nothing on A2; 1: write on A2; 2: write, and K removes it as H does; 3: admin
-    /// on A2, and A2 admin on T1 (X administers T1 through A2 for good).
+    /// on A2, and A2 admin on T1 (X administers T1 through A2 for good); 4: as 3, and B removes A2
+    /// from T1 at the removal's tick, stating [A] (a removal of more than one hop).
     pub x_a2: u8,
     /// B sides with X's removal of H until its user switches at `AFTER`.
     pub b_side_x: bool,
@@ -94,8 +95,9 @@ pub struct Move {
 /// admin, granting H admin, standing or until just after the removal; X removing M listing nothing,
 /// or listing M's grant of H; X demoting H listing its own grant); `N5_MOVES` are signed with the
 /// key of N5, removed by X before the theft (`Setup::n5` 3); 35 is X's twin of that removal; 36 is
-/// N5, paired by X and kept (`Setup::n5` 1), vouching for X's role writes on A (an accomplice).
-pub const MOVES: usize = 37;
+/// N5, paired by X and kept (`Setup::n5` 1), vouching for X's role writes on A (an accomplice); 37
+/// is X removing A from T1 by [A2] (where it administers T1 through A2).
+pub const MOVES: usize = 38;
 /// N5 grants H admin, standing or until just after the removal; N5 removes H; N5 demotes H; N5
 /// vouches against H's removal for X's role writes on A. Each stamped before X's removal of N5
 /// but the vouch.
@@ -127,6 +129,8 @@ pub struct Sim {
     /// at the theft.
     pub r: Id,
     pub r2: Option<Id>,
+    /// B's removal of A2 from T1 by [A] (`Setup::x_a2` 4).
+    pub r3: Option<Id>,
     pub rx: Option<Id>,
     pub xfirst: Option<Id>,
     pub gs: Id,
@@ -216,7 +220,7 @@ impl Sim {
         sync.insert(N6, Things::from([A, ORG, T1, D1, T2]));
         sync.insert(RD3, Things::from([T1, D1]));
         let w = if s.mint > 0 { minted_by(M) } else { account() };
-        let mut m = Sim { w, spec, setup: s, made: vec![], recv: vec![], sync, r: 0, r2: None, rx: None, xfirst: None, gs: 0, g5: None, xrole: None, out5: None, gb5: None, gh: None, gx: 0, thief: BTreeMap::new(), logged: BTreeMap::new() };
+        let mut m = Sim { w, spec, setup: s, made: vec![], recv: vec![], sync, r: 0, r2: None, r3: None, rx: None, xfirst: None, gs: 0, g5: None, xrole: None, out5: None, gb5: None, gh: None, gx: 0, thief: BTreeMap::new(), logged: BTreeMap::new() };
         let grant = Kind::set;
         if s.mint > 0 {
             m.gh = Some(m.put((M, 0, &[], A, grant(H, Role::Admin)), 0, rng, false));
@@ -224,7 +228,7 @@ impl Sim {
         m.gx = m.put((H, 1, &[], A, grant(X, Role::Admin)), 1, rng, false);
         let until = (s.mint == 2).then_some(B_UNTIL);
         m.put((H, 1, &[], A, match until { Some(u) => grant(B, Role::Admin).until(u), None => grant(B, Role::Admin) }), 1, rng, false);
-        let a2 = if s.x_a2 == 3 { Role::Admin } else { Role::Write };
+        let a2 = if s.x_a2 >= 3 { Role::Admin } else { Role::Write };
         if s.x_a2 > 0 {
             m.put((K, 1, &[], A2, grant(X, a2)), 1, rng, false);
         }
@@ -344,6 +348,17 @@ impl Sim {
             self.r2 = Some(r2);
             self.stand(K, r2, &all, rules);
         }
+        // B removes A2 from T1 where its own walk gives it admin on A (X may have demoted it)
+        if self.setup.x_a2 == 4 && judge(&self.w, rules, &self.view_at(B, Some(REMOVAL - 1), rules)).role(B, A) == Role::Admin {
+            let all = self.w.through((A2, T1), |i| self.got(i, B, REMOVAL - 1));
+            let r3 = self.put((B, REMOVAL, &[A], T1, Kind::set(A2, Role::None).listing(self.w.cut(&all))), REMOVAL, rng, false);
+            self.r3 = Some(r3);
+            self.stand(B, r3, &all, rules);
+        }
+    }
+    /// The honest removals.
+    pub fn removals(&self) -> Vec<Id> {
+        [Some(self.r), self.r2, self.r3].into_iter().flatten().collect()
     }
     /// Whether `n`'s own walk at `t` applies removal `r`, and, where `n` trusts it, with its seeds
     /// (it is not void).
@@ -406,7 +421,7 @@ impl Sim {
     /// `ts` that the removal does not list.
     fn owed(&self, n: Thing, rules: &Rules) -> Vec<Owed> {
         let mut out = vec![];
-        for r in [Some(self.r), self.r2].into_iter().flatten() {
+        for r in self.removals() {
             let h = self.w.sets(r).unwrap();
             for on in [A, ORG, T1, D1, T2] {
                 let Some(path) = role_path(n, on) else { continue };
@@ -506,6 +521,10 @@ impl Sim {
             // made with the setup (`Setup::n5` 3)
             return;
         }
+        if mv.kind == 37 && self.r3.is_none() {
+            // where nobody removes A2 from T1, X administers T1 through A2 by right: no move
+            return;
+        }
         if mv.kind == 36 {
             if self.setup.n5 != 1 {
                 return;
@@ -550,6 +569,9 @@ impl Sim {
             return;
         }
         let c: (Thing, &[Thing], Thing, Kind) = match mv.kind {
+            // X removes A from T1 through A2, an edge above the signer's on B's removal's path,
+            // listing the grant to A2 its own path rests on
+            37 => (X, &[A2], T1, grant(A, Role::None).listing(self.w.cut(&[self.gs]))),
             // X removes the mint admin (the remover's granter where M minted A), listing nothing,
             // or listing M's grant of H
             27 => (X, &[], A, grant(M, Role::None)),
@@ -612,7 +634,7 @@ impl Sim {
         }
         let trust = if self.untrusting().contains(&n) {
             Set::new()
-        } else if self.setup.b_side_x && n == B && t.is_some_and(|t| t < AFTER) { self.rx.into_iter().collect() } else { [Some(self.r), self.r2].into_iter().flatten().collect() };
+        } else if self.setup.b_side_x && n == B && t.is_some_and(|t| t < AFTER) { self.rx.into_iter().collect() } else { self.removals().into_iter().collect() };
         View { held, leaves: Some(leaves), trust }
     }
     pub fn view(&self, n: Thing, rules: &Rules) -> View {
@@ -829,10 +851,14 @@ pub fn check(m: &Sim, rules: &Rules, st: &mut Stats) {
     let wrote = |n: Thing| match n {
         H | B => true,
         N5 => m.g5.is_some_and(saved) || regrant_n5,
-        K => !x_removed_a2 && (!s.sharer_x || saved(m.gs) || (s.regrant && b_admin)),
+        // (A2 removed from T1 by B: K writes again only once B grants it again)
+        K => !x_removed_a2 && (!s.sharer_x || saved(m.gs) || (s.regrant && b_admin)) && (m.r3.is_none() || (s.regrant && b_admin)),
         _ => false,
     };
-    let x_keeps_a2 = s.x_a2 == 1 || s.x_a2 == 3;
+    let x_keeps_a2 = matches!(s.x_a2, 1 | 3 | 4);
+    // through A2 on T1 where B removed A2 from T1: what B's removal lists, or a writer of T1
+    // received by then, or the path re-granted
+    let in_r3 = |i: Id| m.r3.is_some_and(|r3| w.in_frontier(r3, i));
     // the accomplice (notes/disputes.md, Hole; membership §4, Role writes): a hostile party that
     // holds admin after the removal (N5, paired by X and kept by H's list) vouches for the thief's
     // writes. Counted, not a failure; where it voids a trusted removal, the vouch must be why (the
@@ -894,7 +920,7 @@ pub fn check(m: &Sim, rules: &Rules, st: &mut Stats) {
             let c = &w.commits[i];
             // X's own writes along A2, a path it keeps (a vouch there showing is its right; what it names
             // is judged apart)
-            let by_right = (c.signer == X && x_keeps_a2 && c.path == [A2] && !matches!(c.kind, Kind::Edge { .. }))
+            let by_right = (c.signer == X && x_keeps_a2 && c.path == [A2] && !matches!(c.kind, Kind::Edge { .. }) && !(m.r3.is_some() && !(s.regrant && b_admin) && [T1, D1].contains(&c.on)))
                 // X leaving A by itself: a self-removal is always open to the holder, and takes nothing X still holds
                 || (w.leave(i) && w.sets(i) == Some((X, A)));
             if rd.shows(i) && !by_right {
@@ -942,6 +968,15 @@ pub fn check(m: &Sim, rules: &Rules, st: &mut Stats) {
                 // not list, and M's writes after it)
                 Kind::Content if c.signer == M => !m_cut() && (c.ts == 1 || s.mint == 2),
                 Kind::Edge { holder, .. } if c.signer == M => *holder != M || (s.mint == 1 && !m_cut()),
+                // through A2 on T1 where B removed A2 from T1 (K's, or X's as a member of A2)
+                Kind::Content if m.r3.is_some() && w.hops(i).contains(&(A2, T1)) => {
+                    let r3 = m.r3.unwrap();
+                    !(c.signer == K && x_removed_a2) && (s.regrant && b_admin && c.signer == K)
+                        || (c.ts < REMOVAL
+                            && !(c.signer == K && x_removed_a2)
+                            && (c.signer == K || m.made[i] < REMOVAL)
+                            && (in_r3(i) || [H, N5].iter().any(|&a| m.sync.get(&a).is_some_and(|u| u.contains(&c.on)) && wrote(a) && m.got(i, a, REMOVAL) && m.recv[r3].contains_key(&a))))
+                }
                 Kind::Content if honest_now => stands(c.signer) && !(c.signer == K && x_removed_a2),
                 Kind::Content => {
                     in_r(i)
@@ -991,10 +1026,20 @@ pub fn check(m: &Sim, rules: &Rules, st: &mut Stats) {
             }
         }
         let shown = disputes(w, rules, v);
-        for r in [Some(m.r), m.r2].into_iter().flatten().filter(|r| v.held.contains(r)) {
+        // trusting the honest removals among the disputes shown, and among those then shown,
+        // applies every honest removal: never a silent loss
+        let honest_shown = |d: Vec<Id>, t: &Set| -> Vec<Id> { d.into_iter().filter(|r| m.removals().contains(r) && !t.contains(r)).collect() };
+        let mut sides = v.clone();
+        let mut more = honest_shown(shown.clone(), &sides.trust);
+        while !more.is_empty() {
+            sides.trust.extend(more);
+            more = honest_shown(disputes(w, rules, &sides), &sides.trust);
+        }
+        let sided = judge(w, rules, &sides);
+        for r in m.removals().into_iter().filter(|r| v.held.contains(r)) {
             st.count("dispute");
-            if !rd.applied.contains(&r) && !shown.contains(&r) {
-                st.fail("dispute", m, format!("node {n}: removal {r} is not applied and no dispute is shown"));
+            if !rd.applied.contains(&r) && !sided.applied.contains(&r) {
+                st.fail("dispute", m, format!("node {n}: removal {r} is not applied, nor where the disputes shown are trusted {:?}", sides.trust));
             }
         }
         let (vh, rh) = &rds[&H];
@@ -1057,7 +1102,7 @@ pub fn random_world(i: u64, rules: &Rules) -> Sim {
         n5: rng.below(4) as u8,
         x_role: rng.below(4) as u8,
         x_role_seen: b(&mut rng),
-        x_a2: rng.below(4) as u8,
+        x_a2: rng.below(5) as u8,
         b_side_x: rng.below(4) == 0,
         regrant: b(&mut rng),
         mint: rng.below(3) as u8,
@@ -1092,7 +1137,7 @@ pub fn random(n: u64, rules: &Rules) -> Stats {
 /// removal (stamped before, an `early` move is made at 5, heard before the removal); `mint` and
 /// `x_first` as one dimension (none, M naming H, M naming timed B, X removing H first). `i` in
 /// `0..FAMILY`.
-pub const FAMILY: usize = 2 * 2 * 2 * 2 * 4 * 4 * 2 * 4 * 2 * 2 * 4 * MOVES * 2;
+pub const FAMILY: usize = 2 * 2 * 2 * 2 * 4 * 4 * 2 * 5 * 2 * 2 * 4 * MOVES * 2;
 
 pub fn family(mut i: usize, rules: &Rules) -> Sim {
     let mut take = |n: usize| {
@@ -1108,7 +1153,7 @@ pub fn family(mut i: usize, rules: &Rules) -> Sim {
         n5: take(4) as u8,
         x_role: take(4) as u8,
         x_role_seen: take(2) == 1,
-        x_a2: take(4) as u8,
+        x_a2: take(5) as u8,
         b_side_x: take(2) == 1,
         regrant: take(2) == 1,
         ..Setup::default()

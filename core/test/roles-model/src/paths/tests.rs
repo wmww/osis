@@ -1145,7 +1145,7 @@ fn each_fix_is_needed() {
 
 #[test]
 fn small_family_sample_holds() {
-    assert_holds(&family_run(&Rules::fixed(), 211), "family");
+    assert_holds(&family_run(&Rules::fixed(), 1009), "family");
 }
 
 fn var(k: &str) -> Option<u64> {
@@ -1169,7 +1169,7 @@ fn random_worlds_hold_large() {
 }
 
 /// Every 53rd world of the small family (`-- 0 paths-exh` runs all of them by hand): a stride
-/// coprime with every dimension's size (2, 4, 35), so no dimension is fixed or tied to
+/// coprime with every dimension's size (2, 4, 5, 38), so no dimension is fixed or tied to
 /// another (an even stride keeps `h_t1` false in every world).
 #[test]
 #[ignore = "property"]
@@ -1513,4 +1513,58 @@ fn a_current_admins_vouch_voids_the_removal_and_leaves_no_trace() {
     let rd = fixed(&w, &[r]);
     assert!(rd.void.contains(&r) && rd.counting.is_empty() && rd.role(N5, A) == Gone && rd.role(X, A) == Admin);
     assert!(fixed(&w, &[r]).void.contains(&r) && judge(&w, &Rules::fixed(), &View::all(&w).trusting(&[r]).without(&[v5])).void.is_empty());
+}
+
+/// A removal stating more than one hop (notes/path-model-findings.md, To model next 8): B removes
+/// A2 from T1 stating [A], so it rests on (B, A) and (A, T1). X, admin on A2 (A2 admin on T1),
+/// backdates through A2 a removal of A from T1, an edge above B's own: in the plain walk B's
+/// removal finds no path and is a dispute shown; trusted, its seeds drop X's write (it rests on
+/// the edge B lowers) and it applies. X making A leave T1 through A (a self-removal, marked) is
+/// dropped by H's removal of X the same way. X's write through A2 after B's removal shows nowhere.
+#[test]
+fn a_removal_of_two_hops_holds_against_a_lowering_above_its_signer() {
+    let (mut w, ..) = paired();
+    w.edge(K, 1, &[], A2, X, Admin, &[]);
+    let gs = w.edge(B, 2, &[A], T1, A2, Admin, &[]);
+    // listing B's grant to A2, its own authority (else it drops it and is void)
+    let xa = w.edge(X, 5, &[A2], T1, A, Gone, &[gs]);
+    let r = w.edge(H, 6, &[], A, X, Gone, &[]);
+    let r3 = w.edge(B, 6, &[A], T1, A2, Gone, &[]);
+    let late = w.content(X, 7, &[A2], T1);
+    let plain = fixed(&w, &[]);
+    assert!(!plain.applied.contains(&r3) && plain.applied.contains(&xa), "{plain:?}");
+    assert!(disputes(&w, &Rules::fixed(), &View::all(&w)).contains(&r3));
+    let rd = fixed(&w, &[r, r3]);
+    assert!(rd.void.is_empty() && rd.applied.contains(&r3) && !rd.shows(xa) && !rd.shows(late));
+    assert_eq!((rd.role(A, T1), rd.role(A2, T1)), (Admin, Gone));
+    let mut w2 = w.clone();
+    let leave = w2.edge(X, 5, &[A], T1, A, Gone, &[]);
+    w2.mark_adminless(leave);
+    let rd = fixed(&w2, &[r, r3]);
+    assert!(rd.void.is_empty() && !rd.shows(leave) && rd.applied.contains(&r3) && rd.role(A, T1) == Admin);
+}
+
+/// Finding 21: a dispute whose own write is a no-op where trusted. X, admin on A2 (A2 admin on
+/// T1), removed A2 from T1 through A before the theft (`xr`, B vouches for it); the thief
+/// backdates through A2 a removal of A from T1 (`xa`). A node trusting nothing: H's removal of X
+/// drops `xr` (B's vouch does not count there, A being off T1), so `xa` applies and B's removal
+/// of A2 finds no path. Trusted, B's removal drops `xa` by its seeds, the vouch counts, `xr`
+/// stands, and B's removal is a no-op (A2 is off T1 already): read as spec/permissions.md §5.1
+/// words it (the trusted write must lower its edge) it raises no dispute, and the node reads A
+/// off T1 silently. As a write that applies once trusted, it is shown.
+#[test]
+fn a_dispute_whose_write_is_a_no_op_where_trusted_is_shown() {
+    let (mut w, ..) = paired();
+    w.edge(K, 1, &[], A2, X, Admin, &[]);
+    let gs = w.edge(B, 2, &[A], T1, A2, Admin, &[]);
+    let xr = w.edge(X, 3, &[A], T1, A2, Gone, &[]);
+    let xa = w.edge(X, 3, &[A2], T1, A, Gone, &[gs]);
+    let r = w.edge(H, 6, &[], A, X, Gone, &[]);
+    let r3 = w.edge(B, 6, &[A], T1, A2, Gone, &[]);
+    w.vouch(B, 7, &[A], T1, r, &[xr]);
+    let plain = fixed(&w, &[]);
+    assert!(plain.applied.contains(&xa) && !plain.applied.contains(&r3) && plain.role(A, T1) == Gone);
+    let t = fixed(&w, &[r3]);
+    assert!(t.applied.contains(&r3) && !t.lowered.contains(&r3) && t.applied.contains(&xr) && t.role(A, T1) == Admin);
+    assert_eq!(disputes(&w, &Rules::fixed(), &View::all(&w)), vec![r3]);
 }
