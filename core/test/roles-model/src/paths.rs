@@ -201,7 +201,7 @@ pub struct Rules {
     /// redone without it, its drops unmade (notes/write-path-design.md §1, A removal is judged
     /// in the world its list makes). False: its drops stay (`Reading::stray`).
     pub void_unapplied: bool,
-    /// Reading of the audit (notes/path-model-findings.md, To model next 4): a lowering puts in
+    /// Reading of the audit: a lowering puts in
     /// question the held writes before it resting on its edge, as a trusted write's seeds do, in
     /// place of the applied ones.
     pub audit_held: bool,

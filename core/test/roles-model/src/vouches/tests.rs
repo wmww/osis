@@ -318,7 +318,7 @@ fn family_worlds_are_distinct() {
     }
 }
 
-/// The writers' leaving out on today's walk (notes/path-model-findings.md, To model next 10): H
+/// The writers' leaving out on today's walk: H
 /// leaves out of its list X's removal of H, with which its removal would not apply, and a
 /// witness's vouch leaves it out too; H's removal applies trusted, and the listing set-aside is
 /// not needed. Likewise for the accomplice: H leaves out Y's removal of H from its removal of Y.

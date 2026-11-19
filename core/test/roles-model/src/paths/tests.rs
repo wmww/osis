@@ -1372,7 +1372,7 @@ fn void_rounds_grow_with_a_partys_writes() {
     assert!(large.1 >= 80 * small.1, "{small:?} {large:?}");
 }
 
-/// A node trusting nothing (notes/path-model-findings.md, To model next 3): X backdates a grant
+/// A node trusting nothing: X backdates a grant
 /// of admin until 7 to H, then removes H at 7, listing its own and B's grants. In the plain walk H's edge is timed at its removal
 /// of X, so the removal (naming no standing admin) is refused, and X's removal of H applies: the
 /// node is shown H's removal as a dispute, never a silent loss, and trusting it gives the
@@ -1443,7 +1443,7 @@ fn a_party_removed_before_the_theft_stays_removed() {
 }
 
 
-/// The writers' leaving out in the story (notes/path-model-findings.md, To model next 5): N5,
+/// The writers' leaving out in the story: N5,
 /// removed by X before the theft, its key the thief's; the thief, heard before the removal, grants
 /// H admin until just after it (X) and, as N5, admin before X's removal of N5. In the order
 /// received, H keeps X's removal of N5 and leaves the timed grant out: N5 stays removed. Control:
@@ -1464,7 +1464,7 @@ fn the_remover_keeps_what_it_received_first_in_the_story() {
     assert!(role == Admin && fails > 0);
 }
 
-/// Equivocation (notes/path-model-findings.md, To model next 6): X signs a twin of its removal of
+/// Equivocation: X signs a twin of its removal of
 /// N5 at its `ts`, ordered first, listing H's pairing of N5 and not N5's grant to B. Received by H
 /// before the removal it is a write H's removal applies with, so H keeps it: the twin applies, the
 /// first is a no-op and N5's grant to B falls (as any lowering X made that H heard). Received
@@ -1513,7 +1513,7 @@ fn a_current_admins_vouch_voids_the_removal_and_leaves_no_trace() {
     assert!(judge(&w, &Rules::fixed(), &View::all(&w).trusting(&[r]).without(&[v5])).void.is_empty());
 }
 
-/// A removal stating more than one hop (notes/path-model-findings.md, To model next 8): B removes
+/// A removal stating more than one hop: B removes
 /// A2 from T1 stating [A], so it rests on (B, A) and (A, T1). X, admin on A2 (A2 admin on T1),
 /// backdates through A2 a removal of A from T1, an edge above B's own: in the plain walk B's
 /// removal finds no path and is a dispute shown; trusted, its seeds drop X's write (it rests on
@@ -1567,7 +1567,7 @@ fn a_dispute_whose_write_is_a_no_op_where_trusted_is_shown() {
     assert_eq!(disputes(&w, &Rules::fixed(), &View::all(&w)), vec![r3]);
 }
 
-/// Self-removal and time (notes/path-model-findings.md, To model next 9). X's backdated leave
+/// Self-removal and time. X's backdated leave
 /// carrying an `until` (admin until 2), and X setting its own edge to write until after the
 /// story, each stamped before role writes X made honestly that H lists: a lowering of (X, A) puts
 /// each in question like a write through it, so H's removal drops them and X's writes stand.

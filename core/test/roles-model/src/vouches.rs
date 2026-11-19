@@ -81,7 +81,9 @@
 //! (random) and `vouches-exh-off`, `vouches-exh-no-rewrite` (the family); `vouches-held` and
 //! `vouches-exh-held` the writing from each node's held set, which fails kept
 //! (`a_witness_unaware_of_its_own_demotion_never_vouches_again`); `vouches-state`,
-//! `vouches-exh-state` the state-based writing. Random worlds are a function of their index.
+//! `vouches-exh-state` the state-based writing; `vouches-stands`, `vouches-exh-stands` the
+//! writers' leaving out (`Rules::stands`), under which the listing set-aside `lowered` is not
+//! needed in the family. Random worlds are a function of their index.
 
 use crate::edges::{self, auth, takes_from, Attr, EHist, EOut, EWrite, Edge, NEVER};
 use crate::shrink::LATE;
