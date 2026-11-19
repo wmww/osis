@@ -207,7 +207,7 @@ fn a_demoted_node_vouches_for_its_own_backdated_invite() {
 
 /// X removes Y long before the theft; H received it, so H's removal of X lists it. Y, holding
 /// nothing, writes a grant of admin to H stamped before H's removal (skipped). Y stays removed
-/// (notes/account-membership-design.md §4, What no list keeps: "a removal X made long before the
+/// (notes/account-membership-design.md §4, What a list leaves out: "a removal X made long before the
 /// theft stays made").
 #[test]
 fn a_removed_node_writing_a_grant_to_the_remover_stays_removed() {

@@ -31,6 +31,10 @@
 //! - **What no list keeps** (`Rules::list_own`): an entry of a lowering R's list (its frontier
 //!   or a counting vouch against it) naming a write that lowers an edge of R's own stated path
 //!   below admin is read as absent.
+//! - **A removal judged in the world its list makes** (`Rules::whole`, the design's rule beside
+//!   the earlier reading `Rules::fixed`): nothing is exempt from a lowering's drops, no entry is
+//!   read as absent, and a lowering that made drops and that the settled walk does not apply is
+//!   void: the walk is redone without it and its drops (`walk`).
 //! - **Last admin** (`Rules::last_admin`): an unmarked write taking a **standing** admin edge
 //!   (admin, no `until`) of T to anything else applies only where the remaining admin it relies
 //!   on is, as the walk stands, a standing admin edge of T other than the one it lowers: the
@@ -146,8 +150,9 @@ pub enum Regrant {
     FirstChained,
 }
 
-/// Which entries of a lowering's list (frontier or vouch) are read as absent
-/// (notes/account-membership-design.md §4, What no list keeps).
+/// Which entries of a lowering's list (frontier or vouch) are read as absent: none in the design
+/// (`Kept`, notes/write-path-design.md §1, A removal is judged in the world its list makes); the
+/// others are the readers' rules of notes/path-model-findings.md 7 and 12.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub enum ListOwn {
     /// None: an entry keeps whatever it names.
@@ -202,6 +207,16 @@ pub struct Rules {
     /// (finding 14): else the removed node's backdated leave, which no audit reaches, voids its
     /// own role writes ordered after it.
     pub leave_in_question: bool,
+    /// A lowering that audited and that the settled walk does not apply is void: the walk is
+    /// redone without it, its drops unmade (notes/write-path-design.md §1, A removal is judged
+    /// in the world its list makes). False: its drops stay (`Reading::stray`).
+    pub void_unapplied: bool,
+    /// Honest writing in `Sim` (a policy, not a judging rule): a remover and a voucher name what
+    /// they had received in the order received, leaving out a role write with which their own
+    /// walk no longer applies the removal.
+    pub stands: bool,
+    /// The thief's menu in `Sim` takes in the moves aimed at the remover (`AIMED`).
+    pub aimed: bool,
 }
 
 impl Rules {
@@ -218,6 +233,9 @@ impl Rules {
             evidence_leaves: false,
             rewrite: false,
             leave_in_question: false,
+            void_unapplied: false,
+            stands: false,
+            aimed: false,
         }
     }
     /// With every fix the notes now state.
@@ -233,7 +251,16 @@ impl Rules {
             evidence_leaves: true,
             rewrite: true,
             leave_in_question: true,
+            void_unapplied: false,
+            stands: false,
+            aimed: false,
         }
+    }
+    /// The rule of notes/write-path-design.md §1 (A removal is judged in the world its list
+    /// makes): no write is exempt from a lowering's audit or seeds, no entry of a list is read as
+    /// absent, and a lowering that does not apply once its drops are made is void.
+    pub fn whole() -> Rules {
+        Rules { own_chain_exempt: false, list_own: ListOwn::Kept, void_unapplied: true, stands: true, aimed: true, ..Rules::fixed() }
     }
 }
 
@@ -551,7 +578,22 @@ fn refused(w: &World, rules: &Rules, p: &Pass, i: Id, e: Edge, new: Val) -> bool
     }
 }
 
+/// The settled walk. With `void_unapplied`, a lowering whose audit dropped something and which
+/// the settled walk does not apply is void, the earliest by key first: the walk is redone from
+/// `d0` without it, until none is.
 fn walk(w: &World, rules: &Rules, v: &View, d0: &Set, vouched: &Vouched) -> Walk {
+    let mut void = Set::new();
+    loop {
+        let wk = drops(w, rules, v, d0, vouched, &void);
+        let gone = wk.dropper.values().copied().filter(|r| !wk.pass.applied.contains(r)).min_by_key(|&r| w.key(r));
+        match gone {
+            Some(r) if rules.void_unapplied => void.insert(r),
+            _ => return wk,
+        };
+    }
+}
+
+fn drops(w: &World, rules: &Rules, v: &View, d0: &Set, vouched: &Vouched, void: &Set) -> Walk {
     let order = order(w, &v.held);
     let mut dropped = d0.clone();
     let mut dropper = BTreeMap::new();
@@ -563,7 +605,7 @@ fn walk(w: &World, rules: &Rules, v: &View, d0: &Set, vouched: &Vouched) -> Walk
         }
         let mut again = false;
         for &i in &order {
-            if dropped.contains(&i) {
+            if dropped.contains(&i) || void.contains(&i) {
                 continue;
             }
             let c = &w.commits[i];

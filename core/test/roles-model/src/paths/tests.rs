@@ -890,6 +890,191 @@ fn repro_a_backdated_timed_grant_to_the_remover_changes_nothing() {
     assert!(rd.void.is_empty() && rd.role(X, A) == Gone && rd.role(H, A) == Admin, "{rd:?}");
 }
 
+// ---- A removal is judged in the world its list makes (notes/write-path-design.md §1) ----
+
+fn whole(w: &World, trust: &[Id]) -> Reading {
+    judge(w, &Rules::whole(), &View::all(w).trusting(trust))
+}
+
+fn whole_but(w: &World, trust: &[Id], f: impl Fn(&mut Rules)) -> Reading {
+    let mut r = Rules::whole();
+    f(&mut r);
+    judge(w, &r, &View::all(w).trusting(trust))
+}
+
+/// Finding 15's two worlds: nothing is exempt, so the thief's grant of a made-up key and its
+/// timed grant to the remover are unlisted writes through the removed edge, dropped like any.
+/// Control: the grants the removal's path rests on, read from the held writes, exempt.
+#[test]
+fn nothing_through_the_removed_edge_is_exempt() {
+    let (mut w, ..) = paired();
+    let gz = w.edge(X, 2, &[], A, Z, Admin, &[]);
+    let zh = w.edge(Z, 3, &[], A, H, Admin, &[]);
+    let r = w.edge(H, 6, &[], A, X, Gone, &[]);
+    let zc = w.content(Z, 8, &[A], T1);
+    let rd = whole(&w, &[r]);
+    assert!(rd.role(Z, A) == Gone && !rd.valid.contains(&zc) && !rd.shows(gz) && !rd.shows(zh) && rd.void.is_empty());
+    // the plain walk reads the same: the removal applies, audits, and still applies
+    let rd = whole(&w, &[]);
+    assert!(rd.role(Z, A) == Gone && rd.lowered.contains(&r) && rd.role(H, A) == Admin);
+    assert!(whole_but(&w, &[r], |x| x.own_chain_exempt = true).role(Z, A) == Admin);
+
+    let (mut w, ..) = paired();
+    let tg = w.edge(X, 2, &[], A, H, Admin, &[]);
+    w.set_until(tg, 7);
+    let r = w.edge(H, 6, &[], A, X, Gone, &[]);
+    let rd = whole(&w, &[r]);
+    assert!(rd.void.is_empty() && !rd.shows(tg) && rd.role(X, A) == Gone && rd.role(H, A) == Admin);
+    assert!(whole_but(&w, &[r], |x| x.own_chain_exempt = true).void.contains(&r));
+    // untrusted, it is the ordinary dispute of a backdated write against the remover
+    assert!(!whole(&w, &[]).applied.contains(&r));
+    assert_eq!(disputes(&w, &Rules::whole(), &View::all(&w)), vec![r]);
+}
+
+/// Finding 4's world: X's removal of H lists nothing, its own grant included. Its drops made,
+/// it does not apply, so it is void: nothing falls by it and no dispute is raised. Control: the
+/// drops of a write that does not apply stay.
+#[test]
+fn a_removal_that_does_not_apply_once_its_drops_are_made_is_void() {
+    let (w, gb, rx) = self_voiding();
+    let rd = whole(&w, &[]);
+    assert!(!rd.applied.contains(&rx) && rd.stray.is_empty() && rd.dropped.is_empty());
+    assert!(rd.applied.contains(&gb) && rd.role(H, A) == Admin && rd.role(B, A) == Admin);
+    assert!(disputes(&w, &Rules::whole(), &View::all(&w)).is_empty());
+    assert!(whole(&w, &[rx]).void.contains(&rx));
+    let rd = whole_but(&w, &[], |x| x.void_unapplied = false);
+    assert!(!rd.stray.is_empty() && !rd.applied.contains(&gb));
+}
+
+/// A removal made under a grant a later removal drops is void with it: N5 (paired by X, the
+/// pairing never received by H) removes B listing nothing; H removes X. N5's grant falls, its
+/// removal of B no longer applies, and B's role writes stand. Control: B's role write stays
+/// dropped by a removal that does not apply.
+#[test]
+fn a_removal_whose_author_falls_later_drops_nothing() {
+    let (mut w, _, gb) = paired();
+    w.edge(X, 2, &[], A, N5, Admin, &[]);
+    let bg = w.edge(B, 3, &[A], T1, A2, Write, &[]);
+    let out = w.edge(N5, 4, &[], A, B, Gone, &[]);
+    let r = w.edge(H, 6, &[], A, X, Gone, &[]);
+    for trust in [&[][..], &[r][..]] {
+        let rd = whole(&w, trust);
+        assert!(!rd.applied.contains(&out) && rd.stray.is_empty() && rd.applied.is_superset(&Set::from([gb, bg])), "{rd:?}");
+    }
+    let rd = whole_but(&w, &[], |x| x.void_unapplied = false);
+    assert!(!rd.applied.contains(&out) && !rd.applied.contains(&bg) && rd.stray.contains(&bg));
+}
+
+/// Findings 7 and 12: a list keeping what unmakes its removal voids it, and nothing reads an
+/// entry as absent: the remover leaves such a write out (it contests it). The thief's removal
+/// of the remover; of the remover's granter M, listing nothing; and an honest removal of M
+/// (listing M's grant of H), which stays made when listed and is undone when left out: so the
+/// remover leaves out by effect, never by the edge lowered.
+#[test]
+fn a_list_keeping_what_unmakes_its_removal_voids_it() {
+    let (mut w, gx, gb) = paired();
+    let rx = w.edge(X, 5, &[], A, H, Gone, &[gx, gb]);
+    let listed = w.edge(H, 6, &[], A, X, Gone, &[rx]);
+    assert!(whole(&w, &[listed]).void.contains(&listed));
+    let (mut w, gx, gb) = paired();
+    let rx = w.edge(X, 5, &[], A, H, Gone, &[gx, gb]);
+    let r = w.edge(H, 6, &[], A, X, Gone, &[]);
+    let rd = whole(&w, &[r]);
+    assert!(rd.void.is_empty() && !rd.shows(rx) && (rd.role(H, A), rd.role(X, A), rd.role(B, A)) == (Admin, Gone, Admin));
+    // an admin's vouch naming it voids the removal: the accomplice that is a current admin
+    w.vouch(B, 7, &[], A, r, &[rx]);
+    assert!(whole(&w, &[r]).void.contains(&r));
+
+    for honest in [false, true] {
+        let mut w = minted_by(M);
+        let gh = w.edge(M, 0, &[], A, H, Admin, &[]);
+        let gx = w.edge(M, 0, &[], A, X, Admin, &[]);
+        let list = if honest { vec![gx, gh] } else { vec![gx] };
+        let rm = w.edge(X, 3, &[], A, M, Gone, &list);
+        let mut w2 = w.clone();
+        let listed = w.edge(H, 6, &[], A, X, Gone, &[rm]);
+        let rd = whole(&w, &[listed]);
+        assert_eq!(rd.void.contains(&listed), !honest);
+        assert!(!honest || (rd.role(M, A) == Gone && rd.role(X, A) == Gone && rd.role(H, A) == Admin));
+        let left = w2.edge(H, 6, &[], A, X, Gone, &[]);
+        let rd = whole(&w2, &[left]);
+        assert!(rd.void.is_empty() && rd.role(H, A) == Admin && rd.role(X, A) == Gone && rd.role(M, A) == Admin);
+    }
+}
+
+/// Why the remover keeps in the order received, not in key order. X removed N5 long ago (`out`,
+/// received then). The thief, holding both keys, backdates a demotion of H by X before `out`
+/// and a grant of admin to H by N5 between them. Kept in key order, the demotion comes first
+/// and the removal applies with it (N5's grant repairs it), and then not with `out` (which
+/// drops N5's grant): `out` is left out and N5 is back. Kept in the order received, `out` is
+/// kept, the demotion left out, and N5 stays removed.
+#[test]
+fn a_remover_keeps_what_it_received_first() {
+    let (mut w, gx, gb) = paired();
+    let g5 = w.edge(H, 1, &[], A, N5, Admin, &[]);
+    let down = w.edge(X, 2, &[], A, H, Write, &[gx, gb, g5]);
+    let junk = w.edge(N5, 3, &[], A, H, Admin, &[]);
+    let out = w.edge(X, 4, &[], A, N5, Gone, &[g5]);
+    let world = |list: &[Id]| {
+        let mut w = w.clone();
+        let r = w.edge(H, 6, &[], A, X, Gone, list);
+        (whole(&w, &[r]), r)
+    };
+    let (rd, r) = world(&[down, out]);
+    assert!(rd.void.contains(&r));
+    let (rd, _) = world(&[down]);
+    assert!(rd.void.is_empty() && rd.role(N5, A) == Admin && rd.shows(junk));
+    let (rd, _) = world(&[out]);
+    assert!(rd.void.is_empty() && rd.role(N5, A) == Gone && !rd.shows(junk) && !rd.shows(down) && rd.role(H, A) == Admin);
+}
+
+/// The hand worlds of the other findings read the same with nothing exempt: a removed node's
+/// junk grant to the remover (README Vouches), a lowering the removed node made vouched for by
+/// the node it lowered (2), a re-granted grantee vouching for its fallen grant (13), a
+/// backdated leave (14).
+#[test]
+fn the_other_findings_read_the_same_with_nothing_exempt() {
+    let (mut w, _, gb) = paired();
+    let g5 = w.edge(H, 1, &[], A, N5, Admin, &[]);
+    let out = w.edge(X, 2, &[], A, N5, Gone, &[g5]);
+    let junk = w.edge(N5, 3, &[], A, H, Admin, &[]);
+    let down = w.edge(X, 3, &[], A, B, Write, &[gb]);
+    let r = w.edge(H, 6, &[], A, X, Gone, &[out]);
+    w.vouch(B, 7, &[], A, r, &[down]);
+    let rd = whole(&w, &[r]);
+    assert!(rd.applied.is_superset(&Set::from([out, down])) && !rd.shows(junk) && rd.role(N5, A) == Gone && rd.role(B, A) == Write);
+
+    let (mut w, ..) = paired();
+    let g5 = w.edge(X, 2, &[], A, N5, Admin, &[]);
+    let gap = w.edge(N5, 4, &[A], T1, A2, Write, &[]);
+    let r = w.edge(H, 6, &[], A, X, Gone, &[]);
+    w.edge(H, 8, &[], A, N5, Admin, &[]);
+    assert!(!whole(&w, &[r]).applied.contains(&gap));
+    w.vouch(N5, 9, &[], A, r, &[g5]);
+    assert!(whole(&w, &[r]).applied.is_superset(&Set::from([g5, gap])));
+
+    let (mut w, _, gb) = paired();
+    let down = w.edge(X, 3, &[], A, B, Write, &[gb]);
+    let r = w.edge(H, 6, &[], A, X, Gone, &[down]);
+    let leave = w.edge(X, 2, &[], A, X, Gone, &[]);
+    w.rely(leave, H);
+    let rd = whole(&w, &[r]);
+    assert!(!rd.applied.contains(&leave) && rd.applied.contains(&down) && rd.role(B, A) == Write);
+}
+
+/// The search under the rule, the thief's moves aimed at the remover included; and each part
+/// alone is needed: the drops of a write that does not apply staying, the remover listing all it
+/// received, the held chain exempt.
+#[test]
+fn random_worlds_hold_with_nothing_exempt() {
+    let r = Rules::whole();
+    assert_holds(&random(400, &r), "random, nothing exempt");
+    assert_holds(&family_run(&r, 211), "family, nothing exempt");
+    for (name, rules) in [("sticky", Rules { void_unapplied: false, ..r }), ("listed", Rules { stands: false, ..r }), ("exempt", Rules { own_chain_exempt: true, ..r }), ("fixed, aimed", Rules { aimed: true, ..Rules::fixed() })] {
+        assert!(random(400, &rules).failures() > 0, "{name}");
+    }
+}
+
 // ---- Descent, self-removal by path end, `until` (brief 3) ----
 
 /// X writes D1 (a dependent of T1) stating [A]: by descent its hops are (X, A), (A, T1),

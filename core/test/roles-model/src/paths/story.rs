@@ -86,6 +86,14 @@ pub struct Move {
 }
 
 pub const MOVES: usize = 23;
+/// The moves aimed at the remover, after `MOVES` (`Rules::aimed`): X grants H admin, standing or
+/// until just after the removal; a made-up key X grants admin does the same; X removes M.
+pub const AIMED: usize = 5;
+
+/// The size of the thief's menu under `rules`.
+pub fn menu(rules: &Rules) -> usize {
+    MOVES + if rules.aimed { AIMED } else { 0 }
+}
 
 /// What a world is built from: its setup, the thief's moves, and the receipts generator.
 #[derive(Clone, Debug, PartialEq)]
@@ -244,7 +252,7 @@ impl Sim {
                     m.recv[i].values_mut().for_each(|t| *t = 5);
                     m.xfirst = Some(i);
                 }
-                m.remove(rng);
+                m.remove(rules, rng);
             }
         }
         for mv in moves {
@@ -276,17 +284,70 @@ impl Sim {
         m
     }
     /// The removals at tick 6, each listing what its author had received through the edge.
-    fn remove(&mut self, rng: &mut Rng) {
-        let f = self.w.cut(&self.w.through((X, A), |i| self.got(i, H, REMOVAL - 1)));
+    fn remove(&mut self, rules: &Rules, rng: &mut Rng) {
+        let all = self.w.through((X, A), |i| self.got(i, H, REMOVAL - 1));
         let i = self.w.commits.len();
         self.logged.insert(i, Things::from([ORG, T1, T2]));
-        self.r = self.put((H, REMOVAL, &[], A, Kind::set(X, Role::None).listing(f)), REMOVAL, rng, false);
+        self.r = self.put((H, REMOVAL, &[], A, Kind::set(X, Role::None).listing(self.w.cut(&all))), REMOVAL, rng, false);
+        self.stand(H, self.r, &all, rules);
         if self.setup.x_a2 == 2 {
-            let f = self.w.cut(&self.w.through((X, A2), |i| self.got(i, K, REMOVAL - 1)));
+            let all = self.w.through((X, A2), |i| self.got(i, K, REMOVAL - 1));
             let i = self.w.commits.len();
             self.logged.insert(i, Things::from([T1]));
-            self.r2 = Some(self.put((K, REMOVAL, &[], A2, Kind::set(X, Role::None).listing(f)), REMOVAL, rng, false));
+            let r2 = self.put((K, REMOVAL, &[], A2, Kind::set(X, Role::None).listing(self.w.cut(&all))), REMOVAL, rng, false);
+            self.r2 = Some(r2);
+            self.stand(K, r2, &all, rules);
         }
+    }
+    /// Whether `n`'s own walk at `t` applies removal `r`.
+    fn applies(&self, n: Thing, t: u32, r: Id, rules: &Rules) -> bool {
+        judge(&self.w, rules, &self.view_at(n, Some(t), rules)).applied.contains(&r)
+    }
+    /// `ids` in the order `n` received them.
+    fn received(&self, n: Thing, ids: impl IntoIterator<Item = Id>) -> Vec<Id> {
+        let mut v: Vec<Id> = ids.into_iter().collect();
+        v.sort_by_key(|&i| (self.recv[i].get(&n).copied(), i));
+        v
+    }
+    /// The remover's list (`Rules::stands`): everything received where its own walk then applies
+    /// the removal; else the role writes one by one in the order received, each kept only where
+    /// the removal still applies with it.
+    fn stand(&mut self, n: Thing, r: Id, all: &[Id], rules: &Rules) {
+        if !rules.stands || self.applies(n, REMOVAL, r, rules) {
+            return;
+        }
+        let mut kept: Vec<Id> = all.iter().copied().filter(|&i| !self.w.edge_class(i)).collect();
+        for c in self.received(n, all.iter().copied().filter(|&i| self.w.edge_class(i))) {
+            kept.push(c);
+            let f = self.w.cut(&kept);
+            self.w.edit(r, |k| k.listing(f));
+            if !self.applies(n, REMOVAL, r, rules) {
+                kept.pop();
+            }
+        }
+        let f = self.w.cut(&kept);
+        self.w.edit(r, |k| k.listing(f));
+    }
+    /// A vouch's list (`Rules::stands`): `list` where `n`'s walk still applies `r` with it
+    /// vouched; else its commits one by one in the order received, each kept only where `r`
+    /// still applies with it.
+    fn vouchable(&self, n: Thing, t: u32, path: &[Thing], on: Thing, r: Id, list: Set, rules: &Rules) -> Set {
+        let with = |l: &Set| {
+            let mut m = self.clone();
+            m.put((n, t, path, on, Kind::Vouch { removal: r, list: l.clone() }), t, &mut Rng(0), false);
+            m.applies(n, t, r, rules)
+        };
+        if with(&list) {
+            return list;
+        }
+        let mut kept = Set::new();
+        for c in self.received(n, list) {
+            kept.insert(c);
+            if !with(&kept) {
+                kept.remove(&c);
+            }
+        }
+        kept
     }
     /// Per removal, thing and kind (addendum for plain content on T1 and T2, vouch for role
     /// writes): the commits through the removed edge node `n` had received by the removal's
@@ -361,6 +422,10 @@ impl Sim {
                     if list.iter().all(covered) {
                         continue;
                     }
+                    let list = if edge && rules.stands { self.vouchable(n, t, &path, on, r, list, rules) } else { list };
+                    if list.iter().all(covered) {
+                        continue;
+                    }
                     let kind = if edge { Kind::Vouch { removal: r, list } } else { Kind::Addendum { removal: r, list } };
                     self.put((n, t, &path, on, kind), t, rng, false);
                 }
@@ -378,7 +443,19 @@ impl Sim {
             self.put((X, mv.ts.max(REMOVAL + 1), &[A2], T1, Kind::Vouch { removal: self.r, list }), mv.made, rng, true);
             return;
         }
+        if (23..27).contains(&mv.kind) {
+            // a grant of admin to the remover, standing or timed, by X or by a key X made up
+            let by = if mv.kind < 25 { X } else { Z };
+            if by == Z {
+                self.put((X, mv.ts.saturating_sub(1), &[], A, grant(Z, Role::Admin)), mv.made, rng, true);
+            }
+            let g = if mv.kind % 2 == 1 { grant(H, Role::Admin) } else { grant(H, Role::Admin).until(REMOVAL + 1) };
+            self.put((by, mv.ts, &[], A, g), mv.made, rng, true);
+            return;
+        }
         let c: (Thing, &[Thing], Thing, Kind) = match mv.kind {
+            // X removes the mint admin (the remover's granter where M minted A)
+            27 => (X, &[], A, grant(M, Role::None)),
             0 | 18 => (X, &[A], T1, Kind::Content),
             19 => unreachable!(),
             1 => (X, &[A, ORG], T2, Kind::Content),
@@ -737,7 +814,7 @@ pub fn random_world(i: u64, rules: &Rules) -> Sim {
         mint: rng.below(3) as u8,
         x_first: rng.below(4) == 0,
     };
-    let moves: Vec<Move> = (0..rng.below(5)).map(|_| Move { kind: rng.below(MOVES), ts: 1 + rng.below(10) as u32, made: 7 + rng.below(4) as u32 }).collect();
+    let moves: Vec<Move> = (0..rng.below(5)).map(|_| Move { kind: rng.below(menu(rules)), ts: 1 + rng.below(10) as u32, made: 7 + rng.below(4) as u32 }).collect();
     Sim::build(&s, rules, &moves, &mut rng)
 }
 
@@ -754,6 +831,11 @@ pub fn random(n: u64, rules: &Rules) -> Stats {
 /// removal; `mint` and `x_first` as one dimension (none, M naming H, M naming timed B, X
 /// removing H first). `i` in `0..FAMILY`.
 pub const FAMILY: usize = 2 * 2 * 2 * 2 * 3 * 4 * 2 * 4 * 2 * 2 * 4 * MOVES * 2;
+
+/// The family's size under `rules` (`menu`).
+pub fn family_size(rules: &Rules) -> usize {
+    FAMILY / MOVES * menu(rules)
+}
 
 pub fn family(mut i: usize, rules: &Rules) -> Sim {
     let mut take = |n: usize| {
@@ -778,14 +860,14 @@ pub fn family(mut i: usize, rules: &Rules) -> Sim {
         3 => s.x_first = true,
         k => s.mint = k as u8,
     }
-    let mv = Move { kind: take(MOVES), ts: if take(2) == 1 { 3 } else { 8 }, made: 7 };
+    let mv = Move { kind: take(menu(rules)), ts: if take(2) == 1 { 3 } else { 8 }, made: 7 };
     Sim::build(&s, rules, &[mv], &mut Rng(0))
 }
 
 /// The small family on every core, every `stride`th world.
 pub fn family_run(rules: &Rules, stride: usize) -> Stats {
     crate::on_every_core(|th, threads, st: &mut Stats| {
-        for i in (th * stride..FAMILY).step_by(threads * stride) {
+        for i in (th * stride..family_size(rules)).step_by(threads * stride) {
             check(&family(i, rules), rules, st);
         }
     })
@@ -813,6 +895,14 @@ pub fn mode_rules(mode: &str) -> Option<Rules> {
         "-first-applied" => Rules { regrant: Regrant::FirstApplied, ..f },
         "-once" => Rules { rewrite: false, ..f },
         "-leave" => Rules { leave_in_question: false, ..f },
+        // the design's rule and its controls: a void lowering's drops kept, the remover and
+        // vouchers naming all they received, the held chain exempt; then the fixed rules under
+        // the moves aimed at the remover
+        "-whole" => Rules::whole(),
+        "-whole-sticky" => Rules { void_unapplied: false, ..Rules::whole() },
+        "-whole-listed" => Rules { stands: false, ..Rules::whole() },
+        "-whole-exempt" => Rules { own_chain_exempt: true, ..Rules::whole() },
+        "-fixed-aimed" => Rules { aimed: true, ..f },
         _ => return None,
     })
 }
