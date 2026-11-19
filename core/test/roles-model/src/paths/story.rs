@@ -871,23 +871,9 @@ impl crate::Tally for Stats {
     }
 }
 
-/// The checks with an open finding against them (notes/path-model-findings.md 34, 35, 36): an
-/// idle write's effect with no dispute shown, and any effect in a world of honest lists. A search
-/// counts their failures (`failures`); the default tests and properties fail on any other
-/// (`closed_failures`) and check these still run.
-pub const OPEN: &[&str] = &["unapplied N", "unapplied T", "unapplied V", "idle", "idle N", "idle T", "idle V", "honest"];
-
-fn closed(fails: &BTreeMap<&'static str, u64>) -> u64 {
-    fails.iter().filter(|(k, _)| !OPEN.contains(k)).map(|(_, n)| n).sum()
-}
-
 impl Stats {
     pub fn failures(&self) -> u64 {
         self.fails.values().sum()
-    }
-    /// Failing checks but those of an open finding (`OPEN`).
-    pub fn closed_failures(&self) -> u64 {
-        closed(&self.fails)
     }
     /// Prints the counts and, per failing property, its first world: shrunk under `rules` in a
     /// run of at most `SHRUNK` worlds, else as found (shrinking is one core's work, and a large
@@ -1147,14 +1133,59 @@ pub fn effects(w: &World, rules: &Rules, v: &View, rd: &Reading) -> Vec<Effect> 
         .collect()
 }
 
+/// Who an idle commit's effect is a fight among (notes/path-model-findings.md 34 to 36): its parts
+/// and every edge-class commit whose applying it changes (`involved`); of them, those whose signer
+/// held what they need at their key in no reading (`illegit`: the node's; without the commit; with
+/// each held explicit lowering of another holder trusted besides, with and without it; trusting
+/// nothing): applied in none, nor every edge of their path giving admin there; and of those, the
+/// ones the commit makes apply, or its own parts (`gains`).
+pub struct Fight {
+    pub involved: Set,
+    pub illegit: Set,
+    pub gains: Set,
+}
+
+pub fn fight_among(w: &World, rules: &Rules, v: &View, rd: &Reading, parts: &[Id]) -> Fight {
+    let less = v.clone().without(parts);
+    let o = judge(w, rules, &less);
+    let mut involved: Set = parts.iter().copied().collect();
+    involved.extend(rd.applied.symmetric_difference(&o.applied).copied());
+    let mut views = vec![View { trust: Set::new(), ..v.clone() }, View { trust: Set::new(), ..less.clone() }];
+    for &r in &v.held {
+        let Kind::Edge { holder, .. } = &w.commits[r].kind else { continue };
+        if *holder == w.commits[r].signer || w.lowers(r).is_none() || w.leave(r) || v.trust.contains(&r) {
+            continue;
+        }
+        views.push(v.clone().trusting_also(r));
+        if !parts.contains(&r) {
+            views.push(less.clone().trusting_also(r));
+        }
+    }
+    let mut readings: Vec<Reading> = views.iter().map(|x| judge(w, rules, x)).collect();
+    readings.push(rd.clone());
+    readings.push(o.clone());
+    let at = |r: &Reading, e: Edge, k: Key| {
+        let rec = if w.records.contains(&e) { (Role::Admin, None) } else { (Role::None, None) };
+        alive(r.hist.get(&e).and_then(|h| h.iter().rev().find(|(x, _)| *x < k)).map_or(rec, |x| x.1), k.0)
+    };
+    let held = |i: Id| readings.iter().any(|r| r.applied.contains(&i) || (!w.hops(i).is_empty() && w.hops(i).iter().all(|&e| at(r, e, w.key(i)) == Role::Admin)));
+    let illegit: Set = involved.iter().copied().filter(|&i| !held(i)).collect();
+    let gains = illegit.iter().copied().filter(|i| parts.contains(i) || (rd.applied.contains(i) && !o.applied.contains(i))).collect();
+    Fight { involved, illegit, gains }
+}
+
 /// At one node's reading: `self-taken` (no applied commit's path loses its authority to the
 /// commit's own drops) and, at the node `relabel` picks, `one reading` (a relabelling of commit IDs
 /// keeping the walk's order reads the same), failing; `stray` (a drop whose dropper does not apply
-/// at the end), counted. Of each idle write (`effects`): an effect users observe fails `void` (a
-/// void lowering), `unapplied` (any other lowering) or `idle` (any other edge write or vouch) unless
-/// the reading shows a dispute (a fight among
-/// admins, counted as `fight`), and fails `honest` in an honest history (`quiet`) whatever is shown;
-/// `void shown`, `unapplied shown`, `idle shown` (only which writes apply differs) are counted.
+/// at the end), counted. Of each idle write (`effects`), counted, not failing (an idle write may
+/// decide a fight among admins, judged once: notes/path-model-findings.md 34 to 36): an effect
+/// users observe with no dispute shown, as `void` (a void lowering), `unapplied` (any other
+/// lowering) or `idle` (any other edge write or vouch), by trust (`unshown T`/`N`), whether it is
+/// the thief's and which side of H's removal it decides; one with a dispute shown (`fight`); any
+/// effect in an honest history (`honest`); `void shown`, `unapplied shown`, `idle shown` (only which
+/// writes apply differs). Failing, `idle gains`: an unshown effect making a commit of the thief's
+/// show that is signed by a key that never legitimately held the right (Z, N5's after its removal),
+/// at any node, or, at a node trusting the removal, made by X after it through A.
 #[allow(clippy::too_many_arguments)]
 fn void_checks(w: &World, rules: &Rules, v: &View, rd: &Reading, n: Thing, t: bool, quiet: bool, relabel: bool, m: &Sim, st: &mut Stats) {
     st.count("self-taken");
@@ -1176,14 +1207,51 @@ fn void_checks(w: &World, rules: &Rules, v: &View, rd: &Reading, n: Thing, t: bo
             st.note("content only", m, format!("node {n}: the idle write {} changes which content counts, no role, unshown", e.id));
         }
         if e.observed && !e.shown {
-            st.fail(k, m, format!("node {n}: the idle write {} has an effect, no dispute shown", e.id));
+            st.note(k, m, format!("node {n}: the idle write {} has an effect, no dispute shown", e.id));
+            st.note(if t { "unshown T" } else { "unshown N" }, m, format!("node {n}: the idle write {} has an effect, no dispute shown", e.id));
+            // who the fight is among, from the generated history: the thief's writes it makes show
+            let o = judge(w, rules, &v.clone().without(&e.parts));
+            let gained: Set = rd.applied.difference(&o.applied).chain(rd.valid.difference(&o.valid)).copied().filter(|i| m.thief.contains_key(i)).collect();
+            if e.parts.iter().any(|i| m.thief.contains_key(i)) {
+                st.note(if t { "unshown, the thief's T" } else { "unshown, the thief's N" }, m, format!("node {n}: the thief's idle write {} has an effect", e.id));
+            }
+            // whose side it decides: H's removal of X applying only with it (the remover's) or only
+            // without it (the thief's)
+            let side = match (rd.applied.contains(&m.r), o.applied.contains(&m.r)) {
+                (true, false) => Some(if t { "unshown, the remover's side T" } else { "unshown, the remover's side N" }),
+                (false, true) => Some(if t { "unshown, the thief's side T" } else { "unshown, the thief's side N" }),
+                _ => None,
+            };
+            if let Some(s) = side {
+                st.note(s, m, format!("node {n}: the idle write {} decides whether H's removal {} applies", e.id, m.r));
+            }
+            // a party that never legitimately held the right (a made-up key, a removed node's key)
+            // gains nothing, at any node; a removed party gains nothing through its removed edge
+            // that it made after the removal where the removal is trusted
+            st.count("idle gains");
+            for &i in &gained {
+                let c = &w.commits[i];
+                let late = m.made[i] >= w.commits[m.r].ts;
+                let (bad, key) = match (c.signer, c.path.first() == Some(&A2)) {
+                    (Z | N5, _) => (true, ""),
+                    (_, true) => (false, if t { "thief gains T by X through A2" } else { "thief gains N by X through A2" }),
+                    _ if t => (late, "thief gains T by X through A, made before the removal"),
+                    _ => (false, "thief gains N by X through A"),
+                };
+                let what = format!("node {n}: the idle write {} makes the thief's {i} (move {}) show", e.id, m.thief[&i]);
+                if bad {
+                    st.fail("idle gains", m, what);
+                } else {
+                    st.note(key, m, what);
+                }
+            }
         } else if e.observed {
             st.note("fight", m, format!("node {n}: the idle write {} has an effect, a dispute shown", e.id));
         }
         if quiet {
             st.count("honest");
             if e.observed {
-                st.fail("honest", m, format!("node {n}: in an honest history the idle write {} has an effect", e.id));
+                st.note("honest", m, format!("node {n}: in an honest history the idle write {} has an effect", e.id));
             }
         }
         st.count(ks);
@@ -1973,23 +2041,23 @@ impl TinyStats {
     pub fn failures(&self) -> u64 {
         self.fails.values().sum()
     }
-    /// Failing checks but those of an open finding (`OPEN`).
-    pub fn closed_failures(&self) -> u64 {
-        closed(&self.fails)
-    }
 }
 
 /// The checks on one small world, by its trust: `N` trusting nothing, `T` trusting a lowering
 /// the settled walk applies, `V` trusting one it does not (void, its seeds lost: the walk is
 /// redone, notes/write-path-design.md §1). Failing: `one reading` (a relabelling keeping the
 /// order reads the same), `self-taken` (no applied commit's path loses its authority to the
-/// commit's own drops), `void`, `unapplied N`/`T`/`V` and `idle N`/`T`/`V` (taking an idle
-/// write, `idle`: a void lowering, any other lowering, any other edge write or vouch, out of the
-/// held set changes nothing users observe, `Reading::observed`, or the reading shows a dispute), `honest` (in a world whose lists all follow the writers' rule, `lists_honest`, it
-/// changes nothing observed, shown or not), `admin T` (A keeps a standing admin). Counted:
-/// `fight` (an effect, a dispute shown), `void shown`, `unapplied shown`, `idle shown` (only which
-/// edge writes apply changes: nobody sees it, finding 33), `stray` (a drop whose dropper does not apply at
-/// the end), `admin N`/`V`, and the worlds whose lists are honest (`honest worlds`).
+/// commit's own drops), `admin T` (A keeps a standing admin), `illegit gains N`/`T`/`V` (an idle
+/// write's unshown effect never makes apply, nor is, a write whose signer held its right in no
+/// reading: `fight_among`). Counted: of each idle write (a void lowering, any other lowering, any
+/// other edge write or vouch, held and doing nothing), an effect users observe (`Reading::observed`)
+/// with no dispute shown (`void`, `unapplied N`/`T`/`V`, `idle N`/`T`/`V`; findings 34 to 36), each
+/// classified as a fight among parties holding their right in some reading (`fight legit`) or not
+/// (`fight illegit`); any effect in a world whose lists all follow the writers' rule (`honest`,
+/// `lists_honest`); `fight` (an effect, a dispute shown), `void shown`, `unapplied shown`, `idle
+/// shown` (only which edge writes apply changes: nobody sees it, finding 33), `stray` (a drop
+/// whose dropper does not apply at the end), `admin N`/`V`, and the worlds whose lists are honest
+/// (`honest worlds`).
 pub fn tiny_check(i: u64, t: &Tiny, rules: &Rules, st: &mut TinyStats) {
     let (w, v) = (&t.w, &t.v);
     st.worlds += 1;
@@ -2006,6 +2074,9 @@ pub fn tiny_check(i: u64, t: &Tiny, rules: &Rules, st: &mut TinyStats) {
             ("idle", "N") => "idle N",
             ("idle", "T") => "idle T",
             ("idle", _) => "idle V",
+            ("gains", "N") => "illegit gains N",
+            ("gains", "T") => "illegit gains T",
+            ("gains", _) => "illegit gains V",
             ("admin", "N") => "admin N",
             ("admin", "T") => "admin T",
             _ => "admin V",
@@ -2023,11 +2094,17 @@ pub fn tiny_check(i: u64, t: &Tiny, rules: &Rules, st: &mut TinyStats) {
             "unapplied" => (k("unapplied"), "unapplied shown"),
             _ => (k("idle"), "idle shown"),
         };
-        st.hit(kk, true, e.observed && !e.shown, i, w, || format!("{x} has an effect, no dispute shown (voided {:?}, applied {:?})", rd.voided, rd.applied));
+        st.hit(kk, false, e.observed && !e.shown, i, w, || format!("{x} has an effect, no dispute shown (voided {:?}, applied {:?})", rd.voided, rd.applied));
+        if e.observed && !e.shown {
+            let f = fight_among(w, rules, v, &rd, &e.parts);
+            let what = || format!("{x}: involved {:?}, illegit {:?}, gains {:?}", f.involved, f.illegit, f.gains);
+            st.hit(if f.illegit.is_empty() { "fight legit" } else { "fight illegit" }, false, true, i, w, what);
+            st.hit(k("gains"), true, !f.gains.is_empty(), i, w, what);
+        }
         st.hit("fight", false, e.observed && e.shown, i, w, || format!("{x} has an effect, a dispute shown"));
         st.hit("content only", false, e.observed && !e.shown && !e.roles, i, w, || format!("{x} changes which content counts, no role"));
         if honest {
-            st.hit("honest", true, e.observed, i, w, || format!("{x} has an effect, every list the writers' rule's"));
+            st.hit("honest", false, e.observed, i, w, || format!("{x} has an effect, every list the writers' rule's"));
         }
         st.hit(ks, false, e.applies && !e.observed, i, w, || format!("{x} changes which writes apply"));
     }

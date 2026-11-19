@@ -426,9 +426,9 @@ impl World {
         i
     }
     /// One commit of several edge writes on `on` along one path (spec/commits.md §2). Its parts
-    /// take effect in holder order, but the part setting an edge of the stated path (at most one:
-    /// the path's final hop, so a self-removal of its last thing, as in a single-use link
-    /// redemption, or the record edge a descent ends with) last. Two parts on one holder's edge are
+    /// take effect in holder order, but the parts on the stated path's last thing or final hop (a
+    /// self-removal of its last thing, as in a single-use link redemption, or the record edge a
+    /// descent ends with; neither changes the other's path) last. Two parts on one holder's edge are
     /// bad input, applying nowhere (the `roles.0` delta's map keys would repeat: spec/data-model.md
     /// deterministic CBOR).
     pub fn commit(&mut self, signer: Thing, ts: u32, path: &[Thing], on: Thing, mut parts: Vec<Kind>) -> Vec<Id> {
