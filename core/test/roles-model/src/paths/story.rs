@@ -708,10 +708,17 @@ impl Stats {
     pub fn failures(&self) -> u64 {
         self.fails.values().sum()
     }
-    /// Prints the counts and, per failing property, its first world shrunk under `rules`.
+    /// Prints the counts and, per failing property, its first world: shrunk under `rules` in a
+    /// run of at most `SHRUNK` worlds, else as found (shrinking is one core's work, and a large
+    /// run holds the box: shrink a printed world in a small run of its own).
     pub fn print(&self, name: &str, rules: &Rules) {
+        const SHRUNK: u64 = 20_000;
         println!("{name}: {} worlds, checks {:?}, largest {:?}, noted {:?}, failing checks {:?}", self.worlds, self.checked, self.most, self.noted, self.fails);
         for (k, (what, spec)) in &self.first {
+            if self.worlds > SHRUNK {
+                println!("FAIL {k} (not shrunk): {what}\n{spec:?}");
+                continue;
+            }
             let small = shrink(spec, rules, k);
             let mut st = Stats::default();
             let m = Sim::build(&small.setup, rules, &small.moves, &mut Rng(small.rng));
@@ -1065,18 +1072,15 @@ pub fn check(m: &Sim, rules: &Rules, st: &mut Stats) {
             }
         }
     }
-    // one set of drops: the audit reading the held writes in place of the applied ones reads
-    // every node alike (notes/path-model-findings.md, To model next 4)
+    // one set of drops: the audit reading the held writes in place of the applied ones, at the
+    // nodes trusting nothing (where a trusted removal's seeds take every held write, the two
+    // readings have not differed: notes/path-model-findings.md 18)
     let other = Rules { audit_held: !rules.audit_held, ..*rules };
-    for (&n, (v, rd)) in rds.iter().chain(plain.iter()) {
+    for (&n, (v, rd)) in &plain {
         st.count("drops");
         let o = judge(w, &other, v);
         if o.applied != rd.applied || o.valid != rd.valid || o.roles != rd.roles {
-            let k = match (plain.contains_key(&n), o.roles == rd.roles) {
-                (false, _) => "drops differ, trusting",
-                (true, true) => "drops differ, trusting nothing, same roles",
-                (true, false) => "drops differ, trusting nothing",
-            };
+            let k = if o.roles == rd.roles { "drops differ, same roles" } else { "drops differ" };
             st.note(k, m, format!("node {n}: the audit over the held writes reads otherwise: applied {:?} / {:?}", rd.applied, o.applied));
         }
     }
