@@ -109,6 +109,10 @@ type frontier = struct {
 /// of the answer vouches for (spec/permissions.md §5.2).
 aspect addenda.0: map<blob, frontier>;
 
+/// Vouches for a removed holder's role writes: by a removal's commit ID, the commits of the removed
+/// holder its writer vouches for (spec/permissions.md §5.1 Vouches). Entries only put.
+aspect vouches.0: map<blob, frontier>;
+
 // ---- Keys ----
 // Everything shared is encrypted. Each actor has a secret per role; whoever holds the read
 // secret can read what the actor shares, whoever holds the sync secret can hold and serve it. Changing who holds a role means making new secrets

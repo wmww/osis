@@ -219,6 +219,56 @@ fn keyed_map_removal_only_in_role_class_aspects_spec_crdt_5_6() {
     assert!(check(&mut b, true, "roles.0").is_ok());
 }
 
+// spec/data-model.md §9 `vouches.0`: a delta creating new entries (`put_new`) is good; a write
+// into an entry it did not create, an entry removal or a reset of the map is bad input. The
+// control: the same deltas on `addenda.0` (content of the same type) pass.
+#[test]
+fn vouches_deltas_put_new_only_spec_dm_9() {
+    use osis_crdt::{DeltaBuilder, Op, PathOp, PathSeg};
+    use osis_schema::Codec;
+    let (mut b, _) = one_commit();
+    let (author, at) = (b.header.author, b.header.ts);
+    let view = osis_schema::core_schema().view("vouches.0").unwrap();
+    let key = |n: u8| Value::Bytes(vec![n; 32]);
+    let frontier = |n: u8| osis_schema::core_types::Frontier { commits: [CommitId([n; 32])].into() }.to_value();
+    // the state: one entry another writer put
+    let other = SESSION.own_source(t(9), CommitId([0; 32]));
+    let state = {
+        let empty = osis_crdt::Fragment::default();
+        let mut bd = DeltaBuilder::new(&empty, Writer::new(at, other, 1));
+        bd.apply(&PathOp { path: vec![PathSeg::Key(key(1))], op: Op::Put(frontier(1)) }, &view).unwrap();
+        bd.finish().unwrap().0
+    };
+    let delta_of = |op: PathOp| {
+        let mut bd = DeltaBuilder::new(&state, Writer::new(at, SESSION.own_source(author, CommitId([0; 32])), 1));
+        bd.apply(&op, &view).unwrap();
+        let (fragment, range) = bd.finish().unwrap();
+        (encode_delta(&Delta { nonce: [5; 16], fragment }, &writer_ctx(SESSION, Kind::Content, at, author, range.lo, range.hi), None).unwrap(), range.hi)
+    };
+    let check = |b: &mut CommitBlob, ak: &str, (delta, hi): &(Vec<u8>, u64)| {
+        b.header.aspects[0].ak = osis_base::Ak::new(ak).unwrap();
+        b.header.aspects[0].hi = *hi;
+        b.header.aspects[0].hash = delta_hash(&sec(0xd0, &t(3)), delta);
+        b.parts[0].delta = delta.to_vec();
+        verify_part(&b.header, &b.id(), &b.parts[0], &sec(0xd0, &t(3)), &mut Interner::new(), None)
+    };
+    let put_new = delta_of(PathOp { path: vec![PathSeg::Key(key(2))], op: Op::Put(frontier(2)) });
+    let concurrent = delta_of(PathOp { path: vec![PathSeg::Key(key(1))], op: Op::Put(frontier(3)) });
+    check(&mut b, "vouches.0", &put_new).unwrap();
+    assert!(check(&mut b, "vouches.0", &concurrent).is_ok(), "a new entry under a live key");
+    let bad = [
+        delta_of(PathOp { path: vec![PathSeg::Key(key(1))], op: Op::Set(frontier(3)) }),
+        delta_of(PathOp { path: vec![], op: Op::Remove(key(1)) }),
+        delta_of(PathOp { path: vec![], op: Op::Replace(Value::Map([(key(4), frontier(4))].into_iter().collect())) }),
+    ];
+    for d in &bad {
+        let e = check(&mut b, "vouches.0", d).unwrap_err();
+        assert!(matches!(&e, Error::Malformed(m) if m.contains("vouches.0")), "{e}");
+        assert_eq!(e.class(), ErrorClass::BadInput);
+        assert!(check(&mut b, "addenda.0", d).is_ok(), "the control: only vouches.0 is put_new only");
+    }
+}
+
 // spec/data-model.md §6, spec/commits.md §4: a value that must be chunked, held unchunked, is bad
 // by itself, judged without its type; only durable content answers to this.
 #[test]

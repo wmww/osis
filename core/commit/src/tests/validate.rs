@@ -140,6 +140,12 @@ fn validate_role_commit() {
     x.aspects[0].lo = 0;
     x.aspects[0].hi = 0;
     assert!(invalid(&x).to_string().contains("roles.0"));
+    // vouches.0 likewise (spec/commits.md §2); the control: a snapshot of keys.0 is fine
+    for (ak, ok) in [("vouches.0", false), ("keys.0", true)] {
+        let mut y = x.clone();
+        y.aspects[0].ak = Ak::new(ak).unwrap();
+        assert_eq!(y.validate().is_ok(), ok, "{ak}");
+    }
 }
 
 // spec/commits.md §6 (one per commit): an expiring commit carries no fixed-retention aspect;
