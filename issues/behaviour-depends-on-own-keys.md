@@ -8,7 +8,7 @@ The rule (Tess): no API behaviour depends on it. Docs may state the cost differe
 notes/api.md and notes/chat.md quote byte figures for app-facing choices.
 
 Behaviour that differs:
-- **Removing the last admin** of a dependent thing is refused (`flows::edges::leaves_no_admin`, spec/permissions.md §1); on an independent one the same write goes through and leaves it adminless. Decided (Tess): refused for every thing unless the write explicitly lets the thing go adminless, as a rule every node judges alike (issues/actors-one-mechanism.md, Answers). Designed, to model: notes/write-path-design.md §5, The last admin (a standing admin is a direct admin edge with no `until`).
+- **Removing the last admin**: refused at the writer for every thing, dependent or independent, unless the write carries the adminless mark (spec/permissions.md §1; notes/permissions.md, The last admin). The rule every node judges alike waits for A1/A2 (notes/write-path-design.md §5, The last admin).
 - **A thing made under an account** is independent at birth (spec/permissions.md §3, spec/sync-set.md §2), because an account is in no sync unit. It becomes an ordinary dependent once the account is an ordinary independent thing (notes/write-path-design.md §5); until then `osis create --admin me` reaches it.
 - **Sharing what a tag holds**: a strong grants nothing, so an app sharing a tag of n things makes n grants itself (issues/many-sync-ids-cost.md). To check whether that counts.
 
