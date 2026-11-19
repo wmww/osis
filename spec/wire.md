@@ -393,6 +393,7 @@ Steps and claim sets (§8) and `entry_box` (a `box` value, §7) are their canoni
     | 13 | refused: this session may not use the node | `[text]` |
     | 14 | closed: the node closed while the call was in hand | `[]` |
     | 15 | in use: the node's store is open elsewhere | `[]` |
+    | 16 | not enabled: a fire of an external signal the thing's current setting does not enable, by an actor holding no write on it (spec/permissions.md §5.2 External fires) | `[tid, ak]` |
 
   - **Payload**: `[0, ..]` is a delivery, `[1]` the subscription lapsed (its id is free), `[2, source]` a delivery above `max_reply`.
   - **Flow control**: spec/sync-streams.md §1; Notifies follow the push rule (spec/sync-streams.md §2).

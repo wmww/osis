@@ -521,6 +521,7 @@ pub(crate) fn outcome_of(e: &Error) -> Outcome {
         Error::UnknownThing { tid } => (ApiCode::UNKNOWN_THING, vec![tid_to(tid)]),
         Error::UnknownActor { tid } => (ApiCode::UNKNOWN_ACTOR, vec![tid_to(tid)]),
         Error::Permission { tid, needs } => (ApiCode::PERMISSION, vec![tid_to(tid), Value::uint(u64::from(needs.id()))]),
+        Error::NotEnabled { tid, signal } => (ApiCode::NOT_ENABLED, vec![tid_to(tid), Value::Str(signal.as_str().to_string())]),
         Error::Type { path, reason } => (ApiCode::TYPE, vec![path_to(path), Value::Str(reason.clone())]),
         Error::TooLarge { limit } => (ApiCode::TOO_LARGE, vec![Value::uint(*limit as u64)]),
         Error::Stranded { things } => (ApiCode::STRANDED, vec![Value::List(things.iter().map(tid_to).collect())]),
@@ -549,6 +550,10 @@ pub(crate) fn error_of(code: u64, detail: &[Value]) -> Error {
         ApiCode::UNKNOWN_ACTOR => t().map_or_else(|| Error::Invalid(text()), |tid| Error::UnknownActor { tid }),
         ApiCode::PERMISSION => match (t(), detail.get(1).and_then(Value::as_uint).and_then(Role::from_id)) {
             (Some(tid), Some(needs)) => Error::Permission { tid, needs },
+            _ => Error::Invalid(text()),
+        },
+        ApiCode::NOT_ENABLED => match (t(), detail.get(1).and_then(|v| if let Value::Str(s) = v { Ak::new(s.clone()).ok() } else { None })) {
+            (Some(tid), Some(signal)) => Error::NotEnabled { tid, signal },
             _ => Error::Invalid(text()),
         },
         ApiCode::TYPE => match detail.first().cloned().map(path_from) {

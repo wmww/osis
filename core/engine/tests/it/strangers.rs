@@ -1,6 +1,7 @@
 //! What a stranger's external fires leave on the node they reach (spec/commits.md §5 The setting,
-//! spec/sync-inbox.md §2, §4): only a setting entry naming an external signal keeps its fires, and a
-//! sealed fire's records and chain go at the pass end, its fires staying.
+//! spec/sync-inbox.md §2, §4): only a setting entry naming an external signal enables it and keeps
+//! its fires (a stranger's fire of another is refused), and a sealed fire's records and chain go
+//! at the pass end, its fires staying.
 
 use crate::common::{ak, s, set_setting};
 use crate::flows::send;
@@ -44,16 +45,29 @@ fn fire(lp: &mut LocalPeer, i: usize, inbox: Tid, ak: &str, v: &str) -> osis_bas
 
 /// `fire` of value `v`.
 fn fire_value(lp: &mut LocalPeer, i: usize, inbox: Tid, ak: &str, v: osis_base::Value) -> osis_base::CommitId {
+    match open(lp, i, inbox, ak, v) {
+        osis_engine::sync::Opened::Commit(c, _) => c,
+        o => panic!("not opened: {o:?}"),
+    }
+}
+
+/// Stranger `i`'s sealed fire of `ak` on `inbox` as peer 0 opens it.
+fn open(lp: &mut LocalPeer, i: usize, inbox: Tid, ak: &str, v: osis_base::Value) -> osis_engine::sync::Opened {
     let e = &mut lp.peers[i].engine;
     e.fire_open(&inbox, ak, v).unwrap();
     let id = *e.fires_owed().last().expect("owed sealed");
     let out = e.sealed_fire(&id).unwrap().expect("sealed");
     e.fire_taken(&id).unwrap();
     let b = osis_blob::blob_id(&out.blob);
-    match lp.peers[0].engine.open_entry(&out.sync_id, &b, &[0; 57], &out.blob, u64::MAX).unwrap() {
-        osis_engine::sync::Opened::Commit(c, _) => c,
-        o => panic!("not opened: {o:?}"),
-    }
+    lp.peers[0].engine.open_entry(&out.sync_id, &b, &[0; 57], &out.blob, u64::MAX).unwrap()
+}
+
+/// Stranger `i` fires `ak`, which `inbox`'s setting does not enable: peer 0 refuses it whole
+/// (spec/permissions.md §5.2 External fires, spec/sync-inbox.md §4: none of a fire that does not
+/// apply valid).
+fn refused(lp: &mut LocalPeer, i: usize, inbox: Tid, ak: &str) {
+    let o = open(lp, i, inbox, ak, s("junk"));
+    assert!(matches!(o, osis_engine::sync::Opened::Bad), "a fire of {ak} its setting does not enable: {o:?}");
 }
 
 /// What node-sync does once no entry of a fire's blob is left (its body out of history): peer 0
@@ -70,15 +84,15 @@ fn listed(lp: &mut LocalPeer, c: &osis_base::CommitId, inbox: Tid, a: &str) -> b
     lp.peers[0].engine.listed_at(c, &[(inbox, ak(a))]).unwrap()
 }
 
-// spec/commits.md §5 The setting: an external signal's fires are kept by an entry naming it only,
-// never by the default: a stranger's fire on an external signal the setting does not name is out of
-// history at its arrival, one on a named signal stays for its entry.
+// spec/commits.md §5 The setting: an external signal is enabled and its fires kept by an entry
+// naming it only, never by the default: a stranger's fire on an external signal the setting does
+// not name is refused (the default keeping everything else for good), one on a named signal stays
+// for its entry.
 #[test]
 fn only_an_entry_naming_an_external_signal_keeps_its_fires_spec_commits_5() {
     let (mut lp, inbox) = strangers(1);
-    let junk = fire(&mut lp, 1, inbox, JUNK, "junk");
+    refused(&mut lp, 1, inbox, JUNK);
     let note = fire(&mut lp, 1, inbox, NOTE, "note");
-    assert!(!listed(&mut lp, &junk, inbox, JUNK), "the default keeps no external fire");
     assert!(listed(&mut lp, &note, inbox, NOTE), "its entry keeps it");
     lp.advance(HOUR_MS - 1_000);
     lp.peers[0].tick().unwrap();
@@ -118,7 +132,7 @@ fn strangers_fires_leave_no_row_spec_sync_inbox_4() {
             // a fire naming its sender's account by a weak, which needs nothing
             let me = lp.peers[i].engine.me();
             fires.push(fire_value(&mut lp, i, inbox, NOTE, osis_base::Value::Weak(me)));
-            fires.push(fire(&mut lp, i, inbox, JUNK, "junk"));
+            refused(&mut lp, i, inbox, JUNK);
         }
         assert!(lp.peers[0].engine.local_census().unwrap() != before, "n={n}: the fires and chains arrived");
         lp.advance(HOUR_MS + 1_000);
@@ -133,7 +147,7 @@ fn strangers_fires_leave_no_row_spec_sync_inbox_4() {
 
 // spec/sync-inbox.md §1, spec/commits.md §5 The setting, Forgetting: one stranger flooding the
 // inbox, past `DEPOSITS_WAITING` fires on its named signal and as many on external signals it names
-// nothing for, each on its own AK: the unnamed are out of history at arrival and go at once, the
+// nothing for, each on its own AK: the unnamed are refused whole, the
 // named stay for their entry, then go; every row of the flood goes with its fires.
 #[test]
 fn a_fire_flood_leaves_no_row_past_its_setting_spec_sync_inbox_1() {
@@ -145,11 +159,10 @@ fn a_fire_flood_leaves_no_row_past_its_setting_spec_sync_inbox_1() {
     lp.peers[0].tick().unwrap();
     settle(&mut lp, &[first]);
     let base = lp.peers[0].engine.local_census().unwrap();
-    let junk: Vec<_> = (0..k).map(|i| fire(&mut lp, 1, inbox, &format!("x:junk{i}@~0"), "junk")).collect();
-    for (i, c) in junk.iter().enumerate() {
-        assert!(!listed(&mut lp, c, inbox, &format!("x:junk{i}@~0")), "an unnamed external signal keeps nothing");
+    for i in 0..k {
+        refused(&mut lp, 1, inbox, &format!("x:junk{i}@~0"));
     }
-    settle(&mut lp, &junk);
+    settle(&mut lp, &[]);
     assert_eq!(changed(&base, &lp.peers[0].engine.local_census().unwrap()), vec![], "unnamed fires leave no row");
     let notes: Vec<_> = (0..k).map(|i| fire(&mut lp, 1, inbox, NOTE, &format!("note {i}"))).collect();
     assert!(notes.iter().all(|c| listed(&mut lp, c, inbox, NOTE)), "kept for their entry");

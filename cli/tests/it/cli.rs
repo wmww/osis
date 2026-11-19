@@ -757,3 +757,21 @@ fn a_chat_link_on_a_store_with_no_peer() {
     let c = s.ok(&["chat", "create", "--name", "room"]).line().to_string();
     assert!(s.ok(&["chat", "link", &c]).line().starts_with("osis://link/"));
 }
+
+// spec/permissions.md §5.2 External fires, spec/commits.md §5 The setting: `enable` gives an
+// external signal an entry of its own in the thing's setting, kept as asked, beside what the
+// setting holds; `disable` drops that entry alone; a key that is no external signal is a usage
+// error.
+#[test]
+fn enable_and_disable_an_external_signal_spec_permissions_5_2() {
+    let s = S::mem();
+    let t = s.kept_thing();
+    s.ok(&["enable", &t, "x:ping@~0", "--keep", "1h"]);
+    let r = s.ok(&["get", &t, "retention^.0"]).out;
+    assert!(r.contains("\"x:ping@~0\": {history: #some(#keep({until: #none, after: #some(1h)}))") && r.contains("default: #some("), "{r}");
+    s.ok(&["fire", &t, "x:ping@~0", "1"]);
+    s.ok(&["disable", &t, "x:ping@~0"]);
+    let r = s.ok(&["get", &t, "retention^.0"]).out;
+    assert!(!r.contains("x:ping@~0") && r.contains("default: #some("), "{r}");
+    assert_eq!(s.code(&["enable", &t, "x:ping~0"]), 2);
+}

@@ -59,7 +59,7 @@ One JSON document per command; streaming commands print JSON lines. int → numb
 | 1 | other: `Storage`, `Closed`, `NotUndoable`, `Unsupported`, a command not built yet (kind `Cli`), I/O |
 | 2 | usage, unparsable argument or value |
 | 3 | `UnknownThing`, `UnknownActor`, absent on `get`, nothing to undo/redo |
-| 4 | `Permission`, `Refused` |
+| 4 | `Permission`, `NotEnabled`, `Refused` |
 | 5 | `TooLarge`, `Type` |
 | 6 | `Network`, `Stranded`, timeout |
 | 7 | `Invalid` (also a schema that does not parse or check) |

@@ -894,7 +894,7 @@ impl Engine {
 
     /// Whether a writer may promote deposited commit `c` under `s` (spec/sync-inbox.md §4): only
     /// once it holds `c` applied, with a body `s` must hold, and its author held write on `s`'s
-    /// actor at `c`'s `ts` (as this node judges it), or it fires an external signal; then with the author's chain for those parts
+    /// actor at `c`'s `ts` (as this node judges it), or it fires an external signal valid here; then with the author's chain for those parts
     /// to log beside it (`NotYet` while that chain is not complete here). `Never` when `s` carries
     /// nothing of `c` or its author lacked write then.
     pub fn promotable(&mut self, s: &SyncId, c: &CommitId) -> Result<Promote> {
@@ -906,7 +906,9 @@ impl Engine {
         let Some(b) = self.commit_bodies_under(&ctx, c)?.into_iter().next() else { return Ok(Promote::Never) };
         let Some(h) = self.header(c) else { return Ok(Promote::NotYet) };
         let actor = self.core.reader_of(&t);
-        // a fire of an external signal is promoted whatever its author's role (spec/sync-inbox.md §4)
+        // a fire of an external signal is promoted whatever its author's role while valid: a
+        // stranger's only while the thing's current setting enables it (`judged_valid`,
+        // spec/sync-inbox.md §4, spec/permissions.md §5.2 External fires)
         let external = b.parts.iter().all(|ai| h.aspects.get(*ai).is_some_and(|a| a.ak.external()));
         if !external && crate::engine::write::role_of(&self.core, &h.author, &actor, h.ts) < Some(Role::Write) || !self.judged_valid(c, &b.parts) {
             return Ok(Promote::Never);

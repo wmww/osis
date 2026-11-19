@@ -311,6 +311,25 @@ fn one_write(ctx: &mut Ctx<'_>, c: ScriptCmd) -> anyhow::Result<()> {
     ctx.emit(&lines, J::Obj(f))
 }
 
+/// `enable` (`entry`) or `disable` (`None`) external signal `ak` on `t`: its own entry in `t`'s
+/// setting, written whole.
+fn enabled(ctx: &mut Ctx<'_>, t: &str, ak: &str, entry: Option<osis::core::RetentionEntry>) -> anyhow::Result<()> {
+    let (db, t) = (ctx.db.clone(), ctx.tid(t)?);
+    let ak = parse_ak(ak, "aspect key")?;
+    if !ak.external() {
+        return Err(usage(format!("{ak} is no external signal (an `@` key)")));
+    }
+    let mut s = db.at(t, osis::core::RETENTION).get()?.unwrap_or_default();
+    match entry {
+        Some(e) => s.rules.insert(ak, e),
+        None => s.rules.remove(&ak),
+    };
+    let mut w = db.write();
+    w.at(t, osis::core::RETENTION).set(&s)?;
+    w.commit()?;
+    Ok(())
+}
+
 fn run(ctx: &mut Ctx<'_>, cmd: Cmd) -> anyhow::Result<()> {
     let db = ctx.db.clone();
     match cmd {
@@ -356,6 +375,12 @@ fn run(ctx: &mut Ctx<'_>, cmd: Cmd) -> anyhow::Result<()> {
         Cmd::Set(a) => one_write(ctx, ScriptCmd::Set(a)),
         Cmd::Overwrite(a) => one_write(ctx, ScriptCmd::Overwrite(a)),
         Cmd::Fire(a) => one_write(ctx, ScriptCmd::Fire(a)),
+        Cmd::Enable { t, ak, keep } => {
+            let after_replaced = keep.as_deref().map(crate::parse_dur).transpose()?;
+            let history = after_replaced.map(|after_replaced| osis::History::Keep { until: osis::Time(0), after_replaced });
+            enabled(ctx, &t, &ak, Some(osis::core::RetentionEntry { history, ..Default::default() }))
+        }
+        Cmd::Disable { t, ak } => enabled(ctx, &t, &ak, None),
         Cmd::Rm(a) => one_write(ctx, ScriptCmd::Rm(a)),
         Cmd::Op(a) => one_write(ctx, ScriptCmd::Op(a)),
         Cmd::Get { t, ak, path, stream, len } => get(ctx, &t, &ak, path.as_deref(), stream, len),

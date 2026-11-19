@@ -187,6 +187,18 @@ pub enum Cmd {
     Overwrite(SetArgs),
     /// Fire a signal (a `~` key) with VALUE: fire T AK VALUE
     Fire(FireArgs),
+    /// Let anyone fire external signal AK (an `@` key) on T, not only T's writers: gives AK an
+    /// entry in T's retention^.0 (an admin), each fire kept --keep DUR after it is replaced
+    /// (default: none kept, taken at once)
+    Enable {
+        t: String,
+        ak: String,
+        #[arg(long, value_name = "DUR")]
+        keep: Option<String>,
+    },
+    /// Let only T's writers fire external signal AK: drops its entry from T's retention^.0 (an
+    /// admin). Others' fires not yet taken go
+    Disable { t: String, ak: String },
     /// Remove an aspect or a map entry, set element or list element
     Rm(RmArgs),
     /// A path op: splice A..B [V..] (a text position: splice A..B S), move A..B TO, undelete A..B,

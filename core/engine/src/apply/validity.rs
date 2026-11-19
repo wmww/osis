@@ -535,13 +535,12 @@ pub(super) fn grantee_boxes_only(actor: &Tid, ak: &str, f: &Fragment, granted: &
 /// Notes the held `retention^.0` bodies among `parts` (spec/commits.md §5 The setting), each read
 /// alone: one not reading as a setting is none. Each is ordered by the setting write it carries:
 /// a delta by its own key, a snapshot by its newest write's stamp, so the last is the one whose
-/// write the state holds. No validity depends on a setting; what the thing's history judges is
-/// judged again (`retention::settings_changed`).
+/// write the state holds; what rests on the thing's current setting is judged again
+/// (`setting_moved`).
 pub(crate) fn note_settings(core: &mut Core, h: &Header, id: &CommitId, parts: &[(usize, Decoded)]) {
     for (ai, d) in parts {
         let Some(a) = h.aspects.get(*ai).filter(|a| a.ak.as_str() == osis_commit::retention::RETENTION) else { continue };
-        core.settings_due.insert(a.tid);
-        core.kept_things_due.insert(a.tid);
+        setting_moved(core, &a.tid);
         let Some(setting) = d.fragment().read().and_then(|v| ct::retention_setting(&v)) else { continue };
         let f = d.fragment();
         let ts = if h.kind.is_compaction() { f.winners().iter().map(|w| w.stamp.ts).max().unwrap_or(h.ts) } else { h.ts };
@@ -569,8 +568,19 @@ pub(crate) fn forget_setting(core: &mut Core, t: &Tid, id: &CommitId) {
     } else {
         core.ix.retention.insert(*t, settings);
     }
+    setting_moved(core, t);
+}
+
+/// `t`'s held valid settings moved (one held, dropped, purged or turning valid or invalid), so
+/// its current setting may have (spec/commits.md §5 In force): what its history judges is judged
+/// again (`retention::settings_changed`), and so is every external fire held on `t`, whose
+/// validity may rest on that setting (spec/permissions.md §5.2 External fires), by the one
+/// re-judging path (`stale_commits`). O(`t`'s aspects and its fires).
+pub(crate) fn setting_moved(core: &mut Core, t: &Tid) {
     core.settings_due.insert(*t);
     core.kept_things_due.insert(*t);
+    let fires: Vec<CommitId> = core.ix.by_aspect.range((*t, Ak::MIN)..).take_while(|((x, _), _)| x == t).filter(|((_, a), _)| a.external()).flat_map(|(_, s)| s.iter().map(|x| x.1)).collect();
+    core.stale_commits.extend(fires);
 }
 
 /// Re-derives the edge writes of commits whose removed keys were unknown.
@@ -659,6 +669,8 @@ pub(crate) struct Judge<'a> {
     vouchings: BTreeMap<Tid, Option<Arc<Vouching>>>,
     /// Per commit, what the epoch rule says of it (`Core::standing`), found once.
     standings: BTreeMap<CommitId, EpochStanding>,
+    /// Per thing, its current setting (`setting_now`), found once.
+    settings: BTreeMap<Tid, Option<Arc<ct::RetentionSetting>>>,
 }
 
 /// A thing's `retention^.0` deltas: each one's key and what it says.
@@ -666,7 +678,7 @@ pub(crate) type Settings = Vec<(Point, Arc<ct::RetentionSetting>)>;
 
 impl<'a> Judge<'a> {
     pub(crate) fn new(core: &'a Core) -> Judge<'a> {
-        Judge { core, last: None, from: BTreeMap::new(), acts: BTreeMap::new(), vouchings: BTreeMap::new(), standings: BTreeMap::new() }
+        Judge { core, last: None, from: BTreeMap::new(), acts: BTreeMap::new(), vouchings: BTreeMap::new(), standings: BTreeMap::new(), settings: BTreeMap::new() }
     }
 
     /// What the epoch rule says of commit `id` (`h` its header).
@@ -780,11 +792,23 @@ impl<'a> Judge<'a> {
         if !self.acts(h, id) {
             return false;
         }
-        // an external fire: valid whatever its author's role on the thing, its signature and chain to
-        // its actor verified (spec/permissions.md §5.2 External fires)
+        // an external fire (spec/permissions.md §5.2 External fires): valid by its author's
+        // authority (a writer's fire, whatever the setting), else iff the thing's current setting
+        // enables its signal. Invariant: the setting is admin-only (its own validity reads no
+        // fire), and the current one is a function of the held valid settings alone, never of a
+        // fire's `ts` (a writer's word) nor of arrival order; every move of it re-judges the
+        // thing's external fires (`setting_moved`).
         if a.ak.external() {
-            return true;
+            return self.by_authority(h, id, ai, a) || self.settings.entry(a.tid).or_insert_with(|| setting_now(core, &a.tid)).as_ref().is_some_and(|s| s.enables(&a.ak));
         }
+        self.by_authority(h, id, ai, a)
+    }
+
+    /// `part` of a part past the epoch rule and the Acting check: valid by its author's role on
+    /// its thing (the timeline, re-grant, addenda).
+    fn by_authority(&mut self, h: &Header, id: &CommitId, ai: usize, a: &osis_commit::AspectEntry) -> bool {
+        let core = self.core;
+        let ak = a.ak.as_str();
         // a thing more than `MAX_CHAIN_DEPTH` record links below its key actor: nothing written on
         // it applies (spec/permissions.md §1); judged per delta from creation records alone
         let (deep, tl) = self.thing(&a.tid);
@@ -888,7 +912,8 @@ pub(crate) fn misjudged(core: &Core) -> Option<String> {
 /// transaction it went wrong in, at the cost of the re-judge itself).
 #[cfg(debug_assertions)]
 fn misjudged_on<'a>(core: &Core, things: impl Iterator<Item = &'a Tid>) -> Option<String> {
-    let ids: BTreeSet<CommitId> = things.flat_map(|t| core.on_thing(t)).collect();
+    // a commit marked stale since (`setting_moved`) is judged by the next pass
+    let ids: BTreeSet<CommitId> = things.flat_map(|t| core.on_thing(t)).filter(|c| !core.stale_commits.contains(c)).collect();
     ids.iter().find_map(|id| core.ix.commits.get(id).and_then(|m| misjudged_one(core, id, m)))
 }
 
@@ -999,6 +1024,8 @@ fn rejudge_once(tx: &mut Tx<'_>, rebuild: bool) -> Result<Vec<(Tid, Ak)>> {
     let current = tx.core.current_sessions();
     let accounts: BTreeSet<Tid> = tx.core.accounts.keys().copied().collect();
     let mut falls: Vec<(Tid, Ak)> = Vec::new();
+    // removal notices turned valid: taken as arriving ones (`flows::inbox::notice_due`)
+    let mut notices: Vec<CommitId> = Vec::new();
     for (id, now) in news {
         let Some(m) = tx.core.ix.commits.get_mut(&id) else { continue };
         let h = m.header.clone();
@@ -1022,6 +1049,9 @@ fn rejudge_once(tx: &mut Tx<'_>, rebuild: bool) -> Result<Vec<(Tid, Ak)>> {
                 }
                 if *b {
                     rose.insert((x.tid, x.ak.clone()));
+                    if x.ak.as_str() == crate::flows::inbox::REMOVAL_FIRE {
+                        notices.push(id);
+                    }
                     if m.dropped_invalid(ai) {
                         back.push((id, ai));
                     }
@@ -1046,6 +1076,9 @@ fn rejudge_once(tx: &mut Tx<'_>, rebuild: bool) -> Result<Vec<(Tid, Ak)>> {
     drop(judge);
     for (t, ak) in falls {
         crate::sync::falls::fell(tx, &t, &ak)?;
+    }
+    for c in notices {
+        crate::flows::inbox::notice_due(tx, &c)?;
     }
     // an own write of the current sessions fell: later writes go under fresh ones, past the hole
     // (`Core::fresh_session`)

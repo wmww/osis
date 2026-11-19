@@ -2608,6 +2608,12 @@ impl Core {
         }
         self.index_missing(&id, &had, &now);
         self.index_own(&id, &m, true);
+        // a setting held value-less (purged) is no setting (`validity::settings`)
+        for (ai, a) in m.view.aspects.iter().enumerate() {
+            if a.ak.as_str() == osis_commit::retention::RETENTION && self.ix.commits.get(&id).is_some_and(|o| o.bare(ai) != m.bare(ai)) {
+                crate::apply::validity::setting_moved(self, &a.tid);
+            }
+        }
         let had = self.ix.commits.get(&id).map(covers_of).unwrap_or_default();
         self.index_covers(&id, &had, &covers_of(&m));
         // a part held invalid (a late part joining, a leftover kept) goes at the transaction's end
@@ -2752,6 +2758,7 @@ impl Core {
         let due = self.ix.commits.get(id).map(|m| self.kept_parts(id, m)).unwrap_or_default();
         self.kept_due.extend(due);
         let Some(m) = self.ix.commits.get(id) else { return };
+        let mut settings = Vec::new();
         for (ai, a) in m.view.aspects.iter().enumerate() {
             let k = (a.tid, a.ak.clone());
             if m.valid_at(ai) {
@@ -2762,15 +2769,17 @@ impl Core {
                     self.drop_due.insert(*id);
                 }
             }
-            // a flip of a setting may move its thing's current setting (`retention::settings_changed`)
+            // a flip of a setting may move its thing's current setting (`validity::setting_moved`)
             if a.ak.as_str() == osis_commit::retention::RETENTION {
-                self.settings_due.insert(a.tid);
-                self.kept_things_due.insert(a.tid);
+                settings.push(a.tid);
             }
             // a flip may make a held purge-on-replace body replaced or covered
             if !self.none_due.contains(&k) && crate::retention::history::of(self, &a.tid, &a.ak).purges() {
                 self.none_due.insert(k);
             }
+        }
+        for t in settings {
+            crate::apply::validity::setting_moved(self, &t);
         }
         edits::index_validity(self, id);
     }
@@ -4048,6 +4057,17 @@ impl Engine {
                     r = r.and_then(|v| crate::retention::settings_changed(&mut tx).map(|_| v));
                 }
                 tx.core.settings_due.clear();
+                // a setting that left here moves which external fires are valid
+                // (`validity::setting_moved`): judged, and what turned invalid goes, in this
+                // transaction; a removal notice turned valid is taken as one arriving
+                if r.is_ok() && tx.core.stale() {
+                    r = r.and_then(|v| crate::apply::rejudged(&mut tx, false).and_then(|_| crate::retention::drop_invalid(&mut tx)).map(|_| v));
+                    if r.is_ok() && !tx.core.removals_due.is_empty() && !tx.txn.is_memory() {
+                        r = r.and_then(|v| crate::flows::inbox::owe_removal_notices(&mut tx).map(|_| v));
+                    }
+                }
+                tx.core.drop_due.clear();
+                tx.core.removals_due.clear();
                 if r.is_ok() && !tx.core.setting_waits_due.is_empty() {
                     r = r.and_then(|v| crate::sync::setting::judge_due(&mut tx).map(|_| v));
                 }

@@ -200,11 +200,7 @@ impl Engine {
     /// naming its things are judged at the transaction's end (`removals_due`).
     fn notice_arrives(&mut self, fire: &CommitId) -> Result<()> {
         let id = *fire;
-        self.run(|tx| {
-            let Some(b) = fire_commit(tx, &id)? else { return Ok(()) };
-            tx.core.removals_due.extend(b.header.aspects.iter().map(|a| a.tid));
-            Ok(())
-        })
+        self.run(|tx| notice_due(tx, &id))
     }
 
     /// Takes the role commit fire `fire` held here carries (`fire_parts`) as an arriving commit,
@@ -214,6 +210,11 @@ impl Engine {
     /// copy it says (spec/permissions.md §3).
     pub(crate) fn take_fire(&mut self, fire: &CommitId) -> Result<()> {
         let id = *fire;
+        // only a fire valid when taken (an external fire by a party holding no write: while the
+        // thing's current setting enables its signal)
+        if !self.read(|tx| Ok(held_valid(tx, &id, TICKET_FIRE) || held_valid(tx, &id, REMOVAL_FIRE)))? {
+            return Ok(());
+        }
         let Some(v) = self.read(|tx| fire_parts(tx, &id))? else { return Ok(()) };
         let aks: &[&str] = if self.read(|tx| fire_value(tx, &id, TICKET_FIRE))?.is_some() { GRANT_PARTS } else { &["roles.0"] };
         self.take_role_parts(&v, aks)
@@ -398,7 +399,8 @@ pub(crate) fn fire(tx: &mut Tx<'_>, thing: Tid, ak: &str, value: Value, to: BTre
     // (a node writes only what it holds, spec/sync-set.md §2 Writing)
     if tx.core.ix.closure.holds(&thing) && reads_now(tx.core, &thing) {
         // a fire the thing's setting would not keep is in no history: none is written (an actor
-        // that is no account takes the fires its own setting keeps, spec/sync-inbox.md §1)
+        // that is no account takes the fires its own setting keeps, spec/sync-inbox.md §1; only
+        // an entry of its own keeps an external signal, which also enables it)
         let ts = tx.core.hlc.peek();
         let wall = ts.wall_ms().0;
         if crate::retention::history::of(tx.core, &thing, &ak).leaves_at(Some(wall), ts) <= wall {
@@ -802,7 +804,8 @@ fn removals_due(tx: &mut Tx<'_>, t: &Tid) -> Result<()> {
     let Some(inbox) = inbox_in(tx, &a)? else { return Ok(()) };
     let fires: Vec<CommitId> = tx.core.ix.by_aspect.get(&(inbox, super::ak(REMOVAL_FIRE)?)).into_iter().flatten().map(|x| x.1).collect();
     for c in fires {
-        if let Some(blob) = fire_commit(tx, &c)?
+        if held_valid(tx, &c, REMOVAL_FIRE)
+            && let Some(blob) = fire_commit(tx, &c)?
             && blob.header.aspects.iter().any(|x| x.tid == *t)
             && !held_whole(tx, &blob)
         {
@@ -810,6 +813,22 @@ fn removals_due(tx: &mut Tx<'_>, t: &Tid) -> Result<()> {
         }
     }
     Ok(())
+}
+
+/// Removal notice `c` held valid here, arriving or turning valid (spec/permissions.md §5.2
+/// External fires): the notices naming its things are judged at the transaction's end
+/// (`removals_due`).
+pub(crate) fn notice_due(tx: &mut Tx<'_>, c: &CommitId) -> Result<()> {
+    let Some(b) = fire_commit(tx, c)? else { return Ok(()) };
+    tx.core.removals_due.extend(b.header.aspects.iter().map(|a| a.tid));
+    Ok(())
+}
+
+/// Whether fire `c` holds its part on signal `ak` held and valid here: only such a fire is taken
+/// (its carried commit, `take_fire`), whatever it carries (spec/permissions.md §5.2 External
+/// fires, spec/sync-inbox.md §5). What was taken while it was valid stands.
+fn held_valid(tx: &Tx<'_>, c: &CommitId, ak: &str) -> bool {
+    tx.core.ix.commits.get(c).is_some_and(|m| m.header.aspects.iter().enumerate().any(|(ai, a)| a.ak.as_str() == ak && m.holds(ai) && m.valid_at(ai)))
 }
 
 /// The commit whose role parts fire `c` carries (`fire_parts`).

@@ -600,7 +600,7 @@ fn convert(e: &mut Engine, hist: &History) -> Input {
         }
     }
     let dots = cv.dots();
-    let mut held = hm::Held { now: e.now().0, me, records, commits, dots, external_fires: hm::ExternalFires::Any };
+    let mut held = hm::Held { now: e.now().0, me, records, commits, dots, external_fires: hm::ExternalFires::Enabled };
     let ds = hm::Dots::new(&held);
     for (sync_id, i) in leftovers {
         let c = held.commits.iter_mut().find(|c| c.id == sync_id).unwrap();

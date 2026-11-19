@@ -15,6 +15,10 @@ pub enum Error {
     /// This node may not write that aspect (local writes, checked before signing): it needs
     /// `needs` on `tid`.
     Permission { tid: Tid, needs: Role },
+    /// A fire of external signal `ak` on `tid` by this node, which holds no write there, while
+    /// `tid`'s current setting does not enable the signal (spec/permissions.md §5.2 External
+    /// fires). Local.
+    NotEnabled { tid: Tid, ak: String },
     /// The thing's `created.0` record is not held.
     UnknownThing(Tid),
     /// No commit with this ID is held (or its body was dropped).
@@ -44,6 +48,7 @@ osis_base::impl_error!(Error {
     Crypto(e) => ("crypto: {e}"),
     Path(e) => ("value: {e}"),
     Permission { tid, needs } => ("needs {needs:?} on {tid}"),
+    NotEnabled { tid, ak } => ("{tid} takes {ak} only from its writers: its retention setting has no entry for it"),
     UnknownThing(t) => ("unknown thing {t}"),
     UnknownCommit(c) => ("unknown commit {c:?}"),
     NotKept(c) => ("undoing {c:?} needs content not in kept history"),
@@ -65,7 +70,7 @@ impl Classified for Error {
             Error::Crypto(e) => e.class(),
             Error::Path(e) => e.class(),
             Error::BadInput(_) => ErrorClass::BadInput,
-            Error::Permission { .. } | Error::UnknownThing(_) | Error::UnknownCommit(_) | Error::NotKept(_) | Error::Misuse(_) | Error::Clash(_) | Error::Corrupt(_) | Error::NotBuilt(_) | Error::NotHeld(_) => ErrorClass::Local,
+            Error::Permission { .. } | Error::NotEnabled { .. } | Error::UnknownThing(_) | Error::UnknownCommit(_) | Error::NotKept(_) | Error::Misuse(_) | Error::Clash(_) | Error::Corrupt(_) | Error::NotBuilt(_) | Error::NotHeld(_) => ErrorClass::Local,
         }
     }
 }

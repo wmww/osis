@@ -1,7 +1,7 @@
 //! The one `Error` of the API (notes/api.md Errors).
 
 use crate::commits::NotUndoableReason;
-use osis_base::{Role, Tid};
+use osis_base::{Ak, Role, Tid};
 use crate::commit_id::CommitId;
 use osis_schema::{Path, PathError};
 
@@ -18,6 +18,10 @@ pub enum Error {
     /// The acting actor lacks `needs` on `tid`, or this node cannot write `tid` yet (`role_on`
     /// reads `Read` meanwhile). Checked locally before signing.
     Permission { tid: Tid, needs: Role },
+    /// A fire of external signal `signal` (an `@` key) on `tid` by an actor holding no write
+    /// there, while `tid`'s setting (`core::RETENTION`) has no entry for the signal: until an
+    /// admin gives it one, only `tid`'s writers fire it.
+    NotEnabled { tid: Tid, signal: Ak },
     /// A typed write's value failed validation at `path` (unknown case, mismatch, missing
     /// field), or a typed path read named a path the key's schema does not have. Stored data
     /// never fails a read on typed grounds: it reads as absent (`Diagnostic::Mismatch`).
@@ -61,6 +65,7 @@ osis_base::impl_error!(Error {
     UnknownThing { tid } => ("unknown thing {tid}"),
     UnknownActor { tid } => ("unknown actor {tid}"),
     Permission { tid, needs } => ("needs {needs:?} on {tid} (or what writing it needs has not synced here yet)"),
+    NotEnabled { tid, signal } => ("{tid} takes {signal} only from its writers: its retention setting has no entry for it"),
     Type { path, reason } => ("type error at {path}: {reason}"),
     TooLarge { limit } => ("value larger than the materialization bound ({limit} bytes)"),
     NotUndoable { commit, reason } => ("cannot revert {commit:?}: {reason:?}"),
@@ -91,6 +96,10 @@ impl From<osis_engine::Error> for Error {
         use osis_engine::Error as N;
         match e {
             N::Permission { tid, needs } => Error::Permission { tid, needs },
+            N::NotEnabled { tid, ak } => match Ak::new(ak) {
+                Ok(signal) => Error::NotEnabled { tid, signal },
+                Err(e) => Error::Invalid(e.to_string()),
+            },
             N::UnknownThing(tid) => Error::UnknownThing { tid },
             N::Path(p) => p.into(),
             N::Store(osis_store::Error::Backend(osis_store::BackendError::InUse)) => Error::InUse,

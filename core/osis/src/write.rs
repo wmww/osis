@@ -596,7 +596,9 @@ impl<K: SignalKey> AspectWrite<'_, '_, K> {
     /// Fires the signal with `v`: one commit that `on_fire` hears and, unless the key is
     /// ephemeral, `fired` lists. A signal has no current value, so each fire counts, an equal
     /// value too. A `Write` fires a signal once on a thing (a `replace` counts); `Invalid` at
-    /// `commit` on a second fire, or on a dynamic key of a value aspect.
+    /// `commit` on a second fire, or on a dynamic key of a value aspect. An external signal (an
+    /// `@` key) needs no write on the thing while the thing's setting has an entry for it
+    /// (`core::RetentionSetting::rules`); otherwise `NotEnabled` at `commit`.
     pub fn fire(&mut self, v: &K::T) -> Result<()> {
         let v = self.encoded(v)?;
         let key = self.ok()?;

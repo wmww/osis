@@ -48,6 +48,7 @@ pub fn category(e: &Error) -> (i32, &'static str) {
         Error::UnknownThing { .. } => (3, "UnknownThing"),
         Error::UnknownActor { .. } => (3, "UnknownActor"),
         Error::Permission { .. } => (4, "Permission"),
+        Error::NotEnabled { .. } => (4, "NotEnabled"),
         Error::Refused(_) => (4, "Refused"),
         Error::TooLarge { .. } => (5, "TooLarge"),
         Error::Type { .. } => (5, "Type"),
@@ -114,7 +115,7 @@ fn report(e: &anyhow::Error, json: bool, err: &mut dyn Write) -> i32 {
     } else if let Some(a) = e.downcast_ref::<Error>() {
         let (c, k) = category(a);
         let (tid, needs) = match a {
-            Error::UnknownThing { tid } | Error::UnknownActor { tid } => (Some(*tid), None),
+            Error::UnknownThing { tid } | Error::UnknownActor { tid } | Error::NotEnabled { tid, .. } => (Some(*tid), None),
             Error::Permission { tid, needs } => (Some(*tid), Some(cmd::role_text(*needs))),
             _ => (None, None),
         };

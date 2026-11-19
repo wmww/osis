@@ -125,7 +125,11 @@ impl From<&osis_schema::core_types::RetentionEntry> for RetentionEntry {
 /// back.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct RetentionSetting {
-    /// The entry for each aspect named.
+    /// The entry for each aspect named. An entry naming an external signal (an `@` key) also
+    /// opens it to everyone: anyone holding the thing's public key may fire it, not only its
+    /// writers. Without one, a fire of it by an actor holding no write is refused
+    /// (`Error::NotEnabled`) and counts nowhere. The newest setting decides, also for fires made
+    /// before it: dropping the entry withdraws the fires of non-writers not yet taken.
     pub rules: std::collections::BTreeMap<Ak, RetentionEntry>,
     /// The entry for every aspect not in `rules` but an external (`@`) signal, which only its own entry
     /// keeps; none: nothing is kept there.

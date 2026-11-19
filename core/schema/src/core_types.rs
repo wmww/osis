@@ -303,6 +303,13 @@ impl RetentionSetting {
     pub fn entry(&self, ak: &Ak) -> Option<&RetentionEntry> {
         self.rules.get(ak).or(self.default.as_ref().filter(|_| !ak.external()))
     }
+
+    /// Whether this setting enables external signal `ak`: an entry of its own names it, never the
+    /// default (spec/commits.md §5 The setting). While the current setting does, a party holding no
+    /// write fires it validly (spec/permissions.md §5.2 External fires).
+    pub fn enables(&self, ak: &Ak) -> bool {
+        ak.external() && self.rules.contains_key(ak)
+    }
 }
 
 impl From<BTreeMap<Ak, RetentionEntry>> for RetentionSetting {

@@ -131,4 +131,7 @@ impl ApiCode {
     pub const CLOSED: u64 = 14;
     /// No detail: the node's store is open elsewhere.
     pub const IN_USE: u64 = 15;
+    /// `[tid, ak]`: a fire of an external signal the thing's setting does not enable, by an actor
+    /// holding no write on it.
+    pub const NOT_ENABLED: u64 = 16;
 }

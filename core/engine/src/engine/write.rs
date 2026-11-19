@@ -291,12 +291,17 @@ pub(crate) fn check_authority_with(core: &Core, node: Tid, records: Records<'_>,
 
 /// `check_authority_with` needing role `need`.
 pub(crate) fn check_role_with(core: &Core, node: Tid, records: Records<'_>, tid: &Tid, ak: &str, need: Role, ts: Ts) -> Result<()> {
-    // an external fire needs no role on its thing (spec/permissions.md §5.2 External fires)
-    if Ak::markers_of(ak).external {
+    let role = role_with(core, node, records, tid, ts);
+    if role >= Some(need) && (ak == CREATED.ak() || core.skip_writer_rules || within_depth(core, records, tid)) {
         return Ok(());
     }
-    let role = role_with(core, node, records, tid, ts);
-    if role >= Some(need) && (ak == CREATED.ak() || core.skip_writer_rules || within_depth(core, records, tid)) { Ok(()) } else { Err(Error::Permission { tid: *tid, needs: need }) }
+    // an external fire by a party holding no write: only while the thing's current setting
+    // enables its signal (spec/permissions.md §5.2 External fires)
+    if Ak::markers_of(ak).external {
+        let enabled = Ak::new(ak).is_ok_and(|a| crate::apply::validity::setting_now(core, tid).is_some_and(|s| s.enables(&a)));
+        return if enabled { Ok(()) } else { Err(Error::NotEnabled { tid: *tid, ak: ak.to_string() }) };
+    }
+    Err(Error::Permission { tid: *tid, needs: need })
 }
 
 /// Whether this node may write on a held thing now (`may_write`).
@@ -932,7 +937,9 @@ pub(crate) fn commit_or_build(tx: &mut Tx<'_>, mut m: Mutation) -> Result<Option
         if !base.creates.contains_key(&tid) && !(if sealed { tx.core.created(&tid).is_some() } else { tx.core.writable(&tid) }) {
             return Err(Error::UnknownThing(tid));
         }
-        if !m.unchecked {
+        // a sealed fire's sender holds no setting of the thing and is bound by none: its
+        // readers judge it (spec/sync-inbox.md §2)
+        if !m.unchecked && !sealed {
             check_authority(tx.core, node, &base.creates, &tid, ak.as_str(), ts)?;
         }
         // a content write is written under the setting: one known and not held yet is waited

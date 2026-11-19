@@ -36,6 +36,7 @@ mod destruction;
 mod refs;
 mod tickets;
 mod strangers;
+mod external;
 mod thing_cost;
 mod copies;
 mod resnapshot;
