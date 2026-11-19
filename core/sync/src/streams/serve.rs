@@ -171,6 +171,10 @@ impl Streams {
         let serve = self.serve.entry(conn).or_default();
         serve.follow = None;
         serve.inline = p.inline_limit;
+        // the requester names the cursor it stored: what was served up to it is applied there
+        if let Some(Some(pos)) = own {
+            serve.unapplied.retain(|_, x| *x > pos);
+        }
         // reported positions: the first Pull's cursor, each join's in the first Pull naming it
         if !serve.pulled {
             serve.pulled = true;
@@ -249,7 +253,9 @@ impl Streams {
         serve.joins_left = joins_left;
         if p.follow && !read.more {
             serve.follow = Some(Follow { cursor: read.cursor.clone(), pos: read.pos, seq: 0 });
-            serve.mem_mark = ctx.store.memory_mark();
+            // a listing the page cut follows in Streams: pushes read on from its least counter
+            let mark = ctx.store.memory_mark();
+            serve.mem_mark = if page.full { serve.eph.values().min().map_or(mark, |n| (*n).min(mark)) } else { mark };
             serve.followed_to(read.pos);
         }
         let cursor = wire_cursor(&read.cursor);
@@ -532,10 +538,6 @@ impl Streams {
     /// A member joined, as server: one opened after the first Pull has no reported position
     /// until a join names it.
     pub(super) fn served_joined(&mut self, ctx: &mut Ctx, conn: ConnId, s: SyncId) {
-        // the log past the follow cursor is read again for the shared set now
-        if let Some(serve) = self.serve.get_mut(&conn) {
-            serve.scanned = None;
-        }
         if let Some(serve) = self.serve.get_mut(&conn)
             && serve.pulled
         {
@@ -559,10 +561,12 @@ impl Streams {
         serve.told_until.remove(s);
     }
 
-    /// Member S's `until` was set or cleared.
+    /// Member S's `until` was set or cleared (or S joined).
     pub(super) fn served_ending(&mut self, ctx: &mut Ctx, conn: ConnId, s: SyncId) {
         let ended = ctx.shared.members(conn).get(&s).is_some_and(|m| m.until.is_some());
         let serve = self.serve.entry(conn).or_default();
+        // the log past the follow cursor is read again for the shared set now (`scan_unpushed`)
+        serve.scanned = None;
         serve.told_until.remove(&s);
         if ended {
             serve.ending.insert(s);

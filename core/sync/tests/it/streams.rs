@@ -1954,7 +1954,7 @@ fn caught_up_needs_the_peers_applied_spec_sync_status_1() {
     assert!(p.a.streams.caught_up(C, &s), "a later Applied covers it");
 }
 
-// spec/sync-status.md §1 (caught up per sync ID: another sync ID's traffic on the connection
+// spec/sync-status.md §1 (caught up: another sync ID's traffic on the connection
 // moves nothing of S's): a push of T not reported applied leaves S caught up at the server, and
 // at the requester one of T in hand awaiting its body leaves S caught up there.
 #[test]
@@ -1974,6 +1974,138 @@ fn another_sync_ids_traffic_leaves_s_caught_up_spec_sync_status_1() {
     p.run_with(|ab, m| ab && m.kind() == 20);
     assert!(!p.b.streams.caught_up(C, &t), "t's push in hand awaiting its body");
     assert!(p.b.streams.caught_up(C, &s), "s is caught up whatever t's traffic");
+}
+
+/// The cursor of a's last message to b carrying one (a PullReply or a Stream).
+fn last_cursor_from_a(p: &Pair) -> Vec<u8> {
+    p.seen.iter().rev().filter(|(ab, _)| *ab).find_map(|(_, m)| match m {
+        Msg::PullReply(r) => r.cursor.clone(),
+        Msg::Stream(st) => st.cursor.clone(),
+        _ => None,
+    }).unwrap().into_bytes()
+}
+
+// spec/sync-status.md §1 (no join of S by the source is left in pages): a join of S the server left
+// in pages keeps S from caught up there, whatever the stream part says.
+#[test]
+fn a_join_left_in_pages_keeps_s_busy_spec_sync_status_1() {
+    let mut p = Pair::new();
+    let s = sid(1);
+    for i in 0..300 {
+        p.a.log(s, 1000 + i);
+    }
+    p.shared_read(s);
+    p.run();
+    assert!(p.a.streams.caught_up(C, &s));
+    // b joins S again from the start, its reply asked small: the join is left in pages
+    let c = last_cursor_from_a(&p);
+    let r = pull_at(&mut p.a, p.now, Pull { follow: true, ..plain_pull(Some(c), vec![(s, None)], SMALL_REPLY) });
+    assert!(!r.more && matches!(r.joins.as_slice(), [(_, Some(_))]), "the stream at its end, the join in pages");
+    assert!(!p.a.streams.caught_up(C, &s), "S's join is left in pages");
+}
+
+// spec/sync-status.md §1 (every ephemeral event of S in its memory part listed): an ephemeral
+// write not yet pushed (no room) keeps S from caught up.
+#[test]
+fn an_ephemeral_write_not_listed_keeps_s_busy_spec_sync_status_1() {
+    let mut p = Pair::new();
+    let s = sid(1);
+    p.shared_read(s);
+    p.a.log(s, 100);
+    p.run();
+    assert!(p.a.streams.caught_up(C, &s));
+    p.a.log_as(s, 120, Class::Ephemeral);
+    p.a.pipe.full = true;
+    p.a.with(p.now, |st, c| st.tick(c).unwrap());
+    assert!(!p.a.streams.caught_up(C, &s), "S's ephemeral write is not pushed");
+}
+
+// spec/sync-status.md §1 (every message carrying an event of S served to the source is reported applied): a reply
+// the requester sends no Applied for (T's listing from the start under way) is covered by the
+// cursor its next Pull names, which it stored: S does not stay busy on an idle connection.
+#[test]
+fn a_pulls_cursor_covers_what_was_served_spec_sync_status_1() {
+    let mut p = Pair::new();
+    let (s, t) = (sid(1), sid(2));
+    p.shared_read(s);
+    p.shared_read(t);
+    p.a.log(s, 100);
+    p.run();
+    assert!(p.sent_by_b(44).is_empty(), "b sent no Applied");
+    assert!(p.a.streams.caught_up(C, &s), "b's last Pull named a cursor past S's entry");
+}
+
+// spec/sync-status.md §1 (every event of S this node logged after the follow cursor is pushed): an ended
+// member's `until` cleared makes its events past it the peer's to be pushed, so S is busy
+// before they are, though the log was read past them while it was ended.
+#[test]
+fn an_until_cleared_makes_s_busy_spec_sync_status_1() {
+    let mut p = Pair::new();
+    let (s, t) = (sid(1), sid(2));
+    p.shared_read(s);
+    p.shared_read(t);
+    p.a.log(s, 100);
+    p.run();
+    let (end, _) = p.a.store.log_bounds().unwrap();
+    p.a.open.members.get_mut(&C).unwrap().get_mut(&s).unwrap().until = Some(end);
+    p.a.with(p.now, |st, c| st.member_moved(c, Moved::Until(C, s)));
+    // past S's until, and a push of T finding no room: the follow cursor stays before both
+    p.a.log(s, 101);
+    p.a.log(t, 102);
+    p.a.pipe.full = true;
+    p.a.with(p.now, |st, c| st.tick(c).unwrap());
+    assert!(p.a.streams.caught_up(C, &s), "nothing of S is b's to be pushed");
+    p.a.open.members.get_mut(&C).unwrap().get_mut(&s).unwrap().until = None;
+    p.a.with(p.now, |st, c| st.member_moved(c, Moved::Until(C, s)));
+    assert!(!p.a.streams.caught_up(C, &s), "S's event past its old until is not pushed");
+}
+
+// spec/sync-status.md §1 (the source's last Pull was answered with `more` false and it is followed): a member that
+// joined after the source's last Pull was answered is not caught up until the source's join of
+// it is read, though the stream is followed.
+#[test]
+#[ignore = "issues/caught-up-before-the-join.md"]
+fn repro_a_member_joined_after_the_pull_waits_for_its_join() {
+    let mut p = Pair::new();
+    let (s, t) = (sid(1), sid(2));
+    p.a.hold(s, Holding::Read);
+    p.b.hold(s, Holding::Read);
+    let e = p.a.log(s, 100);
+    p.shared_read(t);
+    p.run();
+    p.join(s);
+    // b's Pull joining S is on its way
+    p.run_with(|ab, m| !ab && m.kind() == 41);
+    assert!(!held(&p.b, s).contains(&e), "b has not pulled S");
+    assert!(!p.a.streams.caught_up(C, &s), "a says b caught up on S, yet b lacks {e:?}");
+}
+
+// spec/wire.md §11.2 Pull (ephemeral entries count against `max_reply`; what does not fit follows
+// in later replies or Streams), spec/sync-status.md §1: a listing cut by a reply's budget follows
+// in Streams, and S is not caught up until it has.
+#[test]
+fn an_ephemeral_listing_cut_by_a_reply_follows_spec_sync_status_1() {
+    let mut p = Pair::new();
+    let s = sid(1);
+    p.shared_read(s);
+    p.a.log(s, 100);
+    p.run();
+    let all: std::collections::BTreeSet<BlobId> = (0..4).map(|i| p.a.log_as(s, 6000 + i, Class::Ephemeral)).collect();
+    let r = pull_at(&mut p.a, p.now, Pull { follow: true, ephemeral: true, ..plain_pull(None, vec![], SMALL_REPLY) });
+    assert!(!r.more);
+    let mut got: std::collections::BTreeSet<BlobId> = added(&r.events).into_iter().filter(|b| all.contains(b)).collect();
+    assert!(got.len() < all.len(), "the reply's budget cuts the listing");
+    for _ in 0..4 {
+        p.a.with(p.now, |st, c| st.tick(c).unwrap());
+        for (_, f) in p.a.pipe.out.drain(..) {
+            if let Msg::Stream(st) = f.msg() {
+                got.extend(added(&st.events).into_iter().filter(|b| all.contains(b)));
+            }
+        }
+        // sent is all a can say here: a sent Stream's Applied is issues/caught-up-ephemeral-push.md
+        assert!(got.len() == all.len() || !p.a.streams.caught_up(C, &s), "a says b caught up on S, yet the listing lacks some");
+    }
+    assert_eq!(got, all, "the rest follows in Streams");
 }
 
 // spec/sync-status.md §1 (complete pass): a pass asks a fresh Pull (`pull_again`), and caught up
@@ -2097,7 +2229,7 @@ fn deliver(to: &mut Side, now: u64, f: Frame) {
     to.with(now, |st, c| st.message(c, C, inc));
 }
 
-// spec/sync-status.md §1 (caught up per sync ID): differential over random histories on two
+// spec/sync-status.md §1 (caught up: another sync ID's traffic on the connection moves nothing of S's caught up): differential over random histories on two
 // sync IDs: a source said caught up on one holds exactly what this node holds of it (both halves: this side read its stream to the end, it
 // applied every message served to it), whatever order the frames arrive in.
 #[test]
@@ -2486,3 +2618,4 @@ fn only_a_member_stopped_at_the_cursor_rejoins_with_no_join_spec_sync_streams_4(
     let src = p.b.src();
     assert!(knows(&p.b, src, s, away), "what s missed while away");
 }
+
