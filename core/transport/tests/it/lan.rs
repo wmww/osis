@@ -2,24 +2,8 @@
 //! announcements, what a receiver dials, route ranks. spec/sync-transport.md §4.
 
 use osis_transport::lan::{PORT, broadcast};
+use crate::common::{ip, now_or_never};
 use osis_transport::*;
-use std::future::{Future, poll_fn};
-use std::net::IpAddr;
-use std::task::Poll;
-
-/// `f`'s output if it is ready at once.
-async fn now_or_never<T>(f: impl Future<Output = T>) -> Option<T> {
-    let mut f = std::pin::pin!(f);
-    poll_fn(|cx| Poll::Ready(match f.as_mut().poll(cx) {
-        Poll::Ready(v) => Some(v),
-        Poll::Pending => None,
-    }))
-    .await
-}
-
-fn ip(s: &str) -> IpAddr {
-    s.parse().unwrap()
-}
 
 /// A host at `at` on LAN segment `seg`.
 fn on_lan(net: &Net, at: &str, seg: &str) -> MemUdp {

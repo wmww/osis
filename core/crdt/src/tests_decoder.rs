@@ -211,27 +211,48 @@ fn differential(seed: u64, types: &[Ty], per: usize) -> Result<(), String> {
     Ok(())
 }
 
+fn l(v: Vec<Value>) -> Value {
+    Value::List(v)
+}
+
+fn int(i: i64) -> Value {
+    Value::Int(i)
+}
+
+/// A source table's `Session` source `n` (node `[0 * 14, n]`, nonce zero).
+fn session(n: u8) -> Value {
+    Value::Bytes([[0; 14].as_slice(), &[n], &[0; 16]].concat())
+}
+
+/// Whether the implementation and the model accept `b` as a writer delta of session 1 at
+/// counter range [7, 8).
+fn accepts_delta(b: &[u8]) -> (bool, bool) {
+    let w = crdt_model::ops::Writer::new(MSource::session(1, 0), 3 << 16, 7);
+    let imp = decode_delta(b, &writer_cx(&w), &mut Interner::new(), None).is_ok();
+    let model = m_decode_delta(b, &mut Ctx::writer(w.ts, w.source.clone(), w.lo, w.hi())).is_ok();
+    (imp, model)
+}
+
+/// Whether the implementation and the model accept `b` as a snapshot.
+fn accepts_snapshot(b: &[u8]) -> (bool, bool) {
+    let imp = decode_snapshot(b, &snap_cx(), &mut Interner::new(), None).is_ok();
+    let model = m_decode_snapshot(b, &mut Ctx::new(1 << 40, MSource::session(250, 0), 1)).is_ok();
+    (imp, model)
+}
+
 // spec/crdt.md §2.3, §3.3 rule 7: every element of a writer's run is an own-source identity, so
 // one past `hi` is out of range even when the run's first dot is not (shrunk from seed
 // 2814254534854219504: the model checked only a run's first dot).
 #[test]
 fn run_past_counter_range_rejected_spec_2_3() {
-    let w = crdt_model::ops::Writer::new(MSource::session(1, 0), 3 << 16, 7); // range [7, 8)
-    let l = |v: Vec<Value>| Value::List(v);
-    let int = Value::Int;
     // a text delta deleting own elements first..first+n-1 at the delta stamp
     let delta = |first: i64, n: i64| {
         let flag = l(vec![int(0), int(n - 1), int(0), Value::Bool(true)]);
         let run = l(vec![int(first), int(n), l(vec![]), l(vec![]), l(vec![]), l(vec![flag])]);
         osis_base::encode(&l(vec![Value::Bytes(vec![7; 16]), l(vec![]), l(vec![]), l(vec![int(9), l(vec![]), l(vec![]), l(vec![run])])]))
     };
-    let both = |b: &[u8]| {
-        let imp = decode_delta(b, &writer_cx(&w), &mut Interner::new(), None).is_ok();
-        let model = m_decode_delta(b, &mut Ctx::writer(w.ts, w.source.clone(), w.lo, w.hi())).is_ok();
-        (imp, model)
-    };
-    assert_eq!(both(&delta(5, 2)), (true, true), "elements 5, 6 lie below lo");
-    assert_eq!(both(&delta(5, 4)), (false, false), "element 8 lies at hi");
+    assert_eq!(accepts_delta(&delta(5, 2)), (true, true), "elements 5, 6 lie below lo");
+    assert_eq!(accepts_delta(&delta(5, 4)), (false, false), "element 8 lies at hi");
 }
 
 // spec/crdt.md §3.3 rule 7 Prune: a snapshot is prune-stable, so it carries no write below its
@@ -240,9 +261,6 @@ fn run_past_counter_range_rejected_spec_2_3() {
 // reset, accepted above it.
 #[test]
 fn snapshot_write_below_own_reset_rejected_spec_3_3() {
-    let l = |v: Vec<Value>| Value::List(v);
-    let int = Value::Int;
-    let session = |n: u8| Value::Bytes([[0; 14].as_slice(), &[n], &[0; 16]].concat());
     // commit 1: source 1 at wall 2 (the reset and the creation of element 2); commit 2: source
     // 2 at wall `w` (a position write on it, to HEAD)
     let snap = |w: i64| {
@@ -253,13 +271,8 @@ fn snapshot_write_below_own_reset_rejected_spec_3_3() {
         let facts = crate::testutil::narrowest_facts(&commits);
         osis_base::encode(&l(vec![Value::Bytes(vec![3; 16]), l(vec![session(1), session(3)]), commits, text, frontiers, l(vec![]), facts]))
     };
-    let both = |b: &[u8]| {
-        let imp = decode_snapshot(b, &snap_cx(), &mut Interner::new(), None).is_ok();
-        let model = m_decode_snapshot(b, &mut Ctx::new(1 << 40, MSource::session(250, 0), 1)).is_ok();
-        (imp, model)
-    };
-    assert_eq!(both(&snap(3)), (true, true), "position write above the reset");
-    assert_eq!(both(&snap(1)), (false, false), "position write below the reset");
+    assert_eq!(accepts_snapshot(&snap(3)), (true, true), "position write above the reset");
+    assert_eq!(accepts_snapshot(&snap(1)), (false, false), "position write below the reset");
     // the other write `winners` leaves out: a deleted text element's creation (source 2 at wall
     // 5), under a reset (source 1 at wall `w`) and a delete (source 1 at wall 9)
     let deleted = |w: i64| {
@@ -270,8 +283,8 @@ fn snapshot_write_below_own_reset_rejected_spec_3_3() {
         let facts = crate::testutil::narrowest_facts(&commits);
         osis_base::encode(&l(vec![Value::Bytes(vec![3; 16]), l(vec![session(1), session(3)]), commits, text, frontiers, l(vec![]), facts]))
     };
-    assert_eq!(both(&deleted(3)), (true, true), "creation above the reset");
-    assert_eq!(both(&deleted(7)), (false, false), "deleted element's creation below the reset");
+    assert_eq!(accepts_snapshot(&deleted(3)), (true, true), "creation above the reset");
+    assert_eq!(accepts_snapshot(&deleted(7)), (false, false), "deleted element's creation below the reset");
 }
 
 // spec/crdt.md §3.3 rule 7: a record carrying no write is rejected in every collection, as a
@@ -280,26 +293,18 @@ fn snapshot_write_below_own_reset_rejected_spec_3_3() {
 // below `lo`), so the record carries no implied creation.
 #[test]
 fn record_without_write_rejected_spec_3_3() {
-    let w = crdt_model::ops::Writer::new(MSource::session(1, 0), 3 << 16, 7); // range [7, 8)
-    let l = |v: Vec<Value>| Value::List(v);
-    let int = Value::Int;
     let delta = |f: Value| osis_base::encode(&l(vec![Value::Bytes(vec![7; 16]), l(vec![]), l(vec![]), f]));
-    let both = |b: &[u8]| {
-        let imp = decode_delta(b, &writer_cx(&w), &mut Interner::new(), None).is_ok();
-        let model = m_decode_delta(b, &mut Ctx::writer(w.ts, w.source.clone(), w.lo, w.hi())).is_ok();
-        (imp, model)
-    };
     let written = l(vec![int(0), l(vec![]), int(0), Value::Str("v".into())]);
     let unwritten = l(vec![int(0), l(vec![])]);
     let set = |f: Option<&Value>| delta(l(vec![int(6), l(vec![]), l(vec![]), l(vec![l(vec![int(7), l(vec![]), l(f.into_iter().cloned().collect())])])]));
-    assert_eq!(both(&set(Some(&written))), (true, true), "a set element holding its value");
-    assert_eq!(both(&set(Some(&unwritten))), (false, false), "a set element whose register holds no write");
-    assert_eq!(both(&set(None)), (false, false), "a set element holding nothing");
+    assert_eq!(accepts_delta(&set(Some(&written))), (true, true), "a set element holding its value");
+    assert_eq!(accepts_delta(&set(Some(&unwritten))), (false, false), "a set element whose register holds no write");
+    assert_eq!(accepts_delta(&set(None)), (false, false), "a set element holding nothing");
     let key = Value::Str("k".into());
     let map = |f: Option<&Value>| delta(l(vec![int(7), l(vec![]), l(vec![]), l(vec![l(vec![int(5), l(vec![]), key.clone(), l(f.into_iter().cloned().collect())])])]));
-    assert_eq!(both(&map(Some(&written))), (true, true), "an entry record holding a value");
-    assert_eq!(both(&map(Some(&unwritten))), (false, false), "an entry record whose fragment holds no write");
-    assert_eq!(both(&map(None)), (false, false), "an entry record holding nothing");
+    assert_eq!(accepts_delta(&map(Some(&written))), (true, true), "an entry record holding a value");
+    assert_eq!(accepts_delta(&map(Some(&unwritten))), (false, false), "an entry record whose fragment holds no write");
+    assert_eq!(accepts_delta(&map(None)), (false, false), "an entry record holding nothing");
 }
 
 // spec/crdt.md §3.3 rule 7 Prune, §5.6: the records of one map dot are one entry, so prune keeps
@@ -307,18 +312,10 @@ fn record_without_write_rejected_spec_3_3() {
 // though the write itself survives.
 #[test]
 fn write_copied_across_records_rejected_spec_3_3() {
-    let w = crdt_model::ops::Writer::new(MSource::session(1, 0), 3 << 16, 7); // range [7, 8)
-    let l = |v: Vec<Value>| Value::List(v);
-    let int = Value::Int;
     let record = |k: &str| l(vec![int(5), l(vec![]), Value::Str(k.into()), l(vec![l(vec![int(0), l(vec![]), int(0), Value::Str("v".into())])])]);
     let delta = |recs: Vec<Value>| osis_base::encode(&l(vec![Value::Bytes(vec![7; 16]), l(vec![]), l(vec![]), l(vec![int(7), l(vec![]), l(vec![]), l(recs)])]));
-    let both = |b: &[u8]| {
-        let imp = decode_delta(b, &writer_cx(&w), &mut Interner::new(), None).is_ok();
-        let model = m_decode_delta(b, &mut Ctx::writer(w.ts, w.source.clone(), w.lo, w.hi())).is_ok();
-        (imp, model)
-    };
-    assert_eq!(both(&delta(vec![record("a")])), (true, true), "the write in one record");
-    assert_eq!(both(&delta(vec![record("a"), record("b")])), (false, false), "the write in two records of the dot");
+    assert_eq!(accepts_delta(&delta(vec![record("a")])), (true, true), "the write in one record");
+    assert_eq!(accepts_delta(&delta(vec![record("a"), record("b")])), (false, false), "the write in two records of the dot");
 }
 
 /// Mutations per commit of a differential history: 8 in the default tests, 40 with `OSIS_SLOW` (about
@@ -354,9 +351,6 @@ proptest! {
 // stamped with one is rejected. Sources: session 1, then `Derived` of its dot 2.
 #[test]
 fn derived_register_write_rejected_spec_3_3() {
-    let l = |v: Vec<Value>| Value::List(v);
-    let int = Value::Int;
-    let session = |n: u8| Value::Bytes([[0; 14].as_slice(), &[n], &[0; 16]].concat());
     // the register written by commit 1 at wall 2: of session 1 at counter 2, or of `Derived` at 1
     let snap = |derived: bool| {
         let (sources, src, ctr) = if derived { (vec![session(1), l(vec![int(1), int(2)])], 2, 1) } else { (vec![session(1)], 1, 2) };
@@ -366,11 +360,6 @@ fn derived_register_write_rejected_spec_3_3() {
         let facts = crate::testutil::narrowest_facts(&commits);
         osis_base::encode(&l(vec![Value::Bytes(vec![3; 16]), l(sources), commits, reg, frontiers, l(vec![]), facts]))
     };
-    let both = |b: &[u8]| {
-        let imp = decode_snapshot(b, &snap_cx(), &mut Interner::new(), None).is_ok();
-        let model = m_decode_snapshot(b, &mut Ctx::new(1 << 40, MSource::session(250, 0), 1)).is_ok();
-        (imp, model)
-    };
-    assert_eq!(both(&snap(false)), (true, true), "stamped with the session");
-    assert_eq!(both(&snap(true)), (false, false), "stamped with the `Derived` source");
+    assert_eq!(accepts_snapshot(&snap(false)), (true, true), "stamped with the session");
+    assert_eq!(accepts_snapshot(&snap(true)), (false, false), "stamped with the `Derived` source");
 }

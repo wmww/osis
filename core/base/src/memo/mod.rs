@@ -1356,7 +1356,13 @@ mod tests {
     use super::*;
 
     fn runs(name: &'static str) -> u64 {
-        crate::costs::take().iter().filter(|x| x.0 == name).map(|x| x.2).sum()
+        costs_of([name])[0]
+    }
+
+    /// Runs of each of the spans `names` since the last `costs::take`.
+    fn costs_of<const N: usize>(names: [&str; N]) -> [u64; N] {
+        let c = crate::costs::take();
+        names.map(|name| c.iter().filter(|x| x.0 == name).map(|x| x.2).sum())
     }
 
     // spec: none (internal: notes/engine.md, Derived values). A memo runs again exactly when
@@ -1476,39 +1482,35 @@ mod tests {
             )
             .unwrap()
         };
-        let ran = || {
-            let c = crate::costs::take();
-            let n = |name: &str| c.iter().filter(|x| x.0 == name).map(|x| x.2).sum::<u64>();
-            (n("test amended"), n("memo amend"))
-        };
+        let ran = || costs_of(["test amended", "memo amend"]);
         crate::costs::take();
         assert_eq!(ask(&list, &other, false), (1, 11));
-        assert_eq!(ran(), (1, 0));
+        assert_eq!(ran(), [1, 0]);
         push(&mut list, 5);
         assert_eq!(ask(&list, &other, false), (2, 16), "an accounted read moved");
-        assert_eq!(ran(), (0, 1));
+        assert_eq!(ran(), [0, 1]);
         push(&mut list, 2);
         assert_eq!(ask(&list, &other, false), (3, 18), "again, over an amended answer");
-        assert_eq!(ran(), (0, 1));
+        assert_eq!(ran(), [0, 1]);
         other.insert(0, 20);
         push(&mut list, 1);
         assert_eq!(ask(&list, &other, false), (4, 29), "a read not accounted for moved too");
-        assert_eq!(ran(), (1, 1));
+        assert_eq!(ran(), [1, 1]);
         list.insert(0, vec![2]);
         assert_eq!(ask(&list, &other, false), (1, 22), "the amend gave nothing");
-        assert_eq!(ran(), (1, 1));
+        assert_eq!(ran(), [1, 1]);
         other.insert(0, 30);
         assert_eq!(ask(&list, &other, true), (1, 32));
-        assert_eq!(ran(), (1, 1));
+        assert_eq!(ran(), [1, 1]);
         push(&mut list, 3);
         assert_eq!(ask(&list, &other, true), (2, 35), "the moved read was also read unaccounted");
-        assert_eq!(ran(), (1, 1));
+        assert_eq!(ran(), [1, 1]);
         push(&mut list, 4);
         assert_eq!(ask(&list, &other, false), (3, 39), "the kept answer read it unaccounted");
-        assert_eq!(ran(), (1, 1));
+        assert_eq!(ran(), [1, 1]);
         push(&mut list, 1);
         assert_eq!(ask(&list, &other, false), (4, 40));
-        assert_eq!(ran(), (0, 1));
+        assert_eq!(ran(), [0, 1]);
     }
 
     // spec: none (internal). A key present with no stamp of its own (there before the stamps
@@ -1565,22 +1567,18 @@ mod tests {
         clock.set(100);
         let (whole, until, ever): (Memo<(), u64>, Memo<(), u64>, Memo<(), u64>) = (Memo::new("test whole"), Memo::new("test until"), Memo::new("test ever"));
         let ask = |c: &Clock| (whole.get(&(), || c.now()), until.get(&(), || u64::from(c.until(Some(200)) >= 200)), ever.get(&(), || c.until(None).min(1)));
-        let ran = || {
-            let c = crate::costs::take();
-            let n = |name: &str| c.iter().filter(|x| x.0 == name).map(|x| x.2).sum::<u64>();
-            (n("test whole"), n("test until"), n("test ever"))
-        };
+        let ran = || costs_of(["test whole", "test until", "test ever"]);
         crate::costs::take();
         assert_eq!(ask(&clock), (100, 0, 1));
         clock.set(199);
         assert_eq!(ask(&clock), (199, 0, 1), "before its horizon an `until` reader holds");
-        assert_eq!(ran(), (2, 1, 1));
+        assert_eq!(ran(), [2, 1, 1]);
         clock.set(200);
         assert_eq!(ask(&clock), (200, 1, 1), "at its horizon it moves");
-        assert_eq!(ran(), (1, 1, 0));
+        assert_eq!(ran(), [1, 1, 0]);
         clock.set(150);
         assert_eq!(ask(&clock), (150, 0, 1), "a move back moves every reader");
-        assert_eq!(ran(), (1, 1, 1));
+        assert_eq!(ran(), [1, 1, 1]);
         for t in 151..1000 {
             clock.set(t);
         }
@@ -1608,27 +1606,23 @@ mod tests {
         clock.set(100);
         let (past, now): (Memo<(), u64>, Memo<(), u64>) = (Memo::new("test past"), Memo::new("test now"));
         let ask = |c: &Clock| (past.get(&(), || u64::from(c.until(Some(50)) >= 50)), now.get(&(), || u64::from(c.until(Some(100)) >= 100)));
-        let ran = || {
-            let c = crate::costs::take();
-            let n = |name: &str| c.iter().filter(|x| x.0 == name).map(|x| x.2).sum::<u64>();
-            (n("test past"), n("test now"))
-        };
+        let ran = || costs_of(["test past", "test now"]);
         crate::costs::take();
         assert_eq!(ask(&clock), (1, 1));
         assert_eq!(clock.next(), None);
         clock.set(300);
         assert_eq!(ask(&clock), (1, 1), "a forward move keeps a reached answer");
-        assert_eq!(ran(), (1, 1));
+        assert_eq!(ran(), [1, 1]);
         clock.set(40);
         assert_eq!(ask(&clock), (0, 0), "a move back moves it");
-        assert_eq!(ran(), (1, 1));
+        assert_eq!(ran(), [1, 1]);
         assert_eq!(clock.next(), Some(50));
         clock.set(50);
         assert_eq!(ask(&clock), (1, 0), "its horizon, ahead again, wakes it");
         assert_eq!(clock.next(), Some(100));
         clock.set(100);
         assert_eq!(ask(&clock), (1, 1));
-        assert_eq!(ran(), (1, 1));
+        assert_eq!(ran(), [1, 1]);
     }
 
     // spec: none (internal). Debug builds compare a hit with a fresh run at the 1st, 4th, 16th,

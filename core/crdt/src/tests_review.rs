@@ -5,7 +5,7 @@ use crate::fragment::{Bag, BagKind, Elem, Encoding, Fragment, Meta, RegWrite, Re
 use crate::ops::{Writer, create, diff};
 use crate::page::{MemoryPages, PageParams, PageSink};
 use crate::stamp::{CounterRange, Dot, Interner, Source, Stamp};
-use crate::testutil::{TyView, sess, ts};
+use crate::testutil::{TyView, joined, sess, ts};
 use crate::undo::{Undone, undo};
 use crate::view::{AnyView, View};
 use crate::wire::{DeltaCtx, DeltaKind, Frontiers, Snapshot};
@@ -235,33 +235,26 @@ fn same_stamp_copies_converge_spec_4_1() {
     let src = sess(Tid::from_bytes([3; 15]));
     let mk = |v: Value| create(&mut Writer::new(ts(1 << 16), src.clone(), 1), &AnyView, &v).unwrap();
     let m = |k: i64| Value::Map([(Value::Int(k), Value::Int(9))].into_iter().collect());
+    // `a` joined with `b`, and `b` with `a`
+    let orders = |a: Fragment, b: Fragment| (joined(&a, &b), joined(&b, &a));
     for (a, b, want) in [
         // one write under two keys: its copy carrying the greater key
         (mk(m(1)), mk(m(2)), Some(Value::Map([(Value::Int(2), Value::Int(9))].into_iter().collect()))),
         (mk(Value::Str("alice".into())), mk(Value::Str("forged".into())), Some(Value::Str("forged".into()))),
     ] {
-        let mut x = a.clone();
-        x.join(b.clone());
-        let mut y = b;
-        y.join(a);
+        let (x, y) = orders(a, b);
         assert_eq!(x, y);
         assert_eq!(x.read(), want);
     }
     // links as keys: equal as `Value`s (by hash), copies by their bytes
     let link = |b: u8| Value::link(Link { hash: [9; 32], blob: osis_base::BlobId([b; 32]), suite: 1, key: [b; 32], salt: [0; 16], del: osis_base::Del::NONE });
     let (a, b) = (mk(Value::Map([(link(1), Value::Int(9))].into_iter().collect())), mk(Value::Map([(link(2), Value::Int(9))].into_iter().collect())));
-    let mut x = a.clone();
-    x.join(b.clone());
-    let mut y = b;
-    y.join(a);
+    let (x, y) = orders(a, b);
     let bytes = |f: &Fragment| osis_base::cbor::encode(&f.read().unwrap());
     assert_eq!(bytes(&x), bytes(&y), "link keys join by bytes");
     let t = |s: &str| create(&mut Writer::new(ts(1 << 16), src.clone(), 1), &TyView(Ty::Text), &Value::Str(s.into())).unwrap();
     let (a, b) = (t("abc"), t("xb"));
-    let mut x = a.clone();
-    x.join(b.clone());
-    let mut y = b;
-    y.join(a);
+    let (x, y) = orders(a, b);
     assert_eq!(x, y);
     assert_eq!(x.read(), Some(Value::Str("xbc".into())), "per element: the greater char");
 }

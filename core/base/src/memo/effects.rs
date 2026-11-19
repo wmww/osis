@@ -535,6 +535,13 @@ mod tests {
     use super::super::{Clock, Memo, Stamped, StampedSet, Stamps};
     use super::*;
 
+    /// `e` following key 1, settled once by `read`.
+    fn settle_once<K: From<u8> + Hash + Eq + Clone + std::fmt::Debug, V: Clone + PartialEq + std::fmt::Debug>(e: &mut Effects<K, V>, read: impl FnOnce() -> V) {
+        e.want(K::from(1));
+        e.due();
+        e.settle(&K::from(1), read);
+    }
+
     // spec: none (internal: notes/engine.md, Derived values). A followed key is due when it was
     // wanted and not settled, or when something its last value read was written since, never
     // otherwise; settle reports a value only when it differs from the one last settled; an
@@ -612,9 +619,7 @@ mod tests {
         let mut e: Effects<u8, u8> = Effects::new("test again");
         let read = |m: &Stamped<u8, u8>| m.get(&100).copied().unwrap_or(0);
         m.insert(100, 1);
-        e.want(1);
-        e.due();
-        e.settle(&1, || read(&m));
+        settle_once(&mut e, || read(&m));
         m.insert(100, 2);
         m.insert(100, 1);
         assert_eq!(e.due(), [1], "written and written back");
@@ -641,9 +646,7 @@ mod tests {
     fn pruned_removals_move_their_buckets() {
         let mut m: Stamped<u16, u8> = Stamped::default();
         let mut e: Effects<u16, u8> = Effects::new("test pruned");
-        e.want(1);
-        e.due();
-        e.settle(&1, || m.get(&5000).copied().unwrap_or(0));
+        settle_once(&mut e, || m.get(&5000).copied().unwrap_or(0));
         let mut moved = false;
         for k in 0..4 * super::super::ABSENT_BUCKETS as u16 {
             m.insert(k, 1);
@@ -662,9 +665,7 @@ mod tests {
         let mut m: Stamped<u8, u8> = Stamped::default();
         let mut e: Effects<u8, u8> = Effects::new("test absent");
         let read = |m: &Stamped<u8, u8>| m.get(&100).copied().unwrap_or(0);
-        e.want(1);
-        e.due();
-        e.settle(&1, || read(&m));
+        settle_once(&mut e, || read(&m));
         let other = (0..=255u8).find(|x| super::super::bucket(super::super::hash(x)) == super::super::bucket(super::super::hash(&100u8)) && *x != 100).unwrap();
         assert_eq!(m.remove(&other), None);
         m.update(other, |v| Some(v.unwrap_or(0) + 1));
@@ -692,6 +693,18 @@ mod tests {
         assert_eq!(e.due(), Vec::<u8>::new());
     }
 
+    // spec: none (internal). Wanting a key followed already changes nothing: it is not due, and
+    // its next settle compares with the value kept.
+    #[test]
+    fn a_key_wanted_again_stays_as_it_is() {
+        let m: Stamped<u8, u8> = Stamped::default();
+        let mut e: Effects<u8, u8> = Effects::new("test again");
+        settle_once(&mut e, || m.get(&1).copied().unwrap_or(0));
+        e.want(1);
+        assert_eq!(e.due(), Vec::<u8>::new());
+        assert_eq!(e.settle(&1, || 0), None, "the same value");
+    }
+
     // spec: none (internal). The log is kept from the oldest live mark: a reader that reads
     // seldom still sees every write since its last read while another reads often, and a
     // container nobody follows (every reader gone) logs nothing.
@@ -700,9 +713,7 @@ mod tests {
         let mut m: Stamped<u8, u8> = Stamped::default();
         let (mut often, mut seldom): (Effects<u8, u8>, Effects<u8, u8>) = (Effects::new("test often"), Effects::new("test seldom"));
         for e in [&mut often, &mut seldom] {
-            e.want(1);
-            e.due();
-            e.settle(&1, || m.get(&1).copied().unwrap_or(0));
+            settle_once(e, || m.get(&1).copied().unwrap_or(0));
         }
         m.insert(1, 1);
         for x in 2..20 {
@@ -797,9 +808,7 @@ mod tests {
     fn a_copy_holds_only_its_own_readers_marks() {
         let m: Stamped<u8, u8> = Stamped::default();
         let mut e: Effects<u8, u8> = Effects::new("test copy");
-        e.want(1);
-        e.due();
-        e.settle(&1, || m.get(&1).copied().unwrap_or(0));
+        settle_once(&mut e, || m.get(&1).copied().unwrap_or(0));
         let mut alone = crate::copying::copying(|| m.clone());
         alone.insert(1, 1);
         assert!(lock(&alone.stamps.0).log.is_empty() && lock(&alone.stamps.0).marks.is_empty(), "the reader was not copied");
@@ -817,9 +826,7 @@ mod tests {
     fn a_clone_follows_on_its_own() {
         let mut m: Stamped<u8, u8> = Stamped::default();
         let mut e: Effects<u8, u8> = Effects::new("test cloned");
-        e.want(1);
-        e.due();
-        e.settle(&1, || m.get(&1).copied().unwrap_or(0));
+        settle_once(&mut e, || m.get(&1).copied().unwrap_or(0));
         let f = m.stamps.feed::<u8>();
         let mut c = e.clone();
         let mut g = f.clone();
@@ -839,9 +846,7 @@ mod tests {
         c.set(10);
         assert_eq!(c.next(), None);
         let mut e: Effects<u8, bool> = Effects::new("test timed");
-        e.want(1);
-        e.due();
-        e.settle(&1, || c.until(Some(30)) >= 30);
+        settle_once(&mut e, || c.until(Some(30)) >= 30);
         c.until(Some(50));
         c.until(None);
         assert_eq!(c.next(), Some(30));

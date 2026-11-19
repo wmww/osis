@@ -2,6 +2,9 @@
 //! length frames (spec/wire.md §11.1), without proto.
 
 use osis_transport::*;
+use std::future::{Future, poll_fn};
+use std::net::IpAddr;
+use std::task::Poll;
 
 pub fn frame(body: &[u8]) -> Vec<u8> {
     let mut f = (body.len() as u32).to_be_bytes().to_vec();
@@ -88,4 +91,18 @@ pub async fn client<C: Connection>(c: C, n: usize) -> Vec<Vec<u8>> {
         assert!(q.iter().rev().eq(a.iter()));
     }
     out
+}
+
+/// `f`'s output if it is ready at once.
+pub async fn now_or_never<T>(f: impl Future<Output = T>) -> Option<T> {
+    let mut f = std::pin::pin!(f);
+    poll_fn(|cx| Poll::Ready(match f.as_mut().poll(cx) {
+        Poll::Ready(v) => Some(v),
+        Poll::Pending => None,
+    }))
+    .await
+}
+
+pub fn ip(s: &str) -> IpAddr {
+    s.parse().unwrap()
 }
