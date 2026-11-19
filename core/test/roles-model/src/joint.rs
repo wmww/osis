@@ -827,12 +827,9 @@ fn honest_drops(h: &JHist) -> bool {
 }
 
 pub fn random(samples: u64, seed: u64) -> Stats {
-    crate::on_every_core(|th, threads, st| {
-        let mut rng = Rng::thread(seed, th);
-        for _ in 0..samples / threads as u64 {
-            let h = random_hist(&mut rng);
-            check(&h, st, &mut rng);
-        }
+    crate::each_world(seed, 0..samples, |rng, st| {
+        let h = random_hist(rng);
+        check(&h, st, rng);
     })
 }
 

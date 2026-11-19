@@ -1850,12 +1850,7 @@ pub fn run(samples: u64, mode: &str, control: Control) -> u64 {
             small_family(p.clone(), control, st);
         })
     } else {
-        crate::on_every_core(|th, threads, st| {
-            let mut rng = Rng::thread(0xc057, th);
-            for _ in 0..samples / threads as u64 {
-                check(&random_world(&mut rng, control), st);
-            }
-        })
+        crate::each_world(0xc057, 0..samples, |rng, st| check(&random_world(rng, control), st))
     };
     st.print(&format!("custody {mode} {control:?}"));
     for (m, w) in st.fail.iter().take(2) {
@@ -2334,19 +2329,14 @@ mod tests {
     }
 
     /// Worlds from `OSIS_ROLES_START` (default 0), `OSIS_ROLES_SEEDS` many (2000, 20000 under
-    /// `OSIS_FULL=1`), a thread per core.
+    /// `OSIS_FULL=1`).
     #[test]
     #[ignore = "property"]
     fn random_worlds_hold_large() {
         let start = var("OSIS_ROLES_START").unwrap_or(0);
         let n = var("OSIS_ROLES_SEEDS").unwrap_or(if var("OSIS_FULL") == Some(1) { 20_000 } else { 2000 });
         eprintln!("custody::random_worlds_hold_large: {n} worlds from {start}");
-        let st = crate::on_every_core(|th, threads, st| {
-            let mut rng = Rng(Rng::thread(start, th).0 | 1);
-            for _ in 0..n.div_ceil(threads as u64) {
-                check(&random_world(&mut rng, Control::None), st);
-            }
-        });
+        let st = crate::each_world(0xc057, start..start + n, |rng, st| check(&random_world(rng, Control::None), st));
         st.print("custody");
         assert_holds(&st, &format!("OSIS_ROLES_START={start}"));
     }

@@ -895,12 +895,7 @@ pub fn print_world(w: &World) {
 
 /// `samples` random worlds over every core.
 pub fn run(samples: u64, control: Control) -> u64 {
-    let st = crate::on_every_core(|th, threads, st: &mut Stats| {
-        let mut rng = Rng::thread(0xe90c, th);
-        for _ in 0..samples / threads as u64 {
-            check(&random_world(&mut rng, control), st);
-        }
-    });
+    let st = crate::each_world(0xe90c, 0..samples, |rng, st: &mut Stats| check(&random_world(rng, control), st));
     st.print(&format!("epochs {control:?}"));
     for (m, w) in st.fail.iter().take(1) {
         println!("FAIL {m}");
@@ -1251,19 +1246,13 @@ mod tests {
         std::env::var(k).ok().filter(|v| !v.is_empty()).map(|v| v.parse::<u64>().unwrap_or_else(|_| panic!("{k}={v:?} is not a decimal u64")))
     }
 
-    /// Worlds from `OSIS_ROLES_START` (default 0), `OSIS_ROLES_SEEDS` many (2000), a thread per
-    /// core.
+    /// Worlds from `OSIS_ROLES_START` (default 0), `OSIS_ROLES_SEEDS` many (2000).
     #[test]
     #[ignore = "property"]
     fn random_worlds_hold_large() {
         let start = var("OSIS_ROLES_START").unwrap_or(0);
         let n = var("OSIS_ROLES_SEEDS").unwrap_or(2000);
-        let st = crate::on_every_core(|th, threads, st| {
-            let mut rng = Rng(Rng::thread(start, th).0 | 1);
-            for _ in 0..n.div_ceil(threads as u64) {
-                check(&random_world(&mut rng, Control::None), st);
-            }
-        });
+        let st = crate::each_world(0xe90c, start..start + n, |rng, st| check(&random_world(rng, Control::None), st));
         st.print("epochs");
         assert_holds(&st, &format!("OSIS_ROLES_START={start}"));
     }

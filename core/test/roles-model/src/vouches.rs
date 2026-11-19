@@ -718,15 +718,10 @@ pub fn random_world(rng: &mut Rng, rules: Rules) -> World {
     w
 }
 
-/// World `i` from its own generator, so the worlds are a function of `samples` alone, whatever
-/// the core count.
 pub fn random(samples: u64, rules: Rules) -> Stats {
-    crate::on_every_core(|th, threads, st: &mut Stats| {
-        for i in (th as u64..samples).step_by(threads) {
-            let mut rng = Rng::thread(0x5eed, i as usize);
-            let w = random_world(&mut rng, rules);
-            check(&w, rules, st, &mut rng);
-        }
+    crate::each_world(0x5eed, 0..samples, |rng, st: &mut Stats| {
+        let w = random_world(rng, rules);
+        check(&w, rules, st, rng);
     })
 }
 

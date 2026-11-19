@@ -194,10 +194,21 @@ pub fn on_every_core<T: Tally>(f: impl Fn(usize, usize, &mut T) + Sync) -> T {
     })
 }
 
+/// `f(rng, tally)` for each world `i` of `worlds` on a thread per core, world `i` drawn from its own
+/// generator `Rng::thread(seed, i)`: the worlds are a function of `seed` and `worlds` alone, whatever
+/// the core count.
+pub fn each_world<T: Tally>(seed: u64, worlds: std::ops::Range<u64>, f: impl Fn(&mut Rng, &mut T) + Sync) -> T {
+    on_every_core(|th, threads, t| {
+        for i in (worlds.start + th as u64..worlds.end).step_by(threads) {
+            f(&mut Rng::thread(seed, i as usize), t);
+        }
+    })
+}
+
 /// Seeded xorshift generator: every history is a seed (0 included).
 pub struct Rng(pub u64);
 impl Rng {
-    /// Thread `th`'s generator of a search seeded `seed`.
+    /// Generator `th` (a thread's, or a world's: `each_world`) of a search seeded `seed`.
     pub fn thread(seed: u64, th: usize) -> Rng {
         Rng(seed ^ (th as u64 + 1).wrapping_mul(0x9E37_79B9_7F4A_7C15))
     }

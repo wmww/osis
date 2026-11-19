@@ -345,12 +345,9 @@ pub fn check<H: Trusting>(h: &H, st: &mut Stats<H>, rng: &mut Rng) {
 
 /// `samples` random histories from `gen`, every check on each.
 pub fn random<H: Trusting>(samples: u64, seed: u64, gen: impl Fn(&mut Rng) -> H + Sync) -> Stats<H> {
-    crate::on_every_core(|th, threads, st| {
-        let mut rng = Rng::thread(seed, th);
-        for _ in 0..samples / threads as u64 {
-            let h = gen(&mut rng);
-            check(&h, st, &mut rng);
-        }
+    crate::each_world(seed, 0..samples, |rng, st| {
+        let h = gen(rng);
+        check(&h, st, rng);
     })
 }
 

@@ -1089,14 +1089,11 @@ pub fn check(w: &World, covers: Option<&[World; 2]>, st: &mut Stats, rng: &mut R
 }
 
 pub fn random(samples: u64, seed: u64) -> Stats {
-    crate::on_every_core(|th, threads, st| {
-        let mut rng = Rng::thread(seed, th);
-        for _ in 0..samples / threads as u64 {
-            let s0 = rng.next();
-            let w = random_world(&mut Rng(s0), PLAN);
-            let o = COVERS.map(|(_, cover)| random_world(&mut Rng(s0), cover));
-            check(&w, Some(&o), st, &mut rng);
-        }
+    crate::each_world(seed, 0..samples, |rng, st| {
+        let s0 = rng.next();
+        let w = random_world(&mut Rng(s0), PLAN);
+        let o = COVERS.map(|(_, cover)| random_world(&mut Rng(s0), cover));
+        check(&w, Some(&o), st, rng);
     })
 }
 
@@ -1373,18 +1370,18 @@ pub fn run_gaps(samples: u64, mode: &str) -> u64 {
         "-no-rewrite" => Gaps { rewrite: false, ..GAPS },
         _ => GAPS,
     };
-    let st = crate::on_every_core(|th, threads, st: &mut GapStats| {
-        let mut rng = Rng::thread(0x5eed, th);
-        if exh {
+    let st = if exh {
+        crate::on_every_core(|th, threads, st: &mut GapStats| {
+            let mut rng = Rng::thread(0x5eed, th);
             exhaustive_worlds((th, threads), Some(gaps), |w| check_gaps(&w, false, st, &mut rng));
-        } else {
-            for _ in 0..samples / threads as u64 {
-                let s0 = rng.next();
-                let w = random_world_with(&mut Rng(s0), PLAN, gaps, true);
-                check_gaps(&w, true, st, &mut rng);
-            }
-        }
-    });
+        })
+    } else {
+        crate::each_world(0x5eed, 0..samples, |rng, st: &mut GapStats| {
+            let s0 = rng.next();
+            let w = random_world_with(&mut Rng(s0), PLAN, gaps, true);
+            check_gaps(&w, true, st, rng);
+        })
+    };
     st.print(mode);
     st.failures()
 }
