@@ -352,7 +352,7 @@ impl Rules {
             purge_exact: true,
             cover_facts: false,
             commit_drops: true,
-            remains_kept: false,
+            remains_kept: true,
             last_hop: false,
             candidates: Candidates::All,
         }

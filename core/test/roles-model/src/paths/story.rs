@@ -1537,6 +1537,7 @@ pub fn mode_rules(mode: &str) -> Option<Rules> {
         "-purge-contains" => Rules { purge_exact: false, ..f },
         "-facts" => Rules { cover_facts: true, ..f },
         "-own-drops" => Rules { commit_drops: false, ..f },
+        "-remains-unkept" => Rules { remains_kept: false, ..f },
         _ => return None,
     })
 }
@@ -1545,13 +1546,22 @@ pub fn mode_rules(mode: &str) -> Option<Rules> {
 
 /// A small world of admins removing and granting each other on A (H its mint): `n` commits, each
 /// by a random party at a random `ts`, one in four carrying two or three edge writes on distinct
-/// holders (spec/commits.md §2), each setting a random party's edge to admin or none, listing each
+/// holders (spec/commits.md §2), each setting a random party's edge to admin (standing, or one in
+/// three until two ticks on) or none, naming a random remaining admin half the time, listing each
 /// earlier write with probability one half.
 pub fn tiny(i: u64, n: usize) -> World {
     let mut rng = Rng::thread(0x701d, i as usize);
     let mut w = account();
     for _ in 0..n {
-        tiny_commit(&mut w, &mut rng, n, |h, rng, _| Kind::set(h, if rng.below(2) == 0 { Role::Admin } else { Role::None }));
+        tiny_commit(&mut w, &mut rng, n, |h, rng, ts| {
+            let k = match rng.below(5) {
+                0 | 1 => Kind::set(h, Role::Admin),
+                2 => Kind::set(h, Role::Admin).until(ts + 2),
+                _ => Kind::set(h, Role::None),
+            };
+            // naming a remaining admin, half the time
+            if rng.below(2) == 0 { k.relying([H, B, N5, Z, N6][rng.below(5)]) } else { k }
+        });
     }
     w
 }
@@ -1759,8 +1769,9 @@ pub fn tiny_trace(w: &World) -> String {
     let name = |t: &Thing| ["?", "H", "B", "X", "N5", "K", "Z", "N6"].get(*t as usize).copied().unwrap_or("?");
     let mut s = String::new();
     for (i, c) in w.commits.iter().enumerate() {
-        if let Kind::Edge { holder, role, frontier, until, invite, finalize, .. } = &c.kind {
+        if let Kind::Edge { holder, role, frontier, until, invite, finalize, relies, .. } = &c.kind {
             let what = if *finalize { "finalize".to_string() } else { format!("{role:?}{}{}", if *invite > Role::None { format!(" invite {invite:?}") } else { String::new() }, until.map_or(String::new(), |u| format!(" until {u}"))) };
+            let what = relies.map_or(what.clone(), |n| format!("{what} relying on {}", name(&n)));
             let part = if w.parts(c.cid) > 1 { format!(" (commit {})", c.cid) } else { String::new() };
             s += &format!("  {i}: {} ts {}{part}: {} := {what} listing {:?}\n", name(&c.signer), c.ts, name(holder), frontier.values().flatten().collect::<Vec<_>>());
         }

@@ -2110,3 +2110,32 @@ fn a_commit_of_several_writes_on_its_own_path_applies_nowhere() {
     assert!(own.iter().chain(&twice).all(|i| !w.well(*i) && !rd.applied.contains(i)));
     assert!(ok.iter().all(|i| rd.applied.contains(i)) && rd.role(B, A) == Write && rd.role(N5, A) == Admin);
 }
+
+// ---- The remaining admin past the lowering's drops (notes/a1-spec/README.md, OPEN 5) ----
+
+/// M mints A, grants H admin until 20 and X admin, and leaves naming X; X grants B admin. H
+/// removes X naming B, listing nothing: H's own edge is timed, so B's is the remaining admin it
+/// relies on, and its drops take X's grant of B: void, X stays an admin and A keeps a standing
+/// one, trusted or not. Control (the rule read before the drops alone): the removal applies and A
+/// is left with no standing admin, though no write was marked. Listing X's grant of B, it applies.
+#[test]
+fn a_lowering_whose_drops_take_its_remaining_admin_is_void() {
+    let mut w = minted_by(M);
+    w.push(M, 1, &[], A, Kind::set(H, Admin).until(20));
+    let gx = w.edge(M, 1, &[], A, X, Admin, &[]);
+    let leave = w.edge(M, 2, &[], A, M, Gone, &[]);
+    w.rely(leave, X);
+    let xb = w.edge(X, 3, &[], A, B, Admin, &[]);
+    let r = w.edge(H, 6, &[], A, X, Gone, &[]);
+    w.rely(r, B);
+    let standing = |rd: &Reading| rd.roles.iter().any(|(e, x)| e.1 == A && *x == Admin);
+    for t in [&[][..], &[r]] {
+        let rd = fixed(&w, t);
+        assert!(rd.applied.contains(&leave) && !rd.applied.contains(&r) && rd.role(X, A) == Admin && standing(&rd), "{t:?} {rd:?}");
+    }
+    let rd = fixed_but(&w, &[], |x| x.remains_kept = false);
+    assert!(rd.applied.contains(&r) && rd.dropped.contains(&xb) && !standing(&rd), "{rd:?}");
+    w.edit(r, |k| k.listing(BTreeMap::from([(A, Set::from([xb, gx]))])));
+    let rd = fixed(&w, &[r]);
+    assert!(rd.applied.contains(&r) && rd.role(B, A) == Admin && rd.role(X, A) == Gone);
+}
