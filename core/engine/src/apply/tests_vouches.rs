@@ -645,3 +645,47 @@ fn a_removal_of_a_team_is_filed_once_whatever_its_members_spec_perm_5_1() {
     println!("vouches: wake entries for 5 removals of a team: {small} at 2 members, {big} at 20");
     assert_eq!((small, big), (10, 10));
 }
+
+// spec/permissions.md §5.1 Vouches (Writing: a party comes into question at R by a grant
+// ordered before it): a team X (minted by peer 1) holds admin on `t`; peer 1 makes Y (peer 3)
+// an admin of X (G), and Y grants K (peer 4) write on `t` (c). W (peer 2) receives c in time
+// but not G; H removes X without either. W judges R with Y in question nowhere; then G arrives,
+// ordered before R: Y comes into question, c becomes a candidate, W vouches for it and K's
+// grant stands at every node.
+#[test]
+fn a_late_grant_bringing_a_party_into_question_is_vouched_for_spec_perm_5_1() {
+    let (mut lp, t) = world(5);
+    let x = lp.peers[1].engine.me();
+    let mut m = Mutation::new();
+    let team = lp.peers[1].engine.new_thing(&mut m, x);
+    lp.peers[1].commit(m).unwrap();
+    lp.hold(team);
+    lp.sync_all().unwrap();
+    lp.peers[0].engine.grant(&t, &team, &edge(Role::Admin)).unwrap();
+    lp.advance(1000);
+    lp.sync_all().unwrap();
+    let g = grant(&mut lp, 1, team, 3, Role::Admin);
+    lp.sync(1, 3).unwrap();
+    let c = grant(&mut lp, 3, t, 4, Role::Write);
+    let pk = lp.peers[3].engine.package(&c).unwrap().unwrap();
+    lp.deliver(2, &pk).unwrap();
+    lp.advance(1000);
+    let d = Demotion { holder: team, new: None, retain: None };
+    let r = *lp.peers[0].engine.demote(&t, &d).unwrap().commits.last().unwrap();
+    lp.advance(1000);
+    lp.sync(0, 2).unwrap();
+    assert!(vouches(&lp, 2, t).is_empty(), "Y is in question nowhere yet");
+    let pk = lp.peers[1].engine.package(&g).unwrap().unwrap();
+    lp.deliver(2, &pk).unwrap();
+    lp.advance(1000);
+    lp.peers[2].tick().unwrap();
+    let w = lp.peers[2].engine.me();
+    let mine: Vec<CommitId> = vouches(&lp, 2, t).into_iter().filter(|(a, _)| *a == w).map(|(_, v)| v).collect();
+    assert_eq!(mine.len(), 1, "W vouches once G brings Y into question at R");
+    let tl = lp.peers[2].engine.core.timelines.get(&t).unwrap();
+    assert!(tl.counted().any(|(rr, cc)| rr == r && cc == c), "W's vouch keyed by R lists c");
+    lp.sync_all().unwrap();
+    for p in 0..5 {
+        assert_eq!(role(&lp, p, 4, t), Some(Role::Write), "peer {p}: K's grant stands");
+    }
+}
