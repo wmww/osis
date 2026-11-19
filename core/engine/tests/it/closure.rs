@@ -1331,8 +1331,8 @@ type End = (String, usize, Vec<(String, String)>, BTreeMap<osis_base::CommitId, 
 
 /// Peer 0's commit C mints W (a register on it) with X's strong to it, and a later commit D
 /// writes W again; peer 1 holds X. Peer 1 takes C and D in each of `orders` (a step: C whole, C's
-/// part on W, C's part on X, D, or a pass end), and once what it pulled anew is given again, what
-/// it holds and shows of C and D, with how many pulls each took.
+/// part on W, C's part on X, D, a restart, or a pass end), and once what it pulled anew is given
+/// again, what it holds and shows of C and D, with how many pulls each took.
 fn record_with_strong(orders: &[&[&str]]) -> Vec<End> {
     let (mut lp, ps) = people(2);
     let e0 = &mut lp.peers[0].engine;
@@ -1367,6 +1367,10 @@ fn record_with_strong(orders: &[&[&str]]) -> Vec<End> {
     let steps: BTreeMap<&str, Vec<u8>> = [("C", cp.bytes.clone()), ("C on W", on(w)), ("C on X", on(x)), ("D", dp.bytes.clone())].into();
     let blobs: Vec<_> = cp.blobs.iter().chain(&dp.blobs).cloned().collect();
     let ids: BTreeSet<osis_base::CommitId> = [c, d].into();
+    // W's record alone, as a record blob under X's sync ID (spec/wire.md §3)
+    let rec_w = lp.peers[0].engine.core.created(&w).cloned().unwrap();
+    let sx = lp.peers[0].engine.sync_id_of(&x).unwrap().unwrap();
+    let record = crate::facade::record_blob_by_hand(&mut lp, 0, &x, &[rec_w]);
     let mut ends = Vec::new();
     for order in orders {
         let name = order.join(", ");
@@ -1375,9 +1379,11 @@ fn record_with_strong(orders: &[&[&str]]) -> Vec<End> {
         lp.peers[1].pulled_anew.clear();
         let was = synced(&mut lp);
         for s in *order {
-            match steps.get(s) {
-                Some(b) => drop(lp.peers[1].receive(b, blobs.clone())),
-                None => pass_end(&mut lp.peers[1].engine),
+            match (steps.get(s), *s) {
+                (Some(b), _) => drop(lp.peers[1].receive(b, blobs.clone())),
+                (None, "restart") => lp.peers[1].restart(0).unwrap(),
+                (None, "W's record") => drop(lp.peers[1].engine.open_entry(&sx, &record.0, &record.2, &record.1, u64::MAX).unwrap()),
+                (None, _) => pass_end(&mut lp.peers[1].engine),
             }
         }
         pass_end(&mut lp.peers[1].engine);
@@ -1397,24 +1403,97 @@ fn record_with_strong(orders: &[&[&str]]) -> Vec<End> {
 // spec/sync-judgement.md §3 Dropped bodies (unless its record arrived in that transaction): a
 // strong newly reaching a thing pulls nothing anew when the thing's record arrives in the same
 // storage transaction, and that changes nothing the node ends up holding: C whole, or its part on
-// W in a transaction (and a pass) before its part on X, D before or after, end alike.
+// W in a transaction (and a pass) before its part on X, D before or after, end alike. D first
+// pends for W's record (spec/commits.md §4 Unjudgeable) and is kept across pass ends and a
+// restart while carried (§4 Pending storage, §5 What a held thing needs: W held for itself while
+// awaited), so C bringing W's record with the strong, pulling nothing, still finds it.
 #[test]
 fn a_record_arriving_with_the_strong_pulls_nothing_and_ends_alike_spec_sync_judgement_3() {
-    let ends = record_with_strong(&[&["C", "D"], &["C on W", "C on X", "D"], &["C on W", "pass end", "C on X", "D"], &["D", "C"]]);
+    let ends = record_with_strong(&[
+        &["C", "D"],
+        &["C on W", "C on X", "D"],
+        &["C on W", "pass end", "C on X", "D"],
+        &["D", "C"],
+        &["D", "pass end", "C"],
+        &["D", "pass end", "restart", "pass end", "C"],
+        &["D", "pass end", "C on W", "pass end", "C on X"],
+    ]);
     for e in &ends[1..] {
         assert_eq!((&e.2, &e.3), (&ends[0].2, &ends[0].3), "{} ends as {}", e.0, ends[0].0);
     }
     assert_eq!(ends[0].1, 0, "C whole: its record came with the strong, nothing pulled anew");
     assert!(ends[1].1 > 0 && ends[2].1 > 0, "C on W first: the strong reaches a thing outside the node closure, pulled anew");
+    assert_eq!((ends[4].1, ends[5].1), (0, 0), "D first, C whole: nothing pulled anew, D kept pending");
 }
 
-// D, pending for W's record, goes at a pass end (nothing held needs W); C then brings W's record
-// and X's strong to it in one transaction, so nothing is pulled anew and D never comes back.
+// D, pending, makes W's record learned from a record blob; D applies and goes at the pass end with
+// W's record (W outside the node closure); C then brings the record back with the strong in one
+// transaction, pulling nothing, and D never comes back.
 #[test]
-#[ignore = "issues/dropped-before-its-record-never-fetched-again.md"]
-fn repro_dropped_before_its_record_never_fetched_again() {
-    let ends = record_with_strong(&[&["C", "D"], &["D", "pass end", "C"]]);
+#[ignore = "issues/record-dropped-then-back-with-its-strong.md"]
+fn repro_record_dropped_then_back_with_its_strong() {
+    let ends = record_with_strong(&[&["C", "D"], &["D", "W's record", "pass end", "C"]]);
     assert_eq!((&ends[1].2, &ends[1].3), (&ends[0].2, &ends[0].3), "{} ends as {}", ends[1].0, ends[0].0);
+}
+
+// spec/commits.md §4 Pending storage, §5 What a held thing needs (held for itself while awaited):
+// peer 0 mints n things W, each with X's strong to it (C), and writes each again (D); peer 1, which
+// holds X, is given only the Ds. Each pends for its W's record across pass ends; once the last
+// entry carrying one goes (`forget_pending`, as sync calls it), the pass end leaves nothing of it
+// or its W: what pends is bounded by what is carried (and that, from unvouched input, by the
+// sync store's budget per source, osis-sync `a_flood_of_pending_commits_is_bounded_per_peer`).
+// The one still carried applies once its C comes.
+#[test]
+fn a_commit_awaiting_its_record_is_kept_while_carried_and_no_longer_spec_commits_5() {
+    let n = 20;
+    let (mut lp, ps) = people(2);
+    let e0 = &mut lp.peers[0].engine;
+    let mut m = Mutation::new();
+    let x = e0.new_thing(&mut m, ps[0]);
+    e0.commit(m).unwrap();
+    e0.grant(&x, &ps[1], &crate::flows::edge_of(osis_base::Role::Read)).unwrap();
+    let all = lp.peers[0].engine.commit_ids();
+    crate::flows::send(&mut lp, 0, 1, &all);
+    let d1 = lp.peers[1].engine.account_root().unwrap();
+    strong(&mut lp.peers[1].engine, d1, x, true);
+    pass_end(&mut lp.peers[1].engine);
+    let mut made = Vec::new();
+    for _ in 0..n {
+        let e0 = &mut lp.peers[0].engine;
+        let rec = e0.thing_record(x, None);
+        let mut m = Mutation::new();
+        let w = m.create(rec);
+        m.op(x, &ct::HOLDS, PathOp { path: vec![], op: Op::Add(Value::Strong(w)) }).unwrap();
+        let c = e0.commit(m).unwrap().unwrap();
+        let mut m = Mutation::new();
+        m.set(w, &crate::common::REG, &Value::Str("d".into())).unwrap();
+        let d = e0.commit(m).unwrap().unwrap();
+        made.push((w, c, d));
+    }
+    let ds: Vec<_> = made.iter().map(|m| m.2).collect();
+    crate::flows::send(&mut lp, 0, 1, &ds);
+    pass_end(&mut lp.peers[1].engine);
+    lp.peers[1].restart(0).unwrap();
+    pass_end(&mut lp.peers[1].engine);
+    let e1 = &mut lp.peers[1].engine;
+    assert!(ds.iter().all(|d| e1.pends(d)), "each D pends while carried");
+    let (kept, gone) = made.split_last().unwrap();
+    for (_, _, d) in gone {
+        assert!(e1.forget_pending(d).unwrap());
+    }
+    pass_end(e1);
+    let awaited = |e: &Engine, w: &Tid| e.core.ix.pend_on.contains_key(&osis_engine::apply::Wake::Record(*w));
+    for (w, _, d) in gone {
+        assert!(!e1.pends(d) && e1.header(d).is_none(), "an uncarried D goes");
+        assert!(!awaited(e1, w) && e1.core.created(w).is_none(), "nothing of its W is kept");
+    }
+    assert_eq!(e1.pending().len(), 1, "only the carried D pends");
+    assert!(awaited(e1, &kept.0));
+    crate::flows::send(&mut lp, 0, 1, &[kept.1]);
+    pass_end(&mut lp.peers[1].engine);
+    let e1 = &mut lp.peers[1].engine;
+    assert!(!e1.pends(&kept.2));
+    assert_eq!(e1.get(&kept.0, &crate::common::ak("t:reg.0")).unwrap(), Some(Value::Str("d".into())), "the carried D applies with its record");
 }
 
 // spec/commits.md §5 What a held thing needs (certificates: its record, its role-class parts):

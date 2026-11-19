@@ -83,6 +83,7 @@ fn root(core: &Core, x: &Tid, r: &Root) -> String {
         Root::Copy(a) if a == x => "a retained copy".into(),
         Root::Copy(a) => format!("the retained copy of {}", label(core, a)),
         Root::SelfRemoval(c) => format!("an own self-removal from it (c:{}) waits to be sealed", short(c)),
+        Root::Awaited => "a pending commit awaits its record".into(),
     }
 }
 

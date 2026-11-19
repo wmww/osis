@@ -9,12 +9,14 @@
 //! held fires; a weak or ticket only points and needs nothing), an account by its `keys.0` (its inbox), one whose record names it mint admin, one
 //! whose held edge write names it holder (`Held::named_on`), an account root whose account's held
 //! chain names it a device (D bears no edge write), one a pending commit it authored or acted
-//! in, or first awaiting its record, writes on (`Indexes::pend_by`),
+//! in writes on (`Indexes::pend_by`),
 //! one in the node closure a held commit on it has a part missing on (`Meta::missing_parts`: a
 //! part the node fetches again), one in the node closure an edge write on it names holder (not by its
 //! record: the holder's sync ID carries the grant with its chain, spec/sync-judgement.md §2 A
 //! grant naming a holder). A thing is rooted, kept for itself (`Root`): held (in the node closure
-//! or leaving it), a retained copy, or a thing an own self-removal still waits to seal under.
+//! or leaving it), a retained copy, a thing an own self-removal still waits to seal under, or a
+//! thing whose record what waits under Pending storage awaits (nothing on it applies before its
+//! record: what came for it pends, kept while carried, `Engine::forget_pending`).
 //! Keys held here root nothing: the node itself is needed by its node root (its mint admin), and
 //! a link being redeemed keeps its sync ID in the sync set, so what a pass end drops of K comes
 //! again with the next pass, and the join is written once a pass brought what it needs
@@ -180,6 +182,9 @@ pub(crate) enum Root {
     Copy(Tid),
     /// An own self-removal from it waits to be sealed under its sync IDs.
     SelfRemoval(osis_base::CommitId),
+    /// What waits under Pending storage awaits its record (`apply::Wake::Record`): nothing on it
+    /// applies before its record, so what came for it pends, kept while carried.
+    Awaited,
 }
 
 /// Why `x` needs `t` held (the module doc, `needs`).
@@ -208,6 +213,9 @@ pub(crate) fn rooted(core: &Core, t: &Tid) -> Option<Root> {
     }
     if let Some(a) = super::forget::copy_of(core, t) {
         return Some(Root::Copy(a));
+    }
+    if core.ix.pend_on.contains_key(&crate::apply::Wake::Record(*t)) {
+        return Some(Root::Awaited);
     }
     // an own self-removal from it waits to be sealed under its sync IDs (`sync::held::wait_if_own`)
     core.ix.held_wait.iter().find(|c| core.ix.commits.get(c).is_some_and(|m| m.view.aspect(t, "roles.0").is_some())).map(|c| Root::SelfRemoval(*c))

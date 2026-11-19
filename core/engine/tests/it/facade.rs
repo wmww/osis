@@ -462,7 +462,7 @@ fn a_rotation_logs_with_it_the_commits_it_names_spec_crypto_4() {
 
 /// A record blob of `records` under `t`'s current read epoch at peer `i` (spec/wire.md §3), as
 /// any reader of the sync ID could frame one: its ID, bytes and wrap.
-fn record_blob_by_hand(lp: &mut LocalPeer, i: usize, t: &Tid, records: &[osis_base::CreationRecord]) -> (osis_base::BlobId, Vec<u8>, osis_engine::sync::Wrap) {
+pub(crate) fn record_blob_by_hand(lp: &mut LocalPeer, i: usize, t: &Tid, records: &[osis_base::CreationRecord]) -> (osis_base::BlobId, Vec<u8>, osis_engine::sync::Wrap) {
     let dk = osis_crypto::DeleteSecret::derive(&osis_crypto::Secret32::from_bytes([9; 32])).verifying_key();
     record_blob_framed(lp, i, t, records, &[vec![(osis_base::format::DELETE_WRITER, dk)]])
 }
