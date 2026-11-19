@@ -174,7 +174,7 @@ fn whether_a_body_wraps_moves_at_a_grants_until_spec_crypto_4() {
 // who takes the rotation and cannot read the new epoch; with no writer connected it fires a
 // stranded notice, sealed to the new keyset. Peer 0, taking the fire, asks m's re-seal, and the
 // pass end's re-seal boxes m the new epoch, once g enables stranded notices (refused before,
-// spec/permissions.md §5.2 External fires). Fails if a stranded node fires as a reader (it holds
+// spec/permissions.md §5.2 External fires: m stays stranded, its status saying so). Fails if a stranded node fires as a reader (it holds
 // the old epoch's secret) or a writer ignores the notice.
 #[test]
 fn a_writer_taking_a_stranded_notice_reseals_its_holder_spec_sync_inbox_5() {
@@ -191,8 +191,9 @@ fn a_writer_taking_a_stranded_notice_reseals_its_holder_spec_sync_inbox_5() {
     let opened = lp.peers[0].engine.open_entry(&out.sync_id, &osis_blob::blob_id(&out.blob), &[0; 57], &out.blob, u64::MAX).unwrap();
     assert!(matches!(opened, crate::sync::Opened::Bad), "g does not enable stranded notices: refused, {opened:?}");
     assert_eq!(asks(&mut lp, g), vec![], "nothing asked");
+    assert!(lp.peers[1].engine.stranded(&s).unwrap().is_some(), "not enabled: m stays stranded, and says so");
     // g takes stranded notices from its readers once its admin enables them (spec/sync-inbox.md
-    // §1; which first-party kinds enable it: issues/external-signals-taken-by-default.md)
+    // §1), here with no history: a sealed fire is taken all the same
     let mut x = crate::Mutation::new();
     let stranded = osis_base::Ak::new(crate::flows::inbox::STRANDED_FIRE).unwrap();
     x.set(g, &osis_schema::core_types::RETENTION, &osis_schema::core_types::RetentionSetting::from(std::collections::BTreeMap::from([(stranded, osis_schema::core_types::RetentionEntry::default())]))).unwrap();
