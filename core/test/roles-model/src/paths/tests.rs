@@ -1462,14 +1462,16 @@ fn a_thiefs_lowering_after_the_removal_holds_nothing() {
     assert!((rd.role(H, A), rd.role(X, A), rd.role(M, A)) == (Admin, Gone, Admin) && rd.void.is_empty());
 }
 
-/// Small worlds of admins granting and removing each other (`tiny`; README.md, Paths, for the
-/// search): one reading under a relabelling. Control: a lowering whose drops take its author's
+/// Small worlds of admins granting and removing each other (`tiny`), and of invites (`tiny_invites`;
+/// README.md, Paths, for the search): one reading under a relabelling. Control: a lowering whose drops take its author's
 /// standing applying, A is left with no admin (counted).
 #[test]
 fn small_worlds_hold() {
-    let st = tiny_run(3000, &Rules::fixed());
-    assert!(st.failures() == 0 && st.checked["void"] > 0 && st.checked["admin T"] > 0, "{:?} {:?}", st.fails, st.first);
-    let no_void = tiny_run(300, &Rules { self_void: false, ..Rules::fixed() });
+    for invites in [false, true] {
+        let st = tiny_run(3000, &Rules::fixed(), invites);
+        assert!(st.failures() == 0 && st.checked["void"] > 0 && st.checked["admin T"] > 0, "{invites} {:?} {:?}", st.fails, st.first);
+    }
+    let no_void = tiny_run(300, &Rules { self_void: false, ..Rules::fixed() }, false);
     assert!(no_void.noted.contains_key("admin N"));
 }
 

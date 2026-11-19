@@ -1480,7 +1480,9 @@ pub fn family_run(rules: &Rules, stride: usize) -> Stats {
 /// random worlds.
 pub fn mode_rules(mode: &str) -> Option<Rules> {
     let f = Rules::fixed();
-    Some(match mode.trim_start_matches("paths").trim_start_matches("-exh").trim_start_matches("-tiny") {
+    let rest = mode.strip_prefix("paths").unwrap_or(mode);
+    let rest = rest.strip_prefix("-exh").or_else(|| rest.strip_prefix("-tiny-invites")).or_else(|| rest.strip_prefix("-tiny")).unwrap_or(rest);
+    Some(match rest {
         "" => f,
         "-design" => Rules::design(),
         "-no-void" => Rules { self_void: false, ..f },
@@ -1524,10 +1526,39 @@ pub fn tiny(i: u64, n: usize) -> World {
     w
 }
 
-/// Tiny world `i` (`n` from 3 to 12 writes) and its view: every commit held; trusting nothing,
-/// or (every third world) one held lowering.
-pub fn tiny_world(i: u64) -> (World, View) {
-    let w = tiny(i, 3 + (i % 10) as usize);
+/// A small world of invites on A (H its mint): as `tiny`, each write setting admin, none, write
+/// inviting write (standing or until two ticks on), or read, or finalizing its holder's grant. A
+/// writer holding an invite grants as an invite grant; a lowering from write or of the invite is
+/// judged (notes/path-model-findings.md 23).
+pub fn tiny_invites(i: u64, n: usize) -> World {
+    let mut rng = Rng::thread(0x1271, i as usize);
+    let parties = [H, B, N5, Z, N6];
+    let mut w = account();
+    for _ in 0..n {
+        let (s, h) = (parties[rng.below(5)], parties[rng.below(5)]);
+        let ts = 1 + rng.below(n) as u32;
+        let list: Vec<Id> = (0..w.commits.len()).filter(|_| rng.below(2) == 0).collect();
+        let f = w.cut(&list);
+        let kind = match rng.below(6) {
+            0 => Kind::set(h, Role::Admin).listing(f),
+            1 => Kind::set(h, Role::None).listing(f),
+            2 => Kind::set(h, Role::Write).inviting(Role::Write).listing(f),
+            3 => Kind::set(h, Role::Read).listing(f),
+            4 => Kind::set(h, Role::Write).inviting(Role::Write).until(ts + 2).listing(f),
+            _ => Kind::finalize(h),
+        };
+        if s != h {
+            w.push(s, ts, &[], A, kind);
+        }
+    }
+    w
+}
+
+/// Tiny world `i` (`n` from 3 to 12 writes; `invites`: `tiny_invites`, else `tiny`) and its view:
+/// every commit held; trusting nothing, or (every third world) one held lowering.
+pub fn tiny_world(i: u64, invites: bool) -> (World, View) {
+    let n = 3 + (i % 10) as usize;
+    let w = if invites { tiny_invites(i, n) } else { tiny(i, n) };
     let mut v = View::all(&w);
     let lows: Vec<Id> = (0..w.commits.len()).filter(|&k| w.lowers(k).is_some()).collect();
     if i % 3 == 0 && !lows.is_empty() {
@@ -1643,20 +1674,20 @@ pub fn shrink_world(w: &World, v: &View, fails: &dyn Fn(&World, &View) -> bool) 
     }
 }
 
-/// `-- N paths-tiny[-variant]`: N small worlds.
-pub fn tiny_run(n: u64, rules: &Rules) -> TinyStats {
+/// `-- N paths-tiny[-invites][-variant]`: N small worlds.
+pub fn tiny_run(n: u64, rules: &Rules, invites: bool) -> TinyStats {
     crate::on_every_core(|th, threads, st: &mut TinyStats| {
         for i in (th as u64..n).step_by(threads) {
-            let (w, v) = tiny_world(i);
+            let (w, v) = tiny_world(i, invites);
             tiny_check(i, &w, &v, rules, st);
         }
     })
 }
 
-fn tiny_print(st: &TinyStats, rules: &Rules) {
+fn tiny_print(st: &TinyStats, rules: &Rules, invites: bool) {
     println!("tiny: {} worlds, checks {:?}, noted {:?}, failing {:?}, most rounds {}", st.worlds, st.checked, st.noted, st.fails, st.most_rounds);
     for (k, (n, i, what)) in &st.first {
-        let (w, v) = tiny_world(*i);
+        let (w, v) = tiny_world(*i, invites);
         let prop = *k;
         let fails = |w: &World, v: &View| {
             let mut s = TinyStats::default();
@@ -1674,8 +1705,9 @@ pub fn tiny_trace(w: &World) -> String {
     let name = |t: &Thing| ["?", "H", "B", "X", "N5", "K", "Z", "N6"].get(*t as usize).copied().unwrap_or("?");
     let mut s = String::new();
     for (i, c) in w.commits.iter().enumerate() {
-        if let Kind::Edge { holder, role, frontier, .. } = &c.kind {
-            s += &format!("  {i}: {} ts {}: {} := {role:?} listing {:?}\n", name(&c.signer), c.ts, name(holder), frontier.values().flatten().collect::<Vec<_>>());
+        if let Kind::Edge { holder, role, frontier, until, invite, finalize, .. } = &c.kind {
+            let what = if *finalize { "finalize".to_string() } else { format!("{role:?}{}{}", if *invite > Role::None { format!(" invite {invite:?}") } else { String::new() }, until.map_or(String::new(), |u| format!(" until {u}"))) };
+            s += &format!("  {i}: {} ts {}: {} := {what} listing {:?}\n", name(&c.signer), c.ts, name(holder), frontier.values().flatten().collect::<Vec<_>>());
         }
     }
     s
@@ -1689,8 +1721,9 @@ pub fn run(samples: u64, mode: &str) -> u64 {
         return 1;
     };
     if mode.starts_with("paths-tiny") {
-        let st = tiny_run(samples, &rules);
-        tiny_print(&st, &rules);
+        let invites = mode.starts_with("paths-tiny-invites");
+        let st = tiny_run(samples, &rules, invites);
+        tiny_print(&st, &rules, invites);
         return st.failures();
     }
     // `-- N paths-exh`: every Nth family world (N 0 or 1: all of them)
