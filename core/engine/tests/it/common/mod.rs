@@ -298,6 +298,13 @@ pub fn reader(lp: &mut LocalPeer, admin: usize, t: Tid, seed: u64) -> osis_engin
     p
 }
 
+/// A fresh node apart from `lp` (seeded `seed`) holding `t`, granted read on it by peer `admin`
+/// through the flow and given nothing else (`LocalPeer::fresh_reader`), as a one-peer net: it
+/// keeps what it is then handed of `t`, in any order.
+pub fn fresh_net(lp: &mut LocalPeer, admin: usize, t: Tid, seed: u64) -> LocalPeer {
+    LocalPeer::apart(vec![lp.fresh_reader(admin, t, seed)], seed)
+}
+
 /// A copy of observer `p` (`reader`) at wall time `at`: one fresh node.
 pub fn fresh_copy(p: &mut osis_engine::local_peer::Peer, at: WallMs) -> osis_engine::local_peer::Peer {
     let q = p.copy().unwrap();

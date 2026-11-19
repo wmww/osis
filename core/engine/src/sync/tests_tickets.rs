@@ -118,11 +118,13 @@ fn a_forged_ticket_keeps_no_dependent_thing_held_spec_sync_set_2() {
 }
 
 // spec/permissions.md §3 Lost access (drop those role secrets and every local unit it can no
-// longer read), spec/sync-set.md §2 (a read secret a ticket gives establishes nothing): Bob holds
-// T's read secret from his ticket and reads T's value, while T counts as dependent here (he holds no
-// keyset commit of it); his timed grant ends and its secrets go: so does what they read.
+// longer read), spec/sync-set.md §2 (a read secret a ticket gives establishes nothing; On a
+// ticket's word), spec/commits.md §4 (Outside the node closure): Bob holds T's read secret from
+// his ticket while T counts as dependent here (he holds no keyset commit of it), so T is held on
+// the ticket's word alone, outside the node closure: T's value waits, unread; his timed grant
+// ends and its secrets go, the value still unread.
 #[test]
-fn a_tickets_secret_takes_what_it_read_when_it_goes_spec_permissions_3() {
+fn a_tickets_secret_on_a_dependent_thing_reads_nothing_and_goes_spec_permissions_3() {
     let (mut lp, [_, bob]) = two();
     let ak = osis_base::Ak::new("x:v.0").unwrap();
     let e0 = &mut lp.peers[0].engine;
@@ -156,10 +158,12 @@ fn a_tickets_secret_takes_what_it_read_when_it_goes_spec_permissions_3() {
     }
     let e1 = &mut lp.peers[1].engine;
     assert!(!e1.core.is_independent(&t), "T counts as dependent here");
-    assert_eq!(e1.get(&t, &ak).unwrap(), Some(Value::Str("v".into())), "Bob reads T by his ticket's secret");
+    assert!(!e1.closure_holds(&t), "held on the ticket's word alone");
+    assert!(e1.pending().iter().any(|(c, r)| *c == made && *r == crate::Reason::Outside(t)), "T's value waits");
+    assert_eq!(e1.get(&t, &ak).unwrap(), None, "unread");
     lp.advance(hour + crate::rotation::LOST_HEARD_WAIT_MS + 1);
     let e1 = &mut lp.peers[1].engine;
     e1.tick().unwrap();
     assert!(e1.forget_lost(crate::rotation::LostScope::All).unwrap().actors.contains(&t), "T's secrets go");
-    assert_eq!(e1.get(&t, &ak).unwrap(), None, "what they read goes with them");
+    assert_eq!(e1.get(&t, &ak).unwrap(), None, "still unread");
 }

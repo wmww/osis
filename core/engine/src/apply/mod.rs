@@ -2551,7 +2551,7 @@ mod tests {
         let mut m = Mutation::new();
         let t = lp.peers[0].engine.new_thing(&mut m, me);
         lp.peers[0].commit(m).unwrap();
-        lp.hold(t);
+        lp.share(0, t);
         lp.sync_all().unwrap();
         let verifies = || osis_base::costs::take().iter().find(|c| c.0 == osis_crypto::Domain::Commit.verify_cost()).map_or(0, |c| c.2);
         let held = |lp: &mut LocalPeer, id: &osis_base::CommitId| (*lp.peers[1].engine.run(|tx| tx.get_commit(id)).unwrap().unwrap()).clone();
@@ -2609,7 +2609,7 @@ mod tests {
         let mut m = Mutation::new();
         let t = lp.peers[0].engine.new_thing(&mut m, me);
         lp.peers[0].commit(m).unwrap();
-        lp.hold(t);
+        lp.share(0, t);
         lp.sync_all().unwrap();
         let verifies = || osis_base::costs::take().iter().find(|c| c.0 == osis_crypto::Domain::Commit.verify_cost()).map_or(0, |c| c.2);
         lp.peers[0].clock.advance(2 * osis_base::format::MAX_DRIFT_MS);

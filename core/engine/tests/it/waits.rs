@@ -20,7 +20,7 @@ fn only(bytes: &[u8], h: &osis_commit::Header, keep: impl Fn(Tid, &str) -> bool)
 /// entry, the wall clock moving 10 ms between them, with peer 1 given none of them.
 fn carrierless(writes: Vec<Mutate>) -> (LocalPeer, Tid, Vec<osis_engine::local_peer::Package>) {
     let mut lp = net(2, 0);
-    let t = new_thing(&mut lp, 0);
+    let t = new_shared(&mut lp, 0);
     sync(&mut lp, 0, 1);
     let mut out = Vec::new();
     for w in writes {
@@ -158,8 +158,8 @@ fn expiring_part_stays_to_join_past_snapshot_spec_commits_5() {
         let (mut lp, t, c) = carrierless(vec![put("a", true, true), put("b", false, false)]);
         let w = lp.peers[1].engine.me();
         set_edge(&mut lp.peers[0].engine, t, w, Some(edge(osis_base::Role::Write)), None);
-        // the grant with its secrets, not the writes
-        for pg in packages(&mut lp, 0).into_iter().filter(|p| c.iter().all(|x| x.id != p.id)) {
+        // the grant with its secrets, not the writes (what t's sync ID carries)
+        for pg in lp.packages_of(0, &t).unwrap().into_iter().filter(|p| c.iter().all(|x| x.id != p.id)) {
             lp.deliver(1, &pg).unwrap();
         }
         let held = holders.then(|| {
@@ -235,12 +235,13 @@ fn creation_record_applies_alone_spec_commits_4() {
     let t = lp.peers[0].engine.new_thing(&mut m, me);
     m.set(t, &REG, &s("first")).unwrap();
     let c1 = lp.peers[0].commit(m).unwrap().unwrap();
-    lp.hold(t);
+    lp.share(0, t);
     lp.peers[0].clock.advance(10);
     let mut m = Mutation::new();
     m.set(t, &TAGS, &Value::Set([s("a")].into_iter().collect())).unwrap();
     let c2 = lp.peers[0].commit(m).unwrap().unwrap();
-    let pks = packages(&mut lp, 0);
+    // what t's sync ID carries: peer 1's grant waits for t's record
+    let pks = lp.packages_of(0, &t).unwrap();
     for pk in pks.iter().filter(|p| p.id != c1 && p.id != c2) {
         lp.deliver(1, pk).unwrap();
     }
@@ -252,9 +253,9 @@ fn creation_record_applies_alone_spec_commits_4() {
     e.ingest(&pks.iter().find(|p| p.id == c2).unwrap().bytes, Vec::new()).unwrap();
     assert!(e.get(&t, &ak("t:tags.0")).unwrap().is_some(), "the next commit shows");
     assert_eq!(e.get(&t, &ak("t:reg.0")).unwrap(), None);
-    // the rest of it joins when it comes (its part on peer 0's account root fetched with that
-    // root's record, then gone as needed by nothing)
-    lp.peers[1].receive(&pk1.bytes, Vec::new()).unwrap();
+    // the rest of it on t joins when it comes (t's sync ID carries no part on peer 0's account
+    // root)
+    lp.peers[1].receive(&only(&pk1.bytes, &h, |x, _| x == t), Vec::new()).unwrap();
     let e = &mut lp.peers[1].engine;
     assert_eq!(e.get(&t, &ak("t:reg.0")).unwrap(), Some(s("first")));
     assert!(e.pending().is_empty(), "{:?}", e.pending());
@@ -265,15 +266,16 @@ fn creation_record_applies_alone_spec_commits_4() {
 #[test]
 fn creation_record_then_the_rest_join_spec_commits_4() {
     let mut lp = net(2, 0);
-    let u = new_thing(&mut lp, 0);
+    let u = new_shared(&mut lp, 0);
     let mut m = Mutation::new();
     let me = lp.peers[0].engine.me();
     let t = lp.peers[0].engine.new_thing(&mut m, me);
     m.set(t, &REG, &s("t")).unwrap();
     m.set(u, &REG, &s("u")).unwrap();
     let c = lp.peers[0].commit(m).unwrap().unwrap();
-    lp.hold(t);
-    let pks = packages(&mut lp, 0);
+    lp.share(0, t);
+    // what t's and u's sync IDs carry (peer 1's grant on t waits for t's record)
+    let pks: Vec<_> = lp.packages_of(0, &t).unwrap().into_iter().chain(lp.packages_of(0, &u).unwrap()).collect();
     for pk in pks.iter().filter(|p| p.id != c) {
         lp.deliver(1, pk).unwrap();
     }
@@ -285,7 +287,7 @@ fn creation_record_then_the_rest_join_spec_commits_4() {
     assert_eq!(r, Ingested::Applied(c));
     assert_eq!(e.get(&t, &ak("t:reg.0")).unwrap(), Some(s("t")));
     assert_eq!(e.get(&u, &ak("t:reg.0")).unwrap(), Some(s("new")), "the synced thing's part is away");
-    e.ingest(&pk.bytes, Vec::new()).unwrap();
+    e.ingest(&only(&pk.bytes, &h, |x, _| x == t || x == u), Vec::new()).unwrap();
     assert_eq!(e.get(&t, &ak("t:reg.0")).unwrap(), Some(s("t")));
     assert_eq!(e.get(&u, &ak("t:reg.0")).unwrap(), Some(s("u")));
     assert!(e.pending().is_empty(), "{:?}", e.pending());
@@ -329,7 +331,7 @@ fn pages_away_hold_back_only_their_part_spec_commits_4() {
 fn cross_thing_part_shows_spec_commits_4() {
     let read = || {
         let mut lp = net(2, 0);
-        let (t, u) = (new_thing(&mut lp, 0), new_thing(&mut lp, 0));
+        let (t, u) = (new_shared(&mut lp, 0), new_shared(&mut lp, 0));
         sync(&mut lp, 0, 1);
         let mut m = Mutation::new();
         m.set(t, &REG, &s("t")).unwrap();
@@ -436,11 +438,12 @@ fn purged_list_element_keeps_edit_in_any_order_spec_crdt_4_7() {
     let body = lp.peers[1].engine.package(&c).unwrap().unwrap();
     let edit = lp.peers[0].engine.package(&e).unwrap().unwrap();
     let request = lp.peers[0].engine.package(&p).unwrap().unwrap();
-    let rest: Vec<_> = packages(&mut lp, 0).into_iter().filter(|q| ![c, e, p].contains(&q.id)).collect();
+    // a fresh reader of t, handed what t's sync ID carries
+    let mut fresh = lp.fresh_reader(0, t, 0x7a1c);
+    let rest: Vec<_> = lp.packages_of(0, &t).unwrap().into_iter().filter(|q| ![c, e, p].contains(&q.id)).collect();
     let mut digests = Vec::new();
     for order in [[&body, &edit, &request], [&request, &edit, &body], [&request, &body, &edit], [&edit, &request, &body]] {
-        let mut q = osis_engine::local_peer::Peer::new(0x7a1c, lp.peers[0].engine.now()).unwrap();
-        q.engine.hold(osis_base::Strong(t)).unwrap();
+        let mut q = fresh.copy().unwrap();
         for x in &rest {
             let _ = q.receive(&x.bytes, x.blobs.clone());
         }
@@ -533,13 +536,15 @@ fn list_element_expiry_in_any_order_spec_crdt_5_7() {
     let mut m = Mutation::new();
     m.op(t, &LIST, osis_crdt::PathOp { path: vec![osis_crdt::PathSeg::Index(0)], op: osis_crdt::Op::Set(s("edited")) }).unwrap();
     let edit = lp.peers[1].commit(m).unwrap().unwrap();
-    let pks = packages(&mut lp, 1);
+    // a fresh reader of t, handed what t's sync ID carries
+    let mut fresh = lp.fresh_reader(0, t, 0x7a08);
+    sync(&mut lp, 0, 1);
+    let pks = lp.packages_of(1, &t).unwrap();
     let (a, b) = (pks.iter().find(|p| p.id == put).unwrap(), pks.iter().find(|p| p.id == edit).unwrap());
     let rest: Vec<_> = pks.iter().filter(|p| p.id != put && p.id != edit).collect();
     let mut digests = Vec::new();
     for (first, second, past) in [(a, b, false), (b, a, false), (a, b, true), (b, a, true)] {
-        let mut p = osis_engine::local_peer::Peer::new(0x7a08, lp.peers[1].engine.now()).unwrap();
-        p.engine.hold(osis_base::Strong(t)).unwrap();
+        let mut p = fresh.copy().unwrap();
         for x in &rest {
             let _ = p.receive(&x.bytes, x.blobs.clone());
         }
@@ -908,9 +913,9 @@ fn list_element_in_snapshot_before_expiry_reads_alike_spec_crdt_5_7() {
 /// within reach costs, and the pending left.
 fn drift_work(n: usize) -> (u64, u64, usize) {
     let mut lp = net(3, 0);
-    let t = new_thing(&mut lp, 0);
+    let t = new_shared(&mut lp, 0);
     sync(&mut lp, 0, 1);
-    let t2 = new_thing(&mut lp, 2);
+    let t2 = new_shared(&mut lp, 2);
     sync(&mut lp, 2, 1);
     lp.peers[2].clock.advance(3 * osis_base::format::MAX_DRIFT_MS);
     for i in 0..n {
@@ -956,7 +961,7 @@ fn pending_commits_wake_only_for_what_they_await_spec_commits_4() {
 fn the_next_timer_is_the_earliest_of_every_kind_spec_commits_4() {
     let mut lp = net(3, 0);
     let mine = new_thing(&mut lp, 1);
-    let t2 = new_thing(&mut lp, 2);
+    let t2 = new_shared(&mut lp, 2);
     sync(&mut lp, 2, 1);
     lp.peers[2].clock.advance(3 * osis_base::format::MAX_DRIFT_MS);
     let mut m = Mutation::new();
@@ -979,7 +984,8 @@ fn the_next_timer_is_the_earliest_of_every_kind_spec_commits_4() {
 }
 
 /// Peer 1 holding `n` commits of each of two strangers (peers 2 and 3, never met), pending for
-/// their authors' records: the examinations learning peer 2's records costs, and what pends after.
+/// their authors' records: the examinations learning peer 2's records costs, and how many still
+/// await a record after (peer 2's then wait for its thing, which peer 1 does not read, to enter).
 fn record_work(n: usize) -> (u64, usize) {
     let mut lp = net(4, 0);
     let mut recs = Vec::new();
@@ -998,7 +1004,9 @@ fn record_work(n: usize) -> (u64, usize) {
     }
     let e0 = lp.peers[1].engine.examined();
     lp.peers[1].engine.learn_records(recs.swap_remove(0)).unwrap();
-    (lp.peers[1].engine.examined() - e0, lp.peers[1].engine.pending().len())
+    let pending = lp.peers[1].engine.pending();
+    assert!(pending.iter().filter(|(_, r)| matches!(r, Reason::Outside(_))).count() <= n, "{pending:?}");
+    (lp.peers[1].engine.examined() - e0, pending.iter().filter(|(_, r)| !matches!(r, Reason::Outside(_))).count())
 }
 
 // spec/commits.md §4 (Unjudgeable), notes/sync-facade.md (Pending): a record arriving examines
@@ -1170,7 +1178,10 @@ fn an_applied_commits_part_joins_when_its_record_comes_spec_commits_4() {
     e.ingest(&xc.bytes, Vec::new()).unwrap();
     assert_eq!(e.get(&x, &ak("t:reg.0")).unwrap(), Some(s("x")), "joins once the record comes");
     assert!(e.pending().is_empty(), "{:?}", e.pending());
-    assert_eq!(unpended.added(), vec![c], "sync is told: its carriers give something held now");
+    // and xc: its parts on x waited for x to enter, which it brings in (spec/commits.md §4
+    // Outside the node closure)
+    let told: std::collections::BTreeSet<_> = unpended.added().into_iter().collect();
+    assert_eq!(told, [c, xc.id].into_iter().collect(), "sync is told: their carriers give something held now");
 }
 
 // spec/commits.md §4 (Unjudgeable; Examined again): an applied commit with parts on two things

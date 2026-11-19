@@ -578,6 +578,31 @@ impl LocalPeer {
         self.hold(t);
     }
 
+    /// A fresh node of its own account (`Peer::new` at peer `admin`'s time, seeded `seed`) that
+    /// holds `t` and is granted read on it by peer `admin` through the flow, given the grant alone:
+    /// it keeps what it is then given of `t` in any order, as content waits until `t` enters its
+    /// node closure (spec/commits.md §4 Outside the node closure). Peer `admin` keeps its account.
+    #[allow(clippy::panic)] // test harness: a setup that fails fails the test
+    pub fn fresh_reader(&mut self, admin: usize, t: Tid, seed: u64) -> Peer {
+        let mut p = Peer::new(seed, self.peers[admin].engine.now()).unwrap_or_else(|e| panic!("fresh node: {e}"));
+        self.peers[admin].know(&[p.engine.me()]).unwrap_or_else(|e| panic!("know: {e}"));
+        for id in p.engine.commit_ids() {
+            if let Some(pk) = p.engine.package(&id).unwrap_or_else(|e| panic!("package: {e}")) {
+                self.deliver(admin, &pk).unwrap_or_else(|e| panic!("deliver: {e}"));
+            }
+        }
+        p.engine.hold(osis_base::Strong(t)).unwrap_or_else(|e| panic!("hold {t:?}: {e}"));
+        let who = p.engine.me();
+        let edge = osis_schema::core_types::Edge { role: osis_base::Role::Read, until: None, invite: None, retain: false, floor: None };
+        let done = self.peers[admin].engine.grant(&t, &who, &edge).unwrap_or_else(|e| panic!("grant {t:?}: {e}"));
+        for c in &done.commits {
+            if let Some(pk) = self.peers[admin].engine.package(c).unwrap_or_else(|e| panic!("package: {e}")) {
+                p.receive_with(&pk.bytes, pk.blobs.clone(), &pk.lists).unwrap_or_else(|e| panic!("grant to the reader: {e}"));
+            }
+        }
+        p
+    }
+
     /// Every peer not holding `t` holds it from its node root (`hold_at`).
     pub fn hold(&mut self, t: Tid) {
         for i in 0..self.peers.len() {
@@ -610,6 +635,34 @@ impl LocalPeer {
             if let Some(pk) = p.engine.package(&id)? {
                 out.push(pk);
             }
+        }
+        Ok(out)
+    }
+
+    /// What `t`'s sync ID carries from `from` (spec/sync-judgement.md §1-§2), in `packages`
+    /// order: every commit `from` holds with a part on `t`, whole, and a copy of each other chain
+    /// certificate for `t` (`Engine::certificates`) holding its certificate parts alone (a header
+    /// alone for one copied as a header). For a test handing a node what it syncs of `t`, not
+    /// other things' content, which would wait there (spec/commits.md §4 Outside the node closure).
+    pub fn packages_of(&mut self, from: usize, t: &Tid) -> Result<Vec<Package>> {
+        let Some(p) = self.peers.get_mut(from) else { return Ok(Vec::new()) };
+        let certs = p.engine.certificates(t);
+        let all = self.packages(from)?;
+        let Some(p) = self.peers.get(from) else { return Ok(Vec::new()) };
+        let mut out = Vec::new();
+        for mut pk in all {
+            if p.engine.header(&pk.id).is_some_and(|h| h.aspects.iter().any(|a| a.tid == *t)) {
+                out.push(pk);
+                continue;
+            }
+            let parts = match certs.commits.get(&pk.id) {
+                Some(parts) => parts.clone(),
+                None if certs.headers.contains(&pk.id) => BTreeSet::new(),
+                None => continue,
+            };
+            let b = CommitBlob::decode(&pk.bytes)?;
+            pk.bytes = osis_commit::rewrite(&b, |ai| !parts.contains(&ai)).encode();
+            out.push(pk);
         }
         Ok(out)
     }

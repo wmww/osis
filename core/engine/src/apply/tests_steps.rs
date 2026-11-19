@@ -69,7 +69,7 @@ fn pending_setup() -> (LocalPeer, (CommitId, CommitId)) {
     let t = lp.peers[0].engine.new_thing(&mut m, me);
     m.set(t, &ak("x:a.0"), &Value::Int(1)).unwrap();
     let c1 = lp.peers[0].commit(m).unwrap().unwrap();
-    lp.hold(t);
+    lp.share(0, t);
     lp.send_chain(0, 1, &t).unwrap();
     lp.peers[0].clock.advance(3 * osis_base::format::MAX_DRIFT_MS);
     let mut m = Mutation::new();
@@ -112,7 +112,7 @@ fn two_parts_setup() -> (LocalPeer, CommitId) {
     let t = lp.peers[0].engine.new_thing(&mut m, me);
     m.set(t, &ak("x:a.0"), &Value::Int(1)).unwrap();
     lp.peers[0].commit(m).unwrap();
-    lp.hold(t);
+    lp.share(0, t);
     lp.sync_all().unwrap();
     lp.advance(1000);
     let mut m = Mutation::new();

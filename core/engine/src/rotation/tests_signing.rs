@@ -62,6 +62,11 @@ fn world(n: usize, nodes: usize) -> (LocalPeer, CreatedAccount, Tid) {
             lp.peers[0].engine.grant(&t, &o, &edge(Role::Write)).unwrap();
             lp.hold_at(nodes, t);
         }
+        // the other accounts read t, so they keep what they are given of it
+        for i in nodes + 1..n {
+            let o = lp.peers[i].engine.me();
+            lp.peers[0].engine.grant(&t, &o, &edge(Role::Read)).unwrap();
+        }
         lp.sync_all().unwrap();
         lp.advance(1000);
         (lp, (a, t))

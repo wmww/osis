@@ -645,8 +645,9 @@ fn removed_writers_writes(seed: u64) -> (usize, bool) {
     }
     lp.peers[a].restart(seed).unwrap();
     assert_eq!(reads(&mut lp, a, t, "x:v.0"), want, "{at}: the remover restarted");
+    // a fresh node holding t, granted read by Alice, handed everything Alice holds
+    let mut fresh = lp.fresh_reader(a, t, 3 + seed);
     let mut pks = lp.packages(a).unwrap();
-    let mut fresh = crate::local_peer::Peer::new(3 + seed, lp.peers[a].clock.now_wall_ms()).unwrap();
     for _ in 0..3 {
         for i in (1..pks.len()).rev() {
             pks.swap(i, below(i as u64 + 1) as usize);
@@ -717,7 +718,10 @@ fn a_compaction_around_a_write_at_its_removals_ts_reads_alike_spec_perm_5_2() {
             }
             lp.peers[c].restart(1).unwrap();
             assert_eq!(reads(&mut lp, c, t, "x:v.0"), want, "{at}: Carol restarted");
-            let mut fresh = crate::local_peer::Peer::new(3, lp.peers[a].clock.now_wall_ms()).unwrap();
+            // a fresh node holding t, granted read by Alice (Carol has the grant), handed
+            // everything Alice or Carol holds
+            let mut fresh = lp.fresh_reader(a, t, 3);
+            lp.sync(a, c).unwrap();
             for from in [a, c] {
                 let mut pks = lp.packages(from).unwrap();
                 for rev in [false, true] {

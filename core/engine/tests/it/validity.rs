@@ -310,8 +310,7 @@ fn frontier_lists_compacted_too_snapshot_vouches_at_fresh_node_spec_perm_5_1() {
     let f = lp.peers[0].engine.frontier(&of(b, d), now).unwrap();
     assert!(f.commits.contains(&reg) && f.commits.contains(&tag), "{f:?}");
     set_edge(&mut lp.peers[0].engine, d, b, None, Some(f.clone()));
-    let mut fresh = net(1, 1); // a node apart from lp's (its own seeds)
-    fresh.hold(d);
+    let mut fresh = fresh_net(&mut lp, 0, d, 1); // a reader apart from lp's (its own seeds)
     fresh.advance(3 * DAY);
     for p in packages(&mut lp, 0).into_iter().filter(|p| p.id != tag) {
         fresh.deliver(0, &p).unwrap();
@@ -723,7 +722,8 @@ fn admin_only_snapshot_by_writer_invalid_spec_perm_5_2() {
 fn snapshot_vouches_for_its_writes_spec_perm_5_2() {
     for revoke_first in [false, true] {
         let (mut lp, d, b, _) = setup();
-        lp.peers.push(osis_engine::local_peer::Peer::new(4700, T0).unwrap());
+        let reader = lp.fresh_reader(0, d, 4700);
+        lp.peers.push(reader);
         lp.hold_at(lp.peers.len() - 1, d);
         lp.sync_all().unwrap();
         add_tag(&mut lp, 1, d, "mon");
@@ -847,6 +847,9 @@ fn snapshot_before_grant_counts_spec_perm_5_2() {
     lp.peers.push(osis_engine::local_peer::Peer::new(5700, T0).unwrap());
     lp.sync_all().unwrap();
     let d = new_thing(&mut lp, 0);
+    // Dave reads d, so he keeps what he is given of it
+    let dave = lp.peers[2].engine.me();
+    set_edge(&mut lp.peers[0].engine, d, dave, Some(edge(Role::Read)), None);
     let b = lp.peers[1].engine.me();
     let g = set_edge(&mut lp.peers[0].engine, d, b, Some(edge(Role::Write)), None);
     sync(&mut lp, 0, 1);
@@ -931,8 +934,9 @@ fn entry_created_after_demotion_write_first_spec_perm_5_1() {
 
 fn entry_created_after_demotion(snapshot_first: bool) {
     let (mut lp, d, b, _) = setup();
-    lp.peers.push(osis_engine::local_peer::Peer::new(6100, T0).unwrap());
-    lp.hold_at(3, d);
+    // Dave reads d
+    let reader = lp.fresh_reader(0, d, 6100);
+    lp.peers.push(reader);
     lp.sync_all().unwrap();
     let one = |k: &str, v: &str| Value::Map(osis_base::ValueMap::from([(s(k), s(v))]));
     put_at(&mut lp, 1, d, &["k"], one("a", "1"));
@@ -1437,11 +1441,25 @@ fn unmerge_paged_matches_fresh_large_spec_crdt_4_6() {
 #[test]
 fn late_invalid_part_unmerges_alike_spec_crdt_4_6() {
     let (mut lp, d, b, _) = setup();
-    lp.peers.push(osis_engine::local_peer::Peer::new(9100, T0).unwrap());
-    lp.hold_at(lp.peers.len() - 1, d);
-    lp.peers.push(osis_engine::local_peer::Peer::new(9101, T0).unwrap());
-    lp.hold_at(lp.peers.len() - 1, d);
-    let u = new_thing(&mut lp, 1);
+    // Bob's independent thing (its own secrets: he grants read on it)
+    let bob = lp.peers[1].engine.me();
+    let mut m = Mutation::new();
+    let u = lp.peers[1].engine.new_thing(&mut m, bob);
+    lp.peers[1].commit(m).unwrap();
+    lp.hold(u);
+    // Dave and Eve, and the fresh nodes below: readers of d (granted by Alice) and u (by Bob)
+    let reader = |lp: &mut LocalPeer, seed: u64| {
+        let r = lp.fresh_reader(0, d, seed);
+        lp.peers.push(r);
+        let i = lp.peers.len() - 1;
+        lp.hold_at(i, u);
+        let who = lp.peers[i].engine.me();
+        lp.peers[1].know(&[who]).unwrap();
+        lp.peers[1].engine.grant(&u, &who, &edge(Role::Read)).unwrap();
+        i
+    };
+    reader(&mut lp, 9100);
+    reader(&mut lp, 9101);
     lp.sync_all().unwrap();
     let one = |k: &str, v: &str| Value::Map(osis_base::ValueMap::from([(s(k), s(v))]));
     put_at(&mut lp, 1, d, &["k"], one("a", "1"));
@@ -1461,7 +1479,6 @@ fn late_invalid_part_unmerges_alike_spec_crdt_4_6() {
     m.op(d, &TEXT, osis_crdt::PathOp { path: vec![], op: osis_crdt::Op::Insert { at: 1, items: vec![s("c")] } }).unwrap();
     lp.peers[2].commit(m).unwrap().unwrap();
     let n = *lp.peers[2].engine.commit_ids().iter().max_by_key(|id| lp.peers[2].engine.header(id).unwrap().ts).unwrap();
-    let base: Vec<_> = packages(&mut lp, 0);
     let ck = lp.peers[1].engine.package(&c).unwrap().unwrap();
     let nk = lp.peers[2].engine.package(&n).unwrap().unwrap();
     let h = lp.peers[1].engine.header(&c).unwrap();
@@ -1470,7 +1487,9 @@ fn late_invalid_part_unmerges_alike_spec_crdt_4_6() {
     partial.parts.retain(|p| h.aspects[p.ai].ak.as_str() == "t:reg.0" && h.aspects[p.ai].tid == d);
     elsewhere.parts.retain(|p| h.aspects[p.ai].tid == u);
     let (partial, elsewhere) = (partial.encode(), elsewhere.encode());
+    // what d's and u's sync IDs carry but Bob's commit, then `seq`
     let feed = |lp: &mut LocalPeer, i: usize, seq: &[&[u8]]| {
+        let base: Vec<_> = lp.packages_of(0, &d).unwrap().into_iter().chain(lp.packages_of(1, &u).unwrap()).filter(|p| p.id != c).collect();
         for p in &base {
             lp.deliver(i, p).unwrap();
         }
@@ -1500,10 +1519,7 @@ fn late_invalid_part_unmerges_alike_spec_crdt_4_6() {
     assert!(!shown(&want[0]), "Eve: {}", want[0]);
     let orders: [&[&[u8]]; 3] = [&[&nk.bytes, &partial, &ck.bytes], &[&partial, &nk.bytes, &ck.bytes], &[&partial, &ck.bytes, &nk.bytes]];
     for (k, seq) in orders.iter().enumerate() {
-        let i = lp.peers.len();
-        let now = lp.peers[0].engine.now();
-        lp.peers.push(osis_engine::local_peer::Peer::new(9200 + k as u64, now).unwrap());
-        lp.hold_at(lp.peers.len() - 1, d);
+        let i = reader(&mut lp, 9200 + k as u64);
         // it keeps the accounts Eve keeps (`LocalPeer::sync_all` introduced her)
         let all: Vec<Tid> = (0..4).map(|j| lp.peers[j].engine.me()).collect();
         lp.peers[i].know(&all).unwrap();
@@ -1514,10 +1530,7 @@ fn late_invalid_part_unmerges_alike_spec_crdt_4_6() {
     // nothing waits for them (spec/commits.md §4) and Carol's map write stays hidden
     let mut seen = Vec::new();
     for (k, seq) in [[&nk.bytes, &partial], [&partial, &nk.bytes]].iter().enumerate() {
-        let i = lp.peers.len();
-        let now = lp.peers[0].engine.now();
-        lp.peers.push(osis_engine::local_peer::Peer::new(9300 + k as u64, now).unwrap());
-        lp.hold_at(lp.peers.len() - 1, d);
+        let i = reader(&mut lp, 9300 + k as u64);
         feed(&mut lp, i, &seq.map(|x| x.as_slice()));
         seen.push(look(&mut lp, i));
     }
@@ -1527,10 +1540,7 @@ fn late_invalid_part_unmerges_alike_spec_crdt_4_6() {
     // from its header's word on the thing, alike either way, Carol's map write hidden
     let mut seen = Vec::new();
     for (k, seq) in [[&nk.bytes, &elsewhere], [&elsewhere, &nk.bytes]].iter().enumerate() {
-        let i = lp.peers.len();
-        let now = lp.peers[0].engine.now();
-        lp.peers.push(osis_engine::local_peer::Peer::new(9400 + k as u64, now).unwrap());
-        lp.hold_at(lp.peers.len() - 1, d);
+        let i = reader(&mut lp, 9400 + k as u64);
         feed(&mut lp, i, &seq.map(|x| x.as_slice()));
         seen.push(look(&mut lp, i));
     }
@@ -1673,7 +1683,8 @@ fn valueless_copy_loses_to_held_value_spec_crdt_4_7() {
     assert_eq!(e.covered(&later, &vl, &d, &reg).unwrap(), Some(true), "the value-less copy is covered");
     assert_eq!(e.covered(&later, &real, &d, &reg).unwrap(), Some(true), "the valued body is covered");
     assert_eq!(e.covered(&vl, &real, &d, &reg).unwrap(), Some(false), "a value-less copy never covers a valued body");
-    lp.peers.push(osis_engine::local_peer::Peer::new(0x5fe1, lp.peers[0].engine.now()).unwrap());
+    let reader = lp.fresh_reader(0, d, 0x5fe1);
+    lp.peers.push(reader);
     lp.hold_at(3, d);
     for p in &base {
         lp.deliver(3, p).unwrap();
@@ -2059,7 +2070,8 @@ fn demoted_compactor_snapshot_by_frontier_spec_perm_5_2() {
         add_tag(&mut lp, 1, d, "bob");
         lp.sync_all().unwrap();
         // Dave gets only what is delivered below
-        lp.peers.push(osis_engine::local_peer::Peer::new(6100, lp.peers[0].engine.now()).unwrap());
+        let reader = lp.fresh_reader(0, d, 6100);
+        lp.peers.push(reader);
         lp.hold_at(lp.peers.len() - 1, d);
         let bob: BTreeSet<_> = lp.peers[1].engine.commit_ids().into_iter().filter(|x| lp.peers[1].engine.header(x).is_some_and(|h| h.author == b && h.aspects.iter().any(|a| a.ak.as_str() == "t:tags.0"))).collect();
         lp.advance(DAY);
@@ -2353,7 +2365,8 @@ fn removed_holder_write_compacted_earlier_stays_alike_spec_perm_5_2() {
     let mut states = Vec::new();
     for (n, order) in orders.iter().enumerate() {
         let i = lp.peers.len();
-        lp.peers.push(osis_engine::local_peer::Peer::new(0x5f8b + n as u64, lp.peers[0].engine.now()).unwrap());
+        let reader = lp.fresh_reader(0, d, 0x5f8b + n as u64);
+        lp.peers.push(reader);
         lp.hold_at(i, d);
         for p in base.iter().cloned().chain(order.iter().map(|id| pk(*id))) {
             lp.deliver(i, &p).unwrap();
@@ -3011,7 +3024,8 @@ fn late_snapshot_part_received_when_it_came_spec_perm_5_1() {
     sync(&mut lp, 2, 0);
     let pks: Vec<_> = packages(&mut lp, 0).into_iter().filter(|p| !bob.contains(&p.id)).collect();
     let i = lp.peers.len();
-    lp.peers.push(osis_engine::local_peer::Peer::new(0x5fd1, lp.peers[0].engine.now()).unwrap());
+    let reader = lp.fresh_reader(0, d, 0x5fd1);
+    lp.peers.push(reader);
     lp.hold_at(i, d);
     // it keeps the writers' accounts, Carol's chain among them, as it arrives
     let writers: Vec<Tid> = (0..3).map(|j| lp.peers[j].engine.me()).collect();
@@ -3082,7 +3096,8 @@ fn inflated_snapshot_claims_count_nothing_spec_crdt_8() {
         let late: BTreeSet<_> = lp.peers[1].engine.commit_ids().into_iter().filter(|c| !before.contains(c)).collect();
         // S claims the late tag's counter, but was stamped before it: the header alone shows nothing
         let i = lp.peers.len();
-        lp.peers.push(osis_engine::local_peer::Peer::new(0x6110 + n as u64, lp.peers[0].engine.now()).unwrap());
+        let reader = lp.fresh_reader(0, d, 0x6110 + n as u64);
+        lp.peers.push(reader);
         lp.hold_at(i, d);
         for p in packages(&mut lp, 0).into_iter().filter(|p| p.id != rv) {
             lp.deliver(i, &p).unwrap();
@@ -3095,7 +3110,8 @@ fn inflated_snapshot_claims_count_nothing_spec_crdt_8() {
         let all = packages(&mut lp, 0);
         for (k, removal_first) in [true, false].into_iter().enumerate() {
             let j = lp.peers.len();
-            lp.peers.push(osis_engine::local_peer::Peer::new(0x6120 + 2 * n as u64 + k as u64, lp.peers[0].engine.now()).unwrap());
+            let reader = lp.fresh_reader(0, d, 0x6120 + 2 * n as u64 + k as u64);
+            lp.peers.push(reader);
             lp.hold_at(j, d);
             let (first, second): (Vec<_>, Vec<_>) = all.iter().cloned().partition(|p| (p.id == rv) == removal_first || (!late.contains(&p.id) && p.id != rv));
             for p in first.iter().chain(&second) {
@@ -3386,8 +3402,7 @@ fn frontier_lists_kept_writes_compacted_or_not_spec_perm_5_1() {
     assert!(f.commits.contains(&two), "a covered live write is listed too");
     set_edge(&mut lp.peers[0].engine, d, b, None, Some(f.clone()));
     assert_eq!(lp.peers[0].engine.body_valid(&one, &d, &kept), Some(true), "kept history stays valid at the holder");
-    let mut fresh = net(1, 1); // a node apart from lp's (its own seeds)
-    fresh.hold(d);
+    let mut fresh = fresh_net(&mut lp, 0, d, 1); // a reader apart from lp's (its own seeds)
     fresh.advance(DAY);
     for p in packages(&mut lp, 0).into_iter().filter(|p| p.id != one) {
         fresh.deliver(0, &p).unwrap();
@@ -3865,7 +3880,8 @@ fn invalid_insert_leaves_no_trace_in_order_spec_crdt_6_1() {
     for (k, order) in orders.iter().enumerate() {
         let i = lp.peers.len();
         let now = lp.peers[0].engine.now();
-        lp.peers.push(osis_engine::local_peer::Peer::new(9500 + k as u64, now).unwrap());
+        let reader = lp.fresh_reader(0, d, 9500 + k as u64);
+        lp.peers.push(reader);
         lp.hold_at(lp.peers.len() - 1, d);
         for p in order {
             lp.deliver(i, p).unwrap();

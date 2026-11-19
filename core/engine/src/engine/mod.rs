@@ -4655,7 +4655,8 @@ mod tests {
         failing(&mut lp.peers[0], &mut failed, |e| new_thing(e, g));
         failing(&mut lp.peers[0], &mut failed, |e| e.demote(&g, &crate::flows::Demotion { holder: b, new: None, retain: None }));
         // received in reverse: most wait for what they depend on, then apply together
-        let mut pks = lp.packages(0).unwrap();
+        // what g's sync ID carries
+        let mut pks = lp.packages_of(0, &g).unwrap();
         pks.retain(|p| !lp.peers[2].engine.core.ix.commits.contains_key(&p.id));
         pks.reverse();
         for pk in &pks {
@@ -4727,8 +4728,8 @@ mod tests {
         failing(&mut lp.peers[0], &mut failed, |e| e.snapshot(&g, &reg));
         let vpk = lp.packages(1).unwrap().into_iter().find(|p| p.id == v).unwrap();
         failing(&mut lp.peers[0], &mut failed, |e| e.ingest(&vpk.bytes, vpk.blobs.clone()));
-        // peer 2: the two-aspect commit's parts one at a time
-        let pks = lp.packages(0).unwrap();
+        // peer 2: what g's sync ID carries, the two-aspect commit's parts one at a time
+        let pks = lp.packages_of(0, &g).unwrap();
         let tpk = pks.iter().find(|p| p.id == two).unwrap().clone();
         let blob = osis_commit::CommitBlob::decode(&tpk.bytes).unwrap();
         let first = osis_commit::rewrite(&blob, |ai| ai != 0).encode();
