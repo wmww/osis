@@ -320,7 +320,7 @@ impl Streams {
     }
 
     /// Tests only: what a connection's pulling holds for its peer (messages in hand, queued and
-    /// failed bodies, refusals to tell).
+    /// failed bodies, refusals to tell, what a listing under way keeps).
     #[doc(hidden)]
     pub fn holding(&self, conn: ConnId) -> usize {
         self.pull.get(&conn).map_or(0, pull::Pulling::holding)

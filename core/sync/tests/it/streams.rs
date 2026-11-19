@@ -2621,3 +2621,177 @@ fn only_a_member_stopped_at_the_cursor_rejoins_with_no_join_spec_sync_streams_4(
     assert!(knows(&p.b, src, s, away), "what s missed while away");
 }
 
+
+// spec/sync-streams.md §4 (Joining), spec/sync-judgement.md §6 (Read and unread move): S raised
+// to read while its source is away, its record's place held in memory: the record's next take
+// joins S from the start there.
+#[test]
+fn a_pull_anew_while_away_reaches_the_place_held_spec_sync_streams_4() {
+    let (mut p, k) = Pair::kept();
+    let x = k.stamped(&mut p.a, 3000, true);
+    p.join(k.id);
+    p.run();
+    let rec = p.b.open.record.unwrap();
+    p.a.streams.closed(C);
+    p.b.streams.closed(C);
+    assert_eq!(p.b.streams.places(), 1, "the record's place stays with it");
+    p.b.hold(k.id, Holding::Read);
+    p.b.with(p.now, |st, ctx| st.tick(ctx)).unwrap();
+    let pulls = p.sent_by_b(41).len();
+    p.a.join(p.now, k.id);
+    p.b.with(p.now, |st, ctx| st.member_moved(ctx, Moved::Taken(C, rec)));
+    p.run();
+    assert!(p.sent_by_b(41).iter().skip(pulls).any(|m| matches!(m, Msg::Pull(q) if q.joins == vec![(k.id, None)])), "joined from the start");
+    assert!(p.b.store.entry(&k.id, &x).unwrap().is_some());
+}
+
+// spec/sync-status.md §1 (caught up: on the connection S is open on, this node's last Pull there
+// answered with `more` false): a record
+// taken again, its place saying every member at the stream, is caught up on the new connection
+// only once that connection's first Pull is answered.
+#[test]
+fn a_taken_record_is_caught_up_only_once_answered_spec_sync_status_1() {
+    let mut p = Pair::new();
+    let s = sid(1);
+    p.shared_read(s);
+    p.run();
+    assert!(p.b.streams.caught_up(C, &s));
+    let rec = p.b.open.record.unwrap();
+    p.a.streams.closed(C);
+    p.b.streams.closed(C);
+    p.a.join(p.now, s);
+    p.b.with(p.now, |st, ctx| st.member_moved(ctx, Moved::Taken(C, rec)));
+    p.b.with(p.now, |st, ctx| st.tick(ctx)).unwrap();
+    assert!(!p.b.streams.caught_up(C, &s), "nothing answered on this connection yet");
+    p.run();
+    assert!(p.b.streams.caught_up(C, &s));
+}
+
+// spec/sync-opens.md §1 (one connection per pair: the loser lets its record go), spec/sync-streams.md
+// §3 (Durability: the cursor covers what was applied): a push arriving on a connection after it
+// released its record moves nothing of the record's place: the record's next connection pulls
+// what that push carried.
+#[test]
+fn a_push_after_the_release_moves_no_cursor_spec_sync_opens_1() {
+    let mut p = Pair::new();
+    let s = sid(1);
+    p.shared_read(s);
+    p.run();
+    let x = p.a.log(s, 100);
+    p.run_with(|ab, m| ab && m.kind() == 43);
+    assert!(!p.held.is_empty(), "a's push of x held back");
+    let rec = p.b.open.record.unwrap();
+    // b's connection loses its pair: released, a's push still on the way
+    p.b.open.members.remove(&C);
+    p.b.with(p.now, |st, ctx| st.member_moved(ctx, Moved::Released(C, rec)));
+    for (_, f) in std::mem::take(&mut p.held) {
+        let m = f.msg();
+        p.b.with(p.now, |st, ctx| st.message(ctx, C, Incoming::Push(m)));
+    }
+    p.a.streams.closed(C);
+    p.b.streams.closed(C);
+    assert!(!knows(&p.b, p.b.src(), s, x));
+    // the record taken again
+    p.a.join(p.now, s);
+    p.b.open.members.entry(C).or_default().insert(s, member());
+    p.b.with(p.now, |st, ctx| st.member_moved(ctx, Moved::Taken(C, rec)));
+    p.run();
+    assert!(knows(&p.b, p.b.src(), s, x), "pulled from where the record stood");
+}
+
+// spec/sync-opens.md §6 (Where it stopped: a stop kept lasts the connection it closed on): S
+// closed keeping its stop, its connection ends and its record is taken again with S opened on
+// the new connection before the next tick: the stop the old connection kept going at that tick
+// leaves S's place on the new one as it stands.
+#[test]
+fn a_stop_reopened_before_its_tick_stays_spec_sync_opens_6() {
+    let mut p = Pair::new();
+    let s = sid(1);
+    let x = p.a.log(s, 100);
+    p.shared_read(s);
+    p.run();
+    let rec = p.b.open.record.unwrap();
+    p.b.leave_as(p.now, s, Leaving::Kept);
+    p.a.streams.closed(C);
+    p.b.streams.closed(C);
+    p.b.with(p.now, |st, ctx| st.member_moved(ctx, Moved::Taken(C, rec)));
+    p.a.join(p.now, s);
+    p.b.join(p.now, s);
+    p.b.with(p.now, |st, ctx| st.tick(ctx)).unwrap();
+    assert!(knows(&p.b, p.b.src(), s, x), "what the source showed of S stays");
+    p.run();
+    assert!(p.b.streams.caught_up(C, &s));
+}
+
+// spec/sync-opens.md §6 (for every record holding the member whether connected or not): S closed for a record no connection holds (`Moved::Gone`) goes from the
+// record's place held in memory with what its source showed: opened again at the next take, S
+// joins from the start.
+#[test]
+fn a_member_gone_while_away_joins_anew_spec_sync_opens_6() {
+    let mut p = Pair::new();
+    let s = sid(1);
+    let x = p.a.log(s, 100);
+    p.shared_read(s);
+    p.run();
+    let rec = p.b.open.record.unwrap();
+    p.a.streams.closed(C);
+    p.b.streams.closed(C);
+    p.b.open.members.remove(&C);
+    p.b.with(p.now, |st, ctx| st.member_moved(ctx, Moved::Gone(rec, s)));
+    assert!(!knows(&p.b, p.b.src(), s, x), "what it showed goes with the member");
+    p.b.open.members.entry(C).or_default().insert(s, member());
+    let pulls = p.sent_by_b(41).len();
+    p.a.join(p.now, s);
+    p.b.with(p.now, |st, ctx| st.member_moved(ctx, Moved::Taken(C, rec)));
+    p.run();
+    assert!(p.sent_by_b(41).iter().skip(pulls).any(|m| matches!(m, Msg::Pull(q) if q.joins == vec![(s, None)])), "joined from the start");
+    assert!(knows(&p.b, p.b.src(), s, x));
+}
+
+// spec/sync-set.md §3 (Stopping: shreds S's entries in its store): S shredded while its
+// source is away, its record's place held in memory: held again, S joins from the start at the
+// record's next take.
+#[test]
+fn a_shred_while_away_joins_anew_spec_sync_streams_4() {
+    let mut p = Pair::new();
+    let s = sid(1);
+    let x = p.a.log(s, 100);
+    p.shared_read(s);
+    p.run();
+    let rec = p.b.open.record.unwrap();
+    p.a.streams.closed(C);
+    p.b.streams.closed(C);
+    p.b.store.shred(&s).unwrap();
+    p.b.hold(s, Holding::Read);
+    let pulls = p.sent_by_b(41).len();
+    p.a.join(p.now, s);
+    p.b.with(p.now, |st, ctx| st.member_moved(ctx, Moved::Taken(C, rec)));
+    p.run();
+    assert!(p.sent_by_b(41).iter().skip(pulls).any(|m| matches!(m, Msg::Pull(q) if q.joins == vec![(s, None)])), "joined from the start");
+    assert!(knows(&p.b, p.b.src(), s, x));
+}
+
+// spec/sync-streams.md §4 (Applying: a listing from the start read to its end replaces what the
+// source showed), hostile source: a whole listing paged on and on, each page made-up IDs it never
+// gives, leaves this side holding the same at 2 pages as at 20 (what the listing keeps is only
+// what its end could replace).
+#[test]
+fn a_listing_of_made_up_ids_grows_nothing_spec_sync_streams_4() {
+    let flood = |pages: u8| {
+        let mut p = Pair::new();
+        let s = sid(1);
+        p.shared_read(s);
+        for page in 0..pages {
+            p.run_with(|ab, m| ab && m.kind() == 42);
+            for (_, f) in std::mem::take(&mut p.held) {
+                let Frame::Ans(id, _) = f else { continue };
+                let events = (0..20u8).map(|i| (s, Event::Added { blob_id: BlobId([page, i, 0xaa, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]), blob: None, wrap: [1; WRAP_LEN], stamp: None })).collect();
+                let r = osis_proto::PullReply { id, events, cursor: None, whole: true, trimmed: false, more: true, report: false, joins: Vec::new() };
+                p.b.with(p.now, |st, c| st.message(c, C, Incoming::Reply(To::Streams, id, Msg::PullReply(Box::new(r)))));
+            }
+        }
+        p.run_with(|ab, m| ab && m.kind() == 42);
+        p.b.streams.holding(C)
+    };
+    assert_eq!(flood(2), flood(20));
+}

@@ -338,7 +338,8 @@ impl Pulling {
     }
 
     pub(super) fn holding(&self) -> usize {
-        self.pending.len() + self.queue.len() + self.failed.len() + self.settled.len() + self.taken.len() + self.tell.len()
+        let listed = self.listing.iter().flat_map(|l| l.values()).chain(self.join_listing.values()).map(BTreeSet::len).sum::<usize>();
+        self.pending.len() + self.queue.len() + self.failed.len() + self.settled.len() + self.taken.len() + self.tell.len() + listed
     }
 
     pub(super) fn wake(&self) -> Option<Mono> {
@@ -1353,14 +1354,20 @@ impl Streams {
                         None => ctx.store.entry(s, b).ok().flatten().map_or(Class::Durable, |e| e.class),
                     };
                     let at = if class == Class::Ephemeral { Source::Conn(conn) } else { src };
-                    if concerns(ctx, self.pull.get(&conn), s, b) {
+                    let concerned = concerns(ctx, self.pull.get(&conn), s, b);
+                    if concerned {
                         ops.push((at, Op::Add(*s, *b)));
                     }
-                    if let Some(l) = listing.as_mut().and_then(|l| l.get_mut(s)) {
-                        l.insert(*b);
-                    }
-                    if let Some(l) = join_listing.get_mut(s) {
-                        l.insert(*b);
+                    // a listing under way keeps only what its end could replace (presence of
+                    // `src`, which `concerns` bounds), so a source listing made-up IDs grows it not
+                    let listed = listing.as_ref().is_some_and(|l| l.contains_key(s)) || join_listing.contains_key(s);
+                    if listed && (concerned || self.known.knows(src, s, b)) {
+                        if let Some(l) = listing.as_mut().and_then(|l| l.get_mut(s)) {
+                            l.insert(*b);
+                        }
+                        if let Some(l) = join_listing.get_mut(s) {
+                            l.insert(*b);
+                        }
                     }
                 }
                 Event::Deleted(b) => {

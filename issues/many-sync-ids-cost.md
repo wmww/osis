@@ -57,7 +57,7 @@ World tests (node 2 away from both, node 1 hears of the change from node 0, then
 S shredded while a reader of it is away (`Moved::Gone` on rows already gone): `opens::s_shredded_while_its_reader_is_away_spec_sync_opens_3`.
 
 ## Streams' state
-Tabled in notes/sync-streams.md (State): connection state stays the connection's; the place, what the source showed and the class it keeps S as are the record's. Found there: a listing from the start under way (`Pulling::listing`, `join_listing`) keeps every ID the source lists, though only IDs this node knows present there can be replaced: a hostile source listing made-up IDs over many pages grows it until the listing ends.
+Tabled in notes/sync-streams.md (State): connection state stays the connection's; the place, what the source showed and the class it keeps S as are the record's.
 
 ## Still to count
 - Making n at once (sharing a tag of n notes): one keys commit and a sealed secret per holder each (a seal to a KEM key is over 1 KB), a genesis step each.
