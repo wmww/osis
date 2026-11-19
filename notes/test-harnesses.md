@@ -115,5 +115,11 @@ Delete and strip rules, planted against osis-sync `it` (and the engine lib where
 - A sync world that waits out `PASS_WAIT_MS` with a node away costs 7-10 GB, mostly dial ticks toward the absent node.
 - A loop over consecutive seeds with `rng(seed | 1)` makes seeds 2k and 2k+1 the same history: use odd seeds via `step_by(2)`.
 - A count test built on the sync `history::world` turns the memo debug comparisons off before counting (`idle::exact`): the history world turns them on for its thread, and their reads count.
+- `LocalPeer::pulled_anew` fills only at `receive`/`reexamine` (`LocalPeer::wake`): an engine commit's pull anew waits in the engine's wakes, so a test clearing `pulled_anew` after a copy sees the setup's pulls at the next receive: `reexamine` first.
+- A thing re-entering the node closure usually rejoins the sync set by its own sync ID, pulled from the start anyway, so a re-entry test passes with `refetch` broken: only a dependent thing in a unit whose sync ID never left exercises it.
+- Plaintext `LocalPeer` delivery lets a peer holding a thing by a node-root strong and no role read content no real node opens (`new_thing` without `share`, `net2`, `world`'s outsider). `order.rs`'s and `parts.rs`'s `FRESH` are one account (one seed), granted by the base: not a role-less observer.
+- A cost test varying only what the node closure holds cannot see a pass judging every held thing when the filter to things outside it is uncounted: count what is due before filtering.
+- A drop path that marks commits stale needs a test where the drop happens in the end-of-transaction tail: only the end-of-transaction debug assert ("stale validity left unjudged") catches a re-judge marker set after the transaction's last re-judge.
+- roles-model `family_run(stride)`: a stride sharing a factor with a dimension's size fixes that dimension (every 50th world: `h_t1` always false); strides of mixed-radix families are coprime with every radix.
 - The order harness's `fetch_missing` never delivers what a node pulls anew (`pulled_anew`): a node relying on a pull anew fails `held_set_decides` with no hint.
 - held-model `unit`: `Net::deliver` decides by the truth which units a writer syncs, so a writer that cannot know a sync ID (a forked promotion's greater one) still gets commits under it; a gap there needs delivery by hand.
