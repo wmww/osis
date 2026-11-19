@@ -3,7 +3,7 @@
 
 Replaces, in spec/crypto.md §7: the Levels table, the Header list bullet, the `blind` sub-bullet of Commitment, and the last bullet (a holder tries every epoch). Delete base, Delete key, Commitment's other sub-bullets, Certificate blobs and Delete signature stand.
 
-**PENDING MODEL** (purge authors: notes/a1-spec/README.md).
+*Settled* for who holds the level-2 right: the purge author's chain (roles-model `paths` `purges`, control `-purge-any-path`). OPEN: delete keys are not modelled; that every holder of the `author` right holds level 2's secret is argued (its path gives write on every edge up to the purge author, so it reaches the purge author's write secret by derivation, spec/permissions.md §3).
 
 ## 7. Delete keys
 - **Levels** of a delta, by its retention (spec/commits.md §5), one per member of its set:
