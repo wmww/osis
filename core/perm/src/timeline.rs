@@ -290,10 +290,11 @@ impl Timeline {
     /// same walk code, a different listed input. The second walk is from scratch: its cost is a
     /// walk of the component, whatever the number of counting entries.
     pub(crate) fn vouched(self) -> Timeline {
-        debug_assert!(self.first.is_none() && self.input.listed.is_empty(), "vouches judged in a first walk");
+        // (`copy` keeps a second walk's frontiers and no vouch: nothing to judge)
         if !self.input.vouches.keyed() {
             return self;
         }
+        debug_assert!(self.first.is_none() && self.input.listed.is_empty(), "vouches judged in a first walk");
         let counted = crate::vouch::counting(&self, &self.input.vouches, &self.input.commits);
         if counted.is_empty() {
             return self;

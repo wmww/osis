@@ -296,6 +296,22 @@ fn a_removed_partys_flood_of_vouches_changes_nothing() {
     assert!(vouch_diff(&world(true), FIXED).is_none());
 }
 
+/// What a demotion puts in question is read from the timeline (the second walk, its frontiers as
+/// listed) with the demotion appended: H removing K, whom X's vouched grant made admin, demotes K.
+#[test]
+fn a_demotion_scope_on_a_second_walk() {
+    let mut b = B::new(&[FULL, FULL, FULL, None]);
+    b.op(X, 3, FULL, 1, &[(2, 1), (3, 1)]);
+    b.op(H, X, None, 4, &[(2, 5), (3, 4)]);
+    let w = b.honest(FIXED);
+    let ew = vouch_world(&w);
+    let tl = Timeline::evaluate(&ew.w.held());
+    assert_eq!(tl.counted().count(), 1);
+    let r = osis_perm::RoleCommit { id: cid(77_777), ts: ts(20), author: ew.nodes[H], actor: ew.nodes[H], frontier: Some(std::sync::Arc::new(osis_perm::Frontier::default())), ops: vec![osis_perm::EdgeOp { target: ew.t, holder: ew.nodes[3], edge: None }] };
+    let scope = tl.demotion_scope(r);
+    assert!(scope.roles.get(&ew.nodes[3]).is_some_and(|s| s.contains(&ew.t)), "{scope:?}");
+}
+
 // ---------- perm worlds ----------
 
 /// Nodes H, X, W, Z on a thing T minted by H; X and W admins, Z a reader.
