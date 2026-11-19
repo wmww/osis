@@ -47,6 +47,8 @@ struct Cost {
     deliveries: u64,
     frames: BTreeMap<(usize, usize, &'static str), (u64, u64)>,
     fetched: BTreeMap<(usize, usize), BTreeMap<BlobId, u64>>,
+    /// Blobs a node fetched and holds no entry of at the end (under any sync ID), per fetcher.
+    unkept: BTreeMap<usize, Vec<BlobId>>,
     costs: Vec<(&'static str, u64)>,
 }
 
@@ -72,7 +74,15 @@ fn first(w: &mut World) -> Cost {
     }
     out.retain(|_, v| v.0 > 0);
     let costs = osis_base::costs::take().into_iter().map(|(k, _, n)| (k, n)).collect();
-    Cost { deliveries: w.deliveries - d, frames: out, fetched: w.net.fetched.clone(), costs }
+    let mut unkept: BTreeMap<usize, Vec<BlobId>> = BTreeMap::new();
+    for ((_, to), blobs) in &w.net.fetched {
+        for b in blobs.keys() {
+            if w.store(*to).naming(b).unwrap().is_empty() {
+                unkept.entry(*to).or_default().push(*b);
+            }
+        }
+    }
+    Cost { deliveries: w.deliveries - d, frames: out, fetched: w.net.fetched.clone(), unkept, costs }
 }
 
 /// `first` over the closure of `n` members, once per process (a world is a function of its seed).
@@ -112,15 +122,36 @@ fn a_blob_is_fetched_once_whatever_sync_ids_carry_it_spec_sync_streams_4() {
     assert!(!large.fetched.is_empty(), "nothing fetched: the closure is not first synced");
 }
 
+// spec/permissions.md §4 (Logging certificates: a record or list blob counts once opened, while
+// held here or at a source; one losing to another leaves the own store), spec/sync-streams.md §4
+// (Bodies: nor one it counts is fetched): what a new reader fetches and does not keep is only
+// what it could judge by opening it alone (the maker's record blob that the grant made lose, which
+// the store keeping the root unread still lists until the maker's Delete reaches it), once each
+// and as many at 5n members as at n.
+#[test]
+fn what_a_reader_fetches_and_drops_does_not_grow_spec_permissions_4() {
+    let (small, large) = (cost(N), cost(LARGE));
+    let count = |c: &Cost| c.unkept.values().map(Vec::len).sum::<usize>();
+    assert!(count(&large) <= count(&small), "fetched and not kept: {:?} at n, {:?} at 5n", small.unkept, large.unkept);
+    for (to, blobs) in &large.unkept {
+        for b in blobs {
+            let n: u64 = large.fetched.iter().filter(|((_, t), _)| t == to).filter_map(|(_, m)| m.get(b)).sum();
+            assert_eq!(n, 1, "node {to} fetched {b:?}, which it does not keep, {n} times");
+        }
+    }
+}
+
 /// By hand: every counter and the frame census of the first sync at n and 10n members
 /// (`--ignored --nocapture`). What issues/many-sync-ids-cost.md counts.
 #[test]
 #[ignore = "by hand: prints counts"]
 fn probe_first() {
-    for n in [N, 10 * N] {
+    for n in [N, LARGE, 10 * N] {
         let mut w = closure(n);
         let c = first(&mut w);
         println!("F{n} deliveries {}", c.deliveries);
+        println!("F{n} unkept {:?}", c.unkept);
+        println!("F{n} fetched twice {:?}", c.fetched.iter().map(|(k, v)| (k, v.values().filter(|x| **x > 1).count())).collect::<Vec<_>>());
         for ((a, b, k), (count, bytes)) in &c.frames {
             println!("  F{n} {a}->{b} {k} {count} {bytes}");
         }

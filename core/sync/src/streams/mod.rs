@@ -113,6 +113,14 @@ pub trait Ground {
     fn open(&mut self, s: &SyncId, e: &Entry, bytes: &[u8]) -> Result<Opening>;
     /// The body's place in the fill order.
     fn rank(&mut self, s: &SyncId, b: &BlobId, wrap: &Wrap) -> Rank;
+    /// Whether what blob `b` carries under S is known here with no entry needed: a record or
+    /// list blob opened before (spec/permissions.md §4: it counts while held here or shown at a
+    /// source), which a fetch would only open again. Not fetched; a source's showing of it is
+    /// kept (`known`), so it counts while shown.
+    fn counted(&mut self, s: &SyncId, b: &BlobId) -> bool {
+        let _ = (s, b);
+        false
+    }
     /// The write key of the head S's `sync.0` records here (`ReadCredentials::head`), which the
     /// store's served path follows.
     fn head_write(&mut self, s: &SyncId) -> Option<osis_crypto::VerifyingKey> {
@@ -445,6 +453,7 @@ impl Streams {
     pub fn closed(&mut self, conn: ConnId) {
         self.serve.remove(&conn);
         if let Some(p) = self.pull.remove(&conn) {
+            self.dropped_in_hand(&p);
             match p.src {
                 // a record's place stays with the record (`record_left`); where members closed on
                 // this connection stopped lasts the connection: gone at the next tick (a start
@@ -606,6 +615,10 @@ impl Ground for EngineGround<'_> {
             Some(o) => Rank::Order(o),
             None => Rank::Unopened,
         }
+    }
+
+    fn counted(&mut self, s: &SyncId, b: &BlobId) -> bool {
+        self.engine.cert_blob_noted(s, b)
     }
 }
 

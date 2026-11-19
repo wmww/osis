@@ -108,6 +108,9 @@ pub struct Known {
     /// The store's entries changed: a refusal of an entry no longer held goes (`settle`).
     entries: Feed<(SyncId, BlobId)>,
     stamps: Stamps,
+    /// Entries a message in hand shows present and owes a body of, per (S, blob) the number of
+    /// such messages: shown, not recorded until the message applies (`shown`).
+    in_hand: BTreeMap<(SyncId, BlobId), usize>,
     /// Every presence row written (shown present or removed, any source): `feed` readers take
     /// each (read, judging what a source showed of a commit).
     log: Stamps,
@@ -119,7 +122,7 @@ pub type Row = (Source, SyncId, BlobId);
 impl Known {
     pub(super) fn new(store: Store) -> Known {
         let entries = store.entry_feed();
-        Known { store, by_src: BTreeMap::new(), by_blob: BTreeMap::new(), heads: BTreeMap::new(), kept: BTreeMap::new(), full: BTreeSet::new(), refused: BTreeMap::new(), refused_by: BTreeMap::new(), entries, stamps: Stamps::named("streams: known"), log: Stamps::named("streams: known rows") }
+        Known { store, by_src: BTreeMap::new(), by_blob: BTreeMap::new(), heads: BTreeMap::new(), kept: BTreeMap::new(), full: BTreeSet::new(), refused: BTreeMap::new(), refused_by: BTreeMap::new(), entries, stamps: Stamps::named("streams: known"), in_hand: BTreeMap::new(), log: Stamps::named("streams: known rows") }
     }
 
     /// Tests only (world copies): the copy's store.
@@ -301,6 +304,28 @@ impl Known {
                 self.by_src.get(&(src, *s)).is_some_and(|x| x.contains(b))
             }
         }
+    }
+
+    /// A message in hand showing `b` present under S, owing its body, was held (`true`) or
+    /// applied or dropped (`false`).
+    pub(super) fn hand(&mut self, s: &SyncId, b: &BlobId, held: bool) {
+        let k = (*s, *b);
+        let was = self.in_hand.get(&k).copied().unwrap_or(0);
+        let n = if held { was + 1 } else { was.saturating_sub(1) };
+        if n == 0 {
+            self.in_hand.remove(&k);
+        } else {
+            self.in_hand.insert(k, n);
+        }
+        if (was == 0) != (n == 0) {
+            self.stamps.wrote(&("p", s, b), true);
+        }
+    }
+
+    /// Whether some source shows `b` present under S: `present`, or a message in hand showing it
+    /// whose body is owed (a body taken for it is opened before the message applies).
+    pub fn shown(&self, s: &SyncId, b: &BlobId) -> bool {
+        self.present(s, b) || self.in_hand.contains_key(&(*s, *b))
     }
 
     /// Whether any source's stream showed `b` present under S.

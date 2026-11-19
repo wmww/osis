@@ -380,11 +380,12 @@ fn class(rank: Rank, deposited: bool) -> Option<(u8, u64)> {
 /// Whether what a source shows of entry `b` of S is kept (spec/sync-judgement.md §3 `known`),
 /// once its message's bodies settled: only of an entry this node holds or holds a tombstone of
 /// under S, or one whose body it took while the message was in hand (`taken`: a piece, records,
-/// a sealed fire), so what a source lists costs this node in proportion to what it holds or
+/// a sealed fire), or a record or list blob it counts (`Ground::counted`: opened before, not
+/// fetched again), so what a source lists costs this node in proportion to what it holds or
 /// took; a store read that fails keeps nothing (a later listing shows it again). Not built: a
 /// body fetched lazily.
 fn concerns(ctx: &mut Ctx, p: Option<&Pulling>, s: &SyncId, b: &BlobId) -> bool {
-    p.is_some_and(|p| p.taken.contains(&(*s, *b))) || ctx.store.entry(s, b).ok().flatten().is_some() || ctx.store.tombstone(s, b).ok().flatten().is_some()
+    p.is_some_and(|p| p.taken.contains(&(*s, *b))) || ctx.store.entry(s, b).ok().flatten().is_some() || ctx.store.tombstone(s, b).ok().flatten().is_some() || ctx.ground.counted(s, b)
 }
 
 fn entry_of(b: BlobId, wrap: Wrap, stamp: Option<Stamp>, bytes: &[u8]) -> Entry {
@@ -489,7 +490,9 @@ impl Streams {
     pub(super) fn taken(&mut self, ctx: &mut Ctx, conn: ConnId, rid: RecordId) {
         let src = Source::Record(rid);
         let cursor = self.place(ctx.store, src).cursor.clone();
-        self.pull.insert(conn, Pulling::new(src, cursor));
+        if let Some(was) = self.pull.insert(conn, Pulling::new(src, cursor)) {
+            self.dropped_in_hand(&was);
+        }
         let members: Vec<SyncId> = ctx.shared.members(conn).keys().copied().collect();
         for s in members {
             self.holders.entry(s).or_default().insert(conn);
@@ -860,6 +863,13 @@ impl Streams {
         self.stage(ctx, conn, batch);
     }
 
+    /// The messages `p` held in hand are dropped unapplied: what they showed is shown no more.
+    pub(super) fn dropped_in_hand(&mut self, p: &Pulling) {
+        for (s, b) in p.pending.iter().flat_map(|m| m.owed.iter()) {
+            self.known.hand(s, b, false);
+        }
+    }
+
     /// Takes a message in hand: bodies that came inline are taken now, those announced without
     /// bytes that this node lacks and wants are owed and queued for fetching.
     fn stage(&mut self, ctx: &mut Ctx, conn: ConnId, mut batch: Batch) {
@@ -886,6 +896,9 @@ impl Streams {
             }
         }
         if let Some(p) = self.pull.get_mut(&conn) {
+            for (s, b) in &batch.owed {
+                self.known.hand(s, b, true);
+            }
             p.hold(batch);
         }
         self.drain(ctx, conn);
@@ -921,6 +934,11 @@ impl Streams {
                     if ctx.store.entry(s, b).ok().flatten().is_none() {
                         self.take_body(ctx, conn, *s, *b, *wrap, stamp, &bytes);
                     }
+                    return None;
+                }
+                // a record or list blob opened before: what it carries counts while a source
+                // shows it, and a fetch would only open it again
+                if ctx.ground.counted(s, b) {
                     return None;
                 }
                 class(ctx.ground.rank(s, b, wrap), stamp.is_none())
@@ -1346,6 +1364,9 @@ impl Streams {
                 return;
             }
             let Some(batch) = self.pull.get_mut(&conn).and_then(|p| p.next_held()) else { return };
+            for (s, b) in &batch.owed {
+                self.known.hand(s, b, false);
+            }
             self.apply(ctx, conn, batch);
         }
         if let Some(p) = self.pull.get_mut(&conn) {

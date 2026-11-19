@@ -49,6 +49,8 @@ struct Table {
     relay: Option<osis_engine::sync::RelayOpened>,
     /// The next open under this sync ID fails (a store failure in the engine), once.
     fail_under: Option<SyncId>,
+    /// Record or list blobs counted here (opened before): `Ground::counted`.
+    counted: std::collections::BTreeSet<BlobId>,
 }
 
 impl Ground for Table {
@@ -72,6 +74,9 @@ impl Ground for Table {
     }
     fn rank(&mut self, _s: &SyncId, b: &BlobId, _w: &[u8; WRAP_LEN]) -> Rank {
         self.rank.get(b).copied().unwrap_or(Rank::Unopened)
+    }
+    fn counted(&mut self, _s: &SyncId, b: &BlobId) -> bool {
+        self.counted.contains(b)
     }
     fn open_relay(&mut self, _s: &SyncId, _e: &Entry, _bytes: &[u8]) -> Result<osis_engine::sync::RelayOpened> {
         Ok(self.relay.unwrap_or(osis_engine::sync::RelayOpened::NotOpen))
@@ -1019,6 +1024,41 @@ fn a_body_taken_before_is_not_fetched_again_spec_sync_streams_4() {
     let fetched: Vec<BlobId> = p.sent_by_b(19).into_iter().flat_map(|m| if let Msg::Fetch { ids, .. } = m { ids.clone() } else { vec![] }).collect();
     assert_eq!(fetched, [y]);
     assert!(p.b.streams.caught_up(C, &s));
+}
+
+// spec/sync-streams.md §4 (Bodies: nor a record or list blob it counts), spec/sync-judgement.md
+// §3 (`known`: what a source shows of one it counts is kept): b counts x (a record blob it opened
+// and dropped, losing to another, spec/permissions.md §4), so a listing of x and y fetches y
+// alone, keeps a's showing of x (x counts while a shows it) and is caught up.
+#[test]
+fn a_counted_record_blob_is_not_fetched_again_spec_sync_streams_4() {
+    let mut p = Pair::new();
+    let s = sid(1);
+    let (x, y) = (p.a.log(s, 40_001), p.a.log(s, 40_002));
+    p.b.table.counted.insert(x);
+    p.shared_read(s);
+    p.run();
+    let fetched: Vec<BlobId> = p.sent_by_b(19).into_iter().flat_map(|m| if let Msg::Fetch { ids, .. } = m { ids.clone() } else { vec![] }).collect();
+    assert_eq!(fetched, [y], "x counted: not fetched");
+    assert!(knows(&p.b, p.b.src(), s, x), "a's showing of x kept");
+    assert!(p.b.streams.caught_up(C, &s));
+}
+
+// spec/permissions.md §4 (a record or list blob counts while held at a source): a message in hand
+// showing x, its body owed, shows x before it applies (`Known::shown`: what the body opens to is
+// judged before the message's cursor is stored); dropped unapplied (the connection ends), it
+// shows it no more.
+#[test]
+fn a_message_in_hand_shows_what_it_owes_spec_permissions_4() {
+    let mut p = Pair::new();
+    let s = sid(1);
+    let x = p.a.log(s, 40_001);
+    p.shared_read(s);
+    p.run_with(|ab, m| ab && matches!(m, Msg::FetchReply { .. }));
+    let known = p.b.streams.known();
+    assert!(known.shown(&s, &x) && !known.present(&s, &x), "in hand: shown, not recorded");
+    p.b.streams.closed(C);
+    assert!(!p.b.streams.known().shown(&s, &x), "dropped with its connection");
 }
 
 // spec/sync-streams.md §4 (Bodies: an entry whose blob's bytes it holds under another sync ID is

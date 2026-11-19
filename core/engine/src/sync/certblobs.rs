@@ -386,6 +386,12 @@ impl Engine {
         self.core.ix.cert_blobs.get(&(*s, r)).cloned().unwrap_or_default()
     }
 
+    /// Whether `b` is a certificate blob noted under `s`, of any kind: what it carries is known
+    /// here, held in the own store or shown at a source (spec/permissions.md §4: it counts).
+    pub fn cert_blob_noted(&self, s: &SyncId, b: &BlobId) -> bool {
+        self.core.ix.cert_blobs.range(under(s)).any(|(_, m)| m.contains_key(b))
+    }
+
     /// One record blob of `records` (those held here) under `s` and its wrap (`seal_cert_blob`).
     /// `None` when none is held or no epoch is.
     pub fn seal_records(&mut self, s: &SyncId, records: &BTreeSet<Tid>, rng: &mut dyn NodeRng) -> Result<Option<(BlobId, Vec<u8>, Wrap)>> {

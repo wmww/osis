@@ -583,7 +583,7 @@ impl Ground for Live<'_, '_> {
         for b in rows.keys() {
             match self.cx.store.entry(s, b)? {
                 Some(e) => drop(held.insert(*b, e)),
-                None if !self.streams.known().present(s, b) => drop(out.gone.insert(*b)),
+                None if !self.streams.known().shown(s, b) => drop(out.gone.insert(*b)),
                 None => {}
             }
         }
