@@ -143,15 +143,17 @@ impl Clone for QuietRef {
     fn clone(&self) -> QuietRef {
         let mut q = self.0.lock().unwrap();
         let peer = q.peer.copy().expect("reference copy");
-        QuietRef(std::sync::Mutex::new(Quiet { peer, fed: q.fed, waiting: q.waiting.clone() }))
+        QuietRef(std::sync::Mutex::new(Quiet { peer, fed: q.fed, waiting: q.waiting.clone(), held: q.held.clone() }))
     }
 }
 
-/// An incremental reference: the packages handed so far fed, those that did not take yet kept.
+/// An incremental reference: the packages handed so far fed, those that did not take yet kept,
+/// the things it holds (`hold_all`).
 struct Quiet {
     peer: Peer,
     fed: usize,
     waiting: Vec<Package>,
+    held: BTreeSet<Tid>,
 }
 
 impl Made {
@@ -218,8 +220,9 @@ fn note_gone(w: &mut World) {
         harvest(w, i);
     }
     let now = w.now();
-    let mut qr = w.history.quiet.take().unwrap_or_else(|| QuietRef(std::sync::Mutex::new(Quiet { peer: Peer::new_bare(0x005e_ed0f_5eed, now).expect("reference"), fed: 0, waiting: Vec::new() })));
+    let mut qr = w.history.quiet.take().unwrap_or_else(|| QuietRef(std::sync::Mutex::new(Quiet { peer: Peer::new_bare(0x005e_ed0f_5eed, now).expect("reference"), fed: 0, waiting: Vec::new(), held: BTreeSet::new() })));
     let q = qr.0.get_mut().unwrap();
+    hold_all(w, &mut q.peer, &mut q.held);
     let new: Vec<Package> = w.history.handed[q.fed..].to_vec();
     q.fed = w.history.handed.len();
     for pk in new {
@@ -581,12 +584,17 @@ pub fn introduce(w: &mut World) {
 /// The reference: a single engine handed every commit any node wrote, again while one
 /// applies. Every commit any node holds now is handed too (what sync wrote), each node's copy of
 /// it: `harvest` keeps one copy per commit, perhaps a certificate copy (its header and some
-/// parts), and the engine joins the parts a later copy carries (spec/commits.md §4).
+/// parts), and the engine joins the parts a later copy carries (spec/commits.md §4). It holds
+/// every thing of the history and every account root by the ordinary rules, so what it holds of
+/// them is all of it (spec/commits.md §4 Outside the node closure): its node root holds a strong
+/// to each, and it holds every read secret any node holds of each (as a link key gives one,
+/// `Engine::learn_secret`), so the walk enters each.
 pub fn reference(w: &mut World, lost: &BTreeSet<CommitId>) -> Peer {
     for i in 0..w.len() {
         harvest(w, i);
     }
     let mut r = Peer::new_bare(0x005e_ed0f_5eed, w.now()).expect("reference");
+    hold_all(w, &mut r, &mut BTreeSet::new());
     let on: Vec<usize> = (0..w.len()).filter(|i| w.online(*i)).collect();
     let mut handed = Vec::new();
     for pk in w.history.handed.clone().into_iter().filter(|pk| !lost.contains(&pk.id)) {
@@ -608,6 +616,24 @@ pub fn reference(w: &mut World, lost: &BTreeSet<CommitId>) -> Peer {
     r.clock.set(w.now());
     let _ = r.tick();
     r
+}
+
+/// Reference `r` holds every thing of the history and every account root not in `held` yet
+/// (`reference`), and learns every read secret of each that a node holds and it does not.
+fn hold_all(w: &mut World, r: &mut Peer, held: &mut BTreeSet<Tid>) {
+    let mut all: Vec<Tid> = w.history.things.iter().map(|x| x.0).collect();
+    all.extend((0..w.len()).filter_map(|i| w.engine(i).account_root()));
+    for t in &all {
+        for i in 0..w.len() {
+            let Some(es) = w.engine(i).epochs(t) else { continue };
+            for (e, s) in es.role(Role::Read).held() {
+                let _ = r.engine.learn_secret(t, Role::Read, e, s.clone());
+            }
+        }
+        if held.insert(*t) {
+            r.engine.hold(osis_base::Strong(*t)).expect("the reference holds it");
+        }
+    }
 }
 
 /// Node `i` reads thing `k` as the reference.
