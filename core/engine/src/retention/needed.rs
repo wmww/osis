@@ -95,6 +95,8 @@ impl Engine {
 
     /// `due` judged: those outside the node closure nothing held needs go.
     fn settle_due(&mut self, due: &BTreeSet<Tid>) -> Result<()> {
+        // scale checks: a pass end reads what is due, not what is held
+        osis_base::costs::count("needed: things due", due.len() as u64);
         let cl = &self.core.ix.closure;
         let due: Vec<Tid> = due.iter().filter(|t| !cl.holds(t)).copied().collect();
         if due.is_empty() {
