@@ -89,7 +89,8 @@ fn a_witness_granted_the_right_after_the_removal_vouches() {
 /// received its demotion, so it reads itself an admin throughout: its vouch at receipt of the
 /// removal does not count (W holds write there) and its view never shows it newly holding the
 /// right, so it never writes again. The idealised writing (read off the canonical walk) writes
-/// again after the re-grant and keeps K's grant.
+/// again after the re-grant and keeps K's grant; so does the state-based writing (`Rules::state`):
+/// W receives its demotion by `SYNC`, sees its vouch not counting, and writes one that does.
 #[test]
 fn a_witness_unaware_of_its_own_demotion_never_vouches_again() {
     let world = |rules| {
@@ -105,6 +106,9 @@ fn a_witness_unaware_of_its_own_demotion_never_vouches_again() {
     assert_eq!(kept(&world(FIXED), FIXED, 0), (1, 0));
     assert_eq!(role(&world(held), held, 0, 3), Role::None);
     assert_eq!(kept(&world(held), held, 0), (1, 1));
+    let state = Rules { state: true, ..FIXED };
+    assert_eq!(role(&world(state), state, 0, 3), Role::Write);
+    assert_eq!(kept(&world(state), state, 0), (1, 0));
 }
 
 /// X demoted W before the theft; only W received it. W vouches for its own demotion (an edge
@@ -219,6 +223,7 @@ fn a_removed_node_writing_a_grant_to_the_remover_stays_removed() {
     };
     assert_eq!(role(&world(false), FIXED, 0, Y), Role::None);
     assert_eq!(role(&world(true), FIXED, 0, Y), Role::None);
+    assert_eq!(stays_made(&world(true), FIXED, 0), (1, 0));
 }
 
 #[test]
@@ -249,7 +254,6 @@ fn random_worlds_hold_large() {
 fn small_family_holds_exhaustive() {
     assert_eq!(exhaustive(FIXED, 1).failures(), 0);
 }
-
 
 /// A (node 0) leaves at 3; X (node 3), granted admin at 2, edits its own edge at 2 (role down,
 /// invite up), which A received; A removes X at 6 and X removes A at 6, after it. As written,
