@@ -155,7 +155,7 @@ To study (CPU): the sync side's row reads per small commit (about 730 world-wide
   - **Name the key, do not carry it**: a reader already holds the admin delete key (the delete base's `keys.0`) and the author's (its signing key or chain); the header could say which epoch's in a byte or two. About 32 B per level.
   - **No level-1 commitment where it equals the sync ID's**: admins of the sync ID's thing already delete at nodes keeping it unread by the sync ID's delete key; a blob of a thing whose delete base is that thing lists the same right twice. About 68 B per such commit.
   - **Derive the blind** from the blob key, as linked blobs already do (the link blind): 16 B.
-  - Reusing one blinded commitment across an author's blobs is what the blind exists to prevent (a node keeping the sync ID unread, with any contact's help, linking an author's blobs across sync IDs). Reuse within one sync ID only would let such a node tell which blobs one author can delete: a question for Tess if the bytes are wanted.
+  - **One blinded commitment per author within a sync unit** (Tess: yes): about 33 B a commit. A node keeping the unit unread can then tell which of its blobs one author can delete; across units the blind still differs, so nothing links an author's blobs from one unit to another, which is what the blind exists to prevent (a node keeping units unread, with any contact's help, linking an author across them).
   - Hashed tokens in place of signatures under blinded keys were decided against by Tess (a writer that is no admin could not list the admin level).
 
 ## Rejected
