@@ -25,7 +25,8 @@ use std::collections::BTreeSet;
 
 /// Total bytes of durable records a node keeps (spec/sync-opens.md §3). Resource bound: past it
 /// the least recently used record not in use goes, which is that record's loss, a first contact.
-/// 0: every connection a first contact (correct, more bytes); infinity: disk.
+/// 0: every connection a first contact (correct, more bytes); infinity: disk, and memory for
+/// the records with a member (opens keeps those in memory between connections).
 pub const RECORD_BUDGET: u64 = 256 * 1024 * 1024;
 
 /// A record's row ID: random, stays in this store.

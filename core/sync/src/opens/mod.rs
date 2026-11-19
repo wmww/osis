@@ -565,8 +565,9 @@ impl Opens {
     /// The end of the node's step: what changed of each record is written, records past the
     /// budget go (least recently used first, none a connection holds) with what was charged to
     /// them, in one transaction (`Store::write_records`), memory's with them; a kept record no
-    /// connection holds stays in memory without its peer's filter entries (read again at its
-    /// next take). Returns the records that went (evicted, and twin-dropped ones removed). A store failure met during the step fails it here.
+    /// connection holds stays in memory while it has a member, without its peer's filter entries
+    /// (read again at its next take). Returns the records that went (evicted, and twin-dropped
+    /// ones removed). A store failure met during the step fails it here.
     pub fn flush(&mut self, store: &mut Store) -> Result<Vec<RecordId>> {
         if let Some(e) = self.fault.take() {
             self.dirty.clear();
@@ -608,6 +609,11 @@ impl Opens {
         }
         self.dropped.retain(|id| !dropped.contains(id));
         let held: BTreeSet<RecordId> = self.conns.values().filter_map(|c| c.rec).collect();
+        // a kept record no connection holds stays in memory only for its members (what is judged
+        // of them across its connections), without its peer's filter entries: one with none
+        // keeps nothing there that its rows do not, so a dialer proving fresh key actors with no
+        // right to any S costs memory only while connected
+        self.records.retain(|id, r| !r.kept || held.contains(id) || !r.members.is_empty());
         for (_, r) in self.records.iter_mut().filter(|(id, r)| r.kept && !held.contains(*id)) {
             if let Some(p) = r.peer.as_mut().filter(|p| p.held) {
                 p.values = Arc::default();
@@ -615,6 +621,12 @@ impl Opens {
             }
         }
         Ok(evicted.into_iter().chain(dropped).collect())
+    }
+
+    /// Tests only: the records in memory.
+    #[doc(hidden)]
+    pub fn records_in_memory(&self) -> usize {
+        self.records.len()
     }
 
     /// Tests only: `RECORD_BUDGET` as this node keeps it.
@@ -703,8 +715,8 @@ impl Opens {
     }
 
     /// Member S of the record at `src`, whether or not a connection holds it now (stamped per
-    /// (source, S); a take or release moves nothing of it). A kept record stays in memory from
-    /// its first take until it goes (evicted, dropped); before, none.
+    /// (source, S); a take or release moves nothing of it). A kept record with a member stays in
+    /// memory from its first take until it goes (evicted, dropped); before, none.
     pub fn member_at(&self, src: Source, s: &SyncId) -> Option<&Member> {
         self.record_members.read(&(src, *s));
         let id = match src {

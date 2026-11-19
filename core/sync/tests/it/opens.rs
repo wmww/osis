@@ -2233,3 +2233,108 @@ fn a_departed_store_granted_again_closes_at_its_until_spec_sync_opens_6() {
     assert!(!p.a.open(p.ca, &S));
     assert!(matches!(&of_kind(&p.a.sent(), 38)[..], [Msg::Lost { items, .. }] if items[0] == (S, osis_proto::Cursor::new(until.to_be_bytes().to_vec()).ok())));
 }
+
+/// The entries of S node `at` holds.
+fn held_of(w: &crate::harness::World, at: usize, s: &SyncId) -> std::collections::BTreeSet<osis_base::BlobId> {
+    w.store(at).entries(s).unwrap().into_iter().map(|e| e.blob).collect()
+}
+
+/// Node 0 writes thing `t` a new value; the entries of S it logged for it.
+fn write_value(w: &mut crate::harness::World, t: osis_base::Tid, s: &SyncId, v: i64) -> std::collections::BTreeSet<osis_base::BlobId> {
+    let before = held_of(w, 0, s);
+    w.write(0, |e| {
+        let mut m = osis_engine::Mutation::new();
+        m.set(t, &crate::harness::history::value_ak(), &osis_base::Value::Int(v)).unwrap();
+        e.commit(m).unwrap().unwrap()
+    });
+    w.advance(10);
+    held_of(w, 0, s).difference(&before).copied().collect()
+}
+
+/// Nodes 1 and 2 meet again (node 0 still away from node 2); whether node 2 held any of `blobs`
+/// after any delivery until 30 s after they meet (it may drop S's entries later, once it learns
+/// it no longer holds S).
+fn served_at_reconnect(w: &mut crate::harness::World, s: &SyncId, blobs: &std::collections::BTreeSet<osis_base::BlobId>) -> bool {
+    w.rejoin(1, 2);
+    let (mut served, mut met) = (false, None);
+    let start = w.now().0;
+    while met.is_none_or(|t| w.now().0 < t + 30_000) && w.now().0 < start + 3_600_000 && w.step_or_wake() {
+        served |= !held_of(w, 2, s).is_disjoint(blobs);
+        if met.is_none() && w.links_of(1).iter().any(|(_, j)| *j == 2) {
+            met = Some(w.now().0);
+        }
+    }
+    assert!(met.is_some(), "they met again");
+    served
+}
+
+/// Node 1 holds t (`one`: reads, or keeps it unread), node 2 reads it; node 2 goes away from
+/// both, `change` ends its right at node 0, node 0 writes t and node 1 takes the write. Whether
+/// node 2 is served the write when it meets node 1 again.
+fn served_after_a_change_while_away(one: crate::harness::history::Gives, change: impl FnOnce(&mut crate::harness::World, osis_base::Tid)) -> bool {
+    use crate::harness::Step::*;
+    use crate::harness::history::{Gives, world};
+    let mut w = world(0, 3);
+    w.cap = 2_000_000;
+    let _ = crate::harness::play(&mut w, &[New(0), Grant(0, 0, 1, one), Grant(0, 0, 2, Gives::Reads), Run], String::new());
+    let t = w.history.things[0].0;
+    let s = w.engine(0).sync_id_of(&t).unwrap().unwrap();
+    let before = write_value(&mut w, t, &s, 1);
+    w.advance(1000);
+    assert!(!before.is_empty() && before.is_subset(&held_of(&w, 2, &s)), "node 2 reads t");
+    w.partition(0, 2);
+    w.partition(1, 2);
+    change(&mut w, t);
+    let after = write_value(&mut w, t, &s, 2);
+    w.run();
+    assert!(!after.is_empty() && after.is_subset(&held_of(&w, 1, &s)), "node 1 took the write");
+    served_at_reconnect(&mut w, &s, &after)
+}
+
+// spec/sync-opens.md §6 (whether or not a connection holds its record): a member is re-judged at
+// each change of J of its peer or of what this node holds that touches S; node 2's right to t ends while it is away from both other nodes, node 1 hearing
+// of it from node 0; meeting node 1 again it is served nothing written after. Ends: its removal
+// (at a reader by J; at a node keeping S unread by the step registered there), its grant's
+// `until` passing (granted while it is away, so it still asks for S).
+#[test]
+fn a_right_ended_while_away_serves_nothing_after_it_at_the_reconnect_spec_sync_opens_6() {
+    use crate::harness::Step::Remove;
+    use crate::harness::history::Gives;
+    let remove = |w: &mut crate::harness::World, _: osis_base::Tid| {
+        let _ = crate::harness::play(w, &[Remove(0, 0, 2)], String::new());
+        w.run();
+    };
+    assert!(!served_after_a_change_while_away(Gives::Reads, remove), "removed, at a reader");
+    assert!(!served_after_a_change_while_away(Gives::Syncs, remove), "removed, at a node keeping S unread");
+    let expire = |w: &mut crate::harness::World, t: osis_base::Tid| {
+        let a2 = w.node(2).account.unwrap();
+        let until = osis_base::WallMs(w.now().0 + 60_000);
+        let edge = osis_schema::core_types::Edge { role: osis_base::Role::Read, until: Some(until), invite: None, retain: false, floor: None };
+        w.write(0, |e| e.grant(&t, &a2, &edge)).unwrap();
+        w.advance(120_000);
+        assert!(w.now() >= until);
+    };
+    assert!(!served_after_a_change_while_away(Gives::Reads, expire), "its until passed, at a reader");
+}
+
+// spec/sync-opens.md §3 (records), notes/sync-opens.md (Durability and eviction): a record no connection holds
+// stays in memory only while it has a member: a dialer proving a fresh account each time, with no
+// right to S, leaves nothing in memory once gone; a reader of S, its record with its member.
+#[test]
+fn a_record_with_no_member_leaves_memory_with_its_connection_spec_sync_opens_3() {
+    let mut p = readers();
+    p.close();
+    p.a.settle();
+    assert_eq!(p.a.opens.records_in_memory(), 1, "the reader's record, with its member");
+    // the dialer holds nothing of S from here
+    p.b.table.set(S, None);
+    p.b.settle();
+    for n in 0..10u8 {
+        p.connect(2 + u64::from(n), account(1), account(100 + n));
+        p.run();
+        assert!(!p.a.open(p.ca, &S), "no right to S");
+        p.close();
+        p.a.settle();
+    }
+    assert_eq!(p.a.opens.records_in_memory(), 1, "the strangers' records left memory");
+}

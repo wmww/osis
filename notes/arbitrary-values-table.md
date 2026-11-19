@@ -126,7 +126,7 @@ Each only made a bug unlikely (class X); the code ends by a fixpoint, a window o
 | `P` 8 (filter's false-positive bits) | P | every own credential a refused 32 B Hit / 32-byte beacons sent whole; both correct |
 | `STRIDE` 64 (`proto/filter.rs`: entries between index points of a held peer filter's run) | P (a lookup decodes at most this many; the index costs 16 B per this many) | an index point per entry, more than a plain array / a scan per lookup; both correct |
 | whole-filter re-send at doubling (additions up to n of the whole) | P (receiver enforces the same limit) | re-send each change / false positives grow only |
-| `RECORD_BUDGET` 256 MiB (`store/record.rs`) | R (evict least recently used record not in use; a filter that does not fit is tested and not stored) | every connection a first contact / disk |
+| `RECORD_BUDGET` 256 MiB (`store/record.rs`) | R (evict least recently used record not in use; a filter that does not fit is tested and not stored) | every connection a first contact / disk, and memory: a record with a member stays in memory between connections (its filter entries only on disk), one with none only while connected |
 
 ### The store per sync ID (`sync/src/store/`)
 | value | class | 0 / ∞ |

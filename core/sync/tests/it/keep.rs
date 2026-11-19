@@ -244,3 +244,31 @@ fn a_step_issued_while_a_store_is_away_is_registered_when_it_is_back_spec_sync_i
     w.run();
     assert_eq!(at1(&w), Some(head), "back: registered");
 }
+
+// spec/sync-ids.md §6 (Steps), spec/sync-opens.md §6 (whether or not a connection holds its
+// record): node 0's Register of a new step at node 1 (keeping S unread) is lost with its
+// connection; the plan, judged again while no connection holds the record, waits, and the step
+// goes once they meet again.
+#[test]
+fn a_register_lost_with_its_connection_goes_again_at_the_reconnect_spec_sync_ids_6() {
+    use crate::harness::history::{Gives, three};
+    let (mut w, t, s) = three(Gives::Reads, 2);
+    w.cap = 20_000;
+    w.partition(1, 2);
+    w.run();
+    let a0 = w.node(0).account.unwrap();
+    osis_base::costs::take();
+    w.write(0, |e| e.rotate_boxing_only(&[t], &[Role::Write], &[a0])).unwrap().expect("a rotation");
+    let registered = || osis_base::costs::take().into_iter().any(|(k, _, n)| k == "inbox: registered" && n > 0);
+    let mut sent = false;
+    while !sent && w.step_or_wake() {
+        sent = registered();
+    }
+    assert!(sent, "node 0 sent a Register");
+    w.cut(0, 1);
+    let head = w.engine(0).sync_ids(&t).unwrap().iter().find(|o| o.id == s).unwrap().path.steps.last().unwrap().0.id();
+    let at1 = |w: &World| w.store(1).path(&s).unwrap().and_then(|p| p.steps.last().map(|(st, _)| st.id()));
+    assert_ne!(at1(&w), Some(head), "the Register was lost");
+    w.run();
+    assert_eq!(at1(&w), Some(head), "registered once they met again");
+}
