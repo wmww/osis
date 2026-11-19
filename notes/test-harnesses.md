@@ -65,6 +65,7 @@ Compare old and new code by instruction counts, never wall time on a loaded box;
 - Every default test alone under `tools/icount`: `tools/pertest.py` (Default-test cost). An `--exact` run of one test counts its fixture too (a 4-node world can be most of it): for a fixture-free delta compare in-process module counts (`tools/icount BIN -q <module>::`).
 - Which commit grew a test: a background script running `tools/bin-at` and `tools/icount` over a commit list, every 5th commit, then the window.
 - Per-test wall times: run a test binary with `RUSTC_BOOTSTRAP=1 <binary> -Z unstable-options --report-time` from its package dir; CPU per test with `/usr/bin/time <binary> --exact <name>`. A test binary run outside cargo runs proptests at 256 cases: set `PROPTEST_CASES=32 PROPTEST_DISABLE_FAILURE_PERSISTENCE=1` as `.cargo/config.toml` does.
+- A multi-threaded property's instruction count moves with thread timing (which of two alike nodes is met first): compare at `OSIS_SEED_THREADS=1`.
 - In code: `osis_base::costs` spans (`costs::span(name)` in the engine, `costs::take()` in a test).
 
 ## Default-test cost

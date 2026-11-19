@@ -67,3 +67,5 @@ MAX_DEPTH  removed
 MAX_INBOX_TRIES  removed
 HANDSHAKE_TIMEOUT  removed
 CLOSE_WAIT  removed
+RUSTUP_HOME  third-party: rustup environment variable
+CARGO_HOME  third-party: cargo environment variable

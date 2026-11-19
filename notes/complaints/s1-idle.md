@@ -1,3 +1,0 @@
-# s1-idle
-- The sync harness's checks at quiet (`World::run`) were counted as product work by `osis_base::costs`: store-row counts in scale tests (and notes/sync-unit-design.md §8's figures) were mostly the harness's. Paused now; a new harness check that reads the store belongs under `costs::paused` too.
-- Finding who reads the clock whole or who reads store rows took a throwaway backtrace probe in osis-base/osis-store (each a full rebuild). A `costs::count_by`-style label for "store rows read" by caller, or an unbounded-clock-read counter labelled by the Effects key being settled, would have answered both in one run.
