@@ -44,9 +44,10 @@ Each brief ends at green commits and fits a session (notes/coordination.md, Brie
 notes/priorities.md, First: issues/custody-pair-needs-write.md, issues/paged-apply-differs-from-whole.md, issues/app-tile-unreadable-emails-test.md [checked: tools/known_failures.txt].
 
 ### S1. Cost defects of many sync IDs
-Any time; nothing waits on a question.
+Any time; briefs 1-2's rest waits on the two read decisions (issues/many-sync-ids-cost.md).
 - **Changes**: sync and engine only; the spec already says what should hold [assumed: spec/sync-streams.md §4 Costs, Joining; spec/sync.md §2, as cited by issues/many-sync-ids-cost.md]. No format change.
 - **Briefs**: (1) the join per shared sync ID at an idle reconnect: find the cause, fix; (2) work per sync ID held at a commit and at an idle reconnect (`status: stranded`, `inbox: register judged`, `opens standing`, the store rows behind them); (3) opens found in one round batch at a first sync, and what a new reader sends back (23 KB per unit, unexplained).
+- **State**: briefs 1-2 flat for the judgements, bytes and streams' store rows (idle.rs; streams follows a kept record by `Moved::Taken`/`Released`); left: read's store rows per member at a reconnect (its acts and `full` name the connection) and status and inbox keyed by connection, each a decision written in issues/many-sync-ids-cost.md, To fix; then opens stops carrying members one by one.
 - **Measure first**: nothing new; the figures are issues/many-sync-ids-cost.md [measured there, main at 6e38bcd03].
 - **Checked by**: default tests in osis-sync counting at n and 10n (bytes, store rows read, the named counters), as the issue's throwaway tests did; gate.
 - **Unblocks**: nothing waits on it; every independent thing has a sync ID of its own, so it pays wherever things are shared. Closes most of issues/many-sync-ids-cost.md (its Still to count stays).

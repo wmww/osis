@@ -850,6 +850,66 @@ fn standing_is_followed_per_record_across_connections_spec_sync_opens_6() {
     assert!(!p.a.open(p.ca, &S) && !p.b.open(p.cb, &S), "closed at the reconnect too");
 }
 
+// spec/sync-opens.md §6 (a take of a record read from its rows judges each member afresh), §1
+// (one connection per pair): b's node holds two records at a (its first one lost to it, so it met a
+// as a first contact again). After a's restart b's new record is taken on one connection and its
+// old one resumed on another, which loses the pair: the record read for that take leaves memory as
+// it came. Else it stays there unjudged and unfollowed: b departing while away closes nothing of it,
+// and the next take, of a record in memory, judges nothing, serving S to a departed peer.
+#[test]
+fn a_take_refused_for_its_pair_leaves_nothing_unjudged_spec_sync_opens_6() {
+    use osis_sync::types::ConnId;
+    let node = |n: u8, k: u8| Proven { node: Some(tid(k)), ..account(n) };
+    let st = StepKeys::new(1, 0);
+    let rs = read_secret(1, 0);
+    let side = |seed| {
+        let mut x = Side::new(seed);
+        x.table.set(S, Some(reader(&S, &rs, &st, &[], &[], &[])));
+        x.settle();
+        x
+    };
+    let mut p = Pair::new(side(1), side(2), node(1, 11), node(2, 12));
+    p.run();
+    assert!(p.a.open(p.ca, &S));
+    p.close();
+    // the same node, its records lost: a keeps the old record and makes another
+    let old_b = std::mem::replace(&mut p.b, side(3));
+    p.connect(2, node(1, 11), node(2, 12));
+    p.run();
+    assert!(p.a.open(p.ca, &S));
+    p.close();
+    p.a.restart();
+    p.connect(3, node(1, 11), node(2, 12));
+    p.run();
+    assert!(p.a.open(p.ca, &S), "the new record taken");
+    let newer = p.ca;
+    // the old one, b dialing at a worse route: it loses the pair
+    p.b = old_b;
+    let (cb, ca) = (ConnId(4), ConnId(ConnId::ACCEPTED | 4));
+    let (bb, ba) = binds_at([0x5c; 32], [0x6d; 32], [0x4a; 32], 2);
+    p.b.pipe.binds.insert(cb, (bb, node(1, 11)));
+    p.a.pipe.binds.insert(ca, (ba, node(2, 12)));
+    p.a.take(ca, osis_sync::session::Incoming::Proved);
+    p.b.take(cb, osis_sync::session::Incoming::Proved);
+    route_all(&mut p);
+    assert_eq!(p.a.opens.lost_to(ca), Some(newer), "the old record's take lost its pair");
+    p.a.closed(ca);
+    p.a.closed(newer);
+    p.a.settle();
+    p.a.table.judge_as(S, tid(2), J::Departed);
+    p.a.settle();
+    // the old record again, nothing else up
+    let (cb, ca) = (ConnId(5), ConnId(ConnId::ACCEPTED | 5));
+    let (bb, ba) = binds([0x5d; 32], [0x6e; 32], [0x4a; 32]);
+    p.b.pipe.binds.insert(cb, (bb, node(1, 11)));
+    p.a.pipe.binds.insert(ca, (ba, node(2, 12)));
+    p.a.take(ca, osis_sync::session::Incoming::Proved);
+    p.b.take(cb, osis_sync::session::Incoming::Proved);
+    route_all(&mut p);
+    assert!(p.a.opens.record(ca).is_some(), "the old record resumed");
+    assert!(!p.a.open(ca, &S), "departed while away: nothing of S open");
+}
+
 // spec/sync-opens.md §6 (judged in the step that applies the change; for every record holding
 // the member whether connected or not): b's open by a's read secret ends with a's
 // rotation while b is away; its `until` is a's position at the rotation, not at the reconnect,
