@@ -8,3 +8,4 @@ osis-engine/validity::unmerge_paged_matches_fresh_large_spec_crdt_4_6 - issues/o
 osis-app/fields::a_tile_tells_of_emails_it_cannot_read - issues/app-tile-unreadable-emails-test.md Err\(osis::Error::TooLarge
 osis-engine/apply::tests_paged::paged_apply_matches_whole_large_spec_crdt_8 OSIS_PAGED_APPLY_START=874943289199 issues/paged-apply-differs-from-whole.md step \d+: page-by-page apply differs from whole
 osis-engine/order::held_set_decides_plain OSIS_ORDER_SEED=874943289203 issues/held-set-decides-plain-record-only.md RecordOnly \(replay: .*after the sync exchange: shows other than the node keeping every body
+osis-engine/rotation::tests_custody::engine_agrees_with_custody_model_large_spec_permissions_5_4 OSIS_CUSTODY_START=192781816512 issues/custody-pair-needs-write.md T paired by A: needs Write on \S+
