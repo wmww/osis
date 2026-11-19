@@ -459,12 +459,11 @@ pub(crate) fn unreceive_outside(tx: &mut Tx<'_>, t: &Tid) -> Result<()> {
             continue;
         }
         tx.core.waits.examined += 1;
-        match rest.header.ephemeral.is_none() {
-            true => drop(retry_pending(tx, id, rest)?),
-            false => {
-                tx.core.memory_waits.insert(id);
-                tx.core.waits.memory_woken.wrote_added(&id, true, true);
-            }
+        if rest.header.ephemeral.is_none() {
+            retry_pending(tx, id, rest)?;
+        } else {
+            tx.core.memory_waits.insert(id);
+            tx.core.waits.memory_woken.wrote_added(&id, true, true);
         }
     }
     Ok(())
