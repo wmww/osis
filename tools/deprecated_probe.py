@@ -1,8 +1,9 @@
 #!/usr/bin/env python3
 """The cleanup's `#[deprecated]` probe (notes/coordination.md, Cleanup): mark every `pub` item and
-field in CRATE's src/ `#[deprecated]`, run one `cargo clippy --all-targets --message-format=short`
-(with --gui also one `-p osis-kit -p osis-app -p osis-android`), and list per item its use sites
-outside CRATE's own src/: the items nobody uses, then those only tests use (under tests/, benches/
+field in CRATE's src/ `#[deprecated]`, run one `cargo clippy --workspace --all-targets
+--message-format=short` (every member, the GUI's included) and `cargo +nightly fuzz check` of the
+fuzz targets (core/test/fuzz, outside the workspace), and list per item its use sites outside
+CRATE's own src/: the items nobody uses, then those only tests use (under tests/, benches/
 or core/test/, a `tests*.rs`, a file declared `#[cfg(test)] mod x;`, or below a
 `#[cfg(test)] mod x {`). The tree is restored afterwards, always; a probe killed hard leaves its
 backup in target/deprecated-probe/, which the next run restores first.
@@ -14,11 +15,12 @@ matches the name in any module. A variant or tuple-field use counts for its type
 --dead: then find which of the unused items are dead, not merely used only inside CRATE: narrow each
 to `pub(crate)` (a free item also leaves every `pub use` in src/ naming it), run
 `cargo clippy -p CRATE --lib --message-format=short` and list rustc's never used / read /
-constructed warnings (dead in the lib build: unused, or used by CRATE's tests alone). An item a
+constructed warnings (dead in the lib build: unused, or used by CRATE's tests alone), less those
+naming only items used outside CRATE by non-test code (a method of a narrowed type). An item a
 narrowing breaks the build over (a type named in a still-`pub` signature, a re-export the scan
 missed) is put back `pub` and the run repeated; those are listed as kept. Needs CRATE's src/
 committed (no diff against HEAD); after restoring, `git diff` of it must be empty again.
-Usage: tools/deprecated_probe.py [--gui] [--dead] [-v] CRATE   (a package name, e.g. osis-blob; -v
+Usage: tools/deprecated_probe.py [--dead] [-v] CRATE   (a package name, e.g. osis-blob; -v
 also lists every used item with its sites)"""
 import argparse, collections, os, re, shutil, signal, subprocess, sys
 
@@ -32,6 +34,9 @@ OWNER = re.compile(r"^\s*(?:pub(?:\([\w:]+\))? )?(?:unsafe )?(impl|struct|enum|u
 DEAD = re.compile(r"^(\S+?):(\d+):\d+: (?:warning|error): (.*\bnever (?:used|read|constructed)\b.*)$")
 ERROR = re.compile(r"^(\S+?):(\d+):\d+: error(?:\[E\d+\])?: (.*)$")
 USE = re.compile(r"^(\S+?):(\d+):\d+: warning: use of deprecated [a-z ]+`([^`]+)`")
+# cargo-fuzz passes no --message-format: rustc's long form, the message line then its ` --> ` line
+LONG_USE = re.compile(r"^warning: use of deprecated [a-z ]+`([^`]+)`.*\n\s*--> (\S+?):(\d+):\d+", re.M)
+FUZZ = os.path.join(ROOT, "core", "test", "fuzz")
 TESTY = re.compile(r"(^|/)(tests|benches)/|^core/test/|(^|/)tests?(_\w+)?\.rs$")
 
 
@@ -184,6 +189,27 @@ def segments(item_path):
     return segs
 
 
+def use_sites(output, cwd):
+    """(path from the repository root, line, item path) of each deprecated use in a build's output,
+    short form (`--message-format=short`) or rustc's long one; paths are relative to `cwd`."""
+    found = [(m.group(1), m.group(2), m.group(3)) for l in output.splitlines() if (m := USE.match(l))]
+    found += [(m.group(2), m.group(3), m.group(1)) for m in LONG_USE.finditer(output)]
+    return sorted({(os.path.relpath(os.path.join(cwd, p), ROOT), int(n), item) for p, n, item in found})
+
+
+def outside_only(warning, items, used):
+    """Whether a dead-code warning names only items used outside the crate by non-test code
+    (`used`): methods or fields of a narrowed type, not dead. The warning's line is its first item's
+    declaration (narrowing keeps line numbers), which gives the owner of every name it lists."""
+    m = DEAD.match(warning)
+    if not m:
+        return False
+    at = f"{m.group(1)}:{m.group(2)}"
+    owners = {k[0] for k, ds in items.items() if at in ds}
+    names = re.findall(r"`(\w+)`", m.group(3))
+    return len(owners) == 1 and bool(names) and all((next(iter(owners)), n) in used for n in names)
+
+
 def resolve(item_path, items, modules):
     """The marked items a use names. rustc names an item by its visible path (a re-export's), so a
     module owner matches any module item of that name; a variant or tuple field of a marked type
@@ -201,13 +227,18 @@ def resolve(item_path, items, modules):
 
 def narrowed(text, lines, free):
     """`text` with `pub ` made `pub(crate) ` on each of `lines` (1-based) and each name of `free`
-    dropped from its `pub use` statements (a statement left empty goes)."""
+    dropped from its `pub use` statements (a statement left empty goes, its lines left blank: line
+    numbers stay those of the declarations)."""
     out = text.split("\n")
     for n in lines:
         out[n - 1] = re.sub(r"\bpub ", "pub(crate) ", out[n - 1], count=1)
     text = "\n".join(out)
 
     def drop(m):
+        new = rewrite(m)
+        return new + "\n" * (m.group(0).count("\n") - new.count("\n"))
+
+    def rewrite(m):
         stmt = m.group(0)
         # each piece but those whose item (the last segment before any `as`) is in `free`
         names = lambda part: [x for x in part if x.strip() and re.split(r"\s+as\s+", x.strip())[0].split("::")[-1] not in free]
@@ -279,7 +310,6 @@ def clean(path):
 
 def main():
     ap = argparse.ArgumentParser()
-    ap.add_argument("--gui", action="store_true")
     ap.add_argument("--dead", action="store_true")
     ap.add_argument("-v", action="store_true")
     ap.add_argument("crate")
@@ -297,30 +327,29 @@ def main():
     try:
         items, modules = mark(dirs[a.crate], a.crate, originals)
         backup(originals)
-        runs = [[]] + ([["-p", "osis-kit", "-p", "osis-app", "-p", "osis-android"]] if a.gui else [])
-        output = ""
-        for extra in runs:
-            cmd = ["cargo", "clippy", "--all-targets", "--message-format=short", *extra]
+        sites = []
+        for cmd, cwd in [(["cargo", "clippy", "--workspace", "--all-targets", "--message-format=short"], ROOT),
+                         (["cargo", "+nightly", "fuzz", "check", "--fuzz-dir", "."], FUZZ)]:
             print("deprecated_probe:", " ".join(cmd), file=sys.stderr)
-            r = subprocess.run(cmd, cwd=ROOT, capture_output=True, text=True)
-            output += r.stderr
+            r = subprocess.run(cmd, cwd=cwd, capture_output=True, text=True)
+            sites += use_sites(r.stderr, cwd)
             if r.returncode:
-                errors = [l for l in r.stderr.splitlines() if ": error" in l]
-                print(f"deprecated_probe: clippy failed ({len(errors)} errors), the uses listed are partial:", *errors[:10], sep="\n", file=sys.stderr)
+                errors = [l for l in r.stderr.splitlines() if "error" in l]
+                print(f"deprecated_probe: {' '.join(cmd[:3])} failed, the uses listed are partial:", *errors[:10], sep="\n", file=sys.stderr)
     finally:
         restore(originals)
         shutil.rmtree(BACKUP, ignore_errors=True)
+    print("deprecated_probe: uses searched in every workspace member (core and GUI) and the fuzz targets", file=sys.stderr)
     uses = collections.defaultdict(set)
     unmatched = set()
-    for line in output.splitlines():
-        m = USE.match(line)
-        if not m or m.group(1).startswith(crate_src):
+    for path, line, item in sites:
+        if path.startswith(crate_src):
             continue
-        keys = resolve(m.group(3), items, modules)
+        keys = resolve(item, items, modules)
         if not keys:
-            unmatched.add(m.group(3))
+            unmatched.add(item)
         for k in keys:
-            uses[k].add((m.group(1), int(m.group(2))))
+            uses[k].add((path, line))
     unused = sorted(k for k in items if k not in uses)
     test_only = sorted(k for k in uses if all(is_test(p, n) for p, n in uses[k]))
     show = lambda k: f"{k[0]}::{k[1]}  ({', '.join(items[k])})"
@@ -339,6 +368,9 @@ def main():
     print(f"deprecated_probe: {len(items)} items marked, {len(unused)} unused, {len(test_only)} test-only", file=sys.stderr)
     if a.dead:
         warnings, kept, errors = dead(a.crate, dirs[a.crate], {k: items[k] for k in unused}, {k for k in unused if k[0] in modules})
+        used = {k for k in uses if k not in test_only}
+        hidden = [w for w in warnings if outside_only(w, items, used)]
+        warnings = [w for w in warnings if w not in hidden]
         if not clean(crate_src):
             sys.exit(f"deprecated_probe: {crate_src} differs from HEAD after restoring: check git diff")
         if errors:
@@ -347,6 +379,8 @@ def main():
         print(f"dead in the lib build (unused, or used by {a.crate}'s tests alone) ({len(warnings)} warnings):")
         for w in warnings:
             print("  " + w)
+        if hidden:
+            print(f"deprecated_probe: {len(hidden)} warnings left out: they name only items used outside {crate_src} (a method of a narrowed type)", file=sys.stderr)
         if kept:
             print(f"kept pub (narrowing broke the build) ({len(kept)}):")
             for k in sorted(kept):
