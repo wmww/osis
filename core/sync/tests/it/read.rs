@@ -140,6 +140,11 @@ struct Fake {
     orphans: Stamped<SyncId, BTreeSet<BlobId>>,
     sources: Stamped<SyncId, Arc<Vec<SrcView>>>,
     srcs: Stamped<(SyncId, Source), SrcView>,
+    /// The connection each source's record is on (digests agreed), and those told full per S.
+    conns: Stamped<Source, ConnId>,
+    told_full: Stamped<(ConnId, SyncId), ()>,
+    /// Requests sent, numbered.
+    requests: osis_proto::msg::Id,
     src_feed: Vec<(SyncId, Source)>,
     seen: Stamped<(Source, SyncId, CommitId), Seen>,
     seen_feed: Vec<(Source, SyncId, CommitId)>,
@@ -280,9 +285,10 @@ impl Ground for Fake {
         }
         Ok(())
     }
-    fn delete_freed(&mut self, at: &SrcView, _s: &SyncId, _head: &osis_blob::StepId, b: &BlobId, _t: &Tid) -> Result<()> {
-        self.sent.push(Sent::DeleteFreed(at.conn, *b));
-        Ok(())
+    fn delete_freed(&mut self, conn: ConnId, _s: &SyncId, _head: &osis_blob::StepId, b: &BlobId, _t: &Tid) -> Result<Option<osis_proto::msg::Id>> {
+        self.sent.push(Sent::DeleteFreed(conn, *b));
+        self.requests += 1;
+        Ok(Some(self.requests))
     }
     fn freed_done(&mut self, b: &BlobId, t: &Tid) -> Result<()> {
         self.sent.push(Sent::FreedDone(*b));
@@ -405,6 +411,12 @@ impl Ground for Fake {
     fn source(&mut self, s: &SyncId, at: &Source) -> Option<SrcView> {
         self.srcs.get(&(*s, *at)).cloned()
     }
+    fn connected(&mut self, at: &Source) -> Option<ConnId> {
+        self.conns.get(at).copied()
+    }
+    fn told_full(&mut self, conn: ConnId, s: &SyncId) -> bool {
+        self.told_full.contains_key(&(conn, *s))
+    }
     fn holds(&mut self, c: &CommitId) -> bool {
         self.bodies.get(c).is_some()
     }
@@ -475,24 +487,26 @@ impl Ground for Fake {
         }
         Ok(())
     }
-    fn fetch(&mut self, at: &SrcView, s: &SyncId, b: &BlobId) -> Result<()> {
+    fn fetch(&mut self, conn: ConnId, s: &SyncId, b: &BlobId) -> Result<()> {
         let _ = s;
-        self.sent.push(Sent::Fetch(at.conn, *b));
+        self.sent.push(Sent::Fetch(conn, *b));
         Ok(())
     }
     /// By the head's delete key alone (levels: the World tests, `deletes::`).
     fn delete_item(&mut self, s: &SyncId, head: &osis_blob::StepId, b: &BlobId) -> Result<Option<osis_blob::DeleteItem>> {
         Ok(self.creds.get(s).and_then(|c| c.keys.get(head)?.delete.as_ref().map(|d| osis_blob::DeleteItem::sign(d, s, *b))))
     }
-    fn delete(&mut self, at: &SrcView, s: &SyncId, head: &osis_blob::StepId, b: &BlobId) -> Result<()> {
-        if self.delete_item(s, head, b)?.is_some() {
-            self.sent.push(Sent::Delete(at.conn, *b));
+    fn delete(&mut self, conn: ConnId, s: &SyncId, head: &osis_blob::StepId, b: &BlobId) -> Result<Option<osis_proto::msg::Id>> {
+        if self.delete_item(s, head, b)?.is_none() {
+            return Ok(None);
         }
-        Ok(())
+        self.sent.push(Sent::Delete(conn, *b));
+        self.requests += 1;
+        Ok(Some(self.requests))
     }
-    fn deposit(&mut self, at: &SrcView, s: &SyncId, c: &CommitId, b: &BlobId) -> Result<()> {
-        let _ = (s, c);
-        self.sent.push(Sent::Deposit(at.conn, *b));
+    fn deposit(&mut self, conn: ConnId, head: Option<StepId>, s: &SyncId, c: &CommitId, b: &BlobId) -> Result<()> {
+        let _ = (head, s, c);
+        self.sent.push(Sent::Deposit(conn, *b));
         Ok(())
     }
     fn set_stand(&mut self, at: &Source, s: &SyncId, c: &CommitId, stand: &Stand) -> Result<()> {
@@ -573,15 +587,18 @@ impl W {
 
     fn source(&mut self, s: SyncId, at: Source, conn: ConnId, store: bool) {
         let mut v = (*self.g.sources(&s)).clone();
-        v.retain(|x| x.conn != conn);
-        v.push(SrcView { at, conn, store, head: Some(step(0).id()), full: false, role_unheld: false });
+        v.retain(|x| x.at != at);
+        v.push(SrcView { at, store, head: Some(step(0).id()), role_unheld: false });
         self.g.set_sources(s, v);
+        if self.g.conns.get(&at) != Some(&conn) {
+            self.g.conns.insert(at, conn);
+        }
     }
 
-    fn edit_source(&mut self, conn: ConnId, f: impl Fn(&mut SrcView)) {
+    fn edit_source(&mut self, at: Source, f: impl Fn(&mut SrcView)) {
         for s in [S, S2] {
             let mut v = (*self.g.sources(&s)).clone();
-            v.iter_mut().filter(|x| x.conn == conn).for_each(&f);
+            v.iter_mut().filter(|x| x.at == at).for_each(&f);
             self.g.set_sources(s, v);
         }
         self.settle();
@@ -695,8 +712,13 @@ impl W {
             }
         }
         let full = self.g.k.full;
-        if self.g.sources(&S).iter().any(|x| x.conn == KC && x.full != full) {
-            self.edit_source(KC, |x| x.full = full);
+        for s in [S, S2] {
+            if self.g.told_full.contains_key(&(KC, s)) != full {
+                match full {
+                    true => self.g.told_full.insert((KC, s), ()),
+                    false => self.g.told_full.remove(&(KC, s)),
+                };
+            }
         }
     }
 
@@ -885,6 +907,73 @@ fn full_source_counts_a_carrier_it_lacks() {
     assert_eq!(w.deletes(), 1);
 }
 
+// spec/sync-judgement.md §3 (Deletes: what is owed at a source is judged from `known` alone,
+// connected or not, and sent once the source is connected): a Delete owed while K is away goes on
+// K's next connection; one sent and never answered goes again on each later connection, owing
+// no more as the reconnects add up; one answered is never sent again. Fails with acts keyed by
+// connection (each reconnect resends what was answered) or with nothing carried to the next one.
+#[test]
+fn an_act_owed_goes_on_each_connection_until_answered_spec_sync_judgement_3() {
+    let mut w = W::new();
+    w.pulls = false;
+    w.hold(cid(1), &[S], uncovered());
+    w.hold(cid(2), &[S], uncovered());
+    let (b1, b2) = (w.own_blobs(S, cid(1))[0], w.own_blobs(S, cid(2))[0]);
+    w.g.k.held.insert((S, b1), cid(1));
+    w.g.k.held.insert((S, b2), cid(2));
+    w.stream();
+    w.g.conns.remove(&K);
+    w.judge(S, cid(1), covered(cid(2)));
+    assert_eq!(w.deletes(), 0, "sent while K is away");
+    assert_eq!(w.read.owed_pending(), 1);
+    let on = |w: &mut W, c: ConnId| {
+        w.g.conns.insert(K, c);
+        w.settle();
+        w.g.sent.iter().filter(|m| **m == Sent::Delete(c, b1)).count()
+    };
+    for i in 0..5 {
+        assert_eq!(on(&mut w, ConnId(200 + i)), 1, "not sent on K's connection {i}");
+        assert_eq!(w.read.owed_pending(), 1, "what is owed grows with the reconnects");
+    }
+    w.read.answered(ConnId(204), w.g.requests);
+    assert_eq!(w.read.owed_pending(), 0);
+    assert_eq!(on(&mut w, ConnId(300)), 0, "an answered Delete sent again");
+    assert_eq!(w.deletes(), 5);
+}
+
+// spec/sync-judgement.md §3 (Deletes: at a source full for S a carrier it lacks counts as held;
+// Role entries first: a full source is skipped), spec/sync-streams.md §4 (Full: a peer's `full`
+// lasts with the connection it was told on): a Delete owed only because K is full goes only on a
+// connection K told it is full on, and on K's next connection only once told there too; the
+// judgement reads no connection. Fails with the judgement reading `full` of a connection (it
+// re-judges at each reconnect) or with the act sent whatever K told.
+#[test]
+fn a_delete_owed_only_while_full_goes_where_told_full_spec_sync_judgement_3() {
+    let mut w = W::new();
+    w.pulls = false;
+    w.hold(cid(1), &[S], uncovered());
+    let b = w.own_blobs(S, cid(1))[0];
+    w.g.k.held.insert((S, b), cid(1));
+    w.stream();
+    w.hold(cid(2), &[S], uncovered());
+    w.judge(S, cid(1), covered(cid(2)));
+    assert_eq!(w.deletes(), 0, "deleted with no carrier at a K not full");
+    w.g.k.full = true;
+    w.stream();
+    w.settle();
+    assert_eq!(w.deletes(), 1, "not deleted at a K told full");
+    let c2 = ConnId(KC.0 + 70);
+    w.g.conns.insert(K, c2);
+    osis_base::costs::take();
+    w.settle();
+    let taken = osis_base::costs::take();
+    assert!(!taken.iter().any(|(k, _, n)| *k == "read: toward" && *n > 0), "a reconnect judged K's bodies again");
+    assert_eq!(w.deletes(), 1, "sent on a connection K did not tell full on");
+    w.g.told_full.insert((c2, S), ());
+    w.settle();
+    assert!(w.g.sent.contains(&Sent::Delete(c2, b)), "not sent once K told full there");
+}
+
 // spec/sync-judgement.md §3 (between readers): no Delete is sent to a source that reads S; its
 // view is its own (HN_readers).
 #[test]
@@ -936,7 +1025,7 @@ fn head_move_allows_one_more() {
         w.exchange();
     }
     w.g.creds.insert(S, creds(1, true, true));
-    w.edit_source(KC, |x| x.head = Some(step(1).id()));
+    w.edit_source(K, |x| x.head = Some(step(1).id()));
     for _ in 0..2 {
         w.k_delete(cid(1));
         w.exchange();
@@ -1046,10 +1135,10 @@ fn delete_waits_for_a_role_commit_shown() {
     w.hold(cid(2), &[S], uncovered());
     w.hold(cid(1), &[S], uncovered());
     w.exchange();
-    w.edit_source(KC, |x| x.role_unheld = true);
+    w.edit_source(K, |x| x.role_unheld = true);
     w.judge(S, cid(1), covered(cid(2)));
     assert_eq!(w.deletes(), 0);
-    w.edit_source(KC, |x| x.role_unheld = false);
+    w.edit_source(K, |x| x.role_unheld = false);
     assert_eq!(w.deletes(), 1);
 }
 
@@ -1309,7 +1398,7 @@ fn a_non_writer_deposits_nothing_at_a_source_behind_its_head_spec_sync_judgement
     w.hold(cid(1), &[S], uncovered());
     w.settle();
     assert!(!w.g.sent.iter().any(|m| matches!(m, Sent::Deposit(..))), "{:?}", w.g.sent);
-    w.edit_source(KC, |x| x.head = Some(step(1).id()));
+    w.edit_source(K, |x| x.head = Some(step(1).id()));
     let b = w.own_blobs(S, cid(1))[0];
     assert!(w.g.sent.contains(&Sent::Deposit(KC, b)), "{:?}", w.g.sent);
 }

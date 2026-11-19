@@ -684,7 +684,6 @@ impl Node {
         let mut cx = cx!(self, out);
         for m in moved.drain(..) {
             self.status.moved(&self.driver.sessions, &self.opens, &m);
-            self.read.moved(&m, &self.opens);
             self.inbox.moved(&m, &crate::inbox::Links { sessions: &mut self.driver.sessions, opens: &self.opens, streams: &self.streams });
             if let Some(c) = m.conn() {
                 self.driver.dials.sharing(c, !self.opens.members(c).is_empty());
@@ -733,6 +732,7 @@ impl Node {
         self.opens.closed(conn, &mut moved);
         self.moved(&mut moved, out);
         self.inbox.on_closed(conn);
+        self.read.closed(conn);
         self.driver.port.push(PortEvent::Closed(conn));
         // a store failure here reopens the node, whose start drops the same entries
         let _ = self.store.gone(crate::store::Source::Conn(conn));

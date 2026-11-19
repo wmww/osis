@@ -5,6 +5,7 @@
 //! own log; `Live` is the product's, a test's ground is a table of stamped values.
 
 use crate::store::{Source, Stand};
+use crate::session::RequestId;
 use crate::types::{ConnId, Entry, Result};
 use osis_base::{BlobId, CommitId, SyncId, Tid, WallMs};
 use osis_engine::retention::Minting;
@@ -42,18 +43,15 @@ pub struct Facts {
     pub missing: bool,
 }
 
-/// One source of S on a connection up now (spec/sync-opens.md §4).
+/// One source of S (spec/sync-opens.md §4): a member S of a record in memory, connected or not.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct SrcView {
     /// Where its rows live: its record, else the connection.
     pub at: Source,
-    pub conn: ConnId,
     /// It keeps S unread (a store source); else it reads S.
     pub store: bool,
-    /// Its head for S, as its stream or open showed.
+    /// Its head for S, as its stream last named it.
     pub head: Option<StepId>,
-    /// It is full for S (spec/sync-streams.md §4 Full).
-    pub full: bool,
     /// Its stream shows a role commit this node does not hold (spec/sync-judgement.md §3 Role
     /// entries first: deletes toward it wait while it does).
     pub role_unheld: bool,
@@ -181,16 +179,22 @@ pub trait Ground {
     /// of it there stands, and nothing of it is relayed there.
     fn neither(&mut self, s: &SyncId, c: &CommitId, there: &BTreeSet<BlobId>) -> Result<bool>;
 
-    /// The sources of S on connections up now.
+    /// The sources of S, up or away: a member S of each record in memory (a take or a release
+    /// moves none).
     fn sources(&mut self, s: &SyncId) -> Arc<Vec<SrcView>>;
-    /// Where each source of S up now is reached, reading nothing of its streams' rows: what a
-    /// fetch needs (a piece reading `sources` would move with every source's head and full row,
-    /// read at its absent stamp, so a removal in that row's bucket would judge every piece).
-    fn reached(&mut self, s: &SyncId) -> Vec<(Source, ConnId)> {
-        self.sources(s).iter().map(|x| (x.at, x.conn)).collect()
+    /// The sources of S, reading nothing of their streams' rows: what a fetch needs (a piece
+    /// reading `sources` would move with every source's head row, read at its absent stamp, so a
+    /// removal in that row's bucket would judge every piece).
+    fn reached(&mut self, s: &SyncId) -> Vec<Source> {
+        self.sources(s).iter().map(|x| x.at).collect()
     }
-    /// One source of S, if up now (read per source, so a source's change moves its rows alone).
+    /// One source of S (read per source, so a source's change moves its rows alone).
     fn source(&mut self, s: &SyncId, at: &Source) -> Option<SrcView>;
+    /// The connection holding `at`'s record once its digests agreed: where what is owed there
+    /// goes (`read/owed.rs`).
+    fn connected(&mut self, at: &Source) -> Option<ConnId>;
+    /// The peer on `conn` told it is full for S (spec/sync-streams.md §4 Full).
+    fn told_full(&mut self, conn: ConnId, s: &SyncId) -> bool;
     /// Commit `c` is held here (applied or judged): one that is not is not judged (spec/sync-judgement.md
     /// §1 Unjudged blobs).
     fn holds(&mut self, c: &CommitId) -> bool;
@@ -225,19 +229,20 @@ pub trait Ground {
     /// The entry leaves the own log, its tombstone noting `c`.
     fn drop_own(&mut self, s: &SyncId, b: &BlobId, c: &CommitId) -> Result<()>;
     fn lift(&mut self, s: &SyncId, b: &BlobId) -> Result<()>;
-    /// Entry `b` of S fetched from the source (streams' Fetch, spec/sync-judgement.md §3 Dropped
+    /// Entry `b` of S fetched on `conn` (streams' Fetch, spec/sync-judgement.md §3 Dropped
     /// bodies): a body counting missing again.
-    fn fetch(&mut self, at: &SrcView, s: &SyncId, b: &BlobId) -> Result<()>;
+    fn fetch(&mut self, conn: ConnId, s: &SyncId, b: &BlobId) -> Result<()>;
     /// The Delete of commit blob `b` this node can sign for a source on `head` (`Live::delete_item`):
     /// by the head's delete key, else by the delete keys of levels it holds. `None`: it holds
     /// neither, and the entry stays there until a holder connects or it expires.
     fn delete_item(&mut self, s: &SyncId, head: &StepId, b: &BlobId) -> Result<Option<osis_blob::DeleteItem>>;
-    /// A Delete of `b` at the source (`delete_item`).
-    fn delete(&mut self, at: &SrcView, s: &SyncId, head: &StepId, b: &BlobId) -> Result<()>;
-    /// `c`'s body given to a source this node does not stamp for (spec/sync-judgement.md §3
-    /// Reader that is not a writer): own entry `b` relayed under its stamp when the source's head
-    /// write key verifies it, else a fresh encryption (`Engine::seal_body`) deposited.
-    fn deposit(&mut self, at: &SrcView, s: &SyncId, c: &CommitId, b: &BlobId) -> Result<()>;
+    /// A Delete of `b` on `conn` (`delete_item`): the request, if one went.
+    fn delete(&mut self, conn: ConnId, s: &SyncId, head: &StepId, b: &BlobId) -> Result<Option<RequestId>>;
+    /// `c`'s body given to the source on `conn`, on `head`, that this node does not stamp for
+    /// (spec/sync-judgement.md §3 Reader that is not a writer): own entry `b` relayed under its
+    /// stamp when the head's write key verifies it, else a fresh encryption
+    /// (`Engine::seal_body`) deposited.
+    fn deposit(&mut self, conn: ConnId, head: Option<StepId>, s: &SyncId, c: &CommitId, b: &BlobId) -> Result<()>;
     fn set_stand(&mut self, at: &Source, s: &SyncId, c: &CommitId, stand: &Stand) -> Result<()>;
 
     /// Of kind `r` (records: `None`; a rotation's thing lists: `Some(r)`), what S carries as
@@ -342,11 +347,12 @@ pub trait Ground {
         let _ = (s, b);
         Ok(())
     }
-    /// A Delete of freed link `b` of `t` at the source, by the head's delete key where its held
-    /// prefix bore the link, else by level (spec/sync-compaction.md §1 Freed links).
-    fn delete_freed(&mut self, at: &SrcView, s: &SyncId, head: &StepId, b: &BlobId, t: &Tid) -> Result<()> {
-        let _ = (at, s, head, b, t);
-        Ok(())
+    /// A Delete of freed link `b` of `t` on `conn`, by the head's delete key where its held
+    /// prefix bore the link, else by level (spec/sync-compaction.md §1 Freed links): the
+    /// request, if one went.
+    fn delete_freed(&mut self, conn: ConnId, s: &SyncId, head: &StepId, b: &BlobId, t: &Tid) -> Result<Option<RequestId>> {
+        let _ = (conn, s, head, b, t);
+        Ok(None)
     }
     /// Freed link `b` of `t` leaves the set: no entry of it is known here.
     fn freed_done(&mut self, b: &BlobId, t: &Tid) -> Result<()> {
@@ -445,5 +451,5 @@ pub struct CertBlobsMissing {
     pub unneeded: BTreeSet<osis_base::BlobId>,
     /// Deletes owed at sources keeping S unread, once S's sources are heard out: each blob there
     /// losing to another blob there (spec/sync-ids.md §6 Delete).
-    pub deletes: BTreeSet<(Source, ConnId, StepId, osis_base::BlobId)>,
+    pub deletes: BTreeSet<(Source, StepId, osis_base::BlobId)>,
 }

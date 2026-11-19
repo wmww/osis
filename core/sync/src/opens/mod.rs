@@ -471,8 +471,12 @@ pub struct Opens {
     /// what is judged of a record's member whatever connection holds it); never by a take or a
     /// release.
     record_members: osis_base::memo::Stamps,
-    /// Stamped per source as a connection takes or lets go its record (`conn_of`).
+    /// Stamped per source as a connection takes or lets go its record or its digests agree
+    /// (`conn_of`, `agreed_on`).
     connected: osis_base::memo::Stamps,
+    /// Stamped per S as the records in memory holding it move, never by a take or a release
+    /// (`sources_of`), and fed with each (S, source) coming to be one (`sources_feed`).
+    sources: osis_base::memo::Stamps,
     /// Kept records by `acked_pos` (`wait_for`); none before the first settle loads it.
     acks: Option<Acks>,
     /// Per S, the connections whose walk stopped there (spec/sync-ids.md §6 Stranded there), each
@@ -518,6 +522,7 @@ impl Default for Opens {
             member_stamps: osis_base::memo::Stamps::named("opens: members"),
             record_members: osis_base::memo::Stamps::named("opens: record members"),
             connected: osis_base::memo::Stamps::named("opens: connected"),
+            sources: osis_base::memo::Stamps::named("opens: sources"),
             acks: None,
             stops: osis_base::memo::Stamped::default(),
             dropped: BTreeSet::new(),
@@ -654,21 +659,77 @@ impl Opens {
         let r = self.records.remove(&id)?;
         self.unloaded.push(id);
         for s in r.members.keys() {
-            self.hold(*s, id, false);
+            self.hold(*s, id, None);
             self.record_members.wrote(&(src, *s), false);
         }
         Some(r)
     }
 
-    /// Record `rid` in memory holds S as a member, or not (`held`).
-    fn hold(&mut self, s: SyncId, rid: RecordId, on: bool) {
-        if on {
-            self.held.entry(s).or_default().insert(rid);
-        } else if let Some(set) = self.held.get_mut(&s) {
-            set.remove(&rid);
-            if set.is_empty() {
-                self.held.remove(&s);
+    /// Record `rid` in memory holds S as a member at `src` (`Some`), or not (`held`): S's sources
+    /// moved (`sources`).
+    fn hold(&mut self, s: SyncId, rid: RecordId, src: Option<Source>) {
+        let was = self.held.get(&s).map_or(0, BTreeSet::len);
+        match src {
+            Some(src) => {
+                if self.held.entry(s).or_default().insert(rid) {
+                    // a record read from its rows: what read of its members moves too
+                    self.record_members.wrote(&(src, s), true);
+                    self.sources.wrote_added(&(s, src), true, true);
+                }
             }
+            None => {
+                if let Some(set) = self.held.get_mut(&s) {
+                    set.remove(&rid);
+                    if set.is_empty() {
+                        self.held.remove(&s);
+                    }
+                }
+            }
+        }
+        let now = self.held.get(&s).map_or(0, BTreeSet::len);
+        if now != was {
+            self.sources.wrote(&s, true);
+        }
+        if (now == 0) != (was == 0) {
+            self.sources.wrote(&("any", s), true);
+        }
+    }
+
+    /// The sources of S: each record in memory holding S as a member, whether or not a
+    /// connection holds it (a record kept nowhere: its connection). Stamped per S: a take or
+    /// release moves nothing of it.
+    pub fn sources_of(&self, s: &SyncId) -> Vec<Source> {
+        self.sources.read(s);
+        let of = |id: &RecordId| match self.records.get(id) {
+            Some(r) if r.kept => Some(Source::Record(*id)),
+            Some(_) => self.conn_on(*id).map(Source::Conn),
+            None => None,
+        };
+        self.held.get(s).into_iter().flatten().filter_map(of).collect()
+    }
+
+    /// Whether S has a source (`sources_of`): moves only when that flips.
+    pub fn has_sources(&self, s: &SyncId) -> bool {
+        self.sources.read(&("any", *s));
+        self.held.contains_key(s)
+    }
+
+    /// A cursor over the (S, source) pairs that come to be sources from now on (a member
+    /// opening, a record coming into memory with its members).
+    pub fn sources_feed(&self) -> osis_base::memo::Feed<(SyncId, Source)> {
+        self.sources.feed()
+    }
+
+    /// The connection holding the record at `src` once its digests agreed (spec/sync-opens.md §3
+    /// Agreement): where what is owed to that source goes. Stamped per source with `conn_of`.
+    pub fn agreed_on(&self, src: Source) -> Option<ConnId> {
+        self.conn_of(src).filter(|c| self.agreed(*c))
+    }
+
+    /// `conn`'s digests agreed: what read follows of its record moves (`agreed_on`).
+    fn agreed_moved(&self, conn: ConnId) {
+        if let Some(src) = self.source_of(conn) {
+            self.connected.wrote(&src, true);
         }
     }
 
@@ -1309,7 +1370,8 @@ impl Opens {
                     }
                 }
                 // a record no connection holds: what is kept of S for it goes too
-                for id in self.held.remove(&s).unwrap_or_default() {
+                for id in self.held.get(&s).cloned().unwrap_or_default() {
+                    self.hold(s, id, None);
                     if self.records.get(&id).is_some_and(|r| r.kept && r.members.contains_key(&s)) {
                         self.record_members.wrote(&(Source::Record(id), s), false);
                         moved.push(Moved::Gone(id, s));
@@ -1469,7 +1531,7 @@ impl Opens {
                 let members: Vec<SyncId> = r.members.keys().copied().collect();
                 self.records.insert(id, r);
                 for s in members {
-                    self.hold(s, id, true);
+                    self.hold(s, id, Some(Source::Record(id)));
                 }
                 Some(true)
             }
@@ -1736,6 +1798,7 @@ impl Opens {
         c.test_due = true;
         if mine == digest {
             c.agree = Agree::Done;
+            self.agreed_moved(conn);
             return;
         }
         // On a difference each side sends its set as Members pages, before acting on any later message.
@@ -1766,6 +1829,8 @@ impl Opens {
         }
         let theirs: BTreeSet<SyncId> = std::mem::take(list).into_iter().collect();
         c.agree = Agree::Done;
+        self.agreed_moved(conn);
+        let Some(c) = self.conns.get(&conn) else { return };
         let Some(rid) = c.rec else { return };
         let mine: BTreeSet<SyncId> = self.records.get(&rid).map(|r| r.members.keys().copied().collect()).unwrap_or_default();
         for s in mine.difference(&theirs) {
@@ -2473,7 +2538,8 @@ impl Opens {
         let rejoin = r.stopped.remove(&s).unwrap_or(Rejoin::From(None));
         self.dirty(rid).members.insert(s);
         self.member_moved(conn, &s, true);
-        self.hold(s, rid, true);
+        let src = self.source_of(conn);
+        self.hold(s, rid, src);
         self.peers.wrote(&s, true);
         moved.push(Moved::Joined(conn, s, rejoin));
         self.set_stop(conn, s, None);
@@ -2568,7 +2634,7 @@ impl Opens {
         let kept = r.kept;
         self.unfollow_member(rid, s);
         ctx.holds.unfollow(rid, &s);
-        self.hold(s, rid, false);
+        self.hold(s, rid, None);
         self.peers.wrote(&s, true);
         if kept {
             self.record_members.wrote(&(Source::Record(rid), s), false);
@@ -2703,7 +2769,7 @@ impl Opens {
             None => r.stopped.remove(&s),
         };
         if let Some(rid) = c.rec {
-            self.hold(s, rid, false);
+            self.hold(s, rid, None);
         }
         self.peers.wrote(&s, true);
         moved.push(Moved::Left(conn, s, at));

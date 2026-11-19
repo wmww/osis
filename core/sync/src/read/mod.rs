@@ -26,8 +26,8 @@
 pub mod ground;
 mod judge;
 mod live;
+mod owed;
 mod pieces;
-mod views;
 
 pub use ground::{BlobInfo, CertBlobsMissing, Facts, Ground, PieceAt, Seen, SrcView, StepReady};
 pub use live::Live;
@@ -113,9 +113,9 @@ pub struct Read {
     waits: Stamped<SyncId, u64>,
     /// The engine's commits held, followed from the first settle (`Live`).
     commits: Option<osis_base::memo::Feed<CommitId>>,
-    /// The sources of each S, as opens moved them.
-    views: views::Views,
-    /// Cursors over streams' `known` rows and the views, from the first settle (`Live`).
+    /// The acts owed each source, carried out on its record's connection (`read/owed.rs`).
+    owed: owed::Owed,
+    /// Cursors over streams' `known` rows and opens' sources, from the first settle (`Live`).
     feeds: live::Feeds,
 }
 
@@ -142,7 +142,7 @@ impl Default for Read {
             moved: Stamped::default(),
             waits: Stamped::default(),
             commits: None,
-            views: views::Views::default(),
+            owed: owed::Owed::default(),
             feeds: live::Feeds::default(),
         }
     }
@@ -174,17 +174,21 @@ impl Read {
     pub fn settle(&mut self, cx: &mut Cx, sessions: &mut Sessions, opens: &Opens, streams: &Streams, status: &crate::status::Status, unread: &crate::unread::Unread, fetches: &mut Vec<(ConnId, SyncId, osis_base::BlobId)>) -> Result<bool> {
         let mut commits = self.commits.take();
         let mut feeds = std::mem::take(&mut self.feeds);
-        let views = std::mem::take(&mut self.views);
-        let r = osis_base::costs::scoped("read", || self.settle_on(&mut Live { cx, sessions, opens, streams, status, unread, commits: &mut commits, views: &views, feeds: &mut feeds, fetches }));
+        let r = osis_base::costs::scoped("read", || self.settle_on(&mut Live { cx, sessions, opens, streams, status, unread, commits: &mut commits, feeds: &mut feeds, fetches }));
         self.commits = commits;
         self.feeds = feeds;
-        self.views = views;
         r
     }
 
-    /// A member joined or left a connection's shared set (opens' word, through the driver).
-    pub fn moved(&mut self, m: &crate::opens::Moved, opens: &Opens) {
-        self.views.moved(m, opens);
+    /// `conn` ended: what it carried unanswered goes on its record's next connection.
+    pub fn closed(&mut self, conn: ConnId) {
+        self.owed.closed(conn);
+    }
+
+    /// Tests: the acts owed sources and not done (`read/owed.rs`).
+    #[doc(hidden)]
+    pub fn owed_pending(&self) -> usize {
+        self.owed.pending()
     }
 
     /// Follows S's certificate blobs, its record blob and one list blob per rotation with a list S
@@ -288,9 +292,11 @@ impl Read {
                 self.cert_blobs.want((s, Some(r)));
             }
         }
+        let mut unread = BTreeSet::new();
         for (s, r) in self.cert_blobs.due() {
             if !g.reads(&s) {
                 self.cert_blobs.unwant(&(s, r));
+                unread.insert(s);
                 continue;
             }
             // pullable read inside: a sync ID a reader cannot pull yet is due again once it can
@@ -306,8 +312,11 @@ impl Read {
                 acted = true;
             }
             let before = was.map(|w| w.deletes.clone()).unwrap_or_default();
-            for (at, conn, head, blob) in now.deletes.difference(&before).copied().collect::<Vec<_>>() {
-                self.act(g, &s, None, Act::Delete { at, conn, head, blob })?;
+            for (at, head, blob) in before.difference(&now.deletes) {
+                self.owed.remove(&(s, None, Act::Delete { at: *at, head: *head, blob: *blob, full: false }));
+            }
+            for (at, head, blob) in now.deletes.difference(&before).copied().collect::<Vec<_>>() {
+                self.act(g, &s, None, Act::Delete { at, head, blob, full: false })?;
                 acted = true;
             }
             for b in &now.stale {
@@ -408,6 +417,9 @@ impl Read {
                     self.waits.insert(s, w);
                 }
                 if now.idle {
+                    if !g.reads(&s) {
+                        unread.insert(s);
+                    }
                     self.judged.unwant(&k);
                     g.unfollow_facts(&s, &c);
                     self.verdicts.remove(&k);
@@ -435,13 +447,17 @@ impl Read {
         for ((s, c), (was, now)) in judged {
             acted = true;
             let before = was.map(|w| w.acts).unwrap_or_default();
+            self.unowe(&s, Some(c), &before, &now.acts);
             for a in now.acts.difference(&before).cloned().collect::<Vec<_>>() {
                 self.act(g, &s, Some(&c), a)?;
             }
         }
-        // what the pieces newly call for; a lost one is repaired in the own bodies over it, each
-        // body's in one commit
-        let (acts, repairs) = self.pieces.acts();
+        // what the pieces newly call for, and no longer; a lost one is repaired in the own bodies
+        // over it, each body's in one commit
+        let (acts, gone, repairs) = self.pieces.acts();
+        for ((s, _), a) in gone {
+            self.owed.remove(&(s, None, a));
+        }
         for ((s, _), a) in acts {
             acted = true;
             self.act(g, &s, None, a)?;
@@ -479,6 +495,7 @@ impl Read {
         for ((s, c, _), (was, now)) in toward {
             acted = true;
             let before = was.map(|w| w.acts).unwrap_or_default();
+            self.unowe(&s, Some(c), &before, &now.acts);
             for a in now.acts.difference(&before).cloned().collect::<Vec<_>>() {
                 self.act(g, &s, Some(&c), a)?;
             }
@@ -492,6 +509,9 @@ impl Read {
             let Some((was, (acts, known))) = self.freed.try_settle(&k, || judge::freed(g, &k.0, &k.1))? else { continue };
             acted = true;
             let before = was.map(|w| w.0).unwrap_or_default();
+            for (s, a) in before.difference(&acts) {
+                self.owed.remove(&(*s, None, a.clone()));
+            }
             for (s, a) in acts.difference(&before).cloned().collect::<Vec<_>>() {
                 self.act(g, &s, None, a)?;
             }
@@ -530,7 +550,92 @@ impl Read {
             g.forget_commits(&forget)?;
             acted = true;
         }
+        for s in unread {
+            self.owed.forget(&s);
+        }
+        // what is owed each source goes on its record's connection: a new act, or a take,
+        // agreement or `full` moving where it goes
+        for at in self.owed.due() {
+            acted |= self.deliver(g, at)?;
+        }
         Ok(acted)
+    }
+
+    /// The acts toward a source in `before` and not in `now` are owed no more.
+    fn unowe(&mut self, s: &SyncId, c: Option<CommitId>, before: &BTreeSet<Act>, now: &BTreeSet<Act>) {
+        for a in before.difference(now).filter(|a| a.toward().is_some()) {
+            self.owed.remove(&(*s, c, a.clone()));
+        }
+    }
+
+    /// Carries out what is owed `at` and not done on the connection its record is on now, once
+    /// its digests agreed; one owed only while full only where the source told so there.
+    fn deliver(&mut self, g: &mut impl Ground, at: Source) -> Result<bool> {
+        if !self.owed.by.contains_key(&at) {
+            return Ok(false);
+        }
+        let fulls = self.owed.full_wanted(&at);
+        let mut on: owed::On = (None, Arc::default());
+        self.owed.on.try_settle(&at, || {
+            let conn = g.connected(&at);
+            let full = conn.map(|c| fulls.iter().copied().filter(|s| g.told_full(c, s)).collect()).unwrap_or_default();
+            on = (conn, Arc::new(full));
+            Ok::<_, crate::types::Error>(on.clone())
+        })?;
+        let (Some(conn), full) = on else { return Ok(false) };
+        let todo: Vec<owed::Key> = self.owed.by.get(&at).into_iter().flatten().filter(|(k, st)| !matches!(st, owed::State::Done) && **st != owed::State::Sent(conn) && (!k.2.needs_full() || full.contains(&k.0))).map(|(k, _)| k.clone()).collect();
+        let mut acted = false;
+        for k in todo {
+            osis_base::costs::count("read: acts", 1);
+            let st = self.carry(g, conn, at, &k)?;
+            if let Some(x) = self.owed.by.get_mut(&at).and_then(|m| m.get_mut(&k)) {
+                *x = st;
+            }
+            acted = true;
+        }
+        Ok(acted)
+    }
+
+    /// Act `k` owed `at`, carried out on `conn`: where it stands after.
+    fn carry(&mut self, g: &mut impl Ground, conn: ConnId, at: Source, k: &owed::Key) -> Result<owed::State> {
+        let (s, c, a) = k;
+        let sent = |id: Option<crate::session::RequestId>, owed: &mut owed::Owed| match id {
+            Some(id) => {
+                owed.sent(conn, id, at, k.clone());
+                owed::State::Sent(conn)
+            }
+            None => owed::State::Done,
+        };
+        Ok(match (a, c) {
+            (Act::Fetch { blob, .. }, _) => {
+                g.fetch(conn, s, blob)?;
+                owed::State::Sent(conn)
+            }
+            (Act::Delete { head, blob, .. }, _) => {
+                let id = g.delete(conn, s, head, blob)?;
+                sent(id, &mut self.owed)
+            }
+            (Act::DeleteFreed { head, blob, thing, .. }, _) => {
+                let id = g.delete_freed(conn, s, head, blob, thing)?;
+                sent(id, &mut self.owed)
+            }
+            (Act::Deposit { blob, .. }, Some(c)) => {
+                let head = g.head_at(s, &at);
+                g.deposit(conn, head, s, c, blob)?;
+                owed::State::Done
+            }
+            (Act::Again { head, fall, old, .. }, Some(c)) => {
+                // a fresh encryption under this sync ID alone; its stand first, durably
+                if let Some(logged) = g.log_own(s, c, true, &[])? {
+                    g.set_stand(&at, s, c, &Stand { at: g.now(), logged, head: *head, fall: *fall })?;
+                    for b in old {
+                        g.drop_own(s, b, c)?;
+                    }
+                }
+                owed::State::Done
+            }
+            _ => owed::State::Done,
+        })
     }
 
     /// The store sources of S where this node is no writer at their head (it gives them what it
@@ -541,10 +646,18 @@ impl Read {
         Ok(g.sources(s).iter().filter(|x| x.store && !x.head.is_some_and(|h| writer(&h))).map(|x| x.at).collect())
     }
 
-    /// Answers to its own requests: a Delete's codes reach `known` through the source's stream,
-    /// so nothing is taken from them here.
+    /// Answers to its own requests: a Delete answered is done (its codes reach `known` through
+    /// the source's stream, so nothing else is taken from them here).
     pub fn on_message(&mut self, cx: &mut Cx, sessions: &mut Sessions, conn: ConnId, m: Incoming) {
-        let _ = (cx, sessions, conn, m);
+        let _ = (cx, sessions);
+        if let Incoming::Reply(_, id, _) = m {
+            self.answered(conn, id);
+        }
+    }
+
+    /// The answer to read's request `id` on `conn` came: the act it carried is done.
+    pub fn answered(&mut self, conn: ConnId, id: crate::session::RequestId) {
+        self.owed.answered(conn, id);
     }
 
     /// Per S, the pass place a complete pass must begin after for a judgement outside S's
@@ -600,7 +713,13 @@ impl Read {
         }
     }
 
+    /// Act `a` of a judgement under S: on the own store or the engine at once; toward a source,
+    /// owed it (`deliver`).
     fn act(&mut self, g: &mut impl Ground, s: &SyncId, c: Option<&CommitId>, a: Act) -> Result<()> {
+        if a.toward().is_some() {
+            self.owed.add((*s, c.copied(), a));
+            return Ok(());
+        }
         osis_base::costs::count("read: acts", 1);
         match (a, c) {
             (Act::Log, Some(c)) => {
@@ -617,38 +736,11 @@ impl Read {
             (Act::Unlog(b), _) => g.unlog(s, &b)?,
             (Act::Lift(b), _) => g.lift(s, &b)?,
             (Act::Take(b), _) => g.take(s, &b)?,
-            (Act::Fetch { at, conn, blob }, _) => {
-                if let Some(src) = g.source(s, &at).filter(|x| x.conn == conn) {
-                    g.fetch(&src, s, &blob)?;
-                }
-            }
-            (Act::Delete { at, conn, head, blob }, _) => {
-                let Some(src) = g.source(s, &at).filter(|x| x.conn == conn) else { return Ok(()) };
-                g.delete(&src, s, &head, &blob)?;
-            }
-            (Act::Deposit { at, conn, blob }, Some(c)) => {
-                if let Some(src) = g.source(s, &at).filter(|x| x.conn == conn) {
-                    g.deposit(&src, s, c, &blob)?;
-                }
-            }
-            (Act::Again { at, head, fall, old, .. }, Some(c)) => {
-                // a fresh encryption under this sync ID alone; its stand first, durably
-                if let Some(logged) = g.log_own(s, c, true, &[])? {
-                    g.set_stand(&at, s, c, &Stand { at: g.now(), logged, head, fall })?;
-                    for b in old {
-                        g.drop_own(s, &b, c)?;
-                    }
-                }
-            }
             (Act::LogPiece(b), _) => g.log_piece(s, &b)?,
             (Act::TakePiece(b), _) => g.take_piece(s, &b)?,
             (Act::Repair(_), _) => {}
             (Act::DropBlob(b), _) => g.drop_blob(s, &b)?,
-            (Act::DeleteFreed { at, conn, head, blob, thing }, _) => {
-                let Some(src) = g.source(s, &at).filter(|x| x.conn == conn) else { return Ok(()) };
-                g.delete_freed(&src, s, &head, &blob, &thing)?;
-            }
-            (_, None) => {}
+            (Act::Fetch { .. } | Act::Delete { .. } | Act::Deposit { .. } | Act::Again { .. } | Act::DeleteFreed { .. }, _) | (_, None) => {}
         }
         Ok(())
     }

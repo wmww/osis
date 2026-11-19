@@ -49,6 +49,9 @@ impl Linked {
 
 pub(crate) type Key = (SyncId, BlobId);
 
+/// Acts of pieces, each by the piece it is of.
+pub(crate) type PieceActs = Vec<(Key, Act)>;
+
 /// Per own body, its lost pieces to repair in one commit.
 pub(crate) type Repairs = BTreeMap<CommitId, BTreeSet<BlobId>>;
 
@@ -63,11 +66,13 @@ pub(crate) struct Pieces {
     /// Per own repair body linking pieces, the blobs it encrypted afresh: never repaired by way
     /// of it.
     fresh: BTreeMap<(SyncId, CommitId), Arc<BTreeSet<BlobId>>>,
+    /// Acts taken of pieces no longer followed since the last `acts`: called for no more.
+    gone: Vec<(Key, Act)>,
 }
 
 impl Default for Pieces {
     fn default() -> Self {
-        Pieces { judged: Effects::new("read: pieces"), linked: BTreeMap::new(), touched: BTreeSet::new(), relinked: BTreeSet::new(), fresh: BTreeMap::new() }
+        Pieces { judged: Effects::new("read: pieces"), linked: BTreeMap::new(), touched: BTreeSet::new(), relinked: BTreeSet::new(), fresh: BTreeMap::new(), gone: Vec::new() }
     }
 }
 
@@ -116,8 +121,7 @@ impl Pieces {
         e.judged = Some(now);
         if e.by.is_empty() {
             if !held {
-                self.linked.remove(k);
-                self.judged.unwant(k);
+                self.forget(k);
             }
             return;
         }
@@ -171,18 +175,26 @@ impl Pieces {
             self.touched.insert(k);
             todo.extend(e.kids().iter().map(|p| ((k.0, p.blob()), Linker::Node(k.1))));
             if !e.judged.as_ref().is_some_and(|j| j.held) {
-                self.linked.remove(&k);
-                self.judged.unwant(&k);
+                self.forget(&k);
             }
         }
     }
 
+    /// Piece `k` is followed no more: the acts taken on it are called for no more.
+    fn forget(&mut self, k: &Key) {
+        if let Some(e) = self.linked.remove(k) {
+            self.gone.extend(e.done.into_iter().map(|a| (*k, a)));
+        }
+        self.judged.unwant(k);
+    }
+
     /// What the pieces touched since the last call newly call for (an acting piece's acts not
-    /// taken since it woke), with the pieces of each own body over a lost one to repair
-    /// (spec/sync-ids.md §1 Repair: a body's pieces in one commit; again when a body comes to link
-    /// one already lost).
-    pub fn acts(&mut self) -> (Vec<(Key, Act)>, Repairs) {
+    /// taken since it woke) and no longer call for, with the pieces of each own body over a lost
+    /// one to repair (spec/sync-ids.md §1 Repair: a body's pieces in one commit; again when a
+    /// body comes to link one already lost).
+    pub fn acts(&mut self) -> (PieceActs, PieceActs, Repairs) {
         let mut out = Vec::new();
+        let mut gone = std::mem::take(&mut self.gone);
         let mut lost = std::mem::take(&mut self.relinked);
         for k in std::mem::take(&mut self.touched) {
             let Some(e) = self.linked.get_mut(&k) else { continue };
@@ -196,9 +208,10 @@ impl Pieces {
                     a => out.push((k, a.clone())),
                 }
             }
+            gone.extend(e.done.difference(&now).map(|a| (k, a.clone())));
             e.done = now;
         }
-        (out, self.repairs(&lost))
+        (out, gone, self.repairs(&lost))
     }
 
     /// The pieces of `lost` to repair, per own body over them, but a repair's over what it

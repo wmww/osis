@@ -1,5 +1,5 @@
-//! The product's ground: the engine's facade, the store, the sources of each S (`views`, as opens
-//! moved them) and streams' `known` (notes/sync-read.md, The ground in a node). A call
+//! The product's ground: the engine's facade, the store, the sources of each S (opens' records in
+//! memory holding it) and streams' `known` (notes/sync-read.md, The ground in a node). A call
 //! failing in the middle of a settle fails the node's step, closing every connection.
 
 use super::Why;
@@ -7,7 +7,7 @@ use super::ground::{BlobInfo, CertBlobsMissing, Facts, Ground, PieceAt, Seen, Sr
 use osis_engine::sync::PieceLink;
 use osis_blob::StepId;
 use crate::opens::Opens;
-use crate::session::{Sessions, To};
+use crate::session::{RequestId, Sessions, To};
 use crate::store::{Source, Stand};
 use crate::status::{NetView, Status};
 use crate::streams::Streams;
@@ -22,11 +22,11 @@ use osis_proto::Msg;
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
 
-/// Read's cursors over the rows other modules write: streams' `known` and the source views.
+/// Read's cursors over the rows other modules write: streams' `known` and opens' sources.
 #[derive(Clone, Default)]
 pub struct Feeds {
     known: Option<Feed<crate::streams::KnownRow>>,
-    views: Option<Feed<super::views::Row>>,
+    sources: Option<Feed<(SyncId, Source)>>,
     freed: Option<Feed<(BlobId, Tid)>>,
     lists: Option<Feed<(Tid, CommitId)>>,
     /// The own store's entries, the blobs coming to name a commit and the commits coming to be
@@ -60,7 +60,6 @@ pub struct Live<'a, 'b> {
     pub unread: &'a Unread,
     /// The engine's commits held, followed from read's first settle.
     pub commits: &'a mut Option<Feed<CommitId>>,
-    pub views: &'a super::views::Views,
     pub feeds: &'a mut Feeds,
     /// Entries to fetch again, per connection (`Act::Fetch`): the driver hands them to streams.
     pub fetches: &'a mut Vec<(ConnId, SyncId, BlobId)>,
@@ -219,8 +218,8 @@ impl Live<'_, '_> {
 impl Ground for Live<'_, '_> {
     fn commits_added(&mut self) -> Vec<CommitId> {
         // the feeds start with the first settle: what each covers before is judged then
-        if self.feeds.views.is_none() {
-            self.feeds.views = Some(self.views.feed());
+        if self.feeds.sources.is_none() {
+            self.feeds.sources = Some(self.opens.sources_feed());
             self.feeds.syncs = Some(self.cx.store.syncs_feed());
         }
         match self.commits.as_mut() {
@@ -314,8 +313,8 @@ impl Ground for Live<'_, '_> {
         Ok(!things.is_empty())
     }
     fn pullable(&mut self, s: &SyncId) -> Result<bool> {
-        // a source of S up now (stamped: a source joining judges again)
-        if self.views.any(s) {
+        // a source of S (stamped: moves only as S comes to have one or has none)
+        if self.opens.has_sources(s) {
             return Ok(true);
         }
         Ok(self.cx.engine.publishes_reach()?)
@@ -406,20 +405,23 @@ impl Ground for Live<'_, '_> {
     }
     fn sources(&mut self, s: &SyncId) -> Arc<Vec<SrcView>> {
         let mut out = Vec::new();
-        for at in self.views.of(s) {
+        for at in self.opens.sources_of(s) {
             out.extend(self.source(s, &at));
         }
         Arc::new(out)
     }
-    fn reached(&mut self, s: &SyncId) -> Vec<(Source, ConnId)> {
-        self.views.of(s).iter().filter_map(|at| self.views.get(s, at)).map(|v| (v.at, v.conn)).collect()
+    fn reached(&mut self, s: &SyncId) -> Vec<Source> {
+        self.opens.sources_of(s)
     }
     fn source(&mut self, s: &SyncId, at: &Source) -> Option<SrcView> {
-        let mut v = self.views.get(s, at)?;
-        let known = self.streams.known();
-        v.head = known.head(*at, s);
-        v.full = known.full(v.conn, s);
-        Some(v)
+        let store = self.opens.member_at(*at, s)?.class == crate::types::SourceClass::Store;
+        Some(SrcView { at: *at, store, head: self.streams.known().head(*at, s), role_unheld: false })
+    }
+    fn connected(&mut self, at: &Source) -> Option<ConnId> {
+        self.opens.agreed_on(*at)
+    }
+    fn told_full(&mut self, conn: ConnId, s: &SyncId) -> bool {
+        self.streams.known().full(conn, s)
     }
     fn holds(&mut self, c: &CommitId) -> bool {
         self.cx.engine.holds_commit(c)
@@ -435,7 +437,7 @@ impl Ground for Live<'_, '_> {
         Ok(self.cx.engine.commit_blobs(c)?.iter().flat_map(|b| known.shown_at(s, b)).collect())
     }
     fn sources_added(&mut self) -> Vec<(SyncId, Source)> {
-        self.feeds.views.as_mut().map(|f| f.added()).unwrap_or_default().into_iter().map(|(_, s, at)| (s, at)).collect()
+        self.feeds.sources.as_mut().map(|f| f.added()).unwrap_or_default()
     }
     fn seen_added(&mut self) -> Result<Vec<(Source, SyncId, CommitId)>> {
         let mut out = Vec::new();
@@ -511,8 +513,8 @@ impl Ground for Live<'_, '_> {
         self.cx.store.lift_tombstone(s, b)?;
         Ok(())
     }
-    fn fetch(&mut self, at: &SrcView, s: &SyncId, b: &BlobId) -> Result<()> {
-        self.fetches.push((at.conn, *s, *b));
+    fn fetch(&mut self, conn: ConnId, s: &SyncId, b: &BlobId) -> Result<()> {
+        self.fetches.push((conn, *s, *b));
         Ok(())
     }
     fn delete_item(&mut self, s: &SyncId, head: &StepId, b: &BlobId) -> Result<Option<DeleteItem>> {
@@ -526,21 +528,18 @@ impl Ground for Live<'_, '_> {
         };
         Ok(delete_item(&keys, s, *b, false, basis.as_ref()))
     }
-    fn delete(&mut self, at: &SrcView, s: &SyncId, head: &StepId, b: &BlobId) -> Result<()> {
-        let Some(item) = self.delete_item(s, head, b)? else { return Ok(()) };
-        if let Some(session) = self.sessions.get_mut(at.conn) {
-            session.request(To::Read, Msg::Delete { id: 0, sync_id: *s, items: vec![item] });
-        }
-        Ok(())
+    fn delete(&mut self, conn: ConnId, s: &SyncId, head: &StepId, b: &BlobId) -> Result<Option<RequestId>> {
+        let Some(item) = self.delete_item(s, head, b)? else { return Ok(None) };
+        Ok(self.sessions.get_mut(conn).map(|session| session.request(To::Read, Msg::Delete { id: 0, sync_id: *s, items: vec![item] })))
     }
-    fn deposit(&mut self, at: &SrcView, s: &SyncId, c: &CommitId, b: &BlobId) -> Result<()> {
+    fn deposit(&mut self, _conn: ConnId, head: Option<StepId>, s: &SyncId, c: &CommitId, b: &BlobId) -> Result<()> {
         let Some(e) = self.cx.store.entry(s, b)? else { return Ok(()) };
         // a deposited own entry is offered to every store source of S (inbox's offers)
         if e.deposited {
             return Ok(());
         }
         // stamped under the source's head write key: it pulls it as it is
-        let write = at.head.and_then(|h| self.cx.store.path(s).ok().flatten().and_then(|p| p.steps.iter().find(|(st, _)| st.id() == h).map(|(st, _)| st.keys.write)));
+        let write = head.and_then(|h| self.cx.store.path(s).ok().flatten().and_then(|p| p.steps.iter().find(|(st, _)| st.id() == h).map(|(st, _)| st.keys.write)));
         if let Some(w) = write
             && e.stamp.is_some()
             && self.cx.store.stamp_under(s, b, &[w])?
@@ -609,7 +608,7 @@ impl Ground for Live<'_, '_> {
             let shown: Vec<BlobId> = rows.keys().copied().filter(|b| self.blob_shown(&src.at, s, b)).collect();
             for b in &shown {
                 if shown.iter().any(|o| beats(o, b)) {
-                    deletes.insert((src.at, src.conn, head, *b));
+                    deletes.insert((src.at, head, *b));
                 }
             }
         }
@@ -752,14 +751,11 @@ impl Ground for Live<'_, '_> {
         self.cx.store.drop_entry(s, b, Vec::new())?;
         Ok(())
     }
-    fn delete_freed(&mut self, at: &SrcView, s: &SyncId, head: &StepId, b: &BlobId, t: &Tid) -> Result<()> {
-        let Some(f) = self.cx.engine.freed_link(b, t) else { return Ok(()) };
-        let Some(keys) = self.cx.engine.read_credentials(s)?.and_then(|c| c.keys.get(head).cloned()) else { return Ok(()) };
-        let Some(item) = delete_item(&keys, s, f.link.blob, f.borne, self.cx.engine.freed_delete_basis(&f).as_ref()) else { return Ok(()) };
-        if let Some(session) = self.sessions.get_mut(at.conn) {
-            session.request(To::Read, Msg::Delete { id: 0, sync_id: *s, items: vec![item] });
-        }
-        Ok(())
+    fn delete_freed(&mut self, conn: ConnId, s: &SyncId, head: &StepId, b: &BlobId, t: &Tid) -> Result<Option<RequestId>> {
+        let Some(f) = self.cx.engine.freed_link(b, t) else { return Ok(None) };
+        let Some(keys) = self.cx.engine.read_credentials(s)?.and_then(|c| c.keys.get(head).cloned()) else { return Ok(None) };
+        let Some(item) = delete_item(&keys, s, f.link.blob, f.borne, self.cx.engine.freed_delete_basis(&f).as_ref()) else { return Ok(None) };
+        Ok(self.sessions.get_mut(conn).map(|session| session.request(To::Read, Msg::Delete { id: 0, sync_id: *s, items: vec![item] })))
     }
     fn freed_done(&mut self, b: &BlobId, t: &Tid) -> Result<()> {
         Ok(self.cx.engine.freed_done(&[(*t, *b)])?)

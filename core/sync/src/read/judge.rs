@@ -6,7 +6,7 @@ use super::ground::{Facts, Ground, PieceAt, Seen, SrcView};
 use super::{Verdict, Why};
 use crate::inbox::Promotion;
 use crate::store::{Source, Stand};
-use crate::types::{ConnId, Result};
+use crate::types::Result;
 use osis_base::format::MAX_DRIFT_MS;
 use osis_base::memo::{Clock, Stamped};
 use osis_base::{BlobId, CommitId, SyncId, Tid};
@@ -40,14 +40,16 @@ pub(crate) enum Act {
     Take(BlobId),
     /// The body counts missing again: an entry of it a source's stream shows present is fetched
     /// there (§3 Dropped bodies), by streams.
-    Fetch { at: Source, conn: ConnId, blob: BlobId },
-    /// A Delete at a source keeping S unread, by its head's delete key (§3 Deletes).
-    Delete { at: Source, conn: ConnId, head: StepId, blob: BlobId },
+    Fetch { at: Source, blob: BlobId },
+    /// A Delete at a source keeping S unread, by its head's delete key (§3 Deletes); `full`: owed
+    /// only while the source is full for S (a carrier it lacks counted as held, no role entry
+    /// waited for), so it goes only on a connection the source told so.
+    Delete { at: Source, head: StepId, blob: BlobId, full: bool },
     /// Logged again once past a delete at the source (§4), a fresh encryption: `old` leaves the
-    /// own log; the stand records `head` and `fall`.
-    Again { at: Source, conn: ConnId, head: StepId, fall: u64, old: Vec<BlobId> },
+    /// own log; the stand records `head` and `fall`. `full`: as a Delete's.
+    Again { at: Source, head: StepId, fall: u64, old: Vec<BlobId>, full: bool },
     /// The body given to a source this node does not stamp for (§3 Reader that is not a writer).
-    Deposit { at: Source, conn: ConnId, blob: BlobId },
+    Deposit { at: Source, blob: BlobId },
     /// A held piece of a must-hold body into the own store (§1: the same blob, a filler wrap).
     LogPiece(BlobId),
     /// A missing piece whose bytes the store holds (a peer's entry): taken by the engine.
@@ -58,7 +60,31 @@ pub(crate) enum Act {
     /// Freed links).
     DropBlob(BlobId),
     /// A freed link deleted at a source keeping S unread whose stream shows it.
-    DeleteFreed { at: Source, conn: ConnId, head: StepId, blob: BlobId, thing: Tid },
+    DeleteFreed { at: Source, head: StepId, blob: BlobId, thing: Tid },
+}
+
+impl Act {
+    /// The source an act is carried out toward, on its record's connection (`read/owed.rs`);
+    /// `None`: an act on the own store or the engine, carried out at once.
+    pub fn toward(&self) -> Option<Source> {
+        match self {
+            Act::Fetch { at, .. } | Act::Delete { at, .. } | Act::Again { at, .. } | Act::Deposit { at, .. } | Act::DeleteFreed { at, .. } => Some(*at),
+            _ => None,
+        }
+    }
+
+    /// Whether it goes only while the source is full for S.
+    pub fn needs_full(&self) -> bool {
+        matches!(self, Act::Delete { full: true, .. } | Act::Again { full: true, .. })
+    }
+
+    /// The same act owed only while the source is full.
+    fn when_full(mut self) -> Act {
+        if let Act::Delete { full, .. } | Act::Again { full, .. } = &mut self {
+            *full = true;
+        }
+        self
+    }
 }
 
 /// One body's judgement at S, and what it calls for in the own store.
@@ -402,10 +428,10 @@ pub(crate) fn body(g: &mut impl Ground, mine: &Mine, s: &SyncId, c: &CommitId) -
     if f.as_ref().is_some_and(|f| f.missing) {
         j.acts.extend(g.own_tombstones(s, c)?.into_iter().map(Act::Lift));
         j.acts.extend(own.iter().filter(|e| !stale.contains(&e.blob)).map(|e| Act::Take(e.blob)));
-        for (at, conn) in g.reached(s) {
+        for at in g.reached(s) {
             for b in g.seen(&at, s, c)?.present {
                 if !own.iter().any(|e| e.blob == b) {
-                    j.acts.insert(Act::Fetch { at, conn, blob: b });
+                    j.acts.insert(Act::Fetch { at, blob: b });
                 }
             }
         }
@@ -517,9 +543,9 @@ pub(crate) fn piece(g: &mut impl Ground, s: &SyncId, p: &PieceLink) -> Result<Pi
             j.acts.insert(Act::TakePiece(b));
             return Ok(j);
         }
-        for (at, conn) in g.reached(s) {
+        for at in g.reached(s) {
             if g.blob_shown(&at, s, &b) {
-                j.acts.insert(Act::Fetch { at, conn, blob: b });
+                j.acts.insert(Act::Fetch { at, blob: b });
             }
         }
         return Ok(j);
@@ -529,21 +555,26 @@ pub(crate) fn piece(g: &mut impl Ground, s: &SyncId, p: &PieceLink) -> Result<Pi
     if !matches!(g.piece(s, &b)?, PieceAt::Own | PieceAt::Tombstoned) && g.pullable(s)? {
         j.acts.insert(Act::LogPiece(b));
     }
-    // lost: some source shows it deleted and none present, S's sources heard out (every entry of
-    // S each can open applied); deletes read only once no source shows it
+    // lost: some source reached now shows it deleted and none reached now shows it present, S's
+    // sources heard out (every entry of S each can open applied; spec/sync-ids.md §1 Repair).
+    // Whether a source is reached is read only past a deletion seen, so a reconnect judges no
+    // piece no source deleted
     let sources = g.reached(s);
-    for (at, _) in &sources {
-        if g.blob_shown(at, s, &b) {
-            return Ok(j);
+    let mut deleted = Vec::new();
+    for at in &sources {
+        if g.blob_deleted(at, s, &b)? {
+            deleted.push(*at);
         }
     }
-    for (at, _) in &sources {
-        if g.blob_deleted(at, s, &b)? {
-            if g.heard_out(s)? {
-                j.acts.insert(Act::Repair(b));
-            }
-            break;
-        }
+    if deleted.is_empty() {
+        return Ok(j);
+    }
+    let up: Vec<Source> = sources.into_iter().filter(|at| g.connected(at).is_some()).collect();
+    if up.iter().any(|at| g.blob_shown(at, s, &b)) || !deleted.iter().any(|at| up.contains(at)) {
+        return Ok(j);
+    }
+    if g.heard_out(s)? {
+        j.acts.insert(Act::Repair(b));
     }
     Ok(j)
 }
@@ -577,7 +608,7 @@ pub(crate) fn freed(g: &mut impl Ground, b: &BlobId, t: &Tid) -> Result<Freed> {
             }
             known = true;
             if let Some(head) = src.head {
-                acts.insert((s, Act::DeleteFreed { at: src.at, conn: src.conn, head, blob: *b, thing: *t }));
+                acts.insert((s, Act::DeleteFreed { at: src.at, head, blob: *b, thing: *t }));
             }
         }
     }
@@ -616,29 +647,35 @@ pub(crate) fn toward(g: &mut impl Ground, mine: &Mine, s: &SyncId, c: &CommitId,
         true => Some(g.facts(s, c)?),
         false => None,
     };
-    let calls = |g: &mut _, t: &mut Toward, src: &SrcView| -> Result<()> {
+    let calls = |g: &mut _, t: &mut Toward, src: &SrcView, full: bool| -> Result<()> {
         if f.is_some() {
-            at_source(g, mine, t, src, &seen, s, c, &verdict, head, creds, writer, f.as_ref().is_some_and(|f| f.role))?;
+            at_source(g, mine, t, src, full, &seen, s, c, &verdict, head, creds, writer, f.as_ref().is_some_and(|f| f.role))?;
         }
         if keys.is_some() && !seen.present.is_empty() {
-            deletes(g, mine, t, src, &seen, s, c, f.as_ref(), &verdict, head, creds)?;
+            deletes(g, mine, t, src, full, &seen, s, c, f.as_ref(), &verdict, head, creds)?;
         }
         Ok(())
     };
-    // owed there as if up and full (what full and the connection add only lets more go): nothing
-    // owed reads nothing of the connection
+    // owed there as if full (what full adds only lets more go): nothing owed reads nothing of
+    // the source's membership
     let mut owed = Toward::default();
-    calls(g, &mut owed, &SrcView { at: *at, conn: ConnId(0), store: true, head: Some(head), full: true, role_unheld: false })?;
+    calls(g, &mut owed, &SrcView { at: *at, store: true, head: Some(head), role_unheld: false }, true)?;
     if owed.acts.is_empty() {
         return Ok(t);
     }
-    // away, it stays owed (followed while its stream shows the body) until it is up again
+    // a source of S, up or away (its record keeps it): what it is owed goes once it is connected
+    // (`read/owed.rs`); one no longer a source stays followed while its stream shows the body
     let Some(src) = g.source(s, at) else { return Ok(t) };
     if !src.store {
         t.idle = true;
         return Ok(t);
     }
-    calls(g, &mut t, &src)?;
+    // what is owed only while the source is full goes only on a connection it told so
+    calls(g, &mut t, &src, false)?;
+    let mut full = Toward::default();
+    calls(g, &mut full, &src, true)?;
+    let more: Vec<Act> = full.acts.difference(&t.acts).cloned().collect();
+    t.acts.extend(more.into_iter().map(Act::when_full));
     t.idle &= t.acts.is_empty();
     Ok(t)
 }
@@ -647,9 +684,9 @@ pub(crate) fn toward(g: &mut impl Ground, mine: &Mine, s: &SyncId, c: &CommitId,
 /// S must hold (not present there and not deleted there; one it refused included), read from the
 /// own store and the source's stream, never from what was sent. `c` itself waits for no other
 /// copy of itself.
-fn role_wait(g: &mut impl Ground, mine: &Mine, src: &SrcView, s: &SyncId, c: &CommitId, creds: &ReadCredentials) -> Result<bool> {
+fn role_wait(g: &mut impl Ground, mine: &Mine, src: &SrcView, full: bool, s: &SyncId, c: &CommitId, creds: &ReadCredentials) -> Result<bool> {
     let ours = creds.head.as_ref().map(|h| h.id());
-    if src.full || src.head.is_none() || src.head != ours {
+    if full || src.head.is_none() || src.head != ours {
         return Ok(false);
     }
     let Some(roles) = mine.roles.get(s) else { return Ok(false) };
@@ -667,7 +704,7 @@ fn role_wait(g: &mut impl Ground, mine: &Mine, src: &SrcView, s: &SyncId, c: &Co
 /// Carriers, Duplicates) of the entries this node can sign a Delete of, while no role entry of this node's is lacking there and its stream
 /// shows no role commit this node does not hold.
 #[allow(clippy::too_many_arguments)]
-fn deletes(g: &mut impl Ground, mine: &Mine, t: &mut Toward, src: &SrcView, seen: &Seen, s: &SyncId, c: &CommitId, f: Option<&Facts>, verdict: &Verdict, head: StepId, creds: &ReadCredentials) -> Result<()> {
+fn deletes(g: &mut impl Ground, mine: &Mine, t: &mut Toward, src: &SrcView, full: bool, seen: &Seen, s: &SyncId, c: &CommitId, f: Option<&Facts>, verdict: &Verdict, head: StepId, creds: &ReadCredentials) -> Result<()> {
     let why = match verdict {
         // an expired entry leaves every store by itself
         Verdict::MustNot(Why::Expired) => return Ok(()),
@@ -676,7 +713,7 @@ fn deletes(g: &mut impl Ground, mine: &Mine, t: &mut Toward, src: &SrcView, seen
         // and it waits `MAX_DRIFT` past its keep-at-least bound (spec/commits.md §5 Keep at
         // least: every node's clock agrees it left history)
         _ => match f {
-            Some(f) => covered_dropped(verdict, f, |x| Ok(src.full || !g.seen(&src.at, s, x)?.present.is_empty()))? && mine.reached(f.body.hosts_from),
+            Some(f) => covered_dropped(verdict, f, |x| Ok(full || !g.seen(&src.at, s, x)?.present.is_empty()))? && mine.reached(f.body.hosts_from),
             None => false,
         },
     };
@@ -727,7 +764,7 @@ fn deletes(g: &mut impl Ground, mine: &Mine, t: &mut Toward, src: &SrcView, seen
             }
             let mut carried = true;
             for alt in &st.covers {
-                let mut any = src.full;
+                let mut any = full;
                 for x in alt {
                     if any {
                         break;
@@ -737,7 +774,7 @@ fn deletes(g: &mut impl Ground, mine: &Mine, t: &mut Toward, src: &SrcView, seen
                 carried &= any;
             }
             for ai in &st.live {
-                let mut any = src.full;
+                let mut any = full;
                 for x in present.iter().filter(|x| *x != b) {
                     if any {
                         break;
@@ -752,14 +789,14 @@ fn deletes(g: &mut impl Ground, mine: &Mine, t: &mut Toward, src: &SrcView, seen
         }
         out
     };
-    if blobs.is_empty() || src.role_unheld || role_wait(g, mine, src, s, c, creds)? {
+    if blobs.is_empty() || src.role_unheld || role_wait(g, mine, src, full, s, c, creds)? {
         return Ok(());
     }
     // each by the delete key or the level keys held for it (spec/sync-ids.md §6 Delete); without
     // them nothing is sent
     for blob in blobs {
         if g.delete_item(s, &head, &blob)?.is_some() {
-            t.acts.insert(Act::Delete { at: src.at, conn: src.conn, head, blob });
+            t.acts.insert(Act::Delete { at: src.at, head, blob, full: false });
         }
     }
     Ok(())
@@ -795,7 +832,7 @@ fn duplicates(g: &mut impl Ground, seen: &Seen, copy_body: bool) -> Result<Vec<B
 
 /// A must-hold body the source lacks (§3 Reader that is not a writer; §4 Logged again once).
 #[allow(clippy::too_many_arguments)]
-fn at_source(g: &mut impl Ground, mine: &Mine, t: &mut Toward, src: &SrcView, seen: &Seen, s: &SyncId, c: &CommitId, verdict: &Verdict, head: StepId, creds: &ReadCredentials, writer: bool, role: bool) -> Result<()> {
+fn at_source(g: &mut impl Ground, mine: &Mine, t: &mut Toward, src: &SrcView, full: bool, seen: &Seen, s: &SyncId, c: &CommitId, verdict: &Verdict, head: StepId, creds: &ReadCredentials, writer: bool, role: bool) -> Result<()> {
     // what the source holds of it carries the body (§3 Neither): nothing to relay
     if *verdict != Verdict::Must || (!seen.present.is_empty() && g.neither(s, c, &seen.present)?) {
         return Ok(());
@@ -810,7 +847,7 @@ fn at_source(g: &mut impl Ground, mine: &Mine, t: &mut Toward, src: &SrcView, se
         // its head may be held nowhere
         let behind = !role && creds.head.as_ref().is_some_and(|h| h.id() != head) && creds.keys.contains_key(&head);
         if !writer && !behind {
-            t.acts.insert(Act::Deposit { at: src.at, conn: src.conn, blob: e.blob });
+            t.acts.insert(Act::Deposit { at: src.at, blob: e.blob });
         }
         return Ok(());
     }
@@ -828,10 +865,10 @@ fn at_source(g: &mut impl Ground, mine: &Mine, t: &mut Toward, src: &SrcView, se
     if g.stand(&src.at, s, c)?.is_some_and(|st: Stand| st.head == head && st.fall == fall) {
         return Ok(());
     }
-    if role_wait(g, mine, src, s, c, creds)? {
+    if role_wait(g, mine, src, full, s, c, creds)? {
         return Ok(());
     }
-    t.acts.insert(Act::Again { at: src.at, conn: src.conn, head, fall, old: own.iter().map(|e| e.blob).collect() });
+    t.acts.insert(Act::Again { at: src.at, head, fall, old: own.iter().map(|e| e.blob).collect(), full: false });
     Ok(())
 }
 
