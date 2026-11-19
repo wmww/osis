@@ -1,0 +1,3 @@
+# pull-cursor
+- A world test (first::a_blob_is_fetched_once) failed through a timing shift far from the change: a stricter caught up delayed the maker's Delete, exposing a refetch path main avoids by order alone. Bisecting needed the scripted probe edits plus a trace of main's streams code checked out over the branch's (`git checkout origin/main -- core/sync/src/streams`, then back): a documented "trace this test on main's module" recipe would save the detour.
+- `caught_up_matches_what_each_side_holds` takes no seed range from the environment; checking 2,000 seeds meant a scratch edit of its range.

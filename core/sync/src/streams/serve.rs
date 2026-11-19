@@ -13,7 +13,7 @@ use osis_proto::limits::REPLY_BUDGET;
 use osis_proto::msg::stream_event_len;
 use osis_proto::{Code, Event, Fetched, Id, Msg, Pull, PullReply, Stream};
 use osis_store::NodeEvent;
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::{BTreeMap, BTreeSet, VecDeque};
 
 /// Bytes of a reply's frame body besides its events and joins (kind, id, cursor, flags), and of
 /// one join (a sync ID and a cursor): what paging keeps aside.
@@ -42,12 +42,22 @@ pub(super) struct Serve {
     /// Ended members (an `until`), and those told they reached it by an empty Stream.
     ending: BTreeSet<SyncId>,
     told_until: BTreeSet<SyncId>,
-    /// The highest position an Applied reported.
+    /// The highest position an Applied reported (reported positions, spec/sync-opens.md §6).
     applied: Option<Position>,
-    /// Per member, the position of the last message carrying an event of it that asked a
-    /// report: S's messages served are applied once `applied` reaches it (spec/sync-status.md §1
-    /// caught up). Kept while above `applied`.
-    unapplied: BTreeMap<SyncId, Position>,
+    /// Messages asking a report sent so far: each one's number, in send order.
+    sent: u64,
+    /// The highest number an Applied named (covering every message before it).
+    reported: u64,
+    /// The cursors of messages asking a report not yet covered, each sealed afresh so an Applied
+    /// names one message, with its number: the newest `REPORTS_KEPT`.
+    asked: VecDeque<(Cursor, u64)>,
+    /// Per member, the number of the last message carrying an event of it that asked a report:
+    /// S's messages served are applied once `reported` reaches it (spec/sync-status.md §1 caught
+    /// up). Kept while above `reported`.
+    unapplied: BTreeMap<SyncId, u64>,
+    /// Members that joined after the first Pull and that no reply has read for the peer since
+    /// (its join merged, or a reply from the start): caught up waits for that reply.
+    unjoined: BTreeSet<SyncId>,
     /// Per member, its last event the log holds past the follow cursor (not pushed yet), and how
     /// far the log was read for them (`Streams::scan_unpushed`): kept while past the cursor.
     unpushed: BTreeMap<SyncId, Position>,
@@ -64,12 +74,50 @@ impl Serve {
         self.unpushed.retain(|_, p| *p > pos);
     }
 
-    /// A message carrying `events`, asking a report at `pos`, went out.
-    fn served(&mut self, events: &[(SyncId, Event)], pos: Position) {
+    /// A message carrying `events`, asking a report with `cursor`, went out.
+    fn served(&mut self, events: &[(SyncId, Event)], cursor: Cursor) {
+        self.sent += 1;
+        self.asked.push_back((cursor, self.sent));
+        if self.asked.len() > REPORTS_KEPT {
+            self.asked.pop_front();
+        }
         for (s, _) in events {
-            self.unapplied.insert(*s, pos);
+            self.unapplied.insert(*s, self.sent);
         }
     }
+
+    /// Whether a message served asking a report is not reported applied yet: the next message
+    /// with a cursor asks one too, so the last is answered whatever it carries.
+    fn owed(&self) -> bool {
+        self.sent > self.reported
+    }
+
+    /// An Applied named `cursor`: the message it was sent with, and every one before it, is
+    /// applied. A cursor of no message asking a report here (one dropped from `asked`, or not
+    /// this connection's) covers nothing.
+    fn reported_by(&mut self, cursor: &[u8]) {
+        let Some((i, n)) = self.asked.iter().enumerate().find_map(|(i, (c, n))| (c.as_slice() == cursor).then_some((i, *n))) else { return };
+        self.asked.drain(..=i);
+        self.reported = self.reported.max(n);
+        let r = self.reported;
+        self.unapplied.retain(|_, x| *x > r);
+    }
+}
+
+/// Messages asking a report whose cursors a server keeps to tell which one an Applied names. At
+/// 0 no Applied is recognized (never caught up); at infinity a peer that never reports grows them
+/// per message served. A requester answers in order and holds at most `PENDING_CAP` messages,
+/// so an honest one's Applied names one of the newest; an older one dropped only delays caught up
+/// to the next Applied.
+const REPORTS_KEPT: usize = 2 * super::PENDING_CAP;
+
+/// A cursor sealed afresh at the position `c` names, so the message carrying it is the only one
+/// with these bytes (an Applied names one message).
+fn fresh(ctx: &Ctx, c: Cursor) -> Result<Cursor> {
+    Ok(match ctx.store.position(&c)? {
+        Some(pos) => ctx.store.cursor_at(pos)?.unwrap_or(c),
+        None => c,
+    })
 }
 
 #[derive(Clone, Debug)]
@@ -171,10 +219,8 @@ impl Streams {
         let serve = self.serve.entry(conn).or_default();
         serve.follow = None;
         serve.inline = p.inline_limit;
-        // the requester names the cursor it stored: what was served up to it is applied there
-        if let Some(Some(pos)) = own {
-            serve.unapplied.retain(|_, x| *x > pos);
-        }
+        // the Pull's cursor says where to read on from (what the requester received), never
+        // what it applied: only an Applied reports that
         // reported positions: the first Pull's cursor, each join's in the first Pull naming it
         if !serve.pulled {
             serve.pulled = true;
@@ -231,7 +277,9 @@ impl Streams {
                     joins_left.insert(s);
                     reply_joins.push((s, wire_cursor(&r.cursor)));
                 } else {
-                    self.serve.entry(conn).or_default().merging.insert(s, read.pos);
+                    let serve = self.serve.entry(conn).or_default();
+                    serve.merging.insert(s, read.pos);
+                    serve.unjoined.remove(&s);
                 }
             }
         } else {
@@ -241,28 +289,39 @@ impl Streams {
             for s in serve.own.clone() {
                 serve.merging.insert(s, read.pos);
             }
+            serve.unjoined.clear();
             for (s, ..) in &p.joins {
                 if !members.contains_key(s) {
                     reply_joins.push((*s, None));
                 }
             }
         }
-        self.ephemeral(ctx, conn, &mut page, &members, None)?;
+        // ephemeral entries go only in a message with a cursor, so an Applied can report them: a
+        // log naming no position yet lists them once it does
+        if read.cursor.is_some() {
+            self.ephemeral(ctx, conn, &mut page, &members, None)?;
+        }
         let serve = self.serve.entry(conn).or_default();
         serve.eph.extend(page.eph.iter().map(|(s, n)| (*s, *n)));
         serve.joins_left = joins_left;
         if p.follow && !read.more {
             serve.follow = Some(Follow { cursor: read.cursor.clone(), pos: read.pos, seq: 0 });
-            // a listing the page cut follows in Streams: pushes read on from its least counter
+            // a listing the page cut (or not begun) follows in Streams: pushes read on from its
+            // least counter
             let mark = ctx.store.memory_mark();
-            serve.mem_mark = if page.full { serve.eph.values().min().map_or(mark, |n| (*n).min(mark)) } else { mark };
+            serve.mem_mark = if page.full || read.cursor.is_none() { serve.eph.values().min().map_or(mark, |n| (*n).min(mark)) } else { mark };
             serve.followed_to(read.pos);
         }
-        let cursor = wire_cursor(&read.cursor);
-        let report = !page.events.is_empty() && cursor.is_some();
-        if report {
-            serve.served(&page.events, read.pos);
-        }
+        let report = read.cursor.is_some() && (!page.events.is_empty() || serve.owed());
+        let cursor = match read.cursor {
+            Some(c) if report => {
+                let c = fresh(ctx, c)?;
+                self.serve.entry(conn).or_default().served(&page.events, c.clone());
+                Some(c)
+            }
+            c => c,
+        };
+        let cursor = wire_cursor(&cursor);
         let from_start: Vec<SyncId> = if whole { members.keys().copied().collect() } else { p.joins.iter().filter(|(s, c)| c.is_none() && members.contains_key(s)).map(|(s, _)| *s).collect() };
         self.offered(ctx, conn, &page.events, &from_start);
         Ok(PullReply { id, events: page.events, cursor, whole, trimmed, more: read.more, report, joins: reply_joins })
@@ -421,8 +480,12 @@ impl Streams {
                 }
                 s.eph.extend(page.eph);
             } else {
+                // a log naming no position yet holds ephemeral entries back (no Stream carries
+                // events without a cursor): they go once it has one
+                let Some(at) = read.cursor.clone() else { return Ok(acted) };
+                let at = fresh(ctx, at)?;
                 let events = page.events.clone();
-                let st = Stream { events: page.events, cursor: wire_cursor(&read.cursor), report: true, seq: f.seq };
+                let st = Stream { events: page.events, cursor: wire_cursor(&Some(at.clone())), report: true, seq: f.seq };
                 if !ctx.wire.push(conn, Msg::Stream(Box::new(st))) {
                     return Ok(false);
                 }
@@ -430,7 +493,7 @@ impl Streams {
                 let s = self.serve.entry(conn).or_default();
                 s.follow = Some(Follow { cursor: read.cursor, pos: read.pos, seq: f.seq + 1 });
                 s.followed_to(read.pos);
-                s.served(&events, read.pos);
+                s.served(&events, at);
                 s.eph.extend(page.eph);
                 if !page.full && !read.more {
                     s.mem_mark = mark;
@@ -447,11 +510,14 @@ impl Streams {
             if f.pos < u || serve.told_until.contains(s) || shared.reported(conn, s).is_some_and(|r| r >= u) {
                 continue;
             }
-            let st = Stream { events: Vec::new(), cursor: wire_cursor(&f.cursor), report: true, seq: f.seq };
+            let Some(at) = f.cursor.clone() else { break };
+            let at = fresh(ctx, at)?;
+            let st = Stream { events: Vec::new(), cursor: wire_cursor(&Some(at.clone())), report: true, seq: f.seq };
             if !ctx.wire.push(conn, Msg::Stream(Box::new(st))) {
                 break;
             }
             let serve = self.serve.entry(conn).or_default();
+            serve.served(&[], at);
             serve.told_until.insert(*s);
             if let Some(x) = serve.follow.as_mut() {
                 x.seq += 1;
@@ -503,12 +569,13 @@ impl Streams {
 
     /// The members the peer on `conn` has not yet applied all of (spec/sync-status.md §1): an
     /// event of S served and not reported applied, logged and not pushed, listed in memory and
-    /// not sent, or a join of S left to read on.
+    /// not sent, a join of S left to read on, or S joined and not read for the peer since.
     pub(super) fn served_busy(&self, ctx: &Ctx, conn: ConnId, out: &mut BTreeSet<SyncId>) {
         let Some(x) = self.serve.get(&conn) else { return };
-        out.extend(x.unapplied.iter().filter(|(_, p)| x.applied.is_none_or(|a| a < **p)).map(|(s, _)| *s));
+        out.extend(x.unapplied.keys().copied());
         out.extend(x.unpushed.keys().copied());
         out.extend(x.joins_left.iter().copied());
+        out.extend(x.unjoined.iter().copied());
         let members = ctx.shared.members(conn);
         for (n, s) in ctx.store.memory_since(x.mem_mark) {
             if x.eph.get(&s).is_some_and(|at| *at < n) && members.until(&s) == Some(None) {
@@ -521,10 +588,10 @@ impl Streams {
     pub(super) fn on_applied(&mut self, ctx: &mut Ctx, conn: ConnId, cursor: Cursor) {
         let Ok(Some(pos)) = ctx.store.position(&cursor) else { return };
         let serve = self.serve.entry(conn).or_default();
+        serve.reported_by(&cursor);
         // a join merging at a position the stream stood at already is covered by an Applied of it
         if serve.applied.is_none_or(|p| p < pos) {
             serve.applied = Some(pos);
-            serve.unapplied.retain(|_, p| *p > pos);
             ctx.reported.push(Reported::Stream(conn, pos, cursor));
         }
         let merged: Vec<SyncId> = serve.merging.iter().filter(|(_, p)| **p <= pos).map(|(s, _)| *s).collect();
@@ -536,12 +603,13 @@ impl Streams {
     }
 
     /// A member joined, as server: one opened after the first Pull has no reported position
-    /// until a join names it.
+    /// until a join names it, and is not caught up until a reply reads it for the peer.
     pub(super) fn served_joined(&mut self, ctx: &mut Ctx, conn: ConnId, s: SyncId) {
         if let Some(serve) = self.serve.get_mut(&conn)
             && serve.pulled
         {
             serve.own.insert(s);
+            serve.unjoined.insert(s);
             ctx.reported.push(Reported::Member(conn, s, None));
         }
         self.served_ending(ctx, conn, s);
@@ -555,6 +623,7 @@ impl Streams {
         serve.unapplied.remove(s);
         serve.unpushed.remove(s);
         serve.joins_left.remove(s);
+        serve.unjoined.remove(s);
         serve.own.remove(s);
         serve.eph.remove(s);
         serve.ending.remove(s);

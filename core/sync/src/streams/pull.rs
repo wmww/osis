@@ -1334,13 +1334,14 @@ impl Streams {
     }
 
     /// Applies the messages in hand, in order, while the first owes nothing: an owed body is
-    /// settled once held, no longer wanted (not a member here), or this source lacks it.
+    /// settled once its entry is taken under its own sync ID (bytes held under another are taken
+    /// with them first, `fetch`), no longer wanted (not a member here), or this source lacks it.
     fn drain(&mut self, ctx: &mut Ctx, conn: ConnId) {
         loop {
             let Some(p) = self.pull.get(&conn) else { return };
             let Some(front) = p.pending.front() else { break };
             let members = ctx.shared.members(conn);
-            let ready = front.owed.iter().all(|(s, b)| p.settled.contains(&(*s, *b)) || p.failed.contains(&(*s, *b)) || !members.contains_key(s) || ctx.store.bytes(b).ok().flatten().is_some());
+            let ready = front.owed.iter().all(|(s, b)| p.settled.contains(&(*s, *b)) || p.failed.contains(&(*s, *b)) || !members.contains_key(s) || ctx.store.entry(s, b).ok().flatten().is_some());
             if !ready {
                 return;
             }

@@ -19,7 +19,8 @@
 //! points build it from `Cx`, `Sessions` and `Opens`.
 //!
 //! State: per connection, as server, the follow cursor and `seq`, the
-//! ephemeral listing, the joins awaiting their merge's report; as requester, the Pull out, the
+//! ephemeral listing, the joins awaiting their merge's report, the messages asking a report not
+//! yet reported (by cursor), the members joined and not read for the peer since; as requester, the Pull out, the
 //! received cursors, `seq` applied, gaps, messages in hand awaiting bodies, the fetch queue and
 //! the fetches out; per source (a peer's record, or the connection) the stored cursor, the members
 //! at the stream, joins in pages and where members that left stopped; `known` per source (only

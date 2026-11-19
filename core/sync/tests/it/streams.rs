@@ -47,10 +47,16 @@ struct Table {
     unkept: Vec<BlobId>,
     /// What opening a relay-only blob gives (none: it does not open).
     relay: Option<osis_engine::sync::RelayOpened>,
+    /// The next open under this sync ID fails (a store failure in the engine), once.
+    fail_under: Option<SyncId>,
 }
 
 impl Ground for Table {
     fn open(&mut self, s: &SyncId, e: &Entry, _bytes: &[u8]) -> Result<Opening> {
+        if self.fail_under == Some(*s) {
+            self.fail_under = None;
+            return Err(osis_sync::types::Error::Store(osis_store::Error::Corrupt("test: open fails")));
+        }
         self.log.borrow_mut().push(("open", 0));
         self.opened.push(e.blob);
         self.opened_under.push((*s, e.blob));
@@ -365,6 +371,14 @@ impl Pair {
 
     fn run(&mut self) {
         self.run_with(|_, _| false);
+    }
+
+    /// Delivers the frames held back, in order.
+    fn release(&mut self) {
+        for (ab, f) in std::mem::take(&mut self.held) {
+            let to = if ab { &mut self.b } else { &mut self.a };
+            deliver(to, self.now, f);
+        }
     }
 
     /// Messages of `kind` delivered from b to a (b's requests and pushes).
@@ -1033,6 +1047,33 @@ fn a_body_held_under_another_sync_id_is_taken_spec_sync_streams_4() {
     assert!(p.b.streams.caught_up(C, &s));
 }
 
+// spec/sync-streams.md §4 (Flow control: an entry announced without bytes is applied once its
+// entry is taken under its sync ID; Reports): bytes that arrive under another sync ID settle the
+// entry under S only once it is taken there, so a failure taking it stores no cursor past it and
+// the source's stream offers it again after a restart.
+#[test]
+fn an_owed_body_settles_only_once_taken_under_its_sync_id_spec_sync_streams_4() {
+    let mut p = Pair::new();
+    let (s, other) = (sid(1), sid(2));
+    let x = p.a.log(s, 40_000);
+    assert_eq!(p.a.log(other, 40_000), x);
+    p.b.table.held = Some(true);
+    // the bytes come by other's Fetch (announced last, fetched first); taking x under S fails
+    p.b.table.fail_under = Some(s);
+    p.b.faulty = true;
+    p.shared_read(s);
+    p.shared_read(other);
+    p.run();
+    assert!(p.b.down, "taking x under S failed");
+    assert!(p.b.store.entry(&s, &x).unwrap().is_none());
+    p.b.restart_all(7);
+    p.a.streams.closed(C);
+    p.join(s);
+    p.join(other);
+    p.run();
+    assert!(p.b.store.entry(&s, &x).unwrap().is_some(), "x under S is offered again and taken");
+}
+
 // spec/sync-streams.md §4 (Full): a node keeping S unread refusing a pulled entry for room tells
 // the peer `full` once, and once room grew says `full` false and pulls S again from the start. A
 // restart while full changes nothing: the wait is durable, `full` is told again on the new
@@ -1662,6 +1703,8 @@ fn ephemeral_listed_and_gone_with_the_connection_spec_sync_streams_4() {
     let mut p = Pair::new();
     let s = sid(1);
     p.a.hold(s, Holding::Read);
+    // a log naming a position: ephemeral entries go only in a message with a cursor
+    p.a.log(s, 100);
     let (e, bytes) = blob(120, Class::Ephemeral);
     let entry = Entry { blob: e, wrap: [7; WRAP_LEN], stamp: None, deposited: false, own: true, role: false, class: Class::Ephemeral, expires: None };
     assert_eq!(p.a.store.log(&s, entry, Some(bytes), None).unwrap(), Code::OK);
@@ -2023,19 +2066,24 @@ fn an_ephemeral_write_not_listed_keeps_s_busy_spec_sync_status_1() {
     assert!(!p.a.streams.caught_up(C, &s), "S's ephemeral write is not pushed");
 }
 
-// spec/sync-status.md §1 (every message carrying an event of S served to the source is reported applied): a reply
-// the requester sends no Applied for (T's listing from the start under way) is covered by the
-// cursor its next Pull names, which it stored: S does not stay busy on an idle connection.
+// spec/sync-status.md §1 (every message carrying an event of S served to the source is reported
+// applied), spec/sync-streams.md §4 (Reports: a message with a cursor asks a report while one
+// served is not reported applied): a reply the requester sends no Applied for (T's listing from
+// the start under way) is covered by the Applied of the next, which asks one though it carries
+// no event: S does not stay busy on an idle connection.
 #[test]
-fn a_pulls_cursor_covers_what_was_served_spec_sync_status_1() {
+fn a_later_report_covers_what_was_served_spec_sync_status_1() {
     let mut p = Pair::new();
     let (s, t) = (sid(1), sid(2));
     p.shared_read(s);
     p.shared_read(t);
     p.a.log(s, 100);
     p.run();
-    assert!(p.sent_by_b(44).is_empty(), "b sent no Applied");
-    assert!(p.a.streams.caught_up(C, &s), "b's last Pull named a cursor past S's entry");
+    let replies = p.sent_by_a(42);
+    assert!(matches!(replies.first(), Some(Msg::PullReply(r)) if r.report && !r.events.is_empty()));
+    assert!(matches!(replies.last(), Some(Msg::PullReply(r)) if r.report && r.events.is_empty()), "the join's reply asks a report: S's is owed");
+    assert_eq!(p.sent_by_b(44).len(), 1, "b answered the last");
+    assert!(p.a.streams.caught_up(C, &s));
 }
 
 // spec/sync-status.md §1 (every event of S this node logged after the follow cursor is pushed): an ended
@@ -2063,12 +2111,11 @@ fn an_until_cleared_makes_s_busy_spec_sync_status_1() {
     assert!(!p.a.streams.caught_up(C, &s), "S's event past its old until is not pushed");
 }
 
-// spec/sync-status.md §1 (the source's last Pull was answered with `more` false and it is followed): a member that
-// joined after the source's last Pull was answered is not caught up until the source's join of
-// it is read, though the stream is followed.
+// spec/sync-status.md §1 (caught up: a member that joined after the source's first Pull waits for
+// a reply reading it for the source): a member joined after the source's last Pull was answered
+// is not caught up until the source's join of it is answered, though the stream is followed.
 #[test]
-#[ignore = "issues/caught-up-before-the-join.md"]
-fn repro_a_member_joined_after_the_pull_waits_for_its_join() {
+fn a_member_joined_after_the_pull_waits_for_its_join_spec_sync_status_1() {
     let mut p = Pair::new();
     let (s, t) = (sid(1), sid(2));
     p.a.hold(s, Holding::Read);
@@ -2081,6 +2128,82 @@ fn repro_a_member_joined_after_the_pull_waits_for_its_join() {
     p.run_with(|ab, m| !ab && m.kind() == 41);
     assert!(!held(&p.b, s).contains(&e), "b has not pulled S");
     assert!(!p.a.streams.caught_up(C, &s), "a says b caught up on S, yet b lacks {e:?}");
+    p.release();
+    p.run();
+    assert!(held(&p.b, s).contains(&e));
+    assert!(p.a.streams.caught_up(C, &s), "the join answered and applied");
+}
+
+// spec/sync-status.md §1 (every message carrying an event of S served to the source is reported
+// applied), spec/sync-streams.md §4 (Reports): only an Applied reports it; a Pull names where the server reads
+// on from, not what the requester stored: a requester holding a push of S that awaits its body
+// pulls (its join of T), and the server still counts S busy until the Applied answering the push.
+#[test]
+fn a_pull_while_a_body_is_owed_reports_nothing_applied_spec_sync_status_1() {
+    let mut p = Pair::new();
+    let (s, t) = (sid(1), sid(2));
+    p.shared_read(s);
+    p.run();
+    let x = p.a.log(s, 40_000);
+    // a's answer to b's Fetch of x is held back: b holds a's push in hand
+    p.run_with(|ab, m| ab && m.kind() == 20);
+    let pulls = p.sent_by_b(41).len();
+    p.a.hold(t, Holding::Read);
+    p.b.hold(t, Holding::Read);
+    p.join(t);
+    p.run_with(|ab, m| ab && m.kind() == 20);
+    assert_eq!(p.sent_by_b(41).len(), pulls + 1, "b pulled (its join of T) with the push in hand");
+    assert!(!held(&p.b, s).contains(&x));
+    assert!(!p.a.streams.caught_up(C, &s), "a says b caught up on S, yet b lacks {x:?}");
+    p.release();
+    p.run();
+    assert!(held(&p.b, s).contains(&x));
+    assert!(p.a.streams.caught_up(C, &s), "the push applied and reported");
+}
+
+// spec/sync-status.md §1 (every message carrying an event of S served to the source is reported
+// applied): a push carrying only an ephemeral entry of S, at the log position the source already
+// reported, counts as applied only by the Applied answering it.
+#[test]
+fn an_ephemeral_push_waits_for_its_applied_spec_sync_status_1() {
+    let mut p = Pair::new();
+    let s = sid(1);
+    p.shared_read(s);
+    p.a.log(s, 100);
+    p.run();
+    assert!(p.a.streams.caught_up(C, &s));
+    let e = p.a.log_as(s, 120, Class::Ephemeral);
+    // the push is on its way
+    p.run_with(|ab, m| ab && m.kind() == 43);
+    assert!(!held(&p.b, s).contains(&e));
+    assert!(!p.a.streams.caught_up(C, &s), "a says b caught up on S, yet b lacks {e:?}");
+    p.release();
+    p.run();
+    assert!(held(&p.b, s).contains(&e));
+    assert!(p.a.streams.caught_up(C, &s), "the push applied and reported");
+}
+
+// spec/sync-streams.md §4 (Pushes: ephemeral entries go in a message with a cursor), spec/wire.md
+// §11.2: a source whose log names no position yet sends its ephemeral entries in no message
+// (never a malformed Stream), S busy there, and sends them once its log has a position.
+#[test]
+fn ephemeral_entries_wait_for_a_log_position_spec_sync_status_1() {
+    let mut p = Pair::new();
+    let s = sid(1);
+    p.a.hold(s, Holding::Read);
+    // one held at the first Pull (its listing), one written after (a push)
+    let e = p.a.log_as(s, 120, Class::Ephemeral);
+    p.shared_read(s);
+    p.run();
+    let f = p.a.log_as(s, 121, Class::Ephemeral);
+    p.run();
+    assert!(p.sent_by_a(43).iter().all(|m| matches!(m, Msg::Stream(st) if st.cursor.is_some() || !st.report)));
+    assert!(!held(&p.b, s).contains(&e) && !held(&p.b, s).contains(&f));
+    assert!(!p.a.streams.caught_up(C, &s), "S's ephemeral entries are not sent");
+    let d = p.a.log(s, 100);
+    p.run();
+    assert!([d, e, f].iter().all(|x| held(&p.b, s).contains(x)));
+    assert!(p.a.streams.caught_up(C, &s));
 }
 
 // spec/wire.md §11.2 Pull (ephemeral entries count against `max_reply`; what does not fit follows
@@ -2105,8 +2228,8 @@ fn an_ephemeral_listing_cut_by_a_reply_follows_spec_sync_status_1() {
                 got.extend(added(&st.events).into_iter().filter(|b| all.contains(b)));
             }
         }
-        // sent is all a can say here: a sent Stream's Applied is issues/caught-up-ephemeral-push.md
-        assert!(got.len() == all.len() || !p.a.streams.caught_up(C, &s), "a says b caught up on S, yet the listing lacks some");
+        // b reports nothing here: S stays busy whatever was sent
+        assert!(!p.a.streams.caught_up(C, &s), "a says b caught up on S, yet b applied none of the listing");
     }
     assert_eq!(got, all, "the rest follows in Streams");
 }
@@ -2158,30 +2281,38 @@ fn caught_up_history(seed: u64, logs: usize) -> usize {
         p.b.hold(s, Holding::Read);
     }
     let (mut ab, mut ba): (VecDeque<Frame>, VecDeque<Frame>) = (VecDeque::new(), VecDeque::new());
-    let mut joined = false;
+    let mut joined = 0;
     let (mut na, mut nb) = (0, 0);
+    // a node logs an ephemeral entry only once its log names a position (a real node's holds
+    // its sync IDs' heads first)
+    let (mut durable_a, mut durable_b) = (false, false);
     for step in 0..400 {
         let now = p.now;
-        let pick = next(9);
+        let pick = next(10);
         match pick {
-            // S becomes a member at both sides (opens agreed it) before either Pull of it lands
-            0 | 1 if !joined => {
-                joined = true;
-                for s in ids {
-                    p.a.join(now, s);
-                    p.b.join(now, s);
-                }
+            // each sync ID becomes a member at both sides (opens agreed it) before either Pull of
+            // it lands, the second whenever drawn (after the first's Pulls were answered, or not)
+            0 | 1 if joined < ids.len() => {
+                let s = ids[joined];
+                joined += 1;
+                p.a.join(now, s);
+                p.b.join(now, s);
             }
-            // small entries come inline, large ones by Fetch
+            // small entries come inline, large ones by Fetch; some ephemeral (pushed at the
+            // position the log already stood at)
             2 if na < logs => {
                 na += 1;
                 let s = ids[next(2) as usize];
-                p.a.log(s, if next(3) == 0 { 20_000 + na } else { 1000 + na });
+                let class = if next(4) == 0 && durable_a { Class::Ephemeral } else { Class::Durable };
+                durable_a |= class == Class::Durable;
+                p.a.log_as(s, if next(3) == 0 { 20_000 + na } else { 1000 + na }, class);
             }
             3 if nb < logs => {
                 nb += 1;
                 let s = ids[next(2) as usize];
-                p.b.log(s, if next(3) == 0 { 30_000 + nb } else { 2000 + nb });
+                let class = if next(4) == 0 && durable_b { Class::Ephemeral } else { Class::Durable };
+                durable_b |= class == Class::Durable;
+                p.b.log_as(s, if next(3) == 0 { 30_000 + nb } else { 2000 + nb }, class);
             }
             // a side's pushes find no room for a while (spec/sync-streams.md §4 Pushes)
             6 => p.a.pipe.full = !p.a.pipe.full,
