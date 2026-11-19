@@ -9,13 +9,18 @@ Usage: python3 tools/mutate.py FILE OLD NEW [FILE OLD NEW]... -- <cargo test arg
 OLD must occur exactly once in FILE; NEW must be non-empty and differ from OLD. One mutation is a
 plain edit. Several are built once: each OLD, an expression, becomes
 `(if <OSIS_MUTANT is i> { NEW } else { OLD })`, and the built binaries run once per mutation
-with OSIS_MUTANT=i (a build per mutation of a crate low in the tree costs minutes; a statement
-or pattern that is not an expression fails to build: its compiler errors are printed, its row says
-"does not build", and the others are built again without it). Files are put back from
+with OSIS_MUTANT=i (a build per mutation of a crate low in the tree costs minutes). An OLD or NEW
+that starts with `.` (a method-call suffix) or ends with `;` (a statement) is refused before
+building: include the receiver, drop the `;`, or give it alone. Any other text that is not an
+expression (a pattern) fails to build: its compiler errors are printed, its row says
+"does not build", and the others are built again without it. Files are put back from
 their text as read before the edit (never from git, so uncommitted work survives) as soon as the
 build ends, before any test runs; a file changed during the build (someone else edited it) is left
-alone and the path of the original's copy, kept beside it, is printed. Tests run from the built
-binaries, so the tree is never mutated while they run. A mutation that storms runs each seed to
+alone and the path of the original's copy, kept beside it, is printed. The build is a `cargo test`
+with tools/heavy's recording runner (`tools/heavy`, module doc): each test binary is copied as built,
+with cargo's args, cwd and env (`.cargo/config.toml`'s `[env]` included), and the tests run from the
+copies: neither the mutated tree nor a later rebuild in this worktree reaches them. Without a target
+selection the build adds `--tests` (doctests would run while building, not from copies). A mutation that storms runs each seed to
 its timeout: set OSIS_SEED_TIMEOUT_SECS to a few times a seed's normal CPU-s for seeded tests.
 
 Each mutation's test output goes whole to a file (MUTATE_OUT, a directory, or a fresh one under
@@ -23,20 +28,16 @@ TMPDIR), printed on stderr with each failing test's panic message, so a failure 
 read without rebuilding it. MUTATE_HEAVY=1 runs the tests in holds of tools/heavy,
 MUTATE_PER_HOLD mutations per hold (never run mutate.py itself under it: a batch would hold the
 lock for its whole length).
-The variable is read once per site, so a plant in a hot path costs nothing per call.
-The binaries run with `.cargo/config.toml`'s `[env]` (an explicit value wins), as under cargo:
-the suite's proptest case count and no `proptest-regressions/` files."""
-import json, os, shutil, subprocess, sys, tempfile, tomllib
+The variable is read once per site, so a plant in a hot path costs nothing per call."""
+import importlib.machinery, importlib.util, json, os, shutil, subprocess, sys, tempfile
 
 VAR = "OSIS_MUTANT"
-
-
-def cargo_env(env, config=os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), ".cargo", "config.toml")):
-    """`env` with the `[env]` table of `config` added where `env` lacks the name, as cargo sets it
-    for the tests it runs (a value given as a table reads its `value`)."""
-    with open(config, "rb") as f:
-        table = tomllib.load(f).get("env", {})
-    return {**{k: str(v["value"] if isinstance(v, dict) else v) for k, v in table.items()}, **env}
+TOOLS = os.path.dirname(os.path.abspath(__file__))
+_l = importlib.machinery.SourceFileLoader("heavy", os.path.join(TOOLS, "heavy"))
+heavy = importlib.util.module_from_spec(importlib.util.spec_from_loader("heavy", _l))
+_l.exec_module(heavy)
+# cargo's target selection flags: without one, `cargo test` also runs doctests while it builds
+SELECT = ("--lib", "--bin", "--bins", "--test", "--tests", "--example", "--examples", "--bench", "--benches", "--all-targets", "--doc")
 
 
 def panics(text):
@@ -51,28 +52,27 @@ def panics(text):
             name = None
 
 
-def run_bins(bins, test_args, env, mutants):
-    """Per mutation (`mutants`: the OSIS_MUTANT value of each, None for a plain edit), each built
-    binary's (exe, exit code, output), the binaries run side by side from their package dirs (a
-    binary's slow tail leaves cores to the others). MUTATE_HEAVY: MUTATE_PER_HOLD mutations
-    (default 1) in each hold of the heavy lock, the build unlocked, run by this script again."""
-    if env.get("MUTATE_HEAVY") and not env.get("HEAVY_HELD"):
+def run_bins(bins, mutants):
+    """Per mutation (`mutants`: the OSIS_MUTANT value of each, None for a plain edit), each
+    binary's (built path, exit code, output). `bins` are tools/heavy's recorded runs (a copy's
+    argv, cwd, cargo's env, the built path), run side by side (a binary's slow tail leaves cores to
+    the others). MUTATE_HEAVY: MUTATE_PER_HOLD mutations (default 1) in each hold of the heavy
+    lock, the build unlocked, run by this script again."""
+    if os.environ.get("MUTATE_HEAVY") and not os.environ.get("HEAVY_HELD"):
         with tempfile.TemporaryDirectory(prefix="mutate-run-") as d:
             with open(os.path.join(d, "in.json"), "w") as f:
-                json.dump([bins, test_args, mutants], f)
-            heavy = os.path.join(os.path.dirname(os.path.abspath(__file__)), "heavy")
-            subprocess.run([heavy, sys.executable, os.path.abspath(__file__), "--run-bins", d], env=env, check=True)
+                json.dump([bins, mutants], f)
+            subprocess.run([os.path.join(TOOLS, "heavy"), sys.executable, os.path.abspath(__file__), "--run-bins", d], check=True)
             with open(os.path.join(d, "out.json")) as f:
                 return json.load(f)
     out = []
-    env = cargo_env(env)
     for i in mutants:
-        e = dict(env, **({VAR: i} if i is not None else {}))
         with tempfile.TemporaryDirectory(prefix="mutate-out-") as d:
             runs = []
-            for k, (exe, cwd) in enumerate(bins):
+            for k, b in enumerate(bins):
                 f = open(os.path.join(d, str(k)), "w+")
-                runs.append((exe, f, subprocess.Popen([exe, *test_args], cwd=cwd, env=e, stdout=f, stderr=subprocess.STDOUT)))
+                e = dict(b["env"], **({VAR: i} if i is not None else {}))
+                runs.append((b["bin"], f, subprocess.Popen(b["argv"], cwd=b["cwd"], env=e, stdout=f, stderr=subprocess.STDOUT)))
             res = []
             for exe, f, p in runs:
                 rc = p.wait()
@@ -86,9 +86,9 @@ def run_bins(bins, test_args, env, mutants):
 def main(argv):
     if argv[:1] == ["--run-bins"]:
         with open(os.path.join(argv[1], "in.json")) as f:
-            bins, test_args, mutants = json.load(f)
+            bins, mutants = json.load(f)
         with open(os.path.join(argv[1], "out.json"), "w") as f:
-            json.dump(run_bins(bins, test_args, dict(os.environ), mutants), f)
+            json.dump(run_bins(bins, mutants), f)
         return 0
     if "--" not in argv or argv.index("--") % 3 or not argv.index("--"):
         sys.exit(__doc__)
@@ -103,6 +103,10 @@ def main(argv):
             sys.exit(f"mutate: OLD occurs {texts[path].count(old)} times in {path}; it must occur once: {old!r}")
         if not new or new == old:
             sys.exit("mutate: NEW must be non-empty and differ from OLD")
+        for x in (old, new) if len(muts) > 1 else ():
+            if x.lstrip().startswith(".") or x.rstrip().endswith(";"):
+                sys.exit(f"mutate: {x!r} is not an expression ({'a method-call suffix' if x.lstrip().startswith('.') else 'a statement'}): "
+                         "with several mutations each OLD and NEW is wrapped as one; include the receiver, drop the `;`, or give it alone")
     mutated, subs = dict(texts), []
     for i, (path, old, new) in enumerate(muts):
         if len(muts) == 1:
@@ -120,6 +124,7 @@ def main(argv):
     for path, sub in subs:
         lo = mutated[path][: mutated[path].index(sub)].count("\n") + 1
         sites.append((path, lo, lo + sub.count("\n")))
+    rec = tempfile.mkdtemp(prefix="mutate-bins-")
     saved = {}
     for path in texts:
         # beside the file, so one left behind is seen
@@ -129,7 +134,20 @@ def main(argv):
         with open(path, "w") as f:
             f.write(mutated[path])
     try:
-        build = subprocess.run(["cargo", "test", "--no-run", "--message-format=json", *cargo_args], stdout=subprocess.PIPE, text=True)
+        return built(muts, rest, cargo_args, test_args, texts, mutated, saved, sites, rec)
+    finally:
+        shutil.rmtree(rec, ignore_errors=True)
+
+
+def built(muts, rest, cargo_args, test_args, texts, mutated, saved, sites, rec):
+    """Build with the mutated texts in place (copies of the binaries into rec), put the files back,
+    then run and report."""
+    select = [] if any(a.split("=")[0] in SELECT for a in cargo_args) else ["--tests"]
+    try:
+        with tempfile.TemporaryFile("w+") as f:
+            rc, bins = heavy.build(["cargo", "test", "--message-format=json", *select, *cargo_args, "--", *test_args], rec, f)
+            f.seek(0)
+            build_out = f.read()
     finally:
         for path, text in texts.items():
             if open(path).read() == mutated[path]:
@@ -140,16 +158,19 @@ def main(argv):
             else:
                 print(f"mutate: {path} changed during the build; left as it is, the original is at {saved[path]}", file=sys.stderr)
     rows = [f"| `{path}`: `{old}` -> `{new}` |" for path, old, new in muts]
-    if build.returncode != 0:
-        errors = []
-        for line in build.stdout.splitlines():
+    if rc != 0:
+        errors, other = [], []
+        for line in build_out.splitlines():
             try:
                 m = json.loads(line)
             except ValueError:
+                other.append(line)
                 continue
             if m.get("reason") == "compiler-message" and m["message"].get("level") == "error":
                 errors.append(m["message"])
                 print(m["message"].get("rendered", ""), file=sys.stderr)
+        if not errors:  # not a compile error (a bad cargo argument): cargo's own words
+            print("\n".join(l for l in other if not l.lstrip().startswith(("Compiling", "Checking"))), file=sys.stderr)
         # the mutations whose substituted lines an error points into
         bad = {i for e in errors for sp in e.get("spans", []) for i, (path, lo, hi) in enumerate(sites)
                if os.path.abspath(sp["file_name"]) == os.path.abspath(path) and sp["line_start"] <= hi and sp["line_end"] >= lo}
@@ -161,14 +182,6 @@ def main(argv):
             print(f"mutate: {len(bad)} mutation(s) do not build; building the other {len(rest_muts)} again", file=sys.stderr)
             return main([x for m in rest_muts for x in m] + ["--", *rest])
         return 0
-    bins = []
-    for line in build.stdout.splitlines():
-        try:
-            m = json.loads(line)
-        except ValueError:
-            continue
-        if m.get("reason") == "compiler-artifact" and m.get("executable") and m.get("profile", {}).get("test"):
-            bins.append((m["executable"], os.path.dirname(m["manifest_path"])))
     out_dir = os.environ.get("MUTATE_OUT") or tempfile.mkdtemp(prefix="mutate-")
     os.makedirs(out_dir, exist_ok=True)
     per = max(1, int(os.environ.get("MUTATE_PER_HOLD", "1")))
@@ -176,7 +189,7 @@ def main(argv):
     for i, row in enumerate(rows):
         if i not in done:
             ids = list(range(i, min(i + per, len(rows))))
-            res = run_bins(bins, test_args, dict(os.environ), [str(k) if len(muts) > 1 else None for k in ids])
+            res = run_bins(bins, [str(k) if len(muts) > 1 else None for k in ids])
             done.update(zip(ids, res))
         failed, out = [], []
         for exe, rc, text in done.pop(i):
