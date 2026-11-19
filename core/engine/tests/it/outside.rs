@@ -202,11 +202,14 @@ fn a_grant_making_a_strong_valid_wakes_what_waits_on_its_target_spec_commits_4()
     assert_eq!(e1.get(&w, &reg).unwrap(), Some(Value::Str("w".into())), "W's content joined as W entered");
 }
 
+/// Store rows grown, by family.
+type Rows = Vec<(String, i64)>;
+
 /// What peer 1 stores for `n` writes on W, outside its node closure (it holds X, not
 /// the strong to W) while X's sync ID carries them at their source: (rows after the writes and
 /// the pass end with W's minting commit held, rows after `n` writes awaiting W's record and their
 /// carriers gone), each less the rows before.
-fn outside_rows(n: usize) -> (Vec<(String, i64)>, Vec<(String, i64)>) {
+fn outside_rows(n: usize) -> (Rows, Rows) {
     let reg = crate::common::ak("t:reg.0");
     let (mut lp, x) = base();
     let e0 = &mut lp.peers[0].engine;
@@ -222,7 +225,7 @@ fn outside_rows(n: usize) -> (Vec<(String, i64)>, Vec<(String, i64)>) {
         m.set(w, &reg, &Value::Int(i as i64)).unwrap();
         ds.push(lp.peers[0].engine.commit(m).unwrap().unwrap());
     }
-    let diff = |a: &std::collections::BTreeMap<String, (usize, usize)>, b: &std::collections::BTreeMap<String, (usize, usize)>| -> Vec<(String, i64)> {
+    let diff = |a: &std::collections::BTreeMap<String, (usize, usize)>, b: &std::collections::BTreeMap<String, (usize, usize)>| -> Rows {
         a.keys().chain(b.keys()).collect::<BTreeSet<_>>().into_iter().map(|k| (k.clone(), b.get(k).map_or(0, |v| v.0) as i64 - a.get(k).map_or(0, |v| v.0) as i64)).filter(|x| x.1 != 0).collect()
     };
     // minted here: the writes wait, then go at the pass end
