@@ -41,9 +41,13 @@ fn crash_and_restart() {
 // there waits alone, the rest applies. Node 2's relay leaves node 1 without that part until a whole copy comes.
 #[test]
 fn partial_relay_gets_its_rest_spec_commits_4() {
+    // what the sync IDs `to` syncs carry as `from` sees them, and certificates (as a sync sends)
     fn carry(sim: &mut Sim, from: usize, to: usize, ids: &[CommitId]) {
         for id in ids {
-            let p = sim.engine(from).unwrap().package(id).unwrap().unwrap();
+            let synced: std::collections::BTreeSet<osis_base::SyncId> = sim.engine(to).unwrap().sync_set().unwrap().ids.keys().copied().collect();
+            let e = sim.engine(from).unwrap();
+            let Some(parts) = e.sent_parts(id, &synced).unwrap() else { continue };
+            let p = e.package_of_parts(id, &parts).unwrap().unwrap();
             sim.deliver(to, &p).unwrap();
         }
     }

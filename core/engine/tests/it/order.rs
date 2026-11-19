@@ -859,6 +859,8 @@ pub(crate) fn play_with(seed: u64, steps: &[Step], addenda: bool) -> Played {
     let base = packs.len();
     let mut things = vec![g];
     let mut parent: BTreeMap<Tid, Tid> = BTreeMap::new();
+    // things held from their admin by a strong in a commit of their own (`RecordOnly` under one)
+    let mut strong_in: Vec<(Tid, Tid, CommitId)> = Vec::new();
     // wall times of each peer's commits (frontier points)
     let mut marks: Vec<Vec<WallMs>> = vec![Vec::new(); 3];
     let mut tally = Tally::default();
@@ -1223,6 +1225,13 @@ pub(crate) fn play_with(seed: u64, steps: &[Step], addenda: bool) -> Played {
                 let r = lp.peers[by].engine.create_with_admin(&first);
                 no = why(&r);
                 if let Ok((t, done)) = r {
+                    // held from its admin where it lives (`Engine::hold_where_it_lives`): the
+                    // commit on the admin carries the strong
+                    if let Some(u) = under.map(th)
+                        && let Some(c) = done.commits.iter().find(|c| lp.peers[by].engine.header(c).is_some_and(|h| h.aspects.iter().any(|a| a.tid == u && a.ak.as_str() == "holds.0")))
+                    {
+                        strong_in.push((t, u, *c));
+                    }
                     if let Some(id) = done.commits.first() {
                         made_by.insert(t, (by, *id));
                         if under.is_none() {
@@ -1530,7 +1539,7 @@ pub(crate) fn play_with(seed: u64, steps: &[Step], addenda: bool) -> Played {
     }).collect();
     // G and the things outside it the nodes under test hold, and the things minted under them
     let roots: BTreeSet<Tid> = [g].into_iter().chain(tops.iter().copied()).collect();
-    let minted = parent.iter().filter_map(|(t, p)| made_by.get(t).map(|(_, id)| (*t, *p, *id))).collect();
+    let minted = parent.iter().filter_map(|(t, p)| made_by.get(t).map(|(_, id)| (*t, *p, *id))).chain(strong_in).collect();
     let walk = std::sync::Arc::new(crate::held::Walk { roots, minted });
     Played { walk, access, packs, authors, base, things, now, tally, restored: Default::default(), judged: Default::default(), moved: Default::default(), dropped: Default::default(), steps_at, own_sets, settle_from: None, settled_last, withheld: 0, model: None, ingests: Default::default(), copies: Default::default(), reader: std::sync::Arc::new(std::sync::Mutex::new(reader)) }
 }

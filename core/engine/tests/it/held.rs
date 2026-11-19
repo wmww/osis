@@ -642,9 +642,9 @@ fn held_body(e: &Engine, c: &CommitId, ai: usize) -> bool {
 
 /// What the history says enters a node's closure (`compare`'s `quiet`), from the history alone,
 /// never from the node judged: `roots`, held by the node's own strongs and grants (once their
-/// record is held), and each
-/// thing `minted` (thing, mint admin, the commit minting it with the mint admin's strong to it)
-/// whose mint admin is in and whose minting commit is held with that strong valid, as held-model
+/// record is held), and each thing of `minted` (thing, the thing holding a strong to it, the
+/// commit writing that strong: its minting commit, or one of its own) whose holder is in and
+/// whose strong's commit is held valid there, as held-model
 /// judges the held set (`hm::roles::Timeline::valid_delta`).
 #[derive(Clone, Debug, Default)]
 pub(crate) struct Walk {
