@@ -201,7 +201,7 @@ fn a_vouch_owed_across_a_restart_is_written_spec_perm_5_1() {
     }
 }
 
-/// X (peer 1), removed by H, signs a grant to H stamped before R and a flood of `flood` vouches
+/// X (peer 1), removed by H, signs `flood` grants to H stamped before R and `flood` vouches
 /// and as many addenda keyed by R listing its own grant of K, which no one else received; the
 /// removals W judges as it then writes elsewhere.
 fn junk_judged(flood: usize) -> u64 {
@@ -213,11 +213,13 @@ fn junk_judged(flood: usize) -> u64 {
     // the junk grant, stamped before R, and the forged vouches
     let h = lp.peers[0].engine.me();
     lp.peers[1].engine.core.skip_writer_rules = true;
-    let mut m = Mutation::new();
-    crate::flows::put_edge(&mut m, t, h, &edge(Role::Read)).unwrap();
-    m.ts = osis_base::Ts::from_u64(rts.to_u64() - 2);
-    m.unchecked = true;
-    lp.peers[1].commit(m).unwrap();
+    for i in 0..flood {
+        let mut m = Mutation::new();
+        crate::flows::put_edge(&mut m, t, h, &edge(Role::Read)).unwrap();
+        m.ts = osis_base::Ts::from_u64(rts.to_u64() - 2 - u64::try_from(i).unwrap());
+        m.unchecked = true;
+        lp.peers[1].commit(m).unwrap();
+    }
     for _ in 0..flood {
         let mut m = Mutation::new();
         let list = ct::Frontier { commits: [c].into_iter().collect() };
@@ -250,7 +252,7 @@ fn junk_judged(flood: usize) -> u64 {
 }
 
 // spec/permissions.md §5.1 Vouches (an entry counts only where W could write c; nothing trusts
-// a vouch's word), §5.2 Addenda: a removed party's junk grant and its forged vouches and addenda
+// a vouch's word), §5.2 Addenda: a removed party's backdated junk grants and its forged vouches and addenda
 // revive nobody and nothing counts, at every node; and a later write of W's, moving nothing R's
 // judgement reads, judges no removal however large the flood.
 #[test]
@@ -611,4 +613,35 @@ fn an_open_reads_each_commits_role_parts_a_bounded_number_of_times_spec_perm_5_1
     let ((t1, p1), (t2, p2)) = (work(3), work(30));
     assert_eq!(t1, t2, "timeline updates at k, 10k");
     assert_eq!(p2 - p1, 27, "parts read at k {p1}, 10k {p2}: once per rotation");
+}
+
+/// A team (peer 3's actor) with `members` members holds write on `t`; H removes it and grants
+/// it again, 5 times; W syncs. The removals' entries in W's wake index
+/// (`Indexes::vouch_wake`).
+fn wake_entries(members: usize) -> usize {
+    let (mut lp, t) = world(4);
+    let team = lp.peers[3].engine.me();
+    for i in 0..members {
+        let who = Tid::from_bytes([u8::try_from(i + 1).unwrap(); 15]);
+        let mut m = Mutation::new();
+        m.op(team, &ct::ROLES, PathOp { path: vec![PathSeg::Key(Value::Weak(who))], op: Op::Set(edge(Role::Write).to_value()) }).unwrap();
+        lp.peers[3].commit(m).unwrap().unwrap();
+    }
+    lp.sync_all().unwrap();
+    for _ in 0..5 {
+        grant(&mut lp, 0, t, 3, Role::Write);
+        remove(&mut lp, 0, t, 3);
+    }
+    lp.sync(0, 2).unwrap();
+    lp.peers[2].engine.core.ix.vouch_wake.len()
+}
+
+// spec/permissions.md §5.1 Vouches (Writing), notes/principles.md (Fast by construction): a
+// removal is filed for wakes under the holders it names and its author, one entry each, so a
+// removal of a team costs the same whatever its membership.
+#[test]
+fn a_removal_of_a_team_is_filed_once_whatever_its_members_spec_perm_5_1() {
+    let (small, big) = (wake_entries(2), wake_entries(20));
+    println!("vouches: wake entries for 5 removals of a team: {small} at 2 members, {big} at 20");
+    assert_eq!((small, big), (10, 10));
 }

@@ -1390,6 +1390,7 @@ fn elsewhere_cost(n: usize) -> (u64, u64) {
     let c = osis_base::costs::take();
     let get = |k: &str| c.iter().find(|x| x.0 == k).map_or(0, |x| x.2);
     assert_eq!(lp.peers[2].engine.core.timelines.role(&dave, &t, osis_perm::At::END), Some(Role::Write));
+    assert_eq!(get("vouches: wake climbs"), 0, "live traffic climbs to no filed party");
     (get("vouches: removals judged"), get("vouches: commits scanned"))
 }
 

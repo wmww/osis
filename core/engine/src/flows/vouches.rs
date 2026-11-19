@@ -25,7 +25,8 @@
 //! counting answers); the gathering is kept (`Gathered`) and a removal is due again only when
 //! something it reads moves: R's own change in the walk (`note_changed`: the only input of one
 //! not applying), its component walked anew (`note_evaluated`), a commit ordered no later than
-//! it applying (`note_applied`), this node's roles moving on a thing it is filed under
+//! it applying or changing its standing and reaching a party R names or R's author (`wake`,
+//! filed per such party, `Indexes::vouch_wake`), this node's roles moving on a thing it is filed under
 //! (`note_roles_moved`: decided again, the gathering kept). Another party's role change, or a
 //! removed party's commits that change no walk, judge nothing. The window (`window`)
 //! closes at R's own arrival, so its candidates' receipts are final once R is held. So a
@@ -66,9 +67,13 @@ pub(crate) fn note_due(core: &mut Core, r: &CommitId) {
 /// its only trigger: no write elsewhere judges it, however many such removals are held.
 pub(crate) fn note_changed(core: &mut Core, commits: &BTreeSet<CommitId>) {
     for r in commits {
-        if core.ix.commits.get(r).is_some_and(|m| m.view.kind.is_role() && m.view.frontier.is_some()) {
+        let Some(m) = core.ix.commits.get(r) else { continue };
+        let (removal, author, ts) = (m.view.kind.is_role() && m.view.frontier.is_some(), m.view.author, m.view.ts);
+        if removal {
             note_due(core, r);
         }
+        // and a commit ordered before a removal whose standing changed may change what it reads
+        wake(core, r, author, ts);
     }
 }
 
@@ -102,19 +107,39 @@ pub(crate) fn note_roles_moved(core: &mut Core, moved: &BTreeSet<Tid>, under: &B
     }
 }
 
-/// Commit `h` applied here: the removals filed under its author or a thing its edge writes
-/// target (`Indexes::vouch_wake`) that it is ordered no later than are due again, gathered anew.
-/// It may be a candidate of theirs received in time that applied only now (pending meanwhile),
-/// or a grant bringing a party into question at one; a commit ordered after a removal is
-/// neither, so the honest traffic after a removal (the latest `ts`) makes none due. O(the
-/// removals so filed stamped at or after it, by a range).
-pub(crate) fn note_applied(core: &mut Core, h: &osis_commit::Header) {
-    if core.ix.vouch_wake.is_empty() {
+/// Commit `id` (header `h`) applied here (whole or by late parts): it may be a candidate of a
+/// removal received in time that applied only now (pending meanwhile), or a grant bringing a
+/// party into question at one (`wake`).
+pub(crate) fn note_applied(core: &mut Core, id: &CommitId, h: &osis_commit::Header) {
+    wake(core, id, h.author, h.ts);
+}
+
+/// Commit `id` by `author` stamped `ts` applied or changed its standing in the walk: the
+/// removals stamped no earlier, filed under a party it reaches (`Indexes::vouch_wake`), are due
+/// again, gathered anew. A party comes into question at R, or a commit of one becomes a
+/// candidate, only by a commit ordered no later than R: by a party in question (it reaches a
+/// holder R names: `Held::reach` climbs to what a party holds), or naming one on a thing (a
+/// member joining a team R names: it reaches the team, as does the thing), or lowering the
+/// remover's authority (its holder reaches the remover). So live traffic (stamped after every
+/// filed removal) costs a comparison, and a backdated or late commit a climb from its author
+/// and the holders and targets of its edge writes.
+///
+/// Invariant: every input a kept gathering reads besides R's own change in the walk
+/// (`note_changed`) and a re-walk of its component (`note_evaluated`) moves only by such a
+/// commit: who is in question or demoted at R and whether R applies are read from the walk
+/// before R; the candidates are commits held before R's arrival.
+fn wake(core: &mut Core, id: &CommitId, author: Tid, ts: Ts) {
+    let Some(&(newest, _)) = core.ix.vouch_wake_ts.last() else { return };
+    if ts > newest {
         return;
     }
-    let tids: BTreeSet<Tid> = std::iter::once(h.author).chain(h.aspects.iter().filter(|a| crate::apply::validity::edge_ak(a.ak.as_str())).map(|a| a.tid)).collect();
-    for t in tids {
-        let lo = (t, h.ts, CommitId([0; 32]));
+    osis_base::costs::count("vouches: wake climbs", 1);
+    let mut from: BTreeSet<Tid> = BTreeSet::from([author]);
+    if let Some(rc) = core.ix.held.edge_commit(id) {
+        from.extend(rc.ops.iter().flat_map(|o| [o.holder, o.target]));
+    }
+    for t in core.ix.held.reach(&from) {
+        let lo = (t, ts, CommitId([0; 32]));
         let hi = (t, Ts::MAX, CommitId([0xff; 32]));
         let due: Vec<CommitId> = core.ix.vouch_wake.range(lo..=hi).map(|(_, _, r)| *r).collect();
         for r in due {
@@ -124,15 +149,19 @@ pub(crate) fn note_applied(core: &mut Core, h: &osis_commit::Header) {
     }
 }
 
-/// Files removal `r` (its edge commit `rc`) under every party that may come into question at it
-/// (`Indexes::vouch_wake`): the holders its edge writes name and everything upstream of them.
+/// Files removal `r` (its edge commit `rc`) under the parties a commit ordered before it must
+/// reach to change what it reads (`wake`): the holders its edge writes name and its author. One
+/// entry each, however many parties stand behind a holder (a team's members reach it).
 fn file_wake(core: &mut Core, r: &CommitId) {
     let Some(rc) = core.ix.held.edge_commit(r) else { return };
-    let named: BTreeSet<Tid> = rc.ops.iter().map(|o| o.holder).filter(|h| *h != rc.author).collect();
     let ts = rc.ts;
-    for t in core.ix.held.upstream(&named) {
-        core.ix.vouch_wake.insert((t, ts, *r));
+    let parties: BTreeSet<Tid> = rc.ops.iter().map(|o| o.holder).chain(std::iter::once(rc.author)).collect();
+    for t in parties {
+        if core.ix.vouch_wake.insert((t, ts, *r)) {
+            osis_base::costs::count("vouches: wake entries", 1);
+        }
     }
+    core.ix.vouch_wake_ts.insert((ts, *r));
 }
 
 /// Every held removal due (an open: what is owed is re-derived, never kept).

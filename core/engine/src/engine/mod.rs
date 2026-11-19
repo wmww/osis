@@ -937,11 +937,13 @@ indexes! {
     /// What each removal's judgement gathered (`flows::vouches::Gathered`), kept while it is
     /// filed or due: gathered anew only when what it reads may have changed. Memory only.
     pub vouch_gathered: JMap<CommitId, Arc<crate::flows::vouches::Gathered>>,
-    /// The removals judged by `flows::vouches`, by each party that may come into question at
-    /// them (the holders their edge writes name and everything upstream, `Held::upstream`):
-    /// (party, the removal's `ts`, removal). A commit by or naming one, ordered no later than the
-    /// removal, applying makes it due again (`flows::vouches::note_applied`).
+    /// The removals judged by `flows::vouches`, by the holders their edge writes name and their
+    /// author: (party, the removal's `ts`, removal). A commit ordered no later than the removal,
+    /// applying and reaching one (`Held::reach` from its author and edge targets), makes it due
+    /// again (`flows::vouches::wake`).
     pub vouch_wake: JSet<(Tid, osis_base::Ts, CommitId)>,
+    /// `vouch_wake`'s removals by `ts`: a commit stamped after the newest wakes none.
+    pub vouch_wake_ts: JSet<(osis_base::Ts, CommitId)>,
     /// The writers' leaving out taken per (removal, thing) (`flows::vouches::leaving_out`): kept
     /// while it still holds for the same candidates and trust set, so a fight costs a step two
     /// walks, not one per candidate. Memory only: an open takes it anew.

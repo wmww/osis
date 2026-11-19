@@ -613,7 +613,7 @@ pub(crate) fn apply_verified(tx: &mut Tx<'_>, blob: &CommitBlob, parts: Parts, o
         crate::flows::vouches::note_due(tx.core, &id);
     }
     // a commit applying late may be a removal's candidate, or bring one into question
-    crate::flows::vouches::note_applied(tx.core, &h);
+    crate::flows::vouches::note_applied(tx.core, &id, &h);
     let valid: Vec<bool> = (0..h.aspects.len()).map(|ai| validity::part_valid(tx.core, &h, &id, ai)).collect();
     let missing: BTreeSet<usize> = (0..h.aspects.len()).filter(|ai| !parts.has(*ai)).collect();
     let hold = (0..h.aspects.len()).map(|ai| if missing.contains(&ai) { Hold::Missing(Missing::Plain) } else { Hold::Body { whole: false } }).collect();
@@ -765,6 +765,8 @@ pub(crate) fn join_late(tx: &mut Tx<'_>, id: &CommitId, merged: &CommitBlob, par
     if edges && meta.view.frontier.is_some() {
         crate::flows::vouches::note_due(tx.core, id);
     }
+    // a late part may make the commit a removal's candidate (`flows::vouches::wake`)
+    crate::flows::vouches::note_applied(tx.core, id, &h);
     let (held, n) = with_held(tx, &h, id, &parts)?;
     let read = super::PartsRead::of(&h, &held);
     if h.kind.is_role() {

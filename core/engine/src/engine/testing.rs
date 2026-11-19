@@ -1098,8 +1098,8 @@ mod tests {
         // (`forgotten`); events, not the held set (`falls`, `passes`, `role_arrivals`,
         // `cause_at`, `reseal_asks`, `carriers`, `carrying`); the node closure, built again after an open (`closure`);
         // the removals to judge for vouches, all of them again at an open (`vouches_due`,
-        // `vouch_watch`, `vouch_filed`, `vouch_gathered`, `vouch_left`, `vouch_wake`).
-        const LEFT_OUT: &[&str] = &["rotations", "epochs_due", "names_due", "forgotten", "pending", "pend_on", "pend_keys", "pend_by", "pend_needs", "falls", "passes", "role_arrivals", "cause_at", "setting_waits", "reseal_asks", "carriers", "carrying", "cover_waits", "closure", "vouches_due", "vouch_watch", "vouch_filed", "vouch_gathered", "vouch_left", "vouch_wake"];
+        // `vouch_watch`, `vouch_filed`, `vouch_gathered`, `vouch_left`, `vouch_wake`, `vouch_wake_ts`).
+        const LEFT_OUT: &[&str] = &["rotations", "epochs_due", "names_due", "forgotten", "pending", "pend_on", "pend_keys", "pend_by", "pend_needs", "falls", "passes", "role_arrivals", "cause_at", "setting_waits", "reseal_asks", "carriers", "carrying", "cover_waits", "closure", "vouches_due", "vouch_watch", "vouch_filed", "vouch_gathered", "vouch_left", "vouch_wake", "vouch_wake_ts"];
         let ix = super::super::Indexes::default();
         let compared: BTreeSet<&str> = tables(&ix).into_iter().map(|(n, _)| n).collect();
         for n in super::super::INDEX_NAMES {
