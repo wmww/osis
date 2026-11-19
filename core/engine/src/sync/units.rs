@@ -1060,7 +1060,8 @@ fn judge(tx: &mut Tx<'_>, f: &mut Follow, v: Vx, y: Tid) -> Result<BTreeSet<Vx>>
     }
     set_accepted(tx, y, v, any);
     if new {
-        refetch(tx, v, y, any)?;
+        let held = f.gone.contains_key(&y);
+        refetch(tx, v, y, any, held)?;
     }
     let core = &*tx.core;
     let mut got = BTreeSet::new();
@@ -1071,14 +1072,18 @@ fn judge(tx: &mut Tx<'_>, f: &mut Follow, v: Vx, y: Tid) -> Result<BTreeSet<Vx>>
     Ok(got)
 }
 
-/// A new edge of read unit `v` to `y`, whose record the node does not hold and no ticket for
-/// which opened here: the unit's sync IDs are pulled anew from every source, so what was
-/// forgotten of `y` (a release, a body judged outside the required set before the strong
-/// arrived) is fetched again (spec/sync-judgement.md §3 Dropped bodies). Once per new edge,
-/// durable before the transaction adding it commits.
-fn refetch(tx: &mut Tx<'_>, v: Vx, y: Tid, ticketed: bool) -> Result<()> {
+/// A new edge of read unit `v` to `y`, which no ticket for opened here and the node held as
+/// certificates alone or not at all when the transaction began (`retention::needed::Holding`:
+/// not in the node closure, nor leaving it, nor dropped from it in this transaction, `was_held`),
+/// unless its record was learned in this transaction: the unit's sync IDs are pulled anew from
+/// every source, so what was forgotten of `y` (its content outside the node closure, a body
+/// judged outside the required set before the strong arrived) is fetched again
+/// (spec/sync-judgement.md §3 Dropped bodies). Once per new edge, durable before the
+/// transaction adding it commits.
+fn refetch(tx: &mut Tx<'_>, v: Vx, y: Tid, ticketed: bool, was_held: bool) -> Result<()> {
     let Ctx::Read(t) = v.0 else { return Ok(()) };
-    if ticketed || tx.core.exists(&y) || tx.core.is_key_actor(&y) {
+    let cl = &tx.core.ix.closure;
+    if ticketed || was_held || cl.holds(&y) || cl.left().contains_key(&y) || tx.core.learned.contains(&y) || tx.core.is_key_actor(&y) {
         return Ok(());
     }
     // a held commit minting `y` whose part on it was never taken: nothing keeps its blobs out

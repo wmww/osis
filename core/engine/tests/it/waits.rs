@@ -116,6 +116,7 @@ fn one_writer(n: usize) -> (LocalPeer, Tid) {
     LocalPeer::cached(&format!("waits::one_writer/{n}"), || {
         let mut lp = net(n, 0);
         let t = new_thing(&mut lp, 0);
+        share(&mut lp, 0, t);
         writer(&mut lp, t, 1);
         lp.sync_all().unwrap();
         (lp, t)

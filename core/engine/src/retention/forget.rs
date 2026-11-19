@@ -118,6 +118,12 @@ fn forgotten_ak(fate: Fate, ak: &Ak) -> bool {
     }
 }
 
+/// Whether a part on `ak` is content: what a thing held as certificates alone loses
+/// (`retention::needed::Holding`), a released thing's local copy.
+pub(crate) fn content(ak: &Ak) -> bool {
+    forgotten_ak(Fate::Local, ak)
+}
+
 /// Whether dropping the secrets of `lost` forgets `t` (erased or kept as a copy): its secrets
 /// derive from a lost actor's and no held path reads it (node-sync: where this node's writes on
 /// what an `until` ended would go).
@@ -278,8 +284,9 @@ pub(crate) fn forget(tx: &mut Tx<'_>, scope: Scope<'_>, held: &BTreeMap<Tid, u64
         }
         let blob = tx.get_commit(&id)?;
         let rest = blob.as_ref().map(|b| osis_commit::rewrite(b, |ai| ais.contains(&ai)));
-        // whole when no part it keeps stays: a leftover is held outside the blob's parts
-        let keeps = (0..m.view.aspects.len()).any(|ai| !ais.contains(&ai) && m.holds(ai));
+        // whole when no part it keeps stays (a leftover is held outside the blob's parts) and
+        // none it would take is missing (spec/commits.md §5 A released thing)
+        let keeps = m.view.aspects.iter().enumerate().any(|(ai, a)| !ais.contains(&ai) && (m.holds(ai) || (m.missing(ai) && super::needed::takes_part(tx.core, &a.tid, &a.ak))));
         if rest.is_some() && !keeps {
             whole_things.push((id, m.view.aspects.iter().map(|a| a.tid).collect::<BTreeSet<_>>()));
             crate::apply::unindex_unreceived(tx, &id)?;

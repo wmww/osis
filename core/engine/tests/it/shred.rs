@@ -36,7 +36,7 @@ fn peer_bare(seed: u64) -> Peer {
     let mut engine = Engine::create(Box::new(backend.clone()), Box::new(root.clone()), osis_engine::local_peer::blob_area(&blob_disk, seed).unwrap(), cfg, c, Box::new(SeededRng::from_u64(seed))).unwrap();
     engine.take_wakes();
     let events = engine.subscribe();
-    Peer { engine, clock, backend, root, blob_disk, events, restarts: 0, discarded: Vec::new(), discards: 0, redelivered: 0, pulled_anew: Default::default() }
+    Peer { engine, clock, backend, root, blob_disk, events, restarts: 0, discarded: Vec::new(), discards: 0, redelivered: 0, pulled_anew: Default::default(), given: Default::default() }
 }
 
 /// `p` restarted over its durable state, as `peer` opens it.
@@ -46,7 +46,7 @@ fn reopened(p: Peer, seed: u64) -> Peer {
     let c: Arc<dyn Clock> = clock.clone();
     let mut engine = Engine::open(Box::new(backend.clone()), Box::new(root.clone()), osis_engine::local_peer::blob_area(&blob_disk, seed).unwrap(), cfg, c, Box::new(SeededRng::from_u64(seed))).unwrap();
     let events = engine.subscribe();
-    let mut p = Peer { engine, clock, backend, root, blob_disk, events, restarts: 0, discarded, discards: 0, redelivered: 0, pulled_anew: Default::default() };
+    let mut p = Peer { engine, clock, backend, root, blob_disk, events, restarts: 0, discarded, discards: 0, redelivered: 0, pulled_anew: Default::default(), given: Default::default() };
     p.fetch_discarded().unwrap();
     p
 }
@@ -323,7 +323,7 @@ fn erasing_edit_drops_replaced_body_unrecoverable_spec_commits_5() {
 // removal's body nor a later snapshot's tombstone keeps it, at the writer or a receiver
 #[test]
 fn removed_map_key_gone_after_purge_spec_crdt_5_6() {
-    let mut lp = net2();
+    let mut lp = net2_one();
     let t = new_thing(&mut lp, 0);
     let marker = "KEY-MARK-5e17";
     let k = ak("t:big.0");
@@ -391,7 +391,7 @@ fn expired_late_part_unrecoverable_spec_crdt_4_7() {
 // stays so once the record comes.
 #[test]
 fn partless_commit_applies_as_its_header_spec_commits_4() {
-    let mut lp = net2();
+    let mut lp = net2_one();
     lp.sync_all().unwrap();
     let t = new_thing(&mut lp, 0);
     let mut m = Mutation::new();
@@ -943,7 +943,7 @@ fn flagged_read_of_a_part_gone_with_a_page_away_is_repaired_spec_commits_5() {
 // it (was: the row was overwritten unshredded, so the old page kept the value).
 #[test]
 fn snapshot_leftover_stripped_again_unrecoverable_spec_commits_5() {
-    let mut lp = net2();
+    let mut lp = net2_one();
     let t = new_thing_keeping(&mut lp, 0, &[("t:text.0", DAY)]);
     lp.sync(0, 1).unwrap();
     let k = ak("t:big.0");
@@ -1092,7 +1092,7 @@ fn into_entry(lp: &mut LocalPeer, t: Tid, key: &str, n: i64) -> osis_base::Commi
 // on both nodes; purged too, nothing of the key is left
 #[test]
 fn purge_leaves_later_edits_own_key_spec_crdt_4_7() {
-    let mut lp = net2();
+    let mut lp = net2_one();
     let t = new_thing(&mut lp, 0);
     let marker = "ENTRY-KEY-MARK-3f0b";
     let k = ak("t:map.0");
@@ -1127,7 +1127,7 @@ fn purge_leaves_later_edits_own_key_spec_crdt_4_7() {
 // entry's T, the entry under its own copy of the key
 #[test]
 fn edit_into_expiring_entry_keeps_its_expiry_spec_crdt_4_7() {
-    let mut lp = net2();
+    let mut lp = net2_one();
     let t = new_thing(&mut lp, 0);
     let marker = "EXPIRING-KEY-MARK-91c4";
     let t_end = lp.peers[0].engine.now().0 + 60_000;
@@ -1157,7 +1157,7 @@ fn edit_into_expiring_entry_keeps_its_expiry_spec_crdt_4_7() {
 // own values (an undelete): a purge of the insert leaves them, one of the undo too takes them
 #[test]
 fn undelete_chars_are_their_own_values_spec_crdt_4_7() {
-    let mut lp = net2();
+    let mut lp = net2_one();
     let t = new_thing_keeping(&mut lp, 0, &[("t:text.0", DAY)]);
     let marker = "UNDELETE-MARK-6d2a";
     let k = ak("t:text.0");
@@ -1707,7 +1707,7 @@ fn a_flag_moving_rejudges_that_flag_alone_spec_perm_4() {
 fn a_state_digest_is_computed_once_per_state_spec_perm_4() {
     let computed = || osis_base::costs::take().iter().find(|x| x.0 == "state digest: computed").map_or(0, |x| x.2);
     for n in [100usize, 1000] {
-        let mut lp = net2();
+        let mut lp = net2_one();
         let t = new_thing(&mut lp, 0);
         let mut m = Mutation::new();
         let items = (0..n).map(|i| s(&format!("e{i}"))).collect();

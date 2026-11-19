@@ -1189,6 +1189,7 @@ fn record_chain_depth_edge_chain_spec_perm_1() {
     let (at_cap, past) = (chain[MAX_CHAIN_DEPTH - 1], chain[MAX_CHAIN_DEPTH]);
     for (k, holder) in [at_cap, past].into_iter().enumerate() {
         let c = new_thing(&mut lp, 1);
+        share(&mut lp, 1, c);
         lp.sync_all().unwrap();
         edge_write(&mut lp.peers[1].engine, c, holder, Some(edge(Role::Admin)), None);
         let p0 = lp.peers[0].engine.me();
@@ -1951,6 +1952,7 @@ fn snapshot_forging_dropped_commit_dot_changes_nothing_spec_perm_5_2() {
     lp.sync_all().unwrap();
     let r = lp.peers[1].engine.me();
     let t = new_thing(&mut lp, 0);
+    share(&mut lp, 0, t);
     set_edge(&mut lp.peers[0].engine, t, r, Some(edge(Role::Read)), None);
     let mut m = Mutation::new();
     m.commit_form();
@@ -2140,6 +2142,7 @@ fn demoted_writer_dropped_dot_copy_alike_spec_perm_5_2() {
     lp.sync_all().unwrap();
     let w = lp.peers[1].engine.me();
     let t = new_thing(&mut lp, 0);
+    share(&mut lp, 0, t);
     set_edge(&mut lp.peers[0].engine, t, w, Some(edge(Role::Write)), None);
     let mut m = Mutation::new();
     m.commit_form();

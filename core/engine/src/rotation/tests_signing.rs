@@ -711,6 +711,11 @@ fn a_later_rotation_re_judges_no_revoked_epochs_history() {
 #[test]
 fn an_addendum_keyed_by_a_later_closer_saves_once_it_arrives_spec_permissions_5_5() {
     let (mut lp, a, t) = world(5, 3);
+    // peer 4, an outsider, reads T: of a thing outside its node closure it would hold the
+    // certificates alone (spec/commits.md §5 What a held thing needs)
+    let o = lp.peers[4].engine.me();
+    lp.peers[0].engine.grant(&t, &o, &edge(Role::Read)).unwrap();
+    lp.sync_all().unwrap();
     let c = write(&mut lp, 2, t, "removed's");
     send(&mut lp, 2, 3, &[c]);
     send(&mut lp, 2, 4, &[c]);

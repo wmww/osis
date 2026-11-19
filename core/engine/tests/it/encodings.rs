@@ -99,6 +99,7 @@ fn sequences_converge_spec_crdt_5_7() {
 fn big_list_insert_fits_blobs_spec_crdt_3_3() {
     let mut lp = net(2, 0);
     let t = new_thing(&mut lp, 0);
+    share(&mut lp, 0, t);
     let n = osis_base::format::CHUNK_THRESHOLD - 8;
     let items: Vec<Value> = (0..65).map(|i| s(&format!("{i:03}{}", "z".repeat(n - 3)))).collect();
     let mut m = Mutation::new();
@@ -115,6 +116,7 @@ fn big_list_insert_fits_blobs_spec_crdt_3_3() {
 fn large_value_spec_dm_6() {
     let mut lp = net(2, 0);
     let t = new_thing(&mut lp, 0);
+    share(&mut lp, 0, t);
     let data: Vec<u8> = (0..300_000u32).map(|i| (i.wrapping_mul(2654435761) >> 13) as u8).collect();
     let mut m = Mutation::new();
     m.set(t, &BLOB, &Value::Bytes(data.clone())).unwrap();
@@ -136,6 +138,7 @@ fn large_value_spec_dm_6() {
 fn large_values_of_a_writer_pass_the_reader_spec_dm_6() {
     let mut lp = net(2, 0);
     let t = new_thing(&mut lp, 0);
+    share(&mut lp, 0, t);
     let big = "z".repeat(osis_base::format::CHUNK_THRESHOLD + 1);
     // as many bytes in a quarter of the chars: a text costs per char
     let text = "\u{1F600}".repeat(osis_base::format::CHUNK_THRESHOLD / 4 + 1);

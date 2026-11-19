@@ -1628,14 +1628,15 @@ fn later_than(played: &Played) -> WallMs {
 /// commit the node itself counts a part of missing is fetched again from the peer (the history's
 /// packs, which a peer holding the sync ID keeps), until none is or a round changes nothing; then
 /// the pass ends (`Engine::settle_needs`: a copy may bring back what nothing held needs). Only the
-/// node's own count decides: a node that fails to count a body missing never gets it back.
+/// node's own count and pulls (`give`) decide: a node that fails to count a body missing never
+/// gets it back.
 fn fetch_missing(p: &mut Peer, played: &Played, held: &[usize]) {
     let missing = |p: &Peer| -> BTreeSet<CommitId> { p.engine.commit_parts_missing().into_iter().filter(|(_, m)| !m.is_empty()).map(|(c, _)| c).collect() };
     let mut was = missing(p);
     while !was.is_empty() {
         for &i in held.iter().filter(|&&i| was.contains(&played.packs[i].id)) {
             let pk = &played.packs[i];
-            let _ = p.receive(&pk.bytes, pk.blobs.clone());
+            give(played, p, &pk.bytes, pk.blobs.clone());
         }
         p.reexamine().unwrap();
         let now = missing(p);
@@ -1646,6 +1647,41 @@ fn fetch_missing(p: &mut Peer, played: &Played, held: &[usize]) {
     }
     // the exchange is a pass: what it brought that nothing held needs goes
     pass_end(p);
+}
+
+/// The sync IDs node `p` syncs (`Engine::sync_set`).
+fn synced(p: &mut Peer) -> BTreeSet<osis_base::SyncId> {
+    p.engine.sync_set().map(|s| s.ids.keys().copied().collect()).unwrap_or_default()
+}
+
+/// Node `p` receives a package, as node-sync gives it: then each sync ID it pulled anew
+/// (spec/sync-judgement.md §3 Dropped bodies: a strong newly reaching a thing whose content it
+/// does not hold) or that joined its sync set (spec/sync-streams.md §4 Joining: from the start, a
+/// sync ID it stopped included, spec/sync-set.md §3 Stopping) lists again every entry its sources
+/// hold: here every pack of the history the node was given (`Peer::given`; later ones arrive in
+/// their turn), again until no pull from the start is left.
+fn give(played: &Played, p: &mut Peer, bytes: &[u8], blobs: Vec<(osis_base::BlobId, Vec<u8>)>) {
+    let mut before = synced(p);
+    let _ = p.receive(bytes, blobs);
+    // each round pulls only for a sync ID newly synced or a strong newly in the node closure,
+    // brought by the round before: at most a round per pack given and one more
+    for _ in 0..=played.packs.len() {
+        let now = synced(p);
+        let joined = now.difference(&before).next().is_some();
+        before = now;
+        if !std::mem::take(&mut p.pulled_anew).is_empty() | joined {
+            // a source keeps no commit past its expiry (spec/commits.md §6)
+            let now = p.engine.now().0;
+            let live = |pk: &Package| osis_commit::CommitBlob::decode(&pk.bytes).is_ok_and(|b| b.header.expires.is_none_or(|t| t > now));
+            let again: Vec<&Package> = played.packs.iter().filter(|pk| p.given.contains(&pk.id) && live(pk)).collect();
+            for pk in again {
+                let _ = p.receive(&pk.bytes, pk.blobs.clone());
+            }
+        } else {
+            return;
+        }
+    }
+    panic!("still pulling from the start after a round per pack given");
 }
 
 /// A pass ends, as at a node's sync with no source in flight (spec/sync-set.md §3 Release: at
@@ -1898,14 +1934,14 @@ fn ingest(played: &Played, p: &mut Peer, m: Move) {
     let Move::Ingest(i, ai) = m else { unreachable!("{m:?} is no ingest") };
     let pk = &played.packs[i];
     played.ingests.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-    let _ = match ai {
-        None => p.receive(&pk.bytes, pk.blobs.clone()),
+    match ai {
+        None => give(played, p, &pk.bytes, pk.blobs.clone()),
         Some(ai) => {
             let mut b = osis_commit::CommitBlob::decode(&pk.bytes).unwrap();
             b.parts.retain(|x| x.ai == ai);
-            p.receive(&b.encode(), pk.blobs.clone())
+            give(played, p, &b.encode(), pk.blobs.clone())
         }
-    };
+    }
 }
 
 /// What a judged node does after every ingest and clock move: takes the walk's side in each

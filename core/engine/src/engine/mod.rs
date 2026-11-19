@@ -1301,6 +1301,9 @@ pub struct Core {
     /// a holder unnamed, an accepted ticket's strong gone): judged once the pass in flight ends,
     /// or at once with none in flight (`Engine::settle_lost`).
     pub lost_due: BTreeSet<Tid>,
+    /// Records learned in this transaction (`apply::atomic::learn_record`): a strong newly
+    /// reaching such a thing pulls nothing anew (`sync::units::refetch`).
+    pub learned: BTreeSet<Tid>,
     /// While `Some` (a tick round's expiries): the rebuilds asked, one per aspect, run once
     /// when it ends (`apply::run_batched`).
     pub batched: Option<BTreeMap<(Tid, Ak), Batched>>,
@@ -1584,6 +1587,7 @@ impl Core {
             needs_due: self.needs_due.clone(),
             pass_due: self.pass_due.clone(),
             lost_due: self.lost_due.clone(),
+            learned: self.learned.clone(),
             batched: self.batched.clone(),
             touches: self.touches.clone(),
             held_writes: self.held_writes.clone(),
@@ -2148,6 +2152,7 @@ impl Core {
             needs_due: _,
             pass_due: _,
             lost_due: _,
+            learned: _,
             wakes: _,
             resnapshots_due: _,
             openings: _,
@@ -2431,6 +2436,7 @@ impl Core {
             // what arrived before the open but was not judged yet: all judged at the first settle
             pass_due: None,
             lost_due: BTreeSet::new(),
+            learned: BTreeSet::new(),
             batched: None,
             touches: Default::default(),
             held_writes: memo::Memo::new("held writes"),
@@ -2597,6 +2603,13 @@ impl Core {
     /// the indexes derived from it stay exact.
     pub(crate) fn put_meta(&mut self, id: CommitId, m: Meta) {
         self.note_kept(&id, &m);
+        // a content part newly held on a thing outside the node closure: judged once the pass
+        // that brought it ends, which holds such a thing's certificates alone (`retention::needed`)
+        let was = self.ix.commits.get(&id);
+        let outside: Vec<Tid> = m.view.aspects.iter().enumerate().filter(|(ai, a)| m.holds(*ai) && !was.is_some_and(|w| w.holds(*ai)) && crate::retention::forget::content(&a.ak) && !self.ix.closure.holds(&a.tid) && !self.is_key_actor(&a.tid)).map(|(_, a)| a.tid).collect();
+        for t in outside {
+            self.note_pass_due(t);
+        }
         // scale checks: each call walks every part of the commit
         osis_base::costs::count("meta: parts indexed", m.view.aspects.len() as u64);
         let had = self.ix.commits.get(&id).map(missing_of).unwrap_or_default();
@@ -4009,6 +4022,7 @@ impl Engine {
         // changes made outside a transaction are not this one's to undo
         self.core.commit_journal();
         self.core.memory_tx = false;
+        self.core.learned.clear();
         let start = self.core.mark();
         #[cfg(debug_assertions)]
         {

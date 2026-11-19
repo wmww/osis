@@ -186,6 +186,7 @@ fn untraced_session_part_joins_late_spec_commits_4() {
     let mut lp = net(3, 0);
     lp.sync_all().unwrap();
     let t = new_thing(&mut lp, 0);
+    share(&mut lp, 0, t);
     let w = lp.peers[2].engine.me();
     set_edge(&mut lp.peers[0].engine, t, w, Some(edge(Role::Write)), None);
     lp.sync_all().unwrap();
@@ -334,6 +335,7 @@ fn snapshot_not_covered_by_an_earlier_equal_spec_commits_4() {
     let mut lp = net(5, 0);
     lp.sync_all().unwrap();
     let t = new_thing(&mut lp, 0);
+    share(&mut lp, 0, t);
     for p in [2, 3] {
         let w = lp.peers[p].engine.me();
         set_edge(&mut lp.peers[0].engine, t, w, Some(edge(Role::Write)), None);

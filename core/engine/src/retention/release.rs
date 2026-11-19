@@ -17,31 +17,25 @@ impl Engine {
         self.core.ix.closure.left().iter().map(|(t, cs)| (*t, units(cs))).collect()
     }
 
-    /// Drops what `ts` left behind here, those still outside the node closure (spec/sync-set.md
-    /// §3): the content of each and of each thing whose secrets are one of theirs, but those the
-    /// node closure holds and a retained copy (`forget::copy_of`); what arrives again counts as
-    /// never received, and the store's own entries of the commits it deleted whole go
-    /// (`sync::bodies::forget`).
+    /// Releases each of `ts` still outside the node closure (spec/sync-set.md §3): it and what
+    /// it was named holder on are judged in the same transaction by what the node holds of a
+    /// thing outside its node closure (`retention::needed::Holding`): its content goes as never
+    /// received, its certificates stay while a held thing needs them, and the store's own
+    /// entries of the commits it deleted whole go (`sync::bodies::forget`).
     pub fn released(&mut self, ts: &BTreeSet<Tid>) -> Result<()> {
         let out: BTreeSet<Tid> = ts.iter().filter(|t| !self.core.ix.closure.holds(t)).copied().collect();
         if out.is_empty() {
             return Ok(());
         }
-        let mut things = crate::retention::forget::under(&self.core, &out);
-        things.extend(out.iter().copied());
-        let core = &self.core;
-        things.retain(|x| !core.ix.closure.holds(x) && crate::retention::forget::copy_of(core, x).is_none());
         self.run(|tx| {
             for t in &out {
                 tx.core.ix.closure.released(t);
             }
             crate::flows::inbox::drop_account_tickets(tx, &out)?;
-            // what stays of them (records, role-class state) only while a held thing needs it
-            tx.core.needs_due.extend(things.iter().copied());
+            tx.core.needs_due.extend(out.iter().copied());
             // and what each was named holder on: needed by it only while it was in the closure
             let named: Vec<Tid> = out.iter().flat_map(|t| tx.core.ix.held.named_on(t).copied().collect::<Vec<_>>()).collect();
             tx.core.needs_due.extend(named);
-            crate::retention::forget::forget(tx, crate::retention::forget::Scope::Local(&things), &BTreeMap::new())?;
             Ok(())
         })
     }

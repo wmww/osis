@@ -349,6 +349,13 @@ mod tests {
             up = t;
         }
         let at_cap = up;
+        // the other peers read the chain: what they hold of a thing outside their node closure is
+        // its certificates alone (spec/commits.md §5 What a held thing needs)
+        let read = ct::Edge { role: Role::Read, until: None, invite: None, retain: false, floor: None };
+        for r in [1, 2] {
+            let who = lp.peers[r].engine.me();
+            lp.peers[0].engine.grant(&shallow, &who, &read).unwrap();
+        }
         lp.sync_all().unwrap();
         assert_eq!(lp.peers[1].engine.get(&at_cap, &x).unwrap(), Some(Value::Int(1)), "at the cap: applies");
         // one commit writing a shallow thing and a thing one link too deep
@@ -379,6 +386,7 @@ mod tests {
         lp.sync_all().unwrap();
         let x = osis_base::Ak::new("x:a.0").unwrap();
         let mut up = lp.peers[0].engine.me();
+        let mut top = up;
         for i in 0..MAX_CHAIN_DEPTH {
             let t = if i % 4 == 0 {
                 lp.peers[0].engine.create_with_admin(&up).unwrap().0
@@ -392,8 +400,14 @@ mod tests {
             let mut m = Mutation::new();
             m.set(t, &x, &Value::Int(1)).unwrap();
             lp.peers[0].commit(m).unwrap();
+            if i == 0 {
+                top = t;
+            }
             up = t;
         }
+        // peer 1 reads the chain (`record_chain_deeper_than_cap_invalid_spec_permissions_1`)
+        let who = lp.peers[1].engine.me();
+        lp.peers[0].engine.grant(&top, &who, &ct::Edge { role: Role::Read, until: None, invite: None, retain: false, floor: None }).unwrap();
         lp.sync_all().unwrap();
         assert_eq!(lp.peers[1].engine.get(&up, &x).unwrap(), Some(Value::Int(1)), "at the cap: applies");
         let mut m = Mutation::new();

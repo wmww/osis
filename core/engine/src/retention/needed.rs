@@ -1,7 +1,10 @@
-//! What stays of a thing only while something held needs it (spec/commits.md §5 Forgetting,
-//! spec/permissions.md §4): another account's chain (its record, its `keys.0` commits, its
-//! inbox's), and a released thing's record and role-class state, whoever's it is. A thing outside
-//! the node closure is kept while a thing that needs it is kept: one in the node closure whose
+//! What the node holds of a thing outside its node closure (spec/commits.md §5 What a held thing
+//! needs, spec/permissions.md §4; `Holding`, the one rule a pass end and a release both judge
+//! by): its certificates alone (its record, its role-class parts, its secrets; all of a key
+//! actor, its card) while something held needs it, never its content, whether or not it was
+//! ever in the node closure; nothing once nothing does. So another account's chain (its record,
+//! its `keys.0` commits, its inbox's) and a released thing's record and role-class state stay
+//! only while needed. Its certificates stay while a thing that needs it is kept: one in the node closure whose
 //! known references hold a strong to it (`refs::to`: its state, ephemeral aspects included, and
 //! held fires; a weak or ticket only points and needs nothing), an account by its `keys.0` (its inbox), one whose record names it mint admin, one
 //! whose held edge write names it holder (`Held::named_on`), an account root whose account's held
@@ -24,8 +27,9 @@
 //! received, when the pass that brought it ends or its last need went (`settle`).
 //!
 //! An arrival is judged once the pass in flight ends (`Engine::settle_needs`): a thing whose
-//! record was learned (`apply::atomic::learn_record`) or that a commit that pends awaits
-//! (`apply::set_pending`) is noted in `Core::pass_due` until then, so a parent's record arriving
+//! record was learned (`apply::atomic::learn_record`), that a commit that pends awaits
+//! (`apply::set_pending`), or outside the node closure a content part on which is newly held
+//! (`Core::put_meta`) is noted in `Core::pass_due` until then, so a parent's record arriving
 //! before what needs it stays. A lost need waits for nothing but a pass in flight: a thing that
 //! lost one (a strong row or an account's `keys.0` row gone, durable or ephemeral, `refs::note`; a signer's commit
 //! leaving pending; a
@@ -96,10 +100,10 @@ impl Engine {
         if due.is_empty() {
             return Ok(());
         }
-        // judged in a read first: a pass that leaves everything needed writes nothing
+        // judged in a read first: a pass that leaves only what is held writes nothing
         let goes = self.read(|tx| {
             for t in &due {
-                if holds_any(tx.core, t) && !needed(tx, t, &mut Reached::new())? {
+                if excess(tx, t)? {
                     return Ok(true);
                 }
             }
@@ -113,6 +117,55 @@ impl Engine {
             Ok(())
         })
     }
+}
+
+/// What the node holds of a thing (spec/commits.md §5 What a held thing needs): the one rule
+/// both a pass end and a release judge by (`settle`).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum Holding {
+    /// All of it: in the node closure or leaving it and not released yet, or a retained copy.
+    Whole,
+    /// Its certificates alone (its record, role-class parts and secrets, `forget::content`
+    /// not): a held thing needs it, or an own self-removal from it waits to be sealed.
+    Certificates,
+    /// Nothing: it goes whole, with `reached`, every thing needing it (`search`).
+    Nothing,
+}
+
+/// What the node holds of `t` (`Holding`), by its state alone: never by what arrived when.
+/// `reached` as `search` leaves it.
+pub(crate) fn holding(tx: &mut Tx<'_>, t: &Tid, reached: &mut Reached) -> Result<Holding> {
+    Ok(match search(tx, t, reached)? {
+        Some((x, Root::Held | Root::Copy(_))) if x == *t => Holding::Whole,
+        Some(_) => Holding::Certificates,
+        None => Holding::Nothing,
+    })
+}
+
+/// Whether the node holds a content part on `t` (`forget::content`): what a thing held as
+/// certificates loses. A key actor bears none: all of it is its card (spec/sync-set.md §1).
+/// O(the commits on `t`).
+pub(crate) fn holds_content(core: &Core, t: &Tid) -> bool {
+    !core.is_key_actor(t) && core.aspects_of(t).filter(|((_, ak), _)| super::forget::content(ak)).any(|((_, ak), cs)| cs.iter().any(|(_, c)| core.ix.commits.get(c).is_some_and(|m| m.aspect(t, ak).is_some_and(|ai| m.holds(ai)))))
+}
+
+/// Whether the node holds a part on `(t, ak)` once it arrives (`Holding`, read per part): `t`'s
+/// record is held, and the part is no content (`forget::content`), or `t` is a key actor or held
+/// whole. Such a part missing keeps its commit's header (spec/commits.md §5 A released thing).
+pub(crate) fn takes_part(core: &Core, t: &Tid, ak: &osis_base::Ak) -> bool {
+    core.created(t).is_some() && (!super::forget::content(ak) || core.is_key_actor(t) || matches!(rooted(core, t), Some(Root::Held | Root::Copy(_))))
+}
+
+/// Whether the node holds more of `t` than `holding` allows.
+fn excess(tx: &mut Tx<'_>, t: &Tid) -> Result<bool> {
+    if !holds_any(tx.core, t) {
+        return Ok(false);
+    }
+    Ok(match holding(tx, t, &mut Reached::new())? {
+        Holding::Whole => false,
+        Holding::Certificates => holds_content(tx.core, t),
+        Holding::Nothing => true,
+    })
 }
 
 /// Why a thing is kept for itself (the module doc, `rooted`).
@@ -164,7 +217,7 @@ pub(crate) fn rooted(core: &Core, t: &Tid) -> Option<Root> {
 /// pending commit it signed or whose first awaited record it is (`Indexes::pend_by`) writes on
 /// (a record only another part awaits is due once the commit pends on it), and, in the node
 /// closure, those a held commit on it has a part missing on and those an edge write on it names
-/// holder. The rule (`needed`) and the explainer (`Engine::why_kept`)
+/// holder. The rule (`holding`) and the explainer (`Engine::why_kept`)
 /// both read it.
 pub(crate) fn needs(tx: &mut Tx<'_>, t: &Tid) -> Result<Vec<(Tid, Need)>> {
     let core = &*tx.core;
@@ -228,37 +281,42 @@ pub(crate) fn search(tx: &mut Tx<'_>, t: &Tid, reached: &mut Reached) -> Result<
     Ok(None)
 }
 
-/// Whether something rooted needs `t` (`search`); when not, `reached` holds `t` and every
-/// thing needing it, none rooted.
-pub(crate) fn needed(tx: &mut Tx<'_>, t: &Tid, reached: &mut Reached) -> Result<bool> {
-    Ok(search(tx, t, reached)?.is_some())
-}
-
 /// Whether anything of `t` is held: its record, a commit on it, its secrets, or a pending commit
 /// awaiting its record.
 pub(crate) fn holds_any(core: &Core, t: &Tid) -> bool {
     core.created(t).is_some() || core.on_thing(t).next().is_some() || core.ix.secrets.get(t).is_some() || core.ix.pend_on.contains_key(&crate::apply::Wake::Record(*t))
 }
 
-/// Judges the things due (`Core::needs_due`) and drops every one nothing rooted needs, with what
-/// only it kept: each goes whole, as never received (`forget::Scope::Whole`), its secrets, record
-/// and role arrival with it. Whether anything went: what it named and signed is due in turn.
+/// Judges the things due (`Core::needs_due`) by what the node holds of each (`holding`): one
+/// held as certificates loses its content as never received (`forget::Scope::Local`), and every
+/// one nothing rooted needs goes, with what only it kept, whole, as never received
+/// (`forget::Scope::Whole`), its secrets, record and role arrival with it. Whether anything
+/// went: what it named and signed is due in turn.
 pub(crate) fn settle(tx: &mut Tx<'_>) -> Result<bool> {
     let due = std::mem::take(&mut tx.core.needs_due);
     let mut gone: BTreeSet<Tid> = BTreeSet::new();
+    let mut content: BTreeSet<Tid> = BTreeSet::new();
     for t in due {
         if gone.contains(&t) || !holds_any(tx.core, &t) {
             continue;
         }
         let mut reached = Reached::new();
-        if needed(tx, &t, &mut reached)? {
-            continue;
+        match holding(tx, &t, &mut reached)? {
+            Holding::Whole => {}
+            Holding::Certificates => {
+                if holds_content(tx.core, &t) {
+                    content.insert(t);
+                }
+            }
+            Holding::Nothing => gone.extend(reached.into_keys()),
         }
-        gone.extend(reached.into_keys());
     }
+    content.retain(|t| !gone.contains(t));
+    osis_base::costs::count("needed: things stripped", content.len() as u64);
+    super::forget::forget(tx, super::forget::Scope::Local(&content), &BTreeMap::new())?;
     gone.retain(|t| holds_any(tx.core, t));
     if gone.is_empty() {
-        return Ok(false);
+        return Ok(!content.is_empty());
     }
     osis_base::costs::count("needed: things dropped", gone.len() as u64);
     // the role commits with a part on them

@@ -322,6 +322,7 @@ impl osis_commit::Secrets for Dedup {
 fn parked_spec_versioning_2() {
     let mut lp = net(2, 0);
     let t = new_thing(&mut lp, 0);
+    share(&mut lp, 0, t);
     sync(&mut lp, 0, 1);
     let e = &mut lp.peers[0].engine;
     let rec = e.get_typed(&t, &osis_schema::core_types::CREATED).unwrap().unwrap();

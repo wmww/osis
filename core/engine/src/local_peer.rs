@@ -74,6 +74,9 @@ pub struct Peer {
     /// The sync IDs the engine pulled anew (`Wakes::pulled_anew`) since a test took them: what
     /// node-sync would fetch again from them is the test's to deliver.
     pub pulled_anew: BTreeSet<osis_base::SyncId>,
+    /// The commits of every package `receive` was given: what its sources would list again on a
+    /// pull from the start (a test's to deliver).
+    pub given: BTreeSet<CommitId>,
 }
 
 /// A package this peer's engine threw out, as peers keep it: fetched again as node-sync does
@@ -132,6 +135,9 @@ impl Peer {
     /// `receive` with the list blobs that came with it (`Engine::ingest_with_lists`).
     pub fn receive_with(&mut self, bytes: &[u8], blobs: Vec<(BlobId, Vec<u8>)>, lists: &[Vec<u8>]) -> Result<Ingested> {
         self.engine.note_delivered(bytes);
+        if let Ok(b) = CommitBlob::decode(bytes) {
+            self.given.insert(b.id());
+        }
         let r = self.engine.ingest_with_lists(bytes, blobs.clone(), None, lists);
         if let Err(e) = &r
             && e.class() == osis_base::ErrorClass::BadInput
@@ -264,7 +270,7 @@ impl Peer {
         let mut engine = Engine::create(Box::new(backend.clone()), Box::new(root.clone()), blob_area(&blob_disk, seed)?, Config::default(), c, Box::new(SeededRng::from_u64(seed)))?;
         engine.take_wakes();
         let events = engine.subscribe();
-        Ok(Peer { engine, clock, backend, root, blob_disk, events, restarts: 0, discarded: Vec::new(), discards: 0, redelivered: 0, pulled_anew: BTreeSet::new() })
+        Ok(Peer { engine, clock, backend, root, blob_disk, events, restarts: 0, discarded: Vec::new(), discards: 0, redelivered: 0, pulled_anew: BTreeSet::new(), given: BTreeSet::new() })
     }
 
     /// Drops the engine and opens it again over the same durable state.
@@ -295,7 +301,7 @@ impl Peer {
         let mut engine = Engine::open(Box::new(backend.clone()), Box::new(root.clone()), blob_area(&blob_disk, seed)?, Config::default(), c, Box::new(SeededRng::from_u64(seed)))?;
         let events = engine.subscribe();
         engine.take_wakes();
-        let mut p = Peer { engine, clock, backend, root, blob_disk, events, restarts: self.restarts + 1, discarded: self.discarded.clone(), discards: self.discards, redelivered: self.redelivered, pulled_anew: self.pulled_anew.clone() };
+        let mut p = Peer { engine, clock, backend, root, blob_disk, events, restarts: self.restarts + 1, discarded: self.discarded.clone(), discards: self.discards, redelivered: self.redelivered, pulled_anew: self.pulled_anew.clone(), given: self.given.clone() };
         p.fetch_discarded()?;
         Ok(p)
     }
@@ -314,7 +320,7 @@ impl Peer {
             let events = engine.test_subscribe_with(pending, false);
             let (backend, root) = (self.backend.test_copy(), self.root.test_copy());
             let blob_disk = (self.blob_disk.0.test_copy(), self.blob_disk.1.test_copy());
-            Ok(Peer { engine, clock, backend, root, blob_disk, events, restarts: self.restarts, discarded: self.discarded.clone(), discards: self.discards, redelivered: self.redelivered, pulled_anew: self.pulled_anew.clone() })
+            Ok(Peer { engine, clock, backend, root, blob_disk, events, restarts: self.restarts, discarded: self.discarded.clone(), discards: self.discards, redelivered: self.redelivered, pulled_anew: self.pulled_anew.clone(), given: self.given.clone() })
         })
     }
 
@@ -728,7 +734,8 @@ impl LocalPeer {
     }
 
     /// The hashes of those of `pks` that `to` dropped at a pass end and whose things it needs as
-    /// it did then.
+    /// it did then, none of them in its node closure since (one entering it is fetched again,
+    /// spec/sync-judgement.md §3 Dropped bodies).
     fn still_dropped(&mut self, to: usize, pks: &[&Sent]) -> Result<HashSet<u64>> {
         let Some(p) = self.peers.get_mut(to) else { return Ok(HashSet::new()) };
         if pks.is_empty() {
@@ -736,7 +743,7 @@ impl LocalPeer {
         }
         let needed = p.needed(pks.iter().flat_map(|pk| pk.2.iter()))?;
         let dropped = &self.memo.dropped;
-        Ok(pks.iter().filter(|pk| dropped.get(&(to, pk.1)).is_some_and(|was| pk.2.iter().all(|t| needed.contains(t) == was.contains(t)))).map(|pk| pk.1).collect())
+        Ok(pks.iter().filter(|pk| dropped.get(&(to, pk.1)).is_some_and(|was| pk.2.iter().all(|t| needed.contains(t) == was.contains(t) && !p.engine.closure_holds(t)))).map(|pk| pk.1).collect())
     }
 
     /// Delivers `pk` to `to` but where it came back a duplicate that changed nothing at `to` as

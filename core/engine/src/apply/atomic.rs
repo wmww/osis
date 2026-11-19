@@ -529,6 +529,7 @@ pub(crate) fn learn_record(tx: &mut Tx<'_>, rec: CreationRecord) -> Result<bool>
     tx.core.ix.held.create(rec);
     // judged once the pass that brought it ends (`Engine::settle_needs`)
     tx.core.note_pass_due(t);
+    tx.core.learned.insert(t);
     Ok(true)
 }
 

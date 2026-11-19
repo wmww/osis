@@ -34,7 +34,8 @@
 //! ingest of its clocked deliveries, between ticks, judging the drops since (`Drops`).
 //!
 //! A body the node dropped other than as covered (a part missing when purged) is fed as missing;
-//! one dropped as covered as `Body::Dropped(cover)`.
+//! one dropped as covered as `Body::Dropped(cover)`. At quiet (`compare`), the model is told the
+//! node closure and holds no content outside it (`hm::at_quiet`).
 //!
 //! Normalizations: a waiting commit's held parts carry no writes or edges (the model only needs
 //! that they are held); a part an applied commit misses, or holds waiting alone (spec/commits.md
@@ -682,7 +683,13 @@ enum Seen {
 /// held-model dates it with the body as last seen held. A drop is judged once: a setting arriving
 /// later that puts the body back in history does not make it wrong (Dropped stays dropped).
 pub(crate) fn compare(e: &mut Engine, hist: &History, cov: &mut Coverage, drops: Option<&mut Drops>) -> Option<String> {
-    let input = convert(e, hist);
+    let mut input = convert(e, hist);
+    // at quiet (nothing arrived, lost a need or left the node closure unjudged), a thing outside
+    // the node closure holds its certificates alone (`hm::at_quiet`)
+    if e.core.pass_due.as_ref().is_some_and(|d| d.is_empty()) && e.core.lost_due.is_empty() && e.left_closure().is_empty() {
+        let closure: BTreeSet<hm::NodeId> = input.ids.iter().filter(|(_, t)| e.closure_holds(t)).map(|(i, _)| *i).collect();
+        input.held = hm::at_quiet(&input.held, &closure);
+    }
     let j = hist.judged(&input.held);
     let (o, tl) = (&j.o, &j.tl);
     cov.nodes += 1;
