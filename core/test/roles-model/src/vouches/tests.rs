@@ -195,6 +195,30 @@ fn a_demoted_node_vouches_for_its_own_backdated_invite() {
     assert_eq!(safety(&w, FIXED, 0), (1, 0, 1));
 }
 
+/// X removes Y long before the theft; H received it, so H's removal of X lists it. Y, holding
+/// nothing, writes a grant of admin to H stamped before H's removal (skipped: Y holds nothing
+/// then). `EHist::path` counts Y as a grantor of H, so what no list keeps strikes X's removal of
+/// Y from H's list and H's removal drops it: Y is an admin again. Without Y's grant, or without
+/// the rule, Y stays removed (notes/account-membership-design.md §4, What no list keeps: "a
+/// removal X made long before the theft stays made"). No property of `check` catches it.
+#[test]
+#[ignore = "review of m2-vouches: what no list keeps counts a grant no walk applies as one the remover rests on"]
+fn repro_a_removed_node_writing_a_grant_to_the_remover_stays_removed() {
+    const Y: usize = 2;
+    let world = |junk: bool| {
+        let mut b = B::new(&[FULL, FULL, FULL]);
+        b.op(X, Y, None, 1, &[(H, 1)]);
+        if junk {
+            b.op(Y, H, FULL, 2, &[]);
+        }
+        b.op(H, X, None, 4, &[]);
+        b.0
+    };
+    assert_eq!(role(&world(false), FIXED, 0, Y), Role::None);
+    assert_eq!(role(&world(true), Rules { absent: false, ..FIXED }, 0, Y), Role::None);
+    assert_eq!(role(&world(true), FIXED, 0, Y), Role::None);
+}
+
 #[test]
 fn random_worlds_hold() {
     let st = random(400, FIXED);

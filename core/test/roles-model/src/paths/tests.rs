@@ -668,3 +668,19 @@ fn small_family_holds_exhaustive() {
     st.print("paths family");
     assert_holds(&st, "family");
 }
+
+/// X, cut from A but still admin on T1 through A2, vouches through A2 for its own grant through
+/// A, stamped before the removal and received by nobody: it applies (finding 10, nobody vouches
+/// for its own signer's commit, argued for vouches; lands with A1).
+#[test]
+#[ignore = "notes/path-model-findings.md 10: a vouch counts for a commit of its own signer"]
+fn repro_a_removed_signer_vouches_for_nothing_of_its_own() {
+    let (mut w, ..) = paired();
+    w.edge(K, 1, &[], A2, X, Admin, &[]);
+    w.edge(H, 1, &[A], T1, A2, Admin, &[]);
+    let gz = w.edge(X, 2, &[A], T1, Z, Admin, &[]);
+    let r = w.edge(H, 6, &[], A, X, Gone, &[]);
+    w.vouch(X, 7, &[A2], T1, r, &[gz]);
+    let rd = judge(&w, &Rules::fixed(), &View::all(&w).trusting(&[r]));
+    assert!(!rd.applied.contains(&gz) && rd.role(Z, T1) == Gone, "{rd:?}");
+}
