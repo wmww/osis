@@ -928,9 +928,15 @@ indexes! {
     /// transaction (`flows::vouches`): every held one at an open, then those whose component
     /// changed.
     pub vouches_due: JSet<CommitId>,
-    /// The removals judged by `flows::vouches`, by the component (`osis_perm::Timelines::component`)
-    /// of their target as judged: a change of the component makes them due again.
-    pub vouch_watch: JSetMap<u64, CommitId>,
+    /// The removals judged by `flows::vouches`, by each thing whose roles for this node their
+    /// judgement reads (`flows::vouches::Gathered::watched`): this node's roles moving there, or
+    /// the thing's component walked anew, makes them due again.
+    pub vouch_watch: JSetMap<Tid, CommitId>,
+    /// The things each removal is filed under in `vouch_watch`.
+    pub vouch_filed: JMap<CommitId, Arc<BTreeSet<Tid>>>,
+    /// What each removal's judgement gathered (`flows::vouches::Gathered`), kept while it is
+    /// filed or due: gathered anew only when what it reads may have changed. Memory only.
+    pub vouch_gathered: JMap<CommitId, Arc<crate::flows::vouches::Gathered>>,
     /// The removals judged by `flows::vouches`, by each party that may come into question at
     /// them (the holders their edge writes name and everything upstream, `Held::upstream`):
     /// (party, the removal's `ts`, removal). A commit by or naming one, ordered no later than the
@@ -1736,15 +1742,7 @@ impl Core {
         // lowers or audits otherwise: perm names every such commit, `Changed::commits`) is
         // judged again for vouches: the one input a removal not applying reads
         crate::flows::vouches::note_changed(self, &c.commits);
-        // the removals of every component the update changed are judged again for vouches
-        let moved: Vec<u64> = self.timelines.changed_components().iter().copied().filter(|i| self.ix.vouch_watch.get(i).is_some()).collect();
-        for i in moved {
-            let rs: Vec<CommitId> = self.ix.vouch_watch.get(&i).into_iter().flatten().copied().collect();
-            for r in rs {
-                self.ix.vouch_watch.remove(&i, &r);
-                self.ix.vouches_due.insert(r);
-            }
-        }
+        crate::flows::vouches::note_evaluated(self, &c.evaluated);
         self.stale_things.extend(c.evaluated);
         self.stale_things.extend(self.ix.held.below(&c.created));
         // a write may have stopped or started applying with no role of its author moving, and an
@@ -1752,8 +1750,10 @@ impl Core {
         self.stale_commits.extend(c.commits);
         let holders: BTreeSet<Tid> = c.edges.iter().map(|p| p.0).chain(c.created.iter().copied()).collect();
         let targets: BTreeSet<Tid> = c.edges.iter().map(|p| p.1).chain(c.created.iter().copied()).collect();
-        self.stale_authors.extend(self.ix.held.upstream(&holders));
+        let moved = self.ix.held.upstream(&holders);
         let under = self.ix.held.reach(&targets);
+        crate::flows::vouches::note_roles_moved(self, &moved, &under);
+        self.stale_authors.extend(moved);
         // a role moved there, this node's maybe: a held purge-on-replace body may now be owed a
         // cover (`retention::settle_none`), an aspect weighed while this node could not write it
         // a weighing (`compact::Trigger::wake`)

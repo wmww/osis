@@ -1366,3 +1366,40 @@ fn an_addendum_owed_across_a_restart_is_written_spec_perm_5_2() {
         assert!(valid(&lp, p, &e, t, "x:e.0"), "peer {p}: the edit stands");
     }
 }
+
+/// Bob (1) writes `n` edits on `t` that Carol (2) receives and Alice (0) removes him without;
+/// Carol writes her addendum. Then Alice raises Dave (3) from read to write, a role change in
+/// the removal's component that moves nothing Carol's judgement reads: (removals judged, commits
+/// scanned for candidates) at Carol as it arrives.
+fn elsewhere_cost(n: usize) -> (u64, u64) {
+    let (mut lp, t) = world(4, &[Role::Write, Role::Write, Role::Read]);
+    for i in 0..n {
+        write(&mut lp, 1, t, "x:e.0", i64::try_from(i).unwrap());
+    }
+    lp.sync(1, 2).unwrap();
+    lp.advance(1);
+    remove(&mut lp, 0, t, 1);
+    lp.sync(0, 2).unwrap();
+    let carol = lp.peers[2].engine.me();
+    assert_eq!(addenda(&lp, 2, t).iter().filter(|(a, _)| *a == carol).count(), 1, "Carol answers");
+    let dave = lp.peers[3].engine.me();
+    lp.peers[0].engine.grant(&t, &dave, &edge(Role::Write)).unwrap();
+    lp.advance(1000);
+    osis_base::costs::take();
+    lp.sync(0, 2).unwrap();
+    let c = osis_base::costs::take();
+    let get = |k: &str| c.iter().find(|x| x.0 == k).map_or(0, |x| x.2);
+    assert_eq!(lp.peers[2].engine.core.timelines.role(&dave, &t, osis_perm::At::END), Some(Role::Write));
+    (get("vouches: removals judged"), get("vouches: commits scanned"))
+}
+
+// spec/permissions.md §5.2 (Addenda, Writing), notes/principles.md (Fast by construction): a
+// removal with candidates is judged again only when something its judgement reads moves (its
+// standing in the walk, a commit before it, this node's roles), so another party's role change
+// in its component judges it not and scans none of the removed node's commits.
+#[test]
+fn a_role_change_elsewhere_rescans_no_candidates_spec_perm_5_2() {
+    let (small, big) = (elsewhere_cost(5), elsewhere_cost(50));
+    println!("addenda: (judged, commits scanned) by a role change elsewhere: {small:?} at n = 5, {big:?} at n = 50");
+    assert_eq!((small, big), ((0, 0), (0, 0)));
+}

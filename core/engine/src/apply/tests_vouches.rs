@@ -251,14 +251,13 @@ fn junk_judged(flood: usize) -> u64 {
 
 // spec/permissions.md §5.1 Vouches (an entry counts only where W could write c; nothing trusts
 // a vouch's word), §5.2 Addenda: a removed party's junk grant and its forged vouches and addenda
-// revive nobody and nothing counts, at every node; and a flood of them costs a later write the
-// same removals judged as one of each (W's write joins R's component by its author, and R,
-// woken by the junk grant ordered before it, is filed there).
+// revive nobody and nothing counts, at every node; and a later write of W's, moving nothing R's
+// judgement reads, judges no removal however large the flood.
 #[test]
 fn a_removed_partys_junk_grant_and_forged_vouches_change_nothing_spec_perm_5_1() {
     let (one, ten) = (junk_judged(1), junk_judged(10));
     println!("vouches: removals judged by a write after a flood: {one} at 1, {ten} at 10");
-    assert_eq!(one, ten);
+    assert_eq!((one, ten), (0, 0));
 }
 
 // spec/permissions.md §4 (Vouches travel with their removal), spec/crypto.md §4 (Roles secrets):
