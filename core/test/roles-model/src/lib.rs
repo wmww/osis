@@ -19,7 +19,7 @@
 //!   timelines (`JHist::steps`), witnesses' addenda as a least fixpoint, bodies dropped and
 //!   refetched, forged addenda, cost, which covered commits lists leave out (`Cover`).
 //!   Searches `addenda` (random), `addenda-exh` (exhaustive families), `addenda-covers`;
-//!   S3 brief 4's `Gaps` (admin-only content, writing on first holding the role): `addenda-gaps`.
+//!   S3 brief 3's `Gaps` (admin-only content, writing on first holding the role): `addenda-gaps`.
 //!   osis-perm `addenda_model_agrees`; results: notes/addenda.md, Addenda model.
 //! - `forget`: forgetting a commit's ID under a cover and the remover's own cover
 //!   (spec/commits.md §5 Forgetting), per node with real body drops, against listing every
@@ -33,8 +33,8 @@
 //! - `paths`: stated paths and signers as members (notes/write-path-design.md,
 //!   notes/account-membership-design.md; a design, not in spec): self-contained (README.md,
 //!   Paths; findings in notes/path-model-findings.md). Searches `paths`, `paths-exh`, `paths-design`.
-//! - `vouches`: S3's vouches and what no list keeps on today's walk (`edges` with
-//!   `edges::Lists`, trust sets): two walks, writing at receipt and on newly holding the right
+//! - `vouches`: S3's vouches on today's walk (`edges` with frontier entries added,
+//!   trust sets): two walks, writing at receipt and on newly holding the right
 //!   (README.md, Vouches). Searches `vouches`, `vouches-exh` and controls.
 //! - `shrink`: counterexample shrinking (`Shrink` per history type; `shrink::shrink`).
 //! Each model's library API: `walk(h)`, the timeline as a pure function of a history;

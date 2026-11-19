@@ -22,7 +22,7 @@
 //! (`Ctx::fixpoint`). A valid compaction snapshot (`Kind::Snap`) keeps what it carries
 //! visible (§5.2), and is itself a plain write of its author.
 //!
-//! S3 brief 4 (`Gaps`, off by default): admin-only content (`Kind::AdminOnly`, judged with admin
+//! S3 brief 3 (`Gaps`, off by default): admin-only content (`Kind::AdminOnly`, judged with admin
 //! against demotions below admin) listable by a witness holding admin; a witness lacking the role
 //! as it applies the removal writes when it first holds it after. Checks `check_gaps`, search
 //! `addenda-gaps` (README.md, Addenda gaps).
@@ -143,7 +143,7 @@ pub enum Cover {
 /// The plan as decided for the model.
 pub const PLAN: Cover = Cover::ListAll;
 
-/// S3 brief 4's rules (notes/redesign-plan.md S3; notes/account-membership-design.md §4,
+/// S3 brief 3's rules (notes/redesign-plan.md S3; notes/account-membership-design.md §4,
 /// Addenda reach admin-only content and Writing). Both off is today's rule (osis-perm's
 /// differential compares against that).
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -1109,7 +1109,7 @@ pub fn random(samples: u64, seed: u64) -> Stats {
 /// received by Alice, Carol, Dave at t+1 or never. Addenda: honest, received by everyone at
 /// their t+1 or (a switch) never by Alice.
 ///
-/// With `gaps` (S3 brief 4's family): Bob is an admin, the menu's "remove Carol" is "grant Carol
+/// With `gaps` (S3 brief 3's family): Bob is an admin, the menu's "remove Carol" is "grant Carol
 /// admin" and "re-grant Bob write" demotes Bob to write, Bob's first write is admin-only content,
 /// and the addenda follow `gaps`.
 pub fn exhaustive_worlds(share: (usize, usize), gaps: Option<Gaps>, mut f: impl FnMut(World)) {
@@ -1251,7 +1251,7 @@ pub fn exhaustive(covers_only: bool) -> Stats {
     })
 }
 
-// ---------- S3 brief 4 (`Gaps`) ----------
+// ---------- S3 brief 3 (`Gaps`) ----------
 
 /// Content of a removed writer that a remaining witness received is reached: a non-forged plain
 /// or admin-only commit of X on m (acting for nobody), ordered no later than an explicit
@@ -1470,7 +1470,7 @@ mod tests {
     }
 
     /// Admin Bob changes a setting (admin-only, not role-class); only admin Carol received it;
-    /// Alice removes Bob. Carol's addendum reaches it (S3 brief 4); today's rule loses it.
+    /// Alice removes Bob. Carol's addendum reaches it (S3 brief 3); today's rule loses it.
     #[test]
     fn a_setting_only_an_admin_witness_received_is_reached() {
         let world = |gaps: Gaps| {

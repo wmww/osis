@@ -9,7 +9,7 @@
 - Bound: S's caps at each store, the commit's expiry, a purge, or its thing leaving S's sync unit. Honest-use volume is the writes made between a demotion and its author hearing of it; hostile volume is anything a writer can log (spec/sync-hostile.md: "a writer's invalid entry can take a full store's room there until it expires or the caps give way").
 
 ## Why it is not just fixed
-The store copy is the only refetch source once its author is gone: a re-grant whose frontier lists the write (or a demotion turning invalid) makes it valid again, and Tess's rule (issues/drop-rejoin-robust.md) has the body rejoin from any copy. Deleting invalid bodies at stores keeps that rule ("none left means gone alike") but makes a re-grant restore only what an author still holds.
+The store copy is the only refetch source once its author is gone: a re-grant whose frontier lists the write (or a demotion turning invalid) makes it valid again, and Tess's rule (issues/drop-rejoin-robust.md) has the body rejoin from any copy. An addendum written late (a witness first holding the right after the removal) turns a write valid after every node may have dropped its body, so the later the addendum the longer the store copy is its only source (core/test/roles-model/README.md, Addenda gaps). Deleting invalid bodies at stores keeps that rule ("none left means gone alike") but makes a re-grant restore only what an author still holds.
 
 ## Options (Tess)
 1. Accept, stated: add the honest-use case to spec/sync-hostile.md's neighbour list of limits (or requirements wording "a demoted writer's last writes may take store room until they expire").

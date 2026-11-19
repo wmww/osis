@@ -73,15 +73,14 @@ Before either redesign.
 ### S3. Removal gaps on today's rules
 Each is a gap of the ordinary rules, fixed for every holder; all land before either redesign except where said.
 - **Briefs**:
-  1. *Model* (part of M2, first): vouches under today's rule (authority as the walk gives it) in roles-model `edges` and `addenda` [checked: modules exist, core/test/roles-model/src], with "what no list keeps" and addenda written when the right is first held.
+  1. *Model* (part of M2, first): vouches under today's rule (authority as the walk gives it) in roles-model `edges` and `addenda` [checked: modules exist, core/test/roles-model/src], with addenda written when the right is first held.
   2. *Vouches*: spec/permissions.md §5.1 to §5.2 (the vouch aspect, the first walk, what counts), spec/wire.md; osis-perm (two walks for a component holding a counting vouch); engine writing (per thing, on applying a removal and on first holding the right); held-model. The voucher's authority is "an edge write of the same kind by it at the vouch's key would apply", so the check is whatever judges edge writes and survives A1 unchanged.
-  3. *What no list keeps* (argued, modelled in brief 1): an entry naming a lowering of an edge the listing write's own authority rests on is read as absent. Today's rule has the first half ("R never demotes its own author") [checked: spec/permissions.md §5.1 step 4].
-  4. *Addenda*: reach admin-only content that is not role-class; written again when the right is first held (re-granted, switched side).
-  5. *A standing dispute*: an epoch covering a departure the node's walk does not apply is the other side's (spec/crypto.md §4; notes/account-membership-design.md §1, `takes`). Engine rotation, the rotation property, the TLA rotation models where they hold the withdraw rule [assumed: which .tla].
-  6. *The last admin, locally*: the refusal for every thing, dependent or independent, and the mark that lets a thing go adminless: spec/permissions.md §1 to §2, spec/wire.md, engine `flows/edges.rs` (`leaves_no_admin` is dependents only [checked: core/engine/src/flows/edges.rs]), `osis` error and option, CLI. The rule every node judges alike waits for A1 (it names an edge of a stated path) and A2 (its evidence): built before them it would give readers and members different verdicts (notes/path-model-findings.md, 8).
-  7. *The removal's result in the API*: what the removed party had added, removed or lowered; what arrived unnamed and was discarded. `osis`, CLI, app (notes/app.md). No keep.
-  8. *The overlap rule among otherwise valid commits only* (spec/commits.md §4): modelled in held-model first; dropped from this stage if it makes validity read validity.
-- **Not before the redesigns**: the list as a leaf per thing with an entry per role commit (A3: its carriage is the evidence copy, so built before A2 it is built twice); "nobody vouches for its own signer's commit" (meaningful once a write has one path: A1); pairing handing over trust entries (A4).
+  3. *Addenda*: reach admin-only content that is not role-class; written again when the right is first held (re-granted, switched side).
+  4. *A standing dispute*: an epoch covering a departure the node's walk does not apply is the other side's (spec/crypto.md §4; notes/account-membership-design.md §1, `takes`). Engine rotation, the rotation property, the TLA rotation models where they hold the withdraw rule [assumed: which .tla].
+  5. *The last admin, locally*: the refusal for every thing, dependent or independent, and the mark that lets a thing go adminless: spec/permissions.md §1 to §2, spec/wire.md, engine `flows/edges.rs` (`leaves_no_admin` is dependents only [checked: core/engine/src/flows/edges.rs]), `osis` error and option, CLI. The rule every node judges alike waits for A1 (it names an edge of a stated path) and A2 (its evidence): built before them it would give readers and members different verdicts (notes/path-model-findings.md, 8).
+  6. *The removal's result in the API*: what the removed party had added, removed or lowered; what arrived unnamed and was discarded. `osis`, CLI, app (notes/app.md). No keep.
+  7. *The overlap rule among otherwise valid commits only* (spec/commits.md §4): modelled in held-model first; dropped from this stage if it makes validity read validity.
+- **Not before the redesigns**: what no list keeps beyond today's first half ("R never demotes its own author") [checked: spec/permissions.md §5.1 step 4]: it reads the listing write's own path, which today's walk does not define (the any-path readings strike too much or stay gameable by backdating), so on today's walk a list naming X's lowering of the remover keeps it and voids the removal (core/test/roles-model/README.md, Vouches); the list as a leaf per thing with an entry per role commit (A3: its carriage is the evidence copy, so built before A2 it is built twice); "nobody vouches for its own signer's commit" (meaningful once a write has one path: A1); pairing handing over trust entries (A4).
 - **Checked by**: the roles-model differentials in osis-perm (`tests/it/differential.rs`), the addenda differential, `held_set_decides`, hand reproducers for each gap, gate.
 - **Depends on**: nothing open. **Unblocks**: A3 and A4, which then add no removal rule of their own.
 
@@ -112,7 +111,7 @@ Additive: things still ride under enclosing sync IDs, and a node keeping a root 
 ### A1. Stated paths and the purge author
 Accounts unchanged: today's account key is the signer.
 - **Changes**: spec/wire.md §4 (`signer` and `path` replace `author` and `actor`; the hashed path per thing; the purge-author index), spec/commits.md §1 and §4, spec/permissions.md §5.1 to §5.2 and §6 rewritten along one path (notes/write-path-design.md §1), spec/crypto.md §7 (level 2 is the purge author's); osis-commit, osis-perm (validity as a point query per hop, the hop index, `first_held` per path; `roles_on` stays for keys and `holders`), engine apply and writing (the session's default path), `osis` (`Write::act_as` states a path and purge author [checked: core/osis/src/write.rs]), CLI. Certificates certify the stated path.
-- **Lands here from S3's list**: the last-admin rule judged alike (a named remaining admin), nobody vouching for its own signer.
+- **Lands here from S3's list**: what no list keeps (an entry naming a lowering of an edge the listing write's own stated path rests on is read as absent; modelled in M2 brief 2), the last-admin rule judged alike (a named remaining admin), nobody vouching for its own signer.
 - **Removes**: the header's `actor`; the Acting check; "losing a path while another keeps the class is no fall"; the reachability search of an audit (`audit_fall`, the forward roles cache [assumed: names from notes/write-path-design.md §1, osis-perm]); the certificate search over any path.
 - **Briefs**: (1) spec; (2) header and commit crate; (3) osis-perm walk by path, against `paths` as its differential; (4) purge author and delete keys; (5) engine writing and the default path, `osis`, CLI; (6) the last-admin rule; (7) counting: perm work per write at n and 10n (issues/perm-eval-cost.md).
 - **Checked by**: an osis-perm differential against roles-model `paths` replacing those against `joint` and `edges`; `held_set_decides` with held-model updated in brief 1's wake; gate.
@@ -217,7 +216,7 @@ A1 (the permission walk rewritten along stated paths, and a header change that t
 ## Not established
 - Whether readers reject content sealed under a superseded read epoch (risk 3).
 - That a pass holding a unit for an errand fetches no linked chunk, tree or page blob [assumed].
-- Which TLA rotation models hold the withdraw rule S3 brief 5 changes.
+- Which TLA rotation models hold the withdraw rule S3 brief 4 changes.
 - The cost defects' causes (S1 briefs 1 and 3 start by finding them).
 - That all five full-size differential seeds are multi-unit carriage (run again after B2).
 - Bytes of a removal's copy per unit, and of an evidence set per unit: counted in A2 and A3, not computed here.

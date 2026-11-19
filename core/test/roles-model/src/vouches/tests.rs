@@ -12,7 +12,7 @@ struct B(World);
 
 impl B {
     fn new(genesis: &[Option<Edge>]) -> B {
-        B(World { h: EHist { genesis: genesis.to_vec(), writes: vec![], recv: vec![], lists: Lists::default() }, vouches: vec![] })
+        B(World { h: EHist { genesis: genesis.to_vec(), writes: vec![], recv: vec![], extra: vec![] }, vouches: vec![] })
     }
     /// A one-op commit; `recv` lists (node, time), others never. Returns its op index.
     fn op(&mut self, author: usize, x: usize, e: Option<Edge>, t: u32, recv: &[(usize, u32)]) -> usize {
@@ -84,6 +84,29 @@ fn a_witness_granted_the_right_after_the_removal_vouches() {
     assert_eq!(kept(&world(once), once, 0).1, 1);
 }
 
+/// Written from its own held set, a vouch can miss: X demotes W to write (only H received it)
+/// and grants K write (only W received it); H removes X, then grants W admin again. W never
+/// received its demotion, so it reads itself an admin throughout: its vouch at receipt of the
+/// removal does not count (W holds write there) and its view never shows it newly holding the
+/// right, so it never writes again. The idealised writing (read off the canonical walk) writes
+/// again after the re-grant and keeps K's grant.
+#[test]
+fn a_witness_unaware_of_its_own_demotion_never_vouches_again() {
+    let world = |rules| {
+        let mut b = B::new(&[FULL, FULL, FULL, None]);
+        b.op(X, 3, WRITE, 3, &[(2, 3), (3, 3)]);
+        b.op(X, 2, WRITE, 3, &[(H, 3)]);
+        b.op(H, X, None, 4, &[(2, 5), (3, 4)]);
+        b.op(H, 2, FULL, 6, &[(2, 6), (3, 6)]);
+        b.honest(rules)
+    };
+    let held = Rules { held: true, ..FIXED };
+    assert_eq!(role(&world(FIXED), FIXED, 0, 3), Role::Write);
+    assert_eq!(kept(&world(FIXED), FIXED, 0), (1, 0));
+    assert_eq!(role(&world(held), held, 0, 3), Role::None);
+    assert_eq!(kept(&world(held), held, 0), (1, 1));
+}
+
 /// X demoted W before the theft; only W received it. W vouches for its own demotion (an edge
 /// write lowering its own edge always applies): the demotion stays made, in two walks.
 #[test]
@@ -93,61 +116,44 @@ fn a_demotion_only_its_victim_received_stays_made() {
     b.op(H, X, None, 4, &[(2, 5)]);
     let w = b.honest(FIXED);
     assert_eq!(role(&w, FIXED, 0, 2), Role::Write);
+    assert_eq!(stays_made(&w, FIXED, 0), (1, 0));
     let off = Rules { vouches: false, ..FIXED };
     assert_eq!(role(&w, off, 0, 2), Role::Admin);
+    assert_eq!(stays_made(&w, off, 0), (1, 1));
 }
 
-/// The thief removes H; H receives it and removes X, listing it (finding 7). Trusted, H's
-/// removal applies: the entry is read as absent. Without the rule it is void.
+/// The thief removes H; H receives it and removes X, listing it. Trusted, H's removal is void
+/// on today's walk: listing keeps X's removal of H, and with an empty list it applies. Reading
+/// such an entry as absent (the rest of what no list keeps) needs H's stated path (A1).
 #[test]
-fn a_removal_listing_the_thiefs_removal_of_its_author_applies() {
+fn a_removal_listing_the_thiefs_removal_of_its_author_is_void() {
     let mut b = B::new(&[FULL, FULL, FULL]);
     b.op(X, H, None, 1, &[(H, 2), (2, 2)]);
     let r = b.op(H, X, None, 4, &[(2, 5)]);
     let w = b.0;
-    assert_eq!(judge(&w, FIXED, 1 << r).active, 1 << r);
-    assert_eq!(listing(&w, FIXED), (2, 0, 0));
-    let no = Rules { absent: false, ..FIXED };
-    assert_eq!(judge(&w, no, 1 << r).active, 0);
-    assert_eq!(listing(&w, no).1, 1);
+    assert_eq!(judge(&w, FIXED, 1 << r).active, 0);
+    assert_eq!(listing(&w, FIXED), Listing { checked: 2, fail: 0, lowered: 1, accomplice: 0, revived: 0 });
 }
 
-/// H never received the thief's removal of it; W did and vouches for it, as for every write of
-/// X it received. Without the rule the vouch voids H's trusted removal.
+/// X grants Y admin; Y removes H; H received both and removes X, then Y. Trusted alone, H's
+/// removal of X is void as written and applies with an empty list (an accomplice), and its
+/// removal of Y likewise (Y lowered H). Both trusted, both stay void; a removal of Y omitting
+/// Y's removal of H applies both (notes/disputes.md, Hole: an accomplice).
 #[test]
-fn a_vouch_naming_the_thiefs_removal_of_the_remover_is_absent() {
-    let world = |rules| {
-        let mut b = B::new(&[FULL, FULL, FULL]);
-        b.op(X, H, None, 1, &[(2, 2)]);
-        b.op(H, X, None, 4, &[(2, 5)]);
-        b.honest(rules)
+fn an_accomplices_removal_is_answered_by_a_removal_omitting_it() {
+    let world = |omit: bool| {
+        let mut b = B::new(&[FULL, FULL, None]);
+        b.op(X, 2, FULL, 1, &[(H, 1), (2, 1)]);
+        b.op(2, H, None, 2, if omit { &[] } else { &[(H, 2)] });
+        let rx = b.op(H, X, None, 4, &[(2, 4)]);
+        let ry = b.op(H, 2, None, 5, &[(2, 5)]);
+        (b.0, 1 << rx | 1 << ry)
     };
-    let r = 1;
-    assert_eq!(judge(&world(FIXED), FIXED, 1 << r).active, 1 << r);
-    let no = Rules { absent: false, ..FIXED };
-    let w = world(no);
-    assert!(!w.vouches.is_empty());
-    assert_eq!(judge(&w, no, 1 << r).active, 0);
-    assert_eq!(listing(&w, no).1, 1);
-}
-
-/// X grants Y admin; Y removes H; H received both and removes X. Trusted alone, H's removal is
-/// void as written and applies with an empty list: the accomplice's lowering is not X's write.
-/// H removing Y too (both trusted) applies both: that lowering is struck from H's removal of Y.
-#[test]
-fn an_accomplices_removal_is_answered_by_removing_the_accomplice() {
-    let mut b = B::new(&[FULL, FULL, None]);
-    b.op(X, 2, FULL, 1, &[(H, 1), (2, 1)]);
-    b.op(2, H, None, 2, &[(H, 2)]);
-    let rx = b.op(H, X, None, 4, &[(2, 4)]);
-    let ry = b.op(H, 2, None, 5, &[(2, 5)]);
-    let w = b.0;
-    assert_eq!(listing(&w, FIXED).2, 1);
-    assert_eq!(judge(&w, FIXED, 1 << rx).active, 0);
-    let both = 1 << rx | 1 << ry;
+    let (w, both) = world(false);
+    assert_eq!(listing(&w, FIXED), Listing { checked: 3, fail: 0, lowered: 1, accomplice: 1, revived: 0 });
+    assert_eq!(judge(&w, FIXED, both).active, 0);
+    let (w, both) = world(true);
     assert_eq!(judge(&w, FIXED, both).active, both);
-    let no = Rules { absent: false, ..FIXED };
-    assert_eq!(judge(&w, no, both).active, 0);
 }
 
 /// A lying admin L vouches for X's grant nobody received; H removes L without having received
@@ -196,14 +202,11 @@ fn a_demoted_node_vouches_for_its_own_backdated_invite() {
 }
 
 /// X removes Y long before the theft; H received it, so H's removal of X lists it. Y, holding
-/// nothing, writes a grant of admin to H stamped before H's removal (skipped: Y holds nothing
-/// then). `EHist::path` counts Y as a grantor of H, so what no list keeps strikes X's removal of
-/// Y from H's list and H's removal drops it: Y is an admin again. Without Y's grant, or without
-/// the rule, Y stays removed (notes/account-membership-design.md §4, What no list keeps: "a
-/// removal X made long before the theft stays made"). No property of `check` catches it.
+/// nothing, writes a grant of admin to H stamped before H's removal (skipped). Y stays removed
+/// (notes/account-membership-design.md §4, What no list keeps: "a removal X made long before the
+/// theft stays made").
 #[test]
-#[ignore = "review of m2-vouches: what no list keeps counts a grant no walk applies as one the remover rests on"]
-fn repro_a_removed_node_writing_a_grant_to_the_remover_stays_removed() {
+fn a_removed_node_writing_a_grant_to_the_remover_stays_removed() {
     const Y: usize = 2;
     let world = |junk: bool| {
         let mut b = B::new(&[FULL, FULL, FULL]);
@@ -215,15 +218,14 @@ fn repro_a_removed_node_writing_a_grant_to_the_remover_stays_removed() {
         b.0
     };
     assert_eq!(role(&world(false), FIXED, 0, Y), Role::None);
-    assert_eq!(role(&world(true), Rules { absent: false, ..FIXED }, 0, Y), Role::None);
     assert_eq!(role(&world(true), FIXED, 0, Y), Role::None);
 }
 
 #[test]
 fn random_worlds_hold() {
-    let st = random(400, FIXED);
+    let st = random(4000, FIXED);
     assert_eq!(st.failures(), 0, "{}", st.ex.first().map_or(String::new(), |(l, w)| format!("{l}:\n{w}")));
-    assert!(st.counted > 0 && st.kept_checked > 0 && st.safety_checked > 0);
+    assert!(st.counted > 0 && st.kept_checked > 0 && st.made_checked > 0 && st.safety_checked > 0);
 }
 
 #[test]
@@ -231,7 +233,7 @@ fn family_sample_holds_and_each_control_fails() {
     let st = exhaustive(FIXED, 397);
     assert_eq!(st.failures(), 0);
     assert!(st.counted > 0);
-    for rules in [Rules { vouches: false, ..FIXED }, Rules { rewrite: false, ..FIXED }, Rules { absent: false, ..FIXED }] {
+    for rules in [Rules { vouches: false, ..FIXED }, Rules { rewrite: false, ..FIXED }] {
         assert!(exhaustive(rules, 397).failures() > 0, "{rules:?}");
     }
 }
@@ -246,4 +248,25 @@ fn random_worlds_hold_large() {
 #[ignore]
 fn small_family_holds_exhaustive() {
     assert_eq!(exhaustive(FIXED, 1).failures(), 0);
+}
+
+
+/// A (node 0) leaves at 3; X (node 3), granted admin at 2, edits its own edge at 2 (role down,
+/// invite up), which A received; A removes X at 6 and X removes A at 6, after it. As written,
+/// A's removal is void (A left). With an empty list, X's edit is contested, X stays admin, its
+/// removal of A audits A's leaving, and A's removal applies at its key, leaving X's removal
+/// void: the empty baseline revives A, so `listing` sets it aside.
+#[test]
+fn an_empty_list_reviving_its_author_is_set_aside() {
+    let admin = Some(Edge { role: Role::Admin, until: NEVER, invite: Role::None });
+    let edit = Some(Edge { role: Role::Read, until: 5, invite: Role::Read });
+    let mut b = B::new(&[admin, None, admin, Some(Edge { role: Role::Write, until: NEVER, invite: Role::Write })]);
+    b.op(2, 3, admin, 2, &[]);
+    b.op(3, 3, edit, 2, &[(H, 1)]);
+    b.op(H, H, None, 3, &[]);
+    let r = b.op(H, 3, None, 6, &[]);
+    b.op(3, H, None, 6, &[]);
+    let w = b.0;
+    assert_eq!(judge(&w, FIXED, 1 << r).active, 0);
+    assert_eq!(listing(&w, FIXED), Listing { checked: 2, fail: 0, lowered: 0, accomplice: 0, revived: 1 });
 }

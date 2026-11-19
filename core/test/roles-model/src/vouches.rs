@@ -1,8 +1,9 @@
-//! Vouches and what no list keeps (notes/account-membership-design.md §4, Role writes: vouched
-//! for like content, and What no list keeps; notes/redesign-plan.md S3 briefs 2-3) under today's
-//! walk: authority as `edges` gives it
-//! (one thing, every node a key actor, a frontier is what its demoter received), with trust sets
-//! (`trust`). Not the stated-path design (`paths`).
+//! Vouches (notes/account-membership-design.md §4, Role writes: vouched for like content;
+//! notes/redesign-plan.md S3 brief 2) under today's walk: authority as `edges` gives it (one
+//! thing, every node a key actor, a frontier is what its demoter received), with trust sets
+//! (`trust`). Not the stated-path design (`paths`). Of what no list keeps only today's first half
+//! is here (spec/permissions.md §5.1 step 4, R never demotes its own author); the rest needs a
+//! stated path and is modelled in `paths`.
 //!
 //! **A vouch** by W names a removal R (a commit ID) and lists commit IDs of R's victim X. An entry
 //! c **counts** iff, in the **first walk** (the ordinary walk under the node's trust set, every
@@ -17,50 +18,60 @@
 //!   (W's vouch survives W's later removals by their frontiers, as its role-class writes do).
 //!
 //! **The second walk** is the ordinary walk with each counting entry added to its removal's
-//! frontier (`edges::Lists::extra`), in the audit and in a trusted write's seeds alike: that is
-//! the timeline. Nothing judges a vouch again in it.
-//!
-//! **What no list keeps** (`Rules::absent`, `edges::Lists::absent`): a frontier entry, received or
-//! added by a vouch, naming an op of X that takes something from the demoter's own edge is read as
-//! absent. One thing, so the demoter's path is its own edge; a vouch's entries are struck against
-//! the removal's author, the frontier they join (the simplest reading: the entry is in R's list).
+//! frontier (`EHist::extra`), in the audit and in a trusted write's seeds alike: that is the
+//! timeline. Nothing judges a vouch again in it.
 //!
 //! **Honest writing**: each node W but X and R's author that received R writes, at receipt and
-//! (`Rules::rewrite`) at every later time it newly holds the authority for a listed commit in the
-//! first walk, one vouch listing X's commits before R it had received by R's `ts` that R's
-//! author had not. Which times W holds that authority is read off the canonical first walk.
+//! (`Rules::rewrite`) at every later time it newly holds the authority for a listed commit, one
+//! vouch listing X's commits before R it had received by R's `ts` that R's author had not.
+//! `FIXED` is the **idealised writing**: whether W holds that authority is read off the canonical
+//! first walk of the whole history, which no node can compute. With `Rules::held` W reads it off
+//! its own walk of what it holds then (`EHist::held_by`), as a node would; kept then fails where
+//! W never received a lowering of its own edge that the remover's list keeps: its vouch at
+//! receipt does not count and its view never shows it newly holding the right
+//! (`a_witness_unaware_of_its_own_demotion_never_vouches_again`).
 //!
 //! Properties (`check`), at the judgment of the whole held set under the empty trust set and
 //! under each removal trusted alone:
 //! - **kept**: an op of X that an honest node other than X and R's author received by R's `ts`,
 //!   where it holds the authority for it in the first walk as it applies R (and no node that had
-//!   not received its vouch written then later lowers its edge below it) or at the end, is kept:
-//!   every node ends with the authority it has where R's frontier names every such op (the
-//!   reference: `Lists::extra` set to every such entry). Compared on final authority, not op by
-//!   op: keeping one witnessed op may leave a later one of X without effect;
+//!   not received its vouch written then later lowers its edge below it) or at the end
+//!   (`witnessed`), is kept: every node ends with the authority it has where R's frontier names
+//!   every such op (the reference: `EHist::extra` set to every such entry). Compared on final
+//!   authority, not op by op: keeping one witnessed op may leave a later one of X without effect;
+//! - **stays made**: op by op for X's lowerings: a lowering of another node's edge by X that
+//!   every removal of X after it lists or has witnessed, and that applies in the reference,
+//!   applies in the judgment;
 //! - **safety**: an op of X no node but X received before a removal of X after it applied in the
 //!   second walk (unwitnessed) never applies in the second walk where it does not in the first,
-//!   with forged vouches by X and by nodes that never hold admin; finalizes (never audited, they
-//!   remove only ended edges), ops on their author's own edge but raises, and ops on a voucher's
-//!   own edge it names aside (nobody gains: a vouch counting for an op on its author's edge is
-//!   one its author could write). Ops named by a vouch of their own author
-//!   (X still holding the authority after R, by an invite) are counted apart: "nobody vouches for
-//!   its own signer's commit" closes them and lands with stated paths (notes/redesign-plan.md S3,
-//!   A1; `a_demoted_node_vouches_for_its_own_backdated_invite`);
+//!   with forged vouches by X and by nodes that never hold admin (one listing a backdated commit
+//!   of X); finalizes (never audited, they remove only ended edges), ops on their author's own
+//!   edge but raises, ops on a voucher's own edge it names, and ops a voucher naming them could
+//!   write itself at its vouch's position (the bargain: a vouch is its author's word, as an
+//!   addendum is) aside. Ops named by a vouch of their own author (X still holding the authority
+//!   after R, by an invite) are counted apart: "nobody vouches for its own signer's commit"
+//!   closes them and lands with stated paths (notes/redesign-plan.md A1;
+//!   `a_demoted_node_vouches_for_its_own_backdated_invite`);
 //! - **listing**: a trusted removal R by A of X (an op removing X's edge) that applies with an
-//!   empty frontier and no vouch against it also applies with A's honest frontier and its vouches. Worlds
-//!   where a third node sets A's edge below admin, before or after R, are counted apart (an
-//!   accomplice: struck from A's removal of it, not of X:
-//!   `an_accomplices_removal_is_answered_by_removing_the_accomplice`);
+//!   empty frontier and no vouch against it also applies with A's honest frontier and its
+//!   vouches, where nothing writes an edge R may rest on (`above`: A's, and its grantors',
+//!   closed) to a value without admin at R's `ts`. Worlds where X did so before R are counted
+//!   apart as `lowered`: listing (or a witness vouching for) X's lowering keeps it and voids R,
+//!   which only the rest of what no list keeps, on a stated path, closes
+//!   (`a_removal_listing_the_thiefs_removal_of_its_author_is_void`); where a third node did, as
+//!   `accomplice` (notes/disputes.md, Hole: an accomplice); where the empty list's R applies only
+//!   by dropping an op of A that applies as written (A's own leaving, dropped by an audit whose
+//!   cause ends void), as `revived`: there the honest result is the right one;
 //! - **alike**: one result for every input order.
 //!
-//! Negative controls (`Rules`): `vouches: false` fails kept; `rewrite: false` fails kept (a node
-//! granted the authority after R); `absent: false` fails listing.
-//! Search: `roles-model -- N vouches` (random), `-- 0 vouches-exh`
-//! (the small family); controls `vouches-off`, `vouches-no-rewrite`, `vouches-no-absent` (random)
-//! and `vouches-exh-off` and so on (the family).
+//! Negative controls (`Rules`): `vouches: false` fails kept and stays made; `rewrite: false`
+//! fails kept (a node granted the authority after R). Search: `roles-model -- N vouches`
+//! (random), `-- 0 vouches-exh` (the small family); controls `vouches-off`, `vouches-no-rewrite`
+//! (random) and `vouches-exh-off`, `vouches-exh-no-rewrite` (the family); `vouches-held` and
+//! `vouches-exh-held` the writing from each node's held set, which fails kept
+//! (`a_witness_unaware_of_its_own_demotion_never_vouches_again`).
 
-use crate::edges::{self, takes_from, Attr, EHist, EOut, EWrite, Edge, Lists, NEVER};
+use crate::edges::{self, auth, takes_from, Attr, EHist, EOut, EWrite, Edge, NEVER};
 use crate::shrink::LATE;
 use crate::trust::{self, Trusting};
 use crate::{Rng, Role};
@@ -91,10 +102,12 @@ pub struct World {
 pub struct Rules {
     pub vouches: bool,
     pub rewrite: bool,
-    pub absent: bool,
+    /// Honest nodes read their authority off their own held set; false is the idealised writing
+    /// (module doc, Honest writing).
+    pub held: bool,
 }
 
-pub const FIXED: Rules = Rules { vouches: true, rewrite: true, absent: true };
+pub const FIXED: Rules = Rules { vouches: true, rewrite: true, held: false };
 
 pub type Res = (Vec<(Role, Role)>, Vec<u32>);
 
@@ -135,10 +148,9 @@ fn victims(h: &EHist, o: &EOut, i: usize) -> Vec<usize> {
     w.ops.iter().enumerate().filter(|&(k, &(x, e))| x != w.author && o.attr[o.base[i] + k] == Attr::Admin && takes_from(e, before[x])).map(|(_, &(x, _))| x).collect()
 }
 
-/// W's own commit with commit c's ops at time `t` would apply against `edges`.
-fn could_write(h: &EHist, w: usize, c: usize, t: u32, edges: &[Option<Edge>]) -> bool {
-    let cw = &h.writes[c];
-    h.would_apply(&EWrite { author: w, t, id: 0, ops: cw.ops.clone(), fin: cw.fin }, edges)
+/// W's own commit with `c`'s ops at time `t` would apply against `edges`.
+fn could_write(h: &EHist, w: usize, c: &EWrite, t: u32, edges: &[Option<Edge>]) -> bool {
+    h.would_apply(&EWrite { author: w, t, id: 0, ops: c.ops.clone(), fin: c.fin }, edges)
 }
 
 /// The counting entries of `vouches` against the first walk `o` of `h`.
@@ -163,10 +175,10 @@ fn counting(h: &EHist, o: &EOut, vouches: &[Vouch]) -> Vec<(u32, u32)> {
         for &cid in &v.lists {
             let Some(c) = idx(cid) else { continue };
             let cw = &h.writes[c];
-            if !vic.contains(&cw.author) || key(cw) >= key(rw) || !could_write(h, v.author, c, v.t, &at) {
+            if !vic.contains(&cw.author) || key(cw) >= key(rw) || !could_write(h, v.author, cw, v.t, &at) {
                 continue;
             }
-            if later.iter().any(|&q| !could_write(h, v.author, c, h.writes[q].t, &edges_after(h, o, q))) {
+            if later.iter().any(|&q| !could_write(h, v.author, cw, h.writes[q].t, &edges_after(h, o, q))) {
                 continue;
             }
             out.push((v.removal, cid));
@@ -177,15 +189,15 @@ fn counting(h: &EHist, o: &EOut, vouches: &[Vouch]) -> Vec<(u32, u32)> {
     out
 }
 
-fn with_lists(h: &EHist, extra: Vec<(u32, u32)>, absent: bool) -> EHist {
+fn with_extra(h: &EHist, extra: Vec<(u32, u32)>) -> EHist {
     let mut h = h.clone();
-    h.lists = Lists { extra, absent };
+    h.extra = extra;
     h
 }
 
 /// The first walk under `trust` and its settled `EOut`.
-fn first_walk(w: &World, rules: Rules, trust: u64) -> (EHist, trust::Side<Res>, EOut) {
-    let h1 = with_lists(&w.h, vec![], rules.absent);
+fn first_walk(w: &World, trust: u64) -> (EHist, trust::Side<Res>, EOut) {
+    let h1 = with_extra(&w.h, vec![]);
     let s1 = trust::side(&h1, trust);
     let o1 = h1.eval_from(true, s1.d0).0;
     (h1, s1, o1)
@@ -193,9 +205,9 @@ fn first_walk(w: &World, rules: Rules, trust: u64) -> (EHist, trust::Side<Res>, 
 
 /// The timeline of `w` under `rules` and trust set `trust` (bits over ops).
 pub fn judge(w: &World, rules: Rules, trust: u64) -> Judged {
-    let (h1, s1, o1) = first_walk(w, rules, trust);
+    let (h1, s1, o1) = first_walk(w, trust);
     let counted = if rules.vouches { counting(&h1, &o1, &w.vouches) } else { vec![] };
-    let h2 = with_lists(&w.h, counted.clone(), rules.absent);
+    let h2 = with_extra(&w.h, counted.clone());
     let s2 = trust::side(&h2, trust);
     let o2 = h2.eval_from(true, s2.d0).0;
     Judged { res: s2.res, first: s1.applied, applied: s2.applied, active: s2.active, counted, h2, o2 }
@@ -206,7 +218,17 @@ impl World {
     /// from `recv(author, t)`.
     pub fn derive(&mut self, rules: Rules, mut recv: impl FnMut(usize, u32) -> Vec<u32>) {
         let h = &self.h;
-        let (h1, _, o1) = first_walk(self, rules, 0);
+        let (h1, _, o1) = first_walk(self, 0);
+        // whether `wn` holds the authority for commit `c` at `t`, as it reads it
+        let holds = |wn: usize, c: &EWrite, t: u32| {
+            if rules.held {
+                let mine = h1.held_by(wn, t);
+                let o = mine.eval(true);
+                could_write(&mine, wn, c, t, &mine.edges_before(&o, (t, 0, 0)))
+            } else {
+                could_write(&h1, wn, c, t, &h1.edges_before(&o1, (t, 0, 0)))
+            }
+        };
         let n = h.n();
         let mut out = vec![];
         for (r, rw) in h.writes.iter().enumerate() {
@@ -219,8 +241,7 @@ impl World {
                     let first = h.recv[r][wn].max(rw.t) + 1;
                     let mut held_before: Vec<bool> = vec![false; lists.len()];
                     for t in first..END {
-                        let at = h1.edges_before(&o1, (t, 0, 0));
-                        let held: Vec<bool> = lists.iter().map(|&c| could_write(&h1, wn, c, t, &at)).collect();
+                        let held: Vec<bool> = lists.iter().map(|&c| holds(wn, &h.writes[c], t)).collect();
                         let newly = held.iter().zip(&held_before).any(|(a, b)| *a && !*b);
                         if t == first || newly && rules.rewrite {
                             out.push(Vouch { author: wn, t, removal: rw.id, lists: lists.iter().map(|&c| h.writes[c].id).collect(), recv: recv(wn, t), forged: false });
@@ -242,6 +263,10 @@ impl World {
         let q = rng.perm(self.vouches.len());
         World { h: Trusting::permute(&self.h, &p), vouches: q.iter().map(|&i| self.vouches[i].clone()).collect() }
     }
+
+    fn honest(&self) -> World {
+        World { h: self.h.clone(), vouches: self.vouches.iter().filter(|v| !v.forged).cloned().collect() }
+    }
 }
 
 // ---------- properties ----------
@@ -251,49 +276,98 @@ fn ops_of(o: &EOut, c: usize) -> std::ops::Range<usize> {
     o.base[c]..o.base[c + 1]
 }
 
-/// Kept: the judgment gives every node the authority the reference does. Returns (entries the
-/// reference lists, failing worlds).
-fn kept(w: &World, rules: Rules, trust: u64) -> (u64, u64) {
-    let honest = World { h: w.h.clone(), vouches: w.vouches.iter().filter(|v| !v.forged).cloned().collect() };
-    let w = &honest;
+/// Commit `c` of R's victim is witnessed for removal `r` (module doc, kept): by an honest node
+/// other than its author and R's author that received R and `c` by R's `ts`, holding the
+/// authority for `c` in the first walk (`h1`, `o1`) as it applies R, not lowered below it later
+/// by a node that had not received its vouch written then, or at the end.
+fn witnessed(w: &World, h1: &EHist, o1: &EOut, r: usize, c: usize) -> bool {
     let h = &w.h;
-    let (h1, _, o1) = first_walk(w, rules, trust);
-    let fin = h1.edges_before(&o1, (END, 0, 0));
+    let (rw, cw) = (&h.writes[r], &h.writes[c]);
+    let fin = h1.edges_before(o1, (END, 0, 0));
+    (0..h.n()).any(|wn| {
+        if wn == cw.author || wn == rw.author || h.recv[r][wn] >= LATE || h.recv[c][wn] >= rw.t {
+            return false;
+        }
+        let first = h.recv[r][wn].max(rw.t) + 1;
+        let v = w.vouches.iter().find(|v| v.author == wn && v.removal == rw.id && v.t == first);
+        let removed = (0..h.writes.len()).any(|q| {
+            let qw = &h.writes[q];
+            qw.t >= first && qw.author != wn && v.map_or(true, |v| v.recv[qw.author] >= qw.t) && victims(h1, o1, q).contains(&wn) && !could_write(h1, wn, cw, qw.t, &edges_after(h1, o1, q))
+        });
+        let then = !removed && could_write(h1, wn, cw, first, &h1.edges_before(o1, (first, 0, 0)));
+        then || could_write(h1, wn, cw, END, &fin)
+    })
+}
+
+/// The reference frontiers: every witnessed (removal ID, commit ID) of the honest world.
+fn wanted(w: &World, trust: u64) -> Vec<(u32, u32)> {
+    let h = &w.h;
+    let (h1, _, o1) = first_walk(w, trust);
     let mut extra = vec![];
     for r in 0..h.writes.len() {
         let rw = &h.writes[r];
         for x in victims(&h1, &o1, r) {
             for c in (0..h.writes.len()).filter(|&c| h.writes[c].author == x && key(&h.writes[c]) < key(rw)) {
-                let witness = (0..h.n()).any(|wn| {
-                    let first = h.recv[r][wn].max(rw.t) + 1;
-                    // lowered later by another node that had not received its vouch written then
-                    let v = w.vouches.iter().find(|v| v.author == wn && v.removal == rw.id && v.t == first);
-                    let removed = (0..h.writes.len()).any(|q| {
-                        let qw = &h.writes[q];
-                        qw.t >= first && qw.author != wn && v.map_or(true, |v| v.recv[qw.author] >= qw.t) && victims(&h1, &o1, q).contains(&wn) && !could_write(&h1, wn, c, qw.t, &edges_after(&h1, &o1, q))
-                    });
-                    let then = !removed && could_write(&h1, wn, c, first, &h1.edges_before(&o1, (first, 0, 0)));
-                    wn != x && wn != rw.author && h.recv[r][wn] < LATE && h.recv[c][wn] < rw.t && (then || could_write(&h1, wn, c, END, &fin))
-                });
-                if witness {
+                if witnessed(w, &h1, &o1, r, c) {
                     extra.push((rw.id, h.writes[c].id));
                 }
             }
         }
     }
+    extra
+}
+
+/// Kept: the judgment gives every node the authority the reference does. Returns (entries the
+/// reference lists, failing worlds).
+fn kept(w: &World, rules: Rules, trust: u64) -> (u64, u64) {
+    let w = &w.honest();
+    let extra = wanted(w, trust);
     if extra.is_empty() {
         return (0, 0);
     }
-    let reference = trust::side(&with_lists(h, extra.clone(), rules.absent), trust);
+    let reference = trust::side(&with_extra(&w.h, extra.clone()), trust);
     let j = judge(w, rules, trust);
     (extra.len() as u64, (reference.res.0 != j.res.0) as u64)
+}
+
+/// Stays made: X's lowerings of others' edges that every removal of X after them lists or has
+/// witnessed, applied in the reference, apply in the judgment. Returns (checked, failures).
+fn stays_made(w: &World, rules: Rules, trust: u64) -> (u64, u64) {
+    let w = &w.honest();
+    let h = &w.h;
+    let extra = wanted(w, trust);
+    let (h1, _, o1) = first_walk(w, trust);
+    let reference = trust::side(&with_extra(h, extra.clone()), trust);
+    let j = judge(w, rules, trust);
+    let (mut checked, mut bad) = (0, 0);
+    for (c, cw) in h.writes.iter().enumerate() {
+        let after: Vec<usize> = (0..h.writes.len()).filter(|&r| key(&h.writes[r]) > key(cw) && victims(&h1, &o1, r).contains(&cw.author)).collect();
+        let covered = after.iter().all(|&r| {
+            let rw = &h.writes[r];
+            h.recv[c][rw.author] < rw.t || extra.contains(&(rw.id, cw.id))
+        });
+        if after.is_empty() || !covered || cw.fin {
+            continue;
+        }
+        for (k, op) in ops_of(&o1, c).enumerate() {
+            let (y, e) = cw.ops[k];
+            if y == cw.author || !takes_from(e, h.prior(c, y)) || reference.applied >> op & 1 == 0 {
+                continue;
+            }
+            checked += 1;
+            bad += (j.applied >> op & 1 == 0) as u64;
+        }
+    }
+    (checked, bad)
 }
 
 /// Safety: unwitnessed ops of a node removed in the second walk newly applied by vouches.
 /// (checked, failures, of those named by a vouch of their own author)
 fn safety(w: &World, rules: Rules, trust: u64) -> (u64, u64, u64) {
     let h = &w.h;
-    let (_, _, o1) = first_walk(w, rules, trust);
+    let (h1, _, o1) = first_walk(w, trust);
+    // a vouch by a node that could write the commit itself at the vouch's position: the bargain
+    let bargain = |c: usize| w.vouches.iter().any(|v| v.author != h.writes[c].author && v.lists.contains(&h.writes[c].id) && could_write(&h1, v.author, &h.writes[c], v.t, &h1.edges_before(&o1, (v.t, 0, 0))));
     let j = judge(w, rules, trust);
     let removals: Vec<(usize, usize)> = (0..h.writes.len()).flat_map(|r| victims(&j.h2, &j.o2, r).into_iter().map(move |x| (r, x))).collect();
     let (mut checked, mut bad, mut own) = (0, 0, 0);
@@ -308,7 +382,7 @@ fn safety(w: &World, rules: Rules, trust: u64) -> (u64, u64, u64) {
             // a self-lowering, or a lowering of a voucher's own edge it names: no one gains
             let prior = h.prior(c, x);
             let raise = e != prior && !takes_from(e, prior);
-            if cw.fin || x == cw.author && !raise || w.vouches.iter().any(|v| v.author == x && v.lists.contains(&cw.id)) {
+            if cw.fin || x == cw.author && !raise || w.vouches.iter().any(|v| v.author == x && v.lists.contains(&cw.id)) || bargain(c) {
                 continue;
             }
             checked += 1;
@@ -339,28 +413,66 @@ fn trustable(h: &EHist) -> Vec<(usize, usize, usize)> {
     v
 }
 
+#[derive(Default, Debug, PartialEq, Eq)]
+pub struct Listing {
+    pub checked: u64,
+    pub fail: u64,
+    /// X writing, before R, an edge R may rest on (`above`) below admin: the gap stated paths close.
+    pub lowered: u64,
+    /// A third node writing such an edge below admin.
+    pub accomplice: u64,
+    /// R applies with an empty list only where an op of its own author applied as written is
+    /// dropped: the empty baseline revives its author (an audit's cause outlives the write that
+    /// caused it, so a removal by X that ends void still drops A's own leaving).
+    pub revived: u64,
+}
+
+/// The holders a removal `r`'s authority may rest on: its author, and the author of every commit
+/// ordered before it giving one of them admin at its `ts`, closed. Static, so broad: it sets
+/// worlds aside, never decides one.
+fn above(h: &EHist, r: usize) -> Vec<usize> {
+    let rw = &h.writes[r];
+    let mut g = vec![rw.author];
+    loop {
+        let more: Vec<usize> = h.writes.iter().filter(|w| key(w) < key(rw) && !g.contains(&w.author) && w.ops.iter().any(|&(y, e)| g.contains(&y) && auth(e, rw.t).0 == Role::Admin)).map(|w| w.author).collect();
+        if more.is_empty() {
+            return g;
+        }
+        g.extend(more);
+        g.sort();
+        g.dedup();
+    }
+}
+
 /// Listing: for each trustable removal R, trusted alone: R applies with an empty frontier and no
-/// vouch against it, but not as written. Returns (checked, failures, accomplice-shaped failures).
-fn listing(w: &World, rules: Rules) -> (u64, u64, u64) {
+/// vouch against it, but not as written (module doc).
+fn listing(w: &World, rules: Rules) -> Listing {
     let h = &w.h;
-    let (mut checked, mut bad, mut accomplice) = (0, 0, 0);
+    let mut l = Listing::default();
     for (op, r, x) in trustable(h) {
         let rw = &h.writes[r];
         let mut empty = World { h: h.clone(), vouches: w.vouches.iter().filter(|v| v.removal != rw.id).cloned().collect() };
         for c in (0..h.writes.len()).filter(|&c| h.writes[c].author == x && key(&h.writes[c]) < key(rw)) {
             empty.h.recv[c][rw.author] = LATE;
         }
-        checked += 1;
-        if judge(&empty, rules, 1 << op).active >> op & 1 == 1 && judge(w, rules, 1 << op).active >> op & 1 == 0 {
-            let third = h.writes.iter().any(|qw| qw.author != x && qw.author != rw.author && qw.ops.iter().any(|&(y, e)| y == rw.author && edges::auth(e, rw.t).0 < Role::Admin));
-            if third {
-                accomplice += 1;
+        l.checked += 1;
+        let (je, jw) = (judge(&empty, rules, 1 << op), judge(w, rules, 1 << op));
+        if je.active >> op & 1 == 1 && jw.active >> op & 1 == 0 {
+            let up = above(h, r);
+            let below = |cw: &EWrite| cw.ops.iter().any(|&(y, e)| up.contains(&y) && auth(e, rw.t).0 < Role::Admin);
+            let own = |a: u64| (0..h.writes.len()).filter(|&c| h.writes[c].author == rw.author).flat_map(|c| ops_of(&jw.o2, c)).fold(0u64, |m, q| m | (a & 1 << q));
+            if own(jw.applied) & !own(je.applied) != 0 {
+                l.revived += 1;
+            } else if h.writes.iter().any(|cw| cw.author == x && key(cw) < key(rw) && below(cw)) {
+                l.lowered += 1;
+            } else if h.writes.iter().any(|cw| cw.author != x && cw.author != rw.author && below(cw)) {
+                l.accomplice += 1;
             } else {
-                bad += 1;
+                l.fail += 1;
             }
         }
     }
-    (checked, bad, accomplice)
+    l
 }
 
 #[derive(Default)]
@@ -370,12 +482,12 @@ pub struct Stats {
     pub counted: u64,
     pub kept_checked: u64,
     pub kept_fail: u64,
+    pub made_checked: u64,
+    pub made_fail: u64,
     pub safety_checked: u64,
     pub safety_fail: u64,
     pub safety_own: u64,
-    pub listing_checked: u64,
-    pub listing_fail: u64,
-    pub listing_accomplice: u64,
+    pub listing: Listing,
     pub order_fail: u64,
     pub ex: Vec<(&'static str, World)>,
 }
@@ -387,12 +499,16 @@ impl crate::Tally for Stats {
         self.counted += o.counted;
         self.kept_checked += o.kept_checked;
         self.kept_fail += o.kept_fail;
+        self.made_checked += o.made_checked;
+        self.made_fail += o.made_fail;
         self.safety_checked += o.safety_checked;
         self.safety_fail += o.safety_fail;
         self.safety_own += o.safety_own;
-        self.listing_checked += o.listing_checked;
-        self.listing_fail += o.listing_fail;
-        self.listing_accomplice += o.listing_accomplice;
+        self.listing.checked += o.listing.checked;
+        self.listing.fail += o.listing.fail;
+        self.listing.lowered += o.listing.lowered;
+        self.listing.accomplice += o.listing.accomplice;
+        self.listing.revived += o.listing.revived;
         self.order_fail += o.order_fail;
         for (l, w) in o.ex {
             if !self.ex.iter().any(|(m, x)| *m == l && x.h.writes.len() <= w.h.writes.len()) {
@@ -405,12 +521,13 @@ impl crate::Tally for Stats {
 
 impl Stats {
     pub fn failures(&self) -> u64 {
-        self.kept_fail + self.safety_fail + self.listing_fail + self.order_fail
+        self.kept_fail + self.made_fail + self.safety_fail + self.listing.fail + self.order_fail
     }
     pub fn print(&self, name: &str, rules: Rules) {
+        let l = &self.listing;
         println!(
-            "{name}: {} worlds, {} vouches, {} counting entries | kept {} checked, FAIL {} | safety {} checked, FAIL {}, by its own author's vouch {} | listing {} checked, FAIL {}, accomplice {} | FAIL order {}",
-            self.worlds, self.vouches, self.counted, self.kept_checked, self.kept_fail, self.safety_checked, self.safety_fail, self.safety_own, self.listing_checked, self.listing_fail, self.listing_accomplice, self.order_fail
+            "{name}: {} worlds, {} vouches, {} counting entries | kept {} checked, FAIL {} | stays made {} checked, FAIL {} | safety {} checked, FAIL {}, by its own author's vouch {} | listing {} checked, FAIL {}, X lowered A {}, accomplice {}, author revived {} | FAIL order {}",
+            self.worlds, self.vouches, self.counted, self.kept_checked, self.kept_fail, self.made_checked, self.made_fail, self.safety_checked, self.safety_fail, self.safety_own, l.checked, l.fail, l.lowered, l.accomplice, l.revived, self.order_fail
         );
         for (label, w) in &self.ex {
             let w = crate::shrink::shrink(w.clone(), |x| fails(label, x, rules));
@@ -422,10 +539,13 @@ impl Stats {
 fn fails(label: &str, w: &World, rules: Rules) -> bool {
     match label {
         "kept" => kept(w, rules, 0).1 > 0,
+        "made" => stays_made(w, rules, 0).1 > 0,
         "safety" => safety(w, rules, 0).1 > 0,
         "own" => safety(w, rules, 0).2 > 0,
-        "listing" => listing(w, rules).1 > 0,
-        "accomplice" => listing(w, rules).2 > 0,
+        "listing" => listing(w, rules).fail > 0,
+        "lowered" => listing(w, rules).lowered > 0,
+        "accomplice" => listing(w, rules).accomplice > 0,
+        "revived" => listing(w, rules).revived > 0,
         _ => true,
     }
 }
@@ -445,18 +565,26 @@ pub fn check(w: &World, rules: Rules, st: &mut Stats, rng: &mut Rng) {
     st.kept_checked += c;
     st.kept_fail += b;
     note(st, "kept", b > 0);
+    let (c, b) = stays_made(w, rules, 0);
+    st.made_checked += c;
+    st.made_fail += b;
+    note(st, "made", b > 0);
     let (c, b, o) = safety(w, rules, 0);
     st.safety_checked += c;
     st.safety_fail += b;
     st.safety_own += o;
     note(st, "safety", b > 0);
     note(st, "own", o > 0);
-    let (c, b, a) = listing(w, rules);
-    st.listing_checked += c;
-    st.listing_fail += b;
-    st.listing_accomplice += a;
-    note(st, "listing", b > 0);
-    note(st, "accomplice", a > 0);
+    let l = listing(w, rules);
+    note(st, "listing", l.fail > 0);
+    note(st, "lowered", l.lowered > 0);
+    note(st, "accomplice", l.accomplice > 0);
+    note(st, "revived", l.revived > 0);
+    st.listing.checked += l.checked;
+    st.listing.fail += l.fail;
+    st.listing.lowered += l.lowered;
+    st.listing.accomplice += l.accomplice;
+    st.listing.revived += l.revived;
     let p = w.permuted(rng);
     let bad = judge(&p, rules, 0).res != j.res;
     st.order_fail += bad as u64;
@@ -470,11 +598,32 @@ fn recv_row(rng: &mut Rng, n: usize, author: usize, t: u32) -> Vec<u32> {
 }
 
 /// A random world: `edges::random_shaped` (anyone lowers anyone, a third of receipts never),
-/// the honest vouches, and in half the worlds one or two forged vouches by a removal's victim
-/// or a node that never holds admin, naming any write and listing any of the victim's commits.
+/// the honest vouches, and in three worlds of four the thief's attack: one commit of a removal's
+/// victim ordered before it received by no other node (backdated), and one or two forged vouches
+/// by the victim or a node that never holds admin, naming a removal that applies in the first
+/// walk (any write where none does) and listing the backdated commit and any of the victim's.
 pub fn random_world(rng: &mut Rng, rules: Rules) -> World {
-    let h = edges::random_shaped(rng, edges::Who::Anyone, edges::Net::Offline);
+    let mut h = edges::random_shaped(rng, edges::Who::Anyone, edges::Net::Offline);
     let n = h.n();
+    // removals applying in the first walk, else any write
+    let o1 = h.eval(true);
+    let mut named: Vec<(usize, usize)> = (0..h.writes.len()).flat_map(|r| victims(&h, &o1, r).into_iter().map(move |x| (r, x))).collect();
+    if named.is_empty() {
+        named = (0..h.writes.len()).map(|r| (r, h.writes[r].ops[0].0)).collect();
+    }
+    let attack = rng.below(4) > 0 && !named.is_empty();
+    let mut hidden = None;
+    if attack {
+        let (r, x) = named[rng.below(named.len())];
+        let before: Vec<usize> = (0..h.writes.len()).filter(|&c| h.writes[c].author == x && key(&h.writes[c]) < key(&h.writes[r])).collect();
+        if !before.is_empty() {
+            let c = before[rng.below(before.len())];
+            for v in (0..n).filter(|&v| v != x) {
+                h.recv[c][v] = LATE;
+            }
+            hidden = Some((r, x, h.writes[c].id));
+        }
+    }
     let mut w = World { h, vouches: vec![] };
     let mut rows: Vec<Vec<u32>> = vec![];
     // receipts drawn whatever the rules decide, so controls share the base world
@@ -488,18 +637,22 @@ pub fn random_world(rng: &mut Rng, rules: Rules) -> World {
         k += 1;
         r
     });
-    if rng.below(2) == 0 && !w.h.writes.is_empty() {
+    if attack {
         let na = w.h.never_admin();
-        for _ in 0..1 + rng.below(2) {
-            let r = rng.below(w.h.writes.len());
-            let rw = &w.h.writes[r];
-            let x = rw.ops[0].0;
+        for i in 0..1 + rng.below(2) {
+            let (r, x, c) = match hidden {
+                Some(rxc) if i == 0 => rxc,
+                _ => {
+                    let (r, x) = named[rng.below(named.len())];
+                    (r, x, u32::MAX)
+                }
+            };
             let liars: Vec<usize> = (0..n).filter(|&v| v == x || na[v]).collect();
             let author = liars[rng.below(liars.len())];
-            let lists = w.h.writes.iter().filter(|c| c.author == x && rng.below(2) == 0).map(|c| c.id).collect();
-            let t = rng.below(12) as u32;
+            let lists = w.h.writes.iter().filter(|cw| cw.author == x && (cw.id == c || rng.below(2) == 0)).map(|cw| cw.id).collect();
+            let t = w.h.writes[r].t + 1 + rng.below(4) as u32;
             let recv = recv_row(rng, n, author, t);
-            w.vouches.push(Vouch { author, t, removal: rw.id, lists, recv, forged: true });
+            w.vouches.push(Vouch { author, t, removal: w.h.writes[r].id, lists, recv, forged: true });
         }
     }
     w
@@ -556,7 +709,7 @@ pub fn exhaustive(rules: Rules, stride: usize) -> Stats {
             let set = &sets[z % sets.len()];
             z /= sets.len();
             let (wr, hw, kw, hv) = (z % 2, z / 2 % 3, z / 6 % 3, z / 18 % 2);
-            let mut h = EHist { genesis: genesis.clone(), writes: vec![], recv: vec![], lists: Lists::default() };
+            let mut h = EHist { genesis: genesis.clone(), writes: vec![], recv: vec![], extra: vec![] };
             let mut push = |author: usize, op: (usize, Option<Edge>), t: u32, r: [u32; 4]| {
                 let id = h.writes.len() as u32;
                 let mut r = r.to_vec();
@@ -601,7 +754,7 @@ pub fn run(samples: u64, mode: &str) -> u64 {
     let rules = match mode.trim_start_matches("vouches").trim_start_matches("-exh") {
         "-off" => Rules { vouches: false, ..FIXED },
         "-no-rewrite" => Rules { rewrite: false, ..FIXED },
-        "-no-absent" => Rules { absent: false, ..FIXED },
+        "-held" => Rules { held: true, ..FIXED },
         _ => FIXED,
     };
     let st = if exh { exhaustive(rules, 1) } else { random(samples, rules) };
