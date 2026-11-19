@@ -25,7 +25,7 @@ AKs, tids other than the key actors its dialers proved and the things it keeps u
 - Opens gated by the head's credentials, Behind answers one sync key at a time, refusals carrying a code alone, opens ending at a new sync key (notes/sync-access.md).
 - Claim-set padding keys are valid points; static entries are hashes until claimed (notes/sync-access.md).
 - A node keeping S unread holds only the tickets for its thing: no roster, chain, `keys.0` or commit (spec/sync.md §3).
-- The log ID is random per store, so a wiped node invalidates old cursors and two nodes' logs are unrelated (notes/local-store.md, Node log).
+- The cursor key is random per log, so a wiped node invalidates old cursors and two nodes' logs are unrelated (notes/local-store.md, Node log).
 - A node dials with an ephemeral transport key per connection, each QUIC dial on its own UDP socket, and listens under its one dialable key (spec/sync-transport.md §1, §3, §5).
 - Wake-up push tokens, if built, must not link sync IDs (notes/networking.md, Proposal).
 - Nodes may batch writes to blur timing (policy).

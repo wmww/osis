@@ -16,7 +16,7 @@
 //!   incarnation, is on no history this store has (`Valid` of core/test/tla/net/NetStream.tla).
 //!
 //! Rows, all catalog rows under `kind::LOG`:
-//! `m` meta (cursor key, log ID, current incarnation, end position); `n` the ended incarnations;
+//! `m` meta (cursor key, current incarnation, end position); `n` the ended incarnations;
 //! `z` the deletion horizon (`log_horizon`);
 //! `e pos` an event; `I sync_id pos` the same event indexed by its sync ID, so one sync ID's events
 //! read without the others' (a join from the start costs that sync ID's events, not the log's);
@@ -45,7 +45,7 @@ use osis_crypto::aead::{self, NONCE_LEN, TAG_LEN};
 /// appends: at 50 such starts a day the cap is 82 days and 98 KB.
 pub const INCARNATIONS_KEPT: usize = 4096;
 
-const PLAIN_LEN: usize = 16 + 16 + 8;
+const PLAIN_LEN: usize = 16 + 8;
 /// The bytes of a cursor: opaque to whoever holds one.
 pub const CURSOR_LEN: usize = NONCE_LEN + PLAIN_LEN + TAG_LEN;
 
@@ -92,20 +92,20 @@ pub struct LogRead {
 }
 
 struct Meta {
+    /// Drawn with the log and never replaced: a cursor another log sealed does not open.
     key: [u8; 32],
-    log_id: [u8; 16],
     incarnation: [u8; 16],
     end: u64,
 }
 
 impl Meta {
     fn encode(&self) -> Vec<u8> {
-        W::new().raw(&self.key).raw(&self.log_id).raw(&self.incarnation).u64(self.end).take()
+        W::new().raw(&self.key).raw(&self.incarnation).u64(self.end).take()
     }
 
     fn decode(b: &[u8]) -> Result<Meta, Error> {
         let mut r = R::new(b);
-        let m = Meta { key: r.array()?, log_id: r.array()?, incarnation: r.array()?, end: r.u64()? };
+        let m = Meta { key: r.array()?, incarnation: r.array()?, end: r.u64()? };
         r.end()?;
         Ok(m)
     }
@@ -218,9 +218,8 @@ impl Transaction<'_> {
                 m
             }
             None => {
-                let mut m = Meta { key: [0; 32], log_id: [0; 16], incarnation: [0; 16], end: 0 };
+                let mut m = Meta { key: [0; 32], incarnation: [0; 16], end: 0 };
                 self.rng().fill_bytes(&mut m.key);
-                self.rng().fill_bytes(&mut m.log_id);
                 self.rng().fill_bytes(&mut m.incarnation);
                 m
             }
@@ -393,7 +392,7 @@ impl Transaction<'_> {
     fn seal_cursor(&mut self, m: &Meta, pos: u64) -> Result<Vec<u8>, Error> {
         let mut nonce = [0u8; NONCE_LEN];
         self.rng().fill_bytes(&mut nonce);
-        let plain = W::new().raw(&m.log_id).raw(&m.incarnation).u64(pos).take();
+        let plain = W::new().raw(&m.incarnation).u64(pos).take();
         let sealed = aead::seal(&m.key, &nonce, &[], &plain).map_err(|_| Error::Corrupt("node log cursor"))?;
         Ok([nonce.as_slice(), &sealed].concat())
     }
@@ -420,9 +419,9 @@ impl Transaction<'_> {
         let Ok(nonce) = <[u8; NONCE_LEN]>::try_from(nonce) else { return Ok(None) };
         let Ok(plain) = aead::open(&m.key, &nonce, &[], sealed) else { return Ok(None) };
         let mut r = R::new(&plain);
-        let (log_id, incarnation, pos): ([u8; 16], [u8; 16], u64) = (r.array()?, r.array()?, r.u64()?);
+        let (incarnation, pos): ([u8; 16], u64) = (r.array()?, r.u64()?);
         r.end()?;
-        if log_id != m.log_id || pos > m.end {
+        if pos > m.end {
             return Ok(None);
         }
         if incarnation == m.incarnation {
