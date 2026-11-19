@@ -266,7 +266,7 @@ impl Node {
         self.driver.sessions.take_sends(&mut out);
         // a failing stretch wakes no sooner than its retry (a wake due now would fail again)
         let floor = self.driver.failing.map(|f| f.retry_at);
-        if let Some(at) = self.next_wake().map(|at| floor.map_or(at, |f| at.max(f))) {
+        if let Some(at) = osis_base::costs::scoped("next wake", || self.next_wake()).map(|at| floor.map_or(at, |f| at.max(f))) {
             out.push(Out::Wake(at));
         }
         out
@@ -683,8 +683,8 @@ impl Node {
     fn hand(&mut self, moved: &mut Vec<Moved>, out: &mut Vec<Out>) {
         let mut cx = cx!(self, out);
         for m in moved.drain(..) {
-            self.status.moved(&self.driver.sessions, &self.opens, &m);
-            self.inbox.moved(&m, &crate::inbox::Links { sessions: &mut self.driver.sessions, opens: &self.opens, streams: &self.streams });
+            osis_base::costs::scoped("status", || self.status.moved(&self.driver.sessions, &self.opens, &m));
+            osis_base::costs::scoped("inbox", || self.inbox.moved(&m, &crate::inbox::Links { sessions: &mut self.driver.sessions, opens: &self.opens, streams: &self.streams }));
             if let Some(c) = m.conn() {
                 self.driver.dials.sharing(c, !self.opens.members(c).is_empty());
             }
@@ -768,14 +768,14 @@ impl Node {
             let sessions = &mut self.driver.sessions;
             // inbox's start first: what it has the engine follow is part of the sync set, so only
             // then does the engine let go of what it keeps for sync IDs not read
-            acted |= acts.by(Act::InboxStart, self.inbox.start(&mut cx)?);
+            acted |= acts.by(Act::InboxStart, osis_base::costs::scoped("inbox", || self.inbox.start(&mut cx))?);
             if acted {
                 cx.engine.forget_unread()?;
             }
             acted |= acts.by(Act::Follow, cx.engine.follow()?);
             // leave first: what this node syncs, which every other module follows
             acted |= acts.by(Act::Leave, self.leave.settle(&mut crate::leave::Live { cx: &mut cx, status: &self.status })?);
-            acted |= acts.by(Act::Store, self.driver.store.settle(cx.engine, cx.store, cx.now)?);
+            acted |= acts.by(Act::Store, osis_base::costs::scoped("driver store", || self.driver.store.settle(cx.engine, cx.store, cx.now))?);
             acted |= acts.by(Act::Unread, self.unread.settle(&mut cx)?);
             acted |= acts.by(Act::Opens, self.opens.settle(&mut cx, sessions, &self.unread, &mut moved)?);
             self.moved(&mut moved, out);
@@ -791,12 +791,12 @@ impl Node {
             let mut cx = cx!(self, out);
             let sessions = &mut self.driver.sessions;
             acted |= acts.by(Act::Follow, cx.engine.follow()?);
-            acted |= acts.by(Act::Inbox, self.inbox.settle(&mut cx, sessions, &self.opens, &self.streams, &self.status)?);
+            acted |= acts.by(Act::Inbox, osis_base::costs::scoped("inbox", || self.inbox.settle(&mut cx, sessions, &self.opens, &self.streams, &self.status))?);
             acted |= acts.by(Act::Streams, self.streams.settle(&mut cx, sessions, &self.opens, &mut self.driver.reported)?);
             self.reports(out);
             let mut cx = cx!(self, out);
             let mut pulls = Vec::new();
-            acted |= acts.by(Act::Status, self.status.settle(&mut cx, &self.opens, &self.streams, &self.read, &self.unread, &self.leave, &mut pulls)?);
+            acted |= acts.by(Act::Status, osis_base::costs::scoped("status", || self.status.settle(&mut cx, &self.opens, &self.streams, &self.read, &self.unread, &self.leave, &mut pulls))?);
             for conn in pulls {
                 let mut cx = cx!(self, out);
                 self.streams.pull_again(&mut cx, &mut self.driver.sessions, &self.opens, conn, &mut self.driver.reported);

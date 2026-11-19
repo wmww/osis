@@ -599,12 +599,12 @@ impl Read {
     /// Act `k` owed `at`, carried out on `conn`: where it stands after.
     fn carry(&mut self, g: &mut impl Ground, conn: ConnId, at: Source, k: &owed::Key) -> Result<owed::State> {
         let (s, c, a) = k;
-        let sent = |id: Option<crate::session::RequestId>, owed: &mut owed::Owed| match id {
-            Some(id) => {
+        // a Delete it cannot sign now goes nowhere: tried again on the next connection, as one refused
+        let sent = |id: Option<crate::session::RequestId>, owed: &mut owed::Owed| {
+            if let Some(id) = id {
                 owed.sent(conn, id, at, k.clone());
-                owed::State::Sent(conn)
             }
-            None => owed::State::Done,
+            owed::State::Sent(conn)
         };
         Ok(match (a, c) {
             (Act::Fetch { blob, .. }, _) => {
@@ -646,18 +646,20 @@ impl Read {
         Ok(g.sources(s).iter().filter(|x| x.store && !x.head.is_some_and(|h| writer(&h))).map(|x| x.at).collect())
     }
 
-    /// Answers to its own requests: a Delete answered is done (its codes reach `known` through
-    /// the source's stream, so nothing else is taken from them here).
+    /// Answers to its own requests: a Delete taken (its one item answered 0) is done; refused,
+    /// whatever the code, it goes again on the source's next connection (the codes reach `known`
+    /// through the source's stream, so nothing else is taken from them here).
     pub fn on_message(&mut self, cx: &mut Cx, sessions: &mut Sessions, conn: ConnId, m: Incoming) {
         let _ = (cx, sessions);
-        if let Incoming::Reply(_, id, _) = m {
-            self.answered(conn, id);
+        if let Incoming::Reply(_, id, reply) = m {
+            let taken = matches!(&reply, osis_proto::Msg::Status { codes, .. } if !codes.is_empty() && codes.iter().all(|c| c.0 == 0));
+            self.answered(conn, id, taken);
         }
     }
 
-    /// The answer to read's request `id` on `conn` came: the act it carried is done.
-    pub fn answered(&mut self, conn: ConnId, id: crate::session::RequestId) {
-        self.owed.answered(conn, id);
+    /// The answer to read's request `id` on `conn` came, taken or refused (`on_message`).
+    pub fn answered(&mut self, conn: ConnId, id: crate::session::RequestId, taken: bool) {
+        self.owed.answered(conn, id, taken);
     }
 
     /// Per S, the pass place a complete pass must begin after for a judgement outside S's

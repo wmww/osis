@@ -3,7 +3,8 @@
 //! never by connection. A judgement reads the record's facts alone (what its stream showed, its
 //! head and class, its membership of S), so a reconnect moves none; an act goes on the record's
 //! connection once its digests agree (`Ground::connected`), and again on the next one while it
-//! is not done: a request once answered (a Delete), anything else once carried out (a deposit,
+//! is not done: a request once taken (a Delete answered 0; refused, it goes on the next
+//! connection), anything else once carried out (a deposit,
 //! a logging again; a Fetch, whose answer is streams', goes on each connection while the body
 //! is still missing there). One owed only while the source is full (`Act::needs_full`) goes only
 //! on a connection the source told so. A restart judges every body again.
@@ -104,10 +105,14 @@ impl Owed {
         self.out.entry(conn).or_default().insert(id, (at, k));
     }
 
-    /// The answer to request `id` on `conn` came: its act is done.
-    pub fn answered(&mut self, conn: ConnId, id: RequestId) {
+    /// The answer to request `id` on `conn` came: its act is done once `taken`; refused (for now
+    /// or for good), it stays owed and goes again on the record's next connection, as before
+    /// it was answered.
+    pub fn answered(&mut self, conn: ConnId, id: RequestId, taken: bool) {
         let Some((at, k)) = self.out.get_mut(&conn).and_then(|m| m.remove(&id)) else { return };
-        if let Some(st) = self.by.get_mut(&at).and_then(|m| m.get_mut(&k)) {
+        if let Some(st) = self.by.get_mut(&at).and_then(|m| m.get_mut(&k))
+            && taken
+        {
             *st = State::Done;
         }
     }

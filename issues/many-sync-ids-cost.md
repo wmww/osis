@@ -12,7 +12,7 @@ Method: `history::world(0, 3)`, script steps, `osis_base::costs`, `net.between`,
 |---|---|---|---|---|
 | Idle reconnect, writer and reader [idle.rs]: bytes | 2024 | 2044 | 2 | flat (integer widths) |
 | same: `opens: members judged`, `opens standing`, `read: certificate blobs`, `status: stranded`, `inbox: register judged`, `perm: roles walked`, `sync set: entered` | | | 0 | flat |
-| same: store rows [idle.rs, `<- streams` and `<- read` flat] | 831 | 871 | 4.4 | opens' filter 0.7 (below); the rest not attributed to a module yet |
+| same: store rows [idle.rs, `<- streams` and `<- read` flat] | 831 | 871 | 4.4 | opens' filter 0.7 (below); the rest per node step, not per member: 2 more handled inputs at 10n (38 to 40), each reading about 15 fixed rows (`<- next wake` 8: `Store::next_wake`'s one-row scans; `<- driver store` 5; flush 1); `<- status`, `<- inbox` read none |
 | Idle reconnect, writer and node keeping all unread [idle.rs]: bytes | 2040 | 2028 | 0 | flat |
 | same: the counters above, `status: lacking` | | | 0 | flat |
 | same: store rows | 845 | 819 | 0 | flat |

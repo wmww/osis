@@ -935,10 +935,116 @@ fn an_act_owed_goes_on_each_connection_until_answered_spec_sync_judgement_3() {
         assert_eq!(on(&mut w, ConnId(200 + i)), 1, "not sent on K's connection {i}");
         assert_eq!(w.read.owed_pending(), 1, "what is owed grows with the reconnects");
     }
-    w.read.answered(ConnId(204), w.g.requests);
+    w.read.answered(ConnId(204), w.g.requests, true);
     assert_eq!(w.read.owed_pending(), 0);
-    assert_eq!(on(&mut w, ConnId(300)), 0, "an answered Delete sent again");
+    assert_eq!(on(&mut w, ConnId(300)), 0, "a Delete taken sent again");
     assert_eq!(w.deletes(), 5);
+}
+
+/// K showing cid(1) and cid(2) under S, this node a writer holding both; K's record on `KC`.
+fn two_shown() -> (W, BlobId) {
+    let mut w = W::new();
+    w.pulls = false;
+    w.hold(cid(1), &[S], uncovered());
+    w.hold(cid(2), &[S], uncovered());
+    let (b1, b2) = (w.own_blobs(S, cid(1))[0], w.own_blobs(S, cid(2))[0]);
+    w.g.k.held.insert((S, b1), cid(1));
+    w.g.k.held.insert((S, b2), cid(2));
+    w.stream();
+    (w, b1)
+}
+
+/// K's record taken by connection `c` (its digests agreed): what read sends there.
+fn k_on(w: &mut W, c: ConnId) -> Vec<Sent> {
+    w.g.conns.insert(K, c);
+    w.settle();
+    w.g.sent.iter().filter(|m| matches!(m, Sent::Delete(x, _) | Sent::Fetch(x, _) | Sent::Deposit(x, _) if *x == c)).cloned().collect()
+}
+
+// spec/sync-judgement.md §3 (Deletes: a delete owed at a source is judged from `known` alone,
+// connected or not), a must-hold body never deleted: K goes away and comes back once, then
+// away again; cid(1) comes to be covered (a Delete owed at K) and, still while K is away, must-hold
+// again: K's next connection gets no Delete. Then covered again while away: the Delete goes once
+// on the connection after. Fails with an act kept owed once the judgement no longer holds it
+// (`unowe`), which deletes a must-hold body at K.
+#[test]
+fn a_delete_owed_while_away_goes_nowhere_once_the_body_is_must_hold_again_spec_sync_judgement_3() {
+    let (mut w, b1) = two_shown();
+    w.g.conns.remove(&K);
+    w.settle();
+    assert!(k_on(&mut w, ConnId(200)).is_empty());
+    w.g.conns.remove(&K);
+    w.settle();
+    w.judge(S, cid(1), covered(cid(2)));
+    assert_eq!(w.read.owed_pending(), 1, "the Delete is owed while K is away");
+    w.judge(S, cid(1), uncovered());
+    assert_eq!(w.read.owed_pending(), 0, "owed once must-hold again");
+    assert!(k_on(&mut w, ConnId(201)).is_empty(), "a must-hold body deleted at K on its return: {:?}", w.g.sent);
+    w.g.conns.remove(&K);
+    w.settle();
+    w.judge(S, cid(1), covered(cid(2)));
+    assert_eq!(k_on(&mut w, ConnId(202)), vec![Sent::Delete(ConnId(202), b1)]);
+    assert_eq!(w.deletes(), 1);
+}
+
+// spec/sync-opens.md §4 (Shared set), spec/sync-judgement.md §3 (Deletes): a source of S is a
+// member S of the peer. K
+// goes away and comes back once, then away again with a Delete of S owed there; K stops being a
+// source of S while away (its member closed: its right ended, or the Members exchange closed it):
+// its next connection gets nothing of S. Fails with acts owed past the source's membership.
+#[test]
+fn nothing_goes_to_a_source_no_longer_a_member_spec_sync_opens_4() {
+    let (mut w, _) = two_shown();
+    w.g.conns.remove(&K);
+    w.settle();
+    assert!(k_on(&mut w, ConnId(200)).is_empty());
+    w.g.conns.remove(&K);
+    w.settle();
+    w.judge(S, cid(1), covered(cid(2)));
+    assert_eq!(w.read.owed_pending(), 1, "the Delete is owed while K is away");
+    w.g.set_sources(S, Vec::new());
+    w.settle();
+    assert_eq!(w.read.owed_pending(), 0, "owed at a source no longer one");
+    assert!(k_on(&mut w, ConnId(201)).is_empty(), "sent to K, no longer a member of S: {:?}", w.g.sent);
+}
+
+// spec/sync-judgement.md §3 (Deletes: a delete owed stays owed while `known` lists the entry
+// there, and is sent once the source is connected), spec/sync-ids.md §6 (refused for now: code 4):
+// a Delete K refuses is not sent again on that connection and goes again on the next; one K takes
+// is done. Fails with a refused Delete marked done (K keeps the entry until this node restarts).
+#[test]
+fn a_refused_delete_goes_again_on_the_next_connection_spec_sync_judgement_3() {
+    let (mut w, b1) = two_shown();
+    w.judge(S, cid(1), covered(cid(2)));
+    assert_eq!(w.deletes(), 1);
+    w.read.answered(KC, w.g.requests, false);
+    w.settle();
+    assert_eq!(w.deletes(), 1, "sent again on the connection that refused it");
+    assert_eq!(k_on(&mut w, ConnId(200)), vec![Sent::Delete(ConnId(200), b1)], "a refused Delete not sent on the next connection");
+    w.read.answered(ConnId(200), w.g.requests, true);
+    assert!(k_on(&mut w, ConnId(201)).is_empty(), "a Delete taken sent again");
+}
+
+// spec/sync-judgement.md §3 (Dropped bodies: fetched again where present): a missing body's Fetch
+// goes once per connection while it is missing, never again on one connection however often read
+// settles, and once more on each new one. Fails with a Fetch resent at each settle (a loop) or
+// marked done (a Fetch whose answer was lost with its connection never goes again).
+#[test]
+fn a_missing_body_is_fetched_once_per_connection_spec_sync_judgement_3() {
+    let (mut w, b1) = two_shown();
+    w.g.own.insert((S, cid(1)), Vec::new());
+    let mut f = uncovered();
+    f.missing = true;
+    w.judge(S, cid(1), f);
+    let fetches = |w: &W| w.g.sent.iter().filter(|m| matches!(m, Sent::Fetch(..))).count();
+    assert_eq!(fetches(&w), 1);
+    for _ in 0..3 {
+        w.g.added.push(cid(1));
+        w.settle();
+    }
+    assert_eq!(fetches(&w), 1, "fetched again on one connection");
+    assert_eq!(k_on(&mut w, ConnId(200)), vec![Sent::Fetch(ConnId(200), b1)]);
+    assert_eq!(fetches(&w), 2);
 }
 
 // spec/sync-judgement.md §3 (Deletes: at a source full for S a carrier it lacks counts as held;

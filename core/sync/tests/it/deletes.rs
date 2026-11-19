@@ -12,6 +12,7 @@ use crate::harness::{World, edge, fixture_with, play};
 use osis_base::format::MAX_DRIFT_MS;
 use osis_base::{Ak, BlobId, CommitId, PurgeBy, Role, SyncId, Tid, Value};
 use osis_engine::Mutation;
+use osis_sync::ConnId;
 use osis_schema::core_types as ct;
 
 /// Node 0 admin, node 1 keeping S unread, node 2 a writer (`history::three`, shared).
@@ -169,6 +170,51 @@ fn purged_while_away(purger: usize, restart: bool) -> bool {
 #[test]
 fn a_purge_made_while_the_unread_store_is_away_deletes_there_on_return_spec_sync_judgement_3() {
     assert!(purged_while_away(0, false), "the purge deleted it at node 1 on return");
+}
+
+// spec/sync-opens.md §3 (Agreement: nothing of a member goes before the digests agree),
+// spec/sync-judgement.md §3 (Deletes: a delete owed stays owed across the source's absence and
+// is sent once it is connected): node 1 goes away and comes back once; the admin purges the write
+// and its Delete to node 1 is lost as node 1 goes away again; node 1 comes back, and the Delete goes
+// again on the new connection, only once its digests agreed there. Fails with acts going on the
+// record's connection at its take (`Ground::connected` as `conn_of`).
+#[test]
+fn an_owed_delete_waits_for_the_digests_to_agree_spec_sync_opens_3() {
+    let (mut w, t, s) = three();
+    let c = write(&mut w, 2, t, &value_ak(), PurgeBy::AuthorOrAdmin);
+    w.run();
+    let held = at_unread(&mut w, 2, &s, &c);
+    assert!(!held.is_empty(), "node 1 holds the write");
+    w.power_off(1);
+    w.run();
+    w.power_on(1);
+    w.run();
+    w.power_off(2);
+    let deletes = |w: &World| w.net.frames.get(&(0, 1, "Delete")).map_or(0, |x| x.0);
+    // steps until `deletes` passes `n`; whether node 0's connection to node 1 had agreed then
+    let until_delete = |w: &mut World, n: u64| -> Option<bool> {
+        for _ in 0..100_000 {
+            if !w.step_or_wake() {
+                return None;
+            }
+            if deletes(w) > n {
+                let conns: Vec<ConnId> = w.links_of(0).into_iter().filter(|(_, j)| *j == 1).map(|(c, _)| c).collect();
+                return Some(conns.iter().any(|c| w.node(0).node.opens().agreed(*c)));
+            }
+        }
+        None
+    };
+    purge(&mut w, 0, t, c);
+    let n = deletes(&w);
+    assert!(until_delete(&mut w, n).is_some(), "no Delete went to node 1");
+    w.power_off(1);
+    w.run();
+    assert!(!gone_at_unread(&mut w, &s, &held), "the Delete reached node 1 before it went away");
+    let n = deletes(&w);
+    w.power_on(1);
+    assert_eq!(until_delete(&mut w, n), Some(true), "the owed Delete went before the digests agreed, or never");
+    w.run();
+    assert!(gone_at_unread(&mut w, &s, &held), "the purge deleted it at node 1 on return");
 }
 
 // spec/sync-judgement.md §3 (Deletes; Dropped bodies): the owed delete survives a restart of the
