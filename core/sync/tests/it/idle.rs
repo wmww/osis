@@ -98,22 +98,33 @@ fn an_idle_reconnect_judges_no_member_again_spec_sync_2() {
 // spec/sync-streams.md §4 (Joining: a connection that takes a record pulls its members from where
 // the record holds them, with no join for a member at the stream's cursor; Costs),
 // spec/sync-judgement.md §3 (what is owed at a source is judged from `known` alone, connected or
-// not): an idle reconnect, with a reader or with a node keeping every thing unread, reads no row
-// per member in streams (the place and what the source showed are the record's, kept across its
-// connections) or in read (its judgements read the record's facts, its acts owed go on the new
-// connection): as many store rows by each at n as at 10n shared sync IDs, but for a settle round
-// more or fewer (streams reads the log's bounds once per connection to push and to track).
+// not), spec/sync-status.md §1 (sources), spec/sync-inbox.md §3 (Sending): an idle reconnect, with
+// a reader or with a node keeping every thing unread, reads no row per member in streams (the
+// place and what the source showed are the record's), read, status or inbox (what each keeps is
+// the record's, a take moving only its connection): as many store rows by each at n as at 10n
+// shared sync IDs, but for a settle round more or fewer. Opens reads its peer filter's entries
+// again at the take (dropped while no connection holds the record: notes/sync-opens.md,
+// Durability), under a row per member. The rest are per input the node handles, not per sync
+// ID (about 15 each: `Store::next_wake`'s scans 8, the driver's store step 5, flush 1), and an idle
+// reconnect at 10n handles about as many inputs as at n.
 #[test]
 fn an_idle_reconnect_reads_no_row_per_member_spec_sync_streams_4() {
-    for module in ["store rows read <- streams", "store rows read <- read"] {
-        let at = |n| {
-            let mut w = things(n);
-            [reconnect(&mut w, 0, 2).1, reconnect(&mut w, 0, 1).1].map(|c| sum(&c, &[module]))
-        };
-        let (small, large) = (at(N), at(10 * N));
-        for (i, who) in ["a reader", "a node keeping them unread"].iter().enumerate() {
-            assert!(large[i] <= small[i] + 8, "with {who}: {module} {} at n, {} at 10n", small[i], large[i]);
+    const MEMBERS: u64 = (10 * N - N) as u64;
+    let at = |n| {
+        let mut w = things(n);
+        [reconnect(&mut w, 0, 2).1, reconnect(&mut w, 0, 1).1]
+    };
+    let (small, large) = (at(N), at(10 * N));
+    for (i, who) in ["a reader", "a node keeping them unread"].iter().enumerate() {
+        let rows = |c: &[(&'static str, u64)], k: &str| sum(c, &[k]);
+        for module in ["store rows read <- streams", "store rows read <- read", "store rows read <- status", "store rows read <- inbox"] {
+            let (a, b) = (rows(&small[i], module), rows(&large[i], module));
+            assert!(b <= a + 8, "with {who}: {module} {a} at n, {b} at 10n");
         }
+        let (a, b) = (rows(&small[i], "store rows read <- opens"), rows(&large[i], "store rows read <- opens"));
+        assert!(b < a + MEMBERS, "with {who}: opens reads {a} rows at n, {b} at 10n: a row or more per member");
+        let (a, b) = (rows(&small[i], "store rows read"), rows(&large[i], "store rows read"));
+        assert!(b <= a + MEMBERS + 4 * 16, "with {who}: {a} rows at n, {b} at 10n");
     }
 }
 

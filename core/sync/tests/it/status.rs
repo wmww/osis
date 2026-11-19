@@ -916,7 +916,7 @@ fn a_reconnect_moves_no_member_spec_sync_status_1() {
     assert_eq!(reconnect_of(30), (0, 0));
 }
 
-// spec/sync-status.md §1 (caught up, on the connection S is open on): caught up stays per
+// spec/sync-status.md §1 (caught up): on the connection S is open on, caught up stays per
 // connection: a record taken by a new connection is no source caught up until that connection's
 // stream says so, whatever the last one did.
 #[test]
