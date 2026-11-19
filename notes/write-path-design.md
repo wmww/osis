@@ -11,7 +11,7 @@
 ## Assumed of the sync-unit design
 A sync unit is one independent thing and its dependents; a closure is synced unit by unit; a node keeping a unit unread follows each unit's list of direct independent members (notes/sync-unit-scope.md). Needed here:
 - A commit is entered once, under the unit of each thing it writes; evidence is stated per unit.
-- What entering an independent thing's unit takes besides a secret (its sync ID) is in the referring unit: its member blob, and for a holder's taken grant the target's `sync.0` (notes/sync-unit-design.md §2). For a unit the public actor reads, nothing more is needed.
+- What entering an independent thing's unit takes besides a secret (its sync ID) is in the unit of a thing granted a role on it: that unit's key blob, computed from the taken grant and the target's `sync.0` carried there (notes/sync-unit-design.md §2). For a unit the public actor reads, the sync ID rides beside the strong that references it (the same note, §12 case 4).
 - The public actor and a link key are listed in a unit's steps by static entry, with an entry box, and are entered so at readers and at nodes keeping the unit unread alike (checked: spec/sync-ids.md §3, a reader that is a key actor other than a node or an account). A signer is listed like any holder, by a claim under its own key, with an entry box: a static entry would be one node's mark, the same at every step, to a node keeping the unit unread.
 - A node opens a unit only while it syncs it (checked: spec/sync-opens.md §4, the shared set); nothing is logged or fetched in a unit outside the node's closure without holding it.
 - Deposits work per unit as today (spec/sync-inbox.md §3).

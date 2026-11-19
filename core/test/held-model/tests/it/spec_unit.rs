@@ -742,6 +742,113 @@ fn p2_strong_to_a_dependent_brings_its_unit() {
     assert_eq!(walk(&t, &Set::new(), &set(&[0]), Rules::DESIGN, &|g| full.get(&g).cloned().unwrap_or_default(), false).units(), set(&[0, 1]));
 }
 
+// ---- The join: handle blobs and key blobs ----
+
+/// The join walk from 0 with each unit's blobs computed by a reader of that unit alone.
+fn join_own(kinds: &[Kind], cs: &[Commit], homes: bool) -> Set {
+    let hs = |g: T| seen(kinds, cs, g, &[], Unit::Reach).handles(g, homes);
+    let ks = |g: T| seen(kinds, cs, g, &[], Unit::Reach).keys(g);
+    join_walk(&set(&[0]), &hs, &ks)
+}
+
+/// For one world (failures, except the last three counts): 0 every reader of a unit, whatever
+/// else it reads, computes its handle and key blobs alike; 1 the walk over blobs each computed by
+/// a reader of its unit alone equals the walk over everything written; 2 with homes only where
+/// the home's unit carries the target it enters exactly what the earlier reading's reader enters
+/// with writers that see everything; 3 it enters every unit that reader enters; 4 (count) it
+/// enters more: a home whose unit dropped the target; 5 (count) the earlier reading's keeper,
+/// its writers reading their own closure, enters less; 6 (count) without homes it enters less.
+fn join_world(kinds: &[Kind], cs: &[Commit]) -> [usize; 7] {
+    let t = View::all(kinds, cs, Unit::Reach);
+    let ind: Vec<T> = t.independents().into_iter().collect();
+    let mut alike = true;
+    for &g in &ind {
+        let others: Vec<T> = ind.iter().copied().filter(|&x| x != g).collect();
+        for x in subsets(&others) {
+            let v = seen(kinds, cs, g, &x, Unit::Reach);
+            alike &= v.handles(g, true) == t.handles(g, true) && v.keys(g) == t.keys(g);
+        }
+    }
+    let own = join_own(kinds, cs, true);
+    let truth = join_walk(&set(&[0]), &|g| t.handles(g, true), &|g| t.keys(g));
+    let carried = |g: T| -> Set { t.handles(g, true).into_iter().filter(|&h| t.targets(g, Member::Target).iter().any(|&x| t.in_unit[x] == Some(h))).collect() };
+    let reach = join_walk(&set(&[0]), &carried, &|g| t.keys(g));
+    let de = Rules::DESIGN;
+    let full = listing(&t, de, Writers::Full);
+    let reader = walk(&t, &set(&[0]), &Set::new(), de, &|g| full.get(&g).cloned().unwrap_or_default(), true).units();
+    let lo = listing(&t, de, Writers::Own);
+    let keeper = walk(&t, &Set::new(), &set(&[0]), de, &|g| lo.get(&g).cloned().unwrap_or_default(), false).units();
+    let bare = join_own(kinds, cs, false);
+    assert!(bare.is_subset(&own) && keeper.is_subset(&own));
+    let n = |x: bool| !x as usize;
+    [n(alike), n(own == truth), n(reach == reader), n(own.is_superset(&reader)), (own != reader) as usize, (keeper != own) as usize, (bare != own) as usize]
+}
+
+fn join_asserts(f: &[usize; 7]) {
+    assert_eq!(f[0..4], [0; 4], "{f:?}");
+    assert!(f[4] > 0 && f[5] > 0 && f[6] > 0, "{f:?}");
+}
+
+/// The join's static claim over the small family and 600 random worlds: what a unit lists and
+/// which keys it holds are functions of what any reader of that unit holds, and the walk over
+/// them, the same for a reader and a node keeping units unread, enters what a reader served by
+/// writers that see everything enters (see `join_world`).
+#[test]
+fn join_any_reader_of_a_unit_computes_its_blobs_and_the_walk_is_one() {
+    let f = over_family(7, |cs| join_world(&KINDS, cs));
+    join_asserts(&f);
+    eprintln!("join family 1/7 of {FAMILY}: {f:?}");
+    let mut r = Rng::new(0);
+    let mut g = [0; 7];
+    for _ in 0..600 {
+        let (kinds, cs) = random_static(&mut r);
+        for (a, x) in g.iter_mut().zip(join_world(&kinds, &cs)) {
+            *a += x;
+        }
+    }
+    join_asserts(&g);
+    eprintln!("join random of 600: {g:?}");
+}
+
+/// The finding worlds under the join, each unit's blobs by a reader of it alone.
+#[test]
+fn join_on_the_finding_worlds() {
+    let k3 = [K, K, K];
+    // A: 0 reads 1 and 2, 0 -> 1 -> 2. S(1) lists 2's handle, S(0) holds 2's key.
+    let a = world(&[(0, 1, Role::Read), (0, 2, Role::Read)], &[(0, 1), (1, 2)]);
+    assert_eq!(join_own(&k3, &a, true), set(&[0, 1, 2]));
+    // The requirement's second clause: 1 alone, holding no role on 2, keeps no 2.
+    let t = View::all(&k3, &a, Unit::Reach);
+    assert_eq!(join_walk(&set(&[1]), &|g| t.handles(g, true), &|g| t.keys(g)), set(&[1]));
+    // B: 0 -> 1, 0 -> 2, 0 sync on 1, 1 sync on 2; 0's grant on 2 given and removed, or never
+    // given: the same blobs and the same walk (2 by 1's key).
+    let never = world(&[(0, 1, Role::Sync), (1, 2, Role::Sync)], &[(0, 1), (0, 2)]);
+    let mut given = never.clone();
+    given.push(role(2, 0, Some(Role::Sync)));
+    assert_eq!(seen(&k3, &given, 0, &[], Unit::Reach).keys(0), set(&[1, 2]));
+    given.push(role(2, 0, None));
+    for g in 0..3 {
+        let (x, y) = (seen(&k3, &never, g, &[], Unit::Reach), seen(&k3, &given, g, &[], Unit::Reach));
+        assert_eq!((x.handles(g, true), x.keys(g)), (y.handles(g, true), y.keys(g)));
+    }
+    assert_eq!(join_own(&k3, &given, true), set(&[0, 1, 2]));
+    // B, the dependent form: 0 reads 1, 3 a dependent of 1 that 1 does not reach, 0 -> 3. The
+    // strong's home brings 1's unit whenever it was written; a strong carrying no home brings
+    // nothing.
+    let kd = [K, K, K, d(1)];
+    let b = world(&[(0, 1, Role::Read)], &[(0, 3)]);
+    assert_eq!(join_own(&kd, &b, true), set(&[0, 1]));
+    assert_eq!(join_own(&kd, &b, false), set(&[0]));
+    // A role through a holder outside the closure does not count (issues/unit-key-paths.md rule
+    // 1), alike for every reader of 0: 0 holds sync on 1, 1 on 2, 0 -> 2.
+    let c = world(&[(0, 1, Role::Sync), (1, 2, Role::Sync)], &[(0, 2)]);
+    assert_eq!(join_own(&k3, &c, true), set(&[0]));
+    // Finding D's second world: 0 reads 1 and 3, 3 reads 2, 0 -> 1 -> 2: 3 is not referenced.
+    let k4 = [K, K, K, K];
+    let dw = world(&[(0, 1, Role::Read), (0, 3, Role::Read), (3, 2, Role::Read)], &[(0, 1), (1, 2)]);
+    assert_eq!(join_own(&k4, &dw, true), set(&[0, 1]));
+}
+
 // ---- Item 4: key paths ----
 
 /// Key paths (§4): G (0) holds read on W (1), W read on H (2), G -> H, nothing references W.

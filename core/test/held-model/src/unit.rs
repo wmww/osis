@@ -23,6 +23,11 @@
 //!   it reads by its own `can_name` (design §3). With `Paths::Via` a blob carries holder chains
 //!   (design §4); their units are entered for keys and not followed.
 //! - Steps are current (an admin issued one after every role change).
+//! - The join (`join_walk`, `View::handles`, `View::keys`): the design's static core. S(G) lists a
+//!   handle per target and per home a strong carries; S(K) holds a key blob per direct grant K
+//!   holds; a unit is entered when an entered unit lists its handle and an entered unit holds its
+//!   key. `Member::Target` with `can_name`, rules 2-3 and `Paths` are the earlier reading, kept as
+//!   controls and as the oracle of a writer that sees everything.
 //!
 //! Left out: promotion (brief 2: kinds are per `View`, so a promotion can flip one), validity,
 //! keyless grants, epochs and rotation (no blob is sealed per epoch), public things, caps,
@@ -406,6 +411,46 @@ pub fn listing(v: &View, r: Rules, w: Writers) -> BTreeMap<T, Vec<Blob>> {
             return n;
         }
         l = n;
+    }
+}
+
+// ---- The join: handle blobs and key blobs (notes/sync-unit-design.md §2-§3) ----
+
+impl View {
+    /// The handle blobs of S(g): each thing outside `g`'s unit a live strong of the unit targets
+    /// and, with `homes`, the home that strong carries (here its writer held the target: a
+    /// dependent target's independent). No role and no other unit is read.
+    pub fn handles(&self, g: T, homes: bool) -> Set {
+        let mut out = Set::new();
+        for x in self.targets(g, Member::Target) {
+            out.insert(x);
+            if homes && self.ind(x) != g {
+                out.insert(self.ind(x));
+            }
+        }
+        out
+    }
+    /// The key blobs of S(k): the independent things `k` holds a direct grant on (the role
+    /// commits naming `k` travel under S(k)).
+    pub fn keys(&self, k: T) -> Set {
+        self.grants.keys().filter(|&&(a, _)| a == k).map(|&(_, b)| b).collect()
+    }
+}
+
+/// The walk over handle and key blobs, the same for a reader and a node keeping units unread: the
+/// least set holding the roots and each independent thing whose handle an entered unit lists and
+/// whose key an entered unit holds (its step then lists that unit's thing; steps are current).
+pub fn join_walk(roots: &Set, handles: &dyn Fn(T) -> Set, keys: &dyn Fn(T) -> Set) -> Set {
+    let mut e = roots.clone();
+    loop {
+        let listed: Set = e.iter().flat_map(|&g| handles(g)).collect();
+        let keyed: Set = e.iter().flat_map(|&k| keys(k)).collect();
+        let mut n = roots.clone();
+        n.extend(listed.intersection(&keyed).copied());
+        if n == e {
+            return e;
+        }
+        e = n;
     }
 }
 

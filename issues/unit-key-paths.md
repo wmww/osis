@@ -1,5 +1,5 @@
 # Must a role held through a group work when the group itself is not referenced?
-> Summary: With one unit per independent thing, a node uses a role through a holder (a group, an org) with secrets it gets from that holder's unit. Where the closure references the holder that is free; where it does not, the reference must name the holders on the way (a "key path" in the member blob, notes/sync-unit-design.md §4) or the role does not count for that closure. Tess: keep key paths, or accept the simpler rule. The plan builds the simpler rule first.
+> Summary: With one unit per independent thing, a node uses a role through a holder (a group, an org) with what it finds in that holder's unit. Where the closure references the holder that is free; where it does not, the role does not count for that closure. The alternative (a reference naming the holders on its way, "key paths") was modelled and does not deliver what it was for. Tess: confirm the simple rule, which the plan builds, and its clause in spec/requirements.md.
 > Priority: low
 > Tags: tess-call, sync, engine, spec
 
@@ -13,13 +13,15 @@ Today it does for nodes that read: a group's role records are copied under every
    - Cost to users: the corner above. Sharing a set of things through the thing that references them (a realm and its documents) is unaffected.
    - Build: nothing beyond the walk.
    - spec/requirements.md Data model says a thing takes with it "the part of its closure it can itself sync". If "can itself sync" includes roles through any chain of holders, this rule narrows it and the item needs a clause.
-2. **The reference names the holders on its way** (key paths). Whoever writes or later sees the reference, and can see the grants, records which holder units lead to D; nodes open those units for their keys only.
-   - Cost: a new state for a unit (held for keys, nothing stored, not followed), a part of the member blob that only some writers can judge, and a node keeping your data unread learns which opaque units sit between two of its units.
-   - Does not keep the requirement under the wider reading: a chain held by the root and not by the referrer, or a better chain beside a direct grant, still does not count (notes/closure-model.md, Finding D); and it loops under forked sides over a path grant (Finding E).
+2. **The reference names the holders on its way** (key paths). Whoever writes or later sees the reference, and can see the grants, records which holder units lead to D; nodes open those units for their keys only. Modelled (notes/closure-model.md, Finding D, Finding E):
+   - It does not keep the requirement under the wider reading: a chain held by the root and not by the referrer, or a better chain beside a direct grant, still does not count.
+   - Two nodes on different sides of a dispute over a grant on the path log and delete the path without end.
+   - It needs data only some writers of a unit can write or check, which the unit design otherwise has none of (notes/sync-unit-design.md §2): a path can be missing because nobody who knew wrote it, and a forged one can stay.
+   - A node keeping your data unread learns which opaque units sit between two of its units.
    - How often the corner arises: in the model's family of three independent things with every grant of none, sync or read and 8 candidate strongs, the root's role over any chain exceeds its role through units of its closure in 18738 of 186624 worlds.
 
 ## Recommendation
-Rule 1, with the clause in the requirement. The case is unusual, the warning exists, the way out is cheap, and rule 2 is the costliest piece of the unit design for what it gives.
+Rule 1, with the clause in the requirement, and drop rule 2 as designed: it fails the cases it was for and brings back the faults the unit design removed. The case is unusual, the warning exists and the way out is cheap. A design that made every chain count would have a node open, for keys, every unit its things were granted anything on, referenced or not: work and storage in grants, not in references.
 
 ## Meanwhile
-The plan (notes/redesign-plan.md, M1, B1) proceeds on rule 1. Rule 2 is additive: one more field in the member blob and one more state in the walk, B1's last brief, built only if Tess keeps it. Nothing built on rule 1 is undone by adding it.
+The plan (notes/redesign-plan.md, M1, B1) builds rule 1 and no key paths (notes/sync-unit-design.md §4). If Tess wants chains through unreferenced holders to count, that is a new design, not a switch.

@@ -4,9 +4,11 @@
 Designs: notes/account-membership-design.md, notes/write-path-design.md (accounts, "(a)"); notes/sync-unit-scope.md, notes/sync-unit-design.md (the unit, "(b)"); where they meet: notes/sync-unit-design.md §12. Model of (a): roles-model `paths`, notes/path-model-findings.md. Nothing below is built. Marks: **[checked: ref]** read there for this plan; **[assumed]** taken from a design note or not verified; everything unmarked about the future is the plan.
 
 ## Questions for Tess
-Two open, both from the unit's first model (notes/closure-model.md, The unit model); each names the rule the plan proceeds on, and neither holds a stage back:
+Four open, from the unit's model and design (notes/closure-model.md, The unit model; notes/sync-unit-design.md); each names the rule the plan proceeds on, and none holds a stage back:
 1. **Does a unit let go of a dependent thing it no longer references?** (issues/unit-dependent-release.md) Proceeding on yes: a unit holds a dependent thing while it references it, as built. Reaches M1 and B2; the other answer is a deletion.
-2. **Must a role held through a group work when nothing held references the group?** (issues/unit-key-paths.md) Proceeding on no: a role through a holder counts while the closure holds the holder. Reaches M1 and B1's last brief; the other answer is additive.
+2. **Must a role held through a group work when nothing held references the group?** (issues/unit-key-paths.md) Proceeding on no: a role through a holder counts while the closure holds the holder; the key-path variant is modelled, fails two findings and is not planned. Reaches nothing further unless Tess asks for a new design of it.
+3. **May a reference to a thing inside a realm, written from a bare ID by a node that never held the thing, bring nothing?** (issues/unit-reference-home.md) Proceeding on yes: a strong brings a dependent thing's unit by the home written beside it, which its writer fills whenever it holds the thing or copies a reference that had one. Reaches M1, B1; the other answers are a deletion (no homes: no strong to a dependent thing brings its unit) or a blob per dependent thing in every unit.
+4. **What may a node keeping data unread learn about references and grants?** (issues/unit-keeper-learns.md) Proceeding on: an opaque handle per referenced thing, and how many things each kept thing was granted. Reaches B1's spec brief (spec/requirements.md, Data a node cannot read).
 
 Answered last (Tess): a delete-key commitment may be reused across an author's blobs within one unit (about 33 B a commit; a node keeping the unit unread can then tell which of its blobs one author can delete, and nothing across units); it is built with the slimming pass after A1 (notes/thing-cost.md, Delete keys per commit).
 
@@ -19,10 +21,10 @@ Answered and planned on (issues/actors-one-mechanism.md Answers, issues/sync-uni
 | S1 | Cost defects of many sync IDs | | before either |
 | S2 | External signals: the word, and fires valid only where enabled | | before either |
 | S3 | Removal gaps on today's rules | M2 brief 1 | before either |
-| M1 | Model: the unit, member blobs, promotion (held-model) | | (b) |
+| M1 | Model: the unit, handle and key blobs, promotion (held-model) | | (b) |
 | M2 | Model: the write path's second round (roles-model `paths`) | | (a) |
 | M3 | Model: evidence completeness (held-model) | M1, M2 | both |
-| B1 | Holder things in steps, member blobs, the unread walk | M1, S1 | (b), additive |
+| B1 | Holder things in steps, handle and key blobs, homes, the walk | M1, S1 | (b), additive |
 | A1 | Stated paths and the purge author, judged in osis-perm | M2 | (a) |
 | B2 | The switch: a unit is one independent thing and its dependents | B1 | (b) |
 | B3 | Status and waits over a closure | B2 | (b) |
@@ -84,11 +86,12 @@ Each is a gap of the ordinary rules, fixed for every holder; all land before eit
 - **Depends on**: nothing open. **Unblocks**: A3 and A4, which then add no removal rule of their own.
 
 ### M1. Model: the unit
-- held-model `unit` [checked: core/test/held-model/src/unit.rs, tests `spec_unit`] beside `closure`: the unit as one independent thing and the dependents it reaches, member blobs as derived data, one walk for readers and nodes keeping units unread. Properties: every reader computes the same unit and the same member list; the walk of a node keeping a root unread reaches what a reader's does; release by reachability, cycles included; attach and detach converge in every arrival order; a hostile writer of member blobs is set right by the next honest one; a strong to a dependent thing brings its unit; promotion in every arrival order loses no body (a late writer, a late reader); and the cases notes/sync-unit-design.md §5 leaves open: a promotion judged invalid, forked promotions, a mixed commit.
-- The model holds the earlier readings (a list by the referrer's role, depth-free secrets, a unit of every dependent) as negative controls; the rules of notes/sync-unit-design.md §2 to §4 and §6 are modelled, with five open findings (notes/closure-model.md, The unit model, Findings A-E) for the design before B1.
+- held-model `unit` [checked: core/test/held-model/src/unit.rs, tests `spec_unit`] beside `closure`: the unit as one independent thing and the dependents it reaches; what a unit tells its sync holders as two derived sets, handles and keys, each a function of the unit (notes/sync-unit-design.md §2); one walk over them for readers and nodes keeping units unread.
+- Modelled: the unit by reach and its release; the join's static claim (every reader of a unit computes its blobs alike; the walk over them enters what a reader served by all-seeing writers enters), with the reading it replaces (a blob naming the target's unit, key paths) kept as controls and its five findings pinned (notes/closure-model.md, The unit model).
+- To model before B1's code: notes/closure-model.md, To model next, items 1 to 7 (homes in the data; blobs at stores with writers that read one unit alone; no dependence on history; readers walking by the blobs; a hostile writer; forks; work at a change), each with its property and negative control. Item 8 is promotion: every arrival order loses no body (a late writer, a late reader), no blob changes in a referrer, and the cases notes/sync-unit-design.md §5 leaves open (judged invalid, forked, a mixed commit).
 - The sync differential's oracle follows the model [checked: notes/test-properties.md, `differential::histories_hold_their_closure` reads held-model `spec_closure`].
-- **Briefs**: (1) the unit, member blobs and release; (1b) the rules of notes/sync-unit-design.md §2 to §4 and §6, each with its property and negative control, the two open questions as variants; (2) promotion and its open cases, with what a member blob names across a promotion.
-- **Unblocks**: B1 (after 1b passes), B2.
+- **Briefs**: (1c) items 1 to 7, replacing the named-unit reading's stores and oracle; (2) item 8.
+- **Unblocks**: B1 (after 1c passes), B2.
 
 ### M2. Model: the write path's second round
 roles-model `paths` holds the first round [checked: core/test/roles-model/README.md, Paths: 400,000 random worlds and the small family, no failing check under the fixed rules].
@@ -99,12 +102,12 @@ roles-model `paths` holds the first round [checked: core/test/roles-model/README
 ### M3. Model: evidence completeness
 held-model: a reader holding only a unit, its required set computed from its own holdings, judges every write of the unit as a node holding everything does; a removal's copy with its reach is judged required; evidence leaves with the commit that needed it (notes/write-path-design.md §6). One brief, after M1 and M2 brief 3. **Unblocks**: A2.
 
-### B1. Holder things in steps, member blobs, the unread walk
-Additive: things still ride under enclosing sync IDs, and a node keeping a root unread also follows members.
-- **Changes**: spec/sync-ids.md §3 (claims by sync-role key for every holder thing with a direct grant, entry boxes for them, the superseded sync secret in a step), spec/wire.md §5 (the member class: the target's tag for readers, the unit's sync IDs for sync holders), §7, §8; engine `sync/set.rs`, `sync/units.rs` (out-edges of a unit kept unread; a listed unit entered by a secret of any thing its step lists); osis-sync `unread`, `store`. spec/requirements.md Data a node cannot read: such a node also learns the opaque names of what its units refer to (notes/sync-unit-design.md §3), a wording change for Tess to see with the spec brief.
-- **Briefs**: (1) spec and wire; (2) steps: claims and entry boxes for holder things; (3) member blobs: one per target outside the unit, logged by a writer holding the target's unit name, the three delete rules (notes/sync-unit-design.md §2); (4) the walk for a unit kept unread, dropping, caps; (5) the sim scenarios; (6) key paths (notes/sync-unit-design.md §4), only if Tess keeps them.
-- **Checked by**: rule tests; sim scenarios: a fresh reader served only by a node keeping the closure unread, with a unit reached through a referrer that holds no role on it, and with a grant made after the reference (no write in the referrer); the differential unchanged; counts at n and 10n members: entries at a detach (one), and at a removal from the root (no member blob written).
-- **Depends on**: M1 brief 1b; brief 6 on issues/unit-key-paths.md. **Unblocks**: B2.
+### B1. Holder things in steps, handle and key blobs, homes, the walk
+Additive: things still ride under enclosing sync IDs, and a node keeping a root unread also walks to members.
+- **Changes**: spec/sync-ids.md §3 (claims by sync-role key for every holder thing with a direct grant, entry boxes for them, the superseded sync secret in a step), spec/wire.md §4 (a strong's home beside the value in a delta, carried on by snapshots), §5 (the handle class and the key class), §7, §8; spec/sync-judgement.md §2 (both classes in the required set, judged at the end of a complete pass, standing under a dispute while either side asks); engine writing (filling the home), `sync/set.rs`, `sync/units.rs` (a unit kept unread has out-edges; a unit entered where a handle and a key for it are in entered units and its step lists a thing whose secret is held); osis-sync `unread`, `store` (the index of key tags). spec/requirements.md Data a node cannot read and Data model: the wording of issues/unit-keeper-learns.md and issues/unit-reference-home.md, for Tess to see with the spec brief.
+- **Briefs**: (1) spec and wire; (2) steps: claims and entry boxes for holder things; (3) homes: delta metadata, filled at writing, kept by snapshots; (4) handle blobs and key blobs: logged and deleted by any writer from the unit alone (notes/sync-unit-design.md §2); (5) the walk over them for a unit kept unread, dropping, caps; (6) the sim scenarios.
+- **Checked by**: rule tests; sim scenarios: a fresh reader served only by a node keeping the closure unread, with a unit reached through a referrer that holds no role on it and whose writers read it alone (the root holds the key), with a grant made after the reference (no write in the referrer's unit), with a strong to a dependent thing of a unit that dropped it, and with a hostile writer's forged and deleted blobs set right by one honest writer of that unit; the differential unchanged; counts at n and 10n members: blobs at a detach (at most two), at a grant (one, in the grantee's unit), and at a removal from the root (none per member).
+- **Depends on**: M1 brief 1c. **Unblocks**: B2.
 
 ### A1. Stated paths and the purge author
 Accounts unchanged: today's account key is the signer.
@@ -116,7 +119,7 @@ Accounts unchanged: today's account key is the signer.
 - **Depends on**: M2 briefs 2 and 3. **Unblocks**: A2.
 
 ### B2. The switch
-- **Changes**: spec/sync-set.md §2 to §3 and spec/sync-judgement.md §1 to §2 rewritten to the unit (an independent thing and the dependents it reaches inside the unit; spec/sync-set.md §3 A thing leaving a sync unit kept for those, on one sync ID); spec/permissions.md §4 Role changes travel reduced to the holder's own unit; `bodies_under` and `sync_bodies` per unit; the promotion move and the delete-after-carrier rule (notes/sync-unit-design.md §5); the one walk of §3 for readers.
+- **Changes**: spec/sync-set.md §2 to §3 and spec/sync-judgement.md §1 to §2 rewritten to the unit (an independent thing and the dependents it reaches inside the unit; spec/sync-set.md §3 A thing leaving a sync unit kept for those, on one sync ID); spec/permissions.md §4 Role changes travel reduced to the holder's own unit; `bodies_under` and `sync_bodies` per unit; the promotion move and the delete-after-carrier rule (notes/sync-unit-design.md §5); the one walk of §3 for readers, over the same blobs.
 - **Removes**, in the same stage (no half state is specified): spec/sync-judgement.md §1 Retag across units and Per-sync-ID copies for bodies, "T's keys open X" as what decides carriage, the chain form of Role changes travel; the body-deposit and promotion paths for nesting; `Body::to_sync_id` for parts not derivable; the `keys_open` half of engine `sync/units.rs`; the pull anew of an enclosing sync ID at a new strong [assumed: the code sites of notes/sync-unit-design.md §1].
 - **Briefs**: (1) spec; (2) the unit in `units.rs` and the reader walk; (3) bodies per unit, with retag, nesting deposits and body copies deleted; (4) promotion: the move, the carrier rule, the late writer; (5) the differential on the new oracle, its full-size classes run again; (6) sync leftovers closed or re-read (below).
 - **Checked by**: the sync differential and sims on M1's oracle; B1's scenario; `tools/gate.sh`; the networking check by hand (notes/testing.md).
@@ -149,7 +152,7 @@ The flag day of (a): an account is an independent thing A, its members signers, 
 - **Unblocks**: A5, A6; zero-growth's durable counters per signer; recovery (a recovery key is a member signer).
 
 ### A5. Public things, cards, externally grantable
-- **Changes**: the public key thing and its five special cases (notes/write-path-design.md §3), a member blob for a public target, anyone entering by public's static entry; the card aspect and the admin-only aspect naming a thing's inbox and cards, in place of the inbox field of `keys.0`; externally grantable as one switch with tickets; what a thing takes; the granter's refusal; KEM keys published only by a holder or an enabled thing (notes/thing-cost.md, Fewer KEM keys held). spec/crypto.md §3, spec/permissions.md §2 to §4, spec/sync-inbox.md, spec/sync-ids.md §3, spec/data-model.md §9; engine, sync, `osis` (enable, place a card, the public thing's tid), CLI.
+- **Changes**: the public key thing and its five special cases (notes/write-path-design.md §3), a public target's handle and its key from the strong's own delta (notes/sync-unit-design.md §12, case 4), anyone entering by public's static entry; the card aspect and the admin-only aspect naming a thing's inbox and cards, in place of the inbox field of `keys.0`; externally grantable as one switch with tickets; what a thing takes; the granter's refusal; KEM keys published only by a holder or an enabled thing (notes/thing-cost.md, Fewer KEM keys held). spec/crypto.md §3, spec/permissions.md §2 to §4, spec/sync-inbox.md, spec/sync-ids.md §3, spec/data-model.md §9; engine, sync, `osis` (enable, place a card, the public thing's tid), CLI.
 - **Removes**: the inbox field of `keys.0` and `Engine::inbox_thing`'s rule; KEM keys of things nobody seals to; the profile and card travelling as certificates.
 - **Briefs**: (1) spec; (2) the public key thing in perm and keys; (3) public units in sync; (4) cards and the inbox aspect; (5) taken grants and the refusal; (6) keys following the switch, counted per independent thing.
 - **Checked by**: M2 brief 5 through the perm differential; sims: a profile fetched by a reader served only by a node keeping the referrer unread; a stranger's sealed fire reaching a unit kept unread and promoted; bytes per independent thing against notes/thing-cost.md's 14.9 KB.
@@ -167,7 +170,7 @@ The renames left (below); notes/terms.md, Built and being moved to, reduced to w
 ## What is deleted, and when
 | what | stage | must exist first |
 |---|---|---|
-| Retag, nesting deposits and their promotion, per-sync-ID body copies, "T's keys open X" deciding carriage | B2 | member blobs and the unread walk (B1), M1 |
+| Retag, nesting deposits and their promotion, per-sync-ID body copies, "T's keys open X" deciding carriage | B2 | handle and key blobs and the walk over them (B1), M1 |
 | Chain certificates over any path, certificate placement by what a sync ID's thing may read | A2 | stated paths (A1), the unit (B2), M3 |
 | The header's `actor`, the Acting check, the audit's reachability search | A1 | M2 briefs 2 and 3 |
 | The one frontier over every thing | A3 | evidence per unit (A2) |
@@ -207,8 +210,9 @@ A1 (the permission walk rewritten along stated paths, and a header change that t
 3. **A removal's units**: the cost at an organization's scale, and the raised holder (a signer removed while its account only read a unit, the account raised to write later). Cheapest checks: M2 brief 4; reading spec/crypto.md §4 Floors for whether readers take content sealed under a superseded epoch; A3 brief 5's count. If the raised holder is a real window, the removal is also logged at the raise, by the duty already stated.
 4. **Many sync IDs stay costly per unit** after S1, which would make a closure of units slower than the bag it replaces. Cheapest check: S1 itself, first, counted at n and 10n; B1 is not started until S1's counts are flat.
 5. **Two rules are argued, not modelled** (what no list keeps; the last-admin rule's named admin). Cheapest check: M2 brief 2, two hand worlds each with its negative control.
-6. **The unit's member list and walk fail a model that assumes less.** They are argued from a model that assumes what the design must supply (every holder of a strong knows its target's unit; a sync secret reaches any depth holding no unit on the way). Cheapest check: M1 brief 1b before any B1 code, with writers that cannot name a target and secrets only from entered units.
-7. **A member blob per referenced thing costs too much where one unit references very many dependents of another** (about 450 B stored per reference per node). Cheapest check: B1's count at n and 10n; the way out is the API steering to independent targets, not a second kind of blob.
+6. **The join fails over time what it holds statically.** Its static claim is modelled; stores, writers that read one unit alone, forks, partial holdings and a hostile writer are argued. Cheapest check: M1 brief 1c before any B1 code; the weakest points first: a writer judging blobs before it holds what the store holds, and a blob standing "while either side asks" under a fork (notes/closure-model.md, To model next, items 2 and 6).
+7. **A handle blob per referenced thing costs too much where one unit references very many dependents of another** (about 400 B stored per reference per node). Cheapest check: B1's count at n and 10n; the way out is the API steering to independent targets, not a second kind of blob.
+8. **Homes meet the CRDT badly** (a home must live exactly as long as the strong its delta wrote, through covers, snapshots and held history). Cheapest check: B1 brief 1 states the rule in spec/wire.md and spec/crdt.md terms before brief 3; if it cannot be stated in a few lines, the home moves into the reference value and issues/unit-reference-home.md says what an app then observes.
 
 ## Not established
 - Whether readers reject content sealed under a superseded read epoch (risk 3).
