@@ -1,5 +1,5 @@
 # Sync unit: one independent thing and its dependents
-> Summary: Decided by Tess (notes/sync-unit-scope.md): a sync unit stops being a root's readable closure and becomes one independent thing with its dependents; a closure is synced unit by unit, by readers and by nodes keeping it unread alike. Designed in notes/sync-unit-design.md (argued from the spec and counted, not modelled); open: four questions for Tess (notes/redesign-plan.md), the model, then the staged build.
+> Summary: Decided by Tess (notes/sync-unit-scope.md): a sync unit stops being a root's readable closure and becomes one independent thing with its dependents; a closure is synced unit by unit, by readers and by nodes keeping it unread alike. Designed in notes/sync-unit-design.md (argued from the spec and counted; the member list and the walk modelled in part); open: two questions for Tess (issues/unit-dependent-release.md, issues/unit-key-paths.md), the model's next brief, then the staged build.
 > Priority: normal
 > Tags: sync, engine, spec, tess-call
 
@@ -7,10 +7,10 @@ Fixed (Tess): sharing a root gives its closure; promoting a thing to independent
 
 ## Settled in notes/sync-unit-design.md (to be modelled before building)
 - **What goes, shrinks or stays** of the built model, each with spec section, code and issues: §1.
-- **The unit's list of direct independent members**: member blobs, derived data in the unit's required set, sealed under its sync secret; the member's keys reach a holder from the member's own steps (claims and entry boxes for holder things): §2.
-- **A node keeping a closure unread**: the walk, dropping, cycles, caps, and exactly what it learns: §3. **Readers**: §4.
+- **What a unit lists**: a member blob for every thing its strongs target outside it, whatever roles anyone holds, derived data in the unit's required set, sealed under its sync secret; a listed unit is entered by a secret of a thing its own steps list (claims and entry boxes for holder things): §2.
+- **The one walk** for readers and nodes keeping a closure unread, dropping, cycles, caps, and exactly what such a node learns: §3. **A role through a holder outside the closure** (key paths): §4.
 - **Promotion**: the promotion commit stays in the former unit, bodies move by entries, and leave the former unit only once carried in the new: §5.
-- **Attach, detach, several closures, a referrer that cannot enter its target, release**: §6. **Removal**: §7.
+- **A dependent thing in its unit while the unit reaches it; attach, detach, several closures, a referrer that cannot enter its target, release**: §6. **Removal**: §7.
 - **Costs counted**: §8 and issues/many-sync-ids-cost.md. **Status over a closure**: §9. **Wins**: §10. **Cases crossing the account design** (a stated path's evidence, a removal's units, hearing a unit out, a public profile, an externally grantable thing, promotion under a removal, the account as a unit): §12.
 
 ## Questions for Tess
@@ -19,8 +19,8 @@ Fixed (Tess): sharing a root gives its closure; promoting a thing to independent
 Answered (Tess): at a promotion the thing's blobs go under the new sync ID as they are, provided that is the easy build. A holder thing gets a member's sync secret from the member's steps in the X25519 form. A referrer holding only sync on its target still brings it. A unit the remover does not administer goes on serving a removed holder its ciphertext until one of its admins issues a step: accepted, and worth closing if an easy way is seen.
 
 ## Open
-- **Model** (notes/redesign-plan.md, M1): the unit, member blobs, the unread walk, release and hostile member blobs are modelled (held-model `unit`), with four findings against the design to settle before B1: notes/closure-model.md, The unit model, Findings. Promotion and its open cases (judged invalid, forked, a mixed commit) are M1 brief 2.
+- **Model** (notes/redesign-plan.md, M1): the unit, member blobs, the unread walk, release and hostile member blobs are modelled (held-model `unit`), with four findings; the design answers them (notes/sync-unit-design.md §2 to §4, §6) and the model's next brief checks the answers before B1: notes/closure-model.md, To model next. Promotion and its open cases (judged invalid, forked, a mixed commit) are M1 brief 2.
 - **Not established by the study**: why an idle reconnect sends a join per shared sync ID; what a reader sends back at a first sync (23 KB per unit); whether issues/differential-full-size-classes.md's five seeds all go with multi-unit carriage; deposit and promotion code paths were read in the spec, not traced in code.
-- **spec/requirements.md**: Data a node cannot read already states what such a node learns; an edit waits on the referrer holding only sync (notes/redesign-plan.md, Q7).
+- **spec/requirements.md**: Data a node cannot read states what such a node learns of the units it keeps; it also learns the opaque sync IDs, and the number, of the things those units refer to outside what it keeps (notes/sync-unit-design.md §3). The item's wording is to be put to Tess with B1's spec brief. The two open questions each name the clause their recommended answer would add.
 - **With the account redesign**: what this design assumes of it is listed in the design note (Assumed of the account design).
 - The staged build: notes/redesign-plan.md, stages S1, M1, B1 to B3; S1 (the cost defects) and M1 (the model) need no answer.

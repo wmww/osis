@@ -30,6 +30,28 @@ Properties (each over the small family: independent 0, 1, 2, dependents of 1 and
 
 The rules passing every property here: `Member::Any` with `Secrets::Chain` or `Secrets::Steps`. Findings 1 to 3 are design questions for the coordinator and Tess, not patched in the model.
 
+### To model next
+The design after the findings: notes/sync-unit-design.md §2 to §4, §6. Each rule below replaces a reading above; each gets its property and the negative control named. `Member::Role`, `Unit::All` and depth-free secrets stay as controls.
+1. **Unit by reach** (`Unit::Reach`): the unit of H is H and the dependents of H reached from H by strongs through things of the unit. A dependent outside it is in no unit: nobody holds it, its strongs list nothing.
+   - Property: every reader of H computes the same unit whatever else it reads (exhaustive family). A dependent whose last in-unit strong goes leaves every holder and store, and the units only it referenced leave every keeper (today's `unreached_dependent_keeps_its_targets`, turned round).
+   - Negative controls: `Unit::All` (the targets stay for good); a unit by reach from every strong the node holds, other units' included (two readers of H differ, and their writers undo each other at S(H)).
+   - Pin the open question's cost (issues/unit-dependent-release.md): G → X, X a dependent of H that H does not reach, G reading H: X is held by nobody, the strong is not carried.
+2. **A member blob per target**: S(G) requires one blob for each thing outside G's unit that a live strong of G's unit targets; no role is read.
+   - A writer **can name** a target iff it syncs the target's unit, or the target is independent and it reads a unit whose independent holds a direct grant on it (Bootstrap). It logs a missing blob only for targets it can name. It deletes a blob whose target no live strong of the unit names (any writer), all but the lowest ID for one target, and a blob naming the wrong unit only when it can name the target.
+   - Properties: P1 over required targets (exhaustive, random). P4 with writers syncing some units: every store ends with exactly the blobs for targets some visiting writer can name, and no writer logs or deletes after that (quiet); with a writer that can name every target visiting, the full list.
+   - Negative controls: `Member::Role`; a writer deleting blobs for targets it cannot name (two honest writers undo each other for good).
+   - No role op writes the list: over the random histories, grants and removals cause zero member blob logs or deletes (control: `Member::Role` logs at a grant).
+3. **Secrets only through entered units**: a node holds the sync secret of a unit it has entered, nothing deeper. H's step lists the things with a direct grant on H at sync or above. A listed unit is entered iff the independent of an entered unit (or a root) is on its step: read iff a unit the node reads (or a root it reads) holds a direct read grant on it, else kept unread. Fixpoint; readers and keepers run the one function.
+   - Properties: P2 (keeper of R keeps exactly what a reader of R enters), exhaustive and random, Finding 2's world named. P2b against the oracle "R's role on H over chains whose holders are units of the closure".
+   - Report, not a failure: the worlds where R's role over any chain exceeds that oracle (Finding 3's world is one). That count is what issues/unit-key-paths.md asks Tess about.
+   - Negative controls: a list of only what the referrer itself can enter (fails P2 in Finding 2's world); today's two (the walk stopping at a unit kept unread; entering a listed unit with no secret on its step).
+4. **Key paths** (`Paths::Via`, a variant; built only if Tess keeps them): a member blob may carry the holder units between G and the target's unit, logged and judged only by writers that sync a unit showing each grant on the path. A node enters a path unit for keys: it holds its secrets, and does not follow its member blobs.
+   - Property: with a writer that sees the path having visited, P2b holds against R's role over any chain. When a grant on the path is removed, such a writer logs the blob without the path and the node drops the path unit.
+   - Negative control: a path unit entered as a listed unit (the keeper holds the holder's whole closure: count the extra units).
+5. **Work at a change** (counts at n and 10n members of one unit): a detach deletes one blob; a role change on the root, a rotation, and a grant on a member write none.
+6. **A hostile writer** (P5 again, with honest writers that cannot name every target): a forged blob whose target no strong names is deleted by the next honest writer of any kind; one for a live target naming another unit, by the next that can name it; a keeper enters a forged unit only where a thing it holds a secret of is on that unit's step.
+7. For brief 2: a member blob naming the former unit after its target is promoted (a writer holding the promotion logs the new name, then deletes the old); a promotion in dispute (each side logs its name again once per change of ground, and neither side's keeper loses the unit its own side names).
+
 ### For promotion (brief 2)
 - `View::of` derives kinds per holding (`kinds` is a field), and `Kind::Dependent` names the mint admin, so `View::ind` follows chains: a promotion is an `Op` that flips one kind to `Independent`, moving it and the dependents whose chain first meets it.
 - Promotion needs bodies: commits are already per thing (`Commit::on`); `View::under` decides carriage by `ind` of the holding that judges it, so a node that has not seen P carries X's commits under S(H), as §5's late writer.
