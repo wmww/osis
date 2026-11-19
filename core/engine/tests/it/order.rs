@@ -593,6 +593,9 @@ pub(crate) struct Played {
     /// (`share_top`), given what its access to them needs (`setup`), so it keeps what it receives
     /// of them in any order.
     reader: std::sync::Arc<std::sync::Mutex<Peer>>,
+    /// The grants on the things outside G (`share_top`), each with the holder it names: setup,
+    /// never played.
+    pub(crate) access: Vec<(Tid, Package)>,
 }
 
 /// Per step kind: how many ran and how many made a commit, and why the others made none.
@@ -776,7 +779,7 @@ fn held_record(lp: &mut LocalPeer, by: usize, seen: &mut BTreeSet<CommitId>) -> 
 /// history (`access`, pending until the record comes), as a node is granted a thing before it
 /// fetches it. The grants, which the peers sync among them.
 #[allow(clippy::too_many_arguments)]
-fn share_top(lp: &mut LocalPeer, by: usize, t: Tid, reader: Tid, write: Option<usize>, seen: &mut BTreeSet<CommitId>, access: &mut Vec<Package>) -> Vec<CommitId> {
+fn share_top(lp: &mut LocalPeer, by: usize, t: Tid, reader: Tid, write: Option<usize>, seen: &mut BTreeSet<CommitId>, access: &mut Vec<(Tid, Package)>) -> Vec<CommitId> {
     let ids: Vec<Tid> = (0..3).map(|i| lp.peers[i].engine.me()).collect();
     for j in (0..3).filter(|j| *j != by) {
         let before: BTreeSet<CommitId> = lp.peers[j].engine.commit_ids().into_iter().collect();
@@ -785,10 +788,11 @@ fn share_top(lp: &mut LocalPeer, by: usize, t: Tid, reader: Tid, write: Option<u
     }
     let mut grants = Vec::new();
     for (h, role) in (0..3).filter(|j| *j != by).map(|j| (ids[j], if write == Some(j) { Role::Write } else { Role::Read })).chain([(reader, Role::Read)]) {
-        grants.extend(lp.peers[by].engine.grant(&t, &h, &edge(role)).unwrap().commits);
+        let made = lp.peers[by].engine.grant(&t, &h, &edge(role)).unwrap().commits;
+        access.extend(made.iter().map(|id| (h, lp.peers[by].engine.package(id).unwrap().unwrap())));
+        grants.extend(made);
     }
     seen.extend(grants.iter().copied());
-    access.extend(grants.iter().map(|id| lp.peers[by].engine.package(id).unwrap().unwrap()));
     grants
 }
 
@@ -820,7 +824,7 @@ pub(crate) fn play_with(seed: u64, steps: &[Step], addenda: bool) -> Played {
     let reader_id = reader.engine.me();
     // things outside G (`share_top`), and what the nodes under test take first of them
     let mut tops: Vec<Tid> = Vec::new();
-    let mut access: Vec<Package> = Vec::new();
+    let mut access: Vec<(Tid, Package)> = Vec::new();
     let mut seen: BTreeSet<CommitId> = BTreeSet::new();
     let mut packs = Vec::new();
     let mut authors = Vec::new();
@@ -1492,10 +1496,10 @@ pub(crate) fn play_with(seed: u64, steps: &[Step], addenda: bool) -> Played {
     for t in &tops {
         reader.engine.hold(osis_base::Strong(*t)).unwrap();
     }
-    for pk in &access {
+    for (_, pk) in &access {
         reader.receive(&pk.bytes, pk.blobs.clone()).unwrap();
     }
-    Played { packs, authors, base, things, now, tally, restored: Default::default(), judged: Default::default(), moved: Default::default(), dropped: Default::default(), steps_at, own_sets, settle_from: None, settled_last, withheld: 0, model: None, ingests: Default::default(), copies: Default::default(), reader: std::sync::Arc::new(std::sync::Mutex::new(reader)) }
+    Played { access, packs, authors, base, things, now, tally, restored: Default::default(), judged: Default::default(), moved: Default::default(), dropped: Default::default(), steps_at, own_sets, settle_from: None, settled_last, withheld: 0, model: None, ingests: Default::default(), copies: Default::default(), reader: std::sync::Arc::new(std::sync::Mutex::new(reader)) }
 }
 
 /// Per body (commit, thing, aspect): when it was replaced, for keep-for-D (spec/commits.md §5).

@@ -39,11 +39,20 @@ fn part(played: &Played, i: usize, t: Option<Tid>) -> Vec<u8> {
     b.encode()
 }
 
-/// A fresh node holding the history's things given `order`, one pass.
+/// A fresh node holding the history's things given `order`, one pass. It reads them all (G by
+/// the history's base, the others by their keys and its own grant, `Played::access`) and takes no
+/// grant to another peer outside the history: a role commit the history holds back is away.
 fn deliver(played: &Played, order: &[Tok]) -> Peer {
     let mut p = Peer::new(FRESH, played.now).unwrap();
     for t in &played.things {
         p.engine.hold(osis_base::Strong(*t)).unwrap();
+    }
+    let me = p.engine.me();
+    let grants = |pk: &osis_engine::local_peer::Package| CommitBlob::decode(&pk.bytes).unwrap().header.aspects.iter().any(|a| a.ak.to_string() == "roles.0");
+    let mine: Vec<_> = played.access.iter().filter(|(h, pk)| *h == me || !grants(pk)).collect();
+    assert_eq!(mine.iter().filter(|(_, pk)| grants(pk)).count(), played.things.len() - 1, "a grant to the node under test per thing outside G");
+    for (_, pk) in mine {
+        p.receive(&pk.bytes, pk.blobs.clone()).unwrap();
     }
     for (i, t) in order {
         let _ = p.engine.ingest(&part(played, *i, *t), played.packs[*i].blobs.clone());
