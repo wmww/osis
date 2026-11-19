@@ -13,7 +13,9 @@
 //! open re-derives it (`all_due`) and nothing about it is durable. Triggered per component: a
 //! removal that may owe (`may_owe`, from the held set alone) is filed under its component
 //! (`Indexes::vouch_watch`) once judged, and only a change of that component makes it due again
-//! (`Core::timelines_changed`); one that may not is never judged again. So a removal owing
+//! (`Core::timelines_changed`); one that may not is never judged again. A removal received
+//! before its `ts` by the wall clock is judged again once as its `ts` passes (`vouch_wait`, a
+//! wake), its receipts final then. So a removal owing
 //! nothing costs nothing per step, and a node ingesting a history it received after it (a
 //! joiner) judges each removal once.
 //!
@@ -48,6 +50,21 @@ pub(crate) fn all_due(core: &mut Core) {
     }
 }
 
+/// The removals waiting for their `ts` to pass by the wall clock (`Indexes::vouch_wait`) due
+/// at `now` (wall ms): judged again once, their receipts final.
+pub(crate) fn wake(core: &mut Core, now: u64) {
+    let woke: Vec<(u64, CommitId)> = core.ix.vouch_wait.iter().take_while(|(at, _)| *at <= now).copied().collect();
+    for w in woke {
+        core.ix.vouch_wait.remove(&w);
+        core.ix.vouches_due.insert(w.1);
+    }
+}
+
+/// When the first removal waiting for its `ts` is due (wall ms).
+pub(crate) fn next_at(core: &Core) -> Option<u64> {
+    core.ix.vouch_wait.iter().next().map(|(at, _)| *at)
+}
+
 /// What a removal owes here (`owed`).
 #[derive(Debug, Default)]
 struct Owed {
@@ -56,8 +73,8 @@ struct Owed {
     component: Option<u64>,
     /// Per thing, the vouch owed there: the commits it lists, in the order received.
     on: BTreeMap<Tid, Vec<CommitId>>,
-    /// Owed later: its `ts` is not past yet (a vouch is positioned after it, and what this node
-    /// receives until then may be listed).
+    /// Judged again once its `ts` has passed by the wall clock: what this node receives until
+    /// then is received by it (and a vouch is positioned after it).
     later: bool,
 }
 
@@ -68,7 +85,7 @@ struct Owed {
 /// superset of the walk's), stamped no later than `r`, received by `r`'s `ts` and not listed by
 /// its frontier. Once this node's clock is past `r`'s `ts` no receipt can join it, so a removal
 /// with none owes nothing for good: judged once, it is never judged again (`write_for`) but at an
-/// open. O(those authors' role commits before `r`).
+/// open (issues/s3-vouches-build.md item 5). O(those authors' role commits before `r`).
 fn may_owe(core: &Core, r: &CommitId, rc: &osis_perm::RoleCommit, frontier: &osis_perm::Frontier, me: Tid) -> bool {
     let wall = rc.ts.wall_ms().0;
     let named: BTreeSet<Tid> = rc.ops.iter().map(|o| o.holder).filter(|h| *h != rc.author).collect();
@@ -103,8 +120,8 @@ pub(crate) fn write_owed(tx: &mut Tx<'_>) -> Result<()> {
     }
 }
 
-/// Writes the vouches removal `r` owes; takes it off the due set, filed under its component,
-/// unless one waits.
+/// Writes the vouches removal `r` owes; takes it off the due set, filed under its component
+/// (or waiting for its `ts`, `vouch_wait`), unless a vouch it owes waits.
 fn write_for(tx: &mut Tx<'_>, r: &CommitId, me: Tid) -> Result<()> {
     let now = tx.core.hlc.peek();
     let o = owed(tx.core, r, me, now);
@@ -121,10 +138,17 @@ fn write_for(tx: &mut Tx<'_>, r: &CommitId, me: Tid) -> Result<()> {
         let again = owed(tx.core, r, me, tx.core.hlc.peek());
         debug_assert!(w.now.keys().all(|n| !again.on.contains_key(n)), "a vouch written here does not count here: {r:?} on {:?}", again.on.keys().collect::<Vec<_>>());
     }
-    if o.later || w.later || !w.unheld.is_empty() {
+    if w.later || !w.unheld.is_empty() {
         return Ok(());
     }
     tx.core.ix.vouches_due.remove(r);
+    if o.later {
+        // once more as its `ts` passes, at a wake (`Engine::tick`), never per transaction
+        let at = tx.core.ix.held.edge_commit(r).map_or(0, |c| c.ts.wall_ms().0.saturating_add(1));
+        tx.core.ix.vouch_wait.insert((at, *r));
+        tx.core.timer_floor = tx.core.timer_floor.min(at);
+        return Ok(());
+    }
     // filed under its component as it stands after this node's own vouches
     let target = tx.core.ix.held.edge_commit(r).and_then(|c| c.ops.first().map(|o| o.target));
     if let Some(c) = o.component.and(target).and_then(|t| tx.core.timelines.component(&t)) {
@@ -142,8 +166,11 @@ fn owed(core: &Core, r: &CommitId, me: Tid, now: Ts) -> Owed {
     let Some(frontier) = m.view.frontier.clone() else { return out };
     let Some(rc) = core.ix.held.edge_commit(r) else { return out };
     let Some(target) = rc.ops.first().map(|o| o.target) else { return out };
+    // what arrives until R's `ts` by the wall clock is received by it (spec/permissions.md
+    // §5.1 Vouches, Writing: "as of its wall clock"): owed again then
+    out.later = core.hlc.wall().0 <= rc.ts.wall_ms().0;
     if now <= rc.ts {
-        // a vouch is positioned after R, and what arrives until R's `ts` may be listed
+        // a vouch is positioned after R
         out.later = true;
         return out;
     }

@@ -2381,11 +2381,6 @@ fn raise_name_over_older_raise_resealed(r: Role) {
 #[test]
 fn drop_over_older_raise_resealed_spec_crypto_4() {
     let mut lp = synced(6);
-    // the clocks drift apart here, so nodes behind A would receive C by X's `ts` and keep it
-    // with a vouch (spec/permissions.md §5.1 Vouches): this world is about X's audit dropping it
-    for p in &mut lp.peers {
-        p.engine.write_vouches(false);
-    }
     let tids: Vec<Tid> = (0..6).map(|i| lp.peers[i].engine.me()).collect();
     let o = independent_thing(&mut lp, 0);
     lp.peers[0].engine.grant(&o, &tids[1], &edge(Role::Admin)).unwrap();
@@ -2417,6 +2412,11 @@ fn drop_over_older_raise_resealed_spec_crypto_4() {
     lp.peers[0].clock.advance(10_000);
     assert!(!lp.peers[0].engine.ensure_rotated(&g).unwrap().0.commits.is_empty(), "A rotates for the drop");
     assert!(!removed_reader_reads(&mut lp, g, &tids, 0), "A's own rotation boxes M");
+    // every other node gets C past X's `ts` by its own clock (A's runs ahead; one receiving C by
+    // X's `ts` would keep it with a vouch, spec/permissions.md §5.1 Vouches)
+    for p in 1..6 {
+        lp.peers[p].clock.advance(20_000);
+    }
     send_skipping(&mut lp, 0, 3, &t);
     assert_eq!(lp.peers[3].engine.core.role_now(&tids[2], &g), Some(Role::Read), "G3 holds M at R");
     assert!(!lp.peers[3].engine.reseal_after_pass(&g).unwrap().commits.is_empty(), "R re-seals M at A's epoch");

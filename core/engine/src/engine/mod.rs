@@ -930,6 +930,9 @@ indexes! {
     /// The removals judged by `flows::vouches`, by the component (`osis_perm::Timelines::component`)
     /// of their target as judged: a change of the component makes them due again.
     pub vouch_watch: JSetMap<u64, CommitId>,
+    /// Removals received before their `ts` by the wall clock, judged again once it passes (what
+    /// arrives until then is received by it): (wall ms past their `ts`, removal).
+    pub vouch_wait: JSet<(u64, CommitId)>,
     /// Role commits with a frontier applied here and not yet answered with this node's addenda
     /// (`Engine::answer_removals`; `records::ADDENDA_DUE`).
     pub addenda_due: JSet<CommitId>,
