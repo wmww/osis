@@ -354,7 +354,10 @@ pub(crate) fn check_holders_parts(h: &Header, id: &CommitId, parts: &[(usize, De
     Ok(())
 }
 
-/// Adds a role commit's edge writes to perm's held set. A commit's edge writes apply together or
+/// Sets what perm's held set reads of a held role commit (its edge writes, vouches, other
+/// role-class parts, standing) from `parts`, its held role-class parts, replacing whatever it
+/// read of the commit before: a late part, a drop or a forget calls it again with what stays
+/// held, so it is a function of the parts held. A commit's edge writes apply together or
 /// not at all (spec/permissions.md §2): one whose removal resets an entry of unknown creation
 /// names a write this node lacks, so it applies none of them and stays in `unresolved` until keys
 /// arrive. Invariant: an applied commit is the whole departure its author applied, which a name of
@@ -397,7 +400,7 @@ pub(crate) fn add_role_commit(core: &mut Core, h: &View, id: &CommitId, parts: &
         _ => {}
     }
     if ops.is_empty() {
-        core.ix.held.remove(id);
+        core.ix.held.remove_edges(id);
     } else {
         core.ix.held.add_commit(RoleCommit { id: *id, ts: h.ts, author: h.author, actor: h.actor, frontier: h.frontier.clone(), ops });
     }

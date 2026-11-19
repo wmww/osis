@@ -124,6 +124,8 @@ fn unindex(tx: &mut Tx<'_>, id: &CommitId, marks: bool) -> Result<()> {
     let void = core.ix.void.remove(id);
     super::set_pending(core, id, None);
     core.ix.unresolved.remove(id);
+    // perm reads nothing of a commit not held: edge writes, vouches, other role-class parts
+    core.ix.held.remove(id);
     core.stale_commits.remove(id);
     if void {
         tx.txn.remove_local(&[records::VOID, &id.0[..]].concat(), Shred::No)?;

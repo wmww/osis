@@ -792,7 +792,6 @@ pub(crate) fn join_late(tx: &mut Tx<'_>, id: &CommitId, merged: &CommitBlob, par
     crate::retention::stripped_joined(tx, id, &parts.stripped_joined(), &mut j.changed)?;
     crate::retention::on_late(tx, id, Some(&late), &mut j.changed)?;
     if perm && let Some(all) = perm_parts {
-        tx.core.ix.held.remove(id);
         validity::add_role_commit(tx.core, &meta.view, id, all);
         validity::note_notices(tx.core, id);
         held_changed = true;

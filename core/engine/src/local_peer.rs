@@ -566,7 +566,7 @@ fn hash_of(pk: &Package) -> u64 {
 }
 
 /// `pk` (whose commit is `b`) holding its parts `parts` alone: a header alone for none.
-fn holding(pk: &Package, b: &CommitBlob, parts: &BTreeSet<usize>) -> Package {
+pub(crate) fn holding(pk: &Package, b: &CommitBlob, parts: &BTreeSet<usize>) -> Package {
     let mut out = pk.clone();
     if b.parts.iter().any(|p| !parts.contains(&p.ai)) {
         out.bytes = osis_commit::rewrite(b, |ai| !parts.contains(&ai)).encode();

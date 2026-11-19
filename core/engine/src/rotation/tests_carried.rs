@@ -603,9 +603,7 @@ fn rotation_judged_alike_by_a_node_joining_after_compaction_spec_crypto_4() {
         s.lp.sync(x, A).unwrap();
         let xt = s.lp.peers[x].engine.me();
         s.lp.peers[A].engine.grant(&g, &xt, &edge(Role::Read)).unwrap();
-        // Interim (issues/trimmed-delivery-index-diverges.md): whole, as `packages_to(A, x)` in
-        // a random order leaves x's live index unlike its store loaded afresh
-        let mut pks = s.lp.packages(A).unwrap();
+        let mut pks = s.lp.packages_to(A, x).unwrap();
         for k in (1..pks.len()).rev() {
             pks.swap(k, rng.next(k as u64 + 1) as usize);
         }

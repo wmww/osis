@@ -413,9 +413,9 @@ pub(crate) fn settle(tx: &mut Tx<'_>) -> Result<bool> {
     for (h, ai, bodies) in boxes {
         crate::apply::keys::forget_dropped(tx, &h, ai, &bodies)?;
     }
-    // perm's held set reads each such commit left without its edge writes on them
+    // perm's held set reads each such commit left without its parts on them (one gone whole
+    // left it with its record, `apply::unindex`)
     for id in roles {
-        tx.core.ix.held.remove(&id);
         let Some(view) = tx.core.ix.commits.get(&id).map(|m| m.view.clone()) else { continue };
         let parts = crate::apply::perm_parts(tx, &id)?;
         crate::apply::validity::add_role_commit(tx.core, &view, &id, &parts);

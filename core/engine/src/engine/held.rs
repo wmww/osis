@@ -607,11 +607,20 @@ impl Held {
         }
     }
 
-    /// Drops the commit with this ID.
-    pub fn remove(&mut self, id: &CommitId) {
+    /// Drops the edge writes of the commit with this ID (`validity::add_role_commit`: a commit
+    /// applying none).
+    pub fn remove_edges(&mut self, id: &CommitId) {
         if let Some(c) = self.take(id) {
             self.log.push(Undo::Removed(c));
         }
+    }
+
+    /// Drops everything perm reads of commit `id`: its edge writes, vouches and other role-class
+    /// parts. Invariant: perm reads only held commits (`apply::unindex`), so its held set is a
+    /// function of the held commits, as an open finds it.
+    pub fn remove(&mut self, id: &CommitId) {
+        self.remove_edges(id);
+        self.set_vouching(*id, Vec::new(), None);
     }
 
     /// Things whose creation record was added since the last call.

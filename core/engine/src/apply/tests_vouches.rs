@@ -366,3 +366,75 @@ fn a_grant_received_after_an_early_removal_is_not_vouched_for_spec_perm_5_1() {
         }
     }
 }
+
+
+// notes/engine-store.md Index tables (every row a function of the held commits): a role commit
+// forgotten whole takes everything perm read of it along (`apply::unindex`), its vouches and
+// other role-class parts as well as its edge writes. W vouches on t by hand; peer 3, holding t
+// and the vouch, releases t, which goes whole with the vouch's commit: its live index is the
+// store opened and rebuilt afresh, before and after a restart, and holds no vouch.
+#[test]
+fn a_released_things_vouch_leaves_perm_with_it_spec_perm_5_1() {
+    let (mut lp, t) = world(4);
+    for p in &mut lp.peers {
+        p.engine.write_vouches(false);
+    }
+    let r = remove(&mut lp, 0, t, 1);
+    let v = vouch(&mut lp, 2, t, r, &[]);
+    lp.sync_all().unwrap();
+    assert_eq!(vouches(&lp, 3, t), vec![(lp.peers[2].engine.me(), v)], "peer 3 holds W's vouch");
+    let e = &mut lp.peers[3].engine;
+    e.unhold(osis_base::Strong(t)).unwrap();
+    e.released(&std::collections::BTreeSet::from([t])).unwrap();
+    assert!(!e.core.ix.commits.contains_key(&v), "the vouch's commit went with t");
+    assert!(vouches(&lp, 3, t).is_empty(), "perm reads no vouch of a commit not held");
+    lp.peers[3].engine.check_index();
+    lp.peers[3].restart(7).unwrap();
+    assert!(vouches(&lp, 3, t).is_empty(), "nor after a restart");
+}
+
+// notes/engine-store.md Index tables: what perm reads of a role commit is a function of its held
+// parts, whatever order they arrived in (`atomic::join_late` re-derives it whole). H writes one
+// commit vouching on t and on u; peer 3 gets it whole, or a part at a time in either order with
+// a pass end and a restart between: each ends holding the same vouches, its live index the
+// store opened and rebuilt afresh.
+#[test]
+fn a_role_commit_arriving_in_parts_reads_as_whole_spec_perm_5_1() {
+    let (mut lp, t) = world(4);
+    for p in &mut lp.peers {
+        p.engine.write_vouches(false);
+    }
+    let h = lp.peers[0].engine.me();
+    let mut m = Mutation::new();
+    let u = lp.peers[0].engine.new_thing(&mut m, h);
+    lp.peers[0].commit(m).unwrap();
+    lp.hold(u);
+    let r = remove(&mut lp, 0, t, 1);
+    lp.sync_all().unwrap();
+    let mut m = Mutation::new();
+    for x in [t, u] {
+        m.op(x, &ct::VOUCHES, PathOp { path: vec![PathSeg::Key(Value::bytes(&r.0))], op: Op::Put(ct::Frontier { commits: Default::default() }.to_value()) }).unwrap();
+    }
+    let v = lp.peers[0].commit(m).unwrap().unwrap();
+    let pk = lp.peers[0].engine.package(&v).unwrap().unwrap();
+    let blob = osis_commit::CommitBlob::decode(&pk.bytes).unwrap();
+    let ais: Vec<usize> = blob.parts.iter().map(|p| p.ai).collect();
+    assert_eq!(ais.len(), 2, "a part on each thing");
+    let one = |ai: usize| crate::local_peer::holding(&pk, &blob, &std::collections::BTreeSet::from([ai]));
+    for order in [vec![pk.clone()], vec![one(ais[0]), one(ais[1])], vec![one(ais[1]), one(ais[0])]] {
+        let mut c = lp.copy().unwrap();
+        for (i, p) in order.iter().enumerate() {
+            c.deliver(3, p).unwrap();
+            c.peers[3].engine.settle_needs().unwrap();
+            if i == 0 {
+                c.peers[3].restart(7).unwrap();
+                let held = vouches(&c, 3, t).len() + vouches(&c, 3, u).len();
+                assert_eq!(held, 3 - order.len(), "the first delivery's parts alone are held");
+            }
+        }
+        for x in [t, u] {
+            assert_eq!(vouches(&c, 3, x), vec![(h, v)], "{} parts: the vouch on {x:?}", order.len());
+        }
+        c.peers[3].engine.check_index();
+    }
+}
