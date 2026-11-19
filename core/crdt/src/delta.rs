@@ -250,6 +250,12 @@ impl<'s> DeltaBuilder<'s> {
         self.seen.is_some()
     }
 
+    /// Whether that view is the state's sequence layered under the delta's records (no copy).
+    #[cfg(test)]
+    pub(crate) fn keeps_layer(&self) -> bool {
+        matches!(self.seen, Some(Seen { frag: Over::Layer(_), .. }))
+    }
+
     /// The state as the delta sees it: the local state joined with the delta's writes.
     pub fn view(&self) -> Fragment {
         joined(Some(self.state), self.acc.as_ref(), None).unwrap_or_default()

@@ -326,11 +326,18 @@ proptest! {
 /// gets it) moving `moves` elements spread over the text to HEAD, older than those inserts:
 /// (state with its placement cached, the delta).
 fn hostile_moves(base: &Fragment, sibs: usize, moves: usize) -> (Fragment, Fragment) {
+    use crate::seq::{Anchor, Seq, SeqContent, SeqElem};
+    use crate::stamp::Stamp;
     let n = read_str(base).chars().count();
+    // `sibs` chars inserted at HEAD one commit each (each newer than the last), joined as one
+    // delta of their records: what those commits leave, without a whole pass per commit
+    let hs = (0..sibs as u64).map(|k| {
+        let st = Stamp::new(ts((5000 + k) << 16), node(2), k + 1);
+        (st.dot.clone(), SeqElem { created: Some((st.clone(), Anchor::Head)), content: SeqContent::Char('h'), pos: vec![(st, Anchor::Head, None)], deleted: None, undel: None, valueless: false, span: 1 })
+    });
     let mut b = Replica { state: base.clone(), src: node(2), lo: 1 };
-    for k in 0..sibs as u64 {
-        b.commit(5000 + k, &[op(Op::Insert { at: 0, items: vec![s("h")] })], &text_view());
-    }
+    b.state.join(Fragment::Seq(Seq::new(true, crate::fragment::Meta::default(), hs.collect())));
+    assert_eq!(read_str(&b.state), "h".repeat(sibs) + &read_str(base));
     let Fragment::Seq(sq) = base else { panic!() };
     let mut w = Writer::new(ts(4000 << 16), node(7), 1);
     let step = n / moves;
@@ -463,72 +470,133 @@ fn cached_placement_follows_typing_spec_6() {
     assert!(kept >= 198, "kept {kept}");
 }
 
-// spec/crdt.md §4.5, §5.7: a commit of hundreds of moves, inserts and deletes on a text of a few
-// thousand chars (with range records, a delete splitting one, and typos deleted in the same
-// commit, so elements are omitted) reads like the same ops on a plain string; `DeltaBuilder` keeps its layered view through
-// most ops, checked against state + net effect after every op (debug assertion in `DeltaBuilder`).
-#[test]
-fn large_text_batch_is_net_effect_spec_4_5() {
-    for seed in 0..1u64 {
-        let mut r = crate::testutil::rng(seed);
-        let mut a = Replica::new(1);
-        for k in 0..30u64 {
-            let n = read_str(&a.state).chars().count();
-            a.commit(k + 1, &[op(Op::Insert { at: r.below(n + 1), items: vec![s(&"abcdefghij".repeat(10))] })], &text_view());
-        }
-        // a concurrent insert anchored inside a stretch deleted here: after the snapshot the
-        // stretch is one range record with "Q" placed inside it
-        let mut c = a.fork(2);
-        let (q, _, _) = c.commit(39, &[op(Op::Insert { at: 150, items: vec![s("Q")] })], &text_view()).unwrap();
-        a.commit(40, &[op(Op::Delete { at: 100, len: 200 })], &text_view());
-        a.state.join(q);
-        a.state = via_snapshot(&a.state);
-        let base = a.state.clone();
-        let mut model: Vec<char> = read_str(&base).chars().collect();
-        assert_eq!(model[100], 'Q');
-        // deleting from "Q" on flags the rest of that record: the write splits it
-        let cut = Op::Delete { at: 100, len: 2 };
-        apply_text(&mut model, &cut, &base);
-        let mut ops = vec![op(cut)];
-        let mut last_insert = None;
-        for _ in 0..300 {
-            let n = model.len();
-            let o = match r.below(4) {
-                0 => {
-                    let at = r.below(n + 1);
-                    last_insert = Some(at);
-                    Op::Insert { at, items: vec![s("xy")] }
-                }
-                1 => match last_insert.take() {
-                    // a typo deleted in the same commit
-                    Some(at) if r.chance(1, 2) => Op::Delete { at, len: 1 },
-                    _ => {
-                        let at = r.below(n);
-                        Op::Delete { at, len: (1 + r.below(3)).min(n - at) }
-                    }
-                },
+/// One commit on `a` of `fixed` ops, then random inserts, deletes, typos deleted again and moves
+/// until each was drawn `each` times and `least` ops were drawn (then `after`), checked against the ops on a plain string; after every op, how
+/// `DeltaBuilder` holds its view: per op kind (insert 0, typo deleted again 1, delete 2, move 3,
+/// fixed 4) drawn, kept a view, kept a layer (no copy); and whether each fixed op kept a view.
+fn text_batch(a: &mut Replica, r: &mut Rng, fixed: Vec<Op>, each: usize, least: usize, after: Vec<Op>) -> ([(usize, usize, usize); 5], Vec<bool>) {
+    let base = a.state.clone();
+    let mut model: Vec<char> = read_str(&base).chars().collect();
+    let (mut ops, mut kinds) = (Vec::new(), Vec::new());
+    let mut push = |model: &mut Vec<char>, kind: usize, o: Op| {
+        apply_text(model, &o, &base);
+        ops.push(op(o));
+        kinds.push(kind);
+    };
+    for o in fixed {
+        push(&mut model, 4, o);
+    }
+    let mut last_insert = None;
+    let mut drawn = [0; 4];
+    while drawn.iter().any(|d| *d < each) || drawn.iter().sum::<usize>() < least {
+        // a typo's odds are about 1/16 per op
+        assert!(drawn.iter().sum::<usize>() < 64 * (each + least), "drawn {drawn:?}");
+        let n = model.len();
+        let (kind, o) = match r.below(4) {
+            0 => {
+                let at = r.below(n + 1);
+                last_insert = Some(at);
+                (0, Op::Insert { at, items: vec![s("xy")] })
+            }
+            1 => match last_insert.take() {
+                // a typo deleted in the same commit
+                Some(at) if r.chance(1, 2) => (1, Op::Delete { at, len: 1 }),
                 _ => {
                     let at = r.below(n);
-                    let len = (1 + r.below(3)).min(n - at);
-                    Op::Move { at, len, to: r.below(n - len + 1) }
+                    (2, Op::Delete { at, len: (1 + r.below(3)).min(n - at) })
                 }
-            };
-            apply_text(&mut model, &o, &base);
-            ops.push(op(o));
-        }
-        let mut b = DeltaBuilder::new(&a.state, Writer::new(ts(50 << 16), a.src.clone(), a.lo));
-        let mut kept = 0;
-        for o in &ops {
-            b.apply(o, &text_view()).unwrap();
-            kept += b.keeps_view() as usize;
-            if kept == 0 {
-                assert!(matches!(o.op, Op::Delete { at: 100, .. }), "a view after the splitting delete");
+            },
+            _ => {
+                let at = r.below(n);
+                let len = (1 + r.below(3)).min(n - at);
+                (3, Op::Move { at, len, to: r.below(n - len + 1) })
             }
-        }
-        assert!(kept * 10 >= ops.len() * 8, "kept the view through {kept} of {} ops", ops.len());
-        a.commit(50, &ops, &text_view());
-        assert_eq!(read_str(&a.state), model.iter().collect::<String>(), "seed {seed}");
+        };
+        drawn[kind] += 1;
+        push(&mut model, kind, o);
     }
+    for o in after {
+        push(&mut model, 4, o);
+    }
+    let mut b = DeltaBuilder::new(&a.state, Writer::new(ts(50 << 16), a.src.clone(), a.lo));
+    let mut tally = [(0, 0, 0); 5];
+    let mut fixed_kept = Vec::new();
+    for (o, k) in ops.iter().zip(&kinds) {
+        b.apply(o, &text_view()).unwrap();
+        let t = &mut tally[*k];
+        *t = (t.0 + 1, t.1 + b.keeps_view() as usize, t.2 + b.keeps_layer() as usize);
+        if *k == 4 {
+            fixed_kept.push(b.keeps_view());
+        }
+    }
+    // the commit as `Replica::commit` makes it, from this builder
+    let (d, range) = b.finish().unwrap();
+    let back = wired(&d, &a.src, range, 50);
+    assert_eq!(back, d, "a writer's delta round-trips");
+    a.state.join(back);
+    crate::testutil::check_lin(&a.state);
+    assert_eq!(read_str(&a.state), model.iter().collect::<String>());
+    (tally, fixed_kept)
+}
+
+// spec/crdt.md §4.5, §5.7: a commit of a hundred moves, inserts and deletes on a text of a
+// thousand chars (many placement blocks) reads like the same ops on a plain string, and
+// `DeltaBuilder` keeps a view of the text through most ops, checked against state + net effect
+// after every op (debug assertion in `DeltaBuilder`): on typed text often a layer over the
+// state; with range records (a delete splitting one first) a copy. Constructed: a char moved after a fresh
+// char that is then deleted, and moved twice more, so its kept writes no longer name the fresh
+// char and the net effect omits it (`seq::Foot` refuses to follow there); a reset of the text
+// and edits after it. Tallied: every random op kind is drawn, and all but a typo deleted again
+// (its element omitted: the view goes) keep the view.
+#[test]
+fn large_text_batch_is_net_effect_spec_4_5() {
+    let mut r = crate::testutil::rng(0);
+    let mut a = Replica::new(1);
+    for k in 0..10u64 {
+        let n = read_str(&a.state).chars().count();
+        a.commit(k + 1, &[op(Op::Insert { at: r.below(n + 1), items: vec![s(&"abcdefghij".repeat(10))] })], &text_view());
+    }
+    // each random kind drawn 4 times, 80 random ops at least; all but a typo keep the view at
+    // least half the times
+    let (each, least) = (4, 80);
+    let check = |tally: &[(usize, usize, usize); 5], layers: bool| {
+        let (n, kept, layered) = tally.iter().fold((0, 0, 0), |x, t| (x.0 + t.0, x.1 + t.1, x.2 + t.2));
+        assert!(kept * 10 >= n * 8, "kept the view through {kept} of {n} ops");
+        // (a layer goes on until an op it cannot follow; a copy then holds the view)
+        assert!(!layers || layered > 0, "layered {layered} of {kept} views");
+        for (k, (drawn, kept, _)) in tally.iter().enumerate().take(4) {
+            assert!(k == 1 || *kept * 2 >= *drawn, "kind {k}: kept the view {kept} of {drawn} times");
+        }
+    };
+    // the batches end resetting the text and editing the new one
+    let after = || vec![Op::Set(s("fresh text")), Op::Insert { at: 5, items: vec![s("ly")] }, Op::Move { at: 0, len: 5, to: 7 }];
+    // typed text: the view is a layer
+    let mut typed = a.fork(1);
+    typed.lo = a.lo;
+    check(&text_batch(&mut typed, &mut r, vec![], each, least, after()).0, true);
+    // a concurrent insert anchored inside a stretch deleted here: after the snapshot the
+    // stretch is one range record with "Q" placed inside it
+    let mut c = a.fork(2);
+    let (q, _, _) = c.commit(39, &[op(Op::Insert { at: 150, items: vec![s("Q")] })], &text_view()).unwrap();
+    a.commit(40, &[op(Op::Delete { at: 100, len: 200 })], &text_view());
+    a.state.join(q);
+    a.state = via_snapshot(&a.state);
+    assert_eq!(read_str(&a.state).chars().nth(100), Some('Q'));
+    let fixed = vec![
+        // deleting from "Q" on flags the rest of that record: the write splits it
+        Op::Delete { at: 100, len: 2 },
+        // a char moved after a fresh "W", "W" deleted, the char moved twice more: its two kept
+        // position writes no longer name "W", which the net effect omits
+        Op::Insert { at: 300, items: vec![s("W")] },
+        Op::Move { at: 500, len: 1, to: 301 },
+        Op::Delete { at: 300, len: 1 },
+        Op::Move { at: 300, len: 1, to: 600 },
+        Op::Move { at: 600, len: 1, to: 50 },
+    ];
+    let (tally, fixed_kept) = text_batch(&mut a, &mut r, fixed, each, least, after());
+    assert!(fixed_kept[1] && fixed_kept[4], "a view after the splitting delete, and before the move omitting \"W\"");
+    check(&tally, false);
+    assert!(!read_str(&a.state).contains('W'));
 }
 
 // spec/crdt.md §6: the cached placement's dot map is shared between copies of a state; a join
@@ -1009,25 +1077,28 @@ fn cached_placement_follows_moves_spec_6_2() {
 
 /// §6 (a deterministic function of state), `seq_lin`: hostile deltas of moves to HEAD below 250 newer HEAD siblings cost about a
 /// whole pass in placement work, counted in `follow`'s work units (rows and blocks looked at, a
-/// skipped sibling 8) and whole passes: more than max(√n, 64) moves rebuild at once; fewer
-/// stop at the work budget max(n, 1024) and rebuild. Either way at most one pass, and the
-/// units charged stay under the budget plus a per-placement charge and one step's overshoot.
+/// skipped sibling 8) and whole passes: more than max(√n, 64) moves rebuild at once (checked
+/// at that count and one past it); fewer stop at the work budget max(n, 1024) and rebuild.
+/// Either way at most one pass, and the units charged stay under the budget plus a
+/// per-placement charge and one step's overshoot.
 #[test]
 fn hostile_moves_join_bounded_spec_6() {
     let mut a = Replica::new(1);
     for k in 0..4u64 {
         a.commit(1 + k, &[op(Op::Insert { at: 0, items: vec![s(&"x".repeat(1000))] })], &text_view());
     }
-    for moves in [1000, 60] {
+    // n = 4250 rows: the count cap √n (65) above its floor, the budget n above its floor
+    let count = (4000usize + 250).isqrt().max(64);
+    for moves in [count + 1, count] {
         let (mut st, d) = hostile_moves(&a.state, 250, moves);
         let Fragment::Seq(q) = &st else { panic!() };
         let (len, blocks, cap) = q.lin().shape();
+        assert_eq!(len.isqrt().max(64), count);
         let _ = crate::seq_lin::probe();
         st.join(d);
         let Fragment::Seq(q) = &st else { panic!() };
         let _ = q.lin();
         let (work, passes) = crate::seq_lin::probe();
-        let count = len.isqrt().max(64);
         assert_eq!(moves > count, work == 0, "{moves} moves: the count cap ({count}) rebuilds before any work");
         // budget, an `each` charge per placement, and the last sibling step past the budget
         // (a block walk: every block, two partial blocks of at most 2 * cap rows)
@@ -1036,6 +1107,18 @@ fn hostile_moves_join_bounded_spec_6() {
         assert!(passes <= 1, "{moves} moves: {passes} whole passes");
         crate::testutil::check_lin(&st);
     }
+    // one move below 300 newer HEAD siblings, within the work budget: the 256th sibling skipped
+    // rebuilds
+    let (mut st, d) = hostile_moves(&a.state, 300, 1);
+    let Fragment::Seq(q) = &st else { panic!() };
+    let len = q.lin().shape().0;
+    let _ = crate::seq_lin::probe();
+    st.join(d);
+    let Fragment::Seq(q) = &st else { panic!() };
+    let _ = q.lin();
+    let (work, passes) = crate::seq_lin::probe();
+    assert!(work > 0 && work < len.max(1024) && passes == 1, "{work} units, {passes} whole passes");
+    crate::testutil::check_lin(&st);
 }
 
 /// §6 (a deterministic function of state), `seq_lin`: a delta of flag writes each splitting one long deleted chain (a range record
