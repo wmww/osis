@@ -2,7 +2,7 @@
 
 use crate::error::Error;
 use crate::seq::{Anchor, PosW, Seq, SeqContent, SeqElem, top2};
-use crate::seq_span::nth;
+use crate::seq_span::{nth, overlaps};
 use crate::stamp::{Dot, Stamp};
 use osis_base::Ts;
 use crate::wire::{Dec, DeltaKind, Enc, MAX_RUN, as_array, as_uint};
@@ -537,6 +537,9 @@ pub(crate) fn decode_elems(s: &mut Seq, runs: List, cx: &mut Dec) -> Result<(), 
                 } else {
                     SeqContent::None
                 };
+                if overlaps(s.elems(), &dot, len) {
+                    return Err(Error::Malformed("element in two runs"));
+                }
                 let undel = undels.and_then(|(from, u)| u.get((at - from) as usize).copied());
                 let valueless = valueless && created.is_some();
                 s.elems_mut().insert(dot, SeqElem { created, content, pos, deleted: deleted.clone(), undel, valueless, span: len });
