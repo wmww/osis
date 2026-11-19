@@ -702,6 +702,14 @@ impl LocalPeer {
         self.peers.get_mut(i)
     }
 
+    /// The IDs of the commits `from` holds (applied) but those on its node root alone: what its
+    /// syncs may send (`packages_for`).
+    pub fn commit_ids(&self, from: usize) -> BTreeSet<CommitId> {
+        let Some(p) = self.peers.get(from) else { return BTreeSet::new() };
+        let root = p.engine.node_root();
+        p.engine.commit_ids().into_iter().filter(|id| !p.engine.header(id).is_some_and(|h| h.aspects.iter().all(|a| Some(a.tid) == root))).collect()
+    }
+
     /// Every commit `from` holds (applied), packaged, but those on its node root alone (local: no
     /// sync ID carries them, spec/sync-set.md §1).
     pub fn packages(&mut self, from: usize) -> Result<Vec<Package>> {
@@ -743,6 +751,34 @@ impl LocalPeer {
     pub fn packages_for(&mut self, from: usize, to: usize) -> Result<Vec<Package>> {
         let synced = self.synced(to)?;
         self.packages_under(from, &synced)
+    }
+
+    /// What `from` sends peer `to` once `to` syncs what a sync from `from` brings it to sync (its
+    /// sync set after `sync`, on a copy of the world: a grant or rotation it takes moves its sync
+    /// IDs): `packages_under` those, for a test handing them over in its own order.
+    pub fn packages_to(&mut self, from: usize, to: usize) -> Result<Vec<Package>> {
+        let mut c = self.copy()?;
+        c.sync(from, to)?;
+        let synced = c.synced(to)?;
+        self.packages_under(from, &synced)
+    }
+
+    /// `packages_to` for `to`, a node apart from this net: what `from` sends it once it syncs
+    /// what those packages bring it to sync (found on a copy of it, handed them again while its
+    /// sync set grows).
+    pub fn packages_to_peer(&mut self, from: usize, to: &mut Peer) -> Result<Vec<Package>> {
+        let mut c = to.copy()?;
+        let mut seen = BTreeSet::new();
+        loop {
+            let synced: BTreeSet<osis_base::SyncId> = c.engine.sync_set()?.ids.keys().copied().collect();
+            if !seen.is_empty() && synced.is_subset(&seen) {
+                return self.packages_under(from, &seen);
+            }
+            seen.extend(synced);
+            for p in self.packages_under(from, &seen)?.iter() {
+                let _ = c.receive_with(&p.bytes, p.blobs.clone(), &p.lists);
+            }
+        }
     }
 
     /// The sync IDs peer `i` syncs (`Engine::sync_set`).

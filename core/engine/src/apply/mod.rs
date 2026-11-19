@@ -2499,7 +2499,7 @@ mod tests {
         lp.peers[0].engine.core.skip_writer_rules = true;
         let id = lp.peers[0].commit(m).unwrap().unwrap();
         let pk = lp.peers[0].engine.package(&id).unwrap().unwrap();
-        for p in lp.packages(0).unwrap() {
+        for p in lp.packages_for(0, 1).unwrap() {
             if p.id != id {
                 lp.deliver(1, &p).unwrap();
             }

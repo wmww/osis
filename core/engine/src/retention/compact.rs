@@ -1243,7 +1243,7 @@ mod tests {
         // bob gets the rest first
         lp.peers[0].engine.grant(&t, &c, &edge(Role::Read)).unwrap();
         lp.peers[0].engine.grant(&t, &b, &edge(Role::Write)).unwrap();
-        let pks = lp.packages(0).unwrap();
+        let pks = lp.packages_to(0, 1).unwrap();
         let carries = |id: &CommitId| lp.peers[0].engine.writes_keyset(&t, id);
         let (key_pks, rest): (Vec<_>, Vec<_>) = pks.into_iter().partition(|pk| carries(&pk.id));
         assert!(!key_pks.is_empty());

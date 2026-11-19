@@ -404,7 +404,7 @@ fn partless_commit_applies_as_its_header_spec_commits_4() {
     m.set(t, &BRIEF, &s("brief")).unwrap();
     m.expires(t, &BRIEF, osis_base::WallMs(lp.peers[0].engine.now().0 + 60_000)).unwrap();
     let c = lp.peers[0].commit(m).unwrap().unwrap();
-    let pk = lp.packages(0).unwrap().into_iter().find(|p| p.id == c).unwrap();
+    let pk = lp.packages_for(0, 1).unwrap().into_iter().find(|p| p.id == c).unwrap();
     lp.advance(120_000);
     let r = lp.deliver(1, &pk).unwrap();
     assert_eq!(r, osis_engine::Ingested::Applied(c), "its header alone");
@@ -432,7 +432,7 @@ fn purge_of_a_waiting_part_reads_alike_spec_commits_5() {
         lp.peers[0].commit(m).unwrap().unwrap();
         let t3 = new_thing(&mut lp, 0);
         lp.sync(0, 1).unwrap();
-        let had: std::collections::BTreeSet<_> = lp.packages(0).unwrap().iter().map(|p| p.id).collect();
+        let had: std::collections::BTreeSet<_> = lp.commit_ids(0).into_iter().collect();
         let t2 = new_thing(&mut lp, 0);
         let rec: Vec<_> = lp.packages(0).unwrap().into_iter().filter(|p| !had.contains(&p.id)).collect();
         lp.advance(5);
@@ -678,7 +678,7 @@ fn past_expiry_and_purge_alike(every: bool) {
     m.purge_commit(c, t, ak("t:reg.0"));
     let p = lp.peers[0].commit(m).unwrap().unwrap();
     let request = lp.peers[0].engine.package(&p).unwrap().unwrap();
-    let ids: std::collections::BTreeSet<_> = lp.packages(0).unwrap().iter().map(|p| p.id).collect();
+    let ids: std::collections::BTreeSet<_> = lp.commit_ids(0).into_iter().collect();
     let (reg, list, brief) = (ak("t:reg.0"), ak("t:list.0"), ak("t:brief.0"));
     let items = [
         (request.bytes.clone(), request.blobs.clone()),

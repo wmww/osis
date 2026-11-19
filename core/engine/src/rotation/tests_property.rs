@@ -554,7 +554,7 @@ fn rotation_history(seed: u64) -> Reached {
     let x = (1..N).find(|p| !run.hostile.contains(p) && run.lp.peers[0].engine.core.role_now(&run.tids[*p], &g) == Some(Role::Admin)).unwrap_or(0);
     let mut all = Vec::new();
     for p in (0..N).filter(|p| *p != x) {
-        all.extend(run.lp.packages(p).unwrap());
+        all.extend(run.lp.packages_for(p, x).unwrap());
     }
     let mut withheld: BTreeSet<CommitId> = departing.iter().copied().filter(|_| run.rng.next(2) == 0).collect();
     withheld.extend(all.iter().map(|p| p.id).filter(|_| run.rng.next(8) == 0));

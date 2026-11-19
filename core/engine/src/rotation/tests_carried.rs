@@ -93,7 +93,7 @@ fn deliver_certified_in(lp: &mut LocalPeer, from: usize, to: usize, c: CommitId,
     let chain = lp.peers[from].engine.author_chain(&c, &parts).unwrap();
     let mut send: Vec<(CommitId, BTreeSet<usize>)> = chain.commits.into_iter().collect();
     send.push((c, parts));
-    let pks = lp.packages(from).unwrap();
+    let pks = lp.packages_for(from, to).unwrap();
     // (the projected bytes, its package)
     let mut cuts: Vec<(Vec<u8>, usize)> = Vec::new();
     for (i, pk) in pks.iter().enumerate() {
@@ -201,7 +201,7 @@ fn removed_with(s: &mut Shape, who: usize, carry: Carry, again: usize, order: Op
     match order.filter(|_| carry == Carry::Honest) {
         Some(order) => deliver_certified_in(&mut s.lp, B, A, x1_rot, parts, order),
         None => {
-            for pk in s.lp.packages(B).unwrap().into_iter().filter(|p| p.id == x1_rot) {
+            for pk in s.lp.packages_for(B, A).unwrap().into_iter().filter(|p| p.id == x1_rot) {
                 let b = osis_commit::CommitBlob::decode(&pk.bytes).unwrap();
                 s.lp.peers[A].receive(&osis_commit::rewrite(&b, |ai| !parts.contains(&ai)).encode(), pk.blobs).unwrap();
             }
@@ -395,12 +395,12 @@ fn keyset_held_only_with_its_demotions_spec_crypto_4() {
     let c = lp.peers.len();
     let now = lp.peers[A].engine.now();
     lp.peers.push(crate::local_peer::Peer::new(91, now).unwrap());
-    for pk in lp.packages(A).unwrap().into_iter().filter(|p| p.id != rm.rm) {
+    for pk in lp.packages_for(A, c).unwrap().into_iter().filter(|p| p.id != rm.rm) {
         let _ = lp.peers[c].receive(&pk.bytes, pk.blobs);
     }
     assert!(lp.peers[c].engine.core.ix.keysets.contains_key(&(x1, Role::Write, k)), "its body noted");
     assert!(lp.peers[c].engine.core.keyset(&x1, Role::Write, &k).is_none(), "not held without the removal");
-    for pk in lp.packages(A).unwrap().into_iter().filter(|p| p.id == rm.rm) {
+    for pk in lp.packages_for(A, c).unwrap().into_iter().filter(|p| p.id == rm.rm) {
         lp.peers[c].receive(&pk.bytes, pk.blobs).unwrap();
     }
     assert!(lp.peers[c].engine.core.keyset(&x1, Role::Write, &k).is_some(), "held once it arrives");
@@ -603,6 +603,8 @@ fn rotation_judged_alike_by_a_node_joining_after_compaction_spec_crypto_4() {
         s.lp.sync(x, A).unwrap();
         let xt = s.lp.peers[x].engine.me();
         s.lp.peers[A].engine.grant(&g, &xt, &edge(Role::Read)).unwrap();
+        // Interim (issues/trimmed-delivery-index-diverges.md): whole, as `packages_to(A, x)` in
+        // a random order leaves x's live index unlike its store loaded afresh
         let mut pks = s.lp.packages(A).unwrap();
         for k in (1..pks.len()).rev() {
             pks.swap(k, rng.next(k as u64 + 1) as usize);
@@ -662,7 +664,7 @@ fn own_demotion_keyset_held_by_a_node_joining_after_compaction_spec_crypto_4() {
         s.lp.sync(x, B).unwrap();
         let xt = s.lp.peers[x].engine.me();
         s.lp.peers[B].engine.grant(&x1, &xt, &edge(Role::Read)).unwrap();
-        let mut pks = s.lp.packages(B).unwrap();
+        let mut pks = s.lp.packages_to(B, x).unwrap();
         for k in (1..pks.len()).rev() {
             pks.swap(k, rng.next(k as u64 + 1) as usize);
         }

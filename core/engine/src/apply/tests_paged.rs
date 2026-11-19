@@ -239,7 +239,7 @@ impl World {
         let from = r.below(NODES as u64) as usize;
         let to = (from + 1 + r.below(NODES as u64 - 1) as usize) % NODES;
         let t = self.t;
-        let mut pks: Vec<Package> = self.lp.packages(from).unwrap();
+        let mut pks: Vec<Package> = self.lp.packages_for(from, to).unwrap();
         pks.retain(|p| osis_commit::CommitBlob::decode(&p.bytes).is_ok_and(|b| b.header.aspects.iter().any(|a| a.tid == t)));
         // a commit applied as its header with parts waiting is still sent
         let held: Vec<CommitId> = self.lp.peers[to].engine.commit_ids();
@@ -269,7 +269,7 @@ impl World {
         for from in 0..NODES {
             for to in 0..NODES {
                 if from != to {
-                    for pk in self.lp.packages(from).unwrap() {
+                    for pk in self.lp.packages_for(from, to).unwrap() {
                         let out = deliver(&mut self.lp, to, &pk);
                         self.log.push(format!("{from}->{to} {:?}: {out}", pk.id));
                     }

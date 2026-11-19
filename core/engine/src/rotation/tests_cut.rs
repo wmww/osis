@@ -186,12 +186,12 @@ fn holder_lacking_the_rotation_before_the_cut_reseals_nothing_below_it_spec_cryp
     let r1: BTreeSet<osis_base::CommitId> = super::tests::commit_ids(&mut lp, 0).difference(&before).copied().collect();
     lp.peers[0].engine.grant_with(&g, &tids[3], &edge(Role::Read), History::None).unwrap();
     let cut = lp.peers[0].engine.epochs(&g).unwrap().read.newest_held().unwrap().0;
-    for pk in lp.packages(0).unwrap() {
+    for pk in lp.packages_for(0, 1).unwrap() {
         if !r1.contains(&pk.id) {
             lp.deliver(1, &pk).unwrap();
         }
     }
-    for pk in lp.packages(0).unwrap() {
+    for pk in lp.packages_for(0, 3).unwrap() {
         if !r1.contains(&pk.id) {
             lp.deliver(3, &pk).unwrap();
         }
@@ -730,7 +730,7 @@ fn low_floor_waits_for_the_names_spec_crypto_4() {
     lp.peers[0].engine.demote(&g, &crate::flows::Demotion { holder: tids[2], new: None, retain: None }).unwrap();
     let removal: BTreeSet<osis_base::CommitId> = super::tests::commit_ids(&mut lp, 0).difference(&before).copied().collect();
     lp.peers[0].engine.grant_with(&g, &tids[3], &edge(Role::Read), History::None).unwrap();
-    for pk in lp.packages(0).unwrap() {
+    for pk in lp.packages_for(0, 1).unwrap() {
         if !removal.contains(&pk.id) {
             let _ = lp.peers[1].receive(&pk.bytes, pk.blobs.clone());
         }
@@ -796,7 +796,7 @@ fn cut_state_cost_does_not_grow_with_history_spec_crypto_4() {
         }
         let before: BTreeSet<osis_base::CommitId> = lp.peers[0].engine.core.ix.commits.keys().copied().collect();
         lp.peers[0].engine.grant_with(&g, &n, &edge(Role::Read), History::None).unwrap();
-        let new: Vec<_> = lp.packages(0).unwrap().into_iter().filter(|pk| !before.contains(&pk.id)).collect();
+        let new: Vec<_> = lp.commit_ids(0).into_iter().filter(|c| !before.contains(c)).map(|c| lp.peers[0].engine.package(&c).unwrap().unwrap()).collect();
         let snaps: Vec<_> = new.iter().filter(|pk| osis_commit::CommitBlob::decode(&pk.bytes).unwrap().header.kind.is_compaction()).collect();
         let bytes: usize = snaps.iter().map(|pk| pk.bytes.len()).sum();
         eprintln!("rounds {rounds}: {} commits at the cut, {} snapshots, {bytes} snapshot bytes", new.len(), snaps.len());
@@ -846,7 +846,7 @@ fn late_bodies_a_cut_covers_owe_no_snapshot_spec_crypto_4() {
         let pk = lp.peers[0].engine.package(c).unwrap().unwrap();
         let _ = lp.peers[2].receive(&pk.bytes, pk.blobs.clone());
     }
-    for pk in lp.packages(0).unwrap() {
+    for pk in lp.packages_for(0, 2).unwrap() {
         if !on_g(&pk, g) {
             let _ = lp.peers[2].receive(&pk.bytes, pk.blobs.clone());
         }
@@ -886,7 +886,7 @@ fn cut_snapshot_of_a_large_value_reuses_its_chunks_spec_crypto_4() {
     assert!(tree.len() > 4, "the value is chunked");
     let before: BTreeSet<osis_base::CommitId> = lp.peers[0].engine.core.ix.commits.keys().copied().collect();
     lp.peers[0].engine.grant_with(&g, &n, &edge(Role::Read), History::None).unwrap();
-    let snaps: Vec<_> = lp.packages(0).unwrap().into_iter().filter(|pk| !before.contains(&pk.id) && osis_commit::CommitBlob::decode(&pk.bytes).unwrap().header.kind.is_compaction()).collect();
+    let snaps: Vec<_> = lp.commit_ids(0).into_iter().filter(|c| !before.contains(c)).map(|c| lp.peers[0].engine.package(&c).unwrap().unwrap()).filter(|pk| osis_commit::CommitBlob::decode(&pk.bytes).unwrap().header.kind.is_compaction()).collect();
     assert_eq!(snaps.len(), 1, "one snapshot of the value");
     let s = &snaps[0];
     eprintln!("snapshot of a 1 MiB value: {} bytes, {} linked blobs", s.bytes.len(), s.blobs.len());

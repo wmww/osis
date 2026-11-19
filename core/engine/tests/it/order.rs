@@ -1098,7 +1098,7 @@ pub(crate) fn play_with(seed: u64, steps: &[Step], addenda: bool) -> Played {
                 // the refused ones dropped
                 if let Err(e) = lp.sync(from, to) {
                     assert_eq!(osis_base::Classified::class(&e), osis_base::ErrorClass::BadInput, "{e}");
-                    for pk in lp.packages(from).unwrap() {
+                    for pk in lp.packages_for(from, to).unwrap() {
                         if let Err(e) = lp.deliver(to, &pk) {
                             assert_eq!(osis_base::Classified::class(&e), osis_base::ErrorClass::BadInput, "{e}");
                             assert!(forged.contains_key(&pk.id) || unchecked.contains(&pk.id), "an honest commit refused: {e}");

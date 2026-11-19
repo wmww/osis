@@ -139,8 +139,8 @@ fn leaver_uncovered(how: Forge) {
 fn leaver_uncovered_as(role: Role, how: Forge) {
     let (mut lp, g, tids) = shape(role);
     let w_held: BTreeSet<Epoch> = leave(&mut lp, W, g, how).unwrap().into_iter().filter(|(r, _)| *r == Role::Read).map(|(_, e)| e).collect();
-    for pk in lp.packages(W).unwrap() {
-        for i in [A, X] {
+    for i in [A, X] {
+        for pk in lp.packages_for(W, i).unwrap() {
             let _ = lp.peers[i].receive(&pk.bytes, pk.blobs.clone());
         }
     }

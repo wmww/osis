@@ -29,7 +29,7 @@ fn world(keys: bool) -> (LocalPeer, Tid, Vec<osis_engine::local_peer::Package>) 
         m.op(t, &ct::ROLES, osis_crdt::PathOp { path: vec![osis_crdt::PathSeg::Key(Value::Weak(w))], op: osis_crdt::Op::Set(osis_schema::Codec::to_value(&edge(Role::Write))) }).unwrap();
         lp.peers[0].commit(m).unwrap();
         lp.peers[0].engine.grant(&t, &w, &edge(Role::Write)).unwrap();
-        let pks = lp.packages(0).unwrap();
+        let pks = lp.packages_for(0, 1).unwrap();
         let carries = |lp: &LocalPeer, id: &CommitId| lp.peers[0].engine.writes_keyset(&t, id);
         let (held, rest): (Vec<_>, Vec<_>) = pks.into_iter().partition(|pk| keys || !carries(&lp, &pk.id));
         for pk in &held {

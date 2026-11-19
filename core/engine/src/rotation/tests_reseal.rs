@@ -100,7 +100,7 @@ fn reseal_without_the_removal_leaks_nothing_spec_crypto_5() {
     assert!(lp.peers[V].engine.open_commit(&again.blob, &again.key).unwrap().sealed.is_empty(), "V opens it");
     assert!(lp.peers[M].engine.open_commit(&again.blob, &again.key).unwrap().commit.parts.is_empty(), "M opens nothing of it");
     // W arrives: e_R established, V seals the write again, and M still reads nothing of it
-    for pk in lp.packages(A2).unwrap().into_iter().filter(|p| w_commits.contains(&p.id)) {
+    for pk in lp.packages_for(A2, V).unwrap().into_iter().filter(|p| w_commits.contains(&p.id)) {
         let _ = lp.deliver(V, &pk);
     }
     assert!(lp.peers[V].engine.epochs(&g).unwrap().read.is_established(&e_r));
@@ -158,7 +158,7 @@ fn snapshot_without_the_removal_leaks_nothing_spec_crypto_5() {
     let s = lp.peers[V].engine.snapshot(&g, &x());
     assert!(s.is_err(), "V snapshots R's write under its own epoch: {s:?}");
     // W arrives: V compacts, and M reads nothing of w through it
-    for pk in lp.packages(A2).unwrap().into_iter().filter(|p| w_commits.contains(&p.id)) {
+    for pk in lp.packages_for(A2, V).unwrap().into_iter().filter(|p| w_commits.contains(&p.id)) {
         let _ = lp.deliver(V, &pk);
     }
     let s = lp.peers[V].engine.snapshot(&g, &x()).unwrap().unwrap();
@@ -252,7 +252,7 @@ fn reseal_never_hands_m_the_write_randomized_spec_crypto_5() {
         let (mut lp, g, w_commits, e_r, w, entry) = shape(demoted);
         let junk = put(&mut lp, A, g, "junk");
         let send_w = |lp: &mut LocalPeer| {
-            for pk in lp.packages(A2).unwrap().into_iter().filter(|p| w_commits.contains(&p.id)) {
+            for pk in lp.packages_for(A2, V).unwrap().into_iter().filter(|p| w_commits.contains(&p.id)) {
                 let _ = lp.deliver(V, &pk);
             }
         };
@@ -337,7 +337,7 @@ fn wrap_of_others_write_withheld_spec_crypto_5() {
     assert!(!m_opens(&mut lp, g, w, &fresh, &body.parts), "M opens the header of V's fresh encryption");
     assert!(!m_opens(&mut lp, g, w, &copy, &body.parts), "M opens V's copy");
     // W arrives: V wraps both, and M still opens neither (V's epoch is e_R now)
-    for pk in lp.packages(A2).unwrap().into_iter().filter(|p| w_commits.contains(&p.id)) {
+    for pk in lp.packages_for(A2, V).unwrap().into_iter().filter(|p| w_commits.contains(&p.id)) {
         let _ = lp.deliver(V, &pk);
     }
     assert!(lp.peers[V].engine.wrap_secret(&g, Some((&w, &body.parts))).unwrap().is_some(), "V wraps once e_R is established");
@@ -362,7 +362,7 @@ fn opened_after_plain_arrival_counts_spec_crypto_5() {
     let (sealed, leak) = v_reseals_to_m(&mut lp, g, w);
     assert!(!leak, "M reads R's write through V's fresh encryption");
     assert!(!sealed, "V seals w it opened only under e_R, not established");
-    for pk in lp.packages(A2).unwrap().into_iter().filter(|p| w_commits.contains(&p.id)) {
+    for pk in lp.packages_for(A2, V).unwrap().into_iter().filter(|p| w_commits.contains(&p.id)) {
         let _ = lp.deliver(V, &pk);
     }
     assert!(lp.peers[V].engine.epochs(&g).unwrap().read.is_established(&e_r));
@@ -382,7 +382,7 @@ fn header_only_wrap_withheld_spec_crypto_5() {
     let body = lp.peers[V].engine.body(&w).unwrap().unwrap();
     let copy = lp.peers[V].engine.seal_to(&body, osis_blob::Class::Durable, &mut osis_crypto::SeededRng::from_u64(4)).unwrap().unwrap();
     assert!(!m_opens(&mut lp, g, w, &copy, &[]), "M opens a blob of w V wrapped as carrying no part");
-    for pk in lp.packages(A2).unwrap().into_iter().filter(|p| w_commits.contains(&p.id)) {
+    for pk in lp.packages_for(A2, V).unwrap().into_iter().filter(|p| w_commits.contains(&p.id)) {
         let _ = lp.deliver(V, &pk);
     }
     assert!(lp.peers[V].engine.wrap_secret(&g, Some((&w, &[]))).unwrap().is_some(), "V wraps w's header once e_R is established");
@@ -442,7 +442,7 @@ fn m_opens_entry(lp: &mut LocalPeer, g: Tid, w: CommitId, id: &BlobId, bytes: &[
 
 /// W reaches V: e_R is established there.
 fn w_arrives(lp: &mut LocalPeer, g: Tid, w_commits: &BTreeSet<CommitId>, e_r: &osis_crypto::Epoch) {
-    for pk in lp.packages(A2).unwrap().into_iter().filter(|p| w_commits.contains(&p.id)) {
+    for pk in lp.packages_for(A2, V).unwrap().into_iter().filter(|p| w_commits.contains(&p.id)) {
         let _ = lp.deliver(V, &pk);
     }
     assert!(lp.peers[V].engine.epochs(&g).unwrap().read.is_established(e_r));
@@ -789,7 +789,7 @@ fn relink_without_the_removal_leaks_nothing_spec_crypto_5() {
     }
     assert_eq!(r, None, "V repairs R's edit under its own epoch with e_R not established");
     // W arrives: V repairs, and M reads nothing of R's edit through it
-    for pk in lp.packages(A2).unwrap().into_iter().filter(|p| w_commits.contains(&p.id)) {
+    for pk in lp.packages_for(A2, V).unwrap().into_iter().filter(|p| w_commits.contains(&p.id)) {
         let _ = lp.deliver(V, &pk);
     }
     let c = lp.peers[V].engine.relink(&lost, &[g].into(), &mut |_, _| true).unwrap().expect("a repair once e_R is established");

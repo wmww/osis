@@ -1855,7 +1855,7 @@ mod tests {
             // commit: bob gets the rest, then the two puts and the keys in either order
             lp.peers[0].engine.grant(&t, &carol, &edge(Role::Read)).unwrap();
             lp.peers[0].engine.grant(&t, &bob, &edge(Role::Write)).unwrap();
-            let pks = lp.packages(0).unwrap();
+            let pks = lp.packages_to(0, 1).unwrap();
             let carries = |id: &CommitId| lp.peers[0].engine.writes_keyset(&t, id);
             let (key_pks, other): (Vec<_>, Vec<_>) = pks.into_iter().partition(|pk| carries(&pk.id));
             let (put_pks, rest): (Vec<_>, Vec<_>) = other.into_iter().partition(|pk| puts.contains(&pk.id));

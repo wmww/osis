@@ -48,7 +48,7 @@ fn ran_equals_never_ran(site: Step, skip: u32, scenario: impl Fn(Option<StepFaul
 /// for `t`'s record), then `c1`: `c2` applies when re-examined.
 fn pending_then_applied(f: Option<StepFault>) -> (LocalPeer, CommitId) {
     let (mut lp, (c1, c2)) = LocalPeer::cached("apply::tests_steps::pending_then_applied", pending_setup);
-    let pks = lp.packages(0).unwrap();
+    let pks = lp.packages_to(0, 1).unwrap();
     let pk = |c: CommitId| pks.iter().find(|p| p.id == c).unwrap();
     let e = &mut lp.peers[1].engine;
     e.ingest(&pk(c1).bytes, pk(c1).blobs.clone()).unwrap();
@@ -232,7 +232,7 @@ fn failing_answer_never_blocks_ingest() {
 #[test]
 fn bad_pending_commit_forgets_its_leftovers() {
     let (mut lp, (c1, c2)) = LocalPeer::cached("apply::tests_steps::pending_then_applied", pending_setup);
-    let pks = lp.packages(0).unwrap();
+    let pks = lp.packages_to(0, 1).unwrap();
     let pk = |c: CommitId| pks.iter().find(|p| p.id == c).unwrap();
     let e = &mut lp.peers[1].engine;
     e.ingest(&pk(c1).bytes, pk(c1).blobs.clone()).unwrap();

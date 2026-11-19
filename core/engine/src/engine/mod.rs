@@ -4772,7 +4772,7 @@ mod tests {
             e.commit(m)
         });
         failing(&mut lp.peers[0], &mut failed, |e| e.snapshot(&g, &reg));
-        let vpk = lp.packages(1).unwrap().into_iter().find(|p| p.id == v).unwrap();
+        let vpk = lp.packages_for(1, 0).unwrap().into_iter().find(|p| p.id == v).unwrap();
         failing(&mut lp.peers[0], &mut failed, |e| e.ingest(&vpk.bytes, vpk.blobs.clone()));
         // peer 2: what g's sync ID carries, the two-aspect commit's parts one at a time
         let pks = lp.packages_of(0, &g).unwrap();

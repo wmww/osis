@@ -127,7 +127,7 @@ fn planted_epoch_never_blocks_compaction_spec_crypto_4() {
         // N, granted now, gets what c holds, in some order
         lp.peers[0].engine.grant(&g, &tids[4], &edge(Role::Read)).unwrap();
         lp.sync(0, c).unwrap();
-        let mut pks = lp.packages(c).unwrap();
+        let mut pks = lp.packages_to(c, 4).unwrap();
         for k in (1..pks.len()).rev() {
             pks.swap(k, rng.next(k as u64 + 1) as usize);
         }
@@ -164,14 +164,14 @@ fn planted_epoch_never_blocks_compaction_spec_crypto_4() {
 #[test]
 fn unverified_genuine_entry_kept_beside_spec_crypto_4() {
     let (mut lp, g, tids) = granted(5, &[(3, Role::Admin)]);
-    let before: BTreeSet<CommitId> = lp.packages(0).unwrap().into_iter().map(|p| p.id).collect();
+    let before: BTreeSet<CommitId> = lp.commit_ids(0).into_iter().collect();
     rotate_leaving_out(&mut lp, 0, g, &BTreeSet::from([Role::Read]), &[]);
     let e = newest_read(&lp, 0, g).unwrap();
-    let rot: BTreeSet<CommitId> = lp.packages(0).unwrap().into_iter().map(|p| p.id).filter(|c| !before.contains(c)).collect();
+    let rot: BTreeSet<CommitId> = lp.commit_ids(0).into_iter().filter(|c| !before.contains(c)).collect();
     lp.peers[0].engine.grant(&g, &tids[4], &edge(Role::Read)).unwrap();
-    let gr: Vec<CommitId> = lp.packages(0).unwrap().into_iter().map(|p| p.id).filter(|c| !before.contains(c) && !rot.contains(c)).collect();
+    let gr: Vec<CommitId> = lp.commit_ids(0).into_iter().filter(|c| !before.contains(c) && !rot.contains(c)).collect();
     put_on(&mut lp, 0, g, "w", 1);
-    for pk in lp.packages(0).unwrap().into_iter().filter(|p| !rot.contains(&p.id)) {
+    for pk in lp.packages_for(0, 3).unwrap().into_iter().filter(|p| !rot.contains(&p.id)) {
         let _ = lp.peers[3].receive(&pk.bytes, pk.blobs.clone());
     }
     assert!(!based(&lp, 3, g, &e), "e verified at C without its rotation commit");
@@ -210,13 +210,13 @@ fn unverified_genuine_entry_kept_beside_spec_crypto_4() {
 #[test]
 fn mixed_commit_not_absorbed_spec_crdt_8() {
     let (mut lp, g, tids) = granted(6, &[(3, Role::Admin), (5, Role::Read)]);
-    let before: BTreeSet<CommitId> = lp.packages(0).unwrap().into_iter().map(|p| p.id).collect();
+    let before: BTreeSet<CommitId> = lp.commit_ids(0).into_iter().collect();
     rotate_leaving_out(&mut lp, 0, g, &BTreeSet::from([Role::Read]), &[]);
     let e = newest_read(&lp, 0, g).unwrap();
-    let rot: BTreeSet<CommitId> = lp.packages(0).unwrap().into_iter().map(|p| p.id).filter(|c| !before.contains(c)).collect();
+    let rot: BTreeSet<CommitId> = lp.commit_ids(0).into_iter().filter(|c| !before.contains(c)).collect();
     lp.peers[0].engine.grant(&g, &tids[4], &edge(Role::Write)).unwrap();
-    let gr: Vec<CommitId> = lp.packages(0).unwrap().into_iter().map(|p| p.id).filter(|c| !before.contains(c) && !rot.contains(c)).collect();
-    for pk in lp.packages(0).unwrap().into_iter().filter(|p| !rot.contains(&p.id)) {
+    let gr: Vec<CommitId> = lp.commit_ids(0).into_iter().filter(|c| !before.contains(c) && !rot.contains(c)).collect();
+    for pk in lp.packages_for(0, 3).unwrap().into_iter().filter(|p| !rot.contains(&p.id)) {
         let _ = lp.peers[3].receive(&pk.bytes, pk.blobs.clone());
     }
     assert!(!based(&lp, 3, g, &e), "e verified at C without its rotation commit");

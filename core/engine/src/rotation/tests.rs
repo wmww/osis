@@ -41,7 +41,7 @@ pub(super) fn granted(n: usize, grants: &[(usize, Role)]) -> (LocalPeer, Tid, Ve
 /// Delivers every commit of peer `from` to peer `to` without the `secrets.0` deltas of `x`
 /// (what a node that does not read `x` gets of them: certificates).
 pub(super) fn deliver_without_secrets(lp: &mut LocalPeer, from: usize, to: usize, x: Tid) {
-    for pk in lp.packages(from).unwrap() {
+    for pk in lp.packages_for(from, to).unwrap() {
         let b = osis_commit::CommitBlob::decode(&pk.bytes).unwrap();
         let cut = osis_commit::rewrite(&b, |ai| b.header.aspects.get(ai).is_some_and(|a| a.tid == x && a.ak.as_str() == "secrets.0"));
         let _ = lp.peers[to].receive(&cut.encode(), pk.blobs.clone());
@@ -366,7 +366,7 @@ fn box_applied_before_its_grant_is_taken_after_a_pending_read_spec_permissions_3
         let grant: BTreeSet<_> = lp.peers[0].engine.grant(&g, &n, &edge(Role::Read)).unwrap().commits.into_iter().collect();
         let r = lp.peers[0].engine.rotate_boxing_only(&[g], &[Role::Read], &[a, n]).unwrap().unwrap();
         let e = newest_read(&lp, 0, g).unwrap();
-        let all = lp.packages(0).unwrap();
+        let all = lp.packages_for(0, 1).unwrap();
         let (rest, g_pks): (Vec<_>, Vec<_>) = all.iter().filter(|pk| pk.id != r).partition(|pk| !grant.contains(&pk.id));
         if late {
             let rp = all.iter().find(|pk| pk.id == r).unwrap();
@@ -749,7 +749,7 @@ fn rotation_after_invalid_one_through_regrants_spec_crypto_4() {
 /// Peer `w`, holding read epoch `s` of `g`, signs F, a forged rotation commit of `s`: `s`'s
 /// keyset (listing nothing), history box and `holder`'s box at `s` written again. Returns F's ID.
 fn forge_rotation(lp: &mut LocalPeer, w: usize, g: Tid, s: osis_crypto::Epoch, holder: Tid) -> osis_base::CommitId {
-    let ids = |lp: &mut LocalPeer| -> BTreeSet<osis_base::CommitId> { lp.packages(w).unwrap().into_iter().map(|p| p.id).collect() };
+    let ids = |lp: &mut LocalPeer| -> BTreeSet<osis_base::CommitId> { lp.commit_ids(w).into_iter().collect() };
     let before = ids(lp);
     lp.peers[w]
         .engine
@@ -785,7 +785,7 @@ fn forged_rotation_withheld_removal_spec_crypto_4() {
         lp.peers[0].engine.grant(&g, &tids[i], &edge(r)).unwrap();
     }
     lp.sync_all().unwrap();
-    let ids = |lp: &mut LocalPeer, i: usize| -> BTreeSet<osis_base::CommitId> { lp.packages(i).unwrap().into_iter().map(|p| p.id).collect() };
+    let ids = |lp: &mut LocalPeer, i: usize| -> BTreeSet<osis_base::CommitId> { lp.commit_ids(i).into_iter().collect() };
     let before = ids(&mut lp, 0);
     lp.peers[0].engine.demote(&g, &Demotion { holder: tids[2], new: None, retain: None }).unwrap();
     let r_s: BTreeSet<_> = ids(&mut lp, 0).difference(&before).copied().collect();
@@ -794,14 +794,14 @@ fn forged_rotation_withheld_removal_spec_crypto_4() {
     let f = forge_rotation(&mut lp, 1, g, s, tids[3]);
     let before = ids(&mut lp, 1);
     lp.peers[1].engine.grant(&g, &tids[3], &edge(Role::Admin)).unwrap();
-    for pk in lp.packages(1).unwrap().into_iter().filter(|p| !before.contains(&p.id)) {
+    for pk in lp.packages_for(1, 0).unwrap().into_iter().filter(|p| !before.contains(&p.id)) {
         lp.peers[0].receive(&pk.bytes, pk.blobs).unwrap();
     }
     lp.peers[0].engine.demote(&g, &Demotion { holder: tids[1], new: None, retain: None }).unwrap();
     let e = newest_read(&lp, 0, g).unwrap();
     assert!(e.n() > s.n());
-    let mut all = lp.packages(0).unwrap();
-    all.extend(lp.packages(1).unwrap());
+    let mut all = lp.packages_for(0, 3).unwrap();
+    all.extend(lp.packages_for(1, 3).unwrap());
     for pk in all.iter().filter(|p| !r_s.contains(&p.id)) {
         let _ = lp.peers[3].receive(&pk.bytes, pk.blobs.clone());
     }
@@ -832,15 +832,15 @@ fn valid_forged_rotation_withheld_removal_spec_crypto_4() {
     let (mut lp, g, tids, r_s, s) = removed_reader();
     lp.sync(0, 1).unwrap();
     let f = forge_rotation(&mut lp, 1, g, s, tids[3]);
-    for pk in lp.packages(1).unwrap() {
+    for pk in lp.packages_for(1, 0).unwrap() {
         let _ = lp.peers[0].receive(&pk.bytes, pk.blobs);
     }
     assert!(lp.peers[0].engine.epochs(&g).unwrap().read.get(&s).unwrap().rotations.contains_key(&f), "F valid at A");
     lp.peers[0].engine.demote(&g, &Demotion { holder: tids[1], new: None, retain: None }).unwrap();
     let e = newest_read(&lp, 0, g).unwrap();
     assert!(e.n() > s.n());
-    let mut all = lp.packages(0).unwrap();
-    all.extend(lp.packages(1).unwrap());
+    let mut all = lp.packages_for(0, 3).unwrap();
+    all.extend(lp.packages_for(1, 3).unwrap());
     for pk in all.iter().filter(|p| !r_s.contains(&p.id)) {
         let _ = lp.peers[3].receive(&pk.bytes, pk.blobs.clone());
     }
@@ -870,7 +870,7 @@ fn removed_reader() -> (LocalPeer, Tid, Vec<Tid>, BTreeSet<osis_base::CommitId>,
 }
 
 pub(super) fn commit_ids(lp: &mut LocalPeer, i: usize) -> BTreeSet<osis_base::CommitId> {
-    lp.packages(i).unwrap().into_iter().map(|p| p.id).collect()
+    lp.commit_ids(i).into_iter().collect()
 }
 
 /// Delivers `all` but `withheld` to peer `x`; asserts `e` is not established there (it names a
@@ -914,7 +914,7 @@ fn writer_rotation_skips(list_s: bool) {
             super::record(tx, g, &rot)
         })
         .unwrap();
-    for pk in lp.packages(1).unwrap() {
+    for pk in lp.packages_for(1, 0).unwrap() {
         let _ = lp.peers[0].receive(&pk.bytes, pk.blobs);
     }
     let e1 = newest_read(&lp, 0, g).unwrap();
@@ -923,8 +923,8 @@ fn writer_rotation_skips(list_s: bool) {
     lp.peers[0].engine.demote(&g, &Demotion { holder: tids[1], new: None, retain: None }).unwrap();
     let e = newest_read(&lp, 0, g).unwrap();
     assert!(e.n() > e1.n());
-    let mut all = lp.packages(0).unwrap();
-    all.extend(lp.packages(1).unwrap());
+    let mut all = lp.packages_for(0, 3).unwrap();
+    all.extend(lp.packages_for(1, 3).unwrap());
     withheld_then_arrives(&mut lp, 3, g, e, &all, &r_s);
 }
 
@@ -949,7 +949,7 @@ fn snapshot_keyed_without_removal_spec_crypto_4() {
     lp.peers[0].engine.demote(&g, &Demotion { holder: tids[1], new: None, retain: None }).unwrap();
     let e = newest_read(&lp, 0, g).unwrap();
     assert!(e.n() > s.n());
-    let all = lp.packages(0).unwrap();
+    let all = lp.packages_for(0, 3).unwrap();
     withheld_then_arrives(&mut lp, 3, g, e, &all, &r_s);
 }
 
@@ -993,8 +993,8 @@ fn rotator_beside_forged_rotation_spec_crypto_4() {
     let s = newest_read(&lp, 0, g).unwrap();
     lp.sync(0, 1).unwrap();
     forge_rotation(&mut lp, 1, g, s, tids[3]);
-    let mut all = lp.packages(0).unwrap();
-    all.extend(lp.packages(1).unwrap());
+    let mut all = lp.packages_for(0, 4).unwrap();
+    all.extend(lp.packages_for(1, 4).unwrap());
     for pk in all.iter().filter(|p| !r_p.contains(&p.id)) {
         let _ = lp.peers[4].receive(&pk.bytes, pk.blobs.clone());
     }
@@ -1002,7 +1002,9 @@ fn rotator_beside_forged_rotation_spec_crypto_4() {
     lp.peers[4].engine.demote(&g, &Demotion { holder: tids[1], new: None, retain: None }).unwrap();
     let e = newest_read(&lp, 4, g).unwrap();
     assert!(e.n() > s.n());
-    all.extend(lp.packages(4).unwrap());
+    let mut all = lp.packages_for(0, 3).unwrap();
+    all.extend(lp.packages_for(1, 3).unwrap());
+    all.extend(lp.packages_for(4, 3).unwrap());
     withheld_then_arrives(&mut lp, 3, g, e, &all, &r_s);
 }
 
@@ -1284,7 +1286,7 @@ fn finalize_without_its_until_unmet_spec_crypto_4() {
     lp.peers[0].engine.ensure_rotated(&g).unwrap();
     assert!(lp.peers[0].engine.core.key_holders(&g).iter().all(|h| h.0 != tids[1]), "D finalized at A");
     let e = newest_read(&lp, 0, g).unwrap();
-    let all = lp.packages(0).unwrap();
+    let all = lp.packages_for(0, 2).unwrap();
     for pk in all.iter().filter(|p| !u.contains(&p.id)) {
         let _ = lp.peers[2].receive(&pk.bytes, pk.blobs.clone());
     }
@@ -1326,8 +1328,8 @@ fn finalize_applies_whole_or_not_spec_permissions_2() {
     lp.peers[1].clock.advance(1_000);
     lp.peers[1].engine.ensure_rotated(&g).unwrap();
     assert!(lp.peers[1].engine.core.key_holders(&g).iter().all(|h| h.0 != tids[3] && h.0 != tids[4]), "D1, D2 finalized at B");
-    let mut all = lp.packages(0).unwrap();
-    all.extend(lp.packages(1).unwrap());
+    let mut all = lp.packages_for(0, 2).unwrap();
+    all.extend(lp.packages_for(1, 2).unwrap());
     for pk in all.iter().filter(|p| !u1.contains(&p.id)) {
         let _ = lp.peers[2].receive(&pk.bytes, pk.blobs.clone());
     }
@@ -1353,7 +1355,7 @@ fn named_commit_without_its_edge_write_unmet_spec_crypto_4() {
     let (mut lp, g, tids, r_s, _) = removed_reader();
     rotate_leaving_out(&mut lp, 0, g, &BTreeSet::from([Role::Read]), &[]);
     let e = newest_read(&lp, 0, g).unwrap();
-    let all = lp.packages(0).unwrap();
+    let all = lp.packages_for(0, 3).unwrap();
     for pk in all.clone() {
         let bytes = if r_s.contains(&pk.id) {
             let b = osis_commit::CommitBlob::decode(&pk.bytes).unwrap();
@@ -1404,8 +1406,8 @@ fn audit_dropped_grant_named_spec_crypto_4() {
     // write with read: A writes G only through O, shown at write by a keyset of write
     rotate_leaving_out(&mut lp, 0, g, &BTreeSet::from([Role::Read, Role::Write]), &[]);
     let e = newest_read(&lp, 0, g).unwrap();
-    let mut all = lp.packages(0).unwrap();
-    all.extend(lp.packages(1).unwrap());
+    let mut all = lp.packages_for(0, 3).unwrap();
+    all.extend(lp.packages_for(1, 3).unwrap());
     // X gets C after the demotion's `ts` (received by it, X's vouch would keep C,
     // spec/permissions.md §5.1 Vouches)
     lp.peers[3].clock.advance(1_000);
@@ -1456,7 +1458,7 @@ fn newest_event_names_departure_spec_crypto_4() {
 
 /// Delivers every package of peer `from` to peer `to` but those in `skip`.
 pub(super) fn send_skipping(lp: &mut LocalPeer, from: usize, to: usize, skip: &BTreeSet<osis_base::CommitId>) {
-    for pk in lp.packages(from).unwrap().iter().filter(|p| !skip.contains(&p.id)) {
+    for pk in lp.packages_for(from, to).unwrap().iter().filter(|p| !skip.contains(&p.id)) {
         let _ = lp.peers[to].receive(&pk.bytes, pk.blobs.clone());
     }
 }
@@ -1520,17 +1522,18 @@ fn removal_with(bad: &[&str], leave_out: bool) -> Vec<String> {
     lp.peers[0].engine.core.skip_writer_rules = false;
     let forged = lp.peers[0].engine.core.forged.take().unwrap();
     let forged_id = osis_commit::CommitBlob::decode(&forged).unwrap().id();
-    for pk in lp.packages(0).unwrap() {
-        if before.contains(&pk.id) {
-            continue;
-        }
-        let b = osis_commit::CommitBlob::decode(&forged).unwrap();
-        let bytes = match (pk.id == forged_id, leave_out) {
-            (true, true) => osis_commit::rewrite(&b, |ai| bad.contains(&b.header.aspects[ai].ak.as_str())).encode(),
-            (true, false) => forged.clone(),
-            _ => pk.bytes.clone(),
-        };
-        for i in [1, 2, 3] {
+    for i in [1, 2, 3] {
+        for pk in lp.packages_for(0, i).unwrap() {
+            if before.contains(&pk.id) {
+                continue;
+            }
+            // the hostile admin sends its forged commit whole
+            let b = osis_commit::CommitBlob::decode(&forged).unwrap();
+            let bytes = match (pk.id == forged_id, leave_out) {
+                (true, true) => osis_commit::rewrite(&b, |ai| bad.contains(&b.header.aspects[ai].ak.as_str())).encode(),
+                (true, false) => forged.clone(),
+                _ => pk.bytes.clone(),
+            };
             assert!(matches!(lp.peers[i].receive(&bytes, pk.blobs.clone()).unwrap(), crate::Ingested::Applied(_)));
         }
     }
@@ -1542,8 +1545,8 @@ fn removal_with(bad: &[&str], leave_out: bool) -> Vec<String> {
     }
     lp.advance(1000);
     assert!(lp.peers[1].engine.ensure_rotated(&g).unwrap().1.is_empty());
-    for pk in lp.packages(1).unwrap() {
-        for i in [2, 3] {
+    for i in [2, 3] {
+        for pk in lp.packages_for(1, i).unwrap() {
             let _ = lp.peers[i].receive(&pk.bytes, pk.blobs.clone());
         }
     }
@@ -2101,7 +2104,7 @@ fn withdrawn_epoch_compacts_judged_alike_spec_crypto_4() {
         // N, granted now, gets what c holds, in some order
         lp.peers[0].engine.grant(&g, &tids[4], &edge(Role::Read)).unwrap();
         lp.sync(0, c).unwrap();
-        let mut pks = lp.packages(c).unwrap();
+        let mut pks = lp.packages_to(c, 4).unwrap();
         for k in (1..pks.len()).rev() {
             pks.swap(k, rng.next(k as u64 + 1) as usize);
         }
@@ -2114,7 +2117,7 @@ fn withdrawn_epoch_compacts_judged_alike_spec_crypto_4() {
         assert_eq!(read(&lp, 4).current(), read(&lp, c).current(), "seed {seed}: N and compactor {c} count different current read epochs");
         assert!(reads_key(&mut lp, 4, g, "after"), "seed {seed}: N reads nothing of what came after");
         // the snapshot vouches for no names: N, granted after, still never gets e_R (R9); what it
-        // reads of "w" proves nothing here, as `packages` carry c's opened commits in the clear
+        // reads of "w" proves nothing here, as packages carry c's opened commits in the clear
         assert!(read(&lp, 4).reading_secret(&e_r).is_none(), "seed {seed}: N, granted after, holds e_R's secret");
         let differ: Vec<_> = secrets_verdicts(&lp, c, 4, g).into_iter().filter(|(_, a, b)| a != b).collect();
         assert!(differ.is_empty(), "seed {seed}: compactor {c} and N judge `secrets.0` parts differently: {differ:?}");
@@ -2707,7 +2710,7 @@ fn derived_write_after_own_secrets_is_merged_spec_crypto_4() {
     lp.peers[1].restart(0).unwrap();
     // others get every commit but the write itself, which reaches them only as that blob
     let but_w = |lp: &mut LocalPeer, to: usize| {
-        for pk in lp.packages(1).unwrap().into_iter().filter(|pk| pk.id != w) {
+        for pk in lp.packages_for(1, to).unwrap().into_iter().filter(|pk| pk.id != w) {
             let _ = lp.deliver(to, &pk);
         }
     };
@@ -2763,7 +2766,7 @@ fn served_secrets(lp: &mut LocalPeer, g: Tid) -> (std::sync::Arc<ct::Secrets>, c
 #[test]
 fn a_held_grant_again_after_a_self_removal_serves_the_state_held_spec_perm_3() {
     let (mut lp, g, tids) = granted(2, &[(1, Role::Write)]);
-    let pks = lp.packages(0).unwrap();
+    let pks = lp.packages_for(0, 1).unwrap();
     lp.peers[1].restart(0).unwrap();
     let (before, _) = served_secrets(&mut lp, g);
     assert!(before.boxes.keys().any(|b| b.holder == osis_base::Weak(tids[1])), "W's boxes held");

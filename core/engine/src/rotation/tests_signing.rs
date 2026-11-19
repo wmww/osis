@@ -385,13 +385,14 @@ fn a_listing_waits_for_its_things_delete_keys_spec_permissions_5_5() {
     m.op(u, &ct::ROLES, osis_crdt::PathOp { path: vec![osis_crdt::PathSeg::Key(Value::Weak(a.account))], op: osis_crdt::Op::Set(osis_schema::Codec::to_value(&edge(Role::Write))) }).unwrap();
     lp.peers[3].commit(m).unwrap();
     lp.peers[3].engine.grant(&u, &a.account, &edge(Role::Write)).unwrap();
-    let pks = lp.packages(3).unwrap();
+    let (pks, pks2) = (lp.packages_for(3, 1).unwrap(), lp.packages_for(3, 2).unwrap());
     let carries = |id: &CommitId| lp.peers[3].engine.writes_keyset(&u, id);
     let (key_pks, rest): (Vec<_>, Vec<_>) = pks.into_iter().partition(|pk| carries(&pk.id));
+    let rest2: Vec<_> = pks2.into_iter().filter(|pk| !carries(&pk.id)).collect();
     for pk in rest.iter().chain(&key_pks) {
         lp.deliver(1, pk).unwrap();
     }
-    for pk in &rest {
+    for pk in &rest2 {
         lp.deliver(2, pk).unwrap();
     }
     assert!(!lp.peers[2].engine.holds_delete_keys(&u).unwrap(), "u's delete keys are not at node 2");

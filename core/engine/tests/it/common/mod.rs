@@ -330,10 +330,7 @@ pub fn packages(lp: &mut LocalPeer, from: usize) -> Vec<Package> {
 /// sync set after `LocalPeer::sync`, on a copy of the world): what those sync IDs carry and every
 /// certificate (`LocalPeer::packages_under`), for a test handing them over in its own order.
 pub fn packages_to(lp: &mut LocalPeer, from: usize, to: usize) -> Vec<Package> {
-    let mut c = lp.copy().unwrap();
-    c.sync(from, to).unwrap();
-    let synced = c.synced(to).unwrap();
-    lp.packages_under(from, &synced).unwrap()
+    lp.packages_to(from, to).unwrap()
 }
 
 /// Delivers to peer `to` of `other` (a net apart) what `lp`'s peer `from` sends it in a sync

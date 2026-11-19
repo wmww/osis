@@ -78,7 +78,7 @@ fn rotation_out_of_order_spec_crypto_4() {
     let e2 = r2.rotated[0].epoch;
     assert_eq!(lp.peers[0].engine.epochs(&a).unwrap().read.current(), vec![e2]);
     // node 1: the thing, then e2's commit before e1's
-    let pks = lp.packages(0).unwrap();
+    let pks = lp.packages_for(0, 1).unwrap();
     for p in pks.iter().filter(|p| p.id != c1 && p.id != c2) {
         let _ = lp.deliver(1, p);
     }
@@ -171,7 +171,7 @@ fn late_keys_part_establishes_rotation_spec_crypto_4() {
     let e1 = r1.rotated.iter().find(|x| x.role == Role::Read).unwrap().epoch;
     let (c2, r2) = rotation_commit(&mut lp, a, 2, BTreeSet::from([Role::Read]), &Names::default());
     let e2 = r2.rotated[0].epoch;
-    let pks = lp.packages(0).unwrap();
+    let pks = lp.packages_for(0, 1).unwrap();
     for p in pks.iter().filter(|p| p.id != c2) {
         let _ = lp.deliver(1, p);
     }

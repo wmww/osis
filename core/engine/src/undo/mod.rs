@@ -931,7 +931,7 @@ mod tests {
             let d = lp.peers[1].commit(m).unwrap().unwrap();
             lp.advance(10);
             lp.peers[1].engine.snapshot(&t, &x).unwrap().unwrap();
-            for pk in lp.packages(1).unwrap() {
+            for pk in lp.packages_for(1, 0).unwrap() {
                 if headers || pk.id != d {
                     lp.deliver(0, &pk).unwrap();
                 }
@@ -985,7 +985,7 @@ mod tests {
     // Delivers `from`'s commits `to` peer `to`, `id` without its parts on `leave`'s thing (held
     // as missing there).
     fn deliver_leaving(lp: &mut LocalPeer, from: usize, to: usize, id: osis_base::CommitId, leave: osis_base::Tid) {
-        for pk in lp.packages(from).unwrap() {
+        for pk in lp.packages_for(from, to).unwrap() {
             let bytes = if pk.id == id {
                 let b = osis_commit::CommitBlob::decode(&pk.bytes).unwrap();
                 osis_commit::rewrite(&b, |ai| b.header.aspects[ai].tid == leave).encode()

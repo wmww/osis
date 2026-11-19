@@ -647,7 +647,7 @@ fn removed_writers_writes(seed: u64) -> (usize, bool) {
     assert_eq!(reads(&mut lp, a, t, "x:v.0"), want, "{at}: the remover restarted");
     // a fresh node holding t, granted read by Alice, handed everything Alice holds
     let mut fresh = lp.fresh_reader(a, t, 3 + seed);
-    let mut pks = lp.packages(a).unwrap();
+    let mut pks = lp.packages_to_peer(a, &mut fresh).unwrap();
     for _ in 0..3 {
         for i in (1..pks.len()).rev() {
             pks.swap(i, below(i as u64 + 1) as usize);
@@ -723,7 +723,7 @@ fn a_compaction_around_a_write_at_its_removals_ts_reads_alike_spec_perm_5_2() {
             let mut fresh = lp.fresh_reader(a, t, 3);
             lp.sync(a, c).unwrap();
             for from in [a, c] {
-                let mut pks = lp.packages(from).unwrap();
+                let mut pks = lp.packages_to_peer(from, &mut fresh).unwrap();
                 for rev in [false, true] {
                     if rev {
                         pks.reverse();

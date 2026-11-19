@@ -19,7 +19,7 @@ fn two() -> (LocalPeer, [Tid; 2]) {
     let a = lp.peers[0].engine.create_account().unwrap().0.account;
     let b = lp.peers[1].engine.create_account().unwrap().0.account;
     for (x, y) in [(0, 1), (1, 0)] {
-        for pk in lp.packages(x).unwrap() {
+        for pk in lp.packages_for(x, y).unwrap() {
             lp.deliver(y, &pk).unwrap();
         }
     }

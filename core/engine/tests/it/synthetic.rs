@@ -11,7 +11,7 @@ use osis_engine::Event;
 fn diagnostics_deduped() {
     let mut lp = net(2, 0);
     new_thing(&mut lp, 0);
-    let pk = lp.packages(0).unwrap().pop().unwrap();
+    let pk = lp.packages_for(0, 1).unwrap().pop().unwrap();
     // malformed: the blob's outer array one short
     let mut bad = pk.bytes.clone();
     bad[0] ^= 1;

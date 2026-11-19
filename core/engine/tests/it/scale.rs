@@ -221,7 +221,7 @@ fn tid_removals(n: usize) -> Vec<(u64, u64, u64)> {
             lp.peers[0].commit(m).unwrap()
         });
         let id = c.expect("each writes");
-        let bytes = lp.packages(0).unwrap().into_iter().find(|p| p.id == id).map_or(0, |p| p.bytes.len() as u64);
+        let bytes = lp.peers[0].engine.package(&id).unwrap().map_or(0, |p| p.bytes.len() as u64);
         out.push((w.loads(), w.page_writes(), bytes));
     }
     let Some(Value::Set(v)) = lp.peers[0].engine.get(&x, &ak("t:refs.0")).unwrap() else { panic!() };
@@ -511,7 +511,7 @@ fn late_deltas(n: usize, asp: &osis_schema::Aspect<Value>, compact: bool) -> [Wo
     if compact {
         lp.peers[0].engine.snapshot(&t, &k).unwrap().unwrap();
     }
-    let pks = lp.packages(1).unwrap();
+    let pks = lp.packages_for(1, 0).unwrap();
     let pk = |c: &osis_base::CommitId| pks.iter().find(|p| p.id == *c).unwrap().clone();
     lp.deliver(0, &pk(&late[0])).unwrap();
     let (_, old) = measured_at(&mut lp, 0, |lp| {
@@ -524,7 +524,7 @@ fn late_deltas(n: usize, asp: &osis_schema::Aspect<Value>, compact: bool) -> [Wo
     for i in 0..5 {
         add(&mut lp, 0, t, asp, format!("r{i}"));
     }
-    let pk = lp.packages(1).unwrap().into_iter().find(|p| p.id == recent).unwrap();
+    let pk = lp.packages_for(1, 0).unwrap().into_iter().find(|p| p.id == recent).unwrap();
     let (_, recent) = measured_at(&mut lp, 0, |lp| {
         lp.deliver(0, &pk).unwrap();
         lp.peers[0].engine.replaced_at(&ids[0], &t, &k).unwrap();
@@ -585,7 +585,7 @@ fn validity_flip(n: usize) -> [Work; 2] {
         add(&mut lp, 0, t, &TAGS, format!("e{i}"));
     }
     let bs = add(&mut lp, 1, t, &TAGS, "b".into());
-    let pk = lp.packages(1).unwrap().into_iter().find(|p| p.id == bs).unwrap();
+    let pk = lp.packages_for(1, 0).unwrap().into_iter().find(|p| p.id == bs).unwrap();
     lp.deliver(0, &pk).unwrap();
     let scope = osis_perm::DemotionScope { roles: BTreeMap::from([(b, BTreeSet::from([t]))]), content: BTreeMap::from([(b, BTreeSet::from([t]))]) };
     let now = lp.peers[2].engine.now();
@@ -595,8 +595,8 @@ fn validity_flip(n: usize) -> [Work; 2] {
     m.frontier(osis_perm::Frontier::new(f.commits));
     let rv = lp.peers[2].commit(m).unwrap().unwrap();
     let late = add(&mut lp, 1, t, &TAGS, "late".into());
-    let rv = lp.packages(2).unwrap().into_iter().find(|p| p.id == rv).unwrap();
-    let late = lp.packages(1).unwrap().into_iter().find(|p| p.id == late).unwrap();
+    let rv = lp.packages_for(2, 0).unwrap().into_iter().find(|p| p.id == rv).unwrap();
+    let late = lp.packages_for(1, 0).unwrap().into_iter().find(|p| p.id == late).unwrap();
     let tags = |lp: &mut LocalPeer| match lp.peers[0].engine.get(&t, &k).unwrap() {
         Some(Value::Set(s)) => s.len(),
         _ => 0,
@@ -623,7 +623,7 @@ fn snapshot_join(n: usize, asp: &osis_schema::Aspect<Value>) -> [Work; 2] {
     let x = add(&mut lp, 0, t, asp, "x".into());
     let snap = lp.peers[0].engine.snapshot(&t, &k).unwrap().unwrap();
     let one = add(&mut lp, 0, t, asp, "y".into());
-    let pks = lp.packages(0).unwrap();
+    let pks = lp.packages_for(0, 1).unwrap();
     let pk = |c: osis_base::CommitId| pks.iter().find(|p| p.id == c).unwrap().clone();
     lp.deliver(1, &pk(x)).unwrap();
     let (_, join) = measured_at(&mut lp, 1, |lp| lp.deliver(1, &pk(snap)).unwrap());
@@ -639,13 +639,13 @@ fn snapshot_first(n: usize) -> Work {
     let mut lp = net(2, 0);
     // peer 1 a reader: content of a thing outside its node closure waits (spec/commits.md §4)
     let t = crate::common::new_shared(&mut lp, 0);
-    let base: BTreeSet<_> = lp.packages(0).unwrap().iter().map(|p| p.id).collect();
+    let base: BTreeSet<_> = lp.commit_ids(0).into_iter().collect();
     for i in 0..n {
         add(&mut lp, 0, t, &TAGS, format!("e{i}"));
     }
     let k = ak("t:tags.0");
     let snap = lp.peers[0].engine.snapshot(&t, &k).unwrap().unwrap();
-    let pks = lp.packages(0).unwrap();
+    let pks = crate::common::packages_to(&mut lp, 0, 1);
     for p in pks.iter().filter(|p| base.contains(&p.id) || p.id == snap) {
         lp.deliver(1, p).unwrap();
     }
@@ -706,13 +706,13 @@ fn addenda_rejudge(n: usize, with: bool) -> Work {
     }
     lp.advance(1_000);
     let bs = add(&mut lp, 1, t, &TAGS, "b".into());
-    let pk = lp.packages(1).unwrap().into_iter().find(|p| p.id == bs).unwrap();
+    let pk = lp.packages_for(1, 2).unwrap().into_iter().find(|p| p.id == bs).unwrap();
     lp.deliver(2, &pk).unwrap();
     lp.advance(1_000);
     let d = osis_engine::flows::Demotion { holder: ids[1], new: None, retain: None };
     let rv = *lp.peers[0].engine.demote(&t, &d).unwrap().commits.last().unwrap();
     lp.advance(1_000);
-    let pk = lp.packages(0).unwrap().into_iter().find(|p| p.id == rv).unwrap();
+    let pk = lp.packages_for(0, 2).unwrap().into_iter().find(|p| p.id == rv).unwrap();
     lp.deliver(2, &pk).unwrap();
     if with {
         // C's addendum, then B's add again once vouched for
@@ -722,7 +722,7 @@ fn addenda_rejudge(n: usize, with: bool) -> Work {
     let Some(Value::Set(v)) = lp.peers[0].engine.get(&t, &ak("t:tags.0")).unwrap() else { panic!() };
     assert_eq!(v.len(), n + usize::from(with), "C's addendum keeps B's add");
     let g = set_edge(&mut lp.peers[3].engine, ids[3], ids[4], Some(edge(Role::Write)), None);
-    let pk = lp.packages(3).unwrap().into_iter().find(|p| p.id == g).unwrap();
+    let pk = lp.packages_for(3, 0).unwrap().into_iter().find(|p| p.id == g).unwrap();
     measured_at(&mut lp, 0, |lp| lp.deliver(0, &pk).unwrap()).1
 }
 
@@ -1003,7 +1003,7 @@ fn role_history_join(n: usize) -> [Work; 4] {
     for i in 0..PAGED_HISTORY {
         edge_write(&mut lp.peers[0].engine, t, Tid::from_bytes([i as u8 + 100; 15]), Some(edge(Role::Read)), None);
     }
-    let base: BTreeSet<_> = lp.packages(0).unwrap().iter().map(|p| p.id).collect();
+    let base: BTreeSet<_> = lp.commit_ids(0).into_iter().collect();
     for i in 0..n {
         // a grant, then its removal: a holder's records (a map key's) stay few, so a write
         // reads the key's few records, not the history (a paged map's join loads every record
@@ -1012,7 +1012,7 @@ fn role_history_join(n: usize) -> [Work; 4] {
         let e = (i % 2 == 0).then(|| edge(Role::Read));
         edge_write(&mut lp.peers[0].engine, t, h, e, None);
     }
-    let pks = lp.packages(0).unwrap();
+    let pks = lp.packages_for(0, 1).unwrap();
     for p in pks.iter().filter(|p| base.contains(&p.id)) {
         lp.deliver(1, p).unwrap();
     }
@@ -1174,7 +1174,7 @@ fn expiries(n: usize) -> ([Work; 2], Vec<usize>) {
         ids.push(lp.peers[0].commit(m).unwrap().unwrap());
     }
     ids.push(lp.peers[0].engine.snapshot(&t, &k).unwrap().unwrap());
-    let pks = lp.packages(0).unwrap();
+    let pks = lp.packages_for(0, 1).unwrap();
     for c in ids.iter().rev() {
         lp.deliver(1, pks.iter().find(|p| p.id == *c).unwrap()).unwrap();
     }
