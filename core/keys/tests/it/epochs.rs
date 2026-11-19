@@ -9,15 +9,6 @@ use osis_crypto::{Epoch, Secret32, thing_role_secret};
 use osis_keys::aspects::{box_key, history_key};
 use osis_keys::{ActorEpochs, HolderKeys, Opener, Recipient, ROLES, ingest, rotate};
 use osis_schema::core_types::{Keys, SecretBox, Secrets};
-use std::collections::BTreeSet;
-
-fn all() -> BTreeSet<Role> {
-    ROLES.into_iter().collect()
-}
-
-fn read() -> BTreeSet<Role> {
-    [Role::Read].into_iter().collect()
-}
 
 struct World {
     a: osis_base::Tid,
@@ -52,7 +43,7 @@ fn own_secrets_switch() {
     let rg = &mut rng(0);
     let w = World::new();
     let derived = ActorEpochs::derived(&w.pe, &w.a);
-    let rot = rotate(&w.a, &all(), &derived, &Secrets::default(), &w.holders(), &osis_keys::Names::default(), &mut *rg).unwrap();
+    let rot = rotate(&w.a, &roles(&ROLES), &derived, &Secrets::default(), &w.holders(), &osis_keys::Names::default(), &mut *rg).unwrap();
     assert!(rot.unboxed.is_empty());
     let mut s = Secrets::default();
     rot.secrets.apply(&mut s);
@@ -132,13 +123,13 @@ fn fork_merge() {
     let rg = &mut rng(0);
     let w = World::new();
     let derived = ActorEpochs::derived(&w.pe, &w.a);
-    let r1 = rotate(&w.a, &all(), &derived, &Secrets::default(), &w.holders(), &osis_keys::Names::default(), &mut *rg).unwrap();
+    let r1 = rotate(&w.a, &roles(&ROLES), &derived, &Secrets::default(), &w.holders(), &osis_keys::Names::default(), &mut *rg).unwrap();
     let mut base = Secrets::default();
     r1.secrets.apply(&mut base);
     let view = applied(&r1, &derived, 1);
 
-    let x = rotate(&w.a, &read(), &view, &base, &w.holders(), &osis_keys::Names::default(), &mut *rg).unwrap();
-    let y = rotate(&w.a, &read(), &view, &base, &w.holders(), &osis_keys::Names::default(), &mut *rg).unwrap();
+    let x = rotate(&w.a, &roles(&[Role::Read]), &view, &base, &w.holders(), &osis_keys::Names::default(), &mut *rg).unwrap();
+    let y = rotate(&w.a, &roles(&[Role::Read]), &view, &base, &w.holders(), &osis_keys::Names::default(), &mut *rg).unwrap();
     let (ex, ey) = (x.role(Role::Read).unwrap().epoch, y.role(Role::Read).unwrap().epoch);
     assert_eq!((ex.n(), ey.n()), (3, 3));
     assert_ne!(ex, ey);
@@ -182,7 +173,7 @@ fn fork_merge() {
     let mut zview = view.clone();
     zview = x.preview(&zview).unwrap();
     zview = y.preview(&zview).unwrap();
-    let z = rotate(&w.a, &read(), &zview, &s1, &w.holders(), &osis_keys::Names::default(), &mut *rg).unwrap();
+    let z = rotate(&w.a, &roles(&[Role::Read]), &zview, &s1, &w.holders(), &osis_keys::Names::default(), &mut *rg).unwrap();
     let history: std::collections::BTreeSet<_> = zview.read.held_established().map(|x| x.0).collect();
     assert!(history.contains(&ex) && history.contains(&ey));
     assert_eq!(z.role(Role::Read).unwrap().supersedes, history);

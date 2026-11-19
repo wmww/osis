@@ -28,7 +28,7 @@ fn forked() -> Forked {
     let (a, p) = (tid(1), tid(2));
     let mut g = rng(0);
     let pe = actor_epochs(0x20);
-    let admin = Recipient { holder: p, role: Role::Admin, keys: HolderKeys::from_keys(&keys_of(&pe)).unwrap().with_own(&pe), floor: 0 };
+    let admin = admin_rcpt(p, &pe);
     let mut view = ActorEpochs::derived(&pe, &a);
     let mut s = Secrets::default();
     let r1 = rotate(&a, &roles_up_to(Role::Admin), &view, &s, std::slice::from_ref(&admin), &osis_keys::Names::default(), &mut g).unwrap();
@@ -42,6 +42,17 @@ fn forked() -> Forked {
     view = x.preview(&view).unwrap();
     view = y.preview(&view).unwrap();
     Forked { a, view, s, forks: [x.role(Role::Read).unwrap().epoch, y.role(Role::Read).unwrap().epoch], rng: g }
+}
+
+impl Forked {
+    /// Reader G granted read: G, its epochs, and the state holding its boxes.
+    fn grant_reader(&mut self) -> (osis_base::Tid, ActorEpochs, Secrets) {
+        let (g, ge) = (tid(5), actor_epochs(0x50));
+        let w = box_holder(&self.a, &self.view, &hist(&self.a, &self.view, &self.s), &actor_rcpt(g, Role::Read, &ge), &roles_up_to(Role::Read), &mut self.rng).unwrap().unwrap();
+        let mut s = self.s.clone();
+        w.apply(&mut s);
+        (g, ge, s)
+    }
 }
 
 // spec/crypto.md §4: a grant writes the grantee's boxes for every granted role at each current
@@ -239,12 +250,7 @@ fn sizes() {
 #[test]
 fn unchecked_boxes_are_reading_only() {
     let mut f = forked();
-    let (g, ge) = (tid(5), actor_epochs(0x50));
-    let rcpt = actor_rcpt(g, Role::Read, &ge);
-    let read = roles_up_to(Role::Read);
-    let grant = box_holder(&f.a, &f.view, &hist(&f.a, &f.view, &f.s), &rcpt, &read, &mut f.rng).unwrap().unwrap();
-    let mut s = f.s.clone();
-    grant.apply(&mut s);
+    let (g, ge, s) = f.grant_reader();
     let mut gv = ActorEpochs::default();
     ingest(&f.a, &s, &Opener::Actor { holder: g, epochs: &ge }, &mut gv, Some(from(1))).unwrap();
     for e in f.forks {
@@ -272,10 +278,7 @@ fn unchecked_boxes_are_reading_only() {
 #[test]
 fn reading_only_through_history() {
     let mut f = forked();
-    let (g, ge) = (tid(5), actor_epochs(0x50));
-    let w = box_holder(&f.a, &f.view, &hist(&f.a, &f.view, &f.s), &actor_rcpt(g, Role::Read, &ge), &roles_up_to(Role::Read), &mut f.rng).unwrap().unwrap();
-    let mut s = f.s.clone();
-    w.apply(&mut s);
+    let (g, ge, s) = f.grant_reader();
     let mut gv = ActorEpochs::default();
     ingest(&f.a, &s, &Opener::Actor { holder: g, epochs: &ge }, &mut gv, Some(from(2))).unwrap();
     let older: Vec<_> = gv.read.held_newest_first().into_iter().map(|x| x.0).filter(|e| !f.forks.contains(e)).collect();
@@ -376,10 +379,7 @@ fn unknown_authors_share_one_budget_spec_crypto_4() {
 #[test]
 fn history_alternatives_tried_spec_crypto_4() {
     let mut f = forked();
-    let (g, ge) = (tid(5), actor_epochs(0x50));
-    let w = box_holder(&f.a, &f.view, &hist(&f.a, &f.view, &f.s), &actor_rcpt(g, Role::Read, &ge), &roles_up_to(Role::Read), &mut f.rng).unwrap().unwrap();
-    let mut s = f.s.clone();
-    w.apply(&mut s);
+    let (g, ge, s) = f.grant_reader();
     let older: Vec<_> = f.view.read.held().map(|x| x.0).filter(|e| !f.forks.contains(e)).collect();
     assert!(!older.is_empty());
     let mut bad = s.clone();
@@ -401,10 +401,7 @@ fn history_alternatives_tried_spec_crypto_4() {
 /// older n (each names an epoch of its own). Returns G, its epochs, the state, the alternatives,
 /// the older epochs and the planted ones.
 fn poisoned(f: &mut Forked) -> (osis_base::Tid, ActorEpochs, Secrets, osis_keys::HistoryAlts, Vec<osis_crypto::Epoch>, Vec<osis_crypto::Epoch>) {
-    let (g, ge) = (tid(5), actor_epochs(0x50));
-    let w = box_holder(&f.a, &f.view, &hist(&f.a, &f.view, &f.s), &actor_rcpt(g, Role::Read, &ge), &roles_up_to(Role::Read), &mut f.rng).unwrap().unwrap();
-    let mut s = f.s.clone();
-    w.apply(&mut s);
+    let (g, ge, mut s) = f.grant_reader();
     let older: Vec<_> = f.view.read.held().map(|x| x.0).filter(|e| !f.forks.contains(e)).collect();
     assert!(!older.is_empty());
     let junk = Secret32::from_bytes([0x66; 32]);

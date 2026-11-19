@@ -7,15 +7,11 @@ use common::*;
 use osis_base::{Role, Tid};
 use osis_crypto::Secret32;
 use osis_keys::{
-    ActorEpochs, AllHeld, Departure, EdgeLog, EdgeWrite, Holder, HolderKeys, Key, Name, Names, Opener, Own, Recipient, box_holder, ingest, pins,
+    ActorEpochs, AllHeld, Departure, EdgeLog, EdgeWrite, Holder, Key, Name, Names, Opener, Own, Recipient, box_holder, ingest, pins,
     reseal_needed, roles_up_to, rotate, uncovered,
 };
 use osis_schema::core_types::Secrets;
 use std::collections::BTreeSet;
-
-fn admin_rcpt(p: Tid, pe: &ActorEpochs) -> Recipient {
-    Recipient { holder: p, role: Role::Admin, keys: HolderKeys::from_keys(&keys_of(pe)).unwrap().with_own(pe), floor: 0 }
-}
 
 /// The roles a reader holds.
 fn read() -> BTreeSet<Role> {

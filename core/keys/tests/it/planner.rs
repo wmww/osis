@@ -12,10 +12,6 @@ use osis_keys::{
 };
 use std::collections::BTreeSet;
 
-fn set(r: &[Role]) -> BTreeSet<Role> {
-    r.iter().copied().collect()
-}
-
 // spec/crypto.md §5: wrap under the newest current read epoch held; stranded: none;
 // a rotation commit under the newest read epoch it supersedes.
 #[test]
@@ -33,7 +29,7 @@ fn wrap_epochs() {
     assert_eq!(r.wrap_epoch(), ActorEpochs::derived(&pe, &tid(1)).read.newest());
     view = r.preview(&view).unwrap();
     assert_eq!(wrap_epoch(&view.read), Some(r.role(Role::Read).unwrap().epoch));
-    let w = osis_keys::rotate(&tid(1), &set(&[Role::Write]), &view, &Default::default(), &[], &osis_keys::Names::default(), &mut *rg).unwrap();
+    let w = osis_keys::rotate(&tid(1), &roles(&[Role::Write]), &view, &Default::default(), &[], &osis_keys::Names::default(), &mut *rg).unwrap();
     assert_eq!(w.wrap_epoch(), None);
 }
 

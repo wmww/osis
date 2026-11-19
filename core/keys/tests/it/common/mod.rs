@@ -5,6 +5,7 @@ use osis_base::{Role, Tid};
 use osis_crypto::{Epoch, KeyActorKeys, Secret32, SeededRng};
 use osis_keys::aspects::keyset;
 use osis_keys::{ActorEpochs, HolderKeys, Provenance, ROLES, Recipient};
+use std::collections::BTreeSet;
 use osis_schema::core_types::{KemKey, Keys};
 
 pub fn tid(b: u8) -> Tid {
@@ -17,6 +18,14 @@ pub fn ep(n: u64, nonce: u8) -> Epoch {
 
 pub fn rng(seed: u64) -> SeededRng {
     SeededRng::from_u64(seed)
+}
+
+pub fn cid(b: u8) -> osis_base::CommitId {
+    osis_base::CommitId([b; 32])
+}
+
+pub fn roles(r: &[Role]) -> BTreeSet<Role> {
+    r.iter().copied().collect()
 }
 
 /// An actor holding one explicit secret per role at epoch (1, b).
@@ -53,6 +62,11 @@ pub fn key_actor_keys(seed: &Secret32) -> Keys {
 
 pub fn actor_rcpt(holder: Tid, role: Role, a: &ActorEpochs) -> Recipient {
     Recipient { holder, role, keys: HolderKeys::from_keys(&keys_of(a)).unwrap(), floor: 0 }
+}
+
+/// Mint admin `p` holding `pe`, with its own secrets.
+pub fn admin_rcpt(p: Tid, pe: &ActorEpochs) -> Recipient {
+    Recipient { holder: p, role: Role::Admin, keys: HolderKeys::from_keys(&keys_of(pe)).unwrap().with_own(pe), floor: 0 }
 }
 
 pub fn key_rcpt(holder: Tid, role: Role, seed: &Secret32) -> Recipient {
