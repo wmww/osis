@@ -164,7 +164,7 @@ fn a_removal_notice_is_taken_only_while_enabled_spec_sync_inbox_5() {
     assert_eq!(lp.peers[1].engine.role_on(&x), None, "what was taken stands");
 }
 
-// spec/sync-inbox.md §5 (a grant fires a ticket on the grantee's inbox), spec/permissions.md §5.2
+// spec/sync-inbox.md §5 (Delivery of a grant), spec/permissions.md §5.2
 // External fires: with `ticket@~0` disabled on Bob's inbox, Alice's ticket fire is refused and
 // Bob holds no ticket; enabled, the same fire is taken and Bob holds the ticket.
 #[test]
