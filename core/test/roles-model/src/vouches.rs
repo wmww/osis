@@ -1,5 +1,6 @@
-//! Vouches and what no list keeps (notes/account-membership-design.md §4, Role writes and The
-//! list; notes/redesign-plan.md S3 briefs 2-3) under today's walk: authority as `edges` gives it
+//! Vouches and what no list keeps (notes/account-membership-design.md §4, Role writes: vouched
+//! for like content, and What no list keeps; notes/redesign-plan.md S3 briefs 2-3) under today's
+//! walk: authority as `edges` gives it
 //! (one thing, every node a key actor, a frontier is what its demoter received), with trust sets
 //! (`trust`). Not the stated-path design (`paths`).
 //!
