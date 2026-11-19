@@ -1125,7 +1125,7 @@ fn pass_end(e: &mut Engine) {
 /// Peer 0's commits, all sent to peer 1 again (a pull from the start), when peer 1 pulled a sync
 /// ID anew or a sync ID joined its sync set since `before`: what node-sync would fetch.
 fn pull_again(lp: &mut osis_engine::local_peer::LocalPeer, before: &BTreeSet<osis_base::SyncId>) -> bool {
-    let now: BTreeSet<osis_base::SyncId> = lp.peers[1].engine.sync_set().unwrap().ids.keys().copied().collect();
+    let now = synced(lp);
     let pulled = !std::mem::take(&mut lp.peers[1].pulled_anew).is_empty() || now.difference(before).next().is_some();
     if pulled {
         let all = lp.peers[0].engine.commit_ids();
@@ -1202,11 +1202,11 @@ fn a_thing_once_in_the_node_closure_holds_as_one_never_in_it_spec_commits_5() {
 }
 
 // spec/sync-judgement.md §3 Dropped bodies: a thing whose record stays held outside the node
-// closure, entering it again, is pulled anew and its content comes back. Peer 0 makes Z under Y
-// under X (each one's mint admin the next; X's strong holds Y) and grants peer 1 read on X and Z,
-// which it holds: Y is in X's sync unit. Peer 0 removes X's strong to Y: Y, still needed as Z's mint
-// admin, is released to its certificates. Peer 0 adds the strong back: X's sync IDs are pulled anew
-// and Y reads again.
+// closure, entering it again, is pulled anew and its content comes back. Peer 0 makes X, and Y and
+// Z dependent in X's sync unit (X's strongs hold both; Y is Z's mint admin, Y's X's), and grants
+// peer 1 read on X, which it holds. Peer 0 removes X's strong to Y: Y, still needed as Z's mint
+// admin, is released to its certificates. Peer 0 adds the strong back: no sync ID joins (Y's
+// bodies go under X's), so X's sync IDs are pulled anew, and Y reads again.
 #[test]
 fn a_thing_entering_again_with_its_record_held_is_pulled_anew_spec_sync_judgement_3() {
     let reg = crate::common::ak("t:reg.0");
@@ -1217,20 +1217,17 @@ fn a_thing_entering_again_with_its_record_held_is_pulled_anew_spec_sync_judgemen
     m.set(x, &crate::common::REG, &Value::Str("x".into())).unwrap();
     e0.commit(m).unwrap();
     let y = make(e0, x, x);
+    let z = make(e0, y, x);
     let mut m = Mutation::new();
     m.set(y, &crate::common::REG, &Value::Str("y".into())).unwrap();
-    let z = e0.new_thing(&mut m, y);
-    m.set(z, &crate::common::REG, &Value::Str("z".into())).unwrap();
     e0.commit(m).unwrap();
-    for t in [x, z] {
-        e0.grant(&t, &ps[1], &crate::flows::edge_of(osis_base::Role::Read)).unwrap();
-    }
+    e0.grant(&x, &ps[1], &crate::flows::edge_of(osis_base::Role::Read)).unwrap();
     let all = lp.peers[0].engine.commit_ids();
     crate::flows::send(&mut lp, 0, 1, &all);
     let d1 = lp.peers[1].engine.account_root().unwrap();
     strong(&mut lp.peers[1].engine, d1, x, true);
-    strong(&mut lp.peers[1].engine, d1, z, true);
     pass_end(&mut lp.peers[1].engine);
+    assert!(lp.peers[1].engine.closure_holds(&z), "Z in X's sync unit");
     assert_eq!(lp.peers[1].engine.get(&y, &reg).unwrap(), Some(Value::Str("y".into())), "Y in X's sync unit reads");
     let before = lp.peers[0].engine.commit_ids();
     strong(&mut lp.peers[0].engine, x, y, false);
@@ -1247,6 +1244,7 @@ fn a_thing_entering_again_with_its_record_held_is_pulled_anew_spec_sync_judgemen
     let back: Vec<_> = lp.peers[0].engine.commit_ids().into_iter().filter(|c| !before.contains(c)).collect();
     crate::flows::send(&mut lp, 0, 1, &back);
     assert!(lp.peers[1].engine.closure_holds(&y), "Y back in X's sync unit");
+    assert_eq!(synced(&mut lp), was, "no sync ID joins");
     assert!(pull_again(&mut lp, &was), "Y's entry pulls anew");
     pass_end(&mut lp.peers[1].engine);
     assert_eq!(lp.peers[1].engine.get(&y, &reg).unwrap(), Some(Value::Str("y".into())), "Y's content back");
