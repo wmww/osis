@@ -2472,8 +2472,10 @@ fn twins(split: Twins, n: usize, rng: &mut Rng) -> Vec<usize> {
 const ORDERS: Cfg = Cfg { all_up_to: 4, every_held: false, random: 2, partial: 4, split: Twins::First(2), clock: 2, reopens: 2, withhold: true, every_seed: false, settled: false, model: true, addenda: false, away: false };
 
 /// A hand-written history's orders, none shuffled or drawn: as made, reversed and as a first
-/// sync fetches it, of the whole set and two first-sync prefixes.
-const NAMED: Cfg = Cfg { all_up_to: 0, random: 0, partial: 2, split: Twins::First(0), clock: 0, withhold: false, model: false, ..ORDERS };
+/// sync fetches it, of the whole set and two first-sync prefixes. None reopening after every
+/// ingest: that property is the generator's (`held_set_decides`), and its two deliveries with a
+/// reload per ingest cost more than the rest of a named history's checks.
+const NAMED: Cfg = Cfg { all_up_to: 0, random: 0, partial: 2, split: Twins::First(0), clock: 0, reopens: 0, withhold: false, model: false, ..ORDERS };
 
 /// The arrival orders of `held` tried: as made (the reference), reversed, every order of the
 /// held commits after the setup when there are at most `all_up_to` (and the whole set is held,
@@ -3193,21 +3195,15 @@ fn cfg_of(e: Emphasis, cfg: Cfg) -> Cfg {
     Cfg { settled: e == Emphasis::Settled, addenda: e == Emphasis::Addenda, away: e == Emphasis::PartsAway, ..cfg }
 }
 
-/// The longest prefix of `steps` making at most `max` commits after the setup (a prefix of a
-/// history plays as its start), for the exhaustive size. A play that panics keeps its length:
+/// The longest prefix of `steps` making at most `max` commits after the setup, for the
+/// exhaustive size: read off one play (a prefix of a history plays as its start, so the commits
+/// made before step k are what its first k steps make). A play that panics keeps its length:
 /// `check` reports it.
 fn cap(seed: u64, steps: &[Step], addenda: bool, max: usize) -> Vec<Step> {
-    let fits = |k: usize| caught(|| Ok::<_, String>({
-        let p = play_with(seed, &steps[..k], addenda);
-        p.packs.len() - p.base <= max
-    }))
-    .unwrap_or(true);
-    let (mut lo, mut hi) = (0, steps.len());
-    while lo < hi {
-        let mid = (lo + hi).div_ceil(2);
-        if fits(mid) { lo = mid } else { hi = mid - 1 }
-    }
-    steps[..lo].to_vec()
+    let Ok(p) = caught(|| Ok::<_, String>(play_with(seed, steps, addenda))) else { return steps.to_vec() };
+    let made = |k: usize| p.steps_at.get(k).copied().unwrap_or(p.packs.len()) - p.base;
+    let k = (0..=steps.len()).take_while(|&k| made(k) <= max).last().unwrap_or(0);
+    steps[..k].to_vec()
 }
 
 /// A run of `held_set_decides`: seeds, steps per history, the orders, and for the exhaustive size
@@ -3385,14 +3381,17 @@ fn node_state(played: &Played, p: &mut Peer) -> Vec<(&'static str, String)> {
 }
 
 /// A digest of `node_state` but the stores' bytes (which differ by the order rows were written
-/// in): two nodes with one key hold the same rows, indexes, pending and thrown-out commits and
-/// clock, and show the same, so each move and check of `check_orders` takes them alike (`walk`).
-/// Hashed, not printed: printing a store's rows costs as much as judging the node.
+/// in) and the indexes: two nodes with one key hold the same rows, pending and thrown-out
+/// commits and clock, and show the same, so each move and check of `check_orders` takes them
+/// alike (`walk`). The indexes are left out: each node's drop checks its live indexes against
+/// its store's rows loaded afresh (`Engine::check_index`), so of two nodes with the same rows and
+/// different indexes one fails there, judged alike or not. Hashed, not printed: printing a
+/// store's rows costs as much as judging the node.
 fn node_key(played: &Played, p: &mut Peer) -> u64 {
     use std::hash::{Hash, Hasher};
     let mut h = std::collections::hash_map::DefaultHasher::new();
     p.engine.store_dump().unwrap().hash(&mut h);
-    format!("{:?}", (p.engine.index_digest(), p.engine.pending(), p.engine.now())).hash(&mut h);
+    format!("{:?}", (p.engine.pending(), p.engine.now())).hash(&mut h);
     shown(p, &played.things).hash(&mut h);
     (p.discarded.iter().map(|d| d.commit).collect::<Vec<_>>(), p.discards, p.redelivered).hash(&mut h);
     h.finish()
@@ -4327,7 +4326,7 @@ fn harness_judges_a_drop_of_a_body_seen_out_of_scope_spec_commits_5() {
 fn removals_judged_whatever_else_waits() {
     use Step::*;
     let h = vec![Removals { by: 1, other: 2, v: 5 }, NewTop { by: 0 }, Edge { by: 0, t: 2, holder: 1, role: Some(Role::Write) }];
-    let seen = check(0, &h, Cfg { all_up_to: 0, random: 0, partial: 2, split: Twins::First(0), clock: 0, away: true, ..ORDERS }).unwrap();
+    let seen = check(0, &h, Cfg { all_up_to: 0, random: 0, partial: 2, split: Twins::First(0), clock: 0, reopens: 0, away: true, ..ORDERS }).unwrap();
     assert!(seen.pending.contains_key("UnknownCreated"), "{:?}", seen.pending);
     for k in crate::held::REMOVALS {
         assert!(seen.model.reached.get(k).is_some_and(|n| *n > 0), "{k}: {:?}", seen.model.reached);
