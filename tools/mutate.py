@@ -23,10 +23,20 @@ TMPDIR), printed on stderr with each failing test's panic message, so a failure 
 read without rebuilding it. MUTATE_HEAVY=1 runs the tests in holds of tools/heavy,
 MUTATE_PER_HOLD mutations per hold (never run mutate.py itself under it: a batch would hold the
 lock for its whole length).
-The variable is read once per site, so a plant in a hot path costs nothing per call."""
-import json, os, shutil, subprocess, sys, tempfile
+The variable is read once per site, so a plant in a hot path costs nothing per call.
+The binaries run with `.cargo/config.toml`'s `[env]` (an explicit value wins), as under cargo:
+the suite's proptest case count and no `proptest-regressions/` files."""
+import json, os, shutil, subprocess, sys, tempfile, tomllib
 
 VAR = "OSIS_MUTANT"
+
+
+def cargo_env(env, config=os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), ".cargo", "config.toml")):
+    """`env` with the `[env]` table of `config` added where `env` lacks the name, as cargo sets it
+    for the tests it runs (a value given as a table reads its `value`)."""
+    with open(config, "rb") as f:
+        table = tomllib.load(f).get("env", {})
+    return {**{k: str(v["value"] if isinstance(v, dict) else v) for k, v in table.items()}, **env}
 
 
 def panics(text):
@@ -55,6 +65,7 @@ def run_bins(bins, test_args, env, mutants):
             with open(os.path.join(d, "out.json")) as f:
                 return json.load(f)
     out = []
+    env = cargo_env(env)
     for i in mutants:
         e = dict(env, **({VAR: i} if i is not None else {}))
         with tempfile.TemporaryDirectory(prefix="mutate-out-") as d:
