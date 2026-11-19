@@ -1958,31 +1958,45 @@ fn a_removed_signers_backdated_purge_takes_nothing() {
 
 // ---- Covers (spec/commits.md §5 Covered; notes/account-membership-design.md §1, Cutoff and Carrying) ----
 
-/// The story's move 46: the thief withholds the removal from K, writes T1 after it, and K, a
-/// writer of T1 not yet holding the removal, compacts T1 carrying that write. Judged by its own
-/// facts the carried write falls with the removal; under spec/permissions.md §5.2 Copies (control
-/// `-copies`) K's valid cover shows it wherever the cover is held, for good.
+/// The accepted window (spec/permissions.md §5.2 Copies, §5.3; notes/account-membership-design.md
+/// §1 Cutoff and Carrying, §2 step 2): the thief X, removed by H, withholds H's removal from K
+/// (serving K alone; the story's move 46, set by hand: the model's evidence closure is complete)
+/// and writes T1 after it; K, an honest writer of T1 that does not yet hold the removal, compacts
+/// T1 carrying that write. The write is invalid everywhere, and K's valid cover shows it for good
+/// at every node holding the cover (and in every later snapshot, as state). What bounds the
+/// window: K's receipt of the removal; from then K's walk shows nothing new of the thief's. The story counts it (`window`), never as a
+/// safety failure; under the variant `-facts` the carried write falls with the removal.
 #[test]
-fn a_cover_by_a_writer_not_yet_holding_the_removal_smuggles_nothing() {
+fn a_cover_by_a_writer_not_yet_holding_the_removal_carries_the_late_write() {
     let s = Setup { x_a2: 0, ..Setup::default() };
-    for (rules, smuggled) in [(Rules::fixed(), false), (Rules { cover_copies: true, ..Rules::fixed() }, true)] {
+    for (rules, carried) in [(Rules::fixed(), true), (Rules { cover_facts: true, ..Rules::fixed() }, false)] {
         let m = Sim::build(&s, &rules, &[Move { kind: 46, ts: 7, made: 7 }], &mut Rng(1));
         let late = *m.thief.keys().next().unwrap();
-        let cover = (0..m.w.commits.len()).find(|&i| matches!(&m.w.commits[i].kind, Kind::Cover { carries } if carries.contains(&late))).expect("K's cover carries the late write");
+        let (window, after): (Vec<Id>, Vec<Id>) = (0..m.w.commits.len()).filter(|&i| m.w.commits[i].signer == K && matches!(m.w.commits[i].kind, Kind::Cover { .. })).partition(|c| m.unaware.contains(c));
+        assert_eq!(window.len(), 1);
+        assert!(m.w.names(window[0], late));
+        // K's cover made once it holds the removal carries the late write only as the window
+        // cover's copy, which is state: without its covers K's walk then shows nothing of it
+        assert!(!after.is_empty() && after.iter().all(|&c| m.w.names(c, late) == carried));
+        let t = m.w.commits[after[0]].ts;
+        let covers: Vec<Id> = window.iter().chain(&after).copied().collect();
+        assert!(!judge(&m.w, &rules, &m.view_at(K, Some(t), &rules).without(&covers)).shows(late));
         for n in [B, K, RD, RD3] {
             let rd = judge(&m.w, &rules, &m.view(n, &rules));
-            assert!(rd.valid.contains(&cover) && !rd.valid.contains(&late), "node {n}");
-            assert_eq!(rd.shows(late), smuggled, "node {n}");
+            assert!(rd.valid.contains(&window[0]) && !rd.valid.contains(&late), "node {n}");
+            assert_eq!(rd.shows(late), carried, "node {n}");
         }
         let mut st = Stats::default();
         check(&m, &rules, &mut st);
-        assert_eq!(st.fails.contains_key("safety"), smuggled, "{:?}", st.fails);
+        assert!(!st.fails.contains_key("safety") && !st.fails.contains_key("safety N"), "{:?}", st.fails);
+        assert_eq!(st.noted.contains_key("window"), carried, "{:?}", st.noted);
     }
 }
 
 /// An own cover: H forgot X's write (it holds only B's cover carrying it), covers it in a
-/// snapshot of its own, and names that in its removal: a list naming a cover names what it
-/// carries, so the write stands, judged by its facts. Listing nothing, it falls.
+/// snapshot of its own, and names that in its removal. Under copies (the rule) the valid covers
+/// show it, named or not. Under `-facts` a list naming a cover names what it carries, so the
+/// write stands judged by its facts; listing nothing, it falls.
 #[test]
 fn a_removal_naming_its_own_cover_keeps_what_the_cover_carries() {
     let (mut w, ..) = paired();
@@ -1991,10 +2005,14 @@ fn a_removal_naming_its_own_cover_keeps_what_the_cover_carries() {
     let own = w.push(H, 5, &[A], T1, Kind::Cover { carries: Set::from([x]) });
     let r = w.edge(H, 6, &[], A, X, Gone, &[own]);
     let v = View::all(&w).trusting(&[r]).without(&[x]);
-    let rd = judge(&w, &Rules::fixed(), &v);
+    let facts = Rules { cover_facts: true, ..Rules::fixed() };
+    let rd = judge(&w, &facts, &v);
     assert!(rd.valid.contains(&x) && rd.valid.contains(&bc));
+    // under copies (the rule) both covers stay valid, so their copies show it, named or not
+    assert!(judge(&w, &Rules::fixed(), &v).shows(x));
     w.edit(r, |k| k.listing(BTreeMap::new()));
-    let rd = judge(&w, &Rules::fixed(), &v);
+    assert!(judge(&w, &Rules::fixed(), &v).shows(x));
+    let rd = judge(&w, &facts, &v);
     assert!(!rd.valid.contains(&x) && rd.valid.contains(&own));
 }
 
@@ -2017,5 +2035,5 @@ fn a_fallen_cover_takes_nothing_honest() {
     assert!(!rd.valid.contains(&b) && !rd.shows(x));
     w.edit(r, |k| k.listing(BTreeMap::from([(T1, Set::from([xc]))])));
     let rd = judge(&w, &Rules::fixed(), &forgot);
-    assert!(rd.valid.contains(&xc) && rd.valid.contains(&b) && rd.valid.contains(&x));
+    assert!(rd.valid.contains(&xc) && rd.shows(b) && rd.shows(x));
 }

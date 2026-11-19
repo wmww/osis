@@ -66,8 +66,9 @@
 //!   purge request by author P, valid as content along its path, holds the right over the earlier
 //!   deltas on its thing naming exactly P where P is on its chain (`purges`).
 //! - **Covers.** A compaction snapshot carries content commits; a list naming it names them; a
-//!   carried write is judged by its own facts, its statement by a valid cover standing in for a
-//!   commit not held (`Rules::cover_copies` the control).
+//!   valid cover's copy of a write shows it whatever the write's own validity (spec/permissions.md
+//!   §5.2 Copies, §5.3), so a cover made by a writer not yet holding a removal carries the removed
+//!   party's late write for good: the accepted window. `Rules::cover_facts` is the alternative.
 //! - **Evidence** (`evidence`): the least set holding a unit's commits, every edge write on an
 //!   edge of a held commit's path or on the edge a held lowering names as the admin it relies
 //!   on, and the vouches against held removals.
@@ -264,10 +265,12 @@ pub struct Rules {
     /// A request by author matches the deltas naming exactly that purge author. False (control
     /// `-purge-contains`): every delta whose chain holds it.
     pub purge_exact: bool,
-    /// Control `-copies` (spec/permissions.md §5.2 Copies, §5.3): a valid cover's copy of a write
-    /// shows it whatever the write's own validity. False (the rule): a carried write is judged by
-    /// its own facts (signer, `ts`, path, ID), the cover only standing in for its body.
-    pub cover_copies: bool,
+    /// The variant `-facts`, not the design: a carried write is judged by its own facts (signer,
+    /// `ts`, path, ID), a valid cover only standing in for its body, which closes the window a
+    /// cover by a writer not yet holding a removal opens but makes every snapshot state those
+    /// facts per carried commit. False (the rule, spec/permissions.md §5.2 Copies, §5.3): a valid
+    /// cover's copy of a write shows it whatever the write's own validity.
+    pub cover_facts: bool,
 }
 
 impl Rules {
@@ -291,7 +294,7 @@ impl Rules {
             any_fall: true,
             purge_chain: true,
             purge_exact: true,
-            cover_copies: false,
+            cover_facts: false,
         }
     }
     /// The design: every fix the notes state, a removal judged in the world its list makes
@@ -315,7 +318,7 @@ impl Rules {
             any_fall: true,
             purge_chain: true,
             purge_exact: true,
-            cover_copies: false,
+            cover_facts: false,
         }
     }
 }
@@ -534,7 +537,7 @@ pub struct Reading {
     pub valid: Set,
     /// Held content a valid purge request holding the right over it names.
     pub purged: Set,
-    /// Under `Rules::cover_copies`: writes shown only by a valid cover's copy.
+    /// Writes shown only by a valid cover's copy (none under `Rules::cover_facts`).
     pub copied: Set,
     /// Final roles, every `until` counted removed.
     pub roles: BTreeMap<Edge, Role>,
@@ -1073,11 +1076,13 @@ fn finals(p: &Pass) -> BTreeMap<Edge, Role> {
     p.state.iter().map(|(&e, &(r, u))| (e, if u.is_some() { Role::None } else { r })).collect()
 }
 
-/// The commits a node judges: those it holds, and those a held cover carries (judged by the facts
-/// the cover states, its body forgotten or never received, where the cover is valid).
-fn known(w: &World, v: &View) -> Set {
+/// The commits a node judges: those it holds, and under `Rules::cover_facts` those a held cover
+/// carries (judged by the facts the cover states, its body forgotten or never received, where the
+/// cover is valid). Under copies a node judges only the commits it holds; a carried one shows by
+/// the cover's copy.
+fn known(w: &World, rules: &Rules, v: &View) -> Set {
     let mut k = v.held.clone();
-    for &c in &v.held {
+    for &c in v.held.iter().filter(|_| rules.cover_facts) {
         if let Kind::Cover { carries } = &w.commits[c].kind {
             k.extend(carries);
         }
@@ -1094,7 +1099,7 @@ fn content(w: &World, rules: &Rules, v: &View, p: &Pass) -> (Set, Set) {
     let mut valid = Set::new();
     loop {
         let mut next = Set::new();
-        let known = known(w, v);
+        let known = known(w, rules, v);
         for &i in known.iter().filter(|&&i| !w.edge_class(i)) {
             let hops = w.hops(i);
             // a write not held is judged by the facts a valid cover carrying it states; carried
@@ -1180,7 +1185,7 @@ pub fn judge(w: &World, rules: &Rules, v: &View) -> Reading {
         }
         let (valid, vouching) = content(w, rules, v, &wk.pass);
         let purged = purges(w, rules, v, &valid);
-        let copied = if rules.cover_copies {
+        let copied = if !rules.cover_facts {
             valid.iter().filter_map(|&c| match &w.commits[c].kind { Kind::Cover { carries } => Some(carries.iter().copied().filter(|j| !valid.contains(j))), _ => None }).flatten().collect()
         } else {
             Set::new()

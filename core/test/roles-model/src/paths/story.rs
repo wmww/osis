@@ -157,6 +157,11 @@ pub struct Sim {
     pub gi: Option<Id>,
     /// Move 46: K compacts T1 at this tick, not yet holding the removal.
     cover_by_k: Option<(u32, Id)>,
+    /// Covers made by a writer whose view then lacked a removal made by then, and what they carry:
+    /// the accepted window (notes/path-model-findings.md 26). A later cover carrying such a copy
+    /// carries it as state, as any copy.
+    pub unaware: Set,
+    pub smuggled: Set,
     /// The thief's commits, each with the kind of the move that made it.
     pub thief: BTreeMap<Id, usize>,
     /// Removals and the further units they are logged under.
@@ -235,7 +240,7 @@ impl Sim {
         sync.insert(N6, Things::from([A, ORG, T1, D1, T2]));
         sync.insert(RD3, Things::from([T1, D1]));
         let w = if s.mint > 0 { minted_by(M) } else { account() };
-        let mut m = Sim { w, spec, setup: s, made: vec![], recv: vec![], sync, r: 0, r2: None, r3: None, rx: None, xfirst: None, gs: 0, g5: None, xrole: None, out5: None, gb5: None, gh: None, gx: 0, gi: None, cover_by_k: None, thief: BTreeMap::new(), logged: BTreeMap::new() };
+        let mut m = Sim { w, spec, setup: s, made: vec![], recv: vec![], sync, r: 0, r2: None, r3: None, rx: None, xfirst: None, gs: 0, g5: None, xrole: None, out5: None, gb5: None, gh: None, gx: 0, gi: None, cover_by_k: None, unaware: Set::new(), smuggled: Set::new(), thief: BTreeMap::new(), logged: BTreeMap::new() };
         let grant = Kind::set;
         if s.mint > 0 {
             m.gh = Some(m.put((M, 0, &[], A, grant(H, Role::Admin)), 0, rng, false));
@@ -378,12 +383,22 @@ impl Sim {
     }
     /// `n`'s cover of T1 at `t` along its path: the content on T1 showing in its walk then, not
     /// holding `withheld` (the thief serving it alone: the evidence closure, complete in the
-    /// model, would bring the removal with the write).
+    /// model, would bring the removal with the write). Marked `unaware` where its view lacks a
+    /// removal made by then.
     fn cover(&mut self, n: Thing, t: u32, withheld: &[Id], rules: &Rules, rng: &mut Rng) -> Id {
-        let rd = judge(&self.w, rules, &self.view_at(n, Some(t), rules).without(withheld));
-        let carries = rd.valid.iter().chain(&rd.copied).copied().filter(|&i| self.w.commits[i].on == T1 && matches!(self.w.commits[i].kind, Kind::Content)).collect();
+        let v = self.view_at(n, Some(t), rules).without(withheld);
+        let rd = judge(&self.w, rules, &v);
+        let carries: Set = rd.valid.iter().chain(&rd.copied).copied().filter(|&i| self.w.commits[i].on == T1 && matches!(self.w.commits[i].kind, Kind::Content)).collect();
         let path = role_path(n, T1).expect("a writer of T1");
-        self.put((n, t, &path, T1, Kind::Cover { carries }), t, rng, false)
+        let unaware = self.removals().iter().any(|&r| self.made[r] <= t && !v.held.contains(&r));
+        if unaware {
+            self.smuggled.extend(&carries);
+        }
+        let c = self.put((n, t, &path, T1, Kind::Cover { carries }), t, rng, false);
+        if unaware {
+            self.unaware.insert(c);
+        }
+        c
     }
     /// The removals at tick 6, each listing what its author had received through the edge.
     fn remove(&mut self, rules: &Rules, rng: &mut Rng) {
@@ -1099,7 +1114,9 @@ pub fn check(m: &Sim, rules: &Rules, st: &mut Stats) {
     // N5's key, counts: what X stamped before it is X's standing, which is the dispute.
     let rts = w.commits[m.r].ts;
     let safety = |n: Thing, v: &View, rd: &Reading, prop: &'static str, late: bool, st: &mut Stats| {
-        for &i in v.held.iter().filter(|&&i| m.hostile(i) && (!late || w.commits[i].ts > rts || w.commits[i].signer == N5)) {
+        // what it holds, and what the covers it holds carry
+        let seen: Set = v.held.iter().flat_map(|&c| std::iter::once(c).chain(match &w.commits[c].kind { Kind::Cover { carries } => carries.iter().copied().collect(), _ => vec![] })).collect();
+        for &i in seen.iter().filter(|&&i| m.hostile(i) && (!late || w.commits[i].ts > rts || w.commits[i].signer == N5)) {
             st.count(prop);
             let c = &w.commits[i];
             // X's own writes along A2, a path it keeps (a vouch there showing is its right; what it names
@@ -1109,7 +1126,12 @@ pub fn check(m: &Sim, rules: &Rules, st: &mut Stats) {
                 || (w.leave(i) && w.sets(i) == Some((X, A)))
                 // X inviting (or finalizing) at read through A2, which it keeps writing, by A2's invite
                 || (c.signer == X && s.x_a2 == 1 && c.path == [A2] && matches!(c.kind, Kind::Edge { role, .. } if role <= Role::Read));
-            if rd.shows(i) && !by_right {
+            // the accepted window (spec/permissions.md §5.2 Copies, §5.3): shown only by a cover's
+            // copy, carried first by a cover whose writer did not yet hold a removal when it made it
+            let window = !rd.valid.contains(&i) && rd.copied.contains(&i) && m.smuggled.contains(&i);
+            if rd.shows(i) && !by_right && window {
+                st.note(if late { "window N" } else { "window" }, m, format!("node {n}: the thief's commit {i} shows by a cover made before its writer held the removal"));
+            } else if rd.shows(i) && !by_right {
                 st.fail(prop, m, format!("node {n}: the thief's commit {i} shows"));
             }
         }
@@ -1453,8 +1475,8 @@ pub fn family_run(rules: &Rules, stride: usize) -> Stats {
 /// writes before it, not the held ones), `-invite-role` (an invite grant needs only a role on its
 /// path's last edge), `-admin-falls` (only a fall from admin is judged and audits), `-purge-any-path`
 /// (a purge request holds the author right wherever its path gives write), `-purge-contains` (a
-/// request by author matches every delta whose chain holds that author), `-copies` (a valid
-/// cover's copy shows a write whatever its own validity). `-exh` runs the small family in place of
+/// request by author matches every delta whose chain holds that author); the variant `-facts`
+/// (a carried write judged by its own facts, not shown by a cover's copy: not the design). `-exh` runs the small family in place of
 /// random worlds.
 pub fn mode_rules(mode: &str) -> Option<Rules> {
     let f = Rules::fixed();
@@ -1476,7 +1498,7 @@ pub fn mode_rules(mode: &str) -> Option<Rules> {
         "-admin-falls" => Rules { any_fall: false, ..f },
         "-purge-any-path" => Rules { purge_chain: false, ..f },
         "-purge-contains" => Rules { purge_exact: false, ..f },
-        "-copies" => Rules { cover_copies: true, ..f },
+        "-facts" => Rules { cover_facts: true, ..f },
         _ => return None,
     })
 }
