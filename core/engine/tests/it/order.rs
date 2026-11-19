@@ -1757,24 +1757,13 @@ fn order_checks(played: &Played, order: &[usize]) -> Result<(), String> {
     node_checks(&mut p, played, &o)
 }
 
-/// A node given `order` that reopens after every ingest, its clock a millisecond on each time,
-/// shows what one given it the same way without reopening shows, once each has fetched what it
-/// counts missing (a reopen moves where pending commits apply, so when a part dropped while
-/// invalid is valid again). No excuse: both took the same parts at the same clocks.
-fn reopens_alike(played: &Played, order: &[usize]) -> Result<(), String> {
-    let tick = |p: &mut Peer| {
-        let now = p.engine.now();
-        p.clock.set(WallMs(now.0 + 1));
-    };
-    let mut r = deliver_with(played, order, None, None, None, &mut |p| tick(p));
-    let mut p = deliver_with(played, order, None, None, None, &mut |p| {
-        tick(p);
-        p.engine.reload().unwrap();
-    });
-    let held: Vec<usize> = (0..played.packs.len()).collect();
-    fetch_missing(&mut r, played, &held);
-    fetch_missing(&mut p, played, &held);
-    shown_differs(&shown(&mut r, &played.things), &shown(&mut p, &played.things), &|_| false).map_or(Ok(()), Err)
+/// A node given `order` (all of it held) that reopens after every ingest passes `node_checks`
+/// against `o`, as every node given it without reopening does: a reopen moves where pending
+/// commits apply (so when a part dropped while invalid is valid again), never what the node shows
+/// once it has fetched what it counts missing.
+fn reopens_alike(played: &Played, order: &[usize], o: &Oracle) -> Result<(), String> {
+    let mut p = deliver_with(played, order, None, None, None, &mut |p| p.engine.reload().unwrap());
+    node_checks(&mut p, played, o)
 }
 
 /// A node holding what peers keep once covered bodies go (spec/permissions.md §5.1: a frontier
@@ -2872,7 +2861,7 @@ fn check_orders(threads: usize, seed: u64, steps: &[Step], cfg: Cfg) -> Result<S
     };
     let reopened = |h: usize, k: usize| -> Result<Seen, String> {
         let order = &sets[h].orders[k];
-        reopens_alike(played, order).map(|_| Seen::default()).map_err(|d| format!("{}, order {order:?} reopened after every ingest: {d}", sets[h].of))
+        reopens_alike(played, order, &oracles[h]).map(|_| Seen::default()).map_err(|d| format!("{}, order {order:?} reopened after every ingest: {d}", sets[h].of))
     };
     // the whole set without what its snapshots cover
     let away = || -> Result<Seen, String> {
