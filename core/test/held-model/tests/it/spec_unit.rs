@@ -150,7 +150,7 @@ fn random_static(r: &mut Rng, dep_holders: bool) -> (Vec<Kind>, Vec<Commit>) {
 /// the same unit, the same targets, and the same targets cut by G's roles (`Member::Role`).
 fn p1_world(kinds: &[Kind], cs: &[Commit], unit: Unit) -> [bool; 3] {
     let t = View::all(kinds, cs, unit);
-    let ind: Vec<T> = t.independents().into_iter().collect();
+    let ind: Vec<T> = t.units().into_iter().collect();
     let mut agree = [true; 3];
     for &g in &ind {
         let others: Vec<T> = ind.iter().copied().filter(|&x| x != g).collect();
@@ -374,7 +374,7 @@ fn join_on_the_finding_worlds() {
     let never = world(&k3, &[(0, 1, Role::Sync), (1, 2, Role::Sync)], &[(0, 1), (0, 2)]);
     let mut given = never.clone();
     given.push(role(2, 0, Some(Role::Sync)));
-    assert_eq!(seen(&k3, &given, 0, &[], Unit::Reach).keys(0), set(&[1, 2]));
+    assert_eq!(seen(&k3, &given, 0, &[], Unit::Reach).keys(0), BTreeSet::from([(1, 1), (2, 2)]));
     given.push(role(2, 0, None));
     for g in 0..3 {
         let (x, y) = (seen(&k3, &never, g, &[], Unit::Reach), seen(&k3, &given, g, &[], Unit::Reach));
@@ -803,7 +803,7 @@ fn random_net(r: &mut Rng, rules: Rules, walk_by: Walk, hostile: bool, forks: bo
         .filter(|&k| {
             let kp = &net.keepers[k];
             let t = net.truth(kp.side);
-            let own = walk(&t, kp.reads, &kp.roots, &|g| blobs_of(&t, g, Member::Target, true), Walk::DESIGN).units();
+            let own = walk(&t, kp.reads, &net.roots(k), &|g| blobs_of(&t, g, Member::Target, true), Walk::DESIGN).units();
             let synced = own.iter().all(|&g| net.writers.iter().any(|w| w.syncs.contains(&g)));
             synced && !own.is_subset(&kp.kept.units())
         })
@@ -841,11 +841,11 @@ fn escapes(net: &Net) -> usize {
         v.extend(net.listed(g));
         v
     };
-    net.keepers
-        .iter()
-        .filter(|kp| {
+    (0..net.keepers.len())
+        .filter(|&k| {
+            let kp = &net.keepers[k];
             let t = net.truth(kp.side);
-            let bound = walk(&t, kp.reads, &kp.roots, &all, Walk::DESIGN).units();
+            let bound = walk(&t, kp.reads, &net.roots(k), &all, Walk::DESIGN).units();
             !kp.kept.units().is_subset(&bound)
         })
         .count()
@@ -1137,4 +1137,154 @@ fn a_key_too_many_opens_by_its_credential() {
     net.settle(20, false).unwrap();
     assert_eq!(net.keepers[1].kept.units(), set(&[0]));
     assert_eq!(net.keepers[0].kept.units(), set(&[0, 2]));
+}
+
+// ---- Promotion (design §5) ----
+
+fn promote(x: T) -> Commit {
+    Commit { on: x, op: Op::Promote, side: None }
+}
+fn body(x: T) -> Commit {
+    Commit { on: x, op: Op::Body { also: None }, side: None }
+}
+fn mixed(x: T, z: T) -> Commit {
+    Commit { on: x, op: Op::Body { also: Some(z) }, side: None }
+}
+fn void(on: T, c: C) -> Commit {
+    Commit { on, op: Op::Void(c), side: None }
+}
+
+/// What a reader of unit `g` and of `extra` holds, a promotion staying under its mint admin's unit
+/// or not (`p_stays`).
+fn seen_p(kinds: &[Kind], cs: &[Commit], g: T, extra: &[T], p_stays: bool) -> View {
+    let mut t = View::all(kinds, cs, Unit::Reach);
+    t.p_stays = p_stays;
+    let mut units: Set = extra.iter().copied().collect();
+    units.insert(g);
+    let known: BTreeSet<C> = (0..cs.len()).filter(|&c| !t.under(&cs[c]).is_disjoint(&units)).collect();
+    let mut v = View::of(kinds, cs, &known, Unit::Reach);
+    v.p_stays = p_stays;
+    v
+}
+
+/// The things a node rooted at `r` holds and reads (the things of the units it enters), walking
+/// over blobs each computed by a reader of its unit alone.
+fn holds_from(kinds: &[Kind], cs: &[Commit], r: T, reads: bool, p_stays: bool) -> (Set, Set) {
+    let t = View::all(kinds, cs, Unit::Reach);
+    let mut units = t.units();
+    units.extend((kinds.len()..kinds.len() + cs.len()).filter(|&u| t.owner.contains_key(&u)));
+    let own: std::collections::BTreeMap<T, Vec<Blob>> =
+        units.into_iter().map(|g| (g, blobs_of(&seen_p(kinds, cs, g, &[], p_stays), g, Member::Target, true))).collect();
+    let e = walk(&t, reads, &set(&[r]), &|g| own.get(&g).cloned().unwrap_or_default(), Walk::DESIGN);
+    let things = |us: &Set| us.iter().flat_map(|&u| t.unit(u)).collect::<Set>();
+    (things(&e.units()), things(&e.read))
+}
+
+/// The promotion family: 0 a referrer G, 1 = H, 2 = X a dependent of H, 3 = Z a dependent of X,
+/// 4 = W another dependent of H; G's grant on H none, sync or read; every set of strongs among
+/// `PCAND` (a strong to a dependent carrying its independent before the promotion as home); X
+/// promoted.
+const PK: [Kind; 5] = [K, K, Kind::Dependent(1), Kind::Dependent(2), Kind::Dependent(1)];
+const PCAND: [(T, T); 9] = [(1, 2), (1, 3), (2, 3), (3, 2), (1, 4), (4, 2), (0, 2), (0, 3), (0, 1)];
+const PFAMILY: usize = 3 << PCAND.len();
+fn promo_family(i: usize) -> Vec<Commit> {
+    let grants = [vec![], vec![(0, 1, Role::Sync)], vec![(0, 1, Role::Read)]][i >> PCAND.len()].clone();
+    let strongs: Vec<(T, T)> = PCAND.iter().enumerate().filter(|(j, _)| i & (1 << j) != 0).map(|(_, &e)| e).collect();
+    world(&PK, &grants, &strongs)
+}
+
+const PROMO_COLS: usize = 7;
+/// For one world of the family, X promoted (failures, but the count 6): 0 a node rooted at G or H,
+/// reading or keeping unread, holds or reads a thing before that it does not after; 1 the same with
+/// the promotion leaving S(H) (control); 2 S(G)'s blobs change; 3 S(H)'s blobs change other than
+/// X's key and the handles of things of X's subtree its strongs target; 4 after, the keeper and the reader of a root enter different units; 5 after,
+/// a reader of a unit computes its blobs differently by what else it reads; 6 (count) a node holds
+/// after what it held before plus more.
+fn promo_world(cs: &[Commit]) -> [usize; PROMO_COLS] {
+    let mut after = cs.to_vec();
+    after.push(promote(2));
+    let mut out = [0; PROMO_COLS];
+    for r in [0, 1] {
+        for reads in [false, true] {
+            let before = holds_from(&PK, cs, r, reads, true);
+            let now = holds_from(&PK, &after, r, reads, true);
+            out[0] |= (!before.0.is_subset(&now.0) || !before.1.is_subset(&now.1)) as usize;
+            out[6] |= (before != now && before.0.is_subset(&now.0) && before.1.is_subset(&now.1)) as usize;
+            let ctl = holds_from(&PK, &after, r, reads, false);
+            out[1] |= (!before.0.is_subset(&ctl.0) || !before.1.is_subset(&ctl.1)) as usize;
+        }
+    }
+    let blobs = |cs: &[Commit], g: T| -> BTreeSet<Blob> { blobs_of(&seen_p(&PK, cs, g, &[], true), g, Member::Target, true).into_iter().collect() };
+    out[2] = (blobs(cs, 0) != blobs(&after, 0)) as usize;
+    let t = View::all(&PK, &after, Unit::Reach);
+    let moved = |x: T| t.ind(x) == 2;
+    out[3] = blobs(cs, 1)
+        .symmetric_difference(&blobs(&after, 1))
+        .filter(|b| match b {
+            Blob::Handle(x) => !moved(*x),
+            Blob::Key(k) => k.of != 2,
+        })
+        .count();
+    for r in [0, 1] {
+        let b = |g: T| blobs_of(&seen_p(&PK, &after, g, &[], true), g, Member::Target, true);
+        out[4] |= (walk(&t, false, &set(&[r]), &b, Walk::DESIGN).units() != walk(&t, true, &set(&[r]), &b, Walk::DESIGN).units()) as usize;
+    }
+    let units: Vec<T> = t.units().into_iter().collect();
+    for &g in &units {
+        let others: Vec<T> = units.iter().copied().filter(|&x| x != g).collect();
+        for x in subsets(&others) {
+            let v = seen_p(&PK, &after, g, &x, true);
+            out[5] |= (v.unit(g) != t.unit(g) || blobs_of(&v, g, Member::Target, true) != blobs_of(&t, g, Member::Target, true)) as usize;
+        }
+    }
+    out
+}
+
+/// Promotion statically, over the whole family (1536 worlds): no referrer's blob changes (§5 "No
+/// blob of a unit that references X changes"); S(H) gains at most X's key and handle, whatever H
+/// holds; after it every reader of a unit computes the same unit and blobs whatever else it reads,
+/// and the keeper and the reader of a root enter alike. FAILS "a promotion changes in no way who
+/// reaches it" (spec/permissions.md §3 Own secrets add only; design §5 "X and the dependents whose
+/// independent it becomes move from H's unit to X's"): a dependent Z of X that H's unit reached
+/// directly and X's unit does not reach is in no unit after, and when X itself was reached only
+/// through such a Z, H's holders lose X too (smallest worlds below). Control: the promotion leaving
+/// S(H) loses X for H's holders in more worlds.
+#[test]
+fn promotion_moves_x_and_what_x_reaches() {
+    let mut f = [0; PROMO_COLS];
+    for i in 0..PFAMILY {
+        let row = promo_world(&promo_family(i));
+        for (a, x) in f.iter_mut().zip(row) {
+            *a += x;
+        }
+    }
+    eprintln!("promotion family of {PFAMILY} (loses, loses with P out of S(H), referrer changes, other S(H) changes, keeper != reader, reader split, gains): {f:?}");
+    assert_eq!((f[2], f[3], f[4], f[5]), (0, 0, 0, 0), "{f:?}");
+    assert!(f[1] > f[0], "control: {f:?}");
+    // The finding's smallest worlds. H -> X, H -> Z, Z a dependent of X: Z is in no unit after.
+    let a = world(&PK, &[], &[(1, 2), (1, 3)]);
+    let mut pa = a.clone();
+    pa.push(promote(2));
+    assert_eq!(holds_from(&PK, &a, 1, true, true).0, set(&[1, 2, 3]));
+    assert_eq!(holds_from(&PK, &pa, 1, true, true).0, set(&[1, 2]));
+    // H -> Z -> X: X's handle is in no unit H's holders enter; they lose X and Z.
+    let b = world(&PK, &[], &[(1, 3), (3, 2)]);
+    let mut pb = b.clone();
+    pb.push(promote(2));
+    assert_eq!(holds_from(&PK, &b, 1, false, true).0, set(&[1, 2, 3]));
+    assert_eq!(holds_from(&PK, &pb, 1, false, true).0, set(&[1]));
+    // X unreached before, H -> Z, X -> Z: Z joins X's unit, which H's holders do not enter (the
+    // strong's home names H, X's handle is nowhere they look).
+    let c = world(&PK, &[], &[(1, 3), (2, 3)]);
+    let mut pc = c.clone();
+    pc.push(promote(2));
+    assert_eq!(holds_from(&PK, &c, 1, false, true).0, set(&[1, 3]));
+    assert_eq!(holds_from(&PK, &pc, 1, false, true).0, set(&[1]));
+    // The same through a referrer G (sync on H, G -> Z with home H): G's holders lose Z.
+    let g = world(&PK, &[(0, 1, Role::Sync)], &[(1, 2), (2, 3), (1, 3), (0, 3)]);
+    let mut pg = g.clone();
+    pg.push(promote(2));
+    assert_eq!(holds_from(&PK, &g, 0, false, true).0, set(&[0, 1, 2, 3]));
+    assert_eq!(holds_from(&PK, &pg, 0, false, true).0, set(&[0, 1, 2, 3]), "H -> X lists X: kept");
+    assert!(f[0] > 0);
 }

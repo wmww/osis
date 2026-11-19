@@ -29,9 +29,21 @@
 //! - A fork is commits valid on one side only (`Commit::side`); a blob or entry is the unit's while
 //!   either side's view asks for it, and each side's keepers walk by their side's steps.
 //!
-//! Left out: promotion (brief 2: kinds are per `View`, so a promotion can flip one), validity
-//! beyond two fixed sides, keyless grants, public things, caps, tickets other than a root's,
-//! sealing, the wire, dropping held commits.
+//! - Promotion (design §5, `Op::Promote`): a view holding a valid promotion of a dependent X counts
+//!   X independent, owning sync ID `n + c` (c the promotion's commit; a fork owns several, the
+//!   greatest its unit), and X's mint admin holding admin on X by the record edge. The promotion
+//!   travels under X's unit and, as a role commit naming the mint admin, under the mint admin's.
+//!   `Op::Void` judges a commit invalid where it is held (a removal of its author arriving), so a
+//!   voided promotion makes X dependent again. Units, entries, blobs, roots and key blobs' `names`
+//!   are sync IDs; things, handles, homes and grants are things (an original independent thing's
+//!   sync ID is its own index). A writer syncs the sync IDs its things own by the views it judges
+//!   by; a keeper's roots are things, each entered by its sync ID on the keeper's side.
+//! - The carrier rule (`Rules::carrier`): a writer deletes an entry its views put under other
+//!   units only once each of those units' stores holds it.
+//!
+//! Left out: validity beyond two fixed sides and voids, keyless grants, public things, caps,
+//! tickets other than a root's, sealing, the wire, dropping held commits, a source per node (one
+//! store per sync ID).
 use crate::closure::{Kind, Role, Set, C, T};
 use std::cell::RefCell;
 use std::collections::{BTreeMap, BTreeSet};
@@ -52,6 +64,13 @@ pub enum Op {
     Role(T, Option<Role>),
     /// A rotation of the thing's sync secret.
     Rotate,
+    /// A content delta on the thing; with `also` the same commit writes a second thing (a mixed
+    /// commit: one blob under each unit).
+    Body { also: Option<T> },
+    /// Makes the dependent thing independent with a sync ID of its own (design §5).
+    Promote,
+    /// Judges commit `C` invalid wherever this is held (on the thing the voided commit is on).
+    Void(C),
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -91,13 +110,26 @@ pub struct View {
     pub strongs: BTreeMap<(T, T), Set>,
     /// Sync rotations per thing.
     pub epochs: Vec<usize>,
-    /// The unit each thing is in, by the view's `Unit` rule.
+    /// The unit (sync ID) each thing is in, by the view's `Unit` rule.
     pub in_unit: Vec<Option<T>>,
+    /// Each thing's mint admin by its record, whatever it counts as now.
+    pub mint: Vec<Option<T>>,
+    /// The sync IDs each independent thing owns (an original one: its own index; a promoted one:
+    /// `n + c` per valid promotion `c` held).
+    pub sids: Vec<Set>,
+    /// The thing each promotion's sync ID belongs to, for every promotion written.
+    pub owner: BTreeMap<T, T>,
+    /// A promotion travels under its mint admin's unit too (off: a control).
+    pub p_stays: bool,
 }
 
 impl View {
     /// The view of `held` (indices into `all`): live dots, role entries last commit wins.
     pub fn of(kinds: &[Kind], all: &[Commit], held: &BTreeSet<C>, unit: Unit) -> View {
+        let n = kinds.len();
+        let voided: BTreeSet<C> = held.iter().filter_map(|&c| if let Op::Void(x) = all[c].op { Some(x) } else { None }).collect();
+        let held: BTreeSet<C> = held.difference(&voided).copied().collect();
+        let held = &held;
         let mut removed: BTreeSet<Dot> = BTreeSet::new();
         let mut covered: BTreeSet<C> = BTreeSet::new();
         for &c in held {
@@ -111,9 +143,20 @@ impl View {
             kinds: kinds.to_vec(),
             grants: BTreeMap::new(),
             strongs: BTreeMap::new(),
-            epochs: vec![0; kinds.len()],
+            epochs: vec![0; n],
             in_unit: vec![],
+            mint: kinds.iter().map(|k| if let Kind::Dependent(a) = k { Some(*a) } else { None }).collect(),
+            sids: (0..n).map(|t| if kinds[t] == Kind::Independent { Set::from([t]) } else { Set::new() }).collect(),
+            owner: (0..all.len()).filter(|&c| all[c].op == Op::Promote).map(|c| (n + c, all[c].on)).collect(),
+            p_stays: true,
         };
+        for &c in held {
+            let x = all[c].on;
+            if all[c].op == Op::Promote && v.mint[x].is_some() {
+                v.kinds[x] = Kind::Independent;
+                v.sids[x].insert(n + c);
+            }
+        }
         let mut live = |on: T, dot: Dot, home: Option<T>| {
             if !removed.contains(&dot) {
                 v.strongs.entry((on, dot.1)).or_default().extend(home);
@@ -139,27 +182,50 @@ impl View {
                 _ => {}
             }
         }
+        // The record edge: a promoted thing's mint admin holds admin on it.
+        for x in 0..n {
+            if let (Some(a), false) = (v.mint[x], v.sids[x].is_empty()) {
+                v.grants.insert((a, x), Role::Admin);
+            }
+        }
         v.in_unit = v.units_by(unit);
         v
     }
     pub fn all(kinds: &[Kind], all: &[Commit], unit: Unit) -> View {
         View::of(kinds, all, &(0..all.len()).collect(), unit)
     }
+    /// An independent thing's sync ID: the greatest it owns (a dependent's: its index, unused).
+    pub fn sid(&self, t: T) -> T {
+        self.sids[t].last().copied().unwrap_or(t)
+    }
+    /// The thing a sync ID belongs to.
+    pub fn thing(&self, u: T) -> T {
+        if u < self.kinds.len() {
+            u
+        } else {
+            self.owner.get(&u).copied().unwrap_or(u)
+        }
+    }
+    /// The units of the view: each independent thing's sync ID.
+    pub fn units(&self) -> Set {
+        self.independents().into_iter().map(|t| self.sid(t)).collect()
+    }
     fn units_by(&self, u: Unit) -> Vec<Option<T>> {
         let n = self.kinds.len();
         let dep = |x: T| self.kinds[x] != Kind::Independent;
-        let mut out: Vec<Option<T>> = (0..n).map(|x| if !dep(x) || u == Unit::All { Some(self.ind(x)) } else { None }).collect();
+        let unit_of = |x: T| self.sid(self.ind(x));
+        let mut out: Vec<Option<T>> = (0..n).map(|x| if !dep(x) || u == Unit::All { Some(unit_of(x)) } else { None }).collect();
         if u == Unit::Held {
             for &(a, b) in self.strongs.keys() {
                 if dep(b) && self.ind(a) != self.ind(b) {
-                    out[b] = Some(self.ind(b));
+                    out[b] = Some(unit_of(b));
                 }
             }
         }
         loop {
             let mut changed = false;
             for &(a, b) in self.strongs.keys() {
-                if out[b].is_none() && out[a] == Some(self.ind(b)) {
+                if out[b].is_none() && out[a] == Some(unit_of(b)) {
                     out[b] = out[a];
                     changed = true;
                 }
@@ -226,7 +292,7 @@ impl View {
         let mut out: Set =
             self.strongs.keys().filter(|&&(a, b)| self.in_unit[a] == Some(g) && self.in_unit[b] != Some(g)).map(|&(_, b)| b).collect();
         if m == Member::Role {
-            let roles = self.roles_from(g);
+            let roles = self.roles_from(self.thing(g));
             out.retain(|&x| roles.contains_key(&self.ind(x)));
         }
         out
@@ -239,16 +305,16 @@ impl View {
             out.insert(x);
             if homes {
                 for (_, hs) in self.strongs.iter().filter(|(&(a, b), _)| b == x && self.in_unit[a] == Some(g)) {
-                    out.extend(hs.iter().filter(|&&h| h != g));
+                    out.extend(hs.iter().filter(|&&h| h != self.thing(g)));
                 }
             }
         }
         out
     }
-    /// The key blobs of S(k): the independent things a thing of `k`'s unit holds a direct grant on
-    /// (the role commits naming it travel under S(k)).
-    pub fn keys(&self, k: T) -> Set {
-        self.grants.keys().filter(|&&(a, _)| self.in_unit[a] == Some(k)).map(|&(_, b)| b).collect()
+    /// The key blobs of S(k): for each independent thing a thing of `k`'s unit holds a direct grant
+    /// on (the role commits naming it travel under S(k)), each sync ID it owns, as (thing, sync ID).
+    pub fn keys(&self, k: T) -> BTreeSet<(T, T)> {
+        self.grants.keys().filter(|&&(a, _)| self.in_unit[a] == Some(k)).flat_map(|&(_, b)| self.sids[b].iter().map(move |&s| (b, s))).collect()
     }
     /// H's step: H and every holder of a direct grant on H.
     pub fn on_step(&self, w: T, h: T) -> bool {
@@ -260,6 +326,8 @@ impl View {
         match c.op {
             Op::Role(w, _) => out.extend(self.in_unit[w]),
             Op::Rotate => out.extend(self.grants.keys().filter(|k| k.1 == c.on).filter_map(|&(w, _)| self.in_unit[w])),
+            Op::Body { also: Some(z) } => out.extend(self.in_unit[z]),
+            Op::Promote | Op::Void(_) if self.p_stays => out.extend(self.mint[c.on].and_then(|a| self.in_unit[a])),
             _ => {}
         }
         out
@@ -284,7 +352,7 @@ pub enum Blob {
 /// The honest blobs of S(g) by one view: its handles and its keys (no credential).
 pub fn blobs_of(v: &View, g: T, m: Member, homes: bool) -> Vec<Blob> {
     let mut out: Vec<Blob> = v.handles(g, m, homes).into_iter().map(Blob::Handle).collect();
-    out.extend(v.keys(g).into_iter().map(|t| Blob::Key(Key { of: t, names: t, cred: None })));
+    out.extend(v.keys(g).into_iter().map(|(t, s)| Blob::Key(Key { of: t, names: s, cred: None })));
     out
 }
 
@@ -330,7 +398,7 @@ impl Walk {
 /// current credential.
 pub fn walk(steps: &View, reads: bool, roots: &Set, blobs: &dyn Fn(T) -> Vec<Blob>, w: Walk) -> Entered {
     let start = if reads { Entered { read: roots.clone(), unread: Set::new() } } else { Entered { read: Set::new(), unread: roots.clone() } };
-    let deep = steps.reach_by(roots, Role::Sync);
+    let deep = steps.reach_by(&roots.iter().map(|&u| steps.thing(u)).collect(), Role::Sync);
     let mut e = start.clone();
     loop {
         let units = e.units();
@@ -348,25 +416,30 @@ pub fn walk(steps: &View, reads: bool, roots: &Set, blobs: &dyn Fn(T) -> Vec<Blo
         // A thing's sync secret: an entered unit's own, or a dependent's whose tid the node knows
         // (it reads the unit holding it).
         let holds = |h: T| {
-            let u = steps.ind(h);
-            units.contains(&u) && (h == u || (e.read.contains(&u) && steps.in_unit[h] == Some(u)))
+            let i = steps.ind(h);
+            if h == i {
+                return steps.sids[i].iter().any(|s| units.contains(s));
+            }
+            let u = steps.sid(i);
+            e.read.contains(&u) && steps.in_unit[h] == Some(u)
         };
         let mut next = start.clone();
         for k in keys {
             let u = k.names;
+            let x = steps.thing(u);
             if !handles.contains(&k.of) || roots.contains(&u) {
                 continue;
             }
             let enters = match w.enter {
-                Enter::Steps => k.cred == Some(steps.epochs[u]) || (0..steps.kinds.len()).any(|h| steps.on_step(h, u) && holds(h)),
-                Enter::Deep => deep.contains(&u),
+                Enter::Steps => k.cred == Some(steps.epochs[x]) || (0..steps.kinds.len()).any(|h| steps.on_step(h, x) && holds(h)),
+                Enter::Deep => deep.contains(&x),
                 Enter::Free => true,
             };
             if !enters {
                 continue;
             }
             let read = reads
-                && steps.grants.iter().any(|(&(h, t), &r)| t == u && r >= Role::Read && steps.in_unit[h].is_some_and(|x| e.read.contains(&x)));
+                && steps.grants.iter().any(|(&(h, t), &r)| t == x && r >= Role::Read && steps.in_unit[h].is_some_and(|y| e.read.contains(&y)));
             if read {
                 next.read.insert(u);
             } else {
@@ -408,11 +481,25 @@ pub struct Rules {
     pub lowest_wins: bool,
     /// A writer deletes what is not the unit's (off: a control).
     pub deletes: bool,
+    /// The carrier rule (design §5): an entry the writer's views put under other units leaves only
+    /// once each of those units' stores holds it (off: a control, it leaves at once).
+    pub carrier: bool,
+    /// A promotion stays under its mint admin's unit (design §5; off: a control).
+    pub p_stays: bool,
 }
 
 impl Rules {
-    pub const DESIGN: Rules =
-        Rules { unit: Unit::Reach, member: Member::Target, pass: Pass::First, any_side: true, keys_by_any: true, lowest_wins: true, deletes: true };
+    pub const DESIGN: Rules = Rules {
+        unit: Unit::Reach,
+        member: Member::Target,
+        pass: Pass::First,
+        any_side: true,
+        keys_by_any: true,
+        lowest_wins: true,
+        deletes: true,
+        carrier: true,
+        p_stays: true,
+    };
 }
 
 #[derive(Clone, Debug)]
@@ -424,10 +511,13 @@ pub struct Writer {
 
 #[derive(Clone, Debug)]
 pub struct Keeper {
+    /// Things, each entered by its sync ID on the keeper's side.
     pub roots: Set,
     pub side: u8,
     pub reads: bool,
     pub kept: Entered,
+    /// The commits it held at its last pass: those of the stores of the units it kept.
+    pub holds: BTreeSet<C>,
 }
 
 /// What a writer does at one store.
@@ -461,6 +551,14 @@ pub struct Net {
     pub blob_ops: usize,
     /// Single visits after which the store's blobs were not what its own entries give.
     pub off: Vec<String>,
+    /// Commits that ever had an entry, and how many times each entry was logged.
+    pub ever: BTreeSet<C>,
+    pub inserts: BTreeMap<(T, C), usize>,
+    /// Moments a commit was carried nowhere though a unit some writer syncs carries it on a side
+    /// (after a single visit), or a keeper lost a commit it held that its side's walk still keeps.
+    pub lost: Vec<String>,
+    /// Whether `lost` is checked (it costs a walk per keeper pass).
+    pub watch: bool,
     /// Both sides' views of every commit and of each writer's holdings, by how many there were
     /// (both only grow).
     memo: RefCell<Memo>,
@@ -486,6 +584,7 @@ impl Net {
                     side: *side,
                     reads: *reads,
                     kept: if *reads { Entered { read: r.clone(), unread: Set::new() } } else { Entered { read: Set::new(), unread: r.clone() } },
+                    holds: BTreeSet::new(),
                 })
                 .collect(),
             entries: BTreeSet::new(),
@@ -496,13 +595,31 @@ impl Net {
             churn: 0,
             blob_ops: 0,
             off: vec![],
+            ever: BTreeSet::new(),
+            inserts: BTreeMap::new(),
+            lost: vec![],
+            watch: false,
             memo: RefCell::default(),
         }
     }
     /// The view one side counts of `held`.
     pub fn side_view(&self, held: &BTreeSet<C>, side: u8) -> View {
         let valid: BTreeSet<C> = held.iter().copied().filter(|&c| self.commits[c].side.is_none_or(|s| s == side)).collect();
-        View::of(&self.kinds, &self.commits, &valid, self.rules.unit)
+        let mut v = View::of(&self.kinds, &self.commits, &valid, self.rules.unit);
+        v.p_stays = self.rules.p_stays;
+        v
+    }
+    /// The sync IDs of these things by a view (a thing it counts dependent: none).
+    fn sids_of(v: &View, things: &Set) -> Set {
+        things.iter().filter(|&&t| v.kinds[t] == Kind::Independent).map(|&t| v.sid(t)).collect()
+    }
+    /// The units writer `w` syncs: the sync IDs its things own by the views it judges by.
+    pub fn units_of(&self, w: usize) -> Set {
+        self.judging(w).iter().flat_map(|v| Net::sids_of(v, &self.writers[w].syncs)).collect()
+    }
+    /// The units keeper `k` roots at, by its side's view of every commit.
+    pub fn roots(&self, k: usize) -> Set {
+        Net::sids_of(&self.truth(self.keepers[k].side), &self.keepers[k].roots)
     }
     /// What every commit written says, on one side.
     pub fn truth(&self, side: u8) -> View {
@@ -542,7 +659,7 @@ impl Net {
             return None;
         }
         let h = v.ind(to);
-        if wr.syncs.contains(&h) && v.in_unit[to] == Some(h) {
+        if wr.syncs.contains(&h) && v.in_unit[to] == Some(v.sid(h)) {
             return Some(h);
         }
         let covered: BTreeSet<C> = wr
@@ -560,9 +677,29 @@ impl Net {
     /// Hands `c` to writer `w` (a peer exchange) if a unit it syncs carries it on either side.
     pub fn deliver(&mut self, w: usize, c: C) {
         let s = &self.writers[w].syncs;
-        if !self.writers[w].has.contains(&c) && (0..2).any(|side| !self.truth(side).under(&self.commits[c]).is_disjoint(s)) {
+        if !self.writers[w].has.contains(&c)
+            && (0..2).any(|side| {
+                let t = self.truth(side);
+                !t.under(&self.commits[c]).is_disjoint(&Net::sids_of(&t, s))
+            })
+        {
             self.writers[w].has.insert(c);
         }
+    }
+    /// Writer `w` writes `c` and logs it at once under each unit it syncs that its views put it
+    /// under (an author logs in the write's transaction, before any pass).
+    pub fn author_logs(&mut self, w: usize, c: Commit) -> C {
+        let c = self.write(c);
+        self.arrive(w, c);
+        c
+    }
+    /// Commit `c` reaches writer `w`, which logs it at once under each unit it syncs that its
+    /// views put it under (as its author does in the write's transaction), with no pass first.
+    pub fn arrive(&mut self, w: usize, c: C) {
+        self.writers[w].has.insert(c);
+        let mine = self.units_of(w);
+        let under: Set = self.judging(w).iter().flat_map(|v| v.under(&self.commits[c])).filter(|u| mine.contains(u)).collect();
+        self.act(Acts { entry_logs: under.into_iter().map(|u| (u, c)).collect(), ..Acts::default() });
     }
     pub fn deliver_all(&mut self) {
         for w in 0..self.writers.len() {
@@ -581,9 +718,9 @@ impl Net {
         }
     }
     /// What S(g) is due by these views: its handles and its keys.
-    fn due(&self, views: &[View], g: T) -> (Set, Set) {
+    fn due(&self, views: &[View], g: T) -> (Set, BTreeSet<(T, T)>) {
         let mut hs = Set::new();
-        let mut ks = Set::new();
+        let mut ks = BTreeSet::new();
         for v in views {
             hs.extend(v.handles(g, self.rules.member, true));
             ks.extend(v.keys(g));
@@ -613,20 +750,24 @@ impl Net {
         }
         if self.rules.deletes {
             for c in self.entries_of(g) {
-                if wr.has.contains(&c) && !under(c) {
+                // The carrier rule: where its views put it under other units, it leaves only once
+                // each of their stores holds it.
+                let elsewhere: Set = views.iter().flat_map(|v| v.under(&self.commits[c])).collect();
+                let carried = !self.rules.carrier || elsewhere.iter().all(|&u| self.entries.contains(&(u, c)));
+                if wr.has.contains(&c) && !under(c) && carried {
                     a.entry_dels.push((g, c));
                 }
             }
         }
         let (hs, ks) = self.due(&views, g);
-        let (mut kept_h, mut kept_k) = (Set::new(), Set::new());
+        let (mut kept_h, mut kept_k) = (Set::new(), BTreeSet::new());
         for (&(u, id), b) in &self.store {
             if u != g {
                 continue;
             }
             let (due, first) = match b {
                 Blob::Handle(x) => (hs.contains(x), kept_h.insert(*x)),
-                Blob::Key(k) => (ks.contains(&k.of) && k.names == k.of, k.names == k.of && kept_k.insert(k.of)),
+                Blob::Key(k) => (ks.contains(&(k.of, k.names)), ks.contains(&(k.of, k.names)) && kept_k.insert((k.of, k.names))),
             };
             if (!due && self.rules.deletes) || (due && !first && self.rules.lowest_wins) {
                 a.dels.push((g, id));
@@ -635,10 +776,10 @@ impl Net {
         for &x in hs.difference(&kept_h) {
             a.logs.push((g, Blob::Handle(x)));
         }
-        for &t in ks.difference(&kept_k) {
+        for &(t, s) in ks.difference(&kept_k) {
             if self.rules.keys_by_any || wr.syncs.contains(&t) {
                 let cred = views.iter().map(|v| v.epochs[t]).max();
-                a.logs.push((g, Blob::Key(Key { of: t, names: t, cred })));
+                a.logs.push((g, Blob::Key(Key { of: t, names: s, cred })));
             }
         }
         a
@@ -657,7 +798,11 @@ impl Net {
             }
         }
         for e in a.entry_logs {
-            self.churn += self.entries.insert(e) as usize;
+            if self.entries.insert(e) {
+                self.churn += 1;
+                self.ever.insert(e.1);
+                *self.inserts.entry(e).or_default() += 1;
+            }
         }
         for e in a.entry_dels {
             self.churn += self.entries.remove(&e) as usize;
@@ -670,7 +815,7 @@ impl Net {
         let views: Vec<View> = (0..2).map(|s| self.side_view(&es, s)).collect();
         let (hs, ks) = self.due(&views, g);
         let mut want: Vec<Blob> = hs.into_iter().map(Blob::Handle).collect();
-        want.extend(ks.into_iter().map(|t| Blob::Key(Key { of: t, names: t, cred: None })));
+        want.extend(ks.into_iter().map(|(t, s)| Blob::Key(Key { of: t, names: s, cred: None })));
         let mut got: Vec<Blob> = self.listed(g).into_iter().map(|b| if let Blob::Key(k) = b { Blob::Key(Key { cred: None, ..k }) } else { b }).collect();
         got.sort();
         (got != want).then(|| format!("S({g}) holds {got:?}, its entries give {want:?}"))
@@ -688,9 +833,27 @@ impl Net {
         if let Some(e) = self.store_off(g) {
             self.off.push(format!("after writer {w}: {e}"));
         }
+        self.check_carried(&format!("after writer {w} at S({g})"));
+    }
+    /// Whether some writer holds `c` and every writer holding it places it under some unit (none
+    /// counts it released: a release racing a write is the release rule's, not a move's).
+    pub fn placed(&self, c: C) -> bool {
+        let holders: Vec<usize> = (0..self.writers.len()).filter(|&w| self.writers[w].has.contains(&c)).collect();
+        !holders.is_empty() && holders.iter().all(|&w| self.judging(w).iter().any(|v| !v.under(&self.commits[c]).is_empty()))
+    }
+    /// Records each commit that had an entry and has none while it is placed (`placed`).
+    pub fn check_carried(&mut self, when: &str) {
+        if !self.watch {
+            return;
+        }
+        let held: BTreeSet<C> = self.entries.iter().map(|e| e.1).collect();
+        let gone: Vec<C> = self.ever.difference(&held).copied().filter(|&c| self.placed(c)).collect();
+        for c in gone {
+            self.lost.push(format!("{when}: commit {c} ({:?}) carried by no store", self.commits[c]));
+        }
     }
     pub fn visit_all(&mut self, w: usize) {
-        for g in self.writers[w].syncs.clone() {
+        for g in self.units_of(w) {
             self.visit(w, g);
         }
     }
@@ -698,7 +861,7 @@ impl Net {
     pub fn visit_together(&mut self) {
         let mut acts = vec![];
         for w in 0..self.writers.len() {
-            for g in self.writers[w].syncs.clone() {
+            for g in self.units_of(w) {
                 if self.rules.pass == Pass::First {
                     self.pull(w, g);
                 }
@@ -710,21 +873,23 @@ impl Net {
         }
         if self.rules.pass == Pass::After {
             for w in 0..self.writers.len() {
-                for g in self.writers[w].syncs.clone() {
+                for g in self.units_of(w) {
                     self.pull(w, g);
                 }
             }
         }
+        self.check_carried("after a visit together");
     }
     /// Keeper `k` at the stores of what it keeps, by its side's steps: the walk over the stored
     /// blobs; with `count` (a control) a unit stays while a kept unit lists its handle and key.
     pub fn pass(&mut self, k: usize, count: bool) {
         let kp = &self.keepers[k];
         let t = self.truth(kp.side);
+        let roots = self.roots(k);
         let next = if count {
             let mut kept = kp.kept.units();
             loop {
-                let mut n = kp.roots.clone();
+                let mut n = roots.clone();
                 n.extend(walk(&t, false, &kept, &|g| self.listed(g), self.walk).units());
                 if n == kept {
                     break Entered { unread: kept, ..Entered::default() };
@@ -732,10 +897,22 @@ impl Net {
                 kept = n;
             }
         } else {
-            walk(&t, kp.reads, &kp.roots, &|g| self.listed(g), self.walk)
+            walk(&t, kp.reads, &roots, &|g| self.listed(g), self.walk)
         };
-        self.churn += self.keepers[k].kept.units().symmetric_difference(&next.units()).count();
+        let units = next.units();
+        let holds: BTreeSet<C> = self.entries.iter().filter(|e| units.contains(&e.0)).map(|e| e.1).collect();
+        if self.watch {
+            // A commit it held, gone, that a unit its side's walk over the due blobs keeps carries.
+            let want = walk(&t, kp.reads, &roots, &|g| self.truth_blobs(g), Walk::DESIGN).units();
+            let gone: Vec<C> =
+                kp.holds.difference(&holds).copied().filter(|&c| self.placed(c) && !t.under(&self.commits[c]).is_disjoint(&want)).collect();
+            for c in gone {
+                self.lost.push(format!("keeper {k} of {:?} lost commit {c} ({:?})", self.keepers[k].roots, self.commits[c]));
+            }
+        }
+        self.churn += self.keepers[k].kept.units().symmetric_difference(&units).count();
         self.keepers[k].kept = next;
+        self.keepers[k].holds = holds;
     }
     pub fn pass_all(&mut self, count: bool) {
         for k in 0..self.keepers.len() {
@@ -762,7 +939,7 @@ impl Net {
         let views = [self.truth(0), self.truth(1)];
         let (hs, ks) = self.due(&views, g);
         let mut out: Vec<Blob> = hs.into_iter().map(Blob::Handle).collect();
-        out.extend(ks.into_iter().map(|t| Blob::Key(Key { of: t, names: t, cred: None })));
+        out.extend(ks.into_iter().map(|(t, s)| Blob::Key(Key { of: t, names: s, cred: None })));
         out
     }
     /// Where the stores and keepers differ from what every commit written says: per unit some
@@ -770,9 +947,11 @@ impl Net {
     /// with the credentials stored with them (a unit no writer syncs as it is).
     pub fn wrong(&self) -> Vec<String> {
         let views = [self.truth(0), self.truth(1)];
-        let synced = |g: T| self.writers.iter().any(|w| w.syncs.contains(&g));
+        let synced_units: Set = self.writers.iter().flat_map(|w| views.iter().flat_map(|v| Net::sids_of(v, &w.syncs))).collect();
+        let synced = |g: T| synced_units.contains(&g);
         let mut out = vec![];
-        for g in views[0].independents().into_iter().filter(|&g| synced(g)) {
+        let units: Set = views.iter().flat_map(|v| v.units()).collect();
+        for g in units.into_iter().filter(|&g| synced(g)) {
             let want: BTreeSet<C> = (0..self.commits.len()).filter(|&c| views.iter().any(|v| v.under(&self.commits[c]).contains(&g))).collect();
             if self.entries_of(g) != want {
                 out.push(format!("S({g}) holds entries {:?}, wants {want:?}", self.entries_of(g)));
@@ -784,16 +963,16 @@ impl Net {
             }
         }
         let stored = |g: T| -> Vec<Blob> {
-            let creds: BTreeMap<T, Option<usize>> =
-                self.listed(g).into_iter().filter_map(|b| if let Blob::Key(k) = b { (k.names == k.of).then_some((k.of, k.cred)) } else { None }).collect();
+            let creds: BTreeMap<(T, T), Option<usize>> =
+                self.listed(g).into_iter().filter_map(|b| if let Blob::Key(k) = b { Some(((k.of, k.names), k.cred)) } else { None }).collect();
             self.truth_blobs(g)
                 .into_iter()
-                .map(|b| if let Blob::Key(k) = b { Blob::Key(Key { cred: creds.get(&k.of).copied().flatten(), ..k }) } else { b })
+                .map(|b| if let Blob::Key(k) = b { Blob::Key(Key { cred: creds.get(&(k.of, k.names)).copied().flatten(), ..k }) } else { b })
                 .collect()
         };
-        for kp in &self.keepers {
+        for (i, kp) in self.keepers.iter().enumerate() {
             let blobs = |g: T| if synced(g) { stored(g) } else { self.listed(g) };
-            let want = walk(&views[kp.side as usize], kp.reads, &kp.roots, &blobs, Walk::DESIGN);
+            let want = walk(&views[kp.side as usize], kp.reads, &self.roots(i), &blobs, Walk::DESIGN);
             if kp.kept != want {
                 out.push(format!("keeper of {:?} keeps {:?}, wants {want:?}", kp.roots, kp.kept));
             }
