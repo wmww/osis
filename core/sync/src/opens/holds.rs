@@ -444,7 +444,7 @@ impl Holds for NodeHolds<'_, '_> {
             Some(_) => vec![Cred::Sync(k), Cred::Claim(item.key), Cred::Signing(k)],
             None => vec![Cred::Sync(k), Cred::Signing(k)],
         };
-        let max = osis_proto::limits::REPLY_BUDGET / 326;
+        let max = osis_proto::limits::MAX_BEHIND_STEPS;
         let mut last = SharedItem::code(Code::DECLINED);
         for c in &creds {
             match self.cx.store.behind(&item.sync_id, item.step.as_ref(), c, max) {

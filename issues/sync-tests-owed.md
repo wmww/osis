@@ -50,4 +50,4 @@ Names from `git show 28641727e`; each goes through the facade.
 The sync-shaped scale checks the deletion removed: notes/test-scale.md, Checks to restore (engine-level ones go in core/engine/tests/it; the old ones are in git at 680a85188 core/node/tests/it `scale`, `growth`).
 
 ## Dead public items
-Public items the old sync used and nothing calls now (osis-proto `MAX_BEHIND_STEPS`, `OFFSET_DIAGNOSTIC_MS`; osis-store `log_heads`, `table_len`; osis-transport `recheck_relayed`, `relaying`; osis-sync `status_of`): each is used by a test above or deleted.
+Public items the old sync used and nothing calls now (osis-proto `OFFSET_DIAGNOSTIC_MS`; osis-store `log_heads`, `table_len`; osis-transport `recheck_relayed`, `relaying`; osis-sync `status_of`): each is used by a test above or deleted.
