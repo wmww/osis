@@ -1062,11 +1062,13 @@ pub fn one_reading_relabelled(w: &World, rules: &Rules, v: &View, rd: &Reading) 
     r2.applied == m(&rd.applied) && r2.valid == m(&rd.valid) && r2.purged == m(&rd.purged) && r2.dropped == m(&rd.dropped) && r2.voided == m(&rd.voided) && r2.roles == rd.roles
 }
 
-/// Whether the reading without `x` held is `rd`, `x` aside.
-pub fn no_effect(w: &World, rules: &Rules, v: &View, rd: &Reading, x: Id) -> bool {
+/// Whether the reading without `x` held observes what `rd` does, `x` aside (`Reading::observed`:
+/// roles over time, invites, valid and purged content), and whether it applies the same
+/// edge-class commits (counted, not a property: finding 33).
+pub fn no_effect(w: &World, rules: &Rules, v: &View, rd: &Reading, x: Id) -> (bool, bool) {
     let o = judge(w, rules, &v.clone().without(&[x]));
     let less = |s: &Set| s.iter().copied().filter(|&i| i != x).collect::<Set>();
-    o.applied == less(&rd.applied) && o.valid == less(&rd.valid) && o.purged == less(&rd.purged) && o.roles == rd.roles
+    (o.observed(w, None) == rd.observed(w, Some(x)), o.applied == less(&rd.applied))
 }
 
 /// The held lowerings the reading does not apply that it neither drops nor voids, and that are
@@ -1090,8 +1092,13 @@ fn void_checks(w: &World, rules: &Rules, v: &View, rd: &Reading, n: Thing, t: bo
     }
     for &x in &rd.voided {
         st.count("void");
-        if !no_effect(w, rules, v, rd, x) {
+        let (seen, same) = no_effect(w, rules, v, rd, x);
+        if !seen {
             st.fail("void", m, format!("node {n}: the void lowering {x} has an effect"));
+        }
+        st.count("void shown");
+        if !same {
+            st.note("void shown", m, format!("node {n}: the void lowering {x} changes which writes apply, nothing observed"));
         }
     }
     st.count("one reading");
@@ -1594,16 +1601,16 @@ pub fn mode_rules(mode: &str) -> Option<Rules> {
 // ---- The void step in small worlds (notes/path-model-findings.md 16, 17) ----
 
 /// A small world of admins removing and granting each other on A (H its mint): `n` commits, each
-/// by a random party at a random `ts`, one in four carrying two or three removals of distinct
-/// holders (spec/commits.md §2), any other setting a random party's edge to admin (standing, or
-/// one in three until two ticks on) or none, naming a random remaining admin half the time, listing each
-/// earlier write with probability one half.
+/// by a random party at a random `ts`, one in four carrying two or three edge writes on distinct
+/// holders (`tiny_commit`), each setting a random party's edge to admin (standing, or one in three
+/// until two ticks on) or none, naming a random remaining admin half the time, listing each earlier
+/// write with probability one half.
 pub fn tiny(i: u64, n: usize) -> World {
     let mut rng = Rng::thread(0x701d, i as usize);
     let mut w = account();
     for _ in 0..n {
-        tiny_commit(&mut w, &mut rng, n, |h, rng, ts, several| {
-            let k = match if several { 4 } else { rng.below(5) } {
+        tiny_commit(&mut w, &mut rng, n, |h, rng, ts| {
+            let k = match rng.below(5) {
                 0 | 1 => Kind::set(h, Role::Admin),
                 2 => Kind::set(h, Role::Admin).until(ts + 2),
                 _ => Kind::set(h, Role::None),
@@ -1616,9 +1623,8 @@ pub fn tiny(i: u64, n: usize) -> World {
 }
 
 /// One commit of a small world: a random signer, `ts` in 1..=n, one part or (one in four) two
-/// or three on distinct holders other than the signer (`part`'s last argument: lowerings), each
-/// from `part` with its own list.
-fn tiny_commit(w: &mut World, rng: &mut Rng, n: usize, part: impl Fn(Thing, &mut Rng, u32, bool) -> Kind) {
+/// or three on distinct holders other than the signer, each from `part` with its own list.
+fn tiny_commit(w: &mut World, rng: &mut Rng, n: usize, part: impl Fn(Thing, &mut Rng, u32) -> Kind) {
     let parties = [H, B, N5, Z, N6];
     let s = parties[rng.below(5)];
     let ts = 1 + rng.below(n) as u32;
@@ -1628,7 +1634,7 @@ fn tiny_commit(w: &mut World, rng: &mut Rng, n: usize, part: impl Fn(Thing, &mut
     for _ in 0..k {
         let h = parties[rng.below(5)];
         let list: Vec<Id> = (0..w.commits.len()).filter(|_| rng.below(2) == 0).collect();
-        let kind = part(h, rng, ts, k > 1);
+        let kind = part(h, rng, ts);
         if s != h && !holders.contains(&h) {
             holders.push(h);
             let fin = matches!(kind, Kind::Edge { finalize: true, .. });
@@ -1654,7 +1660,7 @@ pub fn tiny_invites(i: u64, n: usize) -> World {
     let mut rng = Rng::thread(0x1271, i as usize);
     let mut w = account();
     for _ in 0..n {
-        tiny_commit(&mut w, &mut rng, n, |h, rng, ts, several| match if several { [1, 2, 3][rng.below(3)] } else { rng.below(6) } {
+        tiny_commit(&mut w, &mut rng, n, |h, rng, ts| match rng.below(6) {
             0 => Kind::set(h, Role::Admin),
             1 => Kind::set(h, Role::None),
             2 => Kind::set(h, Role::Write).inviting(Role::Write),
@@ -1735,11 +1741,12 @@ impl TinyStats {
 /// the settled walk applies, `V` trusting one it does not (void, its seeds lost: the walk is
 /// redone, notes/write-path-design.md §1). Failing: `one reading` (a relabelling keeping the
 /// order reads the same), `self-taken` (no applied commit's path loses its authority to the
-/// commit's own drops), `void` (a void lowering has no effect: the reading without it held is
-/// the same), `unapplied N`/`T` (likewise a lowering left with no verdict), `admin T` (A keeps a
-/// standing admin). Counted: `stray` (a drop whose dropper does not apply at the end), `unapplied
-/// V` (the trusted write's void round reads a lowering the final walk does not apply), `admin
-/// N`/`V`.
+/// commit's own drops), `void` (taking a void lowering out of the held set changes nothing
+/// users observe: `Reading::observed`), `unapplied N`/`T` (likewise a lowering that does not
+/// apply), `admin T` (A keeps a standing admin). Counted: `void shown`, `unapplied shown` (the
+/// same changes which edge writes apply: nobody sees it, finding 33), `stray` (a drop whose
+/// dropper does not apply at the end), `unapplied V` (the trusted write's void round reads a
+/// lowering the final walk does not apply), `admin N`/`V`.
 pub fn tiny_check(i: u64, w: &World, v: &View, rules: &Rules, st: &mut TinyStats) {
     st.worlds += 1;
     let rd = judge(w, rules, v);
@@ -1760,10 +1767,14 @@ pub fn tiny_check(i: u64, w: &World, v: &View, rules: &Rules, st: &mut TinyStats
     st.most_rounds = st.most_rounds.max(rd.rounds);
     st.hit(k("stray"), false, !rd.stray.is_empty(), i, w, || format!("stray {:?}", rd.stray));
     for &x in &rd.voided {
-        st.hit("void", true, !no_effect(w, rules, v, &rd, x), i, w, || format!("void {x} has an effect (voided {:?}, applied {:?})", rd.voided, rd.applied));
+        let (seen, same) = no_effect(w, rules, v, &rd, x);
+        st.hit("void", true, !seen, i, w, || format!("void {x} has an effect (voided {:?}, applied {:?})", rd.voided, rd.applied));
+        st.hit("void shown", false, !same, i, w, || format!("void {x} changes which writes apply"));
     }
     for x in unapplied(w, v, &rd) {
-        st.hit(k("unapplied"), t != "V", !no_effect(w, rules, v, &rd, x), i, w, || format!("unapplied {x} has an effect"));
+        let (seen, same) = no_effect(w, rules, v, &rd, x);
+        st.hit(k("unapplied"), t != "V", !seen, i, w, || format!("unapplied {x} has an effect"));
+        st.hit("unapplied shown", false, !same, i, w, || format!("unapplied {x} changes which writes apply"));
     }
     st.hit("one reading", true, !one_reading_relabelled(w, rules, v, &rd), i, w, || "a relabelling reads otherwise".to_string());
     st.hit("self-taken", true, !rd.self_taken.is_empty(), i, w, || format!("commits {:?} lose their path's authority to their own drops", rd.self_taken));

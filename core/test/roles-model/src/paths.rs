@@ -626,8 +626,13 @@ pub struct Reading {
     pub purged: Set,
     /// Writes shown only by a valid cover's copy (none under `Rules::cover_facts`).
     pub copied: Set,
-    /// Final roles, every `until` counted removed.
+    /// Final roles, every `until` counted removed, and the invite each edge gives in the end.
     pub roles: BTreeMap<Edge, Role>,
+    pub invites: BTreeMap<Edge, Role>,
+    /// The settled walk's edge writes per edge (key, value), and its cuts: the applied explicit
+    /// lowerings taking an edge from write or above to below (edge, key), which content judges by.
+    pub hist: BTreeMap<Edge, Vec<(Key, Val)>>,
+    pub cuts: BTreeSet<(Edge, Key)>,
     /// The settled walk's edge values, and the first walk's (no vouch counting).
     pub state: BTreeMap<Edge, Val>,
     pub first: BTreeMap<Edge, Val>,
@@ -669,6 +674,35 @@ impl Reading {
     pub fn shows(&self, i: Id) -> bool {
         self.valid.contains(&i) || self.applied.contains(&i) || self.copied.contains(&i)
     }
+    /// What users observe of the reading, write `x` aside: what each holder can do (its role and
+    /// invite in the end, and the role each edge gives at the start of each `ts`, which content
+    /// written there rests on, with the cuts) and which content counts (valid, copied, purged).
+    /// Which edge-class commits apply is not in it: an applied write changing none of this is
+    /// seen by nobody (notes/path-model-findings.md 33).
+    pub fn observed(&self, w: &World, x: Option<Id>) -> Observed {
+        let last = w.commits.iter().map(|c| c.ts).max().unwrap_or(0) + 1;
+        let edges: BTreeSet<Edge> = self.hist.keys().chain(&w.records).copied().collect();
+        let at = |e: Edge, t: u32| {
+            let rec = if w.records.contains(&e) { (Role::Admin, None) } else { (Role::None, None) };
+            alive(self.hist.get(&e).and_then(|h| h.iter().rev().find(|(k, _)| k.0 < t)).map_or(rec, |x| x.1), t)
+        };
+        let timeline = edges.into_iter().map(|e| (e, (0..=last).map(|t| at(e, t)).collect::<Vec<Role>>())).filter(|(_, r)| r.iter().any(|&r| r > Role::None)).collect();
+        let less = |s: &Set| s.iter().copied().filter(|&i| Some(i) != x).collect::<Set>();
+        let some = |m: &BTreeMap<Edge, Role>| m.iter().filter(|(_, r)| **r > Role::None).map(|(&e, &r)| (e, r)).collect();
+        Observed { roles: some(&self.roles), invites: some(&self.invites), timeline, cuts: self.cuts.clone(), valid: less(&self.valid), copied: less(&self.copied), purged: less(&self.purged) }
+    }
+}
+
+/// `Reading::observed`.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Observed {
+    pub roles: BTreeMap<Edge, Role>,
+    pub invites: BTreeMap<Edge, Role>,
+    pub timeline: BTreeMap<Edge, Vec<Role>>,
+    pub cuts: BTreeSet<(Edge, Key)>,
+    pub valid: Set,
+    pub copied: Set,
+    pub purged: Set,
 }
 
 #[derive(Clone, Debug)]
@@ -1359,13 +1393,17 @@ pub fn judge(w: &World, rules: &Rules, v: &View) -> Reading {
         };
         let mut dropper = wk.dropper;
         dropper.extend(d0);
+        let fin = finals(&wk.pass);
         let mut rd = Reading {
             lowered: wk.pass.lows.iter().map(|l| l.id).collect(),
             invited: wk.pass.invited.clone(),
             valid,
             purged,
             copied,
-            roles: finals(&wk.pass),
+            invites: fin.iter().map(|(&e, &r)| (e, give_invite(r, wk.pass.inv.get(&e).copied().unwrap_or(Role::None)))).collect(),
+            roles: fin,
+            hist: wk.pass.hist.clone(),
+            cuts: wk.pass.lows.iter().filter(|l| l.explicit && l.before >= Role::Write && l.after < Role::Write).map(|l| (l.edge, w.key(l.id))).collect(),
             state: wk.pass.state.clone(),
             first,
             counting,
