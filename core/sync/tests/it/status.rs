@@ -335,7 +335,8 @@ fn lacking_counted_by_what_a_source_pulls() {
 
 // spec/sync-status.md §1 (lacks), spec/sync.md §2 (work in proportion to change): a store
 // source's lacking count is kept per record: its connection letting the record go and another
-// taking it count nothing again; S leaving the record, or the record going, lets it go.
+// taking it count nothing again; S leaving the record (also while no connection holds it), or the
+// record going, lets it go.
 #[test]
 fn lacking_is_kept_per_record_across_connections_spec_sync_status_1() {
     use osis_sync::opens::{LeftAt, Leaving};
@@ -354,6 +355,15 @@ fn lacking_is_kept_per_record_across_connections_spec_sync_status_1() {
     t.g.stamped.insert(S, vec![blob(1)]);
     t.settle();
     assert_eq!(t.g.stamped_reads, reads, "the record gone: counted no more");
+    // S leaves the record while no connection holds it
+    t.join(S, ConnId(4), store(RB));
+    t.settle();
+    let reads = t.g.stamped_reads;
+    t.st.left(S, ConnId(4), away);
+    t.st.gone(RB, S);
+    t.g.stamped.insert(S, vec![blob(2)]);
+    t.settle();
+    assert_eq!(t.g.stamped_reads, reads, "S gone from the record: counted no more");
 }
 
 // spec/sync-status.md §2 (held elsewhere: a report from a source): a reader's report and the

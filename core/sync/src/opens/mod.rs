@@ -74,6 +74,9 @@ pub enum Moved {
     /// Where S, closed on `conn` earlier, stopped is no longer kept: what its source showed goes
     /// (spec/sync-opens.md §6 Where it stopped).
     Forgot(ConnId, SyncId),
+    /// Member S of kept record R, which no connection holds, closed (judged in the step of a
+    /// change, or S left the sync set): what is kept of S for that source goes.
+    Gone(RecordId, SyncId),
 }
 
 /// Where a member's peer stood as it left: what status still counts it holding (spec/sync-status.md
@@ -117,10 +120,11 @@ enum Close {
 }
 
 impl Moved {
-    /// The connection it moved on.
-    pub fn conn(&self) -> ConnId {
+    /// The connection it moved on (none for a record no connection holds).
+    pub fn conn(&self) -> Option<ConnId> {
         match self {
-            Moved::Joined(c, ..) | Moved::Left(c, ..) | Moved::Until(c, _) | Moved::Forgot(c, _) => *c,
+            Moved::Joined(c, ..) | Moved::Left(c, ..) | Moved::Until(c, _) | Moved::Forgot(c, _) => Some(*c),
+            Moved::Gone(..) => None,
         }
     }
 }
@@ -443,8 +447,9 @@ pub struct Opens {
     budget: u64,
     conns: BTreeMap<ConnId, Conn>,
     changed: Changed,
-    /// The connections each sync ID is a member on: what a change of S re-judges.
-    holding: BTreeMap<SyncId, BTreeSet<ConnId>>,
+    /// The records in memory holding each sync ID as a member, whether a connection holds them
+    /// or not (`on` says which): what a change of S judges.
+    held: BTreeMap<SyncId, BTreeSet<RecordId>>,
     /// The memo effects the product's `Holds` settles.
     fx: holds::Fx,
     /// Stamped per connection as its reported positions move (`reported_at`: status follows it).
@@ -498,7 +503,7 @@ impl Default for Opens {
             budget: osis_store::RECORD_BUDGET,
             conns: BTreeMap::new(),
             changed: Changed::default(),
-            holding: BTreeMap::new(),
+            held: BTreeMap::new(),
             fx: holds::Fx::default(),
             reports: osis_base::memo::Stamps::named("opens: reports"),
             peers: osis_base::memo::Stamps::named("opens: peers"),
@@ -592,12 +597,7 @@ impl Opens {
             Ok(())
         })?;
         for id in evicted.iter().chain(&dropped) {
-            self.unfollow_record(*id);
-            if let Some(r) = self.records.remove(id) {
-                for s in r.members.keys() {
-                    self.record_members.wrote(&(Source::Record(*id), *s), false);
-                }
-            }
+            self.forget_record(*id, Source::Record(*id));
         }
         if !evicted.is_empty() {
             if let Some(acks) = &mut self.acks {
@@ -621,6 +621,36 @@ impl Opens {
             }
         }
         Ok(evicted.into_iter().chain(dropped).collect())
+    }
+
+    /// Record `id` leaves memory (evicted, dropped, a record kept nowhere let go): its members
+    /// go from `held`, are unfollowed at the next `tick`, and read as gone. `src`: where its rows
+    /// live.
+    fn forget_record(&mut self, id: RecordId, src: Source) -> Option<Record> {
+        self.unfollow_record(id);
+        let r = self.records.remove(&id)?;
+        for s in r.members.keys() {
+            self.hold(*s, id, false);
+            self.record_members.wrote(&(src, *s), false);
+        }
+        Some(r)
+    }
+
+    /// Record `rid` in memory holds S as a member, or not (`held`).
+    fn hold(&mut self, s: SyncId, rid: RecordId, on: bool) {
+        if on {
+            self.held.entry(s).or_default().insert(rid);
+        } else if let Some(set) = self.held.get_mut(&s) {
+            set.remove(&rid);
+            if set.is_empty() {
+                self.held.remove(&s);
+            }
+        }
+    }
+
+    /// The connection holding record `rid` now, if any.
+    fn conn_on(&self, rid: RecordId) -> Option<ConnId> {
+        self.on.get(&rid).copied().filter(|c| self.conns.get(c).is_some_and(|k| k.rec == Some(rid)))
     }
 
     /// Tests only: the records in memory.
@@ -826,7 +856,7 @@ impl Opens {
     /// acknowledging S).
     pub fn wait_for(&self, store: &Store, s: &SyncId, mut peer: impl FnMut(&Named) -> Peer) -> Result<bool> {
         self.peers.read(s);
-        if self.holding.get(s).into_iter().flatten().any(|c| self.conns.get(c).is_some_and(|k| peer(&k.named) != Peer::Skipped)) {
+        if self.held.get(s).into_iter().flatten().filter_map(|r| self.conn_on(*r)).any(|c| self.conns.get(&c).is_some_and(|k| peer(&k.named) != Peer::Skipped)) {
             return Ok(true);
         }
         for id in self.holders_of(store, s)? {
@@ -1011,9 +1041,6 @@ impl Opens {
         for (s, m) in &r.members {
             self.member_stamps.wrote(&(conn, *s), false);
             moved.push(Moved::Left(conn, *s, LeftAt { src, reported: c.reported.get(s).map(|(p, _)| *p), until: m.until, how: Leaving::Connection }));
-            if let Some(set) = self.holding.get_mut(s) {
-                set.remove(&conn);
-            }
             self.peers.wrote(s, true);
         }
         // where members closed on this connection stopped lasts the connection
@@ -1023,11 +1050,7 @@ impl Opens {
         // a kept one stays in memory until `flush` writes it (or another connection takes it),
         // its members' J followed still
         if !r.kept {
-            for s in r.members.keys() {
-                self.record_members.wrote(&(src, *s), false);
-            }
-            self.records.remove(&rid);
-            self.unfollow_record(rid);
+            self.forget_record(rid, src);
         }
         // its walk stops stay in the record for the next connection taking it
         for s in walk {
@@ -1078,8 +1101,7 @@ impl Opens {
         }
         ctx.wire.close(loser, "one connection per pair");
         if let Some(id) = gone {
-            self.records.remove(&id);
-            self.unfollow_record(id);
+            self.forget_record(id, Source::Record(id));
             self.dirty.remove(&id);
             if let Some(acks) = &mut self.acks {
                 acks.set(id, None);
@@ -1168,15 +1190,14 @@ impl Opens {
         for (r, s) in std::mem::take(&mut self.unfollowed) {
             ctx.holds.unfollow(r, &s);
         }
+        // whether or not a connection holds the record, in this step
         for (r, s) in ctx.holds.standing_due() {
             self.work.standing += 1;
-            // a record no connection holds is judged at its next take
-            match self.on.get(&r).copied().filter(|c| self.member(*c, &s).is_some()) {
-                Some(c) => self.rejudge(ctx, c, s, moved),
-                None => {
-                    self.unfollow_member(r, s);
-                    ctx.holds.unfollow(r, &s);
-                }
+            if self.records.get(&r).is_some_and(|x| x.members.contains_key(&s)) {
+                self.judge(ctx, r, s, moved);
+            } else {
+                self.unfollow_member(r, s);
+                ctx.holds.unfollow(r, &s);
             }
         }
         let conns: Vec<ConnId> = self.conns.keys().copied().collect();
@@ -1236,7 +1257,8 @@ impl Opens {
             None => {
                 // spec/sync-opens.md §3: a node that stops holding S drops S from every record in
                 // the step that stops it; members on a connection close with a Lost (§6).
-                for c in self.holding.get(&s).cloned().unwrap_or_default() {
+                let on: Vec<ConnId> = self.held.get(&s).into_iter().flatten().filter_map(|r| self.conn_on(*r)).collect();
+                for c in on {
                     self.close_member(ctx, c, s, Close::Left, moved);
                 }
                 // a stop kept on a connection: told that nothing of S is kept here
@@ -1259,9 +1281,11 @@ impl Opens {
                         self.record_members.wrote(&(src, s), false);
                     }
                 }
-                for (id, r) in &self.records {
-                    if r.members.contains_key(&s) {
-                        self.record_members.wrote(&(Source::Record(*id), s), false);
+                // a record no connection holds: what is kept of S for it goes too
+                for id in self.held.remove(&s).unwrap_or_default() {
+                    if self.records.get(&id).is_some_and(|r| r.kept && r.members.contains_key(&s)) {
+                        self.record_members.wrote(&(Source::Record(id), s), false);
+                        moved.push(Moved::Gone(id, s));
                     }
                 }
                 let gone: Vec<RecordId> = self.followed.iter().filter(|(_, m)| m.contains(&s)).map(|(r, _)| *r).collect();
@@ -1283,8 +1307,9 @@ impl Opens {
                 self.failed(r);
             }
         }
-        for c in self.holding.get(&s).cloned().unwrap_or_default() {
-            self.rejudge(ctx, c, s, moved);
+        // spec/sync-opens.md §6: every record holding S, connected or not, in this step
+        for rid in self.held.get(&s).cloned().unwrap_or_default() {
+            self.judge(ctx, rid, s, moved);
         }
         for k in self.conns.values_mut() {
             k.adds.insert(s);
@@ -1393,41 +1418,49 @@ impl Opens {
         id
     }
 
-    /// Record `id` in memory: as a connection holds it, else as its rows hold it. Whether it is.
-    fn load(&mut self, ctx: &mut Ctx, id: RecordId) -> bool {
+    /// Record `id` in memory: as memory holds it (`Some(false)`), else as its rows hold it
+    /// (`Some(true)`: nothing of it was followed). None: no such record.
+    fn load(&mut self, ctx: &mut Ctx, id: RecordId) -> Option<bool> {
         if let Some(r) = self.records.get(&id) {
-            let Some(f) = r.peer.as_ref().filter(|p| !p.held).map(|p| p.f) else { return true };
+            let Some(f) = r.peer.as_ref().filter(|p| !p.held).map(|p| p.f) else { return Some(false) };
             match ctx.store.with_read(|t| records::filter_values(t, &id, f)) {
                 Ok(v) => {
                     if let Some(p) = self.records.get_mut(&id).and_then(|r| r.peer.as_mut()) {
                         p.values = Arc::new(v);
                         p.held = true;
                     }
-                    return true;
+                    return Some(false);
                 }
                 Err(e) => {
                     self.failed(Err(e));
-                    return false;
+                    return None;
                 }
             }
         }
         match ctx.store.with_read(|t| records::load(t, &id)) {
             Ok(Some(r)) => {
+                let members: Vec<SyncId> = r.members.keys().copied().collect();
                 self.records.insert(id, r);
-                true
+                for s in members {
+                    self.hold(s, id, true);
+                }
+                Some(true)
             }
-            Ok(None) => false,
+            Ok(None) => None,
             Err(e) => {
                 self.failed(Err(e));
-                false
+                None
             }
         }
     }
 
-    /// The connection takes record `id`: its members are this connection's (each re-judged),
-    /// Digest first (with a record), then the filter.
+    /// The connection takes record `id`: its members are this connection's, Digest first (with
+    /// a record), then the filter. Its members were judged in the step of each change while no
+    /// connection held it (spec/sync-opens.md §6): judged here only where nothing of them was
+    /// followed (a record read from its rows: a restart's) or what the record names moves.
     fn take(&mut self, ctx: &mut Ctx, conn: ConnId, id: RecordId, digest: bool, moved: &mut Vec<Moved>) {
-        if !self.load(ctx, id) || !self.one_per_pair(ctx, conn, id, moved) {
+        let Some(fresh) = self.load(ctx, id) else { return };
+        if !self.one_per_pair(ctx, conn, id, moved) {
             return;
         }
         let kept = self.records.get(&id).is_some_and(|r| r.kept);
@@ -1466,6 +1499,8 @@ impl Opens {
             c.peer_digest = true;
         }
         let members: Vec<SyncId> = r.members.keys().copied().collect();
+        // ended members close on this connection's reported positions
+        c.ending = r.members.iter().filter(|(_, m)| m.until.is_some()).map(|(s, _)| *s).collect();
         let walk: Vec<(SyncId, Stop)> = r.walk.iter().map(|(s, x)| (*s, *x)).collect();
         if core {
             self.dirty(id).core = true;
@@ -1487,13 +1522,12 @@ impl Opens {
         }
         for s in &members {
             self.member_stamps.wrote(&(conn, *s), true);
-            self.holding.entry(*s).or_default().insert(conn);
             moved.push(Moved::Joined(conn, *s, Rejoin::Held));
         }
-        // spec/sync-opens.md §6: a change while no connection held the record is judged here
-        // (Interim, issues/many-sync-ids-cost.md: every member, not only those that changed).
-        for s in members {
-            self.rejudge(ctx, conn, s, moved);
+        if fresh || renamed {
+            for s in members {
+                self.rejudge(ctx, conn, s, moved);
+            }
         }
     }
 
@@ -1975,14 +2009,13 @@ impl Opens {
         // proofs count for now.
         let actors = ctx.holds.counts(&c.named);
         let j = ctx.holds.judge(s, &actors);
-        self.admissible_as(ctx, conn, s, j)
+        self.admissible_as(ctx, s, j)
     }
 
     /// `admissible` with J judged already.
-    fn admissible_as(&mut self, ctx: &mut Ctx, conn: ConnId, s: &SyncId, j: J) -> Option<Adm> {
+    fn admissible_as(&mut self, ctx: &mut Ctx, s: &SyncId, j: J) -> Option<Adm> {
         let creds = self.changed.at.get(s).map(|(_, _, c)| c.clone())?;
         creds.holding?;
-        self.conns.get(&conn)?;
         let mut ok = |e: &Option<osis_crypto::Epoch>| j != J::Departed || e.as_ref().is_some_and(|e| ctx.holds.covers_departures(s, e));
         let (shows, rest): (Vec<_>, Vec<_>) = creds.shows.iter().partition(|(_, e)| ok(e));
         let shows = shows.into_iter().map(|(x, _)| x.clone()).collect();
@@ -2403,63 +2436,113 @@ impl Opens {
         let rejoin = r.stopped.remove(&s).unwrap_or(Rejoin::From(None));
         self.dirty(rid).members.insert(s);
         self.member_moved(conn, &s, true);
-        self.holding.entry(s).or_default().insert(conn);
+        self.hold(s, rid, true);
         self.peers.wrote(&s, true);
         moved.push(Moved::Joined(conn, s, rejoin));
         self.set_stop(conn, s, None);
     }
 
-    /// Re-judges member S of `conn` (spec/sync-opens.md §6): J reader or sync holder stays; an
-    /// open by a credential stays while it is admissible; one no longer admissible whose peer J
-    /// judges neither holder nor departed is ended (`until`), and stays ended until it closes; one
-    /// at a store source whose peer J judges departed is ended too and closes on the peer's Lost
-    /// alone (`Member::departed`); any other closes at once with a Lost. One that stays, not ended, closes keeping where it
-    /// stopped once this side's class is not the one it declared opening S (an ended one opens
-    /// again past its `until` anyway).
+    /// Re-judges member S of `conn` (`judge`).
     fn rejudge(&mut self, ctx: &mut Ctx, conn: ConnId, s: SyncId, moved: &mut Vec<Moved>) {
-        let Some(m) = self.member(conn, &s).cloned() else { return };
+        if let Some(rid) = self.conns.get(&conn).and_then(|c| c.rec) {
+            self.judge(ctx, rid, s, moved);
+        }
+    }
+
+    /// Judges member S of record `rid` again (spec/sync-opens.md §6), whether or not a connection
+    /// holds the record: J reader or sync holder stays; an open by a credential stays while it is
+    /// admissible; one no longer admissible whose peer J judges neither holder nor departed is
+    /// ended (`until`, judged now), and stays ended until it closes; one at a store source whose
+    /// peer J judges departed is ended too and closes on the peer's Lost alone
+    /// (`Member::departed`); any other closes at once (with a Lost where a connection holds the
+    /// record). One that stays, not ended, closes keeping where it stopped once this side's class
+    /// is not the one it declared opening S (an ended one opens again past its `until` anyway).
+    fn judge(&mut self, ctx: &mut Ctx, rid: RecordId, s: SyncId, moved: &mut Vec<Moved>) {
+        let Some(r) = self.records.get(&rid) else { return };
+        let Some(m) = r.members.get(&s).cloned() else { return };
         self.work.rejudged += 1;
-        let Some((rid, named)) = self.conns.get(&conn).and_then(|c| Some((c.rec?, c.named.clone()))) else { return };
+        osis_base::costs::count("opens: members judged", 1);
+        let conn = self.conn_on(rid);
+        // who the peer is: what the connection proved (a record kept nowhere names nothing), else
+        // what the record names
+        let named = match conn.and_then(|c| self.conns.get(&c)) {
+            Some(c) => c.named.clone(),
+            None => r.named.clone(),
+        };
+        let (rr, basis) = (r.r, r.basis.get(&s).copied().flatten());
         let j = self.follow(ctx, rid, s, &named);
-        let Some(adm) = self.admissible_as(ctx, conn, &s, j) else {
+        let Some(adm) = self.admissible_as(ctx, &s, j) else {
             // S left the sync set: closes at once.
-            self.close_member(ctx, conn, s, Close::Left, moved);
+            self.end_member(ctx, rid, conn, s, Close::Left, moved);
             return;
         };
-        let rr = self.conns.get(&conn).and_then(|c| c.rec).and_then(|r| self.records.get(&r)).map(|r| r.r).unwrap_or_default();
-        let basis = self.conns.get(&conn).and_then(|c| c.rec).and_then(|r| self.records.get(&r)).and_then(|r| r.basis.get(&s).copied()).flatten();
         let holder = matches!(adm.j, J::Reader | J::SyncHolder);
         let admissible = m.by != Credential::J
             && basis.is_some_and(|b| adm.shows.iter().any(|x| beacon_of(x.matched(), &s, &rr) == b) || adm.tests.iter().any(|t| beacon_of(&t.matched(&s), &s, &rr) == b));
         let stays = holder || admissible;
         // a peer no longer departed: its member ends at `until` as any ended one
         if m.departed && adm.j != J::Departed {
-            self.set_departed(conn, &s, false);
-            self.close_if_reached(ctx, conn, s, moved);
-            if self.member(conn, &s).is_none() {
-                return;
+            self.set_departed(rid, &s, false);
+            if let Some(c) = conn {
+                self.close_if_reached(ctx, c, s, moved);
+                if self.member(c, &s).is_none() {
+                    return;
+                }
             }
         }
         // An ended member judged holder or admissible again stays ended: the peer's stream may be
         // past `until` already (S's entries since skipped), so it closes there and opens again.
         if stays {
             if m.own != adm.own && m.until.is_none() {
-                self.close_member(ctx, conn, s, Close::Class, moved);
+                self.end_member(ctx, rid, conn, s, Close::Class, moved);
             }
         } else if adm.j == J::Departed && m.class == SourceClass::Store {
             // the peer keeps S unread and learns its removal only by a Register: ended, it stays
             // while this side registers past its keys, until its own Lost
             if !m.departed {
                 let until = m.until.unwrap_or_else(|| ctx.holds.until(&s, &m.by));
-                self.set_until(conn, &s, until, moved);
-                self.set_departed(conn, &s, true);
+                self.set_until(rid, &s, until, moved);
+                self.set_departed(rid, &s, true);
             }
         } else if m.by == Credential::J || adm.j == J::Departed {
-            self.close_member(ctx, conn, s, Close::AtOnce, moved);
+            self.end_member(ctx, rid, conn, s, Close::AtOnce, moved);
         } else if m.until.is_none() {
             let until = ctx.holds.until(&s, &m.by);
-            self.set_until(conn, &s, until, moved);
-            self.close_if_reached(ctx, conn, s, moved);
+            self.set_until(rid, &s, until, moved);
+            if let Some(c) = conn {
+                self.close_if_reached(ctx, c, s, moved);
+            }
+        }
+    }
+
+    /// Closes member S of record `rid` for `why`: on the connection holding it (`close_member`),
+    /// else in the record alone, keeping nothing of where it stopped (a stop lasts only a
+    /// connection): its peer finds it closed by the next take's digest (§3 Agreement).
+    fn end_member(&mut self, ctx: &mut Ctx, rid: RecordId, conn: Option<ConnId>, s: SyncId, why: Close, moved: &mut Vec<Moved>) {
+        if let Some(c) = conn {
+            self.close_member(ctx, c, s, why, moved);
+            return;
+        }
+        let Some(r) = self.records.get_mut(&rid) else { return };
+        if r.members.remove(&s).is_none() {
+            return;
+        }
+        r.basis.remove(&s);
+        let kept = r.kept;
+        self.unfollow_member(rid, s);
+        ctx.holds.unfollow(rid, &s);
+        self.hold(s, rid, false);
+        self.peers.wrote(&s, true);
+        if kept {
+            self.record_members.wrote(&(Source::Record(rid), s), false);
+            self.dirty(rid).members.insert(s);
+            moved.push(Moved::Gone(rid, s));
+        }
+        // re-marked (§5 Testing): the next connection tests S again
+        if let Some(pos) = self.changed.at.get(&s).map(|(p, ..)| p.saturating_sub(1))
+            && self.records.get(&rid).is_some_and(|r| r.acked_pos > pos)
+        {
+            self.set_acked(rid, pos);
         }
     }
 
@@ -2487,30 +2570,43 @@ impl Opens {
         }
     }
 
-    /// Marks ended member S as ended for its peer's departure, or not (`Member::departed`).
-    fn set_departed(&mut self, conn: ConnId, s: &SyncId, on: bool) {
-        let Some(c) = self.conns.get_mut(&conn) else { return };
-        let Some(m) = c.rec.and_then(|r| self.records.get_mut(&r)).and_then(|r| r.members.get_mut(s)) else { return };
+    /// Marks ended member S of record `rid` as ended for its peer's departure, or not
+    /// (`Member::departed`).
+    fn set_departed(&mut self, rid: RecordId, s: &SyncId, on: bool) {
+        let Some(m) = self.records.get_mut(&rid).and_then(|r| r.members.get_mut(s)) else { return };
         if m.departed == on {
             return;
         }
         m.departed = on;
-        self.member_moved(conn, s, true);
-        self.dirty_member(conn, *s);
+        self.member_changed(rid, s);
     }
 
-    /// Ends member S: sets its `until`; streams hears of it (`Moved::Until`).
-    fn set_until(&mut self, conn: ConnId, s: &SyncId, until: Position, moved: &mut Vec<Moved>) {
-        let Some(c) = self.conns.get_mut(&conn) else { return };
-        let Some(m) = c.rec.and_then(|r| self.records.get_mut(&r)).and_then(|r| r.members.get_mut(s)) else { return };
+    /// Ends member S of record `rid`: sets its `until`; streams on the connection holding it
+    /// hears of it (`Moved::Until`), and a connection taking it later finds it ended.
+    fn set_until(&mut self, rid: RecordId, s: &SyncId, until: Position, moved: &mut Vec<Moved>) {
+        let Some(m) = self.records.get_mut(&rid).and_then(|r| r.members.get_mut(s)) else { return };
         if m.until == Some(until) {
             return;
         }
         m.until = Some(until);
-        c.ending.insert(*s);
-        self.member_moved(conn, s, true);
-        moved.push(Moved::Until(conn, *s));
-        self.dirty_member(conn, *s);
+        if let Some(c) = self.conn_on(rid)
+            && let Some(k) = self.conns.get_mut(&c)
+        {
+            k.ending.insert(*s);
+            moved.push(Moved::Until(c, *s));
+        }
+        self.member_changed(rid, s);
+    }
+
+    /// Member S of record `rid` changed in place: stamped, and written at `flush`.
+    fn member_changed(&mut self, rid: RecordId, s: &SyncId) {
+        match self.conn_on(rid) {
+            Some(c) => self.member_moved(c, s, true),
+            None => self.record_members.wrote(&(Source::Record(rid), *s), true),
+        }
+        if self.records.get(&rid).is_some_and(|r| r.kept) {
+            self.dirty(rid).members.insert(*s);
+        }
     }
 
     /// The peer's reported position's cursor for S on `conn` (spec/sync-opens.md §6 Lost).
@@ -2569,8 +2665,8 @@ impl Opens {
             Some(j) => r.stopped.insert(s, j),
             None => r.stopped.remove(&s),
         };
-        if let Some(set) = self.holding.get_mut(&s) {
-            set.remove(&conn);
+        if let Some(rid) = c.rec {
+            self.hold(s, rid, false);
         }
         self.peers.wrote(&s, true);
         moved.push(Moved::Left(conn, s, at));

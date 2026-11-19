@@ -357,6 +357,7 @@ impl Status {
                 self.joined(s, conn, src);
             }
             Moved::Left(conn, s, at) => self.left(s, conn, at),
+            Moved::Gone(rid, s) => self.gone(rid, s),
             Moved::Until(..) | Moved::Forgot(..) => {}
         }
     }
@@ -387,6 +388,12 @@ impl Status {
         if self.lacking.contains_key(&(s, src)) {
             self.lacking.remove(&(s, src));
         }
+    }
+
+    /// Member S of record `id`, which no connection holds, closed (`Moved::Gone`): its lacking
+    /// count goes.
+    pub fn gone(&mut self, id: crate::types::RecordId, s: SyncId) {
+        self.unwant_lacking(Source::Record(id), s);
     }
 
     /// Record `id` went (evicted past `RECORD_BUDGET`, or twin-dropped): its lacking counts go.

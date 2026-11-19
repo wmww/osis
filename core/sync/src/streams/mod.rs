@@ -380,8 +380,12 @@ impl Streams {
             }
             Moved::Until(conn, s) => self.served_ending(ctx, conn, s),
             Moved::Forgot(conn, s) => self.forgot(ctx, conn, s),
+            // what the record's source showed of S goes with the member (spec/sync-opens.md §6)
+            Moved::Gone(rid, s) => self.forget_stops(ctx, Source::Record(rid), &[s]),
         }
-        self.track(ctx, conn);
+        if let Some(conn) = conn {
+            self.track(ctx, conn);
+        }
     }
 
     /// Wants a Pull from the stream's cursor on `conn` though nothing else is due, sent once any

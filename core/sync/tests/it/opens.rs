@@ -829,7 +829,7 @@ fn a_removal_held_here_closes_a_credential_open_at_once_spec_sync_opens_6() {
 // spec/sync-opens.md §6 (whether or not a connection holds its record; a connection taking a
 // record re-judges nothing that did not change): a member's J is followed per record, across its
 // connections, so a reconnect judges nothing of it again; a move while no connection holds the
-// record lets it go, and the next take judges it: b, removed while away, is no member there.
+// record is judged in its step: b, removed while away, is no member of the record from then.
 #[test]
 fn standing_is_followed_per_record_across_connections_spec_sync_opens_6() {
     let mut p = readers();
@@ -843,10 +843,46 @@ fn standing_is_followed_per_record_across_connections_spec_sync_opens_6() {
     assert!(p.a.opens.member_at(at, &S).is_some() && p.a.opens.conn_of(at).is_none(), "the record keeps its member, connected nowhere");
     p.a.table.judge_as(S, tid(2), J::Departed);
     p.a.settle();
-    assert!(!followed(&p), "moved while away: let go");
+    assert!(!followed(&p) && p.a.opens.member_at(at, &S).is_none(), "moved while away: closed in its step");
     p.connect(2, account(1), account(2));
     p.run();
-    assert!(!p.a.open(p.ca, &S) && !p.b.open(p.cb, &S), "judged at the take");
+    assert!(!p.a.open(p.ca, &S) && !p.b.open(p.cb, &S), "closed at the reconnect too");
+}
+
+// spec/sync-opens.md §6 (`until` judged in the step that applies the change, for every record
+// holding the member whether connected or not): b's open by a's read secret ends with a's
+// rotation while b is away; its `until` is a's position at the rotation, not at the reconnect,
+// though a's log moved on meanwhile.
+#[test]
+fn an_until_is_the_position_of_the_change_while_away_spec_sync_opens_6() {
+    let mut p = readers();
+    let at = osis_sync::store::Source::Record(p.a.opens.record(p.ca).unwrap());
+    p.close();
+    p.a.settle();
+    let then = p.a.table.until;
+    rotated(&mut p.a, 1);
+    p.a.settle();
+    assert_eq!(p.a.opens.member_at(at, &S).and_then(|m| m.until), Some(then), "ended in the step of the rotation");
+    p.a.table.until = then + 50;
+    p.connect(2, account(1), account(2));
+    p.run();
+    assert_eq!(p.a.opens.member_at(at, &S).and_then(|m| m.until), Some(then), "served up to the rotation's position");
+}
+
+// spec/sync-opens.md §3 (a node that stops holding S drops S from every record in the step that
+// stops it): S leaving the sync set while no connection holds the record drops the member there,
+// and what the other modules keep of it for that record goes (`Moved::Gone`).
+#[test]
+fn s_leaving_the_sync_set_while_away_drops_it_from_the_record_spec_sync_opens_3() {
+    let mut p = readers();
+    let rid = p.a.opens.record(p.ca).unwrap();
+    p.close();
+    p.a.settle();
+    p.a.moved.clear();
+    p.a.table.set(S, None);
+    p.a.settle();
+    assert!(p.a.opens.member_at(osis_sync::store::Source::Record(rid), &S).is_none());
+    assert!(p.a.moved.contains(&Moved::Gone(rid, S)), "{:?}", p.a.moved);
 }
 
 // spec/sync-opens.md §6: a move of one peer's standing for one sync ID re-judges that member
@@ -2272,6 +2308,12 @@ fn served_at_reconnect(w: &mut crate::harness::World, s: &SyncId, blobs: &std::c
 /// both, `change` ends its right at node 0, node 0 writes t and node 1 takes the write. Whether
 /// node 2 is served the write when it meets node 1 again.
 fn served_after_a_change_while_away(one: crate::harness::history::Gives, change: impl FnOnce(&mut crate::harness::World, osis_base::Tid)) -> bool {
+    served_after_a_change_while_away_from(one, |_| (), |w, t, _| change(w, t))
+}
+
+/// `served_after_a_change_while_away`, `setup` run once node 2 reads t, before it goes away
+/// (its value is `change`'s).
+fn served_after_a_change_while_away_from<X>(one: crate::harness::history::Gives, setup: impl FnOnce(&mut crate::harness::World) -> X, change: impl FnOnce(&mut crate::harness::World, osis_base::Tid, X)) -> bool {
     use crate::harness::Step::*;
     use crate::harness::history::{Gives, world};
     let mut w = world(0, 3);
@@ -2282,9 +2324,10 @@ fn served_after_a_change_while_away(one: crate::harness::history::Gives, change:
     let before = write_value(&mut w, t, &s, 1);
     w.advance(1000);
     assert!(!before.is_empty() && before.is_subset(&held_of(&w, 2, &s)), "node 2 reads t");
+    let x = setup(&mut w);
     w.partition(0, 2);
     w.partition(1, 2);
-    change(&mut w, t);
+    change(&mut w, t, x);
     let after = write_value(&mut w, t, &s, 2);
     w.run();
     assert!(!after.is_empty() && after.is_subset(&held_of(&w, 1, &s)), "node 1 took the write");
@@ -2315,6 +2358,19 @@ fn a_right_ended_while_away_serves_nothing_after_it_at_the_reconnect_spec_sync_o
         assert!(w.now() >= until);
     };
     assert!(!served_after_a_change_while_away(Gives::Reads, expire), "its until passed, at a reader");
+    // node 2's account, paired to a new node, removes node 2 (spec/permissions.md §3: things the
+    // account holds roles on rotate as for any holder actor's new keyset)
+    let paired = |w: &mut crate::harness::World| {
+        let n = w.pair(2);
+        w.run();
+        n
+    };
+    let revoked = |w: &mut crate::harness::World, _: osis_base::Tid, n: usize| {
+        let n2 = w.engine(2).tid();
+        w.write(n, |e| e.remove_device(&n2)).unwrap();
+        w.run();
+    };
+    assert!(!served_after_a_change_while_away_from(Gives::Reads, paired, revoked), "its device revoked, at a reader");
 }
 
 // spec/sync-opens.md §3 (records), notes/sync-opens.md (Durability and eviction): a record no connection holds

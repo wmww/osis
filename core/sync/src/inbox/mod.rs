@@ -256,6 +256,7 @@ impl Inbox {
                 }
                 self.suspects.left(conn, &s);
             }
+            Moved::Gone(rid, s) => self.register.left(Source::Record(rid), &s),
             Moved::Until(..) | Moved::Forgot(..) => {}
         }
     }
