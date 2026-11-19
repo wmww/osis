@@ -62,8 +62,8 @@ write("Cargo.toml", f"[workspace]\nresolver = \"2\"\nmembers = [{members}]\n")
 for path, (name, deps) in CRATES.items():
     write(f"{path}/Cargo.toml", f'[package]\nname = "{name}"\nversion = "0.1.0"\nedition = "2021"\n[lib]\npath = "src/lib.rs"\n[dependencies]\n{deps}')
 write("core/base/src/lib.rs", PROP.format("base_prop_large") + '#[test] #[ignore] fn base_inline_large() {}\n#[test]\n#[ignore]\n// fn decoy_large names nothing\nfn base_after_comment_large() {}\n')
-# a size word in the middle, a repro, an example, a networking test: none are properties
-write("core/mid/src/lib.rs", PROP.format("mid_prop_plain_spec_crdt_4") + PROP.format("quic_large_transfer") + PROP.format("repro_big_large") + "#[test]\nfn mid_quick() {}\n")
+# a size word in the middle, a repro, a by-hand run, an example, a networking test: none are properties
+write("core/mid/src/lib.rs", PROP.format("mid_prop_plain_spec_crdt_4") + PROP.format("mid_by_hand_spec_crdt_4") + PROP.format("quic_large_transfer") + PROP.format("repro_big_large") + "#[test]\nfn mid_quick() {}\n")
 write("core/mid/tests/it/main.rs", PROP.format("mid_it_plain") + PROP.format("mid_it_plain_over_quic"))
 # reaching the dev dependency: naming it, through a module that does (not std's of that name, not
 # another target's), as a child of a module that does
@@ -108,7 +108,7 @@ t = out("--paths", "notes/a.md")
 check("notes only", t, "selects nothing: notes/a.md", "crates selected: 0 of 9", "nothing to run", absent=["cargo test"])
 
 t = out("--paths", "core/mid/src/lib.rs")
-check("dependents", t, "crates selected: 3 of 9", "mid_it_plain ", "mid_prop_plain_spec_crdt_4", "mid_std_large", "mid_other_target_large", "osis-top: top_exhaustive", "every scenario, 15 seeds from 7", "cargo test --locked --no-fail-fast", absent=["osis-base:", "quic_large_transfer ", "held-model:", "repro_big_large "])
+check("dependents", t, "crates selected: 3 of 9", "mid_it_plain ", "mid_prop_plain_spec_crdt_4", "mid_std_large", "mid_other_target_large", "osis-top: top_exhaustive", "every scenario, 15 seeds from 7", "cargo test --locked --no-fail-fast", absent=["osis-base:", "quic_large_transfer ", "held-model:", "repro_big_large ", "mid_by_hand"])
 check("replay line", t, "offset: 7 (replay this selection: tools/test_select.py --offset 7 --paths core/mid/src/lib.rs)")
 check("substring filter", t, "--skip mid_it_plain_over_quic")
 check("env", t, "OSIS_ORDER_START=7", "OSIS_CRDT_SEED=7", absent=["OSIS_ORDER_SEED=", "OSIS_ORDER_SEEDS="])

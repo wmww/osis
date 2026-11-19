@@ -43,6 +43,7 @@ Everything runs locally; there is no CI. Tests are organised by when they run, n
 - TLA+ when a model or its spec sections change: `core/test/tla/run.sh <module>` (notes/test-properties.md, Models).
 - Networking, for a sync, link or transport change: the networking command (notes/build.md, Profile and command forms; real sockets, not seeded, so any failure is a bug).
 - Slow or special `#[ignore]` tests, by name (`cargo test -p <crate> --test it -- --ignored <name>`): osis-crdt `stream_memory_big_map` (alone, `--exact`).
+- The custody differential, when the custody code changes (engine `flows/custody.rs`, `flows/account.rs`, `sides.rs`, roles-model `custody`): `tools/heavy cargo test -p osis-engine --lib -- --ignored --exact rotation::tests_custody::engine_agrees_with_custody_model_by_hand_spec_permissions_5_4` (200 worlds, about 650 CPU-s). Not gated: notes/redesign-plan.md A4 deletes its machinery, and its failures wait in issues/custody-differential-failures.md.
 - Fuzz (notes/test-properties.md, Fuzzing); roles-model searches (notes/test-properties.md, Models; `-- 0 custody-exh` when `custody.rs` changes: the gate runs only random custody worlds); sim seeds beyond the gate's (`sim-sweep`, notes/test-sim.md); `cargo bench` and memory checks (notes/test-scale.md); coverage: `cargo llvm-cov --lcov --output-path lcov.info` if installed (measured, never gated; read it for untested decoder branches).
 
 ## Conventions

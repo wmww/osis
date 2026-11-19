@@ -1,0 +1,11 @@
+# Custody differential failures
+> Summary: osis-engine `rotation::tests_custody::engine_agrees_with_custody_model_by_hand_spec_permissions_5_4` (by hand, not gated) fails on main at four seeds of its random worlds, each a different disagreement between the engine and roles-model `custody`; none looked into, since notes/redesign-plan.md A4 deletes the machinery.
+> Priority: low
+> Tags: engine, tests
+
+Closes when A4 deletes the account custody machinery and this differential with it. Rerun before A4 only if the custody code (engine `flows/custody.rs`, `flows/account.rs`, `sides.rs`, roles-model `custody`) is changed. Each seed replayed on main's own binary (`tools/bin-at`) with the same text; each either an engine bug or a wrong model expectation. Replay: `OSIS_CUSTODY_START=<seed> OSIS_CUSTODY_SEEDS=1 cargo test -p osis-engine --lib -- --ignored --exact rotation::tests_custody::engine_agrees_with_custody_model_by_hand_spec_permissions_5_4`.
+
+- 192781816512 (main 99fbd07d7): `t13: T paired by A: needs Write on _AzGhh9-EL4gBpgAK7n6` (core/engine/src/rotation/tests_custody.rs, the pairing step), after forks of removals by A and C, a forger X and many pending commits: the engine refuses a pairing the model makes (a role the model grants A, or a pairing the engine rightly refuses).
+- 357482902476 (main 8abe8e2d8): `t17 node T: dropped a taken revocation [16, 8] -> [4, 8]`: a node's taken revocations shrink between steps (the engine forgets one, spec/crypto.md §9, or the check reads the set where it may rightly shrink).
+- 210455287849 (main 5e4c817e2): `t5 B acting: certificate engine None, model Some(({11, 15, 22, 31, 35}, {4, 7}))`: no acting certificate where the model has one (spec/permissions.md §5.4).
+- 146887569055 (main 52c6a11d1): `t7 node B, account P: seeds held: engine {{}, {11}, {11, 26}, {11, 26, 30}, {11, 26, 43}}, model {{}, {11}, {11, 26}, {11, 26, 30}, {11, 26, 43}, {11, 30}}`: one seed set fewer than the model holds (spec/permissions.md §5.4).
