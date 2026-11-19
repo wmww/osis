@@ -619,7 +619,7 @@ impl LocalPeer {
     /// `admin`, an admin of it, and holds it (`hold`): each keeps what it receives of `t`, as only
     /// content of a thing in the node closure applies (spec/commits.md §4 Outside the node
     /// closure).
-    #[allow(clippy::panic)] // test harness: a grant that fails fails the test
+    #[allow(clippy::panic, clippy::indexing_slicing)] // test harness: a grant that fails fails the test (and a peer index past the net)
     pub fn share(&mut self, admin: usize, t: Tid) {
         for j in (0..self.peers.len()).filter(|j| *j != admin) {
             let who = self.peers[j].engine.me();
@@ -635,7 +635,7 @@ impl LocalPeer {
     /// holds `t` and is granted read on it by peer `admin` through the flow, given the grant alone:
     /// it keeps what it is then given of `t` in any order, as content waits until `t` enters its
     /// node closure (spec/commits.md §4 Outside the node closure). Peer `admin` keeps its account.
-    #[allow(clippy::panic)] // test harness: a setup that fails fails the test
+    #[allow(clippy::panic, clippy::indexing_slicing)] // test harness: a setup that fails fails the test (and a peer index past the net)
     pub fn fresh_reader(&mut self, admin: usize, t: Tid, seed: u64) -> Peer {
         let mut p = Peer::new(seed, self.peers[admin].engine.now()).unwrap_or_else(|e| panic!("fresh node: {e}"));
         self.peers[admin].know(&[p.engine.me()]).unwrap_or_else(|e| panic!("know: {e}"));

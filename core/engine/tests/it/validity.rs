@@ -3894,7 +3894,6 @@ fn invalid_insert_leaves_no_trace_in_order_spec_crdt_6_1() {
     let orders = [without.clone(), with_bob.iter().chain(&without).copied().collect(), without.iter().chain(&with_bob).copied().collect::<Vec<_>>()];
     for (k, order) in orders.iter().enumerate() {
         let i = lp.peers.len();
-        let now = lp.peers[0].engine.now();
         let reader = lp.fresh_reader(0, d, 9500 + k as u64);
         lp.peers.push(reader);
         lp.hold_at(lp.peers.len() - 1, d);

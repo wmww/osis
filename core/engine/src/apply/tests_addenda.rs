@@ -4,7 +4,7 @@
 use crate::flows::Demotion;
 use crate::local_peer::LocalPeer;
 use crate::Mutation;
-use osis_base::{Ak, Clock, CommitId, Role, Tid, Value};
+use osis_base::{Ak, CommitId, Role, Tid, Value};
 use osis_schema::core_types as ct;
 use crate::rotation::tests::edge;
 

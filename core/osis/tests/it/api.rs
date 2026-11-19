@@ -319,7 +319,10 @@ fn local_rights_check_spec_permissions_1() {
     w.at(t, osis::DynamicAspectKey::untyped(ak("t:x.0"))).set(&Value::Int(2)).unwrap();
     assert_eq!(w.commit(), Err(Error::UnknownThing { tid: t }));
     deliver(&a, &b);
-    assert_eq!(b.at(t, osis::DynamicAspectKey::untyped(ak("t:x.0"))).get().unwrap(), Some(Value::Int(1)));
+    // b knows t by its certificates; with no role it holds none of its content (spec/commits.md
+    // §4 Outside the node closure)
+    assert!(b.created(t).unwrap().is_some());
+    assert_eq!(b.at(t, osis::DynamicAspectKey::untyped(ak("t:x.0"))).get().unwrap(), None);
     assert_eq!(b.role_on(t).unwrap(), None);
     let before = b.engine(|e| e.commit_ids().len());
     let mut w = b.write();
@@ -351,6 +354,11 @@ fn tree_in_one_commit_spec_permissions_1() {
         w.at(t, osis::DynamicAspectKey::untyped(ak("t:x.0"))).set(&Value::Int(i as i64)).unwrap();
     }
     w.commit().unwrap().unwrap();
+    // b reads x, and so y and z in its unit, and holds it: content of a thing outside the node
+    // closure waits (spec/commits.md §4 Outside the node closure)
+    deliver(&b, &a);
+    a.grant(x, b.me(), Role::Read, Default::default()).unwrap();
+    commit_with(&b, |w| w.hold(b.account_root(), x));
     deliver(&a, &b);
     for (i, t) in [x, y, z].into_iter().enumerate() {
         assert_eq!(b.engine(|e| e.roster(&t)).get(&[a.me(), x, y][i]).map(|e| e.role), Some(Role::Admin), "its mint admin");
