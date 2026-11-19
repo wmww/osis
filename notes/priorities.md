@@ -8,7 +8,7 @@
 - Cleanup and workflow jobs (Job mix) run beside this list, not from it.
 
 ## First: main's failing properties
-A property failing on main is the next task (notes/coordination.md, Known failures). Found by the gate's random seeds and failing on main, each with its replay line and a line in tools/known_failures.txt: issues/custody-pair-needs-write.md, issues/paged-apply-differs-from-whole.md; and the app test of issues/app-tile-unreadable-emails-test.md.
+A property failing on main is the next task (notes/coordination.md, Known failures). Found by the gate's random seeds and failing on main, each with its replay line and a line in tools/known_failures.txt: issues/custody-pair-needs-write.md, issues/paged-apply-differs-from-whole.md, issues/needed-thing-content-by-arrival.md; and the app test of issues/app-tile-unreadable-emails-test.md.
 
 ## Core, in order
 1. **Accounts on the ordinary rules, by the staged plan: notes/redesign-plan.md.** An account becomes an ordinary independent thing whose members are signers, a commit states its actors and is judged along them, evidence travels per sync unit, profiles are public, a thing's admins make it externally grantable, core has no concept of an account (issues/actors-one-mechanism.md; notes/account-membership-design.md, notes/write-path-design.md). Stated for the built sync unit (notes/sync-unit-scope.md). The plan orders it and the work around it in stages that each leave the tree working, and says what every other item here does meanwhile. Realms are designed with it. Issues: actors-one-mechanism, behaviour-depends-on-own-keys, realms-design, external-signals-taken-by-default, readers-see-readers, sync-units-linked-at-rest.
