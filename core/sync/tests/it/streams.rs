@@ -2174,6 +2174,90 @@ fn a_member_joined_after_the_pull_waits_for_its_join_spec_sync_status_1() {
     assert!(p.a.streams.caught_up(C, &s), "the join answered and applied");
 }
 
+// spec/sync-streams.md §4 (Joining: a connection that takes a record pulls its members from
+// where the record holds them, with no join for a member at the stream's cursor), spec/sync-status.md
+// §1 (S joined after the source's first Pull waits for a reply reading it): b's record holds S at
+// the stream, but S is not a member when the record is taken (the first Pull covers T alone) and
+// opens after it. S's place is no longer the stream's: b joins S from where it stood, takes what a
+// logged meanwhile, and a counts it caught up.
+#[test]
+fn a_member_at_the_stream_opened_after_the_first_pull_joins_spec_sync_streams_4() {
+    let mut p = Pair::new();
+    let (s, t) = (sid(1), sid(2));
+    p.shared_read(s);
+    p.shared_read(t);
+    p.a.log(s, 100);
+    p.run();
+    let rec = p.b.open.record.unwrap();
+    p.b.open.members.remove(&C);
+    p.b.with(p.now, |st, ctx| st.member_moved(ctx, Moved::Released(C, rec)));
+    p.a.open.members.remove(&C);
+    p.a.streams.closed(C);
+    let away = p.a.log(s, 101);
+    // taken again with T alone a member; its first Pull answered
+    p.a.join(p.now, t);
+    p.b.open.members.entry(C).or_default().insert(t, member());
+    p.b.with(p.now, |st, ctx| st.member_moved(ctx, Moved::Taken(C, rec, false)));
+    p.run();
+    p.a.log(t, 102);
+    p.run();
+    // S opens on the connection
+    p.join(s);
+    p.run();
+    assert!(held(&p.b, s).contains(&away), "b takes what a logged of S meanwhile");
+    assert!(p.a.streams.caught_up(C, &s), "a reads S for b: caught up");
+    assert!(p.b.streams.caught_up(C, &s));
+}
+
+// spec/sync-streams.md §4 (Reports: an Applied reports applied the message it names and every
+// one before it), spec/sync-status.md §1: a requester whose Applieds fall more than the server
+// keeps cursors of behind (they arrive late, in order) and then goes quiet is counted caught up:
+// the Applied of the last message names a cursor still kept and covers the rest.
+#[test]
+fn a_requester_far_behind_on_reports_is_caught_up_once_quiet_spec_sync_status_1() {
+    let mut p = Pair::new();
+    let s = sid(1);
+    p.shared_read(s);
+    p.run();
+    let kept = 2 * osis_sync::streams::PENDING_CAP;
+    for i in 0..kept + 10 {
+        p.a.log(s, 100 + i);
+        p.run_with(|ab, m| !ab && m.kind() == 44);
+    }
+    let reports = p.held.len();
+    assert!(reports > kept, "{reports} Applieds held back");
+    assert!(!p.a.streams.caught_up(C, &s));
+    p.release();
+    p.run();
+    assert!(p.a.streams.caught_up(C, &s), "the last Applied covers every push");
+}
+
+// spec/sync-streams.md §4 (Reports: a server seals each message's cursor afresh), notes/principles.md
+// (fast by construction): sealing a message's cursor afresh and reading the Applied naming it
+// cost the server as many store rows per message at n and 10n messages served.
+#[test]
+fn a_fresh_cursor_per_message_costs_the_same_at_n_and_10n_spec_sync_streams_4() {
+    let per_message = |n: usize| {
+        let mut p = Pair::new();
+        let s = sid(1);
+        p.shared_read(s);
+        p.run();
+        osis_base::costs::take();
+        let before = p.sent_by_a(43).len();
+        for i in 0..n {
+            p.a.log(s, 100 + i);
+            p.run();
+        }
+        let rows: u64 = osis_base::costs::take().into_iter().filter(|(k, ..)| *k == "store rows read <- streams" || *k == "store rows read").map(|(.., v)| v).sum();
+        assert_eq!(p.sent_by_a(43).len() - before, n, "one push per entry");
+        assert!(p.a.streams.caught_up(C, &s));
+        rows as f64 / n as f64
+    };
+    // a fixed row or two per run amortized: compared per message, rounded up
+    let (small, large) = (per_message(5), per_message(50));
+    assert!(large.ceil() <= small.ceil(), "store rows per message: {small} at n, {large} at 10n");
+}
+
 // spec/sync-status.md §1 (every message carrying an event of S served to the source is reported
 // applied), spec/sync-streams.md §4 (Reports): only an Applied reports it; a Pull names where the server reads
 // on from, not what the requester stored: a requester holding a push of S that awaits its body
@@ -2244,6 +2328,35 @@ fn ephemeral_entries_wait_for_a_log_position_spec_sync_status_1() {
     p.run();
     assert!([d, e, f].iter().all(|x| held(&p.b, s).contains(x)));
     assert!(p.a.streams.caught_up(C, &s));
+}
+
+// spec/sync-streams.md §4 (Pushes: a node whose log names no position yet sends its ephemeral
+// entries once it does), notes/principles.md (fast by construction): ephemeral entries held back
+// for a log position cost a tick no more than a quiet connection's: they are read again when the
+// log moves, not at every tick.
+#[test]
+fn ephemeral_entries_held_back_are_not_read_at_every_tick_spec_sync_streams_4() {
+    let ticks = |held_back: bool| {
+        let mut p = Pair::new();
+        let s = sid(1);
+        p.a.hold(s, Holding::Read);
+        if !held_back {
+            p.a.log(s, 100);
+        }
+        p.shared_read(s);
+        p.run();
+        p.a.log_as(s, 121, Class::Ephemeral);
+        p.run();
+        assert_eq!(p.a.streams.caught_up(C, &s), !held_back);
+        osis_base::costs::take();
+        let members = p.a.streams.work().members;
+        for _ in 0..10 {
+            p.a.with(p.now, |st, c| st.tick(c)).unwrap();
+        }
+        let rows: u64 = osis_base::costs::take().into_iter().filter(|(k, ..)| *k == "store rows read").map(|(.., v)| v).sum();
+        (rows, p.a.streams.work().members - members)
+    };
+    assert_eq!(ticks(true), ticks(false), "ticks held back vs quiet: (rows, members listed)");
 }
 
 // spec/wire.md §11.2 Pull (ephemeral entries count against `max_reply`; what does not fit follows

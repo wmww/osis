@@ -703,6 +703,7 @@ impl Streams {
         let asked = p.joins.iter().map(|(s, j)| (*s, j.generation)).collect();
         let pull = Pull { id: 0, cursor: p.recv.clone().and_then(|c| osis_proto::Cursor::new(c).ok()), joins, inline_limit: p.inline, max_reply: REPLY_BUDGET as u64, follow: true, ephemeral: !p.first_sent || p.eph_next };
         let Some(id) = ctx.wire.request(conn, Msg::Pull(Box::new(pull))) else { return };
+        let first = !p.first_sent;
         p.first_sent = true;
         p.eph_next = false;
         p.again = false;
@@ -710,6 +711,21 @@ impl Streams {
         p.out = Some((id, asked));
         self.pulls_sent += 1;
         p.out_at = self.pulls_sent;
+        // the first Pull covers only the members shared now: one the place holds at the stream
+        // that is not one (no member when the record was taken) stopped at the cursor it names,
+        // so once it opens it joins from there (spec/sync-streams.md §4 Joining); its rows hold
+        // that position as at the stream until the cursor moves
+        let src = p.src;
+        if first && let Some(place) = self.places.get_mut(&src) {
+            let idle: Vec<SyncId> = place.at_stream.iter().filter(|s| !members.contains_key(*s)).copied().collect();
+            for s in idle {
+                place.at_stream.remove(&s);
+                place.stopped.insert(s, place.cursor.clone());
+                if matches!(src, Source::Record(_)) {
+                    place.stale.insert(s);
+                }
+            }
+        }
     }
 
     /// A reply to a request of this side's: a PullReply (or a Pull refused or skipped), a

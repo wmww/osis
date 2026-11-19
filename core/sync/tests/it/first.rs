@@ -49,6 +49,8 @@ struct Cost {
     fetched: BTreeMap<(usize, usize), BTreeMap<BlobId, u64>>,
     /// Blobs a node fetched and holds no entry of at the end (under any sync ID), per fetcher.
     unkept: BTreeMap<usize, Vec<BlobId>>,
+    /// Per node, the sync IDs it holds entries of, and those of them with no head logged.
+    heads: Vec<(usize, Vec<osis_base::SyncId>)>,
     costs: Vec<(&'static str, u64)>,
 }
 
@@ -82,7 +84,14 @@ fn first(w: &mut World) -> Cost {
             }
         }
     }
-    Cost { deliveries: w.deliveries - d, frames: out, fetched: w.net.fetched.clone(), unkept, costs }
+    let heads = (0..3)
+        .map(|i| {
+            let store = w.store(i).clone();
+            let held: Vec<_> = store.syncs().into_keys().filter(|s| !store.entries(s).unwrap().is_empty()).collect();
+            (held.len(), held.into_iter().filter(|s| store.head_at(s).unwrap().is_none()).collect())
+        })
+        .collect();
+    Cost { deliveries: w.deliveries - d, frames: out, fetched: w.net.fetched.clone(), unkept, heads, costs }
 }
 
 /// `first` over the closure of `n` members, once per process (a world is a function of its seed).
@@ -138,6 +147,20 @@ fn what_a_reader_fetches_and_drops_does_not_grow_spec_permissions_4() {
             let n: u64 = large.fetched.iter().filter(|((_, t), _)| t == to).filter_map(|(_, m)| m.get(b)).sum();
             assert_eq!(n, 1, "node {to} fetched {b:?}, which it does not keep, {n} times");
         }
+    }
+}
+
+// spec/sync-streams.md §4 (Reading: a server reads its log after its served heads are logged;
+// Pushes: ephemeral entries go only in a message with a cursor): a node holding an entry of S has
+// S's head logged, so its log names a position whenever it serves S and no ephemeral entry is
+// held back for one (streams::ephemeral_entries_wait_for_a_log_position builds that case on a
+// bare store): the maker, the node keeping the closure unread and the new reader alike.
+#[test]
+fn a_node_holding_an_entry_of_s_has_its_head_logged_spec_sync_streams_4() {
+    let c = cost(N);
+    for (i, (held, missing)) in c.heads.iter().enumerate() {
+        assert!(*held > 0, "node {i} holds entries");
+        assert!(missing.is_empty(), "node {i} holds entries of {missing:?} with no head logged");
     }
 }
 

@@ -458,7 +458,9 @@ impl Streams {
         let Some(f) = self.serve.get(&conn).and_then(|s| s.follow.clone()) else { return Ok(false) };
         let (end, _) = ctx.store.log_bounds()?;
         let mark = ctx.store.memory_mark();
-        let mem_moved = self.serve.get(&conn).is_some_and(|s| s.mem_mark != mark);
+        // a log naming no position holds ephemeral entries back (no Stream carries events without
+        // a cursor): they are read again once the log moves, not at every call
+        let mem_moved = self.serve.get(&conn).is_some_and(|s| s.mem_mark != mark) && (f.cursor.is_some() || end > f.pos);
         // the shared set now, read per event: a push costs its events, not the members
         let shared = ctx.shared;
         let members = shared.members(conn);
