@@ -83,7 +83,7 @@ pub struct Fetched {
 /// Runs the node's fetch loop to quiescence. `order` shuffles a pass's entries (arrival order);
 /// `reading_only` false throws boxes away with what is discarded (the deadlock this design avoids).
 pub fn settle(lib: &Library, order: &mut dyn FnMut(&mut Vec<(SyncId, CommitId)>), reading_only: bool) -> Fetched {
-    let mut held = Held { now: lib.now, me: lib.me, records: lib.records.clone(), commits: vec![], dots: vec![] };
+    let mut held = Held { now: lib.now, me: lib.me, records: lib.records.clone(), commits: vec![], dots: vec![], external_fires: ExternalFires::Any };
     // reading-only keys by the commit they are sourced from
     let mut reading: BTreeMap<CommitId, BTreeSet<SyncId>> = BTreeMap::new();
     let mut fetches = 0;
@@ -154,7 +154,7 @@ fn key_set(lib: &Library, h: &Held, reading: &BTreeMap<CommitId, BTreeSet<SyncId
 
 /// `held` of every entry the given keys open, at once (the order the creation-first reader sees).
 pub fn creation_first(lib: &Library, keys: &BTreeSet<SyncId>) -> Held {
-    let mut held = Held { now: lib.now, me: lib.me, records: lib.records.clone(), commits: vec![], dots: vec![] };
+    let mut held = Held { now: lib.now, me: lib.me, records: lib.records.clone(), commits: vec![], dots: vec![], external_fires: ExternalFires::Any };
     let es: BTreeSet<(SyncId, CommitId)> = lib.entries().into_iter().filter(|(l, _)| keys.contains(l)).collect();
     for (l, id) in es {
         arrive(&mut held, lib.delivered(lib.commits.iter().find(|c| c.id == id).unwrap(), l));

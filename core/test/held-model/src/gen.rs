@@ -200,7 +200,7 @@ fn newest_entry(commits: &[Commit], thing: ThingId, aspect: Aspect, ts: u64) -> 
             _ => None,
         })
         .max_by_key(|x| x.0)
-        .and_then(|(_, x)| x.entry(aspect.name))
+        .and_then(|(_, x)| x.entry_of(aspect))
 }
 
 fn role_part(thing: ThingId, e: EdgeWrite) -> Part {
@@ -302,7 +302,7 @@ pub fn history(seed: u64, n: usize) -> Held {
             r.below(NODES) as NodeId
         };
         let roll = r.below(100);
-        let prefix = |me: NodeId| Held { now: w, me, records: RECORDS.to_vec(), commits: commits.clone(), dots: vec![] };
+        let prefix = |me: NodeId| Held { now: w, me, records: RECORDS.to_vec(), commits: commits.clone(), dots: vec![], external_fires: ExternalFires::Any };
         let c = if roll < 15 {
             let (thing, chief) = r.pick(&TARGETS);
             let author = if r.chance(50) { chief } else { r.below(NODES) as NodeId };
@@ -435,7 +435,7 @@ pub fn history(seed: u64, n: usize) -> Held {
         // a writer applying a kill of a purge-on-replace body it holds covers it in that transaction
         // (spec/commits.md §5): the author does so most of the time (a lapse leaves it to others)
         if content && r.chance(80) {
-            let h = Held { now: w, me: author, records: RECORDS.to_vec(), commits: commits.clone(), dots: vec![] };
+            let h = Held { now: w, me: author, records: RECORDS.to_vec(), commits: commits.clone(), dots: vec![], external_fires: ExternalFires::Any };
             let o = evaluate(&h);
             let owed: BTreeSet<(ThingId, Aspect)> = o.owed.iter().map(|&(c, i)| { let p = &h.commits.iter().find(|x| x.id == c).unwrap().parts[i]; (p.thing, p.aspect) }).collect();
             for (thing, aspect) in owed {
@@ -460,7 +460,7 @@ pub fn history(seed: u64, n: usize) -> Held {
         records.retain(|t| t.id != gone);
         commits.retain(|c| c.id != CREATION_ID + gone);
     }
-    Held { now: w + r.below(13) * HOUR / 2, me: r.below(NODES) as NodeId, records, commits, dots: vec![] }
+    Held { now: w + r.below(13) * HOUR / 2, me: r.below(NODES) as NodeId, records, commits, dots: vec![], external_fires: ExternalFires::Any }
 }
 
 /// A random content write on `aspect` from the writer's view `prior` (crdt-model's ops, now and

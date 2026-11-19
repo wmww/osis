@@ -80,3 +80,84 @@ fn signal_kick_rejudges_history_spec_perm_5_2() {
     assert_eq!(fate(&kicked, 10), Fate::MustDrop(DropWhy::Invalid));
     assert_eq!(read(&kicked, SIG), None);
 }
+
+mod external {
+    use crate::util::*;
+    use held_model::edits::listed;
+    use held_model::external::{fire, setting, EXT, OTHER, STRANGER, WRITER};
+    use held_model::*;
+
+    fn under(rule: ExternalFires, now: u64, cs: Vec<Commit>) -> Held {
+        Held { external_fires: rule, ..held(now, cs) }
+    }
+    fn valid(h: &Held, c: CommitId) -> bool {
+        evaluate(h).valid[&(c, 0)]
+    }
+    fn on(now: u64, cs: Vec<Commit>) -> Held {
+        under(ExternalFires::Enabled, now, cs)
+    }
+
+    // spec/permissions.md §5.2 (External fires), spec/commits.md §5 (The setting): a party holding
+    // no write fires an external signal validly only while the current setting enables it (an
+    // entry of its own; the default never, another signal's never); an unnamed fire is listed
+    // nowhere and not promoted. Without the rule (`Any`) it is valid, and listed nowhere either:
+    // nothing keeps it.
+    #[test]
+    fn an_unnamed_external_fire_is_invalid_and_an_enabled_one_valid_spec_perm_5_2() {
+        let f = fire(50, STRANGER, ts(2));
+        for (s, ok) in [(None, false), (Some(setting(40, MINT_ADMIN, ts(1), &[EXT], false)), true), (Some(setting(40, MINT_ADMIN, ts(1), &[], true)), false), (Some(setting(40, MINT_ADMIN, ts(1), &[OTHER], true)), false)] {
+            let h = on(3, s.iter().cloned().chain([f.clone()]).collect());
+            let o = evaluate(&h);
+            assert_eq!(o.valid[&(50, 0)], ok, "{s:?}");
+            assert_eq!(promotes(&o, &h.commits.iter().find(|c| c.id == 50).unwrap().clone(), 0), ok);
+            assert_eq!(listed(&h).contains(&50), ok, "kept for good where enabled");
+            let any = under(ExternalFires::Any, 3, h.commits.clone());
+            assert!(valid(&any, 50), "without the rule");
+            assert_eq!(listed(&any).contains(&50), ok, "kept by name only");
+        }
+    }
+
+    // spec/permissions.md §5.2 (External fires): a writer's fire is judged by its author's
+    // authority whatever the setting; a removed writer's fire its removal does not list is judged
+    // as any other party's
+    #[test]
+    fn a_writers_external_fire_ignores_the_setting_a_removed_writers_does_not_spec_perm_5_2() {
+        let grant = edge(30, MINT_ADMIN, 0, WRITER, Some(Role::Write), None);
+        let f = fire(50, WRITER, ts(2));
+        assert!(valid(&on(3, vec![grant.clone(), f.clone()]), 50), "a writer's");
+        let kick = edge(31, MINT_ADMIN, 3, WRITER, None, Some(vec![]));
+        assert!(!valid(&on(4, vec![grant.clone(), f.clone(), kick.clone()]), 50), "removed, not listed");
+        let listed_kick = edge(31, MINT_ADMIN, 3, WRITER, None, Some(vec![50]));
+        assert!(valid(&on(4, vec![grant.clone(), f.clone(), listed_kick]), 50), "listed by the removal");
+        assert!(valid(&on(4, vec![grant, f, kick, setting(40, MINT_ADMIN, ts(1), &[EXT], false)]), 50), "removed, enabled");
+    }
+
+    // spec/commits.md §5 (In force), spec/permissions.md §5.2: the current setting decides every
+    // fire whatever its `ts`: a later disabling setting turns an earlier fire invalid, a later
+    // enabling one an earlier fire valid, in whatever order they arrive
+    #[test]
+    fn the_current_setting_decides_every_fire_whatever_its_ts_spec_commits_5() {
+        let (on1, off3, f2) = (setting(40, MINT_ADMIN, ts(1), &[EXT], false), setting(41, MINT_ADMIN, ts(3), &[], false), fire(50, STRANGER, ts(2)));
+        assert!(valid(&on(4, vec![on1.clone(), f2.clone()]), 50));
+        assert!(!valid(&on(4, vec![on1.clone(), f2.clone(), off3.clone()]), 50), "disabled after it");
+        assert!(!valid(&on(4, vec![f2.clone(), off3.clone()]), 50));
+        let on3 = setting(42, MINT_ADMIN, ts(3), &[EXT], false);
+        assert!(valid(&on(4, vec![f2.clone(), on3]), 50), "enabled after it");
+    }
+
+    // The rejected reading, the setting in force at the fire's key (`AtKey`), and its two holes:
+    // a party stamping a fire back to before a disabling setting has it valid and promoted, and a
+    // fire between two settings that both enable turns invalid when the older one drops
+    #[test]
+    fn the_setting_at_a_fires_key_lets_backdated_fires_stand_spec_commits_5() {
+        let (on1, off3, f2) = (setting(40, MINT_ADMIN, ts(1), &[EXT], false), setting(41, MINT_ADMIN, ts(3), &[], false), fire(50, STRANGER, ts(2)));
+        let late = vec![on1.clone(), off3, f2.clone()];
+        assert!(valid(&under(ExternalFires::AtKey, 4, late.clone()), 50), "backdated: valid at its key");
+        assert!(!valid(&on(4, late), 50));
+        let on3 = setting(41, MINT_ADMIN, ts(3), &[EXT], false);
+        let dropped = vec![missing(on1.clone(), 0), on3.clone(), f2.clone()];
+        assert!(valid(&under(ExternalFires::AtKey, 4, vec![on1, on3, f2]), 50));
+        assert!(!valid(&under(ExternalFires::AtKey, 4, dropped.clone()), 50), "the setting before it dropped");
+        assert!(valid(&on(4, dropped), 50));
+    }
+}

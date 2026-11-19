@@ -7,6 +7,7 @@
 pub mod closure;
 pub mod connlived;
 pub mod edits;
+pub mod external;
 pub mod fetch;
 pub mod freed;
 pub mod gen;
@@ -18,5 +19,5 @@ pub mod types;
 pub mod undo;
 pub mod unit;
 
-pub use model::{act, cover, creation, evaluate, join, judged, kept_until, snapshot_state, timeline, Dots, DropWhy, Fate, KeepWhy, LeftoverWhy, Outcome, PartRef};
+pub use model::{act, cover, creation, evaluate, join, judged, promotes, kept_until, snapshot_state, timeline, Dots, DropWhy, Fate, KeepWhy, LeftoverWhy, Outcome, PartRef};
 pub use types::*;

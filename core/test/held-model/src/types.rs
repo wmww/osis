@@ -35,27 +35,34 @@ pub struct Aspect {
     /// ephemeral data): each write is history from the moment it is written, kept until its
     /// keep bound, expiry or purge, never joined into a state; parts carry one root register write.
     pub signal: bool,
+    /// `@` before the `~`: an external signal (spec/data-model.md §2), fired by parties holding no
+    /// write where the setting enables it (`Held::external_fires`).
+    pub external: bool,
 }
 
 impl Aspect {
     /// `roles.0`: carries edge writes only (role commits).
-    pub const ROLES: Aspect = Aspect { name: 0, admin_only: true, signal: false };
+    pub const ROLES: Aspect = Aspect { name: 0, admin_only: true, signal: false, external: false };
     pub const fn plain(name: u32) -> Aspect {
-        Aspect { name, admin_only: false, signal: false }
+        Aspect { name, admin_only: false, signal: false, external: false }
     }
     pub const fn admin(name: u32) -> Aspect {
-        Aspect { name, admin_only: true, signal: false }
+        Aspect { name, admin_only: true, signal: false, external: false }
     }
     /// A signal `name~0`.
     pub const fn signal(name: u32) -> Aspect {
-        Aspect { name, admin_only: false, signal: true }
+        Aspect { name, admin_only: false, signal: true, external: false }
+    }
+    /// An external signal `name@~0`.
+    pub const fn external(name: u32) -> Aspect {
+        Aspect { name, admin_only: false, signal: true, external: true }
     }
     /// `retention^.0`: the thing's history setting (spec/commits.md §5 The setting; `Delta::Retention`).
-    pub const RETENTION: Aspect = Aspect { name: 8, admin_only: true, signal: false };
+    pub const RETENTION: Aspect = Aspect { name: 8, admin_only: true, signal: false, external: false };
     /// `addenda.0` (spec/permissions.md §5.2 Addenda).
-    pub const ADDENDA: Aspect = Aspect { name: 10, admin_only: false, signal: false };
+    pub const ADDENDA: Aspect = Aspect { name: 10, admin_only: false, signal: false, external: false };
     /// `created.0`: a thing's creation, the write that makes it exist (`Delta::Created`).
-    pub const CREATED: Aspect = Aspect { name: 13, admin_only: false, signal: false };
+    pub const CREATED: Aspect = Aspect { name: 13, admin_only: false, signal: false, external: false };
     /// Role-class or fixed retention (`roles.0`, `purge.0`, `addenda.0`, `created.0`): governed
     /// by no setting, never out of history, never covered.
     pub fn fixed(&self) -> bool {
@@ -143,6 +150,16 @@ impl Setting {
     /// The entry governing aspect `name`: its own, else the default.
     pub fn entry(&self, name: u32) -> Option<SettingEntry> {
         self.rules.iter().find(|r| r.0 == name).map(|r| r.1).or(self.default)
+    }
+
+    /// The entry governing aspect `a`: an external signal's is its own only, the default never
+    /// (spec/commits.md §5 The setting).
+    pub fn entry_of(&self, a: Aspect) -> Option<SettingEntry> {
+        if a.external {
+            self.rules.iter().find(|r| r.0 == a.name).map(|r| r.1)
+        } else {
+            self.entry(a.name)
+        }
     }
 
     /// The entry governing aspect `name` (`None`: an aspect no setting names, so the default).
@@ -345,6 +362,25 @@ pub struct Record {
     pub link: RecordLink,
 }
 
+/// When a fire of an external signal by a party holding no write on the thing (one its author's
+/// authority does not make valid, spec/permissions.md §5.2) is valid. `Any` is the default so that
+/// comparisons with an engine without the rule (osis-engine `tests/it/held.rs`) leave it off.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
+pub enum ExternalFires {
+    /// Whatever the setting.
+    #[default]
+    Any,
+    /// The rule (spec/permissions.md §5.2 External fires): iff the thing's current setting
+    /// (spec/commits.md §5 In force) has an entry of its own naming the signal.
+    Enabled,
+    /// Rejected variant, a negative control: the setting with the greatest key below the fire's.
+    /// A fire stamped back to before a disabling setting stays valid, and one stamped between two
+    /// settings turns invalid when the older one drops.
+    AtKey,
+    /// Negative control: the last enabling setting in input order (arrival order).
+    Arrival,
+}
+
 /// Everything the model's output is a function of.
 #[derive(Clone, Debug, PartialEq, Eq, Default)]
 pub struct Held {
@@ -362,4 +398,6 @@ pub struct Held {
     pub commits: Vec<Commit>,
     /// Session-form dot ranges (and any commit-form commit not labelled by `commit_source`).
     pub dots: Vec<DotRange>,
+    /// The external-fire rule this judgment follows.
+    pub external_fires: ExternalFires,
 }

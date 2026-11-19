@@ -134,7 +134,7 @@ pub fn held(now_h: u64, mut commits: Vec<Commit>) -> Held {
     }
     let more: Vec<Commit> = creations().into_iter().filter(|x| !commits.iter().any(|c| c.id == x.id)).collect();
     commits.extend(more);
-    Held { now: at(now_h), me: MINT_ADMIN, records: RECORDS.to_vec(), commits, dots: vec![] }
+    Held { now: at(now_h), me: MINT_ADMIN, records: RECORDS.to_vec(), commits, dots: vec![], external_fires: ExternalFires::Any }
 }
 pub fn missing(mut c: Commit, i: usize) -> Commit {
     c.parts[i].body = Body::Missing;

@@ -151,7 +151,7 @@ impl Outcome {
         }
         let held = self.settings.get(&t)?;
         let (_, s) = held.last()?;
-        let opt = s.entry(a.name).map_or(Opt::None, |e| e.history);
+        let opt = s.entry_of(a).map_or(Opt::None, |e| e.history);
         let opt = if a.signal && opt == Opt::Purge { Opt::None } else { opt };
         let stamps: Vec<(u64, &Setting)> = held.iter().map(|(k, s)| (k.0, s)).collect();
         Some(thing_history::Setting { ts: 0, id: 0, opt, floor: Setting::joined_floor(&stamps, Some(a.name)) })
@@ -369,6 +369,27 @@ fn join_held<'a>(h: &'a Held, parked: &BTreeSet<CommitId>) -> Joined<'a> {
     Joined { live, applied, waiting, thrown, revisit, view, tl }
 }
 
+/// Whether a fire of external signal `a` in `c` by a party holding no write is valid under
+/// `h.external_fires`, `held` the thing's held valid settings by key (`Outcome::settings`).
+fn enabled(h: &Held, held: &[(Key, Setting)], c: &Commit, a: Aspect) -> bool {
+    let names = |s: &Setting| s.rules.iter().any(|r| r.0 == a.name);
+    match h.external_fires {
+        ExternalFires::Any => true,
+        ExternalFires::Enabled => held.last().is_some_and(|(_, s)| names(s)),
+        ExternalFires::AtKey => held.iter().rev().find(|(k, _)| *k < c.key()).is_some_and(|(_, s)| names(s)),
+        ExternalFires::Arrival => {
+            let at = |k: &Key| h.commits.iter().position(|x| x.id == k.2);
+            held.iter().max_by_key(|(k, _)| at(k)).is_some_and(|(_, s)| names(s))
+        }
+    }
+}
+
+/// spec/sync-inbox.md §4 Promotion: a writer promotes a part only valid as it judges it (its
+/// author held write, or it is a fire valid as an external fire): never an invalid one.
+pub fn promotes(o: &Outcome, c: &Commit, i: usize) -> bool {
+    o.applied.contains(&c.id) && o.valid.get(&(c.id, i)) == Some(&true)
+}
+
 /// Notes/expiry-creation-design.md §3: a node holds no part whose author record or thing's
 /// record chain it lacks, nor one on a thing that does not exist (a creation's own thing is
 /// the one it makes).
@@ -417,10 +438,11 @@ fn leads(world: &World, live: &[&Commit], view: &[Commit]) -> BTreeMap<NodeId, B
 }
 
 /// Notes/expiry-creation-design.md §3: nothing leads from the author to the part's thing: not
-/// judgeable (record waits are `unknown`).
+/// judgeable (record waits are `unknown`). A fire of an external signal needs no path
+/// (spec/commits.md §4 Unjudgeable).
 fn unreached(leads: &BTreeMap<NodeId, BTreeSet<ThingId>>, c: &Commit, p: &Part, world: &World) -> bool {
     let t = p.thing;
-    t != c.author && !world.chain_above(t).contains(&c.author) && !leads.get(&c.author).is_some_and(|s| s.contains(&t))
+    !p.aspect.external && t != c.author && !world.chain_above(t).contains(&c.author) && !leads.get(&c.author).is_some_and(|s| s.contains(&t))
 }
 
 /// The commit as joined: its waiting and thrown parts count as not received.
@@ -523,17 +545,12 @@ fn judge(h: &Held) -> (Outcome, Timeline) {
             let v = match c.kind {
                 _ if p.aspect == Aspect::CREATED => true,
                 CommitKind::Role => tl.applied_part(c.id, i),
-                // no validity depends on a setting (spec/commits.md §5 The setting)
+                // no validity depends on a setting but an external fire's (below)
                 _ => tl.valid_delta(c, p.thing, p.aspect),
             };
             o.valid.insert((c.id, i), v);
         }
     }
-    let delta_valid: BTreeMap<DeltaRef, bool> = live
-        .iter()
-        .filter(|c| is_applied(c) && c.kind == CommitKind::Content)
-        .flat_map(|c| c.parts.iter().enumerate().map(|(i, p)| ((c.id, p.thing, p.aspect), o.valid[&(c.id, i)])))
-        .collect();
 
     // Purge (spec/commits.md §5, spec/permissions.md §6): an applied request drops the named
     // joined or missing deltas of applied commits and marks waiting parts value-less. A snapshot
@@ -581,6 +598,23 @@ fn judge(h: &Held) -> (Outcome, Timeline) {
     for v in o.settings.values_mut() {
         v.sort();
     }
+    // An external fire its author's authority does not make valid (a party holding no write on
+    // the thing) is valid as the rule says (spec/permissions.md §5.2 External fires); settings
+    // never read fires, so judging them first is exact. Its commit acts for its author.
+    for c in live.iter().filter(|c| is_applied(c) && c.kind == CommitKind::Content && c.actor == c.author) {
+        for (i, p) in c.parts.iter().enumerate().filter(|(_, p)| p.aspect.external) {
+            if o.valid[&(c.id, i)] {
+                continue;
+            }
+            let held = o.settings.get(&p.thing).map_or(&[][..], |v| &v[..]);
+            o.valid.insert((c.id, i), enabled(h, held, c, p.aspect));
+        }
+    }
+    let delta_valid: BTreeMap<DeltaRef, bool> = live
+        .iter()
+        .filter(|c| is_applied(c) && c.kind == CommitKind::Content)
+        .flat_map(|c| c.parts.iter().enumerate().map(|(i, p)| ((c.id, p.thing, p.aspect), o.valid[&(c.id, i)])))
+        .collect();
 
     // destroyed: every creation joined of the thing is value-less (notes/expiry-creation-design.md §3)
     let joined = || view.iter().flat_map(|c| c.parts.iter().map(move |p| (c, p))).filter(|(_, p)| creation(p).is_some());

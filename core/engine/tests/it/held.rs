@@ -298,7 +298,7 @@ impl Conv<'_> {
         let n = self.aspects.len() as u32;
         let name = 100 + *self.aspects.entry(ak.to_string()).or_insert(n);
         let m = Ak::markers_of(ak);
-        hm::Aspect { name, admin_only: m.admin_only, signal: m.signal }
+        hm::Aspect { name, admin_only: m.admin_only, signal: m.signal, external: m.external }
     }
     /// Every header's dot form and counter range per aspect (spec/crdt.md §2.4).
     fn dots(&mut self) -> Vec<hm::DotRange> {
@@ -600,7 +600,7 @@ fn convert(e: &mut Engine, hist: &History) -> Input {
         }
     }
     let dots = cv.dots();
-    let mut held = hm::Held { now: e.now().0, me, records, commits, dots };
+    let mut held = hm::Held { now: e.now().0, me, records, commits, dots, external_fires: hm::ExternalFires::Any };
     let ds = hm::Dots::new(&held);
     for (sync_id, i) in leftovers {
         let c = held.commits.iter_mut().find(|c| c.id == sync_id).unwrap();

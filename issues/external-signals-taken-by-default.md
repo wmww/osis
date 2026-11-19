@@ -1,21 +1,18 @@
 # Every independent thing takes every external signal and any grant
-> Summary: Decided by Tess, to build: a thing takes an external signal only where its admins enable it in the admin-only setting, and is granted roles by someone who does not administer it only where it is externally grantable (accounts and the like; little else). Today every independent thing takes every `@~` name from anyone holding its public key record and publishes four KEM keys so anyone may grant to it: one of the reasons independent things are heavy.
+> Summary: Decided by Tess; specified and modelled, not built: a party holding no write fires an external signal validly only while the thing's current setting enables it (spec/permissions.md §5.2 External fires; held-model `ExternalFires::Enabled`). The engine still takes every `@~` fire from anyone; externally grantable and KEM keys following it are stage A5.
 > Priority: normal
 > Tags: security, perm, sync, spec
 
-Today (spec/data-model.md §2, spec/sync-inbox.md §2, spec/permissions.md §5.2 External fires): a fire of an `@~` aspect of N is valid whatever its author's role on N. The only per-thing control is keeping: fires stay only where N's `retention^.0` names the signal, else they are out of history at once. To check: whether an unkept fire still reaches listeners and still spends the deposit budget at nodes keeping N unread.
-
 ## Decided (Tess)
-- **External signals: off unless named.** A fire of an external signal the thing's admin-only setting does not name is invalid, not merely unkept. The retention entry that keeps a signal's fires is nearly this switch already: make it the one rule, per signal.
+- **External signals: off unless named.** A fire of an external signal the thing's admin-only setting does not name is invalid, not merely unkept. The retention entry that keeps a signal's fires is the switch, per signal.
 - **Ordinary signals: no switch.** A writer may write any aspect of a thing, so a switch on signals alone would follow from no rule of the data model.
-- **Being granted roles by a non-admin is an unusual property a thing's admins turn on.** A role grant involves the granted side: an account (or its profile or home, whichever takes it) has it, an org or realm has it, and not much else would. Readers of a shared document cannot say "whoever is on this document may read my thing" unless the document's admins allow it; they grant the accounts, or ask.
-- **It is one switch with taking tickets.** A granter that does not administer the holder reaches it only by its public keys: the box is sealed to its KEM key and the ticket is a fire of its external `ticket@~` signal. Off: only its own admins make it a holder, publishing its keys in that commit, and another's grant to it is refused at the granter. On: as today. No grant waits for the holder's side to publish keys.
-- **Keys follow the switch**: a thing neither a holder nor externally grantable publishes no KEM keys (notes/thing-cost.md, Fewer KEM keys held), and a node keeping it unread has nothing a stranger can deposit against.
+- **Being granted roles by a non-admin is an unusual property a thing's admins turn on**, one switch with taking tickets; keys follow the switch; without it, write on a thing gives the right to grant to it, a reader may not. Designed: notes/write-path-design.md §4 (externally grantable, what enabling publishes, the granter's node refused) and §3 (the card).
 
-## Designed
-The rule written precisely enough for the spec, in the words external signal, external fire and externally grantable (notes/terms.md): notes/write-path-design.md §4 (the setting, external fires, what enabling publishes, what a node keeping the thing unread enforces, what the thing takes, the granter's node when refused, no grant waiting on the grantee's side) and §3 (the card: where a thing's inbox and public keys are named, and what an outsider holds to grant to it). Found: the box and the ticket are not the only routes (a deposit under the holder's sync ID with its deposit seed is another), so the deposit seed and sync ID are published only in a card.
-- Decided (Tess): without the switch, write on a thing gives the right to grant to it; a reader may not.
+## Done
+The rule in the spec (spec/permissions.md §5.2 External fires, spec/commits.md §5 The setting and In force, spec/sync-inbox.md §1-§2 and §4, spec/data-model.md §2) and in held-model (`Held::external_fires`, properties in `core/test/held-model/tests/it/props_external.rs`, rule tests in `spec_signals::external`). The setting deciding is the current one, not the one in force at the fire's key: notes/write-path-design.md §4 External fires says why.
 
 ## To do
-- Bring spec/requirements.md Permissions and the subsystem specs to the rule, once the model has checked it (notes/write-path-design.md §6). Name the refusal in the API by the setting, never by keys.
-- How an app enables a signal, and the default for the kinds of thing the first-party schema makes: the schema library's.
+- **Engine and perm** (redesign stage S2, brief 3): judge a fire valid by its author's authority, else iff the current setting enables its signal (`apply::validity`); judge fires again when the current setting changes; promotion follows validity (`Engine::promotable`); a reader writes no unenabled fire. Then flip osis-engine `tests/it/held.rs` to `external_fires: hm::ExternalFires::Enabled` so `order::held_set_decides` compares against the rule, and add the engine rule test (an unenabled fire reaches no listener and is not promoted).
+- **`osis` enable call** (notes/api-design.md) and **CLI**; name a refusal by the setting, never by keys.
+- **First-party schema and app** (brief 4): which kinds of thing enable which signal by default; a thing that is its own inbox takes tickets only once enabled.
+- Stage A5: externally grantable as what a thing publishes, cards, KEM keys following the switch; spec/requirements.md Permissions brought to the rule once roles-model has checked grants from outside (notes/write-path-design.md §6).
