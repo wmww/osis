@@ -10,3 +10,4 @@ osis-engine/apply::tests_paged::paged_apply_matches_whole_large_spec_crdt_8 OSIS
 osis-engine/rotation::tests_custody::engine_agrees_with_custody_model_large_spec_permissions_5_4 OSIS_CUSTODY_START=192781816512 issues/custody-pair-needs-write.md T paired by A: needs Write on \S+
 osis-engine/rotation::tests_custody::engine_agrees_with_custody_model_large_spec_permissions_5_4 OSIS_CUSTODY_START=357482902476 issues/custody-dropped-taken-revocation.md node \S+: dropped a taken revocation
 osis-engine/rotation::tests_custody::engine_agrees_with_custody_model_large_spec_permissions_5_4 OSIS_CUSTODY_START=210455287849 issues/custody-acting-certificate-missing.md \S+ acting: certificate engine None, model Some
+osis-engine/rotation::tests_custody::engine_agrees_with_custody_model_large_spec_permissions_5_4 OSIS_CUSTODY_START=146887569055 issues/custody-seed-set-missing.md node \S+, account \S+: seeds held: engine .*, model
