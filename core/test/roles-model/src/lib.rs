@@ -32,6 +32,9 @@
 //! - `paths`: stated paths and signers as members (notes/write-path-design.md,
 //!   notes/account-membership-design.md; a design, not in spec): self-contained (README.md,
 //!   Paths; findings in notes/path-model-findings.md). Searches `paths`, `paths-exh`, `paths-design`.
+//! - `vouches`: S3's vouches and what no list keeps on today's walk (`edges` with
+//!   `edges::Lists`, trust sets): two walks, writing at receipt and on newly holding the right
+//!   (README.md, Vouches). Searches `vouches`, `vouches-exh` and controls.
 //! - `shrink`: counterexample shrinking (`Shrink` per history type; `shrink::shrink`).
 //! Each model's library API: `walk(h)`, the timeline as a pure function of a history;
 //! `random_hist`; `quiescent(h)` (every node's walk over the writes in its delivery order
@@ -69,6 +72,7 @@ pub mod joint;
 pub mod paths;
 pub mod shrink;
 pub mod trust;
+pub mod vouches;
 
 /// Roles, `None` below read. The build's sync role (below read) is not modelled: §5.1 judges it as
 /// read (neither writes nor audits), and invites and attribution are min/max over a total

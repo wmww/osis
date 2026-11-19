@@ -408,7 +408,7 @@ mod tests {
     struct B(EHist);
     impl B {
         fn new(genesis: &[Option<Edge>]) -> Self {
-            B(EHist { genesis: genesis.to_vec(), writes: vec![], recv: vec![] })
+            B(EHist { genesis: genesis.to_vec(), writes: vec![], recv: vec![], lists: Default::default() })
         }
         /// Commit with one op; returns its op index (one op per commit here).
         fn op(&mut self, author: usize, x: usize, e: Option<Edge>, t: u32, recv: &[(usize, u32)], fin: bool) -> usize {

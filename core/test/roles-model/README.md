@@ -1,5 +1,5 @@
 # roles-model
-> Summary: Rust reference models of the role rules (spec/permissions.md §5), account custody and epochs (§5.4-§5.5), and of the design for stated paths with signers as members: modules, searches with their sizes, and the latest results.
+> Summary: Rust reference models of the role rules (spec/permissions.md §5), S3's vouches and what no list keeps, account custody and epochs (§5.4-§5.5), and of the design for stated paths with signers as members: modules, searches with their sizes, and the latest results.
 
 Independent of any osis crate: an oracle, never patched to match the implementation (osis-perm and osis-engine dev-depend on it for their differentials). Module map and API: `src/lib.rs`; findings behind the role timeline: notes/role-timeline.md; disputes: notes/disputes.md.
 
@@ -18,6 +18,31 @@ Independent of any osis crate: an oracle, never patched to match the implementat
 | `forget` | 0 (one member-family world in 8, each with Bob's writes in or out of kept history, plus the attack family) | below, Own cover |
 | `digest` | 1,000,000 | notes/test-properties.md, Models |
 | `paths` | 400,000 (random worlds, the fixed rules); `paths-exh` 0 (the small family, 175,104 worlds); `paths-design` 40,000 (the notes' rules: its failing checks are the findings) | below, Paths |
+| `vouches` | 400,000 (random); `vouches-exh` 0 (the small family, 385,236 worlds); controls `vouches-off`, `vouches-no-rewrite`, `vouches-no-absent` and `vouches-exh-*` alike | below, Vouches |
+
+## Vouches (`src/vouches.rs`)
+S3's removal-gap rules (notes/redesign-plan.md S3 briefs 2-3; notes/account-membership-design.md §4, Role writes and The list) on today's walk: authority as `edges` gives it (one thing, every node a key actor, a frontier is what its demoter received), with trust sets (`trust::side`). Rule, properties and controls in the module doc. `edges::Lists` carries the two rules into the walk (counting entries added to frontiers; what no list keeps); its default is today's rule, so `edges::walk`, the digest and osis-perm's differentials are unchanged, and osis-perm (which has neither rule) is compared against the default only. S3's code brief adds the rules to perm and then runs a differential against `vouches::judge`.
+
+**Readings where the notes are open:**
+- A vouch is a role-class write that is not an edge write: its position is the start of its `ts`, so "after R" is a later `ts`. Its author's authority for an entry is `EHist::would_apply` of its own commit with the named commit's ops at that position in the first walk (a node may always vouch for a lowering of its own edge: a self-lowering applies).
+- Survival: an entry falls when an applied explicit write by another node lowering the voucher's edge follows, its author had not received the vouch, and the voucher can no longer write the entry after it. Re-grant does not revive it; the voucher writes again.
+- Honest writing: at receipt of R, and at every later time the node newly holds the authority for a listed commit, read off the canonical first walk (a node's own view of its authority is not modelled).
+- What no list keeps: an entry naming an op of X that sets an edge R's authority rests on (R's author's own, and its grantors' closed, statically: `EHist::path`), other than X's own edge, to a value leaving it without admin at R's `ts`, is read as absent in R's audit and in R's seeds when trusted; vouches' entries are struck against R's author, the list they join. Lowerings within admin (an invite, a later `until`) are listed as any write. X's own leaving is exempt: a self-lowering audits nothing, so it takes nothing from a grant X made (striking it gave X its role back when its grantee then lowered it). A static "lowers its prior value" test was wrong both ways (a prior set by a write the walk skips).
+
+**Results** (properties in the module doc; the family: H, X, W admins and K without an edge, up to three writes of X (grant K admin or write, demote W, remove H or W) received by H and W or not, H removing X, W receiving it or not, H re-granting or removing W, K granting or removing W, vouches reaching H or not):
+
+| Run | Worlds | Failing checks |
+|---|---|---|
+| `-- 1000000 vouches` | 1,000,000 (13,798 counting entries; kept 38,272 entries, safety 22,977 ops, listing 1,000,043 removals) | 0 (accomplice-shaped 196, own author's vouch 3: below) |
+| `-- 0 vouches-exh` | 385,236 (87,004 counting entries; kept 247,794, safety 71,568, listing 1,091,916) | 0 |
+| `-- 1000000 vouches-off` / `-- 0 vouches-exh-off` | as above | kept 1,454 / 23,362 |
+| `-- 1000000 vouches-no-rewrite` / `-- 0 vouches-exh-no-rewrite` | as above | kept 16 / 3,552 |
+| `-- 1000000 vouches-no-absent` / `-- 0 vouches-exh-no-absent` | as above | listing 3,504 / 112,892 |
+
+**Limits found** (hand worlds in `src/vouches/tests.rs`):
+- An accomplice: X grants Y admin, Y removes H, H received both and removes X. Trusted alone, H's removal is void as written and applies with an empty list: what no list keeps strikes X's writes, and Y's removal is Y's. H removing Y as well (both trusted) applies both, the rule striking Y's removal of H from H's removal of Y (`an_accomplices_removal_is_answered_by_removing_the_accomplice`). So an honest remover facing an accomplice must remove it too; nothing in S3 does that for it.
+- A node X lowered but keeping an invite vouches for its own backdated invite grant, which nobody else received, and it applies at its own `ts` (`a_demoted_node_vouches_for_its_own_backdated_invite`; 3 random worlds in 1M). "Nobody vouches for its own signer's commit" closes it; S3 leaves it to A1.
+- A demotion X made that only its victim received stays made: the victim vouches for it (`a_demotion_only_its_victim_received_stays_made`). Read literally, "an entry lowering an edge of the listing write's own path" would strike it from the victim's own vouch; the model strikes against R's author only.
 
 ## Epochs (`src/epochs.rs`)
 Layer 2 of the account (spec/permissions.md §5.5) over `custody`'s chain: a world is a settled custody world (its parties, fight and settle) plus P's commits on one to three things in two sync IDs, the rotators' thing lists, listings, R1's and R2's addenda as writers of a thing, and in half the worlds a bound (2 or 3 IDs per thing list), written by the cutoff after the chain world is made. A lister or witness answers as an epoch comes to count at it (a rotation held with its chain, or its side moving), never again as what it holds changes; a commit of P counts as received there once its epoch is held with its chain (its signature verifies then, spec/permissions.md §5.5 Cutoff: `World::dt`). Each node's chain is custody's `View`; the module judges only what counts of P's commits (rule, policy and properties in the module doc). osis-perm `epochs_model_agrees` feeds every observer and receipt prefix of every world to `osis_perm::Epochs`, the chain (held, counting, heads, preferred head, warning, revocations taken) and the epoch rule (pending, counting, saved by an addendum) alike.
