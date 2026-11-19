@@ -1911,6 +1911,26 @@ fn a_write_dropping_an_invite_audits_the_invites_under_it() {
     assert!(rd.applied.contains(&z) && rd.role(Z, T1) == Role::Read);
 }
 
+/// A lowering applied by its verdict only lowers (finding 27): N6, admin by H's grant, grants Z
+/// write and demotes it to read, which is judged (a fall from write) and applied; B removes H not
+/// listing H's grant of N6, which drops it, and the restart finds N6 with no authority. Its
+/// demotion, applied for good, does not raise Z from none to read there: Z ends with nothing, as
+/// without the grant, at a node trusting nothing and one trusting the removal alike.
+#[test]
+fn a_lowering_applied_by_its_verdict_raises_nothing() {
+    let mut w = account();
+    let gb = w.edge(H, 1, &[], A, B, Admin, &[]);
+    w.edge(H, 1, &[], A, N6, Admin, &[]);
+    let z = w.edge(N6, 3, &[], A, Z, Write, &[]);
+    w.edge(N6, 3, &[], A, Z, Role::Read, &[]);
+    let r = w.edge(B, 7, &[], A, H, Gone, &[gb]);
+    for trust in [vec![], vec![r]] {
+        let rd = fixed(&w, &trust);
+        assert_eq!(rd.role(Z, A), Gone, "{trust:?}");
+        assert!(no_effect(&w, &Rules::fixed(), &View::all(&w).trusting(&trust), &rd, z), "{trust:?}");
+    }
+}
+
 // ---- Purge authors (notes/write-path-design.md §1, The purge author) ----
 
 /// A request by author P matches the deltas naming exactly P as their purge author, never every

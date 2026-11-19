@@ -826,7 +826,20 @@ fn walk(w: &World, rules: &Rules, v: &View, d0: &Set, vouched: &Vouched) -> Walk
             let mut as_invite = false;
             let mut as_finalize = false;
             match judged {
-                Some(Verdict::Applied) => {}
+                // applied for good where it lowers; where its edge as restored in this pass is below
+                // its value, in role or invite, it would raise the edge: it applies there only as
+                // any write does, by admin along its path (finding 27)
+                Some(Verdict::Applied) => {
+                    if let Kind::Edge { holder, role, until, invite, .. } = &c.kind {
+                        let e = (*holder, c.on);
+                        let after = alive((*role, *until), c.ts);
+                        let raises = after > p.restored.get(&e).copied().unwrap_or(Role::None).max(p.at(e, c.ts))
+                            || give_invite(after, *invite) > p.rinv.get(&e).copied().unwrap_or(Role::None).max(p.invite_at(e, c.ts));
+                        if raises && !w.hops(i).iter().all(|&h| p.at(h, c.ts) == Role::Admin) {
+                            continue;
+                        }
+                    }
+                }
                 Some(Verdict::Void) => continue,
                 None => {
                     if !w.well(i) {
