@@ -219,6 +219,24 @@ fn readers_logging_the_same_records_settle_on_one_record_blob_spec_permissions_4
         assert_eq!(noted.keys().copied().collect::<Vec<_>>(), one, "node {i} notes only it");
         assert!(noted.values().all(|x| x.tids.is_superset(&records)), "it carries every record");
     }
+    // the winner then goes from every store (its losers counted only while a source showed them,
+    // never fetched again): each node logs a record blob carrying the records anew, and they
+    // settle on one again
+    let won = one[0];
+    for i in 0..3 {
+        assert!(w.store(i).clone().drop_entry(&s, &won, Vec::new()).unwrap(), "node {i} held the winner");
+    }
+    for i in 0..3 {
+        w.power_off(i);
+        w.power_on(i);
+    }
+    w.run();
+    let again = held(&mut w, 0);
+    assert!(again.len() == 1 && again[0] != won, "one fresh record blob at the writer: {again:?}");
+    for i in [1, 2] {
+        assert_eq!(held(&mut w, i), again, "node {i} holds the fresh record blob");
+        assert!(w.engine(i).cert_blobs(&s, None)[&again[0]].tids.is_superset(&records), "node {i}: it carries every record");
+    }
 }
 
 // spec/sync-ids.md §6 (Steps: a reader registers at each source keeping S unread the steps after

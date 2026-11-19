@@ -2342,6 +2342,89 @@ fn an_ephemeral_push_waits_for_its_applied_spec_sync_status_1() {
     assert!(p.a.streams.caught_up(C, &s), "the push applied and reported");
 }
 
+// spec/sync-streams.md §4 (Reports: a server seals each message's cursor afresh, so a cursor
+// names one message, and an Applied reports the message whose cursor it names), spec/sync-status.md
+// §1 (caught up): an Applied naming a message of an earlier connection (the same connection ID, the same log
+// position) reports nothing on this one: a push of S whose own Applied is held back keeps S busy.
+#[test]
+fn an_applied_of_an_earlier_connection_reports_nothing_spec_sync_streams_4() {
+    let mut p = Pair::new();
+    let s = sid(1);
+    p.shared_read(s);
+    p.a.log(s, 100);
+    p.run();
+    // the connection ends and comes back; a logs an ephemeral entry (no log position moves)
+    p.a.streams.closed(C);
+    p.b.streams.closed(C);
+    p.join(s);
+    p.run();
+    let Some(Msg::Applied { cursor: old }) = p.sent_by_b(44).last().map(|m| (*m).clone()) else { panic!("b reported") };
+    let at = p.a.store.position(old.as_bytes()).unwrap();
+    assert!(p.a.streams.caught_up(C, &s));
+    // a reconnect again: the last Applied is of the connection before
+    p.a.streams.closed(C);
+    p.b.streams.closed(C);
+    p.join(s);
+    p.run_with(|ab, m| !ab && m.kind() == 44);
+    let e = p.a.log_as(s, 120, Class::Ephemeral);
+    p.run_with(|ab, m| !ab && m.kind() == 44);
+    assert!(held(&p.b, s).contains(&e));
+    assert_eq!(p.a.store.position(old.as_bytes()).unwrap(), at, "the old cursor names the stream's position");
+    p.a.with(p.now, |st, c| st.message(c, C, Incoming::Push(Msg::Applied { cursor: old })));
+    assert!(!p.a.streams.caught_up(C, &s), "an Applied of an earlier connection reported this one's push");
+    p.release();
+    p.run();
+    assert!(p.a.streams.caught_up(C, &s), "its own Applied reports it");
+}
+
+// spec/sync-status.md §1 (caught up: S, joined after the source's first Pull, waits for a reply
+// reading it for the source): S leaves and opens again on one connection while a push of S is unreported;
+// a never says b caught up on S while b lacks what the push carried, and does once quiet.
+#[test]
+fn a_member_left_and_rejoined_with_a_push_unreported_spec_sync_status_1() {
+    let mut p = Pair::new();
+    let (s, t) = (sid(1), sid(2));
+    p.shared_read(s);
+    p.shared_read(t);
+    p.a.log(s, 100);
+    p.run();
+    let x = p.a.log(s, 40_000);
+    // b's Applieds and a's answers to Fetches held back: the push of x waits in b's hand
+    p.run_with(|ab, m| (!ab && m.kind() == 44) || (ab && m.kind() == 20));
+    p.a.leave(p.now, s);
+    p.b.leave(p.now, s);
+    p.join(s);
+    let mut lacking_said = false;
+    // b's join of S held back too
+    p.run_with(|ab, m| (!ab && matches!(m.kind(), 41 | 44)) || (ab && m.kind() == 20));
+    lacking_said |= p.a.streams.caught_up(C, &s) && !held(&p.b, s).contains(&x);
+    p.release();
+    p.run();
+    lacking_said |= p.a.streams.caught_up(C, &s) && !held(&p.b, s).contains(&x);
+    assert!(!lacking_said, "a said b caught up on S while b lacked {x:?}");
+    assert!(held(&p.b, s).contains(&x));
+    assert!(p.a.streams.caught_up(C, &s) && p.b.streams.caught_up(C, &s));
+}
+
+// spec/sync-streams.md §4 (Reports), spec/sync-status.md §1 (caught up): a requester whose every message
+// carries only ephemeral entries (no log position moves on either side) is caught up both ways
+// once quiet.
+#[test]
+fn ephemeral_only_traffic_both_ways_reaches_caught_up_spec_sync_status_1() {
+    let mut p = Pair::new();
+    let s = sid(1);
+    p.shared_read(s);
+    p.a.log(s, 100);
+    p.b.log(s, 200);
+    p.run();
+    for i in 0..5 {
+        let (x, y) = (p.a.log_as(s, 120 + i, Class::Ephemeral), p.b.log_as(s, 220 + i, Class::Ephemeral));
+        p.run();
+        assert!(held(&p.b, s).contains(&x) && held(&p.a, s).contains(&y));
+        assert!(p.a.streams.caught_up(C, &s) && p.b.streams.caught_up(C, &s), "round {i}");
+    }
+}
+
 // spec/sync-streams.md §4 (Pushes: ephemeral entries go in a message with a cursor), spec/wire.md
 // §11.2: a source whose log names no position yet sends its ephemeral entries in no message
 // (never a malformed Stream), S busy there, and sends them once its log has a position.
