@@ -596,6 +596,8 @@ pub(crate) struct Played {
     /// The grants on the things outside G (`share_top`), each with the holder it names: setup,
     /// never played.
     pub(crate) access: Vec<(Tid, Package)>,
+    /// What enters the node closure of a node under test, from the history (`held::Walk`).
+    pub(crate) walk: std::sync::Arc<crate::held::Walk>,
 }
 
 /// Per step kind: how many ran and how many made a commit, and why the others made none.
@@ -1526,7 +1528,11 @@ pub(crate) fn play_with(seed: u64, steps: &[Step], addenda: bool) -> Played {
             None => pk.clone(),
         }
     }).collect();
-    Played { access, packs, authors, base, things, now, tally, restored: Default::default(), judged: Default::default(), moved: Default::default(), dropped: Default::default(), steps_at, own_sets, settle_from: None, settled_last, withheld: 0, model: None, ingests: Default::default(), copies: Default::default(), reader: std::sync::Arc::new(std::sync::Mutex::new(reader)) }
+    // G and the things outside it the nodes under test hold, and the things minted under them
+    let roots: BTreeSet<Tid> = [g].into_iter().chain(tops.iter().copied()).collect();
+    let minted = parent.iter().filter_map(|(t, p)| made_by.get(t).map(|(_, id)| (*t, *p, *id))).collect();
+    let walk = std::sync::Arc::new(crate::held::Walk { roots, minted });
+    Played { walk, access, packs, authors, base, things, now, tally, restored: Default::default(), judged: Default::default(), moved: Default::default(), dropped: Default::default(), steps_at, own_sets, settle_from: None, settled_last, withheld: 0, model: None, ingests: Default::default(), copies: Default::default(), reader: std::sync::Arc::new(std::sync::Mutex::new(reader)) }
 }
 
 /// Per body (commit, thing, aspect): when it was replaced, for keep-for-D (spec/commits.md §5).
@@ -1762,7 +1768,7 @@ fn value_past_end(p: &mut Peer, played: &Played, now: WallMs) -> Option<String> 
 fn model_differs(p: &mut Peer, played: &Played, drops: Option<&mut crate::held::Drops>, quiet: bool) -> Option<String> {
     let m = played.model.as_ref()?;
     let mut cov = crate::held::Coverage::default();
-    let d = crate::held::compare(&mut p.engine, &m.0, &mut cov, drops, quiet);
+    let d = crate::held::compare(&mut p.engine, &m.0, &mut cov, drops, quiet.then_some(&*played.walk));
     m.1.lock().unwrap().add(&cov);
     d
 }
@@ -4297,11 +4303,11 @@ fn harness_flags_a_covered_drop_in_history_spec_commits_5() {
     let writes: Vec<CommitId> = played.packs[played.base..].iter().map(|pk| osis_commit::CommitBlob::decode(&pk.bytes).unwrap()).filter(|b| !b.header.kind.is_compaction() && b.header.aspects.iter().any(|x| x.tid == t && x.ak == a)).map(|b| b.id()).collect();
     assert_eq!(writes.len(), 3, "{:?}", played.tally.show());
     let (mut cov, mut drops) = (crate::held::Coverage::default(), crate::held::Drops::default());
-    assert_eq!(crate::held::compare(&mut p.engine, &hist, &mut cov, Some(&mut drops), true), None);
+    assert_eq!(crate::held::compare(&mut p.engine, &hist, &mut cov, Some(&mut drops), Some(&played.walk)), None);
     for c in &writes[..2] {
         p.engine.drop_body(c, &t, &a).unwrap();
     }
-    let d = crate::held::compare(&mut p.engine, &hist, &mut cov, Some(&mut drops), true).expect("the drops are flagged");
+    let d = crate::held::compare(&mut p.engine, &hist, &mut cov, Some(&mut drops), Some(&played.walk)).expect("the drops are flagged");
     assert!(d.contains("dropped as covered"), "{d}");
     assert_eq!(cov.differs.get("dropped a body in history"), Some(&2), "{:?}", cov.differs);
 }
@@ -4330,10 +4336,10 @@ fn harness_flags_a_live_drop_before_its_live_bound_spec_commits_5() {
     let (wk, wp) = (write(&kept), write(&plain));
     assert_eq!((wk.len(), wp.len()), (1, 1), "{:?}", played.tally.show());
     let (mut cov, mut drops) = (crate::held::Coverage::default(), crate::held::Drops::default());
-    assert_eq!(crate::held::compare(&mut p.engine, &hist, &mut cov, Some(&mut drops), false), None);
+    assert_eq!(crate::held::compare(&mut p.engine, &hist, &mut cov, Some(&mut drops), None), None);
     p.engine.drop_body(&wk[0], &t, &kept).unwrap();
     p.engine.drop_body(&wp[0], &t, &plain).unwrap();
-    let d = crate::held::compare(&mut p.engine, &hist, &mut cov, Some(&mut drops), false).expect("the drop is flagged");
+    let d = crate::held::compare(&mut p.engine, &hist, &mut cov, Some(&mut drops), None).expect("the drop is flagged");
     assert!(d.contains("live") && d.contains(kept.as_str()), "{d}");
     assert_eq!(cov.differs.get("dropped a live body before its live bound"), Some(&1), "{:?}", cov.differs);
     assert_eq!(cov.reached.get("live drops judged"), Some(&2), "{:?}", cov.reached);
@@ -4361,7 +4367,7 @@ fn harness_judges_a_drop_of_a_body_seen_out_of_scope_spec_commits_5() {
     let mut p = deliver(&played, &(0..n - 1).filter(|i| !setup.contains(i)).collect::<Vec<_>>());
     assert!(!p.engine.pending().is_empty(), "1's write waits");
     let (mut cov, mut drops) = (crate::held::Coverage::default(), crate::held::Drops::default());
-    assert_eq!(crate::held::compare(&mut p.engine, &hist, &mut cov, Some(&mut drops), true), None);
+    assert_eq!(crate::held::compare(&mut p.engine, &hist, &mut cov, Some(&mut drops), Some(&played.walk)), None);
     assert!(cov.skipped.contains_key("waits for a reason outside the model"), "{:?}", cov.skipped);
     for &i in setup.iter().chain([&(n - 1)]) {
         p.receive(&played.packs[i].bytes, played.packs[i].blobs.clone()).unwrap();
@@ -4370,7 +4376,7 @@ fn harness_judges_a_drop_of_a_body_seen_out_of_scope_spec_commits_5() {
     assert!(p.engine.pending().is_empty(), "{:?}", p.engine.pending());
     p.engine.drop_body(&first, &t, &a).unwrap();
     p.engine.drop_body(&second, &t, &a).unwrap();
-    let d = crate::held::compare(&mut p.engine, &hist, &mut cov, Some(&mut drops), false).expect("the second drop is flagged");
+    let d = crate::held::compare(&mut p.engine, &hist, &mut cov, Some(&mut drops), None).expect("the second drop is flagged");
     assert!(d.contains("dropped as covered"), "{d}");
     assert_eq!(cov.differs.get("dropped a body in history"), Some(&1), "{:?}", cov.differs);
     assert_eq!(cov.reached.get("covered drops judged"), Some(&2), "{:?}", cov.reached);

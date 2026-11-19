@@ -1058,14 +1058,6 @@ fn commit_form_carried_writes_vouched_spec_perm_5_2() {
     assert_eq!(keys(&mut lp, 0), BTreeSet::from([s("alice"), s("bob")]));
 }
 
-/// Delivers commits `ids` of peer `from` to peer `to`.
-fn send(lp: &mut LocalPeer, from: usize, to: usize, ids: &[osis_base::CommitId]) {
-    for id in ids {
-        let pk = lp.peers[from].engine.package(id).unwrap().unwrap();
-        lp.deliver(to, &pk).unwrap();
-    }
-}
-
 // spec/permissions.md §5.1 step 4 (D only grows): osis-perm joint neutrality seed 6's shape
 // (notes/role-timeline.md, Sticky drops leave residue). n0 removes A2 from A0 (W, unseen by n1) and grants n1
 // write on A2 (G, unseen too); n1 lowers A1 to write on A0 (R). The full walk drops W (R is a
@@ -1104,7 +1096,7 @@ fn sticky_residue_spec_perm_5_1() {
     step(&mut lp);
     let c6 = edge_write(&mut lp.peers[0].engine, a2, a1, Some(edge(Role::Admin)), None);
     // n1 has c1 and c6, not W or G, when it lowers A1 to write on A0 (R)
-    send(&mut lp, 0, 1, &[c1, c6]);
+    crate::flows::send_carried(&mut lp, 0, 1, &[c1, c6]);
     step(&mut lp);
     let scope = DemotionScope { roles: BTreeMap::from([(n0, BTreeSet::from([a0, a2]))]), content: BTreeMap::new() };
     let now = lp.peers[1].engine.now();
@@ -3247,9 +3239,9 @@ fn a_minting_never_restores_a_destroyed_thing_spec_commits_5() {
         let after = reminting(&mut lp, &rec, 1, 9100, PurgeBy::Admin, None);
         if first {
             assert!(matches!(lp.peers[2].receive(&before, Vec::new()), Ok(Ingested::Applied(_))), "live: a minting applies");
-            send(&mut lp, 0, 2, &[q]);
+            crate::flows::send_carried(&mut lp, 0, 2, &[q]);
         } else {
-            send(&mut lp, 0, 2, &[q]);
+            crate::flows::send_carried(&mut lp, 0, 2, &[q]);
             assert!(matches!(lp.peers[2].receive(&before, Vec::new()), Ok(Ingested::Pending(_, osis_engine::Reason::UnknownCreated(_)))), "destroyed: a minting stamped before waits");
         }
         assert!(matches!(lp.peers[2].receive(&after, Vec::new()), Ok(Ingested::Pending(_, osis_engine::Reason::UnknownCreated(_)))), "first {first}: destroyed, a minting stamped after waits");
@@ -3298,7 +3290,7 @@ fn padded_durable_created_refused_spec_commits_2() {
     assert!(matches!(lp.peers[0].receive(&one, Vec::new()).unwrap(), Ingested::Applied(_)));
     assert_eq!(created(&mut lp), Some(rec.clone()));
     assert!(lp.peers[0].engine.pending().is_empty(), "with the record the padded ones are bad, and go: {:?}", lp.peers[0].engine.pending());
-    send(&mut lp, 1, 0, &[honest]);
+    crate::flows::send_carried(&mut lp, 1, 0, &[honest]);
     assert_eq!(lp.peers[0].engine.get(&x, &ak("t:reg.0")).unwrap(), Some(s("x")));
     assert_eq!(created(&mut lp), Some(rec));
     assert!(matches!(lp.peers[0].engine.snapshot(&x, &ak("created.0")), Err(osis_engine::Error::Misuse(_))));

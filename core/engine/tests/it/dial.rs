@@ -68,7 +68,7 @@ fn a_removed_nodes_entry_leaves_the_dial_list_spec_sync_set_1() {
     assert_eq!(keys(&mut lp), vec![key(0).to_vec()], "written again: dropped again");
     // paired again: a node of D, its entry stays
     let (_, again) = lp.peers[0].engine.pair(&n1).unwrap();
-    crate::flows::send(&mut lp, 0, 1, &again);
+    crate::flows::send_carried(&mut lp, 0, 1, &again);
     lp.peers[1].engine.paired(&p).unwrap();
     spread(&mut lp);
     publish(&mut lp, 1);

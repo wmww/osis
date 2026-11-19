@@ -572,7 +572,7 @@ fn another_accounts_chain_goes_with_the_last_held_thing_needing_it_spec_commits_
             for from in 0..3 {
                 let ids: Vec<_> = lp.peers[from].engine.commit_ids().into_iter().filter(|c| from != 1 || crate::common::is_role(&lp.peers[from].engine, c)).collect();
                 for to in (0..3).filter(|to| *to != from) {
-                    crate::flows::send(lp, from, to, &ids);
+                    crate::flows::send_carried(lp, from, to, &ids);
                 }
             }
         }
@@ -598,7 +598,7 @@ fn another_accounts_chain_goes_with_the_last_held_thing_needing_it_spec_commits_
     let d2 = e2.account_root().unwrap();
     strong(e2, d2, t, true);
     strong(e2, d2, u, true);
-    crate::flows::send(&mut lp, 1, 2, &[w]);
+    crate::flows::send_carried(&mut lp, 1, 2, &[w]);
     let e2 = &mut lp.peers[2].engine;
     assert!(e2.commit_ids().contains(&w), "peer 2 holds peer 1's write");
     assert!(e2.closure_holds(&t) && e2.closure_holds(&u), "peer 2 holds T and U");
@@ -661,7 +661,7 @@ fn what_nothing_needs_goes_whatever_the_arrival_order_spec_commits_5() {
         // Q keeps peer 0's account, which it grants
         lp.peers[1].know(&[p0]).unwrap();
         let mine: Vec<_> = lp.peers[0].engine.commit_ids();
-        crate::flows::send(&mut lp, 0, 1, &mine);
+        crate::flows::send_carried(&mut lp, 0, 1, &mine);
         let e1 = &mut lp.peers[1].engine;
         let mut m = Mutation::new();
         let t = e1.new_thing(&mut m, q);
@@ -783,7 +783,7 @@ fn a_node_writes_only_what_it_holds_spec_sync_set_2() {
     let t = make(e0, d0, d0);
     e0.grant(&t, &ps[1], &crate::flows::edge_of(osis_base::Role::Write)).unwrap();
     let ids = lp.peers[0].engine.commit_ids();
-    crate::flows::send(&mut lp, 0, 1, &ids);
+    crate::flows::send_carried(&mut lp, 0, 1, &ids);
     let e1 = &mut lp.peers[1].engine;
     let before = e1.commit_ids().len();
     let v = osis_base::Ak::new("x:v.0").unwrap();
@@ -1075,7 +1075,7 @@ fn a_release_keeps_an_own_leave_still_waiting_spec_commits_5() {
     e1.released(&left).unwrap();
     e1.settle_needs().unwrap();
     assert!(e1.commit_ids().contains(&c), "the leave stays: {}", e1.why_kept(&x));
-    crate::flows::send(&mut lp, 1, 0, &[c]);
+    crate::flows::send_carried(&mut lp, 1, 0, &[c]);
     assert!(!lp.peers[0].engine.roster(&x).contains_key(&ps[1]), "peer 0 applies the leave");
 }
 
@@ -1094,22 +1094,22 @@ fn a_device_named_after_its_card_went_is_fetched_again_spec_commits_5() {
     lp.peers.extend(rest);
     let (a, z) = (lp.peers[0].engine.tid(), lp.peers[2].engine.tid());
     let card: Vec<_> = lp.peers[2].engine.commit_ids().into_iter().filter(|c| lp.peers[2].engine.header(c).is_some_and(|h| h.author == z && h.aspects.iter().all(|x| x.tid == z))).collect();
-    crate::flows::send(&mut lp, 2, 0, &card);
+    crate::flows::send_carried(&mut lp, 2, 0, &card);
     lp.peers[0].engine.pair(&z).unwrap();
     let pairing: Vec<_> = lp.peers[0].engine.commit_ids().into_iter().filter(|c| !card.contains(c)).collect();
     for card_first in [true, false] {
         let mut lp = lp.copy().unwrap();
         lp.peers[1].pulled_anew.clear();
         if card_first {
-            crate::flows::send(&mut lp, 2, 1, &card);
+            crate::flows::send_carried(&mut lp, 2, 1, &card);
             lp.peers[1].engine.settle_needs().unwrap();
             assert!(lp.peers[1].engine.core.created(&z).is_none(), "card first: nothing names Z at the pass's end");
         }
-        crate::flows::send(&mut lp, 0, 1, &pairing);
+        crate::flows::send_carried(&mut lp, 0, 1, &pairing);
         lp.peers[1].engine.settle_needs().unwrap();
         lp.peers[1].reexamine().unwrap();
         assert!(!std::mem::take(&mut lp.peers[1].pulled_anew).is_empty(), "card first {card_first}: the chain names Z, its card not held: D is pulled anew");
-        crate::flows::send(&mut lp, 2, 1, &card);
+        crate::flows::send_carried(&mut lp, 2, 1, &card);
         lp.peers[1].engine.settle_needs().unwrap();
         assert!(lp.peers[1].engine.core.created(&z).is_some(), "card first {card_first}: Z's card stays");
         lp.peers[1].engine.remove_device(&a).unwrap_or_else(|e| panic!("card first {card_first}: removing peer 0 boxes to Z: {e}"));
@@ -1133,7 +1133,7 @@ fn pull_again(lp: &mut osis_engine::local_peer::LocalPeer, before: &BTreeSet<osi
     let pulled = !std::mem::take(&mut lp.peers[1].pulled_anew).is_empty() || now.difference(before).next().is_some();
     if pulled {
         let all = lp.peers[0].engine.commit_ids();
-        crate::flows::send(lp, 0, 1, &all);
+        crate::flows::send_carried(lp, 0, 1, &all);
     }
     pulled
 }
@@ -1169,13 +1169,15 @@ fn under_y(n: usize, y_too: bool) -> (osis_engine::local_peer::LocalPeer, Tid, T
     for t in [y, x] {
         e0.grant(&t, &ps[1], &crate::flows::edge_of(osis_base::Role::Read)).unwrap();
     }
-    let all = lp.peers[0].engine.commit_ids();
-    crate::flows::send(&mut lp, 0, 1, &all);
     let e1 = &mut lp.peers[1].engine;
     strong(e1, d1, x, true);
     if y_too {
         strong(e1, d1, y, true);
     }
+    // what the sync IDs it comes to sync carry: twice, as the grants move them
+    let all = lp.peers[0].engine.commit_ids();
+    crate::flows::send_carried(&mut lp, 0, 1, &all);
+    crate::flows::send_carried(&mut lp, 0, 1, &all);
     lp.peers[1].pulled_anew.clear();
     pass_end(&mut lp.peers[1].engine);
     let e1 = &mut lp.peers[1].engine;
@@ -1226,17 +1228,18 @@ fn a_thing_entering_again_with_its_record_held_is_pulled_anew_spec_sync_judgemen
     m.set(y, &crate::common::REG, &Value::Str("y".into())).unwrap();
     e0.commit(m).unwrap();
     e0.grant(&x, &ps[1], &crate::flows::edge_of(osis_base::Role::Read)).unwrap();
-    let all = lp.peers[0].engine.commit_ids();
-    crate::flows::send(&mut lp, 0, 1, &all);
     let d1 = lp.peers[1].engine.account_root().unwrap();
     strong(&mut lp.peers[1].engine, d1, x, true);
+    let all = lp.peers[0].engine.commit_ids();
+    crate::flows::send_carried(&mut lp, 0, 1, &all);
+    crate::flows::send_carried(&mut lp, 0, 1, &all);
     pass_end(&mut lp.peers[1].engine);
     assert!(lp.peers[1].engine.closure_holds(&z), "Z in X's sync unit");
     assert_eq!(lp.peers[1].engine.get(&y, &reg).unwrap(), Some(Value::Str("y".into())), "Y in X's sync unit reads");
     let before = lp.peers[0].engine.commit_ids();
     strong(&mut lp.peers[0].engine, x, y, false);
     let cut: Vec<_> = lp.peers[0].engine.commit_ids().into_iter().filter(|c| !before.contains(c)).collect();
-    crate::flows::send(&mut lp, 0, 1, &cut);
+    crate::flows::send_carried(&mut lp, 0, 1, &cut);
     pass_end(&mut lp.peers[1].engine);
     let e1 = &mut lp.peers[1].engine;
     assert!(!e1.closure_holds(&y) && e1.core.created(&y).is_some(), "Y outside, its record kept: {}", e1.why_kept(&y));
@@ -1246,7 +1249,7 @@ fn a_thing_entering_again_with_its_record_held_is_pulled_anew_spec_sync_judgemen
     let before = lp.peers[0].engine.commit_ids();
     strong(&mut lp.peers[0].engine, x, y, true);
     let back: Vec<_> = lp.peers[0].engine.commit_ids().into_iter().filter(|c| !before.contains(c)).collect();
-    crate::flows::send(&mut lp, 0, 1, &back);
+    crate::flows::send_carried(&mut lp, 0, 1, &back);
     assert!(lp.peers[1].engine.closure_holds(&y), "Y back in X's sync unit");
     assert_eq!(synced(&mut lp), was, "no sync ID joins");
     assert!(pull_again(&mut lp, &was), "Y's entry pulls anew");
@@ -1289,7 +1292,7 @@ fn a_part_outside_the_node_closure_waits_beside_one_in_it_spec_commits_4() {
 // spec/sync-set.md §2 Cost, spec/commits.md §4 Outside the node closure, Pending storage, §5 What
 // a held thing needs: the pass end judges the things due alone, a wake examines what waits on the
 // thing entering alone. With n and 10n things of its own held, peer 1 takes a write on Y (outside
-// its node closure: it waits), then holds Y (pulled anew; the write woken and applied) and
+// its node closure, from a source whose view puts Y in a sync unit peer 1 syncs: it waits), then holds Y (pulled anew; the write woken and applied) and
 // releases it; a second write on Y then waits until the pass end, which judges Y in no sync unit
 // peer 1 syncs (it holds Y's minting commit): not carried, it goes. Each step counts the same work.
 #[test]
@@ -1297,6 +1300,11 @@ fn waiting_and_pulling_anew_cost_the_thing_not_the_node_closure_spec_commits_5()
     let work = |n: usize| {
         let (mut lp, _, y) = under_y(n, false);
         let d1 = lp.peers[1].engine.account_root().unwrap();
+        // a source whose view puts Y in a sync unit peer 1 syncs sends its writes whole
+        let give = |lp: &mut osis_engine::local_peer::LocalPeer, c: &osis_base::CommitId| {
+            let pk = lp.peers[0].engine.package(c).unwrap().unwrap();
+            lp.deliver(1, &pk).unwrap();
+        };
         let write = |lp: &mut osis_engine::local_peer::LocalPeer, v: &str| {
             let mut m = Mutation::new();
             m.set(y, &crate::common::REG, &Value::Str(v.into())).unwrap();
@@ -1308,7 +1316,7 @@ fn waiting_and_pulling_anew_cost_the_thing_not_the_node_closure_spec_commits_5()
             f(lp);
             osis_base::costs::take().into_iter().map(|(k, _, c)| (k, c)).collect::<BTreeMap<_, _>>()
         };
-        let wait = counted(&mut lp, &|lp| crate::flows::send(lp, 0, 1, &[c]));
+        let wait = counted(&mut lp, &|lp| give(lp, &c));
         assert_eq!(lp.peers[1].engine.get(&y, &crate::common::ak("t:reg.0")).unwrap(), None, "n {n}: it waits");
         assert!(lp.peers[1].engine.pends(&c), "n {n}: it waits");
         let enter = counted(&mut lp, &|lp| {
@@ -1329,7 +1337,7 @@ fn waiting_and_pulling_anew_cost_the_thing_not_the_node_closure_spec_commits_5()
         });
         let c2 = write(&mut lp, "y3");
         let gone = counted(&mut lp, &|lp| {
-            crate::flows::send(lp, 0, 1, &[c2]);
+            give(lp, &c2);
             lp.peers[1].engine.settle_needs().unwrap();
         });
         assert!(!lp.peers[1].engine.pends(&c2) && lp.peers[1].engine.header(&c2).is_none(), "n {n}: not carried, never received");
@@ -1358,7 +1366,7 @@ fn record_with_strong(orders: &[&[&str]]) -> Vec<End> {
     e0.commit(m).unwrap();
     e0.grant(&x, &ps[1], &crate::flows::edge_of(osis_base::Role::Read)).unwrap();
     let all = lp.peers[0].engine.commit_ids();
-    crate::flows::send(&mut lp, 0, 1, &all);
+    crate::flows::send_carried(&mut lp, 0, 1, &all);
     let d1 = lp.peers[1].engine.account_root().unwrap();
     strong(&mut lp.peers[1].engine, d1, x, true);
     pass_end(&mut lp.peers[1].engine);
@@ -1447,12 +1455,14 @@ fn a_record_arriving_with_the_strong_pulls_nothing_and_ends_alike_spec_sync_judg
     assert_eq!((ends[4].1, ends[5].1), (0, 0), "D first, C whole: nothing pulled anew, D kept pending");
 }
 
-// D, pending, makes W's record learned from a record blob; D applies and goes at the pass end with
-// W's record (W outside the node closure); C then brings the record back with the strong in one
-// transaction, pulling nothing, and D never comes back.
+// spec/commits.md §4 Outside the node closure (carried while the node cannot judge the thing's
+// sync units), spec/sync-judgement.md §3 Dropped bodies: D, pending, makes W's record learned from
+// a record blob; W is outside the node closure, so D's part on W waits, and peer 1, not holding
+// the commit minting W, cannot judge W in no sync unit it syncs: D stays across the pass end, and C,
+// bringing W's record again with the strong in one transaction and pulling nothing, finds it. Ends
+// as C then D.
 #[test]
-#[ignore = "issues/record-dropped-then-back-with-its-strong.md"]
-fn repro_record_dropped_then_back_with_its_strong() {
+fn a_commit_before_its_record_blob_and_its_strong_waits_for_them_spec_commits_4() {
     let ends = record_with_strong(&[&["C", "D"], &["D", "W's record", "pass end", "C"]]);
     assert_eq!((&ends[1].2, &ends[1].3), (&ends[0].2, &ends[0].3), "{} ends as {}", ends[1].0, ends[0].0);
 }
@@ -1495,7 +1505,7 @@ fn a_commit_awaiting_its_record_is_kept_while_carried_and_no_longer_spec_commits
         made.push((w, c, d));
     }
     let ds: Vec<_> = made.iter().map(|m| m.2).collect();
-    crate::flows::send(&mut lp, 0, 1, &ds);
+    crate::flows::send_carried(&mut lp, 0, 1, &ds);
     pass_end(&mut lp.peers[1].engine);
     lp.peers[1].restart(0).unwrap();
     pass_end(&mut lp.peers[1].engine);
@@ -1513,7 +1523,7 @@ fn a_commit_awaiting_its_record_is_kept_while_carried_and_no_longer_spec_commits
     }
     assert_eq!(e1.pending().len(), 1, "only the carried D pends");
     assert!(awaited(e1, &kept.0));
-    crate::flows::send(&mut lp, 0, 1, &[kept.1]);
+    crate::flows::send_carried(&mut lp, 0, 1, &[kept.1]);
     pass_end(&mut lp.peers[1].engine);
     let e1 = &mut lp.peers[1].engine;
     assert!(!e1.pends(&kept.2));
@@ -1549,7 +1559,7 @@ fn repro_uncarried_pending_kept_forever() {
     e0.commit(m).unwrap();
     e0.grant(&x, &ps[1], &crate::flows::edge_of(osis_base::Role::Read)).unwrap();
     let all = lp.peers[0].engine.commit_ids();
-    crate::flows::send(&mut lp, 0, 1, &all);
+    crate::flows::send_carried(&mut lp, 0, 1, &all);
     let d1 = lp.peers[1].engine.account_root().unwrap();
     strong(&mut lp.peers[1].engine, d1, x, true);
     pass_end(&mut lp.peers[1].engine);

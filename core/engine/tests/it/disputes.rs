@@ -3,7 +3,7 @@
 //! trust store across a restart. Over `LocalPeer`: commits delivered by hand, so who holds what
 //! first is the test's.
 
-use crate::flows::{edge_of, people, reopen, send, spread, thing_of};
+use crate::flows::{edge_of, people, reopen, send_carried, spread, thing_of};
 use osis_base::{CommitId, Role, Tid};
 use osis_engine::flows::Demotion;
 use osis_engine::local_peer::LocalPeer;
@@ -105,26 +105,26 @@ fn backdated_removal_loses_where_the_honest_one_was_first_spec_permissions_5_1()
     let mut f = fight(4);
     let (w, r) = (f.w.clone(), f.r.clone());
     // peer 2: b's removal first, then a's backdated one
-    send(&mut f.lp, 1, 2, &w);
+    send_carried(&mut f.lp, 1, 2, &w);
     assert_eq!(admins(&f, 2), (false, true));
     f.lp.peers[2].drain_events();
-    send(&mut f.lp, 0, 2, &r);
+    send_carried(&mut f.lp, 0, 2, &r);
     assert_eq!(admins(&f, 2), (false, true), "the side it had stays");
     assert_eq!(detected(&f.lp, 2), vec![(f.a, f.lp.peers[1].engine.me(), true)]);
     let d = the_dispute(&f, 2);
     assert_eq!(d.side.map(|s| (s.trust, s.chosen)), Some((true, false)));
     // peer 3: the backdated one first
-    send(&mut f.lp, 0, 3, &r);
+    send_carried(&mut f.lp, 0, 3, &r);
     assert_eq!(admins(&f, 3), (true, false));
     f.lp.peers[3].drain_events();
-    send(&mut f.lp, 1, 3, &w);
+    send_carried(&mut f.lp, 1, 3, &w);
     assert_eq!(admins(&f, 3), (true, false), "first received: the thief's side, warned");
     assert_eq!(detected(&f.lp, 3), vec![(f.a, f.lp.peers[1].engine.me(), false)]);
     let d = the_dispute(&f, 3);
     assert_eq!(d.side.map(|s| (s.trust, s.chosen)), Some((false, false)));
     // each party sides with itself
-    send(&mut f.lp, 0, 1, &r);
-    send(&mut f.lp, 1, 0, &w);
+    send_carried(&mut f.lp, 0, 1, &r);
+    send_carried(&mut f.lp, 1, 0, &w);
     assert_eq!((admins(&f, 0), admins(&f, 1)), ((true, false), (false, true)));
     assert_eq!(the_dispute(&f, 0).side.map(|s| s.trust), Some(false));
     assert_eq!(the_dispute(&f, 1).side.map(|s| s.trust), Some(true));
@@ -142,8 +142,8 @@ fn choose_switches_sides_and_persists_spec_permissions_5_1() {
     let c = f.lp.peers[2].engine.me();
     let other = thing_of(&mut f.lp, 2, c);
     f.lp.peers[2].engine.grant(&other, &f.a, &edge_of(Role::Write)).unwrap();
-    send(&mut f.lp, 1, 2, &w);
-    send(&mut f.lp, 0, 2, &r);
+    send_carried(&mut f.lp, 1, 2, &w);
+    send_carried(&mut f.lp, 0, 2, &r);
     assert_eq!(admins(&f, 2), (false, true));
     reopen(&mut f.lp, 2).unwrap();
     assert_eq!(admins(&f, 2), (false, true));
@@ -184,9 +184,9 @@ fn late_choice_brings_back_what_the_default_dropped_spec_permissions_5_1() {
     let x = f.lp.peers[0].commit(m).unwrap().unwrap();
     let reg = |f: &mut Fight, i: usize| f.lp.peers[i].engine.get(&f.t, &crate::common::ak("t:reg.0")).unwrap();
     for (i, first, then) in [(2, &w, &r), (3, &r, &w)] {
-        send(&mut f.lp, if i == 2 { 1 } else { 0 }, i, first);
-        send(&mut f.lp, if i == 2 { 0 } else { 1 }, i, then);
-        send(&mut f.lp, 0, i, &[x]);
+        send_carried(&mut f.lp, if i == 2 { 1 } else { 0 }, i, first);
+        send_carried(&mut f.lp, if i == 2 { 0 } else { 1 }, i, then);
+        send_carried(&mut f.lp, 0, i, &[x]);
     }
     assert_eq!(reg(&mut f, 3), Some(crate::common::s("a's")));
     assert_ne!(reg(&mut f, 2), reg(&mut f, 3), "b's side: a's write dropped as invalid");
@@ -194,7 +194,7 @@ fn late_choice_brings_back_what_the_default_dropped_spec_permissions_5_1() {
     f.lp.peers[2].engine.choose(d.commit, d.op, d.holder, false).unwrap();
     assert_eq!(admins(&f, 2), (true, false));
     assert!(f.lp.peers[2].engine.commit_parts_missing().iter().any(|(c, m)| *c == x && !m.is_empty()), "valid again: missing");
-    send(&mut f.lp, 0, 2, &[x]);
+    send_carried(&mut f.lp, 0, 2, &[x]);
     assert_eq!(reg(&mut f, 2), reg(&mut f, 3));
 }
 
@@ -218,15 +218,15 @@ fn planted_removal_counts_from_when_it_applies_spec_permissions_5_1() {
     let before = ids(&lp, 0);
     lp.peers[0].engine.demote(&t, &Demotion { holder: b, new: None, retain: None }).unwrap();
     let p = new_ids(&lp, 0, &before);
-    send(&mut lp, 0, 2, &p);
+    send_carried(&mut lp, 0, 2, &p);
     let adm = |lp: &LocalPeer| { let r = lp.peers[2].engine.roster(&t); (r.contains_key(&a), r.contains_key(&b)) };
     assert_eq!(adm(&lp), (true, true), "a's planted removal waits");
     lp.advance(1000);
     let before = ids(&lp, 1);
     lp.peers[1].engine.demote(&t, &Demotion { holder: a, new: None, retain: None }).unwrap();
     let w = new_ids(&lp, 1, &before);
-    send(&mut lp, 1, 2, &w);
+    send_carried(&mut lp, 1, 2, &w);
     assert_eq!(adm(&lp), (false, true));
-    send(&mut lp, 0, 2, &e);
+    send_carried(&mut lp, 0, 2, &e);
     assert_eq!(adm(&lp), (false, true), "b's removal was first and is earlier: kept");
 }

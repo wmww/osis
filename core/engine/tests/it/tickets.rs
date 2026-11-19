@@ -231,7 +231,7 @@ fn a_ticket_enters_its_target_at_a_strong_spec_sync_set_2() {
         // the node closure), its content applying once they make it independent here
         if arm != "sealed to another" {
             let roles: Vec<_> = ids.iter().copied().filter(|c| lp.peers[0].engine.header(c).is_some_and(|h| h.kind == osis_commit::Kind::Role)).collect();
-            crate::flows::send(&mut lp, 0, 1, &roles);
+            crate::flows::send_carried(&mut lp, 0, 1, &roles);
         }
         let e1 = &mut lp.peers[1].engine;
         e1.check_closure();

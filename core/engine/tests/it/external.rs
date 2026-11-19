@@ -5,7 +5,7 @@
 //! notice taken, each in both orders against the setting.
 
 use crate::common::{ak, edge, edge_write, new_shared, s, set_edge, set_setting, test_setting};
-use crate::flows::{edge_of, people, send};
+use crate::flows::{edge_of, people, send_carried};
 use osis_base::{CommitId, Role, Tid};
 use osis_crdt::{Op, PathOp};
 use osis_engine::Mutation;
@@ -71,9 +71,9 @@ fn a_fire_counts_only_while_its_signal_is_enabled_spec_permissions_5_2() {
     assert!(matches!(fire(&mut lp, 1, g), Err(osis_engine::Error::NotEnabled { tid, .. }) if tid == g), "a reader's fire of an unenabled signal is refused");
     let s1 = set_setting(&mut lp, 0, g, &setting(true));
     let w = fire(&mut lp, 0, g).unwrap();
-    send(&mut lp, 0, 1, &[s1]);
+    send_carried(&mut lp, 0, 1, &[s1]);
     let f = fire(&mut lp, 1, g).expect("enabled: the reader fires");
-    send(&mut lp, 1, 0, &[f]);
+    send_carried(&mut lp, 1, 0, &[f]);
     assert!(valid(&lp, 0, &f, g) && listed(&mut lp, 0, &f, g), "enabled then fired: valid and listed");
     assert!(promotable(&mut lp, 0, &f, g), "promoted");
     let s2 = set_setting(&mut lp, 0, g, &setting(false));
@@ -83,12 +83,12 @@ fn a_fire_counts_only_while_its_signal_is_enabled_spec_permissions_5_2() {
     let s3 = set_setting(&mut lp, 0, g, &setting(true));
     assert!(valid(&lp, 0, &f, g), "enabled again: valid");
     // the other order: the fire first, the settings after
-    send(&mut lp, 1, 2, &[f]);
+    send_carried(&mut lp, 1, 2, &[f]);
     assert!(!valid(&lp, 2, &f, g), "fired before any enabling setting here: invalid");
-    send(&mut lp, 0, 2, &[s1, s2, s3]);
+    send_carried(&mut lp, 0, 2, &[s1, s2, s3]);
     assert!(valid(&lp, 2, &f, g), "fired then enabled: valid, as at the writer");
     // dropped while invalid, it counts as never received: it joins when it comes again
-    send(&mut lp, 1, 2, &[f]);
+    send_carried(&mut lp, 1, 2, &[f]);
     assert!(listed(&mut lp, 2, &f, g) && listed(&mut lp, 0, &f, g), "listed alike");
 }
 
@@ -102,9 +102,9 @@ fn a_removed_writers_unlisted_fire_is_judged_as_a_strangers_spec_permissions_5_2
     let p1 = lp.peers[1].engine.me();
     let s1 = set_setting(&mut lp, 0, g, &setting(true));
     let up = set_edge(&mut lp.peers[0].engine, g, p1, Some(edge(Role::Write)), None);
-    send(&mut lp, 0, 1, &[s1, up]);
+    send_carried(&mut lp, 0, 1, &[s1, up]);
     let f = fire(&mut lp, 1, g).unwrap();
-    send(&mut lp, 1, 0, &[f]);
+    send_carried(&mut lp, 1, 0, &[f]);
     set_setting(&mut lp, 0, g, &setting(false));
     assert!(valid(&lp, 0, &f, g), "a writer's fire: valid whatever the setting");
     edge_write(&mut lp.peers[0].engine, g, p1, Some(edge(Role::Read)), Some(ct::Frontier::default()));
@@ -215,15 +215,15 @@ fn a_setting_purged_on_replace_moves_no_fire_it_leaves_enabled_spec_commits_5() 
     let mut x = setting(true);
     x.rules.insert(ak("retention^.0"), ct::RetentionEntry { history: Some(osis_schema::History::PurgeOnReplace), ..Default::default() });
     let s1 = set_setting(&mut lp, 0, g, &x);
-    send(&mut lp, 0, 1, &[s1]);
+    send_carried(&mut lp, 0, 1, &[s1]);
     let f = fire(&mut lp, 1, g).unwrap();
-    send(&mut lp, 1, 0, &[f]);
+    send_carried(&mut lp, 1, 0, &[f]);
     assert!(valid(&lp, 0, &f, g));
     let mut y = x.clone();
     y.rules.insert(ak("t:other.0"), ct::RetentionEntry { history: Some(osis_schema::History::FOREVER), ..Default::default() });
     let s2 = set_setting(&mut lp, 0, g, &y);
     assert!(valid(&lp, 0, &f, g), "still enabled");
-    send(&mut lp, 0, 1, &[s2]);
+    send_carried(&mut lp, 0, 1, &[s2]);
     assert!(valid(&lp, 1, &f, g), "still enabled at the reader");
     y.rules.remove(&ak(PING));
     set_setting(&mut lp, 0, g, &y);
@@ -241,7 +241,7 @@ fn a_readers_own_setting_enables_nothing_spec_permissions_5_2() {
     m.op(g, &ak(PING), PathOp { path: vec![], op: Op::Set(s("ping")) }).unwrap();
     let c = lp.peers[1].engine.commit_hostile(m).unwrap().unwrap();
     for to in [0, 2] {
-        send(&mut lp, 1, to, &[c]);
+        send_carried(&mut lp, 1, to, &[c]);
         assert!(!valid(&lp, to, &c, g) && !listed(&mut lp, to, &c, g), "peer {to}: invalid, unlisted");
     }
 }
@@ -259,21 +259,21 @@ fn a_fire_follows_its_settings_validity_spec_commits_5() {
     lp.sync_all().unwrap();
     let p2 = lp.peers[2].engine.me();
     let up = set_edge(&mut lp.peers[0].engine, g, p2, Some(edge(Role::Admin)), None);
-    send(&mut lp, 0, 2, &[up]);
+    send_carried(&mut lp, 0, 2, &[up]);
     let s1 = set_setting(&mut lp, 2, g, &setting(true));
-    send(&mut lp, 2, 1, &[up, s1]);
+    send_carried(&mut lp, 2, 1, &[up, s1]);
     let f = fire(&mut lp, 1, g).expect("enabled at the reader");
-    send(&mut lp, 1, 3, &[f]);
-    send(&mut lp, 2, 3, &[s1]);
+    send_carried(&mut lp, 1, 3, &[f]);
+    send_carried(&mut lp, 2, 3, &[s1]);
     assert!(!valid(&lp, 3, &f, g), "its setting's author not known admin yet: invalid");
-    send(&mut lp, 0, 3, &[up]);
-    send(&mut lp, 2, 3, &[s1]);
+    send_carried(&mut lp, 0, 3, &[up]);
+    send_carried(&mut lp, 2, 3, &[s1]);
     assert!(valid(&lp, 3, &f, g), "the grant, then the setting again: valid");
     let dem = edge_write(&mut lp.peers[0].engine, g, p2, Some(edge(Role::Read)), Some(ct::Frontier::default()));
-    send(&mut lp, 2, 0, &[s1]);
-    send(&mut lp, 1, 0, &[f]);
+    send_carried(&mut lp, 2, 0, &[s1]);
+    send_carried(&mut lp, 1, 0, &[f]);
     assert!(!valid(&lp, 0, &f, g), "the setting unlisted by its author's demotion: invalid");
-    send(&mut lp, 0, 3, &[dem]);
+    send_carried(&mut lp, 0, 3, &[dem]);
     assert!(!valid(&lp, 3, &f, g), "alike at peer 3");
 }
 
@@ -289,10 +289,10 @@ fn a_readers_fire_its_setting_does_not_take_is_refused_spec_sync_inbox_2() {
     let mut x = test_setting();
     x.rules.insert(ak(PING), ct::RetentionEntry::default());
     let s1 = set_setting(&mut lp, 0, g, &x);
-    send(&mut lp, 0, 1, &[s1]);
+    send_carried(&mut lp, 0, 1, &[s1]);
     assert!(matches!(try_fire(&mut lp), Err(osis_engine::Error::Misuse(m)) if m.contains("setting keeps no history")), "enabled, no history");
     assert!(lp.peers[1].engine.fires_owed().is_empty(), "nothing owed sealed");
     let s2 = set_setting(&mut lp, 0, g, &setting(true));
-    send(&mut lp, 0, 1, &[s2]);
+    send_carried(&mut lp, 0, 1, &[s2]);
     try_fire(&mut lp).expect("enabled and kept: written");
 }

@@ -640,6 +640,42 @@ fn held_body(e: &Engine, c: &CommitId, ai: usize) -> bool {
     e.core.ix.commits.get(c).is_some_and(|m| !m.is_dropped(ai) && !m.missing(ai))
 }
 
+/// What the history says enters a node's closure (`compare`'s `quiet`), from the history alone,
+/// never from the node judged: `roots`, held by the node's own strongs and grants (once their
+/// record is held), and each
+/// thing `minted` (thing, mint admin, the commit minting it with the mint admin's strong to it)
+/// whose mint admin is in and whose minting commit is held with that strong valid, as held-model
+/// judges the held set (`hm::roles::Timeline::valid_delta`).
+#[derive(Clone, Debug, Default)]
+pub(crate) struct Walk {
+    pub(crate) roots: BTreeSet<Tid>,
+    pub(crate) minted: Vec<(Tid, Tid, CommitId)>,
+}
+
+impl Walk {
+    /// The node closure, in model ids, of the node whose held set is `input`.
+    fn closure(&self, input: &Input, hist: &History) -> BTreeSet<hm::NodeId> {
+        let j = hist.judged(&input.held);
+        let by: BTreeMap<Tid, hm::NodeId> = input.ids.iter().map(|(i, t)| (*t, *i)).collect();
+        let held: BTreeMap<CommitId, hm::CommitId> = input.commits.iter().filter(|(_, (_, applied))| *applied).map(|(m, (c, _))| (*c, *m)).collect();
+        let strong_valid = |p: &Tid, c: &CommitId| -> bool {
+            let (Some(pm), Some(cm)) = (by.get(p), held.get(c)) else { return false };
+            input.held.commits.iter().find(|x| x.id == *cm).is_some_and(|x| j.tl.valid_delta(x, *pm, hm::r#gen::REG))
+        };
+        // a thing is entered once its record is held (the held set's records or a creation part)
+        let recorded = |t: &Tid| by.get(t).is_some_and(|m| input.held.records.iter().any(|r| r.id == *m) || input.held.commits.iter().flat_map(|c| &c.parts).any(|p| p.thing == *m && matches!(p.body, hm::Body::Held(hm::Delta::Created(_)))));
+        let mut closure: BTreeSet<Tid> = self.roots.iter().filter(|t| recorded(t)).copied().collect();
+        loop {
+            let more: Vec<Tid> = self.minted.iter().filter(|(t, p, c)| !closure.contains(t) && closure.contains(p) && strong_valid(p, c)).map(|x| x.0).collect();
+            if more.is_empty() {
+                break;
+            }
+            closure.extend(more);
+        }
+        closure.iter().filter_map(|t| by.get(t).copied()).collect()
+    }
+}
+
 /// What `compare` remembers of one node between its judgments, for judging its drops: each
 /// part as last seen (`Seen`), and the drops judged.
 #[derive(Default)]
@@ -683,12 +719,12 @@ enum Seen {
 /// held-model dates it with the body as last seen held. A drop is judged once: a setting arriving
 /// later that puts the body back in history does not make it wrong (Dropped stays dropped).
 /// `quiet`, the caller's word that a pass ended with nothing arriving, leaving the node closure
-/// or ticking since: a thing outside the node closure then holds its certificates alone
-/// (`hm::at_quiet`; the node closure is the node's, which its own walk checks).
-pub(crate) fn compare(e: &mut Engine, hist: &History, cov: &mut Coverage, drops: Option<&mut Drops>, quiet: bool) -> Option<String> {
+/// or ticking since, with what the history says enters the node closure (`Walk`): a thing
+/// outside it then holds its certificates alone (`hm::at_quiet`).
+pub(crate) fn compare(e: &mut Engine, hist: &History, cov: &mut Coverage, drops: Option<&mut Drops>, quiet: Option<&Walk>) -> Option<String> {
     let mut input = convert(e, hist);
-    if quiet {
-        let closure: BTreeSet<hm::NodeId> = input.ids.iter().filter(|(_, t)| e.closure_holds(t)).map(|(i, _)| *i).collect();
+    if let Some(w) = quiet {
+        let closure = w.closure(&input, hist);
         input.held = hm::at_quiet(&input.held, &closure);
     }
     let j = hist.judged(&input.held);

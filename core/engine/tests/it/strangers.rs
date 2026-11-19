@@ -4,7 +4,7 @@
 //! at the pass end, its fires staying.
 
 use crate::common::{ak, s, set_setting};
-use crate::flows::send;
+use crate::flows::send_carried;
 use osis_base::Tid;
 use osis_engine::local_peer::LocalPeer;
 use osis_schema::core_types as ct;
@@ -31,8 +31,8 @@ fn strangers(n: usize) -> (LocalPeer, Tid) {
     for i in 1..=n {
         // the stranger keeps peer 0's account (and so its inbox), on which it means to fire
         lp.peers[i].know(&[p0]).unwrap();
-        send(&mut lp, 0, i, &ids);
-        send(&mut lp, 0, i, &ids);
+        send_carried(&mut lp, 0, i, &ids);
+        send_carried(&mut lp, 0, i, &ids);
     }
     (lp, inbox)
 }

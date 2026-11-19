@@ -92,9 +92,9 @@ fn siblings_granted() -> (LocalPeer, Tid, Tid) {
         let a = lp.peers[0].engine.create_account().unwrap().0.account;
         let n = lp.peers[1].engine.tid();
         let card = lp.peers[1].engine.commit_ids();
-        crate::flows::send(&mut lp, 1, 0, &card);
+        crate::flows::send_carried(&mut lp, 1, 0, &card);
         let (_, sent) = lp.peers[0].engine.pair(&n).unwrap();
-        crate::flows::send(&mut lp, 0, 1, &sent);
+        crate::flows::send_carried(&mut lp, 0, 1, &sent);
         lp.peers[1].engine.paired(&a).unwrap();
         let b = lp.peers[2].engine.create_account().unwrap().0.account;
         spread(&mut lp);
@@ -729,7 +729,7 @@ fn a_deposit_only_step_waits_for_a_seed_held_pending_spec_permissions_3() {
     spread(&mut lp);
     let s = lp.peers[0].engine.sync_id_of(&t).unwrap().unwrap();
     let first = *lp.peers[0].engine.refresh_deposit_seed(&t).unwrap().commits.last().unwrap();
-    crate::flows::send(&mut lp, 0, 1, &[first]);
+    crate::flows::send_carried(&mut lp, 0, 1, &[first]);
     lp.peers[0].clock.advance(3 * osis_base::format::MAX_DRIFT_MS / 2);
     let second = *lp.peers[0].engine.refresh_deposit_seed(&t).unwrap().commits.last().unwrap();
     let pk = lp.peers[0].engine.package(&second).unwrap().unwrap();

@@ -17,14 +17,6 @@ pub(crate) fn spread(lp: &mut LocalPeer) {
     lp.sync_all().unwrap();
 }
 
-/// Delivers commits `ids` of peer `from` to peer `to`.
-pub(crate) fn send(lp: &mut LocalPeer, from: usize, to: usize, ids: &[CommitId]) {
-    for id in ids {
-        let pk = lp.peers[from].engine.package(id).unwrap().unwrap();
-        lp.deliver(to, &pk).unwrap();
-    }
-}
-
 /// Delivers commits `ids` of peer `from` to peer `to` as a sync carries them
 /// (`LocalPeer::packages_under`): each holding the parts the sync IDs `to` syncs as it arrives
 /// carry and its certificate parts; one with neither is not sent.
@@ -124,9 +116,9 @@ fn account_two_nodes_built() -> (LocalPeer, Tid) {
     // the new node's card over the direct connection
     let n = lp.peers[1].engine.tid();
     let card: Vec<CommitId> = lp.peers[1].engine.commit_ids();
-    send(&mut lp, 1, 0, &card);
+    send_carried(&mut lp, 1, 0, &card);
     let (_, send_) = lp.peers[0].engine.pair(&n).unwrap();
-    send(&mut lp, 0, 1, &send_);
+    send_carried(&mut lp, 0, 1, &send_);
     lp.peers[1].engine.paired(&p.account).unwrap();
     (lp, p.root)
 }
@@ -538,7 +530,7 @@ fn dropped_pending_grant_drops_reading_secrets_spec_crypto_4() {
     let pb = lp.peers[1].engine.create_account().unwrap().0.account;
     lp.peers[0].know(&[pb]).unwrap();
     let bobs: Vec<CommitId> = lp.peers[1].engine.commit_ids();
-    send(&mut lp, 1, 0, &bobs);
+    send_carried(&mut lp, 1, 0, &bobs);
     let g = thing_of(&mut lp, 0, pa);
     let done = lp.peers[0].engine.grant(&g, &pb, &edge_of(Role::Read)).unwrap();
     let grant = *done.commits.last().unwrap();
@@ -556,7 +548,7 @@ fn dropped_pending_grant_drops_reading_secrets_spec_crypto_4() {
     let rest: Vec<CommitId> = lp.peers[0].engine.commit_ids().into_iter().filter(|c| *c != grant).collect();
     let mut dropped = false;
     for c in rest {
-        send(&mut lp, 0, 1, &[c]);
+        send_carried(&mut lp, 0, 1, &[c]);
         let lost = lp.peers[1].engine.role_duties().unwrap();
         dropped |= lost.contains(&g);
     }
@@ -670,7 +662,7 @@ fn remover_lists_chain_writes_spec_perm_5_1() {
     lp.peers[2].engine.grant(&t, &pb, &edge_of(Role::Admin)).unwrap();
     let to_b: Vec<CommitId> = lp.peers[2].engine.commit_ids().into_iter().filter(|c| !mid.contains(c)).collect();
     assert!(mid.len() > before.len() && !to_b.is_empty());
-    send(&mut lp, 2, 1, &to_b);
+    send_carried(&mut lp, 2, 1, &to_b);
     assert_eq!(lp.peers[1].engine.role_on(&t), Some(Role::Admin));
     assert!(!lp.peers[1].engine.roster(&t).contains_key(&pd), "Bob never got C's grant of D");
     lp.advance(1000);
@@ -749,13 +741,13 @@ fn future_stamped_setter_spec_perm_5_1() {
     let before = ids(&lp, 2);
     lp.peers[2].engine.grant(&t, &pb, &edge_of(Role::Admin)).unwrap();
     let g = new_ids(&lp, 2, &before);
-    send(&mut lp, 2, 1, &g);
+    send_carried(&mut lp, 2, 1, &g);
     // a rewrite of Bob's edge stamped half an hour ahead
     lp.peers[2].clock.advance(1_800_000);
     let before = ids(&lp, 2);
     lp.peers[2].engine.grant(&t, &pb, &ct::Edge { role: Role::Admin, until: None, invite: Some(Role::Read), retain: false, floor: None }).unwrap();
     let f = new_ids(&lp, 2, &before);
-    send(&mut lp, 2, 1, &f);
+    send_carried(&mut lp, 2, 1, &f);
     lp.peers[1].engine.demote(&t, &Demotion { holder: pc, new: None, retain: None }).unwrap();
     let r = lp.peers[1].engine.commit_ids().into_iter().find(|c| lp.peers[1].engine.header(c).unwrap().frontier.is_some()).unwrap();
     let listed = frontier_ids(&mut lp, 1, &r);
@@ -784,12 +776,12 @@ fn intermediate_grantor_covered_spec_perm_5_1() {
     let before = ids(&lp, 2);
     lp.peers[2].engine.grant(&t, &py, &edge_of(Role::Admin)).unwrap();
     let w1 = new_ids(&lp, 2, &before);
-    send(&mut lp, 2, 3, &w1);
+    send_carried(&mut lp, 2, 3, &w1);
     let before = ids(&lp, 3);
     lp.peers[3].engine.grant(&t, &pb, &edge_of(Role::Admin)).unwrap();
     let g = new_ids(&lp, 3, &before);
-    send(&mut lp, 2, 1, &w1);
-    send(&mut lp, 3, 1, &g);
+    send_carried(&mut lp, 2, 1, &w1);
+    send_carried(&mut lp, 3, 1, &g);
     assert_eq!(lp.peers[1].engine.role_on(&t), Some(Role::Admin));
     lp.advance(1000);
     lp.peers[1].engine.demote(&t, &Demotion { holder: pc, new: None, retain: None }).unwrap();
@@ -827,7 +819,7 @@ fn late_joiner_after_compaction_agrees_spec_crdt_8() {
     let done = lp.peers[2].engine.ensure_rotated(&t).unwrap().0;
     assert_eq!(done.commits.len(), 1, "the rotation");
     let xr = new_ids(&lp, 2, &before);
-    send(&mut lp, 2, 0, &xr);
+    send_carried(&mut lp, 2, 0, &xr);
     lp.advance(1000);
     let snap = lp.peers[0].engine.snapshot(&t, &ak("secrets.0")).unwrap().unwrap();
     assert_eq!(lp.peers[0].engine.header(&snap).unwrap().form, osis_commit::Form::Commit);
@@ -835,7 +827,7 @@ fn late_joiner_after_compaction_agrees_spec_crdt_8() {
     // Bob joins late: everything Alice holds but X's rotation itself
     lp.peers[0].engine.grant(&t, &pb, &edge_of(Role::Admin)).unwrap();
     let to_b: Vec<CommitId> = lp.peers[0].engine.commit_ids().into_iter().filter(|c| !xr.contains(c)).collect();
-    send(&mut lp, 0, 1, &to_b);
+    send_carried(&mut lp, 0, 1, &to_b);
     assert_eq!(lp.peers[1].engine.role_on(&t), Some(Role::Admin));
     assert!(xr.iter().all(|c| lp.peers[1].engine.header(c).is_none()), "Bob never got X's rotation");
     assert!(!lp.peers[1].engine.roster(&t).contains_key(&pm));
@@ -845,7 +837,7 @@ fn late_joiner_after_compaction_agrees_spec_crdt_8() {
     let br = new_ids(&lp, 1, &before);
     let r = br.iter().copied().find(|c| lp.peers[1].engine.header(c).unwrap().frontier.is_some()).unwrap();
     assert!(xr.iter().all(|c| !frontier_ids(&mut lp, 1, &r).contains(c)), "the unheld absorbed commit is not listed");
-    send(&mut lp, 1, 0, &br);
+    send_carried(&mut lp, 1, 0, &br);
     let aspects: BTreeSet<_> = xr.iter().flat_map(|c| lp.peers[0].engine.header(c).unwrap().aspects.iter().map(|a| (a.tid, a.ak.clone())).collect::<Vec<_>>()).collect();
     let all = lp.peers[0].engine.commit_ids();
     for reversed in [false, true] {
@@ -855,7 +847,7 @@ fn late_joiner_after_compaction_agrees_spec_crdt_8() {
         if reversed {
             v.reverse();
         }
-        send(&mut lp, 0, i, &v);
+        send_carried(&mut lp, 0, i, &v);
         lp.peers[i].reexamine().unwrap();
         for k in [0, 1, i] {
             for (x, a) in &aspects {
@@ -882,9 +874,9 @@ fn nodes_and_alice_built() -> (LocalPeer, Tid, Tid, SyncId) {
     let (p, _) = lp.peers[1].engine.create_account().unwrap();
     let d1 = lp.peers[0].engine.tid();
     let ids = lp.peers[0].engine.commit_ids();
-    send(&mut lp, 0, 1, &ids);
+    send_carried(&mut lp, 0, 1, &ids);
     let (_, send_) = lp.peers[1].engine.pair(&d1).unwrap();
-    send(&mut lp, 1, 0, &send_);
+    send_carried(&mut lp, 1, 0, &send_);
     lp.peers[0].engine.paired(&p.account).unwrap();
     let pa = lp.peers[2].engine.create_account().unwrap().0.account;
     // alice grants P's account root: she keeps it
@@ -1087,15 +1079,15 @@ fn single_use_loser_keeps_secrets_until_finalized_spec_perm_7() {
     let early = lp.peers[2].engine.redeem(&link, &ps2, true).unwrap().commits;
     lp.peers[1].clock.advance(1000);
     let late = lp.peers[1].engine.redeem(&link, &ps1, true).unwrap().commits;
-    send(&mut lp, 2, 1, &early);
+    send_carried(&mut lp, 2, 1, &early);
     assert!(!lp.peers[1].engine.roster(&link.k).contains_key(&ps1), "peer 1 lost by its view");
     lp.peers[1].engine.drop_lost_secrets().unwrap();
     assert!(lp.peers[1].engine.epochs(&link.k).is_some() && lp.peers[1].engine.epochs(&d).is_some(), "kept until finalized");
-    send(&mut lp, 1, 0, &late);
+    send_carried(&mut lp, 1, 0, &late);
     lp.peers[0].clock.advance(2000);
     let fin = lp.peers[0].engine.finalize_link(&link.k, &l).unwrap();
-    send(&mut lp, 0, 1, &fin.commits);
-    send(&mut lp, 2, 0, &early);
+    send_carried(&mut lp, 0, 1, &fin.commits);
+    send_carried(&mut lp, 2, 0, &early);
     for i in [0, 1] {
         let r = lp.peers[i].engine.roster(&link.k);
         assert!(r.contains_key(&ps1) && !r.contains_key(&ps2) && !r.contains_key(&l), "peer {i}: {r:?}");
@@ -1105,10 +1097,10 @@ fn single_use_loser_keeps_secrets_until_finalized_spec_perm_7() {
     // the loser holds its own redemption only until the finalization reaches it
     lp.peers[2].engine.drop_lost_secrets().unwrap();
     assert!(lp.peers[2].engine.epochs(&link.k).is_some(), "peer 2 won by its view");
-    send(&mut lp, 1, 2, &late);
+    send_carried(&mut lp, 1, 2, &late);
     lp.peers[2].engine.drop_lost_secrets().unwrap();
     assert!(lp.peers[2].engine.epochs(&link.k).is_some(), "lost by its view, not finalized");
-    send(&mut lp, 0, 2, &fin.commits);
+    send_carried(&mut lp, 0, 2, &fin.commits);
     assert!(!lp.peers[2].engine.roster(&link.k).contains_key(&ps2));
     let dropped = lp.peers[2].engine.drop_lost_secrets().unwrap();
     assert!(dropped.contains(&link.k), "{dropped:?}");
@@ -1195,13 +1187,13 @@ fn until_link_backdated_grant_void_spec_perm_7() {
     // (its clock catches up, else it parks the removals as from the future)
     lp.peers[3].clock.advance(2 * 3_600_000);
     // peer 4 gets the forged grant first, peer 2 the removals first
-    send(&mut lp, 3, 4, &forged);
+    send_carried(&mut lp, 3, 4, &forged);
     assert!(lp.peers[4].engine.roster(&link.k).contains_key(&forger), "stands until the removal arrives");
     for (i, c) in &removals {
-        send(&mut lp, *i, 4, c);
-        send(&mut lp, *i, 2, c);
+        send_carried(&mut lp, *i, 4, c);
+        send_carried(&mut lp, *i, 2, c);
     }
-    send(&mut lp, 3, 2, &forged);
+    send_carried(&mut lp, 3, 2, &forged);
     spread(&mut lp);
     for i in 0..5 {
         let r = lp.peers[i].engine.roster(&link.k);
@@ -1522,7 +1514,7 @@ fn removed_node_backdated_leave_dropped_spec_perm_5_1() {
         spread(&mut lp);
         let leave = lp.peers[0].engine.demote(&t, &Demotion { holder: p, new: None, retain: None }).unwrap();
         if seen {
-            send(&mut lp, 0, 1, &leave.commits);
+            send_carried(&mut lp, 0, 1, &leave.commits);
         }
         lp.advance(1000);
         lp.peers[1].engine.demote(&p, &Demotion { holder: d1, new: None, retain: None }).unwrap();
@@ -2397,15 +2389,15 @@ fn record_edge_removal_any_order_spec_perm_2() {
         lp.peers[0].engine.grant(&o, &ps[i], &edge_of(Role::Read)).unwrap();
     }
     let ids: Vec<CommitId> = lp.peers[0].engine.commit_ids().into_iter().collect();
-    send(&mut lp, 0, 1, &ids);
+    send_carried(&mut lp, 0, 1, &ids);
     let before = lp.peers[1].engine.commit_ids();
     lp.peers[1].engine.demote(&o, &remove(ps[0])).unwrap();
     let mut all: Vec<CommitId> = before.to_vec();
     all.extend(lp.peers[1].engine.commit_ids().into_iter().filter(|c| !before.contains(c)));
     let rev: Vec<CommitId> = all.iter().rev().copied().collect();
-    send(&mut lp, 1, 2, &all);
-    send(&mut lp, 1, 3, &rev);
-    send(&mut lp, 1, 3, &rev);
+    send_carried(&mut lp, 1, 2, &all);
+    send_carried(&mut lp, 1, 3, &rev);
+    send_carried(&mut lp, 1, 3, &rev);
     for i in 1..4 {
         let r = lp.peers[i].engine.roster(&o);
         assert!(!r.contains_key(&ps[0]), "peer {i}: the record edge is gone");
