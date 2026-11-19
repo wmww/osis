@@ -1015,10 +1015,13 @@ impl World {
                 None => break,
             }
         }
-        // a by-hand replay inspecting the world (notes/test-harnesses.md, Why kept and row dumps)
+        // a by-hand replay inspecting the world (notes/test-harnesses.md, Why kept and row dumps);
+        // the checks are the harness's: their reads are not the product's work
         if osis_base::testenv::end_checks() {
-            self.sources_are_members();
-            self.unlogged_must_holds();
+            osis_base::costs::paused(|| {
+                self.sources_are_members();
+                self.unlogged_must_holds();
+            });
         }
     }
 
