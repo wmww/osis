@@ -4,7 +4,7 @@
 
 use libfuzzer_sys::fuzz_target;
 use osis_base::{BlobId, Limits, Role, Tid, decode};
-use osis_crypto::{BoxForm, BoxSlot, Epoch, KeyActorKeys, Secret32, decrypt_blob, open_box, open_history, open_sealed, open_symmetric_box, sealed_from_value, unpad, unwrap};
+use osis_crypto::{BoxForm, BoxSlot, Epoch, KeyActorKeys, Secret32, decrypt_blob, open_box, open_history, open_sealed, open_symmetric_box, unpad, unwrap};
 use osis_schema::core_types as ct;
 use osis_schema::{RawKey, Codec};
 
@@ -23,7 +23,7 @@ fuzz_target!(|data: &[u8]| {
     let _ = decrypt_blob(data, prefix, &s);
     let _ = unpad(data);
     if let Ok(v) = decode(data, &Limits::DEFAULT) {
-        let _ = sealed_from_value(&v);
+        let _ = ct::Sealed::from_value(&v);
         let _ = ct::SECRETS.decode(&v);
         let _ = ct::KEYS.decode(&v);
     }

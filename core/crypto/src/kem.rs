@@ -259,11 +259,6 @@ fn combine(ss_x: &Secret32, ss_m: &Secret32, ct_x: &[u8; 32], ct_m: &[u8; MLKEM_
     Secret32::from_bytes(h.finalize().into())
 }
 
-/// The `sealed` agility value `1617([1, h'box'])` (spec/wire.md §3).
-pub fn sealed_to_value(sealed: &[u8]) -> Value {
-    agility_value(sealed)
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;

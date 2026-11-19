@@ -123,7 +123,8 @@ pub struct DeleteItem {
     pub sig: Signature,
 }
 
-/// Digest of a delete: BLAKE3 of canonical `[sync_id, blob_id, [level*]]`.
+/// Digest of a delete: BLAKE3 of canonical `[sync_id, blob_id, [level*]]` (spec/wire.md, Delete; the
+/// conformance vectors sign it with each delete key).
 pub fn delete_digest(sync_id: &SyncId, blob: &BlobId, levels: &[Level]) -> [u8; 32] {
     let v = Value::List(vec![Value::bytes(&sync_id.0), Value::bytes(&blob.0), Value::List(levels.iter().map(|l| Value::Int(i64::from(*l))).collect())]);
     osis_base::hash::hash(&encode(&v))

@@ -75,7 +75,7 @@ pub fn boxes() -> VecFile {
             .with("ad", hex(b"ad"))
             .with("payload", hex(b"payload"))
             .with("sealed", hex(&sealed))
-            .with("sealed-value", hex(&encode(&sealed_to_value(&sealed)))),
+            .with("sealed-value", hex(&encode(&osis_schema::Codec::to_value(&osis_schema::core_types::Sealed::X25519MlKem768(sealed.clone()))))),
     );
     let mut t = sealed.clone();
     *t.last_mut().unwrap() ^= 1;

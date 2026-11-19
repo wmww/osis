@@ -103,6 +103,8 @@ fn format_of(v: &Value) -> Result<(), Error> {
 }
 
 impl ShareLink {
+    /// The value the text form encodes (spec/wire.md §10); the conformance vectors and the link
+    /// fuzz target build and judge it directly.
     pub fn to_value(&self) -> Result<Value, Error> {
         if self.peers.len() > MAX_PEERS {
             return Err(Error::Malformed("more than 4 peers"));
@@ -159,12 +161,8 @@ impl ShareLink {
         })
     }
 
-    pub fn to_bytes(&self) -> Result<Vec<u8>, Error> {
-        Ok(encode(&self.to_value()?))
-    }
-
     pub fn to_text(&self) -> Result<String, Error> {
-        Ok(format!("{LINK_PREFIX}{}", base64url::encode(&self.to_bytes()?)))
+        Ok(format!("{LINK_PREFIX}{}", base64url::encode(&encode(&self.to_value()?))))
     }
 
     pub fn from_text(s: &str) -> Result<ShareLink, Error> {

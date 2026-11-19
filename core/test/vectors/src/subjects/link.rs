@@ -26,7 +26,7 @@ pub fn links() -> VecFile {
     for (name, l) in [("link with a peer", &link), ("link without peers", &bare), ("single-use link (flags 1)", &once)] {
         let t = l.to_text().unwrap();
         assert_eq!(&ShareLink::from_text(&t).unwrap(), l);
-        cases.push(case(name, SPEC).with("bytes", hex(&l.to_bytes().unwrap())).with("text", t));
+        cases.push(case(name, SPEC).with("bytes", hex(&encode(&l.to_value().unwrap()))).with("text", t));
     }
 
     let with = |i: usize, v: Value| {

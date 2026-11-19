@@ -22,7 +22,7 @@ pub const READ_CHUNK: usize = 64 * 1024;
 /// less (its bytes ride its registration's windows, `p2p::RELAY_STREAM_WINDOW` per stream); a
 /// unix one, the kernel's socket buffers.
 pub const CONN_MEMORY: usize = crate::quic::CONN_WINDOW as usize + crate::quic::MAX_STREAMS as usize * READ_CHUNK;
-/// Largest piece the writer pump hands the transport at once: the grain of `LinkTx::taken`
+/// Largest piece the writer pump hands the transport at once: the grain of a link's `Progress`
 /// (progress a slow link shows, spec/sync-streams.md §1). Minor: smaller costs more awaits, larger
 /// shows a link slower than a piece per stall timeout as stalled.
 const WRITE_CHUNK: usize = 16 * 1024;
@@ -63,11 +63,6 @@ impl LinkTx {
         }
         self.queued.fetch_add(n, Ordering::AcqRel);
         self.tx.send(bytes).is_ok()
-    }
-
-    /// Bytes the transport has taken so far (grows as the link moves our bytes).
-    pub fn taken(&self) -> u64 {
-        self.taken.load(Ordering::Acquire)
     }
 
     /// A handle that waits for `taken` to move.
@@ -263,14 +258,12 @@ mod tests {
         while got < n {
             got += b.rx.recv().await.unwrap().len();
         }
-        timeout(W, async {
-            while a.tx.taken() < n as u64 {
-                tokio::task::yield_now().await;
-            }
-        })
-        .await
-        .unwrap();
-        assert_eq!(a.tx.taken(), n as u64);
+        let p = a.tx.progress();
+        let mut taken = 0;
+        while taken < n as u64 {
+            taken = timeout(W, p.next()).await.unwrap();
+        }
+        assert_eq!(taken, n as u64);
     }
 
     // spec: none (driver policy): bytes the transport has not taken count against the cap; one run fits an empty queue
