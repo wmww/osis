@@ -31,7 +31,7 @@
 //! - **A removal judged in the world its list makes** (`Rules::void_unapplied`): nothing is
 //!   exempt from a lowering's drops, no entry of its list is read as absent, and a lowering that
 //!   made drops and that the settled walk does not apply is void: the walk is redone without it
-//!   and its drops, the earliest by key first (`walk`).
+//!   and its drops, the latest by key first (`walk`; the earliest first is finding 16).
 //! - **Last admin** (`Rules::last_admin`): an unmarked write taking a **standing** admin edge
 //!   (admin, no `until`) of T to anything else applies only where the remaining admin it relies
 //!   on is, as the walk stands, a standing admin edge of T other than the one it lowers: the
@@ -150,9 +150,10 @@ pub enum Regrant {
 /// Which unapplied lowerings that made drops a round of the walk voids.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub enum VoidOrder {
-    /// The earliest by key (notes/write-path-design.md §1).
+    /// Control (notes/write-path-design.md §1 as the study wrote it): the earliest by key. A
+    /// later write that does not apply then voids an earlier one through its drops (finding 16).
     Earliest,
-    /// The latest by key.
+    /// The latest by key: a write that does not apply cannot void an earlier one.
     Latest,
     /// Control: all of them.
     AllAtOnce,
@@ -210,6 +211,9 @@ pub struct Rules {
     /// they had received in the order received, leaving out a role write with which their own
     /// walk no longer applies the removal.
     pub stands: bool,
+    /// Control of `stands`: the writer keeps the role writes in key order, not in the order it
+    /// received them.
+    pub key_order: bool,
 }
 
 impl Rules {
@@ -229,6 +233,7 @@ impl Rules {
             void_order: VoidOrder::Earliest,
             audit_held: false,
             stands: false,
+            key_order: false,
         }
     }
     /// The design: every fix the notes state, a removal judged in the world its list makes
@@ -245,9 +250,10 @@ impl Rules {
             rewrite: true,
             leave_in_question: true,
             void_unapplied: true,
-            void_order: VoidOrder::Earliest,
+            void_order: VoidOrder::Latest,
             audit_held: false,
             stands: true,
+            key_order: false,
         }
     }
 }
@@ -392,9 +398,10 @@ impl World {
             _ => false,
         }
     }
-    /// The honest frontier of a lowering of `edge`: every commit through it that `received`.
+    /// The honest frontier of a lowering of `edge`: every commit resting on it (through it, or a
+    /// self-removal of it) that `received`.
     pub fn through(&self, edge: Edge, received: impl Fn(Id) -> bool) -> Vec<Id> {
-        (0..self.commits.len()).filter(|&i| received(i) && self.hops(i).contains(&edge)).collect()
+        (0..self.commits.len()).filter(|&i| received(i) && (self.hops(i).contains(&edge) || (self.leave(i) && self.sets(i) == Some(edge)))).collect()
     }
 }
 
@@ -571,8 +578,8 @@ fn refused(w: &World, rules: &Rules, p: &Pass, i: Id, e: Edge, new: Val) -> bool
 }
 
 /// The settled walk. With `void_unapplied`, a lowering whose audit dropped something and which
-/// the settled walk does not apply is void, the earliest by key first (`void_at_once`: all of
-/// them): the walk is redone from the seeds `d0` without it, until none is.
+/// the settled walk does not apply is void, one at a time by `Rules::void_order`: the walk is
+/// redone from the seeds `d0` without it, until none is.
 fn walk(w: &World, rules: &Rules, v: &View, d0: &Set, vouched: &Vouched) -> Walk {
     walk_from(w, rules, v, d0, vouched, Set::new())
 }
@@ -606,7 +613,7 @@ fn unapplied_droppers(wk: &Walk) -> Set {
 }
 
 /// Every order of voiding: the settled walks reached by voiding, at each round, any one of the
-/// unapplied droppers (`walk` takes the earliest by key). Exponential: for hand worlds and the
+/// unapplied droppers (`walk` takes the latest by key). Exponential: for hand worlds and the
 /// small void search only.
 pub fn void_orders(w: &World, rules: &Rules, v: &View) -> BTreeSet<(Set, Set)> {
     let none = Vouched::new();

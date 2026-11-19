@@ -1170,7 +1170,7 @@ fn random_worlds_hold_large() {
 }
 
 /// Every 53rd world of the small family (`-- 0 paths-exh` runs all of them by hand): a stride
-/// coprime with every dimension's size (2, 3, 4, 28), so no dimension is fixed or tied to
+/// coprime with every dimension's size (2, 4, 35), so no dimension is fixed or tied to
 /// another (an even stride keeps `h_t1` false in every world).
 #[test]
 #[ignore = "property"]
@@ -1261,9 +1261,10 @@ fn two_lowerings_unapplying_each_other_settle_on_the_earlier() {
 /// No consistent world: B and N5 paired by H; H removes N5 (D); B removes H listing its own and
 /// N5's grants, so it drops D; N5, an admin again, removes B, which drops B's removal. B's removal
 /// applied makes N5's apply, which drops it; not applied, it would apply. The walk voids B's
-/// removal (it made drops and does not apply), in any input order and by any order of voiding.
+/// removal (the one write that made drops and does not apply), in any input order and by any
+/// order of voiding.
 #[test]
-fn lowerings_with_no_consistent_world_void_the_earliest() {
+fn lowerings_with_no_consistent_world_void_the_one_unapplied() {
     let mut w = account();
     let gb = w.edge(H, 1, &[], A, B, Admin, &[]);
     let g5 = w.edge(H, 1, &[], A, N5, Admin, &[]);
@@ -1276,59 +1277,49 @@ fn lowerings_with_no_consistent_world_void_the_earliest() {
     assert_eq!((rd.role(H, A), rd.role(B, A), rd.role(N5, A)), (Admin, Admin, Gone));
 }
 
-/// Control: voiding every unapplied lowering that made drops at once, in place of the earliest.
-/// H pairs B and N6; N6 grants B admin and removes H listing that grant (so it drops H's grant of
-/// B); B removes N6, dropping both. Earliest first: N6's removal of H is void, B (by H's grant)
-/// still removes N6. All at once, B's removal is void too and N6 stays; voiding B's removal
-/// first reaches that reading too, so which unapplied lowering is voided first matters.
+/// A void write has no effect (notes/path-model-findings.md 16): the reading is the reading with
+/// it not held. H pairs B and N5; B pairs Z; Z removes H listing B's grant (so it drops H's
+/// pairing of N5), then removes B listing nothing, which drops B's pairing of Z, so neither of
+/// Z's removals applies. The latest first: Z's removal of B is void and its removal of H
+/// applies, as where the removal of B is not held. Control: the earliest first voids the removal
+/// of H before the removal of B that took its author's grant, so both are void and the void
+/// removal of B undid the removal of H.
 #[test]
-fn voiding_all_at_once_differs_from_the_earliest_first() {
+fn a_void_write_has_no_effect() {
+    let mut w = account();
+    let gb = w.edge(H, 1, &[], A, B, Admin, &[]);
+    w.edge(H, 1, &[], A, N5, Admin, &[]);
+    w.edge(B, 2, &[], A, Z, Admin, &[]);
+    let zh = w.edge(Z, 3, &[], A, H, Gone, &[gb]);
+    let zb = w.edge(Z, 4, &[], A, B, Gone, &[]);
+    let without = judge(&w, &Rules::fixed(), &View::all(&w).without(&[zb]));
+    let rd = fixed(&w, &[]);
+    assert!(rd.voided == Set::from([zb]) && rd.applied == without.applied && rd.role(H, A) == Gone && rd.role(N5, A) == Gone);
+    let earliest = fixed_but(&w, &[], |x| x.void_order = VoidOrder::Earliest);
+    assert!(earliest.voided == Set::from([zh, zb]) && earliest.applied != without.applied && earliest.role(H, A) == Admin);
+}
+
+/// Which unapplied lowering a round voids decides the reading: H pairs B and N6; N6 grants B admin
+/// and removes H listing that grant (so it drops H's grant of B); B removes N6 listing nothing,
+/// dropping N6's grant of B, its own standing once H's is gone. The latest first: B's removal is
+/// void and N6's removal of H applies (as where B's removal is not held). Controls: the earliest
+/// first voids N6's removal and B (by H's grant) removes N6; all at once, both are void.
+#[test]
+fn the_void_order_decides_the_reading() {
     let mut w = account();
     let gb = w.edge(H, 3, &[], A, B, Admin, &[]);
     let g6 = w.edge(H, 3, &[], A, N6, Admin, &[]);
     let again = w.edge(N6, 5, &[], A, B, Admin, &[g6]);
     let l6 = w.edge(N6, 5, &[], A, H, Gone, &[g6, again]);
     let lb = w.edge(B, 6, &[], A, N6, Gone, &[]);
-    let rd = fixed(&w, &[]);
     assert_eq!(void_orders(&w, &Rules::fixed(), &View::all(&w)).len(), 2);
-    assert!(rd.voided == Set::from([l6]) && rd.applied.is_superset(&Set::from([gb, g6, lb])) && rd.role(N6, A) == Gone);
-    let once = fixed_but(&w, &[], |x| x.void_order = VoidOrder::AllAtOnce);
-    assert!(once.voided == Set::from([l6, lb]) && once.role(N6, A) == Admin);
-}
-
-/// A void write has an effect (notes/path-model-findings.md, 16): H pairs B and N5; B pairs Z;
-/// Z removes H listing B's grant (so it drops H's pairing of N5), then removes B listing nothing,
-/// which drops B's pairing of Z, so neither of Z's removals applies. Earliest by key first, Z's
-/// removal of H is voided before the removal of B that took its author's grant: both are void.
-/// Without the removal of B held, the removal of H applies: the void write changed the reading.
-#[test]
-#[ignore = "notes/path-model-findings.md 16: voiding the earliest first lets a void write undo an earlier lowering"]
-fn repro_a_void_write_has_no_effect() {
-    let (w, s) = void_with_effect();
     let rd = fixed(&w, &[]);
-    assert!(rd.voided.contains(&s));
-    assert_eq!(rd.applied, judge(&w, &Rules::fixed(), &View::all(&w).without(&[s])).applied);
-}
-
-fn void_with_effect() -> (World, Id) {
-    let mut w = account();
-    let gb = w.edge(H, 1, &[], A, B, Admin, &[]);
-    w.edge(H, 1, &[], A, N5, Admin, &[]);
-    w.edge(B, 2, &[], A, Z, Admin, &[]);
-    w.edge(Z, 3, &[], A, H, Gone, &[gb]);
-    let s = w.edge(Z, 4, &[], A, B, Gone, &[]);
-    (w, s)
-}
-
-/// The latest by key first answers this world (Z's removal of B is void, its removal of H
-/// applies); it is no answer either: small worlds (`tiny`) where a void write still has an effect
-/// under it exist (notes/path-model-findings.md 16).
-#[test]
-fn voiding_the_latest_first_answers_the_void_with_effect() {
-    let (w, s) = void_with_effect();
-    let rd = fixed_but(&w, &[], |x| x.void_order = VoidOrder::Latest);
-    assert!(rd.voided == Set::from([s]) && rd.role(H, A) == Gone && rd.role(N5, A) == Gone);
-    assert_eq!(rd.applied, judge(&w, &Rules::fixed(), &View::all(&w).without(&[s])).applied);
+    assert!(rd.voided == Set::from([lb]) && rd.applied.contains(&l6) && rd.role(H, A) == Gone && rd.role(N6, A) == Admin && rd.role(B, A) == Admin);
+    assert_eq!(rd.applied, judge(&w, &Rules::fixed(), &View::all(&w).without(&[lb])).applied);
+    let earliest = fixed_but(&w, &[], |x| x.void_order = VoidOrder::Earliest);
+    assert!(earliest.voided == Set::from([l6]) && earliest.applied.is_superset(&Set::from([gb, g6, lb])) && earliest.role(N6, A) == Gone);
+    let once = fixed_but(&w, &[], |x| x.void_order = VoidOrder::AllAtOnce);
+    assert!(once.voided == Set::from([l6, lb]) && once.role(N6, A) == Admin && once.role(H, A) == Admin);
 }
 
 /// Small worlds of admins removing and granting each other (`tiny`) settle with no stray drop,
@@ -1421,4 +1412,55 @@ fn the_audit_over_the_held_writes_differs_only_where_nothing_is_trusted() {
     assert!(held.applied.contains(&r) && held.dropped.is_superset(&Set::from([leave, rx])));
     assert_eq!((applied.role(H, A), applied.role(X, A)), (held.role(H, A), held.role(X, A)));
     assert_eq!(fixed(&w, &[r]).applied, fixed_but(&w, &[r], |x| x.audit_held = true).applied);
+}
+
+/// Finding 16 against safety: X removed N5 before the theft (`out`, listing H's pairing of it).
+/// The thief, heard before H's removal, removes H listing nothing: that drops H's grant of X, so
+/// it is void, and H's walk applies the removal with it named (the writers' rule keeps it). Later
+/// it backdates, with N5's key, a grant of admin to H before `out`. `out` drops that grant; the
+/// removal of H drops X's grant, so `out` is unapplied: both are unapplied droppers.
+fn n5_back() -> (World, Id, Id) {
+    let (mut w, gx, _) = paired();
+    let g5 = w.edge(H, 1, &[], A, N5, Admin, &[]);
+    let out = w.edge(X, 3, &[], A, N5, Gone, &[g5]);
+    let x5 = w.edge(X, 5, &[], A, H, Gone, &[]);
+    let r = w.edge(H, 6, &[], A, X, Gone, &[out, x5]);
+    // H's list names both: its own walk applies the removal with them
+    assert!(fixed(&w, &[r]).applied.contains(&r) && fixed(&w, &[r]).role(N5, A) == Gone);
+    let _ = gx;
+    w.edge(N5, 2, &[], A, H, Admin, &[]);
+    (w, out, r)
+}
+
+/// The latest first, `out` applies and N5 stays removed. Control: the earliest first voids `out`
+/// and N5 is back wherever the removal is trusted.
+#[test]
+fn a_party_removed_before_the_theft_stays_removed() {
+    let (w, out, r) = n5_back();
+    let rd = fixed(&w, &[r]);
+    assert!(rd.applied.contains(&out) && rd.role(N5, A) == Gone && rd.void.is_empty());
+    let rd = fixed_but(&w, &[r], |x| x.void_order = VoidOrder::Earliest);
+    assert!(rd.voided.contains(&out) && rd.role(N5, A) == Admin);
+}
+
+
+/// The writers' leaving out in the story (notes/path-model-findings.md, To model next 5): N5,
+/// removed by X before the theft, its key the thief's; the thief, heard before the removal, grants
+/// H admin until just after it (X) and, as N5, admin before X's removal of N5. In the order
+/// received, H keeps X's removal of N5 and leaves the timed grant out: N5 stays removed. Control:
+/// in key order the timed grant comes first, N5's grant repairs it, X's removal of N5 is then the
+/// write H's removal does not apply with, and N5 is back.
+#[test]
+fn the_remover_keeps_what_it_received_first_in_the_story() {
+    let s = Setup { n5: 3, ..Setup::default() };
+    let moves = [Move { kind: 24, ts: 2, made: 5 }, Move { kind: 30, ts: 2, made: 5 }];
+    let n5 = |rules: Rules| {
+        let m = Sim::build(&s, &rules, &moves, &mut Rng(0));
+        let mut st = Stats::default();
+        check(&m, &rules, &mut st);
+        (judge(&m.w, &rules, &m.view(H, &rules)).role(N5, A), st.failures())
+    };
+    assert_eq!(n5(Rules::fixed()), (Gone, 0));
+    let (role, fails) = n5(Rules { key_order: true, ..Rules::fixed() });
+    assert!(role == Admin && fails > 0);
 }
