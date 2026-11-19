@@ -125,7 +125,7 @@ impl History {
         let mut order: Vec<(u8, Vec<u8>, u64, CommitId)> = headers
             .iter()
             .map(|(id, h)| match h.form {
-                Form::Session(nonce) => (0, [&h.author.as_bytes()[..], &nonce[..]].concat(), h.ts.to_u64(), *id),
+                Form::Session(nonce) => (0, [&h.signer.as_bytes()[..], &nonce[..]].concat(), h.ts.to_u64(), *id),
                 Form::Commit => (1, id.0.to_vec(), 0, *id),
             })
             .collect();
@@ -305,7 +305,7 @@ impl Conv<'_> {
     fn dots(&mut self) -> Vec<hm::DotRange> {
         let mut out = Vec::new();
         for (id, h) in &self.hist.headers {
-            let src = source(&h.form.own_source(h.author, *id));
+            let src = source(&h.form.own_source(h.signer, *id));
             let commit = self.commit(id);
             for a in &h.aspects {
                 let (thing, aspect) = (self.id(&a.tid), self.aspect(a.ak.as_str()));
@@ -426,7 +426,7 @@ fn scope(e: &mut Engine, hist: &History, held: &[(CommitId, Arc<Header>, bool)])
 
 fn convert(e: &mut Engine, hist: &History) -> Input {
     // authors take ids in tid order: keys `(ts, author, commit)` order alike (spec/permissions.md §5.1)
-    let authors: BTreeSet<Tid> = hist.headers.values().map(|h| h.author).chain([e.me()]).collect();
+    let authors: BTreeSet<Tid> = hist.headers.values().map(|h| h.signer).chain([e.me()]).collect();
     let ids = authors.into_iter().enumerate().map(|(i, t)| (t, i as u32)).collect();
     let mut cv = Conv { hist, ids, extra: BTreeMap::new(), aspects: BTreeMap::new() };
     let applied: Vec<CommitId> = e.commit_ids();
@@ -556,7 +556,7 @@ fn convert(e: &mut Engine, hist: &History) -> Input {
                 match p {
                     osis_commit::PurgeItem::Commit { ts, src, .. } => {
                         // the commit of that stamp in the history (one per stamp and source)
-                        let named = cv.hist.headers.iter().find(|(c, h)| h.ts == *ts && h.form.own_source(h.author, **c) == *src).map(|x| *x.0);
+                        let named = cv.hist.headers.iter().find(|(c, h)| h.ts == *ts && h.form.own_source(h.signer, **c) == *src).map(|x| *x.0);
                         let commit = match named {
                             Some(c) => cv.commit(&c),
                             None => cv.extra(Err(format!("{ts:?} {src:?}"))),
@@ -564,13 +564,14 @@ fn convert(e: &mut Engine, hist: &History) -> Input {
                         hm::PurgeItem::Commit { commit, thing, aspect }
                     }
                     osis_commit::PurgeItem::Aspect { .. } => hm::PurgeItem::Aspect { thing, aspect },
-                    osis_commit::PurgeItem::Author { actor, .. } => hm::PurgeItem::Author { thing, aspect, author: cv.id(actor) },
+                    osis_commit::PurgeItem::Author { author, .. } => hm::PurgeItem::Author { thing, aspect, author: cv.id(author) },
                 }
             })
             .collect();
-        let (author, actor) = (cv.id(&h.author), cv.id(&h.actor));
+        // a commit none of whose sections opened here holds no part the acting thing judges
+        let (signer, acting) = (cv.id(&h.signer), cv.id(&e.commit_acting(id).unwrap_or(h.signer)));
         let undoes = h.undoes.as_ref().map(|c| cv.commit(c));
-        commits.push(hm::Commit { id: sync_id, author, actor, ts: h.ts.to_u64(), expires: h.expires, kind, parts, purge, frontier, undoes, boxes: vec![] });
+        commits.push(hm::Commit { id: sync_id, signer, acting, ts: h.ts.to_u64(), expires: h.expires, kind, parts, purge, frontier, undoes, boxes: vec![] });
     }
     let me = cv.id(&e.me());
     // every record the node holds of an id named, mint admins naming more
@@ -774,7 +775,7 @@ pub(crate) fn compare(e: &mut Engine, hist: &History, cov: &mut Coverage, drops:
             _ => None,
         });
         reach("undo commits", cs.iter().filter(|c| c.undoes.is_some()).count());
-        reach("acting commits", cs.iter().filter(|c| c.actor != c.author).count());
+        reach("acting commits", cs.iter().filter(|c| c.acting != c.signer).count());
         let addenda = cs.iter().flat_map(|c| c.parts.iter()).filter(|p| matches!(&p.body, hm::Body::Held(hm::Delta::Addenda(es)) if !es.is_empty())).count();
         reach("addenda", addenda);
         if addenda > 0 {
@@ -782,7 +783,7 @@ pub(crate) fn compare(e: &mut Engine, hist: &History, cov: &mut Coverage, drops:
         }
         reach("invites", edges().filter(|(_, e)| e.invite.is_some()).count());
         reach("untils", edges().filter(|(_, e)| e.until.is_some()).count());
-        reach("own edge writes", edges().filter(|(c, e)| e.holder == c.author).count());
+        reach("own edge writes", edges().filter(|(c, e)| e.holder == c.signer).count());
         reach("removals with no frontier", edges().filter(|(c, e)| e.role.is_none() && e.holder != NOBODY && c.frontier.is_none()).count());
     }
     // the model's input on the things `what` is about: now, things, their commits
@@ -1013,7 +1014,7 @@ fn role_commits(e: &mut Engine, t: &Tid) -> Vec<String> {
             continue;
         }
         let parts: Vec<String> = h.aspects.iter().filter(|a| a.tid == *t).map(|a| format!("{} {:?}", a.ak.as_str(), e.body_fragment(&id, &a.tid, &a.ak).ok().flatten())).collect();
-        out.push(format!("{id:?} {:?} by {:?} ts {:?} frontier {:?} {parts:?}", h.kind, h.author, h.ts, h.frontier));
+        out.push(format!("{id:?} {:?} by {:?} ts {:?} frontier {:?} {parts:?}", h.kind, h.signer, h.ts, h.frontier));
     }
     out
 }

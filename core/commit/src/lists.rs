@@ -98,10 +98,10 @@ pub fn read_list(root: &Link, dedup: &Secret32, src: &mut dyn BlobSource, max: u
 
 impl Header {
     /// Fetches and fills every linked list, keyed by `list_secret` of the dedup secret of the
-    /// header's `actor`. A linked list at or below `CHUNK_THRESHOLD` or above `MAX_LIST_BYTES` is
+    /// header's `signer`. A linked list at or below `CHUNK_THRESHOLD` or above `MAX_LIST_BYTES` is
     /// bad input.
-    pub fn resolve(&mut self, src: &mut dyn BlobSource, actor_dedup: &Secret32) -> Result<(), Error> {
-        let key = self.list_secret(actor_dedup);
+    pub fn resolve(&mut self, src: &mut dyn BlobSource, signer_dedup: &Secret32) -> Result<(), Error> {
+        let key = self.list_secret(signer_dedup);
         for f in ListField::ALL {
             let Some(link) = self.links.get(f).copied() else { continue };
             if !self.list_is_empty(f) {

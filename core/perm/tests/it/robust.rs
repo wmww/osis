@@ -53,7 +53,7 @@ fn junk(rng: &mut Rng) -> (MemoryHeldSet, Vec<Tid>) {
             ops.push(EdgeOp { target: pick(rng, &tids), holder: pick(rng, &tids), edge: any_edge(rng) });
         }
         let author = pick(rng, &tids);
-        h.add_commit(RoleCommit { id: cid(i as u32), ts: ts(rng.below(12) as u64), author, actor: author, frontier: frontier(rng), ops });
+        h.add_commit(RoleCommit { id: cid(i as u32), ts: ts(rng.below(12) as u64), signer: author, frontier: frontier(rng), ops });
     }
     (h, tids)
 }

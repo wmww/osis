@@ -103,7 +103,7 @@ fn one_more_write_walks_flat() {
         let (each, ()) = walked(|| {
             for i in 0..20u8 {
                 let op = EdgeOp { target: doc, holder: nodes[210 + usize::from(i % 20)], edge: edge(if i % 2 == 0 { Read } else { Write }) };
-                held.add_commit(RoleCommit { id: CommitId([i; 32]), ts: ts(n as u64 + 100 + u64::from(i)), author: nodes[1], actor: nodes[1], frontier: None, ops: vec![op] });
+                held.add_commit(RoleCommit { id: CommitId([i; 32]), ts: ts(n as u64 + 100 + u64::from(i)), signer: nodes[1], frontier: None, ops: vec![op] });
                 inc.update_touched(&held, &touched);
                 appended += inc.appended();
                 placed += inc.placed();
@@ -308,7 +308,7 @@ fn demotion_scope_walks_at_most_the_history() {
         let mut scope = Vec::new();
         for (target, holder) in [(doc, holder), (root, nodes[1])] {
             for f in [Frontier::default(), tl.all_held()] {
-                let r = RoleCommit { id: CommitId([0xee; 32]), ts: ts(end), author: nodes[0], actor: nodes[0], frontier: Some(std::sync::Arc::new(f)), ops: vec![EdgeOp { target, holder, edge: None }] };
+                let r = RoleCommit { id: CommitId([0xee; 32]), ts: ts(end), signer: nodes[0], frontier: Some(std::sync::Arc::new(f)), ops: vec![EdgeOp { target, holder, edge: None }] };
                 scope.push(walked(|| tl.demotion_scope(r)).0);
             }
         }

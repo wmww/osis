@@ -15,6 +15,7 @@
 
 use crate::cbor::{item, strictly_ascending};
 use crate::header::{Header, LIMITS};
+use crate::path::{Path, Paths, Salted};
 use crate::Error;
 use osis_base::cbor::{Item, MAJOR_ARRAY, MAJOR_UINT, encode_into, head, put_array, put_bytes, put_uint};
 use osis_base::{CommitId, Tid, Value};
@@ -29,18 +30,24 @@ pub struct Part {
     pub delta: Vec<u8>,
 }
 
-/// A commit as a node holds it: the header, its signatures and the parts it opened (its stored
-/// form, `[Header, signature, Opt(inner), [signature*], [Part*]]`; a sealed fire's payload too,
-/// spec/wire.md §9).
+/// A commit as a node holds it: the header, its signatures, the parts it opened and, where it
+/// writes several things, the path of each thing whose section it opened (its stored form,
+/// `[Header, signature, Opt(inner), [signature*], [Part*]]`, then `[[index, Salted]+]` where it
+/// holds one; a sealed fire's payload too, spec/wire.md §9, and a header-only copy is the
+/// commit blob plaintext without sections).
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct CommitBlob {
     pub header: Header,
     pub sigs: Sigs,
     /// Sorted by `ai`, distinct.
     pub parts: Vec<Part>,
+    /// Where the header's paths are hashed: each opened thing's `Salted` by the index of the hash
+    /// it matches (the thing's place among those written, `Header::things`); empty where the path
+    /// is in the clear.
+    pub salted: BTreeMap<usize, Salted>,
 }
 
-/// A commit's signatures (spec/wire.md §4): the author's; an account's commit's sealed inner
+/// A commit's signatures (spec/wire.md §4): the signer's; an account's commit's sealed inner
 /// signature, and a rotation's sealed again under each other epoch it opens with (`more`); a
 /// merge's signatures at the forks its rotation names, in that order.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -63,7 +70,7 @@ impl Sigs {
         sigs
     }
 
-    /// What the author's signature signs (spec/crypto.md §2): the commit ID, and for an account's
+    /// What the signer's signature signs (spec/crypto.md §2): the commit ID, and for an account's
     /// commit also the inner (each seal) and merge signatures, which the commit ID cannot cover
     /// (each signs that ID), so a relay swaps none.
     pub fn digest(&self, id: &CommitId) -> [u8; 32] {
@@ -131,27 +138,89 @@ impl CommitBlob {
         self.parts.binary_search_by_key(&ai, |p| p.ai).ok().and_then(|i| self.parts.get(i))
     }
 
+    /// The path it states for thing `t`, where known here: the header's in the clear, else the
+    /// opened section's.
+    pub fn path(&self, t: &Tid) -> Option<&Path> {
+        match &self.header.path {
+            Paths::One(p) => self.header.aspects.first().is_some_and(|a| a.tid == *t).then_some(p),
+            Paths::Hashed(_) => self.salted_of(t).map(|s| &s.path),
+        }
+    }
+
+    /// Thing `t`'s `Salted`, where its paths are hashed and a section of `t` opened here.
+    pub fn salted_of(&self, t: &Tid) -> Option<&Salted> {
+        self.salted.get(&self.header.things().iter().position(|x| x == t)?)
+    }
+
+    // Interim (notes/a1-spec/README.md step 3): the walk judges each thing along its own path.
+    /// The thing the walk reads it as acting on: its paths' last listed thing (the signer for the
+    /// empty path), alike on every thing it writes; `None` where its paths are hashed and no
+    /// section of it is opened here.
+    pub fn acting(&self) -> Option<Tid> {
+        match &self.header.path {
+            Paths::One(p) => Some(p.acting(self.header.signer)),
+            Paths::Hashed(_) => self.salted.values().next().map(|s| s.path.acting(self.header.signer)),
+        }
+    }
+
+    /// Checks `salted` against the header: each entry hashing to the hash at its index and a
+    /// path it may state (spec/wire.md §4), and (Interim, notes/a1-spec/README.md step 3) one
+    /// acting thing for all; once the aspect list is resolved, every held part's thing among them.
+    pub fn check_paths(&self) -> Result<(), Error> {
+        let h = &self.header;
+        let hashes = match &h.path {
+            Paths::One(_) => return if self.salted.is_empty() { Ok(()) } else { Err(Error::Malformed("salted path beside a path in the clear")) },
+            Paths::Hashed(hs) => hs,
+        };
+        for (i, s) in &self.salted {
+            if hashes.get(*i) != Some(&s.hash()) || !h.path_allowed(&s.path) {
+                return Err(Error::Malformed("salted path not matching its thing's hash"));
+            }
+        }
+        if h.is_resolved() {
+            let things = h.things();
+            if self.parts.iter().any(|p| h.aspects.get(p.ai).and_then(|a| things.iter().position(|t| *t == a.tid)).is_none_or(|i| !self.salted.contains_key(&i))) {
+                return Err(Error::Malformed("a part without its thing's path"));
+            }
+        }
+        let mut acting = self.salted.values().map(|s| s.path.acting(h.signer));
+        let first = acting.next();
+        if acting.any(|a| Some(a) != first) {
+            return Err(Error::Malformed("paths acting for different things"));
+        }
+        Ok(())
+    }
+
     /// Canonical bytes of the opened form (unpadded).
     pub fn encode(&self) -> Vec<u8> {
         let mut out = Vec::new();
-        head(&mut out, MAJOR_ARRAY, 5);
+        head(&mut out, MAJOR_ARRAY, if self.salted.is_empty() { 5 } else { 6 });
         self.header.encode_into(&mut out);
         self.sigs.encode_into(&mut out);
         encode_parts(&self.parts, &mut out);
+        if !self.salted.is_empty() {
+            encode_salted(&self.salted, &mut out);
+        }
         out
     }
 
     /// Decodes the opened form. Linked header lists stay unresolved; part indices are checked
-    /// against the header by [`crate::verify_part`].
+    /// against the header by [`crate::verify_part`], paths by `check_paths` once resolved.
     pub fn decode(b: &[u8]) -> Result<CommitBlob, Error> {
-        let Some([hv, sv, iv, mv, pv]) = item::list(Item::parse(b, &LIMITS)?)?.tuple() else { return Err(Error::Malformed("commit blob arity")) };
+        let items: Vec<Item> = item::list(Item::parse(b, &LIMITS)?)?.iter().collect();
+        let (Some([hv, sv, iv, mv, pv]), tv) = (items.get(..5).and_then(|x| <[Item; 5]>::try_from(x).ok()), items.get(5)) else { return Err(Error::Malformed("commit blob arity")) };
+        if items.len() > 6 {
+            return Err(Error::Malformed("commit blob arity"));
+        }
         let header = Header::read(hv, false)?;
         let sigs = Sigs::read(sv, iv, mv)?;
         let parts = decode_parts(pv)?;
-        let blob = CommitBlob { header, sigs, parts };
+        let salted = tv.map(|t| decode_salted(*t, &header.signer)).transpose()?.unwrap_or_default();
+        let blob = CommitBlob { header, sigs, parts, salted };
         if blob.encode() != b {
             return Err(Error::Malformed("commit blob not canonical"));
         }
+        blob.check_paths()?;
         Ok(blob)
     }
 
@@ -163,7 +232,8 @@ impl CommitBlob {
     /// applies it decodes it with `decode`); never for bytes from a peer.
     pub fn decode_stored(b: &[u8]) -> Result<CommitBlob, Error> {
         let mut r = osis_base::cbor::Reader::new(b);
-        if r.array()? != 5 {
+        let n = r.array()?;
+        if !(5..=6).contains(&n) {
             return Err(Error::Malformed("commit blob arity"));
         }
         let mut next = || -> Result<Item, Error> { Ok(Item::parse(r.item()?, &LIMITS)?) };
@@ -180,11 +250,12 @@ impl CommitBlob {
             }
             parts.push(Part { ai, delta: r.item()?.to_vec() });
         }
+        let salted = if n == 6 { decode_salted(Item::parse(r.item()?, &LIMITS)?, &header.signer)? } else { BTreeMap::new() };
         r.end()?;
         if !strictly_ascending(&parts, |p| p.ai) {
             return Err(Error::Malformed("parts not sorted and distinct"));
         }
-        Ok(CommitBlob { header, sigs, parts })
+        Ok(CommitBlob { header, sigs, parts, salted })
     }
 
     /// Aspects whose delta this blob does not hold (purged, or in a section not opened).
@@ -202,6 +273,41 @@ fn encode_parts(parts: &[impl Borrow<Part>], out: &mut Vec<u8>) {
         head(out, MAJOR_UINT, p.ai as u64);
         out.extend_from_slice(&p.delta);
     }
+}
+
+/// A section's plaintext `Contents := [Opt(Salted), [Part*]]` (spec/wire.md §4).
+fn encode_contents(salted: Option<&Salted>, parts: &[impl Borrow<Part>], out: &mut Vec<u8>) {
+    put_array(out, 2);
+    put_array(out, usize::from(salted.is_some()));
+    if let Some(s) = salted {
+        s.put(out);
+    }
+    encode_parts(parts, out);
+}
+
+/// `[[index, Salted]*]`, ascending by index.
+fn encode_salted(salted: &BTreeMap<usize, Salted>, out: &mut Vec<u8>) {
+    put_array(out, salted.len());
+    for (i, s) in salted {
+        put_array(out, 2);
+        put_uint(out, *i as u64);
+        s.put(out);
+    }
+}
+
+fn decode_salted(v: Item, signer: &Tid) -> Result<BTreeMap<usize, Salted>, Error> {
+    let mut out = BTreeMap::new();
+    let mut last = None;
+    for x in item::list(v)? {
+        let Some([i, s]) = item::list(x)?.tuple() else { return Err(Error::Malformed("salted path entry arity")) };
+        let i = item::idx(i)?;
+        if last.is_some_and(|l| l >= i) {
+            return Err(Error::Malformed("salted paths not ascending by index"));
+        }
+        last = Some(i);
+        out.insert(i, Salted::read(s, signer)?);
+    }
+    Ok(out)
 }
 
 /// Encoded length of one part.
@@ -289,40 +395,42 @@ impl Section {
     }
 
     /// Whether the key of keystream `zero` (under nonce zero) may be this section's key, judged
-    /// by its first plaintext bytes alone (an array of parts, each a 2-array; `encode_parts`),
-    /// NOT authenticated: forensic tests only, to rule a candidate out before `open_section`'s
-    /// pass over the whole ciphertext. Never false for the section's own key.
+    /// by its first plaintext bytes alone (`Contents`, a 2-array whose first item is an option;
+    /// `encode_contents`), NOT authenticated: forensic tests only, to rule a candidate out before
+    /// `open_section`'s pass over the whole ciphertext. Never false for the section's own key.
     #[doc(hidden)]
     pub fn may_open_with(&self, zero: &osis_crypto::aead::Keystream) -> bool {
         let at = |i| zero.plain_byte(&self.ciphertext, i);
-        let Some(b0) = at(0) else { return false };
-        // an empty array, or a count past one byte's head, leaves byte 1 unknown
-        b0 >> 5 == MAJOR_ARRAY && (b0 == MAJOR_ARRAY << 5 || b0 & 0x1f >= 24 || at(1) == Some(MAJOR_ARRAY << 5 | 2))
+        at(0) == Some(MAJOR_ARRAY << 5 | 2) && matches!(at(1), Some(b) if b == MAJOR_ARRAY << 5 || b == MAJOR_ARRAY << 5 | 1)
     }
 
-    /// Opens this section with one of `secrets` (newest first): the parts inside, which must
-    /// be exactly on the aspects listed. `None`: no secret opens the wrap. A section that opens
-    /// to parts disagreeing with its list is bad input.
-    pub fn open(&self, commit: &CommitId, secrets: &[Secret32]) -> Result<Option<Vec<Part>>, Error> {
+    /// Opens this section with one of `secrets` (newest first): its `Contents`, the thing's
+    /// `Salted` where present and the parts, which must be exactly on the aspects listed. `None`:
+    /// no secret opens the wrap. A section that opens to parts disagreeing with its list is bad
+    /// input.
+    pub fn open(&self, commit: &CommitId, signer: &Tid, secrets: &[Secret32]) -> Result<Option<(Option<Salted>, Vec<Part>)>, Error> {
         let Some(key) = secrets.iter().find_map(|s| osis_crypto::unwrap_section(s, commit, &self.wrap).ok()) else { return Ok(None) };
         let pt = osis_crypto::open_section(commit, &key, &self.ciphertext)?;
-        let parts = decode_parts(Item::parse(&pt, &LIMITS)?)?;
+        let Some([sv, pv]) = item::list(Item::parse(&pt, &LIMITS)?)?.tuple() else { return Err(Error::Malformed("section contents arity")) };
+        let salted = item::opt(sv)?.map(|v| Salted::read(v, signer)).transpose()?;
+        let parts = decode_parts(pv)?;
         if !parts.iter().map(|p| p.ai).eq(self.ais.iter().copied()) {
             return Err(Error::Malformed("section parts disagree with its aspect list"));
         }
         let mut canon = Vec::new();
-        encode_parts(&parts, &mut canon);
+        encode_contents(salted.as_ref(), &parts, &mut canon);
         if canon != pt {
             return Err(Error::Malformed("section not canonical"));
         }
-        Ok(Some(parts))
+        Ok(Some((salted, parts)))
     }
 
-    /// Seals `parts` (sorted) under the read secret `secret` of their thing, listing its derivation
-    /// chain `chain`.
-    pub fn seal(commit: &CommitId, parts: &[impl Borrow<Part>], chain: Vec<Tid>, secret: &Secret32, rng: &mut dyn CryptoRngCore) -> Result<Section, Error> {
+    /// Seals `parts` (sorted) of one thing, with its `salted` path where its commit writes
+    /// several things, under the thing's read secret `secret`, listing its derivation chain
+    /// `chain`.
+    pub fn seal(commit: &CommitId, salted: Option<&Salted>, parts: &[impl Borrow<Part>], chain: Vec<Tid>, secret: &Secret32, rng: &mut dyn CryptoRngCore) -> Result<Section, Error> {
         let mut pt = Vec::new();
-        encode_parts(parts, &mut pt);
+        encode_contents(salted, parts, &mut pt);
         let (key, ciphertext) = osis_crypto::seal_section(commit, &pt, rng)?;
         let wrap = osis_crypto::wrap_section(secret, commit, &key, rng)?.to_vec();
         let ais: Vec<usize> = parts.iter().map(|p| p.borrow().ai).collect();
@@ -382,19 +490,49 @@ impl Envelope {
     }
 
     /// Opens every section `secrets` has a read secret for (asked per section): the commit with
-    /// the parts opened, and the sections left sealed.
+    /// the parts opened, and the sections left sealed. A section whose `Salted` is absent where
+    /// the commit writes several things, present where it writes one, or not hashing to its
+    /// thing's entry holds no part of the commit (spec/wire.md §4): its parts are dropped, as
+    /// bytes not matching their delta hash. Where the aspect list is not resolved, a `Salted`
+    /// matching any entry stands, its thing checked once it resolves (`CommitBlob::check_paths`).
     pub fn open(&self, mut secrets: impl FnMut(&Section) -> Vec<Secret32>) -> Result<Opened, Error> {
         let id = self.id();
+        let h = &self.header;
+        let things = h.things();
         let mut parts = Vec::new();
+        let mut salted = BTreeMap::new();
         let mut sealed = Vec::new();
         for s in &self.sections {
-            match s.open(&id, &secrets(s))? {
-                Some(ps) => parts.extend(ps),
-                None => sealed.push(s.clone()),
+            let Some((path, ps)) = s.open(&id, &h.signer, &secrets(s))? else {
+                sealed.push(s.clone());
+                continue;
+            };
+            // the section's thing's place among those written, where the aspects say it
+            let mut at = s.ais.iter().map(|ai| h.aspects.get(*ai).and_then(|a| things.iter().position(|t| *t == a.tid)));
+            let first = at.next().flatten();
+            if h.is_resolved() && (first.is_none() || at.any(|i| i != first)) {
+                continue;
+            }
+            let fits = match (&h.path, path) {
+                (Paths::One(_), None) => true,
+                (Paths::Hashed(hs), Some(p)) => {
+                    let i = hs.iter().position(|x| *x == p.hash()).filter(|i| first.is_none_or(|f| f == *i));
+                    let ok = i.is_some() && h.path_allowed(&p.path);
+                    if ok && let Some(i) = i {
+                        salted.insert(i, p);
+                    }
+                    ok
+                }
+                _ => false,
+            };
+            if fits {
+                parts.extend(ps);
             }
         }
         parts.sort_by_key(|p| p.ai);
-        Ok(Opened { commit: CommitBlob { header: self.header.clone(), sigs: self.sigs.clone(), parts }, sealed })
+        let commit = CommitBlob { header: h.clone(), sigs: self.sigs.clone(), parts, salted };
+        commit.check_paths()?;
+        Ok(Opened { commit, sealed })
     }
 }
 
@@ -406,12 +544,14 @@ pub struct Opened {
     pub sealed: Vec<Section>,
 }
 
-/// Seals a commit's parts into sections, one per value of `section_of(ai)` (the aspect's
-/// thing), each wrapped under the read secret `secret_of(key, parts)` gives with the thing's
-/// derivation chain (that secret at the epoch the writer uses, spec/crypto.md §5); a section whose
-/// secret is not held (`None`) is left out, its parts travelling in other copies; `extra`
-/// sections are copied verbatim, except one listing an aspect a sealed part is on.
-pub fn seal_commit<K: Ord + Clone>(c: &CommitBlob, section_of: impl Fn(usize) -> K, mut secret_of: impl FnMut(&K, &[usize]) -> Option<(Secret32, Vec<Tid>)>, extra: &[Section], rng: &mut dyn CryptoRngCore) -> Result<Envelope, Error> {
+/// Seals a commit's parts into sections, one per value of `section_of(ai)` (each of one thing,
+/// carrying its `Salted` where the commit writes several: `resolved`, `c`'s header with its lists
+/// resolved, says the thing of each part), each wrapped under the read secret
+/// `secret_of(key, parts)` gives with the thing's derivation chain (that secret at the epoch the
+/// writer uses, spec/crypto.md §5); a section whose secret is not held (`None`) is left out, its
+/// parts travelling in other copies; `extra` sections are copied verbatim, except one listing an
+/// aspect a sealed part is on.
+pub fn seal_commit<K: Ord + Clone>(c: &CommitBlob, resolved: &Header, section_of: impl Fn(usize) -> K, mut secret_of: impl FnMut(&K, &[usize]) -> Option<(Secret32, Vec<Tid>)>, extra: &[Section], rng: &mut dyn CryptoRngCore) -> Result<Envelope, Error> {
     let id = c.id();
     let mut by: BTreeMap<K, Vec<&Part>> = BTreeMap::new();
     for p in &c.parts {
@@ -421,9 +561,21 @@ pub fn seal_commit<K: Ord + Clone>(c: &CommitBlob, section_of: impl Fn(usize) ->
     let mut own: std::collections::BTreeSet<usize> = std::collections::BTreeSet::new();
     for (k, ps) in by {
         let ais: Vec<usize> = ps.iter().map(|p| p.ai).collect();
+        let salted = match &c.header.path {
+            Paths::One(_) => None,
+            Paths::Hashed(_) => {
+                let things = resolved.things();
+                let at = |ai: &usize| resolved.aspects.get(*ai).and_then(|a| things.iter().position(|t| *t == a.tid));
+                let i = ais.first().and_then(at).ok_or(Error::Malformed("part aspect index out of range"))?;
+                if ais.iter().any(|ai| at(ai) != Some(i)) {
+                    return Err(Error::Malformed("a section of parts of several things"));
+                }
+                Some(c.salted.get(&i).ok_or(Error::Malformed("a part without its thing's path"))?)
+            }
+        };
         let Some((secret, chain)) = secret_of(&k, &ais) else { continue };
         own.extend(ais.iter().copied());
-        sections.push(Section::seal(&id, &ps, chain, &secret, rng)?);
+        sections.push(Section::seal(&id, salted, &ps, chain, &secret, rng)?);
     }
     let mut seen = own.clone();
     for s in extra {

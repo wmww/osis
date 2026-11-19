@@ -92,7 +92,7 @@ fn lay(played: &Played, second: bool) -> Laid {
             }
         }
         if !cb.parts.is_empty() {
-            let env = osis_commit::seal_commit(&cb, under, |r, _| Some((read_of(*r).clone(), vec![])), &[], &mut rng).unwrap();
+            let env = osis_commit::seal_commit(&cb, &cb.header, |ai| (cb.header.aspects[ai].tid, under(ai)), |r, _| Some((read_of(r.1).clone(), vec![])), &[], &mut rng).unwrap();
             let sealed = osis_engine::sync_ids::frame_envelope(&env, &cb.header, osis_blob::Class::Durable, &mut rng, &cb).unwrap();
             for r in readers {
                 ents.push((osis_crypto::wrap(read_of(r), &sealed.id, &sealed.key, 1).unwrap(), sealed.blob.clone()));

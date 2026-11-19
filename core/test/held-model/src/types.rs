@@ -290,10 +290,11 @@ pub enum PurgeItem {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Commit {
     pub id: CommitId,
-    /// Author node (the signer).
-    pub author: NodeId,
-    /// The header's actor (spec/permissions.md §5.2 Acting); the author when it acts for itself.
-    pub actor: NodeId,
+    /// The signing node (spec/wire.md §4 field 1).
+    pub signer: NodeId,
+    /// The thing its path reads as acting on (spec/permissions.md §5.2 Interim, Acting): the
+    /// signer for the empty path.
+    pub acting: NodeId,
     pub ts: u64,
     /// `expires: T`, wall ms.
     pub expires: Option<u64>,
@@ -326,7 +327,7 @@ pub type Key = (u64, NodeId, CommitId);
 
 impl Commit {
     pub fn key(&self) -> Key {
-        (self.ts, self.author, self.id)
+        (self.ts, self.signer, self.id)
     }
     pub fn lists(&self, c: CommitId) -> bool {
         self.frontier.as_ref().is_some_and(|f| f.contains(&c))

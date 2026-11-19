@@ -37,7 +37,7 @@ pub(crate) fn covered(tx: &mut Tx<'_>, s: &CommitId, c: &CommitId, tid: &Tid, ak
             return Ok(Some(false));
         }
         let untraced = match (h.form.counted() && h.kind.has_own_writes(), super::snapshot::by_id(h.kind, h.form)) {
-            (true, _) => !sn.frontiers.lists(&h.form.own_source(h.author, *c)),
+            (true, _) => !sn.frontiers.lists(&h.form.own_source(h.signer, *c)),
             (_, true) => !sn.absorbed.contains_key(c),
             _ => false,
         };

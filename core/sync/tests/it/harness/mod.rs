@@ -1141,7 +1141,7 @@ impl World {
         let mut out = String::new();
         if let Some(h) = self.engine(i).header(c) {
             let parts: Vec<String> = h.aspects.iter().enumerate().map(|(ai, a)| format!("{ai} {:?} {}", a.tid, a.ak.as_str())).collect();
-            out += &format!("\n  {:?} by {:?}: {}; S's things at the reader {:?}", h.kind, h.author, parts.join(", "), self.store(j).syncs().into_iter().find(|(x, _)| x == s).map(|(_, (t, _))| t));
+            out += &format!("\n  {:?} by {:?}: {}; S's things at the reader {:?}", h.kind, h.signer, parts.join(", "), self.store(j).syncs().into_iter().find(|(x, _)| x == s).map(|(_, (t, _))| t));
         }
         for (who, n) in [("holder", i), ("reader", j)] {
             let held = self.engine(n).holds_commit(c);

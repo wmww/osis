@@ -96,12 +96,12 @@ impl OpenedBlob {
     }
 }
 
-/// Frames the opened form of a commit as a copy: every part in one section under the blob key
+/// Frames the opened form of a commit as a copy: a section per thing of its parts under the blob key
 /// (tests and tools: a node seals with `Engine::seal`, per independent, or `Engine::seal_to`).
 pub fn seal_plain(plaintext: &[u8], class: osis_blob::Class, rng: &mut dyn CryptoRngCore) -> Result<Sealed> {
     let c = CommitBlob::decode(plaintext)?;
     let key = osis_crypto::BlobKey::fresh(rng);
-    let env = osis_commit::seal_commit(&c, |_| (), |_, _| Some((key.secret().clone(), Vec::new())), &[], rng)?;
+    let env = osis_commit::seal_commit(&c, &c.header, |ai| c.header.aspects.get(ai).map(|a| a.tid), |_, _| Some((key.secret().clone(), Vec::new())), &[], rng)?;
     framed(key, &env, &c.header, class, rng, &c)
 }
 
@@ -223,8 +223,8 @@ impl Engine {
         }
     }
 
-    /// Seals a body's parts (`b.parts` alone) as a copy (spec/sync-judgement.md §1): a fresh blob of one
-    /// section under its own blob key (spec/wire.md §4), so whoever opens a wrap of it reads it: a
+    /// Seals a body's parts (`b.parts` alone) as a copy (spec/sync-judgement.md §1): a fresh blob of a
+    /// section per thing under its own blob key (spec/wire.md §4), so whoever opens a wrap of it reads it: a
     /// certificate copy, wrapped under every sync ID needing exactly those parts, or a per-sync-ID
     /// copy (`Body::to_sync_id`).
     pub fn seal_to(&mut self, b: &Body, class: osis_blob::Class, rng: &mut dyn CryptoRngCore) -> Result<Option<Sealed>> {
@@ -236,7 +236,7 @@ impl Engine {
         let c = osis_commit::rewrite(&CommitBlob::decode_stored(&pt)?, |ai| !b.parts.contains(&ai));
         let resolved = self.resolved_header(&c);
         let key = osis_crypto::BlobKey::fresh(rng);
-        let env = osis_commit::seal_commit(&c, |_| (), |_, _| Some((key.secret().clone(), Vec::new())), &[], rng)?;
+        let env = osis_commit::seal_commit(&c, &resolved, |ai| resolved.aspects.get(ai).map(|a| a.tid), |_, _| Some((key.secret().clone(), Vec::new())), &[], rng)?;
         framed(key, &env, &resolved, class, rng, &c).map(Some)
     }
 
@@ -341,6 +341,7 @@ impl Engine {
         let mut under = Vec::new();
         let env = osis_commit::seal_commit(
             &c,
+            &resolved,
             |ai| (things.get(ai).copied(), roles.get(ai).copied().unwrap_or(false)),
             |(t, is_roles), parts| {
                 let t = (*t)?;
@@ -397,7 +398,7 @@ impl Engine {
                 let mut h = env.header.clone();
                 let ok = self
                     .run(|tx| {
-                        let Some(dedup) = tx.core.dedup(&h.actor) else { return Err(Error::Misuse("not resolved")) };
+                        let Some(dedup) = tx.core.dedup(&h.signer) else { return Err(Error::Misuse("not resolved")) };
                         Ok(h.resolve(&mut crate::engine::blobs::TxBlobs::new(&mut tx.blobs, tx.txn.is_memory()), &dedup)?)
                     })
                     .is_ok();
@@ -439,10 +440,11 @@ impl Engine {
                 SectionOpens::Whole => own(sec),
                 SectionOpens::Record => {
                     if let Some(h) = &header
-                        && let Ok(Some(parts)) = sec.open(&id, &own(sec))
+                        && let Ok(Some((_, parts))) = sec.open(&id, &h.signer, &own(sec))
                     {
+                        // a record proves itself by its tid: its section's path is not read
                         let parts = parts.into_iter().filter(|p| h.aspects.get(p.ai).is_some_and(|a| a.ak.as_str() == osis_commit::retention::CREATED)).collect();
-                        let c = CommitBlob { header: (**h).clone(), sigs: env.sigs.clone(), parts };
+                        let c = CommitBlob { header: (**h).clone(), sigs: env.sigs.clone(), parts, salted: Default::default() };
                         records.extend(crate::apply::carried_records(h, &c, &id).into_values());
                     }
                     Vec::new()
@@ -838,10 +840,10 @@ impl Engine {
     pub(crate) fn list_wrap_secret(&mut self, g: &Tid, r: &CommitId) -> Option<Secret32> {
         let a = self.core.secret_actor(g)?;
         let h = self.header(r)?;
-        let at = (h.ts, h.author, *r);
+        let at = (h.ts, h.signer, *r);
         let e = self.epochs(&a)?;
         let (intro, commits) = (&self.core.ix.epoch_intro, &self.core.ix.commits);
-        let before = |(ts, c): &(osis_base::Ts, CommitId)| commits.get(c).map_or(*ts < at.0, |m| (*ts, m.view.author, *c) < at);
+        let before = |(ts, c): &(osis_base::Ts, CommitId)| commits.get(c).map_or(*ts < at.0, |m| (*ts, m.view.signer, *c) < at);
         // role-class metadata: under that epoch's roles secret, which a history-less holder gets
         // of every earlier epoch (spec/crypto.md §4 Roles secrets)
         e.read.newest_held_where(|x| intro.get(&(a, Role::Read, *x)).is_none_or(before)).map(|(_, s)| osis_crypto::roles_secret(s))

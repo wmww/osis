@@ -118,7 +118,9 @@ pub(crate) fn set_pending(core: &mut Core, id: &CommitId, r: Option<(Reason, Opt
     };
     let needs: Vec<Tid> = match &r {
         Some((_, Some(h))) => {
-            let mut v = vec![h.author, h.actor];
+            // Interim (notes/a1-spec/README.md step 3): every thing a held part's path lists
+            let mut v = vec![h.signer];
+            v.extend(h.acting());
             v.extend(awaits);
             v.sort();
             v.dedup();

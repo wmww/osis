@@ -188,7 +188,7 @@ pub(crate) fn boxes_kept(core: &Core, blob: &osis_commit::CommitBlob, id: &osis_
         return BTreeSet::new();
     }
     let newer = |x: &Tid, k: &BoxKey| ours(core, &k.holder.0) && k.role == Role::Read && held.get(x).is_none_or(|n| k.epoch.n > *n);
-    crate::apply::keys::pending_secrets_writes(blob, id).into_iter().filter(|(x, w)| w.boxes.keys().any(|k| newer(x, k)) && may_grant(core, &blob.header.author, x) && authentic(core, blob, id, x, known)).map(|(x, _)| x).collect()
+    crate::apply::keys::pending_secrets_writes(blob, id).into_iter().filter(|(x, w)| w.boxes.keys().any(|k| newer(x, k)) && may_grant(core, &blob.header.signer, x) && authentic(core, blob, id, x, known)).map(|(x, _)| x).collect()
 }
 
 impl Engine {
@@ -223,7 +223,7 @@ pub(crate) fn keys_write_unapplied(tx: &mut crate::engine::Tx<'_>, g: &Tid) -> R
         let Some(p) = tx.txn.get_pending(&id)? else { continue };
         let Ok(blob) = osis_commit::CommitBlob::decode_stored(&p.bytes) else { continue };
         let h = &blob.header;
-        if h.aspect_index(&a, "keys.0").is_some() && tx.core.role_now(&h.author, &a) == Some(Role::Admin) && authentic(tx.core, &blob, &id, &a, crate::apply::kept_verdict(&p)) {
+        if h.aspect_index(&a, "keys.0").is_some() && tx.core.role_now(&h.signer, &a) == Some(Role::Admin) && authentic(tx.core, &blob, &id, &a, crate::apply::kept_verdict(&p)) {
             return Ok(true);
         }
     }
@@ -236,7 +236,7 @@ pub(crate) fn keys_write_unapplied(tx: &mut crate::engine::Tx<'_>, g: &Tid) -> R
 pub(crate) fn authentic(core: &Core, blob: &osis_commit::CommitBlob, id: &osis_base::CommitId, x: &Tid, known: Option<osis_commit::Signed>) -> bool {
     let h = &blob.header;
     let mut interner = osis_crdt::Interner::new();
-    crate::apply::signed_by_author(core, blob, id, core.created(&h.author), known) == Some(true)
+    crate::apply::signed_by_author(core, blob, id, core.created(&h.signer), known) == Some(true)
         && blob.parts.iter().all(|p| match h.aspects.get(p.ai) {
             Some(a) if a.tid == *x && a.ak.as_str() == "secrets.0" => core.dedup(x).is_some_and(|d| osis_commit::verify_part(h, id, p, &d, &mut interner, None).is_ok()),
             _ => true,
@@ -300,14 +300,14 @@ fn contested(core: &Core, k: &Tid) -> bool {
     let op = |mc: &osis_perm::RoleCommit, i: usize| osis_perm::WriteId(mc.id, i as u32);
     // the index of the redemption's self-removal
     let leave = |mc: &osis_perm::RoleCommit| {
-        let j = mc.ops.iter().position(|o| o.target == *k && o.holder == mc.author && o.edge.is_none())?;
-        mc.ops.iter().any(|o| o.target == *k && o.holder != mc.author && o.edge.is_some()).then_some(j)
+        let j = mc.ops.iter().position(|o| o.target == *k && o.holder == mc.signer && o.edge.is_none())?;
+        mc.ops.iter().any(|o| o.target == *k && o.holder != mc.signer && o.edge.is_some()).then_some(j)
     };
     let reds: Vec<_> = core.on_thing(k).filter_map(|c| tl.role_commit(&c)).filter_map(|mc| Some((mc, leave(mc)?))).collect();
     reds.iter().any(|(mc, j)| {
-        tl.lowered_unaudited(&mc.author, k)
+        tl.lowered_unaudited(&mc.signer, k)
             && mc.ops.iter().enumerate().any(|(i, o)| i != *j && o.target == *k && o.edge.is_some() && ours(core, &o.holder) && !tl.is_applied(&op(mc, i)))
-            && reds.iter().any(|(w, jw)| w.author == mc.author && w.id != mc.id && tl.is_applied(&op(w, *jw)))
+            && reds.iter().any(|(w, jw)| w.signer == mc.signer && w.id != mc.id && tl.is_applied(&op(w, *jw)))
     })
 }
 

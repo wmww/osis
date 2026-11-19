@@ -68,12 +68,12 @@ pub(crate) fn note_due(core: &mut Core, r: &CommitId) {
 pub(crate) fn note_changed(core: &mut Core, commits: &BTreeSet<CommitId>) {
     for r in commits {
         let Some(m) = core.ix.commits.get(r) else { continue };
-        let (removal, author, ts) = (m.view.kind.is_role() && m.view.frontier.is_some(), m.view.author, m.view.ts);
+        let (removal, signer, ts) = (m.view.kind.is_role() && m.view.frontier.is_some(), m.view.signer, m.view.ts);
         if removal {
             note_due(core, r);
         }
         // and a commit ordered before a removal whose standing changed may change what it reads
-        wake(core, r, author, ts);
+        wake(core, r, signer, ts);
     }
 }
 
@@ -111,17 +111,17 @@ pub(crate) fn note_roles_moved(core: &mut Core, moved: &BTreeSet<Tid>, under: &B
 /// removal received in time that applied only now (pending meanwhile), or a grant bringing a
 /// party into question at one (`wake`).
 pub(crate) fn note_applied(core: &mut Core, id: &CommitId, h: &osis_commit::Header) {
-    wake(core, id, h.author, h.ts);
+    wake(core, id, h.signer, h.ts);
 }
 
-/// Commit `id` by `author` stamped `ts` applied or changed its standing in the walk: the
+/// Commit `id` by `signer` stamped `ts` applied or changed its standing in the walk: the
 /// removals stamped no earlier, filed under a party it reaches (`Indexes::vouch_wake`), are due
 /// again, gathered anew. A party comes into question at R, falls at it or not, or a commit of
 /// one becomes a candidate, only by a commit ordered no later than R moving a path of a party
 /// that reaches a holder R names or R's author (`Held::reach` climbs to what a party holds): a
 /// commit of its own, or an edge write whose holder it is or stands behind (`Held::upstream`):
 /// a member joining a team R names, a named holder's or a member's other path to what R lowers
-/// taken away, the remover's authority lowered. So the climb is from the author, the edge writes'
+/// taken away, the remover's authority lowered. So the climb is from the signer, the edge writes'
 /// targets and everything upstream of their holders. Live traffic (stamped after every filed
 /// removal) costs a comparison, and a backdated or late commit that climb; one with no edge
 /// write wakes only the removals it arrived before (`window`), so a removed party's backdated
@@ -131,13 +131,13 @@ pub(crate) fn note_applied(core: &mut Core, id: &CommitId, h: &osis_commit::Head
 /// (`note_changed`) and a re-walk of its component (`note_evaluated`) moves only by such a
 /// commit: who is in question or demoted at R and whether R applies are read from the walk
 /// before R; the candidates are commits held before R's arrival.
-fn wake(core: &mut Core, id: &CommitId, author: Tid, ts: Ts) {
+fn wake(core: &mut Core, id: &CommitId, signer: Tid, ts: Ts) {
     let Some(&(newest, _)) = core.ix.vouch_wake_ts.last() else { return };
     if ts > newest {
         return;
     }
     osis_base::costs::count("vouches: wake climbs", 1);
-    let mut from: BTreeSet<Tid> = BTreeSet::from([author]);
+    let mut from: BTreeSet<Tid> = BTreeSet::from([signer]);
     let edges = core.ix.held.edge_commit(id);
     if let Some(rc) = edges {
         let holders: BTreeSet<Tid> = rc.ops.iter().map(|o| o.holder).collect();
@@ -166,7 +166,7 @@ fn wake(core: &mut Core, id: &CommitId, author: Tid, ts: Ts) {
 fn file_wake(core: &mut Core, r: &CommitId) {
     let Some(rc) = core.ix.held.edge_commit(r) else { return };
     let ts = rc.ts;
-    let parties: BTreeSet<Tid> = rc.ops.iter().map(|o| o.holder).chain(std::iter::once(rc.author)).collect();
+    let parties: BTreeSet<Tid> = rc.ops.iter().map(|o| o.holder).chain(std::iter::once(rc.signer)).collect();
     for t in parties {
         if core.ix.vouch_wake.insert((t, ts, *r)) {
             osis_base::costs::count("vouches: wake entries", 1);
@@ -254,9 +254,9 @@ pub struct LeftOut {
 /// superset of the walk's), stamped no later than `r`, received in its window (`window`) and
 /// not listed by its frontier. O(those authors' role commits before `r`).
 fn may_owe(core: &Core, r: &CommitId, rc: &osis_perm::RoleCommit, frontier: &osis_perm::Frontier, me: Tid, r_got: osis_base::WallMs) -> bool {
-    let named: BTreeSet<Tid> = rc.ops.iter().map(|o| o.holder).filter(|h| *h != rc.author).collect();
+    let named: BTreeSet<Tid> = rc.ops.iter().map(|o| o.holder).filter(|h| *h != rc.signer).collect();
     let authors = core.ix.held.upstream(&named);
-    authors.iter().filter(|a| **a != rc.author && **a != me).any(|a| core.ix.held.authored_by(a, rc.ts).any(|c| c != *r && !frontier.covers(&c) && core.ix.commits.get(&c).is_some_and(|cm| window(cm.received, rc.ts, r_got))))
+    authors.iter().filter(|a| **a != rc.signer && **a != me).any(|a| core.ix.held.authored_by(a, rc.ts).any(|c| c != *r && !frontier.covers(&c) && core.ix.commits.get(&c).is_some_and(|cm| window(cm.received, rc.ts, r_got))))
 }
 
 /// Writes every vouch owed for the due removals (`Indexes::vouches_due`), each removal once per
@@ -545,7 +545,7 @@ fn addenda_candidates(core: &Core, tl: &osis_perm::Timeline, r: &CommitId, m: &c
             }
             let listed = match below {
                 // a plain part on N, or the Acting check for N
-                Role::Write => v.aspects.iter().any(|a| plain_ak(&a.ak) && (a.tid == n || v.actor == n)),
+                Role::Write => v.aspects.iter().any(|a| plain_ak(&a.ak) && (a.tid == n || v.acting == Some(n))),
                 Role::Admin => v.aspects.iter().any(|a| a.tid == n && admin_listable_ak(&a.ak)),
                 _ => false,
             };
@@ -577,7 +577,7 @@ fn addenda_owed(core: &Core, cands: &BTreeMap<Tid, BTreeMap<CommitId, BTreeSet<R
         let own = crate::apply::validity::vouching_on(core, n);
         let vouched = |c: &CommitId, q: Role| {
             let Some(cm) = core.ix.commits.get(c) else { return false };
-            let at = Point { ts: cm.view.ts, node: cm.view.author, commit: *c };
+            let at = Point { ts: cm.view.ts, node: cm.view.signer, commit: *c };
             own.as_ref().is_some_and(|v| v.witnesses(tn, at, q).any(|(w, _)| w == me))
         };
         if held.iter().any(|(c, qs)| qs.iter().any(|q| mine >= Some(*q) && !vouched(c, *q))) {

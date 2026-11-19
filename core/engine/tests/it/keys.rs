@@ -71,7 +71,7 @@ fn rotation_out_of_order_spec_crypto_4() {
     let v0 = lp.peers[0].engine.epochs(&a).unwrap();
     assert!(v0.read.is_established(&e1), "{:?}", v0.read);
     let h1 = lp.peers[0].engine.header(&c1).unwrap();
-    let key = osis_keys::Key { ts: h1.ts.to_u64(), node: h1.author, commit: c1 };
+    let key = osis_keys::Key { ts: h1.ts.to_u64(), node: h1.signer, commit: c1 };
     // a void name: met once its commit is applied (it writes no edge, so nothing applies)
     let names = Names { list: [osis_keys::Name::void(key, a)].into(), ..Names::default() };
     let (c2, r2) = rotation_commit(&mut lp, a, 2, BTreeSet::from([Role::Read]), &names);

@@ -101,7 +101,7 @@ fn delete_levels_strict() {
     m.keys.clear();
     m.aspects[0].keys.clear();
     assert!(m.validate().unwrap_err().to_string().contains("delete levels"), "role commit: level 1");
-    let mut b = CommitBuilder::new(Kind::Role, ts(1_000_000), t(1), t(1), Form::Commit);
+    let mut b = CommitBuilder::new(Kind::Role, ts(1_000_000), t(1), crate::Path::default(), Form::Commit);
     let mut a = AspectWrite::new(t(3), Ak::new("roles.0").unwrap(), 1, 2, register_delta(t(1), ts(1_000_000), 1, "a"));
     a.retention = retention::ROLE_RETENTION;
     b.aspects.push(a);
@@ -121,7 +121,8 @@ fn expiry_range() {
     assert!(h.validate().is_err());
 }
 
-// spec/wire.md §4: one author chain: a header listing two level-2 delete keys is bad input.
+// spec/wire.md §4 field 11 (Interim, notes/a1-spec/README.md step 4: one purge author per commit):
+// a header listing two level-2 delete keys is bad input.
 #[test]
 fn one_level_2_key() {
     let mut h = sample_header();

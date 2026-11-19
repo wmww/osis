@@ -25,7 +25,7 @@ fn frontiers_of(e: &Engine, snap: &CommitId, t: &Tid, a: &Ak) -> osis_crdt::Fron
 /// The own source of held commit `c` at peer `i`.
 fn source_of(lp: &LocalPeer, i: usize, c: &CommitId) -> osis_crdt::Source {
     let h = lp.peers[i].engine.header(c).unwrap();
-    h.form.own_source(h.author, *c)
+    h.form.own_source(h.signer, *c)
 }
 
 /// `bytes` of a commit with only its parts on `ak`.

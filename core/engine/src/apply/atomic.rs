@@ -79,37 +79,42 @@ pub(crate) fn note_role_sigs(core: &mut Core, kind: osis_commit::Kind, at_epoch:
     }
 }
 
+/// Adds a commit acting on a thing other than its signer to the indexes of acting
+/// (`Indexes::acting_on`, `chains_on`, `by_actor`).
+fn index_acting(core: &mut Core, id: &CommitId, h: &crate::engine::View) {
+    let Some(x) = h.acts_for() else { return };
+    for a in &h.aspects {
+        core.ix.acting_on.insert((a.tid, h.signer, x), *id);
+        core.ix.chains_on.insert(a.tid, (h.signer, x));
+    }
+    core.ix.by_actor.insert((x, h.signer), *id);
+}
+
 /// Adds a commit to the per-aspect and session range indexes.
 pub(crate) fn index_commit(core: &mut Core, id: &CommitId, h: &crate::engine::View) {
     crate::retention::names::held_again(core, id, &h.aspects);
     for a in &h.aspects {
         core.ix.by_aspect.insert((a.tid, a.ak.clone()), (h.ts, *id));
         core.ix.aspect_things.insert(a.ak.clone(), a.tid);
-        core.ix.by_thing.insert((a.tid, h.author), *id);
+        core.ix.by_thing.insert((a.tid, h.signer), *id);
         if h.kind.is_role() {
-            core.ix.role_on.insert((a.tid, h.author), *id);
+            core.ix.role_on.insert((a.tid, h.signer), *id);
         }
         if h.purges {
             core.ix.purges_on.insert(a.tid, *id);
         }
-        core.ix.chains_on.insert(a.tid, (h.author, a.tid));
-        if h.actor != h.author {
-            core.ix.acting_on.insert((a.tid, h.author, h.actor), *id);
-            core.ix.chains_on.insert(a.tid, (h.author, h.actor));
-        }
+        core.ix.chains_on.insert(a.tid, (h.signer, a.tid));
         if h.form.counted() && h.kind.has_own_writes() && a.lo < a.hi {
-            core.ix.ranges.insert((a.tid, a.ak.clone(), h.form.own_source(h.author, *id)), (a.lo, *id), a.hi);
+            core.ix.ranges.insert((a.tid, a.ak.clone(), h.form.own_source(h.signer, *id)), (a.lo, *id), a.hi);
         }
     }
-    if h.actor != h.author {
-        core.ix.by_actor.insert((h.actor, h.author), *id);
-    }
+    index_acting(core, id, h);
     if let Some(e) = h.epoch {
-        core.ix.by_epoch.insert((h.author, e), *id);
+        core.ix.by_epoch.insert((h.signer, e), *id);
         // at an epoch not open, a held word may name it (`refresh_epochs`)
-        if core.ix.epochs.get(&h.author).is_some_and(|j| j.unnamed_at(&e) != osis_perm::EpochStanding::Counts) {
+        if core.ix.epochs.get(&h.signer).is_some_and(|j| j.unnamed_at(&e) != osis_perm::EpochStanding::Counts) {
             core.ix.names_due.insert(*id);
-            core.ix.epochs_due.insert(h.author);
+            core.ix.epochs_due.insert(h.signer);
         }
     }
     crate::engine::edits::index_commit(core, id, h);
@@ -122,7 +127,7 @@ fn overlaps(core: &Core, id: &CommitId, h: &Header) -> BTreeSet<CommitId> {
     if !h.form.counted() || !h.kind.has_own_writes() {
         return out;
     }
-    let src = h.form.own_source(h.author, *id);
+    let src = h.form.own_source(h.signer, *id);
     for a in &h.aspects {
         if let Some(m) = core.ix.ranges.get(&(a.tid, a.ak.clone(), src.clone())) {
             for ((lo, c), hi) in m.range(..(a.hi, CommitId([0; 32]))) {
@@ -546,7 +551,7 @@ pub(crate) fn learn_record(tx: &mut Tx<'_>, rec: CreationRecord) -> Result<bool>
 /// §5.1 Received, §5.5 Listings).
 pub(crate) fn applied_late(tx: &mut Tx<'_>, h: &osis_commit::Header) -> Result<()> {
     if let Some(e) = h.epoch
-        && let Some(v) = tx.core.account_view(&h.author)
+        && let Some(v) = tx.core.account_view(&h.signer)
     {
         for r in v.closers(&e) {
             crate::flows::signing::note_rotation_due(tx, &r)?;
@@ -570,7 +575,7 @@ pub(crate) fn apply_verified(tx: &mut Tx<'_>, blob: &CommitBlob, parts: Parts, o
 
     // creation records first: perm and dedup secrets need them
     let mut held_changed = note_created(tx, &h, &parts.whole)?;
-    let view = Arc::new(crate::engine::View::of(&h));
+    let view = Arc::new(crate::engine::View::of(&h, blob.acting()));
     let read = super::PartsRead::of(&h, &parts.whole);
     if h.kind.is_role() {
         validity::note_required(tx.core, &h, &id, &read);
@@ -592,14 +597,14 @@ pub(crate) fn apply_verified(tx: &mut Tx<'_>, blob: &CommitBlob, parts: Parts, o
             tx.txn.put_local(&[records::VOID, &c.0[..]].concat(), &[], Shred::No)?;
         }
         tx.core.events.diagnostic(
-            crate::events::Diagnostic { kind: crate::events::DiagnosticKind::OverlappingCounters, tids: vec![h.author], commit: Some(id), peer: Some(h.author), detail: String::new() },
+            crate::events::Diagnostic { kind: crate::events::DiagnosticKind::OverlappingCounters, tids: vec![h.signer], commit: Some(id), peer: Some(h.signer), detail: String::new() },
             tx.core.hlc.mono(),
         );
     }
     index_commit(tx.core, &id, &view);
     note_role_sigs(tx.core, blob.header.kind, blob.header.epoch.is_some(), &id, &blob.sigs);
-    validity::note_addenda(tx.core, &h, &id, &parts.whole);
-    if tx.core.accounts.contains_key(&h.author) && origin == Origin::Remote {
+    validity::note_addenda(tx.core, &h, view.acting, &id, &parts.whole);
+    if tx.core.accounts.contains_key(&h.signer) && origin == Origin::Remote {
         tx.core.signing_due = true;
     }
     // an account's rotation: this node answers it with its listing or addenda
@@ -612,10 +617,10 @@ pub(crate) fn apply_verified(tx: &mut Tx<'_>, blob: &CommitBlob, parts: Parts, o
     if h.kind.is_role() && view.frontier.is_some() {
         crate::flows::vouches::note_due(tx.core, &id);
     }
-    let valid: Vec<bool> = (0..h.aspects.len()).map(|ai| validity::part_valid(tx.core, &h, &id, ai)).collect();
+    let valid: Vec<bool> = (0..h.aspects.len()).map(|ai| validity::part_valid(tx.core, &h, view.acting, &id, ai)).collect();
     let missing: BTreeSet<usize> = (0..h.aspects.len()).filter(|ai| !parts.has(*ai)).collect();
     let hold = (0..h.aspects.len()).map(|ai| if missing.contains(&ai) { Hold::Missing(Missing::Plain) } else { Hold::Body { whole: false } }).collect();
-    let meta = Meta { view, header: crate::engine::LazyHeader::ready(h.clone()), received, origin, repair: None, signed: parts.signed, valid: valid.clone(), hold };
+    let meta = Meta { view: view.clone(), header: crate::engine::LazyHeader::ready(h.clone()), received, origin, repair: None, signed: parts.signed, valid: valid.clone(), hold };
     tx.core.put_meta(id, meta.clone());
     tx.core.index_validity(&id);
     // a commit applying late (its receipt known) may be a removal's candidate, or bring one into question
@@ -657,9 +662,9 @@ pub(crate) fn apply_verified(tx: &mut Tx<'_>, blob: &CommitBlob, parts: Parts, o
     // commit's
     crate::retention::compact::Trigger::applied(tx, &id, &h, blob)?;
     if h.ephemeral.is_some() {
-        tx.core.events.queue(Event::Ephemeral { id, origin, author: h.author, actor: h.actor, ts: h.ts, received, changed: changed.into_iter().collect() });
+        tx.core.events.queue(Event::Ephemeral { id, origin, signer: h.signer, acting: view.acting, ts: h.ts, received, changed: changed.into_iter().collect() });
     } else {
-        tx.core.events.queue(Event::Applied { id, origin, author: h.author, actor: h.actor, ts: h.ts, received, changed: changed.into_iter().collect() });
+        tx.core.events.queue(Event::Applied { id, origin, signer: h.signer, acting: view.acting, ts: h.ts, received, changed: changed.into_iter().collect() });
     }
     if !flipped.is_empty() {
         tx.core.events.queue(Event::Changed { cause: Cause::Validity, changed: flipped });
@@ -748,6 +753,16 @@ pub(crate) fn join_late(tx: &mut Tx<'_>, id: &CommitId, merged: &CommitBlob, par
     tx.core.touch();
     let mut meta = tx.core.ix.commits.get(id).cloned().ok_or(Error::Corrupt("commit index"))?;
     let h = meta.header.clone();
+    // Interim (notes/a1-spec/README.md step 3): the first section opened here tells the thing
+    // a commit writing several things acts on
+    if meta.view.acting.is_none() && merged.acting().is_some() {
+        meta.view = Arc::new(crate::engine::View { acting: merged.acting(), ..(*meta.view).clone() });
+        index_acting(tx.core, id, &meta.view);
+        crate::engine::edits::index_commit(tx.core, id, &meta.view);
+        // its parts were judged with no acting thing (none valid but `created.0`): judged again
+        meta.valid = (0..meta.valid.len()).map(|ai| validity::part_valid(tx.core, &h, meta.view.acting, id, ai)).collect();
+        tx.core.stale_commits.insert(*id);
+    }
     for ai in parts.ais() {
         if meta.missing(ai) {
             meta.set_hold(ai, Hold::Body { whole: false });
@@ -760,7 +775,7 @@ pub(crate) fn join_late(tx: &mut Tx<'_>, id: &CommitId, merged: &CommitBlob, par
     // a late role-class part may change what perm reads of the commit: its edge writes, vouches
     // or the role another part needs (`validity::add_role_commit`)
     let perm = h.kind.is_role() && late.iter().any(|ai| h.aspects.get(*ai).is_some_and(|a| osis_schema::core_types::is_role_class(a.ak.as_str())));
-    validity::note_addenda(tx.core, &h, id, &parts.whole);
+    validity::note_addenda(tx.core, &h, meta.view.acting, id, &parts.whole);
     crate::flows::lists::note_listing(tx, &h, id, &parts.whole)?;
     if edges && meta.view.frontier.is_some() {
         crate::flows::vouches::note_due(tx.core, id);
@@ -815,7 +830,7 @@ pub(crate) fn join_late(tx: &mut Tx<'_>, id: &CommitId, merged: &CommitBlob, par
             tx.core.events.queue(Event::Roster { thing });
         }
     }
-    tx.core.events.queue(Event::Joined { id: *id, origin: meta.origin, author: h.author, actor: h.actor, ts: h.ts, received: meta.received });
+    tx.core.events.queue(Event::Joined { id: *id, origin: meta.origin, signer: h.signer, acting: meta.view.acting, ts: h.ts, received: meta.received });
     let changed = j.changed;
     if !changed.is_empty() {
         tx.core.events.queue(Event::Changed { cause: Cause::LateDelta, changed: changed.into_iter().collect() });
@@ -839,7 +854,7 @@ fn judge_late(tx: &mut Tx<'_>, h: &Header, id: &CommitId, parts: &Parts, all: &s
     validity::note_required(tx.core, h, id, all);
     let mut flipped = false;
     for ai in parts.ais() {
-        let v = validity::part_valid(tx.core, h, id, ai);
+        let v = validity::part_valid(tx.core, h, meta.view.acting, id, ai);
         if let Some(x) = meta.valid.get_mut(ai)
             && *x != v
         {

@@ -150,7 +150,7 @@ pub(crate) fn note_keysets(core: &mut Core, h: &Header, id: &CommitId, actor: &T
     if keysets.is_empty() {
         return;
     }
-    let at = osis_perm::Point { ts: h.ts, node: h.author, commit: *id };
+    let at = osis_perm::Point { ts: h.ts, node: h.signer, commit: *id };
     for k in keysets {
         if h.kind == Kind::Role {
             note_intro(core, h, id, actor, k.role, k.epoch);
@@ -163,7 +163,7 @@ pub(crate) fn note_keysets(core: &mut Core, h: &Header, id: &CommitId, actor: &T
             held.kem_in = Some(held.kem_in.map_or(at, |x| x.min(at)));
         }
         held.since = Some(held.since.map_or(at, |x| x.min(at)));
-        held.names.insert((k.names, h.author));
+        held.names.insert((k.names, h.signer));
         for (m, x) in &k.left_out {
             held.left_out.entry(*m).or_default().insert(*x);
         }
@@ -501,7 +501,7 @@ pub(crate) fn after_join(tx: &mut Tx<'_>, h: &Header, parts: &[(usize, Decoded)]
                 && a.ak.as_str() == "secrets.0"
                 && !valid.get(*ai).copied().unwrap_or(false)
             {
-                read_invalid(tx, &h.id(), h.author, a.tid, &d.fragment)?;
+                read_invalid(tx, &h.id(), h.signer, a.tid, &d.fragment)?;
             }
         }
     }
@@ -540,7 +540,7 @@ pub(crate) fn after_join(tx: &mut Tx<'_>, h: &Header, parts: &[(usize, Decoded)]
 /// longer count (another valid commit of the same epoch keeps it); its boxes stay open for
 /// reading (`read_invalid`).
 pub(crate) fn invalidated(tx: &mut Tx<'_>, c: &CommitId, ai: usize) -> Result<()> {
-    let Some((a, author)) = tx.core.ix.commits.get(c).and_then(|m| Some((m.header.aspects.get(ai)?.clone(), m.view.author))) else { return Ok(()) };
+    let Some((a, author)) = tx.core.ix.commits.get(c).and_then(|m| Some((m.header.aspects.get(ai)?.clone(), m.view.signer))) else { return Ok(()) };
     if a.ak.as_str() != "secrets.0" {
         return Ok(());
     }
@@ -586,7 +586,7 @@ pub(crate) fn reread_invalid(tx: &mut Tx<'_>, actor: &Tid) -> Result<bool> {
         .filter_map(|c| {
             let m = tx.core.ix.commits.get(c)?;
             let ai = m.aspect(actor, &ak)?;
-            (m.header.kind == Kind::Role && !m.valid_at(ai) && m.holds(ai)).then_some((*c, ai, m.view.author))
+            (m.header.kind == Kind::Role && !m.valid_at(ai) && m.holds(ai)).then_some((*c, ai, m.view.signer))
         })
         .collect();
     let mut learned = false;
@@ -708,7 +708,7 @@ pub(crate) fn pending_boxes(tx: &mut Tx<'_>, blob: &osis_commit::CommitBlob, id:
         }
         // an author whose chain is not known here shares one budget with every such author (a
         // claimed grant earns nothing: its `roles.0` part is as unverified as the boxes)
-        let author = if tx.core.created(&blob.header.author).is_some() { blob.header.author } else { osis_keys::UNKNOWN_AUTHOR };
+        let author = if tx.core.created(&blob.header.signer).is_some() { blob.header.signer } else { osis_keys::UNKNOWN_AUTHOR };
         out.push((a, ct::Secrets { boxes: w.boxes, history: w.history.into_iter().collect() }, osis_keys::Unchecked { author, commit: *id }));
     }
     Ok(out)
@@ -998,7 +998,7 @@ mod tests {
         let r = w.range();
         let cx = writer_ctx(Form::Commit, Kind::Role, ts, author, r.lo, r.hi);
         let bytes = encode_delta(&Delta { nonce: [7; 16], fragment: f }, &cx, None).unwrap();
-        let mut cb = CommitBuilder::new(Kind::Role, ts, author, author, Form::Commit);
+        let mut cb = CommitBuilder::new(Kind::Role, ts, author, osis_commit::Path::default(), Form::Commit);
         let mut aw = AspectWrite::new(t, ak.clone(), r.lo, r.hi, bytes.clone());
         aw.retention = osis_commit::retention::write_retention(ak.as_str(), None, None).unwrap();
         cb.aspects.push(aw);

@@ -421,7 +421,7 @@ pub fn forge_snapshot_bytes(lp: &mut LocalPeer, by: usize, t: Tid, a: &osis_base
     let author = lp.peers[by].engine.me();
     let mut aw = AspectWrite::new(t, a.clone(), 0, 0, bytes);
     aw.retention = osis_commit::retention::snapshot_retention(a.as_str());
-    let mut cb = CommitBuilder::new(Kind::ContentSnapshot, ts, author, author, Form::Commit);
+    let mut cb = CommitBuilder::new(Kind::ContentSnapshot, ts, author, osis_commit::Path::default(), Form::Commit);
     cb.aspects.push(aw);
     let rec = lp.peers[0].engine.get_typed(&t, &osis_schema::core_types::CREATED).unwrap().unwrap();
     let forge_key = lp.peers[by].engine.sign_forged(&mut cb);
@@ -472,7 +472,7 @@ pub fn part_keep(e: &mut Engine, c: &CommitId, t: &Tid, a: &Ak) -> u64 {
 
 /// The purge item naming commit `c`'s delta on `(tid, ak)` by its stamp, from its header `h`.
 pub fn stamp_item(h: &osis_commit::Header, c: CommitId, tid: Tid, ak: osis_base::Ak) -> osis_commit::PurgeItem {
-    osis_commit::PurgeItem::Commit { tid, ak, ts: h.ts, src: h.form.own_source(h.author, c) }
+    osis_commit::PurgeItem::Commit { tid, ak, ts: h.ts, src: h.form.own_source(h.signer, c) }
 }
 
 /// The blobs a held commit's deltas link (their pages and their values' trees, through the node

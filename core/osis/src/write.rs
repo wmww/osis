@@ -521,7 +521,7 @@ impl<'d> Write<'d> {
                 }
                 WriteOp::PurgeAuthor { tid, key: k, actor } => {
                     m.op(tid, &osis_schema::core_types::PURGE, PathOp { path: Vec::new(), op: Op::Replace(r.e.now().to_value()) })?;
-                    m.purge(PurgeItem::Author { tid, ak: key(k)?.ak.clone(), actor });
+                    m.purge(PurgeItem::Author { tid, ak: key(k)?.ak.clone(), author: actor });
                 }
                 WriteOp::PurgeThing(tid) => {
                     m.op(tid, &osis_schema::core_types::PURGE, PathOp { path: Vec::new(), op: Op::Replace(r.e.now().to_value()) })?;

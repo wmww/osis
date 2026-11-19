@@ -84,7 +84,7 @@ fn frontier_of(lp: &LocalPeer, peer: usize, r: &CommitId) -> (std::collections::
     let core = &lp.peers[peer].engine.core;
     let rm = core.ix.commits.get(r).unwrap();
     let f = rm.view.frontier.as_ref().unwrap();
-    let own = f.commits().iter().filter(|c| core.ix.commits.get(*c).is_some_and(|m| m.view.kind.is_compaction() && m.view.author == rm.view.author)).copied().collect();
+    let own = f.commits().iter().filter(|c| core.ix.commits.get(*c).is_some_and(|m| m.view.kind.is_compaction() && m.view.signer == rm.view.signer)).copied().collect();
     (f.commits().iter().copied().collect(), own)
 }
 
@@ -100,7 +100,7 @@ fn valid(lp: &LocalPeer, peer: usize, c: &CommitId, t: Tid, a: &str) -> bool {
 /// The addenda commits held at `peer` on `t`, by author.
 fn addenda(lp: &LocalPeer, peer: usize, t: Tid) -> Vec<(Tid, CommitId)> {
     let core = &lp.peers[peer].engine.core;
-    core.ix.addenda.keys().filter(|(th, _)| *th == t).map(|(_, c)| (core.ix.commits.get(c).unwrap().view.author, *c)).collect()
+    core.ix.addenda.keys().filter(|(th, _)| *th == t).map(|(_, c)| (core.ix.commits.get(c).unwrap().view.signer, *c)).collect()
 }
 
 // spec/permissions.md §5.2 (Addenda), §5.3: Alice removes Bob without having received his edit.
@@ -880,7 +880,7 @@ fn forget_under_own_snapshot(lp: &mut LocalPeer, p: usize, author: usize, t: Tid
     let x = lp.peers[author].engine.me();
     let s = lp.peers[p].engine.snapshot(&t, &a).unwrap().unwrap();
     let e = &mut lp.peers[p].engine;
-    let mine: Vec<CommitId> = e.core.held_on(&(t, a.clone())).filter(|c| e.core.ix.commits.get(c).is_some_and(|m| m.view.author == x)).collect();
+    let mine: Vec<CommitId> = e.core.held_on(&(t, a.clone())).filter(|c| e.core.ix.commits.get(c).is_some_and(|m| m.view.signer == x)).collect();
     for c in &mine {
         assert_eq!(e.covered(&s, c, &t, &a).unwrap(), Some(true));
         e.drop_body(c, &t, &a).unwrap();

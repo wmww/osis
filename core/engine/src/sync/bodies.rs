@@ -910,7 +910,7 @@ impl Engine {
         // stranger's only while the thing's current setting enables it (`judged_valid`,
         // spec/sync-inbox.md §4, spec/permissions.md §5.2 External fires)
         let external = b.parts.iter().all(|ai| h.aspects.get(*ai).is_some_and(|a| a.ak.external()));
-        if !external && crate::engine::write::role_of(&self.core, &h.author, &actor, h.ts) < Some(Role::Write) || !self.judged_valid(c, &b.parts) {
+        if !external && crate::engine::write::role_of(&self.core, &h.signer, &actor, h.ts) < Some(Role::Write) || !self.judged_valid(c, &b.parts) {
             return Ok(Promote::Never);
         }
         let parts: crate::sync_ids::Parts = b.parts.iter().copied().collect();

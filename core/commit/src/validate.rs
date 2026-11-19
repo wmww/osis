@@ -2,9 +2,10 @@
 
 use crate::cbor::strictly_ascending;
 use crate::header::{EphClass, FOREVER, Form, Header, Kind, Links, ListField, PurgeItem, aspect_order, purge_bytes};
+use crate::path::{Path, Paths};
+use osis_base::format::DELETE_AUTHOR;
 use crate::retention::{CREATED, EPHEMERAL_RETENTION, delete_levels, fixed_retention};
 use crate::Error;
-use osis_base::format::DELETE_AUTHOR;
 use osis_schema::PurgeBy;
 use osis_schema::core_types::is_role_class;
 
@@ -21,14 +22,26 @@ impl Header {
         ord(self.aspects.is_sorted_by(|a, b| aspect_order(&a.tid, a.ak.as_str()) < aspect_order(&b.tid, b.ak.as_str())), "aspects not sorted and distinct")?;
         ord(strictly_ascending(&self.purge, purge_bytes), "purge not sorted and distinct")?;
         ord(strictly_ascending(&self.keys, |k| *k), "delete keys not sorted and distinct")?;
-        // a linked list's blobs commit to the level-2 key alone (spec/wire.md §5): its links
-        // name that key, or nothing without one (`Header::resolve` holds every link of a list
-        // tree to its root's Del)
-        let list_del = osis_base::Del::from_keys(self.keys.iter().filter(|k| k.level == DELETE_AUTHOR).map(|k| (k.level, k.key)));
+        // a linked list's blobs commit to no delete key (spec/wire.md §5): its links name none
+        // (`Header::resolve` holds every link of a list tree to its root's Del)
         for f in ListField::ALL {
             if let Some(l) = self.links.get(f) {
-                ord(Some(l.del) == list_del, "header list link Del other than the level-2 key")?;
+                ord(l.del == osis_base::Del::NONE, "header list link naming a delete key")?;
             }
+        }
+        // the path's form follows the count of things written (spec/wire.md §4 field 2)
+        match &self.path {
+            Paths::One(p) => {
+                ord(self.things().len() == 1, "a path in the clear on a commit writing several things")?;
+                if !self.path_allowed(p) {
+                    return Err(Error::Invalid("a path this commit may not state"));
+                }
+            }
+            Paths::Hashed(hs) => ord(hs.len() > 1 && hs.len() == self.things().len(), "hashed paths other than one per thing written")?,
+        }
+        // the remaining admin rides on a role commit's edge writes (spec/wire.md §4 field 17)
+        if self.remains.is_some() && (self.kind != Kind::Role || self.adminless || !self.aspects.iter().any(|a| a.ak.as_str() == "roles.0")) {
+            return Err(Error::Invalid("remains outside a role commit's edge writes, or beside the adminless mark"));
         }
 
         let kind = self.kind;
@@ -36,11 +49,6 @@ impl Header {
         // can void them, and a snapshot has no own writes (spec/commits.md §3)
         if matches!(self.form, Form::Session(_)) && kind != Kind::Content {
             return Err(Error::Invalid("session form outside a content commit"));
-        }
-        // edge writes are judged by the timeline, which never asks whom the author acts for
-        // (spec/permissions.md §5.2)
-        if kind == Kind::Role && self.actor != self.author {
-            return Err(Error::Invalid("role commit acting for another actor"));
         }
         let wall = self.ts.wall_ms().0;
         let mut used = vec![false; self.keys.len()];
@@ -102,7 +110,8 @@ impl Header {
                 return Err(Error::Invalid("expires not after the commit's ts"));
             }
         }
-        // one author chain: at most one level-2 key (header-list blobs commit to it alone)
+        // Interim (notes/a1-spec/README.md step 4): one purge author per commit, so at most one
+        // level-2 key; then one per distinct purge author of a delta calling for level 2.
         if self.keys.iter().filter(|k| k.level == DELETE_AUTHOR).count() > 1 {
             return Err(Error::Invalid("more than one level-2 delete key"));
         }
@@ -137,8 +146,8 @@ impl Header {
             if !self.epoch.is_some_and(|e| r.supersedes.contains(&e)) {
                 return Err(Error::Invalid("rotation not superseding the epoch it is signed at"));
             }
-            if self.actor != self.author || !self.aspects.iter().any(|a| a.tid == self.author && a.ak.as_str() == "keys.0") {
-                return Err(Error::Invalid("rotation not writing its author's keys.0 as its author"));
+            if !self.aspects.iter().any(|a| a.tid == self.signer && a.ak.as_str() == "keys.0") {
+                return Err(Error::Invalid("rotation not writing its signer's keys.0"));
             }
             // a merge certificate carries only the join: it supersedes exactly its tips (the one
             // it is signed at and those it names), takes nothing, removes and adds no one
@@ -147,17 +156,17 @@ impl Header {
                 return Err(Error::Invalid("merge certificate carrying more than its join"));
             }
         }
-        // the adminless mark is a role commit's (spec/wire.md §4 field 17)
+        // the adminless mark is a role commit's (spec/wire.md §4 field 18)
         if self.adminless && kind != Kind::Role {
             return Err(Error::Invalid("adminless mark not on a role commit"));
         }
-        // an own cover is a durable content snapshot (spec/wire.md §4 field 17)
+        // an own cover is a durable content snapshot (spec/wire.md §4 field 18)
         if self.own_cover && (kind != Kind::ContentSnapshot || self.ephemeral.is_some()) {
             return Err(Error::Invalid("own cover not a durable content snapshot"));
         }
-        // a seed re-seal: on an account's role commit as its author that is no rotation
-        // (spec/wire.md §4 field 16)
-        if self.reseal.is_some() && (kind != Kind::Role || self.rotation.is_some() || self.epoch.is_none() || self.actor != self.author) {
+        // a seed re-seal: on an account's role commit that is no rotation (spec/wire.md §4
+        // field 16)
+        if self.reseal.is_some() && (kind != Kind::Role || self.rotation.is_some() || self.epoch.is_none()) {
             return Err(Error::Invalid("reseal outside an account's role commit, or on a rotation"));
         }
         // an ephemeral commit is a content commit or a content snapshot (each in its form, as a
@@ -178,5 +187,14 @@ impl Header {
             }
         }
         Ok(())
+    }
+
+    /// Whether it may state `p` for a thing it writes: a rotation and a seed re-seal state the
+    /// empty path, the signer writing itself (spec/wire.md §4 fields 15, 16).
+    pub fn path_allowed(&self, p: &Path) -> bool {
+        // Interim (notes/a1-spec/README.md step 3): the walk judges any path and index; until
+        // then the index names the thing it reads (i = k) and a role commit acts as its signer.
+        let interim = p.interim_index() && (self.kind != Kind::Role || p.things.is_empty());
+        interim && (self.rotation.is_none() && self.reseal.is_none() || p.things.is_empty())
     }
 }

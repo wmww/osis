@@ -1580,7 +1580,7 @@ fn write_link_rotates_as_signer_spec_perm_3() {
     let done = lp.peers[2].engine.redeem(&link, &ps2, false).unwrap();
     let l = osis_engine::identity::Identity::from_seed(link.seed.clone()).tid();
     assert_eq!(done.commits.len(), 3, "L's rotation, D's (its box to K that made stale), then the grant");
-    assert_eq!(lp.peers[2].engine.header(&done.commits[0]).unwrap().author, l);
+    assert_eq!(lp.peers[2].engine.header(&done.commits[0]).unwrap().signer, l);
     let e1 = newest_read(&lp, 2, link.k).unwrap();
     assert_ne!(e0, e1);
     spread(&mut lp);
@@ -1652,7 +1652,7 @@ fn link_key_writes_commit_form_spec_commits_3() {
     sync(&mut lp, 0, 1);
     let done = lp.peers[1].engine.redeem(&link, &ps1, true).unwrap();
     let l = osis_engine::identity::Identity::from_seed(link.seed.clone()).tid();
-    let by_l: Vec<CommitId> = done.commits.iter().copied().filter(|c| lp.peers[1].engine.header(c).unwrap().author == l).collect();
+    let by_l: Vec<CommitId> = done.commits.iter().copied().filter(|c| lp.peers[1].engine.header(c).unwrap().signer == l).collect();
     assert!(!by_l.is_empty());
     for c in by_l {
         assert_eq!(lp.peers[1].engine.header(&c).unwrap().form, osis_commit::Form::Commit);
@@ -1672,7 +1672,7 @@ fn linked_frontier_spec_perm_5_1() {
     sync(&mut lp, 0, 1);
     add_tag(&mut lp, 1, t, "by x");
     sync(&mut lp, 1, 0);
-    let by_x = lp.peers[0].engine.commit_ids().into_iter().find(|c| lp.peers[0].engine.header(c).is_some_and(|h| h.author == x && h.aspects.iter().any(|a| a.ak.as_str() == "t:tags.0"))).unwrap();
+    let by_x = lp.peers[0].engine.commit_ids().into_iter().find(|c| lp.peers[0].engine.header(c).is_some_and(|h| h.signer == x && h.aspects.iter().any(|a| a.ak.as_str() == "t:tags.0"))).unwrap();
     // the frontier lists x's write, padded past the threshold
     let mut commits = BTreeSet::from([by_x]);
     for i in 0..4000u32 {
@@ -1726,7 +1726,7 @@ fn stranger_secrets(lp: &mut LocalPeer, t: Tid, secrets: &ct::Secrets) -> Vec<u8
     assert!(pages.is_empty());
     let mut aw = AspectWrite::new(t, a.clone(), r.lo, r.hi, bytes);
     aw.retention = osis_commit::retention::write_retention(a.as_str(), None, None).unwrap();
-    let mut cb = CommitBuilder::new(Kind::Role, ts, author, author, Form::Commit);
+    let mut cb = CommitBuilder::new(Kind::Role, ts, author, osis_commit::Path::default(), Form::Commit);
     cb.aspects.push(aw);
     let rec = lp.peers[0].engine.get_typed(&t, &ct::CREATED).unwrap().unwrap();
     cb.build(&keys.signing, &Keys(rec), &mut MemoryBlobs::default(), &mut osis_crypto::SeededRng::from_u64(9)).unwrap().commit.encode()

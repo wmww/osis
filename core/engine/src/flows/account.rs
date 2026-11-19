@@ -566,7 +566,7 @@ impl Core {
     pub(crate) fn account_of_root(&self, d: &Tid) -> Option<Tid> {
         let p = self.mint_admin(d).filter(|p| self.is_account(p))?;
         let ak = osis_base::Ak::new("account.0").ok()?;
-        let by_p = |(_, c): &(osis_base::Ts, CommitId)| self.ix.commits.get(c).is_some_and(|m| m.view.author == p);
+        let by_p = |(_, c): &(osis_base::Ts, CommitId)| self.ix.commits.get(c).is_some_and(|m| m.view.signer == p);
         self.ix.by_aspect.get(&(*d, ak))?.iter().any(by_p).then_some(p)
     }
 
@@ -702,7 +702,7 @@ impl Core {
         };
         let ak = osis_base::Ak::new("keys.0").ok()?;
         let rots: Vec<(CommitId, CommitId, osis_commit::RotationHeader)> = self.ix.by_aspect.get(&(*p, ak)).into_iter().flatten().filter_map(|(_, c)| {
-            let m = self.ix.commits.get(c).filter(|m| m.view.author == *p)?;
+            let m = self.ix.commits.get(c).filter(|m| m.view.signer == *p)?;
             Some((*c, m.header.epoch?, m.header.rotation.clone()?))
         }).collect();
         // per epoch (a merge's certificates are one): what it supersedes and its keys
@@ -806,12 +806,12 @@ impl Core {
     /// What the epoch rule (spec/permissions.md §5.5) says of held commit `id` (`view` its view):
     /// `Counts` for every commit of an author other than an account.
     pub(crate) fn standing(&self, id: &CommitId, view: &crate::engine::View) -> EpochStanding {
-        self.standing_by(id, &view.author, view.epoch)
+        self.standing_by(id, &view.signer, view.epoch)
     }
 
     /// `standing` from commit `id`'s header (one not indexed yet).
     pub(crate) fn standing_of(&self, id: &CommitId, h: &osis_commit::Header) -> EpochStanding {
-        self.standing_by(id, &h.author, h.epoch)
+        self.standing_by(id, &h.signer, h.epoch)
     }
 
     /// Whether commit `id` of `author` signed at `epoch` counts whole by the epoch rule (one held
@@ -886,13 +886,9 @@ impl Core {
     }
 }
 
-/// The things commit view `v` names words on: those it has a delta on, and the actor it acts for.
+/// The things commit view `v` names words on: those it has a delta on, and the thing it acts on.
 pub(crate) fn things_of(v: &crate::engine::View) -> BTreeSet<Tid> {
-    let mut t: BTreeSet<Tid> = v.aspects.iter().map(|a| a.tid).collect();
-    if v.actor != v.author {
-        t.insert(v.actor);
-    }
-    t
+    v.aspects.iter().map(|a| a.tid).chain(v.acts_for()).collect()
 }
 
 /// Judges again what moved in the epochs of the accounts due (`Indexes::epochs_due`): those whose
@@ -925,7 +921,7 @@ pub(crate) fn refresh_epochs(tx: &mut Tx<'_>) -> Result<bool> {
     for c in tx.core.ix.names_due.iter().copied().collect::<Vec<_>>() {
         tx.core.ix.names_due.remove(&c);
         if let Some(m) = tx.core.ix.commits.get(&c) {
-            by_account.entry(m.view.author).or_default().insert(c);
+            by_account.entry(m.view.signer).or_default().insert(c);
         }
     }
     // this node's account: what D says moves its chain (`osis_perm::Devices`) and what it
@@ -972,7 +968,7 @@ pub(crate) fn refresh_epochs(tx: &mut Tx<'_>) -> Result<bool> {
                 cands.extend(super::lists::named_by(tx, e)?.into_iter().map(|(c, _)| c));
                 for (t, s) in tx.core.ix.addenda_keyed.get(e).into_iter().flatten() {
                     let listed = tx.core.ix.addenda.get(&(*t, *s)).into_iter().flat_map(|x| x.entries.iter()).filter(|(k, _)| k == e).flat_map(|(_, l)| l.iter());
-                    cands.extend(listed.filter(|c| tx.core.ix.commits.get(*c).is_some_and(|m| m.view.author == p)));
+                    cands.extend(listed.filter(|c| tx.core.ix.commits.get(*c).is_some_and(|m| m.view.signer == p)));
                 }
                 // invariant: every rotation that counts here is due this node's answer once it
                 // counts. One read as void when it arrived (its minter not known yet: the seed
@@ -995,7 +991,7 @@ pub(crate) fn refresh_epochs(tx: &mut Tx<'_>) -> Result<bool> {
                 continue;
             }
             // a candidate that is a listing: what it names stands or falls with it
-            if tx.core.ix.commits.get(&c).is_some_and(|m| m.view.author == p && m.view.epoch.is_some() && m.view.kind.is_role()) && !now.contains_key(&c) {
+            if tx.core.ix.commits.get(&c).is_some_and(|m| m.view.signer == p && m.view.epoch.is_some() && m.view.kind.is_role()) && !now.contains_key(&c) {
                 for (n, _) in super::lists::named_by(tx, &c)? {
                     if cands.insert(n) {
                         work.push(n);
@@ -1004,7 +1000,7 @@ pub(crate) fn refresh_epochs(tx: &mut Tx<'_>) -> Result<bool> {
             }
             let ns = super::lists::names_of(tx, &c)?;
             for (_, s) in &ns {
-                let listing = tx.core.ix.commits.get(s).is_some_and(|m| m.view.author == p && m.view.epoch.is_some()) && !now.contains_key(s);
+                let listing = tx.core.ix.commits.get(s).is_some_and(|m| m.view.signer == p && m.view.epoch.is_some()) && !now.contains_key(s);
                 if listing && !names.contains_key(s) {
                     cands.insert(*s);
                     work.push(*s);
@@ -1018,7 +1014,7 @@ pub(crate) fn refresh_epochs(tx: &mut Tx<'_>) -> Result<bool> {
             names.insert(c, ns);
         }
         let commit_of = |c: &CommitId| -> Option<osis_perm::AccountCommit<CommitId, Tid>> {
-            let m = tx.core.ix.commits.get(c).filter(|m| m.view.author == p)?;
+            let m = tx.core.ix.commits.get(c).filter(|m| m.view.signer == p)?;
             Some(osis_perm::AccountCommit { id: *c, epoch: m.view.epoch?, things: things_of(&m.view), role: m.view.kind.is_role() })
         };
         let mut lists: Vec<osis_perm::ThingList<CommitId, Tid>> = Vec::new();
@@ -1065,7 +1061,7 @@ pub(crate) fn refresh_epochs(tx: &mut Tx<'_>) -> Result<bool> {
         }
         for c in cands {
             let Some(m) = tx.core.ix.commits.get(&c) else { continue };
-            if m.view.author != p {
+            if m.view.signer != p {
                 continue;
             }
             if m.view.kind.is_role() {
@@ -1359,8 +1355,8 @@ impl Core {
     /// `Engine::open_inner`.
     pub(crate) fn inner_node(&self, blob: &CommitBlob) -> Option<Tid> {
         let (h, inner) = (&blob.header, blob.sigs.inner.as_ref()?);
-        let a = self.accounts.get(&h.author)?;
-        let v = self.account_view(&h.author)?;
+        let a = self.accounts.get(&h.signer)?;
+        let v = self.account_view(&h.signer)?;
         let e = v.epochs.get(&h.epoch?)?;
         self.inner_signer(a, &e.signing, &h.id(), inner)
     }

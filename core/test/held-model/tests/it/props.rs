@@ -154,7 +154,7 @@ fn settle(mut h: Held, full: Option<&Held>, seed: u64, seen: &mut Seen) -> Held 
 
 /// Whether `me` holds the purge right over the body now.
 fn right_now(h: &Held, c: &Commit, p: &Part) -> bool {
-    timeline(h).right(h.me, h.me, (u64::MAX, h.me, u32::MAX), u32::MAX, p.retention.by, c.actor, p.thing)
+    timeline(h).right(h.me, h.me, (u64::MAX, h.me, u32::MAX), u32::MAX, p.retention.by, c.acting, p.thing)
 }
 
 // One settled history per seed, four properties of it:

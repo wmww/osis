@@ -574,7 +574,7 @@ impl Engine {
     fn demotion_probe(&self, who: Tid, mut ops: Vec<osis_perm::EdgeOp>, f: osis_perm::Frontier) -> osis_perm::RoleCommit {
         ops.sort_by_key(|o| (o.target, o.holder));
         let id = CommitId([0xff; 32]);
-        osis_perm::RoleCommit { id, ts: self.core.hlc.peek(), author: who, actor: who, frontier: Some(std::sync::Arc::new(f)), ops }
+        osis_perm::RoleCommit { id, ts: self.core.hlc.peek(), signer: who, frontier: Some(std::sync::Arc::new(f)), ops }
     }
 
     /// Lowers or removes `d.holder`'s edge on `target` (spec/permissions.md §2, §3, §5): an

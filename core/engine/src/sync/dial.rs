@@ -39,7 +39,7 @@ impl Core {
     pub(crate) fn profile_of(&self, a: &Tid, inbox: Option<Tid>) -> Option<Tid> {
         let created = ct::CREATED.name();
         let by = self.ix.by_aspect.get(&(*a, created.clone()))?;
-        let meta = by.iter().filter_map(|(_, c)| self.ix.commits.get(c)).find(|m| m.header.author == *a)?;
+        let meta = by.iter().filter_map(|(_, c)| self.ix.commits.get(c)).find(|m| m.header.signer == *a)?;
         meta.view.aspects.iter().filter(|x| x.ak == created && x.tid != *a && Some(x.tid) != inbox).map(|x| x.tid).find(|x| self.mint_admin(x) == Some(*a) && self.account_of_root(x).is_none())
     }
 }

@@ -77,22 +77,22 @@ fn unnamed_fires_go_nowhere(rule: ExternalFires, seeds: u64, seen: &mut Seen) ->
                 let writer = tl.valid_delta(c, THING, EXT);
                 let valid = o.valid[&(c.id, 0)];
                 if !writer && !named && (promotes(&o, c, 0) || listed.contains(&c.id)) {
-                    return Err(format!("seed {seed}: unnamed fire {} by {} promoted or listed (held {:?})", c.id, c.author, ids(&h)));
+                    return Err(format!("seed {seed}: unnamed fire {} by {} promoted or listed (held {:?})", c.id, c.signer, ids(&h)));
                 }
                 if (writer || named) && !valid {
-                    return Err(format!("seed {seed}: fire {} by {} invalid though {}", c.id, c.author, if writer { "its author writes" } else { "enabled" }));
+                    return Err(format!("seed {seed}: fire {} by {} invalid though {}", c.id, c.signer, if writer { "its author writes" } else { "enabled" }));
                 }
                 if writer && unset.get(&c.id) != Some(&valid) {
                     return Err(format!("seed {seed}: a writer's fire {} judged by the setting", c.id));
                 }
                 let removal = h.commits.iter().any(|x| x.is_role() && matches!(x.parts[0].body, Body::Held(Delta::Edge(EdgeWrite { holder: WRITER, role: None, .. }))));
-                let stranger = !writer && c.author == STRANGER;
+                let stranger = !writer && c.signer == STRANGER;
                 let enabling = o.settings.get(&THING).is_some_and(|v| v.iter().any(|(_, s)| enables(s)));
                 seen.add("enabled then fired", stranger && valid && cur.is_some_and(|(k, _)| *k < c.key()));
                 seen.add("fired then enabled", stranger && valid && cur.is_some_and(|(k, _)| *k > c.key()));
                 seen.add("disabled after a fire", stranger && !valid && enabling);
-                seen.add("a writer's fire, not enabled", writer && c.author == WRITER && !named);
-                seen.add("a removed writer's fire", !writer && c.author == WRITER && removal);
+                seen.add("a writer's fire, not enabled", writer && c.signer == WRITER && !named);
+                seen.add("a removed writer's fire", !writer && c.signer == WRITER && removal);
                 // the admins' dispute: a newer held setting is invalid, so another one is current
                 let newer_fell = h.commits.iter().enumerate().any(|(_, x)| x.parts[0].aspect == Aspect::RETENTION && o.applied.contains(&x.id) && !o.valid[&(x.id, 0)] && cur.is_some_and(|(k, _)| x.key() > *k));
                 seen.add("a setting fallen in the admins' dispute", stranger && newer_fell);

@@ -3,6 +3,7 @@
 
 use crate::Error;
 use crate::cbor::item;
+use crate::path::{Path, Paths};
 use osis_base::cbor::{Item, MAJOR_TAG, encode_into, head, put_array, put_bytes, put_link, put_map, put_text, put_uint};
 use osis_base::format::{CHUNK_THRESHOLD, DELETE_ADMIN, DELETE_WRITER, FORMAT_VERSION, MAX_BLOB, MAX_OBJECT_DEPTH, TAG_SET, TID_LEN};
 use osis_base::{Ak, CommitId, Limits, Link, Reader, Tid, Ts, Value};
@@ -70,17 +71,17 @@ impl EphClass {
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum Form {
     Commit,
-    /// Session form: dots `(Session(author, nonce), counter)`, counters per (aspect, session);
+    /// Session form: dots `(Session(signer, nonce), counter)`, counters per (aspect, session);
     /// every content commit with own writes, durable or memory.
     Session([u8; osis_crdt::SESSION_NONCE_LEN]),
 }
 
 impl Form {
-    /// The own source of a commit of this form by `author` (`commit` for commit form).
-    pub fn own_source(&self, author: Tid, commit: CommitId) -> osis_crdt::Source {
+    /// The own source of a commit of this form signed by `signer` (`commit` for commit form).
+    pub fn own_source(&self, signer: Tid, commit: CommitId) -> osis_crdt::Source {
         match self {
             Form::Commit => osis_crdt::Source::commit(commit),
-            Form::Session(nonce) => osis_crdt::Source::session(osis_crdt::Session { node: author, nonce: *nonce }),
+            Form::Session(nonce) => osis_crdt::Source::session(osis_crdt::Session { node: signer, nonce: *nonce }),
         }
     }
 
@@ -130,7 +131,7 @@ pub struct AspectEntry {
     /// The fire this delta claims to replace (a durable signal's, spec/commits.md §5 Signals).
     pub replaces: Option<CommitId>,
     /// The floor of that fire as its writer read it (spec/commits.md §5 Signals): a node whose
-    /// own floor on the thing's actor is above it lists the delta nowhere. 0 without `replaces`.
+    /// own floor on the thing is above it lists the delta nowhere. 0 without `replaces`.
     pub original_floor: u64,
 }
 
@@ -160,9 +161,9 @@ pub enum PurgeItem {
     Commit { tid: Tid, ak: Ak, ts: Ts, src: osis_crdt::Source },
     /// Every delta on that aspect of every commit with a smaller `ts`.
     Aspect { tid: Tid, ak: Ak },
-    /// Every delta on that aspect of every commit with a smaller `ts` whose header actor is
-    /// `actor`.
-    Author { tid: Tid, ak: Ak, actor: Tid },
+    /// Every delta on that aspect of every commit with a smaller `ts` whose purge author is
+    /// `author` (spec/permissions.md §6).
+    Author { tid: Tid, ak: Ak, author: Tid },
 }
 
 /// The index of the entry on `(tid, ak)` in `items`, sorted and distinct as a header's aspects
@@ -197,6 +198,36 @@ impl Header {
     /// The indexes of its aspects on `tid` (`aspects_on`).
     pub fn aspects_on(&self, tid: &Tid) -> std::ops::Range<usize> {
         aspects_on(&self.aspects, tid, |a| &a.tid)
+    }
+
+    /// The things it writes, distinct, in the order of its aspects (that of `path`'s hashes).
+    pub fn things(&self) -> Vec<Tid> {
+        let mut out: Vec<Tid> = self.aspects.iter().map(|a| a.tid).collect();
+        out.dedup();
+        out
+    }
+
+    /// The path it states in the clear: where it writes one thing.
+    pub fn path_in_clear(&self) -> Option<&Path> {
+        match &self.path {
+            Paths::One(p) => Some(p),
+            Paths::Hashed(_) => None,
+        }
+    }
+
+    /// The hash its `path` holds for thing `t`, where it writes several things.
+    pub fn path_hash(&self, t: &Tid) -> Option<[u8; 32]> {
+        let Paths::Hashed(hs) = &self.path else { return None };
+        let i = self.things().iter().position(|x| x == t)?;
+        hs.get(i).copied()
+    }
+
+    // Interim (notes/a1-spec/README.md step 3): the walk judges each thing along its own path.
+    /// The thing the walk reads it as acting on, from the header alone: its path's last listed
+    /// thing (the signer for the empty path) where the path is in the clear; `None` where it
+    /// writes several things (`CommitBlob::acting` reads their sections).
+    pub fn acting(&self) -> Option<Tid> {
+        self.path_in_clear().map(|p| p.acting(self.signer))
     }
 }
 
@@ -259,8 +290,10 @@ impl Links {
 /// [`Header::resolve`](crate::Header::resolve) fills it; its link stays in `links`.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Header {
-    pub author: Tid,
-    pub actor: Tid,
+    /// The key actor whose key signs the commit (spec/wire.md §4 field 1): the commit is by it.
+    pub signer: Tid,
+    /// The paths it states, one per thing it writes (spec/wire.md §4 field 2).
+    pub path: Paths,
     pub kind: Kind,
     pub ts: Ts,
     pub form: Form,
@@ -279,22 +312,25 @@ pub struct Header {
     pub links: Links,
     /// Set on an ephemeral commit (kept in memory by every node, never stored).
     pub ephemeral: Option<EphClass>,
-    /// The epoch an account author signs at (spec/crypto.md §9): its minting rotation's commit
-    /// ID, `FIRST_EPOCH` for the first. Present iff the author is an account (judged by the
-    /// author's creation record).
+    /// The epoch an account signer signs at (spec/crypto.md §9): its minting rotation's commit
+    /// ID, `FIRST_EPOCH` for the first. Present iff the signer is an account (judged by the
+    /// signer's creation record).
     pub epoch: Option<CommitId>,
     /// A rotation of the account's signing chain (spec/wire.md §4): only on an account's role
     /// commit. Its commit ID names the epoch it mints.
     pub rotation: Option<RotationHeader>,
     /// A content snapshot that is its writer's own cover at a removal (spec/permissions.md §5.1,
-    /// Own cover; spec/wire.md §4 field 17): only its writer drops a body under it.
+    /// Own cover; spec/wire.md §4 field 18): only its writer drops a body under it.
     pub own_cover: bool,
-    /// A role commit its author means to leave a thing with no standing admin (spec/wire.md §4
-    /// field 17, bit 1; spec/permissions.md §2 Adminless mark): read only by the writer's check.
+    /// A role commit its signer means to leave a thing with no standing admin (spec/wire.md §4
+    /// field 18, bit 1; spec/permissions.md §2 Adminless mark): read only by the writer's check.
     pub adminless: bool,
     /// A seed re-seal (spec/wire.md §4): seed boxes of an existing epoch of the account's chain,
     /// only on an account's role commit that is no rotation.
     pub reseal: Option<SeedReseal>,
+    /// The holder of the remaining admin edge the commit's edge writes rely on (spec/wire.md §4
+    /// field 17): laid out, read by nothing yet.
+    pub remains: Option<Tid>,
 }
 
 /// A header's `reseal` (spec/wire.md §4 `Reseal`, spec/crypto.md §9 Custody): the signing key of
@@ -507,11 +543,11 @@ fn put_purge(out: &mut Vec<u8>, p: &PurgeItem) {
             put_tid_bytes(out, tid);
             put_text(out, ak.as_str());
         }
-        PurgeItem::Author { tid, ak, actor } => {
+        PurgeItem::Author { tid, ak, author } => {
             put_array(out, 3);
             put_tid_bytes(out, tid);
             put_text(out, ak.as_str());
-            put_tid_bytes(out, actor);
+            put_tid_bytes(out, author);
         }
     }
 }
@@ -598,24 +634,24 @@ impl Header {
     }
 
     /// The key of this header's linked lists' content hashes (spec/wire.md §4 Inline or link):
-    /// `kdf("header list", actor dedup secret, skeleton)`. Two commits differing anywhere outside
+    /// `kdf("header list", signer dedup secret, skeleton)`. Two commits differing anywhere outside
     /// their linked lists key them apart, so a list's blobs serve one commit only and what its
-    /// header costs a node to hold is what its author delivered for it (notes/decode-bounds.md).
-    pub fn list_secret(&self, actor_dedup: &Secret32) -> Secret32 {
-        self.list_secret_for(actor_dedup, &|f| self.links.get(f).is_some())
+    /// header costs a node to hold is what its signer delivered for it (notes/decode-bounds.md).
+    pub fn list_secret(&self, signer_dedup: &Secret32) -> Secret32 {
+        self.list_secret_for(signer_dedup, &|f| self.links.get(f).is_some())
     }
 
-    pub(crate) fn list_secret_for(&self, actor_dedup: &Secret32, linked: &dyn Fn(ListField) -> bool) -> Secret32 {
-        osis_crypto::kdf::kdf("header list", actor_dedup.expose(), &self.skeleton(linked))
+    pub(crate) fn list_secret_for(&self, signer_dedup: &Secret32, linked: &dyn Fn(ListField) -> bool) -> Secret32 {
+        osis_crypto::kdf::kdf("header list", signer_dedup.expose(), &self.skeleton(linked))
     }
 
     fn encode_with(&self, out: &mut Vec<u8>, position: &dyn Fn(&Header, &mut Vec<u8>, ListField)) {
         // the flags are trailing, absent when none is set
         let flags = self.flags();
-        put_array(out, if flags != 0 { 18 } else { 17 });
+        put_array(out, if flags != 0 { 19 } else { 18 });
         put_uint(out, FORMAT_VERSION);
-        put_tid_bytes(out, &self.author);
-        put_tid_bytes(out, &self.actor);
+        put_tid_bytes(out, &self.signer);
+        self.path.put(out);
         put_uint(out, self.kind.id());
         put_uint(out, self.ts.to_u64());
         self.form.put(out);
@@ -630,12 +666,13 @@ impl Header {
         put_opt(out, self.epoch, |out, c| put_bytes(out, &c.0));
         put_opt(out, self.rotation.as_ref(), |out, r| r.put(out));
         put_opt(out, self.reseal.as_ref(), |out, r| r.put(out));
+        put_opt(out, self.remains.as_ref(), put_tid_bytes);
         if flags != 0 {
             put_uint(out, flags);
         }
     }
 
-    /// The header's `flags` (spec/wire.md §4 field 17): bit 0 own cover, bit 1 adminless.
+    /// The header's `flags` (spec/wire.md §4 field 18): bit 0 own cover, bit 1 adminless.
     fn flags(&self) -> u64 {
         u64::from(self.own_cover) | u64::from(self.adminless) << 1
     }
@@ -660,7 +697,7 @@ impl Header {
     }
 }
 
-/// Verifies the author's signature of `sigs` for commit `id` (spec/crypto.md §2): what it
+/// Verifies the signer's signature of `sigs` for commit `id` (spec/crypto.md §2): what it
 /// vouches for, kept with the commit so the same bytes are never checked again.
 pub fn verify_signature(id: &CommitId, sigs: &crate::Sigs, key: &VerifyingKey) -> Result<Signed, Error> {
     key.verify(Domain::Commit, &sigs.digest(id), &sigs.signature).map_err(|_| Error::BadSignature)?;
@@ -807,7 +844,7 @@ fn read_key(r: &mut Reader<'_>, check: bool) -> Result<DeleteKey, Error> {
 fn read_purge(r: &mut Reader<'_>) -> Result<PurgeItem, Error> {
     match r.array()? {
         2 => Ok(PurgeItem::Aspect { tid: read_tid(r)?, ak: read_ak(r)? }),
-        3 => Ok(PurgeItem::Author { tid: read_tid(r)?, ak: read_ak(r)?, actor: read_tid(r)? }),
+        3 => Ok(PurgeItem::Author { tid: read_tid(r)?, ak: read_ak(r)?, author: read_tid(r)? }),
         4 => {
             let (tid, ak) = (read_tid(r)?, read_ak(r)?);
             let ts = Ts::from_u64(r.uint()?).ok_or(Error::Malformed("purge ts"))?;
@@ -899,20 +936,21 @@ impl Header {
             return Err(Error::Malformed("format version"));
         }
         let all: Vec<Item> = items.into_iter().collect();
-        let flags = match all.get(17) {
+        let flags = match all.get(18) {
             None => 0,
-            Some(m) if all.len() == 18 => match item::uint(*m)? {
+            Some(m) if all.len() == 19 => match item::uint(*m)? {
                 f @ 1..=3 => f,
                 _ => return Err(Error::Malformed("header flags")),
             },
             Some(_) => return Err(Error::Malformed("header arity")),
         };
-        let Some([_, author, actor, kind, ts, form, expires, aspects, purge, undoes, blind, keys, frontier, ephemeral, epoch, rotation, reseal]) = all.get(..17).and_then(|x| <[Item; 17]>::try_from(x).ok()) else {
+        let Some([_, signer, path, kind, ts, form, expires, aspects, purge, undoes, blind, keys, frontier, ephemeral, epoch, rotation, reseal, remains]) = all.get(..18).and_then(|x| <[Item; 18]>::try_from(x).ok()) else {
             return Err(Error::Malformed("header arity"));
         };
+        let signer = item::tid(signer)?;
         let mut h = Header {
-            author: item::tid(author)?,
-            actor: item::tid(actor)?,
+            signer,
+            path: Paths::read(path, &signer)?,
             kind: Kind::from_id(item::uint(kind)?).ok_or(Error::Malformed("kind"))?,
             ts: Ts::from_u64(item::uint(ts)?).ok_or(Error::Malformed("ts out of range"))?,
             form: Form::read(form)?,
@@ -930,6 +968,7 @@ impl Header {
             reseal: item::opt(reseal)?.map(SeedReseal::read).transpose()?,
             own_cover: flags & 1 != 0,
             adminless: flags & 2 != 0,
+            remains: item::opt(remains)?.map(item::tid).transpose()?,
         };
         h.take_position(ListField::Aspects, aspects, stored)?;
         h.take_position(ListField::Purge, purge, stored)?;

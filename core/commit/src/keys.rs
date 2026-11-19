@@ -15,7 +15,7 @@ pub trait Secrets {
     /// The thing's admin delete key (level 1): derived from its newest admin secret, or the
     /// published one when that secret is not held.
     fn admin_key(&self, tid: &Tid) -> Option<VerifyingKey>;
-    /// The write delete key of the actor directly above the author node in its chain (level 2).
+    /// The write delete key of the actor directly above the signing node in its chain (level 2).
     fn chain_key(&self) -> Option<VerifyingKey>;
     /// The thing's write delete key (level 3).
     fn write_key(&self, tid: &Tid) -> Option<VerifyingKey>;
@@ -43,7 +43,7 @@ pub fn delete_keys(s: &dyn Secrets, tid: &Tid, r: &Retention) -> Result<Vec<Dele
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Prefix {
     pub salt: [u8; 16],
-    /// The thing whose dedup secret keys the blob's link (a header list's: the header's actor).
+    /// The thing whose dedup secret keys the blob's link (a header list's: the header's signer).
     pub thing: Tid,
     /// Expiry `T`, wall ms.
     pub expiry: Option<u64>,

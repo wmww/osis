@@ -84,18 +84,20 @@ fn key(tid: &Tid, ak: &Ak, c: &CommitId) -> Vec<u8> {
 /// Commit `id`, being forgotten: a name on each aspect it has writes of its own on where a
 /// snapshot is held (one may carry them; `settle_due` keeps it only if one does).
 pub(crate) fn note(tx: &mut Tx<'_>, id: &CommitId) -> Result<()> {
-    let Some(h) = tx.core.ix.commits.get(id).map(|m| m.header.clone()) else { return Ok(()) };
+    let Some((h, acting)) = tx.core.ix.commits.get(id).map(|m| (m.header.clone(), m.view.acting)) else { return Ok(()) };
+    // Interim (notes/a1-spec/README.md step 4): the purge author is the thing it acts on
+    let Some(acting) = acting else { return Ok(()) };
     // past its expiry a write has no value for a purge to act on
     if !h.kind.has_own_writes() || h.expires.is_some_and(|t| t <= tx.now().0) {
         return Ok(());
     }
-    let src = h.form.own_source(h.author, *id);
+    let src = h.form.own_source(h.signer, *id);
     for a in &h.aspects {
         let k = (a.tid, a.ak.clone());
         if tx.core.ix.snapshots.get(&k).is_none_or(|v| v.is_empty()) {
             continue;
         }
-        let n = Name { ts: h.ts, src: src.clone(), actor: h.actor, by: a.retention.by, expires: h.expires };
+        let n = Name { ts: h.ts, src: src.clone(), actor: acting, by: a.retention.by, expires: h.expires };
         let row = n.encode();
         tx.in_class(a.ak.ephemeral(), |tx| Ok(tx.txn.put_local(&key(&a.tid, &a.ak, id), &row, Shred::No)?))?;
         tx.core.ix.forgotten_names.insert(k.clone(), *id, n);

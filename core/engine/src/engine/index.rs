@@ -766,7 +766,7 @@ pub(super) fn meta_row(core: &Core, id: &CommitId, m: &Meta) -> Vec<u8> {
         osis_commit::Form::Commit => w.u8(0),
         osis_commit::Form::Session(n) => w.u8(1).raw(&n),
     };
-    w = w.raw(v.author.as_bytes()).raw(v.actor.as_bytes()).u8(u8::from(v.linked) | (u8::from(v.memory) << 1) | (u8::from(v.purges) << 2) | (u8::from(v.epoch.is_some()) << 3) | (u8::from(v.own_cover) << 4));
+    w = w.raw(v.signer.as_bytes()).raw(v.acting.unwrap_or(v.signer).as_bytes()).u8(u8::from(v.linked) | (u8::from(v.memory) << 1) | (u8::from(v.purges) << 2) | (u8::from(v.epoch.is_some()) << 3) | (u8::from(v.own_cover) << 4) | (u8::from(v.acting.is_some()) << 5));
     if let Some(e) = &v.epoch {
         w = w.raw(&e.0);
     }
@@ -806,8 +806,9 @@ fn parse_meta_row(row: &[u8]) -> Result<(&[u8], super::View)> {
         1 => osis_commit::Form::Session(r.take(osis_crdt::SESSION_NONCE_LEN)?.try_into().map_err(|_| Error::Corrupt("meta row form"))?),
         _ => return Err(Error::Corrupt("meta row form")),
     };
-    let (author, actor) = (r.tid()?, r.tid()?);
+    let (signer, acting) = (r.tid()?, r.tid()?);
     let flags = r.u8()?;
+    let acting = (flags & 32 != 0).then_some(acting);
     let (linked, memory, purges) = (flags & 1 != 0, flags & 2 != 0, flags & 4 != 0);
     let epoch = if flags & 8 != 0 { Some(CommitId(r.arr()?)) } else { None };
     let own_cover = flags & 16 != 0;
@@ -828,7 +829,7 @@ fn parse_meta_row(row: &[u8]) -> Result<(&[u8], super::View)> {
         _ => return Err(Error::Corrupt("meta row frontier")),
     };
     r.end()?;
-    Ok((parts, super::View { ts, kind, form, author, actor, linked, memory, aspects, frontier, purges, epoch, own_cover }))
+    Ok((parts, super::View { ts, kind, form, signer, acting, linked, memory, aspects, frontier, purges, epoch, own_cover }))
 }
 
 /// A commit record's head and its blob bytes.
@@ -1112,7 +1113,7 @@ pub(crate) fn load(tx: &mut Tx<'_>) -> Result<()> {
             // lists by link from the record
             let mut h = super::decode_stored_header(&id, &bytes).ok_or(Error::Corrupt("commit record header"))?;
             head.resolve(&mut h)?;
-            debug_assert_eq!(super::View::of(&h), *view, "meta row of {id:?} is stale");
+            debug_assert_eq!(super::View::of(&h, view.acting), *view, "meta row of {id:?} is stale");
             super::LazyHeader::ready(Arc::new(h))
         } else {
             // a debug build checks the view against the header where it decodes

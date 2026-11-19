@@ -69,7 +69,7 @@ LAN discovery announces nothing stable across networks or meaningful to stranger
   - Only a local client dials one; a node never dials a `unix://` address taken from synced data.
   - A session on it is a **main session**, acting as the node's main actor (Auth without secret); a session on any other transport never is, whatever key it presents.
 - **Client-actor session**: a session on a keyed transport, whose dialer pinned the node's key, that sent a current bearer secret in Auth (spec/wire.md §11.2).
-  - The node acts as its client actor: it signs the session's commits as its account, with that actor in the header's actor field, and holds them to that actor's rights itself, since receivers judge only the author account's (spec/permissions.md §5).
+  - The node acts as its client actor: it signs the session's commits as its account, stating the path to that actor (spec/wire.md §4 field 2), and holds them to that actor's rights itself, since receivers judge only the signing account's (spec/permissions.md §5).
   - A client's secret is never sent on another transport.
   - A client whose connection ended dials again with its session id unchanged, sends Auth, and resends each write that had no answer, marking it (spec/wire.md §11.2). A node that no longer remembers it answers that its outcome is unknown.
 - **Client connection**: a connection a node or a local client dials to use another node's client port sends no Prove: it proves no key actor, keeps no record and opens nothing (spec/sync-opens.md §2-§3), so no pair rule closes it, and its Notifies (kind 29) are the dialer's alone.

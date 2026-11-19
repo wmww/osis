@@ -382,7 +382,7 @@ struct Maker {
 fn maker(core: &Core, who: &Tid, a: &Tid, r: Role, e: &osis_crypto::Epoch) -> Option<Maker> {
     let (_, c) = core.ix.epoch_intro.get(&(*a, r, *e))?;
     let m = core.ix.commits.get(c)?;
-    let author = m.view.author;
+    let author = m.view.signer;
     Some(Maker { me: author == *who && m.origin == crate::events::Origin::Local, may_rotate: may_rotate(core, &author, a).contains(&r) })
 }
 

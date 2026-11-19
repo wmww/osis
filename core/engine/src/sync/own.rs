@@ -106,7 +106,7 @@ impl Engine {
             let own = waits || {
                 let core = &self.core;
                 core.ix.commits.get(c).is_some_and(|m| {
-                    let a = &m.view.author;
+                    let a = &m.view.signer;
                     m.origin == crate::events::Origin::Local && (core.me() == Some(*a) || core.id.tid() == *a || core.followed_links.is_key(a)) && m.view.aspects.iter().any(|x| ctx.holds(core, &x.tid))
                 })
             };

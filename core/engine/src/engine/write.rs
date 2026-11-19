@@ -384,6 +384,14 @@ pub(crate) fn may_write_on(tx: &mut Tx<'_>, tid: &Tid) -> Result<MayWrite> {
     Ok(if tx.core.writable(tid) && super::secrets::ready_to_write_in(tx, tid)? { MayWrite::Yes } else { MayWrite::Later })
 }
 
+// Interim (notes/a1-spec/README.md step 2): the engine states the path to the thing it acts
+// on; until then the old information in the new form.
+/// The path a commit signed by `signer` acting for `actor` states: empty for the signer itself,
+/// else `actor` alone, named as purge author.
+pub(crate) fn interim_path(signer: Tid, actor: Tid) -> osis_commit::Path {
+    if actor == signer { osis_commit::Path::default() } else { osis_commit::Path::through(actor) }
+}
+
 /// May `node` act for `actor` at `ts`: it is the actor or holds write on it? A receiver judges a
 /// commit invalid otherwise (`validity::acts_for`, spec/permissions.md §5.2).
 pub(crate) fn check_acts(core: &Core, node: Tid, records: Records<'_>, actor: &Tid, ts: Ts) -> Result<()> {
@@ -684,7 +692,7 @@ fn build(tx: &mut Tx<'_>, plan: CommitPlan, deltas: Vec<Resolved>) -> Result<osi
         let bytes = if tx.core.forge_bad.contains(&(d.tid, d.ak.clone())) { osis_base::encode(&osis_base::Value::List(vec![osis_base::Value::Int(1)])) } else { bytes };
         writes.push(AspectWrite { tid: d.tid, ak: d.ak, lo: d.lo, hi: d.hi, delta: bytes, retention, replaces: d.replaces, original_floor: d.original_floor });
     }
-    let mut b = CommitBuilder::new(plan.kind, plan.ts, node, plan.actor, plan.form);
+    let mut b = CommitBuilder::new(plan.kind, plan.ts, node, interim_path(node, plan.actor), plan.form);
     b.expires = plan.expires;
     b.aspects = writes;
     b.purge = plan.purge;
@@ -1186,7 +1194,7 @@ fn header_only_parts(tx: &mut Tx<'_>, tid: &Tid, ak: &Ak) -> Result<Vec<osis_crd
         let Some(m) = tx.core.ix.commits.get(&c) else { continue };
         let Some(a) = m.aspect(tid, ak).filter(|ai| m.valid_at(*ai) && m.missing(*ai)).and_then(|ai| m.view.aspects.get(ai)) else { continue };
         if a.lo < a.hi && reset.is_none_or(|r| m.view.ts >= r) {
-            out.push(osis_crdt::DotRange { first: osis_crdt::Dot::new(m.view.form.own_source(m.view.author, c), a.lo), hi: a.hi });
+            out.push(osis_crdt::DotRange { first: osis_crdt::Dot::new(m.view.form.own_source(m.view.signer, c), a.lo), hi: a.hi });
         }
     }
     Ok(out)

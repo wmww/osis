@@ -441,7 +441,7 @@ impl Timeline {
             if !trust::demoting(&o.walked, &self.input.records, c, k) {
                 continue;
             }
-            out.push(Detected { dispute: Dispute { op: *id, holder: op.holder }, author: c.author, target: op.target, stood });
+            out.push(Detected { dispute: Dispute { op: *id, holder: op.holder }, author: c.signer, target: op.target, stood });
         }
         (out, walked, left)
     }
@@ -668,7 +668,7 @@ impl Timeline {
         self.placed = 0;
         for (j, c) in new.iter().enumerate() {
             let p = c.point();
-            let first: BTreeMap<Tid, Option<Point>> = walk::written_on(c).map(|t| (t, self.input.first_write.get(&(c.author, t)).copied())).collect();
+            let first: BTreeMap<Tid, Option<Point>> = walk::written_on(c).map(|t| (t, self.input.first_write.get(&(c.signer, t)).copied())).collect();
             let fresh = self.input.append(std::slice::from_ref(c));
             let n0 = self.walked.history.len();
             let h = self.walked.marks.get(self.items.place(c)).map_or(n0, |m| m.1);
@@ -857,7 +857,7 @@ impl Timeline {
     /// An edge write held here: its author, holder and target.
     pub fn edge_op(&self, w: &WriteId) -> Option<(Tid, Tid, Tid)> {
         let (c, op) = self.edge_write(w)?;
-        Some((c.author, op.holder, op.target))
+        Some((c.signer, op.holder, op.target))
     }
 
     /// The commit and op of an edge write.
@@ -919,7 +919,7 @@ impl Timeline {
         let Some((c, op)) = self.edge_write(w).filter(|_| !self.dropped.contains_key(w)) else { return false };
         let edges = self.edges_at(Some(c.point()));
         let view = View::at(&edges, Some(c.ts)).patched(op.holder, op.target, old);
-        let best = view.roles_from(&c.author);
+        let best = view.roles_from(&c.signer);
         walk::judge(&view, old.as_ref(), c, w.1 as usize, &best).is_some()
     }
     /// The explicit demotions on `thing` that `author` wrote, each once (whoever it demotes), in
@@ -1353,7 +1353,7 @@ impl crate::vouch::FirstWalk for Timeline {
         let best = view.roles_from(w);
         if let Some(rc) = c.edges {
             // c's edge writes as W's own commit there
-            let mine = RoleCommit { id: rc.id, ts, author: *w, actor: *w, frontier: rc.frontier.clone(), ops: rc.ops.clone() };
+            let mine = RoleCommit { id: rc.id, ts, signer: *w, frontier: rc.frontier.clone(), ops: rc.ops.clone() };
             for (k, op) in mine.ops.iter().enumerate() {
                 if walk::judge(&view, edges.get(&op.holder, &op.target), &mine, k, &best).is_none() {
                     return false;

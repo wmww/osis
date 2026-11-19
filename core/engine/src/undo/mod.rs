@@ -398,7 +398,7 @@ fn undone_parts(tx: &mut Tx<'_>, target: &CommitId, ts: Ts) -> Result<Vec<Invert
             return Err(Error::NotKept(*target));
         }
         let Some(Decoded::Delta(d)) = crate::apply::held_part(tx, target, ai)? else { return Err(Error::Corrupt("content part held without its delta")) };
-        let source = h.form.own_source(h.author, *target);
+        let source = h.form.own_source(h.signer, *target);
         let undone = Undone { delta: &d.fragment, source: &source, range: CounterRange { lo: a.lo, hi: a.hi } };
         if osis_crdt::restores(&undone) && !replaced_kept(tx, &h, target, a, now)? {
             return Err(Error::NotKept(*target));
@@ -491,6 +491,8 @@ fn schema_of(core: &Core, ak: &Ak) -> Option<std::sync::Arc<osis_schema::Schema>
 pub struct HeldCommit {
     pub id: CommitId,
     pub header: std::sync::Arc<osis_commit::Header>,
+    /// The thing it acts on (`View::acting`): a valid part is held, so it is known.
+    pub acting: Tid,
     pub received: osis_base::WallMs,
     /// `(tid, ak, body held)` of each valid aspect (in scope, when one is given).
     pub aspects: Vec<(Tid, Ak, bool)>,
@@ -572,7 +574,8 @@ impl Engine {
                     .filter(|(ai, a)| m.valid_at(*ai) && keep.as_ref().is_none_or(|k| k.contains(&(a.tid, a.ak.clone()))))
                     .map(|(ai, a)| (a.tid, a.ak.clone(), !m.body_gone(ai)))
                     .collect();
-                (!aspects.is_empty()).then_some(HeldCommit { id, header, received: m.received, aspects })
+                let acting = m.view.acting?;
+                (!aspects.is_empty()).then_some(HeldCommit { id, header, acting, received: m.received, aspects })
             })
             .collect()
     }

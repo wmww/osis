@@ -194,7 +194,7 @@ fn parked_part_waits_alone_spec_versioning_2() {
     let r = w.range();
     let good = encode_delta(&Delta { nonce: [7; 16], fragment: f }, &writer_ctx(form, Kind::Content, ts, author, r.lo, r.hi), None).unwrap();
     let parked = osis_base::encode(&Value::List(vec![Value::Bytes(vec![0; 16]), Value::List(vec![]), Value::List(vec![]), Value::List(vec![Value::Int(99)])]));
-    let mut cb = CommitBuilder::new(Kind::Content, ts, author, author, form);
+    let mut cb = CommitBuilder::new(Kind::Content, ts, author, osis_commit::Path::default(), form);
     cb.aspects.push(AspectWrite::new(g, ak("t:reg.0"), r.lo, r.hi, good));
     cb.aspects.push(AspectWrite::new(h, ak("t:future.0"), 100, 101, parked));
     let forge_key = e.sign_forged(&mut cb);
@@ -266,7 +266,7 @@ fn waiting_parts_boxes_are_read_in_either_order_spec_crypto_4() {
     let r = w.range();
     let cx = writer_ctx(Form::Commit, Kind::Role, ts, author, r.lo, r.hi);
     let bytes = encode_delta(&Delta { nonce: [7; 16], fragment: f }, &cx, None).unwrap();
-    let mut cb = CommitBuilder::new(Kind::Role, ts, author, author, Form::Commit);
+    let mut cb = CommitBuilder::new(Kind::Role, ts, author, osis_commit::Path::default(), Form::Commit);
     for t in [g, h] {
         let mut aw = AspectWrite::new(t, secrets.clone(), r.lo, r.hi, bytes.clone());
         aw.retention = osis_commit::retention::write_retention(secrets.as_str(), None, None).unwrap();
@@ -283,7 +283,7 @@ fn waiting_parts_boxes_are_read_in_either_order_spec_crypto_4() {
     let (one, two, whole) = (part(g), part(h), blob.encode());
     let plain = {
         // G's part is no `secrets.0` (an empty `sync.0`): only the waiting part's boxes can be read
-        let mut cb = CommitBuilder::new(Kind::Role, ts, author, author, Form::Commit);
+        let mut cb = CommitBuilder::new(Kind::Role, ts, author, osis_commit::Path::default(), Form::Commit);
         let lab = osis_base::Ak::new("sync.0").unwrap();
         let mut w = Writer::new(ts, Source::commit(osis_base::CommitId([0; 32])), r.hi);
         let f = create(&mut w, &osis_schema::core_schema().view(lab.as_str()).unwrap(), &Value::Map(Default::default())).unwrap();
@@ -364,7 +364,7 @@ fn bad_part_beside_good_ones_holds_nothing_back_spec_commits_4() {
     };
     let (one, two) = (delta("one", 7, 1000), delta("two", 8, 1000));
     let bad = osis_base::encode(&Value::List(vec![Value::Int(1)]));
-    let mut cb = CommitBuilder::new(Kind::Content, ts, author, author, form);
+    let mut cb = CommitBuilder::new(Kind::Content, ts, author, osis_commit::Path::default(), form);
     cb.aspects.push(AspectWrite::new(g, ak("t:one.0"), one.1, one.2, one.0));
     cb.aspects.push(AspectWrite::new(g, ak("t:two.0"), two.1, two.2, two.0));
     cb.aspects.push(AspectWrite::new(g, ak("t:bad.0"), 100, 101, bad));
@@ -807,7 +807,7 @@ fn forge_with(f: &mut Forge, parts: &[(Tid, &str, Made, Option<u64>)], purge: Ve
     let form = crate::common::forged_session(author);
     let own = form.own_source(author, osis_base::CommitId([0; 32]));
     let now = e.now().0;
-    let mut cb = CommitBuilder::new(Kind::Content, ts, author, author, form);
+    let mut cb = CommitBuilder::new(Kind::Content, ts, author, osis_commit::Path::default(), form);
     cb.purge = purge;
     for (n, (t, k, how, exp)) in parts.iter().enumerate() {
         let mut w = Writer::new(ts, own.clone(), 1000 + n as u64 * 100);
@@ -897,7 +897,7 @@ fn purge_whose_only_part_is_parked_applies_spec_commits_4() {
         let w = f.lp.peers[0].commit(m).unwrap().unwrap();
         let w = f.lp.peers[0].engine.package(&w).unwrap().unwrap();
         let me = f.lp.peers[0].engine.me();
-        let b = forge_with(&mut f, &[(x, "t:future.0", Made::Parked, None)], vec![osis_commit::PurgeItem::Author { tid: x, ak: ak("t:reg.0"), actor: me }]);
+        let b = forge_with(&mut f, &[(x, "t:future.0", Made::Parked, None)], vec![osis_commit::PurgeItem::Author { tid: x, ak: ak("t:reg.0"), author: me }]);
         // a node holding x, granted read on it: it keeps what it is given of x
         let mut p = f.lp.fresh_reader(0, x, FRESH);
         // what peer 0 sends it: what the sync IDs it syncs carry

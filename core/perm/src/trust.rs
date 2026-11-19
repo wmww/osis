@@ -100,7 +100,7 @@ impl TrustIndex {
     pub(crate) fn new(input: &Input, chained: Arc<CertIndex>) -> TrustIndex {
         let mut ix = TrustIndex { by_author: BTreeMap::new(), by_edge: BTreeMap::new(), chained };
         for c in input.commits.values() {
-            ix.by_author.entry(c.author).or_default().push(c.clone());
+            ix.by_author.entry(c.signer).or_default().push(c.clone());
             for (k, o) in c.ops.iter().enumerate() {
                 let Ok(k) = u32::try_from(k) else { continue };
                 ix.by_edge.entry((o.holder, o.target)).or_default().push((c.point(), k, o.edge));
@@ -119,7 +119,7 @@ impl Input {
     pub(crate) fn trustable(&self, w: &WriteId) -> Option<(&Arc<RoleCommit>, &EdgeOp)> {
         let c = self.commits.get(&w.0)?;
         let op = c.ops.get(usize::try_from(w.1).ok()?)?;
-        (c.frontier.is_some() && op.holder != c.author && op.holder != op.target).then_some((c, op))
+        (c.frontier.is_some() && op.holder != c.signer && op.holder != op.target).then_some((c, op))
     }
 
     /// The value edge (`holder`, `target`) had before op `k` at `point` as held writes set it:
@@ -136,7 +136,7 @@ impl Input {
     /// Whether op `k` of `c` lowers its author's own edge: strictly below (`lowers`, not equal)
     /// the value it had before (`preceding`).
     fn lowers_own(&self, ix: &TrustIndex, c: &RoleCommit, k: u32, op: &EdgeOp) -> bool {
-        if op.holder != c.author {
+        if op.holder != c.signer {
             return false;
         }
         let old = self.preceding(ix, op.holder, op.target, c.point(), k);
@@ -150,7 +150,7 @@ impl Input {
         let point = r.point();
         let below = ix.chained.reach(&self.records, [op.target], true);
         let mut out = BTreeMap::new();
-        for x in self.victims(ix, op.holder, r.author) {
+        for x in self.victims(ix, op.holder, r.signer) {
             for c in ix.by_author.get(&x).into_iter().flatten() {
                 if c.id == r.id || c.point() >= point || self.frontier(r).is_some_and(|f| f.covers(&c.id)) {
                     continue;

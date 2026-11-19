@@ -171,7 +171,7 @@ pub fn edge_events<'a>(commits: impl IntoIterator<Item = &'a Commit>) -> Vec<Edg
                     commit: c.id,
                     part: i,
                     thing: p.thing,
-                    author: c.author,
+                    author: c.signer,
                     holder: e.holder,
                     value: Edge::of(e),
                     frontier: frontier.clone(),
@@ -225,7 +225,7 @@ pub struct Addendum {
 pub fn addenda<'a>(view: impl IntoIterator<Item = &'a Commit>) -> Vec<Addendum> {
     let mut out = Vec::new();
     for c in view {
-        if c.kind != CommitKind::Content || c.actor != c.author {
+        if c.kind != CommitKind::Content || c.acting != c.signer {
             continue;
         }
         for p in c.parts.iter().filter(|p| p.aspect == Aspect::ADDENDA) {
@@ -233,7 +233,7 @@ pub fn addenda<'a>(view: impl IntoIterator<Item = &'a Commit>) -> Vec<Addendum> 
                 Body::Held(Delta::Addenda(es)) => es.clone(),
                 _ => Vec::new(),
             };
-            out.push(Addendum { commit: c.id, key: c.key(), author: c.author, thing: p.thing, entries });
+            out.push(Addendum { commit: c.id, key: c.key(), author: c.signer, thing: p.thing, entries });
         }
     }
     out
@@ -442,14 +442,15 @@ impl Timeline {
     }
 
     /// Commit `c`'s delta on `aspect` of the thing (spec/permissions.md §5.2): judged by its
-    /// author's authority, or for plain content (a content commit carrying no purge request, an
+    /// signer's authority, or for plain content (a content commit carrying no purge request, an
     /// aspect neither role-class nor admin-only) vouched for by an addendum; an addendum by the
-    /// fixpoint (`vouch`). A header actor other than the author needs the author's write on it,
-    /// or an addendum on the actor vouching for the commit (Acting).
+    /// fixpoint (`vouch`). An acting thing other than the signer (spec/permissions.md §5.2
+    /// Interim) needs the signer's write on it, or an addendum on it vouching for the commit
+    /// (Acting).
     pub fn valid_delta(&self, c: &Commit, thing: ThingId, aspect: Aspect) -> bool {
-        let (x, key) = (c.author, c.key());
+        let (x, key) = (c.signer, c.key());
         let plain = c.kind == CommitKind::Content && c.purge.is_empty();
-        let acts = c.actor == x || self.valid_as(x, c.actor, Role::Write, key, c.id) || plain && self.vouched(c.actor, x, key, c.id);
+        let acts = c.acting == x || self.valid_as(x, c.acting, Role::Write, key, c.id) || plain && self.vouched(c.acting, x, key, c.id);
         if aspect == Aspect::ADDENDA {
             return acts && self.valid_addenda.contains(&(c.id, thing));
         }
@@ -478,13 +479,14 @@ impl Timeline {
         })
     }
 
-    /// spec/permissions.md §6: does a request (author `q`, actor `qa`, commit `qc` at `qkey`) hold
-    /// the right over a delta purgeable by `by`, of header actor `actor`, on the thing.
+    /// spec/permissions.md §6: does a request (signer `q`, acting on `qa`, commit `qc` at `qkey`)
+    /// hold the right over a delta purgeable by `by`, of purge author `actor` (its commit's acting
+    /// thing, spec/permissions.md §5.2 Interim), on the thing.
     #[allow(clippy::too_many_arguments)]
     pub fn right(&self, q: NodeId, qa: NodeId, qkey: Key, qc: CommitId, by: PurgeBy, actor: NodeId, thing: ThingId) -> bool {
         let both = |need: Role| self.valid_as(q, thing, need, qkey, qc) && (qa == q || self.valid_as(qa, thing, need, qkey, qc));
         let admin = || both(Role::Admin);
-        // the author's part of `author_or_admin`: the delta's actor while it holds write on the
+        // the author's part of `author_or_admin`: the delta's purge author while it holds write on the
         // thing, held by it and by any node with write on it; each signer holds it on its own
         let on_actor = |x: NodeId| x == actor || self.valid_as(x, actor, Role::Write, qkey, qc);
         let auth = || on_actor(q) && on_actor(qa) && self.valid_as(actor, thing, Role::Write, qkey, qc);
@@ -545,7 +547,7 @@ pub fn namings<'a>(commits: impl IntoIterator<Item = &'a Commit>) -> Vec<Naming>
     for c in commits {
         for p in &c.parts {
             if let (CommitKind::Role, Body::Held(Delta::Edge(EdgeWrite { holder, role: Some(r), .. }))) = (c.kind, &p.body) {
-                out.push((p.thing, c.author, *holder, *r));
+                out.push((p.thing, c.signer, *holder, *r));
             }
         }
     }

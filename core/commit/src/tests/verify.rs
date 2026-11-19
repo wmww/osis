@@ -32,12 +32,12 @@ impl Secrets for TestSecrets {
     }
 }
 
-/// A one-register delta by `author` at `ts`, counter `lo`.
-pub(crate) fn register_delta(author: Tid, at: Ts, lo: u64, v: &str) -> Vec<u8> {
-    let mut w = Writer::new(at, SESSION.own_source(author, CommitId([0; 32])), lo);
+/// A one-register delta by `signer` at `ts`, counter `lo`.
+pub(crate) fn register_delta(signer: Tid, at: Ts, lo: u64, v: &str) -> Vec<u8> {
+    let mut w = Writer::new(at, SESSION.own_source(signer, CommitId([0; 32])), lo);
     let fragment = create(&mut w, &AnyView, &Value::Str(v.into())).unwrap();
     let d = Delta { nonce: [lo as u8; 16], fragment };
-    encode_delta(&d, &writer_ctx(SESSION, Kind::Content, at, author, lo, lo + 1), None).unwrap()
+    encode_delta(&d, &writer_ctx(SESSION, Kind::Content, at, signer, lo, lo + 1), None).unwrap()
 }
 
 // spec/crypto.md §7: delete keys by retention level; a missing
@@ -52,15 +52,15 @@ fn delete_levels_by_retention() {
     assert!(delete_keys(&TestSecrets { admin: false }, &t(3), &Retention::default()).is_err());
 }
 
-/// A valid one-aspect content commit over a register delta, its blob and author key.
+/// A valid one-aspect content commit over a register delta, its blob and signer key.
 pub(crate) fn one_commit() -> (CommitBlob, SigningSecret) {
     let key = SigningSecret::from_seed(&Secret32::from_bytes([0x41; 32]));
     let mut h = sample_header();
     let at = h.ts;
-    let delta = register_delta(h.author, at, 1, "hello");
+    let delta = register_delta(h.signer, at, 1, "hello");
     h.aspects[0].hash = delta_hash(&sec(0xd0, &h.aspects[0].tid), &delta);
     let sigs = crate::Sigs::signed(&h.id(), &key, None, Vec::new(), Vec::new());
-    (CommitBlob { header: h, sigs, parts: vec![Part { ai: 0, delta }] }, key)
+    (CommitBlob { header: h, sigs, parts: vec![Part { ai: 0, delta }], salted: Default::default() }, key)
 }
 
 // spec/wire.md §4: the commit blob plaintext round-trips (a stored record's decode-only read
@@ -88,7 +88,7 @@ fn commit_blob_round_trip() {
 fn commit_decoders_accept_only_canonical_bytes() {
     let (b, _) = one_commit();
     let secret = Secret32::from_bytes([7; 32]);
-    let env = seal_commit(&b, |_| 0, |_, _| Some((secret.clone(), vec![])), &[], &mut crate::tests::build::rng()).unwrap();
+    let env = seal_commit(&b, &b.header, |_| 0, |_, _| Some((secret.clone(), vec![])), &[], &mut crate::tests::build::rng()).unwrap();
     type Decode<'a> = &'a dyn Fn(&[u8]) -> Option<Vec<u8>>;
     let canonical: [(&str, Vec<u8>, Decode); 3] = [
         ("header", b.header.encode(), &|x| Header::decode(x).ok().map(|h| h.encode())),
@@ -161,13 +161,13 @@ fn verify_deltas() {
     assert!(matches!(verify_blob(&b, &other.verifying_key(), &dedup, None), Err(Error::BadSignature)));
     // range check: a delta whose own writes reach above the header range [1, 2)
     let (mut b2, _) = one_commit();
-    let (author, at) = (b2.header.author, b2.header.ts);
-    let mut w = Writer::new(at, SESSION.own_source(author, CommitId([0; 32])), 1);
+    let (signer, at) = (b2.header.signer, b2.header.ts);
+    let mut w = Writer::new(at, SESSION.own_source(signer, CommitId([0; 32])), 1);
     let set = Value::Set([Value::Int(1), Value::Int(2)].into_iter().collect());
     let fragment = create(&mut w, &AnyView, &set).unwrap();
     let r = w.range();
     assert!(r.hi > 2);
-    let delta = encode_delta(&Delta { nonce: [5; 16], fragment }, &writer_ctx(SESSION, Kind::Content, at, author, r.lo, r.hi), None).unwrap();
+    let delta = encode_delta(&Delta { nonce: [5; 16], fragment }, &writer_ctx(SESSION, Kind::Content, at, signer, r.lo, r.hi), None).unwrap();
     b2.header.aspects[0].hash = delta_hash(&sec(0xd0, &t(3)), &delta);
     b2.parts[0].delta = delta;
     let mut i = Interner::new();
@@ -203,12 +203,12 @@ fn verify_refuses_page_items_spec_crdt_8() {
 #[test]
 fn keyed_map_removal_only_in_role_class_aspects_spec_crdt_5_6() {
     let (mut b, _) = one_commit();
-    let (author, at) = (b.header.author, b.header.ts);
+    let (signer, at) = (b.header.signer, b.header.ts);
     let dot = osis_crdt::Dot::new(SESSION.own_source(t(9), CommitId([0; 32])), 4);
-    let w = Writer::new(at, SESSION.own_source(author, CommitId([0; 32])), 1);
+    let w = Writer::new(at, SESSION.own_source(signer, CommitId([0; 32])), 1);
     let check = |b: &mut CommitBlob, keyed: bool, ak: &str| {
         let fragment = osis_crdt::reset_entries(&w.clone().keyed_removals(keyed), &[(dot.clone(), Value::Weak(t(5)))]);
-        let delta = encode_delta(&Delta { nonce: [5; 16], fragment }, &writer_ctx(SESSION, Kind::Content, at, author, 1, 2), None).unwrap();
+        let delta = encode_delta(&Delta { nonce: [5; 16], fragment }, &writer_ctx(SESSION, Kind::Content, at, signer, 1, 2), None).unwrap();
         b.header.aspects[0].ak = osis_base::Ak::new(ak).unwrap();
         b.header.aspects[0].hash = delta_hash(&sec(0xd0, &t(3)), &delta);
         b.parts[0].delta = delta;
@@ -227,7 +227,7 @@ fn vouches_deltas_put_new_only_spec_dm_9() {
     use osis_crdt::{DeltaBuilder, Op, PathOp, PathSeg};
     use osis_schema::Codec;
     let (mut b, _) = one_commit();
-    let (author, at) = (b.header.author, b.header.ts);
+    let (signer, at) = (b.header.signer, b.header.ts);
     let view = osis_schema::core_schema().view("vouches.0").unwrap();
     let key = |n: u8| Value::Bytes(vec![n; 32]);
     let frontier = |n: u8| osis_schema::core_types::Frontier { commits: [CommitId([n; 32])].into() }.to_value();
@@ -240,10 +240,10 @@ fn vouches_deltas_put_new_only_spec_dm_9() {
         bd.finish().unwrap().0
     };
     let delta_of = |op: PathOp| {
-        let mut bd = DeltaBuilder::new(&state, Writer::new(at, SESSION.own_source(author, CommitId([0; 32])), 1));
+        let mut bd = DeltaBuilder::new(&state, Writer::new(at, SESSION.own_source(signer, CommitId([0; 32])), 1));
         bd.apply(&op, &view).unwrap();
         let (fragment, range) = bd.finish().unwrap();
-        (encode_delta(&Delta { nonce: [5; 16], fragment }, &writer_ctx(SESSION, Kind::Content, at, author, range.lo, range.hi), None).unwrap(), range.hi)
+        (encode_delta(&Delta { nonce: [5; 16], fragment }, &writer_ctx(SESSION, Kind::Content, at, signer, range.lo, range.hi), None).unwrap(), range.hi)
     };
     let check = |b: &mut CommitBlob, ak: &str, (delta, hi): &(Vec<u8>, u64)| {
         b.header.aspects[0].ak = osis_base::Ak::new(ak).unwrap();
@@ -277,7 +277,7 @@ fn paged_vouches_deltas_put_new_only_spec_dm_9() {
     use osis_crdt::{DeltaBuilder, MemoryPages, Op, PageParams, PathOp, PathSeg};
     use osis_schema::Codec;
     let (mut b, _) = one_commit();
-    let (author, at) = (b.header.author, b.header.ts);
+    let (signer, at) = (b.header.signer, b.header.ts);
     let view = osis_schema::core_schema().view("vouches.0").unwrap();
     let key = |n: u16| Value::Bytes([n.to_be_bytes().to_vec(), vec![7; 30]].concat());
     let frontier = |n: u16, k: u16| osis_schema::core_types::Frontier { commits: (0..k).map(|i| CommitId([[n.to_be_bytes(), i.to_be_bytes()].concat(), vec![9; 28]].concat().try_into().unwrap())).collect() }.to_value();
@@ -290,13 +290,13 @@ fn paged_vouches_deltas_put_new_only_spec_dm_9() {
     };
     let small = PageParams { target: 4096, cut: osis_base::ChunkParams { min: 1024, max: 4096, mask_bits: 8 }, fanout: 8, ..PageParams::FORMAT };
     let delta_of = |ops: Vec<PathOp>, pages: &mut MemoryPages| {
-        let mut bd = DeltaBuilder::new(&state, Writer::new(at, SESSION.own_source(author, CommitId([0; 32])), 1));
+        let mut bd = DeltaBuilder::new(&state, Writer::new(at, SESSION.own_source(signer, CommitId([0; 32])), 1));
         for op in &ops {
             bd.apply(op, &view).unwrap();
         }
         let (fragment, range) = bd.finish().unwrap();
         let before = pages.len();
-        let d = encode_delta(&Delta { nonce: [5; 16], fragment }, &writer_ctx(SESSION, Kind::Content, at, author, range.lo, range.hi), Some(pages)).unwrap();
+        let d = encode_delta(&Delta { nonce: [5; 16], fragment }, &writer_ctx(SESSION, Kind::Content, at, signer, range.lo, range.hi), Some(pages)).unwrap();
         assert!(pages.len() > before, "paged");
         (d, range.hi)
     };
@@ -332,11 +332,11 @@ fn paged_vouches_deltas_put_new_only_spec_dm_9() {
 fn unchunked_large_value_is_bad_input_spec_dm_6() {
     use osis_base::format::CHUNK_THRESHOLD;
     let (mut b, _) = one_commit();
-    let (author, at) = (b.header.author, b.header.ts);
+    let (signer, at) = (b.header.signer, b.header.ts);
     b.header.aspects[0].hi = 1 << 20;
-    let fragment = |v: &Value| create(&mut Writer::new(at, SESSION.own_source(author, CommitId([0; 32])), 1), &AnyView, v).unwrap();
+    let fragment = |v: &Value| create(&mut Writer::new(at, SESSION.own_source(signer, CommitId([0; 32])), 1), &AnyView, v).unwrap();
     let check = |b: &mut CommitBlob, v: &Value| {
-        let delta = encode_delta(&Delta { nonce: [5; 16], fragment: fragment(v) }, &writer_ctx(SESSION, Kind::Content, at, author, 1, b.header.aspects[0].hi), None).unwrap();
+        let delta = encode_delta(&Delta { nonce: [5; 16], fragment: fragment(v) }, &writer_ctx(SESSION, Kind::Content, at, signer, 1, b.header.aspects[0].hi), None).unwrap();
         b.header.aspects[0].hash = delta_hash(&sec(0xd0, &t(3)), &delta);
         b.parts[0].delta = delta;
         verify_part(&b.header, &b.id(), &b.parts[0], &sec(0xd0, &t(3)), &mut Interner::new(), None)

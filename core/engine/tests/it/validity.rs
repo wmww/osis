@@ -174,7 +174,7 @@ fn overlapping_counters_spec_commits_4() {
     let bytes = encode_delta(&Delta { nonce: [7; 16], fragment: f }, &writer_ctx(h.form, Kind::Content, ts, b, lo, hi), None).unwrap();
     let mut aw = AspectWrite::new(d, other.clone(), lo, hi, bytes);
     aw.retention = crate::common::purgeable_by(osis_base::PurgeBy::Writer);
-    let mut cb = CommitBuilder::new(Kind::Content, ts, b, b, h.form);
+    let mut cb = CommitBuilder::new(Kind::Content, ts, b, osis_commit::Path::default(), h.form);
     cb.aspects.push(aw);
     let rec = lp.peers[0].engine.get_typed(&d, &osis_schema::core_types::CREATED).unwrap().unwrap();
     let forge_key = lp.peers[1].engine.sign_forged(&mut cb);
@@ -198,7 +198,7 @@ fn forge_reg(lp: &mut LocalPeer, d: Tid, ak: &osis_base::Ak, lo: u64, ts: osis_b
     let bytes = encode_delta(&Delta { nonce: [7; 16], fragment: f }, &writer_ctx(form, Kind::Content, ts, b, lo, hi), None).unwrap();
     let mut aw = AspectWrite::new(d, ak.clone(), lo, hi, bytes);
     aw.retention = crate::common::purgeable_by(osis_base::PurgeBy::Writer);
-    let mut cb = CommitBuilder::new(Kind::Content, ts, b, b, form);
+    let mut cb = CommitBuilder::new(Kind::Content, ts, b, osis_commit::Path::default(), form);
     cb.aspects.push(aw);
     let rec = lp.peers[0].engine.get_typed(&d, &osis_schema::core_types::CREATED).unwrap().unwrap();
     let forge_key = lp.peers[1].engine.sign_forged(&mut cb);
@@ -374,7 +374,7 @@ fn reused_counters_never_void_a_grant_spec_commits_4() {
     let (f, range) = builder.finish().unwrap();
     assert!(range.lo < holders.hi && holders.lo < range.hi, "the ranges overlap");
     let bytes = encode_delta(&Delta { nonce: [7; 16], fragment: f }, &writer_ctx(form, Kind::Role, ts, a, range.lo, range.hi), None).unwrap();
-    let mut cb = CommitBuilder::new(Kind::Role, ts, a, a, form);
+    let mut cb = CommitBuilder::new(Kind::Role, ts, a, osis_commit::Path::default(), form);
     let mut aw = AspectWrite::new(d, holders.ak.clone(), range.lo, range.hi, bytes);
     aw.retention = osis_commit::retention::ROLE_RETENTION;
     cb.aspects.push(aw);
@@ -469,7 +469,8 @@ fn forge_acting(lp: &mut LocalPeer, d: Tid, actor: Tid, v: &str) -> Vec<u8> {
     let bytes = encode_delta(&Delta { nonce: [7; 16], fragment: f }, &cx, None).unwrap();
     let mut aw = AspectWrite::new(d, ak("t:reg.0"), r.lo, r.hi, bytes);
     aw.retention = crate::common::purgeable_by(osis_base::PurgeBy::Writer);
-    let mut cb = CommitBuilder::new(Kind::Content, ts, b, actor, Form::Commit);
+    let path = if actor == b { osis_commit::Path::default() } else { osis_commit::Path::through(actor) };
+    let mut cb = CommitBuilder::new(Kind::Content, ts, b, path, Form::Commit);
     cb.aspects.push(aw);
     let rec = lp.peers[0].engine.get_typed(&d, &osis_schema::core_types::CREATED).unwrap().unwrap();
     let forge_key = lp.peers[1].engine.sign_forged(&mut cb);
@@ -555,7 +556,7 @@ pub(crate) fn forge_by(by: &osis_engine::Engine, rec: osis_base::CreationRecord,
     let bytes = encode_delta(&Delta { nonce: [7; 16], fragment: f }, &cx, None).unwrap();
     let mut aw = AspectWrite::new(t, ak.clone(), r.lo, r.hi, bytes);
     aw.retention = osis_commit::retention::write_retention(ak.as_str(), None, None).unwrap();
-    let mut cb = CommitBuilder::new(kind, ts, author, author, Form::Commit);
+    let mut cb = CommitBuilder::new(kind, ts, author, osis_commit::Path::default(), Form::Commit);
     cb.aspects.push(aw);
     let forge_key = by.sign_forged(&mut cb);
     cb.build(&forge_key, &Keys(rec), &mut MemoryBlobs::default(), &mut osis_crypto::SeededRng::from_u64(0)).unwrap().commit.encode()
@@ -730,7 +731,7 @@ fn snapshot_vouches_for_its_writes_spec_perm_5_2() {
         lp.sync_all().unwrap();
         add_tag(&mut lp, 1, d, "mon");
         sync(&mut lp, 1, 0);
-        let mon = lp.peers[1].engine.commit_ids().into_iter().filter(|c| lp.peers[1].engine.header(c).is_some_and(|h| h.author == b && h.aspects.iter().any(|a| a.ak.as_str() == "t:tags.0"))).max_by_key(|c| lp.peers[1].engine.header(c).unwrap().ts).unwrap();
+        let mon = lp.peers[1].engine.commit_ids().into_iter().filter(|c| lp.peers[1].engine.header(c).is_some_and(|h| h.signer == b && h.aspects.iter().any(|a| a.ak.as_str() == "t:tags.0"))).max_by_key(|c| lp.peers[1].engine.header(c).unwrap().ts).unwrap();
         lp.advance(DAY);
         add_tag(&mut lp, 1, d, "x");
         sync(&mut lp, 1, 0);
@@ -742,7 +743,7 @@ fn snapshot_vouches_for_its_writes_spec_perm_5_2() {
         let both = BTreeSet::from(["mon".to_string(), "x".to_string()]);
         assert_eq!(tags(&mut lp, 0, d), both, "Alice: the snapshot vouches for x");
         // Dave: everything of Alice's but Bob's own commits
-        let pks: Vec<_> = packages(&mut lp, 0).into_iter().filter(|p| lp.peers[0].engine.header(&p.id).is_some_and(|h| h.author != b)).collect();
+        let pks: Vec<_> = packages(&mut lp, 0).into_iter().filter(|p| lp.peers[0].engine.header(&p.id).is_some_and(|h| h.signer != b)).collect();
         let (late, early): (Vec<_>, Vec<_>) = pks.into_iter().partition(|p| if revoke_first { p.id == snap } else { p.id == rv });
         for pk in early.iter().chain(&late) {
             lp.deliver(3, pk).unwrap();
@@ -771,7 +772,7 @@ fn entry_by(src: osis_crdt::Source, ts: osis_base::Ts, lo: u64, k: &str, v: &str
 /// The own source of held commit `c` at peer `i` (a session-form commit's session).
 fn source_of(lp: &LocalPeer, i: usize, c: &osis_base::CommitId) -> osis_crdt::Source {
     let h = lp.peers[i].engine.header(c).unwrap();
-    h.form.own_source(h.author, *c)
+    h.form.own_source(h.signer, *c)
 }
 
 /// Frontiers of one session source.
@@ -860,7 +861,7 @@ fn snapshot_before_grant_counts_spec_perm_5_2() {
     lp.advance(DAY);
     let snap = lp.peers[0].engine.snapshot(&d, &ak("t:tags.0")).unwrap().unwrap();
     // Dave: Alice's commits but the grant, then the grant
-    let pks: Vec<_> = packages(&mut lp, 0).into_iter().filter(|p| lp.peers[0].engine.header(&p.id).is_some_and(|h| h.author != b)).collect();
+    let pks: Vec<_> = packages(&mut lp, 0).into_iter().filter(|p| lp.peers[0].engine.header(&p.id).is_some_and(|h| h.signer != b)).collect();
     let (holders, content): (Vec<_>, Vec<_>) = pks.into_iter().partition(|p| p.id == g);
     for pk in &content {
         lp.deliver(2, pk).unwrap();
@@ -963,7 +964,7 @@ fn entry_created_after_demotion(snapshot_first: bool) {
     let snap_id = match lp.peers[2].receive(&snap, Vec::new()).unwrap() { osis_engine::Ingested::Applied(id) => id, x => panic!("{x:?}") };
     // Dave: Alice's and Carol's commits (the snapshot among them), none of Bob's
     for from in [0, 2] {
-        let mut pks: Vec<_> = packages(&mut lp, from).into_iter().filter(|p| lp.peers[from].engine.header(&p.id).is_some_and(|h| h.author != b)).collect();
+        let mut pks: Vec<_> = packages(&mut lp, from).into_iter().filter(|p| lp.peers[from].engine.header(&p.id).is_some_and(|h| h.signer != b)).collect();
         if snapshot_first {
             pks.sort_by_key(|p| p.id != snap_id);
         }
@@ -1398,7 +1399,7 @@ fn unmerge_paged_matches_fresh_large_spec_crdt_4_6() {
         // B's writes last
         let mut fresh = lp.fresh_reader(0, d, 8001);
         let pks = packages(&mut lp, 0);
-        let is_b = |lp: &LocalPeer, id: &osis_base::CommitId| lp.peers[0].engine.header(id).is_some_and(|h| h.author == b && !is_role(&lp.peers[0].engine, id));
+        let is_b = |lp: &LocalPeer, id: &osis_base::CommitId| lp.peers[0].engine.header(id).is_some_and(|h| h.signer == b && !is_role(&lp.peers[0].engine, id));
         for p in pks.iter().filter(|p| !is_b(&lp, &p.id)).chain(pks.iter().filter(|p| is_b(&lp, &p.id))) {
             fresh.engine.ingest(&p.bytes, p.blobs.clone()).unwrap();
         }
@@ -1601,7 +1602,7 @@ fn differing_copies_join_by_copy_order_alike_spec_perm_5_2() {
             }
             let evs = lp.peers[i].drain_events();
             if real_first == Some(true) {
-                let changed = evs.iter().any(|e| matches!(e, Event::Applied { id, author, changed, .. } if Some(*id) == fid && *author == c && changed.contains(&(d, reg.clone()))));
+                let changed = evs.iter().any(|e| matches!(e, Event::Applied { id, signer, changed, .. } if Some(*id) == fid && *signer == c && changed.contains(&(d, reg.clone()))));
                 assert_eq!(changed, wins, "peer {i}: the change is the snapshot's: {evs:?}");
             }
             if real_first == Some(false) {
@@ -1612,7 +1613,7 @@ fn differing_copies_join_by_copy_order_alike_spec_perm_5_2() {
             assert_eq!(lp.peers[i].engine.get(&d, &reg).unwrap(), Some(want), "peer {i}");
             // history: from verified commits only
             let e = &lp.peers[i].engine;
-            let by_bob = e.held_commits(Some(&[(d, reg.clone())])).iter().any(|x| x.header.author == b);
+            let by_bob = e.held_commits(Some(&[(d, reg.clone())])).iter().any(|x| x.header.signer == b);
             assert_eq!(by_bob, real_first.is_some(), "peer {i}: Bob's commit listed only where held");
             let ch = e.changed(&d).unwrap();
             assert_eq!(ch.commit == real, real_first.is_some(), "peer {i}: last change");
@@ -2075,7 +2076,7 @@ fn demoted_compactor_snapshot_by_frontier_spec_perm_5_2() {
         let reader = lp.fresh_reader(0, d, 6100);
         lp.peers.push(reader);
         lp.hold_at(lp.peers.len() - 1, d);
-        let bob: BTreeSet<_> = lp.peers[1].engine.commit_ids().into_iter().filter(|x| lp.peers[1].engine.header(x).is_some_and(|h| h.author == b && h.aspects.iter().any(|a| a.ak.as_str() == "t:tags.0"))).collect();
+        let bob: BTreeSet<_> = lp.peers[1].engine.commit_ids().into_iter().filter(|x| lp.peers[1].engine.header(x).is_some_and(|h| h.signer == b && h.aspects.iter().any(|a| a.ak.as_str() == "t:tags.0"))).collect();
         lp.advance(DAY);
         let snap = lp.peers[2].engine.snapshot(&d, &ak("t:tags.0")).unwrap().unwrap();
         sync(&mut lp, 2, 0);
@@ -2123,7 +2124,7 @@ fn reader_copy_voids_no_valid_carrier_spec_perm_5_2() {
         lp.sync_all().unwrap();
         add_tag(&mut lp, 1, d, "bob");
         lp.sync_all().unwrap();
-        let bob: BTreeSet<_> = lp.peers[1].engine.commit_ids().into_iter().filter(|x| lp.peers[1].engine.header(x).is_some_and(|h| h.author == b && h.aspects.iter().any(|a| a.ak.as_str() == "t:tags.0"))).collect();
+        let bob: BTreeSet<_> = lp.peers[1].engine.commit_ids().into_iter().filter(|x| lp.peers[1].engine.header(x).is_some_and(|h| h.signer == b && h.aspects.iter().any(|a| a.ak.as_str() == "t:tags.0"))).collect();
         lp.advance(1_000);
         let snap = lp.peers[0].engine.snapshot(&d, &ak("t:tags.0")).unwrap().unwrap();
         let now = osis_base::Ts::make(lp.peers[2].engine.now(), 0).unwrap();
@@ -2215,7 +2216,7 @@ fn valid_carrier_dropped_alike_either_order_spec_perm_5_2() {
     lp.sync_all().unwrap();
     add_tag(&mut lp, 1, d, "bob");
     lp.sync_all().unwrap();
-    let bob: BTreeSet<_> = lp.peers[1].engine.commit_ids().into_iter().filter(|x| lp.peers[1].engine.header(x).is_some_and(|h| h.author == b && h.aspects.iter().any(|a| a.ak.as_str() == "t:tags.0"))).collect();
+    let bob: BTreeSet<_> = lp.peers[1].engine.commit_ids().into_iter().filter(|x| lp.peers[1].engine.header(x).is_some_and(|h| h.signer == b && h.aspects.iter().any(|a| a.ak.as_str() == "t:tags.0"))).collect();
     lp.advance(1_000);
     let snap = lp.peers[0].engine.snapshot(&d, &ak("t:tags.0")).unwrap().unwrap();
     lp.advance(1_000);
@@ -2333,7 +2334,7 @@ fn snapshot_extra_dot_of_dropped_delta_joins_alike_spec_perm_5_2() {
 #[test]
 fn removed_holder_write_compacted_earlier_stays_alike_spec_perm_5_2() {
     let (mut lp, d, b, _) = setup();
-    let id_of = |lp: &mut LocalPeer, i: usize| lp.peers[i].engine.commit_ids().into_iter().filter(|c| lp.peers[i].engine.header(c).is_some_and(|h| h.author == b && h.aspects.iter().any(|a| a.ak.as_str() == "t:tags.0"))).max_by_key(|c| lp.peers[i].engine.header(c).unwrap().ts).unwrap();
+    let id_of = |lp: &mut LocalPeer, i: usize| lp.peers[i].engine.commit_ids().into_iter().filter(|c| lp.peers[i].engine.header(c).is_some_and(|h| h.signer == b && h.aspects.iter().any(|a| a.ak.as_str() == "t:tags.0"))).max_by_key(|c| lp.peers[i].engine.header(c).unwrap().ts).unwrap();
     add_tag(&mut lp, 1, d, "mon");
     lp.sync_all().unwrap();
     lp.advance(DAY);
@@ -2404,7 +2405,7 @@ fn coverer_demoted_after_cover_drop_alike_spec_perm_5_2() {
         let mut obs = reader(&mut lp, 0, d, 0x5fa1);
         add_tag(&mut lp, 1, d, "bob");
         lp.sync_all().unwrap();
-        let bob: BTreeSet<_> = lp.peers[1].engine.commit_ids().into_iter().filter(|x| lp.peers[1].engine.header(x).is_some_and(|h| h.author == b && h.aspects.iter().any(|a| a.ak.as_str() == "t:tags.0"))).collect();
+        let bob: BTreeSet<_> = lp.peers[1].engine.commit_ids().into_iter().filter(|x| lp.peers[1].engine.header(x).is_some_and(|h| h.signer == b && h.aspects.iter().any(|a| a.ak.as_str() == "t:tags.0"))).collect();
         lp.advance(1_000);
         let s1 = lp.peers[0].engine.snapshot(&d, &ak("t:tags.0")).unwrap().unwrap();
         sync(&mut lp, 0, 2);
@@ -2473,7 +2474,7 @@ fn invalidated_copy_of_shared_dot_goes_alike_spec_perm_5_2() {
     add_tag(&mut lp, 1, d, "bob");
     lp.sync_all().unwrap();
     let tags_ak = ak("t:tags.0");
-    let bob = lp.peers[1].engine.commit_ids().into_iter().find(|x| lp.peers[1].engine.header(x).is_some_and(|h| h.author == b && h.aspects.iter().any(|a| a.ak == tags_ak))).unwrap();
+    let bob = lp.peers[1].engine.commit_ids().into_iter().find(|x| lp.peers[1].engine.header(x).is_some_and(|h| h.signer == b && h.aspects.iter().any(|a| a.ak == tags_ak))).unwrap();
     let bh = lp.peers[1].engine.header(&bob).unwrap();
     let lo = bh.aspects.iter().find(|a| a.ak == tags_ak).unwrap().lo;
     let empty = osis_crdt::Fragment::default();
@@ -2833,7 +2834,7 @@ fn missing_snapshot_not_covered_by_older_spec_perm_5_2() {
     lp.advance(1_000);
     add_tag(&mut lp, 1, d, "bob");
     lp.sync_all().unwrap();
-    let bob: BTreeSet<_> = lp.peers[1].engine.commit_ids().into_iter().filter(|x| lp.peers[1].engine.header(x).is_some_and(|h| h.author == b && h.aspects.iter().any(|a| a.ak == tags_ak))).collect();
+    let bob: BTreeSet<_> = lp.peers[1].engine.commit_ids().into_iter().filter(|x| lp.peers[1].engine.header(x).is_some_and(|h| h.signer == b && h.aspects.iter().any(|a| a.ak == tags_ak))).collect();
     lp.advance(1_000);
     let s1 = lp.peers[0].engine.snapshot(&d, &tags_ak).unwrap().unwrap();
     sync(&mut lp, 0, 2);
@@ -2875,7 +2876,7 @@ fn flipped_snapshot_leaves_frontier_alike_spec_perm_5_2() {
     let (mut lp, d, b, c) = setup();
     add_tag(&mut lp, 1, d, "bob");
     sync(&mut lp, 1, 2);
-    let bob: BTreeSet<_> = lp.peers[1].engine.commit_ids().into_iter().filter(|x| lp.peers[1].engine.header(x).is_some_and(|h| h.author == b)).collect();
+    let bob: BTreeSet<_> = lp.peers[1].engine.commit_ids().into_iter().filter(|x| lp.peers[1].engine.header(x).is_some_and(|h| h.signer == b)).collect();
     lp.advance(1_000);
     let snap = lp.peers[2].engine.snapshot(&d, &ak("t:tags.0")).unwrap().unwrap();
     sync(&mut lp, 2, 0);
@@ -3029,7 +3030,7 @@ fn late_snapshot_part_received_when_it_came_spec_perm_5_1() {
     add_tag(&mut lp, 1, d, "bob");
     sync(&mut lp, 1, 2);
     // Bob's commits on d
-    let bob: BTreeSet<_> = lp.peers[1].engine.commit_ids().into_iter().filter(|x| lp.peers[1].engine.header(x).is_some_and(|h| h.author == b && h.aspects.iter().any(|a| a.tid == d))).collect();
+    let bob: BTreeSet<_> = lp.peers[1].engine.commit_ids().into_iter().filter(|x| lp.peers[1].engine.header(x).is_some_and(|h| h.signer == b && h.aspects.iter().any(|a| a.tid == d))).collect();
     lp.advance(1_000);
     let snap = lp.peers[2].engine.snapshot(&d, &ak("t:tags.0")).unwrap().unwrap();
     sync(&mut lp, 2, 0);
@@ -3157,7 +3158,7 @@ fn forge_minting(lp: &mut LocalPeer, by: usize, rec: &osis_base::CreationRecord,
     let bytes = encode_delta(&Delta { nonce: [7; 16], fragment: f }, &writer_ctx(form, Kind::Content, ts, author, r.lo, r.hi), None).map_err(|e| format!("{e:?}"))?;
     let mut aw = AspectWrite::new(rec.tid(), ak("created.0"), r.lo, r.hi, bytes);
     aw.retention = retention;
-    let mut cb = CommitBuilder::new(Kind::Content, ts, author, author, form);
+    let mut cb = CommitBuilder::new(Kind::Content, ts, author, osis_commit::Path::default(), form);
     cb.aspects.push(aw);
     cb.expires = expires;
     let forge_key = lp.peers[by].engine.sign_forged(&mut cb);
@@ -3482,7 +3483,7 @@ fn forge_on(lp: &mut LocalPeer, k: Tid, a: &str) -> osis_commit::CommitBlob {
     let v = osis_schema::RawKey::encode(&osis_schema::core_types::NODE, &osis_schema::core_types::NodeInfo { software: "forged".into() });
     let f = create(&mut w, &AnyView, &v).unwrap();
     let bytes = encode_delta(&Delta { nonce: [7; 16], fragment: f }, &writer_ctx(form, kind, ts, b, 1, 2), None).unwrap();
-    let mut cb = CommitBuilder::new(kind, ts, b, b, form);
+    let mut cb = CommitBuilder::new(kind, ts, b, osis_commit::Path::default(), form);
     let mut w = AspectWrite::new(k, ak(a), 1, 2, bytes);
     if let Some(r) = osis_commit::retention::fixed_retention(a) {
         w.retention = r;
@@ -3586,7 +3587,7 @@ fn forge_parts(lp: &mut LocalPeer, by: usize, holder: usize, parts: &[ForgedPart
     let b = lp.peers[by].engine.me();
     let form = forged_session(b);
     let ts = osis_base::Ts::make(lp.peers[by].engine.now(), 0).unwrap();
-    let mut cb = CommitBuilder::new(Kind::Content, ts, b, b, form);
+    let mut cb = CommitBuilder::new(Kind::Content, ts, b, osis_commit::Path::default(), form);
     cb.undoes = undoes;
     cb.expires = expires;
     if memory {

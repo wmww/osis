@@ -34,7 +34,7 @@ impl Core {
             let c = v.minting(e).into_iter().next()?;
             return self.ix.commits.get(&c)?.header.rotation.clone();
         };
-        if m.view.author != *account {
+        if m.view.signer != *account {
             return None;
         }
         m.header.rotation.clone().filter(|r| !r.is_merge())
@@ -540,7 +540,7 @@ impl osis_keys::Held for NamesHeld<'_> {
         let Some(set) = self.core.ix.by_aspect.get(&(self.actor, roles)) else { return false };
         let ts = osis_base::Ts::from_u64(own.ts).unwrap_or_default();
         set.range((ts, CommitId([0; 32]))..=(ts, CommitId([0xff; 32]))).any(|(_, c)| {
-            self.core.ix.commits.get(c).is_some_and(|m| m.view.author == own.author && m.view.kind.is_role() && m.header.blind == own.blind) && self.resolved(c) && self.stands(&osis_keys::Key { ts: own.ts, node: own.author, commit: *c }, None)
+            self.core.ix.commits.get(c).is_some_and(|m| m.view.signer == own.author && m.view.kind.is_role() && m.header.blind == own.blind) && self.resolved(c) && self.stands(&osis_keys::Key { ts: own.ts, node: own.author, commit: *c }, None)
         })
     }
     fn marks(&self, own: &Own, key: &osis_keys::Key) -> bool {

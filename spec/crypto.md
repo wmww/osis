@@ -269,7 +269,7 @@ A **holder actor** of A is a holder for keys of A (its mint admin included while
   | level | retention set members | secret |
   |---|---|---|
   | 1, admin | `admin`, `author_or_admin`, `writer` | the admin secret of its thing |
-  | 2, author | `author_or_admin`, `writer` | the write secret of the commit's header actor (the author chain; spec/permissions.md §5.2) |
+  | 2, author | `author_or_admin`, `writer` | the write secret of the delta's purge author (its commit's actor, spec/permissions.md §5.2 Interim) |
   | 3, writer | `writer` | the write secret of its thing |
 
 - **Delete base**: a dependent thing (§3) uses those of its independent, the last thing of its derivation chain (§3): its delete base.
@@ -279,10 +279,11 @@ A **holder actor** of A is a holder for keys of A (its mint admin included while
 - **Header list**: a header lists, per level of each delta, the first of these for the base; a writer holding none of them cannot write:
   - the base's delete key of the newest current epoch of that level's secret the writer holds;
   - the `delete_key` of the base's `keys.0` keyset of that role it holds;
+  - A linked header list's chunks carry one empty group (spec/wire.md §4, §5): no delete key covers them; they go by the delete key or at their expiry (spec/sync-ids.md §6 Delete).
 - Every delta lists exactly the levels its retention calls for (spec/wire.md §4).
 - **Commitment** in a blob prefix = level byte || A' = h·A, h = `kdf("delete blind", A, prefix salt || blind)` read as 64 XOF bytes, little-endian, mod ℓ (the order of B).
   - A is taken as its 32-byte encoding.
-  - `blind` of a commit blob is the 16 random bytes of its header. A blob reached by a link (a chunk, tree node, page or link page, of a value or of a header list) has its own **link blind**, the first 16 bytes of `kdf("link blind", blob key)`, and its `blind` is its **thing blind**, the first 16 bytes of `kdf("thing blind", link blind, tid)`, tid that of the thing whose dedup secret keys its link (a header list's: the header's `actor`): whoever holds a link to the blob and knows its thing can compute its commitments, nobody else, and commitments computed for another thing are not the blob's.
+  - `blind` of a commit blob is the 16 random bytes of its header. A blob reached by a link (a chunk, tree node, page or link page, of a value or of a header list) has its own **link blind**, the first 16 bytes of `kdf("link blind", blob key)`, and its `blind` is its **thing blind**, the first 16 bytes of `kdf("thing blind", link blind, tid)`, tid that of the thing whose dedup secret keys its link (a header list's: the header's `signer`): whoever holds a link to the blob and knows its thing can compute its commitments, nobody else, and commitments computed for another thing are not the blob's.
   - A blob commits to the delete keys of the deltas it serves, in groups, one per distinct delete-key set (spec/wire.md §5).
 - **Certificate blobs** (record and list blobs, spec/wire.md §3, §4): one group of one level-3 commitment to the delete key of the write secret of the sync ID's thing, as a header lists level 3 for it (Header list: the sealer's newest current epoch, else its `keys.0` write keyset's); `blind` is the blob's link blind. A reader refuses one whose prefix has any other shape, an expiry or another class. A Delete of one at a store is by that level, so only a writer of S (or the head's delete key) deletes it.
 - **Delete signature** for a blob: Ed25519 (RFC 8032 signing) over `"osis v1 delete" || digest` (§2, spec/wire.md §11.2) with secret scalar h·a mod ℓ, nonce prefix `kdf("delete nonce", seed, prefix salt || blind)` (seed: the delete key's RFC 8032 seed), and public key A'.

@@ -116,7 +116,7 @@ impl Engine {
                 let plain = !admin_class(&ak);
                 for c in tx.core.held_on(&(t, ak.clone())) {
                     let Some(m) = tx.core.ix.commits.get(&c) else { continue };
-                    if m.view.author == node && m.received.0 <= as_of.0 {
+                    if m.view.signer == node && m.received.0 <= as_of.0 {
                         f.commits.insert(c);
                         if plain && m.view.kind != osis_commit::Kind::Role && !m.view.purges {
                             content.push((std::cmp::Reverse(m.received.0), c));

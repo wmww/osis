@@ -20,7 +20,7 @@ pub(crate) fn rng() -> SeededRng {
 
 pub(crate) fn content(n: usize) -> CommitBuilder {
     let at = ts(1_000_000);
-    let mut b = CommitBuilder::new(Kind::Content, at, t(1), t(2), SESSION);
+    let mut b = CommitBuilder::new(Kind::Content, at, t(1), crate::Path::through(t(2)), SESSION);
     for i in 0..n {
         let d = register_delta(t(1), at, 1, &format!("v{i}"));
         let tid = Tid::from_bytes([(i % 251) as u8, (i / 251) as u8, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7]);
@@ -58,7 +58,7 @@ fn build_content() {
 #[test]
 fn build_role_commit_and_refusals() {
     let at = ts(1_000_000);
-    let mut b = CommitBuilder::new(Kind::Role, at, t(1), t(1), Form::Commit);
+    let mut b = CommitBuilder::new(Kind::Role, at, t(1), crate::Path::default(), Form::Commit);
     // empty `roles.0` maps: a core-aspect delta must fit the core type
     let roles = |nonce: u8| {
         let mut w = Writer::new(at, Form::Commit.own_source(t(1), CommitId([0; 32])), 1);
@@ -85,7 +85,7 @@ fn build_role_commit_and_refusals() {
 }
 
 // spec/wire.md §4, §6: a list above CHUNK_THRESHOLD goes by link to a chunk tree keyed by the
-// actor's dedup secret; a decoder resolves it and gets the same header and commit ID.
+// signer's dedup secret; a decoder resolves it and gets the same header and commit ID.
 #[test]
 fn list_overflow_links() {
     let mut sink = MemoryBlobs::default();
@@ -100,30 +100,31 @@ fn list_overflow_links() {
     assert!(h.links.keys.is_none());
     assert!(!built.list_blobs.is_empty());
     assert_eq!(built.list_blobs.len(), sink.blobs.len());
-    assert!(h.encode().len() < CHUNK_THRESHOLD);
-    // header-list blobs carry the level-2 commitment only (spec/wire.md §5), under their own
-    // link blinds (the sink draws each key)
+    // past its lists by link, the header holds its path's hash per thing written (34 bytes each)
+    assert!(h.encode().len() < CHUNK_THRESHOLD + 34 * h.things().len());
+    // header-list blobs commit to no delete key (spec/wire.md §5), under their own link
+    // blinds (the sink draws each key)
     for (p, _) in sink.blobs.values() {
-        assert_eq!(p.keys.iter().map(|k| k.level).collect::<Vec<_>>(), vec![2]);
+        assert!(p.keys.is_empty());
     }
     let bytes = built.commit.encode();
     let mut back = CommitBlob::decode(&bytes).unwrap();
     assert!(!back.header.is_resolved());
     assert!(matches!(back.header.validate(), Err(Error::Missing)));
-    assert!(matches!(back.header.resolve(&mut MemoryBlobs::default(), &sec(0xd0, &t(2))), Err(Error::Missing)));
+    assert!(matches!(back.header.resolve(&mut MemoryBlobs::default(), &sec(0xd0, &t(1))), Err(Error::Missing)));
     assert!(matches!(back.header.resolve(&mut sink, &sec(0xd0, &t(9))), Err(Error::Corrupt)));
-    back.header.resolve(&mut sink, &sec(0xd0, &t(2))).unwrap();
+    back.header.resolve(&mut sink, &sec(0xd0, &t(1))).unwrap();
     assert_eq!(&back, &built.commit);
     assert_eq!(back.id(), built.commit.id());
     verify_blob(&back, &key().verifying_key(), &dedup, None).unwrap();
 }
 
-// A list no receiver would resolve (`MAX_LIST_BYTES`) fails at its author, so a demotion's frontier
-// too large stamps nothing only the author could apply.
+// A list no receiver would resolve (`MAX_LIST_BYTES`) fails at its signer, so a demotion's frontier
+// too large stamps nothing only the signer could apply.
 #[test]
-fn list_over_the_bound_refused_at_the_author() {
+fn list_over_the_bound_refused_at_the_signer() {
     let at = ts(1_000_000);
-    let mut b = CommitBuilder::new(Kind::Role, at, t(1), t(1), Form::Commit);
+    let mut b = CommitBuilder::new(Kind::Role, at, t(1), crate::Path::default(), Form::Commit);
     let mut a = AspectWrite::new(t(3), Ak::new("roles.0").unwrap(), 1, 2, register_delta(t(1), at, 1, "a"));
     a.retention = retention::ROLE_RETENTION;
     b.aspects.push(a);
@@ -156,12 +157,12 @@ fn list_over_the_bound_refused_at_the_author() {
 }
 
 // spec/wire.md §4 Inline or link (notes/decode-bounds.md): a linked list is keyed to its own header,
-// so another commit naming its tree resolves nothing: a node holds a commit's lists only as its author
+// so another commit naming its tree resolves nothing: a node holds a commit's lists only as its signer
 // delivered them, never one shared list per small commit (each would hold it whole again)
 #[test]
 fn a_linked_list_serves_its_own_commit_only_spec_wire_4() {
     let at = ts(1_000_000);
-    let mut b = CommitBuilder::new(Kind::Role, at, t(1), t(1), Form::Commit);
+    let mut b = CommitBuilder::new(Kind::Role, at, t(1), crate::Path::default(), Form::Commit);
     let mut a = AspectWrite::new(t(3), Ak::new("roles.0").unwrap(), 1, 2, register_delta(t(1), at, 1, "a"));
     a.retention = retention::ROLE_RETENTION;
     b.aspects.push(a);
@@ -231,7 +232,7 @@ fn sections_per_reader() {
     let reader = |ai: usize| u8::from(ai.is_multiple_of(3));
     let secret = |r: &u8| Secret32::from_bytes([*r + 1; 32]);
     let mut rng = SeededRng::from_u64(0);
-    let env = seal_commit(&c, reader, |r, _| Some((secret(r), vec![])), &[], &mut rng).unwrap();
+    let env = seal_commit(&c, &c.header, reader, |r, _| Some((secret(r), vec![])), &[], &mut rng).unwrap();
     assert_eq!(env.id(), c.id());
     assert_eq!(env.sections.len(), 2);
     assert_eq!(env.sections[0].ais, vec![0, 3]);
@@ -249,7 +250,7 @@ fn sections_per_reader() {
     let none = env.open(|_| vec![Secret32::from_bytes([9; 32])]).unwrap();
     assert!(none.commit.parts.is_empty() && none.sealed.len() == 2);
     // a fresh encryption by reader 1 carries reader 0's section byte for byte
-    let again = seal_commit(&o1.commit, reader, |r, _| Some((secret(r), vec![])), &o1.sealed, &mut rng).unwrap();
+    let again = seal_commit(&o1.commit, &c.header, reader, |r, _| Some((secret(r), vec![])), &o1.sealed, &mut rng).unwrap();
     assert_eq!(again.sections[1], env.sections[1]);
     assert_ne!(again.sections[0], env.sections[0], "a fresh section key and wrap");
     let o = again.open(|_| vec![secret(&0), secret(&1)]).unwrap();
@@ -283,7 +284,7 @@ fn sections_per_reader() {
 fn envelope_rejections() {
     let c = mixed();
     let mut rng = SeededRng::from_u64(0);
-    let env = seal_commit(&c, |ai| ai % 2, |_, _| Some((Secret32::from_bytes([1; 32]), vec![])), &[], &mut rng).unwrap();
+    let env = seal_commit(&c, &c.header, |ai| ai % 2, |_, _| Some((Secret32::from_bytes([1; 32]), vec![])), &[], &mut rng).unwrap();
     let mut swapped = env.clone();
     swapped.sections.swap(0, 1);
     assert!(Envelope::decode(&swapped.encode()).is_err());
@@ -303,20 +304,20 @@ fn envelope_rejections() {
     short.sections[0].wrap.pop();
     assert!(Envelope::decode(&short.encode()).is_err());
     // a section whose secret is not held is left out
-    assert!(seal_commit(&c, |_| (), |_, _| None::<(Secret32, Vec<osis_base::Tid>)>, &[], &mut rng).unwrap().sections.is_empty());
-    assert_eq!(seal_commit(&c, |ai| ai % 2, |r, _| (*r == 0).then(|| (Secret32::from_bytes([1; 32]), vec![])), &[], &mut rng).unwrap().ais(), vec![0, 2, 4]);
+    assert!(seal_commit(&c, &c.header, |_| (), |_, _| None::<(Secret32, Vec<osis_base::Tid>)>, &[], &mut rng).unwrap().sections.is_empty());
+    assert_eq!(seal_commit(&c, &c.header, |ai| ai % 2, |r, _| (*r == 0).then(|| (Secret32::from_bytes([1; 32]), vec![])), &[], &mut rng).unwrap().ais(), vec![0, 2, 4]);
     // an extra section on an aspect a sealed part is on is dropped, one clashing with another
     // extra is bad input
     let extra = env.sections[1].clone();
-    let one = seal_commit(&c, |_| (), |_, _| Some((Secret32::from_bytes([2; 32]), vec![])), std::slice::from_ref(&extra), &mut rng).unwrap();
+    let one = seal_commit(&c, &c.header, |_| (), |_, _| Some((Secret32::from_bytes([2; 32]), vec![])), std::slice::from_ref(&extra), &mut rng).unwrap();
     assert_eq!(one.sections.len(), 1);
-    assert!(seal_commit(&rewrite(&c, |_| true), |_| (), |_, _| Some((Secret32::from_bytes([2; 32]), vec![])), &[extra.clone(), extra], &mut rng).is_err());
+    assert!(seal_commit(&rewrite(&c, |_| true), &c.header, |_| (), |_, _| Some((Secret32::from_bytes([2; 32]), vec![])), &[extra.clone(), extra], &mut rng).is_err());
 }
 
-fn big_delta(author: Tid, at: Ts, len: usize) -> Vec<u8> {
-    let mut w = Writer::new(at, SESSION.own_source(author, CommitId([0; 32])), 1);
+fn big_delta(signer: Tid, at: Ts, len: usize) -> Vec<u8> {
+    let mut w = Writer::new(at, SESSION.own_source(signer, CommitId([0; 32])), 1);
     let fragment = create(&mut w, &AnyView, &Value::Bytes(vec![0x5a; len])).unwrap();
-    encode_delta(&Delta { nonce: [1; 16], fragment }, &writer_ctx(SESSION, Kind::Content, at, author, 1, 2), None).unwrap()
+    encode_delta(&Delta { nonce: [1; 16], fragment }, &writer_ctx(SESSION, Kind::Content, at, signer, 1, 2), None).unwrap()
 }
 
 // spec/sync-judgement.md §1 (no size split), spec/commits.md §1 (commit fits a blob): the whole commit
@@ -325,18 +326,18 @@ fn big_delta(author: Tid, at: Ts, len: usize) -> Vec<u8> {
 #[test]
 fn commit_fits_one_blob() {
     let at = ts(1_000_000);
-    let mut b = CommitBuilder::new(Kind::Content, at, t(1), t(2), SESSION);
+    let mut b = CommitBuilder::new(Kind::Content, at, t(1), crate::Path::through(t(2)), SESSION);
     for i in 0..2u8 {
         b.aspects.push(AspectWrite::new(t(3), Ak::new(format!("app:f{i}.0")).unwrap(), 1, 2, big_delta(t(1), at, 3 << 20)));
     }
     let c = build(b, &mut MemoryBlobs::default()).unwrap().commit;
     assert!(blob_bound(&c) < MAX_BLOB);
-    let mut b = CommitBuilder::new(Kind::Content, at, t(1), t(2), SESSION);
+    let mut b = CommitBuilder::new(Kind::Content, at, t(1), crate::Path::through(t(2)), SESSION);
     for i in 0..4u8 {
         b.aspects.push(AspectWrite::new(t(3), Ak::new(format!("app:f{i}.0")).unwrap(), 1, 2, big_delta(t(1), at, 3 << 20)));
     }
     assert!(matches!(build(b, &mut MemoryBlobs::default()), Err(Error::Build(COMMIT_PAST_BLOB))));
-    let mut huge = CommitBuilder::new(Kind::Content, at, t(1), t(2), SESSION);
+    let mut huge = CommitBuilder::new(Kind::Content, at, t(1), crate::Path::through(t(2)), SESSION);
     huge.aspects.push(AspectWrite::new(t(3), Ak::new("app:f.0").unwrap(), 1, 2, big_delta(t(1), at, MAX_BLOB)));
     assert!(matches!(build(huge, &mut MemoryBlobs::default()), Err(Error::Build(_))));
 }
@@ -387,7 +388,7 @@ fn wide_struct_delta_fits_spec_commits_1() {
         encode_delta(&Delta { nonce: [1; 16], fragment: fragment.clone() }, &writer_ctx(SESSION, Kind::Content, at, t(1), 1, hi), Some(&mut pages)).unwrap()
     };
     let attempt = |delta: Vec<u8>| {
-        let mut b = CommitBuilder::new(Kind::Content, at, t(1), t(2), SESSION);
+        let mut b = CommitBuilder::new(Kind::Content, at, t(1), crate::Path::through(t(2)), SESSION);
         b.max_blob = max_blob;
         b.aspects.push(AspectWrite::new(t(3), Ak::new("app:w.0").unwrap(), 1, hi, delta));
         build(b, &mut MemoryBlobs::default())
@@ -412,7 +413,7 @@ fn relay_only_delta_never_pages_spec_commits_2() {
     let commit = |relay: bool, pages: &mut MemoryPages| {
         let s = Snapshot { nonce: [1; 16], fragment: fragment.clone(), frontiers: Default::default(), absorbed: Default::default(), facts: Default::default() };
         let delta = osis_crdt::encode_snapshot(&s, &cx, Some(pages)).unwrap();
-        let mut b = CommitBuilder::new(Kind::ContentSnapshot, at, t(1), t(2), Form::Commit);
+        let mut b = CommitBuilder::new(Kind::ContentSnapshot, at, t(1), crate::Path::through(t(2)), Form::Commit);
         let mut a = AspectWrite::new(t(3), Ak::new("app:w.0").unwrap(), 0, 0, delta);
         a.retention = crate::retention::EPHEMERAL_RETENTION;
         b.aspects.push(a);
@@ -458,7 +459,7 @@ fn many_writes_per_thing_fit_one_blob() {
     assert!(blob_bound(&c) <= MAX_BLOB);
     let things: Vec<Tid> = c.header.aspects.iter().map(|a| a.tid).collect();
     let mut rng = SeededRng::from_u64(0);
-    let env = seal_commit(&c, |ai| things[ai], |_, _| Some((Secret32::from_bytes([1; 32]), vec![t(9); osis_base::format::MAX_CHAIN_DEPTH])), &[], &mut rng).unwrap();
+    let env = seal_commit(&c, &c.header, |ai| things[ai], |_, _| Some((Secret32::from_bytes([1; 32]), vec![t(9); osis_base::format::MAX_CHAIN_DEPTH])), &[], &mut rng).unwrap();
     assert_eq!(env.sections.len(), 2500);
     let groups = prefix_groups(&c.header, env.ais()).unwrap();
     let prefix = osis_base::format::PREFIX_FIXED_LEN + groups.iter().map(|g| 1 + g.len() * osis_base::format::COMMITMENT_LEN).sum::<usize>();
@@ -474,7 +475,7 @@ fn section_key_filter_keeps_the_key() {
     let mut wrong = 0;
     for n in [0usize, 1, 3, 23, 24, 30] {
         let parts: Vec<Part> = (0..n).map(|ai| Part { ai: ai * 30, delta: osis_base::encode(&Value::Int(ai as i64)) }).collect();
-        let s = Section::seal(&commit, &parts, vec![t(1)], &secret, &mut rng).unwrap();
+        let s = Section::seal(&commit, None, &parts, vec![t(1)], &secret, &mut rng).unwrap();
         let key = osis_crypto::unwrap_section(&secret, &commit, &s.wrap).unwrap();
         let zero = |k: &[u8; 32]| osis_crypto::aead::Keystream::new(k, &osis_crypto::aead::ZERO_NONCE);
         assert!(s.may_open_with(&zero(key.expose())), "{n} parts");
@@ -483,13 +484,12 @@ fn section_key_filter_keeps_the_key() {
     assert!(wrong < 64, "{wrong} of {} wrong keys pass", 6 * 64);
 }
 
-// spec/wire.md §4-§5: a linked list's links name the header's level-2 key alone (nothing without
-// one); a root naming other keys, or a link inside the list's tree naming other keys than its
-// root, is bad input.
+// spec/wire.md §4-§5: a linked list's links name no delete key; a root naming one, or a link
+// inside the list's tree naming other keys than its root, is bad input.
 #[test]
-fn header_list_link_del_is_the_level_2_key() {
+fn header_list_link_del_is_empty() {
     let at = ts(1_000_000);
-    let mut b = CommitBuilder::new(Kind::Role, at, t(1), t(1), Form::Commit);
+    let mut b = CommitBuilder::new(Kind::Role, at, t(1), crate::Path::default(), Form::Commit);
     let mut a = AspectWrite::new(t(3), Ak::new("roles.0").unwrap(), 1, 2, register_delta(t(1), at, 1, "a"));
     a.retention = retention::ROLE_RETENTION;
     b.aspects.push(a);
@@ -500,8 +500,7 @@ fn header_list_link_del_is_the_level_2_key() {
     let built = build(b, &mut sink).unwrap();
     let d = sec(0xd0, &t(1));
     let link = built.commit.header.links.frontier.expect("linked");
-    let level2 = osis_base::Del::from_keys(built.commit.header.keys.iter().filter(|k| k.level == 2).map(|k| (k.level, k.key))).unwrap();
-    assert_eq!(link.del, level2);
+    assert_eq!(link.del, osis_base::Del::NONE);
     let resolved = |h: &Header, sink: &mut MemoryBlobs| {
         let mut back = Header::decode(&h.encode())?;
         back.resolve(sink, &d)?;
@@ -517,14 +516,13 @@ fn header_list_link_del_is_the_level_2_key() {
     // a tree whose chunks name other keys than its root
     let bytes = built.commit.header.list_bytes(ListField::Frontier).unwrap();
     let mut n = 0u8;
-    let keys = built.commit.header.keys.iter().filter(|k| k.level == 2).copied().collect::<Vec<_>>();
     let mixed = write_list(&bytes, &built.commit.header.list_secret(&d), &mut sink, &mut || {
         n += 1;
-        let keys = if n == 1 { vec![crate::DeleteKey { level: 1, key: [9; 32] }] } else { keys.clone() };
+        let keys = if n == 1 { vec![crate::DeleteKey { level: 1, key: [9; 32] }] } else { Vec::new() };
         Prefix { salt: [n; 16], thing: t(1), expiry: None, keys }
     })
     .unwrap();
-    assert_eq!(mixed.del, level2, "the root is written last");
+    assert_eq!(mixed.del, osis_base::Del::NONE, "the root is written last");
     let mut h = built.commit.header.clone();
     h.links.frontier = Some(mixed);
     assert!(matches!(resolved(&h, &mut sink), Err(Error::Malformed(_))));

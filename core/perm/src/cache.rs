@@ -192,8 +192,7 @@ fn put_input(h: &mut osis_base::hash::Hasher, records: &Records, commits: &BTree
     for c in commits.values() {
         w.cid(&c.id);
         w.ts(c.ts);
-        w.tid(&c.author);
-        w.tid(&c.actor);
+        w.tid(&c.signer);
         w.opt(c.frontier.as_deref(), W::frontier_shape);
         w.len(c.ops.len());
         for o in &c.ops {

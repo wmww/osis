@@ -87,7 +87,7 @@ impl Timeline {
             }
         }
         for (w, _) in tl.dropped().iter().filter(|(_, at)| **at == p) {
-            let on = tl.input.commits.get(&w.0).and_then(|c| Some((c.author, c.ops.get(usize::try_from(w.1).ok()?)?.target)));
+            let on = tl.input.commits.get(&w.0).and_then(|c| Some((c.signer, c.ops.get(usize::try_from(w.1).ok()?)?.target)));
             if let Some((x, t)) = on {
                 out.roles.entry(x).or_default().insert(t);
             }

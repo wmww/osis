@@ -78,7 +78,7 @@ fn snapshot_and_request_alone_take_the_copy_spec_commits_5() {
                 let (c, s) = written(&mut lp, t, class);
                 let item = match author {
                     false => lp.peers[0].engine.purge_item(&c, t, reg()).unwrap(),
-                    true => PurgeItem::Author { tid: t, ak: reg(), actor: lp.peers[1].engine.me() },
+                    true => PurgeItem::Author { tid: t, ak: reg(), author: lp.peers[1].engine.me() },
                 };
                 let p = request(&mut lp, by, t, item);
                 let (sp, pp) = (lp.peers[1].engine.package(&s).unwrap().unwrap(), lp.peers[by].engine.package(&p).unwrap().unwrap());

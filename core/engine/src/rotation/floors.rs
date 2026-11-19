@@ -49,7 +49,7 @@ fn floor_in(core: &Core, a: &Tid, p: &Tid, seen: &mut BTreeSet<Tid>) -> u64 {
     let Some(on) = core.timelines.on(a) else { return 0 };
     let mut paths = Vec::new();
     if let Some(e) = on.edge_at(p, None) {
-        let author = on.in_force(p).and_then(|c| core.ix.commits.get(&c)).map(|m| m.view.author).filter(|x| x != p);
+        let author = on.in_force(p).and_then(|c| core.ix.commits.get(&c)).map(|m| m.view.signer).filter(|x| x != p);
         let by = author.map_or(0, |x| floor_in(core, a, &x, &mut seen.clone()));
         paths.push(e.floor.unwrap_or(0).max(by));
     }
@@ -76,7 +76,7 @@ pub(crate) fn set(core: &Core, a: &Tid, view: &mut ActorEpochs) {
     let mut makers = BTreeMap::new();
     let mut unknown = None;
     for e in &epochs {
-        let author = core.ix.epoch_intro.get(&(*a, Role::Read, *e)).and_then(|(_, c)| core.ix.commits.get(c)).map(|m| m.view.author);
+        let author = core.ix.epoch_intro.get(&(*a, Role::Read, *e)).and_then(|(_, c)| core.ix.commits.get(c)).map(|m| m.view.signer);
         let f = match author {
             Some(x) => party_floor(core, a, &x),
             None => *unknown.get_or_insert_with(|| greatest(core, a)),

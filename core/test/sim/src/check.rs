@@ -72,7 +72,7 @@ impl Checker {
         if !self.seen.insert(*id) || !h.form.counted() || !h.kind.has_own_writes() || self.equivocations.contains(id) {
             return Ok(());
         }
-        let src = h.form.own_source(h.author, *id);
+        let src = h.form.own_source(h.signer, *id);
         for a in &h.aspects {
             if a.lo >= a.hi {
                 continue;
@@ -82,7 +82,7 @@ impl Checker {
                 && *hi > a.lo
                 && c != id
             {
-                return Err(format!("counter reuse: {id:?} [{}, {}) overlaps {c:?} [{lo}, {hi}) on {} {} by {}", a.lo, a.hi, a.tid, a.ak.as_str(), h.author));
+                return Err(format!("counter reuse: {id:?} [{}, {}) overlaps {c:?} [{lo}, {hi}) on {} {} by {}", a.lo, a.hi, a.tid, a.ak.as_str(), h.signer));
             }
             m.insert(a.lo, (a.hi, *id));
         }

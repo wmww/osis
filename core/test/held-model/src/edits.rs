@@ -1,6 +1,7 @@
 //! Signal edits (notes/signal-edits-design.md, the design, not the engine). A part with `replaces` is
 //! honored when the named commit is listed on the same (thing, aspect), valid or a purge tombstone,
-//! has no `replaces` itself, has the same verified actor and sorts before it by (ts, ID); else it is a
+//! has no `replaces` itself, acts on the same thing (spec/permissions.md §5.2 Interim: its path's last listed
+//! thing, verified) and sorts before it by (ts, ID); else it is a
 //! fire of its own. An original reads as its newest listed honored version (valid versions only);
 //! stamp, place and order stay the original's. A purge takes only the commits it names. Listing
 //! is judged from headers: an original whose body is not here is listed and its versions fold
@@ -87,12 +88,12 @@ fn status(h: &Held, o: &Outcome, by_id: &BTreeMap<CommitId, &Commit>, c: &Commit
 }
 
 /// The commit `v` names, when it is `v`'s original but for being listed: same (thing, aspect), valid
-/// or a purge tombstone's, no `replaces` of its own, same verified actor, sorting before `v`.
+/// or a purge tombstone's, no `replaces` of its own, acting on the same thing, sorting before `v`.
 fn named<'a>(o: &Outcome, by_id: &BTreeMap<CommitId, &'a Commit>, v: &Commit, i: usize) -> Option<(&'a Commit, usize)> {
     let p = &v.parts[i];
     let x = *by_id.get(&p.replaces?)?;
     let j = x.parts.iter().position(|q| q.thing == p.thing && q.aspect == p.aspect)?;
-    let ok = o.valid.get(&(x.id, j)) == Some(&true) && x.parts[j].replaces.is_none() && x.actor == v.actor && (x.ts, x.id) < (v.ts, v.id);
+    let ok = o.valid.get(&(x.id, j)) == Some(&true) && x.parts[j].replaces.is_none() && x.acting == v.acting && (x.ts, x.id) < (v.ts, v.id);
     ok.then_some((x, j))
 }
 

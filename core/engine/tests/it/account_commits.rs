@@ -32,7 +32,7 @@ fn account_commit(seed: u8, key: &AccountEpochKeys, epoch: CommitId, inner: bool
     let t = CreationRecord::Thing { admin: pt, nonce: [seed ^ 1; 32], link: None, expires: None };
     let ak = Ak::new("created.0").unwrap();
     let view = osis_schema::core_schema().view(ak.as_str()).unwrap();
-    let mut cb = CommitBuilder::new(Kind::Role, ts, pt, pt, Form::Commit);
+    let mut cb = CommitBuilder::new(Kind::Role, ts, pt, osis_commit::Path::default(), Form::Commit);
     let mut w = Writer::new(ts, Source::commit(CommitId([0; 32])), 1);
     for rec in [&p, &t] {
         let f = create(&mut w, &view, &rec.to_value()).unwrap();

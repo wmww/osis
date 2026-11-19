@@ -508,7 +508,7 @@ impl Engine {
                 Ok(pt)
             }
         }
-        let Some(dedup) = self.core.dedup(&h.actor) else { return Ok(()) };
+        let Some(dedup) = self.core.dedup(&h.signer) else { return Ok(()) };
         let key = h.list_secret(&dedup);
         let mut r = Rec { e: self, seen: Vec::new() };
         let _ = osis_commit::read_list(root, &key, &mut r, osis_commit::MAX_LIST_BYTES);

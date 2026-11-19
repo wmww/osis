@@ -474,7 +474,7 @@ fn a_sealed_fire_carries_its_chain_until_it_goes_spec_commits_4() {
         .unwrap();
     let h = fire.header.clone();
     let mut certs = crate::sync_ids::Certs::default();
-    e2.account_chain(&h.author, &mut certs);
+    e2.account_chain(&h.signer, &mut certs);
     let (mut chain, records) = e2.certs_values(&certs).unwrap();
     let limits = osis_base::Limits::new(osis_base::format::MAX_OBJECT_DEPTH, osis_base::format::MAX_BLOB);
     chain.push(osis_base::decode(&d_bytes, &limits).unwrap());

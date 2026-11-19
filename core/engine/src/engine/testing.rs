@@ -11,7 +11,8 @@ use std::collections::{BTreeMap, BTreeSet};
 #[doc(hidden)]
 pub struct HeldBody {
     pub id: CommitId,
-    pub author: Tid,
+    /// The thing its commit acts on (`View::acting`).
+    pub acting: Option<Tid>,
     pub ts: osis_base::Ts,
     pub valid: bool,
     pub value: Option<osis_base::Value>,
@@ -378,13 +379,13 @@ impl Engine {
             for (ts, c) in &page {
                 let Some(m) = tx.core.ix.commits.get(c) else { continue };
                 let Some(ai) = m.aspect(&tid, &ak) else { continue };
-                let (author, valid) = (m.header.actor, m.valid_at(ai));
+                let (acting, valid) = (m.view.acting, m.valid_at(ai));
                 let mut v = None;
                 crate::apply::each_held_piece(tx, c, ai, &mut |_, f| {
                     v = f.read();
                     Ok(())
                 })?;
-                out.push(HeldBody { id: *c, author, ts: *ts, valid, value: v });
+                out.push(HeldBody { id: *c, acting, ts: *ts, valid, value: v });
             }
             Ok(out)
         })
@@ -709,7 +710,7 @@ impl Engine {
             let dropped = m.dropped(ai);
             let missing = m.missing(ai);
             let valid = m.valid.get(ai).copied().unwrap_or(true);
-            let _ = writeln!(out, "  {c:?} {:?} by {} ts {:?}: dropped {:?} missing {missing} valid {valid} covered by {:?}", h.kind, h.author, h.ts, dropped.is_some(), dropped.map(|d| &d.covered_by));
+            let _ = writeln!(out, "  {c:?} {:?} by {} ts {:?}: dropped {:?} missing {missing} valid {valid} covered by {:?}", h.kind, h.signer, h.ts, dropped.is_some(), dropped.map(|d| &d.covered_by));
         }
         let state = self.state(tid, ak).map(|s| format!("{s:?}")).unwrap_or_else(|e| format!("error {e}"));
         let _ = writeln!(out, "  state {state}");

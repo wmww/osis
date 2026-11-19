@@ -33,7 +33,7 @@ fn account_created_commit_verifies_at_an_outsider_spec_wire_4() {
     let me = lp.peers[0].engine.tid();
     let (a, bytes) = created(&mut lp);
     let blob = CommitBlob::decode(&bytes).unwrap();
-    assert_eq!((blob.header.author, blob.header.epoch), (a.account, Some(FIRST_EPOCH)));
+    assert_eq!((blob.header.signer, blob.header.epoch), (a.account, Some(FIRST_EPOCH)));
     assert_eq!(lp.peers[0].engine.open_inner(&blob), Some(me), "the creator opens its own");
     assert!(matches!(lp.peers[1].engine.ingest(&bytes, Vec::new()).unwrap(), Ingested::Applied(_)));
     assert_eq!(lp.peers[1].engine.open_inner(&blob), None);
@@ -76,7 +76,7 @@ pub(super) fn rotation_at(rec: CreationRecord, at: (CommitId, &AccountEpochKeys)
     let p = rec.tid();
     let ak = Ak::new("keys.0").unwrap();
     let view = osis_schema::core_schema().view(ak.as_str()).unwrap();
-    let mut cb = CommitBuilder::new(Kind::Role, ts, p, p, Form::Commit);
+    let mut cb = CommitBuilder::new(Kind::Role, ts, p, osis_commit::Path::default(), Form::Commit);
     let mut w = Writer::new(ts, Source::commit(CommitId([0; 32])), 1);
     let f = create(&mut w, &view, &osis_keys::aspects::account_keys(next).to_value()).unwrap();
     let r = w.range();
@@ -333,7 +333,7 @@ fn a_box_at_an_account_epoch_carries_its_rotation_spec_crypto_4() {
     assert_eq!(crate::rotation::members::carried(&e.core, &w, None), vec![id], "the box's epoch travels with it");
 }
 
-// spec/wire.md §4 (the epoch an account author signs at): the request gate reads an author's signature at the header's epoch: a commit signed at the first epoch verifies only there
+// spec/wire.md §4 (the epoch an account signer signs at): the request gate reads a signer's signature at the header's epoch: a commit signed at the first epoch verifies only there
 #[test]
 fn request_gate_reads_the_header_epoch_spec_sync_3() {
     let mut lp = peers(2);

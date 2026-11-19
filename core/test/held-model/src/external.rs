@@ -38,12 +38,12 @@ fn hour(h: u64) -> u64 {
 
 fn content(id: CommitId, author: NodeId, ts: u64, aspect: Aspect, body: Delta) -> Commit {
     let part = Part { thing: THING, aspect, retention: Retention::ADMIN, body: Body::Held(body), stripped: Default::default(), replaces: None };
-    Commit { id, author, actor: author, ts, expires: None, kind: CommitKind::Content, parts: vec![part], purge: vec![], frontier: None, undoes: None, boxes: vec![] }
+    Commit { id, signer: author, acting: author, ts, expires: None, kind: CommitKind::Content, parts: vec![part], purge: vec![], frontier: None, undoes: None, boxes: vec![] }
 }
 
 fn edge(id: CommitId, author: NodeId, ts: u64, holder: NodeId, role: Option<Role>, frontier: Option<Vec<CommitId>>) -> Commit {
     let part = Part { thing: THING, aspect: Aspect::ROLES, retention: Retention::ROLE, body: Body::Held(Delta::Edge(EdgeWrite::role(holder, role))), stripped: Default::default(), replaces: None };
-    Commit { id, author, actor: author, ts, expires: None, kind: CommitKind::Role, parts: vec![part], purge: vec![], frontier, undoes: None, boxes: vec![] }
+    Commit { id, signer: author, acting: author, ts, expires: None, kind: CommitKind::Role, parts: vec![part], purge: vec![], frontier, undoes: None, boxes: vec![] }
 }
 
 /// A fire of `EXT` by `author` at `ts`.
@@ -82,7 +82,7 @@ pub fn world(seed: u64) -> World {
             3..=5 => events.push(fire(id, r.pick(&[STRANGER, STRANGER, WRITER, ADMIN]), ts)),
             6 => {
                 // the writer's removal, listing some of its fires so far
-                let fires: Vec<CommitId> = events.iter().filter(|c| c.author == WRITER && c.parts[0].aspect == EXT && r.chance(50)).map(|c| c.id).collect();
+                let fires: Vec<CommitId> = events.iter().filter(|c| c.signer == WRITER && c.parts[0].aspect == EXT && r.chance(50)).map(|c| c.id).collect();
                 events.push(edge(id, r.pick(&[ADMIN, ADMIN2]), ts, WRITER, None, Some(fires)));
             }
             _ => {

@@ -523,7 +523,7 @@ impl Run {
         let unheld: Vec<usize> = (0..N).filter(|j| self.lp.peers[to].engine.core.created(&self.tids[*j]).is_none() && v.named_device(&self.tids[*j])).collect();
         for j in unheld {
             let n = self.tids[j];
-            let card: Vec<CommitId> = self.lp.peers[j].engine.commit_ids().into_iter().filter(|c| self.lp.peers[j].engine.header(c).is_some_and(|h| h.author == n && h.aspects.iter().all(|a| a.tid == n))).collect();
+            let card: Vec<CommitId> = self.lp.peers[j].engine.commit_ids().into_iter().filter(|c| self.lp.peers[j].engine.header(c).is_some_and(|h| h.signer == n && h.aspects.iter().all(|a| a.tid == n))).collect();
             for c in card {
                 let pk = self.lp.peers[j].engine.package(&c).unwrap().unwrap();
                 self.deliver(to, &pk, "card");
@@ -826,7 +826,7 @@ impl Run {
         let mut reseals: BTreeSet<(Line, usize)> = BTreeSet::new();
         for c in new {
             let h = self.lp.peers[n].engine.header(&c).unwrap();
-            if h.author == self.ids.p && let Some(r) = &h.rotation {
+            if h.signer == self.ids.p && let Some(r) = &h.rotation {
                 let id = if r.is_merge() { self.add_cert(n, &c) } else { self.add_plain(n, &c, false) };
                 if r.is_merge() {
                     cert = Some(id);
@@ -840,7 +840,7 @@ impl Run {
                     }
                 }
                 made.push(id);
-            } else if h.author == self.ids.p && h.reseal.is_some() {
+            } else if h.signer == self.ids.p && h.reseal.is_some() {
                 let ids = self.add_reseal(n, &c);
                 for id in &ids {
                     if let MK::Reseal { e, .. } = &self.w.item(*id).kind {

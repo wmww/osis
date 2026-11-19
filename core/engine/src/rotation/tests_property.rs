@@ -287,7 +287,7 @@ impl Run {
     /// writes applied.
     fn after(&self, i: usize, c: &CommitId) -> Option<osis_perm::Point> {
         let h = &self.lp.peers[i].engine.core.ix.commits.get(c)?.header;
-        Some(osis_perm::Point { ts: h.ts, node: h.author, commit: CommitId([0xff; 32]) })
+        Some(osis_perm::Point { ts: h.ts, node: h.signer, commit: CommitId([0xff; 32]) })
     }
 
     /// The holder actors (no peers) epoch `e` of role `r` of actor `a` boxes in peer `i`'s
@@ -326,7 +326,7 @@ impl Run {
         let Some(om) = self.actors.iter().find(|x| x.0 == m).map(|x| x.1) else { return true };
         let Some(dep) = tail_departure_point(self, om, m, d, r) else { return true };
         let Some(h) = core.ix.commits.get(c).map(|x| &x.header) else { return true };
-        let made = osis_perm::Point { ts: h.ts, node: h.author, commit: *c };
+        let made = osis_perm::Point { ts: h.ts, node: h.signer, commit: *c };
         !(held.contains(&dep.commit) && made < dep)
     }
 
@@ -827,7 +827,7 @@ fn left_reading(run: &Run, o: usize, d: usize, k: &Key) -> bool {
     let write = h.commits.iter().filter_map(|c| tl.role_commit(c)).find_map(|mc| mc.ops.iter().position(|op| op.target == h.on && op.holder == run.tids[d]).map(|ix| (mc, ix)));
     let Some((mc, ix)) = write else { return false };
     let applies = tl.is_applied(&osis_perm::WriteId(mc.id, ix as u32));
-    let counts = tl.role(&mc.author, &h.on, osis_perm::At::before(mc.point())) >= Some(Role::Write);
+    let counts = tl.role(&mc.signer, &h.on, osis_perm::At::before(mc.point())) >= Some(Role::Write);
     let after = |p: Option<osis_perm::Point>| p.is_some_and(|p| p > mc.point());
     let departed = (0..N).any(|p| after(departure_point(run, o, k.0, p, k.1)) || after(path_loss_point(run, o, p, k.0, k.1)));
     let moved = run.made.keys().any(|m| m.0 == k.0 && m.1 == k.1 && m.2.n() > k.2.n());
@@ -850,7 +850,7 @@ fn dump(run: &mut Run, o: usize, d: usize, k: Key, own: &BTreeSet<Key>, limit: &
         out.push(format!("actor {i}: {t:?}, mint admin peer {ow}"));
     }
     if let Some(m) = run.made.get(&k) {
-        let maker = run.lp.peers[o].engine.core.ix.epoch_intro.get(&k).and_then(|(_, c)| run.lp.peers[o].engine.core.ix.commits.get(c)).map(|c| name(run, &c.header.author));
+        let maker = run.lp.peers[o].engine.core.ix.epoch_intro.get(&k).and_then(|(_, c)| run.lp.peers[o].engine.core.ix.commits.get(c)).map(|c| name(run, &c.header.signer));
         let blind: Vec<String> = m.blind.iter().map(|(t, e)| format!("{} at {}", name(run, t), ep(e))).collect();
         let carried: Vec<String> = m.carried.iter().map(ep).collect();
         out.push(format!("made by {maker:?}: below {:?}, blind {blind:?}, carried {carried:?}, held the lost commits {:?}", m.below, lost.iter().map(|c| m.held.contains(c)).collect::<Vec<_>>()));

@@ -166,7 +166,10 @@ pub(crate) fn part_links(tx: &mut Tx<'_>, c: &CommitId, ai: usize) -> Result<Vec
 pub(crate) fn free_part(tx: &mut Tx<'_>, c: &CommitId, ai: usize) -> Result<()> {
     let Some(m) = tx.core.ix.commits.get(c).cloned() else { return Ok(()) };
     let Some(a) = m.header.aspects.get(ai) else { return Ok(()) };
-    let (tid, author, memory) = (a.tid, m.header.actor, m.view.memory);
+    // Interim (notes/a1-spec/README.md step 4): the purge author is the thing it acts on; a
+    // held part's section opened, so it is known
+    let Some(author) = m.view.acting else { return Ok(()) };
+    let (tid, memory) = (a.tid, m.view.memory);
     for link in part_links(tx, c, ai)? {
         let blob = link.blob;
         add(tx, Freed::new(tid, link, author, false, memory))?;

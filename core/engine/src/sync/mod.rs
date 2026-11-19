@@ -603,7 +603,10 @@ impl Engine {
                 groups.push((a.tid, keys));
             }
         }
-        self.delete_basis(row.salt, h.blind, &h.actor, &groups)
+        // Interim (notes/a1-spec/README.md step 4): level 2 is the purge author's, the thing it
+        // acts on
+        let author = self.core.ix.commits.get(&row.commit).and_then(|m| m.view.acting)?;
+        self.delete_basis(row.salt, h.blind, &author, &groups)
     }
 
     /// A `DeleteBasis` of a blob with prefix `salt` and blind `blind` whose groups are `groups`
@@ -858,7 +861,7 @@ impl Engine {
             let b = osis_base::cbor::encode(&v);
             let Ok(c) = osis_commit::CommitBlob::decode(&b) else { continue };
             let id = c.id();
-            if c.header.rotation.is_none() || !c.parts.is_empty() || self.core.ix.commits.contains_key(&id) || !of.entry(c.header.author).or_default().insert(id) {
+            if c.header.rotation.is_none() || !c.parts.is_empty() || self.core.ix.commits.contains_key(&id) || !of.entry(c.header.signer).or_default().insert(id) {
                 continue;
             }
             fresh.push((b, c));

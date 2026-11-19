@@ -111,6 +111,11 @@ pub const DEPOSITS_WAITING_BYTES: usize = DEPOSITS_WAITING * 32 * 1024;
 /// Most mint-admin links from a thing up its record chain to its key actor
 /// (spec/wire.md §2, spec/permissions.md §1). fixed.
 pub const MAX_CHAIN_DEPTH: usize = 64;
+/// Most things listed in one stated path (spec/wire.md §2, §4 `Path`; spec/permissions.md §1).
+/// Resource bound against hostile input: each listed thing costs a reader a point query per hop
+/// and, while unjudgeable, a wait on its record. 0: no write through a holder; unbounded: a junk
+/// path parks a commit on as many records as its writer lists. Matches `MAX_CHAIN_DEPTH`. fixed.
+pub const MAX_PATH_THINGS: usize = 64;
 
 /// Node policy default, not a format constant (spec/wire.md §2).
 pub const TOMBSTONE_LIFETIME_MS: u64 = 30 * DAY_MS;

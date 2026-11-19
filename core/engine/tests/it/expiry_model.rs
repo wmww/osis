@@ -258,7 +258,7 @@ fn forged_copies(lp: &mut LocalPeer, t: Tid, copy: &Value) -> Vec<Value> {
     lp.sync_all().unwrap();
     let h = lp.peers[0].engine.header(&c).unwrap();
     let x = h.aspects.iter().find(|x| x.tid == t && x.ak == k).unwrap();
-    let asrc = h.form.own_source(h.author, CommitId([0; 32]));
+    let asrc = h.form.own_source(h.signer, CommitId([0; 32]));
     let st = lp.peers[1].engine.state(&t, &k).unwrap().unwrap();
     let mut v = lp.peers[1].engine.get(&t, &k).unwrap().unwrap();
     let Value::Map(vm) = &mut v else { panic!() };

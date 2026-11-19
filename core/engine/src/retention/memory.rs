@@ -87,7 +87,7 @@ pub(crate) fn drop_superseded_by(tx: &mut Tx<'_>, id: &CommitId) -> Result<BTree
                 .into_iter()
                 .flatten()
                 .filter_map(|(_, x)| {
-                    let xm = tx.core.ix.commits.get(x).filter(|xm| *x != *id && plain_memory(xm) && xm.view.author == m.view.author && xm.header.expires.is_some_and(|t| t <= q_exp))?;
+                    let xm = tx.core.ix.commits.get(x).filter(|xm| *x != *id && plain_memory(xm) && xm.view.signer == m.view.signer && xm.header.expires.is_some_and(|t| t <= q_exp))?;
                     let xai = xm.aspect(&a.tid, &a.ak).filter(|xai| xm.holds(*xai))?;
                     Some((*x, xai, xm.header.expires))
                 })
@@ -149,7 +149,7 @@ pub(crate) fn drop_covered(tx: &mut Tx<'_>, aspects: &BTreeSet<(Tid, Ak)>, keep:
     let held_on = |tx: &Tx<'_>, c: &CommitId, tid: &Tid, ak: &Ak| -> Option<(usize, bool, Tid)> {
         let m = tx.core.ix.commits.get(c).filter(|m| m.view.memory)?;
         let ai = m.aspect(tid, ak).filter(|ai| m.holds(*ai))?;
-        Some((ai, m.view.kind.is_compaction(), m.view.author))
+        Some((ai, m.view.kind.is_compaction(), m.view.signer))
     };
     for (tid, ak) in aspects {
         let snaps: Vec<(CommitId, Tid)> = tx
@@ -257,7 +257,7 @@ fn superseder(tx: &mut Tx<'_>, c: &CommitId, ai: usize) -> Result<Option<CommitI
         let Some(x) = step else { break };
         next = Some(x);
         let x = x.1;
-        let Some((xai, x_exp)) = tx.core.ix.commits.get(&x).filter(|xm| x != *c && plain_memory(xm) && xm.view.author == m.view.author && xm.header.expires.is_some_and(|t| t >= p_exp)).and_then(|xm| {
+        let Some((xai, x_exp)) = tx.core.ix.commits.get(&x).filter(|xm| x != *c && plain_memory(xm) && xm.view.signer == m.view.signer && xm.header.expires.is_some_and(|t| t >= p_exp)).and_then(|xm| {
             let xai = xm.aspect(&a.tid, &a.ak).filter(|xai| xm.holds(*xai) && xm.valid_at(*xai))?;
             Some((xai, xm.header.expires))
         }) else {

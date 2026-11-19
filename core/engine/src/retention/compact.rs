@@ -547,7 +547,7 @@ fn candidates(tx: &mut Tx<'_>, tid: &Tid, ak: &Ak, me: Tid) -> Result<(Vec<Candi
         // But the tree blobs it links that no live state links go with it when the new snapshot
         // covers it (durable; ephemeral, the author's own): the bulk of a large value's replaced
         // tree, linked by the snapshot that last carried it
-        if snapshot && memory && tx.core.ix.commits.get(&c).is_none_or(|m| m.header.author != me) {
+        if snapshot && memory && tx.core.ix.commits.get(&c).is_none_or(|m| m.header.signer != me) {
             continue;
         }
         if !snapshot && !by_id && !reflected.contains(&c) {

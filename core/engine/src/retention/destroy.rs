@@ -119,7 +119,7 @@ fn per_minting(core: &Core, t: &Tid) -> Vec<Held> {
     let held = core.mintings(t).filter_map(|(c, ai)| {
         let m = core.ix.commits.get(&c)?;
         let a = m.header.aspects.get(ai)?;
-        let by = requests.iter().filter(|(pc, p)| super::purge::stands(core, p, pc, a, &m.header, &c)).map(|(pc, p)| Point { ts: p.ts, node: p.author, commit: *pc }).collect();
+        let by = requests.iter().filter(|(pc, p)| super::purge::stands(core, p, pc, a, &m.header, &c)).map(|(pc, p)| Point { ts: p.ts, node: p.signer, commit: *pc }).collect();
         Some(Held { at: (c, ai), expires: m.header.expires, by })
     });
     held.collect()

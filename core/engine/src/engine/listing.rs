@@ -180,7 +180,7 @@ pub(super) fn listed(tx: &mut Tx<'_>, c: &CommitId, ai: usize) -> Result<Option<
     let me = tx.core.me();
     let Some(m) = tx.core.ix.commits.get(c) else { return Ok(None) };
     let Some(a) = m.view.aspects.get(ai) else { return Ok(None) };
-    let (tid, ak, valid, own) = (a.tid, a.ak.clone(), m.valid_at(ai), Some(m.view.author) == me);
+    let (tid, ak, valid, own) = (a.tid, a.ak.clone(), m.valid_at(ai), Some(m.view.signer) == me);
     let edits = a.replaces.map(|o| (o, a.original_floor));
     if !valid && !own {
         return Ok(None);
@@ -438,7 +438,8 @@ impl Engine {
     /// `held_parts` of one commit; `None` when it has no part there.
     pub fn held_part(&mut self, tid: &Tid, ak: &Ak, c: &CommitId, budget: usize) -> Result<Option<HeldPart>> {
         let Some(m) = self.core.ix.commits.get(c) else { return Ok(None) };
-        let (actor, ts) = (m.view.actor, m.view.ts);
+        let Some(actor) = m.view.acting else { return Ok(None) };
+        let ts = m.view.ts;
         Ok(self.part(tid, ak, c, budget)?.map(|p| HeldPart { id: *c, actor, ts, valid: p.valid, body: p.body }))
     }
 
@@ -473,7 +474,9 @@ impl Engine {
 
     fn row(&mut self, c: &CommitId, shown: &dyn Fn(&mut Engine, &Tid) -> bool, budget: usize, itself: Option<(Tid, Ak)>) -> Result<Option<CommitRow>> {
         let Some(m) = self.core.ix.commits.get(c) else { return Ok(None) };
-        let (kind, actor, node, ts, received) = (m.view.kind, m.view.actor, m.view.author, m.view.ts, m.received);
+        // a commit none of whose sections opened here shows nothing
+        let Some(actor) = m.view.acting else { return Ok(None) };
+        let (kind, node, ts, received) = (m.view.kind, m.view.signer, m.view.ts, m.received);
         let header = m.header.clone();
         let things: Vec<(usize, Tid, bool)> = m.view.aspects.iter().enumerate().map(|(ai, a)| (ai, a.tid, itself.as_ref().is_some_and(|(t, k)| *t == a.tid && *k == a.ak))).collect();
         let on: Vec<(usize, bool)> = things.into_iter().filter(|(_, t, _)| shown(self, t)).map(|(ai, _, own)| (ai, own)).collect();

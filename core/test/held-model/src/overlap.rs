@@ -88,7 +88,7 @@ pub struct Event {
 }
 
 fn commit(id: CommitId, author: NodeId, h: u64, kind: CommitKind, parts: Vec<Part>, frontier: Option<Vec<CommitId>>) -> Commit {
-    Commit { id, author, actor: author, ts: hour(h), expires: None, kind, parts, purge: vec![], frontier, undoes: None, boxes: vec![] }
+    Commit { id, signer: author, acting: author, ts: hour(h), expires: None, kind, parts, purge: vec![], frontier, undoes: None, boxes: vec![] }
 }
 
 fn part(aspect: Aspect, body: Body) -> Part {
@@ -263,13 +263,13 @@ pub fn world(seed: u64, honest: bool, rule_inputs: bool) -> World {
                 sess(id, STRANGER, h, &src, vec![(a, NONE, lo, hi)])
             }
             4 => {
-                let xs: Vec<CommitId> = events.iter().filter(|e| e.commit.author == X && r.chance(50)).map(|e| e.commit.id).collect();
+                let xs: Vec<CommitId> = events.iter().filter(|e| e.commit.signer == X && r.chance(50)).map(|e| e.commit.id).collect();
                 edge(id, ADMIN, h, X, None, Some(xs))
             }
             5 => edge(id, ADMIN, h, X, Some(r.pick(&[Role::Write, Role::Admin])), None),
             6 => {
                 let Some(&rm) = removals(&events).last() else { continue };
-                let xs: Vec<CommitId> = events.iter().filter(|e| e.commit.author == X && r.chance(60)).map(|e| e.commit.id).collect();
+                let xs: Vec<CommitId> = events.iter().filter(|e| e.commit.signer == X && r.chance(60)).map(|e| e.commit.id).collect();
                 let (author, src) = if r.chance(50) { (W, session(W, 0)) } else { (X, sx.clone()) };
                 if rule_inputs && r.chance(60) {
                     let (lo, hi) = range(&mut r, &src, Aspect::ADDENDA, author == X);

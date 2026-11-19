@@ -96,7 +96,7 @@ impl Engine {
             }
             let things: Vec<Tid> = writes.iter().map(|w| w.tid).collect();
             let published = published_keys(tx, &creates, things)?;
-            let mut b = CommitBuilder::new(Kind::ContentSnapshot, ts, me, actor, Form::Commit);
+            let mut b = CommitBuilder::new(Kind::ContentSnapshot, ts, me, crate::engine::write::interim_path(me, actor), Form::Commit);
             b.aspects = writes;
             b.ephemeral = Some(EphClass::Relay);
             let keys = crate::engine::secrets::KeyCache::default();
@@ -125,11 +125,11 @@ impl Engine {
         let now = self.now().0;
         let at = h.ts.wall_ms().0;
         let r = &self.eph.relays;
-        if r.parts.get(&id).is_some_and(|d| blob.parts.iter().all(|p| d.contains(&p.ai))) || r.floor.get(&h.author).is_some_and(|f| at <= *f) || at.saturating_add(MAX_DRIFT_MS) < now || at > now.saturating_add(MAX_DRIFT_MS) {
+        if r.parts.get(&id).is_some_and(|d| blob.parts.iter().all(|p| d.contains(&p.ai))) || r.floor.get(&h.signer).is_some_and(|f| at <= *f) || at.saturating_add(MAX_DRIFT_MS) < now || at > now.saturating_add(MAX_DRIFT_MS) {
             return Ok(false);
         }
         // its author's record must be held here (a relay never waits)
-        match crate::apply::signed_by_author(&self.core, &blob, &id, self.core.created(&h.author), None) {
+        match crate::apply::signed_by_author(&self.core, &blob, &id, self.core.created(&h.signer), None) {
             Some(true) => {}
             Some(false) => return Err(crate::Error::BadInput("signature")),
             None => return Ok(false),
@@ -149,11 +149,11 @@ impl Engine {
         // judged as its author's write at its `ts` (spec/permissions.md §5.2), on an ephemeral signal
         // key, the author acting for its actor, an account's at an epoch that counts (§5.5: no
         // addendum lists a commit never held)
-        let acts = core.standing_of(&id, h) == osis_perm::EpochStanding::Counts && crate::apply::validity::acts_for(core, h, &id);
+        let acts = core.standing_of(&id, h) == osis_perm::EpochStanding::Counts && crate::apply::validity::acts_for(core, h, blob.acting(), &id);
         let mut signals = Vec::new();
         for (ai, s) in &decoded {
             let Some(a) = h.aspects.get(*ai) else { continue };
-            let valid = a.ak.signal() && a.ak.ephemeral() && a.replaces.is_none() && acts && check_role_with(core, h.author, &|_| None, &a.tid, a.ak.as_str(), Role::Write, h.ts).is_ok();
+            let valid = a.ak.signal() && a.ak.ephemeral() && a.replaces.is_none() && acts && check_role_with(core, h.signer, &|_| None, &a.tid, a.ak.as_str(), Role::Write, h.ts).is_ok();
             if valid && let Some(v) = s.fragment.read() {
                 signals.push((a.tid, a.ak.clone(), v));
             }
@@ -163,7 +163,7 @@ impl Engine {
         let seen = match r.parts.get_mut(&id) {
             Some(d) => std::mem::take(d),
             None => {
-                r.order.push_back((id, at, h.author));
+                r.order.push_back((id, at, h.signer));
                 BTreeSet::new()
             }
         };
@@ -183,7 +183,9 @@ impl Engine {
         }
         r.floor.retain(|_, f| f.saturating_add(MAX_DRIFT_MS) >= now);
         let received = self.now();
-        let fired = fired(signals, id, h.actor, h.author, h.ts, received);
+        // the parts read opened their sections, so the thing it acts on is known
+        let Some(acting) = blob.acting() else { return Ok(false) };
+        let fired = fired(signals, id, acting, h.signer, h.ts, received);
         self.core.commits_fired(fired);
         Ok(true)
     }

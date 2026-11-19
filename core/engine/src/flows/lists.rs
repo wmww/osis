@@ -59,7 +59,7 @@ pub(crate) fn put_names(tx: &mut Tx<'_>, source: &CommitId, thing: &Tid, commits
 pub(crate) fn due(tx: &mut Tx<'_>, c: &CommitId) {
     let Some(m) = tx.core.ix.commits.get(c) else { return };
     if m.view.epoch.is_some() {
-        let author = m.view.author;
+        let author = m.view.signer;
         tx.core.ix.names_due.insert(*c);
         tx.core.ix.epochs_due.insert(author);
     }

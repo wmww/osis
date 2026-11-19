@@ -6,11 +6,12 @@ use crate::groups::{COMMIT_PAST_BLOB, blob_bound};
 use crate::keys::{Prefix, Secrets, delete_keys};
 use crate::lists::{BlobSink, write_list};
 use crate::Error;
-use osis_base::format::{CHUNK_THRESHOLD, DELETE_AUTHOR, MAX_BLOB, MAX_LIST_BYTES};
+use osis_base::format::{CHUNK_THRESHOLD, MAX_BLOB, MAX_LIST_BYTES};
 use osis_base::{Ak, BlobId, CommitId, Tid, Ts};
 use osis_crypto::{CryptoRngCore, Domain, Secret32, SigningSecret, delta_hash, seal_inner};
 use osis_schema::Retention;
-use std::collections::BTreeSet;
+use crate::path::{Path, Paths, Salted};
+use std::collections::{BTreeMap, BTreeSet};
 
 /// The writes of one `(tid, ak)` in a commit.
 #[derive(Clone, Debug)]
@@ -45,9 +46,10 @@ pub struct CommitBuilder {
     pub ts: Ts,
     /// The signing key actor: an account, or a key actor other than an account signing as
     /// itself.
-    pub author: Tid,
-    /// The actor it acts for.
-    pub actor: Tid,
+    pub signer: Tid,
+    /// The path it states on every thing it writes (spec/wire.md §4 field 2): in the clear for
+    /// one thing, else hashed per thing under a fresh salt.
+    pub path: Path,
     pub form: Form,
     /// Expiry T, wall ms, of every delta ([`crate::retention::write_expires`]).
     pub expires: Option<u64>,
@@ -61,7 +63,7 @@ pub struct CommitBuilder {
     pub blind: Option<[u8; 16]>,
     /// The ephemeral marker (an ephemeral commit, spec/commits.md §2).
     pub ephemeral: Option<crate::header::EphClass>,
-    /// An account author's epoch and inner signer (spec/wire.md §4): `build`'s key is then the
+    /// An account signer's epoch and inner signer (spec/wire.md §4): `build`'s key is then the
     /// epoch's signing key.
     pub account: Option<AccountSigner>,
     /// A rotation of the account's signing chain, with, for a merge certificate, a key per tip
@@ -73,6 +75,8 @@ pub struct CommitBuilder {
     pub adminless: bool,
     /// A seed re-seal of an epoch of the signing account's chain (spec/crypto.md §9, Custody).
     pub reseal: Option<SeedReseal>,
+    /// The holder of the remaining admin edge its edge writes rely on (spec/wire.md §4 field 17).
+    pub remains: Option<Tid>,
     /// The blob bound the commit is checked against: `MAX_BLOB` (tests shrink it).
     pub(crate) max_blob: usize,
 }
@@ -109,8 +113,8 @@ fn build_err(e: Error) -> Error {
 }
 
 impl CommitBuilder {
-    pub fn new(kind: Kind, ts: Ts, author: Tid, actor: Tid, form: Form) -> CommitBuilder {
-        CommitBuilder { kind, ts, author, actor, form, expires: None, aspects: Vec::new(), purge: Vec::new(), undoes: None, frontier: None, blind: None, ephemeral: None, account: None, rotation: None, reseal: None, own_cover: false, adminless: false, max_blob: MAX_BLOB }
+    pub fn new(kind: Kind, ts: Ts, signer: Tid, path: Path, form: Form) -> CommitBuilder {
+        CommitBuilder { kind, ts, signer, path, form, expires: None, aspects: Vec::new(), purge: Vec::new(), undoes: None, frontier: None, blind: None, ephemeral: None, account: None, rotation: None, reseal: None, remains: None, own_cover: false, adminless: false, max_blob: MAX_BLOB }
     }
 
     /// Builds the header (lists above `CHUNK_THRESHOLD` go by link through `sink`), signs it,
@@ -156,9 +160,29 @@ impl CommitBuilder {
         let mut purge = std::mem::take(&mut self.purge);
         purge.sort_by_cached_key(purge_bytes);
 
+        // one thing: its path in the clear; several: a salted hash per thing, in aspect order
+        let mut things: Vec<Tid> = entries.iter().map(|e| e.tid).collect();
+        things.dedup();
+        let mut salted = BTreeMap::new();
+        let path = if things.len() == 1 {
+            Paths::One(self.path.clone())
+        } else {
+            Paths::Hashed((0..things.len()).map(|i| {
+                let mut salt = [0u8; 16];
+                rng.fill_bytes(&mut salt);
+                let s = Salted { salt, path: self.path.clone() };
+                let h = s.hash();
+                salted.insert(i, s);
+                h
+            }).collect())
+        };
+        if !things.is_empty() {
+            self.path.check(&self.signer).map_err(build_err)?;
+        }
+
         let mut header = Header {
-            author: self.author,
-            actor: self.actor,
+            signer: self.signer,
+            path,
             kind,
             ts: self.ts,
             form: self.form,
@@ -174,6 +198,7 @@ impl CommitBuilder {
             epoch: self.account.as_ref().map(|a| a.epoch),
             rotation: self.rotation.as_ref().map(|r| r.0.clone()),
             reseal: self.reseal.clone(), own_cover: self.own_cover, adminless: self.adminless,
+            remains: self.remains,
         };
         if self.rotation.as_ref().is_some_and(|(r, keys)| r.names.len() != keys.len()) {
             return Err(Error::Build("a merge signature per named tip"));
@@ -185,21 +210,19 @@ impl CommitBuilder {
 
         // lists above the threshold go by link
         let mut list_blobs = Vec::new();
-        // header-list chunks and tree nodes: the commit's level-2 key only (spec/wire.md §5)
-        let list_keys: Vec<DeleteKey> = header.keys.iter().filter(|k| k.level == DELETE_AUTHOR).copied().collect();
         let lists: Vec<(ListField, Vec<u8>)> = ListField::ALL.into_iter().filter_map(|f| header.list_bytes(f).map(|b| (f, b))).filter(|(_, b)| b.len() > CHUNK_THRESHOLD).collect();
         // keyed to this header alone, before any is linked (`Header::list_secret`)
         let list_key = if lists.is_empty() {
             None
         } else {
-            let dedup = secrets.dedup(&self.actor).ok_or(Error::Build("dedup secret of the actor not supplied"))?;
+            let dedup = secrets.dedup(&self.signer).ok_or(Error::Build("dedup secret of the signer not supplied"))?;
             Some(header.list_secret_for(&dedup, &|f| lists.iter().any(|(g, _)| *g == f)))
         };
         for (f, bytes) in lists {
-            // its author's record is what a reader needs to resolve the list by: the aspect list
+            // its signer's record is what a reader needs to resolve the list by: the aspect list
             // of a commit carrying it must be inline (spec/commits.md §2)
-            if f == ListField::Aspects && header.aspects.iter().any(|a| a.tid == header.author && a.ak.as_str() == crate::retention::CREATED) {
-                return Err(Error::TooLarge("the aspect list of a commit carrying its author's creation"));
+            if f == ListField::Aspects && header.aspects.iter().any(|a| a.tid == header.signer && a.ak.as_str() == crate::retention::CREATED) {
+                return Err(Error::TooLarge("the aspect list of a commit carrying its signer's creation"));
             }
             // no receiver would resolve it (`Header::resolve`)
             if bytes.len() > MAX_LIST_BYTES {
@@ -210,7 +233,8 @@ impl CommitBuilder {
             let mut prefix = || {
                 let mut salt = [0u8; 16];
                 rng.fill_bytes(&mut salt);
-                Prefix { salt, thing: self.actor, expiry: header.expires, keys: list_keys.clone() }
+                // header-list chunks and tree nodes commit to no delete key (spec/wire.md §5)
+                Prefix { salt, thing: self.signer, expiry: header.expires, keys: Vec::new() }
             };
             let mut rec = Recording { sink: &mut *sink, written: &mut written };
             let link = write_list(&bytes, dedup, &mut rec, &mut prefix)?;
@@ -228,7 +252,7 @@ impl CommitBuilder {
         }).collect();
         let sigs = Sigs::signed(&id, key, inner, more, merge);
         let parts = deltas.into_iter().enumerate().map(|(ai, delta)| Part { ai, delta }).collect();
-        let commit = CommitBlob { header, sigs, parts };
+        let commit = CommitBlob { header, sigs, parts, salted };
         // paging keeps deltas far below a blob; a commit whose paged roots still pass it is
         // refused here (spec/commits.md §1)
         if blob_bound(&commit) > self.max_blob {

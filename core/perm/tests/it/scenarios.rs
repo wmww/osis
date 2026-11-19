@@ -876,7 +876,7 @@ fn trusted_component_evaluates_from_scratch_spec_permissions_5_1() {
     tls.update(&held);
     tls.set_trust(&held, trust(&[r]));
     assert!(tls.to_save(b"x", 1, true).put.is_empty());
-    let scope = tls.get(&g).unwrap().demotion_scope(osis_perm::RoleCommit { id: cid(9), ts: ts(9), author: n[1], actor: n[1], frontier: Some(std::sync::Arc::new(osis_perm::Frontier::default())), ops: vec![osis_perm::EdgeOp { target: g, holder: n[3], edge: None }] });
+    let scope = tls.get(&g).unwrap().demotion_scope(osis_perm::RoleCommit { id: cid(9), ts: ts(9), signer: n[1], frontier: Some(std::sync::Arc::new(osis_perm::Frontier::default())), ops: vec![osis_perm::EdgeOp { target: g, holder: n[3], edge: None }] });
     assert!(scope.roles.contains_key(&n[3]));
     w.set(n[0], g, n[4], edge(Read), 5, &[]);
     let held = w.held();

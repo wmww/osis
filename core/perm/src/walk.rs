@@ -112,7 +112,7 @@ impl Ever {
 /// The things a commit's edge writes are on, for `Input::first_write`: their targets, and
 /// their holders other than the author (a self-removal through a holder is audited there).
 pub(crate) fn written_on(c: &RoleCommit) -> impl Iterator<Item = Tid> + '_ {
-    c.ops.iter().flat_map(|o| std::iter::once(o.target).chain((o.holder != c.author).then_some(o.holder)))
+    c.ops.iter().flat_map(|o| std::iter::once(o.target).chain((o.holder != c.signer).then_some(o.holder)))
 }
 
 impl Input {
@@ -198,7 +198,7 @@ impl Input {
     /// the commits and new nodes that reach nothing here (`append`): no thing without a record
     /// here getting one (`Timeline::extend`'s conditions).
     pub fn can_append(&self, new: &[Arc<RoleCommit>]) -> bool {
-        new.iter().all(|c| !self.commits.contains_key(&c.id) && self.may_be_node(&c.author) && c.ops.iter().all(|o| self.records.mint_admin(&o.holder).is_some() || self.may_be_node(&o.holder)))
+        new.iter().all(|c| !self.commits.contains_key(&c.id) && self.may_be_node(&c.signer) && c.ops.iter().all(|o| self.records.mint_admin(&o.holder).is_some() || self.may_be_node(&o.holder)))
     }
 
     /// Adds role commits `new` not held here (all of `gather`'s, or ones `can_append`
@@ -211,9 +211,9 @@ impl Input {
             }
         };
         for c in new {
-            node(c.author);
+            node(c.signer);
             for t in written_on(c) {
-                let e = self.first_write.entry((c.author, t)).or_insert(c.point());
+                let e = self.first_write.entry((c.signer, t)).or_insert(c.point());
                 *e = (*e).min(c.point());
             }
             for o in &c.ops {
@@ -493,7 +493,7 @@ impl Walked {
         let mut placed = Vec::new();
         {
             let view = View::new(&input.records, &before, Some(c.ts));
-            let best = view.roles_from(&c.author);
+            let best = view.roles_from(&c.signer);
             for (k, o) in c.ops.iter().enumerate() {
                 let Ok(k32) = u32::try_from(k) else { continue };
                 if let Some(attr) = judge(&view, before.get(&input.records, &o.holder, &o.target), c, k, &best) {
@@ -520,7 +520,7 @@ impl Walked {
         }
         // later falls of its author on what it applies on: their audits read it
         for (_, o, _) in &placed {
-            for f in self.falls.get(&(c.author, o.target)).into_iter().flatten().filter(|f| f.point >= p) {
+            for f in self.falls.get(&(c.signer, o.target)).into_iter().flatten().filter(|f| f.point >= p) {
                 r.dep.extend(items.at(f.point));
             }
         }
@@ -528,7 +528,7 @@ impl Walked {
         // first write were not recorded; an audit of its author on one may find one
         let moved: BTreeMap<Tid, Option<Point>> = written_on(c).map(|t| (t, first.get(&t).copied().flatten())).filter(|(_, q)| q.is_none_or(|q| q > p)).collect();
         if !moved.is_empty() {
-            let reach = input.ever_forward([c.author]);
+            let reach = input.ever_forward([c.signer]);
             for (t, q) in &moved {
                 let back = input.ever_back([*t]);
                 let end = q.map_or(items.list.len(), |q| items.list.partition_point(|a| a.point <= q));
@@ -574,20 +574,20 @@ impl Walked {
             let id = WriteId(c.id, k);
             let new = o.edge;
             // as `Pass::record`, at its place in walk order
-            self.list_write((c.author, o.target), id, p);
-            self.log.push(Undo::ByAuthorTarget((c.author, o.target)));
-            let was = self.applied.insert(id, Applied { author: c.author, target: o.target, point: p, attr });
+            self.list_write((c.signer, o.target), id, p);
+            self.log.push(Undo::ByAuthorTarget((c.signer, o.target)));
+            let was = self.applied.insert(id, Applied { author: c.signer, target: o.target, point: p, attr });
             self.log.push(Undo::Applied(id, was));
             // as `Pass::change` (no audit: `insert`): the key's state at the end is its state here
             let old = self.set_alive(&input.records, p, key, new);
             let explicit = matches!(attr, Attr::By(Class::Edge));
-            let own = explicit && self.restores(key, old) && View::new(&input.records, &at, Some(p.ts)).reach_backward(&o.holder).contains(&c.author);
+            let own = explicit && self.restores(key, old) && View::new(&input.records, &at, Some(p.ts)).reach_backward(&o.holder).contains(&c.signer);
             self.set_edge(&input.records, key, new);
             at.set(&input.records, o.holder, o.target, new);
             if let Some((base, mine, _)) = self.record_change(p, key, old, new, Some(id), explicit.then(|| input.frontier(c)))
                 && own
             {
-                self.keep_own(key, c.author, base, &mine);
+                self.keep_own(key, c.signer, base, &mine);
             }
         }
         let (log, hist) = (std::mem::replace(&mut self.log, log), std::mem::replace(&mut self.history, hist));
@@ -674,7 +674,7 @@ impl Walked {
                 };
                 // the falls of its author where its first write moved: not in the walk yet
                 let q = items.list.get(j).map_or(p, |x| x.point);
-                let new_fall = |k: &(Tid, Tid)| k.0 == c.author && moved.get(&k.1).is_some_and(|f| f.is_none_or(|f| q <= f));
+                let new_fall = |k: &(Tid, Tid)| k.0 == c.signer && moved.get(&k.1).is_some_and(|f| f.is_none_or(|f| q <= f));
                 with.records.retain(|(fall, k)| !(*fall && new_fall(k)));
                 let found: Vec<((Tid, Tid), Vec<Fall>)> = with.falls.iter().filter(|(k, _)| new_fall(k)).map(|(k, v)| (*k, v.clone())).collect();
                 with.falls.retain(|k, _| !new_fall(k));
@@ -965,7 +965,7 @@ impl Walked {
             if d.ops.iter().any(|o| keys.contains(&(o.holder, o.target))) {
                 return None;
             }
-            let author = classes && a.contains(&d.author) && d.ops.iter().any(|o| f.contains(&o.target) || f.contains(&o.holder));
+            let author = classes && a.contains(&d.signer) && d.ops.iter().any(|o| f.contains(&o.target) || f.contains(&o.holder));
             let ops = d.ops.iter().enumerate().map(|(k, o)| {
                 let r = explicit(&o.holder, &o.target);
                 let applied = || u32::try_from(k).ok().and_then(|k| self.applied.get(&WriteId(d.id, k)));
@@ -1668,7 +1668,7 @@ impl<'a> Pass<'a> {
         #[cfg(debug_assertions)]
         WALKED.with(|w| w.set(w.get().map(|n| n + 1)));
         let point = c.point();
-        let best = self.roles(c.author, c.ts);
+        let best = self.roles(c.signer, c.ts);
         let mut judged = Vec::new();
         for k in 0..c.ops.len() {
             let Ok(k32) = u32::try_from(k) else { continue };
@@ -1684,9 +1684,9 @@ impl<'a> Pass<'a> {
         for (k, id, attr) in judged {
             let Some(op) = c.ops.get(k) else { continue };
             let new = op.edge;
-            self.record(id, Applied { author: c.author, target: op.target, point, attr });
+            self.record(id, Applied { author: c.signer, target: op.target, point, attr });
             let explicit = matches!(attr, Attr::By(Class::Edge));
-            let auditor = explicit.then(|| Auditor { author: c.author, frontier: self.input.frontier(c), commit: c.id, point });
+            let auditor = explicit.then(|| Auditor { author: c.signer, frontier: self.input.frontier(c), commit: c.id, point });
             grew |= self.change(point, (op.holder, op.target), new, Some(id), auditor.as_ref());
         }
         grew
@@ -1698,7 +1698,7 @@ impl<'a> Pass<'a> {
 /// edge it writes there and `best` its author's roles (§5.1 step 2, §2).
 pub(crate) fn judge(view: &View<'_>, old: Option<&Edge>, c: &RoleCommit, k: usize, best: &BTreeMap<Tid, Role>) -> Option<Attr> {
     let op = c.ops.get(k)?;
-    let (a, m, t) = (c.author, op.holder, op.target);
+    let (a, m, t) = (c.signer, op.holder, op.target);
     if m == t {
         return None;
     }
@@ -1769,7 +1769,7 @@ impl Items {
     /// The point of the first item before `until` that names one of `ts` (author, holder,
     /// target).
     pub fn first_naming(&self, ts: &BTreeSet<Tid>, until: Option<Point>) -> Option<Point> {
-        let names = |c: &RoleCommit| ts.contains(&c.author) || c.ops.iter().any(|o| ts.contains(&o.holder) || ts.contains(&o.target));
+        let names = |c: &RoleCommit| ts.contains(&c.signer) || c.ops.iter().any(|o| ts.contains(&o.holder) || ts.contains(&o.target));
         self.list.iter().take_while(|a| until.is_none_or(|u| a.point < u)).find(|a| names(&a.commit)).map(|a| a.point)
     }
 

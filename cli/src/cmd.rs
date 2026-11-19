@@ -1240,7 +1240,7 @@ fn inspect(ctx: &mut Ctx<'_>, i: InspectCmd) -> anyhow::Result<()> {
                 lines.push(format!("aspect {} commits={} stored_size={}", ak.as_str(), changes.len(), size.map_or("-".into(), |s| s.to_string())));
                 for c in changes {
                     let h = &c.header;
-                    lines.push(format!("  commit {} kind={:?} ts={} actor={} node={}{}", commit_text(&c.id), h.kind, h.ts.wall_ms().0, h.actor.to_uri(), h.author.to_uri(), h.undoes.map_or(String::new(), |u| format!(" undoes={}", commit_text(&u)))));
+                    lines.push(format!("  commit {} kind={:?} ts={} acting={} signer={}{}", commit_text(&c.id), h.kind, h.ts.wall_ms().0, c.acting.to_uri(), h.signer.to_uri(), h.undoes.map_or(String::new(), |u| format!(" undoes={}", commit_text(&u)))));
                 }
                 if let Some(f) = frag {
                     lines.push(format!("  state {f}"));

@@ -28,7 +28,7 @@ fn link() -> impl Strategy<Value = Link> {
 
 prop_compose! {
     fn header()(
-        author in tid(), actor in tid(), kind in 0u64..4, wall in 0u64..1 << 46, form in any::<bool>(), expires in proptest::option::of(0u64..1 << 50),
+        signer in tid(), actor in tid(), hashed in proptest::option::of(proptest::collection::vec(any::<[u8; 32]>(), 2..4)), remains in proptest::option::of(tid()), kind in 0u64..4, wall in 0u64..1 << 46, form in any::<bool>(), expires in proptest::option::of(0u64..1 << 50),
         aspects in proptest::collection::vec(aspect(), 0..4),
         purge in proptest::collection::vec((proptest::option::of(any::<[u8; 32]>()), tid()), 0..3),
         undoes in proptest::option::of(any::<[u8; 32]>()),
@@ -42,14 +42,21 @@ prop_compose! {
             l.set(f, x);
         }
         let mut h = Header {
-            author, actor, kind: Kind::from_id(kind).unwrap(), ts: ts(wall).max(ts(0)),
+            signer,
+            // a hashed path, or the empty one or one through another thing in the clear
+            path: match hashed {
+                Some(hs) => Paths::Hashed(hs),
+                None if actor == signer => Paths::default(),
+                None => Paths::One(Path::through(actor)),
+            },
+            kind: Kind::from_id(kind).unwrap(), ts: ts(wall).max(ts(0)),
             form: if form { Form::Commit } else { SESSION },
             expires,
             aspects,
             purge: purge.into_iter().map(|(c, tid)| match c {
                 Some(c) => PurgeItem::Commit { tid, ak: Ak::new("p.0").unwrap(), ts: ts(c[0] as u64), src: if c[1] % 2 == 0 { osis_crdt::Source::commit(CommitId(c)) } else { osis_crdt::Source::session(osis_crdt::Session { node: tid, nonce: [c[2]; 16] }) } },
                 None if tid.as_bytes()[0] % 2 == 0 => PurgeItem::Aspect { tid, ak: Ak::new("p.0").unwrap() },
-                None => PurgeItem::Author { tid, ak: Ak::new("p.0").unwrap(), actor: tid },
+                None => PurgeItem::Author { tid, ak: Ak::new("p.0").unwrap(), author: tid },
             }).collect(),
             undoes: undoes.map(CommitId), blind,
             keys: keys.into_iter().map(|(level, b)| dkey(level, b)).collect(),
@@ -59,6 +66,7 @@ prop_compose! {
             epoch: None,
             rotation: None,
             reseal: None, own_cover: false, adminless: false,
+            remains,
         };
         // the lists' rule: sorted and distinct
         for a in &mut h.aspects {
@@ -89,7 +97,7 @@ prop_compose! {
 /// A content commit over `n` aspects of three things with mixed retention, expiring or not.
 fn commit(classes: &[(u8, u8)], exp: bool) -> CommitBlob {
     let at = ts(1_000_000);
-    let mut b = CommitBuilder::new(Kind::Content, at, t(1), t(2), SESSION);
+    let mut b = CommitBuilder::new(Kind::Content, at, t(1), crate::Path::through(t(2)), SESSION);
     b.expires = exp.then_some(5_000_000);
     for (i, (thing, by)) in classes.iter().enumerate() {
         let by = (*by).clamp(1, 3);
@@ -189,7 +197,7 @@ proptest! {
         let c = commit(&classes, exp);
         let secret = |r: usize| Secret32::from_bytes([r as u8 + 1; 32]);
         let mut rng = rng();
-        let env = seal_commit(&c, |ai| ai % split, |r, _| Some((secret(*r), vec![])), &[], &mut rng).unwrap();
+        let env = seal_commit(&c, &c.header, |ai| (c.header.aspects[ai].tid, ai % split), |r, _| Some((secret(r.1), vec![])), &[], &mut rng).unwrap();
         prop_assert_eq!(Envelope::decode(&env.encode()).unwrap(), env.clone());
         let mut all: Vec<usize> = env.ais();
         all.sort();
@@ -205,7 +213,7 @@ proptest! {
                 prop_assert_eq!(p.ai % split, r);
             }
             sealed_total += o.sealed.len();
-            let again = seal_commit(&o.commit, |ai| ai % split, |x, _| Some((secret(*x), vec![])), &o.sealed, &mut rng).unwrap();
+            let again = seal_commit(&o.commit, &c.header, |ai| (c.header.aspects[ai].tid, ai % split), |x, _| Some((secret(x.1), vec![])), &o.sealed, &mut rng).unwrap();
             prop_assert_eq!(again.open(|_| (0..split).map(secret).collect()).unwrap().commit, c.clone());
         }
         prop_assert_eq!(sealed_total, env.sections.len() * (split - 1));

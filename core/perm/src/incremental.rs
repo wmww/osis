@@ -220,7 +220,7 @@ fn joins(t: Tid, created: Option<&CreationRecord>, commits: &[Arc<RoleCommit>], 
     }
     for c in commits {
         for o in &c.ops {
-            join(c.author, o.target);
+            join(c.signer, o.target);
             join(o.holder, o.target);
         }
     }
@@ -473,7 +473,7 @@ impl Timelines {
                 } else if c.inputs.1.contains(&m.id) || self.trusts([&m.id]) {
                     return None;
                 } else {
-                    let names = std::iter::once(&m.author).chain(m.ops.iter().flat_map(|o| [&o.holder, &o.target]));
+                    let names = std::iter::once(&m.signer).chain(m.ops.iter().flat_map(|o| [&o.holder, &o.target]));
                     for x in names {
                         if c.inputs.0.contains(x) {
                             continue;

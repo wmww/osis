@@ -73,26 +73,29 @@ fn unindex(tx: &mut Tx<'_>, id: &CommitId, marks: bool) -> Result<()> {
             core.ix.aspect_things.remove(&a.ak, &a.tid);
         }
         core.ix.invalid.remove(&k, id);
-        core.ix.by_thing.remove(&(a.tid, v.author), id);
-        core.ix.role_on.remove(&(a.tid, v.author), id);
+        core.ix.by_thing.remove(&(a.tid, v.signer), id);
+        core.ix.role_on.remove(&(a.tid, v.signer), id);
         core.ix.purges_on.remove(&a.tid, id);
-        if v.actor != v.author {
-            core.ix.acting_on.remove(&(a.tid, v.author, v.actor), id);
+        if let Some(x) = v.acts_for() {
+            core.ix.acting_on.remove(&(a.tid, v.signer, x), id);
         }
         // a chain goes once no held commit on the thing needs it (`Indexes::chains_on`)
         // (`acting_on` lies within `by_thing`, so the chain to the thing goes with the last write)
-        if !core.ix.by_thing.contains_key(&(a.tid, v.author)) {
-            core.ix.chains_on.remove(&a.tid, &(v.author, a.tid));
+        if !core.ix.by_thing.contains_key(&(a.tid, v.signer)) {
+            core.ix.chains_on.remove(&a.tid, &(v.signer, a.tid));
         }
-        if v.actor != v.author && v.actor != a.tid && !core.ix.acting_on.contains_key(&(a.tid, v.author, v.actor)) {
-            core.ix.chains_on.remove(&a.tid, &(v.author, v.actor));
+        if let Some(x) = v.acts_for()
+            && x != a.tid
+            && !core.ix.acting_on.contains_key(&(a.tid, v.signer, x))
+        {
+            core.ix.chains_on.remove(&a.tid, &(v.signer, x));
         }
         if a.ak.as_str() == osis_commit::retention::RETENTION {
             super::validity::forget_setting(core, &a.tid, id);
         }
         core.ix.dropped_snapshots.remove(&k, id);
         if v.form.counted() && v.kind.has_own_writes() && a.lo < a.hi {
-            core.ix.ranges.remove(&(a.tid, a.ak.clone(), v.form.own_source(v.author, *id)), &(a.lo, *id));
+            core.ix.ranges.remove(&(a.tid, a.ak.clone(), v.form.own_source(v.signer, *id)), &(a.lo, *id));
         }
         super::atomic::forget_snapshot(core, &a.tid, &a.ak, id);
         // a memory commit's aspect holds no durable one (ephemeral aspects): one row per aspect;
@@ -107,13 +110,13 @@ fn unindex(tx: &mut Tx<'_>, id: &CommitId, marks: bool) -> Result<()> {
             core.ix.forgotten.insert(k, v.ts);
         }
     }
-    if v.actor != v.author {
-        core.ix.by_actor.remove(&(v.actor, v.author), id);
+    if let Some(x) = v.acts_for() {
+        core.ix.by_actor.remove(&(x, v.signer), id);
     }
     if let Some(e) = v.epoch {
         core.ix.role_sigs.remove(id);
-        core.ix.by_epoch.remove(&(v.author, e), id);
-        core.ix.named.remove(&v.author, id);
+        core.ix.by_epoch.remove(&(v.signer, e), id);
+        core.ix.named.remove(&v.signer, id);
         core.ix.names_due.remove(id);
     }
     super::validity::forget_addenda(core, id, &v.aspects);

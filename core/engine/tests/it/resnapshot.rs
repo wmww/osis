@@ -71,7 +71,7 @@ fn purged(lp: &mut LocalPeer, t: Tid) {
 fn own_snapshots(lp: &LocalPeer, t: Tid) -> usize {
     let e = &lp.peers[1].engine;
     let me = e.me();
-    e.core.ix.snapshots.get(&(t, reg())).into_iter().flatten().filter(|x| e.header(&x.1).is_some_and(|h| h.author == me)).count()
+    e.core.ix.snapshots.get(&(t, reg())).into_iter().flatten().filter(|x| e.header(&x.1).is_some_and(|h| h.signer == me)).count()
 }
 
 // spec/commits.md §5 Purge: a writer that stops after applying a purge request, before writing the

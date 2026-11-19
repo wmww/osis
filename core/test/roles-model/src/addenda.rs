@@ -5,7 +5,7 @@
 //! **addendum**: a plain write of W on the thing, naming R and listing those commit IDs.
 //! Every writer publishes for everything it saw that R did not list, with no coordination.
 //!
-//! A part (a commit's delta on a thing, or its acting check on its header actor, §5.2 Acting)
+//! A part (a commit's delta on a thing, or its acting check on the thing it acts on, §5.2 Interim, Acting)
 //! by X on thing m is valid iff X is re-granted there (§5.2), or held write at its key and no
 //! demotion of X below write on m follows, or else the frontier of any such demotion lists it
 //! (whatever the order: a frontier is what its demoter had received), or a counting addendum A
@@ -13,7 +13,7 @@
 //! - A is valid (rule 5: an ordinary write of its author, audited by its author's removals);
 //! - A's key is after D's and the listed commit's before D's (rule 2);
 //! - A's author holds write on m at A's key (rules 1 and 3: readers and nodes keeping it unread hold no
-//!   write; a commit's acting check is its part on its header actor, vouched for there by a
+//!   write; a commit's acting check is its part on the thing it acts on, vouched for there by a
 //!   writer of that actor, as the removal's frontier lists it there);
 //! - the listed commit is plain content, no compaction snapshot (rule 4; `Kind::Special` stands for role-class,
 //!   admin-only and purge writes; role commits are not items at all).
@@ -70,7 +70,7 @@ pub struct Item {
     pub t: u32,
     pub id: u32,
     pub thing: usize,
-    /// Header actor when it acts for another actor (§5.2 Acting).
+    /// The thing it acts on where that is not its signer (§5.2 Interim, Acting).
     pub acting: Option<usize>,
     /// [node] receipt time; `LATE` never.
     pub recv: Vec<u32>,

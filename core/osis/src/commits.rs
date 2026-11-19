@@ -310,7 +310,7 @@ fn commit_of(r: &mut Reader<'_>, rel: &mut Relations, row: CommitRow, limit: usi
                 Err(_) => Body::NotFetched,
             },
             PartBody::TooLarge => Body::TooLarge { limit: limit as u64 },
-            PartBody::Purged(by) => Body::Purged { by: CommitId(by), actor: r.e.header(&by).map(|h| h.actor) },
+            PartBody::Purged(by) => Body::Purged { by: CommitId(by), actor: r.e.commit_acting(&by) },
             PartBody::Dropped | PartBody::NotFetched => Body::NotFetched,
         };
         parts.push((p.tid, p.ak, Part { valid: p.valid, body, edited: p.version.map(CommitPos) }));
@@ -797,7 +797,7 @@ impl crate::handle::ReadOnly {
             base.into_iter()
                 .map(|c| {
                     let id = CommitId(c.id);
-                    Found { id, actor: c.header.actor, kind: kind_of(c.header.kind, undoes(&c.header).is_some()), in_effect: !out_of.contains(&id), depth: depth_of(id) }
+                    Found { id, actor: c.acting, kind: kind_of(c.header.kind, undoes(&c.header).is_some()), in_effect: !out_of.contains(&id), depth: depth_of(id) }
                 })
                 .collect::<Vec<_>>()
         });

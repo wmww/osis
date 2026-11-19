@@ -154,7 +154,7 @@ pub(crate) fn walk_deltas(tx: &mut Tx<'_>, deltas: &[&[u8]], trees: bool, on_pag
 /// Whether `blob`'s header lists resolve from the blobs held (bad lists count as resolving:
 /// nothing more to fetch, its judging refuses them).
 fn resolves(tx: &mut Tx<'_>, blob: &CommitBlob) -> Result<bool> {
-    let Some(dedup) = tx.core.dedup(&blob.header.actor) else { return Ok(true) };
+    let Some(dedup) = tx.core.dedup(&blob.header.signer) else { return Ok(true) };
     let mut h = blob.header.clone();
     match h.resolve(&mut crate::engine::blobs::TxBlobs::new(&mut tx.blobs, tx.txn.is_memory()), &dedup) {
         Err(e) if super::is_missing_page(&e) => Ok(false),

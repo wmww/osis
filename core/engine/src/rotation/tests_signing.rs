@@ -164,7 +164,7 @@ fn removal_rotates_the_account_and_its_lists_keep_its_writes_spec_permissions_5_
     // removed node deposits under them no more (spec/crypto.md §3)
     assert_ne!(lp.peers[0].engine.deposit_seed(&a.root).unwrap().unwrap().expose(), deposit.expose(), "a fresh deposit seed");
     let rot = lp.peers[0].engine.header(&done.commits[0]).unwrap();
-    assert!(rot.rotation.is_some() && rot.author == a.account);
+    assert!(rot.rotation.is_some() && rot.signer == a.account);
     // the outsider gets the rotation (with its lists)
     send(&mut lp, 0, 2, &done.commits[..]);
     assert_eq!(read(&mut lp, 2, t), Some(Value::Str("sibling".into())), "the sibling's write was listed");
@@ -407,7 +407,7 @@ fn a_listing_waits_for_its_things_delete_keys_spec_permissions_5_5() {
     send(&mut lp, 0, 2, &done.commits);
     let listing_on = |lp: &LocalPeer| {
         let e = &lp.peers[2].engine;
-        e.commit_ids().into_iter().find(|c| e.header(c).is_some_and(|h| h.author == a.account && h.aspects.iter().any(|x| x.ak.as_str() == "listing.0" && x.tid == u)))
+        e.commit_ids().into_iter().find(|c| e.header(c).is_some_and(|h| h.signer == a.account && h.aspects.iter().any(|x| x.ak.as_str() == "listing.0" && x.tid == u)))
     };
     assert_eq!(listing_on(&lp), None, "the listing waits for u's delete keys");
     // the keys come later: w applies after the removal, its receipt still before it

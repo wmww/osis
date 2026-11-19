@@ -111,7 +111,7 @@ impl CertIndex {
                 .ops
                 .iter()
                 .enumerate()
-                .filter_map(|(k, op)| Some((WriteId(c.id, u32::try_from(k).ok()?), op, g.could(&input.records, &c.author, op)?)))
+                .filter_map(|(k, op)| Some((WriteId(c.id, u32::try_from(k).ok()?), op, g.could(&input.records, &c.signer, op)?)))
                 .collect();
             for (id, op, sets) in judged {
                 x.writes.insert(id);
@@ -234,7 +234,7 @@ impl Timeline {
                 }
                 for cm in ws {
                     out.commits.insert(cm.id);
-                    things.insert(cm.author);
+                    things.insert(cm.signer);
                 }
             }
         }
@@ -261,7 +261,7 @@ impl Timeline {
     pub fn write_certificates(&self, id: &WriteId) -> Option<Certificates> {
         let cm = self.input.commits.get(&id.0)?;
         let op = cm.ops.get(usize::try_from(id.1).ok()?)?;
-        let mut out = self.closure(vec![(cm.author, op.target), (cm.author, op.holder), (op.holder, op.target)]);
+        let mut out = self.closure(vec![(cm.signer, op.target), (cm.signer, op.holder), (op.holder, op.target)]);
         out.commits.insert(cm.id);
         Some(out)
     }
@@ -306,8 +306,8 @@ impl Timeline {
                         if out.commits.insert(cm.id) {
                             for (k, o) in cm.ops.iter().enumerate() {
                                 if u32::try_from(k).is_ok_and(|k| index.writes.contains(&WriteId(cm.id, k))) {
-                                    todo.insert((cm.author, o.target));
-                                    todo.insert((cm.author, o.holder));
+                                    todo.insert((cm.signer, o.target));
+                                    todo.insert((cm.signer, o.holder));
                                 }
                             }
                         }

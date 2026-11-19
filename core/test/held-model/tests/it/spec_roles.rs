@@ -139,7 +139,7 @@ fn mint_admin_is_an_edge_spec_permissions_1() {
 // write on that actor
 #[test]
 fn acting_for_an_account_spec_permissions_5_2() {
-    let as_account = |id, author, h| Commit { actor: ACCOUNT, parts: vec![Part { thing: 12, ..part(REG, Retention::PLAIN, vec![set(h, id, 1)]) }], ..content(id, author, h, vec![]) };
+    let as_account = |id, author, h| Commit { acting: ACCOUNT, parts: vec![Part { thing: 12, ..part(REG, Retention::PLAIN, vec![set(h, id, 1)]) }], ..content(id, author, h, vec![]) };
     let o = evaluate(&held(5, vec![as_account(10, 2, 1), as_account(11, 1, 1)]));
     assert!(o.valid[&(10, 0)]);
     assert!(!o.valid.contains_key(&(11, 0)), "nothing leads from node 1 to thing 12: it waits");

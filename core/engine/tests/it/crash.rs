@@ -112,7 +112,7 @@ fn crash_every_write_of_a_purging_commit() {
         for id in ids.iter().filter(|c| **c != later) {
             let o = e.header(id).unwrap();
             // counters are per session (spec/crdt.md §2.1): a commit of this open against its own
-            if o.author == h.author && o.form == h.form {
+            if o.signer == h.signer && o.form == h.form {
                 for a in &o.aspects {
                     for b in h.aspects.iter().filter(|b| b.tid == a.tid && b.ak == a.ak && b.lo < b.hi && a.lo < a.hi) {
                         assert!(a.lo >= b.hi || b.lo >= a.hi, "counters reused after a crash at write {n}");

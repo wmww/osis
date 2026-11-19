@@ -638,7 +638,7 @@ impl Engine {
             for c in commits {
                 // a commit counts through its part valid here: an invalid one's retention and
                 // expiry are no one's to copy
-                let Some((ai, mine)) = tx.core.ix.commits.get(&c).and_then(|m| Some((m.aspect(&k.0, &k.1).filter(|ai| m.valid_at(*ai))?, m.header.author == me))) else { continue };
+                let Some((ai, mine)) = tx.core.ix.commits.get(&c).and_then(|m| Some((m.aspect(&k.0, &k.1).filter(|ai| m.valid_at(*ai))?, m.header.signer == me))) else { continue };
                 if newest.is_some() && !mine {
                     continue;
                 }

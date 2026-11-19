@@ -436,7 +436,7 @@ fn goes_invalid(core: &Core, m: &crate::engine::Meta, ai: usize) -> bool {
 /// Whether part `ai` of `m` is judged invalid here and so is not held, nor missing: invalid,
 /// and neither a role commit's nor this node's own (`goes_invalid`).
 fn drops_invalid(core: &Core, m: &crate::engine::Meta, ai: usize) -> bool {
-    !m.valid_at(ai) && Some(m.view.author) != core.me() && !m.view.kind.is_role()
+    !m.valid_at(ai) && Some(m.view.signer) != core.me() && !m.view.kind.is_role()
 }
 
 /// Whether commit `m` holds no part and is known only for a part dropped while invalid (its
@@ -1315,7 +1315,7 @@ impl Engine {
     pub fn own_held_before(&self, s: &CommitId, tid: &Tid, ak: &Ak) -> Vec<CommitId> {
         let Some(m) = self.core.ix.commits.get(s) else { return Vec::new() };
         let ts = m.view.ts;
-        self.core.ix.own_held.get(&(*tid, ak.clone(), m.view.author)).into_iter().flatten().take_while(|x| x.0 < ts).map(|x| x.1).collect()
+        self.core.ix.own_held.get(&(*tid, ak.clone(), m.view.signer)).into_iter().flatten().take_while(|x| x.0 < ts).map(|x| x.1).collect()
     }
 
     /// The own replaces that may cover `c` on `(tid, ak)` (`snapshot::own_covers`).
@@ -1873,7 +1873,7 @@ mod tests {
             }
             let e = &mut lp.peers[1].engine;
             let held: Vec<bool> = puts.iter().map(|c| super::held_part(&e.core, c, &t, &x).is_some()).collect();
-            let own = e.core.ix.snapshots.get(&(t, x.clone())).into_iter().flatten().filter(|s| e.core.ix.commits.get(&s.1).is_some_and(|m| m.view.author == bob)).count();
+            let own = e.core.ix.snapshots.get(&(t, x.clone())).into_iter().flatten().filter(|s| e.core.ix.commits.get(&s.1).is_some_and(|m| m.view.signer == bob)).count();
             (e.get(&t, &x).unwrap(), held, own)
         };
         let keys_first = end(true);

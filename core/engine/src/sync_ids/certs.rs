@@ -86,7 +86,7 @@ impl Engine {
 
     /// `latest_on`, written by `author` when given.
     pub fn latest_by(&self, tid: &Tid, ak: &str, author: Option<&Tid>) -> Option<CommitId> {
-        self.latest_where(tid, ak, |c| author.is_none_or(|a| self.core.ix.commits.get(c).is_some_and(|m| m.header.author == *a)))
+        self.latest_where(tid, ak, |c| author.is_none_or(|a| self.core.ix.commits.get(c).is_some_and(|m| m.header.signer == *a)))
     }
 
     /// `latest_on` among the commits `keep` passes.
@@ -226,7 +226,7 @@ impl Engine {
         let current = self.current_keys(p);
         self.current_keys_into(p, out);
         let Ok(keys) = osis_base::Ak::new("keys.0") else { return };
-        let rots: Vec<CommitId> = self.core.ix.by_aspect.get(&(*p, keys)).into_iter().flatten().map(|(_, c)| *c).filter(|c| !current.contains(c) && self.core.ix.commits.get(c).is_some_and(|m| m.view.author == *p && m.view.epoch.is_some()) && self.header(c).is_some_and(|h| h.rotation.is_some())).collect();
+        let rots: Vec<CommitId> = self.core.ix.by_aspect.get(&(*p, keys)).into_iter().flatten().map(|(_, c)| *c).filter(|c| !current.contains(c) && self.core.ix.commits.get(c).is_some_and(|m| m.view.signer == *p && m.view.epoch.is_some()) && self.header(c).is_some_and(|h| h.rotation.is_some())).collect();
         out.headers.extend(rots);
         // and its inbox's public key record (spec/sync-inbox.md §1)
         if let Some(i) = self.inbox_thing(p).filter(|i| self.core.created(i).is_some()) {
@@ -302,7 +302,7 @@ impl Engine {
                     let held: Vec<CommitId> = self.core.ix.by_aspect.get(&(n, k)).into_iter().flatten().map(|x| x.1).collect();
                     for c in held {
                         let Some(h) = self.header(&c) else { continue };
-                        if h.author == n && h.aspects.iter().all(|a| a.tid == n && CARD.contains(&a.ak.as_str())) {
+                        if h.signer == n && h.aspects.iter().all(|a| a.tid == n && CARD.contains(&a.ak.as_str())) {
                             out.add(c, (0..h.aspects.len()).collect());
                         }
                     }
@@ -423,9 +423,10 @@ impl Engine {
         let evidence: Vec<CommitId> = std::iter::once(w.commit).chain(requests).collect();
         for c in &evidence {
             let Some(h) = self.header(c) else { continue };
-            for x in [*t, h.actor, h.author] {
+            let acting = self.core.ix.commits.get(c).and_then(|m| m.view.acting);
+            for x in [*t, h.signer].into_iter().chain(acting) {
                 // a header is judged by its author's edges and records; no keyset judges it
-                let mut cs = self.chain_to(&h.author, &x);
+                let mut cs = self.chain_to(&h.signer, &x);
                 cs.keys.clear();
                 self.cert_parts(&cs, out);
             }
@@ -519,10 +520,11 @@ impl Engine {
         if self.core.ix.pending.contains_key(c) {
             return None;
         }
-        let h = self.core.ix.commits.get(c)?.header.clone();
+        let m = self.core.ix.commits.get(c)?;
+        let (h, acting) = (m.header.clone(), m.view.acting);
         let mut things: BTreeSet<Tid> = parts.iter().filter_map(|ai| h.aspects.get(*ai)).map(|a| a.tid).collect();
-        things.insert(h.actor);
-        let found: Vec<osis_perm::Certificates> = things.iter().chain([&h.author]).map(|t| self.chain_to(&h.author, t)).collect();
+        things.extend(acting);
+        let found: Vec<osis_perm::Certificates> = things.iter().chain([&h.signer]).map(|t| self.chain_to(&h.signer, t)).collect();
         let mut out = Certs::default();
         for cs in &found {
             self.cert_parts(cs, &mut out);
@@ -560,7 +562,7 @@ impl Engine {
             }
             let keyed: Vec<(CommitId, Tid)> = self.core.ix.held.keyed_by(&r).copied().collect();
             for (v, t) in keyed {
-                let Some(author) = self.header(&v).map(|h| h.author) else { continue };
+                let Some(author) = self.header(&v).map(|h| h.signer) else { continue };
                 out.add(v, self.parts_of(&v, &BTreeSet::from([t]), &[osis_schema::core_types::VOUCHES_AK]));
                 let chain = self.chain_to(&author, &t);
                 todo.extend(chain.commits.iter().copied());
@@ -635,8 +637,9 @@ impl Engine {
             if !fresh {
                 continue;
             }
-            for x in things.into_iter().chain([h.actor]) {
-                let cs = self.chain_to(&h.author, &x);
+            let acting = self.core.ix.commits.get(&d).and_then(|m| m.view.acting);
+            for x in things.into_iter().chain(acting) {
+                let cs = self.chain_to(&h.signer, &x);
                 self.cert_parts(&cs, out);
             }
         }

@@ -262,9 +262,9 @@ pub(crate) type Gives = (osis_crdt::Frontiers, Vec<(CommitId, Tid)>, osis_crdt::
 impl Meta {
     /// A commit's meta from its decoded header: parts in `missing` missing, the rest as `head`
     /// says (`Hold::stored`).
-    pub(crate) fn new(header: Arc<Header>, valid: Vec<bool>, mut head: index::RecordHead, missing: BTreeSet<usize>) -> Meta {
+    pub(crate) fn new(header: Arc<Header>, acting: Option<Tid>, valid: Vec<bool>, mut head: index::RecordHead, missing: BTreeSet<usize>) -> Meta {
         let hold = (0..valid.len()).map(|ai| Hold::stored(ai, &mut head, missing.contains(&ai), false)).collect();
-        Meta { view: Arc::new(View::of(&header)), header: LazyHeader::ready(header), received: head.received, origin: head.origin, repair: head.repair.clone(), signed: head.signed, valid, hold }
+        Meta { view: Arc::new(View::of(&header, acting)), header: LazyHeader::ready(header), received: head.received, origin: head.origin, repair: head.repair.clone(), signed: head.signed, valid, hold }
     }
     /// The index of aspect `(tid, ak)` in the commit.
     pub(crate) fn aspect(&self, tid: &Tid, ak: &Ak) -> Option<usize> {
@@ -386,8 +386,11 @@ pub struct View {
     pub ts: Ts,
     pub kind: osis_commit::Kind,
     pub form: Form,
-    pub author: Tid,
-    pub actor: Tid,
+    pub signer: Tid,
+    // Interim (notes/a1-spec/README.md step 3): the walk judges each thing along its own path.
+    /// The thing the walk reads the commit as acting on (`CommitBlob::acting`): `None` where its
+    /// paths are hashed and no section of it is opened here.
+    pub acting: Option<Tid>,
     /// Some list goes by link: the header is resolved from blobs at open (decoded there).
     pub linked: bool,
     /// A memory commit (the ephemeral marker): held in memory, never durable to node-sync,
@@ -420,15 +423,16 @@ pub struct AspectView {
 }
 
 impl View {
-    pub fn of(h: &Header) -> View {
+    /// The view of `h`, acting on `acting` (`CommitBlob::acting`).
+    pub fn of(h: &Header, acting: Option<Tid>) -> View {
         // what `View::aspect` searches by (spec/wire.md §4)
         debug_assert!(h.aspects.is_sorted_by_key(|a| (a.tid, a.ak.as_str().len(), a.ak.as_str().as_bytes())), "aspects sorted");
         View {
             ts: h.ts,
             kind: h.kind,
             form: h.form,
-            author: h.author,
-            actor: h.actor,
+            signer: h.signer,
+            acting,
             linked: h.links != osis_commit::Links::default(),
             memory: h.ephemeral.is_some(),
             aspects: h.aspects.iter().map(|a| AspectView { tid: a.tid, ak: a.ak.clone(), lo: a.lo, hi: a.hi, replaces: a.replaces, original_floor: a.original_floor }).collect(),
@@ -437,6 +441,12 @@ impl View {
             epoch: h.epoch,
             own_cover: h.own_cover,
         }
+    }
+
+    // Interim (notes/a1-spec/README.md step 3): the walk judges along the stated paths.
+    /// The thing it acts on where that is not its signer, as known here (`acting`).
+    pub fn acts_for(&self) -> Option<Tid> {
+        self.acting.filter(|a| *a != self.signer)
     }
 
     /// The index of aspect `(tid, ak)` (`osis_commit::aspect_position`).
@@ -540,7 +550,7 @@ impl StoredHeader {
             Some(h) => {
                 // the persisted view is the header's (index check: an open from the index
                 // equals a rebuild from the commit records)
-                debug_assert_eq!(View::of(&h), *self.view, "meta row of {:?} is stale", self.id);
+                debug_assert_eq!(View::of(&h, self.view.acting), *self.view, "meta row of {:?} is stale", self.id);
                 Ok(Arc::new(h))
             }
             None => {
@@ -561,8 +571,8 @@ pub(crate) fn decode_stored_header(id: &CommitId, bytes: &[u8]) -> Option<Header
 
 fn fallback_header(v: &View) -> Header {
     Header {
-        author: v.author,
-        actor: v.actor,
+        signer: v.signer,
+        path: osis_commit::Paths::default(),
         kind: v.kind,
         ts: v.ts,
         form: v.form,
@@ -578,6 +588,7 @@ fn fallback_header(v: &View) -> Header {
         epoch: None,
         rotation: None,
         reseal: None, own_cover: v.own_cover, adminless: false,
+        remains: None,
     }
 }
 
@@ -630,12 +641,12 @@ impl Owned {
     }
     pub fn of(h: &Header, id: &CommitId, ai: usize) -> Option<Owned> {
         let a = h.aspects.get(ai)?;
-        Some(Owned::of_form(h.form, h.author, id, a.lo, a.hi))
+        Some(Owned::of_form(h.form, h.signer, id, a.lo, a.hi))
     }
     /// `of` from the commit's `View`.
     pub fn of_view(v: &View, id: &CommitId, ai: usize) -> Option<Owned> {
         let a = v.aspects.get(ai)?;
-        Some(Owned::of_form(v.form, v.author, id, a.lo, a.hi))
+        Some(Owned::of_form(v.form, v.signer, id, a.lo, a.hi))
     }
     /// Whether `d` (an origin dot, never `Derived`) belongs to this delta.
     pub fn owns(&self, d: &Dot) -> bool {
@@ -2650,10 +2661,10 @@ impl Core {
     /// `Core::judged_from`). `rotation_seq` never rolls back, so a number is never given twice.
     pub(crate) fn note_rotation(&mut self, m: &Meta) {
         // from the view: an open decodes no header. Every rotation writes its account's `keys.0`.
-        if m.view.kind.is_role() && m.view.aspect(&m.view.author, "keys.0").is_some() {
+        if m.view.kind.is_role() && m.view.aspect(&m.view.signer, "keys.0").is_some() {
             self.rotation_seq = self.rotation_seq.saturating_add(1);
-            self.ix.rotations.insert(m.view.author, self.rotation_seq);
-            self.ix.epochs_due.insert(m.view.author);
+            self.ix.rotations.insert(m.view.signer, self.rotation_seq);
+            self.ix.epochs_due.insert(m.view.signer);
         }
     }
 
@@ -2800,7 +2811,7 @@ impl Core {
             if !crate::retention::snapshot::own_aspect(&a.ak) {
                 continue;
             }
-            let k = (a.tid, a.ak.clone(), m.view.author);
+            let k = (a.tid, a.ak.clone(), m.view.signer);
             let e = (m.view.ts, *id);
             let held = add && m.holds(ai);
             if held {
@@ -4732,7 +4743,7 @@ mod tests {
         // every commit on g applied (what waited came again, then as node-sync fetches what it
         // lacks); beside them only peer 2's own (its addendum to the removal)
         let own = [c, lp.peers[2].engine.tid()];
-        let others = |p: &Peer| p.engine.core.ix.commits.iter().filter(|(_, m)| !own.contains(&m.view.author) && m.view.aspects.iter().any(|a| a.tid == g)).map(|(id, _)| *id).collect::<BTreeSet<_>>();
+        let others = |p: &Peer| p.engine.core.ix.commits.iter().filter(|(_, m)| !own.contains(&m.view.signer) && m.view.aspects.iter().any(|a| a.tid == g)).map(|(id, _)| *id).collect::<BTreeSet<_>>();
         assert_eq!(others(&lp.peers[2]), others(&lp.peers[0]));
         assert!(lp.peers[2].engine.core.ix.pending.is_empty());
     }

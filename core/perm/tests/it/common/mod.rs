@@ -183,8 +183,7 @@ impl World {
             h.add_commit(RoleCommit {
                 id: c.id,
                 ts: ts(c.t),
-                author: c.author,
-                actor: c.author,
+                signer: c.author,
                 frontier: (!c.fin).then(|| Arc::new(self.frontier(c.author, c.t))),
                 ops: c.ops.iter().map(|&(target, holder, edge)| EdgeOp { target, holder, edge }).collect(),
             });
@@ -208,15 +207,15 @@ impl World {
 /// is audited on the holder, by X's class there (§5.1 step 3). They stay dropped since D only
 /// grows, so the answer depends on the order drops were found.
 pub fn residue(tl: &osis_perm::Timeline) -> BTreeSet<WriteId> {
-    let by = |w: &WriteId| tl.role_commit(&w.0).and_then(|m| Some((m.author, m.ops.get(usize::try_from(w.1).ok()?)?.target, m.point())));
+    let by = |w: &WriteId| tl.role_commit(&w.0).and_then(|m| Some((m.signer, m.ops.get(usize::try_from(w.1).ok()?)?.target, m.point())));
     // the thing whose class fall audits w: the holder for a self-removal through it
     let audited_on = |w: &WriteId, target: Tid| {
         let Some(m) = tl.role_commit(&w.0) else { return target };
         let Some(op) = m.ops.get(usize::try_from(w.1).unwrap_or(usize::MAX)) else { return target };
         let at = osis_perm::At::before(m.point());
         let old = tl.edges_at(Some(m.point())).get(&op.holder, &op.target).copied();
-        let class = tl.class(&m.author, &op.target, at);
-        let through = op.holder != m.author && osis_perm::types::lowers(op.edge.as_ref(), old.as_ref()) && tl.role(&m.author, &op.holder, at) == Some(Role::Admin) && class != osis_perm::Class::Edge;
+        let class = tl.class(&m.signer, &op.target, at);
+        let through = op.holder != m.signer && osis_perm::types::lowers(op.edge.as_ref(), old.as_ref()) && tl.role(&m.signer, &op.holder, at) == Some(Role::Admin) && class != osis_perm::Class::Edge;
         if through { op.holder } else { target }
     };
     let audits = |w: &WriteId, p: &osis_perm::Point| {

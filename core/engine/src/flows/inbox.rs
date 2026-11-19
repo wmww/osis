@@ -530,7 +530,7 @@ impl Engine {
         };
         let h = &blob.header;
         let mut certs = crate::sync_ids::Certs::default();
-        self.account_chain(&h.author, &mut certs);
+        self.account_chain(&h.signer, &mut certs);
         let (chain, records) = self.certs_values(&certs)?;
         let ais: Vec<usize> = (0..h.aspects.len()).collect();
         let groups = osis_commit::prefix_groups(h, ais.iter().copied())?;
@@ -563,7 +563,7 @@ impl Engine {
         let Some(mut chain) = self.author_chain(c, &parts) else { return Ok(None) };
         for (x, ps) in chain.commits.iter_mut() {
             let Some(hx) = self.header(x) else { continue };
-            ps.retain(|i| hx.aspects.get(*i).is_some_and(|a| a.ak.as_str() != "keys.0" || a.tid == hx.author));
+            ps.retain(|i| hx.aspects.get(*i).is_some_and(|a| a.ak.as_str() != "keys.0" || a.tid == hx.signer));
         }
         chain.commits.retain(|_, p| !p.is_empty());
         if let Some(h) = holder {

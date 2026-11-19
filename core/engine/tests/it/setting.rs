@@ -516,7 +516,7 @@ fn two_admins_at_one_stamp_ordered_by_key_spec_commits_5() {
         lp.advance(1_000);
         let (hk, hn) = (lp.peers[keeper].engine.header(&k).unwrap(), lp.peers[other].engine.header(&n).unwrap());
         assert_eq!(hk.ts.wall_ms(), hn.ts.wall_ms(), "one wall ms");
-        let keeps = (hk.ts, hk.author, k) > (hn.ts, hn.author, n);
+        let keeps = (hk.ts, hk.signer, k) > (hn.ts, hn.signer, n);
         seen.push(keeps);
         let v1 = put(&mut lp, 1, d, "one");
         let v2 = put(&mut lp, 1, d, "two");

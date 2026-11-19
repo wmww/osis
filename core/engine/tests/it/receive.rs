@@ -62,7 +62,7 @@ fn dedup_and_events_spec_commits_4() {
     }
     let ev = lp.peers[1].drain_events();
     let last = ev.iter().rev().find_map(|e| match e {
-        Event::Applied { origin, changed, author, .. } => Some((*origin, changed.clone(), *author)),
+        Event::Applied { origin, changed, signer, .. } => Some((*origin, changed.clone(), *signer)),
         _ => None,
     });
     let (origin, changed, author) = last.unwrap();
@@ -340,7 +340,7 @@ fn parked_spec_versioning_2() {
     let delta = osis_base::encode(&Value::List(vec![Value::Bytes(vec![0; 16]), Value::List(vec![]), Value::List(vec![]), Value::List(vec![Value::Int(99)])]));
     let mut w = AspectWrite::new(t, ak("t:future.0"), 100, 101, delta);
     w.retention = crate::common::purgeable_by(osis_base::PurgeBy::Writer);
-    let mut b = CommitBuilder::new(Kind::Content, ts, e.me(), e.me(), crate::common::forged_session(e.me()));
+    let mut b = CommitBuilder::new(Kind::Content, ts, e.me(), osis_commit::Path::default(), crate::common::forged_session(e.me()));
     b.aspects.push(w);
     let forge_key = e.sign_forged(&mut b);
     let built = b.build(&forge_key, &Dedup(vec![rec]), &mut MemoryBlobs::default(), &mut SeededRng::from_u64(0)).unwrap();
@@ -390,7 +390,7 @@ fn a_pending_commit_keeps_its_authors_chain_spec_commits_5() {
         lp.advance(1);
         c
     });
-    let own: Vec<_> = packages_to(&mut lp, 1, 2).into_iter().filter(|pk| lp.peers[1].engine.header(&pk.id).unwrap().author == b).collect();
+    let own: Vec<_> = packages_to(&mut lp, 1, 2).into_iter().filter(|pk| lp.peers[1].engine.header(&pk.id).unwrap().signer == b).collect();
     for pk in &own {
         lp.deliver(2, pk).unwrap();
     }
@@ -399,7 +399,7 @@ fn a_pending_commit_keeps_its_authors_chain_spec_commits_5() {
     assert!(e.release_entry(&w[0]).unwrap());
     // the grant, and nothing more of b's
     let bs = [b, lp.peers[1].engine.tid()];
-    let rest: Vec<_> = packages_to(&mut lp, 0, 2).into_iter().filter(|pk| !bs.contains(&lp.peers[0].engine.header(&pk.id).unwrap().author)).collect();
+    let rest: Vec<_> = packages_to(&mut lp, 0, 2).into_iter().filter(|pk| !bs.contains(&lp.peers[0].engine.header(&pk.id).unwrap().signer)).collect();
     for pk in &rest {
         lp.deliver(2, pk).unwrap();
     }
@@ -428,7 +428,7 @@ fn grantee_waits_for_grant_spec_commits_4() {
     lp.peers[1].commit(m).unwrap();
     // then b's own commits, then a's
     for pk in packages(&mut lp, 1) {
-        if lp.peers[1].engine.header(&pk.id).unwrap().author == b {
+        if lp.peers[1].engine.header(&pk.id).unwrap().signer == b {
             lp.deliver(2, &pk).unwrap();
         }
     }

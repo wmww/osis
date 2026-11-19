@@ -30,7 +30,7 @@ fn row(p: &Tid, key: &VerifyingKey) -> Vec<u8> {
 /// found (`keep`).
 pub(crate) fn take_boxes(tx: &mut Tx<'_>, h: &Header) -> Result<()> {
     let Some((key, boxes)) = seed_boxes_of(h) else { return Ok(()) };
-    let p = h.author;
+    let p = h.signer;
     let ours = tx.core.accounts.contains_key(&p) || tx.core.account.get().is_none_or(|a| a == p);
     if !ours || held(tx, &p, key)? {
         return Ok(());

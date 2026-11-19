@@ -232,7 +232,7 @@ Nothing here is designed: each answer is what today's core would give if servers
 | Can any member create a channel that appears in the directory? | opt | opt⁴⁹ |
 | Does the sidebar show channel names without reading each channel? | yes | yes⁵⁰ |
 | Can non-members see that a private channel exists? | no | opt⁵¹ |
-| Can a member post as a realm (the header's actor)? | no | opt³⁹ |
+| Can a member post as a realm (the thing its path acts on)? | no | opt³⁹ |
 | Can a member choose which channels to sync, with none by default? | yes | opt⁵⁰ |
 | Unread counts for channels not synced? | yes | opt⁵² |
 | Mentions in channels not synced? | yes | core h |
@@ -277,7 +277,7 @@ Nothing here is designed: each answer is what today's core would give if servers
 35. The pointer is a set, so old members stitch every branch; each newcomer sees only its branch; admins merge with a further segment.
 36. About 15 KB per member (grant boxes plus chain certificates under the new sync ID): about 15 MB at 1000, estimated.
 38. admins may always purge (spec/commits.md §5): no setting makes a message undeletable.
-39. the header's actor is checked by validity (spec/permissions.md §5.2: the signing node holds write on the actor at the commit's key), so a valid commit's actor is its sender; that the actor itself could write on the chat is the ordinary validity of the node's write only when its path runs through the actor.
+39. the actor its path names is checked by validity (spec/permissions.md §5.2 Interim, Acting: the signing node holds write on the actor at the commit's key), so a valid commit's actor is its sender; that the actor itself could write on the chat is the ordinary validity of the node's write only when its path runs through the actor.
 40. with frontier heads (unbuilt); without them a kick lists about 34 B per message the member ever sent (3.4 MB at 10^5) and caps near 1.9x10^6 messages.
 41. The removal and the top realm's rotation are one commit (2.7 KB per member); each channel re-keys on any writer's next sync pass (about 11 KB, eager, may fork). Cutting sync, write and deposit keys needs an admin of each channel to register a step at each node keeping it unread; until then the removed member reads ciphertext and can log entries.
 42. At 1000: 2.7 MB plus about 11 KB per channel, spread over members' passes. At 100,000 with tiers of 1000: the tier (2.7 MB), the top realm (100 boxes), then channels; estimated.

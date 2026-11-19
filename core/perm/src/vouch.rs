@@ -249,7 +249,7 @@ pub(crate) fn counting(first: &dyn FirstWalk, held: &Held, commits: &BTreeMap<Co
                 let edges = commits.get(c).map(|x| &**x);
                 let parts = held.parts.get(c);
                 let (author, position) = match (edges, parts) {
-                    (Some(e), _) => (e.author, e.point()),
+                    (Some(e), _) => (e.signer, e.point()),
                     (None, Some(p)) => (p.author, Point::start(p.ts)),
                     (None, None) => continue,
                 };

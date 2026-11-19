@@ -113,7 +113,7 @@ pub const CREATION_ID: CommitId = 2_000_000;
 /// Thing `t`'s creation commit (one `created.0` part), by `author` at `ts`.
 pub fn creation(t: ThingId, link: RecordLink, author: NodeId, ts: u64, retention: Retention, expires: Option<u64>) -> Commit {
     let part = Part { thing: t, aspect: Aspect::CREATED, retention, body: Body::Held(Delta::Created(link)), stripped: Default::default(), replaces: None };
-    Commit { id: CREATION_ID + t, author, actor: author, ts, expires, kind: CommitKind::Content, parts: vec![part], purge: vec![], frontier: None, undoes: None , boxes: vec![] }
+    Commit { id: CREATION_ID + t, signer: author, acting: author, ts, expires, kind: CommitKind::Content, parts: vec![part], purge: vec![], frontier: None, undoes: None , boxes: vec![] }
 }
 
 /// Every `CREATIONS` thing's creation, an hour before `START`, durable and purgeable by admins.
@@ -245,13 +245,13 @@ pub fn history(seed: u64, n: usize) -> Held {
             let d = Delta::Retention(setting(&mut r, START));
             let part = plain_part(t, Aspect::RETENTION, Retention::ADMIN, d);
             let id = new_id(&mut r);
-            commits.push(Commit { id, author: chief, actor: chief, ts: (START - HOUR / 2) * MS + k as u64, expires: None, kind: CommitKind::Content, parts: vec![part], purge: vec![], frontier: None, undoes: None, boxes: vec![] });
+            commits.push(Commit { id, signer: chief, acting: chief, ts: (START - HOUR / 2) * MS + k as u64, expires: None, kind: CommitKind::Content, parts: vec![part], purge: vec![], frontier: None, undoes: None, boxes: vec![] });
         }
     }
     let base = |id, author, ts| Commit {
         id,
-        author,
-        actor: author,
+        signer: author,
+        acting: author,
         ts,
         expires: None,
         kind: CommitKind::Content,
@@ -313,7 +313,7 @@ pub fn history(seed: u64, n: usize) -> Held {
                 let invite = role.filter(|_| r.chance(15));
                 let until = (role.is_some() && r.chance(25)).then(|| w + r.below(4) * HOUR);
                 let frontier = (role != Some(Role::Admin))
-                    .then(|| commits.iter().filter(|c| c.author == holder && r.chance(60)).map(|c| c.id).collect());
+                    .then(|| commits.iter().filter(|c| c.signer == holder && r.chance(60)).map(|c| c.id).collect());
                 let e = EdgeWrite { holder, role, invite, until };
                 Commit { kind: CommitKind::Role, frontier, parts: vec![role_part(thing, e)], ..base(id, author, ts) }
             } else if sub < 70 {
@@ -364,7 +364,7 @@ pub fn history(seed: u64, n: usize) -> Held {
             let item = match if tp.aspect == Aspect::CREATED { 1 } else { k } {
                 0 => PurgeItem::Commit { commit: target.id, thing: tp.thing, aspect: tp.aspect },
                 1 => PurgeItem::Aspect { thing: tp.thing, aspect: tp.aspect },
-                _ => PurgeItem::Author { thing: tp.thing, aspect: tp.aspect, author: target.actor },
+                _ => PurgeItem::Author { thing: tp.thing, aspect: tp.aspect, author: target.signer },
             };
             let ws = set(ts, id, r.below(5) as i64);
             // the chief, else often a node an edge names on the thing: a grant or demotion between
@@ -424,12 +424,12 @@ pub fn history(seed: u64, n: usize) -> Held {
                         expires = newest_entry(&commits, thing, aspect, ts).and_then(|e| e.expires).map(|d| w + d).or(expires);
                     }
                     // node 2 acts for its account on the account's thing half the time
-                    let actor = if thing == 12 && author == 2 && r.chance(50) { ACCOUNT } else { author };
-                    Commit { expires, actor, parts: vec![plain_part(thing, aspect, retention, Delta::Writes(ws))], ..base(id, author, ts) }
+                    let acting = if thing == 12 && author == 2 && r.chance(50) { ACCOUNT } else { author };
+                    Commit { expires, acting, parts: vec![plain_part(thing, aspect, retention, Delta::Writes(ws))], ..base(id, author, ts) }
                 }
             }
         };
-        let author = c.author;
+        let author = c.signer;
         let content = c.kind == CommitKind::Content;
         commits.push(c);
         // a writer applying a kill of a purge-on-replace body it holds covers it in that transaction

@@ -311,7 +311,7 @@ pub(crate) fn author_key(core: &crate::engine::Core, h: &osis_commit::Header, si
     if sigs.more.len() != osis_commit::inner_seals(h.rotation.as_ref()) {
         return Err(Error::BadInput("an inner seal count other than the rotation's"));
     }
-    epoch_key(core, &h.author, h.epoch, public_key)
+    epoch_key(core, &h.signer, h.epoch, public_key)
 }
 
 /// The key of `author`'s epoch `epoch` (`None`: a plain key actor's key), `public_key` its
@@ -446,7 +446,7 @@ pub(crate) fn unreceive_outside(tx: &mut Tx<'_>, t: &Tid) -> Result<()> {
             Some(m) => m.view.aspects.iter().map(|a| a.tid).collect(),
             None => {
                 if !b.header.is_resolved() {
-                    let Some(dedup) = tx.core.dedup(&b.header.actor) else { continue };
+                    let Some(dedup) = tx.core.dedup(&b.header.signer) else { continue };
                     if b.header.resolve(&mut TxBlobs::new(&mut tx.blobs, tx.txn.is_memory()), &dedup).is_err() {
                         continue;
                     }
@@ -515,7 +515,7 @@ fn still_waits(tx: &mut Tx<'_>, b: &CommitBlob) -> Result<bool> {
     if b.header.ts.wall_ms().0 > tx.now().0.saturating_add(MAX_DRIFT_MS) {
         return Ok(true);
     }
-    let Some(author) = tx.core.created(&b.header.author) else { return Ok(false) };
+    let Some(author) = tx.core.created(&b.header.signer) else { return Ok(false) };
     Ok(matches!(author_key(tx.core, &b.header, &b.sigs, author), Ok(None)))
 }
 
@@ -545,12 +545,12 @@ pub(crate) fn examine(tx: &mut Tx<'_>, blob: &mut CommitBlob, id: &CommitId, ski
     if !blob.header.is_resolved() {
         // a held author's signature first: a false one costs no list. An author's record carried
         // by this commit waits for the lists: only the aspects say which part holds it
-        if let Some(rec) = tx.core.created(&blob.header.author).cloned()
+        if let Some(rec) = tx.core.created(&blob.header.signer).cloned()
             && let Some(vk) = author_key(tx.core, &blob.header, &blob.sigs, &rec)?
         {
             *known = Some(check_signature(tx, blob, id, &vk, *known)?);
         }
-        let Some(dedup) = tx.core.dedup(&blob.header.actor) else { return Ok(Exam::Awaits(Reason::UnknownCreated(blob.header.actor))) };
+        let Some(dedup) = tx.core.dedup(&blob.header.signer) else { return Ok(Exam::Awaits(Reason::UnknownCreated(blob.header.signer))) };
         match blob.header.resolve(&mut TxBlobs::new(&mut tx.blobs, tx.txn.is_memory()), &dedup) {
             Ok(()) => {}
             Err(e) if is_missing_page(&e) => return Ok(Exam::Pending(Reason::WaitBlobs)),
@@ -559,12 +559,16 @@ pub(crate) fn examine(tx: &mut Tx<'_>, blob: &mut CommitBlob, id: &CommitId, ski
     }
     let h = blob.header.clone();
     let carried = carried_records(&h, blob, id);
-    let held: BTreeMap<Tid, CreationRecord> = h.aspects.iter().map(|a| a.tid).chain([h.author, h.actor]).filter_map(|t| tx.core.created(&t).map(|r| (t, r.clone()))).collect();
+    // Interim (notes/a1-spec/README.md step 3): the record of every thing a held part's path lists
+    let acting = blob.acting();
+    let held: BTreeMap<Tid, CreationRecord> = h.aspects.iter().map(|a| a.tid).chain([h.signer]).chain(acting).filter_map(|t| tx.core.created(&t).map(|r| (t, r.clone()))).collect();
     let chain_rec = |t: &Tid, core: &crate::engine::Core| -> Option<CreationRecord> { core.created(t).cloned().or_else(|| carried.get(t).cloned()) };
     let record = |t: &Tid| -> Option<CreationRecord> { held.get(t).cloned().or_else(|| carried.get(t).cloned()) };
-    let Some(author) = record(&h.author) else { return Ok(Exam::Awaits(Reason::MissingChain(h.author))) };
-    if record(&h.actor).is_none() {
-        return Ok(Exam::Awaits(Reason::UnknownCreated(h.actor)));
+    let Some(author) = record(&h.signer) else { return Ok(Exam::Awaits(Reason::MissingChain(h.signer))) };
+    if let Some(x) = acting
+        && record(&x).is_none()
+    {
+        return Ok(Exam::Awaits(Reason::UnknownCreated(x)));
     }
     // a part it cannot judge (its thing's record, record chain or the author's reach) waits; with
     // every held part such the commit is unjudgeable (spec/commits.md §4), found before a missing
@@ -620,7 +624,7 @@ pub(crate) fn examine(tx: &mut Tx<'_>, blob: &mut CommitBlob, id: &CommitId, ski
         }
         blob.parts.retain(|p| !junk.contains(&p.ai));
         unjudged.retain(|ai, _| !junk.contains(ai));
-        tx.core.events.diagnostic(Diagnostic { kind: DiagnosticKind::BadInput, tids: Vec::new(), commit: Some(*id), peer: Some(h.author), detail: "delta hash".into() }, tx.core.hlc.mono());
+        tx.core.events.diagnostic(Diagnostic { kind: DiagnosticKind::BadInput, tids: Vec::new(), commit: Some(*id), peer: Some(h.signer), detail: "delta hash".into() }, tx.core.hlc.mono());
     }
     if only_junk {
         return Err(Error::BadInput("delta hash"));
@@ -650,13 +654,13 @@ pub(crate) fn examine(tx: &mut Tx<'_>, blob: &mut CommitBlob, id: &CommitId, ski
         if let Some(held) = tx.core.created(t)
             && held != rec
         {
-            tx.core.events.diagnostic(Diagnostic { kind: DiagnosticKind::CollidingRecord, tids: vec![*t], commit: Some(*id), peer: Some(h.author), detail: String::new() }, tx.core.hlc.mono());
+            tx.core.events.diagnostic(Diagnostic { kind: DiagnosticKind::CollidingRecord, tids: vec![*t], commit: Some(*id), peer: Some(h.signer), detail: String::new() }, tx.core.hlc.mono());
         }
     }
     let mut out = Parts { signed, whole: Vec::new(), streamed: Vec::new(), waiting: None, bad: None, stripped: Vec::new() };
     let mut interner = Interner::new();
     // tests let a local writer break the writer rules, to test receivers
-    let rules = !(tx.core.skip_writer_rules && Some(h.author) == tx.core.me());
+    let rules = !(tx.core.skip_writer_rules && Some(h.signer) == tx.core.me());
     let mut bad: Vec<usize> = Vec::new();
     for p in &blob.parts {
         if skip.contains(&p.ai) || unjudged.contains_key(&p.ai) {
@@ -706,7 +710,7 @@ pub(crate) fn examine(tx: &mut Tx<'_>, blob: &mut CommitBlob, id: &CommitId, ski
         }
         blob.parts.retain(|p| !bad.contains(&p.ai));
         let detail = out.bad.as_ref().map(|e| e.to_string()).unwrap_or_default();
-        tx.core.events.diagnostic(Diagnostic { kind: DiagnosticKind::BadInput, tids: Vec::new(), commit: Some(*id), peer: Some(h.author), detail }, tx.core.hlc.mono());
+        tx.core.events.diagnostic(Diagnostic { kind: DiagnosticKind::BadInput, tids: Vec::new(), commit: Some(*id), peer: Some(h.signer), detail }, tx.core.hlc.mono());
     }
     // nothing else held and a part cannot be judged: unjudgeable
     if out.ais().is_empty() && aside.keys.is_empty() && let Some(r) = unjudged.values().next().cloned() {
@@ -839,7 +843,7 @@ fn thing_wait(
     // it is on the record chain, or held edge writes lead from it to the chain (a revoked author
     // keeps its certificates and still applies, judged invalid); an external fire needs no path
     // (spec/permissions.md §5.2 External fires)
-    (!a.ak.external() && !chain.contains(&h.author) && !validity::reaches(core, &h.author, &chain)).then_some(Reason::MissingChain(h.author))
+    (!a.ak.external() && !chain.contains(&h.signer) && !validity::reaches(core, &h.signer, &chain)).then_some(Reason::MissingChain(h.signer))
 }
 
 /// Applies or stores one decoded commit blob.
@@ -1048,7 +1052,7 @@ fn pend_aside(tx: &mut Tx<'_>, id: &CommitId, applied: &CommitBlob, w: Waiting) 
         return Ok(());
     }
     if w.reason == Reason::Parked {
-        return park(tx, id, &rest.encode(), rest.header.aspects.iter().map(|a| a.tid).collect(), Some(rest.header.author), Some(&rest.header));
+        return park(tx, id, &rest.encode(), rest.header.aspects.iter().map(|a| a.tid).collect(), Some(rest.header.signer), Some(&rest.header));
     }
     // the applied commit's held verdict answers for these signatures (`signature`)
     pend(tx, id, PendingKind::Pending, None, &rest.encode(), w.reason.clone(), Some(&rest.header))?;
@@ -1105,7 +1109,7 @@ fn expire_stored(tx: &mut Tx<'_>, id: &CommitId) -> Result<()> {
     };
     // a header whose lists are away is judged once they come (`retention::pending_drops`)
     if !h.is_resolved()
-        && let Some(dedup) = tx.core.dedup(&h.actor)
+        && let Some(dedup) = tx.core.dedup(&h.signer)
     {
         let mut r = h.clone();
         if r.resolve(&mut TxBlobs::new(&mut tx.blobs, tx.txn.is_memory()), &dedup).is_ok() {
@@ -1129,7 +1133,7 @@ fn with_pending(tx: &mut Tx<'_>, id: &CommitId, mut blob: CommitBlob) -> Result<
     {
         let mut verdict = kept_verdict(&stored);
         if !old.header.is_resolved()
-            && let Some(dedup) = tx.core.dedup(&old.header.actor)
+            && let Some(dedup) = tx.core.dedup(&old.header.signer)
         {
             let mut h = old.header.clone();
             if h.resolve(&mut TxBlobs::new(&mut tx.blobs, tx.txn.is_memory()), &dedup).is_ok() {
@@ -1161,7 +1165,7 @@ fn with_pending(tx: &mut Tx<'_>, id: &CommitId, mut blob: CommitBlob) -> Result<
         }
         blob.parts = rest;
         if !others.is_empty() {
-            keys::read_pending_boxes(tx, &CommitBlob { header: old.header.clone(), sigs: old.sigs.clone(), parts: others }, id)?;
+            keys::read_pending_boxes(tx, &CommitBlob { header: old.header.clone(), sigs: old.sigs.clone(), parts: others, salted: blob.salted.clone() }, id)?;
         }
         let sigs = blob.sigs.clone();
         let mut merged = merge_parts(old, blob);
@@ -1170,7 +1174,7 @@ fn with_pending(tx: &mut Tx<'_>, id: &CommitId, mut blob: CommitBlob) -> Result<
         // so checked as such
         if sigs != merged.sigs {
             let carried = carried_records(&merged.header, &merged, id);
-            let author = tx.core.created(&merged.header.author).cloned().or_else(|| carried.get(&merged.header.author).cloned());
+            let author = tx.core.created(&merged.header.signer).cloned().or_else(|| carried.get(&merged.header.signer).cloned());
             if let Some(author) = author
                 && let Ok(Some(vk)) = author_key(tx.core, &merged.header, &sigs, &author)
                 && let Some(s) = signature(tx.core, id, &sigs, &vk, None)
@@ -1189,12 +1193,14 @@ fn with_pending(tx: &mut Tx<'_>, id: &CommitId, mut blob: CommitBlob) -> Result<
 fn proves(core: &crate::engine::Core, of: &CommitBlob, id: &CommitId, p: &osis_commit::Part) -> bool {
     let h = &of.header;
     let Some(a) = h.aspects.get(p.ai).filter(|_| h.is_resolved()) else { return false };
-    let record = core.created(&a.tid).cloned().or_else(|| carried_records(h, &CommitBlob { header: h.clone(), sigs: of.sigs.clone(), parts: vec![p.clone()] }, id).remove(&a.tid));
+    let record = core.created(&a.tid).cloned().or_else(|| carried_records(h, &CommitBlob { header: h.clone(), sigs: of.sigs.clone(), parts: vec![p.clone()], salted: of.salted.clone() }, id).remove(&a.tid));
     record.is_some_and(|r| osis_crypto::delta_hash(&dedup_secret(r.nonce()), &p.delta) == a.hash)
 }
 
-/// `a` with the parts of `b` on slots it lacks.
+/// `a` with the parts of `b` on slots it lacks, and the paths of `b`'s things (each hashing to
+/// its header entry, so alike in both).
 fn merge_parts(mut a: CommitBlob, b: CommitBlob) -> CommitBlob {
+    a.salted.extend(b.salted);
     for p in b.parts {
         if let Err(i) = a.parts.binary_search_by_key(&p.ai, |x| x.ai) {
             a.parts.insert(i, p);
@@ -1230,11 +1236,11 @@ fn late_parts(tx: &mut Tx<'_>, id: &CommitId, mut blob: CommitBlob) -> Result<In
             }
             let things = blob.header.aspects.iter().map(|a| a.tid).collect();
             if w.reason == Reason::Parked && w.others.is_empty() {
-                park(tx, id, &blob.encode(), things, Some(blob.header.author), Some(&blob.header))?;
+                park(tx, id, &blob.encode(), things, Some(blob.header.signer), Some(&blob.header))?;
                 return Ok(Ingested::Parked(*id));
             }
             if w.reason == Reason::Parked {
-                tell_parked(tx, id, things, Some(blob.header.author));
+                tell_parked(tx, id, things, Some(blob.header.signer));
             }
             pend(tx, id, PendingKind::Pending, known, &blob.encode(), w.reason.clone(), Some(&blob.header))?;
             keys::read_pending_boxes(tx, &blob, id)?;
@@ -1311,7 +1317,7 @@ pub(crate) fn apply_local(tx: &mut Tx<'_>, blob: &CommitBlob, signed: osis_commi
             apply_verified(tx, &b, parts, Origin::Local, received)?;
             // never emit a delta others would un-merge
             if !tx.core.skip_writer_rules && tx.core.ix.commits.get(&id).is_some_and(|m| m.valid.iter().any(|v| !v)) {
-                return Err(Error::Permission { tid: b.header.aspects.first().map_or(b.header.author, |a| a.tid), needs: osis_base::Role::Write });
+                return Err(Error::Permission { tid: b.header.aspects.first().map_or(b.header.signer, |a| a.tid), needs: osis_base::Role::Write });
             }
             Ok(())
         }
@@ -1343,7 +1349,7 @@ impl Engine {
                 let mut h = blob.header.clone();
                 if !h.is_resolved() {
                     self.run(|tx| {
-                        let Some(dedup) = tx.core.dedup(&h.actor) else { return Err(Error::Misuse("not resolved")) };
+                        let Some(dedup) = tx.core.dedup(&h.signer) else { return Err(Error::Misuse("not resolved")) };
                         Ok(h.resolve(&mut TxBlobs::new(&mut tx.blobs, tx.txn.is_memory()), &dedup)?)
                     })
                     .ok()?;
@@ -1365,7 +1371,7 @@ impl Engine {
                 None => known = false,
             }
         }
-        match signed_by_author(&self.core, blob, &id, record(&self.core, &h.author).as_ref(), None) {
+        match signed_by_author(&self.core, blob, &id, record(&self.core, &h.signer).as_ref(), None) {
             Some(true) => {}
             Some(false) => return Some(false),
             None => known = false,
@@ -1908,6 +1914,12 @@ impl Engine {
     }
 
     /// The header of an applied commit (none if its stored bytes fail to decode: `LazyHeader`).
+    /// The thing held commit `id` acts on, as known here (`View::acting`; Interim,
+    /// notes/a1-spec/README.md step 3).
+    pub fn commit_acting(&self, id: &CommitId) -> Option<Tid> {
+        self.core.ix.commits.get(id).and_then(|m| m.view.acting)
+    }
+
     pub fn header(&self, id: &CommitId) -> Option<Arc<Header>> {
         self.core.ix.commits.get(id).and_then(|m| m.header.decoded())
     }
@@ -1921,7 +1933,9 @@ impl Engine {
         self.core.ix.by_aspect.get(&(*tid, ak.clone()))?.iter().find_map(|(_, id)| {
             let m = self.core.ix.commits.get(id)?;
             let ai = m.aspect(tid, &ak)?;
-            (m.valid_at(ai)).then(|| Creation { commit: *id, ts: m.header.ts, node: m.header.author, actor: m.header.actor, received: m.received })
+            // a valid part is held: its section opened, its path known
+            let actor = m.view.acting.filter(|_| m.valid_at(ai))?;
+            Some(Creation { commit: *id, ts: m.header.ts, node: m.header.signer, actor, received: m.received })
         })
     }
 
@@ -1948,7 +1962,8 @@ impl Engine {
                 if m.header.kind != Kind::Content || !valid {
                     continue;
                 }
-                let c = Creation { commit: *id, ts: m.header.ts, node: m.header.author, actor: m.header.actor, received: m.received };
+                let Some(actor) = m.view.acting else { continue };
+                let c = Creation { commit: *id, ts: m.header.ts, node: m.header.signer, actor, received: m.received };
                 if best.as_ref().is_none_or(|b| shown(&c) > shown(b)) {
                     best = Some(c);
                 }
@@ -2090,7 +2105,7 @@ pub(crate) fn load(tx: &mut Tx<'_>, rebuild: bool) -> Result<Option<Vec<(Tid, os
         // what each addendum says, from its row
         for (id, parts) in crate::engine::index::load_addenda(tx)? {
             let Some(v) = tx.core.ix.commits.get(&id).map(|m| m.view.clone()) else { continue };
-            validity::index_addenda(tx.core, osis_perm::Point { ts: v.ts, node: v.author, commit: id }, &parts);
+            validity::index_addenda(tx.core, osis_perm::Point { ts: v.ts, node: v.signer, commit: id }, &parts);
         }
         drop(_s);
     } else {
@@ -2121,7 +2136,7 @@ pub(crate) fn load(tx: &mut Tx<'_>, rebuild: bool) -> Result<Option<Vec<(Tid, os
             let h = Arc::new(blob.header.clone());
             let valid = vec![true; h.aspects.len()];
             let missing = (0..h.aspects.len()).filter(|ai| blob.part(*ai).is_none() && !head.dropped.contains_key(ai) && !head.stripped.contains(ai)).collect();
-            let m = Meta::new(h.clone(), valid, head, missing);
+            let m = Meta::new(h.clone(), blob.acting(), valid, head, missing);
             // what a dropped part judged, kept in its record (`Dropped::role`)
             for (ai, d) in m.dropped_parts() {
                 if let Some(r) = d.role {
@@ -2188,7 +2203,7 @@ pub(crate) fn load(tx: &mut Tx<'_>, rebuild: bool) -> Result<Option<Vec<(Tid, os
             atomic::note_role_sigs(tx.core, b.header.kind, b.header.epoch.is_some(), &id, &b.sigs);
             validity::note_required(tx.core, &b.header, &id, &read);
             validity::note_settings(tx.core, &b.header, &id, &parts);
-            validity::note_addenda(tx.core, &b.header, &id, &parts);
+            validity::note_addenda(tx.core, &b.header, b.acting(), &id, &parts);
             if !b.header.kind.is_role() {
                 continue;
             }
@@ -2688,7 +2703,7 @@ mod tests {
                 assert_eq!(lp.deliver(1, &pk).unwrap(), Ingested::Applied(*id));
                 let b = held(&mut lp, id);
                 assert_eq!(lp.peers[1].engine.parts_genuine(&b), Some(true));
-                assert!(super::signed_at(&lp.peers[1].engine.core, id, &b.header.author, b.header.epoch, &b.sigs));
+                assert!(super::signed_at(&lp.peers[1].engine.core, id, &b.header.signer, b.header.epoch, &b.sigs));
             }
             assert_eq!(verifies(), n as u64, "round {round}: one per commit at the receiver");
             ids.extend(new);
@@ -2707,8 +2722,8 @@ mod tests {
             forged.sigs.signature.0[0] ^= 1;
             let e = &mut lp.peers[1].engine;
             assert_eq!(e.parts_genuine(&forged), Some(false), "forged signature bytes");
-            assert!(!super::signed_at(&e.core, id, &genuine.header.author, genuine.header.epoch, &forged.sigs));
-            assert!(super::signed_at(&e.core, id, &genuine.header.author, Some(osis_commit::FIRST_EPOCH), &genuine.sigs));
+            assert!(!super::signed_at(&e.core, id, &genuine.header.signer, genuine.header.epoch, &forged.sigs));
+            assert!(super::signed_at(&e.core, id, &genuine.header.signer, Some(osis_commit::FIRST_EPOCH), &genuine.sigs));
             assert!(!super::signed_at(&e.core, id, &other, Some(osis_commit::FIRST_EPOCH), &genuine.sigs), "the genuine bytes under another key");
         }
     }

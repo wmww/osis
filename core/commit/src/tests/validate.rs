@@ -28,6 +28,7 @@ fn validate_layout() {
     x.aspects.push(a2);
     assert!(matches!(invalid(&x), Error::Malformed(_)), "aspects unsorted");
     x.aspects.reverse();
+    crate::tests::fit_paths(&mut x);
     x.validate().unwrap();
     let mut x = h.clone();
     x.aspects[0].lo = 2;
@@ -107,7 +108,7 @@ pub(crate) fn role_header(ak: &str) -> Header {
     let mut h = sample_header();
     h.kind = Kind::Role;
     h.form = crate::header::Form::Commit;
-    h.actor = h.author;
+    h.path = Paths::default();
     let a = &mut h.aspects[0];
     a.ak = Ak::new(ak).unwrap();
     a.retention = retention::ROLE_RETENTION;
@@ -130,10 +131,10 @@ fn validate_role_commit() {
     let mut x = h.clone();
     x.form = crate::tests::SESSION;
     assert!(invalid(&x).to_string().contains("session form outside a content commit"));
-    // spec/wire.md §4: a role commit's actor is its author
+    // Interim (notes/a1-spec/README.md step 3): a role commit states the empty path
     let mut x = h.clone();
-    x.actor = t(9);
-    assert!(invalid(&x).to_string().contains("acting for another actor"));
+    x.path = Paths::One(Path::through(t(9)));
+    assert!(invalid(&x).to_string().contains("a path this commit may not state"));
     let mut x = h.clone();
     x.expires = Some(9_999_999_999);
     assert!(invalid(&x).to_string().contains("expires"));
@@ -153,6 +154,7 @@ fn validate_role_commit() {
         a.ak = Ak::new(ak).unwrap();
         x.aspects.push(a);
     }
+    crate::tests::fit_paths(&mut x);
     x.validate().unwrap();
     let mut x = h.clone();
     x.kind = Kind::RoleSnapshot;
@@ -181,6 +183,7 @@ fn validate_commit_expiry() {
         let mut x = h.clone();
         x.aspects.insert(0, b);
         sort(&mut x);
+        crate::tests::fit_paths(&mut x);
         x.validate().unwrap();
         x.expires = Some(h.ts.wall_ms().0 + 1);
         if fixed {
@@ -233,9 +236,9 @@ fn validate_purge_created_whole_only_spec_wire_4() {
     with(PurgeItem::Aspect { tid: t(3), ak: created.clone() }).validate().unwrap();
     let by_commit = with(PurgeItem::Commit { tid: t(3), ak: created.clone(), ts: ts(1), src: osis_crdt::Source::commit(CommitId([7; 32])) });
     assert!(invalid(&by_commit).to_string().contains("created.0"));
-    let by_author = with(PurgeItem::Author { tid: t(3), ak: created, actor: t(4) });
+    let by_author = with(PurgeItem::Author { tid: t(3), ak: created, author: t(4) });
     assert!(invalid(&by_author).to_string().contains("created.0"));
-    with(PurgeItem::Author { tid: t(3), ak: Ak::new("app:title.0").unwrap(), actor: t(4) }).validate().unwrap();
+    with(PurgeItem::Author { tid: t(3), ak: Ak::new("app:title.0").unwrap(), author: t(4) }).validate().unwrap();
 }
 
 // spec/wire.md §4: a part's retention is `by` alone: every class round-trips; an unknown class, or
@@ -350,9 +353,9 @@ fn session_form_spec_commits_3() {
     assert!(x.validate().is_err(), "a session-form snapshot");
     x.ephemeral = None;
     assert!(x.validate().is_err(), "a session-form snapshot");
-    // the session's dots are its own: `(Session(author, nonce), ctr)`
-    let own = h.form.own_source(h.author, h.id());
-    assert_eq!(own.as_session(), Some(osis_crdt::Session { node: h.author, nonce: [6; 16] }));
+    // the session's dots are its own: `(Session(signer, nonce), ctr)`
+    let own = h.form.own_source(h.signer, h.id());
+    assert_eq!(own.as_session(), Some(osis_crdt::Session { node: h.signer, nonce: [6; 16] }));
     // another form value is malformed
     let mut v = crate::tests::header_value(&h);
     if let Value::List(items) = &mut v {

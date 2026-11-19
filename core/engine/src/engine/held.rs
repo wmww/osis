@@ -228,7 +228,7 @@ impl Held {
     /// Who named whom on `t` with `role` or above, as (signer, holder), of any validity and whatever
     /// followed, by edge writes.
     fn named_with(&self, t: &Tid, role: Role) -> impl Iterator<Item = (Tid, Tid)> {
-        self.commits_on(t).iter().flat_map(move |r| r.ops.iter().filter(move |o| o.target == *t && o.edge.as_ref().is_some_and(|e| e.role >= role)).map(|o| (r.author, o.holder)))
+        self.commits_on(t).iter().flat_map(move |r| r.ops.iter().filter(move |o| o.target == *t && o.edge.as_ref().is_some_and(|e| e.role >= role)).map(|o| (r.signer, o.holder)))
     }
 
     /// `t`'s possible admins (spec/commits.md §4): the least set holding `t` and, with each member, its
@@ -496,12 +496,12 @@ impl Held {
         self.moved.extend(targets.iter().copied());
         self.ever.extend(targets.iter().copied());
         self.touched.extend(targets);
-        self.touched.insert(c.author);
-        self.moved.insert(c.author);
+        self.touched.insert(c.signer);
+        self.moved.insert(c.signer);
         self.count(named(&c), true);
         self.count_granted(&c, true);
         self.rest.wrote(&Row::Id(&c.id), true);
-        self.note_author(c.author, c.ts, c.id);
+        self.note_author(c.signer, c.ts, c.id);
         self.ids.insert(c.id, c);
     }
 
@@ -523,7 +523,7 @@ impl Held {
         }
         self.count(named(&c), false);
         self.count_granted(&c, false);
-        self.unnote_author(c.author, c.ts, c.id);
+        self.unnote_author(c.signer, c.ts, c.id);
         Some(c)
     }
 
@@ -690,7 +690,7 @@ impl Held {
             for o in &c.ops {
                 self.rest.wrote(&Row::Commits(&o.target), true);
             }
-            let targets: Vec<Tid> = c.ops.iter().map(|o| o.target).chain([c.author]).collect();
+            let targets: Vec<Tid> = c.ops.iter().map(|o| o.target).chain([c.signer]).collect();
             self.moved.extend(targets.iter().copied());
             self.ever.extend(targets.iter().copied());
             self.touched.extend(targets);
@@ -1216,7 +1216,7 @@ mod tests {
     fn grant(id: u64, by: Tid, on: Tid, to: Tid, role: Role) -> RoleCommit {
         let mut c = [0; 32];
         c[..8].copy_from_slice(&id.to_be_bytes());
-        RoleCommit { id: CommitId(c), ts: Ts::make(osis_base::WallMs(1), 0).unwrap(), author: by, actor: by, frontier: None, ops: vec![EdgeOp { target: on, holder: to, edge: Some(Edge::new(role)) }] }
+        RoleCommit { id: CommitId(c), ts: Ts::make(osis_base::WallMs(1), 0).unwrap(), signer: by, frontier: None, ops: vec![EdgeOp { target: on, holder: to, edge: Some(Edge::new(role)) }] }
     }
 
     /// The definition (spec/commits.md §4) by brute force, to judge the worklist by.
@@ -1228,7 +1228,7 @@ mod tests {
                 if let Some(RecordLink::Admin(x)) = h.created(c).map(CreationRecord::record_link) {
                     next.insert(x);
                 }
-                for r in h.commits_on(c).iter().filter(|r| set.contains(&r.author)) {
+                for r in h.commits_on(c).iter().filter(|r| set.contains(&r.signer)) {
                     next.extend(r.ops.iter().filter(|o| o.target == *c && o.edge.as_ref().is_some_and(|e| e.role >= Role::Admin)).map(|o| o.holder));
                 }
             }

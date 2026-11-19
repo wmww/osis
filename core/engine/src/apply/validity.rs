@@ -121,14 +121,15 @@ pub(crate) fn index_addenda(core: &mut Core, point: Point, parts: &AddendaParts)
 }
 
 /// Indexes commit `id`'s addendum deltas (spec/permissions.md §5.2, Addenda): every `addenda.0`
-/// delta its header names is its author's write, whether its body is held or not; `parts`, the
-/// bodies just held, say its entries. A delta acting for another actor, or of a commit other
-/// than a content one, is no addendum.
-pub(crate) fn note_addenda(core: &mut Core, h: &Header, id: &CommitId, parts: &[(usize, Decoded)]) {
-    if h.kind != Kind::Content || h.author != h.actor {
+/// delta its header names is its signer's write, whether its body is held or not; `parts`, the
+/// bodies just held, say its entries. A delta of a commit acting on another thing (`acting`), or
+/// of a commit other than a content one, is no addendum.
+pub(crate) fn note_addenda(core: &mut Core, h: &Header, acting: Option<Tid>, id: &CommitId, parts: &[(usize, Decoded)]) {
+    // Interim (notes/a1-spec/README.md step 3): an addendum's path gives write on its edge
+    if h.kind != Kind::Content || acting != Some(h.signer) {
         return;
     }
-    let point = Point { ts: h.ts, node: h.author, commit: *id };
+    let point = Point { ts: h.ts, node: h.signer, commit: *id };
     let mut out = Vec::new();
     for (ai, a) in h.aspects.iter().enumerate().filter(|(_, a)| ct::is_addenda(a.ak.as_str())) {
         match parts.iter().find(|(x, _)| *x == ai) {
@@ -404,7 +405,7 @@ pub(crate) fn add_role_commit(core: &mut Core, h: &View, id: &CommitId, parts: &
     if ops.is_empty() {
         core.ix.held.remove_edges(id);
     } else {
-        core.ix.held.add_commit(RoleCommit { id: *id, ts: h.ts, author: h.author, actor: h.actor, frontier: h.frontier.clone(), ops });
+        core.ix.held.add_commit(RoleCommit { id: *id, ts: h.ts, signer: h.signer, frontier: h.frontier.clone(), ops });
     }
 }
 
@@ -422,7 +423,7 @@ fn vouching_parts(core: &Core, h: &View, id: &CommitId, parts: &PermParts) -> (V
         let own = Owned::of_view(h, id, *ai);
         let entries: Vec<(CommitId, Arc<Frontier>)> = es.iter().filter(|(d, _, _)| own.as_ref().is_some_and(|o| o.owns(d.origin()))).map(|(_, r, l)| (*r, l.clone())).collect();
         if !entries.is_empty() {
-            vouches.push(osis_perm::Vouch { id: *id, ts: h.ts, author: h.author, thing: a.tid, entries });
+            vouches.push(osis_perm::Vouch { id: *id, ts: h.ts, author: h.signer, thing: a.tid, entries });
         }
     }
     (vouches, role_parts(core, h, id))
@@ -445,7 +446,7 @@ fn role_parts(core: &Core, h: &View, id: &CommitId) -> Option<osis_perm::RolePar
             (a.tid, role)
         })
         .collect();
-    (!others.is_empty()).then_some(osis_perm::RoleParts { id: *id, ts: h.ts, author: h.author, parts: others })
+    (!others.is_empty()).then_some(osis_perm::RoleParts { id: *id, ts: h.ts, author: h.signer, parts: others })
 }
 
 /// `rotation_role` of commit `id` moved (a body judged, or gone): what perm reads of its other
@@ -650,7 +651,7 @@ pub(crate) fn note_settings(core: &mut Core, h: &Header, id: &CommitId, parts: &
         };
         let f = d.fragment();
         let ts = if h.kind.is_compaction() { f.winners().iter().map(|w| w.stamp.ts).max().unwrap_or(h.ts) } else { h.ts };
-        let p = Point { ts, node: h.author, commit: *id };
+        let p = Point { ts, node: h.signer, commit: *id };
         let put = |l: &mut Vec<(Point, Arc<ct::RetentionSetting>)>| {
             if let Err(i) = l.binary_search_by(|x| x.0.cmp(&p)) {
                 l.insert(i, (p, Arc::new(setting.clone())));
@@ -723,28 +724,32 @@ pub(crate) fn too_deep(core: &Core, t: &Tid) -> bool {
     !core.ix.held.chain_held(t)
 }
 
-/// Is aspect `ai` of a held commit valid (spec/permissions.md §5.2)?
-pub(crate) fn part_valid(core: &Core, h: &Header, id: &CommitId, ai: usize) -> bool {
-    Judge::new(core).part(h, id, ai)
+/// Is aspect `ai` of a held commit acting on `acting` (`View::acting`) valid
+/// (spec/permissions.md §5.2)?
+pub(crate) fn part_valid(core: &Core, h: &Header, acting: Option<Tid>, id: &CommitId, ai: usize) -> bool {
+    Judge::new(core).part(h, acting, id, ai)
 }
 
-/// Whether the author of commit `id` could act for its header's actor (spec/permissions.md
-/// §5.2): it is the actor, or its write on the actor at the commit's key is valid as a delta on
-/// the actor needing write would be (same timeline, demotions and frontiers). A commit failing
-/// this is invalid whole. Role commits name their author (bad input
-/// otherwise, spec/wire.md §4), so the timeline never depends on this.
+// Interim (notes/a1-spec/README.md step 3): each part is judged along the path its commit states
+// for its thing; until then the old walk judges the signer acting on the path's last thing.
+/// Whether the signer of commit `id` could act on `acting`, the thing its path reads as acting on
+/// (`CommitBlob::acting`, spec/permissions.md §5.2 Interim): it is the signer, or its write on
+/// that thing at the commit's key is valid as a delta on it needing write would be (same
+/// timeline, demotions and frontiers). A commit failing this is invalid whole; one whose acting
+/// thing is unknown here holds no part. Role commits state the empty path, so the timeline never
+/// depends on this.
 ///
-/// Invariant (arrival-order independence): a function of the actor's timeline alone, so it
+/// Invariant (arrival-order independence): a function of the acting thing's timeline alone, so it
 /// changes only when that timeline does; `rejudge_once` re-judges the commits acting for a
 /// thing whose timeline changed (`by_actor`).
-pub(crate) fn acts_for(core: &Core, h: &Header, id: &CommitId) -> bool {
-    Judge::new(core).acts(h, id)
+pub(crate) fn acts_for(core: &Core, h: &Header, acting: Option<Tid>, id: &CommitId) -> bool {
+    Judge::new(core).acts(h, acting, id)
 }
 
-fn acts_on(tl: Option<&osis_perm::Timeline>, h: &Header, id: &CommitId) -> bool {
+fn acts_on(tl: Option<&osis_perm::Timeline>, h: &Header, acting: &Tid, id: &CommitId) -> bool {
     let Some(tl) = tl else { return false };
-    let point = Point { ts: h.ts, node: h.author, commit: *id };
-    tl.delta_valid(point, &h.actor, Role::Write) == Validity::Valid
+    let point = Point { ts: h.ts, node: h.signer, commit: *id };
+    tl.delta_valid(point, acting, Role::Write) == Validity::Valid
 }
 
 /// Whether a removal from `tid` retains by default: the `retain` of its current setting
@@ -820,7 +825,7 @@ impl<'a> Judge<'a> {
             EpochStanding::Counts => true,
             EpochStanding::Closed => {
                 let (core, e) = (self.core, h.epoch.unwrap_or(osis_commit::FIRST_EPOCH));
-                plain_part(h, a) && self.vouching(&a.tid).is_some_and(|v| v.saves(id, &|r| core.closes(r, id, &h.author, &e)))
+                plain_part(h, a) && self.vouching(&a.tid).is_some_and(|v| v.saves(id, &|r| core.closes(r, id, &h.signer, &e)))
             }
         }
     }
@@ -847,7 +852,7 @@ impl<'a> Judge<'a> {
             // an addendum at a closed epoch counts only once another saves it: one fixpoint
             // over every account's epochs (spec/permissions.md §5.5)
             let standing = |c: &CommitId| core.ix.commits.get(c).map_or(EpochStanding::Counts, |m| core.standing(c, &m.view));
-            let closes = |c: &CommitId, r: &CommitId| core.ix.commits.get(c).is_some_and(|m| m.view.epoch.is_some_and(|e| core.closes(r, c, &m.view.author, &e)));
+            let closes = |c: &CommitId, r: &CommitId| core.ix.commits.get(c).is_some_and(|m| m.view.epoch.is_some_and(|e| core.closes(r, c, &m.view.signer, &e)));
             Arc::new(tl.vouching(t, &all, standing, closes))
         });
         self.vouchings.insert(*t, v.clone());
@@ -881,21 +886,22 @@ impl<'a> Judge<'a> {
         }
     }
 
-    /// `acts_for`, its `valid_from` bound found once per (author, actor); else an addendum on
-    /// the actor vouching for the commit (spec/permissions.md §5.2, Acting).
-    fn acts(&mut self, h: &Header, id: &CommitId) -> bool {
-        if h.author == h.actor {
+    /// `acts_for`, its `valid_from` bound found once per (signer, acting thing); else an
+    /// addendum on the acting thing vouching for the commit (spec/permissions.md §5.2 Interim).
+    fn acts(&mut self, h: &Header, acting: Option<Tid>, id: &CommitId) -> bool {
+        let Some(x) = acting else { return false };
+        if h.signer == x {
             return true;
         }
-        let tl = self.core.timelines.get(&h.actor);
-        let from = *self.acts.entry((h.author, h.actor)).or_insert_with(|| tl.and_then(|tl| tl.valid_from(&h.author, &h.actor, Role::Write)));
+        let tl = self.core.timelines.get(&x);
+        let from = *self.acts.entry((h.signer, x)).or_insert_with(|| tl.and_then(|tl| tl.valid_from(&h.signer, &x, Role::Write)));
         if osis_perm::content::regranted(from, h.ts) {
             return true;
         }
-        acts_on(tl, h, id) || plain_commit(h) && self.vouched(&h.actor, Point { ts: h.ts, node: h.author, commit: *id }, Role::Write)
+        acts_on(tl, h, &x, id) || plain_commit(h) && self.vouched(&x, Point { ts: h.ts, node: h.signer, commit: *id }, Role::Write)
     }
 
-    pub(crate) fn part(&mut self, h: &Header, id: &CommitId, ai: usize) -> bool {
+    pub(crate) fn part(&mut self, h: &Header, acting: Option<Tid>, id: &CommitId, ai: usize) -> bool {
         let core = self.core;
         if core.ix.void.contains(id) {
             return false;
@@ -912,7 +918,7 @@ impl<'a> Judge<'a> {
         if !ct::is_addenda(ak) && !self.counts(h, id, a) {
             return false;
         }
-        if !self.acts(h, id) {
+        if !self.acts(h, acting, id) {
             return false;
         }
         // an external fire (spec/permissions.md §5.2 External fires): valid by its author's
@@ -961,14 +967,14 @@ impl<'a> Judge<'a> {
         // standing while that removal applies (spec/permissions.md §5.1, Own cover)
         if h.kind.is_compaction() {
             let required = crate::engine::write::snapshot_role(ak);
-            let point = Point { ts: h.ts, node: h.author, commit: *id };
+            let point = Point { ts: h.ts, node: h.signer, commit: *id };
             return tl.delta_valid(point, &a.tid, required) == Validity::Valid || (h.own_cover && tl.own_cover_stands(point, &a.tid, required));
         }
         // the author's deltas from the first point it held the role on are valid (re-grant),
         // found once per author
         if !core.ix.rotation_role.contains_key(&(*id, ai)) && ak != "secrets.0" {
             let required = required_role(ak);
-            let from = *self.from.entry((h.author, required)).or_insert_with(|| tl.valid_from(&h.author, &a.tid, required));
+            let from = *self.from.entry((h.signer, required)).or_insert_with(|| tl.valid_from(&h.signer, &a.tid, required));
             if osis_perm::content::regranted(from, h.ts) {
                 debug_assert!(self.valid_on(tl, h, id, ai, a), "valid_from disagrees with delta_valid");
                 return true;
@@ -982,7 +988,7 @@ impl<'a> Judge<'a> {
     fn valid_on(&mut self, tl: &osis_perm::Timeline, h: &Header, id: &CommitId, ai: usize, a: &osis_commit::AspectEntry) -> bool {
         let core = self.core;
         let ak = a.ak.as_str();
-        let point = Point { ts: h.ts, node: h.author, commit: *id };
+        let point = Point { ts: h.ts, node: h.signer, commit: *id };
         // an applied invite grant carries the grantee's boxes (spec/permissions.md §1, §2): every
         // put on the thing applied as an invite grant (`grant_overreach` checked the boxes against
         // all of them), so a self-removal beside a failing put exempts nothing
@@ -1050,10 +1056,10 @@ fn misjudged_on<'a>(core: &Core, things: impl Iterator<Item = &'a Tid>) -> Optio
 
 fn misjudged_one(core: &Core, id: &CommitId, m: &Meta) -> Option<String> {
     let h = &m.header;
-    let now: Vec<bool> = (0..h.aspects.len()).map(|ai| part_valid(core, h, id, ai)).collect();
+    let now: Vec<bool> = (0..h.aspects.len()).map(|ai| part_valid(core, h, m.view.acting, id, ai)).collect();
     (now != m.valid).then(|| {
         let parts: Vec<_> = h.aspects.iter().zip(m.valid.iter().zip(&now)).filter(|(_, (a, b))| a != b).map(|(x, (a, _))| (x.tid, x.ak.as_str(), *a)).collect();
-        format!("validity of {id:?} ({:?} by {}): {parts:?}", h.kind, h.author)
+        format!("validity of {id:?} ({:?} by {}): {parts:?}", h.kind, h.signer)
     })
 }
 
@@ -1102,10 +1108,10 @@ fn rejudge_once(tx: &mut Tx<'_>, rebuild: bool) -> Result<Vec<(Tid, Ak)>> {
             let mut now: Option<Vec<bool>> = None;
             for (ai, a) in m.header.aspects.iter().enumerate() {
                 // parts on things not re-judged keep their flag
-                if !(whole || things.contains(&a.tid) || under.contains(&a.tid) && authors.contains(&m.view.author)) {
+                if !(whole || things.contains(&a.tid) || under.contains(&a.tid) && authors.contains(&m.view.signer)) {
                     continue;
                 }
-                let v = judge.part(&m.header, id, ai);
+                let v = judge.part(&m.header, m.view.acting, id, ai);
                 let old = m.valid_at(ai);
                 if v != old {
                     let n = now.get_or_insert_with(|| m.valid.clone());
@@ -1160,9 +1166,9 @@ fn rejudge_once(tx: &mut Tx<'_>, rebuild: bool) -> Result<Vec<(Tid, Ak)>> {
     for (id, now) in news {
         let Some(m) = tx.core.ix.commits.get_mut(&id) else { continue };
         let h = m.header.clone();
-        if (Some(h.author) == me || accounts.contains(&h.author)) && h.kind.has_own_writes() && m.valid.iter().zip(&now).any(|(a, b)| *a && !*b) {
+        if (Some(h.signer) == me || accounts.contains(&h.signer)) && h.kind.has_own_writes() && m.valid.iter().zip(&now).any(|(a, b)| *a && !*b) {
             // an account's commit may be a sibling's: told apart by the session, ours or not
-            if Some(h.author) == me {
+            if Some(h.signer) == me {
                 own_fell.push((id, h.aspects.iter().map(|a| a.tid).collect::<BTreeSet<_>>().into_iter().collect()));
             }
             fresh |= matches!(h.form, osis_commit::Form::Session(n) if current.contains(&n));
@@ -1385,12 +1391,12 @@ pub(crate) fn check_content_rules(core: &Core, h: &Header, parts: &[(usize, Deco
         // the one exception for edge writes in a plain role commit: a single-use
         // redemption (a grant plus the author key's own self-removal, both on K,
         // spec/permissions.md §7, spec/commits.md §2)
-        let redemption = holders.len() == 2 && holders.first().map(|m| m.0) == holders.last().map(|m| m.0) && changed.iter().any(|c| c.1 == h.author && c.2.is_none()) && changed.iter().any(|c| c.1 != h.author && c.2.is_some());
+        let redemption = holders.len() == 2 && holders.first().map(|m| m.0) == holders.last().map(|m| m.0) && changed.iter().any(|c| c.1 == h.signer && c.2.is_none()) && changed.iter().any(|c| c.1 != h.signer && c.2.is_some());
         // or a removal of several others' edges on one target under one rotation (a link joiner
         // with the link key, under one frontier; a finalize of several ended edges): no edge of
         // it a self-removal, each gone or saying retain
         let first = holders.first().map(|m| m.0);
-        let removal = changed.iter().all(|c| Some(c.0) == first && c.1 != h.author && c.2.is_none_or(|e| e.says_retain()) && !self_removal(core, &h.author, &c.0, &c.1, h.ts));
+        let removal = changed.iter().all(|c| Some(c.0) == first && c.1 != h.signer && c.2.is_none_or(|e| e.says_retain()) && !self_removal(core, &h.signer, &c.0, &c.1, h.ts));
         if !redemption && !removal {
             return Err(Error::BadInput("a role commit changes more than one edge"));
         }
@@ -1409,12 +1415,12 @@ pub(crate) fn check_content_rules(core: &Core, h: &Header, parts: &[(usize, Deco
         for (target, m, new) in &changed {
             let Some(tl) = core.timelines.get(target) else { continue };
             let old = tl.edges_at(None).get(m, target).copied();
-            let selfr = self_removal(core, &h.author, target, m, h.ts);
-            let removes = *m != h.author && new.as_ref().is_none_or(|e| e.says_retain()) && !selfr;
+            let selfr = self_removal(core, &h.signer, target, m, h.ts);
+            let removes = *m != h.signer && new.as_ref().is_none_or(|e| e.says_retain()) && !selfr;
             if removes && old.is_some_and(|o| o.until.is_none() || o.alive_at(Some(h.ts))) {
                 return Err(Error::BadInput("a removal with no frontier of an edge not past its until"));
             }
-            let explicit = !selfr && tl.role(&h.author, target, At::now(h.ts)) == Some(Role::Admin);
+            let explicit = !selfr && tl.role(&h.signer, target, At::now(h.ts)) == Some(Role::Admin);
             if explicit && new.is_some_and(|e| !e.says_retain()) && tl.audits(m, target, *new, h.ts) {
                 return Err(Error::BadInput("an explicit write that audits with no frontier"));
             }

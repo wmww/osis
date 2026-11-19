@@ -263,7 +263,7 @@ pub(super) fn unseen_by(fr: &osis_crdt::Frontiers, h: &Header, c: &CommitId, hi:
     if !h.form.counted() || !h.kind.has_own_writes() {
         return false;
     }
-    let src = h.form.own_source(h.author, *c);
+    let src = h.form.own_source(h.signer, *c);
     fr.lists(&src) && fr.of(&src).saturating_add(1) < hi
 }
 
@@ -279,7 +279,7 @@ pub(crate) fn reaches((fr, abs): (&Frontiers, &[(CommitId, Tid)]), h: &Header, c
     if by_id(h.kind, h.form) {
         return abs.iter().any(|x| x.0 == *c);
     }
-    h.form.counted() && h.kind.has_own_writes() && fr.lists(&h.form.own_source(h.author, *c)) && !unseen_by(fr, h, c, hi)
+    h.form.counted() && h.kind.has_own_writes() && fr.lists(&h.form.own_source(h.signer, *c)) && !unseen_by(fr, h, c, hi)
 }
 
 /// The frontiers a snapshot of `(tid, ak)` built now carries, and the session-form commits
@@ -358,10 +358,11 @@ pub(crate) fn walk_source<'r>(valid_on: &dyn Fn(&CommitId) -> bool, resets: &dyn
     (next, false)
 }
 
-/// What delta `a` of a commit with header `h` is judged by in a purge (spec/crdt.md §8 `Facts`):
-/// its purgeable-by, and its actor where that is not its author.
-pub(crate) fn header_fact(h: &Header, a: &osis_commit::AspectEntry) -> osis_crdt::Fact {
-    osis_crdt::Fact { by: a.retention.by, actor: (h.actor != h.author).then_some(h.actor) }
+/// What delta `a` of a commit with view `v` is judged by in a purge (spec/crdt.md §8 `Facts`):
+/// its purgeable-by, and the thing it acts on where that is not its signer (Interim,
+/// notes/a1-spec/README.md step 4: its purge author where that is not its signer).
+pub(crate) fn header_fact(v: &crate::engine::View, a: &osis_commit::AspectEntry) -> osis_crdt::Fact {
+    osis_crdt::Fact { by: a.retention.by, actor: v.acts_for() }
 }
 
 /// What a snapshot's `Facts` (with its `Absorbed` authors, `absorbed`) state of carried commit
@@ -393,7 +394,7 @@ pub(crate) fn held_by_stamp(core: &Core, tid: &Tid, ak: &Ak, ts: Ts, src: &osis_
     on.filter_map(|(_, c)| {
         let m = core.ix.commits.get(c)?;
         let ai = m.aspect(tid, ak)?;
-        (m.header.kind.has_own_writes() && m.header.form.own_source(m.header.author, *c) == *src).then_some((*c, ai))
+        (m.header.kind.has_own_writes() && m.header.form.own_source(m.header.signer, *c) == *src).then_some((*c, ai))
     })
     .collect()
 }
@@ -409,7 +410,7 @@ pub(crate) fn facts_of(tx: &mut Tx<'_>, tid: &Tid, ak: &Ak, st: &Fragment) -> Re
         let held = held_by_stamp(tx.core, tid, ak, ts, &src);
         let fact = held.first().and_then(|(c, ai)| {
             let m = tx.core.ix.commits.get(c)?;
-            Some(header_fact(&m.header, m.header.aspects.get(*ai)?))
+            Some(header_fact(&m.view, m.header.aspects.get(*ai)?))
         });
         match fact {
             Some(f) => {
@@ -522,7 +523,7 @@ fn own_replaces<'c>(core: &'c Core, tid: &Tid, ak: &Ak, author: &Tid) -> impl Do
 /// replaces): a plain whole replace of its author, valid here.
 pub(crate) fn own_replace(core: &Core, s: &CommitId, tid: &Tid, ak: &Ak) -> bool {
     let Some(m) = core.ix.commits.get(s) else { return false };
-    core.ix.own_replaces.get(&(*tid, ak.clone(), m.view.author)).is_some_and(|x| x.contains(&(m.view.ts, *s))) && m.aspect(tid, ak).is_some_and(|ai| m.valid_at(ai))
+    core.ix.own_replaces.get(&(*tid, ak.clone(), m.view.signer)).is_some_and(|x| x.contains(&(m.view.ts, *s))) && m.aspect(tid, ak).is_some_and(|ai| m.valid_at(ai))
 }
 
 /// The own replaces that may cover `c` on `(tid, ak)`: its author's two newest valid held
@@ -533,7 +534,7 @@ pub(crate) fn own_covers(core: &Core, c: &CommitId, tid: &Tid, ak: &Ak) -> Vec<C
         return Vec::new();
     }
     let ts = m.view.ts;
-    own_replaces(core, tid, ak, &m.view.author).rev().take_while(|x| x.0 > ts).take(2).map(|x| x.1).collect()
+    own_replaces(core, tid, ak, &m.view.signer).rev().take_while(|x| x.0 > ts).take(2).map(|x| x.1).collect()
 }
 
 /// Whether `s` drops held body `c` as its cover: `covered`, but of two covered-equal snapshots only
@@ -562,9 +563,9 @@ fn covered_read(tx: &mut Tx<'_>, s: &CommitId, c: &CommitId, tid: &Tid, ak: &Ak)
     if sm.view.kind.is_compaction() {
         return covered_join(tx, s, c, tid, ak);
     }
-    let (s_author, s_ts) = (sm.view.author, sm.view.ts);
+    let (s_author, s_ts) = (sm.view.signer, sm.view.ts);
     let Some(cm) = tx.core.ix.commits.get(c) else { return Ok(None) };
-    let (author, cts) = (cm.view.author, cm.view.ts);
+    let (author, cts) = (cm.view.signer, cm.view.ts);
     let may = own_replace(tx.core, s, tid, ak) && s_author == author && s_ts > cts && !cm.view.memory && cm.view.kind == Kind::Content;
     if !may {
         return Ok(Some(false));
@@ -646,8 +647,8 @@ pub(crate) fn covered_join(tx: &mut Tx<'_>, s: &CommitId, c: &CommitId, tid: &Ti
         let same = match &body_facts {
             Some((bf, babs)) => both.iter().all(|k| stated(bf, &|x| babs.get(x).copied(), k) == cover(k)),
             None => {
-                let k = (h.ts, h.form.own_source(h.author, *c));
-                !both.contains(&k) || h.aspects.get(cai).is_none_or(|a| cover(&k) == Some((a.retention.by, h.actor)))
+                let k = (h.ts, h.form.own_source(h.signer, *c));
+                !both.contains(&k) || h.aspects.get(cai).is_none_or(|a| m.view.acting.is_some_and(|x| cover(&k) == Some((a.retention.by, x))))
             }
         };
         if held && !same {
@@ -662,7 +663,7 @@ pub(crate) fn covered_join(tx: &mut Tx<'_>, s: &CommitId, c: &CommitId, tid: &Ti
         // writes are dead where the body is held and joins unchanged (below); a body not held
         // here establishes nothing, as the writer may never have applied it.
         let untraced = match (h.form.counted() && h.kind.has_own_writes(), by_id(h.kind, h.form)) {
-            (true, _) => !fr.lists(&h.form.own_source(h.author, *c)),
+            (true, _) => !fr.lists(&h.form.own_source(h.signer, *c)),
             (_, true) => !abs.iter().any(|x| x.0 == *c),
             _ => false,
         };
@@ -963,7 +964,7 @@ fn snapshot_from_state(tx: &mut Tx<'_>, tid: &Tid, ak: &Ak, memory: bool, own_co
     for (_, c) in tx.core.ix.by_aspect.get(&(tid, ak.clone())).into_iter().flatten() {
         let Some(m) = tx.core.ix.commits.get(c) else { continue };
         if by_id(m.header.kind, m.header.form) && valid_on(c) && !left_out.contains(c) {
-            absorbed.insert(*c, m.header.author);
+            absorbed.insert(*c, m.header.signer);
         }
     }
     build_snapshot(tx, tid, ak, st, ts, node, frontiers, absorbed, None, own_cover).map(Some)
@@ -1006,7 +1007,7 @@ fn held_sources(core: &Core, tid: &Tid, ak: &Ak) -> BTreeSet<osis_crdt::Source> 
     on.filter_map(|(_, c)| {
         let m = core.ix.commits.get(c).filter(|m| (0..m.view.aspects.len()).any(|ai| m.holds(ai)))?;
         let h = &m.header;
-        (h.kind.has_own_writes() && (h.form.counted() || by_id(h.kind, h.form))).then(|| h.form.own_source(h.author, *c))
+        (h.kind.has_own_writes() && (h.form.counted() || by_id(h.kind, h.form))).then(|| h.form.own_source(h.signer, *c))
     })
     .collect()
 }

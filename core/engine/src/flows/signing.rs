@@ -392,7 +392,7 @@ struct Received(osis_base::WallMs, osis_base::Ts, Tid, CommitId);
 
 impl Received {
     fn of(c: &CommitId, m: &crate::engine::Meta) -> Received {
-        Received(m.received, m.view.ts, m.view.author, *c)
+        Received(m.received, m.view.ts, m.view.signer, *c)
     }
 }
 
@@ -447,7 +447,7 @@ impl Cutoff {
 pub(crate) fn lasts(tx: &mut Tx<'_>, c: &CommitId) -> Result<bool> {
     let Some(m) = tx.core.ix.commits.get(c).cloned() else { return Ok(true) };
     let Some(e) = m.view.epoch else { return Ok(true) };
-    let p = m.view.author;
+    let p = m.view.signer;
     let Some(v) = tx.core.account_view(&p) else { return Ok(true) };
     if !v.head_revoked(&e) || named_by_a_word(tx, &v, c, &m.view)? {
         return Ok(true);
@@ -468,7 +468,7 @@ fn named_by_a_word(tx: &mut Tx<'_>, v: &super::account::AccountView, c: &CommitI
         }
         let counts = match tx.core.ix.commits.get(&s) {
             _ if v.is_rotation(&s) => v.rotation_counts(&s),
-            Some(m) => m.view.author == view.author && tx.core.standing(&s, &m.view) == osis_perm::EpochStanding::Counts,
+            Some(m) => m.view.signer == view.signer && tx.core.standing(&s, &m.view) == osis_perm::EpochStanding::Counts,
             None => false,
         };
         if counts {
@@ -482,7 +482,7 @@ fn named_by_a_word(tx: &mut Tx<'_>, v: &super::account::AccountView, c: &CommitI
 fn answer_rotation(tx: &mut Tx<'_>, r: &CommitId) -> Result<bool> {
     // a plain rotation is its commit; a merge epoch is no commit: its account is the one whose
     // judged epochs hold it
-    let author = tx.core.ix.commits.get(r).map(|m| m.view.author);
+    let author = tx.core.ix.commits.get(r).map(|m| m.view.signer);
     let Some(p) = author.or_else(|| tx.core.ix.epochs.iter().find(|(_, j)| j.holds(r)).map(|(p, _)| *p)) else { return Ok(true) };
     let Some(v) = tx.core.account_view(&p) else { return Ok(true) };
     // a merge certificate is answered as its epoch
@@ -603,7 +603,7 @@ fn witness(tx: &mut Tx<'_>, p: Tid, v: &super::account::AccountView, r: &CommitI
         if w.purges || w.kind != osis_commit::Kind::Content {
             continue;
         }
-        for t in w.aspects.iter().filter(|a| super::vouches::plain_ak(&a.ak)).map(|a| a.tid).chain((w.actor != w.author).then_some(w.actor)) {
+        for t in w.aspects.iter().filter(|a| super::vouches::plain_ak(&a.ak)).map(|a| a.tid).chain(w.acts_for()) {
             out.entry(t).or_default().insert(c);
         }
     }

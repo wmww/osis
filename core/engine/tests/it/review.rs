@@ -240,13 +240,13 @@ fn snapshot_frontier_valid_only_spec_crdt_8() {
     lp.advance(10);
     set_edge(&mut lp.peers[0].engine, t, b, None, Some(f.clone()));
     sync(&mut lp, 1, 0);
-    let bs = lp.peers[0].engine.commit_ids().into_iter().find(|c| lp.peers[0].engine.header(c).is_some_and(|h| h.author == b && h.aspects.iter().any(|a| a.ak.as_str() == "t:reg.0"))).unwrap();
+    let bs = lp.peers[0].engine.commit_ids().into_iter().find(|c| lp.peers[0].engine.header(c).is_some_and(|h| h.signer == b && h.aspects.iter().any(|a| a.ak.as_str() == "t:reg.0"))).unwrap();
     let now = lp.peers[0].engine.now();
     assert!(lp.peers[0].engine.frontier(&scope, now).unwrap().commits.contains(&bs), "received, though invalid");
     let snap = lp.peers[0].engine.snapshot(&t, &ak("t:reg.0")).unwrap().unwrap();
     let mut lp2 = fresh_net(&mut lp, 0, t, 1000); // a reader apart from lp's (its own seeds)
     lp2.advance(100);
-    let theirs: std::collections::BTreeSet<_> = lp.peers[0].engine.commit_ids().into_iter().filter(|c| lp.peers[0].engine.header(c).is_some_and(|h| h.author == b && h.aspects.iter().any(|a| a.ak.as_str() == "t:reg.0"))).collect();
+    let theirs: std::collections::BTreeSet<_> = lp.peers[0].engine.commit_ids().into_iter().filter(|c| lp.peers[0].engine.header(c).is_some_and(|h| h.signer == b && h.aspects.iter().any(|a| a.ak.as_str() == "t:reg.0"))).collect();
     give_carried(&mut lp, 0, &mut lp2, 0, |p| theirs.contains(&p.id));
     assert!(lp2.peers[0].engine.commit_ids().contains(&snap));
     // a snapshot's frontier is no receipt (spec/crdt.md §8)

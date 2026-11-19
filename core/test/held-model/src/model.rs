@@ -134,7 +134,7 @@ pub struct Outcome {
     /// Things the node forgets: destroyed (`DropWhy::Destroyed`).
     pub destroyed: BTreeSet<ThingId>,
     /// Commits held of which the node holds nothing (every part it holds is `DropWhy::Unknown`, or
-    /// its author's or actor's record is unknown): thrown out whole, their IDs kept to fetch them again once a
+    /// its signer's or acting thing's record is unknown): thrown out whole, their IDs kept to fetch them again once a
     /// record comes (`act` removes them).
     pub revisit: BTreeSet<CommitId>,
     /// Commits void by overlapping session ranges (spec/commits.md §4) under the `Overlap` judged.
@@ -229,7 +229,7 @@ fn records(h: &Held, parked: &BTreeSet<CommitId>) -> World {
         let more: Vec<(ThingId, RecordLink)> = h
             .commits
             .iter()
-            .filter(|c| !parked.contains(&c.id) && world.known(c.author))
+            .filter(|c| !parked.contains(&c.id) && world.known(c.signer))
             .flat_map(|c| c.parts.iter())
             .filter_map(|p| Some((p.thing, creation(p)?)))
             .filter(|(t, l)| !world.known(*t) && !matches!(l, RecordLink::Admin(a) if !world.known(*a)))
@@ -307,7 +307,7 @@ fn names(q: &Commit, c: &Commit, p: &Part) -> bool {
         && q.purge.iter().any(|it| match *it {
             PurgeItem::Commit { commit, thing, aspect } => commit == c.id && p.thing == thing && p.aspect == aspect,
             PurgeItem::Aspect { thing, aspect } => p.thing == thing && p.aspect == aspect,
-            PurgeItem::Author { thing, aspect, author } => p.thing == thing && p.aspect == aspect && c.actor == author,
+            PurgeItem::Author { thing, aspect, author } => p.thing == thing && p.aspect == aspect && c.acting == author,
         })
 }
 
@@ -415,9 +415,9 @@ fn unknown(world: &World, exists: &BTreeSet<ThingId>, c: &Commit, p: &Part) -> b
     creation(p).is_none() && !exists.contains(&t)
 }
 
-/// A commit is unjudgeable while its author's or actor's record is unknown.
+/// A commit is unjudgeable while its signer's or acting thing's record is unknown.
 fn judgeable(world: &World, c: &Commit) -> bool {
-    world.known(c.author) && world.known(c.actor)
+    world.known(c.signer) && world.known(c.acting)
 }
 
 /// Per author, the things something leads to from it (spec/commits.md §4 A held part waits):
@@ -433,7 +433,7 @@ fn leads(world: &World, live: &[&Commit], view: &[Commit]) -> BTreeMap<NodeId, B
     for (th, _, h, _) in namings(view.iter()) {
         adj.entry(h).or_default().insert(th);
     }
-    let authors: BTreeSet<NodeId> = live.iter().map(|c| c.author).collect();
+    let authors: BTreeSet<NodeId> = live.iter().map(|c| c.signer).collect();
     authors
         .into_iter()
         .map(|a| {
@@ -456,7 +456,7 @@ fn leads(world: &World, live: &[&Commit], view: &[Commit]) -> BTreeMap<NodeId, B
 /// (spec/commits.md §4 Unjudgeable).
 fn unreached(leads: &BTreeMap<NodeId, BTreeSet<ThingId>>, c: &Commit, p: &Part, world: &World) -> bool {
     let t = p.thing;
-    !p.aspect.external && t != c.author && !world.chain_above(t).contains(&c.author) && !leads.get(&c.author).is_some_and(|s| s.contains(&t))
+    !p.aspect.external && t != c.signer && !world.chain_above(t).contains(&c.signer) && !leads.get(&c.signer).is_some_and(|s| s.contains(&t))
 }
 
 /// The commit as joined: its waiting and thrown parts count as not received.
@@ -603,7 +603,7 @@ fn judge(h: &Held, ov: &Overlap) -> (Outcome, Timeline) {
         for c in live.iter().filter(|c| c.kind != CommitKind::Snapshot) {
             for (i, p) in c.parts.iter().enumerate() {
                 // a part the node does not hold is judged once fetched again
-                let right = tl.right(q.author, q.actor, q.key(), q.id, p.retention.by, c.actor, p.thing);
+                let right = tl.right(q.signer, q.acting, q.key(), q.id, p.retention.by, c.acting, p.thing);
                 if thrown.contains(&(c.id, i)) || !names(q, c, p) || !right {
                     continue;
                 }
@@ -632,7 +632,7 @@ fn judge(h: &Held, ov: &Overlap) -> (Outcome, Timeline) {
         for (i, p) in c.parts.iter().enumerate() {
             if let Body::Held(Delta::Retention(x)) = &p.body {
                 if p.aspect == Aspect::RETENTION && o.valid.get(&(c.id, i)) == Some(&true) && !o.valueless.contains(&(c.id, p.thing, p.aspect)) {
-                    let key = (x.written.unwrap_or(c.ts), c.author, c.id);
+                    let key = (x.written.unwrap_or(c.ts), c.signer, c.id);
                     o.settings.entry(p.thing).or_default().push((key, x.clone()));
                 }
             }
@@ -644,7 +644,7 @@ fn judge(h: &Held, ov: &Overlap) -> (Outcome, Timeline) {
     // An external fire its author's authority does not make valid (a party holding no write on
     // the thing) is valid as the rule says (spec/permissions.md §5.2 External fires); settings
     // never read fires, so judging them first is exact. Its commit acts for its author.
-    for c in live.iter().filter(|c| is_applied(c) && c.kind == CommitKind::Content && c.actor == c.author) {
+    for c in live.iter().filter(|c| is_applied(c) && c.kind == CommitKind::Content && c.acting == c.signer) {
         for (i, p) in c.parts.iter().enumerate().filter(|(_, p)| p.aspect.external) {
             if o.otherwise[&(c.id, i)] {
                 continue;
@@ -959,7 +959,7 @@ fn fate(
     }
     let (t, a) = (p.thing, p.aspect);
     let copy = body(p).is_some_and(|f| !dots.values_of(t, a, f, &|x| vl(x, t, a)).is_empty());
-    if !waits && p.body != Body::Parked && o.valid.get(&pr) == Some(&false) && c.author != me {
+    if !waits && p.body != Body::Parked && o.valid.get(&pr) == Some(&false) && c.signer != me {
         return (Fate::MustDrop(DropWhy::Invalid), false);
     }
     if waits || p.body == Body::Parked {
@@ -1011,11 +1011,11 @@ fn fate(
                 q.thing == t && q.aspect == a && o.valid.get(&(s.id, j)) == Some(&true) && !never_received(s, q) && body(q).is_some_and(|sw| covers(sw, &ws))
             })
         })
-        .map(|s| (s.id, tl.right(s.author, s.actor, s.key(), s.id, p.retention.by, c.actor, t)))
+        .map(|s| (s.id, tl.right(s.signer, s.acting, s.key(), s.id, p.retention.by, c.acting, t)))
         .collect();
     let by_right = covering.iter().find(|x| x.1).map(|x| x.0);
     let by_any = by_right.or(covering.first().map(|x| x.0));
-    let right = tl.right(me, me, (u64::MAX, me, u32::MAX), u32::MAX, p.retention.by, c.actor, t);
+    let right = tl.right(me, me, (u64::MAX, me, u32::MAX), u32::MAX, p.retention.by, c.acting, t);
     // spec/commits.md §5 The setting: in history, kept (compaction may not drop it); under purge on
     // replace, gone at every node once a right holder covers it and the clock reaches its
     // replacement, owed by a right holder until then; out of history, any valid writer's cover
@@ -1047,7 +1047,7 @@ fn fate(
 pub fn cover(h: &Held, o: &Outcome, thing: ThingId, aspect: Aspect, id: CommitId, ts: u64) -> Commit {
     let f = snapshot_state(h, o, thing, aspect);
     let part = Part { thing, aspect, retention: Retention::WRITER, body: Body::Held(Delta::Writes(f)), stripped: Default::default(), replaces: None };
-    Commit { id, author: h.me, actor: h.me, ts, expires: None, kind: CommitKind::Snapshot, parts: vec![part], purge: vec![], frontier: None, undoes: None , boxes: vec![] }
+    Commit { id, signer: h.me, acting: h.me, ts, expires: None, kind: CommitKind::Snapshot, parts: vec![part], purge: vec![], frontier: None, undoes: None , boxes: vec![] }
 }
 
 /// What a snapshot of an aspect carries: the state, writes of expiring deltas value-less

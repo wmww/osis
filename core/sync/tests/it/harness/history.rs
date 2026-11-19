@@ -854,7 +854,7 @@ fn snapshots_lost(w: &mut World, r: &mut Peer, lost: &BTreeSet<CommitId>) -> BTr
     let mut out = BTreeSet::new();
     for (t, author) in by {
         for b in r.engine.body_page(&t, &value_ak(), true, 0, usize::MAX).unwrap_or_default() {
-            let snapshot = r.engine.header(&b.id).is_some_and(|h| h.kind.is_compaction() && h.author == author);
+            let snapshot = r.engine.header(&b.id).is_some_and(|h| h.kind.is_compaction() && h.signer == author);
             if snapshot && !on.iter().any(|&i| w.engine(i).holds_commit(&b.id)) {
                 out.insert(b.id);
             }

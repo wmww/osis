@@ -95,7 +95,7 @@ pub(crate) fn edge_logs<'t>(core: &Core, on: &On<'t>, a: &Tid) -> BTreeMap<Tid, 
                         }
                     }
                     let stands = takes || edges.into_iter().any(|e| tl.applies_over(&w, e));
-                    (takes, stands, tl.role(&mc.author, a, At::before(p)) >= Some(Role::Write))
+                    (takes, stands, tl.role(&mc.signer, a, At::before(p)) >= Some(Role::Write))
                 };
                 writes.push(EdgeWrite { key: key_of(&p), role, applied, takes, stands, counts });
             }
@@ -178,7 +178,7 @@ fn direct_departures(tx: &mut Tx<'_>, a: &Tid) -> Result<BTreeSet<Departure>> {
         // nothing), departed it
         for r in osis_keys::ROLES {
             for e in epochs.role(r).current() {
-                let Some(author) = tx.core.ix.epoch_intro.get(&(*a, r, e)).and_then(|(_, c)| tx.core.ix.commits.get(c)).map(|m| m.view.author) else { continue };
+                let Some(author) = tx.core.ix.epoch_intro.get(&(*a, r, e)).and_then(|(_, c)| tx.core.ix.commits.get(c)).map(|m| m.view.signer) else { continue };
                 note(author, super::members::role_for_keys(tx.core, &author, a), r);
             }
         }
@@ -242,8 +242,8 @@ fn own_removal_on(core: &Core, tl: &Timeline, a: &Tid, holder: &Tid) -> Option<o
 /// of the account made it: each waits for it to be held elsewhere, so a sibling that pulled it
 /// from the maker keeps it until a source has it.
 fn own_leaving_write(core: &Core, tl: &Timeline, a: &Tid, mc: &RoleCommit, op: &EdgeOp) -> bool {
-    let own = core.ix.commits.get(&mc.id).is_some_and(|m| m.origin == crate::events::Origin::Local) || mc.author == core.id.tid() || core.account.get() == Some(mc.author) || core.key_actors.contains_key(&mc.author);
-    own && departure_of(tl, a, mc, op).is_some() && crate::apply::validity::self_removal(core, &mc.author, a, &op.holder, mc.ts)
+    let own = core.ix.commits.get(&mc.id).is_some_and(|m| m.origin == crate::events::Origin::Local) || mc.signer == core.id.tid() || core.account.get() == Some(mc.signer) || core.key_actors.contains_key(&mc.signer);
+    own && departure_of(tl, a, mc, op).is_some() && crate::apply::validity::self_removal(core, &mc.signer, a, &op.holder, mc.ts)
 }
 
 /// Whether applied role commit `c` is an own self-removal (`own_removal_on`) on one of
@@ -252,7 +252,7 @@ fn own_leaving_write(core: &Core, tl: &Timeline, a: &Tid, mc: &RoleCommit, op: &
 /// by an own author.
 pub(crate) fn own_self_removal(core: &Core, c: &osis_base::CommitId, targets: &BTreeSet<Tid>) -> bool {
     let Some(m) = core.ix.commits.get(c) else { return false };
-    let a = m.view.author;
+    let a = m.view.signer;
     if m.origin != crate::events::Origin::Local && a != core.id.tid() && core.account.get() != Some(a) && !core.key_actors.contains_key(&a) {
         return false;
     }

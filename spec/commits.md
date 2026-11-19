@@ -4,7 +4,8 @@
 ## 1. Header
 Encoding: spec/wire.md §4. Fields:
 - Format version (spec/versioning.md §1).
-- Author tid (an account, or a key actor signing as itself), the epoch an account signs at, and the actor tid it acts for (checked: spec/permissions.md §5.2, §5.5); a rotation (spec/crypto.md §9).
+- The **signer**: the tid of the key actor whose key signs the commit (an account, or a key actor signing as itself), and the epoch an account signs at (spec/permissions.md §5.5); a rotation (spec/crypto.md §9).
+- The **paths**: for each thing the commit writes, the path it is written along and its purge author (spec/permissions.md §5.2 Interim; §6), in the clear where it writes one thing, else hashed per thing in the header with each thing's own in its sections.
 - Kind: content or role (§2); compaction-snapshot marker.
 - `ts` (spec/crdt.md §2.2) and the dot form, commit or session (§3).
 - Optional `expires` (§6), the expiry of every delta of the commit.
@@ -13,7 +14,8 @@ Encoding: spec/wire.md §4. Fields:
 - A 16-byte random blind (the commit blob's, spec/crypto.md §7) and the delete keys with their levels; per aspect, the indices of the keys its deltas call for.
 - Explicit removals and edge writes that audit only: the frontier (spec/permissions.md §5.1 step 4), inline or as a link to a chunk tree when it exceeds `CHUNK_THRESHOLD` (spec/data-model.md §6).
 - Optional ephemeral marker: an ephemeral commit or a relay-only one (§2).
-- The aspect, purge and delete-key lists are each inline, or a link to a chunk tree of the list's canonical bytes when it exceeds `CHUNK_THRESHOLD`; those blobs carry the commit's level-2 commitment (spec/wire.md §5) and go under every sync ID the commit's blob goes under (spec/sync-judgement.md §1).
+- Role commits with edge writes only: the holder of the remaining admin edge they rely on, or the adminless mark (spec/permissions.md §1, The last admin; §2); compaction snapshots only: the own-cover mark (spec/permissions.md §5.1 Own cover).
+- The aspect, purge and delete-key lists are each inline, or a link to a chunk tree of the list's canonical bytes when it exceeds `CHUNK_THRESHOLD`; those blobs commit to no delete key (spec/wire.md §5) and go under every sync ID the commit's blob goes under (spec/sync-judgement.md §1).
 - Signature (spec/crypto.md §2).
 
 - **Commit ID** = BLAKE3 of the canonical header without the signature. The signature is over the commit ID (spec/crypto.md §2).

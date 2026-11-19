@@ -1792,7 +1792,7 @@ fn save_checked(inc: &mut Timelines, held: &osis_perm::MemoryHeldSet, disk: &mut
             all.insert(admin);
         }
         for c in held.edge_commits(&t) {
-            all.insert(c.author);
+            all.insert(c.signer);
             all.extend(c.ops.iter().flat_map(|o| [o.holder, o.target]));
         }
     }
@@ -2118,7 +2118,7 @@ fn update_moved(inc: &mut Timelines, held: &osis_perm::MemoryHeldSet, prev: &osi
     let mut nodes = BTreeSet::new();
     let mut points = BTreeSet::new();
     for c in held.commits.values().flatten() {
-        nodes.insert(c.author);
+        nodes.insert(c.signer);
         points.insert(c.point());
         for o in &c.ops {
             nodes.insert(o.holder);

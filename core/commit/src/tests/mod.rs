@@ -1,6 +1,7 @@
 //! Unit tests (spec/wire.md §4, spec/commits.md): header round trips here, one module per area.
 
 mod build;
+mod paths;
 mod prop;
 mod review;
 mod validate;
@@ -24,14 +25,23 @@ pub(crate) fn dkey(level: u8, b: u8) -> DeleteKey {
     DeleteKey::new(level, &osis_crypto::DeleteSecret::derive(&Secret32::from_bytes([b; 32])).verifying_key())
 }
 
-/// The test author's session nonce (spec/crdt.md §2.1).
+/// The test signer's session nonce (spec/crdt.md §2.1).
 pub(crate) const NONCE: [u8; 16] = [0x5e; 16];
 pub(crate) const SESSION: Form = Form::Session(NONCE);
 
+/// `h`'s path in the form its count of things asks (spec/wire.md §4 field 2): its own where it
+/// writes one thing, else a placeholder hash per thing.
+pub(crate) fn fit_paths(h: &mut Header) {
+    let n = h.things().len();
+    if n > 1 {
+        h.path = Paths::Hashed(vec![[7; 32]; n]);
+    }
+}
+
 pub(crate) fn sample_header() -> Header {
     Header {
-        author: t(1),
-        actor: t(2),
+        signer: t(1),
+        path: Paths::One(Path::through(t(2))),
         kind: Kind::Content,
         ts: ts(1_000_000),
         form: SESSION,
@@ -57,6 +67,7 @@ pub(crate) fn sample_header() -> Header {
         epoch: None,
         rotation: None,
         reseal: None, own_cover: false, adminless: false,
+        remains: None,
     }
 }
 
@@ -68,6 +79,7 @@ fn rotation_header_spec_wire_4() {
     let keys = osis_crypto::AccountEpochKeys::from_seed(&Secret32::from_bytes([8; 32]));
     let rot = RotationHeader { signing_key: keys.signing.verifying_key(), kem_key: keys.kem.public().clone(), supersedes: vec![crate::FIRST_EPOCH, CommitId([3; 32])], names: Vec::new(), takes: vec![CommitId([4; 32])], revokes: true, devices: vec![9; 40], list_root: [6; 32], seeds: Vec::new() };
     let mut h = sample_header();
+    h.path = Paths::default();
     h.epoch = Some(crate::FIRST_EPOCH);
     assert_eq!(Header::decode(&h.encode()).unwrap(), h);
     h.rotation = Some(rot.clone());
@@ -78,8 +90,7 @@ fn rotation_header_spec_wire_4() {
     r.rotation = Some(rot.clone());
     assert!(r.validate().is_err(), "writes no keys.0");
     let mut r = validate::role_header("keys.0");
-    r.aspects[0].tid = r.author;
-    r.actor = r.author;
+    r.aspects[0].tid = r.signer;
     r.epoch = Some(crate::FIRST_EPOCH);
     r.rotation = Some(rot.clone());
     r.validate().unwrap();
@@ -118,7 +129,6 @@ fn reseal_header_spec_wire_4() {
     let b = |t: u8| SeedBox { tag: [t; 16], sealed: vec![t; osis_crypto::SEALED_OVERHEAD + 32] };
     let rs = SeedReseal { signing_key: keys.signing.verifying_key(), seeds: vec![b(1), b(2)] };
     let mut r = validate::role_header("account.0");
-    r.actor = r.author;
     r.epoch = Some(crate::FIRST_EPOCH);
     r.reseal = Some(rs.clone());
     assert_eq!(Header::decode(&r.encode()).unwrap(), r);
@@ -196,7 +206,7 @@ fn signature_binds_inner_and_merge_spec_crypto_2() {
     let mut swapped_more = good.clone();
     swapped_more.more = vec![[5; osis_crypto::INNER_LEN]];
     assert!(matches!(verify_signature(&id, &swapped_more, &k.verifying_key()), Err(Error::BadSignature)));
-    let blob = crate::CommitBlob { header: h, sigs: good.clone(), parts: Vec::new() };
+    let blob = crate::CommitBlob { header: h, sigs: good.clone(), parts: Vec::new(), salted: Default::default() };
     assert_eq!(crate::CommitBlob::decode(&blob.encode()).unwrap().sigs, good);
 }
 

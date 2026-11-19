@@ -190,7 +190,7 @@ impl Engine {
             let Some(mut chain) = self.author_chain(&k, &BTreeSet::from([ai])) else { continue };
             for (x, ps) in chain.commits.iter_mut() {
                 let Some(hx) = self.header(x) else { continue };
-                ps.retain(|i| hx.aspects.get(*i).is_some_and(|a| a.ak.as_str() != "keys.0" || a.tid == hx.author));
+                ps.retain(|i| hx.aspects.get(*i).is_some_and(|a| a.ak.as_str() != "keys.0" || a.tid == hx.signer));
             }
             chain.commits.retain(|_, p| !p.is_empty());
             certs.extend(chain);
@@ -279,7 +279,7 @@ impl Engine {
         let blobs: Vec<CommitBlob> = keys.commits.iter().filter_map(|v| CommitBlob::decode(&osis_base::encode(v)).ok()).collect();
         let records: BTreeMap<Tid, CreationRecord> = keys.records.iter().map(|r| (r.tid(), r.clone())).collect();
         // the authors of the holder's `keys.0` deltas carried: their cards are on the chain
-        let cards: BTreeSet<Tid> = blobs.iter().filter(|b| b.parts.iter().any(|p| b.header.aspects.get(p.ai).is_some_and(|a| a.tid == *holder && a.ak.as_str() == "keys.0"))).map(|b| b.header.author).collect();
+        let cards: BTreeSet<Tid> = blobs.iter().filter(|b| b.parts.iter().any(|p| b.header.aspects.get(p.ai).is_some_and(|a| a.tid == *holder && a.ak.as_str() == "keys.0"))).map(|b| b.header.signer).collect();
         let mut done: BTreeSet<usize> = BTreeSet::new();
         let mut learned: BTreeSet<Tid> = BTreeSet::new();
         let mut taken = 0;

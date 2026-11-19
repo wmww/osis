@@ -132,10 +132,9 @@ pub struct EdgeOp {
 pub struct RoleCommit {
     pub id: CommitId,
     pub ts: Ts,
-    /// Signing node.
-    pub author: Tid,
-    /// Actor the node acts for (header field 2).
-    pub actor: Tid,
+    /// Its signer (header field 1); a role commit states the empty path (Interim,
+    /// notes/a1-spec/README.md step 3: until the walk reads paths).
+    pub signer: Tid,
     /// The demoter's frontier (explicit demotions only), resolved from its link if large.
     pub frontier: Option<Arc<Frontier>>,
     pub ops: Vec<EdgeOp>,
@@ -143,14 +142,14 @@ pub struct RoleCommit {
 
 impl RoleCommit {
     pub fn point(&self) -> Point {
-        Point { ts: self.ts, node: self.author, commit: self.id }
+        Point { ts: self.ts, node: self.signer, commit: self.id }
     }
 
     /// Whether `o` is this record as an input to the walk: every field, frontiers by their
     /// sizes (fixed by the commit ID, `HeldSet`), as the saved-walk tag covers it. A record can
     /// grow under its ID (a part that arrives late).
     pub(crate) fn same_input(&self, o: &RoleCommit) -> bool {
-        (self.id, self.ts, self.author, self.actor, &self.ops) == (o.id, o.ts, o.author, o.actor, &o.ops) && same_frontier(&self.frontier, &o.frontier)
+        (self.id, self.ts, self.signer, &self.ops) == (o.id, o.ts, o.signer, &o.ops) && same_frontier(&self.frontier, &o.frontier)
     }
 }
 

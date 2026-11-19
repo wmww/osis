@@ -105,12 +105,14 @@ pub const BEACON_HIT: &str = "beacon hit";
 pub const BEACON_REPLY: &str = "beacon reply";
 /// The proof credential of a sync key, from its seed (`sync_proof`).
 pub const SYNC_PROOF: &str = "sync proof";
+/// A stated path's hash in a header writing several things, keyed by its salt (spec/wire.md §4).
+pub const PATH: &str = "path";
 
 /// Every kdf purpose, for distinctness checks and vectors.
-pub const PURPOSES: [&str; 40] = [
+pub const PURPOSES: [&str; 41] = [
     THING_SYNC, THING_READ, THING_WRITE, THING_ADMIN, ROLE_SYNC, ROLE_READ, ROLE_WRITE, ROLE_ADMIN, SIGN, KEM, CREATION_NONCE, BOX, HISTORY, EPOCH, ROLES, WRAP, SECTION,
     DELTA, LINK, LINK_TREE, DELETE_KEY, DELETE_BLIND, DELETE_NONCE, LINK_BLIND, THING_BLIND, SYNC_KEY, SYNC_WRITE, SYNC_DELETE, SYNC_DEPOSIT, SYNC_CLAIM,
-    INNER_SECRET, INNER, SEED_BOX, DEVICES, FIRST_DEVICE, MERGE_SEED, BEACON, BEACON_HIT, BEACON_REPLY, SYNC_PROOF,
+    INNER_SECRET, INNER, SEED_BOX, DEVICES, FIRST_DEVICE, MERGE_SEED, BEACON, BEACON_HIT, BEACON_REPLY, SYNC_PROOF, PATH,
 ];
 
 // Full derive_key contexts used directly (not through `kdf`).

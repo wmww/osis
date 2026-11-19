@@ -154,7 +154,7 @@ fn the_accounts_tickets_follow_what_it_accepts_spec_sync_set_1() {
     let s = w.engine(1).sync_id_of(&inbox).unwrap().unwrap();
     for i in [1, 2] {
         let stamped = w.store(i).entries(&s).unwrap().into_iter().filter(|e| e.stamp.is_some() && !e.deposited);
-        let fires: Vec<_> = stamped.filter(|e| w.engine(i).blob_commit(&e.blob).and_then(|c| w.engine(i).header(&c)).is_some_and(|h| h.author == alice && h.aspects.iter().any(|a| a.tid == inbox && a.ak.as_str() == "ticket@~0"))).collect();
+        let fires: Vec<_> = stamped.filter(|e| w.engine(i).blob_commit(&e.blob).and_then(|c| w.engine(i).header(&c)).is_some_and(|h| h.signer == alice && h.aspects.iter().any(|a| a.tid == inbox && a.ak.as_str() == "ticket@~0"))).collect();
         assert_eq!(fires.len(), 1, "node {i}: Alice's sealed fire stamped once");
         // in place: the sealed blob itself, its wrap filler no read secret of the inbox opens
         assert!(osis_blob::unwrap_any(w.engine(i).read_secrets(&inbox).iter(), &fires[0].blob, &fires[0].wrap).is_none(), "node {i}: promoted in place, not encrypted again");

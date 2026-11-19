@@ -181,7 +181,7 @@ fn removal_answered(f: Option<StepFault>) -> (LocalPeer, Tid, CommitId) {
 fn addenda_by(lp: &LocalPeer, peer: usize, t: Tid) -> usize {
     let core = &lp.peers[peer].engine.core;
     let me = core.writer().unwrap();
-    core.ix.addenda.keys().filter(|(th, c)| *th == t && core.ix.commits.get(c).is_some_and(|m| m.view.author == me)).count()
+    core.ix.addenda.keys().filter(|(th, c)| *th == t && core.ix.commits.get(c).is_some_and(|m| m.view.signer == me)).count()
 }
 
 // spec/permissions.md §5.2 (Addenda): an answer to a removal that fails

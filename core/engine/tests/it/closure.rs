@@ -554,7 +554,7 @@ fn knows(lp: &mut osis_engine::local_peer::LocalPeer, i: usize, a: Tid) -> bool 
     let e = &mut lp.peers[i].engine;
     let inbox = e.inbox_thing(&a);
     let commits = e.commit_ids();
-    e.core.created(&a).is_some() || inbox.is_some_and(|x| e.core.created(&x).is_some()) || commits.iter().any(|c| e.header(c).is_some_and(|h| h.author == a))
+    e.core.created(&a).is_some() || inbox.is_some_and(|x| e.core.created(&x).is_some()) || commits.iter().any(|c| e.header(c).is_some_and(|h| h.signer == a))
 }
 
 // spec/commits.md §5 What a held thing needs, spec/sync-set.md §3 Release: another account's
@@ -1093,7 +1093,7 @@ fn a_device_named_after_its_card_went_is_fetched_again_spec_commits_5() {
     crate::common::pair_into(&mut lp, 0, &mut rest[0]);
     lp.peers.extend(rest);
     let (a, z) = (lp.peers[0].engine.tid(), lp.peers[2].engine.tid());
-    let card: Vec<_> = lp.peers[2].engine.commit_ids().into_iter().filter(|c| lp.peers[2].engine.header(c).is_some_and(|h| h.author == z && h.aspects.iter().all(|x| x.tid == z))).collect();
+    let card: Vec<_> = lp.peers[2].engine.commit_ids().into_iter().filter(|c| lp.peers[2].engine.header(c).is_some_and(|h| h.signer == z && h.aspects.iter().all(|x| x.tid == z))).collect();
     crate::flows::send_carried(&mut lp, 2, 0, &card);
     lp.peers[0].engine.pair(&z).unwrap();
     let pairing: Vec<_> = lp.peers[0].engine.commit_ids().into_iter().filter(|c| !card.contains(c)).collect();

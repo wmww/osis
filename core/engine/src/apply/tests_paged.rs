@@ -819,7 +819,7 @@ fn own_replace_passes_hole_whole_or_paged_spec_crdt_8() {
     let e = &w.lp.peers[3].engine;
     let me = e.me();
     let held = e.core.ix.snapshots.get(&(w.t, aks()[3].clone())).cloned().unwrap_or_default();
-    let cover = held.iter().find(|(_, c, _, _, _)| e.core.ix.commits.get(c).is_some_and(|m| m.view.author == me)).expect("node 3 covers its replaced write");
+    let cover = held.iter().find(|(_, c, _, _, _)| e.core.ix.commits.get(c).is_some_and(|m| m.view.signer == me)).expect("node 3 covers its replaced write");
     assert!(cover.2.sources().any(|(_, f)| f == 2), "the cover passes the hole below node 1's replace: {:?}", cover.2);
 }
 
@@ -915,7 +915,7 @@ fn forge_snapshot_in(w: &mut World, by: usize, ak: &Ak, ts: osis_base::Ts, f: os
     };
     let mut aw = AspectWrite::new(t, ak.clone(), 0, 0, bytes);
     aw.retention = retention;
-    let mut cb = CommitBuilder::new(Kind::ContentSnapshot, ts, author, author, Form::Commit);
+    let mut cb = CommitBuilder::new(Kind::ContentSnapshot, ts, author, osis_commit::Path::default(), Form::Commit);
     cb.aspects.push(aw);
     cb.blind = Some(blind);
     if memory {

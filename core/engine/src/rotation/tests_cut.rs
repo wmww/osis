@@ -812,7 +812,7 @@ fn cut_state_cost_does_not_grow_with_history_spec_crypto_4() {
 fn own_snapshots(lp: &LocalPeer, i: usize) -> usize {
     let e = &lp.peers[i].engine;
     let me = e.me();
-    e.core.ix.commits.values().filter(|m| m.header.kind.is_compaction() && m.view.author == me).count()
+    e.core.ix.commits.values().filter(|m| m.header.kind.is_compaction() && m.view.signer == me).count()
 }
 
 // spec/crypto.md §4 (State at a cut): a writer granted with history after a cut (or a new node

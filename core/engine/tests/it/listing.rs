@@ -391,7 +391,7 @@ fn purge_aspect_compacts_spec_commits_5() {
     let k = ak("purge.0");
     let item = lp.peers.iter().find_map(|p| p.engine.purge_item(&a, d, reg())).unwrap();
     let rq = purge(&mut lp, 0, item);
-    purge(&mut lp, 0, PurgeItem::Author { tid: d, ak: reg(), actor: ids[3] });
+    purge(&mut lp, 0, PurgeItem::Author { tid: d, ak: reg(), author: ids[3] });
     let snap = lp.peers[0].engine.snapshot(&d, &k).unwrap().unwrap();
     let h = lp.peers[0].engine.header(&snap).unwrap();
     assert_eq!(Some(h.aspects[0].retention), osis_commit::retention::fixed_retention("purge.0"));
@@ -409,7 +409,7 @@ fn author_items_are_bounded_spec_wire_4() {
     let (mut lp, d, _) = setup();
     let items = |n: usize, m: &mut Mutation| {
         for i in 0..n {
-            m.purge(PurgeItem::Author { tid: d, ak: reg(), actor: Tid::from_bytes([i as u8 + 1; 15]) });
+            m.purge(PurgeItem::Author { tid: d, ak: reg(), author: Tid::from_bytes([i as u8 + 1; 15]) });
         }
     };
     let max = osis_base::format::MAX_AUTHOR_ITEMS;
@@ -469,7 +469,7 @@ fn purge_by_author_any_order_spec_perm_6() {
             let pc = pack(&mut lp, 1, &c);
             let po = pack(&mut lp, 3, &other);
             lp.sync_all().unwrap();
-            let rq = purge(&mut lp, who, PurgeItem::Author { tid: d, ak: reg(), actor: ids[1] });
+            let rq = purge(&mut lp, who, PurgeItem::Author { tid: d, ak: reg(), author: ids[1] });
             let prq = pack(&mut lp, who, &rq);
             // an honest demotion: it lists the delta and the request (spec/permissions.md §5.1)
             let f = ct::Frontier { commits: [c, rq].into_iter().collect() };
@@ -517,7 +517,7 @@ fn purge_by_author_spares_later_writes_spec_perm_6() {
     let r = Retention::default();
     let before = write(&mut lp, 1, d, r, "before");
     lp.sync_all().unwrap();
-    let rq = purge(&mut lp, 0, PurgeItem::Author { tid: d, ak: reg(), actor: ids[1] });
+    let rq = purge(&mut lp, 0, PurgeItem::Author { tid: d, ak: reg(), author: ids[1] });
     lp.sync_all().unwrap();
     let after = write(&mut lp, 1, d, r, "after");
     lp.sync_all().unwrap();
@@ -540,7 +540,7 @@ fn purge_by_author_of_a_snapshot_keeps_anothers_value_spec_commits_5() {
     let snap = lp.peers[1].engine.snapshot(&d, &reg()).unwrap().unwrap();
     lp.advance(1_000);
     lp.sync_all().unwrap();
-    purge(&mut lp, 0, PurgeItem::Author { tid: d, ak: reg(), actor: ids[1] });
+    purge(&mut lp, 0, PurgeItem::Author { tid: d, ak: reg(), author: ids[1] });
     lp.sync_all().unwrap();
     for i in 0..4 {
         assert_eq!(held(&mut lp.peers[i], d, &snap).body, PartBody::Held(Some(s("dan's"))), "peer {i}");

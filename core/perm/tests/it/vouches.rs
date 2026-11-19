@@ -307,7 +307,7 @@ fn a_demotion_scope_on_a_second_walk() {
     let ew = vouch_world(&w);
     let tl = Timeline::evaluate(&ew.w.held());
     assert_eq!(tl.counted().count(), 1);
-    let r = osis_perm::RoleCommit { id: cid(77_777), ts: ts(20), author: ew.nodes[H], actor: ew.nodes[H], frontier: Some(std::sync::Arc::new(osis_perm::Frontier::default())), ops: vec![osis_perm::EdgeOp { target: ew.t, holder: ew.nodes[3], edge: None }] };
+    let r = osis_perm::RoleCommit { id: cid(77_777), ts: ts(20), signer: ew.nodes[H], frontier: Some(std::sync::Arc::new(osis_perm::Frontier::default())), ops: vec![osis_perm::EdgeOp { target: ew.t, holder: ew.nodes[3], edge: None }] };
     let scope = tl.demotion_scope(r);
     assert!(scope.roles.get(&ew.nodes[3]).is_some_and(|s| s.contains(&ew.t)), "{scope:?}");
 }

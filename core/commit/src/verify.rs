@@ -36,15 +36,15 @@ pub fn delta_ctx(h: &Header, id: &CommitId, ai: usize, interner: &mut Interner) 
     let a = h.aspects.get(ai).ok_or(Error::Malformed("aspect index out of range"))?;
     let own = match h.form {
         Form::Commit => interner.commit(*id),
-        Form::Session(nonce) => interner.session(osis_crdt::Session { node: h.author, nonce }),
+        Form::Session(nonce) => interner.session(osis_crdt::Session { node: h.signer, nonce }),
     };
     Ok(DeltaCtx { ts: h.ts, own, range: CounterRange { lo: a.lo, hi: a.hi }, kind: h.kind.delta_kind() })
 }
 
 /// The writer-side context for encoding a delta of `kind` in a commit (commit form uses a
 /// placeholder own source: own dots are encoded without it).
-pub fn writer_ctx(form: Form, kind: crate::Kind, ts: osis_base::Ts, author: Tid, lo: u64, hi: u64) -> DeltaCtx {
-    DeltaCtx { ts, own: form.own_source(author, CommitId([0; 32])), range: CounterRange { lo, hi }, kind: kind.delta_kind() }
+pub fn writer_ctx(form: Form, kind: crate::Kind, ts: osis_base::Ts, signer: Tid, lo: u64, hi: u64) -> DeltaCtx {
+    DeltaCtx { ts, own: form.own_source(signer, CommitId([0; 32])), range: CounterRange { lo, hi }, kind: kind.delta_kind() }
 }
 
 /// The page source of a relay-only commit's deltas, which never page (spec/commits.md §2): any
@@ -180,7 +180,7 @@ fn check_types(ak: &str, f: &osis_crdt::Fragment) -> Result<(), Error> {
 }
 
 /// Verifies a received commit blob whose header lists are resolved: signature under the
-/// author's key, header rules, then every part (hash and range check). `dedup` gives each
+/// signer's key, header rules, then every part (hash and range check). `dedup` gives each
 /// thing's dedup secret. Returns the decoded deltas in part order.
 pub fn verify_blob(
     blob: &CommitBlob,
@@ -191,6 +191,7 @@ pub fn verify_blob(
     let id = blob.id();
     crate::verify_signature(&id, &blob.sigs, key)?;
     blob.header.validate()?;
+    blob.check_paths()?;
     let mut interner = Interner::new();
     let mut out = Vec::with_capacity(blob.parts.len());
     for p in &blob.parts {

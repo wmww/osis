@@ -274,7 +274,7 @@ fn cert_check(w: &World) -> Option<String> {
     let mut writes: BTreeMap<WriteId, (Point, Tid, Tid)> = BTreeMap::new();
     for c in held.commits.values().flatten() {
         for (k, op) in c.ops.iter().enumerate() {
-            writes.insert(WriteId(c.id, k as u32), (c.point(), c.author, op.target));
+            writes.insert(WriteId(c.id, k as u32), (c.point(), c.signer, op.target));
         }
     }
     // node cards: each node's certificates for a thing give its role there at every write's
@@ -559,7 +559,7 @@ fn sync_runs_through_a_holder_actor_spec_permissions_1() {
 fn scope_of(tl: &Timeline, author: Tid, holder: Tid, target: Tid, new: Option<Edge>, t: u64) -> osis_perm::DemotionScope {
     let ops = vec![osis_perm::EdgeOp { target, holder, edge: new }];
     let frontier = Some(std::sync::Arc::new(osis_perm::Frontier::default()));
-    tl.demotion_scope(osis_perm::RoleCommit { id: osis_base::CommitId([0xee; 32]), ts: ts(t), author, actor: author, frontier, ops })
+    tl.demotion_scope(osis_perm::RoleCommit { id: osis_base::CommitId([0xee; 32]), ts: ts(t), signer: author, frontier, ops })
 }
 
 /// §5.1 "Frontier": removing a node from P puts in question its writes on P and on G below
@@ -705,7 +705,7 @@ fn scope_check(w: &World, nodes: &[Tid], things: &[Tid], rng: &mut Rng) -> Optio
         Frontier::new(f)
     };
     let id = osis_base::CommitId([0xee; 32]);
-    let r = |f: Frontier| RoleCommit { id, ts: ts(t), author, actor: author, frontier: Some(std::sync::Arc::new(f)), ops: vec![EdgeOp { target, holder, edge: new }] };
+    let r = |f: Frontier| RoleCommit { id, ts: ts(t), signer: author, frontier: Some(std::sync::Arc::new(f)), ops: vec![EdgeOp { target, holder, edge: new }] };
     // as a demoter builds it: from the scope with every held write received, until the scope
     // for the frontier is inside the scope it was built from
     let mut scope = tl.demotion_scope(r(tl.all_held()));

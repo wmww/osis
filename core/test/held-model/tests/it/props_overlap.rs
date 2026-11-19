@@ -164,13 +164,13 @@ fn a_writer_voids_only_its_own_session_spec_commits_4() {
         let w = world(s, false, false);
         for h in held_sets(&w) {
             let o = evaluate_with(&h, &Overlap::Valid);
-            for c in h.commits.iter().filter(|c| (100..1000).contains(&c.id) && c.author == W && c.kind == CommitKind::Content && !c.parts.iter().any(|p| p.aspect == Aspect::ADDENDA)) {
+            for c in h.commits.iter().filter(|c| (100..1000).contains(&c.id) && c.signer == W && c.kind == CommitKind::Content && !c.parts.iter().any(|p| p.aspect == Aspect::ADDENDA)) {
                 let without = Held { commits: h.commits.iter().filter(|x| x.id != c.id).cloned().collect(), dots: h.dots.iter().filter(|r| r.commit != c.id).cloned().collect(), ..h.clone() };
                 let ow = evaluate_with(&without, &Overlap::Valid);
-                let xs = |h: &Held, o: &Outcome| verdicts(h, o).0.into_iter().filter(|(k, _)| h.commits.iter().any(|c| c.id == k.0 && c.author == X)).collect::<Vec<_>>();
+                let xs = |h: &Held, o: &Outcome| verdicts(h, o).0.into_iter().filter(|(k, _)| h.commits.iter().any(|c| c.id == k.0 && c.signer == X)).collect::<Vec<_>>();
                 assert_eq!(xs(&h, &o), xs(&without, &ow), "seed {s}: W's {} moves X's verdicts", c.id);
             }
-            own += (o.void.iter().filter(|c| h.commits.iter().any(|x| x.id == **c && x.author == X)).count() >= 2) as usize;
+            own += (o.void.iter().filter(|c| h.commits.iter().any(|x| x.id == **c && x.signer == X)).count() >= 2) as usize;
         }
     }
     println!("held sets where X voids its own valid commits: {own}");

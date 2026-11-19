@@ -850,7 +850,7 @@ pub(crate) fn play_with(seed: u64, steps: &[Step], addenda: bool) -> Played {
     let collect = |lp: &mut LocalPeer, i: usize, seen: &mut BTreeSet<CommitId>, packs: &mut Vec<Package>, authors: &mut Vec<usize>, own: &mut Vec<Vec<CommitId>>| {
         for id in lp.peers[i].engine.commit_ids() {
             if seen.insert(id) {
-                let by = lp.peers[i].engine.header(&id).map(|h| h.author);
+                let by = lp.peers[i].engine.header(&id).map(|h| h.signer);
                 let author = ids.iter().position(|x| Some(*x) == by);
                 // from its author's node, which holds it whole: another may have dropped its parts
                 // on what it needs nothing of (another account's root)
@@ -1084,11 +1084,11 @@ pub(crate) fn play_with(seed: u64, steps: &[Step], addenda: bool) -> Played {
                 Some(by)
             }
             Step::PurgeAuthor { by, t, of } => {
-                let (t, actor) = (th(t), lp.peers[of].engine.me());
+                let (t, author) = (th(t), lp.peers[of].engine.me());
                 let mut m = Mutation::new();
                 let now = lp.peers[by].engine.now();
                 m.set(t, &osis_schema::core_types::PURGE, &now).unwrap();
-                let item = osis_commit::PurgeItem::Author { tid: t, ak: msg(), actor };
+                let item = osis_commit::PurgeItem::Author { tid: t, ak: msg(), author };
                 m.purge(item);
                 no = why(&lp.peers[by].commit(m));
                 Some(by)
@@ -2453,7 +2453,7 @@ fn purge_item(played: &Played, p: &Peer, item: &osis_commit::PurgeItem) -> Strin
             format!("commit {tid:?} {} {ts:?} {src:?}: {}", ak.as_str(), if named.is_empty() { "no pack this order holds".to_string() } else { named.join(" ") })
         }
         Aspect { tid, ak } => format!("aspect {tid:?} {} (every earlier delta)", ak.as_str()),
-        Author { tid, ak, actor } => format!("author {tid:?} {} by {actor:?} (every earlier delta)", ak.as_str()),
+        Author { tid, ak, author } => format!("author {tid:?} {} by {author:?} (every earlier delta)", ak.as_str()),
     }
 }
 
@@ -3670,7 +3670,7 @@ fn settled(mut h: Vec<Step>) -> Vec<Step> {
 /// a commit in the history).
 fn setup_grant(played: &Played, to: usize) -> usize {
     let decode = |i: usize| osis_commit::CommitBlob::decode(&played.packs[i].bytes).unwrap();
-    let account = played.authors.iter().position(|a| *a == to).map(|i| decode(i).header.author).unwrap();
+    let account = played.authors.iter().position(|a| *a == to).map(|i| decode(i).header.signer).unwrap();
     (0..played.base)
         .find(|&i| played.authors[i] == 0 && decode(i).header.aspects.iter().any(|a| a.tid == played.things[0] && a.ak.as_str() == "roles.0") && played.packs[i].bytes.windows(15).any(|w| w == account.as_bytes()))
         .unwrap()
