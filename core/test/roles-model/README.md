@@ -17,7 +17,7 @@ Independent of any osis crate: an oracle, never patched to match the implementat
 | `custody-exh` | 0 (the small family; 77,440 worlds, about 2,900 CPU-s) | below |
 | `forget` | 0 (one member-family world in 8, each with Bob's writes in or out of kept history, plus the attack family) | below, Own cover |
 | `digest` | 1,000,000 | notes/test-properties.md, Models |
-| `paths` | 400,000 (random worlds, about 3,400 CPU-s); `paths-exh` 157 (every 157th family world; the whole family, 3,276,800 worlds, about 30,000 CPU-s, by hand); `paths-tiny` 1,000,000; controls `paths-*` 8,000 (about 65 CPU-s each) | below, Paths |
+| `paths` | 400,000 (random worlds, about 4,800 CPU-s); `paths-exh` 157 (every 157th family world; the whole family, 4,915,200 worlds, about 53,000 CPU-s, by hand); `paths-tiny` 1,000,000; controls `paths-*` 8,000 (about 65 CPU-s each) | below, Paths |
 | `vouches` | 1,000,000 (random, 15 s); `vouches-exh` 0 (the small family, 385,236 worlds, 7 s); controls `vouches-off`, `vouches-no-rewrite`, the held-set writings `vouches-held` and `vouches-state`, and `vouches-exh-*` alike | below, Vouches |
 | `addenda-gaps` | 1,000,000 (random with admin-only content, 15 s); `addenda-gaps-exh` 0 (the gaps family, 2,829,888 worlds, 45 s); controls `-no-admin`, `-no-rewrite` on either | below, Addenda gaps |
 
@@ -151,19 +151,24 @@ An oracle of a design that is not built and not in spec: a write states its path
 
 | Run | Worlds | Failing checks |
 |---|---|---|
-| `-- 400000 paths` | 400,000 (checks: alike 96.6M, liveness 42.2M, admin 13.6M, safety 4.25M, one reading 3.06M, removal 2.27M, own path 1.29M, dispute 1.02M, untrusted 790,320, admin N 386,322, safety N 268,006, removal kept 143,497, void 141,440, quiet 94,514, own path N 56,460; at most 6 restarts in a reading) | 0 (counted: stray drops 0 of 2,270,980 trusting readings, 9,334 of 790,320 trusting nothing; silent under the spec's dispute rule 7,900; the audit over the applied writes reading otherwise 23,315, 1,795 with the same roles; accomplice 1,297) |
-| `-- 157 paths-exh` | 20,872 (alike 4.72M, liveness 2.44M, admin 715,404, one reading 160,718, safety 145,281, removal 119,234, own path 77,308, dispute 54,394, void 5,263, quiet 2,412; at most 4) | 0 (counted: stray 0 trusting, 122 of 41,484 trusting nothing; silent under the spec's rule 122; the applied audit otherwise 982; accomplice 33) |
-| `-- 1000000 paths-tiny` | 1,000,000 (684,507 `N`, 79,958 `T`, 235,535 `V`; void 41,866, unapplied N 1,458,726, unapplied T 111,235; at most 13 restarts) | 0 (counted: stray 245 `N`, 14 `T`, 73 `V`; unapplied V with an effect 1 of 377,833; A with no admin 1 `V`, read as `N`: `a_lowerings_check_does_not_read_what_its_drops_free`) |
-| `-- 8000 paths-no-void` / `paths-tiny-no-void` (a lowering whose drops take its authority applies) | 8,000 / 100,000 | liveness 10,583, safety 1,668, removal 1,080, own path 726, dispute 368, admin 267 / admin T 25 (counted: A with no admin 2,205 `N`, 1,128 `V`) |
-| `paths-listed` (the remover and vouchers name all they received) | 8,000 | liveness 28,282, safety 35,991, removal (void) 16,640, own path 15,280, dispute 5,502, admin 475, own path N 174, removal kept 5 |
-| `-- 8000 paths-exempt` (the held chain exempt from a lowering's drops) | 8,000 | safety 19,732, liveness 15,747, removal (void) 3,087, own path 1,748, dispute 1,060, safety N 304, admin 93, own path N 10, removal kept 4 |
-| `-- 8000 paths-key-order` (the writers keep in key order) | 8,000 | safety 36 |
-| `-- 8000 paths-audit-applied` (the audit over the applied writes) | 8,000 | own path N 366, safety N 88 (counted: silent under the spec's rule 666, adminless 56) |
-| `-- 8000 paths-any-edge` / `-timed` | 8,000 | liveness 9,652, own path 252, admin 154 / 142 (M's leave naming a timed B applies), own path N 16; the any-edge rule's reader split is by hand only (`a_reader_judges_the_named_last_admin_rule_as_a_member`), since every reader holds H's grant through R |
-| `-- 8000 paths-own-vouch` | 8,000 | safety 470, safety N 36 (Z holds T1 by X's own vouch along A2) |
-| `-- 8000 paths-once` | 8,000 | liveness 7,089 (a re-granted writer, a writer kept by a vouch) |
-| `-- 8000 paths-leave` | 8,000 | liveness 2,045, safety 474, safety N 64, removal kept 60, own path 12, own path N 2 |
+| `-- 400000 paths` | 400,000 (checks: alike 107.3M, liveness 47.2M, admin 13.7M, safety 4.18M, one reading 3.07M, removal 2.28M, purge 1.92M, own path 1.27M, dispute 1.02M, untrusted 791,818, admin N 387,754, safety N 274,002, void 115,813, removal kept 113,039, quiet 95,676, own path N 47,576; at most 7 restarts in a reading) | 0 (counted: stray drops 0 of 2,275,474 trusting readings, 8,112 of 791,818 trusting nothing; silent under the spec's dispute rule 6,896; the audit over the applied writes reading otherwise 20,378, 1,298 with the same roles; accomplice 1,091) |
+| `-- 157 paths-exh` | 31,308 (alike 7.90M, liveness 4.09M, admin 1.07M, one reading 241,333, safety 216,012, removal 179,043, purge 175,294, own path 115,403, dispute 82,142, void 6,567, quiet 3,886; at most 4) | 0 (counted: stray 0 trusting, 162 of 62,290 trusting nothing; silent under the spec's rule 162; the applied audit otherwise 1,218; accomplice 40) |
+| `-- 1000000 paths-tiny` | 1,000,000 (684,507 `N`, 79,958 `T`, 235,535 `V`; void 41,866, unapplied N 1,458,726, unapplied T 111,235; at most 13 restarts; tiny worlds hold no invite, purge or cover) | 0 (counted: stray 245 `N`, 14 `T`, 73 `V`; unapplied V with an effect 1 of 377,833; A with no admin 1 `V`, read as `N`: `a_lowerings_check_does_not_read_what_its_drops_free`) |
+| `-- 8000 paths-no-void` / `paths-tiny-no-void` (a lowering whose drops take its authority applies) | 8,000 / 100,000 | liveness 9,054, safety 1,360, removal 810, own path 576, dispute 274, admin 161 / admin T 25 (counted: A with no admin 2,205 `N`, 1,128 `V`) |
+| `paths-listed` (the remover and vouchers name all they received) | 8,000 | safety 34,301, liveness 27,793, removal (void) 16,478, own path 15,361, dispute 5,452, admin 366, own path N 160, purge 156 |
+| `-- 8000 paths-exempt` (the held chain exempt from a lowering's drops) | 8,000 | safety 16,475, liveness 12,828, removal (void) 2,371, own path 1,404, dispute 790, safety N 278, admin 37, purge 35, own path N 18 |
+| `-- 8000 paths-key-order` (the writers keep in key order) | 8,000 | safety 12 |
+| `-- 8000 paths-audit-applied` (the audit over the applied writes) | 8,000 | own path N 292, safety N 67 (counted: silent under the spec's rule 499, adminless 26) |
+| `-- 8000 paths-any-edge` / `-timed` | 8,000 | liveness 9,446, own path 146, admin 39 / 33 (M's leave naming a timed B applies), own path N 10, alike 1 / 0 (any-edge: RD3, trusting nothing and holding only T1's evidence, judges M's leave otherwise than N6; among members by hand, `a_reader_judges_the_named_last_admin_rule_as_a_member`) |
+| `-- 8000 paths-own-vouch` | 8,000 | safety 694, safety N 74 (Z holds T1 by X's own vouch along A2) |
+| `-- 8000 paths-once` | 8,000 | liveness 6,232 (a re-granted writer, a writer kept by a vouch) |
+| `-- 8000 paths-leave` | 8,000 | liveness 1,530, safety 454, safety N 64, removal kept 38, own path 18, removal 6, dispute 2, own path N 2 |
 | `-- 8000 paths-first-applied` | 8,000 | 0: finding 13 makes it moot |
-| `-- 8000 paths-design` (the first round's reading) | 8,000 | every property (alike 272,537, liveness 161,286, safety 24,995, removal, own path, dispute, safety N, admin, removal kept, own path N) |
+| `-- 8000 paths-design` (the first round's reading) | 8,000 | every property (alike 304,748, liveness 169,782, safety 24,630, removal 8,381, own path 7,920, dispute 3,702, admin 1,080, removal kept 824, safety N 551, own path N 68, purge 67) |
+| `-- 8000 paths-invite-role` (an invite grant needs only a role on its path's last edge) | 8,000 | safety 361, safety N 54 (Z invited at write through A2 beyond A2's invite read) |
+| `-- 8000 paths-admin-falls` (only a fall from admin is judged and audits) | 8,000 | safety N 54 (Z keeps read on T1 by X's invite through A2 after K removes X from A2: at trusting nodes the removal's seeds drop it) |
+| `-- 8000 paths-purge-any-path` (a purge request holds the author right wherever its path gives write) | 8,000 | purge 380 (X's purge by author A along [A2]) |
+| `-- 8000 paths-purge-contains` (a request by author matches every delta whose chain holds that author) | 8,000 | purge 31,827 |
+| `-- 8000 paths-copies` (a valid cover's copy shows a write whatever its own validity) | 8,000 | safety 1,047, safety N 234 (move 46: K compacts T1 before it holds the removal, carrying X's late write) |
 
-The rule at 400,000 random worlds is about 3,400 CPU-s, every 157th family world about 200, a control at 8,000 worlds about 65 (`tools/heavy --short`), 1,000,000 `tiny` worlds about 70; the whole family (not run under this rule) about 30,000.
+The rule at 400,000 random worlds is about 4,800 CPU-s, every 157th family world about 340, a control at 8,000 worlds about 100 with its shrinking (`tools/heavy --short`), 1,000,000 `tiny` worlds about 110; the whole family (4,915,200 worlds, not run under this rule) about 53,000.
