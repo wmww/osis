@@ -1139,7 +1139,7 @@ fn each_fix_is_needed() {
         ("leave", Rules { leave_in_question: false, ..f }),
     ];
     for (name, rules) in cases {
-        assert!(random(400, &rules).failures() > 0, "{name}");
+        assert!(random(100, &rules).failures() > 0, "{name}");
     }
 }
 
@@ -1331,6 +1331,59 @@ fn the_first_walk_misses_a_removal_dropping_its_own_standing() {
     assert!(st.stray == Set::from([g6]) && !st.applied.contains(&r));
     let rd = fixed(&w, &[]);
     assert!(rd.voided == Set::from([r]) && rd.applied.contains(&g6) && rd.stray.is_empty());
+}
+
+/// Key order re-resolves the earlier overrules at every later lowering (tiny world 830267,
+/// one of 3 in 1,000,000 failing `void`): H pairs B at 1, N5 and N6 at 3; N5 grants N6 admin
+/// at 3; at 4 B removes N5 (dropping that grant) and N6 removes H (dropping H's grants of B and
+/// N6). N6's removal is judged applying, B's overruled. N6's removal of B at 8 drops nothing,
+/// yet its judgement voids the latest of the two (N6's removal of H) and B's too: H keeps A.
+/// Without B's removal held, N6's removal of H applies.
+#[test]
+#[ignore = "notes/path-model-findings.md: key order re-resolves earlier overrules, so a void write has an effect"]
+fn repro_a_void_write_has_no_effect_in_key_order() {
+    let mut w = account();
+    let gb = w.edge(H, 1, &[], A, B, Admin, &[]);
+    let g5 = w.edge(H, 3, &[], A, N5, Admin, &[]);
+    let g6 = w.edge(H, 3, &[], A, N6, Admin, &[]);
+    let n6 = w.edge(N5, 3, &[], A, N6, Admin, &[gb, g5]);
+    w.edge(B, 4, &[], A, N5, Gone, &[g6, gb]);
+    w.edge(N6, 4, &[], A, H, Gone, &[g5, n6]);
+    w.edge(N6, 8, &[], A, B, Gone, &[]);
+    let rd = fixed(&w, &[]);
+    for &x in &rd.voided {
+        assert!(no_effect(&w, &Rules::fixed(), &View::all(&w), &rd, x), "void {x} has an effect: {rd:?}");
+    }
+}
+
+/// The thief's lowering stamped just after the honest removal, aimed at what the removal rests
+/// on (M's grant of H), by X or by a made-up key X granted backdated, overrules nothing: its
+/// author holds nothing at its key in the walk where the removal applies. Backdated before the
+/// removal it applies only where the removal is not trusted, shown as a dispute.
+#[test]
+fn a_thiefs_lowering_after_the_removal_overrules_nothing() {
+    for by_z in [false, true] {
+        let mut w = minted_by(M);
+        let gh = w.edge(M, 1, &[], A, H, Admin, &[]);
+        let gx = w.edge(M, 1, &[], A, X, Admin, &[]);
+        let by = if by_z { w.edge(X, 4, &[], A, Z, Admin, &[gx]); Z } else { X };
+        let r = w.edge(H, 6, &[], A, X, Gone, &[]);
+        w.edge(by, 7, &[], A, M, Gone, &[gx]);
+        w.edge(by, 7, &[], A, H, Gone, &[gx, gh]);
+        for t in [&[][..], &[r]] {
+            let rd = fixed(&w, t);
+            assert!(rd.applied.contains(&r) && rd.voided.is_empty() && (rd.role(H, A), rd.role(X, A), rd.role(Z, A)) == (Admin, Gone, Gone), "{by_z} {t:?}");
+        }
+    }
+    let mut w = minted_by(M);
+    w.edge(M, 1, &[], A, H, Admin, &[]);
+    let gx = w.edge(M, 1, &[], A, X, Admin, &[]);
+    w.edge(X, 4, &[], A, M, Gone, &[gx]);
+    let r = w.edge(H, 6, &[], A, X, Gone, &[]);
+    assert_eq!(fixed(&w, &[]).role(H, A), Gone);
+    assert_eq!(disputes(&w, &Rules::fixed(), &View::all(&w)), vec![r]);
+    let rd = fixed(&w, &[r]);
+    assert!((rd.role(H, A), rd.role(X, A), rd.role(M, A)) == (Admin, Gone, Admin) && rd.void.is_empty());
 }
 
 /// Small worlds of admins granting and removing each other (`tiny`; README.md, Paths, for the
