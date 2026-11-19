@@ -640,7 +640,7 @@ fn a_read_secret_boxed_beside_a_removal_goes_once_the_role_shows_sync_spec_permi
     w.run();
     w.partition(1, 2);
     w.write(2, |e| e.demote(&t0, &osis_engine::flows::Demotion { holder: alice, new: None, retain: None })).unwrap();
-    w.write(1, |e| e.grant(&t1, &alice, &edge(Role::Read))).unwrap();
+    w.write(1, |e| e.grant(&t1, &alice, &edge(Role::Sync))).unwrap();
     strong(&mut w, 0, None, t1, true);
     w.heal();
     w.run();
