@@ -17,7 +17,9 @@
 //!   on one target (`World::commit`) is one part per write, consecutive in key order, the part on
 //!   an edge of its own stated path last.
 //! - **Edges in time.** An edge gives its role at `ts` while its `until` is later; a write
-//!   giving no role at its own `ts` (none, or an `until` passed) is a removal.
+//!   giving no role at its own `ts` (none, or an `until` passed) is a removal. A write giving admin
+//!   with a later `until` on a standing admin edge (an **end**) is a grant: the last-admin rule
+//!   alone reads it (`Rules::until`; as a lowering it fails a required gate either way).
 //! - **Hops.** Consecutive members of [signer, A1..Ak, end] are joined by descent (the record
 //!   edges down the mint chain) where the first is a mint ancestor of the second, else by their
 //!   direct edge. The end is the thing written, except for an edge write whose path ends at the
@@ -309,6 +311,29 @@ pub struct Rules {
     /// by part like any (`World::commit`), so a single-use link redemption (an invite grant and its
     /// signer's own leave) applies.
     pub refuse_shapes: bool,
+    /// How a write putting an end on a standing admin edge (or shortening its end) is judged.
+    pub until: Until,
+}
+
+/// An **end**: a write giving an edge that gives admin at its `ts` a value giving admin until an
+/// earlier end (an `until` after its `ts`; the edge standing, or ending later). How it is judged
+/// (notes/path-model-findings.md 38).
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum Until {
+    /// The rule: a grant, no lowering; the last-admin rule alone reads it (taking a standing admin's
+    /// standing). It applies in a pass only where its path gives admin there.
+    Plain,
+    /// Variant (`-until-at-key`): a lowering judged at its key (verdict, audit, frontier, dispute
+    /// candidate), whose drops are the writes resting on its edge whose need there its value does
+    /// not meet at their own `ts`. Every write before it in key order is stamped before the end,
+    /// so it drops nothing, seeds nothing and its trust never changes a reading: its one effect is
+    /// the verdict, so it applies for good where its author's standing falls later.
+    AtKey,
+    /// Variant (`-until-past-end`, as the end "a lowering at the time it names" reads literally):
+    /// as `AtKey`, its drops and seeds also the held writes after it in key order resting on its
+    /// edge, stamped at or past the end, that its list does not name (whatever sets the edge
+    /// between). Fails liveness: drops only grow, so what it drops stays dropped after it falls.
+    PastEnd,
 }
 
 /// The dispute candidates (`disputes`): held edge writes of another holder's edge giving it below
@@ -350,6 +375,7 @@ impl Rules {
             candidates: Candidates::All,
             seeds_by_need: false,
             refuse_shapes: false,
+            until: Until::Plain,
         }
     }
     /// The design: every fix the notes state, a removal judged in the world its list makes
@@ -380,7 +406,14 @@ impl Rules {
             candidates: Candidates::Explicit,
             seeds_by_need: true,
             refuse_shapes: false,
+            until: Until::Plain,
         }
+    }
+    /// A lowering (`World::lowers`), and under `Until::AtKey`/`PastEnd` a write giving admin until
+    /// an end after its `ts` (`World::ends`): judged where it takes its edge down, a dispute
+    /// candidate, carrying a frontier.
+    pub fn lowering(&self, w: &World, i: Id) -> Option<Edge> {
+        w.lowers(i).or_else(|| if self.until == Until::Plain { None } else { w.ends(i) })
     }
 }
 
@@ -581,6 +614,14 @@ impl World {
     pub fn lowers(&self, i: Id) -> Option<Edge> {
         match &self.commits[i].kind {
             Kind::Edge { holder, role, until, finalize: false, .. } if alive((*role, *until), self.commits[i].ts) < Role::Admin => Some((*holder, self.commits[i].on)),
+            _ => None,
+        }
+    }
+    /// An edge write giving admin until an end after its own `ts` (no self-removal): it lowers
+    /// where its edge gave admin ending later, or standing.
+    pub fn ends(&self, i: Id) -> Option<Edge> {
+        match &self.commits[i].kind {
+            Kind::Edge { holder, role: Role::Admin, until: Some(u), finalize: false, .. } if *u > self.commits[i].ts && !self.leave(i) => Some((*holder, self.commits[i].on)),
             _ => None,
         }
     }
@@ -968,7 +1009,9 @@ fn walk(w: &World, rules: &Rules, v: &View, d0: &Set, vouched: &Vouched) -> Walk
         let mut cdrops = Set::new();
         let mut judged_here: Vec<Id> = vec![];
         // once a commit has taken effect: the pass ends where its parts dropped something
-        let mut taken = |p: &Pass, cdrops: &Set, judged_here: &[Id], cid: Id| -> Option<usize> {
+        // (a restart only where a drop is before `at`, the next commit: drops after it, past an
+        // end (`Until::PastEnd`), are skipped when reached)
+        let mut taken = |p: &Pass, cdrops: &Set, judged_here: &[Id], cid: Id, at: usize| -> Option<usize> {
             if cdrops.is_empty() {
                 return None;
             }
@@ -978,13 +1021,13 @@ fn walk(w: &World, rules: &Rules, v: &View, d0: &Set, vouched: &Vouched) -> Walk
                     self_taken.insert(cid);
                 }
             }
-            cdrops.iter().map(|j| pos[j]).min()
+            cdrops.iter().map(|j| pos[j]).min().filter(|&r| r < at)
         };
         for (k, &i) in order.iter().enumerate() {
             let cid = w.cid(i);
             if cur != Some(cid) {
                 if let Some(prev) = cur {
-                    if let Some(r) = taken(&p, &cdrops, &judged_here, prev) {
+                    if let Some(r) = taken(&p, &cdrops, &judged_here, prev, k) {
                         restart = Some(r);
                         break;
                     }
@@ -1000,7 +1043,7 @@ fn walk(w: &World, rules: &Rules, v: &View, d0: &Set, vouched: &Vouched) -> Walk
                 walked += 1;
             }
             let c = &w.commits[i];
-            let lowering = w.lowers(i).is_some() && !w.leave(i);
+            let lowering = rules.lowering(w, i).is_some() && !w.leave(i);
             let judged = if lowering { verdict.get(&i).copied() } else { None };
             // how it applies: by admin along its path (or its verdict), as an invite grant, or as
             // a finalize (spec/permissions.md §2, along its stated path)
@@ -1086,6 +1129,14 @@ fn walk(w: &World, rules: &Rules, v: &View, d0: &Set, vouched: &Vouched) -> Walk
             // an explicit write audits against the edge as restored, once, when judged: where it
             // takes the edge down (`any_fall`: in role or invite; else from admin)
             let falls = if rules.any_fall { restored > after || rinv > after_inv } else { restored == Role::Admin && after < Role::Admin };
+            // or it puts an end on admin (`Until`): the edge gives admin at its `ts`, standing or
+            // ending after the end it sets
+            let falls = falls || (rules.until != Until::Plain && explicit && w.ends(i).is_some() && alive(old, c.ts) == Role::Admin && old.1.is_none_or(|o| new.1.is_some_and(|u| u < o)));
+            // the value it sets as the write at `t` needs it (`Until::Plain`: as at its own `ts`)
+            let at = |t: u32| {
+                let a = if rules.until == Until::Plain { after } else { alive(new, t) };
+                (a, give_invite(a, *invite))
+            };
             let mut q = vec![];
             if judged.is_none() && explicit && falls {
                 let exempt = if rules.exempt_chain { chain(w, &v.held, i) } else { Set::new() };
@@ -1093,7 +1144,15 @@ fn walk(w: &World, rules: &Rules, v: &View, d0: &Set, vouched: &Vouched) -> Walk
                 // met and its new value does not, of another commit (no list can name its own)
                 let gone = |j: Id| {
                     let n = need(w, rules, j, e, p.invited.contains(&j) || !p.applied.contains(&j));
-                    w.cid(j) != c.cid && rests_on(w, rules, j, e) && !exempt.contains(&j) && !listed(w, v, vouched, i, j) && n.met(restored, rinv) && !n.met(after, after_inv)
+                    let (a, ai) = at(w.commits[j].ts);
+                    w.cid(j) != c.cid && rests_on(w, rules, j, e) && !exempt.contains(&j) && !listed(w, v, vouched, i, j) && n.met(restored, rinv) && !n.met(a, ai)
+                };
+                // `Until::PastEnd`: the held writes after it resting on its edge whose need there its
+                // value met at its own `ts` and does not at theirs (stamped at or past its end)
+                let past = |j: Id| {
+                    let n = need(w, rules, j, e, true);
+                    let (a, ai) = at(w.commits[j].ts);
+                    past_end(w, rules, i, j) && w.cid(j) != c.cid && rests_on(w, rules, j, e) && !exempt.contains(&j) && !listed(w, v, vouched, i, j) && n.met(after, after_inv) && !n.met(a, ai)
                 };
                 // in question: the applied writes before it (`audit_held`: the held ones not yet
                 // dropped or void) resting on its edge
@@ -1119,6 +1178,7 @@ fn walk(w: &World, rules: &Rules, v: &View, d0: &Set, vouched: &Vouched) -> Walk
                     }
                 }
                 q = before().into_iter().filter(|&j| gone(j)).collect();
+                q.extend(order[k + 1..].iter().copied().filter(|&j| !dropped.contains(&j) && past(j)));
                 verdict.insert(i, Verdict::Applied);
                 judged_here.push(i);
             }
@@ -1147,7 +1207,7 @@ fn walk(w: &World, rules: &Rules, v: &View, d0: &Set, vouched: &Vouched) -> Walk
         }
         if restart.is_none() {
             if let Some(prev) = cur {
-                restart = taken(&p, &cdrops, &judged_here, prev);
+                restart = taken(&p, &cdrops, &judged_here, prev, order.len());
             }
         }
         if let Some(r) = restart {
@@ -1170,13 +1230,23 @@ fn seeds(w: &World, rules: &Rules, v: &View, active: &Set, vouched: &Vouched) ->
         let after_inv = give_invite(after, *invite);
         let exempt = if rules.exempt_chain { chain(w, &v.held, r) } else { Set::new() };
         for &j in &v.held {
-            let unmet = || !rules.seeds_by_need || !need(w, rules, j, h, true).met(after, after_inv);
-            if w.edge_class(j) && w.key(j) < w.key(r) && w.cid(j) != w.cid(r) && rests_on(w, rules, j, h) && !exempt.contains(&j) && !listed(w, v, vouched, r, j) && unmet() {
+            // its value as `j` needs it (`Until::Plain`: as at its own `ts`)
+            let a = if rules.until == Until::Plain { after } else { alive((*role, *until), w.commits[j].ts) };
+            let n = || need(w, rules, j, h, true);
+            let unmet = || !rules.seeds_by_need || !n().met(a, give_invite(a, *invite));
+            // before it, or (`Until::PastEnd`) after it and past its end
+            let when = if w.key(j) < w.key(r) { unmet() } else { past_end(w, rules, r, j) && n().met(after, after_inv) && !n().met(a, give_invite(a, *invite)) };
+            if w.edge_class(j) && w.cid(j) != w.cid(r) && rests_on(w, rules, j, h) && !exempt.contains(&j) && !listed(w, v, vouched, r, j) && when {
                 d.entry(j).or_insert(r);
             }
         }
     }
     d
+}
+
+/// Under `Until::PastEnd`, `j` is stamped at or past the end lowering `r` sets.
+fn past_end(w: &World, rules: &Rules, r: Id, j: Id) -> bool {
+    rules.until == Until::PastEnd && w.ends(r).is_some() && matches!(w.commits[r].kind, Kind::Edge { until: Some(u), .. } if w.commits[j].ts >= u)
 }
 
 /// The vouches a walk applies after their removal, where it applies that removal too
@@ -1457,8 +1527,8 @@ fn unjustified(w: &World, rules: &Rules, v: &View, rd: &Reading) -> Set {
             let Some(&r) = rd.dropper.get(&j) else { return true };
             let seed = v.trust.contains(&r) && !rd.void.contains(&r);
             let Some(h) = w.sets(r) else { return true };
-            let lowering = seed || (w.lowers(r).is_some() && !w.leave(r));
-            !(rd.applied.contains(&r) && lowering && w.key(j) < w.key(r) && rests_on(w, rules, j, h) && !listed(w, v, &vouched, r, j))
+            let lowering = seed || (rules.lowering(w, r).is_some() && !w.leave(r));
+            !(rd.applied.contains(&r) && lowering && (w.key(j) < w.key(r) || past_end(w, rules, r, j)) && rests_on(w, rules, j, h) && !listed(w, v, &vouched, r, j))
         })
         .collect()
 }
@@ -1478,7 +1548,7 @@ pub fn disputes(w: &World, rules: &Rules, v: &View) -> Vec<Id> {
     let mut out = vec![];
     for &r in &v.held {
         let Kind::Edge { holder, .. } = &w.commits[r].kind else { continue };
-        if *holder == w.commits[r].signer || w.lowers(r).is_none() || (explicit && w.leave(r)) || v.trust.contains(&r) || rd.dropper.get(&r).is_some_and(|d| v.trust.contains(d)) {
+        if *holder == w.commits[r].signer || rules.lowering(w, r).is_none() || (explicit && w.leave(r)) || v.trust.contains(&r) || rd.dropper.get(&r).is_some_and(|d| v.trust.contains(d)) {
             continue;
         }
         let t = judge(w, rules, &v.clone().trusting_also(r));

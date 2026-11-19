@@ -114,8 +114,11 @@ pub struct Move {
 /// on its chain: no right); 46 withholds the removal from K until the settle and writes T1 after
 /// it, which K receives at once and compacts T1 carrying (an honest writer compacting before it
 /// holds the removal); 47 is X's own cover of T1, backdated, carrying its writes there; 48 is X
-/// removing H and B in one commit (spec/commits.md §2), listing nothing.
-pub const MOVES: usize = 49;
+/// removing H and B in one commit (spec/commits.md §2), listing nothing; 49 to 51 put an end date on
+/// an admin edge (`Until`): X ending H's admin at the removal, backdated; X ending H's admin a tick
+/// after its own `ts`, stamped after the theft; X ending A's admin on T1 at the removal through A2,
+/// backdated (the edge above the signer's on B's removal of A2 from T1, where B makes it).
+pub const MOVES: usize = 52;
 /// N5 grants H admin, standing or until just after the removal; N5 removes H; N5 demotes H; N5
 /// vouches against H's removal for X's role writes on A. Each stamped before X's removal of N5
 /// but the vouch.
@@ -123,7 +126,7 @@ pub const N5_MOVES: std::ops::Range<usize> = 30..35;
 /// The moves the thief may make at tick 5, heard by H and B before the removal (`Move::made` 5):
 /// X's removal of H, those aimed at the remover but through a made-up key, and N5's.
 pub fn early(kind: usize) -> bool {
-    matches!(kind, 11 | 23 | 24 | 27 | 28 | 29 | 35 | 48) || N5_MOVES.contains(&kind)
+    matches!(kind, 11 | 23 | 24 | 27 | 28 | 29 | 35 | 48 | 49 | 50 | 51) || N5_MOVES.contains(&kind)
 }
 
 /// What a world is built from: its setup, the thief's moves, and the receipts generator.
@@ -650,6 +653,18 @@ impl Sim {
             self.cover_by_k = Some((mv.made + 1, i));
             return;
         }
+        if (49..52).contains(&mv.kind) {
+            // an end date on the remover's admin (backdated to end at the removal, or stamped after
+            // the theft), or on A's admin on T1 above B's removal of A2 (where B makes it)
+            let c: (u32, &[Thing], Thing, Kind) = match mv.kind {
+                49 => (mv.ts.min(REMOVAL - 1), &[], A, grant(H, Role::Admin).until(REMOVAL)),
+                50 => (mv.ts.max(5), &[], A, grant(H, Role::Admin).until(mv.ts.max(5) + 1)),
+                _ if self.r3.is_none() => return,
+                _ => (mv.ts.min(REMOVAL - 1), &[A2], T1, grant(A, Role::Admin).until(REMOVAL)),
+            };
+            self.put((X, c.0, c.1, c.2, c.3), mv.made, rng, true);
+            return;
+        }
         if mv.kind == 48 {
             self.put_parts((X, mv.ts, &[], A, vec![grant(H, Role::None), grant(B, Role::None)]), mv.made, rng, true);
             return;
@@ -826,7 +841,7 @@ impl Sim {
     /// An early move of the thief (heard before the removal) whose write takes the remover's
     /// standing: a timed grant to H, a removal of H's granter listing nothing, a demotion of H.
     fn aims(&self, i: Id) -> bool {
-        self.thief.get(&i).is_some_and(|k| matches!(k, 24 | 26 | 28) || (*k == 27 && self.gh.is_some()))
+        self.thief.get(&i).is_some_and(|k| matches!(k, 24 | 26 | 28 | 49 | 50 | 51) || (*k == 27 && self.gh.is_some()))
     }
     /// A lowering of an edge a removal of X's own path stands on.
     fn lowers_remover(&self, i: Id) -> bool {
@@ -1123,7 +1138,7 @@ pub fn effects(w: &World, rules: &Rules, v: &View, rd: &Reading) -> Vec<Effect> 
             let shown = !seen && *shown.get_or_insert_with(|| !disputes(w, rules, v).is_empty());
             let kind = if parts.iter().any(|i| rd.voided.contains(i)) {
                 "void"
-            } else if parts.iter().any(|&i| w.lowers(i).is_some() && !w.leave(i)) {
+            } else if parts.iter().any(|&i| rules.lowering(w, i).is_some() && !w.leave(i)) {
                 "unapplied"
             } else {
                 "idle"
@@ -1153,7 +1168,7 @@ pub fn fight_among(w: &World, rules: &Rules, v: &View, rd: &Reading, parts: &[Id
     let mut views = vec![View { trust: Set::new(), ..v.clone() }, View { trust: Set::new(), ..less.clone() }];
     for &r in &v.held {
         let Kind::Edge { holder, .. } = &w.commits[r].kind else { continue };
-        if *holder == w.commits[r].signer || w.lowers(r).is_none() || w.leave(r) || v.trust.contains(&r) {
+        if *holder == w.commits[r].signer || rules.lowering(w, r).is_none() || w.leave(r) || v.trust.contains(&r) {
             continue;
         }
         views.push(v.clone().trusting_also(r));
@@ -1739,9 +1754,10 @@ pub fn family_run(rules: &Rules, stride: usize) -> Stats {
 /// writes before it, not the held ones), `-invite-role` (an invite grant needs only a role on its
 /// path's last edge), `-admin-falls` (only a fall from admin is judged and audits), `-purge-any-path`
 /// (a purge request holds the author right wherever its path gives write), `-purge-contains` (a
-/// request by author matches every delta whose chain holds that author); the variant `-facts`
-/// (a carried write judged by its own facts, not shown by a cover's copy: not the design). `-exh` runs the small family in place of
-/// random worlds.
+/// request by author matches every delta whose chain holds that author); the variants `-facts`
+/// (a carried write judged by its own facts, not shown by a cover's copy: not the design),
+/// `-until-at-key` and `-until-past-end` (an end date on admin as a lowering: `Until`, both failing
+/// a required gate). `-exh` runs the small family in place of random worlds.
 pub fn mode_rules(mode: &str) -> Option<Rules> {
     let f = Rules::fixed();
     let rest = mode.strip_prefix("paths").unwrap_or(mode);
@@ -1772,6 +1788,8 @@ pub fn mode_rules(mode: &str) -> Option<Rules> {
         "-all-candidates" => Rules { candidates: Candidates::All, ..f },
         "-seeds-all" => Rules { seeds_by_need: false, ..f },
         "-refuse-shapes" => Rules { refuse_shapes: true, ..f },
+        "-until-at-key" => Rules { until: Until::AtKey, ..f },
+        "-until-past-end" => Rules { until: Until::PastEnd, ..f },
         _ => return None,
     })
 }
@@ -1883,10 +1901,9 @@ pub enum Honesty {
 
 /// Tiny world `i` (`n` from 3 to 12 writes; `tiny_invites` or `tiny`) and its view: every commit
 /// held; trusting nothing, or (every third world) one held lowering.
-pub fn tiny_world(i: u64, mode: TinyMode) -> Tiny {
+pub fn tiny_world(i: u64, mode: TinyMode, rules: &Rules) -> Tiny {
     let n = 3 + (i % 10) as usize;
     let mut w = if mode.invites { tiny_invites(i, n) } else { tiny(i, n) };
-    let rules = Rules::fixed();
     let mut recv: Vec<Vec<Id>> = (0..w.commits.len()).map(|k| (0..w.cid(k)).collect()).collect();
     if mode.honest != Honesty::None {
         let mut rng = Rng::thread(0x4e57, i as usize);
@@ -1909,16 +1926,16 @@ pub fn tiny_world(i: u64, mode: TinyMode) -> Tiny {
             }
             for &r in &parts {
                 recv[r] = got.clone();
-                if w.lowers(r).is_some() && !w.leave(r) {
-                    let l = writers_list(&w, &rules, r, &got);
+                if rules.lowering(&w, r).is_some() && !w.leave(r) {
+                    let l = writers_list(&w, rules, r, &got);
                     let f = w.cut(&l);
                     w.edit(r, |k| k.listing(f));
                 }
             }
             let honest = mode.honest == Honesty::Lists || {
-                let lows: Set = parts.iter().copied().filter(|&r| w.lowers(r).is_some() && !w.leave(r)).collect();
+                let lows: Set = parts.iter().copied().filter(|&r| rules.lowering(&w, r).is_some() && !w.leave(r)).collect();
                 let v = View { held: got.iter().chain(&parts).copied().collect(), leaves: None, trust: lows };
-                let rd = judge(&w, &rules, &v);
+                let rd = judge(&w, rules, &v);
                 parts.iter().all(|r| rd.applied.contains(r)) && rd.void.is_empty()
             };
             if honest {
@@ -1932,6 +1949,7 @@ pub fn tiny_world(i: u64, mode: TinyMode) -> Tiny {
         }
     }
     let mut v = View::all(&w);
+    // (a write below admin: the same worlds under every `Until`)
     let lows: Vec<Id> = (0..w.commits.len()).filter(|&k| w.lowers(k).is_some()).collect();
     if i % 3 == 0 && !lows.is_empty() {
         v.trust.insert(lows[(i / 3) as usize % lows.len()]);
@@ -1978,7 +1996,7 @@ pub fn writers_list(w: &World, rules: &Rules, r: Id, recv: &[Id]) -> Vec<Id> {
 /// Whether every lowering's list (on the commits resting on its edge) is the writers' rule's
 /// over what its writer received: computed from the generated history, never from a node.
 pub fn lists_honest(w: &World, rules: &Rules, recv: &[Vec<Id>]) -> bool {
-    (0..w.commits.len()).filter(|&r| w.lowers(r).is_some() && !w.leave(r)).all(|r| {
+    (0..w.commits.len()).filter(|&r| rules.lowering(w, r).is_some() && !w.leave(r)).all(|r| {
         let names = |l: &[Id], j: Id| l.iter().any(|&c| w.names(c, j));
         let rest = resting(w, r, 0..w.commits.len());
         let listed: Vec<Id> = rest.iter().copied().filter(|&j| w.in_frontier(r, j)).collect();
@@ -2142,7 +2160,7 @@ pub fn tiny_run(n: u64, rules: &Rules, mode: TinyMode) -> TinyStats {
 pub fn tiny_run_from(start: u64, n: u64, rules: &Rules, mode: TinyMode) -> TinyStats {
     crate::on_every_core(|th, threads, st: &mut TinyStats| {
         for i in (start + th as u64..start + n).step_by(threads) {
-            tiny_check(i, &tiny_world(i, mode), rules, st);
+            tiny_check(i, &tiny_world(i, mode, rules), rules, st);
         }
     })
 }
@@ -2150,7 +2168,7 @@ pub fn tiny_run_from(start: u64, n: u64, rules: &Rules, mode: TinyMode) -> TinyS
 fn tiny_print(st: &TinyStats, rules: &Rules, mode: TinyMode) {
     println!("tiny {mode:?}: {} worlds, checks {:?}, noted {:?}, failing {:?}, most rounds {}", st.worlds, st.checked, st.noted, st.fails, st.most_rounds);
     for (k, (n, i, what)) in &st.first {
-        let t = tiny_world(*i, mode);
+        let t = tiny_world(*i, mode, rules);
         let prop = *k;
         let fails = |t: &Tiny| {
             let mut s = TinyStats::default();

@@ -1169,16 +1169,16 @@ fn random_worlds_hold_large() {
     assert_holds(&st, &format!("OSIS_ROLES_START={start}"));
 }
 
-/// Every 281st world of the small family (21,428 worlds, about 299 CPU-s; `-- 0 paths-exh` runs all
-/// of them by hand): a stride coprime with every dimension's size (2, 4, 5, 6, 49;
+/// Every 301st world of the small family (21,228 worlds, about 300 CPU-s; `-- 0 paths-exh` runs all
+/// of them by hand): a stride coprime with every dimension's size (2, 4, 5, 6, 52;
 /// `family_on_every_core` refuses one that is not), so every value of every dimension is reached
 /// and none is tied to another (an even stride keeps `h_t1` false in every world): each thief
-/// move about 437 times, stamped before and after the removal alike, each setup field's values
+/// move about 408 times, stamped before and after the removal alike, each setup field's values
 /// in equal shares.
 #[test]
 #[ignore = "property"]
 fn small_family_holds_large() {
-    let st = family_run(&Rules::fixed(), 281);
+    let st = family_run(&Rules::fixed(), 301);
     st.print("paths family", &Rules::fixed());
     assert_holds(&st, "family");
 }
@@ -2432,10 +2432,9 @@ fn idle_gate(w: &World, trust: &[Id]) -> Vec<Id> {
 /// again at 4; H removes N5 at 6, listing nothing. Held, B's grant gives H admin at 6: H's removal is
 /// judged, its drops take N5's commit (H's edge is its record edge again), so B's grant applies
 /// nowhere in the end: H admin, N5 and B none. Without B's grant H's admin ended at 4 and its removal
-/// has no right: N5 and B admins, H none. No dispute either way (H's removal applies; N5's timed
-/// grant to H gives admin at its `ts`, no lowering). Accepted: a fight among admins each holding
-/// admin at its write, read alike everywhere; N5's `until` on H's standing admin as a lowering at
-/// the time it names (notes/a1-spec/README.md, Open 13) is expected to show it.
+/// has no right: N5 and B admins, H none. No dispute either way: H's removal applies; N5's end on H
+/// is a grant (`Until::Plain`). As a lowering judged at its key (`Until::AtKey`) the same: its drops
+/// are none (nothing before it is stamped past its end), so trusting it changes nothing.
 #[test]
 fn a_grant_applying_nowhere_gives_a_lowering_its_verdict() {
     let mut w = account();
@@ -2443,35 +2442,187 @@ fn a_grant_applying_nowhere_gives_a_lowering_its_verdict() {
     w.commit(N5, 2, &[], A, vec![Kind::set(H, Admin).until(4), Kind::set(B, Admin).relying(Z)]);
     let b = w.push(B, 4, &[], A, Kind::set(H, Admin).listing(w.cut(&[1, 2])));
     w.push(H, 2, &[], A, Kind::set(N5, Admin).listing(w.cut(&[b])));
-    let rd = fixed(&w, &[]);
-    assert!(rd.applied.contains(&r) && !rd.applied.contains(&b) && (rd.role(H, A), rd.role(N5, A), rd.role(B, A)) == (Admin, Gone, Gone), "{rd:?}");
-    let without = judge(&w, &Rules::fixed(), &View::all(&w).without(&[b]));
-    assert!(!without.applied.contains(&r) && (without.role(H, A), without.role(N5, A), without.role(B, A)) == (Gone, Admin, Admin), "{without:?}");
-    assert_eq!(idle_gate(&w, &[]), vec![b]);
+    for rules in [Rules::fixed(), Rules { until: Until::AtKey, ..Rules::fixed() }] {
+        let v = View::all(&w);
+        let rd = judge(&w, &rules, &v);
+        assert!(rd.applied.contains(&r) && !rd.applied.contains(&b) && (rd.role(H, A), rd.role(N5, A), rd.role(B, A)) == (Admin, Gone, Gone), "{rd:?}");
+        let without = judge(&w, &rules, &v.clone().without(&[b]));
+        assert!(!without.applied.contains(&r) && (without.role(H, A), without.role(N5, A), without.role(B, A)) == (Gone, Admin, Admin), "{without:?}");
+        let fx: Vec<Id> = effects(&w, &rules, &v, &rd).into_iter().filter(|e| e.observed && !e.shown).map(|e| e.id).collect();
+        assert_eq!(fx, vec![b]);
+    }
 }
 
-/// Finding 36 (accepted, counted; honest writers: each list the writers' rule's over what its
-/// writer received, each clock past what it saw): H grants B admin at 5; B sets H's admin to end at
-/// 8 at 6 and grants Z admin at 7; Z, having received all three, grants H admin again at 8; H,
-/// having received only Z's grant, removes B at 12 listing nothing (nothing it received rests on
-/// B's edge). Held, Z's grant gives H admin at 12: H's removal drops B's writes, Z's grant among
-/// them, and H's edge is its record edge again: B and Z none, H admin. Without it H's admin ended
-/// at 8: B and Z admins, H none. Nobody is hostile and no dispute is shown. Accepted as 35.
-#[test]
-fn with_honest_writers_a_grant_applying_nowhere_decides_a_fight() {
+/// Finding 36's world (honest writers: each list the writers' rule's over what its writer received,
+/// each clock past what it saw): H grants B admin at 5; B sets H's admin to end at 8 at 6, listing
+/// H's grant of B, and grants Z admin at 7; Z, having received all three, grants H admin again at
+/// 8; H, having received only Z's grant, removes B at 12 listing nothing.
+fn b_ends_h(end: Kind) -> (World, Id, Id, Vec<Vec<Id>>) {
     let mut w = account();
     w.push(H, 5, &[], A, Kind::set(B, Admin));
-    w.push(B, 6, &[], A, Kind::set(H, Admin).until(8));
+    w.push(B, 6, &[], A, end.listing(w.cut(&[0])));
     w.push(B, 7, &[], A, Kind::set(Z, Admin));
     let g = w.push(Z, 8, &[], A, Kind::set(H, Admin));
     let r = w.push(H, 12, &[], A, Kind::set(B, Gone));
-    let recv = vec![vec![], vec![0], vec![0, 1], vec![0, 1, 2], vec![0, 3]];
-    assert!(lists_honest(&w, &Rules::fixed(), &recv));
+    (w, g, r, vec![vec![], vec![0], vec![0, 1], vec![0, 1, 2], vec![0, 3]])
+}
+
+/// Finding 36 (accepted, counted): in `b_ends_h`, held, Z's grant gives H admin at 12: H's removal
+/// drops B's writes, Z's grant among them, and H's edge is its record edge again: B and Z none, H
+/// admin. Without it H's admin ended at 8: B and Z admins, H none. Nobody is hostile and no dispute
+/// is shown. As a lowering judged at its key (`Until::AtKey`) B's end drops nothing: the same. With
+/// B removing H at 6 in place of the end date the world reads the same, unshown: the class is a
+/// re-grant by the lowerer's own grantee that lets the lowered admin's counter-lowering apply and
+/// then falls with its drops, end date or not.
+#[test]
+fn with_honest_writers_a_grant_applying_nowhere_decides_a_fight() {
+    for rules in [Rules::fixed(), Rules { until: Until::AtKey, ..Rules::fixed() }] {
+        for end in [Kind::set(H, Admin).until(8), Kind::set(H, Gone)] {
+            let (w, g, r, recv) = b_ends_h(end);
+            let v = View::all(&w);
+            assert!(lists_honest(&w, &rules, &recv));
+            let rd = judge(&w, &rules, &v);
+            assert!(rd.applied.contains(&r) && !rd.applied.contains(&g) && (rd.role(H, A), rd.role(B, A), rd.role(Z, A)) == (Admin, Gone, Gone), "{rd:?}");
+            let without = judge(&w, &rules, &v.clone().without(&[g]));
+            assert!(!without.applied.contains(&r) && (without.role(H, A), without.role(B, A), without.role(Z, A)) == (Gone, Admin, Admin), "{without:?}");
+            let fx: Vec<Id> = effects(&w, &rules, &v, &rd).into_iter().filter(|e| e.observed && !e.shown).map(|e| e.id).collect();
+            assert_eq!(fx, vec![g]);
+            assert!(disputes(&w, &rules, &v).is_empty());
+            // a fight among parties each holding admin at its write in some reading
+            assert!(fight_among(&w, &rules, &v, &rd, &[g]).illegit.is_empty());
+        }
+    }
+}
+
+/// The variant `Until::PastEnd` (an end's drops also the writes after it resting on its edge stamped
+/// past the end, whatever sets the edge between) shows finding 36's world: B's end drops H's removal
+/// (stamped 12, past 8, through H's edge), so Z's grant applies and B, Z and H stay admins, and
+/// H's removal is shown as a dispute. With B removing H in place of the end date it changes nothing:
+/// an end date takes more than a removal, a write made under a later re-grant included.
+#[test]
+fn an_end_dropping_writes_past_it_shows_the_honest_fight() {
+    let rules = Rules { until: Until::PastEnd, ..Rules::fixed() };
+    let (w, g, r, _) = b_ends_h(Kind::set(H, Admin).until(8));
+    let v = View::all(&w);
+    let rd = judge(&w, &rules, &v);
+    assert!(rd.dropped.contains(&r) && rd.applied.contains(&g) && (rd.role(H, A), rd.role(B, A), rd.role(Z, A)) == (Admin, Admin, Admin), "{rd:?}");
+    assert_eq!(disputes(&w, &rules, &v), vec![r]);
+    let (w, g, _, _) = b_ends_h(Kind::set(H, Gone));
+    let rd = judge(&w, &rules, &View::all(&w));
+    assert!(!rd.applied.contains(&g) && (rd.role(H, A), rd.role(B, A)) == (Admin, Gone));
+}
+
+/// Why `Until::PastEnd` is no rule (it fails liveness in the story, an honest admin's writes lost
+/// at the trusting nodes, and `quiet` in this honest world): H grants N5 and B admin at 1; N5 sets
+/// H's admin to end at 4 at 2; B, not having received it, removes N5 at 3 listing nothing; H, not
+/// having received N5's end either, grants Z admin at 5. Judged at its key N5's end drops H's grant
+/// (stamped past 4, through H's edge); B's removal then drops N5's end, H's edge is standing again,
+/// but the grant stays dropped (drops only grow): Z none at nodes trusting nothing, B's removal shown
+/// as a dispute in an honest history. Trusting B's removal, its seeds take N5's end first: Z admin.
+/// Under the rule, and as a lowering judged at its key (`Until::AtKey`), N5's end drops nothing and
+/// Z is admin everywhere.
+#[test]
+fn an_end_dropping_writes_past_it_keeps_its_drops_after_it_falls() {
+    let mut w = account();
+    w.push(H, 1, &[], A, Kind::set(N5, Admin));
+    w.push(H, 1, &[], A, Kind::set(B, Admin));
+    w.push(N5, 2, &[], A, Kind::set(H, Admin).until(4));
+    let rb = w.push(B, 3, &[], A, Kind::set(N5, Gone));
+    let g = w.push(H, 5, &[], A, Kind::set(Z, Admin));
+    let past = Rules { until: Until::PastEnd, ..Rules::fixed() };
+    let v = View::all(&w);
+    let rd = judge(&w, &past, &v);
+    assert!(rd.stray == Set::from([g]) && (rd.role(H, A), rd.role(Z, A)) == (Admin, Gone), "{rd:?}");
+    assert_eq!(disputes(&w, &past, &v), vec![rb]);
+    assert_eq!(judge(&w, &past, &v.clone().trusting(&[rb])).role(Z, A), Admin);
+    for rules in [Rules::fixed(), Rules { until: Until::AtKey, ..Rules::fixed() }] {
+        for t in [vec![], vec![rb]] {
+            let rd = judge(&w, &rules, &v.clone().trusting(&t));
+            assert!(rd.applied.contains(&g) && rd.role(Z, A) == Admin, "{rd:?}");
+        }
+        assert!(disputes(&w, &rules, &v).is_empty());
+    }
+}
+
+/// Why `Until::AtKey` is not the rule (`tiny`: A left with no standing admin at nodes trusting
+/// nothing in 13 of 1,000,000 worlds against 3, with no dispute shown more): H grants B and N6
+/// admin at 2; N6 removes H at 3 listing H's grant of N6; B, in one commit at 3 (before N6's in key
+/// order), sets H's and N6's admin to end at 5. Judged at its key B's commit applies (both ends
+/// pass the last-admin rule on B's standing edge); N6's removal, H's edge timed, applies and drops
+/// H's grant of B. Restarted, B holds nothing, yet its ends keep their verdict and apply: H and B
+/// none, N6 timed, A with no standing admin. As grants (the rule) B's ends apply nowhere once B
+/// holds nothing: N6 stays a standing admin. The idle-write counts it lowers (47 to 35) are such
+/// ends applying for good, not disputes shown.
+#[test]
+fn an_end_judged_at_its_key_applies_for_good_and_can_strand_the_thing() {
+    let mut w = account();
+    let gb = w.push(H, 2, &[], A, Kind::set(B, Admin));
+    let gn = w.push(H, 2, &[], A, Kind::set(N6, Admin));
+    let r = w.push(N6, 3, &[], A, Kind::set(H, Gone).listing(w.cut(&[gn])));
+    let ends = w.commit(B, 3, &[], A, vec![Kind::set(H, Admin).until(5).listing(w.cut(&[gb, gn])), Kind::set(N6, Admin).until(5).listing(w.cut(&[gb]))]);
+    let v = View::all(&w);
+    let at_key = judge(&w, &Rules { until: Until::AtKey, ..Rules::fixed() }, &v);
+    assert!(at_key.applied.is_superset(&Set::from([r, ends[0], ends[1]])) && at_key.dropped.contains(&gb), "{at_key:?}");
+    assert!(!at_key.roles.iter().any(|(e, r)| e.1 == A && *r == Admin), "{at_key:?}");
     let rd = fixed(&w, &[]);
-    assert!(rd.applied.contains(&r) && !rd.applied.contains(&g) && (rd.role(H, A), rd.role(B, A), rd.role(Z, A)) == (Admin, Gone, Gone), "{rd:?}");
-    let without = judge(&w, &Rules::fixed(), &View::all(&w).without(&[g]));
-    assert!(!without.applied.contains(&r) && (without.role(H, A), without.role(B, A), without.role(Z, A)) == (Gone, Admin, Admin), "{without:?}");
-    assert_eq!(idle_gate(&w, &[]), vec![g]);
-    // a fight among parties each holding admin at its write in some reading
-    assert!(fight_among(&w, &Rules::fixed(), &View::all(&w), &rd, &[g]).illegit.is_empty());
+    assert!(rd.applied.contains(&r) && !rd.applied.contains(&ends[0]) && (rd.role(H, A), rd.role(B, A), rd.role(N6, A)) == (Gone, Gone, Admin), "{rd:?}");
+}
+
+
+/// Why `Until::AtKey` is not the rule: the required gate it fails (`illegit gains V`, `tiny` with
+/// honest lists, 1 in 1,000,000; world 888396 shrunk, trusting N5's removal of N6, which ends void).
+/// N6, admin by H's grant at 2, in one commit at 3 gives B admin until 5 and N5 admin; N5 grants Z
+/// admin at 5; Z, at 5, grants B admin and then sets B's admin to end at 7; N6 removes N5 at 5.
+/// Judged at its key Z's end (B standing by Z's grant) applies; N6's removal drops N5's grant of Z;
+/// restarted, Z holds nothing and its grant applies nowhere, but its end keeps its verdict and,
+/// lowering nothing as restored (B admin), applies: B admin until 7, not 5. Without Z's grant held
+/// the end lengthens B's end, takes nothing and has no right: B until 5. So an idle write of a party
+/// that held its right in no reading changes roles, unshown. (The verdict's raise check, finding 27,
+/// reads roles only.) Under the rule both of Z's writes apply nowhere and nothing idle has an effect.
+#[test]
+fn an_end_judged_at_its_key_lets_an_idle_write_lengthen_a_grant() {
+    let mut w = account();
+    w.push(N5, 5, &[], A, Kind::set(Z, Admin));
+    let g = w.push(Z, 5, &[], A, Kind::set(B, Admin).relying(H).listing(w.cut(&[0])));
+    w.push(H, 2, &[], A, Kind::set(N6, Admin).relying(N6).listing(w.cut(&[0, 1])));
+    let end = w.push(Z, 5, &[], A, Kind::set(B, Admin).until(7));
+    w.push(N6, 5, &[], A, Kind::set(N5, Gone).relying(Z));
+    let r = w.push(N5, 7, &[], A, Kind::set(N6, Gone));
+    w.commit(N6, 3, &[], A, vec![Kind::set(B, Admin).until(5), Kind::set(N5, Admin).listing(w.cut(&[0, 1, 2, 3, 5]))]);
+    let v = View::all(&w).trusting(&[r]);
+    let at_key = Rules { until: Until::AtKey, ..Rules::fixed() };
+    let rd = judge(&w, &at_key, &v);
+    assert!(rd.void == Set::from([r]) && rd.applied.contains(&end) && !rd.applied.contains(&g) && rd.state[&(B, A)] == (Admin, Some(7)), "{rd:?}");
+    let without = judge(&w, &at_key, &v.clone().without(&[g]));
+    assert!(!without.applied.contains(&end) && without.state[&(B, A)] == (Admin, Some(5)), "{without:?}");
+    let fx: Vec<Id> = effects(&w, &at_key, &v, &rd).into_iter().filter(|e| e.observed && !e.shown).map(|e| e.id).collect();
+    assert_eq!(fx, vec![g]);
+    assert_eq!(fight_among(&w, &at_key, &v, &rd, &[g]).gains, Set::from([g]));
+    let rd = judge(&w, &Rules::fixed(), &v);
+    assert!(!rd.applied.contains(&end) && !rd.applied.contains(&g) && rd.state[&(B, A)] == (Admin, Some(5)), "{rd:?}");
+    assert!(effects(&w, &Rules::fixed(), &v, &rd).iter().all(|e| !e.observed));
+}
+
+
+/// Why `Until::AtKey` is not the rule: the story's `own path N` fails (62 of 200,000 worlds, thief
+/// move 26, shrunk): X, stolen, backdates a grant of admin to a made-up key Z at 1, and Z sets H's
+/// admin to end at 7 at 2; H removes X at 6 listing nothing, relying on B. At a node trusting
+/// nothing, judged at its key Z's end applies (Z admin by X's grant then); H's removal applies and
+/// drops X's grant of Z; restarted, Z holds nothing, yet its end keeps its verdict: H's admin ends
+/// at 7, a made-up key's write taking the remover's standing for good. Under the rule Z's end
+/// applies nowhere once Z holds nothing: H admin. Trusting H's removal, its seeds take X's grant of
+/// Z first and Z's end never applies, either way.
+#[test]
+fn an_end_judged_at_its_key_lets_a_made_up_key_end_the_removers_admin() {
+    let (mut w, gx, _) = paired();
+    let gz = w.push(X, 1, &[], A, Kind::set(Z, Admin));
+    let end = w.push(Z, 2, &[], A, Kind::set(H, Admin).until(7));
+    let r = w.push(H, 6, &[], A, Kind::set(X, Gone).relying(B).listing(w.cut(&[gx])));
+    let at_key = Rules { until: Until::AtKey, ..Rules::fixed() };
+    let rd = judge(&w, &at_key, &View::all(&w));
+    assert!(rd.applied.is_superset(&Set::from([r, end])) && rd.dropped.contains(&gz) && rd.role(H, A) == Gone, "{rd:?}");
+    for (rules, t) in [(Rules::fixed(), vec![]), (Rules::fixed(), vec![r]), (at_key, vec![r])] {
+        let rd = judge(&w, &rules, &View::all(&w).trusting(&t));
+        assert!(rd.applied.contains(&r) && !rd.applied.contains(&end) && rd.role(H, A) == Admin, "{rd:?}");
+    }
 }
