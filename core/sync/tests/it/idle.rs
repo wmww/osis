@@ -73,11 +73,11 @@ fn sum(costs: &[(&'static str, u64)], named: &[&str]) -> u64 {
 // member's standing (followed per record, across its connections: spec/sync-opens.md §6), no
 // certificate blobs (S's sources read only where a blob loses to another), no register plan or
 // lacking count at a store (kept per record, the connection read only where a step is to go or
-// an entry lacks by the record's rows): as many at n as at 10n shared sync IDs. Not yet flat
-// (issues/many-sync-ids-cost.md): store rows.
+// an entry lacks by the record's rows), and no thing enters the sync set: as many at n as at
+// 10n shared sync IDs. Not yet flat (issues/many-sync-ids-cost.md): store rows.
 #[test]
 fn an_idle_reconnect_judges_no_member_again_spec_sync_2() {
-    const READER: &[&str] = &["status: stranded", "inbox: register judged", "opens standing", "perm: roles walked", "read: certificate blobs"];
+    const READER: &[&str] = &["status: stranded", "inbox: register judged", "opens standing", "perm: roles walked", "read: certificate blobs", "sync set: entered"];
     const STORE: &[&str] = &["status: stranded", "opens standing", "perm: roles walked", "read: certificate blobs", "inbox: register judged", "status: lacking"];
     let at = |n| {
         let mut w = things(n);

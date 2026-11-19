@@ -742,3 +742,29 @@ fn a_deposit_only_step_waits_for_a_seed_held_pending_spec_permissions_3() {
     let again = lp.peers[0].engine.issue_due_step(&s).unwrap().expect("A's own step");
     assert_eq!(step.keys.deposit, again.keys.deposit, "B's step is at the newest deposit key");
 }
+
+/// "sync: things entered" over one link followed after `n` others, the sync set's rows followed
+/// before and after (`Engine::follow`).
+fn entered_by_one_more_link(n: usize) -> u64 {
+    let (mut lp, ps) = people(2);
+    let target = thing_of(&mut lp, 0, ps[0]);
+    let spec = osis_engine::flows::LinkSpec { target, role: Role::Read, until: None, peers: Vec::new(), single_use: false };
+    let links: Vec<osis_blob::ShareLink> = (0..=n).map(|_| lp.peers[0].engine.create_link(&ps[0], &spec).unwrap().0).collect();
+    let e = &mut lp.peers[1].engine;
+    for l in &links[..n] {
+        e.follow_link(l).unwrap();
+    }
+    e.follow().unwrap();
+    osis_base::costs::take();
+    e.follow_link(&links[n]).unwrap();
+    e.follow().unwrap();
+    osis_base::costs::take().into_iter().filter(|(k, ..)| *k == "sync: things entered").map(|(.., c)| c).sum()
+}
+
+// spec/sync-set.md §2 (Cost: work in proportion to what entered): a link followed enters the
+// sync set alone, however many other links are followed: the same at n and 10n.
+#[test]
+fn a_link_followed_enters_alone_spec_sync_set_2() {
+    let (small, large) = (entered_by_one_more_link(2), entered_by_one_more_link(20));
+    assert!(large <= small, "entered: {small} after 2 links, {large} after 20");
+}

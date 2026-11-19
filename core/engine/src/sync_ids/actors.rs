@@ -225,6 +225,11 @@ impl FollowedLinks {
         self.by_k.contains_key(k)
     }
 
+    /// A cursor over the links followed from now on, each as it is followed (`Feed`).
+    pub(crate) fn followed_feed(&self) -> osis_base::memo::Feed<Tid> {
+        self.by_k.feed()
+    }
+
     /// Every link followed: a read of all of them.
     pub(crate) fn all(&self) -> &BTreeMap<Tid, (SyncId, Tid)> {
         &self.by_k
@@ -253,7 +258,7 @@ impl FollowedLinks {
             return None;
         }
         let old = self.remove(&k);
-        self.by_k.insert(k, (s, lt));
+        self.by_k.update_fed(k, |_| Some((s, lt)));
         Self::add(&mut self.by_actor, lt, k);
         Self::add(&mut self.by_sync, s, k);
         self.keys.insert(lt, l);

@@ -38,16 +38,18 @@ impl Engine {
     }
 
     /// The things that may have entered `sync_things` since `f`'s last read (its first: every
-    /// one): each that entered the sync set's walk since, and the links being
-    /// redeemed (few). Leaving needs no feed: `in_sync_things` moves.
+    /// one): each that entered the sync set's walk since, and each link followed since (a link
+    /// stays followable from its follow until K is made as no link's, so one followed before
+    /// that left enters again only by being followed again). Leaving needs no feed:
+    /// `in_sync_things` moves.
     pub(crate) fn things_entered(&mut self, f: &mut super::ThingsFeed) -> Result<Vec<Tid>> {
         let Some(at) = f.0.as_mut() else {
             let ix = &self.core.ix;
-            f.0 = Some(super::Entered { held: ix.closure.synced_feed() });
+            f.0 = Some(super::Entered { held: ix.closure.synced_feed(), links: self.core.followed_links.followed_feed() });
             return Ok(self.sync_things()?.iter().copied().collect());
         };
         let mut out = at.held.added();
-        out.extend(self.core.followed_links.all().keys().copied());
+        out.extend(at.links.added());
         osis_base::costs::count("sync: things entered", out.len() as u64);
         Ok(out)
     }

@@ -268,15 +268,8 @@ pub struct SyncSet {
 
 /// The sync set's rows' cursor over the things that may have entered `Engine::sync_things`
 /// (`Engine::things_entered`); unstarted until its first read.
-#[derive(Default)]
+#[derive(Clone, Default)]
 pub(crate) struct ThingsFeed(Option<Entered>);
-
-impl Clone for ThingsFeed {
-    // a copy reads everything again at its first read
-    fn clone(&self) -> ThingsFeed {
-        ThingsFeed(None)
-    }
-}
 
 impl std::fmt::Debug for ThingsFeed {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -284,9 +277,13 @@ impl std::fmt::Debug for ThingsFeed {
     }
 }
 
-/// `ThingsFeed`'s cursor: over the things the sync set's walk reaches.
+/// `ThingsFeed`'s cursor: over the things the sync set's walk reaches. A copy reads on from
+/// where the original stands (inside a world copy, the copy's logs).
+#[derive(Clone)]
 pub(crate) struct Entered {
     held: osis_base::memo::Feed<Tid>,
+    /// The links followed (`FollowedLinks::followed_feed`).
+    links: osis_base::memo::Feed<Tid>,
 }
 
 /// How this node syncs one thing of N's closure (spec/sync-set.md §2).
