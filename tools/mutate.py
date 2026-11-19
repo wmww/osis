@@ -107,7 +107,8 @@ def main(argv):
             if x.lstrip().startswith(".") or x.rstrip().endswith(";"):
                 sys.exit(f"mutate: {x!r} is not an expression ({'a method-call suffix' if x.lstrip().startswith('.') else 'a statement'}): "
                          "with several mutations each OLD and NEW is wrapped as one; include the receiver, drop the `;`, or give it alone")
-    mutated, subs = dict(texts), []
+    # each OLD's span in its file as read; spans of one file must be disjoint
+    spans = {}
     for i, (path, old, new) in enumerate(muts):
         if len(muts) == 1:
             sub = new
@@ -115,15 +116,23 @@ def main(argv):
             # the variable read once per site: a read per call slows hot paths several-fold
             on = f'{{ static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new(); *ON.get_or_init(|| std::env::var_os("{VAR}").is_some_and(|v| v == "{i}")) }}'
             sub = f"(if {on} {{ {new} }} else {{ {old} }})"
-        if mutated[path].count(old) != 1:
-            sys.exit(f"mutate: {old!r} overlaps another mutation of {path}")
-        mutated[path] = mutated[path].replace(old, sub)
-        subs.append((path, sub))
-    # each mutation's lines in its mutated file, to name the one a build error points into
-    sites = []
-    for path, sub in subs:
-        lo = mutated[path][: mutated[path].index(sub)].count("\n") + 1
-        sites.append((path, lo, lo + sub.count("\n")))
+        at = texts[path].index(old)
+        spans.setdefault(path, []).append((at, at + len(old), sub, i))
+    mutated, sites = dict(texts), [None] * len(muts)
+    for path, ss in spans.items():
+        ss.sort()
+        if any(x[1] > y[0] for x, y in zip(ss, ss[1:])):
+            sys.exit(f"mutate: two mutations of {path} overlap")
+        text, parts, prev = texts[path], [], 0
+        for lo, hi, sub, i in ss:
+            parts.append(text[prev:lo])
+            # its lines in the mutated file, to name the mutation a build error points into
+            first = "".join(parts).count("\n") + 1
+            sites[i] = (path, first, first + sub.count("\n"))
+            parts.append(sub)
+            prev = hi
+        parts.append(text[prev:])
+        mutated[path] = "".join(parts)
     rec = tempfile.mkdtemp(prefix="mutate-bins-")
     saved = {}
     for path in texts:

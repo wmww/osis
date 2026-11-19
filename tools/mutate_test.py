@@ -47,7 +47,7 @@ with tempfile.TemporaryDirectory(prefix="mutate-test-") as d:
         json.dump([exe], f)
     src = os.path.join(d, "x.rs")
     with open(src, "w") as f:
-        f.write("fn f() -> bool { a < b && zz }\n")
+        f.write("fn f() -> bool { a < b && c }\n")
 
     def mutate(*a, **e):
         return subprocess.Popen([sys.executable, MUTATE, *a], env=dict(env, **e), cwd=d, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
@@ -55,23 +55,28 @@ with tempfile.TemporaryDirectory(prefix="mutate-test-") as d:
     # queued behind a hold, the runs are the copies built for the mutations, whatever the worktree builds meanwhile
     lock = os.open(os.path.join(d, "osis-gate.lock"), os.O_RDWR | os.O_CREAT, 0o666)
     fcntl.flock(lock, fcntl.LOCK_EX)
-    p = mutate(src, "a < b", "a <= b", src, "zz", "!zz", "--", "-p", "x", "--", "--exact", "t", MUTATE_HEAVY="1", MUTATE_OUT=os.path.join(d, "out"))
+    p = mutate(src, "a < b", "a <= b", src, "c", "!c", "--", "-p", "x", "--", "--exact", "t", MUTATE_HEAVY="1", MUTATE_OUT=os.path.join(d, "out"))
     for line in p.stderr:
         if "waiting for" in line:
             break
-    check("file put back before the run", open(src).read(), "fn f() -> bool { a < b && zz }\n")
+    check("file put back before the run", open(src).read(), "fn f() -> bool { a < b && c }\n")
     with open(exe, "w") as f:
         f.write("#!/bin/sh\necho rebuilt\n")
     fcntl.flock(lock, fcntl.LOCK_UN)
     out, _ = p.communicate()
     check("rows from the copies", (p.returncode, [l for l in out.splitlines() if not l.startswith("   limit ")]),
-          (0, ["| `%s`: `a < b` -> `a <= b` | none |" % src, "| `%s`: `zz` -> `!zz` | t |" % src]))
+          (0, ["| `%s`: `a < b` -> `a <= b` | none |" % src, "| `%s`: `c` -> `!c` | t |" % src]))
     check("cargo's env and args reach the copy", open(os.path.join(d, "out", "mutant-0.log")).read().splitlines()[1], "cases=32 args=--exact t")
     check("no target selected: --tests", json.load(open(env["FAKE_ARGS"])), ["test", "--message-format=json", "--tests", "-p", "x", "--", "--exact", "t"])
     check("copies removed", [x for x in os.listdir(d) if x.startswith(("mutate-bins-", "osis-heavy-"))], [])
 
-    # a method-call suffix or a statement among several mutations: refused before any build
+    # an OLD found in another's wrapper text is no overlap (`c` above); overlapping spans are refused
     os.remove(env["FAKE_ARGS"])
+    p = mutate(src, "a < b", "a <= b", src, "b && c", "b || c", "--", "--lib")
+    _, err = p.communicate()
+    check("overlapping spans", (p.returncode, "overlap" in err, os.path.exists(env["FAKE_ARGS"])), (1, True, False))
+
+    # a method-call suffix or a statement among several mutations: refused before any build
     for old in (".then_with(g)", "x;"):
         with open(src, "w") as f:
             f.write(f"fn f() {{ a{old} zz }}\n")
