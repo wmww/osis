@@ -1,0 +1,3 @@
+# engine-cost
+- The brief named b85c80e1d~1 as "before the certificates rule"; b85c80e1d is a bookkeeping commit, the rule's code is 262bce1b4..29d435edd (before: e4f7fe96c). Check `git show --stat` of a named commit before building at its parent.
+- `tools/bin-at` per binary rebuilds most of the tree each call (it returns to the branch between calls, so the next checkout touches everything again): 3 binaries at 4 revisions is about 12 builds of 5 min. One spare worktree (`wt claim <name> <rev>`), one checkout per revision and one `cargo test -p A -p B --no-run --message-format=json` copying every executable, did it in 4.
