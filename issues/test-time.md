@@ -37,7 +37,7 @@ The reference graph rebuild required fewer and faster default tests than its bas
 Rejected: `opt-level` 2 for the workspace (3-10%); fake or memoized crypto in tests (debug and release differ, every forgery test must opt out).
 
 ## Patterns
-- **A harness loop that cannot tell progress from a repeat**: a pending commit handed again comes back `Pending` every round (issues/pending-copy-rearrival-cost.md), so a hand-until-quiet loop counting non-duplicates ran its whole bound (osis-sync `history::reference`: sims 969 to 141 G, differential 683 to 174, flows 288 to 78).
+- **A harness loop that cannot tell progress from a repeat**: a pending commit handed again comes back `Pending` every round, so a hand-until-quiet loop counting non-duplicates ran its whole bound (osis-sync `history::reference`: sims 969 to 141 G, differential 683 to 174, flows 288 to 78).
 - **Per-receiver work that is per-sender**: `LocalPeer` built every sender package once per receiver's sync-ID set, each decoded again to trim (40-50% of the two rotation properties); build once per sender state, trim per set.
 - **A flip-prone input read before the answer needs it**: read it last, on the paths whose answer depends on it; a small map read whole where one key is asked: index it by what is asked.
 - **Derived values whose inputs move far more often than their answers**: keep them as `Cutoff` rows or narrow their reads (n readers of an aggregate over n inputs record O(n²) reads per change).

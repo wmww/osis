@@ -257,3 +257,111 @@ fn a_commit_that_waited_for_its_record_was_received_when_it_came_spec_commits_4(
     assert!(e1.frontier(&scope, between).unwrap().commits.contains(&d), "received when it came");
     assert!(!e1.frontier(&scope, before).unwrap().commits.contains(&d));
 }
+
+/// Peer 0 mints W under X (C) and writes W's `REG` and `GONE` in one commit (D): (W, C, D's
+/// bytes, D).
+fn minted_two(lp: &mut LocalPeer, x: Tid) -> (Tid, CommitId, Vec<u8>, CommitId) {
+    let e0 = &mut lp.peers[0].engine;
+    let rec = e0.thing_record(x, None);
+    let mut m = Mutation::new();
+    let w = m.create(rec);
+    m.op(x, &ct::HOLDS, PathOp { path: vec![], op: Op::Add(Value::Strong(w)) }).unwrap();
+    let c = e0.commit(m).unwrap().unwrap();
+    let mut m = Mutation::new();
+    m.set(w, &REG, &Value::Str("d".into())).unwrap();
+    m.set(w, &crate::common::GONE, &Value::Str("g".into())).unwrap();
+    let d = e0.commit(m).unwrap().unwrap();
+    (w, c, e0.package(&d).unwrap().unwrap().bytes, d)
+}
+
+/// `bytes` (a commit) with its parts `keep` picks, the rest left out.
+fn parts_of(bytes: &[u8], keep: impl Fn(usize) -> bool) -> Vec<u8> {
+    let mut b = osis_commit::CommitBlob::decode(bytes).unwrap();
+    b.parts.retain(|p| keep(p.ai));
+    b.encode()
+}
+
+/// The work of `f` by counter: examinations, signature checks, store rows written and read.
+fn work(f: impl FnOnce()) -> [u64; 4] {
+    osis_base::costs::take();
+    f();
+    let c = osis_base::costs::take();
+    let n = |k: &str| c.iter().filter(|x| x.0 == k).map(|x| x.2).sum::<u64>();
+    [n("examine"), n("examine: signature"), n("store rows written"), n("store rows read")]
+}
+
+// spec/commits.md §4 Pending storage, spec/permissions.md §5.1 Received: D (two parts) pends for
+// W's record, first carried by fire F with one part. Handed again as it is, each arrival costs a
+// lookup, the same at 1 and 10 arrivals: no examination, no signature check, no row written. A
+// copy forging that part (same ID, other bytes) is judged, the stored copy kept; one bringing the
+// other part is judged and takes it, its entry recorded as a carrier, after which the whole copy
+// handed again costs a lookup too. F goes and D stays for its entry; once C comes, D applies with
+// both parts, received when it first came.
+#[test]
+fn a_pending_commit_handed_again_costs_a_lookup_unless_it_brings_something_spec_commits_4() {
+    let (mut lp, x, inbox) = base();
+    let f = fire(&mut lp, inbox, "f");
+    let (w, c, b, d) = minted_two(&mut lp, x);
+    let first = osis_commit::CommitBlob::decode(&b).unwrap().parts[0].ai;
+    let half = parts_of(&b, |ai| ai == first);
+    let before = lp.peers[1].engine.now();
+    lp.advance(1_000);
+    assert!(lp.peers[1].engine.ingest_valid(&half, Some(Carrier::Fire(f))).unwrap().is_some());
+    assert!(lp.peers[1].engine.pends(&d));
+    lp.advance(10_000);
+    let between = lp.peers[1].engine.now();
+    lp.advance(10_000);
+    let again = |lp: &mut LocalPeer, bytes: &[u8], n: usize| {
+        work(|| {
+            for _ in 0..n {
+                let out = lp.peers[1].engine.ingest_valid(bytes, Some(Carrier::Fire(f))).unwrap();
+                assert!(matches!(out, Some(osis_engine::Ingested::Pending(..))), "{out:?}");
+            }
+        })
+    };
+    let (one, ten) = (again(&mut lp, &half, 1), again(&mut lp, &half, 10));
+    assert_eq!(one[..3], [0, 0, 0], "a copy bringing nothing is not examined, checked or written: {one:?}");
+    assert_eq!(ten.map(|x| x / 10), one, "per arrival, flat: {one:?} {ten:?}");
+    assert_eq!(ten.map(|x| x % 10), [0; 4]);
+
+    // a forged part: same ID, other bytes
+    let mut forged = osis_commit::CommitBlob::decode(&half).unwrap();
+    let last = forged.parts[0].delta.len() - 1;
+    forged.parts[0].delta[last] ^= 1;
+    let forged = forged.encode();
+    let judged = work(|| {
+        let _ = lp.peers[1].engine.ingest_valid(&forged, Some(Carrier::Fire(f)));
+    });
+    assert!(judged[0] > 0, "a forged copy is judged: {judged:?}");
+    assert!(lp.peers[1].engine.pends(&d));
+
+    // the other part, by an entry
+    let judged = work(|| {
+        lp.peers[1].receive(&b, Vec::new()).unwrap();
+    });
+    assert!(judged[0] > 0, "a copy bringing a part is judged: {judged:?}");
+    assert_eq!(lp.peers[1].engine.pending_carriers(&d), vec![Carrier::Entry, Carrier::Fire(f)]);
+    let whole = |lp: &mut LocalPeer, n: usize| {
+        work(|| {
+            for _ in 0..n {
+                lp.peers[1].receive(&b, Vec::new()).unwrap();
+            }
+        })
+    };
+    let (one, ten) = (whole(&mut lp, 1), whole(&mut lp, 10));
+    assert_eq!(one[..3], [0, 0, 0], "{one:?}");
+    assert_eq!(ten.map(|x| x / 10), one, "{one:?} {ten:?}");
+
+    fires_go(&mut lp, &[f]);
+    assert!(lp.peers[1].engine.pends(&d), "kept by its entry");
+    crate::flows::send_carried(&mut lp, 0, 1, &[c]);
+    pass_end(&mut lp.peers[1].engine);
+    let author = lp.peers[0].engine.me();
+    let e1 = &mut lp.peers[1].engine;
+    assert!(!e1.pends(&d) && e1.header(&d).is_some(), "D applied");
+    assert_eq!(e1.get(&w, &ak("t:reg.0")).unwrap(), Some(Value::Str("d".into())), "the stored part, not the forged one");
+    assert_eq!(e1.get(&w, &ak("t:gone.0")).unwrap(), Some(Value::Str("g".into())), "the part a later copy brought");
+    let scope = osis_perm::DemotionScope { roles: std::collections::BTreeMap::from([(author, BTreeSet::from([w]))]), content: std::collections::BTreeMap::from([(author, BTreeSet::from([w]))]) };
+    assert!(e1.frontier(&scope, between).unwrap().commits.contains(&d), "received when it first came");
+    assert!(!e1.frontier(&scope, before).unwrap().commits.contains(&d));
+}

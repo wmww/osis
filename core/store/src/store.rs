@@ -635,6 +635,7 @@ impl Transaction<'_> {
         if same {
             return Ok(());
         }
+        osis_base::costs::count_scoped("store rows written", 1);
         self.st.s.row(key, true);
         if mem || self.mem.o.cat.contains_key(key) {
             debug_assert!(self.durable_get(key)?.is_none(), "a memory row over a durable one");
@@ -654,6 +655,7 @@ impl Transaction<'_> {
         let removed = btree::remove(self, c, key, shred.on())? || removed;
         // removing an absent row changes nothing: no reader moves
         if removed {
+            osis_base::costs::count_scoped("store rows written", 1);
             self.st.s.row(key, false);
         }
         Ok(removed)

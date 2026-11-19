@@ -854,6 +854,46 @@ fn ingest_blob(tx: &mut Tx<'_>, blob: CommitBlob, origin: Origin) -> Result<Inge
     }
 }
 
+/// Takes commit `blob` (ID `id`) as a carrier brings it, not as a re-examination: a copy that
+/// brings nothing (`rearrival`) costs a lookup, else `ingest_blob` judges it. `blobs`: blobs new
+/// here came with it (pages, header lists), which may be what it waits for.
+fn arrive(tx: &mut Tx<'_>, id: &CommitId, blob: CommitBlob, blobs: bool) -> Result<Ingested> {
+    if !blobs && let Some(out) = rearrival(tx, id, &blob)? {
+        return Ok(out);
+    }
+    ingest_blob(tx, blob, Origin::Remote)
+}
+
+/// What a copy of commit `id` held or pending here returns when it brings nothing: each part it
+/// carries is held as its body (an applied commit's) or is the stored pending copy's part byte
+/// for byte, under the stored copy's signatures, that copy not past its expiry (`expire_stored`).
+/// Ingesting it would end where it began (the stored copy, its receipt, its wait); a carrier it
+/// came by is still noted (`carriers::taken`, after). `None`: it may bring something, so
+/// `ingest_blob` judges it. Bytes decide, not a part's hash in the header: a pending commit may
+/// await the record whose dedup secret that hash is under, and a part differing from the stored
+/// one (forged, or the true one where junk came first) is judged (`with_pending`). A parked
+/// copy has its own path (`park`), and a memory commit is `memory_gate`'s: an arrival brings a room.
+fn rearrival(tx: &mut Tx<'_>, id: &CommitId, blob: &CommitBlob) -> Result<Option<Ingested>> {
+    if blob.header.ephemeral.is_some() {
+        return Ok(None);
+    }
+    let held: BTreeSet<usize> = tx.core.ix.commits.get(id).map(|m| blob.parts.iter().map(|p| p.ai).filter(|ai| matches!(m.hold.get(*ai), Some(crate::engine::Hold::Body { .. }))).collect()).unwrap_or_default();
+    let Some(reason) = tx.core.ix.pending.get(id).cloned() else {
+        let applied = tx.core.ix.commits.contains_key(id) && held.len() == blob.parts.len();
+        return Ok(applied.then_some(Ingested::Duplicate(*id)));
+    };
+    let Some(stored) = tx.txn.get_pending(id)? else { return Ok(None) };
+    if stored.kind != osis_store::PendingKind::Pending {
+        return Ok(None);
+    }
+    let Ok(old) = CommitBlob::decode_stored(&stored.bytes) else { return Ok(None) };
+    if old.sigs != blob.sigs || old.header.expires.is_some_and(|t| t <= tx.now().0) {
+        return Ok(None);
+    }
+    let same = blob.parts.iter().all(|p| held.contains(&p.ai) || old.part(p.ai).is_some_and(|x| x.delta == p.delta));
+    Ok(same.then_some(Ingested::Pending(*id, reason)))
+}
+
 fn ingest_class(tx: &mut Tx<'_>, mut blob: CommitBlob, origin: Origin) -> Result<Ingested> {
     let id = blob.id();
     // the stored copy as the clock leaves it, ticks or not
@@ -1435,7 +1475,7 @@ impl Engine {
             for b in blobs {
                 let (c, parts): (CommitId, Vec<usize>) = (b.id(), b.parts.iter().map(|p| p.ai).collect());
                 hold_rotation_lists(tx, &b, &[])?;
-                match ingest_blob(tx, b, Origin::Remote) {
+                match arrive(tx, &c, b, false) {
                     Ok(Ingested::Parked(_)) => refused = true,
                     Ok(Ingested::Applied(_)) if !crate::sync_ids::judged_valid(tx.core, &c, &parts) => refused = true,
                     Ok(Ingested::Applied(_)) => applied = true,
@@ -1447,7 +1487,7 @@ impl Engine {
                     return Err(Error::Misuse("refused"));
                 }
             }
-            let out = match ingest_blob(tx, fire, Origin::Remote) {
+            let out = match arrive(tx, &id, fire, false) {
                 Ok(o) => o,
                 Err(e) if e.class() == ErrorClass::Local => return Err(e),
                 Err(_) => Ingested::Parked(id),
@@ -1525,7 +1565,7 @@ impl Engine {
         let mut rotation = None;
         let r = self.run(|tx| {
             rotation = hold_rotation_lists(tx, &blob, &[])?;
-            let out = ingest_blob(tx, blob, Origin::Remote)?;
+            let out = arrive(tx, &id, blob, false)?;
             refused = refuse(tx.core, &id, &ais, &out);
             if refused {
                 // rolled back
@@ -1646,7 +1686,7 @@ impl Engine {
             match decoded {
                 Ok(blob) => {
                     let id = blob.id();
-                    let out = ingest_blob(tx, blob, Origin::Remote)?;
+                    let out = arrive(tx, &id, blob, fresh)?;
                     crate::sync_ids::opened::persist(tx, &id)?;
                     // an entry carries it (a memory commit's copy is the memory lane's)
                     if !memory {
@@ -1656,7 +1696,10 @@ impl Engine {
                 }
                 Err(e) if e.class() == ErrorClass::Parked => {
                     let id = raw_id(bytes)?;
-                    park(tx, &id, bytes, Vec::new(), peer, None)?;
+                    // the same bytes parked again bring nothing
+                    if !tx.core.ix.pending.contains_key(&id) || tx.txn.get_pending(&id)?.is_none_or(|p| p.bytes != bytes) {
+                        park(tx, &id, bytes, Vec::new(), peer, None)?;
+                    }
                     if !memory {
                         carriers::taken(tx, &id, Some(carriers::Carrier::Entry))?;
                     }
