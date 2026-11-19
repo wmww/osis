@@ -346,6 +346,11 @@ impl Engine {
     /// A held commit with every blob it references that this node holds (pages, chunks and
     /// tree nodes its deltas link, header-list trees), for relaying.
     pub fn package(&mut self, id: &CommitId) -> Result<Option<Package>> {
+        Ok(self.package_with_record(id)?.map(|x| x.0))
+    }
+
+    /// `package`, with its commit decoded (the record cache's; a pending copy's bytes decoded).
+    pub fn package_with_record(&mut self, id: &CommitId) -> Result<Option<(Package, Arc<CommitBlob>)>> {
         // a held record decoded once (the record cache), not encoded and decoded again
         let held = {
             let id = *id;
@@ -355,10 +360,11 @@ impl Engine {
             })?
         };
         let Some((bytes, record)) = held else { return Ok(None) };
-        let mut ids: BTreeSet<BlobId> = match record {
-            Some(b) => self.body_links_of(&b)?.blobs,
-            None => self.body_links(&bytes)?.blobs,
+        let record = match record {
+            Some(b) => b,
+            None => Arc::new(CommitBlob::decode(&bytes)?),
         };
+        let mut ids: BTreeSet<BlobId> = self.body_links_of(&record)?.blobs;
         ids.extend(self.header_list_blobs(id)?);
         let mut blobs = Vec::new();
         for b in ids {
@@ -367,7 +373,7 @@ impl Engine {
             }
         }
         let lists = self.list_blob(id, None)?.into_iter().collect();
-        Ok(Some(Package { id: *id, bytes, blobs, lists }))
+        Ok(Some((Package { id: *id, bytes, blobs, lists }, record)))
     }
 
     /// Held commit `id` as the sync IDs `synced` carry it from here (`sync_bodies`, the rule
@@ -392,12 +398,7 @@ impl Engine {
 
     /// Held commit `id` holding its parts `parts` alone (`package`; a header alone for none).
     pub fn package_of_parts(&mut self, id: &CommitId, parts: &BTreeSet<usize>) -> Result<Option<Package>> {
-        let Some(mut pk) = self.package(id)? else { return Ok(None) };
-        let b = CommitBlob::decode(&pk.bytes)?;
-        if b.parts.iter().any(|p| !parts.contains(&p.ai)) {
-            pk.bytes = osis_commit::rewrite(&b, |ai| !parts.contains(&ai)).encode();
-        }
-        Ok(Some(pk))
+        Ok(self.package_with_record(id)?.map(|(pk, b)| holding(&pk, &b, parts)))
     }
 
     /// The parts of held commit `id` this node sends a node syncing `synced` (`LocalPeer::
@@ -527,6 +528,10 @@ pub struct LocalPeer {
 /// What `sync_all` need not do again (`Engine::point`: nothing a delivery reads moved).
 #[derive(Clone, Default)]
 struct SyncMemo {
+    /// Per sender: every commit it sends whole (`packages`), at a point of its engine; each set
+    /// of sync IDs trims these (`sent`), so a sender's packages are built once per state, not
+    /// once per receiver.
+    whole: HashMap<usize, (ReadPoint, Arc<Vec<Whole>>)>,
     /// Per sender and sync IDs synced: its packages under them, with a hash of each, at a point
     /// of its engine.
     sent: HashMap<(usize, Vec<osis_base::SyncId>), (ReadPoint, Hashed)>,
@@ -548,6 +553,26 @@ type Sent = (Package, u64, Vec<Tid>);
 
 /// A sender's packages (`Sent`).
 type Hashed = Arc<Vec<Sent>>;
+
+/// A commit a sender holds, packaged whole (`Engine::package_with_record`): its record and the
+/// package's hash beside it.
+type Whole = (Sent, Arc<CommitBlob>);
+
+/// A hash of what a package delivers.
+fn hash_of(pk: &Package) -> u64 {
+    let mut h = DefaultHasher::new();
+    (&pk.id, &pk.bytes, &pk.blobs).hash(&mut h);
+    h.finish()
+}
+
+/// `pk` (whose commit is `b`) holding its parts `parts` alone: a header alone for none.
+fn holding(pk: &Package, b: &CommitBlob, parts: &BTreeSet<usize>) -> Package {
+    let mut out = pk.clone();
+    if b.parts.iter().any(|p| !parts.contains(&p.ai)) {
+        out.bytes = osis_commit::rewrite(b, |ai| !parts.contains(&ai)).encode();
+    }
+    out
+}
 
 impl LocalPeer {
     /// `n` fresh nodes, each its own account, seeds derived from `seed`, all at wall time `t`,
@@ -680,16 +705,30 @@ impl LocalPeer {
     /// Every commit `from` holds (applied), packaged, but those on its node root alone (local: no
     /// sync ID carries them, spec/sync-set.md §1).
     pub fn packages(&mut self, from: usize) -> Result<Vec<Package>> {
-        let Some(p) = self.peers.get_mut(from) else { return Ok(Vec::new()) };
+        Ok(self.whole(from)?.iter().map(|w| w.0.0.clone()).collect())
+    }
+
+    /// `packages(from)` with each commit's record, hash and things, kept while `from`'s engine
+    /// stands (`SyncMemo::whole`).
+    fn whole(&mut self, from: usize) -> Result<Arc<Vec<Whole>>> {
+        let Some(p) = self.peers.get_mut(from) else { return Ok(Arc::default()) };
+        let at = p.engine.point();
+        if let Some((_, v)) = self.memo.whole.get(&from).filter(|(w, _)| *w == at) {
+            return Ok(v.clone());
+        }
         let root = p.engine.node_root();
         let ids: Vec<CommitId> = p.engine.commit_ids().into_iter().filter(|id| !p.engine.header(id).is_some_and(|h| h.aspects.iter().all(|a| Some(a.tid) == root))).collect();
         let mut out = Vec::new();
         for id in ids {
-            if let Some(pk) = p.engine.package(&id)? {
-                out.push(pk);
+            if let Some((pk, b)) = p.engine.package_with_record(&id)? {
+                let on = b.header.aspects.iter().map(|a| a.tid).collect();
+                let n = hash_of(&pk);
+                out.push(((pk, n, on), b));
             }
         }
-        Ok(out)
+        let v = Arc::new(out);
+        self.memo.whole.insert(from, (at, v.clone()));
+        Ok(v)
     }
 
     /// What `from` sends a node syncing `t`'s sync IDs (as `from` holds them) alone:
@@ -724,16 +763,7 @@ impl LocalPeer {
     /// under its holder's sync ID, pairing), and a node keeps of them only what it needs
     /// (spec/commits.md §5 What a held thing needs).
     pub fn packages_under(&mut self, from: usize, synced: &BTreeSet<osis_base::SyncId>) -> Result<Vec<Package>> {
-        let Some(p) = self.peers.get_mut(from) else { return Ok(Vec::new()) };
-        let root = p.engine.node_root();
-        let ids: Vec<CommitId> = p.engine.commit_ids().into_iter().filter(|id| !p.engine.header(id).is_some_and(|h| h.aspects.iter().all(|a| Some(a.tid) == root))).collect();
-        let mut out = Vec::new();
-        for id in ids {
-            if let Some(parts) = p.engine.sent_parts(&id, synced)? {
-                out.extend(p.engine.package_of_parts(&id, &parts)?);
-            }
-        }
-        Ok(out)
+        Ok(self.packages_hashed(from, synced)?.iter().map(|s| s.0.clone()).collect())
     }
 
     /// `pk`, a commit peer `from` holds, holding only the parts it sends a node syncing `synced`
@@ -745,12 +775,7 @@ impl LocalPeer {
             return Ok(pk.clone());
         }
         let parts = p.engine.sent_parts(&pk.id, synced)?.unwrap_or_default();
-        let b = CommitBlob::decode(&pk.bytes)?;
-        let mut out = pk.clone();
-        if b.parts.iter().any(|x| !parts.contains(&x.ai)) {
-            out.bytes = osis_commit::rewrite(&b, |ai| !parts.contains(&ai)).encode();
-        }
-        Ok(out)
+        Ok(holding(pk, &CommitBlob::decode(&pk.bytes)?, &parts))
     }
 
     /// Delivers to `to`, whole, the commits of `from`'s chain certificates for `t`
@@ -847,14 +872,19 @@ impl LocalPeer {
         if let Some((_, v)) = self.memo.sent.get(&key).filter(|(p, _)| *p == at) {
             return Ok(v.clone());
         }
-        let hash = |pk: &Package| {
-            let mut h = DefaultHasher::new();
-            (&pk.id, &pk.bytes, &pk.blobs).hash(&mut h);
-            h.finish()
-        };
-        let pks = self.packages_under(from, synced)?;
-        let on = |pk: &Package| self.peers.get(from).and_then(|p| p.engine.header(&pk.id)).map(|h| h.aspects.iter().map(|a| a.tid).collect()).unwrap_or_default();
-        let v: Hashed = Arc::new(pks.into_iter().map(|pk| { let n = hash(&pk); let t = on(&pk); (pk, n, t) }).collect());
+        let whole = self.whole(from)?;
+        let Some(p) = self.peers.get_mut(from) else { return Ok(Arc::default()) };
+        let mut out = Vec::new();
+        for ((pk, n, on), b) in whole.iter() {
+            let Some(parts) = p.engine.sent_parts(&pk.id, synced)? else { continue };
+            if b.parts.iter().all(|x| parts.contains(&x.ai)) {
+                out.push((pk.clone(), *n, on.clone()));
+            } else {
+                let t = holding(pk, b, &parts);
+                out.push((t.clone(), hash_of(&t), on.clone()));
+            }
+        }
+        let v: Hashed = Arc::new(out);
         self.memo.sent.insert(key, (at, v.clone()));
         Ok(v)
     }
