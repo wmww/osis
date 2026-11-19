@@ -1182,3 +1182,144 @@ fn a_mint_admins_readers_read_a_thing_again_once_granted_again_spec_permissions_
     w.run();
     assert_eq!(value(&mut w, 0, &t2), Some(Value::Str("t2".into())), "Alice reads T2 again");
 }
+
+/// Bob's node 1 makes T0 and grants Alice read on it; Alice holds T0. Node 1 makes T1 under T0
+/// (keyed by a grant of Bob's admin when `key1`), then T2 under T1, keyed so. Each record edge
+/// stands: (world, T0, T1, T2).
+fn record_chain_of_three(key1: bool) -> (World, Tid, Tid, Tid) {
+    let mut w = siblings();
+    let alice = w.node(0).account.unwrap();
+    let bob = w.node(1).account.unwrap();
+    let t0 = make(&mut w, 1, None, "t0");
+    w.write(1, |e| e.grant(&t0, &alice, &edge(Role::Read))).unwrap();
+    strong(&mut w, 0, None, t0, true);
+    w.run();
+    let t1 = make_in(&mut w, 1, t0, "t1");
+    if key1 {
+        w.write(1, |e| e.grant(&t1, &bob, &edge(Role::Admin))).unwrap();
+    }
+    let t2 = make_in(&mut w, 1, t1, "t2");
+    w.write(1, |e| e.grant(&t2, &bob, &edge(Role::Admin))).unwrap();
+    w.run();
+    w.advance(osis_proto::limits::PASS_WAIT_MS);
+    w.run();
+    (w, t0, t1, t2)
+}
+
+// spec/sync-set.md §2 (T's keys open: read counts through chains of role grants, the lowest role
+// along a chain), spec/permissions.md §1: T0 admin on T1 and T1
+// admin on T2 by their record edges, each keyed (or T1 left dependent): Alice, a reader of T0,
+// reads T1 and T2, and what is written on T2 after it was keyed.
+#[test]
+fn a_reader_reads_down_a_chain_of_standing_record_edges_spec_sync_set_2() {
+    for key1 in [false, true] {
+        let (mut w, _t0, t1, t2) = record_chain_of_three(key1);
+        w.write(1, |e| {
+            let mut m = Mutation::new();
+            m.set(t2, &ak(), &Value::Str("t2 later".into())).unwrap();
+            e.commit(m).unwrap();
+        });
+        w.run();
+        assert_eq!(value(&mut w, 0, &t1), Some(Value::Str("t1".into())), "key1 {key1}: Alice reads T1");
+        assert_eq!(value(&mut w, 0, &t2), Some(Value::Str("t2 later".into())), "key1 {key1}: Alice reads T2");
+        assert_eq!(holding(&mut w, 0, &t2), Some(Holding::Read), "key1 {key1}");
+    }
+}
+
+// spec/sync-set.md §2 (T's keys open), spec/permissions.md §3 (Lost access): as above, T1 keyed; Bob
+// lowers T1's record edge on T2 to sync. T0 reads T2 by no chain: Alice reads T2 no more and holds
+// none of its content, whatever T0's and T1's sync IDs carry (node 2 files them again), while
+// she reads T1 still.
+#[test]
+fn a_reader_down_a_chain_lowered_to_sync_reads_the_thing_no_more_spec_permissions_3() {
+    let (mut w, t0, t1, t2) = record_chain_of_three(true);
+    assert_eq!(value(&mut w, 0, &t2), Some(Value::Str("t2".into())));
+    w.write(1, |e| e.leaving_adminless(|e| e.demote(&t2, &osis_engine::flows::Demotion { holder: t1, new: Some(edge(Role::Sync)), retain: None }))).unwrap();
+    w.run();
+    w.advance(osis_proto::limits::PASS_WAIT_MS);
+    w.run();
+    for t in [t0, t1] {
+        let s = w.engine(1).sync_id_of(&t).unwrap().unwrap();
+        refile(&mut w, 1, 0, &s);
+    }
+    w.advance(osis_proto::limits::PASS_WAIT_MS);
+    w.run();
+    assert_eq!(value(&mut w, 0, &t1), Some(Value::Str("t1".into())), "Alice reads T1");
+    assert_eq!(value(&mut w, 0, &t2), None, "Alice reads T2 no more");
+    assert!(!holds_value(&mut w, 0, &t2), "Alice holds T2's value");
+}
+
+// spec/sync-set.md §3 (Lowering from read to sync), spec/permissions.md §3 (Lost access): Bob reads
+// T; lowered to sync he keeps T unread, holding none of its content, and so across a restart.
+#[test]
+fn a_reader_lowered_to_sync_holds_no_content_across_a_restart_spec_permissions_3() {
+    let (mut w, (t, bob)) = granted();
+    strong(&mut w, 1, None, t, true);
+    w.run();
+    assert!(holds_value(&mut w, 1, &t));
+    w.write(0, |e| e.demote(&t, &osis_engine::flows::edges::Demotion { holder: bob, new: Some(edge(Role::Sync)), retain: None })).unwrap();
+    w.run();
+    assert_eq!(holding(&mut w, 1, &t), Some(Holding::Unread));
+    assert!(!holds_value(&mut w, 1, &t), "lowered: holds T's value");
+    let s = w.engine(0).sync_id_of(&t).unwrap().unwrap();
+    refile(&mut w, 0, 1, &s);
+    w.power_off(1);
+    w.power_on(1);
+    w.run();
+    w.advance(osis_proto::limits::PASS_WAIT_MS);
+    w.run();
+    assert_eq!(holding(&mut w, 1, &t), Some(Holding::Unread));
+    assert!(!holds_value(&mut w, 1, &t), "restarted: holds T's value");
+    assert_eq!(value(&mut w, 1, &t), None);
+}
+
+// spec/sync-set.md §2 (T's keys open), spec/permissions.md §3 (Lost access): Alice reads T0;
+// Bob's T2 under T0 is keyed and Alice granted sync on T2 directly, holding it from her root too.
+// She reads T2 through T0. Bob removes T0's record edge: she keeps T2 unread by her own sync
+// grant and holds none of its content.
+#[test]
+fn a_thing_read_through_one_unit_and_kept_unread_directly_spec_sync_set_2() {
+    let mut w = siblings();
+    let alice = w.node(0).account.unwrap();
+    let bob = w.node(1).account.unwrap();
+    let t0 = make(&mut w, 1, None, "t0");
+    w.write(1, |e| e.grant(&t0, &alice, &edge(Role::Read))).unwrap();
+    strong(&mut w, 0, None, t0, true);
+    w.run();
+    let t2 = make_in(&mut w, 1, t0, "t2");
+    w.write(1, |e| e.grant(&t2, &bob, &edge(Role::Admin))).unwrap();
+    w.write(1, |e| e.grant(&t2, &alice, &edge(Role::Sync))).unwrap();
+    w.run();
+    strong(&mut w, 0, None, t2, true);
+    w.run();
+    assert_eq!(value(&mut w, 0, &t2), Some(Value::Str("t2".into())), "Alice reads T2 through T0");
+    w.write(1, |e| e.demote(&t2, &osis_engine::flows::Demotion { holder: t0, new: None, retain: None })).unwrap();
+    w.run();
+    w.advance(osis_proto::limits::PASS_WAIT_MS);
+    w.run();
+    let s0 = w.engine(1).sync_id_of(&t0).unwrap().unwrap();
+    refile(&mut w, 1, 0, &s0);
+    w.advance(osis_proto::limits::PASS_WAIT_MS);
+    w.run();
+    assert_eq!(value(&mut w, 0, &t2), None, "Alice reads T2 no more");
+    assert_eq!(holding(&mut w, 0, &t2), Some(Holding::Unread), "kept unread by her sync grant");
+    assert!(!holds_value(&mut w, 0, &t2), "Alice holds T2's value");
+}
+
+// spec/sync-judgement.md §1 (Sealed sections), §2 (must-hold): Alice reads T0; Bob's node 2 mints
+// T2 under T0 (its value sealed under T0's epochs), then grants Alice admin on T2 (T2 keyed) and
+// she holds it: she reads T2's minting value, and holds every part her siblings judge must-hold.
+#[test]
+fn a_grantee_reads_a_value_minted_under_its_mint_admin_spec_sync_judgement_1() {
+    let mut w = siblings();
+    let alice = w.node(0).account.unwrap();
+    let t0 = make(&mut w, 1, None, "t0");
+    w.write(1, |e| e.grant(&t0, &alice, &edge(Role::Read))).unwrap();
+    strong(&mut w, 0, None, t0, true);
+    w.run();
+    let t2 = make_in(&mut w, 2, t0, "t2");
+    w.write(2, |e| e.grant(&t2, &alice, &edge(Role::Admin))).unwrap();
+    strong(&mut w, 0, None, t2, true);
+    w.run();
+    assert_eq!(value(&mut w, 0, &t2), Some(Value::Str("t2".into())), "Alice reads T2's minting value");
+}
