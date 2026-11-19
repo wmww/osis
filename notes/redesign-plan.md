@@ -45,7 +45,7 @@ Parallel lanes: {S1, S2, S3, M1, M2} at once; then B1 beside A1 (sync and engine
 Each brief ends at green commits and fits a session (notes/coordination.md, Briefs); a brief that turns out larger is split by its coordinator, never run long. "Gate" means the branch's reviewer runs `tools/gate.sh` once.
 
 ### G. Main's failing properties
-notes/priorities.md, First: issues/rotation-holds-sync-holder-opens.md (security), issues/paged-apply-differs-from-whole.md, issues/held-set-decides-plain-record-only.md, issues/app-tile-unreadable-emails-test.md [checked: tools/known_failures.txt]. The rotation one is studied before S3 brief 5 and A4 touch the rotation code: a real hole there is a fact for M2.
+notes/priorities.md, First: issues/paged-apply-differs-from-whole.md, issues/held-set-decides-plain-record-only.md, issues/app-tile-unreadable-emails-test.md [checked: tools/known_failures.txt]. The rotation property's failure was no hole: a grant that applies nothing and does not count, its author still holding the role, leaves its grantee reading (spec/crypto.md §4 Boxes), which the property excuses (notes/test-properties.md); no new fact for M2.
 
 ### S1. Cost defects of many sync IDs
 Before either redesign; nothing waits on a question.

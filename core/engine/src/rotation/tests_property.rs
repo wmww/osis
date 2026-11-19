@@ -52,6 +52,19 @@ struct Made {
     carried: BTreeSet<Epoch>,
 }
 
+/// A grant that handed a peer a secret (`Run::handed`).
+#[derive(Clone, Debug)]
+struct Handed {
+    /// Its index into `log`.
+    step: usize,
+    /// Its author.
+    author: usize,
+    /// Its target.
+    on: Tid,
+    /// The commits its author wrote for it (rotations first, then the grant).
+    commits: BTreeSet<CommitId>,
+}
+
 struct Run {
     lp: LocalPeer,
     tids: Vec<Tid>,
@@ -59,13 +72,13 @@ struct Run {
     actors: Vec<(Tid, usize)>,
     /// Every secret each peer held or made at any point: what a departed peer keeps.
     ever: Vec<BTreeSet<Key>>,
-    /// The secrets each peer was handed by a grant, each with the grant's index into `log`: the
+    /// The secrets each peer was handed by a grant, each with the grant (`Handed`): the
     /// epochs the grant boxed it that its granter held before it, and the earlier secrets of
     /// their roles the granter held (its history boxes), and what those open through boxes to
     /// the granted thing as a holder actor, none the grantee held yet. Any holder
     /// of a key may hand it on (spec/requirements.md Permissions), and a grant judged invalid
     /// (its author lowered concurrently) still opens (spec/crypto.md §4, Boxes).
-    handed: Vec<BTreeMap<Key, usize>>,
+    handed: Vec<BTreeMap<Key, Handed>>,
     made: BTreeMap<Key, Made>,
     /// Boxes a re-seal wrote to a holder actor at a keyset whose secret its writer lacked: the
     /// box (actor, role, epoch, holder actor), the keyset, and the commits the writer held.
@@ -175,7 +188,10 @@ impl Run {
         // the actors `i` may read
         let all: Vec<Tid> = self.all().into_iter().filter(|a| self.lp.peers[i].engine.get_typed(a, &ct::SECRETS).is_ok()).collect();
         let before = openable(&mut self.lp, i, &all, self.tids[j], BTreeSet::new());
+        let ids = super::tests::commit_ids(&mut self.lp, i);
         if self.lp.peers[i].engine.grant(&t, &self.tids[j], &edge(r)).is_ok() {
+            let commits: BTreeSet<CommitId> = super::tests::commit_ids(&mut self.lp, i).difference(&ids).copied().collect();
+            let handed = Handed { step: self.log.len(), author: i, on: t, commits };
             let had: BTreeSet<Key> = self.held(i).into_iter().filter(|k| k.0 == t).collect();
             let after = openable(&mut self.lp, i, &all, self.tids[j], BTreeSet::new());
             let boxed: BTreeSet<Key> = after.difference(&before).filter(|k| had.contains(k)).copied().collect();
@@ -189,7 +205,7 @@ impl Run {
             let reach = opens_in(&self.lp, &self.states, &self.secrets, nobody, boxed.union(&carried).copied().collect(), &self.stale);
             let above = after.difference(&before).chain(&reach).filter(|k| k.0 != t);
             for k in boxed.iter().chain(&carried).chain(above).filter(|k| !self.ever[j].contains(k)) {
-                self.handed[j].entry(*k).or_insert(self.log.len());
+                self.handed[j].entry(*k).or_insert_with(|| handed.clone());
             }
         }
     }
@@ -737,19 +753,21 @@ fn check(run: &mut Run, seed: u64, rotated: bool) {
                 continue;
             }
             // no departed holder reads later content: what a holder that may write encrypts
-            // under opens to no peer without access, from all it ever held or made and every box;
+            // under opens to no peer without access, from all it ever held or made and every box
+            // (but a secret a grant left it reading: `left_reading`);
             // nor does any epoch made by a rotator that saw the peer lose access (it held the
             // commit that cost the peer the thing, directly or below, and the peer reads it in
             // none of the rotator's rosters), unless a grant (on the thing or on a holder actor
-            // of it) handed it on (its author's own departure then rotates the role, so the first
-            // holds), the history of a later epoch the peer held as a holder in its rotator's view
+            // of it) handed it on (its author's own departure, or the grant counting, then
+            // rotates the role, so the first holds), the history of a later epoch the peer held as a holder in its rotator's view
             // carried it (access regained, here or through a holder actor, reads earlier
             // content), or it opens only through boxes within the limits (`excused`)
             let gone: Vec<usize> = (0..N).filter(|d| !access(run, o, *d, t, r)).collect();
             for &d in &gone {
-                let opens = openable(&mut run.lp, o, &all, run.tids[d], run.ever[d].clone());
+                let kept: BTreeSet<Key> = run.ever[d].iter().filter(|k| !left_reading(run, o, d, k)).copied().collect();
+                let opens = openable(&mut run.lp, o, &all, run.tids[d], kept);
                 // a secret of `t` first held since a grant handed it, not before
-                let own: BTreeSet<Key> = run.ever[d].iter().filter(|k| k.0 != t || run.handed[d].get(k).is_none_or(|g| run.first.get(&(d, **k)).is_some_and(|f| f <= g))).copied().collect();
+                let own: BTreeSet<Key> = run.ever[d].iter().filter(|k| k.0 != t || run.handed[d].get(k).is_none_or(|g| run.first.get(&(d, **k)).is_some_and(|f| *f <= g.step))).copied().collect();
                 for &(h, hr) in direct.iter().filter(|x| x.1 >= r.max(Role::Write)) {
                     if super::tests::blocked_at(&mut run.lp, h, t).contains(&r) {
                         continue;
@@ -790,6 +808,27 @@ fn check(run: &mut Run, seed: u64, rotated: bool) {
     }
 }
 
+/// Whether peer `d` was first handed secret `k` by a grant that leaves it reading (spec/crypto.md
+/// §4, Boxes: an admin demoted to reader while granting X read leaves X reading): the grant's
+/// write applies nothing and does not count in peer `o`'s settled timeline of its target (its
+/// author held no write there just before it), and its author still holds `k`'s role on `k`'s
+/// thing, so could hand `k` on anyway (a secret once shared cannot be un-shared). Nothing such a
+/// grant does rotates that role; one that counts is named void, and the author's own departure
+/// from the role is a departure: both rotate it, so neither is excused. Read from the history
+/// (the grant's commits, the timelines the rosters come from), not from any key decision.
+fn left_reading(run: &Run, o: usize, d: usize, k: &Key) -> bool {
+    let Some(h) = run.handed[d].get(k) else { return false };
+    if run.first.get(&(d, *k)).is_none_or(|f| *f <= h.step) {
+        return false;
+    }
+    let Some(tl) = run.lp.peers[o].engine.core.timelines.get(&h.on) else { return false };
+    let write = h.commits.iter().filter_map(|c| tl.role_commit(c)).find_map(|mc| mc.ops.iter().position(|op| op.target == h.on && op.holder == run.tids[d]).map(|ix| (mc, ix)));
+    let Some((mc, ix)) = write else { return false };
+    let applies = tl.is_applied(&osis_perm::WriteId(mc.id, ix as u32));
+    let counts = tl.role(&mc.author, &h.on, osis_perm::At::before(mc.point())) >= Some(Role::Write);
+    !applies && !counts && access(run, o, h.author, k.0, k.1)
+}
+
 /// `OSIS_ROTATION_DUMP`: on a leak of epoch `k` to peer `d`, prints a legend, how `k` was made,
 /// how `d` opens it (the settled boxes at peer `o` without the boxes within the limit, and every
 /// state met with and without them), each box on the way with the step its state was first met at, and what it
@@ -826,7 +865,7 @@ fn dump(run: &mut Run, o: usize, d: usize, k: Key, own: &BTreeSet<Key>, limit: &
         while let Some(x) = at.take() {
             let line = match by.get(&x) {
                 None => "not opened".to_string(),
-                Some(Via::Known) => format!("held rightly (first at step {:?}, handed at {:?})", run.first.get(&(d, x)), run.handed[d].get(&x)),
+                Some(Via::Known) => format!("held rightly (first at step {:?}, handed at {:?})", run.first.get(&(d, x)), run.handed[d].get(&x).map(|h| h.step)),
                 Some(Via::History(h)) => {
                     at = Some(*h);
                     format!("listed by the history box of {}", key(run, h))
@@ -1107,4 +1146,58 @@ fn a_removal_boxes_none_it_removes_through_a_finalize_first_spec_permissions_3()
     assert!(!run.ever[3].contains(&(g, Role::Read, new[0])), "M opens no epoch of G the removal made");
     settle(&mut run, 1, true);
     check(&mut run, 1, true);
+}
+
+// A grant that leaves its grantee reading (spec/crypto.md §4, Boxes; seed 874943289279): M
+// (peer 0's) a read holder of G (peer 0's), A (peer 1) admin of M. Peer 0 demotes A to reader of
+// M; A, unaware, grants X (peer 2) read of M after it, boxing M's read epoch. The grant applies
+// nothing and does not count, and A still reads M: nothing rotates M's read, so X reads M and,
+// through G's box to M, G's read epoch peer 0 encrypts under. That is the stated limit, not a
+// leak (`left_reading`).
+#[test]
+fn a_grant_by_a_demoted_admin_leaves_its_grantee_reading_spec_crypto_4() {
+    let (mut run, g, m, x) = demoted_granter(false);
+    let read = |run: &Run, t: Tid| run.lp.peers[0].engine.epochs(&t).and_then(|e| e.role(Role::Read).newest_held().map(|x| x.0)).unwrap();
+    assert_eq!(run.key_role(0, &m, 1), Some(Role::Read), "A still reads M");
+    assert!(run.ever[2].contains(&(m, Role::Read, read(&run, m))), "X holds M's read epoch");
+    assert!(openable(&mut run.lp, 0, &[g, m], x, run.ever[2].clone()).contains(&(g, Role::Read, read(&run, g))), "X opens G's read epoch through M");
+    check(&mut run, 1, true);
+}
+
+// The same with A's grant ordered before its demotion, which audits it: the grant counts, so is
+// named void, and M's read rotates; X opens no epoch of G peer 0 encrypts under.
+#[test]
+fn a_grant_audited_by_its_authors_demotion_rotates_spec_crypto_4() {
+    let (mut run, g, m, x) = demoted_granter(true);
+    let read = |run: &Run, t: Tid| run.lp.peers[0].engine.epochs(&t).and_then(|e| e.role(Role::Read).newest_held().map(|x| x.0)).unwrap();
+    assert!(!run.ever[2].contains(&(m, Role::Read, read(&run, m))), "M's read rotated past X");
+    assert!(!openable(&mut run.lp, 0, &[g, m], x, run.ever[2].clone()).contains(&(g, Role::Read, read(&run, g))));
+    check(&mut run, 1, true);
+}
+
+/// `a_grant_by_a_demoted_admin_leaves_its_grantee_reading_spec_crypto_4`'s history, A's grant
+/// before its demotion (`first`) or after, settled: the run, G, M and X.
+fn demoted_granter(first: bool) -> (Run, Tid, Tid, Tid) {
+    let mut lp = LocalPeer::new(N, 0, WallMs(1_700_000_000_000)).unwrap();
+    lp.sync_all().unwrap();
+    let (a, x) = (lp.peers[1].engine.me(), lp.peers[2].engine.me());
+    let g = independent_thing(&mut lp, 0);
+    let m = independent_thing(&mut lp, 0);
+    lp.peers[0].engine.grant(&g, &m, &edge(Role::Read)).unwrap();
+    lp.peers[0].engine.grant(&m, &a, &edge(Role::Admin)).unwrap();
+    lp.sync_all().unwrap();
+    let mut run = Run::new(lp, vec![(g, 0), (m, 0)], Rng(1));
+    let (demote_at, grant_at) = if first { (2_000, 1_000) } else { (1_000, 2_000) };
+    step(&mut run, 0, |run| {
+        run.lp.peers[0].clock.advance(demote_at);
+        run.lp.peers[0].engine.demote(&m, &Demotion { holder: a, new: Some(edge(Role::Read)), retain: None }).unwrap();
+    });
+    step(&mut run, 1, |run| {
+        run.lp.peers[1].clock.advance(grant_at);
+        run.grant(1, 2, m, Role::Read);
+    });
+    assert!(run.handed[2].keys().any(|k| k.0 == m && k.1 == Role::Read), "the grant boxed X");
+    settle(&mut run, 0, true);
+    assert_eq!(run.key_role(0, &m, 2), None, "the grant is invalid");
+    (run, g, m, x)
 }
