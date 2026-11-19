@@ -104,6 +104,10 @@ PLANTS = [
     # code_refs: a stale name, a listed name now in the code, a duplicate listed line
     ("notes/build.md", None, "\nSee `Engine::planted_gone_fn` and `planted_listed_name`.\n"),
     ("tools/code_refs_allow.txt", None, "planted_listed_name  placeholder\nEngine  placeholder\nplanted_listed_name  placeholder\n"),
+    # files made after the `git add`, untracked: cited, they count (a near miss)
+    ("core/base/src/planted_fresh.rs", None, "// fn planted_fresh_fn\n"),
+    ("notes/planted-fresh.md", None, "# Fresh\n> Summary: planted.\n"),
+    ("notes/build.md", None, "\nSee notes/planted-fresh.md, `core/base/src/planted_fresh.rs` and `planted_fresh_fn`.\n"),
     # union_lists: a duplicate line in each union-merged list, a key listed twice, a union list unchecked
     ("core/base/testenv-known.txt", None, f"{V}BENCH_MS\n"),
     ("tools/known_failures.txt", None, f"osis-engine/planted::no_such_test_fn - {ISSUE} x\n"),
@@ -169,6 +173,7 @@ ABSENT = [  # near misses: what the plants show must not be reported
     r"core/engine/tests/it/flows\.rs:\d+: engine",
     r"core/transport/src/lib\.rs:\d+: `hosts`",
     r"faults\.rs:\d+: (world|history)\(",
+    r"planted.fresh",
 ]
 
 

@@ -118,7 +118,8 @@ def refs(rel, text, read, cache=None):
 
 
 def check():
-    tracked = subprocess.run(["git", "ls-files"], cwd=ROOT, capture_output=True, text=True).stdout.split()
+    # tracked files and untracked ones not ignored: a new file counts before its `git add`
+    files = subprocess.run(["git", "ls-files", "--cached", "--others", "--exclude-standard"], cwd=ROOT, capture_output=True, text=True).stdout.split()
     ignored = {l.strip() for l in open(os.path.join(ROOT, ".gitignore")) if l.strip().endswith(".md")}
     docs, cache = {}, {}
 
@@ -128,7 +129,7 @@ def check():
             docs[p] = open(f, errors="replace").read() if os.path.isfile(f) else ("" if p in ignored else None)
         return docs[p]
 
-    for rel in tracked:
+    for rel in files:
         if rel.startswith(("docs/", "libs/kit/patches/", "notes/complaints/")) or re.match(r"tools/\w+_test\.", rel) \
                 or not rel.endswith((".md", ".rs", ".py", ".sh", ".tla", ".cfg", ".toml", ".txt", ".osis")) \
                 or not os.path.isfile(os.path.join(ROOT, rel)):

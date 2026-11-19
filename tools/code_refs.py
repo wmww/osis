@@ -4,14 +4,15 @@ backticks exists, so a rename or deletion fails the branch that made it, not a l
 Checked, in each inline backtick span of notes/ and issues/ (fenced blocks are sketches, not citations):
   names: each segment of an `a::b` path, a name called (`foo(`), a name with `_` (`foo_bar`,
       `MAX_PROOFS`) and a CamelCase name with an inner capital (`LocalPeer`): the word occurs in a
-      tracked file outside docs/ (not Markdown, but spec/'s), is a tracked file's name without its
+      repo file outside docs/ (not Markdown, but spec/'s), is a repo file's name without its
       extension (a TLA model's .cfg), or is a test's name less its `_spec_...` tail. A word match,
       not a definition: a name only a comment keeps passes. Skipped: a name starting or ending in
       `_`, shorter than 3, or beside `*`, `<`, `>`, `{`, `}`, `$`, `-`, `/` (a pattern, placeholder,
       flag or alternative); `a_{b,c}` names `a_b` and `a_c`.
   paths: a span that is a relative path of a source extension (`core/x/src/y.rs`, `apply/mod.rs`):
-      a tracked file's path ends with it, also with `src/` left out (`store/store.rs`) or its crate
+      a repo file's path ends with it, also with `src/` left out (`store/store.rs`) or its crate
       named by package (`osis-keys/tests/it/x.rs`).
+A repo file is tracked, or untracked and not ignored (a new file counts before its `git add`).
 Not read: notes/complaints/ (consumed), the Investigations section of notes/time-limits.md (a record
 of what ran then), spec/ (its names are wire and grammar terms). Names not in our code on purpose
 (third-party, placeholder, planned, rejected, removed) are listed in tools/code_refs_allow.txt with a
@@ -105,40 +106,41 @@ def stale(docs, words, ends, allow):
             yield f"{ALLOW}:{n}: `{name}` is cited nowhere (drop the line)"
 
 
-def code_names(root, tracked):
+def code_names(root, files):
     """The words of the code (and of spec/, which names wire fields and constants), and every tail
     of each source path."""
     words = set()
-    for rel in tracked:
+    for rel in files:
         # not the tools' own test fixtures, whose planted names are none
         if (rel.startswith("spec/") or not rel.endswith(NOT_SRC)) and rel not in LISTS and not rel.startswith("docs/") \
                 and not re.match(r"tools/\w+_test\.", rel) and os.path.isfile(os.path.join(root, rel)):
             words.update(WORD.findall(open(os.path.join(root, rel), errors="replace").read()))
     words |= {SPEC_TAIL.sub("", w) for w in words if "_spec_" in w}
     # a file's name without its extension (a TLA model's .cfg, a script) is a name too
-    words.update(os.path.splitext(os.path.basename(r))[0] for r in tracked)
+    words.update(os.path.splitext(os.path.basename(r))[0] for r in files)
     # a path cites a file by any tail of its path, also with the crate's src/ left out
     # (`store/store.rs`) or its directory named by its package (`osis-keys/tests/it/x.rs`)
     ends = set()
-    for f in tracked:
+    for f in files:
         if f.endswith(PATH_EXTS):
             for g in {f, f.replace("/src/", "/")}:
                 parts = g.split("/")
                 ends.update("/".join(parts[i:]) for i in range(len(parts)))
     for d, pkg in members().items():
         d = os.path.relpath(d, root) + "/"
-        ends.update(pkg + "/" + f[len(d):] for f in tracked if f.startswith(d) and f.endswith(PATH_EXTS))
+        ends.update(pkg + "/" + f[len(d):] for f in files if f.startswith(d) and f.endswith(PATH_EXTS))
     return words, ends
 
 
 def check(root=ROOT):
-    tracked = subprocess.run(["git", "ls-files"], cwd=root, capture_output=True, text=True).stdout.split()
-    docs = {rel: open(os.path.join(root, rel), errors="replace").read() for rel in tracked
+    # tracked files and untracked ones not ignored: a new file counts before its `git add`
+    files = subprocess.run(["git", "ls-files", "--cached", "--others", "--exclude-standard"], cwd=root, capture_output=True, text=True).stdout.split()
+    docs = {rel: open(os.path.join(root, rel), errors="replace").read() for rel in files
             if rel.startswith(("notes/", "issues/")) and rel.endswith(".md") and not rel.startswith("notes/complaints/")
             and os.path.isfile(os.path.join(root, rel))}
     allow, errs = allow_list(root)
     yield from errs
-    yield from stale(docs, *code_names(root, tracked), allow)
+    yield from stale(docs, *code_names(root, files), allow)
 
 
 if __name__ == "__main__":
