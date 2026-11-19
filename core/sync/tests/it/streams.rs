@@ -1535,8 +1535,9 @@ fn a_moved_head_shows_a_refused_entry_again_spec_sync_streams_4() {
 }
 
 // spec/sync-streams.md §4 (Refused), §3 (Durability): n peers each told a code 1 refusal, none
-// connected now: a head move pulls S anew at each from its record's rows and holds no place in
-// memory after (a place lasts while a connection pulls from its source), at n and 10n.
+// connected now and their records out of memory: a head move pulls S anew at each from its
+// record's rows and holds no place in memory after (a place lasts while its record is in memory),
+// at n and 10n.
 fn places_after_head_moves(n: u8) -> usize {
     let (mut p, k) = Pair::kept();
     k.stamped(&mut p.a, 500, false);
@@ -1547,6 +1548,7 @@ fn places_after_head_moves(n: u8) -> usize {
         p.run();
         p.a.streams.closed(C);
         p.b.streams.closed(C);
+        p.b.streams.record_left(rec);
     }
     assert_eq!(p.b.streams.places(), 0);
     let mut parent = k.genesis.0.clone();

@@ -175,7 +175,7 @@ impl Read {
         let mut commits = self.commits.take();
         let mut feeds = std::mem::take(&mut self.feeds);
         let views = std::mem::take(&mut self.views);
-        let r = self.settle_on(&mut Live { cx, sessions, opens, streams, status, unread, commits: &mut commits, views: &views, feeds: &mut feeds, fetches });
+        let r = osis_base::costs::scoped("read", || self.settle_on(&mut Live { cx, sessions, opens, streams, status, unread, commits: &mut commits, views: &views, feeds: &mut feeds, fetches }));
         self.commits = commits;
         self.feeds = feeds;
         self.views = views;

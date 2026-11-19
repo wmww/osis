@@ -358,7 +358,7 @@ impl Status {
             }
             Moved::Left(conn, s, at) => self.left(s, conn, at),
             Moved::Gone(rid, s) => self.gone(rid, s),
-            Moved::Until(..) | Moved::Forgot(..) => {}
+            Moved::Until(..) | Moved::Forgot(..) | Moved::Taken(..) | Moved::Released(..) => {}
         }
     }
 

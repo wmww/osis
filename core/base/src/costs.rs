@@ -9,6 +9,7 @@ use std::time::{Duration, Instant};
 thread_local! {
     static ON: Cell<bool> = const { Cell::new(false) };
     static COSTS: RefCell<BTreeMap<&'static str, (Duration, u64)>> = const { RefCell::new(BTreeMap::new()) };
+    static SCOPE: Cell<Option<&'static str>> = const { Cell::new(None) };
 }
 
 pub struct Span(Option<(&'static str, Instant)>);
@@ -67,6 +68,26 @@ pub fn count_by(name: &'static str, by: &'static str, n: u64) {
     }
 }
 
+/// Runs `f` with `count_scoped` counting under its innermost scope too: which module's work a
+/// shared counter (store rows) is.
+pub fn scoped<T>(scope: &'static str, f: impl FnOnce() -> T) -> T {
+    if !on() {
+        return f();
+    }
+    let was = SCOPE.with(|c| c.replace(Some(scope)));
+    let r = f();
+    SCOPE.with(|c| c.set(was));
+    r
+}
+
+/// `count`, and `count_by` under the innermost `scoped` scope if any.
+pub fn count_scoped(name: &'static str, n: u64) {
+    count(name, n);
+    if let Some(scope) = SCOPE.with(Cell::get) {
+        count_by(name, scope, n);
+    }
+}
+
 /// The time and count per phase since the last `take` on this thread; the first call turns
 /// recording on for this thread (and returns nothing).
 pub fn take() -> Vec<(&'static str, Duration, u64)> {
@@ -81,3 +102,4 @@ pub fn paused<T>(f: impl FnOnce() -> T) -> T {
     ON.with(|on| on.set(was));
     r
 }
+

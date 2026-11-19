@@ -834,6 +834,9 @@ impl Node {
             self.inbox.record_gone(id);
             self.status.record_gone(id);
         }
+        for id in self.opens.unloaded() {
+            self.streams.record_left(id);
+        }
         Ok(())
     }
 

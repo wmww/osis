@@ -340,7 +340,8 @@ fn a_rejoin_reads_from_the_losts_cursor_spec_sync_opens_6() {
     p.b.moved.clear();
     p.connect(2, account(1), account(2));
     p.run();
-    assert!(p.b.moved.contains(&Moved::Joined(p.cb, S, Rejoin::Held)), "{:?}", p.b.moved);
+    assert!(p.b.moved.iter().any(|m| matches!(m, Moved::Taken(c, _) if *c == p.cb)), "{:?}", p.b.moved);
+    assert!(!p.b.moved.iter().any(|m| matches!(m, Moved::Joined(_, _, r) if *r != Rejoin::Taken)), "no member moves: {:?}", p.b.moved);
 }
 
 // spec/sync-opens.md §3 (a node that stops holding S drops S from every record in the step that
@@ -1569,7 +1570,8 @@ pub(crate) fn restart_reconnect_bytes(n: u8) -> usize {
     p.connect(2, account(1), account(2));
     p.run();
     assert!((1..=n).all(|i| p.a.open(p.ca, &sid(i)) && p.b.open(p.cb, &sid(i))), "the record's members are open again");
-    assert!((1..=n).all(|i| p.a.moved.contains(&Moved::Joined(p.ca, sid(i), Rejoin::Held))), "each rejoins where its stream holds it");
+    assert!(p.a.moved.iter().any(|m| matches!(m, Moved::Taken(c, _) if *c == p.ca)), "the record is taken: each stands where it holds it");
+    assert!(!p.a.moved.iter().any(|m| matches!(m, Moved::Joined(_, _, r) if *r != Rejoin::Taken)), "no member moves: {:?}", p.a.moved);
     assert!(p.log.iter().any(|(_, m)| matches!(m, Msg::Resumed { tag: Some(_), .. })), "the record resumed");
     assert!(!p.log.iter().any(|(_, m)| matches!(m, Msg::Members { .. } | Msg::Offer { .. })), "digests match, nothing tested: {:?}", p.log);
     assert!(p.a.opens.agreed(p.ca) && p.b.opens.agreed(p.cb));

@@ -465,12 +465,40 @@ impl Streams {
         let src = self.source(ctx.shared, conn);
         let cursor = self.place(ctx.store, src).cursor.clone();
         self.pull.entry(conn).or_insert_with(|| Pulling::new(src, cursor));
-        // whether it keeps S unread, as it joined: kept with what its stream shows (read judges what
-        // is owed there by it while the source is away); the same class again writes nothing
+        // whether it keeps S unread, as it opened: the record's, kept with what its stream shows
+        // (read judges what is owed there by it while the source is away); it moves only with an
+        // open, and the same class again writes nothing
         let kept = ctx.shared.members(conn).get(&s).is_some_and(|m| m.class == SourceClass::Store);
         if self.known.kept(src, &s) != kept {
             self.save(ctx, src, &[], false, vec![(src, Op::Kept(s, kept))]);
         }
+        self.join_member(ctx, conn, s, rejoin);
+    }
+
+    /// Kept record `rid` is connected on `conn` (spec/sync-streams.md §4 Joining: a connection
+    /// that takes a record pulls its members from where the record holds them): its place, kept
+    /// in memory with the record, is this connection's; a member at the stream needs no join and
+    /// nothing of it is read or written.
+    pub(super) fn taken(&mut self, ctx: &mut Ctx, conn: ConnId, rid: RecordId) {
+        let src = Source::Record(rid);
+        let cursor = self.place(ctx.store, src).cursor.clone();
+        self.pull.insert(conn, Pulling::new(src, cursor));
+        let members: Vec<SyncId> = ctx.shared.members(conn).keys().copied().collect();
+        for s in members {
+            self.holders.entry(s).or_default().insert(conn);
+            self.served_joined(ctx, conn, s);
+            self.join_member(ctx, conn, s, Rejoin::Held);
+        }
+        // its members gained a source: every stream asks inline 0 again where one has two
+        for p in self.pull.values_mut() {
+            p.inline_check = true;
+        }
+    }
+
+    /// Member S stands on `conn`'s stream: full told if S is, joined from where `rejoin` says,
+    /// else where the place holds it, else from the start; none at the stream's cursor.
+    fn join_member(&mut self, ctx: &mut Ctx, conn: ConnId, s: SyncId, rejoin: Rejoin) {
+        let src = self.source(ctx.shared, conn);
         // full for S: told on each connection S joins
         if ctx.store.waits_room(&s) {
             self.tell_full(conn, s, true);
@@ -483,7 +511,7 @@ impl Streams {
         let from = match rejoin {
             // a pull from the start since (fetched anew) stands over where a Lost said it stopped
             Rejoin::From(c) => Some(if place.join_from(&s) == Some(&None) { None } else { c }),
-            Rejoin::Held => {
+            Rejoin::Held | Rejoin::Taken => {
                 if let Some(c) = place.stopped.get(&s).filter(|c| first.as_ref() != Some(*c)) {
                     Some(c.clone())
                 } else if let Some(c) = place.joining.get(&s) {
@@ -596,7 +624,8 @@ impl Streams {
             place.forget(s);
         }
         self.save(ctx, src, ss, false, ss.iter().map(|s| (src, Op::Forget(*s))).collect());
-        if !held {
+        // a record's place stays in memory with the record (`record_left`)
+        if !held && matches!(src, Source::Conn(_)) {
             self.places.remove(&src);
         }
     }
@@ -1106,14 +1135,15 @@ impl Streams {
     /// (`Store::anew_everywhere`: a dropped copy, a raise); else (`ANEW_SOME`, or none) only at
     /// the sources told a refusal of S under a head other than S's now and those whose room mark
     /// of S is owed (`Store::room_marks`). Nothing while S takes nothing (`Store::unheld`): its
-    /// mark stands until it is judged again. A place it loaded for a source no connection pulls
-    /// from goes once written. O(the sources holding a place or a room mark of S, and the
+    /// mark stands until it is judged again. A place it loaded (its record not in memory) goes
+    /// once written. O(the sources holding a place or a room mark of S, and the
     /// connections).
     fn pull_anew(&mut self, ctx: &mut Ctx, s: SyncId) {
         if ctx.store.unheld(&s) {
             return;
         }
         let pulling: BTreeMap<Source, ConnId> = self.holders.get(&s).into_iter().flatten().filter_map(|c| self.pull.get(c).map(|p| (p.src, *c))).collect();
+        let held: BTreeSet<Source> = self.places.keys().copied().collect();
         let read = ctx.store.with_read(|t| {
             let everywhere = Store::anew_everywhere(t, &s)?;
             let mut out = BTreeSet::new();
@@ -1161,10 +1191,8 @@ impl Streams {
             Ok(())
         });
         self.failed(r);
-        // a place is held only while a connection pulls from its source: a record's loaded here
-        // alone is in its rows
-        let pulled: BTreeSet<Source> = self.pull.values().map(|p| p.src).collect();
-        for src in read.iter().filter(|src| !pulled.contains(src)) {
+        // a place loaded here alone (its record not in memory) is in its rows
+        for src in read.iter().filter(|src| !held.contains(src)) {
             self.places.remove(src);
         }
     }

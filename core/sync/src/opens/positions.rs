@@ -15,6 +15,10 @@ pub enum Rejoin {
     Held,
     /// From a Lost's cursor (`Some`), or from the start (nothing kept of where it stopped).
     From(Option<Cursor>),
+    /// Its kept record was taken (`Moved::Taken`): where the record holds it. Interim
+    /// (issues/many-sync-ids-cost.md): carried to the modules still following members per
+    /// connection; streams follows the record.
+    Taken,
 }
 
 /// A reported position: what the peer stored of this node's log, as streams serving it learns it.

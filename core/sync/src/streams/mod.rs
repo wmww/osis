@@ -10,7 +10,8 @@
 //! Both sides of a connection serve (`serve`: answering Pulls and Fetches, pushing under
 //! `follow`) and pull (`pull`: Pulls, joins, applying in order, fetching bodies one source at a
 //! time). What each source showed is `known` (stamped, so `read`, `unread` and `status` follow it
-//! by key). Members come and go by `Moved` from opens; the reported positions a requester gives
+//! by key). Members come and go by `Moved` from opens, a kept record's all at once as it is taken
+//! or released (`Moved::Taken`, `Released`); the reported positions a requester gives
 //! this side as server go back to opens as `Reported`.
 //!
 //! The core runs over `Ctx` (the store, the engine's part as `Ground`, the connections as `Wire`,
@@ -28,7 +29,8 @@
 //! Durable (spec/sync-streams.md §3 Durability): a record source's place (the stream's cursor,
 //! members at it, joins, where members that left stopped) and what it showed (`known`) are rows of
 //! its record, written by the transaction that applies what they cover; a connection's are in
-//! memory and go with it. A place is held in memory while a connection pulls from its source.
+//! memory and go with it. A record's place is held in memory as long as opens holds the record
+//! (`record_left`), so a reconnect reads and writes nothing of it per member.
 //!
 //! Not built: relay-only entries (the engine's relay path); the engine's linked blobs (`wants`:
 //! pages and header lists before apply); `Rank::Never` from the engine (a keyset without history:
@@ -41,7 +43,7 @@ mod serve;
 
 pub use known::{Known, Row as KnownRow};
 
-use crate::opens::{Member, Moved, Opens, Reported};
+use crate::opens::{Leaving, Member, Moved, Opens, Rejoin, Reported};
 use crate::session::{Incoming, Sessions, To};
 use crate::store::{Source, Store};
 use crate::types::{ConnId, Cx, Entry, Error, Position, RecordId, Result};
@@ -356,6 +358,15 @@ impl Streams {
     pub fn member_moved(&mut self, ctx: &mut Ctx, m: Moved) {
         let conn = m.conn();
         match m {
+            // Interim (issues/many-sync-ids-cost.md): a kept record's members carried one by one
+            // to the modules still following members per connection; streams follows the record
+            Moved::Joined(_, _, Rejoin::Taken) => {}
+            Moved::Left(_, _, at) if at.how == Leaving::Connection && matches!(at.src, Source::Record(_)) => {}
+            Moved::Taken(conn, rid) => {
+                self.taken(ctx, conn, rid);
+                self.run(ctx, conn);
+            }
+            Moved::Released(conn, _) => self.closed(conn),
             Moved::Joined(conn, s, rejoin) => {
                 self.holders.entry(s).or_default().insert(conn);
                 self.served_joined(ctx, conn, s);
@@ -436,15 +447,20 @@ impl Streams {
     /// its members' places stay with the record.
     pub fn closed(&mut self, conn: ConnId) {
         self.serve.remove(&conn);
-        // a record's place is in its rows: held again by the next connection taking it
-        if let Some(p) = self.pull.remove(&conn)
-            && !self.pull.values().any(|q| q.src == p.src)
-            && let Some(place) = self.places.remove(&p.src)
-            && !place.closed.is_empty()
-        {
-            // where members closed on it stopped lasts the connection: gone at the next tick
-            // (a start finds those a crash left)
-            self.unkept.push((p.src, place.closed.into_iter().collect()));
+        if let Some(p) = self.pull.remove(&conn) {
+            match p.src {
+                // a record's place stays with the record (`record_left`); where members closed on
+                // this connection stopped lasts the connection: gone at the next tick (a start
+                // finds those a crash left)
+                Source::Record(_) => {
+                    if let Some(place) = self.places.get(&p.src).filter(|pl| !pl.closed.is_empty()) {
+                        self.unkept.push((p.src, place.closed.iter().copied().collect()));
+                    }
+                }
+                Source::Conn(_) => {
+                    self.places.remove(&p.src);
+                }
+            }
         }
         self.asked.retain(|_, (c, _)| *c != conn);
         self.known.forget_source(Source::Conn(conn));
@@ -459,11 +475,23 @@ impl Streams {
         }
     }
 
+    /// Record `rid` left opens' memory: its place goes from memory (its rows stay).
+    pub fn record_left(&mut self, rid: RecordId) {
+        let src = Source::Record(rid);
+        if !self.pull.values().any(|p| p.src == src) {
+            self.places.remove(&src);
+        }
+    }
+
     /// Settles every connection: pushes under `follow`, Pulls and Fetches due, room regained.
     pub fn tick(&mut self, ctx: &mut Ctx) -> Result<bool> {
         self.forget_shredded();
         for (src, ss) in std::mem::take(&mut self.unkept) {
-            self.forget_stops(ctx, src, &ss);
+            // a member opened again since (on the record's next connection) keeps its place
+            let ss: Vec<SyncId> = ss.into_iter().filter(|s| self.places.get(&src).is_none_or(|p| p.closed.contains(s))).collect();
+            if !ss.is_empty() {
+                self.forget_stops(ctx, src, &ss);
+            }
         }
         self.known.settle();
         let mut acted = self.send_relays(ctx)?;
@@ -515,7 +543,7 @@ fn product(cx: &mut Cx, sessions: &mut Sessions, opens: &Opens, reported: &mut V
     let (now, mono) = (cx.now, cx.mono);
     let mut ground = EngineGround { engine: cx.engine, store: cx.store.clone(), rng: &mut *cx.rng };
     let mut ctx = Ctx { store: cx.store, ground: &mut ground, wire: sessions, shared: opens, now, mono, reported };
-    f(&mut ctx);
+    osis_base::costs::scoped("streams", || f(&mut ctx));
 }
 
 /// What opening entry `e` of read S with `bytes` does at this node (the product's `Ground::open`,

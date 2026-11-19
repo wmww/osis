@@ -95,6 +95,24 @@ fn an_idle_reconnect_judges_no_member_again_spec_sync_2() {
     }
 }
 
+// spec/sync-streams.md §4 (Joining: a connection that takes a record pulls its members from where
+// the record holds them, with no join for a member at the stream's cursor; Costs): an idle
+// reconnect, with a reader or with a node keeping every thing unread, reads and writes no row of
+// streams' per member (the place and what the source showed are the record's, kept across its
+// connections): as many store rows by streams at n as at 10n shared sync IDs, but for a settle
+// round more or fewer (each reads the log's bounds once per connection to push and to track).
+#[test]
+fn an_idle_reconnect_reads_no_place_per_member_spec_sync_streams_4() {
+    let at = |n| {
+        let mut w = things(n);
+        [reconnect(&mut w, 0, 2).1, reconnect(&mut w, 0, 1).1].map(|c| sum(&c, &["store rows read <- streams"]))
+    };
+    let (small, large) = (at(N), at(10 * N));
+    for (i, who) in ["a reader", "a node keeping them unread"].iter().enumerate() {
+        assert!(large[i] <= small[i] + 8, "with {who}: streams read {} store rows at n, {} at 10n", small[i], large[i]);
+    }
+}
+
 /// The named counters' sum over one small commit by node 0 on thing 0, run to quiet.
 fn commit(w: &mut World, named: &[&str]) -> u64 {
     exact();

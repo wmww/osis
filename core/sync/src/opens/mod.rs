@@ -77,6 +77,11 @@ pub enum Moved {
     /// Member S of kept record R, which no connection holds, closed (judged in the step of a
     /// change, or S left the sync set): what is kept of S for that source goes.
     Gone(RecordId, SyncId),
+    /// Kept record R is connected on `conn` (`Opens::conn_of`): its members are that
+    /// connection's, standing where the record holds them. No member moves.
+    Taken(ConnId, RecordId),
+    /// `conn` let kept record R go: the record keeps its members where they stand.
+    Released(ConnId, RecordId),
 }
 
 /// Where a member's peer stood as it left: what status still counts it holding (spec/sync-status.md
@@ -123,7 +128,7 @@ impl Moved {
     /// The connection it moved on (none for a record no connection holds).
     pub fn conn(&self) -> Option<ConnId> {
         match self {
-            Moved::Joined(c, ..) | Moved::Left(c, ..) | Moved::Until(c, _) | Moved::Forgot(c, _) => Some(*c),
+            Moved::Joined(c, ..) | Moved::Left(c, ..) | Moved::Until(c, _) | Moved::Forgot(c, _) | Moved::Taken(c, _) | Moved::Released(c, _) => Some(*c),
             Moved::Gone(..) => None,
         }
     }
@@ -479,6 +484,9 @@ pub struct Opens {
     dropped: BTreeSet<RecordId>,
     /// The connection holding each record: record R is connected on C.
     on: BTreeMap<RecordId, ConnId>,
+    /// Records that left memory since `unloaded` was last read: streams keeps a record's place
+    /// in memory as long as opens keeps the record.
+    unloaded: Vec<RecordId>,
     /// Per record, the members whose J `Holds` follows (`Holds::standing`): followed across the
     /// record's connections, from S's open or the take that judged it until S leaves the record,
     /// the record goes (evicted, dropped, a record kept nowhere let go), S leaves the sync set,
@@ -514,6 +522,7 @@ impl Default for Opens {
             stops: osis_base::memo::Stamped::default(),
             dropped: BTreeSet::new(),
             on: BTreeMap::new(),
+            unloaded: Vec::new(),
             followed: BTreeMap::new(),
             unfollowed: BTreeSet::new(),
             work: Work::default(),
@@ -562,7 +571,7 @@ impl Opens {
         let mut fx = std::mem::take(&mut self.fx);
         let mut store = cx.store.clone();
         let mut holds = NodeHolds { cx, unread, fx: &mut fx };
-        let out = f(self, &mut Ctx { holds: &mut holds, wire: sessions, store: &mut store, mono });
+        let out = osis_base::costs::scoped("opens", || f(self, &mut Ctx { holds: &mut holds, wire: sessions, store: &mut store, mono }));
         self.fx = fx;
         out
     }
@@ -613,7 +622,14 @@ impl Opens {
         // of them across its connections), without its peer's filter entries: one with none
         // keeps nothing there that its rows do not, so a dialer proving fresh key actors with no
         // right to any S costs memory only while connected
-        self.records.retain(|id, r| !r.kept || held.contains(id) || !r.members.is_empty());
+        let unloaded = &mut self.unloaded;
+        self.records.retain(|id, r| {
+            let stays = !r.kept || held.contains(id) || !r.members.is_empty();
+            if !stays {
+                unloaded.push(*id);
+            }
+            stays
+        });
         for (_, r) in self.records.iter_mut().filter(|(id, r)| r.kept && !held.contains(*id)) {
             if let Some(p) = r.peer.as_mut().filter(|p| p.held) {
                 p.values = Arc::default();
@@ -623,12 +639,20 @@ impl Opens {
         Ok(evicted.into_iter().chain(dropped).collect())
     }
 
+    /// The records that left memory since this was last read (evicted, dropped, let go) and are
+    /// not back in it.
+    pub fn unloaded(&mut self) -> Vec<RecordId> {
+        let records = &self.records;
+        std::mem::take(&mut self.unloaded).into_iter().filter(|id| !records.contains_key(id)).collect()
+    }
+
     /// Record `id` leaves memory (evicted, dropped, a record kept nowhere let go): its members
     /// go from `held`, are unfollowed at the next `tick`, and read as gone. `src`: where its rows
     /// live.
     fn forget_record(&mut self, id: RecordId, src: Source) -> Option<Record> {
         self.unfollow_record(id);
         let r = self.records.remove(&id)?;
+        self.unloaded.push(id);
         for s in r.members.keys() {
             self.hold(*s, id, false);
             self.record_members.wrote(&(src, *s), false);
@@ -1045,6 +1069,9 @@ impl Opens {
         }
         // where members closed on this connection stopped lasts the connection
         moved.extend(r.stopped.keys().map(|s| Moved::Forgot(conn, *s)));
+        if let Source::Record(rid) = src {
+            moved.push(Moved::Released(conn, rid));
+        }
         let Some(r) = self.records.get_mut(&rid) else { return };
         r.stopped.clear();
         // a kept one stays in memory until `flush` writes it (or another connection takes it),
@@ -1525,9 +1552,14 @@ impl Opens {
         if let Some(src) = self.source_of(conn) {
             self.connected.wrote(&src, true);
         }
+        if kept {
+            moved.push(Moved::Taken(conn, id));
+        }
         for s in &members {
             self.member_stamps.wrote(&(conn, *s), true);
-            moved.push(Moved::Joined(conn, *s, Rejoin::Held));
+            // Interim (issues/many-sync-ids-cost.md): read, status and inbox still follow members
+            // per connection, so a kept record's members are carried to them one by one
+            moved.push(Moved::Joined(conn, *s, if kept { Rejoin::Taken } else { Rejoin::Held }));
         }
         if fresh || renamed {
             for s in members {

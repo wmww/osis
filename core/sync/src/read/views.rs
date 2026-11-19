@@ -44,7 +44,7 @@ impl Views {
                     self.drop_conn(*s, at, *conn);
                 }
             }
-            Moved::Until(..) | Moved::Forgot(..) | Moved::Gone(..) => {}
+            Moved::Until(..) | Moved::Forgot(..) | Moved::Gone(..) | Moved::Taken(..) | Moved::Released(..) => {}
         }
     }
 
