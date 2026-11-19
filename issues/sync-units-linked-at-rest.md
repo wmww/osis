@@ -3,6 +3,6 @@
 > Priority: low
 > Tags: sync, security, spec
 
-What such a node learns under the two redesigns (notes/sync-unit-scope.md, Keeping the privacy story tight; spec/requirements.md, Data a node cannot read): the units it keeps and which refer to which; that units share a writer, by the evidence blob entered under each unit a signer writes in and by each such unit listing the writer's public profile; and whatever account it keeps the data for. Hiding the evidence route (a fresh encryption per unit) while the profile route stays buys nothing, so neither is hidden.
+What such a node learns (spec/requirements.md, Data a node cannot read): which opaque sync units each item is in and how they overlap; that units share a writer, since one blob is wrapped under each sync ID that carries it, so a writer's evidence copies and its public profile, carried under every unit its owner writes in, are the same blobs under each; and whatever account it keeps data for. Hiding the evidence route (a fresh encryption per unit) while the profile route stays buys nothing, so neither is hidden.
 
-For the pass, if it comes: what a node really needs to know to bill and to refuse abuse; whether a writer's units can be kept apart for an identity whose point is privacy (issues/actors-one-mechanism.md, identities managed through another); the two mitigations Tess sketched (notes/sync-unit-scope.md, Mitigations a user could choose).
+For the pass, if it comes: what a node really needs to know to bill and to refuse abuse; whether a writer's units can be kept apart for an identity whose point is privacy (issues/actors-one-mechanism.md, identities managed through another).
