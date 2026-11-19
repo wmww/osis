@@ -34,9 +34,23 @@ fn setup_seeded(seed: u64) -> (LocalPeer, Tid) {
     lp.hold(d);
     set_edge(&mut lp.peers[0].engine, d, ids[1], Some(edge(Role::Write)), None);
     set_edge(&mut lp.peers[0].engine, d, ids[2], Some(edge(Role::Admin)), None);
+    // the fresh node's account, granted read on D: what it is handed of D applies (content of a
+    // thing outside its node closure waits, spec/commits.md §4 Outside the node closure)
+    let mut f = fresh_account();
+    lp.peers[0].know(&[f.engine.me()]).unwrap();
+    for id in f.engine.commit_ids() {
+        let pk = f.engine.package(&id).unwrap().unwrap();
+        lp.deliver(0, &pk).unwrap();
+    }
+    set_edge(&mut lp.peers[0].engine, d, f.engine.me(), Some(edge(Role::Read)), None);
     lp.sync_all().unwrap();
     lp.advance(1_000);
     (lp, d)
+}
+
+/// The fresh node's account as `setup_seeded` grants it (seed `FRESH` at `T0`).
+fn fresh_account() -> Peer {
+    Peer::new(FRESH, crate::common::T0).unwrap()
 }
 
 /// Peer `i` writes `v` on `A` of `d`.
@@ -74,9 +88,12 @@ fn base(lp: &mut LocalPeer) -> Vec<Package> {
 /// A node apart from `setup`'s (seeds 0 to 2).
 const FRESH: u64 = 3;
 
-/// A node at wall time `at` holding `base` then `order`.
-fn fresh(base: &[Package], order: &[&Package], seed: u64, at: WallMs) -> Peer {
-    let mut p = Peer::new(seed, at).unwrap();
+/// A node of the account `setup` grants read on `d` (`fresh_account`), holding `d`, at wall
+/// time `at`, holding `base` then `order`.
+fn fresh(d: Tid, base: &[Package], order: &[&Package], at: WallMs) -> Peer {
+    let mut p = fresh_account();
+    p.engine.hold(osis_base::Strong(d)).unwrap();
+    p.clock.set(at);
     for x in base.iter().chain(order.iter().copied()) {
         p.engine.ingest(&x.bytes, x.blobs.clone()).unwrap();
     }
@@ -189,7 +206,7 @@ fn history_follows_the_setting_in_any_order_spec_commits_5() {
     let pks = [pack(&mut lp, 0, &x), pack(&mut lp, 1, &v1), pack(&mut lp, 1, &v2)];
     let now = lp.peers[0].engine.now();
     for order in [[0, 1, 2], [1, 0, 2], [1, 2, 0], [2, 1, 0], [0, 2, 1], [2, 0, 1]] {
-        let mut p = fresh(&base, &order.map(|i| &pks[i]), FRESH, now);
+        let mut p = fresh(d, &base, &order.map(|i| &pks[i]), now);
         assert!(listed(&mut p, &v1, d), "{order:?}: in history");
         assert!(listed(&mut p, &v2, d), "{order:?}: live");
         p.clock.advance(HOUR + 2_000);
@@ -345,10 +362,10 @@ fn concurrent_admins_lose_no_purge_floor_spec_commits_5() {
     let pk: Vec<Package> = [(0, &p), (1, &v0), (1, &v1), (2, &k), (1, &v2), (1, &v3)].into_iter().map(|(i, c)| pack(&mut lp, i, c)).collect();
     let rest = [&pk[1], &pk[2], &pk[4], &pk[5]];
     let now = lp.peers[0].engine.now();
-    let mut alone = fresh(&base, &[&pk[3], rest[0], rest[1], rest[2], rest[3]], FRESH, now);
+    let mut alone = fresh(d, &base, &[&pk[3], rest[0], rest[1], rest[2], rest[3]], now);
     assert!(listed(&mut alone, &v0, d), "the keep alone lists it: that node never heard of the purge");
     for order in [[&pk[0], &pk[3]], [&pk[3], &pk[0]]] {
-        let mut n = fresh(&base, &[order[0], order[1], rest[0], rest[1], rest[2], rest[3]], FRESH, now);
+        let mut n = fresh(d, &base, &[order[0], order[1], rest[0], rest[1], rest[2], rest[3]], now);
         assert!(!listed(&mut n, &v0, d), "replaced under purge on replace");
         assert!(listed(&mut n, &v2, d), "written after the keep");
     }
@@ -357,7 +374,7 @@ fn concurrent_admins_lose_no_purge_floor_spec_commits_5() {
     let joined = ct::retention_setting(&lp.peers[2].engine.get(&d, &ak("retention^.0")).unwrap().unwrap()).unwrap();
     assert_eq!(joined.rules[&ak(A)].purge_before, Some(lp.peers[2].engine.header(&k).unwrap().ts), "the join, at the keep's stamp");
     let pk2 = pack(&mut lp, 2, &k2);
-    let mut later = fresh(&base, &[&pk2, rest[0], rest[1], rest[2], rest[3]], FRESH, now);
+    let mut later = fresh(d, &base, &[&pk2, rest[0], rest[1], rest[2], rest[3]], now);
     assert!(!listed(&mut later, &v0, d) && listed(&mut later, &v2, d), "the carried join, alone");
 }
 
@@ -375,7 +392,7 @@ fn purge_on_replace_never_listed_ahead_of_the_clock_spec_commits_5() {
     let pks = [pack(&mut lp, 0, &k), pack(&mut lp, 0, &x), pack(&mut lp, 1, &v1), pack(&mut lp, 1, &v2)];
     // half an hour behind the writer
     let at = WallMs(lp.peers[0].engine.now().0 - HOUR / 2);
-    let mut p = fresh(&base, &[&pks[0], &pks[1], &pks[2], &pks[3]], FRESH, at);
+    let mut p = fresh(d, &base, &[&pks[0], &pks[1], &pks[2], &pks[3]], at);
     assert!(p.engine.body_not_dropped(&v1, &d, &ak(A)), "a reader holds it until a writer covers it");
     assert!(!listed(&mut p, &v1, d), "never history");
 }
@@ -397,7 +414,7 @@ fn a_replacement_ahead_of_the_clock_bounds_until_reached_spec_commits_5() {
     let v2 = put(&mut lp, 1, d, "two");
     let pks = [pack(&mut lp, 0, &x), pack(&mut lp, 1, &v1), pack(&mut lp, 0, &k), pack(&mut lp, 1, &v2)];
     let at = WallMs(lp.peers[0].engine.now().0 - HOUR / 2);
-    let mut p = fresh(&base, &[&pks[0], &pks[1], &pks[2], &pks[3]], FRESH, at);
+    let mut p = fresh(d, &base, &[&pks[0], &pks[1], &pks[2], &pks[3]], at);
     let r = p.engine.header(&v2).unwrap().ts.wall_ms().0;
     let mut fx: osis_base::memo::Effects<(), Vec<u64>> = osis_base::memo::Effects::new("test keeps");
     fx.want(());
@@ -506,7 +523,7 @@ fn two_admins_at_one_stamp_ordered_by_key_spec_commits_5() {
         let pks = [pack(&mut lp, keeper, &k), pack(&mut lp, other, &n), pack(&mut lp, 1, &v1), pack(&mut lp, 1, &v2)];
         let now = lp.peers[1].engine.now();
         for order in [[0, 1, 2, 3], [1, 0, 2, 3], [2, 3, 1, 0], [3, 0, 2, 1]] {
-            let mut p = fresh(&base, &order.map(|i| &pks[i]), FRESH, now);
+            let mut p = fresh(d, &base, &order.map(|i| &pks[i]), now);
             assert_eq!(listed(&mut p, &v1, d), keeps, "keeper {keeper}, {order:?}: the later by key is in force");
         }
     }
@@ -740,7 +757,7 @@ fn covered_drops_history(seed: u64) -> usize {
     let mut ids: Vec<(osis_base::Ts, CommitId)> = lp.peers[0].engine.commit_ids().into_iter().map(|c| (lp.peers[0].engine.header(&c).unwrap().ts, c)).collect();
     ids.sort();
     let packs: Vec<Package> = ids.iter().filter_map(|(_, c)| lp.peers[0].engine.package(c).unwrap()).collect();
-    let mut p = fresh(&packs, &[], 9100 + seed, lp.peers[0].engine.now());
+    let mut p = fresh(d, &packs, &[], lp.peers[0].engine.now());
     let p = &mut p;
     let on: Vec<(CommitId, &str)> =
         p.engine.commit_ids().into_iter().flat_map(|c| [A, B].map(|a| (c, a))).filter(|(c, a)| p.engine.header(c).is_some_and(|h| h.aspects.iter().any(|x| x.ak == ak(a)))).collect();
@@ -860,7 +877,7 @@ fn leaving_history_is_told_in_any_order_spec_commits_5() {
     let pks = [pack(&mut lp, 0, &x), pack(&mut lp, 1, &v1), pack(&mut lp, 1, &v2)];
     let now = lp.peers[0].engine.now();
     for (n, order) in [[0, 1, 2], [1, 2, 0], [2, 1, 0]].into_iter().enumerate() {
-        let mut p = fresh(&base, &order.map(|i| &pks[i]), FRESH, now);
+        let mut p = fresh(d, &base, &order.map(|i| &pks[i]), now);
         if n == 1 {
             p.restart(355).unwrap();
         }
@@ -971,7 +988,7 @@ fn a_late_row_leaves_no_earlier_than_replaced_spec_commits_5() {
     lp.sync_all().unwrap();
     let c = put(&mut lp, 2, d, "carol");
     let packs: Vec<Package> = [(0, keep), (0, v), (2, c), (1, b)].iter().map(|(i, x)| pack(&mut lp, *i, x)).collect();
-    let mut p = fresh(&base, &packs.iter().collect::<Vec<_>>(), FRESH, early);
+    let mut p = fresh(d, &base, &packs.iter().collect::<Vec<_>>(), early);
     p.engine.listen_commits(std::sync::Arc::new(|_: &Tid| true));
     p.drain_events();
     let told = |p: &mut Peer| -> Vec<CommitId> { p.drain_events().into_iter().filter_map(|e| if let osis_engine::Event::Commits(ch) = e { Some(ch.iter().filter(|x| x.tid == d).map(|x| x.id).collect::<Vec<_>>()) } else { None }).flatten().collect() };

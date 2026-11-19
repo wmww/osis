@@ -38,6 +38,15 @@ fn setup_built() -> (LocalPeer, Tid, [Tid; 4]) {
     set_edge(&mut lp.peers[0].engine, d, ids[1], Some(edge(Role::Write)), None);
     set_edge(&mut lp.peers[0].engine, d, ids[2], Some(edge(Role::Admin)), None);
     set_edge(&mut lp.peers[0].engine, d, ids[3], Some(edge(Role::Write)), None);
+    // the fresh node's account, granted read on D: what it is handed of D applies (content of a
+    // thing outside its node closure waits, spec/commits.md §4 Outside the node closure)
+    let mut f = fresh_account();
+    lp.peers[0].know(&[f.engine.me()]).unwrap();
+    for id in f.engine.commit_ids() {
+        let pk = f.engine.package(&id).unwrap().unwrap();
+        lp.deliver(0, &pk).unwrap();
+    }
+    set_edge(&mut lp.peers[0].engine, d, f.engine.me(), Some(edge(Role::Read)), None);
     lp.sync_all().unwrap();
     lp.advance(1_000);
     (lp, d, ids)
@@ -74,10 +83,17 @@ fn all(lp: &mut LocalPeer, i: usize) -> Vec<Package> {
     x.into_iter().map(|x| x.1).collect()
 }
 
-/// A new peer (one more than `lp` holds) holding `base`.
-fn fresh(lp: &mut LocalPeer, base: &[Package]) -> Peer {
+/// The fresh node's account as `setup_built` grants it read on D (seed 4 at `T0`).
+fn fresh_account() -> Peer {
+    Peer::new(4, crate::common::T0).unwrap()
+}
+
+/// A new node of `fresh_account`, holding D (`d`), at `lp`'s time, holding `base`.
+fn fresh(lp: &mut LocalPeer, d: Tid, base: &[Package]) -> Peer {
     let now = lp.peers[0].engine.now();
-    let mut p = Peer::new(lp.peers.len() as u64, now).unwrap();
+    let mut p = fresh_account();
+    p.engine.hold(osis_base::Strong(d)).unwrap();
+    p.clock.set(now);
     for x in base {
         p.engine.ingest(&x.bytes, x.blobs.clone()).unwrap();
     }
@@ -277,6 +293,8 @@ fn not_fetched_part_reads_so_and_late_body_tells_the_watch() {
     let e = lp.peers[0].engine.new_thing(&mut m, ids[0]);
     lp.peers[0].commit(m).unwrap().unwrap();
     lp.hold(e);
+    let f = fresh_account().engine.me();
+    set_edge(&mut lp.peers[0].engine, e, f, Some(edge(Role::Read)), None);
     lp.advance(1_000);
     lp.sync_all().unwrap();
     let base = all(&mut lp, 0);
@@ -285,7 +303,11 @@ fn not_fetched_part_reads_so_and_late_body_tells_the_watch() {
     m.set(e, &reg(), &s("away")).unwrap();
     let c = lp.peers[0].commit(m).unwrap().unwrap();
     let pk = pack(&mut lp, 0, &c);
-    let mut p = fresh(&mut lp, &base);
+    let mut p = fresh(&mut lp, d, &base);
+    // it holds E too: content of a thing outside its node closure would wait (spec/commits.md §4)
+    p.engine.hold(osis_base::Strong(e)).unwrap();
+    p.reexamine().unwrap();
+    assert!(p.engine.closure_holds(&e));
     let mut only = osis_commit::CommitBlob::decode(&pk.bytes).unwrap();
     let keep = only.header.aspects.iter().position(|a| a.tid == d).unwrap();
     only.parts.retain(|x| x.ai == keep);
@@ -329,7 +351,9 @@ fn events_per_commit_exact() {
     assert_eq!(told_of(&mut lp.peers[1], d), vec![c3]);
     lp.peers[1].receive(&pk.bytes, pk.blobs.clone()).unwrap();
     assert_eq!(told_of(&mut lp.peers[1], d), vec![older], "the arrival alone");
-    // purged: that one
+    // purged: that one (Dan holds Bob's writes first: what a sync carries of a commit purged
+    // whole is the product's call, spec/sync-judgement.md §1)
+    lp.sync_all().unwrap();
     let item = lp.peers.iter().find_map(|p| p.engine.purge_item(&c, d, reg())).unwrap();
     let pc = purge(&mut lp, 0, item);
     let pp = pack(&mut lp, 0, &pc);
@@ -453,7 +477,7 @@ fn purge_by_author_any_order_spec_perm_6() {
             let pd = pack(&mut lp, 0, &dm);
             let items = [&pc, &setting, &pd, &prq];
             // a fresh node holding `base`, copied for each order
-            let mut start = fresh(&mut lp, &base);
+            let mut start = fresh(&mut lp, d, &base);
             for (k, order) in perms(4).iter().enumerate() {
                 // only the author's own request by the first class: the orders are the same work
                 if k > 0 && by != PurgeBy::AuthorOrAdmin && order[0] != 0 {
