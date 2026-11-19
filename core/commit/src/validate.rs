@@ -147,6 +147,10 @@ impl Header {
                 return Err(Error::Invalid("merge certificate carrying more than its join"));
             }
         }
+        // the adminless mark is a role commit's (spec/wire.md §4 field 17)
+        if self.adminless && kind != Kind::Role {
+            return Err(Error::Invalid("adminless mark not on a role commit"));
+        }
         // an own cover is a durable content snapshot (spec/wire.md §4 field 17)
         if self.own_cover && (kind != Kind::ContentSnapshot || self.ephemeral.is_some()) {
             return Err(Error::Invalid("own cover not a durable content snapshot"));

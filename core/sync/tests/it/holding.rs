@@ -468,7 +468,7 @@ fn lowering_the_makers_only_path_to_sync_keeps_the_thing_unread_spec_permissions
     strong(&mut w, 1, None, t1, true);
     w.run();
     assert_eq!(value(&mut w, 0, &t1), Some(Value::Str("v2".into())));
-    w.write(0, |e| e.demote(&t1, &osis_engine::flows::Demotion { holder: t0, new: Some(edge(Role::Sync)), retain: None })).unwrap();
+    w.write(0, |e| e.leaving_adminless(|e| e.demote(&t1, &osis_engine::flows::Demotion { holder: t0, new: Some(edge(Role::Sync)), retain: None }))).unwrap();
     w.run();
     assert_eq!(value(&mut w, 1, &t1), Some(Value::Str("v2".into())), "Bob still reads T1");
     assert_eq!(value(&mut w, 0, &t1), None, "Alice lost read on T1");
@@ -488,7 +488,7 @@ fn the_last_reader_lowered_to_sync_keeps_the_store_for_a_later_reader_spec_sync_
     let bob = w.node(1).account.unwrap();
     w.write(0, |e| e.grant(&t1, &bob, &edge(Role::Read))).unwrap();
     w.run();
-    w.write(0, |e| e.demote(&t1, &osis_engine::flows::Demotion { holder: t0, new: Some(edge(Role::Sync)), retain: None })).unwrap();
+    w.write(0, |e| e.leaving_adminless(|e| e.demote(&t1, &osis_engine::flows::Demotion { holder: t0, new: Some(edge(Role::Sync)), retain: None }))).unwrap();
     w.run();
     assert_eq!(value(&mut w, 0, &t1), None);
     assert_eq!(holding(&mut w, 0, &t1), Some(Holding::Unread));
@@ -571,7 +571,7 @@ fn removing_the_makers_only_path_parks_its_entries_spec_permissions_3() {
         e.commit(m).unwrap();
     });
     w.check_parks();
-    w.write(0, |e| e.demote(&t1, &osis_engine::flows::Demotion { holder: t0, new: None, retain: None })).unwrap();
+    w.write(0, |e| e.leaving_adminless(|e| e.demote(&t1, &osis_engine::flows::Demotion { holder: t0, new: None, retain: None }))).unwrap();
     w.check_parks();
     w.run();
     w.check_parks();
@@ -594,7 +594,7 @@ fn a_self_removal_of_the_makers_only_path_reaches_the_reader_spec_permissions_3(
     strong(&mut w, 1, None, t1, true);
     w.run();
     assert!(w.engine(1).roster(&t1).contains_key(&t0), "Bob reads T0's record edge");
-    w.write(0, |e| e.demote(&t1, &osis_engine::flows::Demotion { holder: t0, new: None, retain: None })).unwrap();
+    w.write(0, |e| e.leaving_adminless(|e| e.demote(&t1, &osis_engine::flows::Demotion { holder: t0, new: None, retain: None }))).unwrap();
     w.run();
     assert_eq!(value(&mut w, 0, &t1), None, "Alice lost T1");
     let roster: Vec<Tid> = w.engine(1).roster(&t1).into_keys().collect();
@@ -769,7 +769,7 @@ fn a_removed_record_edge_reaches_its_mint_admins_readers_spec_permissions_4() {
     w.run();
     let t2 = make_in(&mut w, 2, t0, "t2");
     w.write(2, |e| e.grant(&t2, &alice, &edge(Role::Sync))).unwrap();
-    w.write(2, |e| e.demote(&t2, &osis_engine::flows::Demotion { holder: t0, new: None, retain: None })).unwrap();
+    w.write(2, |e| e.leaving_adminless(|e| e.demote(&t2, &osis_engine::flows::Demotion { holder: t0, new: None, retain: None }))).unwrap();
     w.run();
     for i in [1, 2] {
         assert!(!w.engine(i).roster(&t2).contains_key(&t0), "node {i} sees T0's record edge removed");

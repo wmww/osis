@@ -248,13 +248,6 @@ pub(crate) fn removal(tx: &Tx<'_>, m: &mut Mutation, target: Tid, holder: Tid) -
     Ok(())
 }
 
-/// Whether lowering `lowered` on dependent `target` would leave it no admin (spec/permissions.md §1:
-/// refused; signed anyway, the thing stays dependent and nobody administers it). Over the edges on
-/// `target` (`edge_holders`): a destroyed admin there still administers it (spec/commits.md §5).
-fn leaves_no_admin(core: &crate::engine::Core, target: &Tid, lowered: &[(Tid, Option<Role>)]) -> bool {
-    !core.edge_holders(target).into_iter().any(|(m, r)| r == Role::Admin && lowered.iter().all(|(x, n)| *x != m || *n == Some(Role::Admin)))
-}
-
 /// A removal or demotion (or a self-removal) of `d.holder` on `target` by `who`: an explicit
 /// demotion carries the frontier and the target's rotation of the roles the holder left in the
 /// same commit (spec/permissions.md §3), after the cascade on the target, where `who` may rotate
@@ -291,15 +284,6 @@ pub(crate) fn demote_in(tx: &mut Tx<'_>, signer: Option<Tid>, target: Tid, d: &D
     let admin = crate::engine::secrets::usable_role_now(tx, &who, &target)? == Some(Role::Admin);
     if !selfr && !admin || selfr && !gone.is_empty() {
         return Err(Error::Permission { tid: target, needs: Role::Admin });
-    }
-    // a dependent thing's only holder for keys is its mint admin (a grant gives it secrets
-    // of its own first): lowering the mint admin's edge would leave it no admin, refused
-    // (spec/permissions.md §1)
-    if !tx.core.is_independent(&target) && !tx.core.is_key_actor(&target) {
-        let lowered: Vec<(Tid, Option<Role>)> = std::iter::once((holder, rotation::key_role(new_p.as_ref()))).chain(gone.iter().map(|(x, _)| (*x, None))).collect();
-        if leaves_no_admin(tx.core, &target, &lowered) && !tx.core.skip_writer_rules {
-            return Err(Error::Misuse("this would leave a dependent thing with no admin: grant another admin first"));
-        }
     }
     let mut done = Done::default();
     let mut m = Mutation::new();
@@ -600,6 +584,16 @@ impl Engine {
     /// waits, none: it stays due).
     pub fn demote(&mut self, target: &Tid, d: &Demotion) -> Result<Done> {
         self.remove_signed(None, target, d, &[])
+    }
+
+    /// `f` with the edge writes it signs carrying the adminless mark: they may leave a thing with
+    /// no standing admin (spec/permissions.md §1, The last admin), which is otherwise refused
+    /// (`Error::LeavesNoAdmin`).
+    pub fn leaving_adminless<R>(&mut self, f: impl FnOnce(&mut Engine) -> R) -> R {
+        let was = std::mem::replace(&mut self.core.leave_adminless, true);
+        let r = f(self);
+        self.core.leave_adminless = was;
+        r
     }
 
     /// `demote` that also removes `others` in the same commit under one rotation

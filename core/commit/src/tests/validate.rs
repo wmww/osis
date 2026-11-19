@@ -54,10 +54,11 @@ fn validate_kinds() {
     x.validate().unwrap();
 }
 
-// spec/wire.md §4 field 17: the own-cover marker is a trailing `true` on a durable content
-// snapshot only, absent on every other header (which keeps its bytes); any other value is bad.
+// spec/wire.md §4 field 17: the flags are a trailing uint, present only when nonzero; bit 0 the
+// own cover, on a durable content snapshot only (a header without flags keeps its bytes); a
+// flags of 0 or a reserved bit is bad.
 #[test]
-fn own_cover_marker_spec_wire_4() {
+fn own_cover_flag_spec_wire_4() {
     let mut x = sample_header();
     x.own_cover = true;
     assert!(invalid(&x).to_string().contains("own cover"), "on a content commit");
@@ -74,14 +75,32 @@ fn own_cover_marker_spec_wire_4() {
     x.own_cover = false;
     assert_eq!(x.encode().len() + 1, marked.len(), "one byte, on the own cover alone");
     assert_eq!(Header::decode(&x.encode()).unwrap(), x);
-    // a trailing `false` is no canonical header
-    let mut bad = x.encode();
-    bad[0] += 1;
-    bad.push(0xf4);
-    assert!(Header::decode(&bad).is_err());
+    // a trailing 0 or a reserved bit is no canonical header
+    for f in [0x00, 0x04] {
+        let mut bad = x.encode();
+        bad[0] += 1;
+        bad.push(f);
+        assert!(Header::decode(&bad).is_err(), "flags {f}");
+    }
     x.own_cover = true;
     x.ephemeral = Some(EphClass::Plain);
     assert!(invalid(&x).to_string().contains("own cover"), "an ephemeral own cover");
+}
+
+// spec/wire.md §4 field 17 bit 1: the adminless mark, on a role commit only, one byte.
+#[test]
+fn adminless_flag_spec_wire_4() {
+    let mut x = role_header("roles.0");
+    x.validate().unwrap();
+    let plain = x.encode();
+    x.adminless = true;
+    x.validate().unwrap();
+    let marked = x.encode();
+    assert_eq!(plain.len() + 1, marked.len());
+    assert_eq!(Header::decode(&marked).unwrap(), x);
+    let mut c = sample_header();
+    c.adminless = true;
+    assert!(invalid(&c).to_string().contains("adminless"), "on a content commit");
 }
 
 pub(crate) fn role_header(ak: &str) -> Header {

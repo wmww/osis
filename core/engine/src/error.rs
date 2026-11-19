@@ -38,6 +38,9 @@ pub enum Error {
     /// A transaction would leave a thing it made outside the node closure (spec/sync-set.md §2
     /// Making a thing). Local.
     NotHeld(Tid),
+    /// A role commit would leave this thing, which has a standing admin, with none, and does not
+    /// carry the adminless mark (spec/permissions.md §1, The last admin). Local.
+    LeavesNoAdmin(Tid),
 }
 
 osis_base::impl_error!(Error {
@@ -58,6 +61,7 @@ osis_base::impl_error!(Error {
     Corrupt(m) => ("corrupt local record: {m}"),
     NotBuilt(m) => ("not built: {m}"),
     NotHeld(t) => ("{t} would be held by nothing: write a strong to it from a held thing in the same write"),
+    LeavesNoAdmin(t) => ("this would leave {t} with no admin"),
 });
 
 impl Classified for Error {
@@ -70,7 +74,7 @@ impl Classified for Error {
             Error::Crypto(e) => e.class(),
             Error::Path(e) => e.class(),
             Error::BadInput(_) => ErrorClass::BadInput,
-            Error::Permission { .. } | Error::NotEnabled { .. } | Error::UnknownThing(_) | Error::UnknownCommit(_) | Error::NotKept(_) | Error::Misuse(_) | Error::Clash(_) | Error::Corrupt(_) | Error::NotBuilt(_) | Error::NotHeld(_) => ErrorClass::Local,
+            Error::Permission { .. } | Error::NotEnabled { .. } | Error::UnknownThing(_) | Error::UnknownCommit(_) | Error::NotKept(_) | Error::Misuse(_) | Error::Clash(_) | Error::Corrupt(_) | Error::NotBuilt(_) | Error::NotHeld(_) | Error::LeavesNoAdmin(_) => ErrorClass::Local,
         }
     }
 }

@@ -577,7 +577,7 @@ fn fallback_header(v: &View) -> Header {
         ephemeral: None,
         epoch: None,
         rotation: None,
-        reseal: None, own_cover: v.own_cover,
+        reseal: None, own_cover: v.own_cover, adminless: false,
     }
 }
 
@@ -1171,6 +1171,8 @@ pub struct Core {
     pub written: Vec<(Tid, Ak)>,
     /// Tests: let local commits break the writer-side role rules (to test receivers).
     pub skip_writer_rules: bool,
+    /// The edge writes signed meanwhile carry the adminless mark (`Engine::leaving_adminless`).
+    pub(crate) leave_adminless: bool,
     /// Someone may listen to commit changes (`Engine::watch_commits`).
     pub(crate) commits_watched: bool,
     /// Someone may listen to backlinks (`Engine::watch_references`).
@@ -1537,6 +1539,7 @@ impl Core {
             events: self.events.clone(),
             written: self.written.clone(),
             skip_writer_rules: self.skip_writer_rules.clone(),
+            leave_adminless: self.leave_adminless,
             commits_watched: self.commits_watched.clone(),
             refs_watched: self.refs_watched.clone(),
             commits_named: self.commits_named.clone(),
@@ -2175,6 +2178,7 @@ impl Core {
             key_salt: _,
             addenda_on: _,
             skip_writer_rules: _,
+            leave_adminless: _,
             commits_watched: _,
             refs_watched: _,
             commit_listeners: _,
@@ -2382,6 +2386,7 @@ impl Core {
             events: Events::default(),
             written: Vec::new(),
             skip_writer_rules: false,
+            leave_adminless: false,
             commits_watched: false,
             refs_watched: false,
             commits_named: Vec::new(),

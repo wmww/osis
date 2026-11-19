@@ -56,7 +56,7 @@ pub(crate) fn sample_header() -> Header {
         ephemeral: None,
         epoch: None,
         rotation: None,
-        reseal: None, own_cover: false,
+        reseal: None, own_cover: false, adminless: false,
     }
 }
 

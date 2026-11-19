@@ -956,13 +956,14 @@ pub(crate) fn play_with(seed: u64, steps: &[Step], addenda: bool) -> Played {
                 if let Ok(f) = f {
                     let mut m = edge_write(&lp.peers[by].engine, t, ids[holder], to_read.then_some(edge(Role::Read)));
                     m.frontier(osis_perm::Frontier::new(f.commits));
-                    no = why(&lp.peers[by].commit(m));
+                    // the histories reach every state a thing may be in, adminless included
+                    no = why(&lp.peers[by].engine.leaving_adminless(|e| e.commit(m)));
                 }
                 Some(by)
             }
             Step::Leave { by, t } => {
                 let d = osis_engine::flows::Demotion { holder: ids[by], new: None, retain: None };
-                no = why(&lp.peers[by].engine.demote(&th(t), &d));
+                no = why(&lp.peers[by].engine.leaving_adminless(|e| e.demote(&th(t), &d)));
                 Some(by)
             }
             Step::Compact { by, t, op } => {

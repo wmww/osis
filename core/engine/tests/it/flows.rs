@@ -2448,12 +2448,104 @@ fn first_grant_on_dependent_thing_rotates_first_spec_perm_3() {
     assert_eq!(sealed_write(&mut lp, 1, o, "after"), BTreeSet::new(), "the removed mint admin opens nothing new");
 }
 
-// spec/permissions.md §1 (last admin of a dependent thing): the last admin edge of a dependent thing is not removed (refused
-// locally); signed anyway (here by a node of its mint admin, the account root, removing it) it
-// applies, the thing stays dependent, the mint admin still reads it by derivation, and nobody
-// writes it.
+// ---- The last admin (spec/permissions.md §1) ----
+
+/// Whether the error is the last-admin refusal for `t`.
+fn leaves_no_admin(r: osis_engine::Result<osis_engine::flows::Done>, t: Tid) -> bool {
+    matches!(r, Err(osis_engine::Error::LeavesNoAdmin(x)) if x == t)
+}
+
+/// `holder`'s edge on `t` lowered to `e`.
+fn lower(holder: Tid, e: ct::Edge) -> Demotion {
+    Demotion { holder, new: Some(e), retain: None }
+}
+
+/// An admin edge ending well after now at peer `i`.
+fn timed_admin(lp: &LocalPeer, i: usize) -> ct::Edge {
+    ct::Edge { until: Some(osis_base::WallMs(lp.peers[i].engine.now().0 + 1_000_000_000)), ..edge_of(Role::Admin) }
+}
+
+// spec/permissions.md §1 (The last admin): every write taking the last standing admin's edge to
+// anything else is refused at its writer, on an independent thing (minted with an account) and a
+// dependent one (minted with the node's account root) alike: a removal (here the admin's own),
+// a lowering below admin, an `until` by a demotion or by a grant. Refused, nothing is written.
 #[test]
-fn last_admin_of_dependent_thing_refused_spec_perm_1() {
+fn the_last_standing_admin_is_kept_spec_perm_1() {
+    let (mut lp, ps) = people(1);
+    let p = ps[0];
+    let t = thing_of(&mut lp, 0, p);
+    let d = lp.peers[0].engine.dependents_admin();
+    let (o, _) = lp.peers[0].engine.create_with_admin(&d).unwrap();
+    lp.hold(o);
+    let before = lp.peers[0].engine.commit_ids().len();
+    for (x, a) in [(t, p), (o, d)] {
+        let e = &mut lp.peers[0].engine;
+        assert!(leaves_no_admin(e.demote(&x, &remove(a)), x), "{x}: a removal");
+        assert!(leaves_no_admin(e.demote(&x, &lower(a, edge_of(Role::Write))), x), "{x}: below admin");
+        let timed = timed_admin(&lp, 0);
+        let e = &mut lp.peers[0].engine;
+        assert!(leaves_no_admin(e.demote(&x, &lower(a, timed.clone())), x), "{x}: an until by demotion");
+        assert!(leaves_no_admin(e.grant(&x, &a, &timed), x), "{x}: an until by grant");
+        assert_eq!(e.roster(&x).get(&a).map(|g| (g.role, g.until)), Some((Role::Admin, None)), "{x}: as it was");
+    }
+    assert_eq!(lp.peers[0].engine.commit_ids().len(), before, "nothing written");
+    assert_eq!(lp.peers[0].engine.get(&o, &ak("keys.0")).unwrap(), None, "still dependent");
+}
+
+// spec/permissions.md §1 (The last admin: a timed admin edge is no standing admin): an admin
+// leaving while the other admin's edge has an `until` is refused; with the other's `until`
+// dropped, the same leave goes through.
+#[test]
+fn a_timed_admin_is_no_remaining_admin_spec_perm_1() {
+    let (mut lp, ps) = people(2);
+    let t = thing_of(&mut lp, 0, ps[0]);
+    let timed = timed_admin(&lp, 0);
+    lp.peers[0].engine.grant(&t, &ps[1], &timed).unwrap();
+    assert!(leaves_no_admin(lp.peers[0].engine.demote(&t, &remove(ps[0])), t));
+    lp.peers[0].engine.grant(&t, &ps[1], &edge_of(Role::Admin)).unwrap();
+    lp.peers[0].engine.demote(&t, &remove(ps[0])).unwrap();
+    assert_eq!(lp.peers[0].engine.roster(&t).keys().copied().collect::<Vec<_>>(), vec![ps[1]]);
+}
+
+// spec/permissions.md §1 (The last admin), §2 (Adminless mark): with the mark the last admin
+// leaves; the thing then has no admin at any node. Its writer still reads and writes it as
+// granted; nobody grants on it or destroys it by request; the mark is the header's and a
+// reader judges the commit as it would without it.
+#[test]
+fn the_mark_lets_a_thing_go_adminless_spec_perm_1() {
+    let (mut lp, ps) = people(2);
+    let t = thing_of(&mut lp, 0, ps[0]);
+    lp.peers[0].engine.grant(&t, &ps[1], &edge_of(Role::Write)).unwrap();
+    spread(&mut lp);
+    assert!(leaves_no_admin(lp.peers[0].engine.demote(&t, &remove(ps[0])), t), "unmarked, refused");
+    let done = lp.peers[0].engine.leaving_adminless(|e| e.demote(&t, &remove(ps[0]))).unwrap();
+    let c = done.commits[0];
+    assert!(lp.peers[0].engine.header(&c).unwrap().adminless, "the mark is on the edge write");
+    spread(&mut lp);
+    for i in 0..2 {
+        let e = &lp.peers[i].engine;
+        assert!(e.header(&c).unwrap().adminless, "peer {i} holds the mark");
+        assert_eq!(e.roster(&t).keys().copied().collect::<Vec<_>>(), vec![ps[1]], "peer {i}: the writer alone");
+    }
+    assert_eq!(lp.peers[0].engine.role_on(&t), None);
+    assert_eq!(sealed_write(&mut lp, 1, t, "after"), BTreeSet::new(), "the writer writes; the one who left reads nothing new");
+    assert_eq!(lp.peers[1].engine.get(&t, &ak("t:reg.0")).unwrap(), Some(s("after")), "the writer reads it");
+    let r = lp.peers[1].engine.grant(&t, &ps[0], &edge_of(Role::Read));
+    assert!(matches!(r, Err(osis_engine::Error::Permission { .. })), "nobody grants: {r:?}");
+    let e = &mut lp.peers[1].engine;
+    let mut m = Mutation::new();
+    let now = e.now();
+    m.set(t, &ct::PURGE, &now).unwrap();
+    m.purge(osis_commit::PurgeItem::Aspect { tid: t, ak: ct::CREATED.name() });
+    assert!(e.commit(m).is_err(), "nobody destroys it by request");
+    assert!(!e.destroyed(&t));
+}
+
+// spec/permissions.md §1 (The last admin: a dependent thing left so stays dependent): marked,
+// the last admin edge of a dependent thing goes; the thing stays dependent, its mint admin's
+// node still reads it by derivation, and nobody writes it.
+#[test]
+fn a_dependent_thing_marked_adminless_stays_dependent_spec_perm_1() {
     let (mut lp, _) = people(2);
     let n = lp.peers[0].engine.dependents_admin();
     let (o, _) = lp.peers[0].engine.create_with_admin(&n).unwrap();
@@ -2461,13 +2553,8 @@ fn last_admin_of_dependent_thing_refused_spec_perm_1() {
     let mut m = Mutation::new();
     m.set(o, &REG, &s("v")).unwrap();
     lp.peers[0].commit(m).unwrap().unwrap();
-    let r = lp.peers[0].engine.demote(&o, &remove(n));
-    assert!(r.is_err(), "{r:?}");
-    let low = Demotion { holder: n, new: Some(edge_of(Role::Write)), retain: None };
-    assert!(lp.peers[0].engine.demote(&o, &low).is_err(), "lowering it is refused too");
-    lp.peers[0].engine.core.skip_writer_rules = true;
-    lp.peers[0].engine.demote(&o, &remove(n)).unwrap();
-    lp.peers[0].engine.core.skip_writer_rules = false;
+    assert!(leaves_no_admin(lp.peers[0].engine.demote(&o, &remove(n)), o), "unmarked, refused");
+    lp.peers[0].engine.leaving_adminless(|e| e.demote(&o, &remove(n))).unwrap();
     spread(&mut lp);
     for i in 0..2 {
         assert!(!lp.peers[i].engine.roster(&o).contains_key(&n), "peer {i}");
@@ -2478,6 +2565,62 @@ fn last_admin_of_dependent_thing_refused_spec_perm_1() {
     let mut m = Mutation::new();
     m.set(o, &REG, &s("w")).unwrap();
     assert!(lp.peers[0].commit(m).is_err(), "nobody writes it");
+}
+
+// spec/permissions.md §1 (The last admin: the writer's check, not a validity rule): two admins
+// leave at once, each with the other standing in its own view, so each passes its check; both
+// leaves apply everywhere and the thing has no admin. Nothing fails at either node; each still
+// reads what it read. Two admins removing each other at once instead leave one (the earlier
+// removal applies; the later one's author has no authority then, spec/permissions.md §5.1).
+#[test]
+fn concurrent_leaves_leave_no_admin_spec_perm_1() {
+    let (mut lp, ps) = people(2);
+    let t = thing_of(&mut lp, 0, ps[0]);
+    lp.peers[0].engine.grant(&t, &ps[1], &edge_of(Role::Admin)).unwrap();
+    spread(&mut lp);
+    lp.peers[0].engine.demote(&t, &remove(ps[0])).unwrap();
+    lp.peers[1].engine.demote(&t, &remove(ps[1])).unwrap();
+    spread(&mut lp);
+    for i in 0..2 {
+        let e = &lp.peers[i].engine;
+        assert!(e.roster(&t).values().all(|g| g.role != Role::Admin), "peer {i}: no admin left: {:?}", e.roster(&t));
+        assert_eq!(e.role_on(&t), None, "peer {i}");
+    }
+    let (mut lp, ps) = people(2);
+    let u = thing_of(&mut lp, 0, ps[0]);
+    lp.peers[0].engine.grant(&u, &ps[1], &edge_of(Role::Admin)).unwrap();
+    spread(&mut lp);
+    lp.peers[0].engine.demote(&u, &remove(ps[1])).unwrap();
+    lp.peers[1].engine.demote(&u, &remove(ps[0])).unwrap();
+    spread(&mut lp);
+    for i in 0..2 {
+        let admins = lp.peers[i].engine.roster(&u).values().filter(|g| g.role == Role::Admin && g.until.is_none()).count();
+        assert_eq!(admins, 1, "peer {i}: one admin stands: {:?}", lp.peers[i].engine.roster(&u));
+    }
+}
+
+// spec/permissions.md §1 (The last admin), §5.1 (audit): G's admin Y (granted by P) made Z the
+// only standing admin of T, a thing minted with G, by granting Z and then removing G's record
+// edge on T. P removing Y from G audits Y's edge writes, T's included, but P's frontier lists
+// every write of Y's it holds, so at P they stand: the removal goes through and T keeps Z.
+#[test]
+fn a_removal_by_audit_keeps_what_its_writer_holds_spec_perm_1() {
+    let (mut lp, ps) = people(3);
+    let (p, y, z) = (ps[0], ps[1], ps[2]);
+    let g = thing_of(&mut lp, 0, p);
+    lp.peers[0].engine.grant(&g, &y, &edge_of(Role::Admin)).unwrap();
+    spread(&mut lp);
+    let t = thing_of(&mut lp, 1, g);
+    lp.peers[1].engine.grant(&t, &z, &edge_of(Role::Admin)).unwrap();
+    lp.peers[1].engine.demote(&t, &remove(g)).unwrap();
+    spread(&mut lp);
+    assert_eq!(lp.peers[0].engine.roster(&t).keys().copied().collect::<Vec<_>>(), vec![z]);
+    lp.peers[0].engine.demote(&g, &remove(y)).unwrap();
+    spread(&mut lp);
+    for i in 0..3 {
+        let r = lp.peers[i].engine.roster(&t);
+        assert_eq!(r.get(&z).map(|e| (e.role, e.until)), Some((Role::Admin, None)), "peer {i}: {r:?}");
+    }
 }
 
 // spec/permissions.md §2 (self-removal: authority through the holder does not count): a node of

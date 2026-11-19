@@ -470,6 +470,8 @@ pub(crate) struct CommitPlan {
     pub rotation: Option<crate::flows::signing::AccountRotation>,
     /// The own-cover marker (`retention::snapshot::write_own_cover`).
     pub own_cover: bool,
+    /// The adminless mark (`Engine::leaving_adminless`).
+    pub adminless: bool,
     /// The header's seed re-seal (`Mutation::reseal`).
     pub reseal: Option<osis_commit::SeedReseal>,
 }
@@ -688,6 +690,7 @@ fn build(tx: &mut Tx<'_>, plan: CommitPlan, deltas: Vec<Resolved>) -> Result<osi
     b.blind = Some(plan.blind);
     b.rotation = plan.rotation.as_ref().map(|r| (r.header.clone(), r.merge_keys.clone()));
     b.own_cover = plan.own_cover;
+    b.adminless = plan.adminless;
     b.reseal = plan.reseal.clone();
     // a commit built in a memory transaction is a memory commit (spec/commits.md §2, §3)
     b.ephemeral = tx.txn.is_memory().then_some(osis_commit::EphClass::Plain);
@@ -933,7 +936,9 @@ pub(crate) fn commit_or_build(tx: &mut Tx<'_>, mut m: Mutation) -> Result<Option
         let item = tx.core.purge_item(&c, tid, ak).ok_or(Error::UnknownCommit(c))?;
         m.purge.push(item);
     }
-    let base = CommitPlan { kind, ts, actor: m.actor.unwrap_or(node), form: Form::Commit, creates: std::mem::take(&mut m.creates), purge: std::mem::take(&mut m.purge), undoes: None, frontier: m.frontier.take(), signer: node, blind: m.blind.unwrap_or_else(|| draw_blind(&mut *tx.rng)), expires: None, restores: false, rotation: m.rotation.take(), reseal: m.reseal.take() , own_cover: false };
+    // the adminless mark rides on the edge writes signed under `Engine::leaving_adminless`
+    let adminless = tx.core.leave_adminless && kind == Kind::Role && m.aspects.keys().any(|(_, ak)| ak.as_str() == "roles.0");
+    let base = CommitPlan { kind, ts, actor: m.actor.unwrap_or(node), form: Form::Commit, creates: std::mem::take(&mut m.creates), purge: std::mem::take(&mut m.purge), undoes: None, frontier: m.frontier.take(), signer: node, blind: m.blind.unwrap_or_else(|| draw_blind(&mut *tx.rng)), expires: None, restores: false, rotation: m.rotation.take(), reseal: m.reseal.take(), own_cover: false, adminless };
     if !m.unchecked {
         check_acts(tx.core, node, &|t| base.creates.get(t), &base.actor, ts)?;
     }
