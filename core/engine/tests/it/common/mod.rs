@@ -290,8 +290,13 @@ pub fn reader(lp: &mut LocalPeer, admin: usize, t: Tid, seed: u64) -> osis_engin
     p.engine.hold(osis_base::Strong(t)).unwrap();
     let me = p.engine.me();
     lp.peers[admin].engine.grant(&t, &me, &edge(Role::Read)).unwrap();
-    for pk in packages(lp, admin) {
-        p.receive(&pk.bytes, pk.blobs.clone()).unwrap();
+    // what `admin` sends it: certificates (the grant among them), then what the sync IDs it
+    // then syncs carry
+    for _ in 0..2 {
+        let synced = p.engine.sync_set().unwrap().ids.keys().copied().collect();
+        for pk in lp.packages_under(admin, &synced).unwrap() {
+            p.receive(&pk.bytes, pk.blobs.clone()).unwrap();
+        }
     }
     p.reexamine().unwrap();
     assert!(p.engine.closure_holds(&t), "the observer holds {t:?}");

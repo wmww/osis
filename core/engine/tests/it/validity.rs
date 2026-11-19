@@ -115,7 +115,9 @@ fn carol_variant_spec_perm_5_2() {
     // the result is a function of the held set, not of arrival order
     let mut lp2 = LocalPeer::of(vec![obs], 1).unwrap();
     lp2.advance(2 * DAY);
-    let mut pks: Vec<_> = [0, 1, 2].iter().flat_map(|i| lp.packages(*i).unwrap()).collect();
+    // what the sync IDs the observer syncs carry
+    let synced = lp2.synced(0).unwrap();
+    let mut pks: Vec<_> = [0, 1, 2].iter().flat_map(|i| lp.packages_under(*i, &synced).unwrap()).collect();
     pks.reverse();
     for _ in 0..2 {
         for p in &pks {
@@ -2945,12 +2947,16 @@ fn listed_part_setup(commit_form: bool) -> (LocalPeer, Tid, Vec<osis_engine::loc
     (lp, d, pks, [x, snap, rv])
 }
 
-/// A fresh peer holding `d`, given Alice's packages, with S, R and X (without its tags part) in `order`.
+/// A fresh peer holding `d`, granted read on it by Alice (`LocalPeer::fresh_reader`), given what
+/// the sync IDs it syncs carry of Alice's packages, with S, R and X (without its tags part) in
+/// `order`.
 fn listed_part_peer(lp: &mut LocalPeer, d: Tid, pks: &[osis_engine::local_peer::Package], ids: [osis_base::CommitId; 3], order: &[osis_base::CommitId], seed: u64) -> usize {
     let [x, ..] = ids;
     let i = lp.peers.len();
-    lp.peers.push(osis_engine::local_peer::Peer::new(seed, lp.peers[0].engine.now()).unwrap());
-    lp.hold_at(i, d);
+    let r = lp.fresh_reader(0, d, seed);
+    lp.peers.push(r);
+    let synced = lp.synced(i).unwrap();
+    let pks: Vec<_> = pks.iter().map(|p| lp.trimmed(0, p, &synced).unwrap()).collect();
     for p in pks.iter().filter(|p| !ids.contains(&p.id)) {
         lp.deliver(i, p).unwrap();
     }
