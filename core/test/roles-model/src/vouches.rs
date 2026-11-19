@@ -585,10 +585,15 @@ impl Stats {
             self.worlds, self.vouches, self.counted, self.kept_checked, self.kept_fail, self.made_checked, self.made_fail, self.safety_checked, self.safety_fail, self.safety_own, l.checked, l.fail, l.lowered, l.accomplice, l.revived, self.order_fail
         );
         for (label, w) in &self.ex {
-            let w = crate::shrink::shrink(w.clone(), |x| fails(label, x, rules));
-            println!("  smallest {label} example:\n{w}");
+            println!("  smallest {label} example:\n{}", shrunk(w, label, rules));
         }
     }
+}
+
+/// The smallest world reachable from `w` that still fails `label`'s property under `rules`, its
+/// honest vouches written by `rules` (`Shrinking`), so it is a world the search could have made.
+pub fn shrunk(w: &World, label: &str, rules: Rules) -> World {
+    crate::shrink::shrink(Shrinking { w: w.clone(), rules }, |x| fails(label, &x.w, rules)).w
 }
 
 fn fails(label: &str, w: &World, rules: Rules) -> bool {
@@ -833,41 +838,51 @@ impl std::fmt::Display for World {
     }
 }
 
-/// Smaller worlds keep the forged vouches and write the honest ones again (under `FIXED`'s
-/// writing, received by every node a tick after), so a shrunk world stays honest.
-impl crate::shrink::Shrink for World {
-    fn smaller(&self) -> Vec<World> {
-        let forged: Vec<Vouch> = self.vouches.iter().filter(|v| v.forged).cloned().collect();
-        let mut hs = vec![];
+/// A world being shrunk under the rules it was searched with.
+pub struct Shrinking {
+    pub w: World,
+    pub rules: Rules,
+}
+
+impl World {
+    /// The world's history and forged vouches with the honest vouches `rules` writes, received by
+    /// every node a tick after.
+    pub fn rederived(&self, rules: Rules) -> World {
+        let mut w = World { h: self.h.clone(), vouches: self.vouches.iter().filter(|v| v.forged).cloned().collect() };
+        let n = w.h.n();
+        w.derive(rules, |a, t| {
+            let mut r = vec![t + 1; n];
+            r[a] = t;
+            r
+        });
+        w
+    }
+}
+
+/// Smaller worlds keep the forged vouches and write the honest ones again under the searched
+/// rules (`World::rederived`), so a shrunk world stays honest under them.
+impl crate::shrink::Shrink for Shrinking {
+    fn smaller(&self) -> Vec<Shrinking> {
+        let (w, rules) = (&self.w, self.rules);
+        let forged: Vec<Vouch> = w.vouches.iter().filter(|v| v.forged).cloned().collect();
         let mut out = vec![];
         for i in 0..forged.len() {
-            out.push(World { h: self.h.clone(), vouches: crate::shrink::without(&forged, i) });
+            out.push(World { h: w.h.clone(), vouches: crate::shrink::without(&forged, i) });
         }
-        for i in 0..self.h.writes.len() {
-            let mut h = self.h.clone();
+        for i in 0..w.h.writes.len() {
+            let mut h = w.h.clone();
             h.writes.remove(i);
             h.recv.remove(i);
-            hs.push(h);
-        }
-        for i in 0..self.h.writes.len() {
-            for m in (0..self.h.n()).filter(|&m| m != self.h.writes[i].author && self.h.recv[i][m] < LATE) {
-                let mut h = self.h.clone();
-                h.recv[i][m] = LATE;
-                hs.push(h);
-            }
-        }
-        for h in hs {
             out.push(World { h, vouches: forged.clone() });
         }
-        for w in &mut out {
-            let n = w.h.n();
-            w.derive(FIXED, |a, t| {
-                let mut r = vec![t + 1; n];
-                r[a] = t;
-                r
-            });
+        for i in 0..w.h.writes.len() {
+            for m in (0..w.h.n()).filter(|&m| m != w.h.writes[i].author && w.h.recv[i][m] < LATE) {
+                let mut h = w.h.clone();
+                h.recv[i][m] = LATE;
+                out.push(World { h, vouches: forged.clone() });
+            }
         }
-        out
+        out.into_iter().map(|w| Shrinking { w: w.rederived(rules), rules }).collect()
     }
 }
 

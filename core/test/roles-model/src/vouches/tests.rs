@@ -243,6 +243,24 @@ fn family_sample_holds_and_each_control_fails() {
     }
 }
 
+// a failing world shrinks under the rules searched: its honest vouches are the ones they write
+// (a shrink rewriting them under `FIXED` printed a hybrid the searched rules never make)
+#[test]
+fn a_control_shrinks_under_its_own_rules() {
+    let once = Rules { rewrite: false, ..FIXED };
+    let st = exhaustive(once, 397);
+    let (label, w) = st.ex.first().expect("the control fails");
+    let s = shrunk(w, label, once);
+    assert!(fails(label, &s, once), "{s}");
+    assert_eq!(format!("{}", s.rederived(once)), format!("{s}"));
+    // every candidate of a world the two writings tell apart is written by the searched rules
+    let mut rng = Rng(0);
+    let w = std::iter::repeat_with(|| random_world(&mut rng, once)).find(|w| format!("{}", w.rederived(once)) != format!("{}", w.rederived(FIXED))).unwrap();
+    for c in crate::shrink::Shrink::smaller(&Shrinking { w, rules: once }) {
+        assert_eq!(format!("{}", c.w.rederived(once)), format!("{}", c.w));
+    }
+}
+
 #[test]
 #[ignore]
 fn random_worlds_hold_large() {
