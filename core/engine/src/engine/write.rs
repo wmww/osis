@@ -262,6 +262,10 @@ pub fn role_of(core: &Core, node: &Tid, tid: &Tid, ts: Ts) -> Option<Role> {
     core.timelines.role(node, tid, At::now(ts))
 }
 
+/// What a fire its thing's setting keeps no history for fails with (spec/commits.md §5 Signals:
+/// a fire is history, so one in none cannot be written).
+pub(crate) const FIRE_IN_NO_HISTORY: &str = "a fire is history: the thing's setting keeps no history for this signal";
+
 /// Looks up the creation record of a thing not yet held: the commit's own.
 pub(crate) type Records<'a> = &'a dyn Fn(&Tid) -> Option<&'a CreationRecord>;
 
@@ -977,7 +981,7 @@ pub(crate) fn commit_or_build(tx: &mut Tx<'_>, mut m: Mutation) -> Result<Option
             // in no history at all
             let wall = ts.wall_ms().0;
             if !memory && !sealed && crate::retention::history::of(tx.core, &tid, &ak).leaves_at(Some(wall), ts) <= wall {
-                return Err(Error::Misuse("a fire is history: the thing's setting keeps no history for this signal"));
+                return Err(Error::Misuse(FIRE_IN_NO_HISTORY));
             }
         }
         // a role commit never expires, so it creates no expiring thing

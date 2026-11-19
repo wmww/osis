@@ -53,7 +53,8 @@ impl Default for Options {
 
 /// A new chat, minted with admin `holder` (its mint admin: the app's home, the account root) and held by
 /// it, its settings written before anyone is granted: every message kept for good (expiry ends a
-/// disappearing one), replacements refused when editing is off, who may delete a message. One
+/// disappearing one), replacements refused when editing is off, who may delete a message, and its
+/// inbox signals enabled (a shared thing's readers reach it by them). One
 /// commit makes it whole (record, `retention^.0`, settings, the strong in `holder`'s `holds.0`).
 /// Until its first grant or link it is dependent, read by whoever reads `holder`; that first share
 /// makes it independent. Changing a setting later writes `retention^.0` whole; a participant
@@ -65,7 +66,8 @@ pub fn create(db: &Osis, o: &Options, holder: Tid) -> Result<Tid> {
         PurgeBy::Writer => Some(schema::Deletes::Anyone),
     };
     let msg = RetentionEntry { history: Some(History::FOREVER), expires: o.disappear, refuse_replace: o.edit.is_none() };
-    let setting = RetentionSetting { rules: BTreeMap::from([(MSG.name(), msg)]), default: None, retain_copies: o.retain_copies, history_holds_targets: false };
+    let mut setting = RetentionSetting { rules: BTreeMap::from([(MSG.name(), msg)]), default: None, retain_copies: o.retain_copies, history_holds_targets: false };
+    setting.enable_inbox_signals();
     let mut w = db.write();
     let c = w.create(holder, None)?;
     w.at(c, RETENTION).set(&setting)?;

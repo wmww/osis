@@ -695,8 +695,8 @@ fn a_reader_by_a_chain_through_a_holder_thing_reads_spec_sync_judgement_2() {
 // spec/sync-inbox.md §5 (Delivery of a grant), spec/sync-judgement.md §2 (A grant naming a
 // holder): Bob's T1 holds T0 by a strong; Alice, who knows T1's public key record but neither
 // reads nor syncs T1 (she reads T4, holder on T3 minted with admin T1), grants T1 read on T0. Bob, T1's
-// reader, then reads T0 through T1, T1 taking tickets from outside (its admin enabled them,
-// spec/permissions.md §5.2 External fires; which kinds do: issues/external-signals-taken-by-default.md).
+// reader, then reads T0 through T1, T1 taking tickets from outside (its admin enabled its inbox
+// signals, as chat and kit do at creation: spec/permissions.md §5.2 External fires).
 #[test]
 fn a_grant_to_a_holder_its_granter_does_not_sync_reaches_its_readers_spec_sync_inbox_5() {
     let mut w = contacts();
@@ -704,7 +704,9 @@ fn a_grant_to_a_holder_its_granter_does_not_sync_reaches_its_readers_spec_sync_i
     let t1 = make(&mut w, 1, None, "t1");
     w.write(1, |e| {
         let mut m = Mutation::new();
-        m.set(t1, &ct::RETENTION, &ct::RetentionSetting::from(std::collections::BTreeMap::from([(Ak::new("ticket@~0").unwrap(), ct::RetentionEntry { history: Some(osis_schema::History::FOREVER), ..Default::default() })]))).unwrap();
+        let mut x = ct::RetentionSetting::default();
+        x.take_inbox_signals();
+        m.set(t1, &ct::RETENTION, &x).unwrap();
         e.commit(m)
     })
     .unwrap();

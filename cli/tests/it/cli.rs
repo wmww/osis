@@ -760,7 +760,8 @@ fn a_chat_link_on_a_store_with_no_peer() {
 
 // spec/permissions.md §5.2 External fires, spec/commits.md §5 The setting: `enable` gives an
 // external signal an entry of its own in the thing's setting, kept as asked, beside what the
-// setting holds; `disable` drops that entry alone; a key that is no external signal is a usage
+// setting holds; `disable` drops that entry alone; a key that is no external signal, or an enable
+// with no `--keep` (it would keep no fire, so no node reading the thing could fire it), is a usage
 // error.
 #[test]
 fn enable_and_disable_an_external_signal_spec_permissions_5_2() {
@@ -773,5 +774,6 @@ fn enable_and_disable_an_external_signal_spec_permissions_5_2() {
     s.ok(&["disable", &t, "x:ping@~0"]);
     let r = s.ok(&["get", &t, "retention^.0"]).out;
     assert!(!r.contains("x:ping@~0") && r.contains("default: #some("), "{r}");
-    assert_eq!(s.code(&["enable", &t, "x:ping~0"]), 2);
+    assert_eq!(s.code(&["enable", &t, "x:ping~0", "--keep", "1h"]), 2);
+    assert_eq!(s.code(&["enable", &t, "x:ping@~0"]), 2);
 }

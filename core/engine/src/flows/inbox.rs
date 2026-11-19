@@ -11,27 +11,24 @@ use osis_store::Shred;
 use std::sync::Arc;
 use osis_base::format::INBOX_LIFETIME_MS;
 use osis_base::{Ak, CommitId, Role, Tid, Ticket, Value};
-use osis_schema::core_types::{self as ct, RetentionEntry, RetentionSetting};
-use std::collections::{BTreeMap, BTreeSet};
+use osis_schema::core_types::{self as ct, RetentionSetting};
+use std::collections::BTreeSet;
 
 /// Arriving tickets (spec/sync-inbox.md §1).
-pub const TICKET_FIRE: &str = Ak::check("ticket@~0", true);
+pub const TICKET_FIRE: &str = ct::INBOX_SIGNALS[0];
 /// Removal notices.
-pub const REMOVAL_FIRE: &str = Ak::check("removal@~0", true);
+pub const REMOVAL_FIRE: &str = ct::INBOX_SIGNALS[1];
 /// Stranded notices.
-pub const STRANDED_FIRE: &str = Ak::check("stranded@~0", true);
+pub const STRANDED_FIRE: &str = ct::INBOX_SIGNALS[2];
 
 /// Makes the account's new inbox `i` independent and gives it its history setting: each of its three signals
-/// kept its lifetime (spec/sync-inbox.md §1), in the account's creation.
+/// enabled and kept its lifetime (spec/sync-inbox.md §1), in the account's creation.
 pub(crate) fn make_inbox(tx: &mut Tx<'_>, i: Tid, done: &mut Done) -> Result<()> {
     crate::rotation::own_secrets(tx, i, done)?;
-    let keep = RetentionEntry { history: Some(osis_schema::History::Keep { until: None, after: Some(INBOX_LIFETIME_MS) }), ..RetentionEntry::default() };
-    let mut rules = BTreeMap::new();
-    for k in [TICKET_FIRE, REMOVAL_FIRE, STRANDED_FIRE] {
-        rules.insert(super::ak(k)?, keep);
-    }
+    let mut setting = RetentionSetting::default();
+    setting.take_inbox_signals();
     let mut m = Mutation::new();
-    m.set(i, &ct::RETENTION, &RetentionSetting::from(rules))?;
+    m.set(i, &ct::RETENTION, &setting)?;
     done.add(Engine::commit_tx(tx, m)?);
     Ok(())
 }
@@ -55,7 +52,13 @@ pub(crate) fn fire_ticket(tx: &mut Tx<'_>, holder: Tid, c: CommitId, things: &[T
         // fired as a write where the node holds and reads the inbox (`fire`), else sealed with
         // the grant
         if tx.core.ix.closure.holds(&inbox) && reads_now(tx.core, &inbox) {
-            fire(tx, inbox, TICKET_FIRE, osis_schema::codec::rt::struct_value(vec![(0, v)]), to.clone())?;
+            match fire(tx, inbox, TICKET_FIRE, osis_schema::codec::rt::struct_value(vec![(0, v)]), to.clone()) {
+                // the holder's setting takes no ticket here: the grant or key change stands, and
+                // the holder's readers, as this node, hold it with no ticket: it travels under
+                // the holder's sync ID (spec/sync-judgement.md §2, A grant naming a holder)
+                Err(e) if refused_by_setting(&e) => {}
+                r => r?,
+            }
         } else {
             save(tx, OwedFire { thing: inbox, ak: super::ak(TICKET_FIRE)?, what: Fire::Ticket { ticket: v, commit: c, target: *t }, to: to.clone(), commit: None })?;
         }
@@ -390,28 +393,45 @@ fn reads_now(core: &crate::engine::Core, t: &Tid) -> bool {
     })
 }
 
-/// Fires external signal `ak` on `thing` with `value` (spec/sync-inbox.md §2): a node reading the
-/// thing fires as it writes (a non-writer's commit is deposited as any); any other owes a sealed
-/// fire, offered to peers where `to` is proven, kept until one takes it.
+/// Fires external signal `ak` on `thing` with `value` (spec/sync-inbox.md §2): a node holding and
+/// reading the thing fires as it writes (a non-writer's commit is deposited as any); any other
+/// owes a sealed fire, offered to peers where `to` is proven, kept until one takes it. A fire this
+/// node would write that the thing's setting does not take is refused before anything is written,
+/// naming the setting: `NotEnabled` where this node holds no write and the setting does not enable
+/// the signal, else `Misuse(FIRE_IN_NO_HISTORY)` where it keeps no history for it (a fire is
+/// history, spec/commits.md §5 Signals).
 pub(crate) fn fire(tx: &mut Tx<'_>, thing: Tid, ak: &str, value: Value, to: BTreeSet<Tid>) -> Result<()> {
     let ak = super::ak(ak)?;
-    // fired as a write where the node holds and reads the thing; at anything else it fires sealed
-    // (a node writes only what it holds, spec/sync-set.md §2 Writing)
-    if tx.core.ix.closure.holds(&thing) && reads_now(tx.core, &thing) {
-        // a fire the thing's setting would not keep is in no history: none is written (an actor
-        // that is no account takes the fires its own setting keeps, spec/sync-inbox.md §1; only
-        // an entry of its own keeps an external signal, which also enables it)
-        let ts = tx.core.hlc.peek();
-        let wall = ts.wall_ms().0;
-        if crate::retention::history::of(tx.core, &thing, &ak).leaves_at(Some(wall), ts) <= wall {
-            return Ok(());
-        }
-        let mut m = Mutation::new();
-        m.op(thing, &ak, PathOp { path: Vec::new(), op: Op::Set(value) })?;
-        Engine::commit_tx(tx, m)?;
-        return Ok(());
+    if !tx.core.ix.closure.holds(&thing) || !reads_now(tx.core, &thing) {
+        return save(tx, OwedFire { thing, ak, what: Fire::Value(value), to, commit: None });
     }
-    save(tx, OwedFire { thing, ak, what: Fire::Value(value), to, commit: None })
+    if !keeps_fire(tx.core, &thing, &ak) {
+        let me = tx.core.writer()?;
+        let writes = tx.core.role_now(&me, &thing) >= Some(Role::Write);
+        let enabled = crate::apply::validity::setting_now(tx.core, &thing).is_some_and(|s| s.enables(&ak));
+        return Err(match writes || enabled {
+            true => Error::Misuse(crate::engine::write::FIRE_IN_NO_HISTORY),
+            false => Error::NotEnabled { tid: thing, ak: ak.to_string() },
+        });
+    }
+    let mut m = Mutation::new();
+    m.op(thing, &ak, PathOp { path: Vec::new(), op: Op::Set(value) })?;
+    Engine::commit_tx(tx, m)?;
+    Ok(())
+}
+
+/// Whether `thing`'s setting keeps a fire of `ak` written now (a fire is history, spec/commits.md
+/// §5 Signals). An entry keeping an external signal also enables it, so such a fire is valid
+/// whoever writes it.
+fn keeps_fire(core: &crate::engine::Core, thing: &Tid, ak: &Ak) -> bool {
+    let ts = core.hlc.peek();
+    let wall = ts.wall_ms().0;
+    crate::retention::history::of(core, thing, ak).leaves_at(Some(wall), ts) > wall
+}
+
+/// Whether `e` is `fire`'s refusal by the thing's setting.
+fn refused_by_setting(e: &Error) -> bool {
+    matches!(e, Error::NotEnabled { .. }) || matches!(e, Error::Misuse(m) if *m == crate::engine::write::FIRE_IN_NO_HISTORY)
 }
 
 /// A sealed fire ready to go (`Engine::sealed_fire`): its Deposit item's sync ID and blob, the
@@ -481,20 +501,17 @@ impl Engine {
                     },
                 };
                 let o = (*o).clone();
-                let reads = reads_now(&self.core, &o.thing);
                 let made = self.run(|tx| {
                     let mut m = Mutation::new();
                     m.op(o.thing, &o.ak, PathOp { path: Vec::new(), op: Op::Set(value) })?;
                     if let Some(t) = expires {
                         m.expires(o.thing, &o.ak, t)?;
                     }
-                    // a node reading the thing fires as it writes (spec/sync-inbox.md §2)
-                    if reads {
-                        let ts = tx.core.hlc.peek();
-                        let wall = ts.wall_ms().0;
-                        if crate::retention::history::of(tx.core, &o.thing, &o.ak).leaves_at(Some(wall), ts) > wall {
-                            Engine::commit_tx(tx, m)?;
-                        }
+                    // a node holding and reading the thing now fires as it writes where the
+                    // setting keeps the fire (spec/sync-inbox.md §2); else the fire it owes
+                    // already goes sealed, its receivers judging it
+                    if tx.core.ix.closure.holds(&o.thing) && reads_now(tx.core, &o.thing) && keeps_fire(tx.core, &o.thing, &o.ak) {
+                        Engine::commit_tx(tx, m)?;
                         drop_fire(tx, &o.id())?;
                         return Ok(None);
                     }

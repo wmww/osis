@@ -276,3 +276,23 @@ fn a_fire_follows_its_settings_validity_spec_commits_5() {
     send(&mut lp, 0, 3, &[dem]);
     assert!(!valid(&lp, 3, &f, g), "alike at peer 3");
 }
+
+// spec/commits.md §5 Signals (a fire is history), spec/sync-inbox.md §2: a reader's first-party
+// fire (`flows::inbox::fire`) is never skipped silently: not enabled, it is refused `NotEnabled`;
+// enabled with no history, which keeps no fire, refused naming the setting; enabled and kept,
+// written. Nothing is owed sealed for a refused one.
+#[test]
+fn a_readers_fire_its_setting_does_not_take_is_refused_spec_sync_inbox_2() {
+    let (mut lp, g) = three();
+    let try_fire = |lp: &mut LocalPeer| lp.peers[1].engine.fire_open(&g, PING, s("ping"));
+    assert!(matches!(try_fire(&mut lp), Err(osis_engine::Error::NotEnabled { tid, .. }) if tid == g), "not enabled");
+    let mut x = test_setting();
+    x.rules.insert(ak(PING), ct::RetentionEntry::default());
+    let s1 = set_setting(&mut lp, 0, g, &x);
+    send(&mut lp, 0, 1, &[s1]);
+    assert!(matches!(try_fire(&mut lp), Err(osis_engine::Error::Misuse(m)) if m.contains("setting keeps no history")), "enabled, no history");
+    assert!(lp.peers[1].engine.fires_owed().is_empty(), "nothing owed sealed");
+    let s2 = set_setting(&mut lp, 0, g, &setting(true));
+    send(&mut lp, 0, 1, &[s2]);
+    try_fire(&mut lp).expect("enabled and kept: written");
+}

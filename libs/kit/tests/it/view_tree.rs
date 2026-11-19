@@ -2,7 +2,7 @@
 use osis::core::NAME;
 use osis::{Osis, Result, Tid};
 use osis_kit::facets::create;
-use osis_kit::store::{Account, Data, Registry, keep_a_day};
+use osis_kit::store::{Account, Data, Registry, start_setting};
 use osis_kit::view::{Block, Cx, WindowState};
 use osis_kit::views::page;
 use std::sync::{Arc, Mutex};
@@ -24,7 +24,7 @@ impl Account for Small {
         let root = db.account_root();
         let t = w.create(root, None)?;
         // its strongs are what undoing a delete writes back
-        keep_a_day(&mut w, t)?;
+        start_setting(&mut w, t)?;
         w.hold(root, t)?;
         w.commit()?;
         *g = Some(t);
@@ -74,7 +74,7 @@ fn chrome_is_not_content() {
     assert!(content.out.blocks.iter().all(|b| !matches!(b, Block::Bar { .. } | Block::Tabs(_))));
 }
 
-/// Undo works on a thing kit created: an edit keeps what it replaces (`keep_a_day`). A delete
+/// Undo works on a thing kit created: an edit keeps what it replaces (`start_setting`). A delete
 /// releases the thing: it has no undo.
 #[test]
 fn undo_works_on_a_kit_created_thing() {

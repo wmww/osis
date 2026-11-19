@@ -376,9 +376,8 @@ fn run(ctx: &mut Ctx<'_>, cmd: Cmd) -> anyhow::Result<()> {
         Cmd::Overwrite(a) => one_write(ctx, ScriptCmd::Overwrite(a)),
         Cmd::Fire(a) => one_write(ctx, ScriptCmd::Fire(a)),
         Cmd::Enable { t, ak, keep } => {
-            let after_replaced = keep.as_deref().map(crate::parse_dur).transpose()?;
-            let history = after_replaced.map(|after_replaced| osis::History::Keep { until: osis::Time(0), after_replaced });
-            enabled(ctx, &t, &ak, Some(osis::core::RetentionEntry { history, ..Default::default() }))
+            let history = osis::History::Keep { until: osis::Time(0), after_replaced: crate::parse_dur(&keep)? };
+            enabled(ctx, &t, &ak, Some(osis::core::RetentionEntry { history: Some(history), ..Default::default() }))
         }
         Cmd::Disable { t, ak } => enabled(ctx, &t, &ak, None),
         Cmd::Rm(a) => one_write(ctx, ScriptCmd::Rm(a)),

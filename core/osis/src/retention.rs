@@ -143,6 +143,22 @@ pub struct RetentionSetting {
     pub history_holds_targets: bool,
 }
 
+impl RetentionSetting {
+    /// Enables the external signals a thing takes as its own inbox, as an account's inbox has them:
+    /// a ticket from a grant to it, the notice of its removal from a thing, and a reader's call
+    /// for the keys it cannot read, each from parties that cannot write it, kept for as long as an
+    /// account's inbox keeps them. An entry already here stays as it is. A thing others will read,
+    /// or that will be granted roles on other things, needs them to learn of these without one of
+    /// its writers connected.
+    pub fn enable_inbox_signals(&mut self) {
+        let mut x = osis_schema::core_types::RetentionSetting::default();
+        x.take_inbox_signals();
+        for (k, e) in &x.rules {
+            self.rules.entry(k.clone()).or_insert(e.into());
+        }
+    }
+}
+
 impl Codec for RetentionSetting {
     fn to_value(&self) -> Value {
         let rules = self.rules.iter().map(|(k, r)| (k.clone(), (*r).into())).collect();

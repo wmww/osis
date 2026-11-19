@@ -310,7 +310,22 @@ impl RetentionSetting {
     pub fn enables(&self, ak: &Ak) -> bool {
         ak.external() && self.rules.contains_key(ak)
     }
+
+    /// Enables the external signals an inbox takes (`INBOX_SIGNALS`, spec/sync-inbox.md §1), each
+    /// kept `INBOX_LIFETIME` after it is fired, as an account's creation sets its inbox's; an entry
+    /// this setting has already stays as it is.
+    pub fn take_inbox_signals(&mut self) {
+        let keep = RetentionEntry { history: Some(crate::History::Keep { until: None, after: Some(osis_base::format::INBOX_LIFETIME_MS) }), ..RetentionEntry::default() };
+        // each a valid AK, checked at build time
+        for k in INBOX_SIGNALS.into_iter().filter_map(|k| Ak::new(k).ok()) {
+            self.rules.entry(k).or_insert(keep);
+        }
+    }
 }
+
+/// The external signals an inbox takes (spec/sync-inbox.md §1): arriving tickets, removal notices
+/// and stranded notices.
+pub const INBOX_SIGNALS: [&str; 3] = [Ak::check("ticket@~0", true), Ak::check("removal@~0", true), Ak::check("stranded@~0", true)];
 
 impl From<BTreeMap<Ak, RetentionEntry>> for RetentionSetting {
     fn from(rules: BTreeMap<Ak, RetentionEntry>) -> RetentionSetting {

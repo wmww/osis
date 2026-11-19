@@ -7,7 +7,7 @@ use osis::core::NAME;
 use osis::core::HOLDS;
 use osis::{Osis, Ref, Result, Tid, Weak};
 use osis_kit::schema::{Arrange, COLLECTION, Collection, CollectionOrder as Order, CollectionSource as Source, FAVORITES};
-use osis_kit::store::{Account, Data, Registry, keep_a_day};
+use osis_kit::store::{Account, Data, Registry, start_setting};
 use std::sync::Arc;
 
 /// Finds or makes the app's home.
@@ -49,13 +49,13 @@ impl Account for AppAccount {
         let root = db.account_root();
         let g = w.create(root, None)?;
         w.hold(root, g)?;
-        keep_a_day(&mut w, g)?;
+        start_setting(&mut w, g)?;
         w.at(g, APP).set(&true)?;
         w.at(g, COLLECTION).set(&Collection { source: Source::Favorites, having: Default::default(), order: Order::Own, arrange: Arrange::Cards, element: None })?;
         let mut favs = Vec::new();
         for (v, name, color) in seeds() {
             let t = w.create(g, None)?;
-            keep_a_day(&mut w, t)?;
+            start_setting(&mut w, t)?;
             w.at(t, COLLECTION).set(&v)?;
             w.at(t, NAME).set(&name.to_string())?;
             w.at(t, COLOR).set(&color.to_string())?;
