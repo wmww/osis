@@ -1,2 +1,3 @@
 # s2-engine-review
 - The end-of-transaction debug assert ("stale validity left unjudged") is the only thing that catches a re-judge marker set after the transaction's last re-judge; a constructed case (a setting purging its own replaced versions) found one the branch's tests missed. Anything that marks commits stale from a drop path needs a test where the drop happens in the end-of-transaction tail.
+- The networking check as notes/build.md words it (`tools/heavy cargo test ... quic relay lan`) waited 47 min behind a single-threaded roles-model search holding the heavy lock; the same command ran in 13 s in the short lane (`tools/heavy --short`). notes/build.md could name the short lane for it.
