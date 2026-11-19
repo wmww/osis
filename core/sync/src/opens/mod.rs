@@ -190,8 +190,8 @@ struct OwnFilter {
     /// The last generation sent, and the last the peer acknowledged.
     generation: u64,
     acked: u64,
-    /// The filter as of the last generation sent, and as of the last acknowledged: a generation
-    /// never acknowledged counts as not sent but for its number (spec/sync-opens.md §5 Filter).
+    /// The filter as of the last generation sent, and as of the last acknowledged: after a
+    /// generation never acknowledged the next counts the entries of both (spec/sync-opens.md §5).
     shape: Shape,
     acked_shape: Shape,
     /// The `changed_at` position the last generation sent covers, and the one the last
@@ -1628,12 +1628,17 @@ impl Opens {
         let first = c.first;
         let whole_next = c.whole_next;
         let Some(r) = self.records.get_mut(&rid) else { return };
-        // a generation the peer never acknowledged (its answer lost with a connection) counts as
-        // not sent but for its number: additions go on the last acknowledged one
+        // after a generation the peer never acknowledged (its answer lost with a connection; the
+        // peer may hold it or not), additions go on the last acknowledged one with the entries of
+        // either counted as sent, so the peer never counts more than this side; after a whole one
+        // of another width or entry count, whole
+        let mut lost_whole = false;
         if r.own.acked != r.own.generation {
-            r.own.shape = r.own.acked_shape;
+            let (s, a) = (&mut r.own.shape, r.own.acked_shape);
+            lost_whole = (s.f, s.whole) != (a.f, a.whole);
+            s.added = s.added.max(a.added);
         }
-        let whole = whole_next || r.own.acked == 0;
+        let whole = whole_next || r.own.acked == 0 || lost_whole;
         let ids: Vec<SyncId> = if whole {
             Vec::new()
         } else if first {

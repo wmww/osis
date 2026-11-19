@@ -497,6 +497,52 @@ fn a_lost_answer_costs_no_whole_filter_spec_sync_opens_5() {
     }
 }
 
+// spec/sync-opens.md §5 (filter: A receiver takes additions on a later generation; a whole one
+// replaces additions once they pass its entries), spec/wire.md §11.2 (Beacons): after a lost
+// answer the peer read, both sides count the additions alike: later additions up to the whole
+// one's entries are taken, never closed as breaking the count, and past it a whole one follows.
+#[test]
+fn additions_after_a_lost_answer_keep_both_counts_alike_spec_sync_opens_5() {
+    let st = StepKeys::new(1, 0);
+    let mut a = Side::new(1);
+    let mut b = Side::new(2);
+    for i in 1..=4 {
+        for x in [&mut a, &mut b] {
+            x.table.set(sid(i), Some(reader(&sid(i), &read_secret(i, 0), &st, &[], &[], &[])));
+            x.settle();
+        }
+    }
+    let mut p = Pair::new(a, b, account(1), account(2));
+    p.run();
+    p.a.table.set(sid(5), Some(reader(&sid(5), &read_secret(5, 0), &st, &[], &[], &[])));
+    p.a.settle();
+    for (c, m) in p.a.sent() {
+        if c == p.ca {
+            p.b.take(p.cb, incoming(m));
+        }
+    }
+    p.close();
+    p.connect(2, account(1), account(2));
+    p.run();
+    p.log.clear();
+    // counted apart, the additions of sync ID 8 fill `a`'s room but pass `b`'s on every
+    // connection: never taken
+    for i in 6..=12 {
+        p.a.table.set(sid(i), Some(reader(&sid(i), &read_secret(i, 0), &st, &[], &[], &[])));
+        p.a.settle();
+        p.run();
+        if i == 8 {
+            p.close();
+            p.connect(3, account(1), account(2));
+            p.run();
+        }
+    }
+    assert!(p.b.pipe.closed.is_empty(), "b closed: {:?}", p.b.pipe.closed);
+    let errors: Vec<_> = p.log.iter().filter(|(from_a, m)| !from_a && matches!(m, Msg::Error { .. })).collect();
+    assert!(errors.is_empty(), "{errors:?}");
+    assert!(p.log.iter().any(|(from_a, m)| *from_a && matches!(m, Msg::Beacons { base: None, .. })), "a whole one once the additions pass its entries");
+}
+
 // spec/sync-opens.md §5 (testing): a Hit that opened nothing is tried again on that connection
 // only once something re-marks S or moves `changed_at(S)` (here a credential of S moving).
 #[test]
