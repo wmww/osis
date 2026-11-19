@@ -35,6 +35,8 @@ type Log = Rc<RefCell<Vec<(&'static str, u64)>>>;
 #[derive(Default)]
 struct Table {
     opened: Vec<BlobId>,
+    /// The same, each with the sync ID it opened under.
+    opened_under: Vec<(SyncId, BlobId)>,
     rank: BTreeMap<BlobId, Rank>,
     log: Log,
     /// Every body opens to a commit that pends here.
@@ -48,9 +50,10 @@ struct Table {
 }
 
 impl Ground for Table {
-    fn open(&mut self, _s: &SyncId, e: &Entry, _bytes: &[u8]) -> Result<Opening> {
+    fn open(&mut self, s: &SyncId, e: &Entry, _bytes: &[u8]) -> Result<Opening> {
         self.log.borrow_mut().push(("open", 0));
         self.opened.push(e.blob);
+        self.opened_under.push((*s, e.blob));
         Ok(match (self.pends, self.held) {
             (true, _) => Opening::Pends,
             (false, Some(gave)) => Opening::Held { gave },
@@ -252,8 +255,13 @@ impl Side {
 
     /// A durable entry of its own logged under a read S.
     fn log(&mut self, s: SyncId, n: usize) -> BlobId {
-        let (b, bytes) = blob(n, Class::Durable);
-        let e = Entry { blob: b, wrap: [n as u8; WRAP_LEN], stamp: None, deposited: false, own: true, role: false, class: Class::Durable, expires: None };
+        self.log_as(s, n, Class::Durable)
+    }
+
+    /// An entry of its own of `class` logged under a read S.
+    fn log_as(&mut self, s: SyncId, n: usize, class: Class) -> BlobId {
+        let (b, bytes) = blob(n, class);
+        let e = Entry { blob: b, wrap: [n as u8; WRAP_LEN], stamp: None, deposited: false, own: true, role: false, class, expires: None };
         assert_eq!(self.store.log(&s, e, Some(bytes), None).unwrap(), Code::OK);
         b
     }
@@ -1903,6 +1911,28 @@ fn push_work_follows_the_events_not_the_log_spec_sync_streams_4() {
     assert_eq!(served(20), 1);
 }
 
+// spec/sync.md §2 (Work in proportion to change), spec/sync-streams.md §4 (Pushes): an ephemeral
+// write pushes the memory part of the sync ID it moved alone: as many members listed at n as at
+// 10n members shared.
+#[test]
+fn an_ephemeral_push_lists_only_what_moved_spec_sync_streams_4() {
+    let listed = |n: u8| {
+        let mut p = Pair::new();
+        for i in 1..=n {
+            p.shared_read(sid(i));
+        }
+        // a push's cursor needs a position in the log
+        p.a.log(sid(1), 100);
+        p.run();
+        let before = p.a.streams.work().members;
+        p.a.log_as(sid(1), 120, Class::Ephemeral);
+        p.run();
+        assert!(p.b.streams.knows(Source::Conn(C), None, &sid(1), &blob(120, Class::Ephemeral).0), "pushed");
+        p.a.streams.work().members - before
+    };
+    assert_eq!(listed(5), listed(50));
+}
+
 // spec/sync-status.md §1 (caught up): a source is caught up once this side applied its stream to
 // the end and it reported every message served to it applied: an Applied lost on the way denies
 // it until a later one covers it.
@@ -1922,6 +1952,28 @@ fn caught_up_needs_the_peers_applied_spec_sync_status_1() {
     p.a.log(s, 102);
     p.run();
     assert!(p.a.streams.caught_up(C, &s), "a later Applied covers it");
+}
+
+// spec/sync-status.md §1 (caught up per sync ID: another sync ID's traffic on the connection
+// moves nothing of S's): a push of T not reported applied leaves S caught up at the server, and
+// at the requester one of T in hand awaiting its body leaves S caught up there.
+#[test]
+fn another_sync_ids_traffic_leaves_s_caught_up_spec_sync_status_1() {
+    let mut p = Pair::new();
+    let (s, t) = (sid(1), sid(2));
+    p.shared_read(s);
+    p.shared_read(t);
+    p.run();
+    // a's push of t is applied at b, b's Applied lost
+    p.a.log(t, 100);
+    p.run_with(|ab, m| !ab && m.kind() == 44);
+    assert!(!p.a.streams.caught_up(C, &t), "t's push is not reported applied");
+    assert!(p.a.streams.caught_up(C, &s), "s is caught up whatever t's traffic");
+    // a large entry of t comes by Fetch: b holds a's push in hand while the answer is lost
+    p.a.log(t, 20_000);
+    p.run_with(|ab, m| ab && m.kind() == 20);
+    assert!(!p.b.streams.caught_up(C, &t), "t's push in hand awaiting its body");
+    assert!(p.b.streams.caught_up(C, &s), "s is caught up whatever t's traffic");
 }
 
 // spec/sync-status.md §1 (complete pass): a pass asks a fresh Pull (`pull_again`), and caught up
@@ -1947,14 +1999,14 @@ fn caught_since_moves_with_a_fresh_pull_spec_sync_status_1() {
 /// The durable entries of S a side holds (the ground truth caught up speaks of): its own logged,
 /// and those the engine took (a reader's engine logs what it keeps itself).
 fn held(side: &Side, s: SyncId) -> std::collections::BTreeSet<BlobId> {
-    side.store.entries(&s).unwrap().into_iter().map(|e| e.blob).chain(side.table.opened.iter().copied()).collect()
+    side.store.entries(&s).unwrap().into_iter().map(|e| e.blob).chain(side.table.opened_under.iter().filter(|(x, _)| *x == s).map(|(_, b)| *b)).collect()
 }
 
-/// One random history: logs at either side and frames delivered in a random order (each
-/// direction in order, as a connection keeps it), both sides settling after each. After every
-/// step a side that says its source caught up holds what the source holds and the source holds
-/// what it holds. `logs`: how many entries each side writes in all. The steps at which a side
-/// said caught up.
+/// One random history over two sync IDs: logs at either side under either and frames delivered in a random order (each direction in order, as a
+/// connection keeps it), both sides settling after each. After every step a side that says its
+/// source caught up on a sync ID holds what the source holds of it and the source holds what it
+/// holds of it, whatever the other sync ID's traffic. `logs`: how many entries each side writes
+/// in all. The (step, sync ID) at which a side said caught up.
 fn caught_up_history(seed: u64, logs: usize) -> usize {
     let mut said = 0;
     let mut rng = seed.wrapping_mul(0x9e37_79b9_7f4a_7c15) | 1;
@@ -1965,9 +2017,11 @@ fn caught_up_history(seed: u64, logs: usize) -> usize {
         rng % n
     };
     let mut p = Pair::new();
-    let s = sid(1);
-    p.a.hold(s, Holding::Read);
-    p.b.hold(s, Holding::Read);
+    let ids = [sid(1), sid(2)];
+    for s in ids {
+        p.a.hold(s, Holding::Read);
+        p.b.hold(s, Holding::Read);
+    }
     let (mut ab, mut ba): (VecDeque<Frame>, VecDeque<Frame>) = (VecDeque::new(), VecDeque::new());
     let mut joined = false;
     let (mut na, mut nb) = (0, 0);
@@ -1978,16 +2032,20 @@ fn caught_up_history(seed: u64, logs: usize) -> usize {
             // S becomes a member at both sides (opens agreed it) before either Pull of it lands
             0 | 1 if !joined => {
                 joined = true;
-                p.a.join(now, s);
-                p.b.join(now, s);
+                for s in ids {
+                    p.a.join(now, s);
+                    p.b.join(now, s);
+                }
             }
             // small entries come inline, large ones by Fetch
             2 if na < logs => {
                 na += 1;
+                let s = ids[next(2) as usize];
                 p.a.log(s, if next(3) == 0 { 20_000 + na } else { 1000 + na });
             }
             3 if nb < logs => {
                 nb += 1;
+                let s = ids[next(2) as usize];
                 p.b.log(s, if next(3) == 0 { 30_000 + nb } else { 2000 + nb });
             }
             // a side's pushes find no room for a while (spec/sync-streams.md §4 Pushes)
@@ -2007,20 +2065,22 @@ fn caught_up_history(seed: u64, logs: usize) -> usize {
         p.b.with(now, |st, c| st.tick(c).unwrap());
         ab.extend(p.a.pipe.out.drain(..).map(|(_, f)| f));
         ba.extend(p.b.pipe.out.drain(..).map(|(_, f)| f));
-        let (ha, hb) = (held(&p.a, s), held(&p.b, s));
-        for (name, here, there, coming, held_back) in [("a", &p.a, &hb, &ba, p.b.pipe.full), ("b", &p.b, &ha, &ab, p.a.pipe.full)] {
-            if !here.streams.caught_up(C, &s) {
-                continue;
-            }
-            said += 1;
-            let mine = held(here, s);
-            // what this side served is applied there: it holds all of it
-            assert!(mine.is_subset(there), "seed {seed} step {step}: {name} says its source caught up, yet the source lacks {:?}", mine.difference(there).collect::<Vec<_>>());
-            // this side read the source's stream to its end: what it holds is here, unless a
-            // message on its way or one it cannot push yet announces more (NetStream.tla
-            // CaughtUpHolds: ~dirty, ~inflight)
-            if coming.is_empty() && !held_back {
-                assert!(there.is_subset(&mine), "seed {seed} step {step}: {name} says its source caught up, yet it lacks {:?}", there.difference(&mine).collect::<Vec<_>>());
+        for s in ids {
+            let (ha, hb) = (held(&p.a, s), held(&p.b, s));
+            for (name, here, there, coming, held_back) in [("a", &p.a, &hb, &ba, p.b.pipe.full), ("b", &p.b, &ha, &ab, p.a.pipe.full)] {
+                if !here.streams.caught_up(C, &s) {
+                    continue;
+                }
+                said += 1;
+                let mine = held(here, s);
+                // what this side served is applied there: it holds all of it
+                assert!(mine.is_subset(there), "seed {seed} step {step}: {name} says its source caught up, yet the source lacks {:?}", mine.difference(there).collect::<Vec<_>>());
+                // this side read the source's stream to its end: what it holds is here, unless a
+                // message on its way or one it cannot push yet announces more (NetStream.tla
+                // CaughtUpHolds: ~dirty, ~inflight)
+                if coming.is_empty() && !held_back {
+                    assert!(there.is_subset(&mine), "seed {seed} step {step}: {name} says its source caught up, yet it lacks {:?}", there.difference(&mine).collect::<Vec<_>>());
+                }
             }
         }
     }
@@ -2037,8 +2097,8 @@ fn deliver(to: &mut Side, now: u64, f: Frame) {
     to.with(now, |st, c| st.message(c, C, inc));
 }
 
-// spec/sync-status.md §1 (caught up): differential over random histories: a source said caught up
-// holds exactly what this node holds (both halves: this side read its stream to the end, it
+// spec/sync-status.md §1 (caught up per sync ID): differential over random histories on two
+// sync IDs: a source said caught up on one holds exactly what this node holds of it (both halves: this side read its stream to the end, it
 // applied every message served to it), whatever order the frames arrive in.
 #[test]
 fn caught_up_matches_what_each_side_holds_spec_sync_status_1() {

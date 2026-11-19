@@ -215,7 +215,12 @@ pub(super) struct Pulling {
     gap: bool,
     more: bool,
     quiet: bool,
+    /// Messages in hand, in order (`hold`, `next_held`).
     pending: VecDeque<Batch>,
+    /// Per member, the pushes in hand carrying an event of it: S is busy here while one is
+    /// (spec/sync-status.md §1); a reply in hand keeps the whole connection so (`replies`).
+    in_hand: BTreeMap<SyncId, usize>,
+    replies: usize,
     fetches: BTreeMap<Id, (SyncId, Vec<BlobId>, u8)>,
     queue: BTreeMap<(u8, u64, u64), (SyncId, BlobId)>,
     arrivals: u64,
@@ -265,6 +270,8 @@ impl Pulling {
             more: false,
             quiet: false,
             pending: VecDeque::new(),
+            in_hand: BTreeMap::new(),
+            replies: 0,
             fetches: BTreeMap::new(),
             queue: BTreeMap::new(),
             arrivals: 0,
@@ -286,10 +293,48 @@ impl Pulling {
         }
     }
 
-    /// SN_rearm: caught up only with the last reply at the end, no Pull out (a change announced
-    /// during one denies it), no gap and nothing in hand.
+    /// SN_rearm, the connection's part: the last reply at the end, no Pull out (a change
+    /// announced during one denies it), no gap and no reply in hand. A push in hand keeps only
+    /// the members it carries from caught up (`in_hand`).
     pub(super) fn caught_up(&self) -> bool {
-        self.quiet && self.out.is_none() && !self.gap && self.pending.is_empty()
+        self.quiet && self.out.is_none() && !self.gap && self.replies == 0
+    }
+
+    /// The members a push in hand carries an event of.
+    pub(super) fn in_hand(&self) -> impl Iterator<Item = &SyncId> {
+        self.in_hand.keys()
+    }
+
+    /// Takes a message in hand, last.
+    fn hold(&mut self, b: Batch) {
+        match b.reply {
+            Some(_) => self.replies += 1,
+            None => {
+                for s in b.events.iter().map(|(s, _)| *s).collect::<BTreeSet<_>>() {
+                    *self.in_hand.entry(s).or_default() += 1;
+                }
+            }
+        }
+        self.pending.push_back(b);
+    }
+
+    /// The first message in hand, no longer held.
+    fn next_held(&mut self) -> Option<Batch> {
+        let b = self.pending.pop_front()?;
+        match b.reply {
+            Some(_) => self.replies -= 1,
+            None => {
+                for s in b.events.iter().map(|(s, _)| *s).collect::<BTreeSet<_>>() {
+                    if let Some(n) = self.in_hand.get_mut(&s) {
+                        *n -= 1;
+                        if *n == 0 {
+                            self.in_hand.remove(&s);
+                        }
+                    }
+                }
+            }
+        }
+        Some(b)
     }
 
     pub(super) fn holding(&self) -> usize {
@@ -805,7 +850,7 @@ impl Streams {
             }
         }
         if let Some(p) = self.pull.get_mut(&conn) {
-            p.pending.push_back(batch);
+            p.hold(batch);
         }
         self.drain(ctx, conn);
     }
@@ -1227,7 +1272,7 @@ impl Streams {
             if !ready {
                 return;
             }
-            let Some(batch) = self.pull.get_mut(&conn).and_then(|p| p.pending.pop_front()) else { return };
+            let Some(batch) = self.pull.get_mut(&conn).and_then(|p| p.next_held()) else { return };
             self.apply(ctx, conn, batch);
         }
         if let Some(p) = self.pull.get_mut(&conn) {

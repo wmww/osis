@@ -197,10 +197,16 @@ pub struct Streams {
     asked: BTreeMap<BlobId, (ConnId, Mono)>,
     /// The connections each sync ID is a member on (its sources).
     holders: BTreeMap<SyncId, BTreeSet<ConnId>>,
-    /// The connections whose stream is caught up both ways (this side applied the peer's to its
-    /// end, the peer applied every message served to it): what read and status follow per
-    /// connection (`caught_up`).
+    /// The connections whose streams stand at their ends both ways (this side's last Pull there
+    /// answered to the end with nothing of it in hand, the peer's followed): the part of caught
+    /// up that is the connection's (`caught_up`).
     caught: StampedSet<ConnId>,
+    /// The members busy on a connection (spec/sync-status.md §1): an event of S in hand there,
+    /// or served to the peer and not reported applied, or logged and not pushed, or a join of S
+    /// left to read on. Kept per (connection, S), so S's traffic moves no other member's caught
+    /// up; `busy_of` is the same per connection.
+    busy: StampedSet<(ConnId, SyncId)>,
+    busy_of: BTreeMap<ConnId, BTreeSet<SyncId>>,
     /// Per caught-up connection, the place (`pulls_sent`) of the Pull the last reply answered:
     /// status's passes alone read it (`caught_since`), so a Pull answered moves no one else.
     caught_at: Stamped<ConnId, u64>,
@@ -223,7 +229,7 @@ impl Streams {
     pub fn new(store: Store) -> Streams {
         let (anew, owed) = store.anew_feed();
         let unkept = pull::forget_unkept(store.clone());
-        let mut st = Streams { serve: BTreeMap::new(), pull: BTreeMap::new(), places: BTreeMap::new(), shreds: store.shred_feed(), anew, known: Known::new(store), asked: BTreeMap::new(), holders: BTreeMap::new(), caught: StampedSet::default(), caught_at: Stamped::default(), pulls_sent: 0, relays: osis_proto::RelayGate::default(), fault: None, work: Work::default(), unkept: Vec::new() };
+        let mut st = Streams { serve: BTreeMap::new(), pull: BTreeMap::new(), places: BTreeMap::new(), shreds: store.shred_feed(), anew, known: Known::new(store), asked: BTreeMap::new(), holders: BTreeMap::new(), caught: StampedSet::default(), busy: StampedSet::default(), busy_of: BTreeMap::new(), caught_at: Stamped::default(), pulls_sent: 0, relays: osis_proto::RelayGate::default(), fault: None, work: Work::default(), unkept: Vec::new() };
         st.failed(owed);
         st.failed(unkept);
         st
@@ -291,12 +297,12 @@ impl Streams {
         self.known.knows(src, s, b) || conn.is_some_and(|c| Source::Conn(c) != src && self.known.knows(Source::Conn(c), s, b))
     }
 
-    /// Whether the source on `conn` is caught up for S (spec/sync-status.md §1): this side's
-    /// stream of S there at the stream, its last reply the end, no gap, nothing in hand and no
-    /// Pull out (spec/sync-streams.md §4; `SN_rearm`), and the peer reported every message
-    /// served to it applied.
+    /// Whether the source on `conn` is caught up on S (spec/sync-status.md §1): this side's
+    /// stream of S there at the stream, its last reply the end, no gap, no reply or push of S in
+    /// hand and no Pull out (spec/sync-streams.md §4; `SN_rearm`), and the peer followed this
+    /// side's stream with every event of S logged here pushed and reported applied.
     pub fn caught_up(&self, conn: ConnId, s: &SyncId) -> bool {
-        self.caught.contains(&conn) && self.pull.get(&conn).is_some_and(|p| self.places.get(&p.src).is_some_and(|pl| pl.at_stream.contains(s) && !pl.joining.contains_key(s)))
+        self.caught.contains(&conn) && !self.busy.contains(&(conn, *s)) && self.pull.get(&conn).is_some_and(|p| self.places.get(&p.src).is_some_and(|pl| pl.at_stream.contains(s) && !pl.joining.contains_key(s)))
     }
 
     /// The place (`pull_seq`) of the Pull whose reply S's caught up on `conn` rests on: none
@@ -387,11 +393,27 @@ impl Streams {
         self.track(ctx, conn);
     }
 
-    /// Keeps `caught` for `conn` as its pulling and serving now stand.
+    /// Keeps `caught` and `busy` for `conn` as its pulling and serving now stand: O(members
+    /// busy there, and events logged since the last).
     fn track(&mut self, ctx: &Ctx, conn: ConnId) {
-        let end = ctx.store.log_bounds().map(|(e, _)| e);
-        let mark = ctx.store.memory_mark();
-        let now = self.pull.get(&conn).filter(|p| p.caught_up() && end.as_ref().is_ok_and(|e| self.served_applied(conn, *e, mark))).map(|p| p.answered_at);
+        let scanned = self.scan_unpushed(ctx, conn);
+        self.failed(scanned);
+        let mut busy = BTreeSet::new();
+        if let Some(p) = self.pull.get(&conn) {
+            busy.extend(p.in_hand().copied());
+        }
+        self.served_busy(ctx, conn, &mut busy);
+        let was = self.busy_of.remove(&conn).unwrap_or_default();
+        for s in was.difference(&busy) {
+            self.busy.remove(&(conn, *s));
+        }
+        for s in busy.difference(&was) {
+            self.busy.insert((conn, *s));
+        }
+        if !busy.is_empty() {
+            self.busy_of.insert(conn, busy);
+        }
+        let now = self.pull.get(&conn).filter(|p| p.caught_up() && self.followed(conn)).map(|p| p.answered_at);
         if self.caught.contains(&conn) != now.is_some() {
             match now {
                 Some(_) => self.caught.insert(conn),
@@ -428,6 +450,9 @@ impl Streams {
         self.holders.retain(|_, v| !v.is_empty());
         self.caught.remove(&conn);
         self.caught_at.remove(&conn);
+        for s in self.busy_of.remove(&conn).unwrap_or_default() {
+            self.busy.remove(&(conn, s));
+        }
     }
 
     /// Settles every connection: pushes under `follow`, Pulls and Fetches due, room regained.

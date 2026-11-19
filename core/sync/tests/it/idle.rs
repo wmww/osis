@@ -54,6 +54,31 @@ fn an_idle_reconnect_sends_the_same_at_10n_spec_sync_streams_4() {
     }
 }
 
+/// The named counters' sum in `costs`.
+fn sum(costs: &[(&'static str, u64)], named: &[&str]) -> u64 {
+    costs.iter().filter(|(k, _)| named.contains(k)).map(|(_, n)| n).sum()
+}
+
+// spec/sync.md §2 (Work in proportion to change: Each event re-judges only what it touches): an
+// idle reconnect judges no member's stranding again, with a reader or with a node keeping every
+// thing unread (S's sources are read only where the engine's word could strand it), and no
+// register plan with a reader (only a store keeping S unread registers steps): as many at n as
+// at 10n shared sync IDs, less one per sync ID added (sampled debug comparisons count a run or
+// not). Not yet flat (issues/many-sync-ids-cost.md): standing, certificate blobs and store rows.
+#[test]
+fn an_idle_reconnect_judges_no_stranding_again_spec_sync_2() {
+    let at = |n| {
+        let mut w = things(n);
+        let (_, reader) = reconnect(&mut w, 0, 2);
+        let (_, store) = reconnect(&mut w, 0, 1);
+        [sum(&reader, &["status: stranded", "inbox: register judged"]), sum(&store, &["status: stranded"])]
+    };
+    let (small, large) = (at(N), at(10 * N));
+    for (i, who) in ["a reader", "a node keeping them unread"].iter().enumerate() {
+        assert!(large[i] < small[i] + (9 * N) as u64, "with {who}: {} judged at n, {} at 10n", small[i], large[i]);
+    }
+}
+
 /// The named counters' sum over one small commit by node 0 on thing 0, run to quiet.
 fn commit(w: &mut World, named: &[&str]) -> u64 {
     osis_base::costs::take();
@@ -76,14 +101,37 @@ fn time_passing_rejudges_no_duty_per_thing_spec_sync_2() {
     assert!(large <= small, "duties judged: {small} at n, {large} at 10n");
 }
 
-// spec/sync.md §2 (Work in proportion to change: Each event re-judges only what it touches): a
-// small commit on one sync ID re-judges no other sync ID's stranding (issues/many-sync-ids-cost.md:
-// caught up is kept per connection, so each S on a connection the commit's stream crosses is
-// judged again).
+// spec/sync.md §2 (Work in proportion to change: Each event re-judges only what it touches),
+// spec/sync-status.md §1 (caught up per sync ID: another sync ID's traffic on the connection moves
+// nothing of S's): a small commit on one sync ID re-judges as many strandings at n as at 10n
+// shared sync IDs (less than one more per sync ID added: the memo's sampled debug comparisons
+// count a run or not).
 #[test]
-#[ignore = "issues/many-sync-ids-cost.md"]
-fn repro_a_commit_judges_one_stranding() {
+fn a_commit_judges_one_stranding_spec_sync_status_1() {
     let at = |n| commit(&mut things(n), &["status: stranded"]);
     let (small, large) = (at(N), at(10 * N));
-    assert!(large <= small, "strandings judged: {small} at n, {large} at 10n");
+    assert!(large < small + (9 * N) as u64, "strandings judged: {small} at n, {large} at 10n");
+}
+
+/// By hand: every counter of an idle reconnect with a reader (R), with a node keeping every
+/// thing unread (S) and of one small commit (C), at n and 10n things (`--ignored --nocapture`).
+/// What issues/many-sync-ids-cost.md and notes/sync-unit-design.md §8 count.
+#[test]
+#[ignore = "by hand: prints counts"]
+fn probe_counts() {
+    for n in [N, 10 * N] {
+        let mut w = things(n);
+        for (tag, b) in [("R", 2), ("S", 1)] {
+            let (bytes, costs) = reconnect(&mut w, 0, b);
+            println!("{tag}{n} bytes {bytes}");
+            for (k, v) in costs {
+                println!("  {tag}{n} {k} {v}");
+            }
+        }
+        osis_base::costs::take();
+        let _ = play(&mut w, &[Write(0, 0), Run], String::new());
+        for (k, _, v) in osis_base::costs::take() {
+            println!("  C{n} {k} {v}");
+        }
+    }
 }

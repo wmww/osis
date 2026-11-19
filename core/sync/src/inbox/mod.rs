@@ -46,7 +46,7 @@ use crate::opens::{Member, Moved, Opens};
 use crate::session::{Incoming, RequestId, Sessions, To};
 use crate::store::{Source, Store};
 use crate::streams::Streams;
-use crate::types::{ConnId, Cx, Result, Waiting};
+use crate::types::{ConnId, Cx, Result, SourceClass, Waiting};
 use osis_base::{BlobId, Mono, SyncId, Tid, WallMs};
 use osis_engine::Engine;
 use osis_blob::{DialHint, ShareLink, StepId};
@@ -233,7 +233,10 @@ impl Inbox {
         match *m {
             Moved::Joined(conn, s, _) => {
                 self.offers.joined(conn, &s, net);
-                self.register.joined(conn, s);
+                // only a store keeping S unread registers steps (spec/sync-ids.md §6 Steps)
+                if net.member(conn, &s).is_some_and(|m| m.class == SourceClass::Store) {
+                    self.register.joined(conn, s);
+                }
                 self.suspects.joined(conn, s, net);
             }
             Moved::Left(conn, s, _) => {

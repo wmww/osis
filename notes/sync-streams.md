@@ -38,7 +38,7 @@ What a record source showed of S (presence, head, refusals) goes with its place 
 A shred of S takes S's place rows in the store's transaction and S out of every place in memory before any place is next read (`Streams::place` drains the store's shred feed). A member leaving S later in that step would otherwise write its pre-shred position back, and S read again would rejoin past entries it no longer holds.
 
 ## Costs left in O(members)
-A Pull's reply builds the members map (per Pull: joins, gaps, pages, not per event); `inline_check` scans a connection's members when a member gains or loses a source; every connection's ephemeral listing reads each listed member's memory part when any ephemeral entry moves (issues/streams-ephemeral-scan.md).
+A Pull's reply builds the members map (per Pull: joins, gaps, pages, not per event); `inline_check` scans a connection's members when a member gains or loses a source; a push lists the memory part only of the members with memory events since its mark (the store's node-wide memory index, `memory_since`).
 
 ## Constants
 `INLINE_LIMIT` (16 KiB), `PENDING_CAP` (64 messages in hand), `FETCHES_OUT` (2), `RESYNC_MS` (30 s, before a refused Pull goes again or a refused join is joined again), `ASKED_MS` (the stall timeout, a blob asked of one source).

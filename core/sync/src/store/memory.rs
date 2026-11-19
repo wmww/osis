@@ -30,6 +30,8 @@ pub(crate) struct Memory {
     pub log: BTreeMap<(SyncId, u64), (BlobId, Option<WallMs>)>,
     /// Each entry's latest memory log event.
     pub slot: BTreeMap<(SyncId, BlobId), u64>,
+    /// The memory log by counter alone: which sync IDs moved past a mark (`since`).
+    by_n: BTreeMap<u64, SyncId>,
     pub next: u64,
     pub tombs: BTreeMap<(SyncId, BlobId), WallMs>,
     /// Tombstones and removal events by when they were made, for the sweep.
@@ -115,9 +117,11 @@ impl Memory {
     fn event(&mut self, s: &SyncId, b: &BlobId, gone: Option<WallMs>) {
         if let Some(old) = self.slot.remove(&(*s, *b)) {
             self.log.remove(&(*s, old));
+            self.by_n.remove(&old);
         }
         self.next += 1;
         self.log.insert((*s, self.next), (*b, gone));
+        self.by_n.insert(self.next, *s);
         self.slot.insert((*s, *b), self.next);
     }
 
@@ -202,6 +206,7 @@ impl Memory {
             if expired {
                 if let Some(old) = self.slot.remove(&(*s, *b)) {
                     self.log.remove(&(*s, old));
+                    self.by_n.remove(&old);
                 }
             } else {
                 self.event(s, b, Some(now));
@@ -233,6 +238,7 @@ impl Memory {
         self.drop_entries(s, now);
         self.tombs.retain(|(x, _), _| x != s);
         self.log.retain(|(x, _), _| x != s);
+        self.by_n.retain(|_, x| x != s);
         self.slot.retain(|(x, _), _| x != s);
         self.usage.remove(s);
         self.conn_forget(|(_, x, _, _)| x != s);
@@ -253,6 +259,11 @@ impl Memory {
         let v: Vec<_> = self.log.range((*s, after.saturating_add(1))..=(*s, u64::MAX)).take(max).map(|((_, n), (b, gone))| (*n, *b, gone.is_none())).collect();
         let last = v.last().map_or(after.max(self.next), |e| e.0);
         (v, last)
+    }
+
+    /// The memory log's events after counter `after`, each with its sync ID: O(those).
+    pub(crate) fn since(&self, after: u64) -> Vec<(u64, SyncId)> {
+        self.by_n.range(after.saturating_add(1)..).map(|(n, s)| (*n, *s)).collect()
     }
 
     /// Sweeps expiry at `now` and tombstones and removal events past `MAX_DRIFT`; whether any.
@@ -277,6 +288,7 @@ impl Memory {
                 && self.log.get(&(s, n)).is_some_and(|(_, g)| *g == Some(t))
             {
                 self.log.remove(&(s, n));
+                self.by_n.remove(&n);
                 self.slot.remove(&(s, b));
             }
             self.moved(&s, &b);

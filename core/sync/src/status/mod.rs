@@ -453,20 +453,26 @@ impl Status {
     /// reading of "after a complete pass there": every unrefusing source caught up) and the
     /// engine holding no current read secret of S's thing though one is known; or no source
     /// has S open and its walk stopped at one (spec/sync-ids.md §6 Stranded there: every source
-    /// it reached refused every open it had to try). O(keys moved).
+    /// it reached refused every open it had to try). O(keys moved): S's sources are read only
+    /// where the engine's word or a walk stop could make it stranded, so a source joining or
+    /// leaving (a reconnect) judges no other S again.
     fn judge_strandings(&mut self, g: &mut impl Ground) -> Result<()> {
         for s in self.stranding_fx.due() {
             let all = &self.sources;
             let r = self.stranding_fx.try_settle(&s, || {
+                let (engine, walk) = (g.stranding(&s)?, g.walk_stop(&s));
+                if engine.is_none() && walk.is_none() {
+                    return Ok(None);
+                }
                 let srcs = all.get(&s).map_or(&NO_SOURCES, |x| &**x);
                 if srcs.is_empty() {
-                    return match g.walk_stop(&s) {
+                    return match walk {
                         Some(step) => g.walk_stranding(&s, step),
                         None => Ok(None),
                     };
                 }
                 let heard = heard_out(srcs.iter().map(|(c, src)| (!g.full(*c, &s) && !g.refusing(src.at, &s), g.caught_since(*c, &s).is_some())));
-                if heard { g.stranding(&s) } else { Ok(None) }
+                Ok(if heard { engine } else { None })
             })?;
             match r {
                 Some((_, Some(x))) => {

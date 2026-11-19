@@ -1441,6 +1441,11 @@ impl Store {
         self.lock().mem.events(s, after, max)
     }
 
+    /// The memory log's events after counter `after` (`memory_mark`), each with its sync ID.
+    pub fn memory_since(&self, after: u64) -> Vec<(u64, SyncId)> {
+        self.lock().mem.since(after)
+    }
+
     /// The memory part's counter: it moves at each ephemeral event of any sync ID.
     pub fn memory_mark(&self) -> u64 {
         self.lock().mem.next

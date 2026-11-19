@@ -44,13 +44,32 @@ pub(super) struct Serve {
     told_until: BTreeSet<SyncId>,
     /// The highest position an Applied reported.
     applied: Option<Position>,
-    /// The position of the last message sent asking a report: every message served is applied
-    /// once `applied` reaches it (spec/sync-status.md §1 caught up).
-    served: Option<Position>,
-    /// The last reply left a join of a member to read on (the peer pulls again for it).
-    joins_left: bool,
+    /// Per member, the position of the last message carrying an event of it that asked a
+    /// report: S's messages served are applied once `applied` reaches it (spec/sync-status.md §1
+    /// caught up). Kept while above `applied`.
+    unapplied: BTreeMap<SyncId, Position>,
+    /// Per member, its last event the log holds past the follow cursor (not pushed yet), and how
+    /// far the log was read for them (`Streams::scan_unpushed`): kept while past the cursor.
+    unpushed: BTreeMap<SyncId, Position>,
+    scanned: Option<(Option<Cursor>, Position)>,
+    /// The members whose join the last reply left to read on (the peer pulls again for them).
+    joins_left: BTreeSet<SyncId>,
     /// Members reported at a position of their own (a join not merged yet).
     own: BTreeSet<SyncId>,
+}
+
+impl Serve {
+    /// The follow cursor reached `pos`: what was logged up to it is pushed or skipped.
+    fn followed_to(&mut self, pos: Position) {
+        self.unpushed.retain(|_, p| *p > pos);
+    }
+
+    /// A message carrying `events`, asking a report at `pos`, went out.
+    fn served(&mut self, events: &[(SyncId, Event)], pos: Position) {
+        for (s, _) in events {
+            self.unapplied.insert(*s, pos);
+        }
+    }
 }
 
 #[derive(Clone, Debug)]
@@ -186,7 +205,7 @@ impl Streams {
         let read = self.read_into(ctx, conn, &mut page, &stream, None, from, start)?;
         // joins: each from its own cursor; one that reaches the log's end merges
         let mut reply_joins = Vec::new();
-        let mut joins_left = false;
+        let mut joins_left = BTreeSet::new();
         if !whole {
             for (s, c, pos) in joins {
                 let Some(until) = members.get(&s) else {
@@ -194,7 +213,7 @@ impl Streams {
                     continue;
                 };
                 if page.full {
-                    joins_left = true;
+                    joins_left.insert(s);
                     let c = match c {
                         Some(c) => Some(c),
                         None => ctx.store.cursor_at(0)?,
@@ -205,7 +224,7 @@ impl Streams {
                 let one = BTreeMap::from([(s, *until)]);
                 let r = self.read_into(ctx, conn, &mut page, &one, Some(s), c, pos.flatten().unwrap_or(0))?;
                 if r.more {
-                    joins_left = true;
+                    joins_left.insert(s);
                     reply_joins.push((s, wire_cursor(&r.cursor)));
                 } else {
                     self.serve.entry(conn).or_default().merging.insert(s, read.pos);
@@ -224,18 +243,19 @@ impl Streams {
                 }
             }
         }
-        self.ephemeral(ctx, conn, &mut page, &members)?;
+        self.ephemeral(ctx, conn, &mut page, &members, None)?;
         let serve = self.serve.entry(conn).or_default();
         serve.eph.extend(page.eph.iter().map(|(s, n)| (*s, *n)));
         serve.joins_left = joins_left;
         if p.follow && !read.more {
             serve.follow = Some(Follow { cursor: read.cursor.clone(), pos: read.pos, seq: 0 });
             serve.mem_mark = ctx.store.memory_mark();
+            serve.followed_to(read.pos);
         }
         let cursor = wire_cursor(&read.cursor);
         let report = !page.events.is_empty() && cursor.is_some();
         if report {
-            serve.served = Some(read.pos);
+            serve.served(&page.events, read.pos);
         }
         let from_start: Vec<SyncId> = if whole { members.keys().copied().collect() } else { p.joins.iter().filter(|(s, c)| c.is_none() && members.contains_key(s)).map(|(s, _)| *s).collect() };
         self.offered(ctx, conn, &page.events, &from_start);
@@ -325,9 +345,16 @@ impl Streams {
     }
 
     /// The ephemeral listing (spec/wire.md §11.2 Pull `ephemeral`): each listed member's memory
-    /// events after where its listing stands, with their bytes, while the page has room.
-    fn ephemeral(&mut self, ctx: &mut Ctx, conn: ConnId, page: &mut Page, members: &impl Members) -> Result<()> {
-        let listing: Vec<(SyncId, u64)> = self.serve.get(&conn).map(|x| x.eph.iter().filter(|(s, _)| members.until(s) == Some(None)).map(|(s, n)| (*s, *n)).collect()).unwrap_or_default();
+    /// events after where its listing stands, with their bytes, while the page has room. `moved`:
+    /// only those members (the ones with memory events since the mark, at a push), else all.
+    fn ephemeral(&mut self, ctx: &mut Ctx, conn: ConnId, page: &mut Page, members: &impl Members, moved: Option<&BTreeSet<SyncId>>) -> Result<()> {
+        let listing: Vec<(SyncId, u64)> = match (self.serve.get(&conn), moved) {
+            (None, _) => Vec::new(),
+            (Some(x), None) => x.eph.iter().map(|(s, n)| (*s, *n)).collect(),
+            (Some(x), Some(m)) => m.iter().filter_map(|s| Some((*s, *x.eph.get(s)?))).collect(),
+        };
+        let listing: Vec<(SyncId, u64)> = listing.into_iter().filter(|(s, _)| members.until(s) == Some(None)).collect();
+        self.work.members += listing.len() as u64;
         for (s, mut at) in listing {
             loop {
                 let (evs, last) = ctx.store.read_memory(&s, at, CHUNK);
@@ -375,11 +402,14 @@ impl Streams {
             let mut page = Page::new(REPLY_BUDGET as u64, 0);
             let read = if end > f.pos { self.read_into(ctx, conn, &mut page, members, None, f.cursor.clone(), f.pos)? } else { Read { cursor: f.cursor.clone(), pos: f.pos, more: false } };
             if mem_moved {
-                self.ephemeral(ctx, conn, &mut page, members)?;
+                let since = self.serve.get(&conn).map_or(0, |s| s.mem_mark);
+                let moved: BTreeSet<SyncId> = ctx.store.memory_since(since).into_iter().map(|(_, s)| s).collect();
+                self.ephemeral(ctx, conn, &mut page, members, Some(&moved))?;
             }
             if page.events.is_empty() {
                 let s = self.serve.entry(conn).or_default();
                 s.follow = Some(Follow { cursor: read.cursor, pos: read.pos, seq: f.seq });
+                s.followed_to(read.pos);
                 if !page.full {
                     s.mem_mark = mark;
                 }
@@ -393,7 +423,8 @@ impl Streams {
                 self.offered(ctx, conn, &events, &[]);
                 let s = self.serve.entry(conn).or_default();
                 s.follow = Some(Follow { cursor: read.cursor, pos: read.pos, seq: f.seq + 1 });
-                s.served = Some(read.pos);
+                s.followed_to(read.pos);
+                s.served(&events, read.pos);
                 s.eph.extend(page.eph);
                 if !page.full && !read.more {
                     s.mem_mark = mark;
@@ -425,13 +456,59 @@ impl Streams {
         Ok(acted)
     }
 
-    /// Whether the peer pulled this side's stream to its end and reported every message served to
-    /// it applied (spec/sync-status.md §1): it pulled, is followed with nothing left to push (`end`,
-    /// `mark`: the log's end and the memory mark now) and no join left to read on.
-    pub(super) fn served_applied(&self, conn: ConnId, end: Position, mark: u64) -> bool {
-        self.serve.get(&conn).is_some_and(|x| {
-            x.follow.as_ref().is_some_and(|f| f.pos >= end) && x.mem_mark == mark && !x.joins_left && x.served.is_none_or(|p| x.applied.is_some_and(|a| a >= p))
-        })
+    /// The connection's part of the peer having pulled this side's stream to its end
+    /// (spec/sync-status.md §1): its last Pull was answered to the end and is followed.
+    pub(super) fn followed(&self, conn: ConnId) -> bool {
+        self.serve.get(&conn).is_some_and(|x| x.follow.is_some())
+    }
+
+    /// Reads the log past the follow cursor on `conn` for the members it holds events of
+    /// (`unpushed`), from where the last read stopped: O(events logged since).
+    pub(super) fn scan_unpushed(&mut self, ctx: &Ctx, conn: ConnId) -> Result<()> {
+        let Some(x) = self.serve.get(&conn) else { return Ok(()) };
+        let Some(f) = &x.follow else { return Ok(()) };
+        let (end, _) = ctx.store.log_bounds()?;
+        let (mut cursor, mut pos) = match &x.scanned {
+            Some((c, p)) if *p > f.pos => (c.clone(), *p),
+            _ => (f.cursor.clone(), f.pos),
+        };
+        if end <= pos {
+            return Ok(());
+        }
+        let members = ctx.shared.members(conn);
+        let mut found = Vec::new();
+        loop {
+            let r = ctx.store.read_log(members, cursor.as_ref(), CHUNK)?;
+            self.work.served += r.events.len() as u64;
+            for e in &r.events {
+                found.push((e.event.sync_id(), e.pos));
+                pos = pos.max(e.pos);
+            }
+            cursor = r.cursor;
+            if !r.more {
+                break;
+            }
+        }
+        let Some(x) = self.serve.get_mut(&conn) else { return Ok(()) };
+        x.unpushed.extend(found);
+        x.scanned = Some((cursor, end.max(pos)));
+        Ok(())
+    }
+
+    /// The members the peer on `conn` has not yet applied all of (spec/sync-status.md §1): an
+    /// event of S served and not reported applied, logged and not pushed, listed in memory and
+    /// not sent, or a join of S left to read on.
+    pub(super) fn served_busy(&self, ctx: &Ctx, conn: ConnId, out: &mut BTreeSet<SyncId>) {
+        let Some(x) = self.serve.get(&conn) else { return };
+        out.extend(x.unapplied.iter().filter(|(_, p)| x.applied.is_none_or(|a| a < **p)).map(|(s, _)| *s));
+        out.extend(x.unpushed.keys().copied());
+        out.extend(x.joins_left.iter().copied());
+        let members = ctx.shared.members(conn);
+        for (n, s) in ctx.store.memory_since(x.mem_mark) {
+            if x.eph.get(&s).is_some_and(|at| *at < n) && members.until(&s) == Some(None) {
+                out.insert(s);
+            }
+        }
     }
 
     /// An Applied: the requester stored this cursor (spec/sync-opens.md §6 reported positions).
@@ -441,6 +518,7 @@ impl Streams {
         // a join merging at a position the stream stood at already is covered by an Applied of it
         if serve.applied.is_none_or(|p| p < pos) {
             serve.applied = Some(pos);
+            serve.unapplied.retain(|_, p| *p > pos);
             ctx.reported.push(Reported::Stream(conn, pos, cursor));
         }
         let merged: Vec<SyncId> = serve.merging.iter().filter(|(_, p)| **p <= pos).map(|(s, _)| *s).collect();
@@ -454,6 +532,10 @@ impl Streams {
     /// A member joined, as server: one opened after the first Pull has no reported position
     /// until a join names it.
     pub(super) fn served_joined(&mut self, ctx: &mut Ctx, conn: ConnId, s: SyncId) {
+        // the log past the follow cursor is read again for the shared set now
+        if let Some(serve) = self.serve.get_mut(&conn) {
+            serve.scanned = None;
+        }
         if let Some(serve) = self.serve.get_mut(&conn)
             && serve.pulled
         {
@@ -468,6 +550,9 @@ impl Streams {
         let Some(serve) = self.serve.get_mut(&conn) else { return };
         serve.named.remove(s);
         serve.merging.remove(s);
+        serve.unapplied.remove(s);
+        serve.unpushed.remove(s);
+        serve.joins_left.remove(s);
         serve.own.remove(s);
         serve.eph.remove(s);
         serve.ending.remove(s);
