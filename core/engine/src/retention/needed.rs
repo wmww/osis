@@ -9,7 +9,7 @@
 //! held fires; a weak or ticket only points and needs nothing), an account by its `keys.0` (its inbox), one whose record names it mint admin, one
 //! whose held edge write names it holder (`Held::named_on`), an account root whose account's held
 //! chain names it a device (D bears no edge write), one a pending commit it authored or acted
-//! in writes on (`Indexes::pend_by`),
+//! in, or first awaiting its record, writes on (`Indexes::pend_by`),
 //! one in the node closure a held commit on it has a part missing on (`Meta::missing_parts`: a
 //! part the node fetches again), one in the node closure an edge write on it names holder (not by its
 //! record: the holder's sync ID carries the grant with its chain, spec/sync-judgement.md §2 A
