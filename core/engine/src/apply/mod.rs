@@ -866,7 +866,8 @@ fn arrive(tx: &mut Tx<'_>, id: &CommitId, blob: CommitBlob, blobs: bool) -> Resu
 
 /// What a copy of commit `id` held or pending here returns when it brings nothing: each part it
 /// carries is held as its body (an applied commit's) or is the stored pending copy's part byte
-/// for byte, under the stored copy's signatures, that copy not past its expiry (`expire_stored`).
+/// for byte, under the stored copy's signatures, that copy not past its expiry (`expire_stored`)
+/// and no clock wake of it due (`Wake::At`: its `ts` came within reach before a tick ran).
 /// Ingesting it would end where it began (the stored copy, its receipt, its wait); a carrier it
 /// came by is still noted (`carriers::taken`, after). `None`: it may bring something, so
 /// `ingest_blob` judges it. Bytes decide, not a part's hash in the header: a pending commit may
@@ -882,12 +883,17 @@ fn rearrival(tx: &mut Tx<'_>, id: &CommitId, blob: &CommitBlob) -> Result<Option
         let applied = tx.core.ix.commits.contains_key(id) && held.len() == blob.parts.len();
         return Ok(applied.then_some(Ingested::Duplicate(*id)));
     };
+    // a clock wake due and not yet run (its `ts` within reach, before a tick): examined now
+    let now = tx.now().0;
+    if tx.core.ix.pend_keys.get(id).is_some_and(|ws| ws.iter().any(|w| matches!(w, Wake::At(t) if *t <= now))) {
+        return Ok(None);
+    }
     let Some(stored) = tx.txn.get_pending(id)? else { return Ok(None) };
     if stored.kind != osis_store::PendingKind::Pending {
         return Ok(None);
     }
     let Ok(old) = CommitBlob::decode_stored(&stored.bytes) else { return Ok(None) };
-    if old.sigs != blob.sigs || old.header.expires.is_some_and(|t| t <= tx.now().0) {
+    if old.sigs != blob.sigs || old.header.expires.is_some_and(|t| t <= now) {
         return Ok(None);
     }
     let same = blob.parts.iter().all(|p| held.contains(&p.ai) || old.part(p.ai).is_some_and(|x| x.delta == p.delta));

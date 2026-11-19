@@ -365,3 +365,24 @@ fn a_pending_commit_handed_again_costs_a_lookup_unless_it_brings_something_spec_
     assert!(e1.frontier(&scope, between).unwrap().commits.contains(&d), "received when it first came");
     assert!(!e1.frontier(&scope, before).unwrap().commits.contains(&d));
 }
+
+// spec/crdt.md §2.2, spec/commits.md §4: D, written more than MAX_DRIFT ahead of peer 1's clock,
+// pends for drift; once peer 1's clock reaches it, D handed again before any tick applies, as an
+// examination would apply it: a copy bringing nothing is a lookup only while nothing of its wait
+// is due.
+#[test]
+fn a_pending_commit_handed_again_once_its_drift_passed_applies_spec_commits_4() {
+    let (mut lp, x, _) = base();
+    let ahead = 3 * osis_base::format::MAX_DRIFT_MS;
+    lp.peers[0].clock.advance(ahead);
+    let mut m = Mutation::new();
+    m.set(x, &REG, &Value::Str("ahead".into())).unwrap();
+    let d = lp.peers[0].engine.commit(m).unwrap().unwrap();
+    let pk = lp.peers[0].engine.package(&d).unwrap().unwrap();
+    let e1 = &mut lp.peers[1].engine;
+    assert!(matches!(e1.ingest(&pk.bytes, pk.blobs.clone()).unwrap(), osis_engine::Ingested::Pending(_, osis_engine::Reason::Drift)));
+    lp.peers[1].clock.advance(ahead);
+    let e1 = &mut lp.peers[1].engine;
+    assert_eq!(e1.ingest(&pk.bytes, Vec::new()).unwrap(), osis_engine::Ingested::Applied(d), "examined, not a lookup");
+    assert_eq!(e1.get(&x, &ak("t:reg.0")).unwrap(), Some(Value::Str("ahead".into())));
+}
