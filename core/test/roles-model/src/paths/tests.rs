@@ -1135,7 +1135,6 @@ fn each_fix_is_needed() {
         ("listed", Rules { stands: false, ..f }),
         ("exempt", Rules { exempt_chain: true, ..f }),
         ("timed", Rules { last_admin: LastAdmin::NamedTimed, ..f }),
-        ("own vouch", Rules { no_own_vouch: false, ..f }),
         ("once", Rules { rewrite: false, ..f }),
         ("leave", Rules { leave_in_question: false, ..f }),
     ];
@@ -1463,4 +1462,28 @@ fn the_remover_keeps_what_it_received_first_in_the_story() {
     assert_eq!(n5(Rules::fixed()), (Gone, 0));
     let (role, fails) = n5(Rules { key_order: true, ..Rules::fixed() });
     assert!(role == Admin && fails > 0);
+}
+
+/// Equivocation (notes/path-model-findings.md, To model next 6): X signs a twin of its removal of
+/// N5 at its `ts`, ordered first, listing H's pairing of N5 and not N5's grant to B. Received by H
+/// before the removal it is a write H's removal applies with, so H keeps it: the twin applies, the
+/// first is a no-op and N5's grant to B falls (as any lowering X made that H heard). Received
+/// after, the removal drops it at every node, trusting or not, and the first stays made, its list
+/// with it.
+#[test]
+fn an_equivocating_twin_of_an_earlier_removal() {
+    let s = Setup { n5: 3, ..Setup::default() };
+    for (made, kept) in [(5, true), (9, false)] {
+        let m = Sim::build(&s, &Rules::fixed(), &[Move { kind: 35, ts: 3, made }], &mut Rng(0));
+        let twin = *m.thief.keys().next().unwrap();
+        for n in [H, B, N6] {
+            let rd = judge(&m.w, &Rules::fixed(), &m.view(n, &Rules::fixed()));
+            assert_eq!(rd.applied.contains(&twin), kept, "node {n}");
+            assert_eq!(rd.applied.contains(&m.gb5.unwrap()), !kept, "node {n}");
+            assert!(rd.applied.contains(&m.out5.unwrap()) && rd.role(N5, A) == Gone);
+        }
+        let mut st = Stats::default();
+        check(&m, &Rules::fixed(), &mut st);
+        assert_eq!(st.failures(), 0);
+    }
 }

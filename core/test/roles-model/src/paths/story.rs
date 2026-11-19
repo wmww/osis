@@ -93,8 +93,8 @@ pub struct Move {
 /// The thief's menu: 23 to 27 and 28, 29 are aimed at the remover (X, or a made-up key X grants
 /// admin, granting H admin, standing or until just after the removal; X removing M listing nothing,
 /// or listing M's grant of H; X demoting H listing its own grant); `N5_MOVES` are signed with the
-/// key of N5, removed by X before the theft (`Setup::n5` 3).
-pub const MOVES: usize = 35;
+/// key of N5, removed by X before the theft (`Setup::n5` 3); 35 is X's twin of that removal.
+pub const MOVES: usize = 36;
 /// N5 grants H admin, standing or until just after the removal; N5 removes H; N5 demotes H; N5
 /// vouches against H's removal for X's role writes on A. Each stamped before X's removal of N5
 /// but the vouch.
@@ -102,7 +102,7 @@ pub const N5_MOVES: std::ops::Range<usize> = 30..35;
 /// The moves the thief may make at tick 5, heard by H and B before the removal (`Move::made` 5):
 /// X's removal of H, those aimed at the remover but through a made-up key, and N5's.
 pub fn early(kind: usize) -> bool {
-    matches!(kind, 11 | 23 | 24 | 27 | 28 | 29) || N5_MOVES.contains(&kind)
+    matches!(kind, 11 | 23 | 24 | 27 | 28 | 29 | 35) || N5_MOVES.contains(&kind)
 }
 
 /// What a world is built from: its setup, the thief's moves, and the receipts generator.
@@ -131,8 +131,10 @@ pub struct Sim {
     pub gs: Id,
     pub g5: Option<Id>,
     pub xrole: Option<Id>,
-    /// X's removal of N5 before the theft (`Setup::n5` 3), and M's grant of H (`Setup::mint`).
+    /// X's removal of N5 before the theft (`Setup::n5` 3), N5's grant of write on T1 to B before
+    /// it (which it lists), and M's grant of H (`Setup::mint`).
     pub out5: Option<Id>,
+    pub gb5: Option<Id>,
     pub gh: Option<Id>,
     pub gx: Id,
     /// The thief's commits, each with the kind of the move that made it.
@@ -213,7 +215,7 @@ impl Sim {
         sync.insert(N6, Things::from([A, ORG, T1, D1, T2]));
         sync.insert(RD3, Things::from([T1, D1]));
         let w = if s.mint > 0 { minted_by(M) } else { account() };
-        let mut m = Sim { w, spec, setup: s, made: vec![], recv: vec![], sync, r: 0, r2: None, rx: None, xfirst: None, gs: 0, g5: None, xrole: None, out5: None, gh: None, gx: 0, thief: BTreeMap::new(), logged: BTreeMap::new() };
+        let mut m = Sim { w, spec, setup: s, made: vec![], recv: vec![], sync, r: 0, r2: None, rx: None, xfirst: None, gs: 0, g5: None, xrole: None, out5: None, gb5: None, gh: None, gx: 0, thief: BTreeMap::new(), logged: BTreeMap::new() };
         let grant = Kind::set;
         if s.mint > 0 {
             m.gh = Some(m.put((M, 0, &[], A, grant(H, Role::Admin)), 0, rng, false));
@@ -235,7 +237,21 @@ impl Sim {
         m.gs = m.put((sharer, 2, &[A], T1, grant(A2, a2)), 2, rng, false);
         if s.n5 == 3 {
             let g = m.put((H, 1, &[], A, grant(N5, Role::Admin)), 1, rng, false);
-            let f = m.w.cut(&[g]);
+            let gb5 = m.put((N5, 2, &[A], T1, grant(B, Role::Write)), 2, rng, false);
+            m.recv[gb5].insert(H, 2);
+            m.gb5 = Some(gb5);
+            // equivocation (move 35): X's twin of its removal of N5, at its `ts`, ordered before it
+            // (a commit ID the thief ground), listing H's grant of N5 and not N5's grant to B
+            for mv in moves.iter().filter(|mv| mv.kind == 35) {
+                let f = m.w.cut(&[g]);
+                let twin = m.put((X, 3, &[], A, grant(N5, Role::None).listing(f)), mv.made, rng, true);
+                m.thief.insert(twin, 35);
+                if mv.made < REMOVAL {
+                    m.recv[twin].insert(H, mv.made);
+                    m.recv[twin].insert(B, mv.made);
+                }
+            }
+            let f = m.w.cut(&[g, gb5]);
             let out = m.put((X, 3, &[], A, grant(N5, Role::None).listing(f)), 3, rng, false);
             m.recv[out].insert(H, 3);
             m.recv[out].insert(B, 3);
@@ -485,6 +501,10 @@ impl Sim {
     }
     fn thief_move(&mut self, mv: &Move, rng: &mut Rng) {
         let grant = Kind::set;
+        if mv.kind == 35 {
+            // made with the setup (`Setup::n5` 3)
+            return;
+        }
         if N5_MOVES.contains(&mv.kind) {
             // N5's key, removed by X at 3: stamped before that, but the vouch
             let Some(_) = self.out5 else { return };
@@ -896,6 +916,9 @@ pub fn check(m: &Sim, rules: &Rules, st: &mut Stats) {
                             m.sync.get(&a).is_some_and(|u| u.contains(&c.on)) && wrote(a) && m.got(i, a, REMOVAL) && m.recv[m.r].contains_key(&a)
                         })
                 }
+                // N5's grant to B, listed by X's removal of N5, stays: X's twin, heard before the
+                // removal, is kept and drops it
+                Kind::Edge { .. } if Some(i) == m.gb5 => !m.thief.iter().any(|(&t, &k)| k == 35 && m.made[t] < REMOVAL),
                 Kind::Edge { .. } if honest_now => c.signer == H || c.signer == K || i == m.gs || (m.made[i] == AFTER && b_admin),
                 // (a write X made before the removal stamped after it never applies)
                 Kind::Edge { .. } => saved(i) && c.ts < REMOVAL && !m.lowers_remover(i) && !m.aims(i),
