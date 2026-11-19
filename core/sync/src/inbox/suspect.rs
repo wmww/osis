@@ -5,29 +5,36 @@
 //! (the engine's `suspect(t, ak)` per aspect, grouped by `carrying(t)` filtered by
 //! `suspect_under`; under no S while a source's stream shows under S a body the flag names: it
 //! is fetched, its state not yet what it reports), most recently flagged first, each with its state digest taken as it goes.
-//! Sent to each reader source's peer at its join and to every one when S's list moves, where the
-//! peer proves an account that may read S (the class is the peer's word; a store source keeps S
-//! unread: it learns nothing of S's closure from us), once S's first sync here ended (`Store::first_synced`: a
-//! node mid first sync digests a partial state, so every writer would repair it for nothing).
-//! An empty list, or one going empty, sends nothing: a repair is idempotent.
+//! Owed to each reader member's peer as read owes its acts (notes/sync-read.md, Owed acts): per
+//! (record, S), named by no connection, owed at the member's open and to every one when S's list
+//! moves, once S's first sync here ended (`Store::first_synced`: a node mid first sync digests a
+//! partial state, so every writer would repair it for nothing); it goes on the record's
+//! connection once its digests agree there (spec/sync-opens.md §3 Agreement), where the peer
+//! proves an account that may read S (the class is the peer's word; a store source keeps S
+//! unread: it learns nothing of S's closure from us), and is done once every message of it is
+//! answered Ok; refused, or unanswered as its connection ends, it goes again on the next. A
+//! reconnect moves nothing owed nothing. An empty list, or one going empty, is owed nowhere: a
+//! repair is idempotent.
 //!
 //! In: a list from a peer is judged only for its reporter, the account it proved holding read or
 //! above on S's actor (`Engine::reader_account`); a peer proving none is answered Ok and not
 //! acted on. Account, not node: an account adds nodes at will, so per node one account could ask
 //! as many repairs per state as it has nodes; a snapshot written for one of its nodes reaches the
 //! others under S anyway. Before S's first sync here ended, the latest message per (connection,
-//! S) waits, its entries this node may repair, judged once it ends (the sender sends again only
+//! S) waits (a message received is the connection's), its entries this node may repair, judged once it ends (the sender sends again only
 //! when its flags move). An aspect named twice in a message is judged once. Each entry: `Engine::repair_suspect` with the digest of the state this node last wrote
 //! a snapshot from for that reporter (row `I/s/ reporter thing ak`), written with a snapshot and
 //! dropped only once stale (`judge`), so no sequence of lists gets a second snapshot of one
 //! state for one reporter.
 //!
 //! Work follows change: one `Effects` key per flagged aspect (new ones from `suspect_feed`), one
-//! per S whose first sync is awaited; a list goes out only when S's list moved or a member
-//! joined.
+//! per S whose first sync is awaited, one per record owed a list (where it goes, `Owed::on`); a
+//! list goes out only when S's list moved, a member opened, or a record owed one is connected.
 //!
 //! Bounds: a followed key per flagged aspect, and its place in the lists of the sync IDs carrying
-//! it (both go with the flag); the members per S (gone at `Left` or close); one message's entries
+//! it (both go with the flag); the reader members per S, by record (gone with the member or the
+//! record); a list owed per (record, S) with a list, so the members of S with a list; the
+//! messages out per connection (gone with their answer or the connection); one message's entries
 //! waiting per (connection, S), only aspects this node may snapshot (gone at `Left`, close or the
 //! first sync's end); a followed key per S listed or with entries waiting (gone with the last of
 //! them, `let_go`); a row per (reporter account, aspect) repaired, replaced by a later state,
@@ -36,6 +43,8 @@
 //! and an entry judged again costs a lookup (`Engine::state_digest` is a memo per aspect).
 
 use super::{Here, Net};
+use crate::session::RequestId;
+use crate::store::Source;
 use crate::types::{ConnId, Result, SourceClass};
 use osis_base::memo::{Effects, Feed};
 use osis_base::{Ak, SyncId, Tid};
@@ -71,9 +80,10 @@ pub(super) struct Suspects {
     /// Sync IDs with a list or entries waiting, followed for their first sync's end.
     synced: Effects<SyncId, bool>,
     first: BTreeSet<SyncId>,
-    members: BTreeMap<SyncId, BTreeSet<ConnId>>,
-    /// Lists owed to a member's peer: at its join, or S's list moved.
-    owed: BTreeSet<(ConnId, SyncId)>,
+    /// Per S, its reader members by record.
+    members: BTreeMap<SyncId, BTreeSet<Source>>,
+    /// The lists owed to each record (`Owed`).
+    owed: Owed,
     /// Entries received before S's first sync here ended, per (S, connection): the reporter and
     /// its entries.
     waiting: BTreeMap<(SyncId, ConnId), Waiting>,
@@ -81,7 +91,7 @@ pub(super) struct Suspects {
 
 impl Default for Suspects {
     fn default() -> Self {
-        Suspects { feed: None, flags: Effects::new("inbox: suspect flags"), lists: BTreeMap::new(), synced: Effects::new("inbox: first synced"), first: BTreeSet::new(), members: BTreeMap::new(), owed: BTreeSet::new(), waiting: BTreeMap::new() }
+        Suspects { feed: None, flags: Effects::new("inbox: suspect flags"), lists: BTreeMap::new(), synced: Effects::new("inbox: first synced"), first: BTreeSet::new(), members: BTreeMap::new(), owed: Owed::default(), waiting: BTreeMap::new() }
     }
 }
 
@@ -131,39 +141,75 @@ impl Suspects {
         }
     }
 
-    /// S joined `conn`'s shared set: a reader source is owed S's list. A store source keeps S
-    /// unread: it learns no tid, AK or digest of S's closure, and could repair nothing.
-    pub(super) fn joined(&mut self, conn: ConnId, s: SyncId, net: &impl Net) {
-        if !net.member(conn, &s).is_some_and(|m| m.class == SourceClass::Reader) {
-            return self.left(conn, &s);
+    /// Member S of the record at `src` opened (or opened again as `class`): a reader is owed S's
+    /// list. A store source keeps S unread: it learns no tid, AK or digest of S's closure, and
+    /// could repair nothing.
+    pub(super) fn joined(&mut self, src: Source, s: SyncId, class: Option<SourceClass>) {
+        if class != Some(SourceClass::Reader) {
+            return self.left(src, &s);
         }
-        self.members.entry(s).or_default().insert(conn);
-        self.owed.insert((conn, s));
+        self.members.entry(s).or_default().insert(src);
+        if self.listed(&s) {
+            self.owed.add(src, s);
+        }
     }
 
-    pub(super) fn left(&mut self, conn: ConnId, s: &SyncId) {
+    /// Member S of the record at `src` closed: nothing of S is owed there.
+    pub(super) fn left(&mut self, src: Source, s: &SyncId) {
         if let Some(m) = self.members.get_mut(s) {
-            m.remove(&conn);
+            m.remove(&src);
             if m.is_empty() {
                 self.members.remove(s);
             }
         }
-        self.owed.remove(&(conn, *s));
+        self.owed.remove(src, s);
+    }
+
+    /// Record `src` went: nothing is owed there.
+    pub(super) fn record_gone(&mut self, src: Source) {
+        let ids: Vec<SyncId> = self.members.iter().filter(|(_, m)| m.contains(&src)).map(|(s, _)| *s).collect();
+        for s in ids {
+            self.left(src, &s);
+        }
+    }
+
+    /// A list received on `conn` waits no more once its member closed there.
+    pub(super) fn closed_on(&mut self, conn: ConnId, s: &SyncId) {
         if self.waiting.remove(&(*s, conn)).is_some() {
             self.let_go(s);
         }
     }
 
+    /// `conn` ended: what it carried unanswered goes on the record's next connection; the lists
+    /// received on it wait no more.
     pub(super) fn closed(&mut self, conn: ConnId) {
-        for m in self.members.values_mut() {
-            m.remove(&conn);
-        }
-        self.members.retain(|_, m| !m.is_empty());
-        self.owed.retain(|(c, _)| *c != conn);
+        self.owed.closed(conn);
         let gone: Vec<SyncId> = self.waiting.keys().filter(|(_, c)| *c == conn).map(|(s, _)| *s).collect();
         for s in &gone {
             self.waiting.remove(&(*s, conn));
             self.let_go(s);
+        }
+    }
+
+    /// A reply to one of this module's Suspect messages: whether it was one. Ok takes it.
+    pub(super) fn answered(&mut self, conn: ConnId, id: RequestId, m: &Msg) -> bool {
+        self.owed.answered(conn, id, matches!(m, Msg::Ok { .. }))
+    }
+
+    /// Whether S has a list to send now: a non-empty one, past S's first sync here.
+    fn listed(&self, s: &SyncId) -> bool {
+        self.first.contains(s) && self.lists.get(s).is_some_and(|l| !l.is_empty())
+    }
+
+    /// S's list moved (or came to be sendable): owed again at every reader member, or nowhere.
+    fn list_moved(&mut self, s: &SyncId) {
+        let listed = self.listed(s);
+        for src in self.members.get(s).into_iter().flatten() {
+            if listed {
+                self.owed.add(*src, *s);
+            } else {
+                self.owed.remove(*src, s);
+            }
         }
     }
 
@@ -209,9 +255,7 @@ impl Suspects {
         }
         for s in &moved {
             self.synced.want(*s);
-            for c in self.members.get(s).into_iter().flatten() {
-                self.owed.insert((*c, *s));
-            }
+            self.list_moved(s);
         }
         let mut acted = false;
         for s in self.synced.due() {
@@ -219,12 +263,11 @@ impl Suspects {
             let Some((_, done)) = self.synced.try_settle(&s, || store.first_synced(&s))? else { continue };
             if !done {
                 self.first.remove(&s);
+                self.list_moved(&s);
                 continue;
             }
             self.first.insert(s);
-            for c in self.members.get(&s).into_iter().flatten() {
-                self.owed.insert((*c, s));
-            }
+            self.list_moved(&s);
             let ready: Vec<(SyncId, ConnId)> = self.waiting.range((s, ConnId(0))..=(s, ConnId(u64::MAX))).map(|(k, _)| *k).collect();
             if !ready.is_empty() {
                 moved.insert(s);
@@ -240,29 +283,23 @@ impl Suspects {
         for s in &moved {
             self.let_go(s);
         }
-        for (conn, s) in std::mem::take(&mut self.owed) {
-            if !self.first.contains(&s) || !self.members.get(&s).is_some_and(|m| m.contains(&conn)) {
-                continue;
-            }
-            let Some(list) = self.lists.get(&s) else { continue };
+        let (engine, lists) = (&mut *h.engine, &self.lists);
+        acted |= self.owed.deliver(net, &mut |net, conn, s| {
+            let Some(list) = lists.get(s) else { return Ok(None) };
             // the peer's class is its word: the list goes only where its proof shows it may read
             // S, the judgement a list received is held to
-            let actors = crate::opens::counted(h.engine, &net.named(conn));
-            if h.engine.reader_account(&s, &actors)?.is_none() {
-                continue;
+            let actors = crate::opens::counted(engine, &net.named(conn));
+            if engine.reader_account(s, &actors)?.is_none() {
+                return Ok(None);
             }
             let mut entries = Vec::new();
             for (t, ak) in ordered(list) {
-                if let Some(digest) = h.engine.state_digest(t, ak)? {
+                if let Some(digest) = engine.state_digest(t, ak)? {
                     entries.push(SuspectEntry { thing: *t, ak: ak.clone(), digest });
                 }
             }
-            for chunk in chunks(entries, osis_base::format::MAX_MESSAGE) {
-                osis_base::costs::count("inbox: suspect sent", 1);
-                net.request(conn, Msg::Suspect { id: 0, sync_id: s, entries: chunk });
-                acted = true;
-            }
-        }
+            Ok(Some(chunks(entries, osis_base::format::MAX_MESSAGE)))
+        })?;
         Ok(acted)
     }
 
@@ -296,6 +333,133 @@ impl Suspects {
             judge(h, &s, &reporter, &t, &ak, &d)?;
         }
         Ok(())
+    }
+}
+
+/// Where a list owed to a record stands: waiting for the record's agreed connection, or sent on
+/// one with these messages not yet answered Ok (a refused one stays: it goes on the next).
+#[derive(Clone, Debug, PartialEq, Eq)]
+enum Owe {
+    Waiting,
+    Sent(ConnId, BTreeSet<RequestId>),
+}
+
+/// The lists owed per (record, S) (notes/sync-read.md, Owed acts, the same shape): named by no
+/// connection; one goes on the record's connection once its digests agree there and is done
+/// (dropped) once each message of it is answered Ok.
+#[derive(Clone)]
+pub(super) struct Owed {
+    by: BTreeMap<Source, BTreeMap<SyncId, Owe>>,
+    /// Per connection, the messages out and the list each carries.
+    out: BTreeMap<ConnId, BTreeMap<RequestId, (Source, SyncId)>>,
+    /// Per record owed a list, its connection once agreed (`Net::agreed_on`): a take, a release
+    /// or an agreement moving makes it due.
+    on: Effects<Source, Option<ConnId>>,
+    /// Records owed a list anew since the last delivery.
+    touched: BTreeSet<Source>,
+}
+
+impl Default for Owed {
+    fn default() -> Self {
+        Owed { by: BTreeMap::new(), out: BTreeMap::new(), on: Effects::new("inbox: suspect owed"), touched: BTreeSet::new() }
+    }
+}
+
+/// S's list as messages for the peer on a connection, or none to send there now.
+type Lists<'a, N> = dyn FnMut(&N, ConnId, &SyncId) -> Result<Option<Vec<Vec<SuspectEntry>>>> + 'a;
+
+impl Owed {
+    /// S's list as it stands now is owed at `src`.
+    pub(super) fn add(&mut self, src: Source, s: SyncId) {
+        self.by.entry(src).or_default().insert(s, Owe::Waiting);
+        self.on.want(src);
+        self.touched.insert(src);
+    }
+
+    /// Nothing of S is owed at `src`.
+    pub(super) fn remove(&mut self, src: Source, s: &SyncId) {
+        let Some(m) = self.by.get_mut(&src) else { return };
+        m.remove(s);
+        if m.is_empty() {
+            self.by.remove(&src);
+            self.on.unwant(&src);
+            self.touched.remove(&src);
+        }
+    }
+
+    /// The answer to message `id` on `conn`: whether it was one of these. Ok (`taken`) and the
+    /// list's last: done. Refused: it stays sent there, and goes again on the next connection.
+    pub(super) fn answered(&mut self, conn: ConnId, id: RequestId, taken: bool) -> bool {
+        let Some(out) = self.out.get_mut(&conn) else { return false };
+        let Some(&(src, s)) = out.get(&id) else { return false };
+        if !taken {
+            return true;
+        }
+        out.remove(&id);
+        if let Some(Owe::Sent(c, ids)) = self.by.get_mut(&src).and_then(|m| m.get_mut(&s))
+            && *c == conn
+        {
+            ids.remove(&id);
+            if ids.is_empty() {
+                self.remove(src, &s);
+            }
+        }
+        true
+    }
+
+    /// `conn` ended: what it carried and was not taken goes on the record's next connection.
+    pub(super) fn closed(&mut self, conn: ConnId) {
+        for (_, (src, s)) in self.out.remove(&conn).unwrap_or_default() {
+            if let Some(st) = self.by.get_mut(&src).and_then(|m| m.get_mut(&s))
+                && matches!(st, Owe::Sent(c, _) if *c == conn)
+            {
+                *st = Owe::Waiting;
+            }
+        }
+    }
+
+    /// Sends what is owed at each record owed a list anew or whose connection moved, on that
+    /// connection once its digests agreed (`list` gives S's messages for it, or none now).
+    pub(super) fn deliver<N: Net>(&mut self, net: &mut N, list: &mut Lists<'_, N>) -> Result<bool> {
+        let mut due: BTreeSet<Source> = std::mem::take(&mut self.touched);
+        due.extend(self.on.due());
+        let mut acted = false;
+        for src in due {
+            if !self.by.contains_key(&src) {
+                continue;
+            }
+            let mut on = None;
+            self.on.settle(&src, || {
+                on = net.agreed_on(src);
+                on
+            });
+            let Some(conn) = on else { continue };
+            let todo: Vec<SyncId> = self.by.get(&src).into_iter().flatten().filter(|(_, st)| !matches!(st, Owe::Sent(c, _) if *c == conn)).map(|(s, _)| *s).collect();
+            for s in todo {
+                let Some(messages) = list(net, conn, &s)? else { continue };
+                let mut ids = BTreeSet::new();
+                for chunk in messages {
+                    osis_base::costs::count("inbox: suspect sent", 1);
+                    if let Some(id) = net.request(conn, Msg::Suspect { id: 0, sync_id: s, entries: chunk }) {
+                        ids.insert(id);
+                        self.out.entry(conn).or_default().insert(id, (src, s));
+                    }
+                    acted = true;
+                }
+                if ids.is_empty() {
+                    self.remove(src, &s);
+                } else if let Some(st) = self.by.get_mut(&src).and_then(|m| m.get_mut(&s)) {
+                    *st = Owe::Sent(conn, ids);
+                }
+            }
+        }
+        Ok(acted)
+    }
+
+    /// Tests: the lists owed and not done, per record.
+    #[cfg(test)]
+    fn pending(&self, src: Source) -> usize {
+        self.by.get(&src).map_or(0, BTreeMap::len)
     }
 }
 
@@ -398,27 +562,64 @@ mod tests {
         assert_eq!(row_after(None, &own, &Repaired::Same), Row::Keep);
     }
 
-    /// A `Net` of members alone.
+    /// A `Net` of records: the connection holding each, whether its digests agreed there, and
+    /// the messages sent.
     #[derive(Default)]
-    struct Members(BTreeMap<(ConnId, SyncId), SourceClass>);
+    struct Records {
+        on: osis_base::memo::Stamped<Source, ConnId>,
+        agreed: osis_base::memo::Stamped<Source, ConnId>,
+        next: RequestId,
+        sent: Vec<(ConnId, RequestId, SyncId)>,
+    }
 
-    impl Net for Members {
+    impl Records {
+        /// `conn` takes `src`'s record; its digests agree there at once when `agreed`.
+        fn take(&mut self, src: Source, conn: ConnId, agreed: bool) {
+            self.on.insert(src, conn);
+            if agreed {
+                self.agreed.insert(src, conn);
+            } else if self.agreed.contains_key(&src) {
+                self.agreed.remove(&src);
+            }
+        }
+
+        fn agree(&mut self, src: Source) {
+            if let Some(c) = self.on.get(&src).copied() {
+                self.agreed.insert(src, c);
+            }
+        }
+
+        fn release(&mut self, src: Source) {
+            self.on.remove(&src);
+            if self.agreed.contains_key(&src) {
+                self.agreed.remove(&src);
+            }
+        }
+    }
+
+    impl Net for Records {
         fn named(&self, _: ConnId) -> osis_store::Named {
             osis_store::Named::default()
         }
-        fn member(&self, conn: ConnId, s: &SyncId) -> Option<crate::opens::Member> {
-            self.0.get(&(conn, *s)).map(|class| crate::opens::Member { class: *class, own: crate::types::SourceClass::Reader, by: crate::types::Credential::SyncKey, until: None, departed: false })
-        }
-        fn member_at(&self, _: crate::store::Source, _: &SyncId) -> Option<crate::opens::Member> {
+        fn member(&self, _: ConnId, _: &SyncId) -> Option<crate::opens::Member> {
             None
         }
-        fn conn_of(&self, _: crate::store::Source) -> Option<ConnId> {
+        fn member_at(&self, _: Source, _: &SyncId) -> Option<crate::opens::Member> {
             None
         }
-        fn head(&self, _: crate::store::Source, _: &SyncId) -> Option<osis_blob::StepId> {
+        fn conn_of(&self, src: Source) -> Option<ConnId> {
+            self.on.get(&src).copied()
+        }
+        fn agreed_on(&self, src: Source) -> Option<ConnId> {
+            self.agreed.get(&src).copied()
+        }
+        fn members(&self, _: ConnId) -> Vec<(SyncId, SourceClass)> {
+            Vec::new()
+        }
+        fn head(&self, _: Source, _: &SyncId) -> Option<osis_blob::StepId> {
             None
         }
-        fn present(&self, _: crate::store::Source, _: &SyncId, _: &osis_base::BlobId) -> bool {
+        fn present(&self, _: Source, _: &SyncId, _: &osis_base::BlobId) -> bool {
             false
         }
         fn shown(&self, _: &SyncId, _: &osis_base::BlobId) -> bool {
@@ -430,13 +631,33 @@ mod tests {
         fn shows_deposit_key(&self, _: ConnId, _: &SyncId, _: &[u8; 32]) -> bool {
             false
         }
-        fn source(&self, conn: ConnId) -> crate::store::Source {
-            crate::store::Source::Conn(conn)
+        fn source(&self, conn: ConnId) -> Source {
+            Source::Conn(conn)
         }
-        fn request(&mut self, _: ConnId, _: Msg) -> Option<crate::session::RequestId> {
-            None
+        fn request(&mut self, conn: ConnId, m: Msg) -> Option<RequestId> {
+            let Msg::Suspect { sync_id, .. } = m else { return None };
+            self.next += 1;
+            self.sent.push((conn, self.next, sync_id));
+            Some(self.next)
         }
-        fn answer(&mut self, _: ConnId, _: crate::session::RequestId, _: Msg) {}
+        fn answer(&mut self, _: ConnId, _: RequestId, _: Msg) {}
+    }
+
+    const S: SyncId = SyncId([1; 16]);
+
+    /// Suspects with S's first sync ended and a list of one aspect under S.
+    fn listing() -> Suspects {
+        let mut x = Suspects::default();
+        x.first.insert(S);
+        x.lists.insert(S, [((Tid::from_bytes([1; 15]), Ak::new("t:reg.0").unwrap()), 1)].into());
+        x
+    }
+
+    /// Delivers what is owed: each list one message. What was sent this time.
+    fn deliver(x: &mut Suspects, net: &mut Records) -> Vec<(ConnId, RequestId, SyncId)> {
+        let n = net.sent.len();
+        x.owed.deliver(net, &mut |_, _, _| Ok(Some(vec![vec![entry(1, "t:reg.0")]]))).unwrap();
+        net.sent[n..].to_vec()
     }
 
     // spec/permissions.md §4 (Suspect list), spec/requirements.md Confidentiality: a list goes
@@ -445,45 +666,82 @@ mod tests {
     // nothing more.
     #[test]
     fn a_list_goes_to_reader_sources_alone_spec_permissions_4() {
-        let s = SyncId([1; 16]);
-        let (reader, store) = (ConnId(1), ConnId(2));
-        let mut net = Members::default();
-        net.0.insert((reader, s), SourceClass::Reader);
-        net.0.insert((store, s), SourceClass::Store);
-        let mut x = Suspects::default();
-        x.joined(reader, s, &net);
-        x.joined(store, s, &net);
-        assert_eq!(x.members.get(&s).cloned().unwrap_or_default(), [reader].into());
-        assert_eq!(x.owed, [(reader, s)].into());
-        net.0.insert((reader, s), SourceClass::Store);
-        x.joined(reader, s, &net);
-        assert!(x.members.is_empty() && x.owed.is_empty());
+        let (reader, store) = (Source::Record([1; 16]), Source::Record([2; 16]));
+        let mut x = listing();
+        x.joined(reader, S, Some(SourceClass::Reader));
+        x.joined(store, S, Some(SourceClass::Store));
+        assert_eq!(x.members.get(&S).cloned().unwrap_or_default(), [reader].into());
+        assert_eq!((x.owed.pending(reader), x.owed.pending(store)), (1, 0));
+        x.joined(reader, S, Some(SourceClass::Store));
+        assert!(x.members.is_empty() && x.owed.pending(reader) == 0);
     }
 
-    // spec/sync-compaction.md §1 (Repair: a list received mid first sync waits for its end):
-    // a waiting list that leaves before the first sync ended (its member left, its connection
-    // closed, a later list naming nothing this node may repair) takes S's first-sync follow with
-    // it, at n and 10n sync IDs.
+    // spec/permissions.md §4 (Suspect list), spec/sync-opens.md §3 (Agreement: nothing of S
+    // before the digests agree): a list is owed per record, named by no connection. It goes on
+    // the record's connection only once its digests agreed there; one unanswered as its
+    // connection ends goes on the next; one answered Ok is done, sent at no later reconnect
+    // until S's list moves; one refused goes again on the next connection.
     #[test]
-    fn a_waiting_list_gone_early_follows_nothing_spec_sync_compaction_1() {
-        for n in [3u8, 30] {
-            let mut x = Suspects::default();
-            let (a, b) = (ConnId(1), ConnId(2));
-            let ids: Vec<SyncId> = (0..n).map(|i| SyncId([i; 16])).collect();
-            let entries: BTreeMap<Aspect, [u8; 16]> = [((Tid::from_bytes([1; 15]), Ak::new("t:reg.0").unwrap()), [1; 16])].into();
-            for s in &ids {
-                for c in [a, b] {
-                    x.waiting.insert((*s, c), (Tid::from_bytes([9; 15]), entries.clone()));
-                }
-                x.synced.want(*s);
-                x.first.insert(*s);
-            }
-            for s in &ids {
-                x.left(a, s);
-                assert!(x.synced.wants(s), "another list still waits");
-            }
-            x.closed(b);
-            assert!(ids.iter().all(|s| !x.synced.wants(s)) && x.first.is_empty() && x.waiting.is_empty());
+    fn a_list_owed_goes_once_agreed_until_taken_spec_permissions_4() {
+        let r = Source::Record([1; 16]);
+        let mut net = Records::default();
+        let mut x = listing();
+        x.joined(r, S, Some(SourceClass::Reader));
+        assert!(deliver(&mut x, &mut net).is_empty(), "no connection");
+        net.take(r, ConnId(1), false);
+        assert!(deliver(&mut x, &mut net).is_empty(), "taken, the digests not agreed: nothing goes");
+        net.agree(r);
+        assert_eq!(deliver(&mut x, &mut net).len(), 1, "agreed: it goes");
+        // the connection ends unanswered: owed on the next
+        x.closed(ConnId(1));
+        net.release(r);
+        assert!(deliver(&mut x, &mut net).is_empty());
+        net.take(r, ConnId(2), true);
+        let sent = deliver(&mut x, &mut net);
+        assert_eq!(sent.len(), 1, "carried out on the next connection");
+        assert!(x.answered(ConnId(2), sent[0].1, &Msg::Ok { id: 0 }));
+        assert_eq!(x.owed.pending(r), 0, "taken: done");
+        x.closed(ConnId(2));
+        net.release(r);
+        net.take(r, ConnId(3), true);
+        assert!(deliver(&mut x, &mut net).is_empty(), "taken: not sent again at a reconnect");
+        // S's list moves: owed again; refused, it goes again on the next connection
+        x.list_moved(&S);
+        let sent = deliver(&mut x, &mut net);
+        assert_eq!(sent.len(), 1, "a list moving is owed again");
+        assert!(x.answered(ConnId(3), sent[0].1, &Msg::Error { id: 0, code: osis_proto::Code::RATE_LIMITED }));
+        assert_eq!(x.owed.pending(r), 1, "refused: still owed");
+        assert!(deliver(&mut x, &mut net).is_empty(), "not again on the connection that refused it");
+        x.closed(ConnId(3));
+        net.release(r);
+        net.take(r, ConnId(4), true);
+        assert_eq!(deliver(&mut x, &mut net).len(), 1, "refused: sent again on the next connection");
+    }
+
+    // spec/sync.md §2 (work in proportion to change), spec/permissions.md §4 (Suspect list): what
+    // is owed is bounded by the reader members of sync IDs with a list: a peer that never answers
+    // holds one list per such member and adds none as it reconnects; a record with members but
+    // no list owes nothing, so its reconnect sends and walks nothing.
+    #[test]
+    fn a_peer_never_answering_holds_one_list_per_member_spec_permissions_4() {
+        let (r, quiet) = (Source::Record([1; 16]), Source::Record([2; 16]));
+        let mut net = Records::default();
+        let mut x = listing();
+        x.joined(r, S, Some(SourceClass::Reader));
+        for i in 2..40u8 {
+            x.joined(quiet, SyncId([i; 16]), Some(SourceClass::Reader));
+        }
+        assert_eq!(x.owed.pending(quiet), 0, "no list: nothing owed");
+        for c in 1..20 {
+            net.take(r, ConnId(c), true);
+            net.take(quiet, ConnId(100 + c), true);
+            assert_eq!(deliver(&mut x, &mut net).len(), 1);
+            x.closed(ConnId(c));
+            x.closed(ConnId(100 + c));
+            net.release(r);
+            net.release(quiet);
+            assert_eq!(x.owed.pending(r), 1);
+            assert!(x.owed.out.is_empty(), "requests out go with their connection");
         }
     }
 

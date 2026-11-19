@@ -265,6 +265,12 @@ mod tests {
         fn conn_of(&self, _: crate::store::Source) -> Option<ConnId> {
             None
         }
+        fn agreed_on(&self, _: crate::store::Source) -> Option<ConnId> {
+            None
+        }
+        fn members(&self, _: ConnId) -> Vec<(SyncId, crate::types::SourceClass)> {
+            Vec::new()
+        }
         fn head(&self, _: crate::store::Source, _: &SyncId) -> Option<osis_blob::StepId> {
             None
         }

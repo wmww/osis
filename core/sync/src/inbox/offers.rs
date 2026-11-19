@@ -8,6 +8,12 @@
 //! unread shows it to every connection, spec/sync-opens.md §5 Filter). Never another peer: a
 //! deposit tells its taker that this connection's node sends to that inbox.
 //!
+//! Owed per record, as read owes its acts (notes/sync-read.md, Owed acts): an offer goes on a
+//! connection only once the digests of its record agreed there (spec/sync-opens.md §3
+//! Agreement), and is done for that record once answered 0 (`took_at`, kept across its
+//! connections: a reconnect offers again only what was not taken); refused, or unanswered as
+//! its connection ends, it goes again on the next connection.
+//!
 //! Per connection: one Deposit item unanswered at a time; answered 0, it is done there and every
 //! other offer of S backed off there is ready again (one taken ends the others' back-off); 4, 5
 //! or 12 (refused for now) back it off, doubling from `BACKOFF_MIN_MS` to `BACKOFF_MAX_MS` (once
@@ -22,15 +28,15 @@
 //! rested on it at once, and an actor counted again readies its offers there.
 //!
 //! Work follows change: each connection keeps the offers ready for it; an offer added is placed
-//! at the connections it may go to (O(connections)), a connection proved gets the offers it may
-//! take (O(offers)), a connection's counted actors moving readies the offers to those it gained
-//! (O(their offers)), a member joining gets the offers of its S (a range), a peer's filter arriving
+//! at the connections it may go to (O(connections)), a connection whose digests agreed gets the
+//! offers its record did not take (O(offers)), a connection's counted actors moving readies the offers to those it gained
+//! (O(their offers)), a member opening gets the offers of its S (a range), a peer's filter arriving
 //! gets the inbox offers (O(offers), tested against it); a settle sends only on connections with
 //! something ready, a back-off due or a refusal waiting for a filter, and reads each connection's
 //! filter count (O(connections)).
 
 use super::Net;
-use crate::store::Store;
+use crate::store::{Source, Store};
 use crate::session::RequestId;
 use crate::types::{ConnId, Result, SourceClass};
 use osis_base::{BlobId, Mono, SyncId, Tid};
@@ -86,6 +92,8 @@ struct Conn {
     actors: Vec<Tid>,
     /// The peer's filter arrivals seen: one more readies the inbox offers again.
     filter: u64,
+    /// Its record, once its digests agreed: nothing goes before.
+    src: Option<Source>,
     out: Option<(RequestId, Key, Signature)>,
     ready: BTreeSet<Key>,
     /// Refused for now: until when, and how many times in a row.
@@ -105,6 +113,12 @@ pub struct Offers {
     to: BTreeMap<Tid, BTreeSet<Key>>,
     /// Each connection's counted actors (`Judge::counted` of what its proofs named).
     who: Effects<ConnId, Vec<Tid>>,
+    /// Each connection's record once its digests agreed there (`Net::agreed_on`).
+    agreed: Effects<ConnId, Option<Source>>,
+    /// Per offer, the records whose peer took it (answered 0): offered there no more. Bound: the
+    /// offers (own deposits and fires owed) times the records in memory; each goes with its
+    /// offer or its record.
+    took_at: BTreeMap<Key, BTreeSet<Source>>,
     /// The deposit key of each offer refused (14) somewhere: one moving sends it again there.
     keys: Effects<Key, Option<VerifyingKey>>,
     conns: BTreeMap<ConnId, Conn>,
@@ -118,7 +132,7 @@ pub struct Offers {
 
 impl Default for Offers {
     fn default() -> Self {
-        Offers { items: BTreeMap::new(), loose: BTreeMap::new(), took: Vec::new(), to: BTreeMap::new(), who: Effects::new("inbox: offer peers"), keys: Effects::new("inbox: deposit keys"), conns: BTreeMap::new(), active: BTreeSet::new(), wakes: BTreeSet::new(), parked: BTreeSet::new() }
+        Offers { items: BTreeMap::new(), loose: BTreeMap::new(), took: Vec::new(), to: BTreeMap::new(), who: Effects::new("inbox: offer peers"), agreed: Effects::new("inbox: offer agreed"), took_at: BTreeMap::new(), keys: Effects::new("inbox: deposit keys"), conns: BTreeMap::new(), active: BTreeSet::new(), wakes: BTreeSet::new(), parked: BTreeSet::new() }
     }
 }
 
@@ -177,6 +191,7 @@ impl Offers {
     pub fn remove(&mut self, s: &SyncId, b: &BlobId) {
         let k = (*s, *b);
         self.loose.remove(&k);
+        self.took_at.remove(&k);
         if !drop_item(&mut self.items, &mut self.to, &k) {
             return;
         }
@@ -189,25 +204,23 @@ impl Offers {
         self.keys.unwant(&k);
     }
 
-    /// A connection's proofs are done: who it counts as is judged at the next settle, before
-    /// anything is sent on it.
+    /// A connection's proofs are done: who it counts as and whether its digests agreed are
+    /// judged at the next settle, before anything is sent on it.
     pub fn connected(&mut self, conn: ConnId, net: &impl Net) {
         self.who.want(conn);
-        let c = Conn { filter: net.filter_generation(conn), ready: self.items.keys().copied().collect(), ..Conn::default() };
-        osis_base::costs::count("inbox: offer placed", self.items.len() as u64);
-        if !c.ready.is_empty() {
-            self.active.insert(conn);
-        }
-        self.conns.insert(conn, c);
+        self.agreed.want(conn);
+        self.conns.insert(conn, Conn { filter: net.filter_generation(conn), ..Conn::default() });
     }
 
-    /// S joined a connection's shared set: its offers may go there now.
+    /// Member S opened on a connection: its offers may go there now.
     pub fn joined(&mut self, conn: ConnId, s: &SyncId, net: &impl Net) {
         if !self.conns.contains_key(&conn) {
             self.connected(conn, net);
         }
         let Some(c) = self.conns.get_mut(&conn) else { return };
-        for k in self.items.range((*s, BlobId([0; 32]))..=(*s, BlobId([0xff; 32]))).map(|(k, _)| *k) {
+        let ks: Vec<Key> = self.items.range((*s, BlobId([0; 32]))..=(*s, BlobId([0xff; 32]))).map(|(k, _)| *k).collect();
+        osis_base::costs::count("inbox: offer placed", ks.len() as u64);
+        for k in ks {
             if !backed_off(&self.wakes, conn, c, &k) && !c.parked.contains_key(&k) {
                 c.ready.insert(k);
             }
@@ -217,8 +230,30 @@ impl Offers {
         }
     }
 
+    /// `conn` took or let go its record: whether its digests agreed there is judged again (where
+    /// the connection's record is read is no stamped value).
+    pub fn record_moved(&mut self, conn: ConnId) {
+        if self.conns.contains_key(&conn) {
+            self.agreed.unwant(&conn);
+            self.agreed.want(conn);
+        }
+    }
+
+    /// Record `src` went: what its peer took is forgotten with it.
+    pub fn record_gone(&mut self, src: Source) {
+        self.took_at.retain(|_, at| {
+            at.remove(&src);
+            !at.is_empty()
+        });
+    }
+
     pub fn closed(&mut self, conn: ConnId) {
+        // a record kept nowhere is its connection
+        if self.conns.get(&conn).and_then(|c| c.src) == Some(Source::Conn(conn)) {
+            self.record_gone(Source::Conn(conn));
+        }
         self.who.unwant(&conn);
+        self.agreed.unwant(&conn);
         self.conns.remove(&conn);
         self.active.remove(&conn);
         self.parked.remove(&conn);
@@ -246,6 +281,33 @@ impl Offers {
             }
             c.actors = actors;
             if !c.ready.is_empty() {
+                self.active.insert(conn);
+            }
+        }
+        // the digests agreed: every offer its record did not take may go there
+        for conn in self.agreed.due() {
+            let Some(c) = self.conns.get_mut(&conn) else {
+                self.agreed.unwant(&conn);
+                continue;
+            };
+            let mut src = None;
+            self.agreed.settle(&conn, || {
+                let at = net.source(conn);
+                src = (net.agreed_on(at) == Some(conn)).then_some(at);
+                src
+            });
+            if c.src == src {
+                continue;
+            }
+            c.src = src;
+            if src.is_none() {
+                continue;
+            }
+            // what its record took is skipped as it comes up (`took_at`)
+            let fresh: Vec<Key> = self.items.keys().filter(|k| !backed_off(&self.wakes, conn, c, k) && !c.parked.contains_key(*k) && c.out.is_none_or(|(_, o, _)| o != **k)).copied().collect();
+            osis_base::costs::count("inbox: offer placed", fresh.len() as u64);
+            if !fresh.is_empty() {
+                c.ready.extend(fresh);
                 self.active.insert(conn);
             }
         }
@@ -321,11 +383,16 @@ impl Offers {
         }
         for conn in std::mem::take(&mut self.active) {
             let Some(c) = self.conns.get_mut(&conn) else { continue };
+            // nothing goes before the digests agree: what is ready waits for it
+            let Some(at) = c.src else { continue };
             if c.out.is_some() {
                 continue;
             }
             while let Some(k) = c.ready.pop_first() {
                 let Some(target) = self.items.get(&k) else { continue };
+                if self.took_at.get(&k).is_some_and(|x| x.contains(&at)) {
+                    continue;
+                }
                 osis_base::costs::count("inbox: offer judged", 1);
                 let Some(key) = judge.deposit_key(&k.0, target.actor())? else {
                     drop_item(&mut self.items, &mut self.to, &k);
@@ -367,6 +434,10 @@ impl Offers {
                     if self.loose.contains_key(&k) {
                         self.took.push(k);
                     }
+                    // taken: done for its record, offered there no more
+                    if let Some(at) = c.src {
+                        self.took_at.entry(k).or_default().insert(at);
+                    }
                     // one taken ends the back-off of the others of S at this peer
                     c.backoff.remove(&k);
                     let s = k.0;
@@ -395,6 +466,12 @@ impl Offers {
 
     pub fn next_wake(&self) -> Option<Mono> {
         self.wakes.first().map(|(t, _, _)| *t)
+    }
+
+    /// Tests only: the connections with state kept, and the (offer, record) pairs taken.
+    #[doc(hidden)]
+    pub fn held(&self) -> (usize, usize) {
+        (self.conns.len() + self.wakes.len() + self.parked.len() + self.active.len(), self.took_at.values().map(BTreeSet::len).sum())
     }
 }
 

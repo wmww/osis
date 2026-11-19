@@ -67,6 +67,10 @@ struct FakeNet {
     generation: BTreeMap<ConnId, u64>,
     /// (connection, S, deposit key) its peer's filter shows.
     shown: BTreeSet<(ConnId, SyncId, [u8; 32])>,
+    /// The kept record each connection holds (else the connection is its own source).
+    rec: BTreeMap<ConnId, osis_sync::types::RecordId>,
+    /// Connections whose digests agreed.
+    agreed: StampedSet<ConnId>,
     next: RequestId,
     requests: Vec<(ConnId, RequestId, Msg)>,
     answers: Vec<(ConnId, RequestId, Msg)>,
@@ -85,8 +89,16 @@ impl Net for FakeNet {
         self.member(c, s)
     }
     fn conn_of(&self, src: Source) -> Option<ConnId> {
-        let Source::Conn(c) = src else { return None };
-        Some(c)
+        match src {
+            Source::Conn(c) => Some(c),
+            Source::Record(r) => self.rec.iter().find(|(_, x)| **x == r).map(|(c, _)| *c),
+        }
+    }
+    fn agreed_on(&self, src: Source) -> Option<ConnId> {
+        self.conn_of(src).filter(|c| self.agreed.contains(c))
+    }
+    fn members(&self, _: ConnId) -> Vec<(SyncId, SourceClass)> {
+        Vec::new()
     }
     fn head(&self, _src: Source, _s: &SyncId) -> Option<StepId> {
         None
@@ -105,7 +117,7 @@ impl Net for FakeNet {
         self.shown.contains(&(conn, *s, *key))
     }
     fn source(&self, conn: ConnId) -> Source {
-        Source::Conn(conn)
+        self.rec.get(&conn).map_or(Source::Conn(conn), |r| Source::Record(*r))
     }
     fn request(&mut self, conn: ConnId, m: Msg) -> Option<RequestId> {
         self.next += 1;
@@ -168,9 +180,34 @@ impl T {
         self.store.set_sync_set(&SyncSet { ids: ids.iter().map(|(s, h)| (*s, ([THING].into(), *h))).collect(), ..SyncSet::default() }).unwrap();
     }
 
+    /// `c` proved `actors`, its digests agreed at once.
     fn connect(&mut self, c: ConnId, actors: &[Tid]) {
+        self.net.agreed.insert(c);
         self.net.actors.insert(c, actors.to_vec());
         self.offers.connected(c, &self.net);
+        self.settle();
+    }
+
+    /// `c` takes kept record `r`, its digests not agreed yet.
+    fn take(&mut self, c: ConnId, r: osis_sync::types::RecordId) {
+        self.net.rec.insert(c, r);
+        self.offers.connected(c, &self.net);
+        self.offers.record_moved(c);
+        self.settle();
+    }
+
+    fn agree(&mut self, c: ConnId) {
+        self.net.agreed.insert(c);
+        self.settle();
+    }
+
+    /// `c` ends, its record let go.
+    fn close(&mut self, c: ConnId) {
+        self.offers.closed(c);
+        self.net.rec.remove(&c);
+        if self.net.agreed.contains(&c) {
+            self.net.agreed.remove(&c);
+        }
         self.settle();
     }
 
@@ -636,5 +673,73 @@ fn a_deposit_flood_leaves_the_bounds_spec_sync_inbox_4() {
         assert!(kept.iter().map(|(_, n)| *n).sum::<u64>() <= DEPOSITS_WAITING_BYTES as u64, "{flood}: bytes kept");
         let latest_gone = idle.iter().filter(|(e, _)| gone.contains(&e.blob)).filter_map(|(e, _)| e.expires).max();
         assert!(kept.iter().all(|(e, _)| e.expires.is_some() && e.expires >= latest_gone), "{flood}: no expiry first, then earliest");
+    }
+}
+
+// spec/sync-inbox.md §3 (Sending: to each source of S keeping S unread until that source takes
+// it), spec/sync-opens.md §3 (Agreement: nothing of S before the digests agree): an own deposit
+// is owed per record, named by no connection: it goes on the record's connection only once its
+// digests agreed there; one unanswered as its connection ends goes on the next; one taken
+// (answered 0) is done for that record, offered at no later reconnect; one refused goes again
+// on the next connection.
+#[test]
+fn an_offer_owed_goes_once_agreed_until_taken_spec_sync_inbox_3() {
+    let mut t = T::new();
+    let s = sync_id(1);
+    let r = [7; 16];
+    t.hold(&[(s, Holding::Read)]);
+    t.take(conn(1), r);
+    t.join(conn(1), s, SourceClass::Store);
+    let b = t.deposit(s, 1, Target::Stores);
+    assert!(t.deposits_sent().is_empty(), "taken, the digests not agreed: nothing goes");
+    t.agree(conn(1));
+    assert_eq!(t.deposits_sent().iter().map(|x| (x.0, x.3)).collect::<Vec<_>>(), vec![(conn(1), b)], "agreed: it goes");
+    // unanswered as the connection ends: carried out on the next
+    t.close(conn(1));
+    t.take(conn(2), r);
+    t.join(conn(2), s, SourceClass::Store);
+    t.agree(conn(2));
+    let sent = t.deposits_sent();
+    assert_eq!(sent.iter().map(|x| (x.0, x.3)).collect::<Vec<_>>(), vec![(conn(1), b), (conn(2), b)], "carried out on the next connection");
+    t.reply(conn(2), sent[1].1, T::shared(Code::OK));
+    t.close(conn(2));
+    t.take(conn(3), r);
+    t.join(conn(3), s, SourceClass::Store);
+    t.agree(conn(3));
+    assert_eq!(t.deposits_sent().len(), 2, "taken: not offered again at a reconnect");
+    // refused for now: backed off on that connection, again at once on the next
+    let b2 = t.deposit(s, 2, Target::Stores);
+    let sent = t.deposits_sent();
+    assert_eq!(sent.last().map(|x| (x.0, x.3)), Some((conn(3), b2)));
+    t.reply(conn(3), sent[2].1, T::shared(Code::DEPOSIT_BUDGET_FULL));
+    assert_eq!(t.deposits_sent().len(), 3, "backed off there");
+    t.close(conn(3));
+    t.take(conn(4), r);
+    t.join(conn(4), s, SourceClass::Store);
+    t.agree(conn(4));
+    assert_eq!(t.deposits_sent().iter().skip(3).map(|x| (x.0, x.3)).collect::<Vec<_>>(), vec![(conn(4), b2)], "refused: offered again on the next connection, the taken one not");
+}
+
+// spec/sync-inbox.md §3 (one unanswered Deposit item per connection), spec/sync.md §2 (work in
+// proportion to change): a peer that never answers costs one item out per connection and holds
+// nothing across its reconnects (what is done per record grows only by what it takes, bounded by
+// the own deposits times the records in memory): at n and 10n own deposits alike.
+#[test]
+fn a_peer_never_answering_holds_nothing_across_reconnects_spec_sync_inbox_3() {
+    for n in [3u64, 30] {
+        let mut t = T::new();
+        let s = sync_id(1);
+        t.hold(&[(s, Holding::Read)]);
+        for i in 0..n {
+            t.deposit(s, 1 + i, Target::Stores);
+        }
+        for c in 1..10 {
+            t.take(conn(c), [7; 16]);
+            t.join(conn(c), s, SourceClass::Store);
+            t.agree(conn(c));
+            t.close(conn(c));
+            assert_eq!(t.offers.held(), (0, 0), "nothing kept of a connection gone, nothing taken");
+        }
+        assert_eq!(t.deposits_sent().len(), 9, "one item out per connection");
     }
 }

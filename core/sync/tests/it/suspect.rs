@@ -106,10 +106,12 @@ fn a_reader_left_apart_by_a_drop_is_repaired_by_its_list_spec_sync_compaction_1(
     assert_eq!(snapshots(&mut w, t), before + 1, "same state: no snapshot");
 }
 
-// spec/sync-compaction.md §1 (Repair: unless it already wrote one from that same state): node 1
-// never gets node 0's snapshot (node 0 withholds every entry from it), so its flag and its
-// different digest stay and every new connection sends the list again. Node 0 snapshots once per
-// state of its own: not again at a reconnect nor after a restart, again once its state moved.
+// spec/sync-compaction.md §1 (Repair: unless it already wrote one from that same state),
+// spec/permissions.md §4 (Suspect list: sent to a peer until it answers it, again whenever the
+// flags change): node 1 never gets node 0's snapshot (node 0 withholds every entry from it), so
+// its flag and its different digest stay. Node 0 snapshots once per state of its own: not again
+// at a reconnect (the list was taken: not sent again) nor after its restart, again once its
+// state moved and node 1's flags change.
 #[test]
 fn a_repeated_report_repairs_once_per_state_across_restarts_spec_sync_compaction_1() {
     let (mut w, t) = diverged();
@@ -135,7 +137,10 @@ fn a_repeated_report_repairs_once_per_state_across_restarts_spec_sync_compaction
     });
     w.cut(0, 1);
     w.run();
-    assert_eq!(snapshots(&mut w, t), before + 2, "its state moved: once more");
+    assert_eq!(snapshots(&mut w, t), before + 1, "the list was taken: not sent again at a reconnect");
+    w.write(1, |e| e.flag_suspect(&t, &big(), Why::PendingExpiry, &[(CommitId([5; 32]), 0)]).unwrap());
+    w.run();
+    assert_eq!(snapshots(&mut w, t), before + 2, "its state moved, the list sent again: once more");
 }
 
 

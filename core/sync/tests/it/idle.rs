@@ -77,8 +77,8 @@ fn sum(costs: &[(&'static str, u64)], named: &[&str]) -> u64 {
 // 10n shared sync IDs. Not yet flat (issues/many-sync-ids-cost.md): store rows.
 #[test]
 fn an_idle_reconnect_judges_no_member_again_spec_sync_2() {
-    const READER: &[&str] = &["opens: members judged", "status: stranded", "inbox: register judged", "opens standing", "perm: roles walked", "read: certificate blobs", "sync set: entered", "status: members moved"];
-    const STORE: &[&str] = &["opens: members judged", "status: stranded", "opens standing", "perm: roles walked", "read: certificate blobs", "inbox: register judged", "status: lacking", "status: members moved"];
+    const READER: &[&str] = &["opens: members judged", "status: stranded", "inbox: register judged", "opens standing", "perm: roles walked", "read: certificate blobs", "sync set: entered", "status: members moved", "inbox: members moved", "inbox: offer judged", "inbox: suspect sent"];
+    const STORE: &[&str] = &["opens: members judged", "status: stranded", "opens standing", "perm: roles walked", "read: certificate blobs", "inbox: register judged", "status: lacking", "status: members moved", "inbox: members moved", "inbox: offer judged", "inbox: suspect sent"];
     let at = |n| {
         let mut w = things(n);
         let (_, reader) = reconnect(&mut w, 0, 2);

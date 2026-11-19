@@ -42,7 +42,7 @@ pub use offers::{BACKOFF_MAX_MS, BACKOFF_MIN_MS, Judge, Offers, Target, backoff_
 pub use osis_engine::sync::Signers;
 pub use register::{Plan, Progress, plan};
 
-use crate::opens::{Leaving, Member, Moved, Opens};
+use crate::opens::{Leaving, Member, Moved, Opens, Rejoin};
 use crate::session::{Incoming, RequestId, Sessions, To};
 use crate::store::{Source, Store};
 use crate::streams::Streams;
@@ -64,6 +64,10 @@ pub trait Net {
     fn member_at(&self, src: Source, s: &SyncId) -> Option<Member>;
     /// The connection holding the record at `src` now (opens' `conn_of`).
     fn conn_of(&self, src: Source) -> Option<ConnId>;
+    /// That connection once its digests agreed (opens' `agreed_on`): nothing of S goes before.
+    fn agreed_on(&self, src: Source) -> Option<ConnId>;
+    /// The members of `conn`'s record, with the class each opened with.
+    fn members(&self, conn: ConnId) -> Vec<(SyncId, SourceClass)>;
     /// That source's step for S: the head its stream last named (spec/sync-ids.md §6 Walk).
     fn head(&self, src: Source, s: &SyncId) -> Option<StepId>;
     /// Whether that source's stream showed `b` present under S, durably (by its record).
@@ -100,6 +104,12 @@ impl Net for Links<'_> {
     }
     fn conn_of(&self, src: Source) -> Option<ConnId> {
         self.opens.conn_of(src)
+    }
+    fn agreed_on(&self, src: Source) -> Option<ConnId> {
+        self.opens.agreed_on(src)
+    }
+    fn members(&self, conn: ConnId) -> Vec<(SyncId, SourceClass)> {
+        self.opens.members(conn).iter().map(|(s, m)| (*s, m.class)).collect()
     }
     fn head(&self, src: Source, s: &SyncId) -> Option<StepId> {
         self.streams.known().head(src, s)
@@ -224,7 +234,7 @@ impl Inbox {
             }
             Incoming::Request(id, m) => serve::request(h, net, conn, id, m),
             Incoming::Reply(_, id, m) => {
-                if !self.offers.answered(h.mono, conn, id, &m) && !self.reports.answered(conn, id, &m) {
+                if !self.offers.answered(h.mono, conn, id, &m) && !self.reports.answered(conn, id, &m) && !self.suspects.answered(conn, id, &m) {
                     self.register.answered(h.mono, conn, id, &m);
                 }
             }
@@ -238,32 +248,56 @@ impl Inbox {
         self.reports.proved(conn);
     }
 
-    /// A member joined or left a connection's shared set.
+    /// A member opened or closed, or a record was taken: what is owed per record follows its
+    /// members, and goes on its connection once agreed.
     pub fn moved(&mut self, m: &Moved, net: &impl Net) {
         match *m {
+            // Interim (issues/many-sync-ids-cost.md): a kept record's members carried one by one
+            // at its take and release; inbox follows the record
+            Moved::Joined(_, _, Rejoin::Taken) => {}
+            Moved::Left(_, _, at) if at.how == Leaving::Connection && matches!(at.src, Source::Record(_)) => {}
             Moved::Joined(conn, s, _) => {
+                osis_base::costs::count("inbox: members moved", 1);
                 self.offers.joined(conn, &s, net);
+                let (src, class) = (net.source(conn), net.member(conn, &s).map(|m| m.class));
                 // only a store keeping S unread registers steps (spec/sync-ids.md §6 Steps)
-                if net.member(conn, &s).is_some_and(|m| m.class == SourceClass::Store) {
-                    self.register.joined(net.source(conn), s);
+                if class == Some(SourceClass::Store) {
+                    self.register.joined(src, s);
                 }
-                self.suspects.joined(conn, s, net);
+                self.suspects.joined(src, s, class);
             }
             Moved::Left(conn, s, at) => {
-                // a record kept lets S go only when S leaves it, not as a connection lets it go
-                if at.how != Leaving::Connection || matches!(at.src, Source::Conn(_)) {
-                    self.register.left(at.src, &s);
-                }
-                self.suspects.left(conn, &s);
+                osis_base::costs::count("inbox: members moved", 1);
+                self.register.left(at.src, &s);
+                self.suspects.left(at.src, &s);
+                self.suspects.closed_on(conn, &s);
             }
-            Moved::Gone(rid, s) => self.register.left(Source::Record(rid), &s),
-            Moved::Until(..) | Moved::Forgot(..) | Moved::Taken(..) | Moved::Released(..) => {}
+            Moved::Gone(rid, s) => {
+                self.register.left(Source::Record(rid), &s);
+                self.suspects.left(Source::Record(rid), &s);
+            }
+            // read from its rows: its members are learned now
+            Moved::Taken(conn, rid, true) => {
+                self.offers.record_moved(conn);
+                let src = Source::Record(rid);
+                for (s, class) in net.members(conn) {
+                    osis_base::costs::count("inbox: members moved", 1);
+                    if class == SourceClass::Store {
+                        self.register.joined(src, s);
+                    }
+                    self.suspects.joined(src, s, Some(class));
+                }
+            }
+            Moved::Taken(conn, ..) | Moved::Released(conn, _) => self.offers.record_moved(conn),
+            Moved::Until(..) | Moved::Forgot(..) => {}
         }
     }
 
     /// Record `id` went (evicted past `RECORD_BUDGET`, or twin-dropped): what is kept of it goes.
     pub fn record_gone(&mut self, id: crate::types::RecordId) {
         self.register.gone(Source::Record(id));
+        self.suspects.record_gone(Source::Record(id));
+        self.offers.record_gone(Source::Record(id));
     }
 
     /// A connection ended.
