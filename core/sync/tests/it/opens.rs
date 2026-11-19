@@ -849,8 +849,8 @@ fn standing_is_followed_per_record_across_connections_spec_sync_opens_6() {
     assert!(!p.a.open(p.ca, &S) && !p.b.open(p.cb, &S), "closed at the reconnect too");
 }
 
-// spec/sync-opens.md §6 (`until` judged in the step that applies the change, for every record
-// holding the member whether connected or not): b's open by a's read secret ends with a's
+// spec/sync-opens.md §6 (judged in the step that applies the change; for every record holding
+// the member whether connected or not): b's open by a's read secret ends with a's
 // rotation while b is away; its `until` is a's position at the rotation, not at the reconnect,
 // though a's log moved on meanwhile.
 #[test]
@@ -869,8 +869,8 @@ fn an_until_is_the_position_of_the_change_while_away_spec_sync_opens_6() {
     assert_eq!(p.a.opens.member_at(at, &S).and_then(|m| m.until), Some(then), "served up to the rotation's position");
 }
 
-// spec/sync-opens.md §3 (a node that stops holding S drops S from every record in the step that
-// stops it): S leaving the sync set while no connection holds the record drops the member there,
+// spec/sync-opens.md §3 (`changed_at`: a node that stops holding S drops S from every record in
+// the step that stops it): S leaving the sync set while no connection holds the record drops the member there,
 // and what the other modules keep of it for that record goes (`Moved::Gone`).
 #[test]
 fn s_leaving_the_sync_set_while_away_drops_it_from_the_record_spec_sync_opens_3() {

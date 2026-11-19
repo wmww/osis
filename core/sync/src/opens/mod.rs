@@ -10,8 +10,8 @@
 //! agreement, filter generations in flight, the Hits its filter makes possible, the Offer in
 //! flight, reported positions and walk state; `changed_at` per S with the credentials it was
 //! advanced for. Work follows change: a sync ID whose credentials moved advances `changed_at`,
-//! re-judges its members on the connections holding it (`holding`), and makes a filter addition
-//! and a test due on each connection; nothing walks every sync ID per connection but a whole
+//! judges its member in every record in memory holding it, connected or not (`held`), and makes
+//! a filter addition and a test due on each connection; nothing walks every sync ID per connection but a whole
 //! filter (first contact) and the Hits index, built at the connection's first Hit.
 //!
 //! Durable (spec/sync-opens.md §3): records live in the store's record rows (`records`), held in
