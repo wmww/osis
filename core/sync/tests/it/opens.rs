@@ -850,7 +850,7 @@ fn standing_is_followed_per_record_across_connections_spec_sync_opens_6() {
     assert!(!p.a.open(p.ca, &S) && !p.b.open(p.cb, &S), "closed at the reconnect too");
 }
 
-// spec/sync-opens.md §6 (a take of a record read from its rows judges each member afresh), §1
+// spec/sync-opens.md §6 (whether or not a connection holds its record), §1
 // (one connection per pair): b's node holds two records at a (its first one lost to it, so it met a
 // as a first contact again). After a's restart b's new record is taken on one connection and its
 // old one resumed on another, which loses the pair: the record read for that take leaves memory as
