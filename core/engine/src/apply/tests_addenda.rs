@@ -126,21 +126,37 @@ fn unsynced_removal_witnessed_by_a_writer_spec_perm_5_2() {
     }
 }
 
-// spec/permissions.md §5.2 (addenda; writing; that it had received by r's `ts`): an edit a writer received only after the removal's
-// `ts` is not vouched for.
+// spec/permissions.md §5.2 (addenda; writing; that it received in r's window): an edit a writer
+// received only after the removal's `ts` is not vouched for; nor one received after the removal
+// itself, though before its `ts` (Alice's clock runs ahead, so the removal reaches Carol early).
 #[test]
 fn received_after_the_removal_is_not_vouched_for_spec_perm_5_2() {
-    let (mut lp, t) = world(3, &[Role::Write, Role::Write]);
-    let e = write(&mut lp, 1, t, "x:e.0", 7);
-    let r = remove(&mut lp, 0, t, 1);
-    // Carol gets the edit after the removal's stamp, then the removal
-    lp.sync(1, 2).unwrap();
-    lp.sync(0, 2).unwrap();
-    lp.sync_all().unwrap();
-    assert!(lp.peers[2].engine.core.ix.commits.contains_key(&r));
-    assert!(addenda(&lp, 2, t).is_empty(), "nothing to vouch for");
-    assert!(!valid(&lp, 2, &e, t, "x:e.0"));
-    assert!(!valid(&lp, 0, &e, t, "x:e.0"));
+    for early in [false, true] {
+        let (mut lp, t) = world(3, &[Role::Write, Role::Write]);
+        let e = write(&mut lp, 1, t, "x:e.0", 7);
+        if early {
+            lp.peers[0].clock.advance(10_000);
+        }
+        let r = remove(&mut lp, 0, t, 1);
+        // Carol gets the removal first when it is early, else the edit after the removal's stamp
+        let order = if early { [(0, 2), (1, 2)] } else { [(1, 2), (0, 2)] };
+        for (a, b) in order {
+            lp.sync(a, b).unwrap();
+        }
+        if early {
+            let got = lp.peers[2].engine.core.ix.commits.get(&e).unwrap().received;
+            assert!(got.0 <= lp.peers[0].engine.header(&r).unwrap().ts.wall_ms().0, "the edit reached Carol by the removal's ts");
+        }
+        lp.advance(20_000);
+        lp.sync_all().unwrap();
+        // an open judges every removal again
+        lp.peers[2].restart(7).unwrap();
+        lp.sync_all().unwrap();
+        assert!(lp.peers[2].engine.core.ix.commits.contains_key(&r));
+        assert!(addenda(&lp, 2, t).is_empty(), "nothing to vouch for, early {early}");
+        assert!(!valid(&lp, 2, &e, t, "x:e.0"));
+        assert!(!valid(&lp, 0, &e, t, "x:e.0"));
+    }
 }
 
 // spec/permissions.md §5.2 (addenda; itself vouched for by other addenda or not): Carol vouched for Bob's edit; Alice then removes Carol without having received

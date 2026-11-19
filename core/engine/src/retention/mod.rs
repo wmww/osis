@@ -1239,8 +1239,7 @@ pub(crate) fn expire_waiting(tx: &mut Tx<'_>, id: &CommitId, pending: &osis_comm
 impl Engine {
     /// Runs what is due by the wall clock: expiries, purge floors (`T_FLOOR`, `T_KEPT`), bodies
     /// leaving history (`leaving`), live bounds and quiet times the compaction trigger waits for
-    /// (`compact::Trigger::passed`, `quiet_passed`), commits parked for drift and removals
-    /// waiting for their `ts` (`flows::vouches::wake`).
+    /// (`compact::Trigger::passed`, `quiet_passed`), and commits parked for drift.
     pub fn tick(&mut self) -> Result<()> {
         if !self.core.fallen.is_empty() {
             self.resnapshot_fallen()?;
@@ -1252,10 +1251,8 @@ impl Engine {
             // live bounds passed: the trigger weighs those aspects
             let now = tx.now().0;
             tx.core.compaction.passed(now);
-            // removals whose `ts` passed: judged once more for vouches (`flows::vouches::wake`)
-            crate::flows::vouches::wake(tx.core, now);
             // the timers these put lower it again
-            tx.core.timer_floor = next.min(next_leave).min(tx.core.compaction.next_at()).min(crate::apply::next_at(tx.core).unwrap_or(u64::MAX)).min(crate::flows::vouches::next_at(tx.core).unwrap_or(u64::MAX));
+            tx.core.timer_floor = next.min(next_leave).min(tx.core.compaction.next_at()).min(crate::apply::next_at(tx.core).unwrap_or(u64::MAX));
             // their rebuilds once per aspect (`run_batched`); an expiry strips a state in place
             // only while no rebuild of it is asked (`apply::strip_state`)
             crate::apply::run_batched(tx, |tx| {
@@ -1306,8 +1303,7 @@ impl Engine {
         let fallen = (!core.fallen.is_empty()).then(|| self.now().0);
         // a commit pending for its `ts` ahead (`apply::Wake::At`)
         let drift = crate::apply::next_at(core);
-        let vouch = crate::flows::vouches::next_at(core);
-        Ok(part.into_iter().chain(aspect).chain(live).chain(fallen).chain(drift).chain(vouch).min())
+        Ok(part.into_iter().chain(aspect).chain(live).chain(fallen).chain(drift).min())
     }
 
     /// Whether held commit `c` is an own replace of `(tid, ak)` (`snapshot::covered`).

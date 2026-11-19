@@ -3974,7 +3974,7 @@ fn delete_falls_after_reopen_reads_text_spec_crdt_5_7() {
 // §5.2 (Position; Addenda): Alice grants Bob and Carol write; in one fresh millisecond Bob writes v5
 // and Alice, not having seen it, removes Bob, so both carry the same `ts`. The HLC makes that tie
 // proof they were concurrent, so layer 2 orders v5 before the removal whatever the tids: Carol
-// received v5 before the removal (`carol_first`) and her addendum keeps it, else it is lost. Then
+// received v5 before the removal (`carol_first`, a millisecond earlier) and her addendum keeps it, else it is lost. Then
 // everyone exchanges everything, and a fresh node is handed every commit: all read alike, for
 // every assignment of the three peers (so either tid order). Found by the sync rebuild's
 // differential (seed 347110580059), where ordering v5 after the removal by tid made the outcome
@@ -4005,6 +4005,9 @@ fn a_removed_writers_write_at_the_removals_ts_reads_alike_whatever_the_tids_spec
             assert!(rm.iter().all(|r| ts(&lp, a, r) == ts(&lp, b, &v5)), "v5 and the removal share a ts");
             if carol_first {
                 sync(&mut lp, b, c);
+                // before the removal reaches her (spec/permissions.md §5.1 Vouches, Writing: R's
+                // window ends at R's arrival, at an earlier millisecond)
+                lp.advance(1);
             }
             sync(&mut lp, a, c);
             for _ in 0..3 {

@@ -299,35 +299,37 @@ fn removals_owing_nothing_cost_a_step_nothing_spec_perm_5_1() {
     assert_eq!(small, big);
 }
 
-// spec/permissions.md §5.1 Vouches (Writing: received by R's `ts` as of its wall clock): R
-// reaches W before its `ts` by W's clock (H's runs ahead); X's grant reaches W after R, still
-// before R's `ts`, so W owes a vouch for it. R is judged again once, as its `ts` passes (a wake),
-// and not at W's transactions meanwhile; the grant then stands at every node.
+// spec/permissions.md §5.1 Vouches (Writing: R's window, by its `ts` and before R arrived): H's
+// clock runs ahead, so R reaches W before its `ts`. X's grant reaching W after R, though before
+// R's `ts`, is not vouched for (a thief's backdated write landing on a witness that holds R is
+// lost); reaching W before R (a millisecond earlier) it is, and the grant stands at every node.
 #[test]
-fn a_grant_received_after_an_early_removal_by_its_ts_is_vouched_for_spec_perm_5_1() {
-    let (mut lp, t) = world(4);
-    let c = grant(&mut lp, 1, t, 3, Role::Write);
-    lp.peers[0].clock.advance(10_000);
-    let r = remove(&mut lp, 0, t, 1);
-    lp.sync(0, 2).unwrap();
-    lp.sync(1, 2).unwrap();
-    let rts = lp.peers[0].engine.header(&r).unwrap().ts;
-    let got = lp.peers[2].engine.core.ix.commits.get(&c).unwrap().received;
-    assert!(got.0 <= rts.wall_ms().0, "received by R's ts");
-    assert!(lp.peers[2].engine.next_timer().unwrap().is_some_and(|at| at <= rts.wall_ms().0 + 1), "a wake at R's ts");
-    osis_base::costs::take();
-    let mut m = Mutation::new();
-    let me = lp.peers[2].engine.me();
-    lp.peers[2].engine.new_thing(&mut m, me);
-    lp.peers[2].commit(m).unwrap();
-    let judged = osis_base::costs::take().into_iter().find(|(k, _, _)| *k == "vouches: removals judged").map_or(0, |x| x.2);
-    assert_eq!(judged, 0, "a transaction before R's `ts` judges no removal");
-    lp.advance(10_000);
-    lp.peers[2].tick().unwrap();
-    assert_eq!(vouches(&lp, 2, t).len(), 1, "W vouches for c");
-    lp.sync_all().unwrap();
-    for p in 0..4 {
-        assert_eq!(role(&lp, p, 3, t), Some(Role::Write), "peer {p}");
+fn a_grant_received_after_an_early_removal_is_not_vouched_for_spec_perm_5_1() {
+    for before in [true, false] {
+        let (mut lp, t) = world(4);
+        let c = grant(&mut lp, 1, t, 3, Role::Write);
+        lp.peers[0].clock.advance(10_000);
+        let r = remove(&mut lp, 0, t, 1);
+        let order = if before { [(1, 2), (0, 2)] } else { [(0, 2), (1, 2)] };
+        for (a, b) in order {
+            lp.sync(a, b).unwrap();
+            lp.advance(1);
+        }
+        let rts = lp.peers[0].engine.header(&r).unwrap().ts;
+        let got = lp.peers[2].engine.core.ix.commits.get(&c).unwrap().received;
+        assert!(got.0 <= rts.wall_ms().0, "received by R's ts");
+        lp.advance(20_000);
+        lp.peers[2].tick().unwrap();
+        // an open judges every removal again: owed is a function of what is held and received
+        lp.peers[2].restart(7).unwrap();
+        let mut m = Mutation::new();
+        let me = lp.peers[2].engine.me();
+        lp.peers[2].engine.new_thing(&mut m, me);
+        lp.peers[2].commit(m).unwrap();
+        assert_eq!(vouches(&lp, 2, t).len(), usize::from(before), "W vouches for c only when received before R");
+        lp.sync_all().unwrap();
+        for p in 0..4 {
+            assert_eq!(role(&lp, p, 3, t), before.then_some(Role::Write), "peer {p}, before {before}");
+        }
     }
 }
-

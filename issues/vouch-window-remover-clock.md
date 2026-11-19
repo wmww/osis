@@ -1,8 +1,0 @@
-# A remover's fast clock lengthens what witnesses vouch for
-> Summary: Witnesses vouch for a removed party's role writes they received by R's `ts` by their own wall clock; a remover whose clock runs ahead (up to `MAX_DRIFT`, an hour) gives the removed party, a thief included, that long after R is written to reach a witness with backdated role writes that are then kept everywhere. Accept, or end the window at R's arrival too.
-> Priority: low
-> Tags: security, perm, tess-call
-
-spec/permissions.md §5.1 Vouches, Writing: a witness lists what "it received by R's `ts` (as of its wall clock)"; the engine reads the commit's first arrival (`flows/vouches.rs`). With clocks in step, what arrives by R's `ts` was sent before R was written, so a thief's backdated write counts only if it was out before the removal, as any write of X then is (the accepted bargain: notes/account-membership-design.md §4, Role writes; nothing tells a real write from a backdated one before R). R's `ts` is its writer's stamp: a remover's clock `d` ahead (parked beyond `MAX_DRIFT`, spec/crdt.md §2.2) lets writes sent up to `d` after R was written, R already public, count at a witness whose clock is right, and through its vouch at every node. The thief cannot widen it itself: its stamps choose only order, and a removal it writes keeps others' writes, not its own.
-
-Options: accept (a window of the remover's clock error, at most `MAX_DRIFT`), stated in the spec; or count as received by R only what arrived by R's `ts` and before R itself arrived (a witness that holds R vouches for nothing arriving after it), which loses a write of X in flight when R overtakes it only where R arrives before its `ts`, i.e. where the remover's clock is ahead.
