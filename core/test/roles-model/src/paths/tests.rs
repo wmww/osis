@@ -1842,8 +1842,8 @@ fn an_invite_by_a_removed_writer_falls_unless_listed() {
 }
 
 /// An expired grant counts as none: an invite over it applies, before or after a finalize; a
-/// finalize applies only to an ended grant, by a writer holding at least its role, audits nothing
-/// and makes nothing standing.
+/// finalize applies only to an ended grant, by a writer holding at least its role (an admin for a
+/// timed admin grant), audits nothing and makes nothing standing.
 #[test]
 fn a_finalize_ends_an_ended_grant_and_an_invite_follows_it() {
     let mut w = invited();
@@ -1859,6 +1859,15 @@ fn a_finalize_ends_an_ended_grant_and_an_invite_follows_it() {
     // without the finalize the invite over the ended grant applies all the same
     let rd = judge(&w, &Rules::fixed(), &View::all(&w).without(&[fin]));
     assert!(rd.applied.contains(&again) && rd.role(Z, T1) == Role::Read);
+    // a timed admin grant is finalized by an admin only (its role at least the grant's), not by a
+    // writer: the finalize is the grant's departure for keys
+    let mut w = invited();
+    w.edge(H, 1, &[], A, B, Admin, &[]);
+    w.push(H, 2, &[A], T1, Kind::set(N6, Admin).until(4));
+    let by_writer = w.push(K, 5, &[A2], T1, Kind::finalize(N6));
+    let by_admin = w.push(B, 6, &[A], T1, Kind::finalize(N6));
+    let rd = fixed(&w, &[]);
+    assert!(!rd.applied.contains(&by_writer) && rd.applied.contains(&by_admin));
 }
 
 /// spec/permissions.md §7, a link: L, timed with an invite, invites; its `until` passing and the
