@@ -16,13 +16,16 @@
 //! Steps are issued by the engine with the rotations that make them (spec/sync-ids.md §6
 //! Steps); this module only registers recorded ones.
 //!
-//! Work follows change: one `Effects` key per (connection, S) open as a store source, judged
-//! again when what it read moved (the recorded path, the step's needs, their presence at the
-//! source, this module's own progress there).
+//! Work follows change: one `Effects` key per (record, S) open as a store source, followed
+//! across the record's connections until S leaves the record (a record kept nowhere: until its
+//! connection ends), judged again when what it read moved (the recorded path, the step's needs,
+//! their presence at the source, this module's own progress there, and only where a step is to
+//! go, whether a connection holds the record), so a reconnect judges nothing again.
 
 use super::offers::backoff_ms;
 use super::{Here, Net};
 use crate::session::RequestId;
+use crate::store::Source;
 use crate::types::{ConnId, Result, SourceClass};
 use osis_base::memo::{Effects, Stamped};
 use osis_base::{Mono, SyncId};
@@ -32,7 +35,7 @@ use osis_blob::{ClaimSet, Step, StepId};
 use osis_proto::{Code, Msg};
 use std::collections::{BTreeMap, BTreeSet};
 
-type Key = (ConnId, SyncId);
+type Key = (Source, SyncId);
 
 /// What to do at one source of S.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -57,38 +60,57 @@ pub struct Progress {
 #[derive(Clone)]
 pub(super) struct Register {
     plans: Effects<Key, Plan>,
+    /// The keys `plans` follows, by record: what a record going lets go.
+    followed: BTreeSet<Key>,
     progress: Stamped<Key, Progress>,
-    /// Register requests out: their sync ID, step and the source's step when sent.
-    out: BTreeMap<(ConnId, RequestId), (SyncId, StepId, Option<StepId>)>,
+    /// Register requests out: their key, step and the source's step when sent.
+    out: BTreeMap<(ConnId, RequestId), (Key, StepId, Option<StepId>)>,
     wakes: BTreeSet<(Mono, Key)>,
 }
 
 impl Default for Register {
     fn default() -> Self {
-        Register { plans: Effects::new("inbox: register"), progress: Stamped::default(), out: BTreeMap::new(), wakes: BTreeSet::new() }
+        Register { plans: Effects::new("inbox: register"), followed: BTreeSet::new(), progress: Stamped::default(), out: BTreeMap::new(), wakes: BTreeSet::new() }
     }
 }
 
 impl Register {
-    pub(super) fn joined(&mut self, conn: ConnId, s: SyncId) {
-        self.plans.want((conn, s));
+    /// S became a store member of the record at `src` (one followed already stays as it is).
+    pub(super) fn joined(&mut self, src: Source, s: SyncId) {
+        self.plans.want((src, s));
+        self.followed.insert((src, s));
     }
 
-    pub(super) fn left(&mut self, conn: ConnId, s: &SyncId) {
-        let k = (conn, *s);
+    /// S left the record at `src`.
+    pub(super) fn left(&mut self, src: Source, s: &SyncId) {
+        let k = (src, *s);
         self.plans.unwant(&k);
+        self.followed.remove(&k);
         if self.progress.contains_key(&k) {
             self.progress.remove(&k);
         }
+        self.wakes.retain(|(_, x)| *x != k);
     }
 
+    /// A connection ended: its Registers out are answered never; a record kept nowhere goes.
     pub(super) fn closed(&mut self, conn: ConnId) {
-        let keys: Vec<Key> = self.progress.keys().filter(|(c, _)| *c == conn).copied().collect();
-        for k in keys {
-            self.left(conn, &k.1);
-        }
+        let out: Vec<Key> = self.out.iter().filter(|((c, _), _)| *c == conn).map(|(_, (k, ..))| *k).collect();
         self.out.retain(|(c, _), _| *c != conn);
-        self.wakes.retain(|(_, (c, _))| *c != conn);
+        for k in out {
+            if let Some(mut p) = self.progress.get(&k).copied() {
+                p.out = false;
+                self.progress.insert(k, p);
+            }
+        }
+        self.gone(Source::Conn(conn));
+    }
+
+    /// The record at `src` went (evicted, dropped, or kept nowhere and its connection ended).
+    pub(super) fn gone(&mut self, src: Source) {
+        let keys: Vec<Key> = self.followed.range((src, SyncId([0; 16]))..=(src, SyncId([0xff; 16]))).copied().collect();
+        for (src, s) in keys {
+            self.left(src, &s);
+        }
     }
 
     pub(super) fn settle(&mut self, h: &mut Here<'_>, net: &mut impl Net) -> Result<bool> {
@@ -109,11 +131,13 @@ impl Register {
             let (engine, progress) = (&mut *h.engine, &self.progress);
             let Some((_, plan)) = self.plans.try_settle(&k, || judge(engine, &*net, progress, &k))? else { continue };
             let Plan::Send(step, claims) = plan else { continue };
-            let (conn, s) = k;
-            let source = net.head(conn, &s);
+            let (src, s) = k;
+            // a Send judged reads the connection holding the record: one is up
+            let Some(conn) = net.conn_of(src) else { continue };
+            let source = net.head(src, &s);
             let Some(id) = net.request(conn, Msg::Register { id: 0, sync_id: s, step: (*step).clone(), claim_set: claims }) else { continue };
             osis_base::costs::count("inbox: registered", 1);
-            self.out.insert((conn, id), (s, step.id(), source));
+            self.out.insert((conn, id), (k, step.id(), source));
             let mut p = self.progress.get(&k).copied().unwrap_or_default();
             p.out = true;
             self.progress.insert(k, p);
@@ -124,8 +148,7 @@ impl Register {
 
     /// A Register's answer: whether it was one of ours.
     pub(super) fn answered(&mut self, now: Mono, conn: ConnId, id: RequestId, m: &Msg) -> bool {
-        let Some((s, step, source)) = self.out.remove(&(conn, id)) else { return false };
-        let k = (conn, s);
+        let Some((k, step, source)) = self.out.remove(&(conn, id)) else { return false };
         let Some(mut p) = self.progress.get(&k).copied() else { return true };
         p.out = false;
         match m {
@@ -153,8 +176,8 @@ impl Register {
 
 fn judge(engine: &mut Engine, net: &impl Net, progress: &Stamped<Key, Progress>, k: &Key) -> Result<Plan> {
     osis_base::costs::count("inbox: register judged", 1);
-    let (conn, s) = k;
-    let Some(m) = net.member(*conn, s).filter(|m| m.class == SourceClass::Store) else { return Ok(Plan::Nothing) };
+    let (src, s) = k;
+    let Some(m) = net.member_at(*src, s).filter(|m| m.class == SourceClass::Store) else { return Ok(Plan::Nothing) };
     // S's recorded path: a sync ID only tickets name records none
     let mut path = None;
     for t in engine.sync_owners(s)? {
@@ -169,13 +192,18 @@ fn judge(engine: &mut Engine, net: &impl Net, progress: &Stamped<Key, Progress>,
             return Ok(true);
         }
         for c in engine.step_needs(s, step)?.iter() {
-            if !engine.commit_blobs(c)?.iter().any(|b| net.present(*conn, s, b)) {
+            if !engine.commit_blobs(c)?.iter().any(|b| net.present(*src, s, b)) {
                 return Ok(false);
             }
         }
         Ok(true)
     };
-    plan(net.head(*conn, s), &path, &p, &mut needs_held)
+    let plan = plan(net.head(*src, s), &path, &p, &mut needs_held)?;
+    // the connection is read only where a step is to go: up again, it goes
+    Ok(match plan {
+        Plan::Send(..) if net.conn_of(*src).is_none() => Plan::Wait,
+        x => x,
+    })
 }
 
 /// spec/sync-ids.md §6 Steps (Register), Walk (Moving it): at a source keeping S unread standing

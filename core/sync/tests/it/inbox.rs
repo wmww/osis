@@ -80,11 +80,20 @@ impl Net for FakeNet {
     fn member(&self, conn: ConnId, s: &SyncId) -> Option<Member> {
         self.members.get(&(conn, *s)).cloned()
     }
-    fn head(&self, _conn: ConnId, _s: &SyncId) -> Option<StepId> {
+    fn member_at(&self, src: Source, s: &SyncId) -> Option<Member> {
+        let Source::Conn(c) = src else { return None };
+        self.member(c, s)
+    }
+    fn conn_of(&self, src: Source) -> Option<ConnId> {
+        let Source::Conn(c) = src else { return None };
+        Some(c)
+    }
+    fn head(&self, _src: Source, _s: &SyncId) -> Option<StepId> {
         None
     }
-    fn present(&self, conn: ConnId, s: &SyncId, b: &BlobId) -> bool {
-        self.present.contains(&(conn, *s, *b))
+    fn present(&self, src: Source, s: &SyncId, b: &BlobId) -> bool {
+        let Source::Conn(c) = src else { return false };
+        self.present.contains(&(c, *s, *b))
     }
     fn shown(&self, _s: &SyncId, _b: &BlobId) -> bool {
         false

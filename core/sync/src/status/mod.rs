@@ -32,7 +32,7 @@ mod live;
 
 pub use live::{Live, NetView};
 
-use crate::opens::{LeftAt, Moved, Opens};
+use crate::opens::{LeftAt, Leaving, Moved, Opens};
 use crate::read::{Read, Verdict};
 use crate::session::Sessions;
 use crate::store::Source;
@@ -159,6 +159,9 @@ pub trait Ground: Net {
     fn stamped(&mut self, s: &SyncId) -> Result<Vec<BlobId>>;
     /// Whether that source's stream showed `b` present under S (streams' `knows`).
     fn knows(&self, at: Source, conn: ConnId, s: &SyncId, b: &BlobId) -> bool;
+    /// `knows` of the record at `at`: by its rows, else on the connection holding it now (that
+    /// connection read only where its rows show nothing).
+    fn knows_now(&self, at: Source, s: &SyncId, b: &BlobId) -> bool;
     /// The position of this node's log the peer on `conn` reported for S (opens' Positions).
     fn reported(&self, conn: ConnId, s: &SyncId) -> Option<Position>;
     /// The `until` of member S on `conn` (opens: a member being ended).
@@ -263,8 +266,12 @@ pub struct Status {
     set: Effects<(), Arc<SyncSet>>,
     holding: Stamped<SyncId, Holding>,
     sources: Stamped<SyncId, Arc<BTreeMap<ConnId, Src>>>,
-    lacking_fx: Effects<(SyncId, ConnId), u64>,
-    lacking: Stamped<(SyncId, ConnId), u64>,
+    /// Per (S, record) of a store source: followed across the record's connections, until S
+    /// leaves the record (a record kept nowhere: until its connection ends).
+    lacking_fx: Effects<(SyncId, Source), u64>,
+    lacking: Stamped<(SyncId, Source), u64>,
+    /// The keys `lacking_fx` follows, by record: what a record going lets go.
+    lacking_keys: BTreeSet<(Source, SyncId)>,
     own_fx: Effects<SyncId, Arc<BTreeSet<CommitId>>>,
     held_fx: Effects<(SyncId, CommitId), Held>,
     /// Per read S whose own commits are known: those not held elsewhere.
@@ -306,6 +313,7 @@ impl Default for Status {
             sources: Stamped::default(),
             lacking_fx: Effects::new("status: lacking"),
             lacking: Stamped::default(),
+            lacking_keys: BTreeSet::new(),
             own_fx: Effects::new("status: own commits"),
             held_fx: Effects::new("status: held elsewhere"),
             unheld: Stamped::default(),
@@ -368,7 +376,25 @@ impl Status {
         now.insert(conn, src);
         self.sources.insert(s, Arc::new(now));
         if src.class == SourceClass::Store {
-            self.lacking_fx.want((s, conn));
+            self.lacking_fx.want((s, src.at));
+            self.lacking_keys.insert((src.at, s));
+        }
+    }
+
+    fn unwant_lacking(&mut self, src: Source, s: SyncId) {
+        self.lacking_fx.unwant(&(s, src));
+        self.lacking_keys.remove(&(src, s));
+        if self.lacking.contains_key(&(s, src)) {
+            self.lacking.remove(&(s, src));
+        }
+    }
+
+    /// Record `id` went (evicted past `RECORD_BUDGET`, or twin-dropped): its lacking counts go.
+    pub fn record_gone(&mut self, id: crate::types::RecordId) {
+        let src = Source::Record(id);
+        let keys: Vec<(Source, SyncId)> = self.lacking_keys.range((src, SyncId([0; 16]))..=(src, SyncId([0xff; 16]))).copied().collect();
+        for (src, s) in keys {
+            self.unwant_lacking(src, s);
         }
     }
 
@@ -384,9 +410,9 @@ impl Status {
         } else {
             self.sources.insert(s, Arc::new(now));
         }
-        self.lacking_fx.unwant(&(s, conn));
-        if self.lacking.contains_key(&(s, conn)) {
-            self.lacking.remove(&(s, conn));
+        // a record kept lets S go only when S leaves it, not as a connection lets it go
+        if at.how != Leaving::Connection || matches!(at.src, Source::Conn(_)) {
+            self.unwant_lacking(at.src, s);
         }
     }
 
@@ -507,13 +533,9 @@ impl Status {
     /// what that source showed or of S's entries here.
     fn count_lacking(&mut self, g: &mut impl Ground) -> Result<()> {
         for k in self.lacking_fx.due() {
-            let (s, conn) = k;
-            let Some(src) = self.sources.get(&s).and_then(|x| x.get(&conn)).copied() else {
-                self.lacking_fx.unwant(&k);
-                continue;
-            };
+            let (s, at) = k;
             self.work.lacking += 1;
-            let Some((_, n)) = self.lacking_fx.try_settle(&k, || Ok::<_, crate::types::Error>(g.stamped(&s)?.iter().filter(|b| !g.knows(src.at, conn, &s, b)).count() as u64))? else { continue };
+            let Some((_, n)) = self.lacking_fx.try_settle(&k, || Ok::<_, crate::types::Error>(g.stamped(&s)?.iter().filter(|b| !g.knows_now(at, &s, b)).count() as u64))? else { continue };
             self.lacking.insert(k, n);
         }
         Ok(())
@@ -717,7 +739,7 @@ impl Status {
         let sources = srcs
             .iter()
             .map(|(c, src)| {
-                let lacking = self.lacking.get(&(*s, *c)).copied().unwrap_or(0);
+                let lacking = self.lacking.get(&(*s, src.at)).copied().unwrap_or(0);
                 (*c, SourceStatus { src: *src, caught_up: net.caught_since(*c, s).is_some(), lacking, full: net.full(*c, s), refusing: net.refusing(src.at, s) })
             })
             .collect();

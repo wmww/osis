@@ -835,9 +835,12 @@ fn standing_is_followed_per_record_across_connections_spec_sync_opens_6() {
     let mut p = readers();
     let followed = |p: &Pair| p.a.table.followed.keys().any(|(_, s)| *s == S);
     assert!(followed(&p));
+    let at = osis_sync::store::Source::Record(p.a.opens.record(p.ca).unwrap());
+    assert_eq!(p.a.opens.conn_of(at), Some(p.ca));
     p.close();
     p.a.settle();
     assert!(followed(&p), "followed while away");
+    assert!(p.a.opens.member_at(at, &S).is_some() && p.a.opens.conn_of(at).is_none(), "the record keeps its member, connected nowhere");
     p.a.table.judge_as(S, tid(2), J::Departed);
     p.a.settle();
     assert!(!followed(&p), "moved while away: let go");
@@ -1573,6 +1576,7 @@ fn an_evicted_record_goes_whole_and_is_a_first_contact_spec_sync_opens_3() {
     assert_eq!(p.a.store.stand(Source::Record(rid), &S, b"body").unwrap(), None, "read's stand");
     p.a.settle();
     assert!(!p.a.table.followed.contains_key(&(rid, S)), "its members' J followed no more");
+    assert!(p.a.opens.member_at(Source::Record(rid), &S).is_none(), "gone from memory too");
     p.log.clear();
     p.connect(2, account(1), account(2));
     p.run();

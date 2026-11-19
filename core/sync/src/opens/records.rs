@@ -191,19 +191,12 @@ pub(super) fn load(t: &mut Transaction<'_>, id: &RecordId) -> Res<Option<Record>
         if d.u8()? == 1 {
             let generation = d.u64()?;
             let f = d.u8()?;
-            r.peer = Some(PeerFilter { generation, f, whole: d.u64()?, added: d.u64()?, arrived: d.u64()?, values: Default::default() });
+            r.peer = Some(PeerFilter { generation, f, whole: d.u64()?, added: d.u64()?, arrived: d.u64()?, values: Default::default(), held: true });
         }
         d.end()?;
     }
     if let Some(p) = r.peer.as_mut() {
-        let end = 1u64.checked_shl(u32::from(p.f)).unwrap_or(u64::MAX);
-        let mut values = osis_proto::filter::Beacons::default();
-        for (_, v) in t.record_wide_rows(id, FILTER)? {
-            let mut run = osis_proto::filter::Run::default();
-            run.extend_from_gcs(&v, 0, end).map_err(|_| corrupt())?;
-            values.add(run);
-        }
-        p.values = std::sync::Arc::new(values);
+        p.values = std::sync::Arc::new(filter_values(t, id, p.f)?);
     }
     for (s, _, v) in t.record_tag_rows(id, MEMBER)? {
         let (m, basis) = decode_member(&v)?;
@@ -216,6 +209,18 @@ pub(super) fn load(t: &mut Transaction<'_>, id: &RecordId) -> Res<Option<Record>
         d.end()?;
     }
     Ok(Some(r))
+}
+
+/// The entries of record `id`'s peer filter of width `f`, as its rows hold them.
+pub(super) fn filter_values(t: &mut Transaction<'_>, id: &RecordId, f: u8) -> Res<osis_proto::filter::Beacons> {
+    let end = 1u64.checked_shl(u32::from(f)).unwrap_or(u64::MAX);
+    let mut values = osis_proto::filter::Beacons::default();
+    for (_, v) in t.record_wide_rows(id, FILTER)? {
+        let mut run = osis_proto::filter::Run::default();
+        run.extend_from_gcs(&v, 0, end).map_err(|_| corrupt())?;
+        values.add(run);
+    }
+    Ok(values)
 }
 
 /// Record `id`'s `acked_pos` as its rows hold it (0 before its own state is written).

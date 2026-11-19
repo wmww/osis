@@ -71,13 +71,14 @@ fn sum(costs: &[(&'static str, u64)], named: &[&str]) -> u64 {
 // member again: no stranding (S's sources are read only where the engine's word could strand
 // it), no register plan with a reader (only a store keeping S unread registers steps), no
 // member's standing (followed per record, across its connections: spec/sync-opens.md §6), no
-// certificate blobs (S's sources read only where a blob loses to another): as many at n as at
-// 10n shared sync IDs. Not yet flat (issues/many-sync-ids-cost.md): register plans and lacking
-// counts at a store, store rows.
+// certificate blobs (S's sources read only where a blob loses to another), no register plan or
+// lacking count at a store (kept per record, the connection read only where a step is to go or
+// an entry lacks by the record's rows): as many at n as at 10n shared sync IDs. Not yet flat
+// (issues/many-sync-ids-cost.md): store rows.
 #[test]
 fn an_idle_reconnect_judges_no_member_again_spec_sync_2() {
     const READER: &[&str] = &["status: stranded", "inbox: register judged", "opens standing", "perm: roles walked", "read: certificate blobs"];
-    const STORE: &[&str] = &["status: stranded", "opens standing", "perm: roles walked", "read: certificate blobs"];
+    const STORE: &[&str] = &["status: stranded", "opens standing", "perm: roles walked", "read: certificate blobs", "inbox: register judged", "status: lacking"];
     let at = |n| {
         let mut w = things(n);
         let (_, reader) = reconnect(&mut w, 0, 2);

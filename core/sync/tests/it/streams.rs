@@ -245,7 +245,7 @@ impl Side {
         if let Some(p) = self.open.positions.get_mut(&C) {
             p.forget(&s);
         }
-        self.with(now, |st, ctx| st.member_moved(ctx, Moved::Left(C, s, LeftAt { how, ..LeftAt::default() })));
+        self.with(now, |st, ctx| st.member_moved(ctx, Moved::Left(C, s, LeftAt { src: osis_sync::store::Source::Conn(C), reported: None, until: None, how })));
     }
 
     /// Member S's reported position on C.

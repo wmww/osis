@@ -829,7 +829,11 @@ impl Node {
     /// The end of a step: opens writes what changed of its records and evicts past
     /// `RECORD_BUDGET` (each record with every row of it and what was charged to it).
     fn flush(&mut self) -> Result<()> {
-        self.opens.flush(&mut self.store).map(drop)
+        for id in self.opens.flush(&mut self.store)? {
+            self.inbox.record_gone(id);
+            self.status.record_gone(id);
+        }
+        Ok(())
     }
 
     /// A step failed (a store failure): every connection closes, and the modules restart from

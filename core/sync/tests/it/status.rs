@@ -21,6 +21,11 @@ const B: ConnId = ConnId(2);
 const RA: RecordId = [0xa; 16];
 const RB: RecordId = [0xb; 16];
 
+/// How a member leaves as its connection lets the record go.
+fn gone(c: ConnId) -> osis_sync::opens::LeftAt {
+    osis_sync::opens::LeftAt { src: osis_sync::store::Source::Conn(c), reported: None, until: None, how: osis_sync::opens::Leaving::Connection }
+}
+
 fn blob(i: u8) -> BlobId {
     BlobId([i; 32])
 }
@@ -116,6 +121,9 @@ impl Ground for Fake {
         Ok(self.stamped.get(s).cloned().unwrap_or_default())
     }
     fn knows(&self, at: Source, _conn: ConnId, s: &SyncId, b: &BlobId) -> bool {
+        self.knows.contains(&(at, *s, *b))
+    }
+    fn knows_now(&self, at: Source, s: &SyncId, b: &BlobId) -> bool {
         self.knows.contains(&(at, *s, *b))
     }
     fn until(&self, conn: ConnId, s: &SyncId) -> Option<Position> {
@@ -273,8 +281,8 @@ fn heard_out_when_every_source_caught_up() {
     assert!(t.heard_out(S));
     let st = t.st.of(&S, &t.g).unwrap();
     assert_eq!(st.readers(), [tid(1)].into(), "two connections of one account: one reader");
-    t.st.left(S, A, Default::default());
-    t.st.left(S, B, Default::default());
+    t.st.left(S, A, gone(A));
+    t.st.left(S, B, gone(B));
     t.settle();
     assert!(!t.heard_out(S), "nobody connected: not heard out");
 }
@@ -298,7 +306,7 @@ fn full_or_refusing_source_named_not_waited_on() {
     t.settle();
     assert!(t.heard_out(S) && t.st.of(&S, &t.g).unwrap().sources[&B].refusing);
     // with only sources that do not take S, nothing is heard out
-    t.st.left(S, A, Default::default());
+    t.st.left(S, A, gone(A));
     t.settle();
     assert!(!t.heard_out(S), "only a refusing source");
 }
@@ -325,6 +333,29 @@ fn lacking_counted_by_what_a_source_pulls() {
     assert_eq!(t.g.stamped_reads, reads, "nothing taken again while nothing moved");
 }
 
+// spec/sync-status.md §1 (lacks), spec/sync.md §2 (work in proportion to change): a store
+// source's lacking count is kept per record: its connection letting the record go and another
+// taking it count nothing again; S leaving the record, or the record going, lets it go.
+#[test]
+fn lacking_is_kept_per_record_across_connections_spec_sync_status_1() {
+    use osis_sync::opens::{LeftAt, Leaving};
+    let mut t = T::new(&[(S, Holding::Read)]);
+    t.g.stamped.insert(S, vec![blob(1), blob(2)]);
+    t.join(S, B, store(RB));
+    t.settle();
+    let reads = t.g.stamped_reads;
+    let away = LeftAt { src: Source::Record(RB), reported: None, until: None, how: Leaving::Connection };
+    t.st.left(S, B, away);
+    t.join(S, ConnId(3), store(RB));
+    t.settle();
+    assert_eq!(t.g.stamped_reads, reads, "a reconnect counts nothing again");
+    assert_eq!(t.st.of(&S, &t.g).unwrap().sources[&ConnId(3)].lacking, 2);
+    t.st.record_gone(RB);
+    t.g.stamped.insert(S, vec![blob(1)]);
+    t.settle();
+    assert_eq!(t.g.stamped_reads, reads, "the record gone: counted no more");
+}
+
 // spec/sync-status.md §2 (held elsewhere: a report from a source): a reader's report and the
 // close that follows it in one step (a peer that judges this node departed by the self-removal it
 // just applied closes S at once) still count: the source's position as it left is judged at the
@@ -336,11 +367,11 @@ fn a_report_counts_when_its_source_leaves_in_the_same_step() {
     t.join(S, A, reader(RA, 1));
     t.own(S, cid(1), blob(1), 5);
     t.own(S, cid(2), blob(2), 7);
-    t.st.left(S, A, LeftAt { reported: Some(6), until: None, how: osis_sync::opens::Leaving::Connection });
+    t.st.left(S, A, LeftAt { src: osis_sync::store::Source::Conn(A), reported: Some(6), until: None, how: osis_sync::opens::Leaving::Connection });
     t.settle();
     assert!(t.st.held(&cid(1)), "reported at 6 as it left");
     assert!(!t.st.held(&cid(2)), "first logged at 7, past the report");
-    t.st.left(S, B, LeftAt { reported: Some(9), until: None, how: osis_sync::opens::Leaving::Connection });
+    t.st.left(S, B, LeftAt { src: osis_sync::store::Source::Conn(B), reported: Some(9), until: None, how: osis_sync::opens::Leaving::Connection });
     t.settle();
     assert!(!t.st.held(&cid(2)), "a leave of no source counts for nothing");
 }
@@ -363,7 +394,7 @@ fn own_commit_held_elsewhere_by_report_or_presence() {
     t.settle();
     assert!(t.st.held(&cid(1)) && t.wait(S));
     assert!(t.g.elsewhere.contains(&(S, blob(1))), "recorded on the entry");
-    t.st.left(S, A, Default::default());
+    t.st.left(S, A, gone(A));
     t.g.reported.remove(&(A, S));
     t.settle();
     assert!(t.st.held(&cid(1)), "the record outlives the source");
@@ -543,7 +574,7 @@ fn complete_pass_with_no_source_waits_for_a_peer_to_be_waited_for() {
     t.join(S, A, reader(RA, 1));
     t.caught(A, S, 20);
     assert_eq!(t.g.passes, vec![(S, 7), (S, 20)], "a source caught up since");
-    t.st.left(S, A, Default::default());
+    t.st.left(S, A, gone(A));
     t.at(30);
     want(&mut t, S, 30);
     t.at(30 + PASS_WAIT_MS);
@@ -679,7 +710,7 @@ fn work_for_a_source_flip(n: u8) -> u64 {
     assert_eq!(t.st.of(&S, &t.g).unwrap().unheld, Some(1));
     let before = t.st.work().commits;
     t.join(S, ConnId(7), reader(RA, 2));
-    t.st.left(S, ConnId(7), Default::default());
+    t.st.left(S, ConnId(7), gone(ConnId(7)));
     t.settle();
     t.st.work().commits - before
 }
@@ -824,7 +855,7 @@ fn a_walk_stopped_with_no_source_is_stranded_spec_sync_ids_6() {
     assert_eq!(t.st.strandings().get(&S).map(|x| x.step), Some([3; 32]), "naming the step it stopped at");
     t.join(S, A, reader(RA, 1));
     assert!(t.st.strandings().is_empty(), "a source has S open: not heard out");
-    t.st.left(S, A, Default::default());
+    t.st.left(S, A, gone(A));
     t.settle();
     assert!(t.st.of(&S, &t.g).unwrap().stranded, "no source again");
     t.g.stops.remove(&S);

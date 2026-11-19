@@ -259,10 +259,16 @@ mod tests {
         fn member(&self, _: ConnId, _: &SyncId) -> Option<crate::opens::Member> {
             None
         }
-        fn head(&self, _: ConnId, _: &SyncId) -> Option<osis_blob::StepId> {
+        fn member_at(&self, _: crate::store::Source, _: &SyncId) -> Option<crate::opens::Member> {
             None
         }
-        fn present(&self, _: ConnId, _: &SyncId, _: &osis_base::BlobId) -> bool {
+        fn conn_of(&self, _: crate::store::Source) -> Option<ConnId> {
+            None
+        }
+        fn head(&self, _: crate::store::Source, _: &SyncId) -> Option<osis_blob::StepId> {
+            None
+        }
+        fn present(&self, _: crate::store::Source, _: &SyncId, _: &osis_base::BlobId) -> bool {
             false
         }
         fn shown(&self, _: &SyncId, _: &osis_base::BlobId) -> bool {

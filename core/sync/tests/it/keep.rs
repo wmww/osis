@@ -220,3 +220,27 @@ fn readers_logging_the_same_records_settle_on_one_record_blob_spec_permissions_4
         assert!(noted.values().all(|x| x.tids.is_superset(&records)), "it carries every record");
     }
 }
+
+// spec/sync-ids.md §6 (Steps: a reader registers at each source keeping S unread the steps after
+// the source's step), spec/sync-opens.md §6 (a record's members are judged whether or not a
+// connection holds it): node 0 rotates t's write secret, issuing a step, while node 1 (keeping S
+// unread) is apart from every reader, its record held by no connection; once they meet again the
+// step is registered there, with nothing else moving.
+#[test]
+fn a_step_issued_while_a_store_is_away_is_registered_when_it_is_back_spec_sync_ids_6() {
+    use crate::harness::history::{Gives, three};
+    let (mut w, t, s) = three(Gives::Reads, 2);
+    w.cap = 20_000;
+    w.partition(0, 1);
+    w.partition(1, 2);
+    w.run();
+    let a0 = w.node(0).account.unwrap();
+    w.write(0, |e| e.rotate_boxing_only(&[t], &[Role::Write], &[a0])).unwrap().expect("a rotation");
+    w.run();
+    let head = w.engine(0).sync_ids(&t).unwrap().iter().find(|o| o.id == s).unwrap().path.steps.last().unwrap().0.id();
+    let at1 = |w: &World| w.store(1).path(&s).unwrap().and_then(|p| p.steps.last().map(|(st, _)| st.id()));
+    assert_ne!(at1(&w), Some(head), "away: not registered");
+    w.heal();
+    w.run();
+    assert_eq!(at1(&w), Some(head), "back: registered");
+}

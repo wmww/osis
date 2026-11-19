@@ -409,10 +409,16 @@ mod tests {
         fn member(&self, conn: ConnId, s: &SyncId) -> Option<crate::opens::Member> {
             self.0.get(&(conn, *s)).map(|class| crate::opens::Member { class: *class, own: crate::types::SourceClass::Reader, by: crate::types::Credential::SyncKey, until: None, departed: false })
         }
-        fn head(&self, _: ConnId, _: &SyncId) -> Option<osis_blob::StepId> {
+        fn member_at(&self, _: crate::store::Source, _: &SyncId) -> Option<crate::opens::Member> {
             None
         }
-        fn present(&self, _: ConnId, _: &SyncId, _: &osis_base::BlobId) -> bool {
+        fn conn_of(&self, _: crate::store::Source) -> Option<ConnId> {
+            None
+        }
+        fn head(&self, _: crate::store::Source, _: &SyncId) -> Option<osis_blob::StepId> {
+            None
+        }
+        fn present(&self, _: crate::store::Source, _: &SyncId, _: &osis_base::BlobId) -> bool {
             false
         }
         fn shown(&self, _: &SyncId, _: &osis_base::BlobId) -> bool {

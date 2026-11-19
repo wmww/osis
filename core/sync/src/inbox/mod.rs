@@ -42,7 +42,7 @@ pub use offers::{BACKOFF_MAX_MS, BACKOFF_MIN_MS, Judge, Offers, Target, backoff_
 pub use osis_engine::sync::Signers;
 pub use register::{Plan, Progress, plan};
 
-use crate::opens::{Member, Moved, Opens};
+use crate::opens::{Leaving, Member, Moved, Opens};
 use crate::session::{Incoming, RequestId, Sessions, To};
 use crate::store::{Source, Store};
 use crate::streams::Streams;
@@ -60,10 +60,14 @@ pub trait Net {
     /// is; that is `opens::counted` of it, judged now.
     fn named(&self, conn: ConnId) -> Named;
     fn member(&self, conn: ConnId, s: &SyncId) -> Option<Member>;
+    /// Member S of the record at `src`, whatever connection holds it (opens' `member_at`).
+    fn member_at(&self, src: Source, s: &SyncId) -> Option<Member>;
+    /// The connection holding the record at `src` now (opens' `conn_of`).
+    fn conn_of(&self, src: Source) -> Option<ConnId>;
     /// That source's step for S: the head its stream last named (spec/sync-ids.md §6 Walk).
-    fn head(&self, conn: ConnId, s: &SyncId) -> Option<StepId>;
-    /// Whether that source's stream showed `b` present under S.
-    fn present(&self, conn: ConnId, s: &SyncId, b: &BlobId) -> bool;
+    fn head(&self, src: Source, s: &SyncId) -> Option<StepId>;
+    /// Whether that source's stream showed `b` present under S, durably (by its record).
+    fn present(&self, src: Source, s: &SyncId, b: &BlobId) -> bool;
     /// Whether some source's stream showed `b` present under S (stamped).
     fn shown(&self, s: &SyncId, b: &BlobId) -> bool;
     /// Moves at each arrival of the peer's filter (spec/sync-inbox.md §3: a refused Deposit item
@@ -91,11 +95,17 @@ impl Net for Links<'_> {
     fn member(&self, conn: ConnId, s: &SyncId) -> Option<Member> {
         self.opens.member(conn, s).cloned()
     }
-    fn head(&self, conn: ConnId, s: &SyncId) -> Option<StepId> {
-        self.streams.known().head(self.streams.source(self.opens, conn), s)
+    fn member_at(&self, src: Source, s: &SyncId) -> Option<Member> {
+        self.opens.member_at(src, s).cloned()
     }
-    fn present(&self, conn: ConnId, s: &SyncId, b: &BlobId) -> bool {
-        self.streams.knows(self.streams.source(self.opens, conn), Some(conn), s, b)
+    fn conn_of(&self, src: Source) -> Option<ConnId> {
+        self.opens.conn_of(src)
+    }
+    fn head(&self, src: Source, s: &SyncId) -> Option<StepId> {
+        self.streams.known().head(src, s)
+    }
+    fn present(&self, src: Source, s: &SyncId, b: &BlobId) -> bool {
+        self.streams.known().knows(src, s, b)
     }
     fn shown(&self, s: &SyncId, b: &BlobId) -> bool {
         self.streams.known().present(s, b)
@@ -235,16 +245,24 @@ impl Inbox {
                 self.offers.joined(conn, &s, net);
                 // only a store keeping S unread registers steps (spec/sync-ids.md §6 Steps)
                 if net.member(conn, &s).is_some_and(|m| m.class == SourceClass::Store) {
-                    self.register.joined(conn, s);
+                    self.register.joined(net.source(conn), s);
                 }
                 self.suspects.joined(conn, s, net);
             }
-            Moved::Left(conn, s, _) => {
-                self.register.left(conn, &s);
+            Moved::Left(conn, s, at) => {
+                // a record kept lets S go only when S leaves it, not as a connection lets it go
+                if at.how != Leaving::Connection || matches!(at.src, Source::Conn(_)) {
+                    self.register.left(at.src, &s);
+                }
                 self.suspects.left(conn, &s);
             }
             Moved::Until(..) | Moved::Forgot(..) => {}
         }
+    }
+
+    /// Record `id` went (evicted past `RECORD_BUDGET`, or twin-dropped): what is kept of it goes.
+    pub fn record_gone(&mut self, id: crate::types::RecordId) {
+        self.register.gone(Source::Record(id));
     }
 
     /// A connection ended.
