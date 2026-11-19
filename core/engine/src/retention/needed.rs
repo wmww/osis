@@ -301,7 +301,11 @@ pub(crate) fn settle(tx: &mut Tx<'_>) -> Result<bool> {
             continue;
         }
         let mut reached = Reached::new();
-        match holding(tx, &t, &mut reached)? {
+        let h = holding(tx, &t, &mut reached)?;
+        // scale checks: a pass end judges the things due, each searching what needs it
+        osis_base::costs::count("needed: things judged", 1);
+        osis_base::costs::count("needed: things searched", reached.len() as u64);
+        match h {
             Holding::Whole => {}
             Holding::Certificates => {
                 if holds_content(tx.core, &t) {
