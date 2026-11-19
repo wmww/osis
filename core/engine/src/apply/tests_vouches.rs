@@ -504,3 +504,52 @@ fn a_release_updates_the_timelines_once_whatever_it_forgets_spec_perm_5_1() {
     let (small, large) = (work(3), work(30));
     assert_eq!(small, large, "timeline updates at k, 10k");
 }
+
+// notes/engine-store.md Index tables (every row a function of the held commits), spec/permissions.md
+// §5.1 Vouches ("W could write c": W holds the role each other role-class part of c requires), §1
+// (record chain: nothing on a thing whose record chain is not held counts): X rotates the write keys of t and of
+// S, a thing of its own peer 3 reads, in one commit c, which W and peer 3 receive; H removes X
+// without c; W vouches c. W holds no role on S, so while S's record is held the vouch keeps
+// nothing and c's keys on t are invalid. Peer 3 releases S (its record goes): its verdict on c is
+// the one it gives after a restart.
+#[test]
+fn a_vouched_commits_parts_read_alike_across_a_restart_spec_perm_5_1() {
+    let (mut lp, t) = world(4);
+    for p in &mut lp.peers {
+        p.engine.write_vouches(false);
+    }
+    let x = lp.peers[1].engine.me();
+    let mut m = Mutation::new();
+    let s = lp.peers[1].engine.new_thing(&mut m, x);
+    lp.peers[1].commit(m).unwrap();
+    grant(&mut lp, 1, s, 3, Role::Read);
+    lp.hold_at(3, s);
+    lp.sync(1, 3).unwrap();
+    let all: Vec<Tid> = lp.peers.iter().map(|p| p.engine.me()).collect();
+    let c = lp.peers[1].engine.rotate_boxing_only(&[t, s], &[Role::Write], &all).unwrap().unwrap();
+    lp.advance(1000);
+    for i in [2, 3] {
+        lp.sync(1, i).unwrap();
+    }
+    let r = remove(&mut lp, 0, t, 1);
+    lp.sync(0, 2).unwrap();
+    vouch(&mut lp, 2, t, r, &[c]);
+    lp.sync(2, 3).unwrap();
+    lp.sync(0, 3).unwrap();
+    let valid = |lp: &LocalPeer| {
+        let m = lp.peers[3].engine.core.ix.commits.get(&c).unwrap();
+        let ai = m.view.aspects.iter().position(|a| a.ak.as_str() == "keys.0" && a.tid == t).unwrap();
+        m.valid_at(ai)
+    };
+    assert!(lp.peers[3].engine.core.ix.held.created(&s).is_some(), "peer 3 holds S's record");
+    assert!(!valid(&lp), "W could not write c's keys on S: the vouch keeps nothing");
+    let e = &mut lp.peers[3].engine;
+    e.unhold(osis_base::Strong(s)).unwrap();
+    e.released(&std::collections::BTreeSet::from([s])).unwrap();
+    assert!(e.core.ix.held.created(&s).is_none(), "S's record went");
+    let live = valid(&lp);
+    lp.peers[3].restart(7).unwrap();
+    assert_eq!(valid(&lp), live, "c's verdict across a restart");
+    assert!(live, "c's keys on S count for nothing: the vouch keeps c");
+    lp.peers[3].engine.check_index();
+}

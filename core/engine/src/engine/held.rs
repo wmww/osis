@@ -27,9 +27,11 @@ enum Undo {
 }
 
 /// What perm reads of one role commit beside its edge writes (`Held::set_vouching`): its vouches
-/// (one per thing) and its other role-class parts.
+/// (one per thing) and its other role-class parts, each as its commit's held parts say (thing,
+/// role its aspect requires), whatever the records held: the depth rule applies where they are
+/// read (`Held::parts_read`).
 #[derive(Clone, Debug, Default, PartialEq)]
-struct Vouching {
+pub(crate) struct Vouching {
     vouches: Vec<Arc<Vouch>>,
     parts: Option<Arc<RoleParts>>,
 }
@@ -68,6 +70,9 @@ pub struct Held {
     uncounted: BTreeSet<CommitId>,
     /// Per role commit, its vouches and other role-class parts (`set_vouching`).
     vouching: BTreeMap<CommitId, Vouching>,
+    /// The commits of `vouching` with another role-class part on a thing, by thing: whose reading
+    /// a record coming or going on its chain moves (`chain_moved`).
+    parts_on: BTreeMap<Tid, BTreeSet<CommitId>>,
     /// The vouches of `vouching` by thing, by commit ID.
     vouches: BTreeMap<Tid, BTreeMap<CommitId, Arc<Vouch>>>,
     /// Role commits perm reads (edge commits, `vouching`) by author: (`ts`, ID).
@@ -308,9 +313,67 @@ impl Held {
         self.uncounted.contains(id)
     }
 
-    /// The role-class parts other than edge writes of role commit `id`, counting or not.
-    pub fn parts_of(&self, id: &CommitId) -> Option<&RoleParts> {
-        self.vouching.get(id).and_then(|v| v.parts.as_deref())
+    /// The role-class parts other than edge writes of role commit `id`, counting or not, as perm
+    /// reads them (`parts_read`).
+    pub fn parts_of(&self, id: &CommitId) -> Option<Arc<RoleParts>> {
+        self.parts_read(id)
+    }
+
+    /// What is held of each role commit beside its edge writes, as its parts say (tests: the
+    /// index check compares it).
+    pub(crate) fn vouching(&self) -> &BTreeMap<CommitId, Vouching> {
+        &self.vouching
+    }
+
+    /// Whether `t`'s record chain ends at a key actor within `MAX_CHAIN_DEPTH` links, mint-admin
+    /// links counted, by the records held (spec/permissions.md §1): nothing written on a thing
+    /// failing it applies; unknown fails (forgetting a record never makes a deep part count).
+    /// Reads each record of the chain. O(`MAX_CHAIN_DEPTH`).
+    pub fn chain_held(&self, t: &Tid) -> bool {
+        matches!(osis_base::record_chain(*t, |x| self.created(x).map(CreationRecord::record_link)).end(), osis_base::ChainStep::Key(_))
+    }
+
+    /// The other role-class parts of `id` perm reads: those stored (`Vouching`) on a thing whose
+    /// record chain is held (`chain_held`), `None` when none is. Invariant: a function of the held
+    /// commits and records alone, worked out at each read, so a running node and the same store
+    /// opened afresh read alike whatever came or went in between. Every input is untrusted (any
+    /// holder writes role commits naming any thing, a removed party too, and any record), and
+    /// none is order-dependent: the stored parts are the commit's own word, the chain the records
+    /// held now. O(its parts × `MAX_CHAIN_DEPTH`), whatever the role history of their things.
+    fn parts_read(&self, id: &CommitId) -> Option<Arc<RoleParts>> {
+        self.rest.read(&Row::Parts(id));
+        let p = self.vouching.get(id)?.parts.as_ref()?;
+        let held: Vec<bool> = p.parts.iter().map(|(t, _)| self.chain_held(t)).collect();
+        if held.iter().all(|h| *h) {
+            return Some(p.clone());
+        }
+        let parts: Vec<(Tid, Role)> = p.parts.iter().zip(held).filter(|(_, h)| *h).map(|(x, _)| *x).collect();
+        (!parts.is_empty()).then(|| Arc::new(RoleParts { id: p.id, ts: p.ts, author: p.author, parts }))
+    }
+
+    /// `t`'s record came or went: the reading (`parts_read`) of each commit with a part on a thing
+    /// whose chain holds `t` may have moved, so what perm reads of it is touched (its parts'
+    /// things, vouches' things and edge writes' targets: one of them is in each component reading
+    /// it). O(the things below `t` and those commits).
+    fn chain_moved(&mut self, t: Tid) {
+        let mut below = BTreeSet::new();
+        let mut stack = vec![t];
+        while let Some(x) = stack.pop() {
+            if below.insert(x) {
+                stack.extend(self.mint_admin_of.get(&x).into_iter().flatten().copied());
+            }
+        }
+        let mut things = BTreeSet::new();
+        for c in below.iter().flat_map(|x| self.parts_on.get(x)).flatten() {
+            if let Some(v) = self.vouching.get(c) {
+                things.extend(v.vouches.iter().map(|v| v.thing).chain(v.parts.iter().flat_map(|p| p.parts.iter().map(|(t, _)| *t))));
+            }
+            if let Some(e) = self.ids.get(c) {
+                things.extend(e.ops.iter().map(|o| o.target));
+            }
+        }
+        self.moved.extend(things.iter().copied());
+        self.touched.extend(things);
     }
 
     fn set_created(&mut self, t: Tid, r: Option<CreationRecord>) -> Option<CreationRecord> {
@@ -353,6 +416,7 @@ impl Held {
         self.touched.insert(t);
         self.ever.insert(t);
         self.moved.insert(t);
+        self.chain_moved(t);
         old
     }
 
@@ -495,7 +559,18 @@ impl Held {
     /// Vouches): the vouches its deltas create and its other role-class parts. A change touches
     /// their things, so perm gathers the vouches there again.
     pub fn set_vouching(&mut self, id: CommitId, vouches: Vec<Vouch>, parts: Option<RoleParts>) {
-        let now = Vouching { vouches: vouches.into_iter().map(Arc::new).collect(), parts: parts.map(Arc::new) };
+        self.set(id, Vouching { vouches: vouches.into_iter().map(Arc::new).collect(), parts: parts.map(Arc::new) });
+    }
+
+    /// Sets the other role-class parts of role commit `id` alone (`set_vouching`), where perm reads
+    /// anything of it: the role one requires moved (`validity::parts_moved`).
+    pub fn set_parts(&mut self, id: CommitId, parts: Option<RoleParts>) {
+        let Some(v) = self.vouching.get(&id) else { return };
+        let now = Vouching { vouches: v.vouches.clone(), parts: parts.map(Arc::new) };
+        self.set(id, now);
+    }
+
+    fn set(&mut self, id: CommitId, now: Vouching) {
         let now = (now != Vouching::default()).then_some(now);
         if self.vouching.get(&id) == now.as_ref() {
             return;
@@ -549,8 +624,21 @@ impl Held {
         for t in &things {
             self.rest.wrote(&Row::Vouches(t), self.vouches.contains_key(t));
         }
-        let parts = old.iter().chain(self.vouching.get(&id)).flat_map(|v| v.parts.iter()).flat_map(|p| p.parts.iter().map(|(t, _)| *t));
-        things.extend(parts.collect::<Vec<_>>());
+        let part_things = |v: Option<&Vouching>| -> BTreeSet<Tid> { v.iter().flat_map(|v| v.parts.iter()).flat_map(|p| p.parts.iter().map(|(t, _)| *t)).collect() };
+        let (was, now) = (part_things(old.as_ref()), part_things(self.vouching.get(&id)));
+        for t in was.difference(&now) {
+            if let Some(s) = self.parts_on.get_mut(t) {
+                s.remove(&id);
+                if s.is_empty() {
+                    self.parts_on.remove(t);
+                }
+            }
+        }
+        for t in now.difference(&was) {
+            self.parts_on.entry(*t).or_default().insert(id);
+        }
+        things.extend(was);
+        things.extend(now);
         self.rest.wrote(&Row::Parts(&id), self.vouching.contains_key(&id));
         self.moved.extend(things.iter().copied());
         self.touched.extend(things);
@@ -662,7 +750,7 @@ impl Held {
 impl Journaled for Held {
     #[cfg(test)]
     fn contents(&self) -> String {
-        format!("{:?} {:?} {:?} {:?} {:?} {:?} {:?} {:?} {:?} {:?} {:?} {:?}", self.commits, self.created, self.holders, self.named, self.granted, self.mint_admin_of, self.ids, self.uncounted, self.vouching, self.vouches, self.keyed, self.by_author)
+        format!("{:?} {:?} {:?} {:?} {:?} {:?} {:?} {:?} {:?} {:?} {:?} {:?} {:?}", self.commits, self.created, self.holders, self.named, self.granted, self.mint_admin_of, self.ids, self.uncounted, self.vouching, self.parts_on, self.vouches, self.keyed, self.by_author)
     }
     type Mark = usize;
     fn commit(&mut self) {
@@ -718,11 +806,11 @@ impl HeldSet for Held {
         self.vouches_on(thing).filter(|v| !self.uncounted.contains(&v.id)).cloned().collect()
     }
     fn role_parts(&self, id: &CommitId) -> Option<Arc<RoleParts>> {
-        self.rest.read(&Row::Parts(id));
         if self.uncounted.contains(id) {
+            self.rest.read(&Row::Parts(id));
             return None;
         }
-        self.vouching.get(id).and_then(|v| v.parts.clone())
+        self.parts_read(id)
     }
 }
 
@@ -1468,5 +1556,93 @@ mod tests {
             }
             assert!(want.contains(&a[0]), "the mint admin's mint admin");
         }
+    }
+
+    /// Role parts of commit `n` by `author` on `on`, each needing `role`.
+    fn parts(n: u8, author: Tid, on: &[Tid], role: Role) -> RoleParts {
+        RoleParts { id: CommitId([n; 32]), ts: Ts::make(osis_base::WallMs(1), 0).unwrap(), author, parts: on.iter().map(|t| (*t, role)).collect() }
+    }
+
+    /// The things of commit `n`'s parts perm reads (`HeldSet::role_parts`).
+    fn read(h: &Held, n: u8) -> Vec<Tid> {
+        HeldSet::role_parts(h, &CommitId([n; 32])).map(|p| p.parts.iter().map(|x| x.0).collect()).unwrap_or_default()
+    }
+
+    // spec/permissions.md §1 (record chain: nothing on a thing whose chain is not held counts), §5.1
+    // Vouches ("W could write c"); notes/engine-store.md Index tables. A role commit's other
+    // role-class parts are kept as its parts say, whatever the records held, and the depth rule
+    // applies where perm reads them: a part on a thing whose record comes, goes or comes back
+    // reads as a held set given the same commits and records in any order reads it, and the
+    // change touches what the commit's parts name (perm reads the commit anew).
+    #[test]
+    fn role_parts_read_by_the_records_held_spec_perm_1() {
+        let a = actor(1);
+        let (s, u) = (thing(a.tid(), 2), thing(a.tid(), 3));
+        let p = parts(9, a.tid(), &[s.tid(), u.tid()], Role::Admin);
+        // records, then the commit; the commit, then records
+        let mut h = Held::default();
+        for r in [&a, &s, &u] {
+            h.create(r.clone());
+        }
+        h.set_vouching(p.id, Vec::new(), Some(p.clone()));
+        let mut g = Held::default();
+        g.set_vouching(p.id, Vec::new(), Some(p.clone()));
+        assert!(read(&g, 9).is_empty(), "no record held: no part counts");
+        for r in [&u, &s, &a] {
+            g.create(r.clone());
+        }
+        assert_eq!(read(&h, 9), vec![s.tid(), u.tid()]);
+        assert_eq!(read(&g, 9), read(&h, 9), "the order records came in");
+        for (x, back) in [(&mut h, false), (&mut g, true)] {
+            x.take_touched();
+            x.forget_record(&s.tid());
+            assert_eq!(read(x, 9), vec![u.tid()], "S's record went: its part counts for nothing");
+            assert!(x.take_touched().contains(&u.tid()), "the commit's parts are touched");
+            if back {
+                x.create(s.clone());
+                assert_eq!(read(x, 9), vec![s.tid(), u.tid()], "S's record back: its part counts again");
+            }
+        }
+        // what is kept is the commit's word: a fresh held set given the same reads alike
+        let mut f = Held::default();
+        for r in [&a, &u] {
+            f.create(r.clone());
+        }
+        f.set_vouching(p.id, Vec::new(), Some(p.clone()));
+        assert_eq!(h.vouching(), f.vouching());
+        assert_eq!(read(&h, 9), read(&f, 9));
+        // a forgotten mint admin: nothing below it counts
+        h.forget_record(&a.tid());
+        assert!(read(&h, 9).is_empty());
+    }
+
+    // spec/permissions.md §1 (record chain: within MAX_CHAIN_DEPTH links): a part on a thing `MAX_CHAIN_DEPTH` mint-admin links
+    // below a key actor counts, one link deeper it does not; a record leaving or coming back in
+    // the middle of the chain moves both below it, and touches what reads them.
+    #[test]
+    fn role_parts_read_by_chain_depth_spec_perm_1() {
+        let a = actor(1);
+        let mut h = Held::default();
+        h.create(a.clone());
+        let mut chain = vec![a.tid()];
+        let mut records = Vec::new();
+        for i in 0..=osis_base::format::MAX_CHAIN_DEPTH {
+            let mut nonce = [0; 32];
+            nonce[..8].copy_from_slice(&(i as u64).to_be_bytes());
+            let r = CreationRecord::Thing { admin: *chain.last().unwrap(), nonce, link: None, expires: None };
+            chain.push(r.tid());
+            records.push(r.clone());
+            h.create(r);
+        }
+        let (deepest, too_deep) = (chain[osis_base::format::MAX_CHAIN_DEPTH], chain[osis_base::format::MAX_CHAIN_DEPTH + 1]);
+        h.set_vouching(CommitId([9; 32]), Vec::new(), Some(parts(9, a.tid(), &[deepest, too_deep], Role::Write)));
+        assert_eq!(read(&h, 9), vec![deepest], "one link too deep counts for nothing");
+        let mid = records[10].clone();
+        h.take_touched();
+        h.forget_record(&mid.tid());
+        assert!(read(&h, 9).is_empty(), "a record gone above both");
+        assert!(h.take_touched().contains(&deepest), "reads moved below the record");
+        h.create(mid);
+        assert_eq!(read(&h, 9), vec![deepest]);
     }
 }

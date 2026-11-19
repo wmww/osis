@@ -175,6 +175,7 @@ fn unindex(tx: &mut Tx<'_>, id: &CommitId, marks: bool) -> Result<()> {
 pub(crate) fn unjudge_part(core: &mut crate::engine::Core, c: &CommitId, ai: usize) {
     core.ix.rotation_role.remove(&(*c, ai));
     core.ix.grant_overreach.remove(&(*c, ai));
+    super::validity::parts_moved(core, c);
 }
 
 #[cfg(test)]

@@ -279,7 +279,7 @@ fn vouches_owed(core: &Core, tl: &osis_perm::Timeline, r: &CommitId, m: &crate::
             if at >= rp {
                 continue;
             }
-            let things: BTreeSet<Tid> = edges.into_iter().flat_map(|e| e.ops.iter().map(|o| o.target)).chain(core.ix.held.parts_of(&c).into_iter().flat_map(|p| p.parts.iter().map(|(t, _)| *t))).collect();
+            let things: BTreeSet<Tid> = edges.into_iter().flat_map(|e| e.ops.iter().map(|o| o.target)).chain(core.ix.held.parts_of(&c).into_iter().flat_map(|p| p.parts.iter().map(|(t, _)| *t).collect::<Vec<_>>())).collect();
             for n in things {
                 if core.timelines.component(&n) == comp && core.ix.closure.holds(&n) {
                     cands.entry(n).or_default().push((cm.received, c));

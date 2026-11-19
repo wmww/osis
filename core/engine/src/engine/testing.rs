@@ -854,6 +854,7 @@ impl super::Core {
         }
         let mut tables: BTreeMap<&'static str, String> = tables(ix).into_iter().map(|(n, t)| (n, format!("{t:?}"))).collect();
         tables.insert("derived_written", format!("{:?}", derived_written(ix)));
+        tables.insert("held vouching", format!("{:?}", ix.held.vouching()));
         IndexDigest { commits, held: self.held_digest(), snapshots, dropped_snapshots, tables }
     }
 
@@ -881,6 +882,7 @@ impl super::Core {
             && *a.dropped_snapshots == *b.dropped_snapshots
             && tables(a).iter().zip(tables(b).iter()).all(|((_, x), (_, y))| x.same(*y))
             && derived_written(a) == derived_written(b)
+            && a.held.vouching() == b.held.vouching()
             && self.perm_parts(false) == o.perm_parts(false)
     }
 

@@ -9,7 +9,7 @@ use crate::engine::write::required_role;
 use crate::engine::{Core, Meta, Owned, Tx, View};
 use crate::error::{Error, Result};
 use osis_commit::{Decoded, Header, Kind};
-use osis_base::{Ak, ChainStep, CommitId, CreationRecord, Role, Tid, Value};
+use osis_base::{Ak, CommitId, CreationRecord, Role, Tid, Value};
 use osis_crdt::{Dot, Fragment};
 use osis_perm::{Addendum, AddendumEntry, At, Edge, EdgeOp, EpochStanding, Frontier, Point, RoleCommit, Validity, Vouching, WriteId};
 use osis_schema::core_types as ct;
@@ -410,7 +410,8 @@ pub(crate) fn add_role_commit(core: &mut Core, h: &View, id: &CommitId, parts: &
 /// Vouches): the vouches its `vouches.0` deltas create, per thing (an entry it did not create
 /// says nothing, `put_new`), and its role-class parts other than edge writes with the role
 /// each needs (what "W could write c" asks of them; a vouch and a listing need none), none for a
-/// compaction snapshot. Nothing on a thing too deep (`too_deep`).
+/// compaction snapshot: a function of the commit alone, the depth rule applied where perm reads
+/// them (`Held::parts_read`). No vouch on a thing too deep (`too_deep`).
 fn vouching_parts(core: &Core, h: &View, id: &CommitId, parts: &PermParts) -> (Vec<osis_perm::Vouch>, Option<osis_perm::RoleParts>) {
     let mut vouches = Vec::new();
     for (ai, es) in &parts.vouches {
@@ -421,12 +422,18 @@ fn vouching_parts(core: &Core, h: &View, id: &CommitId, parts: &PermParts) -> (V
             vouches.push(osis_perm::Vouch { id: *id, ts: h.ts, author: h.author, thing: a.tid, entries });
         }
     }
+    (vouches, role_parts(core, h, id))
+}
+
+/// The other role-class parts of role commit `id` (`vouching_parts`), each with the role its
+/// aspect requires (`rotation_role`, from its body, else by its aspect key).
+fn role_parts(core: &Core, h: &View, id: &CommitId) -> Option<osis_perm::RoleParts> {
     // a compaction snapshot is its author's edit: no vouch lists one (as no addendum does)
     let others: Vec<(Tid, Role)> = h
         .aspects
         .iter()
         .enumerate()
-        .filter(|(_, a)| !h.kind.is_compaction() && ct::is_role_class(a.ak.as_str()) && !edge_ak(a.ak.as_str()) && !too_deep(core, &a.tid))
+        .filter(|(_, a)| !h.kind.is_compaction() && ct::is_role_class(a.ak.as_str()) && !edge_ak(a.ak.as_str()))
         .map(|(ai, a)| {
             let role = match a.ak.as_str() {
                 ct::VOUCHES_AK | "listing.0" => Role::Sync,
@@ -435,8 +442,15 @@ fn vouching_parts(core: &Core, h: &View, id: &CommitId, parts: &PermParts) -> (V
             (a.tid, role)
         })
         .collect();
-    let role_parts = (!others.is_empty()).then_some(osis_perm::RoleParts { id: *id, ts: h.ts, author: h.author, parts: others });
-    (vouches, role_parts)
+    (!others.is_empty()).then_some(osis_perm::RoleParts { id: *id, ts: h.ts, author: h.author, parts: others })
+}
+
+/// `rotation_role` of commit `id` moved (a body judged, or gone): what perm reads of its other
+/// role-class parts follows, where it reads any (`Held::set_parts`).
+pub(crate) fn parts_moved(core: &mut Core, id: &CommitId) {
+    let Some(v) = core.ix.commits.get(id).map(|m| m.view.clone()).filter(|v| v.kind.is_role()) else { return };
+    let parts = role_parts(core, &v, id);
+    core.ix.held.set_parts(*id, parts);
 }
 
 /// Notes the edges role commit `id` writes as held (`Core::notices_due`): a commit applied or
@@ -553,6 +567,7 @@ pub(crate) fn note_required(core: &mut Core, h: &Header, id: &CommitId, read: &s
             core.ix.rotation_role.upsert((*id, *ai), || r, |e| *e = (*e).max(r));
         }
     }
+    parts_moved(core, id);
     if h.kind != Kind::Role {
         return;
     }
@@ -701,7 +716,7 @@ pub(crate) fn resolve_unresolved(tx: &mut Tx<'_>) -> Result<bool> {
 /// held (unknown counts as invalid, so forgetting a record never makes a deep delta valid).
 /// O(`MAX_CHAIN_DEPTH`).
 pub(crate) fn too_deep(core: &Core, t: &Tid) -> bool {
-    !matches!(core.record_chain(t).end(), ChainStep::Key(_))
+    !core.ix.held.chain_held(t)
 }
 
 /// Is aspect `ai` of a held commit valid (spec/permissions.md §5.2)?
@@ -991,13 +1006,19 @@ impl<'a> Judge<'a> {
 /// other inputs changed (`stale_commits`: void, required roles, overreach), every one after a
 /// rebuild at open (`stale_all`); so the cost follows the change, not the held set. Rebuilds
 /// aspects whose validity flipped; returns them. Again while a rebuild left some stale (a part
-/// `retention::uncover` made missing loses what its body judged). Ends: only `uncover` marks
-/// stale here, and it turns parts dropped as covered missing, never back.
+/// `retention::uncover` made missing loses what its body judged, the role it required among
+/// them: perm's timelines read it anew). Ends: only `uncover` marks stale here, and it turns
+/// parts dropped as covered missing, never back.
 pub(crate) fn rejudge_all(tx: &mut Tx<'_>, rebuild: bool) -> Result<Vec<(Tid, Ak)>> {
     let _s = osis_base::costs::span("rejudge");
     let mut out: BTreeSet<(Tid, Ak)> = BTreeSet::new();
     loop {
         out.extend(rejudge_once(tx, rebuild)?);
+        // a part `uncover` made missing loses the role its body required (`parts_moved`): perm
+        // reads the commit anew
+        if !tx.core.ix.held.touched().is_empty() {
+            tx.core.update_timelines();
+        }
         if !tx.core.stale() {
             return Ok(out.into_iter().collect());
         }
