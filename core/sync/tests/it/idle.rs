@@ -67,21 +67,29 @@ fn sum(costs: &[(&'static str, u64)], named: &[&str]) -> u64 {
 }
 
 // spec/sync.md §2 (Work in proportion to change: Each event re-judges only what it touches): an
-// idle reconnect judges no member's stranding again, with a reader or with a node keeping every
-// thing unread (S's sources are read only where the engine's word could strand it), and no
-// register plan with a reader (only a store keeping S unread registers steps): as many at n as
-// at 10n shared sync IDs. Not yet flat (issues/many-sync-ids-cost.md): standing, certificate blobs and store rows.
+// idle reconnect, with a reader or with a node keeping every thing unread, judges nothing of a
+// member again: no stranding (S's sources are read only where the engine's word could strand
+// it), no register plan with a reader (only a store keeping S unread registers steps), no
+// member's standing (followed per record, across its connections: spec/sync-opens.md §6): as
+// many at n as at 10n shared sync IDs. Not yet flat (issues/many-sync-ids-cost.md): certificate
+// blobs, register plans and lacking counts at a store, store rows.
 #[test]
-fn an_idle_reconnect_judges_no_stranding_again_spec_sync_2() {
+fn an_idle_reconnect_judges_no_member_again_spec_sync_2() {
+    const READER: &[&str] = &["status: stranded", "inbox: register judged", "opens standing", "perm: roles walked"];
+    const STORE: &[&str] = &["status: stranded", "opens standing", "perm: roles walked"];
     let at = |n| {
         let mut w = things(n);
         let (_, reader) = reconnect(&mut w, 0, 2);
         let (_, store) = reconnect(&mut w, 0, 1);
-        [sum(&reader, &["status: stranded", "inbox: register judged"]), sum(&store, &["status: stranded"])]
+        let mut v = Vec::new();
+        for (who, costs, named) in [("a reader", &reader, READER), ("a node keeping them unread", &store, STORE)] {
+            v.extend(named.iter().map(|k| (who, *k, sum(costs, &[k]))));
+        }
+        v
     };
     let (small, large) = (at(N), at(10 * N));
-    for (i, who) in ["a reader", "a node keeping them unread"].iter().enumerate() {
-        assert!(large[i] <= small[i], "with {who}: {} judged at n, {} at 10n", small[i], large[i]);
+    for ((who, k, a), (_, _, b)) in small.iter().zip(&large) {
+        assert!(b <= a, "with {who}: {k} {a} at n, {b} at 10n");
     }
 }
 

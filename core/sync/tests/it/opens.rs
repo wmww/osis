@@ -826,6 +826,26 @@ fn a_removal_held_here_closes_a_credential_open_at_once_spec_sync_opens_6() {
     assert!(!p.a.open(p.ca, &S) && !p.b.open(p.cb, &S));
 }
 
+// spec/sync-opens.md §6 (a member is re-judged at each change of J of its peer; a record no
+// connection holds, at its next take): a member's J is followed per record, across its
+// connections, so a reconnect judges nothing of it again; a move while no connection holds the
+// record lets it go, and the next take judges it: b, removed while away, is no member there.
+#[test]
+fn standing_is_followed_per_record_across_connections_spec_sync_opens_6() {
+    let mut p = readers();
+    let followed = |p: &Pair| p.a.table.followed.keys().any(|(_, s)| *s == S);
+    assert!(followed(&p));
+    p.close();
+    p.a.settle();
+    assert!(followed(&p), "followed while away");
+    p.a.table.judge_as(S, tid(2), J::Departed);
+    p.a.settle();
+    assert!(!followed(&p), "moved while away: let go");
+    p.connect(2, account(1), account(2));
+    p.run();
+    assert!(!p.a.open(p.ca, &S) && !p.b.open(p.cb, &S), "judged at the take");
+}
+
 // spec/sync-opens.md §6: a move of one peer's standing for one sync ID re-judges that member
 // alone: the same work at n and 10n sync IDs open on the connection.
 fn standing_moves_one_of(n: u8) -> osis_sync::opens::Work {
@@ -1551,6 +1571,8 @@ fn an_evicted_record_goes_whole_and_is_a_first_contact_spec_sync_opens_3() {
         Ok(())
     }).unwrap();
     assert_eq!(p.a.store.stand(Source::Record(rid), &S, b"body").unwrap(), None, "read's stand");
+    p.a.settle();
+    assert!(!p.a.table.followed.contains_key(&(rid, S)), "its members' J followed no more");
     p.log.clear();
     p.connect(2, account(1), account(2));
     p.run();

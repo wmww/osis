@@ -4,7 +4,7 @@
 
 use super::cred::{Shown, Tested};
 use crate::session::Proven;
-use crate::types::{ConnId, Credential, Cursor, Cx, Holding, Position};
+use crate::types::{Credential, Cursor, Cx, Holding, Position, RecordId};
 use crate::unread::{Unread, UnreadCredentials};
 use osis_base::{SyncId, Tid};
 use osis_crypto::Epoch;
@@ -167,15 +167,16 @@ pub trait Holds {
     fn counts(&mut self, named: &Named) -> Vec<Tid>;
     /// J of a peer's actors (`counts`) for S.
     fn judge(&mut self, s: &SyncId, actors: &[Tid]) -> J;
-    /// J for S of the peer `named` names, now (`judge` of `counts`), for member S of `conn`,
-    /// which is followed from then on: `standing_due` gives it once anything this read moves
-    /// (the peer's removal or demotion, its account's revocation, an `until` passing;
-    /// spec/sync-opens.md §6).
-    fn standing(&mut self, conn: ConnId, s: &SyncId, named: &Named) -> J;
+    /// J for S of the peer record `rec` names (`named`), now (`judge` of `counts`), for member S
+    /// of `rec`, which is followed from then on, across its connections: `standing_due` gives it
+    /// once anything this read moves (the peer's removal or demotion, its account's revocation,
+    /// an `until` passing; spec/sync-opens.md §6). Followed and nothing it read moved, the value
+    /// kept, read nothing again.
+    fn standing(&mut self, rec: RecordId, s: &SyncId, named: &Named) -> J;
     /// The members followed (`standing`) whose J may have moved since the last call.
-    fn standing_due(&mut self) -> Vec<(ConnId, SyncId)>;
-    /// Member S of `conn` is followed no more.
-    fn unfollow(&mut self, conn: ConnId, s: &SyncId);
+    fn standing_due(&mut self) -> Vec<(RecordId, SyncId)>;
+    /// Member S of `rec` is followed no more.
+    fn unfollow(&mut self, rec: RecordId, s: &SyncId);
     /// Whether `epoch` of S's thing covers every departure this node knows of (spec/crypto.md §4).
     fn covers_departures(&mut self, s: &SyncId, epoch: &Epoch) -> bool;
     /// An ended member's `until` (spec/sync-opens.md §6): the highest position at which an entry
@@ -216,8 +217,8 @@ pub trait Holds {
 pub struct Fx {
     set: crate::set::SyncsFollow,
     creds: Effects<SyncId, Option<[u8; 32]>>,
-    /// Per member of a connection up, J of its peer for S (`Holds::standing`).
-    standing: Effects<(ConnId, SyncId), J>,
+    /// Per member of a record, J of its peer for S (`Holds::standing`).
+    standing: Effects<(RecordId, SyncId), J>,
 }
 
 impl Default for Fx {
@@ -384,8 +385,11 @@ impl Holds for NodeHolds<'_, '_> {
         self.cx.engine.judge_peer(s, actors).unwrap_or(J::Unknown)
     }
 
-    fn standing(&mut self, conn: ConnId, s: &SyncId, named: &Named) -> J {
-        let k = (conn, *s);
+    fn standing(&mut self, rec: RecordId, s: &SyncId, named: &Named) -> J {
+        let k = (rec, *s);
+        if let Some(j) = self.fx.standing.current(&k) {
+            return j;
+        }
         self.fx.standing.want(k);
         let engine = &mut *self.cx.engine;
         let mut j = J::Unknown;
@@ -397,12 +401,12 @@ impl Holds for NodeHolds<'_, '_> {
         j
     }
 
-    fn standing_due(&mut self) -> Vec<(ConnId, SyncId)> {
+    fn standing_due(&mut self) -> Vec<(RecordId, SyncId)> {
         self.fx.standing.due()
     }
 
-    fn unfollow(&mut self, conn: ConnId, s: &SyncId) {
-        self.fx.standing.unwant(&(conn, *s));
+    fn unfollow(&mut self, rec: RecordId, s: &SyncId) {
+        self.fx.standing.unwant(&(rec, *s));
     }
 
     fn covers_departures(&mut self, s: &SyncId, epoch: &Epoch) -> bool {

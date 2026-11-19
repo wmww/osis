@@ -151,6 +151,16 @@ impl<K: Hash + Eq + Clone + std::fmt::Debug, V: Clone + PartialEq + std::fmt::De
         self.followed.contains_key(k)
     }
 
+    /// `k`'s value as last settled, when it holds now: followed, settled, not known due, and
+    /// nothing it read written since (each read's stamp checked, no log read). `None`: settle it.
+    pub fn current(&self, k: &K) -> Option<V> {
+        let f = self.followed.get(k)?;
+        if self.pending.contains(k) || !f.deps.iter().all(Dep::holds) {
+            return None;
+        }
+        f.value.clone()
+    }
+
     /// Whether `k` is followed with a value settled (none since a failed settle).
     pub(super) fn settled_value(&self, k: &K) -> bool {
         self.followed.get(k).is_some_and(|f| f.value.is_some())
@@ -607,6 +617,30 @@ mod tests {
             v
         });
         assert_eq!(e.due(), [1], "written during its own settle");
+    }
+
+    // spec: none (internal). `current` is a followed key's value while nothing it read moved:
+    // none before its first settle, once a read is written (before any `due`), while `due` gave
+    // it and it is not settled since, and once unwanted.
+    #[test]
+    fn current_is_the_value_while_nothing_it_read_moved() {
+        let mut m: Stamped<u8, u8> = Stamped::default();
+        let mut e: Effects<u8, u8> = Effects::new("test current");
+        e.want(1);
+        assert_eq!(e.current(&1), None, "never settled");
+        e.settle(&1, || m.get(&1).copied().unwrap_or(0));
+        assert_eq!(e.current(&1), Some(0));
+        m.insert(2, 2);
+        assert_eq!(e.current(&1), Some(0), "a key it did not read");
+        m.insert(1, 5);
+        assert_eq!(e.current(&1), None, "written, no due read yet");
+        assert_eq!(e.due(), [1]);
+        m.insert(1, 0);
+        assert_eq!(e.current(&1), None, "given by due, not settled since");
+        e.settle(&1, || m.get(&1).copied().unwrap_or(0));
+        assert_eq!(e.current(&1), Some(0));
+        e.unwant(&1);
+        assert_eq!(e.current(&1), None, "unwanted");
     }
 
     // spec: none (internal). A settle that reads the same keys again keeps its index, yet a key

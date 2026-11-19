@@ -17,7 +17,7 @@ use osis_sync::opens::{Ctx, Moved, Opens, Reported, Wire};
 use osis_sync::session::{Incoming, Proven};
 use osis_store::{MemoryBackend, MemoryRoot};
 use osis_sync::Store;
-use osis_sync::types::{ConnId, Credential, Cursor, Holding, Position};
+use osis_sync::types::{ConnId, Credential, Cursor, Holding, Position, RecordId};
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
 
@@ -111,8 +111,8 @@ pub struct Table {
     /// The recorded path per S: what a source's steps verify under.
     pub recorded: BTreeMap<SyncId, Vec<osis_blob::Step>>,
     /// The members whose J is followed (`Holds::standing`), with the actors their peer names.
-    pub followed: BTreeMap<(ConnId, SyncId), Vec<Tid>>,
-    standing_due: BTreeSet<(ConnId, SyncId)>,
+    pub followed: BTreeMap<(RecordId, SyncId), Vec<Tid>>,
+    standing_due: BTreeSet<(RecordId, SyncId)>,
 }
 
 impl Table {
@@ -163,17 +163,17 @@ impl Holds for Table {
         let js: Vec<J> = actors.iter().filter_map(|a| self.j.get(&(*s, *a)).copied()).collect();
         [J::Reader, J::SyncHolder, J::Departed].into_iter().find(|j| js.contains(j)).unwrap_or(J::Unknown)
     }
-    fn standing(&mut self, conn: ConnId, s: &SyncId, named: &osis_store::Named) -> J {
+    fn standing(&mut self, rec: RecordId, s: &SyncId, named: &osis_store::Named) -> J {
         let actors = self.counts(named);
         let j = self.judge(s, &actors);
-        self.followed.insert((conn, *s), actors);
+        self.followed.insert((rec, *s), actors);
         j
     }
-    fn standing_due(&mut self) -> Vec<(ConnId, SyncId)> {
+    fn standing_due(&mut self) -> Vec<(RecordId, SyncId)> {
         std::mem::take(&mut self.standing_due).into_iter().collect()
     }
-    fn unfollow(&mut self, conn: ConnId, s: &SyncId) {
-        self.followed.remove(&(conn, *s));
+    fn unfollow(&mut self, rec: RecordId, s: &SyncId) {
+        self.followed.remove(&(rec, *s));
     }
     fn covers_departures(&mut self, s: &SyncId, epoch: &Epoch) -> bool {
         self.covering.contains(&(*s, *epoch))
