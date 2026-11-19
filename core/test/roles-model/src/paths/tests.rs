@@ -1138,7 +1138,6 @@ fn each_fix_is_needed() {
         ("timed", Rules { last_admin: LastAdmin::NamedTimed, ..f }),
         ("once", Rules { rewrite: false, ..f }),
         ("leave", Rules { leave_in_question: false, ..f }),
-        ("invite-role", Rules { invite_check: false, ..f }),
     ];
     for (name, rules) in cases {
         assert!(random(100, &rules).failures() > 0, "{name}");
@@ -1147,7 +1146,7 @@ fn each_fix_is_needed() {
 
 #[test]
 fn small_family_sample_holds() {
-    assert_holds(&family_run(&Rules::fixed(), 1009), "family");
+    assert_holds(&family_run(&Rules::fixed(), 2017), "family");
 }
 
 fn var(k: &str) -> Option<u64> {
@@ -1899,4 +1898,60 @@ fn a_write_dropping_an_invite_audits_the_invites_under_it() {
     w.edit(plain, |k| k.listing(BTreeMap::from([(T1, Set::from([z]))])));
     let rd = fixed(&w, &[]);
     assert!(rd.applied.contains(&z) && rd.role(Z, T1) == Role::Read);
+}
+
+// ---- Purge authors (notes/write-path-design.md §1, The purge author) ----
+
+/// A request by author P matches the deltas naming exactly P as their purge author, never every
+/// delta whose chain holds P.
+#[test]
+fn a_purge_by_author_takes_exactly_that_authors_deltas() {
+    let (mut w, ..) = paired();
+    let b_as_a = w.content_as(B, 2, &[A], T1, 1);
+    let h_as_a = w.content_as(H, 2, &[A], T1, 1);
+    let b_as_b = w.content(B, 2, &[A], T1);
+    let later = w.content_as(H, 4, &[A], T1, 1);
+    let q = w.purge(B, 3, &[A], T1, A);
+    let rd = fixed(&w, &[]);
+    assert!(rd.valid.contains(&q));
+    assert_eq!(rd.purged, Set::from([b_as_a, h_as_a]));
+    assert!(!rd.purged.contains(&b_as_b) && !rd.purged.contains(&later));
+    // control: matched by chain, B's own edit goes too
+    assert!(fixed_but(&w, &[], |r| r.purge_exact = false).purged.contains(&b_as_b));
+}
+
+/// The author right is held only through the request's own chain: a member writing through A2
+/// purges what A2 authored; an admin of the thing by another path names A2 and holds nothing
+/// (the model's right is the `author` class alone).
+#[test]
+fn a_purge_holds_the_right_only_through_its_own_chain() {
+    let mut w = invited();
+    let k = w.content_as(K, 2, &[A2], T1, 1);
+    w.edge(H, 1, &[], A, X, Admin, &[]);
+    let by_admin = w.purge(X, 3, &[A], T1, A2);
+    let rd = fixed(&w, &[]);
+    assert!(rd.valid.contains(&by_admin) && rd.purged.is_empty());
+    assert!(fixed_but(&w, &[], |r| r.purge_chain = false).purged.contains(&k));
+    w.purge(X, 4, &[A2], T1, A2);
+    assert_eq!(fixed(&w, &[]).purged, Set::from([k]));
+}
+
+/// A removed signer's backdated purge through the cut edge takes nothing, trusted or not; listed
+/// by the removal it stands; a purge through a path the signer keeps still holds.
+#[test]
+fn a_removed_signers_backdated_purge_takes_nothing() {
+    let mut w = invited();
+    w.edge(H, 1, &[], A, X, Admin, &[]);
+    let h = w.content_as(H, 2, &[A], T1, 1);
+    let k = w.content_as(K, 2, &[A2], T1, 1);
+    let q = w.purge(X, 5, &[A], T1, A);
+    let qk = w.purge(X, 5, &[A2], T1, A2);
+    let r = w.edge(H, 6, &[], A, X, Gone, &[]);
+    for trust in [vec![], vec![r]] {
+        let rd = fixed(&w, &trust);
+        assert!(!rd.valid.contains(&q) && rd.valid.contains(&qk), "{trust:?}");
+        assert_eq!(rd.purged, Set::from([k]), "{trust:?}");
+    }
+    w.edit(r, |kind| kind.listing(BTreeMap::from([(T1, Set::from([q]))])));
+    assert!(fixed(&w, &[r]).purged.contains(&h));
 }

@@ -64,7 +64,8 @@ pub struct Setup {
     /// party removed before the theft, whose key the thief holds: `N5_MOVES`).
     pub n5: u8,
     /// X's role write before the theft. 0: none; 1: demotes B to write on A; 2: removes A2 from
-    /// T1 (when B shared it); 3: grants A2 admin on T2.
+    /// T1 (when B shared it); 3: grants A2 admin on T2; 4: a purge request by author A on T1 (not
+    /// a role write: content-class, kept only by H's list).
     pub x_role: u8,
     /// H received it before its removal.
     pub x_role_seen: bool,
@@ -102,8 +103,10 @@ pub struct Move {
 /// edge set timed by itself (admin until the tick after its `ts`; write until after the story);
 /// 40 to 42 are invite grants through A2 (where X writes A2, its share on T1 inviting read): Z
 /// invited at write (beyond the invite), at read, and at read until the next tick, finalized by
-/// X then and invited again.
-pub const MOVES: usize = 43;
+/// X then and invited again; 43 to 45 are purge requests by author: by A on T1 along [A], by A2
+/// on T1 along [A2] (X's right where it keeps writing A2), by A on T1 along [A2] (an author not
+/// on its chain: no right).
+pub const MOVES: usize = 46;
 /// N5 grants H admin, standing or until just after the removal; N5 removes H; N5 demotes H; N5
 /// vouches against H's removal for X's role writes on A. Each stamped before X's removal of N5
 /// but the vouch.
@@ -279,7 +282,14 @@ impl Sim {
             m.g5 = Some(g);
         }
         let x_role = if s.x_role == 2 && s.sharer_x { 0 } else { s.x_role };
-        if x_role > 0 {
+        if x_role == 4 {
+            // a purge request by author A on T1, before the theft (H receiving it as x_role_seen)
+            let g = m.put((X, 4, &[A], T1, Kind::Purge { author: A }), 4, rng, false);
+            if m.sync[&H].contains(&T1) {
+                m.recv[g].insert(H, if s.x_role_seen { 4 } else { SETTLE });
+            }
+            m.xrole = Some(g);
+        } else if x_role > 0 {
             let (path, on, holder, role): (&[Thing], _, _, _) = match x_role {
                 1 => (&[], A, B, Role::Write),
                 2 => (&[A], T1, A2, Role::None),
@@ -298,7 +308,11 @@ impl Sim {
                 for on in [T1, T2, D1] {
                     if m.sync.get(&n).is_some_and(|u| u.contains(&on)) && rng.below(2) == 0 {
                         if let Some(p) = role_path(n, on) {
-                            m.put((n, tick, &p, on, Kind::Content), tick, rng, false);
+                            let i = m.put((n, tick, &p, on, Kind::Content), tick, rng, false);
+                            // authored as the first thing on the path at odd ticks, else as the signer
+                            if tick % 2 == 1 && !p.is_empty() {
+                                m.w.authored(i, 1);
+                            }
                         }
                     }
                 }
@@ -320,6 +334,9 @@ impl Sim {
         for mv in moves.iter().filter(|mv| mv.made >= REMOVAL) {
             m.thief(mv, rng);
         }
+        // honest purges by author at 9: B of what A authored on T2, K of what A2 authored on T1
+        m.put((B, 9, &[A, ORG], T2, Kind::Purge { author: A }), 9, rng, false);
+        m.put((K, 9, &[A2], T1, Kind::Purge { author: A2 }), 9, rng, false);
         if s.b_side_x {
             let f = m.w.cut(&m.w.through((H, A), |i| i != m.r));
             m.rx = Some(m.put((X, 5, &[], A, grant(H, Role::None).listing(f)), 7, rng, false));
@@ -535,6 +552,15 @@ impl Sim {
         let grant = Kind::set;
         if mv.kind == 35 {
             // made with the setup (`Setup::n5` 3)
+            return;
+        }
+        if (43..46).contains(&mv.kind) {
+            let (path, author): (&[Thing], _) = match mv.kind {
+                43 => (&[A], A),
+                44 => (&[A2], A2),
+                _ => (&[A2], A),
+            };
+            self.put((X, mv.ts, path, T1, Kind::Purge { author }), mv.made, rng, true);
             return;
         }
         if (40..43).contains(&mv.kind) {
@@ -859,7 +885,9 @@ pub fn trace(m: &Sim) -> String {
             }
             Kind::Addendum { removal, list } => format!("addendum against {removal} {list:?}"),
             Kind::Vouch { removal, list } => format!("vouch against {removal} {list:?}"),
+            Kind::Purge { author } => format!("purge by author {}", name(author)),
         };
+        let kind = if matches!(c.kind, Kind::Content) && c.pa > 0 { format!("{kind} as {}", name(&m.w.purge_author(i))) } else { kind };
         let recv: Vec<String> = m.recv[i].iter().filter(|(n, _)| **n != X && **n != c.signer).map(|(n, t)| format!("{}@{t}", match *n { RD => "RD", RD2 => "RD2", RD3 => "RD3", _ => name(n) })).collect();
         s += &format!("  {i}: {} ts {} made {} [{}] on {}: {kind}; recv {}\n", name(&c.signer), c.ts, m.made[i], path.join(","), name(&c.on), recv.join(" "));
     }
@@ -882,8 +910,10 @@ pub fn rebuild(w: &World, keep: &[Id]) -> (World, BTreeMap<Id, Id>) {
             Kind::Addendum { removal, list } => Kind::Addendum { removal: map[removal], list: ids(list) },
             Kind::Vouch { removal, list } => Kind::Vouch { removal: map[removal], list: ids(list) },
             Kind::Content => Kind::Content,
+            Kind::Purge { author } => Kind::Purge { author: *author },
         };
-        out.push(c.signer, c.ts, &c.path, c.on, kind);
+        let j = out.push(c.signer, c.ts, &c.path, c.on, kind);
+        out.authored(j, c.pa);
     }
     (out, map)
 }
@@ -912,14 +942,14 @@ pub fn one_reading_relabelled(w: &World, rules: &Rules, v: &View, rd: &Reading) 
     let m = |s: &Set| s.iter().map(|i| map[i]).collect::<Set>();
     let v2 = View { held: m(&v.held), leaves: v.leaves.clone(), trust: m(&v.trust) };
     let r2 = judge(&w2, rules, &v2);
-    r2.applied == m(&rd.applied) && r2.valid == m(&rd.valid) && r2.dropped == m(&rd.dropped) && r2.voided == m(&rd.voided) && r2.roles == rd.roles
+    r2.applied == m(&rd.applied) && r2.valid == m(&rd.valid) && r2.purged == m(&rd.purged) && r2.dropped == m(&rd.dropped) && r2.voided == m(&rd.voided) && r2.roles == rd.roles
 }
 
 /// Whether the reading without `x` held is `rd`, `x` aside.
 pub fn no_effect(w: &World, rules: &Rules, v: &View, rd: &Reading, x: Id) -> bool {
     let o = judge(w, rules, &v.clone().without(&[x]));
     let less = |s: &Set| s.iter().copied().filter(|&i| i != x).collect::<Set>();
-    o.applied == less(&rd.applied) && o.valid == less(&rd.valid) && o.roles == rd.roles
+    o.applied == less(&rd.applied) && o.valid == less(&rd.valid) && o.purged == less(&rd.purged) && o.roles == rd.roles
 }
 
 /// The held lowerings the reading does not apply that it neither drops nor voids, and that are
@@ -1111,7 +1141,7 @@ pub fn check(m: &Sim, rules: &Rules, st: &mut Stats) {
                 Kind::Content if c.signer == M => !m_cut() && (c.ts == 1 || s.mint == 2),
                 Kind::Edge { holder, .. } if c.signer == M => *holder != M || (s.mint == 1 && !m_cut()),
                 // through A2 on T1 where B removed A2 from T1 (K's, or X's as a member of A2)
-                Kind::Content if m.r3.is_some() && w.hops(i).contains(&(A2, T1)) => {
+                Kind::Content | Kind::Purge { .. } if m.r3.is_some() && w.hops(i).contains(&(A2, T1)) => {
                     let r3 = m.r3.unwrap();
                     !(c.signer == K && x_removed_a2) && (s.regrant && b_admin && c.signer == K)
                         || (c.ts < REMOVAL
@@ -1119,7 +1149,10 @@ pub fn check(m: &Sim, rules: &Rules, st: &mut Stats) {
                             && (c.signer == K || m.made[i] < REMOVAL)
                             && (in_r3(i) || [H, N5].iter().any(|&a| m.sync.get(&a).is_some_and(|u| u.contains(&c.on)) && wrote(a) && m.got(i, a, REMOVAL) && m.recv[r3].contains_key(&a))))
                 }
-                Kind::Content if honest_now => stands(c.signer) && !(c.signer == K && x_removed_a2),
+                Kind::Content | Kind::Purge { .. } if honest_now => stands(c.signer) && !(c.signer == K && x_removed_a2),
+                // X's purge before the theft: kept by H's list alone (an addendum vouches for no
+                // purge request)
+                Kind::Purge { .. } => in_r(i),
                 Kind::Content => {
                     in_r(i)
                         || [H, B, N5, K].iter().any(|&a| {
@@ -1144,6 +1177,33 @@ pub fn check(m: &Sim, rules: &Rules, st: &mut Stats) {
                 if !rd.shows(i) {
                     st.fail("liveness", m, format!("node {n}: commit {i} does not show"));
                 }
+            }
+        }
+        // purge: a held delta is purged iff a purge request standing by the story (an honest one
+        // the reading holds valid, liveness gating those it wants, or the thief's along [A2]
+        // where X keeps writing A2) names it and its chain holds
+        // the purge author it names (notes/write-path-design.md §1, What a purger must hold)
+        if !heard_lowering {
+            let x_right = |i: Id| w.commits[i].signer == X && m.thief.contains_key(&i) && x_keeps_a2 && w.commits[i].path == [A2] && !(m.r3.is_some() && !(s.regrant && b_admin));
+            // what the requests in `reqs` purge, by the story's reading of the rule
+            let named = |reqs: &[Id]| -> Set {
+                v.held
+                    .iter()
+                    .copied()
+                    .filter(|&d| {
+                        matches!(w.commits[d].kind, Kind::Content)
+                            && reqs.iter().any(|&q| {
+                                let Kind::Purge { author } = w.commits[q].kind else { return false };
+                                w.commits[q].on == w.commits[d].on && w.commits[d].ts < w.commits[q].ts && w.purge_author(d) == author && w.chain(q).contains(&author)
+                            })
+                    })
+                    .collect()
+            };
+            let reqs = |thief: bool| -> Vec<Id> { v.held.iter().copied().filter(|&q| matches!(w.commits[q].kind, Kind::Purge { .. }) && ((!m.hostile(q) && rd.valid.contains(&q)) || (thief && x_right(q)))).collect() };
+            let (least, most) = (named(&reqs(false)), named(&reqs(true)));
+            st.count("purge");
+            if !(least.is_subset(&rd.purged) && rd.purged.is_subset(&most)) {
+                st.fail("purge", m, format!("node {n}: purged {:?}, wanted {least:?} to {most:?}", rd.purged));
             }
         }
     }
@@ -1229,7 +1289,7 @@ pub fn check(m: &Sim, rules: &Rules, st: &mut Stats) {
     for &i in n6.0.held.intersection(&rd3.0.held) {
         if [T1, D1].contains(&w.commits[i].on) {
             st.count("alike");
-            if n6.1.shows(i) != rd3.1.shows(i) {
+            if n6.1.shows(i) != rd3.1.shows(i) || n6.1.purged.contains(&i) != rd3.1.purged.contains(&i) {
                 st.fail("alike", m, format!("nodes trusting nothing read commit {i} otherwise"));
             }
         }
@@ -1251,7 +1311,7 @@ pub fn check(m: &Sim, rules: &Rules, st: &mut Stats) {
             for &i in vn.held.intersection(&vo.held) {
                 if m.sync[&n].contains(&w.commits[i].on) && m.sync[&o].contains(&w.commits[i].on) {
                     st.count("alike");
-                    if rn.shows(i) != ro.shows(i) {
+                    if rn.shows(i) != ro.shows(i) || rn.purged.contains(&i) != ro.purged.contains(&i) {
                         st.fail("alike", m, format!("nodes {n} and {o} read commit {i} otherwise"));
                     }
                 }
@@ -1270,7 +1330,7 @@ pub fn random_world(i: u64, rules: &Rules) -> Sim {
         b_offline: b(&mut rng),
         sharer_x: b(&mut rng),
         n5: rng.below(4) as u8,
-        x_role: rng.below(4) as u8,
+        x_role: rng.below(5) as u8,
         x_role_seen: b(&mut rng),
         x_a2: rng.below(5) as u8,
         b_side_x: rng.below(4) == 0,
@@ -1307,7 +1367,7 @@ pub fn random(n: u64, rules: &Rules) -> Stats {
 /// removal (stamped before, an `early` move is made at 5, heard before the removal); `mint` and
 /// `x_first` as one dimension (none, M naming H, M naming timed B, X removing H first). `i` in
 /// `0..FAMILY`.
-pub const FAMILY: usize = 2 * 2 * 2 * 2 * 4 * 4 * 2 * 5 * 2 * 2 * 4 * MOVES * 2;
+pub const FAMILY: usize = 2 * 2 * 2 * 2 * 4 * 5 * 2 * 5 * 2 * 2 * 4 * MOVES * 2;
 
 pub fn family(mut i: usize, rules: &Rules) -> Sim {
     let mut take = |n: usize| {
@@ -1321,7 +1381,7 @@ pub fn family(mut i: usize, rules: &Rules) -> Sim {
         b_offline: take(2) == 1,
         sharer_x: take(2) == 1,
         n5: take(4) as u8,
-        x_role: take(4) as u8,
+        x_role: take(5) as u8,
         x_role_seen: take(2) == 1,
         x_a2: take(5) as u8,
         b_side_x: take(2) == 1,
@@ -1358,7 +1418,9 @@ pub fn family_run(rules: &Rules, stride: usize) -> Stats {
 /// `-leave` (a self-removal is never put in question), `-key-order` (the remover and vouchers
 /// keep the role writes in key order), `-audit-applied` (the audit puts in question the applied
 /// writes before it, not the held ones), `-invite-role` (an invite grant needs only a role on its
-/// path's last edge), `-admin-falls` (only a fall from admin is judged and audits). `-exh` runs the small family in place of
+/// path's last edge), `-admin-falls` (only a fall from admin is judged and audits), `-purge-any-path`
+/// (a purge request holds the author right wherever its path gives write), `-purge-contains` (a
+/// request by author matches every delta whose chain holds that author). `-exh` runs the small family in place of
 /// random worlds.
 pub fn mode_rules(mode: &str) -> Option<Rules> {
     let f = Rules::fixed();
@@ -1378,6 +1440,8 @@ pub fn mode_rules(mode: &str) -> Option<Rules> {
         "-key-order" => Rules { key_order: true, ..f },
         "-invite-role" => Rules { invite_check: false, ..f },
         "-admin-falls" => Rules { any_fall: false, ..f },
+        "-purge-any-path" => Rules { purge_chain: false, ..f },
+        "-purge-contains" => Rules { purge_exact: false, ..f },
         _ => return None,
     })
 }
