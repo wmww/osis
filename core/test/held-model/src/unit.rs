@@ -46,6 +46,7 @@
 //! store per sync ID).
 use crate::closure::{Kind, Role, Set, C, T};
 use std::cell::RefCell;
+use std::rc::Rc;
 use std::collections::{BTreeMap, BTreeSet};
 
 /// A strong as an OR-set element: the commit that added it and its target.
@@ -566,8 +567,8 @@ pub struct Net {
 
 #[derive(Clone, Debug, Default)]
 struct Memo {
-    truth: Option<(usize, [View; 2])>,
-    writers: BTreeMap<usize, (usize, [View; 2])>,
+    truth: Option<(usize, Rc<[View; 2]>)>,
+    writers: BTreeMap<usize, (usize, Rc<[View; 2]>)>,
 }
 
 impl Net {
@@ -615,28 +616,33 @@ impl Net {
     }
     /// The units writer `w` syncs: the sync IDs its things own by the views it judges by.
     pub fn units_of(&self, w: usize) -> Set {
-        self.judging(w).iter().flat_map(|v| Net::sids_of(v, &self.writers[w].syncs)).collect()
+        let (vs, r) = self.judging(w);
+        vs[r].iter().flat_map(|v| Net::sids_of(v, &self.writers[w].syncs)).collect()
     }
     /// The units keeper `k` roots at, by its side's view of every commit.
     pub fn roots(&self, k: usize) -> Set {
-        Net::sids_of(&self.truth(self.keepers[k].side), &self.keepers[k].roots)
+        Net::sids_of(&self.truths()[self.keepers[k].side as usize], &self.keepers[k].roots)
     }
     /// What every commit written says, on one side.
     pub fn truth(&self, side: u8) -> View {
+        self.truths()[side as usize].clone()
+    }
+    /// Both sides' views of every commit written.
+    fn truths(&self) -> Rc<[View; 2]> {
         let n = self.commits.len();
         let mut m = self.memo.borrow_mut();
         if m.truth.as_ref().is_none_or(|t| t.0 != n) {
             let all = (0..n).collect();
-            m.truth = Some((n, [self.side_view(&all, 0), self.side_view(&all, 1)]));
+            m.truth = Some((n, Rc::new([self.side_view(&all, 0), self.side_view(&all, 1)])));
         }
-        m.truth.as_ref().unwrap().1[side as usize].clone()
+        m.truth.as_ref().unwrap().1.clone()
     }
     /// Both sides' views of what writer `w` holds.
-    fn writer_views(&self, w: usize) -> [View; 2] {
+    fn writer_views(&self, w: usize) -> Rc<[View; 2]> {
         let has = &self.writers[w].has;
         let mut m = self.memo.borrow_mut();
         if m.writers.get(&w).is_none_or(|x| x.0 != has.len()) {
-            m.writers.insert(w, (has.len(), [self.side_view(has, 0), self.side_view(has, 1)]));
+            m.writers.insert(w, (has.len(), Rc::new([self.side_view(has, 0), self.side_view(has, 1)])));
         }
         m.writers[&w].1.clone()
     }
@@ -654,7 +660,8 @@ impl Net {
     /// another unit gives that unit's thing; else a home some held delta gives for `to`; else none.
     pub fn home(&self, w: usize, to: T) -> Option<T> {
         let wr = &self.writers[w];
-        let v = self.writer_views(w)[wr.side as usize].clone();
+        let vs = self.writer_views(w);
+        let v = &vs[wr.side as usize];
         if v.kinds[to] == Kind::Independent {
             return None;
         }
@@ -678,10 +685,7 @@ impl Net {
     pub fn deliver(&mut self, w: usize, c: C) {
         let s = &self.writers[w].syncs;
         if !self.writers[w].has.contains(&c)
-            && (0..2).any(|side| {
-                let t = self.truth(side);
-                !t.under(&self.commits[c]).is_disjoint(&Net::sids_of(&t, s))
-            })
+            && self.truths().iter().any(|t| !t.under(&self.commits[c]).is_disjoint(&Net::sids_of(t, s)))
         {
             self.writers[w].has.insert(c);
         }
@@ -698,7 +702,8 @@ impl Net {
     pub fn arrive(&mut self, w: usize, c: C) {
         self.writers[w].has.insert(c);
         let mine = self.units_of(w);
-        let under: Set = self.judging(w).iter().flat_map(|v| v.under(&self.commits[c])).filter(|u| mine.contains(u)).collect();
+        let (vs, r) = self.judging(w);
+        let under: Set = vs[r].iter().flat_map(|v| v.under(&self.commits[c])).filter(|u| mine.contains(u)).collect();
         self.act(Acts { entry_logs: under.into_iter().map(|u| (u, c)).collect(), ..Acts::default() });
     }
     pub fn deliver_all(&mut self) {
@@ -709,13 +714,13 @@ impl Net {
         }
     }
     /// The views writer `w` judges by: both sides', or with `any_side` off its own.
-    fn judging(&self, w: usize) -> Vec<View> {
-        let [a, b] = self.writer_views(w);
-        match self.writers[w].side {
-            0 if !self.rules.any_side => vec![a],
-            1 if !self.rules.any_side => vec![b],
-            _ => vec![a, b],
-        }
+    fn judging(&self, w: usize) -> (Rc<[View; 2]>, std::ops::Range<usize>) {
+        let r = match self.writers[w].side {
+            0 if !self.rules.any_side => 0..1,
+            1 if !self.rules.any_side => 1..2,
+            _ => 0..2,
+        };
+        (self.writer_views(w), r)
     }
     /// What S(g) is due by these views: its handles and its keys.
     fn due(&self, views: &[View], g: T) -> (Set, BTreeSet<(T, T)>) {
@@ -740,7 +745,8 @@ impl Net {
     /// What writer `w` does at S(g) by what it holds (design §2).
     pub fn look(&self, w: usize, g: T) -> Acts {
         let wr = &self.writers[w];
-        let views = self.judging(w);
+        let (vs, r) = self.judging(w);
+        let views = &vs[r];
         let mut a = Acts::default();
         let under = |c: C| views.iter().any(|v| v.under(&self.commits[c]).contains(&g));
         for &c in &wr.has {
@@ -839,7 +845,11 @@ impl Net {
     /// counts it released: a release racing a write is the release rule's, not a move's).
     pub fn placed(&self, c: C) -> bool {
         let holders: Vec<usize> = (0..self.writers.len()).filter(|&w| self.writers[w].has.contains(&c)).collect();
-        !holders.is_empty() && holders.iter().all(|&w| self.judging(w).iter().any(|v| !v.under(&self.commits[c]).is_empty()))
+        !holders.is_empty()
+            && holders.iter().all(|&w| {
+                let (vs, r) = self.judging(w);
+                vs[r].iter().any(|v| !v.under(&self.commits[c]).is_empty())
+            })
     }
     /// Records each commit that had an entry and has none while it is placed (`placed`).
     pub fn check_carried(&mut self, when: &str) {
@@ -884,7 +894,8 @@ impl Net {
     /// blobs; with `count` (a control) a unit stays while a kept unit lists its handle and key.
     pub fn pass(&mut self, k: usize, count: bool) {
         let kp = &self.keepers[k];
-        let t = self.truth(kp.side);
+        let ts = self.truths();
+        let t = &ts[kp.side as usize];
         let roots = self.roots(k);
         let next = if count {
             let mut kept = kp.kept.units();
@@ -936,8 +947,8 @@ impl Net {
     }
     /// The design's blobs of S(g) by every commit written: both sides' handles and keys.
     pub fn truth_blobs(&self, g: T) -> Vec<Blob> {
-        let views = [self.truth(0), self.truth(1)];
-        let (hs, ks) = self.due(&views, g);
+        let views = self.truths();
+        let (hs, ks) = self.due(&views[..], g);
         let mut out: Vec<Blob> = hs.into_iter().map(Blob::Handle).collect();
         out.extend(ks.into_iter().map(|(t, s)| Blob::Key(Key { of: t, names: s, cred: None })));
         out
@@ -946,7 +957,7 @@ impl Net {
     /// writer syncs, its entries and its blobs (each once); per keeper, its walk over those blobs
     /// with the credentials stored with them (a unit no writer syncs as it is).
     pub fn wrong(&self) -> Vec<String> {
-        let views = [self.truth(0), self.truth(1)];
+        let views = self.truths();
         let synced_units: Set = self.writers.iter().flat_map(|w| views.iter().flat_map(|v| Net::sids_of(v, &w.syncs))).collect();
         let synced = |g: T| synced_units.contains(&g);
         let mut out = vec![];

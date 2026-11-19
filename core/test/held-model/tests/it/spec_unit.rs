@@ -1288,3 +1288,564 @@ fn promotion_moves_x_and_what_x_reaches() {
     assert_eq!(holds_from(&PK, &pg, 0, false, true).0, set(&[0, 1, 2, 3]), "H -> X lists X: kept");
     assert!(f[0] > 0);
 }
+
+/// One promotion scenario over time, every `stride`-th schedule: `genesis` held by each writer a
+/// unit it syncs carries, settled; then `moves` reaching writers 0 and 1 in every order and
+/// interleaving, each logging a move at once where it arrives (`Net::arrive`, as its author does
+/// with no pass first); after each, the receiving writer visiting alone (or every writer together),
+/// writers from 2 on (each holding the moves `ticket` names, as a node granted on X holds X's
+/// sync ID) visiting, every keeper passing. Then settled. Counts: schedules, unsettled, ending
+/// wrong, with a commit lost (`Net::lost`), the most times one entry was logged, failing `end`.
+#[allow(clippy::too_many_arguments)]
+fn promo_orders(
+    kinds: &[Kind],
+    writers: &[(Set, u8)],
+    keepers: &[(Set, u8, bool)],
+    genesis: &[Commit],
+    moves: &[Commit],
+    ticket: &[usize],
+    rules: Rules,
+    stride: usize,
+    end: &dyn Fn(&Net) -> bool,
+) -> [usize; 6] {
+    let perms = permutations(moves.len());
+    let ilv = interleavings(moves.len(), moves.len());
+    let mut out = [0; 6];
+    let mut i = 0;
+    for together in [false, true] {
+        for pa in &perms {
+            for pb in &perms {
+                for il in &ilv {
+                    i += 1;
+                    if i % stride != 0 {
+                        continue;
+                    }
+                    let mut net = Net::new(kinds.to_vec(), rules, writers, keepers);
+                    net.watch = true;
+                    for c in genesis {
+                        let c = net.write(c.clone());
+                        for w in 0..writers.len() {
+                            net.deliver(w, c);
+                        }
+                    }
+                    net.settle(20, false).unwrap();
+                    let base = net.commits.len();
+                    for c in moves {
+                        net.write(c.clone());
+                    }
+                    for w in 2..writers.len() {
+                        for &m in ticket {
+                            net.writers[w].has.insert(base + m);
+                        }
+                    }
+                    let (mut ia, mut ib) = (0, 0);
+                    for &who in il {
+                        let c = if who == 0 {
+                            ia += 1;
+                            pa[ia - 1]
+                        } else {
+                            ib += 1;
+                            pb[ib - 1]
+                        };
+                        net.arrive(who, base + c);
+                        if together {
+                            net.visit_together();
+                        } else {
+                            net.visit_all(who);
+                            for w in 2..writers.len() {
+                                net.visit_all(w);
+                            }
+                        }
+                        net.pass_all(false);
+                    }
+                    let settled = net.settle(20, false).is_some();
+                    out[0] += 1;
+                    out[1] += !settled as usize;
+                    out[2] += (settled && !net.wrong().is_empty()) as usize;
+                    out[3] += !net.lost.is_empty() as usize;
+                    out[4] = out[4].max(net.inserts.values().copied().max().unwrap_or(0));
+                    out[5] += (settled && !end(&net)) as usize;
+                }
+            }
+        }
+    }
+    out
+}
+
+/// The late reader: what a reader holding only S(H)'s entries computes S(H)'s blobs to be, against
+/// the truth: it finds in S(H) alone that X moved and where.
+fn late_reader_finds(net: &Net, h: T) -> bool {
+    let mut v = View::of(&net.kinds, &net.commits, &net.entries_of(h), Unit::Reach);
+    v.p_stays = net.rules.p_stays;
+    let mut got: Vec<Blob> = blobs_of(&v, h, Member::Target, true);
+    got.sort();
+    got == net.truth_blobs(h)
+}
+
+/// Writer 2 (syncing `x` alone) holds every commit its side's truth puts under x's unit.
+fn x_alone_holds_all(net: &Net, x: T) -> bool {
+    let t = net.truth(net.writers[2].side);
+    if t.kinds[x] != Kind::Independent {
+        return true;
+    }
+    let u = t.sid(x);
+    (0..net.commits.len()).filter(|&c| t.under(&net.commits[c]).contains(&u)).all(|c| net.writers[2].has.contains(&c))
+}
+
+/// The promotion world: 0 a referrer G holding sync on H (G -> X with home H), 1 = H, 2 = X a
+/// dependent of H, 3 = Z a dependent of X (X -> Z), 4 = W another dependent of H; a body on each.
+/// Writers: 0 and 1 sync H and X; 2 syncs X alone. Keepers: of H unread and read, of G, a reader
+/// of X alone, of H on side 1.
+const OK: [Kind; 5] = [K, K, Kind::Dependent(1), Kind::Dependent(2), Kind::Dependent(1)];
+fn promo_setup() -> (Vec<Commit>, Vec<(Set, u8, bool)>) {
+    let genesis = vec![role(1, 0, Some(Role::Sync)), add(1, 2), add(2, 3), add(1, 4), addh(0, 2, 1), body(2), body(3), body(4)];
+    let keepers = vec![(set(&[1]), 0, false), (set(&[1]), 0, true), (set(&[0]), 0, false), (set(&[2]), 0, true), (set(&[1]), 1, false)];
+    (genesis, keepers)
+}
+
+/// Items (1)-(3) and (5) over time, every `stride`-th schedule of each scenario (1440 in all;
+/// a stride shares no factor with 2, 3, 5): the late writer (bodies of X and Z written by a writer
+/// lacking P, logged under S(H) where they arrive); P late with a mixed commit on X and W; a
+/// dispute (P valid on side 0 only, the writers on two sides); a promotion judged invalid (`Void`)
+/// after bodies moved. In each: settled, the stated end state, no commit carried by no store while
+/// every holder places it, no keeper losing a commit it held that its side's walk keeps (but the
+/// invalid promotion: `a_voided_promotion_strands_what_was_written_under_x`), an entry logged at
+/// most twice (once more after a change of ground), a late reader of H finding X's key and handle
+/// in S(H) alone, the writer of X alone holding every body of X's unit, the late writer's
+/// included. Controls (every 11th): the carrier rule off loses commits; P leaving S(H) leaves the
+/// late reader without X; each writer judging by its own side never settles the dispute.
+fn promotion_orders(stride: usize) {
+    let (genesis, keepers) = promo_setup();
+    let base = genesis.len();
+    let w2 = |b: u8| vec![(set(&[1, 2]), 0), (set(&[1, 2]), b), (set(&[2]), 0)];
+    let end_all = |net: &Net| late_reader_finds(net, 1) && x_alone_holds_all(net, 2);
+    let scenarios: Vec<(&str, Vec<Commit>, u8, bool)> = vec![
+        ("late writer", vec![promote(2), body(2), body(3)], 0, true),
+        ("P late, mixed", vec![promote(2), mixed(2, 4), body(4)], 0, true),
+        ("dispute", vec![sided(promote(2), 0), body(2), body(3)], 1, true),
+        ("invalid", vec![promote(2), body(2), void(2, base)], 0, false),
+    ];
+    let n = 1440 / stride;
+    for (name, moves, side, x_alone) in &scenarios {
+        let ws = if *x_alone { w2(*side) } else { w2(*side)[..2].to_vec() };
+        let end = |net: &Net| late_reader_finds(net, 1) && (!*x_alone || x_alone_holds_all(net, 2));
+        let f = promo_orders(&OK, &ws, &keepers, &genesis, moves, &[0], Rules::DESIGN, stride, &end);
+        eprintln!("{name}: (schedules, unsettled, wrong, lost, most logs of one entry, end failing) {f:?}");
+        let lost = if *name == "invalid" { f[3] } else { 0 };
+        assert_eq!(f, [n, 0, 0, lost, f[4], 0], "{name}");
+        assert!(f[4] <= 2, "{name}: {f:?}");
+    }
+    let ctl = |rules: Rules, i: usize| promo_orders(&OK, &w2(scenarios[i].2), &keepers, &genesis, &scenarios[i].1, &[0], rules, 11, &end_all);
+    let carrier = ctl(with(Rules::DESIGN, |r| r.carrier = false), 0);
+    let p_out = ctl(with(Rules::DESIGN, |r| r.p_stays = false), 0);
+    let own_side = ctl(with(Rules::DESIGN, |r| r.any_side = false), 2);
+    eprintln!("controls: carrier off {carrier:?}, P out of S(H) {p_out:?}, own side {own_side:?}");
+    assert!(carrier[3] > 0, "{carrier:?}");
+    assert!(p_out[5] > 0, "{p_out:?}");
+    assert!(own_side[1] + own_side[2] > 0, "{own_side:?}");
+}
+
+#[test]
+fn promotion_in_every_order_loses_no_body() {
+    promotion_orders(7);
+}
+
+#[test]
+#[ignore]
+fn promotion_in_every_order_loses_no_body_full() {
+    promotion_orders(1);
+}
+
+/// A promotion judged invalid strands what was written under S(X) (FAILS design §5 "a node keeping
+/// the closure unread always holds X's content under one of the two" and the open item's "moves
+/// the bodies back"). H = 0, X = 1 its dependent, H -> X; writers A and B sync both; a keeper of H.
+/// P; A writes a body of X after P, logged under S(X) alone. The void reaches B first: X is H's
+/// again by B's view, so B deletes X's key and handle at S(H) and never syncs S(X) again (no view
+/// holding the void has that sync ID); the keeper drops S(X) and holds the body nowhere. Only a
+/// node holding the body (A, once it gets the void) logs it under S(H): no node counting P invalid
+/// passes S(X), so a body only S(X)'s stores hold stays there for good.
+#[test]
+fn a_voided_promotion_strands_what_was_written_under_x() {
+    let mut net = Net::new(vec![K, d(0)], Rules::DESIGN, &[(set(&[0, 1]), 0), (set(&[0, 1]), 0)], &[(set(&[0]), 0, false)]);
+    net.watch = true;
+    net.author(0, add(0, 1));
+    let p = net.author(0, promote(1));
+    net.deliver_all();
+    net.settle(20, false).unwrap();
+    let sx = 2 + p;
+    assert_eq!(net.keepers[0].kept.units(), set(&[0, sx]));
+    let b = net.author_logs(0, body(1));
+    assert_eq!(net.entries.iter().filter(|e| e.1 == b).collect::<Vec<_>>(), vec![&(sx, b)]);
+    net.pass_all(false);
+    assert!(net.keepers[0].holds.contains(&b));
+    let v = net.write(void(1, p));
+    net.arrive(1, v);
+    net.visit_all(1);
+    net.pass_all(false);
+    assert!(!net.units_of(1).contains(&sx), "B no longer syncs S(X)");
+    assert!(!net.writers[1].has.contains(&b), "B never passed S(X) for it");
+    assert_eq!(net.keepers[0].kept.units(), set(&[0]));
+    assert!(!net.keepers[0].holds.contains(&b) && net.entries.contains(&(sx, b)), "held at S(X) alone, which the keeper dropped");
+    assert!(!net.lost.is_empty());
+    // A, holding the body, gets the void: it logs the body under S(H).
+    net.arrive(0, v);
+    net.settle(20, false).unwrap();
+    assert!(net.wrong().is_empty(), "{:?}", net.wrong());
+    assert!(net.keepers[0].holds.contains(&b));
+    assert!(net.entries.contains(&(sx, b)), "S(X)'s copy stays: nobody passes S(X)");
+}
+
+/// Finding 1's state from a promotion judged invalid (issues/unit-dependent-holder.md): H = 0, X =
+/// 1 its dependent, Y = 2 a dependent of X; H -> X -> Y; X promoted, then Y (its mint admin now
+/// independent, spec/permissions.md §3). The keeper of H enters X and Y. The void of X's promotion
+/// makes X dependent again while Y stays independent with X, a dependent of H's unit, on its
+/// step: S(H) holds Y's key and handle; a reader of H derives X's sync secret (it knows X's tid)
+/// and keeps Y; the keeper enters Y only by the key's first credential and loses Y at Y's next
+/// rotation. Without the void the keeper keeps Y through the rotation; an admin making X
+/// independent again (the SHOULD of spec/permissions.md §3) gives it back.
+#[test]
+fn an_invalid_promotion_leaves_a_dependent_holder() {
+    for voided in [true, false] {
+        let mut net = Net::new(vec![K, d(0), d(1)], Rules::DESIGN, &[(set(&[0, 1, 2]), 0)], &[(set(&[0]), 0, false), (set(&[0]), 0, true)]);
+        net.author(0, add(0, 1));
+        net.author(0, add(1, 2));
+        let px = net.author(0, promote(1));
+        net.author(0, promote(2));
+        net.author(0, body(2));
+        net.settle(20, false).unwrap();
+        assert_eq!(net.keepers[0].kept.units().len(), 3);
+        if voided {
+            net.author(0, void(1, px));
+            net.settle(20, false).unwrap();
+            let t = net.truth(0);
+            assert_eq!((t.kinds[1], t.kinds[2]), (d(0), K));
+            assert!(t.on_step(1, 2) && t.in_unit[1] == Some(0), "Y's step lists X, a dependent of H's unit");
+        }
+        let units = net.keepers[0].kept.units().len();
+        assert_eq!(units, if voided { 2 } else { 3 });
+        net.author(0, rotate(2));
+        net.settle(20, false).unwrap();
+        assert!(net.wrong().is_empty(), "{:?}", net.wrong());
+        assert_eq!(net.keepers[1].kept.units().len(), units, "the reader keeps Y");
+        assert_eq!(net.keepers[0].kept.units().len(), if voided { 1 } else { 3 }, "voided {voided}");
+        if voided {
+            net.author(0, promote(1));
+            net.settle(20, false).unwrap();
+            assert_eq!(net.keepers[0].kept.units().len(), 3, "X independent again");
+        }
+    }
+}
+
+/// Forked promotions (spec/sync-ids.md §2: two admins making X independent at once each record a
+/// sync ID; both stand, X's sync ID is the greatest it owns). H = 0, X = 1 its dependent, H -> X;
+/// writers A and B sync both, C syncs X alone and holds the first promotion only (its grant came
+/// on that side). Every order of the two promotions and a body reaching A and B: settled, the
+/// stated end state (X's bodies under the greater sync ID), nothing lost, S(H) holding X's key
+/// naming both sync IDs and the keeper of H entering both. FAILS for C, a node syncing X by the
+/// lesser sync ID alone: nothing of X travels under it once a writer holds both promotions (the
+/// second promotion goes under S(H) and the greater sync ID), so C never learns the greater one
+/// and holds X frozen (design §2 Key blobs "each owned one after a forked promotion" serves nodes
+/// that enter X through a key blob, not a node granted on X alone).
+#[test]
+fn forked_promotions_name_both_sync_ids() {
+    let kinds = [K, d(0)];
+    let writers = [(set(&[0, 1]), 0), (set(&[0, 1]), 0), (set(&[1]), 0)];
+    let keepers = [(set(&[0]), 0, false), (set(&[0]), 0, true)];
+    let genesis = [add(0, 1), body(1)];
+    let (s1, s2) = (2 + 2, 2 + 3);
+    let both = |net: &Net| {
+        let want = [Blob::Key(Key { of: 1, names: s1, cred: None }), Blob::Key(Key { of: 1, names: s2, cred: None })];
+        let t = net.truth(0);
+        t.sid(1) == s2 && want.iter().all(|b| net.truth_blobs(0).contains(b)) && net.keepers[0].kept.units() == set(&[0, s1, s2]) && late_reader_finds(net, 0)
+    };
+    let f = promo_orders(&kinds, &writers, &keepers, &genesis, &[promote(1), promote(1), body(1)], &[0], Rules::DESIGN, 7, &both);
+    eprintln!("forked: (schedules, unsettled, wrong, lost, most logs of one entry, end failing) {f:?}");
+    assert_eq!(f, [205, 0, 0, 0, f[4], 0]);
+    let stuck = promo_orders(&kinds, &writers, &keepers, &genesis, &[promote(1), promote(1), body(1)], &[0], Rules::DESIGN, 7, &|n| x_alone_holds_all(n, 1));
+    assert_eq!(stuck[5], 205, "C never holds what the greater sync ID carries: {stuck:?}");
+    // By hand: both promotions held by A and B, then A writes a body: C holds neither.
+    let mut net = Net::new(kinds.to_vec(), Rules::DESIGN, &writers, &keepers);
+    for c in genesis {
+        net.write(c);
+    }
+    let p1 = net.write(promote(1));
+    let p2 = net.write(promote(1));
+    for w in [0, 1] {
+        for c in 0..4 {
+            net.deliver(w, c);
+        }
+    }
+    net.writers[2].has.insert(p1);
+    net.settle(20, false).unwrap();
+    let b = net.author_logs(0, body(1));
+    net.settle(20, false).unwrap();
+    assert!(net.wrong().is_empty(), "{:?}", net.wrong());
+    assert_eq!(net.units_of(2), set(&[s1]));
+    assert!(!net.writers[2].has.contains(&p2) && !net.writers[2].has.contains(&b));
+    assert!(!net.entries.contains(&(s1, p2)), "nothing names S(X2) under S(X1)");
+}
+
+/// What the carrier rule can promise against a hostile writer of S(H): nothing beyond the next
+/// honest visit. It binds honest writers; a hostile one deletes X's bodies at S(H) before any
+/// carrier exists, as it may delete any entry of S(H) (a bounded writer), and the bodies are
+/// carried by no store until an honest writer holding them visits: it logs them under S(X) (and
+/// deletes nothing more). A body only stores held is gone, as for any unit.
+#[test]
+fn a_hostile_writer_deletes_before_a_carrier() {
+    let mut net = Net::new(vec![K, d(0)], Rules::DESIGN, &[(set(&[0, 1]), 0)], &[(set(&[0]), 0, false)]);
+    net.watch = true;
+    net.author(0, add(0, 1));
+    let b = net.author(0, body(1));
+    net.settle(20, false).unwrap();
+    assert!(net.entries.contains(&(0, b)));
+    let p = net.author_logs(0, promote(1));
+    // Before any visit of S(X): the hostile deletion.
+    net.entries.remove(&(0, b));
+    net.check_carried("after the hostile delete");
+    assert!(!net.lost.is_empty());
+    net.settle(20, false).unwrap();
+    assert!(net.wrong().is_empty(), "{:?}", net.wrong());
+    assert!(net.entries.contains(&(2 + p, b)) && !net.entries.contains(&(0, b)));
+}
+
+/// A removal on its way while X is promoted (item 5): 0 = W holds read on H = 1 and references H
+/// and X (home H), X = 2 a dependent of H; writers A (syncing W too: the removal travels under
+/// S(W)) and B sync H and X, a third syncs W. The removal (W's grant on H gone, with H's rotation),
+/// the promotion and a body of X written after both reach A and B in every order of each (A and B
+/// alternating). After every step a keeper and a reader of W hold no unit but W's own: the move
+/// writes no key of X under S(W), and every key of H there carries a credential the rotation made
+/// stale. With steps current in the model, the window the spec accepts (a promoter that lacks the
+/// removal boxes X to H's older keyset, spec/permissions.md §3 Own secrets add only) is not
+/// modelled.
+#[test]
+fn a_removed_holder_gains_nothing_by_the_move() {
+    let kinds = [K, K, d(1)];
+    let writers = [(set(&[0, 1, 2]), 0), (set(&[1, 2]), 0), (set(&[0]), 0)];
+    let keepers = [(set(&[0]), 0, false), (set(&[0]), 0, true)];
+    let genesis = [role(1, 0, Some(Role::Read)), add(0, 1), addh(0, 2, 1), add(1, 2), body(2)];
+    let mut runs = 0;
+    for pa in permutations(3) {
+        for pb in permutations(3) {
+            let mut net = Net::new(kinds.to_vec(), Rules::DESIGN, &writers, &keepers);
+            net.watch = true;
+            for c in genesis.iter().cloned() {
+                let c = net.write(c);
+                for w in 0..3 {
+                    net.deliver(w, c);
+                }
+            }
+            net.settle(20, false).unwrap();
+            assert_eq!(net.keepers[1].kept.units(), set(&[0, 1]));
+            let base = net.commits.len();
+            for c in [role(1, 0, None), promote(2), body(2), rotate(1)] {
+                net.write(c);
+            }
+            for i in 0..6 {
+                let (who, m) = if i % 2 == 0 { (0, pa[i / 2]) } else { (1, pb[i / 2]) };
+                net.arrive(who, base + m);
+                if m == 0 {
+                    net.arrive(who, base + 3);
+                }
+                net.visit_all(who);
+                net.visit_all(2);
+                net.pass_all(false);
+                assert!(net.keepers.iter().all(|k| k.kept.units() == set(&[0])), "{pa:?} {pb:?} step {i}: {:?}", net.keepers);
+            }
+            net.deliver_all();
+            net.settle(20, false).unwrap();
+            assert!(net.wrong().is_empty() && net.lost.is_empty(), "{:?} {:?}", net.wrong(), net.lost);
+            runs += 1;
+        }
+    }
+    assert_eq!(runs, 36);
+}
+
+/// Work at a promotion (item 6), at n and 10n: G = 0 (sync on H, referencing X and a member with
+/// home H), H = 1 with n member dependents each with a body, X = 2 a dependent of H with n bodies
+/// and a dependent Z it references, with a body. Promoting X: S(X) gains one entry per commit of
+/// X's subtree and P; S(H) loses those and gains P; S(H) gains X's key and handle; S(X) and S(G)
+/// change no blob and S(G) no entry. Nothing per member, nothing in the referrer.
+#[test]
+fn work_at_a_promotion_counts() {
+    let mut rows = vec![];
+    for n in [5, 50] {
+        let z = 3 + n;
+        let mut kinds = vec![K, K, d(1)];
+        kinds.extend((0..n).map(|_| d(1)));
+        kinds.push(d(2));
+        let mut net = Net::new(kinds, Rules::DESIGN, &[(set(&[0, 1, 2]), 0)], &[(set(&[0]), 0, false)]);
+        for c in [role(1, 0, Some(Role::Sync)), add(1, 2), add(2, z), addh(0, 2, 1), addh(0, 3, 1), body(z)] {
+            net.author(0, c);
+        }
+        for m in 3..3 + n {
+            net.author(0, add(1, m));
+            net.author(0, body(m));
+            net.author(0, body(2));
+        }
+        net.settle(20, false).unwrap();
+        let (entries, store) = (net.entries.clone(), net.store.clone());
+        let p = net.author(0, promote(2));
+        net.settle(20, false).unwrap();
+        assert!(net.wrong().is_empty(), "{:?}", net.wrong());
+        let sx = net.kinds.len() + p;
+        let x_commits = (0..p).filter(|&c| net.commits[c].on == 2 || net.commits[c].on == z).count();
+        let ediff = |g: T| entries.symmetric_difference(&net.entries).filter(|e| e.0 == g).count();
+        let bdiff = |g: T| {
+            let a: BTreeSet<(usize, Blob)> = store.iter().filter(|(k, _)| k.0 == g).map(|(k, b)| (k.1, *b)).collect();
+            let b: BTreeSet<(usize, Blob)> = net.store.iter().filter(|(k, _)| k.0 == g).map(|(k, b)| (k.1, *b)).collect();
+            a.symmetric_difference(&b).count()
+        };
+        let row = [ediff(sx), ediff(1), ediff(0), bdiff(sx), bdiff(1), bdiff(0)];
+        assert_eq!(row, [x_commits + 1, x_commits + 1, 0, 0, 2, 0], "n {n}");
+        assert_eq!(net.keepers[0].kept.units(), set(&[0, 1, sx]));
+        rows.push((n, x_commits, row));
+    }
+    eprintln!("promotion work (n, commits of X's subtree, [S(X) entries, S(H) entries, S(G) entries, S(X) blobs, S(H) blobs, S(G) blobs]): {rows:?}");
+}
+
+/// P1 with promotions (item 2): 300 random static worlds of `random_static` with dependents
+/// promoted (each whose mint admin is independent or promoted, at random): every reader of a unit
+/// computes the same unit and targets whatever else it reads. Control `Unit::Held` fails.
+#[test]
+fn p1_with_promotions() {
+    let mut r = Rng::new(0);
+    let mut f = [0; 5];
+    for _ in 0..300 {
+        let (kinds, mut cs) = random_static(&mut r, false);
+        let mut promoted = Set::new();
+        for x in 4..8 {
+            if let Kind::Dependent(a) = kinds[x] {
+                if (kinds[a] == K || promoted.contains(&a)) && r.chance(40) {
+                    promoted.insert(x);
+                    cs.push(promote(x));
+                    cs.push(body(x));
+                }
+            }
+        }
+        for (a, x) in f.iter_mut().zip(p1_row(&kinds, &cs)) {
+            *a += x;
+        }
+    }
+    eprintln!("p1 with promotions, random of 300: {f:?}");
+    assert_eq!(f[..2], [0; 2], "{f:?}");
+    assert!(f[2] > 0, "{f:?}");
+}
+
+/// A random history with promotions: 4 independent things and 0's dependent 4, 4's dependent 5,
+/// 1's dependent 6, 2's dependent 7; 2 or 3 writers syncing random things, each writing bodies,
+/// strongs, removes and grants on what it syncs (logged where they are written), promoting a
+/// dependent whose mint admin it counts independent, with `voids` sometimes voiding a promotion it
+/// holds, with `forks` a third of the commits valid on their writer's side alone; deliveries,
+/// single and simultaneous visits, keeper passes (of 0 on each side, unread and read). Then
+/// everything delivered and settled.
+fn random_promo(r: &mut Rng, rules: Rules, forks: bool, voids: bool) -> Net {
+    let kinds = vec![K, K, K, K, d(0), d(4), d(1), d(2)];
+    let writers: Vec<(Set, u8)> = (0..2 + r.below(2))
+        .map(|i| {
+            let mut s: Set = (0..8).filter(|_| r.chance(50)).collect();
+            s.insert(r.below(4) as T);
+            // A writer of H syncs what is promoted out of H's unit (its walk enters it: §5).
+            let sub: Vec<T> = (4..8).filter(|&x| s.contains(&ind(&kinds, x))).collect();
+            s.extend(sub);
+            (s, if forks { (i % 2) as u8 } else { 0 })
+        })
+        .collect();
+    let mut net = Net::new(kinds, rules, &writers, &[(set(&[0]), 0, false), (set(&[0]), 0, true), (set(&[0]), 1, false)]);
+    net.watch = true;
+    for _ in 0..40 {
+        let w = r.below(net.writers.len() as u64) as usize;
+        let units = net.units_of(w);
+        let v = net.side_view(&net.writers[w].has, net.writers[w].side);
+        let mine: Vec<T> = (0..8).filter(|&x| v.in_unit[x].is_some_and(|u| units.contains(&u)) || (v.kinds[x] == K && units.contains(&v.sid(x)))).collect();
+        let side = (forks && r.chance(33)).then_some(net.writers[w].side);
+        match r.below(12) {
+            0 | 1 if !mine.is_empty() => {
+                let (on, to) = (r.pick(&mine), r.below(8) as T);
+                let home = net.home(w, to);
+                net.author_logs(w, Commit { on, op: Op::Add { to, home }, side });
+            }
+            2 | 3 if !mine.is_empty() => {
+                let on = r.pick(&mine);
+                let also = r.chance(30).then(|| r.pick(&mine));
+                net.author_logs(w, Commit { on, op: Op::Body { also }, side });
+            }
+            4 if !mine.is_empty() => {
+                let on = r.pick(&mine);
+                let dots: Vec<Dot> = net.writers[w]
+                    .has
+                    .iter()
+                    .filter_map(|&c| match net.commits[c].op {
+                        Op::Add { to, .. } if net.commits[c].on == on => Some((c, to)),
+                        _ => None,
+                    })
+                    .collect();
+                if !dots.is_empty() {
+                    net.author_logs(w, Commit { side, ..rm(on, &[r.pick(&dots)]) });
+                }
+            }
+            5 => {
+                let ps: Vec<T> = mine.iter().copied().filter(|&x| v.kinds[x] != K && v.mint[x].is_some_and(|a| v.kinds[a] == K)).collect();
+                if !ps.is_empty() {
+                    net.author_logs(w, Commit { side, ..promote(r.pick(&ps)) });
+                }
+            }
+            6 if voids => {
+                let ps: Vec<C> = net.writers[w].has.iter().copied().filter(|&c| net.commits[c].op == Op::Promote).collect();
+                if !ps.is_empty() && r.chance(50) {
+                    let p = r.pick(&ps);
+                    net.author_logs(w, void(net.commits[p].on, p));
+                }
+            }
+            7 if !net.commits.is_empty() => {
+                let c = r.below(net.commits.len() as u64) as C;
+                net.deliver(w, c);
+            }
+            8 | 9 if !units.is_empty() => {
+                let g = r.pick(&units.iter().copied().collect::<Vec<_>>());
+                net.visit(w, g);
+            }
+            10 => net.visit_together(),
+            _ => {}
+        }
+        net.pass_all(false);
+    }
+    net.deliver_all();
+    net.settle(40, false);
+    net
+}
+
+/// Random histories with promotions, 100 per configuration: plain, forked (promotions and grants
+/// valid on one side only: disputes), with voids. Every run settles, ends in the stated end state,
+/// and (but with voids: `a_voided_promotion_strands_what_was_written_under_x`) no commit is carried
+/// by no store while every holder places it and no keeper loses a commit its walk keeps. Control:
+/// the carrier rule off loses commits.
+#[test]
+fn random_histories_with_promotions() {
+    let mut rows = vec![];
+    for (forks, voids) in [(false, false), (true, false), (false, true)] {
+        let mut r = Rng::new(0);
+        let mut f = [0; 4];
+        let mut ctl = 0;
+        for _ in 0..100 {
+            r.next();
+            let mut net = random_promo(&mut r.clone(), Rules::DESIGN, forks, voids);
+            let settled = net.settle(1, false).is_some();
+            f[0] += !settled as usize;
+            f[1] += (settled && !net.wrong().is_empty()) as usize;
+            f[2] += !net.lost.is_empty() as usize;
+            f[3] = f[3].max(net.writers.iter().map(|w| w.has.iter().filter(|&&c| net.commits[c].op == Op::Promote).count()).max().unwrap_or(0));
+            if !forks && !voids {
+                ctl += !random_promo(&mut r.clone(), with(Rules::DESIGN, |x| x.carrier = false), forks, voids).lost.is_empty() as usize;
+            }
+        }
+        rows.push((forks, voids, f, ctl));
+        assert_eq!(f[..2], [0, 0], "forks {forks} voids {voids}: {f:?}");
+        if !voids {
+            assert_eq!(f[2], 0, "forks {forks}: {f:?}");
+        }
+        if !forks && !voids {
+            assert!(ctl > 0, "carrier off must lose: {ctl}");
+        }
+    }
+    eprintln!("random with promotions of 100 (forks, voids, [unsettled, wrong, lost, most promotions held], carrier off lost): {rows:?}");
+}
