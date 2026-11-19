@@ -1321,6 +1321,30 @@ fn the_void_order_decides_the_reading() {
     assert!(once.voided == Set::from([l6, lb]) && once.role(N6, A) == Admin && once.role(H, A) == Admin);
 }
 
+/// Finding 16's mirror: the latest first voids a later write that is unapplied only through an
+/// earlier void one's drops. H grants B admin at 2 and again at 10; B removes H at 9 listing
+/// neither (it drops the first grant, its own standing: void), and at 10 listing the first (it
+/// drops only the second). Without the removal at 9 held, the removal at 10 applies. Held, the
+/// walk where it dropped the first grant leaves both removals unapplied droppers; the latest
+/// first voids the removal at 10, then the one at 9: the void write took the later removal with
+/// it. The void set whose every member is void without the others is {the removal at 9}, and in
+/// key order the removal at 9 is void before the one at 10 is judged: either gives the reading
+/// without it.
+#[test]
+#[ignore = "notes/path-model-findings.md 16: the latest first, an earlier void write's drops void a later write"]
+fn repro_an_earlier_void_write_has_no_effect() {
+    let mut w = account();
+    let g1 = w.edge(H, 2, &[], A, B, Admin, &[]);
+    w.edge(H, 10, &[], A, B, Admin, &[]);
+    let early = w.edge(B, 9, &[], A, H, Gone, &[]);
+    let late = w.edge(B, 10, &[], A, H, Gone, &[g1]);
+    let without = judge(&w, &Rules::fixed(), &View::all(&w).without(&[early]));
+    assert!(without.applied.contains(&late) && without.role(H, A) == Gone);
+    let rd = fixed(&w, &[]);
+    assert_eq!(rd.voided, Set::from([early]), "{rd:?}");
+    assert_eq!(rd.applied, without.applied);
+}
+
 /// Small worlds of admins removing and granting each other (`tiny`) settle with no stray drop,
 /// within one round per held lowering (the void set only grows); the drops of a void lowering kept
 /// (control) are stray.
@@ -1637,3 +1661,4 @@ fn a_vouch_counts_only_where_its_removal_applies_in_the_first_walk() {
     let rd = fixed(&w, &[r]);
     assert!(rd.void.is_empty() && rd.role(N5, A) == Gone && rd.role(H, A) == Admin && !rd.shows(timed));
 }
+
