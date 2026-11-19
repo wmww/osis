@@ -507,11 +507,18 @@ fn rejects_bad_runs_spec_3_3() {
     rejects(&delta(vec![l(vec![i(0), i(3)])], vec![], f), &wcx(), ErrorClass::BadInput);
     let f = text_with(vec![run(i(3), 1, l(vec![l(vec![i(2), i(1)]), l(vec![l(vec![i(0), i(1)])])]), s("q"), vec![], vec![])]);
     decode_delta(&delta(vec![sess_value(osis_base::Tid::from_bytes([9; 15])), l(vec![i(1), i(4)])], vec![], f), &wcx(), &mut Interner::new(), None).unwrap();
-    // runs that overlap (here the second starts inside the first), in a snapshot
-    let runs = vec![run(i(1), 5, l(vec![]), l(vec![]), vec![], vec![]), run(i(3), 5, l(vec![]), l(vec![]), vec![], vec![])];
-    let bytes = osis_base::encode(&l(vec![Value::Bytes(vec![0; 16]), l(vec![]), l(vec![]), text_with(runs), l(vec![])]));
-    let e = decode_snapshot(&bytes, &snap_cx(), &mut Interner::new(), None).unwrap_err();
-    assert_eq!(osis_base::Classified::class(&e), ErrorClass::BadInput, "{e}");
+    // runs that overlap (the second starts inside the first, or lies within it), in a snapshot
+    // of a typed text that decodes with one run
+    let Value::List(mut top) = osis_base::decode(&snapshot_bytes(&typed("abcde").1), &osis_base::Limits::DEFAULT).unwrap() else { panic!("snapshot") };
+    let mk = |at: i64, n: i64, cs: &str| run(l(vec![i(1), i(at)]), n, l(vec![i(0), l(vec![l(vec![i(1), i(n)])])]), s(cs), vec![], vec![]);
+    for (runs, ok) in [(vec![mk(1, 5, "abcde")], true), (vec![mk(1, 5, "abcde"), mk(3, 3, "cde")], false), (vec![mk(1, 5, "abcde"), mk(2, 1, "b")], false)] {
+        top[3] = text_with(runs);
+        let r = decode_snapshot(&osis_base::encode(&Value::List(top.clone())), &snap_cx(), &mut Interner::new(), None);
+        match r {
+            Ok(_) => assert!(ok, "overlapping runs accepted"),
+            Err(e) => assert!(!ok && osis_base::Classified::class(&e) == ErrorClass::BadInput, "{e}"),
+        }
+    }
 }
 
 // ---- notes/crdt.md, Worked examples (model ops, joined by this implementation)
