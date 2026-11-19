@@ -19,7 +19,8 @@ fn thing_build() -> (LocalPeer, Tid) {
     let mut m = Mutation::new();
     let t = lp.peers[0].engine.new_thing(&mut m, me);
     lp.peers[0].commit(m).unwrap();
-    lp.hold(t);
+    // peer 1 reads it: content of a thing outside a node closure waits (spec/commits.md §4)
+    lp.share(0, t);
     lp.sync_all().unwrap();
     (lp, t)
 }

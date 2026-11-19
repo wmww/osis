@@ -280,7 +280,8 @@ fn creation_record_then_the_rest_join_spec_commits_4() {
         lp.deliver(1, pk).unwrap();
     }
     let h = lp.peers[0].engine.header(&c).unwrap();
-    let pk = pks.iter().find(|p| p.id == c).unwrap();
+    // its parts on t and u, which their sync IDs carry (`only` picks them)
+    let pk = &lp.peers[0].engine.package(&c).unwrap().unwrap();
     let e = &mut lp.peers[1].engine;
     assert!(matches!(e.ingest(&only(&pk.bytes, &h, |x, a| x == t && a == "created.0"), Vec::new()).unwrap(), Ingested::Applied(_)));
     let r = e.ingest(&only(&pk.bytes, &h, |x, a| x == t && a != "created.0"), Vec::new()).unwrap();

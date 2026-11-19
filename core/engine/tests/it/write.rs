@@ -122,7 +122,15 @@ fn authority_checked_before_signing_spec_perm_1() {
     let mut m = Mutation::new();
     m.set(ta, &ak("app:x.0"), &Value::Int(2)).unwrap();
     assert!(matches!(b.commit(m), Err(osis_engine::Error::UnknownThing(_))));
-    // after receiving the thing, b still holds no role on it
+    // b, granted read and holding it (content of a thing outside its node closure waits,
+    // spec/commits.md §4), receives the thing: it still holds no write role on it
+    for id in b.engine.commit_ids() {
+        let pk = b.engine.package(&id).unwrap().unwrap();
+        a.engine.ingest(&pk.bytes, pk.blobs).unwrap();
+    }
+    a.know(&[b.engine.me()]).unwrap();
+    a.engine.grant(&ta, &b.engine.me(), &crate::common::edge(osis_base::Role::Read)).unwrap();
+    b.engine.hold(osis_base::Strong(ta)).unwrap();
     for id in a.engine.commit_ids() {
         let pk = a.engine.package(&id).unwrap().unwrap();
         b.engine.ingest(&pk.bytes, pk.blobs).unwrap();

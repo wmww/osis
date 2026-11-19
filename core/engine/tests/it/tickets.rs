@@ -190,8 +190,9 @@ fn a_ticket_lookup_reads_the_targets_tickets_alone_at_n_and_10n() {
 
 // spec/data-model.md §8 Tickets, spec/sync-set.md §2 (What a held ticket does): a ticket lets its holder sync
 // the target from a strong on. Placed by hand in a thing account 1 holds (no inbox), before any
-// of T's commits: a read ticket's sync ID is synced at once and, given T's commits sealed, T
-// reads; a sync ticket's is synced and T stays unread; one sealed to account 2 syncs nothing.
+// of T's commits: a read ticket's sync ID is synced at once and, given T's commits sealed and the
+// role commits its fire carries, T reads; a sync ticket's is synced and T stays unread; one
+// sealed to account 2 syncs nothing.
 #[test]
 fn a_ticket_enters_its_target_at_a_strong_spec_sync_set_2() {
     for arm in ["read", "sync", "sealed to another"] {
@@ -225,9 +226,17 @@ fn a_ticket_enters_its_target_at_a_strong_spec_sync_set_2() {
         // the ticket does not open: it comes as the record blob sync logs (spec/permissions.md §4)
         let rec = lp.peers[0].engine.core.created(&t).cloned().unwrap();
         lp.peers[1].engine.learn_records(vec![rec]).unwrap();
+        // the holder's ticket fire carries T's role commits (spec/sync-inbox.md §5 Carried
+        // commits): on its ticket's word alone a thing holds no data (spec/commits.md §4 Outside
+        // the node closure), its content applying once they make it independent here
+        if arm != "sealed to another" {
+            let roles: Vec<_> = ids.iter().copied().filter(|c| lp.peers[0].engine.header(c).is_some_and(|h| h.kind == osis_commit::Kind::Role)).collect();
+            crate::flows::send(&mut lp, 0, 1, &roles);
+        }
         let e1 = &mut lp.peers[1].engine;
         e1.check_closure();
         let read = e1.get(&t, &osis_base::Ak::new("t:reg.0").unwrap()).unwrap();
+        let e1 = &mut lp.peers[1].engine;
         match arm {
             "read" => assert_eq!(read, Some(Value::Str("v".into())), "{arm}"),
             "sync" => assert!(read.is_none() && e1.in_sync_things(&t).unwrap(), "{arm}: kept unread"),
