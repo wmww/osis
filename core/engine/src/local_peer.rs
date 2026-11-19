@@ -562,6 +562,22 @@ impl LocalPeer {
         osis_base::copying::cached(key, build, |(lp, t)| (lp.copy().unwrap_or_else(|e| panic!("copy of {key}: {e}")), t.clone()))
     }
 
+    /// Every other peer holding no role on `t` is granted read on it through the flow by peer
+    /// `admin`, an admin of it, and holds it (`hold`): each keeps what it receives of `t`, as only
+    /// content of a thing in the node closure applies (spec/commits.md §4 Outside the node
+    /// closure).
+    #[allow(clippy::panic)] // test harness: a grant that fails fails the test
+    pub fn share(&mut self, admin: usize, t: Tid) {
+        for j in (0..self.peers.len()).filter(|j| *j != admin) {
+            let who = self.peers[j].engine.me();
+            if self.peers[admin].engine.key_role(&t, &who).is_none() {
+                let edge = osis_schema::core_types::Edge { role: osis_base::Role::Read, until: None, invite: None, retain: false, floor: None };
+                self.peers[admin].engine.grant(&t, &who, &edge).unwrap_or_else(|e| panic!("grant {t:?}: {e}"));
+            }
+        }
+        self.hold(t);
+    }
+
     /// Every peer not holding `t` holds it from its node root (`hold_at`).
     pub fn hold(&mut self, t: Tid) {
         for i in 0..self.peers.len() {
@@ -776,6 +792,15 @@ impl LocalPeer {
     fn pass_end(&mut self, to: usize) -> Result<()> {
         let Some(p) = self.peers.get_mut(to) else { return Ok(()) };
         p.engine.settle_needs()?;
+        // a sync offers all `from` holds, a real node takes what its sync IDs carry: a delivery
+        // still waiting for a thing outside `to`'s node closure to enter, and for no record, is
+        // carried by none here (spec/commits.md §4 Outside the node closure, Pending storage):
+        // it goes as never received, offered again once a thing of it enters
+        let outside: Vec<CommitId> = self.memo.in_pass.get(&to).into_iter().flatten().map(|(_, id, _)| *id).filter(|id| p.engine.core.ix.pend_keys.get(id).is_some_and(|w| w.iter().any(|w| matches!(w, crate::apply::Wake::Enters(_))) && !w.iter().any(|w| matches!(w, crate::apply::Wake::Record(_))))).collect();
+        for id in outside {
+            p.engine.forget_pending(&id)?;
+            p.discarded.retain(|d| d.commit != id);
+        }
         let gone: Vec<(u64, Vec<Tid>)> = self.memo.in_pass.remove(&to).unwrap_or_default().into_iter().filter(|(_, id, on)| !p.engine.core.ix.pending.contains_key(id) && !p.engine.holds_whole(id) && !on.iter().any(|t| p.engine.closure_holds(t))).map(|(h, _, on)| (h, on)).collect();
         let needed = p.needed(gone.iter().flat_map(|(_, on)| on.iter()))?;
         for (hash, on) in gone {
