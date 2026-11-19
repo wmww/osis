@@ -1100,7 +1100,7 @@ fn a_backdated_leave_undoes_nothing_the_removed_node_made() {
 // ---- The searches at small size ----
 
 fn assert_holds(st: &Stats, what: &str) {
-    for k in ["safety", "liveness", "alike", "removal kept", "removal", "own path", "admin", "stray"] {
+    for k in ["safety", "liveness", "alike", "removal kept", "removal", "own path", "admin", "stray", "untrusted", "dispute"] {
         assert!(st.checked.get(k).is_some_and(|n| *n > 0), "{what}: no {k} check ran");
     }
     assert!(st.failures() == 0, "{what}: {:?}\n{:?}", st.fails, st.first);
@@ -1380,4 +1380,23 @@ fn void_rounds_grow_with_a_partys_writes() {
     // grows with the square of the party's writes
     assert_eq!((small.0, large.0), (20, 200), "{small:?} {large:?}");
     assert!(large.1 >= 80 * small.1, "{small:?} {large:?}");
+}
+
+/// A node trusting nothing (notes/path-model-findings.md, To model next 3): X backdates a grant
+/// of admin until 7 to H, then removes H at 7, listing its own and B's grants. In the plain walk H's edge is timed at its removal
+/// of X, so the removal (naming no standing admin) is refused, and X's removal of H applies: the
+/// node is shown H's removal as a dispute, never a silent loss, and trusting it gives the
+/// members' reading.
+#[test]
+fn a_node_trusting_nothing_is_shown_the_removal_as_a_dispute() {
+    let (mut w, gx, gb) = paired();
+    let tg = w.edge(X, 4, &[], A, H, Admin, &[]);
+    w.set_until(tg, 7);
+    let r = w.edge(H, 6, &[], A, X, Gone, &[]);
+    let rx = w.edge(X, 7, &[], A, H, Gone, &[gx, gb]);
+    let plain = fixed(&w, &[]);
+    assert!(!plain.applied.contains(&r) && plain.applied.contains(&rx) && plain.stray.is_empty());
+    assert_eq!(disputes(&w, &Rules::fixed(), &View::all(&w)), vec![r]);
+    let rd = fixed(&w, &[r]);
+    assert!(rd.void.is_empty() && !rd.shows(tg) && !rd.shows(rx) && rd.role(H, A) == Admin && rd.role(X, A) == Gone);
 }

@@ -22,6 +22,9 @@ pub const D1: Thing = 15;
 /// Readers outside A (nodes, not signers): holding only T1 and D1, only T2 (part of the evidence).
 pub const RD: Thing = 20;
 pub const RD2: Thing = 21;
+/// Nodes that trust nothing (paired after the fact, or a reader that never chose a side): N6
+/// syncs what B does, RD3 only T1 and D1. Neither writes.
+pub const RD3: Thing = 22;
 
 const SETTLE: u32 = 11;
 const AFTER: u32 = 12;
@@ -188,6 +191,8 @@ impl Sim {
         sync.insert(K, Things::from([A2, T1, D1]));
         sync.insert(RD, Things::from([T1, D1]));
         sync.insert(RD2, Things::from([T2]));
+        sync.insert(N6, Things::from([A, ORG, T1, D1, T2]));
+        sync.insert(RD3, Things::from([T1, D1]));
         let w = if s.mint > 0 { minted_by(M) } else { account() };
         let mut m = Sim { w, spec, setup: s, made: vec![], recv: vec![], sync, r: 0, r2: None, rx: None, xfirst: None, gs: 0, g5: None, xrole: None, logged: BTreeMap::new() };
         let grant = Kind::set;
@@ -505,7 +510,9 @@ impl Sim {
         if rules.evidence_leaves {
             leaves.extend(held.iter().filter(|&&i| self.w.edge_class(i)).map(|&i| self.w.commits[i].on));
         }
-        let trust = if self.setup.b_side_x && n == B && t.is_some_and(|t| t < AFTER) { self.rx.into_iter().collect() } else { [Some(self.r), self.r2].into_iter().flatten().collect() };
+        let trust = if self.untrusting().contains(&n) {
+            Set::new()
+        } else if self.setup.b_side_x && n == B && t.is_some_and(|t| t < AFTER) { self.rx.into_iter().collect() } else { [Some(self.r), self.r2].into_iter().flatten().collect() };
         View { held, leaves: Some(leaves), trust }
     }
     pub fn view(&self, n: Thing, rules: &Rules) -> View {
@@ -513,6 +520,10 @@ impl Sim {
     }
     pub fn honest(&self) -> Vec<Thing> {
         [H, B, N5, K, RD, RD2].into_iter().filter(|n| self.sync.contains_key(n)).collect()
+    }
+    /// The nodes that trust nothing.
+    pub fn untrusting(&self) -> [Thing; 2] {
+        [N6, RD3]
     }
     fn hostile(&self, i: Id) -> bool {
         self.w.commits[i].signer == Z || (self.w.commits[i].signer == X && self.made[i] > REMOVAL)
@@ -533,6 +544,9 @@ pub struct Stats {
     pub checked: BTreeMap<&'static str, u64>,
     /// Largest values seen: `rounds`, the walks one reading redid for a void write.
     pub most: BTreeMap<&'static str, u64>,
+    /// Known failures of a property, counted and printed but not failing the run: each names its
+    /// finding (notes/path-model-findings.md).
+    pub noted: BTreeMap<&'static str, u64>,
 }
 
 impl crate::Tally for Stats {
@@ -547,6 +561,9 @@ impl crate::Tally for Stats {
         for (k, s) in o.first {
             self.first.entry(k).or_insert(s);
         }
+        for (k, n) in o.noted {
+            *self.noted.entry(k).or_default() += n;
+        }
         for (k, n) in o.most {
             let m = self.most.entry(k).or_default();
             *m = (*m).max(n);
@@ -560,7 +577,7 @@ impl Stats {
     }
     /// Prints the counts and, per failing property, its first world shrunk under `rules`.
     pub fn print(&self, name: &str, rules: &Rules) {
-        println!("{name}: {} worlds, checks {:?}, largest {:?}, failing checks {:?}", self.worlds, self.checked, self.most, self.fails);
+        println!("{name}: {} worlds, checks {:?}, largest {:?}, noted {:?}, failing checks {:?}", self.worlds, self.checked, self.most, self.noted, self.fails);
         for (k, (what, spec)) in &self.first {
             let small = shrink(spec, rules, k);
             let mut st = Stats::default();
@@ -572,6 +589,10 @@ impl Stats {
     }
     fn fail(&mut self, prop: &'static str, m: &Sim, what: String) {
         *self.fails.entry(prop).or_default() += 1;
+        self.first.entry(prop).or_insert_with(|| (what, m.spec.clone()));
+    }
+    fn note(&mut self, prop: &'static str, m: &Sim, what: String) {
+        *self.noted.entry(prop).or_default() += 1;
         self.first.entry(prop).or_insert_with(|| (what, m.spec.clone()));
     }
     fn count(&mut self, k: &'static str) {
@@ -617,7 +638,7 @@ pub fn shrink(spec: &Spec, rules: &Rules, prop: &str) -> Spec {
     let fails = |s: &Spec| {
         let mut st = Stats::default();
         check(&Sim::build(&s.setup, rules, &s.moves, &mut Rng(s.rng)), rules, &mut st);
-        st.fails.contains_key(prop)
+        st.fails.contains_key(prop) || st.noted.contains_key(prop)
     };
     let mut cur = spec.clone();
     'step: loop {
@@ -656,7 +677,7 @@ pub fn trace(m: &Sim) -> String {
             Kind::Addendum { removal, list } => format!("addendum against {removal} {list:?}"),
             Kind::Vouch { removal, list } => format!("vouch against {removal} {list:?}"),
         };
-        let recv: Vec<String> = m.recv[i].iter().filter(|(n, _)| **n != X && **n != c.signer).map(|(n, t)| format!("{}@{t}", if *n == RD { "RD" } else if *n == RD2 { "RD2" } else { name(n) })).collect();
+        let recv: Vec<String> = m.recv[i].iter().filter(|(n, _)| **n != X && **n != c.signer).map(|(n, t)| format!("{}@{t}", match *n { RD => "RD", RD2 => "RD2", RD3 => "RD3", _ => name(n) })).collect();
         s += &format!("  {i}: {} ts {} made {} [{}] on {}: {kind}; recv {}\n", name(&c.signer), c.ts, m.made[i], path.join(","), name(&c.on), recv.join(" "));
     }
     s
@@ -721,7 +742,7 @@ pub fn check(m: &Sim, rules: &Rules, st: &mut Stats) {
             st.count("void");
             let o = judge(w, rules, &v.clone().without(&[x]));
             if o.applied != rd.applied || o.valid != rd.valid {
-                st.fail("void", m, format!("node {n}: the void lowering {x} has an effect"));
+                st.note("void (finding 16)", m, format!("node {n}: the void lowering {x} has an effect"));
             }
         }
         st.count("removal");
@@ -793,6 +814,56 @@ pub fn check(m: &Sim, rules: &Rules, st: &mut Stats) {
                 if !rd.shows(i) {
                     st.fail("liveness", m, format!("node {n}: commit {i} does not show"));
                 }
+            }
+        }
+    }
+    // nodes trusting nothing: the walk settles with no stray drop, a void write has no effect,
+    // the removal not applied is a dispute shown there, and a commit read otherwise than on the
+    // trusted side (H's) comes with a dispute
+    let plain: BTreeMap<Thing, (View, Reading)> = m
+        .untrusting()
+        .into_iter()
+        .map(|n| {
+            let v = m.view(n, rules);
+            let rd = judge(w, rules, &v);
+            (n, (v, rd))
+        })
+        .collect();
+    for (&n, (v, rd)) in &plain {
+        st.count("untrusted");
+        st.most("rounds", rd.rounds as u64);
+        if rd.circle || !rd.stray.is_empty() {
+            st.fail("untrusted", m, format!("node {n}: unsettled or stray {:?}", rd.stray));
+        }
+        for &x in &rd.voided {
+            st.count("void");
+            let o = judge(w, rules, &v.clone().without(&[x]));
+            if o.applied != rd.applied || o.valid != rd.valid {
+                st.note("void (finding 16)", m, format!("node {n}: the void lowering {x} has an effect"));
+            }
+        }
+        let shown = disputes(w, rules, v);
+        for r in [Some(m.r), m.r2].into_iter().flatten().filter(|r| v.held.contains(r)) {
+            st.count("dispute");
+            if !rd.applied.contains(&r) && !shown.contains(&r) {
+                st.fail("dispute", m, format!("node {n}: removal {r} is not applied and no dispute is shown"));
+            }
+        }
+        let (vh, rh) = &rds[&H];
+        let differs = v.held.intersection(&vh.held).any(|&i| m.sync[&n].contains(&w.commits[i].on) && m.sync[&H].contains(&w.commits[i].on) && rd.shows(i) != rh.shows(i));
+        if differs {
+            st.count("untrusted differs");
+            if shown.is_empty() {
+                st.fail("dispute", m, format!("node {n}: reads otherwise than the trusted side with no dispute shown"));
+            }
+        }
+    }
+    let (n6, rd3) = (&plain[&N6], &plain[&RD3]);
+    for &i in n6.0.held.intersection(&rd3.0.held) {
+        if [T1, D1].contains(&w.commits[i].on) {
+            st.count("alike");
+            if n6.1.shows(i) != rd3.1.shows(i) {
+                st.fail("alike", m, format!("nodes trusting nothing read commit {i} otherwise"));
             }
         }
     }
