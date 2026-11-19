@@ -172,6 +172,9 @@ pub struct Commit {
     leave: bool,
     /// The purge author: an index into [signer, path..] (notes/write-path-design.md §1).
     pa: usize,
+    /// The commit this part belongs to: the ID of its first part (its own for a commit of one
+    /// part). A commit's parts are consecutive in key order, ordered by holder (`World::commit`).
+    cid: Id,
 }
 
 /// How role writes a removal does not list are vouched for (issues/actors-one-mechanism.md,
@@ -271,6 +274,31 @@ pub struct Rules {
     /// facts per carried commit. False (the rule, spec/permissions.md §5.2 Copies, §5.3): a valid
     /// cover's copy of a write shows it whatever the write's own validity.
     pub cover_facts: bool,
+    /// In a commit of several edge writes, a lowering's `keeps` passes over the drops of the
+    /// commit's lowerings applied before it too (spec/commits.md §2). False (control
+    /// `-own-drops`): over its own drops alone.
+    pub commit_drops: bool,
+    /// `keeps(L)` also needs the remaining admin edge L relies on (its last edge, else the named
+    /// holder's) to stay a standing admin past L's drops; else L is void. False (control
+    /// `-remains-unkept`): the last-admin rule reads the pass before L's drops alone.
+    pub remains_kept: bool,
+    /// A path's last edge (the default remaining admin) is its final hop where that joins its
+    /// last member to the thing written in one edge; a descent of two steps or more has none.
+    /// False (control `-last-any`): the edge (Ak, T), read whether or not it is a hop.
+    pub last_hop: bool,
+    /// Which held writes are dispute candidates.
+    pub candidates: Candidates,
+}
+
+/// The dispute candidates (`disputes`): held edge writes of another holder's edge giving it below
+/// admin at their `ts`, but finalizes, and of those:
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum Candidates {
+    /// Every one: self-removals (a holder thing's leave by its member) and invite grants included.
+    All,
+    /// Explicit writes only: no self-removal, and none the walk trusting it applies as an invite
+    /// grant (neither carries a frontier, so neither is ever trusted).
+    Explicit,
 }
 
 impl Rules {
@@ -295,6 +323,10 @@ impl Rules {
             purge_chain: true,
             purge_exact: true,
             cover_facts: false,
+            commit_drops: true,
+            remains_kept: false,
+            last_hop: false,
+            candidates: Candidates::All,
         }
     }
     /// The design: every fix the notes state, a removal judged in the world its list makes
@@ -319,6 +351,10 @@ impl Rules {
             purge_chain: true,
             purge_exact: true,
             cover_facts: false,
+            commit_drops: true,
+            remains_kept: false,
+            last_hop: false,
+            candidates: Candidates::All,
         }
     }
 }
@@ -360,8 +396,44 @@ impl World {
         }
         let well = all.iter().collect::<BTreeSet<_>>().len() == all.len();
         let hops = if well { all.windows(2).flat_map(|p| self.joins(p[0], p[1])).collect() } else { vec![] };
-        self.commits.push(Commit { signer, ts, path: path.to_vec(), on, kind, hops, well, leave, pa: 0 });
-        self.commits.len() - 1
+        let i = self.commits.len();
+        self.commits.push(Commit { signer, ts, path: path.to_vec(), on, kind, hops, well, leave, pa: 0, cid: i });
+        i
+    }
+    /// One commit of several edge writes on `on` along one path (spec/commits.md §2), its parts
+    /// ordered by holder. Bad input, applying nowhere, where two parts set one holder's edge, a part
+    /// is a self-removal, or a part sets an edge of the path (no lowering in such a commit is on
+    /// an edge of the path it states).
+    pub fn commit(&mut self, signer: Thing, ts: u32, path: &[Thing], on: Thing, mut parts: Vec<Kind>) -> Vec<Id> {
+        parts.sort_by_key(|k| match k {
+            Kind::Edge { holder, .. } => *holder,
+            _ => panic!("a commit of several parts carries edge writes"),
+        });
+        let ids: Vec<Id> = parts.into_iter().map(|k| self.push(signer, ts, path, on, k)).collect();
+        self.group(&ids);
+        ids
+    }
+    /// Makes `ids` (consecutive in key order) one commit, read as `commit` reads it.
+    pub fn group(&mut self, ids: &[Id]) {
+        let cid = ids[0];
+        let sets: Vec<Edge> = ids.iter().filter_map(|&i| self.sets(i)).collect();
+        let hops: BTreeSet<Edge> = ids.iter().flat_map(|&i| self.hops(i).to_vec()).collect();
+        let bad = sets.iter().collect::<BTreeSet<_>>().len() < sets.len() || ids.iter().any(|&i| self.leave(i)) || sets.iter().any(|e| hops.contains(e));
+        for &i in ids {
+            self.commits[i].cid = cid;
+            if bad {
+                self.commits[i].well = false;
+                self.commits[i].hops.clear();
+            }
+        }
+    }
+    /// The commit part `i` belongs to.
+    pub fn cid(&self, i: Id) -> Id {
+        self.commits[i].cid
+    }
+    /// The number of parts of commit `cid`.
+    pub fn parts(&self, cid: Id) -> usize {
+        self.commits.iter().filter(|c| c.cid == cid).count()
     }
     /// The mint admin of `t`: the holder of its record edge.
     fn mint_of(&self, t: Thing) -> Option<Thing> {
@@ -487,9 +559,9 @@ impl World {
             _ => false,
         }
     }
-    /// A list entry `c` names commit `j`: it is `j`, or a cover carrying `j`.
+    /// A list entry `c` names commit `j`: it is `j`'s commit, or a cover carrying `j`.
     pub fn names(&self, c: Id, j: Id) -> bool {
-        c == j || matches!(&self.commits[c].kind, Kind::Cover { carries } if carries.contains(&j))
+        self.cid(c) == self.cid(j) || matches!(&self.commits[c].kind, Kind::Cover { carries } if carries.contains(&j))
     }
     /// The honest frontier of a lowering of `edge`: every commit resting on it (through it, or a
     /// self-removal of it) that `received`.
@@ -549,6 +621,8 @@ pub struct Reading {
     pub counting: Set,
     pub vouching: Set,
     pub dropped: Set,
+    /// Commits of several parts whose own drops took their path's authority (`Walk::self_taken`).
+    pub self_taken: Set,
     /// What dropped each dropped commit: the lowering whose audit did, or the trusted write
     /// whose seeds did.
     pub dropper: BTreeMap<Id, Id>,
@@ -592,7 +666,7 @@ struct Low {
     after: Role,
 }
 
-#[derive(Default)]
+#[derive(Clone, Default)]
 struct Pass {
     state: BTreeMap<Edge, Val>,
     /// The edge as restored: the highest role each edge held since the last explicit write on it
@@ -673,6 +747,9 @@ fn need(w: &World, rules: &Rules, i: Id, e: Edge, as_invite: bool) -> Need {
 struct Walk {
     pass: Pass,
     dropped: Set,
+    /// Commits of several parts whose path, once the commit took effect in the pass that judged
+    /// a part of it, did not keep admin past the drops its parts made there.
+    self_taken: Set,
     dropper: BTreeMap<Id, Id>,
     voided: Set,
     rounds: u32,
@@ -681,12 +758,13 @@ struct Walk {
     checked: u64,
 }
 
+/// (removal, commit) pairs a counting vouch names, by commit ID.
 type Vouched = BTreeSet<(Id, Id)>;
 
 /// R's list names `j`: its frontier, in a leaf the node sees, or a counting vouch against it.
 fn listed(w: &World, v: &View, vouched: &Vouched, r: Id, j: Id) -> bool {
     let seen = v.leaves.as_ref().is_none_or(|l| l.contains(&w.commits[j].on));
-    (seen && w.in_frontier(r, j)) || vouched.contains(&(r, j))
+    (seen && w.in_frontier(r, j)) || vouched.contains(&(w.cid(r), w.cid(j)))
 }
 
 /// Control `exempt_chain`: the grants R's own authority rests on, as the held writes give them:
@@ -719,27 +797,35 @@ fn order(w: &World, held: &Set) -> Vec<Id> {
     o
 }
 
-/// Whether the last-admin rule refuses edge write `i` setting `e` to `new` against `p`.
-fn refused(w: &World, rules: &Rules, p: &Pass, i: Id, e: Edge, new: Val) -> bool {
+/// The last-admin rule for edge write `i` setting `e` to `new` against `p`: None where it refuses
+/// the write; else the remaining admin edge it relies on, where it relies on one.
+fn remains(w: &World, rules: &Rules, p: &Pass, i: Id, e: Edge, new: Val) -> Option<Option<Edge>> {
     let c = &w.commits[i];
-    let Kind::Edge { relies, adminless, .. } = &c.kind else { return false };
+    let Kind::Edge { relies, adminless, .. } = &c.kind else { return Some(None) };
     if *adminless {
-        return false;
+        return Some(None);
     }
     let old = p.state.get(&e).copied();
     match rules.last_admin {
-        LastAdmin::Off => false,
+        LastAdmin::Off => Some(None),
         LastAdmin::AnyEdge => {
-            p.at(e, c.ts) == Role::Admin && alive(new, c.ts) < Role::Admin && !p.state.keys().any(|&k| k.1 == c.on && k != e && p.at(k, c.ts) == Role::Admin)
+            let refuses = p.at(e, c.ts) == Role::Admin && alive(new, c.ts) < Role::Admin && !p.state.keys().any(|&k| k.1 == c.on && k != e && p.at(k, c.ts) == Role::Admin);
+            (!refuses).then_some(None)
         }
         LastAdmin::Named | LastAdmin::NamedTimed => {
             let timed = rules.last_admin == LastAdmin::NamedTimed;
             if !standing(old, c.ts, timed) || standing(Some(new), c.ts, timed) {
-                return false;
+                return Some(None);
             }
             let ok = |x: Edge| x != e && standing(p.state.get(&x).copied(), c.ts, timed);
-            let last = (*c.path.last().unwrap_or(&c.signer), c.on);
-            !(ok(last) || relies.is_some_and(|n| ok((n, c.on))))
+            // the last edge: the final hop where it joins Ak (the signer for an empty path) to the
+            // thing in one edge (`last_hop`; else (Ak, T) wherever it is)
+            let ak = *c.path.last().unwrap_or(&c.signer);
+            let last = if rules.last_hop { w.hops(i).last().copied().filter(|&h| h == (ak, c.on)) } else { Some((ak, c.on)) };
+            if let Some(l) = last.filter(|&l| ok(l)) {
+                return Some(Some(l));
+            }
+            relies.map(|n| (n, c.on)).filter(|&x| ok(x)).map(Some)
         }
     }
 }
@@ -757,36 +843,34 @@ enum Verdict {
 }
 
 /// Whether write `i`, applied in `p`, still holds the right its path needs at its key once the
-/// writes `gone` names are dropped: each edge of its path is read back along the applied writes
-/// setting it before `i`, latest first, skipping those gone and grants that do not keep in turn;
-/// the first left decides (a lowering or a self-removal as it stands), a record edge at the
-/// bottom. No later write is read and nothing is walked again: the cost is the setters read.
+/// writes `gone` names are dropped: each edge of its path keeps admin (`setter_keeps`). No later
+/// write is read and nothing is walked again: the cost is the setters read.
 fn keeps(w: &World, p: &Pass, gone: &dyn Fn(Id) -> bool, i: Id, memo: &mut BTreeMap<Id, bool>, checked: &mut u64) -> bool {
     if let Some(&k) = memo.get(&i) {
         return k;
     }
     let (key, ts) = (w.key(i), w.commits[i].ts);
-    let mut ok = true;
-    for &e in w.hops(i) {
-        let mut admin = None;
-        for &(k, v) in p.hist.get(&e).into_iter().flatten().rev().filter(|x| x.0 < key) {
-            *checked += 1;
-            let j = k.2;
-            if gone(j) {
-                continue;
-            }
-            if w.lowers(j).is_some() || w.leave(j) || keeps(w, p, gone, j, memo, checked) {
-                admin = Some(alive(v, ts) == Role::Admin);
-                break;
-            }
-        }
-        if !admin.unwrap_or_else(|| w.records.contains(&e)) {
-            ok = false;
-            break;
-        }
-    }
+    let ok = w.hops(i).iter().all(|&e| setter_keeps(w, p, gone, e, key, &|v| alive(v, ts) == Role::Admin, memo, checked));
     memo.insert(i, ok);
     ok
+}
+
+/// Edge `e` read back along the applied writes setting it before `key`, latest first, skipping
+/// those gone and grants that do not keep in turn: the first left decides by `accept` (a
+/// lowering or a self-removal as it stands), a record edge at the bottom.
+#[allow(clippy::too_many_arguments)]
+fn setter_keeps(w: &World, p: &Pass, gone: &dyn Fn(Id) -> bool, e: Edge, key: Key, accept: &dyn Fn(Val) -> bool, memo: &mut BTreeMap<Id, bool>, checked: &mut u64) -> bool {
+    for &(k, v) in p.hist.get(&e).into_iter().flatten().rev().filter(|x| x.0 < key) {
+        *checked += 1;
+        let j = k.2;
+        if gone(j) {
+            continue;
+        }
+        if w.lowers(j).is_some() || w.leave(j) || keeps(w, p, gone, j, memo, checked) {
+            return accept(v);
+        }
+    }
+    w.records.contains(&e)
 }
 
 /// The walk from the seeds `d0` (notes/write-path-design.md §1): edge-class commits in key
@@ -800,6 +884,7 @@ fn walk(w: &World, rules: &Rules, v: &View, d0: &Set, vouched: &Vouched) -> Walk
     let pos: BTreeMap<Id, usize> = order.iter().enumerate().map(|(k, &i)| (i, k)).collect();
     let mut dropped = d0.clone();
     let mut dropper = BTreeMap::new();
+    let mut self_taken = Set::new();
     let mut verdict: BTreeMap<Id, Verdict> = BTreeMap::new();
     let (mut rounds, mut passes, mut walked, mut checked, mut from) = (0, 0, 0, 0, 0);
     loop {
@@ -811,7 +896,40 @@ fn walk(w: &World, rules: &Rules, v: &View, d0: &Set, vouched: &Vouched) -> Walk
             p.rinv.insert(e, Role::Admin);
         }
         let mut restart = None;
+        // the commit taking effect: its ID, the pass as it stood before it (where it has several
+        // parts: whether each part applies reads it), the drops its parts made in this pass and
+        // its parts judged applied in this pass
+        let mut cur: Option<Id> = None;
+        let mut pre: Option<Pass> = None;
+        let mut cdrops = Set::new();
+        let mut judged_here: Vec<Id> = vec![];
+        // once a commit has taken effect: the pass ends where its parts dropped something
+        let mut taken = |p: &Pass, cdrops: &Set, judged_here: &[Id], cid: Id| -> Option<usize> {
+            if cdrops.is_empty() {
+                return None;
+            }
+            if !judged_here.is_empty() && w.parts(cid) > 1 {
+                let gone = |j: Id| cdrops.contains(&j);
+                if judged_here.iter().any(|&l| !keeps(w, p, &gone, l, &mut BTreeMap::new(), &mut 0)) {
+                    self_taken.insert(cid);
+                }
+            }
+            cdrops.iter().map(|j| pos[j]).min()
+        };
         for (k, &i) in order.iter().enumerate() {
+            let cid = w.cid(i);
+            if cur != Some(cid) {
+                if let Some(prev) = cur {
+                    if let Some(r) = taken(&p, &cdrops, &judged_here, prev) {
+                        restart = Some(r);
+                        break;
+                    }
+                }
+                cur = Some(cid);
+                cdrops.clear();
+                judged_here.clear();
+                pre = order.get(k + 1).is_some_and(|&n| w.cid(n) == cid).then(|| p.clone());
+            }
             if dropped.contains(&i) {
                 continue;
             }
@@ -884,9 +1002,15 @@ fn walk(w: &World, rules: &Rules, v: &View, d0: &Set, vouched: &Vouched) -> Walk
             // an explicit write: attributed to admin (spec/permissions.md §5.1 step 2); a
             // self-removal, an invite grant and a finalize are not, and audit nothing
             let explicit = !leave && !as_invite && !as_finalize;
-            if judged.is_none() && !as_invite && !as_finalize && refused(w, rules, &p, i, e, new) {
-                continue;
-            }
+            // the last-admin rule, read from the pass as it stood before the commit
+            let relied = if judged.is_none() && !as_invite && !as_finalize {
+                match remains(w, rules, pre.as_ref().unwrap_or(&p), i, e, new) {
+                    None => continue,
+                    Some(r) => r,
+                }
+            } else {
+                None
+            };
             let old = p.state.get(&e).copied().unwrap_or((Role::None, None));
             // a self-removal only lowers: no component above the grant's
             if leave && (new.0 > old.0 || old.1.is_some_and(|u| new.1.is_none_or(|n| n > u))) {
@@ -917,14 +1041,23 @@ fn walk(w: &World, rules: &Rules, v: &View, d0: &Set, vouched: &Vouched) -> Walk
                         p.applied.clone()
                     }
                 };
-                // void: its own drops would take its authority (read back from the state, before
-                // any drop is listed)
-                if rules.self_void && !keeps(w, &p, &gone, i, &mut BTreeMap::new(), &mut checked) {
-                    verdict.insert(i, Verdict::Void);
-                    continue;
+                // void: its drops, with those of its commit's lowerings applied before it
+                // (`commit_drops`), would take its authority (read back from the state, before any
+                // drop is listed), or the remaining admin it relies on (`remains_kept`)
+                let all_gone = |j: Id| gone(j) || (rules.commit_drops && cdrops.contains(&j));
+                if rules.self_void {
+                    let mut memo = BTreeMap::new();
+                    let timed = rules.last_admin == LastAdmin::NamedTimed;
+                    let kept = keeps(w, &p, &all_gone, i, &mut memo, &mut checked)
+                        && relied.is_none_or(|r| !rules.remains_kept || setter_keeps(w, &p, &all_gone, r, w.key(i), &|v| standing(Some(v), c.ts, timed), &mut memo, &mut checked));
+                    if !kept {
+                        verdict.insert(i, Verdict::Void);
+                        continue;
+                    }
                 }
                 q = before().into_iter().filter(|&j| gone(j)).collect();
                 verdict.insert(i, Verdict::Applied);
+                judged_here.push(i);
             }
             p.state.insert(e, new);
             p.inv.insert(e, *invite);
@@ -943,13 +1076,15 @@ fn walk(w: &World, rules: &Rules, v: &View, d0: &Set, vouched: &Vouched) -> Walk
             if after < before {
                 p.lows.push(Low { id: i, explicit, edge: e, before, after });
             }
-            if !q.is_empty() {
-                restart = q.iter().map(|j| pos[j]).min();
-                for j in q {
-                    dropped.insert(j);
-                    dropper.insert(j, i);
-                }
-                break;
+            for j in q {
+                dropped.insert(j);
+                dropper.insert(j, i);
+                cdrops.insert(j);
+            }
+        }
+        if restart.is_none() {
+            if let Some(prev) = cur {
+                restart = taken(&p, &cdrops, &judged_here, prev);
             }
         }
         if let Some(r) = restart {
@@ -957,7 +1092,7 @@ fn walk(w: &World, rules: &Rules, v: &View, d0: &Set, vouched: &Vouched) -> Walk
             continue;
         }
         let voided = verdict.iter().filter(|(i, x)| **x == Verdict::Void && !dropped.contains(*i)).map(|(i, _)| *i).collect();
-        return Walk { pass: p, dropped, dropper, voided, rounds, passes, walked, checked };
+        return Walk { pass: p, dropped, dropper, self_taken, voided, rounds, passes, walked, checked };
     }
 }
 
@@ -984,10 +1119,10 @@ fn counting(w: &World, rules: &Rules, wk: &Walk) -> (Set, Vouched) {
     let (mut ids, mut out) = (Set::new(), Vouched::new());
     for &i in &wk.pass.applied {
         if let Kind::Vouch { removal, list } = &w.commits[i].kind {
-            if w.key(*removal) < w.key(i) && wk.pass.applied.contains(removal) {
+            if w.key(*removal) < w.key(i) && wk.pass.applied.iter().any(|&a| w.cid(a) == w.cid(*removal)) {
                 ids.insert(i);
                 let own = |j: Id| rules.no_own_vouch && w.commits[j].signer == w.commits[i].signer;
-                out.extend(list.iter().filter(|&&j| w.edge_class(j) && w.commits[j].on == w.commits[i].on && !own(j)).map(|&j| (*removal, j)));
+                out.extend(list.iter().filter(|&&j| w.edge_class(j) && w.commits[j].on == w.commits[i].on && !own(j)).map(|&j| (w.cid(*removal), w.cid(j))));
             }
         }
     }
@@ -1217,6 +1352,7 @@ pub fn judge(w: &World, rules: &Rules, v: &View) -> Reading {
             vouching,
             applied,
             dropped: wk.dropped,
+            self_taken: wk.self_taken,
             dropper,
             void,
             voided: wk.voided,
@@ -1239,7 +1375,7 @@ fn unjustified(w: &World, rules: &Rules, v: &View, rd: &Reading) -> Set {
     for &a in &rd.counting {
         if let Kind::Vouch { removal, list } = &w.commits[a].kind {
             let own = |j: Id| rules.no_own_vouch && w.commits[j].signer == w.commits[a].signer;
-            vouched.extend(list.iter().filter(|&&j| w.edge_class(j) && w.commits[j].on == w.commits[a].on && !own(j)).map(|&j| (*removal, j)));
+            vouched.extend(list.iter().filter(|&&j| w.edge_class(j) && w.commits[j].on == w.commits[a].on && !own(j)).map(|&j| (w.cid(*removal), w.cid(j))));
         }
     }
     rd.dropped
@@ -1290,17 +1426,18 @@ fn evidence_edges(w: &World, i: Id) -> Vec<Edge> {
 }
 
 /// The evidence closure of `unit` over `avail` (notes/write-path-design.md §2): the commits in
-/// `unit`, every available edge write on an edge of a held commit's path or on the remaining
+/// `unit`, the other parts of a held commit, every available edge write on an edge of a held commit's path or on the remaining
 /// admin edge a held lowering names, every available vouch against a held removal.
 pub fn evidence(w: &World, unit: &Set, avail: &Set) -> Set {
     let mut s = unit.clone();
     loop {
         let edges: BTreeSet<Edge> = s.iter().flat_map(|&i| evidence_edges(w, i)).collect();
+        let cids: BTreeSet<Id> = s.iter().map(|&i| w.cid(i)).collect();
         let more: Vec<Id> = avail
             .iter()
             .copied()
             .filter(|i| !s.contains(i))
-            .filter(|&i| match &w.commits[i].kind {
+            .filter(|&i| cids.contains(&w.cid(i)) || match &w.commits[i].kind {
                 Kind::Edge { .. } => w.sets(i).is_some_and(|e| edges.contains(&e)),
                 Kind::Vouch { removal, .. } => s.contains(removal),
                 _ => false,

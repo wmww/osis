@@ -2068,3 +2068,45 @@ fn a_fallen_cover_takes_nothing_honest() {
     let rd = judge(&w, &Rules::fixed(), &forgot);
     assert!(rd.valid.contains(&xc) && rd.shows(b) && rd.shows(x));
 }
+
+// ---- A commit of several edge writes (spec/commits.md §2; notes/a1-spec/README.md, OPEN 10) ----
+
+/// X's edge granted by B and by N5; X removes B and N5 in one commit, listing nothing. Its parts
+/// are judged in holder order: the removal of B drops B's grant of X, N5's grant still keeping X's
+/// edge, and applies. The removal of N5 would drop N5's grant: past its own drop and the commit's
+/// earlier one X's edge has no grant left, so it is void, and X keeps admin by N5's grant, trusted
+/// or not. Control (`keeps` over each lowering's own drops alone): both apply and the commit's
+/// path ends with no authority.
+#[test]
+fn a_commit_whose_drops_together_take_its_path_applies_only_what_keeps_it() {
+    let mut w = account();
+    w.edge(H, 1, &[], A, B, Admin, &[]);
+    w.edge(H, 1, &[], A, N5, Admin, &[]);
+    let bx = w.edge(B, 2, &[], A, X, Admin, &[]);
+    let nx = w.edge(N5, 3, &[], A, X, Admin, &[]);
+    let ids = w.commit(X, 5, &[], A, vec![Kind::set(N5, Gone), Kind::set(B, Gone)]);
+    let (rb, r5) = (ids[0], ids[1]);
+    assert_eq!(w.sets(rb), Some((B, A)));
+    for t in [&[][..], &[rb]] {
+        let rd = fixed(&w, t);
+        assert!(rd.applied.contains(&rb) && rd.voided == Set::from([r5]) && rd.dropped == Set::from([bx]) && rd.self_taken.is_empty(), "{t:?} {rd:?}");
+        assert_eq!((rd.role(X, A), rd.role(B, A), rd.role(N5, A)), (Admin, Gone, Admin));
+        assert!(no_effect(&w, &Rules::fixed(), &View::all(&w).trusting(t), &rd, r5));
+    }
+    let rd = fixed_but(&w, &[], |r| r.commit_drops = false);
+    assert!(rd.applied.is_superset(&Set::from([rb, r5])) && rd.dropped == Set::from([bx, nx]) && rd.role(X, A) == Gone, "{rd:?}");
+    assert_eq!(rd.self_taken, Set::from([rb]));
+}
+
+/// A commit of several edge writes none of which may set an edge of its path, name a holder twice
+/// or be a self-removal: such a commit applies nowhere (bad input).
+#[test]
+fn a_commit_of_several_writes_on_its_own_path_applies_nowhere() {
+    let (mut w, ..) = paired();
+    let own = w.commit(X, 5, &[], A, vec![Kind::set(X, Gone), Kind::set(B, Gone)]);
+    let twice = w.commit(X, 5, &[], A, vec![Kind::set(B, Gone), Kind::set(B, Write)]);
+    let ok = w.commit(H, 5, &[], A, vec![Kind::set(B, Write), Kind::set(N5, Admin)]);
+    let rd = fixed(&w, &[]);
+    assert!(own.iter().chain(&twice).all(|i| !w.well(*i) && !rd.applied.contains(i)));
+    assert!(ok.iter().all(|i| rd.applied.contains(i)) && rd.role(B, A) == Write && rd.role(N5, A) == Admin);
+}

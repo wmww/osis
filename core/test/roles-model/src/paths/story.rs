@@ -107,8 +107,9 @@ pub struct Move {
 /// on T1 along [A2] (X's right where it keeps writing A2), by A on T1 along [A2] (an author not
 /// on its chain: no right); 46 withholds the removal from K until the settle and writes T1 after
 /// it, which K receives at once and compacts T1 carrying (an honest writer compacting before it
-/// holds the removal); 47 is X's own cover of T1, backdated, carrying its writes there.
-pub const MOVES: usize = 48;
+/// holds the removal); 47 is X's own cover of T1, backdated, carrying its writes there; 48 is X
+/// removing H and B in one commit (spec/commits.md §2), listing nothing.
+pub const MOVES: usize = 49;
 /// N5 grants H admin, standing or until just after the removal; N5 removes H; N5 demotes H; N5
 /// vouches against H's removal for X's role writes on A. Each stamped before X's removal of N5
 /// but the vouch.
@@ -116,7 +117,7 @@ pub const N5_MOVES: std::ops::Range<usize> = 30..35;
 /// The moves the thief may make at tick 5, heard by H and B before the removal (`Move::made` 5):
 /// X's removal of H, those aimed at the remover but through a made-up key, and N5's.
 pub fn early(kind: usize) -> bool {
-    matches!(kind, 11 | 23 | 24 | 27 | 28 | 29 | 35) || N5_MOVES.contains(&kind)
+    matches!(kind, 11 | 23 | 24 | 27 | 28 | 29 | 35 | 48) || N5_MOVES.contains(&kind)
 }
 
 /// What a world is built from: its setup, the thief's moves, and the receipts generator.
@@ -189,6 +190,23 @@ impl Sim {
     fn put(&mut self, c: (Thing, u32, &[Thing], Thing, Kind), made: u32, rng: &mut Rng, hostile: bool) -> Id {
         let (signer, ts, path, on, kind) = c;
         let i = self.w.push(signer, ts, path, on, kind);
+        self.deliver(i, made, rng, hostile);
+        i
+    }
+    /// One commit of several edge writes (`World::commit`), received as one.
+    fn put_parts(&mut self, c: (Thing, u32, &[Thing], Thing, Vec<Kind>), made: u32, rng: &mut Rng, hostile: bool) -> Vec<Id> {
+        let (signer, ts, path, on, parts) = c;
+        let ids = self.w.commit(signer, ts, path, on, parts);
+        self.deliver(ids[0], made, rng, hostile);
+        for _ in &ids[1..] {
+            self.made.push(made);
+            self.recv.push(self.recv[ids[0]].clone());
+        }
+        ids
+    }
+    /// Commit `i`'s receipt times.
+    fn deliver(&mut self, i: Id, made: u32, rng: &mut Rng, hostile: bool) {
+        let (signer, on) = (self.w.commits[i].signer, self.w.commits[i].on);
         self.made.push(made);
         let mut units = Things::from([on]);
         units.extend(self.logged.get(&i).into_iter().flatten());
@@ -207,7 +225,6 @@ impl Sim {
             recv.insert(n, t);
         }
         self.recv.push(recv);
-        i
     }
     pub fn got(&self, i: Id, n: Thing, by: u32) -> bool {
         self.recv[i].get(&n).is_some_and(|t| *t <= by)
@@ -595,6 +612,10 @@ impl Sim {
             self.cover_by_k = Some((mv.made + 1, i));
             return;
         }
+        if mv.kind == 48 {
+            self.put_parts((X, mv.ts, &[], A, vec![grant(H, Role::None), grant(B, Role::None)]), mv.made, rng, true);
+            return;
+        }
         if mv.kind == 47 {
             let carries = (0..self.w.commits.len()).filter(|&i| self.w.commits[i].signer == X && self.w.commits[i].on == T1 && matches!(self.w.commits[i].kind, Kind::Content)).collect();
             self.put((X, mv.ts.min(REMOVAL - 1), &[A], T1, Kind::Cover { carries }), mv.made, rng, true);
@@ -935,6 +956,7 @@ pub fn trace(m: &Sim) -> String {
             Kind::Cover { carries } => format!("cover carrying {carries:?}"),
         };
         let kind = if matches!(c.kind, Kind::Content) && c.pa > 0 { format!("{kind} as {}", name(&m.w.purge_author(i))) } else { kind };
+        let kind = if m.w.parts(c.cid) > 1 { format!("{kind} (commit {})", c.cid) } else { kind };
         let recv: Vec<String> = m.recv[i].iter().filter(|(n, _)| **n != X && **n != c.signer).map(|(n, t)| format!("{}@{t}", match *n { RD => "RD", RD2 => "RD2", RD3 => "RD3", _ => name(n) })).collect();
         s += &format!("  {i}: {} ts {} made {} [{}] on {}: {kind}; recv {}\n", name(&c.signer), c.ts, m.made[i], path.join(","), name(&c.on), recv.join(" "));
     }
@@ -962,6 +984,15 @@ pub fn rebuild(w: &World, keep: &[Id]) -> (World, BTreeMap<Id, Id>) {
         };
         let j = out.push(c.signer, c.ts, &c.path, c.on, kind);
         out.authored(j, c.pa);
+    }
+    // a commit's parts kept stay one commit
+    let mut groups: BTreeMap<Id, Vec<Id>> = BTreeMap::new();
+    for &i in keep {
+        groups.entry(w.cid(i)).or_default().push(map[&i]);
+    }
+    for mut g in groups.into_values().filter(|g| g.len() > 1) {
+        g.sort();
+        out.group(&g);
     }
     (out, map)
 }
@@ -1011,6 +1042,10 @@ pub fn unapplied(w: &World, v: &View, rd: &Reading) -> Vec<Id> {
 /// (a void lowering has no effect: the reading without it held is the same), `one reading` (a
 /// relabelling of commit IDs keeping the walk's order reads the same).
 fn void_checks(w: &World, rules: &Rules, v: &View, rd: &Reading, n: Thing, t: bool, m: &Sim, st: &mut Stats) {
+    st.count("self-taken");
+    if !rd.self_taken.is_empty() {
+        st.fail("self-taken", m, format!("node {n}: commits {:?} lose their path's authority to their own drops", rd.self_taken));
+    }
     st.count(if t { "stray T" } else { "stray N" });
     if !rd.stray.is_empty() {
         st.note(if t { "stray T" } else { "stray N" }, m, format!("node {n}: {:?} dropped by a write that does not apply", rd.stray));
@@ -1106,7 +1141,7 @@ pub fn check(m: &Sim, rules: &Rules, st: &mut Stats) {
     // dropped (H's grants of B and N5, what was written under them, what only B's answers kept,
     // M's leave naming B) is lost, as with any
     // lowering X made that the remover heard (notes/path-model-findings.md 19)
-    let heard_lowering = m.thief.iter().any(|(&i, &k)| matches!(k, 11 | 28) && m.made[i] < REMOVAL);
+    let heard_lowering = m.thief.iter().any(|(&i, &k)| matches!(k, 11 | 28 | 48) && m.made[i] < REMOVAL);
     let under_h = |i: Id| heard_lowering && (w.hops(i).contains(&(H, A)) || [B, N5, K, X, M].contains(&w.commits[i].signer));
     // safety: no commit the thief made after the removal shows (but content on a path it still
     // holds, and its own leave), and Z, X and N5 removed before the theft end with no role. At a
@@ -1501,29 +1536,54 @@ pub fn mode_rules(mode: &str) -> Option<Rules> {
         "-purge-any-path" => Rules { purge_chain: false, ..f },
         "-purge-contains" => Rules { purge_exact: false, ..f },
         "-facts" => Rules { cover_facts: true, ..f },
+        "-own-drops" => Rules { commit_drops: false, ..f },
         _ => return None,
     })
 }
 
 // ---- The void step in small worlds (notes/path-model-findings.md 16, 17) ----
 
-/// A small world of admins removing and granting each other on A (H its mint): `n` edge writes,
-/// each by a random party, setting a random party's edge to admin or none at a random `ts`,
-/// listing each earlier write with probability one half.
+/// A small world of admins removing and granting each other on A (H its mint): `n` commits, each
+/// by a random party at a random `ts`, one in four carrying two or three edge writes on distinct
+/// holders (spec/commits.md §2), each setting a random party's edge to admin or none, listing each
+/// earlier write with probability one half.
 pub fn tiny(i: u64, n: usize) -> World {
     let mut rng = Rng::thread(0x701d, i as usize);
-    let parties = [H, B, N5, Z, N6];
     let mut w = account();
     for _ in 0..n {
-        let (s, h) = (parties[rng.below(5)], parties[rng.below(5)]);
-        let ts = 1 + rng.below(n) as u32;
-        let list: Vec<Id> = (0..w.commits.len()).filter(|_| rng.below(2) == 0).collect();
-        let role = if rng.below(2) == 0 { Role::Admin } else { Role::None };
-        if s != h {
-            w.edge(s, ts, &[], A, h, role, &list);
-        }
+        tiny_commit(&mut w, &mut rng, n, |h, rng, _| Kind::set(h, if rng.below(2) == 0 { Role::Admin } else { Role::None }));
     }
     w
+}
+
+/// One commit of a small world: a random signer, `ts` in 1..=n, one part or (one in four) two
+/// or three on distinct holders other than the signer, each from `part` with its own list.
+fn tiny_commit(w: &mut World, rng: &mut Rng, n: usize, part: impl Fn(Thing, &mut Rng, u32) -> Kind) {
+    let parties = [H, B, N5, Z, N6];
+    let s = parties[rng.below(5)];
+    let ts = 1 + rng.below(n) as u32;
+    let k = if rng.below(4) == 0 { 2 + rng.below(2) } else { 1 };
+    let mut parts: Vec<Kind> = vec![];
+    let mut holders = vec![];
+    for _ in 0..k {
+        let h = parties[rng.below(5)];
+        let list: Vec<Id> = (0..w.commits.len()).filter(|_| rng.below(2) == 0).collect();
+        let kind = part(h, rng, ts);
+        if s != h && !holders.contains(&h) {
+            holders.push(h);
+            let fin = matches!(kind, Kind::Edge { finalize: true, .. });
+            parts.push(if fin { kind } else { kind.listing(w.cut(&list)) });
+        }
+    }
+    match parts.len() {
+        0 => {}
+        1 => {
+            w.push(s, ts, &[], A, parts.pop().unwrap());
+        }
+        _ => {
+            w.commit(s, ts, &[], A, parts);
+        }
+    }
 }
 
 /// A small world of invites on A (H its mint): as `tiny`, each write setting admin, none, write
@@ -1532,24 +1592,16 @@ pub fn tiny(i: u64, n: usize) -> World {
 /// judged (notes/path-model-findings.md 23).
 pub fn tiny_invites(i: u64, n: usize) -> World {
     let mut rng = Rng::thread(0x1271, i as usize);
-    let parties = [H, B, N5, Z, N6];
     let mut w = account();
     for _ in 0..n {
-        let (s, h) = (parties[rng.below(5)], parties[rng.below(5)]);
-        let ts = 1 + rng.below(n) as u32;
-        let list: Vec<Id> = (0..w.commits.len()).filter(|_| rng.below(2) == 0).collect();
-        let f = w.cut(&list);
-        let kind = match rng.below(6) {
-            0 => Kind::set(h, Role::Admin).listing(f),
-            1 => Kind::set(h, Role::None).listing(f),
-            2 => Kind::set(h, Role::Write).inviting(Role::Write).listing(f),
-            3 => Kind::set(h, Role::Read).listing(f),
-            4 => Kind::set(h, Role::Write).inviting(Role::Write).until(ts + 2).listing(f),
+        tiny_commit(&mut w, &mut rng, n, |h, rng, ts| match rng.below(6) {
+            0 => Kind::set(h, Role::Admin),
+            1 => Kind::set(h, Role::None),
+            2 => Kind::set(h, Role::Write).inviting(Role::Write),
+            3 => Kind::set(h, Role::Read),
+            4 => Kind::set(h, Role::Write).inviting(Role::Write).until(ts + 2),
             _ => Kind::finalize(h),
-        };
-        if s != h {
-            w.push(s, ts, &[], A, kind);
-        }
+        });
     }
     w
 }
@@ -1622,7 +1674,8 @@ impl TinyStats {
 /// The checks on one small world, by its trust: `N` trusting nothing, `T` trusting a lowering
 /// the settled walk applies, `V` trusting one it does not (void, its seeds lost: the walk is
 /// redone, notes/write-path-design.md §1). Failing: `one reading` (a relabelling keeping the
-/// order reads the same), `void` (a void lowering has no effect: the reading without it held is
+/// order reads the same), `self-taken` (no applied commit's path loses its authority to the
+/// commit's own drops), `void` (a void lowering has no effect: the reading without it held is
 /// the same), `unapplied N`/`T` (likewise a lowering left with no verdict), `admin T` (A keeps a
 /// standing admin). Counted: `stray` (a drop whose dropper does not apply at the end), `unapplied
 /// V` (the trusted write's void round reads a lowering the final walk does not apply), `admin
@@ -1653,6 +1706,7 @@ pub fn tiny_check(i: u64, w: &World, v: &View, rules: &Rules, st: &mut TinyStats
         st.hit(k("unapplied"), t != "V", !no_effect(w, rules, v, &rd, x), i, w, || format!("unapplied {x} has an effect"));
     }
     st.hit("one reading", true, !one_reading_relabelled(w, rules, v, &rd), i, w, || "a relabelling reads otherwise".to_string());
+    st.hit("self-taken", true, !rd.self_taken.is_empty(), i, w, || format!("commits {:?} lose their path's authority to their own drops", rd.self_taken));
     st.hit(k("admin"), t == "T", !rd.roles.iter().any(|(e, r)| e.1 == A && *r == Role::Admin), i, w, || format!("A has no admin: applied {:?}", rd.applied));
 }
 
@@ -1707,7 +1761,8 @@ pub fn tiny_trace(w: &World) -> String {
     for (i, c) in w.commits.iter().enumerate() {
         if let Kind::Edge { holder, role, frontier, until, invite, finalize, .. } = &c.kind {
             let what = if *finalize { "finalize".to_string() } else { format!("{role:?}{}{}", if *invite > Role::None { format!(" invite {invite:?}") } else { String::new() }, until.map_or(String::new(), |u| format!(" until {u}"))) };
-            s += &format!("  {i}: {} ts {}: {} := {what} listing {:?}\n", name(&c.signer), c.ts, name(holder), frontier.values().flatten().collect::<Vec<_>>());
+            let part = if w.parts(c.cid) > 1 { format!(" (commit {})", c.cid) } else { String::new() };
+            s += &format!("  {i}: {} ts {}{part}: {} := {what} listing {:?}\n", name(&c.signer), c.ts, name(holder), frontier.values().flatten().collect::<Vec<_>>());
         }
     }
     s
