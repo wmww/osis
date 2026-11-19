@@ -128,7 +128,7 @@ Binds released formats only; until a stable release formats change in place.
 - Roles that things hold on things, and nothing else. A role M holds on A reaches the parties holding roles on M; A never depends on who they are.
 - A thing's mint admin is fixed in its identity and is an ordinary admin, removable like any other. Sharing a thing, or changing its admins, never changes its identity or how it behaves, only what it costs.
 - Referencing a thing grants no rights, and removing a reference revokes none. A grant lasts until it expires or someone who may remove it does.
-- Readers only read. A thing takes messages, or grants of roles to it, from parties holding no role on it only where its admins allow; an account does.
+- Readers only read. A thing's writers may grant roles to it. From anyone else it takes messages, or grants of roles to it, only where its admins allow.
 - Every write states its actors, from the key that signs it to a holder of the role it uses on what it writes, and is judged along them alone. Anyone who may read the write can verify each step.
 - Rights held by different parties never combine into a right neither has alone.
 - When a writer is removed, those of its edits the remover or another remaining writer vouches for having received by then are kept; the rest are discarded, since nothing shows they were made before the removal. Removing a node from an account works the same way.

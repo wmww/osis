@@ -3,6 +3,8 @@
 
 Applies to any change to what the `osis` crate exports, and to whatever else apps or the CLI's users see of it.
 
+**The core API exposes osis (Tess).** It is not a grab bag of common ways to use osis: a convenience that encodes one way of arranging things (what an account is, what a home holds, how a chat is laid out) belongs in a library above core, and only where the logic really is reusable. Cruft of that kind in the `osis` crate is removed when met, ahead of Tess's in-depth API review.
+
 ## Goals (Tess)
 - **Simple**: an absolute bare minimum of concepts exposed.
 - **Complete**: everything an app could reasonably want to do is possible. It need not be sleek or compact; a few more lines beat another concept or another function.
