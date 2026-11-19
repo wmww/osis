@@ -824,6 +824,87 @@ pub fn trace(m: &Sim) -> String {
     s
 }
 
+/// `w` with the commits `keep` pushed in that order (ids relabelled; a reference to a commit
+/// left out is dropped from its list), and the map old id -> new.
+pub fn rebuild(w: &World, keep: &[Id]) -> (World, BTreeMap<Id, Id>) {
+    let mut out = World::new(&w.records);
+    let map: BTreeMap<Id, Id> = keep.iter().enumerate().map(|(k, &i)| (i, k)).collect();
+    let ids = |l: &Set| l.iter().filter_map(|j| map.get(j).copied()).collect::<Set>();
+    for &i in keep {
+        let c = &w.commits[i];
+        let kind = match &c.kind {
+            Kind::Edge { holder, role, until, frontier, relies, adminless } => {
+                let f = frontier.iter().map(|(t, l)| (*t, ids(l))).collect();
+                Kind::Edge { holder: *holder, role: *role, until: *until, frontier: f, relies: *relies, adminless: *adminless }
+            }
+            Kind::Addendum { removal, list } => Kind::Addendum { removal: map[removal], list: ids(list) },
+            Kind::Vouch { removal, list } => Kind::Vouch { removal: map[removal], list: ids(list) },
+            Kind::Content => Kind::Content,
+        };
+        out.push(c.signer, c.ts, &c.path, c.on, kind);
+    }
+    (out, map)
+}
+
+/// A relabelling of `w`'s commits that keeps the walk's order: the ids reversed, commits sharing
+/// `ts` and signer (ordered by id) kept in their order. As `rebuild`'s `keep`.
+pub fn key_relabelling(w: &World) -> Vec<Id> {
+    let mut perm: Vec<Id> = (0..w.commits.len()).rev().collect();
+    let mut groups: BTreeMap<(u32, Thing), Vec<usize>> = BTreeMap::new();
+    for (k, &i) in perm.iter().enumerate() {
+        groups.entry((w.commits[i].ts, w.commits[i].signer)).or_default().push(k);
+    }
+    for slots in groups.values() {
+        let mut olds: Vec<Id> = slots.iter().map(|&k| perm[k]).collect();
+        olds.sort();
+        for (&k, i) in slots.iter().zip(olds) {
+            perm[k] = i;
+        }
+    }
+    perm
+}
+
+/// Whether the reading of `w` at `v` is the reading of a relabelling keeping the walk's order.
+pub fn one_reading_relabelled(w: &World, rules: &Rules, v: &View, rd: &Reading) -> bool {
+    let (w2, map) = rebuild(w, &key_relabelling(w));
+    let m = |s: &Set| s.iter().map(|i| map[i]).collect::<Set>();
+    let v2 = View { held: m(&v.held), leaves: v.leaves.clone(), trust: m(&v.trust) };
+    let r2 = judge(&w2, rules, &v2);
+    r2.applied == m(&rd.applied) && r2.valid == m(&rd.valid) && r2.dropped == m(&rd.dropped) && r2.voided == m(&rd.voided) && r2.roles == rd.roles
+}
+
+/// Whether the reading without `x` held is `rd`, `x` aside.
+pub fn no_effect(w: &World, rules: &Rules, v: &View, rd: &Reading, x: Id) -> bool {
+    let o = judge(w, rules, &v.clone().without(&[x]));
+    let less = |s: &Set| s.iter().copied().filter(|&i| i != x).collect::<Set>();
+    o.applied == less(&rd.applied) && o.valid == less(&rd.valid) && o.roles == rd.roles
+}
+
+/// The held lowerings the reading does not apply that it neither drops nor voids, and that are
+/// not trusted: unapplied, as the author lacked the right.
+pub fn unapplied(w: &World, v: &View, rd: &Reading) -> Vec<Id> {
+    v.held.iter().copied().filter(|&i| w.lowers(i).is_some() && !w.leave(i) && !rd.applied.contains(&i) && !rd.dropped.contains(&i) && !rd.voided.contains(&i) && !v.trust.contains(&i)).collect()
+}
+
+/// A write that does not apply has no effect: the reading without each voided lowering held is
+/// the same (`void`). The reading is that of a relabelling keeping the walk's order (`one
+/// reading`). No consistent void set (`Consistent`) is counted.
+fn void_checks(w: &World, rules: &Rules, v: &View, rd: &Reading, n: Thing, m: &Sim, st: &mut Stats) {
+    for &x in &rd.voided {
+        st.count("void");
+        if !no_effect(w, rules, v, rd, x) {
+            st.fail("void", m, format!("node {n}: the void lowering {x} has an effect"));
+        }
+    }
+    st.count("one reading");
+    if !one_reading_relabelled(w, rules, v, rd) {
+        st.fail("one reading", m, format!("node {n}: a relabelling keeping the order reads otherwise"));
+    }
+    if rd.inconsistent {
+        st.note("no consistent set", m, format!("node {n}: no consistent void set"));
+    }
+}
+
 /// The properties, at every honest node's final reading. The oracle is the wanted behaviour
 /// (issues/actors-one-mechanism.md: a removed node's role writes are kept on the same terms as
 /// its content), computed from the story, never from a reading.
@@ -914,15 +995,7 @@ pub fn check(m: &Sim, rules: &Rules, st: &mut Stats) {
         if !rd.stray.is_empty() {
             st.fail("stray", m, format!("node {n}: {:?} dropped by a write that does not apply", rd.stray));
         }
-        // a write that does not apply has no effect: the reading without each voided lowering
-        // held is the same
-        for &x in &rd.voided {
-            st.count("void");
-            let o = judge(w, rules, &v.clone().without(&[x]));
-            if o.applied != rd.applied || o.valid != rd.valid {
-                st.note("void (finding 16)", m, format!("node {n}: the void lowering {x} has an effect"));
-            }
-        }
+        void_checks(w, rules, v, rd, n, m, st);
         st.count("removal");
         if !rd.void.is_empty() {
             st.fail("removal", m, format!("node {n}: its trusted removal {:?} is void", rd.void));
@@ -1031,13 +1104,7 @@ pub fn check(m: &Sim, rules: &Rules, st: &mut Stats) {
         if rd.circle || !rd.stray.is_empty() {
             st.fail("untrusted", m, format!("node {n}: unsettled or stray {:?}", rd.stray));
         }
-        for &x in &rd.voided {
-            st.count("void");
-            let o = judge(w, rules, &v.clone().without(&[x]));
-            if o.applied != rd.applied || o.valid != rd.valid {
-                st.note("void (finding 16)", m, format!("node {n}: the void lowering {x} has an effect"));
-            }
-        }
+        void_checks(w, rules, v, rd, n, m, st);
         let shown = disputes(w, rules, v);
         // trusting the honest removals among the disputes shown, and among those then shown,
         // applies every honest removal: never a silent loss
@@ -1202,7 +1269,7 @@ pub fn family_run(rules: &Rules, stride: usize) -> Stats {
 /// random worlds.
 pub fn mode_rules(mode: &str) -> Option<Rules> {
     let f = Rules::fixed();
-    Some(match mode.trim_start_matches("paths").trim_start_matches("-exh") {
+    Some(match mode.trim_start_matches("paths").trim_start_matches("-exh").trim_start_matches("-tiny") {
         "" => f,
         "-design" => Rules::design(),
         "-sticky" => Rules { void_unapplied: false, ..f },
@@ -1218,17 +1285,201 @@ pub fn mode_rules(mode: &str) -> Option<Rules> {
         "-key-order" => Rules { key_order: true, ..f },
         "-earliest" => Rules { void_order: VoidOrder::Earliest, ..f },
         "-at-once" => Rules { void_order: VoidOrder::AllAtOnce, ..f },
+        "-latest" => Rules { void_order: VoidOrder::Latest, ..f },
+        "-key" => Rules { void_order: VoidOrder::KeyOrder, ..f },
+        "-consistent" => Rules { void_order: VoidOrder::Consistent, ..f },
+        "-stratified" => Rules { void_order: VoidOrder::Stratified, ..f },
         _ => return None,
     })
 }
 
-/// `-- N paths[-control]` (random worlds), `-- 0 paths-exh[-control]` (the small family).
-/// Returns the failing checks.
+// ---- The void step in small worlds (notes/path-model-findings.md 16, 17) ----
+
+/// A small world of admins removing and granting each other on A (H its mint): `n` edge writes,
+/// each by a random party, setting a random party's edge to admin or none at a random `ts`,
+/// listing each earlier write with probability one half.
+pub fn tiny(i: u64, n: usize) -> World {
+    let mut rng = Rng::thread(0x701d, i as usize);
+    let parties = [H, B, N5, Z, N6];
+    let mut w = account();
+    for _ in 0..n {
+        let (s, h) = (parties[rng.below(5)], parties[rng.below(5)]);
+        let ts = 1 + rng.below(n) as u32;
+        let list: Vec<Id> = (0..w.commits.len()).filter(|_| rng.below(2) == 0).collect();
+        let role = if rng.below(2) == 0 { Role::Admin } else { Role::None };
+        if s != h {
+            w.edge(s, ts, &[], A, h, role, &list);
+        }
+    }
+    w
+}
+
+/// Tiny world `i` (`n` from 3 to 12 writes) and its view: every commit held; trusting nothing,
+/// or (every third world) one held lowering.
+pub fn tiny_world(i: u64) -> (World, View) {
+    let w = tiny(i, 3 + (i % 10) as usize);
+    let mut v = View::all(&w);
+    let lows: Vec<Id> = (0..w.commits.len()).filter(|&k| w.lowers(k).is_some()).collect();
+    if i % 3 == 0 && !lows.is_empty() {
+        v.trust.insert(lows[(i / 3) as usize % lows.len()]);
+    }
+    (w, v)
+}
+
+#[derive(Clone, Debug, Default)]
+pub struct TinyStats {
+    pub worlds: u64,
+    pub checked: BTreeMap<&'static str, u64>,
+    pub fails: BTreeMap<&'static str, u64>,
+    /// Counted, not failing: `several` (more than one consistent void set), `none` (no
+    /// consistent set), `unreached` (a consistent set not reached by voiding one unapplied
+    /// lowering at a time), `not consistent` (the reading's void set is not one of them, though
+    /// some is), `unapplied` (a lowering the reading leaves unapplied has an effect).
+    pub noted: BTreeMap<&'static str, u64>,
+    /// Per check, the smallest failing world: (commits, index, what).
+    pub first: BTreeMap<&'static str, (usize, u64, String)>,
+    pub most_rounds: u32,
+}
+
+impl crate::Tally for TinyStats {
+    fn merge(&mut self, o: TinyStats) {
+        self.worlds += o.worlds;
+        for (k, n) in o.checked {
+            *self.checked.entry(k).or_default() += n;
+        }
+        for (k, n) in o.fails {
+            *self.fails.entry(k).or_default() += n;
+        }
+        for (k, n) in o.noted {
+            *self.noted.entry(k).or_default() += n;
+        }
+        for (k, f) in o.first {
+            let e = self.first.entry(k).or_insert(f.clone());
+            if (f.0, f.1) < (e.0, e.1) {
+                *e = f;
+            }
+        }
+        self.most_rounds = self.most_rounds.max(o.most_rounds);
+    }
+}
+
+impl TinyStats {
+    fn hit(&mut self, k: &'static str, fail: bool, i: u64, w: &World, what: impl Fn() -> String) {
+        *self.checked.entry(k).or_default() += 1;
+        if !fail {
+            return;
+        }
+        let noted = matches!(k, "several" | "none" | "unreached" | "not consistent" | "unapplied" | "differs");
+        *if noted { self.noted.entry(k) } else { self.fails.entry(k) }.or_default() += 1;
+        let n = w.commits.len();
+        if self.first.get(k).is_none_or(|f| (n, i) < (f.0, f.1)) {
+            self.first.insert(k, (n, i, what()));
+        }
+    }
+    pub fn failures(&self) -> u64 {
+        self.fails.values().sum()
+    }
+}
+
+/// The checks of the void step on one small world (every failing check a property: `stray`,
+/// `void`, `one reading`, `settles`).
+pub fn tiny_check(i: u64, w: &World, v: &View, rules: &Rules, st: &mut TinyStats) {
+    st.worlds += 1;
+    let rd = judge(w, rules, v);
+    st.most_rounds = st.most_rounds.max(rd.rounds);
+    st.hit("stray", !rd.stray.is_empty(), i, w, || format!("stray {:?}", rd.stray));
+    for &x in &rd.voided {
+        st.hit("void", !no_effect(w, rules, v, &rd, x), i, w, || format!("void {x} has an effect (voided {:?}, applied {:?})", rd.voided, rd.applied));
+    }
+    for x in unapplied(w, v, &rd) {
+        st.hit("unapplied", !no_effect(w, rules, v, &rd, x), i, w, || format!("unapplied {x} has an effect"));
+    }
+    st.hit("one reading", !one_reading_relabelled(w, rules, v, &rd), i, w, || "a relabelling reads otherwise".to_string());
+    // the key-order and consistent readings against each other
+    if matches!(rules.void_order, VoidOrder::KeyOrder | VoidOrder::Consistent) {
+        let other = if rules.void_order == VoidOrder::KeyOrder { VoidOrder::Consistent } else { VoidOrder::KeyOrder };
+        let o = judge(w, &Rules { void_order: other, ..*rules }, v);
+        st.hit("differs", o.applied != rd.applied || o.voided != rd.voided, i, w, || format!("{other:?} voids {:?}, this {:?}", o.voided, rd.voided));
+    }
+    if v.trust.is_empty() && rules.vouch != Vouch::SameWalk {
+        let sets = consistent_sets(w, rules, v);
+        st.hit("several", sets.len() > 1, i, w, || format!("consistent sets {sets:?}"));
+        st.hit("none", sets.is_empty(), i, w, || "no consistent set".to_string());
+        st.hit("unreached", sets.iter().any(|s| !s.1), i, w, || format!("consistent sets {sets:?}"));
+        if !sets.is_empty() {
+            st.hit("not consistent", !sets.iter().any(|s| s.0 == rd.voided), i, w, || format!("voided {:?}, consistent {sets:?}", rd.voided));
+        }
+    }
+}
+
+/// `w` less one commit at a time while `fails` holds of it.
+pub fn shrink_world(w: &World, v: &View, fails: &dyn Fn(&World, &View) -> bool) -> (World, View) {
+    let (mut w, mut v) = (w.clone(), v.clone());
+    'step: loop {
+        for k in 0..w.commits.len() {
+            let keep: Vec<Id> = (0..w.commits.len()).filter(|&j| j != k).collect();
+            let (w2, map) = rebuild(&w, &keep);
+            let m = |s: &Set| s.iter().filter_map(|i| map.get(i).copied()).collect::<Set>();
+            let v2 = View { held: m(&v.held), leaves: v.leaves.clone(), trust: m(&v.trust) };
+            if fails(&w2, &v2) {
+                (w, v) = (w2, v2);
+                continue 'step;
+            }
+        }
+        return (w, v);
+    }
+}
+
+/// `-- N paths-tiny[-variant]`: N small worlds.
+pub fn tiny_run(n: u64, rules: &Rules) -> TinyStats {
+    crate::on_every_core(|th, threads, st: &mut TinyStats| {
+        for i in (th as u64..n).step_by(threads) {
+            let (w, v) = tiny_world(i);
+            tiny_check(i, &w, &v, rules, st);
+        }
+    })
+}
+
+fn tiny_print(st: &TinyStats, rules: &Rules) {
+    println!("tiny: {} worlds, checks {:?}, noted {:?}, failing {:?}, most rounds {}", st.worlds, st.checked, st.noted, st.fails, st.most_rounds);
+    for (k, (n, i, what)) in &st.first {
+        let (w, v) = tiny_world(*i);
+        let prop = *k;
+        let fails = |w: &World, v: &View| {
+            let mut s = TinyStats::default();
+            tiny_check(*i, w, v, rules, &mut s);
+            s.fails.contains_key(prop) || s.noted.contains_key(prop)
+        };
+        let (w, v) = shrink_world(&w, &v, &fails);
+        let tag = if st.fails.contains_key(k) { "FAIL" } else { "NOTED" };
+        println!("{tag} {k}: world {i} ({n} commits; shrunk to {}), trust {:?}: {what}\n{}", w.commits.len(), v.trust, tiny_trace(&w));
+    }
+}
+
+/// A small world's commits, one a line.
+pub fn tiny_trace(w: &World) -> String {
+    let name = |t: &Thing| ["?", "H", "B", "X", "N5", "K", "Z", "N6"].get(*t as usize).copied().unwrap_or("?");
+    let mut s = String::new();
+    for (i, c) in w.commits.iter().enumerate() {
+        if let Kind::Edge { holder, role, frontier, .. } = &c.kind {
+            s += &format!("  {i}: {} ts {}: {} := {role:?} listing {:?}\n", name(&c.signer), c.ts, name(holder), frontier.values().flatten().collect::<Vec<_>>());
+        }
+    }
+    s
+}
+
+/// `-- N paths[-control]` (random worlds), `-- 0 paths-exh[-control]` (the small family),
+/// `-- N paths-tiny[-control]` (small worlds of admins). Returns the failing checks.
 pub fn run(samples: u64, mode: &str) -> u64 {
     let Some(rules) = mode_rules(mode) else {
         eprintln!("unknown mode {mode}");
         return 1;
     };
+    if mode.starts_with("paths-tiny") {
+        let st = tiny_run(samples, &rules);
+        tiny_print(&st, &rules);
+        return st.failures();
+    }
     // `-- N paths-exh`: every Nth family world (N 0 or 1: all of them)
     let st = if mode.starts_with("paths-exh") { family_run(&rules, samples.max(1) as usize) } else { random(samples, &rules) };
     st.print(mode, &rules);

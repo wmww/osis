@@ -147,16 +147,33 @@ pub enum Regrant {
     FirstChained,
 }
 
-/// Which unapplied lowerings that made drops a round of the walk voids.
+/// How the walk chooses the void set: the lowerings that made drops and that the settled walk
+/// does not apply (notes/path-model-findings.md 16, 17).
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub enum VoidOrder {
-    /// Control (notes/write-path-design.md §1 as the study wrote it): the earliest by key. A
-    /// later write that does not apply then voids an earlier one through its drops (finding 16).
+    /// Control: a round voids the earliest unapplied lowering by key. A later write that does not
+    /// apply then voids an earlier one through its drops (finding 16).
     Earliest,
-    /// The latest by key: a write that does not apply cannot void an earlier one.
+    /// Control: a round voids the latest. An earlier void write's drops then leave a later write
+    /// unapplied, and the later one is voided first (`repro_an_earlier_void_write_has_no_effect`).
     Latest,
-    /// Control: all of them.
+    /// Control: a round voids all of them.
     AllAtOnce,
+    /// Each lowering in key order, judged in the walk of the held writes up to it (later
+    /// lowerings left out) with the void ones decided before it left out: the writes it
+    /// overrules (lowerings its drops leave unapplied) are voided first, the latest first; it is
+    /// void when it then does not apply and its audit made drops. A void decision is never
+    /// revisited. The settled walk is the last lowering's.
+    KeyOrder,
+    /// The consistent void set: V such that the walk with V voided leaves no unapplied lowering
+    /// that made drops, and each member is void judged with only the others voided (the writes
+    /// it overrules voided first, as `KeyOrder` judges); searched over the sets of lowerings seen
+    /// making drops in the walks reached by voiding one unapplied lowering at a time. Where several are consistent the earlier lowering by key
+    /// applies: of two sets, the one not voiding the earliest lowering in which they differ.
+    Consistent,
+    /// A first walk where no lowering drops anything: a lowering not applied there is void; the
+    /// rest drop in a second walk, and nothing more is voided.
+    Stratified,
 }
 
 /// What a lowering of an admin edge must leave (notes/write-path-design.md §5, The last admin).
@@ -250,7 +267,7 @@ impl Rules {
             rewrite: true,
             leave_in_question: true,
             void_unapplied: true,
-            void_order: VoidOrder::Latest,
+            void_order: VoidOrder::KeyOrder,
             audit_held: false,
             stands: true,
             key_order: false,
@@ -460,10 +477,15 @@ pub struct Reading {
     /// commit does not rest on the edge it lowers, or its list names the commit. Checked from the
     /// reading alone (`unjustified`), apart from how the walk reached it.
     pub stray: Set,
-    /// Walks redone because a lowering or a trusted write turned out void, and passes walked
-    /// (each restart one), over the whole reading.
+    /// Walks redone because a lowering or a trusted write turned out void (or, in key order, to
+    /// judge a lowering), passes walked (each restart one), and edge-class commits visited, over
+    /// the whole reading.
     pub rounds: u32,
     pub passes: u64,
+    pub walked: u64,
+    /// `VoidOrder::Consistent` found no consistent void set (the reading falls back on the
+    /// sets reached by voiding, under the same tie rule).
+    pub inconsistent: bool,
     /// The vouch iteration did not settle (`Vouch::SameWalk`).
     pub circle: bool,
 }
@@ -512,6 +534,30 @@ struct Walk {
     voided: Set,
     rounds: u32,
     passes: u64,
+    walked: u64,
+    inconsistent: bool,
+}
+
+/// What a walk costs: walks, passes, commits visited.
+#[derive(Clone, Copy, Default)]
+struct Cost {
+    walks: u32,
+    passes: u64,
+    walked: u64,
+}
+
+impl Cost {
+    fn add(&mut self, wk: &Walk) {
+        self.walks += 1;
+        self.passes += wk.passes;
+        self.walked += wk.walked;
+    }
+    /// `wk` as the settled walk, with `voided` and the cost (its rounds the walks after the
+    /// first).
+    fn onto(self, mut wk: Walk, voided: Set) -> Walk {
+        (wk.voided, wk.rounds, wk.passes, wk.walked) = (voided, self.walks.saturating_sub(1), self.passes, self.walked);
+        wk
+    }
 }
 
 type Vouched = BTreeSet<(Id, Id)>;
@@ -577,34 +623,188 @@ fn refused(w: &World, rules: &Rules, p: &Pass, i: Id, e: Edge, new: Val) -> bool
     }
 }
 
-/// The settled walk. With `void_unapplied`, a lowering whose audit dropped something and which
-/// the settled walk does not apply is void, one at a time by `Rules::void_order`: the walk is
-/// redone from the seeds `d0` without it, until none is.
+/// The settled walk from the seeds `d0`. With `void_unapplied`, a lowering whose audit dropped
+/// something and which the settled walk does not apply is void, chosen by `Rules::void_order`:
+/// the walk is redone without it.
 fn walk(w: &World, rules: &Rules, v: &View, d0: &Set, vouched: &Vouched) -> Walk {
-    walk_from(w, rules, v, d0, vouched, Set::new())
+    let walk = |skip: &Set| drops(w, rules, v, d0, vouched, skip, true);
+    if !rules.void_unapplied {
+        return walk(&Set::new());
+    }
+    match rules.void_order {
+        VoidOrder::Earliest | VoidOrder::Latest | VoidOrder::AllAtOnce => by_rounds(w, rules.void_order, &walk, Set::new(), Cost::default()).0,
+        VoidOrder::KeyOrder => key_order(w, v, &walk),
+        VoidOrder::Consistent => consistent(w, &walk),
+        VoidOrder::Stratified => {
+            let first = drops(w, rules, v, d0, vouched, &Set::new(), false);
+            let applied: Set = first.pass.applied.iter().copied().collect();
+            let void: Set = lowerings(w, v).into_iter().filter(|i| !applied.contains(i)).collect();
+            let wk = walk(&void);
+            let mut cost = Cost::default();
+            cost.add(&first);
+            cost.add(&wk);
+            cost.onto(wk, void)
+        }
+    }
 }
 
-fn walk_from(w: &World, rules: &Rules, v: &View, d0: &Set, vouched: &Vouched, mut void: Set) -> Walk {
-    let (mut rounds, mut passes) = (0, 0);
+/// The held lowerings that can audit (explicit edge writes giving below admin at their `ts`),
+/// in key order.
+fn lowerings(w: &World, v: &View) -> Vec<Id> {
+    order(w, &v.held).into_iter().filter(|&i| w.lowers(i).is_some() && !w.leave(i)).collect()
+}
+
+/// Rounds of voiding from `void`, each a walk skipping it, until no unapplied lowering made
+/// drops: `order` picks which a round voids.
+fn by_rounds(w: &World, order: VoidOrder, walk: &dyn Fn(&Set) -> Walk, mut void: Set, mut cost: Cost) -> (Walk, Cost) {
     loop {
-        let mut wk = drops(w, rules, v, d0, vouched, &void);
-        passes += wk.passes;
+        let wk = walk(&void);
+        cost.add(&wk);
         let mut gone: Vec<Id> = unapplied_droppers(&wk).into_iter().collect();
         gone.sort_by_key(|&r| w.key(r));
-        if gone.is_empty() || !rules.void_unapplied {
-            wk.voided = void;
-            wk.rounds = rounds;
-            wk.passes = passes;
-            return wk;
+        if gone.is_empty() {
+            return (cost.onto(wk, void), cost);
         }
-        rounds += 1;
-        match rules.void_order {
+        match order {
             VoidOrder::Earliest => gone.truncate(1),
-            VoidOrder::Latest => gone = gone.split_off(gone.len() - 1),
             VoidOrder::AllAtOnce => {}
+            _ => gone = gone.split_off(gone.len() - 1),
         }
         void.extend(gone);
     }
+}
+
+/// `VoidOrder::KeyOrder`.
+fn key_order(w: &World, v: &View, walk: &dyn Fn(&Set) -> Walk) -> Walk {
+    let lows = lowerings(w, v);
+    let mut decided = Set::new();
+    let mut cost = Cost::default();
+    // the walk after the last lowering judged not void, with the writes it overrules
+    let mut last: Option<(Walk, Set, bool)> = None;
+    for (k, &l) in lows.iter().enumerate() {
+        let later: Set = lows[k + 1..].iter().copied().collect();
+        let (void, wk, overruled, c) = judged_void(w, walk, decided.clone(), l, &later, cost);
+        let free = c.walks == cost.walks;
+        cost = c;
+        if void {
+            decided.insert(l);
+        } else {
+            last = Some((wk, overruled, free));
+        }
+    }
+    match last {
+        // every lowering after the last one not void is void: its walk is the settled one
+        Some((wk, overruled, free)) => {
+            let voided = decided.union(&overruled).copied().collect();
+            if free {
+                cost.add(&wk);
+            }
+            cost.onto(wk, voided)
+        }
+        None => {
+            let wk = walk(&decided);
+            cost.add(&wk);
+            cost.onto(wk, decided)
+        }
+    }
+}
+
+/// Whether lowering `l` is void judged in the walk skipping `void` and `out`: the writes it
+/// overrules (the other unapplied lowerings that made drops) voided first, the latest first, it
+/// does not apply and made drops. With the settled walk (`l` not void) and the writes it
+/// overruled.
+fn judged_void(w: &World, walk: &dyn Fn(&Set) -> Walk, void: Set, l: Id, out: &Set, mut cost: Cost) -> (bool, Walk, Set, Cost) {
+    let mut inner = Set::new();
+    let mut audited = false;
+    loop {
+        let skip: Set = void.iter().chain(out).chain(&inner).copied().collect();
+        let wk = walk(&skip);
+        audited |= wk.dropper.values().any(|&r| r == l);
+        // a lowering whose audit drops nothing leaves the walk before it settled: extending that
+        // walk to it costs no walk of its own (`key_order` counts the settled walk once)
+        if audited || !inner.is_empty() {
+            cost.add(&wk);
+        }
+        let mut gone: Vec<Id> = unapplied_droppers(&wk).into_iter().filter(|&r| r != l).collect();
+        if gone.is_empty() {
+            let is = audited && !wk.pass.applied.contains(&l);
+            return (is, wk, inner, cost);
+        }
+        gone.sort_by_key(|&r| w.key(r));
+        inner.insert(*gone.last().unwrap());
+    }
+}
+
+/// `VoidOrder::Consistent`.
+fn consistent(w: &World, walk: &dyn Fn(&Set) -> Walk) -> Walk {
+    let mut cost = Cost::default();
+    let mut seen: BTreeMap<Set, Set> = BTreeMap::new();
+    let mut todo = vec![Set::new()];
+    let mut ends = vec![];
+    let mut droppers = Set::new();
+    while let Some(void) = todo.pop() {
+        if seen.contains_key(&void) {
+            continue;
+        }
+        let wk = walk(&void);
+        cost.add(&wk);
+        droppers.extend(wk.dropper.values());
+        let gone = unapplied_droppers(&wk);
+        if gone.is_empty() {
+            ends.push(void.clone());
+        }
+        for &r in &gone {
+            let mut next = void.clone();
+            next.insert(r);
+            todo.push(next);
+        }
+        seen.insert(void, gone);
+    }
+    // every set of the lowerings seen making drops, not only those reached
+    let cands: Vec<Id> = droppers.into_iter().collect();
+    if cands.len() <= 12 {
+        for bits in 0u64..1 << cands.len() {
+            let s: Set = cands.iter().enumerate().filter(|(k, _)| bits >> k & 1 == 1).map(|(_, &i)| i).collect();
+            if !seen.contains_key(&s) {
+                let wk = walk(&s);
+                cost.add(&wk);
+                let gone = unapplied_droppers(&wk);
+                if gone.is_empty() {
+                    ends.push(s.clone());
+                }
+                seen.insert(s, gone);
+            }
+        }
+    }
+    // a member is void judged with only the others voided: the writes it overrules voided first
+    let none = Set::new();
+    let mut member = |void: &Set, x: Id| -> bool {
+        let mut o = void.clone();
+        o.remove(&x);
+        let (is, _, _, c) = judged_void(w, walk, o, x, &none, cost);
+        cost = c;
+        is
+    };
+    let good: Vec<Set> = ends.iter().filter(|s| s.iter().all(|&x| member(s, x))).cloned().collect();
+    let inconsistent = good.is_empty();
+    let pick = earliest_applies(w, if inconsistent { &ends } else { &good });
+    let mut wk = walk(&pick);
+    cost.add(&wk);
+    wk.inconsistent = inconsistent;
+    cost.onto(wk, pick)
+}
+
+/// Of void sets, the one not voiding the earliest lowering by key in which it differs from
+/// each other.
+pub fn earliest_applies(w: &World, sets: &[Set]) -> Set {
+    let better = |a: &Set, b: &Set| a.symmetric_difference(b).min_by_key(|&&x| w.key(x)).is_some_and(|x| !a.contains(x));
+    let mut best = sets[0].clone();
+    for s in &sets[1..] {
+        if better(s, &best) {
+            best = s.clone();
+        }
+    }
+    best
 }
 
 /// The droppers of a walk's audit drops that it does not apply.
@@ -612,12 +812,17 @@ fn unapplied_droppers(wk: &Walk) -> Set {
     wk.dropper.values().copied().filter(|r| !wk.pass.applied.contains(r)).collect()
 }
 
+/// The walk's seeds for a view (the vouches not counted).
+fn view_seeds(w: &World, rules: &Rules, v: &View) -> Set {
+    let none = Vouched::new();
+    seeds(w, rules, v, &v.trust.iter().copied().filter(|i| v.held.contains(i) && w.sets(*i).is_some()).collect(), &none).into_keys().collect()
+}
+
 /// Every order of voiding: the settled walks reached by voiding, at each round, any one of the
-/// unapplied droppers (`walk` takes the latest by key). Exponential: for hand worlds and the
-/// small void search only.
+/// unapplied droppers. Exponential: for hand worlds and the small void search only.
 pub fn void_orders(w: &World, rules: &Rules, v: &View) -> BTreeSet<(Set, Set)> {
     let none = Vouched::new();
-    let d0: Set = seeds(w, rules, v, &v.trust.iter().copied().filter(|i| v.held.contains(i) && w.sets(*i).is_some()).collect(), &none).into_keys().collect();
+    let d0 = view_seeds(w, rules, v);
     let mut out = BTreeSet::new();
     let mut seen = BTreeSet::new();
     let mut todo = vec![Set::new()];
@@ -625,7 +830,7 @@ pub fn void_orders(w: &World, rules: &Rules, v: &View) -> BTreeSet<(Set, Set)> {
         if !seen.insert(void.clone()) {
             continue;
         }
-        let wk = drops(w, rules, v, &d0, &none, &void);
+        let wk = drops(w, rules, v, &d0, &none, &void, true);
         let gone = unapplied_droppers(&wk);
         if gone.is_empty() {
             out.insert((wk.pass.applied.iter().copied().collect(), wk.dropped.clone()));
@@ -639,11 +844,53 @@ pub fn void_orders(w: &World, rules: &Rules, v: &View) -> BTreeSet<(Set, Set)> {
     out
 }
 
-fn drops(w: &World, rules: &Rules, v: &View, d0: &Set, vouched: &Vouched, void: &Set) -> Walk {
+/// Every consistent void set (`VoidOrder::Consistent`) over every subset of the held lowerings
+/// (no vouches counted), and whether each is reached by voiding one unapplied lowering at a time.
+/// Exponential in the lowerings: for the small void search only.
+pub fn consistent_sets(w: &World, rules: &Rules, v: &View) -> Vec<(Set, bool)> {
+    let none = Vouched::new();
+    let d0 = view_seeds(w, rules, v);
+    let lows = lowerings(w, v);
+    let gone = |s: &Set| unapplied_droppers(&drops(w, rules, v, &d0, &none, s, true));
+    let reached: BTreeSet<Set> = {
+        let mut seen = BTreeSet::new();
+        let mut todo = vec![Set::new()];
+        while let Some(s) = todo.pop() {
+            if seen.insert(s.clone()) {
+                for r in gone(&s) {
+                    let mut n = s.clone();
+                    n.insert(r);
+                    todo.push(n);
+                }
+            }
+        }
+        seen
+    };
+    let mut out = vec![];
+    for bits in 0u64..1 << lows.len() {
+        let s: Set = lows.iter().enumerate().filter(|(k, _)| bits >> k & 1 == 1).map(|(_, &i)| i).collect();
+        let walk = |skip: &Set| drops(w, rules, v, &d0, &none, skip, true);
+        if gone(&s).is_empty()
+            && s.iter().all(|&x| {
+                let mut o = s.clone();
+                o.remove(&x);
+                judged_void(w, &walk, o, x, &Set::new(), Cost::default()).0
+            })
+        {
+            let r = reached.contains(&s);
+            out.push((s, r));
+        }
+    }
+    out
+}
+
+/// One walk with restarts, skipping `void` (as though not held); `audit` false: no lowering
+/// drops anything.
+fn drops(w: &World, rules: &Rules, v: &View, d0: &Set, vouched: &Vouched, void: &Set, audit: bool) -> Walk {
     let order = order(w, &v.held);
     let mut dropped = d0.clone();
     let mut dropper = BTreeMap::new();
-    let mut passes = 0;
+    let (mut passes, mut walked) = (0, 0);
     loop {
         passes += 1;
         let mut p = Pass::default();
@@ -656,6 +903,7 @@ fn drops(w: &World, rules: &Rules, v: &View, d0: &Set, vouched: &Vouched, void: 
             if dropped.contains(&i) || void.contains(&i) {
                 continue;
             }
+            walked += 1;
             let c = &w.commits[i];
             if !w.well(i) || !w.hops(i).iter().all(|&e| p.at(e, c.ts) == Role::Admin) {
                 continue;
@@ -678,7 +926,7 @@ fn drops(w: &World, rules: &Rules, v: &View, d0: &Set, vouched: &Vouched, void: 
             let restored = p.restored.get(&e).copied().unwrap_or(Role::None).max(p.at(e, c.ts));
             let (before, after) = (if leave { p.at(e, c.ts) } else { restored }, alive(new, c.ts));
             // an explicit write audits against the edge as restored; a self-removal audits nothing
-            let falls = !leave && before == Role::Admin && after < Role::Admin;
+            let falls = audit && !leave && before == Role::Admin && after < Role::Admin;
             let mut q = vec![];
             if falls {
                 let exempt = if rules.exempt_chain { chain(w, &v.held, i) } else { Set::new() };
@@ -706,7 +954,7 @@ fn drops(w: &World, rules: &Rules, v: &View, d0: &Set, vouched: &Vouched, void: 
             }
         }
         if !again {
-            return Walk { pass: p, dropped, dropper, voided: Set::new(), rounds: 0, passes };
+            return Walk { pass: p, dropped, dropper, voided: Set::new(), rounds: 0, passes, walked, inconsistent: false };
         }
     }
 }
@@ -749,13 +997,15 @@ fn counting(w: &World, rules: &Rules, wk: &Walk) -> (Set, Vouched) {
 /// whether the vouches settled.
 fn settle(w: &World, rules: &Rules, v: &View, active: &Set) -> (Walk, BTreeMap<Id, Id>, BTreeMap<Edge, Val>, Set, bool) {
     let none = Vouched::new();
-    let (mut rounds, mut passes) = (0, 0);
+    let (mut rounds, mut passes, mut walked, mut inconsistent) = (0, 0, 0, false);
     let mut run = |vouched: &Vouched| {
         let d0 = seeds(w, rules, v, active, vouched);
         let mut wk = walk(w, rules, v, &d0.keys().copied().collect(), vouched);
         rounds += wk.rounds;
         passes += wk.passes;
-        (wk.rounds, wk.passes) = (rounds, passes);
+        walked += wk.walked;
+        inconsistent |= wk.inconsistent;
+        (wk.rounds, wk.passes, wk.walked, wk.inconsistent) = (rounds, passes, walked, inconsistent);
         (wk, d0)
     };
     match rules.vouch {
@@ -880,11 +1130,12 @@ fn content(w: &World, rules: &Rules, v: &View, p: &Pass) -> (Set, Set) {
 pub fn judge(w: &World, rules: &Rules, v: &View) -> Reading {
     let mut active: Set = v.trust.iter().copied().filter(|i| v.held.contains(i) && w.sets(*i).is_some()).collect();
     let mut void = Set::new();
-    let (mut rounds, mut passes) = (0, 0);
+    let (mut rounds, mut passes, mut walked) = (0, 0, 0);
     loop {
         let (wk, d0, first, counting, circle) = settle(w, rules, v, &active);
         rounds += wk.rounds;
         passes += wk.passes;
+        walked += wk.walked;
         let applied: Set = wk.pass.applied.iter().copied().collect();
         let gone: Vec<Id> = active.iter().copied().filter(|r| !applied.contains(r)).collect();
         if !gone.is_empty() {
@@ -914,6 +1165,8 @@ pub fn judge(w: &World, rules: &Rules, v: &View) -> Reading {
             stray: Set::new(),
             rounds,
             passes,
+            walked,
+            inconsistent: wk.inconsistent,
             circle,
         };
         rd.stray = unjustified(w, rules, v, &rd);
