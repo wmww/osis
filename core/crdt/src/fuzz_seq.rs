@@ -576,14 +576,7 @@ impl World {
         if per > 0
             && let Fragment::Seq(sq) = &st
         {
-            let mut pg = Pager::new(sq, usize::from(per));
-            let mut got = Err(());
-            for _ in 0..64 {
-                got = run(&pg.part(), w());
-                if !pg.absorb() {
-                    break;
-                }
-            }
+            let got = Pager::new(sq, usize::from(per)).run(|f| run(f, w()));
             self.stats.partial += 1;
             assert!(got == Ok(want.clone()), "ops on a state held in part write what they write on the whole: {pops:?}\n got {got:?}\n want {want:?}");
         }

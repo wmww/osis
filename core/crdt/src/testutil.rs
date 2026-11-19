@@ -460,6 +460,17 @@ impl Pager {
         f.set_seq_place(Some(p));
         f
     }
+    /// `f` on the part held, loading what it missed and running it again until it misses nothing.
+    pub fn run<T>(&mut self, mut f: impl FnMut(&Fragment) -> T) -> T {
+        let mut got = f(&self.part());
+        for _ in 1..64 {
+            if !self.absorb() {
+                break;
+            }
+            got = f(&self.part());
+        }
+        got
+    }
     /// Loads what the placement missed since the last call; whether it missed anything.
     pub fn absorb(&mut self) -> bool {
         let m = self.p.misses();
