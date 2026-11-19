@@ -692,7 +692,7 @@ fn a_reader_by_a_chain_through_a_holder_thing_reads_spec_sync_judgement_2() {
     assert_eq!(holding(&mut w, 1, &t), Some(Holding::Read));
 }
 
-// spec/sync-inbox.md §5 (Delivery of a grant), §1 (signals off), spec/sync-judgement.md §2 (A
+// spec/sync-inbox.md §5 (Delivery of a grant), §1, spec/sync-judgement.md §2 (A
 // grant naming a holder): Bob's T1 holds T0 by a strong; Alice, who knows T1's public key record
 // but neither reads nor syncs T1 (she reads T4, holder on T3 minted with admin T1), grants T1 read
 // on T0. T1 takes no tickets from outside, so Bob, T1's reader, does not read T0; once T1's admin
