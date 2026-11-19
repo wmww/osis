@@ -315,7 +315,7 @@ impl Run {
 
     /// Milliseconds since the run began: the mirror's time.
     fn now(&self) -> u32 {
-        (self.lp.peers[A].engine.now().0 - self.base.0 + 1) as u32
+        (self.lp.peers[A].engine.now().0 + 1 - self.base.0) as u32
     }
 
     fn goto(&mut self, t: u32) {
