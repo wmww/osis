@@ -1732,6 +1732,10 @@ impl Core {
     /// only for those upstream of a changed edge's holder or a new record, and only down from
     /// its target or that record; what is below a new record has a new record chain.
     pub(crate) fn timelines_changed(&mut self, c: osis_perm::Changed) {
+        // a removal whose own change in the walk differs (it started or stopped applying, or
+        // lowers or audits otherwise: perm names every such commit, `Changed::commits`) is
+        // judged again for vouches: the one input a removal not applying reads
+        crate::flows::vouches::note_changed(self, &c.commits);
         // the removals of every component the update changed are judged again for vouches
         let moved: Vec<u64> = self.timelines.changed_components().iter().copied().filter(|i| self.ix.vouch_watch.get(i).is_some()).collect();
         for i in moved {

@@ -20,9 +20,10 @@
 //! Invariant: what is owed is a function of the held set, the receipts and the trust set (the
 //! first walk, the counting entries and addenda, the clock), never of what this node wrote
 //! before (bar a leaving out kept, `leaving_out`), so an
-//! open re-derives it (`all_due`) and nothing about it is durable. Triggered per component: a
-//! removal with candidates (or not applying in this node's view: it may come to) is filed under
-//! its component (`Indexes::vouch_watch`) once judged, and only a change of that component makes
+//! open re-derives it (`all_due`) and nothing about it is durable. A removal not applying in
+//! this node's view reads nothing but whether it applies: due again only when its change in the
+//! walk differs (`note_changed`). One with candidates is filed under its component
+//! (`Indexes::vouch_watch`) once judged, and only a change of that component makes
 //! it due again (`Core::timelines_changed`: a grant, a lowering, a vouch, this node's side); one
 //! with none is never judged again (`may_owe` reads the held set alone for the vouches' part). The window (`window`)
 //! closes at R's own arrival, so its candidates' receipts are final once R is held. So a
@@ -53,6 +54,18 @@ use std::sync::Arc;
 /// Notes removal `r` (a role commit with a frontier, applied here) as due.
 pub(crate) fn note_due(core: &mut Core, r: &CommitId) {
     core.ix.vouches_due.insert(*r);
+}
+
+/// The walk changed: of `commits` (`osis_perm::Changed::commits`: every commit whose change in
+/// the walk's history differs, so every one that started or stopped applying), the removals
+/// are due again. A removal not applying reads nothing else (`owed`), so this is its only
+/// trigger: no write elsewhere judges it, however many such removals are held.
+pub(crate) fn note_changed(core: &mut Core, commits: &BTreeSet<CommitId>) {
+    for r in commits {
+        if core.ix.commits.get(r).is_some_and(|m| m.view.kind.is_role() && m.view.frontier.is_some()) {
+            core.ix.vouches_due.insert(*r);
+        }
+    }
 }
 
 /// Commit `h` applied here: the removals filed under its author or a thing its edge writes
@@ -234,10 +247,10 @@ fn owed(core: &Core, r: &CommitId, me: Tid, now: Ts) -> Owed {
     // (`Hlc::observe`)
     debug_assert!(now > rc.ts, "the clock is past an applied removal's ts");
     let comp = core.timelines.component(&target);
-    // R not applying (dropped, or its author's authority in dispute) may come to, the walk
-    // changing: judged again then
+    // R not applying (dropped, or its author's authority in dispute) owes nothing; it may come
+    // to apply, and then its change enters the walk's history: judged again then
+    // (`note_changed`), filed nowhere
     if !(0..rc.ops.len()).filter_map(|k| u32::try_from(k).ok()).any(|k| tl.is_applied(&osis_perm::WriteId(*r, k))) {
-        out.component = comp;
         return out;
     }
     if core.addenda_on {

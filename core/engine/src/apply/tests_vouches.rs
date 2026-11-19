@@ -332,6 +332,39 @@ fn removals_owing_nothing_cost_a_step_nothing_spec_perm_5_1() {
     assert_eq!(small, big);
 }
 
+/// H removes X (peer 1); X, not holding the removal, grants K (peer 3) write and removes it
+/// again `k` times, all stamped after it: `k` removals never applying at W. The removals W
+/// judges as it then grants on `t`, an honest write in their component.
+fn unapplied_judged(k: usize) -> u64 {
+    let (mut lp, t) = world(4);
+    let r = remove(&mut lp, 0, t, 1);
+    for p in [2, 3] {
+        lp.sync(0, p).unwrap();
+    }
+    let mut junk = Vec::new();
+    for _ in 0..k {
+        grant(&mut lp, 1, t, 3, Role::Write);
+        junk.push(remove(&mut lp, 1, t, 3));
+    }
+    lp.sync_all().unwrap();
+    let tl = lp.peers[2].engine.core.timelines.get(&t).unwrap();
+    assert!(junk.iter().all(|j| !tl.is_applied(&osis_perm::WriteId(*j, 0))), "X's removals apply nowhere");
+    assert!(tl.is_applied(&osis_perm::WriteId(r, 0)));
+    osis_base::costs::take();
+    grant(&mut lp, 2, t, 3, Role::Read);
+    osis_base::costs::take().into_iter().find(|(k, _, _)| *k == "vouches: removals judged").map_or(0, |x| x.2)
+}
+
+// spec/permissions.md §5.1 Vouches (Writing), notes/principles.md (Fast by construction): a
+// removal not applying is judged again only when it starts to (its change enters the walk), so
+// a removed party's never-applying removals cost an honest write in their component nothing.
+#[test]
+fn never_applying_removals_cost_an_honest_write_nothing_spec_perm_5_1() {
+    let (small, big) = (unapplied_judged(2), unapplied_judged(20));
+    println!("vouches: never-applying removals judged by an honest write: {small} at k = 2, {big} at k = 20");
+    assert_eq!((small, big), (0, 0));
+}
+
 // spec/permissions.md §5.1 Vouches (Writing: R's window, by its `ts` and before R arrived): H's
 // clock runs ahead, so R reaches W before its `ts`. X's grant reaching W after R, though before
 // R's `ts`, is not vouched for (a thief's backdated write landing on a witness that holds R is
