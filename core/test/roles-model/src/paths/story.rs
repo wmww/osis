@@ -12,6 +12,8 @@ pub const Z: Thing = 6;
 pub const N6: Thing = 7;
 /// The mint admin of A in `Setup::mint` worlds, who leaves A.
 pub const M: Thing = 8;
+/// A guest X invites to read T1 through A2 (`Setup::x_a2` 1, 2): an invite grant.
+pub const G: Thing = 9;
 pub const A: Thing = 10;
 pub const A2: Thing = 11;
 pub const ORG: Thing = 12;
@@ -97,8 +99,11 @@ pub struct Move {
 /// key of N5, removed by X before the theft (`Setup::n5` 3); 35 is X's twin of that removal; 36 is
 /// N5, paired by X and kept (`Setup::n5` 1), vouching for X's role writes on A (an accomplice); 37
 /// is X removing A from T1 by [A2] (where it administers T1 through A2); 38 and 39 are X's own
-/// edge set timed by itself (admin until the tick after its `ts`; write until after the story).
-pub const MOVES: usize = 40;
+/// edge set timed by itself (admin until the tick after its `ts`; write until after the story);
+/// 40 to 42 are invite grants through A2 (where X writes A2, its share on T1 inviting read): Z
+/// invited at write (beyond the invite), at read, and at read until the next tick, finalized by
+/// X then and invited again.
+pub const MOVES: usize = 43;
 /// N5 grants H admin, standing or until just after the removal; N5 removes H; N5 demotes H; N5
 /// vouches against H's removal for X's role writes on A. Each stamped before X's removal of N5
 /// but the vouch.
@@ -143,6 +148,8 @@ pub struct Sim {
     pub gb5: Option<Id>,
     pub gh: Option<Id>,
     pub gx: Id,
+    /// X's invite of G to read T1 through A2 (`Setup::x_a2` 1, 2).
+    pub gi: Option<Id>,
     /// The thief's commits, each with the kind of the move that made it.
     pub thief: BTreeMap<Id, usize>,
     /// Removals and the further units they are logged under.
@@ -221,7 +228,7 @@ impl Sim {
         sync.insert(N6, Things::from([A, ORG, T1, D1, T2]));
         sync.insert(RD3, Things::from([T1, D1]));
         let w = if s.mint > 0 { minted_by(M) } else { account() };
-        let mut m = Sim { w, spec, setup: s, made: vec![], recv: vec![], sync, r: 0, r2: None, r3: None, rx: None, xfirst: None, gs: 0, g5: None, xrole: None, out5: None, gb5: None, gh: None, gx: 0, thief: BTreeMap::new(), logged: BTreeMap::new() };
+        let mut m = Sim { w, spec, setup: s, made: vec![], recv: vec![], sync, r: 0, r2: None, r3: None, rx: None, xfirst: None, gs: 0, g5: None, xrole: None, out5: None, gb5: None, gh: None, gx: 0, gi: None, thief: BTreeMap::new(), logged: BTreeMap::new() };
         let grant = Kind::set;
         if s.mint > 0 {
             m.gh = Some(m.put((M, 0, &[], A, grant(H, Role::Admin)), 0, rng, false));
@@ -240,7 +247,11 @@ impl Sim {
             m.put((M, 3, &[A], T1, Kind::Content), 3, rng, false);
         }
         let sharer = if s.sharer_x { X } else { B };
-        m.gs = m.put((sharer, 2, &[A], T1, grant(A2, a2)), 2, rng, false);
+        m.gs = m.put((sharer, 2, &[A], T1, grant(A2, a2).inviting(Role::Read)), 2, rng, false);
+        if (1..=2).contains(&s.x_a2) {
+            // an invite grant: X's path [A2] gives write on A2 and A2's invite on T1
+            m.gi = Some(m.put((X, 2, &[A2], T1, grant(G, Role::Read)), 2, rng, false));
+        }
         if s.n5 == 3 {
             let g = m.put((H, 1, &[], A, grant(N5, Role::Admin)), 1, rng, false);
             let gb5 = m.put((N5, 2, &[A], T1, grant(B, Role::Write)), 2, rng, false);
@@ -325,11 +336,15 @@ impl Sim {
                 }
             }
         }
+        // an honest explicit write carries its author's frontier (spec/permissions.md §5.1 step
+        // 4), a re-grant included, and keeps the invite the share had
         if s.regrant {
             if s.n5 > 0 && s.n5 < 3 {
-                m.put((H, AFTER, &[], A, grant(N5, Role::Admin)), AFTER, rng, false);
+                let f = m.w.cut(&m.w.through((N5, A), |i| m.got(i, H, AFTER)));
+                m.put((H, AFTER, &[], A, grant(N5, Role::Admin).listing(f)), AFTER, rng, false);
             }
-            m.put((B, AFTER, &[A], T1, grant(A2, Role::Write)), AFTER, rng, false);
+            let f = m.w.cut(&m.w.through((A2, T1), |i| m.got(i, B, AFTER)));
+            m.put((B, AFTER, &[A], T1, grant(A2, Role::Write).inviting(Role::Read).listing(f)), AFTER, rng, false);
         }
         m.answers(rules, rng);
         m
@@ -520,6 +535,27 @@ impl Sim {
         let grant = Kind::set;
         if mv.kind == 35 {
             // made with the setup (`Setup::n5` 3)
+            return;
+        }
+        if (40..43).contains(&mv.kind) {
+            // where X writes A2 (and K may remove it): invites of Z through A2
+            if !(1..=2).contains(&self.setup.x_a2) {
+                return;
+            }
+            let ts = mv.ts;
+            match mv.kind {
+                40 => {
+                    self.put((X, ts, &[A2], T1, grant(Z, Role::Write)), mv.made, rng, true);
+                }
+                41 => {
+                    self.put((X, ts, &[A2], T1, grant(Z, Role::Read)), mv.made, rng, true);
+                }
+                _ => {
+                    self.put((X, ts, &[A2], T1, grant(Z, Role::Read).until(ts + 1)), mv.made, rng, true);
+                    self.put((X, ts + 1, &[A2], T1, Kind::finalize(Z)), mv.made, rng, true);
+                    self.put((X, ts + 2, &[A2], T1, grant(Z, Role::Read)), mv.made, rng, true);
+                }
+            }
             return;
         }
         if mv.kind == 37 && self.r3.is_none() {
@@ -796,14 +832,20 @@ pub fn shrink(spec: &Spec, rules: &Rules, prop: &str) -> Spec {
 }
 
 pub fn trace(m: &Sim) -> String {
-    let name = |t: &Thing| ["?", "H", "B", "X", "N5", "K", "Z", "N6", "M", "?", "A", "A2", "ORG", "T1", "T2", "D1"].get(*t as usize).copied().unwrap_or("?");
+    let name = |t: &Thing| ["?", "H", "B", "X", "N5", "K", "Z", "N6", "M", "G", "A", "A2", "ORG", "T1", "T2", "D1"].get(*t as usize).copied().unwrap_or("?");
     let mut s = String::new();
     for (i, c) in m.w.commits.iter().enumerate() {
         let path: Vec<&str> = c.path.iter().map(name).collect();
         let kind = match &c.kind {
             Kind::Content => "content".to_string(),
-            Kind::Edge { holder, role, until, frontier, relies, adminless } => {
+            Kind::Edge { holder, role, until, frontier, relies, adminless, invite, finalize } => {
                 let mut k = format!("{} := {role:?}", name(holder));
+                if *invite > Role::None {
+                    k += &format!(" invite {invite:?}");
+                }
+                if *finalize {
+                    k += " finalize";
+                }
                 if let Some(u) = until {
                     k += &format!(" until {u}");
                 }
@@ -833,9 +875,9 @@ pub fn rebuild(w: &World, keep: &[Id]) -> (World, BTreeMap<Id, Id>) {
     for &i in keep {
         let c = &w.commits[i];
         let kind = match &c.kind {
-            Kind::Edge { holder, role, until, frontier, relies, adminless } => {
+            Kind::Edge { holder, role, until, frontier, relies, adminless, invite, finalize } => {
                 let f = frontier.iter().map(|(t, l)| (*t, ids(l))).collect();
-                Kind::Edge { holder: *holder, role: *role, until: *until, frontier: f, relies: *relies, adminless: *adminless }
+                Kind::Edge { holder: *holder, role: *role, until: *until, frontier: f, relies: *relies, adminless: *adminless, invite: *invite, finalize: *finalize }
             }
             Kind::Addendum { removal, list } => Kind::Addendum { removal: map[removal], list: ids(list) },
             Kind::Vouch { removal, list } => Kind::Vouch { removal: map[removal], list: ids(list) },
@@ -1001,7 +1043,9 @@ pub fn check(m: &Sim, rules: &Rules, st: &mut Stats) {
             // is judged apart)
             let by_right = (c.signer == X && x_keeps_a2 && c.path == [A2] && !matches!(c.kind, Kind::Edge { .. }) && !(m.r3.is_some() && !(s.regrant && b_admin) && [T1, D1].contains(&c.on)))
                 // X leaving A by itself: a self-removal is always open to the holder, and takes nothing X still holds
-                || (w.leave(i) && w.sets(i) == Some((X, A)));
+                || (w.leave(i) && w.sets(i) == Some((X, A)))
+                // X inviting (or finalizing) at read through A2, which it keeps writing, by A2's invite
+                || (c.signer == X && s.x_a2 == 1 && c.path == [A2] && matches!(c.kind, Kind::Edge { role, .. } if role <= Role::Read));
             if rd.shows(i) && !by_right {
                 st.fail(prop, m, format!("node {n}: the thief's commit {i} shows"));
             }
@@ -1010,7 +1054,9 @@ pub fn check(m: &Sim, rules: &Rules, st: &mut Stats) {
             let x_holds = e.0 == X && (e.1 == A || (e.1 == A2 && !x_keeps_a2));
             // N5, removed before the theft, stays removed
             let n5_holds = s.n5 == 3 && *e == (N5, A);
-            if *r > Role::None && (e.0 == Z || x_holds || n5_holds) {
+            // Z invited to read T1 through A2 by X, which keeps writing A2: X's right
+            let z_by_right = s.x_a2 == 1 && *e == (Z, T1) && *r <= Role::Read;
+            if *r > Role::None && ((e.0 == Z && !z_by_right) || x_holds || n5_holds) {
                 st.fail(prop, m, format!("node {n}: {e:?} ends {r:?}"));
             }
         }
@@ -1079,6 +1125,11 @@ pub fn check(m: &Sim, rules: &Rules, st: &mut Stats) {
                         || [H, B, N5, K].iter().any(|&a| {
                             m.sync.get(&a).is_some_and(|u| u.contains(&c.on)) && wrote(a) && m.got(i, a, REMOVAL) && m.recv[m.r].contains_key(&a)
                         })
+                }
+                // X's invite of G through A2 stands where the share it rests on does, and where
+                // K removed X from A2, by K's list or an admin's vouch for it
+                Kind::Edge { .. } if Some(i) == m.gi => {
+                    (!s.sharer_x || saved(m.gs)) && (s.x_a2 == 1 || m.r2.is_some_and(|r2| w.in_frontier(r2, i)) || saved(i))
                 }
                 // N5's grant to B, listed by X's removal of N5, stays: X's twin, heard before the
                 // removal, is kept and drops it
@@ -1306,7 +1357,8 @@ pub fn family_run(rules: &Rules, stride: usize) -> Stats {
 /// walk gave it), `-once` (a node answers a removal only the first time its walk applies it),
 /// `-leave` (a self-removal is never put in question), `-key-order` (the remover and vouchers
 /// keep the role writes in key order), `-audit-applied` (the audit puts in question the applied
-/// writes before it, not the held ones). `-exh` runs the small family in place of
+/// writes before it, not the held ones), `-invite-role` (an invite grant needs only a role on its
+/// path's last edge), `-admin-falls` (only a fall from admin is judged and audits). `-exh` runs the small family in place of
 /// random worlds.
 pub fn mode_rules(mode: &str) -> Option<Rules> {
     let f = Rules::fixed();
@@ -1324,6 +1376,8 @@ pub fn mode_rules(mode: &str) -> Option<Rules> {
         "-leave" => Rules { leave_in_question: false, ..f },
         "-audit-applied" => Rules { audit_held: false, ..f },
         "-key-order" => Rules { key_order: true, ..f },
+        "-invite-role" => Rules { invite_check: false, ..f },
+        "-admin-falls" => Rules { any_fall: false, ..f },
         _ => return None,
     })
 }

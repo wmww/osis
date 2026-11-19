@@ -1138,6 +1138,7 @@ fn each_fix_is_needed() {
         ("timed", Rules { last_admin: LastAdmin::NamedTimed, ..f }),
         ("once", Rules { rewrite: false, ..f }),
         ("leave", Rules { leave_in_question: false, ..f }),
+        ("invite-role", Rules { invite_check: false, ..f }),
     ];
     for (name, rules) in cases {
         assert!(random(100, &rules).failures() > 0, "{name}");
@@ -1794,4 +1795,108 @@ fn a_vouch_counts_only_where_its_removal_applies_in_the_first_walk() {
     assert!(disputes(&w, &Rules::fixed(), &View::all(&w)).is_empty());
     let rd = fixed(&w, &[r]);
     assert!(rd.void.is_empty() && rd.role(N5, A) == Gone && rd.role(H, A) == Admin && !rd.shows(timed) && rd.roles == plain.roles);
+}
+
+// ---- Invites and finalizes (spec/permissions.md §2 along one path; notes/write-path-design.md §1, Edge writes) ----
+
+/// A with H; A2 (K's) shares T1 at write inviting read (by H, through A); K gives X write on A2.
+fn invited() -> World {
+    let mut w = account();
+    w.push(H, 1, &[A], T1, Kind::set(A2, Write).inviting(Role::Read));
+    w.edge(K, 1, &[], A2, X, Write, &[]);
+    w
+}
+
+/// An invite grant applies by its path's invite (the roles before the last edge, the last edge's
+/// invite), to a holder with no current grant, and gives no right to change another edge.
+#[test]
+fn an_invite_grant_applies_by_its_paths_invite() {
+    let mut w = invited();
+    let z = w.push(X, 2, &[A2], T1, Kind::set(Z, Role::Read));
+    let beyond = w.push(X, 2, &[A2], T1, Kind::set(N6, Write));
+    let again = w.push(X, 3, &[A2], T1, Kind::set(Z, Role::Read).until(9));
+    let lower = w.push(X, 4, &[A2], T1, Kind::set(Z, Gone));
+    let rd = fixed(&w, &[]);
+    assert!(rd.applied.contains(&z) && ![beyond, again, lower].iter().any(|i| rd.applied.contains(i)));
+    assert_eq!((rd.role(Z, T1), rd.role(N6, T1)), (Role::Read, Gone));
+    // control: a role on the last edge suffices, so a writer grants write
+    let rd = fixed_but(&w, &[], |r| r.invite_check = false);
+    assert_eq!(rd.role(N6, T1), Write);
+}
+
+/// A writer removed from the holder it invited through: its invites rest on that edge, fall
+/// unless the removal lists them, whether the edge fell from admin or from write.
+#[test]
+fn an_invite_by_a_removed_writer_falls_unless_listed() {
+    let mut w = invited();
+    let z = w.push(X, 3, &[A2], T1, Kind::set(Z, Role::Read));
+    let n6 = w.push(X, 4, &[A2], T1, Kind::set(N6, Role::Read));
+    let r = w.edge(K, 6, &[], A2, X, Gone, &[z]);
+    for trust in [vec![], vec![r]] {
+        let rd = fixed(&w, &trust);
+        assert!(rd.applied.contains(&z) && !rd.shows(n6), "{trust:?}");
+        assert_eq!((rd.role(Z, T1), rd.role(N6, T1)), (Role::Read, Gone));
+    }
+    // control: only a fall from admin audits; trusting nothing the unlisted invite stands
+    let rd = fixed_but(&w, &[], |r| r.any_fall = false);
+    assert_eq!(rd.role(N6, T1), Role::Read);
+}
+
+/// An expired grant counts as none: an invite over it applies, before or after a finalize; a
+/// finalize applies only to an ended grant, by a writer holding at least its role, audits nothing
+/// and makes nothing standing.
+#[test]
+fn a_finalize_ends_an_ended_grant_and_an_invite_follows_it() {
+    let mut w = invited();
+    let timed = w.push(X, 2, &[A2], T1, Kind::set(Z, Role::Read).until(4));
+    let early = w.push(K, 3, &[A2], T1, Kind::finalize(Z));
+    let by_reader = w.push(Z, 3, &[], T1, Kind::finalize(Z));
+    let fin = w.push(K, 4, &[A2], T1, Kind::finalize(Z));
+    let again = w.push(X, 5, &[A2], T1, Kind::set(Z, Role::Read));
+    let rd = fixed(&w, &[]);
+    assert!([timed, fin, again].iter().all(|i| rd.applied.contains(i)));
+    assert!(![early, by_reader].iter().any(|i| rd.applied.contains(i)));
+    assert_eq!(rd.role(Z, T1), Role::Read);
+    // without the finalize the invite over the ended grant applies all the same
+    let rd = judge(&w, &Rules::fixed(), &View::all(&w).without(&[fin]));
+    assert!(rd.applied.contains(&again) && rd.role(Z, T1) == Role::Read);
+}
+
+/// spec/permissions.md §7, a link: L, timed with an invite, invites; its `until` passing and the
+/// finalize audit nothing (the invitee's writes stand by their own keys); the next explicit
+/// removal of L audits against the edge as restored and drops the invites it does not list.
+#[test]
+fn the_explicit_removal_after_a_finalize_audits_the_invites() {
+    let mut w = account();
+    let l = N6;
+    w.push(H, 1, &[A], T1, Kind::set(l, Write).inviting(Write).until(5));
+    let z = w.push(l, 2, &[], T1, Kind::set(Z, Write));
+    let n5 = w.push(l, 3, &[], T1, Kind::set(N5, Write));
+    let wz = w.content(Z, 4, &[], T1);
+    let fin = w.push(B, 6, &[A], T1, Kind::finalize(l));
+    w.edge(H, 1, &[], A, B, Admin, &[]);
+    let rd = fixed(&w, &[]);
+    assert!(rd.applied.contains(&fin) && rd.valid.contains(&wz));
+    assert_eq!((rd.role(Z, T1), rd.role(N5, T1)), (Write, Write));
+    let r = w.edge(H, 7, &[A], T1, l, Gone, &[z]);
+    for trust in [vec![], vec![r]] {
+        let rd = fixed(&w, &trust);
+        assert!(rd.applied.contains(&r) && rd.valid.contains(&wz) && !rd.applied.contains(&n5), "{trust:?}");
+        assert_eq!((rd.role(Z, T1), rd.role(N5, T1)), (Write, Gone));
+    }
+}
+
+/// A re-grant dropping the invite the share carried lowers it: it audits the invites made under
+/// it, and an honest one lists them (story: B's re-grant of A2 keeps the invite and lists).
+#[test]
+fn a_write_dropping_an_invite_audits_the_invites_under_it() {
+    let mut w = invited();
+    let z = w.push(X, 2, &[A2], T1, Kind::set(Z, Role::Read));
+    let plain = w.push(B, 5, &[A], T1, Kind::set(A2, Write));
+    w.edge(H, 1, &[], A, B, Admin, &[]);
+    let rd = fixed(&w, &[]);
+    assert!(rd.applied.contains(&plain) && rd.dropped.contains(&z));
+    w.edit(plain, |k| k.listing(BTreeMap::from([(T1, Set::from([z]))])));
+    let rd = fixed(&w, &[]);
+    assert!(rd.applied.contains(&z) && rd.role(Z, T1) == Role::Read);
 }

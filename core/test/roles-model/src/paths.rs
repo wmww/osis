@@ -90,6 +90,12 @@ pub enum Kind {
         relies: Option<Thing>,
         /// The mark that lets the thing go adminless.
         adminless: bool,
+        /// The invite it carries (spec/permissions.md §2), at most its role; an admin edge gives
+        /// every invite whatever this says.
+        invite: Role,
+        /// A finalize: a removal carrying no frontier, ending a grant past its `until`
+        /// (spec/permissions.md §2).
+        finalize: bool,
     },
     Addendum { removal: Id, list: Set },
     Vouch { removal: Id, list: Set },
@@ -98,7 +104,21 @@ pub enum Kind {
 impl Kind {
     /// An edge write setting `holder`'s edge to `role`, standing, listing nothing.
     pub fn set(holder: Thing, role: Role) -> Kind {
-        Kind::Edge { holder, role, until: None, frontier: BTreeMap::new(), relies: None, adminless: false }
+        Kind::Edge { holder, role, until: None, frontier: BTreeMap::new(), relies: None, adminless: false, invite: Role::None, finalize: false }
+    }
+    /// A finalize of `holder`'s ended grant.
+    pub fn finalize(holder: Thing) -> Kind {
+        let mut k = Kind::set(holder, Role::None);
+        if let Kind::Edge { finalize, .. } = &mut k {
+            *finalize = true;
+        }
+        k
+    }
+    pub fn inviting(mut self, r: Role) -> Kind {
+        if let Kind::Edge { invite, .. } = &mut self {
+            *invite = r;
+        }
+        self
     }
     fn with(mut self, f: impl FnOnce(&mut Option<u32>, &mut BTreeMap<Thing, Set>, &mut Option<Thing>, &mut bool)) -> Kind {
         if let Kind::Edge { until, frontier, relies, adminless, .. } = &mut self {
@@ -208,6 +228,14 @@ pub struct Rules {
     /// Control of `stands`: the writer keeps the role writes in key order, not in the order it
     /// received them.
     pub key_order: bool,
+    /// An invite grant needs its level as an invite on its path's last edge (spec/permissions.md
+    /// §2, along one path: notes/write-path-design.md §1, Edge writes). False (control
+    /// `-invite-role`): a role there suffices, so any writer grants.
+    pub invite_check: bool,
+    /// A lowering is judged, and audits, when it takes its edge as restored down in role or in
+    /// invite, dropping the writes whose need the edge no longer meets (an invite grant falls with
+    /// a writer's edge). False (control `-admin-falls`): only a fall from admin is judged.
+    pub any_fall: bool,
 }
 
 impl Rules {
@@ -227,6 +255,8 @@ impl Rules {
             audit_held: false,
             stands: false,
             key_order: false,
+            invite_check: true,
+            any_fall: true,
         }
     }
     /// The design: every fix the notes state, a removal judged in the world its list makes
@@ -246,6 +276,8 @@ impl Rules {
             audit_held: true,
             stands: true,
             key_order: false,
+            invite_check: true,
+            any_fall: true,
         }
     }
 }
@@ -326,7 +358,7 @@ impl World {
     /// An edge write setting `holder`'s edge on `on`, standing; `frontier` is cut per thing.
     pub fn edge(&mut self, signer: Thing, ts: u32, path: &[Thing], on: Thing, holder: Thing, role: Role, frontier: &[Id]) -> Id {
         let f = self.cut(frontier);
-        self.push(signer, ts, path, on, Kind::Edge { holder, role, until: None, frontier: f, relies: None, adminless: false })
+        self.push(signer, ts, path, on, Kind::set(holder, role).listing(f))
     }
     pub fn addendum(&mut self, signer: Thing, ts: u32, path: &[Thing], on: Thing, removal: Id, list: &[Id]) -> Id {
         self.push(signer, ts, path, on, Kind::Addendum { removal, list: list.iter().copied().collect() })
@@ -334,7 +366,7 @@ impl World {
     pub fn vouch(&mut self, signer: Thing, ts: u32, path: &[Thing], on: Thing, removal: Id, list: &[Id]) -> Id {
         self.push(signer, ts, path, on, Kind::Vouch { removal, list: list.iter().copied().collect() })
     }
-    fn edit(&mut self, i: Id, f: impl FnOnce(Kind) -> Kind) {
+    pub fn edit(&mut self, i: Id, f: impl FnOnce(Kind) -> Kind) {
         let k = std::mem::replace(&mut self.commits[i].kind, Kind::Content);
         self.commits[i].kind = f(k);
     }
@@ -377,10 +409,11 @@ impl World {
             _ => None,
         }
     }
-    /// An edge write setting its edge to below admin at its own `ts`.
+    /// An edge write setting its edge to below admin at its own `ts`, but a finalize (which ends
+    /// a grant already ended).
     pub fn lowers(&self, i: Id) -> Option<Edge> {
         match &self.commits[i].kind {
-            Kind::Edge { holder, role, until, .. } if alive((*role, *until), self.commits[i].ts) < Role::Admin => Some((*holder, self.commits[i].on)),
+            Kind::Edge { holder, role, until, finalize: false, .. } if alive((*role, *until), self.commits[i].ts) < Role::Admin => Some((*holder, self.commits[i].on)),
             _ => None,
         }
     }
@@ -493,14 +526,75 @@ struct Pass {
     /// The edge as restored: the highest role each edge held since the last explicit write on it
     /// (values an `until` or a self-removal took included).
     restored: BTreeMap<Edge, Role>,
+    /// Each edge's invite field, and its invite as restored (as `restored`, of `invite_at`).
+    inv: BTreeMap<Edge, Role>,
+    rinv: BTreeMap<Edge, Role>,
     hist: BTreeMap<Edge, Vec<(Key, Val)>>,
     applied: Vec<Id>,
+    /// The applied invite grants (attributed to invite, not to admin: spec/permissions.md §5.1
+    /// step 3, admin before invite).
+    invited: Set,
     lows: Vec<Low>,
 }
 
 impl Pass {
     fn at(&self, e: Edge, ts: u32) -> Role {
         self.state.get(&e).map_or(Role::None, |&v| alive(v, ts))
+    }
+    /// The invite edge `e` gives at `ts`: every invite where it gives admin, else its invite
+    /// field, at most its role.
+    fn invite_at(&self, e: Edge, ts: u32) -> Role {
+        give_invite(self.at(e, ts), self.inv.get(&e).copied().unwrap_or(Role::None))
+    }
+}
+
+/// The invite a value gives: every invite at admin, else its field at most its role.
+fn give_invite(role: Role, field: Role) -> Role {
+    if role == Role::Admin {
+        Role::Admin
+    } else {
+        field.min(role)
+    }
+}
+
+/// What a write needs of one edge of its path: a role there, or (the last edge of an invite
+/// grant's path) an invite there.
+#[derive(Clone, Copy, Debug, PartialEq)]
+enum Need {
+    Role(Role),
+    Invite(Role),
+}
+
+impl Need {
+    fn met(self, role: Role, invite: Role) -> bool {
+        match self {
+            Need::Role(r) => role >= r,
+            Need::Invite(r) => invite >= r,
+        }
+    }
+}
+
+/// An edge write adding a grant below admin (no self-removal, no finalize): one that may apply
+/// as an invite grant. Its level is its role (its invite is at most its role).
+fn invite_grant(w: &World, i: Id) -> Option<Role> {
+    let c = &w.commits[i];
+    match &c.kind {
+        Kind::Edge { role, until, invite, finalize: false, .. } if !c.leave && *invite <= *role && alive((*role, *until), c.ts) > Role::None && *role < Role::Admin => Some(*role),
+        _ => None,
+    }
+}
+
+/// What write `i` needs of edge `e` (where its path holds `e`; a self-removal of `e` needs admin
+/// there): admin, unless it is an invite grant (`as_invite`: applied as one, or, for a held write
+/// this pass did not apply, one that may), which needs its level as a role on its path's edges
+/// before the last and as an invite on the last (`Rules::invite_check`; else as a role there too).
+fn need(w: &World, rules: &Rules, i: Id, e: Edge, as_invite: bool) -> Need {
+    let hops = w.hops(i);
+    match (as_invite, invite_grant(w, i)) {
+        (true, Some(r)) if rules.invite_check && hops.last() == Some(&e) => Need::Invite(r),
+        (true, Some(r)) => Need::Role(r),
+        _ if matches!(w.commits[i].kind, Kind::Edge { finalize: true, .. }) => Need::Role(Role::Write),
+        _ => Need::Role(Role::Admin),
     }
 }
 
@@ -642,6 +736,7 @@ fn walk(w: &World, rules: &Rules, v: &View, d0: &Set, vouched: &Vouched) -> Walk
         for &e in &w.records {
             p.state.insert(e, (Role::Admin, None));
             p.restored.insert(e, Role::Admin);
+            p.rinv.insert(e, Role::Admin);
         }
         let mut restart = None;
         for (k, &i) in order.iter().enumerate() {
@@ -654,38 +749,80 @@ fn walk(w: &World, rules: &Rules, v: &View, d0: &Set, vouched: &Vouched) -> Walk
             let c = &w.commits[i];
             let lowering = w.lowers(i).is_some() && !w.leave(i);
             let judged = if lowering { verdict.get(&i).copied() } else { None };
+            // how it applies: by admin along its path (or its verdict), as an invite grant, or as
+            // a finalize (spec/permissions.md §2, along its stated path)
+            let mut as_invite = false;
+            let mut as_finalize = false;
             match judged {
                 Some(Verdict::Applied) => {}
                 Some(Verdict::Void) => continue,
                 None => {
-                    if !w.well(i) || !w.hops(i).iter().all(|&e| p.at(e, c.ts) == Role::Admin) {
+                    if !w.well(i) {
                         continue;
+                    }
+                    let hops = w.hops(i);
+                    let path_role = hops.iter().map(|&e| p.at(e, c.ts)).min().unwrap_or(Role::Admin);
+                    match &c.kind {
+                        Kind::Edge { holder, finalize: true, .. } => {
+                            // it ends a grant past its `until`, by a writer holding a role at
+                            // least the grant's; else it applies nothing
+                            let old = p.state.get(&(*holder, c.on)).copied();
+                            let ended = old.is_some_and(|v| v.0 > Role::None && v.1.is_some_and(|u| u <= c.ts));
+                            if !(ended && path_role >= old.map_or(Role::None, |v| v.0).max(Role::Write)) {
+                                continue;
+                            }
+                            as_finalize = true;
+                        }
+                        _ if path_role == Role::Admin => {}
+                        Kind::Edge { holder, .. } => {
+                            // an invite grant: a holder with no current grant, its level within
+                            // the path's invite (roles before the last edge, the last's invite)
+                            let Some(lvl) = invite_grant(w, i) else { continue };
+                            let (last, before) = hops.split_last().expect("a grant states a hop");
+                            let gives = if rules.invite_check { p.invite_at(*last, c.ts) } else { p.at(*last, c.ts) };
+                            if p.at((*holder, c.on), c.ts) > Role::None || !before.iter().all(|&e| p.at(e, c.ts) >= lvl) || gives < lvl {
+                                continue;
+                            }
+                            as_invite = true;
+                        }
+                        _ => continue,
                     }
                 }
             }
-            let Kind::Edge { holder, role, until, .. } = &c.kind else {
+            let Kind::Edge { holder, role, until, invite, .. } = &c.kind else {
                 p.applied.push(i);
                 continue;
             };
             let e = (*holder, c.on);
             let new = (*role, *until);
-            if judged.is_none() && refused(w, rules, &p, i, e, new) {
+            let leave = w.leave(i);
+            // an explicit write: attributed to admin (spec/permissions.md §5.1 step 2); a
+            // self-removal, an invite grant and a finalize are not, and audit nothing
+            let explicit = !leave && !as_invite && !as_finalize;
+            if judged.is_none() && !as_invite && !as_finalize && refused(w, rules, &p, i, e, new) {
                 continue;
             }
-            let leave = w.leave(i);
             let old = p.state.get(&e).copied().unwrap_or((Role::None, None));
             // a self-removal only lowers: no component above the grant's
             if leave && (new.0 > old.0 || old.1.is_some_and(|u| new.1.is_none_or(|n| n > u))) {
                 continue;
             }
             let restored = p.restored.get(&e).copied().unwrap_or(Role::None).max(p.at(e, c.ts));
-            let (before, after) = (if leave { p.at(e, c.ts) } else { restored }, alive(new, c.ts));
-            // an explicit write audits against the edge as restored, once, when judged; a
-            // self-removal audits nothing
+            let rinv = p.rinv.get(&e).copied().unwrap_or(Role::None).max(p.invite_at(e, c.ts));
+            let (before, after) = (if explicit { restored } else { p.at(e, c.ts) }, alive(new, c.ts));
+            let after_inv = give_invite(after, *invite);
+            // an explicit write audits against the edge as restored, once, when judged: where it
+            // takes the edge down (`any_fall`: in role or invite; else from admin)
+            let falls = if rules.any_fall { restored > after || rinv > after_inv } else { restored == Role::Admin && after < Role::Admin };
             let mut q = vec![];
-            if judged.is_none() && !leave && before == Role::Admin && after < Role::Admin {
+            if judged.is_none() && explicit && falls {
                 let exempt = if rules.exempt_chain { chain(w, &v.held, i) } else { Set::new() };
-                let gone = |j: Id| rests_on(w, rules, j, e) && !exempt.contains(&j) && !listed(w, v, vouched, i, j);
+                // in question: a write resting on the edge whose need there the edge as restored
+                // met and its new value does not
+                let gone = |j: Id| {
+                    let n = need(w, rules, j, e, p.invited.contains(&j) || !p.applied.contains(&j));
+                    rests_on(w, rules, j, e) && !exempt.contains(&j) && !listed(w, v, vouched, i, j) && n.met(restored, rinv) && !n.met(after, after_inv)
+                };
                 // in question: the applied writes before it (`audit_held`: the held ones not yet
                 // dropped or void) resting on its edge
                 let before = || -> Vec<Id> {
@@ -705,13 +842,21 @@ fn walk(w: &World, rules: &Rules, v: &View, d0: &Set, vouched: &Vouched) -> Walk
                 verdict.insert(i, Verdict::Applied);
             }
             p.state.insert(e, new);
-            if !leave {
+            p.inv.insert(e, *invite);
+            if explicit {
                 p.restored.insert(e, new.0);
+                p.rinv.insert(e, after_inv);
+            } else if as_invite {
+                let r = p.restored.entry(e).or_insert(Role::None);
+                *r = (*r).max(new.0);
+                let r = p.rinv.entry(e).or_insert(Role::None);
+                *r = (*r).max(after_inv);
+                p.invited.insert(i);
             }
             p.hist.entry(e).or_default().push((w.key(i), new));
             p.applied.push(i);
             if after < before {
-                p.lows.push(Low { id: i, explicit: !leave, edge: e, before, after });
+                p.lows.push(Low { id: i, explicit, edge: e, before, after });
             }
             if !q.is_empty() {
                 restart = q.iter().map(|j| pos[j]).min();
@@ -827,12 +972,20 @@ fn first_applied(w: &World, p: &Pass, edges: &[Edge]) -> Option<Key> {
 /// §4 Chained writes, along the write's stated path, `until` disregarded).
 fn first_chained(w: &World, held: &Set) -> BTreeMap<Edge, Key> {
     let mut max: BTreeMap<Edge, Role> = w.records.iter().map(|&e| (e, Role::Admin)).collect();
+    let mut inv: BTreeMap<Edge, Role> = w.records.iter().map(|&e| (e, Role::Admin)).collect();
     let mut first: BTreeMap<Edge, Key> = w.records.iter().map(|&e| (e, (0, 0, 0))).collect();
+    let get = |m: &BTreeMap<Edge, Role>, e: &Edge| m.get(e).copied().unwrap_or(Role::None);
     for i in order(w, held) {
         let hops = w.hops(i);
-        let (Some(e), Kind::Edge { role, .. }) = (w.sets(i), &w.commits[i].kind) else { continue };
-        // a self-removal sets no edge here (spec/permissions.md §4 Chained writes)
-        if !w.well(i) || w.leave(i) || !hops.iter().all(|h| max.get(h) == Some(&Role::Admin)) {
+        let (Some(e), Kind::Edge { role, invite, finalize, .. }) = (w.sets(i), &w.commits[i].kind) else { continue };
+        // a self-removal and a finalize set no edge here (spec/permissions.md §4 Chained writes)
+        if !w.well(i) || w.leave(i) || *finalize {
+            continue;
+        }
+        // by admin on its target, or by an invite there for an invite grant
+        let admin = hops.iter().all(|h| get(&max, h) == Role::Admin);
+        let invited = invite_grant(w, i).is_some_and(|lvl| hops.split_last().is_some_and(|(l, b)| get(&inv, l) >= lvl && b.iter().all(|h| get(&max, h) >= lvl)));
+        if !admin && !invited {
             continue;
         }
         if *role >= Role::Write {
@@ -840,6 +993,8 @@ fn first_chained(w: &World, held: &Set) -> BTreeMap<Edge, Key> {
         }
         let m = max.entry(e).or_insert(Role::None);
         *m = (*m).max(*role);
+        let m = inv.entry(e).or_insert(Role::None);
+        *m = (*m).max(give_invite(*role, *invite));
     }
     first
 }
