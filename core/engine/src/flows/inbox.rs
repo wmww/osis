@@ -464,7 +464,7 @@ impl Engine {
         Ok(self.fire_keys(&o.thing)?.map(|(e, _, _)| e))
     }
 
-    fn fire_keys(&mut self, t: &Tid) -> Result<Option<(osis_crypto::Epoch, osis_crypto::KemPublicKey, osis_base::SyncId)>> {
+    pub(crate) fn fire_keys(&mut self, t: &Tid) -> Result<Option<(osis_crypto::Epoch, osis_crypto::KemPublicKey, osis_base::SyncId)>> {
         let Some(k) = self.get_typed(t, &ct::KEYS)? else { return Ok(None) };
         let (Some(rk), Some(s)) = (k.read.as_ref(), k.sync_id) else { return Ok(None) };
         let ct::KemKey::X25519MlKem768(b) = &rk.kem_key;

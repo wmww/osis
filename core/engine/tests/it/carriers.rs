@@ -197,3 +197,63 @@ fn a_flood_of_fires_carries_no_more_than_the_fires_held_spec_commits_4() {
     assert!(ws.iter().all(|w| !awaited(e1, w) && e1.core.created(w).is_none()));
     assert_eq!(carrier_rows(&mut lp), 0);
 }
+
+// spec/commits.md §4 Pending storage (with none left it counts as never received, until a carrier
+// brings it again): D1 is carried by fire F and an entry, D2 by an entry alone. Their entries go:
+// D1 stays for F, D2 is gone with what it rooted. An entry brings both again: each pends as before,
+// D1 carried by both again; once F goes, both stay for their entries, and go with them.
+#[test]
+fn a_commit_let_go_and_brought_again_pends_by_its_carriers_spec_commits_4() {
+    let (mut lp, x, inbox) = base();
+    let f = fire(&mut lp, inbox, "f");
+    let (w1, _, b1, d1) = minted(&mut lp, x, "d1");
+    let (w2, _, b2, d2) = minted(&mut lp, x, "d2");
+    lp.peers[1].engine.ingest_valid(&b1, Some(Carrier::Fire(f))).unwrap();
+    lp.peers[1].receive(&b1, Vec::new()).unwrap();
+    lp.peers[1].receive(&b2, Vec::new()).unwrap();
+    let e1 = &mut lp.peers[1].engine;
+    assert!(!e1.release_entry(&d1).unwrap(), "D1 kept by F");
+    assert!(e1.release_entry(&d2).unwrap(), "D2 had its entry alone");
+    pass_end(e1);
+    assert_eq!(e1.pending_carriers(&d1), vec![Carrier::Fire(f)]);
+    assert!(e1.pends(&d1) && awaited(e1, &w1));
+    assert!(!e1.pends(&d2) && !awaited(e1, &w2) && e1.pending_carriers(&d2).is_empty());
+    lp.peers[1].receive(&b1, Vec::new()).unwrap();
+    lp.peers[1].receive(&b2, Vec::new()).unwrap();
+    pass_end(&mut lp.peers[1].engine);
+    let e1 = &mut lp.peers[1].engine;
+    assert_eq!(e1.pending_carriers(&d1), vec![Carrier::Entry, Carrier::Fire(f)]);
+    assert_eq!(e1.pending_carriers(&d2), vec![Carrier::Entry]);
+    assert!(awaited(e1, &w1) && awaited(e1, &w2), "brought again, each roots its thing");
+    fires_go(&mut lp, &[f]);
+    let e1 = &mut lp.peers[1].engine;
+    assert!(e1.pends(&d1) && e1.pends(&d2) && awaited(e1, &w1), "kept by their entries");
+    assert!(e1.release_entry(&d1).unwrap() && e1.release_entry(&d2).unwrap());
+    pass_end(e1);
+    assert!(!awaited(e1, &w1) && !awaited(e1, &w2));
+    assert_eq!(carrier_rows(&mut lp), 0);
+}
+
+// spec/commits.md §4 Pending storage, spec/permissions.md §5.1 Received: D, carried by an entry,
+// pends for W's record a while; once C brings it D applies, received when it first came: a
+// frontier as of a time between its arrival and its apply lists it, one before its arrival does not.
+#[test]
+fn a_commit_that_waited_for_its_record_was_received_when_it_came_spec_commits_4() {
+    let (mut lp, x, _) = base();
+    let (w, c, b, d) = minted(&mut lp, x, "d");
+    let before = lp.peers[1].engine.now();
+    lp.advance(1_000);
+    lp.peers[1].receive(&b, Vec::new()).unwrap();
+    assert!(lp.peers[1].engine.pends(&d));
+    lp.advance(10_000);
+    let between = lp.peers[1].engine.now();
+    lp.advance(10_000);
+    crate::flows::send_carried(&mut lp, 0, 1, &[c]);
+    pass_end(&mut lp.peers[1].engine);
+    let author = lp.peers[0].engine.me();
+    let e1 = &mut lp.peers[1].engine;
+    assert!(!e1.pends(&d) && e1.header(&d).is_some(), "D applied");
+    let scope = osis_perm::DemotionScope { roles: std::collections::BTreeMap::from([(author, BTreeSet::from([w]))]), content: std::collections::BTreeMap::from([(author, BTreeSet::from([w]))]) };
+    assert!(e1.frontier(&scope, between).unwrap().commits.contains(&d), "received when it came");
+    assert!(!e1.frontier(&scope, before).unwrap().commits.contains(&d));
+}

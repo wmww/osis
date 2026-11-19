@@ -355,3 +355,149 @@ fn a_report_letting_go_forgets_what_only_it_carries_spec_commits_4() {
     assert!(!lp.peers[0].engine.pends(&d3) && !awaited(&lp, &w3), "D3 goes with its holder");
     assert!(lp.peers[0].engine.pends(&d2) && awaited(&lp, &w2));
 }
+
+// spec/commits.md §4 Pending storage (a fire carries while its commit is held), spec/sync-inbox.md
+// §5 Carried commits, §5 What a held thing needs: peer 2, a reader of g, fires Bob (peer 1) a
+// removal notice carrying its own role commit on g and on W, a thing it mints and never sends,
+// projected to its part on W. Bob takes it from the notice (`take_fire`): it pends for W's record,
+// carried by the notice alone, rooting W. Once the notice leaves Bob's inbox history and is
+// forgotten, nothing of the commit or W is left, across a restart.
+#[test]
+fn a_removal_notice_carries_what_it_brings_until_it_goes_spec_commits_4() {
+    use crate::apply::carriers::Carrier;
+    use crate::flows::inbox::{save, Fire, OwedFire, REMOVAL_FIRE};
+    const HOUR_MS: u64 = 3_600_000;
+    let (mut lp, g, tids) = granted(3, &[(1, Role::Read), (2, Role::Read)]);
+    let bob = tids[1];
+    let removal = osis_base::Ak::new(REMOVAL_FIRE).unwrap();
+    // Bob keeps removal notices on his inbox an hour
+    let e1 = &mut lp.peers[1].engine;
+    let inbox = e1.inbox_thing(&bob).unwrap();
+    let mut s = e1.get_typed(&inbox, &osis_schema::core_types::RETENTION).unwrap().unwrap_or_default();
+    s.rules.insert(removal.clone(), osis_schema::core_types::RetentionEntry { history: Some(osis_schema::History::Keep { until: None, after: Some(HOUR_MS) }), ..Default::default() });
+    let mut m = crate::Mutation::new();
+    m.set(inbox, &osis_schema::core_types::RETENTION, &s).unwrap();
+    lp.peers[1].commit(m).unwrap().unwrap();
+    lp.sync_all().unwrap();
+    let e2 = &mut lp.peers[2].engine;
+    let me2 = e2.me();
+    let mut m = crate::Mutation::new();
+    let w = e2.new_thing(&mut m, me2);
+    e2.commit(m).unwrap().unwrap();
+    let before = e2.fires_owed();
+    let c = e2
+        .run(|tx| {
+            let mut m = crate::Mutation::new();
+            crate::flows::put_edge(&mut m, g, bob, &edge(Role::Sync))?;
+            crate::flows::put_edge(&mut m, w, bob, &edge(Role::Read))?;
+            m.unchecked();
+            tx.core.skip_writer_rules = true;
+            let c = crate::engine::Engine::commit_tx(tx, m);
+            tx.core.skip_writer_rules = false;
+            let c = c?.expect("built");
+            let full = tx.get_commit(&c)?.expect("held");
+            let on_w = osis_commit::rewrite(&full, |ai| full.header.aspects.get(ai).is_none_or(|a| a.tid != w));
+            let v = osis_schema::codec::rt::struct_value(vec![(0, osis_base::Value::Bytes(on_w.encode())), (1, osis_base::Value::List(Vec::new())), (2, osis_base::Value::List(Vec::new()))]);
+            save(tx, OwedFire { thing: inbox, ak: removal.clone(), what: Fire::Value(v), to: BTreeSet::new(), commit: None })?;
+            Ok(c)
+        })
+        .unwrap();
+    let id = *e2.fires_owed().iter().find(|x| !before.contains(x)).expect("owed");
+    let out = e2.sealed_fire(&id).unwrap().expect("sealed");
+    let e1 = &mut lp.peers[1].engine;
+    let f = match e1.open_entry(&out.sync_id, &osis_blob::blob_id(&out.blob), &[0; 57], &out.blob, u64::MAX).unwrap() {
+        crate::sync::Opened::Commit(f, _) => f,
+        o => panic!("the notice is a fire like any: {o:?}"),
+    };
+    e1.take_carried().unwrap();
+    e1.settle_needs().unwrap();
+    assert!(e1.pends(&c) && awaited_at(e1, &w), "taken from the notice, pending for W's record");
+    assert_eq!(e1.pending_carriers(&c), vec![Carrier::Fire(f)]);
+    lp.peers[1].restart(0).unwrap();
+    lp.peers[1].engine.settle_needs().unwrap();
+    assert!(lp.peers[1].engine.pends(&c) && awaited_at(&lp.peers[1].engine, &w), "carried across a restart");
+    lp.advance(HOUR_MS + 1_000);
+    lp.peers[1].tick().unwrap();
+    let e1 = &mut lp.peers[1].engine;
+    assert!(e1.forgettable(&f).unwrap(), "the notice is out of history");
+    e1.forget_commits(&[f]).unwrap();
+    e1.settle_needs().unwrap();
+    assert!(!e1.pends(&c) && !awaited_at(e1, &w) && e1.core.created(&w).is_none(), "gone with its notice: {}", e1.why_kept(&w));
+    lp.peers[1].restart(0).unwrap();
+    lp.peers[1].engine.settle_needs().unwrap();
+    assert!(!lp.peers[1].engine.pends(&c) && lp.peers[1].engine.pending_carriers(&c).is_empty());
+}
+
+fn awaited_at(e: &crate::Engine, w: &Tid) -> bool {
+    e.core.ix.pend_on.contains_key(&crate::apply::Wake::Record(*w))
+}
+
+// spec/commits.md §4 Pending storage (a fire carries a chain commit it carries while its commit is
+// held), spec/sync-inbox.md §4 A sealed fire: peer 2 seals Bob (peer 1) a fire whose chain carries,
+// beside its own, a write on W, a thing it mints and never sends. Bob takes the fire whole: the
+// write pends for W's record, carried by the fire alone, rooting W; once the fire leaves Bob's
+// inbox history and is forgotten, nothing of the write or W is left.
+#[test]
+fn a_sealed_fire_carries_its_chain_until_it_goes_spec_commits_4() {
+    use crate::apply::carriers::Carrier;
+    use crate::flows::inbox::REMOVAL_FIRE;
+    use osis_base::Value;
+    const HOUR_MS: u64 = 3_600_000;
+    let (mut lp, _, tids) = granted(3, &[]);
+    let bob = tids[1];
+    let removal = osis_base::Ak::new(REMOVAL_FIRE).unwrap();
+    let e1 = &mut lp.peers[1].engine;
+    let inbox = e1.inbox_thing(&bob).unwrap();
+    let mut s = e1.get_typed(&inbox, &osis_schema::core_types::RETENTION).unwrap().unwrap_or_default();
+    s.rules.insert(removal.clone(), osis_schema::core_types::RetentionEntry { history: Some(osis_schema::History::Keep { until: None, after: Some(HOUR_MS) }), ..Default::default() });
+    let mut m = crate::Mutation::new();
+    m.set(inbox, &osis_schema::core_types::RETENTION, &s).unwrap();
+    lp.peers[1].commit(m).unwrap().unwrap();
+    lp.sync_all().unwrap();
+    let e2 = &mut lp.peers[2].engine;
+    let me2 = e2.me();
+    let mut m = crate::Mutation::new();
+    let w = e2.new_thing(&mut m, me2);
+    e2.commit(m).unwrap().unwrap();
+    let mut m = crate::Mutation::new();
+    m.set(w, &osis_base::Ak::new("x:a.0").unwrap(), &Value::Str("d".into())).unwrap();
+    let d = e2.commit(m).unwrap().unwrap();
+    let d_bytes = e2.package(&d).unwrap().unwrap().bytes;
+    // `Engine::sealed_fire`, its chain carrying D too
+    let fire = e2
+        .run(|tx| {
+            let mut m = crate::Mutation::new();
+            m.op(inbox, &removal, osis_crdt::PathOp { path: Vec::new(), op: osis_crdt::Op::Set(Value::Int(0)) })?;
+            m.commit_form();
+            crate::engine::write::sealed_commit(tx, m)
+        })
+        .unwrap();
+    let h = fire.header.clone();
+    let mut certs = crate::sync_ids::Certs::default();
+    e2.account_chain(&h.author, &mut certs);
+    let (mut chain, records) = e2.certs_values(&certs).unwrap();
+    let limits = osis_base::Limits::new(osis_base::format::MAX_OBJECT_DEPTH, osis_base::format::MAX_BLOB);
+    chain.push(osis_base::decode(&d_bytes, &limits).unwrap());
+    let (epoch, kem, sync_id) = e2.fire_keys(&inbox).unwrap().unwrap();
+    let ais: Vec<usize> = (0..h.aspects.len()).collect();
+    let groups = osis_commit::prefix_groups(&h, ais.iter().copied()).unwrap();
+    let mut rng = osis_crypto::SeededRng::from_seed([7; 32]);
+    let prefix = osis_blob::Prefix::for_delete_keys(osis_blob::Prefix::random_salt(&mut rng), &h.blind, osis_commit::prefix_expiry(&h, &ais).map(osis_base::WallMs), &groups).unwrap();
+    let commit = osis_base::decode(&fire.encode(), &limits).unwrap();
+    let blob = osis_blob::seal_fire(&prefix, &inbox, &epoch, &kem, &osis_blob::SealedFire { commit, chain, records }, &mut rng).unwrap();
+    let e1 = &mut lp.peers[1].engine;
+    let f = match e1.open_entry(&sync_id, &osis_blob::blob_id(&blob), &[0; 57], &blob, u64::MAX).unwrap() {
+        crate::sync::Opened::Commit(f, _) => f,
+        o => panic!("taken whole: {o:?}"),
+    };
+    e1.settle_needs().unwrap();
+    assert!(e1.pends(&d) && awaited_at(e1, &w), "D pends for W's record");
+    assert_eq!(e1.pending_carriers(&d), vec![Carrier::Fire(f)]);
+    lp.advance(HOUR_MS + 1_000);
+    lp.peers[1].tick().unwrap();
+    let e1 = &mut lp.peers[1].engine;
+    assert!(e1.forgettable(&f).unwrap(), "the fire is out of history");
+    e1.forget_commits(&[f]).unwrap();
+    e1.settle_needs().unwrap();
+    assert!(!e1.pends(&d) && !awaited_at(e1, &w) && e1.core.created(&w).is_none(), "gone with its fire: {}", e1.why_kept(&w));
+}
