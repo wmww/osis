@@ -1,5 +1,5 @@
 # held-model
-> Summary: Brute-force executable spec of what a node holding a set of commits reads and keeps (apply and waits, validity with actors and invites, undo, purge, expiry, history by the thing's `retention^.0` settings, signals); a greenfield model of the reference graph plan (closure) and of connection-lived things (connlived); input format, input changes and how to call it.
+> Summary: Brute-force executable spec of what a node holding a set of commits reads and keeps (apply and waits, validity with actors and invites, undo, purge, expiry, history by the thing's `retention^.0` settings, signals); a greenfield model of the reference graph plan (closure), of the sync unit as one independent thing and its dependents (unit) and of connection-lived things (connlived); input format, input changes and how to call it.
 
 Written from `spec/` alone, depending on no osis crate but crdt-model (the other independent reading, whose fragments are its values: join, prune, read, un-merge, strip, death, covering), so it is an independent reading to test the engine against. Every query recomputes from scratch (`evaluate` is a pure function of `Held`). AMBIGUITIES.md lists the choices the spec left; ASSUMPTIONS.md what is out of scope.
 
@@ -44,6 +44,9 @@ The freed judgment of notes/chunk-links.md: links carry Del (the writer's claim)
 
 ## The reference graph (`src/closure.rs`, `tests/it/spec_closure.rs`)
 A greenfield model of the reference graph (spec/data-model.md §8, spec/sync-set.md), apart from `evaluate`: keys by role grants followed transitively (`World::keys_of`), sync units with no leaves (`sync unit`, `piece_seen`), carrying per sync ID with grants as role commits, per-sync-ID stores and delete keys (`Sync`, `Carry`; `certify_revokes` is the fix for the revocation hole), the node closure walked sync unit by sync unit and the making rule (`closure`, `Walk`, `may_make`), release at a pass's end (`Net`, with ephemeral strongs and restarts) and the spanning-tree structure for removing a strong (`Tree`, counting work). Properties P1-P6, checks (a)-(d), counts and the hole found: notes/closure-model.md.
+
+## The sync unit (`src/unit.rs`, `tests/it/spec_unit.rs`)
+The decided unit (notes/sync-unit-design.md): a unit as an independent thing and its dependents (`View::unit`), member blobs as derived data (`View::members`), where role commits and boxes travel (`View::under`), the reader walk (`reader`), a node keeping units unread walking member blobs (`keeper`), and stores, writers and keepers over time (`Net`: logging, deleting, the lower blob ID, release by reachability, hostile blobs). `Member` and `Secrets` name the design and its variants, `Keep` the keeper's negative controls. Readings, properties P1-P5 with world counts and controls, findings: notes/closure-model.md, The unit model.
 
 ## Properties (`tests/it/props.rs`)
 `settle` carries out the forced fates, writes the covers `me` owes, and (given the full history) fetches again what `uncovered` or `NeverReceived` names.

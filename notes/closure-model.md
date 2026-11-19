@@ -1,6 +1,42 @@
 # Closure model
-> Summary: What the model of the reference graph (held_model::closure, tests in held-model's `spec_closure`) checks, P1-P6 with each test, the P5 work counts, and the hole it found in the design: a revocation never reaches a node syncing only the grantee when the target is dependent or the grant is a chain, and with a delete key two honest nodes then undo each other for good; carrying role commits under the thing they name fixes it, and the spec states that rule (spec/permissions.md §4 Role changes travel, spec/sync-judgement.md §2).
+> Summary: Two held-model models of the reference graph. The unit model (held_model::unit, `spec_unit`): the sync unit as one independent thing and its dependents, its readings, properties with negative controls, and four findings against notes/sync-unit-design.md (member lists by a chain of roles split readers; a keeper misses a unit reached through a referrer without a role; a reader by a chain reads nothing through an unheld holder; unreached dependents never leave their unit). The readable-closure model (held_model::closure, `spec_closure`, the sync differential's oracle until B2): what it checks, P1-P6 with each test, the P5 work counts, and the hole it found in the design: a revocation never reaches a node syncing only the grantee when the target is dependent or the grant is a chain, and with a delete key two honest nodes then undo each other for good; carrying role commits under the thing they name fixes it, and the spec states that rule (spec/permissions.md §4 Role changes travel, spec/sync-judgement.md §2).
 
+## The unit model (held_model::unit, tests `spec_unit`)
+The decided unit (notes/sync-unit-scope.md, notes/sync-unit-design.md §2-§4, §6), modelled beside the readable-closure model below, which the sync differential reads until B2. Plain data, pure functions, 13 tests in about 11 s (debug, parallel).
+
+Readings (the simplest where the notes leave a choice):
+- A unit is an independent thing H and every thing whose mint-admin chain first meets an independent thing at H, whatever the strongs. A node entering a unit holds it whole.
+- Grants are between independent things; a role through a chain is the lowest along it, the best chain counting (no keyless grants).
+- A role commit on H naming holder W travels under S(H) and S(W) with H's boxes to W (Bootstrap; the design's shrunk "role changes travel"). Read secrets come from boxes in units read. Sync secrets come from steps: H's step boxes its sync secret to every holder with sync or above, so a sync secret of W gives H's at any depth, holding no unit on the way. Steps are current.
+- S(G)'s member blobs: one per independent H != G that a live strong from any thing of G's unit targets (H or a dependent of H), where G holds sync or above on H (`Member::Role`, the design). Records and sync IDs of a strong's target are known to whoever holds the strong.
+- Reader of R (§4): within a unit read, at each strong into H: read by a read secret, else kept unread by a sync secret, else not entered; a unit kept unread is left by its member blobs. Keeper of R (§3): reachability from R over the member blobs of kept units, entering a listed unit by a credential it holds.
+- Over time (`Net`): writers hold the commits carried under the units they sync and visit those units' stores: log a missing member blob, delete one outside the required set as they see it and all but the lowest ID for one member. Keepers pass over the stores.
+
+Variants: `Member::Any` (a blob for every independent thing a strong from the unit enters; the keeper still enters only by its own credential), `Secrets::Chain` (today's rule kept: a role commit naming W also under the unit of every thing holding read on W), `Secrets::Steps` (read secrets in steps' entry boxes too).
+
+Properties (each over the small family: independent 0, 1, 2, dependents of 1 and 2, every grant among them of none, sync or read, every set of 7 candidate strongs, 93312 worlds; and 600 random worlds of 4 independent and 4 dependent things, dependents of dependents included):
+- **P1 one member list**: every reader of G computes the same member blobs whatever other units it reads. Design: fails, 25848 of 93312 worlds, 189 of 600 random (Finding 1). `Secrets::Chain`: still fails, 13977 (a sync link in the chain). `Member::Any` with any secrets: passes. Negative control (members by the reader's walk across units): fails 72171.
+- **P2 keeper reaches what a reader needs**: a node keeping R unread keeps exactly the units a reader of R enters. **P2b**: that reader reads every unit of its closure R holds read on. Design: P2 fails 1620, P2b fails 864 (Findings 2, 3). `Member::Any`: P2 passes; with `Holder` P2b fails 324; with `Chain` or `Steps` both pass (exhaustive and random). Negative controls on `Member::Any`+`Steps`: the walk stopping at a unit kept unread (today's keeper) fails P2 57024; keeping every listed unit without a credential fails 17820.
+- **A strong to a dependent thing brings its independent's unit** (`p2_strong_to_a_dependent_brings_its_unit`): holds by the unit's definition.
+- **P3 release by reachability**: a detached cycle (0 lists 1, 1 and 2 list each other, 0 -> 1 removed) is released whole and nothing reachable is; the negative control (a unit kept while a kept unit lists it) keeps the cycle for good.
+- **P4 attach and detach converge in every arrival order**: three scenarios (attach, attach through a dependent, detach; a grant after the strong, its removal, a second add; a cycle attached and its entry detached), every order and interleaving of their three commits at two writers visiting together after each (720 schedules each): every end state lists exactly the required member blobs once and the keeper keeps exactly its reach. Negative control (no lower-ID rule): two blobs for one member remain. Random histories (400, two writers, strongs and grants added and removed, visits alone and together): writers syncing every unit always converge; writers syncing some units do not under the design (2 of 400: Finding 1 over time) and do with `Member::Any`.
+- **P5 a hostile writer deleting or forging member blobs**: what the design promises (§2, §3): readers of the unit never read its member blobs; a blob outside the required set, or one missing, is set right by the next honest writer of the unit holding the data; until then a node keeping the unit unread keeps a forged member it holds a credential for, or loses the deleted one. Checked: one honest visit restores the store and the keeper's next pass its units (a forgery costs one delete and one unit dropped); 300 random histories with hostile deletes and forgeries all settle right. Negative control (writers deleting nothing outside the set): a forged blob stays for good. Nothing is promised between the hostile op and the honest visit, so nothing there is checked.
+
+### Findings
+1. **A member list by a chain of roles splits readers.** World: 0 holds sync on 1, 1 holds sync on 2, 0 -> 2. 1's grant on 2 travels under S(1) and S(2), not S(0), so a reader of 0 alone lists nothing and one also reading 1 lists 2; a writer of each kind deletes and logs the other's blob for good (`p1_member_list_by_a_chain_of_roles_splits_readers`). Carrying the chain's role commits under S(0) (today's rule) fixes only a read link: with sync on 1, S(0)'s readers may not read 1's role data. Deriving the list from S(G)'s strongs alone (`Member::Any`) fixes it.
+2. **A node keeping a closure unread misses a unit reached through a referrer holding no role on it.** World: 0 reads 1 and 2; 0 -> 1 -> 2; 1 holds no role on 2. A reader of 0 holds 0, 1, 2; S(1) lists nothing (1 cannot enter 2) and S(0) lists 1, so a node keeping 0 unread keeps 0 and 1, and a fresh reader served only by it never gets 2. spec/requirements.md Data model ("a thing takes with it, to whoever syncs it, the part of its closure it can itself sync") is broken; its second clause (a reference from a thing holding no role on its target does not keep it) is what the design's rule serves. `Member::Any` meets both: the blob lists 2 and only a node with its own credential (from 0, through steps) enters. Its cost: S(1)'s sync holders see a member 1 cannot enter, and the blob needs a writer of 1 that knows 2's sync ID (the design's "next writer holding them logs it" then may be nobody; not modelled).
+3. **A reader by a chain reads nothing through a holder whose unit it does not hold.** World: 0 reads 1, 1 reads 2, 0 -> 2. A reader of 0 holds 1's read secret but not S(1), so not 2's box to 1: it keeps 2 unread though 0 holds read on 2, and reads 2 once some strong brings S(1) (so the closure of 0 depends on other strongs). Fixed by today's chain rule (`Secrets::Chain`) or read secrets in steps (`Secrets::Steps`, which Tess kept out of this change).
+4. **A dependent no strong reaches never leaves its unit.** Under "a sync ID carries its independent thing and that thing's dependents", a dependent X of H that nothing references stays carried and held by every node entering H, and its strongs keep the units they name at keepers (`unreached_dependent_keeps_its_targets`). Today's spec carries a dependent only while the unit's walk reaches it (spec/sync-set.md §2). Holding of a unit by reach from its independent loses Tess's "a strong to a dependent brings its unit" when H does not reach X; holding by reach from every entry point is not a function of the unit. spec/requirements.md "a thing goes when its last reference goes" then holds for units only; the design must say which.
+
+The rules passing every property here: `Member::Any` with `Secrets::Chain` or `Secrets::Steps`. Findings 1 to 3 are design questions for the coordinator and Tess, not patched in the model.
+
+### For promotion (brief 2)
+- `View::of` derives kinds per holding (`kinds` is a field), and `Kind::Dependent` names the mint admin, so `View::ind` follows chains: a promotion is an `Op` that flips one kind to `Independent`, moving it and the dependents whose chain first meets it.
+- Promotion needs bodies: commits are already per thing (`Commit::on`); `View::under` decides carriage by `ind` of the holding that judges it, so a node that has not seen P carries X's commits under S(H), as §5's late writer.
+- The member blob for X stays in S(H) while H's unit references X (§5) falls out of `members` once X is independent.
+- Still to add: per-unit stores of commit entries (today only member blobs are stored), the carrier rule before deleting from S(H), a promotion judged invalid (kinds flipping back), forked promotions (two sync IDs for one thing).
+
+## The readable-closure model (held_model::closure, tests `spec_closure`)
 The model is an oracle written from the design's rules (spec/data-model.md §8, spec/sync-set.md), not from code: plain data, pure functions, 24 tests in about 0.8 s (debug, parallel). Its module doc lists what it leaves out (validity, disputes, key rotation, the wire, sealing, `@` signals, purge, storage rows).
 
 How it reads the plan:
@@ -12,7 +48,7 @@ How it reads the plan:
 - `closure` walks the node closure sync unit by sync unit. The node's keys and sync secrets are the least sets the independent things it reads yield (a fixpoint over the walk): an open ticket gives its keys only where the walk enters its thing (spec/sync-set.md §4 Declining is doing nothing), and an independent thing reached that the node's keys hold sync on (no read) is kept unread as by a sync-only ticket. Kept unread, the walk stops at it: the node holds it alone (spec/sync-set.md §2). `Walk::Literal` follows every strong the node can open: a mutation kept for contrast.
 - `Net` is release: a pass of a node with its connected peers. `Tree` is the spanning-tree structure for removing a strong.
 
-## Properties and tests
+### Properties and tests
 - **P1 Sync units agree.** Every reader of T computes the same sync unit, and reading more changes nothing.
   - `p1_units_agree_exhaustive` covers every world of 2 independent and 3 dependent things, each independent thing holding no role, sync or read on the other, with strongs among 9 candidates. Every member of a sync unit is one T's keys open; readers of T alone and of both compute the same sync unit; toggling a strong inside a thing T's keys cannot open never changes it. PASS.
   - `p1_by_readers_keys_undoes_forever`: walked by the reader's keys instead of T's, a shared store flips every round for good.
@@ -53,7 +89,7 @@ Each rule the passing tests rely on was removed once and failed tests:
 - serving the peer's wants in a pass (P4 (d))
 - re-attaching (P5)
 
-## New checks
+### New checks
 - **(a) Nested sharing**, `p3_nested_sharing`. Setup: Y is independent, X is granted read on Y, X -> Y -> B.
   - Y and B are in X's sync unit. A reader of X holds and reads them with no ticket for Y; a node keeping X unread holds X alone (it reads none of X's strongs), their commits carried under X's sync ID.
   - In `Sync`, a node reading only X gets Y's commits under X and syncs Y.
@@ -68,7 +104,7 @@ Each rule the passing tests rely on was removed once and failed tests:
 - **(d) A dependent thing in two sync units**, `p2_two_units_reach_only_through_a_bridge` and the fixed-grant mode of `p2_sync_settles_random`. The limit is exactly "through a node that syncs both". It reaches by that node's exchanges or through the two stores alone. Every other split traces to such an edit. An independent thing in two sync units has no such limit, since every holder syncs its own sync ID.
   - Two things reach the grantee's readers only through a node syncing both: a grant itself (its certificate must be logged under the grantee by someone holding the target's role record) and, by the plan's words, never a revocation (Hole).
 
-## Hole
+### Hole
 **A revocation never reaches a node syncing only the grantee**, for a dependent target or a chained grant.
 - Smallest history: Z is granted read on T; A is one of T's dependents; Z -> A. Node 0 syncs T and Z and holds Z's delete key. Node 1 syncs Z only and holds A under Z.
 - Node 0 revokes Z's read on T. By node 0's view, A left Z's sync unit. The revocation is a commit on T, which no sync ID node 1 syncs carries, so node 1 never gets it. Node 1 keeps A and logs it under Z again each time node 0 deletes it. That goes on for good.
@@ -76,7 +112,7 @@ Each rule the passing tests rely on was removed once and failed tests:
 - A direct grant on an independent Y settles only because node 1 syncs Y while it holds Y and gets the revocation there.
 - Fix (modelled, `certify_revokes`): a role commit naming a holder travels under the sync ID of that holder and of every thing whose keys reach it. With it every random run settles and P1 holds. The spec states it: spec/permissions.md §4 Role changes travel and spec/sync-judgement.md §2 (required set), the role records of a chain's middle things included, applied before the deletes it causes (spec/sync-judgement.md §3 Role entries first).
 
-## P5 counts
+### P5 counts
 Work is edges examined plus parent-chain steps, at n = 50 / 500. `ancestor_step` tries the target's other referrers first, each by walking its parent chain. Without it, a removed tree edge always marks the target's subtree.
 
 | edit | with ancestor step | subtree only |
@@ -96,7 +132,7 @@ Work is edges examined plus parent-chain steps, at n = 50 / 500. `ancestor_step`
 - Both grow with fan-in when the other referrers sit below the target, as any search that must rule them out does.
 - Nothing simpler meets the counts: a reference count releases no cycle, and a from-scratch walk at each pass end costs the held set per pass.
 
-## Questions for the design
+### Questions for the design
 1. The Hole: stated as the model's rule (spec/permissions.md §4 Role changes travel).
 2. That rule keeps a revoked entry of a role record carried under the former grantee. How long? Settled: `ROLE_KEEP` after replaced, a removal after its `ts` (spec/sync-judgement.md §2); the model keeps it for good.
 3. A direct revocation on an independent Y reaches X's holders through Y's own sync ID. That needs them to keep fetching under Y after the removal and the key change, until they hold the removal. Spec/sync-opens.md must allow it.
