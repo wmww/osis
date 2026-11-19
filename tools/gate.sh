@@ -164,18 +164,15 @@ locks() {
 step locks
 step python3 tools/policy.py
 if [ -z "$core" ]; then gui_only "GUI-only change"; fi
-# instant checks first, so a missing citation fails before minutes of tests; the tools' own tests
-# (every tools/*_test.*) only when what they read changed (tooling)
+# instant checks first (policy.py above holds the spec map's): the tools' own tests (every
+# tools/*_test.*) only when what they read changed (tooling)
 instant() {
-  if [ -n "$tooling" ]; then
-    for t in tools/*_test.*; do
-      case $t in *.sh) step sh "$t" ;; *) step python3 "$t" ;; esac
-    done
-    step python3 tools/limits.py split
-  fi
-  step python3 tools/spec_map.py --uncited --gaps
+  for t in tools/*_test.*; do
+    case $t in *.sh) step sh "$t" ;; *) step python3 "$t" ;; esac
+  done
+  step python3 tools/limits.py split
 }
-limited gate.checks instant
+if [ -n "$tooling" ]; then limited gate.checks instant; fi
 if [ "$core" = docs ]; then
   if [ -n "$gui" ]; then gui_only "docs and GUI change"; fi
   passed 0 ", docs-only change: builds, tests, lints and deny skipped"

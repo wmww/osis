@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Tests tools/policy.py (doc_refs.py and code_refs.py with it) by planting violations, at least one
+"""Tests tools/policy.py (doc_refs.py, code_refs.py and spec_map.py with it) by planting violations, at least one
 per check, in a copy of the working tree and asserting each is reported, and a near miss is not;
 and that `rustsrc.has`'s prefilter never rejects a text its pattern matches. A check that silently
 stops finding violations would otherwise pass every gate.
@@ -13,7 +13,7 @@ ROOT = os.path.dirname(TOOLS)
 sys.path.insert(0, TOOLS)
 from rustsrc import has
 
-CHECKERS = ("policy.py", "doc_refs.py", "code_refs.py", "rustsrc.py", "gate_failures.py")
+CHECKERS = ("policy.py", "doc_refs.py", "code_refs.py", "spec_map.py", "rustsrc.py", "gate_failures.py")
 fails = 0
 
 
@@ -108,6 +108,8 @@ PLANTS = [
     ("core/base/src/planted_fresh.rs", None, "// fn planted_fresh_fn\n"),
     ("notes/planted-fresh.md", None, "# Fresh\n> Summary: planted.\n"),
     ("notes/build.md", None, "\nSee notes/planted-fresh.md, `core/base/src/planted_fresh.rs` and `planted_fresh_fn`.\n"),
+    # spec_anchors: a test citing nothing, an anchor naming no rule
+    ("core/base/src/planted_spec.rs", None, "#[test]\nfn planted_uncited() {}\n\n// spec/wire.md §4 (planted no such anchor)\n#[test]\nfn planted_stray() {}\n"),
     # union_lists: a duplicate line in each union-merged list, a key listed twice, a union list unchecked
     ("core/base/testenv-known.txt", None, f"{V}BENCH_MS\n"),
     ("tools/known_failures.txt", None, f"osis-engine/planted::no_such_test_fn - {ISSUE} x\n"),
@@ -166,6 +168,8 @@ EXPECT = [  # regexes the output must hold
     r"core/base/testenv-known\.txt:\d+: duplicate of line \d+",
     r"tools/known_failures\.txt:\d+: duplicate of line \d+",
     r"\.gitattributes: notes/time-limits\.md has merge=union but no stale-line check",
+    r"spec_map: uncited test: \S*planted_uncited",
+    r"spec_map: stray anchor: `\S*planted_stray`",
 ]
 ABSENT = [  # near misses: what the plants show must not be reported
     r"libs/chat/src/lib\.rs: calls a dispute query",

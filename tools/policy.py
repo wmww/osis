@@ -15,7 +15,8 @@ union-merged lists have no duplicate and a stale-line check (`union_lists`), no 
 "ended" (`ended_names`) and no deprecated term (`old_words`) in code, store row keys and sync's
 record tags are distinct and never literals (`row_prefixes`, `record_tags`), every pointer into
 notes/, issues/ or spec/ names an existing file and section (tools/doc_refs.py), and every code name
-notes/ and issues/ cite in backticks exists (tools/code_refs.py).
+notes/ and issues/ cite in backticks exists (tools/code_refs.py), and every test cites the spec and every
+anchor names a rule (`spec_anchors`: tools/spec_map.py --uncited --gaps).
 Usage: python3 tools/policy.py [--baseline [REF]]   (every workspace member, the GUI's included;
 vendored crates under libs/kit/patches/ are not ours and are skipped; exit 1 on any violation).
 --baseline prints and fails on only the violations REF (default origin/main) does not have, matched
@@ -24,7 +25,7 @@ under target/policy-baseline/."""
 import collections, functools, glob, multiprocessing, os, re, shutil, subprocess, sys, tempfile
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-import code_refs, doc_refs, gate_failures
+import code_refs, doc_refs, gate_failures, spec_map
 from rustsrc import ROOT, has, members as workspace_members, read, rs_files, toml as load
 
 errs = []
@@ -518,8 +519,16 @@ def ignore_issues():
                     yield f"{rel}:{n}: #[ignore] names issues/{f}.md, which does not exist (run the test, or name what it waits on)"
 
 
+def spec_anchors():
+    """tools/spec_map.py --uncited --gaps: what the gate's instant step would refuse."""
+    _, uncited, open_r, problems = spec_map.render()
+    yield from (f"spec_map: uncited test: {u}" for u in uncited)
+    yield from (f"spec_map: no test or issue: {f} §{s} ({a})" for f, s, a in open_r)
+    yield from (f"spec_map: {p}" for p in problems)
+
+
 # the slowest first, so the pool balances
-CHECKS = [doc_refs.check, code_refs.check, row_prefixes, record_tags, ended_names, old_words, known_failures, union_lists, test_copies, ignore_issues, checked_bytes, kept_verdicts, sync_hashed, pinned_seeds, real_lan_tests, peer_ticks, env_vars, dispute_types]
+CHECKS = [doc_refs.check, spec_anchors, code_refs.check, row_prefixes, record_tags, ended_names, old_words, known_failures, union_lists, test_copies, ignore_issues, checked_bytes, kept_verdicts, sync_hashed, pinned_seeds, real_lan_tests, peer_ticks, env_vars, dispute_types]
 
 
 def run(check):

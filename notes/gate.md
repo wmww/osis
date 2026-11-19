@@ -1,5 +1,5 @@
 # Merge gate
-> Summary: What `tools/gate.sh` runs and in what order, which steps a branch's paths select (GUI, docs-only, comments-only), how `tools/test_select.py` picks the properties and sim scenarios, how failures are marked KNOWN or NEW (`tools/known_failures.txt`), and the instant checks (policy.py, spec_map.py, the tools' own tests).
+> Summary: What `tools/gate.sh` runs and in what order, which steps a branch's paths select (GUI, docs-only, comments-only), how `tools/test_select.py` picks the properties and sim scenarios, how failures are marked KNOWN or NEW (`tools/known_failures.txt`), and the instant checks (policy.py with the spec map's, the tools' own tests).
 
 The reviewer gates once per branch in the branch's worktree; a worker never does (notes/coordination.md, Test budget). Stage costs and limits: notes/time-limits.md, Limits.
 
@@ -11,8 +11,8 @@ The reviewer gates once per branch in the branch's worktree; a worker never does
 
 ## Steps
 Each prints its wall and CPU-s (compare CPU-s; wall follows load) and checks its time limit. The steps before the tests fail fast; every test stage runs to its end.
-1. The lockfile is current (`cargo metadata --locked`, about 1 s; not `--offline`, where an uncached crate fails like a stale lock; the failure prints the refresh command); `tools/policy.py`.
-2. Instant checks: `tools/spec_map.py --uncited --gaps`; when the branch touched tools/, .gitattributes or notes/time-limits.md (`tooling`), also every `tools/*_test.*` (`policy_test.py` plants one violation per policy check in a copy of the tree, each must be reported) and `tools/limits.py split`.
+1. The lockfile is current (`cargo metadata --locked`, about 1 s; not `--offline`, where an uncached crate fails like a stale lock; the failure prints the refresh command); `tools/policy.py` (the spec map's `--uncited --gaps` among its checks).
+2. Instant checks, when the branch touched tools/, .gitattributes or notes/time-limits.md (`tooling`): every `tools/*_test.*` (`policy_test.py` plants one violation per policy check in a copy of the tree, each must be reported) and `tools/limits.py split`.
 3. The selection, printed with its commands (The selection, below).
 4. Lints: core clippy, then the GUI's on the same artifacts (re-lints only kit and app, a few seconds; cold, about 1.5 min once per worktree).
    Then the fuzz targets (core/test/fuzz, their own workspace, lock and target dir): `cargo metadata --locked` on their lock (a stale one fails with the refresh command), then `cargo +nightly fuzz check` (needs nightly and cargo-fuzz; warm under a second, cold about 10 s). Nothing else compiles them.
@@ -57,6 +57,6 @@ The default-test stages (the default tests, the GUI tests) run under `tools/test
 - The core crates below the engine (osis-base, -crdt, -perm, -schema) pull no tokio, quinn, redb or ML-KEM; tokio enters only in osis-transport and osis (notes/architecture.md §5).
 
 ## Spec-to-test map
-`python3 tools/spec_map.py` writes notes/testing-map.md (gitignored): per numbered spec section, the tests and vector cases citing it, the rule checklist, gaps and uncited tests. `--uncited` (gate) fails on a test in core/, libs/chat/ or cli/ that cites nothing (models exempt); `--gaps` (gate) fails on a rule with neither a test nor an issue, or a MUST sentence no rule anchors; both flags in one run print both lists.
+`python3 tools/spec_map.py` writes notes/testing-map.md (gitignored): per numbered spec section, the tests and vector cases citing it, the rule checklist, gaps and uncited tests. `--uncited` fails on a test in core/, libs/chat/ or cli/ that cites nothing (models exempt); `--gaps` fails on a rule with neither a test nor an issue, or a MUST sentence no rule anchors; both flags in one run print both lists. `tools/policy.py` runs both (`spec_anchors`, each line prefixed `spec_map:`), so policy's exit covers them.
 - **Rules**: every MUST / MUST NOT sentence of spec/*.md plus the refusal rules (spec/permissions.md and the sync spec files), each a `RULES` entry in the script (file, §, anchor, a substring of the sentence). A test or issue covers one by citing `spec/<file>.md §N (anchor)`, several anchors `;`-separated (`(Covered; Purge on replace)`: a comma is part of one anchor, so the piece is stray); a new MUST fails `--gaps` until it has an entry. `VACUOUS` lists rules nothing can test yet.
 - Not in the map: SHOULDs (listed, not gated), policy numbers (cited as `spec: none` or by section), normative text without a MUST (section level only), spec/requirements.md (no numbered sections; covered by reviews).
