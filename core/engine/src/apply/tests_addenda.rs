@@ -1394,7 +1394,7 @@ fn elsewhere_cost(n: usize) -> (u64, u64) {
     (get("vouches: removals judged"), get("vouches: commits scanned"))
 }
 
-// spec/permissions.md §5.2 (Addenda, Writing), notes/principles.md (Fast by construction): a
+// spec/permissions.md §5.2 (Addenda; Writing), notes/principles.md (Fast by construction): a
 // removal with candidates is judged again only when something its judgement reads moves (its
 // standing in the walk, a commit before it, this node's roles), so another party's role change
 // in its component judges it not and scans none of the removed node's commits.
