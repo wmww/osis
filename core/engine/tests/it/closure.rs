@@ -1586,3 +1586,40 @@ fn repro_uncarried_pending_kept_forever() {
     let e1 = &mut lp.peers[1].engine;
     assert!(!e1.pends(&d), "an uncarried commit stays pending: {}", e1.why_kept(&w));
 }
+
+// spec/commits.md §4 Outside the node closure (the node closure judged as the transaction leaves
+// it): peer 0's C mints W with X's strong to it and a write on W; peer 1, holding X, takes C in one
+// transaction: the part on W waits at examination, W enters at the settle, and the part joins in
+// that transaction, so C applies whole before any pass end, nothing of it pending, examined once
+// more.
+#[test]
+fn a_commit_minting_with_the_strong_applies_whole_in_its_transaction_spec_commits_4() {
+    let (mut lp, ps) = people(2);
+    let e0 = &mut lp.peers[0].engine;
+    let mut m = Mutation::new();
+    let x = e0.new_thing(&mut m, ps[0]);
+    e0.commit(m).unwrap();
+    e0.grant(&x, &ps[1], &crate::flows::edge_of(osis_base::Role::Read)).unwrap();
+    let d1 = lp.peers[1].engine.account_root().unwrap();
+    strong(&mut lp.peers[1].engine, d1, x, true);
+    let all = lp.peers[0].engine.commit_ids();
+    crate::flows::send_carried(&mut lp, 0, 1, &all);
+    crate::flows::send_carried(&mut lp, 0, 1, &all);
+    pass_end(&mut lp.peers[1].engine);
+    assert!(lp.peers[1].engine.closure_holds(&x));
+    let e0 = &mut lp.peers[0].engine;
+    let rec = e0.thing_record(x, None);
+    let mut m = Mutation::new();
+    let w = m.create(rec);
+    m.set(w, &crate::common::REG, &Value::Str("w".into())).unwrap();
+    m.op(x, &ct::HOLDS, PathOp { path: vec![], op: Op::Add(Value::Strong(w)) }).unwrap();
+    let c = e0.commit(m).unwrap().unwrap();
+    let pk = lp.peers[0].engine.package(&c).unwrap().unwrap();
+    let before = lp.peers[1].engine.examined();
+    lp.peers[1].receive(&pk.bytes, pk.blobs.clone()).unwrap();
+    let e1 = &mut lp.peers[1].engine;
+    assert!(e1.closure_holds(&w), "W entered");
+    assert!(!e1.pends(&c), "nothing of C waits");
+    assert_eq!(e1.get(&w, &crate::common::ak("t:reg.0")).unwrap(), Some(Value::Str("w".into())), "C's part on W joined in its transaction");
+    assert_eq!(e1.examined() - before, 1, "the waiting part examined once more");
+}
