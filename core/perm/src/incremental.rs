@@ -454,8 +454,9 @@ impl Timelines {
             };
             let c = self.comps.get(&i)?;
             let old = c.per.get(t);
-            // a vouch come or gone: the general path (re-partition, `Timeline::extend`)
-            if c.inputs.2.contains(t) != held.created(t).is_some() || self.trusts(&c.inputs.1) || !c.tl.input.vouches.same_on(t, &held.vouches(t)) {
+            // a vouch come or gone, or the role parts of a commit one lists: the general path
+            // (re-partition, `Timeline::extend`)
+            if c.inputs.2.contains(t) != held.created(t).is_some() || self.trusts(&c.inputs.1) || !c.tl.input.vouches.same_on(t, &held.vouches(t)) || !c.tl.input.vouches.same_parts(held) {
                 return None;
             }
             let (mut kept, mut ids) = (0, BTreeSet::new());

@@ -72,8 +72,9 @@ pub struct Timeline {
     /// The first walk (spec/permissions.md §5.1 Vouches), when a vouch counts in it: this is then
     /// the second walk. `None`: the two walks are one, this.
     first: Option<Box<Timeline>>,
-    /// The counting entries: removal to the commits they list (`crate::vouch::counting`).
-    counted: BTreeMap<CommitId, BTreeSet<CommitId>>,
+    /// The counting entries: removal to the commits they list, with their vouchers
+    /// (`crate::vouch::counting`).
+    counted: crate::vouch::Counted,
 }
 
 /// What `Timeline::append` changed in the history: the changes it placed without walking
@@ -125,6 +126,9 @@ pub(crate) struct Memo {
     pub disputes: std::sync::OnceLock<Vec<Dispute>>,
     /// `Timeline::own_named`'s index: by (author, thing).
     pub own_named: std::sync::OnceLock<BTreeMap<(Tid, Tid), Vec<Demotion>>>,
+    /// `Timeline::in_question`'s index: per explicit lowering of another's grant, the authors
+    /// in question at it.
+    pub in_question: std::sync::OnceLock<BTreeMap<CommitId, BTreeSet<Tid>>>,
 }
 
 impl Memo {
@@ -179,6 +183,7 @@ impl Clone for Memo {
             held_on_target: self.held_on_target.clone(),
             disputes: self.disputes.clone(),
             own_named: self.own_named.clone(),
+            in_question: self.in_question.clone(),
         }
     }
 }
@@ -300,7 +305,7 @@ impl Timeline {
 
     /// The second walk over this first walk's input with `counted` (its counting entries) read
     /// as listed; this first walk when none counts.
-    fn walk_second(self, counted: BTreeMap<CommitId, BTreeSet<CommitId>>) -> Timeline {
+    fn walk_second(self, counted: crate::vouch::Counted) -> Timeline {
         debug_assert!(self.first.is_none() && self.input.listed.is_empty(), "vouches judged in a first walk");
         if counted.is_empty() {
             return self;
@@ -308,7 +313,7 @@ impl Timeline {
         let mut input = self.input.clone();
         for (r, cs) in &counted {
             let own = input.commits.get(r).and_then(|c| c.frontier.clone());
-            let all = own.iter().flat_map(|f| f.commits().iter().copied()).chain(cs.iter().copied());
+            let all = own.iter().flat_map(|f| f.commits().iter().copied()).chain(cs.keys().copied());
             input.listed.insert(*r, Arc::new(crate::types::Frontier::new(all)));
         }
         let mut tl = Timeline::settle(input, &self.trust);
@@ -330,7 +335,13 @@ impl Timeline {
 
     /// The counting vouch entries: (removal, commit it lists), ascending.
     pub fn counted(&self) -> impl Iterator<Item = (CommitId, CommitId)> + '_ {
-        self.counted.iter().flat_map(|(r, cs)| cs.iter().map(move |c| (*r, *c)))
+        self.counted.iter().flat_map(|(r, cs)| cs.keys().map(move |c| (*r, *c)))
+    }
+
+    /// The commits counting entries by voucher `w` keyed by `r` list (spec/permissions.md §5.1
+    /// Vouches, Writing: "no vouch of its own counting names c for R").
+    pub fn counted_by(&self, w: &Tid, r: &CommitId) -> BTreeSet<CommitId> {
+        self.counted.get(r).into_iter().flatten().filter(|(_, by)| by.contains(w)).map(|(c, _)| *c).collect()
     }
 
     /// Whether a timeline under this trust set over `commits` may only be evaluated from
@@ -750,7 +761,7 @@ impl Timeline {
     /// Whether the commits `held` holds on `things` are the ones walked here, with the same
     /// content (a record can grow under its ID: a part that arrives late).
     pub(crate) fn holds_same(&self, held: &dyn HeldSet, things: &BTreeSet<Tid>) -> bool {
-        things.iter().all(|t| held.edge_commits(t).iter().all(|c| self.input.holds_commit(c)) && self.input.vouches.same_on(t, &held.vouches(t)))
+        things.iter().all(|t| held.edge_commits(t).iter().all(|c| self.input.holds_commit(c)) && self.input.vouches.same_on(t, &held.vouches(t))) && self.input.vouches.same_parts(held)
     }
 
     /// The edge state before history change `h`, from the newest kept state at or before it.
@@ -1212,6 +1223,59 @@ impl Timeline {
     pub fn roles_without(&self, node: &Tid, at: At, skip: &BTreeSet<(Tid, Tid)>) -> BTreeMap<Tid, Role> {
         let edges = self.edges_at(at.point);
         View::at(&edges, at.ts).roles_from_without(node, skip)
+    }
+}
+
+/// What a node writing vouches reads of its walks (spec/permissions.md §5.1 Vouches, Writing).
+impl Timeline {
+    /// Where removal `r` applies in the first walk as an explicit write lowering a grant whose
+    /// holder is not its author: the authors in question at it (the lowered holders, and every
+    /// author whose class or role on a thing falls at it). One pass over the first walk's
+    /// history and falls per timeline, memoized.
+    pub fn in_question(&self, r: &CommitId) -> Option<&BTreeSet<Tid>> {
+        use crate::vouch::FirstWalk;
+        let first = self.first_walk();
+        first
+            .memo
+            .in_question
+            .get_or_init(|| {
+                let mut out: BTreeMap<CommitId, BTreeSet<Tid>> = BTreeMap::new();
+                for l in first.lowerings() {
+                    out.entry(l.point.commit).or_default().insert(l.holder);
+                }
+                for (c, xs) in first.demoted() {
+                    if let Some(v) = out.get_mut(&c) {
+                        v.extend(xs);
+                    }
+                }
+                out
+            })
+            .get(r)
+    }
+
+    /// Whether `w` could write held commit `c` at the start of `ts` in the first walk: each
+    /// edge write of `c` applies as `w`'s, and `w` holds the role each of `parts` (`c`'s other
+    /// role-class parts, `RoleParts`) requires.
+    pub fn could_write(&self, w: &Tid, c: &CommitId, parts: &[(Tid, Role)], ts: Ts) -> bool {
+        use crate::vouch::FirstWalk;
+        let first = self.first_walk();
+        let listed = crate::vouch::Listed { edges: first.input.commits.get(c).map(|x| &**x), parts };
+        FirstWalk::could_write(first, w, &listed, crate::vouch::State::Before(Point::start(ts)))
+    }
+
+    /// Whether removal `r`, trusted, applies in this walk with its frontier also listing `more`
+    /// (spec/permissions.md §5.1 Writing, the writers' leaving out). A walk from scratch.
+    pub fn stands_with(&self, r: &CommitId, more: &[CommitId]) -> bool {
+        let Some(rc) = self.input.commits.get(r).cloned() else { return false };
+        let mut input = self.input.clone();
+        let base = input.listed.get(r).cloned().or_else(|| rc.frontier.clone());
+        let all = base.iter().flat_map(|f| f.commits().iter().copied()).chain(more.iter().copied());
+        input.listed.insert(*r, Arc::new(crate::types::Frontier::new(all)));
+        let ops = (0..rc.ops.len()).filter_map(|k| u32::try_from(k).ok()).map(|k| WriteId(*r, k));
+        let mut trust = self.trust.clone();
+        trust.ops.extend(ops.clone());
+        let tl = Timeline::settle(input, &trust);
+        ops.into_iter().all(|w| tl.walked.applied.contains_key(&w))
     }
 }
 

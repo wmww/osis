@@ -17,7 +17,7 @@ Engine, the maker and its account's second node (`account_two_nodes`), each kind
 | maker work | 2 signs | 4 ML-KEM keygens, 5 signs |
 | second node work | 1 commit verify | 2 commit verifies, no KEM |
 
-Independent, stored rows at the maker: commit records `c/` (the two commits whole); aspect states 66-69 B each (`keys.0`, `secrets.0`, `sync.0`, `created.0`, content: each its one body, States stored as their body); `node/keysets` 948; `k/` (opened epochs) 1443; `node/metas` 603, `node/sealed` 592, `node/epoch intro` 408, `node/boxes to` 400, refs 354, `node/edges` 66; small local rows about 300. Dependent: `c/` 789, `node/metas` 255, refs 178, states 330, `t/` 74, `a/` 56, counters 104, states 136 (by body).
+Independent, stored rows at the maker: commit records `c/` (the two commits whole); aspect states 66-69 B each (`keys.0`, `secrets.0`, `sync.0`, `created.0`, content: each its one body, States stored as their body); `node/keysets` 948; `k/` (opened epochs) 1443; `node/metas` 603, `node/sealed` 592, `node/epoch intro` 408, `node/boxes to` 400, refs 354, `node/perm` 66; small local rows about 300. Dependent: `c/` 789, `node/metas` 255, refs 178, states 330, `t/` 74, `a/` 56, counters 104, states 136 (by body).
 
 The KEM public keys (1216 B each, one per role, four roles) are 4864 B of the 9402 B a reader downloads and of the 14.9 KB stored at every holder (in the commit record; the `keys.0` state is that body until a second one joins).
 

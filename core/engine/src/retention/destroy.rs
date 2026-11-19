@@ -281,9 +281,9 @@ fn destroy_thing(tx: &mut Tx<'_>, t: &Tid, changed: &mut BTreeSet<(Tid, Ak)>) ->
     let late = |core: &Core, id: &CommitId| destruction.as_ref().is_some_and(|e| core.ix.commits.get(id).is_some_and(|m| e.after(&m.header)));
     let edge_commits: Vec<CommitId> = tx.core.ix.held.commits_on(t).iter().map(|c| c.id).filter(|c| late(tx.core, c)).collect();
     for id in &edge_commits {
-        let parts = crate::apply::edge_parts(tx, id)?;
+        let parts = crate::apply::perm_parts(tx, id)?;
         let view = tx.core.ix.commits.get(id).map(|m| m.view.clone());
-        for (ai, es) in &parts.0 {
+        for (ai, es) in &parts.edges {
             let Some(v) = view.as_ref().filter(|v| v.aspects.get(*ai).is_some_and(|a| a.tid == *t)) else { continue };
             // the entries it created (a reset of another's entry keys nothing: that one's commit
             // may stay)
@@ -310,13 +310,13 @@ fn destroy_thing(tx: &mut Tx<'_>, t: &Tid, changed: &mut BTreeSet<(Tid, Ak)>) ->
     let held_changed = !edge_commits.is_empty();
     for id in edge_commits {
         // a role commit keeps its row and its place, empty once its last edge goes: as an open reads it
-        let mut parts = crate::apply::edge_parts(tx, &id)?;
+        let mut parts = crate::apply::perm_parts(tx, &id)?;
         let Some((view, m)) = tx.core.ix.commits.get(&id).map(|m| (m.view.clone(), m.clone())) else { continue };
         // the parts it dropped are not held (a role commit's record keeps them)
-        parts.0.retain(|(ai, _)| m.holds(*ai));
+        parts.retain(|ai| m.holds(ai));
         tx.core.ix.held.remove(&id);
         crate::apply::validity::add_role_commit(tx.core, &view, &id, &parts);
-        crate::engine::index::put_edges(tx, &id, &parts, Shred::Yes)?;
+        crate::engine::index::put_perm(tx, &id, &parts, Shred::Yes)?;
     }
     for (ak, _) in &aspects {
         let k = (*t, ak.clone());

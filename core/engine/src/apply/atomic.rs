@@ -583,7 +583,7 @@ pub(crate) fn apply_verified(tx: &mut Tx<'_>, blob: &CommitBlob, parts: Parts, o
     let read = super::PartsRead::of(&h, &parts.whole);
     if h.kind.is_role() {
         validity::note_required(tx.core, &h, &id, &read);
-        validity::add_role_commit(tx.core, &view, &id, read.edges());
+        validity::add_role_commit(tx.core, &view, &id, read.perm());
         validity::note_notices(tx.core, &id);
         held_changed = true;
     }
@@ -617,9 +617,11 @@ pub(crate) fn apply_verified(tx: &mut Tx<'_>, blob: &CommitBlob, parts: Parts, o
     if h.rotation.is_some() {
         crate::flows::signing::note_rotation_due(tx, &id)?;
     }
-    // an explicit demotion: this node answers it with its addenda (`Engine::answer_removals`)
+    // an explicit demotion: this node answers it with its addenda (`Engine::answer_removals`),
+    // and judges what vouches it owes (`flows::vouches`)
     if h.kind.is_role() && view.frontier.is_some() {
         note_addenda_due(tx, &id)?;
+        crate::flows::vouches::note_due(tx.core, &id);
     }
     let valid: Vec<bool> = (0..h.aspects.len()).map(|ai| validity::part_valid(tx.core, &h, &id, ai)).collect();
     let missing: BTreeSet<usize> = (0..h.aspects.len()).filter(|ai| !parts.has(*ai)).collect();
@@ -636,7 +638,7 @@ pub(crate) fn apply_verified(tx: &mut Tx<'_>, blob: &CommitBlob, parts: Parts, o
     {
         let _s = osis_base::costs::span("apply: put_commit");
         // role-class parts join whole: the record holds the parts read
-        tx.put_commit(&id, blob, &meta, Shred::No, h.kind.is_role().then(|| read.edges()))?;
+        tx.put_commit(&id, blob, &meta, Shred::No, h.kind.is_role().then(|| read.perm()))?;
     }
     note_held_rules(tx, &h, &id, &parts)?;
     after_store(tx, &j);
@@ -764,10 +766,14 @@ pub(crate) fn join_late(tx: &mut Tx<'_>, id: &CommitId, merged: &CommitBlob, par
     let late = parts.ais();
     let mut held_changed = note_created(tx, &h, &parts.whole)?;
     let edges = h.kind.is_role() && late.iter().any(|ai| h.aspects.get(*ai).is_some_and(|a| validity::edge_ak(a.ak.as_str())));
+    // a late role-class part may change what perm reads of the commit: its edge writes, vouches
+    // or the role another part needs (`validity::add_role_commit`)
+    let perm = h.kind.is_role() && late.iter().any(|ai| h.aspects.get(*ai).is_some_and(|a| osis_schema::core_types::is_role_class(a.ak.as_str())));
     validity::note_addenda(tx.core, &h, id, &parts.whole);
     crate::flows::lists::note_listing(tx, &h, id, &parts.whole)?;
     if edges && meta.view.frontier.is_some() {
         note_addenda_due(tx, id)?;
+        crate::flows::vouches::note_due(tx.core, id);
     }
     let (held, n) = with_held(tx, &h, id, &parts)?;
     let read = super::PartsRead::of(&h, &held);
@@ -777,9 +783,9 @@ pub(crate) fn join_late(tx: &mut Tx<'_>, id: &CommitId, merged: &CommitBlob, par
     let with_keys = read.first(n);
     let pend = super::keys::before_join(tx, &h, id, &with_keys, &meta.valid)?;
     let mut j = joins(tx, &h, id, merged, &parts, &meta.valid)?;
-    // the record's `node/edges` row: the commit's held parts read, also its edge writes again
-    let edge_parts = h.kind.is_role().then(|| read.edges());
-    tx.put_commit(id, merged, &meta, Shred::No, edge_parts)?;
+    // the record's `node/perm` row: the commit's held parts read, also its edge writes again
+    let perm_parts = h.kind.is_role().then(|| read.perm());
+    tx.put_commit(id, merged, &meta, Shred::No, perm_parts)?;
     // a leftover set aside at a purge's fall is stale once a copy joined whole
     crate::retention::forget_joined_leftovers(tx, &h, id, &late)?;
     note_held_rules(tx, &h, id, &parts)?;
@@ -795,7 +801,7 @@ pub(crate) fn join_late(tx: &mut Tx<'_>, id: &CommitId, merged: &CommitBlob, par
     // expiry and purges for the late parts (a late snapshot part carrying purged values too)
     crate::retention::stripped_joined(tx, id, &parts.stripped_joined(), &mut j.changed)?;
     crate::retention::on_late(tx, id, Some(&late), &mut j.changed)?;
-    if edges && let Some(all) = edge_parts {
+    if perm && let Some(all) = perm_parts {
         tx.core.ix.held.remove(id);
         validity::add_role_commit(tx.core, &meta.view, id, all);
         validity::note_notices(tx.core, id);

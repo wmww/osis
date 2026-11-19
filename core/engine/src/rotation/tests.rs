@@ -1406,6 +1406,9 @@ fn audit_dropped_grant_named_spec_crypto_4() {
     let e = newest_read(&lp, 0, g).unwrap();
     let mut all = lp.packages(0).unwrap();
     all.extend(lp.packages(1).unwrap());
+    // X gets C after the demotion's `ts` (received by it, X's vouch would keep C,
+    // spec/permissions.md §5.1 Vouches)
+    lp.peers[3].clock.advance(1_000);
     for pk in all.iter().filter(|p| !dem.contains(&p.id)) {
         let _ = lp.peers[3].receive(&pk.bytes, pk.blobs.clone());
     }
@@ -2378,6 +2381,11 @@ fn raise_name_over_older_raise_resealed(r: Role) {
 #[test]
 fn drop_over_older_raise_resealed_spec_crypto_4() {
     let mut lp = synced(6);
+    // the clocks drift apart here, so nodes behind A would receive C by X's `ts` and keep it
+    // with a vouch (spec/permissions.md §5.1 Vouches): this world is about X's audit dropping it
+    for p in &mut lp.peers {
+        p.engine.write_vouches(false);
+    }
     let tids: Vec<Tid> = (0..6).map(|i| lp.peers[i].engine.me()).collect();
     let o = independent_thing(&mut lp, 0);
     lp.peers[0].engine.grant(&o, &tids[1], &edge(Role::Admin)).unwrap();

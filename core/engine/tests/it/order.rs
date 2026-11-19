@@ -663,8 +663,9 @@ fn noting<E>(r: Result<Option<CommitId>, E>, unchecked: &mut BTreeSet<CommitId>)
     r
 }
 
-/// A fresh node under test: it answers removals with no addenda, so what it reads is a function
-/// of the commits it received alone (`Engine::write_addenda`; the witness rule has its own tests).
+/// A fresh node under test: it answers removals with no addenda and writes no vouches, so what it
+/// reads is a function of the commits it received alone (`Engine::write_addenda`,
+/// `Engine::write_vouches`; the witness rules have their own tests).
 /// A reader of G holding it, given what its access needs (`Played::reader`), so it keeps what it
 /// receives of what it holds in any order; opened over a copy of that node, so each held set's oracle (`made`, a copy that
 /// never opened) also compares every order against a node that never opened.
@@ -724,21 +725,29 @@ const ACCOUNT_AT: WallMs = WallMs(T0.0 - 2 * 86_400_000);
 fn under_test(mut p: Peer, now: WallMs) -> Peer {
     p.clock.set(now);
     p.engine.write_addenda(false);
+    p.engine.write_vouches(false);
     p
 }
 
-/// `LocalPeer::new` with every peer answering removals with no addenda (`fresh`).
+/// `LocalPeer::new` with every peer answering removals with no addenda and writing no vouches
+/// (`fresh`).
 fn local_peer_off(n: usize, seed: u64, t: WallMs) -> LocalPeer {
     let mut lp = LocalPeer::new(n, seed, t).unwrap();
     for p in &mut lp.peers {
         p.engine.write_addenda(false);
+        p.engine.write_vouches(false);
     }
     lp
 }
 
 /// The peers `play_with` starts from, their tids and G: built once per seed (`LocalPeer::cached`).
 fn setup(seed: u64, addenda: bool) -> (LocalPeer, (Vec<Tid>, Tid)) {
+    // the peers write no vouches either way: held-model judges none (the witness rule for role
+    // writes has its own tests, apply::tests_vouches)
     let mut lp = if addenda { LocalPeer::new(3, seed, T0).unwrap() } else { local_peer_off(3, seed, T0) };
+    for p in &mut lp.peers {
+        p.engine.write_vouches(false);
+    }
     lp.sync_all().unwrap();
     let ids: Vec<Tid> = (0..3).map(|i| lp.peers[i].engine.me()).collect();
     let mut m = Mutation::new();

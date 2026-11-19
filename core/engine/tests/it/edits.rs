@@ -216,6 +216,9 @@ fn versions_return_folded_with_their_original_spec_commits_5() {
     // carol kicks bob before receiving them, and alice removes carol before receiving her kick
     set_edge(&mut lp.peers[carol].engine, d, ids[bob], None, Some(ct::Frontier::default()));
     set_edge(&mut lp.peers[0].engine, d, ids[carol], None, Some(ct::Frontier::default()));
+    // bob gets the kick after alice's removal of carol (received by its `ts`, his vouch would
+    // keep his own kick, spec/permissions.md §5.1 Vouches)
+    lp.advance(1000);
     for c in [o, v] {
         let b = lp.peers[bob].engine.commit_bytes(&c).unwrap().unwrap();
         lp.peers[carol].receive(&b, Vec::new()).unwrap();

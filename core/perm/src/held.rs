@@ -18,18 +18,12 @@ pub trait HeldSet {
     fn edge_commits(&self, thing: &Tid) -> Vec<Arc<RoleCommit>>;
     /// The `created.0` record of `thing`, if held.
     fn created(&self, thing: &Tid) -> Option<CreationRecord>;
-    /// The vouches held on `thing` (spec/permissions.md §5.1 Vouches), in a fixed order.
-    /// Interim (issues/s3-vouches-build.md, engine writing): the engine holds none yet.
-    fn vouches(&self, thing: &Tid) -> Vec<Arc<Vouch>> {
-        let _ = thing;
-        Vec::new()
-    }
+    /// The vouches held on `thing` (spec/permissions.md §5.1 Vouches), in a fixed order. Every
+    /// held set answers it: one that leaves vouches out judges role writes vouch-blind.
+    fn vouches(&self, thing: &Tid) -> Vec<Arc<Vouch>>;
     /// The role-class parts other than edge writes of held role commit `id` (`RoleParts`);
-    /// `None` when not held or it has none. Interim, as `vouches`.
-    fn role_parts(&self, id: &CommitId) -> Option<Arc<RoleParts>> {
-        let _ = id;
-        None
-    }
+    /// `None` when not held or it has none.
+    fn role_parts(&self, id: &CommitId) -> Option<Arc<RoleParts>>;
 }
 
 /// In-memory held set.

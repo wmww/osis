@@ -924,6 +924,12 @@ indexes! {
     /// rotation joining or leaving an epoch's closers moves only the commits these list
     /// (`refresh_epochs`).
     pub addenda_keyed: JSetMap<CommitId, (Tid, CommitId)>,
+    /// Removals whose vouches this node may owe, to judge at the end of the transaction
+    /// (`flows::vouches`): every held one at an open, then those whose component changed.
+    pub vouches_due: JSet<CommitId>,
+    /// The removals judged by `flows::vouches`, by the component (`osis_perm::Timelines::component`)
+    /// of their target as judged: a change of the component makes them due again.
+    pub vouch_watch: JSetMap<u64, CommitId>,
     /// Role commits with a frontier applied here and not yet answered with this node's addenda
     /// (`Engine::answer_removals`; `records::ADDENDA_DUE`).
     pub addenda_due: JSet<CommitId>,
@@ -976,6 +982,8 @@ pub(crate) enum Step {
     Part,
     /// One removal answered with this node's addenda (`flows::addenda::answer_removals`).
     Answer,
+    /// The vouches one removal owes written (`flows::vouches::write_owed`).
+    Vouch,
     /// One purge-on-replace cover written (`retention::settle_none`).
     Cover,
     /// One re-snapshot owed after a purge written (`Engine::purge_resnapshots`).
@@ -1163,6 +1171,9 @@ pub struct Core {
     /// Whether this node answers removals with addenda (tests: an oracle checking that reads
     /// are a function of the received commits turns it off, `Engine::write_addenda`).
     pub addenda_on: bool,
+    /// Whether this node writes vouches (tests: a world with hand-written vouches turns it off,
+    /// `Engine::write_vouches`).
+    pub vouches_on: bool,
     pub stale_under: BTreeSet<Tid>,
     pub stale_commits: BTreeSet<CommitId>,
     pub stale_all: bool,
@@ -1214,7 +1225,7 @@ pub struct Core {
     /// Debug builds: what a load from the commit records read of each role commit's edge writes
     /// (`apply::load`), for `Engine::check_index` to compare with the persisted rows.
     #[cfg(debug_assertions)]
-    pub(crate) rebuilt_edges: BTreeMap<CommitId, crate::apply::validity::EdgeParts>,
+    pub(crate) rebuilt_perm: BTreeMap<CommitId, crate::apply::validity::PermParts>,
     /// The blob `Engine::commit_forged` built (its own node drops the bad part).
     pub(crate) forged: Option<Vec<u8>>,
     /// This open's session (spec/crdt.md §2.1): the own source of its content commits, durable
@@ -1544,6 +1555,7 @@ impl Core {
             stale_things: self.stale_things.clone(),
             stale_authors: self.stale_authors.clone(),
             addenda_on: self.addenda_on.clone(),
+            vouches_on: self.vouches_on.clone(),
             stale_under: self.stale_under.clone(),
             stale_commits: self.stale_commits.clone(),
             stale_all: self.stale_all.clone(),
@@ -1566,7 +1578,7 @@ impl Core {
             #[cfg(debug_assertions)]
             unchecked_states: BTreeSet::new(),
             #[cfg(debug_assertions)]
-            rebuilt_edges: self.rebuilt_edges.clone(),
+            rebuilt_perm: self.rebuilt_perm.clone(),
             forged: self.forged.clone(),
             session: self.session.clone(),
             expiring: self.expiring.clone(),
@@ -1714,6 +1726,15 @@ impl Core {
     /// only for those upstream of a changed edge's holder or a new record, and only down from
     /// its target or that record; what is below a new record has a new record chain.
     pub(crate) fn timelines_changed(&mut self, c: osis_perm::Changed) {
+        // the removals of every component the update changed are judged again for vouches
+        let moved: Vec<u64> = self.timelines.changed_components().iter().copied().filter(|i| self.ix.vouch_watch.get(i).is_some()).collect();
+        for i in moved {
+            let rs: Vec<CommitId> = self.ix.vouch_watch.get(&i).into_iter().flatten().copied().collect();
+            for r in rs {
+                self.ix.vouch_watch.remove(&i, &r);
+                self.ix.vouches_due.insert(r);
+            }
+        }
         self.stale_things.extend(c.evaluated);
         self.stale_things.extend(self.ix.held.below(&c.created));
         // a write may have stopped or started applying with no role of its author moving, and an
@@ -2193,6 +2214,7 @@ impl Core {
             walk_cache_min: _,
             key_salt: _,
             addenda_on: _,
+            vouches_on: _,
             skip_writer_rules: _,
             leave_adminless: _,
             commits_watched: _,
@@ -2217,7 +2239,7 @@ impl Core {
             #[cfg(debug_assertions)]
             unchecked_states: _,
             #[cfg(debug_assertions)]
-            rebuilt_edges: _,
+            rebuilt_perm: _,
             #[cfg(debug_assertions)]
             #[cfg(test)]
             check_ingest: _,
@@ -2382,6 +2404,7 @@ impl Core {
             stale_things: BTreeSet::new(),
             stale_authors: BTreeSet::new(),
             addenda_on: true,
+            vouches_on: true,
             stale_under: BTreeSet::new(),
             stale_commits: BTreeSet::new(),
             stale_all: true,
@@ -2417,7 +2440,7 @@ impl Core {
             #[cfg(debug_assertions)]
             unchecked_states: BTreeSet::new(),
             #[cfg(debug_assertions)]
-            rebuilt_edges: BTreeMap::new(),
+            rebuilt_perm: BTreeMap::new(),
             forged: None,
             session,
             expiring,
@@ -3456,9 +3479,9 @@ impl Tx<'_> {
     }
 
     /// Writes a commit record (`index::record_head`: received, origin, dropped parts and what
-    /// they keep; then its blob), and for a role commit its `node/edges` row (`edges`: what the caller already
-    /// read of `blob` with `edge_parts_of`, else decoded here).
-    pub(crate) fn put_commit(&mut self, id: &CommitId, blob: &CommitBlob, meta: &Meta, shred: Shred, edges: Option<&crate::apply::validity::EdgeParts>) -> Result<()> {
+    /// they keep; then its blob), and for a role commit its `node/perm` row (`edges`: what the caller already
+    /// read of `blob` with `perm_parts_of`, else decoded here).
+    pub(crate) fn put_commit(&mut self, id: &CommitId, blob: &CommitBlob, meta: &Meta, shred: Shred, edges: Option<&crate::apply::validity::PermParts>) -> Result<()> {
         // the bodies leaving the record: held whole as the index has it, absent from `blob`
         self.core.note_kept(id, meta);
         let leaving: Vec<usize> = self.core.ix.commits.get(id).map(|m| (0..m.view.aspects.len()).filter(|ai| m.holds(*ai) && !m.stripped(*ai) && blob.part(*ai).is_none()).collect()).unwrap_or_default();
@@ -3469,10 +3492,10 @@ impl Tx<'_> {
         if meta.header.kind.is_role() {
             // perm's reading of it, persisted beside the record (an open decodes no body)
             match edges {
-                Some(p) => index::put_edges(self, id, p, shred)?,
+                Some(p) => index::put_perm(self, id, p, shred)?,
                 None => {
-                    let p = crate::apply::edge_parts_of(self, id, &meta.header, blob)?;
-                    index::put_edges(self, id, &p, shred)?;
+                    let p = crate::apply::perm_parts_of(self, id, &meta.header, blob)?;
+                    index::put_perm(self, id, &p, shred)?;
                 }
             }
         }
@@ -3488,7 +3511,7 @@ impl Tx<'_> {
     pub fn remove_commit(&mut self, id: &CommitId) -> Result<()> {
         self.txn.remove_local(&records::commit_key(id), Shred::Yes)?;
         crate::sync_ids::opened::forget(self, id)?;
-        index::remove_edges(self, id)?;
+        index::remove_perm(self, id)?;
         index::remove_addenda(self, id)
     }
 
@@ -4086,7 +4109,7 @@ impl Engine {
                 }
                 if r.is_ok()
                     && !tx.txn.is_memory()
-                    && let Err(e) = crate::flows::inbox::owe_removal_notices(&mut tx).and_then(|()| crate::flows::addenda::answer_removals(&mut tx)).and_then(|()| crate::flows::signing::leave_if_removed(&mut tx)).and_then(|()| crate::flows::signing::answer_rotations(&mut tx))
+                    && let Err(e) = crate::flows::inbox::owe_removal_notices(&mut tx).and_then(|()| crate::flows::addenda::answer_removals(&mut tx)).and_then(|()| crate::flows::vouches::write_owed(&mut tx)).and_then(|()| crate::flows::signing::leave_if_removed(&mut tx)).and_then(|()| crate::flows::signing::answer_rotations(&mut tx))
                         .and_then(|()| crate::sync::dial::drop_departed(&mut tx))
                 {
                     r = Err(e);
@@ -4323,7 +4346,7 @@ impl Engine {
         };
         crate::apply::load_waits(&mut self.core);
         #[cfg(debug_assertions)]
-        self.core.rebuilt_edges.clear();
+        self.core.rebuilt_perm.clear();
         self.core.commit_journal();
         r
     }
@@ -4410,11 +4433,11 @@ impl Engine {
                 // the persisted edges rows are what the role commits' records read, one each
                 #[cfg(debug_assertions)]
                 if rebuild {
-                    let mut rows = index::load_edges(&mut tx)?;
-                    for (id, parts) in std::mem::take(&mut tx.core.rebuilt_edges) {
-                        assert_eq!(rows.remove(&id), Some(parts), "node/edges row of {id:?} is stale");
+                    let mut rows = index::load_perm(&mut tx)?;
+                    for (id, parts) in std::mem::take(&mut tx.core.rebuilt_perm) {
+                        assert_eq!(rows.remove(&id), Some(parts), "node/perm row of {id:?} is stale");
                     }
-                    assert!(rows.is_empty(), "node/edges rows without a role commit: {:?}", rows.keys().collect::<Vec<_>>());
+                    assert!(rows.is_empty(), "node/perm rows without a role commit: {:?}", rows.keys().collect::<Vec<_>>());
                 }
                 Ok(Some(tx.blobs.reads))
             };

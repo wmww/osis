@@ -121,6 +121,15 @@ impl Held {
         self.on.get(thing).map_or(&[][..], Vec::as_slice) == held
     }
 
+    /// Whether `held` gives the commits that entries keyed by a held removal list the role parts
+    /// gathered: a listed commit's parts come or go with no vouch or edge write moving (a role
+    /// commit with no edge write arriving after the vouch listing it). O(the commits those
+    /// entries list); entries keyed by anything else can count for nothing and cost nothing.
+    pub fn same_parts(&self, held: &dyn HeldSet) -> bool {
+        let listed = self.held_keys.iter().filter_map(|r| self.by_removal.get(r)).flatten().filter_map(|(v, k)| v.entries.get(*k)).flat_map(|(_, l)| l.commits().iter());
+        listed.into_iter().all(|c| held.role_parts(c).as_deref() == self.parts.get(c).map(|p| &**p))
+    }
+
 }
 
 /// An applied explicit write of the first walk lowering a grant held by another than its
@@ -195,15 +204,19 @@ pub fn entries_judged() -> u64 {
     panic!("entries_judged counts in debug builds only");
 }
 
-/// The counting entries (removal to the commits they list), spec/permissions.md §5.1 Vouches:
+/// Counting entries: removal to the commits counting entries keyed by it list, each with its
+/// vouchers.
+pub(crate) type Counted = BTreeMap<CommitId, BTreeMap<CommitId, BTreeSet<Tid>>>;
+
+/// The counting entries (removal to the commits they list, with their vouchers), spec/permissions.md §5.1 Vouches:
 /// an entry of vouch V by W keyed by R listing c counts iff, in the first walk, R applies an
 /// explicit write lowering a grant of X (not R's author), c is in question (by X, or by an
 /// author whose class or role falls at R) and ordered before R, V's
 /// position is after R, V is on a thing where c has a role-class part, W could write c at V's
 /// position, and W could write c just after each
 /// later lowering Q of W's grant by another author whose frontier does not list V.
-pub(crate) fn counting(first: &dyn FirstWalk, held: &Held, commits: &BTreeMap<CommitId, Arc<RoleCommit>>) -> BTreeMap<CommitId, BTreeSet<CommitId>> {
-    let mut out: BTreeMap<CommitId, BTreeSet<CommitId>> = BTreeMap::new();
+pub(crate) fn counting(first: &dyn FirstWalk, held: &Held, commits: &BTreeMap<CommitId, Arc<RoleCommit>>) -> Counted {
+    let mut out = Counted::new();
     if !held.keyed() {
         return out;
     }
@@ -248,7 +261,7 @@ pub(crate) fn counting(first: &dyn FirstWalk, held: &Held, commits: &BTreeMap<Co
                     continue;
                 }
                 if later.iter().all(|q| first.could_write(&v.author, &listed, State::After(*q))) {
-                    out.entry(*r).or_default().insert(*c);
+                    out.entry(*r).or_default().entry(*c).or_default().insert(v.author);
                 }
             }
         }

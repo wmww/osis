@@ -132,7 +132,10 @@ fn right_holds(core: &Core, p: &Header, pc: &CommitId, a: &Right) -> bool {
     // over what authority on the thing and the delta's actor comes from (`Held::upstream`), not
     // the node's whole role graph
     if a.ak.as_str() == osis_commit::retention::CREATED {
-        let later: BTreeSet<CommitId> = HeldSet::edge_commits(&core.ix.held, &a.tid).iter().filter(|c| c.point().ts > p.ts).map(|c| c.id).collect();
+        // the edge writes and vouches on the thing stamped after the request (a vouch goes as an
+        // edge write does: the cut is the held set as of the request on the thing)
+        let held = &core.ix.held;
+        let later: BTreeSet<CommitId> = HeldSet::edge_commits(held, &a.tid).iter().filter(|c| c.point().ts > p.ts).map(|c| c.id).chain(HeldSet::vouches(held, &a.tid).iter().filter(|v| v.ts > p.ts).map(|v| v.id)).collect();
         if !later.is_empty() {
             if !signers_could(core, p, a) {
                 return false;
@@ -147,7 +150,7 @@ fn right_holds(core: &Core, p: &Header, pc: &CommitId, a: &Right) -> bool {
 }
 
 /// The held set over `things` (closed upstream: roles on them come from them alone) without
-/// commits `later` (`holds_right`).
+/// commits `later`, edge commits and vouches alike (`holds_right`).
 struct Cut<'a> {
     held: &'a crate::engine::held::Held,
     things: BTreeSet<Tid>,
@@ -166,6 +169,15 @@ impl HeldSet for Cut<'_> {
     }
     fn created(&self, thing: &Tid) -> Option<osis_base::CreationRecord> {
         self.things.contains(thing).then(|| HeldSet::created(self.held, thing)).flatten()
+    }
+    fn vouches(&self, thing: &Tid) -> Vec<std::sync::Arc<osis_perm::Vouch>> {
+        if !self.things.contains(thing) {
+            return Vec::new();
+        }
+        HeldSet::vouches(self.held, thing).into_iter().filter(|v| !self.later.contains(&v.id)).collect()
+    }
+    fn role_parts(&self, id: &CommitId) -> Option<std::sync::Arc<osis_perm::RoleParts>> {
+        HeldSet::role_parts(self.held, id)
     }
 }
 

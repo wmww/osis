@@ -1,5 +1,6 @@
 //! perm's held set (notes/architecture.md §2: the node implements `HeldSet`): applied role
-//! commits by target, `created.0` records, indexed by commit and by
+//! commits by target, `created.0` records, vouches by thing and role commits' other role-class
+//! parts (spec/permissions.md §5.1 Vouches), indexed by commit and by
 //! holder, journaled for rollback, and remembering which things' inputs changed since perm last
 //! looked (`take_touched`), so the timelines re-partition only around them. A role commit of an
 //! account that does not count by the epoch rule (spec/permissions.md §5.5) stays held but no
@@ -12,7 +13,7 @@
 use super::journal::Journaled;
 use osis_base::memo::Stamps;
 use osis_base::{CommitId, CreationRecord, RecordLink, Role, Tid};
-use osis_perm::{HeldSet, RoleCommit};
+use osis_perm::{HeldSet, RoleCommit, RoleParts, Vouch};
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
 
@@ -22,6 +23,15 @@ enum Undo {
     AddedCommit(Arc<RoleCommit>),
     Removed(Arc<RoleCommit>),
     Counted(CommitId, bool),
+    Vouching(CommitId, Option<Vouching>),
+}
+
+/// What perm reads of one role commit beside its edge writes (`Held::set_vouching`): its vouches
+/// (one per thing) and its other role-class parts.
+#[derive(Clone, Debug, Default, PartialEq)]
+struct Vouching {
+    vouches: Vec<Arc<Vouch>>,
+    parts: Option<Arc<RoleParts>>,
 }
 
 #[derive(Clone, Debug, Default)]
@@ -56,6 +66,14 @@ pub struct Held {
     /// left out of what perm reads (`HeldSet::edge_commits`). By ID, whether held or not, so a
     /// commit re-derived (`add_commit`) keeps its standing.
     uncounted: BTreeSet<CommitId>,
+    /// Per role commit, its vouches and other role-class parts (`set_vouching`).
+    vouching: BTreeMap<CommitId, Vouching>,
+    /// The vouches of `vouching` by thing, by commit ID.
+    vouches: BTreeMap<Tid, BTreeMap<CommitId, Arc<Vouch>>>,
+    /// Role commits perm reads (edge commits, `vouching`) by author: (`ts`, ID).
+    by_author: BTreeMap<Tid, BTreeSet<(osis_base::Ts, CommitId)>>,
+    /// The vouches of `vouching` by the removal an entry is keyed by: (vouch commit, thing).
+    keyed: BTreeMap<CommitId, BTreeSet<(CommitId, Tid)>>,
     /// Stamps `created`, per thing.
     records_read: Stamps,
     /// Stamps everything else, per key of each map (`Row`).
@@ -76,6 +94,9 @@ enum Row<'a> {
     Granted(&'a Tid),
     MintAdminOf(&'a Tid),
     Id(&'a CommitId),
+    Vouches(&'a Tid),
+    Keyed(&'a CommitId),
+    Parts(&'a CommitId),
 }
 
 fn named(c: &RoleCommit) -> Vec<(Tid, Tid)> {
@@ -259,6 +280,39 @@ impl Held {
         set
     }
 
+    fn note_author(&mut self, author: Tid, ts: osis_base::Ts, id: CommitId) {
+        self.by_author.entry(author).or_default().insert((ts, id));
+    }
+
+    /// Takes `id` off its author's row unless perm still reads something of it.
+    fn unnote_author(&mut self, author: Tid, ts: osis_base::Ts, id: CommitId) {
+        if self.ids.contains_key(&id) || self.vouching.contains_key(&id) {
+            return;
+        }
+        if let Some(s) = self.by_author.get_mut(&author) {
+            s.remove(&(ts, id));
+            if s.is_empty() {
+                self.by_author.remove(&author);
+            }
+        }
+    }
+
+    /// The role commits perm reads of `author` (edge commits, vouches, other role-class parts)
+    /// stamped at or before `ts`, oldest first, whether they count by the epoch rule or not.
+    pub fn authored_by(&self, author: &Tid, ts: osis_base::Ts) -> impl Iterator<Item = CommitId> + '_ {
+        self.by_author.get(author).into_iter().flat_map(move |s| s.iter().take_while(move |(t, _)| *t <= ts).map(|(_, c)| *c))
+    }
+
+    /// Whether role commit `id` does not count by the epoch rule (`set_counted`).
+    pub fn is_uncounted(&self, id: &CommitId) -> bool {
+        self.uncounted.contains(id)
+    }
+
+    /// The role-class parts other than edge writes of role commit `id`, counting or not.
+    pub fn parts_of(&self, id: &CommitId) -> Option<&RoleParts> {
+        self.vouching.get(id).and_then(|v| v.parts.as_deref())
+    }
+
     fn set_created(&mut self, t: Tid, r: Option<CreationRecord>) -> Option<CreationRecord> {
         self.records_read.wrote(&t, r.is_some());
         let old = match r {
@@ -372,6 +426,7 @@ impl Held {
         self.count(named(&c), true);
         self.count_granted(&c, true);
         self.rest.wrote(&Row::Id(&c.id), true);
+        self.note_author(c.author, c.ts, c.id);
         self.ids.insert(c.id, c);
     }
 
@@ -393,6 +448,7 @@ impl Held {
         }
         self.count(named(&c), false);
         self.count_granted(&c, false);
+        self.unnote_author(c.author, c.ts, c.id);
         Some(c)
     }
 
@@ -420,10 +476,98 @@ impl Held {
         self.log.push(Undo::AddedCommit(c));
     }
 
+    /// Whether perm reads anything of role commit `id` here: edge writes, vouches or other
+    /// role-class parts.
+    pub fn reads(&self, id: &CommitId) -> bool {
+        self.edge_commit(id).is_some() || {
+            self.rest.read(&Row::Parts(id));
+            self.vouching.contains_key(id)
+        }
+    }
+
     /// The edge commit held under this ID.
     pub fn edge_commit(&self, id: &CommitId) -> Option<&RoleCommit> {
         self.rest.read(&Row::Id(id));
         self.ids.get(id).map(|c| &**c)
+    }
+
+    /// Sets what perm reads of role commit `id` beside its edge writes (spec/permissions.md §5.1
+    /// Vouches): the vouches its deltas create and its other role-class parts. A change touches
+    /// their things, so perm gathers the vouches there again.
+    pub fn set_vouching(&mut self, id: CommitId, vouches: Vec<Vouch>, parts: Option<RoleParts>) {
+        let now = Vouching { vouches: vouches.into_iter().map(Arc::new).collect(), parts: parts.map(Arc::new) };
+        let now = (now != Vouching::default()).then_some(now);
+        if self.vouching.get(&id) == now.as_ref() {
+            return;
+        }
+        let old = self.put_vouching(id, now);
+        self.log.push(Undo::Vouching(id, old));
+    }
+
+    fn put_vouching(&mut self, id: CommitId, now: Option<Vouching>) -> Option<Vouching> {
+        let old = match now {
+            Some(v) => self.vouching.insert(id, v),
+            None => self.vouching.remove(&id),
+        };
+        let stamp = |v: &Vouching| v.parts.as_ref().map(|p| (p.author, p.ts)).or_else(|| v.vouches.first().map(|x| (x.author, x.ts)));
+        if let Some((a, ts)) = self.vouching.get(&id).and_then(stamp) {
+            self.note_author(a, ts, id);
+        } else if let Some((a, ts)) = old.as_ref().and_then(stamp) {
+            self.unnote_author(a, ts, id);
+        }
+        let mut things = BTreeSet::new();
+        let mut keys = BTreeSet::new();
+        for v in old.iter().flat_map(|o| &o.vouches) {
+            if let Some(m) = self.vouches.get_mut(&v.thing) {
+                m.remove(&id);
+                if m.is_empty() {
+                    self.vouches.remove(&v.thing);
+                }
+            }
+            for (r, _) in &v.entries {
+                if let Some(k) = self.keyed.get_mut(r) {
+                    k.remove(&(id, v.thing));
+                    if k.is_empty() {
+                        self.keyed.remove(r);
+                    }
+                }
+                keys.insert(*r);
+            }
+            things.insert(v.thing);
+        }
+        for v in self.vouching.get(&id).iter().flat_map(|n| &n.vouches) {
+            self.vouches.entry(v.thing).or_default().insert(id, v.clone());
+            for (r, _) in &v.entries {
+                self.keyed.entry(*r).or_default().insert((id, v.thing));
+                keys.insert(*r);
+            }
+            things.insert(v.thing);
+        }
+        for r in &keys {
+            self.rest.wrote(&Row::Keyed(r), self.keyed.contains_key(r));
+        }
+        for t in &things {
+            self.rest.wrote(&Row::Vouches(t), self.vouches.contains_key(t));
+        }
+        let parts = old.iter().chain(self.vouching.get(&id)).flat_map(|v| v.parts.iter()).flat_map(|p| p.parts.iter().map(|(t, _)| *t));
+        things.extend(parts.collect::<Vec<_>>());
+        self.rest.wrote(&Row::Parts(&id), self.vouching.contains_key(&id));
+        self.moved.extend(things.iter().copied());
+        self.touched.extend(things);
+        old
+    }
+
+    /// The held vouches with an entry keyed by `r`, as (vouch commit, thing), whether they count
+    /// or not: what travels with `r` (spec/permissions.md §4 Vouches travel with their removal).
+    pub fn keyed_by(&self, r: &CommitId) -> impl Iterator<Item = &(CommitId, Tid)> {
+        self.rest.read(&Row::Keyed(r));
+        self.keyed.get(r).into_iter().flatten()
+    }
+
+    /// The held vouches on `t`, by commit ID, whether they count by the epoch rule or not.
+    pub fn vouches_on(&self, t: &Tid) -> impl Iterator<Item = &Arc<Vouch>> {
+        self.rest.read(&Row::Vouches(t));
+        self.vouches.get(t).into_iter().flat_map(|m| m.values())
     }
 
     /// Whether the role commit `id` counts (spec/permissions.md §5.5): one that does not stays
@@ -451,6 +595,15 @@ impl Held {
             self.moved.extend(targets.iter().copied());
             self.ever.extend(targets.iter().copied());
             self.touched.extend(targets);
+        }
+        if let Some(v) = self.vouching.get(&id) {
+            let things: Vec<Tid> = v.vouches.iter().map(|v| v.thing).chain(v.parts.iter().flat_map(|p| p.parts.iter().map(|(t, _)| *t))).collect();
+            for t in &things {
+                self.rest.wrote(&Row::Vouches(t), true);
+            }
+            self.rest.wrote(&Row::Parts(&id), true);
+            self.moved.extend(things.iter().copied());
+            self.touched.extend(things);
         }
     }
 
@@ -500,7 +653,7 @@ impl Held {
 impl Journaled for Held {
     #[cfg(test)]
     fn contents(&self) -> String {
-        format!("{:?} {:?} {:?} {:?} {:?} {:?} {:?} {:?}", self.commits, self.created, self.holders, self.named, self.granted, self.mint_admin_of, self.ids, self.uncounted)
+        format!("{:?} {:?} {:?} {:?} {:?} {:?} {:?} {:?} {:?} {:?} {:?} {:?}", self.commits, self.created, self.holders, self.named, self.granted, self.mint_admin_of, self.ids, self.uncounted, self.vouching, self.vouches, self.keyed, self.by_author)
     }
     type Mark = usize;
     fn commit(&mut self) {
@@ -521,6 +674,9 @@ impl Journaled for Held {
                 }
                 Undo::Removed(c) => self.put_commit(c),
                 Undo::Counted(id, counts) => self.mark_counted(id, counts),
+                Undo::Vouching(id, old) => {
+                    self.put_vouching(id, old);
+                }
             }
         }
     }
@@ -532,6 +688,7 @@ impl HeldSet for Held {
         self.records_read.read_all();
         let mut s: BTreeSet<Tid> = self.commits.keys().copied().collect();
         s.extend(self.created.keys().copied());
+        s.extend(self.vouches.keys().copied());
         s.into_iter().collect()
     }
     fn edge_commits(&self, thing: &Tid) -> Vec<Arc<RoleCommit>> {
@@ -545,6 +702,18 @@ impl HeldSet for Held {
     fn created(&self, thing: &Tid) -> Option<CreationRecord> {
         self.records_read.read(thing);
         self.created.get(thing).cloned()
+    }
+    /// A vouch of a role commit that does not count by the epoch rule is left out, as its edge
+    /// writes are.
+    fn vouches(&self, thing: &Tid) -> Vec<Arc<Vouch>> {
+        self.vouches_on(thing).filter(|v| !self.uncounted.contains(&v.id)).cloned().collect()
+    }
+    fn role_parts(&self, id: &CommitId) -> Option<Arc<RoleParts>> {
+        self.rest.read(&Row::Parts(id));
+        if self.uncounted.contains(id) {
+            return None;
+        }
+        self.vouching.get(id).and_then(|v| v.parts.clone())
     }
 }
 
@@ -904,6 +1073,17 @@ impl Timelines {
         let out = f(&mut self.of);
         self.keyless = Arc::new(self.of.each().flat_map(crate::rotation::members::keyless_in).collect());
         out
+    }
+
+    /// The components the last update evaluated, continued or took apart, by ID (never reused):
+    /// read where what changes is followed per component (`flows::vouches`), not by a memo.
+    pub fn changed_components(&self) -> &BTreeSet<u64> {
+        self.of.changed()
+    }
+
+    /// The ID of the component holding `thing` (`changed_components`).
+    pub fn component(&self, thing: &Tid) -> Option<u64> {
+        self.of.component(thing)
     }
 
     /// The timelines' bookkeeping, which moves no timeline: dispute detection's switch and

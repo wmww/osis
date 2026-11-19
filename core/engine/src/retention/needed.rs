@@ -382,8 +382,8 @@ pub(crate) fn settle(tx: &mut Tx<'_>) -> Result<bool> {
     let mut boxes = Vec::new();
     for id in &roles {
         let Some(m) = tx.core.ix.commits.get(id).cloned() else { continue };
-        let parts = crate::apply::edge_parts(tx, id)?;
-        for (ai, es) in &parts.0 {
+        let parts = crate::apply::perm_parts(tx, id)?;
+        for (ai, es) in &parts.edges {
             let Some(t) = m.view.aspects.get(*ai).map(|a| a.tid).filter(|t| gone.contains(t)) else { continue };
             let own = crate::engine::Owned::of_view(&m.view, id, *ai);
             for (d, _, _) in es.iter().filter(|(d, _, _)| own.as_ref().is_some_and(|o| o.owns(d.origin()))) {
@@ -405,9 +405,9 @@ pub(crate) fn settle(tx: &mut Tx<'_>) -> Result<bool> {
     for id in roles {
         tx.core.ix.held.remove(&id);
         let Some(view) = tx.core.ix.commits.get(&id).map(|m| m.view.clone()) else { continue };
-        let parts = crate::apply::edge_parts(tx, &id)?;
+        let parts = crate::apply::perm_parts(tx, &id)?;
         crate::apply::validity::add_role_commit(tx.core, &view, &id, &parts);
-        crate::engine::index::put_edges(tx, &id, &parts, Shred::Yes)?;
+        crate::engine::index::put_perm(tx, &id, &parts, Shred::Yes)?;
     }
     for t in &gone {
         super::destroy::note(tx, t, false)?;

@@ -434,6 +434,24 @@ fn a_late_vouch_for_a_rotation_is_reported() {
     assert!(changed.evaluated.contains(&t), "{changed:?}");
 }
 
+/// The rotation a vouch lists arriving after the vouch and the removal (no edge write: no
+/// vouch, edge or history moves with it) is gathered and counts: its component is reported
+/// evaluated, and the walk equals a fresh one.
+#[test]
+fn a_rotation_arriving_after_its_vouch_counts() {
+    let (mut w, n, t) = perm_world();
+    let rot = w.role_parts(n[1], 1, &[(t, Role::Write)], &[(n[2], 1), (n[3], 1)]);
+    let r = w.set(n[0], t, n[1], None, 4, &[(n[2], 5), (n[3], 5)]);
+    w.vouch(n[2], 6, t, &[(r, &[rot])], &[(n[0], 7)]);
+    let at = Point { ts: ts(1), node: n[1], commit: rot };
+    let mut tls = Timelines::new();
+    tls.update(&w.held_without(&[rot].into()));
+    let changed = tls.update_touched(&w.held(), &[t].into());
+    assert_eq!(tls.get(&t).unwrap().delta_valid(at, &t, Role::Write), Validity::Valid);
+    assert_eq!(tls.get(&t).unwrap().counted().count(), Timeline::evaluate(&w.held()).counted().count());
+    assert!(changed.evaluated.contains(&t), "{changed:?}");
+}
+
 /// Validity is a function of the held set (incremental equals from scratch): the world of
 /// `a_grant_only_a_witness_received_stands` with W's vouch arriving before the removal and after
 /// it, and a later write appended to a component whose walk is a second walk, through

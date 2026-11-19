@@ -667,6 +667,9 @@ fn remover_lists_chain_writes_spec_perm_5_1() {
     assert!(!lp.peers[1].engine.roster(&t).contains_key(&pd), "Bob never got C's grant of D");
     lp.advance(1000);
     lp.peers[1].engine.demote(&t, &Demotion { holder: pc, new: None, retain: None }).unwrap();
+    // the others get C's grant of D after the removal (one received by its `ts` would be
+    // vouched for, spec/permissions.md §5.1 Vouches)
+    lp.advance(1000);
     spread(&mut lp);
     for i in 0..4 {
         let r = lp.peers[i].engine.roster(&t);
@@ -717,6 +720,9 @@ fn grantor_cannot_backdate_removers_edge_spec_perm_5_1() {
     lp.peers[2].engine.grant(&t, &pb, &ct::Edge { role: Role::Admin, until: Some(until), invite: None, retain: false, floor: None }).unwrap();
     let forged = new_ids(&lp, 2, &before);
     assert!(lp.peers[2].engine.header(&forged[0]).unwrap().ts < lp.peers[1].engine.header(&r).unwrap().ts, "backdated");
+    // the others get the forgery after the removal (one received by its `ts` would be vouched
+    // for, spec/permissions.md §5.1 Vouches)
+    lp.advance(1000);
     spread(&mut lp);
     lp.advance(3_700_000);
     for i in 0..3 {
@@ -752,7 +758,9 @@ fn future_stamped_setter_spec_perm_5_1() {
     let r = lp.peers[1].engine.commit_ids().into_iter().find(|c| lp.peers[1].engine.header(c).unwrap().frontier.is_some()).unwrap();
     let listed = frontier_ids(&mut lp, 1, &r);
     assert!(g.iter().chain(&f).all(|c| listed.contains(c)), "both writes on Bob's chain are listed");
-    lp.advance(1_800_000);
+    // past the removal's `ts` (C's clock, which Bob's followed): the others get C's grant of D
+    // after it (one received by its `ts` would be vouched for, spec/permissions.md §5.1 Vouches)
+    lp.advance(1_801_000);
     spread(&mut lp);
     for i in 0..4 {
         let ro = lp.peers[i].engine.roster(&t);
@@ -788,6 +796,9 @@ fn intermediate_grantor_covered_spec_perm_5_1() {
     let r = lp.peers[1].engine.commit_ids().into_iter().find(|c| lp.peers[1].engine.header(c).unwrap().frontier.is_some()).unwrap();
     let listed = frontier_ids(&mut lp, 1, &r);
     assert!(w1.iter().chain(&g).all(|c| listed.contains(c)), "Bob's chain certificates are listed");
+    // the others get C's grant of E after the removal (one received by its `ts` would be
+    // vouched for, spec/permissions.md §5.1 Vouches)
+    lp.advance(1000);
     spread(&mut lp);
     for i in 0..5 {
         let ro = lp.peers[i].engine.roster(&t);
@@ -1186,7 +1197,9 @@ fn until_link_backdated_grant_void_spec_perm_7() {
     assert!(lp.peers[3].engine.header(&forged[0]).unwrap().ts.wall_ms() < until);
     // (its clock catches up, else it parks the removals as from the future)
     lp.peers[3].clock.advance(2 * 3_600_000);
-    // peer 4 gets the forged grant first, peer 2 the removals first
+    // peer 4 gets the forged grant first, peer 2 the removals first; every peer after the
+    // removals' `ts` (one received by it would be vouched for, spec/permissions.md §5.1 Vouches)
+    lp.advance(1000);
     send_carried(&mut lp, 3, 4, &forged);
     assert!(lp.peers[4].engine.roster(&link.k).contains_key(&forger), "stands until the removal arrives");
     for (i, c) in &removals {

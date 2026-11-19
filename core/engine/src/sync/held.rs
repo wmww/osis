@@ -57,7 +57,7 @@ impl Cause {
 }
 
 /// The role aspects whose commits from elsewhere a complete pass must follow.
-const ROLE_ASPECTS: [&str; 3] = ["roles.0", "secrets.0", "keys.0"];
+const ROLE_ASPECTS: [&str; 4] = ["roles.0", "secrets.0", "keys.0", "vouches.0"];
 
 /// Loads the waiting self-removals, the complete passes noted, the role arrivals and the causes
 /// judged (an open or reload); the pass place goes on from the highest stored.
@@ -90,7 +90,7 @@ pub(crate) fn load(tx: &mut Tx<'_>) -> Result<()> {
 }
 
 /// Role commit `c`, applied from elsewhere in this transaction (or late parts of it), arrived:
-/// each actor whose `roles.0`, `secrets.0` or `keys.0` it writes, its record held, takes the next
+/// each actor whose `roles.0`, `secrets.0`, `keys.0` or `vouches.0` it writes, its record held, takes the next
 /// pass place (a part on a thing whose record is not held is on nothing here).
 pub(crate) fn note_arrival(tx: &mut Tx<'_>, h: &osis_commit::Header) -> Result<()> {
     let actors: BTreeSet<Tid> = h.aspects.iter().filter(|a| ROLE_ASPECTS.contains(&a.ak.as_str()) && tx.core.created(&a.tid).is_some()).map(|a| a.tid).collect();

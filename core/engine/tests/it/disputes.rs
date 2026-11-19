@@ -230,3 +230,41 @@ fn planted_removal_counts_from_when_it_applies_spec_permissions_5_1() {
     send_carried(&mut lp, 0, 2, &e);
     assert_eq!(adm(&lp), (false, true), "b's removal was first and is earlier: kept");
 }
+
+// spec/permissions.md §5.1 Vouches (Writing, the writers' leaving out), §5.1 Trust set: X (peer 1)
+// demoted H (peer 0) to write (D) and granted K (peer 3) write (C); W (peer 2) alone received
+// both; H removes X (R). D lowers R's author, so R applies only where it is trusted (D a seed);
+// W sides with R. Listing D would void R there, so W's vouch lists C alone: at W, K keeps write,
+// X stays removed and H admin. (Vouches as written: tests in the engine's `apply::tests_vouches`.)
+#[test]
+fn a_witness_leaves_out_what_would_void_the_removal_spec_perm_5_1() {
+    let (mut lp, ps) = people(4);
+    let (h, x, w, k) = (ps[0], ps[1], ps[2], ps[3]);
+    let t = thing_of(&mut lp, 0, h);
+    for p in [x, w] {
+        lp.peers[0].engine.grant(&t, &p, &edge_of(Role::Admin)).unwrap();
+    }
+    spread(&mut lp);
+    lp.advance(1000);
+    let d = *lp.peers[1].engine.demote(&t, &Demotion { holder: h, new: Some(edge_of(Role::Write)), retain: None }).unwrap().commits.last().unwrap();
+    lp.advance(1000);
+    let c = *lp.peers[1].engine.grant(&t, &k, &edge_of(Role::Write)).unwrap().commits.last().unwrap();
+    lp.advance(1000);
+    lp.sync(1, 2).unwrap();
+    lp.advance(1000);
+    let r = *lp.peers[0].engine.demote(&t, &Demotion { holder: x, new: None, retain: None }).unwrap().commits.last().unwrap();
+    lp.advance(1000);
+    lp.sync(0, 2).unwrap();
+    let vouches = |lp: &LocalPeer| lp.peers[2].engine.core.ix.held.vouches_on(&t).cloned().collect::<Vec<_>>();
+    assert!(vouches(&lp).is_empty(), "R void in W's walk: nothing owed");
+    let op = lp.peers[2].engine.core.ix.held.edge_commit(&r).unwrap().ops.iter().position(|o| o.holder == x).unwrap();
+    lp.peers[2].engine.choose(r, op as u32, x, true).unwrap();
+    let v = vouches(&lp);
+    assert_eq!(v.len(), 1, "W vouches once it sides with R");
+    assert_eq!(v[0].entries.iter().map(|(key, l)| (*key, l.commits().to_vec())).collect::<Vec<_>>(), vec![(r, vec![c])], "D left out");
+    assert!(!v[0].entries.iter().any(|(_, l)| l.covers(&d)));
+    let e = &lp.peers[2].engine.core;
+    assert_eq!(e.role_now(&k, &t), Some(Role::Write), "C kept");
+    assert_eq!(e.role_now(&x, &t), None, "X removed");
+    assert_eq!(e.role_now(&h, &t), Some(Role::Admin), "H admin");
+}

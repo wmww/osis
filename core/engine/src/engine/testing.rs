@@ -324,6 +324,12 @@ impl Engine {
         self.core.addenda_on = on;
     }
 
+    /// Whether this node writes vouches unasked (tests: a world with hand-written vouches).
+    #[doc(hidden)]
+    pub fn write_vouches(&mut self, on: bool) {
+        self.core.vouches_on = on;
+    }
+
     /// The list bound in place of `MAX_LIST_BYTES` (tests: frontiers, thing lists and listings
     /// fit end to end).
     #[doc(hidden)]
@@ -650,12 +656,12 @@ impl Engine {
         })
     }
 
-    /// Damages the role commits' `EDGES` rows (tests): 0 truncates one, 1 garbles one,
+    /// Damages the role commits' `PERM_PARTS` rows (tests): 0 truncates one, 1 garbles one,
     /// 2 removes one. Returns how many rows there were.
     #[doc(hidden)]
-    pub fn damage_edges(&mut self, how: u8) -> Result<usize> {
+    pub fn damage_perm_rows(&mut self, how: u8) -> Result<usize> {
         self.run(|tx| {
-            let t = tx.txn.index(EDGES)?;
+            let t = tx.txn.index(PERM_PARTS)?;
             let rows = tx.txn.table_range(t, &[], None, 1 << 20)?;
             if let Some((k, v)) = rows.iter().max_by_key(|(_, v)| v.len()) {
                 match how {
@@ -668,11 +674,11 @@ impl Engine {
         })
     }
 
-    /// The `EDGES` rows as stored (tests: what a rebuild writes equals what the writes kept).
+    /// The `PERM_PARTS` rows as stored (tests: what a rebuild writes equals what the writes kept).
     #[doc(hidden)]
-    pub fn edges_rows(&mut self) -> Result<Vec<(Vec<u8>, Vec<u8>)>> {
+    pub fn perm_rows(&mut self) -> Result<Vec<(Vec<u8>, Vec<u8>)>> {
         self.read(|tx| {
-            let t = tx.txn.index(EDGES)?;
+            let t = tx.txn.index(PERM_PARTS)?;
             Ok(tx.txn.table_range(t, &[], None, 1 << 20)?)
         })
     }
@@ -1088,8 +1094,10 @@ mod tests {
         // `cover_waits`); what an open parks anew (`pending`, `pend_on`,
         // `pend_keys`, `pend_by`, `pend_needs`: each examined again); rows not persisted for ephemeral aspects
         // (`forgotten`); events, not the held set (`falls`, `passes`, `role_arrivals`,
-        // `cause_at`, `reseal_asks`, `carriers`, `carrying`); the node closure, built again after an open (`closure`).
-        const LEFT_OUT: &[&str] = &["rotations", "epochs_due", "names_due", "forgotten", "pending", "pend_on", "pend_keys", "pend_by", "pend_needs", "falls", "passes", "role_arrivals", "cause_at", "setting_waits", "reseal_asks", "carriers", "carrying", "cover_waits", "closure"];
+        // `cause_at`, `reseal_asks`, `carriers`, `carrying`); the node closure, built again after an open (`closure`);
+        // the removals to judge for vouches, all of them again at an open (`vouches_due`,
+        // `vouch_watch`).
+        const LEFT_OUT: &[&str] = &["rotations", "epochs_due", "names_due", "forgotten", "pending", "pend_on", "pend_keys", "pend_by", "pend_needs", "falls", "passes", "role_arrivals", "cause_at", "setting_waits", "reseal_asks", "carriers", "carrying", "cover_waits", "closure", "vouches_due", "vouch_watch"];
         let ix = super::super::Indexes::default();
         let compared: BTreeSet<&str> = tables(&ix).into_iter().map(|(n, _)| n).collect();
         for n in super::super::INDEX_NAMES {

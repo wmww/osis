@@ -3,7 +3,7 @@
 //! Each applied commit's meta (header and dropped parts in its record's head; per part its
 //! validity, rotation role and overreach in a small table), the indexes derived from
 //! role bodies (box keys, epoch introductions, independent things, snapshots) and
-//! perm's reading of each role commit's held parts (`EDGES`, written with the commit
+//! perm's reading of each role commit's held parts (`PERM_PARTS`, written with the commit
 //! record) are written in the transaction that changes them, from the journal of the in-memory
 //! indexes.
 //! Tagged with a hash of the sources its judgments follow from (`build.rs`): a build with other
@@ -47,9 +47,9 @@ const EPOCHS: &[u8] = b"node/epochs";
 const NAMED: &[u8] = b"node/named";
 /// What each addendum commit says (`validity::AddendaParts`), by commit ID.
 pub(super) const ADDENDA: &[u8] = b"node/addenda";
-/// Per role commit, what perm's adaptation reads of its held `roles.0` parts (`validity::EdgeParts`): written with the commit record (`Tx::put_commit`), so an open
+/// Per role commit, what perm's adaptation reads of its held `roles.0` and `vouches.0` parts (`validity::PermParts`): written with the commit record (`Tx::put_commit`), so an open
 /// adapts these rows instead of decoding the bodies.
-pub(super) const EDGES: &[u8] = b"node/edges";
+pub(super) const PERM_PARTS: &[u8] = b"node/perm";
 /// Saved role walks (osis-perm `Timelines::to_save`), by component root: a cache unit
 /// tagged with these rules and its exact inputs; one that does not match is evaluated anew.
 pub(super) const WALKS: &[u8] = b"node/walks";
@@ -465,31 +465,40 @@ impl Rec for crate::apply::validity::AddendaParts {
     }
 }
 
-impl Rec for crate::apply::validity::EdgeParts {
+impl Rec for crate::apply::validity::PermParts {
     fn to(&self) -> Value {
-        Value::List(
-            self.0
-                .iter()
-                .map(|(ai, es)| {
-                    let es = es
-                        .iter()
-                        .map(|(d, k, v)| {
-                            let v = match v {
-                                None => Value::Int(0),
-                                Some(v) => v.to(),
-                            };
-                            Value::List(vec![records::dot_value(d), k.to(), v])
-                        })
-                        .collect();
-                    Value::List(vec![Value::uint(*ai as u64), Value::List(es)])
-                })
-                .collect(),
-        )
+        let edges = self
+            .edges
+            .iter()
+            .map(|(ai, es)| {
+                let es = es
+                    .iter()
+                    .map(|(d, k, v)| {
+                        let v = match v {
+                            None => Value::Int(0),
+                            Some(v) => v.to(),
+                        };
+                        Value::List(vec![records::dot_value(d), k.to(), v])
+                    })
+                    .collect();
+                Value::List(vec![Value::uint(*ai as u64), Value::List(es)])
+            })
+            .collect();
+        let vouches = self
+            .vouches
+            .iter()
+            .map(|(ai, es)| {
+                let es = es.iter().map(|(d, r, l)| Value::List(vec![records::dot_value(d), r.to(), Value::List(l.commits().iter().map(Rec::to).collect())])).collect();
+                Value::List(vec![Value::uint(*ai as u64), Value::List(es)])
+            })
+            .collect();
+        Value::List(vec![Value::List(edges), Value::List(vouches)])
     }
     fn from(v: &Value) -> Option<Self> {
         let Value::List(x) = v else { return None };
-        let mut out = Vec::with_capacity(x.len());
-        for p in x {
+        let [Value::List(edges), Value::List(vouches)] = x.as_slice() else { return None };
+        let mut out = crate::apply::validity::PermParts::default();
+        for p in edges {
             let Value::List(p) = p else { return None };
             let [ai, Value::List(items)] = p.as_slice() else { return None };
             let es = items
@@ -504,9 +513,23 @@ impl Rec for crate::apply::validity::EdgeParts {
                     Some((records::dot_of(d).ok()?, Rec::from(k)?, v))
                 })
                 .collect::<Option<Vec<_>>>()?;
-            out.push((<usize as Rec>::from(ai)?, es));
+            out.edges.push((<usize as Rec>::from(ai)?, es));
         }
-        Some(crate::apply::validity::EdgeParts(out))
+        for p in vouches {
+            let Value::List(p) = p else { return None };
+            let [ai, Value::List(items)] = p.as_slice() else { return None };
+            let es = items
+                .iter()
+                .map(|e| {
+                    let Value::List(e) = e else { return None };
+                    let [d, r, Value::List(l)] = e.as_slice() else { return None };
+                    let l = l.iter().map(Rec::from).collect::<Option<Vec<CommitId>>>()?;
+                    Some((records::dot_of(d).ok()?, Rec::from(r)?, std::sync::Arc::new(osis_perm::Frontier::new(l))))
+                })
+                .collect::<Option<Vec<_>>>()?;
+            out.vouches.push((<usize as Rec>::from(ai)?, es));
+        }
+        Some(out)
     }
 }
 
@@ -563,16 +586,16 @@ fn put_setmap<K: Rec + Ord + Clone + std::hash::Hash + Send + Sync + 'static, T:
     put_rows(txn, name, items, |(k, t)| s.get(k).is_some_and(|x| x.contains(t)).then(Vec::new))
 }
 
-/// Writes a role commit's `EDGES` row (with its record).
-pub(crate) fn put_edges(tx: &mut Tx<'_>, id: &CommitId, parts: &crate::apply::validity::EdgeParts, shred: Shred) -> Result<()> {
-    let t = tx.txn.index(EDGES)?;
+/// Writes a role commit's `PERM_PARTS` row (with its record).
+pub(crate) fn put_perm(tx: &mut Tx<'_>, id: &CommitId, parts: &crate::apply::validity::PermParts, shred: Shred) -> Result<()> {
+    let t = tx.txn.index(PERM_PARTS)?;
     tx.txn.table_put(t, &id.0, enc(parts), shred)?;
     Ok(())
 }
 
-/// Removes a commit's `EDGES` row, shredded (with its record).
-pub(crate) fn remove_edges(tx: &mut Tx<'_>, id: &CommitId) -> Result<()> {
-    let t = tx.txn.index(EDGES)?;
+/// Removes a commit's `PERM_PARTS` row, shredded (with its record).
+pub(crate) fn remove_perm(tx: &mut Tx<'_>, id: &CommitId) -> Result<()> {
+    let t = tx.txn.index(PERM_PARTS)?;
     tx.txn.table_remove(t, &id.0, Shred::Yes)?;
     Ok(())
 }
@@ -618,21 +641,21 @@ pub(crate) fn load_addenda(tx: &mut Tx<'_>) -> Result<BTreeMap<CommitId, crate::
     Ok(out)
 }
 
-/// Every role commit's `EDGES` row, from its record (after a rebuild).
-fn write_edges_all(tx: &mut Tx<'_>) -> Result<()> {
+/// Every role commit's `PERM_PARTS` row, from its record (after a rebuild).
+fn write_perm_all(tx: &mut Tx<'_>) -> Result<()> {
     let ids: Vec<CommitId> = tx.core.ix.commits.iter().filter(|(_, m)| m.view.kind.is_role()).map(|(id, _)| *id).collect();
     for id in ids {
-        let parts = crate::apply::edge_parts(tx, &id)?;
-        put_edges(tx, &id, &parts, Shred::No)?;
+        let parts = crate::apply::perm_parts(tx, &id)?;
+        put_perm(tx, &id, &parts, Shred::No)?;
     }
     Ok(())
 }
 
-/// The `EDGES` rows of the held role commits; an error when one is missing or does not
+/// The `PERM_PARTS` rows of the held role commits; an error when one is missing or does not
 /// decode (the open then rebuilds).
-pub(crate) fn load_edges(tx: &mut Tx<'_>) -> Result<BTreeMap<CommitId, crate::apply::validity::EdgeParts>> {
+pub(crate) fn load_perm(tx: &mut Tx<'_>) -> Result<BTreeMap<CommitId, crate::apply::validity::PermParts>> {
     let _s = osis_base::costs::span("open: edges rows");
-    let t = tx.txn.index(EDGES)?;
+    let t = tx.txn.index(PERM_PARTS)?;
     let lim = |n: usize| osis_base::Limits::new(2 * osis_base::format::MAX_OBJECT_DEPTH, n);
     let mut out = BTreeMap::new();
     scan_table(&mut tx.txn, t, &[], None, |k, v| {
@@ -994,7 +1017,7 @@ pub(crate) fn write_all(tx: &mut Tx<'_>) -> Result<()> {
     }
     super::refs::write_all(tx)?;
     super::refs::kept::write_all(tx)?;
-    write_edges_all(tx)?;
+    write_perm_all(tx)?;
     write_addenda_all(tx)?;
     write(tx, true)?;
     tx.txn.put_local(VERSION_KEY, VERSION.as_bytes(), Shred::No)?;

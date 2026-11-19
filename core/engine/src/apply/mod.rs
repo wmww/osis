@@ -18,6 +18,8 @@ mod tests_validity;
 #[cfg(test)]
 mod tests_addenda;
 #[cfg(test)]
+mod tests_vouches;
+#[cfg(test)]
 mod oracle;
 #[cfg(test)]
 mod tests_paged;
@@ -142,24 +144,24 @@ pub(crate) struct Streamed {
 }
 
 /// A commit's decoded parts, with what is read of them, each read once on first ask: each
-/// `keys.0` part's keysets (`keys::KeysBody`) and perm's reading of its `roles.0` parts
-/// (`validity::EdgeParts`, also its record's `node/edges` row). A part may come as several
+/// `keys.0` part's keysets (`keys::KeysBody`) and perm's reading of its `roles.0` and `vouches.0` parts
+/// (`validity::PermParts`, also its record's `node/perm` row). A part may come as several
 /// deltas (pages of one rotation): each entry is read alone.
 pub(crate) struct PartsRead<'a> {
     h: &'a Header,
     parts: &'a [(usize, Decoded)],
     keys: Cow<'a, [OnceCell<keys::KeysBody>]>,
-    edges: OnceCell<validity::EdgeParts>,
+    perm: OnceCell<validity::PermParts>,
 }
 
 impl<'a> PartsRead<'a> {
     pub(crate) fn of(h: &'a Header, parts: &'a [(usize, Decoded)]) -> Self {
-        PartsRead { h, parts, keys: parts.iter().map(|_| OnceCell::new()).collect(), edges: OnceCell::new() }
+        PartsRead { h, parts, keys: parts.iter().map(|_| OnceCell::new()).collect(), perm: OnceCell::new() }
     }
 
     /// The first `n` parts, sharing what is read of their `keys.0` parts.
     pub(crate) fn first(&self, n: usize) -> PartsRead<'_> {
-        PartsRead { h: self.h, parts: self.parts.get(..n).unwrap_or(self.parts), keys: Cow::Borrowed(self.keys.get(..n).unwrap_or(&self.keys)), edges: OnceCell::new() }
+        PartsRead { h: self.h, parts: self.parts.get(..n).unwrap_or(self.parts), keys: Cow::Borrowed(self.keys.get(..n).unwrap_or(&self.keys)), perm: OnceCell::new() }
     }
 
     /// The parts: aspect index and decoded delta or snapshot.
@@ -176,9 +178,9 @@ impl<'a> PartsRead<'a> {
         Some(self.keys.get(i)?.get_or_init(|| keys::KeysBody::of(d.fragment())))
     }
 
-    /// What perm's adaptation reads of the `roles.0` parts.
-    pub(crate) fn edges(&self) -> &validity::EdgeParts {
-        self.edges.get_or_init(|| validity::EdgeParts::of(self.h, self.parts))
+    /// What perm's adaptation reads of the `roles.0` and `vouches.0` parts.
+    pub(crate) fn perm(&self) -> &validity::PermParts {
+        self.perm.get_or_init(|| validity::PermParts::of(self.h, self.parts))
     }
 }
 
@@ -2027,7 +2029,7 @@ pub(crate) fn load(tx: &mut Tx<'_>, rebuild: bool) -> Result<Option<Vec<(Tid, os
         let _s = osis_base::costs::span("open: adapt");
         // perm's inputs: the edge writes of the role commits, oldest first, from what the
         // index keeps of their bodies
-        let mut edges = crate::engine::index::load_edges(tx)?;
+        let mut edges = crate::engine::index::load_perm(tx)?;
         let mut ids: Vec<(osis_base::Ts, CommitId)> = tx.core.ix.commits.iter().filter(|(_, m)| m.view.kind.is_role()).map(|(id, m)| (m.view.ts, *id)).collect();
         ids.sort();
         for (_, id) in ids {
@@ -2151,9 +2153,9 @@ pub(crate) fn load(tx: &mut Tx<'_>, rebuild: bool) -> Result<Option<Vec<(Tid, os
                 }
             }
             let v = tx.core.ix.commits.get(&id).map(|m| m.view.clone()).ok_or(Error::Corrupt("commit meta"))?;
-            validity::add_role_commit(tx.core, &v, &id, read.edges());
+            validity::add_role_commit(tx.core, &v, &id, read.perm());
             #[cfg(debug_assertions)]
-            tx.core.rebuilt_edges.insert(id, read.edges().clone());
+            tx.core.rebuilt_perm.insert(id, read.perm().clone());
         }
     }
     // which role commits of accounts count (spec/permissions.md §5.5), before any timeline
@@ -2229,6 +2231,8 @@ pub(crate) fn load(tx: &mut Tx<'_>, rebuild: bool) -> Result<Option<Vec<(Tid, os
         let actors: BTreeSet<Tid> = tx.core.ix.commits.values().flat_map(|m| m.view.aspects.iter().filter(|a| a.ak.as_str() == "keys.0").map(|a| a.tid)).collect();
         keys::rebuild_keysets(tx, &actors)?;
     }
+    // what vouches are owed is re-derived, never kept (`flows::vouches`)
+    crate::flows::vouches::all_due(tx.core);
     if fast {
         return Ok(None);
     }
@@ -2283,18 +2287,18 @@ fn examine_stored<'p>(tx: &mut Tx<'_>, h: &Header, parts: impl IntoIterator<Item
     Ok(out)
 }
 
-/// What perm's adaptation reads of a held role commit: its held `roles.0` parts.
-pub(crate) fn edge_parts(tx: &mut Tx<'_>, id: &CommitId) -> Result<validity::EdgeParts> {
+/// What perm's adaptation reads of a held role commit: its held `roles.0` and `vouches.0` parts.
+pub(crate) fn perm_parts(tx: &mut Tx<'_>, id: &CommitId) -> Result<validity::PermParts> {
     // the header decoded only for a held record
-    let Some(h) = tx.core.ix.commits.get(id).map(|m| m.header.clone()) else { return Ok(validity::EdgeParts::default()) };
-    let Some(blob) = tx.get_commit(id)? else { return Ok(validity::EdgeParts::default()) };
-    edge_parts_of(tx, id, &h, &blob)
+    let Some(h) = tx.core.ix.commits.get(id).map(|m| m.header.clone()) else { return Ok(validity::PermParts::default()) };
+    let Some(blob) = tx.get_commit(id)? else { return Ok(validity::PermParts::default()) };
+    perm_parts_of(tx, id, &h, &blob)
 }
 
-/// `edge_parts` of a commit record's blob (`h`: its resolved header).
-pub(crate) fn edge_parts_of(tx: &mut Tx<'_>, id: &CommitId, h: &Header, blob: &CommitBlob) -> Result<validity::EdgeParts> {
-    let edges = blob.parts.iter().filter(|p| h.aspects.get(p.ai).is_some_and(|a| validity::edge_ak(a.ak.as_str())));
-    Ok(validity::EdgeParts::of(h, &examine_stored(tx, h, edges, id)?))
+/// `perm_parts` of a commit record's blob (`h`: its resolved header).
+pub(crate) fn perm_parts_of(tx: &mut Tx<'_>, id: &CommitId, h: &Header, blob: &CommitBlob) -> Result<validity::PermParts> {
+    let perm = blob.parts.iter().filter(|p| h.aspects.get(p.ai).is_some_and(|a| validity::perm_part(a.ak.as_str())));
+    Ok(validity::PermParts::of(h, &examine_stored(tx, h, perm, id)?))
 }
 
 /// The decoded part of a held commit on aspect `ai`.

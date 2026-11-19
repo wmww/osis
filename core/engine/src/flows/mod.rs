@@ -11,6 +11,7 @@
 //! sync IDs) it reads what sync noted (`Engine::note_complete_pass`).
 
 pub mod addenda;
+pub(crate) mod vouches;
 pub mod edges;
 pub(crate) mod sync_ids;
 pub(crate) mod links;

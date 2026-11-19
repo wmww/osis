@@ -1,6 +1,6 @@
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::indexing_slicing)]
 //! The rebuildable caches (notes/local-store.md; notes/engine-store.md, Open): the persisted
-//! index, its `node/edges` rows and the saved role walks. That an open from them gives what a
+//! index, its `node/perm` rows and the saved role walks. That an open from them gives what a
 //! rebuild from the commit records gives is the debug check after sampled transactions
 //! (`Engine::check_index`); these are the rules it cannot reach: damage, crashes, restores.
 
@@ -44,7 +44,7 @@ fn reopen_same(e: &mut Engine, at: &str) -> usize {
     e.walks_restored()
 }
 
-// spec: none (rebuildable caches): a truncated, garbled or missing `node/edges` row, an index
+// spec: none (rebuildable caches): a truncated, garbled or missing `node/perm` row, an index
 // tagged with other rules (its states joined so) or a row that does not decode, and a saved walk
 // truncated, with a flipped bit or saved under other rules, each make the open evaluate anew from
 // the commit records: what the node had (an invalid part included, its state joined again), the
@@ -73,13 +73,13 @@ fn damaged_caches_are_rebuilt() {
     let e = &mut lp.peers[0].engine;
     let reg = ak("t:reg.0");
     assert_eq!(e.get(&d, &reg).unwrap(), Some(s("bob before")), "bob's late write invalid here");
-    let before = (e.index_digest(), e.perm_digest(false), e.edges_rows().unwrap());
+    let before = (e.index_digest(), e.perm_digest(false), e.perm_rows().unwrap());
     assert!(before.0.commits.values().any(|c| c.valid.contains(&false)), "an invalid part is indexed");
     reopen_same(e, "saved");
     assert!(reopen_same(e, "restored") > 0);
     for how in 0..5u8 {
         match how {
-            0..3 => assert_eq!(e.damage_edges(how).unwrap(), before.2.len()),
+            0..3 => assert_eq!(e.damage_perm_rows(how).unwrap(), before.2.len()),
             // another build's rules: everything valid, states joined so; then a row that does
             // not decode
             _ => e.damage_index(how == 4).unwrap(),
@@ -89,7 +89,7 @@ fn damaged_caches_are_rebuilt() {
             assert_eq!(e.get(&d, &reg).unwrap(), Some(s("bob before")), "the old rules' state");
         }
         e.reload().unwrap();
-        assert_eq!((e.index_digest(), e.perm_digest(false), e.edges_rows().unwrap()), before, "index damage {how}");
+        assert_eq!((e.index_digest(), e.perm_digest(false), e.perm_rows().unwrap()), before, "index damage {how}");
         assert!(e.index_current().unwrap(), "index damage {how}: tagged again");
         assert_eq!(e.get(&d, &reg).unwrap(), Some(s("bob before")), "index damage {how}: joined again");
     }
