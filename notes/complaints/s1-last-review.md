@@ -1,0 +1,2 @@
+- A world test of a deposit owed to a store took three tries: with the admin up, its duties give a writer left out by `rotate_leaving_out` the write key again (its write is stamped, not deposited), and a reader pulling the deposit promotes it (moot). Recipe: rotate with the writer off, `Lie::Withhold` on the writer, admin off while it writes (`inbox::deposit_items_to_a_peer_back`).
+- `tools/bin-at` for one main-vs-branch probe: 3 min of rebuild in the worktree, and the next branch build pays it back.

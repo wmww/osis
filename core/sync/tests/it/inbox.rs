@@ -648,6 +648,63 @@ fn a_writer_promotes_a_deposit_spec_sync_inbox_4() {
     assert_eq!(promotion(&mut w), Promotion::Yes, "the chain under S again");
 }
 
+/// Node 1 (keeping S unread) goes away from both others, back once, and away again. With
+/// `removed`, node 0 removes node 1 from the thing, and node 2 hears of it. Then node 2 (a writer
+/// left out of S's next rotation, standing at its head) writes with node 0 off: its entry is
+/// deposited, owed to the sources keeping S unread. The Deposit items node 2 sends as node 1 is
+/// back (node 2 withholds its entries from every stream, so nothing promotes the deposit).
+fn deposit_items_to_a_peer_back(removed: bool) -> u64 {
+    use crate::harness::history::{Gives, three, value_ak};
+    use osis_base::{Role, Value};
+    use osis_engine::Mutation;
+    let (mut w, t, s) = three(Gives::Writes, 1);
+    w.cap = 2_000_000;
+    w.partition(0, 1);
+    w.partition(1, 2);
+    w.advance(1000);
+    w.rejoin(0, 1);
+    w.rejoin(1, 2);
+    w.advance(30_000);
+    w.partition(0, 1);
+    w.partition(1, 2);
+    if removed {
+        let _ = crate::harness::play(&mut w, &[crate::harness::Step::Remove(0, 0, 1)], String::new());
+        w.run();
+    }
+    let a2 = w.node(2).account.unwrap();
+    w.power_off(2);
+    w.write(0, |e| e.rotate_leaving_out(&t, &[Role::Write], &[a2])).unwrap().expect("a rotation");
+    w.run();
+    w.power_on(2);
+    w.run();
+    assert_eq!(w.store(2).head(&s).unwrap().map(|h| h.id()), w.store(0).head(&s).unwrap().map(|h| h.id()), "node 2 stands at the new head");
+    w.lie(2, Some(crate::harness::lies::Lie::Withhold));
+    w.power_off(0);
+    let c = w.write(2, |e| {
+        let mut m = Mutation::new();
+        m.set(t, &value_ak(), &Value::Int(7)).unwrap();
+        e.commit(m).unwrap().unwrap()
+    });
+    w.run();
+    let blobs: Vec<BlobId> = w.engine(2).commit_blobs(&c).unwrap().iter().copied().collect();
+    assert!(blobs.iter().any(|b| w.store(2).entry(&s, b).unwrap().is_some_and(|e| e.deposited)), "deposited");
+    osis_base::costs::take();
+    w.rejoin(1, 2);
+    w.advance(30_000);
+    assert!(w.links_of(2).iter().any(|(_, j)| *j == 1), "they met again");
+    osis_base::costs::take().into_iter().filter(|(k, ..)| *k == "inbox: deposit item sent").map(|(.., n)| n).sum()
+}
+
+// spec/sync-inbox.md §3 (Sending: to each source of S keeping S unread), spec/sync-opens.md §6
+// (ended: judged in the step that applies the change, whether connected or not): a deposit owed to a
+// node keeping S unread goes there as it is back; written after that node's right ended while it
+// was away, it goes nowhere.
+#[test]
+fn a_deposit_after_a_removal_while_away_goes_nowhere_spec_sync_inbox_3() {
+    assert!(deposit_items_to_a_peer_back(false) >= 1, "owed: it goes as the peer is back");
+    assert_eq!(deposit_items_to_a_peer_back(true), 0, "removed while away: nothing goes");
+}
+
 // spec/sync-inbox.md §4 Clearing deposits: a stranger flooding an inbox with deposits nobody can
 // act on (junk, fires with no expiry or one far off, a blob past the byte bound) leaves at most
 // `DEPOSITS_WAITING` entries and `DEPOSITS_WAITING_BYTES` bytes, whatever the flood's size: those
@@ -677,53 +734,60 @@ fn a_deposit_flood_leaves_the_bounds_spec_sync_inbox_4() {
 }
 
 // spec/sync-inbox.md §3 (Sending: to each source of S keeping S unread until that source takes
-// it), spec/sync-opens.md §3 (Agreement: nothing of S before the digests agree): an own deposit
-// is owed per record, named by no connection: it goes on the record's connection only once its
-// digests agreed there; one unanswered as its connection ends goes on the next; one taken
-// (answered 0) is done for that record, offered at no later reconnect; one refused goes again
-// on the next connection.
+// it there, on each connection), spec/sync-opens.md §3 (Agreement: nothing of S before the
+// digests agree): an own deposit goes on a connection of the record only once its digests agreed
+// there; unanswered as its connection ends, it goes on the next; taken (answered 0), it goes
+// again on the next connection all the same until it is moot (stamped): the store that took it
+// may have lost it since (a restart, S shredded and synced again), and nothing it shows says so.
+// Refused for now, it is backed off on that connection, and goes at once on the next.
 #[test]
-fn an_offer_owed_goes_once_agreed_until_taken_spec_sync_inbox_3() {
+fn an_offer_goes_once_agreed_on_each_connection_until_moot_spec_sync_inbox_3() {
     let mut t = T::new();
     let s = sync_id(1);
     let r = [7; 16];
+    let sent_of = |t: &T, from: usize| t.deposits_sent().iter().skip(from).map(|x| (x.0, x.3)).collect::<Vec<_>>();
     t.hold(&[(s, Holding::Read)]);
     t.take(conn(1), r);
     t.join(conn(1), s, SourceClass::Store);
     let b = t.deposit(s, 1, Target::Stores);
     assert!(t.deposits_sent().is_empty(), "taken, the digests not agreed: nothing goes");
     t.agree(conn(1));
-    assert_eq!(t.deposits_sent().iter().map(|x| (x.0, x.3)).collect::<Vec<_>>(), vec![(conn(1), b)], "agreed: it goes");
+    assert_eq!(sent_of(&t, 0), vec![(conn(1), b)], "agreed: it goes");
     // unanswered as the connection ends: carried out on the next
     t.close(conn(1));
     t.take(conn(2), r);
     t.join(conn(2), s, SourceClass::Store);
     t.agree(conn(2));
-    let sent = t.deposits_sent();
-    assert_eq!(sent.iter().map(|x| (x.0, x.3)).collect::<Vec<_>>(), vec![(conn(1), b), (conn(2), b)], "carried out on the next connection");
-    t.reply(conn(2), sent[1].1, T::shared(Code::OK));
+    assert_eq!(sent_of(&t, 1), vec![(conn(2), b)], "carried out on the next connection");
+    let id = t.deposits_sent()[1].1;
+    t.reply(conn(2), id, T::shared(Code::OK));
+    assert_eq!(t.deposits_sent().len(), 2, "taken: done on that connection");
+    // the store may lose it while away: offered again on its next connection
     t.close(conn(2));
     t.take(conn(3), r);
     t.join(conn(3), s, SourceClass::Store);
     t.agree(conn(3));
-    assert_eq!(t.deposits_sent().len(), 2, "taken: not offered again at a reconnect");
+    assert_eq!(sent_of(&t, 2), vec![(conn(3), b)], "taken before: offered again at a reconnect until moot");
+    let id = t.deposits_sent()[2].1;
+    t.reply(conn(3), id, T::shared(Code::OK));
     // refused for now: backed off on that connection, again at once on the next
     let b2 = t.deposit(s, 2, Target::Stores);
-    let sent = t.deposits_sent();
-    assert_eq!(sent.last().map(|x| (x.0, x.3)), Some((conn(3), b2)));
-    t.reply(conn(3), sent[2].1, T::shared(Code::DEPOSIT_BUDGET_FULL));
-    assert_eq!(t.deposits_sent().len(), 3, "backed off there");
+    assert_eq!(sent_of(&t, 3), vec![(conn(3), b2)]);
+    let id = t.deposits_sent()[3].1;
+    t.reply(conn(3), id, T::shared(Code::DEPOSIT_BUDGET_FULL));
+    assert_eq!(t.deposits_sent().len(), 4, "backed off there");
+    // stamped: moot, offered nowhere again
+    t.offers.remove(&s, &b);
     t.close(conn(3));
     t.take(conn(4), r);
     t.join(conn(4), s, SourceClass::Store);
     t.agree(conn(4));
-    assert_eq!(t.deposits_sent().iter().skip(3).map(|x| (x.0, x.3)).collect::<Vec<_>>(), vec![(conn(4), b2)], "refused: offered again on the next connection, the taken one not");
+    assert_eq!(sent_of(&t, 4), vec![(conn(4), b2)], "refused: offered again on the next connection; the moot one not");
 }
 
 // spec/sync-inbox.md §3 (one unanswered Deposit item per connection), spec/sync.md §2 (work in
 // proportion to change): a peer that never answers costs one item out per connection and holds
-// nothing across its reconnects (what is done per record grows only by what it takes, bounded by
-// the own deposits times the records in memory): at n and 10n own deposits alike.
+// nothing across its reconnects: at n and 10n own deposits alike.
 #[test]
 fn a_peer_never_answering_holds_nothing_across_reconnects_spec_sync_inbox_3() {
     for n in [3u64, 30] {
@@ -738,7 +802,7 @@ fn a_peer_never_answering_holds_nothing_across_reconnects_spec_sync_inbox_3() {
             t.join(conn(c), s, SourceClass::Store);
             t.agree(conn(c));
             t.close(conn(c));
-            assert_eq!(t.offers.held(), (0, 0), "nothing kept of a connection gone, nothing taken");
+            assert_eq!(t.offers.held(), 0, "nothing kept of a connection gone");
         }
         assert_eq!(t.deposits_sent().len(), 9, "one item out per connection");
     }

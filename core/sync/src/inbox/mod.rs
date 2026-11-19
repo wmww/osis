@@ -234,7 +234,7 @@ impl Inbox {
             }
             Incoming::Request(id, m) => serve::request(h, net, conn, id, m),
             Incoming::Reply(_, id, m) => {
-                if !self.offers.answered(h.mono, conn, id, &m) && !self.reports.answered(conn, id, &m) && !self.suspects.answered(conn, id, &m) {
+                if !self.offers.answered(h.mono, conn, id, &m) && !self.reports.answered(conn, id, &m) {
                     self.register.answered(h.mono, conn, id, &m);
                 }
             }
@@ -285,7 +285,9 @@ impl Inbox {
                 }
             }
             Moved::Taken(conn, ..) | Moved::Released(conn, _) => self.offers.record_moved(conn),
-            Moved::Until(..) | Moved::Forgot(..) => {}
+            // an ended member takes no offer; its `until` cleared, S's offers may go there again
+            Moved::Until(conn, s) => self.offers.joined(conn, &s, net),
+            Moved::Forgot(..) => {}
         }
     }
 
@@ -293,7 +295,6 @@ impl Inbox {
     pub fn record_gone(&mut self, id: crate::types::RecordId) {
         self.register.gone(Source::Record(id));
         self.suspects.record_gone(Source::Record(id));
-        self.offers.record_gone(Source::Record(id));
     }
 
     /// A connection ended.

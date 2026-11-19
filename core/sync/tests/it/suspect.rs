@@ -106,12 +106,10 @@ fn a_reader_left_apart_by_a_drop_is_repaired_by_its_list_spec_sync_compaction_1(
     assert_eq!(snapshots(&mut w, t), before + 1, "same state: no snapshot");
 }
 
-// spec/sync-compaction.md §1 (Repair: unless it already wrote one from that same state),
-// spec/permissions.md §4 (Suspect list: sent to a peer until it answers it, again whenever the
-// flags change): node 1 never gets node 0's snapshot (node 0 withholds every entry from it), so
-// its flag and its different digest stay. Node 0 snapshots once per state of its own: not again
-// at a reconnect (the list was taken: not sent again) nor after its restart, again once its
-// state moved and node 1's flags change.
+// spec/sync-compaction.md §1 (Repair: unless it already wrote one from that same state): node 1
+// never gets node 0's snapshot (node 0 withholds every entry from it), so its flag and its
+// different digest stay and every new connection sends the list again. Node 0 snapshots once per
+// state of its own: not again at a reconnect nor after a restart, again once its state moved.
 #[test]
 fn a_repeated_report_repairs_once_per_state_across_restarts_spec_sync_compaction_1() {
     let (mut w, t) = diverged();
@@ -137,10 +135,7 @@ fn a_repeated_report_repairs_once_per_state_across_restarts_spec_sync_compaction
     });
     w.cut(0, 1);
     w.run();
-    assert_eq!(snapshots(&mut w, t), before + 1, "the list was taken: not sent again at a reconnect");
-    w.write(1, |e| e.flag_suspect(&t, &big(), Why::PendingExpiry, &[(CommitId([5; 32]), 0)]).unwrap());
-    w.run();
-    assert_eq!(snapshots(&mut w, t), before + 2, "its state moved, the list sent again: once more");
+    assert_eq!(snapshots(&mut w, t), before + 2, "its state moved: once more");
 }
 
 
@@ -198,6 +193,29 @@ fn a_list_received_mid_first_sync_is_judged_as_it_ends_spec_sync_compaction_1() 
     w.run();
     assert_eq!(snapshots(&mut w, t), before + 1, "repaired as its first sync ends");
     assert_eq!(digests(&mut w, t).0, digests(&mut w, t).1);
+}
+
+// spec/permissions.md §4 (Suspect list: on each connection sharing L), spec/sync-compaction.md
+// §1 (Repair): node 0 mid its first sync answers node 1's list and keeps it in memory; a restart
+// loses it before node 0 acts, and node 1's flags never move. Node 1 sends it again on the next
+// connection, so node 0 still repairs as its first sync ends. Fails if a list answered Ok is
+// sent at no later connection.
+#[test]
+fn a_list_lost_by_its_receiver_restarting_goes_again_spec_permissions_4() {
+    let (mut w, t) = diverged();
+    let s = w.engine(0).sync_id_of(&t).unwrap().unwrap();
+    let before = snapshots(&mut w, t);
+    first_synced(&mut w, 0, s, false);
+    sent();
+    w.heal();
+    w.run();
+    assert!(sent() >= 1, "node 1 sent its list");
+    w.power_off(0);
+    w.power_on(0);
+    w.run();
+    first_synced(&mut w, 0, s, true);
+    w.run();
+    assert_eq!(snapshots(&mut w, t), before + 1, "sent again after the restart: repaired as its first sync ends");
 }
 
 // spec/permissions.md §4 (Suspect list: an aspect is left out while a source's stream shows a
