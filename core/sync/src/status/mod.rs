@@ -10,7 +10,11 @@
 //! (source, S)), so a sync ID's status is read when asked, from its sources: O(sources of S),
 //! nothing per sync ID while idle and nothing on a push that changes no answer someone asked
 //! for. Status itself keeps what needs acting on, each an `Effects` key over stamped values:
-//! - the sources of S, from opens' `Moved` (the driver hands each here);
+//! - the members of S per source (a record, or the connection of one kept nowhere), from opens'
+//!   member-level `Moved` (an open, a close, `Gone`, a record read from its rows at its take,
+//!   `record_gone`), and the connection per source (`Moved::Taken`, `Released`): S's sources are
+//!   its members whose record a connection holds, read where asked, so a reconnect moves only
+//!   what reads that record's connection;
 //! - lacking counts per (S, source keeping S unread): the stamped entries here its stream did
 //!   not show (spec/sync-status.md §1: a source lacks only what it would pull);
 //! - per own commit under a read S: held elsewhere (§2), recorded on the entry durably
@@ -32,7 +36,7 @@ mod live;
 
 pub use live::{Live, NetView};
 
-use crate::opens::{LeftAt, Leaving, Moved, Opens};
+use crate::opens::{LeftAt, Moved, Opens, Rejoin};
 use crate::read::{Read, Verdict};
 use crate::session::Sessions;
 use crate::store::Source;
@@ -45,6 +49,15 @@ use osis_engine::sync::{Stranding, SyncSet};
 use osis_proto::limits::PASS_WAIT_MS;
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
+
+/// The connection holding a source now, and who its peer proved there: readers are counted by
+/// identity, and a self-removal skips this account's own nodes.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Up {
+    pub conn: ConnId,
+    pub account: Option<Tid>,
+    pub own_node: bool,
+}
 
 /// A source of S: a peer with S open on a connection up now (spec/sync-status.md §1).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -265,13 +278,19 @@ pub struct Status {
     clock: Clock,
     set: Effects<(), Arc<SyncSet>>,
     holding: Stamped<SyncId, Holding>,
-    sources: Stamped<SyncId, Arc<BTreeMap<ConnId, Src>>>,
-    /// Per (S, record) of a store source: followed across the record's connections, until S
+    /// Per S, its members by source and the class each opened with: kept across the record's
+    /// connections, moved only by a member opening or closing (stamped per S).
+    members: Stamped<SyncId, Arc<BTreeMap<Source, SourceClass>>>,
+    /// The sync IDs each source holds as members: what a record going, or read from its rows,
+    /// moves.
+    of_source: BTreeMap<Source, BTreeSet<SyncId>>,
+    /// Per source, the connection holding it now (stamped per source: a take or release moves
+    /// only what read it).
+    up: Stamped<Source, Up>,
+    /// Per (S, source) of a store member: followed across the record's connections, until S
     /// leaves the record (a record kept nowhere: until its connection ends).
     lacking_fx: Effects<(SyncId, Source), u64>,
     lacking: Stamped<(SyncId, Source), u64>,
-    /// The keys `lacking_fx` follows, by record: what a record going lets go.
-    lacking_keys: BTreeSet<(Source, SyncId)>,
     own_fx: Effects<SyncId, Arc<BTreeSet<CommitId>>>,
     held_fx: Effects<(SyncId, CommitId), Held>,
     /// Per read S whose own commits are known: those not held elsewhere.
@@ -310,10 +329,11 @@ impl Default for Status {
             clock: Clock::default(),
             set: Effects::new("status: sync set"),
             holding: Stamped::default(),
-            sources: Stamped::default(),
+            members: Stamped::default(),
+            of_source: BTreeMap::new(),
+            up: Stamped::default(),
             lacking_fx: Effects::new("status: lacking"),
             lacking: Stamped::default(),
-            lacking_keys: BTreeSet::new(),
             own_fx: Effects::new("status: own commits"),
             held_fx: Effects::new("status: held elsewhere"),
             unheld: Stamped::default(),
@@ -342,23 +362,51 @@ impl std::fmt::Debug for Status {
     }
 }
 
-static NO_SOURCES: BTreeMap<ConnId, Src> = BTreeMap::new();
+/// S's sources now: its members a connection holds, by that connection. Stamped reads of S's
+/// members and of each member's connection, so a take or release moves only what read it.
+fn sources_of(members: &Stamped<SyncId, Arc<BTreeMap<Source, SourceClass>>>, up: &Stamped<Source, Up>, s: &SyncId) -> BTreeMap<ConnId, Src> {
+    let Some(m) = members.get(s) else { return BTreeMap::new() };
+    m.iter().filter_map(|(src, class)| up.get(src).map(|u| (u.conn, Src { class: *class, at: *src, account: u.account, own_node: u.own_node }))).collect()
+}
 
 impl Status {
     // ---- the product's entry points ----
 
-    /// A member moved on a connection (the driver hands each `Moved` here as to streams).
+    /// A member or a record moved (the driver hands each `Moved` here as to streams): a member
+    /// opening or closing moves its S; a take or release moves only the record's connection.
     pub fn moved(&mut self, sessions: &Sessions, opens: &Opens, m: &Moved) {
+        let up = |conn: ConnId| {
+            let proven = sessions.get(conn).map(|x| x.proven());
+            Up { conn, account: proven.and_then(|p| p.account()), own_node: proven.is_some_and(|p| p.node.is_some()) }
+        };
         match *m {
+            // Interim (issues/many-sync-ids-cost.md): a kept record's members carried one by one
+            // at its take; status follows the record (`Taken`)
+            Moved::Joined(_, _, Rejoin::Taken) => {}
+            Moved::Left(_, _, at) if at.how == crate::opens::Leaving::Connection && matches!(at.src, Source::Record(_)) => {}
             Moved::Joined(conn, s, _) => {
                 let Some(member) = opens.member(conn, &s) else { return };
-                let proven = sessions.get(conn).map(|x| x.proven());
-                let src = Src { class: member.class, at: opens.record(conn).map_or(Source::Conn(conn), Source::Record), account: proven.and_then(|p| p.account()), own_node: proven.is_some_and(|p| p.node.is_some()) };
-                self.joined(s, conn, src);
+                let src = opens.record(conn).map_or(Source::Conn(conn), Source::Record);
+                // a record kept nowhere is its connection: up while it has a member
+                if matches!(src, Source::Conn(_)) && !self.up.contains_key(&src) {
+                    self.taken(src, up(conn));
+                }
+                self.opened(s, src, member.class);
             }
             Moved::Left(conn, s, at) => self.left(s, conn, at),
             Moved::Gone(rid, s) => self.gone(rid, s),
-            Moved::Until(..) | Moved::Forgot(..) | Moved::Taken(..) | Moved::Released(..) => {}
+            Moved::Taken(conn, rid, read) => {
+                let src = Source::Record(rid);
+                self.taken(src, up(conn));
+                // read from its rows: its members are learned now
+                if read {
+                    for (s, m) in opens.members(conn) {
+                        self.opened(*s, src, m.class);
+                    }
+                }
+            }
+            Moved::Released(_, rid) => self.released(Source::Record(rid)),
+            Moved::Until(..) | Moved::Forgot(..) => {}
         }
     }
 
@@ -371,55 +419,91 @@ impl Status {
 
     // ---- the core ----
 
-    /// S became a member on `conn`: a source.
-    pub fn joined(&mut self, s: SyncId, conn: ConnId, src: Src) {
-        let mut now = self.sources.get(&s).map(|x| (**x).clone()).unwrap_or_default();
-        now.insert(conn, src);
-        self.sources.insert(s, Arc::new(now));
-        if src.class == SourceClass::Store {
-            self.lacking_fx.want((s, src.at));
-            self.lacking_keys.insert((src.at, s));
+    /// Member S of the record at `src` opened (or opened again with `class`).
+    pub fn opened(&mut self, s: SyncId, src: Source, class: SourceClass) {
+        osis_base::costs::count("status: members moved", 1);
+        let mut now = self.members.get(&s).map(|x| (**x).clone()).unwrap_or_default();
+        if now.insert(src, class) != Some(class) {
+            self.members.insert(s, Arc::new(now));
         }
+        self.of_source.entry(src).or_default().insert(s);
+        if class == SourceClass::Store {
+            self.lacking_fx.want((s, src));
+        } else {
+            self.unwant_lacking(src, s);
+        }
+    }
+
+    /// A connection holds the record at `src` now: its members are sources there.
+    pub fn taken(&mut self, src: Source, up: Up) {
+        if self.up.get(&src) != Some(&up) {
+            self.up.insert(src, up);
+        }
+    }
+
+    /// No connection holds the record at `src`: it keeps its members, none a source. Nothing of
+    /// where its peer stood is kept: a report racing the drop is made again by the next
+    /// connection's Pull.
+    pub fn released(&mut self, src: Source) {
+        if self.up.contains_key(&src) {
+            self.up.remove(&src);
+        }
+    }
+
+    /// Member S of the record at `src` is a member no more: its lacking count goes.
+    fn drop_member(&mut self, s: SyncId, src: Source) -> Option<SourceClass> {
+        self.unwant_lacking(src, s);
+        if let Some(ids) = self.of_source.get_mut(&src) {
+            ids.remove(&s);
+            if ids.is_empty() {
+                self.of_source.remove(&src);
+                // a record kept nowhere is its connection: down with its last member
+                if matches!(src, Source::Conn(_)) {
+                    self.released(src);
+                }
+            }
+        }
+        let was = self.members.get(&s)?.clone();
+        let mut now = (*was).clone();
+        let class = now.remove(&src)?;
+        osis_base::costs::count("status: members moved", 1);
+        if now.is_empty() {
+            self.members.remove(&s);
+        } else {
+            self.members.insert(s, Arc::new(now));
+        }
+        Some(class)
     }
 
     fn unwant_lacking(&mut self, src: Source, s: SyncId) {
         self.lacking_fx.unwant(&(s, src));
-        self.lacking_keys.remove(&(src, s));
         if self.lacking.contains_key(&(s, src)) {
             self.lacking.remove(&(s, src));
         }
     }
 
-    /// Member S of record `id`, which no connection holds, closed (`Moved::Gone`): its lacking
-    /// count goes.
+    /// Member S of record `id`, which no connection holds, closed (`Moved::Gone`).
     pub fn gone(&mut self, id: crate::types::RecordId, s: SyncId) {
-        self.unwant_lacking(Source::Record(id), s);
+        self.drop_member(s, Source::Record(id));
     }
 
-    /// Record `id` went (evicted past `RECORD_BUDGET`, or twin-dropped): its lacking counts go.
+    /// Record `id` went (evicted past `RECORD_BUDGET`, or twin-dropped): its members go.
     pub fn record_gone(&mut self, id: crate::types::RecordId) {
         let src = Source::Record(id);
-        let keys: Vec<(Source, SyncId)> = self.lacking_keys.range((src, SyncId([0; 16]))..=(src, SyncId([0xff; 16]))).copied().collect();
-        for (src, s) in keys {
-            self.unwant_lacking(src, s);
+        for s in self.of_source.get(&src).cloned().unwrap_or_default() {
+            self.drop_member(s, src);
         }
+        self.released(src);
     }
 
-    /// S stopped being a member on `conn` (closed, or the connection ended).
-    /// `at`: where the peer stood as it left, counted for held elsewhere at the next settle.
+    /// Member S closed on `conn`. `at`: where the peer stood as it closed, counted for held
+    /// elsewhere at the next settle (its report and its close come in one step).
     pub fn left(&mut self, s: SyncId, conn: ConnId, at: LeftAt) {
-        let Some(was) = self.sources.get(&s).cloned() else { return };
-        let mut now = (*was).clone();
-        let Some(src) = now.remove(&conn) else { return };
-        self.leaving.entry(s).or_default().insert(conn, (src, at));
-        if now.is_empty() {
-            self.sources.remove(&s);
-        } else {
-            self.sources.insert(s, Arc::new(now));
-        }
-        // a record kept lets S go only when S leaves it, not as a connection lets it go
-        if at.how != Leaving::Connection || matches!(at.src, Source::Conn(_)) {
-            self.unwant_lacking(at.src, s);
+        let up = self.up.get(&at.src).copied().filter(|u| u.conn == conn);
+        let Some(class) = self.drop_member(s, at.src) else { return };
+        if let Some(u) = up {
+            let src = Src { class, at: at.src, account: u.account, own_node: u.own_node };
+            self.leaving.entry(s).or_default().insert(conn, (src, at));
         }
     }
 
@@ -491,13 +575,13 @@ impl Status {
     /// leaving (a reconnect) judges no other S again.
     fn judge_strandings(&mut self, g: &mut impl Ground) -> Result<()> {
         for s in self.stranding_fx.due() {
-            let all = &self.sources;
+            let (members, up) = (&self.members, &self.up);
             let r = self.stranding_fx.try_settle(&s, || {
                 let (engine, walk) = (g.stranding(&s)?, g.walk_stop(&s));
                 if engine.is_none() && walk.is_none() {
                     return Ok(None);
                 }
-                let srcs = all.get(&s).map_or(&NO_SOURCES, |x| &**x);
+                let srcs = sources_of(members, up, &s);
                 if srcs.is_empty() {
                     return match walk {
                         Some(step) => g.walk_stranding(&s, step),
@@ -590,11 +674,11 @@ impl Status {
         }
         for (s, c) in self.held_fx.due() {
             self.work.commits += 1;
-            let (all, leaving, removals) = (&self.sources, &self.leaving, &self.removals);
+            let (members, up, leaving, removals) = (&self.members, &self.up, &self.leaving, &self.removals);
             let r = self.held_fx.try_settle(&(s, c), || {
                 let srcs = || {
-                    let now = all.get(&s).map_or(&NO_SOURCES, |x| &**x);
-                    now.iter().map(|(k, v)| (*k, *v, None)).chain(leaving.get(&s).into_iter().flatten().map(|(k, (v, at))| (*k, *v, Some(*at)))).collect()
+                    let now = sources_of(members, up, &s);
+                    now.into_iter().map(|(k, v)| (k, v, None)).chain(leaving.get(&s).into_iter().flatten().map(|(k, (v, at))| (*k, *v, Some(*at)))).collect()
                 };
                 held_at(g, &s, &c, srcs, removals.contains(&c))
             });
@@ -684,9 +768,9 @@ impl Status {
                 self.pass_fx.unwant(&s);
                 continue;
             };
-            let (all, passes, clock, work) = (&self.sources, &self.passes, &self.clock, &mut self.work);
+            let (members, up, passes, clock, work) = (&self.members, &self.up, &self.passes, &self.clock, &mut self.work);
             let Some((_, now)) = self.pass_fx.settle(&s, || match passes.get(&s) {
-                Some(p) => pass_now(&mut *g, clock, work, &s, p, all.get(&s).map_or(&NO_SOURCES, |x| &**x)),
+                Some(p) => pass_now(&mut *g, clock, work, &s, p, &sources_of(members, up, &s)),
                 None => PassNow::default(),
             }) else {
                 continue;
@@ -717,7 +801,7 @@ impl Status {
     fn begin(&mut self, g: &mut impl Ground, s: SyncId, pulls: &mut Vec<ConnId>) -> Result<()> {
         let (began, noted) = (g.mono(), g.begin_pass());
         let waits = g.records_holding(&s)?;
-        pulls.extend(self.sources.get(&s).into_iter().flat_map(|x| x.keys().copied()));
+        pulls.extend(sources_of(&self.members, &self.up, &s).into_keys());
         self.passes.insert(s, Pass { began, noted, waits, pulled: g.pull_seq() });
         self.pass_fx.want(s);
         Ok(())
@@ -727,7 +811,7 @@ impl Status {
 
     /// Whether S has a source now (§1).
     pub fn sourced(&self, s: &SyncId) -> bool {
-        self.sources.get(s).is_some_and(|x| !x.is_empty())
+        !sources_of(&self.members, &self.up, s).is_empty()
     }
 
     /// Whether a complete pass of S begun after pass place `seq` (`Engine::pass_place`) ended,
@@ -739,7 +823,7 @@ impl Status {
     /// How S stands now: O(sources of S). None for a sync ID neither held nor shared.
     pub fn of(&self, s: &SyncId, net: &impl Net) -> Option<SyncStatus> {
         let holding = self.holding.get(s).copied();
-        let srcs = self.sources.get(s).map_or(&NO_SOURCES, |x| &**x);
+        let srcs = sources_of(&self.members, &self.up, s);
         if holding.is_none() && srcs.is_empty() {
             return None;
         }
@@ -760,7 +844,7 @@ impl Status {
 
     /// Every sync ID held or shared, as `of` says each: O(sync IDs × their sources).
     pub fn all(&self, net: &impl Net) -> BTreeMap<SyncId, SyncStatus> {
-        let ids: BTreeSet<SyncId> = self.holding.keys().chain(self.sources.keys()).copied().collect();
+        let ids: BTreeSet<SyncId> = self.holding.keys().chain(self.members.keys()).copied().collect();
         ids.into_iter().filter_map(|s| Some((s, self.of(&s, net)?))).collect()
     }
 
@@ -768,7 +852,7 @@ impl Status {
     /// least.
     /// O(sources of S).
     pub fn heard_out(&self, s: &SyncId, net: &impl Net) -> bool {
-        let srcs = self.sources.get(s).map_or(&NO_SOURCES, |x| &**x);
+        let srcs = sources_of(&self.members, &self.up, s);
         heard_out(srcs.iter().map(|(c, src)| (!net.full(*c, s) && !net.refusing(src.at, s), net.caught_since(*c, s).is_some())))
     }
 

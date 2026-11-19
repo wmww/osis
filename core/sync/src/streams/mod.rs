@@ -362,7 +362,7 @@ impl Streams {
             // to the modules still following members per connection; streams follows the record
             Moved::Joined(_, _, Rejoin::Taken) => {}
             Moved::Left(_, _, at) if at.how == Leaving::Connection && matches!(at.src, Source::Record(_)) => {}
-            Moved::Taken(conn, rid) => {
+            Moved::Taken(conn, rid, _) => {
                 self.taken(ctx, conn, rid);
                 self.run(ctx, conn);
             }

@@ -78,8 +78,10 @@ pub enum Moved {
     /// change, or S left the sync set): what is kept of S for that source goes.
     Gone(RecordId, SyncId),
     /// Kept record R is connected on `conn` (`Opens::conn_of`): its members are that
-    /// connection's, standing where the record holds them. No member moves.
-    Taken(ConnId, RecordId),
+    /// connection's, standing where the record holds them. No member moves. `true`: the record
+    /// was just read from its rows (a restart's), so nothing of its members was followed: the
+    /// modules learn them now (`Opens::members`).
+    Taken(ConnId, RecordId, bool),
     /// `conn` let kept record R go: the record keeps its members where they stand.
     Released(ConnId, RecordId),
 }
@@ -128,7 +130,7 @@ impl Moved {
     /// The connection it moved on (none for a record no connection holds).
     pub fn conn(&self) -> Option<ConnId> {
         match self {
-            Moved::Joined(c, ..) | Moved::Left(c, ..) | Moved::Until(c, _) | Moved::Forgot(c, _) | Moved::Taken(c, _) | Moved::Released(c, _) => Some(*c),
+            Moved::Joined(c, ..) | Moved::Left(c, ..) | Moved::Until(c, _) | Moved::Forgot(c, _) | Moved::Taken(c, ..) | Moved::Released(c, _) => Some(*c),
             Moved::Gone(..) => None,
         }
     }
@@ -1615,7 +1617,7 @@ impl Opens {
             self.connected.wrote(&src, true);
         }
         if kept {
-            moved.push(Moved::Taken(conn, id));
+            moved.push(Moved::Taken(conn, id, fresh));
         }
         for s in &members {
             self.member_stamps.wrote(&(conn, *s), true);

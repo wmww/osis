@@ -9,7 +9,7 @@ use osis_engine::sync::{Holding, Stranding, SyncSet};
 use osis_proto::limits::PASS_WAIT_MS;
 use osis_sync::Result;
 use osis_sync::read::Verdict;
-use osis_sync::status::{Ground, Net, Src, Status};
+use osis_sync::status::{Ground, Net, Src, Status, Up};
 use osis_sync::store::Source;
 use osis_sync::types::{ConnId, Position, RecordId, Scope, SourceClass, Waiting};
 use std::collections::{BTreeMap, BTreeSet};
@@ -20,11 +20,6 @@ const A: ConnId = ConnId(1);
 const B: ConnId = ConnId(2);
 const RA: RecordId = [0xa; 16];
 const RB: RecordId = [0xb; 16];
-
-/// How a member leaves as its connection lets the record go.
-fn gone(c: ConnId) -> osis_sync::opens::LeftAt {
-    osis_sync::opens::LeftAt { src: osis_sync::store::Source::Conn(c), reported: None, until: None, how: osis_sync::opens::Leaving::Connection }
-}
 
 fn blob(i: u8) -> BlobId {
     BlobId([i; 32])
@@ -197,6 +192,8 @@ struct T {
     st: Status,
     g: Fake,
     pulls: Vec<ConnId>,
+    /// The record each connection holds.
+    on: BTreeMap<ConnId, Source>,
 }
 
 impl T {
@@ -204,7 +201,7 @@ impl T {
     fn new(ids: &[(SyncId, Holding)]) -> T {
         let mut g = Fake::default();
         g.set.insert((), Arc::new(SyncSet { ids: ids.iter().map(|(s, h)| (*s, ([tid(9)].into(), *h))).collect(), unsyncable: BTreeSet::new() }));
-        let mut t = T { st: Status::default(), g, pulls: Vec::new() };
+        let mut t = T { st: Status::default(), g, pulls: Vec::new(), on: BTreeMap::new() };
         t.settle();
         t
     }
@@ -223,9 +220,20 @@ impl T {
         self.settle();
     }
 
+    /// `conn` holds `src`'s record (as `Moved::Taken`) and S is a member of it (as a member
+    /// opening).
     fn join(&mut self, s: SyncId, conn: ConnId, src: Src) {
-        self.st.joined(s, conn, src);
+        self.st.taken(src.at, Up { conn, account: src.account, own_node: src.own_node });
+        self.on.insert(conn, src.at);
+        self.st.opened(s, src.at, src.class);
         self.settle();
+    }
+
+    /// `conn` lets its record go (as `Moved::Released`): it keeps its members.
+    fn release(&mut self, conn: ConnId) {
+        if let Some(src) = self.on.remove(&conn) {
+            self.st.released(src);
+        }
     }
 
     fn caught(&mut self, conn: ConnId, s: SyncId, since: u64) {
@@ -281,8 +289,8 @@ fn heard_out_when_every_source_caught_up() {
     assert!(t.heard_out(S));
     let st = t.st.of(&S, &t.g).unwrap();
     assert_eq!(st.readers(), [tid(1)].into(), "two connections of one account: one reader");
-    t.st.left(S, A, gone(A));
-    t.st.left(S, B, gone(B));
+    t.release(A);
+    t.release(B);
     t.settle();
     assert!(!t.heard_out(S), "nobody connected: not heard out");
 }
@@ -306,7 +314,7 @@ fn full_or_refusing_source_named_not_waited_on() {
     t.settle();
     assert!(t.heard_out(S) && t.st.of(&S, &t.g).unwrap().sources[&B].refusing);
     // with only sources that do not take S, nothing is heard out
-    t.st.left(S, A, gone(A));
+    t.release(A);
     t.settle();
     assert!(!t.heard_out(S), "only a refusing source");
 }
@@ -339,14 +347,12 @@ fn lacking_counted_by_what_a_source_pulls() {
 // record going, lets it go.
 #[test]
 fn lacking_is_kept_per_record_across_connections_spec_sync_status_1() {
-    use osis_sync::opens::{LeftAt, Leaving};
     let mut t = T::new(&[(S, Holding::Read)]);
     t.g.stamped.insert(S, vec![blob(1), blob(2)]);
     t.join(S, B, store(RB));
     t.settle();
     let reads = t.g.stamped_reads;
-    let away = LeftAt { src: Source::Record(RB), reported: None, until: None, how: Leaving::Connection };
-    t.st.left(S, B, away);
+    t.release(B);
     t.join(S, ConnId(3), store(RB));
     t.settle();
     assert_eq!(t.g.stamped_reads, reads, "a reconnect counts nothing again");
@@ -359,7 +365,7 @@ fn lacking_is_kept_per_record_across_connections_spec_sync_status_1() {
     t.join(S, ConnId(4), store(RB));
     t.settle();
     let reads = t.g.stamped_reads;
-    t.st.left(S, ConnId(4), away);
+    t.release(ConnId(4));
     t.st.gone(RB, S);
     t.g.stamped.insert(S, vec![blob(2)]);
     t.settle();
@@ -377,11 +383,11 @@ fn a_report_counts_when_its_source_leaves_in_the_same_step() {
     t.join(S, A, reader(RA, 1));
     t.own(S, cid(1), blob(1), 5);
     t.own(S, cid(2), blob(2), 7);
-    t.st.left(S, A, LeftAt { src: osis_sync::store::Source::Conn(A), reported: Some(6), until: None, how: osis_sync::opens::Leaving::Connection });
+    t.st.left(S, A, LeftAt { src: Source::Record(RA), reported: Some(6), until: None, how: osis_sync::opens::Leaving::Kept });
     t.settle();
     assert!(t.st.held(&cid(1)), "reported at 6 as it left");
     assert!(!t.st.held(&cid(2)), "first logged at 7, past the report");
-    t.st.left(S, B, LeftAt { src: osis_sync::store::Source::Conn(B), reported: Some(9), until: None, how: osis_sync::opens::Leaving::Connection });
+    t.st.left(S, B, LeftAt { src: Source::Record(RB), reported: Some(9), until: None, how: osis_sync::opens::Leaving::Kept });
     t.settle();
     assert!(!t.st.held(&cid(2)), "a leave of no source counts for nothing");
 }
@@ -404,7 +410,7 @@ fn own_commit_held_elsewhere_by_report_or_presence() {
     t.settle();
     assert!(t.st.held(&cid(1)) && t.wait(S));
     assert!(t.g.elsewhere.contains(&(S, blob(1))), "recorded on the entry");
-    t.st.left(S, A, gone(A));
+    t.release(A);
     t.g.reported.remove(&(A, S));
     t.settle();
     assert!(t.st.held(&cid(1)), "the record outlives the source");
@@ -584,7 +590,7 @@ fn complete_pass_with_no_source_waits_for_a_peer_to_be_waited_for() {
     t.join(S, A, reader(RA, 1));
     t.caught(A, S, 20);
     assert_eq!(t.g.passes, vec![(S, 7), (S, 20)], "a source caught up since");
-    t.st.left(S, A, gone(A));
+    t.release(A);
     t.at(30);
     want(&mut t, S, 30);
     t.at(30 + PASS_WAIT_MS);
@@ -683,7 +689,9 @@ fn work_for_one_report(n: u32) -> (u64, u64) {
     let ids: Vec<(SyncId, Holding)> = (0..n).map(|i| (sid(i), Holding::Read)).collect();
     let mut t = T::new(&ids);
     for (i, (s, _)) in ids.iter().enumerate() {
-        t.join(*s, ConnId(100 + i as u64), reader(RA, 1));
+        let mut r = [0x50; 16];
+        r[..8].copy_from_slice(&(i as u64).to_le_bytes());
+        t.join(*s, ConnId(100 + i as u64), reader(r, 1));
         t.own(*s, cid(1 + (i % 200) as u8), blob(i as u8), 3);
     }
     let before = t.st.work();
@@ -719,8 +727,8 @@ fn work_for_a_source_flip(n: u8) -> u64 {
     t.settle();
     assert_eq!(t.st.of(&S, &t.g).unwrap().unheld, Some(1));
     let before = t.st.work().commits;
-    t.join(S, ConnId(7), reader(RA, 2));
-    t.st.left(S, ConnId(7), gone(ConnId(7)));
+    t.join(S, ConnId(7), reader(RB, 2));
+    t.release(ConnId(7));
     t.settle();
     t.st.work().commits - before
 }
@@ -865,10 +873,81 @@ fn a_walk_stopped_with_no_source_is_stranded_spec_sync_ids_6() {
     assert_eq!(t.st.strandings().get(&S).map(|x| x.step), Some([3; 32]), "naming the step it stopped at");
     t.join(S, A, reader(RA, 1));
     assert!(t.st.strandings().is_empty(), "a source has S open: not heard out");
-    t.st.left(S, A, gone(A));
+    t.release(A);
     t.settle();
     assert!(t.st.of(&S, &t.g).unwrap().stranded, "no source again");
     t.g.stops.remove(&S);
     t.settle();
     assert!(!t.st.of(&S, &t.g).unwrap().stranded && t.st.strandings().is_empty(), "the stop gone");
+}
+
+/// What one reconnect of a record holding `n` sync IDs moves in status: members moved (the
+/// named counter) and lacking counts taken again.
+fn reconnect_of(n: u32) -> (u64, u64) {
+    let ids: Vec<(SyncId, Holding)> = (0..n).map(|i| (sid(i), Holding::Read)).collect();
+    let mut t = T::new(&ids);
+    for (s, _) in &ids {
+        t.g.stamped.insert(*s, vec![blob(1)]);
+        t.join(*s, B, store(RB));
+    }
+    t.release(B);
+    t.settle();
+    osis_base::costs::take();
+    let lacking = t.st.work().lacking;
+    t.st.taken(Source::Record(RB), Up { conn: ConnId(3), account: None, own_node: false });
+    t.on.insert(ConnId(3), Source::Record(RB));
+    t.settle();
+    let moved = osis_base::costs::take().into_iter().filter(|(k, ..)| *k == "status: members moved").map(|(.., v)| v).sum();
+    for (s, _) in &ids {
+        let st = t.st.of(s, &t.g).unwrap();
+        assert_eq!(st.sources.keys().copied().collect::<Vec<_>>(), vec![ConnId(3)], "the record's members are sources on the new connection");
+        assert_eq!(st.sources[&ConnId(3)].lacking, 1, "its lacking count kept");
+    }
+    (moved, t.st.work().lacking - lacking)
+}
+
+// spec/sync-status.md §1 (sources: the peers with S open on a connection up now), spec/sync.md §2
+// (work in proportion to change): a kept record's members are followed per record; a connection
+// taking it makes each a source on that connection by one fact (the record's connection), moving
+// no member and counting no lacking again, at n and 10n sync IDs.
+#[test]
+fn a_reconnect_moves_no_member_spec_sync_status_1() {
+    assert_eq!(reconnect_of(3), (0, 0));
+    assert_eq!(reconnect_of(30), (0, 0));
+}
+
+// spec/sync-status.md §1 (caught up, on the connection S is open on): caught up stays per
+// connection: a record taken by a new connection is no source caught up until that connection's
+// stream says so, whatever the last one did.
+#[test]
+fn a_taken_record_is_caught_up_per_connection_spec_sync_status_1() {
+    let mut t = T::new(&[(S, Holding::Read)]);
+    t.join(S, B, reader(RB, 1));
+    t.caught(B, S, 0);
+    assert!(t.heard_out(S));
+    t.release(B);
+    t.st.taken(Source::Record(RB), Up { conn: ConnId(3), account: Some(tid(1)), own_node: false });
+    t.settle();
+    assert!(!t.heard_out(S), "the new connection's stream has said nothing yet");
+    t.caught(ConnId(3), S, 0);
+    assert!(t.heard_out(S));
+}
+
+// spec/sync-status.md §2 (held elsewhere: reported by a source): a member closing counts where
+// its peer stood as it closed (its report and close come in one step); a connection letting the
+// record go keeps nothing of its reports: the next connection's Pull reports again.
+#[test]
+fn a_release_keeps_no_report_spec_sync_status_2() {
+    let mut t = T::new(&[(S, Holding::Read)]);
+    t.join(S, A, reader(RA, 1));
+    t.own(S, cid(1), blob(1), 5);
+    t.g.reported.insert((A, S), 6);
+    t.release(A);
+    t.g.reported.remove(&(A, S));
+    t.settle();
+    assert!(!t.st.held(&cid(1)), "a release keeps no report");
+    t.st.taken(Source::Record(RA), Up { conn: ConnId(3), account: Some(tid(1)), own_node: false });
+    t.g.reported.insert((ConnId(3), S), 6);
+    t.settle();
+    assert!(t.st.held(&cid(1)), "reported again on the next connection");
 }

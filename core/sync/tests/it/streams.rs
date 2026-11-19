@@ -2639,7 +2639,7 @@ fn a_pull_anew_while_away_reaches_the_place_held_spec_sync_streams_4() {
     p.b.with(p.now, |st, ctx| st.tick(ctx)).unwrap();
     let pulls = p.sent_by_b(41).len();
     p.a.join(p.now, k.id);
-    p.b.with(p.now, |st, ctx| st.member_moved(ctx, Moved::Taken(C, rec)));
+    p.b.with(p.now, |st, ctx| st.member_moved(ctx, Moved::Taken(C, rec, false)));
     p.run();
     assert!(p.sent_by_b(41).iter().skip(pulls).any(|m| matches!(m, Msg::Pull(q) if q.joins == vec![(k.id, None)])), "joined from the start");
     assert!(p.b.store.entry(&k.id, &x).unwrap().is_some());
@@ -2660,7 +2660,7 @@ fn a_taken_record_is_caught_up_only_once_answered_spec_sync_status_1() {
     p.a.streams.closed(C);
     p.b.streams.closed(C);
     p.a.join(p.now, s);
-    p.b.with(p.now, |st, ctx| st.member_moved(ctx, Moved::Taken(C, rec)));
+    p.b.with(p.now, |st, ctx| st.member_moved(ctx, Moved::Taken(C, rec, false)));
     p.b.with(p.now, |st, ctx| st.tick(ctx)).unwrap();
     assert!(!p.b.streams.caught_up(C, &s), "nothing answered on this connection yet");
     p.run();
@@ -2694,7 +2694,7 @@ fn a_push_after_the_release_moves_no_cursor_spec_sync_opens_1() {
     // the record taken again
     p.a.join(p.now, s);
     p.b.open.members.entry(C).or_default().insert(s, member());
-    p.b.with(p.now, |st, ctx| st.member_moved(ctx, Moved::Taken(C, rec)));
+    p.b.with(p.now, |st, ctx| st.member_moved(ctx, Moved::Taken(C, rec, false)));
     p.run();
     assert!(knows(&p.b, p.b.src(), s, x), "pulled from where the record stood");
 }
@@ -2714,7 +2714,7 @@ fn a_stop_reopened_before_its_tick_stays_spec_sync_opens_6() {
     p.b.leave_as(p.now, s, Leaving::Kept);
     p.a.streams.closed(C);
     p.b.streams.closed(C);
-    p.b.with(p.now, |st, ctx| st.member_moved(ctx, Moved::Taken(C, rec)));
+    p.b.with(p.now, |st, ctx| st.member_moved(ctx, Moved::Taken(C, rec, false)));
     p.a.join(p.now, s);
     p.b.join(p.now, s);
     p.b.with(p.now, |st, ctx| st.tick(ctx)).unwrap();
@@ -2742,7 +2742,7 @@ fn a_member_gone_while_away_joins_anew_spec_sync_opens_6() {
     p.b.open.members.entry(C).or_default().insert(s, member());
     let pulls = p.sent_by_b(41).len();
     p.a.join(p.now, s);
-    p.b.with(p.now, |st, ctx| st.member_moved(ctx, Moved::Taken(C, rec)));
+    p.b.with(p.now, |st, ctx| st.member_moved(ctx, Moved::Taken(C, rec, false)));
     p.run();
     assert!(p.sent_by_b(41).iter().skip(pulls).any(|m| matches!(m, Msg::Pull(q) if q.joins == vec![(s, None)])), "joined from the start");
     assert!(knows(&p.b, p.b.src(), s, x));
@@ -2765,7 +2765,7 @@ fn a_shred_while_away_joins_anew_spec_sync_streams_4() {
     p.b.hold(s, Holding::Read);
     let pulls = p.sent_by_b(41).len();
     p.a.join(p.now, s);
-    p.b.with(p.now, |st, ctx| st.member_moved(ctx, Moved::Taken(C, rec)));
+    p.b.with(p.now, |st, ctx| st.member_moved(ctx, Moved::Taken(C, rec, false)));
     p.run();
     assert!(p.sent_by_b(41).iter().skip(pulls).any(|m| matches!(m, Msg::Pull(q) if q.joins == vec![(s, None)])), "joined from the start");
     assert!(knows(&p.b, p.b.src(), s, x));

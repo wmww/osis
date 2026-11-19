@@ -340,7 +340,7 @@ fn a_rejoin_reads_from_the_losts_cursor_spec_sync_opens_6() {
     p.b.moved.clear();
     p.connect(2, account(1), account(2));
     p.run();
-    assert!(p.b.moved.iter().any(|m| matches!(m, Moved::Taken(c, _) if *c == p.cb)), "{:?}", p.b.moved);
+    assert!(p.b.moved.iter().any(|m| matches!(m, Moved::Taken(c, ..) if *c == p.cb)), "{:?}", p.b.moved);
     assert!(!p.b.moved.iter().any(|m| matches!(m, Moved::Joined(_, _, r) if *r != Rejoin::Taken)), "no member moves: {:?}", p.b.moved);
 }
 
@@ -1630,7 +1630,7 @@ pub(crate) fn restart_reconnect_bytes(n: u8) -> usize {
     p.connect(2, account(1), account(2));
     p.run();
     assert!((1..=n).all(|i| p.a.open(p.ca, &sid(i)) && p.b.open(p.cb, &sid(i))), "the record's members are open again");
-    assert!(p.a.moved.iter().any(|m| matches!(m, Moved::Taken(c, _) if *c == p.ca)), "the record is taken: each stands where it holds it");
+    assert!(p.a.moved.iter().any(|m| matches!(m, Moved::Taken(c, ..) if *c == p.ca)), "the record is taken: each stands where it holds it");
     assert!(!p.a.moved.iter().any(|m| matches!(m, Moved::Joined(_, _, r) if *r != Rejoin::Taken)), "no member moves: {:?}", p.a.moved);
     assert!(p.log.iter().any(|(_, m)| matches!(m, Msg::Resumed { tag: Some(_), .. })), "the record resumed");
     assert!(!p.log.iter().any(|(_, m)| matches!(m, Msg::Members { .. } | Msg::Offer { .. })), "digests match, nothing tested: {:?}", p.log);
