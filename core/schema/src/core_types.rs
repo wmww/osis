@@ -344,7 +344,6 @@ pub type Listings = BTreeMap<Vec<u8>, BTreeSet<Vec<u8>>>;
 pub type Holders = BTreeMap<Weak, Edge>;
 pub type SyncIds = BTreeMap<SyncId, SyncEntry>;
 
-pub const ASPECTS: Aspect<BTreeSet<String>> = Aspect::new("aspects.0", &CORE);
 pub const CREATED: Aspect<CreationRecord> = Aspect::new("created.0", &CORE);
 pub const ROLES: Aspect<Holders> = Aspect::new("roles.0", &CORE);
 /// Removal commit ID -> what the author vouches for (spec/permissions.md §5.2, Addenda).

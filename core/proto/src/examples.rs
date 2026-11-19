@@ -25,13 +25,10 @@ pub struct Fixture {
     pub genesis: Step,
     pub genesis_claims: ClaimSet,
     pub child: Step,
-    pub child_claims: ClaimSet,
     pub sync: SigningSecret,
     pub write: SigningSecret,
     pub delete: SigningSecret,
     pub deposit: SigningSecret,
-    /// The DH reader's X25519 key (its claim key: `step.claim_key(&reader)`).
-    pub reader: X25519Secret,
     /// The key actor listed by static entry.
     pub key_actor: SigningSecret,
 }
@@ -53,18 +50,16 @@ impl Fixture {
         let readers = [Reader::Dh(reader.public()), Reader::Static { signing: key_actor.verifying_key(), kem: kem.public() }];
         let mut rng = SeededRng::from_seed([b + 7; 32]);
         let (genesis, genesis_claims) = register(Parent::Genesis(&delete), keys, &readers, (&group, read_epoch, &read), (sync_epoch, &sync), &mut rng).expect("fixed genesis");
-        let (child, child_claims) = register(Parent::Child { step: &genesis, delete: &delete }, keys, &readers, (&group, read_epoch, &read), (sync_epoch, &sync), &mut rng).expect("fixed child");
+        let (child, _) = register(Parent::Child { step: &genesis, delete: &delete }, keys, &readers, (&group, read_epoch, &read), (sync_epoch, &sync), &mut rng).expect("fixed child");
         Fixture {
             sync_id,
             genesis,
             genesis_claims,
             child,
-            child_claims,
             sync: role_key(RoleKey::Sync, &sync),
             write: role_key(RoleKey::Write, &write),
             delete,
             deposit: osis_crypto::deposit_key(&dseed, &sync_id),
-            reader,
             key_actor,
         }
     }

@@ -295,11 +295,6 @@ impl Reuse {
         self.chunks.retain(|_, l| l.blob != *blob);
         self.nodes.retain(|_, (l, _)| l.blob != *blob);
     }
-
-    /// Chunk links indexed.
-    pub fn chunks(&self) -> usize {
-        self.chunks.len()
-    }
 }
 
 /// Fetches and decrypts linked blobs, checking the blob ID and suite.
