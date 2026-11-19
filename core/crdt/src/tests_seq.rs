@@ -946,6 +946,26 @@ fn move_over_virtual_anchors_spec_5_7() {
     assert_eq!(order(&s1), order(&s2));
 }
 
+/// §6.1 sibling order: two children of one anchor whose chosen position writes carry one sibling
+/// key (copies of one write, §4.1) go by dot ascending, whichever arrived first.
+#[test]
+fn equal_sibling_keys_go_by_dot_spec_6_1() {
+    let key = st(3, 9, 1);
+    let el = |b: u8, c: char| {
+        let d = Dot::new(n(b), 1);
+        let mut e = char_at(d.clone(), 1, Anchor::Head, c);
+        e.pos.push((Stamp { ts: ts(5 << 16), dot: Dot::new(n(b), 2) }, Anchor::Head, Some(key.clone())));
+        crate::seq::top2(&mut e.pos);
+        (d, e)
+    };
+    let (lo, hi) = (el(2, 'a'), el(3, 'b'));
+    assert!(lo.0 < hi.0);
+    let mut f = one(hi.0.clone(), hi.1);
+    f.join(one(lo.0.clone(), lo.1));
+    assert_eq!(order(&f), vec![lo.0, hi.0]);
+    assert_eq!(reads(&f).as_deref(), Some("ab"));
+}
+
 /// The flag-only range `(node 2, 1..=10)` (deleted, created elsewhere) as one record, and the
 /// same element by element.
 fn flagged_ten() -> (Fragment, Fragment) {
