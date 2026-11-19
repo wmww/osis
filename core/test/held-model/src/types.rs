@@ -362,6 +362,25 @@ pub struct Record {
     pub link: RecordLink,
 }
 
+/// Which commits count when two commits of one session overlap: counter ranges on one aspect
+/// that intersect (spec/commits.md §4: both are invalid). A void commit is invalid whole but
+/// for `created.0`. `model::evaluate_with` takes it; `evaluate` judges by `Held`.
+#[derive(Clone, Debug, PartialEq, Eq, Default)]
+pub enum Overlap {
+    /// The spec's rule as written and built: every applied commit counts, whatever its
+    /// validity; a void commit is void for every judgment (its addenda vouch for nothing, its
+    /// setting is none, its purge requests drop nothing).
+    #[default]
+    Held,
+    /// S3's rule as a last layer: the deltas on the aspect must both be valid by every other
+    /// rule, judged with no overlap anywhere (`Outcome::otherwise`); no other judgment reads
+    /// the result (a void commit's addenda, setting and purge requests still count).
+    Valid,
+    /// A probe: these commits are void, for every judgment as under `Held`. `Outcome::otherwise`
+    /// then gives which pairs a rule reading those verdicts finds (`overlap::consistent`).
+    Given(std::collections::BTreeSet<CommitId>),
+}
+
 /// When a fire of an external signal by a party holding no write on the thing (one its author's
 /// authority does not make valid, spec/permissions.md §5.2) is valid. `Any` is the default so that
 /// comparisons with an engine without the rule (osis-engine `tests/it/held.rs`) leave it off.

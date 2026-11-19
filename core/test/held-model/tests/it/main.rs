@@ -17,3 +17,4 @@ mod spec_undo;
 mod spec_waits;
 mod props;
 mod props_external;
+mod props_overlap;

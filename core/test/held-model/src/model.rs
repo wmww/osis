@@ -137,6 +137,11 @@ pub struct Outcome {
     /// its author's or actor's record is unknown): thrown out whole, their IDs kept to fetch them again once a
     /// record comes (`act` removes them).
     pub revisit: BTreeSet<CommitId>,
+    /// Commits void by overlapping session ranges (spec/commits.md §4) under the `Overlap` judged.
+    pub void: BTreeSet<CommitId>,
+    /// Validity of each part of an applied commit by every rule but its own commit's overlap
+    /// (others' voids applied as the `Overlap` says).
+    pub otherwise: BTreeMap<PartRef, bool>,
 }
 
 impl Outcome {
@@ -319,9 +324,12 @@ struct Joined<'a> {
     /// The applied commits as joined: their waiting and thrown parts count as not received.
     view: Vec<Commit>,
     tl: Timeline,
+    /// Commits void for every judgment (`Overlap::Held`, `Overlap::Given`); none under `Valid`,
+    /// whose voids no judgment reads.
+    void: BTreeSet<CommitId>,
 }
 
-fn join_held<'a>(h: &'a Held, parked: &BTreeSet<CommitId>) -> Joined<'a> {
+fn join_held<'a>(h: &'a Held, parked: &BTreeSet<CommitId>, ov: &Overlap) -> Joined<'a> {
     let world = records(h, parked);
     let mut live: Vec<&Commit> = h.commits.iter().filter(|c| !parked.contains(&c.id)).collect();
     live.sort_by_key(|c| c.id);
@@ -363,10 +371,16 @@ fn join_held<'a>(h: &'a Held, parked: &BTreeSet<CommitId>) -> Joined<'a> {
         .filter(|c| !judgeable(&world, c) || ((0..c.parts.len()).any(|i| thrown.contains(&(c.id, i))) && (0..c.parts.len()).all(|i| thrown.contains(&(c.id, i)) || !held(&c.parts[i]))))
         .map(|c| c.id)
         .collect();
-    // Role timeline over the joined role commits.
+    // overlap reads headers alone under `Held` (applied commits: what joining decides)
+    let void = match ov {
+        Overlap::Held => crate::overlap::void_among(h, &applied, |_, _| true),
+        Overlap::Given(v) => v.clone(),
+        Overlap::Valid => BTreeSet::new(),
+    };
+    // Role timeline over the joined role commits; a void commit's addenda vouch for nothing.
     let mut tl = Timeline::walk(world, edge_events(view.iter()));
-    tl.vouch(addenda(view.iter()));
-    Joined { live, applied, waiting, thrown, revisit, view, tl }
+    tl.vouch(addenda(view.iter().filter(|c| !void.contains(&c.id))));
+    Joined { live, applied, waiting, thrown, revisit, view, tl, void }
 }
 
 /// Whether a fire of external signal `a` in `c` by a party holding no write is valid under
@@ -514,11 +528,11 @@ pub fn at_quiet(h: &Held, closure: &BTreeSet<ThingId>) -> Held {
 
 /// The held set as judged once its destroyed things are forgotten, with its judgment. What a destruction
 /// keeps (`kept_when_destroyed`) still counts, so a purge's right reads the same before and after.
-fn forgotten(h: &Held) -> (Held, Outcome, Timeline) {
+fn forgotten(h: &Held, ov: &Overlap) -> (Held, Outcome, Timeline) {
     let mut gone: BTreeSet<ThingId> = BTreeSet::new();
     loop {
         let hv = forget(h, &gone);
-        let (mut o, tl) = judge(&hv);
+        let (mut o, tl) = judge(&hv, ov);
         if o.destroyed.is_subset(&gone) {
             o.destroyed = gone;
             return (hv, o, tl);
@@ -531,9 +545,19 @@ pub fn evaluate(h: &Held) -> Outcome {
     judged(h).0
 }
 
+/// `evaluate` under overlap rule `ov` (`evaluate` judges by `Overlap::Held`).
+pub fn evaluate_with(h: &Held, ov: &Overlap) -> Outcome {
+    judged_with(h, ov).0
+}
+
 /// `evaluate` and `timeline` of one held set, judged once.
 pub fn judged(h: &Held) -> (Outcome, Timeline) {
-    let (_, mut o, tl) = forgotten(h);
+    judged_with(h, &Overlap::Held)
+}
+
+/// `judged` under overlap rule `ov`.
+pub fn judged_with(h: &Held, ov: &Overlap) -> (Outcome, Timeline) {
+    let (_, mut o, tl) = forgotten(h, ov);
     for c in &h.commits {
         for (i, p) in c.parts.iter().enumerate() {
             if o.destroyed.contains(&p.thing) && matches!(p.body, Body::Held(_) | Body::Parked) && !kept_when_destroyed(h, p) {
@@ -546,12 +570,12 @@ pub fn judged(h: &Held) -> (Outcome, Timeline) {
 
 /// The judgment of a held set with no thing forgotten, and its role timeline;
 /// `Outcome::destroyed` is the things it destroys.
-fn judge(h: &Held) -> (Outcome, Timeline) {
+fn judge(h: &Held, ov: &Overlap) -> (Outcome, Timeline) {
     let now = h.now;
     let by_id: BTreeMap<CommitId, &Commit> = h.commits.iter().map(|c| (c.id, c)).collect();
     let mut o = Outcome::default();
     o.parked = parked(h);
-    let Joined { live, applied, waiting, thrown, revisit, view, tl } = join_held(h, &o.parked);
+    let Joined { live, applied, waiting, thrown, revisit, view, tl, void } = join_held(h, &o.parked, ov);
     o.revisit = revisit;
     o.applied = applied.clone();
     let is_applied = |c: &Commit| applied.contains(&c.id);
@@ -566,7 +590,8 @@ fn judge(h: &Held) -> (Outcome, Timeline) {
                 // no validity depends on a setting but an external fire's (below)
                 _ => tl.valid_delta(c, p.thing, p.aspect),
             };
-            o.valid.insert((c.id, i), v);
+            o.otherwise.insert((c.id, i), v);
+            o.valid.insert((c.id, i), v && (p.aspect == Aspect::CREATED || !void.contains(&c.id)));
         }
     }
 
@@ -574,7 +599,7 @@ fn judge(h: &Held) -> (Outcome, Timeline) {
     // joined or missing deltas of applied commits and marks waiting parts value-less. A snapshot
     // has no values of its own: a request naming it takes nothing.
     let mut pending_purged: BTreeSet<PartRef> = BTreeSet::new();
-    for q in live.iter().filter(|q| !q.purge.is_empty() && is_applied(q)) {
+    for q in live.iter().filter(|q| !q.purge.is_empty() && is_applied(q) && !void.contains(&q.id)) {
         for c in live.iter().filter(|c| c.kind != CommitKind::Snapshot) {
             for (i, p) in c.parts.iter().enumerate() {
                 // a part the node does not hold is judged once fetched again
@@ -621,11 +646,24 @@ fn judge(h: &Held) -> (Outcome, Timeline) {
     // never read fires, so judging them first is exact. Its commit acts for its author.
     for c in live.iter().filter(|c| is_applied(c) && c.kind == CommitKind::Content && c.actor == c.author) {
         for (i, p) in c.parts.iter().enumerate().filter(|(_, p)| p.aspect.external) {
-            if o.valid[&(c.id, i)] {
+            if o.otherwise[&(c.id, i)] {
                 continue;
             }
             let held = o.settings.get(&p.thing).map_or(&[][..], |v| &v[..]);
-            o.valid.insert((c.id, i), enabled(h, held, c, p.aspect));
+            let v = enabled(h, held, c, p.aspect);
+            o.otherwise.insert((c.id, i), v);
+            o.valid.insert((c.id, i), v && !void.contains(&c.id));
+        }
+    }
+    // S3's rule, the last layer: overlap among deltas valid by every other rule; nothing above
+    // read it (`Overlap::Valid`)
+    o.void = match ov {
+        Overlap::Valid => crate::overlap::void_among(h, &applied, |c, i| o.otherwise.get(&(c, i)) == Some(&true)),
+        _ => void,
+    };
+    for (&(c, i), v) in o.valid.iter_mut() {
+        if o.void.contains(&c) && by_id[&c].parts[i].aspect != Aspect::CREATED {
+            *v = false;
         }
     }
     let delta_valid: BTreeMap<DeltaRef, bool> = live

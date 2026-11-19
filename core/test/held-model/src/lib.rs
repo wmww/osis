@@ -12,11 +12,12 @@ pub mod fetch;
 pub mod freed;
 pub mod gen;
 pub mod model;
+pub mod overlap;
 pub mod roles;
 pub mod strip;
 pub mod thing_history;
 pub mod types;
 pub mod undo;
 
-pub use model::{act, at_quiet, cover, creation, evaluate, join, judged, promotes, kept_until, snapshot_state, timeline, Dots, DropWhy, Fate, KeepWhy, LeftoverWhy, Outcome, PartRef};
+pub use model::{act, at_quiet, cover, creation, evaluate, evaluate_with, join, judged, judged_with, promotes, kept_until, snapshot_state, timeline, Dots, DropWhy, Fate, KeepWhy, LeftoverWhy, Outcome, PartRef};
 pub use types::*;
