@@ -29,6 +29,9 @@
 //! - `epochs`: layer 2 of the account (§5.5) over `custody`'s chain: P's commits on things in
 //!   sync IDs, thing lists, listings, outside writers' addenda, the cutoff and the bound (README.md,
 //!   results). osis-perm `epochs_model_agrees` (chain and layer 2).
+//! - `paths`: stated paths and signers as members (notes/write-path-design.md,
+//!   notes/account-membership-design.md; a design, not in spec): self-contained (README.md,
+//!   Paths; findings in notes/path-model-findings.md). Searches `paths`, `paths-exh`, `paths-design`.
 //! - `shrink`: counterexample shrinking (`Shrink` per history type; `shrink::shrink`).
 //! Each model's library API: `walk(h)`, the timeline as a pure function of a history;
 //! `random_hist`; `quiescent(h)` (every node's walk over the writes in its delivery order
@@ -63,6 +66,7 @@ pub mod edges;
 pub mod epochs;
 pub mod forget;
 pub mod joint;
+pub mod paths;
 pub mod shrink;
 pub mod trust;
 
