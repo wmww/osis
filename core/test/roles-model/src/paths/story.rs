@@ -85,15 +85,9 @@ pub struct Move {
     pub made: u32,
 }
 
-pub const MOVES: usize = 23;
-/// The moves aimed at the remover, after `MOVES` (`Rules::aimed`): X grants H admin, standing or
-/// until just after the removal; a made-up key X grants admin does the same; X removes M.
-pub const AIMED: usize = 5;
-
-/// The size of the thief's menu under `rules`.
-pub fn menu(rules: &Rules) -> usize {
-    MOVES + if rules.aimed { AIMED } else { 0 }
-}
+/// The thief's menu: 23 to 27 are aimed at the remover (X, or a made-up key X grants admin,
+/// granting H admin, standing or until just after the removal; X removing M).
+pub const MOVES: usize = 28;
 
 /// What a world is built from: its setup, the thief's moves, and the receipts generator.
 #[derive(Clone, Debug, PartialEq)]
@@ -814,7 +808,7 @@ pub fn random_world(i: u64, rules: &Rules) -> Sim {
         mint: rng.below(3) as u8,
         x_first: rng.below(4) == 0,
     };
-    let moves: Vec<Move> = (0..rng.below(5)).map(|_| Move { kind: rng.below(menu(rules)), ts: 1 + rng.below(10) as u32, made: 7 + rng.below(4) as u32 }).collect();
+    let moves: Vec<Move> = (0..rng.below(5)).map(|_| Move { kind: rng.below(MOVES), ts: 1 + rng.below(10) as u32, made: 7 + rng.below(4) as u32 }).collect();
     Sim::build(&s, rules, &moves, &mut rng)
 }
 
@@ -831,11 +825,6 @@ pub fn random(n: u64, rules: &Rules) -> Stats {
 /// removal; `mint` and `x_first` as one dimension (none, M naming H, M naming timed B, X
 /// removing H first). `i` in `0..FAMILY`.
 pub const FAMILY: usize = 2 * 2 * 2 * 2 * 3 * 4 * 2 * 4 * 2 * 2 * 4 * MOVES * 2;
-
-/// The family's size under `rules` (`menu`).
-pub fn family_size(rules: &Rules) -> usize {
-    FAMILY / MOVES * menu(rules)
-}
 
 pub fn family(mut i: usize, rules: &Rules) -> Sim {
     let mut take = |n: usize| {
@@ -860,49 +849,42 @@ pub fn family(mut i: usize, rules: &Rules) -> Sim {
         3 => s.x_first = true,
         k => s.mint = k as u8,
     }
-    let mv = Move { kind: take(menu(rules)), ts: if take(2) == 1 { 3 } else { 8 }, made: 7 };
+    let mv = Move { kind: take(MOVES), ts: if take(2) == 1 { 3 } else { 8 }, made: 7 };
     Sim::build(&s, rules, &[mv], &mut Rng(0))
 }
 
 /// The small family on every core, every `stride`th world.
 pub fn family_run(rules: &Rules, stride: usize) -> Stats {
     crate::on_every_core(|th, threads, st: &mut Stats| {
-        for i in (th * stride..family_size(rules)).step_by(threads * stride) {
+        for i in (th * stride..FAMILY).step_by(threads * stride) {
             check(&family(i, rules), rules, st);
         }
     })
 }
 
-/// The rules a mode runs: `paths` the fixed rules; `paths-design` the first round's reading;
-/// controls, each the fixed rules with one rule undone: `-kept` (no list reads an entry as
-/// absent), `-chain` (absent read from the static chain), `-any` (every lowering absent),
-/// `-any-edge` (the last-admin rule reads every admin edge), `-timed` (a timed admin edge counts
-/// as standing), `-own-vouch` (a vouch counts for its own signer's commit), `-first-applied` (a re-granted path counts
-/// from the first point the settled walk gave it), `-once` (a node answers a removal only the first
-/// time its walk applies it), `-leave` (a self-removal is never put in question). `-exh` runs the
-/// small family in place of random worlds.
+/// The rules a mode runs: `paths` the design's (`Rules::fixed`); `paths-design` the first round's
+/// reading; controls, each the design with one rule undone: `-sticky` (a void lowering's drops
+/// kept), `-listed` (the remover and vouchers name all they received), `-exempt` (the held chain
+/// exempt from a lowering's drops), `-any-edge` (the last-admin rule reads every admin edge),
+/// `-timed` (a timed admin edge counts as standing), `-own-vouch` (a vouch counts for its own
+/// signer's commit), `-first-applied` (a re-granted path counts from the first point the settled
+/// walk gave it), `-once` (a node answers a removal only the first time its walk applies it),
+/// `-leave` (a self-removal is never put in question). `-exh` runs the small family in place of
+/// random worlds.
 pub fn mode_rules(mode: &str) -> Option<Rules> {
     let f = Rules::fixed();
     Some(match mode.trim_start_matches("paths").trim_start_matches("-exh") {
         "" => f,
         "-design" => Rules::design(),
-        "-kept" => Rules { list_own: ListOwn::Kept, ..f },
-        "-chain" => Rules { list_own: ListOwn::Chain, ..f },
-        "-any" => Rules { list_own: ListOwn::AnyLowering, ..f },
+        "-sticky" => Rules { void_unapplied: false, ..f },
+        "-listed" => Rules { stands: false, ..f },
+        "-exempt" => Rules { exempt_chain: true, ..f },
         "-any-edge" => Rules { last_admin: LastAdmin::AnyEdge, ..f },
         "-timed" => Rules { last_admin: LastAdmin::NamedTimed, ..f },
         "-own-vouch" => Rules { no_own_vouch: false, ..f },
         "-first-applied" => Rules { regrant: Regrant::FirstApplied, ..f },
         "-once" => Rules { rewrite: false, ..f },
         "-leave" => Rules { leave_in_question: false, ..f },
-        // the design's rule and its controls: a void lowering's drops kept, the remover and
-        // vouchers naming all they received, the held chain exempt; then the fixed rules under
-        // the moves aimed at the remover
-        "-whole" => Rules::whole(),
-        "-whole-sticky" => Rules { void_unapplied: false, ..Rules::whole() },
-        "-whole-listed" => Rules { stands: false, ..Rules::whole() },
-        "-whole-exempt" => Rules { own_chain_exempt: true, ..Rules::whole() },
-        "-fixed-aimed" => Rules { aimed: true, ..f },
         _ => return None,
     })
 }

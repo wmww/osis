@@ -430,17 +430,6 @@ fn nothing_raises_a_dispute_over_a_removal_that_voids_itself() {
     assert!(disputes(&w, &Rules::design(), &View::all(&w)).is_empty());
 }
 
-#[test]
-fn a_removal_never_puts_its_own_grant_in_question() {
-    let (mut w, gb, rx) = self_voiding();
-    let rd = with(&w, &[], |x| x.own_chain_exempt = true);
-    // an ordinary removal: it applies, B (unlisted) falls with H, and H's answer is a dispute
-    assert!(rd.applied.contains(&rx) && rd.stray.is_empty() && !rd.applied.contains(&gb));
-    let r = w.edge(H, 6, &[], A, X, Gone, &[]);
-    let rd = with(&w, &[r], |x| x.own_chain_exempt = true);
-    assert!(rd.role(H, A) == Admin && rd.role(X, A) == Gone && rd.applied.contains(&gb));
-}
-
 // ---- The last admin ----
 
 #[test]
@@ -592,7 +581,7 @@ fn a_switch_ends_the_rotations() {
     }
 }
 
-// ---- What no list keeps (notes/account-membership-design.md §4) ----
+// ---- The list (notes/account-membership-design.md §4) ----
 
 fn fixed(w: &World, trust: &[Id]) -> Reading {
     judge(w, &Rules::fixed(), &View::all(w).trusting(trust))
@@ -604,33 +593,8 @@ fn fixed_but(w: &World, trust: &[Id], f: impl Fn(&mut Rules)) -> Reading {
     judge(w, &r, &View::all(w).trusting(trust))
 }
 
-/// The thief removes H, honestly stamped; H receives it and removes X, listing all it received:
-/// the entry lowers an edge of R's own path and is read as absent, so trusted, R applies (finding
-/// 7). Control: the entry kept, R is void.
-#[test]
-fn a_removal_listing_the_thiefs_removal_of_its_author_applies() {
-    let (mut w, gx, gb) = paired();
-    let rx = w.edge(X, 5, &[], A, H, Gone, &[gx, gb]);
-    let r = w.edge(H, 6, &[], A, X, Gone, &[rx]);
-    let rd = fixed(&w, &[r]);
-    assert!(rd.void.is_empty() && rd.applied.contains(&r) && !rd.shows(rx));
-    assert_eq!((rd.role(H, A), rd.role(X, A), rd.role(B, A)), (Admin, Gone, Admin));
-    let rd = fixed_but(&w, &[r], |x| x.list_own = ListOwn::Kept);
-    assert!(rd.void.contains(&r) && rd.role(H, A) == Gone);
-    // a witness's vouch naming it is read as absent alike
-    let mut w = w.clone();
-    let r2 = w.edge(H, 6, &[], A, X, Gone, &[]);
-    w.vouch(B, 7, &[], A, r2, &[rx]);
-    let rd = fixed(&w, &[r2]);
-    assert!(rd.void.is_empty() && rd.role(H, A) == Admin);
-    assert!(fixed_but(&w, &[r2], |x| x.list_own = ListOwn::Kept).void.contains(&r2));
-}
-
 /// X removed N5 long before the theft; H received it and lists it. N5, holding nothing, writes a
-/// grant of admin to H. N5 stays removed: N5's edge is on no path H's removal states (the
-/// world that broke "rests on" read as any held grant to the remover, vouches README Limits).
-/// Control: "rests on" read from the held writes (`ListOwn::Chain`) takes in N5's junk grant,
-/// strikes X's removal of N5, and N5 comes back.
+/// grant of admin to H: it applies nowhere, and X's removal of N5 stays made.
 #[test]
 fn a_removed_node_writing_a_grant_to_the_remover_stays_removed() {
     let (mut w, ..) = paired();
@@ -639,14 +603,12 @@ fn a_removed_node_writing_a_grant_to_the_remover_stays_removed() {
     let junk = w.edge(N5, 3, &[], A, H, Admin, &[]);
     let r = w.edge(H, 6, &[], A, X, Gone, &[out]);
     let rd = fixed(&w, &[r]);
-    assert!(rd.applied.contains(&out) && !rd.shows(junk) && rd.role(N5, A) == Gone);
-    let rd = fixed_but(&w, &[r], |x| x.list_own = ListOwn::Chain);
-    assert!(!rd.applied.contains(&out) && rd.role(N5, A) == Admin);
+    assert!(rd.applied.contains(&out) && !rd.shows(junk) && rd.role(N5, A) == Gone && rd.void.is_empty());
 }
 
 /// Every other lowering the removed node made stays made: listed by the remover (X's removal of
 /// N5), or vouched for by a witness the remover did not hear (X's demotion of B, only B
-/// received it). Control: every lowering read as absent, both are undone.
+/// received it). Control: no vouch counting, the demotion only B received is undone.
 #[test]
 fn a_lowering_the_removed_node_made_before_stays_made() {
     let (mut w, _, gb) = paired();
@@ -657,46 +619,8 @@ fn a_lowering_the_removed_node_made_before_stays_made() {
     w.vouch(B, 7, &[], A, r, &[down]);
     let rd = fixed(&w, &[r]);
     assert!(rd.applied.is_superset(&Set::from([out, down])) && rd.role(N5, A) == Gone && rd.role(B, A) == Write);
-    let rd = fixed_but(&w, &[r], |x| x.list_own = ListOwn::AnyLowering);
-    assert!(rd.role(N5, A) == Admin && rd.role(B, A) == Admin);
-}
-
-/// M (mint) paired H and X; X, stolen, removes M listing nothing, which drops M's grant of H;
-/// H receives it and removes X listing it. H's own path is [H on A] alone, so the entry is kept
-/// and H's removal is void: the rule over the stated path's own edges does not reach "an edge a
-/// grant on that path rests on" (notes/path-model-findings.md 12). Read from the held writes
-/// (`Chain`) it applies, and the junk grant above breaks that reading; an honest remover leaving
-/// the entry out (writer policy) applies.
-#[test]
-fn a_removal_listing_the_thiefs_removal_of_its_granter_is_void() {
-    let mut w = minted_by(M);
-    let gh = w.edge(M, 0, &[], A, H, Admin, &[]);
-    let gx = w.edge(M, 0, &[], A, X, Admin, &[]);
-    let rm = w.edge(X, 3, &[], A, M, Gone, &[gx]);
-    let world = |listed: bool| {
-        let mut w = w.clone();
-        let f: Vec<Id> = if listed { vec![rm] } else { vec![] };
-        let r = w.edge(H, 6, &[], A, X, Gone, &f);
-        (w, r)
-    };
-    let (w1, r) = world(true);
-    assert!(fixed(&w1, &[r]).void.contains(&r));
-    let rd = fixed_but(&w1, &[r], |x| x.list_own = ListOwn::Chain);
-    assert!(rd.void.is_empty() && rd.applied.contains(&gh) && rd.role(H, A) == Admin);
-    let (w2, r) = world(false);
-    let rd = fixed(&w2, &[r]);
-    assert!(rd.void.is_empty() && rd.role(H, A) == Admin && rd.role(X, A) == Gone && rd.role(M, A) == Admin);
-}
-
-/// What no list keeps reads every edge of the listing write's path, not only its last.
-#[test]
-fn what_no_list_keeps_reads_every_edge_of_the_path() {
-    let mut w = account();
-    let r = w.edge(H, 6, &[A], T1, A2, Gone, &[]);
-    let first = w.edge(X, 5, &[], A, H, Gone, &[]);
-    let last = w.edge(X, 5, &[A], T1, A, Gone, &[]);
-    let held = View::all(&w).held;
-    assert!(unlistable(&w, &Rules::fixed(), &held, r, first) && unlistable(&w, &Rules::fixed(), &held, r, last));
+    let rd = fixed_but(&w, &[r], |x| x.vouch = Vouch::Off);
+    assert!(rd.role(N5, A) == Gone && rd.role(B, A) == Admin);
 }
 
 // ---- The last admin relying on a named admin (notes/write-path-design.md §5) ----
@@ -858,15 +782,15 @@ fn a_re_granted_grantee_vouches_for_its_own_fallen_grant() {
     assert!(rd.applied.contains(&g5) && rd.valid.contains(&week) && rd.applied.contains(&gap));
 }
 
-// ---- A lowering's own chain, read from the held writes (finding 15) ----
+// ---- Nothing is exempt (finding 15) ----
 
 /// X backdates a grant of admin to a key it made up, Z, and Z a grant of admin to H (H is admin
 /// already): Z's grant sets an edge of H's removal's path, so X's grant of Z is what "such a write's
 /// own path rests on", put in question by nothing, and Z stays admin wherever H's removal is
-/// trusted (`own_chain_exempt` read from the held writes, closed).
+/// trusted under the control exempting a removal's chain (`exempt_chain`, finding 15). Nothing is
+/// exempt: X's grant of Z is an unlisted write through the removed edge.
 #[test]
-#[ignore = "notes/path-model-findings.md 15: a made-up key re-granting the remover keeps its own grant through the remover's removal"]
-fn repro_a_made_up_key_regranting_the_remover_holds_nothing() {
+fn a_made_up_key_regranting_the_remover_holds_nothing() {
     let (mut w, ..) = paired();
     w.edge(X, 2, &[], A, Z, Admin, &[]);
     w.edge(Z, 3, &[], A, H, Admin, &[]);
@@ -878,10 +802,10 @@ fn repro_a_made_up_key_regranting_the_remover_holds_nothing() {
 
 /// X backdates a grant of admin until 7 to H, the remover: it sets an edge of H's removal's path,
 /// so the removal never puts it in question. H's edge is then timed, so the removal (naming no
-/// other admin) is refused and, trusted, void: X keeps A and H loses it at 7.
+/// other admin) is refused and, trusted, void: X keeps A and H loses it at 7 (finding 15, under
+/// `exempt_chain`). Nothing is exempt: the timed grant falls like any unlisted write.
 #[test]
-#[ignore = "notes/path-model-findings.md 15: the thief's backdated timed grant to the remover voids the removal"]
-fn repro_a_backdated_timed_grant_to_the_remover_changes_nothing() {
+fn a_backdated_timed_grant_to_the_remover_changes_nothing() {
     let (mut w, ..) = paired();
     let tg = w.edge(X, 2, &[], A, H, Admin, &[]);
     w.set_until(tg, 7);
@@ -891,16 +815,6 @@ fn repro_a_backdated_timed_grant_to_the_remover_changes_nothing() {
 }
 
 // ---- A removal is judged in the world its list makes (notes/write-path-design.md §1) ----
-
-fn whole(w: &World, trust: &[Id]) -> Reading {
-    judge(w, &Rules::whole(), &View::all(w).trusting(trust))
-}
-
-fn whole_but(w: &World, trust: &[Id], f: impl Fn(&mut Rules)) -> Reading {
-    let mut r = Rules::whole();
-    f(&mut r);
-    judge(w, &r, &View::all(w).trusting(trust))
-}
 
 /// Finding 15's two worlds: nothing is exempt, so the thief's grant of a made-up key and its
 /// timed grant to the remover are unlisted writes through the removed edge, dropped like any.
@@ -912,23 +826,23 @@ fn nothing_through_the_removed_edge_is_exempt() {
     let zh = w.edge(Z, 3, &[], A, H, Admin, &[]);
     let r = w.edge(H, 6, &[], A, X, Gone, &[]);
     let zc = w.content(Z, 8, &[A], T1);
-    let rd = whole(&w, &[r]);
+    let rd = fixed(&w, &[r]);
     assert!(rd.role(Z, A) == Gone && !rd.valid.contains(&zc) && !rd.shows(gz) && !rd.shows(zh) && rd.void.is_empty());
     // the plain walk reads the same: the removal applies, audits, and still applies
-    let rd = whole(&w, &[]);
+    let rd = fixed(&w, &[]);
     assert!(rd.role(Z, A) == Gone && rd.lowered.contains(&r) && rd.role(H, A) == Admin);
-    assert!(whole_but(&w, &[r], |x| x.own_chain_exempt = true).role(Z, A) == Admin);
+    assert!(fixed_but(&w, &[r], |x| x.exempt_chain = true).role(Z, A) == Admin);
 
     let (mut w, ..) = paired();
     let tg = w.edge(X, 2, &[], A, H, Admin, &[]);
     w.set_until(tg, 7);
     let r = w.edge(H, 6, &[], A, X, Gone, &[]);
-    let rd = whole(&w, &[r]);
+    let rd = fixed(&w, &[r]);
     assert!(rd.void.is_empty() && !rd.shows(tg) && rd.role(X, A) == Gone && rd.role(H, A) == Admin);
-    assert!(whole_but(&w, &[r], |x| x.own_chain_exempt = true).void.contains(&r));
+    assert!(fixed_but(&w, &[r], |x| x.exempt_chain = true).void.contains(&r));
     // untrusted, it is the ordinary dispute of a backdated write against the remover
-    assert!(!whole(&w, &[]).applied.contains(&r));
-    assert_eq!(disputes(&w, &Rules::whole(), &View::all(&w)), vec![r]);
+    assert!(!fixed(&w, &[]).applied.contains(&r));
+    assert_eq!(disputes(&w, &Rules::fixed(), &View::all(&w)), vec![r]);
 }
 
 /// Finding 4's world: X's removal of H lists nothing, its own grant included. Its drops made,
@@ -937,12 +851,12 @@ fn nothing_through_the_removed_edge_is_exempt() {
 #[test]
 fn a_removal_that_does_not_apply_once_its_drops_are_made_is_void() {
     let (w, gb, rx) = self_voiding();
-    let rd = whole(&w, &[]);
+    let rd = fixed(&w, &[]);
     assert!(!rd.applied.contains(&rx) && rd.stray.is_empty() && rd.dropped.is_empty());
     assert!(rd.applied.contains(&gb) && rd.role(H, A) == Admin && rd.role(B, A) == Admin);
-    assert!(disputes(&w, &Rules::whole(), &View::all(&w)).is_empty());
-    assert!(whole(&w, &[rx]).void.contains(&rx));
-    let rd = whole_but(&w, &[], |x| x.void_unapplied = false);
+    assert!(disputes(&w, &Rules::fixed(), &View::all(&w)).is_empty());
+    assert!(fixed(&w, &[rx]).void.contains(&rx));
+    let rd = fixed_but(&w, &[], |x| x.void_unapplied = false);
     assert!(!rd.stray.is_empty() && !rd.applied.contains(&gb));
 }
 
@@ -958,10 +872,10 @@ fn a_removal_whose_author_falls_later_drops_nothing() {
     let out = w.edge(N5, 4, &[], A, B, Gone, &[]);
     let r = w.edge(H, 6, &[], A, X, Gone, &[]);
     for trust in [&[][..], &[r][..]] {
-        let rd = whole(&w, trust);
+        let rd = fixed(&w, trust);
         assert!(!rd.applied.contains(&out) && rd.stray.is_empty() && rd.applied.is_superset(&Set::from([gb, bg])), "{rd:?}");
     }
-    let rd = whole_but(&w, &[], |x| x.void_unapplied = false);
+    let rd = fixed_but(&w, &[], |x| x.void_unapplied = false);
     assert!(!rd.applied.contains(&out) && !rd.applied.contains(&bg) && rd.stray.contains(&bg));
 }
 
@@ -975,15 +889,15 @@ fn a_list_keeping_what_unmakes_its_removal_voids_it() {
     let (mut w, gx, gb) = paired();
     let rx = w.edge(X, 5, &[], A, H, Gone, &[gx, gb]);
     let listed = w.edge(H, 6, &[], A, X, Gone, &[rx]);
-    assert!(whole(&w, &[listed]).void.contains(&listed));
+    assert!(fixed(&w, &[listed]).void.contains(&listed));
     let (mut w, gx, gb) = paired();
     let rx = w.edge(X, 5, &[], A, H, Gone, &[gx, gb]);
     let r = w.edge(H, 6, &[], A, X, Gone, &[]);
-    let rd = whole(&w, &[r]);
+    let rd = fixed(&w, &[r]);
     assert!(rd.void.is_empty() && !rd.shows(rx) && (rd.role(H, A), rd.role(X, A), rd.role(B, A)) == (Admin, Gone, Admin));
     // an admin's vouch naming it voids the removal: the accomplice that is a current admin
     w.vouch(B, 7, &[], A, r, &[rx]);
-    assert!(whole(&w, &[r]).void.contains(&r));
+    assert!(fixed(&w, &[r]).void.contains(&r));
 
     for honest in [false, true] {
         let mut w = minted_by(M);
@@ -993,11 +907,11 @@ fn a_list_keeping_what_unmakes_its_removal_voids_it() {
         let rm = w.edge(X, 3, &[], A, M, Gone, &list);
         let mut w2 = w.clone();
         let listed = w.edge(H, 6, &[], A, X, Gone, &[rm]);
-        let rd = whole(&w, &[listed]);
+        let rd = fixed(&w, &[listed]);
         assert_eq!(rd.void.contains(&listed), !honest);
         assert!(!honest || (rd.role(M, A) == Gone && rd.role(X, A) == Gone && rd.role(H, A) == Admin));
         let left = w2.edge(H, 6, &[], A, X, Gone, &[]);
-        let rd = whole(&w2, &[left]);
+        let rd = fixed(&w2, &[left]);
         assert!(rd.void.is_empty() && rd.role(H, A) == Admin && rd.role(X, A) == Gone && rd.role(M, A) == Admin);
     }
 }
@@ -1018,7 +932,7 @@ fn a_remover_keeps_what_it_received_first() {
     let world = |list: &[Id]| {
         let mut w = w.clone();
         let r = w.edge(H, 6, &[], A, X, Gone, list);
-        (whole(&w, &[r]), r)
+        (fixed(&w, &[r]), r)
     };
     let (rd, r) = world(&[down, out]);
     assert!(rd.void.contains(&r));
@@ -1041,7 +955,7 @@ fn the_other_findings_read_the_same_with_nothing_exempt() {
     let down = w.edge(X, 3, &[], A, B, Write, &[gb]);
     let r = w.edge(H, 6, &[], A, X, Gone, &[out]);
     w.vouch(B, 7, &[], A, r, &[down]);
-    let rd = whole(&w, &[r]);
+    let rd = fixed(&w, &[r]);
     assert!(rd.applied.is_superset(&Set::from([out, down])) && !rd.shows(junk) && rd.role(N5, A) == Gone && rd.role(B, A) == Write);
 
     let (mut w, ..) = paired();
@@ -1049,30 +963,17 @@ fn the_other_findings_read_the_same_with_nothing_exempt() {
     let gap = w.edge(N5, 4, &[A], T1, A2, Write, &[]);
     let r = w.edge(H, 6, &[], A, X, Gone, &[]);
     w.edge(H, 8, &[], A, N5, Admin, &[]);
-    assert!(!whole(&w, &[r]).applied.contains(&gap));
+    assert!(!fixed(&w, &[r]).applied.contains(&gap));
     w.vouch(N5, 9, &[], A, r, &[g5]);
-    assert!(whole(&w, &[r]).applied.is_superset(&Set::from([g5, gap])));
+    assert!(fixed(&w, &[r]).applied.is_superset(&Set::from([g5, gap])));
 
     let (mut w, _, gb) = paired();
     let down = w.edge(X, 3, &[], A, B, Write, &[gb]);
     let r = w.edge(H, 6, &[], A, X, Gone, &[down]);
     let leave = w.edge(X, 2, &[], A, X, Gone, &[]);
     w.rely(leave, H);
-    let rd = whole(&w, &[r]);
+    let rd = fixed(&w, &[r]);
     assert!(!rd.applied.contains(&leave) && rd.applied.contains(&down) && rd.role(B, A) == Write);
-}
-
-/// The search under the rule, the thief's moves aimed at the remover included; and each part
-/// alone is needed: the drops of a write that does not apply staying, the remover listing all it
-/// received, the held chain exempt.
-#[test]
-fn random_worlds_hold_with_nothing_exempt() {
-    let r = Rules::whole();
-    assert_holds(&random(400, &r), "random, nothing exempt");
-    assert_holds(&family_run(&r, 211), "family, nothing exempt");
-    for (name, rules) in [("sticky", Rules { void_unapplied: false, ..r }), ("listed", Rules { stands: false, ..r }), ("exempt", Rules { own_chain_exempt: true, ..r }), ("fixed, aimed", Rules { aimed: true, ..Rules::fixed() })] {
-        assert!(random(400, &rules).failures() > 0, "{name}");
-    }
 }
 
 // ---- Descent, self-removal by path end, `until` (brief 3) ----
@@ -1230,7 +1131,9 @@ fn each_fix_is_needed() {
     let cases = [
         ("vouch", Rules { vouch: Vouch::Off, ..f }),
         ("leaves", Rules { evidence_leaves: false, ..f }),
-        ("list own", Rules { list_own: ListOwn::Kept, ..f }),
+        ("sticky", Rules { void_unapplied: false, ..f }),
+        ("listed", Rules { stands: false, ..f }),
+        ("exempt", Rules { exempt_chain: true, ..f }),
         ("timed", Rules { last_admin: LastAdmin::NamedTimed, ..f }),
         ("own vouch", Rules { no_own_vouch: false, ..f }),
         ("once", Rules { rewrite: false, ..f }),
@@ -1266,13 +1169,13 @@ fn random_worlds_hold_large() {
     assert_holds(&st, &format!("OSIS_ROLES_START={start}"));
 }
 
-/// Every 49th world of the small family (`-- 0 paths-exh` runs all of them by hand): a stride
-/// coprime with every dimension's size (2, 3, 4, 23), so no dimension is fixed (an even stride
-/// keeps `h_t1` false in every world).
+/// Every 53rd world of the small family (`-- 0 paths-exh` runs all of them by hand): a stride
+/// coprime with every dimension's size (2, 3, 4, 28), so no dimension is fixed or tied to
+/// another (an even stride keeps `h_t1` false in every world).
 #[test]
 #[ignore = "property"]
 fn small_family_holds_large() {
-    let st = family_run(&Rules::fixed(), 49);
+    let st = family_run(&Rules::fixed(), 53);
     st.print("paths family", &Rules::fixed());
     assert_holds(&st, "family");
 }

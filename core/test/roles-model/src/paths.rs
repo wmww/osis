@@ -28,13 +28,10 @@
 //!   `until` or a self-removal took included), to below puts in question every earlier applied
 //!   edge-class commit whose path holds h; those its list does not name (`listed`) join D and the
 //!   walk restarts. A self-removal audits nothing. D only grows until a pass adds nothing.
-//! - **What no list keeps** (`Rules::list_own`): an entry of a lowering R's list (its frontier
-//!   or a counting vouch against it) naming a write that lowers an edge of R's own stated path
-//!   below admin is read as absent.
-//! - **A removal judged in the world its list makes** (`Rules::whole`, the design's rule beside
-//!   the earlier reading `Rules::fixed`): nothing is exempt from a lowering's drops, no entry is
-//!   read as absent, and a lowering that made drops and that the settled walk does not apply is
-//!   void: the walk is redone without it and its drops (`walk`).
+//! - **A removal judged in the world its list makes** (`Rules::void_unapplied`): nothing is
+//!   exempt from a lowering's drops, no entry of its list is read as absent, and a lowering that
+//!   made drops and that the settled walk does not apply is void: the walk is redone without it
+//!   and its drops, the earliest by key first (`walk`).
 //! - **Last admin** (`Rules::last_admin`): an unmarked write taking a **standing** admin edge
 //!   (admin, no `until`) of T to anything else applies only where the remaining admin it relies
 //!   on is, as the walk stands, a standing admin edge of T other than the one it lowers: the
@@ -150,23 +147,6 @@ pub enum Regrant {
     FirstChained,
 }
 
-/// Which entries of a lowering's list (frontier or vouch) are read as absent: none in the design
-/// (`Kept`, notes/write-path-design.md §1, A removal is judged in the world its list makes); the
-/// others are the readers' rules of notes/path-model-findings.md 7 and 12.
-#[derive(Clone, Copy, Debug, PartialEq)]
-pub enum ListOwn {
-    /// None: an entry keeps whatever it names.
-    Kept,
-    /// The rule: an entry naming a write that lowers an edge of the listing write's own stated
-    /// path below admin.
-    Hops,
-    /// Control: also an edge of the path of any held grant giving admin on such an edge, closed
-    /// (`chain`): "rests on" read from the held writes, whether they apply or not.
-    Chain,
-    /// Control: an entry naming any lowering.
-    AnyLowering,
-}
-
 /// What a lowering of an admin edge must leave (notes/write-path-design.md §5, The last admin).
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub enum LastAdmin {
@@ -185,17 +165,15 @@ pub enum LastAdmin {
 pub struct Rules {
     pub vouch: Vouch,
     pub regrant: Regrant,
-    /// spec/permissions.md §5.1 "R never demotes its own author", read along paths: a lowering
-    /// never puts in question an edge write setting an edge of its own path, nor one such a
-    /// write's path rests on.
-    pub own_chain_exempt: bool,
+    /// Control (notes/write-path-design.md §1, Rejected): a lowering never puts in question the
+    /// grants its own path rests on, read from the held writes, closed (`chain`).
+    pub exempt_chain: bool,
     pub last_admin: LastAdmin,
     /// An addendum vouches for no commit of its own signer (spec/permissions.md §5.2 Addenda
     /// asks only that its writer holds write on the thing, by any path).
     pub no_own_addendum: bool,
     /// A vouch counts for no commit of its own signer.
     pub no_own_vouch: bool,
-    pub list_own: ListOwn,
     /// A node sees a frontier's leaf for every thing an edge write it holds as evidence is on,
     /// besides the things it syncs (finding 5).
     pub evidence_leaves: bool,
@@ -215,8 +193,6 @@ pub struct Rules {
     /// they had received in the order received, leaving out a role write with which their own
     /// walk no longer applies the removal.
     pub stands: bool,
-    /// The thief's menu in `Sim` takes in the moves aimed at the remover (`AIMED`).
-    pub aimed: bool,
 }
 
 impl Rules {
@@ -225,42 +201,33 @@ impl Rules {
         Rules {
             vouch: Vouch::Off,
             regrant: Regrant::FirstApplied,
-            own_chain_exempt: false,
+            exempt_chain: false,
             last_admin: LastAdmin::AnyEdge,
             no_own_addendum: false,
             no_own_vouch: false,
-            list_own: ListOwn::Kept,
             evidence_leaves: false,
             rewrite: false,
             leave_in_question: false,
             void_unapplied: false,
             stands: false,
-            aimed: false,
         }
     }
-    /// With every fix the notes now state.
+    /// The design: every fix the notes state, a removal judged in the world its list makes
+    /// (notes/write-path-design.md §1) included.
     pub fn fixed() -> Rules {
         Rules {
             vouch: Vouch::BaseWalk,
             regrant: Regrant::FirstChained,
-            own_chain_exempt: true,
+            exempt_chain: false,
             last_admin: LastAdmin::Named,
             no_own_addendum: true,
             no_own_vouch: true,
-            list_own: ListOwn::Hops,
             evidence_leaves: true,
             rewrite: true,
             leave_in_question: true,
-            void_unapplied: false,
-            stands: false,
-            aimed: false,
+            void_unapplied: true,
+            stands: true,
         }
-    }
-    /// The rule of notes/write-path-design.md §1 (A removal is judged in the world its list
-    /// makes): no write is exempt from a lowering's audit or seeds, no entry of a list is read as
-    /// absent, and a lowering that does not apply once its drops are made is void.
-    pub fn whole() -> Rules {
-        Rules { own_chain_exempt: false, list_own: ListOwn::Kept, void_unapplied: true, stands: true, aimed: true, ..Rules::fixed() }
     }
 }
 
@@ -506,25 +473,14 @@ struct Walk {
 
 type Vouched = BTreeSet<(Id, Id)>;
 
-/// R's list names `j` (its frontier, in a leaf the node sees, or a counting vouch against it),
-/// and `j` is not what no list keeps.
-fn listed(w: &World, rules: &Rules, v: &View, vouched: &Vouched, r: Id, j: Id) -> bool {
+/// R's list names `j`: its frontier, in a leaf the node sees, or a counting vouch against it.
+fn listed(w: &World, v: &View, vouched: &Vouched, r: Id, j: Id) -> bool {
     let seen = v.leaves.as_ref().is_none_or(|l| l.contains(&w.commits[j].on));
-    ((seen && w.in_frontier(r, j)) || vouched.contains(&(r, j))) && !unlistable(w, rules, &v.held, r, j)
+    (seen && w.in_frontier(r, j)) || vouched.contains(&(r, j))
 }
 
-fn unlistable(w: &World, rules: &Rules, held: &Set, r: Id, j: Id) -> bool {
-    let Some(e) = w.lowers(j) else { return false };
-    match rules.list_own {
-        ListOwn::Kept => false,
-        ListOwn::Hops => w.hops(r).contains(&e),
-        ListOwn::Chain => w.hops(r).contains(&e) || chain(w, held, r).iter().any(|&g| w.hops(g).contains(&e)),
-        ListOwn::AnyLowering => true,
-    }
-}
-
-/// The grants R's own authority rests on, as the held writes give them: those giving admin on
-/// an edge of its path, and so on along their paths.
+/// Control `exempt_chain`: the grants R's own authority rests on, as the held writes give them:
+/// those giving admin on an edge of its path, and so on along their paths.
 fn chain(w: &World, held: &Set, r: Id) -> Set {
     let mut edges: BTreeSet<Edge> = w.hops(r).iter().copied().collect();
     let mut out = Set::new();
@@ -633,8 +589,8 @@ fn drops(w: &World, rules: &Rules, v: &View, d0: &Set, vouched: &Vouched, void: 
             let falls = !leave && before == Role::Admin && after < Role::Admin;
             let mut q = vec![];
             if falls {
-                let exempt = if rules.own_chain_exempt { chain(w, &v.held, i) } else { Set::new() };
-                q = p.applied.iter().copied().filter(|&j| rests_on(w, rules, j, e) && !exempt.contains(&j) && !listed(w, rules, v, vouched, i, j)).collect();
+                let exempt = if rules.exempt_chain { chain(w, &v.held, i) } else { Set::new() };
+                q = p.applied.iter().copied().filter(|&j| rests_on(w, rules, j, e) && !exempt.contains(&j) && !listed(w, v, vouched, i, j)).collect();
             }
             p.state.insert(e, new);
             if !leave {
@@ -664,9 +620,9 @@ fn seeds(w: &World, rules: &Rules, v: &View, active: &Set, vouched: &Vouched) ->
     let mut d = Set::new();
     for &r in active {
         let Some(h) = w.sets(r) else { continue };
-        let exempt = if rules.own_chain_exempt { chain(w, &v.held, r) } else { Set::new() };
+        let exempt = if rules.exempt_chain { chain(w, &v.held, r) } else { Set::new() };
         for &j in &v.held {
-            if w.edge_class(j) && w.key(j) < w.key(r) && rests_on(w, rules, j, h) && !exempt.contains(&j) && !listed(w, rules, v, vouched, r, j) {
+            if w.edge_class(j) && w.key(j) < w.key(r) && rests_on(w, rules, j, h) && !exempt.contains(&j) && !listed(w, v, vouched, r, j) {
                 d.insert(j);
             }
         }
@@ -785,7 +741,7 @@ fn content(w: &World, rules: &Rules, v: &View, p: &Pass) -> (Set, Set) {
             let cuts: Vec<&Low> = p.lows.iter().filter(|l| l.explicit && hops.contains(&l.edge) && l.before >= Role::Write && l.after < Role::Write).collect();
             let held = hops.iter().all(|&e| role_at(w, p, e, pos) >= Role::Write);
             let ok = (held && !cuts.iter().any(|l| w.key(l.id) > pos))
-                || cuts.iter().any(|l| listed(w, rules, v, &none, l.id, i))
+                || cuts.iter().any(|l| listed(w, v, &none, l.id, i))
                 || valid.iter().any(|&a| match &w.commits[a].kind {
                     Kind::Addendum { removal, list } => {
                         w.commits[a].on == w.commits[i].on
