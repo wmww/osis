@@ -30,8 +30,10 @@
 //!   walk restarts. A self-removal audits nothing. D only grows until a pass adds nothing.
 //! - **A removal judged in the world its list makes** (`Rules::void_unapplied`): nothing is
 //!   exempt from a lowering's drops, no entry of its list is read as absent, and a lowering that
-//!   made drops and that the settled walk does not apply is void: the walk is redone without it
-//!   and its drops, the latest by key first (`walk`; the earliest first is finding 16).
+//!   made drops and that the settled walk does not apply is void, its drops unmade. The
+//!   lowerings are judged in key order, each in the walk of the writes up to it with the void ones
+//!   before it left out, the writes it overrules voided first; void decisions are never revisited
+//!   (`VoidOrder::KeyOrder`; the alternatives are finding 16).
 //! - **Last admin** (`Rules::last_admin`): an unmarked write taking a **standing** admin edge
 //!   (admin, no `until`) of T to anything else applies only where the remaining admin it relies
 //!   on is, as the walk stands, a standing admin edge of T other than the one it lowers: the
@@ -155,7 +157,7 @@ pub enum VoidOrder {
     /// apply then voids an earlier one through its drops (finding 16).
     Earliest,
     /// Control: a round voids the latest. An earlier void write's drops then leave a later write
-    /// unapplied, and the later one is voided first (`repro_an_earlier_void_write_has_no_effect`).
+    /// unapplied, and the later one is voided first (`an_earlier_void_write_has_no_effect`).
     Latest,
     /// Control: a round voids all of them.
     AllAtOnce,

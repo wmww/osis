@@ -1443,7 +1443,7 @@ fn n5_back() -> (World, Id, Id) {
     (w, out, r)
 }
 
-/// The latest first, `out` applies and N5 stays removed. Control: the earliest first voids `out`
+/// In key order `out` applies and N5 stays removed. Control: the earliest first voids `out`
 /// and N5 is back wherever the removal is trusted.
 #[test]
 fn a_party_removed_before_the_theft_stays_removed() {
