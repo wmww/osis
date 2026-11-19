@@ -872,15 +872,8 @@ pub fn random(samples: u64, rules: Rules) -> Stats {
 /// then one of: nothing, K granting W admin at 7, K removing W at 7. The honest vouches, received
 /// by every node a tick after they are written or never by H.
 pub fn exhaustive(rules: Rules, stride: usize) -> Stats {
-    let total = family_size();
-    crate::on_every_core(|th, threads, st: &mut Stats| {
-        let mut i = th * stride;
-        while i < total {
-            let mut rng = Rng::thread(0x5eed, i);
-            let w = family_world(rules, i);
-            i += threads * stride;
-            check(&w, rules, st, &mut rng);
-        }
+    crate::family_on_every_core(family_size(), stride, |i, st: &mut Stats| {
+        check(&family_world(rules, i), rules, st, &mut Rng::thread(0x5eed, i));
     })
 }
 

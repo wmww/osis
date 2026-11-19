@@ -48,6 +48,11 @@ fn main() {
             }
         }
         Some(m) if m.starts_with("paths") => {
+            // `-- N paths-exh`: every Nth family world (paths::run)
+            if let Some(why) = m.starts_with("paths-exh").then(|| roles_model::stride_refusal(samples.max(1) as usize, roles_model::paths::FAMILY)).flatten() {
+                eprintln!("{why}");
+                std::process::exit(2);
+            }
             if roles_model::paths::run(samples, m) > 0 {
                 std::process::exit(1);
             }

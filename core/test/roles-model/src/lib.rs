@@ -194,6 +194,64 @@ pub fn on_every_core<T: Tally>(f: impl Fn(usize, usize, &mut T) + Sync) -> T {
     })
 }
 
+/// Why every `stride`th world of a family of `total` cannot stand for the family: none when it can.
+/// A family's world index is mixed-radix over its dimensions, `total` their product; the worlds
+/// `0, s, 2s, ...` reach every value of every dimension only when `s` shares no factor with any,
+/// i.e. with `total` (an even stride over a first dimension of 2 holds it at 0 in every world).
+pub fn stride_refusal(stride: usize, total: usize) -> Option<String> {
+    let gcd = |mut a: usize, mut b: usize| {
+        while b != 0 {
+            (a, b) = (b, a % b);
+        }
+        a
+    };
+    match gcd(stride, total) {
+        _ if stride == 0 => Some("stride 0: give at least 1 (1 runs every world)".into()),
+        1 => None,
+        g => Some(format!(
+            "stride {stride} shares the factor {g} with the family's size {total} (the product of its dimensions): \
+             a dimension that factor divides would be sampled at some of its values only; pick a stride coprime to {total} (a prime not dividing it)"
+        )),
+    }
+}
+
+/// `f(world, tally)` for every `stride`th world of `0..total` (a family: `stride_refusal`) on a
+/// thread per core. Panics on a stride `stride_refusal` refuses.
+pub fn family_on_every_core<T: Tally>(total: usize, stride: usize, f: impl Fn(usize, &mut T) + Sync) -> T {
+    if let Some(why) = stride_refusal(stride, total) {
+        panic!("{why}");
+    }
+    on_every_core(|th, threads, t| {
+        for i in (th * stride..total).step_by(threads * stride) {
+            f(i, t);
+        }
+    })
+}
+
+#[cfg(test)]
+mod stride_tests {
+    use super::*;
+
+    // spec: none (the search runner)
+    #[test]
+    fn a_stride_sharing_a_factor_with_the_family_is_refused() {
+        // dimensions 2 and 3: stride 2 holds the first at 0, stride 3 the second at two values
+        for bad in [0, 2, 3, 4, 6, 9] {
+            assert!(stride_refusal(bad, 6).is_some(), "{bad}");
+        }
+        for good in [1, 5, 7, 11] {
+            assert_eq!(stride_refusal(good, 6), None, "{good}");
+        }
+        // every 5th world of 0..42, each once, whatever the core count
+        let seen = family_on_every_core(42, 5, |i, t: &mut [u64; 2]| {
+            t[0] += 1;
+            t[1] += i as u64;
+        });
+        assert_eq!(seen, [9, (0..42).step_by(5).sum::<usize>() as u64]);
+        assert!(std::panic::catch_unwind(|| family_on_every_core(12, 4, |_, _: &mut [u64; 1]| ())).is_err());
+    }
+}
+
 /// `f(rng, tally)` for each world `i` of `worlds` on a thread per core, world `i` drawn from its own
 /// generator `Rng::thread(seed, i)`: the worlds are a function of `seed` and `worlds` alone, whatever
 /// the core count.
