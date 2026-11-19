@@ -1074,3 +1074,25 @@ fn a_thing_left_by_one_view_is_logged_again_by_one_still_holding_it_spec_sync_se
     w.advance(31_000);
     assert_eq!(value(&mut w, 0, &x), Some(Value::Str("x".into())), "node 0 reads X again, from the store");
 }
+
+// spec/permissions.md §3 (Lost access: a node drops every local unit it can no longer read),
+// spec/permissions.md §4 (Role changes travel): Bob's node 2 makes T0 and T2 under it and removes
+// T0's record edge on T2 before his node 1 has synced either. Node 1, reading T2 only through T0,
+// loses it, as node 2, and an hour on still reads it no more (issues/lost-part-read-again.md).
+#[test]
+fn a_removed_record_edge_reaches_a_reader_entering_with_it_spec_permissions_3() {
+    let mut w = siblings();
+    let alice = w.node(0).account.unwrap();
+    let t0 = make(&mut w, 2, None, "t0");
+    let t2 = make_in(&mut w, 2, t0, "t2");
+    w.write(2, |e| e.grant(&t2, &alice, &edge(Role::Sync))).unwrap();
+    w.write(2, |e| e.leaving_adminless(|e| e.demote(&t2, &osis_engine::flows::Demotion { holder: t0, new: None, retain: None }))).unwrap();
+    w.run();
+    w.advance(osis_proto::limits::PASS_WAIT_MS);
+    w.run();
+    assert_eq!(value(&mut w, 1, &t0), Some(Value::Str("t0".into())), "node 1 reads T0");
+    for i in [1, 2] {
+        assert!(!w.engine(i).roster(&t2).contains_key(&t0), "node {i} sees T0's record edge removed");
+        assert_eq!(value(&mut w, i, &t2), None, "node {i} reads T2 no more");
+    }
+}

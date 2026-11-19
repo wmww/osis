@@ -8,3 +8,4 @@ held-model/props::settled_histories_keep_their_laws_large_spec_commits_5 rate:OS
 osis-engine/validity::unmerge_paged_matches_fresh_large_spec_crdt_4_6 - issues/osis-tests-depend-on-store-rng.md one rebuild per flipped aspect\s+left: 7\s+right: 5
 osis-app/fields::a_tile_tells_of_emails_it_cannot_read - issues/app-tile-unreadable-emails-test.md Err\(osis::Error::TooLarge
 osis-engine/apply::tests_paged::paged_apply_matches_whole_large_spec_crdt_8 rate:OSIS_PAGED_APPLY_START=874943289199 issues/paged-apply-differs-from-whole.md step \d+: page-by-page apply differs from whole
+osis-sync/holding::a_removed_record_edge_reaches_a_reader_entering_with_it_spec_permissions_3 - issues/lost-part-read-again.md node 1 reads T2 no more

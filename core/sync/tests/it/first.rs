@@ -1,7 +1,7 @@
 //! A first sync of many sync IDs (spec/sync-streams.md §4 Costs, Joining; spec/sync.md §2): node 0
 //! makes a root with `n` independent members (each minted under it, then given secrets of its
 //! own), node 1's account keeps the root unread; node 2's account is granted read on the root and
-//! syncs the closure for the first time. Counted at n and 10n members, never timed.
+//! syncs the closure for the first time. Counted at n and 5n members, never timed.
 
 use crate::harness::Step::*;
 use crate::harness::history::{Gives, world};
@@ -11,6 +11,8 @@ use std::collections::BTreeMap;
 use std::sync::Mutex;
 
 const N: usize = 1;
+/// The larger size: growth shows at any size past n, and each member adds to the run.
+const LARGE: usize = 5 * N;
 
 /// Node 0 has made thing 0 (the root) and `n` members under it, each independent, node 1 keeps
 /// the root unread, quiet (built on the world of `N` members).
@@ -75,13 +77,10 @@ fn first(w: &mut World) -> Cost {
 
 /// `first` over the closure of `n` members, once per process (a world is a function of its seed).
 fn cost(n: usize) -> Cost {
+    // held while it runs: the tests asking for the same size wait for it, not run it again
     static COSTS: Mutex<BTreeMap<usize, Cost>> = Mutex::new(BTreeMap::new());
-    if let Some(c) = COSTS.lock().unwrap().get(&n) {
-        return c.clone();
-    }
-    let c = first(&mut closure(n));
-    COSTS.lock().unwrap().insert(n, c.clone());
-    c
+    let mut costs = COSTS.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+    costs.entry(n).or_insert_with(|| first(&mut closure(n))).clone()
 }
 
 // spec/sync-judgement.md §3 (Own store: an entry of the body under S it pulled stands as that
@@ -89,13 +88,13 @@ fn cost(n: usize) -> Cost {
 // pass of S did), spec/permissions.md §4 (Logging certificates: except what an entry under the
 // sync ID already holds): a new reader syncing a closure from its maker logs no copy of
 // what the maker holds under each member's sync ID, so the maker fetches nothing back from it:
-// as many bodies at 10n members as at n.
+// as many bodies at 5n members as at n.
 #[test]
 fn a_new_reader_logs_no_copy_of_what_its_source_holds_spec_sync_judgement_3() {
-    let (small, large) = (cost(N), cost(10 * N));
+    let (small, large) = (cost(N), cost(LARGE));
     let (asked, answered) = ((small.sent(0, 2, "Fetch"), large.sent(0, 2, "Fetch")), (small.sent(2, 0, "FetchReply"), large.sent(2, 0, "FetchReply")));
-    assert!(asked.1.0 <= asked.0.0, "the maker fetched from the reader {} times at n, {} at 10n", asked.0.0, asked.1.0);
-    assert!(answered.1.1 <= answered.0.1, "the reader sent the maker {} bytes of bodies at n, {} at 10n", answered.0.1, answered.1.1);
+    assert!(asked.1.0 <= asked.0.0, "the maker fetched from the reader {} times at n, {} at 5n", asked.0.0, asked.1.0);
+    assert!(answered.1.1 <= answered.0.1, "the reader sent the maker {} bytes of bodies at n, {} at 5n", answered.0.1, answered.1.1);
 }
 
 // spec/sync-streams.md §4 (Bodies: only blob IDs its store lacks are fetched; an entry whose
@@ -105,7 +104,7 @@ fn a_new_reader_logs_no_copy_of_what_its_source_holds_spec_sync_judgement_3() {
 // number of sync IDs announcing it.
 #[test]
 fn a_blob_is_fetched_once_whatever_sync_ids_carry_it_spec_sync_streams_4() {
-    let large = cost(10 * N);
+    let large = cost(LARGE);
     for ((a, b), blobs) in &large.fetched {
         let again: Vec<_> = blobs.iter().filter(|(_, n)| **n > 1).collect();
         assert!(again.is_empty(), "node {b} fetched from node {a} again: {again:?}");
