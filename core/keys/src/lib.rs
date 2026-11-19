@@ -14,7 +14,6 @@ pub mod members;
 pub mod error;
 pub mod names;
 pub mod open;
-pub mod planner;
 pub mod produce;
 pub mod wrap;
 
@@ -27,7 +26,6 @@ pub use names::{AllHeld, Held, Key, Name, Names, NamesDigest, Own};
 pub use error::Error;
 pub use open::{HistoryAlts, Opened, Opener, ingest, ingest_with, open_boxes, open_histories};
 pub use osis_crypto::Epoch;
-pub use planner::{Graph, PermGraph, reached};
-pub use delete::{delete_candidates, delete_key};
+pub use delete::delete_candidates;
 pub use wrap::{UNDER_ROLES, newer_than_head, registered_epoch, registered_key, registration_epochs, under_roles, wrap_epoch};
 pub use produce::{Carried, HistoryBox, HistoryBoxes, HolderKeys, LeftOut, Recipient, Rotated, Rotation, box_dropped, box_holder, box_keysets, history_adds, history_boxes, reseal_holder, roles_up_to, rotate, rotate_leaving_out, symmetric_box};

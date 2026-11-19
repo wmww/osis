@@ -1,107 +1,19 @@
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::indexing_slicing)]
-//! What a removal reaches, wrap epochs, sync ID epochs and delete keys (spec/permissions.md §3,
-//! spec/crypto.md §5, §7, spec/sync-ids.md §2, spec/sync-ids.md §6).
+//! Wrap epochs, sync ID epochs and delete keys (spec/crypto.md §5, §7, spec/sync-ids.md §2,
+//! spec/sync-ids.md §6).
 
 use crate::common;
 use common::*;
-use osis_base::{CommitId, CreationRecord, Role, Tid, Ts};
+use osis_base::Role;
 use osis_crypto::{Epoch, RoleKey, Secret32, role_key};
 use osis_keys::{
-    ActorEpochs, Graph, PermGraph, newer_than_head, reached,
-    registered_epoch, registration_epochs, roles_up_to, delete_candidates, delete_key, wrap_epoch,
+    ActorEpochs, newer_than_head,
+    registered_epoch, registration_epochs, roles_up_to, delete_candidates, wrap_epoch,
 };
-use osis_perm::{At, Edge, EdgeOp, RoleCommit, MemoryHeldSet, Timeline};
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::BTreeSet;
 
 fn set(r: &[Role]) -> BTreeSet<Role> {
     r.iter().copied().collect()
-}
-
-/// A role graph held in memory.
-#[derive(Default)]
-struct MemoryGraph {
-    edges: BTreeMap<Tid, Vec<(Tid, Role)>>,
-}
-
-impl Graph for MemoryGraph {
-    fn edges(&self, holder: &Tid) -> Vec<(Tid, Role)> {
-        self.edges.get(holder).cloned().unwrap_or_default()
-    }
-}
-
-// spec/permissions.md §3: `reached` (the sync IDs a removal is placed under) is the fixpoint of
-// the things one hop from the start or from a thing reached, never through the avoided holder,
-// on random graphs with cycles and mint admins, and stays linear on a lattice with 6^11 paths.
-#[test]
-fn reached_is_the_hop_fixpoint() {
-    let mut x: u64 = 0x2545_F491_4F6C_DD1D;
-    let mut next = |n: u64| {
-        x ^= x << 13;
-        x ^= x >> 7;
-        x ^= x << 17;
-        x % n
-    };
-    for _ in 0..300 {
-        let mut g = MemoryGraph::default();
-        for v in 1..=8u8 {
-            for t in 1..=8u8 {
-                if t != v && next(4) == 0 {
-                    let role = [Role::Read, Role::Write, Role::Admin][next(3) as usize];
-                    g.edges.entry(tid(v)).or_default().push((tid(t), role));
-                }
-            }
-        }
-        let (start, avoid) = (tid(1 + next(8) as u8), tid(1 + next(8) as u8));
-        if start == avoid {
-            continue;
-        }
-        let hop = |v: &Tid| g.edges.get(v).into_iter().flatten().map(|x| x.0);
-        let mut want: BTreeSet<Tid> = BTreeSet::new();
-        loop {
-            let more: BTreeSet<Tid> = std::iter::once(start).chain(want.iter().copied()).flat_map(|v| hop(&v).collect::<Vec<_>>()).filter(|t| *t != start && *t != avoid).collect();
-            if more.is_subset(&want) {
-                break;
-            }
-            want.extend(more);
-        }
-        assert_eq!(reached(&g, start, avoid), want);
-    }
-    let mut g = MemoryGraph::default();
-    let mut layer = vec![tid(200)];
-    for l in 0..12u8 {
-        let next: Vec<Tid> = (0..6u8).map(|i| tid(l * 6 + i + 1)).collect();
-        for v in &layer {
-            g.edges.insert(*v, next.iter().map(|t| (*t, Role::Write)).collect());
-        }
-        layer = next;
-    }
-    assert_eq!(reached(&g, tid(200), tid(250)).len(), 72);
-}
-
-// spec/permissions.md §3: the graph over perm's timeline (live edges, record edges included).
-#[test]
-fn perm_graph() {
-    let mut held = MemoryHeldSet::new();
-    let d = held.create(CreationRecord::KeyActor { alg: 1, public_key: vec![7; 32], nonce: [1; 32], account: false });
-    let p = held.create(CreationRecord::Thing { admin: d, nonce: [2; 32], link: None, expires: None });
-    let t = held.create(CreationRecord::Thing { admin: p, nonce: [3; 32], link: None, expires: None });
-    let a2 = held.create(CreationRecord::Thing { admin: d, nonce: [4; 32], link: None, expires: None });
-    held.add_commit(RoleCommit {
-        id: CommitId([9; 32]),
-        ts: Ts::make(osis_base::WallMs(1000), 0).unwrap(),
-        author: d,
-        actor: d,
-        frontier: None,
-        ops: vec![EdgeOp { target: a2, holder: p, edge: Some(Edge::new(Role::Write)) }],
-    });
-    let tl = Timeline::evaluate(&held);
-    let g = PermGraph { timeline: &tl, at: At::now(Ts::make(osis_base::WallMs(2000), 0).unwrap()) };
-    let mut edges = g.edges(&p);
-    edges.sort();
-    let mut want = vec![(a2, Role::Write), (t, Role::Admin)];
-    want.sort();
-    assert_eq!(edges, want);
-    assert_eq!(reached(&g, p, tid(99)), BTreeSet::from([t, a2]));
 }
 
 // spec/crypto.md §5: wrap under the newest current read epoch held; stranded: none;
@@ -221,11 +133,14 @@ fn jumped_base_forks_derive_base_newest() {
     }
 }
 
-// spec/crypto.md §7: delete keys per level from the newest held secret; level 2 from the
+// spec/crypto.md §7: a level's delete key from its newest held secret; level 2 from the
 // author's actor; holders try every epoch; the published keyset names the same key.
 #[test]
 fn delete_keys() {
     let dk = |s: &Secret32| osis_crypto::DeleteSecret::derive(s).verifying_key();
+    fn delete_key(l: u8, t: &ActorEpochs, a: Option<&ActorEpochs>) -> Option<osis_crypto::VerifyingKey> {
+        delete_candidates(l, t, a).first().map(|(_, s)| osis_crypto::DeleteSecret::derive(s).verifying_key())
+    }
     let (mut thing, author) = (actor_epochs(0x20), actor_epochs(0x30));
     assert_eq!(delete_key(1, &thing, Some(&author)), Some(dk(thing.admin.secret(&ep(1, 0x20)).unwrap())));
     assert_eq!(delete_key(2, &thing, Some(&author)), Some(dk(author.write.secret(&ep(1, 0x30)).unwrap())));
