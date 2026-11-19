@@ -1,4 +1,4 @@
-//! Search driver for the roles model: `[samples] [edges|joint|disputes|disputes-random|digest|addenda|addenda-exh|addenda-covers|addenda-gaps|addenda-gaps-exh|addenda-gaps-no-admin|addenda-gaps-no-rewrite|forget|epochs|epochs-no-cutoff|epochs-own-only|epochs-void-uncounted|epochs-no-own-cover|epochs-open-carried|epochs-no-reanswer|custody|custody-exh|custody-judged|custody-roster-bare|custody-merge-random|custody-stale-shut|custody-merge-carries|custody-readd-beside|paths[-exh][-control] (paths::mode_rules)|vouches|vouches-exh|vouches-off|vouches-no-rewrite|vouches-held|vouches-state|vouches-stands|vouches-state-stands|vouches-exh-off|vouches-exh-no-rewrite|vouches-exh-held|vouches-exh-state|vouches-exh-stands]`.
+//! Search driver for the roles model: `[samples] [edges|joint|disputes|disputes-random|digest|addenda|addenda-exh|addenda-covers|addenda-gaps|addenda-gaps-exh|addenda-gaps-no-admin|addenda-gaps-no-rewrite|forget|epochs|epochs-no-cutoff|epochs-own-only|epochs-void-uncounted|epochs-no-own-cover|epochs-open-carried|epochs-no-reanswer|custody|custody-exh|custody-judged|custody-roster-bare|custody-merge-random|custody-stale-shut|custody-merge-carries|custody-readd-beside|paths[-exh|-tiny[-invites][-honest]][-control] [--from K] (paths::mode_rules)|vouches|vouches-exh|vouches-off|vouches-no-rewrite|vouches-held|vouches-state|vouches-stands|vouches-state-stands|vouches-exh-off|vouches-exh-no-rewrite|vouches-exh-held|vouches-exh-state|vouches-exh-stands]`.
 
 use roles_model::{edges, joint};
 
@@ -53,7 +53,9 @@ fn main() {
                 eprintln!("{why}");
                 std::process::exit(2);
             }
-            if roles_model::paths::run(samples, m) > 0 {
+            // `--from K`: random or small worlds K.. (a large sample split across runs)
+            let from = args.iter().position(|a| a == "--from").and_then(|k| args.get(k + 1)).map_or(0, |v| v.parse().expect("--from takes a world index"));
+            if roles_model::paths::run(samples, from, m) > 0 {
                 std::process::exit(1);
             }
         }

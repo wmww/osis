@@ -14,7 +14,8 @@
 //!   IDs per thing; it may name the remaining admin it relies on, or carry the mark that lets
 //!   its thing go adminless), an addendum (plain content naming a removal and commits it
 //!   vouches for), a vouch (the same for role writes: `Vouch`). A commit of several edge writes
-//!   on one target (`World::commit`) is one part per write, consecutive in key order.
+//!   on one target (`World::commit`) is one part per write, consecutive in key order, the part on
+//!   an edge of its own stated path last.
 //! - **Edges in time.** An edge gives its role at `ts` while its `until` is later; a write
 //!   giving no role at its own `ts` (none, or an `until` passed) is a removal.
 //! - **Hops.** Consecutive members of [signer, A1..Ak, end] are joined by descent (the record
@@ -36,16 +37,17 @@
 //!   it holding its right (its path giving admin, the last-admin rule passed) and taking its edge
 //!   from admin: where its own drops would take its authority (`keeps`: its path's edges read back
 //!   along the writes that set them, passing over its own drops) it is **void**; else it applies.
-//!   In a commit of several edge writes each applies or not by the pass before the commit, and a
-//!   lowering's `keeps` passes over its commit's earlier drops too; the pass ends once the
-//!   commit took effect (`Rules::commit_drops`).
+//!   A commit of several edge writes takes effect part by part, each judged with the earlier
+//!   ones in effect, a lowering's `keeps` passing over its commit's earlier drops too; no part's
+//!   drops or seeds reach its own commit; the pass ends once the commit took effect
+//!   (`Rules::commit_drops`).
 //!   The verdict stands for the rest of the walk: a restart neither re-judges nor re-audits it,
 //!   and an applied lowering applies in every later pass unless a later lowering drops it. One
 //!   without its right, or taking nothing, has no verdict and is judged by a later pass. D only
 //!   grows: nothing is undropped.
 //! - **Last admin** (`Rules::last_admin`): an unmarked write taking a **standing** admin edge
 //!   (admin, no `until`) of T to anything else applies only where the remaining admin it relies
-//!   on is, as the pass stands before its commit, a standing admin edge of T other than the one
+//!   on is, as the pass stands at it (its commit's earlier parts in effect), a standing admin edge of T other than the one
 //!   it lowers: the last edge of its own path where that is one (`Rules::last_hop`: its final hop
 //!   joining its last member to T in one edge), else the edge of the holder it names. A judged
 //!   lowering is void where that edge stands no more past its drops (`Rules::remains_kept`).
@@ -180,8 +182,11 @@ pub struct Commit {
     /// The purge author: an index into [signer, path..] (notes/write-path-design.md §1).
     pa: usize,
     /// The commit this part belongs to: the ID of its first part (its own for a commit of one
-    /// part). A commit's parts are consecutive in key order, ordered by holder (`World::commit`).
+    /// part). A commit's parts are consecutive in key order (`World::commit`).
     cid: Id,
+    /// A part of a commit of several parts one of which sets an edge of the commit's stated path
+    /// (`World::group`; read only by the control `Rules::refuse_shapes`).
+    own_path: bool,
 }
 
 /// How role writes a removal does not list are vouched for (issues/actors-one-mechanism.md,
@@ -299,6 +304,11 @@ pub struct Rules {
     /// does not meet, as its audit reads them (a demotion to write keeps the invites under it).
     /// False (control `-seeds-all`): every unlisted write resting on its edge.
     pub seeds_by_need: bool,
+    /// Control (`-refuse-shapes`): a commit of several edge writes carrying a self-removal or a
+    /// part on an edge of its own stated path applies nowhere. False (the rule): it is judged part
+    /// by part like any (`World::commit`), so a single-use link redemption (an invite grant and its
+    /// signer's own leave) applies.
+    pub refuse_shapes: bool,
 }
 
 /// The dispute candidates (`disputes`): held edge writes of another holder's edge giving it below
@@ -339,6 +349,7 @@ impl Rules {
             last_hop: false,
             candidates: Candidates::All,
             seeds_by_need: false,
+            refuse_shapes: false,
         }
     }
     /// The design: every fix the notes state, a removal judged in the world its list makes
@@ -368,6 +379,7 @@ impl Rules {
             last_hop: true,
             candidates: Candidates::Explicit,
             seeds_by_need: true,
+            refuse_shapes: false,
         }
     }
 }
@@ -410,31 +422,37 @@ impl World {
         let well = all.iter().collect::<BTreeSet<_>>().len() == all.len();
         let hops = if well { all.windows(2).flat_map(|p| self.joins(p[0], p[1])).collect() } else { vec![] };
         let i = self.commits.len();
-        self.commits.push(Commit { signer, ts, path: path.to_vec(), on, kind, hops, well, leave, pa: 0, cid: i });
+        self.commits.push(Commit { signer, ts, path: path.to_vec(), on, kind, hops, well, leave, pa: 0, cid: i, own_path: false });
         i
     }
-    /// One commit of several edge writes on `on` along one path (spec/commits.md §2), its parts
-    /// ordered by holder. Bad input, applying nowhere, where two parts set one holder's edge, a part
-    /// is a self-removal, or a part sets an edge of the path (no lowering in such a commit is on
-    /// an edge of the path it states).
+    /// One commit of several edge writes on `on` along one path (spec/commits.md §2). Its parts
+    /// take effect in holder order, but the part setting an edge of the stated path (at most one:
+    /// the path's final hop, so a self-removal of its last thing, as in a single-use link
+    /// redemption, or the record edge a descent ends with) last. Two parts on one holder's edge are
+    /// bad input, applying nowhere (the `roles.0` delta's map keys would repeat: spec/data-model.md
+    /// deterministic CBOR).
     pub fn commit(&mut self, signer: Thing, ts: u32, path: &[Thing], on: Thing, mut parts: Vec<Kind>) -> Vec<Id> {
+        let ak = *path.last().unwrap_or(&signer);
+        let last = self.joins(ak, on).last().copied();
         parts.sort_by_key(|k| match k {
-            Kind::Edge { holder, .. } => *holder,
+            Kind::Edge { holder, .. } => (*holder == ak || last == Some((*holder, on)), *holder),
             _ => panic!("a commit of several parts carries edge writes"),
         });
         let ids: Vec<Id> = parts.into_iter().map(|k| self.push(signer, ts, path, on, k)).collect();
         self.group(&ids);
         ids
     }
-    /// Makes `ids` (consecutive in key order) one commit, read as `commit` reads it.
+    /// Makes `ids` (consecutive in key order, as `commit` orders them) one commit.
     pub fn group(&mut self, ids: &[Id]) {
         let cid = ids[0];
         let sets: Vec<Edge> = ids.iter().filter_map(|&i| self.sets(i)).collect();
         let hops: BTreeSet<Edge> = ids.iter().flat_map(|&i| self.hops(i).to_vec()).collect();
-        let bad = sets.iter().collect::<BTreeSet<_>>().len() < sets.len() || ids.iter().any(|&i| self.leave(i)) || sets.iter().any(|e| hops.contains(e));
+        let twice = sets.iter().collect::<BTreeSet<_>>().len() < sets.len();
+        let own_path = ids.iter().any(|&i| self.leave(i)) || sets.iter().any(|e| hops.contains(e));
         for &i in ids {
             self.commits[i].cid = cid;
-            if bad {
+            self.commits[i].own_path = own_path;
+            if twice {
                 self.commits[i].well = false;
                 self.commits[i].hops.clear();
             }
@@ -674,12 +692,12 @@ impl Reading {
     pub fn shows(&self, i: Id) -> bool {
         self.valid.contains(&i) || self.applied.contains(&i) || self.copied.contains(&i)
     }
-    /// What users observe of the reading, write `x` aside: what each holder can do (its role and
+    /// What users observe of the reading: what each holder can do (its role and
     /// invite in the end, and the role each edge gives at the start of each `ts`, which content
     /// written there rests on, with the cuts) and which content counts (valid, copied, purged).
     /// Which edge-class commits apply is not in it: an applied write changing none of this is
     /// seen by nobody (notes/path-model-findings.md 33).
-    pub fn observed(&self, w: &World, x: Option<Id>) -> Observed {
+    pub fn observed(&self, w: &World) -> Observed {
         let last = w.commits.iter().map(|c| c.ts).max().unwrap_or(0) + 1;
         let edges: BTreeSet<Edge> = self.hist.keys().chain(&w.records).copied().collect();
         let at = |e: Edge, t: u32| {
@@ -687,9 +705,8 @@ impl Reading {
             alive(self.hist.get(&e).and_then(|h| h.iter().rev().find(|(k, _)| k.0 < t)).map_or(rec, |x| x.1), t)
         };
         let timeline = edges.into_iter().map(|e| (e, (0..=last).map(|t| at(e, t)).collect::<Vec<Role>>())).filter(|(_, r)| r.iter().any(|&r| r > Role::None)).collect();
-        let less = |s: &Set| s.iter().copied().filter(|&i| Some(i) != x).collect::<Set>();
         let some = |m: &BTreeMap<Edge, Role>| m.iter().filter(|(_, r)| **r > Role::None).map(|(&e, &r)| (e, r)).collect();
-        Observed { roles: some(&self.roles), invites: some(&self.invites), timeline, cuts: self.cuts.clone(), valid: less(&self.valid), copied: less(&self.copied), purged: less(&self.purged) }
+        Observed { roles: some(&self.roles), invites: some(&self.invites), timeline, cuts: self.cuts.clone(), valid: self.valid.clone(), copied: self.copied.clone(), purged: self.purged.clone() }
     }
 }
 
@@ -945,11 +962,9 @@ fn walk(w: &World, rules: &Rules, v: &View, d0: &Set, vouched: &Vouched) -> Walk
             p.rinv.insert(e, Role::Admin);
         }
         let mut restart = None;
-        // the commit taking effect: its ID, the pass as it stood before it (where it has several
-        // parts: whether each part applies reads it), the drops its parts made in this pass and
-        // its parts judged applied in this pass
+        // the commit taking effect: its ID, the drops its parts made in this pass and its parts
+        // judged applied in this pass
         let mut cur: Option<Id> = None;
-        let mut pre: Option<Pass> = None;
         let mut cdrops = Set::new();
         let mut judged_here: Vec<Id> = vec![];
         // once a commit has taken effect: the pass ends where its parts dropped something
@@ -977,7 +992,6 @@ fn walk(w: &World, rules: &Rules, v: &View, d0: &Set, vouched: &Vouched) -> Walk
                 cur = Some(cid);
                 cdrops.clear();
                 judged_here.clear();
-                pre = order.get(k + 1).is_some_and(|&n| w.cid(n) == cid).then(|| p.clone());
             }
             if dropped.contains(&i) {
                 continue;
@@ -1009,7 +1023,7 @@ fn walk(w: &World, rules: &Rules, v: &View, d0: &Set, vouched: &Vouched) -> Walk
                 }
                 Some(Verdict::Void) => continue,
                 None => {
-                    if !w.well(i) {
+                    if !w.well(i) || (rules.refuse_shapes && w.commits[i].own_path) {
                         continue;
                     }
                     let hops = w.hops(i);
@@ -1051,9 +1065,9 @@ fn walk(w: &World, rules: &Rules, v: &View, d0: &Set, vouched: &Vouched) -> Walk
             // an explicit write: attributed to admin (spec/permissions.md §5.1 step 2); a
             // self-removal, an invite grant and a finalize are not, and audit nothing
             let explicit = !leave && !as_invite && !as_finalize;
-            // the last-admin rule, read from the pass as it stood before the commit
+            // the last-admin rule, with the commit's earlier parts in effect
             let relied = if judged.is_none() && !as_invite && !as_finalize {
-                match remains(w, rules, pre.as_ref().unwrap_or(&p), i, e, new) {
+                match remains(w, rules, &p, i, e, new) {
                     None => continue,
                     Some(r) => r,
                 }
@@ -1076,10 +1090,10 @@ fn walk(w: &World, rules: &Rules, v: &View, d0: &Set, vouched: &Vouched) -> Walk
             if judged.is_none() && explicit && falls {
                 let exempt = if rules.exempt_chain { chain(w, &v.held, i) } else { Set::new() };
                 // in question: a write resting on the edge whose need there the edge as restored
-                // met and its new value does not
+                // met and its new value does not, of another commit (no list can name its own)
                 let gone = |j: Id| {
                     let n = need(w, rules, j, e, p.invited.contains(&j) || !p.applied.contains(&j));
-                    rests_on(w, rules, j, e) && !exempt.contains(&j) && !listed(w, v, vouched, i, j) && n.met(restored, rinv) && !n.met(after, after_inv)
+                    w.cid(j) != c.cid && rests_on(w, rules, j, e) && !exempt.contains(&j) && !listed(w, v, vouched, i, j) && n.met(restored, rinv) && !n.met(after, after_inv)
                 };
                 // in question: the applied writes before it (`audit_held`: the held ones not yet
                 // dropped or void) resting on its edge
@@ -1157,7 +1171,7 @@ fn seeds(w: &World, rules: &Rules, v: &View, active: &Set, vouched: &Vouched) ->
         let exempt = if rules.exempt_chain { chain(w, &v.held, r) } else { Set::new() };
         for &j in &v.held {
             let unmet = || !rules.seeds_by_need || !need(w, rules, j, h, true).met(after, after_inv);
-            if w.edge_class(j) && w.key(j) < w.key(r) && rests_on(w, rules, j, h) && !exempt.contains(&j) && !listed(w, v, vouched, r, j) && unmet() {
+            if w.edge_class(j) && w.key(j) < w.key(r) && w.cid(j) != w.cid(r) && rests_on(w, rules, j, h) && !exempt.contains(&j) && !listed(w, v, vouched, r, j) && unmet() {
                 d.entry(j).or_insert(r);
             }
         }

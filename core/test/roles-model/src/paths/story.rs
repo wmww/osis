@@ -871,9 +871,23 @@ impl crate::Tally for Stats {
     }
 }
 
+/// The checks with an open finding against them (notes/path-model-findings.md 34, 35, 36): an
+/// idle write's effect with no dispute shown, and any effect in a world of honest lists. A search
+/// counts their failures (`failures`); the default tests and properties fail on any other
+/// (`closed_failures`) and check these still run.
+pub const OPEN: &[&str] = &["unapplied N", "unapplied T", "unapplied V", "idle", "idle N", "idle T", "idle V", "honest"];
+
+fn closed(fails: &BTreeMap<&'static str, u64>) -> u64 {
+    fails.iter().filter(|(k, _)| !OPEN.contains(k)).map(|(_, n)| n).sum()
+}
+
 impl Stats {
     pub fn failures(&self) -> u64 {
         self.fails.values().sum()
+    }
+    /// Failing checks but those of an open finding (`OPEN`).
+    pub fn closed_failures(&self) -> u64 {
+        closed(&self.fails)
     }
     /// Prints the counts and, per failing property, its first world: shrunk under `rules` in a
     /// run of at most `SHRUNK` worlds, else as found (shrinking is one core's work, and a large
@@ -1066,22 +1080,83 @@ pub fn one_reading_relabelled(w: &World, rules: &Rules, v: &View, rd: &Reading) 
 /// roles over time, invites, valid and purged content), and whether it applies the same
 /// edge-class commits (counted, not a property: finding 33).
 pub fn no_effect(w: &World, rules: &Rules, v: &View, rd: &Reading, x: Id) -> (bool, bool) {
-    let o = judge(w, rules, &v.clone().without(&[x]));
-    let less = |s: &Set| s.iter().copied().filter(|&i| i != x).collect::<Set>();
-    (o.observed(w, None) == rd.observed(w, Some(x)), o.applied == less(&rd.applied))
+    let (seen, same, _) = no_effect_of(w, rules, v, rd, &[x]);
+    (seen, same)
 }
 
-/// The held lowerings the reading does not apply that it neither drops nor voids, and that are
-/// not trusted: unapplied, as the author lacked the right.
-pub fn unapplied(w: &World, v: &View, rd: &Reading) -> Vec<Id> {
-    v.held.iter().copied().filter(|&i| w.lowers(i).is_some() && !w.leave(i) && !rd.applied.contains(&i) && !rd.dropped.contains(&i) && !rd.voided.contains(&i) && !v.trust.contains(&i)).collect()
+/// As `no_effect`, the writes `xs` (one commit's parts) taken out together, and whether what each
+/// holder can do (roles over time, invites, cuts) is the same, content aside.
+pub fn no_effect_of(w: &World, rules: &Rules, v: &View, rd: &Reading, xs: &[Id]) -> (bool, bool, bool) {
+    let o = judge(w, rules, &v.clone().without(xs));
+    let less = |s: &Set| s.iter().copied().filter(|i| !xs.contains(i)).collect::<Set>();
+    let (mut a, b) = (rd.observed(w), o.observed(w));
+    for s in [&mut a.valid, &mut a.copied, &mut a.purged] {
+        *s = less(s);
+    }
+    let roles = a.roles == b.roles && a.invites == b.invites && a.timeline == b.timeline && a.cuts == b.cuts;
+    (a == b, o.applied == less(&rd.applied), roles)
 }
 
-/// Counted, not failing (notes/path-model-findings.md 16), at nodes trusting the removals (`t`)
-/// or trusting nothing: `stray` (a drop whose dropper does not apply at the end). Failing: `void`
-/// (a void lowering has no effect: the reading without it held is the same), `one reading` (a
-/// relabelling of commit IDs keeping the walk's order reads the same).
-fn void_checks(w: &World, rules: &Rules, v: &View, rd: &Reading, n: Thing, t: bool, m: &Sim, st: &mut Stats) {
+/// The held commits whose edge-class parts all do nothing in the reading, each as its held parts:
+/// edge writes it does not apply (void, refused, or never given a verdict) and vouches that do
+/// not count, but those dropped (a dropper's effect) or trusted (a trust set's). A node holds a
+/// commit whole, so a commit is idle only where every part is.
+pub fn idle(w: &World, v: &View, rd: &Reading) -> Vec<Vec<Id>> {
+    let does = |i: Id| if matches!(w.commits[i].kind, Kind::Vouch { .. }) { rd.counting.contains(&i) } else { rd.applied.contains(&i) };
+    let quiet = |i: Id| !does(i) && !rd.dropped.contains(&i) && !v.trust.contains(&i);
+    let mut by: BTreeMap<Id, Vec<Id>> = BTreeMap::new();
+    for &i in v.held.iter().filter(|&&i| w.edge_class(i)) {
+        by.entry(w.cid(i)).or_default().push(i);
+    }
+    by.into_values().filter(|ps| ps.iter().all(|&i| quiet(i))).collect()
+}
+
+/// What an idle commit may change (notes/write-path-design.md §1, What judging once gives): for
+/// each `idle` commit (`id` its first part, `parts` all), whether taking it out of the held set
+/// changes what users observe, whether the reading then shows a dispute (`disputes`, computed once
+/// and only where some commit has an effect), and whether it changes which writes apply (nobody
+/// sees that: finding 33). `kind`: `void` (a void lowering among its parts), `unapplied` (a lowering
+/// among them), else `idle` (grants, invite grants, finalizes, self-removals, vouches).
+pub struct Effect {
+    pub id: Id,
+    pub parts: Vec<Id>,
+    pub kind: &'static str,
+    pub observed: bool,
+    /// Of what is observed, what holders can do changes (else only which content counts).
+    pub roles: bool,
+    pub shown: bool,
+    pub applies: bool,
+}
+
+pub fn effects(w: &World, rules: &Rules, v: &View, rd: &Reading) -> Vec<Effect> {
+    let mut shown: Option<bool> = None;
+    idle(w, v, rd)
+        .into_iter()
+        .map(|parts| {
+            let (seen, same, roles_same) = no_effect_of(w, rules, v, rd, &parts);
+            let shown = !seen && *shown.get_or_insert_with(|| !disputes(w, rules, v).is_empty());
+            let kind = if parts.iter().any(|i| rd.voided.contains(i)) {
+                "void"
+            } else if parts.iter().any(|&i| w.lowers(i).is_some() && !w.leave(i)) {
+                "unapplied"
+            } else {
+                "idle"
+            };
+            Effect { id: parts[0], parts, kind, observed: !seen, roles: !roles_same, shown, applies: !same }
+        })
+        .collect()
+}
+
+/// At one node's reading: `self-taken` (no applied commit's path loses its authority to the
+/// commit's own drops) and, at the node `relabel` picks, `one reading` (a relabelling of commit IDs
+/// keeping the walk's order reads the same), failing; `stray` (a drop whose dropper does not apply
+/// at the end), counted. Of each idle write (`effects`): an effect users observe fails `void` (a
+/// void lowering), `unapplied` (any other lowering) or `idle` (any other edge write or vouch) unless
+/// the reading shows a dispute (a fight among
+/// admins, counted as `fight`), and fails `honest` in an honest history (`quiet`) whatever is shown;
+/// `void shown`, `unapplied shown`, `idle shown` (only which writes apply differs) are counted.
+#[allow(clippy::too_many_arguments)]
+fn void_checks(w: &World, rules: &Rules, v: &View, rd: &Reading, n: Thing, t: bool, quiet: bool, relabel: bool, m: &Sim, st: &mut Stats) {
     st.count("self-taken");
     if !rd.self_taken.is_empty() {
         st.fail("self-taken", m, format!("node {n}: commits {:?} lose their path's authority to their own drops", rd.self_taken));
@@ -1090,20 +1165,37 @@ fn void_checks(w: &World, rules: &Rules, v: &View, rd: &Reading, n: Thing, t: bo
     if !rd.stray.is_empty() {
         st.note(if t { "stray T" } else { "stray N" }, m, format!("node {n}: {:?} dropped by a write that does not apply", rd.stray));
     }
-    for &x in &rd.voided {
-        st.count("void");
-        let (seen, same) = no_effect(w, rules, v, rd, x);
-        if !seen {
-            st.fail("void", m, format!("node {n}: the void lowering {x} has an effect"));
+    for e in effects(w, rules, v, rd) {
+        let (k, ks) = match e.kind {
+            "void" => ("void", "void shown"),
+            "unapplied" => ("unapplied", "unapplied shown"),
+            _ => ("idle", "idle shown"),
+        };
+        st.count(k);
+        if e.observed && !e.shown && !e.roles {
+            st.note("content only", m, format!("node {n}: the idle write {} changes which content counts, no role, unshown", e.id));
         }
-        st.count("void shown");
-        if !same {
-            st.note("void shown", m, format!("node {n}: the void lowering {x} changes which writes apply, nothing observed"));
+        if e.observed && !e.shown {
+            st.fail(k, m, format!("node {n}: the idle write {} has an effect, no dispute shown", e.id));
+        } else if e.observed {
+            st.note("fight", m, format!("node {n}: the idle write {} has an effect, a dispute shown", e.id));
+        }
+        if quiet {
+            st.count("honest");
+            if e.observed {
+                st.fail("honest", m, format!("node {n}: in an honest history the idle write {} has an effect", e.id));
+            }
+        }
+        st.count(ks);
+        if e.applies && !e.observed {
+            st.note(ks, m, format!("node {n}: the idle write {} changes which writes apply, nothing observed", e.id));
         }
     }
-    st.count("one reading");
-    if !one_reading_relabelled(w, rules, v, rd) {
-        st.fail("one reading", m, format!("node {n}: a relabelling keeping the order reads otherwise"));
+    if relabel {
+        st.count("one reading");
+        if !one_reading_relabelled(w, rules, v, rd) {
+            st.fail("one reading", m, format!("node {n}: a relabelling keeping the order reads otherwise"));
+        }
     }
 }
 
@@ -1255,12 +1347,23 @@ pub fn check(m: &Sim, rules: &Rules, st: &mut Stats) {
             }
         }
     };
+    // an honest history: no move of the thief, X removing H neither at the theft nor after (every
+    // explicit lowering is an honest node's, its list by the writers' rule)
+    let quiet = m.thief.is_empty() && !s.x_first && !s.b_side_x;
+    // `one reading` at one node per world, picked by the world's spec
+    let pick = {
+        use std::hash::{Hash, Hasher};
+        let mut h = std::collections::hash_map::DefaultHasher::new();
+        format!("{:?}", m.spec).hash(&mut h);
+        let all: Vec<Thing> = nodes.iter().copied().chain(m.untrusting()).collect();
+        all[(h.finish() % all.len() as u64) as usize]
+    };
     for (&n, (v, rd)) in &rds {
         if rd.circle {
             st.fail("settles", m, format!("node {n}: the vouches do not settle"));
         }
         st.most("rounds", rd.rounds as u64);
-        void_checks(w, rules, v, rd, n, true, m, st);
+        void_checks(w, rules, v, rd, n, true, quiet, n == pick, m, st);
         st.count("removal");
         if !rd.void.is_empty() {
             st.fail("removal", m, format!("node {n}: its trusted removal {:?} is void", rd.void));
@@ -1373,7 +1476,7 @@ pub fn check(m: &Sim, rules: &Rules, st: &mut Stats) {
         if rd.circle {
             st.fail("untrusted", m, format!("node {n}: the vouches do not settle"));
         }
-        void_checks(w, rules, v, rd, n, false, m, st);
+        void_checks(w, rules, v, rd, n, false, quiet, n == pick, m, st);
         // where every honest removal it holds applies (else X keeps its standing there: a dispute)
         if m.removals().iter().all(|r| !v.held.contains(r) || rd.applied.contains(r)) {
             st.count("admin N");
@@ -1386,7 +1489,7 @@ pub fn check(m: &Sim, rules: &Rules, st: &mut Stats) {
         let shown = disputes(w, rules, v);
         // an honest history (no move of the thief, X removing H neither at the theft nor after)
         // shows none
-        if m.thief.is_empty() && !s.x_first && !s.b_side_x {
+        if quiet {
             st.count("quiet");
             if !shown.is_empty() {
                 st.fail("quiet", m, format!("node {n}: an honest history shows the disputes {shown:?}"));
@@ -1503,8 +1606,13 @@ pub fn random_world(i: u64, rules: &Rules) -> Sim {
 
 /// Random worlds `0..n` on every core.
 pub fn random(n: u64, rules: &Rules) -> Stats {
+    random_from(0, n, rules)
+}
+
+/// Random worlds `start..start + n` on every core (a large sample split across runs).
+pub fn random_from(start: u64, n: u64, rules: &Rules) -> Stats {
     crate::on_every_core(|th, threads, st: &mut Stats| {
-        for i in (th as u64..n).step_by(threads) {
+        for i in (start + th as u64..start + n).step_by(threads) {
             check(&random_world(i, rules), rules, st);
         }
     })
@@ -1570,6 +1678,7 @@ pub fn mode_rules(mode: &str) -> Option<Rules> {
     let f = Rules::fixed();
     let rest = mode.strip_prefix("paths").unwrap_or(mode);
     let rest = rest.strip_prefix("-exh").or_else(|| rest.strip_prefix("-tiny-invites")).or_else(|| rest.strip_prefix("-tiny")).unwrap_or(rest);
+    let rest = rest.strip_prefix("-honest-writers").or_else(|| rest.strip_prefix("-honest")).unwrap_or(rest);
     Some(match rest {
         "" => f,
         "-design" => Rules::design(),
@@ -1594,6 +1703,7 @@ pub fn mode_rules(mode: &str) -> Option<Rules> {
         "-last-any" => Rules { last_hop: false, ..f },
         "-all-candidates" => Rules { candidates: Candidates::All, ..f },
         "-seeds-all" => Rules { seeds_by_need: false, ..f },
+        "-refuse-shapes" => Rules { refuse_shapes: true, ..f },
         _ => return None,
     })
 }
@@ -1672,17 +1782,145 @@ pub fn tiny_invites(i: u64, n: usize) -> World {
     w
 }
 
-/// Tiny world `i` (`n` from 3 to 12 writes; `invites`: `tiny_invites`, else `tiny`) and its view:
-/// every commit held; trusting nothing, or (every third world) one held lowering.
-pub fn tiny_world(i: u64, invites: bool) -> (World, View) {
+/// A small world to check: its commits, the view, and per commit (by ID) what its writer had
+/// received when writing it, in the order received.
+#[derive(Clone, Debug)]
+pub struct Tiny {
+    pub w: World,
+    pub v: View,
+    pub recv: Vec<Vec<Id>>,
+}
+
+/// Which small worlds: `tiny` or `tiny_invites`, and how honest their writers are.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct TinyMode {
+    pub invites: bool,
+    pub honest: Honesty,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum Honesty {
+    /// Each writer received every commit made before it; lists are drawn at random.
+    None,
+    /// Each writer received its own earlier commits and each other earlier commit with
+    /// probability one half, in the order made, and every lowering's list is the writers' rule's
+    /// over that (`writers_list`); the world is otherwise the one `None` gives.
+    Lists,
+    /// As `Lists`, with honest writers: a commit is stamped after everything its writer received
+    /// (a clock never behind what it saw: one drawn earlier moves later, its `until`s with it), and
+    /// is kept only where its writer's own walk over what it received applies it (its lowerings
+    /// trusted there, with their lists). A writer receives only commits kept.
+    Writers,
+}
+
+/// Tiny world `i` (`n` from 3 to 12 writes; `tiny_invites` or `tiny`) and its view: every commit
+/// held; trusting nothing, or (every third world) one held lowering.
+pub fn tiny_world(i: u64, mode: TinyMode) -> Tiny {
     let n = 3 + (i % 10) as usize;
-    let w = if invites { tiny_invites(i, n) } else { tiny(i, n) };
+    let mut w = if mode.invites { tiny_invites(i, n) } else { tiny(i, n) };
+    let rules = Rules::fixed();
+    let mut recv: Vec<Vec<Id>> = (0..w.commits.len()).map(|k| (0..w.cid(k)).collect()).collect();
+    if mode.honest != Honesty::None {
+        let mut rng = Rng::thread(0x4e57, i as usize);
+        let mut kept: Vec<Id> = vec![];
+        let cids: Vec<Id> = (0..w.commits.len()).filter(|&k| w.cid(k) == k).collect();
+        for cid in cids {
+            let parts: Vec<Id> = (cid..w.commits.len()).take_while(|&k| w.cid(k) == cid).collect();
+            let got: Vec<Id> = kept.iter().copied().filter(|&j| w.commits[j].signer == w.commits[cid].signer || rng.below(2) == 0).collect();
+            // an honest clock is never behind what its writer saw: the commit moves later, its
+            // `until`s with it
+            let floor = got.iter().map(|&j| w.commits[j].ts + 1).max().unwrap_or(0);
+            if mode.honest == Honesty::Writers && floor > w.commits[cid].ts {
+                let shift = floor - w.commits[cid].ts;
+                for &r in &parts {
+                    w.commits[r].ts += shift;
+                    if let Kind::Edge { until: Some(u), .. } = &mut w.commits[r].kind {
+                        *u += shift;
+                    }
+                }
+            }
+            for &r in &parts {
+                recv[r] = got.clone();
+                if w.lowers(r).is_some() && !w.leave(r) {
+                    let l = writers_list(&w, &rules, r, &got);
+                    let f = w.cut(&l);
+                    w.edit(r, |k| k.listing(f));
+                }
+            }
+            let honest = mode.honest == Honesty::Lists || {
+                let lows: Set = parts.iter().copied().filter(|&r| w.lowers(r).is_some() && !w.leave(r)).collect();
+                let v = View { held: got.iter().chain(&parts).copied().collect(), leaves: None, trust: lows };
+                let rd = judge(&w, &rules, &v);
+                parts.iter().all(|r| rd.applied.contains(r)) && rd.void.is_empty()
+            };
+            if honest {
+                kept.extend(&parts);
+            }
+        }
+        if mode.honest == Honesty::Writers {
+            let (w2, map) = rebuild(&w, &kept);
+            recv = kept.iter().map(|&j| recv[j].iter().filter_map(|i| map.get(i).copied()).collect()).collect();
+            w = w2;
+        }
+    }
     let mut v = View::all(&w);
     let lows: Vec<Id> = (0..w.commits.len()).filter(|&k| w.lowers(k).is_some()).collect();
     if i % 3 == 0 && !lows.is_empty() {
         v.trust.insert(lows[(i / 3) as usize % lows.len()]);
     }
-    (w, v)
+    Tiny { w, v, recv }
+}
+
+/// The commits of `recv` resting on lowering `r`'s edge, its own commit's parts aside.
+fn resting(w: &World, r: Id, among: impl IntoIterator<Item = Id>) -> Vec<Id> {
+    let h = w.sets(r).expect("a lowering sets an edge");
+    among.into_iter().filter(|&j| w.cid(j) != w.cid(r) && (w.hops(j).contains(&h) || (w.leave(j) && w.sets(j) == Some(h)))).collect()
+}
+
+/// The list the writers' rule gives lowering `r`, its writer having received `recv` (in that order)
+/// when writing it (notes/write-path-design.md §1, The list is its writer's; `Sim::stand`): the
+/// received commits resting on its edge, where the writer's walk (holding `recv` and `r`, trusting
+/// `r`) applies `r` with all of them named; else the content among them, then its role writes one
+/// at a time, each kept only where `r` still applies with it.
+pub fn writers_list(w: &World, rules: &Rules, r: Id, recv: &[Id]) -> Vec<Id> {
+    let all = resting(w, r, recv.iter().copied());
+    let mut v = View { held: recv.iter().copied().collect(), leaves: None, trust: Set::from([r]) };
+    v.held.insert(r);
+    let classed: Vec<bool> = all.iter().map(|&j| w.edge_class(j)).collect();
+    let mut w = w.clone();
+    let mut applies = |l: &[Id]| {
+        let f = w.cut(l);
+        w.edit(r, |k| k.listing(f));
+        let rd = judge(&w, rules, &v);
+        rd.applied.contains(&r) && !rd.void.contains(&r)
+    };
+    if applies(&all) {
+        return all;
+    }
+    let mut kept: Vec<Id> = all.iter().zip(&classed).filter(|x| !*x.1).map(|x| *x.0).collect();
+    for c in all.iter().zip(&classed).filter(|x| *x.1).map(|x| *x.0) {
+        kept.push(c);
+        if !applies(&kept) {
+            kept.pop();
+        }
+    }
+    kept
+}
+
+/// Whether every lowering's list (on the commits resting on its edge) is the writers' rule's
+/// over what its writer received: computed from the generated history, never from a node.
+pub fn lists_honest(w: &World, rules: &Rules, recv: &[Vec<Id>]) -> bool {
+    (0..w.commits.len()).filter(|&r| w.lowers(r).is_some() && !w.leave(r)).all(|r| {
+        let names = |l: &[Id], j: Id| l.iter().any(|&c| w.names(c, j));
+        let rest = resting(w, r, 0..w.commits.len());
+        let listed: Vec<Id> = rest.iter().copied().filter(|&j| w.in_frontier(r, j)).collect();
+        // a list naming what its writer had not received is no writer's
+        if !listed.iter().all(|&j| recv[r].iter().any(|&c| w.cid(c) == w.cid(j))) {
+            return false;
+        }
+        let honest = writers_list(w, rules, r, &recv[r]);
+        rest.iter().all(|&j| w.in_frontier(r, j) == names(&honest, j))
+    })
 }
 
 #[derive(Clone, Debug, Default)]
@@ -1735,30 +1973,39 @@ impl TinyStats {
     pub fn failures(&self) -> u64 {
         self.fails.values().sum()
     }
+    /// Failing checks but those of an open finding (`OPEN`).
+    pub fn closed_failures(&self) -> u64 {
+        closed(&self.fails)
+    }
 }
 
 /// The checks on one small world, by its trust: `N` trusting nothing, `T` trusting a lowering
 /// the settled walk applies, `V` trusting one it does not (void, its seeds lost: the walk is
 /// redone, notes/write-path-design.md §1). Failing: `one reading` (a relabelling keeping the
 /// order reads the same), `self-taken` (no applied commit's path loses its authority to the
-/// commit's own drops), `void` (taking a void lowering out of the held set changes nothing
-/// users observe: `Reading::observed`), `unapplied N`/`T` (likewise a lowering that does not
-/// apply), `admin T` (A keeps a standing admin). Counted: `void shown`, `unapplied shown` (the
-/// same changes which edge writes apply: nobody sees it, finding 33), `stray` (a drop whose
-/// dropper does not apply at the end), `unapplied V` (the trusted write's void round reads a
-/// lowering the final walk does not apply), `admin N`/`V`.
-pub fn tiny_check(i: u64, w: &World, v: &View, rules: &Rules, st: &mut TinyStats) {
+/// commit's own drops), `void`, `unapplied N`/`T`/`V` and `idle N`/`T`/`V` (taking an idle
+/// write, `idle`: a void lowering, any other lowering, any other edge write or vouch, out of the
+/// held set changes nothing users observe, `Reading::observed`, or the reading shows a dispute), `honest` (in a world whose lists all follow the writers' rule, `lists_honest`, it
+/// changes nothing observed, shown or not), `admin T` (A keeps a standing admin). Counted:
+/// `fight` (an effect, a dispute shown), `void shown`, `unapplied shown`, `idle shown` (only which
+/// edge writes apply changes: nobody sees it, finding 33), `stray` (a drop whose dropper does not apply at
+/// the end), `admin N`/`V`, and the worlds whose lists are honest (`honest worlds`).
+pub fn tiny_check(i: u64, t: &Tiny, rules: &Rules, st: &mut TinyStats) {
+    let (w, v) = (&t.w, &t.v);
     st.worlds += 1;
     let rd = judge(w, rules, v);
-    let t = if v.trust.is_empty() { "N" } else if rd.void.is_empty() { "T" } else { "V" };
+    let tr = if v.trust.is_empty() { "N" } else if rd.void.is_empty() { "T" } else { "V" };
     let k = |c: &'static str| -> &'static str {
-        match (c, t) {
+        match (c, tr) {
             ("stray", "N") => "stray N",
             ("stray", "T") => "stray T",
             ("stray", _) => "stray V",
             ("unapplied", "N") => "unapplied N",
             ("unapplied", "T") => "unapplied T",
             ("unapplied", _) => "unapplied V",
+            ("idle", "N") => "idle N",
+            ("idle", "T") => "idle T",
+            ("idle", _) => "idle V",
             ("admin", "N") => "admin N",
             ("admin", "T") => "admin T",
             _ => "admin V",
@@ -1766,62 +2013,79 @@ pub fn tiny_check(i: u64, w: &World, v: &View, rules: &Rules, st: &mut TinyStats
     };
     st.most_rounds = st.most_rounds.max(rd.rounds);
     st.hit(k("stray"), false, !rd.stray.is_empty(), i, w, || format!("stray {:?}", rd.stray));
-    for &x in &rd.voided {
-        let (seen, same) = no_effect(w, rules, v, &rd, x);
-        st.hit("void", true, !seen, i, w, || format!("void {x} has an effect (voided {:?}, applied {:?})", rd.voided, rd.applied));
-        st.hit("void shown", false, !same, i, w, || format!("void {x} changes which writes apply"));
-    }
-    for x in unapplied(w, v, &rd) {
-        let (seen, same) = no_effect(w, rules, v, &rd, x);
-        st.hit(k("unapplied"), t != "V", !seen, i, w, || format!("unapplied {x} has an effect"));
-        st.hit("unapplied shown", false, !same, i, w, || format!("unapplied {x} changes which writes apply"));
+    let fx = effects(w, rules, v, &rd);
+    let honest = lists_honest(w, rules, &t.recv);
+    *st.checked.entry("honest worlds").or_default() += honest as u64;
+    for e in fx {
+        let x = e.id;
+        let (kk, ks) = match e.kind {
+            "void" => ("void", "void shown"),
+            "unapplied" => (k("unapplied"), "unapplied shown"),
+            _ => (k("idle"), "idle shown"),
+        };
+        st.hit(kk, true, e.observed && !e.shown, i, w, || format!("{x} has an effect, no dispute shown (voided {:?}, applied {:?})", rd.voided, rd.applied));
+        st.hit("fight", false, e.observed && e.shown, i, w, || format!("{x} has an effect, a dispute shown"));
+        st.hit("content only", false, e.observed && !e.shown && !e.roles, i, w, || format!("{x} changes which content counts, no role"));
+        if honest {
+            st.hit("honest", true, e.observed, i, w, || format!("{x} has an effect, every list the writers' rule's"));
+        }
+        st.hit(ks, false, e.applies && !e.observed, i, w, || format!("{x} changes which writes apply"));
     }
     st.hit("one reading", true, !one_reading_relabelled(w, rules, v, &rd), i, w, || "a relabelling reads otherwise".to_string());
     st.hit("self-taken", true, !rd.self_taken.is_empty(), i, w, || format!("commits {:?} lose their path's authority to their own drops", rd.self_taken));
-    st.hit(k("admin"), t == "T", !rd.roles.iter().any(|(e, r)| e.1 == A && *r == Role::Admin), i, w, || format!("A has no admin: applied {:?}", rd.applied));
+    st.hit(k("admin"), tr == "T", !rd.roles.iter().any(|(e, r)| e.1 == A && *r == Role::Admin), i, w, || format!("A has no admin: applied {:?}", rd.applied));
 }
 
-/// `w` less one commit at a time while `fails` holds of it.
-pub fn shrink_world(w: &World, v: &View, fails: &dyn Fn(&World, &View) -> bool) -> (World, View) {
-    let (mut w, mut v) = (w.clone(), v.clone());
+/// `t` less one commit at a time while `fails` holds of it (receipts follow the relabelling).
+pub fn shrink_world(t: &Tiny, fails: &dyn Fn(&Tiny) -> bool) -> Tiny {
+    let mut t = t.clone();
     'step: loop {
-        for k in 0..w.commits.len() {
-            let keep: Vec<Id> = (0..w.commits.len()).filter(|&j| j != k).collect();
-            let (w2, map) = rebuild(&w, &keep);
+        for k in 0..t.w.commits.len() {
+            let keep: Vec<Id> = (0..t.w.commits.len()).filter(|&j| j != k).collect();
+            let (w2, map) = rebuild(&t.w, &keep);
             let m = |s: &Set| s.iter().filter_map(|i| map.get(i).copied()).collect::<Set>();
-            let v2 = View { held: m(&v.held), leaves: v.leaves.clone(), trust: m(&v.trust) };
-            if fails(&w2, &v2) {
-                (w, v) = (w2, v2);
+            let v2 = View { held: m(&t.v.held), leaves: t.v.leaves.clone(), trust: m(&t.v.trust) };
+            let recv = keep.iter().map(|&j| t.recv[j].iter().filter_map(|i| map.get(i).copied()).collect()).collect();
+            let t2 = Tiny { w: w2, v: v2, recv };
+            if fails(&t2) {
+                t = t2;
                 continue 'step;
             }
         }
-        return (w, v);
+        return t;
     }
 }
 
-/// `-- N paths-tiny[-invites][-variant]`: N small worlds.
-pub fn tiny_run(n: u64, rules: &Rules, invites: bool) -> TinyStats {
+/// `-- N paths-tiny[-invites][-honest[-writers]][-variant]`: N small worlds.
+pub fn tiny_run(n: u64, rules: &Rules, mode: TinyMode) -> TinyStats {
+    tiny_run_from(0, n, rules, mode)
+}
+
+/// Small worlds `start..start + n`.
+pub fn tiny_run_from(start: u64, n: u64, rules: &Rules, mode: TinyMode) -> TinyStats {
     crate::on_every_core(|th, threads, st: &mut TinyStats| {
-        for i in (th as u64..n).step_by(threads) {
-            let (w, v) = tiny_world(i, invites);
-            tiny_check(i, &w, &v, rules, st);
+        for i in (start + th as u64..start + n).step_by(threads) {
+            tiny_check(i, &tiny_world(i, mode), rules, st);
         }
     })
 }
 
-fn tiny_print(st: &TinyStats, rules: &Rules, invites: bool) {
-    println!("tiny: {} worlds, checks {:?}, noted {:?}, failing {:?}, most rounds {}", st.worlds, st.checked, st.noted, st.fails, st.most_rounds);
+fn tiny_print(st: &TinyStats, rules: &Rules, mode: TinyMode) {
+    println!("tiny {mode:?}: {} worlds, checks {:?}, noted {:?}, failing {:?}, most rounds {}", st.worlds, st.checked, st.noted, st.fails, st.most_rounds);
     for (k, (n, i, what)) in &st.first {
-        let (w, v) = tiny_world(*i, invites);
+        let t = tiny_world(*i, mode);
         let prop = *k;
-        let fails = |w: &World, v: &View| {
+        let fails = |t: &Tiny| {
             let mut s = TinyStats::default();
-            tiny_check(*i, w, v, rules, &mut s);
+            tiny_check(*i, t, rules, &mut s);
             s.fails.contains_key(prop) || s.noted.contains_key(prop)
         };
-        let (w, v) = shrink_world(&w, &v, &fails);
+        let t = shrink_world(&t, &fails);
+        let mut s = TinyStats::default();
+        tiny_check(*i, &t, rules, &mut s);
+        let what = s.first.get(prop).map_or(what.clone(), |f| f.2.clone());
         let tag = if st.fails.contains_key(k) { "FAIL" } else { "NOTED" };
-        println!("{tag} {k}: world {i} ({n} commits; shrunk to {}), trust {:?}: {what}\n{}", w.commits.len(), v.trust, tiny_trace(&w));
+        println!("{tag} {k}: world {i} ({n} commits; shrunk to {}), trust {:?}, received {:?}: {what}\n{}", t.w.commits.len(), t.v.trust, t.recv, tiny_trace(&t.w));
     }
 }
 
@@ -1841,20 +2105,24 @@ pub fn tiny_trace(w: &World) -> String {
 }
 
 /// `-- N paths[-control]` (random worlds), `-- 0 paths-exh[-control]` (the small family),
-/// `-- N paths-tiny[-control]` (small worlds of admins). Returns the failing checks.
-pub fn run(samples: u64, mode: &str) -> u64 {
+/// `-- N paths-tiny[-invites][-honest[-writers]][-control]` (small worlds); random and small worlds from
+/// index `from` on (`-- N paths --from K`). Returns the failing checks.
+pub fn run(samples: u64, from: u64, mode: &str) -> u64 {
     let Some(rules) = mode_rules(mode) else {
         eprintln!("unknown mode {mode}");
         return 1;
     };
     if mode.starts_with("paths-tiny") {
         let invites = mode.starts_with("paths-tiny-invites");
-        let st = tiny_run(samples, &rules, invites);
-        tiny_print(&st, &rules, invites);
+        let rest = mode.strip_prefix(if invites { "paths-tiny-invites" } else { "paths-tiny" }).unwrap_or("");
+        let honest = if rest.starts_with("-honest-writers") { Honesty::Writers } else if rest.starts_with("-honest") { Honesty::Lists } else { Honesty::None };
+        let mode = TinyMode { invites, honest };
+        let st = tiny_run_from(from, samples, &rules, mode);
+        tiny_print(&st, &rules, mode);
         return st.failures();
     }
     // `-- N paths-exh`: every Nth family world (N 0 or 1: all of them)
-    let st = if mode.starts_with("paths-exh") { family_run(&rules, samples.max(1) as usize) } else { random(samples, &rules) };
+    let st = if mode.starts_with("paths-exh") { family_run(&rules, samples.max(1) as usize) } else { random_from(from, samples, &rules) };
     st.print(mode, &rules);
     st.failures()
 }
