@@ -749,7 +749,8 @@ fn vouches_model_agrees_large() {
     sharded(40_000, 0x5eed_0007, vouch_run);
 }
 
-/// The control: perm against the model without vouches (`Rules::vouches` false) disagrees.
+/// spec/permissions.md §5.1 Vouches, the control: perm against the model without vouches
+/// (`Rules::vouches` false) disagrees.
 #[test]
 fn vouches_model_control_disagrees() {
     let off = vouches::Rules { vouches: false, ..vouches::FIXED };
