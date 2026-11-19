@@ -809,13 +809,15 @@ fn check(run: &mut Run, seed: u64, rotated: bool) {
 }
 
 /// Whether peer `d` was first handed secret `k` by a grant that leaves it reading (spec/crypto.md
-/// §4, Boxes: an admin demoted to reader while granting X read leaves X reading): the grant's
-/// write applies nothing and does not count in peer `o`'s settled timeline of its target (its
-/// author held no write there just before it), and its author still holds `k`'s role on `k`'s
-/// thing, so could hand `k` on anyway (a secret once shared cannot be un-shared). Nothing such a
-/// grant does rotates that role; one that counts is named void, and the author's own departure
-/// from the role is a departure: both rotate it, so neither is excused. Read from the history
-/// (the grant's commits, the timelines the rosters come from), not from any key decision.
+/// §4, Boxes: an admin demoted to reader while granting X read leaves X reading, until that
+/// role's next rotation): the grant's write applies nothing and does not count in peer `o`'s
+/// settled timeline of its target (its author held no write there just before it), its author
+/// still holds `k`'s role on `k`'s thing, so could hand `k` on anyway (a secret once shared cannot
+/// be un-shared), and that role has not moved past `k`: nobody departed it after the grant (the
+/// author's own departure, regained or not, included) and no later epoch of it was made. A grant
+/// that counts is named void, and a departure rotates the role: neither is excused. Read from the
+/// history (the grant's commits, the timelines the rosters come from, the epochs made), not from
+/// any key decision.
 fn left_reading(run: &Run, o: usize, d: usize, k: &Key) -> bool {
     let Some(h) = run.handed[d].get(k) else { return false };
     if run.first.get(&(d, *k)).is_none_or(|f| *f <= h.step) {
@@ -826,7 +828,10 @@ fn left_reading(run: &Run, o: usize, d: usize, k: &Key) -> bool {
     let Some((mc, ix)) = write else { return false };
     let applies = tl.is_applied(&osis_perm::WriteId(mc.id, ix as u32));
     let counts = tl.role(&mc.author, &h.on, osis_perm::At::before(mc.point())) >= Some(Role::Write);
-    !applies && !counts && access(run, o, h.author, k.0, k.1)
+    let after = |p: Option<osis_perm::Point>| p.is_some_and(|p| p > mc.point());
+    let departed = (0..N).any(|p| after(departure_point(run, o, k.0, p, k.1)) || after(path_loss_point(run, o, p, k.0, k.1)));
+    let moved = run.made.keys().any(|m| m.0 == k.0 && m.1 == k.1 && m.2.n() > k.2.n());
+    !applies && !counts && !departed && !moved && access(run, o, h.author, k.0, k.1)
 }
 
 /// `OSIS_ROTATION_DUMP`: on a leak of epoch `k` to peer `d`, prints a legend, how `k` was made,
@@ -895,12 +900,17 @@ fn departure(run: &Run, o: usize, t: Tid, d: usize, r: Role) -> Option<CommitId>
 /// peer `o`'s settled timelines (`access_at`): the newest applied write with `d` reading `t` just
 /// before it and not just after.
 fn path_loss(run: &Run, o: usize, d: usize, t: Tid, r: Role) -> Option<CommitId> {
+    path_loss_point(run, o, d, t, r).map(|p| p.commit)
+}
+
+/// `path_loss`, at its point in the key order.
+fn path_loss_point(run: &Run, o: usize, d: usize, t: Tid, r: Role) -> Option<osis_perm::Point> {
     let core = &run.lp.peers[o].engine.core;
     let points: BTreeSet<osis_perm::Point> = run.all().iter().filter_map(|a| core.timelines.get(a)).flat_map(|tl| tl.applied().values().map(|a| a.point)).collect();
     let last = points.last().map(|p| osis_perm::Point { commit: CommitId([0xff; 32]), ..*p });
     // whether `d` reads `t` just before each point, then just after the last
     let reads: Vec<bool> = points.iter().copied().chain(last).map(|p| access_at(run, o, d, t, r, Some(p))).collect();
-    points.iter().zip(reads.windows(2)).filter(|(_, w)| w[0] && !w[1]).map(|(p, _)| p.commit).next_back()
+    points.iter().zip(reads.windows(2)).filter(|(_, w)| w[0] && !w[1]).map(|(p, _)| *p).next_back()
 }
 
 /// Where peer `d`'s departure from role `r` of holder actor `m` is ordered for a keyset of `m`
@@ -1200,4 +1210,32 @@ fn demoted_granter(first: bool) -> (Run, Tid, Tid, Tid) {
     settle(&mut run, 0, true);
     assert_eq!(run.key_role(0, &m, 2), None, "the grant is invalid");
     (run, g, m, x)
+}
+
+// The same, then peer 0 removes A from M, re-adding it as a reader of M (`readd`) or not: A's
+// departure rotates M's read and, through M, G's, so X opens no epoch of G peer 0 encrypts under;
+// the excuse ends with the role's rotation, the author's departure counted even once it reads
+// again (else a missing rotation there would read as the limit).
+#[test]
+fn the_demoted_granters_removal_shuts_its_grantee_out_spec_crypto_4() {
+    for readd in [false, true] {
+        let (mut run, g, m, x) = demoted_granter(false);
+        let a = run.tids[1];
+        let read = |run: &Run, t: Tid| run.lp.peers[0].engine.epochs(&t).and_then(|e| e.role(Role::Read).newest_held().map(|x| x.0)).unwrap();
+        let k = (m, Role::Read, read(&run, m));
+        assert!(left_reading(&run, 0, 2, &k), "X reads M by the void grant");
+        step(&mut run, 0, |run| {
+            run.lp.peers[0].clock.advance(3_000);
+            run.lp.peers[0].engine.demote(&m, &Demotion { holder: a, new: None, retain: None }).unwrap();
+            if readd {
+                run.lp.peers[0].clock.advance(1_000);
+                run.lp.peers[0].engine.grant(&m, &a, &edge(Role::Read)).unwrap();
+            }
+        });
+        settle(&mut run, 1, true);
+        assert_eq!(access(&run, 0, 1, m, Role::Read), readd);
+        assert!(!left_reading(&run, 0, 2, &k), "readd {readd}: the excuse outlives A's departure");
+        assert!(!openable(&mut run.lp, 0, &[g, m], x, run.ever[2].clone()).contains(&(g, Role::Read, read(&run, g))), "readd {readd}");
+        check(&mut run, 1, true);
+    }
 }
