@@ -1461,6 +1461,11 @@ impl Opens {
     fn take(&mut self, ctx: &mut Ctx, conn: ConnId, id: RecordId, digest: bool, moved: &mut Vec<Moved>) {
         let Some(fresh) = self.load(ctx, id) else { return };
         if !self.one_per_pair(ctx, conn, id, moved) {
+            // read from its rows for this take, nothing of it judged or followed: it leaves
+            // memory as it came, so the next take reads and judges it afresh
+            if fresh {
+                self.forget_record(id, Source::Record(id));
+            }
             return;
         }
         let kept = self.records.get(&id).is_some_and(|r| r.kept);
