@@ -188,8 +188,9 @@ pub enum Cmd {
     /// Fire a signal (a `~` key) with VALUE: fire T AK VALUE
     Fire(FireArgs),
     /// Let anyone fire external signal AK (an `@` key) on T, not only T's writers: gives AK an
-    /// entry in T's retention^.0 (an admin), each fire kept --keep DUR after it is replaced
-    /// (default: none kept, taken at once)
+    /// entry in T's retention^.0 (an admin), each fire kept --keep DUR after it is fired. Without
+    /// --keep none is kept: only sealed fires (from nodes that cannot read T) are taken, at once,
+    /// and `fire` is refused to everyone
     Enable {
         t: String,
         ak: String,

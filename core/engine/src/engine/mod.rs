@@ -2609,11 +2609,7 @@ impl Core {
         self.index_missing(&id, &had, &now);
         self.index_own(&id, &m, true);
         // a setting held value-less (purged) is no setting (`validity::settings`)
-        for (ai, a) in m.view.aspects.iter().enumerate() {
-            if a.ak.as_str() == osis_commit::retention::RETENTION && self.ix.commits.get(&id).is_some_and(|o| o.bare(ai) != m.bare(ai)) {
-                crate::apply::validity::setting_moved(self, &a.tid);
-            }
-        }
+        let bared: Vec<(Tid, BTreeSet<Ak>)> = m.view.aspects.iter().enumerate().filter(|(ai, a)| a.ak.as_str() == osis_commit::retention::RETENTION && self.ix.commits.get(&id).is_some_and(|o| o.bare(*ai) != m.bare(*ai))).map(|(_, a)| (a.tid, crate::apply::validity::enabled(self, &a.tid))).collect();
         let had = self.ix.commits.get(&id).map(covers_of).unwrap_or_default();
         self.index_covers(&id, &had, &covers_of(&m));
         // a part held invalid (a late part joining, a leftover kept) goes at the transaction's end
@@ -2628,6 +2624,9 @@ impl Core {
             self.handed_due.insert(id);
         }
         self.ix.commits.insert(id, m);
+        for (t, before) in bared {
+            crate::apply::validity::setting_moved(self, &t, Some(before));
+        }
     }
 
     /// `t` arrived: judged at the next `Engine::settle_needs`.
@@ -2769,17 +2768,23 @@ impl Core {
                     self.drop_due.insert(*id);
                 }
             }
-            // a flip of a setting may move its thing's current setting (`validity::setting_moved`)
+            // a flip of a setting may move its thing's current setting (`validity::setting_moved`);
+            // one not noted yet (a commit being applied) moves it when noted
             if a.ak.as_str() == osis_commit::retention::RETENTION {
-                settings.push(a.tid);
+                settings.push((a.tid, self.ix.retention.get(&a.tid).is_some_and(|l| l.iter().any(|x| x.0.commit == *id))));
             }
             // a flip may make a held purge-on-replace body replaced or covered
             if !self.none_due.contains(&k) && crate::retention::history::of(self, &a.tid, &a.ak).purges() {
                 self.none_due.insert(k);
             }
         }
-        for t in settings {
-            crate::apply::validity::setting_moved(self, &t);
+        for (t, noted) in settings {
+            if noted {
+                crate::apply::validity::setting_moved(self, &t, None);
+            } else {
+                self.settings_due.insert(t);
+                self.kept_things_due.insert(t);
+            }
         }
         edits::index_validity(self, id);
     }

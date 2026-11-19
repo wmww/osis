@@ -540,8 +540,11 @@ pub(super) fn grantee_boxes_only(actor: &Tid, ak: &str, f: &Fragment, granted: &
 pub(crate) fn note_settings(core: &mut Core, h: &Header, id: &CommitId, parts: &[(usize, Decoded)]) {
     for (ai, d) in parts {
         let Some(a) = h.aspects.get(*ai).filter(|a| a.ak.as_str() == osis_commit::retention::RETENTION) else { continue };
-        setting_moved(core, &a.tid);
-        let Some(setting) = d.fragment().read().and_then(|v| ct::retention_setting(&v)) else { continue };
+        let before = enabled(core, &a.tid);
+        let Some(setting) = d.fragment().read().and_then(|v| ct::retention_setting(&v)) else {
+            setting_moved(core, &a.tid, Some(before));
+            continue;
+        };
         let f = d.fragment();
         let ts = if h.kind.is_compaction() { f.winners().iter().map(|w| w.stamp.ts).max().unwrap_or(h.ts) } else { h.ts };
         let p = Point { ts, node: h.author, commit: *id };
@@ -555,6 +558,7 @@ pub(crate) fn note_settings(core: &mut Core, h: &Header, id: &CommitId, parts: &
             put(&mut l);
             l
         }, put);
+        setting_moved(core, &a.tid, Some(before));
     }
 }
 
@@ -562,24 +566,34 @@ pub(crate) fn note_settings(core: &mut Core, h: &Header, id: &CommitId, parts: &
 /// a setting not held is in force nowhere (spec/commits.md §5 In force).
 pub(crate) fn forget_setting(core: &mut Core, t: &Tid, id: &CommitId) {
     let Some(mut settings) = core.ix.retention.get(t).cloned() else { return };
+    let before = enabled(core, t);
     settings.retain(|x| x.0.commit != *id);
     if settings.is_empty() {
         core.ix.retention.remove(t);
     } else {
         core.ix.retention.insert(*t, settings);
     }
-    setting_moved(core, t);
+    setting_moved(core, t, Some(before));
+}
+
+/// The external signals `t`'s current setting enables (`RetentionSetting::enables`).
+pub(crate) fn enabled(core: &Core, t: &Tid) -> BTreeSet<Ak> {
+    setting_now(core, t).map(|s| s.rules.keys().filter(|a| a.external()).cloned().collect()).unwrap_or_default()
 }
 
 /// `t`'s held valid settings moved (one held, dropped, purged or turning valid or invalid), so
 /// its current setting may have (spec/commits.md §5 In force): what its history judges is judged
-/// again (`retention::settings_changed`), and so is every external fire held on `t`, whose
-/// validity may rest on that setting (spec/permissions.md §5.2 External fires), by the one
-/// re-judging path (`stale_commits`). O(`t`'s aspects and its fires).
-pub(crate) fn setting_moved(core: &mut Core, t: &Tid) {
+/// again (`retention::settings_changed`), and so are the external fires held on `t` whose validity
+/// may rest on that setting (spec/permissions.md §5.2 External fires), by the one re-judging path
+/// (`stale_commits`). `before`: the signals enabled before a move of the held settings, so only
+/// the fires of signals that changed are (a fire's verdict reads the setting by `enables` alone;
+/// a setting dropped or covered at a transaction's end moves none); `None`: a setting's validity
+/// flipped while the pass judging it is under way, so every one is. O(those fires).
+pub(crate) fn setting_moved(core: &mut Core, t: &Tid, before: Option<BTreeSet<Ak>>) {
     core.settings_due.insert(*t);
     core.kept_things_due.insert(*t);
-    let fires: Vec<CommitId> = core.ix.by_aspect.range((*t, Ak::MIN)..).take_while(|((x, _), _)| x == t).filter(|((_, a), _)| a.external()).flat_map(|(_, s)| s.iter().map(|x| x.1)).collect();
+    let moved = |a: &Ak| a.external() && before.as_ref().is_none_or(|b| b.contains(a) != setting_now(core, t).is_some_and(|s| s.enables(a)));
+    let fires: Vec<CommitId> = core.ix.by_aspect.range((*t, Ak::MIN)..).take_while(|((x, _), _)| x == t).filter(|((_, a), _)| moved(a)).flat_map(|(_, s)| s.iter().map(|x| x.1)).collect();
     core.stale_commits.extend(fires);
 }
 

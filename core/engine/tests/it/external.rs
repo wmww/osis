@@ -183,3 +183,96 @@ fn a_ticket_is_taken_only_while_enabled_spec_sync_inbox_5() {
     assert!(matches!(open(&mut lp, 1, &out), Opened::Commit(..)), "enabled: taken");
     assert!(lp.peers[1].engine.ticket_for(&t).unwrap().is_some(), "the ticket is held");
 }
+
+// spec/sync-inbox.md §5 Carried commits, spec/permissions.md §5.2 External fires: a removal
+// notice opened while `removal@~0` is enabled on Bob's inbox, disabled before its carried commit
+// is taken: the notice is invalid and out of history, so nothing of it is taken (`take_fire`;
+// passes with every external fire valid too, the dropped body alone stopping it).
+#[test]
+fn a_removal_notice_disabled_before_taken_is_not_taken_spec_sync_inbox_5() {
+    let (mut lp, ps) = people(2);
+    let x = crate::flows::thing_of(&mut lp, 0, ps[0]);
+    lp.peers[0].engine.grant(&x, &ps[1], &edge_of(Role::Read)).unwrap();
+    crate::flows::spread(&mut lp);
+    let owed = lp.peers[0].engine.fires_owed();
+    lp.peers[0].engine.demote(&x, &osis_engine::flows::Demotion { holder: ps[1], new: None, retain: Some(false) }).unwrap();
+    let id = *lp.peers[0].engine.fires_owed().iter().find(|f| !owed.contains(f)).expect("a removal notice owed");
+    let out = lp.peers[0].engine.sealed_fire(&id).unwrap().expect("sealed");
+    assert!(matches!(open(&mut lp, 1, &out), Opened::Commit(..)), "enabled: opened");
+    inbox_signal(&mut lp, 1, "removal@~0", false);
+    lp.peers[1].engine.take_carried().unwrap();
+    assert_eq!(lp.peers[1].engine.role_on(&x), Some(Role::Read), "disabled before taken: nothing taken");
+}
+
+// spec/commits.md §5 In force, spec/permissions.md §5.2 External fires: `g`'s setting purges its
+// own replaced versions, so a new setting's transaction ends by covering and dropping the old one;
+// a move that leaves which signals are enabled as they were leaves the fires as judged (and
+// leaves none to judge past the transaction), one that disables `PING` makes a reader's fire
+// invalid.
+#[test]
+fn a_setting_purged_on_replace_moves_no_fire_it_leaves_enabled_spec_commits_5() {
+    let (mut lp, g) = three();
+    let mut x = setting(true);
+    x.rules.insert(ak("retention^.0"), ct::RetentionEntry { history: Some(osis_schema::History::PurgeOnReplace), ..Default::default() });
+    let s1 = set_setting(&mut lp, 0, g, &x);
+    send(&mut lp, 0, 1, &[s1]);
+    let f = fire(&mut lp, 1, g).unwrap();
+    send(&mut lp, 1, 0, &[f]);
+    assert!(valid(&lp, 0, &f, g));
+    let mut y = x.clone();
+    y.rules.insert(ak("t:other.0"), ct::RetentionEntry { history: Some(osis_schema::History::FOREVER), ..Default::default() });
+    let s2 = set_setting(&mut lp, 0, g, &y);
+    assert!(valid(&lp, 0, &f, g), "still enabled");
+    send(&mut lp, 0, 1, &[s2]);
+    assert!(valid(&lp, 1, &f, g), "still enabled at the reader");
+    y.rules.remove(&ak(PING));
+    set_setting(&mut lp, 0, g, &y);
+    assert!(!valid(&lp, 0, &f, g), "disabled: invalid");
+}
+
+// spec/permissions.md §5.2 External fires (the setting is admin-only): a reader's commit past the
+// writer's rules carrying both a setting enabling `PING` and a `PING` fire enables nothing: the
+// fire is invalid at every node.
+#[test]
+fn a_readers_own_setting_enables_nothing_spec_permissions_5_2() {
+    let (mut lp, g) = three();
+    let mut m = Mutation::new();
+    m.set(g, &ct::RETENTION, &setting(true)).unwrap();
+    m.op(g, &ak(PING), PathOp { path: vec![], op: Op::Set(s("ping")) }).unwrap();
+    let c = lp.peers[1].engine.commit_hostile(m).unwrap().unwrap();
+    for to in [0, 2] {
+        send(&mut lp, 1, to, &[c]);
+        assert!(!valid(&lp, to, &c, g) && !listed(&mut lp, to, &c, g), "peer {to}: invalid, unlisted");
+    }
+}
+
+// spec/commits.md §5 In force (which settings are valid is the role timeline's),
+// spec/permissions.md §5.2 External fires: a second admin's enabling setting reaches peer 3 after
+// the reader's fire and before the grant making its author admin: the fire is invalid until the
+// grant arrives and the setting's body comes again (dropped while invalid), then valid as at the
+// reader. The admin's demotion with a frontier leaving the setting out makes it invalid again,
+// at a node holding everything and at peer 3 alike.
+#[test]
+fn a_fire_follows_its_settings_validity_spec_commits_5() {
+    let mut lp = crate::common::net(4, 0);
+    let g = new_shared(&mut lp, 0);
+    lp.sync_all().unwrap();
+    let p2 = lp.peers[2].engine.me();
+    let up = set_edge(&mut lp.peers[0].engine, g, p2, Some(edge(Role::Admin)), None);
+    send(&mut lp, 0, 2, &[up]);
+    let s1 = set_setting(&mut lp, 2, g, &setting(true));
+    send(&mut lp, 2, 1, &[up, s1]);
+    let f = fire(&mut lp, 1, g).expect("enabled at the reader");
+    send(&mut lp, 1, 3, &[f]);
+    send(&mut lp, 2, 3, &[s1]);
+    assert!(!valid(&lp, 3, &f, g), "its setting's author not known admin yet: invalid");
+    send(&mut lp, 0, 3, &[up]);
+    send(&mut lp, 2, 3, &[s1]);
+    assert!(valid(&lp, 3, &f, g), "the grant, then the setting again: valid");
+    let dem = edge_write(&mut lp.peers[0].engine, g, p2, Some(edge(Role::Read)), Some(ct::Frontier::default()));
+    send(&mut lp, 2, 0, &[s1]);
+    send(&mut lp, 1, 0, &[f]);
+    assert!(!valid(&lp, 0, &f, g), "the setting unlisted by its author's demotion: invalid");
+    send(&mut lp, 0, 3, &[dem]);
+    assert!(!valid(&lp, 3, &f, g), "alike at peer 3");
+}

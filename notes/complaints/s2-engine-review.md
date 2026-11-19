@@ -1,0 +1,2 @@
+# s2-engine-review
+- The end-of-transaction debug assert ("stale validity left unjudged") is the only thing that catches a re-judge marker set after the transaction's last re-judge; a constructed case (a setting purging its own replaced versions) found one the branch's tests missed. Anything that marks commits stale from a drop path needs a test where the drop happens in the end-of-transaction tail.
