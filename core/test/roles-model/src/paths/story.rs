@@ -675,7 +675,7 @@ pub struct Stats {
     pub first: BTreeMap<&'static str, (String, Spec)>,
     /// Checks made of each kind (a dead check shows as 0).
     pub checked: BTreeMap<&'static str, u64>,
-    /// Largest values seen: `rounds`, the walks one reading redid for a void write.
+    /// Largest values seen: `rounds`, one reading's restarts and void rounds of its trusted writes.
     pub most: BTreeMap<&'static str, u64>,
     /// Known failures of a property, counted and printed but not failing the run: each names its
     /// finding (notes/path-model-findings.md).
@@ -887,9 +887,9 @@ pub fn unapplied(w: &World, v: &View, rd: &Reading) -> Vec<Id> {
 }
 
 /// Counted, not failing (notes/path-model-findings.md 16), at nodes trusting the removals (`t`)
-/// or trusting nothing: `stray` (a drop whose dropper does not apply at the end) and `void` (a
-/// void lowering whose absence reads otherwise). Failing: `one reading` (a relabelling of commit
-/// IDs keeping the walk's order reads the same).
+/// or trusting nothing: `stray` (a drop whose dropper does not apply at the end). Failing: `void`
+/// (a void lowering has no effect: the reading without it held is the same), `one reading` (a
+/// relabelling of commit IDs keeping the walk's order reads the same).
 fn void_checks(w: &World, rules: &Rules, v: &View, rd: &Reading, n: Thing, t: bool, m: &Sim, st: &mut Stats) {
     st.count(if t { "stray T" } else { "stray N" });
     if !rd.stray.is_empty() {
@@ -898,7 +898,7 @@ fn void_checks(w: &World, rules: &Rules, v: &View, rd: &Reading, n: Thing, t: bo
     for &x in &rd.voided {
         st.count("void");
         if !no_effect(w, rules, v, rd, x) {
-            st.note(if t { "void T" } else { "void N" }, m, format!("node {n}: the void lowering {x} has an effect"));
+            st.fail("void", m, format!("node {n}: the void lowering {x} has an effect"));
         }
     }
     st.count("one reading");
@@ -1126,6 +1126,14 @@ pub fn check(m: &Sim, rules: &Rules, st: &mut Stats) {
             own_path(n, v, rd, "own path N", st);
         }
         let shown = disputes(w, rules, v);
+        // an honest history (no move of the thief, X removing H neither at the theft nor after)
+        // shows none
+        if m.thief.is_empty() && !s.x_first && !s.b_side_x {
+            st.count("quiet");
+            if !shown.is_empty() {
+                st.fail("quiet", m, format!("node {n}: an honest history shows the disputes {shown:?}"));
+            }
+        }
         // trusting the honest removals among the disputes shown, and among those then shown,
         // applies every honest removal: never a silent loss
         let honest_shown = |d: Vec<Id>, t: &Set| -> Vec<Id> { d.into_iter().filter(|r| m.removals().contains(r) && !t.contains(r)).collect() };
@@ -1358,10 +1366,7 @@ pub struct TinyStats {
     pub worlds: u64,
     pub checked: BTreeMap<&'static str, u64>,
     pub fails: BTreeMap<&'static str, u64>,
-    /// Counted, not failing, each at worlds trusting one lowering (`T`) or nothing (`N`):
-    /// `stray` (a drop whose dropper does not apply at the end), `void` (a void lowering whose
-    /// absence reads otherwise), `unapplied` (likewise for a lowering left unapplied), `admin` (A
-    /// ends with no standing admin; `T` only where the trusted lowering is not void).
+    /// Counted, not failing (`tiny_check`).
     pub noted: BTreeMap<&'static str, u64>,
     /// Per check, the smallest world: (commits, index, what).
     pub first: BTreeMap<&'static str, (usize, u64, String)>,
@@ -1391,13 +1396,13 @@ impl crate::Tally for TinyStats {
 }
 
 impl TinyStats {
-    fn hit(&mut self, k: &'static str, fail: bool, i: u64, w: &World, what: impl Fn() -> String) {
+    /// Check `k` at world `i`: `bad`, it fails where `gate`, else it is counted.
+    fn hit(&mut self, k: &'static str, gate: bool, bad: bool, i: u64, w: &World, what: impl Fn() -> String) {
         *self.checked.entry(k).or_default() += 1;
-        if !fail {
+        if !bad {
             return;
         }
-        let noted = k != "one reading";
-        *if noted { self.noted.entry(k) } else { self.fails.entry(k) }.or_default() += 1;
+        *if gate { self.fails.entry(k) } else { self.noted.entry(k) }.or_default() += 1;
         let n = w.commits.len();
         if self.first.get(k).is_none_or(|f| (n, i) < (f.0, f.1)) {
             self.first.insert(k, (n, i, what()));
@@ -1408,25 +1413,41 @@ impl TinyStats {
     }
 }
 
-/// The checks on one small world: `one reading` fails; `stray`, `void`, `unapplied` and `admin`
-/// (A ends with no standing admin) are counted, by whether the world trusts a lowering (for
-/// `admin`, one not void).
+/// The checks on one small world, by its trust: `N` trusting nothing, `T` trusting a lowering
+/// the settled walk applies, `V` trusting one it does not (void, its seeds lost: the walk is
+/// redone, notes/write-path-design.md §1). Failing: `one reading` (a relabelling keeping the
+/// order reads the same), `void` (a void lowering has no effect: the reading without it held is
+/// the same), `unapplied N`/`T` (likewise a lowering left with no verdict), `admin T` (A keeps a
+/// standing admin). Counted: `stray` (a drop whose dropper does not apply at the end), `unapplied
+/// V` (the trusted write's void round reads a lowering the final walk does not apply), `admin
+/// N`/`V`.
 pub fn tiny_check(i: u64, w: &World, v: &View, rules: &Rules, st: &mut TinyStats) {
     st.worlds += 1;
-    let t = !v.trust.is_empty();
     let rd = judge(w, rules, v);
+    let t = if v.trust.is_empty() { "N" } else if rd.void.is_empty() { "T" } else { "V" };
+    let k = |c: &'static str| -> &'static str {
+        match (c, t) {
+            ("stray", "N") => "stray N",
+            ("stray", "T") => "stray T",
+            ("stray", _) => "stray V",
+            ("unapplied", "N") => "unapplied N",
+            ("unapplied", "T") => "unapplied T",
+            ("unapplied", _) => "unapplied V",
+            ("admin", "N") => "admin N",
+            ("admin", "T") => "admin T",
+            _ => "admin V",
+        }
+    };
     st.most_rounds = st.most_rounds.max(rd.rounds);
-    st.hit(if t { "stray T" } else { "stray N" }, !rd.stray.is_empty(), i, w, || format!("stray {:?}", rd.stray));
+    st.hit(k("stray"), false, !rd.stray.is_empty(), i, w, || format!("stray {:?}", rd.stray));
     for &x in &rd.voided {
-        st.hit(if t { "void T" } else { "void N" }, !no_effect(w, rules, v, &rd, x), i, w, || format!("void {x} has an effect (voided {:?}, applied {:?})", rd.voided, rd.applied));
+        st.hit("void", true, !no_effect(w, rules, v, &rd, x), i, w, || format!("void {x} has an effect (voided {:?}, applied {:?})", rd.voided, rd.applied));
     }
     for x in unapplied(w, v, &rd) {
-        st.hit(if t { "unapplied T" } else { "unapplied N" }, !no_effect(w, rules, v, &rd, x), i, w, || format!("unapplied {x} has an effect"));
+        st.hit(k("unapplied"), t != "V", !no_effect(w, rules, v, &rd, x), i, w, || format!("unapplied {x} has an effect"));
     }
-    st.hit("one reading", !one_reading_relabelled(w, rules, v, &rd), i, w, || "a relabelling reads otherwise".to_string());
-    // trusting: a trusted lowering that is not void
-    let t = t && rd.void.is_empty();
-    st.hit(if t { "admin T" } else { "admin N" }, !rd.roles.iter().any(|(e, r)| e.1 == A && *r == Role::Admin), i, w, || format!("A has no admin: applied {:?}", rd.applied));
+    st.hit("one reading", true, !one_reading_relabelled(w, rules, v, &rd), i, w, || "a relabelling reads otherwise".to_string());
+    st.hit(k("admin"), t == "T", !rd.roles.iter().any(|(e, r)| e.1 == A && *r == Role::Admin), i, w, || format!("A has no admin: applied {:?}", rd.applied));
 }
 
 /// `w` less one commit at a time while `fails` holds of it.

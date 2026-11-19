@@ -1285,8 +1285,8 @@ fn an_earlier_void_write_has_no_effect() {
     assert!(no_effect(&w, &Rules::fixed(), &View::all(&w), &rd, early));
 }
 
-/// The redo rules' void worlds (small worlds 830267, 360379, 234147, where judging in key order
-/// with overrules re-resolved gave a void write an effect), each judged once.
+/// Small worlds 830267, 360379 and 234147: fights of three or four admins where a lowering
+/// applied at its key keeps its drops once a later lowering drops it.
 /// 830267: H pairs B at 1, N5 and N6 at 3; N5 grants N6 admin at 3; at 4 B removes N5 (dropping
 /// that grant) and N6 removes H, which would drop H's grant of N6, its only one left: void. N6's
 /// removal of B at 8 rests on H's grant and applies, dropping B's removal; N5's grant of N6
@@ -1374,6 +1374,64 @@ fn a_lowerings_check_does_not_read_what_its_drops_free() {
     assert!(!rd.applied.contains(&l) && rd.role(H, A) == Admin);
 }
 
+/// The void check reads the grant chain back: H pairs Z, Z pairs N5, and N5 removes H listing
+/// only Z's grant of it. Its drop of H's grant of Z takes the grant N5's own came through: void,
+/// and H keeps A. Control: taking each setter as it stands (Z's grant of N5 as admin), it applies
+/// and A is left with no admin.
+#[test]
+fn a_lowering_dropping_its_granters_grant_is_void() {
+    let mut w = account();
+    let gz = w.edge(H, 4, &[], A, Z, Admin, &[]);
+    let g5 = w.edge(Z, 8, &[], A, N5, Admin, &[]);
+    let l = w.edge(N5, 10, &[], A, H, Gone, &[g5]);
+    let rd = one_reading(&w);
+    assert!(rd.voided == Set::from([l]) && rd.applied == Set::from([gz, g5]) && rd.role(H, A) == Admin, "{rd:?}");
+    assert!(no_effect(&w, &Rules::fixed(), &View::all(&w), &rd, l));
+}
+
+/// A lowering that takes nothing where it is first reached is judged by the restart that gives it
+/// the edge: X removes N5 honestly at 3 (`out`, heard by H and listed); the thief backdates a
+/// removal of N5 to 2 and, with N5's key, a grant of admin to Z after it. Trusting nothing, `out`
+/// first takes nothing (N5 is off A already) and the grant does not apply; H's removal drops the
+/// backdated removal, the grant applies, and `out`, now taking N5's edge, audits and drops it: Z
+/// holds nothing, trusted or not.
+#[test]
+fn a_lowering_taking_nothing_is_judged_when_a_restart_gives_it_the_edge() {
+    let (mut w, ..) = paired();
+    let g5 = w.edge(H, 1, &[], A, N5, Admin, &[]);
+    let out = w.edge(X, 3, &[], A, N5, Gone, &[g5]);
+    let r = w.edge(H, 6, &[], A, X, Gone, &[out]);
+    w.edge(X, 2, &[], A, N5, Gone, &[g5]);
+    let gz = w.edge(N5, 2, &[], A, Z, Admin, &[]);
+    for t in [&[][..], &[r]] {
+        let rd = fixed(&w, t);
+        assert!(rd.applied.contains(&r) && rd.applied.contains(&out) && rd.dropped.contains(&gz) && rd.role(Z, A) == Gone, "{t:?} {rd:?}");
+    }
+}
+
+/// A stray drop costing a role in a fight of admins (the smallest such `tiny` world trusting a
+/// lowering that applies): H pairs N5, N5 pairs N6 and B, B pairs Z; N6 removes B; Z removes N6
+/// not listing that removal, so it drops it; H removes Z listing nothing, so it drops Z's removal.
+/// N6 stays an admin and so does B: N6's removal stays dropped. Trusting H's removal of Z, its
+/// seeds take Z's removal before the walk and B is removed: shown as a dispute.
+#[test]
+fn a_stray_drop_in_a_fight_of_admins_is_shown() {
+    let mut w = account();
+    let g5 = w.edge(H, 1, &[], A, N5, Admin, &[]);
+    let g6 = w.edge(N5, 1, &[], A, N6, Admin, &[g5]);
+    let gb = w.edge(N5, 7, &[], A, B, Admin, &[]);
+    let gz = w.edge(B, 8, &[], A, Z, Admin, &[gb]);
+    let rb = w.edge(N6, 8, &[], A, B, Gone, &[gb, gz, g6]);
+    let rn6 = w.edge(Z, 9, &[], A, N6, Gone, &[g5, gz]);
+    let rz = w.edge(H, 10, &[], A, Z, Gone, &[]);
+    let rd = one_reading(&w);
+    assert!(rd.dropped == Set::from([rb, rn6]) && rd.stray == Set::from([rb]) && rd.applied.contains(&rz), "{rd:?}");
+    assert_eq!((rd.role(B, A), rd.role(N6, A), rd.role(Z, A)), (Admin, Admin, Gone));
+    assert_eq!(disputes(&w, &Rules::fixed(), &View::all(&w)), vec![rz]);
+    let t = fixed(&w, &[rz]);
+    assert!(t.void.is_empty() && t.applied.contains(&rb) && t.role(B, A) == Gone);
+}
+
 /// The thief's lowering stamped just after the honest removal, aimed at what the removal rests
 /// on (M's grant of H), by X or by a made-up key X granted backdated, holds nothing at its key in
 /// the walk where the removal applies. Backdated before the removal it applies only where the
@@ -1410,7 +1468,7 @@ fn a_thiefs_lowering_after_the_removal_holds_nothing() {
 #[test]
 fn small_worlds_hold() {
     let st = tiny_run(3000, &Rules::fixed());
-    assert!(st.failures() == 0 && st.checked["void N"] > 0, "{:?} {:?}", st.fails, st.first);
+    assert!(st.failures() == 0 && st.checked["void"] > 0 && st.checked["admin T"] > 0, "{:?} {:?}", st.fails, st.first);
     let no_void = tiny_run(300, &Rules { self_void: false, ..Rules::fixed() });
     assert!(no_void.noted.contains_key("admin N"));
 }
@@ -1737,6 +1795,3 @@ fn a_vouch_counts_only_where_its_removal_applies_in_the_first_walk() {
     let rd = fixed(&w, &[r]);
     assert!(rd.void.is_empty() && rd.role(N5, A) == Gone && rd.role(H, A) == Admin && !rd.shows(timed) && rd.roles == plain.roles);
 }
-
-
-

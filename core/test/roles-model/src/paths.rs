@@ -53,7 +53,7 @@
 //!   ordered before R whose path holds h and R's list does not name; a trusted write the
 //!   settled walk does not apply is void and loses its seeds, all void ones at once, and the
 //!   walk is redone.
-//! - **Disputes** (`disputes`): a held edge write on another holder's edge, not trusted, whose
+//! - **Disputes** (`disputes`): a held lowering of another holder's edge, not trusted, whose
 //!   trust changes the reading.
 //! - **Leaves.** A node sees a frontier's leaf for a thing only where its view says so
 //!   (`View::leaves`); an entry in a leaf it does not see is not listed for it.
@@ -970,18 +970,20 @@ fn unjustified(w: &World, rules: &Rules, v: &View, rd: &Reading) -> Set {
         .collect()
 }
 
-/// Disputes: the held edge writes on another holder's edge, not trusted and not dropped by a
-/// trusted write's seeds, whose trust changes the reading (what applies, what is valid, the
-/// roles). spec/permissions.md §5.1 asks instead that the walk not apply it, that it apply once
-/// trusted and lower its edge (finding 21); a removal that applies but whose reach-back the walk
-/// cannot undo (its drops of a lowering that dropped in turn, or of a grant a lowering applied
-/// under) changes the reading once trusted and is shown only by this rule (finding 16).
+/// Disputes: the held lowerings (edge writes giving below admin at their `ts`) of another
+/// holder's edge, not trusted and not dropped by a trusted write's seeds, whose trust changes the
+/// reading (what applies, what is valid, the roles). spec/permissions.md §5.1 asks instead that
+/// the walk not apply it, that it apply once trusted and lower its edge (finding 21); a removal
+/// that applies but whose reach-back the walk cannot undo (its drops of a lowering that dropped in
+/// turn, or of a grant a lowering applied under) changes the reading once trusted and is shown
+/// only by this rule (finding 16). A grant is never one: trusted, its seeds drop its holder's
+/// earlier writes, so an honest re-grant would be shown.
 pub fn disputes(w: &World, rules: &Rules, v: &View) -> Vec<Id> {
     let rd = judge(w, rules, v);
     let mut out = vec![];
     for &r in &v.held {
         let Kind::Edge { holder, .. } = &w.commits[r].kind else { continue };
-        if *holder == w.commits[r].signer || v.trust.contains(&r) || rd.dropper.get(&r).is_some_and(|d| v.trust.contains(d)) {
+        if *holder == w.commits[r].signer || w.lowers(r).is_none() || v.trust.contains(&r) || rd.dropper.get(&r).is_some_and(|d| v.trust.contains(d)) {
             continue;
         }
         let t = judge(w, rules, &v.clone().trusting_also(r));
