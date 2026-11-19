@@ -21,6 +21,10 @@ pub const T1: Thing = 13;
 pub const T2: Thing = 14;
 /// A dependent of T1 (minted with it, in T1's unit): written by descent.
 pub const D1: Thing = 15;
+/// A holder of admin on D1 (H's grant), writing T2 through D1, which holds write on T2 inviting
+/// read (J invites RD2): a reader of T2 holds D1's edges on J's path as evidence and not A's
+/// direct grant on D1.
+pub const J: Thing = 16;
 /// Readers outside A (nodes, not signers): holding only T1 and D1, only T2 (part of the evidence).
 pub const RD: Thing = 20;
 pub const RD2: Thing = 21;
@@ -256,6 +260,7 @@ impl Sim {
         sync.insert(RD2, Things::from([T2]));
         sync.insert(N6, Things::from([A, ORG, T1, D1, T2]));
         sync.insert(RD3, Things::from([T1, D1]));
+        sync.insert(J, Things::from([D1, T2]));
         let w = if s.mint > 0 { minted_by(M) } else { account() };
         let mut m = Sim { w, spec, setup: s, made: vec![], recv: vec![], sync, r: 0, r2: None, r3: None, rx: None, xfirst: None, gs: 0, g5: None, xrole: None, out5: None, gb5: None, gh: None, gx: 0, gi: None, cover_by_k: None, unaware: Set::new(), smuggled: Set::new(), thief: BTreeMap::new(), logged: BTreeMap::new() };
         let grant = Kind::set;
@@ -275,6 +280,20 @@ impl Sim {
             m.put((M, 2, &[], A, grant(M, Role::None).listing(f).relying(B)), 2, rng, false);
             m.put((M, 3, &[A], T1, Kind::Content), 3, rng, false);
         }
+        // A, two steps up D1's mint chain, holds a direct grant on D1 too; J holds admin on D1 and
+        // writes T2 through D1, which holds write there
+        // (by [A, T1]: a path ending at A, the holder, is a self-removal's)
+        m.put((H, 1, &[A, T1], D1, grant(A, Role::Admin)), 1, rng, false);
+        m.put((H, 1, &[A], D1, grant(J, Role::Admin)), 1, rng, false);
+        m.put((H, 1, &[A, ORG], T2, grant(D1, Role::Write).inviting(Role::Read)), 1, rng, false);
+        m.put((J, 3, &[D1], T2, Kind::Content), 3, rng, false);
+        // J invites RD2 to read T2 by D1's invite: an edge-class write resting on (D1, T2)
+        m.put((J, 3, &[D1], T2, grant(RD2, Role::Read)), 3, rng, false);
+        // B removes J from D1 by [A] at 4 (a descent of two steps: no last edge) naming no remaining
+        // admin, so it applies nowhere; J writes T2 after it
+        let f = m.w.cut(&m.w.through((J, D1), |i| m.got(i, B, 4)));
+        m.put((B, 4, &[A], D1, grant(J, Role::None).listing(f)), 4, rng, false);
+        m.put((J, 5, &[D1], T2, Kind::Content), 5, rng, false);
         let sharer = if s.sharer_x { X } else { B };
         m.gs = m.put((sharer, 2, &[A], T1, grant(A2, a2).inviting(Role::Read)), 2, rng, false);
         if (1..=2).contains(&s.x_a2) {
@@ -925,7 +944,7 @@ pub fn shrink(spec: &Spec, rules: &Rules, prop: &str) -> Spec {
 }
 
 pub fn trace(m: &Sim) -> String {
-    let name = |t: &Thing| ["?", "H", "B", "X", "N5", "K", "Z", "N6", "M", "G", "A", "A2", "ORG", "T1", "T2", "D1"].get(*t as usize).copied().unwrap_or("?");
+    let name = |t: &Thing| ["?", "H", "B", "X", "N5", "K", "Z", "N6", "M", "G", "A", "A2", "ORG", "T1", "T2", "D1", "J"].get(*t as usize).copied().unwrap_or("?");
     let mut s = String::new();
     for (i, c) in m.w.commits.iter().enumerate() {
         let path: Vec<&str> = c.path.iter().map(name).collect();
@@ -1538,6 +1557,7 @@ pub fn mode_rules(mode: &str) -> Option<Rules> {
         "-facts" => Rules { cover_facts: true, ..f },
         "-own-drops" => Rules { commit_drops: false, ..f },
         "-remains-unkept" => Rules { remains_kept: false, ..f },
+        "-last-any" => Rules { last_hop: false, ..f },
         _ => return None,
     })
 }

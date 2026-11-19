@@ -2139,3 +2139,30 @@ fn a_lowering_whose_drops_take_its_remaining_admin_is_void() {
     let rd = fixed(&w, &[r]);
     assert!(rd.applied.contains(&r) && rd.role(B, A) == Admin && rd.role(X, A) == Gone);
 }
+
+// ---- The last edge is a hop of the stated path (notes/a1-spec/README.md, OPEN 9) ----
+
+/// A reaches D1 by descent (A, T1, D1: two steps) and also holds a direct grant on D1. J, admin on
+/// D1, writes T2 through D1 (which holds write there) after H removes J from D1 by [A], naming no
+/// remaining admin. The path's last hop is T1's record edge, not one edge from A: it has no last
+/// edge, so the removal applies nowhere, at a member and at a reader of T2 holding J's write and
+/// its evidence alike (A's direct grant on D1 is on no path it holds). Control (A's direct grant
+/// read as the last edge though no hop): a member applies the removal and J's write falls, the
+/// reader refuses it and shows the write. Naming T1 (its record edge) it applies at both.
+#[test]
+fn a_remaining_admin_by_a_descent_of_two_steps_is_named() {
+    let mut w = account();
+    let ga = w.edge(H, 1, &[A, T1], D1, A, Admin, &[]);
+    w.edge(H, 1, &[A], D1, J, Admin, &[]);
+    w.push(H, 1, &[A, ORG], T2, Kind::set(D1, Write));
+    let r = w.edge(H, 4, &[A], D1, J, Gone, &[]);
+    let late = w.content(J, 5, &[D1], T2);
+    let all = View::all(&w).held;
+    let reader = View { held: evidence(&w, &Set::from([late]), &all), leaves: None, trust: Set::new() };
+    assert!(reader.held.contains(&r) && !reader.held.contains(&ga));
+    let shows = |w: &World, rules: &Rules| (judge(w, rules, &View::all(w)).shows(late), judge(w, rules, &reader).shows(late));
+    assert_eq!(shows(&w, &Rules::fixed()), (true, true));
+    assert_eq!(shows(&w, &Rules { last_hop: false, ..Rules::fixed() }), (false, true));
+    w.rely(r, T1);
+    assert_eq!(shows(&w, &Rules::fixed()), (false, false));
+}

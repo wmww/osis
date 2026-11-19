@@ -353,7 +353,7 @@ impl Rules {
             cover_facts: false,
             commit_drops: true,
             remains_kept: true,
-            last_hop: false,
+            last_hop: true,
             candidates: Candidates::All,
         }
     }
