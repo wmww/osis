@@ -81,9 +81,15 @@ fn net2_one() -> LocalPeer {
     .0
 }
 
-/// Two peers (seeds 0 and 1): built once (`LocalPeer::cached`).
+/// Two peers (seeds 0 and 1), each holding the other's account chain (synced once), so either
+/// may grant the other: built once (`LocalPeer::cached`).
 fn net2() -> LocalPeer {
-    LocalPeer::cached("shred::net2", || (LocalPeer::of(vec![peer(0), peer(1)], 0).unwrap(), ())).0
+    LocalPeer::cached("shred::net2", || {
+        let mut lp = LocalPeer::of(vec![peer(0), peer(1)], 0).unwrap();
+        lp.sync_all().unwrap();
+        (lp, ())
+    })
+    .0
 }
 
 fn big(marker: &str) -> String {
@@ -359,7 +365,7 @@ fn removed_map_key_gone_after_purge_spec_crdt_5_6() {
 #[test]
 fn expired_late_part_unrecoverable_spec_crdt_4_7() {
     let mut lp = net2();
-    let t = new_thing(&mut lp, 0);
+    let t = new_shared(&mut lp, 0);
     lp.sync(0, 1).unwrap();
     let marker = "LATEEXP-MARK-3e9f";
     let at = osis_base::WallMs(lp.peers[0].engine.now().0 + 3_600_000);
@@ -489,9 +495,9 @@ fn purge_of_a_waiting_part_reads_alike_spec_commits_5() {
 fn purge_of_a_part_waiting_aside_reads_alike_spec_commits_5() {
     for order in [[0usize, 1, 2], [1, 0, 2], [0, 2, 1], [1, 2, 0], [2, 0, 1], [2, 1, 0]] {
         let mut lp = net2();
-        let t = new_thing(&mut lp, 0);
-        let t2 = new_thing(&mut lp, 0);
-        let t3 = new_thing(&mut lp, 0);
+        let t = new_shared(&mut lp, 0);
+        let t2 = new_shared(&mut lp, 0);
+        let t3 = new_shared(&mut lp, 0);
         lp.sync(0, 1).unwrap();
         lp.advance(5);
         let mut m = Mutation::new();
@@ -551,7 +557,7 @@ fn part_on(pk: &osis_engine::local_peer::Package, t: Tid, a: &osis_base::Ak, emp
 #[test]
 fn stripped_delta_goes_with_its_part_past_expiry_spec_commits_5() {
     let mut lp = net2();
-    let (t, y, q) = (new_thing(&mut lp, 0), new_thing(&mut lp, 0), new_thing(&mut lp, 0));
+    let (t, y, q) = (new_shared(&mut lp, 0), new_shared(&mut lp, 0), new_shared(&mut lp, 0));
     lp.sync(0, 1).unwrap();
     lp.advance(5);
     let exp = osis_base::WallMs(lp.peers[0].engine.now().0 + 60_000);
@@ -591,7 +597,7 @@ fn stripped_delta_goes_with_its_part_past_expiry_spec_commits_5() {
 #[test]
 fn junk_beside_a_part_past_expiry_raises_no_flag_spec_commits_5() {
     let mut lp = net2();
-    let (t, y) = (new_thing(&mut lp, 0), new_thing(&mut lp, 0));
+    let (t, y) = (new_shared(&mut lp, 0), new_shared(&mut lp, 0));
     let mut m = Mutation::new();
     m.set(t, &REG, &s("old")).unwrap();
     lp.peers[0].commit(m).unwrap().unwrap();
@@ -1474,9 +1480,9 @@ fn pending_part_awaiting_its_record_is_judged_with_it_spec_commits_4() {
 fn copy_of_a_purged_part_beside_an_unjudgeable_one_is_spent_spec_commits_5() {
     let map: osis_base::ValueMap = (0..2000).map(|i| (Value::Str(format!("key {i:05}")), Value::Str("v".repeat(60)))).collect();
     let mut lp = net2();
-    let (t, h, q) = (new_thing(&mut lp, 0), new_thing(&mut lp, 0), new_thing(&mut lp, 0));
+    let (t, h, q) = (new_shared(&mut lp, 0), new_shared(&mut lp, 0), new_shared(&mut lp, 0));
     lp.sync(0, 1).unwrap();
-    let t2 = new_thing(&mut lp, 0);
+    let t2 = new_shared(&mut lp, 0);
     lp.advance(5);
     let mut m = Mutation::new();
     m.set(t, &REG, &s("SECRET-C7d2")).unwrap();
