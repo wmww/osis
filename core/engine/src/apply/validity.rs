@@ -1187,21 +1187,21 @@ pub(crate) fn self_removal(core: &Core, author: &Tid, target: &Tid, holder: &Tid
     view.roles_from(author).get(target).copied() != Some(Role::Admin)
 }
 
-/// The edge writes of role commit `h`, each `(target, holder, new edge)` once (`None`: removed):
-/// a change is a reset and a put of one entry, the put the holder's new edge.
-fn edge_writes(core: &Core, h: &Header, parts: &[(usize, Decoded)]) -> Vec<(Tid, Tid, Option<Edge>)> {
+/// The edge writes of a role commit's parts `(thing, ak, fragment)`, each `(target, holder, new
+/// edge)` once (`None`: removed): a change is a reset and a put of one entry, the put the
+/// holder's new edge.
+fn edge_writes<'f>(core: &Core, parts: impl IntoIterator<Item = (Tid, &'f Ak, &'f Fragment)>) -> Vec<(Tid, Tid, Option<Edge>)> {
     let mut changed: Vec<(Tid, Tid, Option<Edge>)> = Vec::new();
-    for (ai, d) in parts {
-        let Some(a) = h.aspects.get(*ai) else { continue };
-        if a.ak.as_str() != "roles.0" {
+    for (t, ak, f) in parts {
+        if !edge_ak(ak.as_str()) {
             continue;
         }
-        for (dot, k, frag) in entries(d.fragment()) {
+        for (dot, k, frag) in entries(f) {
             match k {
-                Some(Value::Weak(m)) => changed.push((a.tid, m, frag.and_then(|f| f.read()).as_ref().and_then(edge_of))),
+                Some(Value::Weak(m)) => changed.push((t, m, frag.and_then(|f| f.read()).as_ref().and_then(edge_of))),
                 _ => {
-                    if let Some(m) = core.ix.holder_keys.get(&(a.tid, dot)) {
-                        changed.push((a.tid, *m, None));
+                    if let Some(m) = core.ix.holder_keys.get(&(t, dot)) {
+                        changed.push((t, *m, None));
                     }
                 }
             }
@@ -1235,22 +1235,31 @@ pub(crate) fn leaves_no_admin(core: &Core, t: &Tid, writes: &[(Tid, Option<Edge>
     now.iter().any(|(_, e)| standing(e)) && !after.into_iter().any(|e| standing(&e))
 }
 
+/// The first thing edge writes `changed` leave with no standing admin (`leaves_no_admin`).
+fn left_adminless(core: &Core, changed: &[(Tid, Tid, Option<Edge>)]) -> Option<Tid> {
+    let targets: BTreeSet<Tid> = changed.iter().map(|c| c.0).collect();
+    targets.into_iter().find(|t| {
+        let writes: Vec<(Tid, Option<Edge>)> = changed.iter().filter(|c| c.0 == *t).map(|c| (c.1, c.2)).collect();
+        leaves_no_admin(core, t, &writes)
+    })
+}
+
+/// Whether a role commit with parts `parts` would leave a thing with no standing admin: the
+/// commit the adminless mark goes on (`Engine::leaving_adminless`), and no other.
+pub(crate) fn needs_adminless_mark<'f>(core: &Core, parts: impl IntoIterator<Item = (Tid, &'f Ak, &'f Fragment)>) -> bool {
+    left_adminless(core, &edge_writes(core, parts)).is_some()
+}
+
 /// Rules of a role commit that need its deltas
 /// (spec/commits.md §2, spec/wire.md §4 position 12).
 pub(crate) fn check_content_rules(core: &Core, h: &Header, parts: &[(usize, Decoded)]) -> Result<()> {
     if h.kind != Kind::Role {
         return Ok(());
     }
-    let changed = edge_writes(core, h, parts);
+    let changed = edge_writes(core, parts.iter().filter_map(|(ai, d)| h.aspects.get(*ai).map(|a| (a.tid, &a.ak, d.fragment()))));
     // the last admin (spec/permissions.md §1): the adminless mark says it is meant
-    if !h.adminless {
-        let targets: BTreeSet<Tid> = changed.iter().map(|c| c.0).collect();
-        for t in targets {
-            let writes: Vec<(Tid, Option<Edge>)> = changed.iter().filter(|c| c.0 == t).map(|c| (c.1, c.2)).collect();
-            if leaves_no_admin(core, &t, &writes) {
-                return Err(Error::LeavesNoAdmin(t));
-            }
-        }
+    if !h.adminless && let Some(t) = left_adminless(core, &changed) {
+        return Err(Error::LeavesNoAdmin(t));
     }
     let mut holders: Vec<(Tid, Tid)> = changed.iter().map(|c| (c.0, c.1)).collect();
     holders.sort();

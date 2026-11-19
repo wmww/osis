@@ -2515,7 +2515,9 @@ fn a_timed_admin_is_no_remaining_admin_spec_perm_1() {
 fn the_mark_lets_a_thing_go_adminless_spec_perm_1() {
     let (mut lp, ps) = people(2);
     let t = thing_of(&mut lp, 0, ps[0]);
-    lp.peers[0].engine.grant(&t, &ps[1], &edge_of(Role::Write)).unwrap();
+    // an edge write in the scope that leaves an admin goes unmarked
+    let g = lp.peers[0].engine.leaving_adminless(|e| e.grant(&t, &ps[1], &edge_of(Role::Write))).unwrap();
+    assert!(g.commits.iter().all(|c| !lp.peers[0].engine.header(c).unwrap().adminless), "the mark is on no write that needs none");
     spread(&mut lp);
     assert!(leaves_no_admin(lp.peers[0].engine.demote(&t, &remove(ps[0])), t), "unmarked, refused");
     let done = lp.peers[0].engine.leaving_adminless(|e| e.demote(&t, &remove(ps[0]))).unwrap();

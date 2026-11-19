@@ -1171,7 +1171,7 @@ pub struct Core {
     pub written: Vec<(Tid, Ak)>,
     /// Tests: let local commits break the writer-side role rules (to test receivers).
     pub skip_writer_rules: bool,
-    /// The edge writes signed meanwhile carry the adminless mark (`Engine::leaving_adminless`).
+    /// The edge writes signed meanwhile may leave a thing adminless, marked (`Engine::leaving_adminless`).
     pub(crate) leave_adminless: bool,
     /// Someone may listen to commit changes (`Engine::watch_commits`).
     pub(crate) commits_watched: bool,

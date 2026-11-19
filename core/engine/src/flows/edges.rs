@@ -593,9 +593,9 @@ impl Engine {
         crate::apply::validity::leaves_no_admin(&self.core, target, &[(*holder, new.map(perm_edge))])
     }
 
-    /// `f` with the edge writes it signs carrying the adminless mark: they may leave a thing with
-    /// no standing admin (spec/permissions.md §1, The last admin), which is otherwise refused
-    /// (`Error::LeavesNoAdmin`).
+    /// `f` with the edge writes it signs allowed to leave a thing with no standing admin
+    /// (spec/permissions.md §1, The last admin; otherwise `Error::LeavesNoAdmin`): each commit
+    /// that does carries the adminless mark, and no other.
     pub fn leaving_adminless<R>(&mut self, f: impl FnOnce(&mut Engine) -> R) -> R {
         let was = std::mem::replace(&mut self.core.leave_adminless, true);
         let r = f(self);

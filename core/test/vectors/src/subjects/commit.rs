@@ -109,6 +109,17 @@ fn role_commit() -> CommitBlob {
     built(b)
 }
 
+/// `role_commit` with header flags bit 1 set (spec/wire.md §4 field 17).
+fn adminless_role_commit() -> CommitBlob {
+    let at = ts(1_700_000_001_000);
+    let mut b = CommitBuilder::new(Kind::Role, at, AUTHOR, AUTHOR, Form::Commit);
+    let mut a = AspectWrite::new(THING, Ak::new("roles.0").unwrap(), 1, 2, core_delta("roles.0", Form::Commit, Kind::Role, at, 1, grant(0x41, 1), 2));
+    a.retention = retention::ROLE_RETENTION;
+    b.aspects.push(a);
+    b.adminless = true;
+    built(b)
+}
+
 /// A compaction snapshot carrying the author's session's write (spec/crdt.md §8: its frontier
 /// names that session, which occurs in the fragment).
 fn snapshot() -> CommitBlob {
@@ -168,6 +179,7 @@ pub fn headers() -> VecFile {
     let c = content();
     cases.push(record("minimal content commit", "spec/wire.md §4; spec/commits.md §1", &c));
     cases.push(record("role commit", "spec/wire.md §4; spec/commits.md §2", &role_commit()));
+    cases.push(record("role commit with the adminless mark", "spec/wire.md §4 field 17; spec/permissions.md §2", &adminless_role_commit()));
     cases.push(record("content compaction snapshot", "spec/wire.md §4; spec/commits.md §2, §5", &snapshot()));
     let e = ephemeral(osis_commit::EphClass::Plain);
     cases.push(record("ephemeral commit", "spec/wire.md §4; spec/commits.md §2", &e));
@@ -368,6 +380,19 @@ fn more_rejected(content: &Header) -> Vec<Record> {
     let bytes = osis_base::encode(&v);
     assert!(Header::decode(&bytes).is_err());
     out.push(case("unknown ephemeral marker", "spec/wire.md §4").with("header", hex(&bytes)).with("reject", "ephemeral"));
+    // header flags (field 17): 0 is absent, bits above 1 are reserved, bit 1 is a role commit's
+    let mut x = content.clone();
+    x.adminless = true;
+    out.push(reject("adminless mark on a content commit", "spec/wire.md §4 field 17", &x, "flags"));
+    for (name, f) in [("header flags of 0", 0), ("reserved header flag", 4)] {
+        let mut v = osis_base::decode(&m.encode(), &osis_base::Limits::DEFAULT).unwrap();
+        if let Value::List(items) = &mut v {
+            items.push(Value::Int(f));
+        }
+        let bytes = osis_base::encode(&v);
+        assert!(Header::decode(&bytes).is_err(), "{name}");
+        out.push(case(name, "spec/wire.md §4 field 17").with("header", hex(&bytes)).with("reject", "flags"));
+    }
     // a delete key that is no valid Ed25519 point
     let mut x = content.clone();
     x.keys[0].key = [0; 32];
