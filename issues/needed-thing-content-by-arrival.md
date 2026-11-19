@@ -1,7 +1,7 @@
 # Content of a needed thing outside the node closure depends on arrival order
 > Summary: A thing outside the node closure that a held thing needs keeps its content if it never entered the closure, but loses it if a pass let it in for a while and then released it. So two nodes holding the same commits show different values. spec/commits.md §5 contradicts itself here. Fails osis-engine `order::held_set_decides_plain`. Needs a design decision.
 > Priority: normal
-> Tags: engine, spec, tess-call
+> Tags: engine, spec
 
 ## The contradiction
 spec/commits.md §5 What a held thing needs: a thing outside the node closure "is kept (its record, every held commit on it, the secrets the node holds of it) only while a held thing needs it". The same section, A released thing (and spec/sync-set.md §3 "Nothing of R stays: its content"), says a released thing keeps only "its record, and its role commits on that chain" while it is needed. Everything else goes.
@@ -38,3 +38,6 @@ Recommended: A. It matches the area's own statement that only nodes holding a th
 Possibly related, not checked by a test: a released thing whose record stays needed, entering the closure again, is never pulled anew (`refetch` returns early because the record is held). So content dropped at the release may never come back, even under the current rules.
 
 Replay: `OSIS_ORDER_SEED=874943289203 OSIS_ORDER_LEN=60 cargo test -p osis-engine --test it -- --ignored --exact order::held_set_decides_plain` (also seeds 430540858112 and 367121598791; `OSIS_ORDER_SHRINK=1` with `OSIS_SHRINK_MATCH='after the sync exchange: shows other than the node keeping every body'` shrinks it).
+
+## Decided (coordinator)
+Option A: outside the node closure a needed thing keeps its record, role commits and secrets, never content, whether or not it was ever inside (spec/requirements.md: a node holds exactly what its own references reach). The pass end strips content from needed-only things, and a thing entering the closure with its record already held is pulled anew.
