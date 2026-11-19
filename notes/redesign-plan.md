@@ -14,7 +14,7 @@ Answered and planned on (issues/actors-one-mechanism.md Answers, issues/sync-uni
 | G | Main's failing properties | | neither |
 | S1 | Cost defects of many sync IDs | | before either |
 | S2 | External signals: the word, and fires valid only where enabled | | before either |
-| S3 | Removal gaps on today's rules | G (rotation), M2 brief 1 | before either |
+| S3 | Removal gaps on today's rules | M2 brief 1 | before either |
 | M1 | Model: the unit, member blobs, promotion (held-model) | | (b) |
 | M2 | Model: the write path's second round (roles-model `paths`) | | (a) |
 | M3 | Model: evidence completeness (held-model) | M1, M2 | both |
@@ -45,7 +45,7 @@ Parallel lanes: {S1, S2, S3, M1, M2} at once; then B1 beside A1 (sync and engine
 Each brief ends at green commits and fits a session (notes/coordination.md, Briefs); a brief that turns out larger is split by its coordinator, never run long. "Gate" means the branch's reviewer runs `tools/gate.sh` once.
 
 ### G. Main's failing properties
-notes/priorities.md, First: issues/paged-apply-differs-from-whole.md, issues/held-set-decides-plain-record-only.md, issues/app-tile-unreadable-emails-test.md [checked: tools/known_failures.txt]. The rotation property's failure was no hole: a grant that applies nothing and does not count, its author still holding the role, leaves its grantee reading (spec/crypto.md §4 Boxes), which the property excuses (notes/test-properties.md); no new fact for M2.
+notes/priorities.md, First: issues/paged-apply-differs-from-whole.md, issues/held-set-decides-plain-record-only.md, issues/app-tile-unreadable-emails-test.md [checked: tools/known_failures.txt].
 
 ### S1. Cost defects of many sync IDs
 Before either redesign; nothing waits on a question.
@@ -71,7 +71,7 @@ Each is a gap of the ordinary rules, fixed for every holder; all land before eit
   2. *Vouches*: spec/permissions.md §5.1 to §5.2 (the vouch aspect, the first walk, what counts), spec/wire.md; osis-perm (two walks for a component holding a counting vouch); engine writing (per thing, on applying a removal and on first holding the right); held-model. The voucher's authority is "an edge write of the same kind by it at the vouch's key would apply", so the check is whatever judges edge writes and survives A1 unchanged.
   3. *What no list keeps* (argued, modelled in brief 1): an entry naming a lowering of an edge the listing write's own authority rests on is read as absent. Today's rule has the first half ("R never demotes its own author") [checked: spec/permissions.md §5.1 step 4].
   4. *Addenda*: reach admin-only content that is not role-class; written again when the right is first held (re-granted, switched side).
-  5. *A standing dispute*: an epoch covering a departure the node's walk does not apply is the other side's (spec/crypto.md §4; notes/account-membership-design.md §1, `takes`). After G's rotation issue. Engine rotation, the rotation property, the TLA rotation models where they hold the withdraw rule [assumed: which .tla].
+  5. *A standing dispute*: an epoch covering a departure the node's walk does not apply is the other side's (spec/crypto.md §4; notes/account-membership-design.md §1, `takes`). Engine rotation, the rotation property, the TLA rotation models where they hold the withdraw rule [assumed: which .tla].
   6. *The last admin, locally*: the refusal for every thing, dependent or independent, and the mark that lets a thing go adminless: spec/permissions.md §1 to §2, spec/wire.md, engine `flows/edges.rs` (`leaves_no_admin` is dependents only [checked: core/engine/src/flows/edges.rs]), `osis` error and option, CLI. The rule every node judges alike waits for A1 (it names an edge of a stated path) and A2 (its evidence): built before them it would give readers and members different verdicts (notes/path-model-findings.md, 8).
   7. *The removal's result in the API*: what the removed party had added, removed or lowered; what arrived unnamed and was discarded. `osis`, CLI, app (notes/app.md). No keep.
   8. *The overlap rule among otherwise valid commits only* (spec/commits.md §4): modelled in held-model first; dropped from this stage if it makes validity read validity.
