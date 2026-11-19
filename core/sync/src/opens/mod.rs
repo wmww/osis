@@ -190,13 +190,22 @@ struct OwnFilter {
     /// The last generation sent, and the last the peer acknowledged.
     generation: u64,
     acked: u64,
-    f: u8,
-    whole: u64,
-    added: u64,
+    /// The filter as of the last generation sent, and as of the last acknowledged: a generation
+    /// never acknowledged counts as not sent but for its number (spec/sync-opens.md §5 Filter).
+    shape: Shape,
+    acked_shape: Shape,
     /// The `changed_at` position the last generation sent covers, and the one the last
     /// acknowledged covers (one generation is in flight at a time).
     sent_reach: u64,
     acked_reach: u64,
+}
+
+/// A filter's width, the entries of its whole generation, and of the additions since.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+struct Shape {
+    f: u8,
+    whole: u64,
+    added: u64,
 }
 
 #[derive(Clone, Debug)]
@@ -270,6 +279,8 @@ struct PeerGen {
     f: u8,
     next_lo: u64,
     held_base: bool,
+    /// Whole, or additions on the generation held itself (not a later one).
+    exact: bool,
     /// The generation's entries so far, as coded.
     values: Run,
 }
@@ -1614,20 +1625,27 @@ impl Opens {
             return;
         }
         let Some(rid) = c.rec else { return };
-        let Some(r) = self.records.get(&rid) else { return };
         let first = c.first;
-        let whole = c.whole_next || r.own.generation == 0 || (first && r.own.acked != r.own.generation);
+        let whole_next = c.whole_next;
+        let Some(r) = self.records.get_mut(&rid) else { return };
+        // a generation the peer never acknowledged (its answer lost with a connection) counts as
+        // not sent but for its number: additions go on the last acknowledged one
+        if r.own.acked != r.own.generation {
+            r.own.shape = r.own.acked_shape;
+        }
+        let whole = whole_next || r.own.acked == 0;
         let ids: Vec<SyncId> = if whole {
             Vec::new()
         } else if first {
             self.changed.after(r.acked_pos)
         } else {
-            c.adds.iter().copied().collect()
+            self.conns.get(&conn).map(|c| c.adds.iter().copied().collect()).unwrap_or_default()
         };
         if !whole && !first && ids.is_empty() {
             return;
         }
-        let (rr, room) = (r.r, r.own.whole.saturating_sub(r.own.added));
+        let Some(r) = self.records.get(&rid) else { return };
+        let (rr, room) = (r.r, r.own.shape.whole.saturating_sub(r.own.shape.added));
         let mut beacons = if whole { None } else { Some(self.shown_beacons(ctx, conn, &ids, &rr)) };
         // Additions bring at most the whole one's n entries in all (spec/wire.md §11.2): past it, whole.
         if beacons.as_ref().is_some_and(|b| b.len() as u64 > room) {
@@ -1642,18 +1660,18 @@ impl Opens {
             }
         };
         let Some(r) = self.records.get_mut(&rid) else { return };
-        let f = if whole { filter_width(beacons.len()).clamp(MIN_FILTER_WIDTH, MAX_FILTER_WIDTH) } else { r.own.f };
+        let f = if whole { filter_width(beacons.len()).clamp(MIN_FILTER_WIDTH, MAX_FILTER_WIDTH) } else { r.own.shape.f };
         let mut values: Vec<u64> = beacons.iter().map(|b| beacon_value(b, f)).collect();
         values.sort_unstable();
         let generation = r.own.generation + 1;
         let base = if whole { None } else { Some(r.own.acked) };
         r.own.generation = generation;
-        r.own.f = f;
+        r.own.shape.f = f;
         if whole {
-            r.own.whole = values.len() as u64;
-            r.own.added = 0;
+            r.own.shape.whole = values.len() as u64;
+            r.own.shape.added = 0;
         } else {
-            r.own.added += values.len() as u64;
+            r.own.shape.added += values.len() as u64;
         }
         r.own.sent_reach = self.changed.end;
         self.dirty_core(conn);
@@ -1707,6 +1725,7 @@ impl Opens {
             c.whole_next = true;
         } else {
             r.own.acked = g.generation;
+            r.own.acked_shape = r.own.shape;
             r.own.acked_reach = r.own.sent_reach;
             self.dirty_core(conn);
             self.rise(conn);
@@ -1728,15 +1747,19 @@ impl Opens {
             return;
         }
         if fresh {
-            let held = base.and_then(|b| r.peer.as_ref().filter(|p| p.generation == b));
-            // Additions at another width than their base's break the format.
-            if held.is_some_and(|p| p.f != f) {
+            // additions go on their base or on a later generation held (one whose answer was lost
+            // with a connection: it only adds entries, spec/sync-opens.md §5 Filter)
+            let held = base.and_then(|b| r.peer.as_ref().filter(|p| p.generation >= b));
+            let exact = base.is_none() || held.is_some_and(|p| Some(p.generation) == base);
+            // Additions at another width than their base's break the format; than a later
+            // generation's, they are taken as on a base not held.
+            if exact && held.is_some_and(|p| p.f != f) {
                 ctx.wire.answer(conn, id, Msg::Error { id, code: Code::MALFORMED });
                 ctx.wire.close(conn, "filter additions at another width");
                 return;
             }
-            let held_base = base.is_none() || held.is_some();
-            c.peer_gen = Some(PeerGen { generation, base, f, next_lo: lo, held_base, values: Run::default() });
+            let held_base = base.is_none() || held.is_some_and(|p| p.f == f);
+            c.peer_gen = Some(PeerGen { generation, base, f, next_lo: lo, held_base, exact, values: Run::default() });
         }
         let Some(p) = c.peer_gen.as_mut() else { return };
         p.next_lo = hi;
@@ -1756,9 +1779,12 @@ impl Opens {
         };
         let narrow = !more && p.base.is_none() && filter_width(usize::try_from(n).unwrap_or(usize::MAX)).max(MIN_FILTER_WIDTH) != f;
         if p.held_base && (n > cap || narrow) {
-            ctx.wire.answer(conn, id, Msg::Error { id, code: Code::MALFORMED });
-            ctx.wire.close(conn, "a filter breaking its width or entry count");
-            return;
+            if p.exact {
+                ctx.wire.answer(conn, id, Msg::Error { id, code: Code::MALFORMED });
+                ctx.wire.close(conn, "a filter breaking its width or entry count");
+                return;
+            }
+            p.held_base = false;
         }
         let code = if p.held_base { Code::OK } else { Code::UNKNOWN_SYNC_ID };
         ctx.wire.answer(conn, id, Msg::Shared { id, items: vec![SharedItem::code(code)] });

@@ -442,6 +442,61 @@ fn a_resumed_record_sends_additions_first_spec_sync_opens_5() {
     assert!(!bases.is_empty() && bases.iter().all(Option::is_some), "{bases:?}");
 }
 
+/// Two readers sharing sync IDs 1 to 4 (room in the whole filter for later additions); `a`
+/// comes to hold sync ID 5 and sends its additions, whose answer is lost with the connection
+/// (`b` read them when `stored`); they connect again. The bases of `a`'s generations on the new
+/// connection, and the codes `b` answered them with.
+fn after_a_lost_answer(stored: bool) -> (Vec<Option<u64>>, Vec<Code>) {
+    let st = StepKeys::new(1, 0);
+    let mut a = Side::new(1);
+    let mut b = Side::new(2);
+    for i in 1..=4 {
+        for x in [&mut a, &mut b] {
+            x.table.set(sid(i), Some(reader(&sid(i), &read_secret(i, 0), &st, &[], &[], &[])));
+            x.settle();
+        }
+    }
+    let mut p = Pair::new(a, b, account(1), account(2));
+    p.run();
+    p.a.table.set(sid(5), Some(reader(&sid(5), &read_secret(5, 0), &st, &[], &[], &[])));
+    p.a.settle();
+    let sent = p.a.sent();
+    assert!(!of_kind(&sent, 36).is_empty(), "a sent additions");
+    if stored {
+        for (c, m) in sent {
+            if c == p.ca {
+                p.b.take(p.cb, incoming(m));
+            }
+        }
+    }
+    p.close();
+    p.log.clear();
+    p.connect(2, account(1), account(2));
+    p.run();
+    let gens: Vec<(osis_proto::Id, Option<u64>)> = p.log.iter().filter_map(|(from_a, m)| match m {
+        Msg::Beacons { id, base, .. } if *from_a => Some((*id, *base)),
+        _ => None,
+    }).collect();
+    let codes = p.log.iter().filter_map(|(from_a, m)| match m {
+        Msg::Shared { id, items } if !from_a && gens.iter().any(|(g, _)| g == id) => items.first().map(|i| i.code),
+        _ => None,
+    }).collect();
+    (gens.into_iter().map(|(_, b)| b).collect(), codes)
+}
+
+// spec/sync-opens.md §5 (filter: A generation never acknowledged; A receiver takes additions
+// on their base or on a later generation): a
+// generation whose answer was lost with its connection, read by the peer or not, is followed on
+// the next connection by additions on the last acknowledged one, taken: no whole filter.
+#[test]
+fn a_lost_answer_costs_no_whole_filter_spec_sync_opens_5() {
+    for stored in [false, true] {
+        let (bases, codes) = after_a_lost_answer(stored);
+        assert!(!bases.is_empty() && bases.iter().all(Option::is_some), "read {stored}: additions only: {bases:?}");
+        assert!(codes.iter().all(|c| *c == Code::OK), "read {stored}: taken: {codes:?}");
+    }
+}
+
 // spec/sync-opens.md §5 (testing): a Hit that opened nothing is tried again on that connection
 // only once something re-marks S or moves `changed_at(S)` (here a credential of S moving).
 #[test]

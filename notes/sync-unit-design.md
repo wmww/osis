@@ -98,8 +98,7 @@ Throwaway debug tests on the sync harness (`history::world(0, 3)`, script steps,
 | | at n | at 10n | per unit | grows? |
 |---|---|---|---|---|
 | Idle reconnect, writer and reader (flat): deliveries | 39 | 39 | 0 | no |
-| same: bytes | 3318 | 8194 | 108 | **defect**: one side's Pull names a join with an 80-byte cursor per shared sync ID, against spec/sync-streams.md §4 Costs |
-| same, writer and node keeping all unread: bytes | 3334 | 9774 | 143 | same |
+| same, and writer with a node keeping all unread: bytes [measured: core/sync/tests/it/idle.rs] | 2088 | 2108 | 0.4 | no: integer widths |
 | same: store rows read / `status: stranded` / `inbox: register judged` / `opens standing` | 16499 / 77 / 33 / 33 | 30648 / 392 / 168 / 168 | 314 / 7 / 3 / 3 | **defect**: work per shared sync ID with nothing out of date (spec/sync.md §2) |
 | One small commit (flat): deliveries, bytes | 29, 3926 | 29, 3926 | 0 | no |
 | same: store rows read / `status: stranded` | 15469 / 101 | 26003 / 416 | 234 / 7 | **defect**: a commit's work grows with sync IDs held |
@@ -122,7 +121,7 @@ One commit and one reference, in the closure world (the same at 4 and 40 members
 - Detaching a member: 7.0 KB, 47 deliveries, 17 entries leaving the maker's store; with 20 dependents under the member 13.9 KB, 70 deliveries, 80 entries.
 - Attaching it again: 82.8 KB, 63 deliveries, 42 signs at 4 members; **140.8 KB at 40 members** (the enclosing sync ID is listed again, so the cost follows the size of what encloses); with 20 dependents 145.8 KB, 85 deliveries, 92 signs, 371 transactions.
 
-Not established: why the idle reconnect sends joins (it should resume at the stream's cursor); what the reader sends back at a first sync; a first sync through a node keeping the closure unread only; a removal's cascade through n units (issues/many-sync-ids-cost.md keeps it).
+Not established: what the reader sends back at a first sync; a first sync through a node keeping the closure unread only; a removal's cascade through n units (issues/many-sync-ids-cost.md keeps it).
 
 ## 9. First sync and "caught up" over a closure
 - Status stays per sync ID (spec/sync-status.md). **A closure's status** is derived: the units the walk reaches from a thing, each with its status, and a count of members listed but not yet open anywhere.

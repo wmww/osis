@@ -5,6 +5,7 @@ mod differential;
 mod faults;
 mod flows;
 mod growth;
+mod idle;
 mod harness;
 mod holding;
 mod inbox;

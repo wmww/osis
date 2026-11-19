@@ -7,7 +7,7 @@
 //! they move, so a crash between the two leaves opens' older word, which streams' rows cover
 //! (a member left is where streams stopped it).
 
-use super::{Member, OwnFilter, PeerFilter, Record};
+use super::{Member, OwnFilter, PeerFilter, Record, Shape};
 use crate::store::rows::tag::{FILTER, MEMBER, OPENS, WALK};
 use crate::types::{Credential, RecordId, SourceClass};
 use osis_base::SyncId;
@@ -81,8 +81,13 @@ fn encode_core(r: &Record) -> Vec<u8> {
     for v in [r.acked_pos, o.generation, o.acked] {
         w.extend_from_slice(&v.to_be_bytes());
     }
-    w.push(o.f);
-    for v in [o.whole, o.added, o.sent_reach, o.acked_reach] {
+    for sh in [o.shape, o.acked_shape] {
+        w.push(sh.f);
+        for v in [sh.whole, sh.added] {
+            w.extend_from_slice(&v.to_be_bytes());
+        }
+    }
+    for v in [o.sent_reach, o.acked_reach] {
         w.extend_from_slice(&v.to_be_bytes());
     }
     match &r.peer {
@@ -180,8 +185,9 @@ pub(super) fn load(t: &mut Transaction<'_>, id: &RecordId) -> Res<Option<Record>
         let mut d = Rd(&v);
         r.acked_pos = d.u64()?;
         let (generation, acked) = (d.u64()?, d.u64()?);
-        let f = d.u8()?;
-        r.own = OwnFilter { generation, acked, f, whole: d.u64()?, added: d.u64()?, sent_reach: d.u64()?, acked_reach: d.u64()? };
+        let mut shape = || -> Res<Shape> { Ok(Shape { f: d.u8()?, whole: d.u64()?, added: d.u64()? }) };
+        let (shape, acked_shape) = (shape()?, shape()?);
+        r.own = OwnFilter { generation, acked, shape, acked_shape, sent_reach: d.u64()?, acked_reach: d.u64()? };
         if d.u8()? == 1 {
             let generation = d.u64()?;
             let f = d.u8()?;

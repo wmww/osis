@@ -430,25 +430,43 @@ impl Streams {
         if ctx.store.waits_room(&s) {
             self.tell_full(conn, s, true);
         }
+        // the cursor this connection's first Pull names, while none went out: a member stopped
+        // there is at the stream's cursor (spec/sync-streams.md §4 Joining)
+        let first = self.pull.get(&conn).filter(|p| !p.first_sent).map(|p| p.recv.clone());
         let place = self.place(ctx.store, src);
+        let first = first.filter(|c| *c == place.cursor);
         let from = match rejoin {
             // a pull from the start since (fetched anew) stands over where a Lost said it stopped
             Rejoin::From(c) => Some(if place.join_from(&s) == Some(&None) { None } else { c }),
             Rejoin::Held => {
-                if let Some(c) = place.stopped.get(&s) {
+                if let Some(c) = place.stopped.get(&s).filter(|c| first.as_ref() != Some(*c)) {
                     Some(c.clone())
                 } else if let Some(c) = place.joining.get(&s) {
                     Some(c.clone())
-                } else if place.at_stream.contains(&s) {
+                } else if place.at_stream.contains(&s) || place.stopped.contains_key(&s) {
+                    // at the stream, or stopped at the first Pull's cursor
                     None
                 } else {
                     Some(None)
                 }
             }
         };
-        // a join's cursor is its place from now on, durably: a restart joins from it again (a
-        // rejoin from where it was joining moves nothing, so writes nothing)
-        let Some(c) = from else { return };
+        // stopped at the cursor the connection's first Pull names (it left with a connection, and
+        // the stream has not moved since): it is at the stream, with no join; its rows hold that
+        // position
+        let Some(c) = from else {
+            if place.stopped.remove(&s).is_some() {
+                place.at_stream.insert(s);
+                let reopened = place.closed.remove(&s);
+                if matches!(src, Source::Record(_)) {
+                    place.stale.insert(s);
+                }
+                if reopened {
+                    self.save(ctx, src, &[s], false, Vec::new());
+                }
+            }
+            return;
+        };
         let was = place.effective(&s);
         let reopened = place.closed.remove(&s);
         place.stopped.remove(&s);
