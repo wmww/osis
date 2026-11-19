@@ -145,6 +145,8 @@ pub struct Report {
     pub held_checked: u64,
     /// Holders the liveness check left out at the end: the model keeps them cut off.
     pub unjudged: u64,
+    /// (node, write, thing) triples the history check found held at quiet (`Sim::check_history`).
+    pub history_checked: u64,
     /// Phase C: messages an evil peer dropped, held back or replayed; requests an adversary's
     /// hand-driven session sent and those the peer refused.
     pub evil: u64,
@@ -177,6 +179,55 @@ pub struct Sim {
     check: Checker,
     /// Each node's held set and reads at its last convergence check.
     views: BTreeMap<usize, check::View>,
+    /// What the run played: the oracle of what each node holds at quiet (`check_history`).
+    history: History,
+}
+
+/// What a run played, as the harness played it: things made, roles given and taken, content
+/// written. What each node must hold at quiet is computed from it (`Sim::check_history`), apart
+/// from what any node sends.
+#[derive(Clone, Debug, Default)]
+pub struct History {
+    /// Thing -> (maker node, the thing it was made under, if any).
+    made: BTreeMap<Tid, (usize, Option<Tid>)>,
+    /// (thing, node) -> the role given it last (`grant`), `None` once removed (`revoke`).
+    roles: BTreeMap<(Tid, usize), Option<Role>>,
+    /// (thing, node) once removed: its writes there are judged by the removal's frontier, which
+    /// the history does not hold, so none is expected.
+    removed: BTreeSet<(Tid, usize)>,
+    /// Content commits played: (writer node, commit, things written).
+    writes: Vec<(usize, CommitId, BTreeSet<Tid>)>,
+}
+
+impl History {
+    /// Node `n`'s role on `t` by the history: its maker's admin, a role given it, or its role on
+    /// what `t` was made under (spec/permissions.md §1, the record chain).
+    fn role(&self, n: usize, t: &Tid) -> Option<Role> {
+        let mut best = self.roles.get(&(*t, n)).copied().flatten();
+        let mut at = *t;
+        for _ in 0..=self.made.len() {
+            let Some((maker, under)) = self.made.get(&at) else { break };
+            if *maker == n && under.is_none() {
+                return Some(Role::Admin);
+            }
+            let Some(u) = under else { break };
+            best = best.max(self.roles.get(&(*u, n)).copied().flatten());
+            at = *u;
+        }
+        best
+    }
+
+    /// Whether `n`'s writes on `t` can be judged from the history: never removed there nor above.
+    fn kept(&self, n: usize, t: &Tid) -> bool {
+        let mut at = Some(*t);
+        while let Some(x) = at {
+            if self.removed.contains(&(x, n)) {
+                return false;
+            }
+            at = self.made.get(&x).and_then(|m| m.1);
+        }
+        true
+    }
 }
 
 fn boot(seed: u64, t: WallMs) -> osis_engine::Result<(Peer, Faults)> {
@@ -209,6 +260,7 @@ impl Sim {
             trace: VecDeque::new(),
             check: Checker::default(),
             views: BTreeMap::new(),
+            history: History::default(),
         };
         for i in 0..s.cfg.nodes {
             let clock = s.cfg.clocks.get(i).copied().unwrap_or_default();
@@ -304,7 +356,21 @@ impl Sim {
         let r = self.engine(i)?.commit(m);
         let r = r.map_err(|e| self.fail(format!("node {i} commit: {e}")))?;
         self.drain(i)?;
+        if let Some(id) = r {
+            self.wrote(i, id)?;
+        }
         Ok(r)
+    }
+
+    /// Notes node `i`'s commit `id` in the history, as a write on the things its content parts name.
+    fn wrote(&mut self, i: usize, id: CommitId) -> Res<()> {
+        let Some(h) = self.engine(i)?.header(&id) else { return Ok(()) };
+        // the sim schema's aspects: what `workload` and scenarios write
+        let things: BTreeSet<Tid> = h.aspects.iter().filter(|a| a.ak.as_str().starts_with("s:")).map(|a| a.tid).collect();
+        if !things.is_empty() {
+            self.history.writes.push((i, id, things));
+        }
+        Ok(())
     }
 
     /// Node `i` creates a thing whose mint admin is `admin` (default: itself) and adds it to the write
@@ -314,6 +380,7 @@ impl Sim {
         let mut m = Mutation::new();
         let t = self.engine(i)?.new_thing(&mut m, admin.unwrap_or(me));
         m.set(t, &workload::REG, &Value::Str("new".into())).map_err(|e| self.fail(e.to_string()))?;
+        self.history.made.insert(t, (i, admin));
         self.commit(i, m)?;
         self.things.push(t);
         Ok(t)
@@ -327,6 +394,7 @@ impl Sim {
         let r = self.engine(i)?.grant(&thing, &holder, &edge);
         let done = r.map_err(|e| self.fail(format!("node {i} grant: {e}")))?;
         self.drain(i)?;
+        self.history.roles.insert((thing, j), Some(role));
         if !self.engine(j)?.closure_holds(&thing) {
             let r = self.engine(j)?.hold(osis_base::Strong(thing));
             r.map_err(|e| self.fail(format!("node {j} hold: {e}")))?;
@@ -342,6 +410,8 @@ impl Sim {
         m.op(thing, &ct::ROLES, PathOp { path: Vec::new(), op: Op::Remove(Value::Weak(holder)) }).map_err(|e| self.fail(e.to_string()))?;
         // an explicit removal: with no frontier it would be a finalize (spec/permissions.md §2)
         m.frontier(osis_engine::Frontier::default());
+        self.history.roles.insert((thing, j), None);
+        self.history.removed.insert((thing, j));
         let id = self.commit(i, m)?;
         id.ok_or_else(|| self.fail("removal changed nothing"))
     }
@@ -537,6 +607,9 @@ impl Sim {
             Ok(id) => {
                 self.report.writes = self.report.writes.saturating_add(1);
                 self.note(format!("node {i} write {id:?}"));
+                if let Some(id) = id {
+                    self.wrote(i, id)?;
+                }
             }
             Err(e) => self.engine_err(i, "write", e)?,
         }
@@ -692,10 +765,40 @@ impl Sim {
                 }
             }
         }
+        self.check_history()?;
         // read every node afresh: the per-step views trust `Engine::point`, this does not
         self.views.clear();
         self.check_convergence()?;
         self.finish_report()
+    }
+
+    /// At quiet, what each node holds by the history alone (`History`), whatever any node sends:
+    /// each thing node `n` reads by it (made or given read or above, or reached through what it
+    /// was made under: spec/sync-set.md §1-§2, as `grant` and `create_thing` hold it), and on each
+    /// such thing every content commit the history played whose writer may write there and was
+    /// never removed there (`History::kept`): `n` holds the commit, no part of it on that thing
+    /// missing (spec/commits.md §4: every node is up and synced at quiet). The sender-defined
+    /// check above cannot see a sender that never carries some content; this one can.
+    fn check_history(&mut self) -> Res<()> {
+        let h = self.history.clone();
+        for n in 0..self.nodes.len() {
+            let held = check::held(self.engine(n)?);
+            for (w, c, things) in &h.writes {
+                for t in things.iter().filter(|t| h.role(n, t).is_some_and(|r| r >= Role::Read) && h.role(*w, t).is_some_and(|r| r >= Role::Write) && h.kept(*w, t)) {
+                    let header = self.engine(n)?.header(c);
+                    let gaps = held.get(c);
+                    let lacks = match (header, gaps) {
+                        (Some(hd), Some(g)) => hd.aspects.iter().enumerate().any(|(ai, a)| a.tid == *t && g.contains(&ai)),
+                        _ => true,
+                    };
+                    if lacks {
+                        return Err(self.fail(format!("at quiescence node {n} lacks node {w}'s write {c:?} on {t}, which it reads by the history (holds the commit: {})", gaps.is_some())));
+                    }
+                    self.report.history_checked = self.report.history_checked.saturating_add(1);
+                }
+            }
+        }
+        Ok(())
     }
 
     fn finish_report(&mut self) -> Res<()> {

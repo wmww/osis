@@ -16,14 +16,14 @@ fn ok(name: &str, seed: u64) -> Report {
 #[test]
 fn two_nodes_converge() {
     let r = ok("two_nodes", 0);
-    assert!(r.writes > 20 && r.dropped > 0, "{r:?}");
+    assert!(r.writes > 20 && r.dropped > 0 && r.history_checked > 0, "{r:?}");
 }
 
 // spec/requirements.md (convergence); spec/crdt.md §2.3 (its own counter): counters never reused.
 #[test]
 fn three_nodes_random_delivery() {
     let r = ok("three_random", 0);
-    assert!(r.writes > 20 && r.dropped > 0 && r.parked > 0, "{r:?}");
+    assert!(r.writes > 20 && r.dropped > 0 && r.parked > 0 && r.history_checked > 0, "{r:?}");
 }
 
 // spec/commits.md §4 (applies in one storage transaction); spec/crdt.md §2.2, §2.3: a crash at any

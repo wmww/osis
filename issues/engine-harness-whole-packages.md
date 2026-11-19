@@ -1,5 +1,5 @@
 # Engine test harness: whole-commit deliveries and broadcast certificates
-> Summary: `LocalPeer::packages` (whole commits) still has 13 direct call sites and `common::packages` (engine tests/it) about 103 more; `Engine::package` hand deliveries are whole too; certificates go to every node; the sim's quiescence oracle asks only that each node holds what senders send it. Each can hide a carried-set bug: content outside the closure waits forever under a `LocalPeer` carrier, a certificate no real route brings can make a test pass, and a sender omitting content is invisible to the oracle that uses the sender's own rule.
+> Summary: `LocalPeer::packages` (whole commits) still has 13 direct call sites and `common::packages` (engine tests/it) about 103 more; `Engine::package` hand deliveries are whole too; certificates go to every node. Each can hide a carried-set bug: content outside the closure waits forever under a `LocalPeer` carrier, and a certificate no real route brings can make a test pass.
 > Priority: low
 > Tags: engine, tests
 
@@ -8,4 +8,3 @@
 
 ## Oracles
 - Certificates (`Engine::certificate_parts`) go to every node in `packages_under`: deliver instead what `Engine::certificates(t)` gives for the things whose sync IDs the receiver syncs, plus the named routes (contact card, ticket fire, holder's sync ID), so a missing certificate route fails a test.
-- core/test/sim `Sim::check_quiescent` defines "holds what it should" by `Engine::sent_parts` at the sender, the rule under test. Add an oracle independent of it: at quiet, every node holds each valid part any node holds on a thing in its node closure (allowing covered and invalid drops as held-model judges them).
