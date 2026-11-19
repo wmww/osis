@@ -603,7 +603,7 @@ fn witness(tx: &mut Tx<'_>, p: Tid, v: &super::account::AccountView, r: &CommitI
         if w.purges || w.kind != osis_commit::Kind::Content {
             continue;
         }
-        for t in w.aspects.iter().filter(|a| super::addenda::plain_ak(&a.ak)).map(|a| a.tid).chain((w.actor != w.author).then_some(w.actor)) {
+        for t in w.aspects.iter().filter(|a| super::vouches::plain_ak(&a.ak)).map(|a| a.tid).chain((w.actor != w.author).then_some(w.actor)) {
             out.entry(t).or_default().insert(c);
         }
     }

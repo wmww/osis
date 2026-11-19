@@ -470,7 +470,7 @@ pub(crate) fn kept_purged(core: &Core, c: &CommitId, m: &crate::engine::Meta) ->
 /// Drops every held part judged invalid in this transaction (`Core::drop_due`) but those
 /// `goes_invalid` keeps: its writes are none of the state's, so no read changes and no aspect is
 /// rebuilt (spec/crdt.md §4.6, spec/permissions.md §5.2). Run at the transaction's end, after
-/// this node's addenda (a witness lists what it received, `flows::addenda`). A memory
+/// this node's addenda (a witness lists what it received, `flows::vouches`). A memory
 /// transaction writes no durable row: it drops memory parts only.
 pub(crate) fn drop_invalid(tx: &mut Tx<'_>) -> Result<()> {
     let memory_only = tx.txn.is_memory();

@@ -10,7 +10,6 @@
 //! (`sync::deliveries::owe`). Where a decision needs sync state (a complete pass of an actor's
 //! sync IDs) it reads what sync noted (`Engine::note_complete_pass`).
 
-pub mod addenda;
 pub(crate) mod vouches;
 pub mod edges;
 pub(crate) mod sync_ids;

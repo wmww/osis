@@ -70,9 +70,6 @@ pub const LEAVE_FROM: &[u8] = b"hf/";
 pub const DESTROYED: &[u8] = b"dt/";
 /// Commits voided by overlapping session ranges: `o/` + commit ID.
 pub const VOID: &[u8] = b"o/";
-/// `ad/<commit>`: explicit demotions this node has not answered with addenda yet
-/// (`Indexes::addenda_due`).
-pub const ADDENDA_DUE: &[u8] = b"ad/";
 /// `rd/<commit>`: accounts' rotations not yet answered with this node's listing (its own
 /// account's) or addenda (another's) (`Indexes::rotations_due`).
 pub const ROTATIONS_DUE: &[u8] = b"rd/";

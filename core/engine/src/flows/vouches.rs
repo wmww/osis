@@ -1,5 +1,7 @@
-//! Vouches (spec/permissions.md §5.1 Vouches, Writing): a node that received a removed party's
-//! role write the remover had not keeps it with a vouch, written unasked by the state rule. For
+//! A witness's writes to a removal, by one state rule: vouches (spec/permissions.md §5.1 Vouches,
+//! Writing) for a removed party's role writes and addenda (§5.2 Addenda, Writing) for its content,
+//! which a node received and the remover had not, written unasked (`owed`: `vouches_owed`,
+//! `addenda_owed`). Vouches: for
 //! each held removal R applying in its first walk as an explicit lowering of another's grant
 //! (not at the node that wrote R, nor at one acting as a party in question at R), and each thing
 //! N of R's component in its node closure: the commits in question at R with a role-class part
@@ -9,18 +11,27 @@
 //! own lists, it owes one vouch on N keyed by R listing every candidate (the writers' leaving out
 //! applied).
 //!
+//! Addenda: for each explicit demotion R makes below write in this node's view (R's own node
+//! included), the content commits of the demoted node in R's window, not listed by its frontier,
+//! on each thing N it is demoted on (`addenda_owed`); owed while this node holds write on N and no
+//! counting addendum of its own vouches for one of them.
+//!
 //! Invariant: what is owed is a function of the held set, the receipts and the trust set (the
-//! first walk, the counting entries, the clock), never of what this node wrote before, so an
+//! first walk, the counting entries and addenda, the clock), never of what this node wrote
+//! before (bar a leaving out kept, `leaving_out`), so an
 //! open re-derives it (`all_due`) and nothing about it is durable. Triggered per component: a
-//! removal that may owe (`may_owe`, from the held set alone) is filed under its component
-//! (`Indexes::vouch_watch`) once judged, and only a change of that component makes it due again
-//! (`Core::timelines_changed`); one that may not is never judged again. The window (`window`)
+//! removal with candidates (or not applying in this node's view: it may come to) is filed under
+//! its component (`Indexes::vouch_watch`) once judged, and only a change of that component makes
+//! it due again (`Core::timelines_changed`: a grant, a lowering, a vouch, this node's side); one
+//! with none is never judged again (`may_owe` reads the held set alone for the vouches' part). The window (`window`)
 //! closes at R's own arrival, so its candidates' receipts are final once R is held. So a
 //! removal owing nothing costs nothing per step, and a node ingesting a history it received
 //! after it (a joiner) judges each removal once.
 //!
-//! Who writes each input: R, the candidates and every vouch are their signers' word (a removed
-//! party may sign any number, at any key and `ts`); the first walk judges them all. This node
+//! Who writes each input: R, the candidates and every vouch and addendum are their signers' word
+//! (a removed party may sign any number, at any key and `ts`; any writer writes `addenda.0`); the
+//! first walk and layer 2 judge them all. An addendum is content: it moves no component, so a
+//! flood of them makes no removal due. This node
 //! writes only what it received and could write itself, so a forged vouch or a flood of a
 //! removed party's commits makes it write nothing it would not write from the honest ones: a
 //! removed party's commits after R are not candidates (ordered after R, or received after its
@@ -45,7 +56,7 @@ pub(crate) fn note_due(core: &mut Core, r: &CommitId) {
 
 /// Every held removal due (an open: what is owed is re-derived, never kept).
 pub(crate) fn all_due(core: &mut Core) {
-    let rs: Vec<CommitId> = core.ix.commits.iter().filter(|(_, m)| m.view.kind.is_role() && m.view.frontier.is_some() && m.origin == Origin::Remote).map(|(id, _)| *id).collect();
+    let rs: Vec<CommitId> = core.ix.commits.iter().filter(|(_, m)| m.view.kind.is_role() && m.view.frontier.is_some()).map(|(id, _)| *id).collect();
     for r in rs {
         core.ix.vouches_due.insert(r);
     }
@@ -68,6 +79,8 @@ struct Owed {
     component: Option<u64>,
     /// Per thing, the vouch owed there: the commits it lists, in the order received.
     on: BTreeMap<Tid, Vec<CommitId>>,
+    /// Per thing, the addendum owed there: the commits it lists.
+    addenda: BTreeMap<Tid, BTreeSet<CommitId>>,
     /// The leavings out taken anew, per thing (`Indexes::vouch_left`).
     left: Vec<(Tid, Arc<LeftOut>)>,
 }
@@ -101,13 +114,14 @@ fn may_owe(core: &Core, r: &CommitId, rc: &osis_perm::RoleCommit, frontier: &osi
 /// may write on only later (outside its node closure, keys not here) stays due, judged again at
 /// the end of each transaction until written.
 pub(crate) fn write_owed(tx: &mut Tx<'_>) -> Result<()> {
-    if !tx.core.vouches_on || tx.core.ix.vouches_due.is_empty() {
+    if !(tx.core.vouches_on || tx.core.addenda_on) || tx.core.ix.vouches_due.is_empty() {
         return Ok(());
     }
     let Some(me) = tx.core.member() else { return Ok(()) };
     let mut done: BTreeSet<CommitId> = BTreeSet::new();
     loop {
-        // a vouch written moves its component: the removals filed there are due again, once
+        // a vouch written moves its component: the removals filed there are due again, once (an
+        // addendum moves none)
         let due: Vec<CommitId> = tx.core.ix.vouches_due.iter().filter(|r| !done.contains(r)).copied().collect();
         if due.is_empty() {
             return Ok(());
@@ -122,64 +136,97 @@ pub(crate) fn write_owed(tx: &mut Tx<'_>) -> Result<()> {
     }
 }
 
-/// Writes the vouches removal `r` owes; takes it off the due set, filed under its component,
-/// unless a vouch it owes waits.
+/// Writes the vouches and addenda removal `r` owes; takes it off the due set, filed under its
+/// component, unless one it owes waits.
 fn write_for(tx: &mut Tx<'_>, r: &CommitId, me: Tid) -> Result<()> {
     let now = tx.core.hlc.peek();
     let o = owed(tx.core, r, me, now);
-    let w = writable_split(tx, me, o.on, ct::VOUCHES_AK, Some(Role::Sync))?;
     for (n, l) in o.left {
         tx.core.ix.vouch_left.insert((*r, n), l);
     }
-    for (n, lists) in &w.now {
-        // a new entry of this delta's own (`put_new`, spec/data-model.md §9)
-        let mut mu = crate::Mutation::new();
-        let list = ct::Frontier { commits: lists.iter().copied().collect() };
-        mu.op(*n, &ct::VOUCHES, PathOp { path: vec![PathSeg::Key(Value::bytes(&r.0))], op: Op::Put(list.to_value()) })?;
-        Engine::commit_tx(tx, mu)?;
+    let v = writable_split(tx, me, o.on, ct::VOUCHES_AK, Some(Role::Sync))?;
+    for (n, lists) in &v.now {
+        write_entry(tx, *n, &ct::VOUCHES, r, lists.iter().copied().collect())?;
+    }
+    let a = writable_split(tx, me, o.addenda, ct::ADDENDA_AK, Some(Role::Write))?;
+    for (n, lists) in &a.now {
+        write_entry(tx, *n, &ct::ADDENDA, r, lists.clone())?;
     }
     #[cfg(debug_assertions)]
-    if !w.now.is_empty() {
+    if !v.now.is_empty() || !a.now.is_empty() {
         let again = owed(tx.core, r, me, tx.core.hlc.peek());
-        debug_assert!(w.now.keys().all(|n| !again.on.contains_key(n)), "a vouch written here does not count here: {r:?} on {:?}", again.on.keys().collect::<Vec<_>>());
+        debug_assert!(v.now.keys().all(|n| !again.on.contains_key(n)), "a vouch written here does not count here: {r:?} on {:?}", again.on.keys().collect::<Vec<_>>());
+        debug_assert!(a.now.keys().all(|n| !again.addenda.contains_key(n)), "an addendum written here does not count here: {r:?} on {:?}", again.addenda.keys().collect::<Vec<_>>());
     }
-    if w.later || !w.unheld.is_empty() {
+    if v.later || !v.unheld.is_empty() || a.later || !a.unheld.is_empty() {
         return Ok(());
     }
     tx.core.ix.vouches_due.remove(r);
-    // filed under its component as it stands after this node's own vouches
-    let target = tx.core.ix.held.edge_commit(r).and_then(|c| c.ops.first().map(|o| o.target));
-    if let Some(c) = o.component.and(target).and_then(|t| tx.core.timelines.component(&t)) {
+    // filed under its component as it stands after this node's own writes
+    if let Some(c) = o.component.and(target_of(tx.core, r)).and_then(|t| tx.core.timelines.component(&t)) {
         tx.core.ix.vouch_watch.insert(c, *r);
     }
     Ok(())
 }
 
-/// What removal `r` owes at this node (account `me`) at `now` (spec/permissions.md §5.1
-/// Vouches, Writing).
+/// Writes one entry keyed by removal `r` listing `lists` on `n`'s aspect `ak` (`vouches.0` or
+/// `addenda.0`): a new entry of this delta's own (`put_new`, spec/data-model.md §9), whatever
+/// this node holds at the key (another's answer to `r`).
+fn write_entry<K: osis_schema::RawKey>(tx: &mut Tx<'_>, n: Tid, ak: &K, r: &CommitId, lists: BTreeSet<CommitId>) -> Result<()> {
+    let mut mu = crate::Mutation::new();
+    mu.op(n, ak, PathOp { path: vec![PathSeg::Key(Value::bytes(&r.0))], op: Op::Put(ct::Frontier { commits: lists }.to_value()) })?;
+    Engine::commit_tx(tx, mu)?;
+    Ok(())
+}
+
+/// The thing removal `r`'s first edge write targets.
+fn target_of(core: &Core, r: &CommitId) -> Option<Tid> {
+    core.ix.held.edge_commit(r).and_then(|c| c.ops.first().map(|o| o.target))
+}
+
+/// What removal `r` owes at this node (account `me`) at `now`: vouches (spec/permissions.md
+/// §5.1 Vouches, Writing) and addenda (§5.2 Addenda, Writing), by one rule.
 fn owed(core: &Core, r: &CommitId, me: Tid, now: Ts) -> Owed {
     let mut out = Owed::default();
-    // not at the node that wrote R
-    let Some(m) = core.ix.commits.get(r).filter(|m| m.origin == Origin::Remote) else { return out };
+    let Some(m) = core.ix.commits.get(r) else { return out };
     let Some(frontier) = m.view.frontier.clone() else { return out };
     let Some(rc) = core.ix.held.edge_commit(r) else { return out };
     let Some(target) = rc.ops.first().map(|o| o.target) else { return out };
-    // a vouch is positioned after R: applying R moved the clock past its `ts` (`Hlc::observe`)
+    let Some(tl) = core.timelines.get(&target) else { return out };
+    // a vouch or addendum is positioned after R: applying R moved the clock past its `ts`
+    // (`Hlc::observe`)
     debug_assert!(now > rc.ts, "the clock is past an applied removal's ts");
-    if !may_owe(core, r, rc, &frontier, me, m.received) {
+    let comp = core.timelines.component(&target);
+    // R not applying (dropped, or its author's authority in dispute) may come to, the walk
+    // changing: judged again then
+    if !(0..rc.ops.len()).filter_map(|k| u32::try_from(k).ok()).any(|k| tl.is_applied(&osis_perm::WriteId(*r, k))) {
+        out.component = comp;
         return out;
     }
-    let Some(tl) = core.timelines.get(&target) else { return out };
+    if core.addenda_on {
+        addenda_owed(core, tl, r, m, &frontier, me, now, &mut out);
+    }
+    // vouches: not at the node that wrote R
+    if core.vouches_on && m.origin == Origin::Remote && may_owe(core, r, rc, &frontier, me, m.received) {
+        vouches_owed(core, tl, r, m, rc, &frontier, me, now, &mut out);
+    }
+    out
+}
+
+/// The vouches removal `r` owes (`owed`).
+#[allow(clippy::too_many_arguments)]
+fn vouches_owed(core: &Core, tl: &osis_perm::Timeline, r: &CommitId, m: &crate::engine::Meta, rc: &osis_perm::RoleCommit, frontier: &osis_perm::Frontier, me: Tid, now: Ts, out: &mut Owed) {
+    let Some(target) = rc.ops.first().map(|o| o.target) else { return };
     let comp = core.timelines.component(&target);
     // R applies in the first walk as an explicit lowering of another's grant (one that does not
     // may come to, the walk changing: judged again then); not at a node acting as one in
     // question at it
     let Some(in_question) = tl.in_question(r) else {
         out.component = comp;
-        return out;
+        return;
     };
     if in_question.contains(&me) || in_question.contains(&core.id.tid()) {
-        return out;
+        return;
     }
     let rp = rc.point();
     // candidates per thing of R's component in the node closure, in the order received
@@ -206,7 +253,7 @@ fn owed(core: &Core, r: &CommitId, me: Tid, now: Ts) -> Owed {
     // none: nothing is owed for good (its candidates are fixed once R is held), unless what
     // is in question at it grows (issues/s3-vouches-build.md)
     if cands.is_empty() {
-        return out;
+        return;
     }
     out.component = comp;
     let own = tl.counted_by(&me, r);
@@ -229,7 +276,71 @@ fn owed(core: &Core, r: &CommitId, me: Tid, now: Ts) -> Owed {
             out.on.insert(n, lists);
         }
     }
-    out
+}
+
+/// The addenda removal `r` (its record `m`) owes (`owed`; spec/permissions.md §5.2 Addenda,
+/// Writing): for each explicit demotion R makes in this node's view of a node X other than this
+/// one below write on a thing N, X's content commits on N or acting for N, ordered before R,
+/// received in R's window and not listed by its frontier are its candidates (plain content: no
+/// role-class or admin-only part, no snapshot, no purge request). While one of them is one an
+/// addendum this node wrote now would vouch for (it holds write on N now) and no counting addendum
+/// of its own vouches for, it owes one addendum on N keyed by R listing every candidate.
+///
+/// Who writes each input: R and the candidates are their signers' word, judged by the walk and
+/// layer 2; every addendum on N (any writer's, a removed party's forged ones included) goes
+/// through the least fixpoint (`validity::vouching_on`), so only this node's own counting ones
+/// stop it owing.
+#[allow(clippy::too_many_arguments)]
+fn addenda_owed(core: &Core, tl: &osis_perm::Timeline, r: &CommitId, m: &crate::engine::Meta, frontier: &osis_perm::Frontier, me: Tid, now: Ts, out: &mut Owed) {
+    let mut cands: BTreeMap<Tid, BTreeSet<CommitId>> = BTreeMap::new();
+    for (x, n, below) in tl.demoted_by(r) {
+        if *x == me || *below != Role::Write {
+            continue;
+        }
+        let (x, n) = (*x, *n);
+        let held = core.ix.by_thing.get(&(n, x)).into_iter().flatten().chain(core.ix.by_actor.get(&(n, x)).into_iter().flatten());
+        for c in held {
+            let Some(cm) = core.ix.commits.get(c) else { continue };
+            let v = &cm.view;
+            // ordered before R (at its `ts` or earlier, §5.2 Position); what the frontier lists
+            // needs no witness
+            if v.purges || v.kind != osis_commit::Kind::Content || frontier.covers(c) || v.ts > m.view.ts || !window(cm.received, m.view.ts, m.received) {
+                continue;
+            }
+            if v.aspects.iter().any(|a| plain_ak(&a.ak) && (a.tid == n || v.actor == n)) {
+                cands.entry(n).or_default().insert(*c);
+            }
+        }
+    }
+    if cands.is_empty() {
+        return;
+    }
+    if let Some(t) = target_of(core, r) {
+        out.component = core.timelines.component(&t);
+    }
+    for (n, cs) in cands {
+        let Some(tn) = core.timelines.get(&n) else { continue };
+        // an addendum written now vouches only as a writer's
+        if tn.role(&me, &n, osis_perm::At::now(now)) < Some(Role::Write) {
+            continue;
+        }
+        let own = crate::apply::validity::vouching_on(core, &n);
+        let vouched = |c: &CommitId| {
+            let Some(cm) = core.ix.commits.get(c) else { return false };
+            let at = Point { ts: cm.view.ts, node: cm.view.author, commit: *c };
+            own.as_ref().is_some_and(|v| v.witnesses(tn, at).any(|(w, _)| w == me))
+        };
+        if cs.iter().any(|c| !vouched(c)) {
+            out.addenda.insert(n, cs);
+        }
+    }
+}
+
+/// Whether a part on `ak` is plain content an addendum may list (spec/permissions.md §5.2,
+/// Addenda): no role-class or admin-only aspect, no creation record; another addendum is one.
+pub(crate) fn plain_ak(ak: &osis_base::Ak) -> bool {
+    let s = ak.as_str();
+    !ct::is_role_class(s) && !ak.admin_only() && s != "created.0"
 }
 
 /// The writers' leaving out (spec/permissions.md §5.1 Vouches, Writing): where R, trusted, would

@@ -541,15 +541,6 @@ pub(crate) fn learn_record(tx: &mut Tx<'_>, rec: CreationRecord) -> Result<bool>
     Ok(true)
 }
 
-/// Role commit `id` (with a frontier) is due an answer by this node's addenda, kept across
-/// restarts (`records::ADDENDA_DUE`).
-fn note_addenda_due(tx: &mut Tx<'_>, id: &CommitId) -> Result<()> {
-    if tx.core.ix.addenda_due.insert(*id) {
-        tx.txn.put_local(&[records::ADDENDA_DUE, &id.0[..]].concat(), &[], Shred::No)?;
-    }
-    Ok(())
-}
-
 /// Pending commit `h` applied: received before (it waited), the account's rotations closing its
 /// epoch answer again, their listings or addenda naming it by its receipt (spec/permissions.md
 /// §5.1 Received, §5.5 Listings).
@@ -617,10 +608,8 @@ pub(crate) fn apply_verified(tx: &mut Tx<'_>, blob: &CommitBlob, parts: Parts, o
     if h.rotation.is_some() {
         crate::flows::signing::note_rotation_due(tx, &id)?;
     }
-    // an explicit demotion: this node answers it with its addenda (`Engine::answer_removals`),
-    // and judges what vouches it owes (`flows::vouches`)
+    // an explicit demotion: this node judges what vouches and addenda it owes (`flows::vouches`)
     if h.kind.is_role() && view.frontier.is_some() {
-        note_addenda_due(tx, &id)?;
         crate::flows::vouches::note_due(tx.core, &id);
     }
     let valid: Vec<bool> = (0..h.aspects.len()).map(|ai| validity::part_valid(tx.core, &h, &id, ai)).collect();
@@ -772,7 +761,6 @@ pub(crate) fn join_late(tx: &mut Tx<'_>, id: &CommitId, merged: &CommitBlob, par
     validity::note_addenda(tx.core, &h, id, &parts.whole);
     crate::flows::lists::note_listing(tx, &h, id, &parts.whole)?;
     if edges && meta.view.frontier.is_some() {
-        note_addenda_due(tx, id)?;
         crate::flows::vouches::note_due(tx.core, id);
     }
     let (held, n) = with_held(tx, &h, id, &parts)?;

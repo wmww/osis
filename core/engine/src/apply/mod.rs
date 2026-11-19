@@ -2001,8 +2001,6 @@ pub(crate) fn load(tx: &mut Tx<'_>, rebuild: bool) -> Result<Option<Vec<(Tid, os
     crate::sync::certblobs::load(tx)?;
     crate::sync_ids::opened::load(tx)?;
     crate::flows::lists::load(tx)?;
-    let addenda_due = tx.scan_keys(records::ADDENDA_DUE, "addenda due", CommitId)?;
-    tx.core.ix.addenda_due.extend(addenda_due);
     let rotations_due = tx.scan_keys(records::ROTATIONS_DUE, "listings due", CommitId)?;
     tx.core.ix.rotations_due.extend(rotations_due);
     crate::rotation::merge::load(tx)?;

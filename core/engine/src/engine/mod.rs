@@ -924,8 +924,9 @@ indexes! {
     /// rotation joining or leaving an epoch's closers moves only the commits these list
     /// (`refresh_epochs`).
     pub addenda_keyed: JSetMap<CommitId, (Tid, CommitId)>,
-    /// Removals whose vouches this node may owe, to judge at the end of the transaction
-    /// (`flows::vouches`): every held one at an open, then those whose component changed.
+    /// Removals whose vouches and addenda this node may owe, to judge at the end of the
+    /// transaction (`flows::vouches`): every held one at an open, then those whose component
+    /// changed.
     pub vouches_due: JSet<CommitId>,
     /// The removals judged by `flows::vouches`, by the component (`osis_perm::Timelines::component`)
     /// of their target as judged: a change of the component makes them due again.
@@ -934,9 +935,6 @@ indexes! {
     /// while it still holds for the same candidates and trust set, so a fight costs a step two
     /// walks, not one per candidate. Memory only: an open takes it anew.
     pub vouch_left: JMap<(CommitId, Tid), Arc<crate::flows::vouches::LeftOut>>,
-    /// Role commits with a frontier applied here and not yet answered with this node's addenda
-    /// (`Engine::answer_removals`; `records::ADDENDA_DUE`).
-    pub addenda_due: JSet<CommitId>,
     /// Accounts' rotations applied and not yet answered with this node's listing or addenda
     /// (`flows::signing::answer_rotations`; `records::ROTATIONS_DUE`).
     pub rotations_due: JSet<CommitId>,
@@ -984,9 +982,7 @@ pub(crate) enum Step {
     Commit,
     /// One part judged alone (`apply::examine`).
     Part,
-    /// One removal answered with this node's addenda (`flows::addenda::answer_removals`).
-    Answer,
-    /// The vouches one removal owes written (`flows::vouches::write_owed`).
+    /// The vouches and addenda one removal owes written (`flows::vouches::write_owed`).
     Vouch,
     /// One purge-on-replace cover written (`retention::settle_none`).
     Cover,
@@ -4114,7 +4110,7 @@ impl Engine {
                 }
                 if r.is_ok()
                     && !tx.txn.is_memory()
-                    && let Err(e) = crate::flows::inbox::owe_removal_notices(&mut tx).and_then(|()| crate::flows::addenda::answer_removals(&mut tx)).and_then(|()| crate::flows::vouches::write_owed(&mut tx)).and_then(|()| crate::flows::signing::leave_if_removed(&mut tx)).and_then(|()| crate::flows::signing::answer_rotations(&mut tx))
+                    && let Err(e) = crate::flows::inbox::owe_removal_notices(&mut tx).and_then(|()| crate::flows::vouches::write_owed(&mut tx)).and_then(|()| crate::flows::signing::leave_if_removed(&mut tx)).and_then(|()| crate::flows::signing::answer_rotations(&mut tx))
                         .and_then(|()| crate::sync::dial::drop_departed(&mut tx))
                 {
                     r = Err(e);

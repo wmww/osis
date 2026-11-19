@@ -763,6 +763,12 @@ pub(crate) struct Judge<'a> {
 /// A thing's `retention^.0` deltas: each one's key and what it says.
 pub(crate) type Settings = Vec<(Point, Arc<ct::RetentionSetting>)>;
 
+/// The addenda on `t` that count (`Judge::vouching`): what a writer reads to know whether its own
+/// vouch for a commit (`flows::vouches`).
+pub(crate) fn vouching_on(core: &Core, t: &Tid) -> Option<Arc<Vouching>> {
+    Judge::new(core).vouching(t)
+}
+
 impl<'a> Judge<'a> {
     pub(crate) fn new(core: &'a Core) -> Judge<'a> {
         Judge { core, last: None, from: BTreeMap::new(), acts: BTreeMap::new(), vouchings: BTreeMap::new(), standings: BTreeMap::new(), settings: BTreeMap::new() }

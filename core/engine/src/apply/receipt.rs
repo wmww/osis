@@ -163,7 +163,7 @@ impl Engine {
 
 /// Leaves out of frontier `f` as many of `out` (in order) as it takes to fit `max` encoded bytes
 /// (spec/permissions.md §5.1): first the plain-content commits received last, which the
-/// demoter's own addenda list instead (`flows::addenda`), then the purge requests received last,
+/// demoter's own addenda list instead (`flows::vouches`), then the purge requests received last,
 /// each losing its right, so that requests never make a role holder impossible to demote (a
 /// hostile holder's flood is what it received last). What is over `max` without them stays over:
 /// `build` refuses it.

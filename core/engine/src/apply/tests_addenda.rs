@@ -1192,3 +1192,58 @@ fn purge_on_replace_keeps_what_an_own_cover_covers_spec_perm_5_1() {
         }
     }
 }
+
+// spec/permissions.md §5.2 (addenda; writing; when it first holds the role after): Carol, a
+// reader, received Bob's edit before Alice removed Bob without it; Alice then grants Carol write.
+// Carol writes her addendum then, by the state rule (answering once, as Carol applied the removal
+// without the role, loses the edit), and the edit stands at every node.
+#[test]
+fn a_witness_granted_write_after_the_removal_writes_its_addendum_then_spec_perm_5_2() {
+    let (mut lp, t) = world(3, &[Role::Write, Role::Read]);
+    let e = write(&mut lp, 1, t, "x:e.0", 7);
+    lp.sync(1, 2).unwrap();
+    lp.advance(1);
+    remove(&mut lp, 0, t, 1);
+    lp.sync(0, 2).unwrap();
+    assert!(addenda(&lp, 2, t).is_empty(), "a reader writes none");
+    let carol = lp.peers[2].engine.me();
+    lp.peers[0].engine.grant(&t, &carol, &edge(Role::Write)).unwrap();
+    lp.advance(1000);
+    lp.sync(0, 2).unwrap();
+    assert_eq!(addenda(&lp, 2, t).iter().filter(|(a, _)| *a == carol).count(), 1, "Carol writes once she holds write");
+    lp.sync_all().unwrap();
+    for p in 0..3 {
+        assert!(valid(&lp, p, &e, t, "x:e.0"), "peer {p}: the edit stands");
+    }
+}
+
+// spec/permissions.md §5.2 (addenda; writing; when it first holds the role after), §5.1 Vouches: Dave
+// holds write on t by Bob's grant alone. Alice removes Bob, having received neither that grant
+// nor Bob's edit, both of which Dave received: Dave's grant falls at Dave, so he writes no
+// addendum as he applies the removal. Carol (an admin who received the grant) vouches for it,
+// Dave's write comes back, and Dave then writes the addendum keeping Bob's edit at every node.
+#[test]
+fn a_writer_kept_by_a_vouch_writes_its_addendum_then_spec_perm_5_2() {
+    let (mut lp, t) = world(4, &[Role::Admin, Role::Admin]);
+    let dave = lp.peers[3].engine.me();
+    lp.peers[1].engine.grant(&t, &dave, &edge(Role::Write)).unwrap();
+    lp.advance(1000);
+    let e = write(&mut lp, 1, t, "x:e.0", 7);
+    for p in [2, 3] {
+        lp.sync(1, p).unwrap();
+    }
+    lp.advance(1);
+    remove(&mut lp, 0, t, 1);
+    lp.sync(0, 3).unwrap();
+    let role = |lp: &LocalPeer, at: usize| lp.peers[at].engine.core.timelines.role(&dave, &t, osis_perm::At::END);
+    assert_eq!(role(&lp, 3), None, "Dave's grant falls at Dave");
+    assert!(addenda(&lp, 3, t).is_empty(), "no addendum without write");
+    lp.sync(0, 2).unwrap();
+    lp.sync(2, 3).unwrap();
+    assert_eq!(role(&lp, 3), Some(Role::Write), "Carol's vouch keeps Dave's grant");
+    assert_eq!(addenda(&lp, 3, t).iter().filter(|(a, _)| *a == dave).count(), 1, "Dave writes once he holds write again");
+    lp.sync_all().unwrap();
+    for p in 0..4 {
+        assert!(valid(&lp, p, &e, t, "x:e.0"), "peer {p}: the edit stands");
+    }
+}

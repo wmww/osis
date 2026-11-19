@@ -202,9 +202,9 @@ fn a_vouch_owed_across_a_restart_is_written_spec_perm_5_1() {
 }
 
 // spec/permissions.md §5.1 Vouches (an entry counts only where W could write c; nothing trusts
-// a vouch's word): X, removed, signs a grant to H stamped before R and a flood of vouches keyed
-// by R listing its own grant of K, which no one else received. Nobody is revived and nothing
-// counts, at every node; and the flood costs a write elsewhere no vouch judging.
+// a vouch's word): X, removed, signs a grant to H stamped before R and a flood of vouches and
+// addenda keyed by R listing its own grant of K, which no one else received. Nobody is revived
+// and nothing counts, at every node; and the flood costs a write elsewhere no removal judged.
 #[test]
 fn a_removed_partys_junk_grant_and_forged_vouches_change_nothing_spec_perm_5_1() {
     let (mut lp, t) = world(4);
@@ -224,6 +224,12 @@ fn a_removed_partys_junk_grant_and_forged_vouches_change_nothing_spec_perm_5_1()
         let mut m = Mutation::new();
         let list = ct::Frontier { commits: [c].into_iter().collect() };
         m.op(t, &ct::VOUCHES, PathOp { path: vec![PathSeg::Key(Value::bytes(&r.0))], op: Op::Put(list.to_value()) }).unwrap();
+        m.unchecked = true;
+        lp.peers[1].commit(m).unwrap();
+        // and forged addenda keyed by R listing the junk grant
+        let mut m = Mutation::new();
+        let list = ct::Frontier { commits: [c].into_iter().collect() };
+        m.op(t, &ct::ADDENDA, PathOp { path: vec![PathSeg::Key(Value::bytes(&r.0))], op: Op::Put(list.to_value()) }).unwrap();
         m.unchecked = true;
         lp.peers[1].commit(m).unwrap();
         lp.advance(1000);
@@ -268,15 +274,26 @@ fn a_holder_granted_without_history_keeps_the_vouched_grant_spec_perm_5_1() {
     assert_eq!(role(&lp, 4, 1, t), None);
 }
 
-/// Peer 2 (W) holding `n` removals on `t` owing nothing (H grants peer 3 read and removes it, `n`
-/// times): the removals W judges as H then grants on another thing and W syncs.
+/// Peer 2 (W) holding `n` removals on `t` owing nothing (H grants peer 3 write, peer 3 writes on
+/// `t` and H, having received it, removes peer 3, `n` times: each demotes below write and its
+/// frontier lists everything, so no vouch or addendum is owed): the removals W judges as H then
+/// grants on another thing and W syncs.
 fn judged_per_step(n: usize) -> u64 {
     let (mut lp, t) = world(4);
-    for _ in 0..n {
-        grant(&mut lp, 0, t, 3, Role::Read);
-        remove(&mut lp, 0, t, 3);
+    let mut last = None;
+    for i in 0..n {
+        grant(&mut lp, 0, t, 3, Role::Write);
+        lp.sync(0, 3).unwrap();
+        let mut m = Mutation::new();
+        m.set(t, &osis_base::Ak::new("x:e.0").unwrap(), &Value::Int(i64::try_from(i).unwrap())).unwrap();
+        lp.peers[3].commit(m).unwrap();
+        lp.sync(3, 0).unwrap();
+        lp.sync(3, 2).unwrap();
+        last = Some(remove(&mut lp, 0, t, 3));
     }
     lp.sync(0, 2).unwrap();
+    let w3 = lp.peers[3].engine.me();
+    assert!(last.is_none_or(|r| lp.peers[2].engine.core.timelines.get(&t).unwrap().demoted_by(&r).contains(&(w3, t, Role::Write))), "each removal demotes peer 3 below write");
     let mut m = Mutation::new();
     let me = lp.peers[0].engine.me();
     let u = lp.peers[0].engine.new_thing(&mut m, me);
@@ -290,8 +307,8 @@ fn judged_per_step(n: usize) -> u64 {
     osis_base::costs::take().into_iter().find(|(k, _, _)| *k == "vouches: removals judged").map_or(0, |x| x.2)
 }
 
-// spec/permissions.md §5.1 Vouches (Writing), notes/principles.md (Check scaling): an idle node's
-// work per step does not grow with the removals it holds owing nothing.
+// spec/permissions.md §5.1 Vouches (Writing), §5.2 Addenda (Writing), notes/principles.md (Check
+// scaling): an idle node's work per step does not grow with the removals it holds owing nothing.
 #[test]
 fn removals_owing_nothing_cost_a_step_nothing_spec_perm_5_1() {
     let (small, big) = (judged_per_step(2), judged_per_step(20));

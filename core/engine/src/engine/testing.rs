@@ -805,7 +805,6 @@ fn tables(ix: &super::Indexes) -> Vec<(&'static str, &dyn Table)> {
         ("dated", &*ix.dated),
         ("leave_from", &*ix.leave_from),
         ("leave_due", &*ix.leave_due),
-        ("addenda_due", &*ix.addenda_due),
         ("rotations_due", &*ix.rotations_due),
         ("resnapshots_owed", &*ix.resnapshots_owed),
         ("freed", &*ix.freed),
