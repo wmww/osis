@@ -269,6 +269,63 @@ fn vouches_deltas_put_new_only_spec_dm_9() {
     }
 }
 
+// spec/data-model.md §9 `vouches.0`, judged per streamed piece (`stream_part`): a paged put_new
+// delta (one entry listing many commits, and many entries) is good; a paged delta writing into
+// an entry it did not create is bad input, as whole.
+#[test]
+fn paged_vouches_deltas_put_new_only_spec_dm_9() {
+    use osis_crdt::{DeltaBuilder, MemoryPages, Op, PageParams, PathOp, PathSeg};
+    use osis_schema::Codec;
+    let (mut b, _) = one_commit();
+    let (author, at) = (b.header.author, b.header.ts);
+    let view = osis_schema::core_schema().view("vouches.0").unwrap();
+    let key = |n: u16| Value::Bytes([n.to_be_bytes().to_vec(), vec![7; 30]].concat());
+    let frontier = |n: u16, k: u16| osis_schema::core_types::Frontier { commits: (0..k).map(|i| CommitId([[n.to_be_bytes(), i.to_be_bytes()].concat(), vec![9; 28]].concat().try_into().unwrap())).collect() }.to_value();
+    let other = SESSION.own_source(t(9), CommitId([0; 32]));
+    let state = {
+        let empty = osis_crdt::Fragment::default();
+        let mut bd = DeltaBuilder::new(&empty, Writer::new(at, other, 1));
+        bd.apply(&PathOp { path: vec![PathSeg::Key(key(1))], op: Op::Put(frontier(1, 2)) }, &view).unwrap();
+        bd.finish().unwrap().0
+    };
+    let small = PageParams { target: 4096, cut: osis_base::ChunkParams { min: 1024, max: 4096, mask_bits: 8 }, fanout: 8, ..PageParams::FORMAT };
+    let delta_of = |ops: Vec<PathOp>, pages: &mut MemoryPages| {
+        let mut bd = DeltaBuilder::new(&state, Writer::new(at, SESSION.own_source(author, CommitId([0; 32])), 1));
+        for op in &ops {
+            bd.apply(op, &view).unwrap();
+        }
+        let (fragment, range) = bd.finish().unwrap();
+        let before = pages.len();
+        let d = encode_delta(&Delta { nonce: [5; 16], fragment }, &writer_ctx(SESSION, Kind::Content, at, author, range.lo, range.hi), Some(pages)).unwrap();
+        assert!(pages.len() > before, "paged");
+        (d, range.hi)
+    };
+    let check = |b: &mut CommitBlob, (delta, hi): &(Vec<u8>, u64), pages: &mut MemoryPages| {
+        b.header.aspects[0].ak = osis_base::Ak::new("vouches.0").unwrap();
+        b.header.aspects[0].hi = *hi;
+        b.header.aspects[0].hash = delta_hash(&sec(0xd0, &t(3)), delta);
+        b.parts[0].delta = delta.to_vec();
+        let id = b.id();
+        let mut pieces = 0;
+        let r = stream_part(&b.header, &id, &b.parts[0], &sec(0xd0, &t(3)), &mut Interner::new(), Some(pages), &mut |_| {
+            pieces += 1;
+            Ok(())
+        });
+        (r.map(|_| ()), pieces)
+    };
+    let mut pages = MemoryPages::with_params(small);
+    let one_long = delta_of(vec![PathOp { path: vec![PathSeg::Key(key(2))], op: Op::Put(frontier(2, 600)) }], &mut pages);
+    let many = delta_of((10..400).map(|n| PathOp { path: vec![PathSeg::Key(key(n))], op: Op::Put(frontier(n, 1)) }).collect(), &mut pages);
+    for (name, d) in [("one long frontier", &one_long), ("many entries", &many)] {
+        let (r, pieces) = check(&mut b, d, &mut pages);
+        assert!(r.is_ok() && pieces > 1, "{name}: {r:?} in {pieces} pieces");
+    }
+    let replace = delta_of(vec![PathOp { path: vec![PathSeg::Key(key(1))], op: Op::Set(frontier(3, 600)) }], &mut pages);
+    let (r, _) = check(&mut b, &replace, &mut pages);
+    let e = r.unwrap_err();
+    assert!(matches!(&e, Error::Malformed(m) if m.contains("vouches.0")), "{e}");
+}
+
 // spec/data-model.md §6, spec/commits.md §4: a value that must be chunked, held unchunked, is bad
 // by itself, judged without its type; only durable content answers to this.
 #[test]

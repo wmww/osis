@@ -693,14 +693,53 @@ fn vouch_run(samples: u64, seed: u64) -> (u64, u64, u64) {
     (with, counting, kept)
 }
 
+/// World `j` of a sample of `n` of roles-model's small family (`vouches::family_world`): every
+/// `stride`-th, the stride coprime with the family's size so the sample spreads over each of
+/// its dimensions. Compared as `vouch_run`; returns (worlds with a counting entry, kept checked).
+fn vouch_family_run(n: usize, stride: usize) -> (u64, u64) {
+    let total = vouches::family_size();
+    let gcd = |mut a: usize, mut b: usize| {
+        while b != 0 {
+            (a, b) = (b, a % b);
+        }
+        a
+    };
+    assert_eq!(gcd(stride, total), 1, "stride coprime with {total}");
+    let (mut counting, mut kept) = (0, 0);
+    let mut fails = Vec::new();
+    for j in 0..n {
+        let i = j * stride % total;
+        let rules = vouch_rules(j as u64);
+        let w = vouches::family_world(rules, i);
+        counting += u64::from(!vouches::judge(&w, rules, 0).counted.is_empty());
+        let mut d = vouch_diff(&w, rules);
+        if rules.state && d.is_none() {
+            kept += 1;
+            d = vouch_kept_diff(&w, rules);
+        }
+        if let Some(d) = d {
+            fails.push(format!("family world {i} ({rules:?}): {d}\n{w}"));
+            if fails.len() >= 3 {
+                break;
+            }
+        }
+    }
+    assert!(fails.is_empty(), "{} mismatches:\n{}", fails.len(), fails.join("\n"));
+    (counting, kept)
+}
+
 /// spec/permissions.md §5.1 Vouches: perm's two walks agree with core/test/roles-model
 /// `vouches::judge` on random and hostile worlds, under no trust, each dispute's R alone and a
-/// node's random picks, and keep what the spec promises; every check reached.
+/// node's random picks, and on a strided sample of the small family, and keep what the spec
+/// promises; every check reached.
 #[test]
 fn vouches_model_agrees() {
     let (with, counting, kept) = vouch_run(2000, 0);
     eprintln!("vouches: 2000 worlds, {with} with a vouch, {counting} with a counting entry, {kept} checked for what vouches keep");
     assert!(with > 0 && counting > 0 && kept > 0);
+    let (counting, kept) = vouch_family_run(500, 769);
+    eprintln!("vouches: 500 family worlds, {counting} with a counting entry, {kept} checked for what vouches keep");
+    assert!(counting > 0 && kept > 0);
 }
 
 /// spec/permissions.md §5.1 Vouches: as above, more worlds (a property).

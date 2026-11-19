@@ -303,3 +303,17 @@ fn state_writing_keeps_what_the_spec_promises() {
     assert!(st.kept_end_checked > 0);
     assert!(random(2000, Rules { vouches: false, ..state }).kept_end_fail > 0);
 }
+
+/// `family_world` decodes each index below one block of subsets to a distinct history: the
+/// small family's subsets of X's writes, each once.
+#[test]
+fn family_worlds_are_distinct() {
+    let m = family_size() / 36;
+    let mut seen = std::collections::BTreeSet::new();
+    for i in 0..m {
+        let w = family_world(FIXED, i);
+        let xs: Vec<_> = w.h.writes.iter().filter(|x| x.author == 1).map(|x| (x.t, x.ops.clone(), w.h.recv[x.id as usize].clone())).collect();
+        assert!(xs.len() <= 3);
+        assert!(seen.insert(format!("{xs:?}")), "index {i}");
+    }
+}

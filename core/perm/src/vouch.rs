@@ -169,6 +169,9 @@ pub(crate) enum State {
 pub(crate) trait FirstWalk {
     /// The applied explicit lowerings of other holders' grants, in walk order.
     fn lowerings(&self) -> Vec<Lowering>;
+    /// Per commit, the authors whose class or role on some thing falls at it (spec/permissions.md
+    /// §5.1 step 4): whose writes before it its audit puts in question.
+    fn demoted(&self) -> BTreeMap<CommitId, BTreeSet<Tid>>;
     /// "W could write c" in `state` (spec/permissions.md §5.1 Vouches): each edge write of c
     /// applies as W's there, and W holds the role each other part requires.
     fn could_write(&self, w: &Tid, c: &Listed<'_>, state: State) -> bool;
@@ -194,8 +197,10 @@ pub fn entries_judged() -> u64 {
 
 /// The counting entries (removal to the commits they list), spec/permissions.md §5.1 Vouches:
 /// an entry of vouch V by W keyed by R listing c counts iff, in the first walk, R applies an
-/// explicit write lowering a grant of X (not R's author), c is X's and ordered before R, V's
-/// position is after R, W could write c at V's position, and W could write c just after each
+/// explicit write lowering a grant of X (not R's author), c is in question (by X, or by an
+/// author whose class or role falls at R) and ordered before R, V's
+/// position is after R, V is on a thing where c has a role-class part, W could write c at V's
+/// position, and W could write c just after each
 /// later lowering Q of W's grant by another author whose frontier does not list V.
 pub(crate) fn counting(first: &dyn FirstWalk, held: &Held, commits: &BTreeMap<CommitId, Arc<RoleCommit>>) -> BTreeMap<CommitId, BTreeSet<CommitId>> {
     let mut out: BTreeMap<CommitId, BTreeSet<CommitId>> = BTreeMap::new();
@@ -203,6 +208,7 @@ pub(crate) fn counting(first: &dyn FirstWalk, held: &Held, commits: &BTreeMap<Co
         return out;
     }
     let lowerings = first.lowerings();
+    let demoted = first.demoted();
     let mut by_point: BTreeMap<CommitId, Vec<&Lowering>> = BTreeMap::new();
     let mut of_holder: BTreeMap<Tid, Vec<&Lowering>> = BTreeMap::new();
     for l in &lowerings {
@@ -212,7 +218,9 @@ pub(crate) fn counting(first: &dyn FirstWalk, held: &Held, commits: &BTreeMap<Co
     for r in &held.held_keys {
         let Some(rs) = by_point.get(r) else { continue };
         let Some(rp) = rs.first().map(|l| l.point) else { continue };
-        let victims: BTreeSet<Tid> = rs.iter().map(|l| l.holder).collect();
+        // in question: the lowered holders, and every author whose class or role falls at R (a
+        // node acting through a lowered holder thing)
+        let victims: BTreeSet<Tid> = rs.iter().map(|l| l.holder).chain(demoted.get(r).into_iter().flatten().copied()).collect();
         for (v, k) in held.by_removal.get(r).into_iter().flatten() {
             let Some((_, list)) = v.entries.get(*k) else { continue };
             let pos = v.position();
@@ -233,7 +241,10 @@ pub(crate) fn counting(first: &dyn FirstWalk, held: &Held, commits: &BTreeMap<Co
                     (None, None) => continue,
                 };
                 let listed = Listed { edges, parts: parts.map_or(&[][..], |p| p.parts.as_slice()) };
-                if !victims.contains(&author) || position >= rp || !first.could_write(&v.author, &listed, State::Before(pos)) {
+                // on a thing where c has a role-class part: the voucher's right there joins it
+                // with c's things, so a vouch elsewhere joins no component
+                let on = edges.is_some_and(|e| e.ops.iter().any(|o| o.target == v.thing)) || listed.parts.iter().any(|(t, _)| *t == v.thing);
+                if !on || !victims.contains(&author) || position >= rp || !first.could_write(&v.author, &listed, State::Before(pos)) {
                     continue;
                 }
                 if later.iter().all(|q| first.could_write(&v.author, &listed, State::After(*q))) {

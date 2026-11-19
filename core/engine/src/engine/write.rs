@@ -244,6 +244,8 @@ pub(crate) fn required_role(ak: &str) -> Role {
     match ak {
         "roles.0" | "sync.0" | "account.0" => Role::Admin,
         _ if Ak::markers_of(ak).admin_only => Role::Admin,
+        // Interim (issues/s3-vouches-build.md, engine reading): `vouches.0` falls here, though its
+        // delta needs no role (spec/permissions.md §5.1 Vouches); the engine writes none yet
         _ => Role::Write,
     }
 }

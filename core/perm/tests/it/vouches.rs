@@ -312,6 +312,27 @@ fn a_demotion_scope_on_a_second_walk() {
     assert!(scope.roles.get(&ew.nodes[3]).is_some_and(|s| s.contains(&ew.t)), "{scope:?}");
 }
 
+/// No cycle: W1 and W2 hold admin only through X's grants (each received by both), which H's
+/// removal of X drops; each vouches for the grant of the other. The first walk reads no vouch,
+/// so neither voucher could write what it lists and nothing counts. The control: W1 an admin
+/// by H's grant too, its vouch counts and W2's admin stands.
+#[test]
+fn vouches_for_each_other_make_no_cycle() {
+    let world = |w1_admin: bool| {
+        let mut b = B::new(&[FULL, FULL, if w1_admin { FULL } else { None }, None]);
+        let c1 = b.op(X, 2, FULL, 1, &[(2, 1), (3, 1)]);
+        let c2 = b.op(X, 3, FULL, 2, &[(2, 2), (3, 2)]);
+        let r = b.op(H, X, None, 4, &[(2, 5), (3, 5)]);
+        b.vouch(2, 6, r, &[c2], &[(H, 7), (3, 7)]);
+        b.vouch(3, 6, r, &[c1], &[(H, 7), (2, 7)]);
+        b.0
+    };
+    assert_eq!(counted(&world(false)), 0);
+    assert_eq!((role(&world(false), FIXED, 2), role(&world(false), FIXED, 3)), (None, None));
+    assert_eq!(counted(&world(true)), 1);
+    assert_eq!(role(&world(true), FIXED, 3), Some(Role::Admin));
+}
+
 // ---------- perm worlds ----------
 
 /// Nodes H, X, W, Z on a thing T minted by H; X and W admins, Z a reader.
@@ -348,31 +369,69 @@ fn a_vouched_rotation_stands() {
     assert_eq!(world(None), (false, 0));
 }
 
-/// Counting clause 2 (c's author is R's holder X, spec/permissions.md §5.1 Vouches, as written):
-/// A, an actor X mints, holds admin on T, X's only admin there; X grants K admin (only W
-/// received it); H removes A, demoting X. W's vouch keyed by that removal listing X's grant
-/// counts for nothing (its author is X, not the holder A), and the grant drops; keyed by a
-/// removal of X's own edge (the control world: X holds admin on T itself) it counts.
+/// Counting clause 2 (c is in question: by R's holder X, or by an author whose class or role
+/// falls at R, spec/permissions.md §5.1 Vouches): A, a thing X mints, holds admin on T, X's only
+/// admin there; X grants K admin (only W received it); H removes A, demoting X. W's vouch keyed
+/// by that removal listing X's grant counts, as it does keyed by a removal of X's own edge (the
+/// world where X holds admin on T itself). The same vouch also lists Y's grant of Z (Y an admin
+/// R does not demote, its grant received by H): that entry counts for nothing.
 #[test]
-fn a_vouch_counts_only_for_commits_of_the_removed_holder() {
+fn a_vouch_counts_for_a_commit_acting_through_the_removed_holder() {
     let world = |through_actor: bool| {
         let mut w = World::new();
-        let n = w.nodes(4);
-        let (h, x, wn, k) = (n[0], n[1], n[2], n[3]);
+        let n = w.nodes(6);
+        let (h, x, wn, k, y, z) = (n[0], n[1], n[2], n[3], n[4], n[5]);
         let t = w.thing(h);
         let a = w.thing(x);
-        let all: Vec<(Tid, u64)> = n.iter().map(|y| (*y, 0)).collect();
+        let all: Vec<(Tid, u64)> = n.iter().map(|q| (*q, 0)).collect();
         let holder = if through_actor { a } else { x };
         w.set(h, t, holder, edge(Role::Admin), 0, &all);
         w.set(h, t, wn, edge(Role::Admin), 0, &all);
+        w.set(h, t, y, edge(Role::Admin), 0, &all);
         let g = w.set(x, t, k, edge(Role::Admin), 1, &[(wn, 1), (k, 1)]);
+        let gy = w.set(y, t, z, edge(Role::Write), 2, &all);
         let r = w.set(h, t, holder, None, 4, &[(wn, 5), (k, 5)]);
-        w.vouch(wn, 6, t, &[(r, &[g])], &[(h, 7)]);
+        w.vouch(wn, 6, t, &[(r, &[g, gy])], &[(h, 7)]);
+        let tl = Timeline::evaluate(&w.held());
+        (tl.role(&k, &t, At::END), tl.counted().map(|(_, c)| c).collect::<Vec<_>>() == vec![g])
+    };
+    assert_eq!(world(true), (Some(Role::Admin), true));
+    assert_eq!(world(false), (Some(Role::Admin), true));
+}
+
+/// Counting clause 3 (V is on a thing where c has a role-class part): W's vouch for X's grant
+/// on T, written on U (a thing W mints) counts for nothing; on T it counts (the control).
+#[test]
+fn a_vouch_on_a_thing_the_commit_does_not_write_counts_for_nothing() {
+    let world = |on_t: bool| {
+        let (mut w, n, t) = perm_world();
+        let k = w.nodes_salted(1, 9)[0];
+        let u = w.thing(n[2]);
+        let g = w.set(n[1], t, k, edge(Role::Admin), 1, &[(n[2], 1), (k, 1)]);
+        let r = w.set(n[0], t, n[1], None, 4, &[(n[2], 5), (k, 5)]);
+        w.vouch(n[2], 6, if on_t { t } else { u }, &[(r, &[g])], &[(n[0], 7)]);
         let tl = Timeline::evaluate(&w.held());
         (tl.role(&k, &t, At::END), tl.counted().count())
     };
-    assert_eq!(world(true), (None, 0));
-    assert_eq!(world(false), (Some(Role::Admin), 1));
+    assert_eq!(world(false), (None, 0));
+    assert_eq!(world(true), (Some(Role::Admin), 1));
+}
+
+/// A vouch arriving last that keeps a rotation (no edge write: no edge or history change) is
+/// reported: the component is reported evaluated, so layer 2 judges T's commits again.
+#[test]
+fn a_late_vouch_for_a_rotation_is_reported() {
+    let (mut w, n, t) = perm_world();
+    let rot = w.role_parts(n[1], 1, &[(t, Role::Write)], &[(n[2], 1), (n[3], 1)]);
+    let r = w.set(n[0], t, n[1], None, 4, &[(n[2], 5), (n[3], 5)]);
+    let v = w.vouch(n[2], 6, t, &[(r, &[rot])], &[(n[0], 7)]);
+    let at = Point { ts: ts(1), node: n[1], commit: rot };
+    let mut tls = Timelines::new();
+    tls.update(&w.held_without(&[v].into()));
+    assert_ne!(tls.get(&t).unwrap().delta_valid(at, &t, Role::Write), Validity::Valid);
+    let changed = tls.update_touched(&w.held(), &[t].into());
+    assert_eq!(tls.get(&t).unwrap().delta_valid(at, &t, Role::Write), Validity::Valid);
+    assert!(changed.evaluated.contains(&t), "{changed:?}");
 }
 
 /// Validity is a function of the held set (incremental equals from scratch): the world of
@@ -412,6 +471,59 @@ fn incremental_equals_from_scratch_with_vouches() {
         }
         assert_eq!(tls.get(&t).unwrap().role(&k, &t, At::END), Some(Role::Admin));
     }
+}
+
+/// Incremental equals from scratch in every arrival order of X's grant to K (only W received
+/// it), H's removal of X, W's vouch for the grant, and H's later removal of W not listing the
+/// vouch (the vouch falls with it): each step's roles and counting entries equal a fresh
+/// evaluation's, and a role that changes on T is reported (`Changed`: T evaluated, or its edge).
+#[test]
+fn incremental_equals_from_scratch_in_every_order() {
+    let (mut w, n, t) = perm_world();
+    let (h, x, wn, z) = (n[0], n[1], n[2], n[3]);
+    let k = w.nodes_salted(1, 9)[0];
+    let base: BTreeSet<CommitId> = w.commits.iter().map(|c| c.id).collect();
+    let g = w.set(x, t, k, edge(Role::Admin), 1, &[(wn, 1), (k, 1)]);
+    let r = w.fresh_id();
+    let v = w.vouch(wn, 6, t, &[(r, &[g])], &[(k, 7)]);
+    w.commit_id(r, h, 4, &[(t, x, None)], &[(wn, 5), (k, 5)]);
+    let q = w.set(h, t, wn, None, 8, &[(k, 8)]);
+    let moving = [g, r, v, q];
+    let nodes = [h, x, wn, z, k];
+    let roles = |tl: &Timeline| nodes.map(|y| tl.role(&y, &t, At::END));
+    let mut orders = vec![vec![]];
+    for _ in 0..moving.len() {
+        orders = orders.into_iter().flat_map(|o: Vec<usize>| (0..moving.len()).filter(|i| !o.contains(i)).map(|i| [o.clone(), vec![i]].concat()).collect::<Vec<_>>()).collect();
+    }
+    let (mut second, mut flips) = (0, 0);
+    for order in &orders {
+        let mut tls = Timelines::new();
+        let mut held_ids = base.clone();
+        let touched: BTreeSet<Tid> = [t, k, x, wn, h, z].into();
+        tls.update_touched(&w.held_without(&moving.into_iter().collect()), &touched);
+        let mut was = roles(tls.get(&t).unwrap());
+        for &i in order {
+            held_ids.insert(moving[i]);
+            let skip: BTreeSet<CommitId> = moving.iter().filter(|c| !held_ids.contains(c)).copied().collect();
+            let held = w.held_without(&skip);
+            let changed = tls.update_touched(&held, &touched);
+            let fresh = Timeline::evaluate(&held);
+            let tl = tls.get(&t).expect("T has a timeline");
+            let now = roles(tl);
+            assert_eq!(now, roles(&fresh), "order {order:?} step {i}");
+            assert_eq!(tl.counted().collect::<Vec<_>>(), fresh.counted().collect::<Vec<_>>(), "order {order:?} step {i}");
+            second += usize::from(fresh.counted().count() > 0);
+            for (y, (a, b)) in nodes.iter().zip(was.iter().zip(now.iter())) {
+                if a != b {
+                    flips += 1;
+                    assert!(changed.evaluated.contains(&t) || changed.edges.contains(&(*y, t)), "order {order:?} step {i}: {y:?} {a:?} -> {b:?} unreported: {changed:?}");
+                }
+            }
+            was = now;
+        }
+        assert_eq!(was[4], None, "the vouch falls with W's removal");
+    }
+    assert!(second > 0 && flips > 0, "{second} {flips}");
 }
 
 // ---------- work (notes/principles.md, Check scaling) ----------
@@ -460,6 +572,73 @@ fn a_write_never_rescans_the_vouches_held() {
     eprintln!("a write with 2x10 and 2x100 vouches held: {a:?} {b:?}");
     assert_eq!(a, b, "work at n and 10n vouches: (commits walked, entries judged, entries moved)");
     assert_eq!(a.1, 0);
+}
+
+/// A removed party X forges a vouch on each of `k` things of other components (each its own
+/// admin and a few writes), keyed by its removal and listing its own commits on T; then a write
+/// on one of them: (commits walked, entries judged).
+fn forged_elsewhere_work(k: u32) -> (u64, u64) {
+    let (mut w, nodes, t) = perm_world();
+    let (h, x) = (nodes[0], nodes[1]);
+    let g = w.set(x, t, nodes[3], edge(Role::Admin), 1, &[]);
+    let r = w.set(h, t, x, None, 4, &[]);
+    let pool = w.nodes_salted(2 * k as usize, 20);
+    let mut others = Vec::new();
+    for i in 0..k as usize {
+        let (o, m) = (pool[2 * i], pool[2 * i + 1]);
+        let u = w.thing(o);
+        for j in 0..5 {
+            w.set(o, u, m, edge(if j % 2 == 0 { Role::Write } else { Role::Read }), 1 + j, &[]);
+        }
+        w.vouch(x, 6, u, &[(r, &[g])], &[]);
+        others.push((o, u));
+    }
+    let mut tls = Timelines::new();
+    tls.update(&w.held());
+    let (o, u) = others[0];
+    w.set(o, u, pool[1], edge(Role::Admin), 50, &[]);
+    let before = work();
+    tls.update_touched(&w.held(), &[u].into());
+    let d = since(before);
+    (d.0, d.1)
+}
+
+/// spec/permissions.md §5.1 Vouches (Check scaling): vouches forged on things of other
+/// components merge nothing: a write on one of them costs the same with 10 and 100 forged.
+#[test]
+fn forged_vouches_elsewhere_merge_no_components() {
+    let (a, b) = (forged_elsewhere_work(10), forged_elsewhere_work(100));
+    eprintln!("a write beside 10 and 100 forged vouches on other components: {a:?} {b:?}");
+    assert_eq!(a, b);
+}
+
+/// A write appended to a component of `n` edge writes holding one counting vouch, which it
+/// leaves counting: (commits walked, entries judged, entries moved).
+fn counting_append_work(n: u64) -> (u64, u64, u64) {
+    let (mut w, nodes, t) = perm_world();
+    let (h, x, wn) = (nodes[0], nodes[1], nodes[2]);
+    for i in 0..n {
+        w.set(h, t, nodes[3], edge(if i % 2 == 0 { Role::Write } else { Role::Read }), 1 + i, &[]);
+    }
+    let g = w.set(x, t, nodes[3], edge(Role::Admin), n + 1, &[(wn, n + 1)]);
+    let r = w.set(h, t, x, None, n + 10, &[(wn, n + 11)]);
+    w.vouch(wn, n + 12, t, &[(r, &[g])], &[]);
+    let mut tls = Timelines::new();
+    tls.update(&w.held());
+    assert_eq!(tls.get(&t).unwrap().counted().count(), 1);
+    w.set(h, t, wn, edge(Role::Admin), n + 20, &[]);
+    let before = work();
+    tls.update_touched(&w.held(), &[t].into());
+    since(before)
+}
+
+/// spec/permissions.md §5.1 Vouches (Check scaling): a write that leaves the counting entries
+/// as they were continues both walks: it costs the same at 30 and 300 edge writes of history.
+#[test]
+fn a_write_beside_a_counting_vouch_continues_both_walks() {
+    let (a, b) = (counting_append_work(30), counting_append_work(300));
+    eprintln!("a write beside a counting vouch at 30 and 300 edge writes: {a:?} {b:?}");
+    assert_eq!(a, b, "(commits walked, entries judged, entries moved)");
 }
 
 /// The evaluation of a component with `k` counting vouches for X's grant: (commits walked,

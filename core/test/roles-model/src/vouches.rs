@@ -625,6 +625,9 @@ impl crate::Tally for Stats {
     }
 }
 
+/// The labels of `Stats::ex` that `Stats::failures` counts; the rest are set-asides.
+const FAILURES: [&str; 6] = ["kept", "kept_end", "made", "safety", "listing", "order"];
+
 impl Stats {
     pub fn failures(&self) -> u64 {
         self.kept_fail + self.kept_end_fail + self.made_fail + self.safety_fail + self.listing.fail + self.order_fail
@@ -635,8 +638,13 @@ impl Stats {
             "{name}: {} worlds, {} vouches, {} counting entries | kept {} checked, FAIL {} | kept as promised {} checked, FAIL {} | stays made {} checked, FAIL {} | safety {} checked, FAIL {}, by its own author's vouch {} | listing {} checked, FAIL {}, X lowered A {}, accomplice {}, author revived {} | FAIL order {}",
             self.worlds, self.vouches, self.counted, self.kept_checked, self.kept_fail, self.kept_end_checked, self.kept_end_fail, self.made_checked, self.made_fail, self.safety_checked, self.safety_fail, self.safety_own, l.checked, l.fail, l.lowered, l.accomplice, l.revived, self.order_fail
         );
+        // shrinking costs minutes on one core: failures only; a set-aside example prints as found
         for (label, w) in &self.ex {
-            println!("  smallest {label} example:\n{}", shrunk(w, label, rules));
+            if FAILURES.contains(label) {
+                println!("  smallest {label} example:\n{}", shrunk(w, label, rules));
+            } else {
+                println!("  {label} example (set aside, not shrunk):\n{w}");
+            }
         }
     }
 }
@@ -790,9 +798,22 @@ pub fn random(samples: u64, rules: Rules) -> Stats {
 /// then one of: nothing, K granting W admin at 7, K removing W at 7. The honest vouches, received
 /// by every node a tick after they are written or never by H.
 pub fn exhaustive(rules: Rules, stride: usize) -> Stats {
+    let total = family_size();
+    crate::on_every_core(|th, threads, st: &mut Stats| {
+        let mut i = th * stride;
+        while i < total {
+            let mut rng = Rng::thread(0x5eed, i);
+            let w = family_world(rules, i);
+            i += threads * stride;
+            check(&w, rules, st, &mut rng);
+        }
+    })
+}
+
+/// X's write menu of the small family (`exhaustive`): (op, t, H's receipt, W's receipt).
+fn family_menu() -> Vec<((usize, Option<Edge>), u32, u32, u32)> {
     let full = Some(Edge { role: Role::Admin, until: NEVER, invite: Role::Admin });
     let write = Some(Edge { role: Role::Write, until: NEVER, invite: Role::None });
-    let genesis = vec![full, full, full, None];
     let xops: Vec<(usize, Option<Edge>)> = vec![(3, full), (3, write), (2, write), (0, None), (2, None)];
     let mut xmenu = vec![];
     for &op in &xops {
@@ -804,63 +825,88 @@ pub fn exhaustive(rules: Rules, stride: usize) -> Stats {
             }
         }
     }
-    let mut sets: Vec<Vec<usize>> = vec![vec![]];
-    for a in 0..xmenu.len() {
-        sets.push(vec![a]);
-        for b in a + 1..xmenu.len() {
-            sets.push(vec![a, b]);
-            for c in b + 1..xmenu.len() {
-                sets.push(vec![a, b, c]);
-            }
+    xmenu
+}
+
+/// The number of worlds of the small family (`family_world`).
+pub fn family_size() -> usize {
+    let m = family_menu().len();
+    (1 + m + m * (m - 1) / 2 + m * (m - 1) * (m - 2) / 6) * 2 * 3 * 3 * 2
+}
+
+/// World `i` of the small family (`exhaustive`), `i` below `family_size`, its honest vouches
+/// written by `rules`.
+pub fn family_world(rules: Rules, i: usize) -> World {
+    let full = Some(Edge { role: Role::Admin, until: NEVER, invite: Role::Admin });
+    let genesis = vec![full, full, full, None];
+    let xmenu = family_menu();
+    // the subsets of up to three menu entries, in a fixed order: index `z % sets` decoded
+    let m = xmenu.len();
+    let sets = 1 + m + m * (m - 1) / 2 + m * (m - 1) * (m - 2) / 6;
+    let mut k = i % sets;
+    let mut z = i / sets;
+    let set: Vec<usize> = 'found: {
+        if k == 0 {
+            break 'found vec![];
         }
-    }
-    let total = sets.len() * 2 * 3 * 3 * 2;
-    crate::on_every_core(|th, threads, st: &mut Stats| {
-        let mut i = th * stride;
-        while i < total {
-            let mut rng = Rng::thread(0x5eed, i);
-            let mut z = i;
-            i += threads * stride;
-            let set = &sets[z % sets.len()];
-            z /= sets.len();
-            let (wr, hw, kw, hv) = (z % 2, z / 2 % 3, z / 6 % 3, z / 18 % 2);
-            let mut h = EHist { genesis: genesis.clone(), writes: vec![], recv: vec![], extra: vec![] };
-            let mut push = |author: usize, op: (usize, Option<Edge>), t: u32, r: [u32; 4]| {
-                let id = h.writes.len() as u32;
-                let mut r = r.to_vec();
-                r[author] = t;
-                h.writes.push(EWrite { author, t, id, ops: vec![op], fin: false });
-                h.recv.push(r);
-            };
-            for &a in set {
-                let (op, t, rh, rw) = xmenu[a];
-                // K holds the grant naming it; others but H and W never receive X's writes
-                let rk = if op.0 == 3 { t } else { LATE };
-                push(1, op, t, [rh, t, rw, rk]);
+        k -= 1;
+        for a in 0..m {
+            if k == 0 {
+                break 'found vec![a];
             }
-            push(0, (1, None), 4, [4, LATE, if wr == 0 { 5 } else { LATE }, 4]);
-            match hw {
-                1 => push(0, (2, full), 6, [6, LATE, 6, 6]),
-                2 => push(0, (2, None), 6, [6, LATE, 6, 6]),
-                _ => {}
-            }
-            match kw {
-                1 => push(3, (2, full), 7, [7, LATE, 7, 7]),
-                2 => push(3, (2, None), 7, [7, LATE, 7, 7]),
-                _ => {}
-            }
-            let mut w = World { h, vouches: vec![] };
-            w.derive(rules, |a, t| {
-                let mut r = vec![t + 1; 4];
-                if hv == 1 {
-                    r[0] = LATE;
+            k -= 1;
+            for b in a + 1..m {
+                if k == 0 {
+                    break 'found vec![a, b];
                 }
-                r[a] = t;
-                r
-            });
-            check(&w, rules, st, &mut rng);
+                k -= 1;
+                let rest = m - b - 1;
+                if k < rest {
+                    break 'found vec![a, b, b + 1 + k];
+                }
+                k -= rest;
+            }
         }
-    })
+        unreachable!("index below the family size")
+    };
+    let (wr, hw, kw, hv) = (z % 2, z / 2 % 3, z / 6 % 3, z / 18 % 2);
+    z /= 36;
+    debug_assert_eq!(z, 0, "index below the family size");
+    let mut h = EHist { genesis, writes: vec![], recv: vec![], extra: vec![] };
+    let mut push = |author: usize, op: (usize, Option<Edge>), t: u32, r: [u32; 4]| {
+        let id = h.writes.len() as u32;
+        let mut r = r.to_vec();
+        r[author] = t;
+        h.writes.push(EWrite { author, t, id, ops: vec![op], fin: false });
+        h.recv.push(r);
+    };
+    for &a in &set {
+        let (op, t, rh, rw) = xmenu[a];
+        // K holds the grant naming it; others but H and W never receive X's writes
+        let rk = if op.0 == 3 { t } else { LATE };
+        push(1, op, t, [rh, t, rw, rk]);
+    }
+    push(0, (1, None), 4, [4, LATE, if wr == 0 { 5 } else { LATE }, 4]);
+    match hw {
+        1 => push(0, (2, full), 6, [6, LATE, 6, 6]),
+        2 => push(0, (2, None), 6, [6, LATE, 6, 6]),
+        _ => {}
+    }
+    match kw {
+        1 => push(3, (2, full), 7, [7, LATE, 7, 7]),
+        2 => push(3, (2, None), 7, [7, LATE, 7, 7]),
+        _ => {}
+    }
+    let mut w = World { h, vouches: vec![] };
+    w.derive(rules, |a, t| {
+        let mut r = vec![t + 1; 4];
+        if hv == 1 {
+            r[0] = LATE;
+        }
+        r[a] = t;
+        r
+    });
+    w
 }
 
 /// Search driver: `vouches`, `vouches-exh` and the controls (module doc). Failures found.

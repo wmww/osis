@@ -1,7 +1,7 @@
 //! Incremental evaluation (notes/perm-impl.md): the timeline split into connected components of
 //! things (edges join holder, target and author; a record joins a thing and its mint admin; a
-//! vouch joins its thing and its author),
-//! each cached by its exact
+//! vouch joins nothing: one counts only on a thing where its voucher holds a role, so already
+//! in its component), each cached by its exact
 //! inputs. A held-set change touches only the components whose inputs changed: continued in
 //! place (`Timeline::append`, `add_leaves`), from the old walk (`Timeline::extend`), from a
 //! saved walk, or evaluated. Components are independent: no write in one can change authority
@@ -12,7 +12,6 @@ use crate::held::HeldSet;
 use crate::timeline::{Appended, Timeline};
 use crate::trust::{Detection, Trust, DETECT_MAX};
 use crate::types::{Point, RoleCommit, WriteId};
-use crate::vouch::Vouch;
 use crate::walk::Change;
 use osis_base::{CommitId, CreationRecord, Tid};
 use std::collections::{BTreeMap, BTreeSet};
@@ -211,15 +210,13 @@ pub struct SaveDone {
 }
 
 /// The unions of the partition that thing `t`'s held inputs make (`created` its record,
-/// `commits` and `vouches` those held on it): with its mint admin; each edge write's author and
-/// holder with its target; each vouch's author with its thing (a voucher that could write what
-/// it lists reaches its targets, so every vouch that may count is in its removal's component).
-fn joins(t: Tid, created: Option<&CreationRecord>, commits: &[Arc<RoleCommit>], vouches: &[Arc<Vouch>], mut join: impl FnMut(Tid, Tid)) {
+/// `commits` those held on it): with its mint admin; each edge write's author and holder with
+/// its target. A vouch joins nothing: it counts only on a thing where its listed commit has a
+/// role-class part and its voucher could write that commit, so where the voucher, the commit's
+/// things and its removal are joined already (spec/permissions.md §5.1 Vouches).
+fn joins(t: Tid, created: Option<&CreationRecord>, commits: &[Arc<RoleCommit>], mut join: impl FnMut(Tid, Tid)) {
     if let Some(CreationRecord::Thing { admin, .. }) = created {
         join(t, *admin);
-    }
-    for v in vouches {
-        join(v.author, t);
     }
     for c in commits {
         for o in &c.ops {
@@ -232,7 +229,7 @@ fn joins(t: Tid, created: Option<&CreationRecord>, commits: &[Arc<RoleCommit>], 
 /// The things `t`'s held inputs join it with (`joins`).
 fn links(held: &dyn HeldSet, t: &Tid) -> Vec<Tid> {
     let mut out = Vec::new();
-    joins(*t, held.created(t).as_ref(), &held.edge_commits(t), &held.vouches(t), |a, b| out.extend([a, b]));
+    joins(*t, held.created(t).as_ref(), &held.edge_commits(t), |a, b| out.extend([a, b]));
     out
 }
 
@@ -667,7 +664,7 @@ impl Timelines {
         for t in &region {
             dsu.find(*t);
             let (rec, commits, vouches) = (held.created(t), held.edge_commits(t), held.vouches(t));
-            joins(*t, rec.as_ref(), &commits, &vouches, |a, b| dsu.union(a, b));
+            joins(*t, rec.as_ref(), &commits, |a, b| dsu.union(a, b));
             if rec.is_some() {
                 created.insert(*t);
             }

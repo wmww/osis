@@ -294,8 +294,14 @@ impl Timeline {
         if !self.input.vouches.keyed() {
             return self;
         }
-        debug_assert!(self.first.is_none() && self.input.listed.is_empty(), "vouches judged in a first walk");
         let counted = crate::vouch::counting(&self, &self.input.vouches, &self.input.commits);
+        self.walk_second(counted)
+    }
+
+    /// The second walk over this first walk's input with `counted` (its counting entries) read
+    /// as listed; this first walk when none counts.
+    fn walk_second(self, counted: BTreeMap<CommitId, BTreeSet<CommitId>>) -> Timeline {
+        debug_assert!(self.first.is_none() && self.input.listed.is_empty(), "vouches judged in a first walk");
         if counted.is_empty() {
             return self;
         }
@@ -586,7 +592,22 @@ impl Timeline {
             });
         };
         match first.append_walk(new, keys) {
-            Ok(f) => Ok(f.vouched().walked_again(std::mem::take(&mut self.walked.history))),
+            Ok(f) => {
+                let counted = crate::vouch::counting(&f, &f.input.vouches, &f.input.commits);
+                if counted != self.counted {
+                    return Ok(f.walk_second(counted).walked_again(std::mem::take(&mut self.walked.history)));
+                }
+                // the same counting entries: the second walk goes on over the same listed input
+                let counted = std::mem::take(&mut self.counted);
+                match self.append_walk(new, keys) {
+                    Ok(mut s) => {
+                        s.first = Some(Box::new(f));
+                        s.counted = counted;
+                        Ok(s)
+                    }
+                    Err(s) => Ok(f.walk_second(counted).walked_again(s.walked.history)),
+                }
+            }
             Err(f) => {
                 self.first = Some(f);
                 Err(Box::new(self))
@@ -1214,6 +1235,21 @@ impl crate::vouch::FirstWalk for Timeline {
                 out.push(crate::vouch::Lowering { point: c.point, holder: c.holder, frontier: frontier.clone() });
             }
             last.insert(key, c.edge);
+        }
+        out
+    }
+
+    fn demoted(&self) -> BTreeMap<CommitId, BTreeSet<Tid>> {
+        let mut out: BTreeMap<CommitId, BTreeSet<Tid>> = BTreeMap::new();
+        for ((x, _), fs) in &self.walked.falls {
+            for f in fs {
+                out.entry(f.point.commit).or_default().insert(*x);
+            }
+        }
+        for ((x, _), ds) in &self.walked.demotions {
+            for d in ds {
+                out.entry(d.point.commit).or_default().insert(*x);
+            }
         }
         out
     }
