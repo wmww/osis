@@ -98,7 +98,7 @@ pub const MAX_DRIFT_MS: u64 = HOUR_MS;
 /// Role-class deltas are kept at least this long after replaced (spec/wire.md §2,
 /// spec/commits.md §5). fixed.
 pub const ROLE_KEEP_MS: u64 = 90 * DAY_MS;
-/// How long an inbox keeps its open-signal fires (spec/wire.md §2, spec/sync-inbox.md §1). fixed.
+/// How long an inbox keeps its external-signal fires (spec/wire.md §2, spec/sync-inbox.md §1). fixed.
 pub const INBOX_LIFETIME_MS: u64 = 90 * DAY_MS;
 /// Deposits an admin leaves waiting under a sync ID per peer (spec/wire.md §2, spec/sync-inbox.md §4
 /// Clearing deposits): half the recommended minimum budget, so the rest stays free. Resource bound

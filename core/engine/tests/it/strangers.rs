@@ -1,5 +1,5 @@
-//! What a stranger's open fires leave on the node they reach (spec/commits.md §5 The setting,
-//! spec/sync-inbox.md §2, §4): only a setting entry naming an open signal keeps its fires, and a
+//! What a stranger's external fires leave on the node they reach (spec/commits.md §5 The setting,
+//! spec/sync-inbox.md §2, §4): only a setting entry naming an external signal keeps its fires, and a
 //! sealed fire's records and chain go at the pass end, its fires staying.
 
 use crate::common::{ak, s, set_setting};
@@ -70,15 +70,15 @@ fn listed(lp: &mut LocalPeer, c: &osis_base::CommitId, inbox: Tid, a: &str) -> b
     lp.peers[0].engine.listed_at(c, &[(inbox, ak(a))]).unwrap()
 }
 
-// spec/commits.md §5 The setting: an open signal's fires are kept by an entry naming it only,
-// never by the default: a stranger's fire on an open signal the setting does not name is out of
+// spec/commits.md §5 The setting: an external signal's fires are kept by an entry naming it only,
+// never by the default: a stranger's fire on an external signal the setting does not name is out of
 // history at its arrival, one on a named signal stays for its entry.
 #[test]
-fn only_an_entry_naming_an_open_signal_keeps_its_fires_spec_commits_5() {
+fn only_an_entry_naming_an_external_signal_keeps_its_fires_spec_commits_5() {
     let (mut lp, inbox) = strangers(1);
     let junk = fire(&mut lp, 1, inbox, JUNK, "junk");
     let note = fire(&mut lp, 1, inbox, NOTE, "note");
-    assert!(!listed(&mut lp, &junk, inbox, JUNK), "the default keeps no open fire");
+    assert!(!listed(&mut lp, &junk, inbox, JUNK), "the default keeps no external fire");
     assert!(listed(&mut lp, &note, inbox, NOTE), "its entry keeps it");
     lp.advance(HOUR_MS - 1_000);
     lp.peers[0].tick().unwrap();
@@ -104,7 +104,7 @@ type Census = std::collections::BTreeMap<String, Rows>;
 // spec/sync-inbox.md §4 A sealed fire, spec/commits.md §5 Forgetting, What a held thing needs: a
 // stranger's fires go whole once out of history, and its chain (its records, its and its
 // inbox's `keys.0` commits) with the pass end, which nothing held needs (a weak a fire carries
-// to its account needs nothing): N strangers each firing on a named and an unnamed open signal
+// to its account needs nothing): N strangers each firing on a named and an unnamed external signal
 // leave peer 0's rows exactly as before.
 #[test]
 fn strangers_fires_leave_no_row_spec_sync_inbox_4() {
@@ -132,7 +132,7 @@ fn strangers_fires_leave_no_row_spec_sync_inbox_4() {
 }
 
 // spec/sync-inbox.md §1, spec/commits.md §5 The setting, Forgetting: one stranger flooding the
-// inbox, past `DEPOSITS_WAITING` fires on its named signal and as many on open signals it names
+// inbox, past `DEPOSITS_WAITING` fires on its named signal and as many on external signals it names
 // nothing for, each on its own AK: the unnamed are out of history at arrival and go at once, the
 // named stay for their entry, then go; every row of the flood goes with its fires.
 #[test]
@@ -147,7 +147,7 @@ fn a_fire_flood_leaves_no_row_past_its_setting_spec_sync_inbox_1() {
     let base = lp.peers[0].engine.local_census().unwrap();
     let junk: Vec<_> = (0..k).map(|i| fire(&mut lp, 1, inbox, &format!("x:junk{i}@~0"), "junk")).collect();
     for (i, c) in junk.iter().enumerate() {
-        assert!(!listed(&mut lp, c, inbox, &format!("x:junk{i}@~0")), "an unnamed open signal keeps nothing");
+        assert!(!listed(&mut lp, c, inbox, &format!("x:junk{i}@~0")), "an unnamed external signal keeps nothing");
     }
     settle(&mut lp, &junk);
     assert_eq!(changed(&base, &lp.peers[0].engine.local_census().unwrap()), vec![], "unnamed fires leave no row");

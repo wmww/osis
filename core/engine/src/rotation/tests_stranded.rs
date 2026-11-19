@@ -196,9 +196,9 @@ fn a_writer_taking_a_stranded_notice_reseals_its_holder_spec_sync_inbox_5() {
     assert!(lp.peers[1].engine.epochs(&g).unwrap().read.secret(&e).is_some(), "m holds the new epoch");
 }
 
-// spec/sync-inbox.md §4 (A sealed fire: one holding any delta but one fire of an open signal of
+// spec/sync-inbox.md §4 (A sealed fire: one holding any delta but one fire of an external signal of
 // S's thing is not promoted): peer 1, holding g's public record and no secret of it, seals fires
-// to g's keyset; peer 0, a writer of g, takes the one holding one fire of an open signal of g and
+// to g's keyset; peer 0, a writer of g, takes the one holding one fire of an external signal of g and
 // refuses as bad one with a second fire beside it, one with a fire on another thing beside it,
 // one holding a fire of another thing alone, and one holding a write of g's that is no signal.
 #[test]

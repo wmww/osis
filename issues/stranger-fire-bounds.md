@@ -1,5 +1,5 @@
-# What a stranger's open fires leave behind
-> Summary: Open fires let anyone holding a thing's public key record write: the fires stored are bounded only by the sender's rate times the inbox's history setting.
+# What a stranger's external fires leave behind
+> Summary: External fires let anyone holding a thing's public key record write: the fires stored are bounded only by the sender's rate times the inbox's history setting.
 > Priority: normal
 > Tags: engine, sync, security
 

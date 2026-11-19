@@ -291,8 +291,8 @@ pub(crate) fn check_authority_with(core: &Core, node: Tid, records: Records<'_>,
 
 /// `check_authority_with` needing role `need`.
 pub(crate) fn check_role_with(core: &Core, node: Tid, records: Records<'_>, tid: &Tid, ak: &str, need: Role, ts: Ts) -> Result<()> {
-    // an open fire needs no role on its thing (spec/permissions.md §5.2 Open fires)
-    if Ak::markers_of(ak).open {
+    // an external fire needs no role on its thing (spec/permissions.md §5.2 External fires)
+    if Ak::markers_of(ak).external {
         return Ok(());
     }
     let role = role_with(core, node, records, tid, ts);
@@ -825,14 +825,14 @@ fn independent_first(tx: &mut Tx<'_>, mut m: Mutation) -> Result<Option<CommitId
     Ok(commit_or_build(tx, m)?.map(|(id, _)| id).or(done.commits.last().copied()))
 }
 
-/// The commit of sealed fire mutation `m` (one fire of an open signal on a thing this node need
+/// The commit of sealed fire mutation `m` (one fire of an external signal on a thing this node need
 /// not hold, spec/sync-inbox.md §2), built and signed, never applied here: the sender holds no
 /// setting of the thing and is bound by none (spec/commits.md §5 The setting).
 pub(crate) fn sealed_commit(tx: &mut Tx<'_>, mut m: Mutation) -> Result<osis_commit::CommitBlob> {
     m.sealed = true;
-    let one = matches!(m.aspects.keys().collect::<Vec<_>>().as_slice(), [(_, ak)] if ak.open());
+    let one = matches!(m.aspects.keys().collect::<Vec<_>>().as_slice(), [(_, ak)] if ak.external());
     if !one || !m.creates.is_empty() || !m.purge.is_empty() || !m.purge_named.is_empty() || m.undoes.is_some() || tx.txn.is_memory() {
-        return Err(Error::Misuse("a sealed fire is one fire of an open signal"));
+        return Err(Error::Misuse("a sealed fire is one fire of an external signal"));
     }
     commit_or_build(tx, m)?.and_then(|(_, b)| b).ok_or(Error::Misuse("a sealed fire writes nothing"))
 }

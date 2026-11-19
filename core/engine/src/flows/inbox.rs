@@ -1,4 +1,4 @@
-//! The inbox thing and its open signals (spec/sync-inbox.md §1, §2, §5): `ticket@~0`,
+//! The inbox thing and its external signals (spec/sync-inbox.md §1, §2, §5): `ticket@~0`,
 //! `removal@~0` and `stranded@~0`, fired sealed by anyone holding the inbox's public key record,
 //! promoted by a writer.
 
@@ -275,7 +275,7 @@ pub type FireId = [u8; 32];
 /// `node/fires/` + fire ID: a sealed fire owed (`OwedFire`).
 pub(crate) const FIRES: &[u8] = b"node/fires/";
 
-/// A fire of open signal `ak` on `thing` this node owes by sealed fire until a peer takes it
+/// A fire of external signal `ak` on `thing` this node owes by sealed fire until a peer takes it
 /// (spec/sync-inbox.md §2): offered to peers where `to` (an account holding a role on the thing)
 /// is proven; its commit built once (`commit`, a `CommitBlob`'s bytes), sealed again whenever
 /// the thing's read keyset moves.
@@ -389,7 +389,7 @@ fn reads_now(core: &crate::engine::Core, t: &Tid) -> bool {
     })
 }
 
-/// Fires open signal `ak` on `thing` with `value` (spec/sync-inbox.md §2): a node reading the
+/// Fires external signal `ak` on `thing` with `value` (spec/sync-inbox.md §2): a node reading the
 /// thing fires as it writes (a non-writer's commit is deposited as any); any other owes a sealed
 /// fire, offered to peers where `to` is proven, kept until one takes it.
 pub(crate) fn fire(tx: &mut Tx<'_>, thing: Tid, ak: &str, value: Value, to: BTreeSet<Tid>) -> Result<()> {
@@ -564,7 +564,7 @@ impl Engine {
 impl Engine {
     /// Opens entry `b` (`bytes`) of thing `t`'s sync ID as a sealed fire (spec/sync-inbox.md §4
     /// A sealed fire): with the read secret of each keyset of `t` held, newest first; takes the
-    /// commit, which holds one delta: a fire of an open signal of `t` whose hash and prefix agree
+    /// commit, which holds one delta: a fire of an external signal of `t` whose hash and prefix agree
     /// with its header, with the author's records and its chain's commits it carries as
     /// certificates, all or nothing: `Bad` unless the fire applies valid. `NotOpen` when no held
     /// key opens it.
@@ -580,7 +580,7 @@ impl Engine {
         let Some((under, (prefix, fire))) = found else { return Ok(Opened::NotOpen) };
         let Ok(commit) = osis_commit::CommitBlob::decode(&osis_base::encode(&fire.commit)) else { return Ok(Opened::Bad) };
         let h = &commit.header;
-        let one = matches!(commit.parts.as_slice(), [p] if h.aspects.get(p.ai).is_some_and(|a| a.tid == *t && a.ak.open()));
+        let one = matches!(commit.parts.as_slice(), [p] if h.aspects.get(p.ai).is_some_and(|a| a.tid == *t && a.ak.external()));
         if !one || !h.is_resolved() {
             return Ok(Opened::Bad);
         }
@@ -833,7 +833,7 @@ pub(crate) fn fire_untaken(tx: &mut Tx<'_>, c: &CommitId, ak: &str) -> Result<bo
     Ok(fire_commit(tx, c)?.is_some_and(|b| !held_whole(tx, &b)))
 }
 
-/// The value fire commit `c` holds on open signal `ak`, as held here.
+/// The value fire commit `c` holds on external signal `ak`, as held here.
 fn fire_value(tx: &mut Tx<'_>, c: &CommitId, ak: &str) -> Result<Option<Value>> {
     let Some(m) = tx.core.ix.commits.get(c) else { return Ok(None) };
     let Some(ai) = m.header.aspects.iter().position(|a| a.ak.as_str() == ak) else { return Ok(None) };

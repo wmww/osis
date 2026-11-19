@@ -1346,7 +1346,7 @@ impl Engine {
     /// (spec/commits.md §5, Forgetting): only where forgetting changes no read, every part of
     /// it covered, dropped as invalid or a fire dropped out of history, nothing waiting. A content
     /// commit or content snapshot every part of which dropped as covered (by any writer's cover),
-    /// as invalid or as a fire out of history or expired (a stranger's open fires, each its own
+    /// as invalid or as a fire out of history or expired (a stranger's external fires, each its own
     /// commit, would leave a header for good), or missing on a thing whose record is not held (a
     /// release's marked part: the commit of a thing made and released beside a write on a root
     /// stayed for good once that write was covered), no purge

@@ -206,13 +206,13 @@ pub struct Markers {
     pub admin_only: bool,
     /// `~` in place of the `.`: it has no current value; it is only written.
     pub signal: bool,
-    /// `@` before the `~` (never beside `+` or `^`): an open signal.
-    pub open: bool,
+    /// `@` before the `~` (never beside `+` or `^`): an external signal.
+    pub external: bool,
 }
 
 /// An aspect key: name segments `[a-z_][a-z0-9_]*` joined by `:`, after an optional leading
 /// `:<tid>` segment; then the markers `+` (ephemeral) and `^` (admin-only); then `.` (an aspect)
-/// or `~` (a signal), or `@~` alone (an open signal), and the version: `name.0`,
+/// or `~` (a signal), or `@~` alone (an external signal), and the version: `name.0`,
 /// `contact:names.0`, `:<tid>:foo+^.1`, `x+~0`, `ticket@~0`.
 #[derive(Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Debug)]
 pub struct Ak(String);
@@ -270,8 +270,8 @@ const fn parse(s: &[u8]) -> Option<Parsed> {
         }
     }
     let end = s.len() - rest.len();
-    let open = matches!(rest, [b'@', b'~', ..]);
-    if open {
+    let external = matches!(rest, [b'@', b'~', ..]);
+    if external {
         rest = match rest {
             [_, r @ ..] => r,
             _ => rest,
@@ -279,20 +279,20 @@ const fn parse(s: &[u8]) -> Option<Parsed> {
     }
     let mut ephemeral = false;
     if let [b'+', r @ ..] = rest
-        && !open
+        && !external
     {
         ephemeral = true;
         rest = r;
     }
     let mut admin_only = false;
     if let [b'^', r @ ..] = rest
-        && !open
+        && !external
     {
         admin_only = true;
         rest = r;
     }
     let signal = match rest {
-        [b'.', r @ ..] if !open => {
+        [b'.', r @ ..] if !external => {
             rest = r;
             false
         }
@@ -322,7 +322,7 @@ const fn parse(s: &[u8]) -> Option<Parsed> {
     if digits == 0 {
         return None;
     }
-    Some(Parsed { names, end, version, markers: Markers { ephemeral, admin_only, signal, open } })
+    Some(Parsed { names, end, version, markers: Markers { ephemeral, admin_only, signal, external } })
 }
 
 impl Ak {
@@ -381,10 +381,10 @@ impl Ak {
     pub fn signal(&self) -> bool {
         self.parsed().markers.signal
     }
-    /// The `@` marker (before `~`): an open signal, which anyone holding the thing's public key
+    /// The `@` marker (before `~`): an external signal, which anyone holding the thing's public key
     /// record may fire (spec/data-model.md §2, spec/sync-inbox.md §2).
-    pub fn open(&self) -> bool {
-        self.parsed().markers.open
+    pub fn external(&self) -> bool {
+        self.parsed().markers.external
     }
     #[doc(hidden)]
     /// The markers of a valid AK's text, read from its tail (`+`, `^`, `@` and `~` occur nowhere
@@ -398,12 +398,12 @@ impl Ak {
         let signal = b.get(i.wrapping_sub(1)) == Some(&b'~');
         let i = i.saturating_sub(1);
         if signal && b.get(i.wrapping_sub(1)) == Some(&b'@') {
-            return Markers { ephemeral: false, admin_only: false, signal, open: true };
+            return Markers { ephemeral: false, admin_only: false, signal, external: true };
         }
         let admin_only = b.get(i.wrapping_sub(1)) == Some(&b'^');
         let i = i.saturating_sub(usize::from(admin_only));
         let ephemeral = b.get(i.wrapping_sub(1)) == Some(&b'+');
-        Markers { ephemeral, admin_only, signal, open: false }
+        Markers { ephemeral, admin_only, signal, external: false }
     }
     /// Whether this key is a later version of `other`: the same tid and name segments, a higher
     /// version, any markers.
@@ -704,7 +704,7 @@ mod tests {
     fn ak_rules() {
         let a = Ak::new("note:body.0").unwrap();
         assert_eq!(a.segments().collect::<Vec<_>>(), ["note", "body"]);
-        let m = |ephemeral, admin_only, signal| Markers { ephemeral, admin_only, signal, open: false };
+        let m = |ephemeral, admin_only, signal| Markers { ephemeral, admin_only, signal, external: false };
         let markers = |a: &Ak| m(a.ephemeral(), a.admin_only(), a.signal());
         assert_eq!((a.version(), a.tid(), markers(&a)), (0, None, m(false, false, false)));
         let t = Tid::from_bytes([7; 15]);
@@ -726,10 +726,10 @@ mod tests {
         }
         assert_eq!(Ak::markers_of(":AAAAAAAAAAAAAAAAAAAA:a+^~12"), m(true, true, true));
         // `@` only as `@~`, never beside `+` or `^`
-        let open = Markers { signal: true, open: true, ..Markers::default() };
+        let external = Markers { signal: true, external: true, ..Markers::default() };
         let k = Ak::new("ticket@~0").unwrap();
-        assert!(k.open() && k.signal() && !k.ephemeral() && !k.admin_only() && k.segments().eq(["ticket"]));
-        assert_eq!((Ak::markers_of("ticket@~0"), Ak::markers_of("x~0").open), (open, false));
+        assert!(k.external() && k.signal() && !k.ephemeral() && !k.admin_only() && k.segments().eq(["ticket"]));
+        assert_eq!((Ak::markers_of("ticket@~0"), Ak::markers_of("x~0").external), (external, false));
         for bad in ["x@.0", "x+@~0", "x^@~0", "x@+~0", "x@^~0", "x@~", "x@0", "@~0", "x@@~0"] {
             assert_eq!(Ak::new(bad), Err(AkError), "{bad}");
         }

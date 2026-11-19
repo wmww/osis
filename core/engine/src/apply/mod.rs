@@ -752,9 +752,9 @@ fn thing_wait(
         }
     }
     // it is on the record chain, or held edge writes lead from it to the chain (a revoked author
-    // keeps its certificates and still applies, judged invalid); an open fire needs no path
-    // (spec/permissions.md §5.2 Open fires)
-    (!a.ak.open() && !chain.contains(&h.author) && !validity::reaches(core, &h.author, &chain)).then_some(Reason::MissingChain(h.author))
+    // keeps its certificates and still applies, judged invalid); an external fire needs no path
+    // (spec/permissions.md §5.2 External fires)
+    (!a.ak.external() && !chain.contains(&h.author) && !validity::reaches(core, &h.author, &chain)).then_some(Reason::MissingChain(h.author))
 }
 
 /// Applies or stores one decoded commit blob.

@@ -780,9 +780,9 @@ impl<'a> Judge<'a> {
         if !self.acts(h, id) {
             return false;
         }
-        // an open fire: valid whatever its author's role on the thing, its signature and chain to
-        // its actor verified (spec/permissions.md §5.2 Open fires)
-        if a.ak.open() {
+        // an external fire: valid whatever its author's role on the thing, its signature and chain to
+        // its actor verified (spec/permissions.md §5.2 External fires)
+        if a.ak.external() {
             return true;
         }
         // a thing more than `MAX_CHAIN_DEPTH` record links below its key actor: nothing written on

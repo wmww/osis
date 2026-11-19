@@ -198,7 +198,7 @@ impl Engine {
         })
     }
 
-    /// Tests only: fires open signal `ak` on `thing` with `value` as any fire goes
+    /// Tests only: fires external signal `ak` on `thing` with `value` as any fire goes
     /// (`flows::inbox::fire`): written where this node reads the thing, else owed sealed.
     #[doc(hidden)]
     pub fn fire_open(&mut self, thing: &Tid, ak: &str, value: osis_base::Value) -> Result<()> {

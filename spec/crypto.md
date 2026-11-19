@@ -59,7 +59,7 @@
 - **`keys.0`**: a struct holding the current keyset only, and the box records (§4, Stale).
   - Per role a `keyset` (spec/data-model.md §9; `delete_key`: §7; `demotions`, `demotes`: §4, Carried demotions; a key actor: one KEM key, no epoch).
   - `sealed`: per box of the thing to a holder actor, keyed as the box, the keysets of the holder it names (§4, Stale), written with the box by whoever writes it.
-  - For an independent thing, also its **sync ID** (spec/sync-ids.md §2) and **deposit seed** (32 random bytes): what an open fire on it goes under and is signed with (spec/sync-inbox.md §2).
+  - For an independent thing, also its **sync ID** (spec/sync-ids.md §2) and **deposit seed** (32 random bytes): what an external fire on it goes under and is signed with (spec/sync-inbox.md §2).
   - A role's entry is written by the node that rotates that role (spec/permissions.md §3).
   - An admin writes the sync ID and deposit seed; it MAY refresh the deposit seed at any time and MUST write a fresh one in each rotation of the sync role it makes.
   - A key actor's `keys.0` is written by its own key. A key actor's keyset other than an account's is fixed by its seed and never rotates: a key actor changes keys only by being replaced (a new key actor added, the old one removed).

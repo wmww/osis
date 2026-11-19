@@ -127,7 +127,7 @@ impl From<&osis_schema::core_types::RetentionEntry> for RetentionEntry {
 pub struct RetentionSetting {
     /// The entry for each aspect named.
     pub rules: std::collections::BTreeMap<Ak, RetentionEntry>,
-    /// The entry for every aspect not in `rules` but an open (`@`) signal, which only its own entry
+    /// The entry for every aspect not in `rules` but an external (`@`) signal, which only its own entry
     /// keeps; none: nothing is kept there.
     pub default: Option<RetentionEntry>,
     /// A holder removed from the thing retains a read-only copy, unless its remover says otherwise

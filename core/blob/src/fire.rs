@@ -1,4 +1,4 @@
-//! Sealed fires (spec/sync-inbox.md §2, spec/wire.md §9): a fire of an open signal, a commit by
+//! Sealed fires (spec/sync-inbox.md §2, spec/wire.md §9): a fire of an external signal, a commit by
 //! the sender's own account sealed to the fired thing's read KEM key, delivered as a deposit.
 //! The commit travels as its `CommitBlobPlaintext` value; osis-commit parses it.
 
