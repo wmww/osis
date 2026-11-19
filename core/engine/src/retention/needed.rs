@@ -167,10 +167,31 @@ pub(crate) fn takes_part(core: &Core, t: &Tid, ak: &osis_base::Ak) -> bool {
     core.created(t).is_some_and(|r| applies_on(core, t, ak, r))
 }
 
+/// Whether the node holds the commit minting `t` (a held `created.0` part on it): then it judges
+/// which sync units hold `t` by its own view (spec/commits.md §4 Pending storage, Outside the
+/// node closure). Until then a strong bringing `t` in may come with its record in one transaction
+/// (the commit minting it), which pulls nothing anew (spec/sync-judgement.md §3 Dropped bodies),
+/// so what waits on `t` is kept while carried. O(the commits on `t`'s `created.0`).
+pub(crate) fn minted_here(core: &Core, t: &Tid) -> bool {
+    let Ok(ak) = osis_base::Ak::new("created.0") else { return false };
+    core.ix.by_aspect.get(&(*t, ak.clone())).is_some_and(|cs| cs.iter().any(|(_, c)| core.ix.commits.get(c).is_some_and(|m| m.aspect(t, &ak).is_some_and(|ai| m.holds(ai)))))
+}
+
+/// Whether parts wait on `t` to enter the node closure that no sync ID the node syncs carries
+/// (spec/commits.md §4 Pending storage): `t` is not held whole and the node judges it in no sync
+/// unit (`minted_here`; a unit holds only things of the node closure). They count as never
+/// received once the pass that brought them ends (`settle`).
+pub(crate) fn uncarried(core: &Core, t: &Tid) -> bool {
+    core.ix.pend_on.contains_key(&crate::apply::Wake::Enters(*t)) && !matches!(rooted(core, t), Some(Root::Held | Root::Copy(_))) && minted_here(core, t)
+}
+
 /// Whether the node holds more of `t` than `holding` allows.
 fn excess(tx: &mut Tx<'_>, t: &Tid) -> Result<bool> {
     if !holds_any(tx.core, t) {
         return Ok(false);
+    }
+    if uncarried(tx.core, t) {
+        return Ok(true);
     }
     Ok(match holding(tx, t, &mut Reached::new())? {
         Holding::Whole => false,
@@ -191,7 +212,8 @@ pub(crate) enum Root {
     SelfRemoval(osis_base::CommitId),
     /// What waits under Pending storage awaits its record or its entry into the node closure
     /// (`apply::awaited`): nothing on it applies before its record, nor content before it
-    /// enters, so what came for it pends, kept while carried.
+    /// enters, so what came for it pends, kept while carried. An entry is awaited only until the
+    /// node holds the commit minting it (`uncarried`).
     Awaited,
 }
 
@@ -222,7 +244,7 @@ pub(crate) fn rooted(core: &Core, t: &Tid) -> Option<Root> {
     if let Some(a) = super::forget::copy_of(core, t) {
         return Some(Root::Copy(a));
     }
-    if crate::apply::awaited(core, t) {
+    if core.ix.pend_on.contains_key(&crate::apply::Wake::Record(*t)) || (core.ix.pend_on.contains_key(&crate::apply::Wake::Enters(*t)) && !minted_here(core, t)) {
         return Some(Root::Awaited);
     }
     // an own self-removal from it waits to be sealed under its sync IDs (`sync::held::wait_if_own`)
@@ -312,6 +334,12 @@ pub(crate) fn holds_any(core: &Core, t: &Tid) -> bool {
 /// went: what it named and signed is due in turn.
 pub(crate) fn settle(tx: &mut Tx<'_>) -> Result<bool> {
     let due = std::mem::take(&mut tx.core.needs_due);
+    // what waits on a thing no synced sync ID carries counts as never received (`uncarried`)
+    for t in &due {
+        if uncarried(tx.core, t) {
+            crate::apply::unreceive_outside(tx, t)?;
+        }
+    }
     let mut gone: BTreeSet<Tid> = BTreeSet::new();
     let mut content: BTreeSet<Tid> = BTreeSet::new();
     for t in due {
@@ -341,6 +369,10 @@ pub(crate) fn settle(tx: &mut Tx<'_>) -> Result<bool> {
         return Ok(!content.is_empty());
     }
     osis_base::costs::count("needed: things dropped", gone.len() as u64);
+    // what waits on a thing going whole goes with it, as never received
+    for t in &gone {
+        crate::apply::unreceive_outside(tx, t)?;
+    }
     // the role commits with a part on them
     let core = &*tx.core;
     let roles: BTreeSet<osis_base::CommitId> = gone.iter().flat_map(|t| core.ix.held.commits_on(t).iter().map(|c| c.id).chain(core.on_thing(t).filter(|c| core.ix.commits.get(c).is_some_and(|m| m.view.kind.is_role())))).collect();

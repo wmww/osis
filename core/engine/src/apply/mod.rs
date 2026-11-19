@@ -431,6 +431,45 @@ pub(crate) fn wake_entered(tx: &mut Tx<'_>) -> Result<usize> {
     Ok(n)
 }
 
+/// The parts waiting for `t` to enter the node closure count as never received: no sync ID the
+/// node syncs carries them (spec/commits.md §4 Pending storage, `retention::needed::uncarried`),
+/// or `t` went whole. Each leaves its commit's stored copy; a copy left with no part goes, as does
+/// a commit nothing of which applied; one with other parts waiting is examined again.
+pub(crate) fn unreceive_outside(tx: &mut Tx<'_>, t: &Tid) -> Result<()> {
+    let ids: Vec<CommitId> = tx.core.ix.pend_on.get(&Wake::Enters(*t)).into_iter().flatten().copied().collect();
+    for id in ids {
+        let Some(mut b) = read_pending(tx, &id)? else { continue };
+        let things: Vec<Tid> = match tx.core.ix.commits.get(&id) {
+            Some(m) => m.view.aspects.iter().map(|a| a.tid).collect(),
+            None => {
+                if !b.header.is_resolved() {
+                    let Some(dedup) = tx.core.dedup(&b.header.actor) else { continue };
+                    if b.header.resolve(&mut TxBlobs::new(&mut tx.blobs, tx.txn.is_memory()), &dedup).is_err() {
+                        continue;
+                    }
+                }
+                b.header.aspects.iter().map(|a| a.tid).collect()
+            }
+        };
+        let ais: BTreeSet<usize> = b.parts.iter().map(|p| p.ai).filter(|ai| things.get(*ai) == Some(t)).collect();
+        let Some(rest) = crate::retention::take_parts(tx, &id, &ais)? else { continue };
+        tx.core.touch();
+        if rest.parts.is_empty() {
+            drop_pending(tx, &id)?;
+            continue;
+        }
+        tx.core.waits.examined += 1;
+        match rest.header.ephemeral.is_none() {
+            true => drop(retry_pending(tx, id, rest)?),
+            false => {
+                tx.core.memory_waits.insert(id);
+                tx.core.waits.memory_woken.wrote_added(&id, true, true);
+            }
+        }
+    }
+    Ok(())
+}
+
 /// Examines pending commit `id` (stored as `b`) again as one step: a commit refused leaves
 /// nothing of its examination or apply, and bad input forgets it. `None` when it was bad.
 fn retry_pending(tx: &mut Tx<'_>, id: CommitId, b: CommitBlob) -> Result<Option<Ingested>> {

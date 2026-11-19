@@ -1254,10 +1254,12 @@ fn a_thing_entering_again_with_its_record_held_is_pulled_anew_spec_sync_judgemen
     assert_eq!(lp.peers[1].engine.get(&y, &reg).unwrap(), Some(Value::Str("y".into())), "Y's content back");
 }
 
-// spec/commits.md §4 Outside the node closure: one commit of peer 0 writes Y, outside peer 1's
-// node closure, and X, in it; peer 1 gets its part on Y alone: that part waits for Y to enter, so
-// the commit pends whole (its every held part waits) and Y reads nothing. The whole copy then
-// applies its part on X; the part on Y waits on.
+// spec/commits.md §4 Outside the node closure, Pending storage: one commit of peer 0 writes Y,
+// outside peer 1's node closure, and X, in it; peer 1 gets its part on Y alone: that part waits for
+// Y to enter, so the commit pends whole (its every held part waits) and Y reads nothing. Peer 1
+// holds Y's minting commit, so it judges Y in no sync unit it syncs: at the pass end the part is
+// not carried and counts as never received. The whole copy then applies its part on X; the part
+// on Y waits again and goes again.
 #[test]
 fn a_part_outside_the_node_closure_waits_beside_one_in_it_spec_commits_4() {
     let reg = crate::common::ak("t:reg.0");
@@ -1272,37 +1274,43 @@ fn a_part_outside_the_node_closure_waits_beside_one_in_it_spec_commits_4() {
     b.parts.retain(|p| p.ai != on_x);
     let r = &mut lp.peers[1];
     r.receive(&b.encode(), pk.blobs.clone()).unwrap();
-    pass_end(&mut r.engine);
     assert_eq!(r.engine.get(&y, &reg).unwrap(), None, "the part on Y waits");
     assert!(r.engine.pending().iter().any(|p| p.0 == c), "the commit pends: its every held part waits");
+    pass_end(&mut r.engine);
+    assert!(!r.engine.pends(&c) && r.engine.header(&c).is_none(), "not carried: never received");
     r.receive(&pk.bytes, pk.blobs.clone()).unwrap();
+    assert!(r.engine.pends(&c), "the part on Y waits");
     pass_end(&mut r.engine);
     assert_eq!(r.engine.get(&x, &reg).unwrap(), Some(Value::Str("x2".into())), "X reads the commit");
     assert_eq!(r.engine.get(&y, &reg).unwrap(), None, "Y still none");
+    assert!(!r.engine.pends(&c), "the part on Y not carried");
 }
 
-// spec/sync-set.md §2 Cost, spec/commits.md §4 Outside the node closure, §5 What a held thing
-// needs: the pass end judges the things due alone. With n and 10n things of its own held, peer 1
-// takes a write on Y (outside its node closure: it waits), then holds Y (pulled anew; the write
-// woken and applied) and releases it: each step counts the same work.
+// spec/sync-set.md §2 Cost, spec/commits.md §4 Outside the node closure, Pending storage, §5 What
+// a held thing needs: the pass end judges the things due alone, a wake examines what waits on the
+// thing entering alone. With n and 10n things of its own held, peer 1 takes a write on Y (outside
+// its node closure: it waits), then holds Y (pulled anew; the write woken and applied) and
+// releases it; a second write on Y then waits until the pass end, which judges Y in no sync unit
+// peer 1 syncs (it holds Y's minting commit): not carried, it goes. Each step counts the same work.
 #[test]
 fn waiting_and_pulling_anew_cost_the_thing_not_the_node_closure_spec_commits_5() {
     let work = |n: usize| {
         let (mut lp, _, y) = under_y(n, false);
         let d1 = lp.peers[1].engine.account_root().unwrap();
-        let mut m = Mutation::new();
-        m.set(y, &crate::common::REG, &Value::Str("y2".into())).unwrap();
-        let c = lp.peers[0].engine.commit(m).unwrap().unwrap();
+        let write = |lp: &mut osis_engine::local_peer::LocalPeer, v: &str| {
+            let mut m = Mutation::new();
+            m.set(y, &crate::common::REG, &Value::Str(v.into())).unwrap();
+            lp.peers[0].engine.commit(m).unwrap().unwrap()
+        };
+        let c = write(&mut lp, "y2");
         let counted = |lp: &mut osis_engine::local_peer::LocalPeer, f: &dyn Fn(&mut osis_engine::local_peer::LocalPeer)| {
             osis_base::costs::take();
             f(lp);
             osis_base::costs::take().into_iter().map(|(k, _, c)| (k, c)).collect::<BTreeMap<_, _>>()
         };
-        let wait = counted(&mut lp, &|lp| {
-            crate::flows::send(lp, 0, 1, &[c]);
-            lp.peers[1].engine.settle_needs().unwrap();
-        });
+        let wait = counted(&mut lp, &|lp| crate::flows::send(lp, 0, 1, &[c]));
         assert_eq!(lp.peers[1].engine.get(&y, &crate::common::ak("t:reg.0")).unwrap(), None, "n {n}: it waits");
+        assert!(lp.peers[1].engine.pends(&c), "n {n}: it waits");
         let enter = counted(&mut lp, &|lp| {
             let e1 = &mut lp.peers[1].engine;
             let mut m = Mutation::new();
@@ -1319,11 +1327,17 @@ fn waiting_and_pulling_anew_cost_the_thing_not_the_node_closure_spec_commits_5()
             e1.released(&[y].into()).unwrap();
             e1.settle_needs().unwrap();
         });
-        (wait, enter, release)
+        let c2 = write(&mut lp, "y3");
+        let gone = counted(&mut lp, &|lp| {
+            crate::flows::send(lp, 0, 1, &[c2]);
+            lp.peers[1].engine.settle_needs().unwrap();
+        });
+        assert!(!lp.peers[1].engine.pends(&c2) && lp.peers[1].engine.header(&c2).is_none(), "n {n}: not carried, never received");
+        (wait, enter, release, gone)
     };
     let (small, large) = (work(5), work(50));
-    eprintln!("wait, enter, release at n, 10n:\n{small:?}\n{large:?}");
-    assert!(small.0.get("needed: things due").is_some_and(|c| *c > 0), "a thing judged");
+    eprintln!("wait, enter, release, gone at n, 10n:\n{small:?}\n{large:?}");
+    assert!(small.3.get("needed: things due").is_some_and(|c| *c > 0), "a thing judged");
     assert!(small.1.get("sync IDs pulled anew").is_some_and(|c| *c > 0), "pulled anew on entry");
     assert_eq!(small, large);
 }

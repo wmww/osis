@@ -56,7 +56,7 @@ pub(crate) use snapshot::write_snapshot;
 pub mod suspect;
 
 pub(crate) use replace::settle_none;
-pub(crate) use pending::{emptied, forget_joined_leftovers, forget_waiting_leftovers, pending_drops, pending_expired, stripped_joined, waiting_stripped};
+pub(crate) use pending::{emptied, forget_joined_leftovers, forget_waiting_leftovers, pending_drops, pending_expired, stripped_joined, take_parts, waiting_stripped};
 use pending::{purge_pending, strip_pending};
 pub(crate) use purge::{check_request, known_purged, lasting, load_owed, note_requests, purged_aspects, purged_by, rejudge_purges, requests_resting_on};
 pub(crate) use snapshot::covered;

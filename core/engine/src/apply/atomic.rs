@@ -506,7 +506,15 @@ fn note_created(tx: &mut Tx<'_>, h: &Header, parts: &[(usize, Decoded)]) -> Resu
     }
     for (ai, d) in parts {
         let Some(a) = h.aspects.get(*ai) else { continue };
-        if a.ak.as_str() != osis_commit::retention::CREATED || tx.core.created(&a.tid).is_some() {
+        if a.ak.as_str() != osis_commit::retention::CREATED {
+            continue;
+        }
+        if tx.core.created(&a.tid).is_some() {
+            // the commit minting it: what waits on it is judged once the pass ends
+            // (`retention::needed::uncarried`)
+            if tx.core.ix.pend_on.contains_key(&super::Wake::Enters(a.tid)) {
+                tx.core.note_pass_due(a.tid);
+            }
             continue;
         }
         let rec = d.fragment().read().as_ref().and_then(CreationRecord::from_value).ok_or(Error::BadInput("created.0"))?;

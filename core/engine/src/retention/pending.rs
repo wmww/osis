@@ -303,6 +303,23 @@ pub(crate) fn stripped_joined(tx: &mut Tx<'_>, id: &CommitId, joined: &[(usize, 
 
 /// Part `ai` of the stored pending copy of `c` (waiting or parked), if any, goes (`pending_drops`,
 /// `hold_valueless`), flagged suspect; sync then forgets the blobs holding it.
+/// Parts `ais` of commit `id`'s stored pending copy go, as never received, with the leftovers
+/// they kept (`apply::unreceive_outside`): what is left of the copy, `None` when none is stored.
+pub(crate) fn take_parts(tx: &mut Tx<'_>, id: &CommitId, ais: &BTreeSet<usize>) -> Result<Option<osis_commit::CommitBlob>> {
+    let Some((h, _)) = rewrite_stored(tx, id, |b| {
+        let n = b.parts.len();
+        b.parts.retain(|p| !ais.contains(&p.ai));
+        b.parts.len() != n
+    })?
+    else {
+        return Ok(None);
+    };
+    for ai in ais {
+        forget_waiting_leftover(tx, &h, id, *ai)?;
+    }
+    Ok(tx.txn.get_pending(id)?.and_then(|p| osis_commit::CommitBlob::decode_stored(&p.bytes).ok()))
+}
+
 pub(super) fn strip_pending(tx: &mut Tx<'_>, c: &CommitId, ai: usize) -> Result<()> {
     let Some((h, taken)) = rewrite_stored(tx, c, |b| take_slot(b, ai))? else { return Ok(()) };
     forget_waiting_leftover(tx, &h, c, ai)?;

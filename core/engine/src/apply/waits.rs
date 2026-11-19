@@ -97,6 +97,8 @@ pub(crate) fn set_pending(core: &mut Core, id: &CommitId, r: Option<(Reason, Opt
                     // judged once the pass ends: a record nothing needs is not awaited (`retention::needed`)
                     core.note_pass_due(*t);
                 }
+                // judged once the pass ends: what no synced sync ID carries goes (`needed::uncarried`)
+                Wake::Enters(t) => core.note_pass_due(*t),
                 // a tick is due then (`Engine::next_timer`)
                 Wake::At(t) => core.timer_floor = core.timer_floor.min(*t),
                 _ => {}
