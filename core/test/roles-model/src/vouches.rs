@@ -46,6 +46,9 @@
 //!   (`witnessed`), is kept: every node ends with the authority it has where R's frontier names
 //!   every such op (the reference: `EHist::extra` set to every such entry). Compared on final
 //!   authority, not op by op: keeping one witnessed op may leave a later one of X without effect;
+//! - **kept as promised** (`kept_end`, under `Rules::state`): the spec's form of kept
+//!   (spec/permissions.md §5.1 What vouches keep): `witnessed` reduced to its end clause, the
+//!   reference's entries joined with the judgment's counting ones;
 //! - **stays made**: op by op for X's lowerings: a lowering of another node's edge by X that
 //!   every removal of X after it lists or has witnessed, and that applies in the reference,
 //!   applies in the judgment;
