@@ -826,8 +826,8 @@ fn a_removal_held_here_closes_a_credential_open_at_once_spec_sync_opens_6() {
     assert!(!p.a.open(p.ca, &S) && !p.b.open(p.cb, &S));
 }
 
-// spec/sync-opens.md §6 (a member is re-judged at each change of J of its peer; a record no
-// connection holds, at its next take): a member's J is followed per record, across its
+// spec/sync-opens.md §6 (whether or not a connection holds its record; a connection taking a
+// record re-judges nothing that did not change): a member's J is followed per record, across its
 // connections, so a reconnect judges nothing of it again; a move while no connection holds the
 // record lets it go, and the next take judges it: b, removed while away, is no member there.
 #[test]

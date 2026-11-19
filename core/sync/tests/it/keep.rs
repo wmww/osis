@@ -222,8 +222,8 @@ fn readers_logging_the_same_records_settle_on_one_record_blob_spec_permissions_4
 }
 
 // spec/sync-ids.md §6 (Steps: a reader registers at each source keeping S unread the steps after
-// the source's step), spec/sync-opens.md §6 (a record's members are judged whether or not a
-// connection holds it): node 0 rotates t's write secret, issuing a step, while node 1 (keeping S
+// the source's step), spec/sync-opens.md §6 (whether or not a connection holds its record):
+// node 0 rotates t's write secret, issuing a step, while node 1 (keeping S
 // unread) is apart from every reader, its record held by no connection; once they meet again the
 // step is registered there, with nothing else moving.
 #[test]
