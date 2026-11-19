@@ -22,3 +22,6 @@ Rule 1. It keeps storage following what is referenced, which users rely on every
 
 ## Meanwhile
 The plan (notes/redesign-plan.md, M1, B2) proceeds on rule 1: it is what the spec and engine already do for dependent things, so B2 keeps that code instead of deleting it. Going to rule 2 later is a deletion (the release of dependents inside a unit, and its model property); nothing else changes.
+
+## Proposed third rule: expiring external holds
+notes/external-holds.md: a reference from another unit keeps a dependent thing through an expiring strong on its independent, renewed by nodes holding both units that may write it. Verdict: it works, with three rules added (renewal counted from the hold's source, or cycles across units are never released; reads gated by the same closure; purges kept past a lapse), at the accepted gap, release up to the expiry late, and an idle renewal per outside reference. It cannot help where none of the referring unit's holders may write the independent: there the thing is lost at once and for good when its unit drops it. Tess's call.
