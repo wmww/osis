@@ -42,6 +42,7 @@ S3 brief 2 (notes/redesign-plan.md; notes/account-membership-design.md §4, Role
 | `-- 1000000 vouches-held` / `-- 0 vouches-exh-held` | as above | kept 0 / 1,584, stays made 1 / 738 |
 | `-- 1000000 vouches-state` / `-- 0 vouches-exh-state` | as above (21 s / 13 s; family: kept 318,108, stays made 195,052; kept as promised 10,418 / 127,064 entries) | kept 1 / 0, stays made 2 / 0 (two random worlds, Limits); kept as promised 0 / 0 |
 | `-- 100000 vouches-stands` / `-- 0 vouches-exh-stands` (the writers' leaving out, `Rules::stands`) | 100,000 / 385,236 | 0 (set aside: listing X lowered A 2 / 0, accomplice 0, author revived 0; against 555 / 112,892, 15, 2 without it) |
+| `-- 100000 vouches-state-stands` (with the state-based writing) | 100,000 | kept 1, kept as promised 1, stays made 2: world 74440 (Limits) and world 48946, where the remover's leaving out, modelled as the remover never having received the left-out commit (today's frontier is its author's receipts), also takes it out of the remover's other lowering's frontier: a limit of the model, not of the rule (the list is per removal) |
 
 Removing the voucher's authority check fails `random_worlds_hold` (4,000 worlds: safety) and three hand worlds.
 
