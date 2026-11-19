@@ -18,7 +18,7 @@ Most serious first.
    - X paired N5 and shared T1; B received the pairing, only N5 the share. B's vouch keeps N5; N5's vouch for the share does not count (N5 is no admin in the walk without vouches), so the share falls.
    - Question: accept (a holder standing only by a vouch saves nothing, as a re-granted writer's addendum saves nothing today, finding 9), or define levels (vouches counting in walk k judge the vouchers of walk k+1, never dropping one already counted). The same-walk reading saves this world and circles on finding 2's.
 4. **A removal that does not list its own grant drops what it does not list and then does not apply** (`repro_nothing_falls_by_a_removal_that_does_not_apply`).
-   - X (stolen, admin by H's grant) removes H with an empty frontier. The audit drops X's own grant and B's; on the restart X holds nothing, so its removal does not apply, yet both grants stay dropped: B falls with no standing removal, and no dispute is raised (the removal applies under no trust set). A made-up key's removal of H does the same to X's grant.
+   - X (stolen, admin by H's grant) removes H with an empty frontier. The audit drops X's own grant and B's; on the restart X holds nothing, so its removal does not apply, yet both grants stay dropped: B falls with no standing removal, and no dispute is raised (the removal applies under no trust set). A removal of H by a made-up key X granted does the same to X's grant (and so to the made-up key's).
    - Allowed by: write-path §1 removing "R never demotes its own author" on the ground that an honest frontier lists its own chain; a hostile one need not, and D only grows within a walk (spec/permissions.md §5.1 step 5).
    - Fix modelled: keep the rule along paths: a lowering never puts in question the grants its own path rests on (`a_removal_never_puts_its_own_grant_in_question`). The removal then applies and is an ordinary dispute. Alternative: drops made by a write the settled walk does not apply do not count (needs a second fixpoint).
 5. **A reader holding only its thing's leaf of a frontier misjudges role writes on A** (`repro_a_reader_with_its_things_leaf_reads_as_a_member`).
@@ -54,4 +54,18 @@ Most serious first.
 - A removal logged only where the node wrote leaves the window Tess's answer closes (`a_removal_logged_only_where_the_node_wrote_leaves_a_window`).
 
 ## Not covered
-Dependent things and descent; `until`, invites, finalizes and self-removal by path end; snapshots, forgetting and own covers; demotion to write; accomplices granted inside the theft window; sessions and overlapping dots; hidden mode; purge authors; re-keys of things above A and re-seals; bodies a node on the wrong side dropped as invalid (whether a switch fetches them again); how a node picks its side (sides are given); the differential against osis-perm (nothing is built).
+Dependent things and descent; `until`, invites, finalizes and self-removal by path end; snapshots, forgetting and own covers; demotion to write; accomplices granted inside the theft window; sessions and overlapping dots; hidden mode; purge authors; the thief's own rotations of A and secrecy (the keys layer is only the rotation loop under a standing dispute); a user keeping what nobody received; re-keys of things above A and re-seals; bodies a node on the wrong side dropped as invalid (whether a switch fetches them again); how a node picks its side (sides are given); the differential against osis-perm (nothing is built).
+
+## Against the second-round design
+Read, not modelled: each finding against notes/account-membership-design.md and notes/write-path-design.md as revised (issues/actors-one-mechanism.md, Answers).
+1. Answered as modelled: a vouch by a holder of every right the named write needed, read in the first walk, added to R's list for the second; it covers any role write, lowerings included.
+2. Answered as modelled: the first walk reads no vouch; two walks, no fixpoint.
+3. Answered: accepted (a holder whose authority only a vouch restores cannot itself vouch; one stage only).
+4. Open: write-path §1 still removes "R never demotes its own author" on the ground that R's list names its own chain, and nothing undoes drops made by a write the settled walk does not apply.
+5. Open: membership's assumption 3 and its locality property still give a reader of T only T's leaf; a leaf names X's commits on that thing or made through it, so a listed grant on A stays unseen there.
+6. Open: membership §1 (`takes`) and §4 (Other gaps) still list the loop as possible; nothing in the revised text ends it.
+7. Open: R's list still names every commit through the lowered edge its author received (write-path §1, List scope); nothing says to leave out the lowerings the remover contests.
+8. Open: the last-admin rule still reads every standing admin edge as the walk stands (adding only "no `until`"), and evidence still holds only edge writes on held paths' edges.
+9. Answered differently: no first-chained re-grant; the collateral grantee stands by a vouch where a remaining admin received its grant, else is discarded, shown to the user and kept only on the user's say-so; re-granted, its earlier content counts from the re-grant and its role writes stay dropped. The backdated-grant cost does not arise; a re-granted writer's addendum still vouches for nothing (left to the user's keep).
+10. Open: an addendum is still kept by any writer that could have written the write itself; nothing excludes the removed signer writing by another path.
+11. Answered as modelled: the pairer hands over its trust entries (membership §2, Pairing).
