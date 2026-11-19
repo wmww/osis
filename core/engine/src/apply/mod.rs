@@ -1163,16 +1163,10 @@ pub(crate) fn apply_local(tx: &mut Tx<'_>, blob: &CommitBlob, signed: osis_commi
         Exam::Ready(Parts { bad: Some(e), .. }) if !tx.core.skip_writer_rules => Err(e),
         Exam::Ready(parts) => {
             // writer-side rules: a received commit is judged by perm instead
-            let mut admins = Vec::new();
             if !tx.core.skip_writer_rules {
                 validity::check_content_rules(tx.core, &b.header, &parts.whole)?;
-                admins = validity::admins_in_question(tx.core, &b.header, &parts.whole);
             }
             apply_verified(tx, &b, parts, Origin::Local, received)?;
-            // the last admin (spec/permissions.md §1): read in this node's walk with it applied
-            if let Some(t) = admins.into_iter().find(|t| !validity::has_standing_admin(tx.core, t)) {
-                return Err(Error::LeavesNoAdmin(t));
-            }
             // never emit a delta others would un-merge
             if !tx.core.skip_writer_rules && tx.core.ix.commits.get(&id).is_some_and(|m| m.valid.iter().any(|v| !v)) {
                 return Err(Error::Permission { tid: b.header.aspects.first().map_or(b.header.author, |a| a.tid), needs: osis_base::Role::Write });

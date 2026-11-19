@@ -586,6 +586,13 @@ impl Engine {
         self.remove_signed(None, target, d, &[])
     }
 
+    /// Whether writing `new` (`None`: a removal) on `holder`'s edge on `target` would leave
+    /// `target` with no standing admin here, so that it is refused unless marked
+    /// (`leaving_adminless`): for a caller writing several commits that checks before the first.
+    pub fn leaves_no_admin(&self, target: &Tid, holder: &Tid, new: Option<&Edge>) -> bool {
+        crate::apply::validity::leaves_no_admin(&self.core, target, &[(*holder, new.map(perm_edge))])
+    }
+
     /// `f` with the edge writes it signs carrying the adminless mark: they may leave a thing with
     /// no standing admin (spec/permissions.md §1, The last admin), which is otherwise refused
     /// (`Error::LeavesNoAdmin`).

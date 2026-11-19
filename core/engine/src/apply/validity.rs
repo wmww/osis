@@ -1218,34 +1218,21 @@ fn edge_writes(core: &Core, h: &Header, parts: &[(usize, Decoded)]) -> Vec<(Tid,
     net.into_iter().map(|((t, m), e)| (t, m, e)).collect()
 }
 
-/// Whether `t` has a standing admin in this node's walk: an admin edge on it with no `until`,
-/// its record edge included while it stands (spec/permissions.md §1).
-pub(crate) fn has_standing_admin(core: &Core, t: &Tid) -> bool {
-    match core.timelines.on(t) {
-        Some(on) => on.holders().into_iter().any(|(_, e)| e.role == Role::Admin && e.until.is_none()),
-        None => core.mint_admin(t).is_some(),
-    }
-}
-
-/// The things local role commit `h` may leave with no standing admin, each holding one now
-/// (spec/permissions.md §1, The last admin): the targets of its writes taking a standing admin
-/// edge to anything else. None when it carries the adminless mark. Which of them it does leave
-/// so is read once it applied (`apply_local`). An audit it makes drops none of the writes this
-/// node holds (its frontier lists them, `Engine::demotion_frontier`), so it leaves no other thing
-/// so here.
-pub(crate) fn admins_in_question(core: &Core, h: &Header, parts: &[(usize, Decoded)]) -> Vec<Tid> {
-    if h.kind != Kind::Role || h.adminless {
-        return Vec::new();
-    }
-    let standing = |e: Option<&Edge>| e.is_some_and(|e| e.role == Role::Admin && e.until.is_none());
-    let mut out: BTreeSet<Tid> = BTreeSet::new();
-    for (t, m, new) in edge_writes(core, h, parts) {
-        let old = core.timelines.get(&t).and_then(|tl| tl.edges_at(None).get(&m, &t).copied());
-        if standing(old.as_ref()) && !standing(new.as_ref()) && has_standing_admin(core, &t) {
-            out.insert(t);
-        }
-    }
-    out.into_iter().collect()
+/// Whether edge writes `writes` (holder, new edge) on `t` would leave it, holding a standing
+/// admin now, with none (spec/permissions.md §1, The last admin): a standing admin is an admin
+/// edge on `t` with no `until`, its record edge included while it stands, as this node's walk
+/// has them. Reads `t`'s own edges alone: an audit a write makes drops none of the writes its
+/// writer holds (its frontier lists them, `Engine::demotion_frontier`), so it leaves no other
+/// thing so at the writer.
+pub(crate) fn leaves_no_admin(core: &Core, t: &Tid, writes: &[(Tid, Option<Edge>)]) -> bool {
+    let standing = |e: &Edge| e.role == Role::Admin && e.until.is_none();
+    let now: Vec<(Tid, Edge)> = match core.timelines.on(t) {
+        Some(on) => on.holders(),
+        None => core.mint_admin(t).map(|a| (a, Edge::new(Role::Admin))).into_iter().collect(),
+    };
+    let lowered = |m: &Tid| writes.iter().find(|(x, _)| x == m).map(|(_, e)| *e);
+    let after = now.iter().filter_map(|(m, e)| lowered(m).unwrap_or(Some(*e))).chain(writes.iter().filter_map(|(_, e)| *e));
+    now.iter().any(|(_, e)| standing(e)) && !after.into_iter().any(|e| standing(&e))
 }
 
 /// Rules of a role commit that need its deltas
@@ -1255,6 +1242,16 @@ pub(crate) fn check_content_rules(core: &Core, h: &Header, parts: &[(usize, Deco
         return Ok(());
     }
     let changed = edge_writes(core, h, parts);
+    // the last admin (spec/permissions.md §1): the adminless mark says it is meant
+    if !h.adminless {
+        let targets: BTreeSet<Tid> = changed.iter().map(|c| c.0).collect();
+        for t in targets {
+            let writes: Vec<(Tid, Option<Edge>)> = changed.iter().filter(|c| c.0 == t).map(|c| (c.1, c.2)).collect();
+            if leaves_no_admin(core, &t, &writes) {
+                return Err(Error::LeavesNoAdmin(t));
+            }
+        }
+    }
     let mut holders: Vec<(Tid, Tid)> = changed.iter().map(|c| (c.0, c.1)).collect();
     holders.sort();
     holders.dedup();

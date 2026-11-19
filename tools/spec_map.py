@@ -149,7 +149,7 @@ RULES = [
     ("spec/permissions.md", "3", "required rotation", "MUST do so before it next encrypts"),
     ("spec/permissions.md", "3", "holder actors", "boxes a holder actor M at the keysets Seal gives"),
     ("spec/permissions.md", "3", "removal logged first", "MUST, in the same sync and before anything else it logs"),
-    ("spec/permissions.md", "1", "last admin of a dependent thing", "MUST NOT remove or lower the last admin edge of a dependent thing"),
+    ("spec/permissions.md", "1", "the last admin", "MUST NOT sign a role commit that, in its own walk with the commit applied"),
     ("spec/permissions.md", "2", "finalize", "MUST write the finalize before its next commit encrypting under T"),
     ("spec/permissions.md", "3", "drop lost secrets", "MUST drop those role secrets"),
     ("spec/permissions.md", "4", "stranded", "A stranded node MUST send a Stranded message"),
@@ -185,6 +185,7 @@ RULES = [
     ("spec/versioning.md", "4", "additive version", "a new revision MUST NOT"),
     ("spec/versioning.md", "5", "mistyped reads absent", "MUST NOT be taken as a value of the type"),
     ("spec/wire.md", "5", "unpad", "which MUST be present"),
+    ("spec/wire.md", "4", "header flags", "Other bits are reserved and MUST be zero"),
     ("spec/wire.md", "10", "reserved flags", "reserved and MUST be zero"),
 ]
 # Rules nothing can test yet, with why; not counted as gaps.
