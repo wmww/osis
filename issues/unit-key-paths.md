@@ -15,7 +15,8 @@ Today it does for nodes that read: a group's role records are copied under every
    - spec/requirements.md Data model says a thing takes with it "the part of its closure it can itself sync". If "can itself sync" includes roles through any chain of holders, this rule narrows it and the item needs a clause.
 2. **The reference names the holders on its way** (key paths). Whoever writes or later sees the reference, and can see the grants, records which holder units lead to D; nodes open those units for their keys only.
    - Cost: a new state for a unit (held for keys, nothing stored, not followed), a part of the member blob that only some writers can judge, and a node keeping your data unread learns which opaque units sit between two of its units.
-   - Keeps the requirement under either reading.
+   - Does not keep the requirement under the wider reading: a chain held by the root and not by the referrer, or a better chain beside a direct grant, still does not count (notes/closure-model.md, Finding D); and it loops under forked sides over a path grant (Finding E).
+   - How often the corner arises: in the model's family of three independent things with every grant of none, sync or read and 8 candidate strongs, the root's role over any chain exceeds its role through units of its closure in 18738 of 186624 worlds.
 
 ## Recommendation
 Rule 1, with the clause in the requirement. The case is unusual, the warning exists, the way out is cheap, and rule 2 is the costliest piece of the unit design for what it gives.
