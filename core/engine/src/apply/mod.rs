@@ -25,7 +25,7 @@ mod tests_steps;
 
 pub(crate) use unindex::{unindex_commit, unindex_unreceived, unjudge_part};
 pub use waits::Wake;
-pub(crate) use waits::{awaits_record, next_at, pending_left, set_pending};
+pub(crate) use waits::{awaited, awaits_record, next_at, pending_left, set_pending};
 pub use memory::PART_OVERHEAD;
 pub(crate) use waits::Waits;
 #[cfg(debug_assertions)]
@@ -56,6 +56,9 @@ pub enum Reason {
     MissingChain(Tid),
     /// Unjudgeable: the record of a thing whose part it holds, or of the actor, is unknown.
     UnknownCreated(Tid),
+    /// Unjudgeable: a content part on a thing the node does not hold whole (outside the node
+    /// closure, spec/commits.md §4 Outside the node closure), until it enters.
+    Outside(Tid),
     /// `ts` more than `MAX_DRIFT` ahead of the wall clock.
     Drift,
     /// A page of a paged delta or a blob of a linked header list has not arrived.
@@ -391,6 +394,43 @@ fn read_pending(tx: &mut Tx<'_>, id: &CommitId) -> Result<Option<CommitBlob>> {
     Ok(decode(&bytes).ok())
 }
 
+/// The things entering the node closure since the last call wake the parts waiting for them
+/// (`Reason::Outside`, spec/commits.md §4 Outside the node closure): each such commit is
+/// examined again in this transaction, at its end (`Engine::run`), an ephemeral one woken for
+/// node-sync's room (`apply_waiting_memory`). How many were examined. The first call reads every
+/// thing awaited so. O(what entered and the commits waiting for it).
+pub(crate) fn wake_entered(tx: &mut Tx<'_>) -> Result<usize> {
+    let came: Vec<Tid> = match tx.core.entered.as_mut() {
+        Some(f) => f.added(),
+        None => {
+            tx.core.entered = Some(tx.core.ix.closure.feed());
+            tx.core.ix.pend_on.keys().filter_map(|w| if let Wake::Enters(t) = w { Some(*t) } else { None }).collect()
+        }
+    };
+    let mut ids: BTreeSet<CommitId> = BTreeSet::new();
+    for t in came.iter().filter(|t| tx.core.ix.closure.holds(t)) {
+        ids.extend(tx.core.ix.pend_on.get(&Wake::Enters(*t)).into_iter().flatten().copied());
+    }
+    let mut n = 0;
+    for id in ids {
+        if !tx.core.ix.pending.contains_key(&id) {
+            continue;
+        }
+        tx.core.waits.examined += 1;
+        n += 1;
+        if !tx.core.memory_waits.contains(&id) {
+            let Some(b) = read_pending(tx, &id)? else { continue };
+            if b.header.ephemeral.is_none() {
+                retry_pending(tx, id, b)?;
+                continue;
+            }
+            tx.core.memory_waits.insert(id);
+        }
+        tx.core.waits.memory_woken.wrote_added(&id, true, true);
+    }
+    Ok(n)
+}
+
 /// Examines pending commit `id` (stored as `b`) again as one step: a commit refused leaves
 /// nothing of its examination or apply, and bad input forgets it. `None` when it was bad.
 fn retry_pending(tx: &mut Tx<'_>, id: CommitId, b: CommitBlob) -> Result<Option<Ingested>> {
@@ -495,6 +535,10 @@ pub(crate) fn examine(tx: &mut Tx<'_>, blob: &mut CommitBlob, id: &CommitId, ski
         }
         if let Some(wait) = thing_wait(tx.core, &h, a, &record, &chain_rec) {
             unjudged.insert(ai, wait);
+        } else if origin == Origin::Remote && record(&a.tid).is_some_and(|r| !crate::retention::needed::applies_on(tx.core, &a.tid, &a.ak, &r)) {
+            // nothing but certificates applies on a thing outside the node closure: content waits
+            // until it enters (a node's own commits write only what it holds, `check_written`)
+            unjudged.insert(ai, Reason::Outside(a.tid));
         }
     }
     // the slots a held purge request emptied while they waited (`retention::strip_purged`; perhaps just
@@ -648,7 +692,7 @@ pub(crate) fn examine(tx: &mut Tx<'_>, blob: &mut CommitBlob, id: &CommitId, ski
 /// they await noted (`waits`).
 fn note_unjudged(tx: &mut Tx<'_>, id: &CommitId, unjudged: &BTreeMap<usize, Reason>) {
     if !unjudged.is_empty() {
-        tx.core.waits.awaits_records(*id, unjudged.values().filter_map(awaited));
+        tx.core.waits.parts_await(*id, unjudged.values());
     }
 }
 
@@ -664,7 +708,7 @@ pub(crate) fn leftover_part(l: crate::retention::leftover::Leftover) -> Decoded 
 /// again when any one of the records comes, as a part on another thing may apply
 /// (spec/commits.md §4).
 fn pend_unjudgeable(tx: &mut Tx<'_>, id: &CommitId, unjudged: &BTreeMap<usize, Reason>, first: Reason) -> Exam {
-    tx.core.waits.awaits_records(*id, unjudged.values().filter_map(awaited));
+    tx.core.waits.parts_await(*id, unjudged.values());
     Exam::Awaits(first)
 }
 
@@ -840,21 +884,12 @@ fn ingest_class(tx: &mut Tx<'_>, mut blob: CommitBlob, origin: Origin) -> Result
 }
 
 /// The record a wait names.
-fn awaited(r: &Reason) -> Option<Tid> {
-    match r {
-        Reason::MissingChain(t) | Reason::UnknownCreated(t) => Some(*t),
-        _ => None,
-    }
-}
-
-/// The records the waiting parts `w` of applied commit `id` await, noted (`Waits::records_of`):
-/// its pending copy parks under each (`waits::wakes_of`), whatever its first reason.
+/// What the waiting parts `w` of applied commit `id` await on their things, noted
+/// (`Waits::parts_await`): its pending copy parks under each (`waits::wakes_of`), whatever its
+/// first reason.
 fn note_awaited(tx: &mut Tx<'_>, id: &CommitId, w: &Waiting) {
     tx.core.waits.unawaits(id);
-    let records: Vec<Tid> = std::iter::once(&w.reason).chain(&w.others).filter_map(awaited).collect();
-    if !records.is_empty() {
-        tx.core.waits.awaits_records(*id, records.into_iter());
-    }
+    tx.core.waits.parts_await(*id, std::iter::once(&w.reason).chain(&w.others));
 }
 
 /// Whether `id` gave reading-only secrets that may go now: no `secrets.0` part of it is missing
@@ -1177,6 +1212,7 @@ pub(crate) fn apply_local(tx: &mut Tx<'_>, blob: &CommitBlob, signed: osis_commi
             Reason::MissingChain(_) => "own commit not applicable: a record on its chain is missing",
             Reason::Epoch(_) => "own commit not applicable: its epoch's rotation is missing",
             Reason::UnknownCreated(_) => "own commit not applicable: a thing's record is unknown",
+            Reason::Outside(_) => "own commit not applicable: a thing outside the node closure",
             Reason::Drift => "own commit not applicable: ts drift",
             Reason::WaitBlobs => "own commit not applicable: blobs missing",
             Reason::Parked | Reason::Unexamined => "own commit not applicable: parked",

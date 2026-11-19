@@ -1306,6 +1306,10 @@ pub struct Core {
     /// Records learned in this transaction (`apply::atomic::learn_record`): a strong newly
     /// reaching such a thing pulls nothing anew (`sync::units::refetch`).
     pub learned: BTreeSet<Tid>,
+    /// The things entering the node closure since the last transaction's end
+    /// (`apply::wake_entered`): what waits to see them enter is examined again. `None` until the
+    /// first such end, which reads every awaited thing.
+    pub(crate) entered: Option<memo::Feed<Tid>>,
     /// While `Some` (a tick round's expiries): the rebuilds asked, one per aspect, run once
     /// when it ends (`apply::run_batched`).
     pub batched: Option<BTreeMap<(Tid, Ak), Batched>>,
@@ -1591,6 +1595,7 @@ impl Core {
             pass_due: self.pass_due.clone(),
             lost_due: self.lost_due.clone(),
             learned: self.learned.clone(),
+            entered: self.entered.clone(),
             batched: self.batched.clone(),
             touches: self.touches.clone(),
             held_writes: self.held_writes.clone(),
@@ -2156,6 +2161,7 @@ impl Core {
             pass_due: _,
             lost_due: _,
             learned: _,
+            entered: _,
             wakes: _,
             resnapshots_due: _,
             openings: _,
@@ -2442,6 +2448,7 @@ impl Core {
             pass_due: None,
             lost_due: BTreeSet::new(),
             learned: BTreeSet::new(),
+            entered: None,
             batched: None,
             touches: Default::default(),
             held_writes: memo::Memo::new("held writes"),
@@ -2608,13 +2615,6 @@ impl Core {
     /// the indexes derived from it stay exact.
     pub(crate) fn put_meta(&mut self, id: CommitId, m: Meta) {
         self.note_kept(&id, &m);
-        // a content part newly held on a thing outside the node closure: judged once the pass
-        // that brought it ends, which holds such a thing's certificates alone (`retention::needed`)
-        let was = self.ix.commits.get(&id);
-        let outside: Vec<Tid> = m.view.aspects.iter().enumerate().filter(|(ai, a)| m.holds(*ai) && !was.is_some_and(|w| w.holds(*ai)) && crate::retention::forget::content(&a.ak) && !self.ix.closure.holds(&a.tid) && !self.is_key_actor(&a.tid)).map(|(_, a)| a.tid).collect();
-        for t in outside {
-            self.note_pass_due(t);
-        }
         // scale checks: each call walks every part of the commit
         osis_base::costs::count("meta: parts indexed", m.view.aspects.len() as u64);
         let had = self.ix.commits.get(&id).map(missing_of).unwrap_or_default();
@@ -4053,6 +4053,21 @@ impl Engine {
                 // what it holds, spec/sync-set.md §2 Writing)
                 if r.is_ok() && !tx.txn.is_memory() {
                     r = r.and_then(|v| crate::sync::units::settle(&mut tx).map(|_| v));
+                    // what waits to see a thing enter the node closure joins as it enters
+                    // (spec/commits.md §4 Outside the node closure), the closure settled again
+                    let mut guard = osis_base::loop_guard::LoopGuard::new("Engine::run (what waits for things entering the node closure)");
+                    while r.is_ok() {
+                        match crate::apply::wake_entered(&mut tx) {
+                            Ok(0) => break,
+                            Ok(n) => {
+                                // each round wakes what things newly entered hold back
+                                let pending = tx.core.ix.pending.len() as u64;
+                                guard.round(n, || (pending + 2, format!("{pending} pending")));
+                                r = r.and_then(|v| crate::sync::units::settle(&mut tx).map(|_| v));
+                            }
+                            Err(e) => r = Err(e),
+                        }
+                    }
                 }
                 if r.is_ok()
                     && !tx.txn.is_memory()

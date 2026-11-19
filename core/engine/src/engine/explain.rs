@@ -83,7 +83,7 @@ fn root(core: &Core, x: &Tid, r: &Root) -> String {
         Root::Copy(a) if a == x => "a retained copy".into(),
         Root::Copy(a) => format!("the retained copy of {}", label(core, a)),
         Root::SelfRemoval(c) => format!("an own self-removal from it (c:{}) waits to be sealed", short(c)),
-        Root::Awaited => "a pending commit awaits its record".into(),
+        Root::Awaited => "a pending part awaits its record or its entry into the node closure".into(),
     }
 }
 
@@ -111,8 +111,8 @@ fn held_of(core: &Core, t: &Tid) -> String {
     if core.ix.secrets.get(t).is_some() {
         out.push("secrets".into());
     }
-    if core.ix.pend_on.contains_key(&crate::apply::Wake::Record(*t)) {
-        out.push("a pending commit awaits its record".into());
+    if crate::apply::awaited(core, t) {
+        out.push("a pending part awaits its record or its entry".into());
     }
     out.join(", ")
 }

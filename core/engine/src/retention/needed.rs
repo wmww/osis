@@ -61,7 +61,7 @@ impl Engine {
         let mut due: BTreeSet<Tid> = match self.core.pass_due.replace(BTreeSet::new()) {
             Some(a) => a,
             None => {
-                let awaited = self.core.ix.pend_on.keys().filter_map(|w| if let crate::apply::Wake::Record(t) = w { Some(*t) } else { None });
+                let awaited = self.core.ix.pend_on.keys().filter_map(|w| if let crate::apply::Wake::Record(t) | crate::apply::Wake::Enters(t) = w { Some(*t) } else { None });
                 self.core.ix.held.things().copied().chain(awaited).collect()
             }
         };
@@ -153,11 +153,18 @@ pub(crate) fn holds_content(core: &Core, t: &Tid) -> bool {
     !core.is_key_actor(t) && core.aspects_of(t).filter(|((_, ak), _)| super::forget::content(ak)).any(|((_, ak), cs)| cs.iter().any(|(_, c)| core.ix.commits.get(c).is_some_and(|m| m.aspect(t, ak).is_some_and(|ai| m.holds(ai)))))
 }
 
-/// Whether the node holds a part on `(t, ak)` once it arrives (`Holding`, read per part): `t`'s
-/// record is held, and the part is no content (`forget::content`), or `t` is a key actor or held
-/// whole. Such a part missing keeps its commit's header (spec/commits.md §5 A released thing).
+/// Whether a part on `(t, ak)` applies here, `rec` its record (spec/commits.md §4 Outside the
+/// node closure): it is no content (`forget::content`), or `t` is a key actor or held whole
+/// (`Holding`, read per part). Else it waits for `t` to enter (`apply::Reason::Outside`).
+pub(crate) fn applies_on(core: &Core, t: &Tid, ak: &osis_base::Ak, rec: &osis_base::CreationRecord) -> bool {
+    !super::forget::content(ak) || matches!(rec, osis_base::CreationRecord::KeyActor { .. }) || matches!(rooted(core, t), Some(Root::Held | Root::Copy(_)))
+}
+
+/// Whether the node holds a part on `(t, ak)` once it arrives: `t`'s record is held and the part
+/// applies (`applies_on`). Such a part missing keeps its commit's header (spec/commits.md §5 A
+/// released thing).
 pub(crate) fn takes_part(core: &Core, t: &Tid, ak: &osis_base::Ak) -> bool {
-    core.created(t).is_some() && (!super::forget::content(ak) || core.is_key_actor(t) || matches!(rooted(core, t), Some(Root::Held | Root::Copy(_))))
+    core.created(t).is_some_and(|r| applies_on(core, t, ak, r))
 }
 
 /// Whether the node holds more of `t` than `holding` allows.
@@ -182,8 +189,9 @@ pub(crate) enum Root {
     Copy(Tid),
     /// An own self-removal from it waits to be sealed under its sync IDs.
     SelfRemoval(osis_base::CommitId),
-    /// What waits under Pending storage awaits its record (`apply::Wake::Record`): nothing on it
-    /// applies before its record, so what came for it pends, kept while carried.
+    /// What waits under Pending storage awaits its record or its entry into the node closure
+    /// (`apply::awaited`): nothing on it applies before its record, nor content before it
+    /// enters, so what came for it pends, kept while carried.
     Awaited,
 }
 
@@ -214,7 +222,7 @@ pub(crate) fn rooted(core: &Core, t: &Tid) -> Option<Root> {
     if let Some(a) = super::forget::copy_of(core, t) {
         return Some(Root::Copy(a));
     }
-    if core.ix.pend_on.contains_key(&crate::apply::Wake::Record(*t)) {
+    if crate::apply::awaited(core, t) {
         return Some(Root::Awaited);
     }
     // an own self-removal from it waits to be sealed under its sync IDs (`sync::held::wait_if_own`)
@@ -291,10 +299,10 @@ pub(crate) fn search(tx: &mut Tx<'_>, t: &Tid, reached: &mut Reached) -> Result<
     Ok(None)
 }
 
-/// Whether anything of `t` is held: its record, a commit on it, its secrets, or a pending commit
-/// awaiting its record.
+/// Whether anything of `t` is held: its record, a commit on it, its secrets, or a pending part
+/// awaiting its record or its entry.
 pub(crate) fn holds_any(core: &Core, t: &Tid) -> bool {
-    core.created(t).is_some() || core.on_thing(t).next().is_some() || core.ix.secrets.get(t).is_some() || core.ix.pend_on.contains_key(&crate::apply::Wake::Record(*t))
+    core.created(t).is_some() || core.on_thing(t).next().is_some() || core.ix.secrets.get(t).is_some() || crate::apply::awaited(core, t)
 }
 
 /// Judges the things due (`Core::needs_due`) by what the node holds of each (`holding`): one

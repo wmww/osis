@@ -16,6 +16,9 @@ pub enum Wake {
     Open,
     /// A record not known here (`atomic::learn_record`).
     Record(Tid),
+    /// A thing entering the node closure (`Reason::Outside`): its content parts may apply
+    /// (`atomic::wake_entered`, in the transaction it enters).
+    Enters(Tid),
     /// The role inputs held moving (an edge write, a record, a rotation): a reach or an epoch.
     Moved,
     /// The wall clock reaching this time (a `ts` ahead, `Reason::Drift`).
@@ -38,6 +41,7 @@ pub(crate) fn wakes_of(core: &Core, id: &CommitId, r: &Reason, h: Option<&osis_c
     let mut out = match r {
         Reason::Parked | Reason::Unexamined => vec![Wake::Open],
         Reason::MissingChain(_) | Reason::UnknownCreated(_) => Vec::new(),
+        Reason::Outside(t) => vec![Wake::Enters(*t)],
         Reason::Drift => match h {
             Some(h) => vec![Wake::At(h.ts.wall_ms().0.saturating_sub(osis_base::format::MAX_DRIFT_MS))],
             None => vec![Wake::Moved],
@@ -45,7 +49,7 @@ pub(crate) fn wakes_of(core: &Core, id: &CommitId, r: &Reason, h: Option<&osis_c
         Reason::WaitBlobs => vec![Wake::Blobs],
         Reason::Epoch(e) => vec![Wake::Epoch(*e), Wake::Moved],
     };
-    // every record a part of it awaits (`awaits_records`), whatever its first reason: any arriving
+    // every record a part of it awaits (`parts_await`), whatever its first reason: any arriving
     // may let a part apply; one held: a reach, which role commits bring (whichever part `t` names)
     let first = match r {
         Reason::MissingChain(t) | Reason::UnknownCreated(t) => Some(*t),
@@ -57,6 +61,8 @@ pub(crate) fn wakes_of(core: &Core, id: &CommitId, r: &Reason, h: Option<&osis_c
     if !held.is_empty() {
         out.push(Wake::Moved);
     }
+    // every thing a content part of it waits to see enter the node closure
+    out.extend(core.waits.entries_of(id).iter().map(|t| Wake::Enters(*t)));
     if let Some(h) = h {
         // an expiry already passed was run (`expire_stored`): no wake, or the clock is due for good
         if let Some(t) = h.expires.filter(|t| *t > core.now().0) {
@@ -76,6 +82,12 @@ pub(crate) fn set_pending(core: &mut Core, id: &CommitId, r: Option<(Reason, Opt
     if core.ix.pend_keys.get(id).map(|w| w.as_slice()) != Some(wakes.as_slice()) {
         for w in core.ix.pend_keys.get(id).cloned().unwrap_or_default().iter() {
             core.ix.pend_on.remove(w, id);
+            // held for itself while awaited (`retention::needed::Root::Awaited`): judged again
+            if let Wake::Enters(t) = w
+                && !wakes.contains(w)
+            {
+                core.note_lost(*t);
+            }
         }
         for w in &wakes {
             core.ix.pend_on.insert(*w, *id);
@@ -147,6 +159,12 @@ pub(crate) fn pending_left(core: &mut Core, id: &CommitId) {
     for k in signers.iter() {
         core.note_lost(*k);
     }
+}
+
+/// Whether something here awaits a part of whose thing waits for what it needs there: its record
+/// or its entry into the node closure (`retention::needed::Root::Awaited`).
+pub(crate) fn awaited(core: &Core, t: &Tid) -> bool {
+    core.ix.pend_on.contains_key(&Wake::Record(*t)) || core.ix.pend_on.contains_key(&Wake::Enters(*t))
 }
 
 /// Whether something here awaits record `t`: a pending commit, a waiting part of one, or a held
@@ -299,6 +317,9 @@ pub(crate) struct Waits {
     /// memory, with `things_of`, noted at each examination that pends them.
     on_record: BTreeMap<Tid, BTreeSet<CommitId>>,
     records_of: BTreeMap<CommitId, Vec<Tid>>,
+    /// Pending commits, and applied ones with parts waiting, by the things outside the node
+    /// closure their content parts wait to see enter (`Reason::Outside`), noted as `records_of`.
+    entries_of: BTreeMap<CommitId, Vec<Tid>>,
     /// Records from record blobs nothing awaits yet (`Loose`).
     pub loose: Loose,
     /// Stamps a carrier of loose records whose every record was learned (`Engine::loose_feed`).
@@ -355,24 +376,41 @@ impl Waits {
         self.things_of.insert(id, things);
     }
 
-    /// Parts of pending `id` await each of `records` (and nothing else noted before).
-    pub fn awaits_records(&mut self, id: CommitId, records: impl Iterator<Item = Tid>) {
+    /// Parts of pending `id` wait for `reasons` (and nothing else noted before): the records
+    /// they await, and the things whose entry into the node closure they await.
+    pub fn parts_await<'a>(&mut self, id: CommitId, reasons: impl Iterator<Item = &'a Reason>) {
         self.unawait_records(&id);
+        let mut records = BTreeSet::new();
+        let mut entries = BTreeSet::new();
+        for r in reasons {
+            match r {
+                Reason::MissingChain(t) | Reason::UnknownCreated(t) => drop(records.insert(*t)),
+                Reason::Outside(t) => drop(entries.insert(*t)),
+                _ => {}
+            }
+        }
+        if records.is_empty() && entries.is_empty() {
+            return;
+        }
         self.make_room(&id);
-        let records: Vec<Tid> = records.collect::<BTreeSet<_>>().into_iter().collect();
         for t in &records {
             self.on_record.entry(*t).or_default().insert(id);
             self.loose.want(t);
         }
-        self.records_of.insert(id, records);
+        if !records.is_empty() {
+            self.records_of.insert(id, records.into_iter().collect());
+        }
+        if !entries.is_empty() {
+            self.entries_of.insert(id, entries.into_iter().collect());
+        }
     }
 
     /// Remembered commits stay under `MAX_REMEMBERED`, the headers of commits given directly (a peer,
     /// an inbox chain) having no entry to go with: past it the smallest ID is forgotten (it waits on no
     /// wake, and `awaits_on` stops naming it; a restart forgets them all alike).
     fn make_room(&mut self, id: &CommitId) {
-        while !self.things_of.contains_key(id) && !self.records_of.contains_key(id) && self.things_of.len().max(self.records_of.len()) >= MAX_REMEMBERED {
-            let Some(first) = self.things_of.keys().chain(self.records_of.keys()).min().copied() else { return };
+        while !self.things_of.contains_key(id) && !self.records_of.contains_key(id) && !self.entries_of.contains_key(id) && self.things_of.len().max(self.records_of.len()).max(self.entries_of.len()) >= MAX_REMEMBERED {
+            let Some(first) = self.things_of.keys().chain(self.records_of.keys()).chain(self.entries_of.keys()).min().copied() else { return };
             self.unawaits(&first);
         }
     }
@@ -391,6 +429,7 @@ impl Waits {
     }
 
     fn unawait_records(&mut self, id: &CommitId) {
+        self.entries_of.remove(id);
         for t in self.records_of.remove(id).into_iter().flatten() {
             if let Some(s) = self.on_record.get_mut(&t) {
                 s.remove(id);
@@ -401,9 +440,14 @@ impl Waits {
         }
     }
 
-    /// The records the parts of `id` await (`awaits_records`).
+    /// The records the parts of `id` await (`parts_await`).
     pub fn records_of(&self, id: &CommitId) -> &[Tid] {
         self.records_of.get(id).map_or(&[], |v| v.as_slice())
+    }
+
+    /// The things whose entry into the node closure the parts of `id` await (`parts_await`).
+    pub fn entries_of(&self, id: &CommitId) -> &[Tid] {
+        self.entries_of.get(id).map_or(&[], |v| v.as_slice())
     }
 
     /// Whether a commit touching `t` cannot be judged here (`Engine::awaits_on`).
@@ -518,7 +562,7 @@ mod tests {
             let mut c = [0u8; 32];
             c[..8].copy_from_slice(&(i as u64).to_be_bytes());
             w.awaits(CommitId(c), vec![Tid::from_bytes([1; 15])]);
-            w.awaits_records(CommitId(c), [Tid::from_bytes([2; 15])].into_iter());
+            w.parts_await(CommitId(c), [Reason::UnknownCreated(Tid::from_bytes([2; 15]))].iter());
         }
         assert!(w.things_of.len() <= MAX_REMEMBERED && w.records_of.len() <= MAX_REMEMBERED);
         assert_eq!(w.on_thing[&Tid::from_bytes([1; 15])].len(), w.things_of.len(), "the index follows");
