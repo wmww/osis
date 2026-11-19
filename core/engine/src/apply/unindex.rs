@@ -12,14 +12,18 @@ use std::collections::BTreeSet;
 /// Removes commit `id` from every index applying it added to and its records from the store:
 /// the mirror of `index_commit` and the rest of `apply_verified`.
 pub(crate) fn unindex_commit(tx: &mut Tx<'_>, id: &CommitId) -> Result<()> {
-    unindex(tx, id, true)
+    unindex(tx, id, true)?;
+    tx.core.update_timelines();
+    Ok(())
 }
 
 /// `unindex_commit` of a commit forgotten as never received (`retention::forget`: its thing
 /// released or unreadable here): nothing of it stays as a cover, a name or a forgotten mark; the
 /// rows of its blobs as this node opened or sealed them (`sync::bodies`) stay with the blobs, which
 /// the sync store may keep (an own entry, opened again once the thing reads again); a release
-/// drops them, and the store's own entries of them (`sync::bodies::forget`).
+/// drops them, and the store's own entries of them (`sync::bodies::forget`). The caller gives
+/// the timelines the held set's change (`Core::update_timelines`) once it has forgotten all it
+/// forgets: each update re-walks the components touched.
 pub(crate) fn unindex_unreceived(tx: &mut Tx<'_>, id: &CommitId) -> Result<()> {
     // never received, nothing keeps it out: fetched again where present once needed
     let blobs: Vec<osis_base::BlobId> = tx.core.ix.commit_blobs.get(id).into_iter().flatten().copied().collect();
@@ -162,10 +166,7 @@ fn unindex(tx: &mut Tx<'_>, id: &CommitId, marks: bool) -> Result<()> {
     for a in m.header.aspects.iter().filter(|a| a.ak.signal()) {
         crate::retention::leaving::unplaced(tx, &a.tid, &a.ak)?;
     }
-    tx.remove_commit(id)?;
-    // the timelines follow the held set before anything reads them (`Core::mark`)
-    tx.core.update_timelines();
-    Ok(())
+    tx.remove_commit(id)
 }
 
 /// The rows part `ai` of `c`'s judgment derived (the roles its `secrets.0` or `keys.0` delta

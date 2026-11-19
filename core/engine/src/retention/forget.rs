@@ -307,6 +307,8 @@ pub(crate) fn forget(tx: &mut Tx<'_>, scope: Scope<'_>, held: &BTreeMap<Tid, u64
         }
         parts.insert(id, ais);
     }
+    // the timelines follow the held set once, whatever it forgot whole (`Core::mark`)
+    tx.core.update_timelines();
     for (h, ai, bodies) in boxes.into_values() {
         crate::apply::keys::forget_dropped(tx, &h, ai, &bodies)?;
     }
