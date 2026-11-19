@@ -135,6 +135,17 @@ fn a_grant_the_remover_did_not_hold_stands_by_a_co_admins_vouch() {
     assert!(!design(&w, &[r]).shows(kc));
 }
 
+/// A vouch counts only ordered after its removal and for a commit on its own thing: B's vouch
+/// stamped before H's removal, and its vouch on A naming X's grant on T1, keep nothing.
+#[test]
+fn a_vouch_counts_only_after_its_removal_and_on_its_own_thing() {
+    let (mut w, gs, kc, r, _) = shared_by_x();
+    w.vouch(B, 5, &[A], T1, r, &[gs]);
+    w.vouch(B, 7, &[], A, r, &[gs]);
+    let rd = fixed(&w, &[r]);
+    assert!(!rd.applied.contains(&gs) && !rd.valid.contains(&kc));
+}
+
 /// B shares T1 with A2, X removes A2 again, K writes on; H, who does not sync T1, removes X.
 fn unshared_by_x() -> (World, Id, Id, Id) {
     let (mut w, ..) = paired();
@@ -677,6 +688,17 @@ fn a_removal_listing_the_thiefs_removal_of_its_granter_is_void() {
     assert!(rd.void.is_empty() && rd.role(H, A) == Admin && rd.role(X, A) == Gone && rd.role(M, A) == Admin);
 }
 
+/// What no list keeps reads every edge of the listing write's path, not only its last.
+#[test]
+fn what_no_list_keeps_reads_every_edge_of_the_path() {
+    let mut w = account();
+    let r = w.edge(H, 6, &[A], T1, A2, Gone, &[]);
+    let first = w.edge(X, 5, &[], A, H, Gone, &[]);
+    let last = w.edge(X, 5, &[A], T1, A, Gone, &[]);
+    let held = View::all(&w).held;
+    assert!(unlistable(&w, &Rules::fixed(), &held, r, first) && unlistable(&w, &Rules::fixed(), &held, r, last));
+}
+
 // ---- The last admin relying on a named admin (notes/write-path-design.md §5) ----
 
 /// H pairs B, then leaves A naming B as the admin that remains; H writes T1 after. A reader of
@@ -767,6 +789,20 @@ fn no_unmarked_schedule_leaves_a_thing_without_a_standing_admin() {
     assert!(rd.applied.contains(&lb) && !rd.applied.contains(&lh) && rd.role(H, A) == Admin);
 }
 
+/// Giving the last standing admin an `until` is a lowering of it: H, A's only admin, gives itself
+/// an `until` naming no other admin: not applied. Control: a timed admin counting as standing.
+#[test]
+fn the_last_standing_admin_takes_an_until_only_when_marked() {
+    let mut w = account();
+    let timed = w.edge(H, 2, &[], A, H, Admin, &[]);
+    w.set_until(timed, 8);
+    let rd = fixed(&w, &[]);
+    assert!(!rd.applied.contains(&timed) && rd.role(H, A) == Admin);
+    assert!(fixed_but(&w, &[], |x| x.last_admin = LastAdmin::NamedTimed).applied.contains(&timed));
+    w.mark_adminless(timed);
+    assert!(fixed(&w, &[]).applied.contains(&timed));
+}
+
 // ---- Nobody vouches for its own signer's commit (finding 10) ----
 
 /// X, cut from A but still admin on T1 through A2, vouches through A2 for its own grant through
@@ -820,6 +856,38 @@ fn a_re_granted_grantee_vouches_for_its_own_fallen_grant() {
     w.vouch(N5, 9, &[], A, r, &[g5]);
     let rd = fixed_but(&w, &[r], |x| x.regrant = Regrant::FirstApplied);
     assert!(rd.applied.contains(&g5) && rd.valid.contains(&week) && rd.applied.contains(&gap));
+}
+
+// ---- A lowering's own chain, read from the held writes (finding 15) ----
+
+/// X backdates a grant of admin to a key it made up, Z, and Z a grant of admin to H (H is admin
+/// already): Z's grant sets an edge of H's removal's path, so X's grant of Z is what "such a write's
+/// own path rests on", put in question by nothing, and Z stays admin wherever H's removal is
+/// trusted (`own_chain_exempt` read from the held writes, closed).
+#[test]
+#[ignore = "notes/path-model-findings.md 15: a made-up key re-granting the remover keeps its own grant through the remover's removal"]
+fn repro_a_made_up_key_regranting_the_remover_holds_nothing() {
+    let (mut w, ..) = paired();
+    w.edge(X, 2, &[], A, Z, Admin, &[]);
+    w.edge(Z, 3, &[], A, H, Admin, &[]);
+    let r = w.edge(H, 6, &[], A, X, Gone, &[]);
+    let zc = w.content(Z, 8, &[A], T1);
+    let rd = fixed(&w, &[r]);
+    assert!(rd.role(Z, A) == Gone && !rd.valid.contains(&zc), "{rd:?}");
+}
+
+/// X backdates a grant of admin until 7 to H, the remover: it sets an edge of H's removal's path,
+/// so the removal never puts it in question. H's edge is then timed, so the removal (naming no
+/// other admin) is refused and, trusted, void: X keeps A and H loses it at 7.
+#[test]
+#[ignore = "notes/path-model-findings.md 15: the thief's backdated timed grant to the remover voids the removal"]
+fn repro_a_backdated_timed_grant_to_the_remover_changes_nothing() {
+    let (mut w, ..) = paired();
+    let tg = w.edge(X, 2, &[], A, H, Admin, &[]);
+    w.set_until(tg, 7);
+    let r = w.edge(H, 6, &[], A, X, Gone, &[]);
+    let rd = fixed(&w, &[r]);
+    assert!(rd.void.is_empty() && rd.role(X, A) == Gone && rd.role(H, A) == Admin, "{rd:?}");
 }
 
 // ---- Descent, self-removal by path end, `until` (brief 3) ----
@@ -1013,11 +1081,14 @@ fn random_worlds_hold_large() {
     assert_holds(&st, &format!("OSIS_ROLES_START={start}"));
 }
 
-/// Every 50th world of the small family (`-- 0 paths-exh` runs all of them by hand).
+/// Every 49th world of the small family (`-- 0 paths-exh` runs all of them by hand): a stride
+/// coprime with every dimension's size (2, 3, 4, 23), so no dimension is fixed (an even stride
+/// keeps `h_t1` false in every world).
 #[test]
 #[ignore = "property"]
 fn small_family_holds_large() {
-    let st = family_run(&Rules::fixed(), 50);
+    let st = family_run(&Rules::fixed(), 49);
     st.print("paths family", &Rules::fixed());
     assert_holds(&st, "family");
 }
+

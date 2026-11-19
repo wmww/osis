@@ -68,8 +68,9 @@ pub struct Setup {
     pub b_side_x: bool,
     /// At `AFTER` H grants N5 again and B grants A2 write on T1 again.
     pub regrant: bool,
-    /// 0: H mints A. 1: M mints A, pairs H at 0, writes T1 at 1, leaves A at 2 naming H as the
-    /// remaining admin, writes T1 again at 3. 2: as 1, naming B, whose admin grant is timed.
+    /// 0: H mints A. 1: M mints A, pairs H at 0, writes T1 at 1, leaves A at 2 naming B (paired
+    /// by H at 1) as the remaining admin, writes T1 again at 3: a reader of T1 holds B's grant
+    /// only as the leave's evidence where B wrote nothing there. 2: as 1, B's admin grant timed.
     pub mint: u8,
     /// The thief removes H at the theft, honestly stamped, and every node receives it at once:
     /// H's removal of X lists it.
@@ -201,8 +202,7 @@ impl Sim {
         if s.mint > 0 {
             m.put((M, 1, &[A], T1, Kind::Content), 1, rng, false);
             let f = m.w.cut(&m.w.through((M, A), |_| true));
-            let relies = if s.mint == 1 { H } else { B };
-            m.put((M, 2, &[], A, grant(M, Role::None).listing(f).relying(relies)), 2, rng, false);
+            m.put((M, 2, &[], A, grant(M, Role::None).listing(f).relying(B)), 2, rng, false);
             m.put((M, 3, &[A], T1, Kind::Content), 3, rng, false);
         }
         let sharer = if s.sharer_x { X } else { B };
