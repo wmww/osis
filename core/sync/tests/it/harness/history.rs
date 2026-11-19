@@ -604,12 +604,15 @@ pub fn reference(w: &mut World, lost: &BTreeSet<CommitId>) -> Peer {
             handed.extend(w.engine(i).package(&id).ok().flatten());
         }
     }
+    // again while a round applies anything or moves what pends (a commit kept pending is
+    // handed again each round and comes back pending: that alone moves nothing)
     for _ in 0..=handed.len() {
-        let mut moved = false;
+        let was = r.engine.pending();
+        let mut applied = false;
         for pk in &handed {
-            moved |= matches!(r.receive_with(&pk.bytes, pk.blobs.clone(), &pk.lists), Ok(x) if !matches!(x, Ingested::Duplicate(_)));
+            applied |= matches!(r.receive_with(&pk.bytes, pk.blobs.clone(), &pk.lists), Ok(Ingested::Applied(_)));
         }
-        if !moved {
+        if !applied && r.engine.pending() == was {
             break;
         }
     }
