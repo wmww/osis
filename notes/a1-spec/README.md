@@ -9,7 +9,7 @@ Draft files: notes/a1-spec/wire.md, notes/a1-spec/commits.md, notes/a1-spec/perm
 | draft section | replaces | oracle (roles-model `paths`) | status |
 |---|---|---|---|
 | wire §4 fields 1, 2: `signer`, `path` (in the clear for one thing, hashed per thing for several), `Salted` in sections | spec/wire.md §4 fields 1, 2, Commit blob | `World::push` (members, `well`), `World::joins` (descent); bytes per notes/write-path-design.md §1 (Where the path sits) | SETTLED (bytes: Open 6, settled) |
-| wire §4 field 8 (`[tid, ak, author]`), field 11 (level-2 keys), the purge-author index | spec/wire.md §4 fields 8, 11 | none yet | PENDING MODEL |
+| wire §4 field 8 (`[tid, ak, author]`), field 11 (level-2 keys), the purge-author index | spec/wire.md §4 fields 8, 11 | `World::authored`, `purge_author` (an index into [signer, path]), `purges`; controls `-purge-any-path`, `-purge-contains` | SETTLED for the index and the `author` class (bytes and keys not modelled; notes/path-model-findings.md What held) |
 | wire §4 fields 14 to 16 (`epoch`, `rotation`, `reseal` keyed to the signer) | spec/wire.md §4 fields 14 to 16, Inner signature | none (a rename; accounts unchanged) | SETTLED |
 | wire §4 field 17 `remains`, field 18 `flags` | spec/wire.md §4 field 17 | `LastAdmin::Named`, `refused` (`relies`), `evidence_edges` | SETTLED (position: Open 7, settled) |
 | wire §4 Inline or link, §5 header-list commitment, crypto §7 thing blind | spec/wire.md §4, §5; spec/crypto.md §7 | none | SETTLED (Open 8, settled) |
@@ -17,22 +17,22 @@ Draft files: notes/a1-spec/wire.md, notes/a1-spec/commits.md, notes/a1-spec/perm
 | commits §1, §2 (several holders), §3 | spec/commits.md §1, §2, §3 | none (who a commit is by: `Commit::signer`); §2's sentence: none (OPEN 10) | SETTLED |
 | commits §4 Each delta, Unjudgeable, Examined again | spec/commits.md §4 | `judge` along `World::hops`; `evidence` (edges of held paths) | SETTLED |
 | commits §4 Received | spec/permissions.md §5.1 Received (moved) | the story's receipt times (`Sim::received`) | SETTLED (today's words) |
-| commits §4 Could hold the right; §5 sentences | spec/commits.md §4 (possible admins, possible writers, could hold the right), §5 | none yet | PENDING MODEL |
-| crypto §7 | spec/crypto.md §7 | none yet | PENDING MODEL |
+| commits §4 Could hold the right; §5 sentences | spec/commits.md §4 (possible admins, possible writers, could hold the right), §5 | `purges` (a request by author, valid along its own path, holds the right over deltas naming exactly that author where it is on its chain) | SETTLED for the right a judging node reads; a node that cannot judge (could hold) not modelled |
+| crypto §7 | spec/crypto.md §7 | `purges` (who holds the level-2 right: the purge author's chain) | SETTLED for who holds the right; delete keys not modelled |
 | permissions §1 Signer, Path | spec/permissions.md §1 Actor | `World::push`, `World::joins`, `a_write_by_descent_is_judged_along_the_record_edges` | SETTLED |
 | permissions §1 The last admin | spec/permissions.md §1 The last admin | `refused` under `LastAdmin::Named`; `a_reader_judges_the_named_last_admin_rule_as_a_member`, `a_timed_admin_is_no_remaining_admin`, `the_last_admin_rule_is_a_function_of_the_held_writes`; controls `-any-edge`, `-timed` | SETTLED (OPEN 5, 9, 10) |
 | permissions §2 Edge writes, Self-removal, Adminless mark, Logging a lowered grant | spec/permissions.md §2 | `walk` (a self-removal only lowers), `rests_on` with `leave_in_question`, `a_self_removal_by_path_end_audits_nothing`, `a_backdated_leave_undoes_nothing_the_removed_node_made`; control `-leave` | SETTLED |
-| permissions §2 Finalize, Path's invite, Invite grant | spec/permissions.md §2 | none yet | PENDING MODEL |
-| permissions §4 lead, Chained writes, Chain certificates, path chain | spec/permissions.md §4 | `first_chained`; `evidence` with the alike property (readers holding a unit's evidence read as members) | SETTLED (transitional: A2 deletes it); invites and finalizes PENDING MODEL |
+| permissions §2 Finalize, Path's invite, Invite grant | spec/permissions.md §2 | `walk` (invite and finalize arms), `need`, `Rules::any_fall`; `an_invite_grant_applies_by_its_paths_invite`, `a_finalize_ends_an_ended_grant_and_an_invite_follows_it`; controls `-invite-role`, `-admin-falls`; `tiny_invites` | SETTLED: a lowering is judged where it takes its edge down in role or invite (notes/path-model-findings.md 23, 24) |
+| permissions §4 lead, Chained writes, Chain certificates, path chain | spec/permissions.md §4 | `first_chained`; `evidence` with the alike property (readers holding a unit's evidence read as members) | SETTLED (transitional: A2 deletes it); invites in `first_chained`, finalizes setting no edge (notes/path-model-findings.md 23, 24) |
 | permissions §5.1 steps 1-5, terms, Nothing is exempt | spec/permissions.md §5.1 steps 1-5 | `walk`, `keeps`, `settle`, `judge`; every property of the Paths table; controls `-no-void`, `-exempt`, `-audit-applied`, `-once` | SETTLED (OPEN 1-4, 10) |
-| permissions §5.1 Frontier | spec/permissions.md §5.1 Frontier | `World::through` (what an honest frontier names), `listed` | SETTLED; its Own cover PENDING MODEL |
+| permissions §5.1 Frontier | spec/permissions.md §5.1 Frontier | `World::through` (what an honest frontier names), `listed` | SETTLED; its Own cover: a list naming a cover names what it carries (`World::names`, notes/path-model-findings.md 26) |
 | permissions §5.1 The list | spec/permissions.md §5.1 Vouches (its last bullet) | `Sim::stand`, `Sim::vouchable`, `Sim::applies`; controls `-listed`, `-key-order`; `a_list_keeping_what_unmakes_its_removal_voids_it`, `a_remover_keeps_what_it_received_first` | SETTLED |
 | permissions §5.1 Trust set, Seeds, void, dispute | spec/permissions.md §5.1 Trust set | `seeds`, the redo loop of `judge`, `disputes`; properties `quiet`, `dispute`, `untrusted`; `a_dispute_whose_write_is_a_no_op_where_trusted_is_shown` | SETTLED (OPEN 3, 12) |
 | permissions §5.1 Vouches | spec/permissions.md §5.1 Vouches | `settle` under `Vouch::BaseWalk`, `counting` with `no_own_vouch`; `a_vouch_counts_only_where_its_removal_applies_in_the_first_walk`, `a_removed_signer_vouches_for_nothing_of_its_own`; control `-own-vouch` | SETTLED |
 | permissions §5.2 Content, cut, Addenda, Re-grant | spec/permissions.md §5.2 | `content` (`cuts`, `no_own_addendum`, `Regrant::FirstChained`); `a_re_granted_writers_later_addendum_vouches`, `a_backdated_grant_moves_a_current_holders_first_point_back` | SETTLED |
 | permissions §5.2 External fires, admin-only, Copies, Ephemeral parts | spec/permissions.md §5.2 | none (wording: signer, path) | SETTLED |
-| permissions §5.2 Compaction snapshot, its Own cover, A cover is its signer's edit | spec/permissions.md §5.2 | none yet | PENDING MODEL |
-| permissions §6 | spec/permissions.md §6 | none yet | PENDING MODEL |
+| permissions §5.2 Compaction snapshot, its Own cover, A cover is its signer's edit | spec/permissions.md §5.2 | `Kind::Cover` judged along its path, copies (`Reading::copied`); `a_cover_by_a_writer_not_yet_holding_the_removal_carries_the_late_write`, `a_fallen_cover_takes_nothing_honest` | SETTLED by copies, the window accepted and counted (notes/path-model-findings.md 26); an own cover standing whatever demotes its author later not modelled |
+| permissions §6 | spec/permissions.md §6 | `purges`, property `purge`; `a_removed_signers_backdated_purge_takes_nothing` | SETTLED for the `author` class (other classes, vouches for purge requests and copies of commits not held not modelled: notes/path-model-findings.md Not covered) |
 
 ## Where the model overrode the design notes
 Each is written as the model has it.
