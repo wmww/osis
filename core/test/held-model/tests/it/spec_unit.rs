@@ -1,11 +1,11 @@
 //! The sync unit as one independent thing and the dependents it reaches, held_model::unit: each
-//! test names the property of notes/closure-model.md (The unit model) it checks. Where a rule of
-//! the design fails a property the test asserts the smallest world, so the finding stays visible
-//! and checked; counts print with `--nocapture`.
+//! test names the property of notes/closure-model.md (The unit model) it checks and its negative
+//! control. Where a rule of the design fails a property the test asserts the smallest world, so the
+//! finding stays visible and checked; counts print with `--nocapture`.
 use held_model::closure::{Kind, Role, Set, C, T};
 use held_model::gen::Rng;
 use held_model::unit::*;
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::BTreeSet;
 
 const K: Kind = Kind::Independent;
 fn d(a: T) -> Kind {
@@ -15,28 +15,49 @@ fn set(xs: &[T]) -> Set {
     xs.iter().copied().collect()
 }
 fn add(on: T, to: T) -> Commit {
-    Commit { on, op: Op::Add(to) }
+    Commit { on, op: Op::Add { to, home: None }, side: None }
+}
+fn addh(on: T, to: T, home: T) -> Commit {
+    Commit { on, op: Op::Add { to, home: Some(home) }, side: None }
 }
 fn role(on: T, holder: T, r: Option<Role>) -> Commit {
-    Commit { on, op: Op::Role(holder, r) }
+    Commit { on, op: Op::Role(holder, r), side: None }
 }
-fn rm(on: T, adds: &[C]) -> Commit {
-    Commit { on, op: Op::Remove(adds.iter().copied().collect()) }
+fn rm(on: T, dots: &[Dot]) -> Commit {
+    Commit { on, op: Op::Remove(dots.iter().copied().collect()), side: None }
+}
+fn rotate(on: T) -> Commit {
+    Commit { on, op: Op::Rotate, side: None }
+}
+fn sided(c: Commit, s: u8) -> Commit {
+    Commit { side: Some(s), ..c }
 }
 fn subsets<X: Copy>(of: &[X]) -> Vec<Vec<X>> {
     (0..1u32 << of.len()).map(|m| of.iter().enumerate().filter(|(i, _)| m & (1 << i) != 0).map(|(_, x)| *x).collect()).collect()
 }
-/// A static world: one role commit per grant `(holder, target, role)`, one add per strong.
-fn world(grants: &[(T, T, Role)], strongs: &[(T, T)]) -> Vec<Commit> {
-    grants.iter().map(|&(g, t, r)| role(t, g, Some(r))).chain(strongs.iter().map(|&(x, y)| add(x, y))).collect()
+fn ind(kinds: &[Kind], mut x: T) -> T {
+    while let Kind::Dependent(a) = kinds[x] {
+        x = a;
+    }
+    x
 }
-fn blob(tag: T, unit: T) -> Blob {
-    Blob { tag, unit, paths: BTreeSet::new() }
+/// A static world: one role commit per grant `(holder, target, role)`, one add per strong, a
+/// strong to a dependent thing carrying its independent as home (its writer held the target).
+fn world(kinds: &[Kind], grants: &[(T, T, Role)], strongs: &[(T, T)]) -> Vec<Commit> {
+    let home = |to: T| (kinds[to] != K).then(|| ind(kinds, to));
+    grants
+        .iter()
+        .map(|&(g, t, r)| role(t, g, Some(r)))
+        .chain(strongs.iter().map(|&(x, y)| Commit { on: x, op: Op::Add { to: y, home: home(y) }, side: None }))
+        .collect()
 }
 fn with(r: Rules, f: impl FnOnce(&mut Rules)) -> Rules {
     let mut r = r;
     f(&mut r);
     r
+}
+fn handle_blobs(bs: &[Blob]) -> Set {
+    bs.iter().filter_map(|b| if let Blob::Handle(x) = b { Some(*x) } else { None }).collect()
 }
 
 /// What a reader of `g` that also reads the units `extra` holds: the commits carried under them.
@@ -48,27 +69,7 @@ fn seen(kinds: &[Kind], cs: &[Commit], g: T, extra: &[T], unit: Unit) -> View {
     View::of(kinds, cs, &known, unit)
 }
 
-/// For one world: whether every reader of each unit G, whatever other units it reads, computes
-/// the same unit, the same targets for G's member blobs, and the same targets cut by G's roles
-/// (`Member::Role`).
-fn p1_world(kinds: &[Kind], cs: &[Commit], unit: Unit) -> [bool; 3] {
-    let t = View::all(kinds, cs, unit);
-    let ind: Vec<T> = t.independents().into_iter().collect();
-    let mut agree = [true; 3];
-    for &g in &ind {
-        let others: Vec<T> = ind.iter().copied().filter(|&x| x != g).collect();
-        let mut first: Option<[Set; 3]> = None;
-        for x in subsets(&others) {
-            let v = seen(kinds, cs, g, &x, unit);
-            let now = [v.unit(g), v.targets(g, Member::Target), v.targets(g, Member::Role)];
-            match &first {
-                Some(f) => (0..3).for_each(|i| agree[i] &= f[i] == now[i]),
-                None => first = Some(now),
-            }
-        }
-    }
-    agree
-}
+// ---- The small family and random static worlds ----
 
 /// The small family: independent 0, 1, 2; 3 a dependent of 1, 4 of 2; every grant among 0, 1, 2
 /// of none, sync or read; every set of strongs among `CAND` (in-unit strongs to the dependents,
@@ -88,12 +89,16 @@ fn family(i: usize) -> Vec<Commit> {
         gi /= 3;
     }
     let strongs: Vec<(T, T)> = CAND.iter().enumerate().filter(|(j, _)| si & (1 << j) != 0).map(|(_, &e)| e).collect();
-    world(&grants, &strongs)
+    world(&KINDS, &grants, &strongs)
 }
+/// 3^6 grant sets times 2^8 strong sets.
 const FAMILY: usize = 729 << CAND.len();
 
-/// Runs `f` on every `step`-th world of the family, a thread per core, summing its counts.
+/// Runs `f` on every `step`-th world of the family, a thread per core, summing its counts. The
+/// family index is grants * 256 + strongs, so a step sharing a factor with 2 or 3 would sample
+/// only some strong sets or grant sets.
 fn over_family<const N: usize>(step: usize, f: impl Fn(&[Commit]) -> [usize; N] + Sync) -> [usize; N] {
+    assert!(step % 2 != 0 && step % 3 != 0, "a step sharing a factor with the family's 2^8 * 3^6 aliases it");
     let threads = std::thread::available_parallelism().map_or(1, |n| n.get());
     std::thread::scope(|sc| {
         let hs: Vec<_> = (0..threads)
@@ -119,13 +124,15 @@ fn over_family<const N: usize>(step: usize, f: impl Fn(&[Commit]) -> [usize; N] 
     })
 }
 
-fn random_static(r: &mut Rng) -> (Vec<Kind>, Vec<Commit>) {
+/// 4 independent and 4 dependent things, random grants among the independent ones (with
+/// `dep_holders` also held by dependent things) and strongs.
+fn random_static(r: &mut Rng, dep_holders: bool) -> (Vec<Kind>, Vec<Commit>) {
     let mut kinds = vec![K, K, K, K];
     for i in 4..8 {
         kinds.push(d(r.below(i as u64) as T));
     }
     let mut grants = vec![];
-    for a in 0..4 {
+    for a in 0..if dep_holders { 8 } else { 4 } {
         for b in 0..4 {
             if a != b && r.chance(30) {
                 grants.push((a, b, if r.chance(50) { Role::Sync } else { Role::Read }));
@@ -133,29 +140,52 @@ fn random_static(r: &mut Rng) -> (Vec<Kind>, Vec<Commit>) {
         }
     }
     let strongs: Vec<(T, T)> = (0..r.below(10) + 2).map(|_| (r.below(8) as T, r.below(8) as T)).collect();
-    (kinds, world(&grants, &strongs))
+    let cs = world(&kinds, &grants, &strongs);
+    (kinds, cs)
 }
 
-// ---- Item 1 and 2: the unit by reach, one blob per target ----
+// ---- The unit by reach ----
 
-/// P1 for the unit and for its targets (items 1, 2), over the small family (186624 worlds) and 600
-/// random worlds: every reader of G computes the same unit and the same targets whatever else it
-/// reads. Controls: the unit by reach from every strong the node holds (`Unit::Held`) fails the
-/// unit (and the targets, where the dependent it adds has strongs out); targets cut to those G
-/// holds a role on (`Member::Role`) fail the targets.
+/// For one world: whether every reader of each unit G, whatever other units it reads, computes
+/// the same unit, the same targets, and the same targets cut by G's roles (`Member::Role`).
+fn p1_world(kinds: &[Kind], cs: &[Commit], unit: Unit) -> [bool; 3] {
+    let t = View::all(kinds, cs, unit);
+    let ind: Vec<T> = t.independents().into_iter().collect();
+    let mut agree = [true; 3];
+    for &g in &ind {
+        let others: Vec<T> = ind.iter().copied().filter(|&x| x != g).collect();
+        let mut first: Option<[Set; 3]> = None;
+        for x in subsets(&others) {
+            let v = seen(kinds, cs, g, &x, unit);
+            let now = [v.unit(g), v.targets(g, Member::Target), v.targets(g, Member::Role)];
+            match &first {
+                Some(f) => (0..3).for_each(|i| agree[i] &= f[i] == now[i]),
+                None => first = Some(now),
+            }
+        }
+    }
+    agree
+}
+
+/// P1 over every 7th world of the small family (all of it in the ignored twin) and 600 random
+/// worlds: every reader of G computes the
+/// same unit and the same targets whatever else it reads. Controls: the unit by reach from every
+/// strong the node holds (`Unit::Held`) fails the unit; targets cut to those G holds a role on
+/// (`Member::Role`) fail the targets.
+fn p1_row(kinds: &[Kind], cs: &[Commit]) -> [usize; 5] {
+    let [u, t, tr] = p1_world(kinds, cs, Unit::Reach);
+    let [uh, th, _] = p1_world(kinds, cs, Unit::Held);
+    [!u, !t, !uh, !th, !tr].map(|b| b as usize)
+}
+
 #[test]
 fn p1_readers_compute_one_unit_and_one_target_list() {
-    let row = |kinds: &[Kind], cs: &[Commit]| {
-        let [u, t, tr] = p1_world(kinds, cs, Unit::Reach);
-        let [uh, th, _] = p1_world(kinds, cs, Unit::Held);
-        [!u, !t, !uh, !th, !tr].map(|b| b as usize)
-    };
-    let fails = over_family(1, |cs| row(&KINDS, cs));
+    let fails = over_family(7, |cs| p1_row(&KINDS, cs));
     let mut r = Rng::new(0);
     let mut rand = [0; 5];
     for _ in 0..600 {
-        let (kinds, cs) = random_static(&mut r);
-        for (a, x) in rand.iter_mut().zip(row(&kinds, &cs)) {
+        let (kinds, cs) = random_static(&mut r, false);
+        for (a, x) in rand.iter_mut().zip(p1_row(&kinds, &cs)) {
             *a += x;
         }
     }
@@ -165,38 +195,43 @@ fn p1_readers_compute_one_unit_and_one_target_list() {
     }
     // The control's smallest world: 0 holds sync on 1, 1 on 2, 0 -> 2. 1's grant on 2 travels
     // under S(1) and S(2), so a reader of 0 alone cuts 2 and one also reading 1 keeps it.
-    let cs = world(&[(0, 1, Role::Sync), (1, 2, Role::Sync)], &[(0, 2)]);
+    let cs = world(&[K, K, K], &[(0, 1, Role::Sync), (1, 2, Role::Sync)], &[(0, 2)]);
     assert_eq!(p1_world(&[K, K, K], &cs, Unit::Reach), [true, true, false]);
-    eprintln!("p1 failing (unit, targets) by reach, (unit, targets) Held, targets Role: family of {FAMILY} {fails:?}, random of 600 {rand:?}");
+    eprintln!("p1 failing (unit, targets) by reach, (unit, targets) Held, targets Role: family 1/7 of {FAMILY} {fails:?}, random of 600 {rand:?}");
 }
 
-/// Item 1 over time: H -> X -> K, X a dependent of H, K independent and H holding sync on K.
-/// Removing H -> X releases X: its body entries leave S(H), S(H) stops listing K and the keeper of
-/// H drops K. Controls: `Unit::All` keeps both for good; `Unit::Held`, with a second writer holding
-/// a strong from another unit to X, never settles (the two writers log and delete X at S(H)).
+#[test]
+#[ignore]
+fn p1_readers_compute_one_unit_and_one_target_list_full() {
+    let f = over_family(1, |cs| p1_row(&KINDS, cs));
+    assert_eq!(f[..2], [0; 2], "{f:?}");
+    assert!(f[2] > 0 && f[4] > 0, "controls must fail: {f:?}");
+    eprintln!("p1 family of {FAMILY}: {f:?}");
+}
+
+/// Release (§6): H -> X -> K, X a dependent of H, H holding sync on K. Removing H -> X takes X's
+/// entries out of S(H), K's handle out, and K out of the keeper of H (K's key stays: the grant
+/// stands). Controls: `Unit::All` keeps all three for good; `Unit::Held`, with a second writer of
+/// S(H) syncing a unit whose strong targets X, never settles (they log and delete X's entries).
 #[test]
 fn unit_by_reach_releases_a_dependent_and_what_only_it_listed() {
     let kinds = vec![K, d(0), K, K];
-    let gen = [role(2, 0, Some(Role::Sync)), add(0, 1), add(1, 2)];
     for (unit, released) in [(Unit::Reach, true), (Unit::All, false)] {
-        let mut net = Net::new(kinds.clone(), with(Rules::DESIGN, |r| r.unit = unit), vec![set(&[0])], vec![set(&[0])]);
-        for c in gen.clone() {
-            net.write(c);
+        let mut net = Net::new(kinds.clone(), with(Rules::DESIGN, |r| r.unit = unit), &[(set(&[0]), 0)], &[(set(&[0]), 0, false)]);
+        for c in [role(2, 0, Some(Role::Sync)), add(0, 1), add(1, 2)] {
+            net.author(0, c);
         }
-        net.deliver_all();
         net.settle(20, false).unwrap();
-        assert_eq!(net.kept[0].units(), set(&[0, 2]));
-        assert!(net.bodies.contains(&(0, 2)));
-        net.write(rm(0, &[1]));
-        net.deliver_all();
+        assert_eq!(net.keepers[0].kept.units(), set(&[0, 2]));
+        assert!(net.entries.contains(&(0, 2)));
+        net.author(0, rm(0, &[(1, 1)]));
         net.settle(20, false).unwrap();
         assert!(net.wrong().is_empty(), "{:?}", net.wrong());
-        assert_eq!(net.bodies.contains(&(0, 2)), !released, "{unit:?}");
-        assert_eq!(net.listed(0).is_empty(), released, "{unit:?}");
-        assert_eq!(net.kept[0].units(), if released { set(&[0]) } else { set(&[0, 2]) }, "{unit:?}");
+        assert_eq!(net.entries.contains(&(0, 2)), !released, "{unit:?}");
+        assert_eq!(handle_blobs(&net.listed(0)).is_empty(), released, "{unit:?}");
+        assert_eq!(net.keepers[0].kept.units(), if released { set(&[0]) } else { set(&[0, 2]) }, "{unit:?}");
     }
-    // Held: writer 1 also syncs 3, which references X; writer 0 syncs H alone.
-    let mut net = Net::new(kinds, with(Rules::DESIGN, |r| r.unit = Unit::Held), vec![set(&[0]), set(&[0, 3])], vec![]);
+    let mut net = Net::new(kinds, with(Rules::DESIGN, |r| r.unit = Unit::Held), &[(set(&[0]), 0), (set(&[0, 3]), 0)], &[]);
     for c in [role(2, 0, Some(Role::Sync)), add(3, 1), add(1, 2)] {
         net.write(c);
     }
@@ -204,90 +239,367 @@ fn unit_by_reach_releases_a_dependent_and_what_only_it_listed() {
     assert_eq!(net.settle(20, false), None, "two honest writers of S(0) undo each other for good");
 }
 
-/// Pins the cost of issues/unit-dependent-release.md rule 1, and what the naming rule adds to it.
-/// G (0) reads H (1); X (2) is a dependent of H that H does not reach; G -> X. X is in no unit:
-/// nobody holds it and the strong is carried with no target. Whether S(G) lists H's unit for it
-/// depends on history (finding): a writer named it while H reached X, and nothing removes that
-/// blob after (no writer can name X's unit any more, so none judges it), so keepers and readers of
-/// G keep entering H; had G -> X been written after the release, nothing names it and H is not
-/// entered. The two end states hold the same commits.
+/// Release by reachability (P3): 0 lists 1, 1 and 2 list each other; removing 0 -> 1 releases 1
+/// and 2 at the keeper. Control: a unit kept while a kept unit lists it keeps the cycle for good.
 #[test]
-fn pin_a_strong_to_a_dependent_its_unit_dropped() {
-    let kinds = vec![K, K, d(1)];
-    let run = |order: &[usize]| {
-        let all = [role(1, 0, Some(Role::Read)), add(1, 2), add(0, 2), rm(1, &[1])];
-        let mut net = Net::new(kinds.clone(), Rules::DESIGN, vec![set(&[0, 1])], vec![set(&[0])]);
-        for c in all {
-            net.write(c);
+fn p3_detached_cycle_is_released() {
+    for count in [false, true] {
+        let mut net = Net::new(vec![K, K, K], Rules::DESIGN, &[(set(&[0, 1, 2]), 0)], &[(set(&[0]), 0, false)]);
+        for c in [role(1, 0, Some(Role::Sync)), role(2, 1, Some(Role::Sync)), role(1, 2, Some(Role::Sync)), add(0, 1), add(1, 2), add(2, 1)] {
+            net.author(0, c);
         }
-        for &c in order {
-            net.deliver(0, c);
-            net.settle(20, false).unwrap();
-        }
-        net
-    };
-    let named = run(&[0, 1, 2, 3]);
-    let late = run(&[0, 1, 3, 2]);
-    for net in [&named, &late] {
-        let t = net.truth();
-        assert_eq!(t.in_unit[2], None, "X is in no unit");
-        assert_eq!(t.targets(0, Member::Target), set(&[2]));
-        assert!(!net.bodies.iter().any(|&(_, c)| net.commits[c].on == 2), "nobody holds X");
-        assert_eq!(net.view(0), late.view(0), "the same commits");
+        net.settle(20, count).unwrap();
+        assert_eq!(net.keepers[0].kept.units(), set(&[0, 1, 2]));
+        net.author(0, rm(0, &[(3, 1)]));
+        net.settle(20, count).unwrap();
+        assert_eq!(net.keepers[0].kept.units() == set(&[0]), !count, "count {count}");
+        assert_eq!(net.wrong().is_empty(), !count);
     }
-    assert_eq!(named.listed(0), vec![blob(2, 1)]);
-    assert_eq!(named.kept[0].units(), set(&[0, 1]), "H's unit kept for a strong that holds nothing");
-    assert!(late.listed(0).is_empty());
-    assert_eq!(late.kept[0].units(), set(&[0]));
-    assert!(late.wrong().is_empty());
-    assert!(!named.wrong().is_empty(), "the blob no writer can name is outside the stated end state");
 }
 
-/// One scenario: commits every writer holds first, then `moves` reaching two writers in every
-/// order and interleaving, both visiting the stores together after each and the keeper of 0
-/// passing; then everything delivered and settled. The schedules whose end state is wrong or
-/// does not settle, of how many.
-fn every_order(kinds: &[Kind], syncs: &[Set], genesis: &[Commit], moves: &[Commit], tune: &dyn Fn(&mut Net)) -> (usize, usize) {
+// ---- The join's static claim ----
+
+/// The walk from 0 over blobs each unit's own reader computes (`homes` off: strongs carry none).
+fn join_own(kinds: &[Kind], cs: &[Commit], homes: bool) -> Set {
+    let t = View::all(kinds, cs, Unit::Reach);
+    let blobs = |g: T| blobs_of(&seen(kinds, cs, g, &[], Unit::Reach), g, Member::Target, homes);
+    walk(&t, false, &set(&[0]), &blobs, Walk::DESIGN).units()
+}
+
+/// An oracle written from the truth alone, not from blobs: the least set holding 0 and each unit
+/// that carries the target of a live strong from an entered unit and on whose step an entered
+/// unit is.
+fn oracle(t: &View) -> Set {
+    let mut e = set(&[0]);
+    loop {
+        let mut n = set(&[0]);
+        for &(a, x) in t.strongs.keys() {
+            if let (Some(g), Some(h)) = (t.in_unit[a], t.in_unit[x]) {
+                if g != h && e.contains(&g) && e.iter().any(|&w| w != h && t.on_step(w, h)) {
+                    n.insert(h);
+                }
+            }
+        }
+        if n == e {
+            return e;
+        }
+        e = n;
+    }
+}
+
+/// For one world (failures, except the last two counts): 0 every reader of a unit, whatever else
+/// it reads, computes its handle and key blobs alike; 1 the walk over blobs each computed by a
+/// reader of its unit alone equals the walk over everything written; 2 with homes counted only
+/// where the home's unit carries the target it enters exactly what the oracle enters; 3 it enters
+/// every unit the oracle enters; 4 (count) it enters more: a home whose unit dropped the target;
+/// 5 (count) without homes it enters less.
+fn join_world(kinds: &[Kind], cs: &[Commit]) -> [usize; 6] {
+    let t = View::all(kinds, cs, Unit::Reach);
+    let ind: Vec<T> = t.independents().into_iter().collect();
+    let mut alike = true;
+    for &g in &ind {
+        let others: Vec<T> = ind.iter().copied().filter(|&x| x != g).collect();
+        for x in subsets(&others) {
+            let v = seen(kinds, cs, g, &x, Unit::Reach);
+            alike &= blobs_of(&v, g, Member::Target, true) == blobs_of(&t, g, Member::Target, true);
+        }
+    }
+    let own = join_own(kinds, cs, true);
+    let truth = walk(&t, false, &set(&[0]), &|g| blobs_of(&t, g, Member::Target, true), Walk::DESIGN).units();
+    let carried = |g: T| -> Vec<Blob> {
+        let targets = t.targets(g, Member::Target);
+        blobs_of(&t, g, Member::Target, true)
+            .into_iter()
+            .filter(|b| match b {
+                Blob::Handle(h) => targets.iter().any(|&x| t.in_unit[x] == Some(*h)),
+                Blob::Key(_) => true,
+            })
+            .collect()
+    };
+    let reach = walk(&t, false, &set(&[0]), &carried, Walk::DESIGN).units();
+    let o = oracle(&t);
+    let bare = join_own(kinds, cs, false);
+    assert!(bare.is_subset(&own));
+    let n = |x: bool| !x as usize;
+    [n(alike), n(own == truth), n(reach == o), n(own.is_superset(&o)), (own != o) as usize, (bare != own) as usize]
+}
+
+fn join_asserts(f: &[usize; 6]) {
+    assert_eq!(f[0..4], [0; 4], "{f:?}");
+    assert!(f[4] > 0 && f[5] > 0, "{f:?}");
+}
+
+/// The join's static claim over every 7th world of the family and 600 random worlds: what a unit
+/// lists and which keys it holds are functions of what any reader of that unit holds, and the
+/// walk over them enters what the oracle enters (see `join_world`).
+#[test]
+fn join_any_reader_of_a_unit_computes_its_blobs_and_the_walk_is_one() {
+    let f = over_family(7, |cs| join_world(&KINDS, cs));
+    join_asserts(&f);
+    eprintln!("join family 1/7 of {FAMILY}: {f:?}");
+    let mut r = Rng::new(0);
+    let mut g = [0; 6];
+    for _ in 0..600 {
+        let (kinds, cs) = random_static(&mut r, false);
+        for (a, x) in g.iter_mut().zip(join_world(&kinds, &cs)) {
+            *a += x;
+        }
+    }
+    join_asserts(&g);
+    eprintln!("join random of 600: {g:?}");
+}
+
+#[test]
+#[ignore]
+fn join_any_reader_of_a_unit_computes_its_blobs_and_the_walk_is_one_full() {
+    let f = over_family(1, |cs| join_world(&KINDS, cs));
+    join_asserts(&f);
+    eprintln!("join family of {FAMILY}: {f:?}");
+}
+
+/// The worlds the reading the join replaces failed, under the join, each unit's blobs by a reader
+/// of it alone.
+#[test]
+fn join_on_the_finding_worlds() {
+    let k3 = [K, K, K];
+    // A node keeping 0 unread reaches what only a reader of 0 could name: 0 reads 1 and 2,
+    // 0 -> 1 -> 2. S(1) lists 2's handle, S(0) holds 2's key.
+    let a = world(&k3, &[(0, 1, Role::Read), (0, 2, Role::Read)], &[(0, 1), (1, 2)]);
+    assert_eq!(join_own(&k3, &a, true), set(&[0, 1, 2]));
+    // The requirement's second clause: 1 alone, holding no role on 2, keeps no 2.
+    let t = View::all(&k3, &a, Unit::Reach);
+    assert_eq!(walk(&t, false, &set(&[1]), &|g| blobs_of(&t, g, Member::Target, true), Walk::DESIGN).units(), set(&[1]));
+    // No history: 0 -> 1, 0 -> 2, 0 sync on 1, 1 sync on 2; 0's grant on 2 given and removed, or
+    // never given: the same blobs and the same walk (2 by 1's key).
+    let never = world(&k3, &[(0, 1, Role::Sync), (1, 2, Role::Sync)], &[(0, 1), (0, 2)]);
+    let mut given = never.clone();
+    given.push(role(2, 0, Some(Role::Sync)));
+    assert_eq!(seen(&k3, &given, 0, &[], Unit::Reach).keys(0), set(&[1, 2]));
+    given.push(role(2, 0, None));
+    for g in 0..3 {
+        let (x, y) = (seen(&k3, &never, g, &[], Unit::Reach), seen(&k3, &given, g, &[], Unit::Reach));
+        assert_eq!(blobs_of(&x, g, Member::Target, true), blobs_of(&y, g, Member::Target, true));
+    }
+    assert_eq!(join_own(&k3, &given, true), set(&[0, 1, 2]));
+    // A strong to a dependent thing brings its unit by its home, whether or not the unit reaches
+    // the target: 0 reads 1, 3 a dependent of 1; a strong with no home brings nothing.
+    let kd = [K, K, K, d(1)];
+    for reached in [false, true] {
+        let strongs: &[(T, T)] = if reached { &[(0, 3), (1, 3)] } else { &[(0, 3)] };
+        let b = world(&kd, &[(0, 1, Role::Read)], strongs);
+        assert_eq!(join_own(&kd, &b, true), set(&[0, 1]));
+        assert_eq!(join_own(&kd, &b, false), set(&[0]));
+    }
+    // A role through a holder outside the closure does not count (issues/unit-key-paths.md rule
+    // 1): 0 holds sync on 1, 1 on 2, 0 -> 2.
+    let c = world(&k3, &[(0, 1, Role::Sync), (1, 2, Role::Sync)], &[(0, 2)]);
+    assert_eq!(join_own(&k3, &c, true), set(&[0]));
+    // 0 reads 1 and 3, 3 reads 2, 0 -> 1 -> 2: 3 is not referenced, so 2 is not entered.
+    let k4 = [K, K, K, K];
+    let dw = world(&k4, &[(0, 1, Role::Read), (0, 3, Role::Read), (3, 2, Role::Read)], &[(0, 1), (1, 2)]);
+    assert_eq!(join_own(&k4, &dw, true), set(&[0, 1]));
+}
+
+// ---- Readers and keepers: one walk, secrets only through entered units ----
+
+/// The honest blobs of S(g) with a key for each unit `g` holds a role on by any chain (a control).
+fn chain_blobs(t: &View, g: T) -> Vec<Blob> {
+    let mut out: Vec<Blob> = t.handles(g, Member::Target, true).into_iter().map(Blob::Handle).collect();
+    out.extend(t.roles_from(g).into_keys().filter(|&x| x != g).map(|x| Blob::Key(Key { of: x, names: x, cred: None })));
+    out
+}
+
+const P2_COLS: usize = 8;
+/// The reader of 0 and the keeper of 0 over the honest blobs, for one world (failures, except the
+/// count): 0 P2, the keeper enters exactly the units the reader enters; 1 P2b, the reader reads
+/// exactly the units it entered that 0 holds read on through chains whose holders are units it
+/// entered; 2 every unit entered is on such a chain; 3 (count) 0's role over any chain on a
+/// referenced unit exceeds that; 4-5 keeper controls (handles cut to what the referrer holds a
+/// role on, stopping at a unit kept unread): P2; 6 the reader by depth-free secrets and a key per
+/// chain: 2; 7 the reader against 0's role over any chain.
+fn p2_world(kinds: &[Kind], cs: &[Commit]) -> [usize; P2_COLS] {
+    let t = View::all(kinds, cs, Unit::Reach);
+    let blobs = |g: T| blobs_of(&t, g, Member::Target, true);
+    let rd = walk(&t, true, &set(&[0]), &blobs, Walk::DESIGN);
+    let kp = walk(&t, false, &set(&[0]), &blobs, Walk::DESIGN);
+    let units = rd.units();
+    let oracle = t.roles_through(0, &|a| units.contains(&t.ind(a)));
+    let p2 = kp.units() == units;
+    let p2b = units.iter().all(|h| rd.read.contains(h) == oracle.get(h).is_some_and(|&x| x >= Role::Read));
+    let inside = |e: &Entered| e.units().iter().all(|h| oracle.contains_key(h));
+    let full = t.roles_from(0);
+    let referenced: Set = units.iter().flat_map(|&g| t.targets(g, Member::Target)).map(|x| t.ind(x)).filter(|&h| h != 0).collect();
+    let exceeds = referenced.iter().any(|h| full.get(h) > oracle.get(h));
+    let status = |h: &T| {
+        if rd.read.contains(h) {
+            Some(Role::Read)
+        } else if rd.unread.contains(h) {
+            Some(Role::Sync)
+        } else {
+            None
+        }
+    };
+    let any = referenced.iter().all(|h| status(h) == full.get(h).map(|&x| x.min(Role::Read)));
+    let keeper = |b: &dyn Fn(T) -> Vec<Blob>, w: Walk| walk(&t, false, &set(&[0]), b, w).units() != units;
+    let c_role = keeper(&|g| blobs_of(&t, g, Member::Role, true), Walk::DESIGN);
+    let c_stop = keeper(&blobs, Walk { follow_unread: false, ..Walk::DESIGN });
+    let deep = walk(&t, true, &set(&[0]), &|g| chain_blobs(&t, g), Walk { enter: Enter::Deep, ..Walk::DESIGN });
+    let n = |x: bool| !x as usize;
+    [n(p2), n(p2b), n(inside(&rd)), exceeds as usize, c_role as usize, c_stop as usize, n(inside(&deep)), n(any)]
+}
+
+fn p2_asserts(f: &[usize; P2_COLS]) {
+    assert_eq!(f[0..3], [0; 3], "{f:?}");
+    assert!(f[4..7].iter().all(|&x| x > 0), "controls must fail: {f:?}");
+    // The rule of §4: a role through a holder outside the closure does not count.
+    assert!(f[3] > 0 && f[7] > 0, "{f:?}");
+}
+
+/// P2 and P2b over every 7th world of the family (all of it in the ignored twin) and 600 random
+/// worlds: the keeper and the reader of a root walk alike and read only by the closure.
+#[test]
+fn p2_keeper_enters_what_a_reader_enters() {
+    let f = over_family(7, |cs| p2_world(&KINDS, cs));
+    p2_asserts(&f);
+    let mut r = Rng::new(0);
+    let mut g = [0; P2_COLS];
+    for _ in 0..600 {
+        let (kinds, cs) = random_static(&mut r, false);
+        for (a, x) in g.iter_mut().zip(p2_world(&kinds, &cs)) {
+            *a += x;
+        }
+    }
+    p2_asserts(&g);
+    eprintln!("p2 family 1/7 of {FAMILY}: {f:?}; random of 600: {g:?}");
+}
+
+#[test]
+#[ignore]
+fn p2_keeper_enters_what_a_reader_enters_full() {
+    let f = over_family(1, |cs| p2_world(&KINDS, cs));
+    p2_asserts(&f);
+    eprintln!("p2 family of {FAMILY}: {f:?}");
+}
+
+/// The smallest chain-exceeds world: 0 reads 1, 1 reads 2, 0 -> 2, nothing references 1. 2's step
+/// lists 1, whose secret the node does not hold: 2 is not entered, read or unread. The control (a
+/// key per chain, depth-free secrets) keeps it unread through 1 unentered. A strong 0 -> 1 brings 1
+/// in and 2 is read.
+#[test]
+fn p2_a_unit_reached_through_a_holder_outside_the_closure() {
+    let k3 = [K, K, K];
+    let cs = world(&k3, &[(0, 1, Role::Read), (1, 2, Role::Read)], &[(0, 2)]);
+    let t = View::all(&k3, &cs, Unit::Reach);
+    let blobs = |g: T| blobs_of(&t, g, Member::Target, true);
+    assert_eq!(walk(&t, true, &set(&[0]), &blobs, Walk::DESIGN).units(), set(&[0]));
+    assert_eq!(walk(&t, true, &set(&[0]), &|g| chain_blobs(&t, g), Walk { enter: Enter::Deep, ..Walk::DESIGN }).unread, set(&[2]));
+    assert_eq!(walk(&t, true, &set(&[0]), &|g| chain_blobs(&t, g), Walk::DESIGN).units(), set(&[0]));
+    let cs2 = world(&k3, &[(0, 1, Role::Read), (1, 2, Role::Read)], &[(0, 2), (0, 1)]);
+    let t2 = View::all(&k3, &cs2, Unit::Reach);
+    assert_eq!(walk(&t2, true, &set(&[0]), &|g| blobs_of(&t2, g, Member::Target, true), Walk::DESIGN).read, set(&[0, 1, 2]));
+}
+
+/// Item 5, the assumption that a holder of K's sync secret holds the sync-role key of a dependent
+/// of K that a target's step lists. A dependent holds a grant with key access only after its
+/// keyset part turned invalid (spec/permissions.md §3). World: 0, its dependent 1 reached from 0,
+/// 1 holding sync on 2, 0 -> 2. S(0) holds 2's key (1 is of 0's unit) and 2's step lists 1. A
+/// reader of 0 knows 1's tid and derives its sync secret: it enters 2. A node keeping 0 unread
+/// knows no tid of 0's dependents: it enters 2 only by the key's first credential, and loses it at
+/// 2's first rotation (FAILS P2). With the grant held by 0 itself the keeper keeps 2 through the
+/// rotation. Over 600 random worlds with dependent holders P2 fails, each time where a step
+/// lists a dependent holder.
+#[test]
+fn p2_a_dependent_holder_is_entered_by_readers_alone() {
+    let kinds = vec![K, d(0), K];
+    for holder in [1, 0] {
+        let mut net = Net::new(kinds.clone(), Rules::DESIGN, &[(set(&[0, 2]), 0)], &[(set(&[0]), 0, false), (set(&[0]), 0, true)]);
+        for c in [add(0, 1), role(2, holder, Some(Role::Sync)), add(0, 2)] {
+            net.author(0, c);
+        }
+        net.settle(20, false).unwrap();
+        let t = net.truth(0);
+        let no_cred = |g: T| blobs_of(&t, g, Member::Target, true);
+        let keeper_bare = walk(&t, false, &set(&[0]), &no_cred, Walk::DESIGN).units();
+        assert_eq!(keeper_bare, if holder == 1 { set(&[0]) } else { set(&[0, 2]) }, "holder {holder}");
+        assert_eq!(walk(&t, true, &set(&[0]), &no_cred, Walk::DESIGN).units(), set(&[0, 2]));
+        assert_eq!(net.keepers[0].kept.units(), set(&[0, 2]), "by the first credential");
+        net.author(0, rotate(2));
+        net.settle(20, false).unwrap();
+        assert!(net.wrong().is_empty(), "{:?}", net.wrong());
+        assert_eq!(net.keepers[1].kept.units(), set(&[0, 2]), "the reader keeps 2");
+        assert_eq!(net.keepers[0].kept.units(), if holder == 1 { set(&[0]) } else { set(&[0, 2]) }, "holder {holder}");
+    }
+    let mut r = Rng::new(0);
+    let (mut fails, mut by_dep) = (0, 0);
+    for _ in 0..600 {
+        let (kinds, cs) = random_static(&mut r, true);
+        let t = View::all(&kinds, &cs, Unit::Reach);
+        if p2_world(&kinds, &cs)[0] > 0 {
+            fails += 1;
+            by_dep += t.grants.keys().any(|&(h, _)| kinds[h] != K && t.in_unit[h].is_some()) as usize;
+        }
+    }
+    assert!(fails > 0 && by_dep == fails, "{fails} {by_dep}");
+    eprintln!("p2 with dependent holders, random of 600: keeper != reader in {fails}");
+}
+
+// ---- Stores and writers over time ----
+
+/// One scenario, every schedule: `genesis` held by both writers and settled; then `moves` reaching
+/// writers 0 and 1 in every order and interleaving, after each either the receiving writer
+/// visiting its stores alone or every writer visiting together (both modes), every keeper passing;
+/// then everything delivered and settled. Counts: schedules, unsettled, ending wrong, with a
+/// single visit leaving a store off what its own entries give, and steps where the reader of 0 and
+/// the keeper of 0 on side 0 differ.
+fn every_order(kinds: &[Kind], writers: &[(Set, u8)], genesis: &[Commit], moves: &[Commit], rules: Rules, modes: &[bool]) -> [usize; 5] {
     let perms = permutations(moves.len());
-    let (mut bad, mut n) = (0, 0);
     let ilv = interleavings(moves.len(), moves.len());
-    for pa in &perms {
-        for pb in &perms {
-            for il in &ilv {
-                let mut net = Net::new(kinds.to_vec(), Rules::DESIGN, syncs.to_vec(), vec![set(&[0])]);
-                tune(&mut net);
-                for c in genesis {
-                    let c = net.write(c.clone());
-                    net.deliver(0, c);
-                    net.deliver(1, c);
+    let keepers = [(set(&[0]), 0, false), (set(&[0]), 0, true), (set(&[0]), 1, false)];
+    let mut out = [0; 5];
+    for &together in modes {
+        for pa in &perms {
+            for pb in &perms {
+                for il in &ilv {
+                    let mut net = Net::new(kinds.to_vec(), rules, writers, &keepers);
+                    for c in genesis {
+                        let c = net.write(c.clone());
+                        net.deliver(0, c);
+                        net.deliver(1, c);
+                    }
+                    net.settle(20, false).unwrap();
+                    let base = net.commits.len();
+                    for c in moves {
+                        net.write(c.clone());
+                    }
+                    let (mut ia, mut ib) = (0, 0);
+                    for &who in il {
+                        let c = if who == 0 {
+                            ia += 1;
+                            pa[ia - 1]
+                        } else {
+                            ib += 1;
+                            pb[ib - 1]
+                        };
+                        net.deliver(who, base + c);
+                        if together {
+                            net.visit_together();
+                        } else {
+                            net.visit_all(who);
+                        }
+                        net.pass_all(false);
+                        out[4] += (net.keepers[0].kept.units() != net.keepers[1].kept.units()) as usize;
+                    }
+                    net.deliver_all();
+                    let settled = net.settle(20, false).is_some();
+                    out[0] += 1;
+                    out[1] += !settled as usize;
+                    out[2] += (settled && !net.wrong().is_empty()) as usize;
+                    out[3] += !net.off.is_empty() as usize;
                 }
-                let base = net.commits.len();
-                for c in moves {
-                    net.write(c.clone());
-                }
-                net.visit_together();
-                net.pass(0, false);
-                let (mut ia, mut ib) = (0, 0);
-                for &who in il {
-                    let c = if who == 0 {
-                        ia += 1;
-                        pa[ia - 1]
-                    } else {
-                        ib += 1;
-                        pb[ib - 1]
-                    };
-                    net.deliver(who, base + c);
-                    net.visit_together();
-                    net.pass(0, false);
-                }
-                net.deliver_all();
-                let settled = net.settle(20, false).is_some();
-                n += 1;
-                bad += !(settled && net.wrong().is_empty()) as usize;
             }
         }
     }
-    (bad, n)
+    out
 }
 fn permutations(n: usize) -> Vec<Vec<usize>> {
     if n == 0 {
@@ -325,737 +637,504 @@ fn interleavings(a: usize, b: usize) -> Vec<Vec<usize>> {
     }
 }
 
-/// P4 (item 2): attach and detach in every arrival order (720 schedules a scenario) with writer 0
-/// syncing every unit and writer 1 only S(0), so writer 1 cannot name a dependent target: every end
-/// state lists exactly the targets some writer can name, once, naming the right unit, with the
-/// body entries of each unit's things, the keeper keeping its walk, and quiet. Scenarios: attach,
-/// attach a dependent target only writer 0 can name, detach the first; a grant after the strong, its removal, a grant again (the
-/// target named by Bootstrap while the grant stands); a cycle attached and its entry detached.
-/// Controls: a writer deleting blobs for targets it cannot name undoes writer 0 for good; no
-/// lower-ID rule leaves the two blobs two writers log in one visit.
+/// Items 1 and 2 (blobs at stores, writers with different holdings): writer 0 syncs 0 and 1,
+/// writer 1 syncs 0 alone, so each holds what the other lacks while moves arrive; 3 is a dependent
+/// of 1 that 1 reaches. Scenarios: attach an independent and a dependent (home 1) and detach the
+/// first; a grant after the strong, its removal and a grant again; a cycle attached and its entry
+/// detached; a remove racing a re-add; a fork, the two writers on two sides for good (a strong
+/// both count, a grant side 0 counts, its removal side 1 counts). In every one of the 1440
+/// schedules a scenario: settled, the stated end state, every single visit leaving the store
+/// exactly what its own entries give, the reader and the keeper of 0 alike at every step.
+/// Controls: judging before the pass leaves stores off what their entries give (transient, it
+/// pulls after); deletes off ends wrong; a key logged only by a writer that syncs the target ends
+/// wrong (no writer of S(0) syncs 2); each writer judging by its own side alone never settles.
 #[test]
-fn p4_attach_detach_every_order_converges() {
+fn stores_judged_after_a_complete_pass_in_every_order() {
     let kinds = [K, K, K, d(1)];
-    let syncs = [set(&[0, 1, 2]), set(&[0])];
+    let writers = [(set(&[0, 1]), 0), (set(&[0]), 1)];
     let g = [role(1, 0, Some(Role::Sync)), role(2, 1, Some(Role::Sync)), role(1, 2, Some(Role::Sync)), add(1, 3)];
-    // genesis numbering: moves are numbered after it.
-    let scenarios: Vec<(Vec<Commit>, Vec<Commit>)> = vec![
-        (g.to_vec(), vec![add(0, 1), add(0, 3), rm(0, &[4])]),
-        (vec![add(0, 2)], vec![role(2, 0, Some(Role::Sync)), role(2, 0, None), role(2, 0, Some(Role::Read))]),
-        ([g.to_vec(), vec![add(0, 1)]].concat(), vec![add(1, 2), add(2, 1), rm(0, &[4])]),
+    let scenarios: Vec<(&str, Vec<Commit>, Vec<Commit>)> = vec![
+        ("attach, detach", g.to_vec(), vec![add(0, 1), addh(0, 3, 1), rm(0, &[(4, 1)])]),
+        ("grant, removal, grant", vec![add(0, 2)], vec![role(2, 0, Some(Role::Sync)), role(2, 0, None), role(2, 0, Some(Role::Read))]),
+        ("cycle", [g.to_vec(), vec![add(0, 1)]].concat(), vec![add(1, 2), add(2, 1), rm(0, &[(4, 1)])]),
+        ("re-add", g.to_vec(), vec![add(0, 1), rm(0, &[(4, 1)]), add(0, 1)]),
+        ("fork", g.to_vec(), vec![add(0, 2), sided(role(2, 0, Some(Role::Sync)), 0), sided(role(2, 0, None), 1)]),
     ];
-    let mut fight = 0;
-    for (gen, moves) in &scenarios {
-        assert_eq!(every_order(&kinds, &syncs, gen, moves, &|_| {}), (0, 720), "{moves:?}");
-        fight += every_order(&kinds, &syncs, gen, moves, &|n| n.delete_unnamed = true).0;
+    for (name, gen, moves) in &scenarios {
+        let f = every_order(&kinds, &writers, gen, moves, Rules::DESIGN, &[false, true]);
+        assert_eq!(f, [1440, 0, 0, 0, 0], "{name}");
     }
-    assert!(fight > 0, "control must fail");
-    // Two writers that can both name a target log it in one visit: the lower ID stays.
+    // Each control on the scenario it breaks, the receiving writer visiting alone (720 schedules).
+    let controls: [(&str, Rules, usize); 4] = [
+        ("judge before the pass", with(Rules::DESIGN, |r| r.pass = Pass::After), 0),
+        ("deletes off", with(Rules::DESIGN, |r| r.deletes = false), 2),
+        ("keys by target syncers", with(Rules::DESIGN, |r| r.keys_by_any = false), 1),
+        ("own side", with(Rules::DESIGN, |r| r.any_side = false), 4),
+    ];
+    let ctl: Vec<[usize; 5]> = controls
+        .iter()
+        .map(|&(_, rules, i)| every_order(&kinds, &writers, &scenarios[i].1, &scenarios[i].2, rules, &[false]))
+        .collect();
+    assert!(ctl[0][3] > 0, "judging before the pass: {:?}", ctl[0]);
+    assert!(ctl[1][2] > 0 && ctl[2][2] > 0, "{ctl:?}");
+    assert!(ctl[3][1] > 0, "own side: {:?}", ctl[3]);
+    eprintln!("controls (schedules, unsettled, wrong, off, reader != keeper steps): {:?}", controls.iter().map(|c| c.0).zip(ctl).collect::<Vec<_>>());
+}
+
+/// Two writers holding one strong visit S(0) at once and both log its handle: the lower ID stays.
+/// Control: with no such rule both stay.
+#[test]
+fn of_two_alike_blobs_the_lower_id_stays() {
     for lowest_wins in [true, false] {
-        let mut net = Net::new(vec![K, K], Rules::DESIGN, vec![set(&[0, 1]), set(&[0, 1])], vec![]);
-        net.lowest_wins = lowest_wins;
+        let mut net = Net::new(vec![K, K], with(Rules::DESIGN, |r| r.lowest_wins = lowest_wins), &[(set(&[0]), 0), (set(&[0]), 0)], &[]);
         net.write(add(0, 1));
         net.deliver_all();
+        net.visit_together();
         net.settle(20, false).unwrap();
         assert_eq!(net.listed(0).len(), if lowest_wins { 1 } else { 2 });
+        assert_eq!(net.wrong().is_empty(), lowest_wins);
     }
 }
 
-/// A random history over time: 4 independent and 2 dependent things, writers with the given
-/// syncs, a keeper of 0; commits (strongs added and removed, grants set and removed) delivered at
-/// random, visits alone or together, keeper passes, and with `hostile` blobs deleted and forged at
-/// random. Then everything delivered and settled: `None` if it does not settle, else what is wrong
-/// and the blobs no writer can name (`Net::residue`).
-fn random_net(r: &mut Rng, rules: Rules, syncs: Vec<Set>, hostile: bool, tune: &dyn Fn(&mut Net)) -> Option<(Vec<String>, usize)> {
+/// Item 1's undo for good: two writers of S(0); writer 0 writes 0 -> 1 and logs it with its
+/// handle; writer 1 judges by what peers handed it, never by what the store holds, and deletes the
+/// handle at every visit while writer 0 logs it again. With a complete pass first, writer 1 holds
+/// the strong before it judges.
+#[test]
+fn a_writer_judging_by_less_than_the_store_holds_undoes_another_for_good() {
+    for (pass, settles) in [(Pass::First, true), (Pass::Never, false), (Pass::After, true)] {
+        let mut net = Net::new(vec![K, K], with(Rules::DESIGN, |r| r.pass = pass), &[(set(&[0]), 0), (set(&[0]), 0)], &[]);
+        net.author(0, add(0, 1));
+        assert_eq!(net.settle(20, false).is_some(), settles, "{pass:?}");
+    }
+}
+
+/// A random history over time: 4 independent and 2 dependent things, 2 or 3 writers syncing
+/// random units, each writing only things it syncs (homes filled by `Net::home`), a reader and a
+/// keeper of 0 on side 0 and a keeper of 0 on side 1; strongs added and removed, grants set and
+/// removed, rotations, peer deliveries, single and simultaneous visits, keeper passes; with
+/// `forks` a third of the commits valid on their writer's side alone; with `hostile` blobs forged
+/// and deleted at random (a handle, a key naming any unit, or both; forged keys carry no
+/// credential, a secret the forger does not hold). Then everything delivered and settled.
+struct Run {
+    settled: bool,
+    wrong: bool,
+    off: bool,
+    /// Steps where the side-0 reader and keeper differ.
+    split: usize,
+    /// Passes where a keeper entered a unit outside every walk over all conceivable blobs.
+    escaped: usize,
+    /// Keepers lacking at the end a unit their own side's blobs give.
+    side_loss: usize,
+    net: Net,
+}
+
+fn random_net(r: &mut Rng, rules: Rules, walk_by: Walk, hostile: bool, forks: bool) -> Run {
     let kinds = vec![K, K, K, K, d(1), d(2)];
-    let mut net = Net::new(kinds, rules, syncs, vec![set(&[0])]);
-    tune(&mut net);
-    for _ in 0..30 {
-        match r.below(10) {
-            0..=2 => {
-                net.write(add(r.below(6) as T, r.below(6) as T));
+    let writers: Vec<(Set, u8)> = (0..2 + r.below(2))
+        .map(|i| {
+            let mut s: Set = (0..4).filter(|_| r.chance(50)).collect();
+            s.insert(r.below(4) as T);
+            (s, if forks { (i % 2) as u8 } else { 0 })
+        })
+        .collect();
+    let mut net = Net::new(kinds, rules, &writers, &[(set(&[0]), 0, false), (set(&[0]), 0, true), (set(&[0]), 1, false)]);
+    net.walk = walk_by;
+    let (mut split, mut escaped) = (0, 0);
+    for _ in 0..40 {
+        let w = r.below(net.writers.len() as u64) as usize;
+        let mine: Vec<T> = (0..6).filter(|&x| net.writers[w].syncs.contains(&ind(&net.kinds, x))).collect();
+        let side = (forks && r.chance(33)).then_some(net.writers[w].side);
+        match r.below(12) {
+            0..=2 if !mine.is_empty() => {
+                let (on, to) = (r.pick(&mine), r.below(6) as T);
+                let home = net.home(w, to);
+                net.author(w, Commit { on, op: Op::Add { to, home }, side });
             }
-            3 => {
-                let on = r.below(6) as T;
-                let adds: Vec<C> = (0..net.commits.len()).filter(|&c| net.commits[c].on == on && matches!(net.commits[c].op, Op::Add(_))).collect();
-                if !adds.is_empty() {
-                    net.write(rm(on, &[r.pick(&adds)]));
+            3 if !mine.is_empty() => {
+                let on = r.pick(&mine);
+                let dots: Vec<Dot> = net.writers[w]
+                    .has
+                    .iter()
+                    .filter_map(|&c| match net.commits[c].op {
+                        Op::Add { to, .. } if net.commits[c].on == on => Some((c, to)),
+                        _ => None,
+                    })
+                    .collect();
+                if !dots.is_empty() {
+                    net.author(w, Commit { side, ..rm(on, &[r.pick(&dots)]) });
                 }
             }
             4 => {
-                let (a, b) = (r.below(4) as T, r.below(4) as T);
-                if a != b {
-                    net.write(role(b, a, [None, Some(Role::Sync), Some(Role::Read)][r.below(3) as usize]));
+                let mine: Vec<T> = net.writers[w].syncs.iter().copied().collect();
+                let (t, a) = (r.pick(&mine), r.below(4) as T);
+                if a != t {
+                    let ro = [None, Some(Role::Sync), Some(Role::Read)][r.below(3) as usize];
+                    net.author(w, Commit { side, ..role(t, a, ro) });
+                    if ro.is_none() {
+                        // The departure's required rotation: a first credential goes stale.
+                        net.author(w, rotate(t));
+                    }
                 }
             }
-            5 | 6 if !net.commits.is_empty() => {
-                let c = r.below(net.commits.len() as u64) as C;
-                net.deliver(r.below(net.syncs.len() as u64) as usize, c);
+            5 => {
+                let mine: Vec<T> = net.writers[w].syncs.iter().copied().collect();
+                net.author(w, rotate(r.pick(&mine)));
             }
-            7 => net.visit(r.below(net.syncs.len() as u64) as usize),
+            6 if !net.commits.is_empty() => {
+                let c = r.below(net.commits.len() as u64) as C;
+                net.deliver(w, c);
+            }
+            7 => {
+                let g = r.pick(&net.writers[w].syncs.iter().copied().collect::<Vec<_>>());
+                net.visit(w, g);
+            }
             8 => net.visit_together(),
-            _ if hostile && r.chance(50) => forge(r, &mut net),
-            _ => net.pass(0, false),
+            9 | 10 if hostile => forge(r, &mut net),
+            _ => {}
         }
+        net.pass_all(false);
+        split += (net.keepers[0].kept.units() != net.keepers[1].kept.units()) as usize;
+        escaped += escapes(&net);
     }
     net.deliver_all();
-    net.settle(40, false)?;
-    Some((net.wrong(), residue(&net)))
+    let settled = net.settle(40, false).is_some();
+    let side_loss = (0..net.keepers.len())
+        .filter(|&k| {
+            let kp = &net.keepers[k];
+            let t = net.truth(kp.side);
+            let own = walk(&t, kp.reads, &kp.roots, &|g| blobs_of(&t, g, Member::Target, true), Walk::DESIGN).units();
+            let synced = own.iter().all(|&g| net.writers.iter().any(|w| w.syncs.contains(&g)));
+            synced && !own.is_subset(&kp.kept.units())
+        })
+        .count();
+    Run { settled, wrong: !net.wrong().is_empty(), off: !net.off.is_empty(), split, escaped, side_loss, net }
 }
 fn forge(r: &mut Rng, net: &mut Net) {
-    let keys: Vec<(T, usize)> = net.store.keys().copied().collect();
-    if r.chance(50) && !keys.is_empty() {
-        net.store.remove(&r.pick(&keys));
+    let g = r.below(4) as T;
+    let here: Vec<(T, usize)> = net.store.keys().copied().filter(|k| k.0 == g).collect();
+    if r.chance(40) && !here.is_empty() {
+        net.store.remove(&r.pick(&here));
     } else {
-        let id = net.next_id;
-        net.next_id += 1;
-        net.store.insert((r.below(4) as T, id), blob(r.below(6) as T, r.below(4) as T));
+        // A handle, a key, or both for one thing (a key naming any unit).
+        let (x, pick) = (r.below(6) as T, r.below(3));
+        let mut bs = vec![];
+        if pick != 1 {
+            bs.push(Blob::Handle(x));
+        }
+        if pick != 0 {
+            bs.push(Blob::Key(Key { of: x, names: r.below(4) as T, cred: None }));
+        }
+        for b in bs {
+            net.store.insert((g, net.next_id), b);
+            net.next_id += 1;
+        }
     }
 }
-/// Blobs no writer judges: in a unit no writer syncs, or for a live target no writer syncing the
-/// unit can name (so none judges the unit it names).
-fn residue(net: &Net) -> usize {
-    let t = net.truth();
-    net.store
+/// Keepers that entered a unit outside the walk over every handle and every key in every unit
+/// (and the credentials honest writers stored): what no forged blob can make a node enter (only a
+/// unit whose step lists a thing whose secret it holds through units it entered, or whose secret
+/// an honest writer handed it).
+fn escapes(net: &Net) -> usize {
+    let all = |g: T| -> Vec<Blob> {
+        let mut v: Vec<Blob> = (0..net.kinds.len()).flat_map(|x| [Blob::Handle(x), Blob::Key(Key { of: x, names: x, cred: None })]).collect();
+        v.extend(net.listed(g));
+        v
+    };
+    net.keepers
         .iter()
-        .filter(|(&(g, _), b)| {
-            let visitors: Vec<usize> = (0..net.syncs.len()).filter(|&w| net.syncs[w].contains(&g)).collect();
-            visitors.is_empty()
-                || (t.targets(g, net.rules.member).contains(&b.tag) && !visitors.iter().any(|&w| net.view(w).can_name(&net.syncs[w], b.tag)))
+        .filter(|kp| {
+            let t = net.truth(kp.side);
+            let bound = walk(&t, kp.reads, &kp.roots, &all, Walk::DESIGN).units();
+            !kp.kept.units().is_subset(&bound)
         })
         .count()
 }
-fn random_syncs(r: &mut Rng) -> Vec<Set> {
-    (0..2)
-        .map(|_| {
-            let mut s: Set = (0..4).filter(|_| r.chance(60)).collect();
-            s.insert(r.below(4) as T);
-            s
-        })
-        .collect()
-}
 
-/// P4 over random histories (400, each with two writers syncing random units): every run settles
-/// (no two honest writers undo each other), and once settled every store lists exactly the targets
-/// some writer syncing it can name, with the right bodies and keepers, except for blobs a writer
-/// logged while it could name the target and that no writer can name or judge after (finding,
-/// `pin_a_strong_to_a_dependent_its_unit_dropped`, `a_blob_named_by_bootstrap_outlives_the_grant`).
-#[test]
-fn p4_random_histories_settle() {
-    let mut r = Rng::new(0);
-    let n = 400;
-    let (mut unsettled, mut wrong, mut residue_runs) = (0, 0, 0);
-    for _ in 0..n {
-        let syncs = random_syncs(&mut r);
-        match random_net(&mut r.clone(), Rules::DESIGN, syncs, false, &|_| {}) {
-            None => unsettled += 1,
-            Some((w, res)) => {
-                residue_runs += (res > 0) as usize;
-                wrong += (!w.is_empty() && res == 0) as usize;
-            }
-        }
-        r.next();
+fn tally(runs: impl Iterator<Item = Run>) -> [usize; 6] {
+    let mut f = [0; 6];
+    for x in runs {
+        f[0] += !x.settled as usize;
+        f[1] += (x.settled && x.wrong) as usize;
+        f[2] += x.off as usize;
+        f[3] += x.split;
+        f[4] += x.escaped;
+        f[5] += x.side_loss;
     }
-    assert_eq!((unsettled, wrong), (0, 0), "residue runs {residue_runs}");
-    eprintln!("p4 random of {n}: unsettled {unsettled}, wrong {wrong}, ending with a blob no writer can name {residue_runs}");
+    f
 }
 
-/// The residue in its smallest independent form: G (0) holds sync on W (1) and references W and
-/// X (2); W holds sync on X. S(G)'s one writer syncs G alone, so it names W (G's grant on W travels
-/// under S(G)) and names X only while G holds a direct grant on X. Given and then removed, that
-/// grant leaves a blob for X that no writer can name or judge; the keeper of G enters X by W's
-/// secret. With the grant never given, the same end state of roles and strongs lists nothing for X
-/// and the keeper does not enter it.
+/// Items 1, 2, 4 and 5 over 300 random histories each: plain, forked, hostile, forked and
+/// hostile. Every run settles (no two honest writers undo each other), ends in the stated end
+/// state at every unit a writer syncs (a forgery or deletion repaired by whichever writer visits),
+/// every single visit leaves the store exactly what its own entries give (so the next honest
+/// writer of a unit repairs any forgery), the reader and the keeper of 0 enter alike after every
+/// step, no keeper enters a unit outside the bound forged blobs allow, and no keeper ends without
+/// a unit its own side's blobs give. Controls: deletes off ends wrong (hostile); entering with no
+/// secret escapes the bound (hostile); each writer judging by its own side never settles or ends
+/// wrong (forked); judging before the pass leaves stores off.
 #[test]
-fn a_blob_named_by_bootstrap_outlives_the_grant() {
-    let hist = |first: bool| {
-        let mut n = Net::new(vec![K, K, K], Rules::DESIGN, vec![set(&[0])], vec![set(&[0])]);
-        let mut cs = vec![role(1, 0, Some(Role::Sync)), add(0, 1), add(0, 2), role(2, 1, Some(Role::Sync))];
-        if first {
-            cs.push(role(2, 0, Some(Role::Sync)));
+fn random_histories_settle_on_the_stores_own_commits() {
+    let n = 300;
+    let mut rows = vec![];
+    for (hostile, forks) in [(false, false), (false, true), (true, false), (true, true)] {
+        let mut r = Rng::new(0);
+        let seeds: Vec<Rng> = (0..n).map(|_| {
+            r.next();
+            r.clone()
+        }).collect();
+        let f = tally(seeds.iter().map(|s| random_net(&mut s.clone(), Rules::DESIGN, Walk::DESIGN, hostile, forks)));
+        assert_eq!(f, [0; 6], "hostile {hostile} forks {forks}");
+        // Each control on the configuration it breaks.
+        let ctl = |rules: Rules, w: Walk| tally(seeds.iter().map(|s| random_net(&mut s.clone(), rules, w, hostile, forks)));
+        let (none, mut c) = ([0; 6], [[0; 6]; 4]);
+        if hostile && !forks {
+            c[0] = ctl(with(Rules::DESIGN, |r| r.deletes = false), Walk::DESIGN);
+            c[1] = ctl(Rules::DESIGN, Walk { enter: Enter::Free, ..Walk::DESIGN });
+            assert!(c[0][1] > 0, "deletes off: {:?}", c[0]);
+            assert!(c[1][4] > 0, "entering with no secret: {:?}", c[1]);
         }
-        for c in cs {
-            n.write(c);
+        if forks && !hostile {
+            c[2] = ctl(with(Rules::DESIGN, |r| r.any_side = false), Walk::DESIGN);
+            assert!(c[2][0] + c[2][1] > 0, "own side: {:?}", c[2]);
         }
-        n.deliver_all();
-        n.settle(20, false).unwrap();
-        if first {
-            n.write(role(2, 0, None));
-            n.deliver_all();
-            n.settle(20, false).unwrap();
+        if !forks && !hostile {
+            c[3] = ctl(with(Rules::DESIGN, |r| r.pass = Pass::After), Walk::DESIGN);
+            assert!(c[3][2] > 0, "judge before the pass: {:?}", c[3]);
         }
-        n
-    };
-    let (gave, never) = (hist(true), hist(false));
-    assert_eq!((gave.truth().grants, gave.truth().strongs), (never.truth().grants, never.truth().strongs));
-    assert_eq!(residue(&gave), 1);
-    assert_eq!(gave.kept[0].units(), set(&[0, 1, 2]), "W's secret enters X, named by the residue");
-    assert_eq!(never.kept[0].units(), set(&[0, 1]), "nothing names X");
+        rows.push((hostile, forks, c.map(|x| if x == none { None } else { Some(x) })));
+    }
+    eprintln!("random of {n} (unsettled, wrong, off, split steps, escapes, side losses) per (hostile, forks): controls deletes off, entering with no secret, own side, judge before the pass: {rows:?}");
 }
 
-/// Item 2, role ops: over random settled histories, one role op (a grant set, changed or removed
-/// between two independent things) then everything settled again. The design deletes no blob for
-/// it and logs only first blobs for targets the op made nameable (Bootstrap); the control
-/// (`Member::Role`) logs and deletes because roles changed, or never settles (writers seeing
-/// different chains).
+/// No history (item 3 of the list): a settled random history ends with the same blobs at every
+/// synced store and the same keepers as a history writing only its end state (live strongs with
+/// their homes, standing grants). Control: deletes off keeps what history left.
 #[test]
-fn role_ops_write_no_member_blob_but_first_names() {
+fn the_end_state_alone_decides_the_blobs() {
     let mut r = Rng::new(0);
-    let (mut first_names, mut other, mut control) = (0, 0, 0);
-    for _ in 0..300 {
-        let syncs = random_syncs(&mut r);
-        for (member, count) in [(Member::Target, false), (Member::Role, true)] {
-            let mut rr = r.clone();
-            let mut net = Net::new(vec![K, K, K, K, d(1), d(2)], with(Rules::DESIGN, |x| x.member = member), syncs.clone(), vec![set(&[0])]);
-            for _ in 0..8 {
-                let c = if rr.chance(50) {
-                    add(rr.below(6) as T, rr.below(6) as T)
-                } else {
-                    let (a, b) = (rr.below(4) as T, (rr.below(3) + 1) as T);
-                    role((a + b) % 4, a, Some(if rr.chance(50) { Role::Sync } else { Role::Read }))
-                };
-                net.write(c);
+    let (mut differ, mut ctl) = (0, 0);
+    for _ in 0..200 {
+        for (deletes, count) in [(true, &mut differ), (false, &mut ctl)] {
+            let rules = with(Rules::DESIGN, |x| x.deletes = deletes);
+            let run = random_net(&mut r.clone(), rules, Walk::DESIGN, false, false);
+            let net = run.net;
+            let t = net.truth(0);
+            let ws: Vec<(Set, u8)> = net.writers.iter().map(|w| (w.syncs.clone(), 0)).collect();
+            let ks: Vec<(Set, u8, bool)> = net.keepers.iter().map(|k| (k.roots.clone(), k.side, k.reads)).collect();
+            let mut fresh = Net::new(net.kinds.clone(), rules, &ws, &ks);
+            for (&(a, b), hs) in &t.strongs {
+                if hs.is_empty() {
+                    fresh.write(add(a, b));
+                }
+                for &h in hs {
+                    fresh.write(addh(a, b, h));
+                }
             }
-            net.deliver_all();
-            if net.settle(40, false).is_none() {
-                continue;
+            for (&(g, x), &ro) in &t.grants {
+                fresh.write(role(x, g, Some(ro)));
             }
-            let before = net.store.clone();
-            let tags: BTreeSet<(T, T)> = before.iter().map(|(&(g, _), b)| (g, b.tag)).collect();
-            let ops = net.blob_ops;
-            let (a, b) = (rr.below(4) as T, (rr.below(3) + 1) as T);
-            net.write(role((a + b) % 4, a, [None, Some(Role::Sync), Some(Role::Read)][rr.below(3) as usize]));
-            net.deliver_all();
-            let settled = net.settle(40, false).is_some();
-            assert!(settled || count, "the design settles after a role op");
-            let old = |s: &BTreeMap<(T, usize), Blob>| -> Vec<((T, usize), Blob)> {
-                s.iter().filter(|(&(g, _), b)| tags.contains(&(g, b.tag))).map(|(k, b)| (*k, b.clone())).collect()
+            fresh.deliver_all();
+            fresh.settle(40, false).unwrap();
+            let strip = |n: &Net, g: T| -> Vec<Blob> {
+                let mut v: Vec<Blob> = n.listed(g).into_iter().map(|b| if let Blob::Key(k) = b { Blob::Key(Key { cred: None, ..k }) } else { b }).collect();
+                v.sort();
+                v
             };
-            let new: BTreeSet<(T, T)> = net.store.iter().map(|(&(g, _), b)| (g, b.tag)).filter(|t| !tags.contains(t)).collect();
-            let done = net.blob_ops - ops;
-            if count {
-                control += done + !settled as usize;
-            } else if old(&before) == old(&net.store) {
-                first_names += new.len();
-            } else {
-                other += done;
-            }
+            let same = (0..4).all(|g| strip(&net, g) == strip(&fresh, g))
+                && net.keepers.iter().zip(&fresh.keepers).all(|(a, b)| a.kept == b.kept);
+            *count += !same as usize;
         }
         r.next();
     }
-    assert_eq!(other, 0);
-    assert!(control > 0);
-    eprintln!("role ops: first names {first_names}, other blob ops {other}; control (Member::Role) blob ops {control}");
+    assert_eq!(differ, 0);
+    assert!(ctl > 0, "control must differ");
+    eprintln!("no history over 200: differ {differ}; deletes off {ctl}");
 }
 
-// ---- Item 3: secrets only through entered units ----
+// ---- Homes ----
 
-/// The reader of 0 and the keeper of 0 over the settled blobs `l`; per property whether it holds:
-/// P2 (the keeper enters exactly the units the reader enters, key units alike), P2b (the reader
-/// reads exactly the units it entered that 0 holds read on through chains whose holders are units
-/// it entered), every unit entered on a chain of such holders (no secret from outside), R's role
-/// over any chain on a referenced unit exceeding that oracle (a report), and P2b against R's role
-/// over any chain (the key-path property).
-fn p2_row(t: &View, r: Rules, l: &BTreeMap<T, Vec<Blob>>, keeper_rules: Rules) -> [bool; 5] {
-    let listed = |g| l.get(&g).cloned().unwrap_or_default();
-    let rd = walk(t, &set(&[0]), &Set::new(), r, &listed, true);
-    let kp = walk(t, &Set::new(), &set(&[0]), keeper_rules, &listed, false);
-    let units = rd.units();
-    let oracle = t.roles_through(0, &|a| units.contains(&a));
-    let p2 = kp.units() == units && kp.keys == rd.keys;
-    let p2b = units.iter().all(|h| rd.read.contains(h) == oracle.get(h).is_some_and(|&x| x >= Role::Read));
-    let inside = units.iter().all(|h| oracle.contains_key(h));
-    let full = t.roles_from(0);
-    let referenced: Set = rd.followed().into_iter().flat_map(|g| t.targets(g, r.member)).map(|x| t.ind(x)).filter(|&h| h != 0).collect();
-    let exceeds = referenced.iter().any(|h| full.get(h) > oracle.get(h));
-    let status = |h: &T| {
-        if rd.read.contains(h) {
-            Some(Role::Read)
-        } else if rd.unread.contains(h) {
-            Some(Role::Sync)
-        } else {
-            None
+/// A home lives as long as its dot, not its strong: writer 0 (syncing 0 and 1, holding 2 as a
+/// dependent of 1) adds 0 -> 2 with home 1; writer 1 (syncing 0 alone, never having held 2 or
+/// writer 0's add) adds 0 -> 2 from a bare tid, with no home; writer 0 removes its own dot. The
+/// value 0 -> 2 stands throughout, and 1's unit leaves the closure (FAILS "a home lives exactly as
+/// long as its strong"; within issues/unit-reference-home.md's corner, the bare-tid write). Had
+/// writer 1 held writer 0's add, it would have copied the home and 1's unit would stay.
+#[test]
+fn a_home_lives_with_its_dot() {
+    for copies in [false, true] {
+        let kinds = vec![K, K, d(1)];
+        let mut net = Net::new(kinds, Rules::DESIGN, &[(set(&[0, 1]), 0), (set(&[0]), 0)], &[(set(&[0]), 0, false)]);
+        net.author(0, role(1, 0, Some(Role::Sync)));
+        net.author(0, add(1, 2));
+        let h = net.home(0, 2);
+        assert_eq!(h, Some(1));
+        let a = net.author(0, Commit { on: 0, op: Op::Add { to: 2, home: h }, side: None });
+        if copies {
+            net.writers[1].has.insert(a);
         }
-    };
-    let any = referenced.iter().all(|h| status(h) == full.get(h).map(|&x| x.min(Role::Read)));
-    [p2, p2b, inside, exceeds, any]
+        let h1 = net.home(1, 2);
+        assert_eq!(h1, copies.then_some(1));
+        net.author(1, Commit { on: 0, op: Op::Add { to: 2, home: h1 }, side: None });
+        net.settle(20, false).unwrap();
+        assert_eq!(net.keepers[0].kept.units(), set(&[0, 1]));
+        net.author(0, rm(0, &[(a, 2)]));
+        net.settle(20, false).unwrap();
+        assert!(net.wrong().is_empty());
+        assert!(net.truth(0).strongs.contains_key(&(0, 2)), "the strong stands");
+        assert_eq!(net.keepers[0].kept.units(), if copies { set(&[0, 1]) } else { set(&[0]) }, "copies {copies}");
+    }
 }
 
-const P2_COLS: usize = 16;
-/// The P2 columns for one world (failures, except `exceeds` and the extra-unit count):
-/// 0-3 design, writers seeing everything: P2, P2b, inside, exceeds; 4-6 design, each unit's writer
-/// a reader of it alone: P2, P2b, exceeds; 7-9 controls on the keeper (blobs only where the
-/// referrer holds a role; stopping at a unit kept unread; entering with no secret): P2; 10 the
-/// depth-free secrets of the first model: inside; 11-13 key paths, writers seeing everything: P2,
-/// P2b, P2b against any chain; 14 the design against any chain; 15 key-path units followed as
-/// members: units the keeper holds beyond the key-path walk's.
-fn p2_world(kinds: &[Kind], cs: &[Commit]) -> [usize; P2_COLS] {
-    let t = View::all(kinds, cs, Unit::Reach);
-    let de = Rules::DESIGN;
-    let full = listing(&t, de, Writers::Full);
-    let own = listing(&t, de, Writers::Own);
-    let a = p2_row(&t, de, &full, de);
-    let b = p2_row(&t, de, &own, de);
-    let role_l = listing(&t, with(de, |r| r.member = Member::Role), Writers::Full);
-    let c_role = p2_row(&t, de, &role_l, de)[0];
-    let c_stop = p2_row(&t, de, &full, with(de, |r| r.follow_unread = false))[0];
-    let c_free = p2_row(&t, de, &full, with(de, |r| r.enter = Enter::Free))[0];
-    let c_deep = p2_row(&t, with(de, |r| r.enter = Enter::Deep), &full, de)[2];
-    let via = listing(&t, Rules::VIA, Writers::Full);
-    let p = p2_row(&t, Rules::VIA, &via, Rules::VIA);
-    let fol = with(Rules::VIA, |r| r.paths = Paths::Followed);
-    let lv = |g: T| via.get(&g).cloned().unwrap_or_default();
-    let kv = walk(&t, &Set::new(), &set(&[0]), Rules::VIA, &lv, false).units();
-    let kf = walk(&t, &Set::new(), &set(&[0]), fol, &lv, false).units();
-    let n = |x: bool| !x as usize;
-    [
-        n(a[0]),
-        n(a[1]),
-        n(a[2]),
-        a[3] as usize,
-        n(b[0]),
-        n(b[1]),
-        b[3] as usize,
-        n(c_role),
-        n(c_stop),
-        n(c_free),
-        n(c_deep),
-        n(p[0]),
-        n(p[1]),
-        n(p[4]),
-        n(a[4]),
-        kf.difference(&kv).count(),
-    ]
-}
-
-fn p2_asserts(f: &[usize; P2_COLS]) {
-    // Writers seeing everything: the keeper enters what the reader enters, reads what 0 holds read
-    // on through the closure, and enters nothing by a secret from outside it.
-    assert_eq!(f[0..3], [0; 3], "{f:?}");
-    // Writers reading only their own unit's closure: the keeper misses what only the reader names.
-    assert!(f[4] > 0, "{f:?}");
-    assert_eq!(f[5], 0, "{f:?}");
-    assert!(f[7] > 0 && f[8] > 0 && f[9] > 0 && f[10] > 0, "controls must fail: {f:?}");
-    assert_eq!(f[11..13], [0; 2], "{f:?}");
-    // Key paths do not reach R's role over any chain (findings), nor does the design.
-    assert!(f[13] > 0 && f[14] > f[13], "{f:?}");
-}
-
-/// Items 3 and 4 over the small family (every 7th world by default, all 186624 in the ignored
-/// twin): P2, P2b, entering only through entered units, the chain-exceeds-oracle count, key paths,
-/// and the controls (see `p2_world`).
+/// A snapshot carries on each kept dot with its home: over 300 random histories of one thing's
+/// strongs (adds with and without homes, removes, covers by a writer holding all of them), a
+/// cover changes no handle or home. Control: a cover keeping the values without homes changes
+/// them. The fill rule reads held history: a node that once held the homed add, removed and then
+/// covered, re-adds from a bare tid with no home; holding the removed add uncovered, with it.
 #[test]
-fn p2_keeper_enters_what_a_reader_enters_family() {
-    let f = over_family(7, |cs| p2_world(&KINDS, cs));
-    p2_asserts(&f);
-    eprintln!("p2 family 1/7 of {FAMILY}: {f:?}");
-}
-
-#[test]
-#[ignore]
-fn p2_keeper_enters_what_a_reader_enters_family_full() {
-    let f = over_family(1, |cs| p2_world(&KINDS, cs));
-    p2_asserts(&f);
-    eprintln!("p2 family of {FAMILY}: {f:?}");
-}
-
-/// The same over 600 random worlds of 4 independent and 4 dependent things.
-#[test]
-fn p2_keeper_enters_what_a_reader_enters_random() {
+fn a_cover_carries_on_the_homes() {
+    let kinds = vec![K, K, K, d(1), d(2)];
     let mut r = Rng::new(0);
-    let mut f = [0; P2_COLS];
-    for _ in 0..600 {
-        let (kinds, cs) = random_static(&mut r);
-        for (a, x) in f.iter_mut().zip(p2_world(&kinds, &cs)) {
-            *a += x;
+    let (mut changed, mut ctl) = (0, 0);
+    for _ in 0..300 {
+        for keep_homes in [true, false] {
+            let mut cs: Vec<Commit> = vec![role(1, 0, Some(Role::Sync)), role(2, 0, Some(Role::Sync)), add(1, 3), add(2, 4)];
+            for _ in 0..8 {
+                let t = View::all(&kinds, &cs, Unit::Reach);
+                match r.below(3) {
+                    0 => {
+                        let to = 1 + r.below(4) as T;
+                        cs.push(if r.chance(50) { add(0, to) } else { addh(0, to, ind(&kinds, to)) });
+                    }
+                    1 => {
+                        let dots: Vec<Dot> = (0..cs.len()).filter_map(|c| if let Op::Add { to, .. } = cs[c].op { (cs[c].on == 0).then_some((c, to)) } else { None }).collect();
+                        if !dots.is_empty() {
+                            cs.push(rm(0, &[r.pick(&dots)]));
+                        }
+                    }
+                    _ => {
+                        let covers: BTreeSet<C> = (0..cs.len()).filter(|&c| cs[c].on == 0).collect();
+                        let removed: BTreeSet<Dot> = covers.iter().filter_map(|&c| if let Op::Remove(x) = &cs[c].op { Some(x.clone()) } else { None }).flatten().collect();
+                        let mut keeps = vec![];
+                        for &c in &covers {
+                            match &cs[c].op {
+                                Op::Add { to, home } if !removed.contains(&(c, *to)) => keeps.push(((c, *to), if keep_homes { *home } else { None })),
+                                Op::Cover { keeps: k, .. } => keeps.extend(k.iter().filter(|(d, _)| !removed.contains(d)).map(|&(d, h)| (d, if keep_homes { h } else { None }))),
+                                _ => {}
+                            }
+                        }
+                        cs.push(Commit { on: 0, op: Op::Cover { covers, keeps }, side: None });
+                        let after = View::all(&kinds, &cs, Unit::Reach);
+                        let diff = (t.strongs != after.strongs || t.handles(0, Member::Target, true) != after.handles(0, Member::Target, true)) as usize;
+                        if keep_homes {
+                            changed += diff;
+                        } else {
+                            ctl += diff;
+                        }
+                    }
+                }
+            }
         }
     }
-    p2_asserts(&f);
-    eprintln!("p2 random of 600: {f:?}");
-}
-
-/// Finding 2's world, 0 reads 1 and 2, 0 -> 1 -> 2, 1 holding no role on 2. S(1) requires a blob
-/// for 2 (no role read). The reader of 0 reads 1 and names 2 itself (Bootstrap: 0's grant on 2
-/// travels under S(0)), and enters 2 by 0's secret. Who logs S(1)'s blob: a writer of 1 that can
-/// name 2. With S(1)'s only writer reading 1 alone, none does: the keeper of 0 keeps {0, 1}, a
-/// fresh reader it serves never gets 2 (finding). With the reader of 0 writing 1, or any writer of
-/// 1 that reads 0 or 2, the blob is there and the keeper keeps 2. The control (a list of what the
-/// referrer itself can enter) never lists it.
-#[test]
-fn p2_keeper_misses_what_no_writer_of_the_referrer_can_name() {
-    let kinds = [K, K, K];
-    let cs = world(&[(0, 1, Role::Read), (0, 2, Role::Read)], &[(0, 1), (1, 2)]);
-    let t = View::all(&kinds, &cs, Unit::Reach);
-    let de = Rules::DESIGN;
-    let own = listing(&t, de, Writers::Own);
-    assert!(own[&1].is_empty());
-    let lo = |g: T| own.get(&g).cloned().unwrap_or_default();
-    let reader = walk(&t, &set(&[0]), &Set::new(), de, &lo, true);
-    assert_eq!(reader.read, set(&[0, 1, 2]));
-    assert_eq!(walk(&t, &Set::new(), &set(&[0]), de, &lo, false).units(), set(&[0, 1]));
-    // The reader of 0 also writes 1: it logs what it names.
-    let mut l2 = own.clone();
-    l2.insert(1, vec![blob(2, 2)]);
-    let l2f = |g: T| l2.get(&g).cloned().unwrap_or_default();
-    assert_eq!(walk(&t, &Set::new(), &set(&[0]), de, &l2f, false).units(), set(&[0, 1, 2]));
-    // spec/requirements.md Data model's second clause holds: 1 alone keeps no 2.
-    let full = listing(&t, de, Writers::Full);
-    let lf = |g: T| full.get(&g).cloned().unwrap_or_default();
-    assert_eq!(walk(&t, &Set::new(), &set(&[1]), de, &lf, false).units(), set(&[1]));
-    let role_l = listing(&t, with(de, |r| r.member = Member::Role), Writers::Full);
-    assert!(role_l[&1].is_empty());
-}
-
-/// Finding 3's world, the chain-exceeds-oracle case: 0 reads 1, 1 reads 2, 0 -> 2, nothing
-/// references 1. 2's step lists 1, whose secret the node does not hold: 2 is not entered, read or
-/// unread, though 0 holds read on 2 over the chain (issues/unit-key-paths.md rule 1). The first
-/// model's depth-free secrets (control) kept it unread through 1 unentered. A strong 0 -> 1 brings
-/// 1 into the closure and 2 is read.
-#[test]
-fn p2_a_unit_reached_through_a_holder_outside_the_closure() {
-    let kinds = [K, K, K];
-    let de = Rules::DESIGN;
-    let cs = world(&[(0, 1, Role::Read), (1, 2, Role::Read)], &[(0, 2)]);
-    let t = View::all(&kinds, &cs, Unit::Reach);
-    let full = listing(&t, de, Writers::Full);
-    let row = p2_row(&t, de, &full, de);
-    assert_eq!(row, [true, true, true, true, false]);
-    let lf = |g: T| full.get(&g).cloned().unwrap_or_default();
-    assert_eq!(walk(&t, &set(&[0]), &Set::new(), de, &lf, true).units(), set(&[0]));
-    let deep = walk(&t, &set(&[0]), &Set::new(), with(de, |r| r.enter = Enter::Deep), &lf, true);
-    assert_eq!(deep.unread, set(&[2]));
-    let cs2 = world(&[(0, 1, Role::Read), (1, 2, Role::Read)], &[(0, 2), (0, 1)]);
-    let t2 = View::all(&kinds, &cs2, Unit::Reach);
-    let f2 = listing(&t2, de, Writers::Full);
-    assert_eq!(walk(&t2, &set(&[0]), &Set::new(), de, &|g| f2.get(&g).cloned().unwrap_or_default(), true).read, set(&[0, 1, 2]));
-}
-
-/// A strong to a dependent thing brings its independent's unit (Tess): 0 -> 3, 3 a dependent of
-/// 1 that 1 reaches; 0 holds sync on 1.
-#[test]
-fn p2_strong_to_a_dependent_brings_its_unit() {
-    let kinds = [K, K, K, d(1)];
-    let cs = world(&[(0, 1, Role::Sync)], &[(1, 3), (0, 3)]);
-    let t = View::all(&kinds, &cs, Unit::Reach);
-    let full = listing(&t, Rules::DESIGN, Writers::Full);
-    assert_eq!(full[&0], vec![blob(3, 1)]);
-    assert_eq!(walk(&t, &Set::new(), &set(&[0]), Rules::DESIGN, &|g| full.get(&g).cloned().unwrap_or_default(), false).units(), set(&[0, 1]));
-}
-
-// ---- The join: handle blobs and key blobs ----
-
-/// The join walk from 0 with each unit's blobs computed by a reader of that unit alone.
-fn join_own(kinds: &[Kind], cs: &[Commit], homes: bool) -> Set {
-    let hs = |g: T| seen(kinds, cs, g, &[], Unit::Reach).handles(g, homes);
-    let ks = |g: T| seen(kinds, cs, g, &[], Unit::Reach).keys(g);
-    join_walk(&set(&[0]), &hs, &ks)
-}
-
-/// For one world (failures, except the last three counts): 0 every reader of a unit, whatever
-/// else it reads, computes its handle and key blobs alike; 1 the walk over blobs each computed by
-/// a reader of its unit alone equals the walk over everything written; 2 with homes only where
-/// the home's unit carries the target it enters exactly what the earlier reading's reader enters
-/// with writers that see everything; 3 it enters every unit that reader enters; 4 (count) it
-/// enters more: a home whose unit dropped the target; 5 (count) the earlier reading's keeper,
-/// its writers reading their own closure, enters less; 6 (count) without homes it enters less.
-fn join_world(kinds: &[Kind], cs: &[Commit]) -> [usize; 7] {
-    let t = View::all(kinds, cs, Unit::Reach);
-    let ind: Vec<T> = t.independents().into_iter().collect();
-    let mut alike = true;
-    for &g in &ind {
-        let others: Vec<T> = ind.iter().copied().filter(|&x| x != g).collect();
-        for x in subsets(&others) {
-            let v = seen(kinds, cs, g, &x, Unit::Reach);
-            alike &= v.handles(g, true) == t.handles(g, true) && v.keys(g) == t.keys(g);
+    assert_eq!(changed, 0);
+    assert!(ctl > 0);
+    // Held history: writer 0 held the homed add (dot 2 -> 3); removed, then covered.
+    let kinds = vec![K, K, K, d(1)];
+    for cover in [false, true] {
+        let mut net = Net::new(kinds.clone(), Rules::DESIGN, &[(set(&[0]), 0)], &[]);
+        let a = net.author(0, addh(0, 3, 1));
+        let x = net.author(0, rm(0, &[(a, 3)]));
+        if cover {
+            net.author(0, Commit { on: 0, op: Op::Cover { covers: BTreeSet::from([a, x]), keeps: vec![] }, side: None });
         }
+        assert_eq!(net.home(0, 3), (!cover).then_some(1), "cover {cover}");
     }
-    let own = join_own(kinds, cs, true);
-    let truth = join_walk(&set(&[0]), &|g| t.handles(g, true), &|g| t.keys(g));
-    let carried = |g: T| -> Set { t.handles(g, true).into_iter().filter(|&h| t.targets(g, Member::Target).iter().any(|&x| t.in_unit[x] == Some(h))).collect() };
-    let reach = join_walk(&set(&[0]), &carried, &|g| t.keys(g));
-    let de = Rules::DESIGN;
-    let full = listing(&t, de, Writers::Full);
-    let reader = walk(&t, &set(&[0]), &Set::new(), de, &|g| full.get(&g).cloned().unwrap_or_default(), true).units();
-    let lo = listing(&t, de, Writers::Own);
-    let keeper = walk(&t, &Set::new(), &set(&[0]), de, &|g| lo.get(&g).cloned().unwrap_or_default(), false).units();
-    let bare = join_own(kinds, cs, false);
-    assert!(bare.is_subset(&own) && keeper.is_subset(&own));
-    let n = |x: bool| !x as usize;
-    [n(alike), n(own == truth), n(reach == reader), n(own.is_superset(&reader)), (own != reader) as usize, (keeper != own) as usize, (bare != own) as usize]
+    eprintln!("covers changing handles: {changed}; control (homes dropped) {ctl}");
 }
 
-fn join_asserts(f: &[usize; 7]) {
-    assert_eq!(f[0..4], [0; 4], "{f:?}");
-    assert!(f[4] > 0 && f[5] > 0 && f[6] > 0, "{f:?}");
-}
+// ---- Work at a change ----
 
-/// The join's static claim over the small family and 600 random worlds: what a unit lists and
-/// which keys it holds are functions of what any reader of that unit holds, and the walk over
-/// them, the same for a reader and a node keeping units unread, enters what a reader served by
-/// writers that see everything enters (see `join_world`).
-#[test]
-fn join_any_reader_of_a_unit_computes_its_blobs_and_the_walk_is_one() {
-    let f = over_family(7, |cs| join_world(&KINDS, cs));
-    join_asserts(&f);
-    eprintln!("join family 1/7 of {FAMILY}: {f:?}");
-    let mut r = Rng::new(0);
-    let mut g = [0; 7];
-    for _ in 0..600 {
-        let (kinds, cs) = random_static(&mut r);
-        for (a, x) in g.iter_mut().zip(join_world(&kinds, &cs)) {
-            *a += x;
-        }
-    }
-    join_asserts(&g);
-    eprintln!("join random of 600: {g:?}");
-}
-
-/// The finding worlds under the join, each unit's blobs by a reader of it alone.
-#[test]
-fn join_on_the_finding_worlds() {
-    let k3 = [K, K, K];
-    // A: 0 reads 1 and 2, 0 -> 1 -> 2. S(1) lists 2's handle, S(0) holds 2's key.
-    let a = world(&[(0, 1, Role::Read), (0, 2, Role::Read)], &[(0, 1), (1, 2)]);
-    assert_eq!(join_own(&k3, &a, true), set(&[0, 1, 2]));
-    // The requirement's second clause: 1 alone, holding no role on 2, keeps no 2.
-    let t = View::all(&k3, &a, Unit::Reach);
-    assert_eq!(join_walk(&set(&[1]), &|g| t.handles(g, true), &|g| t.keys(g)), set(&[1]));
-    // B: 0 -> 1, 0 -> 2, 0 sync on 1, 1 sync on 2; 0's grant on 2 given and removed, or never
-    // given: the same blobs and the same walk (2 by 1's key).
-    let never = world(&[(0, 1, Role::Sync), (1, 2, Role::Sync)], &[(0, 1), (0, 2)]);
-    let mut given = never.clone();
-    given.push(role(2, 0, Some(Role::Sync)));
-    assert_eq!(seen(&k3, &given, 0, &[], Unit::Reach).keys(0), set(&[1, 2]));
-    given.push(role(2, 0, None));
-    for g in 0..3 {
-        let (x, y) = (seen(&k3, &never, g, &[], Unit::Reach), seen(&k3, &given, g, &[], Unit::Reach));
-        assert_eq!((x.handles(g, true), x.keys(g)), (y.handles(g, true), y.keys(g)));
-    }
-    assert_eq!(join_own(&k3, &given, true), set(&[0, 1, 2]));
-    // B, the dependent form: 0 reads 1, 3 a dependent of 1 that 1 does not reach, 0 -> 3. The
-    // strong's home brings 1's unit whenever it was written; a strong carrying no home brings
-    // nothing.
-    let kd = [K, K, K, d(1)];
-    let b = world(&[(0, 1, Role::Read)], &[(0, 3)]);
-    assert_eq!(join_own(&kd, &b, true), set(&[0, 1]));
-    assert_eq!(join_own(&kd, &b, false), set(&[0]));
-    // A role through a holder outside the closure does not count (issues/unit-key-paths.md rule
-    // 1), alike for every reader of 0: 0 holds sync on 1, 1 on 2, 0 -> 2.
-    let c = world(&[(0, 1, Role::Sync), (1, 2, Role::Sync)], &[(0, 2)]);
-    assert_eq!(join_own(&k3, &c, true), set(&[0]));
-    // Finding D's second world: 0 reads 1 and 3, 3 reads 2, 0 -> 1 -> 2: 3 is not referenced.
-    let k4 = [K, K, K, K];
-    let dw = world(&[(0, 1, Role::Read), (0, 3, Role::Read), (3, 2, Role::Read)], &[(0, 1), (1, 2)]);
-    assert_eq!(join_own(&k4, &dw, true), set(&[0, 1]));
-}
-
-// ---- Item 4: key paths ----
-
-/// Key paths (§4): G (0) holds read on W (1), W read on H (2), G -> H, nothing references W.
-/// A writer syncing G, W and H logs S(G)'s blob for H with the path [W]; the keeper of G enters W for
-/// keys (not followed) and H by W's secret; the reader reads H. W's grant on H removed: the writer
-/// logs the blob without the path, deletes the old one, and the keeper drops W and H. Control: a
-/// path unit followed as a member brings W's own members.
-#[test]
-fn key_path_followed_and_dropped_with_its_grant() {
-    let mut net = Net::new(vec![K, K, K], Rules::VIA, vec![set(&[0, 1, 2])], vec![set(&[0])]);
-    for c in [role(1, 0, Some(Role::Read)), role(2, 1, Some(Role::Read)), add(0, 2)] {
-        net.write(c);
-    }
-    net.deliver_all();
-    net.settle(20, false).unwrap();
-    assert_eq!(net.listed(0), vec![Blob { tag: 2, unit: 2, paths: BTreeSet::from([vec![1]]) }]);
-    assert_eq!(net.kept[0], Entered { read: set(&[]), unread: set(&[0, 1, 2]), keys: set(&[1]) });
-    let t = net.truth();
-    let rd = walk(&t, &set(&[0]), &Set::new(), Rules::VIA, &|g| net.listed(g), true);
-    assert_eq!(rd.read, set(&[0, 1, 2]));
-    net.write(role(2, 1, None));
-    net.deliver_all();
-    net.settle(20, false).unwrap();
-    assert_eq!(net.listed(0), vec![blob(2, 2)]);
-    assert_eq!(net.kept[0].units(), set(&[0]));
-    assert!(net.wrong().is_empty());
-    // Control: a path unit followed as a member brings what it lists (W -> Y, W holding sync on Y).
-    let cs = world(&[(0, 1, Role::Read), (1, 2, Role::Read), (1, 3, Role::Sync)], &[(0, 2), (1, 3)]);
-    let t = View::all(&[K, K, K, K], &cs, Unit::Reach);
-    let l = listing(&t, Rules::VIA, Writers::Full);
-    let lf = |g: T| l.get(&g).cloned().unwrap_or_default();
-    assert_eq!(walk(&t, &Set::new(), &set(&[0]), Rules::VIA, &lf, false).units(), set(&[0, 1, 2]));
-    assert_eq!(walk(&t, &Set::new(), &set(&[0]), with(Rules::VIA, |r| r.paths = Paths::Followed), &lf, false).units(), set(&[0, 1, 2, 3]));
-}
-
-/// Two gaps of key paths against "R's role over any chain" (the item's property), each its
-/// smallest world, writers seeing every grant:
-/// - a direct grant hides a better chain: G holds sync on H directly and read through W; the
-///   blob carries no path ("absent where G holds a role on H directly"), so H is kept unread.
-/// - the root's chain, not the referrer's: R reads G and W, W reads H, G -> H; G holds no role on
-///   H, so its blob has no path, and H's step lists W, which nothing names: H is not entered.
-#[test]
-fn key_paths_miss_a_chain_the_referrer_does_not_hold() {
-    let via = Rules::VIA;
-    let cs = world(&[(0, 2, Role::Sync), (0, 1, Role::Read), (1, 2, Role::Read)], &[(0, 2)]);
-    let t = View::all(&[K, K, K], &cs, Unit::Reach);
-    let l = listing(&t, via, Writers::Full);
-    assert_eq!(l[&0], vec![blob(2, 2)]);
-    assert_eq!(p2_row(&t, via, &l, via)[4], false);
-    let rd = walk(&t, &set(&[0]), &Set::new(), via, &|g| l.get(&g).cloned().unwrap_or_default(), true);
-    assert_eq!(rd.unread, set(&[2]));
-    let cs = world(&[(0, 1, Role::Read), (0, 3, Role::Read), (3, 2, Role::Read)], &[(0, 1), (1, 2)]);
-    let t = View::all(&[K, K, K, K], &cs, Unit::Reach);
-    let l = listing(&t, via, Writers::Full);
-    assert_eq!(l[&1], vec![blob(2, 2)]);
-    let rd = walk(&t, &set(&[0]), &Set::new(), via, &|g| l.get(&g).cloned().unwrap_or_default(), true);
-    assert_eq!(rd.units(), set(&[0, 1]));
-    assert_eq!(p2_row(&t, via, &l, via)[4], false);
-}
-
-/// Forked sides over a grant on a key path (attack (a)): writer 0 never gets the removal of W's
-/// grant on H, writer 1 does. Writer 0 logs the blob with the path, writer 1 judges the path gone,
-/// deletes it and logs the blob without; writer 0 sees no blob covering its own and logs again:
-/// without spec/sync-judgement.md §4's once-per-change-of-ground (not modelled) they never stop.
-/// With no key paths the same fork changes no blob.
-#[test]
-fn key_path_under_forked_sides_never_settles() {
-    for (rules, settles) in [(Rules::VIA, false), (Rules::DESIGN, true)] {
-        let mut net = Net::new(vec![K, K, K], rules, vec![set(&[0, 1]), set(&[0, 1])], vec![]);
-        for c in [role(1, 0, Some(Role::Read)), role(2, 1, Some(Role::Read)), add(0, 2), role(2, 1, None)] {
-            net.write(c);
-        }
-        for c in 0..3 {
-            net.deliver(0, c);
-            net.deliver(1, c);
-        }
-        net.deliver(1, 3);
-        assert_eq!(net.settle(20, false).is_some(), settles, "{rules:?}");
-    }
-}
-
-// ---- Item 5: work at a change ----
-
-/// Counts at n and 10n members (item 5, attack (d)): root 0 references a holder 1 (0 holds sync on
-/// 1) and n members, each granted to 1; a writer syncs 0 and 1, the keeper keeps 0. Blob operations
-/// for: a detach (one delete), a grant on a member (none), a role change on the root (its grant on
-/// the holder removed: none; the keeper drops what it can no longer enter). The control
-/// (`Member::Role`) deletes a blob per member at that role change. Rotation is not modelled (no
-/// epochs): the design rewrites no blob at one by construction (§2, Across G's sync rotations).
+/// Counts at n and 10n members (item 7): root 0 references holder 1 (0 holds sync on 1) and n
+/// members, each granted to 1; H (n + 2) with dependents; a writer syncs 0 and 1, the keeper keeps
+/// 0. Blob operations for: detaching a member (1), attaching it again (1), a strong to a dependent
+/// of H with its home (2), its detach (2), a grant to 1 on a new thing (1), the root's grant on
+/// the holder removed (1; the keeper then drops every member, the release), a rotation of 1 (0),
+/// n strongs into the dependents of H (n + 1). Control: handles cut by roles (`Member::Role`)
+/// delete a handle per member at the root's grant removal.
 #[test]
 fn work_at_a_change_counts() {
     let mut rows = vec![];
     for n in [5, 50] {
         for member in [Member::Target, Member::Role] {
-            let kinds = vec![K; n + 3];
-            let mut net = Net::new(kinds, with(Rules::DESIGN, |r| r.member = member), vec![set(&[0, 1])], vec![set(&[0])]);
-            net.write(role(1, 0, Some(Role::Sync)));
-            net.write(add(0, 1));
-            let first = net.commits.len();
+            let h = n + 2;
+            let z = n + 3;
+            let mut kinds = vec![K; n + 4];
+            kinds.extend((0..n).map(|_| d(h)));
+            let mut net = Net::new(kinds, with(Rules::DESIGN, |r| r.member = member), &[(set(&[0, 1]), 0)], &[(set(&[0]), 0, false)]);
+            net.author(0, role(1, 0, Some(Role::Sync)));
+            let first = net.author(0, add(0, 1));
             for m in 2..n + 2 {
-                net.write(role(m, 1, Some(Role::Sync)));
-                net.write(add(0, m));
+                net.author(0, role(m, 1, Some(Role::Sync)));
+                net.author(0, add(0, m));
             }
-            net.deliver_all();
             net.settle(20, false).unwrap();
-            assert_eq!(net.listed(0).len(), n + 1);
-            assert_eq!(net.kept[0].units().len(), n + 2);
+            assert_eq!(handle_blobs(&net.listed(0)).len(), n + 1);
+            assert_eq!(net.keepers[0].kept.units().len(), n + 2);
             let ops = |net: &mut Net, c: Commit| {
                 let before = net.blob_ops;
-                net.write(c);
-                net.deliver_all();
+                net.author(0, c);
                 net.settle(20, false).unwrap();
                 net.blob_ops - before
             };
-            let detach = ops(&mut net, rm(0, &[first + 1]));
-            let grant = ops(&mut net, role(3, n + 2, Some(Role::Read)));
+            let detach = ops(&mut net, rm(0, &[(first + 2, 2)]));
+            let attach = ops(&mut net, add(0, 2));
+            let to_dep = net.commits.len();
+            let attach_dep = ops(&mut net, addh(0, n + 4, h));
+            let detach_dep = ops(&mut net, rm(0, &[(to_dep, n + 4)]));
+            let grant = ops(&mut net, role(z, 1, Some(Role::Sync)));
+            let rotation = ops(&mut net, rotate(1));
+            let many = {
+                let before = net.blob_ops;
+                for x in n + 4..2 * n + 4 {
+                    net.author(0, addh(0, x, h));
+                }
+                net.settle(20, false).unwrap();
+                net.blob_ops - before
+            };
             let root = ops(&mut net, role(1, 0, None));
-            rows.push((n, member, detach, grant, root, net.kept[0].units().len()));
+            assert!(net.wrong().is_empty(), "{:?}", net.wrong());
+            rows.push((n, member, [detach, attach, attach_dep, detach_dep, grant, rotation, many, root], net.keepers[0].kept.units().len()));
         }
     }
-    for &(n, member, detach, grant, root, kept) in &rows {
-        assert_eq!((detach, grant), (1, 0), "{rows:?}");
+    for &(n, member, c, kept) in &rows {
         match member {
-            Member::Target => assert_eq!((root, kept), (0, 1), "{rows:?}"),
-            Member::Role => assert_eq!(root, n, "{rows:?}"),
+            Member::Target => assert_eq!((c, kept), ([1, 1, 2, 2, 1, 0, n + 1, 1], 1), "{rows:?}"),
+            Member::Role => assert!(c[7] > n, "{rows:?}"),
         }
     }
-    eprintln!("work (n, member, detach, grant on a member, root role change, kept after): {rows:?}");
+    eprintln!("work (n, member, [detach, attach, attach to a dependent, its detach, grant, rotation, n strongs into one unit's dependents, root's grant removed], kept after): {rows:?}");
 }
 
-// ---- Item 6: a hostile writer ----
 
-/// P5 (item 6): writer 0 syncs every unit, writer 1 only S(0), so writer 1 cannot name the
-/// dependent target. A forged blob whose target no strong names is deleted by writer 1 (rule 1); one
-/// for a live target naming another unit is left by writer 1 (it cannot name the target) and set
-/// right by writer 0 (rule 3). The keeper enters a forged unit only where a thing it holds a secret
-/// of is on that unit's step. Random hostile histories with writers syncing random units: every run
-/// settles, and every wrong end is a blob no honest writer judges (finding): a forgery for a live
-/// target no writer of the unit can name, or in a unit no writer visits, stays for good. Control:
-/// writers deleting nothing outside the set keep a forged blob for good.
+/// A key too many under a fork opens by its first credential: side 0 grants 0 sync on 2, side 1
+/// counts no grant (forks are permanent). The key blob stands (side 0 asks for it) and carries 2's
+/// sync secret, logged by a side-0 writer; the keeper of 0 on side 1, whose side's step of 2 lists
+/// nothing it holds, enters 2 by that credential until 2 rotates (FAILS §2 "A key too many opens
+/// nothing"; what it opens is what the side-0 grant's box already gave 0's sync holders, a secret
+/// once shared). Without the credential it does not enter.
 #[test]
-fn p5_hostile_member_blobs() {
-    let kinds = vec![K, K, K, d(1), K];
-    let mut net = Net::new(kinds, Rules::DESIGN, vec![set(&[0, 1, 2, 4]), set(&[0])], vec![set(&[0])]);
-    for c in [role(1, 0, Some(Role::Sync)), role(2, 0, Some(Role::Sync)), add(1, 3), add(0, 3)] {
-        net.write(c);
-    }
-    net.deliver_all();
+fn a_key_too_many_opens_by_its_credential() {
+    let mut net = Net::new(vec![K, K, K], Rules::DESIGN, &[(set(&[0, 2]), 0), (set(&[0]), 1)], &[(set(&[0]), 0, false), (set(&[0]), 1, false)]);
+    net.author(0, add(0, 2));
+    net.author(0, sided(role(2, 0, Some(Role::Sync)), 0));
     net.settle(20, false).unwrap();
-    assert_eq!(net.listed(0), vec![blob(3, 1)]);
-    // No strong names 2: writer 1 deletes it. The keeper had entered 2 (0 is on 2's step).
-    net.store.insert((0, 100), blob(2, 2));
-    net.pass(0, false);
-    assert_eq!(net.kept[0].units(), set(&[0, 1, 2]));
-    net.visit(1);
-    net.pass(0, false);
-    assert!(net.wrong().is_empty());
-    // Live target 3 named as unit 2 beside the honest blob; and as unit 4, whose step lists nothing
-    // the keeper holds.
-    net.store.insert((0, 101), blob(3, 2));
-    net.store.insert((0, 102), blob(3, 4));
-    net.pass(0, false);
-    assert_eq!(net.kept[0].units(), set(&[0, 1, 2]), "enters 2 (0 on its step), not 4");
-    net.visit(1);
-    assert_eq!(net.listed(0).len(), 3, "writer 1 cannot name 3: it judges nothing");
-    net.visit(0);
-    net.pass(0, false);
-    assert!(net.wrong().is_empty());
-    assert_eq!(net.kept[0].units(), set(&[0, 1]));
-
-    let mut r = Rng::new(0);
-    let (mut unsettled, mut wrong, mut unjudged, mut control) = (0, 0, 0, 0);
-    let n = 300;
-    for _ in 0..n {
-        let syncs = random_syncs(&mut r);
-        match random_net(&mut r.clone(), Rules::DESIGN, syncs.clone(), true, &|_| {}) {
-            None => unsettled += 1,
-            Some((w, res)) => {
-                unjudged += (res > 0) as usize;
-                wrong += (!w.is_empty() && res == 0) as usize
-            }
-        }
-        control += random_net(&mut r.clone(), Rules::DESIGN, syncs, true, &|n| n.deletes = false).is_none_or(|(w, _)| !w.is_empty()) as usize;
-        r.next();
-    }
-    assert_eq!((unsettled, wrong), (0, 0));
-    assert!(unjudged > 0 && control > 0, "{unjudged} {control}");
-    eprintln!("p5 random of {n}: unsettled {unsettled}, wrong {wrong}, ending with a blob no writer judges {unjudged}; control {control}");
-}
-
-/// P3: release by reachability, cycles included. 0 lists 1, 1 and 2 list each other; removing
-/// 0 -> 1 releases 1 and 2 at the keeper. The negative control (a unit kept while a kept unit
-/// lists it) keeps the cycle for good.
-#[test]
-fn p3_detached_cycle_is_released() {
-    for count in [false, true] {
-        let mut net = Net::new(vec![K, K, K], Rules::DESIGN, vec![set(&[0, 1, 2])], vec![set(&[0])]);
-        for c in [role(1, 0, Some(Role::Sync)), role(2, 1, Some(Role::Sync)), role(1, 2, Some(Role::Sync)), add(0, 1), add(1, 2), add(2, 1)] {
-            net.write(c);
-        }
-        net.deliver_all();
-        net.settle(20, count).unwrap();
-        assert_eq!(net.kept[0].units(), set(&[0, 1, 2]));
-        net.write(rm(0, &[3]));
-        net.deliver_all();
-        net.settle(20, count).unwrap();
-        assert_eq!(net.kept[0].units() == set(&[0]), !count, "count {count}");
-        assert_eq!(net.wrong().is_empty(), !count);
-    }
+    assert!(net.wrong().is_empty(), "{:?}", net.wrong());
+    assert_eq!(net.keepers[0].kept.units(), set(&[0, 2]));
+    assert_eq!(net.keepers[1].kept.units(), set(&[0, 2]), "side 1 enters by the credential");
+    let t1 = net.truth(1);
+    assert_eq!(walk(&t1, false, &set(&[0]), &|g| net.truth_blobs(g), Walk::DESIGN).units(), set(&[0]), "not by its side's step");
+    net.author(0, rotate(2));
+    net.settle(20, false).unwrap();
+    assert_eq!(net.keepers[1].kept.units(), set(&[0]));
+    assert_eq!(net.keepers[0].kept.units(), set(&[0, 2]));
 }
