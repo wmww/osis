@@ -13,7 +13,8 @@
 //!   edge write (setting a holder's edge on `on`; a lowering carries a frontier, a leaf of commit
 //!   IDs per thing; it may name the remaining admin it relies on, or carry the mark that lets
 //!   its thing go adminless), an addendum (plain content naming a removal and commits it
-//!   vouches for), a vouch (the same for role writes: `Vouch`).
+//!   vouches for), a vouch (the same for role writes: `Vouch`). A commit of several edge writes
+//!   on one target (`World::commit`) is one part per write, consecutive in key order.
 //! - **Edges in time.** An edge gives its role at `ts` while its `until` is later; a write
 //!   giving no role at its own `ts` (none, or an `until` passed) is a removal.
 //! - **Hops.** Consecutive members of [signer, A1..Ak, end] are joined by descent (the record
@@ -35,14 +36,19 @@
 //!   it holding its right (its path giving admin, the last-admin rule passed) and taking its edge
 //!   from admin: where its own drops would take its authority (`keeps`: its path's edges read back
 //!   along the writes that set them, passing over its own drops) it is **void**; else it applies.
+//!   In a commit of several edge writes each applies or not by the pass before the commit, and a
+//!   lowering's `keeps` passes over its commit's earlier drops too; the pass ends once the
+//!   commit took effect (`Rules::commit_drops`).
 //!   The verdict stands for the rest of the walk: a restart neither re-judges nor re-audits it,
 //!   and an applied lowering applies in every later pass unless a later lowering drops it. One
 //!   without its right, or taking nothing, has no verdict and is judged by a later pass. D only
 //!   grows: nothing is undropped.
 //! - **Last admin** (`Rules::last_admin`): an unmarked write taking a **standing** admin edge
 //!   (admin, no `until`) of T to anything else applies only where the remaining admin it relies
-//!   on is, as the walk stands, a standing admin edge of T other than the one it lowers: the
-//!   last edge of its own path where that is one, else the edge of the holder it names.
+//!   on is, as the pass stands before its commit, a standing admin edge of T other than the one
+//!   it lowers: the last edge of its own path where that is one (`Rules::last_hop`: its final hop
+//!   joining its last member to T in one edge), else the edge of the holder it names. A judged
+//!   lowering is void where that edge stands no more past its drops (`Rules::remains_kept`).
 //! - **Content.** A commit on T with path P is valid iff every edge of P gave write just before
 //!   its position (the start of its `ts`) and no applied lowering of an edge of P below write is
 //!   ordered after it; else iff such a lowering's list names it, a valid addendum by a writer
@@ -50,11 +56,12 @@
 //!   re-granted (every edge gives write in the final state, every `until` counted removed) and
 //!   the commit is ordered after the first point P gave write (`Regrant`).
 //! - **Trust sets.** A trusted lowering R of edge h seeds D with the held edge-class commits
-//!   ordered before R whose path holds h and R's list does not name; a trusted write the
+//!   ordered before R whose path holds h, R's list does not name and whose need at h R's value
+//!   does not meet (`Rules::seeds_by_need`); a trusted write the
 //!   settled walk does not apply is void and loses its seeds, all void ones at once, and the
 //!   walk is redone.
-//! - **Disputes** (`disputes`): a held lowering of another holder's edge, not trusted, whose
-//!   trust changes the reading.
+//! - **Disputes** (`disputes`): a held explicit lowering of another holder's edge (no
+//!   self-removal or invite grant: `Candidates`), not trusted, whose trust changes the reading.
 //! - **Leaves.** A node sees a frontier's leaf for a thing only where its view says so
 //!   (`View::leaves`); an entry in a leaf it does not see is not listed for it.
 //! - **Invites and finalizes.** An edge write without admin on its path applies as an invite

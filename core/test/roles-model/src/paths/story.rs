@@ -468,7 +468,8 @@ impl Sim {
         }
         // the kiosk: where B's own walk gives it admin on A and A2 admin on T1
         let b = judge(&self.w, rules, &self.view_at(B, Some(REMOVAL - 1), rules));
-        if self.setup.x_a2 == 5 && b.role(B, A) == Role::Admin && b.role(A2, T1) == Role::Admin {
+        let at = |e: Edge| b.state.get(&e).is_some_and(|&v| alive(v, REMOVAL) == Role::Admin);
+        if self.setup.x_a2 == 5 && at((B, A)) && at((A2, T1)) {
             let all = self.w.through((A2, T1), |i| self.got(i, B, REMOVAL - 1));
             let k = self.put((B, REMOVAL, &[A], T1, Kind::set(A2, Role::Write).inviting(Role::Read).listing(self.w.cut(&all))), REMOVAL, rng, false);
             self.kiosk = Some(k);
@@ -569,7 +570,7 @@ impl Sim {
     /// its own. So it writes at receipt, again once it holds the right after a re-grant or a
     /// switch of side, and again whenever its earlier one stops counting.
     fn answers(&mut self, rules: &Rules, rng: &mut Rng) {
-        let mut seen: BTreeMap<Thing, (Set, Set)> = BTreeMap::new();
+        let mut seen: BTreeMap<Thing, (Set, Set, Vec<(Id, Thing, bool)>)> = BTreeMap::new();
         let mut done: BTreeSet<(Thing, Id, Thing, bool)> = BTreeSet::new();
         for t in REMOVAL + 1..=END {
             for n in [H, B, N5, K] {
@@ -581,7 +582,9 @@ impl Sim {
                     continue;
                 }
                 let v = self.view_at(n, Some(t), rules);
-                let key = (v.held.clone(), v.trust.clone());
+                // what it holds may already carry a removal it has not received (as evidence):
+                // the answers owed are part of what changed
+                let key = (v.held.clone(), v.trust.clone(), owed.iter().map(|o| (o.0, o.1, o.3)).collect::<Vec<_>>());
                 if seen.get(&n) == Some(&key) {
                     continue;
                 }
@@ -1203,7 +1206,9 @@ pub fn check(m: &Sim, rules: &Rules, st: &mut Stats) {
                 // X leaving A by itself: a self-removal is always open to the holder, and takes nothing X still holds
                 || (w.leave(i) && w.sets(i) == Some((X, A)))
                 // X inviting (or finalizing) at read through A2, which it keeps writing, by A2's invite
-                || (c.signer == X && x_invites > Role::None && c.path == [A2] && matches!(c.kind, Kind::Edge { role, .. } if role <= x_invites));
+                || (c.signer == X && x_invites > Role::None && c.path == [A2] && matches!(c.kind, Kind::Edge { role, .. } if role <= x_invites))
+                // Z writing T1 by X's invite at write, where that is X's right
+                || (c.signer == Z && x_invites >= Role::Write && c.on == T1 && c.path.is_empty() && matches!(c.kind, Kind::Content));
             // the accepted window (spec/permissions.md §5.2 Copies, §5.3): shown only by a cover's
             // copy, carried first by a cover whose writer did not yet hold a removal when it made it
             let window = !rd.valid.contains(&i) && rd.copied.contains(&i) && m.smuggled.contains(&i);
@@ -1589,16 +1594,16 @@ pub fn mode_rules(mode: &str) -> Option<Rules> {
 // ---- The void step in small worlds (notes/path-model-findings.md 16, 17) ----
 
 /// A small world of admins removing and granting each other on A (H its mint): `n` commits, each
-/// by a random party at a random `ts`, one in four carrying two or three edge writes on distinct
-/// holders (spec/commits.md §2), each setting a random party's edge to admin (standing, or one in
-/// three until two ticks on) or none, naming a random remaining admin half the time, listing each
+/// by a random party at a random `ts`, one in four carrying two or three removals of distinct
+/// holders (spec/commits.md §2), any other setting a random party's edge to admin (standing, or
+/// one in three until two ticks on) or none, naming a random remaining admin half the time, listing each
 /// earlier write with probability one half.
 pub fn tiny(i: u64, n: usize) -> World {
     let mut rng = Rng::thread(0x701d, i as usize);
     let mut w = account();
     for _ in 0..n {
-        tiny_commit(&mut w, &mut rng, n, |h, rng, ts| {
-            let k = match rng.below(5) {
+        tiny_commit(&mut w, &mut rng, n, |h, rng, ts, several| {
+            let k = match if several { 4 } else { rng.below(5) } {
                 0 | 1 => Kind::set(h, Role::Admin),
                 2 => Kind::set(h, Role::Admin).until(ts + 2),
                 _ => Kind::set(h, Role::None),
@@ -1611,8 +1616,9 @@ pub fn tiny(i: u64, n: usize) -> World {
 }
 
 /// One commit of a small world: a random signer, `ts` in 1..=n, one part or (one in four) two
-/// or three on distinct holders other than the signer, each from `part` with its own list.
-fn tiny_commit(w: &mut World, rng: &mut Rng, n: usize, part: impl Fn(Thing, &mut Rng, u32) -> Kind) {
+/// or three on distinct holders other than the signer (`part`'s last argument: lowerings), each
+/// from `part` with its own list.
+fn tiny_commit(w: &mut World, rng: &mut Rng, n: usize, part: impl Fn(Thing, &mut Rng, u32, bool) -> Kind) {
     let parties = [H, B, N5, Z, N6];
     let s = parties[rng.below(5)];
     let ts = 1 + rng.below(n) as u32;
@@ -1622,7 +1628,7 @@ fn tiny_commit(w: &mut World, rng: &mut Rng, n: usize, part: impl Fn(Thing, &mut
     for _ in 0..k {
         let h = parties[rng.below(5)];
         let list: Vec<Id> = (0..w.commits.len()).filter(|_| rng.below(2) == 0).collect();
-        let kind = part(h, rng, ts);
+        let kind = part(h, rng, ts, k > 1);
         if s != h && !holders.contains(&h) {
             holders.push(h);
             let fin = matches!(kind, Kind::Edge { finalize: true, .. });
@@ -1648,7 +1654,7 @@ pub fn tiny_invites(i: u64, n: usize) -> World {
     let mut rng = Rng::thread(0x1271, i as usize);
     let mut w = account();
     for _ in 0..n {
-        tiny_commit(&mut w, &mut rng, n, |h, rng, ts| match rng.below(6) {
+        tiny_commit(&mut w, &mut rng, n, |h, rng, ts, several| match if several { [1, 2, 3][rng.below(3)] } else { rng.below(6) } {
             0 => Kind::set(h, Role::Admin),
             1 => Kind::set(h, Role::None),
             2 => Kind::set(h, Role::Write).inviting(Role::Write),

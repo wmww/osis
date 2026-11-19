@@ -2216,3 +2216,28 @@ fn a_trusted_demotion_to_write_keeps_the_invites_under_it() {
     assert_eq!(judge(&w, &all, &View::all(&w).trusting(&[kiosk])).role(G, T1), Gone);
     assert_eq!(disputes(&w, &all, &View::all(&w)), vec![kiosk]);
 }
+
+
+/// Finding 33 (open): H grants N5 admin at 3 and again at 11; N5 gives N6 write inviting write
+/// until 10 at 8, removes N6 at 9, and demotes H to write inviting write at 11 listing only H's
+/// second grant. The removal of N6 falls from write, is judged and applied; the demotion of H
+/// drops H's first grant of N5, and the restart leaves N5 no right at 8 and 9: the grant of N6
+/// does not apply, and the removal of N6, applied by its verdict, still applies. Without the grant
+/// held the removal never falls, gets no verdict and does not apply: the grant, unapplied, decides
+/// whether the removal shows (roles read alike).
+#[test]
+#[ignore = "notes/path-model-findings.md 33: a lowering left with no verdict gives a later lowering its verdict"]
+fn repro_an_unapplied_lowering_gives_another_its_verdict() {
+    let mut w = account();
+    let again = w.edge(H, 11, &[], A, N5, Admin, &[]);
+    w.edge(N5, 11, &[], A, H, Write, &[again]);
+    w.edit(1, |k| k.inviting(Write));
+    let r6 = w.edge(N5, 9, &[], A, N6, Gone, &[]);
+    let g6 = w.push(N5, 8, &[], A, Kind::set(N6, Write).inviting(Write).until(10));
+    w.edge(H, 3, &[], A, N5, Admin, &[]);
+    let rd = fixed(&w, &[]);
+    assert!(rd.applied.contains(&r6) && !rd.applied.contains(&g6), "{rd:?}");
+    let without = judge(&w, &Rules::fixed(), &View::all(&w).without(&[g6]));
+    assert!([H, N5, N6].iter().all(|&n| without.role(n, A) == rd.role(n, A)));
+    assert!(no_effect(&w, &Rules::fixed(), &View::all(&w), &rd, g6), "the removal of N6 shows only with the grant held");
+}
