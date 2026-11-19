@@ -232,6 +232,20 @@ rc, out = summary(f"{LISTED}ok 1 issues/known.md x\nfine 1 issues/known.md x\ndr
 check("known but passed", (rc, [l for l in out.split("\n") if "KNOWN but passed" in l]), (3, ["   KNOWN but passed: ok (default-tests, gate.gui): fixed? drop its tools/known_failures.txt line once its issue is", "   KNOWN but passed: sim-sweep:drift_parks (gate.sim): fixed? drop its tools/known_failures.txt line once its issue is"]))
 rc, out = summary(f"{LISTED}quick 1 issues/known.md x\n", [("default-tests", "0", "test quick ... ok\n"), ("gate.gui", "101", "     Running tests/q.rs (q-1)\n\nrunning 1 test\ntest quick ... FAILED\n\nfailures:\n\n---- quick stdout ----\nx\n\nfailures:\n    quick\n\ntest result: FAILED. 0 passed; 1 failed\n\nerror: test failed, to rerun pass `--test q`\n" + COUNT1)])
 check("known, passed in one stage, failed in another: not reported", (rc, "KNOWN but passed" in out), (3, False))
+# the property and sim stages' runs by CPU-s: runner summary lines (not progress lines), the order
+# harness's `NAME (SIZE)` line naming test NAME_SIZE, then tests with no line
+PROPS = """a::p_large: 3 seeds from 0 (OSIS_COVERED_START=0)
+a::p_large: 1 of 3 run, 0 failing, 0 hung, 16 threads, 60.0 s, 900.0 CPU-s (running)
+a::p_large: 3 of 3 run, 0 failing, 0 hung, 16 threads, 70.5 s, 1000.5 CPU-s
+test a::p_large ... ok
+order::held_set_decides (plain): 8 seeds from 0, 6 steps, 1 failing, 9.0 s, 120.0 CPU-s; held-model compared 3 aspects over 2 nodes
+test order::held_set_decides_plain ... ok
+test b::q_exhaustive ... ok
+"""
+check("costs", gate_failures.costs(PROPS), ([(1000.5, 70.5, "a::p_large"), (120.0, 9.0, "order::held_set_decides (plain)")], ["b::q_exhaustive"]))
+rc, out = summary("", [("default-tests", "0", "a::x: 1 of 1 run, 0 failing, 0 hung, 1 threads, 1.0 s, 5.0 CPU-s\n"), ("gate.properties", "0", PROPS), ("gate.sim", "0", "sim-sweep: 75 of 75 run, 0 failing, 0 hung, 16 threads, 10.9 s, 150.0 CPU-s\n")])
+check("cost table", (rc, out.split("== test stages")[0]), (0, "== property and sim CPU-s, costliest first (1270 CPU-s on the seed runners)\n"
+      "     1000.5 CPU-s    70.5 s  a::p_large\n      150.0 CPU-s    10.9 s  sim-sweep\n      120.0 CPU-s     9.0 s  order::held_set_decides (plain)\n          (no CPU line)  b::q_exhaustive\n"))
 rc, out = summary("x 1 issues/gone.md p\n", [("default-tests", "0", "")])
 check("a bad list fails the gate", (rc, "NEW   known list" in out), (1, True))
 

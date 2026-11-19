@@ -148,7 +148,41 @@ pub fn threads(var: &str) -> usize {
     u64_var(var).map_or_else(|| std::thread::available_parallelism().map_or(1, |n| n.get()), |n| n as usize).max(1)
 }
 
-/// `f` over `items` on up to `threads` threads, results in order.
+thread_local! {
+    /// CPU nanoseconds of the ended threads `par_map` and `run_jobs` ran for this one (`Cpu`).
+    static CHILD_NS: std::cell::Cell<u64> = const { std::cell::Cell::new(0) };
+}
+
+/// A reading of the CPU time spent on the calling thread's work: its own, plus that of every
+/// thread `par_map` or `run_jobs` ran for it (nested) once that thread's share ended. A test's or
+/// job's cost while others run in the same process. Zero where a thread's CPU clock cannot be read
+/// (not Linux).
+#[derive(Clone, Copy)]
+pub struct Cpu(u64);
+
+impl Cpu {
+    pub fn now() -> Cpu {
+        Cpu(thread_clock().and_then(|c| cpu_ns(&c)).unwrap_or(0) + CHILD_NS.get())
+    }
+
+    /// Nanoseconds spent since `self`.
+    pub fn ns_since(self) -> u64 {
+        Cpu::now().0.saturating_sub(self.0)
+    }
+
+    /// CPU-seconds spent since `self`.
+    pub fn secs_since(self) -> f64 {
+        self.ns_since() as f64 / 1e9
+    }
+}
+
+/// Adds `ns` of an ended helper thread to the calling thread's `Cpu`.
+fn add_child_cpu(ns: u64) {
+    CHILD_NS.set(CHILD_NS.get() + ns);
+}
+
+/// `f` over `items` on up to `threads` threads, results in order; the threads' CPU counts in the
+/// caller's `Cpu`.
 pub fn par_map<T: Send>(items: &[u64], threads: usize, f: impl Fn(u64) -> T + Sync) -> Vec<T> {
     use std::sync::atomic::{AtomicUsize, Ordering};
     let threads = threads.clamp(1, items.len().max(1));
@@ -158,17 +192,24 @@ pub fn par_map<T: Send>(items: &[u64], threads: usize, f: impl Fn(u64) -> T + Sy
         let hs: Vec<_> = (0..threads)
             .map(|_| {
                 s.spawn(move || {
+                    let cpu = Cpu::now();
                     let mut mine = Vec::new();
                     loop {
                         let i = next.fetch_add(1, Ordering::Relaxed);
                         let Some(&x) = items.get(i) else { break };
                         mine.push((i, f(x)));
                     }
-                    mine
+                    (mine, cpu.ns_since())
                 })
             })
             .collect();
-        hs.into_iter().flat_map(|h| h.join().expect("par_map thread")).collect()
+        let mut out = Vec::new();
+        for h in hs {
+            let (mine, ns) = h.join().expect("par_map thread");
+            add_child_cpu(ns);
+            out.extend(mine);
+        }
+        out
     });
     out.sort_by_key(|x| x.0);
     out.into_iter().map(|x| x.1).collect()
@@ -367,7 +408,8 @@ pub fn run_seeds<T: Send>(name: &str, seeds: &[u64], visible_summary: bool, repl
 /// its next `checkpoint`) and a new thread takes its place; a hung job that ends later is still a
 /// failure. Each failing or hung job is printed with its label as it happens, a progress line
 /// every `PROGRESS_SECS`, all past libtest's capture; then a summary line (past it when
-/// `visible_summary`). A hung thread cannot be stopped or joined: if hung jobs are still running
+/// `visible_summary`) ending with the ended jobs' CPU-seconds (`Cpu`; tools/gate_failures.py lists
+/// a gate's properties by it), which also count in the caller's `Cpu`. A hung thread cannot be stopped or joined: if hung jobs are still running
 /// when the rest is done, or as many jobs are hung as there are threads, the runner prints every
 /// failure and hung job and exits the process (101).
 pub fn run_jobs<J: Sync, T: Send>(name: &str, jobs: &[J], threads: usize, visible_summary: bool, label: impl Fn(&J) -> String + Sync, f: impl Fn(&J) -> T + Sync) -> Vec<Result<T, String>> {
@@ -389,11 +431,13 @@ pub fn run_jobs<J: Sync, T: Send>(name: &str, jobs: &[J], threads: usize, visibl
         /// marked hung (running or ended since), and why
         hung: BTreeMap<usize, String>,
         failed: usize,
+        /// CPU nanoseconds of the ended jobs (`Cpu`)
+        cpu_ns: u64,
         /// workers not on a hung job
         live: usize,
         stop: bool,
     }
-    let state = Mutex::new(State { next: 0, running: BTreeMap::new(), results: (0..jobs.len()).map(|_| None).collect(), hung: BTreeMap::new(), failed: 0, live: threads, stop: false });
+    let state = Mutex::new(State { next: 0, running: BTreeMap::new(), results: (0..jobs.len()).map(|_| None).collect(), hung: BTreeMap::new(), failed: 0, cpu_ns: 0, live: threads, stop: false });
     let lock = || state.lock().unwrap_or_else(|e| e.into_inner());
     let wake = Condvar::new();
     let (f, label, lock, wake) = (&f, &label, &lock, &wake);
@@ -416,9 +460,12 @@ pub fn run_jobs<J: Sync, T: Send>(name: &str, jobs: &[J], threads: usize, visibl
                 (i, job, ctx)
             };
             CURRENT.with(|c| *c.borrow_mut() = Some(ctx.clone()));
+            let cpu = Cpu::now();
             let r = caught(|| Ok(f(job)));
+            let cpu = cpu.ns_since();
             CURRENT.with(|c| *c.borrow_mut() = None);
             let mut g = lock();
+            g.cpu_ns += cpu;
             let run = g.running.remove(&i).expect("running");
             let why = g.hung.get(&i).cloned();
             let r = match &why {
@@ -448,7 +495,7 @@ pub fn run_jobs<J: Sync, T: Send>(name: &str, jobs: &[J], threads: usize, visibl
     let worker = &worker;
     let summary = |g: &State<T>| {
         let done = g.results.iter().filter(|r| r.is_some()).count();
-        format!("{name}: {done} of {} run, {} failing, {} hung, {threads} threads, {:.1} s", jobs.len(), g.failed, g.hung.len(), t0.elapsed().as_secs_f64())
+        format!("{name}: {done} of {} run, {} failing, {} hung, {threads} threads, {:.1} s, {:.1} CPU-s", jobs.len(), g.failed, g.hung.len(), t0.elapsed().as_secs_f64(), g.cpu_ns as f64 / 1e9)
     };
     // every failure in job order, with its replay line
     let failures = |g: &State<T>| -> Vec<String> {
@@ -515,6 +562,7 @@ pub fn run_jobs<J: Sync, T: Send>(name: &str, jobs: &[J], threads: usize, visibl
             std::process::exit(101);
         }
         visible(visible_summary, &summary);
+        add_child_cpu(g.cpu_ns);
         std::mem::take(&mut g.results)
     });
     results.into_iter().map(|r| r.unwrap_or_else(|| Err("not run".to_string()))).collect()
@@ -578,6 +626,27 @@ mod tests {
         let mut run = run_on(None, long_ago);
         assert_eq!(run.judge(Instant::now(), Duration::from_secs(1)), Err("ran past 1 s".to_string()));
         assert!(run_on(None, Instant::now()).judge(Instant::now(), Duration::from_secs(1)).is_ok());
+    }
+
+    // a caller's `Cpu` counts the CPU of the threads par_map and run_jobs ran for it, nested,
+    // and a run_jobs summary carries it (spec: none, test infrastructure)
+    #[test]
+    fn cpu_counts_helper_threads() {
+        let Some(clock) = thread_clock() else { return };
+        // each call spins 10 ms of its own thread's CPU
+        let spin = |_| {
+            let c = thread_clock().unwrap();
+            let end = cpu_ns(&c).unwrap() + 10_000_000;
+            while cpu_ns(&c).unwrap() < end {}
+        };
+        let own = cpu_ns(&clock).unwrap();
+        let cpu = Cpu::now();
+        par_map(&[0, 1, 2, 3], 2, spin);
+        let helpers = cpu.ns_since() - (cpu_ns(&clock).unwrap() - own);
+        assert!(helpers >= 40_000_000, "{helpers} ns");
+        let cpu = Cpu::now();
+        run_jobs("cpu", &[0u64, 1], 2, false, |j| j.to_string(), |_| par_map(&[0, 1], 2, spin));
+        assert!(cpu.ns_since() >= 40_000_000, "{} ns", cpu.ns_since());
     }
 
     // a shrink counts its candidates and finds a planted failure's two steps among 40 in under

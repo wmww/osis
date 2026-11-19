@@ -24,6 +24,10 @@ add up, a sim sweep without its closing tally. tools/policy.py checks the list (
 A listed NAME that ran and passed in every stage that ran it (a `test NAME ... ok` line, a sim
 tally of 0 failed) and failed in none is reported `KNOWN but passed`: its issue may be fixed and
 its line stale. It changes no exit code (a property's random seeds may miss a known failure).
+
+First it lists the property and sim stages' runs by CPU-seconds, costliest first: each summary line
+ending `..., W s, C CPU-s` (osis_base::testenv::run_jobs, the order harness's `NAME (SIZE): ...`
+line, which names test NAME_SIZE), then each test the stage ran that printed none.
 """
 import collections, os, re, sys
 
@@ -42,6 +46,9 @@ SIM_TALLY = re.compile(r"^(\w+) (\d+) (\d+)$")
 # tools/test_watch.py stopping a target: why, then each test still running
 HUNG = re.compile(r"^gate: hung: (no test finished .*)$")
 HUNG_TEST = re.compile(r"^gate: hung test: (.+)$")
+# a runner's summary line (not its `(running)` progress line): `NAME[ (SIZE)]: ..., W s, C CPU-s`
+CPU = re.compile(r"^(\S+?)(?: \(([^()]*)\))?: .*, ([\d.]+) s, ([\d.]+) CPU-s(?:;.*)?$")
+COST_STAGES = ("gate.properties", "gate.sim")
 
 
 def known(root=ROOT):
@@ -197,6 +204,20 @@ def sim_failures(text):
     return out
 
 
+def costs(text):
+    """([(cpu, wall, name)], [test]) of a stage log: each runner summary line's cost, and each
+    test that ran (passed or failed) with no summary line of its own."""
+    rows, named = [], set()
+    for l in text.split("\n"):
+        m = CPU.match(l)
+        if m:
+            name = m.group(1) + (f" ({m.group(2)})" if m.group(2) else "")
+            rows.append((float(m.group(4)), float(m.group(3)), name))
+            named.add(m.group(1) + ("_" + re.sub(r"\W+", "_", m.group(2)) if m.group(2) else ""))
+    ran = [m.group(1) for l in text.split("\n") if (m := PASSED.match(l) or FAILED.match(l))]
+    return sorted(rows, reverse=True), [t for t in dict.fromkeys(ran) if t not in named]
+
+
 def main():
     if len(sys.argv) not in (3, 4):
         sys.exit(__doc__)
@@ -239,6 +260,18 @@ def main():
             else:
                 rows.append(("NEW", stage, name))
             rows += [("", "", s) for s in shown[:3]] + ([("", "", f"... {len(shown) - 3} more seeds")] if len(shown) > 3 else [])
+    cost, bare = [], []
+    for stage, _, log in ((r + ["", ""])[:3] for r in results):
+        if stage in COST_STAGES and os.path.exists(log):
+            c, b = costs(open(log, errors="replace").read())
+            cost += c
+            bare += b
+    if cost or bare:
+        print(f"== property and sim CPU-s, costliest first ({sum(c for c, _, _ in cost):.0f} CPU-s on the seed runners)")
+        for c, w, name in sorted(cost, reverse=True):
+            print(f"   {c:8.1f} CPU-s {w:7.1f} s  {name}")
+        for name in bare:
+            print(f"          (no CPU line)  {name}")
     failed = sum(1 for r in results if r[1:2] != ["0"])
     print(f"== test stages: {len(results)} run of {max(sum(expected.values()), len(results))}, {failed} failed")
     for kind, stage, text in rows:

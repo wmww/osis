@@ -3269,7 +3269,7 @@ fn held_set_decides_at(sizes: Vec<Size>) {
     let mut fails = Vec::new();
     let threads = threads("OSIS_SEED_THREADS");
     for size in &sizes {
-        let t0 = std::time::Instant::now();
+        let (t0, cpu) = (std::time::Instant::now(), osis_base::testenv::Cpu::now());
         // up to a seed per thread in flight, each seed's deliveries on every thread, all of it
         // holding the process's permits (`check_on`)
         let results = par_map(&size.seeds, threads, |seed| {
@@ -3311,7 +3311,7 @@ fn held_set_decides_at(sizes: Vec<Size>) {
         }
         let failed: Vec<String> = results.into_iter().filter_map(|x| x.1).collect();
         // always shown: the counts are what a passing run is read for
-        osis_base::testenv::visible(true, &format!("order::held_set_decides ({}): {} seeds from {}, {} steps, {} orders in the passing ones ({} with late parts; {} ingests, {} nodes copied, {} ends judged as an alike one), {} failing, {:.1} s; held-model compared {} aspects over {} nodes", size.name, size.seeds.len(), size.seeds.first().copied().unwrap_or(0), size.len, here.orders, here.twins.2, here.ingests, here.copies, here.alike, failed.len(), t0.elapsed().as_secs_f64(), here.model.compared, here.model.nodes));
+        osis_base::testenv::visible(true, &format!("order::held_set_decides ({}): {} seeds from {}, {} steps, {} orders in the passing ones ({} with late parts; {} ingests, {} nodes copied, {} ends judged as an alike one), {} failing, {:.1} s, {:.1} CPU-s; held-model compared {} aspects over {} nodes", size.name, size.seeds.len(), size.seeds.first().copied().unwrap_or(0), size.len, here.orders, here.twins.2, here.ingests, here.copies, here.alike, failed.len(), t0.elapsed().as_secs_f64(), cpu.secs_since(), here.model.compared, here.model.nodes));
         seen.add(&here);
         fails.extend(failed);
     }
