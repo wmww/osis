@@ -682,11 +682,12 @@ enum Seen {
 /// its clock), dated as
 /// held-model dates it with the body as last seen held. A drop is judged once: a setting arriving
 /// later that puts the body back in history does not make it wrong (Dropped stays dropped).
-pub(crate) fn compare(e: &mut Engine, hist: &History, cov: &mut Coverage, drops: Option<&mut Drops>) -> Option<String> {
+/// `quiet`, the caller's word that a pass ended with nothing arriving, leaving the node closure
+/// or ticking since: a thing outside the node closure then holds its certificates alone
+/// (`hm::at_quiet`; the node closure is the node's, which its own walk checks).
+pub(crate) fn compare(e: &mut Engine, hist: &History, cov: &mut Coverage, drops: Option<&mut Drops>, quiet: bool) -> Option<String> {
     let mut input = convert(e, hist);
-    // at quiet (nothing arrived, lost a need or left the node closure unjudged), a thing outside
-    // the node closure holds its certificates alone (`hm::at_quiet`)
-    if e.core.pass_due.as_ref().is_some_and(|d| d.is_empty()) && e.core.lost_due.is_empty() && e.left_closure().is_empty() {
+    if quiet {
         let closure: BTreeSet<hm::NodeId> = input.ids.iter().filter(|(_, t)| e.closure_holds(t)).map(|(i, _)| *i).collect();
         input.held = hm::at_quiet(&input.held, &closure);
     }

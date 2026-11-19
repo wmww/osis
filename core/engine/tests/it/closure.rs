@@ -1413,3 +1413,18 @@ fn repro_dropped_before_its_record_never_fetched_again() {
     let ends = record_with_strong(&[&["C", "D"], &["D", "pass end", "C"]]);
     assert_eq!((&ends[1].2, &ends[1].3), (&ends[0].2, &ends[0].3), "{} ends as {}", ends[1].0, ends[0].0);
 }
+
+// spec/commits.md §5 What a held thing needs (certificates: its record, its role-class parts):
+// peer 0's account root D, kept at peer 1 as X's mint admin outside its node closure, keeps its
+// role-class parts (`account.0`, the signing keys of the account's epochs) and none of its
+// content (`holds.0`).
+#[test]
+fn a_needed_account_root_keeps_its_role_class_parts_alone_spec_commits_5() {
+    let (mut lp, d) = held_under_d();
+    let [account, holds] = ["account.0", "holds.0"].map(|a| osis_base::Ak::new(a).unwrap());
+    let theirs = lp.peers[0].engine.get(&d, &account).unwrap();
+    assert!(theirs.is_some(), "D carries account.0");
+    let e1 = &mut lp.peers[1].engine;
+    assert_eq!(e1.get(&d, &account).unwrap(), theirs, "account.0 kept");
+    assert_eq!(e1.get(&d, &holds).unwrap(), None, "no content of D");
+}

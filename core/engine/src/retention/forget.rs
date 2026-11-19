@@ -36,6 +36,12 @@ use std::collections::{BTreeMap, BTreeSet};
 /// no secret.
 const KEPT: [&str; 5] = ["created.0", "retention^.0", "roles.0", "keys.0", "sync.0"];
 
+/// Whether a part on `ak` is a certificate (spec/commits.md §5 What a held thing needs): the
+/// record or a role-class part, `secrets.0` included.
+fn certificate(ak: &Ak) -> bool {
+    ak.as_str() == "created.0" || osis_schema::core_types::is_role_class(ak.as_str())
+}
+
 /// What `forget` forgets.
 #[derive(Clone, Copy)]
 pub(crate) enum Scope<'a> {
@@ -113,7 +119,7 @@ fn forgotten_ak(fate: Fate, ak: &Ak) -> bool {
         Fate::Stays => false,
         Fate::Kept => ak.as_str() == "secrets.0",
         Fate::Erased => !KEPT.contains(&ak.as_str()),
-        Fate::Local => !KEPT.contains(&ak.as_str()) && ak.as_str() != "secrets.0",
+        Fate::Local => !certificate(ak),
         Fate::Whole => true,
     }
 }

@@ -497,13 +497,13 @@ fn forget(h: &Held, things: &BTreeSet<ThingId>) -> Held {
 /// What a node holds at quiet (no arrival or release left to judge) of the things outside its
 /// node closure, every thing not in `closure` (spec/commits.md §5 What a held thing needs): its
 /// certificates alone, never content, whether or not it was ever in the node closure. `h` with
-/// every content part on such a thing counting as never received: all but its creation, its
-/// `roles.0` and its `retention^.0` (role-class), and all of a key actor (its card).
+/// every content part on such a thing counting as never received: all but its creation and its
+/// `roles.0` (role-class; `retention^.0` is content), and all of a key actor (its card).
 pub fn at_quiet(h: &Held, closure: &BTreeSet<ThingId>) -> Held {
     let keys: BTreeSet<ThingId> = h.records.iter().filter(|r| r.link == RecordLink::Key).map(|r| r.id).chain(h.commits.iter().flat_map(|c| &c.parts).filter(|p| creation(p) == Some(RecordLink::Key)).map(|p| p.thing)).collect();
     let mut n = h.clone();
     for p in n.commits.iter_mut().flat_map(|c| c.parts.iter_mut()) {
-        let certificate = [Aspect::CREATED, Aspect::ROLES, Aspect::RETENTION].contains(&p.aspect);
+        let certificate = [Aspect::CREATED, Aspect::ROLES].contains(&p.aspect);
         if !closure.contains(&p.thing) && !keys.contains(&p.thing) && !certificate && matches!(p.body, Body::Held(_) | Body::Parked) {
             p.body = Body::Missing;
             p.stripped.clear();

@@ -1730,11 +1730,12 @@ fn value_past_end(p: &mut Peer, played: &Played, now: WallMs) -> Option<String> 
 }
 
 /// `Cfg::model`: where the node and held-model judge what it holds differently (`held::compare`);
-/// with `drops`, the node's covered drops since the last call are judged too.
-fn model_differs(p: &mut Peer, played: &Played, drops: Option<&mut crate::held::Drops>) -> Option<String> {
+/// with `drops`, the node's covered drops since the last call are judged too; `quiet` after a
+/// pass end with nothing since.
+fn model_differs(p: &mut Peer, played: &Played, drops: Option<&mut crate::held::Drops>, quiet: bool) -> Option<String> {
     let m = played.model.as_ref()?;
     let mut cov = crate::held::Coverage::default();
-    let d = crate::held::compare(&mut p.engine, &m.0, &mut cov, drops);
+    let d = crate::held::compare(&mut p.engine, &m.0, &mut cov, drops, quiet);
     m.1.lock().unwrap().add(&cov);
     d
 }
@@ -1755,7 +1756,7 @@ fn model_differs(p: &mut Peer, played: &Played, drops: Option<&mut crate::held::
 fn node_checks(p: &mut Peer, played: &Played, o: &Oracle) -> Result<(), String> {
     let at = |p: &mut Peer, want: &Shown, when: &str| -> Result<(), String> {
         let at = p.engine.now();
-        value_past_end(p, played, at).or_else(|| model_differs(p, played, None)).map_or(Ok(()), |d| Err(format!("{when}: {d}")))?;
+        value_past_end(p, played, at).or_else(|| model_differs(p, played, None, true)).map_or(Ok(()), |d| Err(format!("{when}: {d}")))?;
         if p.engine.perm_digest(false) != p.engine.perm_digest(true) {
             return Err(format!("{when}: the permission index differs from its walk from scratch"));
         }
@@ -1783,6 +1784,9 @@ fn node_checks(p: &mut Peer, played: &Played, o: &Oracle) -> Result<(), String> 
     at(p, &o.now, "now")?;
     p.clock.set(later_than(played));
     p.tick().unwrap();
+    // with no pass in flight, what the tick took out of the node closure is released at once
+    // (spec/sync-set.md §3 Release)
+    pass_end(p);
     drop_covered(played, p);
     at(p, &o.later, "later")
 }
@@ -2887,7 +2891,7 @@ fn check_orders(threads: usize, seed: u64, steps: &[Step], cfg: Cfg) -> Result<S
         let mut p = deliver_with(played, order, None, Some(c), Some(&drops), &mut |p| {
             done += 1;
             if early.is_none() {
-                early = model_differs(p, played, Some(&mut drops.borrow_mut())).map(|d| format!("after {done} ingests at {:?}: {d}", p.engine.now()));
+                early = model_differs(p, played, Some(&mut drops.borrow_mut()), false).map(|d| format!("after {done} ingests at {:?}: {d}", p.engine.now()));
                 if let Some(d) = &early {
                     explain(played, &s.held, p, d);
                 }
@@ -4242,7 +4246,7 @@ fn judged_under_the_walks_side_after_every_ingest_spec_permissions_5_1() {
     let (mut disputes, mut differs) = (0, None);
     deliver_with(&played, &(0..n).rev().collect::<Vec<_>>(), None, None, None, &mut |p| {
         disputes += crate::disputes::walk_sides(p);
-        differs = differs.take().or_else(|| model_differs(p, &played, None));
+        differs = differs.take().or_else(|| model_differs(p, &played, None, false));
     });
     assert!(disputes > 0, "a dispute");
     assert_eq!(differs, None);
@@ -4266,11 +4270,11 @@ fn harness_flags_a_covered_drop_in_history_spec_commits_5() {
     let writes: Vec<CommitId> = played.packs[played.base..].iter().map(|pk| osis_commit::CommitBlob::decode(&pk.bytes).unwrap()).filter(|b| !b.header.kind.is_compaction() && b.header.aspects.iter().any(|x| x.tid == t && x.ak == a)).map(|b| b.id()).collect();
     assert_eq!(writes.len(), 3, "{:?}", played.tally.show());
     let (mut cov, mut drops) = (crate::held::Coverage::default(), crate::held::Drops::default());
-    assert_eq!(crate::held::compare(&mut p.engine, &hist, &mut cov, Some(&mut drops)), None);
+    assert_eq!(crate::held::compare(&mut p.engine, &hist, &mut cov, Some(&mut drops), true), None);
     for c in &writes[..2] {
         p.engine.drop_body(c, &t, &a).unwrap();
     }
-    let d = crate::held::compare(&mut p.engine, &hist, &mut cov, Some(&mut drops)).expect("the drops are flagged");
+    let d = crate::held::compare(&mut p.engine, &hist, &mut cov, Some(&mut drops), true).expect("the drops are flagged");
     assert!(d.contains("dropped as covered"), "{d}");
     assert_eq!(cov.differs.get("dropped a body in history"), Some(&2), "{:?}", cov.differs);
 }
@@ -4299,10 +4303,10 @@ fn harness_flags_a_live_drop_before_its_live_bound_spec_commits_5() {
     let (wk, wp) = (write(&kept), write(&plain));
     assert_eq!((wk.len(), wp.len()), (1, 1), "{:?}", played.tally.show());
     let (mut cov, mut drops) = (crate::held::Coverage::default(), crate::held::Drops::default());
-    assert_eq!(crate::held::compare(&mut p.engine, &hist, &mut cov, Some(&mut drops)), None);
+    assert_eq!(crate::held::compare(&mut p.engine, &hist, &mut cov, Some(&mut drops), false), None);
     p.engine.drop_body(&wk[0], &t, &kept).unwrap();
     p.engine.drop_body(&wp[0], &t, &plain).unwrap();
-    let d = crate::held::compare(&mut p.engine, &hist, &mut cov, Some(&mut drops)).expect("the drop is flagged");
+    let d = crate::held::compare(&mut p.engine, &hist, &mut cov, Some(&mut drops), false).expect("the drop is flagged");
     assert!(d.contains("live") && d.contains(kept.as_str()), "{d}");
     assert_eq!(cov.differs.get("dropped a live body before its live bound"), Some(&1), "{:?}", cov.differs);
     assert_eq!(cov.reached.get("live drops judged"), Some(&2), "{:?}", cov.reached);
@@ -4330,7 +4334,7 @@ fn harness_judges_a_drop_of_a_body_seen_out_of_scope_spec_commits_5() {
     let mut p = deliver(&played, &(0..n - 1).filter(|i| !setup.contains(i)).collect::<Vec<_>>());
     assert!(!p.engine.pending().is_empty(), "1's write waits");
     let (mut cov, mut drops) = (crate::held::Coverage::default(), crate::held::Drops::default());
-    assert_eq!(crate::held::compare(&mut p.engine, &hist, &mut cov, Some(&mut drops)), None);
+    assert_eq!(crate::held::compare(&mut p.engine, &hist, &mut cov, Some(&mut drops), true), None);
     assert!(cov.skipped.contains_key("waits for a reason outside the model"), "{:?}", cov.skipped);
     for &i in setup.iter().chain([&(n - 1)]) {
         p.receive(&played.packs[i].bytes, played.packs[i].blobs.clone()).unwrap();
@@ -4339,7 +4343,7 @@ fn harness_judges_a_drop_of_a_body_seen_out_of_scope_spec_commits_5() {
     assert!(p.engine.pending().is_empty(), "{:?}", p.engine.pending());
     p.engine.drop_body(&first, &t, &a).unwrap();
     p.engine.drop_body(&second, &t, &a).unwrap();
-    let d = crate::held::compare(&mut p.engine, &hist, &mut cov, Some(&mut drops)).expect("the second drop is flagged");
+    let d = crate::held::compare(&mut p.engine, &hist, &mut cov, Some(&mut drops), false).expect("the second drop is flagged");
     assert!(d.contains("dropped as covered"), "{d}");
     assert_eq!(cov.differs.get("dropped a body in history"), Some(&1), "{:?}", cov.differs);
     assert_eq!(cov.reached.get("covered drops judged"), Some(&2), "{:?}", cov.reached);
