@@ -397,21 +397,21 @@ fn read_pending(tx: &mut Tx<'_>, id: &CommitId) -> Result<Option<CommitBlob>> {
     Ok(decode(&bytes).ok())
 }
 
-/// The things entering the node closure since the last call wake the parts waiting for them
+/// The things the node closure comes to read whole since the last call wake the parts waiting for them
 /// (`Reason::Outside`, spec/commits.md §4 Outside the node closure): each such commit is
 /// examined again in this transaction, at its end (`Engine::run`), an ephemeral one woken for
 /// node-sync's room (`apply_waiting_memory`). How many were examined. The first call reads every
 /// thing awaited so. O(what entered and the commits waiting for it).
 pub(crate) fn wake_entered(tx: &mut Tx<'_>) -> Result<usize> {
-    let came: Vec<Tid> = match tx.core.entered.as_mut() {
-        Some(f) => f.added(),
+    let came: BTreeSet<Tid> = match tx.core.entered.as_mut() {
+        Some(f) => f.added().into_iter().map(|(_, t)| t).collect(),
         None => {
-            tx.core.entered = Some(tx.core.ix.closure.feed());
+            tx.core.entered = Some(tx.core.ix.closure.member_feed());
             tx.core.ix.pend_on.keys().filter_map(|w| if let Wake::Enters(t) = w { Some(*t) } else { None }).collect()
         }
     };
     let mut ids: BTreeSet<CommitId> = BTreeSet::new();
-    for t in came.iter().filter(|t| tx.core.ix.closure.holds(t)) {
+    for t in came.iter().filter(|t| crate::retention::needed::whole(tx.core, t)) {
         ids.extend(tx.core.ix.pend_on.get(&Wake::Enters(*t)).into_iter().flatten().copied());
     }
     let mut n = 0;

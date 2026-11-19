@@ -140,7 +140,7 @@ pub(crate) enum Holding {
 /// `reached` as `search` leaves it.
 pub(crate) fn holding(tx: &mut Tx<'_>, t: &Tid, reached: &mut Reached) -> Result<Holding> {
     Ok(match search(tx, t, reached)? {
-        Some((x, Root::Held | Root::Copy(_))) if x == *t => Holding::Whole,
+        Some((x, Root::Held | Root::Copy(_))) if x == *t && whole(tx.core, t) => Holding::Whole,
         Some(_) => Holding::Certificates,
         None => Holding::Nothing,
     })
@@ -155,9 +155,21 @@ pub(crate) fn holds_content(core: &Core, t: &Tid) -> bool {
 
 /// Whether a part on `(t, ak)` applies here, `rec` its record (spec/commits.md §4 Outside the
 /// node closure): it is no content (`forget::content`), or `t` is a key actor or held whole
-/// (`Holding`, read per part). Else it waits for `t` to enter (`apply::Reason::Outside`).
+/// (`whole`). Else it waits for `t` to enter (`apply::Reason::Outside`).
 pub(crate) fn applies_on(core: &Core, t: &Tid, ak: &osis_base::Ak, rec: &osis_base::CreationRecord) -> bool {
-    !super::forget::content(ak) || matches!(rec, osis_base::CreationRecord::KeyActor { .. }) || matches!(rooted(core, t), Some(Root::Held | Root::Copy(_)))
+    !super::forget::content(ak) || matches!(rec, osis_base::CreationRecord::KeyActor { .. }) || whole(core, t)
+}
+
+/// Whether the node holds `t` whole, so content on it applies (spec/commits.md §4 Outside the
+/// node closure, spec/permissions.md §3 Lost access): the node closure reads it (`Closure::reads`:
+/// in the local part or a read sync unit, held or leaving), or it is a retained copy. Invariant:
+/// content applies on a thing only where the node's roles read it now. Whatever blob carries a
+/// part, under whichever sync ID, opened by whichever held secret (a section a thing that became
+/// independent left under its mint admin's epochs, readable by that admin's readers after it no
+/// longer reads the thing), and whenever it arrives against a loss, a thing kept unread, on a
+/// ticket's word or outside the node closure takes none of its content.
+pub(crate) fn whole(core: &Core, t: &Tid) -> bool {
+    core.ix.closure.reads(t) || super::forget::copy_of(core, t).is_some()
 }
 
 /// Whether the node holds a part on `(t, ak)` once it arrives: `t`'s record is held and the part
@@ -182,7 +194,7 @@ pub(crate) fn minted_here(core: &Core, t: &Tid) -> bool {
 /// unit (`minted_here`; a unit holds only things of the node closure). They count as never
 /// received once the pass that brought them ends (`settle`).
 pub(crate) fn uncarried(core: &Core, t: &Tid) -> bool {
-    core.ix.pend_on.contains_key(&crate::apply::Wake::Enters(*t)) && !matches!(rooted(core, t), Some(Root::Held | Root::Copy(_))) && minted_here(core, t)
+    core.ix.pend_on.contains_key(&crate::apply::Wake::Enters(*t)) && !whole(core, t) && minted_here(core, t)
 }
 
 /// Whether the node holds more of `t` than `holding` allows.

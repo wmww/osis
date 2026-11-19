@@ -468,6 +468,14 @@ impl Closure {
         self.tree.held.get(t).is_some_and(|cs| cs.iter().any(|c| !matches!(c, Ctx::Ticket(_))))
     }
 
+    /// Whether the node closure reads `t`: holds it, or holds it leaving, in the local part or a
+    /// read sync unit (spec/sync-set.md §2: a sync unit kept unread is its root alone, the node
+    /// cannot read what it holds; on a ticket's word none of its data is held).
+    pub(crate) fn reads(&self, t: &Tid) -> bool {
+        let reading = |cs: &BTreeSet<Ctx>| cs.iter().any(|c| matches!(c, Ctx::Local | Ctx::Read(_)));
+        self.tree.held.get(t).is_some_and(reading) || self.left.get(t).is_some_and(reading)
+    }
+
     /// Whether `t` is in the node closure in any context, on a ticket's word included: the node
     /// syncs its sync IDs, so it takes its role commits and purge requests.
     pub(crate) fn reaches(&self, t: &Tid) -> bool {
@@ -801,16 +809,18 @@ impl Closure {
 }
 
 impl Core {
-    /// Whether `t`'s keys open `x` (spec/sync-set.md §2): `x`'s secrets derive from `t`'s (`t`
-    /// is on the record chain of the actor they derive from), or `t` holds read or above on
-    /// that actor, by chains of grants with key access (`reads_now`). `t`'s own role: the account
-    /// root reads as itself.
+    /// Whether `t`'s keys open `x` (spec/sync-set.md §2): `x`'s secrets derive from `t`'s (`t` is
+    /// `x`'s independent, the actor they derive from), or `t` holds read or above on that actor,
+    /// by chains of grants with key access (`reads_now`). `t`'s own role: the account root reads
+    /// as itself.
+    /// Invariant: a thing above an independent `a` on its record chain opens `a` only by its role
+    /// there (a record edge is a grant), never by being its mint admin: once that edge is lowered
+    /// or removed `a` leaves `t`'s sync unit, so whatever entry of `a`'s parts later arrives under
+    /// `t`'s sync ID (sealed under `t`'s epochs from before `a` was keyed) waits outside the node
+    /// closure (`retention::needed::applies_on`), as one that arrived before the loss went.
     pub(crate) fn keys_open(&self, t: &Tid, x: &Tid) -> bool {
         let Some(a) = self.secret_actor(x) else { return false };
-        if self.record_chain(&a).filter_map(|s| s.thing()).any(|c| c == *t) {
-            return true;
-        }
-        self.reads_now(t, &a)
+        a == *t || self.reads_now(t, &a)
     }
 
     /// Whether the node opens dependent thing `y` (spec/sync-set.md §2 local part): it holds a read

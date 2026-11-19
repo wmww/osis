@@ -1078,7 +1078,9 @@ fn a_thing_left_by_one_view_is_logged_again_by_one_still_holding_it_spec_sync_se
 // spec/permissions.md §3 (Lost access: a node drops every local unit it can no longer read),
 // spec/permissions.md §4 (Role changes travel): Bob's node 2 makes T0 and T2 under it and removes
 // T0's record edge on T2 before his node 1 has synced either. Node 1, reading T2 only through T0,
-// loses it, as node 2, and an hour on still reads it no more (issues/lost-part-read-again.md).
+// loses it, as node 2, and a pass on still reads it no more, though node 1 meets T2's minting
+// under T0's sync ID after the loss (its blob seals T2's value under epochs node 1 holds, from
+// before T2 was keyed).
 #[test]
 fn a_removed_record_edge_reaches_a_reader_entering_with_it_spec_permissions_3() {
     let mut w = siblings();
@@ -1095,4 +1097,88 @@ fn a_removed_record_edge_reaches_a_reader_entering_with_it_spec_permissions_3() 
         assert!(!w.engine(i).roster(&t2).contains_key(&t0), "node {i} sees T0's record edge removed");
         assert_eq!(value(&mut w, i, &t2), None, "node {i} reads T2 no more");
     }
+}
+
+/// Whether node `i` holds a state of `t`'s value aspect (content, not certificates).
+fn holds_value(w: &mut World, i: usize, t: &Tid) -> bool {
+    w.engine(i).all_aspects().unwrap().iter().any(|(x, a)| x == t && *a == ak())
+}
+
+/// Every entry node `from`'s store holds under `s`, opened again by node `to`'s engine as a
+/// writer of `s`'s thing filing it anew would have it arrive (spec/sync-ids.md §5), then run.
+fn refile(w: &mut World, from: usize, to: usize, s: &osis_base::SyncId) {
+    let es = w.store(from).entries(s).unwrap();
+    for e in es {
+        let Some(bytes) = w.store(from).bytes(&e.blob).unwrap() else { continue };
+        w.engine(to).open_entry(s, &e.blob, &e.wrap, &bytes, u64::MAX).unwrap();
+    }
+    w.run();
+}
+
+// spec/sync-set.md §2 (T's keys open), spec/commits.md §4 (Outside the node closure): Bob's node 1
+// makes T0 and grants Alice read on it; his node 2 makes T2 under T0 (its value sealed under T0's
+// epochs), grants Alice sync on T2 (T2 keyed) and removes T0's record edge. T0 holds no role on T2:
+// no reader of T0 reads T2, its maker's nodes included, and every entry under T0's sync ID filed
+// again after the loss by a writer of T0 (who holds them all) gives none of T2's content back.
+#[test]
+fn a_mint_admins_readers_read_a_thing_no_more_once_its_record_edge_goes_spec_sync_set_2() {
+    let mut w = siblings();
+    let alice = w.node(0).account.unwrap();
+    let t0 = make(&mut w, 1, None, "t0");
+    w.write(1, |e| e.grant(&t0, &alice, &edge(Role::Read))).unwrap();
+    strong(&mut w, 0, None, t0, true);
+    w.run();
+    let t2 = make_in(&mut w, 2, t0, "t2");
+    w.write(2, |e| e.grant(&t2, &alice, &edge(Role::Sync))).unwrap();
+    w.write(2, |e| e.leaving_adminless(|e| e.demote(&t2, &osis_engine::flows::Demotion { holder: t0, new: None, retain: None }))).unwrap();
+    w.run();
+    w.advance(osis_proto::limits::PASS_WAIT_MS);
+    w.run();
+    let s0 = w.engine(1).sync_id_of(&t0).unwrap().unwrap();
+    for refiled in [false, true] {
+        for i in [0, 1, 2] {
+            assert_eq!(value(&mut w, i, &t0), Some(Value::Str("t0".into())), "refiled {refiled}: node {i} reads T0");
+            assert_eq!(value(&mut w, i, &t2), None, "refiled {refiled}: node {i} reads T2 no more");
+            assert!(!holds_value(&mut w, i, &t2), "refiled {refiled}: node {i} holds T2's value");
+        }
+        for to in [0, 1] {
+            refile(&mut w, 2, to, &s0);
+        }
+        w.advance(osis_proto::limits::PASS_WAIT_MS);
+        w.run();
+    }
+}
+
+// spec/permissions.md §3 (Lost access), spec/sync-set.md §2 (T's keys open): Bob makes T0 and grants Alice read on it; his node 2 makes T2 under T0, grants his account
+// admin on T2 and removes T0's record edge. Alice, reading T2 only through T0, reads it no more,
+// whatever T0's sync ID still carries (Bob's node 2 files its entries again). Bob grants T0 read on
+// T2 again: she reads T2 again, and only then.
+#[test]
+fn a_mint_admins_readers_read_a_thing_again_once_granted_again_spec_permissions_3() {
+    let mut w = siblings();
+    let alice = w.node(0).account.unwrap();
+    let bob = w.node(1).account.unwrap();
+    let t0 = make(&mut w, 1, None, "t0");
+    w.write(1, |e| e.grant(&t0, &alice, &edge(Role::Read))).unwrap();
+    strong(&mut w, 0, None, t0, true);
+    w.run();
+    let t2 = make_in(&mut w, 2, t0, "t2");
+    w.write(2, |e| e.grant(&t2, &bob, &edge(Role::Admin))).unwrap();
+    w.run();
+    assert_eq!(value(&mut w, 0, &t2), Some(Value::Str("t2".into())), "Alice reads T2 through T0");
+    w.write(2, |e| e.demote(&t2, &osis_engine::flows::Demotion { holder: t0, new: None, retain: None })).unwrap();
+    w.run();
+    w.advance(osis_proto::limits::PASS_WAIT_MS);
+    w.run();
+    let s0 = w.engine(1).sync_id_of(&t0).unwrap().unwrap();
+    refile(&mut w, 2, 0, &s0);
+    w.advance(osis_proto::limits::PASS_WAIT_MS);
+    w.run();
+    assert_eq!(value(&mut w, 0, &t2), None, "Alice reads T2 no more");
+    assert!(!holds_value(&mut w, 0, &t2), "Alice holds T2's value");
+    w.write(2, |e| e.grant(&t2, &t0, &edge(Role::Read))).unwrap();
+    w.run();
+    w.advance(osis_proto::limits::PASS_WAIT_MS);
+    w.run();
+    assert_eq!(value(&mut w, 0, &t2), Some(Value::Str("t2".into())), "Alice reads T2 again");
 }

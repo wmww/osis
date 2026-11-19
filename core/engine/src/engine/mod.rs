@@ -1325,10 +1325,11 @@ pub struct Core {
     /// Records learned in this transaction (`apply::atomic::learn_record`): a strong newly
     /// reaching such a thing pulls nothing anew (`sync::units::refetch`).
     pub learned: BTreeSet<Tid>,
-    /// The things entering the node closure since the last transaction's end
-    /// (`apply::wake_entered`): what waits to see them enter is examined again. `None` until the
-    /// first such end, which reads every awaited thing.
-    pub(crate) entered: Option<memo::Feed<Tid>>,
+    /// The (context, thing) members entering the node closure since the last transaction's end
+    /// (`apply::wake_entered`): what waits for a thing to be read whole is examined again (a thing
+    /// kept unread read again enters a read context). `None` until the first such end, which
+    /// reads every awaited thing.
+    pub(crate) entered: Option<memo::Feed<(crate::sync::units::Ctx, Tid)>>,
     /// While `Some` (a tick round's expiries): the rebuilds asked, one per aspect, run once
     /// when it ends (`apply::run_batched`).
     pub batched: Option<BTreeMap<(Tid, Ak), Batched>>,
