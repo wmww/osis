@@ -532,7 +532,9 @@ fn addenda_diff(w: &addenda::World) -> Option<String> {
         if let addenda::Kind::Add { .. } = it.kind {
             return vouching[&m].valid(&p.commit);
         }
-        if tl.delta_valid(p, &jw.actors[m], Role::Write) == Validity::Valid {
+        // admin-only content on its thing needs admin; an acting part (the Acting check) write
+        let required = if m == it.thing && it.kind == addenda::Kind::AdminOnly { Role::Admin } else { Role::Write };
+        if tl.delta_valid(p, &jw.actors[m], required) == Validity::Valid {
             return true;
         }
         if let addenda::Kind::RemSnap { .. } = it.kind {
@@ -541,7 +543,7 @@ fn addenda_diff(w: &addenda::World) -> Option<String> {
         if matches!(it.kind, addenda::Kind::Special | addenda::Kind::Snap(_) | addenda::Kind::RemSnap { .. }) {
             return false;
         }
-        vouching[&m].witnesses(&tl, p).next().is_some()
+        vouching[&m].witnesses(&tl, p, required).next().is_some()
     };
     let e = w.ideal(addenda::PLAN);
     for (c, it) in w.items.iter().enumerate() {
@@ -553,10 +555,11 @@ fn addenda_diff(w: &addenda::World) -> Option<String> {
     None
 }
 
-/// Random worlds, half of them with forged addenda by one or two nodes of any role. Every item
+/// Random worlds under `GAPS` with admin-only content (a third of the plain), half of them with
+/// forged addenda by one or two nodes of any role. Every item
 /// after t=0: perm writes the model's genesis edges as commits at t=0 (`joint_genesis`).
 fn addenda_hist(rng: &mut Rng) -> addenda::World {
-    let w = addenda::random_world(rng, addenda::PLAN);
+    let w = addenda::random_world_with(rng, addenda::PLAN, addenda::GAPS, true);
     let mut w = if rng.below(2) == 0 {
         let nn = w.roles.nodes;
         let att: Vec<usize> = (0..1 + rng.below(2)).map(|_| rng.below(nn)).collect();
@@ -577,7 +580,8 @@ fn addenda_run(samples: u64, seed: u64) {
 }
 
 /// spec/permissions.md §5.2 (Addenda): layer 2 with addenda agrees with core/test/roles-model
-/// `addenda` (the least fixpoint, rules 1-5, re-removals, forged addenda).
+/// `addenda` under `GAPS` (the least fixpoint, rules 1-5, re-removals, forged addenda, admin-only
+/// content vouched for by a witness holding admin).
 #[test]
 fn addenda_model_agrees() {
     addenda_run(400, 0);

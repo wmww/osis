@@ -1247,3 +1247,65 @@ fn a_writer_kept_by_a_vouch_writes_its_addendum_then_spec_perm_5_2() {
         assert!(valid(&lp, p, &e, t, "x:e.0"), "peer {p}: the edit stands");
     }
 }
+
+/// Peer 0 (Alice) demotes Bob (peer 1, an admin) on `t` to `to` (`None`: removes him), a second
+/// after everything so far.
+fn demote_to(lp: &mut LocalPeer, t: Tid, to: Option<Role>) -> CommitId {
+    lp.advance(1000);
+    let bob = lp.peers[1].engine.me();
+    let d = Demotion { holder: bob, new: to.map(edge), retain: None };
+    let id = *lp.peers[0].engine.demote(&t, &d).unwrap().commits.last().unwrap();
+    lp.advance(1000);
+    id
+}
+
+// spec/permissions.md §5.2 (addenda; w held write on n just before a's key, and admin where the
+// delta needs admin): Bob, an admin, writes admin-only content; Alice removes him, or lowers him
+// to write, without it. Carol, an admin who received it, writes her addendum by the state rule
+// and it keeps Bob's write at every node; Dave, a writer who received it too, owes none.
+#[test]
+fn admin_only_content_is_kept_by_an_admin_witness_spec_perm_5_2() {
+    for to in [None, Some(Role::Write)] {
+        let (mut lp, t) = world(4, &[Role::Admin, Role::Admin, Role::Write]);
+        let e = write(&mut lp, 1, t, "x:p^.0", 7);
+        for p in [2, 3] {
+            lp.sync(1, p).unwrap();
+        }
+        lp.advance(1);
+        demote_to(&mut lp, t, to);
+        lp.sync_all().unwrap();
+        let (carol, dave) = (lp.peers[2].engine.me(), lp.peers[3].engine.me());
+        let by: Vec<Tid> = addenda(&lp, 0, t).into_iter().map(|(a, _)| a).collect();
+        assert!(by.contains(&carol), "Carol, an admin, writes one ({to:?})");
+        assert!(!by.contains(&dave), "Dave, a writer, owes none ({to:?})");
+        for p in 0..4 {
+            assert!(valid(&lp, p, &e, t, "x:p^.0"), "peer {p} ({to:?}): Bob's admin-only write stands");
+        }
+    }
+}
+
+// spec/permissions.md §5.2 (addenda; w held write on n just before a's key, and admin where the
+// delta needs admin): as above, but only Dave, a writer, received Bob's admin-only write; his
+// addendum listing it (written by hand: the state rule writes none) keeps nothing.
+#[test]
+fn admin_only_content_is_not_kept_by_a_writers_addendum_spec_perm_5_2() {
+    let (mut lp, t) = world(4, &[Role::Admin, Role::Admin, Role::Write]);
+    for p in &mut lp.peers {
+        p.engine.write_addenda(false);
+    }
+    let e = write(&mut lp, 1, t, "x:p^.0", 7);
+    lp.sync(1, 3).unwrap();
+    lp.advance(1);
+    let r = demote_to(&mut lp, t, None);
+    lp.sync(0, 3).unwrap();
+    let mut m = Mutation::new();
+    let list = ct::Frontier { commits: [e].into_iter().collect() };
+    m.op(t, &ct::ADDENDA, osis_crdt::PathOp { path: vec![osis_crdt::PathSeg::Key(Value::bytes(&r.0))], op: osis_crdt::Op::Put(osis_schema::Codec::to_value(&list)) }).unwrap();
+    let a = lp.peers[3].commit(m).unwrap().unwrap();
+    lp.advance(1000);
+    lp.sync_all().unwrap();
+    for p in 0..4 {
+        assert!(valid(&lp, p, &a, t, ct::ADDENDA_AK), "peer {p}: Dave's addendum is a valid write of his");
+        assert!(!valid(&lp, p, &e, t, "x:p^.0"), "peer {p}: a writer's addendum keeps no admin-only write");
+    }
+}

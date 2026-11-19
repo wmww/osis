@@ -11,10 +11,11 @@
 //! own lists, it owes one vouch on N keyed by R listing every candidate (the writers' leaving out
 //! applied).
 //!
-//! Addenda: for each explicit demotion R makes below write in this node's view (R's own node
-//! included), the content commits of the demoted node in R's window, not listed by its frontier,
-//! on each thing N it is demoted on (`addenda_owed`); owed while this node holds write on N and no
-//! counting addendum of its own vouches for one of them.
+//! Addenda: for each explicit demotion R makes below write (below admin, for admin-only content)
+//! in this node's view (R's own node included), the content commits of the demoted node in R's
+//! window, not listed by its frontier, on each thing N it is demoted on (`addenda_owed`); owed
+//! while this node holds the role one needs on N and no counting addendum of its own vouches for
+//! it.
 //!
 //! Invariant: what is owed is a function of the held set, the receipts and the trust set (the
 //! first walk, the counting entries and addenda, the clock), never of what this node wrote
@@ -280,11 +281,13 @@ fn vouches_owed(core: &Core, tl: &osis_perm::Timeline, r: &CommitId, m: &crate::
 
 /// The addenda removal `r` (its record `m`) owes (`owed`; spec/permissions.md §5.2 Addenda,
 /// Writing): for each explicit demotion R makes in this node's view of a node X other than this
-/// one below write on a thing N, X's content commits on N or acting for N, ordered before R,
-/// received in R's window and not listed by its frontier are its candidates (plain content: no
-/// role-class or admin-only part, no snapshot, no purge request). While one of them is one an
-/// addendum this node wrote now would vouch for (it holds write on N now) and no counting addendum
-/// of its own vouches for, it owes one addendum on N keyed by R listing every candidate.
+/// one below write on a thing N, X's plain content commits on N or acting for N (no role-class or
+/// admin-only part), and for each below admin, X's commits with admin-only content on N that is
+/// not role-class, ordered before R, received in R's window and not listed by its frontier, no
+/// snapshot or purge request, are its candidates, each needing that role. While one of them is one
+/// an addendum this node wrote now would vouch for (it holds the role it needs on N now) and no
+/// counting addendum of its own vouches for, it owes one addendum on N keyed by R listing every
+/// candidate.
 ///
 /// Who writes each input: R and the candidates are their signers' word, judged by the walk and
 /// layer 2; every addendum on N (any writer's, a removed party's forged ones included) goes
@@ -292,12 +295,13 @@ fn vouches_owed(core: &Core, tl: &osis_perm::Timeline, r: &CommitId, m: &crate::
 /// stop it owing.
 #[allow(clippy::too_many_arguments)]
 fn addenda_owed(core: &Core, tl: &osis_perm::Timeline, r: &CommitId, m: &crate::engine::Meta, frontier: &osis_perm::Frontier, me: Tid, now: Ts, out: &mut Owed) {
-    let mut cands: BTreeMap<Tid, BTreeSet<CommitId>> = BTreeMap::new();
+    // per thing, per candidate, the roles its listed parts need
+    let mut cands: BTreeMap<Tid, BTreeMap<CommitId, BTreeSet<Role>>> = BTreeMap::new();
     for (x, n, below) in tl.demoted_by(r) {
-        if *x == me || *below != Role::Write {
+        let (x, n, below) = (*x, *n, *below);
+        if x == me {
             continue;
         }
-        let (x, n) = (*x, *n);
         let held = core.ix.by_thing.get(&(n, x)).into_iter().flatten().chain(core.ix.by_actor.get(&(n, x)).into_iter().flatten());
         for c in held {
             let Some(cm) = core.ix.commits.get(c) else { continue };
@@ -307,8 +311,14 @@ fn addenda_owed(core: &Core, tl: &osis_perm::Timeline, r: &CommitId, m: &crate::
             if v.purges || v.kind != osis_commit::Kind::Content || frontier.covers(c) || v.ts > m.view.ts || !window(cm.received, m.view.ts, m.received) {
                 continue;
             }
-            if v.aspects.iter().any(|a| plain_ak(&a.ak) && (a.tid == n || v.actor == n)) {
-                cands.entry(n).or_default().insert(*c);
+            let listed = match below {
+                // a plain part on N, or the Acting check for N
+                Role::Write => v.aspects.iter().any(|a| plain_ak(&a.ak) && (a.tid == n || v.actor == n)),
+                Role::Admin => v.aspects.iter().any(|a| a.tid == n && admin_listable_ak(&a.ak)),
+                _ => false,
+            };
+            if listed {
+                cands.entry(n).or_default().entry(*c).or_default().insert(below);
             }
         }
     }
@@ -320,20 +330,28 @@ fn addenda_owed(core: &Core, tl: &osis_perm::Timeline, r: &CommitId, m: &crate::
     }
     for (n, cs) in cands {
         let Some(tn) = core.timelines.get(&n) else { continue };
-        // an addendum written now vouches only as a writer's
-        if tn.role(&me, &n, osis_perm::At::now(now)) < Some(Role::Write) {
+        // an addendum written now vouches as a holder of the role a part needs
+        let mine = tn.role(&me, &n, osis_perm::At::now(now));
+        if mine < Some(Role::Write) {
             continue;
         }
         let own = crate::apply::validity::vouching_on(core, &n);
-        let vouched = |c: &CommitId| {
+        let vouched = |c: &CommitId, q: Role| {
             let Some(cm) = core.ix.commits.get(c) else { return false };
             let at = Point { ts: cm.view.ts, node: cm.view.author, commit: *c };
-            own.as_ref().is_some_and(|v| v.witnesses(tn, at).any(|(w, _)| w == me))
+            own.as_ref().is_some_and(|v| v.witnesses(tn, at, q).any(|(w, _)| w == me))
         };
-        if cs.iter().any(|c| !vouched(c)) {
-            out.addenda.insert(n, cs);
+        if cs.iter().any(|(c, qs)| qs.iter().any(|q| mine >= Some(*q) && !vouched(c, *q))) {
+            out.addenda.insert(n, cs.into_keys().collect());
         }
     }
+}
+
+/// Whether a part on admin-only `ak` is content an addendum by a witness holding admin may list
+/// (spec/permissions.md §5.2, Addenda: admin-only content that is not role-class).
+pub(crate) fn admin_listable_ak(ak: &osis_base::Ak) -> bool {
+    let s = ak.as_str();
+    ak.admin_only() && !ct::is_role_class(s) && s != "created.0"
 }
 
 /// Whether a part on `ak` is plain content an addendum may list (spec/permissions.md §5.2,

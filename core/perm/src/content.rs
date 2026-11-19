@@ -149,7 +149,7 @@ impl Timeline {
                     EpochStanding::Counts => true,
                     EpochStanding::Closed => st.iter().filter(counted).any(|b| saves(b.0, &a.point.commit, &|r| closes(&a.point.commit, r))),
                 };
-                let v = epoch && (self.delta_valid(a.point, thing, Role::Write) == Validity::Valid || st.iter().filter(counted).any(|b| self.vouches(thing, b.0, a.point)));
+                let v = epoch && (self.delta_valid(a.point, thing, Role::Write) == Validity::Valid || st.iter().filter(counted).any(|b| self.vouches(thing, b.0, a.point, Role::Write)));
                 if v && let Some(x) = st.get_mut(i) {
                     x.3 = true;
                     changed = true;
@@ -163,13 +163,15 @@ impl Timeline {
         Vouching { thing: *thing, valid: st.iter().filter(|x| x.3).map(|(a, ..)| a.point.commit).collect(), counting }
     }
 
-    /// Whether addendum `a` (counting) vouches for the write at `at` on `thing`: an entry of it
-    /// names an explicit demotion of `at.node` below write on the thing ordered after `at` and
-    /// before `a`, each judged at the start of its `ts` (§5.2, Position), and lists `at`'s
-    /// commit.
-    fn vouches(&self, thing: &Tid, a: &Addendum, at: Point) -> bool {
+    /// Whether addendum `a` (counting) vouches for the write at `at` on `thing` needing
+    /// `required` (write, or admin for admin-only content: §5.2): an entry of it names an explicit
+    /// demotion of `at.node` below `required` on the thing ordered after `at` and before `a`,
+    /// each judged at the start of its `ts` (§5.2, Position), and lists `at`'s commit; and `a`'s
+    /// author held `required` there just before `a`'s key (write is the fixpoint's `counting`).
+    fn vouches(&self, thing: &Tid, a: &Addendum, at: Point, required: Role) -> bool {
         let (from, to) = (Point::start(at.ts), Point::start(a.point.ts));
-        a.entries.iter().any(|(removal, lists)| lists.contains(&at.commit) && self.demotions(&at.node, thing).iter().any(|d| d.below == Role::Write && d.point.commit == *removal && from <= d.point && d.point < to))
+        a.entries.iter().any(|(removal, lists)| lists.contains(&at.commit) && self.demotions(&at.node, thing).iter().any(|d| d.below == required && d.point.commit == *removal && from <= d.point && d.point < to))
+            && (required == Role::Write || self.role(&a.point.node, thing, At::before(to)) >= Some(required))
     }
 
 
@@ -318,11 +320,12 @@ impl Vouching {
         self.valid.contains(c)
     }
 
-    /// The counting addenda vouching for the part at `at` on the thing: each witness and the
-    /// addendum's key. A commit's Acting check is its part on its header actor, vouched for on
-    /// that actor's timeline.
-    pub fn witnesses<'a>(&'a self, tl: &'a Timeline, at: Point) -> impl Iterator<Item = (Tid, Point)> + 'a {
-        self.counting.iter().filter(move |a| tl.vouches(&self.thing, a, at)).map(|a| (a.point.node, a.point))
+    /// The counting addenda vouching for the part at `at` on the thing needing `required` (write;
+    /// admin for admin-only content that is not role-class, whose witness held admin at its
+    /// addendum's key, §5.2): each witness and the addendum's key. A commit's Acting check is its
+    /// part on its header actor, needing write, vouched for on that actor's timeline.
+    pub fn witnesses<'a>(&'a self, tl: &'a Timeline, at: Point, required: Role) -> impl Iterator<Item = (Tid, Point)> + 'a {
+        self.counting.iter().filter(move |a| tl.vouches(&self.thing, a, at, required)).map(|a| (a.point.node, a.point))
     }
 
     /// Whether a counting addendum against a rotation `closes` tells closes the epoch commit `c`

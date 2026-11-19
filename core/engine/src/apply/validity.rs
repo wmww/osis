@@ -53,12 +53,20 @@ pub(crate) fn perm_ak(ak: &str) -> bool {
     perm_part(ak) || ak == "created.0"
 }
 
-/// Whether a part of commit `h` on aspect `a` is plain content, what an addendum may vouch for
-/// (spec/permissions.md §5.2, Addenda): a content commit (no compaction snapshot) carrying no
-/// purge request, on no role-class, admin-only or addenda aspect.
+/// Whether a part of commit `h` on aspect `a` is plain content, what an addendum against a
+/// rotation may vouch for (spec/permissions.md §5.5): a content commit (no compaction snapshot)
+/// carrying no purge request, on no role-class, admin-only or addenda aspect.
 fn plain_part(h: &Header, a: &osis_commit::AspectEntry) -> bool {
+    !a.ak.admin_only() && listable_part(h, a)
+}
+
+/// Whether a part of commit `h` on aspect `a` is content an addendum against a removal may
+/// vouch for (spec/permissions.md §5.2, Addenda): a content commit (no compaction snapshot)
+/// carrying no purge request, on no role-class or addenda aspect; on an admin-only one only by
+/// a witness holding admin (`Vouching::witnesses` with admin).
+fn listable_part(h: &Header, a: &osis_commit::AspectEntry) -> bool {
     let ak = a.ak.as_str();
-    plain_commit(h) && !ct::is_role_class(ak) && !a.ak.admin_only() && !ct::is_addenda(ak) && ak != "created.0"
+    plain_commit(h) && !ct::is_role_class(ak) && !ct::is_addenda(ak) && ak != "created.0"
 }
 
 /// Whether commit `h` may be vouched for at all (`plain_part`).
@@ -825,17 +833,17 @@ impl<'a> Judge<'a> {
     }
 
     /// Whether a counting addendum on `thing` vouches for the part of the commit at `point`
-    /// there: a witness with write on the thing at the addendum's key (spec/permissions.md
+    /// there needing `required`: a witness with that role on the thing at the addendum's key (spec/permissions.md
     /// §5.2, Addenda). The Acting check of a commit is a part on its header actor, vouched for
     /// on that actor by a writer of it (`acts`).
-    fn vouched(&mut self, thing: &Tid, point: Point) -> bool {
+    fn vouched(&mut self, thing: &Tid, point: Point, required: Role) -> bool {
         let core = self.core;
         let Some(v) = self.vouching(thing) else { return false };
         if v.is_empty() {
             return false;
         }
         let Some(tl) = core.timelines.get(thing) else { return false };
-        v.witnesses(tl, point).next().is_some()
+        v.witnesses(tl, point, required).next().is_some()
     }
 
     /// (too deep, timeline) of `t`.
@@ -862,7 +870,7 @@ impl<'a> Judge<'a> {
         if osis_perm::content::regranted(from, h.ts) {
             return true;
         }
-        acts_on(tl, h, id) || plain_commit(h) && self.vouched(&h.actor, Point { ts: h.ts, node: h.author, commit: *id })
+        acts_on(tl, h, id) || plain_commit(h) && self.vouched(&h.actor, Point { ts: h.ts, node: h.author, commit: *id }, Role::Write)
     }
 
     pub(crate) fn part(&mut self, h: &Header, id: &CommitId, ai: usize) -> bool {
@@ -970,7 +978,7 @@ impl<'a> Judge<'a> {
         if tl.delta_valid(point, &a.tid, required) == Validity::Valid {
             return true;
         }
-        required == Role::Write && plain_part(h, a) && self.vouched(&a.tid, point)
+        matches!(required, Role::Write | Role::Admin) && listable_part(h, a) && self.vouched(&a.tid, point, required)
     }
 }
 
