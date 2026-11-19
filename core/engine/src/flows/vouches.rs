@@ -55,6 +55,39 @@ pub(crate) fn note_due(core: &mut Core, r: &CommitId) {
     core.ix.vouches_due.insert(*r);
 }
 
+/// Commit `h` applied here: the removals filed under its author or a thing its edge writes
+/// target (`Indexes::vouch_wake`) that it is ordered no later than are due again. It may be a
+/// candidate of theirs received in time that applied only now (pending meanwhile), or a grant
+/// bringing a party into question at one; a commit ordered after a removal is neither, so the
+/// honest traffic after a removal (the latest `ts`) makes none due. O(the removals so filed
+/// stamped at or after it, by a range).
+pub(crate) fn note_applied(core: &mut Core, h: &osis_commit::Header) {
+    if core.ix.vouch_wake.is_empty() {
+        return;
+    }
+    let tids: BTreeSet<Tid> = std::iter::once(h.author).chain(h.aspects.iter().filter(|a| crate::apply::validity::edge_ak(a.ak.as_str())).map(|a| a.tid)).collect();
+    for t in tids {
+        let lo = (t, h.ts, CommitId([0; 32]));
+        let hi = (t, Ts::MAX, CommitId([0xff; 32]));
+        let due: Vec<CommitId> = core.ix.vouch_wake.range(lo..=hi).map(|(_, _, r)| *r).collect();
+        for r in due {
+            osis_base::costs::count("vouches: removals woken", 1);
+            core.ix.vouches_due.insert(r);
+        }
+    }
+}
+
+/// Files removal `r` (its edge commit `rc`) under every party that may come into question at it
+/// (`Indexes::vouch_wake`): the holders its edge writes name and everything upstream of them.
+fn file_wake(core: &mut Core, r: &CommitId) {
+    let Some(rc) = core.ix.held.edge_commit(r) else { return };
+    let named: BTreeSet<Tid> = rc.ops.iter().map(|o| o.holder).filter(|h| *h != rc.author).collect();
+    let ts = rc.ts;
+    for t in core.ix.held.upstream(&named) {
+        core.ix.vouch_wake.insert((t, ts, *r));
+    }
+}
+
 /// Every held removal due (an open: what is owed is re-derived, never kept).
 pub(crate) fn all_due(core: &mut Core) {
     let rs: Vec<CommitId> = core.ix.commits.iter().filter(|(_, m)| m.view.kind.is_role() && m.view.frontier.is_some()).map(|(id, _)| *id).collect();
@@ -163,6 +196,9 @@ fn write_for(tx: &mut Tx<'_>, r: &CommitId, me: Tid) -> Result<()> {
         return Ok(());
     }
     tx.core.ix.vouches_due.remove(r);
+    // filed under the parties that may bring it a candidate later (a commit of one received in
+    // time applying late, a late grant bringing one into question), whatever it owes now
+    file_wake(tx.core, r);
     // filed under its component as it stands after this node's own writes
     if let Some(c) = o.component.and(target_of(tx.core, r)).and_then(|t| tx.core.timelines.component(&t)) {
         tx.core.ix.vouch_watch.insert(c, *r);

@@ -201,12 +201,10 @@ fn a_vouch_owed_across_a_restart_is_written_spec_perm_5_1() {
     }
 }
 
-// spec/permissions.md §5.1 Vouches (an entry counts only where W could write c; nothing trusts
-// a vouch's word): X, removed, signs a grant to H stamped before R and a flood of vouches and
-// addenda keyed by R listing its own grant of K, which no one else received. Nobody is revived
-// and nothing counts, at every node; and the flood costs a write elsewhere no removal judged.
-#[test]
-fn a_removed_partys_junk_grant_and_forged_vouches_change_nothing_spec_perm_5_1() {
+/// X (peer 1), removed by H, signs a grant to H stamped before R and a flood of `flood` vouches
+/// and as many addenda keyed by R listing its own grant of K, which no one else received; the
+/// removals W judges as it then writes elsewhere.
+fn junk_judged(flood: usize) -> u64 {
     let (mut lp, t) = world(4);
     let c = grant(&mut lp, 1, t, 3, Role::Write);
     let r = remove(&mut lp, 0, t, 1);
@@ -220,7 +218,7 @@ fn a_removed_partys_junk_grant_and_forged_vouches_change_nothing_spec_perm_5_1()
     m.ts = osis_base::Ts::from_u64(rts.to_u64() - 2);
     m.unchecked = true;
     lp.peers[1].commit(m).unwrap();
-    for _ in 0..10 {
+    for _ in 0..flood {
         let mut m = Mutation::new();
         let list = ct::Frontier { commits: [c].into_iter().collect() };
         m.op(t, &ct::VOUCHES, PathOp { path: vec![PathSeg::Key(Value::bytes(&r.0))], op: Op::Put(list.to_value()) }).unwrap();
@@ -235,22 +233,32 @@ fn a_removed_partys_junk_grant_and_forged_vouches_change_nothing_spec_perm_5_1()
         lp.advance(1000);
     }
     lp.sync_all().unwrap();
-    let judged = |lp: &mut LocalPeer| {
-        osis_base::costs::take();
-        let mut m = Mutation::new();
-        let me = lp.peers[2].engine.me();
-        let u = lp.peers[2].engine.new_thing(&mut m, me);
-        lp.peers[2].commit(m).unwrap();
-        lp.peers[2].engine.grant(&u, &h, &edge(Role::Read)).unwrap();
-        osis_base::costs::take().into_iter().find(|(k, _, _)| *k == "vouches: removals judged").map_or(0, |x| x.2)
-    };
-    assert_eq!(judged(&mut lp), 0, "a write elsewhere judges no removal");
+    osis_base::costs::take();
+    let mut m = Mutation::new();
+    let me = lp.peers[2].engine.me();
+    let u = lp.peers[2].engine.new_thing(&mut m, me);
+    lp.peers[2].commit(m).unwrap();
+    lp.peers[2].engine.grant(&u, &h, &edge(Role::Read)).unwrap();
+    let judged = osis_base::costs::take().into_iter().find(|(k, _, _)| *k == "vouches: removals judged").map_or(0, |x| x.2);
     for p in 0..4 {
         assert_eq!(role(&lp, p, 3, t), None, "peer {p}: K's grant fell");
         assert_eq!(role(&lp, p, 1, t), None, "peer {p}: X removed");
         assert_eq!(role(&lp, p, 0, t), Some(Role::Admin), "peer {p}: H admin");
         assert!(lp.peers[p].engine.core.timelines.get(&t).unwrap().counted().next().is_none(), "peer {p}: no entry counts");
     }
+    judged
+}
+
+// spec/permissions.md §5.1 Vouches (an entry counts only where W could write c; nothing trusts
+// a vouch's word), §5.2 Addenda: a removed party's junk grant and its forged vouches and addenda
+// revive nobody and nothing counts, at every node; and a flood of them costs a later write the
+// same removals judged as one of each (W's write joins R's component by its author, and R,
+// woken by the junk grant ordered before it, is filed there).
+#[test]
+fn a_removed_partys_junk_grant_and_forged_vouches_change_nothing_spec_perm_5_1() {
+    let (one, ten) = (junk_judged(1), junk_judged(10));
+    println!("vouches: removals judged by a write after a flood: {one} at 1, {ten} at 10");
+    assert_eq!(one, ten);
 }
 
 // spec/permissions.md §4 (Vouches travel with their removal), spec/crypto.md §4 (Roles secrets):
@@ -277,7 +285,7 @@ fn a_holder_granted_without_history_keeps_the_vouched_grant_spec_perm_5_1() {
 /// Peer 2 (W) holding `n` removals on `t` owing nothing (H grants peer 3 write, peer 3 writes on
 /// `t` and H, having received it, removes peer 3, `n` times: each demotes below write and its
 /// frontier lists everything, so no vouch or addendum is owed): the removals W judges as H then
-/// grants on another thing and W syncs.
+/// grants on another thing and W syncs, and W receives a later commit of peer 3's.
 fn judged_per_step(n: usize) -> u64 {
     let (mut lp, t) = world(4);
     let mut last = None;
@@ -302,8 +310,16 @@ fn judged_per_step(n: usize) -> u64 {
     grant(&mut lp, 0, u, 2, Role::Read);
     lp.sync(0, 2).unwrap();
     grant(&mut lp, 0, u, 1, Role::Read);
+    // and the removed party writing after its removals (a commit by a party filed under each,
+    // ordered after them: none due)
+    let mut m = Mutation::new();
+    let p3 = lp.peers[3].engine.me();
+    lp.peers[3].engine.new_thing(&mut m, p3);
+    let late = lp.peers[3].commit(m).unwrap().unwrap();
     osis_base::costs::take();
     lp.sync(0, 2).unwrap();
+    let pk = lp.peers[3].engine.package(&late).unwrap().unwrap();
+    lp.deliver(2, &pk).unwrap();
     osis_base::costs::take().into_iter().find(|(k, _, _)| *k == "vouches: removals judged").map_or(0, |x| x.2)
 }
 

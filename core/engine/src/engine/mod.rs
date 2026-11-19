@@ -931,6 +931,11 @@ indexes! {
     /// The removals judged by `flows::vouches`, by the component (`osis_perm::Timelines::component`)
     /// of their target as judged: a change of the component makes them due again.
     pub vouch_watch: JSetMap<u64, CommitId>,
+    /// The removals judged by `flows::vouches`, by each party that may come into question at
+    /// them (the holders their edge writes name and everything upstream, `Held::upstream`):
+    /// (party, the removal's `ts`, removal). A commit by or naming one, ordered no later than the
+    /// removal, applying makes it due again (`flows::vouches::note_applied`).
+    pub vouch_wake: JSet<(Tid, osis_base::Ts, CommitId)>,
     /// The writers' leaving out taken per (removal, thing) (`flows::vouches::leaving_out`): kept
     /// while it still holds for the same candidates and trust set, so a fight costs a step two
     /// walks, not one per candidate. Memory only: an open takes it anew.
