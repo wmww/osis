@@ -1,0 +1,5 @@
+# s1-first
+- The frame census counts kinds, not what a FetchReply carries: telling a body fetched once per sync ID from one fetched once needed decoding (`Net::count_fetched`, `Net::fetched`). Blob IDs in a trace differ between two runs of one test (encryption draws), so two traced runs cannot be diffed by blob.
+- A delay that should change nothing (a maker logging its certificates a pass later) broke `holding::a_removed_record_edge_reaches_its_mint_admins_readers_spec_permissions_4` (node 1 still reads T2 after the removal). Why is not established; worth a look by whoever owns removals: a rule that depends on when certificates arrive is order-dependent.
+- Batching Fetches across sync IDs changed message counts, and with them the random interleavings of `streams::caught_up_matches_what_each_side_holds`, which then found an older race (a Pull names a received cursor the server reads as stored). Expect seeded properties to fail on unrelated protocol changes.
+- `spec_map` refuses a citation whose second `;` piece is not spec text: write one rule's citation with commas.
