@@ -572,7 +572,6 @@ impl Ground for Live<'_, '_> {
         let at = |b: &BlobId| of.get(b).unwrap_or(&none);
         let all = |b: &BlobId| rows.get(b).map_or(0, |c| c.tids.len());
         let beats = |o: &BlobId, b: &BlobId| o != b && at(o).is_superset(at(b)) && (at(o).len(), std::cmp::Reverse(all(o)), std::cmp::Reverse(*o)) > (at(b).len(), std::cmp::Reverse(all(b)), std::cmp::Reverse(*b));
-        let stores: Vec<SrcView> = self.sources(s).iter().filter(|x| x.store).cloned().collect();
         let mut held: BTreeMap<BlobId, Entry> = BTreeMap::new();
         for b in rows.keys() {
             match self.cx.store.entry(s, b)? {
@@ -600,8 +599,10 @@ impl Ground for Live<'_, '_> {
             out.missing = carried;
         }
         // at a store, each blob shown there losing to another shown there, once this node's
-        // view is S's sources' (spec/sync-ids.md §6 Delete; that view read last, only where a
-        // blob loses)
+        // view is S's sources' (spec/sync-ids.md §6 Delete); the sources read only where a blob
+        // loses to another, so a source joining or leaving moves nothing else
+        let loses = rows.keys().any(|b| rows.keys().any(|o| beats(o, b)));
+        let stores: Vec<SrcView> = if loses { self.sources(s).iter().filter(|x| x.store).cloned().collect() } else { Vec::new() };
         let mut deletes = BTreeSet::new();
         for src in &stores {
             let Some(head) = src.head else { continue };
