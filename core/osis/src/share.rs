@@ -414,6 +414,10 @@ impl Osis {
     /// A thing's first grant to anyone but its mint admin also gives it keys of its own, so every
     /// holder of a role on it can read it.
     ///
+    /// A grant to a thing as holder reaches that thing's readers through it; from a node that does
+    /// not read the holder it goes as a ticket the holder takes only once its setting enables its
+    /// inbox signals (`core::RetentionSetting::enable_inbox_signals`), waiting until then.
+    ///
     /// Needs admin on the target (or a `may_grant` of at least `role`, for someone with no grant yet;
     /// a grant that ended above `role` counts as one until an admin takes it away), else `Permission`,
     /// and the holder's keys here (a contact card, a shared thing, pairing), else `UnknownActor`.
