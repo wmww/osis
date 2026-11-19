@@ -224,7 +224,8 @@ pub(super) struct Pulling {
     /// (spec/sync-status.md §1); a reply in hand keeps the whole connection so (`replies`).
     in_hand: BTreeMap<SyncId, usize>,
     replies: usize,
-    fetches: BTreeMap<Id, (SyncId, Vec<BlobId>, u8)>,
+    /// Fetches out: the (sync ID, blob) pairs each asked, and their fill class.
+    fetches: BTreeMap<Id, (Vec<(SyncId, BlobId)>, u8)>,
     /// Bodies to fetch, by fill order: each with the wrap and stamp it was announced under, when
     /// one was (`refetch`'s come with the reply), so one whose bytes arrive meanwhile under another
     /// sync ID is taken with them at its turn, not fetched again.
@@ -363,6 +364,18 @@ impl Pulling {
         self.joins.insert(s, Join { generation: self.generation, cursor });
         self.rejoin_at.remove(&s);
     }
+}
+
+/// A Fetch's groups of `pairs`: each run of one sync ID's blobs, in order.
+fn grouped(pairs: &[(SyncId, BlobId)]) -> Vec<(SyncId, Vec<BlobId>)> {
+    let mut out: Vec<(SyncId, Vec<BlobId>)> = Vec::new();
+    for (s, b) in pairs {
+        match out.last_mut() {
+            Some((x, bs)) if x == s => bs.push(*b),
+            _ => out.push((*s, vec![*b])),
+        }
+    }
+    out
 }
 
 /// A body's fill-order class (spec/sync-streams.md §4 Fill order, §5): order 0, deposited
@@ -1255,8 +1268,9 @@ impl Streams {
         }
     }
 
-    /// Sends Fetches while fewer than `FETCHES_OUT` are out: one sync ID's bodies of one fill
-    /// class at a time, the best first, order 0 before anything else; a blob asked anywhere (here
+    /// Sends Fetches while fewer than `FETCHES_OUT` are out: bodies of one fill class at a time,
+    /// whatever sync IDs they are under (so a first sync of n sync IDs fetches in O(bodies /
+    /// `MAX_FETCH_IDS`) round trips, not O(n)), the best first, order 0 before anything else; a blob asked anywhere (here
     /// under another sync ID, or at another source) stays queued until that ask is answered or
     /// past `ASKED_MS`, and one whose bytes arrived meanwhile is taken with them under its
     /// announced wrap, never fetched again (spec/sync-streams.md §4 Bodies: only blob IDs its
@@ -1267,8 +1281,9 @@ impl Streams {
             if p.fetches.len() >= FETCHES_OUT {
                 return;
             }
-            let order0_out = p.fetches.values().any(|(_, _, c)| *c == 0);
-            let mut pick: Option<(SyncId, u8)> = None;
+            let order0_out = p.fetches.values().any(|(_, c)| *c == 0);
+            let mut pick: Option<u8> = None;
+            let mut blobs = BTreeSet::new();
             let mut ids = Vec::new();
             let mut drop = Vec::new();
             let mut held = Vec::new();
@@ -1291,12 +1306,16 @@ impl Streams {
                         if order0_out && k.0 != 0 {
                             break;
                         }
-                        pick = Some((*s, k.0));
+                        pick = Some(k.0);
                     }
-                    Some((ps, pc)) if ps != *s || pc != k.0 => continue,
+                    Some(pc) if pc != k.0 => continue,
                     _ => {}
                 }
-                ids.push((*k, *b));
+                // one blob once per Fetch: the same blob under another sync ID waits for it
+                if !blobs.insert(*b) {
+                    continue;
+                }
+                ids.push((*k, *s, *b));
                 if ids.len() >= MAX_FETCH_IDS {
                     break;
                 }
@@ -1315,14 +1334,14 @@ impl Streams {
                 self.drain(ctx, conn);
                 continue;
             }
-            let Some((s, c)) = pick else { return };
-            let blobs: Vec<BlobId> = ids.iter().map(|(_, b)| *b).collect();
-            let Some(id) = ctx.wire.request(conn, Msg::Fetch { id: 0, sync_id: s, max_reply: REPLY_BUDGET as u64, ids: blobs.clone() }) else { return };
-            for (k, b) in &ids {
+            let Some(c) = pick else { return };
+            let pairs: Vec<(SyncId, BlobId)> = ids.iter().map(|(_, s, b)| (*s, *b)).collect();
+            let Some(id) = ctx.wire.request(conn, Msg::Fetch { id: 0, max_reply: REPLY_BUDGET as u64, ids: grouped(&pairs) }) else { return };
+            for (k, _, b) in &ids {
                 p.queue.remove(k);
                 self.asked.insert(*b, (conn, ctx.mono));
             }
-            p.fetches.insert(id, (s, blobs, c));
+            p.fetches.insert(id, (pairs, c));
         }
     }
 
@@ -1332,29 +1351,32 @@ impl Streams {
     /// for an ID not asked is ignored.
     fn fetched(&mut self, ctx: &mut Ctx, conn: ConnId, id: Id, items: Vec<Fetched>) {
         let Some(p) = self.pull.get_mut(&conn) else { return };
-        let Some((s, ids, c)) = p.fetches.remove(&id) else { return };
+        let Some((ids, c)) = p.fetches.remove(&id) else { return };
+        // each blob is asked once per Fetch: an item names its pair by its blob
+        let of: BTreeMap<BlobId, SyncId> = ids.iter().map(|(s, b)| (*b, *s)).collect();
         let mut items = items;
         let mut seen = BTreeSet::new();
-        items.retain(|f| ids.contains(&f.blob_id) && seen.insert(f.blob_id));
-        let rest: Vec<BlobId> = if items.is_empty() { Vec::new() } else { ids.iter().filter(|b| !seen.contains(b)).copied().collect() };
+        items.retain(|f| of.contains_key(&f.blob_id) && seen.insert(f.blob_id));
+        let rest: Vec<(SyncId, BlobId)> = if items.is_empty() { Vec::new() } else { ids.iter().filter(|(_, b)| !seen.contains(b)).copied().collect() };
         if !rest.is_empty()
-            && let Some(again) = ctx.wire.request(conn, Msg::Fetch { id: 0, sync_id: s, max_reply: REPLY_BUDGET as u64, ids: rest.clone() })
+            && let Some(again) = ctx.wire.request(conn, Msg::Fetch { id: 0, max_reply: REPLY_BUDGET as u64, ids: grouped(&rest) })
         {
-            for b in &rest {
+            for (_, b) in &rest {
                 self.asked.insert(*b, (conn, ctx.mono));
             }
-            p.fetches.insert(again, (s, rest, c));
+            p.fetches.insert(again, (rest, c));
         }
         let Some(p) = self.pull.get_mut(&conn) else { return };
         if items.is_empty() {
-            p.failed.extend(ids.iter().map(|b| (s, *b)));
+            p.failed.extend(ids.iter().copied());
         }
-        for b in ids.iter().filter(|b| items.is_empty() || seen.contains(b)) {
+        for (_, b) in ids.iter().filter(|(_, b)| items.is_empty() || seen.contains(b)) {
             if self.asked.get(b).is_some_and(|(x, _)| *x == conn) {
                 self.asked.remove(b);
             }
         }
         for f in items {
+            let Some(s) = of.get(&f.blob_id).copied() else { continue };
             match f.entry {
                 Some((bytes, wrap, stamp)) => self.take_body(ctx, conn, s, f.blob_id, wrap, stamp, &bytes),
                 None => {

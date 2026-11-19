@@ -86,3 +86,15 @@ fn embedded_items_count_toward_the_message_spec_wire_12() {
         assert_eq!(Msg::decode(&cbor::encode(&Value::List(body))).unwrap_err().error, Error::Cap("message items"));
     }
 }
+
+// spec/wire.md §11.2 (Per-message caps: Fetch 1024 IDs in all its groups): a Fetch's IDs count
+// across its sync IDs' groups, so groups of the cap each are refused as one past it
+#[test]
+fn a_fetchs_ids_are_capped_across_its_groups_spec_wire_12() {
+    let cap = osis_proto::limits::MAX_FETCH_IDS;
+    // distinct blob IDs: group `g`'s `n` of them
+    let group = |g: u8, n: usize| Value::List(vec![Value::Bytes(vec![g; 16]), Value::List((0..n).map(|i| Value::Bytes([[g; 2].as_slice(), &(i as u32).to_be_bytes(), &[0; 26]].concat())).collect())]);
+    let fetch = |groups: Vec<Value>| cbor::encode(&Value::List(vec![Value::uint(19), Value::uint(u64::from(TOP_BIT) | 1), Value::uint(16_384), Value::List(groups)]));
+    assert!(Msg::decode(&fetch(vec![group(1, cap / 2), group(2, cap / 2)])).is_ok(), "the cap in all");
+    assert!(matches!(Msg::decode(&fetch(vec![group(1, cap / 2), group(2, cap / 2 + 1)])).unwrap_err().error, Error::Cap(_)), "one past it");
+}

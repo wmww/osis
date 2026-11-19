@@ -646,14 +646,14 @@ impl Streams {
         }
     }
 
-    /// A Fetch (spec/wire.md §11.2 Fetch): each ID's entry of S with its bytes, a prefix of them
-    /// within `max_reply`; none for one not held, not shared here, or (an ended member) first
-    /// logged past its `until`.
-    pub(super) fn on_fetch(&mut self, ctx: &mut Ctx, conn: ConnId, id: Id, s: SyncId, max_reply: u64, ids: Vec<BlobId>) {
-        let until = ctx.shared.members(conn).get(&s).map(|m| m.until);
+    /// A Fetch (spec/wire.md §11.2 Fetch): each ID's entry of its sync ID with its bytes, in
+    /// request order, a prefix of them within `max_reply`; none for one not held, of a sync ID not
+    /// shared here, or (an ended member) first logged past its `until`.
+    pub(super) fn on_fetch(&mut self, ctx: &mut Ctx, conn: ConnId, id: Id, max_reply: u64, ids: Vec<(SyncId, Vec<BlobId>)>) {
         let mut left = (max_reply as usize).min(REPLY_BUDGET).saturating_sub(OVERHEAD);
         let mut items = Vec::new();
-        for b in ids {
+        for (s, b) in ids.into_iter().flat_map(|(s, bs)| bs.into_iter().map(move |b| (s, b))) {
+            let until = ctx.shared.members(conn).get(&s).map(|m| m.until);
             let entry = match until {
                 None => None,
                 Some(u) => self.fetchable(ctx, &s, &b, u).ok().flatten(),

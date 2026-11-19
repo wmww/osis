@@ -135,10 +135,9 @@ fn list_caps_spec_wire_11_2() {
     use crate::limits::*;
     let ms: std::collections::BTreeMap<_, _> = messages().into_iter().collect();
     type Case<'a> = (&'a str, usize, Option<(usize, usize)>, usize);
-    let cases: [Case; 11] = [
+    let cases: [Case; 10] = [
         ("delete", 3, None, MAX_DELETE_ITEMS),
         ("status", 2, None, MAX_DELETE_ITEMS),
-        ("fetch", 4, None, MAX_FETCH_IDS),
         ("fetch reply", 2, None, MAX_FETCH_IDS),
         ("offer", 2, None, MAX_OFFER_ITEMS),
         ("offer", 2, Some((2, 2)), MAX_ITEM_HITS),
@@ -156,6 +155,12 @@ fn list_caps_spec_wire_11_2() {
         // past the cap: refused as over it, or (Resume, whose cap fills a message) as too large
         assert_eq!(rejected(grown(m, pos, inner, cap + 1)).code(), Code::MALFORMED, "{name} past its cap");
     }
+    // a Fetch names each blob ID once: its cap of distinct ones
+    let fetch = |n: usize| Msg::Fetch { id: crate::limits::TOP_BIT | 1, max_reply: 32_768, ids: vec![(osis_base::SyncId([0x0a; 16]), (0..n).map(|i| { let mut b = [0u8; 32]; b[..8].copy_from_slice(&(i as u64).to_be_bytes()); osis_base::BlobId(b) }).collect())] };
+    let at = fetch(MAX_FETCH_IDS).encode();
+    assert!(at.len() <= MAX_MESSAGE, "fetch: {} bytes at its cap", at.len());
+    assert!(Msg::decode(&at).is_ok(), "fetch at its cap");
+    assert_eq!(rejected(fetch(MAX_FETCH_IDS + 1).to_value()).code(), Code::MALFORMED, "fetch past its cap");
 }
 
 // spec/wire.md §11.2 Prove, Proved: at most `MAX_ROTATIONS` rotations, each a header-only copy

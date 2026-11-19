@@ -228,7 +228,8 @@ pub enum Msg {
     /// One code per item of a Delete, in order.
     Status { id: Id, codes: Vec<Code> },
     Delete { id: Id, sync_id: SyncId, items: Vec<DeleteItem> },
-    Fetch { id: Id, sync_id: SyncId, max_reply: u64, ids: Vec<BlobId> },
+    /// Blob IDs to fetch, grouped by sync ID (each blob ID once; at most `MAX_FETCH_IDS` in all).
+    Fetch { id: Id, max_reply: u64, ids: Vec<(SyncId, Vec<BlobId>)> },
     FetchReply { id: Id, items: Vec<Fetched> },
     /// A main session sends no secret; a client-actor session its bearer secret.
     Auth { id: Id, secret: Option<osis_crypto::Secret32>, session_id: [u8; SESSION_ID_LEN] },
@@ -445,7 +446,7 @@ impl Msg {
             M::Register { sync_id, step, claim_set, .. } => vec![k, id, s(sync_id), step_value(step), Value::opt(claim_set.as_ref().map(|c| Value::Bytes(c.to_bytes())))],
             M::Status { codes, .. } => vec![k, id, Value::List(codes.iter().map(|c| Value::uint(c.0)).collect())],
             M::Delete { sync_id, items, .. } => vec![k, id, s(sync_id), Value::List(items.iter().map(DeleteItem::to_value).collect())],
-            M::Fetch { sync_id, max_reply, ids, .. } => vec![k, id, s(sync_id), Value::uint(*max_reply), Value::List(ids.iter().map(|i| Value::bytes(&i.0)).collect())],
+            M::Fetch { max_reply, ids, .. } => vec![k, id, Value::uint(*max_reply), Value::List(ids.iter().map(|(x, bs)| Value::List(vec![s(x), Value::List(bs.iter().map(|i| Value::bytes(&i.0)).collect())])).collect())],
             M::FetchReply { items, .. } => vec![k, id, Value::List(items.iter().map(fetched_value).collect())],
             M::Auth { secret, session_id, .. } => vec![k, id, Value::opt(secret.as_ref().map(|s| Value::bytes(s.expose()))), Value::bytes(session_id)],
             M::Call { max_reply, method, args, .. } => vec![k, id, Value::uint(*max_reply), Value::uint(*method), Value::List(args.clone())],
@@ -555,7 +556,7 @@ fn decode_body(kind: u64, id: Id, v: Value, n: &Items) -> Result<Msg, Error> {
             let items = f.list(1, MAX_DELETE_ITEMS, "delete items")?.iter().map(DeleteItem::from_value).collect::<Result<_, _>>()?;
             Msg::Delete { id, sync_id, items }
         }
-        19 => Msg::Fetch { id, sync_id: sync_id(&mut f)?, max_reply: max_reply(&mut f)?, ids: f.list(1, MAX_FETCH_IDS, "fetch ids")?.into_iter().map(|v| dec::fixed(v, "blob id").map(BlobId)).collect::<Result<_, _>>()? },
+        19 => Msg::Fetch { id, max_reply: max_reply(&mut f)?, ids: fetch_ids(f.list(1, MAX_FETCH_IDS, "fetch groups")?)? },
         20 => Msg::FetchReply { id, items: f.list(0, MAX_FETCH_IDS, "fetch items")?.into_iter().map(fetched).collect::<Result<_, _>>()? },
         24 => Msg::Auth { id, secret: f.opt()?.map(|v| dec::fixed::<CLIENT_SECRET_LEN>(v, "client secret").map(osis_crypto::Secret32::from_bytes)).transpose()?, session_id: f.fixed()? },
         25 => Msg::Call { id, max_reply: max_reply(&mut f)?, method: f.uint()?, args: f.list(0, usize::MAX, "args")?.into_iter().map(value).collect::<Result<_, _>>()? },
@@ -860,6 +861,25 @@ fn opt_cursor(c: &Option<Cursor>) -> Value {
 
 fn opt_cursor_of(f: &mut Fields) -> Result<Option<Cursor>, Error> {
     f.opt()?.map(|v| dec::bytes(v, MAX_CURSOR_BYTES, "cursor").and_then(Cursor::new)).transpose()
+}
+
+/// A Fetch's groups: a sync ID and its blob IDs, at most `MAX_FETCH_IDS` blob IDs in all, each
+/// blob ID once (a FetchReply item names its blob ID alone).
+fn fetch_ids(vs: Vec<Value>) -> Result<Vec<(SyncId, Vec<BlobId>)>, Error> {
+    let mut left = MAX_FETCH_IDS;
+    let mut seen = std::collections::BTreeSet::new();
+    vs.into_iter()
+        .map(|v| {
+            let mut g = Fields::exact(v, 2, "fetch group")?;
+            let s = sync_id(&mut g)?;
+            let ids: Vec<BlobId> = g.list(1, left, "fetch ids")?.into_iter().map(|v| dec::fixed(v, "blob id").map(BlobId)).collect::<Result<_, _>>()?;
+            left -= ids.len();
+            if !ids.iter().all(|b| seen.insert(*b)) {
+                return Err(Error::Malformed("fetch: a blob ID twice"));
+            }
+            Ok((s, ids))
+        })
+        .collect()
 }
 
 fn joins(vs: Vec<Value>) -> Result<Vec<Join>, Error> {

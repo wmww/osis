@@ -999,7 +999,7 @@ fn order_zero_first_never_not_fetched_spec_sync_streams_5() {
     p.b.table.rank = BTreeMap::from([(z, Rank::Order(0)), (h, Rank::Order(5)), (n, Rank::Never), (u, Rank::Unopened)]);
     p.shared_read(s);
     p.run();
-    let fetches: Vec<Vec<BlobId>> = p.sent_by_b(19).into_iter().map(|m| if let Msg::Fetch { ids, .. } = m { ids.clone() } else { vec![] }).collect();
+    let fetches: Vec<Vec<BlobId>> = p.sent_by_b(19).into_iter().map(|m| if let Msg::Fetch { ids, .. } = m { ids.iter().flat_map(|(_, bs)| bs.clone()).collect() } else { vec![] }).collect();
     assert_eq!(fetches.first().unwrap(), &vec![z], "order 0 alone first");
     assert!(fetches.iter().flatten().all(|b| *b != n), "never opens: never fetched");
     let order: Vec<BlobId> = fetches.into_iter().flatten().collect();
@@ -1021,7 +1021,7 @@ fn a_body_taken_before_is_not_fetched_again_spec_sync_streams_4() {
     p.b.store.log(&s, Entry { own: false, ..e }, bytes, None).unwrap();
     p.shared_read(s);
     p.run();
-    let fetched: Vec<BlobId> = p.sent_by_b(19).into_iter().flat_map(|m| if let Msg::Fetch { ids, .. } = m { ids.clone() } else { vec![] }).collect();
+    let fetched: Vec<BlobId> = p.sent_by_b(19).into_iter().flat_map(|m| if let Msg::Fetch { ids, .. } = m { ids.iter().flat_map(|(_, bs)| bs.clone()).collect::<Vec<_>>() } else { vec![] }).collect();
     assert_eq!(fetched, [y]);
     assert!(p.b.streams.caught_up(C, &s));
 }
@@ -1038,13 +1038,13 @@ fn a_counted_record_blob_is_not_fetched_again_spec_sync_streams_4() {
     p.b.table.counted.insert(x);
     p.shared_read(s);
     p.run();
-    let fetched: Vec<BlobId> = p.sent_by_b(19).into_iter().flat_map(|m| if let Msg::Fetch { ids, .. } = m { ids.clone() } else { vec![] }).collect();
+    let fetched: Vec<BlobId> = p.sent_by_b(19).into_iter().flat_map(|m| if let Msg::Fetch { ids, .. } = m { ids.iter().flat_map(|(_, bs)| bs.clone()).collect::<Vec<_>>() } else { vec![] }).collect();
     assert_eq!(fetched, [y], "x counted: not fetched");
     assert!(knows(&p.b, p.b.src(), s, x), "a's showing of x kept");
     assert!(p.b.streams.caught_up(C, &s));
 }
 
-// spec/permissions.md §4 (a record or list blob counts while held at a source): a message in hand
+// spec/permissions.md §4 (Logging certificates: a record or list blob counts while held at a source): a message in hand
 // showing x, its body owed, shows x before it applies (`Known::shown`: what the body opens to is
 // judged before the message's cursor is stored); dropped unapplied (the connection ends), it
 // shows it no more.
@@ -1059,6 +1059,33 @@ fn a_message_in_hand_shows_what_it_owes_spec_permissions_4() {
     assert!(known.shown(&s, &x) && !known.present(&s, &x), "in hand: shown, not recorded");
     p.b.streams.closed(C);
     assert!(!p.b.streams.known().shown(&s, &x), "dropped with its connection");
+}
+
+// spec/wire.md §11.2 (Fetch: blob IDs grouped by sync ID, each a member of the connection's
+// shared set, an ID of a sync ID it does not share there answered with none, items in request
+// order): one Fetch asks bodies of several sync IDs; the source answers each ID under its own
+// sync ID. Under u, which a holds and does not share with b, the blob a holds is answered as a
+// made-up one is: none, telling nothing of what a holds there; so is w, held under t, asked under s.
+#[test]
+fn one_fetch_asks_the_bodies_of_several_sync_ids_spec_wire_11_2() {
+    let mut p = Pair::new();
+    let (s, t, u) = (sid(1), sid(2), sid(3));
+    let (x, y, z) = (p.a.log(s, 40_001), p.a.log(t, 40_002), p.a.log(u, 40_003));
+    let (made_up, _) = blob(40_004, Class::Durable);
+    let w = p.a.log(t, 40_005);
+    p.shared_read(s);
+    p.shared_read(t);
+    p.run();
+    let id = TOP_BIT | 99;
+    let ask = Msg::Fetch { id, max_reply: REPLY_BUDGET as u64, ids: vec![(t, vec![y]), (u, vec![z, made_up]), (s, vec![x, w])] };
+    p.a.with(p.now, |st, c| st.message(c, C, Incoming::Request(id, ask)));
+    let answer = p.a.pipe.out.iter().find_map(|(_, f)| match f {
+        Frame::Ans(i, _) if *i == id => Some(f.msg()),
+        _ => None,
+    });
+    let Some(Msg::FetchReply { items, .. }) = answer else { panic!("answered: {answer:?}") };
+    let got: Vec<(BlobId, bool)> = items.iter().map(|f| (f.blob_id, f.entry.is_some())).collect();
+    assert_eq!(got, [(y, true), (z, false), (made_up, false), (x, true), (w, false)], "u not shared, w not under s: none");
 }
 
 // spec/sync-streams.md §4 (Bodies: an entry whose blob's bytes it holds under another sync ID is
@@ -1797,7 +1824,7 @@ fn the_rest_of_a_fetch_is_asked_before_applying_spec_sync_streams_4() {
     p.b.with(p.now, |st, c| st.message(c, C, Incoming::Reply(To::Streams, *id, Msg::FetchReply { id: *id, items: first })));
     assert_eq!(p.b.table.opened, [items[0].blob_id]);
     assert_eq!(p.b.table.log.borrow().as_slice(), [("request", 19), ("open", 0)], "the rest asked, then the first applied");
-    let rest: Vec<BlobId> = p.b.pipe.out.iter().filter_map(|(_, f)| if let Msg::Fetch { ids, .. } = f.msg() { Some(ids) } else { None }).flatten().collect();
+    let rest: Vec<BlobId> = p.b.pipe.out.iter().filter_map(|(_, f)| if let Msg::Fetch { ids, .. } = f.msg() { Some(ids.into_iter().flat_map(|(_, bs)| bs)) } else { None }).flatten().collect();
     assert_eq!(rest.len(), 2);
     assert!(!p.b.streams.caught_up(C, &s), "a partial fill is not caught up");
     assert!(p.sent_by_b(44).is_empty(), "no Applied yet");
@@ -1850,37 +1877,45 @@ fn the_next_source_takes_over_when_one_fails_spec_sync_streams_4() {
 }
 
 // spec/sync-streams.md §4 (Bodies: what a Fetch answered with nothing counts as not held at that
-// source until it announces the entry again): a body the source failed to give under S, owed by a
-// message in hand behind another, stays failed there when the same blob is announced under
-// another sync ID, so the message applies once the one before it does.
+// source until it announces the entry again), spec/wire.md §11.2 (Fetch: blob IDs grouped by sync
+// ID): one Fetch asks z under s3 and x under s1 (two messages in hand); the source answers none of
+// x and leaves z for later. x stays failed under s1 there when the same blob is announced under s2
+// and taken there while both messages are in hand, so s1's message applies once s3's does.
 #[test]
 fn a_failed_body_stays_failed_when_announced_under_another_sync_id_spec_sync_streams_4() {
     let mut p = Pair::new();
     let (s1, s2, s3) = (sid(1), sid(2), sid(3));
     // b joins s3 first: its listing, owing z, is in hand before s1's, owing x
-    p.a.log(s3, 40_001);
+    let z = p.a.log(s3, 40_001);
     let x = p.a.log(s1, 40_000);
     for s in [s3, s1, s2] {
         p.shared_read(s);
     }
     p.run_with(|ab, m| ab && m.kind() == 20);
-    let mut held = std::mem::take(&mut p.held);
-    assert_eq!(held.len(), 2, "z's and x's Fetches answered, held");
-    let at = |held: &[(bool, Frame)], b: BlobId| held.iter().position(|(_, f)| matches!(f.msg(), Msg::FetchReply { items, .. } if items.iter().any(|i| i.blob_id == b))).unwrap();
-    // a answers x's Fetch with none
-    let (_, Frame::Ans(id, _)) = held.remove(at(&held, x)) else { panic!() };
-    p.b.with(p.now, |st, c| st.message(c, C, Incoming::Reply(To::Streams, id, Msg::FetchReply { id, items: Vec::new() })));
-    // then announces x under s2; b fetches it there
+    let answers = std::mem::take(&mut p.held);
+    let [(_, Frame::Ans(id, _))] = answers.as_slice() else { panic!("one Fetch answered, held: {answers:?}") };
+    let Msg::FetchReply { items, .. } = answers[0].1.msg() else { panic!() };
+    let got: Vec<BlobId> = items.iter().map(|f| f.blob_id).collect();
+    assert!(got.contains(&z) && got.contains(&x), "z under s3 and x under s1 in one Fetch: {got:?}");
+    // a answers x with none and leaves z out: z is asked again, its answer held
+    let items = vec![osis_proto::Fetched { blob_id: x, entry: None }];
+    p.b.with(p.now, |st, c| st.message(c, C, Incoming::Reply(To::Streams, *id, Msg::FetchReply { id: *id, items })));
+    // then announces x under s2; b fetches it there, the answer held too
     assert_eq!(p.a.log(s2, 40_000), x);
     p.run_with(|ab, m| ab && m.kind() == 20);
-    held.append(&mut p.held);
-    assert_eq!(held.len(), 2, "z's Fetch, then x's under s2");
-    for (_, f) in held {
+    let mut answers = std::mem::take(&mut p.held);
+    let has = |f: &Frame, b: BlobId| matches!(f.msg(), Msg::FetchReply { items, .. } if items.iter().any(|i| i.blob_id == b && i.entry.is_some()));
+    answers.sort_by_key(|(_, f)| !has(f, x));
+    assert!(answers.len() == 2 && has(&answers[0].1, x) && has(&answers[1].1, z), "x's answer under s2, then z's");
+    // x taken under s2 while z's message, and s1's behind it, are in hand
+    for (_, f) in answers {
         let Frame::Ans(id, _) = f else { panic!() };
         let m = f.msg();
         p.b.with(p.now, |st, c| st.message(c, C, Incoming::Reply(To::Streams, id, m)));
     }
     p.run();
+    assert!(held(&p.b, s2).contains(&x), "x taken under s2");
+    assert!(!held(&p.b, s1).contains(&x), "x not given under s1");
     assert!(p.b.streams.caught_up(C, &s1), "x failed at a under s1: its message applied");
 }
 
@@ -2176,7 +2211,7 @@ fn a_member_joined_after_the_pull_waits_for_its_join_spec_sync_status_1() {
 
 // spec/sync-streams.md §4 (Joining: a connection that takes a record pulls its members from
 // where the record holds them, with no join for a member at the stream's cursor), spec/sync-status.md
-// §1 (S joined after the source's first Pull waits for a reply reading it): b's record holds S at
+// §1 (caught up: S joined after the source's first Pull waits for a reply reading it): b's record holds S at
 // the stream, but S is not a member when the record is taken (the first Pull covers T alone) and
 // opens after it. S's place is no longer the stream's: b joins S from where it stood, takes what a
 // logged meanwhile, and a counts it caught up.

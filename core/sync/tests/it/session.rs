@@ -332,7 +332,7 @@ fn one_prove_from_the_dialer_spec_wire_11_2() {
 fn request_ids_spec_wire_11_2() {
     let mut p = quiet_pair();
     let a = p.ds.request(To::Streams, pull(SMALL_REPLY as u64));
-    let b = p.ds.request(To::Streams, Msg::Fetch { id: 0, sync_id: osis_base::SyncId([1; 16]), max_reply: SMALL_REPLY as u64, ids: vec![osis_base::BlobId([2; 32])] });
+    let b = p.ds.request(To::Streams, Msg::Fetch { id: 0, max_reply: SMALL_REPLY as u64, ids: vec![(osis_base::SyncId([1; 16]), vec![osis_base::BlobId([2; 32])])] });
     let c = p.ds.request(To::Opens, Msg::NoRecord { id: 0 });
     let d = p.ds.request(To::Inbox, Msg::Ping { id: 0, wall_ms: 0 });
     assert!(a & TOP_BIT != 0 && b & TOP_BIT != 0 && a != b && a != NO_RECORD_ID);
@@ -362,7 +362,7 @@ fn window_spec_sync_streams_1() {
 fn skipped_pulls_and_fetches_spec_wire_11_2() {
     let mut p = quiet_pair();
     let a = p.ds.request(To::Streams, pull(SMALL_REPLY as u64));
-    let f = p.ds.request(To::Streams, Msg::Fetch { id: 0, sync_id: osis_base::SyncId([1; 16]), max_reply: SMALL_REPLY as u64, ids: vec![osis_base::BlobId([2; 32])] });
+    let f = p.ds.request(To::Streams, Msg::Fetch { id: 0, max_reply: SMALL_REPLY as u64, ids: vec![(osis_base::SyncId([1; 16]), vec![osis_base::BlobId([2; 32])])] });
     let b = p.ds.request(To::Streams, pull(SMALL_REPLY as u64));
     p.ds.take_bytes();
     let ins = p.ds.receive(&frame(&pull_reply(b)), &mut p.d.cx()).expect("kept");
@@ -433,7 +433,7 @@ fn flooding_peer_closes_spec_sync_streams_1() {
 #[test]
 fn reused_request_id_closes_spec_wire_11_1() {
     let (_, mut l, mut ls, _) = listener_with_scripted_dialer();
-    let m = Msg::Fetch { id: TOP_BIT | 3, sync_id: osis_base::SyncId([1; 16]), max_reply: SMALL_REPLY as u64, ids: vec![osis_base::BlobId([2; 32])] };
+    let m = Msg::Fetch { id: TOP_BIT | 3, max_reply: SMALL_REPLY as u64, ids: vec![(osis_base::SyncId([1; 16]), vec![osis_base::BlobId([2; 32])])] };
     assert!(ls.receive(&frame(&m), &mut l.cx()).is_ok());
     ls.take_bytes();
     assert_eq!(ls.receive(&frame(&m), &mut l.cx()).err(), Some(Close("request id reused")));
@@ -593,7 +593,7 @@ fn peer_that_reads_nothing_closes_spec_sync_streams_1() {
     let mut kept = None;
     for i in 1..=5u32 {
         let id = TOP_BIT | i;
-        let fetch = Msg::Fetch { id, sync_id: osis_base::SyncId([1; 16]), max_reply: REPLY_BUDGET as u64, ids: vec![osis_base::BlobId([2; 32])] };
+        let fetch = Msg::Fetch { id, max_reply: REPLY_BUDGET as u64, ids: vec![(osis_base::SyncId([1; 16]), vec![osis_base::BlobId([2; 32])])] };
         let r = ls.receive(&frame(&fetch), &mut l.cx());
         assert!(r.is_ok(), "{i}: within the bound ({} MiB unwritten)", (i - 1) * 8);
         ls.answer(id, Msg::FetchReply { id, items: vec![osis_proto::msg::Fetched { blob_id: osis_base::BlobId([2; 32]), entry: Some((blob.clone(), [0; osis_proto::msg::WRAP_LEN], None)) }] });
@@ -716,7 +716,7 @@ fn served(n: u64) -> (End, Sessions) {
 
 /// A Fetch of the costliest reply.
 fn big_fetch(id: u32) -> Vec<u8> {
-    frame(&Msg::Fetch { id: TOP_BIT | id, sync_id: osis_base::SyncId([1; 16]), max_reply: REPLY_BUDGET as u64, ids: vec![osis_base::BlobId([2; 32])] })
+    frame(&Msg::Fetch { id: TOP_BIT | id, max_reply: REPLY_BUDGET as u64, ids: vec![(osis_base::SyncId([1; 16]), vec![osis_base::BlobId([2; 32])])] })
 }
 
 /// A reply to Fetch `id` as large as its allowance lets (the module's answer).

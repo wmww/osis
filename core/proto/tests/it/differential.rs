@@ -304,7 +304,22 @@ fn spec_decode(body: &[u8]) -> Result<(), &'static str> {
         7 => n(3).and_then(|_| b(&a[0], 16)).and_then(|_| step(&a[1])).and_then(|_| opt_of(&a[2], claim_set)),
         11 => n(1).and_then(|_| list(&a[0], 1, 1024, u)),
         14 => n(2).and_then(|_| b(&a[0], 16)).and_then(|_| list(&a[1], 1, 1024, ditem)),
-        19 => n(3).and_then(|_| b(&a[0], 16)).and_then(|_| max_reply(&a[1])).and_then(|_| list(&a[2], 1, 1024, |x| b(x, 32))),
+        19 => n(2).and_then(|_| max_reply(&a[0])).and_then(|_| {
+            // groups of a sync ID and its blob IDs, 1024 IDs in all
+            let ids = std::cell::RefCell::new(std::collections::BTreeSet::new());
+            list(&a[1], 1, 1024, |g| {
+                let p = tuple(g, 2)?;
+                b(&p[0], 16)?;
+                list(&p[1], 1, 1024, |x| b(x, 32))?;
+                let mut seen = ids.borrow_mut();
+                let n = seen.len() + arr(&p[1])?.len();
+                ok(n <= 1024, "fetch ids")?;
+                for x in arr(&p[1])? {
+                    ok(seen.insert(format!("{x:?}")), "a blob ID twice")?;
+                }
+                Ok(())
+            })
+        }),
         20 => n(1).and_then(|_| {
             list(&a[0], 0, 1024, |x| {
                 let p = tuple(x, 2)?;

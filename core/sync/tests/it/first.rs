@@ -116,6 +116,21 @@ fn a_new_reader_logs_no_copy_of_what_its_source_holds_spec_sync_judgement_3() {
     assert!(answered.1.1 <= answered.0.1, "the reader sent the maker {} bytes of bodies at n, {} at 5n", answered.0.1, answered.1.1);
 }
 
+// spec/sync-streams.md §4 (Joining: opens from one Offer batch join in one Pull; Bodies: a
+// requester fetches every body announced without bytes), spec/wire.md §11.2 (Fetch: blob IDs
+// grouped by sync ID): the members' opens go in one Offer, their joins in one Pull, their bodies
+// in Fetches of up to `MAX_FETCH_IDS` whatever sync IDs they are under, so a first sync's round
+// trips do not grow per member: 113 deliveries at n, 121 at 5n and at 10n (`probe_first`); one
+// Fetch per sync ID cost 3 to 6 deliveries per member (137 at 5n, 153 at 10n).
+#[test]
+fn a_first_sync_of_n_sync_ids_takes_the_same_round_trips_spec_sync_streams_4() {
+    const MEMBERS: u64 = (LARGE - N) as u64;
+    let (small, large) = (cost(N), cost(LARGE));
+    assert!(large.deliveries <= small.deliveries + 2 * MEMBERS, "{} deliveries at n members, {} at 5n", small.deliveries, large.deliveries);
+    let (a, b) = (small.sent(2, 0, "Fetch").0, large.sent(2, 0, "Fetch").0);
+    assert!(b <= a + 1, "the reader sent {a} Fetches at n members, {b} at 5n");
+}
+
 // spec/sync-streams.md §4 (Bodies: only blob IDs its store lacks are fetched; an entry whose
 // blob's bytes it holds under another sync ID is taken with them, under the entry's wrap; a
 // blob counts as asked while a fetch of it from some source is unanswered): a blob carried under
@@ -132,7 +147,7 @@ fn a_blob_is_fetched_once_whatever_sync_ids_carry_it_spec_sync_streams_4() {
 }
 
 // spec/permissions.md §4 (Logging certificates: a record or list blob counts once opened, while
-// held here or at a source; one losing to another leaves the own store), spec/sync-streams.md §4
+// held here or at a source, and one losing to another leaves the own store), spec/sync-streams.md §4
 // (Bodies: nor one it counts is fetched): what a new reader fetches and does not keep is only
 // what it could judge by opening it alone (the maker's record blob that the grant made lose, which
 // the store keeping the root unread still lists until the maker's Delete reaches it), once each

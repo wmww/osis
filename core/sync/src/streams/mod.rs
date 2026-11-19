@@ -353,7 +353,7 @@ impl Streams {
     pub fn message(&mut self, ctx: &mut Ctx, conn: ConnId, m: Incoming) {
         match m {
             Incoming::Request(id, Msg::Pull(p)) => self.on_pull(ctx, conn, id, *p),
-            Incoming::Request(id, Msg::Fetch { sync_id, max_reply, ids, .. }) => self.on_fetch(ctx, conn, id, sync_id, max_reply, ids),
+            Incoming::Request(id, Msg::Fetch { max_reply, ids, .. }) => self.on_fetch(ctx, conn, id, max_reply, ids),
             Incoming::Push(Msg::Applied { cursor }) => self.on_applied(ctx, conn, cursor.into_bytes()),
             Incoming::Push(Msg::Stream(st)) => self.on_stream(ctx, conn, *st),
             Incoming::Reply(To::Streams, id, m) => self.on_reply(ctx, conn, id, m),
