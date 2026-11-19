@@ -317,3 +317,26 @@ fn family_worlds_are_distinct() {
         assert!(seen.insert(format!("{xs:?}")), "index {i}");
     }
 }
+
+/// The writers' leaving out on today's walk (notes/path-model-findings.md, To model next 10): H
+/// leaves out of its list X's removal of H, with which its removal would not apply, and a
+/// witness's vouch leaves it out too; H's removal applies trusted, and the listing set-aside is
+/// not needed. Likewise for the accomplice: H leaves out Y's removal of H from its removal of Y.
+#[test]
+fn the_writers_leave_out_what_their_removal_does_not_apply_with() {
+    let stands = Rules { stands: true, ..FIXED };
+    let mut b = B::new(&[FULL, FULL, FULL]);
+    b.op(X, H, None, 1, &[(H, 2), (2, 2)]);
+    let r = b.op(H, X, None, 4, &[(2, 5)]);
+    let w = b.honest(stands);
+    assert_eq!(judge(&w, stands, 1 << r).active, 1 << r);
+    assert_eq!(listing(&w, stands), Listing { checked: 2, fail: 0, lowered: 0, accomplice: 0, revived: 0 });
+    let mut b = B::new(&[FULL, FULL, None]);
+    b.op(X, 2, FULL, 1, &[(H, 1), (2, 1)]);
+    b.op(2, H, None, 2, &[(H, 2)]);
+    let rx = b.op(H, X, None, 4, &[(2, 4)]);
+    let ry = b.op(H, 2, None, 5, &[(2, 5)]);
+    let w = b.honest(stands);
+    assert_eq!(listing(&w, stands), Listing { checked: 3, fail: 0, lowered: 0, accomplice: 0, revived: 0 });
+    assert_eq!(judge(&w, stands, 1 << rx | 1 << ry).active, 1 << rx | 1 << ry);
+}

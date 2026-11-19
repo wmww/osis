@@ -121,9 +121,13 @@ pub struct Rules {
     /// honest node holding the right keeps, per removal it holds, a vouch of its own that counts
     /// in its own current walk, writing one whenever none does.
     pub state: bool,
+    /// The writers' leaving out (notes/account-membership-design.md §4, What a list leaves out):
+    /// a remover, and a witness vouching, name what they had received in the order received,
+    /// leaving out a role write with which R, trusted, would no longer apply (`World::stand`).
+    pub stands: bool,
 }
 
-pub const FIXED: Rules = Rules { vouches: true, rewrite: true, held: false, state: false };
+pub const FIXED: Rules = Rules { vouches: true, rewrite: true, held: false, state: false, stands: false };
 
 /// Under `Rules::state`, when every commit some node besides its author received has reached
 /// every node: after every write's `ts`, before `END`.
@@ -237,6 +241,74 @@ impl World {
     /// The world with the honest vouches (module doc, Honest writing) added; receipts of each
     /// from `recv(author, t)`.
     pub fn derive(&mut self, rules: Rules, mut recv: impl FnMut(usize, u32) -> Vec<u32>) {
+        if rules.stands {
+            self.stand_removers(rules);
+        }
+        let before = self.vouches.len();
+        self.derive_vouches(rules, &mut recv);
+        if rules.stands {
+            self.stand_vouches(rules, before);
+        }
+    }
+
+    /// Whether removal `r` (its op `op`) applies, trusted alone.
+    fn stands_with(&self, rules: Rules, op: usize) -> bool {
+        judge(self, rules, 1 << op).active >> op & 1 == 1
+    }
+
+    /// The remover's list by the writers' rule: where its removal, trusted alone, does not apply
+    /// with all it received of the victim, it names those commits one by one in the order it
+    /// received them, each kept only where the removal still applies; the rest are left out (read
+    /// as not received by it).
+    fn stand_removers(&mut self, rules: Rules) {
+        for (op, r, x) in trustable(&self.h) {
+            let (a, t) = (self.h.writes[r].author, self.h.writes[r].t);
+            if self.stands_with(rules, op) {
+                continue;
+            }
+            let mut got: Vec<usize> = (0..self.h.writes.len()).filter(|&c| self.h.writes[c].author == x && key(&self.h.writes[c]) < key(&self.h.writes[r]) && self.h.recv[c][a] < t).collect();
+            got.sort_by_key(|&c| (self.h.recv[c][a], key(&self.h.writes[c])));
+            let at: Vec<u32> = got.iter().map(|&c| self.h.recv[c][a]).collect();
+            for &c in &got {
+                self.h.recv[c][a] = LATE;
+            }
+            for (&c, &t) in got.iter().zip(&at) {
+                self.h.recv[c][a] = t;
+                if !self.stands_with(rules, op) {
+                    self.h.recv[c][a] = LATE;
+                }
+            }
+        }
+    }
+
+    /// Each honest vouch from `from` by the writers' rule: where its removal, trusted alone, does
+    /// not apply with the vouch as written, it names its commits one by one in the order its
+    /// author received them, each kept only where the removal still applies.
+    fn stand_vouches(&mut self, rules: Rules, from: usize) {
+        let ops = trustable(&self.h);
+        for k in from..self.vouches.len() {
+            let v = self.vouches[k].clone();
+            let Some(r) = self.h.writes.iter().position(|w| w.id == v.removal) else { continue };
+            let Some(&(op, ..)) = ops.iter().find(|o| o.1 == r) else { continue };
+            if self.stands_with(rules, op) {
+                continue;
+            }
+            let idx = |id: u32| self.h.writes.iter().position(|w| w.id == id);
+            let mut order = v.lists.clone();
+            order.sort_by_key(|&id| idx(id).map(|c| (self.h.recv[c][v.author], key(&self.h.writes[c]))));
+            let mut kept = vec![];
+            for id in order {
+                kept.push(id);
+                self.vouches[k].lists = kept.clone();
+                if !self.stands_with(rules, op) {
+                    kept.pop();
+                }
+            }
+            self.vouches[k].lists = kept;
+        }
+    }
+
+    fn derive_vouches(&mut self, rules: Rules, recv: &mut impl FnMut(usize, u32) -> Vec<u32>) {
         if rules.state {
             // eventual delivery: every commit of the judged held set reaches every node by `SYNC`
             self.h.recv.iter_mut().flatten().for_each(|x| *x = (*x).min(SYNC));
@@ -917,6 +989,8 @@ pub fn run(samples: u64, mode: &str) -> u64 {
         "-no-rewrite" => Rules { rewrite: false, ..FIXED },
         "-held" => Rules { held: true, ..FIXED },
         "-state" => Rules { state: true, ..FIXED },
+        "-stands" => Rules { stands: true, ..FIXED },
+        "-state-stands" => Rules { state: true, stands: true, ..FIXED },
         _ => FIXED,
     };
     let st = if exh { exhaustive(rules, 1) } else { random(samples, rules) };
