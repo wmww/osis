@@ -26,7 +26,9 @@ test reads from the tree at run time, and cargo inside a script or another progr
 Log: ~/.cache/osis/heavy.log, one JSON object per line. Every line carries the box's cumulative
 CPU jiffies (`busy`, `all` from /proc/stat), so any two lines give the box's utilization between
 them. Events: `acq` (lock taken: who, cmd, wait, and the box at the request), `smp` (every
-SAMPLE_S while held), `rel` (released: held, the command's CPU-s from its rusage, exit code).
+SAMPLE_S while held: the run's CPU-s so far), `yld` (a quiet hold released the lock, run going on),
+`back` (a yielded run holds it again: wait, paused), `rel` (the command ended: held, its wall from
+the first acquisition, the command's CPU-s from its rusage, exit code).
 tools/agent-times.py charges each acquisition to the agent whose command ran it.
 
 The short lane (--short): a run small enough to cost a hold beside it little needs no wait for one.
@@ -36,6 +38,14 @@ limit `heavy.short` or its processes' resident memory passes SHORT_RSS. The run'
 process it started, finished or running; for a cargo test, only the copies' run (the build is
 unlocked anyway). Never for a command that edits the tree (tools/mutate.py): a stop leaves its edit
 in place. Every hold prints whether it would have fit the lane.
+
+A quiet hold yields (notes/build.md, Heavy lock): the lock keeps all-core runs apart, so a hold
+whose process tree has used under YIELD_CORES cores over the last YIELD_WINDOW_S, at most SHORT_RSS
+resident, while another run waits for the lock, releases it and runs on beside the next holder
+(one yielded run box-wide: its own lock). While yielded it must stay that small: a sample over
+YIELD_CORES or SHORT_RSS stops (SIGSTOP) its whole tree until it holds the lock again, then
+continues (SIGCONT); its next binary also waits for the lock. Nothing is killed and no work lost;
+a holder pays at most YIELD_CORES / cores of its wall for it.
 
 Time limits (notes/build.md): the hold's CPU-s and wall are checked against NAME's limits
 (default `heavy`, a hold's own; the gate's is `gate.hold`) by tools/limits.py, which prints an
@@ -49,6 +59,7 @@ import limits  # noqa: E402
 
 LOCK = os.path.join(os.environ.get("XDG_RUNTIME_DIR") or "/tmp", "osis-gate.lock")
 SHORT_LOCK = os.path.join(os.environ.get("XDG_RUNTIME_DIR") or "/tmp", "osis-short.lock")
+YIELD_LOCK = os.path.join(os.environ.get("XDG_RUNTIME_DIR") or "/tmp", "osis-yield.lock")
 # The short lane's memory cap (its CPU and wall caps are limit `heavy.short`): the summed resident
 # memory of the run's processes. The heavy lock's other job is keeping two large runs out of one
 # 30 GB box; 0 would stop every run, infinity would let a 16 GB bench beside a gate push the box into
@@ -65,6 +76,15 @@ LOG_CAP = 8 << 20
 # Minor consequence: the time resolution of utilization while held. 0 spins, infinity leaves
 # only the acq-to-rel average.
 SAMPLE_S = 10
+# A quiet hold yields (module doc). YIELD_CORES: the cores a run may use beside a holder, costing it
+# up to this / 16 of its wall; 0 never yields (a sleeping run holds the lock as today), infinity
+# yields every hold with a waiter and lets all-core runs overlap. 1.5 is over a single-threaded run
+# (100-106% of a core) and under any run worth the lock. YIELD_WINDOW_S: how long a hold must stay
+# quiet; 0 yields an all-core run at a pause between its phases, infinity never yields. 300 s is
+# past the gate's quiet spans (a binary's slow tail, about a minute; a sim storm seed, 2-3 min on one
+# core; a hung test is stopped at 150 s) and is the most a waiter loses to a one-core hold.
+YIELD_CORES = 1.5
+YIELD_WINDOW_S = 300
 
 
 def stat():
@@ -202,12 +222,35 @@ def tree(root):
 
 def kill_tree(root):
     """SIGKILL root's tree; a second walk catches what forked during the first."""
+    signal_tree(root, signal.SIGKILL)
+
+
+def signal_tree(root, sig):
     for _ in range(2):
         for p in tree(root)[0]:
             try:
-                os.kill(p, signal.SIGKILL)
+                os.kill(p, sig)
             except OSError:
                 pass
+
+
+def waiters(fd):
+    """How many requests wait for the flock on fd's file (/proc/locks lists blocked ones with `->`)."""
+    st = os.fstat(fd)
+    key = f"{os.major(st.st_dev):02x}:{os.minor(st.st_dev):02x}:{st.st_ino}"
+    try:
+        with open("/proc/locks") as f:
+            return sum(1 for l in f if "->" in l.split()[:2] and l.split()[-3] == key)
+    except OSError:
+        return 0
+
+
+def quiet(samples):
+    """samples: (time, CPU-s) of the run, oldest first. Whether it used under YIELD_CORES over the
+    last YIELD_WINDOW_S (False until it has run that long)."""
+    t, c = samples[-1]
+    old = [s for s in samples if t - s[0] >= YIELD_WINDOW_S]
+    return bool(old) and c - old[-1][1] < YIELD_CORES * (t - old[-1][0])
 
 
 def run(cmd, name, out=None, short=False):
@@ -268,7 +311,36 @@ def hold(cmd, name, out, who, runs, sub, lane=None):
         signal.signal(s, lambda n, _f: cur[0] and cur[0].send_signal(n))
     keep_going = "--no-fail-fast" in cmd[:cmd.index("--")] if "--" in cmd else "--no-fail-fast" in cmd
     rc, failed, stop = 0, False, None
+    yfd = None  # while yielded: the yield lock, held
+
+    def say(msg):
+        print(f"heavy: {msg}", file=sys.stderr)
+        if out:
+            print(f"heavy: {msg}", file=out, flush=True)
+
+    def retake(pid=None):
+        """A yielded run takes the lock again; pid: its running tree, stopped while it waits."""
+        nonlocal yfd
+        if pid:
+            signal_tree(pid, signal.SIGSTOP)
+            say("the yielded run went over its share beside the hold: stopped until it holds the lock again")
+        tw = time.time()
+        fcntl.flock(fd, fcntl.LOCK_EX)
+        log("back", wait=round(time.time() - tw, 1), paused=bool(pid))
+        if pid:
+            signal_tree(pid, signal.SIGCONT)
+            say(f"holds the lock again after {time.time() - tw:.0f} s: continued")
+        os.close(yfd)
+        yfd = None
+
+    def used():
+        ru = resource.getrusage(resource.RUSAGE_CHILDREN)
+        _, live, rss = tree(p.pid)
+        return ru.ru_utime + ru.ru_stime - ru0.ru_utime - ru0.ru_stime + live, rss
+
     for r in runs:
+        if yfd is not None:
+            retake()
         if r.get("line"):
             (out or sys.stderr).write(r["line"])
             (out or sys.stderr).flush()
@@ -284,19 +356,38 @@ def hold(cmd, name, out, who, runs, sub, lane=None):
             log("rel", held=round(time.time() - t1, 1), cpu=0, rc=127)
             sys.exit(f"heavy: {r['argv'][0]}: {e}")
         cur[0] = p
+        samples = [(time.time(), used()[0])]
         while True:
             try:
                 rc = p.wait(SHORT_POLL_S if lane else SAMPLE_S)
                 break
             except subprocess.TimeoutExpired:
+                cpu, rss = used()
                 if not lane:
-                    log("smp")
+                    samples.append((time.time(), cpu))
+                    log("smp", cpu=round(cpu, 1))
+                    if yfd is None:
+                        if quiet(samples) and rss <= SHORT_RSS and waiters(fd):
+                            yfd = os.open(YIELD_LOCK, os.O_RDWR | os.O_CREAT, 0o666)
+                            try:
+                                fcntl.flock(yfd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                            except BlockingIOError:  # another run is yielded: keep holding
+                                os.close(yfd)
+                                yfd = None
+                                continue
+                            fcntl.flock(fd, fcntl.LOCK_UN)
+                            log("yld", cpu=round(cpu, 1))
+                            say(f"under {YIELD_CORES} cores for {YIELD_WINDOW_S} s while another run waits: "
+                                "lock released, this run goes on beside the next hold")
+                    else:
+                        (t0s, c0), (t1s, c1) = samples[-2:]
+                        if c1 - c0 > YIELD_CORES * (t1s - t0s) or rss > SHORT_RSS:
+                            retake(p.pid)
+                            samples = [(time.time(), used()[0])]
+                    del samples[:-(int(YIELD_WINDOW_S / SAMPLE_S) + 2)]
                     continue
-                ru = resource.getrusage(resource.RUSAGE_CHILDREN)
-                _, live, rss = tree(p.pid)
-                used = ru.ru_utime + ru.ru_stime - ru0.ru_utime - ru0.ru_stime + live
                 stop = next((f"{k} {v:.0f} past the lane's {c:.0f}" for k, v, c in (
-                    ("CPU-s", used, lane[0]), ("wall s", time.time() - t1, lane[1]), ("MB resident", rss / 1e6, SHORT_RSS / 1e6)) if v > c), None)
+                    ("CPU-s", cpu, lane[0]), ("wall s", time.time() - t1, lane[1]), ("MB resident", rss / 1e6, SHORT_RSS / 1e6)) if v > c), None)
                 if stop:
                     kill_tree(p.pid)
                     p.wait()
@@ -315,6 +406,8 @@ def hold(cmd, name, out, who, runs, sub, lane=None):
                 print(f"heavy: {r['bin']} failed (exit {rc})", file=out or sys.stderr)
             if not keep_going:
                 break
+    if yfd is not None:
+        os.close(yfd)
     if sub == "test" and not stop:
         rc = 101 if failed else 0
     ru = resource.getrusage(resource.RUSAGE_CHILDREN)
@@ -343,19 +436,28 @@ def report(hours):
     def pct(u):
         return f"{100 * u:3.0f}%" if u is not None else "   ?"
 
+    def yielded(a):
+        ys = [y for y in a["yld"] if y["ev"] == "yld"]
+        if not ys:
+            return ""
+        stops = sum(1 for y in a["yld"] if y["ev"] == "back" and y.get("paused"))
+        return f"  [yielded at {(ys[0]['t'] - a['t']) / 60:.0f} min" + (f", stopped {stops}x" if stops else "") + "]"
+
     acq, runs = {}, []
     for o in ev:
         if o["ev"] == "acq":
-            acq[o["pid"]] = dict(o, smp=[])
+            acq[o["pid"]] = dict(o, smp=[], yld=[])
             if o.get("lane"):
                 acq[o["pid"]]["via"] = ("short lane " + o["via"]).strip()
         elif o["ev"] == "smp" and o["pid"] in acq:
             acq[o["pid"]]["smp"].append(o)
+        elif o["ev"] in ("yld", "back") and o["pid"] in acq:
+            acq[o["pid"]]["yld"].append(o)
         elif o["ev"] == "rel" and o["pid"] in acq:
             a = acq.pop(o["pid"])
             runs.append((a, o))
     print(f"{len(runs)} locked runs, {sum(1 for a, _ in runs if a.get('lane'))} of them in the short lane ({len(acq)} unfinished or killed). wait/held in minutes; own = the run's CPU-s over held x "
-          f"{ncpu} cores; box = every process's CPU while held; waitbox = the box while it waited; min = lowest {SAMPLE_S} s sample")
+          f"{ncpu} cores; box = every process's CPU while held; waitbox = the box while it waited; min = lowest {SAMPLE_S} s sample; [yielded at N min]: released the lock as quiet N minutes in (stopped Kx: stopped K times to retake it)")
     print(f"{'start':11s} {'wait':>5s} {'held':>5s} {'CPU-s':>7s} {'own':>4s} {'box':>4s} {'min':>4s} {'waitbox':>7s} {'rc':>3s}  who: command")
     for a, r in runs:
         pts = [a] + a["smp"] + [r]
@@ -365,14 +467,14 @@ def report(hours):
         print(f"{time.strftime('%d %H:%M:%S', time.localtime(a['t'])):11s} {a['wait']/60:5.1f} {r['held']/60:5.1f} {r['cpu']:7.0f} "
               f"{pct(own)} {pct(util(a['busy'], a['all'], r['busy'], r['all']))} {pct(min(mins) if len(mins) > 1 else None)} "
               f"{pct(util(a['busy0'], a['all0'], a['busy'], a['all'])):>7s} {r['rc']:3d}  "
-              f"{os.path.basename(a['who'])} {a['branch']}{' ' + a['via'] if a['via'] else ''}: {a['cmd'][:70]}")
+              f"{os.path.basename(a['who'])} {a['branch']}{' ' + a['via'] if a['via'] else ''}: {a['cmd'][:70]}" + yielded(a))
     # the box over the whole span, split by whether the lock was held (a reboot resets the counters: skipped)
     pts = sorted(ev, key=lambda o: o["t"])
     held_until, sums = {}, {"held": [0, 0], "free": [0, 0]}
     for x, y in zip(pts, pts[1:]):
-        if x["ev"] == "acq" and not x.get("lane"):
+        if x["ev"] in ("acq", "back") and not x.get("lane"):
             held_until[x["pid"]] = True
-        if x["ev"] == "rel":
+        if x["ev"] in ("rel", "yld"):
             held_until.pop(x["pid"], None)
         if y["all"] > x["all"] and y["busy"] >= x["busy"]:
             s = sums["held" if held_until else "free"]
@@ -384,7 +486,8 @@ def report(hours):
     for lane, rs in (("the heavy lock", [x for x in runs if not x[0].get("lane")]), ("the short lane", [x for x in runs if x[0].get("lane")])):
         if rs:
             print(f"{lane}: {len(rs)} runs waited {sum(a['wait'] for a, _ in rs)/60:.0f} min, held {sum(r['held'] for _, r in rs)/60:.0f} min, "
-                  f"{sum(r['cpu'] for _, r in rs):.0f} CPU-s" + (f", {sum(1 for _, r in rs if r.get('stop'))} stopped past a cap" if lane == "the short lane" else ""))
+                  f"{sum(r['cpu'] for _, r in rs):.0f} CPU-s" + (f", {sum(1 for _, r in rs if r.get('stop'))} stopped past a cap" if lane == "the short lane" else
+                     f", {sum(1 for a, _ in rs if any(y['ev'] == 'yld' for y in a['yld']))} yielded as quiet"))
 
 
 if __name__ == "__main__":

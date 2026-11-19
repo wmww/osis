@@ -3,7 +3,7 @@
 run runs the binaries as they were at invocation, with cargo's args, cwd and env; --no-fail-fast
 and exit codes as cargo's; a failed build never queues; other commands run as given. Exit 1 on a
 mismatch."""
-import fcntl, json, os, subprocess, sys, tempfile
+import fcntl, json, os, subprocess, sys, tempfile, time
 
 sys.dont_write_bytecode = True
 HEAVY = os.path.join(os.path.dirname(os.path.abspath(__file__)), "heavy")
@@ -164,6 +164,65 @@ got, err = lane(60, 60, "1", "sleep", "30")
 expect("memory cap", (got, "resident" in err), (["137"], True))
 got, _ = lane(60, 60, big, "sh", "-c", "exit 5")
 expect("within the caps: the command's code", got, ["5"])
+
+# a quiet hold yields to a waiter: window and sampling shrunk to fit a test
+HOLD = r"""
+import importlib.machinery, importlib.util, sys
+l = importlib.machinery.SourceFileLoader("heavy", sys.argv[1])
+h = importlib.util.module_from_spec(importlib.util.spec_from_loader("heavy", l)); l.exec_module(h)
+h.YIELD_CORES, h.YIELD_WINDOW_S, h.SAMPLE_S = float(sys.argv[2]), 1, 0.2
+cmd = sys.argv[3:]
+who = dict(who="t", branch="t", sess="", via="", cmd="t")
+print(h.hold(cmd, "heavy", None, who, [dict(argv=cmd, cwd=None, env=None)], None))
+"""
+WAITER = r"""
+import fcntl, os, sys, time
+fd = os.open(sys.argv[1], os.O_RDWR | os.O_CREAT, 0o666)
+fcntl.flock(fd, fcntl.LOCK_EX)
+t = time.time()
+time.sleep(float(sys.argv[2]))
+print(t, time.time())
+"""
+with open(os.path.join(d, "spin.py"), "w") as f:
+    f.write("import sys, time\nt = time.time() + float(sys.argv[1])\nwhile time.time() < t:\n    pass\n")
+logf = os.path.join(d, ".cache/osis/heavy.log")
+
+
+def spinners(n, secs):
+    return f"for i in {' '.join(map(str, range(n)))}; do {sys.executable} {d}/spin.py {secs} & done; wait"
+
+
+def yielding(cores, job, hold_s=0.0, waiter=True):
+    """Hold the lock for job (a sh script) with a waiter that holds it hold_s once it has it.
+    Returns (the holder's printed exit code, its log events, (waiter's acquire, release) times, end)."""
+    open(logf, "w").close()
+    with open(os.path.join(d, "hold.err"), "w") as e:
+        hp = subprocess.Popen([sys.executable, "-c", HOLD, HEAVY, str(cores), "sh", "-c", job], env=ENV, cwd=d,
+                              stdout=subprocess.PIPE, stderr=e, text=True)
+        while not os.path.getsize(logf):  # the hold is taken
+            time.sleep(0.01)
+        wp = waiter and subprocess.Popen([sys.executable, "-c", WAITER, os.path.join(d, "osis-gate.lock"), str(hold_s)],
+                                         env=ENV, stdout=subprocess.PIPE, text=True)
+        out, _ = hp.communicate()
+        end = time.time()
+        w = tuple(map(float, wp.communicate()[0].split())) if wp else None
+    return out.split()[-1:], [json.loads(x) for x in open(logf)], w, end
+
+
+# one spinning process: under 1.5 cores, so the waiter gets the lock while it still runs
+rc, ev, (wacq, _), end = yielding(1.5, spinners(1, 4))
+expect("spinner yields", (rc, [o["ev"] for o in ev if o["ev"] in ("yld", "back")], wacq < end - 1), (["0"], ["yld"], True))
+# idle, then over its share beside the waiter's hold: stopped until it holds the lock again, then done
+rc, ev, (_, wrel), _ = yielding(0.5, f"sleep 2; {spinners(4, 1)}", hold_s=3)
+backs = [o for o in ev if o["ev"] == "back"]
+expect("idle then busy: yields, stops, resumes", (rc, [o["ev"] for o in ev if o["ev"] in ("yld", "back")], [o["paused"] for o in backs]),
+       (["0"], ["yld", "back"], [True]))
+expect("resumed only after the waiter's hold", backs and backs[0]["t"] >= wrel - 0.05, True)
+# a busy run keeps the lock with a waiter; a quiet one keeps it with none
+rc, ev, (wacq, _), end = yielding(0.5, spinners(4, 3))
+expect("busy keeps the lock", (rc, [o["ev"] for o in ev if o["ev"] == "yld"], wacq >= end - 0.5), (["0"], [], True))
+rc, ev, _, _ = yielding(1.5, "sleep 2", waiter=False)
+expect("no waiter: no yield", (rc, [o["ev"] for o in ev if o["ev"] == "yld"]), (["0"], []))
 
 subprocess.run(["rm", "-rf", d])
 print("heavy_test: ok" if not fails else f"heavy_test: {fails} failed")
