@@ -7,7 +7,7 @@ use crate::common;
 use common::*;
 use osis_base::SyncId;
 use osis_crypto::SeededRng;
-use osis_store::{Fault, Named, RecordId, Shred, Store};
+use osis_store::{Named, RecordId, Shred, Store, Transaction};
 use std::collections::BTreeSet;
 
 fn l(n: u8) -> SyncId {
@@ -50,72 +50,43 @@ fn create(s: &mut Store, rng: &mut SeededRng, r: u8, actor: u8) -> RecordId {
 // it whole or absent
 #[test]
 fn crash_at_any_write_leaves_a_record_whole_or_absent() {
-    let run = |k: u64| {
-        let (d, mut rng, mut s) = fresh(cfg());
-        d.backend.faults().at(k, Fault::Crash);
-        let mut t = s.transaction(&mut rng).unwrap();
+    let work = |t: &mut Transaction<'_>, _: &()| {
         let id = t.record_create([7; 32], &named(&[tid(1), tid(2)])).unwrap();
         t.record_put_row(&id, b'm', &l(1), b"", b"member".to_vec()).unwrap();
         t.record_put_wide_row(&id, b'c', b"", b"cur".to_vec()).unwrap();
-        let _ = t.commit();
-        drop(s);
-        d.backend.faults().revive();
-        let mut s = reopen(&d);
-        let mut t = s.transaction(&mut rng).unwrap();
-        let found = t.records_of_actors(&[tid(1)]).unwrap();
-        match found.as_slice() {
-            [] => {
-                assert!(t.records_of_actors(&[tid(2)]).unwrap().is_empty(), "crash at write {k}: an actor index row outlived its record");
-                assert_eq!(t.records_total().unwrap(), 0, "crash at write {k}: a total without a record");
-                assert!(t.records_with_row(&l(1), b'm', b"", 10).unwrap().is_empty(), "crash at write {k}: an index row without its record");
-                false
-            }
-            [r] => {
-                assert_eq!(t.record_get_wide_row(&r.id, b'c', b"").unwrap().as_deref(), Some(b"cur".as_slice()), "crash at write {k}: a record without its row");
-                assert_eq!(t.records_with_row(&l(1), b'm', b"", 10).unwrap(), [r.id], "crash at write {k}: a row without its index");
-                assert!(t.records_total().unwrap() > 0);
-                true
-            }
-            more => panic!("crash at write {k}: {} records", more.len()),
-        }
     };
-    let (mut gone, mut whole) = (false, false);
-    for k in 0..40 {
-        if run(k) {
-            whole = true;
-        } else {
-            gone = true;
+    crash_at_each_write(0..40, |_, _| (), work, |k, t, _| match t.records_of_actors(&[tid(1)]).unwrap().as_slice() {
+        [] => {
+            assert!(t.records_of_actors(&[tid(2)]).unwrap().is_empty(), "crash at write {k}: an actor index row outlived its record");
+            assert_eq!(t.records_total().unwrap(), 0, "crash at write {k}: a total without a record");
+            assert!(t.records_with_row(&l(1), b'm', b"", 10).unwrap().is_empty(), "crash at write {k}: an index row without its record");
+            false
         }
-    }
-    assert!(gone && whole, "the crash points reach both outcomes");
+        [r] => {
+            assert_eq!(t.record_get_wide_row(&r.id, b'c', b"").unwrap().as_deref(), Some(b"cur".as_slice()), "crash at write {k}: a record without its row");
+            assert_eq!(t.records_with_row(&l(1), b'm', b"", 10).unwrap(), [r.id], "crash at write {k}: a row without its index");
+            assert!(t.records_total().unwrap() > 0);
+            true
+        }
+        more => panic!("crash at write {k}: {} records", more.len()),
+    });
 }
 
 // a cursor row is written by the transaction applying what it covers (spec/sync-streams.md §3
 // Durability): data and cursor cannot split at any write of that transaction
 #[test]
 fn crash_at_any_write_keeps_a_row_with_its_applied_data() {
-    let (mut seen_none, mut seen_both) = (false, false);
-    for k in 0..24 {
-        let (d, mut rng, mut s) = fresh(cfg());
-        let id = create(&mut s, &mut rng, 7, 1);
-        d.backend.faults().at(k, Fault::Crash);
-        let mut t = s.transaction(&mut rng).unwrap();
+    let work = |t: &mut Transaction<'_>, id: &RecordId| {
         t.put_local(b"applied", b"1", Shred::Yes).unwrap();
         t.log_added(l(3), osis_base::BlobId([1; 32])).unwrap();
-        t.record_put_wide_row(&id, b'c', b"", b"cur".to_vec()).unwrap();
-        let _ = t.commit();
-        drop(s);
-        d.backend.faults().revive();
-        let mut s = reopen(&d);
-        let mut t = s.transaction(&mut rng).unwrap();
+        t.record_put_wide_row(id, b'c', b"", b"cur".to_vec()).unwrap();
+    };
+    crash_at_each_write(0..24, |s, rng| create(s, rng, 7, 1), work, |k, t, id| {
         let applied = t.get_local(b"applied").unwrap().is_some();
-        let cursor = t.record_get_wide_row(&id, b'c', b"").unwrap();
-        assert_eq!(applied, cursor.is_some(), "crash at write {k}: a cursor and its data split");
+        assert_eq!(applied, t.record_get_wide_row(id, b'c', b"").unwrap().is_some(), "crash at write {k}: a cursor and its data split");
         assert_eq!(applied, t.log_end().unwrap() > 0, "crash at write {k}: a cursor and the log's event split");
-        seen_none |= !applied;
-        seen_both |= applied;
-    }
-    assert!(seen_none && seen_both, "the crash points reach both outcomes");
+        applied
+    });
 }
 
 // spec/sync-opens.md §3: a node that stops holding S drops it from every record, every module's
@@ -162,10 +133,18 @@ fn eviction_drops_the_least_recently_used_not_in_use_whole() {
     t.record_used(&a, &named(&[tid(1)])).unwrap();
     t.record_used(&b, &named(&[tid(2)])).unwrap();
     t.commit().unwrap();
+    let in_use: BTreeSet<RecordId> = [c].into();
+    // a budget the first eviction meets exactly evicts nothing more
     let mut t = s.transaction(&mut rng).unwrap();
     let total = t.records_total().unwrap();
+    t.records_evict(total - 1, &in_use).unwrap();
+    let left = t.records_total().unwrap();
+    drop(t);
+    let mut t = s.transaction(&mut rng).unwrap();
+    assert_eq!(t.records_evict(left, &in_use).unwrap(), [a], "the budget met");
+    drop(t);
+    let mut t = s.transaction(&mut rng).unwrap();
     assert!(total > 1000, "every row counts");
-    let in_use: BTreeSet<RecordId> = [c].into();
     assert_eq!(t.records_evict(total - 1, &in_use).unwrap(), [a]);
     assert!(t.record(&a).unwrap().is_none(), "the least recently used not in use goes");
     assert!(t.record(&c).unwrap().is_some(), "a record in use stays");

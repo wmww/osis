@@ -44,11 +44,13 @@ pub struct StoreConfig {
     pub node_cache: usize,
     /// Decrypted unit bytes kept in memory before the cache is emptied.
     pub unit_cache_bytes: usize,
+    /// Ended node-log incarnations kept, oldest evicted (`INCARNATIONS_KEPT`).
+    pub incarnations_kept: usize,
 }
 
 impl Default for StoreConfig {
     fn default() -> StoreConfig {
-        StoreConfig { arity: 256, page_max: 8 * 1024, spill_bytes: 16 << 20, node_cache: 4096, unit_cache_bytes: 16 << 20 }
+        StoreConfig { arity: 256, page_max: 8 * 1024, spill_bytes: 16 << 20, node_cache: 4096, unit_cache_bytes: 16 << 20, incarnations_kept: crate::INCARNATIONS_KEPT }
     }
 }
 

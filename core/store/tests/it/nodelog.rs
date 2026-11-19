@@ -8,7 +8,7 @@ use common::*;
 use osis_base::format::TOMBSTONE_LIFETIME_MS;
 use osis_base::{BlobId, SyncId};
 use osis_crypto::SeededRng;
-use osis_store::{Fault, INCARNATIONS_KEPT, NodeEvent, Shred, Store, StoreConfig};
+use osis_store::{INCARNATIONS_KEPT, NodeEvent, Shred, Store, StoreConfig};
 
 fn l(n: u8) -> SyncId {
     SyncId([n; 16])
@@ -77,34 +77,23 @@ fn empty_log_has_no_cursor() {
 // the model's assumption: the log and the record are one atomic unit
 #[test]
 fn crash_at_any_write_keeps_event_and_effect_together() {
-    let mut writes = 0;
+    let work = |t: &mut osis_store::Transaction<'_>, _: &()| {
+        t.put_local(b"effect", b"1", Shred::Yes).unwrap();
+        t.log_added(l(1), b(1)).unwrap();
+    };
+    // the transaction's writes, and past them
     let (d, mut rng, mut s) = fresh(cfg());
     let base = d.backend.faults().writes();
     let mut t = s.transaction(&mut rng).unwrap();
-    t.put_local(b"effect", b"1", Shred::Yes).unwrap();
-    t.log_added(l(1), b(1)).unwrap();
+    work(&mut t, &());
     t.commit().unwrap();
-    writes += d.backend.faults().writes() - base;
+    let writes = d.backend.faults().writes() - base;
     assert!(writes > 0);
-    let (mut seen_before, mut seen_after) = (false, false);
-    for k in 0..=writes + 2 {
-        let (d, mut rng, mut s) = fresh(cfg());
-        d.backend.faults().at(k, Fault::Crash);
-        let mut t = s.transaction(&mut rng).unwrap();
-        t.put_local(b"effect", b"1", Shred::Yes).unwrap();
-        t.log_added(l(1), b(1)).unwrap();
-        let _ = t.commit();
-        drop(s);
-        d.backend.faults().revive();
-        let mut s = reopen(&d);
-        let mut t = s.transaction(&mut rng).unwrap();
+    crash_at_each_write(0..writes + 3, |_, _| (), work, |k, t, _| {
         let effect = t.get_local(b"effect").unwrap().is_some();
-        let logged = !t.log_read(None, 10).unwrap().events.is_empty();
-        assert_eq!(effect, logged, "crash at write {k}: the entry and its event split");
-        seen_before |= !effect;
-        seen_after |= effect;
-    }
-    assert!(seen_before && seen_after, "the crash points reach both outcomes");
+        assert_eq!(effect, !t.log_read(None, 10).unwrap().events.is_empty(), "crash at write {k}: the entry and its event split");
+        effect
+    });
 }
 
 #[test]
@@ -240,18 +229,20 @@ fn garbage_and_foreign_cursors_are_no_cursor() {
 
 #[test]
 fn incarnation_list_is_capped_oldest_first() {
-    let (d, mut rng, mut s) = fresh(cfg());
+    let small = StoreConfig { incarnations_kept: 3, ..cfg() };
+    let (d, mut rng, mut s) = fresh(small);
     add(&mut s, &mut rng, 0);
     let mut cursors = vec![at_end(&mut s, &mut rng)];
-    for n in 1..=INCARNATIONS_KEPT as u32 + 1 {
-        s = reopen(&d);
+    for n in 1..=small.incarnations_kept as u32 + 1 {
+        s = Store::open(d.backend(), d.root(), small).unwrap();
         add(&mut s, &mut rng, n);
         cursors.push(at_end(&mut s, &mut rng));
     }
-    // the list holds the KEPT incarnations before the current: the oldest, and only it, fell out
+    // the list holds the kept incarnations before the current: the oldest, and only it, fell out
     assert_eq!(position(&mut s, &mut rng, &cursors[0]), None, "evicted");
     assert_eq!(position(&mut s, &mut rng, &cursors[1]), Some(2), "the oldest kept");
-    assert_eq!(position(&mut s, &mut rng, cursors.last().unwrap()), Some(INCARNATIONS_KEPT as u64 + 2));
+    assert_eq!(position(&mut s, &mut rng, cursors.last().unwrap()), Some(small.incarnations_kept as u64 + 2));
+    assert_eq!(StoreConfig::default().incarnations_kept, INCARNATIONS_KEPT);
 }
 
 #[test]
@@ -392,9 +383,7 @@ fn changed_at_has_its_own_sequence() {
 }
 
 fn filled(n: u32) -> (MemDevice, Vec<u8>) {
-    let mut rng = SeededRng::from_u64(0);
-    let d = MemDevice::new();
-    let mut s = Store::create(d.backend(), d.root(), big(), &mut rng).unwrap();
+    let (d, mut rng, mut s) = fresh(big());
     let mut t = s.transaction(&mut rng).unwrap();
     for i in 0..n {
         t.log_added(l(1), b(i)).unwrap();

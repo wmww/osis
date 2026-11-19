@@ -38,7 +38,8 @@ use osis_base::format::TOMBSTONE_LIFETIME_MS;
 use osis_base::{BlobId, SyncId};
 use osis_crypto::aead::{self, NONCE_LEN, TAG_LEN};
 
-/// Ended incarnations kept, oldest evicted (spec/wire.md §2 `INCARNATIONS_KEPT`). Resource
+/// Ended incarnations kept by default (`StoreConfig::incarnations_kept`), oldest evicted
+/// (spec/wire.md §2 `INCARNATIONS_KEPT`). Resource
 /// bound: 0 makes every cursor from before an appending start no cursor (correct, one listing
 /// per peer), infinity is disk growing with appending starts. 24 bytes each, one per start that
 /// appends: at 50 such starts a day the cap is 82 days and 98 KB.
@@ -205,7 +206,7 @@ impl Transaction<'_> {
                 if !drawn {
                     let mut ended = self.log_ended()?;
                     ended.push((m.incarnation, m.end));
-                    let extra = ended.len().saturating_sub(INCARNATIONS_KEPT);
+                    let extra = ended.len().saturating_sub(self.cfg().incarnations_kept);
                     ended.drain(..extra);
                     let mut w = W::new();
                     for (id, end) in &ended {

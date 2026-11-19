@@ -3,7 +3,7 @@
 
 use osis_base::{Ak, BlobId, Tid};
 use osis_crypto::SeededRng;
-use osis_store::{Backend, BackendError, Faults, KeyValue, MemoryBackend, MemoryRoot, RootStorage, Store, StoreConfig, Synced, WriteBatch};
+use osis_store::{Backend, BackendError, Fault, Faults, KeyValue, MemoryBackend, MemoryRoot, RootStorage, Store, StoreConfig, Synced, Transaction, WriteBatch};
 use redb::StorageBackend;
 use redb::backends::FileBackend;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
@@ -287,4 +287,25 @@ pub fn create(dev: &dyn Device, rng: &mut SeededRng) -> Store {
 
 pub fn reopen(dev: &dyn Device) -> Store {
     Store::open(dev.backend(), dev.root(), cfg()).unwrap()
+}
+
+/// One transaction crashed at each device write `k` in `ks`: a fresh store, `setup`, a crash at
+/// the k-th write while `work` commits, a reopen; `landed` checks what survived at `k` and says
+/// whether the transaction landed. The crash points must reach both outcomes.
+pub fn crash_at_each_write<X>(ks: std::ops::Range<u64>, setup: impl Fn(&mut Store, &mut SeededRng) -> X, work: impl Fn(&mut Transaction<'_>, &X), landed: impl Fn(u64, &mut Transaction<'_>, &X) -> bool) {
+    let (mut gone, mut whole) = (false, false);
+    for k in ks {
+        let (d, mut rng, mut s) = fresh(cfg());
+        let x = setup(&mut s, &mut rng);
+        d.backend.faults().at(k, Fault::Crash);
+        let mut t = s.transaction(&mut rng).unwrap();
+        work(&mut t, &x);
+        let _ = t.commit();
+        drop(s);
+        d.backend.faults().revive();
+        let mut s = reopen(&d);
+        let landed = landed(k, &mut s.transaction(&mut rng).unwrap(), &x);
+        (gone, whole) = (gone || !landed, whole || landed);
+    }
+    assert!(gone && whole, "the crash points reach both outcomes");
 }

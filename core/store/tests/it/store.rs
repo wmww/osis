@@ -364,10 +364,8 @@ fn memory_rows_never_spill() {
 // is one transaction: its reads see its writes, spills included, and it commits or aborts whole
 #[test]
 fn suspended_transaction_is_one() {
-    let dev = MemDevice::new();
-    let mut rng = SeededRng::from_u64(0);
     let cfg = StoreConfig { spill_bytes: 100, ..cfg() };
-    let mut s = Store::open_or_create(dev.backend(), dev.root(), cfg, &mut rng).unwrap();
+    let (dev, mut rng, mut s) = fresh(cfg);
     let mut t = s.transaction(&mut rng).unwrap();
     let tb = t.create_table(&tid(1), &ak("t.0"), 0).unwrap();
     let mut held = t.suspend().unwrap();
@@ -759,10 +757,7 @@ fn savepoint_rollback_is_no_step() {
 // savepoint spills at the outermost release.
 #[test]
 fn savepoint_release_spills() {
-    let dev = MemDevice::new();
-    let mut rng = SeededRng::from_u64(0);
-    let cfg = StoreConfig { spill_bytes: 600, ..cfg() };
-    let mut s = Store::create(dev.backend(), dev.root(), cfg, &mut rng).unwrap();
+    let (dev, mut rng, mut s) = fresh(StoreConfig { spill_bytes: 600, ..cfg() });
     let mut t = s.transaction(&mut rng).unwrap();
     let w0 = dev.faults.writes();
     let sp = t.savepoint();

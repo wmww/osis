@@ -521,6 +521,9 @@ impl Transaction<'_> {
     pub(crate) fn log_drawn(&self) -> bool {
         self.d.meta.log_drawn
     }
+    pub(crate) fn cfg(&self) -> &StoreConfig {
+        self.pager.cfg()
+    }
 
     pub(crate) fn set_log_drawn(&mut self) {
         self.d.meta.log_drawn = true;

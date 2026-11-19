@@ -6,7 +6,7 @@ use crate::common;
 
 use common::*;
 use osis_crypto::SeededRng;
-use osis_store::{MemoryBackend, Shred, Store, StoreConfig};
+use osis_store::{Shred, Store, StoreConfig};
 use std::collections::HashSet;
 
 /// Unit rows that differ between two dumps (new or rewritten).
@@ -69,9 +69,8 @@ fn stream_and_positions() {
 /// One edit of a table of n keys and its index of n (the element shredded, the index entry
 /// not): (unit rows rewritten, rows written, bytes written).
 fn table_edit(n: u32) -> (usize, u64, u64) {
-    let b = MemoryBackend::new();
-    let mut rng = SeededRng::from_u64(0);
-    let mut s = Store::create(Box::new(b.clone()), Box::new(osis_store::MemoryRoot::new()), StoreConfig::default(), &mut rng).unwrap();
+    let (d, mut rng, mut s) = fresh(StoreConfig::default());
+    let b = &d.backend;
     fill(&mut s, &mut rng, n, 50_000);
     let before = b.dump();
     let io = b.io();
@@ -106,9 +105,7 @@ fn table_edit_is_flat() {
 // pages written stay decoded).
 #[test]
 fn a_table_page_is_decoded_once_per_write() {
-    let b = MemoryBackend::new();
-    let mut rng = SeededRng::from_u64(0);
-    let mut s = Store::create(Box::new(b.clone()), Box::new(osis_store::MemoryRoot::new()), StoreConfig::default(), &mut rng).unwrap();
+    let (_d, mut rng, mut s) = fresh(StoreConfig::default());
     fill(&mut s, &mut rng, 3_000, 50_000);
     let key = |i: u32| format!("key{i:08}").into_bytes();
     let gets = |s: &mut Store, rng: &mut SeededRng| {
@@ -140,9 +137,8 @@ fn a_table_page_is_decoded_once_per_write() {
 #[test]
 fn a_small_write_seals_its_page_and_the_top() {
     let sealed = |n: u32| {
-        let b = MemoryBackend::new();
-        let mut rng = SeededRng::from_u64(0);
-        let mut s = Store::create(Box::new(b.clone()), Box::new(osis_store::MemoryRoot::new()), StoreConfig::default(), &mut rng).unwrap();
+        let (d, mut rng, mut s) = fresh(StoreConfig::default());
+        let b = &d.backend;
         fill(&mut s, &mut rng, n, 500);
         let before: HashSet<(Vec<u8>, Vec<u8>)> = b.dump().into_iter().collect();
         let mut t = s.transaction(&mut rng).unwrap();
