@@ -361,10 +361,10 @@ impl Sim {
     pub fn removals(&self) -> Vec<Id> {
         [Some(self.r), self.r2, self.r3].into_iter().flatten().collect()
     }
-    /// Whether `n`'s own walk at `t` applies removal `r`, and, where `n` trusts it, with its seeds
-    /// (it is not void).
+    /// Whether `n`'s walk at `t`, trusting `r` beside its own trust set, applies removal `r` with
+    /// its seeds (it is not void): where the removal's list counts, whichever side `n` is on.
     fn applies(&self, n: Thing, t: u32, r: Id, rules: &Rules) -> bool {
-        let rd = judge(&self.w, rules, &self.view_at(n, Some(t), rules));
+        let rd = judge(&self.w, rules, &self.view_at(n, Some(t), rules).trusting_also(r));
         rd.applied.contains(&r) && !rd.void.contains(&r)
     }
     /// `ids` in the order `n` received them (control `Rules::key_order`: in key order).
@@ -886,22 +886,24 @@ pub fn unapplied(w: &World, v: &View, rd: &Reading) -> Vec<Id> {
     v.held.iter().copied().filter(|&i| w.lowers(i).is_some() && !w.leave(i) && !rd.applied.contains(&i) && !rd.dropped.contains(&i) && !rd.voided.contains(&i) && !v.trust.contains(&i)).collect()
 }
 
-/// A write that does not apply has no effect: the reading without each voided lowering held is
-/// the same (`void`). The reading is that of a relabelling keeping the walk's order (`one
-/// reading`). No consistent void set (`Consistent`) is counted.
-fn void_checks(w: &World, rules: &Rules, v: &View, rd: &Reading, n: Thing, m: &Sim, st: &mut Stats) {
+/// Counted, not failing (notes/path-model-findings.md 16), at nodes trusting the removals (`t`)
+/// or trusting nothing: `stray` (a drop whose dropper does not apply at the end) and `void` (a
+/// void lowering whose absence reads otherwise). Failing: `one reading` (a relabelling of commit
+/// IDs keeping the walk's order reads the same).
+fn void_checks(w: &World, rules: &Rules, v: &View, rd: &Reading, n: Thing, t: bool, m: &Sim, st: &mut Stats) {
+    st.count(if t { "stray T" } else { "stray N" });
+    if !rd.stray.is_empty() {
+        st.note(if t { "stray T" } else { "stray N" }, m, format!("node {n}: {:?} dropped by a write that does not apply", rd.stray));
+    }
     for &x in &rd.voided {
         st.count("void");
         if !no_effect(w, rules, v, rd, x) {
-            st.fail("void", m, format!("node {n}: the void lowering {x} has an effect"));
+            st.note(if t { "void T" } else { "void N" }, m, format!("node {n}: the void lowering {x} has an effect"));
         }
     }
     st.count("one reading");
     if !one_reading_relabelled(w, rules, v, rd) {
         st.fail("one reading", m, format!("node {n}: a relabelling keeping the order reads otherwise"));
-    }
-    if rd.inconsistent {
-        st.note("no consistent set", m, format!("node {n}: no consistent void set"));
     }
 }
 
@@ -986,23 +988,14 @@ pub fn check(m: &Sim, rules: &Rules, st: &mut Stats) {
     // lowering X made that the remover heard (notes/path-model-findings.md 19)
     let heard_lowering = m.thief.iter().any(|(&i, &k)| matches!(k, 11 | 28) && m.made[i] < REMOVAL);
     let under_h = |i: Id| heard_lowering && (w.hops(i).contains(&(H, A)) || [B, N5, K, X, M].contains(&w.commits[i].signer));
-    for (&n, (v, rd)) in &rds {
-        if rd.circle {
-            st.fail("settles", m, format!("node {n}: the vouches do not settle"));
-        }
-        st.count("stray");
-        st.most("rounds", rd.rounds as u64);
-        if !rd.stray.is_empty() {
-            st.fail("stray", m, format!("node {n}: {:?} dropped by a write that does not apply", rd.stray));
-        }
-        void_checks(w, rules, v, rd, n, m, st);
-        st.count("removal");
-        if !rd.void.is_empty() {
-            st.fail("removal", m, format!("node {n}: its trusted removal {:?} is void", rd.void));
-        }
-        // safety
-        for &i in v.held.iter().filter(|&&i| m.hostile(i)) {
-            st.count("safety");
+    // safety: no commit the thief made after the removal shows (but content on a path it still
+    // holds, and its own leave), and Z, X and N5 removed before the theft end with no role. At a
+    // node trusting nothing (`late`) only what the thief stamped after the removal, or signed with
+    // N5's key, counts: what X stamped before it is X's standing, which is the dispute.
+    let rts = w.commits[m.r].ts;
+    let safety = |n: Thing, v: &View, rd: &Reading, prop: &'static str, late: bool, st: &mut Stats| {
+        for &i in v.held.iter().filter(|&&i| m.hostile(i) && (!late || w.commits[i].ts > rts || w.commits[i].signer == N5)) {
+            st.count(prop);
             let c = &w.commits[i];
             // X's own writes along A2, a path it keeps (a vouch there showing is its right; what it names
             // is judged apart)
@@ -1010,7 +1003,7 @@ pub fn check(m: &Sim, rules: &Rules, st: &mut Stats) {
                 // X leaving A by itself: a self-removal is always open to the holder, and takes nothing X still holds
                 || (w.leave(i) && w.sets(i) == Some((X, A)));
             if rd.shows(i) && !by_right {
-                st.fail("safety", m, format!("node {n}: the thief's commit {i} shows"));
+                st.fail(prop, m, format!("node {n}: the thief's commit {i} shows"));
             }
         }
         for (e, r) in &rd.roles {
@@ -1018,31 +1011,48 @@ pub fn check(m: &Sim, rules: &Rules, st: &mut Stats) {
             // N5, removed before the theft, stays removed
             let n5_holds = s.n5 == 3 && *e == (N5, A);
             if *r > Role::None && (e.0 == Z || x_holds || n5_holds) {
-                st.fail("safety", m, format!("node {n}: {e:?} ends {r:?}"));
+                st.fail(prop, m, format!("node {n}: {e:?} ends {r:?}"));
             }
         }
-        // the remover keeps its own path: H ends a standing admin of A (X's lowering of it shows
-        // only where a write of X kept with it gives it back)
+    };
+    // the last admin: every thing keeps a standing admin edge (no write in the story is marked)
+    let admin = |n: Thing, rd: &Reading, prop: &'static str, st: &mut Stats| {
+        for t in [A, A2, ORG, T1, D1, T2] {
+            st.count(prop);
+            if !rd.roles.iter().any(|(e, r)| e.1 == t && *r == Role::Admin) {
+                st.fail(prop, m, format!("node {n}: {t} has no standing admin"));
+            }
+        }
+    };
+    // the remover keeps its own path: H ends a standing admin of A (X's lowering of it shows only
+    // where a write of X kept with it gives it back)
+    let own_path = |n: Thing, v: &View, rd: &Reading, prop: &'static str, st: &mut Stats| {
         if v.held.iter().any(|&i| w.commits[i].signer == X && m.lowers_remover(i)) {
-            st.count("own path");
+            st.count(prop);
             if rd.role(H, A) != Role::Admin {
-                st.fail("own path", m, format!("node {n}: H ends {:?} on A", rd.role(H, A)));
+                st.fail(prop, m, format!("node {n}: H ends {:?} on A", rd.role(H, A)));
             }
         }
+    };
+    for (&n, (v, rd)) in &rds {
+        if rd.circle {
+            st.fail("settles", m, format!("node {n}: the vouches do not settle"));
+        }
+        st.most("rounds", rd.rounds as u64);
+        void_checks(w, rules, v, rd, n, true, m, st);
+        st.count("removal");
+        if !rd.void.is_empty() {
+            st.fail("removal", m, format!("node {n}: its trusted removal {:?} is void", rd.void));
+        }
+        safety(n, v, rd, "safety", false, st);
+        own_path(n, v, rd, "own path", st);
         if x_removed_a2 && !s.regrant && m.xrole.is_some_and(saved) {
             st.count("removal kept");
             if rd.role(A2, T1) > Role::None {
                 st.fail("removal kept", m, format!("node {n}: A2 holds on T1 again"));
             }
         }
-        // the last admin: every thing keeps a standing admin edge (no write in the story is
-        // marked)
-        for t in [A, A2, ORG, T1, D1, T2] {
-            st.count("admin");
-            if !rd.roles.iter().any(|(e, r)| e.1 == t && *r == Role::Admin) {
-                st.fail("admin", m, format!("node {n}: {t} has no standing admin"));
-            }
-        }
+        admin(n, rd, "admin", st);
         // liveness
         for &i in v.held.iter().filter(|&&i| !m.hostile(i)) {
             let c = &w.commits[i];
@@ -1086,9 +1096,10 @@ pub fn check(m: &Sim, rules: &Rules, st: &mut Stats) {
             }
         }
     }
-    // nodes trusting nothing: the walk settles with no stray drop, a void write has no effect,
-    // the removal not applied is a dispute shown there, and a commit read otherwise than on the
-    // trusted side (H's) comes with a dispute
+    // nodes trusting nothing: the walk settles; where the honest removals apply there, the thief
+    // gains nothing past its standing and H keeps its own (a thing left adminless counted); a
+    // removal not applied is a dispute shown there; a reading unlike the trusted side's comes with
+    // a dispute, and trusting the honest ones shown reads as the trusting side
     let plain: BTreeMap<Thing, (View, Reading)> = m
         .untrusting()
         .into_iter()
@@ -1101,10 +1112,19 @@ pub fn check(m: &Sim, rules: &Rules, st: &mut Stats) {
     for (&n, (v, rd)) in &plain {
         st.count("untrusted");
         st.most("rounds", rd.rounds as u64);
-        if rd.circle || !rd.stray.is_empty() {
-            st.fail("untrusted", m, format!("node {n}: unsettled or stray {:?}", rd.stray));
+        if rd.circle {
+            st.fail("untrusted", m, format!("node {n}: the vouches do not settle"));
         }
-        void_checks(w, rules, v, rd, n, m, st);
+        void_checks(w, rules, v, rd, n, false, m, st);
+        // where every honest removal it holds applies (else X keeps its standing there: a dispute)
+        if m.removals().iter().all(|r| !v.held.contains(r) || rd.applied.contains(r)) {
+            st.count("admin N");
+            if !rd.roles.iter().any(|(e, r)| e.1 == T1 && *r == Role::Admin) || ![A, A2, ORG, D1, T2].iter().all(|&t| rd.roles.iter().any(|(e, r)| e.1 == t && *r == Role::Admin)) {
+                st.note("admin N", m, format!("node {n}: a thing has no standing admin"));
+            }
+            safety(n, v, rd, "safety N", true, st);
+            own_path(n, v, rd, "own path N", st);
+        }
         let shown = disputes(w, rules, v);
         // trusting the honest removals among the disputes shown, and among those then shown,
         // applies every honest removal: never a silent loss
@@ -1122,12 +1142,27 @@ pub fn check(m: &Sim, rules: &Rules, st: &mut Stats) {
                 st.fail("dispute", m, format!("node {n}: removal {r} is not applied, nor where the disputes shown are trusted {:?}", sides.trust));
             }
         }
+        // a reading unlike the trusted side's (H's, on the things both sync), or unlike its own
+        // held set's trusting every honest removal held, comes with a dispute shown, and trusting
+        // the honest ones shown reads as that
+        let t = judge(w, rules, &v.clone().trusting(&m.removals().into_iter().filter(|r| v.held.contains(r)).collect::<Vec<_>>()));
+        if sided.applied != t.applied || sided.valid != t.valid || sided.roles != t.roles {
+            st.fail("dispute", m, format!("node {n}: trusting the disputes shown {:?} does not read as trusting the honest removals", sides.trust));
+        }
         let (vh, rh) = &rds[&H];
-        let differs = v.held.intersection(&vh.held).any(|&i| m.sync[&n].contains(&w.commits[i].on) && m.sync[&H].contains(&w.commits[i].on) && rd.shows(i) != rh.shows(i));
+        let differs = v.held.intersection(&vh.held).any(|&i| m.sync[&n].contains(&w.commits[i].on) && m.sync[&H].contains(&w.commits[i].on) && rd.shows(i) != rh.shows(i))
+            || t.applied != rd.applied
+            || t.valid != rd.valid
+            || t.roles != rd.roles;
         if differs {
             st.count("untrusted differs");
             if shown.is_empty() {
                 st.fail("dispute", m, format!("node {n}: reads otherwise than the trusted side with no dispute shown"));
+            }
+            // shown under spec/permissions.md §5.1's rule only where a shown write is one the walk
+            // does not apply (counted: what the reach-back leaves, finding 16)
+            if !shown.iter().any(|r| !rd.applied.contains(r)) {
+                st.note("silent under the spec's dispute rule", m, format!("node {n}: reads otherwise than the trusted side, every removal shown applying"));
             }
         }
     }
@@ -1140,16 +1175,15 @@ pub fn check(m: &Sim, rules: &Rules, st: &mut Stats) {
             }
         }
     }
-    // one set of drops: the audit reading the held writes in place of the applied ones, at the
-    // nodes trusting nothing (where a trusted removal's seeds take every held write, the two
-    // readings have not differed: notes/path-model-findings.md 18)
+    // the other reading of the audit (the applied writes before it in place of the held ones), at
+    // the nodes trusting nothing, counted (notes/path-model-findings.md 18)
     let other = Rules { audit_held: !rules.audit_held, ..*rules };
     for (&n, (v, rd)) in &plain {
         st.count("drops");
         let o = judge(w, &other, v);
         if o.applied != rd.applied || o.valid != rd.valid || o.roles != rd.roles {
             let k = if o.roles == rd.roles { "drops differ, same roles" } else { "drops differ" };
-            st.note(k, m, format!("node {n}: the audit over the held writes reads otherwise: applied {:?} / {:?}", rd.applied, o.applied));
+            st.note(k, m, format!("node {n}: the audit over the {} writes reads otherwise: applied {:?} / {:?}", if other.audit_held { "held" } else { "applied" }, rd.applied, o.applied));
         }
     }
     // alike: two nodes read a commit they both hold in a unit they both sync alike
@@ -1256,23 +1290,22 @@ pub fn family_run(rules: &Rules, stride: usize) -> Stats {
 }
 
 /// The rules a mode runs: `paths` the design's (`Rules::fixed`); `paths-design` the first round's
-/// reading; controls, each the design with one rule undone: `-sticky` (a void lowering's drops
-/// kept), `-listed` (the remover and vouchers name all they received), `-exempt` (the held chain
+/// reading; controls, each the design with one rule undone: `-no-void` (a lowering whose own
+/// drops take its authority applies), `-listed` (the remover and vouchers name all they received), `-exempt` (the held chain
 /// exempt from a lowering's drops), `-any-edge` (the last-admin rule reads every admin edge),
 /// `-timed` (a timed admin edge counts as standing), `-own-vouch` (a vouch counts for its own
 /// signer's commit), `-first-applied` (a re-granted path counts from the first point the settled
 /// walk gave it), `-once` (a node answers a removal only the first time its walk applies it),
-/// `-leave` (a self-removal is never put in question), `-earliest` (a round voids the earliest
-/// unapplied lowering that made drops), `-at-once` (all of them), `-key-order` (the remover and
-/// vouchers keep the role writes in key order); `-audit-held` (the audit puts in question the held
-/// writes, not the applied ones) is a reading, not a control. `-exh` runs the small family in place of
+/// `-leave` (a self-removal is never put in question), `-key-order` (the remover and vouchers
+/// keep the role writes in key order), `-audit-applied` (the audit puts in question the applied
+/// writes before it, not the held ones). `-exh` runs the small family in place of
 /// random worlds.
 pub fn mode_rules(mode: &str) -> Option<Rules> {
     let f = Rules::fixed();
     Some(match mode.trim_start_matches("paths").trim_start_matches("-exh").trim_start_matches("-tiny") {
         "" => f,
         "-design" => Rules::design(),
-        "-sticky" => Rules { void_unapplied: false, ..f },
+        "-no-void" => Rules { self_void: false, ..f },
         "-listed" => Rules { stands: false, ..f },
         "-exempt" => Rules { exempt_chain: true, ..f },
         "-any-edge" => Rules { last_admin: LastAdmin::AnyEdge, ..f },
@@ -1281,14 +1314,8 @@ pub fn mode_rules(mode: &str) -> Option<Rules> {
         "-first-applied" => Rules { regrant: Regrant::FirstApplied, ..f },
         "-once" => Rules { rewrite: false, ..f },
         "-leave" => Rules { leave_in_question: false, ..f },
-        "-audit-held" => Rules { audit_held: true, ..f },
+        "-audit-applied" => Rules { audit_held: false, ..f },
         "-key-order" => Rules { key_order: true, ..f },
-        "-earliest" => Rules { void_order: VoidOrder::Earliest, ..f },
-        "-at-once" => Rules { void_order: VoidOrder::AllAtOnce, ..f },
-        "-latest" => Rules { void_order: VoidOrder::Latest, ..f },
-        "-key" => Rules { void_order: VoidOrder::KeyOrder, ..f },
-        "-consistent" => Rules { void_order: VoidOrder::Consistent, ..f },
-        "-stratified" => Rules { void_order: VoidOrder::Stratified, ..f },
         _ => return None,
     })
 }
@@ -1331,12 +1358,12 @@ pub struct TinyStats {
     pub worlds: u64,
     pub checked: BTreeMap<&'static str, u64>,
     pub fails: BTreeMap<&'static str, u64>,
-    /// Counted, not failing: `several` (more than one consistent void set), `none` (no
-    /// consistent set), `unreached` (a consistent set not reached by voiding one unapplied
-    /// lowering at a time), `not consistent` (the reading's void set is not one of them, though
-    /// some is), `unapplied` (a lowering the reading leaves unapplied has an effect).
+    /// Counted, not failing, each at worlds trusting one lowering (`T`) or nothing (`N`):
+    /// `stray` (a drop whose dropper does not apply at the end), `void` (a void lowering whose
+    /// absence reads otherwise), `unapplied` (likewise for a lowering left unapplied), `admin` (A
+    /// ends with no standing admin; `T` only where the trusted lowering is not void).
     pub noted: BTreeMap<&'static str, u64>,
-    /// Per check, the smallest failing world: (commits, index, what).
+    /// Per check, the smallest world: (commits, index, what).
     pub first: BTreeMap<&'static str, (usize, u64, String)>,
     pub most_rounds: u32,
 }
@@ -1369,7 +1396,7 @@ impl TinyStats {
         if !fail {
             return;
         }
-        let noted = matches!(k, "several" | "none" | "unreached" | "not consistent" | "unapplied" | "differs");
+        let noted = k != "one reading";
         *if noted { self.noted.entry(k) } else { self.fails.entry(k) }.or_default() += 1;
         let n = w.commits.len();
         if self.first.get(k).is_none_or(|f| (n, i) < (f.0, f.1)) {
@@ -1381,35 +1408,25 @@ impl TinyStats {
     }
 }
 
-/// The checks of the void step on one small world (every failing check a property: `stray`,
-/// `void`, `one reading`, `settles`).
+/// The checks on one small world: `one reading` fails; `stray`, `void`, `unapplied` and `admin`
+/// (A ends with no standing admin) are counted, by whether the world trusts a lowering (for
+/// `admin`, one not void).
 pub fn tiny_check(i: u64, w: &World, v: &View, rules: &Rules, st: &mut TinyStats) {
     st.worlds += 1;
+    let t = !v.trust.is_empty();
     let rd = judge(w, rules, v);
     st.most_rounds = st.most_rounds.max(rd.rounds);
-    st.hit("stray", !rd.stray.is_empty(), i, w, || format!("stray {:?}", rd.stray));
+    st.hit(if t { "stray T" } else { "stray N" }, !rd.stray.is_empty(), i, w, || format!("stray {:?}", rd.stray));
     for &x in &rd.voided {
-        st.hit("void", !no_effect(w, rules, v, &rd, x), i, w, || format!("void {x} has an effect (voided {:?}, applied {:?})", rd.voided, rd.applied));
+        st.hit(if t { "void T" } else { "void N" }, !no_effect(w, rules, v, &rd, x), i, w, || format!("void {x} has an effect (voided {:?}, applied {:?})", rd.voided, rd.applied));
     }
     for x in unapplied(w, v, &rd) {
-        st.hit("unapplied", !no_effect(w, rules, v, &rd, x), i, w, || format!("unapplied {x} has an effect"));
+        st.hit(if t { "unapplied T" } else { "unapplied N" }, !no_effect(w, rules, v, &rd, x), i, w, || format!("unapplied {x} has an effect"));
     }
     st.hit("one reading", !one_reading_relabelled(w, rules, v, &rd), i, w, || "a relabelling reads otherwise".to_string());
-    // the key-order and consistent readings against each other
-    if matches!(rules.void_order, VoidOrder::KeyOrder | VoidOrder::Consistent) {
-        let other = if rules.void_order == VoidOrder::KeyOrder { VoidOrder::Consistent } else { VoidOrder::KeyOrder };
-        let o = judge(w, &Rules { void_order: other, ..*rules }, v);
-        st.hit("differs", o.applied != rd.applied || o.voided != rd.voided, i, w, || format!("{other:?} voids {:?}, this {:?}", o.voided, rd.voided));
-    }
-    if v.trust.is_empty() && rules.vouch != Vouch::SameWalk {
-        let sets = consistent_sets(w, rules, v);
-        st.hit("several", sets.len() > 1, i, w, || format!("consistent sets {sets:?}"));
-        st.hit("none", sets.is_empty(), i, w, || "no consistent set".to_string());
-        st.hit("unreached", sets.iter().any(|s| !s.1), i, w, || format!("consistent sets {sets:?}"));
-        if !sets.is_empty() {
-            st.hit("not consistent", !sets.iter().any(|s| s.0 == rd.voided), i, w, || format!("voided {:?}, consistent {sets:?}", rd.voided));
-        }
-    }
+    // trusting: a trusted lowering that is not void
+    let t = t && rd.void.is_empty();
+    st.hit(if t { "admin T" } else { "admin N" }, !rd.roles.iter().any(|(e, r)| e.1 == A && *r == Role::Admin), i, w, || format!("A has no admin: applied {:?}", rd.applied));
 }
 
 /// `w` less one commit at a time while `fails` holds of it.
