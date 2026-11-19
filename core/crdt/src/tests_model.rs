@@ -10,7 +10,7 @@ use crate::seq::SeqContent;
 use crate::stamp::{Dot, Interner};
 use crate::testutil::{MCommit, check_bound, check_lin, frag, history_twins, history_with, mapply, ostate, sink_no_seq, source, value};
 use crate::tests_seq::{as_carried, map_of_text};
-use crate::tests_wire::{snap_cx, writer_cx};
+use crate::testutil::{snap_cx, writer_cx};
 use crate::wire::{Delta, Frontiers, Snapshot};
 use crdt_model::ops::{Ty, Writer as MWriter};
 use crdt_model::r#gen::{Rng, kitchen_sink};

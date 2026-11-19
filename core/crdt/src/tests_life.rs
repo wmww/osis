@@ -1,17 +1,20 @@
-//! Expiry, un-merge, snapshots and paging (spec/crdt.md §4.6, §4.7, §8).
+//! Expiry, un-merge, snapshots, sweeps and paging (spec/crdt.md §4.6, §4.7, §8,
+//! spec/sync-compaction.md §1).
 
 use crate::codec::{decode_delta, decode_snapshot, encode_delta, encode_snapshot};
 use crate::fragment::Fragment;
+use crate::ops::{Op, PathOp, Writer, create, diff, replace};
 use crate::page::{MemoryPages, PageParams, PageSink};
-use crate::stamp::{CounterRange, Dot, Interner, Source};
-use crate::testutil::{TyView, frag, history, mapply, ostate, sess, sink_no_seq, source, ts};
-use crate::wire::{Delta, DeltaCtx, DeltaKind, Frontiers, Snapshot};
+use crate::seq::{Seq, SeqElem};
+use crate::stamp::{Dot, Interner, Source};
+use crate::testutil::{TyView, ctx_of, frag, history, joined, mapply, node, ostate, sink_no_seq, snap_cx, snapshot, source, struct_list, ts, wired, writer_cx};
+use crate::view::AnyView;
+use crate::wire::{Delta, DeltaCtx, Frontiers, Snapshot};
 use crate::DeltaBuilder;
-use crate::ops::{Op, PathOp};
 use crdt_model::r#gen::random_op;
 use crdt_model::ops::Ty;
 use crdt_model::stamp::Source as MSource;
-use osis_base::{ChunkParams, Tid, Value};
+use osis_base::{ChunkParams, Value};
 use proptest::prelude::*;
 use std::collections::BTreeSet;
 
@@ -21,49 +24,30 @@ fn in_ranges(r: &[Range]) -> impl Fn(&Dot) -> bool + '_ {
     move |d: &Dot| r.iter().any(|(s, lo, hi)| d.src == *s && (*lo..*hi).contains(&d.ctr))
 }
 
-fn join(a: &Fragment, b: &Fragment) -> Fragment {
-    let mut x = a.clone();
-    x.join(b.clone());
-    x
+/// `f` with the writes `expired` names stripped.
+fn stripped(f: &Fragment, expired: &dyn Fn(&Dot) -> bool) -> Fragment {
+    let mut g = f.clone();
+    g.strip(expired);
+    g
 }
 
-/// Three states by different writers and the ranges of their commits.
-type Three = (Vec<Fragment>, Vec<crdt_model::state::Frag>, Vec<Range>, Vec<(MSource, u64, u64)>);
-
-fn three(seed: u64, ty: &Ty) -> Three {
-    let mut r = crate::testutil::rng(seed | 1);
-    let mut ours = Vec::new();
-    let mut models = Vec::new();
-    let mut ranges = Vec::new();
-    let mut mranges = Vec::new();
-    for i in 0..3u8 {
-        let mut w = crdt_model::ops::Writer::new(MSource::session(i + 1, 0), ((r.below(5) as u64 + 1) << 16) + i as u64, 1);
-        let mut st = None;
-        for k in 0..4 {
-            w.next_commit(w.ts + ((r.below(3) as u64) << 16) + 1 + k);
-            if let Some(d) = random_op(&mut r, &mut w, ty, st.as_ref()) {
-                mapply(&mut st, d);
-                ranges.push((source(&w.source), w.lo, w.hi()));
-                mranges.push((w.source.clone(), w.lo, w.hi()));
-            }
-        }
-        ours.push(ostate(&st));
-        models.push(st.unwrap_or_else(|| crdt_model::state::Frag::empty(0)));
-    }
-    (ours, models, ranges, mranges)
+/// The types the lifecycle laws run over: every encoding but sequences, nested; a text; a list.
+fn law_types() -> [Ty; 3] {
+    [sink_no_seq(), Ty::Text, struct_list()]
 }
 
 proptest! {
     /// §4.7: strip equals the model's, commutes with join, is idempotent; a valued copy wins.
     #[test]
     fn expiry_laws_spec_4_7(seed in any::<u64>()) {
-        expiry_laws(seed, &sink_no_seq());
+        law_types().iter().for_each(|ty| expiry_laws(seed, ty));
     }
 
-    /// §4.6: un-merge of held bodies equals the model's and is order-independent.
+    /// §4.6: un-merge of held bodies equals the model's and is order-independent (texts and lists:
+    /// created elements lose their creations).
     #[test]
     fn unmerge_spec_4_6(seed in any::<u64>()) {
-        unmerge_check(seed, &sink_no_seq());
+        law_types().iter().for_each(|ty| unmerge_check(seed, ty));
     }
 
     /// §4.8, §8: a state without a set of commits' writes (`remove_writes`) holds none of them,
@@ -71,69 +55,69 @@ proptest! {
     /// stay.
     #[test]
     fn remove_writes_rejoins_spec_4_8(seed in any::<u64>()) {
-        remove_writes_check(seed, &sink_no_seq());
+        law_types().iter().for_each(|ty| remove_writes_check(seed, ty));
     }
 
     /// §8: a node bootstrapped from a snapshot and then editing converges with the source node;
     /// frontiers cover every commit.
     #[test]
     fn bootstrap_then_edit_spec_8(seed in any::<u64>()) {
-        bootstrap_check(seed, &sink_no_seq());
+        law_types().iter().for_each(|ty| bootstrap_check(seed, ty));
     }
 }
 
-/// §4.7 laws of `strip` over random states of type `ty`.
-pub(crate) fn expiry_laws(seed: u64, ty: &Ty) {
-    let (s, m, ranges, mranges) = three(seed, ty);
+/// §4.7 laws of `strip` over three random states of type `ty`, each by its own writer.
+fn expiry_laws(seed: u64, ty: &Ty) {
+    let mut r = crate::testutil::rng(seed | 1);
+    let (mut s, mut m, mut ranges) = (Vec::new(), Vec::new(), Vec::new());
+    for i in 0..3u8 {
+        let mut w = crdt_model::ops::Writer::new(MSource::session(i + 1, 0), ((r.below(5) as u64 + 1) << 16) + i as u64, 1);
+        let mut st = None;
+        for k in 0..4 {
+            w.next_commit(w.ts + ((r.below(3) as u64) << 16) + 1 + k);
+            if let Some(d) = random_op(&mut r, &mut w, ty, st.as_ref()) {
+                mapply(&mut st, d);
+                ranges.push((w.source.clone(), w.lo, w.hi()));
+            }
+        }
+        s.push(ostate(&st));
+        m.push(st.unwrap_or_else(|| crdt_model::state::Frag::empty(0)));
+    }
     let mut r = crate::testutil::rng(seed ^ 0x55);
-    let pick: Vec<bool> = ranges.iter().map(|_| r.chance(1, 2)).collect();
-    let expired: Vec<Range> = ranges.iter().zip(&pick).filter(|x| *x.1).map(|x| x.0.clone()).collect();
-    let mexpired: Vec<(MSource, u64, u64)> = mranges.iter().zip(&pick).filter(|x| *x.1).map(|x| x.0.clone()).collect();
-    let strip = |f: &Fragment| {
-        let mut g = f.clone();
-        g.strip(&in_ranges(&expired));
-        g
-    };
+    let mexpired: Vec<(MSource, u64, u64)> = ranges.into_iter().filter(|_| r.chance(1, 2)).collect();
+    let expired: Vec<Range> = mexpired.iter().map(|(s, lo, hi)| (source(s), *lo, *hi)).collect();
+    let strip = |f: &Fragment| stripped(f, &in_ranges(&expired));
     for (o, mo) in s.iter().zip(&m) {
         let mut ms = mo.clone();
         ms.strip(&|d| mexpired.iter().any(|(src, lo, hi)| d.source == *src && (*lo..*hi).contains(&d.ctr)));
         assert_eq!(strip(o), frag(&ms), "strip equals the model");
-    }
-    // `each_valued` names every write holding a value, and none `strip` took a value from
-    for o in &s {
+        // `each_valued` names every write holding a value, and none `strip` took a value from
         let mut valued = BTreeSet::new();
         o.each_valued(&mut |d| {
             valued.insert(d.clone());
         });
-        let mut g = o.clone();
-        g.strip(&|d| !valued.contains(d));
-        assert_eq!(g, *o, "each_valued names every valued write");
+        assert_eq!(stripped(o, &|d| !valued.contains(d)), *o, "each_valued names every valued write");
         let mut left = Vec::new();
         strip(o).each_valued(&mut |d| left.extend(in_ranges(&expired)(d).then(|| d.clone())));
         assert!(left.is_empty(), "stripped writes named valued: {left:?}");
     }
     let (a, b) = (&s[0], &s[1]);
-    assert_eq!(strip(&join(a, b)), join(&strip(a), &strip(b)), "strip commutes with join");
+    assert_eq!(strip(&joined(a, b)), joined(&strip(a), &strip(b)), "strip commutes with join");
     assert_eq!(strip(&strip(a)), strip(a), "idempotent");
     // a stripped map write moves to its dot's key-erased record (§4.7), which the valued
     // records' read joins: the same read, and the same state once stripped
-    assert_eq!(join(a, &strip(a)), *a, "valued copy wins");
-    assert_eq!(strip(&join(a, &strip(a))), strip(a), "valued copy wins, stripped");
+    assert_eq!(joined(a, &strip(a)), *a, "valued copy wins");
+    assert_eq!(strip(&joined(a, &strip(a))), strip(a), "valued copy wins, stripped");
 }
 
 /// §4.6 un-merge over a random history of type `ty`.
-pub(crate) fn unmerge_check(seed: u64, ty: &Ty) {
+fn unmerge_check(seed: u64, ty: &Ty) {
     let mut r = crate::testutil::rng(seed | 1);
     let commits = history(&mut r, std::slice::from_ref(ty), 3, 4);
-    let mut mstate = None;
-    for c in &commits {
-        mapply(&mut mstate, c.delta.clone());
-    }
-    let state = ostate(&mstate);
     let bad = source(&MSource::session(2, 0));
-    let mut model = None;
-    let mut ours = Fragment::default();
+    let (mut model, mut whole, mut ours) = (None, None, Fragment::default());
     for c in &commits {
+        mapply(&mut whole, c.delta.clone());
         let mut m = c.delta.clone();
         m.unmerge(&|d| d.source == MSource::session(2, 0));
         mapply(&mut model, m);
@@ -143,8 +127,8 @@ pub(crate) fn unmerge_check(seed: u64, ty: &Ty) {
     }
     assert_eq!(ours, ostate(&model), "un-merged bodies equal the model's");
     // an author's writes (§4.6) and one delta's (spec/permissions.md §5.2): the join of the held
-    // bodies each without them is order-independent
-    let held: Vec<Fragment> = commits.iter().map(|c| frag(&c.delta)).chain(std::iter::once(state.clone())).collect();
+    // bodies (and the whole state) each without them is order-independent
+    let held: Vec<Fragment> = commits.iter().map(|c| frag(&c.delta)).chain(std::iter::once(ostate(&whole))).collect();
     type Pred = Box<dyn Fn(&Dot) -> bool>;
     let mut preds: Vec<Pred> = vec![Box::new(move |d: &Dot| d.src == bad)];
     for c in &commits {
@@ -161,13 +145,12 @@ pub(crate) fn unmerge_check(seed: u64, ty: &Ty) {
             }
             out
         };
-        let want = unmerged(&mut held.iter());
-        assert_eq!(want, unmerged(&mut held.iter().rev()), "order-independent");
+        assert_eq!(unmerged(&mut held.iter()), unmerged(&mut held.iter().rev()), "order-independent");
     }
 }
 
 /// `remove_writes` over a random history of type `ty`: for random sets of its commits.
-pub(crate) fn remove_writes_check(seed: u64, ty: &Ty) {
+fn remove_writes_check(seed: u64, ty: &Ty) {
     let mut r = crate::testutil::rng(seed | 1);
     let commits = history(&mut r, std::slice::from_ref(ty), 3, 4);
     let mut state = Fragment::default();
@@ -175,8 +158,9 @@ pub(crate) fn remove_writes_check(seed: u64, ty: &Ty) {
         state.join(frag(&c.delta));
     }
     for _ in 0..4 {
-        let pick: Vec<bool> = commits.iter().map(|_| r.chance(1, 2)).collect();
-        let ranges: Vec<Range> = commits.iter().zip(&pick).filter(|x| *x.1).map(|(c, _)| (source(&c.w.source), c.w.lo, c.w.hi())).collect();
+        let picked: Vec<_> = commits.iter().filter(|_| r.chance(1, 2)).collect();
+        let ranges: Vec<Range> = picked.iter().map(|c| (source(&c.w.source), c.w.lo, c.w.hi())).collect();
+        let picked: Vec<Fragment> = picked.iter().map(|c| frag(&c.delta)).collect();
         let pred = in_ranges(&ranges);
         let mut rest = state.clone();
         rest.remove_writes(&pred);
@@ -184,21 +168,20 @@ pub(crate) fn remove_writes_check(seed: u64, ty: &Ty) {
         assert!(left.is_empty(), "left {left:?}");
         // as a replay plays them: the commits (before the snapshot), then the rest; and after
         let mut back = Fragment::default();
-        for c in commits.iter().zip(&pick).filter(|x| *x.1) {
-            back.join(frag(&c.0.delta));
+        for d in &picked {
+            back.join(d.clone());
         }
         back.join(rest.clone());
         assert_eq!(back.read(), state.read(), "rejoined");
-        let mut after = rest.clone();
-        for c in commits.iter().zip(&pick).filter(|x| *x.1) {
-            after.join(frag(&c.0.delta));
+        for d in picked {
+            rest.join(d);
         }
-        assert_eq!(after.read(), state.read(), "rejoined after");
+        assert_eq!(rest.read(), state.read(), "rejoined after");
     }
 }
 
 /// §8 bootstrap from a snapshot, then concurrent edits of type `ty`.
-pub(crate) fn bootstrap_check(seed: u64, ty: &Ty) {
+fn bootstrap_check(seed: u64, ty: &Ty) {
     let mut r = crate::testutil::rng(seed | 1);
     let commits = history(&mut r, std::slice::from_ref(ty), 3, 4);
     let mut a = Fragment::default();
@@ -207,46 +190,39 @@ pub(crate) fn bootstrap_check(seed: u64, ty: &Ty) {
         a.join(frag(&c.delta));
         received.add(&c.w.source, c.w.lo, c.w.hi());
     }
-    let snap = |f: &Fragment, fr: Frontiers| encode_snapshot(&Snapshot { absorbed: Default::default(), facts: Default::default(), nonce: [0; 16], fragment: f.clone(), frontiers: fr }, &scx(), None).unwrap();
     // frontiers of the sources left in the state only (§8)
     let mut fr = Frontiers::default();
     for (s, c) in received.frontiers() {
         fr.insert(&source(&s), c);
     }
-    fr.retain(&crate::sources_of(&a, &scx()).unwrap());
-    let got = decode_snapshot(&snap(&a, fr.clone()), &scx(), &mut Interner::new(), None).unwrap();
-    let mut b = Fragment::default();
-    b.join(got.fragment);
+    fr.retain(&crate::sources_of(&a, &snap_cx()).unwrap());
+    let bytes = encode_snapshot(&Snapshot { frontiers: fr.clone(), ..snapshot(&a) }, &snap_cx(), None).unwrap();
+    let got = decode_snapshot(&bytes, &snap_cx(), &mut Interner::new(), None).unwrap();
+    let mut b = joined(&Fragment::default(), &got.fragment);
     assert_eq!(got.frontiers.without_zeros(), fr);
     assert_eq!(b.read(), a.read());
     // b edits; a edits concurrently; both exchange
-    let view = TyView(ty.clone());
     let v = crate::testutil::value(&crdt_model::r#gen::random_value(&mut r, ty, 0));
-    let mut bb = DeltaBuilder::new(&b, crate::Writer::new(ts(1 << 30), sess(Tid::from_bytes([9; 15])), 1));
-    bb.apply(&PathOp { path: vec![], op: Op::Set(v) }, &view).unwrap();
+    let mut bb = DeltaBuilder::new(&b, Writer::new(ts(1 << 30), node(9), 1));
+    bb.apply(&PathOp { path: vec![], op: Op::Set(v) }, &TyView(ty.clone())).unwrap();
     let mut mw = crdt_model::ops::Writer::new(MSource::session(1, 0), (1 << 30) + 1, 100);
     mw.next_commit((1 << 30) + 2);
     let da = random_op(&mut r, &mut mw, ty, None).map(|d| frag(&d));
-    if let Some((db, _)) = bb.finish() {
-        a.join(db.clone());
-        b.join(db);
-    }
-    if let Some(da) = da {
-        a.join(da.clone());
-        b.join(da);
+    for d in bb.finish().map(|x| x.0).into_iter().chain(da) {
+        a.join(d.clone());
+        b.join(d);
     }
     // equal up to the chars of deleted text, which a snapshot does not carry (§3.3 rule 5)
     assert_eq!(a.read(), b.read());
-    assert_eq!(snap(&a, Frontiers::default()), snap(&b, Frontiers::default()));
+    assert_eq!(crate::testutil::snapshot_bytes(&a), crate::testutil::snapshot_bytes(&b));
 }
-
 
 // ---- paging (§8, spec/wire.md §6)
 
 const SMALL: PageParams = PageParams { target: 2000, cut: ChunkParams { min: 128, max: 1024, mask_bits: 6 }, fanout: 8, ..PageParams::FORMAT };
 
+/// A set of `n` strings, each added by its own commit, joined in an order drawn from `order_seed`.
 pub(crate) fn big_set(n: usize, order_seed: u64) -> Fragment {
-    let node = |i: u8| sess(Tid::from_bytes([i; 15]));
     let mut idx: Vec<usize> = (0..n).collect();
     let mut r = crate::testutil::rng(order_seed | 1);
     for k in (1..idx.len()).rev() {
@@ -254,25 +230,21 @@ pub(crate) fn big_set(n: usize, order_seed: u64) -> Fragment {
     }
     let mut st = Fragment::default();
     for i in idx {
-        let mut w = crate::Writer::new(ts(((i as u64 % 7) + 1) << 16), node((i % 3) as u8 + 1), 1 + i as u64);
-        let d = crate::create(&mut w, &crate::AnyView, &Value::Set([Value::Str(format!("element number {i}"))].into_iter().collect())).unwrap();
-        st.join(d);
+        let mut w = Writer::new(ts(((i as u64 % 7) + 1) << 16), node((i % 3) as u8 + 1), 1 + i as u64);
+        st.join(create(&mut w, &AnyView, &Value::Set([Value::Str(format!("element number {i}"))].into_iter().collect())).unwrap());
     }
     st
-}
-
-fn snap(f: &Fragment) -> Snapshot {
-    Snapshot { absorbed: Default::default(), facts: Default::default(), nonce: [0; 16], fragment: f.clone(), frontiers: Frontiers::default() }
-}
-
-fn scx() -> DeltaCtx {
-    DeltaCtx { ts: ts(1 << 40), own: sess(Tid::from_bytes([250; 15])), range: CounterRange::EMPTY, kind: DeltaKind::Snapshot }
 }
 
 /// Plaintexts of every page written.
 struct Recording {
     inner: MemoryPages,
     pages: Vec<Vec<u8>>,
+}
+impl Recording {
+    fn new(params: PageParams) -> Recording {
+        Recording { inner: MemoryPages::with_params(params), pages: Vec::new() }
+    }
 }
 impl PageSink for Recording {
     fn put(&mut self, p: &[u8]) -> Result<osis_base::Link, crate::PageError> {
@@ -285,23 +257,32 @@ impl PageSink for Recording {
 }
 
 fn paged(f: &Fragment, params: PageParams) -> (Vec<u8>, Recording) {
-    let mut rec = Recording { inner: MemoryPages::with_params(params), pages: Vec::new() };
-    let bytes = encode_snapshot(&snap(f), &scx(), Some(&mut rec)).unwrap();
+    let mut rec = Recording::new(params);
+    let bytes = encode_snapshot(&snapshot(f), &snap_cx(), Some(&mut rec)).unwrap();
     (bytes, rec)
 }
 
+/// `bytes` decoded as a snapshot whose pages are read from `pages`.
+fn unpage(bytes: &[u8], pages: &mut dyn crate::page::PageSource) -> Result<Fragment, crate::Error> {
+    decode_snapshot(bytes, &snap_cx(), &mut Interner::new(), Some(pages)).map(|s| s.fragment)
+}
+
+/// §8: a fragment pages iff its plain array is above the target, into pages of whole elements
+/// ending once they reach the cut maximum, under link pages of at most `fanout` links: one level
+/// (100 elements) or two (600). It round-trips, and equal states give equal pages; a fragment
+/// that would need a third level cannot be written. The paging is canonical: pages cut by other
+/// parameters, missing pages and an unpaged fragment where paging is mandatory are rejected.
 #[test]
-fn paging_round_trip_and_bounds_spec_8() {
-    for n in [3usize, 100, 400] {
+fn paging_spec_8() {
+    let links = |p: &[u8]| matches!(osis_base::decode(p, &osis_base::Limits::DEFAULT), Ok(Value::List(i)) if i.iter().all(|x| matches!(x, Value::Link(_))));
+    for n in [3usize, 100, 600] {
         let st = big_set(n, 1);
         let (bytes, mut rec) = paged(&st, SMALL);
-        // paged iff the plain array is above the target (the 3-element set is not)
         assert_eq!(rec.pages.is_empty(), n == 3, "n = {n}");
+        assert_eq!(rec.pages.iter().any(|p| links(p)), n == 600, "link pages above the link target: n = {n}");
         for p in &rec.pages {
-            let v = osis_base::decode(p, &osis_base::Limits::DEFAULT).unwrap();
-            let osis_base::Value::List(items) = &v else { panic!() };
-            let is_links = items.iter().all(|i| matches!(i, osis_base::Value::Link(_)));
-            if is_links {
+            let Ok(Value::List(items)) = osis_base::decode(p, &osis_base::Limits::DEFAULT) else { panic!("a page") };
+            if links(p) {
                 assert!(items.len() <= SMALL.fanout);
             } else {
                 // whole elements; a page ends once it reaches the maximum
@@ -309,85 +290,50 @@ fn paging_round_trip_and_bounds_spec_8() {
                 assert!(p.len() < SMALL.cut.max + last + 8, "page of {} bytes", p.len());
             }
         }
-        let got = decode_snapshot(&bytes, &scx(), &mut Interner::new(), Some(&mut rec.inner)).unwrap();
-        assert_eq!(got.fragment, st);
+        assert_eq!(unpage(&bytes, &mut rec.inner).unwrap(), st);
+        if n < 600 {
+            continue;
+        }
+        let other = big_set(n, 2);
+        assert_eq!(other, st);
+        assert_eq!(paged(&other, SMALL).1.pages, rec.pages, "equal states, equal pages");
+        let tiny = PageParams { target: 200, cut: ChunkParams { min: 64, max: 256, mask_bits: 4 }, fanout: 2, ..PageParams::FORMAT };
+        assert!(encode_snapshot(&snapshot(&st), &snap_cx(), Some(&mut MemoryPages::with_params(tiny))).is_err(), "a third level");
+        // a source with other parameters would have cut elsewhere: the paging is not canonical
+        let mut cut = MemoryPages::with_params(PageParams { cut: ChunkParams { min: 200, max: 1024, mask_bits: 6 }, ..SMALL });
+        for p in &rec.pages {
+            cut.put(p).unwrap();
+        }
+        assert!(unpage(&bytes, &mut cut).is_err());
+        assert!(decode_snapshot(&bytes, &snap_cx(), &mut Interner::new(), None).is_err(), "the pages are needed");
+        let plain = paged(&st, PageParams { target: usize::MAX, ..SMALL }).0;
+        assert!(unpage(&plain, &mut rec.inner).is_err(), "unpaged where paging is mandatory");
     }
 }
 
-#[test]
-fn paging_two_levels_and_limit_spec_8() {
-    let st = big_set(600, 2);
-    let (bytes, mut rec) = paged(&st, SMALL);
-    let has_link_pages = rec.pages.iter().any(|p| matches!(osis_base::decode(p, &osis_base::Limits::DEFAULT), Ok(osis_base::Value::List(i)) if i.iter().all(|x| matches!(x, osis_base::Value::Link(_)))));
-    assert!(has_link_pages, "link pages appear above the link target");
-    assert_eq!(decode_snapshot(&bytes, &scx(), &mut Interner::new(), Some(&mut rec.inner)).unwrap().fragment, st);
-    // a fragment that would need a third level cannot be written
-    let tiny = PageParams { target: 200, cut: ChunkParams { min: 64, max: 256, mask_bits: 4 }, fanout: 2, ..PageParams::FORMAT };
-    let mut pages = MemoryPages::with_params(tiny);
-    assert!(encode_snapshot(&snap(&st), &scx(), Some(&mut pages)).is_err());
-}
-
-#[test]
-fn equal_states_equal_pages_spec_8() {
-    let a = big_set(300, 3);
-    let b = big_set(300, 4);
-    assert_eq!(a, b);
-    let (_, ra) = paged(&a, SMALL);
-    let (_, rb) = paged(&b, SMALL);
-    let set = |r: &Recording| r.pages.iter().filter(|p| !matches!(osis_base::decode(p, &osis_base::Limits::DEFAULT), Ok(osis_base::Value::List(i)) if i.iter().all(|x| matches!(x, osis_base::Value::Link(_))))).cloned().collect::<BTreeSet<_>>();
-    assert_eq!(set(&ra), set(&rb));
-}
-
-#[test]
-fn paging_canonical_rejections_spec_8() {
-    let st = big_set(400, 5);
-    let (bytes, mut rec) = paged(&st, SMALL);
-    // a source with other parameters would have cut elsewhere: the paging is not canonical
-    let mut other = MemoryPages::with_params(PageParams { cut: ChunkParams { min: 200, max: 1024, mask_bits: 6 }, ..SMALL });
-    for p in &rec.pages {
-        other.put(p).unwrap();
-    }
-    assert!(decode_snapshot(&bytes, &scx(), &mut Interner::new(), Some(&mut other)).is_err());
-    // without the pages the commit cannot apply
-    assert!(decode_snapshot(&bytes, &scx(), &mut Interner::new(), None).is_err());
-    // unpaged where paging is mandatory
-    let plain = encode_snapshot(&snap(&st), &scx(), Some(&mut MemoryPages::with_params(PageParams { target: usize::MAX, ..SMALL }))).unwrap();
-    assert!(decode_snapshot(&plain, &scx(), &mut Interner::new(), Some(&mut rec.inner)).is_err());
-}
-
-/// §8: an ephemeral delta is never paged: above the page target it encodes inline and decodes
-/// only as unpaged; a paged one is bad input there.
-#[test]
-fn unpaged_ephemeral_deltas_spec_8() {
-    let st = big_set(3000, 7);
-    let plain = encode_snapshot(&snap(&st), &scx(), Some(&mut crate::Unpaged)).unwrap();
-    assert!(plain.len() > PageParams::FORMAT.target);
-    assert_eq!(decode_snapshot(&plain, &scx(), &mut Interner::new(), Some(&mut crate::Unpaged)).unwrap().fragment, st);
-    assert!(decode_snapshot(&plain, &scx(), &mut Interner::new(), None).is_err(), "durable: paging is mandatory");
-    let mut pages = MemoryPages::new();
-    let paged = encode_snapshot(&snap(&st), &scx(), Some(&mut pages)).unwrap();
-    let e = decode_snapshot(&paged, &scx(), &mut Interner::new(), Some(&mut crate::Unpaged)).unwrap_err();
-    assert_eq!(osis_base::Classified::class(&e), osis_base::ErrorClass::BadInput);
-}
-
-/// §8 at the format's sizes: a set above 64 KiB pages and round-trips.
+/// §8 at the format's sizes: a set above 64 KiB pages and round-trips, and a writer's delta pages
+/// the same way (any delta may page). An ephemeral delta is never paged: above the page target it
+/// encodes inline and decodes only as unpaged; a paged one is bad input there.
 #[test]
 fn paging_format_size_spec_8() {
     let st = big_set(3000, 6);
     let mut pages = MemoryPages::new();
-    let bytes = encode_snapshot(&snap(&st), &scx(), Some(&mut pages)).unwrap();
+    let bytes = encode_snapshot(&snapshot(&st), &snap_cx(), Some(&mut pages)).unwrap();
     assert!(!pages.is_empty());
-    assert!(bytes.len() < crate::page::PageParams::FORMAT.target);
-    assert_eq!(decode_snapshot(&bytes, &scx(), &mut Interner::new(), Some(&mut pages)).unwrap().fragment, st);
-    // a writer's delta pages the same way (§8: any delta may page)
-    let node = sess(Tid::from_bytes([1; 15]));
-    let mut w = crate::Writer::new(ts(1 << 20), node.clone(), 1);
+    assert!(bytes.len() < PageParams::FORMAT.target);
+    assert_eq!(unpage(&bytes, &mut pages).unwrap(), st);
+    let e = unpage(&bytes, &mut crate::Unpaged).unwrap_err();
+    assert_eq!(osis_base::Classified::class(&e), osis_base::ErrorClass::BadInput);
+    let plain = encode_snapshot(&snapshot(&st), &snap_cx(), Some(&mut crate::Unpaged)).unwrap();
+    assert!(plain.len() > PageParams::FORMAT.target);
+    assert_eq!(unpage(&plain, &mut crate::Unpaged).unwrap(), st);
+    assert!(decode_snapshot(&plain, &snap_cx(), &mut Interner::new(), None).is_err(), "durable: paging is mandatory");
+    let mut w = Writer::new(ts(1 << 20), node(1), 1);
     let items: osis_base::ValueSet = (0..3000).map(|i| Value::Str(format!("bulk import {i}"))).collect();
-    let d = crate::create(&mut w, &crate::AnyView, &Value::Set(items)).unwrap();
-    let cx = DeltaCtx { ts: ts(1 << 20), own: node, range: w.range(), kind: DeltaKind::Writer };
+    let d = create(&mut w, &AnyView, &Value::Set(items)).unwrap();
     let mut pages = MemoryPages::new();
-    let bytes = encode_delta(&Delta { nonce: [0; 16], fragment: d.clone() }, &cx, Some(&mut pages)).unwrap();
-    assert_eq!(decode_delta(&bytes, &cx, &mut Interner::new(), Some(&mut pages)).unwrap().fragment, d);
+    let bytes = encode_delta(&Delta { nonce: [0; 16], fragment: d.clone() }, &ctx_of(&w), Some(&mut pages)).unwrap();
+    assert_eq!(decode_delta(&bytes, &ctx_of(&w), &mut Interner::new(), Some(&mut pages)).unwrap().fragment, d);
 }
 
 const CAP_ERR: &str = "page or root fragment above MAX_PAGE_ITEMS items";
@@ -404,8 +350,8 @@ fn page_items_cap_spec_8() {
     use osis_base::format::MAX_PAGE_ITEMS;
     let none = || Value::List(Vec::new());
     // a register whose value holds `n` items, or a text string of `n` bytes
-    let root = |val: Value, snapshot: bool| {
-        let mut top = vec![Value::Bytes(vec![0; 16]), none(), none(), Value::List(vec![Value::Int(0), none(), Value::Int(0), val])];
+    let root = |val: &Value, snapshot: bool| {
+        let mut top = vec![Value::Bytes(vec![0; 16]), none(), none(), Value::List(vec![Value::Int(0), none(), Value::Int(0), val.clone()])];
         if snapshot {
             top.extend([none(), none(), none()]);
         }
@@ -416,27 +362,27 @@ fn page_items_cap_spec_8() {
     let over = MAX_PAGE_ITEMS - 4;
     for (val, capped) in [(zeros(over), true), (zeros(over - 1), false), (Value::Str("x".repeat(MAX_PAGE_ITEMS)), true)] {
         for snapshot in [false, true] {
-            let bytes = root(val.clone(), snapshot);
+            let bytes = root(&val, snapshot);
             let mut pages = MemoryPages::new();
             let errs = if snapshot {
-                [decode_snapshot(&bytes, &scx(), &mut Interner::new(), None).unwrap_err(), decode_snapshot(&bytes, &scx(), &mut Interner::new(), Some(&mut pages)).unwrap_err()]
+                [decode_snapshot(&bytes, &snap_cx(), &mut Interner::new(), None).unwrap_err(), unpage(&bytes, &mut pages).unwrap_err()]
             } else {
-                [decode_delta(&bytes, &scx(), &mut Interner::new(), None).unwrap_err(), decode_delta(&bytes, &scx(), &mut Interner::new(), Some(&mut pages)).unwrap_err()]
+                [decode_delta(&bytes, &snap_cx(), &mut Interner::new(), None).unwrap_err(), decode_delta(&bytes, &snap_cx(), &mut Interner::new(), Some(&mut pages)).unwrap_err()]
             };
             for e in errs {
                 assert_eq!(is_cap(&e), capped, "{e}");
                 assert_eq!(osis_base::Classified::class(&e), osis_base::ErrorClass::BadInput);
             }
-            let e = decode_snapshot(&root(val.clone(), true), &scx(), &mut Interner::new(), Some(&mut crate::Unpaged)).unwrap_err();
-            assert!(!is_cap(&e), "ephemeral deltas are not counted: {e}");
         }
+        let e = unpage(&root(&val, true), &mut crate::Unpaged).unwrap_err();
+        assert!(!is_cap(&e), "ephemeral deltas are not counted: {e}");
     }
     // a page: the set's element array links to one page of too many items
     for (n, capped) in [(MAX_PAGE_ITEMS, true), (MAX_PAGE_ITEMS - 1, false)] {
         let mut pages = MemoryPages::new();
         let link = pages.put(&osis_base::encode(&zeros(n))).unwrap();
         let top = Value::List(vec![Value::Bytes(vec![0; 16]), none(), none(), Value::List(vec![Value::Int(6), none(), none(), Value::List(vec![Value::link(link)])]), none(), none(), none()]);
-        let e = decode_snapshot(&osis_base::encode(&top), &scx(), &mut Interner::new(), Some(&mut pages)).unwrap_err();
+        let e = unpage(&osis_base::encode(&top), &mut pages).unwrap_err();
         assert_eq!(is_cap(&e), capped, "{e}");
     }
 }
@@ -446,16 +392,15 @@ fn page_items_cap_spec_8() {
 /// decode; a text's runs hold at most `MAX_RUN` elements.
 #[test]
 fn page_items_honest_spec_8() {
-    let node = sess(Tid::from_bytes([1; 15]));
     // the text past `PAGE_TARGET` (one byte a char); the map as many bytes in fewer entries
     let chars = 80_000;
     let big_map = Value::Map((0..8_000).map(|i| (Value::Str(format!("key {i}")), Value::Str("v".repeat(10)))).collect());
     let text = Value::Str((0..chars).map(|i| char::from(b'a' + (i % 26) as u8)).collect());
     for (view, v) in [(TyView(Ty::Map(Box::new(Ty::Register), Box::new(Ty::Register))), big_map), (TyView(Ty::Text), text)] {
-        let mut w = crate::Writer::new(ts(1 << 20), node.clone(), 1);
-        let d = crate::create(&mut w, &view, &v).unwrap();
-        let cx = DeltaCtx { ts: ts(1 << 20), own: node.clone(), range: w.range(), kind: DeltaKind::Writer };
-        let mut rec = Recording { inner: MemoryPages::new(), pages: Vec::new() };
+        let mut w = Writer::new(ts(1 << 20), node(1), 1);
+        let d = create(&mut w, &view, &v).unwrap();
+        let cx = ctx_of(&w);
+        let mut rec = Recording::new(PageParams::FORMAT);
         let bytes = encode_delta(&Delta { nonce: [0; 16], fragment: d.clone() }, &cx, Some(&mut rec)).unwrap();
         let (sbytes, mut srec) = paged(&d, PageParams::FORMAT);
         for b in [&bytes, &sbytes].into_iter().chain(&rec.pages).chain(&srec.pages) {
@@ -464,7 +409,7 @@ fn page_items_honest_spec_8() {
         }
         assert!(!rec.pages.is_empty());
         assert_eq!(decode_delta(&bytes, &cx, &mut Interner::new(), Some(&mut rec.inner)).unwrap().fragment, d);
-        assert_eq!(decode_snapshot(&sbytes, &scx(), &mut Interner::new(), Some(&mut srec.inner)).unwrap().fragment, d);
+        assert_eq!(unpage(&sbytes, &mut srec.inner).unwrap(), d);
         if matches!(d, Fragment::Seq(_)) {
             // runs `[Dot, n, ...]` of at most `MAX_RUN` elements
             let ns: Vec<u64> = rec.pages.iter().flat_map(|p| match osis_base::decode(p, &osis_base::Limits::DEFAULT).unwrap() {
@@ -486,14 +431,12 @@ fn wide_struct(n: u64, len: usize) -> (Fragment, DeltaCtx) {
     let inner: std::collections::BTreeMap<u64, Ty> = (0..n).map(|i| (i, Ty::Register)).collect();
     let mut fields = inner.clone();
     fields.insert(n, Ty::Enum([(1, Some(Ty::Struct(inner.clone())))].into_iter().collect()));
-    let ty = Ty::Struct(fields);
     let strs = || (0..n).map(|i| (Value::Int(i as i64), Value::Str(format!("{i:04}{}", "x".repeat(len))))).collect::<osis_base::ValueMap>();
     let mut v = strs();
     v.insert(Value::Int(n as i64), Value::Enum(1, Some(Box::new(Value::Map(strs())))));
-    let node = sess(Tid::from_bytes([1; 15]));
-    let mut w = crate::Writer::new(ts(1 << 20), node.clone(), 1);
-    let d = crate::create(&mut w, &TyView(ty), &Value::Map(v)).unwrap();
-    (d, DeltaCtx { ts: ts(1 << 20), own: node, range: w.range(), kind: DeltaKind::Writer })
+    let mut w = Writer::new(ts(1 << 20), node(1), 1);
+    let d = create(&mut w, &TyView(Ty::Struct(fields)), &Value::Map(v)).unwrap();
+    (d, ctx_of(&w))
 }
 
 /// §8: a struct's field map and an enum's payload map page like element arrays: pages are maps
@@ -503,7 +446,7 @@ fn wide_struct(n: u64, len: usize) -> (Fragment, DeltaCtx) {
 fn struct_field_paging_spec_8() {
     for (n, paged) in [(3u64, false), (200, true)] {
         let (d, cx) = wide_struct(n, 100);
-        let mut rec = Recording { inner: MemoryPages::with_params(SMALL), pages: Vec::new() };
+        let mut rec = Recording::new(SMALL);
         let bytes = encode_delta(&Delta { nonce: [0; 16], fragment: d.clone() }, &cx, Some(&mut rec)).unwrap();
         assert_eq!(!rec.pages.is_empty(), paged, "n = {n}");
         assert!(bytes.len() <= SMALL.target || !paged);
@@ -522,7 +465,7 @@ fn struct_field_paging_spec_8() {
         assert!(maps > 1 || !paged);
         assert_eq!(decode_delta(&bytes, &cx, &mut Interner::new(), Some(&mut rec.inner)).unwrap().fragment, d);
         // equal fields give equal pages
-        let mut again = Recording { inner: MemoryPages::with_params(SMALL), pages: Vec::new() };
+        let mut again = Recording::new(SMALL);
         encode_delta(&Delta { nonce: [0; 16], fragment: d.clone() }, &cx, Some(&mut again)).unwrap();
         assert_eq!(again.pages, rec.pages);
     }
@@ -533,7 +476,7 @@ fn struct_field_paging_spec_8() {
 #[test]
 fn struct_field_paging_rejections_spec_8() {
     let (d, cx) = wide_struct(200, 100);
-    let mut rec = Recording { inner: MemoryPages::with_params(SMALL), pages: Vec::new() };
+    let mut rec = Recording::new(SMALL);
     let bytes = encode_delta(&Delta { nonce: [0; 16], fragment: d.clone() }, &cx, Some(&mut rec)).unwrap();
     let plain = encode_delta(&Delta { nonce: [0; 16], fragment: d }, &cx, Some(&mut MemoryPages::with_params(PageParams { target: usize::MAX, ..SMALL }))).unwrap();
     assert!(decode_delta(&plain, &cx, &mut Interner::new(), Some(&mut rec.inner)).is_err());
@@ -546,7 +489,7 @@ fn struct_field_paging_rejections_spec_8() {
         osis_base::encode(&Value::List(a))
     };
     let mut pages = MemoryPages::with_params(SMALL);
-    let field = |i: i64| (Value::Int(i), Value::List(vec![Value::Int(0), Value::List(vec![]), Value::Int(0), Value::Str("v".into())]));
+    let field = |i: i64| (Value::Int(i), Value::List(vec![Value::Int(0), Value::List(vec![]), Value::Int(0), s("v")]));
     let page = |pages: &mut MemoryPages, v: Value| Value::link(pages.put(&osis_base::encode(&v)).unwrap());
     let a = page(&mut pages, Value::Map([field(5)].into_iter().collect()));
     let b = page(&mut pages, Value::Map([field(2)].into_iter().collect()));
@@ -563,29 +506,28 @@ fn struct_field_paging_rejections_spec_8() {
 fn paging_large_spec_8() {
     let st = big_set(100_000, 7);
     let mut pages = MemoryPages::new();
-    let bytes = encode_snapshot(&snap(&st), &scx(), Some(&mut pages)).unwrap();
-    assert_eq!(decode_snapshot(&bytes, &scx(), &mut Interner::new(), Some(&mut pages)).unwrap().fragment, st);
+    let bytes = encode_snapshot(&snapshot(&st), &snap_cx(), Some(&mut pages)).unwrap();
+    assert_eq!(unpage(&bytes, &mut pages).unwrap(), st);
 }
 
 /// §4.7, §7: a value-less register embeds like its valued copy after stripping.
 #[test]
 fn value_less_embedding_spec_7() {
-    let node = sess(Tid::from_bytes([1; 15]));
-    let mut w = crate::Writer::new(ts(3 << 16), node.clone(), 1);
-    let reg = crate::create(&mut w, &crate::AnyView, &Value::Int(5)).unwrap();
-    let mut w2 = crate::Writer::new(ts(2 << 16), sess(Tid::from_bytes([2; 15])), 1);
-    let counter = crate::Fragment::empty(crate::Encoding::Counter).unwrap();
-    let _ = &mut w2;
     let all = |_: &Dot| true;
-    let mut valued = join(&reg, &counter);
-    valued.join(crate::ops::create(&mut w2, &TyView(Ty::Counter), &Value::Int(1)).unwrap());
-    let mut a = valued.clone();
-    a.strip(&all);
-    let mut less = reg.clone();
-    less.strip(&all);
-    let mut b = join(&less, &crate::ops::create(&mut crate::Writer::new(ts(2 << 16), sess(Tid::from_bytes([2; 15])), 1), &TyView(Ty::Counter), &Value::Int(1)).unwrap());
-    b.strip(&all);
-    assert_eq!(a, b);
+    let reg = create(&mut Writer::new(ts(3 << 16), node(1), 1), &AnyView, &Value::Int(5)).unwrap();
+    let counter = || create(&mut Writer::new(ts(2 << 16), node(2), 1), &TyView(Ty::Counter), &Value::Int(1)).unwrap();
+    let valued = joined(&joined(&reg, &Fragment::empty(crate::Encoding::Counter).unwrap()), &counter());
+    assert_eq!(stripped(&valued, &all), stripped(&joined(&stripped(&reg, &all), &counter()), &all));
+}
+
+/// Model writer 1's list of `n` strings of 128 KiB less `pad` bytes and a 3-digit index, made at
+/// t = 5: the model delta, its context, and our delta.
+fn big_list(n: usize, pad: usize) -> (crdt_model::state::Frag, DeltaCtx, Delta) {
+    use crdt_model::value::Value as MV;
+    let mut w = crdt_model::ops::Writer::new(MSource::session(1, 0), 5 << 16, 1);
+    let delta = crdt_model::ops::create(&mut w, &Ty::List(Box::new(Ty::Register)), &MV::List((0..n).map(|i| MV::Str(format!("{i:03}{}", "x".repeat(128 * 1024 - pad)))).collect()));
+    let d = Delta { nonce: [7; 16], fragment: frag(&delta) };
+    (delta, writer_cx(&w), d)
 }
 
 /// §3.3 rule 3: a list run closes once its content reaches `CHUNK_MAX` bytes, so 65 values of
@@ -593,14 +535,8 @@ fn value_less_embedding_spec_7() {
 /// within `CHUNK_MAX` plus one element; it round-trips.
 #[test]
 fn list_run_closes_at_chunk_max_spec_3_3() {
-    use crdt_model::value::Value as MV;
-    let ty = crdt_model::ops::Ty::List(Box::new(crdt_model::ops::Ty::Register));
-    let mut w = crdt_model::ops::Writer::new(crdt_model::stamp::Source::session(1, 0), 5 << 16, 1);
-    let big = |i: usize| MV::Str(format!("{i:03}{}", "x".repeat(128 * 1024 - 16)));
-    let delta = crdt_model::ops::create(&mut w, &ty, &MV::List((0..65).map(big).collect()));
-    let mbytes = crdt_model::wire::encode_delta(&delta, [7; 16], &mut crdt_model::wire::Ctx::new(w.ts, w.source.clone(), w.lo));
-    let cx = crate::tests_wire::writer_cx(&w);
-    let d = Delta { nonce: [7; 16], fragment: crate::testutil::frag(&delta) };
+    let (delta, cx, d) = big_list(65, 16);
+    let mbytes = crdt_model::wire::encode_delta(&delta, [7; 16], &mut crdt_model::wire::Ctx::new(5 << 16, MSource::session(1, 0), 1));
     let mut flat = MemoryPages::with_params(PageParams { target: usize::MAX, ..PageParams::FORMAT });
     let bytes = encode_delta(&d, &cx, Some(&mut flat)).unwrap();
     assert_eq!(bytes, mbytes, "the model's bytes");
@@ -610,7 +546,7 @@ fn list_run_closes_at_chunk_max_spec_3_3() {
     let Some(Value::List(runs)) = f.get(3) else { panic!() };
     // two elements stay just below 256 KiB, three reach it: 21 runs of 3, one of 2
     assert_eq!(runs.len(), 22);
-    let mut rec = Recording { inner: MemoryPages::new(), pages: Vec::new() };
+    let mut rec = Recording::new(PageParams::FORMAT);
     let paged = encode_delta(&d, &cx, Some(&mut rec)).unwrap();
     assert!(rec.pages.iter().all(|p| p.len() < osis_base::format::CHUNK_MAX + 3 * 128 * 1024), "pages {:?}", rec.pages.iter().map(Vec::len).collect::<Vec<_>>());
     assert_eq!(decode_delta(&paged, &cx, &mut Interner::new(), Some(&mut rec.inner)).unwrap().fragment, d.fragment);
@@ -619,12 +555,7 @@ fn list_run_closes_at_chunk_max_spec_3_3() {
 /// §3.3 rule 7: a list run whose content goes on past `CHUNK_MAX` bytes is rejected.
 #[test]
 fn rejects_list_run_past_chunk_max_spec_3_3() {
-    use crdt_model::value::Value as MV;
-    let ty = crdt_model::ops::Ty::List(Box::new(crdt_model::ops::Ty::Register));
-    let mut w = crdt_model::ops::Writer::new(crdt_model::stamp::Source::session(1, 0), 5 << 16, 1);
-    let delta = crdt_model::ops::create(&mut w, &ty, &MV::List((0..6).map(|i| MV::Str(format!("{i}{}", "x".repeat(128 * 1024)))).collect()));
-    let cx = crate::tests_wire::writer_cx(&w);
-    let d = Delta { nonce: [7; 16], fragment: crate::testutil::frag(&delta) };
+    let (_, cx, d) = big_list(6, 0);
     let mut flat = MemoryPages::with_params(PageParams { target: usize::MAX, ..PageParams::FORMAT });
     let bytes = encode_delta(&d, &cx, Some(&mut flat)).unwrap();
     assert!(decode_delta(&bytes, &cx, &mut Interner::new(), Some(&mut flat)).is_ok());
@@ -649,6 +580,14 @@ fn rejects_list_run_past_chunk_max_spec_3_3() {
     assert!(e.to_string().contains("not canonical"), "{e}");
 }
 
+fn s(v: &str) -> Value {
+    Value::Str(v.into())
+}
+/// The map `{"k": v}`.
+fn kmap(v: Value) -> Value {
+    Value::Map([(s("k"), v)].into_iter().collect())
+}
+
 /// spec/permissions.md §5.2 (a delta's writes count while it is valid; copies), spec/crdt.md §5.6:
 /// a snapshot carrying an entry another node created, holding only a held delta's write inside
 /// it, stripped of that delta's copies keeps the creation, so its join gives the entry its
@@ -656,33 +595,20 @@ fn rejects_list_run_past_chunk_max_spec_3_3() {
 /// creation: one held set, two states). Alone it joins nothing.
 #[test]
 fn stripped_entry_keeps_others_creation_spec_perm_5_2() {
-    use crate::ops::{Writer, create};
-    use crate::view::AnyView;
-    use crate::PathSeg;
-    use osis_base::{Tid, Value};
-    let (a, b) = (sess(Tid::from_bytes([1; 15])), sess(Tid::from_bytes([2; 15])));
-    let k = Value::Str("k".into());
-    let w1 = create(&mut Writer::new(ts(1), a, 1), &AnyView, &Value::Map(osis_base::ValueMap::from([(k.clone(), Value::Int(1))]))).unwrap();
-    let mut builder = DeltaBuilder::new(&w1, Writer::new(ts(2), b.clone(), 1));
-    builder.apply(&PathOp { path: vec![PathSeg::Key(k)], op: Op::Set(Value::Int(2)) }, &AnyView).unwrap();
+    let w1 = create(&mut Writer::new(ts(1), node(1), 1), &AnyView, &kmap(Value::Int(1))).unwrap();
+    let mut builder = DeltaBuilder::new(&w1, Writer::new(ts(2), node(2), 1));
+    builder.apply(&PathOp { path: vec![crate::PathSeg::Key(s("k"))], op: Op::Set(Value::Int(2)) }, &AnyView).unwrap();
     let (w2, _) = builder.finish().unwrap();
-    let mut snap = w1.clone();
-    snap.join(w2.clone());
+    let snap = joined(&w1, &w2);
     let mut stripped = snap.clone();
-    stripped.remove_writes(&|d| d.src == b);
-    let mut first = w2.clone();
-    first.join(stripped.clone());
-    let mut then = snap.clone();
-    then.join(w2.clone());
-    assert_eq!(first, then, "the delta first, the stripped snapshot after; the snapshot first");
+    stripped.remove_writes(&|d| d.src == node(2));
+    let then = joined(&snap, &w2);
+    assert_eq!(joined(&w2, &stripped), then, "the delta first, the stripped snapshot after; the snapshot first");
     // an un-merge of another author's dots (a rebuild) keeps the creation for the join too
     let mut unmerged = stripped.clone();
-    unmerged.remove_writes(&|d| d.src == sess(Tid::from_bytes([3; 15])));
-    let mut later = w2.clone();
-    later.join(unmerged);
-    assert_eq!(later, then, "removing others' dots kept the creation");
-    let mut alone = Fragment::default();
-    alone.join(stripped);
+    unmerged.remove_writes(&|d| d.src == node(3));
+    assert_eq!(joined(&w2, &unmerged), then, "removing others' dots kept the creation");
+    let alone = joined(&Fragment::default(), &stripped);
     assert!(alone.read().is_none_or(|v| v == Value::Map(osis_base::ValueMap::new())), "a creation alone joins nothing: {alone:?}");
 }
 
@@ -694,55 +620,40 @@ fn stripped_entry_keeps_others_creation_spec_perm_5_2() {
 #[test]
 fn copies_under_two_keys_expire_alike_spec_4_7() {
     use crate::fragment::{Eid, Entry, Map, Meta};
-    use crate::seq::{Anchor, Seq, SeqContent, SeqElem};
+    use crate::seq::{Anchor, SeqContent};
     use crate::stamp::Stamp;
     use std::collections::BTreeMap;
-    let s = sess(Tid::from_bytes([1; 15]));
-    let st = |c: u64| Stamp::new(ts(1 << 16), s.clone(), c);
-    let (d, e, f) = (Dot::new(s.clone(), 1), Dot::new(s.clone(), 2), Dot::new(s.clone(), 3));
+    let st = |c: u64| Stamp::new(ts(1 << 16), node(1), c);
+    let (d, e, f) = (Dot::new(node(1), 1), Dot::new(node(1), 2), Dot::new(node(1), 3));
     let copy = |key: &str, anchor: Anchor, c: char| {
-        let mut el = SeqElem::bare();
-        el.created = Some((st(2), anchor.clone()));
-        el.content = SeqContent::Char(c);
-        el.pos = vec![(st(2), anchor, None)];
+        let el = SeqElem { created: Some((st(2), anchor.clone())), content: SeqContent::Char(c), pos: vec![(st(2), anchor, None)], ..SeqElem::bare() };
         let text = Fragment::Seq(Seq::new(true, Meta::default(), BTreeMap::from([(e.clone(), el)])));
         let entry = Entry { reset: None, frag: Some(Box::new(text)), created: Some(st(1)) };
-        let mut m = Fragment::Map(Map::new(Meta::default(), BTreeMap::from([(Eid::new(d.clone(), Some(Value::Str(key.into()))), entry)])));
+        let mut m = Fragment::Map(Map::new(Meta::default(), BTreeMap::from([(Eid::new(d.clone(), Some(s(key))), entry)])));
         m.prune(None, &mut crate::Changes::new());
         m
     };
     let (a, b) = (copy("b", Anchor::Head, 'x'), copy("a", Anchor::Dot(f), 'y'));
-    let both = join(&a, &b);
-    assert_eq!(both, join(&b, &a));
-    assert_eq!(both.read(), Some(Value::Map(osis_base::ValueMap::from([(Value::Str("b".into()), Value::Str("y".into()))]))), "the greater key, anchor and char");
-    let exp = |x: &Dot| x.src == s;
-    let strip = |x: &Fragment| {
-        let mut y = x.clone();
-        y.strip(&exp);
-        y
-    };
+    let both = joined(&a, &b);
+    assert_eq!(both, joined(&b, &a));
+    assert_eq!(both.read(), Some(Value::Map(osis_base::ValueMap::from([(s("b"), s("y"))]))), "the greater key, anchor and char");
+    let strip = |x: &Fragment| stripped(x, &|x: &Dot| x.src == node(1));
     let late = strip(&both);
-    assert_eq!(strip(&join(&strip(&a), &strip(&b))), late, "expired before the join");
-    assert_eq!(strip(&join(&a, &strip(&b))), late, "one copy expired before the join");
-    assert_eq!(strip(&join(&strip(&a), &b)), late, "the other");
+    assert_eq!(strip(&joined(&strip(&a), &strip(&b))), late, "expired before the join");
+    assert_eq!(strip(&joined(&a, &strip(&b))), late, "one copy expired before the join");
+    assert_eq!(strip(&joined(&strip(&a), &b)), late, "the other");
 }
 
-/// spec/commits.md §5 (an element's or entry's tombstone is not one of its creator's): a removed map entry's tombstone, keyed by its dot,
-/// holds the remover's reset, not the creator's write.
+/// spec/commits.md §5 (an element's or entry's tombstone is not one of its creator's): a removed
+/// map entry's tombstone, keyed by its dot, holds the remover's reset, not the creator's write.
 #[test]
 fn entry_tombstone_is_no_live_write_spec_commits_5() {
-    use crate::ops::{Writer, create};
-    use crate::view::AnyView;
-    use osis_base::{Tid, Value};
-    let (a, b) = (sess(Tid::from_bytes([1; 15])), sess(Tid::from_bytes([2; 15])));
-    let k = Value::Str("k".into());
-    let mut st = create(&mut Writer::new(ts(1), a.clone(), 1), &AnyView, &Value::Map(osis_base::ValueMap::from([(k.clone(), Value::Int(1))]))).unwrap();
-    let owned = |s: &Source, lo: u64, _: u64| *s == a && lo <= 1;
+    let mut st = create(&mut Writer::new(ts(1), node(1), 1), &AnyView, &kmap(Value::Int(1))).unwrap();
+    let owned = |s: &Source, lo: u64, _: u64| *s == node(1) && lo <= 1;
     assert!(st.holds_owned_write(&owned));
-    let mut builder = DeltaBuilder::new(&st, Writer::new(ts(2), b, 1));
-    builder.apply(&PathOp { path: vec![], op: Op::Remove(k) }, &AnyView).unwrap();
-    let (rm, _) = builder.finish().unwrap();
-    st.join(rm);
+    let mut builder = DeltaBuilder::new(&st, Writer::new(ts(2), node(2), 1));
+    builder.apply(&PathOp { path: vec![], op: Op::Remove(s("k")) }, &AnyView).unwrap();
+    st.join(builder.finish().unwrap().0);
     assert!(st.holds_owned(&owned), "the tombstone is keyed by the entry's dot");
     assert!(!st.holds_owned_write(&owned), "but holds no write of its creator");
     let ours = |w: Vec<(crate::Dot, Option<osis_base::Ts>)>| w.iter().any(|(d, _)| owned(&d.src, d.ctr, d.ctr + 1));
@@ -753,170 +664,144 @@ fn entry_tombstone_is_no_live_write_spec_commits_5() {
 /// anchors, counts toward no presence, and a list whose elements all expired reads absent.
 #[test]
 fn expired_list_reads_absent_spec_crdt_4_3() {
-    use crate::ops::{Writer, create};
-    use crate::view::AnyView;
-    let x = sess(Tid::from_bytes([1; 15]));
-    let mut f = create(&mut Writer::new(ts(5), x.clone(), 1), &AnyView, &Value::List(vec![Value::Int(1), Value::Int(2)])).unwrap();
-    f.strip(&|d| d.src == x);
+    let f = create(&mut Writer::new(ts(5), node(1), 1), &AnyView, &Value::List(vec![Value::Int(1), Value::Int(2)])).unwrap();
+    let f = stripped(&f, &|d| d.src == node(1));
     assert!(!f.present());
     assert_eq!(f.read(), None);
 }
 
-/// spec/sync-compaction.md §1: a sweep resets what a removal hid, once, so the join leaves no repeated key;
-/// never a record merely lacking its creation or a value (one expired here), a live one or an
-/// empty tombstone.
+/// A list of maps of registers.
+fn map_list() -> TyView {
+    TyView(Ty::List(Box::new(Ty::Map(Box::new(Ty::Register), Box::new(Ty::Register)))))
+}
+
+/// spec/sync-compaction.md §1: a sweep resets what a removal hid, once, so the join leaves no
+/// repeated key; never a record merely lacking its creation or a value (one expired here), a live
+/// one or an empty tombstone.
 #[test]
 fn sweep_takes_only_what_is_hidden_spec_sync_7() {
-    use crate::ops::{Writer, create};
-    use crate::view::AnyView;
-    let (x, y) = (sess(Tid::from_bytes([1; 15])), sess(Tid::from_bytes([2; 15])));
-    let map = |v: &str| Value::Map([(Value::Str("k".into()), Value::Str(v.into()))].into_iter().collect());
-    let put = create(&mut Writer::new(ts(5), x.clone(), 1), &AnyView, &map("a")).unwrap();
-    let edit = crate::diff(&mut Writer::new(ts(9), y.clone(), 1), Some(&put), &AnyView, &map("b")).unwrap().unwrap();
-    let w = Writer::new(ts(20), y.clone(), 5);
-    let r = w.delta_stamp();
-    assert_eq!(put.sweep(&r, &|_| false), None, "a live entry");
-    assert_eq!(edit.sweep(&r, &|_| false), None, "the creation not held: it may still arrive");
-    let dot = Dot::new(x.clone(), 1);
-    let removal = crate::reset_entries(&Writer::new(ts(7), x.clone(), 3), &[(dot.clone(), Value::Str("k".into()))]);
-    let mut gone = put.clone();
-    gone.join(removal.clone());
-    assert_eq!(gone.sweep(&r, &|_| false), None, "a tombstone holds nothing");
-    let mut hid = gone.clone();
-    hid.join(edit.clone());
+    let (x, y) = (node(1), node(2));
+    let r = Writer::new(ts(20), y.clone(), 5).delta_stamp();
+    let none = |f: &Fragment, why: &str| assert_eq!(f.sweep(&r, &|_| false), None, "{why}");
+    let mine = |d: &Dot| d.src == x;
+    let put = create(&mut Writer::new(ts(5), x.clone(), 1), &AnyView, &kmap(s("a"))).unwrap();
+    let edit = diff(&mut Writer::new(ts(9), y.clone(), 1), Some(&put), &AnyView, &kmap(s("b"))).unwrap().unwrap();
+    none(&put, "a live entry");
+    none(&edit, "the creation not held: it may still arrive");
+    let removal = crate::reset_entries(&Writer::new(ts(7), x.clone(), 3), &[(Dot::new(x.clone(), 1), s("k"))]);
+    let gone = joined(&put, &removal);
+    none(&gone, "a tombstone holds nothing");
+    let hid = joined(&gone, &edit);
     assert_eq!(hid.read(), Some(Value::Map(Default::default())));
     let sweep = hid.sweep(&r, &|_| false).expect("a removal hid the edit");
-    let mut after = hid.clone();
-    after.join(sweep.clone());
-    assert_eq!(after.sweep(&r, &|_| false), None, "once");
+    let after = joined(&hid, &sweep);
+    none(&after, "once");
     assert!(!after.holds_write(&Dot::new(y.clone(), 1)), "the edit is dead");
     let Fragment::Map(m) = &after else { panic!("a map") };
     assert!(m.entries.keys().all(|id| id.key.is_none()), "the key is gone");
-    let mine = |d: &crate::Dot| d.src == x;
-    let mut expired = put.clone();
-    expired.join(edit.clone());
-    expired.strip(&mine);
-    assert_eq!(expired.read(), Some(map("b")), "another's value keeps the entry");
-    assert_eq!(expired.sweep(&r, &|_| false), None, "a live entry");
-    let mut own = put.clone();
-    own.strip(&mine);
-    assert_eq!(own.sweep(&r, &|_| false), None, "expired, nothing else in it");
+    let expired = stripped(&joined(&put, &edit), &mine);
+    assert_eq!(expired.read(), Some(kmap(s("b"))), "another's value keeps the entry");
+    none(&expired, "a live entry");
+    none(&stripped(&put, &mine), "expired, nothing else in it");
+    // a text undelete over its held creation: a live char
+    let text = create(&mut Writer::new(ts(5), x.clone(), 1), &TyView(Ty::Text), &s("a")).unwrap();
+    let mut undel = Seq::empty(true);
+    undel.elems_mut().insert(Dot::new(x.clone(), 1), SeqElem { deleted: Some((Writer::new(ts(9), y.clone(), 1).delta_stamp(), false)), undel: Some('a'), ..SeqElem::bare() });
+    assert_eq!(joined(&text, &Fragment::Seq(undel)).sweep(&r, &|_| true), None, "a live char");
     // another's removal alone in an expired entry hides it
-    let nested = |m: Value| Value::Map([(Value::Str("k".into()), m)].into_iter().collect());
-    let put = create(&mut Writer::new(ts(5), x.clone(), 1), &AnyView, &nested(map("a"))).unwrap();
-    let removal = crate::diff(&mut Writer::new(ts(9), y.clone(), 1), Some(&put), &AnyView, &nested(Value::Map(Default::default()))).unwrap().unwrap();
-    let mut hid = put.clone();
-    hid.join(removal.clone());
-    hid.strip(&mine);
+    let put = create(&mut Writer::new(ts(5), x.clone(), 1), &AnyView, &kmap(kmap(s("a")))).unwrap();
+    let removal = diff(&mut Writer::new(ts(9), y.clone(), 1), Some(&put), &AnyView, &kmap(Value::Map(Default::default()))).unwrap().unwrap();
+    let hid = stripped(&joined(&put, &removal), &mine);
     assert_eq!(hid.read(), Some(Value::Map(Default::default())));
-    assert_eq!(hid.sweep(&r, &|_| false), None, "not removed: a valued write may still arrive");
+    none(&hid, "not removed: a valued write may still arrive");
     // a list element, nested in a live one
-    let ty = crate::testutil::TyView(Ty::List(Box::new(Ty::Map(Box::new(Ty::Register), Box::new(Ty::Register)))));
-    let list = create(&mut Writer::new(ts(5), x.clone(), 1), &ty, &Value::List(vec![map("a")])).unwrap();
-    let new = crate::diff(&mut Writer::new(ts(9), y.clone(), 1), Some(&list), &ty, &Value::List(vec![Value::Map(Default::default())])).unwrap().unwrap();
-    assert_eq!(list.sweep(&r, &|_| false), None, "a live element");
-    let mut over = list.clone();
-    over.join(new);
-    assert_eq!(over.sweep(&r, &|_| false), None, "a live element, emptied");
-    over.strip(&mine);
+    let ty = map_list();
+    let list = create(&mut Writer::new(ts(5), x.clone(), 1), &ty, &Value::List(vec![kmap(s("a"))])).unwrap();
+    let new = diff(&mut Writer::new(ts(9), y.clone(), 1), Some(&list), &ty, &Value::List(vec![Value::Map(Default::default())])).unwrap().unwrap();
+    none(&list, "a live element");
+    let over = joined(&list, &new);
+    none(&over, "a live element, emptied");
+    let over = stripped(&over, &mine);
     assert_eq!(over.read(), Some(Value::List(Vec::new())));
-    assert_eq!(over.sweep(&r, &|_| false), None, "not removed");
+    none(&over, "not removed");
     // a removed element with a newer write inside
-    let rm = crate::diff(&mut Writer::new(ts(7), x.clone(), 3), Some(&list), &ty, &Value::List(vec![])).unwrap().unwrap();
-    let edit = crate::diff(&mut Writer::new(ts(9), y.clone(), 1), Some(&list), &ty, &Value::List(vec![map("b")])).unwrap().unwrap();
-    let mut gone = list.clone();
-    gone.join(rm);
-    gone.join(edit);
+    let rm = diff(&mut Writer::new(ts(7), x.clone(), 3), Some(&list), &ty, &Value::List(vec![])).unwrap().unwrap();
+    let edit = diff(&mut Writer::new(ts(9), y.clone(), 1), Some(&list), &ty, &Value::List(vec![kmap(s("b"))])).unwrap().unwrap();
+    let mut gone = joined(&joined(&list, &rm), &edit);
     assert_eq!(gone.read(), Some(Value::List(Vec::new())));
     let sweep = gone.sweep(&r, &|_| false).expect("its edit hidden");
     gone.join(sweep);
-    assert_eq!(gone.sweep(&r, &|_| false), None);
+    none(&gone, "once");
     assert!(!gone.holds_write(&Dot::new(y, 1)));
 }
 
-/// spec/sync-compaction.md §1, spec/crdt.md §5.6 Live: a live map record reads as its fragment joined with its dot's
-/// key-erased record's, and the sweep judges it so. x puts `{k: [1]}`, y edits the element to 2, x's
-/// commit expires: the element's creation moves, value-less, to the key-erased record while y's
-/// write stays under `k`. The element shows y's value; it is not swept though x's delta is reflected.
+/// spec/sync-compaction.md §1, spec/crdt.md §5.6 Live: a live map record reads as its fragment
+/// joined with its dot's key-erased record's, and the sweep judges it so. x puts `{k: [1]}`, y
+/// edits the element to 2, x's commit expires: the element's creation moves, value-less, to the
+/// key-erased record while y's write stays under `k`. The element shows y's value; it is not swept
+/// though x's delta is reflected.
 #[test]
 fn sweep_reads_a_live_record_with_its_key_erased_record_spec_sync_7() {
-    use crate::ops::{Writer, create};
-    let (x, y) = (sess(Tid::from_bytes([1; 15])), sess(Tid::from_bytes([2; 15])));
-    let ty = crate::testutil::TyView(Ty::Map(Box::new(Ty::Register), Box::new(Ty::List(Box::new(Ty::Register)))));
-    let val = |i: i64| Value::Map([(Value::Str("k".into()), Value::List(vec![Value::Int(i)]))].into_iter().collect());
-    let put = create(&mut Writer::new(ts(5), x.clone(), 1), &ty, &val(1)).unwrap();
-    let edit = crate::diff(&mut Writer::new(ts(9), y.clone(), 1), Some(&put), &ty, &val(2)).unwrap().unwrap();
-    let mut st = put;
-    st.join(edit);
-    let xs = [(x, 1, 9)];
-    st.strip(&in_ranges(&xs));
+    let ty = TyView(Ty::Map(Box::new(Ty::Register), Box::new(Ty::List(Box::new(Ty::Register)))));
+    let val = |i: i64| kmap(Value::List(vec![Value::Int(i)]));
+    let put = create(&mut Writer::new(ts(5), node(1), 1), &ty, &val(1)).unwrap();
+    let edit = diff(&mut Writer::new(ts(9), node(2), 1), Some(&put), &ty, &val(2)).unwrap().unwrap();
+    let xs = [(node(1), 1, 9)];
+    let st = stripped(&joined(&put, &edit), &in_ranges(&xs));
     assert_eq!(st.read(), Some(val(2)));
-    assert_eq!(st.sweep(&Writer::new(ts(20), y, 5).delta_stamp(), &in_ranges(&xs)), None, "the element shows");
+    assert_eq!(st.sweep(&Writer::new(ts(20), node(2), 5).delta_stamp(), &in_ranges(&xs)), None, "the element shows");
 }
 
-/// spec/sync-compaction.md §1: a creation a parent's reset pruned is dead once the state reflects its delta, so
-/// what was written into its record since goes (a map entry, a list element, a text undelete's
-/// char); the record merely lacking its creation (not received, or its delta invalid) stays, and so
-/// does an enum's payload of a case not current, which a concurrent case write may show.
+/// spec/sync-compaction.md §1: a creation a parent's reset pruned is dead once the state reflects
+/// its delta, so what was written into its record since goes (a map entry, a list element, a text
+/// undelete's char); the record merely lacking its creation (not received, or its delta invalid)
+/// stays, and so does an enum's payload of a case not current, which a concurrent case write may
+/// show.
 #[test]
 fn sweep_takes_what_a_parent_reset_hid_spec_sync_7() {
-    use crate::ops::{Writer, create, diff, replace};
-    use crate::seq::{Seq, SeqElem};
-    use crate::view::AnyView;
-    let (x, y, z) = (sess(Tid::from_bytes([1; 15])), sess(Tid::from_bytes([2; 15])), sess(Tid::from_bytes([3; 15])));
-    let r = Writer::new(ts(20), z.clone(), 9).delta_stamp();
+    let (x, y, z) = (node(1), node(2), node(3));
+    let zw = Writer::new(ts(20), z.clone(), 9);
+    let r = zw.delta_stamp();
     let xs = [(x.clone(), 1, 9)];
     let reflected = in_ranges(&xs);
     // each: x creates at 5, y writes inside at 9, z replaces the parent at 7
     let check = |what: &str, put: Fragment, edit: Fragment, over: Fragment| {
-        let mut st = put.clone();
-        st.join(over.clone());
-        st.join(edit.clone());
+        let st = joined(&joined(&put, &over), &edit);
         let want = st.read();
-        let mut partial = over.clone();
-        partial.join(edit.clone());
+        let partial = joined(&over, &edit);
         assert_eq!(partial.sweep(&r, &|_| false), None, "{what}: the creation may arrive");
         assert_eq!(st.sweep(&r, &|_| false), None, "{what}: its delta not reflected (invalid)");
         let sw = st.sweep(&r, &reflected).unwrap_or_else(|| panic!("{what}: swept"));
-        let cx = DeltaCtx { ts: ts(20), own: z.clone(), range: Writer::new(ts(20), z.clone(), 9).range(), kind: DeltaKind::Writer };
-        let bytes = encode_delta(&Delta { nonce: [0; 16], fragment: sw.clone() }, &cx, None).unwrap();
-        assert_eq!(decode_delta(&bytes, &cx, &mut Interner::new(), None).unwrap().fragment, sw, "{what}: the wire");
-        let mut after = st.clone();
-        after.join(sw.clone());
+        assert_eq!(wired(&sw, &ctx_of(&zw)), sw, "{what}: the wire");
+        let after = joined(&st, &sw);
         assert_eq!(after.read(), want, "{what}: the read");
         assert!(!after.holds_write(&Dot::new(y.clone(), 1)), "{what}: the edit is dead");
         assert_eq!(after.sweep(&r, &reflected), None, "{what}: once");
         // the late creation, or the partial view swept, read alike
-        let mut late = partial.clone();
-        late.join(sw);
-        late.join(put);
-        assert_eq!(late.read(), want, "{what}: a late creation stays dead");
+        assert_eq!(joined(&joined(&partial, &sw), &put).read(), want, "{what}: a late creation stays dead");
     };
-    let map = |v: &str| Value::Map([(Value::Str("k".into()), Value::Str(v.into()))].into_iter().collect());
-    let put = create(&mut Writer::new(ts(5), x.clone(), 1), &AnyView, &map("a")).unwrap();
-    let edit = diff(&mut Writer::new(ts(9), y.clone(), 1), Some(&put), &AnyView, &map("b")).unwrap().unwrap();
+    let put = create(&mut Writer::new(ts(5), x.clone(), 1), &AnyView, &kmap(s("a"))).unwrap();
+    let edit = diff(&mut Writer::new(ts(9), y.clone(), 1), Some(&put), &AnyView, &kmap(s("b"))).unwrap().unwrap();
     let over = replace(&mut Writer::new(ts(7), z.clone(), 1), &AnyView, &Value::Map(Default::default())).unwrap();
     check("map entry", put, edit, over);
-    let ty = crate::testutil::TyView(Ty::List(Box::new(Ty::Map(Box::new(Ty::Register), Box::new(Ty::Register)))));
-    let put = create(&mut Writer::new(ts(5), x.clone(), 1), &ty, &Value::List(vec![map("a")])).unwrap();
-    let edit = diff(&mut Writer::new(ts(9), y.clone(), 1), Some(&put), &ty, &Value::List(vec![map("b")])).unwrap().unwrap();
-    let over = replace(&mut Writer::new(ts(7), z.clone(), 1), &ty, &Value::List(vec![map("c")])).unwrap();
+    let ty = map_list();
+    let put = create(&mut Writer::new(ts(5), x.clone(), 1), &ty, &Value::List(vec![kmap(s("a"))])).unwrap();
+    let edit = diff(&mut Writer::new(ts(9), y.clone(), 1), Some(&put), &ty, &Value::List(vec![kmap(s("b"))])).unwrap().unwrap();
+    let over = replace(&mut Writer::new(ts(7), z.clone(), 1), &ty, &Value::List(vec![kmap(s("c"))])).unwrap();
     check("list element", put, edit, over);
-    let text = crate::testutil::TyView(Ty::Text);
-    let put = create(&mut Writer::new(ts(5), x.clone(), 1), &text, &Value::Str("a".into())).unwrap();
+    let text = TyView(Ty::Text);
+    let put = create(&mut Writer::new(ts(5), x.clone(), 1), &text, &s("a")).unwrap();
     let mut undel = Seq::empty(true);
     undel.elems_mut().insert(Dot::new(x.clone(), 1), SeqElem { deleted: Some((Writer::new(ts(9), y.clone(), 1).delta_stamp(), false)), undel: Some('a'), ..SeqElem::bare() });
-    let over = replace(&mut Writer::new(ts(7), z.clone(), 1), &text, &Value::Str("c".into())).unwrap();
+    let over = replace(&mut Writer::new(ts(7), z.clone(), 1), &text, &s("c")).unwrap();
     check("text undelete", put, Fragment::Seq(undel), over);
     // an enum: case 1 by x at 5, case 2 by z at 7, an edit of case 1's payload by y at 9
-    let ety = crate::testutil::TyView(Ty::Enum([(1, Some(Ty::Register)), (2, None)].into_iter().collect()));
-    let one = |v: &str| Value::Enum(1, Some(Box::new(Value::Str(v.into()))));
+    let ety = TyView(Ty::Enum([(1, Some(Ty::Register)), (2, None)].into_iter().collect()));
+    let one = |v: &str| Value::Enum(1, Some(Box::new(s(v))));
     let put = create(&mut Writer::new(ts(5), x.clone(), 1), &ety, &one("a")).unwrap();
     let edit = diff(&mut Writer::new(ts(9), y.clone(), 1), Some(&put), &ety, &one("b")).unwrap().unwrap();
     let two = diff(&mut Writer::new(ts(7), z.clone(), 1), Some(&put), &ety, &Value::Enum(2, None)).unwrap().unwrap();
-    let mut st = put.clone();
-    st.join(two);
-    st.join(edit);
+    let mut st = joined(&joined(&put, &two), &edit);
     assert_eq!(st.read(), Some(Value::Enum(2, None)));
     assert_eq!(st.sweep(&r, &|_| true), None, "a payload of a case not current");
     // a concurrent case write stamped between the case change and the edit, arriving late
@@ -943,14 +828,11 @@ fn bare(f: &Fragment) -> u64 {
     }
 }
 
-/// spec/sync-compaction.md §1: a sweep takes at most `MAX_DELTA_BARE` content-less elements, so it is a
-/// valid writer delta whatever is hidden; sweeps again take the rest until none is left.
+/// spec/sync-compaction.md §1: a sweep takes at most `MAX_DELTA_BARE` content-less elements, so it
+/// is a valid writer delta whatever is hidden; sweeps again take the rest until none is left.
 #[test]
 fn sweep_is_bounded_and_finishes_spec_sync_7() {
-    use crate::ops::{Writer, replace};
-    use crate::seq::{Seq, SeqElem};
-    let (x, y, z) = (sess(Tid::from_bytes([1; 15])), sess(Tid::from_bytes([2; 15])), sess(Tid::from_bytes([3; 15])));
-    let text = crate::testutil::TyView(Ty::Text);
+    let (x, y, z) = (node(1), node(2), node(3));
     // x wrote a text, y undeletes all of it, z replaces it concurrently: every char is hidden
     let n = osis_base::format::MAX_DELTA_BARE + 3;
     // x's creation is held nowhere (the replace pruned it), its delta reflected
@@ -959,10 +841,9 @@ fn sweep_is_bounded_and_finishes_spec_sync_7() {
     for c in 1..=n {
         undel.elems_mut().insert(Dot::new(x.clone(), c), SeqElem { deleted: Some((at.clone(), false)), undel: Some('a'), ..SeqElem::bare() });
     }
-    let over = replace(&mut Writer::new(ts(7), z.clone(), 1), &text, &Value::Str("c".into())).unwrap();
-    let mut st = over;
+    let mut st = replace(&mut Writer::new(ts(7), z.clone(), 1), &TyView(Ty::Text), &s("c")).unwrap();
     st.join(Fragment::Seq(undel));
-    let xs = [(x.clone(), 1, n + 1)];
+    let xs = [(x, 1, n + 1)];
     let reflected = in_ranges(&xs);
     let want = st.read();
     let mut steps = 0;
@@ -970,8 +851,7 @@ fn sweep_is_bounded_and_finishes_spec_sync_7() {
         let w = Writer::new(ts(20 + k), z.clone(), 9);
         let Some(sw) = st.sweep(&w.delta_stamp(), &reflected) else { break };
         assert!(bare(&sw) <= osis_base::format::MAX_DELTA_BARE, "step {k}: {} elements", bare(&sw));
-        let cx = DeltaCtx { ts: ts(20 + k), own: z.clone(), range: w.range(), kind: DeltaKind::Writer };
-        encode_delta(&Delta { nonce: [0; 16], fragment: sw.clone() }, &cx, None).expect("a valid writer delta");
+        encode_delta(&Delta { nonce: [0; 16], fragment: sw.clone() }, &ctx_of(&w), None).expect("a valid writer delta");
         st.join(sw);
         steps += 1;
     }
@@ -998,17 +878,16 @@ fn shown(v: Value) -> Option<Value> {
     }
 }
 
-/// spec/sync-compaction.md §1: a sweep from any stale view (a random part of the commits, a random part of the
-/// expiries) changes no read, there or at a node holding everything; it is a valid writer delta;
-/// joined back it finds nothing more, so a compaction does not write forever.
-pub(crate) fn sweep_laws(seed: u64, ty: &Ty) -> usize {
-    use crate::ops::Writer;
+/// spec/sync-compaction.md §1: a sweep from any stale view (a random part of the commits, a random
+/// part of the expiries) changes no read, there or at a node holding everything; it is a valid
+/// writer delta; joined back it finds nothing more, so a compaction does not write forever; swept
+/// one content-less element at a time it ends where it would at once.
+fn sweep_laws(seed: u64, ty: &Ty) -> usize {
     let mut r = crate::testutil::rng(seed | 1);
     let commits = crate::testutil::history_honest(&mut r, std::slice::from_ref(ty), 3, 5);
     let bodies: Vec<Fragment> = commits.iter().map(|c| frag(&c.delta)).collect();
     let ranges: Vec<Range> = commits.iter().map(|c| (source(&c.w.source), c.w.lo, c.w.hi())).collect();
-    let me = sess(Tid::from_bytes([250; 15]));
-    let w = Writer::new(ts(1 << 40), me.clone(), 1);
+    let w = Writer::new(ts(1 << 40), node(250), 1);
     let stamp = w.delta_stamp();
     let mut swept = 0;
     for _ in 0..6 {
@@ -1024,12 +903,8 @@ pub(crate) fn sweep_laws(seed: u64, ty: &Ty) -> usize {
         let reflected = in_ranges(&held);
         let Some(sw) = view.sweep(&stamp, &reflected) else { continue };
         swept += 1;
-        let cx = DeltaCtx { ts: ts(1 << 40), own: me.clone(), range: w.range(), kind: DeltaKind::Writer };
-        let bytes = encode_delta(&Delta { nonce: [0; 16], fragment: sw.clone() }, &cx, None).unwrap();
-        assert_eq!(decode_delta(&bytes, &cx, &mut Interner::new(), None).unwrap().fragment, sw, "the wire");
-        let mut after = view.clone();
-        after.join(sw.clone());
-        after.strip(&in_ranges(&gone));
+        assert_eq!(wired(&sw, &ctx_of(&w)), sw, "the wire");
+        let after = stripped(&joined(&view, &sw), &in_ranges(&gone));
         assert_eq!(after.read(), view.read(), "the view's read");
         assert_eq!(after.sweep(&stamp, &reflected), None, "swept once");
         // swept a content-less element at a time, over as many commits as that takes: the same
@@ -1040,16 +915,10 @@ pub(crate) fn sweep_laws(seed: u64, ty: &Ty) -> usize {
             assert!(bare(&part) <= 1, "one element per step");
             stepped.join(part);
         }
-        stepped.strip(&in_ranges(&gone));
-        assert!(stepped == after, "swept in steps");
-        let mut all = Fragment::default();
-        for b in &bodies {
-            all.join(b.clone());
-        }
-        all.strip(&in_ranges(&expired));
+        assert!(stripped(&stepped, &in_ranges(&gone)) == after, "swept in steps");
+        let all = stripped(&bodies.iter().fold(Fragment::default(), |f, b| joined(&f, b)), &in_ranges(&expired));
         let want = all.read();
-        all.join(sw);
-        all.strip(&in_ranges(&expired));
+        let all = stripped(&joined(&all, &sw), &in_ranges(&expired));
         assert_eq!(all.read().and_then(shown), want.and_then(shown), "the read of a node holding everything");
     }
     swept

@@ -383,7 +383,7 @@ mod entry_copies {
             let mbytes = crdt_model::wire::encode_snapshot(&m, &[], [3; 16], &mut crdt_model::wire::Ctx::new(1 << 40, Source::session(250, 0), 1));
             let bytes = snapshot_bytes(&f);
             assert_eq!(bytes, mbytes, "the model's bytes");
-            let back = crate::codec::decode_snapshot(&bytes, &crate::tests_wire::snap_cx(), &mut crate::stamp::Interner::new(), None).unwrap();
+            let back = crate::codec::decode_snapshot(&bytes, &crate::testutil::snap_cx(), &mut crate::stamp::Interner::new(), None).unwrap();
             assert_eq!(back.fragment, f, "round trip");
             assert_eq!(join(&back.fragment, &f), f);
         }
@@ -406,14 +406,14 @@ mod entry_copies {
         for f in [join(&fc, &ff), join(&ff, &fc)] {
             let bytes = snapshot_bytes(&f);
             assert_eq!(bytes, mbytes, "the model's bytes");
-            let back = crate::codec::decode_snapshot(&bytes, &crate::tests_wire::snap_cx(), &mut crate::stamp::Interner::new(), None).unwrap();
+            let back = crate::codec::decode_snapshot(&bytes, &crate::testutil::snap_cx(), &mut crate::stamp::Interner::new(), None).unwrap();
             assert_eq!(back.fragment, f, "round trip");
         }
     }
 
     fn snapshot_bytes(f: &Fragment) -> Vec<u8> {
         let s = crate::wire::Snapshot { absorbed: Default::default(), facts: Default::default(), nonce: [3; 16], fragment: f.clone(), frontiers: Default::default() };
-        crate::codec::encode_snapshot(&s, &crate::tests_wire::snap_cx(), None).unwrap()
+        crate::codec::encode_snapshot(&s, &crate::testutil::snap_cx(), None).unwrap()
     }
 
     /// A slot's copy of the register's write is the embedding of the register's winning copy

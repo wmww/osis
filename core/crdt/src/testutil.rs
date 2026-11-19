@@ -4,7 +4,8 @@
 use crate::fragment::{Bag, BagKind, CaseWrite, Elem, Encoding, Entry, Enum, Fragment, Map, Meta, RegWrite, Register, Set, Slots, Struct};
 use crate::seq::{Anchor, Seq, SeqContent, SeqElem};
 use crate::seq_span::nth;
-use crate::stamp::{Dot, Source, Stamp};
+use crate::stamp::{CounterRange, Dot, Source, Stamp};
+use crate::wire::{DeltaCtx, DeltaKind, Snapshot};
 use crdt_model::r#gen::{Rng, random_op};
 use crdt_model::ops::{Ty, Writer as MWriter};
 use crdt_model::state as m;
@@ -122,6 +123,63 @@ pub fn ts(t: u64) -> Ts {
 
 pub fn stamp(s: &crdt_model::stamp::Stamp) -> Stamp {
     Stamp { ts: ts(s.ts), dot: dot(&s.dot) }
+}
+
+/// Node `n`'s session source.
+pub fn node(n: u8) -> Source {
+    sess(Tid::from_bytes([n; 15]))
+}
+
+/// `a` joined with `b`.
+pub fn joined(a: &Fragment, b: &Fragment) -> Fragment {
+    let mut x = a.clone();
+    x.join(b.clone());
+    x
+}
+
+/// The read of a text, `None` when absent or not a string.
+pub fn reads(f: &Fragment) -> Option<String> {
+    match f.read() {
+        Some(Value::Str(x)) => Some(x),
+        _ => None,
+    }
+}
+
+/// A snapshot's context: node 250 at ts 2^40.
+pub fn snap_cx() -> DeltaCtx {
+    DeltaCtx { ts: ts(1 << 40), own: source(&crdt_model::stamp::Source::session(250, 0)), range: CounterRange::EMPTY, kind: DeltaKind::Snapshot }
+}
+
+/// Model writer `w`'s header as a writer's delta context.
+pub fn writer_cx(w: &MWriter) -> DeltaCtx {
+    DeltaCtx { ts: ts(w.ts), own: source(&w.source), range: CounterRange { lo: w.lo, hi: w.hi() }, kind: DeltaKind::Writer }
+}
+
+/// Writer `w`'s header as a writer's delta context.
+pub fn ctx_of(w: &crate::ops::Writer) -> DeltaCtx {
+    let s = w.delta_stamp();
+    DeltaCtx { ts: s.ts, own: s.dot.src, range: w.range(), kind: DeltaKind::Writer }
+}
+
+/// A snapshot of `f` with nothing else in it.
+pub fn snapshot(f: &Fragment) -> Snapshot {
+    Snapshot { absorbed: Default::default(), facts: Default::default(), nonce: [0; 16], fragment: f.clone(), frontiers: Default::default() }
+}
+
+/// The unpaged bytes of `snapshot(f)`.
+pub fn snapshot_bytes(f: &Fragment) -> Vec<u8> {
+    crate::encode_snapshot(&snapshot(f), &snap_cx(), None).unwrap()
+}
+
+/// `f` through a snapshot: deleted chars dropped, uniform stretches as range records (§3.3).
+pub fn via_snapshot(f: &Fragment) -> Fragment {
+    crate::decode_snapshot(&snapshot_bytes(f), &snap_cx(), &mut crate::stamp::Interner::new(), None).unwrap().fragment
+}
+
+/// Delta `d` through the wire under `cx` (deletes come back as range records).
+pub fn wired(d: &Fragment, cx: &DeltaCtx) -> Fragment {
+    let bytes = crate::encode_delta(&crate::wire::Delta { nonce: [0; 16], fragment: d.clone() }, cx, None).unwrap();
+    crate::decode_delta(&bytes, cx, &mut crate::stamp::Interner::new(), None).unwrap().fragment
 }
 
 fn ostamp(s: &Option<crdt_model::stamp::Stamp>) -> Option<Stamp> {
@@ -264,6 +322,11 @@ pub fn sink_no_seq() -> Ty {
         .into_iter()
         .collect(),
     )
+}
+
+/// A list of structs holding a register and a set.
+pub fn struct_list() -> Ty {
+    Ty::List(Box::new(Ty::Struct([(1, Ty::Register), (2, Ty::Set(Box::new(Ty::Register)))].into_iter().collect())))
 }
 
 /// Model join of a delta into an optional state (core/test/crdt-model/tests/props.rs `apply`).

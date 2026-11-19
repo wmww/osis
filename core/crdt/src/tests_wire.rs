@@ -4,7 +4,7 @@
 use crate::codec::{decode_delta, decode_snapshot, encode_delta, encode_snapshot};
 use crate::fragment::{Elem, Fragment, Meta, RegWrite, Register, Set};
 use crate::stamp::{CounterRange, Dot, Interner, Source, Stamp};
-use crate::testutil::{frag, sess, sess_value, source, ts};
+use crate::testutil::{frag, sess, sess_value, snap_cx, source, ts, writer_cx};
 use crate::wire::{Delta, DeltaCtx, DeltaKind, Frontiers, Snapshot};
 use crdt_model::ops::Ty;
 use crdt_model::stamp::Source as MSource;
@@ -12,14 +12,6 @@ use crdt_model::wire::Ctx;
 use osis_base::{Classified, ErrorClass, Tid, Value};
 use proptest::prelude::*;
 use std::collections::BTreeMap;
-
-pub(crate) fn writer_cx(w: &crdt_model::ops::Writer) -> DeltaCtx {
-    DeltaCtx { ts: ts(w.ts), own: source(&w.source), range: CounterRange { lo: w.lo, hi: w.hi() }, kind: DeltaKind::Writer }
-}
-
-pub(crate) fn snap_cx() -> DeltaCtx {
-    DeltaCtx { ts: ts(1 << 40), own: source(&MSource::session(250, 0)), range: CounterRange::EMPTY, kind: DeltaKind::Snapshot }
-}
 
 proptest! {
     /// §3.3 rule 7: the decoder never panics on arbitrary input.

@@ -1,23 +1,19 @@
 //! Sequence ops, net effect, undo, cut/paste, diff and `edit` (spec/crdt.md §4.5, §4.6, §5.7, §9).
 
 use crate::delta::DeltaBuilder;
-use crate::codec::{decode_delta, encode_delta};
 use crate::fragment::Fragment;
 use crate::ops::{Op, PathOp, PathSeg, Writer, create, diff, diff_values};
 use crate::seq::visible;
-use crate::stamp::{CounterRange, Interner, Source};
-use crate::testutil::{Pager, TyView, frag, mapply, ostate, sess, ts, value, writer};
+use crate::stamp::{CounterRange, Source};
+use crate::testutil::{Pager, TyView, frag, mapply, node, ostate, ts, value, via_snapshot, writer};
 use crate::undo::{Undone, undo};
-use crate::wire::{Delta, DeltaCtx, DeltaKind};
+use crate::wire::{DeltaCtx, DeltaKind};
 use crdt_model::r#gen::{Rng, random_value};
 use crdt_model::ops::{self as mops, Ty, Writer as MWriter};
 use crdt_model::state::Content;
-use osis_base::{Tid, Value};
+use osis_base::Value;
 use proptest::prelude::*;
 
-fn session_of(n: u8) -> Source {
-    sess(Tid::from_bytes([n; 15]))
-}
 fn s(x: &str) -> Value {
     Value::Str(x.into())
 }
@@ -79,7 +75,7 @@ fn history_state(r: &mut Rng, ty: &Ty, n: usize, rounds: usize, hold: u64) -> (O
     let Some(mut ms) = ms else { return (None, held) };
     ms.prune(None);
     let st = frag(&ms);
-    (Some(if r.chance(1, 3) { rebooted(&st) } else { st }), held)
+    (Some(if r.chance(1, 3) { via_snapshot(&st) } else { st }), held)
 }
 
 /// One replica: state, writer source, next counter, clock.
@@ -91,11 +87,11 @@ struct Replica {
 
 impl Replica {
     fn new(n: u8) -> Replica {
-        Replica { state: Fragment::default(), src: session_of(n), lo: 1 }
+        Replica { state: Fragment::default(), src: node(n), lo: 1 }
     }
     /// Writer `n` holding this replica's state.
     fn fork(&self, n: u8) -> Replica {
-        Replica { state: self.state.clone(), src: session_of(n), lo: 1 }
+        Replica { state: self.state.clone(), src: node(n), lo: 1 }
     }
     /// Applies `ops` as one commit at time `t`; the delta goes through the wire as a writer's.
     fn commit(&mut self, t: u64, ops: &[PathOp], view: &TyView) -> Option<(Fragment, Source, CounterRange)> {
@@ -116,17 +112,7 @@ impl Replica {
 /// A writer's delta through the wire: encoded and decoded under its header range (deletes come
 /// back as range records).
 fn wired(d: &Fragment, src: &Source, range: CounterRange, t: u64) -> Fragment {
-    let cx = DeltaCtx { ts: ts(t << 16), own: src.clone(), range, kind: DeltaKind::Writer };
-    let bytes = encode_delta(&Delta { nonce: [0; 16], fragment: d.clone() }, &cx, None).unwrap();
-    decode_delta(&bytes, &cx, &mut Interner::new(), None).unwrap().fragment
-}
-
-/// `f` through a snapshot: deleted chars dropped, uniform stretches as range records (§3.3).
-fn rebooted(f: &Fragment) -> Fragment {
-    let cx = crate::tests_wire::snap_cx();
-    let snap = crate::wire::Snapshot { absorbed: Default::default(), facts: Default::default(), nonce: [0; 16], fragment: f.clone(), frontiers: Default::default() };
-    let bytes = crate::encode_snapshot(&snap, &cx, None).unwrap();
-    crate::decode_snapshot(&bytes, &cx, &mut Interner::new(), None).unwrap().fragment
+    crate::testutil::wired(d, &DeltaCtx { ts: ts(t << 16), own: src.clone(), range, kind: DeltaKind::Writer })
 }
 
 fn op(o: Op) -> PathOp {
@@ -220,7 +206,7 @@ proptest! {
             let v = crdt_model::value::Value::Str(crdt_model::r#gen::random_text(&mut r, 20) + "s");
             reps[0].state.join(crate::testutil::frag(&crdt_model::ops::create(&mut mw, &Ty::Register, &v)));
         }
-        let mut a = Replica { state: if r.chance(1, 2) { rebooted(&reps[0].state) } else { reps[0].state.clone() }, src: session_of(3), lo: 1 };
+        let mut a = Replica { state: if r.chance(1, 2) { via_snapshot(&reps[0].state) } else { reps[0].state.clone() }, src: node(3), lo: 1 };
         let base = a.state.clone();
         let mut model: Vec<char> = read_str(&base).chars().collect();
         let mut ops = Vec::new();
@@ -253,7 +239,7 @@ proptest! {
         let o = random_list_op(&mut r, &a.state, &ty);
         let Some((d, src, range)) = a.commit(10, &[o], &view) else { return Ok(()) };
         let u = Undone { delta: &d, source: &src, range };
-        let mut w = Writer::new(ts(11 << 16), session_of(1), a.lo);
+        let mut w = Writer::new(ts(11 << 16), node(1), a.lo);
         let full = undo(&mut w, &u, &a.state, &before, &view).unwrap();
         prop_assert!(crate::undo::restores(&u) || w.copied().is_empty());
         if let Some(ud) = full {
@@ -275,7 +261,7 @@ proptest! {
             let st = ostate(&m);
             for k in 0..3u64 {
                 let v = value(&random_value(&mut r, &ty, 0));
-                let mut w = Writer::new(ts((100 + k) << 16), session_of(9), 1);
+                let mut w = Writer::new(ts((100 + k) << 16), node(9), 1);
                 let d = diff(&mut w, Some(&st), &TyView(ty.clone()), &v).unwrap();
                 let mut s2 = st.clone();
                 if let Some(d) = d {
@@ -298,7 +284,7 @@ proptest! {
         let new = base.replacen("beta", if r.chance(1, 2) { "BETA!" } else { "bet" }, 1);
         let ops = diff_values(Some(&s(base)), &s(&new), &text_view()).unwrap();
         let mut plain = a.state.clone();
-        let mut b = DeltaBuilder::new(&plain, Writer::new(ts(3 << 16), session_of(1), a.lo));
+        let mut b = DeltaBuilder::new(&plain, Writer::new(ts(3 << 16), node(1), a.lo));
         for o in &ops {
             b.apply(o, &text_view()).unwrap();
         }
@@ -341,12 +327,12 @@ proptest! {
 /// (state with its placement cached, the delta).
 fn hostile_moves(base: &Fragment, sibs: usize, moves: usize) -> (Fragment, Fragment) {
     let n = read_str(base).chars().count();
-    let mut b = Replica { state: base.clone(), src: session_of(2), lo: 1 };
+    let mut b = Replica { state: base.clone(), src: node(2), lo: 1 };
     for k in 0..sibs as u64 {
         b.commit(5000 + k, &[op(Op::Insert { at: 0, items: vec![s("h")] })], &text_view());
     }
     let Fragment::Seq(sq) = base else { panic!() };
-    let mut w = Writer::new(ts(4000 << 16), session_of(7), 1);
+    let mut w = Writer::new(ts(4000 << 16), node(7), 1);
     let step = n / moves;
     let elems = visible(sq).iter().step_by(step.max(1)).take(moves).map(|d| (d.clone(), crate::seq::SeqElem { pos: vec![(w.fresh(), crate::seq::Anchor::Head, None)], ..crate::seq::SeqElem::bare() })).collect();
     let d = Fragment::Seq(crate::seq::Seq::new(true, crate::fragment::Meta::default(), elems));
@@ -403,7 +389,7 @@ fn text_op_over_register_spec_7() {
     let reg = crdt_model::ops::create(&mut mw, &Ty::Register, &crdt_model::value::Value::Str("ab".into()));
     let mut st = Fragment::default();
     st.join(frag(&reg));
-    let mut a = Replica { state: st, src: session_of(3), lo: 1 };
+    let mut a = Replica { state: st, src: node(3), lo: 1 };
     a.commit(10, &[op(Op::Insert { at: 1, items: vec![s("x")] })], &text_view()).unwrap();
     assert_eq!(read_str(&a.state), "axb");
 }
@@ -418,7 +404,7 @@ fn reset_drops_old_records_spec_4_2() {
         a.commit(k + 1, &[op(Op::Insert { at: 5 * k as usize, items: vec![s("abcde")] })], &text_view());
     }
     let base = a.state.clone();
-    let mut b = Replica { state: base.clone(), src: session_of(2), lo: 1 };
+    let mut b = Replica { state: base.clone(), src: node(2), lo: 1 };
     let (newer, _, _) = b.commit(50, &[op(Op::Insert { at: 37, items: vec![s("q")] })], &text_view()).unwrap();
     let (d, _, _) = a.commit(40, &[op(Op::Replace(s("xyz")))], &text_view()).unwrap();
     let mut never = Fragment::default();
@@ -496,7 +482,7 @@ fn large_text_batch_is_net_effect_spec_4_5() {
         let (q, _, _) = c.commit(39, &[op(Op::Insert { at: 150, items: vec![s("Q")] })], &text_view()).unwrap();
         a.commit(40, &[op(Op::Delete { at: 100, len: 200 })], &text_view());
         a.state.join(q);
-        a.state = rebooted(&a.state);
+        a.state = via_snapshot(&a.state);
         let base = a.state.clone();
         let mut model: Vec<char> = read_str(&base).chars().collect();
         assert_eq!(model[100], 'Q');
@@ -633,11 +619,11 @@ fn paste_refuses_a_range_with_visible_text_spec_5_7() {
     // someone types inside the cut range (anchored at the hidden "c")
     let mut b = a.fork(2);
     let mut d = crate::seq::Seq::empty(true);
-    let st = crate::stamp::Stamp::new(ts(3 << 16), session_of(2), 1);
+    let st = crate::stamp::Stamp::new(ts(3 << 16), node(2), 1);
     d.elems_mut().insert(st.dot.clone(), crate::seq::SeqElem { created: Some((st.clone(), crate::seq::Anchor::Dot(dots[1].clone()))), content: crate::seq::SeqContent::Char('X'), pos: vec![(st, crate::seq::Anchor::Dot(dots[1].clone()), None)], deleted: None, undel: None, valueless: false, span: 1 });
     b.state.join(Fragment::Seq(d));
     assert_eq!(read_str(&b.state), "aXef");
-    let mut bt = DeltaBuilder::new(&b.state, Writer::new(ts(5 << 16), session_of(2), 2));
+    let mut bt = DeltaBuilder::new(&b.state, Writer::new(ts(5 << 16), node(2), 2));
     assert!(bt.apply(&op(Op::Paste { dots, at: 3 }), &text_view()).is_err());
 }
 
@@ -672,7 +658,7 @@ fn list_undo_delete_skips_hidden_element_spec_4_6() {
     let (d, src, range) = a.commit(4, &[op(Op::Delete { at: 0, len: 2 })], &view).unwrap();
     assert_eq!(a.state.read(), Some(Value::List(vec![])));
     let u = Undone { delta: &d, source: &src, range };
-    let ud = undo(&mut Writer::new(ts(5 << 16), session_of(1), a.lo), &u, &a.state, &before, &view).unwrap().unwrap();
+    let ud = undo(&mut Writer::new(ts(5 << 16), node(1), a.lo), &u, &a.state, &before, &view).unwrap().unwrap();
     a.state.join(ud);
     assert_eq!(a.state.read(), before.read());
 }
@@ -686,7 +672,7 @@ fn move_undo_spec_5_7() {
     let (d, src, range) = a.commit(2, &[op(Op::Move { at: 0, len: 3, to: 3 })], &text_view()).unwrap();
     assert_eq!(read_str(&a.state), "BARFOO");
     let u = Undone { delta: &d, source: &src, range };
-    let mut w = Writer::new(ts(3 << 16), session_of(1), a.lo);
+    let mut w = Writer::new(ts(3 << 16), node(1), a.lo);
     let full = undo(&mut w, &u, &a.state, &before, &text_view()).unwrap().unwrap();
     assert!(crate::undo::restores(&u), "a move writes back the old anchors");
     a.state.join(full);
@@ -696,7 +682,7 @@ fn move_undo_spec_5_7() {
     b.state = before.clone();
     b.state.join(d.clone());
     b.commit(4, &[op(Op::Move { at: 3, len: 1, to: 0 })], &text_view());
-    let mut w = Writer::new(ts(5 << 16), session_of(1), a.lo);
+    let mut w = Writer::new(ts(5 << 16), node(1), a.lo);
     let x = undo(&mut w, &u, &b.state, &before, &text_view()).unwrap();
     assert!(x.is_some_and(|x| match x {
         Fragment::Seq(sq) => sq.elems().len() == 1,
@@ -721,7 +707,7 @@ fn move_undo_keeps_sibling_order_spec_5_7() {
     let mut b = a.fork(2);
     let (x, _, _) = b.commit(4, &[op(Op::Insert { at: 0, items: vec![s("x")] })], &text_view()).unwrap();
     let u = Undone { delta: &d, source: &src, range };
-    let mut w = Writer::new(ts(5 << 16), session_of(1), a.lo);
+    let mut w = Writer::new(ts(5 << 16), node(1), a.lo);
     let ud = undo(&mut w, &u, &a.state, &before, &text_view()).unwrap().unwrap();
     let back = wired(&ud, &src, w.range(), 5);
     assert_eq!(back, ud, "the undo round-trips as a writer's delta");
@@ -848,7 +834,7 @@ fn cut_and_paste_keeps_identity_spec_5_7() {
     // a paste whose clipboard no longer matches fails (the caller inserts instead)
     let mut c = Replica::new(3);
     c.commit(1, &[op(Op::Set(s("x")))], &text_view());
-    let mut bt = DeltaBuilder::new(&c.state, Writer::new(ts(5 << 16), session_of(3), c.lo));
+    let mut bt = DeltaBuilder::new(&c.state, Writer::new(ts(5 << 16), node(3), c.lo));
     assert!(bt.apply(&op(Op::Paste { dots, at: 0 }), &text_view()).is_err());
 }
 
@@ -892,7 +878,7 @@ fn list_delete_vs_concurrent_nested_write_spec_5_7() {
 #[test]
 fn derived_anchor_outlives_its_register_spec_7() {
     let reg_w = |v: Option<Value>| {
-        let mut w = Writer::new(ts(1 << 16), session_of(1), 1);
+        let mut w = Writer::new(ts(1 << 16), node(1), 1);
         let mut f = create(&mut w, &crate::AnyView, &s("ab")).unwrap();
         if let Fragment::Register(r) = &mut f {
             r.write.as_mut().unwrap().value = v;
@@ -912,7 +898,7 @@ fn derived_anchor_outlives_its_register_spec_7() {
     let (q, _, _) = b.commit(2, &[op(Op::Insert { at: 1, items: vec![s("q")] })], &text_view()).unwrap();
     p.join(q.clone());
     assert_eq!(read_str(&p), "aqb");
-    let expired = |d: &crate::Dot| d.src == session_of(1) && d.ctr == 1;
+    let expired = |d: &crate::Dot| d.src == node(1) && d.ctr == 1;
     p.strip(&expired);
     assert_eq!(read_str(&p), "q");
     // a node that only saw the value-less register
@@ -936,12 +922,12 @@ fn move_undo_chain_spec_4_6() {
     let s1 = a.state.clone();
     let (m2, _, r2) = a.commit(3, &[op(Op::Move { at: 5, len: 1, to: 2 })], &text_view()).unwrap();
     assert_eq!(read_str(&a.state), "OOFBAR");
-    let mut w = Writer::new(ts(4 << 16), session_of(1), a.lo);
+    let mut w = Writer::new(ts(4 << 16), node(1), a.lo);
     let u2 = undo(&mut w, &Undone { delta: &m2, source: &src, range: r2 }, &a.state, &s1, &text_view()).unwrap().unwrap();
     a.lo = w.range().hi;
     a.state.join(u2);
     assert_eq!(read_str(&a.state), "OOBARF");
-    let mut w = Writer::new(ts(5 << 16), session_of(1), a.lo);
+    let mut w = Writer::new(ts(5 << 16), node(1), a.lo);
     let u1 = undo(&mut w, &Undone { delta: &m1, source: &src, range: r1 }, &a.state, &s0, &text_view()).unwrap().unwrap();
     a.state.join(u1);
     assert_eq!(read_str(&a.state), "FOOBAR");
@@ -1059,7 +1045,7 @@ fn hostile_moves_join_bounded_spec_6() {
 fn hostile_cuts_join_bounded_spec_6() {
     use crate::seq::{Anchor, Seq, SeqContent, SeqElem};
     use crate::stamp::{Dot, Stamp};
-    let (a, b, c) = (session_of(1), session_of(2), session_of(3));
+    let (a, b, c) = (node(1), node(2), node(3));
     let chain = 2000u64;
     let mut elems = std::collections::BTreeMap::new();
     let del = Some((Stamp::new(ts(2 << 16), b.clone(), 1), true));
@@ -1079,7 +1065,7 @@ fn hostile_cuts_join_bounded_spec_6() {
         let mut st = base.clone();
         let _ = read_str(&st);
         // newer delete flags on single elements spread over the chain: two cuts each
-        let w = Stamp::new(ts(4 << 16), session_of(4), 1);
+        let w = Stamp::new(ts(4 << 16), node(4), 1);
         let step = chain / (writes as u64 + 1);
         let d = (1..=writes as u64).map(|j| (Dot::new(a.clone(), 1 + j * step), SeqElem { deleted: Some((w.clone(), true)), ..SeqElem::bare() })).collect();
         let _ = crate::seq_lin::probe();
@@ -1142,7 +1128,7 @@ fn delta_keeps_sequence_view_spec_4_5() {
     let f = |text: &str| Value::Map([(Value::Int(1), s(text)), (Value::Int(2), Value::Int(0))].into_iter().collect());
     a.commit(1, &[op(Op::Set(f("hello world")))], &view);
     let text = |o: Op| PathOp { path: vec![PathSeg::Field(1)], op: o };
-    let mut bt = DeltaBuilder::new(&a.state, Writer::new(ts(2 << 16), session_of(1), a.lo));
+    let mut bt = DeltaBuilder::new(&a.state, Writer::new(ts(2 << 16), node(1), a.lo));
     bt.apply(&text(Op::Insert { at: 5, items: vec![s(",")] }), &view).unwrap();
     assert!(!bt.keeps_view(), "nothing of the delta there before the first op");
     bt.apply(&text(Op::Insert { at: 0, items: vec![s(">")] }), &view).unwrap();
@@ -1167,7 +1153,7 @@ fn placement_read_by_index_spec_6() {
     for (k, o) in [Op::Insert { at: 1500, items: vec![s("XYZ")] }, Op::Delete { at: 10, len: 3 }, Op::Move { at: 2000, len: 4, to: 7 }].into_iter().enumerate() {
         a.commit(k as u64 + 2, &[op(o)], &text_view());
         // the placement is a whole pass's
-        assert_eq!(vis(&a.state), vis(&rebooted(&a.state)), "step {k}");
+        assert_eq!(vis(&a.state), vis(&via_snapshot(&a.state)), "step {k}");
         let all = read_str(&a.state);
         let dots = a.state.visible_range(1490..1520).unwrap();
         assert_eq!(a.state.read_elems(&dots), Some(s(&all.chars().skip(1490).take(30).collect::<String>())), "step {k}");
@@ -1225,7 +1211,7 @@ fn resolved_insert_delete_match_index_ops_spec_6_1() {
         let (Some(mut st @ Fragment::Seq(_)), _) = history_state(&mut r, &ty, 3, 6, 8) else { continue };
         for k in 0..6u64 {
             let order = full_order(&st);
-            let w = || Writer::new(ts((100 + k) << 16), session_of(9), 1 + 10 * k);
+            let w = || Writer::new(ts((100 + k) << 16), node(9), 1 + 10 * k);
             let insert = shown(&st) == 0 || r.chance(1, 2);
             let items = vec![new_item(&mut r, &ty, "pq")];
             let (by_index, resolved) = resolved_pair(&mut r, &order, insert, items, 5);
@@ -1243,7 +1229,7 @@ fn resolved_insert_delete_match_index_ops_spec_6_1() {
                     let new = after.len() - order.len();
                     let mut want = order.clone();
                     let made: Vec<(crate::Dot, bool)> = after[at..at + new].to_vec();
-                    assert!(made.iter().all(|(d, shown)| *shown && d.src == session_of(9)), "round {round} step {k}: new elements directly after the anchor");
+                    assert!(made.iter().all(|(d, shown)| *shown && d.src == node(9)), "round {round} step {k}: new elements directly after the anchor");
                     want.splice(at..at, made);
                     assert_eq!(after, want, "round {round} step {k}");
                 }
@@ -1267,7 +1253,7 @@ fn resolved_insert_delete_match_index_ops_spec_6_1() {
 #[test]
 fn resolved_ops_on_embedded_text_and_skew_spec_6_1() {
     let tv = TyView(Ty::Text);
-    let mut st = crate::ops::leaf(&mut Writer::new(ts(100 << 16), session_of(8), 1), None, &TyView(Ty::Register), &Op::Set(s("hello wide world of embedded chars")), true).unwrap().unwrap();
+    let mut st = crate::ops::leaf(&mut Writer::new(ts(100 << 16), node(8), 1), None, &TyView(Ty::Register), &Op::Set(s("hello wide world of embedded chars")), true).unwrap().unwrap();
     let mut r = crate::testutil::rng(0);
     let text_of = |f: &Fragment| -> Fragment {
         match f {
@@ -1277,7 +1263,7 @@ fn resolved_ops_on_embedded_text_and_skew_spec_6_1() {
     };
     let (mut ctr, mut derived_del) = (1, 0);
     for k in 0..60u64 {
-        let w = || Writer::new(ts((200 + k) << 16), session_of(9), ctr);
+        let w = || Writer::new(ts((200 + k) << 16), node(9), ctr);
         let order = full_order(&text_of(&st));
         let insert = shown(&text_of(&st)) < 3 || r.chance(1, 3);
         let (by_index, resolved) = resolved_pair(&mut r, &order, insert, vec![s("pq")], 4);
@@ -1294,19 +1280,19 @@ fn resolved_ops_on_embedded_text_and_skew_spec_6_1() {
     let vis = |st: &Fragment| -> Vec<crate::Dot> { full_order(&text_of(st)).iter().filter(|x| x.1).map(|x| x.0.clone()).collect() };
     // at the fourth visible element (the deletes may have left fewer)
     if vis(&st).len() < 4 {
-        st.join(crate::ops::leaf(&mut Writer::new(ts(300 << 16), session_of(9), ctr), Some(&st), &tv, &Op::Insert { at: 0, items: vec![s("wxyz")] }, true).unwrap().unwrap());
+        st.join(crate::ops::leaf(&mut Writer::new(ts(300 << 16), node(9), ctr), Some(&st), &tv, &Op::Insert { at: 0, items: vec![s("wxyz")] }, true).unwrap().unwrap());
     }
     let anchor = vis(&st)[3].clone();
-    let d = crate::ops::leaf(&mut Writer::new(ts(1_000_000 << 16), session_of(5), 1), Some(&st), &tv, &Op::InsertAfter { anchor: Some(anchor.clone()), items: vec![s("ZZ")] }, true).unwrap().unwrap();
+    let d = crate::ops::leaf(&mut Writer::new(ts(1_000_000 << 16), node(5), 1), Some(&st), &tv, &Op::InsertAfter { anchor: Some(anchor.clone()), items: vec![s("ZZ")] }, true).unwrap().unwrap();
     st.join(d);
-    let w = || Writer::new(ts(500 << 16), session_of(9), 5000);
+    let w = || Writer::new(ts(500 << 16), node(9), 5000);
     let d1 = crate::ops::leaf(&mut w(), Some(&st), &tv, &Op::Insert { at: 4, items: vec![s("Y")] }, true).unwrap();
     let d2 = crate::ops::leaf(&mut w(), Some(&st), &tv, &Op::InsertAfter { anchor: Some(anchor.clone()), items: vec![s("Y")] }, true).unwrap();
     assert_eq!(d1, d2);
     st.join(d2.unwrap());
     let after = full_order(&text_of(&st));
     let ai = after.iter().position(|x| x.0 == anchor).unwrap();
-    assert_eq!(after[ai + 1].0.src, session_of(5), "the newer sibling places first");
+    assert_eq!(after[ai + 1].0.src, node(5), "the newer sibling places first");
 }
 
 /// §5.7 Ops, §6, §8 (pages are joined independently), `seq_place`: ops by index (insert, delete, move, paste; two in one commit)
@@ -1365,7 +1351,7 @@ fn index_ops_on_partial_placement_match_whole_spec_5_7() {
                 stale = st.read();
             }
             multi += usize::from(ops.len() > 1);
-            let w = || Writer::new(ts((100 + k) << 16), session_of(9), 1 + 10 * k);
+            let w = || Writer::new(ts((100 + k) << 16), node(9), 1 + 10 * k);
             let per = 1 + r.below(8);
             let (want, pg) = paged(&st, per, w, &ops.iter().cloned().map(op).collect::<Vec<_>>(), &view);
             runs += 1;
@@ -1398,9 +1384,9 @@ fn set_on_partial_text_matches_whole_spec_5_7() {
     let view = text_view();
     for ops in [vec![Op::Set(s(""))], vec![Op::Insert { at: 0, items: vec![s("x")] }, Op::Set(s(""))], vec![Op::Insert { at: 1, items: vec![s("bc")] }, Op::Set(s("bd"))]] {
         let mut st = Fragment::default();
-        st.join(create(&mut Writer::new(ts(1 << 16), session_of(1), 1), &view, &s("a")).unwrap());
+        st.join(create(&mut Writer::new(ts(1 << 16), node(1), 1), &view, &s("a")).unwrap());
         let Some(Op::Set(v)) = ops.last().cloned() else { panic!() };
-        let (got, _) = paged(&st, 1, || Writer::new(ts(2 << 16), session_of(2), 1), &ops.into_iter().map(op).collect::<Vec<_>>(), &view);
+        let (got, _) = paged(&st, 1, || Writer::new(ts(2 << 16), node(2), 1), &ops.into_iter().map(op).collect::<Vec<_>>(), &view);
         st.join(got.unwrap().0);
         assert_eq!(st.read(), Some(v));
     }
@@ -1423,7 +1409,7 @@ fn set_after_op_on_partial_matches_whole_spec_5_7() {
             };
             let v0 = if text { Value::Str(items.iter().map(|v| if let Value::Str(x) = v { x.clone() } else { unreachable!() }).collect()) } else { Value::List(items.clone()) };
             let mut st = Fragment::default();
-            st.join(create(&mut Writer::new(ts(1 << 16), session_of(1), 1), &view, &v0).unwrap());
+            st.join(create(&mut Writer::new(ts(1 << 16), node(1), 1), &view, &v0).unwrap());
             let mut firsts = vec![op(Op::Delete { at: 0, len: 1 }), op(Op::Delete { at: n - 1, len: 1 })];
             for at in 0..n {
                 for to in 0..n {
@@ -1436,7 +1422,7 @@ fn set_after_op_on_partial_matches_whole_spec_5_7() {
             }
             for first in firsts {
                 let mut mid = st.clone();
-                let mut b = DeltaBuilder::new(&mid, Writer::new(ts(2 << 16), session_of(2), 1));
+                let mut b = DeltaBuilder::new(&mid, Writer::new(ts(2 << 16), node(2), 1));
                 b.apply(&first, &view).unwrap();
                 if let Some((d, _)) = b.finish() {
                     mid.join(d);
@@ -1456,7 +1442,7 @@ fn set_after_op_on_partial_matches_whole_spec_5_7() {
                     });
                 }
                 for v in targets {
-                    paged(&st, 1, || Writer::new(ts(2 << 16), session_of(2), 1), &[first.clone(), op(Op::Set(v))], &view);
+                    paged(&st, 1, || Writer::new(ts(2 << 16), node(2), 1), &[first.clone(), op(Op::Set(v))], &view);
                     runs += 1;
                 }
             }
@@ -1470,7 +1456,7 @@ fn scatter(r: &mut Rng, st: &mut Fragment, count: u64, ty: &Ty, text: &str) {
     for k in 0..count {
         let at = r.below(shown(st) + 1);
         let ins = op(Op::Insert { at, items: vec![new_item(r, ty, text)] });
-        st.join(build(st, Writer::new(ts((10 + k) << 16), session_of(2), 1 + 10 * k), &[ins], &TyView(ty.clone())).unwrap().0);
+        st.join(build(st, Writer::new(ts((10 + k) << 16), node(2), 1 + 10 * k), &[ins], &TyView(ty.clone())).unwrap().0);
     }
 }
 
@@ -1548,7 +1534,7 @@ fn partial_placement_skew_piles_and_joins_spec_6_1() {
                     })
                 })
                 .collect();
-            let w = || Writer::new(ts(t << 16), session_of(20 + k as u8), 1);
+            let w = || Writer::new(ts(t << 16), node(20 + k as u8), 1);
             let per = 1 + r.below(6);
             let (want, pg) = paged(&st, per, w, &ops, &view);
             runs += 1;
@@ -1566,7 +1552,7 @@ fn partial_placement_skew_piles_and_joins_spec_6_1() {
                 for j in 0..12u64 {
                     let floor = base.reset().map_or(0, |x| (x.ts.to_u64() >> 16) + 1);
                     let t = if r.chance(1, 2) { floor + 1 + r.below(300) as u64 } else { 400 + j };
-                    let mut b = DeltaBuilder::new(&base, Writer::new(ts((t << 16) + j), session_of(40 + j as u8 + 12 * (k as u8 % 4)), 1 + 100 * k));
+                    let mut b = DeltaBuilder::new(&base, Writer::new(ts((t << 16) + j), node(40 + j as u8 + 12 * (k as u8 % 4)), 1 + 100 * k));
                     b.apply(&op(Op::Insert { at, items: vec![new_item(&mut r, &ty, "xy")] }), &view).unwrap();
                     ds.extend(b.finish().map(|x| x.0));
                 }
@@ -1592,7 +1578,7 @@ fn partial_placement_skew_piles_and_joins_spec_6_1() {
 fn edit_on_partial_placement_loads_its_window_spec_5_7() {
     let mut r = crate::testutil::rng(0);
     let view = TyView(Ty::Text);
-    let mut w = Writer::new(ts(1 << 16), session_of(1), 1);
+    let mut w = Writer::new(ts(1 << 16), node(1), 1);
     // not periodic: a window repeated elsewhere in base matches whole
     let text: String = (0..3000).map(|_| (b'a' + r.below(26) as u8) as char).collect();
     let mut st = create(&mut w, &view, &s(&text)).unwrap();
@@ -1610,7 +1596,7 @@ fn edit_on_partial_placement_loads_its_window_spec_5_7() {
             7 => s("whole"),
             _ => edited(&mut r, &base, &Ty::Text),
         };
-        let w = || Writer::new(ts((200 + k) << 16), session_of(9), 1000 + 10 * k);
+        let w = || Writer::new(ts((200 + k) << 16), node(9), 1000 + 10 * k);
         let (want, pg) = paged(&st, 40, w, &[op(Op::Edit { base: base.clone(), new })], &view);
         let (all, stubs) = (pg.whole.top().blocks.len(), pg.p.stubs().0.len());
         // (after a whole replace the text is short and may be emptied: an empty base is a look
@@ -1640,7 +1626,7 @@ fn edit_on_partial_placement_loads_its_window_spec_5_7() {
 fn newest_stamp_skips_children_records_spec_6_1() {
     let mut r = crate::testutil::rng(0);
     let view = text_view();
-    let mut w = Writer::new(ts(1 << 16), session_of(1), 1);
+    let mut w = Writer::new(ts(1 << 16), node(1), 1);
     let text: String = (0..800).map(|_| (b'a' + r.below(26) as u8) as char).collect();
     let mut st = create(&mut w, &view, &s(&text)).unwrap();
     // another writer's chars under many of them
@@ -1649,7 +1635,7 @@ fn newest_stamp_skips_children_records_spec_6_1() {
     for k in 0..40u64 {
         let Fragment::Seq(sq) = &st else { panic!() };
         let n = shown(&st);
-        let mut b = DeltaBuilder::new(&st, Writer::new(ts((1000 + k) << 16), session_of(9), 1 + 10 * k));
+        let mut b = DeltaBuilder::new(&st, Writer::new(ts((1000 + k) << 16), node(9), 1 + 10 * k));
         b.apply(&PathOp { path: Vec::new(), op: Op::Insert { at: r.below(n + 1), items: vec![s("z")] } }, &view).unwrap();
         let (d, _) = b.finish().unwrap();
         let Fragment::Seq(ds) = &d else { panic!() };
@@ -1668,10 +1654,10 @@ fn newest_stamp_skips_children_records_spec_6_1() {
 #[test]
 fn newest_move_onto_new_element_spec_6_1() {
     let view = text_view();
-    let mut w = Writer::new(ts(1 << 16), session_of(1), 1);
+    let mut w = Writer::new(ts(1 << 16), node(1), 1);
     let text: String = (0..300).map(|i| (b'a' + (i % 26) as u8) as char).collect();
     let st = create(&mut w, &view, &s(&text)).unwrap();
-    let mut b = DeltaBuilder::new(&st, Writer::new(ts(1000 << 16), session_of(9), 1));
+    let mut b = DeltaBuilder::new(&st, Writer::new(ts(1000 << 16), node(9), 1));
     for op in [Op::Insert { at: 10, items: vec![s("x")] }, Op::Move { at: 50, len: 1, to: 11 }, Op::Insert { at: 11, items: vec![s("y")] }] {
         b.apply(&PathOp { path: Vec::new(), op }, &view).unwrap();
     }
@@ -1699,7 +1685,7 @@ fn list_edit_on_partial_placement_loads_its_window_spec_5_7() {
     let ty = list_ty();
     let view = TyView(ty.clone());
     let Ty::List(e) = &ty else { unreachable!() };
-    let mut w = Writer::new(ts(1 << 16), session_of(1), 1);
+    let mut w = Writer::new(ts(1 << 16), node(1), 1);
     let items: Vec<Value> = (0..1500).map(|_| value(&random_value(&mut r, e, 1))).collect();
     let mut st = create(&mut w, &view, &Value::List(items)).unwrap();
     scatter(&mut r, &mut st, 40, &ty, "");
@@ -1711,7 +1697,7 @@ fn list_edit_on_partial_placement_loads_its_window_spec_5_7() {
         let new = edited(&mut r, &base, &ty);
         let (Value::List(b), Value::List(nl)) = (&base, &new) else { panic!() };
         let win = crate::seq_diff::edit_window(b, nl);
-        let w = || Writer::new(ts((200 + k) << 16), session_of(9), 1000 + 10 * k);
+        let w = || Writer::new(ts((200 + k) << 16), node(9), 1000 + 10 * k);
         let (want, pg) = paged(&st, 40, w, &[op(Op::Edit { base: base.clone(), new: new.clone() })], &view);
         assert_eq!(pg.whole_passes, 0, "step {k}: a whole pass");
         let (all, stubs) = (pg.whole.top().blocks.len(), pg.p.stubs().0.len());
@@ -1776,7 +1762,7 @@ fn edit_window_matches_whole_spec_5_7() {
             _ => (0..n).map(|_| (b'a' + r.below(26) as u8) as char).collect(),
         };
         let bs: String = base.iter().collect();
-        let mut w = Writer::new(ts(1 << 16), session_of(1), 1);
+        let mut w = Writer::new(ts(1 << 16), node(1), 1);
         let mut st = create(&mut w, &view, &s(&bs)).unwrap();
         // concurrent changes, often keeping the length
         let mut ctr = 1000;
@@ -1800,7 +1786,7 @@ fn edit_window_matches_whole_spec_5_7() {
                 }
                 _ => vec![Op::Insert { at: r.below(len + 1), items: vec![s("ab")] }],
             };
-            let mut b = DeltaBuilder::new(&st, Writer::new(ts((10 + round * 10 + k as u64) << 16), session_of(2), ctr));
+            let mut b = DeltaBuilder::new(&st, Writer::new(ts((10 + round * 10 + k as u64) << 16), node(2), ctr));
             let mut ok = true;
             for o in &ops {
                 ok &= b.apply(&op(o.clone()), &view).is_ok();
@@ -1819,7 +1805,7 @@ fn edit_window_matches_whole_spec_5_7() {
         let o = Op::Edit { base: s(&bs), new: s(&c.iter().collect::<String>()) };
         let run = |whole: bool| {
             crate::seq_diff::WHOLE_ONLY.set(whole);
-            let mut b = DeltaBuilder::new(&st, Writer::new(ts(1 << 40), session_of(9), 1 << 20));
+            let mut b = DeltaBuilder::new(&st, Writer::new(ts(1 << 40), node(9), 1 << 20));
             b.apply(&op(o.clone()), &view).unwrap();
             let got = b.finish().map(|x| x.0);
             crate::seq_diff::WHOLE_ONLY.set(false);
@@ -1889,7 +1875,7 @@ fn ranged_text(r: &mut Rng) -> (Fragment, u64) {
     for q in qs {
         a.state.join(q);
     }
-    (rebooted(&a.state), a.lo)
+    (via_snapshot(&a.state), a.lo)
 }
 
 proptest! {
@@ -1950,11 +1936,11 @@ proptest! {
             apply_text(&mut model, &o, &state);
             ops.push(op(o));
         }
-        let mut one = Replica { state: state.clone(), src: session_of(1), lo };
+        let mut one = Replica { state: state.clone(), src: node(1), lo };
         for (k, o) in ops.iter().enumerate() {
             one.commit(51 + k as u64, std::slice::from_ref(o), &text_view());
         }
-        let mut a = Replica { state, src: session_of(1), lo };
+        let mut a = Replica { state, src: node(1), lo };
         a.commit(50, &ops, &text_view());
         prop_assert_eq!(read_str(&a.state), model.iter().collect::<String>());
         prop_assert_eq!(read_str(&a.state), read_str(&one.state));
@@ -1986,7 +1972,7 @@ fn expired_list_element_keeps_others_values_spec_5_7() {
     let newer_alone = newer.clone();
     s2.join(newer);
     assert_eq!(s2, s1, "expiry commutes with the nested write");
-    assert_eq!(rebooted(&s1).read(), others, "a snapshot carries the creation value-less");
+    assert_eq!(via_snapshot(&s1).read(), others, "a snapshot carries the creation value-less");
     let mut copy = base.clone();
     copy.strip(&expired);
     let mut s3 = base.clone();
@@ -2012,7 +1998,7 @@ fn removed_anchor_goes_charless_spec_4_5() {
     let view = text_view();
     let mut a = Replica::new(1);
     a.commit(1, &[op(Op::Set(s("hello")))], &view);
-    let mut bt = DeltaBuilder::new(&a.state, Writer::new(ts(2 << 16), session_of(1), a.lo));
+    let mut bt = DeltaBuilder::new(&a.state, Writer::new(ts(2 << 16), node(1), a.lo));
     bt.apply(&op(Op::Insert { at: 2, items: vec![s("abc")] }), &view).unwrap();
     bt.apply(&op(Op::Delete { at: 2, len: 1 }), &view).unwrap();
     bt.apply(&op(Op::Delete { at: 3, len: 1 }), &view).unwrap();
@@ -2021,16 +2007,16 @@ fn removed_anchor_goes_charless_spec_4_5() {
     let Fragment::Seq(sq) = &d else { panic!("{d:?}") };
     assert!(sq.elems().values().all(|e| e.deleted.is_none()), "no flag: {d:?}");
     assert_eq!(sq.elems().values().filter(|e| e.created.is_some() && matches!(e.content, crate::seq::SeqContent::None)).count(), 1, "'a' as its bare creation: {d:?}");
-    let back = wired(&d, &session_of(1), range, 2);
+    let back = wired(&d, &node(1), range, 2);
     assert_eq!(back, d);
     let mut b = back.clone();
     assert_eq!(b.read(), Some(s("b")), "a receiver without the base");
-    assert_eq!(rebooted(&b).read(), Some(s("b")));
+    assert_eq!(via_snapshot(&b).read(), Some(s("b")));
     b.join(a.state.clone());
     a.state.join(back);
     for f in [&a.state, &b] {
         assert_eq!(f.read(), Some(s("hebllo")));
-        assert_eq!(rebooted(f).read(), Some(s("hebllo")));
+        assert_eq!(via_snapshot(f).read(), Some(s("hebllo")));
     }
 }
 
@@ -2103,7 +2089,7 @@ fn move_unplaced_record_converges_spec_5_7() {
         // a's own read before x's creation arrives (the second move's range "w", x, "y": x
         // stays, y moves as a root), its own undo, then everything joined
         assert_eq!(a.state.read(), Some(s("wyuz")));
-        let x = crate::stamp::Dot { src: session_of(2), ctr: 1 };
+        let x = crate::stamp::Dot { src: node(2), ctr: 1 };
         assert!(matches!(&da, Fragment::Seq(sq) if !sq.elems().contains_key(&x)), "no position write for x");
         let mut alone = a.state.clone();
         alone.join(undo(&mut Writer::new(ts(8 << 16), sa.clone(), a.lo), &Undone { delta: &da, source: &sa, range: ra }, &a.state, &ab, &view).unwrap().unwrap());

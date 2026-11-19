@@ -8,7 +8,7 @@ use crate::stamp::Interner;
 use crate::stream::Piece;
 use crate::tests_decoder::{mutate, mutate_tree};
 use crate::testutil::{MCommit, frag, history_bulk, history_with, mapply, sess};
-use crate::tests_wire::{snap_cx, writer_cx};
+use crate::testutil::{snap_cx, writer_cx};
 use crate::wire::{Delta, DeltaCtx, Frontiers, Snapshot};
 use crate::{Checked, Fragment, decode_checked, decode_delta, decode_snapshot, stream_checked, stream_delta, stream_snapshot};
 use crdt_model::ops::Ty;

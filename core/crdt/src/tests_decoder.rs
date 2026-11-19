@@ -5,7 +5,7 @@
 use crate::codec::{decode_delta, decode_snapshot, encode_delta, encode_snapshot};
 use crate::stamp::Interner;
 use crate::testutil::{MCommit, frag, history_with, mapply};
-use crate::tests_wire::{snap_cx, writer_cx};
+use crate::testutil::{snap_cx, writer_cx};
 use crate::wire::{Delta, Frontiers, Snapshot};
 use crdt_model::ops::Ty;
 use crdt_model::r#gen::{Rng, kitchen_sink};

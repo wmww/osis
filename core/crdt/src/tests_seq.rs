@@ -1,5 +1,5 @@
 //! Sequences (spec/crdt.md §5.7, §6): differential join/read and wire against core/test/crdt-model, run
-//! rejections, the worked examples of notes/crdt.md.
+//! rejections, range records, the worked examples of notes/crdt.md.
 
 use crate::codec::{decode_delta, decode_snapshot, encode_delta, encode_snapshot};
 use crate::fragment::Fragment;
@@ -7,23 +7,18 @@ use crate::fragment::Meta;
 use crate::linearize::place;
 use crate::seq::{Anchor, Seq, SeqContent, SeqElem};
 use crate::seq_span::{expand, nth};
-use crate::stamp::{Dot, Stamp};
-use std::collections::BTreeMap;
-use crate::stamp::{CounterRange, Interner};
-use crate::testutil::{frag, history, history_with, mapply, sess, sess_value, source, ts};
+use crate::stamp::{Dot, Interner, Stamp};
+use crate::testutil::{frag, history, history_with, joined, mapply, node, reads, sess_value, snap_cx, snapshot, snapshot_bytes, source, struct_list, ts, via_snapshot, wired, writer_cx};
 pub(crate) use crate::testutil::{Pager, partial_follow, partial_follow_in};
-use crate::tests_wire::{delta, i, l, rejects, snap_cx, wcx, writer_cx};
-use crate::wire::{Delta, DeltaCtx, DeltaKind, Frontiers, Snapshot};
+use crate::tests_wire::{delta, i, l, rejects, wcx};
+use crate::wire::{Delta, DeltaCtx};
 use crdt_model::ops::{self as mops, Ty, Writer as MWriter};
 use crdt_model::stamp::Source as MSource;
 use crdt_model::state::{Content, Frag as MFrag};
 use crdt_model::wire::{Ctx, encode_snapshot as m_encode_snapshot};
 use osis_base::{ErrorClass, Value};
 use proptest::prelude::*;
-
-fn inner() -> Ty {
-    Ty::Struct([(1, Ty::Register), (2, Ty::Set(Box::new(Ty::Register)))].into_iter().collect())
-}
+use std::collections::BTreeMap;
 
 /// Maps whose entries hold texts and lists, directly, in a struct and in a nested map.
 pub(crate) fn map_of_text() -> Vec<Ty> {
@@ -33,34 +28,6 @@ pub(crate) fn map_of_text() -> Vec<Ty> {
 }
 
 proptest! {
-    /// §4.7: strip of text and list states equals the model's and commutes with join.
-    #[test]
-    fn seq_expiry_laws_spec_4_7(seed in any::<u64>()) {
-        crate::tests_life::expiry_laws(seed, &Ty::Text);
-        crate::tests_life::expiry_laws(seed, &Ty::List(Box::new(inner())));
-    }
-
-    /// §4.6: un-merge of text and list (created elements lose their creations).
-    #[test]
-    fn seq_unmerge_spec_4_6(seed in any::<u64>()) {
-        crate::tests_life::unmerge_check(seed, &Ty::Text);
-        crate::tests_life::unmerge_check(seed, &Ty::List(Box::new(inner())));
-    }
-
-    /// §4.8: `remove_writes` of text and list states, rejoined with the commits, is the state.
-    #[test]
-    fn seq_remove_writes_rejoins_spec_4_8(seed in any::<u64>()) {
-        crate::tests_life::remove_writes_check(seed, &Ty::Text);
-        crate::tests_life::remove_writes_check(seed, &Ty::List(Box::new(inner())));
-    }
-
-    /// §8: bootstrap from a text or list snapshot, then concurrent edits, converges.
-    #[test]
-    fn seq_bootstrap_then_edit_spec_8(seed in any::<u64>()) {
-        crate::tests_life::bootstrap_check(seed, &Ty::Text);
-        crate::tests_life::bootstrap_check(seed, &Ty::List(Box::new(inner())));
-    }
-
     /// §5.7 undelete: random deleted chars undeleted with their content reach a node that only
     /// holds the snapshot (deleted chars not carried) and read the same there.
     #[test]
@@ -71,62 +38,86 @@ proptest! {
         for c in &commits {
             full.join(frag(&c.delta));
         }
-        let snap = Snapshot { absorbed: Default::default(), facts: Default::default(), nonce: [0; 16], fragment: full.clone(), frontiers: Frontiers::default() };
-        let bytes = encode_snapshot(&snap, &snap_cx(), None).unwrap();
-        let mut boot = decode_snapshot(&bytes, &snap_cx(), &mut Interner::new(), None).unwrap().fragment;
+        let mut boot = via_snapshot(&full);
         let Fragment::Seq(sq) = &full else { return Ok(()) };
-        let dead: Vec<crate::stamp::Dot> = sq.elems().iter().filter(|(_, e)| e.flag() && matches!(e.content, SeqContent::Char(_))).map(|(d, _)| d.clone()).filter(|_| r.chance(1, 2)).collect();
+        let dead: Vec<Dot> = sq.elems().iter().filter(|(_, e)| e.flag() && matches!(e.content, SeqContent::Char(_))).map(|(d, _)| d.clone()).filter(|_| r.chance(1, 2)).collect();
         if dead.is_empty() {
             return Ok(());
         }
-        let src = sess(osis_base::Tid::from_bytes([7; 15]));
-        let st = crate::stamp::Stamp::new(ts(1 << 30), src.clone(), 1);
-        let mut d = crate::seq::Seq::empty(true);
+        let st = Stamp::new(ts(1 << 30), node(7), 1);
+        let mut d = Seq::empty(true);
         for x in &dead {
-            let mut e = crate::seq::SeqElem::bare();
+            let mut e = SeqElem::bare();
             e.deleted = Some((st.clone(), false));
             e.undel = sq.elems()[x].char();
             d.elems_mut().insert(x.clone(), e);
         }
-        let cx = DeltaCtx { ts: ts(1 << 30), own: src, range: CounterRange { lo: 1, hi: 2 }, kind: DeltaKind::Writer };
-        let bytes = encode_delta(&Delta { nonce: [0; 16], fragment: Fragment::Seq(d) }, &cx, None).unwrap();
-        let u = decode_delta(&bytes, &cx, &mut Interner::new(), None).unwrap().fragment;
+        let u = wired(&Fragment::Seq(d), &crate::testutil::ctx_of(&crate::ops::Writer::new(ts(1 << 30), node(7), 1)));
         full.join(u.clone());
         boot.join(u);
         prop_assert_eq!(full.read(), boot.read());
         // the bootstrapped node holds the undelete's copy of each char, the full one both copies
-        let mut j = full.clone();
-        j.join(boot);
-        prop_assert_eq!(j, full);
+        prop_assert_eq!(joined(&full, &boot), full);
     }
 
+    /// §6: range records place, read and encode like their elements, and own the writes their
+    /// elements own (`holds_owned` answers as `writes`, spec/commits.md §5), `Derived` dots
+    /// included (random histories, every uniform stretch coalesced).
+    #[test]
+    fn ranges_act_like_their_elements_spec_6(seed in any::<u64>()) {
+        let mut r = crate::testutil::rng(seed | 1);
+        // text slots: embedded chars (`Derived` dots) beside range records
+        let types: &[Ty] = if seed % 2 == 0 { &[Ty::Text, struct_list()] } else { &[Ty::Register, Ty::Text] };
+        let mut state = None;
+        for c in history(&mut r, types, 3, 6) {
+            mapply(&mut state, c.delta);
+            let f = match frag(state.as_ref().unwrap()) {
+                Fragment::Slots(x) => x.slots.get(&crate::fragment::Encoding::Text).cloned().unwrap_or_default(),
+                f => f,
+            };
+            let Fragment::Seq(_) = &f else { continue };
+            let flat = expanded(&f);
+            prop_assert_eq!(order(&f), order(&flat));
+            prop_assert_eq!(f.read(), flat.read());
+            prop_assert_eq!(snapshot_bytes(&f), snapshot_bytes(&flat));
+        }
+        let Some(st) = state.as_ref() else { return Ok(()) };
+        let f = frag(st);
+        for g in [f.clone(), via_snapshot(&f)] {
+            let ws: Vec<Dot> = g.writes().into_iter().map(|(d, _)| d).collect();
+            for n in 1..=3u8 {
+                let src = node(n);
+                for lo in [1u64, 2, 5, 9, 20] {
+                    for len in [1u64, 3, 50] {
+                        let want = ws.iter().any(|d| d.src == src && lo <= d.ctr && d.ctr < lo + len);
+                        let got = g.holds_owned(&|s, a, b| *s == src && a < lo + len && lo < b);
+                        prop_assert_eq!(got, want, "src {} lo {} len {}", n, lo, len);
+                    }
+                }
+            }
+        }
+    }
 }
 
 /// §6.2: cycle breaking is linear. Adversarial graph: a chain of 20,000 plus 20,000 mutual-`cur`
 /// pairs whose `prev` is the chain's tail (each victim's new edge walks into the chain).
 #[test]
 fn cycle_breaking_is_linear_spec_6_2() {
-    use crate::seq::{Anchor, SeqElem};
-    use crate::stamp::{Dot, Stamp};
     let (len, k) = (20_000u64, 20_000u64);
-    let a = sess(osis_base::Tid::from_bytes([1; 15]));
-    let st = |t: u64, c: u64| Stamp::new(ts(t << 16), a.clone(), c);
-    let mut elems = std::collections::BTreeMap::new();
-    let mut prev = Anchor::Head;
-    for c in 1..=len {
-        let s = st(1, c);
-        elems.insert(Dot::new(a.clone(), c), SeqElem { created: Some((s.clone(), prev.clone())), content: SeqContent::Char('x'), pos: vec![(s, prev.clone(), None)], deleted: None, undel: None, valueless: false, span: 1 });
-        prev = Anchor::Dot(Dot::new(a.clone(), c));
-    }
-    let tail = prev;
+    let mut elems = chain(len);
+    let a = node(1);
+    let tail = Anchor::Dot(Dot::new(a.clone(), len));
     let (mut c, mut m) = (len + 1, 10_000_000u64);
     for _ in 0..k {
         let (x, y) = (Dot::new(a.clone(), c), Dot::new(a.clone(), c + 1));
-        let (cx, cy, mx, my) = (st(2, c), st(2, c + 1), st(3, m), st(3, m + 1));
+        let mut ex = char_at(x.clone(), 2, tail.clone(), 'a');
+        ex.pos.insert(0, (Stamp::new(ts(3 << 16), a.clone(), m), Anchor::Dot(y.clone()), None));
+        let mut ey = char_at(y.clone(), 2, tail.clone(), 'b');
+        ey.pos.insert(0, (Stamp::new(ts(3 << 16), a.clone(), m + 1), Anchor::Dot(x.clone()), None));
+        elems.insert(x, ex);
+        elems.insert(y, ey);
         c += 2;
         m += 2;
-        elems.insert(x.clone(), SeqElem { created: Some((cx.clone(), tail.clone())), content: SeqContent::Char('a'), pos: vec![(mx, Anchor::Dot(y.clone()), None), (cx, tail.clone(), None)], deleted: None, undel: None, valueless: false, span: 1 });
-        elems.insert(y.clone(), SeqElem { created: Some((cy.clone(), tail.clone())), content: SeqContent::Char('b'), pos: vec![(my, Anchor::Dot(x.clone()), None), (cy, tail.clone(), None)], deleted: None, undel: None, valueless: false, span: 1 });
     }
     let _ = crate::linearize::walk_probe();
     let p = crate::linearize::place_idx(&elems);
@@ -159,10 +150,11 @@ pub(crate) struct Follows {
 /// Text built by a random history (`upgraded`: then a string register write over it, embedded as
 /// characters with `Derived` dots, §7, and text edits of those, the position's text slot taken
 /// alone) and bootstrapped from a snapshot (deleted stretches arrive as range records, deleted
-/// chars without content); then edited by a new writer through the wire: an insert anchored at a random placed element (hidden ones inside range
-/// records and embedded ones included), then a random text op (undelete of part of a deleted
-/// run, delete, move, insert, now and then a replace), `n` times. After every join the read
-/// equals the model's text slot and the cached placement a whole pass (`check_lin`).
+/// chars without content); then edited by a new writer through the wire: an insert anchored at a
+/// random placed element (hidden ones inside range records and embedded ones included), then a
+/// random text op (undelete of part of a deleted run, delete, move, insert, now and then a
+/// replace), `n` times. After every join the read equals the model's text slot and the cached
+/// placement a whole pass (`check_lin`).
 pub(crate) fn snapshot_then_edit(mut r: crate::testutil::SeedRng, upgraded: bool, n: usize) -> Follows {
     use crdt_model::stamp::Dot as MDot;
     use crdt_model::state::{Anchor as MAnchor, Composite};
@@ -190,9 +182,7 @@ pub(crate) fn snapshot_then_edit(mut r: crate::testutil::SeedRng, upgraded: bool
     for d in &deltas {
         full.join(frag(d));
     }
-    let snap = Snapshot { absorbed: Default::default(), facts: Default::default(), nonce: [0; 16], fragment: full, frontiers: Frontiers::default() };
-    let bytes = encode_snapshot(&snap, &snap_cx(), None).unwrap();
-    let mut ours = decode_snapshot(&bytes, &snap_cx(), &mut Interner::new(), None).unwrap().fragment;
+    let mut ours = via_snapshot(&full);
     let mut f = Follows::default();
     // the text slot alone (the writer's deltas are newer than the register's write, so the
     // slot joins them as the position does)
@@ -206,9 +196,7 @@ pub(crate) fn snapshot_then_edit(mut r: crate::testutil::SeedRng, upgraded: bool
     let mut w = MWriter::new(MSource::session(9, 0), 1 << 30, 1);
     let mut deliver = |d: MFrag, w: &MWriter, m: &mut Option<MFrag>, ours: &mut Fragment| {
         mapply(m, d.clone());
-        let cx = writer_cx(w);
-        let bytes = encode_delta(&Delta { nonce: [0; 16], fragment: frag(&d) }, &cx, None).unwrap();
-        let d = decode_delta(&bytes, &cx, &mut Interner::new(), None).unwrap().fragment;
+        let d = wired(&frag(&d), &writer_cx(w));
         let before = match &*ours {
             Fragment::Seq(x) => Some(x.clone()),
             _ => None,
@@ -247,7 +235,6 @@ pub(crate) fn snapshot_then_edit(mut r: crate::testutil::SeedRng, upgraded: bool
         f.derived += usize::from(cached && after && derived);
         f.missed_derived += usize::from(cached && !after && derived);
     };
-    let text = Ty::Text;
     for k in 0..n as u64 {
         // the placement read before each join, so the join has a cache to follow
         let _ = ours.read();
@@ -260,25 +247,26 @@ pub(crate) fn snapshot_then_edit(mut r: crate::testutil::SeedRng, upgraded: bool
         let mut d = MFrag::Seq { text: true, c: Composite { reset: None, w: None, w_valueless: false }, elems: Default::default() };
         let cs = crdt_model::r#gen::random_text(&mut r, 3);
         if !cs.is_empty() {
-            crdt_model::ops::insert_run(&mut w, &mut d, anchor.map_or(MAnchor::Head, |x| MAnchor::Dot(x.clone())), cs.chars().map(Content::Char).collect());
+            crdt_model::ops::insert_run(&mut w, &mut d, anchor.map_or(MAnchor::Head, |x| MAnchor::Dot(x.clone())), chars(&cs));
             deliver(d, &w, &mut m, &mut ours);
         }
         let _ = ours.read();
         w.next_commit((1 << 30) + 2 * k + 2);
-        if let Some(d) = crdt_model::r#gen::random_op(&mut r, &mut w, &text, m.as_ref()) {
+        if let Some(d) = crdt_model::r#gen::random_op(&mut r, &mut w, &Ty::Text, m.as_ref()) {
             deliver(d, &w, &mut m, &mut ours);
         }
     }
     f
 }
 
-/// §6 (a deterministic function of state), `seq_lin`: writes splitting a range record of a snapshot-bootstrapped text, or anchoring
-/// inside one, are followed by the cached placement, not rebuilt (each kind of split alone:
-/// `ranges_split_where_writes_land_spec_6`). §6.1, §7 (embedding), `seq_lin`: writes on embedded characters
-/// (`Derived` dots) of an upgraded text, and inserts anchored at them, are followed too.
-/// §6, §8 (pages are joined independently), `seq_place`: a placement held in part (a node's stored one: blocks and dot-map
-/// chunks loaded on a miss) over records held in part (pages loaded on a miss) follows the
-/// joins a whole one follows, and what it writes back reads as a whole pass. Fixed seeds.
+/// §6 (a deterministic function of state), `seq_lin`: writes splitting a range record of a
+/// snapshot-bootstrapped text, or anchoring inside one, are followed by the cached placement, not
+/// rebuilt (each kind of split alone: `ranges_split_where_writes_land_spec_6`). §6.1, §7
+/// (embedding), `seq_lin`: writes on embedded characters (`Derived` dots) of an upgraded text, and
+/// inserts anchored at them, are followed too. §6, §8 (pages are joined independently),
+/// `seq_place`: a placement held in part (a node's stored one: blocks and dot-map chunks loaded on
+/// a miss) over records held in part (pages loaded on a miss) follows the joins a whole one
+/// follows, and what it writes back reads as a whole pass. Fixed seeds.
 #[test]
 fn snapshot_edits_follow_cache_spec_6() {
     let (mut split, mut partial, mut derived) = (Follows::default(), Follows::default(), Follows::default());
@@ -337,61 +325,43 @@ fn text_slot(f: &MFrag) -> MFrag {
 /// bootstrapped from it holds the deleted embedded char again (the decoder returns the
 /// re-embedded position); an undelete carrying no char (as a writer bootstrapped without the char
 /// may send) shows nothing there, as on a node with the full history, and the state re-encodes
-/// and decodes (reviewer's probes).
+/// and decodes.
 #[test]
 fn bootstrapped_undelete_of_embedded_char_spec_4_6() {
     use crdt_model::value::Value as MValue;
     let mut m = None;
-    let mut w = MWriter::new(MSource::session(1, 0), 50 << 16, 1);
-    mapply(&mut m, mops::create(&mut w, &Ty::Text, &MValue::Str("xy".into())));
-    let mut w = MWriter::new(MSource::session(2, 0), 100 << 16, 1);
-    mapply(&mut m, mops::create(&mut w, &Ty::Register, &MValue::Str("ab".into())));
-    let mut w = MWriter::new(MSource::session(3, 0), 102 << 16, 1);
-    let d = mops::seq_delete(&mut w, &text_slot(m.as_ref().unwrap()), 0, 1).unwrap();
+    mapply(&mut m, mops::create(&mut mw(1, 50), &Ty::Text, &MValue::Str("xy".into())));
+    mapply(&mut m, mops::create(&mut mw(2, 100), &Ty::Register, &MValue::Str("ab".into())));
+    let d = mops::seq_delete(&mut mw(3, 102), &text_slot(m.as_ref().unwrap()), 0, 1).unwrap();
     mapply(&mut m, d);
     let st = m.as_ref().unwrap();
     assert!(matches!(st, MFrag::Slots { .. }));
-    let msnap = m_encode_snapshot(st, &[], [3; 16], &mut Ctx::new(1 << 40, MSource::session(250, 0), 1));
-    let s = Snapshot { absorbed: Default::default(), facts: Default::default(), nonce: [3; 16], fragment: frag(st), frontiers: Frontiers::default() };
-    let bytes = encode_snapshot(&s, &snap_cx(), None).unwrap();
-    assert_eq!(bytes, msnap);
+    let full = frag(st);
+    let bytes = snapshot_bytes(&full);
+    assert_eq!(bytes, m_encode_snapshot(st, &[], [0; 16], &mut Ctx::new(1 << 40, MSource::session(250, 0), 1)));
     let back = decode_snapshot(&bytes, &snap_cx(), &mut Interner::new(), None).unwrap().fragment;
     let (mback, _) = crdt_model::wire::decode_snapshot(&bytes, &mut Ctx::new(1 << 40, MSource::session(250, 0), 1)).unwrap();
     assert_eq!(back.read(), Some(Value::Str("b".into())));
-    assert_eq!(back.read(), s.fragment.read());
+    assert_eq!(back.read(), full.read());
     assert_eq!(frag(&mback).read(), back.read());
+    assert_eq!(back, full, "the embedded char is held again");
     // joined into an empty state, the embedding restores the char locally
-    let mut j = Fragment::default();
-    j.join(back);
-    assert_eq!(j, s.fragment);
-    let full = frag(m.as_ref().unwrap());
-    let snap = |f: &Fragment| {
-        let s = Snapshot { absorbed: Default::default(), facts: Default::default(), nonce: [3; 16], fragment: f.clone(), frontiers: Frontiers::default() };
-        let bytes = encode_snapshot(&s, &snap_cx(), None).unwrap();
-        decode_snapshot(&bytes, &snap_cx(), &mut Interner::new(), None).unwrap().fragment
-    };
-    let mut boot = snap(&full);
-    assert_eq!(boot, full, "the embedded char is held again");
+    assert_eq!(joined(&Fragment::default(), &back), full);
     // the deleted embedded char, undeleted without content
-    let Some(MFrag::Seq { elems, .. }) = m.as_ref().and_then(|x| x.slot(9)) else { panic!() };
+    let Some(MFrag::Seq { elems, .. }) = st.slot(9) else { panic!() };
     let dead: Vec<_> = elems.iter().filter(|(_, e)| e.is_deleted(true)).map(|(d, _)| d.clone()).collect();
     assert_eq!(dead.len(), 1);
-    let mut w = MWriter::new(MSource::session(4, 0), 103 << 16, 1);
-    let empty = MFrag::Seq { text: true, c: Default::default(), elems: BTreeMap::new() };
-    let u = mops::seq_undelete(&mut w, &empty, &dead);
-    let cx = writer_cx(&w);
-    let bytes = encode_delta(&Delta { nonce: [0; 16], fragment: frag(&u) }, &cx, None).unwrap();
-    let u = decode_delta(&bytes, &cx, &mut Interner::new(), None).unwrap().fragment;
-    let mut whole = full.clone();
-    whole.join(u.clone());
-    boot.join(u);
+    let mut w = mw(4, 103);
+    let u = mops::seq_undelete(&mut w, &MFrag::Seq { text: true, c: Default::default(), elems: BTreeMap::new() }, &dead);
+    let u = wired(&frag(&u), &writer_cx(&w));
+    let (whole, boot) = (joined(&full, &u), joined(&back, &u));
     assert_eq!(whole.read(), Some(Value::Str("b".into())));
     assert_eq!(boot.read(), whole.read());
-    assert_eq!(snap(&boot).read(), whole.read());
+    assert_eq!(via_snapshot(&boot).read(), whole.read());
 }
 
-/// §7 (embedding), `seq_lin`: joins at a `Slots` position that leave its register and effective reset as
-/// they are (text edits of a text upgraded from a string) follow the text slot's cached
+/// §7 (embedding), `seq_lin`: joins at a `Slots` position that leave its register and effective
+/// reset as they are (text edits of a text upgraded from a string) follow the text slot's cached
 /// placement and read like the model (the join itself is checked against a whole pass).
 #[test]
 fn slots_join_follows_cache_spec_7() {
@@ -415,11 +385,9 @@ fn slots_join_follows_cache_spec_7() {
     for seed in (1..12).step_by(2) {
         let mut r = crate::testutil::fixed(seed);
         let (mut m, mut ours) = (None, Fragment::default());
-        let mut w = MWriter::new(MSource::session(1, 0), 50 << 16, 1);
-        put(mops::create(&mut w, &Ty::Text, &MValue::Str("xy".into())), &mut m, &mut ours);
-        let mut w = MWriter::new(MSource::session(2, 0), 100 << 16, 1);
-        put(mops::create(&mut w, &Ty::Register, &MValue::Str("abcdefghij".repeat(4))), &mut m, &mut ours);
-        let mut w = MWriter::new(MSource::session(3, 0), 101 << 16, 1);
+        put(mops::create(&mut mw(1, 50), &Ty::Text, &MValue::Str("xy".into())), &mut m, &mut ours);
+        put(mops::create(&mut mw(2, 100), &Ty::Register, &MValue::Str("abcdefghij".repeat(4))), &mut m, &mut ours);
+        let mut w = mw(3, 101);
         for k in 0..40 {
             w.next_commit((102 + k) << 16);
             let Some(d) = crdt_model::r#gen::random_op(&mut r, &mut w, &Ty::Text, m.as_ref()) else { continue };
@@ -460,6 +428,7 @@ fn accepts(f: Value, cx: &DeltaCtx) -> Fragment {
     decode_delta(&delta(vec![], vec![], f), cx, &mut Interner::new(), None).unwrap().fragment
 }
 
+/// §3.2 Run: creations, flag writes, position writes and undeletes carrying their chars decode.
 #[test]
 fn accepts_valid_runs_spec_3_2() {
     let f = accepts(text_with(vec![run(i(3), 3, created(3), s("abc"), vec![], vec![])]), &wcx());
@@ -472,6 +441,8 @@ fn accepts_valid_runs_spec_3_2() {
     assert_eq!(f.read(), Some(l(vec![i(1), i(2)])));
 }
 
+/// §3.3 rule 7: every malformed run is bad input; where a rule has a bound (`MAX_DELTA_BARE`, a
+/// segment's source, `Derived` creations) the run just inside it decodes.
 #[test]
 fn rejects_bad_runs_spec_3_3() {
     let bad = |f: Value| rejects(&delta(vec![], vec![], f), &wcx(), ErrorClass::BadInput);
@@ -507,56 +478,40 @@ fn rejects_bad_runs_spec_3_3() {
     // content for a deleted element, an empty list element fragment
     bad(text_with(vec![run(i(1), 1, l(vec![]), s("a"), vec![], vec![l(vec![i(0), i(0), i(0), Value::Bool(true)])])]));
     bad(list_with(vec![run(i(3), 1, created(1), l(vec![l(vec![i(0), l(vec![])])]), vec![], vec![])]));
-}
-
-/// §3.3 rule 7: no run carrying no write, in a writer's delta or a snapshot; at most
-/// `MAX_DELTA_BARE` content-less elements per writer's delta; a writer's flag writes carry the
-/// delta stamp.
-#[test]
-fn rejects_writeless_and_oversized_runs_spec_3_3() {
-    let other = osis_base::Tid::from_bytes([9; 15]);
-    let srcs = || vec![sess_value(other)];
+    // a flag write off the delta stamp
+    bad(text_with(vec![run(i(1), 1, l(vec![]), l(vec![]), vec![], vec![l(vec![i(0), i(0), l(vec![i(0), i(4)]), Value::Bool(true)])])]));
+    // a run carrying no write, in any delta; at most `MAX_DELTA_BARE` content-less elements per
+    // writer's delta: k · MAX_RUN of them pass, one run more does not
+    let srcs = || vec![sess_value(osis_base::Tid::from_bytes([9; 15]))];
     let m = crate::MAX_RUN as i64;
     let k = (osis_base::format::MAX_DELTA_BARE / crate::MAX_RUN) as i64;
     let flag = || vec![l(vec![i(0), i(m - 1), i(0), Value::Bool(true)])];
     let runs = |k: i64, f: &dyn Fn() -> Vec<Value>| text_with((0..k).map(|j| run(l(vec![i(1), i(1 + j * m)]), m, l(vec![]), l(vec![]), vec![], f())).collect());
-    // a run of nothing but dots: rejected in any delta
     rejects(&delta(srcs(), vec![], runs(1, &Vec::new)), &wcx(), ErrorClass::BadInput);
     rejects(&delta(srcs(), vec![], runs(1, &Vec::new)), &snap_cx(), ErrorClass::BadInput);
-    // k · MAX_RUN = MAX_DELTA_BARE flagged elements pass, one run more does not
     decode_delta(&delta(srcs(), vec![], runs(k, &flag)), &wcx(), &mut Interner::new(), None).unwrap();
     rejects(&delta(srcs(), vec![], runs(k + 1, &flag)), &wcx(), ErrorClass::BadInput);
-    // a flag write off the delta stamp
-    let off = text_with(vec![run(i(1), 1, l(vec![]), l(vec![]), vec![], vec![l(vec![i(0), i(0), l(vec![i(0), i(4)]), Value::Bool(true)])])]);
-    rejects(&delta(vec![], vec![], off), &wcx(), ErrorClass::BadInput);
-}
-
-/// §3.3 rule 7: a segment's commit has the run's source.
-#[test]
-fn rejects_segment_of_another_source_spec_3_3() {
+    // a segment's commit has the run's source
     let (a, b) = (osis_base::Tid::from_bytes([1; 15]), osis_base::Tid::from_bytes([2; 15]));
-    let srcs = vec![sess_value(a), sess_value(b)];
     let commits = vec![l(vec![i(1), l(vec![l(vec![i(10), i(0), i(1)])])]), l(vec![i(2), l(vec![l(vec![i(10), i(0), i(1)])])])];
-    let with = |ci: i64| {
+    let segment_of = |ci: i64| {
         let r = run(l(vec![i(1), i(1)]), 1, l(vec![i(0), l(vec![l(vec![i(ci), i(1)])])]), s("a"), vec![], vec![]);
         let f = text_with(vec![r, run(l(vec![i(2), i(1)]), 1, l(vec![i(0), l(vec![l(vec![i(2), i(1)])])]), s("b"), vec![], vec![])]);
-        delta(srcs.clone(), commits.clone(), f)
+        delta(vec![sess_value(a), sess_value(b)], commits.clone(), f)
     };
-    decode_delta(&with(1), &snap_cx(), &mut Interner::new(), None).unwrap();
-    rejects(&with(2), &snap_cx(), ErrorClass::BadInput);
-}
-
-/// §3.3 rule 7: a creation run of a `Derived` source only in snapshots (embedded characters).
-#[test]
-fn rejects_derived_creation_in_writer_delta_spec_3_3() {
+    decode_delta(&segment_of(1), &snap_cx(), &mut Interner::new(), None).unwrap();
+    rejects(&segment_of(2), &snap_cx(), ErrorClass::BadInput);
+    // a creation run of a `Derived` source (of own dot 3) only in snapshots (embedded
+    // characters); an anchor at an embedded character is fine
     let f = text_with(vec![run(l(vec![i(1), i(1)]), 1, created(1), s("a"), vec![], vec![])]);
-    // Sources: Derived of own dot 3
     rejects(&delta(vec![l(vec![i(0), i(3)])], vec![], f), &wcx(), ErrorClass::BadInput);
-    // an anchor at an embedded character is fine
     let f = text_with(vec![run(i(3), 1, l(vec![l(vec![i(2), i(1)]), l(vec![l(vec![i(0), i(1)])])]), s("q"), vec![], vec![])]);
-    let other = osis_base::Tid::from_bytes([9; 15]);
-    let srcs = vec![sess_value(other), l(vec![i(1), i(4)])];
-    decode_delta(&delta(srcs, vec![], f), &wcx(), &mut Interner::new(), None).unwrap();
+    decode_delta(&delta(vec![sess_value(osis_base::Tid::from_bytes([9; 15])), l(vec![i(1), i(4)])], vec![], f), &wcx(), &mut Interner::new(), None).unwrap();
+    // runs that overlap (here the second starts inside the first), in a snapshot
+    let runs = vec![run(i(1), 5, l(vec![]), l(vec![]), vec![], vec![]), run(i(3), 5, l(vec![]), l(vec![]), vec![], vec![])];
+    let bytes = osis_base::encode(&l(vec![Value::Bytes(vec![0; 16]), l(vec![]), l(vec![]), text_with(runs), l(vec![])]));
+    let e = decode_snapshot(&bytes, &snap_cx(), &mut Interner::new(), None).unwrap_err();
+    assert_eq!(osis_base::Classified::class(&e), ErrorClass::BadInput, "{e}");
 }
 
 // ---- notes/crdt.md, Worked examples (model ops, joined by this implementation)
@@ -567,44 +522,48 @@ fn chars(x: &str) -> Vec<Content> {
 fn mw(n: u8, t: u64) -> MWriter {
     MWriter::new(MSource::session(n, 0), t << 16, 1)
 }
-fn joined(base: &Fragment, ds: &[&MFrag]) -> Fragment {
-    let mut f = base.clone();
-    for d in ds {
-        f.join(frag(d));
-    }
-    f
+/// `base` joined with model deltas `ds` in order.
+fn after(base: &Fragment, ds: &[&MFrag]) -> Fragment {
+    ds.iter().fold(base.clone(), |f, d| joined(&f, &frag(d)))
 }
-fn reads(f: &Fragment) -> Option<String> {
-    match f.read() {
-        Some(Value::Str(x)) => Some(x),
-        _ => None,
-    }
+/// The read of `base` joined with `ds`, the same state in either order (§4.1).
+fn converged(base: &Fragment, ds: &[&MFrag]) -> Option<String> {
+    let st = after(base, ds);
+    assert_eq!(st, after(base, &ds.iter().rev().copied().collect::<Vec<_>>()), "order-independent");
+    reads(&st)
+}
+fn txt(x: &str) -> Option<String> {
+    Some(x.into())
 }
 /// `x` typed by node 1 at t=1, as a model state and ours.
 fn typed(x: &str) -> (MFrag, Fragment) {
-    let mut a = mw(1, 1);
-    let mut st = mops::seq_insert(&mut a, None, true, 0, chars(x));
+    let mut st = mops::seq_insert(&mut mw(1, 1), None, true, 0, chars(x));
     st.prune(None);
     let f = frag(&st);
     (st, f)
 }
-/// The model writer's header as a delta context.
-fn cx_of(w: &MWriter) -> DeltaCtx {
-    DeltaCtx { ts: ts(w.ts), own: source(&w.source), range: CounterRange { lo: w.lo, hi: w.hi() }, kind: DeltaKind::Writer }
+/// Model writer `n` at `t` with counters from `lo`.
+fn mw_at(n: u8, t: u64, lo: u64) -> MWriter {
+    let mut w = mw(n, t);
+    (w.lo, w.next) = (lo, lo);
+    w
 }
+/// The fragment of delta bytes, as CBOR.
 fn fragment_value(bytes: &[u8]) -> Value {
     let Value::List(top) = osis_base::decode(bytes, &osis_base::Limits::new(64, 1 << 20)).unwrap() else { panic!() };
     top[3].clone()
+}
+/// The wire fragment of model delta `d` by `w`.
+fn wire_of(d: &MFrag, w: &MWriter) -> Value {
+    fragment_value(&encode_delta(&Delta { nonce: [0; 16], fragment: frag(d) }, &writer_cx(w), None).unwrap())
 }
 
 #[test]
 fn typing_spec_example() {
     let mut a = mw(1, 1);
     let d = mops::seq_insert(&mut a, None, true, 0, chars("FOOBAR"));
-    let bytes = encode_delta(&Delta { nonce: [0; 16], fragment: frag(&d) }, &cx_of(&a), None).unwrap();
-    let runs = l(vec![run(i(1), 6, l(vec![i(0), l(vec![l(vec![i(0), i(6)])])]), s("FOOBAR"), vec![], vec![])]);
-    assert_eq!(fragment_value(&bytes), l(vec![i(9), l(vec![]), l(vec![]), runs]));
-    assert_eq!(reads(&frag(&d)).as_deref(), Some("FOOBAR"));
+    assert_eq!(wire_of(&d, &a), text_with(vec![run(i(1), 6, l(vec![i(0), l(vec![l(vec![i(0), i(6)])])]), s("FOOBAR"), vec![], vec![])]));
+    assert_eq!(reads(&frag(&d)), txt("FOOBAR"));
 }
 
 #[test]
@@ -612,26 +571,17 @@ fn concurrent_inserts_at_one_anchor_spec_example() {
     let (m, base) = typed("FOOBAR");
     let mut b = mw(2, 2);
     let x = mops::seq_insert(&mut b, Some(&m), true, 3, chars("x"));
-    let bytes = encode_delta(&Delta { nonce: [0; 16], fragment: frag(&x) }, &cx_of(&b), None).unwrap();
-    let runs = l(vec![run(i(1), 1, l(vec![l(vec![i(1), i(3)]), l(vec![l(vec![i(0), i(1)])])]), s("x"), vec![], vec![])]);
-    assert_eq!(fragment_value(&bytes), l(vec![i(9), l(vec![]), l(vec![]), runs]));
-    let mut c = mw(3, 3);
-    let y = mops::seq_insert(&mut c, Some(&m), true, 3, chars("y"));
-    assert_eq!(reads(&joined(&base, &[&x, &y])).as_deref(), Some("FOOyxBAR"));
-    assert_eq!(reads(&joined(&base, &[&y, &x])).as_deref(), Some("FOOyxBAR"));
+    assert_eq!(wire_of(&x, &b), text_with(vec![run(i(1), 1, l(vec![l(vec![i(1), i(3)]), l(vec![l(vec![i(0), i(1)])])]), s("x"), vec![], vec![])]));
+    let y = mops::seq_insert(&mut mw(3, 3), Some(&m), true, 3, chars("y"));
+    assert_eq!(converged(&base, &[&x, &y]), txt("FOOyxBAR"));
 }
 
 #[test]
 fn move_with_concurrent_insert_spec_example() {
     let (m, base) = typed("FOOBAR");
-    let mut b = mw(2, 2);
-    let x = mops::seq_insert(&mut b, Some(&m), true, 3, chars("x"));
-    let mut a = mw(1, 3);
-    a.lo = 7;
-    a.next = 7;
-    let mv = mops::seq_move(&mut a, &m, 0, 3, 3).unwrap();
-    assert_eq!(reads(&joined(&base, &[&x, &mv])).as_deref(), Some("BARFOOx"));
-    assert_eq!(reads(&joined(&base, &[&mv, &x])).as_deref(), Some("BARFOOx"));
+    let x = mops::seq_insert(&mut mw(2, 2), Some(&m), true, 3, chars("x"));
+    let mv = mops::seq_move(&mut mw_at(1, 3, 7), &m, 0, 3, 3).unwrap();
+    assert_eq!(converged(&base, &[&x, &mv]), txt("BARFOOx"));
 }
 
 #[test]
@@ -645,10 +595,10 @@ fn range_with_several_roots_spec_example() {
     }
     let m = st.unwrap();
     let base = frag(&m);
-    assert_eq!(reads(&base).as_deref(), Some("abc"));
+    assert_eq!(reads(&base), txt("abc"));
     w.next_commit(4 << 16);
     let mv = mops::seq_move(&mut w, &m, 0, 2, 1).unwrap();
-    assert_eq!(reads(&joined(&base, &[&mv])).as_deref(), Some("cab"));
+    assert_eq!(reads(&after(&base, &[&mv])), txt("cab"));
 }
 
 #[test]
@@ -656,8 +606,7 @@ fn concurrent_moves_of_one_element_spec_example() {
     let (m, base) = typed("abc");
     let m1 = mops::seq_move(&mut mw(2, 5), &m, 0, 1, 2).unwrap();
     let m2 = mops::seq_move(&mut mw(3, 4), &m, 0, 1, 1).unwrap();
-    assert_eq!(reads(&joined(&base, &[&m1, &m2])).as_deref(), Some("bca"));
-    assert_eq!(reads(&joined(&base, &[&m2, &m1])).as_deref(), Some("bca"));
+    assert_eq!(converged(&base, &[&m1, &m2]), txt("bca"));
 }
 
 #[test]
@@ -665,26 +614,21 @@ fn cycle_spec_example() {
     let (m, base) = typed("acb");
     let m1 = mops::seq_move(&mut mw(2, 5), &m, 0, 1, 2).unwrap();
     let m2 = mops::seq_move(&mut mw(3, 4), &m, 2, 1, 1).unwrap();
-    assert_eq!(reads(&joined(&base, &[&m1, &m2])).as_deref(), Some("cba"));
-    assert_eq!(reads(&joined(&base, &[&m2, &m1])).as_deref(), Some("cba"));
+    assert_eq!(converged(&base, &[&m1, &m2]), txt("cba"));
 }
 
 #[test]
 fn reset_against_a_newer_insert_spec_example() {
     let (m, base) = typed("abc");
-    let mut a = mw(1, 5);
-    a.lo = 4;
-    a.next = 4;
-    let rep = mops::replace(&mut a, &Ty::Text, &crdt_model::value::Value::Str("xyz".into()));
+    let rep = mops::replace(&mut mw_at(1, 5, 4), &Ty::Text, &crdt_model::value::Value::Str("xyz".into()));
     let q = mops::seq_insert(&mut mw(2, 6), Some(&m), true, 2, chars("q"));
-    assert_eq!(reads(&joined(&base, &[&rep, &q])).as_deref(), Some("xyzq"));
-    assert_eq!(joined(&base, &[&rep, &q]), joined(&base, &[&q, &rep]));
+    assert_eq!(converged(&base, &[&rep, &q]), txt("xyzq"));
     let old = mops::seq_insert(&mut mw(3, 3), Some(&m), true, 2, chars("o"));
-    assert_eq!(reads(&joined(&base, &[&old, &rep])).as_deref(), Some("xyz"));
+    assert_eq!(reads(&after(&base, &[&old, &rep])), txt("xyz"));
     // remove_aspect instead: absent until q arrives, then q
     let rm = mops::remove(&mut mw(1, 5), 9);
-    assert_eq!(joined(&base, &[&rm]).read(), None);
-    assert_eq!(reads(&joined(&base, &[&rm, &q])).as_deref(), Some("q"));
+    assert_eq!(after(&base, &[&rm]).read(), None);
+    assert_eq!(reads(&after(&base, &[&rm, &q])), txt("q"));
 }
 
 #[test]
@@ -692,7 +636,7 @@ fn move_displaces_a_concurrent_insert_spec_example() {
     let (m, base) = typed("abcd");
     let mv = mops::seq_move(&mut mw(2, 5), &m, 1, 1, 3).unwrap();
     let x = mops::seq_insert(&mut mw(3, 4), Some(&m), true, 1, chars("x"));
-    assert_eq!(reads(&joined(&base, &[&mv, &x])).as_deref(), Some("acdbx"));
+    assert_eq!(reads(&after(&base, &[&mv, &x])), txt("acdbx"));
 }
 
 #[test]
@@ -700,38 +644,26 @@ fn delete_vs_move_spec_example() {
     let (m, base) = typed("abc");
     let del = mops::seq_delete(&mut mw(2, 4), &m, 1, 1).unwrap();
     let mv = mops::seq_move(&mut mw(3, 5), &m, 1, 1, 2).unwrap();
-    let st = joined(&base, &[&del, &mv]);
-    assert_eq!(reads(&st).as_deref(), Some("ac"));
-    assert_eq!(st, joined(&base, &[&mv, &del]));
+    assert_eq!(converged(&base, &[&del, &mv]), txt("ac"));
     // an insert anchored at b (made before the delete) appears after c
     let q = mops::seq_insert(&mut mw(4, 6), Some(&m), true, 2, chars("q"));
-    assert_eq!(reads(&joined(&st, &[&q])).as_deref(), Some("acq"));
+    assert_eq!(reads(&after(&base, &[&del, &mv, &q])), txt("acq"));
 }
 
 #[test]
 fn unknown_anchor_spec_example() {
     let (m, base) = typed("FOOBAR");
     let x = mops::seq_insert(&mut mw(2, 2), Some(&m), true, 3, chars("x"));
-    let mut early = Fragment::default();
-    early.join(frag(&x));
-    assert_eq!(reads(&early).as_deref(), Some("x"), "at END until its anchor arrives");
-    let mut a = mw(1, 5);
-    a.lo = 7;
-    a.next = 7;
-    let rep = mops::replace(&mut a, &Ty::Text, &crdt_model::value::Value::Str("Z".into()));
-    early.join(frag(&rep));
-    assert_eq!(reads(&early).as_deref(), Some("Z"));
-    early.join(base);
-    assert_eq!(reads(&early).as_deref(), Some("Z"), "x (t=2) is older than the reset");
+    let rep = mops::replace(&mut mw_at(1, 5, 7), &Ty::Text, &crdt_model::value::Value::Str("Z".into()));
+    let e = Fragment::default();
+    assert_eq!(reads(&after(&e, &[&x])), txt("x"), "at END until its anchor arrives");
+    assert_eq!(reads(&after(&e, &[&x, &rep])), txt("Z"));
+    assert_eq!(reads(&joined(&after(&e, &[&x, &rep]), &base)), txt("Z"), "x (t=2) is older than the reset");
     // a newer insert into the reset text is placed once its anchor arrives
     let y = mops::seq_insert(&mut mw(3, 6), Some(&m), true, 3, chars("y"));
-    let mut late = Fragment::default();
-    late.join(frag(&y));
-    assert_eq!(reads(&late).as_deref(), Some("y"));
-    late.join(frag(&rep));
-    assert_eq!(reads(&late).as_deref(), Some("Zy"));
-    late.join(frag(&m));
-    assert_eq!(reads(&late).as_deref(), Some("Zy"));
+    assert_eq!(reads(&after(&e, &[&y])), txt("y"));
+    assert_eq!(reads(&after(&e, &[&y, &rep])), txt("Zy"));
+    assert_eq!(reads(&after(&e, &[&y, &rep, &m])), txt("Zy"));
 }
 
 /// §8: a text with many runs pages and re-joins to itself.
@@ -743,13 +675,11 @@ fn text_pages_spec_8() {
     let (_, mut st) = typed(&text);
     // every third char deleted by its own commit: one run per char
     let Fragment::Seq(s) = &mut st else { panic!() };
-    let b = sess(osis_base::Tid::from_bytes([2; 15]));
     for (k, e) in s.elems_mut().values_mut().enumerate().filter(|(k, _)| k % 3 == 0) {
-        e.deleted = Some((crate::stamp::Stamp::new(ts((k as u64 + 2) << 16), b.clone(), k as u64 + 1), true));
+        e.deleted = Some((Stamp::new(ts((k as u64 + 2) << 16), node(2), k as u64 + 1), true));
     }
     let mut pages = MemoryPages::with_params(params);
-    let snap = Snapshot { absorbed: Default::default(), facts: Default::default(), nonce: [0; 16], fragment: st.clone(), frontiers: Frontiers::default() };
-    let bytes = encode_snapshot(&snap, &snap_cx(), Some(&mut pages)).unwrap();
+    let bytes = encode_snapshot(&snapshot(&st), &snap_cx(), Some(&mut pages)).unwrap();
     assert!(!pages.is_empty());
     let got = decode_snapshot(&bytes, &snap_cx(), &mut Interner::new(), Some(&mut pages)).unwrap();
     assert_eq!(got.fragment, as_carried(&st));
@@ -758,11 +688,8 @@ fn text_pages_spec_8() {
 
 // ---- range records (spec/requirements.md Scale: input never causes unbounded allocation)
 
-fn n(b: u8) -> crate::stamp::Source {
-    sess(osis_base::Tid::from_bytes([b; 15]))
-}
 fn st(t: u64, b: u8, c: u64) -> Stamp {
-    Stamp::new(ts(t << 16), n(b), c)
+    Stamp::new(ts(t << 16), node(b), c)
 }
 fn seq_of(elems: BTreeMap<Dot, SeqElem>, reset: Option<Stamp>) -> Fragment {
     Fragment::Seq(Seq::new(true, Meta { reset, ..Meta::default() }, elems))
@@ -770,16 +697,28 @@ fn seq_of(elems: BTreeMap<Dot, SeqElem>, reset: Option<Stamp>) -> Fragment {
 fn one(d: Dot, e: SeqElem) -> Fragment {
     seq_of(BTreeMap::from([(d, e)]), None)
 }
+/// A created char `c` of `dot` at `t`, anchored at `at`.
+fn char_at(dot: Dot, t: u64, at: Anchor, c: char) -> SeqElem {
+    let s = Stamp { ts: ts(t << 16), dot };
+    SeqElem { created: Some((s.clone(), at.clone())), content: SeqContent::Char(c), pos: vec![(s, at, None)], deleted: None, undel: None, valueless: false, span: 1 }
+}
 /// `len` chars typed by node 1 at t = 1, chained from HEAD.
+fn chain(len: u64) -> BTreeMap<Dot, SeqElem> {
+    let (a, mut prev) = (node(1), Anchor::Head);
+    (1..=len)
+        .map(|c| {
+            let d = Dot::new(a.clone(), c);
+            (d.clone(), char_at(d.clone(), 1, std::mem::replace(&mut prev, Anchor::Dot(d)), 'a'))
+        })
+        .collect()
+}
 fn long_text(len: u64) -> Fragment {
-    let mut elems = BTreeMap::new();
-    let mut prev = Anchor::Head;
-    for c in 1..=len {
-        let s = st(1, 1, c);
-        elems.insert(s.dot.clone(), SeqElem { created: Some((s.clone(), prev.clone())), content: SeqContent::Char('a'), pos: vec![(s.clone(), prev, None)], deleted: None, undel: None, valueless: false, span: 1 });
-        prev = Anchor::Dot(s.dot);
-    }
-    seq_of(elems, None)
+    seq_of(chain(len), None)
+}
+/// `long_text(MAX_RUN - 1)` deleted by one range write of node 2.
+fn deleted_text() -> Fragment {
+    let len = crate::MAX_RUN - 1;
+    joined(&long_text(len), &one(Dot::new(node(1), 1), SeqElem { deleted: Some((st(2, 2, 1), true)), span: len, ..SeqElem::bare() }))
 }
 fn records(f: &Fragment) -> usize {
     match f {
@@ -797,8 +736,12 @@ fn expanded(f: &Fragment) -> Fragment {
     let Fragment::Seq(s) = f else { panic!("not a sequence") };
     Fragment::Seq(Seq::new(s.text, s.meta.clone(), expand(s.elems().clone())))
 }
-fn snapshot_of(f: &Fragment) -> Vec<u8> {
-    encode_snapshot(&Snapshot { absorbed: Default::default(), facts: Default::default(), nonce: [0; 16], fragment: f.clone(), frontiers: Frontiers::default() }, &snap_cx(), None).unwrap()
+/// `a` and `b` place, read and encode alike.
+#[track_caller]
+fn alike(a: &Fragment, b: &Fragment) {
+    assert_eq!(order(a), order(b));
+    assert_eq!(a.read(), b.read());
+    assert_eq!(snapshot_bytes(a), snapshot_bytes(b));
 }
 
 /// §3.2 Run, issue run amplification: a snapshot run of `MAX_RUN` - 1 deleted elements is a few
@@ -806,14 +749,11 @@ fn snapshot_of(f: &Fragment) -> Vec<u8> {
 /// carrying no write (`[Dot, n, [], [], [], []]`) is rejected in a snapshot too (§3.3 rule 7).
 #[test]
 fn snapshot_runs_decode_to_ranges_spec_3_2() {
-    let len = crate::MAX_RUN - 1;
-    let mut reset = long_text(len);
-    reset.join(seq_of(BTreeMap::new(), Some(st(2, 2, 1))));
+    let reset = joined(&long_text(crate::MAX_RUN - 1), &seq_of(BTreeMap::new(), Some(st(2, 2, 1))));
     assert_eq!(records(&reset), 0, "a reset leaves no record");
-    let mut deleted = long_text(len);
-    deleted.join(one(Dot::new(n(1), 1), SeqElem { deleted: Some((st(2, 2, 1), true)), span: len, ..SeqElem::bare() }));
-    assert_eq!(records(&deleted), len as usize, "a range write splits nothing into a per-element state");
-    let bytes = snapshot_of(&deleted);
+    let deleted = deleted_text();
+    assert_eq!(records(&deleted), crate::MAX_RUN as usize - 1, "a range write splits nothing into a per-element state");
+    let bytes = snapshot_bytes(&deleted);
     // 138 bytes, 66 of them its two session sources
     assert!(bytes.len() < 144, "{} bytes", bytes.len());
     let back = decode_snapshot(&bytes, &snap_cx(), &mut Interner::new(), None).unwrap().fragment;
@@ -821,7 +761,7 @@ fn snapshot_runs_decode_to_ranges_spec_3_2() {
     assert_eq!(back, as_carried(&deleted));
     assert_eq!(back.read(), deleted.read());
     assert_eq!(order(&back), order(&deleted));
-    assert_eq!(snapshot_of(&back), bytes);
+    assert_eq!(snapshot_bytes(&back), bytes);
     // the deleted run with its flag write taken out: a run of nothing but dots
     let v = osis_base::decode(&bytes, &osis_base::Limits::new(16, 1 << 20)).unwrap();
     let Value::List(mut top) = v else { panic!("snapshot") };
@@ -839,23 +779,19 @@ fn snapshot_runs_decode_to_ranges_spec_3_2() {
 /// each split (`seq_lin`: no whole pass), the reset aside.
 #[test]
 fn ranges_split_where_writes_land_spec_6() {
-    let len = crate::MAX_RUN - 1;
-    let mut deleted = long_text(len);
-    deleted.join(one(Dot::new(n(1), 1), SeqElem { deleted: Some((st(2, 2, 1), true)), span: len, ..SeqElem::bare() }));
-    let ranged = decode_snapshot(&snapshot_of(&deleted), &snap_cx(), &mut Interner::new(), None).unwrap().fragment;
+    let ranged = via_snapshot(&deleted_text());
     assert_eq!(records(&ranged), 1);
     let flat = expanded(&ranged);
     let x = st(3, 3, 1);
-    let at = Anchor::Dot(Dot::new(n(1), 1000));
-    let insert = one(x.dot.clone(), SeqElem { created: Some((x.clone(), at.clone())), content: SeqContent::Char('x'), pos: vec![(x.clone(), at, None)], deleted: None, undel: None, valueless: false, span: 1 });
-    let mv = one(Dot::new(n(1), 500), SeqElem { pos: vec![(st(4, 3, 2), Anchor::Head, None)], ..SeqElem::bare() });
-    let undelete = one(Dot::new(n(1), 2000), SeqElem { deleted: Some((st(5, 3, 3), false)), undel: Some('u'), ..SeqElem::bare() });
+    let insert = one(x.dot.clone(), char_at(x.dot.clone(), 3, Anchor::Dot(Dot::new(node(1), 1000)), 'x'));
+    let mv = one(Dot::new(node(1), 500), SeqElem { pos: vec![(st(4, 3, 2), Anchor::Head, None)], ..SeqElem::bare() });
+    let undelete = one(Dot::new(node(1), 2000), SeqElem { deleted: Some((st(5, 3, 3), false)), undel: Some('u'), ..SeqElem::bare() });
     // creations of t = 1 below (1, node 1, 3000) go: a reset inside the chain
     let reset = seq_of(BTreeMap::new(), Some(st(1, 1, 3_000)));
     let (mut a, mut b) = (ranged.clone(), flat.clone());
     for (k, d) in [insert, mv, undelete, reset].into_iter().enumerate() {
         if k == 3 {
-            assert_eq!(reads(&a).as_deref(), Some("xu"));
+            assert_eq!(reads(&a), txt("xu"));
         }
         let _ = a.read();
         let _ = crate::seq_lin::probe();
@@ -871,53 +807,33 @@ fn ranges_split_where_writes_land_spec_6() {
         assert!(records(&a) <= 12, "{} records", records(&a));
     }
     // the reset pruned the undeleted char's creation, so only its flag revived (§5.7)
-    assert_eq!(reads(&a).as_deref(), Some("x"));
-    let bytes = snapshot_of(&a);
-    assert_eq!(bytes, snapshot_of(&b));
-    assert_eq!(decode_snapshot(&bytes, &snap_cx(), &mut Interner::new(), None).unwrap().fragment, as_carried(&a));
+    assert_eq!(reads(&a), txt("x"));
+    assert_eq!(via_snapshot(&a), as_carried(&a));
 }
 
-proptest! {
-    /// §6: range records place, read and encode like their elements (random histories, every
-    /// uniform stretch coalesced).
-    #[test]
-    fn ranges_place_like_elements_spec_6(seed in any::<u64>()) {
-        let mut r = crate::testutil::rng(seed | 1);
-        // text slots: embedded chars (`Derived` dots) beside range records
-        let types: &[Ty] = if seed % 2 == 0 { &[Ty::Text, Ty::List(Box::new(inner()))] } else { &[Ty::Register, Ty::Text] };
-        let commits = crate::testutil::history(&mut r, types, 3, 6);
-        let mut state = None;
-        for c in &commits {
-            mapply(&mut state, c.delta.clone());
-            let f = match frag(state.as_ref().unwrap()) {
-                Fragment::Slots(x) => x.slots.get(&crate::fragment::Encoding::Text).cloned().unwrap_or_default(),
-                f => f,
-            };
-            let Fragment::Seq(_) = &f else { continue };
-            let flat = expanded(&f);
-            prop_assert_eq!(order(&f), order(&flat));
-            prop_assert_eq!(f.read(), flat.read());
-            prop_assert_eq!(snapshot_of(&f), snapshot_of(&flat));
-        }
-    }
+/// §4.7: a list range record whose elements' creations expire in part (two commits' counters in
+/// one record, as a snapshot may carry them) strips like its elements.
+#[test]
+fn range_strips_like_its_elements_spec_4_7() {
+    let at = |c: u64| if c == 1 { Anchor::Head } else { Anchor::Dot(Dot::new(node(1), c - 1)) };
+    let el = |c: u64, span: u64| SeqElem { created: Some((st(1, 1, c), at(c))), pos: vec![(st(1, 1, c), at(c), None)], deleted: Some((st(2, 2, 1), true)), span, ..SeqElem::bare() };
+    let list = |elems: BTreeMap<Dot, SeqElem>| Fragment::Seq(Seq::new(false, Meta::default(), elems));
+    let ranged = list(BTreeMap::from([(Dot::new(node(1), 1), el(1, 4))]));
+    let flat = list((1..=4).map(|c| (Dot::new(node(1), c), el(c, 1))).collect());
+    let strip = |f: &Fragment| {
+        let mut g = f.clone();
+        g.strip(&|d| d.src == node(1) && d.ctr <= 2);
+        expanded(&g)
+    };
+    assert_eq!(strip(&ranged), strip(&flat));
 }
 
-/// A created char `c` of `dot` at `t`, anchored at `at`.
-fn char_at(dot: Dot, t: u64, at: Anchor, c: char) -> SeqElem {
-    let s = Stamp { ts: ts(t << 16), dot };
-    SeqElem { created: Some((s.clone(), at.clone())), content: SeqContent::Char(c), pos: vec![(s, at, None)], deleted: None, undel: None, valueless: false, span: 1 }
-}
-/// Through a snapshot: uniform stretches become range records.
-pub(crate) fn via_snapshot(f: &Fragment) -> Fragment {
-    decode_snapshot(&snapshot_of(f), &snap_cx(), &mut Interner::new(), None).unwrap().fragment
-}
 /// `op` applied by node 4 at t = 9: the delta and the joined state.
 fn apply_op(f: &Fragment, op: crate::ops::Op) -> (Fragment, Fragment) {
-    let mut b = crate::delta::DeltaBuilder::new(f, crate::ops::Writer::new(ts(9 << 16), n(4), 1));
+    let mut b = crate::delta::DeltaBuilder::new(f, crate::ops::Writer::new(ts(9 << 16), node(4), 1));
     b.apply(&crate::ops::PathOp { path: vec![], op }, &crate::testutil::TyView(Ty::Text)).unwrap();
     let (d, _) = b.finish().unwrap();
-    let mut s = f.clone();
-    s.join(d.clone());
+    let s = joined(f, &d);
     (d, s)
 }
 
@@ -926,22 +842,18 @@ fn apply_op(f: &Fragment, op: crate::ops::Op) -> (Fragment, Fragment) {
 /// built element by element give the same writes and read.
 #[test]
 fn move_over_virtual_anchors_spec_5_7() {
-    let mut elems = BTreeMap::new();
-    let mut prev = Anchor::Head;
+    let mut elems = chain(5);
     for (k, c) in "hello".chars().enumerate() {
-        let d = Dot::new(n(1), k as u64 + 1);
-        elems.insert(d.clone(), char_at(d.clone(), 1, prev, c));
-        prev = Anchor::Dot(d);
+        elems.get_mut(&Dot::new(node(1), k as u64 + 1)).unwrap().content = SeqContent::Char(c);
     }
-    elems.insert(Dot::new(n(3), 1), char_at(Dot::new(n(3), 1), 3, Anchor::Dot(Dot::new(n(2), 5)), 'a'));
-    elems.insert(Dot::new(n(3), 2), char_at(Dot::new(n(3), 2), 3, Anchor::Dot(Dot::new(n(2), 10)), 'x'));
+    elems.insert(Dot::new(node(3), 1), char_at(Dot::new(node(3), 1), 3, Anchor::Dot(Dot::new(node(2), 5)), 'a'));
+    elems.insert(Dot::new(node(3), 2), char_at(Dot::new(node(3), 2), 3, Anchor::Dot(Dot::new(node(2), 10)), 'x'));
     let flat = seq_of(elems, None);
-    assert_eq!(reads(&flat).as_deref(), Some("helloax"));
-    let ranged = via_snapshot(&flat);
+    assert_eq!(reads(&flat), txt("helloax"));
     let (d1, s1) = apply_op(&flat, crate::ops::Op::Move { at: 5, len: 2, to: 0 });
-    let (d2, s2) = apply_op(&ranged, crate::ops::Op::Move { at: 5, len: 2, to: 0 });
+    let (d2, s2) = apply_op(&via_snapshot(&flat), crate::ops::Op::Move { at: 5, len: 2, to: 0 });
     assert_eq!(d1, d2);
-    assert_eq!(reads(&s1).as_deref(), Some("axhello"));
+    assert_eq!(reads(&s1), txt("axhello"));
     assert_eq!(s1, s2);
     assert_eq!(order(&s1), order(&s2));
 }
@@ -952,28 +864,29 @@ fn move_over_virtual_anchors_spec_5_7() {
 fn equal_sibling_keys_go_by_dot_spec_6_1() {
     let key = st(3, 9, 1);
     let el = |b: u8, c: char| {
-        let d = Dot::new(n(b), 1);
+        let d = Dot::new(node(b), 1);
         let mut e = char_at(d.clone(), 1, Anchor::Head, c);
-        e.pos.push((Stamp { ts: ts(5 << 16), dot: Dot::new(n(b), 2) }, Anchor::Head, Some(key.clone())));
+        e.pos.push((Stamp { ts: ts(5 << 16), dot: Dot::new(node(b), 2) }, Anchor::Head, Some(key.clone())));
         crate::seq::top2(&mut e.pos);
         (d, e)
     };
     let (lo, hi) = (el(2, 'a'), el(3, 'b'));
     assert!(lo.0 < hi.0);
-    let mut f = one(hi.0.clone(), hi.1);
-    f.join(one(lo.0.clone(), lo.1));
+    let f = joined(&one(hi.0.clone(), hi.1), &one(lo.0.clone(), lo.1));
     assert_eq!(order(&f), vec![lo.0, hi.0]);
-    assert_eq!(reads(&f).as_deref(), Some("ab"));
+    assert_eq!(reads(&f), txt("ab"));
 }
 
 /// The flag-only range `(node 2, 1..=10)` (deleted, created elsewhere) as one record, and the
 /// same element by element.
 fn flagged_ten() -> (Fragment, Fragment) {
     let flag = || SeqElem { deleted: Some((st(1, 2, 1), true)), ..SeqElem::bare() };
-    let flat = seq_of((1..=10).map(|c| (Dot::new(n(2), c), flag())).collect(), None);
-    let mut e = flag();
-    e.span = 10;
-    (seq_of(BTreeMap::from([(Dot::new(n(2), 1), e)]), None), flat)
+    let flat = seq_of((1..=10).map(|c| (Dot::new(node(2), c), flag())).collect(), None);
+    (one(Dot::new(node(2), 1), SeqElem { span: 10, ..flag() }), flat)
+}
+/// Dot 1 of `Derived(node 2, 5)`.
+fn derived_dot() -> Dot {
+    Dot::new(crate::stamp::Source::derived(Dot::new(node(2), 5)).unwrap(), 1)
 }
 
 /// §2.2, §7: a `Derived(S, 5)` record sorts between `(S, 5)` and `(S, 6)`: joining one splits a
@@ -981,18 +894,15 @@ fn flagged_ten() -> (Fragment, Fragment) {
 #[test]
 fn derived_keys_split_ranges_spec_7() {
     let (mut a, mut b) = flagged_ten();
-    let dd = Dot::new(crate::stamp::Source::derived(Dot::new(n(2), 5)).unwrap(), 1);
-    let emb = one(dd.clone(), char_at(dd, 4, Anchor::Head, 'q'));
-    let flag = one(Dot::new(n(2), 1), SeqElem { deleted: Some((st(5, 5, 1), true)), span: 10, ..SeqElem::bare() });
+    let emb = one(derived_dot(), char_at(derived_dot(), 4, Anchor::Head, 'q'));
+    let flag = one(Dot::new(node(2), 1), SeqElem { deleted: Some((st(5, 5, 1), true)), span: 10, ..SeqElem::bare() });
     for d in [emb, flag] {
         a.join(d.clone());
         b.join(d);
         assert_eq!(a, b);
-        assert_eq!(order(&a), order(&b));
-        assert_eq!(a.read(), b.read());
+        alike(&a, &b);
     }
     assert_eq!(records(&a), 3);
-    assert_eq!(snapshot_of(&a), snapshot_of(&b));
 }
 
 /// §6.1: an element anchored at a `Derived(S, 5)` dot absent from the state sits under a
@@ -1001,15 +911,14 @@ fn derived_keys_split_ranges_spec_7() {
 #[test]
 fn virtual_derived_anchor_inside_range_spec_6_1() {
     let (mut a, mut b) = flagged_ten();
-    let dd = Dot::new(crate::stamp::Source::derived(Dot::new(n(2), 5)).unwrap(), 1);
-    let y = one(Dot::new(n(3), 1), char_at(Dot::new(n(3), 1), 4, Anchor::Dot(dd), 'y'));
-    let z = one(Dot::new(n(3), 2), char_at(Dot::new(n(3), 2), 4, Anchor::Dot(Dot::new(n(2), 10)), 'z'));
+    let y = one(Dot::new(node(3), 1), char_at(Dot::new(node(3), 1), 4, Anchor::Dot(derived_dot()), 'y'));
+    let z = one(Dot::new(node(3), 2), char_at(Dot::new(node(3), 2), 4, Anchor::Dot(Dot::new(node(2), 10)), 'z'));
     for d in [y, z] {
         a.join(d.clone());
         b.join(d);
     }
     assert_eq!(order(&a), order(&b));
-    assert_eq!(reads(&a).as_deref(), Some("yz"));
+    assert_eq!(reads(&a), txt("yz"));
     // a delete over the selection flags the same hidden elements
     let (d1, _) = apply_op(&a, crate::ops::Op::Delete { at: 0, len: 2 });
     let (d2, _) = apply_op(&b, crate::ops::Op::Delete { at: 0, len: 2 });
@@ -1021,54 +930,11 @@ fn virtual_derived_anchor_inside_range_spec_6_1() {
 #[test]
 fn chain_anchored_into_itself_spec_6_2() {
     let s0 = st(1, 1, 1);
-    let at = Anchor::Dot(Dot::new(n(1), 3));
+    let at = Anchor::Dot(Dot::new(node(1), 3));
     let e = SeqElem { created: Some((s0.clone(), at.clone())), pos: vec![(s0, at, None)], deleted: Some((st(2, 2, 1), true)), span: 5, ..SeqElem::bare() };
-    let mut a = seq_of(BTreeMap::from([(Dot::new(n(1), 1), e)]), None);
-    a.join(one(Dot::new(n(3), 1), char_at(Dot::new(n(3), 1), 4, Anchor::Dot(Dot::new(n(1), 5)), 'v')));
-    let b = expanded(&a);
-    assert_eq!(order(&a), order(&b));
-    assert_eq!(reads(&a).as_deref(), Some("v"));
-    assert_eq!(snapshot_of(&a), snapshot_of(&b));
-}
-
-/// §3.3 rule 7: runs that overlap (here the second starts inside the first) are bad input.
-#[test]
-fn rejects_overlapping_runs_spec_3_3() {
-    let runs = vec![run(i(1), 5, l(vec![]), l(vec![]), vec![], vec![]), run(i(3), 5, l(vec![]), l(vec![]), vec![], vec![])];
-    let bytes = osis_base::encode(&l(vec![Value::Bytes(vec![0; 16]), l(vec![]), l(vec![]), text_with(runs), l(vec![])]));
-    let e = decode_snapshot(&bytes, &snap_cx(), &mut Interner::new(), None).unwrap_err();
-    assert_eq!(osis_base::Classified::class(&e), ErrorClass::BadInput, "{e}");
-}
-
-proptest! {
-    /// spec/commits.md §5 (a live write of a body): a body's live writes, judged by origin dot: `holds_owned` answers as
-    /// `writes` does, over range records and `Derived` dots too (random histories, as held and
-    /// through a snapshot).
-    #[test]
-    fn holds_owned_like_writes_spec_commits_5(seed in any::<u64>()) {
-        let mut r = crate::testutil::rng(seed | 1);
-        let types: &[Ty] = if seed % 2 == 0 { &[Ty::Text, Ty::List(Box::new(inner()))] } else { &[Ty::Register, Ty::Text] };
-        let commits = crate::testutil::history(&mut r, types, 3, 6);
-        let mut state = None;
-        for c in &commits {
-            mapply(&mut state, c.delta.clone());
-        }
-        let Some(st) = state.as_ref() else { return Ok(()) };
-        let f = frag(st);
-        for g in [f.clone(), via_snapshot(&f)] {
-            let ws: Vec<Dot> = g.writes().into_iter().map(|(d, _)| d).collect();
-            for n in 1..=3u8 {
-                let src = sess(osis_base::Tid::from_bytes([n; 15]));
-                for lo in [1u64, 2, 5, 9, 20] {
-                    for len in [1u64, 3, 50] {
-                        let want = ws.iter().any(|d| d.src == src && lo <= d.ctr && d.ctr < lo + len);
-                        let got = g.holds_owned(&|s, a, b| *s == src && a < lo + len && lo < b);
-                        prop_assert_eq!(got, want, "src {} lo {} len {}", n, lo, len);
-                    }
-                }
-            }
-        }
-    }
+    let a = joined(&one(Dot::new(node(1), 1), e), &one(Dot::new(node(3), 1), char_at(Dot::new(node(3), 1), 4, Anchor::Dot(Dot::new(node(1), 5)), 'v')));
+    alike(&a, &expanded(&a));
+    assert_eq!(reads(&a), txt("v"));
 }
 
 // spec/crdt.md §6.2: a received insert anchored at its own dot is a cycle of one, demoted to END
@@ -1088,20 +954,12 @@ fn self_anchored_insert_placed_spec_6_2() {
     assert!(matches!(st.read(), Some(Value::Str(x)) if x.ends_with("ab")));
 }
 
-
-/// §6, §8 (pages are joined independently), `seq_place`: the placement of a sequence with no records, stored and loaded in part,
-/// lists its dot map's first chunk, so a join's misses name only chunks the stored form holds
-/// (the whole map had none; fuzz: seq_ops).
+/// §6, §8 (pages are joined independently), `seq_place`: the placement of a sequence with no
+/// records, stored and loaded in part, lists its dot map's first chunk, so a join's misses name
+/// only chunks the stored form holds (the whole map had none; fuzz: seq_ops).
 #[test]
 fn empty_placement_held_in_part_follows_spec_6() {
-    use crate::{DeltaBuilder, Op, PathOp, Writer};
-    let view = crate::testutil::TyView(Ty::Text);
-    let src = sess(osis_base::Tid::from_bytes([1; 15]));
-    let e = Fragment::default();
-    let mut b = DeltaBuilder::new(&e, Writer::new(ts(1 << 16), src, 1));
-    b.apply(&PathOp { path: vec![], op: Op::Insert { at: 0, items: vec![Value::Str("ab".into())] } }, &view).unwrap();
-    let (d, _) = b.finish().unwrap();
-    let Fragment::Seq(d) = d else { panic!("a text delta") };
+    let (Fragment::Seq(d), _) = apply_op(&Fragment::default(), crate::ops::Op::Insert { at: 0, items: vec![s("ab")] }) else { panic!("a text delta") };
     let empty = Seq::empty(true);
     assert!(Pager::new(&empty, 1).whole.chunk(None).is_some(), "the first chunk is stored");
     // loads what the follow misses (it panicked loading a chunk the stored form lacked)
@@ -1111,54 +969,42 @@ fn empty_placement_held_in_part_follows_spec_6() {
 /// §6.1: a cached placement follows a delta moving element X (under p, by sibling key K, before
 /// Z) and Y onto p, Y first, where X's writes after the join name p with a key below K (`second`:
 /// a forged copy of X's chosen write, or an undo's restoring write): X sits by K until re-placed.
-fn moved_row_keeps_key(base_x: Vec<(Stamp, Anchor, Option<Stamp>)>, delta_x: Vec<(Stamp, Anchor, Option<Stamp>)>, x_created: Stamp) {
-    let (p, x, y) = (Dot::new(n(1), 1), x_created.dot.clone(), Dot::new(n(1), 4));
-    let pa = Anchor::Dot(p.clone());
-    let mk = |s: Stamp, a: Anchor| SeqElem { created: Some((s.clone(), a.clone())), content: SeqContent::Char('c'), pos: vec![(s, a, None)], deleted: None, undel: None, valueless: false, span: 1 };
-    let mut elems = BTreeMap::new();
-    elems.insert(p.clone(), mk(st(1, 1, 1), Anchor::Head));
-    let mut xe = mk(x_created.clone(), base_x[0].1.clone());
-    xe.pos = base_x;
-    elems.insert(x.clone(), xe);
-    elems.insert(Dot::new(n(1), 3), mk(st(4, 1, 3), pa.clone()));
-    elems.insert(y.clone(), mk(st(1, 1, 4), Anchor::Head));
-    let base = seq_of(elems, None);
-    let mut d = BTreeMap::new();
-    d.insert(x, SeqElem { pos: delta_x, ..SeqElem::bare() });
-    d.insert(y, SeqElem { pos: vec![(st(3, 2, 1), pa, None)], ..SeqElem::bare() });
-    let mut cached = base;
-    let _ = cached.read();
-    cached.join(seq_of(d, None));
-    crate::testutil::check_lin(&cached);
-}
-
 #[test]
 fn moved_row_keeps_key_spec_6_1() {
-    let pa = Anchor::Dot(Dot::new(n(1), 1));
+    type Pos = Vec<(Stamp, Anchor, Option<Stamp>)>;
+    let pa = Anchor::Dot(Dot::new(node(1), 1));
+    let (c1, w5, w6) = (st(1, 1, 2), st(5, 3, 0), st(6, 3, 1));
+    let check = |base_x: Pos, delta_x: Pos| {
+        let (p, x, y) = (Dot::new(node(1), 1), c1.dot.clone(), Dot::new(node(1), 4));
+        let mut elems = BTreeMap::new();
+        elems.insert(p.clone(), char_at(p, 1, Anchor::Head, 'c'));
+        let mut xe = char_at(x.clone(), 1, base_x[0].1.clone(), 'c');
+        xe.pos = base_x;
+        elems.insert(x.clone(), xe);
+        elems.insert(Dot::new(node(1), 3), char_at(Dot::new(node(1), 3), 4, pa.clone(), 'c'));
+        elems.insert(y.clone(), char_at(y.clone(), 1, Anchor::Head, 'c'));
+        let mut cached = seq_of(elems, None);
+        let _ = cached.read();
+        let d = BTreeMap::from([(x, SeqElem { pos: delta_x, ..SeqElem::bare() }), (y, SeqElem { pos: vec![(st(3, 2, 1), pa.clone(), None)], ..SeqElem::bare() })]);
+        cached.join(seq_of(d, None));
+        crate::testutil::check_lin(&cached);
+    };
     // X created at p (t1), moved to HEAD (t5), back to p (t6); concurrently an undo of t5 (t7:
     // back to p with key t1) and a move to HEAD (t8)
-    let (c1, w5, w6) = (st(1, 1, 2), st(5, 3, 0), st(6, 3, 1));
-    moved_row_keeps_key(vec![(w6.clone(), pa.clone(), None), (w5, Anchor::Head, None)], vec![(st(8, 4, 1), Anchor::Head, None), (st(7, 5, 1), pa.clone(), Some(c1.clone()))], c1.clone());
+    check(vec![(w6.clone(), pa.clone(), None), (w5, Anchor::Head, None)], vec![(st(8, 4, 1), Anchor::Head, None), (st(7, 5, 1), pa.clone(), Some(c1.clone()))]);
     // forged: the delta's copy of X's chosen write t6 carries key t1, beside a move to HEAD
-    moved_row_keeps_key(vec![(w6.clone(), pa.clone(), None), (c1.clone(), pa.clone(), None)], vec![(st(8, 4, 1), Anchor::Head, None), (w6.clone(), pa.clone(), Some(c1.clone()))], c1.clone());
+    check(vec![(w6.clone(), pa.clone(), None), (c1.clone(), pa.clone(), None)], vec![(st(8, 4, 1), Anchor::Head, None), (w6.clone(), pa.clone(), Some(c1.clone()))]);
     // forged: the copy alone (X stays under p, its key drops)
-    moved_row_keeps_key(vec![(w6.clone(), pa.clone(), None), (c1.clone(), pa.clone(), None)], vec![(w6, pa, Some(c1.clone()))], c1);
+    check(vec![(w6.clone(), pa.clone(), None), (c1.clone(), pa.clone(), None)], vec![(w6, pa.clone(), Some(c1.clone()))]);
 }
 
 /// A state's part at a delta's positions judges the delta as the whole state does (`covered`,
 /// `Parts::kills`, spec/commits.md §5), and the part of paged pieces is the part of their join: for
 /// any shape of delta, forged ones included. A false "joins unchanged" would lose history.
 pub(crate) fn part_judges_as_whole(st: &Fragment, d: &Fragment, r: &mut crdt_model::r#gen::Rng) {
-    let enc = |f: &Fragment| encode_snapshot(&Snapshot { absorbed: Default::default(), facts: Default::default(), nonce: [3; 16], fragment: f.clone(), frontiers: Frontiers::default() }, &snap_cx(), None).unwrap();
-    let joined = |a: &Fragment, b: &Fragment| {
-        let mut x = a.clone();
-        x.join(b.clone());
-        x
-    };
-    let unchanged = joined(st, d) == *st;
-    assert_eq!(crate::testutil::contains(st, d), unchanged, "the part judges as the whole");
-    let part = st.part_at(d);
-    assert_eq!(enc(&joined(&part, d)) == enc(&part), enc(&joined(st, d)) == enc(st), "the part's bytes judge as the whole's");
+    let unchanged = |x: &Fragment| snapshot_bytes(&joined(x, d)) == snapshot_bytes(x);
+    assert_eq!(crate::testutil::contains(st, d), joined(st, d) == *st, "the part judges as the whole");
+    assert_eq!(unchanged(&st.part_at(d)), unchanged(st), "the part's bytes judge as the whole's");
     if let Fragment::Seq(s) = st {
         // pages of the state: whole records, each with its meta
         let mut pieces = vec![BTreeMap::new()];
@@ -1172,17 +1018,12 @@ pub(crate) fn part_judges_as_whole(st: &Fragment, d: &Fragment, r: &mut crdt_mod
         for p in pieces {
             from_pieces.join(Fragment::Seq(Seq::new(s.text, s.meta.clone(), p)).part_at(d));
         }
-        assert_eq!(enc(&joined(&from_pieces, d)) == enc(&from_pieces), enc(&joined(st, d)) == enc(st), "pieces' part judges as the whole");
+        assert_eq!(unchanged(&from_pieces), unchanged(st), "pieces' part judges as the whole");
     }
     // what a join of the source's part kills of a fragment, as `Parts::kills` keeps them
-    let kills = |x: Fragment| {
-        let mut g = d.clone();
-        g.join(x);
-        d.winners().minus(&g.winners())
-    };
+    let kills = |x: Fragment| d.winners().minus(&joined(d, &x).winners());
     assert_eq!(kills(st.part_at(d)), kills(st.clone()), "a source's part kills as the source");
 }
-
 
 /// §3.3 rule 3: runs past `MAX_RUN` (a creation chain longer than a run, deleted stretches as
 /// range records of more than `MAX_RUN`) encode byte-identically with the model and round trip,
@@ -1202,31 +1043,24 @@ fn long_runs_match_model_spec_3_3() {
         a = MAnchor::Dot(d);
     }
     let mut state = Some(MFrag::Seq { text: true, c: Composite::default(), elems });
+    let by2 = |t: u64, ctr: u64| MStamp { ts: t << 16, dot: MDot { source: MSource::session(2, 0), ctr } };
+    let seq = |c: Composite, elems: BTreeMap<MDot, MElem>| MFrag::Seq { text: true, c, elems };
     // a delete of most of it, a move inside the deleted stretch, then a reset above it all
-    let del = MStamp { ts: 5 << 16, dot: MDot { source: MSource::session(2, 0), ctr: 1 } };
-    let mut d = BTreeMap::new();
-    for c in 10..n - 10 {
-        d.insert(MDot { source: src.clone(), ctr: c }, MElem::write(Content::None, vec![], Some((del.clone(), true))));
-    }
-    mapply(&mut state, MFrag::Seq { text: true, c: Composite::default(), elems: d });
-    let mv = MStamp { ts: 6 << 16, dot: MDot { source: MSource::session(2, 0), ctr: 2 } };
-    let mut d = BTreeMap::new();
-    d.insert(MDot { source: src.clone(), ctr: 2000 }, MElem::write(Content::None, vec![(mv, MAnchor::Head, None)], None));
-    mapply(&mut state, MFrag::Seq { text: true, c: Composite::default(), elems: d });
+    let del = (10..n - 10).map(|c| (MDot { source: src.clone(), ctr: c }, MElem::write(Content::None, vec![], Some((by2(5, 1), true)))));
+    mapply(&mut state, seq(Composite::default(), del.collect()));
+    let mv = MElem::write(Content::None, vec![(by2(6, 2), MAnchor::Head, None)], None);
+    mapply(&mut state, seq(Composite::default(), BTreeMap::from([(MDot { source: src.clone(), ctr: 2000 }, mv)])));
     for reset in [false, true] {
         if reset {
-            let r = MStamp { ts: 7 << 16, dot: MDot { source: MSource::session(2, 0), ctr: 3 } };
-            mapply(&mut state, MFrag::Seq { text: true, c: Composite { reset: Some(r), w: None, w_valueless: false }, elems: BTreeMap::new() });
+            mapply(&mut state, seq(Composite { reset: Some(by2(7, 3)), w: None, w_valueless: false }, BTreeMap::new()));
         }
         let st = state.as_ref().unwrap();
-        let msnap = m_encode_snapshot(st, &[], [3; 16], &mut Ctx::new(1 << 40, MSource::session(250, 0), 1));
         let ours = frag(st);
-        let s = Snapshot { absorbed: Default::default(), facts: Default::default(), nonce: [3; 16], fragment: ours.clone(), frontiers: Frontiers::default() };
-        let sbytes = encode_snapshot(&s, &snap_cx(), None).unwrap();
-        assert!(sbytes == msnap, "snapshot bytes equal the model's (reset {reset})");
-        let back = decode_snapshot(&sbytes, &snap_cx(), &mut Interner::new(), None).unwrap();
-        assert_eq!(back.fragment, as_carried(&ours));
-        assert_eq!(back.fragment.read(), ours.read());
+        let bytes = snapshot_bytes(&ours);
+        assert!(bytes == m_encode_snapshot(st, &[], [0; 16], &mut Ctx::new(1 << 40, MSource::session(250, 0), 1)), "snapshot bytes equal the model's (reset {reset})");
+        let back = decode_snapshot(&bytes, &snap_cx(), &mut Interner::new(), None).unwrap().fragment;
+        assert_eq!(back, as_carried(&ours));
+        assert_eq!(back.read(), ours.read());
     }
 }
 
@@ -1234,12 +1068,11 @@ fn long_runs_match_model_spec_3_3() {
 /// keeps it with the undelete (`holds_dots` still sees the record).
 #[test]
 fn unmerge_keeps_undelete_char_spec_4_7() {
-    let (a, b) = (sess(osis_base::Tid::from_bytes([1; 15])), sess(osis_base::Tid::from_bytes([2; 15])));
-    let flag = Stamp { ts: ts(9), dot: Dot { src: b, ctr: 1 } };
-    let el = SeqElem { created: None, content: SeqContent::None, pos: vec![], deleted: Some((flag.clone(), false)), undel: Some('x'), valueless: false, span: 1 };
-    let mut f = Fragment::Seq(Seq::new(true, Meta::default(), [(Dot { src: a.clone(), ctr: 5 }, el)].into()));
-    assert!(f.holds_dots(&|d| d.src == a));
-    f.remove_writes(&|d| d.src == a);
+    let flag = Stamp { ts: ts(9), dot: Dot { src: node(2), ctr: 1 } };
+    let el = SeqElem { deleted: Some((flag.clone(), false)), undel: Some('x'), ..SeqElem::bare() };
+    let mut f = one(Dot { src: node(1), ctr: 5 }, el);
+    assert!(f.holds_dots(&|d| d.src == node(1)));
+    f.remove_writes(&|d| d.src == node(1));
     let Fragment::Seq(s) = &f else { panic!("a sequence") };
     let left: Vec<_> = s.elems().values().map(|e| (e.deleted.clone(), e.undel)).collect();
     assert_eq!(left, vec![(Some((flag, false)), Some('x'))]);
@@ -1249,15 +1082,10 @@ fn unmerge_keeps_undelete_char_spec_4_7() {
 // the records with its dots, not the sequence: a `covered` costs about the body's records.
 #[test]
 fn part_at_a_sequence_is_the_deltas_records() {
-    let src = sess(osis_base::Tid::from_bytes([1; 15]));
-    let dot = |ctr: u64| Dot { src: src.clone(), ctr };
-    let rec = |ctr: u64| {
-        let st = Stamp { ts: ts(ctr + 1), dot: dot(ctr) };
-        SeqElem { created: Some((st.clone(), Anchor::Head)), content: SeqContent::Char('x'), pos: vec![(st, Anchor::Head, None)], deleted: None, undel: None, valueless: false, span: 1 }
-    };
-    let whole: BTreeMap<Dot, SeqElem> = (0..1000).map(|c| (dot(2 * c), rec(2 * c))).collect();
-    let delta: BTreeMap<Dot, SeqElem> = [(dot(1000), rec(1000)), (dot(1002), rec(1002))].into();
-    let (whole, delta) = (Fragment::Seq(Seq::new(true, Meta::default(), whole)), Fragment::Seq(Seq::new(true, Meta::default(), delta)));
+    let dot = |ctr: u64| Dot { src: node(1), ctr };
+    let rec = |ctr: u64| (dot(ctr), char_at(dot(ctr), 1, Anchor::Head, 'x'));
+    let whole = seq_of((0..1000).map(|c| rec(2 * c)).collect(), None);
+    let delta = seq_of([rec(1000), rec(1002)].into(), None);
     let Fragment::Seq(part) = whole.part_at(&delta) else { panic!("a sequence's part is one") };
     assert_eq!(part.elems().keys().cloned().collect::<Vec<_>>(), vec![dot(1000), dot(1002)]);
     assert!(crate::testutil::contains(&whole, &delta));
@@ -1441,15 +1269,13 @@ mod valid_order {
         for f in [frag(&m), xs.clone(), frag(&y)] {
             st.join(f);
         }
-        assert_eq!(reads(&st).as_deref(), Some("ayb"), "expired: X keeps its place, no char");
+        assert_eq!(reads(&st), txt("ayb"), "expired: X keeps its place, no char");
         let mut un = Fragment::default();
         for mut f in [frag(&m), xs, frag(&y)] {
             f.remove_writes(&|d| d.src == bad);
             un.join(f);
         }
-        let mut never = frag(&m);
-        never.join(frag(&y));
-        assert_eq!(un, never, "expired then invalid: as never held");
+        assert_eq!(un, after(&frag(&m), &[&y]), "expired then invalid: as never held");
     }
 }
 
@@ -1459,15 +1285,15 @@ mod valid_order {
 /// none of node 1's.
 #[test]
 fn a_record_without_its_creation_holds_no_live_write_of_its_creator_spec_commits_5() {
-    let d = Dot::new(n(1), 1);
+    let d = Dot::new(node(1), 1);
     let mut f = one(d.clone(), char_at(d.clone(), 1, Anchor::Head, 'a'));
     f.join(one(d.clone(), SeqElem { deleted: Some((st(3, 2, 1), true)), ..SeqElem::bare() }));
     f.join(seq_of(BTreeMap::new(), Some(st(2, 3, 1))));
     f.prune(None, &mut crate::Changes::new());
     assert_eq!(records(&f), 1, "the record stays for its delete flag");
-    let of = |b: u8| move |s: &crate::stamp::Source, _: u64, _: u64| *s == n(b);
+    let of = |b: u8| move |s: &crate::stamp::Source, _: u64, _: u64| *s == node(b);
     assert!(f.holds_owned_write(&of(2)), "the delete is node 2's live write");
     assert!(!f.holds_owned_write(&of(1)), "the creation is gone: no live write of node 1");
-    let ours = |w: Vec<(Dot, Option<osis_base::Ts>)>| w.iter().any(|(x, _)| x.src == n(1));
+    let ours = |w: Vec<(Dot, Option<osis_base::Ts>)>| w.iter().any(|(x, _)| x.src == node(1));
     assert!(ours(f.writes()) && !ours(f.live_writes()), "live_writes agrees");
 }

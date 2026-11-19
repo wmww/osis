@@ -626,8 +626,8 @@ fn expired_undelete_hides_alike_spec_5_7() {
     let mut deleted = dx.clone();
     deleted.join(dz);
     let snap = Snapshot { absorbed: Default::default(), facts: Default::default(), nonce: [0; 16], fragment: deleted.clone(), frontiers: Frontiers::default() };
-    let bytes = encode_snapshot(&snap, &crate::tests_wire::snap_cx(), None).unwrap();
-    let booted = decode_snapshot(&bytes, &crate::tests_wire::snap_cx(), &mut Interner::new(), None).unwrap().fragment;
+    let bytes = encode_snapshot(&snap, &crate::testutil::snap_cx(), None).unwrap();
+    let booted = decode_snapshot(&bytes, &crate::testutil::snap_cx(), &mut Interner::new(), None).unwrap().fragment;
     let past = |mut f: Fragment| {
         f.join(dy.clone());
         assert_eq!(f.read(), Some(Value::Str("a".into())));
