@@ -147,6 +147,17 @@ pub enum Regrant {
     FirstChained,
 }
 
+/// Which unapplied lowerings that made drops a round of the walk voids.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum VoidOrder {
+    /// The earliest by key (notes/write-path-design.md §1).
+    Earliest,
+    /// The latest by key.
+    Latest,
+    /// Control: all of them.
+    AllAtOnce,
+}
+
 /// What a lowering of an admin edge must leave (notes/write-path-design.md §5, The last admin).
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub enum LastAdmin {
@@ -189,6 +200,8 @@ pub struct Rules {
     /// redone without it, its drops unmade (notes/write-path-design.md §1, A removal is judged
     /// in the world its list makes). False: its drops stay (`Reading::stray`).
     pub void_unapplied: bool,
+    /// Which unapplied lowerings that made drops a round voids.
+    pub void_order: VoidOrder,
     /// Honest writing in `Sim` (a policy, not a judging rule): a remover and a voucher name what
     /// they had received in the order received, leaving out a role write with which their own
     /// walk no longer applies the removal.
@@ -209,6 +222,7 @@ impl Rules {
             rewrite: false,
             leave_in_question: false,
             void_unapplied: false,
+            void_order: VoidOrder::Earliest,
             stands: false,
         }
     }
@@ -226,6 +240,7 @@ impl Rules {
             rewrite: true,
             leave_in_question: true,
             void_unapplied: true,
+            void_order: VoidOrder::Earliest,
             stands: true,
         }
     }
@@ -420,10 +435,22 @@ pub struct Reading {
     pub counting: Set,
     pub vouching: Set,
     pub dropped: Set,
+    /// What dropped each dropped commit: the lowering whose audit did, or the trusted write
+    /// whose seeds did.
+    pub dropper: BTreeMap<Id, Id>,
     /// Trusted writes the settled walk does not apply.
     pub void: Set,
-    /// Dropped by the audit of a write the settled walk does not apply.
+    /// Lowerings the settled walk voided (they made drops and did not apply).
+    pub voided: Set,
+    /// Dropped commits whose drop the reading does not justify: the dropper is not applied (or,
+    /// for a seed, not trusted and applied), is no explicit lowering ordered after the commit, the
+    /// commit does not rest on the edge it lowers, or its list names the commit. Checked from the
+    /// reading alone (`unjustified`), apart from how the walk reached it.
     pub stray: Set,
+    /// Walks redone because a lowering or a trusted write turned out void, and passes walked
+    /// (each restart one), over the whole reading.
+    pub rounds: u32,
+    pub passes: u64,
     /// The vouch iteration did not settle (`Vouch::SameWalk`).
     pub circle: bool,
 }
@@ -469,6 +496,9 @@ struct Walk {
     pass: Pass,
     dropped: Set,
     dropper: BTreeMap<Id, Id>,
+    voided: Set,
+    rounds: u32,
+    passes: u64,
 }
 
 type Vouched = BTreeSet<(Id, Id)>;
@@ -535,25 +565,74 @@ fn refused(w: &World, rules: &Rules, p: &Pass, i: Id, e: Edge, new: Val) -> bool
 }
 
 /// The settled walk. With `void_unapplied`, a lowering whose audit dropped something and which
-/// the settled walk does not apply is void, the earliest by key first: the walk is redone from
-/// `d0` without it, until none is.
+/// the settled walk does not apply is void, the earliest by key first (`void_at_once`: all of
+/// them): the walk is redone from the seeds `d0` without it, until none is.
 fn walk(w: &World, rules: &Rules, v: &View, d0: &Set, vouched: &Vouched) -> Walk {
-    let mut void = Set::new();
+    walk_from(w, rules, v, d0, vouched, Set::new())
+}
+
+fn walk_from(w: &World, rules: &Rules, v: &View, d0: &Set, vouched: &Vouched, mut void: Set) -> Walk {
+    let (mut rounds, mut passes) = (0, 0);
     loop {
-        let wk = drops(w, rules, v, d0, vouched, &void);
-        let gone = wk.dropper.values().copied().filter(|r| !wk.pass.applied.contains(r)).min_by_key(|&r| w.key(r));
-        match gone {
-            Some(r) if rules.void_unapplied => void.insert(r),
-            _ => return wk,
-        };
+        let mut wk = drops(w, rules, v, d0, vouched, &void);
+        passes += wk.passes;
+        let mut gone: Vec<Id> = unapplied_droppers(&wk).into_iter().collect();
+        gone.sort_by_key(|&r| w.key(r));
+        if gone.is_empty() || !rules.void_unapplied {
+            wk.voided = void;
+            wk.rounds = rounds;
+            wk.passes = passes;
+            return wk;
+        }
+        rounds += 1;
+        match rules.void_order {
+            VoidOrder::Earliest => gone.truncate(1),
+            VoidOrder::Latest => gone = gone.split_off(gone.len() - 1),
+            VoidOrder::AllAtOnce => {}
+        }
+        void.extend(gone);
     }
+}
+
+/// The droppers of a walk's audit drops that it does not apply.
+fn unapplied_droppers(wk: &Walk) -> Set {
+    wk.dropper.values().copied().filter(|r| !wk.pass.applied.contains(r)).collect()
+}
+
+/// Every order of voiding: the settled walks reached by voiding, at each round, any one of the
+/// unapplied droppers (`walk` takes the earliest by key). Exponential: for hand worlds and the
+/// small void search only.
+pub fn void_orders(w: &World, rules: &Rules, v: &View) -> BTreeSet<(Set, Set)> {
+    let none = Vouched::new();
+    let d0: Set = seeds(w, rules, v, &v.trust.iter().copied().filter(|i| v.held.contains(i) && w.sets(*i).is_some()).collect(), &none).into_keys().collect();
+    let mut out = BTreeSet::new();
+    let mut seen = BTreeSet::new();
+    let mut todo = vec![Set::new()];
+    while let Some(void) = todo.pop() {
+        if !seen.insert(void.clone()) {
+            continue;
+        }
+        let wk = drops(w, rules, v, &d0, &none, &void);
+        let gone = unapplied_droppers(&wk);
+        if gone.is_empty() {
+            out.insert((wk.pass.applied.iter().copied().collect(), wk.dropped.clone()));
+        }
+        for r in gone {
+            let mut next = void.clone();
+            next.insert(r);
+            todo.push(next);
+        }
+    }
+    out
 }
 
 fn drops(w: &World, rules: &Rules, v: &View, d0: &Set, vouched: &Vouched, void: &Set) -> Walk {
     let order = order(w, &v.held);
     let mut dropped = d0.clone();
     let mut dropper = BTreeMap::new();
+    let mut passes = 0;
     loop {
+        passes += 1;
         let mut p = Pass::default();
         for &e in &w.records {
             p.state.insert(e, (Role::Admin, None));
@@ -611,19 +690,21 @@ fn drops(w: &World, rules: &Rules, v: &View, d0: &Set, vouched: &Vouched, void: 
             }
         }
         if !again {
-            return Walk { pass: p, dropped, dropper };
+            return Walk { pass: p, dropped, dropper, voided: Set::new(), rounds: 0, passes };
         }
     }
 }
 
-fn seeds(w: &World, rules: &Rules, v: &View, active: &Set, vouched: &Vouched) -> Set {
-    let mut d = Set::new();
+/// A trusted lowering's seeds: each held edge-class commit ordered before it, resting on its
+/// edge, that its list does not name, with the trusted write that drops it.
+fn seeds(w: &World, rules: &Rules, v: &View, active: &Set, vouched: &Vouched) -> BTreeMap<Id, Id> {
+    let mut d = BTreeMap::new();
     for &r in active {
         let Some(h) = w.sets(r) else { continue };
         let exempt = if rules.exempt_chain { chain(w, &v.held, r) } else { Set::new() };
         for &j in &v.held {
             if w.edge_class(j) && w.key(j) < w.key(r) && rests_on(w, rules, j, h) && !exempt.contains(&j) && !listed(w, v, vouched, r, j) {
-                d.insert(j);
+                d.entry(j).or_insert(r);
             }
         }
     }
@@ -646,13 +727,19 @@ fn counting(w: &World, rules: &Rules, wk: &Walk) -> (Set, Vouched) {
     (ids, out)
 }
 
-/// The settled walk under the active trusted writes, the first walk's state, the counting
-/// vouches, and whether the vouches settled.
-fn settle(w: &World, rules: &Rules, v: &View, active: &Set) -> (Walk, Set, BTreeMap<Edge, Val>, Set, bool) {
+/// The settled walk under the active trusted writes (its rounds and passes counting every walk
+/// made), the seeds with their trusted writes, the first walk's state, the counting vouches, and
+/// whether the vouches settled.
+fn settle(w: &World, rules: &Rules, v: &View, active: &Set) -> (Walk, BTreeMap<Id, Id>, BTreeMap<Edge, Val>, Set, bool) {
     let none = Vouched::new();
-    let run = |vouched: &Vouched| {
+    let (mut rounds, mut passes) = (0, 0);
+    let mut run = |vouched: &Vouched| {
         let d0 = seeds(w, rules, v, active, vouched);
-        (walk(w, rules, v, &d0, vouched), d0)
+        let mut wk = walk(w, rules, v, &d0.keys().copied().collect(), vouched);
+        rounds += wk.rounds;
+        passes += wk.passes;
+        (wk.rounds, wk.passes) = (rounds, passes);
+        (wk, d0)
     };
     match rules.vouch {
         Vouch::Off => {
@@ -776,20 +863,25 @@ fn content(w: &World, rules: &Rules, v: &View, p: &Pass) -> (Set, Set) {
 pub fn judge(w: &World, rules: &Rules, v: &View) -> Reading {
     let mut active: Set = v.trust.iter().copied().filter(|i| v.held.contains(i) && w.sets(*i).is_some()).collect();
     let mut void = Set::new();
+    let (mut rounds, mut passes) = (0, 0);
     loop {
         let (wk, d0, first, counting, circle) = settle(w, rules, v, &active);
+        rounds += wk.rounds;
+        passes += wk.passes;
         let applied: Set = wk.pass.applied.iter().copied().collect();
         let gone: Vec<Id> = active.iter().copied().filter(|r| !applied.contains(r)).collect();
         if !gone.is_empty() {
+            rounds += 1;
             for r in gone {
                 active.remove(&r);
                 void.insert(r);
             }
             continue;
         }
-        let stray = wk.dropper.iter().filter(|(j, r)| !d0.contains(j) && !applied.contains(r)).map(|(j, _)| *j).collect();
         let (valid, vouching) = content(w, rules, v, &wk.pass);
-        return Reading {
+        let mut dropper = wk.dropper;
+        dropper.extend(d0);
+        let mut rd = Reading {
             lowered: wk.pass.lows.iter().map(|l| l.id).collect(),
             valid,
             roles: finals(&wk.pass),
@@ -799,11 +891,40 @@ pub fn judge(w: &World, rules: &Rules, v: &View) -> Reading {
             vouching,
             applied,
             dropped: wk.dropped,
+            dropper,
             void,
-            stray,
+            voided: wk.voided,
+            stray: Set::new(),
+            rounds,
+            passes,
             circle,
         };
+        rd.stray = unjustified(w, rules, v, &rd);
+        return rd;
     }
+}
+
+/// The dropped commits whose drop the reading does not justify (`Reading::stray`): read from
+/// the reading's applied set, trust set, lists and counting vouches alone.
+fn unjustified(w: &World, rules: &Rules, v: &View, rd: &Reading) -> Set {
+    let mut vouched = Vouched::new();
+    for &a in &rd.counting {
+        if let Kind::Vouch { removal, list } = &w.commits[a].kind {
+            let own = |j: Id| rules.no_own_vouch && w.commits[j].signer == w.commits[a].signer;
+            vouched.extend(list.iter().filter(|&&j| w.edge_class(j) && w.commits[j].on == w.commits[a].on && !own(j)).map(|&j| (*removal, j)));
+        }
+    }
+    rd.dropped
+        .iter()
+        .copied()
+        .filter(|&j| {
+            let Some(&r) = rd.dropper.get(&j) else { return true };
+            let seed = v.trust.contains(&r) && !rd.void.contains(&r);
+            let Some(h) = w.sets(r) else { return true };
+            let lowering = seed || (w.lowers(r).is_some() && !w.leave(r));
+            !(rd.applied.contains(&r) && lowering && w.key(j) < w.key(r) && rests_on(w, rules, j, h) && !listed(w, v, &vouched, r, j))
+        })
+        .collect()
 }
 
 /// Disputes (spec/permissions.md §5.1): held lowerings of another holder's edge that the

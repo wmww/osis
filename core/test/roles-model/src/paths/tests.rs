@@ -1100,7 +1100,7 @@ fn a_backdated_leave_undoes_nothing_the_removed_node_made() {
 // ---- The searches at small size ----
 
 fn assert_holds(st: &Stats, what: &str) {
-    for k in ["safety", "liveness", "alike", "removal kept", "removal", "own path", "admin"] {
+    for k in ["safety", "liveness", "alike", "removal kept", "removal", "own path", "admin", "stray"] {
         assert!(st.checked.get(k).is_some_and(|n| *n > 0), "{what}: no {k} check ran");
     }
     assert!(st.failures() == 0, "{what}: {:?}\n{:?}", st.fails, st.first);
@@ -1180,3 +1180,204 @@ fn small_family_holds_large() {
     assert_holds(&st, "family");
 }
 
+
+// ---- The void step (notes/write-path-design.md §1, A write that does not apply has no effect) ----
+
+/// A small world of admins removing and granting each other on A (H its mint): `n` edge writes,
+/// each by a random party, setting a random party's edge to admin or none at a random `ts`,
+/// listing each earlier write with probability one half.
+fn tiny(i: u64, n: usize) -> World {
+    let mut rng = Rng::thread(0x701d, i as usize);
+    let parties = [H, B, N5, Z, N6];
+    let mut w = account();
+    for _ in 0..n {
+        let (s, h) = (parties[rng.below(5)], parties[rng.below(5)]);
+        let ts = 1 + rng.below(n) as u32;
+        let list: Vec<Id> = (0..w.commits.len()).filter(|_| rng.below(2) == 0).collect();
+        let role = if rng.below(2) == 0 { Admin } else { Gone };
+        if s != h {
+            w.edge(s, ts, &[], A, h, role, &list);
+        }
+    }
+    w
+}
+
+/// `w` with its commits pushed in the order `perm` (ids relabelled; every key in these worlds
+/// differs in `ts` or signer, so the walk's order is unchanged), and the map old id -> new.
+fn relabel(w: &World, perm: &[Id]) -> (World, BTreeMap<Id, Id>) {
+    let mut out = World::new(&w.records);
+    let mut map = BTreeMap::new();
+    for (k, &i) in perm.iter().enumerate() {
+        map.insert(i, k);
+    }
+    for &i in perm {
+        let c = &w.commits[i];
+        let kind = match &c.kind {
+            Kind::Edge { holder, role, until, frontier, relies, adminless } => {
+                let f = frontier.iter().map(|(t, l)| (*t, l.iter().map(|j| map[j]).collect())).collect();
+                Kind::Edge { holder: *holder, role: *role, until: *until, frontier: f, relies: *relies, adminless: *adminless }
+            }
+            k => k.clone(),
+        };
+        out.push(c.signer, c.ts, &c.path, c.on, kind);
+    }
+    (out, map)
+}
+
+/// The reading of `w` is the reading of every relabelling of it, and every order of voiding
+/// reaches it.
+fn one_reading(w: &World) -> Reading {
+    let rd = fixed(w, &[]);
+    assert_eq!(void_orders(w, &Rules::fixed(), &View::all(w)).len(), 1);
+    let n = w.commits.len();
+    for rot in 1..n {
+        let perm: Vec<Id> = (0..n).map(|k| (k + rot) % n).rev().collect();
+        let (w2, map) = relabel(w, &perm);
+        let r2 = fixed(&w2, &[]);
+        assert_eq!(r2.applied, rd.applied.iter().map(|i| map[i]).collect::<Set>());
+        assert_eq!(r2.dropped, rd.dropped.iter().map(|i| map[i]).collect::<Set>());
+    }
+    rd
+}
+
+/// Two lowerings, each un-applying the other through its drops: B and N5, both paired by H,
+/// each remove H listing only their own grant, so each drops the other's. Two consistent worlds
+/// exist (either removal applied, the other's author dropped); the walk applies the earlier by
+/// key, in any input order, by any order of voiding, and voids nothing.
+#[test]
+fn two_lowerings_unapplying_each_other_settle_on_the_earlier() {
+    let mut w = account();
+    let gb = w.edge(H, 1, &[], A, B, Admin, &[]);
+    let g5 = w.edge(H, 1, &[], A, N5, Admin, &[]);
+    let lb = w.edge(B, 3, &[], A, H, Gone, &[gb]);
+    let l5 = w.edge(N5, 4, &[], A, H, Gone, &[g5]);
+    let rd = one_reading(&w);
+    assert!(rd.applied.contains(&lb) && !rd.applied.contains(&l5) && rd.dropped == Set::from([g5]) && rd.voided.is_empty());
+    // the other consistent world: N5's removal applied once B's is not held
+    let other = judge(&w, &Rules::fixed(), &View::all(&w).without(&[lb]));
+    assert!(other.applied.contains(&l5) && other.dropped == Set::from([gb]));
+}
+
+/// No consistent world: B and N5 paired by H; H removes N5 (D); B removes H listing its own and
+/// N5's grants, so it drops D; N5, an admin again, removes B, which drops B's removal. B's removal
+/// applied makes N5's apply, which drops it; not applied, it would apply. The walk voids B's
+/// removal (it made drops and does not apply), in any input order and by any order of voiding.
+#[test]
+fn lowerings_with_no_consistent_world_void_the_earliest() {
+    let mut w = account();
+    let gb = w.edge(H, 1, &[], A, B, Admin, &[]);
+    let g5 = w.edge(H, 1, &[], A, N5, Admin, &[]);
+    let d = w.edge(H, 2, &[], A, N5, Gone, &[]);
+    let lb = w.edge(B, 3, &[], A, H, Gone, &[gb, g5]);
+    let l5 = w.edge(N5, 4, &[], A, B, Gone, &[]);
+    let rd = one_reading(&w);
+    assert_eq!(rd.voided, Set::from([lb]));
+    assert!(rd.applied.contains(&d) && !rd.applied.contains(&l5) && rd.dropped.is_empty() && rd.stray.is_empty());
+    assert_eq!((rd.role(H, A), rd.role(B, A), rd.role(N5, A)), (Admin, Admin, Gone));
+}
+
+/// Control: voiding every unapplied lowering that made drops at once, in place of the earliest.
+/// H pairs B and N6; N6 grants B admin and removes H listing that grant (so it drops H's grant of
+/// B); B removes N6, dropping both. Earliest first: N6's removal of H is void, B (by H's grant)
+/// still removes N6. All at once, B's removal is void too and N6 stays; voiding B's removal
+/// first reaches that reading too, so which unapplied lowering is voided first matters.
+#[test]
+fn voiding_all_at_once_differs_from_the_earliest_first() {
+    let mut w = account();
+    let gb = w.edge(H, 3, &[], A, B, Admin, &[]);
+    let g6 = w.edge(H, 3, &[], A, N6, Admin, &[]);
+    let again = w.edge(N6, 5, &[], A, B, Admin, &[g6]);
+    let l6 = w.edge(N6, 5, &[], A, H, Gone, &[g6, again]);
+    let lb = w.edge(B, 6, &[], A, N6, Gone, &[]);
+    let rd = fixed(&w, &[]);
+    assert_eq!(void_orders(&w, &Rules::fixed(), &View::all(&w)).len(), 2);
+    assert!(rd.voided == Set::from([l6]) && rd.applied.is_superset(&Set::from([gb, g6, lb])) && rd.role(N6, A) == Gone);
+    let once = fixed_but(&w, &[], |x| x.void_order = VoidOrder::AllAtOnce);
+    assert!(once.voided == Set::from([l6, lb]) && once.role(N6, A) == Admin);
+}
+
+/// A void write has an effect (notes/path-model-findings.md, 16): H pairs B and N5; B pairs Z;
+/// Z removes H listing B's grant (so it drops H's pairing of N5), then removes B listing nothing,
+/// which drops B's pairing of Z, so neither of Z's removals applies. Earliest by key first, Z's
+/// removal of H is voided before the removal of B that took its author's grant: both are void.
+/// Without the removal of B held, the removal of H applies: the void write changed the reading.
+#[test]
+#[ignore = "notes/path-model-findings.md 16: voiding the earliest first lets a void write undo an earlier lowering"]
+fn repro_a_void_write_has_no_effect() {
+    let (w, s) = void_with_effect();
+    let rd = fixed(&w, &[]);
+    assert!(rd.voided.contains(&s));
+    assert_eq!(rd.applied, judge(&w, &Rules::fixed(), &View::all(&w).without(&[s])).applied);
+}
+
+fn void_with_effect() -> (World, Id) {
+    let mut w = account();
+    let gb = w.edge(H, 1, &[], A, B, Admin, &[]);
+    w.edge(H, 1, &[], A, N5, Admin, &[]);
+    w.edge(B, 2, &[], A, Z, Admin, &[]);
+    w.edge(Z, 3, &[], A, H, Gone, &[gb]);
+    let s = w.edge(Z, 4, &[], A, B, Gone, &[]);
+    (w, s)
+}
+
+/// The latest by key first answers this world (Z's removal of B is void, its removal of H
+/// applies); it is no answer either: small worlds (`tiny`) where a void write still has an effect
+/// under it exist (notes/path-model-findings.md 16).
+#[test]
+fn voiding_the_latest_first_answers_the_void_with_effect() {
+    let (w, s) = void_with_effect();
+    let rd = fixed_but(&w, &[], |x| x.void_order = VoidOrder::Latest);
+    assert!(rd.voided == Set::from([s]) && rd.role(H, A) == Gone && rd.role(N5, A) == Gone);
+    assert_eq!(rd.applied, judge(&w, &Rules::fixed(), &View::all(&w).without(&[s])).applied);
+}
+
+/// Small worlds of admins removing and granting each other (`tiny`) settle with no stray drop,
+/// within one round per held lowering (the void set only grows); the drops of a void lowering kept
+/// (control) are stray.
+#[test]
+fn small_worlds_settle_with_no_stray_drop() {
+    let f = Rules::fixed();
+    let (mut voided, mut sticky) = (0, 0);
+    for n in [4usize, 8, 12] {
+        for i in 0..400u64 {
+            let w = tiny(i * 100 + n as u64, n);
+            let rd = fixed(&w, &[]);
+            let lowerings = (0..w.commits.len()).filter(|&k| w.lowers(k).is_some()).count();
+            assert!(rd.stray.is_empty() && rd.rounds as usize <= 2 * lowerings, "n {n} i {i}: {rd:?}");
+            voided += rd.voided.len();
+            sticky += judge(&w, &Rules { void_unapplied: false, ..f }, &View::all(&w)).stray.len();
+        }
+    }
+    assert!(voided > 0 && sticky > 0, "{voided} {sticky}");
+}
+
+/// What a party with admin can make every reader not trusting a removal of it walk: X grants k
+/// keys of its own admin and each removes X listing nothing, so each drops its own grant and is
+/// void. The walk is redone once per such removal (any order of voiding: only one has applied
+/// when the restart finds it void), each redo walking the whole component again: rounds grow
+/// with k and passes with k too, each over the component, so the work is O(k^2) for 2k writes
+/// (notes/path-model-findings.md 17). A node trusting H's removal of X drops X's grants as seeds:
+/// no round.
+#[test]
+fn void_rounds_grow_with_a_partys_writes() {
+    let count = |k: usize| {
+        let (mut w, ..) = paired();
+        for z in 0..k {
+            w.edge(X, 1, &[], A, 30 + z as Thing, Admin, &[]);
+        }
+        for z in 0..k {
+            w.edge(30 + z as Thing, 2, &[], A, X, Gone, &[]);
+        }
+        let r = w.edge(H, 6, &[], A, X, Gone, &[]);
+        let plain = fixed(&w, &[]);
+        assert!(plain.stray.is_empty() && plain.voided.len() == k && plain.lowered.contains(&r));
+        assert_eq!(fixed(&w, &[r]).rounds, 0);
+        // each pass walks every held edge write
+        (plain.rounds, plain.passes * w.commits.len() as u64)
+    };
+    let (small, large) = (count(10), count(100));
+    // two walks per reading (the first, with no vouch counting, and the settled one); the work
+    // grows with the square of the party's writes
+    assert_eq!((small.0, large.0), (20, 200), "{small:?} {large:?}");
+    assert!(large.1 >= 80 * small.1, "{small:?} {large:?}");
+}

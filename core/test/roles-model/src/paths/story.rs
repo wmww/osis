@@ -531,6 +531,8 @@ pub struct Stats {
     pub first: BTreeMap<&'static str, (String, Spec)>,
     /// Checks made of each kind (a dead check shows as 0).
     pub checked: BTreeMap<&'static str, u64>,
+    /// Largest values seen: `rounds`, the walks one reading redid for a void write.
+    pub most: BTreeMap<&'static str, u64>,
 }
 
 impl crate::Tally for Stats {
@@ -545,6 +547,10 @@ impl crate::Tally for Stats {
         for (k, s) in o.first {
             self.first.entry(k).or_insert(s);
         }
+        for (k, n) in o.most {
+            let m = self.most.entry(k).or_default();
+            *m = (*m).max(n);
+        }
     }
 }
 
@@ -554,7 +560,7 @@ impl Stats {
     }
     /// Prints the counts and, per failing property, its first world shrunk under `rules`.
     pub fn print(&self, name: &str, rules: &Rules) {
-        println!("{name}: {} worlds, checks {:?}, failing checks {:?}", self.worlds, self.checked, self.fails);
+        println!("{name}: {} worlds, checks {:?}, largest {:?}, failing checks {:?}", self.worlds, self.checked, self.most, self.fails);
         for (k, (what, spec)) in &self.first {
             let small = shrink(spec, rules, k);
             let mut st = Stats::default();
@@ -570,6 +576,10 @@ impl Stats {
     }
     fn count(&mut self, k: &'static str) {
         *self.checked.entry(k).or_default() += 1;
+    }
+    fn most(&mut self, k: &'static str, n: u64) {
+        let m = self.most.entry(k).or_default();
+        *m = (*m).max(n);
     }
 }
 
@@ -700,8 +710,19 @@ pub fn check(m: &Sim, rules: &Rules, st: &mut Stats) {
         if rd.circle {
             st.fail("settles", m, format!("node {n}: the vouches do not settle"));
         }
+        st.count("stray");
+        st.most("rounds", rd.rounds as u64);
         if !rd.stray.is_empty() {
             st.fail("stray", m, format!("node {n}: {:?} dropped by a write that does not apply", rd.stray));
+        }
+        // a write that does not apply has no effect: the reading without each voided lowering
+        // held is the same
+        for &x in &rd.voided {
+            st.count("void");
+            let o = judge(w, rules, &v.clone().without(&[x]));
+            if o.applied != rd.applied || o.valid != rd.valid {
+                st.fail("void", m, format!("node {n}: the void lowering {x} has an effect"));
+            }
         }
         st.count("removal");
         if !rd.void.is_empty() {
