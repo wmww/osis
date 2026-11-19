@@ -723,6 +723,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "osis-blob"
+version = "0.1.0"
+dependencies = [
+ "osis-base",
+ "osis-commit",
+ "osis-crdt",
+ "osis-crypto",
+ "osis-schema",
+]
+
+[[package]]
 name = "osis-commit"
 version = "0.1.0"
 dependencies = [
@@ -745,7 +756,6 @@ name = "osis-crypto"
 version = "0.1.0"
 dependencies = [
  "blake3",
- "chacha20 0.9.1",
  "chacha20poly1305",
  "curve25519-dalek",
  "ed25519-dalek",
@@ -763,22 +773,11 @@ version = "0.0.0"
 dependencies = [
  "libfuzzer-sys",
  "osis-base",
- "osis-commit",
- "osis-crdt",
- "osis-crypto",
  "osis-blob",
- "osis-proto",
- "osis-schema",
-]
-
-[[package]]
-name = "osis-blob"
-version = "0.1.0"
-dependencies = [
- "osis-base",
  "osis-commit",
  "osis-crdt",
  "osis-crypto",
+ "osis-proto",
  "osis-schema",
 ]
 
@@ -787,8 +786,8 @@ name = "osis-proto"
 version = "0.1.0"
 dependencies = [
  "osis-base",
- "osis-crypto",
  "osis-blob",
+ "osis-crypto",
  "osis-schema",
 ]
 

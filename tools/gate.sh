@@ -205,6 +205,15 @@ step python3 tools/test_select.py $from --offset "$offset" --emit "$sel"
 # core's, then the GUI's on the same artifacts (the core crates are linted already)
 limited gate.clippy cargo clippy --all-targets --locked -- -D warnings
 gui_lint
+# the fuzz targets (core/test/fuzz, its own workspace, lock and target dir; nightly): nothing
+# else compiles them. Warm well under a second, cold about 10 s.
+fuzz_check() {
+  cargo metadata --locked --format-version 1 --manifest-path core/test/fuzz/Cargo.toml >/dev/null || {
+    echo "gate: core/test/fuzz/Cargo.lock is stale: refresh it with cargo metadata --format-version 1 --manifest-path core/test/fuzz/Cargo.toml >/dev/null and commit it" >&2; return 1; }
+  (cd core/test/fuzz && cargo +nightly fuzz check --fuzz-dir .) || {
+    echo "gate: the fuzz targets do not compile (above; needs the nightly toolchain and cargo-fuzz)" >&2; return 1; }
+}
+step fuzz_check
 # every binary the tests run, built unlocked with the runs' own cargo arguments, so the hold only runs
 builds() {
   while IFS= read -r l; do
