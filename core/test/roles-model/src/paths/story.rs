@@ -19,7 +19,7 @@ pub const T1: Thing = 13;
 pub const T2: Thing = 14;
 /// A dependent of T1 (minted with it, in T1's unit): written by descent.
 pub const D1: Thing = 15;
-/// Readers outside A (nodes, not signers): of T1's unit, of T2's.
+/// Readers outside A (nodes, not signers): holding only T1 and D1, only T2 (part of the evidence).
 pub const RD: Thing = 20;
 pub const RD2: Thing = 21;
 
