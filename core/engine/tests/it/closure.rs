@@ -1326,11 +1326,14 @@ fn stripping_and_pulling_anew_cost_the_thing_not_the_node_closure_spec_commits_5
     assert_eq!(small, large);
 }
 
+/// An order's end (`record_with_strong`): its name, its pulls anew, what it shows and holds.
+type End = (String, usize, Vec<(String, String)>, BTreeMap<osis_base::CommitId, Vec<bool>>);
+
 /// Peer 0's commit C mints W (a register on it) with X's strong to it, and a later commit D
 /// writes W again; peer 1 holds X. Peer 1 takes C and D in each of `orders` (a step: C whole, C's
 /// part on W, C's part on X, D, or a pass end), and once what it pulled anew is given again, what
 /// it holds and shows of C and D, with how many pulls each took.
-fn record_with_strong(orders: &[&[&str]]) -> Vec<(String, usize, Vec<(String, String)>, BTreeMap<osis_base::CommitId, Vec<bool>>)> {
+fn record_with_strong(orders: &[&[&str]]) -> Vec<End> {
     let (mut lp, ps) = people(2);
     let e0 = &mut lp.peers[0].engine;
     let mut m = Mutation::new();
