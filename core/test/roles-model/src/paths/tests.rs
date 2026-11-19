@@ -1170,7 +1170,7 @@ fn random_worlds_hold_large() {
 }
 
 /// Every 157th world of the small family (`-- 0 paths-exh` runs all of them by hand): a stride
-/// coprime with every dimension's size (2, 4, 5, 40), so no dimension is fixed or tied to
+/// coprime with every dimension's size (2, 4, 5, 48), so no dimension is fixed or tied to
 /// another (an even stride keeps `h_t1` false in every world).
 #[test]
 #[ignore = "property"]

@@ -57,6 +57,17 @@
 //!   trust changes the reading.
 //! - **Leaves.** A node sees a frontier's leaf for a thing only where its view says so
 //!   (`View::leaves`); an entry in a leaf it does not see is not listed for it.
+//! - **Invites and finalizes.** An edge write without admin on its path applies as an invite
+//!   grant where it adds a grant below admin to a holder with none current, within the path's
+//!   invite; a finalize ends a grant past its `until`. Neither is explicit: neither audits. A
+//!   lowering is judged where it takes its edge down in role or invite (`Rules::any_fall`), and
+//!   drops the writes whose need there the edge no longer meets (`need`).
+//! - **Purge authors.** A commit states its purge author (an index into [signer, path..]); a
+//!   purge request by author P, valid as content along its path, holds the right over the earlier
+//!   deltas on its thing naming exactly P where P is on its chain (`purges`).
+//! - **Covers.** A compaction snapshot carries content commits; a list naming it names them; a
+//!   carried write is judged by its own facts, its statement by a valid cover standing in for a
+//!   commit not held (`Rules::cover_copies` the control).
 //! - **Evidence** (`evidence`): the least set holding a unit's commits, every edge write on an
 //!   edge of a held commit's path or on the edge a held lowering names as the admin it relies
 //!   on, and the vouches against held removals.
