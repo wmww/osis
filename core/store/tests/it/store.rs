@@ -71,7 +71,7 @@ fn pending_commits() {
     let mut t = s.transaction(&mut rng).unwrap();
     for i in 0..10u8 {
         let k = if i % 3 == 0 { PendingKind::Parked } else { PendingKind::Pending };
-        t.put_pending(&CommitId([i; 32]), k, (i % 2 == 0).then_some([i; 32]), &vec![i; 300]).unwrap();
+        t.put_pending(&CommitId([i; 32]), k, (i % 2 == 0).then_some([i; 32]), 0, &vec![i; 300]).unwrap();
     }
     assert_eq!(t.get_pending(&CommitId([3; 32])).unwrap(), Some(Pending { kind: PendingKind::Parked, verdict: None, bytes: vec![3; 300] }));
     assert_eq!(t.get_pending(&CommitId([6; 32])).unwrap(), Some(Pending { kind: PendingKind::Parked, verdict: Some([6; 32]), bytes: vec![6; 300] }));

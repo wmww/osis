@@ -367,7 +367,9 @@ fn an_answer_undone_owes_no_holding_of_what_it_wrote_spec_sync_set_2() {
 
 // spec/permissions.md §5.5 (Listings), spec/crypto.md §7: a node of the account whose listing goes
 // on a thing whose delete keys are not here yet takes the rotation in (its own answer never fails
-// the receive) and writes the listing once the keys come
+// the receive) and writes the listing once the keys come; spec/permissions.md §5.1 (Received),
+// spec/commits.md §4 (Outside the node closure): a commit received before the removal that
+// applies after it (it waited for its thing to enter the node closure) is listed by its receipt
 #[test]
 fn a_listing_waits_for_its_things_delete_keys_spec_permissions_5_5() {
     let (mut lp, a, _) = world(4, 3);
@@ -395,6 +397,8 @@ fn a_listing_waits_for_its_things_delete_keys_spec_permissions_5_5() {
     assert!(!lp.peers[2].engine.holds_delete_keys(&u).unwrap(), "u's delete keys are not at node 2");
     let w = write(&mut lp, 1, u, "sibling");
     send(&mut lp, 1, 2, &[w]);
+    // u is outside node 2's node closure (its keys are not there): w waits, received
+    assert!(lp.peers[2].engine.pending().iter().any(|(c, r)| *c == w && *r == crate::Reason::Outside(u)), "w waits for u");
     lp.advance(10);
     // received before the rotation (the cutoff), and the rotator never received it: node 2 owes a
     // listing on `u`

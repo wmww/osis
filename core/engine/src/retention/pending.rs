@@ -117,14 +117,14 @@ fn rewrite_stored(tx: &mut Tx<'_>, id: &CommitId, edit: impl FnOnce(&mut osis_co
     if !tx.core.ix.pending.contains_key(id) {
         return Ok(None);
     }
-    let Some(osis_store::Pending { kind, verdict, bytes }) = tx.txn.get_pending(id)? else { return Ok(None) };
+    let Some(osis_store::Pending { kind, verdict, received, bytes }) = tx.txn.get_pending(id)? else { return Ok(None) };
     let Ok(mut b) = osis_commit::CommitBlob::decode_stored(&bytes) else { return Ok(None) };
     let changed = edit(&mut b);
     if changed {
         tx.in_class(b.header.ephemeral.is_some(), |tx| {
             tx.txn.remove_pending(id, Shred::Yes)?;
             // its signatures unchanged: their verdict stays
-            Ok(tx.txn.put_pending(id, kind, verdict, &b.encode())?)
+            Ok(tx.txn.put_pending(id, kind, verdict, received, &b.encode())?)
         })?;
     }
     Ok(Some((b.header, changed)))

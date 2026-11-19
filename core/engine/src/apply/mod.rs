@@ -843,16 +843,20 @@ fn ingest_class(tx: &mut Tx<'_>, mut blob: CommitBlob, origin: Origin) -> Result
     {
         return Ok(out);
     }
-    let received = tx.now();
+    let received = first_received(tx, &id)?;
     let _s = osis_base::costs::span("examine");
     let exam = examine(tx, &mut blob, &id, &BTreeSet::new(), origin, &mut known)?;
     let awaits = matches!(exam, Exam::Awaits(_));
     let out = match exam {
         Exam::Ready(mut parts) => {
             let w = parts.waiting.take();
+            let waited = tx.core.ix.pending.contains_key(&id);
             tx.core.waits.unawaits(&id);
             unpend(tx, &id)?;
             apply_verified(tx, &blob, parts, origin, received)?;
+            if waited {
+                atomic::applied_late(tx, &blob.header)?;
+            }
             // what a part still waiting read of its boxes may be what opens what it waits for
             match w {
                 Some(w) => pend_aside(tx, &id, &blob, w)?,
@@ -904,10 +908,26 @@ fn settled_boxes(tx: &Tx<'_>, id: &CommitId) -> bool {
 #[allow(clippy::too_many_arguments)]
 fn pend(tx: &mut Tx<'_>, id: &CommitId, kind: PendingKind, signed: Option<osis_commit::Signed>, bytes: &[u8], reason: Reason, h: Option<&Header>) -> Result<()> {
     tx.core.touch();
-    tx.txn.put_pending(id, kind, signed.map(osis_commit::Signed::to_bytes), bytes)?;
+    let received = first_received(tx, id)?;
+    tx.txn.put_pending(id, kind, signed.map(osis_commit::Signed::to_bytes), received.0, bytes)?;
     // unchanged at a look that keeps it waiting: what read it holds (`Core::waiting_carried`)
     set_pending(tx.core, id, Some((reason, h)));
     Ok(())
+}
+
+/// When commit `id` was received (spec/permissions.md §5.1 Received: its header decrypted and
+/// its signature verified, whether or not its deltas are held, applied or stored): at its first
+/// arrival, kept with its applied copy (`Meta::received`) or its pending one, else now.
+fn first_received(tx: &mut Tx<'_>, id: &CommitId) -> Result<WallMs> {
+    if let Some(m) = tx.core.ix.commits.get(id) {
+        return Ok(m.received);
+    }
+    if tx.core.ix.pending.contains_key(id)
+        && let Some(p) = tx.txn.get_pending(id)?
+    {
+        return Ok(WallMs(p.received));
+    }
+    Ok(tx.now())
 }
 
 /// Keeps commit `id` parked (`bytes` as stored, spec/versioning.md §2), telling the app the first

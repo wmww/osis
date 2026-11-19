@@ -358,7 +358,7 @@ pub(crate) fn forget(tx: &mut Tx<'_>, scope: Scope<'_>, held: &BTreeMap<Tid, u64
             crate::apply::pending_left(tx.core, &id);
             crate::apply::set_pending(tx.core, &id, None);
         } else {
-            tx.txn.put_pending(&id, p.kind, p.verdict, &rest.encode())?;
+            tx.txn.put_pending(&id, p.kind, p.verdict, p.received, &rest.encode())?;
         }
     }
     // aspect units and per-aspect records: rebuilt from what is held (nothing), so what their

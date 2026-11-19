@@ -55,6 +55,8 @@ pub enum PendingKind {
 pub struct Pending {
     pub kind: PendingKind,
     pub verdict: Option<[u8; 32]>,
+    /// When the commit first arrived (ms): its receipt (spec/permissions.md §5.1 Received).
+    pub received: u64,
     pub bytes: Vec<u8>,
 }
 
@@ -943,12 +945,12 @@ impl Transaction<'_> {
 
     /// Stores a commit not yet applied, as bytes (header and blob), with its signature's
     /// verdict if one was reached (`Pending`).
-    pub fn put_pending(&mut self, id: &CommitId, k: PendingKind, verdict: Option<[u8; 32]>, bytes: &[u8]) -> Result<(), Error> {
+    pub fn put_pending(&mut self, id: &CommitId, k: PendingKind, verdict: Option<[u8; 32]>, received: u64, bytes: &[u8]) -> Result<(), Error> {
         let tag = match k {
             PendingKind::Pending => 0,
             PendingKind::Parked => 1,
         } | u8::from(verdict.is_some()) << 1;
-        let v = W::new().u8(tag).raw(verdict.as_ref().map_or(&[][..], |v| &v[..])).raw(bytes).take();
+        let v = W::new().u8(tag).raw(verdict.as_ref().map_or(&[][..], |v| &v[..])).raw(&received.to_be_bytes()).raw(bytes).take();
         self.cat_put(&W::new().u8(kind::PENDING).raw(&id.0).take(), v, Shred::No)
     }
     pub fn get_pending(&mut self, id: &CommitId) -> Result<Option<Pending>, Error> {
@@ -1105,5 +1107,6 @@ fn decode_pending(v: &[u8]) -> Result<Pending, Error> {
         }
         _ => return Err(Error::Corrupt("pending")),
     };
-    Ok(Pending { kind, verdict, bytes: bytes.to_vec() })
+    let (received, bytes) = bytes.split_first_chunk::<8>().ok_or(Error::Corrupt("pending"))?;
+    Ok(Pending { kind, verdict, received: u64::from_be_bytes(*received), bytes: bytes.to_vec() })
 }

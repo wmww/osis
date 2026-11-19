@@ -543,6 +543,20 @@ fn note_addenda_due(tx: &mut Tx<'_>, id: &CommitId) -> Result<()> {
 }
 
 /// Applies a verified commit (`parts` examined) in this transaction.
+/// Pending commit `h` applied: received before (it waited), the account's rotations closing its
+/// epoch answer again, their listings or addenda naming it by its receipt (spec/permissions.md
+/// §5.1 Received, §5.5 Listings).
+pub(crate) fn applied_late(tx: &mut Tx<'_>, h: &osis_commit::Header) -> Result<()> {
+    if let Some(e) = h.epoch
+        && let Some(v) = tx.core.account_view(&h.author)
+    {
+        for r in v.closers(&e) {
+            crate::flows::signing::note_rotation_due(tx, &r)?;
+        }
+    }
+    Ok(())
+}
+
 pub(crate) fn apply_verified(tx: &mut Tx<'_>, blob: &CommitBlob, parts: Parts, origin: Origin, received: WallMs) -> Result<()> {
     let _s = osis_base::costs::span("apply");
     tx.core.touch();
