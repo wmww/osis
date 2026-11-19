@@ -165,9 +165,10 @@ fn purge_drops_late_snapshot_spec_commits_5() {
     check(&mut lp.peers[1].engine, "snapshot last");
     lp.peers[1].restart(0x5b01).unwrap();
     check(&mut lp.peers[1].engine, "snapshot last, restarted");
-    // the named delta last
+    // the named delta last, at a fresh reader of `t`
     let i = lp.peers.len();
-    lp.peers.push(osis_engine::local_peer::Peer::new(0x5b02, lp.peers[0].engine.now()).unwrap());
+    let r = lp.fresh_reader(0, t, 0x5b02);
+    lp.peers.push(r);
     for p in rest.iter().chain([&spk, &secret_pk]) {
         lp.deliver(i, p).unwrap();
     }
@@ -175,7 +176,8 @@ fn purge_drops_late_snapshot_spec_commits_5() {
     check(&mut lp.peers[i].engine, "named delta last");
     // the snapshot's header (applied alone, spec/commits.md §4), then its part
     let j = lp.peers.len();
-    lp.peers.push(osis_engine::local_peer::Peer::new(0x5b03, lp.peers[0].engine.now()).unwrap());
+    let r = lp.fresh_reader(0, t, 0x5b03);
+    lp.peers.push(r);
     for p in rest.iter().chain([&secret_pk]) {
         lp.deliver(j, p).unwrap();
     }
@@ -242,16 +244,10 @@ fn snapshot_frontier_valid_only_spec_crdt_8() {
     let now = lp.peers[0].engine.now();
     assert!(lp.peers[0].engine.frontier(&scope, now).unwrap().commits.contains(&bs), "received, though invalid");
     let snap = lp.peers[0].engine.snapshot(&t, &ak("t:reg.0")).unwrap().unwrap();
-    let mut lp2 = net(1, 1); // a node apart from lp's (its own seeds)
-    lp2.hold(t);
+    let mut lp2 = fresh_net(&mut lp, 0, t, 1000); // a reader apart from lp's (its own seeds)
     lp2.advance(100);
-    for p in packages_to(&mut lp, 0, 0) {
-        let h = lp.peers[0].engine.header(&p.id).unwrap();
-        let skip = h.author == b && h.aspects.iter().any(|a| a.ak.as_str() == "t:reg.0");
-        if !skip {
-            let _ = lp2.deliver(0, &p);
-        }
-    }
+    let theirs: std::collections::BTreeSet<_> = lp.peers[0].engine.commit_ids().into_iter().filter(|c| lp.peers[0].engine.header(c).is_some_and(|h| h.author == b && h.aspects.iter().any(|a| a.ak.as_str() == "t:reg.0"))).collect();
+    give_carried(&mut lp, 0, &mut lp2, 0, |p| theirs.contains(&p.id));
     assert!(lp2.peers[0].engine.commit_ids().contains(&snap));
     // a snapshot's frontier is no receipt (spec/crdt.md §8)
     let now = lp2.peers[0].engine.now();

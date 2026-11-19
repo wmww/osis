@@ -312,7 +312,7 @@ fn frontier_lists_compacted_too_snapshot_vouches_at_fresh_node_spec_perm_5_1() {
     let f = lp.peers[0].engine.frontier(&of(b, d), now).unwrap();
     assert!(f.commits.contains(&reg) && f.commits.contains(&tag), "{f:?}");
     set_edge(&mut lp.peers[0].engine, d, b, None, Some(f.clone()));
-    let mut fresh = fresh_net(&mut lp, 0, d, 1); // a reader apart from lp's (its own seeds)
+    let mut fresh = fresh_net(&mut lp, 0, d, 1000); // a reader apart from lp's (its own seeds)
     fresh.advance(3 * DAY);
     for p in packages(&mut lp, 0).into_iter().filter(|p| p.id != tag) {
         fresh.deliver(0, &p).unwrap();
@@ -1456,6 +1456,12 @@ fn late_invalid_part_unmerges_alike_spec_crdt_4_6() {
         let i = lp.peers.len() - 1;
         lp.hold_at(i, u);
         let who = lp.peers[i].engine.me();
+        // Bob takes its account's commits, as Alice did, so he can grant it
+        for id in lp.peers[i].engine.commit_ids() {
+            if let Some(pk) = lp.peers[i].engine.package(&id).unwrap() {
+                lp.deliver(1, &pk).unwrap();
+            }
+        }
         lp.peers[1].know(&[who]).unwrap();
         lp.peers[1].engine.grant(&u, &who, &edge(Role::Read)).unwrap();
         i
@@ -2955,7 +2961,12 @@ fn listed_part_peer(lp: &mut LocalPeer, d: Tid, pks: &[osis_engine::local_peer::
     let i = lp.peers.len();
     let r = lp.fresh_reader(0, d, seed);
     lp.peers.push(r);
-    let synced = lp.synced(i).unwrap();
+    // the sync IDs it syncs once a sync from Alice ends (R moves `d`'s: spec/sync-ids.md)
+    let synced = {
+        let mut c = lp.copy().unwrap();
+        c.sync(0, i).unwrap();
+        c.synced(i).unwrap()
+    };
     let pks: Vec<_> = pks.iter().map(|p| lp.trimmed(0, p, &synced).unwrap()).collect();
     for p in pks.iter().filter(|p| !ids.contains(&p.id)) {
         lp.deliver(i, p).unwrap();
@@ -3408,11 +3419,9 @@ fn frontier_lists_kept_writes_compacted_or_not_spec_perm_5_1() {
     assert!(f.commits.contains(&two), "a covered live write is listed too");
     set_edge(&mut lp.peers[0].engine, d, b, None, Some(f.clone()));
     assert_eq!(lp.peers[0].engine.body_valid(&one, &d, &kept), Some(true), "kept history stays valid at the holder");
-    let mut fresh = fresh_net(&mut lp, 0, d, 1); // a reader apart from lp's (its own seeds)
+    let mut fresh = fresh_net(&mut lp, 0, d, 1000); // a reader apart from lp's (its own seeds)
     fresh.advance(DAY);
-    for p in packages_to(&mut lp, 0, 0).into_iter().filter(|p| p.id != one) {
-        fresh.deliver(0, &p).unwrap();
-    }
+    give_carried(&mut lp, 0, &mut fresh, 0, |p| p.id == one);
     fresh.peers[0].reexamine().unwrap();
     assert!(fresh.peers[0].engine.header(&one).is_none());
     for l in [&mut lp, &mut fresh] {

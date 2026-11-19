@@ -336,6 +336,23 @@ pub fn packages_to(lp: &mut LocalPeer, from: usize, to: usize) -> Vec<Package> {
     lp.packages_under(from, &synced).unwrap()
 }
 
+/// Delivers to peer `to` of `other` (a net apart) what `lp`'s peer `from` sends it in a sync
+/// (`LocalPeer::packages_under` the sync IDs it syncs), but the packages `skip` names: again
+/// while what it syncs grows (a grant or a rotation it takes moves its sync IDs).
+pub fn give_carried(lp: &mut LocalPeer, from: usize, other: &mut LocalPeer, to: usize, skip: impl Fn(&Package) -> bool) {
+    let mut seen = std::collections::BTreeSet::new();
+    loop {
+        let synced = other.synced(to).unwrap();
+        if !seen.is_empty() && synced.is_subset(&seen) {
+            return;
+        }
+        seen.extend(synced.iter().copied());
+        for p in lp.packages_under(from, &synced).unwrap().iter().filter(|p| !skip(p)) {
+            other.deliver(to, p).unwrap();
+        }
+    }
+}
+
 pub fn is_role(e: &Engine, id: &CommitId) -> bool {
     e.header(id).is_some_and(|h| h.kind == Kind::Role)
 }
