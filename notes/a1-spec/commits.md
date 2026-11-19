@@ -1,0 +1,54 @@
+# A1 draft: spec/commits.md
+> Summary: Draft spec text for stage A1 (not in spec, not built): spec/commits.md §1 (a commit by its signer, a path per thing it writes, the remaining admin), §3 (sessions are the signer's), §4 (judged along stated paths, received, unjudgeable by a path's edges, who could hold a purge right) and the §5 sentences that name a header actor. Map and status: notes/a1-spec/README.md.
+
+Replaces, in spec/commits.md: §1 whole; §3 whole; in §4 the bullets Each delta, the pending list's account line, Unjudgeable's first sentence, Examined again, the three bullets possible admins, possible writers and could hold the right (one bullet in their place), and a new bullet Received; in §5 one sentence each of Covered, Forgetting (A forgotten commit's name), Signals (`replaces`) and Purge (Without the header). Every other bullet stands.
+
+## 1. Header
+Encoding: spec/wire.md §4. Fields:
+- Format version (spec/versioning.md §1).
+- The **signer**: the tid of the key actor whose key signs the commit (an account, or a key actor signing as itself), and the epoch an account signs at (spec/permissions.md §5.5); a rotation (spec/crypto.md §9).
+- The **paths**: for each thing the commit writes, the path it is written along and its purge author (Path, spec/permissions.md §1; §6), one for every thing or one per thing hashed, each thing's own in its sections.
+- Kind: content or role (§2); compaction-snapshot marker.
+- `ts` (spec/crdt.md §2.2) and the dot form, commit or session (§3).
+- Optional `expires` (§6), the expiry of every delta of the commit.
+- Aspect list: per touched `(tid, ak)`: counter range `[lo, hi)`, retention (§5), the delta hash of its one delta, and for a durable signal's delta optionally the fire it `replaces` (§5 Signals).
+- Optional purge request (§5), optional `undoes: commit ID` (§7).
+- A 16-byte random blind (the commit blob's, spec/crypto.md §7) and the delete keys with their levels; per aspect, the indices of the keys its deltas call for.
+- Explicit removals and lowerings only: the frontier (spec/permissions.md §5.1 Frontier), inline or as a link to a chunk tree when it exceeds `CHUNK_THRESHOLD` (spec/data-model.md §6).
+- Optional ephemeral marker: an ephemeral commit or a relay-only one (§2).
+- Role commits with edge writes only: the holder of the remaining admin edge they rely on, or the adminless mark (spec/permissions.md §1, The last admin; §2); compaction snapshots only: the own-cover mark (spec/permissions.md §5.1 Own cover).
+- The aspect, purge and delete-key lists are each inline, or a link to a chunk tree of the list's canonical bytes when it exceeds `CHUNK_THRESHOLD`; those blobs carry the commitment of the signer's level-2 delete key (spec/wire.md §5) and go under every sync ID the commit's blob goes under (spec/sync-judgement.md §1).
+- Signature (spec/crypto.md §2).
+
+- A commit is **by** its signer: the signer signs it, its sessions are the signer's (§3), and the commit acts, on each thing it writes, along the path it states for that thing and no other (spec/permissions.md §5). Nothing else in a commit names whom it acts for.
+- **Commit ID** = BLAKE3 of the canonical header without the signature. The signature is over the commit ID (spec/crypto.md §2).
+- **Delta** bytes: spec/crdt.md §3. **Delta hash** = `kdf("delta", dedup secret of tid, delta bytes)` (spec/crypto.md §6).
+- A commit may touch any things, of any reader sets.
+- A commit's size is bounded by its one blob (spec/sync-judgement.md §1):
+  - a delta pages (spec/crdt.md §8), but a relay-only commit's deltas never page;
+  - the header's lists go by link, each at most `MAX_LIST_BYTES`;
+  - the whole commit, its paged deltas' roots included, fits `MAX_BLOB` (spec/data-model.md §6), or the writer refuses it. Paging and chunking keep every page within a blob.
+
+## 3. Dot forms
+- **Commit form**: dots `(commit ID, index)`, unlinkable across commits. Any content commit, durable or ephemeral, may use it.
+  - A signer other than an account whose key is used from more than one node (link key) MUST use it, and every role commit and every compaction snapshot MUST use it.
+- **Session form**: dots `(Session(signer, nonce), counter)` (spec/crdt.md §2.1), counters per (aspect, session), contiguous from 1; the header carries the 16-byte nonce. A session is its signer's whatever paths its commits state.
+  - Content commits (§2) with own writes otherwise use it, durable and ephemeral alike.
+  - Session form on any other kind (§2: role, compaction snapshot) is bad input.
+
+## 4. Verification and application
+- A commit's signature MUST verify, under its signer's key; receivers dedup by commit ID. *(Stands but for its signer's key.)*
+- Each **delta** is judged on its own, by what the path its commit states for that delta's thing gives its signer there (spec/permissions.md §5); an invalid delta is un-merged alone (spec/crdt.md §4.6), the commit's other deltas stand.
+- **Received**: a node has **received** a commit once it decrypted the commit's header and verified its signature (the header pins its deltas, and each thing's path, by hash), whether or not it holds, applies or stores its deltas; relaying is not receiving. A commit forgotten at the node (§5 Forgetting) is not received, and an ephemeral one the node restarted since receiving is not. What a node received as of a time is what it had received by its own wall clock then. Lists, vouches and addenda name what their writer received (spec/permissions.md §5.1, §5.2).
+- In the pending list, the account line reads: its signer is an account and the rotation minting the epoch it names is not held (spec/permissions.md §5.5). The list's other lines stand.
+- **Unjudgeable**: a commit is unjudgeable while its signer's `created.0` record is unknown, or while every held part of it is; a held part is unjudgeable while its thing's record, a record on its thing's chain (spec/permissions.md §1) or the record of a thing its stated path lists (or one up that thing's record chain) is unknown, while its path is one per thing and none of its held sections for that thing carries a `Salted` that hashes to the thing's entry, or while an edge of its stated path (Path, spec/permissions.md §1; a fire of an external signal reads none, spec/permissions.md §5.2 External fires) is neither a record edge nor set by a held applied part's edge write putting a grant on it, whether the walk applies it or not (a removal sets none). The sub-bullets stand.
+- **Examined again**: a pending commit is examined only when something it awaits arrives: a record it or a part of it awaits; the held role inputs moving (an edge write, a record, a rotation), for one awaiting an edge of its path, its signer's secrets or an epoch; the account's chain coming to hold the epoch it names; a blob, for one waiting for pages or header lists; the clock reaching its `ts` less `MAX_DRIFT` or its expiry; a purge request or expiry changing what is value-less on a thing it writes; an open (an upgrade may read a parked one). No arrival examines the others.
+- **Could hold the right** (in place of possible admins, possible writers and could hold the right): a purge request could hold the right of a delta's purgeable-by when the path it states for the delta's thing could give it, by any role any held edge write ever gave on each edge of that path, whatever that write's validity (a record edge: admin): admin on every edge for `admin`; write on every edge for `writer`; for `author_or_admin`, either, write only where the path holds the delta's purge author (spec/permissions.md §6). **PENDING MODEL** (purge authors).
+- Two commits of one session whose counter ranges on one aspect overlap are both invalid. *(Stands: a session is its signer's, §3.)*
+
+## 5. Retention and purge (sentences naming a header actor)
+**PENDING MODEL** (purge authors). Each sentence replaces the one of today's that names the commit's actor; the rest of its bullet stands.
+- **Covered**: A held body is covered only if the snapshot, where it carries the commit's writes, states for it the class and purge author its header gives, and a held snapshot body only if the covering snapshot states for each commit both carry the class and purge author the body states (spec/crdt.md §8 `Facts`; a snapshot's purge author for a commit is its fact's): a cover never leaves a commit's writes judged by other facts where its header is not held.
+- **A forgotten commit's name**: a node forgetting a commit with writes of its own keeps, per aspect where a held compaction snapshot carries a value-carrying write (spec/crdt.md §4.7, valued or value-less) stamped with its `ts` and own source, its ID with that stamp, its purgeable-by class there, purge author there and `expires`, all from its header, across restarts, until no held snapshot of the aspect carries such a write, it holds the header again or the `expires` has passed (a write past its expiry has no value for a purge to act on).
+- **Signals**, in `replaces`: It is **honored**, judged from headers alone, when the named commit O is listed on the same `(t, ak)` and valid (a purge tombstone counts), carries no `replaces` on that aspect, has the same verified purge author on `t`, and sorts before the delta by `(ts, ID)`; else the delta is a fire of its own at its own place.
+- **Purge**, Without the header: a commit whose writes a held valid snapshot carries is judged by the snapshots' `Facts` for it (spec/crdt.md §8) and its copies' stamps: named and right as for a delta stamped `ts` with that source, class and purge author and no expiry (a snapshot carries no value of a delta with one); dropped only if it stands by the class and purge author every held valid snapshot carrying it states (one stating none for it states nothing).
