@@ -1,0 +1,10 @@
+# What perm reads of a role commit's other role-class parts goes stale
+> Summary: `Held`'s per-commit `RoleParts` (role-class parts other than edge writes, with the role each needs) is computed once at apply from state outside the commit (`rotation_role`, records held via `too_deep`) and never re-derived when that state moves, so the live set differs from an open's; the index check does not compare it.
+> Priority: normal
+> Tags: engine
+
+`validity::vouching_parts` builds `RoleParts` from the header's role-class aspects, filtered by `too_deep(core, tid)` (records held now) and with each part's role read from `ix.rotation_role` (judged later, by `note_required`). `add_role_commit` runs at apply before the part is judged and before a later-arriving record, and again only on late parts, drops, destroys and releases. A fast open and a rebuild run it with `rotation_role` loaded and every record held, so they read differently. Seen across the engine suite (lost access, closure, facade, order, flows tests) once the index check compares `Held::vouching` whole: live `(t, Admin)` where an open has `(t, Write)`; live missing a thing's parts an open has (its record arrived after the commit), and the reverse after `retention::needed::settle` forgets a record (its role commits are re-derived before `forget_record`).
+
+Repro: give `Held` a `pub(crate) fn vouching(&self) -> &BTreeMap<CommitId, Vouching>` (make `Vouching` `pub(crate)`) and add `("held vouching", ix.held.vouching())` to `tables` in `engine/testing.rs`; `cargo test -p osis-engine --no-fail-fast` fails some 30 tests at the index check.
+
+Fix direction (one definition: a function of the held commits, records and judged roles): either re-derive a role commit's reading whenever an input moves (its `rotation_role` entries, a record on one of its things arriving or going), or keep in `Held` only what the commit says (thing, aspect index) and resolve role and depth where perm reads them. Edge writes share the `too_deep` input (`edge_ops`), so check them with it. Then add the table to the check.

@@ -858,13 +858,14 @@ impl super::Core {
     }
 
     /// `IndexDigest::held`.
-    fn held_digest(&self) -> BTreeMap<Tid, (Vec<CommitId>, bool)> {
+    fn held_digest(&self) -> BTreeMap<Tid, (Vec<CommitId>, bool, Vec<CommitId>)> {
         let ix = &self.ix;
         osis_perm::HeldSet::things(&ix.held).into_iter().map(|t| {
             // sorted: the held set keeps arrival order, which nothing it answers depends on
             let mut cs: Vec<CommitId> = osis_perm::HeldSet::edge_commits(&ix.held, &t).iter().map(|x| x.id).collect();
             cs.sort();
-            (t, (cs, ix.held.created(&t).is_some()))
+            let vs: Vec<CommitId> = ix.held.vouches_on(&t).map(|v| v.id).collect();
+            (t, (cs, ix.held.created(&t).is_some(), vs))
         }).collect()
     }
 
@@ -927,9 +928,9 @@ impl super::Core {
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct IndexDigest {
     pub commits: BTreeMap<CommitId, CommitDigest>,
-    /// Per held thing: its edge commits, sorted, and whether its creation
-    /// record is held.
-    pub held: BTreeMap<Tid, (Vec<CommitId>, bool)>,
+    /// Per thing perm's held set reads: its edge commits, sorted, whether its creation record is
+    /// held, and the commits of the vouches on it, sorted.
+    pub held: BTreeMap<Tid, (Vec<CommitId>, bool, Vec<CommitId>)>,
     /// Per compaction snapshot: its `snapshots` entries, with their aspect.
     pub snapshots: BTreeMap<CommitId, Vec<(Tid, Ak, String)>>,
     /// Per snapshot: the aspects listing it in `dropped_snapshots`.

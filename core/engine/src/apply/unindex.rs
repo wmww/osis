@@ -162,7 +162,10 @@ fn unindex(tx: &mut Tx<'_>, id: &CommitId, marks: bool) -> Result<()> {
     for a in m.header.aspects.iter().filter(|a| a.ak.signal()) {
         crate::retention::leaving::unplaced(tx, &a.tid, &a.ak)?;
     }
-    tx.remove_commit(id)
+    tx.remove_commit(id)?;
+    // the timelines follow the held set before anything reads them (`Core::mark`)
+    tx.core.update_timelines();
+    Ok(())
 }
 
 /// The rows part `ai` of `c`'s judgment derived (the roles its `secrets.0` or `keys.0` delta
