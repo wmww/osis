@@ -114,3 +114,6 @@ Delete and strip rules, planted against osis-sync `it` (and the engine lib where
 - `LocalPeer::sync` carries no ephemeral commit: an engine test hands one over with `memory_blob` and `ingest_memory`.
 - A sync world that waits out `PASS_WAIT_MS` with a node away costs 7-10 GB, mostly dial ticks toward the absent node.
 - A loop over consecutive seeds with `rng(seed | 1)` makes seeds 2k and 2k+1 the same history: use odd seeds via `step_by(2)`.
+- A count test built on the sync `history::world` turns the memo debug comparisons off before counting (`idle::exact`): the history world turns them on for its thread, and their reads count.
+- The order harness's `fetch_missing` never delivers what a node pulls anew (`pulled_anew`): a node relying on a pull anew fails `held_set_decides` with no hint.
+- held-model `unit`: `Net::deliver` decides by the truth which units a writer syncs, so a writer that cannot know a sync ID (a forked promotion's greater one) still gets commits under it; a gap there needs delivery by hand.

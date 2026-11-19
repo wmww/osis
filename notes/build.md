@@ -48,6 +48,7 @@ One large all-core run at a time per box: `tools/heavy [--limit NAME] [--log FIL
 - **A load-dependent flake**: pin the test to few cores (`taskset -c 0-1 <copied binary> ...`); don't spin CPU burners.
 - **Permission prompts** stall unattended agents: stay inside your worktree and scratch dir, absolute paths instead of `cd` in compound commands; no sudo, network fetches, killing processes you did not start, or `git worktree add`. Write files with the Write tool.
 - **Scratch** (CLAUDE.md): every file, gate logs and copied binaries included, goes in your own `<scratchpad>/<task>-<random>` dir; never a file or `rm` at the scratchpad root. `mkdir -p` the dir in an earlier call, not a parallel one (a redirect into a missing dir fails a background run; `tools/heavy --log FILE` makes it). At your task's end delete copied binaries, profiles and TLC state dirs (GBs each) in your own dir.
+- **Scripted edits** over-match: a `sed` pattern `a.s` meant as "a's" rewrote a whole comment line; a python `str.replace` for one test also hit a near-identical older block. Edit with the Edit tool, or assert each replacement's count is 1.
 - **Renames**: a scripted sweep over-matches: notes/build-internals.md, Scripted renames. Test harness traps: notes/test-harnesses.md, Harness footguns.
 
 ## What things should cost
