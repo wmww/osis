@@ -111,6 +111,60 @@ out, _ = p.communicate()
 expect("stale-free", (p.returncode, lines(out)), (0, [f"ok {d} by-cargo 1"]))
 expect("copies removed", [x for x in os.listdir(d) if x.startswith("osis-heavy-")], [])
 
+# the short lane runs beside a held heavy lock without waiting, and logs its run as the lane's
+fcntl.flock(lock, fcntl.LOCK_EX)
+rc, out, err = heavy("--short", "sh", "-c", "echo $HEAVY_HELD")
+expect("short beside a hold", (rc, out, "waiting" in err), (0, ["1"], False))
+log = [json.loads(l) for l in open(os.path.join(d, ".cache/osis/heavy.log"))]
+expect("short logged", [o.get("lane") for o in log if o["ev"] == "acq"][-1], "short")
+expect("short refuses --limit", heavy("--short", "--limit", "gate", "true")[0], 1)
+fcntl.flock(lock, fcntl.LOCK_UN)
+
+# past a cap the lane kills the run's whole tree (exit 137); caps given directly, as limit
+# heavy.short's are too large to wait for in a test
+LANE = r"""
+import importlib.machinery, importlib.util, json, sys
+l = importlib.machinery.SourceFileLoader("heavy", sys.argv[1])
+h = importlib.util.module_from_spec(importlib.util.spec_from_loader("heavy", l)); l.exec_module(h)
+cpu, wall, rss, cmd = float(sys.argv[2]), float(sys.argv[3]), int(sys.argv[4]), sys.argv[5:]
+h.SHORT_RSS = rss
+who = dict(who="t", branch="t", sess="", via="", cmd="t")
+rc = h.hold(cmd, "heavy", None, who, [dict(argv=cmd, cwd=None, env=None)], None, (cpu, wall))
+print(rc)
+"""
+spin = "while :; do :; done"
+pidf = os.path.join(d, "pids")
+
+
+def lane(cpu, wall, rss, *cmd):
+    """(the exit code printed, stderr); output through files, so a survivor cannot hang a pipe"""
+    with open(os.path.join(d, "lane.out"), "w+") as o, open(os.path.join(d, "lane.err"), "w+") as e:
+        subprocess.run([sys.executable, "-c", LANE, HEAVY, str(cpu), str(wall), str(rss), *cmd], env=ENV, stdout=o, stderr=e, cwd=d)
+        o.seek(0), e.seek(0)
+        return o.read().split()[-1:], e.read()
+
+
+def alive(pid):
+    try:
+        return open(f"/proc/{pid}/stat").read().rsplit(")", 1)[1].split()[0] != "Z"
+    except OSError:
+        return False
+
+
+big = str(1 << 40)
+got, err = lane(1, 60, big, "sh", "-c", rf'sh -c "echo \$\$ >> {pidf}; {spin}" & sh -c "echo \$\$ >> {pidf}; {spin}"; wait')
+expect("CPU cap over a tree", (got, "CPU-s" in err), (["137"], True))
+left = [int(p) for p in open(pidf).read().split() if alive(p)]
+expect("the whole tree killed", left, [])
+for p in left:
+    os.kill(p, 9)
+got, err = lane(60, 1, big, "sleep", "30")
+expect("wall cap", (got, "wall" in err), (["137"], True))
+got, err = lane(60, 60, "1", "sleep", "30")
+expect("memory cap", (got, "resident" in err), (["137"], True))
+got, _ = lane(60, 60, big, "sh", "-c", "exit 5")
+expect("within the caps: the command's code", got, ["5"])
+
 subprocess.run(["rm", "-rf", d])
 print("heavy_test: ok" if not fails else f"heavy_test: {fails} failed")
 sys.exit(1 if fails else 0)

@@ -20,7 +20,7 @@ A package's features are the union of what everything in the build asks for, so 
 
 
 ## Heavy lock log
-Log: `~/.cache/osis/heavy.log` (JSON lines: who, command, wait, hold, CPU-s, the box's /proc/stat counters). `tools/heavy --report [--since HOURS]` lists runs and utilization; `tools/agent-times.py [--long N] [--since HH:MM|ISO|commit]` charges each agent its lock wait, hold, CPU-s and time by kind.
+Log: `~/.cache/osis/heavy.log` (JSON lines: who, command, wait, hold, CPU-s, the box's /proc/stat counters). `tools/heavy --report [--since HOURS]` lists runs (short-lane runs marked, kept out of the held/free split, totalled apart with their stops) and utilization; `tools/agent-times.py [--long N] [--since HH:MM|ISO|commit]` charges each agent its lock wait, hold, CPU-s and time by kind.
 
 ## Scheduler
 `system76-scheduler` (Pop!_OS, `com.system76.Scheduler.service`) must stay off (`sudo systemctl disable --now` and `mask`; an OS upgrade can re-enable it): at its 60 s refresh it puts `cargo`, `rustc`, `ld` and all they spawn after in SCHED_IDLE, and a cargo run outliving a refresh crawls beside any other run (10-30x the wall at normal CPU-s). Unprivileged processes cannot leave SCHED_IDLE; `nice`/`chrt` don't help. Check: `ps -eo pid,cls,ni,comm | grep -E 'cargo|rustc'` shows `IDL`; the gate warns while the service runs.

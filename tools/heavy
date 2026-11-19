@@ -2,6 +2,7 @@
 """Run a command that uses every core under the box-wide heavy lock, logging what it cost.
 
   tools/heavy [--limit NAME] [--log FILE] CMD [ARGS...]   wait for the lock, run CMD, release; exits with CMD's code
+  tools/heavy --short [--log FILE] CMD [ARGS...]   run CMD in the short lane, beside any hold; stopped past its caps
   tools/heavy --report [--since HOURS]   the lock's use and the box's CPU from the log
   tools/heavy --record BIN [ARGS...]   internal: cargo's runner while a cargo test/run builds
 
@@ -28,6 +29,14 @@ them. Events: `acq` (lock taken: who, cmd, wait, and the box at the request), `s
 SAMPLE_S while held), `rel` (released: held, the command's CPU-s from its rusage, exit code).
 tools/agent-times.py charges each acquisition to the agent whose command ran it.
 
+The short lane (--short): a run small enough to cost a hold beside it little needs no wait for one.
+It takes only the lane's own lock (one short run at a time, so the lane adds at most one all-core run
+beside a hold) and is stopped, its whole process tree killed (exit 137), once its CPU-s or wall pass
+limit `heavy.short` or its processes' resident memory passes SHORT_RSS. The run's CPU-s counts every
+process it started, finished or running; for a cargo test, only the copies' run (the build is
+unlocked anyway). Never for a command that edits the tree (tools/mutate.py): a stop leaves its edit
+in place. Every hold prints whether it would have fit the lane.
+
 Time limits (notes/build.md): the hold's CPU-s and wall are checked against NAME's limits
 (default `heavy`, a hold's own; the gate's is `gate.hold`) by tools/limits.py, which prints an
 over-limit line and logs the hit. The wait is not part of the hold: with HEAVY_WAIT_FILE set, its
@@ -39,6 +48,15 @@ sys.path.insert(0, os.path.dirname(os.path.realpath(__file__)))
 import limits  # noqa: E402
 
 LOCK = os.path.join(os.environ.get("XDG_RUNTIME_DIR") or "/tmp", "osis-gate.lock")
+SHORT_LOCK = os.path.join(os.environ.get("XDG_RUNTIME_DIR") or "/tmp", "osis-short.lock")
+# The short lane's memory cap (its CPU and wall caps are limit `heavy.short`): the summed resident
+# memory of the run's processes. The heavy lock's other job is keeping two large runs out of one
+# 30 GB box; 0 would stop every run, infinity would let a 16 GB bench beside a gate push the box into
+# swap. 4 GB is 20-100x a roles-model search or a held-model run and leaves a gate its room.
+SHORT_RSS = 4 << 30
+# How often the lane measures its run: a run can pass a cap by this long's work (16 threads x 1 s);
+# 0 spins, infinity never stops anything.
+SHORT_POLL_S = 1
 LOG = os.path.expanduser("~/.cache/osis/heavy.log")
 # Minor consequence: past it the log moves to heavy.log.1 (one generation kept), so at most twice
 # this on disk; 0 would keep only the last line, infinity grows without bound. About 200 bytes a
@@ -153,7 +171,46 @@ def build(cmd, rec, out):
     return rc, runs
 
 
-def run(cmd, name, out=None):
+def proc_table():
+    """{pid: (ppid, cpu_s, rss_bytes)} for every process; cpu_s counts its reaped children."""
+    tick, page, t = os.sysconf("SC_CLK_TCK"), os.sysconf("SC_PAGE_SIZE"), {}
+    for d in os.listdir("/proc"):
+        if not d.isdigit():
+            continue
+        try:
+            with open(f"/proc/{d}/stat") as f:
+                v = f.read().rsplit(")", 1)[1].split()
+        except OSError:
+            continue  # exited meanwhile
+        t[int(d)] = (int(v[1]), sum(int(x) for x in v[11:15]) / tick, int(v[21]) * page)
+    return t
+
+
+def tree(root):
+    """The pids of root and its living descendants, with their summed CPU-s and resident memory."""
+    t = proc_table()
+    kids = {}
+    for pid, (pp, _, _) in t.items():
+        kids.setdefault(pp, []).append(pid)
+    pids, todo = [], [root] if root in t else []
+    while todo:
+        p = todo.pop()
+        pids.append(p)
+        todo += kids.get(p, [])
+    return pids, sum(t[p][1] for p in pids), sum(t[p][2] for p in pids)
+
+
+def kill_tree(root):
+    """SIGKILL root's tree; a second walk catches what forked during the first."""
+    for _ in range(2):
+        for p in tree(root)[0]:
+            try:
+                os.kill(p, signal.SIGKILL)
+            except OSError:
+                pass
+
+
+def run(cmd, name, out=None, short=False):
     # the lock is per open file: a hold inside a hold would wait on itself forever
     if os.environ.get("HEAVY_HELD"):
         sys.exit("heavy: already inside a hold (HEAVY_HELD): run the command directly")
@@ -163,32 +220,39 @@ def run(cmd, name, out=None):
     if out:
         os.makedirs(os.path.dirname(os.path.abspath(out)), exist_ok=True)
         out = open(out, "w")
+    lane = None
+    if short:
+        lane, why = limits.limit("heavy.short")
+        if lane is None:
+            sys.exit(f"heavy: --short: {why}; run it without --short")
     sub = cargo_sub(cmd)
     if not sub:
-        return hold(cmd, name, out, who, [dict(argv=cmd, cwd=None, env=None)], sub)
+        return hold(cmd, name, out, who, [dict(argv=cmd, cwd=None, env=None)], sub, lane)
     rec = tempfile.mkdtemp(prefix="osis-heavy-")
     try:
         rc, runs = build(cmd, rec, out)
         if rc or not runs:
             return rc
         print(f"heavy: built; the hold runs copies of {len(runs)} binaries: later edits don't reach them", file=sys.stderr)
-        return hold(cmd, name, out, who, runs, sub)
+        return hold(cmd, name, out, who, runs, sub, lane)
     finally:
         shutil.rmtree(rec, ignore_errors=True)
 
 
-def hold(cmd, name, out, who, runs, sub):
-    """Take the lock and run each of runs in order. A cargo test stops at the first failing binary
-    unless --no-fail-fast, and exits 101 when any failed, as cargo does."""
-    fd = os.open(LOCK, os.O_RDWR | os.O_CREAT, 0o666)
+def hold(cmd, name, out, who, runs, sub, lane=None):
+    """Take the lock (with lane, the short lane's: its (CPU-s, wall) caps) and run each of runs in
+    order. A cargo test stops at the first failing binary unless --no-fail-fast, and exits 101 when
+    any failed, as cargo does."""
+    path = SHORT_LOCK if lane else LOCK
+    fd = os.open(path, os.O_RDWR | os.O_CREAT, 0o666)
     t0, (b0, a0) = time.time(), stat()
     try:
         fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
     except BlockingIOError:
-        print(f"heavy: waiting for {LOCK} (another all-core run)", file=sys.stderr)
+        print(f"heavy: waiting for {path} ({'another short run' if lane else 'another all-core run'})", file=sys.stderr)
         fcntl.flock(fd, fcntl.LOCK_EX)
     t1 = time.time()
-    log("acq", wait=round(t1 - t0, 1), busy0=b0, all0=a0, **who)
+    log("acq", wait=round(t1 - t0, 1), busy0=b0, all0=a0, **(dict(lane="short") if lane else {}), **who)
     if t1 - t0 >= 1:
         print(f"heavy: waited {t1 - t0:.0f} s for the lock", file=sys.stderr)
     if os.environ.get("HEAVY_WAIT_FILE"):
@@ -203,7 +267,7 @@ def hold(cmd, name, out, who, runs, sub):
     for s in (signal.SIGINT, signal.SIGTERM, signal.SIGHUP):
         signal.signal(s, lambda n, _f: cur[0] and cur[0].send_signal(n))
     keep_going = "--no-fail-fast" in cmd[:cmd.index("--")] if "--" in cmd else "--no-fail-fast" in cmd
-    rc, failed = 0, False
+    rc, failed, stop = 0, False, None
     for r in runs:
         if r.get("line"):
             (out or sys.stderr).write(r["line"])
@@ -222,10 +286,28 @@ def hold(cmd, name, out, who, runs, sub):
         cur[0] = p
         while True:
             try:
-                rc = p.wait(SAMPLE_S)
+                rc = p.wait(SHORT_POLL_S if lane else SAMPLE_S)
                 break
             except subprocess.TimeoutExpired:
-                log("smp")
+                if not lane:
+                    log("smp")
+                    continue
+                ru = resource.getrusage(resource.RUSAGE_CHILDREN)
+                _, live, rss = tree(p.pid)
+                used = ru.ru_utime + ru.ru_stime - ru0.ru_utime - ru0.ru_stime + live
+                stop = next((f"{k} {v:.0f} past the lane's {c:.0f}" for k, v, c in (
+                    ("CPU-s", used, lane[0]), ("wall s", time.time() - t1, lane[1]), ("MB resident", rss / 1e6, SHORT_RSS / 1e6)) if v > c), None)
+                if stop:
+                    kill_tree(p.pid)
+                    p.wait()
+                    print(f"heavy: --short run stopped, {stop} (limit heavy.short, SHORT_RSS): run it without --short",
+                          file=out or sys.stderr)
+                    if out:
+                        print(f"heavy: --short run stopped, {stop}: run it without --short", file=sys.stderr)
+                    break
+        if stop:
+            rc = 137
+            break
         rc = 128 - rc if rc < 0 else rc
         if rc:
             failed = True
@@ -233,13 +315,19 @@ def hold(cmd, name, out, who, runs, sub):
                 print(f"heavy: {r['bin']} failed (exit {rc})", file=out or sys.stderr)
             if not keep_going:
                 break
-    if sub == "test":
+    if sub == "test" and not stop:
         rc = 101 if failed else 0
     ru = resource.getrusage(resource.RUSAGE_CHILDREN)
     cpu = ru.ru_utime + ru.ru_stime - ru0.ru_utime - ru0.ru_stime
     held = time.time() - t1
-    log("rel", held=round(held, 1), cpu=round(cpu, 1), rc=rc)
+    log("rel", held=round(held, 1), cpu=round(cpu, 1), rc=rc, **(dict(stop=stop) if stop else {}))
+    if lane:
+        return rc
     limits.safe_check(name, cpu, held)
+    fits, _ = limits.limit("heavy.short")
+    if fits and cpu <= fits[0] and held <= fits[1] and ru.ru_maxrss * 1024 <= SHORT_RSS:
+        print(f"heavy: {cpu:.0f} CPU-s in {held:.0f} s: this run fits the short lane (`tools/heavy --short`, "
+              f"under {fits[0]:.0f} CPU-s, {fits[1]:.0f} s, {SHORT_RSS >> 30} GB), which waits for no hold", file=sys.stderr)
     return rc
 
 
@@ -259,12 +347,14 @@ def report(hours):
     for o in ev:
         if o["ev"] == "acq":
             acq[o["pid"]] = dict(o, smp=[])
+            if o.get("lane"):
+                acq[o["pid"]]["via"] = ("short lane " + o["via"]).strip()
         elif o["ev"] == "smp" and o["pid"] in acq:
             acq[o["pid"]]["smp"].append(o)
         elif o["ev"] == "rel" and o["pid"] in acq:
             a = acq.pop(o["pid"])
             runs.append((a, o))
-    print(f"{len(runs)} locked runs ({len(acq)} unfinished or killed). wait/held in minutes; own = the run's CPU-s over held x "
+    print(f"{len(runs)} locked runs, {sum(1 for a, _ in runs if a.get('lane'))} of them in the short lane ({len(acq)} unfinished or killed). wait/held in minutes; own = the run's CPU-s over held x "
           f"{ncpu} cores; box = every process's CPU while held; waitbox = the box while it waited; min = lowest {SAMPLE_S} s sample")
     print(f"{'start':11s} {'wait':>5s} {'held':>5s} {'CPU-s':>7s} {'own':>4s} {'box':>4s} {'min':>4s} {'waitbox':>7s} {'rc':>3s}  who: command")
     for a, r in runs:
@@ -280,7 +370,7 @@ def report(hours):
     pts = sorted(ev, key=lambda o: o["t"])
     held_until, sums = {}, {"held": [0, 0], "free": [0, 0]}
     for x, y in zip(pts, pts[1:]):
-        if x["ev"] == "acq":
+        if x["ev"] == "acq" and not x.get("lane"):
             held_until[x["pid"]] = True
         if x["ev"] == "rel":
             held_until.pop(x["pid"], None)
@@ -291,9 +381,10 @@ def report(hours):
     hz = os.sysconf("SC_CLK_TCK") * ncpu
     print("\nbox CPU between log events: " + ", ".join(
         f"lock {k} {s[1] / hz / 60:.0f} min at {pct(s[0] / s[1])}" for k, s in sums.items() if s[1]))
-    w = sum(a["wait"] for a, _ in runs)
-    h = sum(r["held"] for _, r in runs)
-    print(f"totals: waited {w/60:.0f} min, held {h/60:.0f} min, {sum(r['cpu'] for _, r in runs):.0f} CPU-s locked")
+    for lane, rs in (("the heavy lock", [x for x in runs if not x[0].get("lane")]), ("the short lane", [x for x in runs if x[0].get("lane")])):
+        if rs:
+            print(f"{lane}: {len(rs)} runs waited {sum(a['wait'] for a, _ in rs)/60:.0f} min, held {sum(r['held'] for _, r in rs)/60:.0f} min, "
+                  f"{sum(r['cpu'] for _, r in rs):.0f} CPU-s" + (f", {sum(1 for _, r in rs if r.get('stop'))} stopped past a cap" if lane == "the short lane" else ""))
 
 
 if __name__ == "__main__":
@@ -303,10 +394,13 @@ if __name__ == "__main__":
     if a[:1] == ["--report"]:
         report(float(a[2]) if a[1:2] == ["--since"] and len(a) > 2 else 0)
         sys.exit()
-    opts = {"--limit": "heavy", "--log": None}
-    while a[:1] and a[0] in opts and len(a) > 2:
-        opts[a[0]] = a[1]
-        a = a[2:]
-    if not a or a[0].startswith("-"):
+    opts = {"--limit": None, "--log": None}
+    short = False
+    while a[:1] == ["--short"] or a[:1] and a[0] in opts and len(a) > 2:
+        if a[0] == "--short":
+            short, a = True, a[1:]
+        else:
+            opts[a[0]], a = a[1], a[2:]
+    if not a or a[0].startswith("-") or short and opts["--limit"]:
         sys.exit(__doc__)
-    sys.exit(run(a, opts["--limit"], opts["--log"]))
+    sys.exit(run(a, opts["--limit"] or "heavy", opts["--log"], short))
