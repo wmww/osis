@@ -1,4 +1,0 @@
-# keel-judge-cost2
-- `Effects::due`'s causes count each moved container per due key, so they overlap: removing a cause (the read things row) moved 4,232 judgements to 4,224 because the same events moved other inputs of the same keys. Attribution needed a throwaway per-read site label on `Dep` and a count per key of the set of sites that moved (what alone made it due); the second step's diagnostic is the one that predicts a saving (issues/tooling-gaps.md).
-- A plain `git checkout <file>` to undo a probe edit reverted a whole file of real changes made since the last commit; commit a wip before probing by hand.
-- Count tests through a real world: most events that move an input also bring new keys (a redeem's link sync ID carries the target's bodies, a register's writes replace one body), so "same at n and 10n" needed an event that changes inputs alone (a second ticket of another role).

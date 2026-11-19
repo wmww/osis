@@ -5,6 +5,8 @@
 
 Nothing bounds how many sync IDs one commit is carried under today; with a unit being one independent thing and its dependents a commit is under one per unit it writes.
 
+No kept test counts an idle reconnect, a commit or a first sync at n and 10n shared sync IDs (`opens::a_reconnect_costs_the_same_at_n_and_10n` varies unshared ones): §8's growth came from a throwaway test; each fix lands with its count.
+
 ## Counted (debug, at n and 10n; tables and method in notes/sync-unit-design.md §8)
 - **Idle reconnect** (nothing out of date): deliveries flat (39). Bytes grow: one side's Pull names a join with an 80-byte cursor for every shared sync ID (108 B each with a reader, 143 B with a node keeping them unread), against spec/sync-streams.md §4 Costs and Joining (a connection that takes a record pulls its members with no join for a member at the stream's cursor). Cause not found. Local work grows too: about 314-369 store rows read, 7 `status: stranded`, 3 `inbox: register judged`, 3 `opens standing`, 10-22 `perm: roles walked` per shared sync ID.
 - **One small commit**: deliveries and bytes flat (29; 3926 B over three nodes). Local work grows with the sync IDs held: 234 store rows read per sync ID (437 in a closure of nested things), 7 `status: stranded`, 1 each of `life: lost access` and `life: role duty owed`.

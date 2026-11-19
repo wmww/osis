@@ -33,7 +33,7 @@ Other store kinds (osis-store's catalog):
 - Counters (memory overlay rows only, notes/engine-apply.md Counters), pending and parked commits, blob ciphertexts (pages, chunks, header-list trees).
 
 ## Index tables
-Rebuildable `node/*` tables (`engine/index.rs`), an index, never the truth: a store whose index fails to read is rebuilt from the commit records.
+Rebuildable `node/*` tables (`engine/index.rs`), an index, never the truth: a store whose index fails to read is rebuilt from the commit records. Every row is a function of the held commits (the index check's rebuild must give it), and what the fast open derives decodes no header (the index check asserts `headers decoded` is 0): state that needs either is persisted in its own rows.
 - `node/metas`: per commit a byte per part (valid, the rotation role it needs, a grant's overreach), and the header's `View`. Every input of a part's judgment that comes from its body is in the row, so a fast open judges a held part as the running node did.
 - `node/boxes to`, `node/epoch intro`, `node/keysets`, `node/delete hints`, `node/required`, `node/snapshots` (per aspect, with frontiers), `node/edges`, `node/walks`, `node/refs to` and `node/refs from` (the reference index, notes/engine-refs.md).
 
