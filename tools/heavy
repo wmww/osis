@@ -3,6 +3,7 @@
 
   tools/heavy [--limit NAME] [--log FILE] CMD [ARGS...]   wait for the lock, run CMD, release; exits with CMD's code
   tools/heavy --report [--since HOURS]   the lock's use and the box's CPU from the log
+  tools/heavy --record BIN [ARGS...]   internal: cargo's runner while a cargo test/run builds
 
 One all-core run at a time per box (notes/build.md): the gate's tests (one hold per gate),
 release checks, by-hand property and sim runs, TLC and roles-model runs. Builds and single-crate
@@ -11,6 +12,15 @@ flock(1)); the command inherits it, so it stays held while the command runs even
 dies. The command sees HEAVY_HELD=1; a tools/heavy inside it refuses (it would wait on itself).
 --log FILE sends the command's stdout and stderr to FILE, making its directory first: a shell
 redirect into a missing directory fails before tools/heavy starts, so nothing runs (exit 1).
+
+A `cargo test` or `cargo run` (maybe after `env VAR=VAL...`) builds before queueing, with
+tools/heavy as cargo's runner (`--record`): cargo compiles and chooses each binary, its args, cwd
+and env as usual, and each is copied to a private dir instead of run. The hold then runs the
+copies in order, with cargo's `Running` lines, stopping at a failing test binary unless
+--no-fail-fast (exit 101, as cargo). So the hold runs what was on disk at invocation and compiles
+nothing; a build failure exits with cargo's code without queueing. Not covered: doctests (cargo
+runs them itself, while building, unlocked; most crates set doctest = false), files and binaries a
+test reads from the tree at run time, and cargo inside a script or another program.
 
 Log: ~/.cache/osis/heavy.log, one JSON object per line. Every line carries the box's cumulative
 CPU jiffies (`busy`, `all` from /proc/stat), so any two lines give the box's utilization between
@@ -23,7 +33,7 @@ Time limits (notes/build.md): the hold's CPU-s and wall are checked against NAME
 over-limit line and logs the hit. The wait is not part of the hold: with HEAVY_WAIT_FILE set, its
 seconds are written there (the gate's own limit leaves them out).
 """
-import errno, fcntl, json, os, resource, shlex, signal, subprocess, sys, time
+import errno, fcntl, json, os, re, resource, shlex, shutil, signal, subprocess, sys, tempfile, time
 
 sys.path.insert(0, os.path.dirname(os.path.realpath(__file__)))
 import limits  # noqa: E402
@@ -77,6 +87,72 @@ def via():
     return os.path.basename(argv[0])
 
 
+def cargo_sub(cmd):
+    """`test` or `run` when cmd is a cargo test or run, maybe after `env VAR=VAL...`; else None."""
+    i = 0
+    if os.path.basename(cmd[0]) == "env":
+        i = 1
+        while i < len(cmd) and "=" in cmd[i] and not cmd[i].startswith("-"):
+            i += 1
+    if i >= len(cmd) or os.path.basename(cmd[i]) != "cargo":
+        return None
+    for a in cmd[i + 1:]:
+        if not a.startswith(("-", "+")):
+            return {"test": "test", "t": "test", "run": "run", "r": "run"}.get(a)
+    return None
+
+
+def runner_var():
+    host = next(l.split()[1] for l in subprocess.run(["rustc", "-vV"], capture_output=True, text=True, check=True).stdout.splitlines()
+                if l.startswith("host:"))
+    return "CARGO_TARGET_" + re.sub(r"[^A-Z0-9]", "_", host.upper()) + "_RUNNER"
+
+
+def record(argv):
+    """Cargo's runner while building (`--record BIN ARGS...`): copy BIN, note its args, cwd and env, run nothing."""
+    rec, var = os.environ["HEAVY_RECORD"], os.environ["HEAVY_RUNNER_VAR"]
+    n = 0
+    while True:
+        try:
+            fd = os.open(os.path.join(rec, f"{n:04d}.json"), os.O_WRONLY | os.O_CREAT | os.O_EXCL)
+            break
+        except FileExistsError:
+            n += 1
+    copy = os.path.join(rec, f"{n:04d}-{os.path.basename(argv[0])}")
+    shutil.copy2(argv[0], copy)
+    env = {k: v for k, v in os.environ.items() if k not in ("HEAVY_RECORD", "HEAVY_RUNNER_VAR", var)}
+    with os.fdopen(fd, "w") as f:
+        json.dump(dict(bin=argv[0], argv=[copy, *argv[1:]], cwd=os.getcwd(), env=env), f)
+
+
+def build(cmd, rec, out):
+    """Run the cargo command with tools/heavy as its runner: cargo builds and picks the binaries,
+    args, cwd and env as usual, and each run is recorded (`record`) with a copy of its binary.
+    Returns cargo's exit code and the runs, each with cargo's `Running` line for it."""
+    var = runner_var()
+    env = dict(os.environ, HEAVY_RECORD=rec, HEAVY_RUNNER_VAR=var)
+    env[var] = os.path.realpath(__file__) + " --record"
+    sink = out or sys.stderr
+    lines = {}
+    p = subprocess.Popen(cmd, env=env, stdout=out, stderr=subprocess.PIPE, text=True, errors="replace")
+    for line in p.stderr:
+        if line.lstrip().startswith("Running "):  # printed again when the copy runs
+            m = re.search(r"\((\S+)\)$", line.rstrip())
+            if m:
+                lines[os.path.basename(m.group(1))] = line
+        else:
+            sink.write(line)
+            sink.flush()
+    rc = p.wait()
+    runs = []
+    for f in sorted(x for x in os.listdir(rec) if x.endswith(".json")):
+        with open(os.path.join(rec, f)) as fh:
+            r = json.load(fh)
+        r["line"] = lines.get(os.path.basename(r["bin"]), f"     Running {r['bin']}\n")
+        runs.append(r)
+    return rc, runs
+
+
 def run(cmd, name, out=None):
     # the lock is per open file: a hold inside a hold would wait on itself forever
     if os.environ.get("HEAVY_HELD"):
@@ -87,6 +163,23 @@ def run(cmd, name, out=None):
     if out:
         os.makedirs(os.path.dirname(os.path.abspath(out)), exist_ok=True)
         out = open(out, "w")
+    sub = cargo_sub(cmd)
+    if not sub:
+        return hold(cmd, name, out, who, [dict(argv=cmd, cwd=None, env=None)], sub)
+    rec = tempfile.mkdtemp(prefix="osis-heavy-")
+    try:
+        rc, runs = build(cmd, rec, out)
+        if rc or not runs:
+            return rc
+        print(f"heavy: built; the hold runs copies of {len(runs)} binaries: later edits don't reach them", file=sys.stderr)
+        return hold(cmd, name, out, who, runs, sub)
+    finally:
+        shutil.rmtree(rec, ignore_errors=True)
+
+
+def hold(cmd, name, out, who, runs, sub):
+    """Take the lock and run each of runs in order. A cargo test stops at the first failing binary
+    unless --no-fail-fast, and exits 101 when any failed, as cargo does."""
     fd = os.open(LOCK, os.O_RDWR | os.O_CREAT, 0o666)
     t0, (b0, a0) = time.time(), stat()
     try:
@@ -105,32 +198,49 @@ def run(cmd, name, out=None):
         except OSError as e:
             print(f"heavy: {e}", file=sys.stderr)
     ru0 = resource.getrusage(resource.RUSAGE_CHILDREN)
-    env = dict(os.environ, HEAVY_HELD="1")
-    try:
-        try:
-            p = subprocess.Popen(cmd, pass_fds=(fd,), env=env, stdout=out, stderr=out)
-        except OSError as e:
-            if e.errno != errno.ENOEXEC:
-                raise
-            p = subprocess.Popen(["sh", *cmd], pass_fds=(fd,), env=env, stdout=out, stderr=out)  # a script without a #! line, as a shell runs it
-    except OSError as e:
-        log("rel", held=round(time.time() - t1, 1), cpu=0, rc=127)
-        sys.exit(f"heavy: {cmd[0]}: {e}")
+    cur = [None]
     # forward the usual stop signals; the child shares our process group, so a group kill reaches it anyway
     for s in (signal.SIGINT, signal.SIGTERM, signal.SIGHUP):
-        signal.signal(s, lambda n, _f: p.send_signal(n))
-    while True:
+        signal.signal(s, lambda n, _f: cur[0] and cur[0].send_signal(n))
+    keep_going = "--no-fail-fast" in cmd[:cmd.index("--")] if "--" in cmd else "--no-fail-fast" in cmd
+    rc, failed = 0, False
+    for r in runs:
+        if r.get("line"):
+            (out or sys.stderr).write(r["line"])
+            (out or sys.stderr).flush()
+        env = dict(r["env"] or os.environ, HEAVY_HELD="1")
         try:
-            rc = p.wait(SAMPLE_S)
-            break
-        except subprocess.TimeoutExpired:
-            log("smp")
+            try:
+                p = subprocess.Popen(r["argv"], cwd=r["cwd"], pass_fds=(fd,), env=env, stdout=out, stderr=out)
+            except OSError as e:
+                if e.errno != errno.ENOEXEC:
+                    raise
+                p = subprocess.Popen(["sh", *r["argv"]], cwd=r["cwd"], pass_fds=(fd,), env=env, stdout=out, stderr=out)  # a script without a #! line, as a shell runs it
+        except OSError as e:
+            log("rel", held=round(time.time() - t1, 1), cpu=0, rc=127)
+            sys.exit(f"heavy: {r['argv'][0]}: {e}")
+        cur[0] = p
+        while True:
+            try:
+                rc = p.wait(SAMPLE_S)
+                break
+            except subprocess.TimeoutExpired:
+                log("smp")
+        rc = 128 - rc if rc < 0 else rc
+        if rc:
+            failed = True
+            if sub == "test":
+                print(f"heavy: {r['bin']} failed (exit {rc})", file=out or sys.stderr)
+            if not keep_going:
+                break
+    if sub == "test":
+        rc = 101 if failed else 0
     ru = resource.getrusage(resource.RUSAGE_CHILDREN)
     cpu = ru.ru_utime + ru.ru_stime - ru0.ru_utime - ru0.ru_stime
     held = time.time() - t1
     log("rel", held=round(held, 1), cpu=round(cpu, 1), rc=rc)
     limits.safe_check(name, cpu, held)
-    return 128 - rc if rc < 0 else rc
+    return rc
 
 
 def report(hours):
@@ -188,6 +298,8 @@ def report(hours):
 
 if __name__ == "__main__":
     a = sys.argv[1:]
+    if a[:1] == ["--record"]:
+        sys.exit(record(a[1:]))
     if a[:1] == ["--report"]:
         report(float(a[2]) if a[1:2] == ["--since"] and len(a) > 2 else 0)
         sys.exit()
