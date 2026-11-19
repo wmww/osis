@@ -13,7 +13,7 @@ Answered and planned on (issues/actors-one-mechanism.md Answers): a removal is l
 |---|---|---|
 | G | Main's failing properties | |
 | S1 | Cost defects of many sync IDs | |
-| S2 | External signals: the word, and fires valid only where enabled | |
+| S2 | External signals (built) | |
 | S3 | Removal gaps on today's rules | M1 brief 1 |
 | M1 | Model: the write path's second round (roles-model `paths`) | |
 | M2 | Model: evidence completeness (held-model) | M1 brief 3 |
@@ -52,13 +52,9 @@ Any time; nothing waits on a question.
 - **Unblocks**: nothing waits on it; every independent thing has a sync ID of its own, so it pays wherever things are shared. Closes most of issues/many-sync-ids-cost.md (its Still to count stays).
 
 ### S2. External signals
-Before the account stages.
-- **Changes**: the rename open signal → external signal, open fire → external fire, "enables" (issues/deprecated-terms.md row; notes/terms.md): spec/data-model.md §2, spec/sync-inbox.md §2, spec/permissions.md §5.2 External fires, spec/commits.md §5 The setting; engine, perm, `osis`, CLI, schema, app text. The rule: a fire of an external signal by a party holding no write on the thing is valid iff the thing's current setting (the newest held valid `retention^.0`, whatever the fire's `ts`) names the signal in an entry of its own (spec/permissions.md §5.2 External fires; notes/write-path-design.md §4, The setting, External fires). An account's inbox already names its three signals at creation [checked: spec/sync-inbox.md §1], so accounts keep working; a thing that is its own inbox takes tickets, removal notices and stranded notices from parties holding no write on it only once its admins enable them.
-- **Not in this stage**: cards, "externally grantable" as what a thing publishes, KEM keys following the switch: A5.
-- **Briefs**: (1) the rename, one pass, each use read; (2) held-model and spec: fire validity by the setting; (3) engine and perm, `osis` enable call (notes/api-design.md), CLI; (4) first-party schema and app: which things enable which signal.
-- **Model first**: held-model judges signals [checked: notes/test-properties.md, held-set property's coverage tally names "a judged signal"]; brief 2 adds the rule there before brief 3.
-- **Checked by**: `held_set_decides` with its held-model comparison; a rule test that an unnamed fire reaches no listener and is not promoted; the sim scenarios; gate.
-- **Unblocks**: A5; issues/stranger-fire-bounds.md is re-read after it.
+Built (spec/permissions.md §5.2 External fires; spec/commits.md §5 The setting; spec/sync-inbox.md §1-§2): a fire by a party holding no write on the thing is valid only while the thing's current setting names the signal in an entry of its own; first-party libraries enable the three inbox signals when they make a thing (Tess), an account's inbox at creation.
+- **Left for A5**: externally grantable as what a thing publishes, cards, KEM keys following the switch, refusing at the granter a grant to a holder that takes no tickets (issues/external-signals-taken-by-default.md).
+- **Owed**: the held-set property does not reach external fires (issues/held-set-external-fires.md); issues/external-signal-floor.md.
 
 ### S3. Removal gaps on today's rules
 Each is a gap of the ordinary rules, fixed for every holder; all land before the account stages except where said.
