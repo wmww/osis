@@ -3,4 +3,4 @@
 > Priority: normal
 > Tags: held-model, tests
 
-Repro: `OSIS_HELD_START=387315248891 cargo test -p held-model --test it -- --ignored settled_histories_keep_their_laws_large_spec_commits_5`. Either the held model (core/test/held-model/src/model.rs) misses the deadline at which an invalid part's `Until` keep ends, or the fate changes where it should not; find which side is wrong before fixing (the engine mirrors the model, notes/engine-retention*.md).
+Repro: `OSIS_HELD_START=387315248891 cargo test -p held-model --test it -- --ignored settled_histories_keep_their_laws_large_spec_commits_5`. Either the held model (core/test/held-model/src/model.rs) misses the deadline at which an invalid part's `Until` keep ends, or the fate changes where it should not; find which side is wrong before fixing (the engine mirrors the model, notes/engine-retention*.md). It fails on some seeds only: the gate's random seeds pass it most runs (its tools/known_failures.txt line is `rate:`).

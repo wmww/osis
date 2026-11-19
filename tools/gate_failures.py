@@ -11,7 +11,8 @@ Exit 0 when every stage passed, 3 when only KNOWN failures failed, 1 on any NEW 
 tools/known_failures.txt: one failure on main per line, `NAME REPRO ISSUE PATTERN`: NAME a test's
 crate and libtest path (`osis-engine/order::held_set_decides_plain`; failures match by the path
 alone, tools/policy.py checks the crate holds the test) or `sim-sweep:SCENARIO`; REPRO the setting that
-shows it failing on main; ISSUE its issues/ file; PATTERN (the rest of the line) a Python regex
+shows it failing on main, prefixed `rate:` when the failure needs some seeds the gate's random
+offsets seldom draw (its issue says so); ISSUE its issues/ file; PATTERN (the rest of the line) a Python regex
 searched in each failing unit of NAME's text: each `seed N ... (replay: ...)` line of its panic
 (of each failing sim seed, its lines), or its whole panic when it names no seed. A failure is
 KNOWN when every unit matches a pattern listed for its NAME (the gate's seeds are random: its
@@ -23,7 +24,8 @@ add up, a sim sweep without its closing tally. tools/policy.py checks the list (
 
 A listed NAME that ran and passed in every stage that ran it (a `test NAME ... ok` line, a sim
 tally of 0 failed) and failed in none is reported `KNOWN but passed`: its issue may be fixed and
-its line stale. It changes no exit code (a property's random seeds may miss a known failure).
+its line stale; when every line of NAME is a `rate:` one, it says passing is expected instead. It
+changes no exit code.
 
 First it lists the property and sim stages' runs by CPU-seconds, costliest first: each summary line
 ending `..., W s, C CPU-s` (osis_base::testenv::run_jobs, the order harness's `NAME (SIZE): ...`
@@ -52,7 +54,8 @@ COST_STAGES = ("gate.properties", "gate.sim")
 
 
 def known(root=ROOT):
-    """({NAME: [(issue, pattern), ...]}, [error, ...]) from the known-failures list."""
+    """({NAME: [(issue, pattern, rate), ...]}, [error, ...]) from the known-failures list; `rate`
+    when its REPRO is `rate:...` (fails on some seeds only)."""
     names, errs, seen = {}, [], {}
     path = os.path.join(root, KNOWN)
     if not os.path.exists(path):
@@ -69,7 +72,7 @@ def known(root=ROOT):
         if len(f) != 4:
             errs.append(f"{KNOWN}:{n}: want `NAME REPRO ISSUE PATTERN`, got {line!r}")
             continue
-        name, _, issue, pat = f
+        name, repro, issue, pat = f
         if not (issue.startswith("issues/") and issue.endswith(".md") and os.path.isfile(os.path.join(root, issue))):
             errs.append(f"{KNOWN}:{n}: {issue}: no such issue file (fixed? drop the line)")
             continue
@@ -78,7 +81,7 @@ def known(root=ROOT):
         except re.error as e:
             errs.append(f"{KNOWN}:{n}: bad pattern {pat!r}: {e}")
             continue
-        names.setdefault(test_path(name), []).append((issue, pat))
+        names.setdefault(test_path(name), []).append((issue, pat, repro.startswith("rate:")))
     return names, errs
 
 
@@ -251,12 +254,12 @@ def main():
                 rows.append(("NEW", stage, us))
                 continue
             listed = names.get(name, [])
-            hit = [next((i for i, p in listed if p.search(u)), None) for u in us]
+            hit = [next((i for i, p, _ in listed if p.search(u)), None) for u in us]
             if listed and all(hit):
                 rows.append(("KNOWN", stage, f"{name}: {', '.join(dict.fromkeys(hit))}"))
             elif listed:
                 miss = next(u for u, h in zip(us, hit) if h is None).strip().split("\n")[0][:200]
-                rows.append(("NEW", stage, f"{name}: listed ({', '.join(dict.fromkeys(i for i, _ in listed))}), but this failure matches none of its patterns: {miss}"))
+                rows.append(("NEW", stage, f"{name}: listed ({', '.join(dict.fromkeys(i for i, _, _ in listed))}), but this failure matches none of its patterns: {miss}"))
             else:
                 rows.append(("NEW", stage, name))
             rows += [("", "", s) for s in shown[:3]] + ([("", "", f"... {len(shown) - 3} more seeds")] if len(shown) > 3 else [])
@@ -277,7 +280,12 @@ def main():
     for kind, stage, text in rows:
         print(f"   {kind:5} {stage}  {text}" if kind else f"         {text}")
     for name in sorted(n for n in names if n in ok and n not in bad):
-        print(f"   KNOWN but passed: {name} ({', '.join(sorted(ok[name]))}): fixed? drop its {KNOWN} line once its issue is")
+        stages = ', '.join(sorted(ok[name]))
+        if all(r for _, _, r in names[name]):
+            issues = ', '.join(dict.fromkeys(i for i, _, _ in names[name]))
+            print(f"   KNOWN, passed: {name} ({stages}): fails at a rate ({issues}): passing this run is expected")
+        else:
+            print(f"   KNOWN but passed: {name} ({stages}): fixed? drop its {KNOWN} line once its issue is")
     new = sum(1 for k, _, _ in rows if k == "NEW")
     old = sum(1 for k, _, _ in rows if k == "KNOWN")
     if new:

@@ -175,7 +175,9 @@ def known(text):
 
 
 ns, errs = known("# comment\norder::known_plain OSIS_ORDER_SEED=1 issues/known.md ^seed \\d+, Lists # not a comment\n")
-check("known", ({k: [(i, p.pattern) for i, p in v] for k, v in ns.items()}, errs), ({"order::known_plain": [("issues/known.md", "^seed \\d+, Lists # not a comment")]}, []))
+check("known", ({k: [(i, p.pattern, r) for i, p, r in v] for k, v in ns.items()}, errs), ({"order::known_plain": [("issues/known.md", "^seed \\d+, Lists # not a comment", False)]}, []))
+ns, _ = known("a rate:OSIS_ORDER_START=3 issues/known.md x\n")
+check("known rate", [r for _, _, r in ns["a"]], [True])
 _, errs = known("a 1 issues/gone.md x\nb 2 issues/known.md\nc 3 notes/x.md x\nd 4 issues/known.md (\n")
 check("known refuses", [e.split(": ", 1)[1].split(":")[0] for e in errs], ["issues/gone.md", "want `NAME REPRO ISSUE PATTERN`, got 'b 2 issues/known.md'", "notes/x.md", "bad pattern '('"])
 
@@ -232,6 +234,9 @@ rc, out = summary(f"{LISTED}ok 1 issues/known.md x\nfine 1 issues/known.md x\ndr
 check("known but passed", (rc, [l for l in out.split("\n") if "KNOWN but passed" in l]), (3, ["   KNOWN but passed: ok (default-tests, gate.gui): fixed? drop its tools/known_failures.txt line once its issue is", "   KNOWN but passed: sim-sweep:drift_parks (gate.sim): fixed? drop its tools/known_failures.txt line once its issue is"]))
 rc, out = summary(f"{LISTED}quick 1 issues/known.md x\n", [("default-tests", "0", "test quick ... ok\n"), ("gate.gui", "101", "     Running tests/q.rs (q-1)\n\nrunning 1 test\ntest quick ... FAILED\n\nfailures:\n\n---- quick stdout ----\nx\n\nfailures:\n    quick\n\ntest result: FAILED. 0 passed; 1 failed\n\nerror: test failed, to rerun pass `--test q`\n" + COUNT1)])
 check("known, passed in one stage, failed in another: not reported", (rc, "KNOWN but passed" in out), (3, False))
+# a line failing at a rate: passing is expected, said so; a name with one plain line keeps the question
+rc, out = summary(f"{LISTED}ok rate:S=1 issues/known.md x\nfine rate:S=1 issues/known.md x\nfine 2 issues/sim.md y\n", [("default-tests", "101", KNOWN_ONLY + COUNT1), ("gate.gui", "0", HUNG.replace("test fine ... ok", "test ok ... ok") + "test fine ... ok\n")])
+check("known at a rate, passed", (rc, [l for l in out.split("\n") if "passed:" in l]), (3, ["   KNOWN but passed: fine (gate.gui): fixed? drop its tools/known_failures.txt line once its issue is", "   KNOWN, passed: ok (default-tests, gate.gui): fails at a rate (issues/known.md): passing this run is expected"]))
 # the property and sim stages' runs by CPU-s: runner summary lines (not progress lines), the order
 # harness's `NAME (SIZE)` line naming test NAME_SIZE, then tests with no line
 PROPS = """a::p_large: 3 seeds from 0 (OSIS_COVERED_START=0)
