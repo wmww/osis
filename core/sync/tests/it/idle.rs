@@ -120,7 +120,7 @@ fn a_commit_judges_one_stranding_spec_sync_status_1() {
 
 /// By hand: every counter of an idle reconnect with a reader (R), with a node keeping every
 /// thing unread (S) and of one small commit (C), at n and 10n things (`--ignored --nocapture`).
-/// What issues/many-sync-ids-cost.md and notes/sync-unit-design.md §8 count.
+/// What issues/many-sync-ids-cost.md counts.
 #[test]
 #[ignore = "by hand: prints counts"]
 fn probe_counts() {

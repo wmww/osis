@@ -1,5 +1,5 @@
 //! Greenfield model of the sync unit as one independent thing and the dependents it reaches
-//! (notes/sync-unit-scope.md, notes/sync-unit-design.md §2-§4, §6), beside `closure`, which models
+//! (the unit designed and rejected: notes/sync-unit-scope.md), beside `closure`, which models
 //! the readable-closure unit the spec states today and which the sync differential reads. Plain
 //! data and pure functions; properties in tests/it/spec_unit.rs, readings, counts and findings in
 //! notes/closure-model.md (The unit model).

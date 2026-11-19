@@ -390,7 +390,7 @@ fn join_on_the_finding_worlds() {
         assert_eq!(join_own(&kd, &b, true), set(&[0, 1]));
         assert_eq!(join_own(&kd, &b, false), set(&[0]));
     }
-    // A role through a holder outside the closure does not count (issues/unit-key-paths.md rule
+    // A role through a holder outside the closure does not count (notes/sync-unit-scope.md, a role through a holder nothing references; rule
     // 1): 0 holds sync on 1, 1 on 2, 0 -> 2.
     let c = world(&k3, &[(0, 1, Role::Sync), (1, 2, Role::Sync)], &[(0, 2)]);
     assert_eq!(join_own(&k3, &c, true), set(&[0]));
@@ -958,7 +958,7 @@ fn the_end_state_alone_decides_the_blobs() {
 /// dependent of 1) adds 0 -> 2 with home 1; writer 1 (syncing 0 alone, never having held 2 or
 /// writer 0's add) adds 0 -> 2 from a bare tid, with no home; writer 0 removes its own dot. The
 /// value 0 -> 2 stands throughout, and 1's unit leaves the closure (FAILS "a home lives exactly as
-/// long as its strong"; within issues/unit-reference-home.md's corner, the bare-tid write). Had
+/// long as its strong"; within the bare-ID corner of notes/sync-unit-scope.md, the bare-tid write). Had
 /// writer 1 held writer 0's add, it would have copied the home and 1's unit would stay.
 #[test]
 fn a_home_lives_with_its_dot() {
@@ -1495,7 +1495,7 @@ fn a_voided_promotion_strands_what_was_written_under_x() {
     assert!(net.entries.contains(&(sx, b)), "S(X)'s copy stays: nobody passes S(X)");
 }
 
-/// Finding 1's state from a promotion judged invalid (issues/unit-dependent-holder.md): H = 0, X =
+/// Finding 1's state from a promotion judged invalid (notes/sync-unit-scope.md, promotion): H = 0, X =
 /// 1 its dependent, Y = 2 a dependent of X; H -> X -> Y; X promoted, then Y (its mint admin now
 /// independent, spec/permissions.md §3). The keeper of H enters X and Y. The void of X's promotion
 /// makes X dependent again while Y stays independent with X, a dependent of H's unit, on its
