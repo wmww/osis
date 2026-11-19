@@ -103,6 +103,10 @@ pub enum Kind {
     /// purge author): it names the earlier deltas on its thing whose purge author is `author`.
     /// Content-class, judged as a content write along its path.
     Purge { author: Thing },
+    /// A compaction snapshot of its thing (spec/commits.md §5 Covered), carrying the content
+    /// commits on it that showed at its writer. Content-class, judged as a content write along its
+    /// path. A list or addendum naming it names what it carries (an own cover).
+    Cover { carries: Set },
 }
 
 impl Kind {
@@ -249,6 +253,10 @@ pub struct Rules {
     /// A request by author matches the deltas naming exactly that purge author. False (control
     /// `-purge-contains`): every delta whose chain holds it.
     pub purge_exact: bool,
+    /// Control `-copies` (spec/permissions.md §5.2 Copies, §5.3): a valid cover's copy of a write
+    /// shows it whatever the write's own validity. False (the rule): a carried write is judged by
+    /// its own facts (signer, `ts`, path, ID), the cover only standing in for its body.
+    pub cover_copies: bool,
 }
 
 impl Rules {
@@ -272,6 +280,7 @@ impl Rules {
             any_fall: true,
             purge_chain: true,
             purge_exact: true,
+            cover_copies: false,
         }
     }
     /// The design: every fix the notes state, a removal judged in the world its list makes
@@ -295,6 +304,7 @@ impl Rules {
             any_fall: true,
             purge_chain: true,
             purge_exact: true,
+            cover_copies: false,
         }
     }
 }
@@ -459,9 +469,13 @@ impl World {
     }
     fn in_frontier(&self, r: Id, j: Id) -> bool {
         match &self.commits[r].kind {
-            Kind::Edge { frontier, .. } => frontier.get(&self.commits[j].on).is_some_and(|l| l.contains(&j)),
+            Kind::Edge { frontier, .. } => frontier.get(&self.commits[j].on).is_some_and(|l| l.iter().any(|&c| self.names(c, j))),
             _ => false,
         }
+    }
+    /// A list entry `c` names commit `j`: it is `j`, or a cover carrying `j`.
+    pub fn names(&self, c: Id, j: Id) -> bool {
+        c == j || matches!(&self.commits[c].kind, Kind::Cover { carries } if carries.contains(&j))
     }
     /// The honest frontier of a lowering of `edge`: every commit resting on it (through it, or a
     /// self-removal of it) that `received`.
@@ -509,6 +523,8 @@ pub struct Reading {
     pub valid: Set,
     /// Held content a valid purge request holding the right over it names.
     pub purged: Set,
+    /// Under `Rules::cover_copies`: writes shown only by a valid cover's copy.
+    pub copied: Set,
     /// Final roles, every `until` counted removed.
     pub roles: BTreeMap<Edge, Role>,
     /// The settled walk's edge values, and the first walk's (no vouch counting).
@@ -548,7 +564,7 @@ impl Reading {
     }
     /// A commit shows: valid content, or an applied edge-class commit.
     pub fn shows(&self, i: Id) -> bool {
-        self.valid.contains(&i) || self.applied.contains(&i)
+        self.valid.contains(&i) || self.applied.contains(&i) || self.copied.contains(&i)
     }
 }
 
@@ -1046,6 +1062,18 @@ fn finals(p: &Pass) -> BTreeMap<Edge, Role> {
     p.state.iter().map(|(&e, &(r, u))| (e, if u.is_some() { Role::None } else { r })).collect()
 }
 
+/// The commits a node judges: those it holds, and those a held cover carries (judged by the facts
+/// the cover states, its body forgotten or never received, where the cover is valid).
+fn known(w: &World, v: &View) -> Set {
+    let mut k = v.held.clone();
+    for &c in &v.held {
+        if let Kind::Cover { carries } = &w.commits[c].kind {
+            k.extend(carries);
+        }
+    }
+    k
+}
+
 /// Valid content-class commits, and the addenda among them that vouch.
 fn content(w: &World, rules: &Rules, v: &View, p: &Pass) -> (Set, Set) {
     let chained = first_chained(w, &v.held);
@@ -1055,9 +1083,13 @@ fn content(w: &World, rules: &Rules, v: &View, p: &Pass) -> (Set, Set) {
     let mut valid = Set::new();
     loop {
         let mut next = Set::new();
-        for &i in v.held.iter().filter(|&&i| !w.edge_class(i)) {
+        let known = known(w, v);
+        for &i in known.iter().filter(|&&i| !w.edge_class(i)) {
             let hops = w.hops(i);
-            if !w.well(i) {
+            // a write not held is judged by the facts a valid cover carrying it states; carried
+            // only by covers that are not valid it counts as never received
+            let stated = v.held.contains(&i) || valid.iter().any(|&c| matches!(&w.commits[c].kind, Kind::Cover { carries } if carries.contains(&i)));
+            if !w.well(i) || !stated {
                 continue;
             }
             let pos = w.pos(i);
@@ -1069,7 +1101,7 @@ fn content(w: &World, rules: &Rules, v: &View, p: &Pass) -> (Set, Set) {
                 || valid.iter().any(|&a| match &w.commits[a].kind {
                     Kind::Addendum { removal, list } if !matches!(w.commits[i].kind, Kind::Purge { .. }) => {
                         w.commits[a].on == w.commits[i].on
-                            && list.contains(&i)
+                            && list.iter().any(|&c| w.names(c, i))
                             && !(rules.no_own_addendum && w.commits[a].signer == w.commits[i].signer)
                             && cuts.iter().any(|l| l.id == *removal && w.key(l.id) > pos && w.key(l.id) < w.pos(a))
                             && vouches(a)
@@ -1137,12 +1169,18 @@ pub fn judge(w: &World, rules: &Rules, v: &View) -> Reading {
         }
         let (valid, vouching) = content(w, rules, v, &wk.pass);
         let purged = purges(w, rules, v, &valid);
+        let copied = if rules.cover_copies {
+            valid.iter().filter_map(|&c| match &w.commits[c].kind { Kind::Cover { carries } => Some(carries.iter().copied().filter(|j| !valid.contains(j))), _ => None }).flatten().collect()
+        } else {
+            Set::new()
+        };
         let mut dropper = wk.dropper;
         dropper.extend(d0);
         let mut rd = Reading {
             lowered: wk.pass.lows.iter().map(|l| l.id).collect(),
             valid,
             purged,
+            copied,
             roles: finals(&wk.pass),
             state: wk.pass.state.clone(),
             first,

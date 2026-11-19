@@ -1955,3 +1955,67 @@ fn a_removed_signers_backdated_purge_takes_nothing() {
     w.edit(r, |kind| kind.listing(BTreeMap::from([(T1, Set::from([q]))])));
     assert!(fixed(&w, &[r]).purged.contains(&h));
 }
+
+// ---- Covers (spec/commits.md §5 Covered; notes/account-membership-design.md §1, Cutoff and Carrying) ----
+
+/// The story's move 46: the thief withholds the removal from K, writes T1 after it, and K, a
+/// writer of T1 not yet holding the removal, compacts T1 carrying that write. Judged by its own
+/// facts the carried write falls with the removal; under spec/permissions.md §5.2 Copies (control
+/// `-copies`) K's valid cover shows it wherever the cover is held, for good.
+#[test]
+fn a_cover_by_a_writer_not_yet_holding_the_removal_smuggles_nothing() {
+    let s = Setup { x_a2: 0, ..Setup::default() };
+    for (rules, smuggled) in [(Rules::fixed(), false), (Rules { cover_copies: true, ..Rules::fixed() }, true)] {
+        let m = Sim::build(&s, &rules, &[Move { kind: 46, ts: 7, made: 7 }], &mut Rng(1));
+        let late = *m.thief.keys().next().unwrap();
+        let cover = (0..m.w.commits.len()).find(|&i| matches!(&m.w.commits[i].kind, Kind::Cover { carries } if carries.contains(&late))).expect("K's cover carries the late write");
+        for n in [B, K, RD, RD3] {
+            let rd = judge(&m.w, &rules, &m.view(n, &rules));
+            assert!(rd.valid.contains(&cover) && !rd.valid.contains(&late), "node {n}");
+            assert_eq!(rd.shows(late), smuggled, "node {n}");
+        }
+        let mut st = Stats::default();
+        check(&m, &rules, &mut st);
+        assert_eq!(st.fails.contains_key("safety"), smuggled, "{:?}", st.fails);
+    }
+}
+
+/// An own cover: H forgot X's write (it holds only B's cover carrying it), covers it in a
+/// snapshot of its own, and names that in its removal: a list naming a cover names what it
+/// carries, so the write stands, judged by its facts. Listing nothing, it falls.
+#[test]
+fn a_removal_naming_its_own_cover_keeps_what_the_cover_carries() {
+    let (mut w, ..) = paired();
+    let x = w.content(X, 3, &[A], T1);
+    let bc = w.push(B, 4, &[A], T1, Kind::Cover { carries: Set::from([x]) });
+    let own = w.push(H, 5, &[A], T1, Kind::Cover { carries: Set::from([x]) });
+    let r = w.edge(H, 6, &[], A, X, Gone, &[own]);
+    let v = View::all(&w).trusting(&[r]).without(&[x]);
+    let rd = judge(&w, &Rules::fixed(), &v);
+    assert!(rd.valid.contains(&x) && rd.valid.contains(&bc));
+    w.edit(r, |k| k.listing(BTreeMap::new()));
+    let rd = judge(&w, &Rules::fixed(), &v);
+    assert!(!rd.valid.contains(&x) && rd.valid.contains(&own));
+}
+
+/// A cover written by a party removed later, unlisted, falls with its writer's other writes:
+/// the honest write it carries stays valid where its commit is held (its author's node keeps
+/// it); a node that forgot it under the fallen cover holds no valid statement of it, so it counts
+/// there as never received and is fetched again from a holder. The removed party's own carried
+/// write falls everywhere. Listed by the removal, the cover stands and carries both.
+#[test]
+fn a_fallen_cover_takes_nothing_honest() {
+    let (mut w, ..) = paired();
+    let b = w.content(B, 2, &[A], T1);
+    let x = w.content(X, 3, &[A], T1);
+    let xc = w.push(X, 4, &[A], T1, Kind::Cover { carries: Set::from([b, x]) });
+    let r = w.edge(H, 6, &[], A, X, Gone, &[]);
+    let at_author = judge(&w, &Rules::fixed(), &View::all(&w).trusting(&[r]));
+    assert!(!at_author.valid.contains(&xc) && at_author.valid.contains(&b) && !at_author.shows(x));
+    let forgot = View::all(&w).trusting(&[r]).without(&[b, x]);
+    let rd = judge(&w, &Rules::fixed(), &forgot);
+    assert!(!rd.valid.contains(&b) && !rd.shows(x));
+    w.edit(r, |k| k.listing(BTreeMap::from([(T1, Set::from([xc]))])));
+    let rd = judge(&w, &Rules::fixed(), &forgot);
+    assert!(rd.valid.contains(&xc) && rd.valid.contains(&b) && rd.valid.contains(&x));
+}
