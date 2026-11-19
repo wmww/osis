@@ -25,7 +25,7 @@
 //! removal reaches each node. A lying snapshot (`Script::claims`) covers a write it does not
 //! carry. `window_search` runs the small families; hand tests below state each result.
 
-use crate::addenda::{Cover, Ctx, Eval, Item, Kind, View, World, L1};
+use crate::addenda::{Cover, Ctx, Eval, Gaps, Item, Kind, View, World, L1};
 use crate::joint::{JHist, JWrite};
 use crate::shrink::LATE;
 use crate::{Rng, Role};
@@ -194,7 +194,7 @@ struct Run<'a> {
 
 impl<'a> Run<'a> {
     fn new(s: &'a Script, p: Policy, suppress: Option<(usize, u32)>) -> Self {
-        let w = World { roles: s.roles.clone(), items: vec![], frontier: HashMap::new() };
+        let w = World { roles: s.roles.clone(), items: vec![], frontier: HashMap::new(), gaps: Gaps::default() };
         let mut r = Run {
             s,
             p,

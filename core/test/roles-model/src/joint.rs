@@ -84,6 +84,8 @@ pub struct Steps {
     pub after: Vec<(usize, Vec<Vec<Role>>)>,
     /// (write, node, actor): explicit demotions below write.
     pub demotions: Vec<(usize, usize, usize)>,
+    /// (write, node, actor): explicit demotions below admin (admin-only content, §5.2).
+    pub demotions_admin: Vec<(usize, usize, usize)>,
 }
 
 /// What the walk remembers per edge between explicit writes on it (§5.1 step 4, "the edge as
@@ -355,7 +357,7 @@ impl JHist {
         let (nn, na) = (self.nodes, self.actors());
         let mut edges = self.genesis.clone();
         let mut r = self.roles(&edges);
-        let mut st = Steps { genesis: r.clone(), after: vec![], demotions: vec![] };
+        let mut st = Steps { genesis: r.clone(), after: vec![], demotions: vec![], demotions_admin: vec![] };
         let mut rest = Restored { since: vec![vec![Role::None; na]; nn + na], kept: HashMap::new() };
         let mut attr = vec![Attr::Skipped; self.writes.len()];
         for i in self.order() {
@@ -386,6 +388,9 @@ impl JHist {
                 let rw = self.roles(&was);
                 for n in (0..na).filter(|&n| down[nn + n] && rw[x][n] >= Role::Write && r[x][n] < Role::Write) {
                     st.demotions.push((i, x, n));
+                }
+                for n in (0..na).filter(|&n| down[nn + n] && rw[x][n] >= Role::Admin && r[x][n] < Role::Admin) {
+                    st.demotions_admin.push((i, x, n));
                 }
             }
             let added = self.audit(i, old, own, &edges, &r, &attr, &mut rest, true);

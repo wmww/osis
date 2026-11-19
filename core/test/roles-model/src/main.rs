@@ -1,4 +1,4 @@
-//! Search driver for the roles model: `[samples] [edges|joint|disputes|disputes-random|digest|addenda|addenda-exh|addenda-covers|forget|epochs|epochs-no-cutoff|epochs-own-only|epochs-void-uncounted|epochs-no-own-cover|epochs-open-carried|epochs-no-reanswer|custody|custody-exh|custody-judged|custody-roster-bare|custody-merge-random|custody-stale-shut|custody-merge-carries|custody-readd-beside|paths|paths-exh|paths-design|vouches|vouches-exh|vouches-off|vouches-no-rewrite|vouches-no-absent]`.
+//! Search driver for the roles model: `[samples] [edges|joint|disputes|disputes-random|digest|addenda|addenda-exh|addenda-covers|addenda-gaps|addenda-gaps-exh|addenda-gaps-no-admin|addenda-gaps-no-rewrite|forget|epochs|epochs-no-cutoff|epochs-own-only|epochs-void-uncounted|epochs-no-own-cover|epochs-open-carried|epochs-no-reanswer|custody|custody-exh|custody-judged|custody-roster-bare|custody-merge-random|custody-stale-shut|custody-merge-carries|custody-readd-beside|paths|paths-exh|paths-design|vouches|vouches-exh|vouches-off|vouches-no-rewrite|vouches-no-absent]`.
 
 use roles_model::{edges, joint};
 
@@ -56,6 +56,11 @@ fn main() {
         Some("disputes-random") => roles_model::trust::run(samples, true),
         Some("forget") => {
             if roles_model::forget::search() > 0 {
+                std::process::exit(1);
+            }
+        }
+        Some(m) if m.starts_with("addenda-gaps") => {
+            if roles_model::addenda::run_gaps(samples, m) > 0 {
                 std::process::exit(1);
             }
         }

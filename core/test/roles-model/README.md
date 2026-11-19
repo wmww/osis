@@ -1,5 +1,5 @@
 # roles-model
-> Summary: Rust reference models of the role rules (spec/permissions.md §5), S3's vouches and what no list keeps, account custody and epochs (§5.4-§5.5), and of the design for stated paths with signers as members: modules, searches with their sizes, and the latest results.
+> Summary: Rust reference models of the role rules (spec/permissions.md §5), S3's vouches, what no list keeps and addenda gaps, account custody and epochs (§5.4-§5.5), and of the design for stated paths with signers as members: modules, searches with their sizes, and the latest results.
 
 Independent of any osis crate: an oracle, never patched to match the implementation (osis-perm and osis-engine dev-depend on it for their differentials). Module map and API: `src/lib.rs`; findings behind the role timeline: notes/role-timeline.md; disputes: notes/disputes.md.
 
@@ -18,7 +18,8 @@ Independent of any osis crate: an oracle, never patched to match the implementat
 | `forget` | 0 (one member-family world in 8, each with Bob's writes in or out of kept history, plus the attack family) | below, Own cover |
 | `digest` | 1,000,000 | notes/test-properties.md, Models |
 | `paths` | 400,000 (random worlds, the fixed rules); `paths-exh` 0 (the small family, 175,104 worlds); `paths-design` 40,000 (the notes' rules: its failing checks are the findings) | below, Paths |
-| `vouches` | 400,000 (random); `vouches-exh` 0 (the small family, 385,236 worlds); controls `vouches-off`, `vouches-no-rewrite`, `vouches-no-absent` and `vouches-exh-*` alike | below, Vouches |
+| `vouches` | 1,000,000 (random, 25 s); `vouches-exh` 0 (the small family, 385,236 worlds, 13 s); controls `vouches-off`, `vouches-no-rewrite`, `vouches-no-absent` and `vouches-exh-*` alike | below, Vouches |
+| `addenda-gaps` | 1,000,000 (random with admin-only content, 15 s); `addenda-gaps-exh` 0 (the gaps family, 2,829,888 worlds, 45 s); controls `-no-admin`, `-no-rewrite` on either | below, Addenda gaps |
 
 ## Vouches (`src/vouches.rs`)
 S3's removal-gap rules (notes/redesign-plan.md S3 briefs 2-3; notes/account-membership-design.md §4, Role writes and The list) on today's walk: authority as `edges` gives it (one thing, every node a key actor, a frontier is what its demoter received), with trust sets (`trust::side`). Rule, properties and controls in the module doc. `edges::Lists` carries the two rules into the walk (counting entries added to frontiers; what no list keeps); its default is today's rule, so `edges::walk`, the digest and osis-perm's differentials are unchanged, and osis-perm (which has neither rule) is compared against the default only. S3's code brief adds the rules to perm and then runs a differential against `vouches::judge`.
@@ -43,6 +44,20 @@ S3's removal-gap rules (notes/redesign-plan.md S3 briefs 2-3; notes/account-memb
 - An accomplice: X grants Y admin, Y removes H, H received both and removes X. Trusted alone, H's removal is void as written and applies with an empty list: what no list keeps strikes X's writes, and Y's removal is Y's. H removing Y as well (both trusted) applies both, the rule striking Y's removal of H from H's removal of Y (`an_accomplices_removal_is_answered_by_removing_the_accomplice`). So an honest remover facing an accomplice must remove it too; nothing in S3 does that for it.
 - A node X lowered but keeping an invite vouches for its own backdated invite grant, which nobody else received, and it applies at its own `ts` (`a_demoted_node_vouches_for_its_own_backdated_invite`; 3 random worlds in 1M). "Nobody vouches for its own signer's commit" closes it; S3 leaves it to A1.
 - A demotion X made that only its victim received stays made: the victim vouches for it (`a_demotion_only_its_victim_received_stays_made`). Read literally, "an entry lowering an edge of the listing write's own path" would strike it from the victim's own vouch; the model strikes against R's author only.
+
+## Addenda gaps (`src/addenda.rs`, `Gaps`)
+S3 brief 4 on today's rules (notes/account-membership-design.md §4, Addenda reach admin-only content, Writing): `Kind::AdminOnly` is content on an admin-only aspect that is not role-class, judged with admin in place of write against demotions below admin (`joint::Steps::demotions_admin`, spec/permissions.md §5.2); `Gaps::admin_only` lets an addendum by a witness holding admin at its key list it; `Gaps::rewrite` makes a witness lacking the role as it applies the removal write its addendum when it first holds it after (else, today, never). `Gaps::default()` is today's rule, so `random_world`, `addenda-exh` and osis-perm's `addenda_model_agrees` are unchanged; S3's code brief flips perm to `GAPS` and the differential with it.
+
+Properties (`check_gaps`): **reached** (a non-forged plain or admin-only commit of X, ordered no later than a demotion of X below the role it needs, that a node other than X and the demoter received before the demotion's `ts`, which received the demotion and holds that role at the end, is valid), one result for every input order, monotone, forged addenda gaining nothing beyond their author's power (admin for admin-only content). The gaps family is `exhaustive_worlds` with Bob an admin whose first write is admin-only, "grant Carol admin" in place of "remove Carol" and "demote Bob to write" in place of the re-grant.
+
+| Run | Worlds | Failing checks |
+|---|---|---|
+| `-- 1000000 addenda-gaps` | 1,000,000 (1,021,036 admin-only items; reached 33,349 wanted) | 0 |
+| `-- 0 addenda-gaps-exh` | 2,829,888 (reached 348,352 wanted) | 0 |
+| `-- 1000000 addenda-gaps-no-admin` / `-- 0 addenda-gaps-exh-no-admin` | as above | not reached 3,831 / 117,504 |
+| `-- 1000000 addenda-gaps-no-rewrite` / `-- 0 addenda-gaps-exh-no-rewrite` | as above | not reached 415 / 46,080 |
+
+**Limit found**: with bodies dropped at once (`simulate`), 2,741 of the 33,349 wanted commits are lost in the random run: a commit invalid from the removal until a witness's addendum arrives is dropped by every node meanwhile, and the addendum turns it valid with no body left to fetch. Writing again on first holding the right makes that window as long as the witness waits for its grant (`a_witness_granted_admin_after_the_removal_reaches_the_setting`). It is notes/addenda.md's body loss, which only keeping invalid bodies closes (notes/priorities.md, Whole commits tail: invalid bodies kept at stores).
 
 ## Epochs (`src/epochs.rs`)
 Layer 2 of the account (spec/permissions.md §5.5) over `custody`'s chain: a world is a settled custody world (its parties, fight and settle) plus P's commits on one to three things in two sync IDs, the rotators' thing lists, listings, R1's and R2's addenda as writers of a thing, and in half the worlds a bound (2 or 3 IDs per thing list), written by the cutoff after the chain world is made. A lister or witness answers as an epoch comes to count at it (a rotation held with its chain, or its side moving), never again as what it holds changes; a commit of P counts as received there once its epoch is held with its chain (its signature verifies then, spec/permissions.md §5.5 Cutoff: `World::dt`). Each node's chain is custody's `View`; the module judges only what counts of P's commits (rule, policy and properties in the module doc). osis-perm `epochs_model_agrees` feeds every observer and receipt prefix of every world to `osis_perm::Epochs`, the chain (held, counting, heads, preferred head, warning, revocations taken) and the epoch rule (pending, counting, saved by an addendum) alike.

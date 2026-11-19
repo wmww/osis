@@ -18,7 +18,8 @@
 //! - `addenda`: addenda (spec/permissions.md §5.2): layer 2 with several authors over `joint`
 //!   timelines (`JHist::steps`), witnesses' addenda as a least fixpoint, bodies dropped and
 //!   refetched, forged addenda, cost, which covered commits lists leave out (`Cover`).
-//!   Searches `addenda` (random), `addenda-exh` (exhaustive families), `addenda-covers`.
+//!   Searches `addenda` (random), `addenda-exh` (exhaustive families), `addenda-covers`;
+//!   S3 brief 4's `Gaps` (admin-only content, writing on first holding the role): `addenda-gaps`.
 //!   osis-perm `addenda_model_agrees`; results: notes/addenda.md, Addenda model.
 //! - `forget`: forgetting a commit's ID under a cover and the remover's own cover
 //!   (spec/commits.md §5 Forgetting), per node with real body drops, against listing every

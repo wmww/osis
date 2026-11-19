@@ -22,6 +22,11 @@
 //! (`Ctx::fixpoint`). A valid compaction snapshot (`Kind::Snap`) keeps what it carries
 //! visible (§5.2), and is itself a plain write of its author.
 //!
+//! S3 brief 4 (`Gaps`, off by default): admin-only content (`Kind::AdminOnly`, judged with admin
+//! against demotions below admin) listable by a witness holding admin; a witness lacking the role
+//! as it applies the removal writes when it first holds it after. Checks `check_gaps`, search
+//! `addenda-gaps` (README.md, Addenda gaps).
+//!
 //! On a re-removal every removal's frontier counts, whatever the order, and addenda naming any
 //! later removal. Variant: `Cover` (which covered commits a removal's frontier and addenda leave
 //! out, against listing every commit).
@@ -43,6 +48,10 @@ pub type Key = (u32, usize, u32);
 #[derive(Clone, Debug, PartialEq)]
 pub enum Kind {
     Plain,
+    /// A delta on an admin-only aspect that is not role-class (a setting, §5.2): judged with
+    /// admin in place of write, against demotions below admin; listable by addenda only under
+    /// `Gaps::admin_only`.
+    AdminOnly,
     /// Role-class, admin-only or purge write: judged like content, never listable (rule 4).
     Special,
     /// Compaction snapshot carrying these content items (IDs) of its thing.
@@ -91,12 +100,20 @@ impl Item {
     }
     /// Plain content commits and addenda (rule 4): no role-class, admin-only or purge write;
     /// a compaction snapshot only where the cover rule lets addenda name one
-    /// (spec/permissions.md §5.2, Addenda).
-    fn listable(&self, rules: Cover) -> bool {
-        matches!(self.kind, Kind::Plain | Kind::Add { .. }) || matches!(self.kind, Kind::Snap(_)) && rules != Cover::ListAll
+    /// (spec/permissions.md §5.2, Addenda); admin-only content under `Gaps::admin_only`.
+    fn listable(&self, rules: Cover, gaps: Gaps) -> bool {
+        matches!(self.kind, Kind::Plain | Kind::Add { .. }) || matches!(self.kind, Kind::Snap(_)) && rules != Cover::ListAll || self.kind == Kind::AdminOnly && gaps.admin_only
     }
     fn content(&self) -> bool {
-        matches!(self.kind, Kind::Plain | Kind::Special)
+        matches!(self.kind, Kind::Plain | Kind::Special | Kind::AdminOnly)
+    }
+    /// The role its writes need.
+    pub fn level(&self) -> Role {
+        if self.kind == Kind::AdminOnly {
+            Role::Admin
+        } else {
+            Role::Write
+        }
     }
     fn parts(&self) -> impl Iterator<Item = usize> {
         std::iter::once(self.thing).chain(self.acting)
@@ -126,6 +143,21 @@ pub enum Cover {
 /// The plan as decided for the model.
 pub const PLAN: Cover = Cover::ListAll;
 
+/// S3 brief 4's rules (notes/redesign-plan.md S3; notes/account-membership-design.md §4,
+/// Addenda reach admin-only content and Writing). Both off is today's rule (osis-perm's
+/// differential compares against that).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct Gaps {
+    /// An addendum by a witness holding admin at its key vouches for the leaver's admin-only
+    /// content that is not role-class, against a demotion below admin.
+    pub admin_only: bool,
+    /// A witness lacking the role when it applies the removal writes its addendum when it first
+    /// holds it after (re-granted); else it writes none.
+    pub rewrite: bool,
+}
+
+pub const GAPS: Gaps = Gaps { admin_only: true, rewrite: true };
+
 /// The cover rules compared with listing every commit (`check`).
 pub const COVERS: [(&str, Cover); 2] = [("omit others' covers", Cover::OmitOthers), ("omit own covers", Cover::OmitOwn)];
 
@@ -135,6 +167,7 @@ pub struct World {
     pub items: Vec<Item>,
     /// Role write ID -> the item IDs its author had received before its `ts`.
     pub frontier: HashMap<u32, HashSet<u32>>,
+    pub gaps: Gaps,
 }
 
 /// An explicit demotion below write (`JHist::steps`).
@@ -152,6 +185,8 @@ pub struct L1 {
     keys: Vec<Key>,
     states: Vec<Vec<Vec<Role>>>,
     pub dems: Vec<Dem>,
+    /// Explicit demotions below admin.
+    pub dems_admin: Vec<Dem>,
 }
 
 impl L1 {
@@ -161,13 +196,31 @@ impl L1 {
         let sub = JHist { nodes: h.nodes, admins: h.admins.clone(), genesis: h.genesis.clone(), writes: idx.iter().map(|&i| h.writes[i].clone()).collect(), recv: idx.iter().map(|&i| h.recv[i].clone()).collect() };
         let s = sub.steps();
         let wkey = |i: usize| (sub.writes[i].t, sub.writes[i].author, sub.writes[i].id);
-        let mut l = L1 { keys: vec![], states: vec![s.genesis], dems: vec![] };
+        let mut l = L1 { keys: vec![], states: vec![s.genesis], dems: vec![], dems_admin: vec![] };
         for (i, r) in s.after {
             l.keys.push(wkey(i));
             l.states.push(r);
         }
-        l.dems = s.demotions.iter().map(|&(i, x, n)| Dem { rid: sub.writes[i].id, key: wkey(i), author: sub.writes[i].author, victim: x, thing: n }).collect();
+        let dem = |&(i, x, n): &(usize, usize, usize)| Dem { rid: sub.writes[i].id, key: wkey(i), author: sub.writes[i].author, victim: x, thing: n };
+        l.dems = s.demotions.iter().map(dem).collect();
+        l.dems_admin = s.demotions_admin.iter().map(dem).collect();
         l
+    }
+    /// The explicit demotions below `level`.
+    pub fn dems_below(&self, level: Role) -> &[Dem] {
+        if level == Role::Admin {
+            &self.dems_admin
+        } else {
+            &self.dems
+        }
+    }
+    /// The first key at or after `key` where x holds `level` on n, if any.
+    fn first_held(&self, n: usize, x: usize, key: Key, level: Role) -> Option<Key> {
+        let at = self.at(key);
+        if self.states[at][n][x] >= level {
+            return Some(key);
+        }
+        (at..self.keys.len()).find(|&i| self.states[i + 1][n][x] >= level).map(|i| self.keys[i])
     }
     fn at(&self, key: Key) -> usize {
         self.keys.partition_point(|k| *k < key)
@@ -179,10 +232,10 @@ impl L1 {
     pub fn role(&self, n: usize, x: usize, key: Key) -> Role {
         self.states[self.at(key)][n][x]
     }
-    /// §5.2 re-grant: write in the final state, and the key at or after the first point n
-    /// ever held write on x.
-    fn regrant(&self, n: usize, x: usize, key: Key) -> bool {
-        self.states.last().map_or(false, |s| s[n][x] >= Role::Write) && self.states.iter().position(|s| s[n][x] >= Role::Write).map_or(false, |p| p <= self.at(key))
+    /// §5.2 re-grant: `level` in the final state, and the key at or after the first point n
+    /// ever held it on x.
+    fn regrant(&self, n: usize, x: usize, key: Key, level: Role) -> bool {
+        self.states.last().map_or(false, |s| s[n][x] >= level) && self.states.iter().position(|s| s[n][x] >= level).map_or(false, |p| p <= self.at(key))
     }
 }
 
@@ -230,7 +283,7 @@ impl<'a> Ctx<'a> {
     fn vouches(&self, a: usize, c: usize, m: usize, d: &Dem) -> bool {
         let (ad, l1) = (&self.w.items[a], self.v.l1);
         let k = ad.pos();
-        d.key < k && self.w.items[c].pos() <= d.key && l1.role(ad.author, m, k) >= Role::Write
+        d.key < k && self.w.items[c].pos() <= d.key && l1.role(ad.author, m, k) >= self.w.items[c].level()
     }
 
     /// Whether item c's part on thing m is valid, given which items are valid (`valid`).
@@ -246,11 +299,12 @@ impl<'a> Ctx<'a> {
                 return true;
             }
         }
-        if l1.regrant(x, m, key) {
+        let level = it.level();
+        if l1.regrant(x, m, key, level) {
             return true;
         }
-        let dems: Vec<&Dem> = l1.dems.iter().filter(|d| d.victim == x && d.thing == m).collect();
-        let held = l1.role(x, m, key) >= Role::Write;
+        let dems: Vec<&Dem> = l1.dems_below(level).iter().filter(|d| d.victim == x && d.thing == m).collect();
+        let held = l1.role(x, m, key) >= level;
         if held && !dems.iter().any(|d| d.key >= key) {
             return true;
         }
@@ -258,7 +312,7 @@ impl<'a> Ctx<'a> {
         if dems.iter().any(|d| self.w.frontier.get(&d.rid).map_or(false, |f| f.contains(&it.id))) {
             return true;
         }
-        if !it.listable(self.rules) {
+        if !it.listable(self.rules, self.w.gaps) {
             return false;
         }
         dems.iter().filter(|d| d.key >= key).any(|d| self.adds.get(&(d.rid, m)).map_or(false, |v| v.iter().any(|(a, l)| valid[*a] && l.contains(&it.id) && self.vouches(*a, c, m, d))))
@@ -362,7 +416,7 @@ impl World {
         enum Trig {
             Front(usize),
             Snap(usize, u32, usize),
-            Add(usize, usize),
+            Add(usize, usize, Role),
         }
         let mut trig: Vec<(u32, u8, usize, Trig)> = vec![];
         for (i, w) in self.roles.writes.iter().enumerate() {
@@ -371,10 +425,13 @@ impl World {
         for (k, &(s, ts, m)) in snaps.iter().enumerate() {
             trig.push((ts, 1, k, Trig::Snap(s, ts, m)));
         }
-        for (k, d) in g.dems.iter().enumerate() {
-            let ri = self.roles.writes.iter().position(|w| w.id == d.rid).unwrap();
-            for w in (0..nn).filter(|&w| w != d.victim && w != d.author && self.roles.recv[ri][w] < LATE) {
-                trig.push((self.roles.recv[ri][w].max(d.key.0) + 1, 2, k * nn + w, Trig::Add(k, w)));
+        let levels: &[Role] = if self.gaps.admin_only { &[Role::Write, Role::Admin] } else { &[Role::Write] };
+        for (li, &level) in levels.iter().enumerate() {
+            for (k, d) in g.dems_below(level).iter().enumerate() {
+                let ri = self.roles.writes.iter().position(|w| w.id == d.rid).unwrap();
+                for w in (0..nn).filter(|&w| w != d.victim && w != d.author && self.roles.recv[ri][w] < LATE) {
+                    trig.push((self.roles.recv[ri][w].max(d.key.0) + 1, 2 + li as u8, k * nn + w, Trig::Add(k, w, level)));
+                }
             }
         }
         trig.sort_by_key(|t| (t.0, t.1, t.2));
@@ -399,16 +456,23 @@ impl World {
                         self.items.push(Item { kind: Kind::Snap(carries), author: s, t: ts, id, thing: m, acting: None, recv, forged: false });
                     }
                 }
-                Trig::Add(k, w) => {
-                    let d = &g.dems[k];
+                Trig::Add(k, w, level) => {
+                    let d = &g.dems_below(level)[k];
                     let id = fresh(rng, ids);
                     let mut recv = recv_row(rng, nn, w, time, false);
+                    // lacking the role as it applies the removal, a witness writes when it first
+                    // holds it after (`Gaps::rewrite`), else never
+                    let time = match g.first_held(w, d.thing, (time, 0, 0), level) {
+                        Some(k2) if k2 == (time, 0, 0) => time,
+                        Some(k2) if self.gaps.rewrite => {
+                            let t2 = k2.0 + 1;
+                            recv.iter_mut().filter(|r| **r < LATE).for_each(|r| *r += t2 - time);
+                            t2
+                        }
+                        _ => continue,
+                    };
                     if let Some(f) = add_recv {
                         recv = f(w, time);
-                    }
-                    let key = (time, 0, 0);
-                    if g.role(w, d.thing, key) < Role::Write {
-                        continue;
                     }
                     let front = &self.frontier[&d.rid];
                     // an addendum saves the leaver's snapshot the frontier lists, or one it lists
@@ -417,7 +481,7 @@ impl World {
                     let lists: Vec<u32> = self
                         .items
                         .iter()
-                        .filter(|c| c.author == d.victim && c.listable(rules) && c.parts().any(|m| m == d.thing) && c.held(w, d.key.0) && !front.contains(&c.id) && !covered.contains(&c.id))
+                        .filter(|c| c.author == d.victim && c.level() == level && c.listable(rules, self.gaps) && c.parts().any(|m| m == d.thing) && c.held(w, d.key.0) && !front.contains(&c.id) && !covered.contains(&c.id))
                         .map(|c| c.id)
                         .collect();
                     if !lists.is_empty() {
@@ -463,7 +527,7 @@ impl World {
         let mut roles = self.roles.clone();
         roles.writes = pr.iter().map(|&i| self.roles.writes[i].clone()).collect();
         roles.recv = pr.iter().map(|&i| self.roles.recv[i].clone()).collect();
-        World { roles, items: pi.iter().map(|&i| self.items[i].clone()).collect(), frontier: self.frontier.clone() }
+        World { roles, items: pi.iter().map(|&i| self.items[i].clone()).collect(), frontier: self.frontier.clone(), gaps: self.gaps }
     }
 
     /// IDs of the items set in `bits`.
@@ -503,6 +567,12 @@ fn recv_row(rng: &mut Rng, nn: usize, author: usize, t: u32, early: bool) -> Vec
 /// thirds by a node some removal demotes, on that thing, before it; a sixth acting for
 /// another actor, an eighth special), up to two snapshots, and the honest addenda.
 pub fn random_world(rng: &mut Rng, rules: Cover) -> World {
+    random_world_with(rng, rules, Gaps::default(), false)
+}
+
+/// `random_world` under `gaps`; with `admin_items` a third of the plain content is admin-only
+/// instead (acting for nobody).
+pub fn random_world_with(rng: &mut Rng, rules: Cover, gaps: Gaps, admin_items: bool) -> World {
     let roles = joint::random_hist(rng);
     let (nn, na) = (roles.nodes, roles.admins.len());
     let mut ids: HashSet<u32> = roles.writes.iter().map(|w| w.id).collect();
@@ -515,14 +585,17 @@ pub fn random_world(rng: &mut Rng, rules: Cover) -> World {
             let d = &dems[rng.below(dems.len())];
             (author, thing, t) = (d.victim, d.thing, 1 + rng.below(d.key.0.max(2) as usize - 1) as u32);
         }
-        let acting = (rng.below(6) == 0).then(|| (thing + 1 + rng.below(na - 1)) % na);
-        let kind = if rng.below(8) == 0 { Kind::Special } else { Kind::Plain };
+        let mut acting = (rng.below(6) == 0).then(|| (thing + 1 + rng.below(na - 1)) % na);
+        let mut kind = if rng.below(8) == 0 { Kind::Special } else { Kind::Plain };
+        if admin_items && kind == Kind::Plain && rng.below(3) == 0 {
+            (kind, acting) = (Kind::AdminOnly, Option::None);
+        }
         let id = fresh(rng, &mut ids);
         let recv = recv_row(rng, nn, author, t, true);
         items.push(Item { kind, author, t, id, thing, acting, recv, forged: false });
     }
     let snaps: Vec<(usize, u32, usize)> = (0..rng.below(3)).map(|_| (rng.below(nn), 2 + rng.below(9) as u32, rng.below(na))).collect();
-    let mut w = World { roles, items, frontier: HashMap::new() };
+    let mut w = World { roles, items, frontier: HashMap::new(), gaps };
     w.derive(rng, rules, &snaps, &mut ids, None);
     // half the removals name their demoter's own cover of the thing, written at the removal's
     // `ts` from its view (spec/permissions.md §5.1, Own cover)
@@ -665,6 +738,7 @@ impl std::fmt::Display for World {
             let what = match &it.kind {
                 Kind::Plain => "plain".to_string(),
                 Kind::Special => "special".to_string(),
+                Kind::AdminOnly => "admin-only".to_string(),
                 Kind::Snap(c) => format!("snapshot carrying {c:?}"),
                 Kind::Add { removal, lists } => format!("addendum to {removal} listing {lists:?}"),
                 Kind::RemSnap { removal, carries } => format!("snapshot in removal {removal} carrying {carries:?}"),
@@ -912,7 +986,8 @@ fn nonmonotone(w: &World, rules: Cover) -> bool {
 }
 
 /// Attack: every part the forged addenda turn valid is a plain write's part on a thing m
-/// where a valid forged addendum on m has its author holding write at its key: nothing beyond
+/// where a valid forged addendum on m has its author holding write (admin for admin-only
+/// content) at its key: nothing beyond
 /// the attacker's own write power on that thing (a part attributed to an actor is vouched for
 /// on the actor by a writer of it, as a frontier lists it).
 fn attack_gains(w: &World, f: &World, rules: Cover) -> bool {
@@ -928,13 +1003,13 @@ fn attack_gains(w: &World, f: &World, rules: Cover) -> bool {
             if !c1.part_ok(c, m, &v1) || c0.part_ok(c, m, &v0) {
                 return false;
             }
-            if !it.listable(rules) {
+            if !it.listable(rules, w.gaps) {
                 return true;
             }
             !(w.items.len()..f.items.len()).any(|a| {
                 let ad = &f.items[a];
                 let k = ad.pos();
-                v1[a] && ad.thing == m && l1.role(ad.author, m, k) >= Role::Write
+                v1[a] && ad.thing == m && l1.role(ad.author, m, k) >= it.level()
             })
         })
     })
@@ -1033,17 +1108,21 @@ pub fn random(samples: u64, seed: u64) -> Stats {
 /// by Carol and Dave at t+1 or never. Bob writes at t=1 or 4 and at 7 (or not), each
 /// received by Alice, Carol, Dave at t+1 or never. Addenda: honest, received by everyone at
 /// their t+1 or (a switch) never by Alice.
-pub fn exhaustive_worlds(share: (usize, usize), mut f: impl FnMut(World)) {
+///
+/// With `gaps` (S3 brief 4's family): Bob is an admin, the menu's "remove Carol" is "grant Carol
+/// admin" and "re-grant Bob write" demotes Bob to write, Bob's first write is admin-only content,
+/// and the addenda follow `gaps`.
+pub fn exhaustive_worlds(share: (usize, usize), gaps: Option<Gaps>, mut f: impl FnMut(World)) {
     use Role::{Admin, None, Read, Write};
     let nn = 4;
-    let menu: [(usize, Role); 4] = [(1, None), (2, None), (3, None), (1, Write)];
+    let menu: [(usize, Role); 4] = if gaps.is_some() { [(1, None), (2, Admin), (3, None), (1, Write)] } else { [(1, None), (2, None), (3, None), (1, Write)] };
     let mut index = 0usize;
     for dave in [Read, Write] {
         for script in 0..5usize.pow(3) {
             for rmask in 0..(1u32 << 6) {
                 let mut genesis = vec![vec![None]; nn + 1];
                 genesis[0][0] = Admin;
-                genesis[1][0] = Write;
+                genesis[1][0] = if gaps.is_some() { Admin } else { Write };
                 genesis[2][0] = Write;
                 genesis[3][0] = dave;
                 let mut roles = JHist { nodes: nn, admins: vec![0], genesis, writes: vec![], recv: vec![] };
@@ -1074,11 +1153,12 @@ pub fn exhaustive_worlds(share: (usize, usize), mut f: impl FnMut(World)) {
                         let (t1, rest) = ([1u32, 4][bob % 2], bob / 2);
                         let (r1, second) = (rest % 8, rest / 8);
                         let row = |t: u32, m: usize| -> Vec<u32> { vec![if m & 1 == 1 { t + 1 } else { LATE }, t, if m & 2 == 2 { t + 1 } else { LATE }, if m & 4 == 4 { t + 1 } else { LATE }] };
-                        let mut items = vec![Item { kind: Kind::Plain, author: 1, t: t1, id: 1, thing: 0, acting: Option::None, recv: row(t1, r1), forged: false }];
+                        let kind = if gaps.is_some() { Kind::AdminOnly } else { Kind::Plain };
+                        let mut items = vec![Item { kind, author: 1, t: t1, id: 1, thing: 0, acting: Option::None, recv: row(t1, r1), forged: false }];
                         if second > 0 {
                             items.push(Item { kind: Kind::Plain, author: 1, t: 7, id: 2, thing: 0, acting: Option::None, recv: row(7, second - 1), forged: false });
                         }
-                        let mut w = World { roles: roles.clone(), items, frontier: HashMap::new() };
+                        let mut w = World { roles: roles.clone(), items, frontier: HashMap::new(), gaps: gaps.unwrap_or_default() };
                         let mut ids: HashSet<u32> = (0..2000).collect();
                         let add_recv = |a: usize, t: u32| -> Vec<u32> { (0..nn).map(|v| if v == a { t } else if v == 0 && !alice_sees { LATE } else { t + 1 }).collect() };
                         w.derive(&mut Rng(0), PLAN, &[], &mut ids, Some(&add_recv));
@@ -1146,7 +1226,7 @@ pub fn cover_worlds(share: (usize, usize), mut f: impl FnMut([World; 3])) {
                                 }
                                 let add_recv = |a: usize, t: u32| -> Vec<u32> { (0..nn).map(|v| if v == a { t } else { t + 1 }).collect() };
                                 let make = |rules: Cover| {
-                                    let mut w = World { roles: roles.clone(), items: vec![c.clone(), snap.clone()], frontier: HashMap::new() };
+                                    let mut w = World { roles: roles.clone(), items: vec![c.clone(), snap.clone()], frontier: HashMap::new(), gaps: Gaps::default() };
                                     w.derive(&mut Rng(0), rules, &[], &mut (0..2000).collect(), Some(&add_recv));
                                     w
                                 };
@@ -1166,9 +1246,147 @@ pub fn exhaustive(covers_only: bool) -> Stats {
         let mut rng = Rng::thread(0x5eed, th);
         cover_worlds((th, threads), |[w, o, p]| check(&w, Some(&[o, p]), st, &mut rng));
         if !covers_only {
-            exhaustive_worlds((th, threads), |w| check(&w, None, st, &mut rng));
+            exhaustive_worlds((th, threads), Option::None, |w| check(&w, None, st, &mut rng));
         }
     })
+}
+
+// ---------- S3 brief 4 (`Gaps`) ----------
+
+/// Content of a removed writer that a remaining witness received is reached: a non-forged plain
+/// or admin-only commit of X on m (acting for nobody), ordered no later than an explicit
+/// demotion D of X below the role it needs, that a node other than X and D's author received
+/// before D's `ts`, which received D and holds that role on m in the final state, is valid.
+/// Returns (wanted, not reached).
+pub fn reached(w: &World) -> (u64, u64) {
+    let (wanted, lost, _) = reached_items(w);
+    (wanted, lost)
+}
+
+/// `reached` with the wanted items' indices.
+fn reached_items(w: &World) -> (u64, u64, Vec<usize>) {
+    let l1 = L1::new(&w.roles, |_| true);
+    let e = w.ideal(PLAN);
+    let (mut wanted, mut lost, mut items) = (0, 0, vec![]);
+    for (c, it) in w.items.iter().enumerate() {
+        if it.forged || it.acting.is_some() || !matches!(it.kind, Kind::Plain | Kind::AdminOnly) {
+            continue;
+        }
+        let level = it.level();
+        let want = l1.dems_below(level).iter().filter(|d| d.victim == it.author && d.thing == it.thing && it.pos() <= d.key).any(|d| {
+            let ri = w.roles.writes.iter().position(|x| x.id == d.rid).unwrap();
+            (0..w.nodes()).any(|v| v != it.author && v != d.author && w.roles.recv[ri][v] < LATE && it.held(v, d.key.0) && l1.states.last().map_or(false, |s| s[v][it.thing] >= level))
+        });
+        if want {
+            wanted += 1;
+            lost += !e.valid[c] as u64;
+            items.push(c);
+        }
+    }
+    (wanted, lost, items)
+}
+
+#[derive(Default)]
+pub struct GapStats {
+    pub worlds: u64,
+    pub admin_items: u64,
+    pub wanted: u64,
+    pub lost: u64,
+    pub order_dep: u64,
+    pub nonmonotone: u64,
+    pub attack_gain: u64,
+    /// Measured (random worlds): wanted items valid but not visible with bodies dropped at once.
+    pub sim_lost: u64,
+    pub ex: Vec<(&'static str, World)>,
+}
+
+impl crate::Tally for GapStats {
+    fn merge(&mut self, o: GapStats) {
+        self.worlds += o.worlds;
+        self.admin_items += o.admin_items;
+        self.wanted += o.wanted;
+        self.lost += o.lost;
+        self.order_dep += o.order_dep;
+        self.nonmonotone += o.nonmonotone;
+        self.attack_gain += o.attack_gain;
+        self.sim_lost += o.sim_lost;
+        for (l, w) in o.ex {
+            if !self.ex.iter().any(|(m, _)| *m == l) {
+                self.ex.push((l, w));
+            }
+        }
+    }
+}
+
+impl GapStats {
+    pub fn failures(&self) -> u64 {
+        self.lost + self.order_dep + self.nonmonotone + self.attack_gain
+    }
+    pub fn print(&self, name: &str) {
+        println!(
+            "{name}: {} worlds ({} admin-only items) | reached {} wanted, FAIL {} | FAIL order-dependent {}, non-monotone {}, attack gains {} | measured: wanted and lost with bodies dropped at once {}",
+            self.worlds, self.admin_items, self.wanted, self.lost, self.order_dep, self.nonmonotone, self.attack_gain, self.sim_lost
+        );
+        for (label, w) in &self.ex {
+            // not shrunk: dropping items drops the honest addenda with them
+            println!("  {label} example:\n{w}");
+        }
+    }
+}
+
+/// The checks of `Gaps` on one world: reached, one result for every input order, monotone,
+/// forged addenda gaining nothing beyond their author's power.
+pub fn check_gaps(w: &World, sim: bool, st: &mut GapStats, rng: &mut Rng) {
+    st.worlds += 1;
+    st.admin_items += w.items.iter().filter(|it| it.kind == Kind::AdminOnly).count() as u64;
+    let note = |st: &mut GapStats, label: &'static str, bad: bool, x: &World| {
+        if bad && !st.ex.iter().any(|(l, _)| *l == label) {
+            st.ex.push((label, x.clone()));
+        }
+        bad as u64
+    };
+    let (wanted, lost, items) = reached_items(w);
+    st.wanted += wanted;
+    st.lost += lost;
+    if sim && !items.is_empty() {
+        let v = w.simulate(PLAN, Option::None).visible;
+        st.sim_lost += items.iter().filter(|&&c| !v[c]).count() as u64;
+    }
+    note(st, "not reached", lost > 0, w);
+    let e = w.ideal(PLAN);
+    let p = w.permuted(rng);
+    let ep = p.ideal(PLAN);
+    st.order_dep += note(st, "order dependence", p.ids(&ep.valid) != w.ids(&e.valid), w);
+    st.nonmonotone += note(st, "non-monotone", nonmonotone(w, PLAN), w);
+    let nn = w.roles.nodes;
+    let att = [rng.below(nn)];
+    let f = w.forge(rng, &att);
+    st.attack_gain += note(st, "attack gain", attack_gains(w, &f, PLAN), &f);
+}
+
+/// Search driver: `addenda-gaps[-exh][-no-admin|-no-rewrite]` (random worlds with admin-only
+/// content, or the gaps family). Failures found.
+pub fn run_gaps(samples: u64, mode: &str) -> u64 {
+    let exh = mode.starts_with("addenda-gaps-exh");
+    let gaps = match mode.trim_start_matches("addenda-gaps").trim_start_matches("-exh") {
+        "-no-admin" => Gaps { admin_only: false, ..GAPS },
+        "-no-rewrite" => Gaps { rewrite: false, ..GAPS },
+        _ => GAPS,
+    };
+    let st = crate::on_every_core(|th, threads, st: &mut GapStats| {
+        let mut rng = Rng::thread(0x5eed, th);
+        if exh {
+            exhaustive_worlds((th, threads), Some(gaps), |w| check_gaps(&w, false, st, &mut rng));
+        } else {
+            for _ in 0..samples / threads as u64 {
+                let s0 = rng.next();
+                let w = random_world_with(&mut Rng(s0), PLAN, gaps, true);
+                check_gaps(&w, true, st, &mut rng);
+            }
+        }
+    });
+    st.print(mode);
+    st.failures()
 }
 
 // ---------- scenarios ----------
@@ -1201,7 +1419,7 @@ mod tests {
             genesis[DAVE] = vec![Write, Write];
             genesis[EVE][0] = Read;
             let roles = JHist { nodes: NN, admins: vec![ALICE, ALICE], genesis, writes: vec![], recv: vec![] };
-            B { w: World { roles, items: vec![], frontier: HashMap::new() }, next: 100 }
+            B { w: World { roles, items: vec![], frontier: HashMap::new(), gaps: Gaps::default() }, next: 100 }
         }
         fn row(author: usize, t: u32, recv: &[(usize, u32)]) -> Vec<u32> {
             let mut r = vec![LATE; NN];
@@ -1249,6 +1467,83 @@ mod tests {
 
     fn addenda(w: &World) -> Vec<&Item> {
         w.items.iter().filter(|it| matches!(it.kind, Kind::Add { .. })).collect()
+    }
+
+    /// Admin Bob changes a setting (admin-only, not role-class); only admin Carol received it;
+    /// Alice removes Bob. Carol's addendum reaches it (S3 brief 4); today's rule loses it.
+    #[test]
+    fn a_setting_only_an_admin_witness_received_is_reached() {
+        let world = |gaps: Gaps| {
+            let mut b = B::new();
+            b.w.gaps = gaps;
+            b.w.roles.genesis[BOB][0] = Admin;
+            b.w.roles.genesis[CAROL][0] = Admin;
+            let s = b.item(Kind::AdminOnly, BOB, 1, &[(CAROL, 2)]);
+            b.set(BOB, None, 3);
+            (b.derive(&[]), s)
+        };
+        let (w, s) = world(GAPS);
+        assert!(valid(&w, s));
+        assert_eq!(reached(&w), (1, 0));
+        let (w, s) = world(Gaps { admin_only: false, ..GAPS });
+        assert!(!valid(&w, s));
+        assert_eq!(reached(&w), (1, 1));
+    }
+
+    /// Carol only writes when she applies Bob's removal; Alice grants her admin after it: her
+    /// addendum written then reaches Bob's setting. Writing only on applying the removal loses it.
+    /// With bodies dropped at once (`simulate`) it is lost all the same: invalid from the removal
+    /// to Carol's grant, every node dropped its body, and nobody holds one to fetch.
+    #[test]
+    fn a_witness_granted_admin_after_the_removal_reaches_the_setting() {
+        let world = |gaps: Gaps| {
+            let mut b = B::new();
+            b.w.gaps = gaps;
+            b.w.roles.genesis[BOB][0] = Admin;
+            let s = b.item(Kind::AdminOnly, BOB, 1, &[(CAROL, 2)]);
+            b.set(BOB, None, 3);
+            b.set(CAROL, Admin, 6);
+            (b.derive(&[]), s)
+        };
+        let (w, s) = world(GAPS);
+        let i = w.items.iter().position(|it| it.id == s).unwrap();
+        assert!(w.ideal(PLAN).valid[i]);
+        assert!(!w.simulate(PLAN, Option::None).visible[i]);
+        assert!(addenda(&w).iter().any(|a| a.author == CAROL && a.t == 7));
+        let (w, s) = world(Gaps { rewrite: false, ..GAPS });
+        assert!(!w.ideal(PLAN).valid[w.items.iter().position(|it| it.id == s).unwrap()]);
+    }
+
+    /// A writer forging an addendum for an admin-only commit gains nothing.
+    #[test]
+    fn a_writers_addendum_vouches_for_no_setting() {
+        let mut b = B::new();
+        b.w.gaps = GAPS;
+        b.w.roles.genesis[BOB][0] = Admin;
+        let s = b.item(Kind::AdminOnly, BOB, 1, &[(CAROL, 2)]);
+        let r = b.set(BOB, None, 3);
+        let w = b.derive(&[]);
+        assert!(addenda(&w).is_empty());
+        let f = forged(&w, CAROL, 5, r, vec![s]);
+        assert!(!f.ideal(PLAN).valid[f.items.iter().position(|it| it.id == s).unwrap()]);
+    }
+
+    #[test]
+    fn gaps_random_and_family_sample_hold_and_controls_fail() {
+        let mut st = GapStats::default();
+        let mut rng = Rng(7);
+        for _ in 0..300 {
+            let s0 = rng.next();
+            check_gaps(&random_world_with(&mut Rng(s0), PLAN, GAPS, true), true, &mut st, &mut rng);
+        }
+        exhaustive_worlds((0, 997), Some(GAPS), |w| check_gaps(&w, false, &mut st, &mut rng));
+        assert_eq!(st.failures(), 0);
+        assert!(st.wanted > 0);
+        for gaps in [Gaps { admin_only: false, ..GAPS }, Gaps { rewrite: false, ..GAPS }] {
+            let mut st = GapStats::default();
+            exhaustive_worlds((0, 997), Some(gaps), |w| check_gaps(&w, false, &mut st, &mut rng));
+            assert!(st.lost > 0, "{gaps:?}");
+        }
     }
 
     /// Alice removes Bob without having synced: his edits return iff a writer (Carol) received
