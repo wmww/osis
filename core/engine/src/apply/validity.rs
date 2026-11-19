@@ -380,7 +380,9 @@ pub(crate) fn add_role_commit(core: &mut Core, h: &View, id: &CommitId, parts: &
     for (ai, es) in &parts.edges {
         let Some(a) = h.aspects.get(*ai) else { continue };
         // nothing written on a thing too deep applies (spec/permissions.md §1); its record chain is
-        // held whole at apply (`examine`), so this never changes later
+        // held whole at apply (`apply::thing_wait`) and a record goes only with every part on its
+        // thing, once nothing held needs it, a thing it minted included (`retention::needed`), so
+        // this never changes while the part is held (vouches alike, `vouching_parts`)
         if too_deep(core, &a.tid) {
             continue;
         }
@@ -411,7 +413,8 @@ pub(crate) fn add_role_commit(core: &mut Core, h: &View, id: &CommitId, parts: &
 /// says nothing, `put_new`), and its role-class parts other than edge writes with the role
 /// each needs (what "W could write c" asks of them; a vouch and a listing need none), none for a
 /// compaction snapshot: a function of the commit alone, the depth rule applied where perm reads
-/// them (`Held::parts_read`). No vouch on a thing too deep (`too_deep`).
+/// them (`Held::parts_read`). No vouch on a thing too deep (`too_deep`: fixed while the part is
+/// held, `add_role_commit`).
 fn vouching_parts(core: &Core, h: &View, id: &CommitId, parts: &PermParts) -> (Vec<osis_perm::Vouch>, Option<osis_perm::RoleParts>) {
     let mut vouches = Vec::new();
     for (ai, es) in &parts.vouches {
@@ -449,6 +452,7 @@ fn role_parts(core: &Core, h: &View, id: &CommitId) -> Option<osis_perm::RolePar
 /// role-class parts follows, where it reads any (`Held::set_parts`).
 pub(crate) fn parts_moved(core: &mut Core, id: &CommitId) {
     let Some(v) = core.ix.commits.get(id).map(|m| m.view.clone()).filter(|v| v.kind.is_role()) else { return };
+    osis_base::costs::count("role parts read", 1);
     let parts = role_parts(core, &v, id);
     core.ix.held.set_parts(*id, parts);
 }

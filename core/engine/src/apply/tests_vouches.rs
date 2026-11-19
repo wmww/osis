@@ -506,12 +506,12 @@ fn a_release_updates_the_timelines_once_whatever_it_forgets_spec_perm_5_1() {
 }
 
 // notes/engine-store.md Index tables (every row a function of the held commits), spec/permissions.md
-// §5.1 Vouches ("W could write c": W holds the role each other role-class part of c requires), §1
-// (record chain: nothing on a thing whose record chain is not held counts): X rotates the write keys of t and of
-// S, a thing of its own peer 3 reads, in one commit c, which W and peer 3 receive; H removes X
-// without c; W vouches c. W holds no role on S, so while S's record is held the vouch keeps
-// nothing and c's keys on t are invalid. Peer 3 releases S (its record goes): its verdict on c is
-// the one it gives after a restart.
+// §5.1 Vouches ("W could write c": W holds the role each other role-class part of c requires): X
+// rotates the write keys of t and of S, a thing of its own peer 3 reads, in one commit c, which W
+// and peer 3 receive; H removes X without c; W vouches c. W holds no role on S, so the vouch keeps
+// nothing and c's keys on t are invalid. Peer 3 releases S (its record goes): W's role on S is
+// then unknown, still no role, so the verdict stays, live and after a restart (were the part on
+// an unknown thing dropped, releasing S would make the vouch count).
 #[test]
 fn a_vouched_commits_parts_read_alike_across_a_restart_spec_perm_5_1() {
     let (mut lp, t) = world(4);
@@ -550,6 +550,33 @@ fn a_vouched_commits_parts_read_alike_across_a_restart_spec_perm_5_1() {
     let live = valid(&lp);
     lp.peers[3].restart(7).unwrap();
     assert_eq!(valid(&lp), live, "c's verdict across a restart");
-    assert!(live, "c's keys on S count for nothing: the vouch keeps c");
+    assert!(!live, "c's keys on S still need a role W lacks: releasing S keeps nothing");
     lp.peers[3].engine.check_index();
+}
+
+// notes/principles.md (scaling by counting): an open rebuilding the index reads each role
+// commit's other role-class parts once (`validity::parts_moved`, from `note_required`) and
+// updates the timelines a fixed number of times (`rejudge_all` between rounds): at k and 10k
+// rotations, the same timeline updates and one more parts read per rotation.
+#[test]
+fn an_open_reads_each_commits_role_parts_a_bounded_number_of_times_spec_perm_5_1() {
+    let work = |k: usize| {
+        let (mut lp, t) = world(4);
+        let all: Vec<Tid> = lp.peers.iter().map(|p| p.engine.me()).collect();
+        for _ in 0..k {
+            lp.peers[1].engine.rotate_boxing_only(&[t], &[Role::Write], &all).unwrap().unwrap();
+            lp.advance(10);
+        }
+        lp.sync_all().unwrap();
+        let e = &mut lp.peers[3].engine;
+        osis_base::costs::take();
+        e.rebuild_index().unwrap();
+        let c = osis_base::costs::take();
+        let get = |n: &str| c.iter().find(|x| x.0 == n).map_or(0, |x| x.2);
+        e.check_index();
+        (get("timelines"), get("role parts read"))
+    };
+    let ((t1, p1), (t2, p2)) = (work(3), work(30));
+    assert_eq!(t1, t2, "timeline updates at k, 10k");
+    assert_eq!(p2 - p1, 27, "parts read at k {p1}, 10k {p2}: once per rotation");
 }

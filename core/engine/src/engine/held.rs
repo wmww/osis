@@ -333,17 +333,28 @@ impl Held {
         matches!(osis_base::record_chain(*t, |x| self.created(x).map(CreationRecord::record_link)).end(), osis_base::ChainStep::Key(_))
     }
 
-    /// The other role-class parts of `id` perm reads: those stored (`Vouching`) on a thing whose
-    /// record chain is held (`chain_held`), `None` when none is. Invariant: a function of the held
-    /// commits and records alone, worked out at each read, so a running node and the same store
-    /// opened afresh read alike whatever came or went in between. Every input is untrusted (any
-    /// holder writes role commits naming any thing, a removed party too, and any record), and
-    /// none is order-dependent: the stored parts are the commit's own word, the chain the records
-    /// held now. O(its parts × `MAX_CHAIN_DEPTH`), whatever the role history of their things.
+    /// Whether the records held show `t`'s record chain past `MAX_CHAIN_DEPTH` links
+    /// (spec/permissions.md §1): every record of the chain held down to the limit, none a key
+    /// actor. Unknown is not too deep. O(`MAX_CHAIN_DEPTH`).
+    fn known_too_deep(&self, t: &Tid) -> bool {
+        matches!(osis_base::record_chain(*t, |x| self.created(x).map(CreationRecord::record_link)).end(), osis_base::ChainStep::TooDeep)
+    }
+
+    /// The other role-class parts of `id` perm reads: those stored (`Vouching`) but on a thing the
+    /// records held show too deep (`known_too_deep`: needing nothing, spec/permissions.md §5.1 "W
+    /// could write c"), `None` when none is left. A part on a thing whose chain is unknown here
+    /// stays: the voucher's role there is unknown, so not held, and forgetting a record never
+    /// eases "could write" (were it dropped, a release of an unrelated thing would make a vouch
+    /// count). Invariant: a function of the held commits and records alone, worked out at each
+    /// read, so a running node and the same store opened afresh read alike whatever came or went
+    /// in between. Every input is untrusted (any holder writes role commits naming any thing, a
+    /// removed party too, and any record), and none is order-dependent: the stored parts are the
+    /// commit's own word, the chain the records held now. O(its parts × `MAX_CHAIN_DEPTH`),
+    /// whatever the role history of their things.
     fn parts_read(&self, id: &CommitId) -> Option<Arc<RoleParts>> {
         self.rest.read(&Row::Parts(id));
         let p = self.vouching.get(id)?.parts.as_ref()?;
-        let held: Vec<bool> = p.parts.iter().map(|(t, _)| self.chain_held(t)).collect();
+        let held: Vec<bool> = p.parts.iter().map(|(t, _)| !self.known_too_deep(t)).collect();
         if held.iter().all(|h| *h) {
             return Some(p.clone());
         }
@@ -1568,17 +1579,17 @@ mod tests {
         HeldSet::role_parts(h, &CommitId([n; 32])).map(|p| p.parts.iter().map(|x| x.0).collect()).unwrap_or_default()
     }
 
-    // spec/permissions.md §1 (record chain: nothing on a thing whose chain is not held counts), §5.1
-    // Vouches ("W could write c"); notes/engine-store.md Index tables. A role commit's other
-    // role-class parts are kept as its parts say, whatever the records held, and the depth rule
-    // applies where perm reads them: a part on a thing whose record comes, goes or comes back
-    // reads as a held set given the same commits and records in any order reads it, and the
-    // change touches what the commit's parts name (perm reads the commit anew).
+    // spec/permissions.md §5.1 Vouches ("W could write c": each other role-class part needs its
+    // role, held by W); notes/engine-store.md Index tables. A role commit's other role-class parts
+    // are kept as its parts say, whatever the records held: a part on a thing whose record is not
+    // held still needs its role (forgetting a record never eases "could write"), so a held set
+    // given the same commit reads it alike whichever records came, went or came back, in any order.
     #[test]
     fn role_parts_read_by_the_records_held_spec_perm_1() {
         let a = actor(1);
         let (s, u) = (thing(a.tid(), 2), thing(a.tid(), 3));
         let p = parts(9, a.tid(), &[s.tid(), u.tid()], Role::Admin);
+        let both = vec![s.tid(), u.tid()];
         // records, then the commit; the commit, then records
         let mut h = Held::default();
         for r in [&a, &s, &u] {
@@ -1587,38 +1598,32 @@ mod tests {
         h.set_vouching(p.id, Vec::new(), Some(p.clone()));
         let mut g = Held::default();
         g.set_vouching(p.id, Vec::new(), Some(p.clone()));
-        assert!(read(&g, 9).is_empty(), "no record held: no part counts");
+        assert_eq!(read(&g, 9), both, "no record held: every part needs its role");
         for r in [&u, &s, &a] {
             g.create(r.clone());
         }
-        assert_eq!(read(&h, 9), vec![s.tid(), u.tid()]);
-        assert_eq!(read(&g, 9), read(&h, 9), "the order records came in");
-        for (x, back) in [(&mut h, false), (&mut g, true)] {
-            x.take_touched();
+        assert_eq!(read(&h, 9), both);
+        assert_eq!(read(&g, 9), both, "the order records came in");
+        for x in [&mut h, &mut g] {
             x.forget_record(&s.tid());
-            assert_eq!(read(x, 9), vec![u.tid()], "S's record went: its part counts for nothing");
-            assert!(x.take_touched().contains(&u.tid()), "the commit's parts are touched");
-            if back {
-                x.create(s.clone());
-                assert_eq!(read(x, 9), vec![s.tid(), u.tid()], "S's record back: its part counts again");
-            }
+            assert_eq!(read(x, 9), both, "S's record went: its part still needs its role");
+            x.create(s.clone());
+            assert_eq!(read(x, 9), both);
         }
         // what is kept is the commit's word: a fresh held set given the same reads alike
         let mut f = Held::default();
-        for r in [&a, &u] {
-            f.create(r.clone());
-        }
+        f.create(u.clone());
         f.set_vouching(p.id, Vec::new(), Some(p.clone()));
         assert_eq!(h.vouching(), f.vouching());
         assert_eq!(read(&h, 9), read(&f, 9));
-        // a forgotten mint admin: nothing below it counts
         h.forget_record(&a.tid());
-        assert!(read(&h, 9).is_empty());
+        assert_eq!(read(&h, 9), both, "a forgotten mint admin");
     }
 
-    // spec/permissions.md §1 (record chain: within MAX_CHAIN_DEPTH links): a part on a thing `MAX_CHAIN_DEPTH` mint-admin links
-    // below a key actor counts, one link deeper it does not; a record leaving or coming back in
-    // the middle of the chain moves both below it, and touches what reads them.
+    // spec/permissions.md §1 (record chain: within MAX_CHAIN_DEPTH links), §5.1 Vouches: a part on
+    // a thing `MAX_CHAIN_DEPTH` mint-admin links below a key actor needs its role, one link deeper
+    // nothing; a record leaving the middle of the chain makes the deeper one unknown (needing its
+    // role again) and coming back too deep, each touching what reads it.
     #[test]
     fn role_parts_read_by_chain_depth_spec_perm_1() {
         let a = actor(1);
@@ -1640,9 +1645,10 @@ mod tests {
         let mid = records[10].clone();
         h.take_touched();
         h.forget_record(&mid.tid());
-        assert!(read(&h, 9).is_empty(), "a record gone above both");
+        assert_eq!(read(&h, 9), vec![deepest, too_deep], "a record gone above both: unknown, not too deep");
         assert!(h.take_touched().contains(&deepest), "reads moved below the record");
         h.create(mid);
         assert_eq!(read(&h, 9), vec![deepest]);
+        assert!(h.take_touched().contains(&deepest), "reads moved below the record");
     }
 }
