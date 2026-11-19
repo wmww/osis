@@ -370,6 +370,43 @@ impl Engine {
         Ok(Some(Package { id: *id, bytes, blobs, lists }))
     }
 
+    /// Held commit `id` as the sync IDs `synced` carry it from here (`sync_bodies`, the rule
+    /// node-sync's bodies follow, spec/sync-judgement.md §1-§2): its parts the body under any of
+    /// them holds, a header alone for a header-only body; `None` where none carries a body of it.
+    pub fn package_under(&mut self, id: &CommitId, synced: &BTreeSet<osis_base::SyncId>) -> Result<Option<Package>> {
+        match self.carried_under(id, synced)? {
+            Some(parts) => self.package_of_parts(id, &parts),
+            None => Ok(None),
+        }
+    }
+
+    /// The parts of held commit `id` the bodies under the sync IDs `synced` hold (`package_under`).
+    pub fn carried_under(&mut self, id: &CommitId, synced: &BTreeSet<osis_base::SyncId>) -> Result<Option<BTreeSet<usize>>> {
+        let bodies = self.sync_bodies(id)?;
+        let mut parts: Option<BTreeSet<usize>> = None;
+        for (_, b) in bodies.iter().filter(|(s, _)| synced.contains(*s)) {
+            parts.get_or_insert_default().extend(b.parts.iter().copied());
+        }
+        Ok(parts)
+    }
+
+    /// Held commit `id` holding its parts `parts` alone (`package`; a header alone for none).
+    pub fn package_of_parts(&mut self, id: &CommitId, parts: &BTreeSet<usize>) -> Result<Option<Package>> {
+        let Some(mut pk) = self.package(id)? else { return Ok(None) };
+        let b = CommitBlob::decode(&pk.bytes)?;
+        if b.parts.iter().any(|p| !parts.contains(&p.ai)) {
+            pk.bytes = osis_commit::rewrite(&b, |ai| !parts.contains(&ai)).encode();
+        }
+        Ok(Some(pk))
+    }
+
+    /// The certificate parts of held commit `id` (spec/commits.md §5 What a held thing needs:
+    /// every part but content, `retention::forget::content`; every part on a key actor).
+    pub fn certificate_parts(&self, id: &CommitId) -> BTreeSet<usize> {
+        let Some(m) = self.core.ix.commits.get(id) else { return BTreeSet::new() };
+        m.view.aspects.iter().enumerate().filter(|(ai, a)| m.holds(*ai) && (!crate::retention::forget::content(&a.ak) || self.core.is_key_actor(&a.tid))).map(|(ai, _)| ai).collect()
+    }
+
     /// The blobs of a held commit's linked header lists that this node holds.
     pub fn header_list_blobs(&mut self, id: &CommitId) -> Result<BTreeSet<BlobId>> {
         let mut ids = BTreeSet::new();
@@ -475,8 +512,9 @@ pub struct LocalPeer {
 /// What `sync_all` need not do again (`Engine::point`: nothing a delivery reads moved).
 #[derive(Clone, Default)]
 struct SyncMemo {
-    /// Per sender: its packages, with a hash of each, at a point of its engine.
-    sent: HashMap<usize, (ReadPoint, Hashed)>,
+    /// Per sender and sync IDs synced: its packages under them, with a hash of each, at a point
+    /// of its engine.
+    sent: HashMap<(usize, Vec<osis_base::SyncId>), (ReadPoint, Hashed)>,
     /// (receiver, package hash): delivered as a duplicate that changed nothing, at this point.
     duplicate: HashMap<(usize, u64), ReadPoint>,
     /// (receiver, package hash): delivered, then dropped at the end of its pass (whole or some
@@ -639,30 +677,53 @@ impl LocalPeer {
         Ok(out)
     }
 
-    /// What `t`'s sync ID carries from `from` (spec/sync-judgement.md §1-§2), in `packages`
-    /// order: every commit `from` holds with a part on `t`, whole, and a copy of each other chain
-    /// certificate for `t` (`Engine::certificates`) holding its certificate parts alone (a header
-    /// alone for one copied as a header). For a test handing a node what it syncs of `t`, not
-    /// other things' content, which would wait there (spec/commits.md §4 Outside the node closure).
+    /// What `from` sends a node syncing `t`'s sync IDs (as `from` holds them) alone:
+    /// `packages_under` them.
     pub fn packages_of(&mut self, from: usize, t: &Tid) -> Result<Vec<Package>> {
         let Some(p) = self.peers.get_mut(from) else { return Ok(Vec::new()) };
-        let certs = p.engine.certificates(t);
-        let all = self.packages(from)?;
-        let Some(p) = self.peers.get(from) else { return Ok(Vec::new()) };
+        let synced = p.engine.sync_ids(t)?.iter().map(|o| o.id).collect();
+        self.packages_under(from, &synced)
+    }
+
+    /// What `from` sends peer `to` in a sync: `packages_under` the sync IDs `to` syncs.
+    pub fn packages_for(&mut self, from: usize, to: usize) -> Result<Vec<Package>> {
+        let synced = self.synced(to)?;
+        self.packages_under(from, &synced)
+    }
+
+    /// The sync IDs peer `i` syncs (`Engine::sync_set`).
+    pub fn synced(&mut self, i: usize) -> Result<BTreeSet<osis_base::SyncId>> {
+        match self.peers.get_mut(i) {
+            Some(p) => Ok(p.engine.sync_set()?.ids.keys().copied().collect()),
+            None => Ok(BTreeSet::new()),
+        }
+    }
+
+    /// What `from` sends a node syncing the sync IDs `synced`, in `packages` order: each held
+    /// commit holding the parts those sync IDs carry as `from` sees them (`Engine::carried_under`,
+    /// the rule node-sync's bodies follow, spec/sync-judgement.md §1-§2) and its certificate
+    /// parts (`Engine::certificate_parts`); a commit with neither is not sent. So a node is never
+    /// given content of a thing no sync ID it syncs carries, which would wait there
+    /// (spec/commits.md §4 Outside the node closure). Certificates go to every node: they stand
+    /// for the routes the harness does not play (contact cards, links, ticket fires, a grant
+    /// under its holder's sync ID, pairing), and a node keeps of them only what it needs
+    /// (spec/commits.md §5 What a held thing needs).
+    pub fn packages_under(&mut self, from: usize, synced: &BTreeSet<osis_base::SyncId>) -> Result<Vec<Package>> {
+        let Some(p) = self.peers.get_mut(from) else { return Ok(Vec::new()) };
+        let root = p.engine.node_root();
+        let ids: Vec<CommitId> = p.engine.commit_ids().into_iter().filter(|id| !p.engine.header(id).is_some_and(|h| h.aspects.iter().all(|a| Some(a.tid) == root))).collect();
         let mut out = Vec::new();
-        for mut pk in all {
-            if p.engine.header(&pk.id).is_some_and(|h| h.aspects.iter().any(|a| a.tid == *t)) {
-                out.push(pk);
-                continue;
-            }
-            let parts = match certs.commits.get(&pk.id) {
-                Some(parts) => parts.clone(),
-                None if certs.headers.contains(&pk.id) => BTreeSet::new(),
+        for id in ids {
+            let certs = p.engine.certificate_parts(&id);
+            let parts = match p.engine.carried_under(&id, synced)? {
+                Some(mut a) => {
+                    a.extend(certs);
+                    a
+                }
+                None if !certs.is_empty() => certs,
                 None => continue,
             };
-            let b = CommitBlob::decode(&pk.bytes)?;
-            pk.bytes = osis_commit::rewrite(&b, |ai| !parts.contains(&ai)).encode();
-            out.push(pk);
+            out.extend(p.engine.package_of_parts(&id, &parts)?);
         }
         Ok(out)
     }
@@ -754,10 +815,11 @@ impl LocalPeer {
         self.pass_end(to)
     }
 
-    /// `packages`, hashed, kept while `from`'s engine stands.
-    fn packages_hashed(&mut self, from: usize) -> Result<Hashed> {
+    /// `packages_under(from, synced)`, hashed, kept while `from`'s engine stands.
+    fn packages_hashed(&mut self, from: usize, synced: &BTreeSet<osis_base::SyncId>) -> Result<Hashed> {
         let at = self.peers.get(from).map(|p| p.engine.point()).unwrap_or_default();
-        if let Some((_, v)) = self.memo.sent.get(&from).filter(|(p, _)| *p == at) {
+        let key = (from, synced.iter().copied().collect::<Vec<_>>());
+        if let Some((_, v)) = self.memo.sent.get(&key).filter(|(p, _)| *p == at) {
             return Ok(v.clone());
         }
         let hash = |pk: &Package| {
@@ -765,20 +827,42 @@ impl LocalPeer {
             (&pk.id, &pk.bytes, &pk.blobs).hash(&mut h);
             h.finish()
         };
-        let pks = self.packages(from)?;
+        let pks = self.packages_under(from, synced)?;
         let on = |pk: &Package| self.peers.get(from).and_then(|p| p.engine.header(&pk.id)).map(|h| h.aspects.iter().map(|a| a.tid).collect()).unwrap_or_default();
         let v: Hashed = Arc::new(pks.into_iter().map(|pk| { let n = hash(&pk); let t = on(&pk); (pk, n, t) }).collect());
-        self.memo.sent.insert(from, (at, v.clone()));
+        self.memo.sent.insert(key, (at, v.clone()));
         Ok(v)
     }
 
-    /// `sync`; whether any delivery was more than a duplicate. A package `to` dropped at an
-    /// earlier pass end goes only once which of its things `to` needs moved since, checked again
-    /// after the rest (what arrived may need it: a thing whose record awaits its parent's).
+    /// `sync`; whether any delivery was more than a duplicate. `from` sends what the sync IDs
+    /// `to` syncs carry (`packages_for`), again under those `to` came to sync meanwhile (a grant
+    /// bringing a thing in: its sync IDs join in the pass). A package `to` dropped at an earlier
+    /// pass end goes only once which of its things `to` needs moved since.
     fn sync_changed(&mut self, from: usize, to: usize) -> Result<bool> {
         osis_base::testenv::checkpoint();
         let mut changed = false;
-        let pks = self.packages_hashed(from)?;
+        let mut seen = BTreeSet::new();
+        // each round after the first runs once `to` syncs a sync ID not synced before: at most
+        // one per sync ID it comes to sync
+        loop {
+            let synced = self.synced(to)?;
+            if changed && synced.is_subset(&seen) {
+                return Ok(changed);
+            }
+            seen.extend(synced.iter().copied());
+            if !self.sync_under(from, to, &synced)? {
+                return Ok(changed);
+            }
+            changed = true;
+        }
+    }
+
+    /// One round of `sync_changed`, to a node syncing `synced`. A package `to` dropped at an
+    /// earlier pass end goes only once which of its things `to` needs moved since, checked again
+    /// after the rest (what arrived may need it: a thing whose record awaits its parent's).
+    fn sync_under(&mut self, from: usize, to: usize, synced: &BTreeSet<osis_base::SyncId>) -> Result<bool> {
+        let mut changed = false;
+        let pks = self.packages_hashed(from, synced)?;
         let dropped: Vec<&Sent> = pks.iter().filter(|pk| self.memo.dropped.contains_key(&(to, pk.1))).collect();
         let still = self.still_dropped(to, &dropped)?;
         let mut held_back = Vec::new();
@@ -803,7 +887,7 @@ impl LocalPeer {
     }
 
     /// The hashes of those of `pks` that `to` dropped at a pass end and whose things it needs as
-    /// it did then, none of them in its node closure since (one entering it is fetched again,
+    /// it did then, none of them in its node closure or awaited since (one entering it is fetched again,
     /// spec/sync-judgement.md §3 Dropped bodies).
     fn still_dropped(&mut self, to: usize, pks: &[&Sent]) -> Result<HashSet<u64>> {
         let Some(p) = self.peers.get_mut(to) else { return Ok(HashSet::new()) };
@@ -812,7 +896,9 @@ impl LocalPeer {
         }
         let needed = p.needed(pks.iter().flat_map(|pk| pk.2.iter()))?;
         let dropped = &self.memo.dropped;
-        Ok(pks.iter().filter(|pk| dropped.get(&(to, pk.1)).is_some_and(|was| pk.2.iter().all(|t| needed.contains(t) == was.contains(t) && !p.engine.closure_holds(t)))).map(|pk| pk.1).collect())
+        // one of its things awaited there goes again: what awaits a record learns it from the
+        // record blob a pass fetches first (spec/commits.md §4 Records)
+        Ok(pks.iter().filter(|pk| dropped.get(&(to, pk.1)).is_some_and(|was| pk.2.iter().all(|t| needed.contains(t) == was.contains(t) && !p.engine.closure_holds(t) && !crate::apply::awaits_record(&p.engine.core, t)))).map(|pk| pk.1).collect())
     }
 
     /// Delivers `pk` to `to` but where it came back a duplicate that changed nothing at `to` as
@@ -845,15 +931,6 @@ impl LocalPeer {
     fn pass_end(&mut self, to: usize) -> Result<()> {
         let Some(p) = self.peers.get_mut(to) else { return Ok(()) };
         p.engine.settle_needs()?;
-        // a sync offers all `from` holds, a real node takes what its sync IDs carry: a delivery
-        // still waiting for a thing outside `to`'s node closure to enter, and for no record, is
-        // carried by none here (spec/commits.md §4 Outside the node closure, Pending storage):
-        // it goes as never received, offered again once a thing of it enters
-        let outside: Vec<CommitId> = self.memo.in_pass.get(&to).into_iter().flatten().map(|(_, id, _)| *id).filter(|id| p.engine.core.ix.pend_keys.get(id).is_some_and(|w| w.iter().any(|w| matches!(w, crate::apply::Wake::Enters(_))) && !w.iter().any(|w| matches!(w, crate::apply::Wake::Record(_))))).collect();
-        for id in outside {
-            p.engine.forget_pending(&id)?;
-            p.discarded.retain(|d| d.commit != id);
-        }
         let gone: Vec<(u64, Vec<Tid>)> = self.memo.in_pass.remove(&to).unwrap_or_default().into_iter().filter(|(_, id, on)| !p.engine.core.ix.pending.contains_key(id) && !p.engine.holds_whole(id) && !on.iter().any(|t| p.engine.closure_holds(t))).map(|(h, _, on)| (h, on)).collect();
         let needed = p.needed(gone.iter().flat_map(|(_, on)| on.iter()))?;
         for (hash, on) in gone {

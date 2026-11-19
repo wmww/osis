@@ -391,10 +391,12 @@ mod tests {
             let t = if i % 4 == 0 {
                 lp.peers[0].engine.create_with_admin(&up).unwrap().0
             } else {
+                // held in `top`'s sync unit, so `top`'s sync ID carries it (a node root's unit is
+                // local, spec/sync-set.md §1)
                 let mut m = Mutation::new();
                 let t = lp.peers[0].engine.new_thing(&mut m, up);
+                m.op(top, &ct::HOLDS, osis_crdt::PathOp { path: Vec::new(), op: osis_crdt::Op::Add(Value::Strong(t)) }).unwrap();
                 lp.peers[0].commit(m).unwrap();
-                lp.hold(t);
                 t
             };
             let mut m = Mutation::new();
@@ -408,6 +410,7 @@ mod tests {
         // peer 1 reads the chain (`record_chain_deeper_than_cap_invalid_spec_permissions_1`)
         let who = lp.peers[1].engine.me();
         lp.peers[0].engine.grant(&top, &who, &ct::Edge { role: Role::Read, until: None, invite: None, retain: false, floor: None }).unwrap();
+        lp.hold_at(1, top);
         lp.sync_all().unwrap();
         assert_eq!(lp.peers[1].engine.get(&up, &x).unwrap(), Some(Value::Int(1)), "at the cap: applies");
         let mut m = Mutation::new();
