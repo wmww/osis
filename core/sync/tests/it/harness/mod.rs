@@ -24,6 +24,7 @@ use osis_base::testenv::Script;
 use osis_base::{Clock, ManualClock, Tid, WallMs};
 use osis_crypto::{RngCore, SeededRng};
 use osis_engine::Engine;
+use osis_proto::FrameDecoder;
 use osis_blob::Address;
 use osis_store::{Fault, Faults, MemoryBackend, MemoryRoot};
 use osis_sync::{ConnId, Input, Links, Node, NodeKey, Out, Store, SyncConfig, apply};
@@ -220,6 +221,11 @@ pub struct Net {
     pub bytes: u64,
     /// Bytes each node sent each other node, every connection between them summed.
     pub between: BTreeMap<(usize, usize), u64>,
+    /// The frames each node sent each other node, per message kind (`Hello`, a `Msg` variant):
+    /// (count, bytes with the length prefix). `census` prints it.
+    pub frames: BTreeMap<(usize, usize, &'static str), (u64, u64)>,
+    /// Each end's sent bytes split into frames for `frames`, and whether its Hello went by.
+    splitters: BTreeMap<(usize, ConnId), (FrameDecoder, bool)>,
     /// Bytes each end sent on each connection: the transport takes them at once (no buffer), so
     /// each send is answered `Taken` with the total.
     written: BTreeMap<(usize, ConnId), u64>,
@@ -358,6 +364,14 @@ impl Net {
         let Some((to, tc)) = self.links.get(&(from, conn)).copied() else { return };
         self.bytes += bytes.len() as u64;
         *self.between.entry((from, to)).or_default() += bytes.len() as u64;
+        let (f, hello) = self.splitters.entry((from, conn)).or_default();
+        f.push(bytes);
+        while let Ok(Some(body)) = f.next_frame() {
+            let kind = if std::mem::replace(hello, true) { trace::kind_name(&body) } else { "Hello" };
+            let t = self.frames.entry((from, to, kind)).or_default();
+            t.0 += 1;
+            t.1 += 4 + body.len() as u64;
+        }
         let w = self.written.entry((from, conn)).or_default();
         *w += bytes.len() as u64;
         let total = *w;
@@ -393,10 +407,25 @@ impl Net {
 
     fn close(&mut self, from: usize, conn: ConnId) {
         self.paused.remove(&(from, conn));
+        self.splitters.remove(&(from, conn));
         if let Some((to, tc)) = self.links.remove(&(from, conn)) {
             self.links.remove(&(to, tc));
+            self.splitters.remove(&(to, tc));
             self.push(to, tc, Input::Closed { conn: tc }, 0);
         }
+    }
+
+    /// `frames`, one line per node pair, kinds by bytes, largest first.
+    pub fn census(&self) -> String {
+        let all: Vec<_> = self.frames.iter().collect();
+        let mut out = String::from("frames sent (kind count/bytes):");
+        for pair in all.chunk_by(|x, y| (x.0.0, x.0.1) == (y.0.0, y.0.1)) {
+            let mut kinds = pair.to_vec();
+            kinds.sort_by_key(|((_, _, k), (_, bytes))| (std::cmp::Reverse(*bytes), *k));
+            let kinds: Vec<String> = kinds.iter().map(|((_, _, k), (n, bytes))| format!("{k} {n}/{bytes}")).collect();
+            out.push_str(&format!("\n  n{} -> n{}: {}", pair[0].0.0, pair[0].0.1, kinds.join(", ")));
+        }
+        out
     }
 
     /// The connection resets: both ends are told it closed.
@@ -499,6 +528,10 @@ thread_local! {
 
 impl Drop for World {
     fn drop(&mut self) {
+        // the trace's summary
+        if self.tracer.is_some() && !osis_base::testenv::quiet() {
+            eprintln!("{}", self.net.census());
+        }
         if let Some(k) = self.fixture.take() {
             LIVE.with(|l| l.borrow_mut().remove(&k));
         }
@@ -982,8 +1015,11 @@ impl World {
                 None => break,
             }
         }
-        self.sources_are_members();
-        self.unlogged_must_holds();
+        // a by-hand replay inspecting the world (notes/test-harnesses.md, Why kept and row dumps)
+        if osis_base::testenv::end_checks() {
+            self.sources_are_members();
+            self.unlogged_must_holds();
+        }
     }
 
     /// At quiet, every source status counts of S at a node is a connection up on which S is a

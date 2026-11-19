@@ -853,7 +853,7 @@ pub fn check(w: &mut World) {
 
 /// Per thing, the value and roster size the reference and each online node read, and what the
 /// model says each node does with it; per node, how many of the commits handed to the reference
-/// it lacks.
+/// it lacks; the frame census (`Net::census`).
 fn at_check(w: &mut World, r: &mut Peer, m: &Model) -> String {
     let brief = |x: &Reads| format!("{} ({} roles)", x.value.as_ref().map_or("none".to_string(), |v| format!("{v:?}")), x.roles.len());
     let mut out = String::from("at the check:");
@@ -873,6 +873,7 @@ fn at_check(w: &mut World, r: &mut Peer, m: &Model) -> String {
         let held: BTreeSet<CommitId> = w.engine(i).commit_ids().into_iter().collect();
         out.push_str(&format!("\n  node {i} lacks {} of {} handed commits", handed.difference(&held).count(), handed.len()));
     }
+    out.push_str(&format!("\n  {}", w.net.census().replace('\n', "\n  ")));
     out
 }
 

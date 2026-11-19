@@ -422,7 +422,12 @@ fn a_head_move_relists_nothing_between_a_reader_and_a_store_at_n_and_10n() {
         (after.0 - before.0, after.1 - before.1)
     };
     let (a, b) = (head_move(&mut w, 3), head_move(&mut w, 30));
-    assert!(b.0 <= a.0 + 64 && b.1 <= a.1 + 64, "bytes (store to reader, reader to store) across a head move: {a:?} at n, {b:?} at 10n");
+    assert!(b.0 <= a.0 + 64 && b.1 <= a.1 + 64, "bytes (store to reader, reader to store) across a head move: {a:?} at n, {b:?} at 10n\n{}", w.net.census());
+    // at quiet every byte sent is in a whole frame the census counts
+    for (&(x, y), &bytes) in &w.net.between {
+        let framed: u64 = w.net.frames.iter().filter(|((a, b, _), _)| (*a, *b) == (x, y)).map(|(_, t)| t.1).sum();
+        assert_eq!(framed, bytes, "n{x} -> n{y}: the census against the bytes sent\n{}", w.net.census());
+    }
 }
 
 /// Node 0 mints a dependent thing with its account root D as admin held from D, an independent thing with

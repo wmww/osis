@@ -169,6 +169,25 @@ impl Tracer {
     }
 }
 
+/// The message kind of a frame body after Hello, as `Msg`'s variant name (`undecodable` when its
+/// head does not parse, `unknown kind` for one no example shows).
+pub fn kind_name(body: &[u8]) -> &'static str {
+    use std::sync::OnceLock;
+    static NAMES: OnceLock<BTreeMap<u64, &'static str>> = OnceLock::new();
+    let names = NAMES.get_or_init(|| {
+        let name = |m: &Msg| -> &'static str {
+            let d = format!("{m:?}");
+            let end = d.find(|c: char| !c.is_alphanumeric()).unwrap_or(d.len());
+            Box::leak(d[..end].to_string().into_boxed_str()) // once per kind
+        };
+        osis_proto::examples::messages().iter().map(|(_, m)| (m.kind(), name(m))).collect()
+    });
+    match osis_proto::msg::peek_head(body) {
+        Some((k, _)) => names.get(&k).copied().unwrap_or("unknown kind"),
+        None => "undecodable",
+    }
+}
+
 /// A connection end as the trace prints it: `c<n>` dialed, `a<n>` accepted.
 fn c(conn: ConnId) -> String {
     if conn.accepted() { format!("a{}", conn.0 & !ConnId::ACCEPTED) } else { format!("c{}", conn.0) }
@@ -187,13 +206,11 @@ fn hex(b: &[u8]) -> String {
     b.iter().take(3).map(|x| format!("{x:02x}")).collect()
 }
 
-/// Lines longer than this are cut (a message's Debug can carry whole blobs).
-const LINE_MAX: usize = 400;
-
 /// A Debug string made compact: `SyncId(1a2b3c..)` as `S1a2b3c`, `BlobId` as `B..`, `CommitId` as
-/// `C..`; a list of more than 8 numbers (bytes) as `[N b]`; cut at `LINE_MAX`.
+/// `C..`; a list of more than 8 numbers (bytes) as `[N b]`. Never cut: what makes a line long
+/// (a growing list) is what a trace is read for.
 pub fn brief(s: &str) -> String {
-    let mut out = String::with_capacity(s.len().min(LINE_MAX));
+    let mut out = String::with_capacity(s.len());
     let mut rest = s;
     while let Some(c) = rest.chars().next() {
         let id = [("SyncId(", 'S'), ("BlobId(", 'B'), ("CommitId(", 'C')].into_iter().find(|(p, _)| rest.starts_with(p));
@@ -217,11 +234,6 @@ pub fn brief(s: &str) -> String {
         }
         out.push(c);
         rest = &rest[c.len_utf8()..];
-    }
-    if out.len() > LINE_MAX {
-        let cut = (0..=LINE_MAX).rev().find(|i| out.is_char_boundary(*i)).unwrap_or(0);
-        out.truncate(cut);
-        out.push_str("..");
     }
     out
 }

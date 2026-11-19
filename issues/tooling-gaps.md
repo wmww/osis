@@ -1,5 +1,5 @@
 # Debugging and differential tooling gaps
-> Summary: Tool gaps several agents met: no per-node cost attribution or NotOpen trace line, trace lines cut at 400 chars, no frame census per message kind, `World::run`'s quiet checks deaf to `OSIS_NO_END_CHECKS`, `verify_stamp`'s bool misread as "verified", no safe way to build main's library sources beside a branch's, `tools/bin-at` building only test binaries, comment-only manifest edits selecting the whole gate, run.sh negative controls passing on any failure, and cpuprof without a by-caller split.
+> Summary: Tool gaps several agents met: no per-node cost attribution or NotOpen trace line, `verify_stamp`'s bool misread as "verified", no safe way to build main's library sources beside a branch's, `tools/bin-at` building only test binaries, comment-only manifest edits selecting the whole gate, run.sh negative controls passing on any failure, and cpuprof without a by-caller split.
 > Priority: low
 > Tags: tests, tools, sync
 
@@ -8,9 +8,6 @@ No per-node cost attribution or NotOpen trace line, and `verify_stamp`'s bool re
 
 Each met by two or more agents in the sync rebuild:
 - **Per-node and per-caller costs**: `osis_base::costs` is thread-local and `World` steps every node on one thread, so counts mix nodes; attributing store commits to a module took a backtrace probe in `pager::commit`. A `costs::count_by` keyed by the stepping node (the harness sets it in `World::deliver`) and by caller would answer it in one run. `Effects::due`'s causes name the table, not the key that moved (absent-bucket stamps made one cost test flip 24 to 130 by hash luck), and they overlap (one event moves several inputs of a key): two judge-cost rounds each built a throwaway per-`Dep` read-site label; the diagnostic that predicts a saving is, per due key, the set of read sites that moved.
-- **Trace line cut** (`harness/trace.rs` `LINE_MAX`, 400): a Pull whose `joins` list was the growth read the same length at n and 10n, and debug notes printing a queue lose the part that matters. `brief` already shortens IDs and byte lists; cut only lines still past a much larger cap, or never under a node filter.
-- **No frame census**: `net.between` gives bytes per direction, not a count and size per message kind per pair, which would have named a growing join list at once.
-- **`World::run`'s quiet checks** (`sources_are_members`, `unlogged_must_holds`, harness/mod.rs) run under `OSIS_NO_END_CHECKS=1`, so a by-hand replay still panics before it can inspect the world: two agents gated them locally. Fix: skip both when `!osis_base::testenv::end_checks()`, as `history::check` does.
 - **Trace gaps** (notes/sync-test-harness.md, Trace): an entry that stays NotOpen shows `+entry` without `+commit` and nothing says why; one hour of tracing went into a sibling rotation that never opened.
 - **`osis_blob::verify_stamp` returns `Ok(false)` for a good stamp** (the bool says "role entry"): read's deposit path read it with `.unwrap_or(false)` as "bad" and encrypted afresh every body it should have relayed. An enum (`Stamp::{Role, Entry}`) would make the misreading impossible.
 
