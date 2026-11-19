@@ -396,16 +396,29 @@ impl Sim {
     }
 
     /// Packages of the commits node `from` holds that `to` lacks, wholly or by a part `from`
-    /// holds (anti-entropy oracle; phase B's nodes fetch entries by blob, so parts come the same
-    /// way there).
+    /// holds, each holding what the sync IDs `to` syncs carry as `from` sees them and its
+    /// certificate parts (`Engine::sent_parts`, as a sync sends: anti-entropy oracle; phase B's
+    /// nodes fetch entries by blob, so parts come the same way there).
     fn missing(&mut self, from: usize, to: usize) -> Res<Vec<Package>> {
         let theirs = check::held(&self.node(to)?.peer.engine);
         let ours = check::held(self.engine(from)?);
         let lacks = |c: &CommitId| theirs.get(c).is_none_or(|gaps| ours.get(c).is_some_and(|mine| gaps.difference(mine).next().is_some()));
         let ids: Vec<CommitId> = self.engine(from)?.commit_ids().into_iter().filter(lacks).collect();
+        let synced: BTreeSet<osis_base::SyncId> = match self.engine(to)?.sync_set() {
+            Ok(s) => s.ids.keys().copied().collect(),
+            Err(e) => {
+                self.engine_err(to, "sync set", e)?;
+                return Ok(Vec::new());
+            }
+        };
         let mut out = Vec::new();
         for id in ids {
-            match self.engine(from)?.package(&id) {
+            let e = self.engine(from)?;
+            let r = e.sent_parts(&id, &synced).and_then(|parts| match parts {
+                Some(parts) => e.package_of_parts(&id, &parts),
+                None => Ok(None),
+            });
+            match r {
                 Ok(Some(p)) => out.push(p),
                 Ok(None) => {}
                 Err(e) => {
@@ -503,13 +516,14 @@ impl Sim {
         (0..self.nodes.len()).filter(|i| self.nodes.get(*i).is_some_and(|n| n.up)).collect()
     }
 
-    /// A random up node writes 1..=3 random ops on things it may write.
+    /// A random up node writes 1..=3 random ops on things it holds and may write (a node writes
+    /// only what it holds, spec/sync-set.md §2 Writing).
     fn random_write(&mut self) -> Res<()> {
         let ups = self.up_nodes();
         let Some(&i) = self.dice.pick(&ups) else { return Ok(()) };
         let things = self.things.clone();
         let e = self.engine(i)?;
-        let writable: Vec<Tid> = things.into_iter().filter(|t| e.role_on(t).is_some_and(|r| r >= Role::Write)).collect();
+        let writable: Vec<Tid> = things.into_iter().filter(|t| e.closure_holds(t) && e.role_on(t).is_some_and(|r| r >= Role::Write)).collect();
         if writable.is_empty() {
             return Ok(());
         }
@@ -659,11 +673,25 @@ impl Sim {
         self.nodes.iter().map(|n| (check::held(&n.peer.engine), n.peer.engine.pending().len())).collect()
     }
 
-    /// Quiescent invariants: same commits everywhere, nothing pending, reads converge.
+    /// Quiescent invariants: nothing pending; every node holds each part another node sends it
+    /// (`missing`: what the sync IDs it syncs carry as the sender sees them, and certificates);
+    /// reads converge.
     pub fn check_quiescent(&mut self) -> Res<()> {
         let es: Vec<(usize, &Engine)> = self.nodes.iter().enumerate().map(|(i, n)| (i, &n.peer.engine)).collect();
         let r = check::quiescent(&es);
         r.map_err(|w| self.fail(w))?;
+        for a in 0..self.nodes.len() {
+            for b in (0..self.nodes.len()).filter(|b| *b != a) {
+                let theirs = check::held(&self.node(b)?.peer.engine);
+                for p in self.missing(a, b)? {
+                    let parts: BTreeSet<usize> = osis_commit::CommitBlob::decode(&p.bytes).map(|x| x.parts.iter().map(|q| q.ai).collect()).unwrap_or_default();
+                    let lacks = theirs.get(&p.id).is_none_or(|gaps| parts.iter().any(|ai| gaps.contains(ai)));
+                    if lacks {
+                        return Err(self.fail(format!("at quiescence node {b} lacks what node {a} sends it of {:?} (parts {parts:?}; holds it: {})", p.id, theirs.contains_key(&p.id))));
+                    }
+                }
+            }
+        }
         // read every node afresh: the per-step views trust `Engine::point`, this does not
         self.views.clear();
         self.check_convergence()?;

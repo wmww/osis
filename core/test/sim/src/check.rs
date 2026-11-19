@@ -51,9 +51,12 @@ impl Checker {
                     return Err(format!("node {i}: own ts {ts:?} more than MAX_DRIFT ahead of its wall clock {received:?}"));
                 }
             }
+            // judged at the node's clock as it applies (drained right after): a commit parked
+            // for drift keeps its first arrival as its receipt (spec/commits.md §4)
             Origin::Remote => {
-                if ts.wall_ms().0 > limit {
-                    return Err(format!("node {i}: applied {id:?} at {received:?} with ts {ts:?} beyond MAX_DRIFT (must park)"));
+                let now = e.now();
+                if ts.wall_ms().0 > now.0.saturating_add(MAX_DRIFT_MS) {
+                    return Err(format!("node {i}: applied {id:?} at {now:?} (received {received:?}) with ts {ts:?} beyond MAX_DRIFT (must park)"));
                 }
             }
         }
@@ -165,24 +168,14 @@ fn diff(a: &[(Tid, Ak, Option<Value>)], b: &[(Tid, Ak, Option<Value>)]) -> (Stri
     (String::new(), None)
 }
 
-/// The first commit two nodes hold differently.
-fn first_difference(a: &Held, b: &Held) -> Option<CommitId> {
-    a.keys().chain(b.keys()).find(|c| a.get(c) != b.get(c)).copied()
-}
 
-/// At quiescence with full delivery: every node holds the same parts and nothing pends.
+/// At quiescence: nothing pends at any node (what each holds of what the others send it:
+/// `Sim::check_quiescent`).
 pub fn quiescent(nodes: &[(usize, &Engine)]) -> std::result::Result<(), String> {
-    let mut first: Option<(usize, Held)> = None;
     for (i, e) in nodes {
         let p = e.pending();
         if !p.is_empty() {
             return Err(format!("node {i}: {} commits still pending at quiescence: {p:?}", p.len()));
-        }
-        let h = held(e);
-        match &first {
-            None => first = Some((*i, h)),
-            Some((j, f)) if *f != h => return Err(format!("nodes {j} and {i} hold different commits or parts at quiescence ({} vs {} commits; first differing: {:?})", f.len(), h.len(), first_difference(f, &h))),
-            Some(_) => {}
         }
     }
     Ok(())
