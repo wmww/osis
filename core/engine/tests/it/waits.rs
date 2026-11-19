@@ -417,7 +417,7 @@ fn list_element_stays_beside_snapshot_before_expiry_spec_crdt_4_7() {
 fn purged_list_element_keeps_edit_in_any_order_spec_crdt_4_7() {
     let k = ak("t:list.0");
     let mut lp = net(3, 0);
-    let t = new_thing(&mut lp, 0);
+    let t = new_shared(&mut lp, 0);
     let w = lp.peers[1].engine.me();
     set_edge(&mut lp.peers[0].engine, t, w, Some(edge(osis_base::Role::Write)), None);
     lp.sync_all().unwrap();
@@ -960,7 +960,7 @@ fn pending_commits_wake_only_for_what_they_await_spec_commits_4() {
 #[test]
 fn the_next_timer_is_the_earliest_of_every_kind_spec_commits_4() {
     let mut lp = net(3, 0);
-    let mine = new_thing(&mut lp, 1);
+    let mine = new_shared(&mut lp, 1);
     let t2 = new_shared(&mut lp, 2);
     sync(&mut lp, 2, 1);
     lp.peers[2].clock.advance(3 * osis_base::format::MAX_DRIFT_MS);
@@ -1161,9 +1161,9 @@ fn creation_of(lp: &mut LocalPeer, i: usize, t: Tid) -> osis_engine::local_peer:
 #[test]
 fn an_applied_commits_part_joins_when_its_record_comes_spec_commits_4() {
     let mut lp = net_one(2); // 1 a node of 0's account
-    let u = new_thing(&mut lp, 0);
+    let u = new_shared(&mut lp, 0);
     sync(&mut lp, 0, 1);
-    let x = new_thing(&mut lp, 0);
+    let x = new_shared(&mut lp, 0);
     let xc = creation_of(&mut lp, 0, x);
     let mut m = Mutation::new();
     m.set(u, &REG, &s("u")).unwrap();

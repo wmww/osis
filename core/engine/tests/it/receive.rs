@@ -45,7 +45,7 @@ fn bad_signature_rejected_spec_commits_4() {
 #[test]
 fn dedup_and_events_spec_commits_4() {
     let mut lp = net_apart(2, 0);
-    let t = new_thing(&mut lp, 0);
+    let t = new_shared(&mut lp, 0);
     let pks = packages(&mut lp, 0);
     for p in &pks {
         assert!(matches!(lp.deliver(1, p).unwrap(), Ingested::Applied(_)));
@@ -175,8 +175,8 @@ fn a_removal_leads_no_author_to_a_thing_spec_commits_4() {
 fn pending_not_reexamined_while_unchanged_spec_commits_4() {
     // 1 a node of 0's account
     let mut lp = net_one(2);
-    let u = new_thing(&mut lp, 0);
-    let t = new_thing(&mut lp, 0);
+    let u = new_shared(&mut lp, 0);
+    let t = new_shared(&mut lp, 0);
     for i in 0..40 {
         for x in [t, u] {
             let mut m = Mutation::new();
@@ -248,8 +248,8 @@ fn without_parts(bytes: &[u8], keep: impl Fn(&str) -> bool, h: &osis_commit::Hea
 #[test]
 fn applies_what_is_held_and_late_delta_spec_commits_4() {
     let mut lp = net(2, 0);
-    let t = new_thing(&mut lp, 0);
-    let u = new_thing(&mut lp, 0);
+    let t = new_shared(&mut lp, 0);
+    let u = new_shared(&mut lp, 0);
     sync(&mut lp, 0, 1);
     let mut m = Mutation::new();
     m.set(t, &REG, &s("r")).unwrap();
@@ -268,7 +268,7 @@ fn applies_what_is_held_and_late_delta_spec_commits_4() {
     assert!(lp.peers[1].drain_events().iter().any(|e| matches!(e, Event::Changed { cause: osis_engine::Cause::LateDelta, .. })));
     // the same thing, synced: applies what is held too
     let mut lp = net(2, 0);
-    let t = new_thing(&mut lp, 0);
+    let t = new_shared(&mut lp, 0);
     sync(&mut lp, 0, 1);
     let mut m = Mutation::new();
     m.set(t, &REG, &s("r")).unwrap();
@@ -284,7 +284,7 @@ fn applies_what_is_held_and_late_delta_spec_commits_4() {
     assert!(lp.peers[1].engine.get(&t, &ak("t:tags.0")).unwrap().is_some());
     // across things, the other one synced: applies what is held
     let mut lp = net(2, 0);
-    let (t, u) = (new_thing(&mut lp, 0), new_thing(&mut lp, 0));
+    let (t, u) = (new_shared(&mut lp, 0), new_shared(&mut lp, 0));
     sync(&mut lp, 0, 1);
     let mut m = Mutation::new();
     m.set(t, &REG, &s("r")).unwrap();

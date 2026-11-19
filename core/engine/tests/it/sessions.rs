@@ -293,7 +293,7 @@ fn steady_aspect_holds_steady_across_sessions() {
 fn frontier_entries_are_the_tables_sessions_spec_crdt_8() {
     let mut lp = net(2, 0);
     lp.sync_all().unwrap();
-    let t = new_thing(&mut lp, 0);
+    let t = new_shared(&mut lp, 0);
     let reg = ak("t:reg.0");
     set(&mut lp, 0, t, &REG, "real");
     sync(&mut lp, 0, 1);

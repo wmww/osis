@@ -66,7 +66,7 @@ fn nested_write_under_invalid_entry_spec_crdt_4_6() {
 #[test]
 fn expiring_commit_applies_without_missing_delta_spec_commits_4() {
     let mut lp = net(2, 0);
-    let t = new_thing(&mut lp, 0);
+    let t = new_shared(&mut lp, 0);
     sync(&mut lp, 0, 1);
     let at = osis_base::WallMs(lp.peers[0].engine.now().0 + 3_600_000);
     let mut m = Mutation::new();
@@ -93,7 +93,7 @@ fn expiring_commit_applies_without_missing_delta_spec_commits_4() {
 #[test]
 fn bad_part_dropped_alone_spec_commits_4() {
     let mut lp = net(2, 0);
-    let t = new_thing(&mut lp, 0);
+    let t = new_shared(&mut lp, 0);
     sync(&mut lp, 0, 1);
     let mut m = Mutation::new();
     m.set(t, &REG, &s("r")).unwrap();
@@ -139,7 +139,7 @@ fn purge_drops_snapshots_spec_commits_5() {
 #[test]
 fn purge_drops_late_snapshot_spec_commits_5() {
     let mut lp = net(2, 0);
-    let t = new_thing(&mut lp, 0);
+    let t = new_shared(&mut lp, 0);
     let reg = ak("t:reg.0");
     let secret = set(&mut lp, 0, t, &REG, "secret");
     let snap = lp.peers[0].engine.snapshot(&t, &reg).unwrap().unwrap();
@@ -194,14 +194,14 @@ fn purge_drops_late_snapshot_spec_commits_5() {
 #[test]
 fn late_snapshot_of_purged_value_reads_nothing_spec_crdt_4_7() {
     let mut lp = net(2, 0);
-    let t = new_thing(&mut lp, 0);
+    let t = new_shared(&mut lp, 0);
     let reg = ak("t:reg.0");
     let secret = set(&mut lp, 0, t, &REG, "secret");
     let snap = lp.peers[0].engine.snapshot(&t, &reg).unwrap().unwrap();
     let spk = lp.peers[0].engine.package(&snap).unwrap().unwrap();
     lp.advance(5);
     // the request rides a write elsewhere: nothing is written over the secret
-    let u = new_thing(&mut lp, 0);
+    let u = new_shared(&mut lp, 0);
     let mut m = Mutation::new();
     m.set(u, &REG, &s("other")).unwrap();
     m.purge_commit(secret, t, reg.clone());
@@ -226,7 +226,7 @@ fn late_snapshot_of_purged_value_reads_nothing_spec_crdt_4_7() {
 fn snapshot_frontier_valid_only_spec_crdt_8() {
     let mut lp = net(2, 0);
     lp.sync_all().unwrap();
-    let t = new_thing(&mut lp, 0);
+    let t = new_shared(&mut lp, 0);
     let b = lp.peers[1].engine.me();
     set_edge(&mut lp.peers[0].engine, t, b, Some(edge(Role::Write)), None);
     sync(&mut lp, 0, 1);

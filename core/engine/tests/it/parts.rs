@@ -346,7 +346,7 @@ fn bad_part_beside_good_ones_holds_nothing_back_spec_commits_4() {
     use osis_commit::{AspectWrite, CommitBuilder, Kind, MemoryBlobs, writer_ctx};
     use osis_crdt::{Delta, Writer, create, encode_delta};
     let mut lp = net(2, 0);
-    let g = new_thing(&mut lp, 0);
+    let g = new_shared(&mut lp, 0);
     let setup = packages(&mut lp, 0);
     lp.peers[0].clock.advance(10);
     let e = &mut lp.peers[0].engine;
@@ -668,7 +668,7 @@ fn pending_for_pages_then_unjudgeable_awaits_its_record_spec_commits_4() {
 fn false_signature_refused_before_linked_lists() {
     use crate::common::*;
     let mut lp = net(2, 0);
-    let h = new_thing(&mut lp, 0);
+    let h = new_shared(&mut lp, 0);
     for pk0 in &packages(&mut lp, 0) {
         lp.deliver(1, pk0).unwrap();
     }
