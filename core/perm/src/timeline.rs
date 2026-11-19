@@ -69,6 +69,11 @@ pub struct Timeline {
     active: BTreeSet<WriteId>,
     /// Their seeds: D before the first walk, each with its op's point.
     seeds: BTreeMap<WriteId, Point>,
+    /// The first walk (spec/permissions.md §5.1 Vouches), when a vouch counts in it: this is then
+    /// the second walk. `None`: the two walks are one, this.
+    first: Option<Box<Timeline>>,
+    /// The counting entries: removal to the commits they list (`crate::vouch::counting`).
+    counted: BTreeMap<CommitId, BTreeSet<CommitId>>,
 }
 
 /// What `Timeline::append` changed in the history: the changes it placed without walking
@@ -247,7 +252,14 @@ impl Timeline {
         Timeline::from_input(Input::gather(held), trust)
     }
 
+    /// Both walks over `input` under `trust` (spec/permissions.md §5.1 Vouches): the first, then,
+    /// when a vouch counts in it, the second.
     pub(crate) fn from_input(input: Input, trust: &Trust) -> Timeline {
+        Timeline::settle(input, trust).vouched()
+    }
+
+    /// The walk over `input` under `trust` (steps 1 to 5), its frontiers as `input` lists them.
+    fn settle(input: Input, trust: &Trust) -> Timeline {
         let mut active: BTreeSet<WriteId> = trust.ops.iter().filter(|w| input.trustable(w).is_some()).copied().collect();
         let ix = (!active.is_empty()).then(|| TrustIndex::new(&input, Arc::new(CertIndex::of(&input))));
         let mut passes = 0;
@@ -271,6 +283,47 @@ impl Timeline {
                 active.remove(&r);
             }
         }
+    }
+
+    /// This first walk and, when a held vouch counts in it, the second walk over the same input
+    /// with each counting entry's commit listed by its removal's frontier (`Input::listed`): the
+    /// same walk code, a different listed input. The second walk is from scratch: its cost is a
+    /// walk of the component, whatever the number of counting entries.
+    pub(crate) fn vouched(self) -> Timeline {
+        debug_assert!(self.first.is_none() && self.input.listed.is_empty(), "vouches judged in a first walk");
+        if !self.input.vouches.keyed() {
+            return self;
+        }
+        let counted = crate::vouch::counting(&self, &self.input.vouches, &self.input.commits);
+        if counted.is_empty() {
+            return self;
+        }
+        let mut input = self.input.clone();
+        for (r, cs) in &counted {
+            let own = input.commits.get(r).and_then(|c| c.frontier.clone());
+            let all = own.iter().flat_map(|f| f.commits().iter().copied()).chain(cs.iter().copied());
+            input.listed.insert(*r, Arc::new(crate::types::Frontier::new(all)));
+        }
+        let mut tl = Timeline::settle(input, &self.trust);
+        tl.counted = counted;
+        tl.first = Some(Box::new(self));
+        tl
+    }
+
+    /// The first walk (spec/permissions.md §5.1 Vouches): every vouch disregarded. This timeline
+    /// when no vouch counts.
+    pub fn first_walk(&self) -> &Timeline {
+        self.first.as_deref().unwrap_or(self)
+    }
+
+    /// Whether this is a second walk (a vouch counts in the first): made from scratch.
+    pub(crate) fn second(&self) -> bool {
+        self.first.is_some()
+    }
+
+    /// The counting vouch entries: (removal, commit it lists), ascending.
+    pub fn counted(&self) -> impl Iterator<Item = (CommitId, CommitId)> + '_ {
+        self.counted.iter().flat_map(|(r, cs)| cs.iter().map(move |c| (*r, *c)))
     }
 
     /// Whether a timeline under this trust set over `commits` may only be evaluated from
@@ -368,7 +421,9 @@ impl Timeline {
         let (dropped, checkpoints) = (self.dropped.clone(), self.checkpoints.clone());
         let (trust, active, seeds) = (self.trust.clone(), self.active.clone(), self.seeds.clone());
         let Timeline { passes, reach, .. } = *self;
-        Timeline { input, items, walked, dropped, passes, reach, checkpoints, memo: Memo::default(), placed: 0, appended: Appended::default(), trust, active, seeds }
+        // the timeline's frontiers kept; no vouch judged again on what is appended
+        let input = Input { vouches: crate::vouch::Held::default(), ..input };
+        Timeline { input, items, walked, dropped, passes, reach, checkpoints, memo: Memo::default(), placed: 0, appended: Appended::default(), trust, active, seeds, first: None, counted: BTreeMap::new() }
     }
 
     pub(crate) fn from_outcome(input: Input, out: walk::Outcome) -> Timeline {
@@ -395,6 +450,8 @@ impl Timeline {
             trust: Trust::default(),
             active: BTreeSet::new(),
             seeds: BTreeMap::new(),
+            first: None,
+            counted: BTreeMap::new(),
         }
     }
 
@@ -410,7 +467,17 @@ impl Timeline {
     /// when that does not hold (a node gone that has no record now, a new node mint admin of a
     /// thing walked before, a record changed under its ID) or a trusted op is held (seeds and
     /// void ops are read from the whole held set, `crate::trust`): evaluate.
-    pub fn extend(mut self, held: &dyn HeldSet) -> Option<Timeline> {
+    /// With vouches held, the first walk goes on and the vouches are judged again in it
+    /// (`vouched`).
+    pub fn extend(self, held: &dyn HeldSet) -> Option<Timeline> {
+        let first = match self.first {
+            Some(f) => *f,
+            None => self,
+        };
+        first.extend_walk(held).map(Timeline::vouched)
+    }
+
+    fn extend_walk(mut self, held: &dyn HeldSet) -> Option<Timeline> {
         let input = Input::gather(held);
         if !self.input.commits.keys().all(|k| input.commits.contains_key(k)) || !self.input.kept_in(&input) || self.trusted(input.commits.keys().copied()) {
             return None;
@@ -501,7 +568,39 @@ impl Timeline {
     /// later item reads what it changes); from the first that is not, the walk goes on from
     /// it. `Err(self)`, unchanged, when `extend` would not hold or the inputs would change
     /// otherwise (`Input::can_append`).
+    ///
+    /// With vouches held, the first walk goes on and the vouches are judged again in it
+    /// (`vouched`); where the timeline was or becomes a second walk, `appended` reports its
+    /// whole history as walked again.
     pub fn append(mut self, new: &[Arc<RoleCommit>], keys: &[(Tid, CreationRecord)]) -> Result<Timeline, Box<Timeline>> {
+        let Some(first) = self.first.take() else {
+            // the history before, only where the result may be a second walk
+            let keyed = self.input.vouches.keyed() || new.iter().any(|c| self.input.vouches.names_removal(&c.id));
+            let before = keyed.then(|| self.walked.history.clone());
+            let tl = self.append_walk(new, keys)?;
+            let tl = tl.vouched();
+            return Ok(match before {
+                Some(old) if tl.first.is_some() => tl.walked_again(old),
+                _ => tl,
+            });
+        };
+        match first.append_walk(new, keys) {
+            Ok(f) => Ok(f.vouched().walked_again(std::mem::take(&mut self.walked.history))),
+            Err(f) => {
+                self.first = Some(f);
+                Err(Box::new(self))
+            }
+        }
+    }
+
+    /// This timeline, a second walk made from scratch (or a first walk continued after one), with
+    /// `appended` reporting every change of `old`, the history before, as walked again.
+    fn walked_again(mut self, old: Vec<walk::Change>) -> Timeline {
+        self.appended = Appended { placed: Vec::new(), undone: Some((0, old)) };
+        self
+    }
+
+    fn append_walk(mut self, new: &[Arc<RoleCommit>], keys: &[(Tid, CreationRecord)]) -> Result<Timeline, Box<Timeline>> {
         self.appended = Appended::default();
         if new.is_empty() {
             return Ok(self);
@@ -574,7 +673,21 @@ impl Timeline {
     /// set again. The walk is the same but for their demotions, which are their mint admins'
     /// (`Walked::alias_leaves`). `Err(self)`, unchanged, when one is known here, a key actor,
     /// or the records cycle.
+    ///
+    /// With a counting vouch, the first walk takes them and the second is walked again: a leaf
+    /// changes no write's verdict, so no entry's count.
     pub fn add_leaves(mut self, leaves: &[(Tid, CreationRecord)]) -> Result<Timeline, Box<Timeline>> {
+        let Some(first) = self.first.take() else { return self.leaves_walk(leaves) };
+        match first.leaves_walk(leaves) {
+            Ok(f) => Ok(f.vouched()),
+            Err(f) => {
+                self.first = Some(f);
+                Err(Box::new(self))
+            }
+        }
+    }
+
+    fn leaves_walk(mut self, leaves: &[(Tid, CreationRecord)]) -> Result<Timeline, Box<Timeline>> {
         let records = &self.input.records;
         let links: Option<Vec<(Tid, Tid)>> = leaves
             .iter()
@@ -615,7 +728,7 @@ impl Timeline {
     /// Whether the commits `held` holds on `things` are the ones walked here, with the same
     /// content (a record can grow under its ID: a part that arrives late).
     pub(crate) fn holds_same(&self, held: &dyn HeldSet, things: &BTreeSet<Tid>) -> bool {
-        things.iter().all(|t| held.edge_commits(t).iter().all(|c| self.input.holds_commit(c)))
+        things.iter().all(|t| held.edge_commits(t).iter().all(|c| self.input.holds_commit(c)) && self.input.vouches.same_on(t, &held.vouches(t)))
     }
 
     /// The edge state before history change `h`, from the newest kept state at or before it.
@@ -857,6 +970,13 @@ impl Timeline {
         &self.walked.edges
     }
 
+    /// The edge state just after the commit at `point` took effect (every change at or before it).
+    pub(crate) fn edges_after(&self, point: Point) -> EdgesAt<'_> {
+        let mut e = EdgesAt::new(&self.input.records, &INITIAL);
+        self.advance(&mut e, 0, self.walked.history.partition_point(|c| c.point <= point));
+        e
+    }
+
     /// The edge state just before `point` (`None`: the current state).
     pub fn edges_at(&self, point: Option<Point>) -> EdgesAt<'_> {
         let Some(p) = point else { return EdgesAt::new(&self.input.records, &self.walked.edges) };
@@ -1070,5 +1190,49 @@ impl Timeline {
     pub fn roles_without(&self, node: &Tid, at: At, skip: &BTreeSet<(Tid, Tid)>) -> BTreeMap<Tid, Role> {
         let edges = self.edges_at(at.point);
         View::at(&edges, at.ts).roles_from_without(node, skip)
+    }
+}
+
+/// A first walk as the counting rule reads it (`crate::vouch`).
+impl crate::vouch::FirstWalk for Timeline {
+    /// One pass over the history, each explicit change compared with the edge's value before it
+    /// (the last change on it, else its record value).
+    fn lowerings(&self) -> Vec<crate::vouch::Lowering> {
+        let mut last: BTreeMap<(Tid, Tid), Option<Edge>> = BTreeMap::new();
+        let mut out = Vec::new();
+        for c in &self.walked.history {
+            let key = (c.holder, c.target);
+            let before = match last.get(&key) {
+                Some(e) => *e,
+                None => (self.input.records.mint_admin(&c.target) == Some(c.holder)).then_some(RECORD_EDGE),
+            };
+            if let Some(frontier) = &c.explicit
+                && c.holder != c.point.node
+                && crate::vouch::takes_from(c.edge.as_ref(), before.as_ref())
+            {
+                out.push(crate::vouch::Lowering { point: c.point, holder: c.holder, frontier: frontier.clone() });
+            }
+            last.insert(key, c.edge);
+        }
+        out
+    }
+
+    fn could_write(&self, w: &Tid, c: &crate::vouch::Listed<'_>, state: crate::vouch::State) -> bool {
+        let (edges, ts) = match state {
+            crate::vouch::State::Before(p) => (self.edges_at(Some(p)), p.ts),
+            crate::vouch::State::After(p) => (self.edges_after(p), p.ts),
+        };
+        let view = View::at(&edges, Some(ts));
+        let best = view.roles_from(w);
+        if let Some(rc) = c.edges {
+            // c's edge writes as W's own commit there
+            let mine = RoleCommit { id: rc.id, ts, author: *w, actor: *w, frontier: rc.frontier.clone(), ops: rc.ops.clone() };
+            for (k, op) in mine.ops.iter().enumerate() {
+                if walk::judge(&view, edges.get(&op.holder, &op.target), &mine, k, &best).is_none() {
+                    return false;
+                }
+            }
+        }
+        c.parts.iter().all(|(t, r)| best.get(t).is_some_and(|b| b >= r))
     }
 }

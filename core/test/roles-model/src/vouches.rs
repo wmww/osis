@@ -367,6 +367,49 @@ fn kept(w: &World, rules: Rules, trust: u64) -> (u64, u64) {
     (extra.len() as u64, (reference.res.0 != j.res.0) as u64)
 }
 
+/// The reference of what vouches keep in the spec's form (spec/permissions.md §5.1 Vouches, What
+/// vouches keep): beside the counting entries, each commit c of R's victim X ordered before R
+/// that R's frontier does not list and that an honest node other than X and R's author, holding
+/// R, received by R's `ts` and could write at the end of the first walk (`witnessed` reduced to
+/// its end clause). Promised once every node holds every commit and owes no vouch: checked under
+/// `Rules::state`.
+pub fn kept_end_extra(w: &World, rules: Rules, trust: u64) -> Vec<(u32, u32)> {
+    let w = &w.honest();
+    let h = &w.h;
+    let (h1, _, o1) = first_walk(w, trust);
+    let fin = h1.edges_before(&o1, (END, 0, 0));
+    let mut extra = judge(w, rules, trust).counted;
+    for (r, rw) in h.writes.iter().enumerate() {
+        for x in victims(&h1, &o1, r) {
+            for (c, cw) in h.writes.iter().enumerate().filter(|(_, cw)| cw.author == x && key(cw) < key(rw)) {
+                if h.recv[c][rw.author] < rw.t || extra.contains(&(rw.id, cw.id)) {
+                    continue;
+                }
+                if (0..h.n()).any(|wn| wn != x && wn != rw.author && h.recv[r][wn] < LATE && h.recv[c][wn] < rw.t && could_write(&h1, wn, cw, END, &fin)) {
+                    extra.push((rw.id, cw.id));
+                }
+            }
+        }
+    }
+    extra.sort();
+    extra.dedup();
+    extra
+}
+
+/// What vouches keep, as the spec promises it (`kept_end_extra`): the judgment gives every node
+/// the authority the reference does. Returns (entries the reference lists, failing worlds).
+fn kept_end(w: &World, rules: Rules, trust: u64) -> (u64, u64) {
+    let extra = kept_end_extra(w, rules, trust);
+    let j = judge(&w.honest(), rules, trust);
+    if extra.len() == j.counted.len() {
+        // the counting entries alone: the reference is the judgment
+        return (extra.len() as u64, 0);
+    }
+    let n = extra.len() as u64;
+    let reference = trust::side(&with_extra(&w.h, extra), trust);
+    (n, (reference.res.0 != j.res.0) as u64)
+}
+
 /// Stays made: X's lowerings of others' edges that every removal of X after them lists or has
 /// witnessed, applied in the reference, apply in the judgment. Returns (checked, failures).
 fn stays_made(w: &World, rules: Rules, trust: u64) -> (u64, u64) {
@@ -537,6 +580,9 @@ pub struct Stats {
     pub counted: u64,
     pub kept_checked: u64,
     pub kept_fail: u64,
+    /// `kept_end`, under `Rules::state` only.
+    pub kept_end_checked: u64,
+    pub kept_end_fail: u64,
     pub made_checked: u64,
     pub made_fail: u64,
     pub safety_checked: u64,
@@ -554,6 +600,8 @@ impl crate::Tally for Stats {
         self.counted += o.counted;
         self.kept_checked += o.kept_checked;
         self.kept_fail += o.kept_fail;
+        self.kept_end_checked += o.kept_end_checked;
+        self.kept_end_fail += o.kept_end_fail;
         self.made_checked += o.made_checked;
         self.made_fail += o.made_fail;
         self.safety_checked += o.safety_checked;
@@ -576,13 +624,13 @@ impl crate::Tally for Stats {
 
 impl Stats {
     pub fn failures(&self) -> u64 {
-        self.kept_fail + self.made_fail + self.safety_fail + self.listing.fail + self.order_fail
+        self.kept_fail + self.kept_end_fail + self.made_fail + self.safety_fail + self.listing.fail + self.order_fail
     }
     pub fn print(&self, name: &str, rules: Rules) {
         let l = &self.listing;
         println!(
-            "{name}: {} worlds, {} vouches, {} counting entries | kept {} checked, FAIL {} | stays made {} checked, FAIL {} | safety {} checked, FAIL {}, by its own author's vouch {} | listing {} checked, FAIL {}, X lowered A {}, accomplice {}, author revived {} | FAIL order {}",
-            self.worlds, self.vouches, self.counted, self.kept_checked, self.kept_fail, self.made_checked, self.made_fail, self.safety_checked, self.safety_fail, self.safety_own, l.checked, l.fail, l.lowered, l.accomplice, l.revived, self.order_fail
+            "{name}: {} worlds, {} vouches, {} counting entries | kept {} checked, FAIL {} | kept as promised {} checked, FAIL {} | stays made {} checked, FAIL {} | safety {} checked, FAIL {}, by its own author's vouch {} | listing {} checked, FAIL {}, X lowered A {}, accomplice {}, author revived {} | FAIL order {}",
+            self.worlds, self.vouches, self.counted, self.kept_checked, self.kept_fail, self.kept_end_checked, self.kept_end_fail, self.made_checked, self.made_fail, self.safety_checked, self.safety_fail, self.safety_own, l.checked, l.fail, l.lowered, l.accomplice, l.revived, self.order_fail
         );
         for (label, w) in &self.ex {
             println!("  smallest {label} example:\n{}", shrunk(w, label, rules));
@@ -599,6 +647,7 @@ pub fn shrunk(w: &World, label: &str, rules: Rules) -> World {
 fn fails(label: &str, w: &World, rules: Rules) -> bool {
     match label {
         "kept" => kept(w, rules, 0).1 > 0,
+        "kept_end" => kept_end(w, rules, 0).1 > 0,
         "made" => stays_made(w, rules, 0).1 > 0,
         "safety" => safety(w, rules, 0).1 > 0,
         "own" => safety(w, rules, 0).2 > 0,
@@ -625,6 +674,12 @@ pub fn check(w: &World, rules: Rules, st: &mut Stats, rng: &mut Rng) {
     st.kept_checked += c;
     st.kept_fail += b;
     note(st, "kept", b > 0);
+    if rules.state {
+        let (c, b) = kept_end(w, rules, 0);
+        st.kept_end_checked += c;
+        st.kept_end_fail += b;
+        note(st, "kept_end", b > 0);
+    }
     let (c, b) = stays_made(w, rules, 0);
     st.made_checked += c;
     st.made_fail += b;

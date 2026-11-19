@@ -82,6 +82,12 @@ pub(crate) struct Input {
     /// Every edge any held write can set (any role, any time), holder to targets and target to
     /// holders: what any reach in any walk follows besides record edges.
     pub ever: Ever,
+    /// The held vouches (`crate::vouch`), read only to find the counting entries.
+    pub vouches: crate::vouch::Held,
+    /// The second walk's frontiers (spec/permissions.md §5.1 Vouches): per removal with a
+    /// counting entry, its own frontier joined with those entries' commits. Empty in a first
+    /// walk. Every coverage read goes through `listed`.
+    pub listed: BTreeMap<CommitId, Arc<Frontier>>,
 }
 
 /// Edges at any time, both ways (`Input::ever`).
@@ -129,9 +135,17 @@ impl Input {
                 nodes.insert(*a);
             }
         }
-        let mut input = Input { records, commits: BTreeMap::new(), nodes, first_write: BTreeMap::new(), ever: Ever::default() };
+        let vouches = crate::vouch::Held::gather(held, &things);
+        let mut input = Input { records, commits: BTreeMap::new(), nodes, first_write: BTreeMap::new(), ever: Ever::default(), vouches, listed: BTreeMap::new() };
         input.append(&commits.into_values().collect::<Vec<_>>());
         input
+    }
+
+    /// What `c`'s frontier lists in this walk: its own, or in a second walk its own with the
+    /// counting entries keyed by it (`listed`). Whether `c` carries a frontier at all (a
+    /// finalize, a trustable op) is read off `c` itself.
+    pub(crate) fn frontier(&self, c: &RoleCommit) -> Option<Arc<Frontier>> {
+        self.listed.get(&c.id).cloned().or_else(|| c.frontier.clone())
     }
 
     /// Whether `c` is held here with this content (a record can grow under its ID: a part
@@ -213,6 +227,7 @@ impl Input {
                     self.ever.add(o.holder, o.target, e);
                 }
             }
+            self.vouches.note_commit(&c.id);
             self.commits.insert(c.id, c.clone());
         }
         fresh
@@ -569,7 +584,7 @@ impl Walked {
             let own = explicit && self.restores(key, old) && View::new(&input.records, &at, Some(p.ts)).reach_backward(&o.holder).contains(&c.author);
             self.set_edge(&input.records, key, new);
             at.set(&input.records, o.holder, o.target, new);
-            if let Some((base, mine, _)) = self.record_change(p, key, old, new, Some(id), explicit.then(|| c.frontier.clone()))
+            if let Some((base, mine, _)) = self.record_change(p, key, old, new, Some(id), explicit.then(|| input.frontier(c)))
                 && own
             {
                 self.keep_own(key, c.author, base, &mine);
@@ -1671,7 +1686,7 @@ impl<'a> Pass<'a> {
             let new = op.edge;
             self.record(id, Applied { author: c.author, target: op.target, point, attr });
             let explicit = matches!(attr, Attr::By(Class::Edge));
-            let auditor = explicit.then(|| Auditor { author: c.author, frontier: c.frontier.clone(), commit: c.id, point });
+            let auditor = explicit.then(|| Auditor { author: c.author, frontier: self.input.frontier(c), commit: c.id, point });
             grew |= self.change(point, (op.holder, op.target), new, Some(id), auditor.as_ref());
         }
         grew

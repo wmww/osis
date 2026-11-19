@@ -2,7 +2,8 @@
 //! over its store; `MemoryHeldSet` serves tests. perm holds no state between calls.
 
 use crate::types::RoleCommit;
-use osis_base::{CreationRecord, Tid};
+use crate::vouch::{RoleParts, Vouch};
+use osis_base::{CommitId, CreationRecord, Tid};
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
 
@@ -11,12 +12,24 @@ use std::sync::Arc;
 /// commit ID (the node's are inline in the signed header or linked by content hash): a saved
 /// walk is matched to its input by everything else in full, frontiers by their sizes.
 pub trait HeldSet {
-    /// Things with a held edge write or `created.0` record.
+    /// Things with a held edge write, `created.0` record or vouch.
     fn things(&self) -> Vec<Tid>;
     /// Role commits with an edge write on `thing`.
     fn edge_commits(&self, thing: &Tid) -> Vec<Arc<RoleCommit>>;
     /// The `created.0` record of `thing`, if held.
     fn created(&self, thing: &Tid) -> Option<CreationRecord>;
+    /// The vouches held on `thing` (spec/permissions.md §5.1 Vouches), in a fixed order.
+    /// Interim (issues/s3-vouches-build.md, engine writing): the engine holds none yet.
+    fn vouches(&self, thing: &Tid) -> Vec<Arc<Vouch>> {
+        let _ = thing;
+        Vec::new()
+    }
+    /// The role-class parts other than edge writes of held role commit `id` (`RoleParts`);
+    /// `None` when not held or it has none. Interim, as `vouches`.
+    fn role_parts(&self, id: &CommitId) -> Option<Arc<RoleParts>> {
+        let _ = id;
+        None
+    }
 }
 
 /// In-memory held set.
@@ -24,6 +37,8 @@ pub trait HeldSet {
 pub struct MemoryHeldSet {
     pub commits: BTreeMap<Tid, Vec<Arc<RoleCommit>>>,
     pub created: BTreeMap<Tid, CreationRecord>,
+    pub vouches: BTreeMap<Tid, Vec<Arc<Vouch>>>,
+    pub parts: BTreeMap<CommitId, Arc<RoleParts>>,
 }
 
 impl MemoryHeldSet {
@@ -43,11 +58,23 @@ impl MemoryHeldSet {
             self.commits.entry(t).or_default().push(c.clone());
         }
     }
+    /// Adds a vouch on its thing.
+    pub fn add_vouch(&mut self, v: Vouch) {
+        self.vouches.entry(v.thing).or_default().push(Arc::new(v));
+    }
+    /// Notes a held role commit's role-class parts that are not edge writes.
+    pub fn add_parts(&mut self, p: RoleParts) {
+        self.parts.insert(p.id, Arc::new(p));
+    }
     /// Drops every held commit with this ID (as a compacted node would).
     pub fn remove(&mut self, id: &osis_base::CommitId) {
         for v in self.commits.values_mut() {
             v.retain(|c| c.id != *id);
         }
+        for v in self.vouches.values_mut() {
+            v.retain(|x| x.id != *id);
+        }
+        self.parts.remove(id);
     }
 }
 
@@ -55,6 +82,7 @@ impl HeldSet for MemoryHeldSet {
     fn things(&self) -> Vec<Tid> {
         let mut s: BTreeSet<Tid> = self.commits.keys().copied().collect();
         s.extend(self.created.keys().copied());
+        s.extend(self.vouches.keys().copied());
         s.into_iter().collect()
     }
     fn edge_commits(&self, thing: &Tid) -> Vec<Arc<RoleCommit>> {
@@ -62,5 +90,11 @@ impl HeldSet for MemoryHeldSet {
     }
     fn created(&self, thing: &Tid) -> Option<CreationRecord> {
         self.created.get(thing).cloned()
+    }
+    fn vouches(&self, thing: &Tid) -> Vec<Arc<Vouch>> {
+        self.vouches.get(thing).cloned().unwrap_or_default()
+    }
+    fn role_parts(&self, id: &CommitId) -> Option<Arc<RoleParts>> {
+        self.parts.get(id).cloned()
     }
 }

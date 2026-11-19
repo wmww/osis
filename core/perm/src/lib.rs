@@ -18,6 +18,7 @@ pub mod scope;
 pub mod timeline;
 pub mod trust;
 pub mod types;
+pub mod vouch;
 mod walk;
 
 pub use cert::{verify, Certificates};
@@ -34,6 +35,7 @@ pub use scope::DemotionScope;
 pub use timeline::{At, Timeline};
 pub use trust::{Detected, Detection, Dispute, Trust, DETECT_MAX};
 pub use types::{Edge, EdgeOp, Frontier, RoleCommit, Point, WriteId, ROLES};
+pub use vouch::{RoleParts, Vouch};
 pub use walk::{Applied, Attr, Demotion, Fall};
 #[doc(hidden)]
 pub use walk::{commits_walked, entries_moved, roles_reached, uncounted};

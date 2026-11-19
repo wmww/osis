@@ -191,14 +191,14 @@ fn joint_kept_standing_spread_agrees() {
 }
 
 /// An edges-model history: node 0 is mint admin of the one target T; genesis edges are its writes at t=0.
-struct EdgesWorld {
-    w: World,
-    nodes: Vec<Tid>,
-    t: Tid,
-    ids: Vec<CommitId>,
+pub(crate) struct EdgesWorld {
+    pub(crate) w: World,
+    pub(crate) nodes: Vec<Tid>,
+    pub(crate) t: Tid,
+    pub(crate) ids: Vec<CommitId>,
 }
 
-fn edges_world(h: &edges::EHist) -> EdgesWorld {
+pub(crate) fn edges_world(h: &edges::EHist) -> EdgesWorld {
     let mut w = World::new();
     let nodes = w.nodes(h.n());
     let t = w.thing(nodes[0]);
@@ -220,7 +220,7 @@ fn edges_world(h: &edges::EHist) -> EdgesWorld {
 }
 
 /// (role, invite) of x's edge on T at the model's NOW.
-fn auth_of(tl: &Timeline, ew: &EdgesWorld, x: usize) -> (Option<Role>, Option<Role>) {
+pub(crate) fn auth_of(tl: &Timeline, ew: &EdgesWorld, x: usize) -> (Option<Role>, Option<Role>) {
     tl.roster(&ew.t, At::now(ts(500))).get(&ew.nodes[x]).map_or((None, None), |e| (Some(e.role), e.invite))
 }
 
@@ -588,4 +588,138 @@ fn addenda_model_agrees() {
 #[ignore]
 fn addenda_model_agrees_large() {
     sharded(40_000, 0x5eed_0005, addenda_run);
+}
+
+// ---------- vouches (spec/permissions.md §5.1 Vouches; core/test/roles-model `vouches`) ----------
+
+use roles_model::vouches;
+
+/// The commit ID of model vouch `i`.
+pub(crate) fn vouch_id(i: usize) -> CommitId {
+    let mut c = cid(50_000 + i as u32);
+    c.0[31] = 3;
+    c
+}
+
+/// A model `vouches::World` as perm's: the edges history (`edges_world`) and each vouch on the
+/// one thing, its entry keyed by the removal's commit ID; frontiers list a vouch its demoter
+/// received before its `ts`, as the model's survival reads it.
+pub(crate) fn vouch_world(w: &vouches::World) -> EdgesWorld {
+    let mut ew = edges_world(&w.h);
+    for (i, v) in w.vouches.iter().enumerate() {
+        let recv: Vec<(Tid, u64)> = ew.nodes.iter().enumerate().map(|(n, t)| (*t, v.recv[n] as u64)).collect();
+        let lists: Vec<CommitId> = v.lists.iter().map(|c| cid(*c)).collect();
+        ew.w.vouch_id(vouch_id(i), ew.nodes[v.author], v.t as u64, ew.t, &[(cid(v.removal), &lists)], &recv);
+    }
+    ew
+}
+
+/// Compares perm with `vouches::judge` on one world under every trust set of `trust_sets`:
+/// authorities, applied and dropped ops, active trusted ops and disputes, counting entries.
+pub(crate) fn vouch_diff(w: &vouches::World, rules: vouches::Rules) -> Option<String> {
+    let ew = vouch_world(w);
+    let held = ew.w.held();
+    for bits in trust_sets(&w.h) {
+        let j = vouches::judge(w, rules, bits);
+        let tl = Timeline::evaluate_with(&held, &trust_of(&w.h, bits));
+        let mc: Vec<(CommitId, CommitId)> = j.counted.iter().map(|(r, c)| (cid(*r), cid(*c))).collect();
+        let pc: Vec<(CommitId, CommitId)> = tl.counted().collect();
+        if mc != pc {
+            return Some(format!("trust {bits:#b}: counting entries: model {mc:?} perm {pc:?}"));
+        }
+        let s = side(&j.h2, bits);
+        let d = edges_check(&w.h, &ew, &tl, &j.res.0, j.applied, j.o2.dropped).or_else(|| side_check(&w.h, &s, &tl, |x| ew.nodes[x]));
+        if let Some(d) = d {
+            return Some(format!("trust {bits:#b}: {d}"));
+        }
+    }
+    None
+}
+
+/// What vouches keep, as spec/permissions.md §5.1 promises it: perm's timeline gives every node
+/// the authority perm gives with R's frontier also listing the model's reference entries
+/// (`vouches::kept_end_extra`: beside the counting ones, what a witness received by R's `ts`
+/// and could write at the end of the first walk), and no vouch. Honest worlds written by
+/// `Rules::state`, under the empty trust set.
+fn vouch_kept_diff(w: &vouches::World, rules: vouches::Rules) -> Option<String> {
+    let honest = vouches::World { h: w.h.clone(), vouches: w.vouches.iter().filter(|v| !v.forged).cloned().collect() };
+    let extra = vouches::kept_end_extra(&honest, rules, 0);
+    let ew = vouch_world(&honest);
+    let tl = Timeline::evaluate(&ew.w.held());
+    let mut reference = edges_world(&w.h).w.held();
+    for v in reference.commits.values_mut() {
+        for c in v.iter_mut() {
+            let Some(f) = &c.frontier else { continue };
+            let more = extra.iter().filter(|(r, _)| cid(*r) == c.id).map(|(_, x)| cid(*x));
+            let nf = osis_perm::Frontier::new(f.commits().iter().copied().chain(more));
+            *c = std::sync::Arc::new(osis_perm::RoleCommit { frontier: Some(std::sync::Arc::new(nf)), ..(**c).clone() });
+        }
+    }
+    let rt = Timeline::evaluate(&reference);
+    (1..w.h.n()).find(|&x| auth_of(&tl, &ew, x) != auth_of(&rt, &ew, x)).map(|x| format!("what vouches keep: auth of {x}: perm {:?}, the promised {:?} (reference entries {extra:?})", auth_of(&tl, &ew, x), auth_of(&rt, &ew, x)))
+}
+
+/// Model rules of world `i`: the idealised writing (`FIXED`) and the state-based one alternate.
+fn vouch_rules(i: u64) -> vouches::Rules {
+    if i.is_multiple_of(2) { vouches::FIXED } else { vouches::Rules { state: true, ..vouches::FIXED } }
+}
+
+/// Random worlds (`vouches::random_world`: in three of four the thief's backdated commit and
+/// forged vouches by it or by nodes never holding admin), world `i` from its own seed; each
+/// compared with `vouches::judge` (`vouch_diff`), the state-written ones also with what vouches
+/// keep (`vouch_kept_diff`). Returns (worlds with a vouch, with a counting entry, kept checked).
+fn vouch_run(samples: u64, seed: u64) -> (u64, u64, u64) {
+    let seed = seeded(seed);
+    let (mut with, mut counting, mut kept) = (0, 0, 0);
+    let mut fails = Vec::new();
+    for i in 0..samples {
+        let rules = vouch_rules(i);
+        let w = vouches::random_world(&mut Rng(seed ^ i.wrapping_mul(0x9e37_79b9_7f4a_7c15)), rules);
+        with += u64::from(!w.vouches.is_empty());
+        counting += u64::from(!vouches::judge(&w, rules, 0).counted.is_empty());
+        let mut d = vouch_diff(&w, rules);
+        if rules.state && d.is_none() {
+            kept += 1;
+            d = vouch_kept_diff(&w, rules);
+        }
+        if let Some(d) = d {
+            fails.push(format!("seed {seed:#x} world {i} ({rules:?}): {d}\n{w}"));
+            if fails.len() >= 3 {
+                break;
+            }
+        }
+    }
+    assert!(fails.is_empty(), "{} mismatches:\n{}", fails.len(), fails.join("\n"));
+    (with, counting, kept)
+}
+
+/// spec/permissions.md §5.1 Vouches: perm's two walks agree with core/test/roles-model
+/// `vouches::judge` on random and hostile worlds, under no trust, each dispute's R alone and a
+/// node's random picks, and keep what the spec promises; every check reached.
+#[test]
+fn vouches_model_agrees() {
+    let (with, counting, kept) = vouch_run(2000, 0);
+    eprintln!("vouches: 2000 worlds, {with} with a vouch, {counting} with a counting entry, {kept} checked for what vouches keep");
+    assert!(with > 0 && counting > 0 && kept > 0);
+}
+
+/// spec/permissions.md §5.1 Vouches: as above, more worlds (a property).
+#[test]
+#[ignore]
+fn vouches_model_agrees_large() {
+    sharded(40_000, 0x5eed_0007, vouch_run);
+}
+
+/// The control: perm against the model without vouches (`Rules::vouches` false) disagrees.
+#[test]
+fn vouches_model_control_disagrees() {
+    let off = vouches::Rules { vouches: false, ..vouches::FIXED };
+    let bad = (0..300u64).filter(|&i| {
+        let w = vouches::random_world(&mut Rng(i.wrapping_mul(0x9e37_79b9_7f4a_7c15)), vouches::FIXED);
+        let ew = vouch_world(&w);
+        let tl = Timeline::evaluate(&ew.w.held());
+        let j = vouches::judge(&w, off, 0);
+        edges_check(&w.h, &ew, &tl, &j.res.0, j.applied, j.o2.dropped).is_some()
+    });
+    assert!(bad.count() > 0);
 }

@@ -292,3 +292,14 @@ fn an_empty_list_reviving_its_author_is_set_aside() {
     assert_eq!(judge(&w, FIXED, 1 << r).active, 0);
     assert_eq!(listing(&w, FIXED), Listing { checked: 2, fail: 0, lowered: 0, accomplice: 0, revived: 1 });
 }
+
+/// What vouches keep, as spec/permissions.md §5.1 promises it (`kept_end`), under the
+/// state-based writing; the control without vouches fails it.
+#[test]
+fn state_writing_keeps_what_the_spec_promises() {
+    let state = Rules { state: true, ..FIXED };
+    let st = random(2000, state);
+    assert_eq!(st.kept_end_fail, 0, "{}", st.ex.iter().find(|(l, _)| *l == "kept_end").map_or(String::new(), |(_, w)| format!("{w}")));
+    assert!(st.kept_end_checked > 0);
+    assert!(random(2000, Rules { vouches: false, ..state }).kept_end_fail > 0);
+}

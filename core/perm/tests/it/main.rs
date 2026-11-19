@@ -11,3 +11,4 @@ mod incremental;
 mod queries;
 mod robust;
 mod scenarios;
+mod vouches;
