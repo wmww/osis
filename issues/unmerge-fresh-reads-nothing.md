@@ -1,0 +1,6 @@
+# A fresh node given an un-merge's commits reads nothing of a paged map
+> Summary: engine property `validity::unmerge_paged_matches_fresh_large_spec_crdt_4_6`: past its rebuild count, the fresh node handed every commit of A (B's writes last) reads `t:big.0` as (None, None) where A reads the map; on main with the count assertion removed (`tools/bin-at --patch`) as on a branch whose draws pass the count.
+> Priority: normal
+> Tags: engine, tests
+
+Reproduce: `cargo test -p osis-engine --test it -- --ignored --exact validity::unmerge_paged_matches_fresh_large_spec_crdt_4_6` on a build whose `rejudge: rebuild` count is 5 (issues/osis-tests-depend-on-store-rng.md: the count flips with the store's draws), or on main with that assertion (core/engine/tests/it/validity.rs, "one rebuild per flipped aspect") dropped. It fails at round 0 (before the restart), `t:big.0`: A `Some(Map{key-00000: ...})`, the fresh node `(None, None)` for both `get` and `state`. Deterministic (no seed). Whether the fresh node lacks the thing's keys, its record, or judges A's own writes invalid is not known: find which, then whether the fresh node or the test's ingest order (B's writes last, role commits not B's) is wrong.
