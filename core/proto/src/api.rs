@@ -134,4 +134,6 @@ impl ApiCode {
     /// `[tid, ak]`: a fire of an external signal the thing's setting does not enable, by an actor
     /// holding no write on it.
     pub const NOT_ENABLED: u64 = 16;
+    /// `[tid]`: the write would leave the thing with no admin and does not say it is meant.
+    pub const LEAVES_NO_ADMIN: u64 = 17;
 }

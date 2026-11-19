@@ -352,7 +352,7 @@ fn run(ctx: &mut Ctx<'_>, cmd: Cmd) -> anyhow::Result<()> {
         }
         Cmd::Node(NodeCmd::Rm { node, d, end_links }) => {
             let n = ctx.tid(&node)?;
-            let o = SetRoleOpts { retain_copy: d.retain_copy };
+            let o = SetRoleOpts { retain_copy: d.retain_copy, ..SetRoleOpts::default() };
             let open = db.remove_node(n, o)?;
             if end_links {
                 for l in &open {
@@ -491,18 +491,18 @@ fn run(ctx: &mut Ctx<'_>, cmd: Cmd) -> anyhow::Result<()> {
             let r = db.role_on(ctx.tid(&t)?)?;
             ctx.emit(&[r.map_or("none", role_text).to_string()], J::obj([("role", J::opt(r.map(|r| J::str(role_text(r)))))]))
         }
-        Cmd::Grant { t, holder, role, until, may_grant, reads } => {
+        Cmd::Grant { t, holder, role, until, may_grant, reads, leave_adminless } => {
             let (t, m) = (ctx.tid(&t)?, ctx.tid(&holder)?);
             let role = match role {
                 Some(r) => parse_role(&r)?,
                 None => db.grants(t)?.get(&m).map(|e| e.role).ok_or_else(|| exit(3, "no such grant"))?,
             };
-            db.grant(t, m, role, GrantOpts { until: opt_ts(&until)?, retain_copy: None, may_grant: may_grant.as_deref().map(parse_role).transpose()?, reads: parse_reads(reads.as_deref())? })?;
+            db.grant(t, m, role, GrantOpts { until: opt_ts(&until)?, retain_copy: None, may_grant: may_grant.as_deref().map(parse_role).transpose()?, reads: parse_reads(reads.as_deref())?, leave_adminless })?;
             delivered(ctx, &granted(t))
         }
-        Cmd::SetRole { t, holder, role, d } => {
+        Cmd::SetRole { t, holder, role, d, leave_adminless } => {
             let role = if role == "none" { None } else { Some(parse_role(&role)?) };
-            let (t, m, o) = (ctx.tid(&t)?, ctx.tid(&holder)?, SetRoleOpts { retain_copy: d.retain_copy });
+            let (t, m, o) = (ctx.tid(&t)?, ctx.tid(&holder)?, SetRoleOpts { retain_copy: d.retain_copy, leave_adminless });
             db.set_role(t, m, role, o)?;
             // a role given is a grant; a removal gives nobody anything and waits for nothing
             match role {
@@ -510,9 +510,9 @@ fn run(ctx: &mut Ctx<'_>, cmd: Cmd) -> anyhow::Result<()> {
                 None => Ok(()),
             }
         }
-        Cmd::Leave { t, holder } => {
+        Cmd::Leave { t, holder, leave_adminless } => {
             let holder = holder.map_or(Ok(db.me()), |h| ctx.tid(&h))?;
-            Ok(db.leave(holder, ctx.tid(&t)?)?)
+            Ok(db.leave(holder, ctx.tid(&t)?, SetRoleOpts { leave_adminless, ..SetRoleOpts::default() })?)
         }
         Cmd::Retained { drop: Some(a) } => Ok(db.drop_retained_copy(ctx.tid(&a)?)?),
         Cmd::Retained { drop: None } => ctx.list(&db.retained_copies()?.iter().map(Tid::to_uri).collect::<Vec<_>>()),

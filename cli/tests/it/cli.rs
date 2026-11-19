@@ -397,6 +397,13 @@ fn sharing_commands_local_plan_cli_4() {
     // CLI `source T`: shows where T's sync unit's calls go
     assert_eq!(s.ok(&["source", &g]).out, "local\n");
     assert_eq!(s.ok(&["--json", "source", &g]).line(), "{\"source\":\"local\"}");
+    // spec/permissions.md §1 (The last admin), notes/cli.md Exit codes: `me` is g's only admin
+    // (and its link's actor's)
+    let o = s.call(&["leave", &g], "");
+    assert_eq!(o.code, 7, "{}", o.err);
+    assert!(o.err.contains("no admin"), "{}", o.err);
+    let o = s.call(&["leave", &g, "--leave-adminless"], "");
+    assert_eq!(o.code, 0, "{}", o.err);
 }
 
 // CLI `chat relay` (issues of notes/dogfood.md: a relay of another account) grants as `grant`

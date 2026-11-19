@@ -140,7 +140,7 @@ fn grant_never_lowers_and_set_role_writes_only_changes() {
     assert_eq!(role(&alice), Some(Role::Admin));
     alice.set_role(g, b, Some(Role::Read), SetRoleOpts::default()).unwrap();
     assert_eq!(role(&alice), Some(Role::Read));
-    assert!(matches!(alice.set_role(g, b, Some(Role::Write), SetRoleOpts { retain_copy: Some(true) }), Err(Error::Invalid(_))), "retain with a role");
+    assert!(matches!(alice.set_role(g, b, Some(Role::Write), SetRoleOpts { retain_copy: Some(true), ..Default::default() }), Err(Error::Invalid(_))), "retain with a role");
     alice.set_role(g, b, None, SetRoleOpts::default()).unwrap();
     assert_eq!(role(&alice), None);
     assert!(!alice.holders(g).unwrap().iter().any(|h| h.actor == b));
@@ -182,14 +182,14 @@ fn leave_ends_only_own_ways_and_refuses_before_writing() {
     let (alice, bob) = alice_knows_bob();
     let (g, team) = alice.commit_with(|w| Ok((w.create_held()?, w.create_held()?))).unwrap();
     let n = commits(&alice);
-    alice.leave(team, g).unwrap();
+    alice.leave(team, g, SetRoleOpts::default()).unwrap();
     assert_eq!(commits(&alice), n, "no way in: nothing written");
     alice.grant(g, team, Role::Write, Default::default()).unwrap();
     alice.make_link(g, Role::Write, Default::default()).unwrap();
     let k = alice.links_of(g).unwrap()[0].id.actor();
     alice.grant(k, team, Role::Read, Default::default()).unwrap();
     let n = commits(&alice);
-    assert!(matches!(alice.leave(team, g), Err(Error::Invalid(_))));
+    assert!(matches!(alice.leave(team, g, SetRoleOpts::default()), Err(Error::Invalid(_))));
     assert_eq!(commits(&alice), n, "refused before anything is written");
     assert!(alice.grants(k).unwrap().contains_key(&team), "the join of the link stays");
     // bob's own thing, alice a writer of it who makes a link: her leave ends her role only
@@ -200,7 +200,12 @@ fn leave_ends_only_own_ways_and_refuses_before_writing() {
     deliver(&bob, &alice);
     alice.make_link(t, Role::Read, Default::default()).unwrap();
     assert_eq!(alice.role_on(t).unwrap(), Some(Role::Admin));
-    alice.leave(alice.me(), t).unwrap();
+    // the link's actor has her as its only admin: her leave of it is meant, or refused first
+    let k = alice.links_of(t).unwrap()[0].id.actor();
+    let n = commits(&alice);
+    assert!(matches!(alice.leave(alice.me(), t, SetRoleOpts::default()), Err(Error::LeavesNoAdmin { tid }) if tid == k));
+    assert_eq!(commits(&alice), n, "refused before anything is written");
+    alice.leave(alice.me(), t, SetRoleOpts { leave_adminless: true, ..Default::default() }).unwrap();
     assert_eq!(alice.role_on(t).unwrap(), None, "no way in is left");
     assert_eq!(alice.links_of(t).unwrap().len(), 1, "a leave ends no link");
 }
@@ -354,4 +359,26 @@ fn a_parents_reader_sees_no_roster_of_its_member_team_spec_crypto_4() {
     assert_eq!(carol.role_on(m).unwrap(), None, "Carol left T");
     assert!(carol.grants(m).unwrap().is_empty(), "no roster of M");
     assert!(heard.lock().unwrap().last().is_some_and(|g| g.is_empty()), "her watch heard it hidden: {:?}", heard.lock().unwrap());
+}
+
+// spec/permissions.md §1 (The last admin), notes/api.md Sharing and roles: the last admin's
+// removal, lowering, leave or `until` is `LeavesNoAdmin`, naming the thing, and changes nothing;
+// the same call with `leave_adminless` goes through, and the thing then has no admin.
+#[test]
+fn the_last_admin_is_refused_unless_meant_spec_perm_1() {
+    let alice = db(1);
+    let mut w = alice.write();
+    let t = w.create_held().unwrap();
+    w.commit().unwrap();
+    let me = alice.me();
+    let no_admin = |r: osis::Result<()>| matches!(r, Err(Error::LeavesNoAdmin { tid }) if tid == t);
+    assert!(no_admin(alice.set_role(t, me, None, SetRoleOpts::default())), "a removal");
+    assert!(no_admin(alice.set_role(t, me, Some(Role::Write), SetRoleOpts::default())), "a lowering");
+    assert!(no_admin(alice.leave(me, t, SetRoleOpts::default())), "a leave");
+    let until = osis::GrantOpts { until: Some(osis::Time(T0 + 60_000)), ..Default::default() };
+    assert!(no_admin(alice.grant(t, me, Role::Admin, until)), "an until");
+    assert_eq!(alice.role_on(t).unwrap(), Some(Role::Admin), "nothing changed");
+    alice.leave(me, t, SetRoleOpts { leave_adminless: true, ..Default::default() }).unwrap();
+    assert_eq!(alice.role_on(t).unwrap(), None);
+    assert!(alice.grants(t).unwrap().values().all(|g| g.role != Role::Admin), "no admin");
 }

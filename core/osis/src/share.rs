@@ -25,6 +25,9 @@ pub struct GrantOpts {
     pub may_grant: Option<Role>,
     /// What the holder reads of what was written before its first grant.
     pub reads: Reads,
+    /// The grant may leave `target` with no admin: an `until` on its last admin whose grant has
+    /// none (`Error::LeavesNoAdmin` without it).
+    pub leave_adminless: bool,
 }
 
 /// What a grant's holder reads of what was written on the thing before its first grant
@@ -60,6 +63,14 @@ pub enum HolderKind {
     Key,
 }
 
+/// `f` on the engine, its edge writes allowed to leave a thing with no admin when `adminless`.
+fn marked<R>(e: &mut osis_engine::Engine, adminless: bool, f: impl FnOnce(&mut osis_engine::Engine) -> R) -> R {
+    match adminless {
+        true => e.leaving_adminless(f),
+        false => f(e),
+    }
+}
+
 /// Whether this node may end `holder`'s grant on `t` for `Osis::leave`.
 fn leave_allowed(e: &mut osis_engine::Engine, holder: Tid, t: Tid, own: bool) -> Result<()> {
     match e.may_remove(&t, &holder)? {
@@ -93,6 +104,9 @@ pub struct SetRoleOpts {
     /// or erase it (`false`). `None`: the thing's default (`core::RetentionSetting::retain_copies`), and
     /// erase for a node leaving its account. `Invalid` when a role remains.
     pub retain_copy: Option<bool>,
+    /// The change may leave the thing with no admin, for good: nobody can then change its
+    /// grants (`Error::LeavesNoAdmin` without it).
+    pub leave_adminless: bool,
 }
 
 /// How a link made by `Osis::make_link` ends. The link names the node that made it (by its key),
@@ -422,7 +436,8 @@ impl Osis {
     /// a grant that ended above `role` counts as one until an admin takes it away), else `Permission`,
     /// and the holder's keys here (a contact card, a shared thing, pairing), else `UnknownActor`.
     /// Each grant costs about 2.6 KB of keys: to share with many, grant one team. `Unsupported` on
-    /// a client with its own actor.
+    /// a client with its own actor. An `until` on the last admin whose grant has none is
+    /// `LeavesNoAdmin` unless `GrantOpts::leave_adminless` says it is meant (`set_role`).
     pub fn grant(&self, target: Tid, holder: Tid, role: Role, opts: GrantOpts) -> Result<()> {
         self.local_at(target, "grant")?;
         if !self.has_record(target) {
@@ -436,13 +451,13 @@ impl Osis {
                 return Err(Error::Invalid("a lower role takes set_role".into()));
             }
             let new = edge(e, &target, role, opts)?;
-            match (opts.reads, cur.map(|x| x.floor)) {
+            marked(e, opts.leave_adminless, |e| match (opts.reads, cur.map(|x| x.floor)) {
                 (Reads::FromNow, None) => e.grant_with(&target, &holder, &new, flows::edges::History::None).map_err(Error::from),
                 (Reads::FromNow, Some(None)) => Err(Error::Invalid(format!("{holder} already reads what was written on {target} before"))),
                 // a change keeps the floor: still from its first grant on
                 (Reads::FromNow | Reads::Kept, Some(floor)) => e.grant(&target, &holder, &ct::Edge { floor, ..new }).map_err(Error::from),
                 (Reads::Kept | Reads::All, _) => e.grant(&target, &holder, &new).map_err(Error::from),
-            }
+            })
         })?;
         Ok(())
     }
@@ -479,6 +494,10 @@ impl Osis {
     /// made by a writer it keeps, the lowering applies without changing the keys, and nothing is
     /// written under the thing here until that writer changes them (or is removed too).
     ///
+    /// A change that would leave `target` with no admin (its last admin removed, lowered or
+    /// leaving) is `LeavesNoAdmin` unless `SetRoleOpts::leave_adminless` says it is meant: nobody
+    /// can change the grants of such a thing again, nor delete it; its holders keep their roles.
+    ///
     /// `Unsupported` on a client with its own actor, and on a thing this node reads at another node: move its sync unit
     /// back here first. A removal written to the copy here would never leave it.
     pub fn set_role(&self, target: Tid, holder: Tid, role: Option<Role>, o: SetRoleOpts) -> Result<()> {
@@ -504,7 +523,7 @@ impl Osis {
                     let cur = self.grants(target)?.get(&holder).copied().ok_or(Error::Invalid(format!("{holder} is no holder of {target}")))?;
                     match role {
                         Some(r) if r == cur.role => return Ok(()),
-                        Some(r) if r > cur.role => return self.grant(target, holder, r, GrantOpts { until: cur.until, retain_copy: cur.until.map(|_| cur.retain_copy), may_grant: cur.may_grant, reads: Reads::Kept }),
+                        Some(r) if r > cur.role => return self.grant(target, holder, r, GrantOpts { until: cur.until, retain_copy: cur.until.map(|_| cur.retain_copy), may_grant: cur.may_grant, reads: Reads::Kept, leave_adminless: false }),
                         _ => self.lower(target, holder, role, o)?,
                     }
                 }
@@ -539,7 +558,7 @@ impl Osis {
         // an account's default does not reach its nodes (spec/permissions.md §2)
         let retain = o.retain_copy.or((t == self.inner.account_root).then_some(false));
         let fd = flows::Demotion { holder: m, new, retain };
-        self.engine(|e| e.demote(&t, &fd))?;
+        self.engine(|e| marked(e, o.leave_adminless, |e| e.demote(&t, &fd)))?;
         Ok(())
     }
 
@@ -553,8 +572,9 @@ impl Osis {
     /// has, naming the actor, as leaving it is what ends the role. `Invalid` for another
     /// actor when this node is an admin of `target`: taking that role away is `set_role`'s.
     /// `Permission` when this node is no admin of `holder`; on a client with its own
-    /// actor, for any `holder` but that actor.
-    pub fn leave(&self, holder: Tid, target: Tid) -> Result<()> {
+    /// actor, for any `holder` but that actor. `LeavesNoAdmin` when `holder` is the last admin
+    /// of `target` (`SetRoleOpts::leave_adminless` means it).
+    pub fn leave(&self, holder: Tid, target: Tid, o: SetRoleOpts) -> Result<()> {
         self.local_at(target, "leave")?;
         let own = holder == self.me();
         // the flow below runs with the node's authority: a client ends only its own actor's role
@@ -580,22 +600,25 @@ impl Osis {
         // every refusal before anything is written
         for t in &on {
             self.engine(|e| leave_allowed(e, holder, *t, own))?;
+            if !o.leave_adminless && self.engine(|e| e.leaves_no_admin(t, &holder, None)) {
+                return Err(Error::LeavesNoAdmin { tid: *t });
+            }
         }
         // the target's own grant first: its next rotation still seals a link's K at the keyset
         // it holds, which the leave of K then leaves uncovered (until a joiner rotates K)
         let order: Vec<Tid> = on.iter().copied().filter(|t| *t == target).chain(on.iter().copied().filter(|t| *t != target)).collect();
         for t in order {
-            self.leave_grant(holder, t, own)?;
+            self.leave_grant(holder, t, own, o)?;
         }
         Ok(())
     }
 
     /// `leave`'s removal of `holder`'s grant on `t`.
-    fn leave_grant(&self, holder: Tid, t: Tid, own: bool) -> Result<()> {
+    fn leave_grant(&self, holder: Tid, t: Tid, own: bool, o: SetRoleOpts) -> Result<()> {
         self.engine(|e| {
             leave_allowed(e, holder, t, own)?;
             // this account's own grant, whichever way this node also holds the target
-            e.demote(&t, &flows::Demotion { holder, new: None, retain: None }).map_err(Error::from)
+            marked(e, o.leave_adminless, |e| e.demote(&t, &flows::Demotion { holder, new: None, retain: o.retain_copy })).map_err(Error::from)
         })?;
         Ok(())
     }
@@ -721,7 +744,7 @@ impl Osis {
     /// need a new link to invite anyone.
     fn remove_joiner(&self, k: Tid, joiner: Tid, o: SetRoleOpts) -> Result<()> {
         let l = self.link_key(k)?;
-        self.engine(|e| e.revoke_joiner(&k, &l, &joiner, o.retain_copy))?;
+        self.engine(|e| marked(e, o.leave_adminless, |e| e.revoke_joiner(&k, &l, &joiner, o.retain_copy)))?;
         Ok(())
     }
 

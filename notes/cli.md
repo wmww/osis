@@ -62,7 +62,7 @@ One JSON document per command; streaming commands print JSON lines. int → numb
 | 4 | `Permission`, `NotEnabled`, `Refused` |
 | 5 | `TooLarge`, `Type` |
 | 6 | `Network`, `Stranded`, timeout |
-| 7 | `Invalid` (also a schema that does not parse or check) |
+| 7 | `Invalid`, `LeavesNoAdmin` (also a schema that does not parse or check) |
 | 8 | store missing, `InUse`, or (on `init`) not empty |
 
 Every non-zero exit prints why on stderr, absent on `get` included (`error: absent: AK of TID`).

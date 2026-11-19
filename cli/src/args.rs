@@ -326,6 +326,9 @@ pub enum Cmd {
         /// it reads now (unset; a new holder: all)
         #[arg(long, value_name = "WHAT")]
         reads: Option<String>,
+        /// Allow an --until on T's last admin: T may then be left with no admin, for good
+        #[arg(long = "leave-adminless")]
+        leave_adminless: bool,
     },
     /// Make HOLDER's role on T this one: read, write, admin, or none to remove. A role waits as
     /// `grant` does; a removal waits for nothing
@@ -335,6 +338,9 @@ pub enum Cmd {
         role: String,
         #[command(flatten)]
         d: SetRoleFlags,
+        /// Allow leaving T with no admin, for good: nobody can change its grants again
+        #[arg(long = "leave-adminless")]
+        leave_adminless: bool,
     },
     /// Remove this account's own grant on T, or with --holder that of an actor this node is an
     /// admin of (no catching up)
@@ -342,6 +348,9 @@ pub enum Cmd {
         t: String,
         #[arg(long, value_name = "ACTOR")]
         holder: Option<String>,
+        /// Allow leaving T with no admin, for good: nobody can change its grants again
+        #[arg(long = "leave-adminless")]
+        leave_adminless: bool,
     },
     /// List this node's read-only copies of what it was removed from, or erase ACTOR's
     Retained {

@@ -178,7 +178,7 @@ pub(crate) fn run(ctx: &mut Ctx<'_>, c: ChatCmd) -> anyhow::Result<()> {
             let (t, p) = (ctx.tid(&chat)?, ctx.tid(&account)?);
             // clap keeps --erase and --retain-copy apart: at most one is given
             let retain_copy = (erase || retain_copy).then_some(retain_copy);
-            db.set_role(t, p, None, SetRoleOpts { retain_copy })?;
+            db.set_role(t, p, None, SetRoleOpts { retain_copy, ..SetRoleOpts::default() })?;
             if purge {
                 let mut w = db.write();
                 w.at(t, MSG).purge(osis::Purge::Author(p))?;
@@ -299,7 +299,7 @@ pub(crate) fn run(ctx: &mut Ctx<'_>, c: ChatCmd) -> anyhow::Result<()> {
             Ok(())
         }
         ChatCmd::Leave { chat } => {
-            db.leave(db.me(), ctx.tid(&chat)?)?;
+            db.leave(db.me(), ctx.tid(&chat)?, SetRoleOpts::default())?;
             Ok(())
         }
         ChatCmd::Participants { chat } => {

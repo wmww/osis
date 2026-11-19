@@ -34,6 +34,9 @@ pub enum Error {
     /// These things' sync IDs are stranded here: they cannot catch up, and waiting would not help
     /// (`wait_synced`, `unit_source`).
     Stranded { things: Vec<Tid> },
+    /// The write would leave `tid` with no admin, so that nobody could change its grants again;
+    /// the call's `leave_adminless` option says it is meant.
+    LeavesNoAdmin { tid: Tid },
     /// What was asked cannot be done as asked: a malformed argument (value, link, card, path, op,
     /// retention), or writes that cannot share a commit. The text says which.
     Invalid(String),
@@ -70,6 +73,7 @@ osis_base::impl_error!(Error {
     TooLarge { limit } => ("value larger than the materialization bound ({limit} bytes)"),
     NotUndoable { commit, reason } => ("cannot revert {commit:?}: {reason:?}"),
     Stranded { things } => ("{} thing(s) stranded: they cannot sync", things.len()),
+    LeavesNoAdmin { tid } => ("this would leave {tid} with no admin"),
     Invalid(m) => ("invalid: {m}"),
     Storage(m) => ("storage: {m}"),
     InUse => ("store in use by another process or another open node"),
@@ -101,6 +105,7 @@ impl From<osis_engine::Error> for Error {
                 Err(e) => Error::Invalid(e.to_string()),
             },
             N::UnknownThing(tid) => Error::UnknownThing { tid },
+            N::LeavesNoAdmin(tid) => Error::LeavesNoAdmin { tid },
             N::Path(p) => p.into(),
             N::Store(osis_store::Error::Backend(osis_store::BackendError::InUse)) => Error::InUse,
             N::Store(e) => Error::Storage(e.to_string()),

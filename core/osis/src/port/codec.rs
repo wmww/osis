@@ -522,6 +522,7 @@ pub(crate) fn outcome_of(e: &Error) -> Outcome {
         Error::UnknownActor { tid } => (ApiCode::UNKNOWN_ACTOR, vec![tid_to(tid)]),
         Error::Permission { tid, needs } => (ApiCode::PERMISSION, vec![tid_to(tid), Value::uint(u64::from(needs.id()))]),
         Error::NotEnabled { tid, signal } => (ApiCode::NOT_ENABLED, vec![tid_to(tid), Value::Str(signal.as_str().to_string())]),
+        Error::LeavesNoAdmin { tid } => (ApiCode::LEAVES_NO_ADMIN, vec![tid_to(tid)]),
         Error::Type { path, reason } => (ApiCode::TYPE, vec![path_to(path), Value::Str(reason.clone())]),
         Error::TooLarge { limit } => (ApiCode::TOO_LARGE, vec![Value::uint(*limit as u64)]),
         Error::Stranded { things } => (ApiCode::STRANDED, vec![Value::List(things.iter().map(tid_to).collect())]),
@@ -548,6 +549,7 @@ pub(crate) fn error_of(code: u64, detail: &[Value]) -> Error {
     match code {
         ApiCode::UNKNOWN_THING => t().map_or_else(|| Error::Invalid(text()), |tid| Error::UnknownThing { tid }),
         ApiCode::UNKNOWN_ACTOR => t().map_or_else(|| Error::Invalid(text()), |tid| Error::UnknownActor { tid }),
+        ApiCode::LEAVES_NO_ADMIN => t().map_or_else(|| Error::Invalid(text()), |tid| Error::LeavesNoAdmin { tid }),
         ApiCode::PERMISSION => match (t(), detail.get(1).and_then(Value::as_uint).and_then(Role::from_id)) {
             (Some(tid), Some(needs)) => Error::Permission { tid, needs },
             _ => Error::Invalid(text()),
