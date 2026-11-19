@@ -6,7 +6,7 @@ Each item is a property that must hold, hard unless its section says goal. A pro
 ## Concepts
 - **Thing**: anything with an identity. **Aspect**: one typed datum of a thing. Every datum is an aspect of a thing.
 - **Reference**: a value pointing at a thing. A **strong** reference says its target belongs with the thing holding it; a **weak** one only points; a **ticket** also carries what is needed to sync its target. Holding a reference grants nothing.
-- **Closure** of a thing: it and everything it references strongly, directly or through other things. Its **sync unit**: the part of its closure it can itself read, which is what syncs as one.
+- **Closure** of a thing: it and everything it references strongly, directly or through other things. A **sync unit** is what syncs as one piece; a closure is made of sync units.
 - **Commit**: one signed, atomic edit. **Part**: what a commit writes on one aspect.
 - A thing is **created** by its creation record, which names its mint admin, and **destroyed** when its creation is purged or expires. A node **releases** a thing when nothing it holds references it strongly any more; a released thing is not destroyed.
 - **Role**: sync, read, write or admin, held by one thing on another. A **holder** is a thing with a role on something. Sync stores and serves data without reading it.
@@ -57,7 +57,7 @@ Each item is a property that must hold, hard unless its section says goal. A pro
 
 ## Data a node cannot read
 - Holding and serving data it cannot read is a first-class feature of every node; one node may read some things and not others. One protocol for all nodes: peers differ only in which keys they hold.
-- For such data a node learns only what storing and selective sync need: volume, which opaque sync units each item is in and how they overlap, padded sizes, timing, addresses, and what it must act on (an item's expiry, whether it is durable, which kinds of right may delete it, whether someone without write left it). Never identifiers, keys, values, authors, role grants or node identities.
+- For such data a node learns only what storing and selective sync need: volume, the opaque sync units it keeps, which of them refer to which and which each item is in, padded sizes, timing, addresses, and what it must act on (an item's expiry, whether it is durable, which kinds of right may delete it, whether someone without write left it). Never identifiers, keys, values, authors, role grants or node identities.
 - What a connection reveals (its address, the sync units it opens) is network metadata, hidden only by routing through a relay or an anonymity network.
 - A node that cannot read data may hold its only copy, knows none of its role holders and never waits on their liveness.
 - Reading never allows deleting data, forcing it to be sent again, or storing arbitrary content at a node that cannot read it. Such a node stores content only with a writer's signature, beyond a small bounded budget per thing for parties that must reach the thing's readers without write (an invitation, a reader leaving). The budget is best effort: it can be used up, and what needs it then waits.
@@ -120,7 +120,7 @@ Binds released formats only; until a stable release formats change in place.
 - One canonical serialization and one hash function: equal values compare equal on every node.
 - Values are typed by the writer's schema. Untyped access always works on any stored data. References may dangle.
 - A thing is kept while something references it strongly and released when nothing does. Release is not prompt and is not erasure: a released thing may still exist on, and come back from, a node that holds it, and changes not yet synced when it is released are lost. A cycle nothing outside it references is released whole. A node that releases everything is left with its own and its account's identity.
-- A thing takes with it, to whoever syncs it, its sync unit; a reference from something that cannot read its target does not keep the target.
+- A thing takes with it, to whoever syncs it, the part of its closure it can itself read, whether they read it or only store it; a reference from something that cannot read its target does not keep the target. Sharing a thing more narrowly than what holds it, or changing its admins, changes none of that.
 - Per-aspect merge with one conflict rule everywhere: at a position the later write wins, and a removal is final. A write never brings back what was removed, so an edit concurrent with the removal of what it is in is lost; removing from a collection drops only what the remover had seen.
 - Collaborative text and lists.
 
