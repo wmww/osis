@@ -2166,3 +2166,26 @@ fn a_remaining_admin_by_a_descent_of_two_steps_is_named() {
     w.rely(r, T1);
     assert_eq!(shows(&w, &Rules::fixed()), (false, false));
 }
+
+// ---- Dispute candidates (notes/a1-spec/README.md, OPEN 12) ----
+
+/// An honest holder thing's leave: H grants A2 admin on T1 by [A], K grants Z write by [A2], and K
+/// makes A2 leave T1 (a self-removal by [A2], naming A). Trusted, its seeds would drop K's grant
+/// (unlisted: a self-removal carries no frontier), so as a candidate it is shown in an honest
+/// history. Candidates are explicit writes: a self-removal, never trusted, is none. Control: every
+/// lowering of another holder's edge a candidate, the leave is shown.
+#[test]
+fn an_honest_holder_leave_is_no_dispute() {
+    let mut w = account();
+    w.edge(H, 1, &[A], T1, A2, Admin, &[]);
+    let gz = w.edge(K, 2, &[A2], T1, Z, Write, &[]);
+    let leave = w.edge(K, 3, &[A2], T1, A2, Gone, &[]);
+    w.rely(leave, A);
+    assert!(w.leave(leave));
+    let rd = fixed(&w, &[]);
+    assert!(rd.applied.contains(&leave) && rd.role(Z, T1) == Write && rd.role(A2, T1) == Gone);
+    assert!(disputes(&w, &Rules::fixed(), &View::all(&w)).is_empty());
+    let all = Rules { candidates: Candidates::All, ..Rules::fixed() };
+    assert_eq!(disputes(&w, &all, &View::all(&w)), vec![leave]);
+    assert!(!judge(&w, &all, &View::all(&w).trusting(&[leave])).shows(gz));
+}

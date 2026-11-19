@@ -354,7 +354,7 @@ impl Rules {
             commit_drops: true,
             remains_kept: true,
             last_hop: true,
-            candidates: Candidates::All,
+            candidates: Candidates::Explicit,
         }
     }
 }
@@ -605,6 +605,8 @@ pub struct Reading {
     pub applied: Set,
     /// Applied edge writes that lowered their edge.
     pub lowered: Set,
+    /// Edge writes the settled walk applies as invite grants.
+    pub invited: Set,
     /// Valid content-class commits.
     pub valid: Set,
     /// Held content a valid purge request holding the right over it names.
@@ -1342,6 +1344,7 @@ pub fn judge(w: &World, rules: &Rules, v: &View) -> Reading {
         dropper.extend(d0);
         let mut rd = Reading {
             lowered: wk.pass.lows.iter().map(|l| l.id).collect(),
+            invited: wk.pass.invited.clone(),
             valid,
             purged,
             copied,
@@ -1391,23 +1394,28 @@ fn unjustified(w: &World, rules: &Rules, v: &View, rd: &Reading) -> Set {
         .collect()
 }
 
-/// Disputes: the held lowerings (edge writes giving below admin at their `ts`) of another
-/// holder's edge, not trusted and not dropped by a trusted write's seeds, whose trust changes the
-/// reading (what applies, what is valid, the roles). spec/permissions.md §5.1 asks instead that
-/// the walk not apply it, that it apply once trusted and lower its edge (finding 21); a removal
-/// that applies but whose reach-back the walk cannot undo (its drops of a lowering that dropped in
-/// turn, or of a grant a lowering applied under) changes the reading once trusted and is shown
-/// only by this rule (finding 16). A grant is never one: trusted, its seeds drop its holder's
-/// earlier writes, so an honest re-grant would be shown.
+/// Disputes: the candidates (`Candidates`: held edge writes of another holder's edge giving it
+/// below admin at their `ts`, but finalizes; under `Candidates::Explicit` no self-removal and none
+/// applied as an invite grant where trusted), not trusted and not dropped by a trusted write's
+/// seeds, whose trust changes the reading (what applies, what is valid, the roles).
+/// spec/permissions.md §5.1 asks instead that the walk not apply it, that it apply once trusted and
+/// lower its edge (finding 21); a removal that applies but whose reach-back the walk cannot undo
+/// (its drops of a lowering that dropped in turn, or of a grant a lowering applied under) changes
+/// the reading once trusted and is shown only by this rule (finding 16). A grant at admin is never
+/// one: trusted, its seeds drop its holder's earlier writes, so an honest re-grant would be shown.
 pub fn disputes(w: &World, rules: &Rules, v: &View) -> Vec<Id> {
     let rd = judge(w, rules, v);
+    let explicit = rules.candidates == Candidates::Explicit;
     let mut out = vec![];
     for &r in &v.held {
         let Kind::Edge { holder, .. } = &w.commits[r].kind else { continue };
-        if *holder == w.commits[r].signer || w.lowers(r).is_none() || v.trust.contains(&r) || rd.dropper.get(&r).is_some_and(|d| v.trust.contains(d)) {
+        if *holder == w.commits[r].signer || w.lowers(r).is_none() || (explicit && w.leave(r)) || v.trust.contains(&r) || rd.dropper.get(&r).is_some_and(|d| v.trust.contains(d)) {
             continue;
         }
         let t = judge(w, rules, &v.clone().trusting_also(r));
+        if explicit && t.invited.contains(&r) {
+            continue;
+        }
         if t.applied != rd.applied || t.valid != rd.valid || t.roles != rd.roles {
             out.push(r);
         }

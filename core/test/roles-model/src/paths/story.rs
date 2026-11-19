@@ -290,10 +290,12 @@ impl Sim {
         // J invites RD2 to read T2 by D1's invite: an edge-class write resting on (D1, T2)
         m.put((J, 3, &[D1], T2, grant(RD2, Role::Read)), 3, rng, false);
         // B removes J from D1 by [A] at 4 (a descent of two steps: no last edge) naming no remaining
-        // admin, so it applies nowhere; J writes T2 after it
+        // admin, so it applies nowhere; J writes T2 after it, and at 10 makes D1 leave T2 (an
+        // honest holder thing's leave)
         let f = m.w.cut(&m.w.through((J, D1), |i| m.got(i, B, 4)));
         m.put((B, 4, &[A], D1, grant(J, Role::None).listing(f)), 4, rng, false);
         m.put((J, 5, &[D1], T2, Kind::Content), 5, rng, false);
+        m.put((J, 10, &[D1], T2, grant(D1, Role::None)), 10, rng, false);
         let sharer = if s.sharer_x { X } else { B };
         m.gs = m.put((sharer, 2, &[A], T1, grant(A2, a2).inviting(Role::Read)), 2, rng, false);
         if (1..=2).contains(&s.x_a2) {
@@ -1558,6 +1560,7 @@ pub fn mode_rules(mode: &str) -> Option<Rules> {
         "-own-drops" => Rules { commit_drops: false, ..f },
         "-remains-unkept" => Rules { remains_kept: false, ..f },
         "-last-any" => Rules { last_hop: false, ..f },
+        "-all-candidates" => Rules { candidates: Candidates::All, ..f },
         _ => return None,
     })
 }
