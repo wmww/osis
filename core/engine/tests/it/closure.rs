@@ -1125,6 +1125,7 @@ fn pass_end(e: &mut Engine) {
 /// Peer 0's commits, all sent to peer 1 again (a pull from the start), when peer 1 pulled a sync
 /// ID anew or a sync ID joined its sync set since `before`: what node-sync would fetch.
 fn pull_again(lp: &mut osis_engine::local_peer::LocalPeer, before: &BTreeSet<osis_base::SyncId>) -> bool {
+    lp.peers[1].reexamine().unwrap();
     let now = synced(lp);
     let pulled = !std::mem::take(&mut lp.peers[1].pulled_anew).is_empty() || now.difference(before).next().is_some();
     if pulled {
@@ -1323,4 +1324,92 @@ fn stripping_and_pulling_anew_cost_the_thing_not_the_node_closure_spec_commits_5
     assert!(small.0.get("needed: things stripped").is_some_and(|c| *c > 0) && small.0.get("needed: things judged").is_some_and(|c| *c > 0), "a thing judged and stripped");
     assert!(small.1.get("sync IDs pulled anew").is_some_and(|c| *c > 0), "pulled anew on entry");
     assert_eq!(small, large);
+}
+
+/// Peer 0's commit C mints W (a register on it) with X's strong to it, and a later commit D
+/// writes W again; peer 1 holds X. Peer 1 takes C and D in each of `orders` (a step: C whole, C's
+/// part on W, C's part on X, D, or a pass end), and once what it pulled anew is given again, what
+/// it holds and shows of C and D, with how many pulls each took.
+fn record_with_strong(orders: &[&[&str]]) -> Vec<(String, usize, Vec<(String, String)>, BTreeMap<osis_base::CommitId, Vec<bool>>)> {
+    let (mut lp, ps) = people(2);
+    let e0 = &mut lp.peers[0].engine;
+    let mut m = Mutation::new();
+    let x = e0.new_thing(&mut m, ps[0]);
+    m.set(x, &crate::common::REG, &Value::Str("x".into())).unwrap();
+    e0.commit(m).unwrap();
+    e0.grant(&x, &ps[1], &crate::flows::edge_of(osis_base::Role::Read)).unwrap();
+    let all = lp.peers[0].engine.commit_ids();
+    crate::flows::send(&mut lp, 0, 1, &all);
+    let d1 = lp.peers[1].engine.account_root().unwrap();
+    strong(&mut lp.peers[1].engine, d1, x, true);
+    pass_end(&mut lp.peers[1].engine);
+    let e0 = &mut lp.peers[0].engine;
+    let rec = e0.thing_record(x, None);
+    let mut m = Mutation::new();
+    let w = m.create(rec);
+    m.set(w, &crate::common::REG, &Value::Str("w".into())).unwrap();
+    m.op(x, &ct::HOLDS, PathOp { path: vec![], op: Op::Add(Value::Strong(w)) }).unwrap();
+    let c = e0.commit(m).unwrap().unwrap();
+    let mut m = Mutation::new();
+    m.set(w, &crate::common::LIST, &Value::List(vec![Value::Str("d".into())])).unwrap();
+    let d = e0.commit(m).unwrap().unwrap();
+    let pk = |lp: &mut osis_engine::local_peer::LocalPeer, id| lp.peers[0].engine.package(&id).unwrap().unwrap();
+    let (cp, dp) = (pk(&mut lp, c), pk(&mut lp, d));
+    let on = |t: Tid| {
+        let mut b = osis_commit::CommitBlob::decode(&cp.bytes).unwrap();
+        let h = b.header.clone();
+        b.parts.retain(|p| h.aspects[p.ai].tid == t);
+        b.encode()
+    };
+    let steps: BTreeMap<&str, Vec<u8>> = [("C", cp.bytes.clone()), ("C on W", on(w)), ("C on X", on(x)), ("D", dp.bytes.clone())].into();
+    let blobs: Vec<_> = cp.blobs.iter().chain(&dp.blobs).cloned().collect();
+    let ids: BTreeSet<osis_base::CommitId> = [c, d].into();
+    let mut ends = Vec::new();
+    for order in orders {
+        let name = order.join(", ");
+        let mut lp = lp.copy().unwrap();
+        lp.peers[1].reexamine().unwrap();
+        lp.peers[1].pulled_anew.clear();
+        let was = synced(&mut lp);
+        for s in *order {
+            match steps.get(s) {
+                Some(b) => drop(lp.peers[1].receive(b, blobs.clone())),
+                None => pass_end(&mut lp.peers[1].engine),
+            }
+        }
+        pass_end(&mut lp.peers[1].engine);
+        let mut pulls = 0;
+        while pull_again(&mut lp, &was) {
+            pulls += 1;
+            assert!(pulls < 4, "{name}: still pulling");
+            pass_end(&mut lp.peers[1].engine);
+        }
+        let e = &mut lp.peers[1].engine;
+        assert_eq!(e.get(&w, &crate::common::ak("t:reg.0")).unwrap(), Some(Value::Str("w".into())), "{name}: W reads C");
+        ends.push((name, pulls, crate::judgment::observe(e, &ids), parts_held(e, &ids)));
+    }
+    ends
+}
+
+// spec/sync-judgement.md §3 Dropped bodies (unless its record arrived in that transaction): a
+// strong newly reaching a thing pulls nothing anew when the thing's record arrives in the same
+// storage transaction, and that changes nothing the node ends up holding: C whole, or its part on
+// W in a transaction (and a pass) before its part on X, D before or after, end alike.
+#[test]
+fn a_record_arriving_with_the_strong_pulls_nothing_and_ends_alike_spec_sync_judgement_3() {
+    let ends = record_with_strong(&[&["C", "D"], &["C on W", "C on X", "D"], &["C on W", "pass end", "C on X", "D"], &["D", "C"]]);
+    for e in &ends[1..] {
+        assert_eq!((&e.2, &e.3), (&ends[0].2, &ends[0].3), "{} ends as {}", e.0, ends[0].0);
+    }
+    assert_eq!(ends[0].1, 0, "C whole: its record came with the strong, nothing pulled anew");
+    assert!(ends[1].1 > 0 && ends[2].1 > 0, "C on W first: the strong reaches a thing outside the node closure, pulled anew");
+}
+
+// D, pending for W's record, goes at a pass end (nothing held needs W); C then brings W's record
+// and X's strong to it in one transaction, so nothing is pulled anew and D never comes back.
+#[test]
+#[ignore = "issues/dropped-before-its-record-never-fetched-again.md"]
+fn repro_dropped_before_its_record_never_fetched_again() {
+    let ends = record_with_strong(&[&["C", "D"], &["D", "pass end", "C"]]);
+    assert_eq!((&ends[1].2, &ends[1].3), (&ends[0].2, &ends[0].3), "{} ends as {}", ends[1].0, ends[0].0);
 }
