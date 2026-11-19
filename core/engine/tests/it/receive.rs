@@ -22,7 +22,7 @@ fn creation_of(lp: &mut osis_engine::local_peer::LocalPeer, pks: &[osis_engine::
 fn bad_signature_rejected_spec_commits_4() {
     let mut lp = net(2, 0);
     let t = new_thing(&mut lp, 0);
-    let pks = packages(&mut lp, 0);
+    let pks = packages_to(&mut lp, 0, 1);
     let at = creation_of(&mut lp, &pks, t);
     let mut blob = CommitBlob::decode(&pks[at].bytes).unwrap();
     let Value::Enum(c, Some(p)) = blob.sigs.signature.to_value() else { panic!() };
@@ -44,9 +44,16 @@ fn bad_signature_rejected_spec_commits_4() {
 // spec/commits.md §4: receivers dedup by commit ID; remote applies fire events with origin.
 #[test]
 fn dedup_and_events_spec_commits_4() {
-    let mut lp = net_apart(2, 0);
+    let mut lp = net(2, 0);
+    // peer 1 reads t, then is sent a commit on it it lacks
     let t = new_shared(&mut lp, 0);
-    let pks = packages(&mut lp, 0);
+    sync(&mut lp, 0, 1);
+    let mut m = Mutation::new();
+    m.set(t, &REG, &s("second")).unwrap();
+    lp.peers[0].commit(m).unwrap();
+    let pks: Vec<_> = packages_to(&mut lp, 0, 1).into_iter().filter(|p| !lp.peers[1].engine.commit_ids().contains(&p.id) && lp.peers[0].engine.header(&p.id).is_some_and(|h| h.aspects.iter().any(|a| a.tid == t))).collect();
+    assert!(!pks.is_empty());
+    lp.peers[1].drain_events();
     for p in &pks {
         assert!(matches!(lp.deliver(1, p).unwrap(), Ingested::Applied(_)));
     }
@@ -77,7 +84,7 @@ fn pending_until_created_spec_commits_4() {
     let mut m = Mutation::new();
     m.set(t, &REG, &s("second")).unwrap();
     lp.peers[0].commit(m).unwrap();
-    let pks = packages(&mut lp, 0);
+    let pks = packages_to(&mut lp, 0, 1);
     // the last commit first: its author's created.0 is unknown
     let r = lp.deliver(1, pks.last().unwrap()).unwrap();
     assert!(matches!(r, Ingested::Pending(_, Reason::MissingChain(_))), "{r:?}");
@@ -103,7 +110,7 @@ fn pending_until_created_spec_commits_4() {
     let mut m = Mutation::new();
     m.set(t, &REG, &s("third")).unwrap();
     lp.peers[0].commit(m).unwrap();
-    let pk = packages(&mut lp, 0).pop().unwrap();
+    let pk = packages_to(&mut lp, 0, 1).pop().unwrap();
     let mut lp2 = net(1, 1); // a node apart from lp's (its own seeds)
     assert!(matches!(lp2.deliver(0, &pk).unwrap(), Ingested::Pending(_, osis_engine::Reason::MissingChain(_) | osis_engine::Reason::UnknownCreated(_))));
     assert!(lp2.peers[0].engine.pending().iter().any(|(c, _)| *c == pk.id));
@@ -175,8 +182,8 @@ fn a_removal_leads_no_author_to_a_thing_spec_commits_4() {
 fn pending_not_reexamined_while_unchanged_spec_commits_4() {
     // 1 a node of 0's account
     let mut lp = net_one(2);
-    let u = new_shared(&mut lp, 0);
-    let t = new_shared(&mut lp, 0);
+    let u = new_thing(&mut lp, 0);
+    let t = new_thing(&mut lp, 0);
     for i in 0..40 {
         for x in [t, u] {
             let mut m = Mutation::new();
@@ -184,7 +191,7 @@ fn pending_not_reexamined_while_unchanged_spec_commits_4() {
             lp.peers[0].commit(m).unwrap();
         }
     }
-    let pks = packages(&mut lp, 0);
+    let pks = packages_to(&mut lp, 0, 1);
     // the author's commits and u's creation; t's creation last
     let c = creation_of(&mut lp, &pks, t);
     for p in &pks[..c] {
@@ -204,7 +211,10 @@ fn pending_not_reexamined_while_unchanged_spec_commits_4() {
     lp.deliver(1, &pks[c]).unwrap();
     assert!(lp.peers[1].engine.pending().is_empty());
     assert_eq!(lp.peers[1].engine.get(&t, &ak("t:reg.0")).unwrap(), Some(s("v39")));
-    assert_eq!(examined(&osis_base::costs::take()), 41);
+    // the 40 that waited and the creation, whose content part on t is examined again as t
+    // enters the node closure (spec/commits.md §4 Outside the node closure: what enters wakes
+    // its waiting parts, examined again in that transaction)
+    assert_eq!(examined(&osis_base::costs::take()), 42);
 }
 
 // spec/crdt.md §2.2: a commit more than MAX_DRIFT ahead is parked until local time catches
@@ -367,7 +377,7 @@ fn a_pending_commit_keeps_its_authors_chain_spec_commits_5() {
     let t = new_thing(&mut lp, 0);
     let r = lp.peers[2].engine.me();
     set_edge(&mut lp.peers[0].engine, t, r, Some(edge(Role::Read)), None);
-    for pk in packages(&mut lp, 0) {
+    for pk in packages_to(&mut lp, 0, 2) {
         lp.deliver(2, &pk).unwrap();
     }
     let b = lp.peers[1].engine.me();
@@ -380,7 +390,7 @@ fn a_pending_commit_keeps_its_authors_chain_spec_commits_5() {
         lp.advance(1);
         c
     });
-    let own: Vec<_> = packages(&mut lp, 1).into_iter().filter(|pk| lp.peers[1].engine.header(&pk.id).unwrap().author == b).collect();
+    let own: Vec<_> = packages_to(&mut lp, 1, 2).into_iter().filter(|pk| lp.peers[1].engine.header(&pk.id).unwrap().author == b).collect();
     for pk in &own {
         lp.deliver(2, pk).unwrap();
     }
@@ -389,7 +399,7 @@ fn a_pending_commit_keeps_its_authors_chain_spec_commits_5() {
     assert!(e.forget_pending(&w[0]).unwrap());
     // the grant, and nothing more of b's
     let bs = [b, lp.peers[1].engine.tid()];
-    let rest: Vec<_> = packages(&mut lp, 0).into_iter().filter(|pk| !bs.contains(&lp.peers[0].engine.header(&pk.id).unwrap().author)).collect();
+    let rest: Vec<_> = packages_to(&mut lp, 0, 2).into_iter().filter(|pk| !bs.contains(&lp.peers[0].engine.header(&pk.id).unwrap().author)).collect();
     for pk in &rest {
         lp.deliver(2, pk).unwrap();
     }
@@ -440,7 +450,7 @@ fn role_commits_before_their_creation_pend_then_apply_spec_commits_4() {
     // 2 reads t
     lp.hold_at(2, t);
     lp.peers[0].engine.grant(&t, &ps[2], &crate::flows::edge_of(Role::Read)).unwrap();
-    let pks = packages(&mut lp, 0);
+    let pks = packages_to(&mut lp, 0, 2);
     let c = creation_of(&mut lp, &pks, t);
     let roles: Vec<_> = pks[c + 1..].iter().filter(|p| is_role(&lp.peers[0].engine, &p.id)).cloned().collect();
     assert!(roles.len() >= 3, "the rotation and the grants");

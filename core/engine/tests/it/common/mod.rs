@@ -321,6 +321,16 @@ pub fn packages(lp: &mut LocalPeer, from: usize) -> Vec<Package> {
     lp.packages(from).unwrap()
 }
 
+/// What `from` sends peer `to` once `to` syncs what a sync from `from` brings it to sync (its
+/// sync set after `LocalPeer::sync`, on a copy of the world): what those sync IDs carry and every
+/// certificate (`LocalPeer::packages_under`), for a test handing them over in its own order.
+pub fn packages_to(lp: &mut LocalPeer, from: usize, to: usize) -> Vec<Package> {
+    let mut c = lp.copy().unwrap();
+    c.sync(from, to).unwrap();
+    let synced = c.synced(to).unwrap();
+    lp.packages_under(from, &synced).unwrap()
+}
+
 pub fn is_role(e: &Engine, id: &CommitId) -> bool {
     e.header(id).is_some_and(|h| h.kind == Kind::Role)
 }

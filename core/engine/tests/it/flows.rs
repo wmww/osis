@@ -11,26 +11,10 @@ use osis_engine::Mutation;
 use osis_schema::core_types as ct;
 use std::collections::BTreeSet;
 
-/// Every peer's new commits to every other peer, twice (cheaper than `sync_all`'s n rounds);
-/// commits that arrive before their chain wait and apply on the second pass.
+/// Every peer syncs every other (`LocalPeer::sync_all`): each gets what the sync IDs it syncs
+/// carry, and every certificate.
 pub(crate) fn spread(lp: &mut LocalPeer) {
-    lp.know_all().unwrap();
-    let n = lp.peers.len();
-    let mut sent: Vec<BTreeSet<CommitId>> = vec![BTreeSet::new(); n];
-    for _ in 0..2 {
-        #[allow(clippy::needless_range_loop)]
-        for a in 0..n {
-            let ids: Vec<CommitId> = lp.peers[a].engine.commit_ids().into_iter().filter(|c| !sent[a].contains(c)).collect();
-            let pks: Vec<_> = ids.iter().filter_map(|id| lp.peers[a].engine.package(id).unwrap()).collect();
-            for b in (0..n).filter(|b| *b != a) {
-                for pk in &pks {
-                    lp.deliver(b, pk).unwrap();
-                }
-            }
-            sent[a].extend(ids);
-        }
-    }
-    lp.settle_needs().unwrap();
+    lp.sync_all().unwrap();
 }
 
 /// Delivers commits `ids` of peer `from` to peer `to`.
