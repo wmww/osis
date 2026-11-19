@@ -1487,3 +1487,30 @@ fn an_equivocating_twin_of_an_earlier_removal() {
         assert_eq!(st.failures(), 0);
     }
 }
+
+/// Vouches that void (notes/path-model-findings.md 20): N5, paired by X and listed by H's removal,
+/// is the thief's: it vouches for X's removal of H, which H's removal left out. Trusted, the
+/// removal is void by that vouch (the accomplice: a party holding admin after it), and without
+/// the vouch it stands. Z or X vouching the same counts for nothing. Once the removal is void, X
+/// is an admin again and removes N5 after it, so the final reading holds no counting vouch: what
+/// voided the removal is not in the reading that shows it void.
+#[test]
+fn a_current_admins_vouch_voids_the_removal_and_leaves_no_trace() {
+    let (mut w, gx, gb) = paired();
+    let g5 = w.edge(X, 2, &[], A, N5, Admin, &[]);
+    let rx = w.edge(X, 5, &[], A, H, Gone, &[gx, gb]);
+    let r = w.edge(H, 6, &[], A, X, Gone, &[g5]);
+    assert!(fixed(&w, &[r]).void.is_empty());
+    for by in [Z, X] {
+        let mut w = w.clone();
+        w.vouch(by, 7, &[], A, r, &[rx]);
+        assert!(fixed(&w, &[r]).void.is_empty());
+    }
+    let v5 = w.vouch(N5, 7, &[], A, r, &[rx]);
+    let rd = fixed(&w, &[r]);
+    assert!(rd.void.contains(&r) && rd.counting.contains(&v5) && rd.role(X, A) == Admin);
+    w.edge(X, 7, &[], A, N5, Gone, &[]);
+    let rd = fixed(&w, &[r]);
+    assert!(rd.void.contains(&r) && rd.counting.is_empty() && rd.role(N5, A) == Gone && rd.role(X, A) == Admin);
+    assert!(fixed(&w, &[r]).void.contains(&r) && judge(&w, &Rules::fixed(), &View::all(&w).trusting(&[r]).without(&[v5])).void.is_empty());
+}

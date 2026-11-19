@@ -93,8 +93,9 @@ pub struct Move {
 /// The thief's menu: 23 to 27 and 28, 29 are aimed at the remover (X, or a made-up key X grants
 /// admin, granting H admin, standing or until just after the removal; X removing M listing nothing,
 /// or listing M's grant of H; X demoting H listing its own grant); `N5_MOVES` are signed with the
-/// key of N5, removed by X before the theft (`Setup::n5` 3); 35 is X's twin of that removal.
-pub const MOVES: usize = 36;
+/// key of N5, removed by X before the theft (`Setup::n5` 3); 35 is X's twin of that removal; 36 is
+/// N5, paired by X and kept (`Setup::n5` 1), vouching for X's role writes on A (an accomplice).
+pub const MOVES: usize = 37;
 /// N5 grants H admin, standing or until just after the removal; N5 removes H; N5 demotes H; N5
 /// vouches against H's removal for X's role writes on A. Each stamped before X's removal of N5
 /// but the vouch.
@@ -505,6 +506,14 @@ impl Sim {
             // made with the setup (`Setup::n5` 3)
             return;
         }
+        if mv.kind == 36 {
+            if self.setup.n5 != 1 {
+                return;
+            }
+            let list = (0..self.w.commits.len()).filter(|&i| self.w.commits[i].signer == X && self.w.commits[i].on == A && self.w.edge_class(i)).collect();
+            self.put((N5, mv.ts.max(REMOVAL + 1), &[], A, Kind::Vouch { removal: self.r, list }), mv.made, rng, true);
+            return;
+        }
         if N5_MOVES.contains(&mv.kind) {
             // N5's key, removed by X at 3: stamped before that, but the vouch
             let Some(_) = self.out5 else { return };
@@ -824,6 +833,30 @@ pub fn check(m: &Sim, rules: &Rules, st: &mut Stats) {
         _ => false,
     };
     let x_keeps_a2 = s.x_a2 == 1 || s.x_a2 == 3;
+    // the accomplice (notes/disputes.md, Hole; membership §4, Role writes): a hostile party that
+    // holds admin after the removal (N5, paired by X and kept by H's list) vouches for the thief's
+    // writes. Counted, not a failure; where it voids a trusted removal, the vouch must be why (the
+    // removal is not void without them) and its voucher must be such a party (the vouch counts
+    // only where its voucher holds admin in the first walk; once the removal is void it may count
+    // no more, X then removing N5): no wider. Nothing else is checked in such a world.
+    let kept5 = s.n5 == 1 && m.g5.is_some_and(in_r);
+    let accomplices: Vec<Id> = m.thief.iter().filter(|(_, &k)| k == 36).map(|(&i, _)| i).collect();
+    if kept5 && !accomplices.is_empty() {
+        for (&n, (v, rd)) in &rds {
+            st.count("accomplice");
+            if rd.void.is_empty() {
+                continue;
+            }
+            let why = judge(w, rules, &v.clone().without(&accomplices)).void.is_empty();
+            if !why {
+                st.fail("removal", m, format!("node {n}: its trusted removal {:?} is void, no current admin's vouch why", rd.void));
+            }
+        }
+        if rds.values().any(|(_, rd)| !rd.void.is_empty()) {
+            st.note("accomplice", m, "a current admin's vouch voids the trusted removal".to_string());
+        }
+        return;
+    }
     // X's removal of M listing M's grant of H, heard before the removal (kept)
     let m_cut = || m.thief.iter().any(|(&i, &k)| k == 29 && m.made[i] < REMOVAL);
     // X's lowering of H heard before the removal (a removal or a demotion, its list naming only
