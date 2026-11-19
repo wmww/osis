@@ -1392,11 +1392,13 @@ fn unmerge_paged_matches_fresh_large_spec_crdt_4_6() {
         lp.deliver(0, &pk).unwrap();
         let costs = osis_base::costs::take();
         let n = |k: &str| costs.iter().find(|c| c.0 == k).map_or(0, |c| c.2);
-        assert_eq!(n("rejudge: rebuild"), 5, "one rebuild per flipped aspect");
-        // the fresh node: B's writes last
+        // the five aspects B wrote; A writes no addendum (spec/permissions.md §5.2 Addenda): it
+        // received B's writes in the millisecond it received the revocation, outside its window
+        assert_eq!(n("rejudge: rebuild"), 5, "one rebuild per flipped aspect");        // the fresh node, a reader holding d (a node not holding it keeps none of its content):
+        // B's writes last
+        let mut fresh = lp.fresh_reader(0, d, 8001);
         let pks = packages(&mut lp, 0);
         let is_b = |lp: &LocalPeer, id: &osis_base::CommitId| lp.peers[0].engine.header(id).is_some_and(|h| h.author == b && !is_role(&lp.peers[0].engine, id));
-        let mut fresh = osis_engine::local_peer::Peer::new(8001, lp.peers[0].engine.now()).unwrap();
         for p in pks.iter().filter(|p| !is_b(&lp, &p.id)).chain(pks.iter().filter(|p| is_b(&lp, &p.id))) {
             fresh.engine.ingest(&p.bytes, p.blobs.clone()).unwrap();
         }

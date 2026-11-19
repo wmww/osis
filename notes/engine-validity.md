@@ -52,7 +52,7 @@ The one helper for "could this author ever have held the role" where the answer 
 Newest body first, `rebuilt` stops once the state's root reset or register write is past the next body's `ts` (`Fragment::settled_above`; spec/crdt.md §7 One reset per position): older writes are pruned (spec/crdt.md §4.2). A debug build reads them all anyway and checks the skipped state equal. So a chat kick reads down to the winner only, flat in length.
 
 ### Checks
-Debug builds check after every transaction that the state equals a rebuild (`apply::check_rebuilt`: every aspect changed other than by a valid join, and a sample of those). osis-crdt `unmerge_spec_4_6` checks un-merge per delta (`Fragment::remove_writes`) on random histories.
+Debug builds check after every transaction that the state equals a rebuild (`apply::check_rebuilt`: every aspect changed other than by a valid join, and a sample of those). osis-crdt `unmerge_spec_4_6` checks un-merge per delta (`Fragment::remove_writes`) on random histories. The engine property `validity::unmerge_paged_matches_fresh_large` compares a node un-merging paged states with a fresh reader holding the thing (a node not holding it keeps no content, so reads nothing) and counts one rebuild per aspect the revoked writer wrote: the receiver gets those writes in the millisecond it gets the removal, outside R's window, so it writes no addendum (an addendum would flip `addenda.0` and re-raise a vouched aspect: two more rebuilds).
 
 ### Cost
 O(aspect history) per flip (`scale::validity_flip_is_linear_and_invalid_arrival_flat_spec_permissions_5_2`: n + 1 body reads, commits re-judged flat). Accepted as rare (issues/long-aspect-cost.md). An invalid arrival reads no other body (the same test).
