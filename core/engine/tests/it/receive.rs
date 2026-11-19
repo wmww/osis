@@ -396,7 +396,7 @@ fn a_pending_commit_keeps_its_authors_chain_spec_commits_5() {
     }
     let e = &mut lp.peers[2].engine;
     assert!(w.iter().all(|c| e.pending().iter().any(|(x, _)| x == c)), "{:?}", e.pending());
-    assert!(e.forget_pending(&w[0]).unwrap());
+    assert!(e.release_entry(&w[0]).unwrap());
     // the grant, and nothing more of b's
     let bs = [b, lp.peers[1].engine.tid()];
     let rest: Vec<_> = packages_to(&mut lp, 0, 2).into_iter().filter(|pk| !bs.contains(&lp.peers[0].engine.header(&pk.id).unwrap().author)).collect();

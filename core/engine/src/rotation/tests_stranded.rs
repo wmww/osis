@@ -41,7 +41,7 @@ fn holder_keys_bring_the_holders_new_keyset_spec_permissions_4() {
     assert!(lp.peers[0].engine.header(&k).is_none(), "peer 0 lacks T's new keyset");
     let keys = lp.peers[2].engine.holder_keys(&t).unwrap();
     assert!(ids_of(&keys).contains(&k));
-    assert!(lp.peers[0].engine.take_holder_keys(&t, &keys).unwrap() > 0);
+    assert!(lp.peers[0].engine.take_holder_keys(&t, &keys, None).unwrap() > 0);
     assert!(lp.peers[0].engine.current_keys(&t).contains(&k), "T's new keyset taken");
 }
 
@@ -57,7 +57,7 @@ fn holder_keys_take_nothing_off_the_chain_spec_permissions_4() {
     let mut ids = ids_of(&keys);
     ids.retain(|c| lp.peers[0].engine.header(c).is_none());
     assert!(!ids.is_empty() && !lp.peers[0].engine.knows(&x));
-    assert_eq!(lp.peers[0].engine.take_holder_keys(&t, &keys).unwrap(), 0);
+    assert_eq!(lp.peers[0].engine.take_holder_keys(&t, &keys, None).unwrap(), 0);
     assert_eq!(held(&lp, 0, &ids), 0, "X's commits not kept");
     assert!(!lp.peers[0].engine.knows(&x), "X's record not kept");
 }
@@ -89,7 +89,7 @@ fn holder_keys_take_no_edge_write_off_the_chain_spec_permissions_4() {
     let limits = osis_base::Limits::new(osis_base::format::MAX_OBJECT_DEPTH, osis_base::format::MAX_BLOB);
     let v = osis_base::decode(&lp.peers[2].engine.run(|tx| tx.get_commit(&c)).unwrap().unwrap().encode(), &limits).unwrap();
     let keys = osis_blob::HolderKeys { commits: vec![v], records: Vec::new() };
-    assert_eq!(lp.peers[0].engine.take_holder_keys(&t, &keys).unwrap(), 0);
+    assert_eq!(lp.peers[0].engine.take_holder_keys(&t, &keys, None).unwrap(), 0);
     assert!(lp.peers[0].engine.header(&c).is_none(), "the grant on X not kept");
 }
 
@@ -301,4 +301,57 @@ fn a_forged_removal_notice_changes_nothing_spec_sync_inbox_5() {
     assert_eq!(e1.role_on(&g), Some(Role::Read), "Bob's role stands");
     assert_eq!(e1.get(&g, &reg).unwrap(), Some(osis_base::Value::Str("before".into())), "he reads g as before");
     assert!(e1.header(&c).is_none(), "nothing of the forged commit is held");
+}
+
+/// Peer 1 writes again an independent thing W it makes, unknown to peer 0 (D): (W, D, D's
+/// bytes). D pends at peer 0 for W's record.
+fn on_unknown(lp: &mut LocalPeer, v: &str) -> (Tid, CommitId, Vec<u8>) {
+    let w = independent_thing(lp, 1);
+    let mut m = crate::Mutation::new();
+    m.set(w, &osis_base::Ak::new("x:a.0").unwrap(), &osis_base::Value::Str(v.into())).unwrap();
+    let e1 = &mut lp.peers[1].engine;
+    let d = e1.commit(m).unwrap().unwrap();
+    (w, d, e1.package(&d).unwrap().unwrap().bytes)
+}
+
+fn awaited(lp: &LocalPeer, w: &Tid) -> bool {
+    lp.peers[0].engine.core.ix.pend_on.contains_key(&crate::apply::Wake::Record(*w))
+}
+
+// spec/commits.md §4 Pending storage (a stranded report carries while it is the newest on its
+// sync ID and its holder is current), §5 What a held thing needs: D1, D2 and D3 pend at peer 0
+// for their things' records, carried by holder M's report on G; D2 also by an entry. A newer
+// report on G's sync ID carrying none of them forgets D1 and un-roots its W1, D2 staying for its
+// entry; D3, carried again by the newer report, goes once M is no holder of G.
+#[test]
+fn a_report_letting_go_forgets_what_only_it_carries_spec_commits_4() {
+    use crate::apply::carriers::Carrier;
+    let (mut lp, g, tids) = granted(2, &[(1, Role::Read)]);
+    let m = tids[1];
+    let s = lp.peers[0].engine.sync_ids(&g).unwrap()[0].id;
+    let k = Carrier::Report { actor: g, sync_id: s, holder: m };
+    let (w1, d1, b1) = on_unknown(&mut lp, "1");
+    let (w2, d2, b2) = on_unknown(&mut lp, "2");
+    let (w3, d3, b3) = on_unknown(&mut lp, "3");
+    for b in [&b1, &b2] {
+        lp.peers[0].engine.ingest_valid(b, Some(k)).unwrap();
+    }
+    lp.peers[0].receive(&b2, Vec::new()).unwrap();
+    assert!([d1, d2].iter().all(|d| lp.peers[0].engine.pends(d)) && awaited(&lp, &w1));
+    let mut keys = osis_blob::HolderKeys::default();
+    keys.commits.push(osis_base::decode(&b3, &osis_base::Limits::new(osis_base::format::MAX_OBJECT_DEPTH, osis_base::format::MAX_BLOB)).unwrap());
+    // the newer report: D3 rides it alone (off M's chain, so it is not taken from it)
+    lp.peers[0].engine.take_stranded(&s, &m, &keys).unwrap();
+    lp.peers[0].engine.ingest_valid(&b3, Some(k)).unwrap();
+    lp.peers[0].engine.settle_needs().unwrap();
+    let e0 = &mut lp.peers[0].engine;
+    assert!(!e0.pends(&d1) && !awaited(&lp, &w1), "D1 goes with the report replaced");
+    let e0 = &mut lp.peers[0].engine;
+    assert_eq!(e0.pending_carriers(&d2), vec![Carrier::Entry], "D2 kept by its entry");
+    assert_eq!(e0.pending_carriers(&d3), vec![k], "D3 carried by the newer report");
+    e0.demote(&g, &crate::flows::Demotion { holder: m, new: None, retain: None }).unwrap();
+    e0.reseal_run(&g).unwrap();
+    e0.settle_needs().unwrap();
+    assert!(!lp.peers[0].engine.pends(&d3) && !awaited(&lp, &w3), "D3 goes with its holder");
+    assert!(lp.peers[0].engine.pends(&d2) && awaited(&lp, &w2));
 }

@@ -4,6 +4,7 @@
 //! engine's indexes from the store lives here too, since it replays what apply records.
 
 pub(crate) mod atomic;
+pub mod carriers;
 pub(crate) mod copies;
 pub(crate) mod unindex;
 pub(crate) mod memory;
@@ -1392,12 +1393,14 @@ impl Engine {
         self.ingest_class(bytes, blobs, None, None, &[])
     }
 
-    /// `ingest` of a commit taken only for what it proves here (a stranded report's holder keys,
-    /// spec/permissions.md §4): one that applies with a part it brings judged invalid or an edge
-    /// write not applied (`judged_valid`) keeps nothing, as if never received (`None`), and so
-    /// does one this build would park.
-    pub fn ingest_valid(&mut self, bytes: &[u8]) -> Result<Option<Ingested>> {
-        self.ingest_kept(bytes, |core, id, ais, out| matches!(out, Ingested::Parked(_)) || (matches!(out, Ingested::Applied(_)) && !crate::sync_ids::judged_valid(core, id, ais)))
+    /// `ingest` of a commit taken only for what it proves here (a fire's carried commit, a
+    /// stranded report's holder keys, spec/permissions.md §4), carried by `from` while it pends
+    /// (`carriers`; `None`: by nothing, so nothing of it pends past this transaction): one that
+    /// applies with a part it brings judged invalid or an edge write not applied
+    /// (`judged_valid`) keeps nothing, as if never received (`None`), and so does one this build
+    /// would park.
+    pub fn ingest_valid(&mut self, bytes: &[u8], from: Option<carriers::Carrier>) -> Result<Option<Ingested>> {
+        self.ingest_kept(bytes, from, |core, id, ais, out| matches!(out, Ingested::Parked(_)) || (matches!(out, Ingested::Applied(_)) && !crate::sync_ids::judged_valid(core, id, ais)))
     }
 
     /// A sealed fire's bundle taken whole or not at all (spec/sync-inbox.md §4 A sealed fire):
@@ -1455,6 +1458,8 @@ impl Engine {
             applied |= matches!(out, Ingested::Applied(_));
             for c in &ids {
                 crate::sync_ids::opened::persist(tx, c)?;
+                // the fire's own entry carries it; it carries its chain
+                carriers::taken(tx, c, Some(if *c == id { carriers::Carrier::Entry } else { carriers::Carrier::Fire(id) }))?;
             }
             Ok(out)
         });
@@ -1474,7 +1479,7 @@ impl Engine {
     /// would pend or park keeps nothing, as if never received (`None`); decided in the one
     /// transaction, so nothing of it is written.
     pub(crate) fn ingest_uncarried(&mut self, bytes: &[u8]) -> Result<Option<Ingested>> {
-        self.ingest_kept(bytes, |_, _, _, out| matches!(out, Ingested::Parked(_) | Ingested::Pending(..)))
+        self.ingest_kept(bytes, None, |_, _, _, out| matches!(out, Ingested::Parked(_) | Ingested::Pending(..)))
     }
 
     /// The commits of `blobs` (each decoding, none held) that `keep` chooses once all of them are
@@ -1504,8 +1509,8 @@ impl Engine {
     }
 
     /// `ingest` keeping nothing of a commit `refuse` objects to (its outcome, judged in the
-    /// transaction, which is then rolled back): `None` for those.
-    fn ingest_kept(&mut self, bytes: &[u8], refuse: impl Fn(&crate::engine::Core, &CommitId, &[usize], &Ingested) -> bool) -> Result<Option<Ingested>> {
+    /// transaction, which is then rolled back): `None` for those. One kept is carried by `from`.
+    fn ingest_kept(&mut self, bytes: &[u8], from: Option<carriers::Carrier>, refuse: impl Fn(&crate::engine::Core, &CommitId, &[usize], &Ingested) -> bool) -> Result<Option<Ingested>> {
         let blob = match CommitBlob::decode(bytes) {
             Ok(b) if b.header.ephemeral.is_none() => b,
             Ok(_) => return Err(Error::BadInput("an ephemeral commit on the durable path")),
@@ -1525,6 +1530,7 @@ impl Engine {
                 return Err(Error::Misuse("refused"));
             }
             crate::sync_ids::opened::persist(tx, &id)?;
+            carriers::taken(tx, &id, from)?;
             Ok(out)
         });
         // written where kept, or nothing of it is kept (`sync_ids::opened`)
@@ -1640,11 +1646,18 @@ impl Engine {
                     let id = blob.id();
                     let out = ingest_blob(tx, blob, Origin::Remote)?;
                     crate::sync_ids::opened::persist(tx, &id)?;
+                    // an entry carries it (a memory commit's copy is the memory lane's)
+                    if !memory {
+                        carriers::taken(tx, &id, Some(carriers::Carrier::Entry))?;
+                    }
                     Ok(out)
                 }
                 Err(e) if e.class() == ErrorClass::Parked => {
                     let id = raw_id(bytes)?;
                     park(tx, &id, bytes, Vec::new(), peer, None)?;
+                    if !memory {
+                        carriers::taken(tx, &id, Some(carriers::Carrier::Entry))?;
+                    }
                     Ok(Ingested::Parked(id))
                 }
                 Err(e) => Err(e.into()),
@@ -1696,26 +1709,21 @@ impl Engine {
         self.core.waits.awaits_on(t)
     }
 
-    /// Drops the stored pending copy of durable commit `id` (a pending or parked commit, or an
-    /// applied one's parts that wait alone): the last entry carrying it left (called by
-    /// sync). Its parts count as never received;
-    /// the next entry carrying it brings it back. Whether there was one.
-    pub fn forget_pending(&mut self, id: &CommitId) -> Result<bool> {
+    /// No entry in the sync store names a blob of commit `id` any more (sync's
+    /// `store::follow::release`, or a test standing in for it): that carrier goes, and with its
+    /// last carrier its pending copy (`carriers`). Whether the copy went.
+    pub fn release_entry(&mut self, id: &CommitId) -> Result<bool> {
         if !self.core.ix.pending.contains_key(id) {
             return Ok(false);
         }
         let id = *id;
-        self.run(|tx| {
-            // a memory commit's copy is the memory lane's, under its own share
-            let Some(osis_store::Pending { bytes, .. }) = tx.txn.get_pending(&id)? else { return Ok(false) };
-            let things: Vec<Tid> = CommitBlob::decode_stored(&bytes).ok().filter(|b| b.header.kind.is_role()).map(|b| b.header.aspects.iter().map(|a| a.tid).collect()).unwrap_or_default();
-            drop_pending(tx, &id)?;
-            tx.core.waits.unawaits(&id);
-            keys::forget_unchecked(tx, &id)?;
-            // secrets read from its boxes go unless something else reads them
-            crate::rotation::touch_held(tx, things);
-            Ok(true)
-        })
+        self.run(|tx| carriers::entry_gone(tx, &id))?;
+        Ok(!self.core.ix.pending.contains_key(&id))
+    }
+
+    /// The carriers of pending commit `id` (`carriers`).
+    pub fn pending_carriers(&self, id: &CommitId) -> Vec<carriers::Carrier> {
+        self.core.ix.carriers.get(id).into_iter().flatten().copied().collect()
     }
 
     /// Pending commits `reexamine` read again so far (scale checks).
@@ -1938,6 +1946,7 @@ pub(crate) fn load(tx: &mut Tx<'_>, rebuild: bool) -> Result<Option<Vec<(Tid, os
     crate::sync::stranded::load(tx)?;
     crate::sync::falls::load(tx)?;
     crate::sync::bodies::load(tx)?;
+    carriers::load(tx)?;
     crate::sync::certblobs::load(tx)?;
     crate::sync_ids::opened::load(tx)?;
     crate::flows::lists::load(tx)?;

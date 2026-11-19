@@ -220,11 +220,13 @@ impl Engine {
         }
         let Some(v) = self.read(|tx| fire_parts(tx, &id))? else { return Ok(()) };
         let aks: &[&str] = if self.read(|tx| fire_value(tx, &id, TICKET_FIRE))?.is_some() { GRANT_PARTS } else { &["roles.0"] };
-        self.take_role_parts(&v, aks)
+        self.take_role_parts(&v, aks, id)
     }
 
-    /// Takes role commit parts `v` (`role_parts_value`), every part one of `aks`.
-    fn take_role_parts(&mut self, v: &Value, aks: &[&str]) -> Result<()> {
+    /// Takes role commit parts `v` (`role_parts_value`) that fire `fire` carries, every part one
+    /// of `aks`: what pends of them, the fire carries (spec/commits.md §4 Pending storage).
+    fn take_role_parts(&mut self, v: &Value, aks: &[&str], fire: CommitId) -> Result<()> {
+        let from = Some(crate::apply::carriers::Carrier::Fire(fire));
         let Value::Map(m) = v else { return Ok(()) };
         let bytes = |k: i64| match m.get(&Value::Int(k)) {
             Some(Value::Bytes(b)) => vec![b.clone()],
@@ -242,9 +244,9 @@ impl Engine {
             self.learn_records(records)?;
         }
         for c in bytes(1) {
-            self.ingest_valid(&c)?;
+            self.ingest_valid(&c, from)?;
         }
-        self.ingest_valid(&commit)?;
+        self.ingest_valid(&commit, from)?;
         Ok(())
     }
 
@@ -633,10 +635,10 @@ impl Engine {
         self.note_opened(&commit.header, &[(*t, under, commit.parts.iter().collect())]);
         let Some(ingested) = self.ingest_sealed_fire(records, &chain, commit)? else { return Ok(Opened::Bad) };
         if let Some(g) = grant {
-            self.take_role_parts(&g, GRANT_PARTS)?;
+            self.take_role_parts(&g, GRANT_PARTS, id)?;
         }
         if let Some((s, holder, keys)) = stranded {
-            self.take_stranded(&s, &holder, &keys)?;
+            self.take_stranded_from(&s, &holder, &keys, crate::apply::carriers::Carrier::Fire(id))?;
         }
         if parts.iter().any(|ai| removal.get(*ai) == Some(&true)) {
             self.notice_arrives(&id)?;

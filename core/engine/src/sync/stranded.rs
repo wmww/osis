@@ -25,6 +25,7 @@
 //! ingested at most once per pass of the chain loop, and the loop runs at most once per thing
 //! the chain gains.
 
+use crate::apply::carriers::Carrier;
 use crate::engine::{Engine, Tx};
 use crate::error::{Error, Result};
 use crate::sync_ids::Certs;
@@ -115,9 +116,11 @@ pub(crate) fn meet(tx: &mut Tx<'_>, a: &Tid, m: &Tid) -> Result<()> {
     Ok(())
 }
 
-/// Drops `a`'s asks, met or not, of holders `keep` refuses (a holder no longer current at a pass's
-/// end; every one when this node loses the actor).
+/// Drops `a`'s asks, met or not, and its reports, of holders `keep` refuses (a holder no longer
+/// current at a pass's end; every one when this node loses the actor).
 pub(crate) fn drop_asks(tx: &mut Tx<'_>, a: &Tid, keep: impl Fn(&Tid) -> bool) -> Result<()> {
+    // the reports naming them carry nothing more (spec/commits.md §4 Pending storage)
+    crate::apply::carriers::reports_gone(tx, a, &keep)?;
     let gone: Vec<Tid> = of_actor(tx, a).map(|(m, _)| m).filter(|m| !keep(m)).collect();
     for m in gone {
         tx.txn.remove_local(&ask_key(a, &m), Shred::No)?;
@@ -221,11 +224,24 @@ impl Engine {
     /// pass (`pass_end`). Returns whether the ask is new.
     pub fn take_stranded(&mut self, s: &SyncId, holder: &Tid, keys: &HolderKeys) -> Result<bool> {
         let Some((t, _)) = self.read_sync_id(s)? else { return Ok(false) };
+        let actor = self.core.reader_of(&t);
+        self.take_stranded_from(s, holder, keys, Carrier::Report { actor, sync_id: *s, holder: *holder })
+    }
+
+    /// `take_stranded` of a report carried by `from`: a Stranded message's report itself (the
+    /// newest on its sync ID replacing the one before, `carriers::report_taken`), or the fire of a
+    /// stranded notice.
+    pub(crate) fn take_stranded_from(&mut self, s: &SyncId, holder: &Tid, keys: &HolderKeys, from: Carrier) -> Result<bool> {
+        let Some((t, _)) = self.read_sync_id(s)? else { return Ok(false) };
         let a = self.core.reader_of(&t);
         if !self.may_reseal(&a, holder) {
             return Ok(false);
         }
-        self.take_holder_keys(holder, keys)?;
+        self.take_holder_keys(holder, keys, Some(from))?;
+        if matches!(from, Carrier::Report { .. }) {
+            let ids: BTreeSet<CommitId> = keys.commits.iter().filter_map(|v| CommitBlob::decode(&osis_base::encode(v)).ok()).map(|b| b.id()).collect();
+            self.run(|tx| crate::apply::carriers::report_taken(tx, &from, &ids))?;
+        }
         let m = *holder;
         if !self.may_reseal(&a, &m) {
             return Ok(false);
@@ -257,8 +273,9 @@ impl Engine {
     /// extends it): records of chain things, `keys.0` deltas on the holder and on the authors of
     /// the holder's `keys.0` commits carried (their cards), `roles.0` deltas on chain things; each
     /// commit, projected to those deltas, kept only if judged valid with every edge write it makes
-    /// applied (`ingest_valid`). Everything else is ignored. Returns the commits taken.
-    pub fn take_holder_keys(&mut self, holder: &Tid, keys: &HolderKeys) -> Result<usize> {
+    /// applied (`ingest_valid`), carried by `from` while it pends. Everything else is ignored.
+    /// Returns the commits taken.
+    pub fn take_holder_keys(&mut self, holder: &Tid, keys: &HolderKeys, from: Option<Carrier>) -> Result<usize> {
         let blobs: Vec<CommitBlob> = keys.commits.iter().filter_map(|v| CommitBlob::decode(&osis_base::encode(v)).ok()).collect();
         let records: BTreeMap<Tid, CreationRecord> = keys.records.iter().map(|r| (r.tid(), r.clone())).collect();
         // the authors of the holder's `keys.0` deltas carried: their cards are on the chain
@@ -292,7 +309,7 @@ impl Engine {
                 p.parts.retain(|x| on(x.ai));
                 done.insert(i);
                 osis_base::costs::count("stranded: holder keys judged", 1);
-                if self.ingest_valid(&p.encode())?.is_some() {
+                if self.ingest_valid(&p.encode(), from)?.is_some() {
                     taken += 1;
                     moved = true;
                 }

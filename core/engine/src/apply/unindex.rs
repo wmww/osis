@@ -44,6 +44,8 @@ fn unindex(tx: &mut Tx<'_>, id: &CommitId, marks: bool) -> Result<()> {
         crate::sync::bodies::forget(tx, id)?;
     }
     tx.core.redeliver.remove(id);
+    // a fire carries nothing once forgotten (spec/commits.md §4 Pending storage)
+    super::carriers::fire_gone(tx, id)?;
     // a memory commit's held parts go with it: what they link joins the freed sets
     // (`retention::freed`), memory rows; node-sync deletes the pieces as durable ones
     let held: Vec<usize> = tx.core.ix.commits.get(id).filter(|m| m.view.memory).map(|m| (0..m.header.aspects.len()).filter(|ai| m.holds(*ai)).collect()).unwrap_or_default();

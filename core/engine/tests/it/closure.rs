@@ -1406,7 +1406,7 @@ fn record_with_strong(orders: &[&[&str]]) -> Vec<End> {
             match (steps.get(s), *s) {
                 (Some(b), _) => drop(lp.peers[1].receive(b, blobs.clone())),
                 (None, "restart") => lp.peers[1].restart(0).unwrap(),
-                (None, "D gone") => assert!(lp.peers[1].engine.forget_pending(&d).unwrap(), "{name}: D pends"),
+                (None, "D gone") => assert!(lp.peers[1].engine.release_entry(&d).unwrap(), "{name}: D pends"),
                 (None, "W's record") => drop(lp.peers[1].engine.open_entry(&sx, &record.0, &record.2, &record.1, u64::MAX).unwrap()),
                 (None, _) => pass_end(&mut lp.peers[1].engine),
             }
@@ -1470,7 +1470,7 @@ fn a_commit_before_its_record_blob_and_its_strong_waits_for_them_spec_commits_4(
 // spec/commits.md §4 Pending storage, §5 What a held thing needs (held for itself while awaited):
 // peer 0 mints n things W, each with X's strong to it (C), and writes each again (D); peer 1, which
 // holds X, is given only the Ds. Each pends for its W's record across pass ends; once the last
-// entry carrying one goes (`forget_pending`, as sync calls it), the pass end leaves nothing of it
+// entry carrying one goes (`release_entry`, as sync calls it), the pass end leaves nothing of it
 // or its W: what pends is bounded by what is carried (and that, from unvouched input, by the
 // sync store's budget per source, osis-sync `a_flood_of_pending_commits_is_bounded_per_peer`).
 // The one still carried applies once its C comes.
@@ -1513,7 +1513,7 @@ fn a_commit_awaiting_its_record_is_kept_while_carried_and_no_longer_spec_commits
     assert!(ds.iter().all(|d| e1.pends(d)), "each D pends while carried");
     let (kept, gone) = made.split_last().unwrap();
     for (_, _, d) in gone {
-        assert!(e1.forget_pending(d).unwrap());
+        assert!(e1.release_entry(d).unwrap());
     }
     pass_end(e1);
     let awaited = |e: &Engine, w: &Tid| e.core.ix.pend_on.contains_key(&osis_engine::apply::Wake::Record(*w));
@@ -1543,48 +1543,6 @@ fn a_needed_account_root_keeps_its_role_class_parts_alone_spec_commits_5() {
     let e1 = &mut lp.peers[1].engine;
     assert_eq!(e1.get(&d, &account).unwrap(), theirs, "account.0 kept");
     assert_eq!(e1.get(&d, &holds).unwrap(), None, "no content of D");
-}
-
-// spec/commits.md §4 Pending storage (kept only while something carries it): a commit taken with
-// no entry naming a blob of it (as a fire's carried commit is, `ingest_valid`), pending for the
-// record of a thing outside the node closure, is held for itself (awaited) and no carrier ever
-// lets it go.
-#[test]
-#[ignore = "issues/uncarried-pending-kept-forever.md"]
-fn repro_uncarried_pending_kept_forever() {
-    let (mut lp, ps) = people(2);
-    let e0 = &mut lp.peers[0].engine;
-    let mut m = Mutation::new();
-    let x = e0.new_thing(&mut m, ps[0]);
-    e0.commit(m).unwrap();
-    e0.grant(&x, &ps[1], &crate::flows::edge_of(osis_base::Role::Read)).unwrap();
-    let all = lp.peers[0].engine.commit_ids();
-    crate::flows::send_carried(&mut lp, 0, 1, &all);
-    let d1 = lp.peers[1].engine.account_root().unwrap();
-    strong(&mut lp.peers[1].engine, d1, x, true);
-    pass_end(&mut lp.peers[1].engine);
-    let e0 = &mut lp.peers[0].engine;
-    let rec = e0.thing_record(x, None);
-    let mut m = Mutation::new();
-    let w = m.create(rec);
-    m.set(w, &crate::common::REG, &Value::Str("w".into())).unwrap();
-    m.op(x, &ct::HOLDS, PathOp { path: vec![], op: Op::Add(Value::Strong(w)) }).unwrap();
-    e0.commit(m).unwrap().unwrap();
-    let mut m = Mutation::new();
-    m.set(w, &crate::common::REG, &Value::Str("d".into())).unwrap();
-    let d = e0.commit(m).unwrap().unwrap();
-    let dp = lp.peers[0].engine.package(&d).unwrap().unwrap();
-    let e1 = &mut lp.peers[1].engine;
-    e1.ingest_valid(&dp.bytes).unwrap();
-    assert!(e1.pends(&d) && e1.commit_blobs(&d).unwrap().is_empty(), "pends, no blob of it noted");
-    for _ in 0..3 {
-        pass_end(e1);
-    }
-    lp.peers[1].restart(0).unwrap();
-    pass_end(&mut lp.peers[1].engine);
-    pass_end(&mut lp.peers[1].engine);
-    let e1 = &mut lp.peers[1].engine;
-    assert!(!e1.pends(&d), "an uncarried commit stays pending: {}", e1.why_kept(&w));
 }
 
 // spec/commits.md §4 Outside the node closure (the node closure judged as the transaction leaves
@@ -1622,4 +1580,35 @@ fn a_commit_minting_with_the_strong_applies_whole_in_its_transaction_spec_commit
     assert!(!e1.pends(&c), "nothing of C waits");
     assert_eq!(e1.get(&w, &crate::common::ak("t:reg.0")).unwrap(), Some(Value::Str("w".into())), "C's part on W joined in its transaction");
     assert_eq!(e1.examined() - before, 1, "the waiting part examined once more");
+}
+
+// spec/commits.md §4 Pending storage, Outside the node closure, spec/sync-judgement.md §3: every
+// order of D, W's record blob and C (whole, or its part on W before its part on X), a pass end
+// between steps and a restart after the first, ends as C then D: W shows C and D, the same parts held
+// (`record_with_strong`). Orders with no step between: `a_record_arriving_with_the_strong_*`.
+#[test]
+fn every_order_of_a_commit_its_record_and_its_minting_ends_alike_spec_commits_4() {
+    let cs: [&[&str]; 2] = [&["C"], &["C on W", "C on X"]];
+    let mut orders: Vec<Vec<&str>> = Vec::new();
+    for c in cs {
+        let items: [&[&str]; 3] = [&["D"], &["W's record"], c];
+        for p in [[0, 1, 2], [0, 2, 1], [1, 0, 2], [1, 2, 0], [2, 0, 1], [2, 1, 0]] {
+            let mut o: Vec<&str> = Vec::new();
+            for s in p.iter().flat_map(|i| items[*i].iter()) {
+                match o.len() {
+                    0 => {}
+                    1 => o.extend(["restart", "pass end"]),
+                    _ => o.push("pass end"),
+                }
+                o.push(s);
+            }
+            orders.push(o);
+        }
+    }
+    let refs: Vec<&[&str]> = orders.iter().map(|o| o.as_slice()).collect();
+    let ends = record_with_strong(&refs);
+    let first = record_with_strong(&[&["C", "D"]]).remove(0);
+    for e in &ends {
+        assert_eq!((&e.2, &e.3), (&first.2, &first.3), "{} ends as {}", e.0, first.0);
+    }
 }

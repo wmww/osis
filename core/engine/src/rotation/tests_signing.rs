@@ -225,7 +225,7 @@ fn list_before_rotation(valid_only: bool) {
         true => {
             let mut b = osis_commit::CommitBlob::decode(&pk.bytes).unwrap();
             b.parts.retain(|p| b.header.aspects.get(p.ai).is_some_and(|x| x.tid != a.root));
-            assert!(matches!(lp.peers[2].engine.ingest_valid(&b.encode()).unwrap(), Some(crate::Ingested::Applied(_))), "taken");
+            assert!(matches!(lp.peers[2].engine.ingest_valid(&b.encode(), None).unwrap(), Some(crate::Ingested::Applied(_))), "taken");
         }
     }
     assert!(!lp.peers[2].engine.carries_loose(&carrier), "held with its rotation");

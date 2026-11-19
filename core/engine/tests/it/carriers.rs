@@ -1,0 +1,199 @@
+//! What carries a pending commit (spec/commits.md §4 Pending storage): a commit pends, and a thing
+//! it awaits is held for itself (spec/commits.md §5 What a held thing needs), only while an entry,
+//! a fire or a report carries it. Fires here: peer 0's sealed `NOTE` fires on peer 1's inbox, kept
+//! an hour; what a fire carries is taken as `Engine::take_fire` takes a carried commit
+//! (`ingest_valid` from the fire). Reports: rotation::tests_stranded.
+
+use crate::common::{ak, set_setting, REG};
+use crate::flows::people;
+use osis_base::{CommitId, Tid, Value};
+use osis_crdt::{Op, PathOp};
+use osis_engine::local_peer::LocalPeer;
+use osis_engine::{Carrier, Engine, Mutation};
+use osis_schema::core_types as ct;
+use std::collections::BTreeSet;
+
+const NOTE: &str = "x:note@~0";
+const HOUR_MS: u64 = 3_600_000;
+
+fn pass_end(e: &mut Engine) {
+    let left: BTreeSet<Tid> = e.left_closure().into_keys().collect();
+    e.released(&left).unwrap();
+    e.settle_needs().unwrap();
+    e.check_index();
+}
+
+/// Peer 0 makes X and grants peer 1 read; peer 1 holds X and keeps `NOTE` fires on its inbox an
+/// hour. (lp, X, peer 1's inbox)
+fn base() -> (LocalPeer, Tid, Tid) {
+    let (mut lp, ps) = people(2);
+    let e0 = &mut lp.peers[0].engine;
+    let mut m = Mutation::new();
+    let x = e0.new_thing(&mut m, ps[0]);
+    e0.commit(m).unwrap();
+    e0.grant(&x, &ps[1], &crate::flows::edge_of(osis_base::Role::Read)).unwrap();
+    let d1 = lp.peers[1].engine.account_root().unwrap();
+    let mut m = Mutation::new();
+    m.op(d1, &ct::HOLDS, PathOp { path: vec![], op: Op::Add(Value::Strong(x)) }).unwrap();
+    lp.peers[1].engine.commit(m).unwrap();
+    let all = lp.peers[0].engine.commit_ids();
+    crate::flows::send_carried(&mut lp, 0, 1, &all);
+    crate::flows::send_carried(&mut lp, 0, 1, &all);
+    let inbox = lp.peers[1].engine.inbox_thing(&ps[1]).unwrap();
+    let mut s = lp.peers[1].engine.get_typed(&inbox, &ct::RETENTION).unwrap().unwrap();
+    s.rules.insert(ak(NOTE), ct::RetentionEntry { history: Some(osis_schema::History::Keep { until: None, after: Some(HOUR_MS) }), ..Default::default() });
+    set_setting(&mut lp, 1, inbox, &s);
+    pass_end(&mut lp.peers[1].engine);
+    assert!(lp.peers[1].engine.closure_holds(&x));
+    (lp, x, inbox)
+}
+
+/// Peer 0's sealed `NOTE` fire on `inbox`, opened by peer 1: the fire's commit.
+fn fire(lp: &mut LocalPeer, inbox: Tid, v: &str) -> CommitId {
+    let e = &mut lp.peers[0].engine;
+    let before: BTreeSet<_> = e.fires_owed().into_iter().collect();
+    e.fire_open(&inbox, NOTE, Value::Str(v.into())).unwrap();
+    let id = e.fires_owed().into_iter().find(|x| !before.contains(x)).expect("owed sealed");
+    let out = e.sealed_fire(&id).unwrap().expect("sealed");
+    e.fire_taken(&id).unwrap();
+    let b = osis_blob::blob_id(&out.blob);
+    match lp.peers[1].engine.open_entry(&out.sync_id, &b, &[0; 57], &out.blob, u64::MAX).unwrap() {
+        osis_engine::sync::Opened::Commit(c, _) => c,
+        o => panic!("not opened: {o:?}"),
+    }
+}
+
+/// Peer 1's fires leave history (their hour passes) and node-sync forgets them.
+fn fires_go(lp: &mut LocalPeer, fires: &[CommitId]) {
+    lp.advance(HOUR_MS + 1_000);
+    lp.peers[1].tick().unwrap();
+    let e = &mut lp.peers[1].engine;
+    let gone: Vec<_> = fires.iter().copied().filter(|c| e.forgettable(c).unwrap()).collect();
+    let kept: Vec<_> = fires.iter().filter(|c| !gone.contains(c)).map(|c| (fires.iter().position(|x| x == c), e.header(c).map(|h| h.ts), e.pends(c), e.pending_carriers(c))).collect();
+    assert_eq!(gone.len(), fires.len(), "every fire out of history may be forgotten: {kept:?}");
+    e.forget_commits(&gone).unwrap();
+    pass_end(e);
+}
+
+/// Peer 0 mints W under X with X's strong to it (C) and writes W again (D): (W, C, D's bytes, D).
+fn minted(lp: &mut LocalPeer, x: Tid, v: &str) -> (Tid, CommitId, Vec<u8>, CommitId) {
+    let e0 = &mut lp.peers[0].engine;
+    let rec = e0.thing_record(x, None);
+    let mut m = Mutation::new();
+    let w = m.create(rec);
+    m.op(x, &ct::HOLDS, PathOp { path: vec![], op: Op::Add(Value::Strong(w)) }).unwrap();
+    let c = e0.commit(m).unwrap().unwrap();
+    let mut m = Mutation::new();
+    m.set(w, &REG, &Value::Str(v.into())).unwrap();
+    let d = e0.commit(m).unwrap().unwrap();
+    (w, c, e0.package(&d).unwrap().unwrap().bytes, d)
+}
+
+/// Whether something pending at `e` awaits `w`'s record (W held for itself, `Root::Awaited`).
+fn awaited(e: &Engine, w: &Tid) -> bool {
+    e.core.ix.pend_on.contains_key(&osis_engine::apply::Wake::Record(*w))
+}
+
+/// Peer 1's `pc/` rows (`apply::carriers`).
+fn carrier_rows(lp: &mut LocalPeer) -> usize {
+    lp.peers[1].engine.local_census().unwrap().get("pc/").map_or(0, |r| r.0)
+}
+
+// spec/commits.md §4 Pending storage (taken from no carrier, never received at the end of its
+// transaction), §5 What a held thing needs: D on W, whose record peer 1 lacks, taken with no
+// carrier (`ingest_valid(_, None)`) neither pends nor roots W, across pass ends and a restart.
+#[test]
+fn a_commit_taken_from_no_carrier_is_not_kept_spec_commits_4() {
+    let (mut lp, x, _) = base();
+    let (w, _, d_bytes, d) = minted(&mut lp, x, "d");
+    let e1 = &mut lp.peers[1].engine;
+    e1.ingest_valid(&d_bytes, None).unwrap();
+    assert!(!e1.pends(&d) && e1.header(&d).is_none(), "nothing of D kept");
+    assert!(!awaited(e1, &w));
+    pass_end(e1);
+    lp.peers[1].restart(0).unwrap();
+    pass_end(&mut lp.peers[1].engine);
+    let e1 = &mut lp.peers[1].engine;
+    assert!(!e1.pends(&d) && e1.core.created(&w).is_none(), "{}", e1.why_kept(&w));
+    assert_eq!(carrier_rows(&mut lp), 0);
+}
+
+// spec/commits.md §4 Pending storage (a fire carries what it carries while its commit is held),
+// §5 What a held thing needs: D1 and D2 on things whose records peer 1 lacks, each carried by fire
+// F; D2 also by an entry. Across a restart both pend and root their things; once F leaves history
+// and is forgotten, D1 goes and its W1 with it, while D2 stays for its entry, until the entry goes.
+#[test]
+fn a_fire_letting_go_forgets_what_only_it_carries_spec_commits_4() {
+    let (mut lp, x, inbox) = base();
+    let f = fire(&mut lp, inbox, "f");
+    let (w1, _, b1, d1) = minted(&mut lp, x, "d1");
+    let (w2, _, b2, d2) = minted(&mut lp, x, "d2");
+    let e1 = &mut lp.peers[1].engine;
+    e1.ingest_valid(&b1, Some(Carrier::Fire(f))).unwrap();
+    e1.ingest_valid(&b2, Some(Carrier::Fire(f))).unwrap();
+    lp.peers[1].receive(&b2, Vec::new()).unwrap();
+    assert_eq!(lp.peers[1].engine.pending_carriers(&d2), vec![Carrier::Entry, Carrier::Fire(f)]);
+    pass_end(&mut lp.peers[1].engine);
+    lp.peers[1].restart(0).unwrap();
+    pass_end(&mut lp.peers[1].engine);
+    let e1 = &mut lp.peers[1].engine;
+    assert!(e1.pends(&d1) && e1.pends(&d2) && awaited(e1, &w1) && awaited(e1, &w2), "carried across a restart");
+    fires_go(&mut lp, &[f]);
+    let e1 = &mut lp.peers[1].engine;
+    assert!(!e1.pends(&d1) && !awaited(e1, &w1), "D1 goes with its fire: {}", e1.why_kept(&w1));
+    assert!(e1.pends(&d2) && awaited(e1, &w2), "D2 kept by its entry");
+    assert!(e1.release_entry(&d2).unwrap(), "D2 goes with its entry");
+    pass_end(e1);
+    assert!(!awaited(e1, &w2));
+    assert_eq!(carrier_rows(&mut lp), 0);
+}
+
+// spec/commits.md §4 Pending storage, Outside the node closure: D, carried by a fire, waits for
+// W's record and its entry into the node closure; C brings both, and D applies once: W reads D's
+// value, nothing of D pends or keeps a carrier, and the fire leaving changes nothing.
+#[test]
+fn a_fire_carried_commit_applies_once_its_ground_comes_spec_commits_4() {
+    let (mut lp, x, inbox) = base();
+    let f = fire(&mut lp, inbox, "f");
+    let (w, c, b, d) = minted(&mut lp, x, "d");
+    lp.peers[1].engine.ingest_valid(&b, Some(Carrier::Fire(f))).unwrap();
+    assert!(lp.peers[1].engine.pends(&d));
+    crate::flows::send_carried(&mut lp, 0, 1, &[c]);
+    pass_end(&mut lp.peers[1].engine);
+    let e1 = &mut lp.peers[1].engine;
+    assert!(!e1.pends(&d) && e1.pending_carriers(&d).is_empty());
+    assert_eq!(e1.get(&w, &crate::common::ak("t:reg.0")).unwrap(), Some(Value::Str("d".into())));
+    assert_eq!(carrier_rows(&mut lp), 0);
+    fires_go(&mut lp, &[f]);
+    let e1 = &mut lp.peers[1].engine;
+    assert!(e1.closure_holds(&w) && e1.header(&d).is_some());
+    assert_eq!(e1.get(&w, &crate::common::ak("t:reg.0")).unwrap(), Some(Value::Str("d".into())), "D applied once, kept");
+}
+
+// spec/commits.md §4 Pending storage, spec/sync-inbox.md §2: a sender's flood of fires, each
+// carrying a commit on a thing peer 1 holds that awaits a record never sent: what pends and the
+// carrier rows are one per fire held (bounded by what bounds the fires), and nothing is left once
+// the fires go.
+#[test]
+fn a_flood_of_fires_carries_no_more_than_the_fires_held_spec_commits_4() {
+    let k = 6;
+    let (mut lp, x, inbox) = base();
+    let before = lp.peers[1].engine.pending().len();
+    let mut fires = Vec::new();
+    let mut ws = Vec::new();
+    for i in 0..k {
+        let f = fire(&mut lp, inbox, &format!("f{i}"));
+        let (w, _, b, _) = minted(&mut lp, x, &format!("d{i}"));
+        lp.peers[1].engine.ingest_valid(&b, Some(Carrier::Fire(f))).unwrap();
+        fires.push(f);
+        ws.push(w);
+    }
+    pass_end(&mut lp.peers[1].engine);
+    assert_eq!(lp.peers[1].engine.pending().len() - before, k, "one pending per fire");
+    assert_eq!(carrier_rows(&mut lp), k);
+    fires_go(&mut lp, &fires);
+    let e1 = &mut lp.peers[1].engine;
+    assert_eq!(e1.pending().len(), before, "nothing pends past the fires");
+    assert!(ws.iter().all(|w| !awaited(e1, w) && e1.core.created(w).is_none()));
+    assert_eq!(carrier_rows(&mut lp), 0);
+}

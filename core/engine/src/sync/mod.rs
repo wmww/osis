@@ -952,7 +952,7 @@ impl Engine {
     }
 
     /// Whether commit `c`, or parts of it, pend here (spec/commits.md §4: kept only while
-    /// something carries it, `forget_pending` once nothing does).
+    /// something carries it, `apply::carriers` forgets it once nothing does).
     pub fn pends(&mut self, c: &CommitId) -> bool {
         self.core.ix.pending.contains_key(c)
     }

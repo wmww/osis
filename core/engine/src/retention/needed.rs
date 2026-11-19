@@ -16,7 +16,7 @@
 //! grant naming a holder). A thing is rooted, kept for itself (`Root`): held (in the node closure
 //! or leaving it), a retained copy, a thing an own self-removal still waits to seal under, or a
 //! thing whose record what waits under Pending storage awaits (nothing on it applies before its
-//! record: what came for it pends, kept while carried, `Engine::forget_pending`).
+//! record: what came for it pends, kept while carried, `apply::carriers`).
 //! Keys held here root nothing: the node itself is needed by its node root (its mint admin), and
 //! a link being redeemed keeps its sync ID in the sync set, so what a pass end drops of K comes
 //! again with the next pass, and the join is written once a pass brought what it needs

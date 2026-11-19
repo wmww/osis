@@ -147,8 +147,12 @@ pub(crate) fn set_pending(core: &mut Core, id: &CommitId, r: Option<(Reason, Opt
             }
         }
         None => {
-            if core.ix.pending.remove(id).is_some() && core.ix.commits.contains_key(id) {
-                core.waits.unpended.wrote_added(id, true, true);
+            if core.ix.pending.remove(id).is_some() {
+                // its carriers go with it unless it pends again in this transaction (`carriers::settle`)
+                core.carriers_due.insert(*id);
+                if core.ix.commits.contains_key(id) {
+                    core.waits.unpended.wrote_added(id, true, true);
+                }
             }
         }
     }

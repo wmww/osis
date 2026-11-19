@@ -1231,7 +1231,7 @@ fn an_applied_commits_waiting_part_goes_with_its_carrier_spec_commits_4() {
     let cp = packages(&mut lp, 0).into_iter().find(|p| p.id == c).unwrap();
     let e = &mut lp.peers[1].engine;
     e.ingest(&cp.bytes, Vec::new()).unwrap();
-    assert!(e.forget_pending(&c).unwrap());
+    assert!(e.release_entry(&c).unwrap());
     e.ingest(&xc.bytes, Vec::new()).unwrap();
     assert_eq!(e.get(&x, &ak("t:reg.0")).unwrap(), Some(s("new")), "never received");
     e.ingest(&cp.bytes, Vec::new()).unwrap();

@@ -128,7 +128,7 @@ impl Parked {
 /// engine keeps its pending copy only while an entry of it is in the store, an unstamped one
 /// charged to the peer that brought it (spec/sync-ids.md §5 Peer budget), so what one peer makes
 /// pend is bounded by its own budget. A blob no entry names any more lets its commit's pending
-/// copy go once no blob of it is named (`release`); a commit held here and pending no more (an
+/// entry carrier go once no blob of it is named (`release`); a commit held here and pending no more (an
 /// applied one's waiting parts joined too) takes its entries off their peers' budgets. Nothing kept but the feeds' cursors: a start sweeps every pending commit
 /// once.
 #[derive(Clone, Default)]
@@ -201,23 +201,19 @@ pub(crate) fn pends(engine: &mut Engine, b: &BlobId, o: &Opened) -> bool {
     }
 }
 
-/// Commit `c`'s pending copy goes when no entry in the store names a blob of it (spec/commits.md
-/// §4 Pending storage: kept only while something carries it). A commit that came by no entry here
-/// (an inbox payload, a node's pairing) names no blob, and is left.
+/// Commit `c`'s entry carrier goes when no entry in the store names a blob of it (spec/commits.md
+/// §4 Pending storage: kept only while something carries it; `Engine::release_entry`, whose
+/// other carriers, fires and reports, the engine follows itself).
 pub(crate) fn release(engine: &mut Engine, store: &Store, c: &CommitId) -> Result<()> {
     if !engine.pends(c) {
         return Ok(());
     }
-    let blobs = engine.commit_blobs(c)?;
-    if blobs.is_empty() {
-        return Ok(());
-    }
-    for b in blobs.iter() {
+    for b in engine.commit_blobs(c)?.iter() {
         if store.named(b)? {
             return Ok(());
         }
     }
-    engine.forget_pending(c)?;
+    engine.release_entry(c)?;
     Ok(())
 }
 

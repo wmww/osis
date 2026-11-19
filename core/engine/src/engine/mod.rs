@@ -840,6 +840,11 @@ indexes! {
     pub falls: JMap<(Tid, Ak), u64>,
     /// Self-removals waiting to be held elsewhere (`sync::held`).
     pub held_wait: JSet<CommitId>,
+    /// Per pending commit, its carriers (`apply::carriers`, rows `pc/`): an event, not derived
+    /// from the commits held, so no rebuild compares it.
+    pub carriers: JSetMap<CommitId, crate::apply::carriers::Carrier>,
+    /// `carriers` by fire and report: what each carries.
+    pub carrying: JSetMap<crate::apply::carriers::Carrier, CommitId>,
     /// Per thing, the commits with an opening written under an epoch of it (`sync_ids::opened`,
     /// `records::OPENED_UNDER`): what goes with the thing.
     pub opened_under: JSetMap<Tid, CommitId>,
@@ -1376,6 +1381,9 @@ pub struct Core {
     /// Freed rows (thing, blob) added this transaction: judged at its end, once their states are
     /// rebuilt (`retention::freed::settle_due`).
     pub freed_due: BTreeSet<(Tid, osis_base::BlobId)>,
+    /// Commits whose carriers moved, that were taken, or that stopped pending this transaction:
+    /// judged at its end (`apply::carriers::settle`).
+    pub carriers_due: BTreeSet<CommitId>,
     /// Aspects with a forgotten commit's name (`Indexes::forgotten_names`) whose held snapshots moved this
     /// transaction: judged at its end (`retention::names::settle_due`).
     pub forgotten_names_due: BTreeSet<(Tid, Ak)>,
@@ -1618,6 +1626,7 @@ impl Core {
             notices_due: self.notices_due.clone(),
             removals_due: self.removals_due.clone(),
             freed_due: self.freed_due.clone(),
+            carriers_due: self.carriers_due.clone(),
             forgotten_names_due: self.forgotten_names_due.clone(),
             handed_due: self.handed_due.clone(),
             freed_waits: self.freed_waits.clone(),
@@ -2148,6 +2157,7 @@ impl Core {
             notices_due: _,
             removals_due: _,
             freed_due: _,
+            carriers_due: _,
             forgotten_names_due: _,
             handed_due: _,
             freed_waits: _,
@@ -2471,6 +2481,7 @@ impl Core {
             notices_due: BTreeSet::new(),
             removals_due: BTreeSet::new(),
             freed_due: BTreeSet::new(),
+            carriers_due: BTreeSet::new(),
             forgotten_names_due: BTreeSet::new(),
             handed_due: BTreeSet::new(),
             freed_waits: BTreeMap::new(),
@@ -4068,6 +4079,10 @@ impl Engine {
                             Err(e) => r = Err(e),
                         }
                     }
+                    // a commit pends only while carried (spec/commits.md §4 Pending storage)
+                    if r.is_ok() {
+                        r = r.and_then(|v| crate::apply::carriers::settle(&mut tx).map(|_| v));
+                    }
                 }
                 if r.is_ok()
                     && !tx.txn.is_memory()
@@ -4172,6 +4187,11 @@ impl Engine {
                     r = r.and_then(|v| crate::sync::units::settle(&mut tx).and_then(|()| crate::sync::units::check_written(&mut tx)).map(|_| v));
                 }
                 tx.core.wrote_on.clear();
+                // what stopped pending above loses its carriers
+                if r.is_ok() && !tx.txn.is_memory() {
+                    r = r.and_then(|v| crate::apply::carriers::settle(&mut tx).map(|_| v));
+                }
+                tx.core.carriers_due.clear();
                 // every state written above stored in its form (`Tx::settle_states`)
                 if r.is_ok() {
                     r = r.and_then(|v| tx.settle_placements().and_then(|()| tx.settle_states()).map(|_| v));

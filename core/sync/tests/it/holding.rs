@@ -545,7 +545,7 @@ fn an_entry_whose_pending_commit_is_forgotten_is_parked_again_spec_sync_judgemen
     let pending: Vec<_> = g.commits.iter().copied().filter(|c| w.engine(1).pends(c)).collect();
     assert!(!pending.is_empty(), "the grant pends at Bob's node, its thing released");
     for c in &pending {
-        w.engine(1).forget_pending(c).unwrap();
+        w.engine(1).release_entry(c).unwrap();
     }
     w.run();
     w.check_parks();

@@ -249,7 +249,7 @@ fn outside_rows(n: usize) -> (Rows, Rows) {
     pass_end(&mut b.peers[1].engine);
     assert_eq!(b.peers[1].engine.pending().len(), n, "they wait while carried");
     for d in &ds {
-        b.peers[1].engine.forget_pending(d).unwrap();
+        b.peers[1].engine.release_entry(d).unwrap();
     }
     pass_end(&mut b.peers[1].engine);
     let carried = diff(&before, &b.peers[1].engine.census().unwrap());
