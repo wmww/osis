@@ -6,6 +6,24 @@ Spec: spec/sync-judgement.md §1-§5, spec/sync-compaction.md §1, spec/sync-set
 ## What it owns
 `Effects` for bodies per commit; the own judgement per (S, commit): verdict and own-store acts; minting copies per (S, thing); what a body calls for per (S, commit, source keeping S unread); each piece per (S, piece blob) (`read/pieces.rs`); a memo `Clock` (expiries move judgements; `next_wake`), two stamped maps (verdicts, own role commits S must hold), which status and inbox read (`Read::verdict`), and the outside waits (below). Nothing durable of its own: stands live in the store's record rows (`s`, the head and the fall mark), so a start judges every held commit once. A judgement under an S not held read (the engine's sync set lists S before leave sets the store's holdings) unfollows its key; S coming to be read (`Ground::holdings_moved`, the store's syncs feed) follows its bodies, certificate blobs and steps again. `on_message` takes the answers to read's own requests (Delete, deposits).
 
+## State
+One rule: what read judges is the record's (the source's `known` rows, its head and class, its membership of S), kept across its connections; only carrying an act out reads the connection. Keys: P a peer, E the engine or opens, N this node. A restart changes nothing a user sees: nothing is durable but the stands (record rows), so a start judges every held commit and replays every `known` row once.
+
+| State | Keys | Per | Bound (flood test) | Goes |
+|---|---|---|---|---|
+| `bodies`, `settled`, `metas`, `moved`, `local` | commits the engine holds (E) | node | commits held | the commit no longer held (`Local::Gone`) |
+| `judged`, `verdicts`, `roles`, `arrived`, `BlobsAt` | (S, commit) from E's bodies, N's store entries, P's `known` rows only for a commit held here | node | (S, commit) with a body, an entry or a shown entry under S | idle (no body, no entry, nothing shown) |
+| `waits` | S | node | read S | its pass ended |
+| `mintings`, `mints` | (S, thing), (S, minting, thing) from E | node | minting copies in S's required set | no copy of the thing required |
+| `toward` | (S, commit, source) from P's `known` rows (`seen_added`) and, where this node is no writer at a store source's head, its must-hold bodies | record | `known` rows (entries held here × sources: `streams::a_source_listing_what_it_never_gives_grows_nothing_spec_sync_judgement_3`) plus must-hold bodies × store sources | idle: nothing shown there and nothing owed; with the record's rows |
+| `cert_blobs`, `steps`, `step_since` | (S, kind), S from E | node | read S × rotations listed | S not read |
+| `freed` | freed links from E | node | freed rows | no entry known |
+| `pieces` | (S, piece) linked by must-hold bodies (E) | node | held pieces linked here (`read::replaced_bodies_leave_no_pieces_followed_once_released_spec_sync_judgement_1`) | the blob released |
+| `views` | (S, source) from opens' `Moved` | connection (Interim: issues/many-sync-ids-cost.md) | members × connections | each `Left` |
+| stands (record rows `s`) | (source, S, commit) by N's acts | record | must-hold bodies × sources | with the record's rows or S |
+
+Messages: read sends Delete requests and takes no message but their answers. What a peer controls reaches read only through streams' `known` (presence and deletes, kept only for entries held, tombstoned or taken here), the head its stream names, its class and membership (opens: needs proof that it may hold S), and `full`; none of it adds a key for a commit this node does not hold. Clock: the memo `Clock` (expiries, keep bounds `hosts_from`, `MAX_DRIFT` margins, `until` reached), woken by `next_wake`.
+
 `judge.rs` holds the pure judgements (`body`, `toward`) over `Ground` values; `Read::settle` runs them inside its effects to a fixpoint, then acts on what a new judgement adds. A restart or a reconnect (a new `ConnId` in each act) carries each act out once more, never in a loop; logging again is bounded by the durable stand alone. Tests drive `settle_on` with a fake ground (core/sync/tests/it/read.rs).
 
 ## Every held entry is judged
