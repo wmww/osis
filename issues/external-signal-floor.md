@@ -1,0 +1,8 @@
+# An external signal's purge floor is read from its own entries only
+> Summary: spec/commits.md §5 One way reads an external signal's floor from entries naming it, never `default`, so disabling a signal whose floor is above 0 pins every held setting body in history for good; held-model's `Setting::joined_floor` reads `default` for it (diverges from spec and engine, reached by no world).
+> Priority: low
+> Tags: spec, commit
+
+- The entry governing an external AK is its own only (spec/commits.md §5 The setting). One way joins each held setting's `purge_before` "in the entry governing the AK there", and a writer moves the floor of an AK its new setting does not name to `default`. For an external AK that move absorbs nothing: the current setting gives it no `purge_before`, so "while the floor of some AK is above the `purge_before` the current setting gives it, every held valid `retention^.0` body is in history" holds for good once a disabled signal had a floor (an entry purging on replace, then a later setting). Engine: `osis_commit::retention::floors_unabsorbed` via `RetentionSetting::entry` does the same.
+- held-model's `Setting::governing` falls back to `default` for every name (no external flag on a setting's names), so its floor for an external signal includes `default`'s `purge_before`. The external worlds write `purge_before` 0 and `keep`, so no test meets it.
+- Candidate fix: the floor (One way) of every AK reads `default` where the setting has no entry of its own, external ones included (only history and enabling skip `default` for them); then the engine's `governing` and the model agree with it.

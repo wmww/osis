@@ -98,6 +98,27 @@ pub fn world(seed: u64) -> World {
     World { base, events, now: crate::gen::START + 14 * HOUR }
 }
 
+/// The admins' dispute, toggling forever: each removes the other at hour 5, then they write
+/// settings enabling and disabling `EXT` in turn (the first admin enables at 6 and disables at 8,
+/// the second disables at 7 and enables at 9); the stranger fires at 3 and at 10. Which admin
+/// stands, and so which setting is current, differs by the held set.
+pub fn dispute() -> World {
+    let mut base = creations();
+    base.push(edge(FIRST - 2, ADMIN, hour(0), ADMIN2, Some(Role::Admin), None));
+    base.push(edge(FIRST - 1, ADMIN, hour(0), WRITER, Some(Role::Write), None));
+    let events = vec![
+        edge(FIRST, ADMIN, hour(5), ADMIN2, None, Some(vec![])),
+        edge(FIRST + 1, ADMIN2, hour(5), ADMIN, None, Some(vec![])),
+        setting(FIRST + 2, ADMIN, hour(6), &[EXT], false),
+        setting(FIRST + 3, ADMIN2, hour(7), &[], true),
+        setting(FIRST + 4, ADMIN, hour(8), &[OTHER], false),
+        setting(FIRST + 5, ADMIN2, hour(9), &[EXT], false),
+        fire(FIRST + 6, STRANGER, hour(3)),
+        fire(FIRST + 7, STRANGER, hour(10)),
+    ];
+    World { base, events, now: crate::gen::START + 14 * HOUR }
+}
+
 impl World {
     /// What a node `me` holding the events `mask` names (bit k: event k) holds, judged by `rule`.
     pub fn held(&self, mask: u64, me: NodeId, rule: ExternalFires) -> Held {

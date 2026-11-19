@@ -1,6 +1,7 @@
 //! Properties of the external-fire rule (spec/permissions.md §5.2 External fires, spec/commits.md §5
-//! The setting, spec/sync-inbox.md §4) over `held_model::external` worlds: every subset of a
-//! world's events is a held set, so every arrival order of them is covered.
+//! The setting, spec/sync-inbox.md §4) over `held_model::external` worlds (the random ones and the
+//! admins' dispute, the seed after them): every subset of a world's events is a held set, so every
+//! arrival order of them is covered.
 use held_model::edits::listed_of;
 use held_model::external::*;
 use held_model::gen::shuffle;
@@ -9,9 +10,13 @@ use std::collections::BTreeMap;
 
 const SEEDS: u64 = 40;
 
-/// Each held set of seed `seed`'s world, as node `me` holds it under `rule`.
-fn held_sets(seed: u64, me: NodeId, rule: ExternalFires) -> Vec<Held> {
-    let w = world(seed);
+/// The random worlds, then the admins' dispute (`dispute`).
+fn worlds(seeds: u64) -> Vec<World> {
+    (0..seeds).map(world).chain([dispute()]).collect()
+}
+
+/// Each held set of world `w`, as node `me` holds it under `rule`.
+fn held_sets(w: &World, me: NodeId, rule: ExternalFires) -> Vec<Held> {
     (0..1u64 << w.events.len()).map(|m| w.held(m, me, rule)).collect()
 }
 
@@ -31,8 +36,9 @@ fn enables(s: &Setting) -> bool {
 
 /// Every node holding the same set judges every fire alike, whatever order it holds them in.
 fn alike_in_every_order(rule: ExternalFires, seeds: u64) -> Result<(), String> {
-    for seed in 0..seeds {
-        for h in held_sets(seed, ADMIN, rule) {
+    for (seed, w) in worlds(seeds).iter().enumerate() {
+        let seed = seed as u64;
+        for h in held_sets(w, ADMIN, rule) {
             let want = fires(&h, &evaluate(&h));
             for k in 0..3 {
                 let s = shuffle(&h, seed * 31 + k);
@@ -59,8 +65,8 @@ impl Seen {
 /// setting does not enable reaches no listener (is listed nowhere) and is not promoted; one it
 /// enables is valid; a writer's fire is judged alike with every setting gone.
 fn unnamed_fires_go_nowhere(rule: ExternalFires, seeds: u64, seen: &mut Seen) -> Result<(), String> {
-    for seed in 0..seeds {
-        for h in held_sets(seed, ADMIN, rule) {
+    for (seed, w) in worlds(seeds).iter().enumerate() {
+        for h in held_sets(w, ADMIN, rule) {
             let (o, tl) = judged(&h);
             let listed = listed_of(&h, &o);
             let cur = current(&o);
@@ -99,8 +105,8 @@ fn unnamed_fires_go_nowhere(rule: ExternalFires, seeds: u64, seen: &mut Seen) ->
 /// A held setting that is not current dropping (out of history, never received) changes no
 /// fire's validity: the rule reads the current setting alone.
 fn older_settings_drop_freely(rule: ExternalFires, seeds: u64) -> Result<(), String> {
-    for seed in 0..seeds {
-        for h in held_sets(seed, ADMIN, rule) {
+    for (seed, w) in worlds(seeds).iter().enumerate() {
+        for h in held_sets(w, ADMIN, rule) {
             let o = evaluate(&h);
             let want = fires(&h, &o);
             let Some(((_, _, cur), _)) = current(&o) else { continue };
