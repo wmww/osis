@@ -347,7 +347,7 @@ fn bad_part_beside_good_ones_holds_nothing_back_spec_commits_4() {
     use osis_crdt::{Delta, Writer, create, encode_delta};
     let mut lp = net(2, 0);
     let g = new_shared(&mut lp, 0);
-    let setup = packages(&mut lp, 0);
+    let setup = packages_to(&mut lp, 0, 1);
     lp.peers[0].clock.advance(10);
     let e = &mut lp.peers[0].engine;
     let recs = vec![e.get_typed(&g, &osis_schema::core_types::CREATED).unwrap().unwrap()];
@@ -375,7 +375,7 @@ fn bad_part_beside_good_ones_holds_nothing_back_spec_commits_4() {
     let mut m = Mutation::new();
     m.set(g, &REG, &s("beside")).unwrap();
     let beside = lp.peers[0].commit(m).unwrap().unwrap();
-    let beside = packages(&mut lp, 0).into_iter().find(|p| p.id == beside).unwrap();
+    let beside = packages_to(&mut lp, 0, 1).into_iter().find(|p| p.id == beside).unwrap();
     let on = |key: &str| {
         let mut b = blob.clone();
         let h = b.header.clone();
@@ -669,7 +669,7 @@ fn false_signature_refused_before_linked_lists() {
     use crate::common::*;
     let mut lp = net(2, 0);
     let h = new_shared(&mut lp, 0);
-    for pk0 in &packages(&mut lp, 0) {
+    for pk0 in &packages_to(&mut lp, 0, 1) {
         lp.deliver(1, pk0).unwrap();
     }
     lp.peers[0].clock.advance(10);

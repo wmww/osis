@@ -400,6 +400,21 @@ impl Engine {
         Ok(Some(pk))
     }
 
+    /// The parts of held commit `id` this node sends a node syncing `synced` (`LocalPeer::
+    /// packages_under`): those the sync IDs carry (`carried_under`) and its certificate parts
+    /// (`certificate_parts`); `None` with neither.
+    pub fn sent_parts(&mut self, id: &CommitId, synced: &BTreeSet<osis_base::SyncId>) -> Result<Option<BTreeSet<usize>>> {
+        let certs = self.certificate_parts(id);
+        Ok(match self.carried_under(id, synced)? {
+            Some(mut a) => {
+                a.extend(certs);
+                Some(a)
+            }
+            None if !certs.is_empty() => Some(certs),
+            None => None,
+        })
+    }
+
     /// The certificate parts of held commit `id` (spec/commits.md §5 What a held thing needs:
     /// every part but content, `retention::forget::content`; every part on a key actor).
     pub fn certificate_parts(&self, id: &CommitId) -> BTreeSet<usize> {
@@ -714,16 +729,26 @@ impl LocalPeer {
         let ids: Vec<CommitId> = p.engine.commit_ids().into_iter().filter(|id| !p.engine.header(id).is_some_and(|h| h.aspects.iter().all(|a| Some(a.tid) == root))).collect();
         let mut out = Vec::new();
         for id in ids {
-            let certs = p.engine.certificate_parts(&id);
-            let parts = match p.engine.carried_under(&id, synced)? {
-                Some(mut a) => {
-                    a.extend(certs);
-                    a
-                }
-                None if !certs.is_empty() => certs,
-                None => continue,
-            };
-            out.extend(p.engine.package_of_parts(&id, &parts)?);
+            if let Some(parts) = p.engine.sent_parts(&id, synced)? {
+                out.extend(p.engine.package_of_parts(&id, &parts)?);
+            }
+        }
+        Ok(out)
+    }
+
+    /// `pk`, a commit peer `from` holds, holding only the parts it sends a node syncing `synced`
+    /// (`Engine::sent_parts`; a header alone where it sends none): a package made earlier, trimmed
+    /// as `from` sees it now. As it was where `from` holds no such commit.
+    pub fn trimmed(&mut self, from: usize, pk: &Package, synced: &BTreeSet<osis_base::SyncId>) -> Result<Package> {
+        let Some(p) = self.peers.get_mut(from) else { return Ok(pk.clone()) };
+        if p.engine.header(&pk.id).is_none() {
+            return Ok(pk.clone());
+        }
+        let parts = p.engine.sent_parts(&pk.id, synced)?.unwrap_or_default();
+        let b = CommitBlob::decode(&pk.bytes)?;
+        let mut out = pk.clone();
+        if b.parts.iter().any(|x| !parts.contains(&x.ai)) {
+            out.bytes = osis_commit::rewrite(&b, |ai| !parts.contains(&ai)).encode();
         }
         Ok(out)
     }

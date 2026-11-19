@@ -245,7 +245,7 @@ fn snapshot_frontier_valid_only_spec_crdt_8() {
     let mut lp2 = net(1, 1); // a node apart from lp's (its own seeds)
     lp2.hold(t);
     lp2.advance(100);
-    for p in lp.packages(0).unwrap() {
+    for p in packages_to(&mut lp, 0, 0) {
         let h = lp.peers[0].engine.header(&p.id).unwrap();
         let skip = h.author == b && h.aspects.iter().any(|a| a.ak.as_str() == "t:reg.0");
         if !skip {

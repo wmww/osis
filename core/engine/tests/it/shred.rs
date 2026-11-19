@@ -370,7 +370,7 @@ fn expired_late_part_unrecoverable_spec_crdt_4_7() {
     m.expires(t, &BRIEF, at).unwrap();
     m.expires(t, &REG, at).unwrap();
     let c = lp.peers[0].commit(m).unwrap().unwrap();
-    let pk = lp.packages(0).unwrap().into_iter().find(|p| p.id == c).unwrap();
+    let pk = packages_to(&mut lp, 0, 1).into_iter().find(|p| p.id == c).unwrap();
     let mut b = osis_commit::CommitBlob::decode(&pk.bytes).unwrap();
     let brief = b.header.aspects.iter().position(|a| a.ak.as_str() == "t:brief.0").unwrap();
     b.parts.retain(|x| x.ai != brief);

@@ -3404,7 +3404,7 @@ fn frontier_lists_kept_writes_compacted_or_not_spec_perm_5_1() {
     assert_eq!(lp.peers[0].engine.body_valid(&one, &d, &kept), Some(true), "kept history stays valid at the holder");
     let mut fresh = fresh_net(&mut lp, 0, d, 1); // a reader apart from lp's (its own seeds)
     fresh.advance(DAY);
-    for p in packages(&mut lp, 0).into_iter().filter(|p| p.id != one) {
+    for p in packages_to(&mut lp, 0, 0).into_iter().filter(|p| p.id != one) {
         fresh.deliver(0, &p).unwrap();
     }
     fresh.peers[0].reexamine().unwrap();

@@ -1500,6 +1500,26 @@ pub(crate) fn play_with(seed: u64, steps: &[Step], addenda: bool) -> Played {
     for (_, pk) in &access {
         reader.receive(&pk.bytes, pk.blobs.clone()).unwrap();
     }
+    // the nodes under test are sent what the sync IDs they come to sync carry, as each author
+    // sees it (`LocalPeer::trimmed`), never another thing's content, which would wait there
+    // (spec/commits.md §4 Outside the node closure): what they sync once given everything
+    let synced: BTreeSet<osis_base::SyncId> = {
+        let mut probe = under_test(reader.copy().unwrap(), now);
+        for _ in 0..2 {
+            for pk in &packs {
+                let _ = probe.receive(&pk.bytes, pk.blobs.clone());
+            }
+        }
+        probe.engine.sync_set().unwrap().ids.keys().copied().collect()
+    };
+    let packs: Vec<Package> = packs.iter().zip(&authors).map(|(pk, a)| {
+        // by its author's node, else a node of the three holding it
+        let by = (*a < 3).then_some(*a).or_else(|| (0..3).find(|i| lp.peers[*i].engine.header(&pk.id).is_some()));
+        match by {
+            Some(i) => lp.trimmed(i, pk, &synced).unwrap(),
+            None => pk.clone(),
+        }
+    }).collect();
     Played { access, packs, authors, base, things, now, tally, restored: Default::default(), judged: Default::default(), moved: Default::default(), dropped: Default::default(), steps_at, own_sets, settle_from: None, settled_last, withheld: 0, model: None, ingests: Default::default(), copies: Default::default(), reader: std::sync::Arc::new(std::sync::Mutex::new(reader)) }
 }
 
