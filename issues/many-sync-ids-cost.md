@@ -11,7 +11,7 @@ No kept test counts an idle reconnect, a commit or a first sync at n and 10n sha
 - **Idle reconnect** (nothing out of date; core/sync/tests/it/idle.rs at 2 and 20 things): deliveries and bytes flat. Per shared sync ID: about 75 store rows read, 7 `status: stranded`, 3 each of `inbox: register judged`, `opens standing` and `sync set: entered`, 5 `read: certificate blobs`.
 - **The first reconnect after first contact** proves only the account where the record names the cards' key actors too, so it re-tests every credential and sends whole filters (spec/sync-opens.md §3: other actors than the record names): O(shared sync IDs) once per contact.
 - **One small commit**: deliveries and bytes flat. Per sync ID held: about 11 store rows read and 6 `status: stranded` (`idle::repro_a_commit_judges_one_stranding`); no duty judgement (`life:`) per thing.
-- **A reader's restart while connected**: 373 B per sync ID (measured before the idle fixes; recount).
+- **A reader's restart while connected**: 373 B per sync ID at 6e38bcd03 (recount).
 - **First sync of a closure** (a root with n independent members, the built model): per member 4.0 deliveries, 47 KB (23 KB of it sent by the new reader back to the maker, unexplained), 7.6 signs, 42 transactions, 16 step verifications and 16 stamp verifications. Kept unread under the root's one sync ID: 1.9 deliveries, 17 KB, 2 entries per member.
 - **Held per sync ID** with one small value and two grants: a node keeping it unread 37 store rows (4.3 KB) and 6.2 blobs (35.9 KB); a reader 48 rows (5.2 KB), 8.2 blobs (43 KB) and 29.7 KB of engine rows. Six rows of about 500 B exist per sync ID whatever it holds. About half of a sync ID's entries name blobs also held under other sync IDs (certificate copies).
 

@@ -2394,3 +2394,35 @@ fn a_member_left_at_the_stream_rejoins_from_there_after_the_cursor_moved_spec_sy
     p.run();
     assert!(knows(&p.b, p.b.src(), s1, z), "rejoined from where it stood, not from the moved cursor");
 }
+
+// spec/sync-streams.md §4 (Joining: a connection that takes a record pulls its members from where
+// the record holds them, with no join for one that left the stream at its cursor): t left with
+// the connection at the cursor, s earlier, before entries of s the stream passed while s was
+// away; on the next connection t is pulled with no join, s joins from where it stopped and gets
+// what was logged meanwhile.
+#[test]
+fn only_a_member_stopped_at_the_cursor_rejoins_with_no_join_spec_sync_streams_4() {
+    let mut p = Pair::new();
+    let (s, t) = (sid(1), sid(2));
+    p.shared_read(s);
+    p.shared_read(t);
+    p.a.log(s, 100);
+    p.run();
+    p.a.leave(p.now, s);
+    p.b.leave(p.now, s);
+    let away = p.a.log(s, 101);
+    p.a.log(t, 102);
+    p.run();
+    for x in [&mut p.a, &mut p.b] {
+        x.leave(p.now, t);
+        x.streams.closed(C);
+    }
+    let pulls = p.sent_by_b(41).len();
+    p.join(s);
+    p.join(t);
+    p.run();
+    let first = p.sent_by_b(41).into_iter().nth(pulls).unwrap();
+    assert!(matches!(first, Msg::Pull(q) if q.joins.len() == 1 && q.joins[0].0 == s && q.joins[0].1.is_some()), "s joins from where it stopped, t with no join: {first:?}");
+    let src = p.b.src();
+    assert!(knows(&p.b, src, s, away), "what s missed while away");
+}

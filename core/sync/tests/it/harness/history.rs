@@ -131,8 +131,20 @@ pub struct Made {
     /// holds nothing from then on (spec/sync-set.md §3 A thing goes when its last reference goes).
     gone: BTreeSet<usize>,
     /// The reference `note_gone` reads, fed what was handed since its last quiet run (made at
-    /// the first, so a world copied before a history shares none).
-    quiet: Option<std::sync::Arc<std::sync::Mutex<Quiet>>>,
+    /// the first; a copy of the world copies it).
+    quiet: Option<QuietRef>,
+}
+
+/// The reference behind a lock (a world is `Send`); cloned, an exact copy sharing nothing, so
+/// copies of one world never feed one reference.
+struct QuietRef(std::sync::Mutex<Quiet>);
+
+impl Clone for QuietRef {
+    fn clone(&self) -> QuietRef {
+        let mut q = self.0.lock().unwrap();
+        let peer = q.peer.copy().expect("reference copy");
+        QuietRef(std::sync::Mutex::new(Quiet { peer, fed: q.fed, waiting: q.waiting.clone() }))
+    }
 }
 
 /// An incremental reference: the packages handed so far fed, those that did not take yet kept.
@@ -206,8 +218,8 @@ fn note_gone(w: &mut World) {
         harvest(w, i);
     }
     let now = w.now();
-    let q = w.history.quiet.get_or_insert_with(|| std::sync::Arc::new(std::sync::Mutex::new(Quiet { peer: Peer::new_bare(0x005e_ed0f_5eed, now).expect("reference"), fed: 0, waiting: Vec::new() }))).clone();
-    let mut q = q.lock().unwrap();
+    let mut qr = w.history.quiet.take().unwrap_or_else(|| QuietRef(std::sync::Mutex::new(Quiet { peer: Peer::new_bare(0x005e_ed0f_5eed, now).expect("reference"), fed: 0, waiting: Vec::new() })));
+    let q = qr.0.get_mut().unwrap();
     let new: Vec<Package> = w.history.handed[q.fed..].to_vec();
     q.fed = w.history.handed.len();
     for pk in new {
@@ -217,7 +229,7 @@ fn note_gone(w: &mut World) {
             q.waiting.extend(w.engine(i).package(&id).ok().flatten());
         }
     }
-    let Quiet { peer, waiting, .. } = &mut *q;
+    let Quiet { peer, waiting, .. } = q;
     loop {
         let before = waiting.len();
         waiting.retain(|pk| peer.receive_with(&pk.bytes, pk.blobs.clone(), &pk.lists).is_err());
@@ -238,6 +250,7 @@ fn note_gone(w: &mut World) {
             w.history.gone.insert(k);
         }
     }
+    w.history.quiet = Some(qr);
 }
 
 /// Hands the reference every commit node `i` holds that it has not been handed.

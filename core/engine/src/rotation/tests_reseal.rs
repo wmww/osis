@@ -873,6 +873,63 @@ fn roles_at_now_move_at_an_until_spec_permissions_2() {
     assert_eq!(fx.settle(&1, || e1.role_on(&g)), Some((Some(Some(Role::Read)), None)));
 }
 
+// spec/permissions.md §2 (Finalize), spec/sync.md §2 (Work in proportion to change): a role duty
+// on g owed through a chain of holder actors (m1 holds g, m2 holds m1, the reader holds m2 until
+// a time) falls due when the clock passes that `until`, nothing else moving: a follower of g's
+// duty alone is due then.
+#[test]
+fn a_duty_down_a_holder_chain_is_due_at_its_until_spec_permissions_2() {
+    let (mut lp, g, tids) = granted(2, &[]);
+    let m1 = super::tests::independent_thing(&mut lp, 0);
+    let m2 = super::tests::independent_thing(&mut lp, 0);
+    let e0 = &mut lp.peers[0].engine;
+    e0.grant(&g, &m1, &edge(Role::Read)).unwrap();
+    e0.grant(&m1, &m2, &edge(Role::Read)).unwrap();
+    let until = osis_base::WallMs(e0.core.now().0 + 1_000);
+    e0.grant(&m2, &tids[1], &osis_schema::core_types::Edge { until: Some(until), ..edge(Role::Read) }).unwrap();
+    lp.sync_all().unwrap();
+    let mut fx: osis_base::memo::Effects<(), bool> = osis_base::memo::Effects::new("duty on g");
+    fx.want(());
+    let e0 = &mut lp.peers[0].engine;
+    assert_eq!(fx.settle(&(), || e0.role_duty_due(&g).unwrap()), Some((None, false)));
+    assert!(fx.due().is_empty());
+    lp.peers[0].clock.advance(2_000);
+    let e0 = &mut lp.peers[0].engine;
+    let now = e0.now();
+    e0.set_now(now);
+    assert_eq!(fx.due(), vec![()], "due at the until");
+    assert_eq!(fx.settle(&(), || e0.role_duty_due(&g).unwrap()), Some((Some(false), true)));
+}
+
+// spec/permissions.md §2 (An `until` passing), spec/sync.md §2: a reader
+// holding g only through a chain of holder actors whose far end has an `until` loses g at it: a
+// follower of its lost access alone is due when the clock passes it, nothing else moving, and
+// reads a loss by the `until` alone (`lost_timed`, not `lost_due`).
+#[test]
+fn access_down_a_holder_chain_is_lost_at_its_until_spec_permissions_2() {
+    let (mut lp, g, tids) = granted(2, &[]);
+    let m1 = super::tests::independent_thing(&mut lp, 0);
+    let m2 = super::tests::independent_thing(&mut lp, 0);
+    let e0 = &mut lp.peers[0].engine;
+    e0.grant(&g, &m1, &edge(Role::Read)).unwrap();
+    e0.grant(&m1, &m2, &edge(Role::Read)).unwrap();
+    let until = osis_base::WallMs(e0.core.now().0 + 1_000);
+    e0.grant(&m2, &tids[1], &osis_schema::core_types::Edge { until: Some(until), ..edge(Role::Read) }).unwrap();
+    lp.sync_all().unwrap();
+    let mut fx: osis_base::memo::Effects<(), bool> = osis_base::memo::Effects::new("lost g");
+    fx.want(());
+    let e1 = &mut lp.peers[1].engine;
+    assert!(e1.core.ix.secrets.contains_key(&g), "the reader holds g's secrets");
+    assert_eq!(fx.settle(&(), || e1.lost_due(&g).unwrap()), Some((None, false)));
+    assert!(fx.due().is_empty());
+    lp.peers[1].clock.advance(2_000);
+    let e1 = &mut lp.peers[1].engine;
+    let now = e1.now();
+    e1.set_now(now);
+    assert_eq!(fx.due(), vec![()], "due at the until");
+    assert!(!e1.lost_due(&g).unwrap() && e1.lost_timed(&g).unwrap().is_some(), "lost by the until alone");
+}
+
 // spec/sync-opens.md §4 (judged on the rosters held here now), spec/permissions.md §2 (the grant
 // counts as removed): J of a holder whose grant has an `until` is reader before
 // it and departed after; a follower of J is due when the clock passes it, nothing else moving.
