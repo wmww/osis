@@ -409,6 +409,8 @@ fn a_listing_waits_for_its_things_delete_keys_spec_permissions_5_5() {
         e.commit_ids().into_iter().find(|c| e.header(c).is_some_and(|h| h.author == a.account && h.aspects.iter().any(|x| x.ak.as_str() == "listing.0" && x.tid == u)))
     };
     assert_eq!(listing_on(&lp), None, "the listing waits for u's delete keys");
+    // the keys come later: w applies after the removal, its receipt still before it
+    lp.advance(10);
     for pk in &key_pks {
         lp.deliver(2, pk).unwrap();
     }
