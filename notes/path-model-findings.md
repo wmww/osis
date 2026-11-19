@@ -56,16 +56,16 @@ Most serious first.
 ## Not covered
 Dependent things and descent; `until`, invites, finalizes and self-removal by path end; snapshots, forgetting and own covers; demotion to write; accomplices granted inside the theft window; sessions and overlapping dots; hidden mode; purge authors; the thief's own rotations of A and secrecy (the keys layer is only the rotation loop under a standing dispute); a user keeping what nobody received; re-keys of things above A and re-seals; bodies a node on the wrong side dropped as invalid (whether a switch fetches them again); how a node picks its side (sides are given); the differential against osis-perm (nothing is built).
 
-## Against the second-round design
-Read, not modelled: each finding against notes/account-membership-design.md and notes/write-path-design.md as revised (issues/actors-one-mechanism.md, Answers).
-1. Answered as modelled: a vouch by a holder of every right the named write needed, read in the first walk, added to R's list for the second; it covers any role write, lowerings included.
-2. Answered as modelled: the first walk reads no vouch; two walks, no fixpoint.
-3. Answered: accepted (a holder whose authority only a vouch restores cannot itself vouch; one stage only).
-4. Open: write-path §1 still removes "R never demotes its own author" on the ground that R's list names its own chain, and nothing undoes drops made by a write the settled walk does not apply.
-5. Open: membership's assumption 3 and its locality property still give a reader of T only T's leaf; a leaf names X's commits on that thing or made through it, so a listed grant on A stays unseen there.
-6. Open: membership §1 (`takes`) and §4 (Other gaps) still list the loop as possible; nothing in the revised text ends it.
-7. Open: R's list still names every commit through the lowered edge its author received (write-path §1, List scope); nothing says to leave out the lowerings the remover contests.
-8. Open: the last-admin rule still reads every standing admin edge as the walk stands (adding only "no `until`"), and evidence still holds only edge writes on held paths' edges.
-9. Answered differently: no first-chained re-grant; the collateral grantee stands by a vouch where a remaining admin received its grant, else is discarded, shown to the user and kept only on the user's say-so; re-granted, its earlier content counts from the re-grant and its role writes stay dropped. The backdated-grant cost does not arise; a re-granted writer's addendum still vouches for nothing (left to the user's keep).
-10. Open: an addendum is still kept by any writer that could have written the write itself; nothing excludes the removed signer writing by another path.
-11. Answered as modelled: the pairer hands over its trust entries (membership §2, Pairing).
+## Where the design answers each
+Against notes/account-membership-design.md (membership) and notes/write-path-design.md (write-path). "Modelled" means the rule is the one `Rules::fixed` checks; "argued" means the note states a rule the model does not yet hold.
+1. Membership §4, Role writes: a vouch by a holder of every right the named write needed, read in the first walk and added to R's list for the second; any role write, lowerings included. Modelled.
+2. Membership §4, No circle: the first walk reads no vouch; two walks, no fixpoint. Modelled.
+3. Membership §4, No circle: accepted; a holder whose authority only a vouch restores vouches for nothing, and writes no vouch. Modelled as accepted.
+4. Write-path §1, A lowering stands on its own path: a lowering never puts in question the grants its own path rests on. Modelled (`own_chain_exempt`).
+5. Membership §4, The list: an entry per role commit beside the leaf per thing; a unit's copy of R carries the entry of each role commit the unit holds as evidence (write-path §2). The reader seeing those entries is modelled; the position per commit is argued.
+6. Membership §1, `takes`: an epoch covering a departure the node's walk does not apply is the other side's, read and never current, neither answered nor withdrawn. Modelled (`Withdraw::SideOnly`).
+7. Membership §4, What no list keeps, and write-path §1: an entry naming a lowering of an edge the listing write's own path rests on is read as absent, by every node. Argued, not modelled. Every other lowering the removed party made is listed as received and named in the removal's result.
+8. Write-path §5, The last admin: an unmarked lowering of an admin edge relies on one remaining standing admin edge (its own path's last edge, or one it names), whose edge writes are its evidence, so the rule reads two edges a reader holds. Argued; the model holds the fix as "the reader holds that grant", not the named edge.
+9. Membership §4: no re-grant from the first chained grant, so the backdated-grant cost does not arise. The collateral grantee stands by a vouch where a remaining admin had received its grant; otherwise its grant and its writes are discarded and a new grant counts from itself (nothing is kept on a user's word: Tess). A re-granted writer vouches, after its new grant, for what it had received before R (Writing): argued; the model takes those writes as lost. Its own role writes from the gap stay dropped.
+10. Membership §4: no addendum or vouch counts for a commit of its own signer. Modelled for addenda (`no_own_addendum`), argued for vouches.
+11. Membership §2, Pairing: the pairer hands over its trust entries. Modelled.

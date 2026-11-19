@@ -1,0 +1,219 @@
+# The staged plan for the two redesigns
+> Summary: The one plan a coordinator builds from for accounts on the ordinary rules and for the sync unit as one independent thing and its dependents: the open questions for Tess gathered with their recommendations and the stages each gates, the stages in order (what each changes, removes, needs modelled or measured, how it is checked, what it unblocks), why the two are ordered as they are, what is deleted when, what every other priority does meanwhile, and the risks with their cheapest early checks.
+
+Designs: notes/account-membership-design.md, notes/write-path-design.md (accounts, "(a)"); notes/sync-unit-scope.md, notes/sync-unit-design.md (the unit, "(b)"); where they meet: notes/sync-unit-design.md §12. Model of (a): roles-model `paths`, notes/path-model-findings.md. Nothing below is built. Marks: **[checked: ref]** read there for this plan; **[assumed]** taken from a design note or not verified; everything unmarked about the future is the plan.
+
+## Questions for Tess
+Open across all the files; each stage that would change is named. Until answered, the plan follows the recommendation.
+
+| | question | recommendation | gates |
+|---|---|---|---|
+| Q4 | **The deposit budget of a public thing** is open to everyone, or its deposit seed is sealed away from public (a sixth special case). | No special case until it matters | A5 |
+| Q5 | **At a promotion, the same blobs under the new sync ID or fresh ones.** The same blobs cost an entry each and show a node keeping both units unread which earlier entries were the promoted thing's. | The same blobs | B2 (the promotion move); fresh ones would add a re-encryption path there |
+| Q6 | **How a holder thing gets a member's secrets.** The member's steps list every holder thing with the sync secret for each; sealed by the step's X25519 exchange (48 B, not quantum-resistant, protects the member list and the right to fetch ciphertext) or to the holder's KEM key (1.2 KB); and whether the read secret moves into steps too. | Steps, the X25519 form, the read secret not in this change | B1 (wire and step format); the read-secret half would reshape A2's Bootstrap |
+| Q7 | **A referrer holding only sync on its target** still lists it, so readers of the referrer keep the target unread. spec/requirements.md says a thing takes "the part of its closure it can itself read". | Sync suffices; the requirement says "can itself sync" (a requirements edit, Tess's sign-off) | B1, B2 |
+| Q8 | **A unit the remover does not administer keeps serving a removed holder its ciphertext** until one of its admins issues a step. True today per inner sync ID. | Accept; reading new content is cut by the key rule | nothing built; B2's spec text and A3's stated properties |
+| Q9 | **What a node keeping units unread may learn of who writes where** (issues/sync-units-linked-at-rest.md): an evidence copy is one blob wrapped under each unit that needs it, and each unit a profile's owner writes in lists the profile's sync ID. A fresh encryption per unit hides the first at a copy per unit; nothing hides the second from a holder of both units' sync secrets. | Accept both and say so in spec/requirements.md (Data a node cannot read): hiding one and not the other buys nothing | A2 (the form of an evidence copy), A5 |
+| Q10 | **Node signers show on public things.** A public profile's evidence names, to everyone, which signer wrote each change and that signer's grant on the account: the number of nodes that edit a profile is public. It follows from visible mode (decided); hiding it is hidden mode for that one thing. | Accept; a profile-only shared signer stays possible later | A5 |
+
+Answered and planned on (issues/actors-one-mechanism.md Answers, issues/sync-unit-dependent-tree.md): a removal is logged where an act of the removed node could be valid, for good; vouching for role writes is automatic; nothing nobody received is kept; a strong to a dependent thing brings its independent's unit; core removes a node when told and never waits, with no hear-out operation tied to removal (a general "wait until every connected node is fully synced" behind a sync button serves a node being retired: UX, later); a timed admin grant does not count as a standing admin for the last-admin rule; the dial aspect is core's.
+
+## The stages at a glance
+| | stage | needs | redesign |
+|---|---|---|---|
+| G | Main's failing properties | | neither |
+| S1 | Cost defects of many sync IDs | | before either |
+| S2 | External signals: the word, and fires valid only where enabled | | before either |
+| S3 | Removal gaps on today's rules | G (rotation), M2 brief 1 | before either |
+| M1 | Model: the unit, member blobs, promotion (held-model) | | (b) |
+| M2 | Model: the write path's second round (roles-model `paths`) | | (a) |
+| M3 | Model: evidence completeness (held-model) | M1, M2 | both |
+| B1 | Holder things in steps, member blobs, the unread walk | M1, S1 | (b), additive |
+| A1 | Stated paths and the purge author, judged in osis-perm | M2 | (a) |
+| B2 | The switch: a unit is one independent thing and its dependents | B1 | (b) |
+| B3 | Status and waits over a closure | B2 | (b) |
+| A2 | Evidence per unit | A1, B2, M3 | both |
+| A3 | A removal's list and where it is logged | A2 | both |
+| A4 | Accounts as ordinary things | A3 | (a) |
+| A5 | Public things, cards, externally grantable | A4 | both |
+| A6 | Core without accounts: the library | A5 | (a) |
+| Z | Clean-up | A6 | |
+
+Parallel lanes: {S1, S2, S3, M1, M2} at once; then B1 beside A1 (sync and engine against perm and commit); B2 then B3; A2 onward is one lane.
+
+## The order of the two redesigns
+- **Independent of (a)**: S1, M1, B1, B2, B3. The unit's definition reads roles and records only, and today's account root is a root like any [checked: spec/sync-set.md §2, the unit is defined from strongs, roles and records; assumed: nothing in the switch reads the signing chain].
+- **Independent of (b)**: S2, S3, M2, A1. Validity is judged from held commits whatever sync ID brought them.
+- **(b)'s switch before (a)'s evidence.** Evidence per unit, a removal logged per unit and the enumeration of a removed signer's units are each stated once per unit only when a thing is under one unit (notes/sync-unit-scope.md, wins). Built on the readable-closure unit they would need the case of a thing under several sync IDs, then lose it: built twice. The other way round, B2 only shrinks certificate placement to "outside the unit" [assumed: notes/sync-unit-design.md §1], which is deletion, and A2 then replaces what is left.
+- **Paths (A1) before members (A4).** A signer that is not the account needs a path of at least [A]; today's header has one `actor` [checked: spec/wire.md §4]. With paths first, today's account key is simply the signer of a path that starts above it, so A1 lands with accounts unchanged.
+- **The ordinary removal complete (A3) before accounts rest on it (A4).** A4 deletes the account's own lists and listings; the per-thing list, the per-unit logging and vouches must hold first.
+- **Public things and cards (A5) before the library (A6)**, so the account functions leave the `osis` crate once, in their final shape.
+- **A1 before B2 is not required**; they run side by side. A1's one transitional piece: chain certificates certify the stated path instead of searching for one, a narrowing of engine `sync/certified.rs` that A2 deletes.
+- **Earliest deletions**: the multi-unit carriage at B2, the signing chain at A4. Nothing old is kept beside its replacement inside a stage: formats change in place.
+
+## Stages
+Each brief ends at green commits and fits a session (notes/coordination.md, Briefs); a brief that turns out larger is split by its coordinator, never run long. "Gate" means the branch's reviewer runs `tools/gate.sh` once.
+
+### G. Main's failing properties
+notes/priorities.md, First: issues/rotation-holds-sync-holder-opens.md (security), issues/paged-apply-differs-from-whole.md, issues/held-set-decides-plain-record-only.md, issues/app-tile-unreadable-emails-test.md [checked: tools/known_failures.txt]. The rotation one is studied before S3 brief 5 and A4 touch the rotation code: a real hole there is a fact for M2.
+
+### S1. Cost defects of many sync IDs
+Before either redesign; nothing waits on a question.
+- **Changes**: sync and engine only; the spec already says what should hold [assumed: spec/sync-streams.md §4 Costs, Joining; spec/sync.md §2, as cited by notes/sync-unit-design.md §8]. No format change.
+- **Briefs**: (1) the join per shared sync ID at an idle reconnect: find the cause, fix; (2) work per sync ID held at a commit and at an idle reconnect (`status: stranded`, `inbox: register judged`, `opens standing`, the store rows behind them); (3) opens found in one round batch at a first sync, and what a new reader sends back (23 KB per unit, unexplained).
+- **Measure first**: nothing new; the figures are notes/sync-unit-design.md §8 [measured there, main at 6e38bcd03].
+- **Checked by**: default tests in osis-sync counting at n and 10n (bytes, store rows read, the named counters), as §8's throwaway tests did; gate.
+- **Unblocks**: B1 and B2, which make many sync IDs the normal case. Closes most of issues/many-sync-ids-cost.md (its Still to count stays).
+
+### S2. External signals
+Before either redesign.
+- **Changes**: the rename open signal → external signal, open fire → external fire, "enables" (issues/deprecated-terms.md row; notes/terms.md): spec/data-model.md §2, spec/sync-inbox.md §2, spec/permissions.md §5.2 Open fires, spec/commits.md §5 The setting; engine, perm, `osis`, CLI, schema, app text. The rule: a fire of an external signal by a party holding no write on the thing is valid iff the thing's `retention^.0` in force at its key names the signal (notes/write-path-design.md §4, The setting, External fires). An account's inbox already names its three signals at creation [checked: spec/sync-inbox.md §1], so accounts keep working; a thing that is its own inbox takes tickets only once its admins enable them.
+- **Not in this stage**: cards, "externally grantable" as what a thing publishes, KEM keys following the switch: A5.
+- **Briefs**: (1) the rename, one pass, each use read; (2) held-model and spec: fire validity by the setting; (3) engine and perm, `osis` enable call (notes/api-design.md), CLI; (4) first-party schema and app: which things enable which signal.
+- **Model first**: held-model judges signals [checked: notes/test-properties.md, held-set property's coverage tally names "a judged signal"]; brief 2 adds the rule there before brief 3.
+- **Checked by**: `held_set_decides` with its held-model comparison; a rule test that an unnamed fire reaches no listener and is not promoted; the sim scenarios; gate.
+- **Unblocks**: A5; issues/stranger-fire-bounds.md is re-read after it.
+
+### S3. Removal gaps on today's rules
+Each is a gap of the ordinary rules, fixed for every holder; all land before either redesign except where said.
+- **Briefs**:
+  1. *Model* (part of M2, first): vouches under today's rule (authority as the walk gives it) in roles-model `edges` and `addenda` [checked: modules exist, core/test/roles-model/src], with "what no list keeps" and addenda written when the right is first held.
+  2. *Vouches*: spec/permissions.md §5.1 to §5.2 (the vouch aspect, the first walk, what counts), spec/wire.md; osis-perm (two walks for a component holding a counting vouch); engine writing (per thing, on applying a removal and on first holding the right); held-model. The voucher's authority is "an edge write of the same kind by it at the vouch's key would apply", so the check is whatever judges edge writes and survives A1 unchanged.
+  3. *What no list keeps* (argued, modelled in brief 1): an entry naming a lowering of an edge the listing write's own authority rests on is read as absent. Today's rule has the first half ("R never demotes its own author") [checked: spec/permissions.md §5.1 step 4].
+  4. *Addenda*: reach admin-only content that is not role-class; written again when the right is first held (re-granted, switched side).
+  5. *A standing dispute*: an epoch covering a departure the node's walk does not apply is the other side's (spec/crypto.md §4; notes/account-membership-design.md §1, `takes`). After G's rotation issue. Engine rotation, the rotation property, the TLA rotation models where they hold the withdraw rule [assumed: which .tla].
+  6. *The last admin, locally*: the refusal for every thing, dependent or independent, and the mark that lets a thing go adminless: spec/permissions.md §1 to §2, spec/wire.md, engine `flows/edges.rs` (`leaves_no_admin` is dependents only [checked: core/engine/src/flows/edges.rs]), `osis` error and option, CLI. The rule every node judges alike waits for A1 (it names an edge of a stated path) and A2 (its evidence): built before them it would give readers and members different verdicts (notes/path-model-findings.md, 8).
+  7. *The removal's result in the API*: what the removed party had added, removed or lowered; what arrived unnamed and was discarded. `osis`, CLI, app (notes/app.md). No keep.
+  8. *The overlap rule among otherwise valid commits only* (spec/commits.md §4): modelled in held-model first; dropped from this stage if it makes validity read validity.
+- **Not before the redesigns**: the list as a leaf per thing with an entry per role commit (A3: its carriage is the evidence copy, so built before A2 it is built twice); "nobody vouches for its own signer's commit" (meaningful once a write has one path: A1); pairing handing over trust entries (A4).
+- **Checked by**: the roles-model differentials in osis-perm (`tests/it/differential.rs`), the addenda differential, `held_set_decides`, hand reproducers for each gap, gate.
+- **Depends on**: Q2 (brief 6). **Unblocks**: A3 and A4, which then add no removal rule of their own.
+
+### M1. Model: the unit
+- held-model `closure` [checked: core/test/held-model/src/closure.rs] with the unit as one independent thing and its dependents, member blobs as derived data, a node keeping units unread walking them. Properties: every reader computes the same unit; release by reachability, cycles included; promotion in every arrival order loses no body (a late writer, a late reader); a strong to a dependent thing brings its unit; and the cases notes/sync-unit-design.md §5 leaves open: a promotion judged invalid, forked promotions, a mixed commit, a hostile writer deleting a member blob.
+- The sync differential's oracle follows the model [checked: notes/test-properties.md, `differential::histories_hold_their_closure` reads held-model `spec_closure`].
+- **Briefs**: (1) the unit, member blobs and release; (2) promotion and its open cases.
+- **Unblocks**: B1, B2.
+
+### M2. Model: the write path's second round
+roles-model `paths` holds the first round [checked: core/test/roles-model/README.md, Paths: 400,000 random worlds and the small family, no failing check under the fixed rules].
+- **Briefs**: (1) S3's rules under today's walk (above); (2) the two rules argued and not modelled: what no list keeps, the last-admin rule relying on a named remaining admin with a reader holding one unit's evidence; nobody vouching for its own signer; a re-granted writer's later addendum; (3) what the first round leaves out and A1 builds: descent and dependent things, `until`, invites, finalizes, self-removal by path end, purge authors, own covers and forgetting; (4) the removal's units: logged where the signer could write, absent where it could only read, a holder raised to write after the removal, a promotion while it is on its way; (5) public and external grants (notes/write-path-design.md §6).
+- **Checked by**: `cargo run --bin roles-model -- N paths` through `tools/heavy`, each new rule with its negative control.
+- **Unblocks**: S3 (brief 1), A1 (2, 3), A3 (4), A5 (5).
+
+### M3. Model: evidence completeness
+held-model: a reader holding only a unit, its required set computed from its own holdings, judges every write of the unit as a node holding everything does; a removal's copy with its reach is judged required; evidence leaves with the commit that needed it (notes/write-path-design.md §6). One brief, after M1 and M2 brief 3. **Unblocks**: A2.
+
+### B1. Holder things in steps, member blobs, the unread walk
+Additive: things still ride under enclosing sync IDs, and a node keeping a root unread also follows members.
+- **Changes**: spec/sync-ids.md §3 (claims by sync-role key for every holder thing, entry boxes for them, the superseded sync secret in a step), spec/wire.md §5 (the member class), §7, §8; engine `sync/set.rs`, `sync/units.rs` (out-edges of a unit kept unread); osis-sync `unread`, `store`.
+- **Briefs**: (1) spec and wire; (2) steps: claims and entry boxes for holder things; (3) member blobs: the required-set rule, logging, deleting; (4) the unread walk, dropping, caps; (5) the sim scenario.
+- **Checked by**: rule tests; a sim scenario: a fresh reader served only by a node keeping the closure unread; the differential unchanged; counts at n and 10n members.
+- **Depends on**: Q6, Q7. **Unblocks**: B2.
+
+### A1. Stated paths and the purge author
+Accounts unchanged: today's account key is the signer.
+- **Changes**: spec/wire.md §4 (`signer` and `path` replace `author` and `actor`; the hashed path per thing; the purge-author index), spec/commits.md §1 and §4, spec/permissions.md §5.1 to §5.2 and §6 rewritten along one path (notes/write-path-design.md §1), spec/crypto.md §7 (level 2 is the purge author's); osis-commit, osis-perm (validity as a point query per hop, the hop index, `first_held` per path; `roles_on` stays for keys and `holders`), engine apply and writing (the session's default path), `osis` (`Write::act_as` states a path and purge author [checked: core/osis/src/write.rs]), CLI. Certificates certify the stated path.
+- **Lands here from S3's list**: the last-admin rule judged alike (a named remaining admin), nobody vouching for its own signer.
+- **Removes**: the header's `actor`; the Acting check; "losing a path while another keeps the class is no fall"; the reachability search of an audit (`audit_fall`, the forward roles cache [assumed: names from notes/write-path-design.md §1, osis-perm]); the certificate search over any path.
+- **Briefs**: (1) spec; (2) header and commit crate; (3) osis-perm walk by path, against `paths` as its differential; (4) purge author and delete keys; (5) engine writing and the default path, `osis`, CLI; (6) the last-admin rule; (7) counting: perm work per write at n and 10n (issues/perm-eval-cost.md).
+- **Checked by**: an osis-perm differential against roles-model `paths` replacing those against `joint` and `edges`; `held_set_decides` with held-model updated in brief 1's wake; gate.
+- **Depends on**: M2 briefs 2 and 3; Q2. **Unblocks**: A2.
+
+### B2. The switch
+- **Changes**: spec/sync-set.md §2 to §3 and spec/sync-judgement.md §1 to §2 rewritten to the unit; `bodies_under` and `sync_bodies` per unit; the promotion move and the delete-after-carrier rule (notes/sync-unit-design.md §5); the reader walk of §4.
+- **Removes**, in the same stage (no half state is specified): spec/sync-judgement.md §1 Retag and Per-sync-ID copies for bodies, spec/sync-set.md §3 "A thing leaving a sync unit", "T's keys open X" as what decides carriage; the body-deposit and promotion paths for nesting; `Body::to_sync_id` for parts not derivable; the `keys_open` half of engine `sync/units.rs`; the pull anew of an enclosing sync ID at a new strong [assumed: the code sites of notes/sync-unit-design.md §1].
+- **Briefs**: (1) spec; (2) the unit in `units.rs` and the reader walk; (3) bodies per unit, with retag, nesting deposits and body copies deleted; (4) promotion: the move, the carrier rule, the late writer; (5) the differential on the new oracle, its full-size classes run again; (6) sync leftovers closed or re-read (below).
+- **Checked by**: the sync differential and sims on M1's oracle; B1's scenario; `tools/gate.sh`; the networking check by hand (notes/testing.md).
+- **Depends on**: Q5; Q7 for the requirements wording. **Unblocks**: B3, A2. The note for the readable-closure model stays: notes/sync-unit-scope.md, The readable-closure model.
+
+### B3. Status over a closure
+spec/sync-status.md, osis-sync `status`, the `osis` wait over a closure (notes/api-design.md), CLI and app where they show sync state. One or two briefs. Checked by rule tests of the fixpoint (a pass of one unit adding members) and the sims.
+
+### A2. Evidence per unit
+- **Changes**: spec/permissions.md §4 and spec/sync-judgement.md §1 to §2: a unit's evidence is the closure over the paths its held commits state (notes/write-path-design.md §2), logged with the commit that needs it and leaving with it; a holder's taken grants in the holder's unit; pending on missing evidence; deposits promoted once their evidence is under the unit. Engine `sync/certified.rs`, `sync_ids/certs.rs`, `sync/certblobs.rs` rebuilt as the one derivation [checked: the three files exist, 1059, 711 and 514 lines].
+- **Removes**: chain certificates over any path, "closed under authors", each path thing's `keys.0` as evidence, the duty to log one's account's chain on first logging under a sync ID. The account's rotations as header-only copies and its thing lists stay until A4, as the evidence of today's signer.
+- **Briefs**: (1) spec; (2) the derivation and its required-set rule; (3) logging and leaving, copies; (4) taken grants and Bootstrap; (5) sim and differential: a reader holding one unit judges as a node holding all.
+- **Checked by**: M3's property in `held_set_decides`' held-model comparison and the sync differential; stored bytes per unit counted against notes/sync-unit-design.md §8's "half the entries are certificate copies".
+- **Depends on**: Q9; Q6's read-secret half. **Unblocks**: A3. Closes issues/certificate-copy-never-shrinks.md; issues/cert-blob-hostile-delete.md is re-read.
+
+### A3. A removal's list and where it is logged
+- **Changes**: spec/permissions.md §5.1 Frontier: a leaf per thing and an entry per role commit in the list tree (the built tree of §5.5 moves to the ordinary removal [checked: core/commit/src/lists.rs, core/engine/src/flows/lists.rs exist]); the copy of a removal under a unit with its leaves, entries and reach; logged under every unit where the signer could write, invite or make an enabled reader-level act, for good; the standing duty and the debt; holding a unit for the errand of logging there (notes/account-membership-design.md §4; notes/sync-unit-design.md §12 cases 2, 3, 6). No hear-out operation: core removes when told (Tess); what a retiring node still holds reaches the others by ordinary sync, waited for by the general wait on connected nodes.
+- **Removes**: the one frontier over every thing and its bound on a removal's size.
+- **Briefs**: (1) spec; (2) the list tree in the ordinary removal, perm and engine; (3) the copy per unit and its required-set rule; (4) finding the units, the duty, the debt; (5) counting: a removal over n and 10n units (entries, stamps, store rows).
+- **Checked by**: M2 brief 4's properties through the osis-perm differential; a sim scenario: a stolen node's first write in a unit it never wrote is invalid at a reader served only by a node keeping the unit unread; gate.
+- **Depends on**: Q1. **Unblocks**: A4.
+
+### A4. Accounts as ordinary things
+The flag day of (a): an account is an independent thing A, its members signers, a key per node per account.
+- **Changes**: spec/permissions.md, spec/crypto.md §3, spec/wire.md §4, spec/sync-set.md §1, spec/sync-inbox.md §1, spec/sync-opens.md §2 (a proof of a signer); engine: making an account mints A with the first signer, pairing is a grant with a step and the pairer's trust entries, removing a node is the ordinary removal, a thing minted with A is its dependent; the `osis` account calls keep their names over the new mechanism (they move at A6); CLI and app follow.
+- **Removes**: spec/permissions.md §5.4 Signing chain and §5.5 Account epochs, spec/crypto.md §9, the header's `epoch`, `rotation`, `reseal` and the inner signature [checked: spec/wire.md §4 fields 14 to 16, Inner signature]; engine `flows/account.rs`, `flows/custody.rs`, `flows/lists.rs`, `flows/signing.rs`, `sides.rs` (account sides) [checked: files exist, 1450, 271, 231, 790, 308 lines]; osis-perm `epochs.rs`, `chain.rs` [checked: core/perm/src]; core/keys `account.rs` [checked exists; assumed removable]; roles-model `custody` and `epochs`, the custody differential (`rotation::tests_custody`), core/test/tla/rotation Account.tla with its `Acc_*.cfg` [checked: exist]; the account root; "a thing minted with an account as admin is independent at birth"; the account evidence A2 kept.
+- **Kept on purpose**: notes/account-membership-design.md §7, Node anonymity as it was built (Tess); it stops saying "while they stand" of the spec sections once they go.
+- **Briefs** (a rewrite of an area: notes/coordination.md, Rewriting an area; the pieces land on one coordinator branch and reach main together, since no half of an account system is specified): (1) spec; (2) signers: keys per node per account, steps listing them; (3) making an account and its things as dependents; (4) pairing; (5) removing a node, with the stolen-node walk of notes/account-membership-design.md §2 as tests; (6) the deletions in engine and perm; (7) `osis`, CLI, app adapted; (8) models and differentials: custody and epochs removed, the membership instances of M2 as the perm differential, sims' worlds rebuilt; (9) counting: a commit's bytes (no epoch, no inner signature), pairing and removal at n and 10n nodes.
+- **Checked by**: the osis-perm differential against `paths` with the membership instances; the rotation and deep-departure properties on accounts as holders; sync differential and sims with accounts as units; `-p osis`, CLI and app tests; gate; the networking check.
+- **Unblocks**: A5, A6; zero-growth's durable counters per signer; recovery (a recovery key is a member signer).
+
+### A5. Public things, cards, externally grantable
+- **Changes**: the public key thing and its five special cases (notes/write-path-design.md §3), a member blob for a public target, anyone entering by public's static entry; the card aspect and the admin-only aspect naming a thing's inbox and cards, in place of the inbox field of `keys.0`; externally grantable as one switch with tickets; what a thing takes; the granter's refusal; KEM keys published only by a holder or an enabled thing (notes/thing-cost.md, Fewer KEM keys held). spec/crypto.md §3, spec/permissions.md §2 to §4, spec/sync-inbox.md, spec/sync-ids.md §3, spec/data-model.md §9; engine, sync, `osis` (enable, place a card, the public thing's tid), CLI.
+- **Removes**: the inbox field of `keys.0` and `Engine::inbox_thing`'s rule; KEM keys of things nobody seals to; the profile and card travelling as certificates.
+- **Briefs**: (1) spec; (2) the public key thing in perm and keys; (3) public units in sync; (4) cards and the inbox aspect; (5) taken grants and the refusal; (6) keys following the switch, counted per independent thing.
+- **Checked by**: M2 brief 5 through the perm differential; sims: a profile fetched by a reader served only by a node keeping the referrer unread; a stranger's sealed fire reaching a unit kept unread and promoted; bytes per independent thing against notes/thing-cost.md's 14.9 KB.
+- **Depends on**: Q4, Q9, Q10. **Unblocks**: A6; the two leaks of priorities item 3 are judged again here.
+
+### A6. Core without accounts
+- **Changes**: a library crate beside the first-party schema takes `Osis::pair`, `Joining`, `pair_offer`, `pair_accept`, `me`, `account_root`, `nodes`, `remove_node`, `profile`, `profile_of`, `contact_card`, `import_contact` and the account-making half of `Osis::create` [checked: these exist in core/osis/src/account.rs, share.rs, handle.rs]; core keeps signers, a session's default path and purge author, and the dial aspect (notes/write-path-design.md §5 table). The schema describes a realm, a home and an account (notes/realms.md, issues/realms-design.md); profiles are public things, the dial list a contact-only thing. CLI `me`, `pair`, `contact` call the library; app and libs/kit follow (notes/app.md).
+- **Removes**: the account calls from the `osis` crate; the sibling rule of dialing; "the account's inbox" as core's.
+- **Briefs**: (1) the `osis` surface (notes/api-design.md); (2) the library crate; (3) schema: realm, home, account, profile, contacts; (4) dialing by the dial aspect; (5) CLI; (6) kit and app.
+- **Depends on**: Q1, Q3. **Unblocks**: realms' UX work; schema discovery and templates stay parked.
+
+### Z. Clean-up
+The renames left (below); notes/terms.md, Built and being moved to, reduced to what is true; issues closed or re-read; the TLA vocabulary pass with a TLC rerun; notes/overview.md and notes/architecture.md brought to the result.
+
+## What is deleted, and when
+| what | stage | must exist first |
+|---|---|---|
+| Retag, nesting deposits and their promotion, per-sync-ID body copies, "T's keys open X" deciding carriage | B2 | member blobs and the unread walk (B1), M1 |
+| Chain certificates over any path, certificate placement by what a sync ID's thing may read | A2 | stated paths (A1), the unit (B2), M3 |
+| The header's `actor`, the Acting check, the audit's reachability search | A1 | M2 briefs 2 and 3 |
+| The one frontier over every thing | A3 | evidence per unit (A2) |
+| Signing chain, epochs, custody, merges, account sides, thing lists and listings; `flows/account.rs`, `custody.rs`, `lists.rs`, `signing.rs`, `sides.rs`; perm `epochs.rs`, `chain.rs`; the header's `epoch`, `rotation`, `reseal`, inner signature | A4 | the ordinary removal complete (S3, A3) |
+| roles-model `custody` and `epochs`, the custody differential, TLA Account | A4 | `paths` holding the membership instances (M2) |
+| The account root | A4 | A as a unit with dependents |
+| The inbox field of `keys.0`, KEM keys nobody seals to | A5 | cards |
+| Account functions in the `osis` crate | A6 | public profiles and cards (A5) |
+
+Kept as records (Tess): node anonymity as built, notes/account-membership-design.md §7; the readable-closure model, notes/sync-unit-scope.md.
+
+## What the other priorities do meanwhile
+By item of notes/priorities.md.
+- **First, main's failing properties**: proceed first (G).
+- **2. Whole commits tail**: invalid bodies kept at stores stays a Tess call and proceeds; "re-grants restoring from stores" matters more after S3, since a vouch arriving late fetches bodies again. Drop-rejoin's holder-logs-again waits for B2 (it logs under one unit then). Zero-growth: the tombstone design that needs a stable writer waits for A4 (each signer is one); its other rows proceed.
+- **3. Key passing and grants without history**: history-less-grant's next step (records of dependent things under another's sync ID) is overtaken by B2. removed-device-reads-later-grants is judged after A4, fresh-deposit-seed-readable-by-departed after A5.
+- **4. Bounded memory tail**: proceeds; it touches neither redesign.
+- **5. Account signing tail**: overtaken at A4; account-signing, account-side-shared, rotation-names-grow close there, maker-unknown-from-snapshot is re-read [assumed].
+- **6. Slimmer things** (notes/thing-cost.md, Ranked candidates):
+  - Free by a redesign: 4 (no `epoch`, no inner signature: A4); the KEM keys most independent things publish (A5); `X/` only for a blob under several sync IDs (12, mostly free at B2).
+  - Moot: `actor` absent when equal to `author` (14: A1 replaces both); the account root's ticket in the making commit (Rejected there: the root goes at A4).
+  - Wait: 1 (store each commit once) until B2 removes body copies; 3 and 13 (the echo, the blob ID beside an inline blob) until S1 and B2 settle the entry flow; 5, 6, 8 and the delete-key ideas (wire format of a commit) are done in one pass after A1's header change, so the header changes once more, not three times.
+  - Proceed any time: 2, 7, 9, 10, 11 (engine rows).
+  - perm-eval-cost: counted in A1; many-sync-ids-cost: S1; many-things-cost, derived-state-recomputed, chat-add-cost proceed.
+- **7. Sync leftovers**: closed by B2 without a fix: refetch-ticket-test, the retag items of sync-unbuilt and sync-tests-owed, the `rewrap` item of sync-pending-leftovers; run again after B2: differential-full-size-classes; re-read after B2: sync-parks-check and sync-tests-owed (deposit items), storage-owners, sync-models-lag; closed or re-read at A2: certificate-copy-never-shrinks, cert-blob-hostile-delete; wait for A5 and A6: stranger-fire-bounds, dial-candidates, sync-link-first-contact; proceed: redeem-leaves-a-blob, forged-ticket-sync-id-entries, cover-before-commit, opens-hit-index-cost, timed-loss-wait.
+- **8. Long tail**: proceeds beside; an issue in the perm walk (settled-writers-dispute-script, dispute-scan-cost) is checked against A1 before a fix.
+- **Parked on Tess**: unchanged; recovery is designed after A4; settings and client auth do not collide.
+- **Renames owed** (issues/deprecated-terms.md): external signal and external fire at S2; `author` and `actor` in the header at A1; key actor to signer, device for a node, devices, the account root at A4 (they go with what they name); `actor` in identifiers (`mint_actor`, holder actor, client actor) at A6 and Z, each use read; the TLA vocabulary at Z, with Account.tla's share gone at A4; `Placed` when A2 rebuilds `certified.rs`; the spec's rule words (edge, rights, demotion) where A1 rewrites §5, otherwise unscheduled; the reference-graph words stay with their own rebuild.
+- **Later designs that build on this**: readers hidden from each other (issues/readers-see-readers.md) after A2; hidden mode stays a design.
+
+## Risks
+1. **The path-judged walk with two-walk vouches does not hold up outside the first round's worlds** (descent, `until`, invites, self-removal, own covers; a component holding a vouch walked twice). Cheapest check: M2 briefs 2 and 3, before any A1 code; then A1 brief 7's count at n and 10n.
+2. **Promotion under the switch** (a promotion judged invalid, forked promotions, a late writer, a removal on its way) loses or strands bodies. Cheapest check: M1 brief 2, every arrival order, before B1 is built.
+3. **A removal's units**: the cost at an organization's scale, and the raised holder (a signer removed while its account only read a unit, the account raised to write later). Cheapest checks: M2 brief 4; reading spec/crypto.md §4 Floors for whether readers take content sealed under a superseded epoch; A3 brief 6's count. If the raised holder is a real window, the removal is also logged at the raise, by the duty already stated.
+4. **Many sync IDs stay costly per unit** after S1, which would make a closure of units slower than the bag it replaces. Cheapest check: S1 itself, first, counted at n and 10n; B1 is not started until S1's counts are flat.
+5. **Two rules are argued, not modelled** (what no list keeps; the last-admin rule's named admin). Cheapest check: M2 brief 2, two hand worlds each with its negative control.
+
+## Not established
+- Whether readers reject content sealed under a superseded read epoch (risk 3).
+- That a pass holding a unit for an errand fetches no linked chunk, tree or page blob [assumed].
+- Which TLA rotation models hold the withdraw rule S3 brief 5 changes.
+- The cost defects' causes (S1 briefs 1 and 3 start by finding them).
+- That all five full-size differential seeds are multi-unit carriage (run again after B2).
+- Bytes of a removal's copy per unit, and of an evidence set per unit: counted in A2 and A3, not computed here.
