@@ -727,13 +727,14 @@ fn seeds(w: &World, rules: &Rules, v: &View, active: &Set, vouched: &Vouched) ->
     d
 }
 
-/// The vouches a walk applies after their removal, and the (removal, role write) pairs they
+/// The vouches a walk applies after their removal, where it applies that removal too
+/// (notes/account-membership-design.md §4, It counts), and the (removal, role write) pairs they
 /// name.
 fn counting(w: &World, rules: &Rules, wk: &Walk) -> (Set, Vouched) {
     let (mut ids, mut out) = (Set::new(), Vouched::new());
     for &i in &wk.pass.applied {
         if let Kind::Vouch { removal, list } = &w.commits[i].kind {
-            if w.key(*removal) < w.key(i) {
+            if w.key(*removal) < w.key(i) && wk.pass.applied.contains(removal) {
                 ids.insert(i);
                 let own = |j: Id| rules.no_own_vouch && w.commits[j].signer == w.commits[i].signer;
                 out.extend(list.iter().filter(|&&j| w.edge_class(j) && w.commits[j].on == w.commits[i].on && !own(j)).map(|&j| (*removal, j)));

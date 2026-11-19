@@ -96,8 +96,9 @@ pub struct Move {
 /// or listing M's grant of H; X demoting H listing its own grant); `N5_MOVES` are signed with the
 /// key of N5, removed by X before the theft (`Setup::n5` 3); 35 is X's twin of that removal; 36 is
 /// N5, paired by X and kept (`Setup::n5` 1), vouching for X's role writes on A (an accomplice); 37
-/// is X removing A from T1 by [A2] (where it administers T1 through A2).
-pub const MOVES: usize = 38;
+/// is X removing A from T1 by [A2] (where it administers T1 through A2); 38 and 39 are X's own
+/// edge set timed by itself (admin until the tick after its `ts`; write until after the story).
+pub const MOVES: usize = 40;
 /// N5 grants H admin, standing or until just after the removal; N5 removes H; N5 demotes H; N5
 /// vouches against H's removal for X's role writes on A. Each stamped before X's removal of N5
 /// but the vouch.
@@ -600,6 +601,10 @@ impl Sim {
             20 => (X, &[A], D1, Kind::Content),
             // X leaves A by itself (a self-removal, its path ending at itself)
             21 => (X, &[], A, grant(X, Role::None).relying(H)),
+            // the same carrying an `until` in place of none: admin until just after, write until
+            // after the story
+            38 => (X, &[], A, grant(X, Role::Admin).until(mv.ts + 1).relying(H)),
+            39 => (X, &[], A, grant(X, Role::Write).until(B_UNTIL).relying(H)),
             // X makes A leave T1, its path ending at A, marked adminless
             22 => {
                 let mut k = grant(A, Role::None);

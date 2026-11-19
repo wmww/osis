@@ -1169,7 +1169,7 @@ fn random_worlds_hold_large() {
 }
 
 /// Every 53rd world of the small family (`-- 0 paths-exh` runs all of them by hand): a stride
-/// coprime with every dimension's size (2, 4, 5, 38), so no dimension is fixed or tied to
+/// coprime with every dimension's size (2, 4, 5, 40), so no dimension is fixed or tied to
 /// another (an even stride keeps `h_t1` false in every world).
 #[test]
 #[ignore = "property"]
@@ -1491,9 +1491,10 @@ fn an_equivocating_twin_of_an_earlier_removal() {
 /// Vouches that void (notes/path-model-findings.md 20): N5, paired by X and listed by H's removal,
 /// is the thief's: it vouches for X's removal of H, which H's removal left out. Trusted, the
 /// removal is void by that vouch (the accomplice: a party holding admin after it), and without
-/// the vouch it stands. Z or X vouching the same counts for nothing. Once the removal is void, X
-/// is an admin again and removes N5 after it, so the final reading holds no counting vouch: what
-/// voided the removal is not in the reading that shows it void.
+/// the vouch it stands. Z or X vouching the same counts for nothing. Once the removal is void the
+/// walk applies X's removal of H, so the vouch's removal does not apply in the first walk and the
+/// vouch counts no more: the final reading holds no counting vouch, and what voided the removal
+/// is not in the reading that shows it void.
 #[test]
 fn a_current_admins_vouch_voids_the_removal_and_leaves_no_trace() {
     let (mut w, gx, gb) = paired();
@@ -1508,11 +1509,8 @@ fn a_current_admins_vouch_voids_the_removal_and_leaves_no_trace() {
     }
     let v5 = w.vouch(N5, 7, &[], A, r, &[rx]);
     let rd = fixed(&w, &[r]);
-    assert!(rd.void.contains(&r) && rd.counting.contains(&v5) && rd.role(X, A) == Admin);
-    w.edge(X, 7, &[], A, N5, Gone, &[]);
-    let rd = fixed(&w, &[r]);
-    assert!(rd.void.contains(&r) && rd.counting.is_empty() && rd.role(N5, A) == Gone && rd.role(X, A) == Admin);
-    assert!(fixed(&w, &[r]).void.contains(&r) && judge(&w, &Rules::fixed(), &View::all(&w).trusting(&[r]).without(&[v5])).void.is_empty());
+    assert!(rd.void.contains(&r) && rd.counting.is_empty() && rd.role(X, A) == Admin && rd.role(H, A) == Gone);
+    assert!(judge(&w, &Rules::fixed(), &View::all(&w).trusting(&[r]).without(&[v5])).void.is_empty());
 }
 
 /// A removal stating more than one hop (notes/path-model-findings.md, To model next 8): B removes
@@ -1567,4 +1565,75 @@ fn a_dispute_whose_write_is_a_no_op_where_trusted_is_shown() {
     let t = fixed(&w, &[r3]);
     assert!(t.applied.contains(&r3) && !t.lowered.contains(&r3) && t.applied.contains(&xr) && t.role(A, T1) == Admin);
     assert_eq!(disputes(&w, &Rules::fixed(), &View::all(&w)), vec![r3]);
+}
+
+/// Self-removal and time (notes/path-model-findings.md, To model next 9). X's backdated leave
+/// carrying an `until` (admin until 2), and X setting its own edge to write until after the
+/// story, each stamped before role writes X made honestly that H lists: a lowering of (X, A) puts
+/// each in question like a write through it, so H's removal drops them and X's writes stand.
+/// Control: a self-removal never put in question, X's writes fall.
+#[test]
+fn a_timed_self_removal_is_put_in_question_like_a_leave() {
+    for (role, until) in [(Admin, 2), (Write, 20)] {
+        let (mut w, _, gb) = paired();
+        let down = w.edge(X, 3, &[], A, B, Write, &[gb]);
+        let g5 = w.edge(X, 3, &[], A, N5, Admin, &[]);
+        let r = w.edge(H, 6, &[], A, X, Gone, &[down, g5]);
+        let timed = w.edge(X, 1, &[], A, X, role, &[]);
+        w.set_until(timed, until);
+        w.rely(timed, H);
+        assert!(w.leave(timed));
+        let rd = fixed(&w, &[r]);
+        assert!(!rd.applied.contains(&timed) && rd.applied.is_superset(&Set::from([down, g5])), "{role:?}");
+        let rd = fixed_but(&w, &[r], |x| x.leave_in_question = false);
+        assert!(rd.applied.contains(&timed) && !rd.applied.contains(&g5), "{role:?}");
+    }
+}
+
+/// A leave of a holder thing: X makes A leave T1 (marked adminless), stamped before a grant B made
+/// on T1 through (A, T1); K, a co-admin of T1 through A2, then removes A from T1 listing B's
+/// grant. The leave is put in question like a write through (A, T1): unlisted, it is dropped, and
+/// B's grant stands. Control: never put in question, the leave takes B's authority and its grant.
+#[test]
+fn a_holder_things_leave_is_put_in_question_by_a_removal_of_its_edge() {
+    let mut w = account();
+    w.edge(H, 1, &[], A, X, Admin, &[]);
+    w.edge(H, 1, &[], A, B, Admin, &[]);
+    let g2 = w.edge(H, 1, &[A], T1, A2, Admin, &[]);
+    let leave = w.edge(X, 2, &[A], T1, A, Gone, &[]);
+    w.mark_adminless(leave);
+    let gn = w.edge(B, 3, &[A], T1, N6, Write, &[]);
+    // K lists its own holder's grant too (else it drops its own authority and is void)
+    let rk = w.edge(K, 6, &[A2], T1, A, Gone, &[g2, gn]);
+    let rd = fixed(&w, &[]);
+    assert!(rd.applied.contains(&rk) && !rd.applied.contains(&leave) && rd.applied.contains(&gn) && rd.role(N6, T1) == Write);
+    let rd = fixed_but(&w, &[], |x| x.leave_in_question = false);
+    assert!(rd.applied.contains(&leave) && !rd.applied.contains(&gn));
+}
+
+/// A vouch counts only where its removal applies in the first walk (notes/account-membership-
+/// design.md §4, It counts; finding 22: the model had read only its key). X removed N5 before the
+/// theft; the thief backdates X's own edge to write until after the story, removes H (honestly
+/// stamped, before H's removal), and with N5's key vouches against H's removal for all three. A
+/// node trusting nothing: in the first walk H's removal drops the timed self-demotion, X's
+/// removal of H then applies and H's is void; there N5 is an admin again, but H's removal does
+/// not apply, so N5's vouch counts for nothing and H's removal is the dispute shown. Counted by
+/// its key alone, N5's vouch would keep all three: H's removal would apply there with N5 back
+/// and the self-demotion standing, a reading unlike the trusted side's with no dispute shown.
+#[test]
+fn a_vouch_counts_only_where_its_removal_applies_in_the_first_walk() {
+    let (mut w, gx, gb) = paired();
+    let g5 = w.edge(H, 1, &[], A, N5, Admin, &[]);
+    let out = w.edge(X, 3, &[], A, N5, Gone, &[g5]);
+    let rx = w.edge(X, 5, &[], A, H, Gone, &[gx, gb, g5]);
+    let r = w.edge(H, 6, &[], A, X, Gone, &[out]);
+    let timed = w.edge(X, 2, &[], A, X, Write, &[]);
+    w.set_until(timed, 20);
+    w.rely(timed, H);
+    let v5 = w.vouch(N5, 7, &[], A, r, &[out, rx, timed]);
+    let plain = fixed(&w, &[]);
+    assert!(!plain.counting.contains(&v5) && !plain.applied.contains(&r));
+    assert_eq!(disputes(&w, &Rules::fixed(), &View::all(&w)), vec![r]);
+    let rd = fixed(&w, &[r]);
+    assert!(rd.void.is_empty() && rd.role(N5, A) == Gone && rd.role(H, A) == Admin && !rd.shows(timed));
 }
