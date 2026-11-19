@@ -930,6 +930,10 @@ indexes! {
     /// The removals judged by `flows::vouches`, by the component (`osis_perm::Timelines::component`)
     /// of their target as judged: a change of the component makes them due again.
     pub vouch_watch: JSetMap<u64, CommitId>,
+    /// The writers' leaving out taken per (removal, thing) (`flows::vouches::leaving_out`): kept
+    /// while it still holds for the same candidates and trust set, so a fight costs a step two
+    /// walks, not one per candidate. Memory only: an open takes it anew.
+    pub vouch_left: JMap<(CommitId, Tid), Arc<crate::flows::vouches::LeftOut>>,
     /// Role commits with a frontier applied here and not yet answered with this node's addenda
     /// (`Engine::answer_removals`; `records::ADDENDA_DUE`).
     pub addenda_due: JSet<CommitId>,

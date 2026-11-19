@@ -36,6 +36,7 @@ use osis_perm::Point;
 use osis_schema::Codec;
 use osis_schema::core_types as ct;
 use std::collections::{BTreeMap, BTreeSet};
+use std::sync::Arc;
 
 /// Notes removal `r` (a role commit with a frontier, applied here) as due.
 pub(crate) fn note_due(core: &mut Core, r: &CommitId) {
@@ -67,6 +68,17 @@ struct Owed {
     component: Option<u64>,
     /// Per thing, the vouch owed there: the commits it lists, in the order received.
     on: BTreeMap<Tid, Vec<CommitId>>,
+    /// The leavings out taken anew, per thing (`Indexes::vouch_left`).
+    left: Vec<(Tid, Arc<LeftOut>)>,
+}
+
+/// A leaving out taken (`leaving_out`): of the candidates `all` (in the order received) under
+/// trust set `trust`, the `kept` with which R, trusted, applies.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct LeftOut {
+    all: Vec<CommitId>,
+    trust: BTreeSet<osis_perm::WriteId>,
+    kept: Vec<CommitId>,
 }
 
 /// Whether removal `r` (its edge commit `rc`, first received at `r_got`) may ever owe a vouch at this node
@@ -116,6 +128,9 @@ fn write_for(tx: &mut Tx<'_>, r: &CommitId, me: Tid) -> Result<()> {
     let now = tx.core.hlc.peek();
     let o = owed(tx.core, r, me, now);
     let w = writable_split(tx, me, o.on, ct::VOUCHES_AK, Some(Role::Sync))?;
+    for (n, l) in o.left {
+        tx.core.ix.vouch_left.insert((*r, n), l);
+    }
     for (n, lists) in &w.now {
         // a new entry of this delta's own (`put_new`, spec/data-model.md §9)
         let mut mu = crate::Mutation::new();
@@ -205,7 +220,11 @@ fn owed(core: &Core, r: &CommitId, me: Tid, now: Ts) -> Owed {
         if !owes(&all) {
             continue;
         }
-        let lists = leaving_out(tl, r, all);
+        let taken = core.ix.vouch_left.get(&(*r, n)).filter(|l| l.all == all && l.trust == *tl.trust());
+        let (lists, new) = leaving_out(tl, r, all, taken.map(|l| &**l));
+        if let Some(l) = new {
+            out.left.push((n, l));
+        }
         if owes(&lists) {
             out.on.insert(n, lists);
         }
@@ -215,18 +234,33 @@ fn owed(core: &Core, r: &CommitId, me: Tid, now: Ts) -> Owed {
 
 /// The writers' leaving out (spec/permissions.md §5.1 Vouches, Writing): where R, trusted, would
 /// not apply in this node's walk with every one of `all` listed, they are taken in the order
-/// received, each kept only where R still applies with those kept so far. A walk of the
-/// component per commit only where the first check fails (rare: a listed write R rests on).
-fn leaving_out(tl: &osis_perm::Timeline, r: &CommitId, all: Vec<CommitId>) -> Vec<CommitId> {
+/// received, each kept only where R still applies with those kept so far. A list taken before for
+/// the same candidates and trust set (`taken`) is kept while R still applies with it and not with
+/// all (the spec's "may keep"): two walks per judgement in a fight, whatever the number of
+/// candidates the removed party made; taking anew walks once per candidate. Returns the list and
+/// the leaving out to keep when taken anew.
+///
+/// Invariant: the list returned is one the rule allows in this walk: R, trusted, applies with
+/// it, and where it is not all of them, not with all.
+fn leaving_out(tl: &osis_perm::Timeline, r: &CommitId, all: Vec<CommitId>, taken: Option<&LeftOut>) -> (Vec<CommitId>, Option<Arc<LeftOut>>) {
+    osis_base::costs::count("vouches: leaving-out walks", 1);
     if tl.stands_with(r, &all) {
-        return all;
+        return (all, None);
+    }
+    if let Some(l) = taken {
+        osis_base::costs::count("vouches: leaving-out walks", 1);
+        if tl.stands_with(r, &l.kept) {
+            return (l.kept.clone(), None);
+        }
     }
     let mut kept = Vec::new();
-    for c in all {
-        kept.push(c);
+    for c in &all {
+        kept.push(*c);
+        osis_base::costs::count("vouches: leaving-out walks", 1);
         if !tl.stands_with(r, &kept) {
             kept.pop();
         }
     }
-    kept
+    let left = LeftOut { all, trust: tl.trust().clone(), kept: kept.clone() };
+    (kept, Some(Arc::new(left)))
 }

@@ -73,7 +73,7 @@ fn answer(tx: &mut Tx<'_>, r: &CommitId, me: Tid) -> Result<Option<BTreeMap<Tid,
     let mut demoted: BTreeSet<(Tid, Tid)> = BTreeSet::new();
     for t in &targets {
         if let Some(tl) = tx.core.timelines.get(t) {
-            demoted.extend(tl.demoted_below_write(&r));
+            demoted.extend(tl.demoted_by(&r).iter().filter(|d| d.2 == Role::Write).map(|d| (d.0, d.1)));
         }
     }
     for (x, n) in demoted {

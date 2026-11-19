@@ -21,7 +21,6 @@ Spec: spec/permissions.md §5.1 Vouches, §4 Vouches travel with their removal, 
 
 Also open from the perm build:
 - Counting is judged again at each update of a component holding a vouch keyed by a held removal: one pass over its history (the explicit lowerings) and its falls and demotions per update, no walk while the counting entries stay the same. Index the lowerings and falls by point with the walk when this shows in a count. `vouch::Held::same_parts` (whether a listed commit's role parts arrived) is the same shape: one lookup per commit listed by entries keyed by a held removal, per update of the component; a removed party's vouches keyed by a held removal add to both in proportion to what they list.
-- The witnesses' leaving out walks per candidate at every change of the component in a fight: issues/vouch-leaving-out-cost.md.
 - **Duplication** (notes/growth.md, its vouches row): every witness writes its own vouch per (R, N). Writing only while no vouch at all (anyone's) counts for c would cut that to about one per (R, N), but another's vouch may stop counting (its voucher lowered) and each witness would then owe again on that change; not decided.
 
 ## Questions a builder would otherwise guess

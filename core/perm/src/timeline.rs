@@ -94,6 +94,9 @@ type Valid = BTreeMap<(Point, Tid, Role), crate::content::Validity>;
 /// One `Memo::on_now` entry.
 type OnNow = (Arc<BTreeMap<Tid, Role>>, Ts, Option<WallMs>);
 
+/// An explicit demotion as `Timeline::demoted_by` gives it: (node, thing, the role it fell below).
+pub type Demoted = (Tid, Tid, Role);
+
 /// Memoized layer-2 answers.
 #[derive(Default)]
 pub(crate) struct Memo {
@@ -129,6 +132,8 @@ pub(crate) struct Memo {
     /// `Timeline::in_question`'s index: per explicit lowering of another's grant, the authors
     /// in question at it.
     pub in_question: std::sync::OnceLock<BTreeMap<CommitId, BTreeSet<Tid>>>,
+    /// `Timeline::demoted_by`'s index: per explicit demotion's commit, (node, thing, below).
+    pub demoted_by: std::sync::OnceLock<BTreeMap<CommitId, Vec<Demoted>>>,
 }
 
 impl Memo {
@@ -155,6 +160,8 @@ impl Memo {
             }
         }
         self.own_named = std::sync::OnceLock::new();
+        // a leaf takes its mint admin's demotions (`alias_leaves`)
+        self.demoted_by = std::sync::OnceLock::new();
     }
 }
 
@@ -184,6 +191,7 @@ impl Clone for Memo {
             disputes: self.disputes.clone(),
             own_named: self.own_named.clone(),
             in_question: self.in_question.clone(),
+            demoted_by: self.demoted_by.clone(),
         }
     }
 }
@@ -348,6 +356,11 @@ impl Timeline {
     /// scratch: a trusted op is among them (`crate::trust`).
     fn trusted(&self, commits: impl IntoIterator<Item = CommitId>) -> bool {
         !self.trust.is_empty() && commits.into_iter().any(|id| self.trust.names(&id))
+    }
+
+    /// The trust set this timeline was walked under.
+    pub fn trust(&self) -> &BTreeSet<WriteId> {
+        &self.trust.ops
     }
 
     /// The trusted ops in force: held here, applied, their seeds in D.
@@ -939,10 +952,23 @@ impl Timeline {
     pub fn demotions_in_effect(&self, thing: &Tid) -> impl Iterator<Item = (&Tid, &Demotion)> {
         self.walked.demotions.iter().filter(move |(k, _)| k.1 == *thing).flat_map(move |((x, t), ds)| ds.iter().filter(move |d| self.role(x, t, At::END) < Some(d.below)).map(move |d| (x, d)))
     }
-    /// Whom role commit `commit` demotes below write, on which things: (node, thing) pairs
-    /// (what a writer answers with addenda, §5.2). O(every demotion recorded).
-    pub fn demoted_below_write(&self, commit: &CommitId) -> Vec<(Tid, Tid)> {
-        self.walked.demotions.iter().filter(|(_, ds)| ds.iter().any(|d| d.below == Role::Write && d.point.commit == *commit)).map(|(k, _)| *k).collect()
+    /// The explicit demotions (§5.1 step 4) role commit `commit` makes: (node, thing, the role it
+    /// fell below), what writers answer with addenda (§5.2). One pass over every demotion per
+    /// timeline, memoized.
+    pub fn demoted_by(&self, commit: &CommitId) -> &[Demoted] {
+        self.memo
+            .demoted_by
+            .get_or_init(|| {
+                let mut out: BTreeMap<CommitId, Vec<Demoted>> = BTreeMap::new();
+                for ((x, t), ds) in &self.walked.demotions {
+                    for d in ds {
+                        out.entry(d.point.commit).or_default().push((*x, *t, d.below));
+                    }
+                }
+                out
+            })
+            .get(commit)
+            .map_or(&[], |v| v.as_slice())
     }
     /// Class falls of `node` on `thing` in the settled walk (§5.1 step 4), in timeline order,
     /// where `node` has an earlier held write on `thing`.

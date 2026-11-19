@@ -268,3 +268,70 @@ fn a_witness_leaves_out_what_would_void_the_removal_spec_perm_5_1() {
     assert_eq!(e.role_now(&x, &t), None, "X removed");
     assert_eq!(e.role_now(&h, &t), Some(Role::Admin), "H admin");
 }
+
+/// A fight at W (peer 2) over thing `t` H (peer 0) made, X (peer 1) and W its admins: X makes `k`
+/// role writes on `t` (granting peer 3 write and lowering it to read in turn), then removes H;
+/// H, having received none of it, removes X (R); W receives all, sides with R, and vouches for
+/// X's writes on peer 3, leaving out X's removal of H (R does not apply with it listed). The
+/// leaving-out walks (`flows::vouches::leaving_out`) of a grant by W on `t` after that.
+fn leaving_out_walks_per_write(k: usize) -> u64 {
+    let mut lp = LocalPeer::fresh(4, osis_base::WallMs(1_700_000_000_000));
+    lp.sync_all().unwrap();
+    let [h, x, w, p3] = [0, 1, 2, 3].map(|i| lp.peers[i].engine.me());
+    let mut m = osis_engine::Mutation::new();
+    let t = lp.peers[0].engine.new_thing(&mut m, h);
+    lp.peers[0].commit(m).unwrap();
+    lp.hold(t);
+    for who in [x, w] {
+        lp.peers[0].engine.grant(&t, &who, &edge_of(Role::Admin)).unwrap();
+    }
+    lp.sync_all().unwrap();
+    lp.advance(1000);
+    let role = |lp: &LocalPeer, at: usize, who: &Tid| lp.peers[at].engine.core.timelines.role(who, &t, osis_perm::At::END);
+    for i in 0..k {
+        if i % 2 == 0 {
+            lp.peers[1].engine.grant(&t, &p3, &edge_of(Role::Write)).unwrap();
+        } else {
+            lp.peers[1].engine.demote(&t, &Demotion { holder: p3, new: Some(edge_of(Role::Read)), retain: None }).unwrap();
+        }
+        lp.advance(1000);
+    }
+    let lowering = *lp.peers[1].engine.demote(&t, &Demotion { holder: h, new: None, retain: None }).unwrap().commits.last().unwrap();
+    lp.advance(1000);
+    lp.sync(1, 2).unwrap();
+    let r = *lp.peers[0].engine.demote(&t, &Demotion { holder: x, new: None, retain: None }).unwrap().commits.last().unwrap();
+    lp.advance(1000);
+    lp.sync(0, 2).unwrap();
+    assert_eq!(role(&lp, 2, &x), Some(Role::Admin), "R does not apply at W before it sides with it");
+    lp.peers[2].engine.choose(r, 0, x, true).unwrap();
+    let mut m = osis_engine::Mutation::new();
+    lp.peers[2].engine.new_thing(&mut m, w);
+    lp.peers[2].commit(m).unwrap();
+    assert_eq!(role(&lp, 2, &x), None, "R applies at W");
+    let held: Vec<_> = lp.peers[2].engine.core.ix.held.vouches_on(&t).cloned().collect();
+    assert_eq!(held.len(), 1, "W vouches once");
+    let listed: Vec<CommitId> = held[0].entries.iter().flat_map(|(_, l)| l.commits().to_vec()).collect();
+    assert_eq!(listed.len(), k, "every role write of X on peer 3 listed");
+    assert!(!listed.contains(&lowering), "X's removal of H left out");
+    let write = |lp: &mut LocalPeer| {
+        osis_base::costs::take();
+        lp.peers[2].engine.grant(&t, &p3, &edge_of(Role::Admin)).unwrap();
+        lp.advance(1000);
+        osis_base::costs::take().into_iter().find(|(k, _, _)| *k == "vouches: leaving-out walks").map_or(0, |x| x.2)
+    };
+    // the first write after the vouch may take the leaving out anew (the one taken before the
+    // vouch counted); every later one keeps it
+    write(&mut lp);
+    write(&mut lp)
+}
+
+// spec/permissions.md §5.1 Vouches (Writing: the writers' leaving out; "may keep"),
+// notes/principles.md (Check scaling): in a fight, a write in R's component costs the witness
+// the same leaving-out walks whatever the number of candidates the removed party made (taking
+// it anew walks once per candidate).
+#[test]
+fn a_fights_leaving_out_costs_a_write_the_same_at_k_and_10k_candidates_spec_perm_5_1() {
+    let (small, big) = (leaving_out_walks_per_write(2), leaving_out_walks_per_write(20));
+    println!("vouches: leaving-out walks per write: {small} at k, {big} at 10k");
+    assert_eq!(small, big);
+}
