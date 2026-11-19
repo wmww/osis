@@ -128,6 +128,17 @@ impl FileDevice {
         let faults = Faults::new();
         FileDevice { dir, faults, trap: Arc::default(), sync_trap: Arc::default(), disk: Arc::default() }
     }
+
+    /// A fresh device holding this one's files (no store open on it), all on disk.
+    pub fn copy(&self, name: &str) -> FileDevice {
+        let d = FileDevice::new(name);
+        for f in std::fs::read_dir(&self.dir).unwrap() {
+            let f = f.unwrap();
+            std::fs::copy(f.path(), d.dir.join(f.file_name())).unwrap();
+        }
+        d.disk.lock().unwrap().synced = std::fs::read(d.dir.join("db")).unwrap();
+        d
+    }
 }
 
 impl Drop for FileDevice {

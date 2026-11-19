@@ -630,12 +630,15 @@ fn a_lost_store_retries_after_a_wait() {
 #[test]
 fn a_failed_redb_write_anywhere_in_a_commit_reports_its_outcome() {
     use std::sync::atomic::Ordering::SeqCst;
+    // the store each fault point starts from, closed: a copy of its files per point
+    let start = FileDevice::new("redb-any-write");
+    drop(put_x(&start, &mut SeededRng::from_u64(0)));
     for shred in [Shred::No, Shred::Yes] {
         let (mut landed, mut failed, mut lost) = (false, false, false);
         for n in 1.. {
-            let dev = FileDevice::new(&format!("redb-any-write-{shred:?}-{n}"));
-            let mut rng = SeededRng::from_u64(0);
-            let mut s = put_x(&dev, &mut rng);
+            let dev = start.copy(&format!("redb-any-write-{shred:?}-{n}"));
+            let mut rng = SeededRng::from_u64(1);
+            let mut s = reopen(&dev);
             let unknown = s.writes().unknown;
             dev.trap.store(n, SeqCst);
             let ok = put_k(&mut s, &mut rng, b"k", shred);
