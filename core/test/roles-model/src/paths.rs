@@ -320,6 +320,10 @@ pub struct Rules {
     pub until: Until,
     /// What a counting vouch's entry keeps of the commit it names.
     pub entry: Entry,
+    /// Honest writing in `Sim` (a policy, not a judging rule; `Rules::remake`): a witness of a
+    /// removed party's role write that the removal dropped makes the write again as its own, where
+    /// it holds the right to (`Sim::remake_at`).
+    pub remake: bool,
 }
 
 /// What a counting vouch entry keeps of the commit `c` it names (notes/a1-spec/permissions.md
@@ -398,6 +402,7 @@ impl Rules {
             refuse_shapes: false,
             until: Until::Plain,
             entry: Entry::Whole,
+            remake: false,
         }
     }
     /// The design: every fix the notes state, a removal judged in the world its list makes
@@ -431,7 +436,14 @@ impl Rules {
             refuse_shapes: false,
             until: Until::Plain,
             entry: Entry::OnThing,
+            remake: false,
         }
+    }
+    /// The proposal (README.md, Paths, Making again; notes/role-remake-model.md): nothing vouches
+    /// for a role write (a vouch is inert), and a witness of a removed party's role write that the
+    /// removal dropped makes it again as its own write, judged by its own path at its own key.
+    pub fn remake() -> Rules {
+        Rules { vouch: Vouch::Off, remake: true, ..Rules::fixed() }
     }
     /// A lowering (`World::lowers`), and under `Until::AtKey`/`PastEnd` a write giving admin until
     /// an end after its `ts` (`World::ends`): judged where it takes its edge down, a dispute

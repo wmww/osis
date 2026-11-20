@@ -1243,8 +1243,8 @@ fn random_worlds_hold_large() {
     assert_holds(&st, &format!("OSIS_ROLES_START={start}"));
 }
 
-/// Every 367th world of the small family (21,295 worlds, about 300 CPU-s; `-- 0 paths-exh` runs all
-/// of them by hand): a stride coprime with every dimension's size (2, 4, 6, 53;
+/// Every 367th world of the small family (30,636 worlds; `-- 0 paths-exh` runs all
+/// of them by hand): a stride coprime with every dimension's size (2, 4, 5, 6, 61;
 /// `family_on_every_core` refuses one that is not), so every value of every dimension is reached
 /// and none is tied to another (an even stride keeps `h_t1` false in every world): each thief
 /// move about 400 times, stamped before and after the removal alike, each setup field's values
@@ -2857,5 +2857,290 @@ fn an_end_judged_at_its_key_lets_a_made_up_key_end_the_removers_admin() {
     for (rules, t) in [(Rules::fixed(), vec![]), (Rules::fixed(), vec![r]), (at_key, vec![r])] {
         let rd = judge(&w, &rules, &View::all(&w).trusting(&t));
         assert!(rd.applied.contains(&r) && !rd.applied.contains(&end) && rd.role(H, A) == Admin, "{rd:?}");
+    }
+}
+
+// ---- Making again (`Rules::remake`; notes/role-remake-model.md) ----
+
+fn remake(w: &World, trust: &[Id]) -> Reading {
+    judge(w, &Rules::remake(), &View::all(w).trusting(trust))
+}
+
+/// The pair no counting rule tells apart (notes/path-model-findings.md 42). X removed N5 at 3;
+/// only B received it; H removes X at 6 listing nothing. With N5's key the thief backdates a
+/// removal of B to 2. The same held set is the honest history where N5 removed a stolen B at 2
+/// and the thief, with X's and B's keys, backdates X's removal of N5 and B's answer to it.
+/// Under the vouch (`fixed`), B's vouch: where H's removal is trusted N5 is an admin and B removed,
+/// no dispute shown; trusting nothing, B's vouch counts, N5 removed, H's removal shown.
+#[test]
+fn the_pair_under_the_vouch_reads_the_thiefs_side_unshown() {
+    let (mut w, ..) = paired();
+    w.edge(H, 1, &[], A, N5, Admin, &[]);
+    w.edge(N5, 2, &[], A, B, Gone, &[]);
+    let out5 = w.edge(X, 3, &[], A, N5, Gone, &[]);
+    let r = w.edge(H, 6, &[], A, X, Gone, &[]);
+    let vb = w.vouch(B, 7, &[], A, r, &[out5]);
+    let x = Rules::fixed();
+    let v = View::all(&w).trusting(&[r]);
+    let rd = judge(&w, &x, &v);
+    assert!(rd.counting.is_empty() && rd.role(N5, A) == Admin && rd.role(B, A) == Gone && disputes(&w, &x, &v).is_empty(), "{rd:?}");
+    let v = View::all(&w);
+    let rd = judge(&w, &x, &v);
+    assert!(rd.counting == Set::from([vb]) && rd.role(N5, A) == Gone && rd.role(B, A) == Admin && disputes(&w, &x, &v) == vec![r], "{rd:?}");
+}
+
+/// The pair under `remake`: B makes X's removal of N5 again as its own at 7, listing what it had
+/// received resting on N5's edge when X's removal reached it (H's grant). An ordinary fight of two
+/// admins: where only H's removal is trusted, N5's backdated removal of B applies, B's removal does
+/// not, and B's removal is shown as a dispute; trusting B's too (world 1's user), its seeds take
+/// N5's write: N5 removed, B an admin, nothing shown; a node trusting nothing shows both removals.
+/// World 2's user, shown the same dispute, does not trust B's write and reads B removed. A vouch in
+/// either world is inert.
+#[test]
+fn the_pair_under_remake_is_an_ordinary_fight_shown_to_both_worlds() {
+    let (mut w, ..) = paired();
+    let g5 = w.edge(H, 1, &[], A, N5, Admin, &[]);
+    w.edge(N5, 2, &[], A, B, Gone, &[]);
+    w.edge(X, 3, &[], A, N5, Gone, &[g5]);
+    let r = w.edge(H, 6, &[], A, X, Gone, &[]);
+    let rb = w.edge(B, 7, &[], A, N5, Gone, &[g5]);
+    w.rely(rb, H);
+    let x = Rules::remake();
+    let v = View::all(&w).trusting(&[r]);
+    let rd = judge(&w, &x, &v);
+    assert!(rd.role(N5, A) == Admin && rd.role(B, A) == Gone && !rd.applied.contains(&rb) && disputes(&w, &x, &v) == vec![rb], "{rd:?}");
+    let v = View::all(&w).trusting(&[r, rb]);
+    let rd = judge(&w, &x, &v);
+    assert!(rd.role(N5, A) == Gone && rd.role(B, A) == Admin && rd.void.is_empty() && disputes(&w, &x, &v).is_empty(), "{rd:?}");
+    let v = View::all(&w);
+    assert!(!disputes(&w, &x, &v).is_empty());
+    // a vouch is inert under `remake`
+    let mut w2 = w.clone();
+    w2.vouch(B, 7, &[], A, r, &[]);
+    let rd2 = judge(&w2, &x, &View::all(&w2).trusting(&[r]));
+    assert!(rd2.counting.is_empty() && rd2.role(N5, A) == Admin && rd2.role(B, A) == Gone, "{rd2:?}");
+}
+
+/// Finding 39's world under `remake` (notes/path-model-findings.md 45): B makes X's removal of
+/// A2's share of T1 again at 7. X's backdated grant to Z through [A] falls with H's removal, and
+/// what Z wrote through A2 while the share stood again (a grant of admin to itself at 6) rests on
+/// the edge B lowers, is unlisted, and falls: Z holds nothing on T1, trusted or not. Z's vouch is
+/// inert.
+#[test]
+fn finding_39s_thief_holds_nothing_where_a_witness_makes_the_removal_again() {
+    let (mut w, ..) = paired();
+    w.edge(K, 1, &[], A2, X, Admin, &[]);
+    w.edge(H, 1, &[A], T1, A2, Admin, &[]);
+    w.edge(X, 3, &[A], T1, A2, Gone, &[]);
+    let gz = w.edge(X, 5, &[A], T1, Z, Write, &[]);
+    let r = w.edge(H, 6, &[], A, X, Gone, &[]);
+    w.edge(X, 6, &[], A2, Z, Admin, &[]);
+    let gz2 = w.edge(Z, 6, &[A2], T1, Z, Admin, &[]);
+    w.vouch(Z, 7, &[A2], T1, r, &[gz]);
+    w.edge(B, 7, &[A], T1, A2, Gone, &[]);
+    for t in [&[][..], &[r]] {
+        let rd = remake(&w, t);
+        assert!(rd.role(A2, T1) == Gone && rd.role(Z, T1) == Gone && rd.role(A, T1) == Admin && !rd.applied.contains(&gz) && !rd.applied.contains(&gz2), "{rd:?}");
+    }
+}
+
+/// What a witness making a share again gives back (notes/role-remake-model.md, What users lose):
+/// X shared T1 with A2 at 2 (H never received it); K wrote T1 through A2 at 3 and invited G to
+/// read at 4; B, which received the share, makes it again at 7. Under `remake` K's content counts
+/// back to the first grant (the re-grant rule), and G's invite, a role write made under the fallen
+/// share before it was made again, stays dropped. Under the vouch both stand.
+#[test]
+fn a_share_made_again_counts_content_back_and_drops_role_writes_made_under_it() {
+    let (mut w, ..) = paired();
+    let gs = w.edge(X, 2, &[A], T1, A2, Write, &[]);
+    w.edit(gs, |k| k.inviting(Role::Read));
+    let c = w.content(K, 3, &[A2], T1);
+    let gi = w.edge(K, 4, &[A2], T1, G, Role::Read, &[]);
+    let r = w.edge(H, 6, &[], A, X, Gone, &[]);
+    let mut wf = w.clone();
+    let rs = w.edge(B, 7, &[A], T1, A2, Write, &[c, gi]);
+    w.edit(rs, |k| k.inviting(Role::Read));
+    let rd = remake(&w, &[r]);
+    assert!(rd.valid.contains(&c) && rd.role(A2, T1) == Write && !rd.applied.contains(&gi) && rd.role(G, T1) == Gone, "{rd:?}");
+    wf.vouch(B, 7, &[A], T1, r, &[gs]);
+    let rd = fixed(&wf, &[r]);
+    assert!(rd.valid.contains(&c) && rd.applied.contains(&gi) && rd.role(G, T1) == Role::Read, "{rd:?}");
+}
+
+/// The window a later honest write closes: X shared T1 with A2 at 2 (H never received it), K wrote
+/// T1 through A2 at 3, and B, which received both, removed A2 from T1 at 5 listing K's write. B
+/// never makes the share again (its own later removal replaced it), so the share stood from 2 to 5
+/// in no reading and K's write, listed by B's removal, is lost. Under the vouch it stands.
+#[test]
+fn a_share_a_later_honest_removal_replaced_is_never_made_again_and_its_window_is_lost() {
+    let (mut w, ..) = paired();
+    let gs = w.edge(X, 2, &[A], T1, A2, Write, &[]);
+    let c = w.content(K, 3, &[A2], T1);
+    let rb = w.edge(B, 5, &[A], T1, A2, Gone, &[c]);
+    let r = w.edge(H, 6, &[], A, X, Gone, &[]);
+    let rd = remake(&w, &[r, rb]);
+    assert!(!rd.valid.contains(&c), "{rd:?}");
+    let mut wf = w.clone();
+    wf.vouch(B, 7, &[A], T1, r, &[gs]);
+    let rd = fixed(&wf, &[r, rb]);
+    assert!(rd.valid.contains(&c), "{rd:?}");
+}
+
+/// Two witnesses race (notes/role-remake-model.md, What users lose): X removed N5 and demoted B to write
+/// at 3, before the theft; B and N5 received both, H neither; H removes X at 6 listing nothing.
+/// Each witness's walk drops what X did, so each holds admin. N5 makes X's demotion of B again
+/// at 7: B, now a writer, cannot make X's removal of N5 again. Had B written first, N5 could not
+/// have made the demotion again. Which of X's writes stand depends on which witness wrote first,
+/// and neither order gives both. Under the vouch B's vouch (its right read with X's writes
+/// dropped) keeps both.
+#[test]
+fn two_witnesses_race_and_neither_order_makes_both_writes_again() {
+    let (mut w, ..) = paired();
+    let g5 = w.edge(H, 1, &[], A, N5, Admin, &[]);
+    let out5 = w.edge(X, 3, &[], A, N5, Gone, &[g5]);
+    let down = w.edge(X, 3, &[], A, B, Write, &[]);
+    let r = w.edge(H, 6, &[], A, X, Gone, &[]);
+    // N5 first
+    let mut w1 = w.clone();
+    let d = w1.edge(N5, 7, &[], A, B, Write, &[]);
+    w1.rely(d, H);
+    let rb = w1.edge(B, 8, &[], A, N5, Gone, &[g5]);
+    w1.rely(rb, H);
+    let rd = remake(&w1, &[r, d]);
+    assert!(rd.role(B, A) == Write && rd.role(N5, A) == Admin && !rd.applied.contains(&rb), "{rd:?}");
+    // B first
+    let mut w2 = w.clone();
+    let rb = w2.edge(B, 7, &[], A, N5, Gone, &[g5]);
+    w2.rely(rb, H);
+    let d = w2.edge(N5, 8, &[], A, B, Write, &[]);
+    w2.rely(d, H);
+    let rd = remake(&w2, &[r, rb]);
+    assert!(rd.role(B, A) == Admin && rd.role(N5, A) == Gone && !rd.applied.contains(&d), "{rd:?}");
+    // the vouch: B's right read with X's writes dropped
+    let mut wf = w.clone();
+    wf.vouch(B, 7, &[], A, r, &[out5, down]);
+    let rd = fixed(&wf, &[r]);
+    assert!(rd.role(B, A) == Write && rd.role(N5, A) == Gone, "{rd:?}");
+}
+
+/// A lowering only its victim received (notes/role-remake-model.md, What users lose): X demoted B
+/// to write at 3; only B received it. Under `remake` nobody makes it again: B's own leave would
+/// audit nothing (a self-removal never does, finding 14), so it is no making again, and B stays an
+/// admin. Under the vouch B vouches for it and it stays made.
+#[test]
+fn a_demotion_only_its_victim_received_is_lost_under_remake() {
+    let (mut w, ..) = paired();
+    let down = w.edge(X, 3, &[], A, B, Write, &[]);
+    let r = w.edge(H, 6, &[], A, X, Gone, &[]);
+    let rd = remake(&w, &[r]);
+    assert!(rd.role(B, A) == Admin, "{rd:?}");
+    w.vouch(B, 7, &[], A, r, &[down]);
+    let rd = fixed(&w, &[r]);
+    assert!(rd.role(B, A) == Write, "{rd:?}");
+}
+
+/// Content addenda have the shape only through the role layer (notes/role-remake-model.md,
+/// Content addenda): X wrote T1 at 3, and removed N5 at 3; only B received either; with N5's key the thief
+/// backdates a removal of B to 2; H removes X at 6 listing nothing. B's addendum lists X's write.
+/// Under the vouch, trusting H's removal, B's vouch for X's removal of N5 counts for nothing (B
+/// holds nothing in the first walk), N5's removal of B applies, and B's addendum, by a writer
+/// holding nothing at its key, keeps nothing: X's honest write is lost, no dispute shown. Under
+/// `remake` B also makes the removal of N5 again: trusting it, B is an admin and its addendum
+/// keeps X's write; trusting only H's removal the write is lost and B's removal is shown. A content
+/// write lowers nobody, so a thief holding only content keys cannot contest a witness at all.
+#[test]
+fn an_addendum_is_contested_only_through_its_witness_standing() {
+    let (mut w, ..) = paired();
+    let g5 = w.edge(H, 1, &[], A, N5, Admin, &[]);
+    w.edge(N5, 2, &[], A, B, Gone, &[]);
+    let c = w.content(X, 3, &[A], T1);
+    let out5 = w.edge(X, 3, &[], A, N5, Gone, &[g5]);
+    let r = w.edge(H, 6, &[], A, X, Gone, &[]);
+    w.addendum(B, 7, &[A], T1, r, &[c]);
+    let mut wf = w.clone();
+    wf.vouch(B, 7, &[], A, r, &[out5]);
+    let x = Rules::fixed();
+    let v = View::all(&wf).trusting(&[r]);
+    let rd = judge(&wf, &x, &v);
+    assert!(!rd.valid.contains(&c) && rd.role(B, A) == Gone && disputes(&wf, &x, &v).is_empty(), "{rd:?}");
+    let rb = w.edge(B, 7, &[], A, N5, Gone, &[g5]);
+    w.rely(rb, H);
+    let rd = remake(&w, &[r, rb]);
+    assert!(rd.valid.contains(&c) && rd.role(B, A) == Admin && rd.role(N5, A) == Gone, "{rd:?}");
+    let x = Rules::remake();
+    let v = View::all(&w).trusting(&[r]);
+    let rd = judge(&w, &x, &v);
+    assert!(!rd.valid.contains(&c) && disputes(&w, &x, &v) == vec![rb], "{rd:?}");
+    // without the thief's role write the witness stands and the write counts, whatever content
+    // the thief adds
+    let (mut w3, ..) = paired();
+    let g5 = w3.edge(H, 1, &[], A, N5, Admin, &[]);
+    let c = w3.content(X, 3, &[A], T1);
+    w3.edge(X, 3, &[], A, N5, Gone, &[g5]);
+    let r = w3.edge(H, 6, &[], A, X, Gone, &[]);
+    w3.content(X, 2, &[A], T1);
+    w3.addendum(B, 7, &[A], T1, r, &[c]);
+    let rd = remake(&w3, &[r]);
+    assert!(rd.valid.contains(&c), "{rd:?}");
+}
+
+/// The required gates under `Rules::remake`, as `random_worlds_hold_large` (from
+/// `OSIS_ROLES_START`, `OSIS_ROLES_SEEDS` many, 13,000 by default).
+#[test]
+#[ignore = "property"]
+fn remake_random_worlds_hold_large() {
+    let start = var("OSIS_ROLES_START").unwrap_or(0);
+    let n = var("OSIS_ROLES_SEEDS").unwrap_or(13_000);
+    let st = random_from(start, n, &Rules::remake());
+    st.print("paths-remake", &Rules::remake());
+    assert_holds(&st, &format!("remake OSIS_ROLES_START={start}"));
+}
+
+/// The required gates under `Rules::remake` on every 367th family world.
+#[test]
+#[ignore = "property"]
+fn remake_small_family_holds_large() {
+    let st = family_run(&Rules::remake(), 367);
+    st.print("paths-exh-remake", &Rules::remake());
+    assert_holds(&st, "remake family");
+}
+
+/// `remake` changes only the vouch and the story's honest writing: small worlds (no vouch, no
+/// story) read alike under both rule sets, so the `tiny` searches are not run under it.
+#[test]
+fn tiny_worlds_read_alike_under_remake() {
+    for invites in [false, true] {
+        for i in 0..200 {
+            let t = tiny_world(i, TinyMode { invites, honest: Honesty::None }, &Rules::fixed());
+            let (f, r) = (judge(&t.w, &Rules::fixed(), &t.v), judge(&t.w, &Rules::remake(), &t.v));
+            assert!(f.observed(&t.w) == r.observed(&t.w) && f.applied == r.applied && f.dropped == r.dropped && f.void == r.void, "{invites} {i}");
+        }
+    }
+}
+
+/// A witness's earlier write dropped for good by a removed key's backdated lowering
+/// (notes/role-remake-model.md, Found on the way): H paired N5; B shared T1 with A2 at 2;
+/// X removed N5 at 3, listing H's grant, and everyone received it; H removes X at 6 listing it.
+/// With N5's key the thief backdates a removal of B to 2, ordered after B's share. It applies at
+/// its key (N5 an admin then) and drops B's share (unlisted, resting on B's edge); X's removal of
+/// N5 then drops the thief's write, but a drop stands for good (finding 16): the share stays
+/// dropped, under the vouch and under `remake` alike, trusted or not. No vouch or witness is
+/// involved: B is an admin throughout and its share is lost.
+#[test]
+fn a_removed_keys_backdated_lowering_drops_a_witness_write_for_good() {
+    let (mut w, ..) = paired();
+    let g5 = w.edge(H, 1, &[], A, N5, Admin, &[]);
+    let gs = w.edge(B, 2, &[A], T1, A2, Write, &[]);
+    let out5 = w.edge(X, 3, &[], A, N5, Gone, &[g5]);
+    let r = w.edge(H, 6, &[], A, X, Gone, &[out5]);
+    let rd = fixed(&w, &[r]);
+    assert!(rd.applied.contains(&gs) && rd.role(A2, T1) == Write, "{rd:?}");
+    let down = w.edge(N5, 2, &[], A, B, Gone, &[]);
+    assert!(w.key(gs) < w.key(down) && w.key(down) < w.key(out5));
+    for x in [Rules::fixed(), Rules::remake()] {
+        for t in [&[][..], &[r]] {
+            let rd = judge(&w, &x, &View::all(&w).trusting(t));
+            assert!(rd.role(B, A) == Admin && !rd.applied.contains(&down) && !rd.applied.contains(&gs) && rd.role(A2, T1) == Gone && rd.stray.contains(&gs), "{rd:?}");
+        }
     }
 }
