@@ -3,6 +3,7 @@
 
 use osis_base::format::{MAX_PAGE_ITEMS, PAGE_TARGET, TREE_FANOUT};
 use osis_base::{BlobId, ChunkParams, Classified, ErrorClass, Link};
+use std::cell::Cell;
 use std::collections::HashMap;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -48,6 +49,22 @@ impl PageParams {
     pub const FORMAT: PageParams = PageParams { target: PAGE_TARGET, cut: ChunkParams::FORMAT, fanout: TREE_FANOUT, max_items: MAX_PAGE_ITEMS };
     /// Never pages: relay-only deltas (spec/commits.md §2), bounded by the blob alone.
     pub const UNPAGED: PageParams = PageParams { target: usize::MAX, max_items: usize::MAX, ..PageParams::FORMAT };
+
+    /// What the node's page plugs page with: `FORMAT`, or on this thread the parameters a test
+    /// set (`set_test`), so an engine test reaches deep link trees with small states.
+    pub fn wire() -> PageParams {
+        TEST_PARAMS.with(Cell::get).unwrap_or(PageParams::FORMAT)
+    }
+
+    /// Tests: this thread's page plugs page with `p` (`None`: `FORMAT`); returns what was set.
+    #[doc(hidden)]
+    pub fn set_test(p: Option<PageParams>) -> Option<PageParams> {
+        TEST_PARAMS.with(|c| c.replace(p))
+    }
+}
+
+thread_local! {
+    static TEST_PARAMS: Cell<Option<PageParams>> = const { Cell::new(None) };
 }
 
 /// The page plug of a delta that is never paged (relay-only deltas, spec/commits.md §2):
@@ -77,7 +94,7 @@ impl PageSource for Unpaged {
 pub trait PageSink {
     fn put(&mut self, plaintext: &[u8]) -> Result<Link, PageError>;
     fn params(&self) -> PageParams {
-        PageParams::FORMAT
+        PageParams::wire()
     }
 }
 
@@ -85,7 +102,7 @@ pub trait PageSink {
 pub trait PageSource {
     fn get(&mut self, link: &Link) -> Result<Vec<u8>, PageError>;
     fn params(&self) -> PageParams {
-        PageParams::FORMAT
+        PageParams::wire()
     }
 }
 

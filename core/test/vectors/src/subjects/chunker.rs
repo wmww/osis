@@ -62,6 +62,7 @@ pub fn tree() -> VecFile {
 struct PageRec {
     dedup: osis_crypto::Secret32,
     pages: Vec<Vec<u8>>,
+    params: osis_crdt::PageParams,
 }
 
 impl osis_crdt::PageSink for PageRec {
@@ -69,47 +70,103 @@ impl osis_crdt::PageSink for PageRec {
         self.pages.push(plaintext.to_vec());
         Ok(osis_base::Link { hash: osis_crypto::link_hash(&self.dedup, plaintext), blob: osis_base::BlobId([0; 32]), suite: 1, key: [0; 32], salt: [0; 16], del: osis_base::Del::NONE })
     }
+    fn params(&self) -> osis_crdt::PageParams {
+        self.params
+    }
 }
 
 /// `chunker/pages.vec`: page split and link-page grouping of an element array (spec/crdt.md §8,
 /// spec/wire.md §6) by content hash alone. Element `i` is the byte string of the 1024 bytes at
-/// offset `1024 i` of the input; dedup secret `07`.
+/// offset `1024 i` of the input (of 64 bytes, at small pages); dedup secret `07`. The format's
+/// pages reach two levels only at about a gigabyte per level more, so a case at small pages
+/// (stated parameters, the same rules) reaches four.
 pub fn pages() -> VecFile {
     use osis_base::Value;
     const SPEC: &str = "spec/crdt.md §8, spec/wire.md §6";
     let dedup = osis_crypto::Secret32::from_bytes([0x07; 32]);
-    let inputs: [(&str, usize); 2] = [("pages 1 MiB", 1 << 20), ("link pages 64 MiB", 64 << 20)];
+    let small = osis_crdt::PageParams { target: 600, cut: osis_base::ChunkParams { min: 128, max: 512, mask_bits: 6 }, fanout: 4, ..osis_crdt::PageParams::FORMAT };
+    let format = osis_crdt::PageParams::FORMAT;
+    let inputs: [(&str, usize, usize, osis_crdt::PageParams); 3] = [("pages 1 MiB", 1 << 20, 1024, format), ("link pages 64 MiB", 64 << 20, 1024, format), ("link levels at small pages 64 KiB", 64 << 10, 64, small)];
     let mut cases = Vec::new();
-    for (name, n) in inputs {
+    for (name, n, size, params) in inputs {
         let data = xof("osis test pages", n);
-        let items: Vec<Value> = data.chunks(1024).map(|c| Value::Bytes(c.to_vec())).collect();
-        let mut rec = PageRec { dedup: dedup.clone(), pages: Vec::new() };
+        let items: Vec<Value> = data.chunks(size).map(|c| Value::Bytes(c.to_vec())).collect();
+        let mut rec = PageRec { dedup: dedup.clone(), pages: Vec::new(), params };
         let top = osis_crdt::page_array(Some(&mut rec), &items).unwrap();
         let Value::List(top) = osis_base::decode(&top, &osis_base::Limits::DEFAULT).unwrap() else { panic!("array") };
-        let (mut elems, mut links) = (Vec::new(), Vec::new());
+        let mut elems = Vec::new();
         for p in &rec.pages {
             let Value::List(items) = osis_base::decode(p, &osis_base::Limits::new(4, osis_base::format::MAX_BLOB)).unwrap() else { panic!("page") };
-            if items.iter().all(|i| matches!(i, Value::Link(_))) {
-                links.push(items.len().to_string());
-            } else {
+            if !items.iter().all(|i| matches!(i, Value::Link(_))) {
                 elems.push(items.len().to_string());
             }
         }
-        assert_eq!(links.is_empty(), name.starts_with("pages"), "link pages only in the large case");
-        assert_eq!(elems, naive_pages(&data).iter().map(usize::to_string).collect::<Vec<_>>(), "page rule re-derived");
+        let links: Vec<String> = link_levels(&rec.pages, &top).into_iter().rev().flatten().map(|n| n.to_string()).collect();
+        assert_eq!(links.is_empty(), name.starts_with("pages"), "link pages only in the large cases");
+        if params == format {
+            assert_eq!(elems, naive_pages(&data).iter().map(usize::to_string).collect::<Vec<_>>(), "page rule re-derived");
+        } else {
+            assert!(levels(&rec.pages, &top) >= 4, "{name}: four page levels or more");
+        }
         let top: Vec<String> = top.iter().map(|l| if let Value::Link(l) = l { hex(&l.hash) } else { panic!("link") }).collect();
         let mut r = Record::new()
             .with("case", name)
             .with("spec", SPEC)
-            .with("input", format!("xof(\"osis test pages\", {n}) as byte strings of 1024 bytes"))
-            .with("dedup", hex(dedup.expose()))
-            .with("pages", elems.join(","));
+            .with("input", format!("xof(\"osis test pages\", {n}) as byte strings of {size} bytes"));
+        if params != format {
+            r = r.with("params", format!("PAGE_TARGET {}, CHUNK_MIN {}, CHUNK_MAX {}, mask bits {}, fan-out {}", params.target, params.cut.min, params.cut.max, params.cut.mask_bits, params.fanout));
+        }
+        let mut r = r.with("dedup", hex(dedup.expose())).with("pages", elems.join(","));
         if !links.is_empty() {
             r = r.with("link-pages", links.join(","));
         }
         cases.push(r.with("top", top.join(",")));
     }
     VecFile { header: generated_header("chunker", SPEC), cases }
+}
+
+/// The link counts of the link pages under root list `top`, a level at a time from the top, each
+/// in order.
+fn link_levels(pages: &[Vec<u8>], top: &[osis_base::Value]) -> Vec<Vec<usize>> {
+    use osis_base::Value;
+    let dedup = osis_crypto::Secret32::from_bytes([0x07; 32]);
+    let by: std::collections::HashMap<[u8; 32], &Vec<u8>> = pages.iter().map(|p| (osis_crypto::link_hash(&dedup, p), p)).collect();
+    let (mut out, mut level) = (Vec::new(), top.to_vec());
+    loop {
+        let (mut counts, mut next) = (Vec::new(), Vec::new());
+        for x in &level {
+            let Value::Link(l) = x else { panic!("link") };
+            if let Ok(Value::List(items)) = osis_base::decode(by[&l.hash], &osis_base::Limits::new(4, osis_base::format::MAX_BLOB))
+                && items.iter().all(|i| matches!(i, Value::Link(_)))
+            {
+                counts.push(items.len());
+                next.extend(items);
+            }
+        }
+        if counts.is_empty() {
+            return out;
+        }
+        out.push(counts);
+        level = next;
+    }
+}
+
+/// The page levels under root list `top`, leaves included: the first link followed down through
+/// the recorded pages (by content hash).
+fn levels(pages: &[Vec<u8>], top: &[osis_base::Value]) -> usize {
+    use osis_base::Value;
+    let dedup = osis_crypto::Secret32::from_bytes([0x07; 32]);
+    let by: std::collections::HashMap<[u8; 32], &Vec<u8>> = pages.iter().map(|p| (osis_crypto::link_hash(&dedup, p), p)).collect();
+    let first = |items: &[Value]| items.first().and_then(|x| if let Value::Link(l) = x { Some(l.hash) } else { None });
+    let (mut at, mut d) = (first(top), 0);
+    while let Some(p) = at.and_then(|h| by.get(&h)) {
+        d += 1;
+        at = match osis_base::decode(p, &osis_base::Limits::new(4, osis_base::format::MAX_BLOB)) {
+            Ok(Value::List(items)) => first(&items),
+            _ => None,
+        };
+    }
+    d
 }
 
 /// The page rule of spec/wire.md §6 written out directly over the gear table: element counts.

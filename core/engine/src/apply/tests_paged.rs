@@ -411,11 +411,16 @@ fn paged_apply_matches_whole_large_spec_crdt_8() {
 /// them (states, when replaced, indexes, each delivery's outcome or error); returns the cost counts of
 /// the page-by-page world's deliveries and their outcomes.
 fn both(script: impl Fn(&mut World) -> Vec<Package>) -> (BTreeMap<&'static str, u64>, Vec<String>) {
+    both_in(world, script).0
+}
+
+/// `both` in worlds `make` gives (applying whole if its argument), with the worlds.
+fn both_in(make: impl Fn(bool) -> World, script: impl Fn(&mut World) -> Vec<Package>) -> ((BTreeMap<&'static str, u64>, Vec<String>), Vec<World>) {
     let mut worlds = Vec::new();
     let mut counts = BTreeMap::new();
     let mut outs = Vec::new();
     for whole in [false, true] {
-        let mut w = world(whole);
+        let mut w = make(whole);
         let pks = script(&mut w);
         osis_base::costs::take();
         for pk in &pks {
@@ -437,7 +442,7 @@ fn both(script: impl Fn(&mut World) -> Vec<Package>) -> (BTreeMap<&'static str, 
         let (x, y) = v[0].iter().zip(&v[1]).find(|(x, y)| x != y).expect("page-by-page apply differs from whole in length");
         panic!("page-by-page apply differs from whole\n{}", first_diff(x, y, ["page by page", "whole"]));
     }
-    (counts, outs)
+    ((counts, outs), worlds)
 }
 
 /// Delivers `pk` to node `to`: the outcome, and what of the commit waits there after (a part
@@ -472,6 +477,71 @@ fn snapshot_root_reset_prunes_pages_spec_crdt_8() {
         packages(w, 0, &[snap])
     });
     assert!(c.get("reset: by pages").is_some_and(|n| *n > 0) && c.get("apply: piece").is_some_and(|n| *n > 2), "{c:?}");
+}
+
+/// The page levels of the paged position in part `ai` of node `n`'s commit `c`, leaves included:
+/// the links followed down from the root list's first, each page opened under its link's key.
+fn wire_depth(w: &mut World, n: usize, c: &CommitId, ai: usize) -> usize {
+    fn first(v: &Value) -> Option<osis_base::Link> {
+        let Value::List(items) = v else { return None };
+        match items.first() {
+            Some(Value::Link(l)) => Some(**l),
+            _ => items.iter().find_map(first),
+        }
+    }
+    let e = &mut w.lp.peers[n].engine;
+    let (_, record) = e.package_with_record(c).unwrap().unwrap();
+    let delta = &record.parts.iter().find(|p| p.ai == ai).unwrap().delta;
+    let mut at = first(&osis_base::decode(delta, &osis_base::Limits::DEFAULT).unwrap());
+    let mut d = 0;
+    while let Some(l) = at {
+        d += 1;
+        let blob = e.blob(&l.blob).unwrap().unwrap();
+        let (_, pt) = osis_blob::open(&blob, &osis_crypto::Secret32::from_bytes(l.key)).unwrap();
+        at = match osis_base::decode(&pt, &osis_base::Limits::DEFAULT).unwrap() {
+            Value::List(items) => items.first().and_then(|x| if let Value::Link(l) = x { Some(**l) } else { None }),
+            _ => None,
+        };
+    }
+    d
+}
+
+/// §8 end to end at any depth: under small wire pages (`PageParams::set_test`, every page plug
+/// of the nodes) a map whose compaction snapshot pages at four levels or more is written by node
+/// 0 and delivered alone to node 3, which applies it page by page as the whole world does (the
+/// same states, outcomes and judgments), and reads it whole and at single entries as node 0 does.
+#[test]
+fn deep_link_tree_compacts_syncs_and_reads_spec_crdt_8() {
+    let small = osis_crdt::PageParams { target: 400, cut: osis_base::ChunkParams { min: 32, max: 160, mask_bits: 5 }, fanout: 3, ..osis_crdt::PageParams::FORMAT };
+    let was = osis_crdt::PageParams::set_test(Some(small));
+    let a = aks()[0].clone();
+    let map = Value::Map((0..300).map(|i| (Value::Int(i), s(i as u64, 0))).collect());
+    let (_, mut worlds) = both_in(
+        |whole| {
+            let (lp, t) = build(0);
+            of(lp, t, whole)
+        },
+        |w| {
+            let t = w.t;
+            let mut m = Mutation::new();
+            m.set(t, &a, &map).unwrap();
+            w.lp.peers[0].commit(m).unwrap().unwrap();
+            let snap = w.lp.peers[0].engine.snapshot(&t, &a).unwrap().unwrap();
+            let ai = w.lp.peers[0].engine.package_with_record(&snap).unwrap().unwrap().1.parts[0].ai;
+            let d = wire_depth(w, 0, &snap, ai);
+            assert!(d >= 4, "four page levels or more: {d}");
+            packages(w, 0, &[snap])
+        },
+    );
+    let w = &mut worlds[0];
+    let t = w.t;
+    assert_eq!(w.lp.peers[3].engine.get(&t, &a).unwrap(), Some(map.clone()), "read whole");
+    for i in [0i64, 151, 299] {
+        let path = [PathSeg::Key(Value::Int(i))];
+        assert_eq!(w.lp.peers[3].engine.get_at(&t, &a, &path).unwrap(), w.lp.peers[0].engine.get_at(&t, &a, &path).unwrap(), "entry {i}");
+        assert_eq!(w.lp.peers[3].engine.get_at(&t, &a, &path).unwrap(), Some(s(i as u64, 0)));
+    }
+    osis_crdt::PageParams::set_test(was);
 }
 
 /// What a commit listener on node 3 hears of `big` once the keep bound (an hour after replaced)

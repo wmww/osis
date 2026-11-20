@@ -200,7 +200,7 @@ impl PageSink for BlobWriter<'_> {
         Ok(self.put_blob(link_hash(&self.framing.dedup, plaintext), plaintext)?)
     }
     fn params(&self) -> PageParams {
-        PageParams::FORMAT
+        PageParams::wire()
     }
 }
 
@@ -338,7 +338,7 @@ impl PageSource for BlobReader<'_> {
         Ok(pt)
     }
     fn params(&self) -> PageParams {
-        PageParams::FORMAT
+        PageParams::wire()
     }
 }
 

@@ -285,7 +285,7 @@ fn prune_page(f: &Fragment, e: Option<&Stamp>, carry: &mut Vec<(Eid, Entry)>) ->
 /// the position's path with it): the links it does not name are not fetched.
 fn position(dec: &mut Dec, mut enc: Option<&mut Enc>, d: &Deferred, (path, want): (&[Step], Option<Want<'_>>), wrap: &WrapPath, e: Option<&Stamp>, each: &mut dyn FnMut(Raw) -> Result<(), Error>) -> Result<(), Error> {
     let wants = |at: &[usize]| want.is_none_or(|w| w(path, at));
-    let params = dec.pages.as_ref().map_or(PageParams::FORMAT, |p| p.params());
+    let params = dec.pages.as_ref().map_or_else(PageParams::wire, |p| p.params());
     if d.top.len() > params.target {
         return Err(Error::Malformed("link list above the page target"));
     }

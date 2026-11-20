@@ -97,7 +97,7 @@ impl Pager {
 
     /// A pager for an array `cx` encodes.
     pub(crate) fn of(cx: &mut Enc, map: bool) -> Pager {
-        let params = cx.sink().map_or(PageParams::FORMAT, |p| p.params());
+        let params = cx.sink().map_or_else(PageParams::wire, |p| p.params());
         let mut p = Pager::new(map, params);
         #[cfg(any(test, fuzzing))]
         {
@@ -311,7 +311,7 @@ fn re<'s>(sink: &'s mut Option<&mut dyn PageSink>) -> Option<&'s mut dyn PageSin
 /// target (`Levels`). Pages are put
 /// through the sink; `None` is fine only for an array that does not page.
 pub fn page_array(mut pages: Option<&mut dyn PageSink>, items: &[Value]) -> Result<Vec<u8>, Error> {
-    let mut p = Pager::new(false, pages.as_ref().map_or(PageParams::FORMAT, |p| p.params()));
+    let mut p = Pager::new(false, pages.as_ref().map_or_else(PageParams::wire, |p| p.params()));
     for v in items {
         encode_into(v, p.out());
         p.end(re(&mut pages))?;
@@ -632,7 +632,7 @@ pub(crate) enum Visit {
 /// bad input, so no cycle), and memory is the link lists on the way down, a page's worth per
 /// level reached, every level a page the author delivered.
 pub(crate) fn walk_tree(cx: &mut Dec, top: Vec<osis_base::Link>, want: &dyn Fn(&[usize]) -> bool, on: &mut dyn FnMut(&mut Dec, Visit) -> Result<(), Error>) -> Result<(), Error> {
-    let fanout = cx.pages.as_ref().map_or(PageParams::FORMAT, |p| p.params()).fanout;
+    let fanout = cx.pages.as_ref().map_or_else(PageParams::wire, |p| p.params()).fanout;
     // each level's links and the index of the next one to take
     let mut stack = vec![(top, 0usize)];
     // the depth every leaf lies at, once a leaf is reached
@@ -674,7 +674,7 @@ pub(crate) fn walk_tree(cx: &mut Dec, top: Vec<osis_base::Link>, want: &dyn Fn(&
 
 /// The leaf pages under a paged position `v` holding links `top`, in order, and its link pages.
 fn leaf_pages(cx: &mut Dec, v: Item, top: Vec<osis_base::Link>) -> Result<(Vec<(CanonicalBytes, osis_base::Link)>, Fetched), Error> {
-    let params = cx.pages.as_ref().map_or(PageParams::FORMAT, |p| p.params());
+    let params = cx.pages.as_ref().map_or_else(PageParams::wire, |p| p.params());
     if v.bytes().len() > params.target {
         return Err(Error::Malformed("link list above the page target"));
     }
@@ -1104,7 +1104,7 @@ pub(crate) fn check_items(bytes: &[u8], params: PageParams) -> Result<(), Error>
 /// `check_items` on the fragment of a delta or snapshot root (its fourth item), found by heads;
 /// a root without one is left to the decoder to refuse.
 pub(crate) fn check_root(bytes: &[u8], pages: Option<&dyn PageSource>) -> Result<(), Error> {
-    let params = pages.map_or(PageParams::FORMAT, |p| p.params());
+    let params = pages.map_or_else(PageParams::wire, |p| p.params());
     if bytes.len() <= params.max_items {
         return Ok(());
     }
@@ -1194,7 +1194,7 @@ pub mod oracle {
     /// Writes the array of elements `elems` (their canonical bytes), paged when the plain form is
     /// above the target (spec/wire.md §6).
     pub(crate) fn paged(mut pages: Option<&mut dyn PageSink>, map: bool, elems: &[&[u8]], out: &mut Vec<u8>) -> Result<(), Error> {
-        let params = pages.as_ref().map_or(PageParams::FORMAT, |p| p.params());
+        let params = pages.as_ref().map_or_else(PageParams::wire, |p| p.params());
         let plain = |out: &mut Vec<u8>, es: &[&[u8]]| {
             put_head(out, map, es.len());
             es.iter().for_each(|e| out.extend_from_slice(e));
@@ -1299,7 +1299,7 @@ pub mod oracle {
     }
 
     fn replay(dec: &mut Dec) -> crate::wire::Replay {
-        let mut r = crate::wire::Replay::new(dec.pages.as_ref().map_or(PageParams::FORMAT, |p| p.params()));
+        let mut r = crate::wire::Replay::new(dec.pages.as_ref().map_or_else(PageParams::wire, |p| p.params()));
         r.extend(std::mem::take(&mut dec.fetched));
         r
     }

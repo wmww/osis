@@ -954,7 +954,7 @@ impl<'a> Dec<'a> {
         enc.sources = self.sources.clone();
         enc.commit_idx = self.commits.iter().enumerate().map(|(i, c)| ((c.ts, c.src.clone()), i as u64 + 1)).collect();
         enc.commits = self.commits.clone();
-        let mut replay = Replay::new(self.pages.as_ref().map_or(crate::page::PageParams::FORMAT, |p| p.params()));
+        let mut replay = Replay::new(self.pages.as_ref().map_or_else(crate::page::PageParams::wire, |p| p.params()));
         replay.extend(std::mem::take(&mut self.fetched));
         let min = vec![u64::MAX; self.commits.len()];
         enc.check = Some(Box::new(Check { next: 1, min, bad: false, log: Some(Vec::new()), track: Track::new(), streams, replay }));
