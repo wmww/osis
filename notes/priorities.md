@@ -8,7 +8,15 @@
 - Cleanup and workflow jobs (Job mix) run beside this list, not from it.
 
 ## First: main's failing properties
-A property failing on main is the next task (notes/coordination.md, Known failures). Found by the gate's random seeds and failing on main, each with its replay line and a line in tools/known_failures.txt: the app test of issues/app-tile-unreadable-emails-test.md.
+A property failing on main is the next task (notes/coordination.md, Known failures). Found by the gate's random seeds and failing on main, each with its replay line and a line in tools/known_failures.txt:
+- issues/forged-text-dead-write-no-superseder.md (security: a forged text or list history fails a peer's tick with a local error; hostile input must never do that). First.
+- issues/perm-components-unapplied-vs-dropped.md (the unwired permission walk: judging by component disagrees with the single walk on one arrival order; before any A1 switch).
+- the app test of issues/app-tile-unreadable-emails-test.md.
+- The four role-vouch story properties wait on Tess (issues/role-vouch-contested.md).
+
+## Unlanded branches
+- `windlass-wiring-1`: the A1 debug shadow (the new permission walk beside today's on every engine and sync test; every difference in a designed class or the test fails). Reviewed, not landed: at the gate's seed offsets three differences fall in no class (a thing given a role on itself; an admin rewriting its own grant to add `invite: Admin`; STATED_CUT lapsing for a rotation's key parts), each written up on that branch, in the perm-paths note's section on the switch. Also owed there: Open 26's fix (read the remaining admin past the removal's own drops), the shadow comparing only readings that moved (it is quadratic in history), snapshots and purge requests in the adapter, the saved store. Run its properties at several offsets before the next review.
+- `windlass-voucher-standing`: parked; holds the vouch rule study for Tess's vouch question.
 
 ## Core, in order
 1. **Accounts on the ordinary rules, by the staged plan: notes/redesign-plan.md.** An account becomes an ordinary independent thing whose members are signers, a commit states its actors and is judged along them, evidence travels per sync unit, profiles are public, a thing's admins make it externally grantable, core has no concept of an account (issues/actors-one-mechanism.md; notes/account-membership-design.md, notes/write-path-design.md). Stated for the built sync unit (notes/sync-unit-scope.md). The plan orders it and the work around it in stages that each leave the tree working, and says what every other item here does meanwhile. Realms are designed with it. Issues: actors-one-mechanism, behaviour-depends-on-own-keys, realms-design, external-signals-taken-by-default, readers-see-readers, sync-units-linked-at-rest.
