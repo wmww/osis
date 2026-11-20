@@ -328,6 +328,13 @@ impl Engine {
         self.core.addenda_on = on;
     }
 
+    /// Whether this node's role commits state the Interim empty path, as before they stated real
+    /// ones (tests: the old walk judges both alike, `role_paths`).
+    #[doc(hidden)]
+    pub fn interim_role_paths(&mut self, on: bool) {
+        self.core.interim_role_paths = on;
+    }
+
     /// Whether this node writes vouches unasked (tests: a world with hand-written vouches).
     #[doc(hidden)]
     pub fn write_vouches(&mut self, on: bool) {

@@ -133,7 +133,7 @@ pub struct RoleCommit {
     pub id: CommitId,
     pub ts: Ts,
     // Interim (notes/a1-spec/README.md step 3): the walk reads the path a role commit states;
-    // until then every role commit states the empty path, so its signer is all it acts as.
+    // until then it reads the signer alone, which every role commit names as purge author.
     /// Its signer (header field 1).
     pub signer: Tid,
     /// The demoter's frontier (explicit demotions only), resolved from its link if large.

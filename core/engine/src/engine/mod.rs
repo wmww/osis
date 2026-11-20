@@ -1229,6 +1229,8 @@ pub struct Core {
     pub written: Vec<(Tid, Ak)>,
     /// Tests: let local commits break the writer-side role rules (to test receivers).
     pub skip_writer_rules: bool,
+    /// Tests: role commits state the Interim empty path (`Engine::interim_role_paths`).
+    pub(crate) interim_role_paths: bool,
     /// The edge writes signed meanwhile may leave a thing adminless, marked (`Engine::leaving_adminless`).
     pub(crate) leave_adminless: bool,
     /// Someone may listen to commit changes (`Engine::watch_commits`).
@@ -1611,6 +1613,7 @@ impl Core {
             events: self.events.clone(),
             written: self.written.clone(),
             skip_writer_rules: self.skip_writer_rules.clone(),
+            interim_role_paths: self.interim_role_paths,
             leave_adminless: self.leave_adminless,
             commits_watched: self.commits_watched.clone(),
             refs_watched: self.refs_watched.clone(),
@@ -2270,6 +2273,7 @@ impl Core {
             addenda_on: _,
             vouches_on: _,
             skip_writer_rules: _,
+            interim_role_paths: _,
             leave_adminless: _,
             commits_watched: _,
             refs_watched: _,
@@ -2482,6 +2486,7 @@ impl Core {
             events: Events::default(),
             written: Vec::new(),
             skip_writer_rules: false,
+            interim_role_paths: false,
             leave_adminless: false,
             commits_watched: false,
             refs_watched: false,

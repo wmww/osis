@@ -741,20 +741,25 @@ impl<'a> View<'a> {
     }
 
     /// The ways into `y` giving at least `need` (`Ways`): breadth first, backward from `y`, over
-    /// edges alive at the view's `ts` each giving `need` or more, holders taken in the order the
-    /// edge state lists them; with the earliest `until` it followed. A mint ancestor two or more
-    /// record edges up reaches a thing by descent only (notes/a1-spec/permissions.md §1 Path, Hops), so
-    /// its direct edge on it is not followed. O(things reaching `y` × their edges into it).
-    pub(crate) fn ways_to(&self, y: &Tid, need: Role) -> (Ways, Option<WallMs>) {
+    /// edges alive at the view's `ts` each giving `need` or more (for `Need::Invite`, the edges
+    /// into `y` giving it as an invite: notes/a1-spec/permissions.md §2 Path's invite), holders
+    /// taken in the order the edge state lists them; with the earliest `until` it followed. A mint
+    /// ancestor two or more record edges up reaches a thing by descent only
+    /// (notes/a1-spec/permissions.md §1 Path, Hops), so its direct edge on it is not followed.
+    /// O(things reaching `y` × their edges into it).
+    pub(crate) fn ways_to(&self, y: &Tid, need: Need) -> (Ways, Option<WallMs>) {
         let mut expires: Option<WallMs> = None;
         let mut next: BTreeMap<Tid, Tid> = BTreeMap::new();
         let mut queue = std::collections::VecDeque::from([*y]);
+        let role = need.role();
         while let Some(t) = queue.pop_front() {
             let parent = self.records.mint_admin(&t);
             let up: BTreeSet<Tid> = std::iter::successors(parent.and_then(|p| self.records.mint_admin(&p)), |a| self.records.mint_admin(a)).take(osis_base::format::MAX_CHAIN_DEPTH).collect();
             let mut found: Vec<Tid> = Vec::new();
+            let invite = matches!(need, Need::Invite(_)) && t == *y;
             self.each_holder(&t, |m, e| {
-                if e.alive_at(self.ts) && e.role >= need && !up.contains(m) {
+                let gives = if invite { e.role == Role::Admin || e.invite.is_some_and(|i| i.min(e.role) >= role) } else { e.role >= role };
+                if e.alive_at(self.ts) && gives && !up.contains(m) {
                     expires = earliest(expires, e.until);
                     found.push(*m);
                 }
@@ -831,6 +836,24 @@ impl<'a> View<'a> {
             }
         }
         seen
+    }
+}
+
+/// What a path must give on the thing it ends at (notes/a1-spec/permissions.md §1 Path, §2).
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
+pub enum Need {
+    /// At least this role on every edge.
+    Role(Role),
+    /// This role on every edge but the last, and as an invite on the last (§2 Path's invite):
+    /// what an invite grant of the role needs.
+    Invite(Role),
+}
+
+impl Need {
+    pub fn role(self) -> Role {
+        match self {
+            Need::Role(r) | Need::Invite(r) => r,
+        }
     }
 }
 

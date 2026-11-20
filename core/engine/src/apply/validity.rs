@@ -1314,7 +1314,7 @@ pub(crate) fn self_removal(core: &Core, author: &Tid, target: &Tid, holder: &Tid
 /// The edge writes of a role commit's parts `(thing, ak, fragment)`, each `(target, holder, new
 /// edge)` once (`None`: removed): a change is a reset and a put of one entry, the put the
 /// holder's new edge.
-fn edge_writes<'f>(core: &Core, parts: impl IntoIterator<Item = (Tid, &'f Ak, &'f Fragment)>) -> Vec<(Tid, Tid, Option<Edge>)> {
+pub(crate) fn edge_writes<'f>(core: &Core, parts: impl IntoIterator<Item = (Tid, &'f Ak, &'f Fragment)>) -> Vec<(Tid, Tid, Option<Edge>)> {
     let mut changed: Vec<(Tid, Tid, Option<Edge>)> = Vec::new();
     for (t, ak, f) in parts {
         if !edge_ak(ak.as_str()) {

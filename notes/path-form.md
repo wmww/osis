@@ -35,14 +35,14 @@ A thing T's path is read by every node that judges T's parts: T's holders, who h
 - **Waits**: a commit awaits its purge author's record (as one clear path's actor); no per-part pending wait (held parts always know their path; unheld ones wait as above).
 - **Purge, level-2 keys, cover facts, listings, stamps, signals**: the one purge author, in the clear (`Header::purge_author`).
 - **Undo**: a part not held on a thing whose path is not known here: the commit is not undone there (`undo::undone_parts`, `NotKept`).
-- Role commits state one path (a `Split` on kind 1 or 3 is bad input); the engine writes one thing per role commit.
+- Role commits state one path in the clear (a `Split` on kind 1 or 3 is bad input): `write::role_path`, one `Path` serving every thing a role commit writes (several only where all hang off one path: an account's creation, its root and records off the empty path; debug-asserted), notes/a1-spec/README.md step 3, Role paths.
 
 ## Whom a write is by (`act_as`, a1-spec Open 16)
 - One purge author per commit; it must be among each thing's members in a split commit (else that thing's entry is bad).
 - Built (Open 16 undecided): `act_as(X)` with X on every thing's path states the real paths with X as purge author; where some thing's path does not go through X, the engine states the Interim `[X]` for the whole commit (`engine::write::stated_paths`, marked Open 16), as main's Acting check accepts it. Proposed: refuse it (`Permission`); the owner has not agreed.
 
 ## The engine's choice
-Each thing's own shortest path (`write::path_with`, memoized per (thing, role)), through X where acting for X; the clear form where they are read off one `Path` and `clear_tells_nothing` holds; else split. Never a longer route for one thing so one path serves all (a part rests on its stated path's edges alone). Interim `interim_path`: role commits, rotations, re-seals, a commit where no path gives the role (a fire valid by its setting), the Open 16 case. `validity::every_stated_path_is_a_chain_of_held_edges_spec_wire_4` checks honest paths are held chains.
+Each thing's own shortest path (`write::path_with`, memoized per (thing, role)), through X where acting for X; the clear form where they are read off one `Path` and `clear_tells_nothing` holds; else split. Never a longer route for one thing so one path serves all (a part rests on its stated path's edges alone). Role commits: `write::role_path` (one path, notes/a1-spec/README.md step 3); an account's rotation and seed re-seal state `[0]`. Interim `interim_path`: a commit where no path gives the role (a fire valid by its setting; a role commit, a1-spec Open 20), the Open 16 case. `validity::every_stated_path_is_a_chain_of_held_edges_spec_wire_4` checks honest paths are held chains.
 
 ## Bytes
 `signer` 16, `path`, `remains` 1 (from `thing_cost` and `osis_commit` tests):

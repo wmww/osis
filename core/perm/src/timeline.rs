@@ -110,10 +110,10 @@ pub(crate) struct Memo {
     /// `roles_on` on the current edges, per thing: (the answer, from what ts, the earliest
     /// `until` it followed). A walk per thing while the edges stay and no followed edge ends.
     pub on_now: Mutex<BTreeMap<Tid, OnNow>>,
-    /// `ways_to` on the current edges, per (thing, role): (the ways, from what ts, the earliest
-    /// `until` they followed). A walk per thing and role while the edges stay and no followed edge
+    /// `ways_to` on the current edges, per (thing, need): (the ways, from what ts, the earliest
+    /// `until` they followed). A walk per thing and need while the edges stay and no followed edge
     /// ends.
-    pub ways: Mutex<BTreeMap<(Tid, Role), WaysNow>>,
+    pub ways: Mutex<BTreeMap<(Tid, crate::graph::Need), WaysNow>>,
     /// Walks made for `on_now` (a measure).
     pub on_walks: std::sync::atomic::AtomicU64,
     /// What a node reaches over chained edges (`cert`), per node `closure` met: the asker (a
@@ -1203,10 +1203,10 @@ impl Timeline {
         (r, expires)
     }
 
-    /// The path from `node` into `thing` giving at least `need` on the current edges at `ts`
+    /// The path from `node` into `thing` giving `need` on the current edges at `ts`
     /// (`graph::Ways::path`): the things listed and whether the last hop is a record edge.
-    /// Walked once per thing and role while it holds (counted: "perm: ways walked").
-    pub fn path_now(&self, node: &Tid, thing: &Tid, need: Role, ts: Ts) -> Option<(Vec<Tid>, bool)> {
+    /// Walked once per thing and need while it holds (counted: "perm: ways walked").
+    pub fn path_now(&self, node: &Tid, thing: &Tid, need: crate::graph::Need, ts: Ts) -> Option<(Vec<Tid>, bool)> {
         let held = |e: &WaysNow| e.1 <= ts && e.2.is_none_or(|u| ts.wall_ms() < u);
         let cached = self.memo.ways.lock().ok().and_then(|m| m.get(&(*thing, need)).filter(|e| held(e)).map(|e| e.0.clone()));
         let ways = match cached {
