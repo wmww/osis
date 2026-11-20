@@ -7,3 +7,4 @@
 held-model/props::settled_histories_keep_their_laws_large_spec_commits_5 rate:OSIS_HELD_START=387315248891 issues/held-model-until-no-deadline.md seed \d+: output changed before its first deadline
 osis-app/fields::a_tile_tells_of_emails_it_cannot_read - issues/app-tile-unreadable-emails-test.md Err\(osis::Error::TooLarge
 osis-engine/apply::tests_paged::paged_apply_matches_whole_large_spec_crdt_8 rate:OSIS_PAGED_APPLY_START=874943289199 issues/paged-apply-differs-from-whole.md step \d+: page-by-page apply differs from whole
+sim-sweep:crash_restart rate:853002419338/853002419342 issues/sim-crash-restart-pending-chain.md not quiescent after \d+ rounds
