@@ -202,7 +202,9 @@ fn search(family_step: usize, random_worlds: u64) {
             (format!("{sh:?}"), f)
         }));
     }
-    for seed in 0..random_worlds {
+    let start = std::env::var("OSIS_HELD_START").ok().filter(|v| !v.is_empty()).map_or(0, |v| v.parse::<u64>().expect("OSIS_HELD_START is a decimal u64"));
+    eprintln!("errand: random seeds {start}..{}", start + random_worlds);
+    for seed in start..start + random_worlds {
         // random: x is node 0, q node 3
         jobs.push(Box::new(move || (format!("random seed {seed}"), remover_lost(random(seed, 14), 0, 3).map(|w| lost_fails(&w, &lagged(Runners::AnyHolder))).unwrap_or_default())));
     }

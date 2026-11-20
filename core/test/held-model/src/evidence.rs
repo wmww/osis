@@ -429,6 +429,9 @@ impl Rule {
     }
 }
 
+/// The chained writes of a held set, computed when first read (`World::chained`).
+pub type Chained = std::cell::OnceCell<Set>;
+
 /// A frontier leaf: (lowering, thing).
 pub type Leaf = (Id, Thing);
 pub type Leafs = std::collections::BTreeSet<Leaf>;
@@ -1057,7 +1060,7 @@ impl World {
     /// thing, with no edge-class part, resting on the lowered edge, in any order (a list keeps what
     /// its writer received, stamped after the lowering or not), and under `LeafKeep::Cuts` the
     /// lowering taking write away there (`cuts_write`). What a reader without the leaf waits on.
-    pub fn reads(&self, keep: LeafKeep, l: Leaf, j: Id, h: &Set, ch: &Set) -> bool {
+    pub fn reads(&self, keep: LeafKeep, l: Leaf, j: Id, h: &Set, ch: &Chained) -> bool {
         let (r, t) = l;
         self.on(j) == t && !self.w.edge_class(j) && self.w.sets(r).is_some_and(|e| self.w.hops(j).contains(&e)) && (keep != LeafKeep::Cuts || self.cuts_write(r, h, ch))
     }
@@ -1067,12 +1070,12 @@ impl World {
     /// needs is write, so this is when its list is read for content (a superset of the walk's
     /// cuts: every write the walk applies is chained). The same test as reach's
     /// `Removals::TakesWrite`, so a leaf waited on travels with the errand.
-    pub fn cuts_write(&self, r: Id, h: &Set, ch: &Set) -> bool {
+    pub fn cuts_write(&self, r: Id, h: &Set, ch: &Chained) -> bool {
         let Some(e) = self.removes(r) else { return false };
-        self.w.records.contains(&e) || h.iter().any(|&j| ch.contains(&j) && self.gives_write(j) == Some(e) && self.w.key(j) < self.w.key(r))
+        self.w.records.contains(&e) || h.iter().any(|&j| self.gives_write(j) == Some(e) && self.w.key(j) < self.w.key(r) && ch.get_or_init(|| self.chained(h)).contains(&j))
     }
     /// Leaf `l` is evidence of `j` under `keep` over `h` (`ch` its chained writes).
-    fn evidence_of(&self, keep: LeafKeep, l: Leaf, j: Id, h: &Set, ch: &Set) -> bool {
+    fn evidence_of(&self, keep: LeafKeep, l: Leaf, j: Id, h: &Set, ch: &Chained) -> bool {
         match keep {
             LeafKeep::Named => self.on(j) == l.1 && self.content_entries(l.0, l.1).iter().any(|&c| self.w.names(c, j)),
             LeafKeep::Judged | LeafKeep::Cuts => self.reads(keep, l, j, h, ch),
@@ -1083,7 +1086,7 @@ impl World {
     pub fn req_leaves(&self, rule: &Rule, s: Sid, units: &BTreeMap<Sid, Things>, h: &Set) -> Leafs {
         let Lists::Travels(keep) = rule.lists else { return Leafs::new() };
         let req = self.req(rule, s, units, h);
-        let ch = self.chained(h);
+        let ch = Chained::new();
         let home = |l: Leaf| rule.leaves_home && units[&s].contains(&self.on(l.0));
         req.iter().flat_map(|&r| self.leaves_of(r)).filter(|&l| home(l) || req.iter().any(|&j| self.evidence_of(keep, l, j, h, &ch))).collect()
     }
@@ -1249,7 +1252,7 @@ impl World {
                 out.entry(x).or_default().extend(self.closure(rule, &seed, &h));
                 if let Lists::Travels(keep) = rule.lists {
                     let bodies = self.bodies(x, &st.units, &h);
-                    let ch = self.chained(&h);
+                    let ch = Chained::new();
                     lv.entry(x).or_default().extend(self.leaves_of(i).into_iter().filter(|&l| bodies.iter().any(|&j| self.evidence_of(keep, l, j, &h, &ch))));
                 }
             }
@@ -1506,7 +1509,7 @@ impl World {
     }
     /// Under `Lists::Travels`: `i` has no edge-class part and a held lowering's root shows a leaf
     /// for `i`'s thing that would read `i`, not held: `i` waits for it.
-    pub fn pend_leaf(&self, keep: LeafKeep, h: &Set, ch: &Set, l: &Leafs, i: Id) -> bool {
+    pub fn pend_leaf(&self, keep: LeafKeep, h: &Set, ch: &Chained, l: &Leafs, i: Id) -> bool {
         !self.w.edge_class(i) && h.iter().any(|&r| self.w.lowers(r).is_some() && self.leaves_of(r).contains(&(r, self.on(i))) && self.reads(keep, (r, self.on(i)), i, h, ch) && !l.contains(&(r, self.on(i))))
     }
     /// The verdict on each of `ids` at a node judging from `s`.
@@ -1520,7 +1523,10 @@ impl World {
             }
         }
         let ch = (self.pend == Pend::Granted).then(|| self.chained(&s.v.held));
-        let leaf_ch = if s.lists.is_some() && s.keep == LeafKeep::Cuts { ch.clone().unwrap_or_else(|| self.chained(&s.v.held)) } else { Set::new() };
+        let leaf_ch = Chained::new();
+        if let Some(c) = &ch {
+            let _ = leaf_ch.set(c.clone());
+        }
         ids.iter()
             .map(|&i| {
                 let ok = if self.w.edge_class(i) { rd.applied.contains(&i) } else { rd.valid.contains(&i) || rd.copied.contains(&i) };
@@ -1831,7 +1837,7 @@ impl World {
             let seen = self.reader(rule, st, s, &Set::new());
             let bodies = self.bodies(s, &st.units, &seen.v.held);
             let held_leaves = seen.lists.clone().unwrap_or_default();
-            let ch = self.chained(&seen.v.held);
+            let ch = Chained::new();
             for &i in &bodies {
                 for &l in held_leaves.iter().filter(|&&l| self.reads(seen.keep, l, i, &seen.v.held, &ch)) {
                     let mut short = seen.clone();
