@@ -26,8 +26,8 @@ fn signal_parts(v: &View) -> impl Iterator<Item = (usize, &AspectView)> + '_ {
     v.aspects.iter().enumerate().filter(move |(_, a)| !v.memory && durable_signal(&a.ak))
 }
 
-/// The `versions` key of `v`'s claim at `a`, if any: keyed by the thing it acts on (Interim,
-/// notes/a1-spec/README.md step 4: then its purge author on `a`'s thing).
+// Interim (notes/a1-spec/README.md step 4): keyed by the purge author on `a`'s thing.
+/// The `versions` key of `v`'s claim at `a`, if any: keyed by the thing it acts on.
 fn claim(v: &View, a: &AspectView) -> Option<(Tid, Ak, CommitId, Tid)> {
     Some((a.tid, a.ak.clone(), a.replaces?, v.acting?))
 }

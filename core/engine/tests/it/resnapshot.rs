@@ -44,7 +44,8 @@ fn world(keys: bool) -> (LocalPeer, Tid, Vec<osis_engine::local_peer::Package>) 
 
 /// Admin 0 writes over an older value with a secret on `t`, 1 applying each; 0 purges the secret
 /// and 1 applies the request (node-sync, which would write the re-snapshot at once, does not run).
-fn purged(lp: &mut LocalPeer, t: Tid) {
+/// `late`: the secret reaches 1 only after the request naming it.
+fn purged(lp: &mut LocalPeer, t: Tid, late: bool) {
     let send = |lp: &mut LocalPeer, id: CommitId| {
         let pk = lp.peers[0].engine.package(&id).unwrap().unwrap();
         lp.deliver(1, &pk).unwrap();
@@ -55,7 +56,9 @@ fn purged(lp: &mut LocalPeer, t: Tid) {
         m.retention(t, &reg(), Retention { by: PurgeBy::Writer }).unwrap();
         m.set(t, &reg(), &Value::Str(v.into())).unwrap();
         let id = lp.peers[0].commit(m).unwrap().unwrap();
-        send(lp, id);
+        if !(late && v == "SECRET") {
+            send(lp, id);
+        }
         c = Some(id);
         lp.advance(1_000);
     }
@@ -64,7 +67,12 @@ fn purged(lp: &mut LocalPeer, t: Tid) {
     m.purge(lp.peers[0].engine.purge_item(&c.unwrap(), t, reg()).unwrap());
     let p = lp.peers[0].commit(m).unwrap().unwrap();
     send(lp, p);
-    assert_eq!(lp.peers[1].engine.get(&t, &reg()).unwrap(), None, "the purge applied");
+    if late {
+        send(lp, c.unwrap());
+    } else {
+        // read with the secret late: issues/purge-before-named-delta-reads-older.md
+        assert_eq!(lp.peers[1].engine.get(&t, &reg()).unwrap(), None, "the purge applied");
+    }
 }
 
 /// The snapshots of `(t, reg)` writer 1 wrote.
@@ -79,7 +87,7 @@ fn own_snapshots(lp: &LocalPeer, t: Tid) -> usize {
 #[test]
 fn owed_resnapshot_survives_a_stop_spec_commits_5() {
     let (mut lp, t, _) = world(true);
-    purged(&mut lp, t);
+    purged(&mut lp, t, false);
     assert_eq!(own_snapshots(&lp, t), 0, "not written yet");
     lp.peers[1].restart(1).unwrap();
     lp.peers[1].engine.purge_resnapshots().unwrap();
@@ -95,7 +103,7 @@ fn owed_resnapshot_survives_a_stop_spec_commits_5() {
 #[test]
 fn owed_resnapshot_waits_for_delete_keys_spec_commits_5() {
     let (mut lp, t, keys) = world(false);
-    purged(&mut lp, t);
+    purged(&mut lp, t, false);
     lp.peers[1].engine.purge_resnapshots().unwrap();
     assert_eq!(own_snapshots(&lp, t), 0, "the keys are not here");
     for pk in &keys {
@@ -104,4 +112,16 @@ fn owed_resnapshot_waits_for_delete_keys_spec_commits_5() {
     assert!(lp.peers[1].engine.holds_delete_keys(&t).unwrap());
     lp.peers[1].engine.purge_resnapshots().unwrap();
     assert_eq!(own_snapshots(&lp, t), 1, "written once the keys came");
+}
+
+// spec/commits.md §5 Purge, §4 Order independence: a writer owes the re-snapshot whichever of the
+// request and the delta it names came first: the request dropped something here either way
+#[test]
+fn owed_resnapshot_whichever_comes_first_spec_commits_5() {
+    for late in [false, true] {
+        let (mut lp, t, _) = world(true);
+        purged(&mut lp, t, late);
+        lp.peers[1].engine.purge_resnapshots().unwrap();
+        assert_eq!(own_snapshots(&lp, t), 1, "late {late}");
+    }
 }

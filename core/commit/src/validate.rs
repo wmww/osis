@@ -29,15 +29,15 @@ impl Header {
                 ord(l.del == osis_base::Del::NONE, "header list link naming a delete key")?;
             }
         }
-        // the path's form follows the count of things written (spec/wire.md §4 field 2)
+        // one path in the clear for every thing, or a hash per thing for two or more
+        // (spec/wire.md §4 field 2)
         match &self.path {
             Paths::One(p) => {
-                ord(self.things().len() == 1, "a path in the clear on a commit writing several things")?;
                 if !self.path_allowed(p) {
                     return Err(Error::Invalid("a path this commit may not state"));
                 }
             }
-            Paths::Hashed(hs) => ord(hs.len() > 1 && hs.len() == self.things().len(), "hashed paths other than one per thing written")?,
+            Paths::Hashed(hs) => ord(hs.len() > 1 && hs.len() == self.things().len(), "hashed paths other than one per thing written, or for one thing")?,
         }
         // the remaining admin rides on a role commit's edge writes (spec/wire.md §4 field 17)
         if self.remains.is_some() && (self.kind != Kind::Role || self.adminless || !self.aspects.iter().any(|a| a.ak.as_str() == "roles.0")) {
@@ -189,12 +189,15 @@ impl Header {
         Ok(())
     }
 
-    /// Whether it may state `p` for a thing it writes: a rotation and a seed re-seal state the
-    /// empty path, the signer writing itself (spec/wire.md §4 fields 15, 16).
+    /// Whether it may state `p` for a thing it writes.
     pub fn path_allowed(&self, p: &Path) -> bool {
-        // Interim (notes/a1-spec/README.md step 3): the walk judges any path and index; until
-        // then the index names the thing it reads (i = k) and a role commit acts as its signer.
+        // a rotation and a seed re-seal state the empty path, the signer writing itself
+        // (spec/wire.md §4 fields 15, 16)
+        let own = self.rotation.is_none() && self.reseal.is_none() || p.things.is_empty();
+        // Interim (notes/a1-spec/README.md step 3): the index names the thing the old walk reads
+        // (i = k), and a role commit states the empty path (the old walk judges an edge write by
+        // its signer alone).
         let interim = p.interim_index() && (self.kind != Kind::Role || p.things.is_empty());
-        interim && (self.rotation.is_none() && self.reseal.is_none() || p.things.is_empty())
+        own && interim
     }
 }

@@ -322,42 +322,57 @@ fn more_accepted() -> Vec<Record> {
     out
 }
 
-/// A content commit writing two things along one listed thing: its `path` a salted hash per
-/// thing (spec/wire.md §4 field 2), each thing's `Salted` in the opened form's paths. The
-/// randomness is the header blind, then a salt per thing in aspect order.
+/// A content commit writing two things along one listed thing: one `path` for both, in the clear
+/// (spec/wire.md §4 field 2); and with the second thing's path differing (`[2, A, LISTED]`): a
+/// salted hash per thing, each thing's `Salted` in the opened form's paths. The randomness is the
+/// header blind, then (hashed) a salt per thing in aspect order.
 fn several_things() -> Vec<Record> {
     let at = ts(1_700_000_005_000);
+    let other = Tid::from_bytes([0x24; 15]);
     let mut b = CommitBuilder::new(Kind::Content, at, SIGNER, osis_commit::Path::through(LISTED), SESSION);
-    for (i, t) in [THING, Tid::from_bytes([0x24; 15])].into_iter().enumerate() {
+    for (i, t) in [THING, other].into_iter().enumerate() {
         b.aspects.push(AspectWrite::new(t, Ak::new("app:title.0").unwrap(), 1, 2, delta(SESSION, Kind::Content, at, 1, Value::Str(format!("t{i}")), 12 + i as u8)));
     }
     let key = SigningSecret::from_seed(&s32(0x35));
-    let mut rec = Recording(osis_crypto::SeededRng::from_seed([0x38; 32]), Vec::new());
-    let first = b.clone().build(&key, &VSecrets, &mut MemoryBlobs::default(), &mut rec).unwrap().commit;
-    let c = b.build(&key, &VSecrets, &mut MemoryBlobs::default(), &mut FixedRng::new(&[&rec.1])).unwrap().commit;
-    assert_eq!(first, c);
     let dedup = |_: &Tid| Some(s32(0x30));
-    verify_blob(&c, &key.verifying_key(), &dedup, None).unwrap();
-    assert!(matches!(c.header.path, osis_commit::Paths::Hashed(_)));
-    let mut r = record("several things: hashed paths", "spec/wire.md §4 field 2", &c).with("randomness", hex(&rec.1));
-    for (i, x) in &c.salted {
-        r = r.with(&format!("salted-{i}"), hex(&{
-            let mut b = Vec::new();
-            osis_base::cbor::put_array(&mut b, 2);
-            osis_base::cbor::put_bytes(&mut b, &x.salt);
-            b.extend_from_slice(&x.path.encode());
-            b
-        }));
+    let mut out = Vec::new();
+    for hashed in [false, true] {
+        let mut b = b.clone();
+        if hashed {
+            b.thing_paths.insert(other, osis_commit::Path { purge: 2, things: vec![Tid::from_bytes([0x26; 15]), LISTED] });
+        }
+        let mut rec = Recording(osis_crypto::SeededRng::from_seed([0x38; 32]), Vec::new());
+        let first = b.clone().build(&key, &VSecrets, &mut MemoryBlobs::default(), &mut rec).unwrap().commit;
+        let c = b.build(&key, &VSecrets, &mut MemoryBlobs::default(), &mut FixedRng::new(&[&rec.1])).unwrap().commit;
+        assert_eq!(first, c);
+        verify_blob(&c, &key.verifying_key(), &dedup, None).unwrap();
+        if !hashed {
+            assert_eq!(c.header.path, osis_commit::Paths::One(osis_commit::Path::through(LISTED)));
+            out.push(record("several things: one path", "spec/wire.md §4 field 2", &c).with("randomness", hex(&rec.1)));
+            continue;
+        }
+        assert!(matches!(c.header.path, osis_commit::Paths::Hashed(_)));
+        let mut r = record("several things: hashed paths", "spec/wire.md §4 field 2", &c).with("randomness", hex(&rec.1));
+        for (i, x) in &c.salted {
+            r = r.with(&format!("salted-{i}"), hex(&{
+                let mut b = Vec::new();
+                osis_base::cbor::put_array(&mut b, 2);
+                osis_base::cbor::put_bytes(&mut b, &x.salt);
+                b.extend_from_slice(&x.path.encode());
+                b
+            }));
+        }
+        out.push(r);
+        // a thing's Salted not hashing to its entry (its salt changed): its parts are no part of
+        // the commit, and the opened form carrying it is bad input
+        let mut x = c.clone();
+        if let Some(s) = x.salted.values_mut().next() {
+            s.salt[0] ^= 1;
+        }
+        assert!(CommitBlob::decode(&x.encode()).is_err());
+        out.push(case("salted path not matching its hash", "spec/wire.md §4 field 2, Contents").with("blob", hex(&x.encode())).with("reject", "salted"));
     }
-    // a thing's Salted not hashing to its entry (its salt changed): its parts are no part of the
-    // commit, and the opened form carrying it is bad input
-    let mut x = c.clone();
-    if let Some(s) = x.salted.values_mut().next() {
-        s.salt[0] ^= 1;
-    }
-    assert!(CommitBlob::decode(&x.encode()).is_err());
-    let bad = case("salted path not matching its hash", "spec/wire.md §4 field 2, Contents").with("blob", hex(&x.encode())).with("reject", "salted");
-    vec![r, bad]
+    out
 }
 
 fn more_rejected(content: &Header) -> Vec<Record> {
@@ -375,7 +390,9 @@ fn more_rejected(content: &Header) -> Vec<Record> {
     let mut a = x.aspects[0].clone();
     a.tid = Tid::from_bytes([0x24; 15]);
     x.aspects.push(a);
-    out.push(reject("path in the clear on a commit writing two things", "spec/wire.md §4 field 2", &x, "path-form"));
+    x.validate().unwrap();
+    x.path = osis_commit::Paths::Hashed(vec![[1; 32], [2; 32], [3; 32]]);
+    out.push(reject("hashed path of another count than the things written", "spec/wire.md §4 field 2", &x, "path-form"));
     let m = role_commit().header;
     let mut x = m.clone();
     x.purge.push(PurgeItem::Aspect { tid: THING, ak: Ak::new("app:title.0").unwrap() });

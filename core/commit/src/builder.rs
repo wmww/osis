@@ -47,9 +47,12 @@ pub struct CommitBuilder {
     /// The signing key actor: an account, or a key actor other than an account signing as
     /// itself.
     pub signer: Tid,
-    /// The path it states on every thing it writes (spec/wire.md §4 field 2): in the clear for
-    /// one thing, else hashed per thing under a fresh salt.
+    /// The path it states on every thing it writes but those in `thing_paths` (spec/wire.md §4
+    /// field 2).
     pub path: Path,
+    /// A thing's own path where it differs from `path`. Every thing's path equal: the header
+    /// states it once in the clear; else a salted hash per thing (spec/wire.md §4 field 2).
+    pub thing_paths: BTreeMap<Tid, Path>,
     pub form: Form,
     /// Expiry T, wall ms, of every delta ([`crate::retention::write_expires`]).
     pub expires: Option<u64>,
@@ -114,7 +117,7 @@ fn build_err(e: Error) -> Error {
 
 impl CommitBuilder {
     pub fn new(kind: Kind, ts: Ts, signer: Tid, path: Path, form: Form) -> CommitBuilder {
-        CommitBuilder { kind, ts, signer, path, form, expires: None, aspects: Vec::new(), purge: Vec::new(), undoes: None, frontier: None, blind: None, ephemeral: None, account: None, rotation: None, reseal: None, remains: None, own_cover: false, adminless: false, max_blob: MAX_BLOB }
+        CommitBuilder { kind, ts, signer, path, thing_paths: BTreeMap::new(), form, expires: None, aspects: Vec::new(), purge: Vec::new(), undoes: None, frontier: None, blind: None, ephemeral: None, account: None, rotation: None, reseal: None, remains: None, own_cover: false, adminless: false, max_blob: MAX_BLOB }
     }
 
     /// Builds the header (lists above `CHUNK_THRESHOLD` go by link through `sink`), signs it,
@@ -160,25 +163,36 @@ impl CommitBuilder {
         let mut purge = std::mem::take(&mut self.purge);
         purge.sort_by_cached_key(purge_bytes);
 
-        // one thing: its path in the clear; several: a salted hash per thing, in aspect order
+        // every thing's path equal: stated once in the clear; else a salted hash per thing, in
+        // aspect order (spec/wire.md §4 field 2)
         let mut things: Vec<Tid> = entries.iter().map(|e| e.tid).collect();
         things.dedup();
-        let mut salted = BTreeMap::new();
-        let path = if things.len() == 1 {
-            Paths::One(self.path.clone())
-        } else {
-            Paths::Hashed((0..things.len()).map(|i| {
-                let mut salt = [0u8; 16];
-                rng.fill_bytes(&mut salt);
-                let s = Salted { salt, path: self.path.clone() };
-                let h = s.hash();
-                salted.insert(i, s);
-                h
-            }).collect())
-        };
-        if !things.is_empty() {
-            self.path.check(&self.signer).map_err(build_err)?;
+        let of = |t: &Tid| self.thing_paths.get(t).unwrap_or(&self.path);
+        if self.thing_paths.keys().any(|t| !things.contains(t)) {
+            return Err(Error::Build("a path for a thing the commit does not write"));
         }
+        for t in &things {
+            of(t).check(&self.signer).map_err(build_err)?;
+        }
+        let mut salted = BTreeMap::new();
+        let path = match things.first() {
+            Some(first) if things.iter().any(|t| of(t) != of(first)) => Paths::Hashed(
+                things
+                    .iter()
+                    .enumerate()
+                    .map(|(i, t)| {
+                        let mut salt = [0u8; 16];
+                        rng.fill_bytes(&mut salt);
+                        let s = Salted { salt, path: of(t).clone() };
+                        let h = s.hash();
+                        salted.insert(i, s);
+                        h
+                    })
+                    .collect(),
+            ),
+            Some(first) => Paths::One(of(first).clone()),
+            None => Paths::One(self.path.clone()),
+        };
 
         let mut header = Header {
             signer: self.signer,
@@ -253,6 +267,9 @@ impl CommitBuilder {
         let sigs = Sigs::signed(&id, key, inner, more, merge);
         let parts = deltas.into_iter().enumerate().map(|(ai, delta)| Part { ai, delta }).collect();
         let commit = CommitBlob { header, sigs, parts, salted };
+        // Interim (notes/a1-spec/README.md step 3): one acting thing for all its paths, as a
+        // reader checks them
+        commit.check_paths().map_err(build_err)?;
         // paging keeps deltas far below a blob; a commit whose paged roots still pass it is
         // refused here (spec/commits.md §1)
         if blob_bound(&commit) > self.max_blob {

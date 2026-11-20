@@ -692,7 +692,18 @@ fn build(tx: &mut Tx<'_>, plan: CommitPlan, deltas: Vec<Resolved>) -> Result<osi
         let bytes = if tx.core.forge_bad.contains(&(d.tid, d.ak.clone())) { osis_base::encode(&osis_base::Value::List(vec![osis_base::Value::Int(1)])) } else { bytes };
         writes.push(AspectWrite { tid: d.tid, ak: d.ak, lo: d.lo, hi: d.hi, delta: bytes, retention, replaces: d.replaces, original_floor: d.original_floor });
     }
+    // Interim (notes/a1-spec/README.md step 2): one acting thing, so one path for every thing a
+    // commit writes, stated once in the clear (`thing_paths` left empty)
     let mut b = CommitBuilder::new(plan.kind, plan.ts, node, interim_path(node, plan.actor), plan.form);
+    if let Some(z) = tx.core.hashed_through
+        && let Some(acting) = b.path.things.last().copied()
+    {
+        let p = osis_commit::Path { purge: 2, things: vec![z, acting] };
+        let mut things: Vec<Tid> = writes.iter().map(|w| w.tid).collect();
+        things.sort();
+        things.dedup();
+        b.thing_paths = things.into_iter().skip(1).map(|t| (t, p.clone())).collect();
+    }
     b.expires = plan.expires;
     b.aspects = writes;
     b.purge = plan.purge;

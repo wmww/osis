@@ -817,11 +817,17 @@ pub(crate) fn note_requests(tx: &mut Tx<'_>, id: &CommitId, h: &Header) -> Resul
     Ok(())
 }
 
-/// Held requests already naming delta `ai` of `id` (header `h`), just applied.
+/// Held requests already naming delta `ai` of `id` (header `h`), just applied. One standing on
+/// it dropped something here, as at its own apply (`apply_request`): a writer owes a re-snapshot,
+/// with no named body applied here before (this one never was), whichever came first.
 pub(super) fn purge_arrived(tx: &mut Tx<'_>, id: &CommitId, h: &Header, ai: usize, purged: &mut BTreeSet<(Tid, Ak)>) -> Result<()> {
     let Some(a) = h.aspects.get(ai) else { return Ok(()) };
+    let mut stood = false;
     for (pc, _) in requests_on(tx, a, h, id)? {
-        purge_one(tx, &pc, id, ai, purged)?;
+        stood |= purge_one(tx, &pc, id, ai, purged)?;
+    }
+    if stood {
+        owe_resnapshot(tx, &a.tid, &a.ak, BTreeSet::new(), true)?;
     }
     Ok(())
 }

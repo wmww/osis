@@ -186,6 +186,7 @@ RULES = [
     ("spec/versioning.md", "5", "mistyped reads absent", "MUST NOT be taken as a value of the type"),
     ("spec/wire.md", "5", "unpad", "which MUST be present"),
     ("spec/wire.md", "4", "header flags", "Other bits are reserved and MUST be zero"),
+    ("spec/wire.md", "4", "one path", "a writer MUST use this form then"),
     ("spec/wire.md", "10", "reserved flags", "reserved and MUST be zero"),
 ]
 # Rules nothing can test yet, with why; not counted as gaps.

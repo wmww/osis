@@ -207,7 +207,7 @@ impl Header {
         out
     }
 
-    /// The path it states in the clear: where it writes one thing.
+    /// The path it states in the clear, for every thing it writes.
     pub fn path_in_clear(&self) -> Option<&Path> {
         match &self.path {
             Paths::One(p) => Some(p),
@@ -215,7 +215,7 @@ impl Header {
         }
     }
 
-    /// The hash its `path` holds for thing `t`, where it writes several things.
+    /// The hash its `path` holds for thing `t`, where its paths are hashed.
     pub fn path_hash(&self, t: &Tid) -> Option<[u8; 32]> {
         let Paths::Hashed(hs) = &self.path else { return None };
         let i = self.things().iter().position(|x| x == t)?;
@@ -224,8 +224,8 @@ impl Header {
 
     // Interim (notes/a1-spec/README.md step 3): the walk judges each thing along its own path.
     /// The thing the walk reads it as acting on, from the header alone: its path's last listed
-    /// thing (the signer for the empty path) where the path is in the clear; `None` where it
-    /// writes several things (`CommitBlob::acting` reads their sections).
+    /// thing (the signer for the empty path) where the path is in the clear; `None` where its
+    /// paths are hashed (`CommitBlob::acting` reads their sections).
     pub fn acting(&self) -> Option<Tid> {
         self.path_in_clear().map(|p| p.acting(self.signer))
     }

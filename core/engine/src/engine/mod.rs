@@ -1237,6 +1237,11 @@ pub struct Core {
     pub(crate) redeliver: BTreeSet<CommitId>,
     /// Aspects whose deltas `Engine::commit_forged` replaces by bytes that do not decode.
     pub(crate) forge_bad: BTreeSet<(Tid, Ak)>,
+    /// Tests: a commit acting for a thing other than its signer states, on every thing it writes
+    /// but the first, its path with this thing listed before the acting one, so its paths go
+    /// hashed (spec/wire.md §4 field 2; what step 2 of notes/a1-spec/README.md writes).
+    #[doc(hidden)]
+    pub hashed_through: Option<Tid>,
     /// Tests: the running transaction writes states no held body gives (`Engine::damage_index`:
     /// another build's rules), so the rebuild check (`apply::check_rebuilt`) skips it.
     #[cfg(debug_assertions)]
@@ -1598,6 +1603,7 @@ impl Core {
             to_date: self.to_date.clone(),
             redeliver: self.redeliver.clone(),
             forge_bad: self.forge_bad.clone(),
+            hashed_through: self.hashed_through,
             #[cfg(debug_assertions)]
             unchecked_tx: self.unchecked_tx.clone(),
             #[cfg(debug_assertions)]
@@ -2244,6 +2250,7 @@ impl Core {
             refs_watched: _,
             commit_listeners: _,
             forge_bad: _,
+            hashed_through: _,
             forged: _,
             header_fault: _,
             key_actors: _,
@@ -2458,6 +2465,7 @@ impl Core {
             to_date: Vec::new(),
             redeliver: BTreeSet::new(),
             forge_bad: BTreeSet::new(),
+            hashed_through: None,
             #[cfg(debug_assertions)]
             unchecked_tx: false,
             #[cfg(debug_assertions)]

@@ -1913,13 +1913,13 @@ impl Engine {
         v.into_iter().map(|x| x.1).collect()
     }
 
-    /// The header of an applied commit (none if its stored bytes fail to decode: `LazyHeader`).
-    /// The thing held commit `id` acts on, as known here (`View::acting`; Interim,
-    /// notes/a1-spec/README.md step 3).
+    // Interim (notes/a1-spec/README.md step 3): a commit acts along a path per thing.
+    /// The thing held commit `id` acts on, as known here (`View::acting`).
     pub fn commit_acting(&self, id: &CommitId) -> Option<Tid> {
         self.core.ix.commits.get(id).and_then(|m| m.view.acting)
     }
 
+    /// The header of an applied commit (none if its stored bytes fail to decode: `LazyHeader`).
     pub fn header(&self, id: &CommitId) -> Option<Arc<Header>> {
         self.core.ix.commits.get(id).and_then(|m| m.header.decoded())
     }

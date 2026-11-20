@@ -28,7 +28,6 @@ fn validate_layout() {
     x.aspects.push(a2);
     assert!(matches!(invalid(&x), Error::Malformed(_)), "aspects unsorted");
     x.aspects.reverse();
-    crate::tests::fit_paths(&mut x);
     x.validate().unwrap();
     let mut x = h.clone();
     x.aspects[0].lo = 2;
@@ -154,7 +153,6 @@ fn validate_role_commit() {
         a.ak = Ak::new(ak).unwrap();
         x.aspects.push(a);
     }
-    crate::tests::fit_paths(&mut x);
     x.validate().unwrap();
     let mut x = h.clone();
     x.kind = Kind::RoleSnapshot;
@@ -183,8 +181,7 @@ fn validate_commit_expiry() {
         let mut x = h.clone();
         x.aspects.insert(0, b);
         sort(&mut x);
-        crate::tests::fit_paths(&mut x);
-        x.validate().unwrap();
+            x.validate().unwrap();
         x.expires = Some(h.ts.wall_ms().0 + 1);
         if fixed {
             assert!(invalid(&x).to_string().contains("fixed-retention"), "{ak}");

@@ -17,7 +17,7 @@
   - it goes as a Deposit item under T's sync ID (§3), signed with the deposit key T's deposit seed derives (spec/sync-ids.md §2), within T's deposit budget.
 - A sender that does not sync T, or cannot read T's current epoch, keeps the sealed fire outside any store while its **delivery** is pending: shown, never "sent", until a peer takes its Deposit item (answer 0, §3); then it ends. A fire to an account whose nodes the sender never meets stays pending.
   - A fire not yet taken by any peer is kept durably by its sender and survives a restart. If T's public keys change before a peer takes it, the sender seals it again (to the newest read keyset of T it then holds).
-- Who fired is the commit's author, verified by its chain; a fire grants nothing. Blocking a sender is the app's.
+- Who fired is the commit's signer, verified by its chain; a fire grants nothing. Blocking a sender is the app's.
 - A node keeping T unread cannot read T's setting: it takes a fire's Deposit item by signature and budget alone (§3), as any deposit. A fire T's writers judge invalid (a signal T does not enable) is never promoted (§4) and leaves the budget by clearing or at its expiry.
 
 ## 3. Deposits
@@ -35,7 +35,7 @@
 - What a node must log under S and cannot stamp, it deposits: spec/sync-judgement.md §1.
 
 ## 4. Promotion and clearing
-- **Promotion**: a writer that verifies a deposited commit S must hold stamps it in its own store (promotes it; a source keeping S unread pulls the stamp), only once its author's chain (spec/permissions.md §4) is under S, and only for parts whose author held write on S's actor at the commit's `ts`, or that are fires of an external signal valid as such (spec/permissions.md §5.2 External fires: enabled by the current setting), as the writer judges it.
+- **Promotion**: a writer that verifies a deposited commit S must hold stamps it in its own store (promotes it; a source keeping S unread pulls the stamp), only once its author's chain (spec/permissions.md §4) is under S, and only for parts whose signer held write on S's actor at the commit's `ts`, or that are fires of an external signal valid as such (spec/permissions.md §5.2 External fires: enabled by the current setting), as the writer judges it.
   - It promotes only a deposit holding a delta S must hold that no other entry under S in its store holds stamped or as its own certificate copy: one stamped copy per delta, however many encryptions are deposited.
   - Or, by its bytes alone, a deposit that is no duplicate of any one entry of the commit under S held stamped there and loses to none as needed (spec/sync-judgement.md §2 Per blob) as the writer judges blobs (spec/sync-compaction.md §1 Duplicates: a section it cannot open or check is byte-identical to none of that entry's), while no entry of the commit held stamped there has each delta S must hold that it carries held by another such entry: one such promotion per commit while it stands. An unpromoted deposit stays on the deposit budget.
   - A delta S must hold here, valid at the writer: one its bodies carry (on a thing of its sync unit). No chain certificate is promoted: the author's chain of a commit promoted goes under S as the promoter's own certificate copies.

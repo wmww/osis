@@ -29,15 +29,6 @@ pub(crate) fn dkey(level: u8, b: u8) -> DeleteKey {
 pub(crate) const NONCE: [u8; 16] = [0x5e; 16];
 pub(crate) const SESSION: Form = Form::Session(NONCE);
 
-/// `h`'s path in the form its count of things asks (spec/wire.md §4 field 2): its own where it
-/// writes one thing, else a placeholder hash per thing.
-pub(crate) fn fit_paths(h: &mut Header) {
-    let n = h.things().len();
-    if n > 1 {
-        h.path = Paths::Hashed(vec![[7; 32]; n]);
-    }
-}
-
 pub(crate) fn sample_header() -> Header {
     Header {
         signer: t(1),

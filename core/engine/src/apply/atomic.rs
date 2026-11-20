@@ -754,8 +754,9 @@ pub(crate) fn join_late(tx: &mut Tx<'_>, id: &CommitId, merged: &CommitBlob, par
     let mut meta = tx.core.ix.commits.get(id).cloned().ok_or(Error::Corrupt("commit index"))?;
     let h = meta.header.clone();
     // Interim (notes/a1-spec/README.md step 3): the first section opened here tells the thing
-    // a commit writing several things acts on
-    if meta.view.acting.is_none() && merged.acting().is_some() {
+    // a commit stating hashed paths acts on
+    let learned = meta.view.acting.is_none() && merged.acting().is_some();
+    if learned {
         meta.view = Arc::new(crate::engine::View { acting: merged.acting(), ..(*meta.view).clone() });
         index_acting(tx.core, id, &meta.view);
         crate::engine::edits::index_commit(tx.core, id, &meta.view);
@@ -769,6 +770,9 @@ pub(crate) fn join_late(tx: &mut Tx<'_>, id: &CommitId, merged: &CommitBlob, par
         }
     }
     tx.core.put_meta(*id, meta.clone());
+    if learned {
+        tx.core.index_validity(id);
+    }
     let late = parts.ais();
     let mut held_changed = note_created(tx, &h, &parts.whole)?;
     let edges = h.kind.is_role() && late.iter().any(|ai| h.aspects.get(*ai).is_some_and(|a| validity::edge_ak(a.ak.as_str())));

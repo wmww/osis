@@ -64,7 +64,7 @@ A reader checks that:
 - Snapshot marker (§8): a snapshot commit carries only foreign writes and consumes no counters (empty ranges).
 - `expires: T` (wall ms), optional, one per commit (§4.7).
 - `undoes: commit id` for undo commits (§4.6).
-Every other header field (author, actor, retention, purge request, delete keys, signature) is outside merge.
+Every other header field (signer, path, retention, purge request, delete keys, signature) is outside merge.
 
 ## 3. Wire grammar
 
@@ -292,7 +292,7 @@ Writes of deltas the node judges invalid are not undone. A signal delta is writt
 - **Function of the held set.** The result is a function of the held set, never of the order in which the commits and the revocation arrived. A body dropped as covered is held through its valid coverers' copies (spec/commits.md §5); once no valid coverer carries it, it is missing again (spec/permissions.md §5.2) and, until a copy arrives, the node holds less of it than one that kept it.
 - **Seq elements** created by an invalid delta lose their creation (anchor and char); others' position and flag writes on them and writes nested in them stay (an undelete's char with its flag write), and a record left with no write goes (§4.2). Such an element is placed by valid writes alone: with no record left, what anchors at it sits at its virtual anchor (§6.1), so the order, like every read, is a function of the valid writes held.
 
-**Un-merge of an ephemeral commit** (revoked author, spec/sync-compaction.md §2): the aspect is rebuilt from the node's own writes and the valid held parts left. The commit's writes and records go, as at a node that never held it (what anchors at them sits at virtual anchors, §6.1).
+**Un-merge of an ephemeral commit** (revoked signer, spec/sync-compaction.md §2): the aspect is rebuilt from the node's own writes and the valid held parts left. The commit's writes and records go, as at a node that never held it (what anchors at them sits at virtual anchors, §6.1).
 
 ### 4.7 Expiry and value-less writes
 A delta with `expires: T` (header, per aspect; `T > wall_ms(ts)`, else the commit is rejected) carries the writes of its source with a counter in its range (commit form: every write of its source in that aspect).

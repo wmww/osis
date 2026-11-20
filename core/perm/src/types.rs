@@ -132,8 +132,9 @@ pub struct EdgeOp {
 pub struct RoleCommit {
     pub id: CommitId,
     pub ts: Ts,
-    /// Its signer (header field 1); a role commit states the empty path (Interim,
-    /// notes/a1-spec/README.md step 3: until the walk reads paths).
+    // Interim (notes/a1-spec/README.md step 3): the walk reads the path a role commit states;
+    // until then every role commit states the empty path, so its signer is all it acts as.
+    /// Its signer (header field 1).
     pub signer: Tid,
     /// The demoter's frontier (explicit demotions only), resolved from its link if large.
     pub frontier: Option<Arc<Frontier>>,

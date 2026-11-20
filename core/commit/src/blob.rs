@@ -31,7 +31,7 @@ pub struct Part {
 }
 
 /// A commit as a node holds it: the header, its signatures, the parts it opened and, where it
-/// writes several things, the path of each thing whose section it opened (its stored form,
+/// states hashed paths, the path of each thing whose section it opened (its stored form,
 /// `[Header, signature, Opt(inner), [signature*], [Part*]]`, then `[[index, Salted]+]` where it
 /// holds one; a sealed fire's payload too, spec/wire.md §9, and a header-only copy is the
 /// commit blob plaintext without sections).
@@ -142,7 +142,7 @@ impl CommitBlob {
     /// opened section's.
     pub fn path(&self, t: &Tid) -> Option<&Path> {
         match &self.header.path {
-            Paths::One(p) => self.header.aspects.first().is_some_and(|a| a.tid == *t).then_some(p),
+            Paths::One(p) => self.header.aspects.iter().any(|a| a.tid == *t).then_some(p),
             Paths::Hashed(_) => self.salted_of(t).map(|s| &s.path),
         }
     }
@@ -163,9 +163,10 @@ impl CommitBlob {
         }
     }
 
+    // Interim (notes/a1-spec/README.md step 3): one acting thing for all its paths.
     /// Checks `salted` against the header: each entry hashing to the hash at its index and a
-    /// path it may state (spec/wire.md §4), and (Interim, notes/a1-spec/README.md step 3) one
-    /// acting thing for all; once the aspect list is resolved, every held part's thing among them.
+    /// path it may state (spec/wire.md §4), one acting thing for all; once the aspect list is
+    /// resolved, every held part's thing among them.
     pub fn check_paths(&self) -> Result<(), Error> {
         let h = &self.header;
         let hashes = match &h.path {
@@ -274,6 +275,10 @@ fn encode_parts(parts: &[impl Borrow<Part>], out: &mut Vec<u8>) {
         out.extend_from_slice(&p.delta);
     }
 }
+
+/// A section's plaintext, opened (spec/wire.md §4 `Contents`): its thing's `Salted` where the
+/// commit's paths are hashed, and its parts.
+pub type Contents = (Option<Salted>, Vec<Part>);
 
 /// A section's plaintext `Contents := [Opt(Salted), [Part*]]` (spec/wire.md §4).
 fn encode_contents(salted: Option<&Salted>, parts: &[impl Borrow<Part>], out: &mut Vec<u8>) {
@@ -408,7 +413,7 @@ impl Section {
     /// `Salted` where present and the parts, which must be exactly on the aspects listed. `None`:
     /// no secret opens the wrap. A section that opens to parts disagreeing with its list is bad
     /// input.
-    pub fn open(&self, commit: &CommitId, signer: &Tid, secrets: &[Secret32]) -> Result<Option<(Option<Salted>, Vec<Part>)>, Error> {
+    pub fn open(&self, commit: &CommitId, signer: &Tid, secrets: &[Secret32]) -> Result<Option<Contents>, Error> {
         let Some(key) = secrets.iter().find_map(|s| osis_crypto::unwrap_section(s, commit, &self.wrap).ok()) else { return Ok(None) };
         let pt = osis_crypto::open_section(commit, &key, &self.ciphertext)?;
         let Some([sv, pv]) = item::list(Item::parse(&pt, &LIMITS)?)?.tuple() else { return Err(Error::Malformed("section contents arity")) };
@@ -425,8 +430,8 @@ impl Section {
         Ok(Some((salted, parts)))
     }
 
-    /// Seals `parts` (sorted) of one thing, with its `salted` path where its commit writes
-    /// several things, under the thing's read secret `secret`, listing its derivation chain
+    /// Seals `parts` (sorted), with their thing's `salted` path where the commit's paths are
+    /// hashed, under the thing's read secret `secret`, listing its derivation chain
     /// `chain`.
     pub fn seal(commit: &CommitId, salted: Option<&Salted>, parts: &[impl Borrow<Part>], chain: Vec<Tid>, secret: &Secret32, rng: &mut dyn CryptoRngCore) -> Result<Section, Error> {
         let mut pt = Vec::new();
@@ -491,8 +496,9 @@ impl Envelope {
 
     /// Opens every section `secrets` has a read secret for (asked per section): the commit with
     /// the parts opened, and the sections left sealed. A section whose `Salted` is absent where
-    /// the commit writes several things, present where it writes one, or not hashing to its
-    /// thing's entry holds no part of the commit (spec/wire.md §4): its parts are dropped, as
+    /// the commit's paths are hashed, present where its path is in the clear, not hashing to its
+    /// thing's entry, or beside parts of several things there, holds no part of the commit
+    /// (spec/wire.md §4): its parts are dropped, as
     /// bytes not matching their delta hash. Where the aspect list is not resolved, a `Salted`
     /// matching any entry stands, its thing checked once it resolves (`CommitBlob::check_paths`).
     pub fn open(&self, mut secrets: impl FnMut(&Section) -> Vec<Secret32>) -> Result<Opened, Error> {
@@ -507,15 +513,16 @@ impl Envelope {
                 sealed.push(s.clone());
                 continue;
             };
-            // the section's thing's place among those written, where the aspects say it
-            let mut at = s.ais.iter().map(|ai| h.aspects.get(*ai).and_then(|a| things.iter().position(|t| *t == a.tid)));
-            let first = at.next().flatten();
-            if h.is_resolved() && (first.is_none() || at.any(|i| i != first)) {
-                continue;
-            }
             let fits = match (&h.path, path) {
                 (Paths::One(_), None) => true,
                 (Paths::Hashed(hs), Some(p)) => {
+                    // where paths are hashed a section holds one thing's parts: its place among
+                    // those written, where the aspects say it
+                    let mut at = s.ais.iter().map(|ai| h.aspects.get(*ai).and_then(|a| things.iter().position(|t| *t == a.tid)));
+                    let first = at.next().flatten();
+                    if h.is_resolved() && (first.is_none() || at.any(|i| i != first)) {
+                        continue;
+                    }
                     let i = hs.iter().position(|x| *x == p.hash()).filter(|i| first.is_none_or(|f| f == *i));
                     let ok = i.is_some() && h.path_allowed(&p.path);
                     if ok && let Some(i) = i {
@@ -544,35 +551,31 @@ pub struct Opened {
     pub sealed: Vec<Section>,
 }
 
-/// Seals a commit's parts into sections, one per value of `section_of(ai)` (each of one thing,
-/// carrying its `Salted` where the commit writes several: `resolved`, `c`'s header with its lists
-/// resolved, says the thing of each part), each wrapped under the read secret
-/// `secret_of(key, parts)` gives with the thing's derivation chain (that secret at the epoch the
-/// writer uses, spec/crypto.md §5); a section whose secret is not held (`None`) is left out, its
-/// parts travelling in other copies; `extra` sections are copied verbatim, except one listing an
-/// aspect a sealed part is on.
+/// Seals a commit's parts into sections, one per value of `section_of(ai)` and, where its paths
+/// are hashed, per thing (each section then carries its thing's `Salted`; `resolved`, `c`'s
+/// header with its lists resolved, says the thing of each part), each wrapped under the read
+/// secret `secret_of(key, parts)` gives with the thing's derivation chain (that secret at the
+/// epoch the writer uses, spec/crypto.md §5); a section whose secret is not held (`None`) is left
+/// out, its parts travelling in other copies; `extra` sections are copied verbatim, except one
+/// listing an aspect a sealed part is on.
 pub fn seal_commit<K: Ord + Clone>(c: &CommitBlob, resolved: &Header, section_of: impl Fn(usize) -> K, mut secret_of: impl FnMut(&K, &[usize]) -> Option<(Secret32, Vec<Tid>)>, extra: &[Section], rng: &mut dyn CryptoRngCore) -> Result<Envelope, Error> {
     let id = c.id();
-    let mut by: BTreeMap<K, Vec<&Part>> = BTreeMap::new();
+    let hashed = matches!(c.header.path, Paths::Hashed(_));
+    let things = if hashed { resolved.things() } else { Vec::new() };
+    let mut by: BTreeMap<(K, Option<usize>), Vec<&Part>> = BTreeMap::new();
     for p in &c.parts {
-        by.entry(section_of(p.ai)).or_default().push(p);
+        let thing = if hashed {
+            Some(resolved.aspects.get(p.ai).and_then(|a| things.iter().position(|t| *t == a.tid)).ok_or(Error::Malformed("part aspect index out of range"))?)
+        } else {
+            None
+        };
+        by.entry((section_of(p.ai), thing)).or_default().push(p);
     }
     let mut sections = Vec::with_capacity(by.len() + extra.len());
     let mut own: std::collections::BTreeSet<usize> = std::collections::BTreeSet::new();
-    for (k, ps) in by {
+    for ((k, thing), ps) in by {
         let ais: Vec<usize> = ps.iter().map(|p| p.ai).collect();
-        let salted = match &c.header.path {
-            Paths::One(_) => None,
-            Paths::Hashed(_) => {
-                let things = resolved.things();
-                let at = |ai: &usize| resolved.aspects.get(*ai).and_then(|a| things.iter().position(|t| *t == a.tid));
-                let i = ais.first().and_then(at).ok_or(Error::Malformed("part aspect index out of range"))?;
-                if ais.iter().any(|ai| at(ai) != Some(i)) {
-                    return Err(Error::Malformed("a section of parts of several things"));
-                }
-                Some(c.salted.get(&i).ok_or(Error::Malformed("a part without its thing's path"))?)
-            }
-        };
+        let salted = thing.map(|i| c.salted.get(&i).ok_or(Error::Malformed("a part without its thing's path"))).transpose()?;
         let Some((secret, chain)) = secret_of(&k, &ais) else { continue };
         own.extend(ais.iter().copied());
         sections.push(Section::seal(&id, salted, &ps, chain, &secret, rng)?);

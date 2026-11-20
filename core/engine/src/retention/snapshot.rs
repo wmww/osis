@@ -358,9 +358,9 @@ pub(crate) fn walk_source<'r>(valid_on: &dyn Fn(&CommitId) -> bool, resets: &dyn
     (next, false)
 }
 
+// Interim (notes/a1-spec/README.md step 4): its purge author where that is not its signer.
 /// What delta `a` of a commit with view `v` is judged by in a purge (spec/crdt.md §8 `Facts`):
-/// its purgeable-by, and the thing it acts on where that is not its signer (Interim,
-/// notes/a1-spec/README.md step 4: its purge author where that is not its signer).
+/// its purgeable-by, and the thing it acts on where that is not its signer.
 pub(crate) fn header_fact(v: &crate::engine::View, a: &osis_commit::AspectEntry) -> osis_crdt::Fact {
     osis_crdt::Fact { by: a.retention.by, actor: v.acts_for() }
 }

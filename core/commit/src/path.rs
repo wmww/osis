@@ -1,6 +1,6 @@
 //! Stated paths (spec/wire.md §4 `Path`, `Paths`, `Salted`; spec/permissions.md §5.2 Interim): what
-//! a commit acts along on each thing it writes, in the clear where it writes one thing, else a
-//! salted hash per thing in the header with each thing's own path in its sections.
+//! a commit acts along on each thing it writes: one path in the clear where every thing's is the
+//! same, else a salted hash per thing in the header with each thing's own path in its sections.
 
 use crate::Error;
 use crate::cbor::item;
@@ -83,8 +83,8 @@ impl Path {
     }
 }
 
-/// A header's `path` (spec/wire.md §4 `Paths`): the one thing's `Path` where the commit writes one
-/// thing, else one 32-byte hash per thing it writes, in the order of its aspects' tids.
+/// A header's `path` (spec/wire.md §4 `Paths`): one `Path` for every thing it writes, where all are
+/// equal, else one 32-byte hash per thing it writes, in the order of its aspects' tids.
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
 pub enum Paths {
     One(Path),
@@ -124,7 +124,7 @@ impl Paths {
     }
 }
 
-/// A thing's path in its sections where its commit writes several things (spec/wire.md §4
+/// A thing's path in its sections where its commit's paths are hashed (spec/wire.md §4
 /// `Salted`): the random salt its header's hash is keyed by, and the path.
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
 pub struct Salted {
