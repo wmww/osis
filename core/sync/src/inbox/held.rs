@@ -281,9 +281,9 @@ fn judge(engine: &mut Engine, store: &Store, k: &Key) -> Result<Act> {
     if e.own && holding.is_some() {
         return Ok(Act::Offer);
     }
-    // a peer's deposit under a read S this node writes: whether read promotes it
-    if !e.own
-        && holding == Some(Holding::Read)
+    // a peer's deposit (an own one here holds no S) under a read S this node writes: whether
+    // read promotes it
+    if holding == Some(Holding::Read)
         && engine.signers(s, None)?.stamp.is_some()
         && let Some(c) = deposit_commit(engine, store, s, &e)?
         && promotion(engine, store, s, &c, b)? == Promotion::Yes

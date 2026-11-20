@@ -1,0 +1,2 @@
+- The inbox module doc and its test file claimed each rule's decision is a plain-value function tests drive (`act_of`); none drove it, and mutating judge's Promote rule fails nothing (issues/inbox-held-untested-rules.md). A "tests drive it directly" claim in a doc is worth one grep before trusting it.
+- One mutation run of osis-sync's tests costs ~90 s each (the whole it binary); eight mutants took 13 min. No per-module filter catches what the whole binary does (M1 is caught only by an idle test).
