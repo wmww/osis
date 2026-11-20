@@ -132,11 +132,16 @@ passed() {
   python3 "$tools/limits.py" check gate "$cpu" $(( $(date +%s) - t0 - $1 )) --since "$t0" || true
   # once a stage is expected (`$sel` exists), the summary decides: a hold that never ran (a
   # refused or failed tools/heavy) leaves its stages unrun, which the summary counts NEW
+  stale=
   if [ -e "$sel" ] || [ -e "$results" ]; then
-    rc=0; python3 "$tools/gate_failures.py" "$sel" "$results" || rc=$?
+    rc=0; python3 "$tools/gate_failures.py" "$sel" "$results" > "$tmp/summary" || rc=$?
+    cat "$tmp/summary"
     [ "$rc" = 0 ] || exit "$rc"
+    # a known line whose test passed: stale unless `rate:`, so the pass line (the one read) says it
+    n=$(grep -c '^   KNOWN-BUT-PASSED:' "$tmp/summary" || true)
+    [ "$n" = 0 ] || stale="; $n KNOWN-BUT-PASSED to remove (above)"
   fi
-  echo "== gate passed$2 ($(( $(date +%s) - t0 ))s)"
+  echo "== gate passed$2 ($(( $(date +%s) - t0 ))s)$stale"
 }
 # The GUI packages: built, linted and tested only when named (not default members). Every lint
 # and build here reuses core's artifacts for the core crates (Feature unification).

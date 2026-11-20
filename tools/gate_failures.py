@@ -6,7 +6,8 @@ stages, each marked KNOWN (listed in tools/known_failures.txt, with its issue) o
       `expect LIMIT` lines: the stages expected); RESULTS: `LIMIT EXIT LOG` per stage run; ROOT:
       where the known list and issues/ are (default: this checkout; tools/gate_failures_test.py
       passes a fabricated one)
-Exit 0 when every stage passed, 3 when only KNOWN failures failed, 1 on any NEW one.
+Exit 0 when every stage passed, 3 when only KNOWN failures failed, 1 on any NEW one (NEW-TEXT
+included).
 
 tools/known_failures.txt: one failure on main per line, `NAME REPRO ISSUE PATTERN`: NAME a test's
 crate and libtest path (`osis-engine/order::held_set_decides_plain`; failures match by the path
@@ -16,16 +17,18 @@ offsets seldom draw (its issue says so); ISSUE its issues/ file; PATTERN (the re
 searched in each failing unit of NAME's text: each `seed N ... (replay: ...)` line of its panic
 (of each failing sim seed, its lines), or its whole panic when it names no seed. A failure is
 KNOWN when every unit matches a pattern listed for its NAME (the gate's seeds are random: its
-failing seed is never REPRO's). A target tools/test_watch.py stopped as hung fails each test it
+failing seed is never REPRO's); a listed NAME failing with a unit no pattern matches is NEW-TEXT (a
+second failure behind the known one). A target tools/test_watch.py stopped as hung fails each test it
 names, its unit `hung: no test finished for N s`. Anything the parser cannot account for is NEW: a
 stage that did not run, a target that ended before its summary (a crash, a signal, a hung-seed
 exit, a hang naming no test) or exited non-zero after it, an `error` cargo printed outside a target, a failed-target count that does not
 add up, a sim sweep without its closing tally. tools/policy.py checks the list (`known`).
 
 A listed NAME that ran and passed in every stage that ran it (a `test NAME ... ok` line, a sim
-tally of 0 failed) and failed in none is reported `KNOWN but passed`: its issue may be fixed and
-its line stale; when every line of NAME is a `rate:` one, it says passing is expected instead. It
-changes no exit code.
+tally of 0 failed) and failed in none is listed under `KNOWN-BUT-PASSED`: its line is stale (the
+landing removes it) unless it fails at a rate; when every line of NAME is a `rate:` one, it says
+passing is expected instead. It changes no exit code: the exit-3 line counts them, and
+tools/gate.sh's pass line does from this output.
 
 First it lists the property and sim stages' runs by CPU-seconds, costliest first: each summary line
 ending `..., W s, C CPU-s` (osis_base::testenv::run_jobs, the order harness's `NAME (SIZE): ...`
@@ -259,7 +262,7 @@ def main():
                 rows.append(("KNOWN", stage, f"{name}: {', '.join(dict.fromkeys(hit))}"))
             elif listed:
                 miss = next(u for u, h in zip(us, hit) if h is None).strip().split("\n")[0][:200]
-                rows.append(("NEW", stage, f"{name}: listed ({', '.join(dict.fromkeys(i for i, _, _ in listed))}), but this failure matches none of its patterns: {miss}"))
+                rows.append(("NEW-TEXT", stage, f"{name}: listed ({', '.join(dict.fromkeys(i for i, _, _ in listed))}), but this failure matches none of its patterns: {miss}"))
             else:
                 rows.append(("NEW", stage, name))
             rows += [("", "", s) for s in shown[:3]] + ([("", "", f"... {len(shown) - 3} more seeds")] if len(shown) > 3 else [])
@@ -279,20 +282,26 @@ def main():
     print(f"== test stages: {len(results)} run of {max(sum(expected.values()), len(results))}, {failed} failed")
     for kind, stage, text in rows:
         print(f"   {kind:5} {stage}  {text}" if kind else f"         {text}")
+    stale = []
     for name in sorted(n for n in names if n in ok and n not in bad):
         stages = ', '.join(sorted(ok[name]))
         if all(r for _, _, r in names[name]):
             issues = ', '.join(dict.fromkeys(i for i, _, _ in names[name]))
             print(f"   KNOWN, passed: {name} ({stages}): fails at a rate ({issues}): passing this run is expected")
         else:
-            print(f"   KNOWN but passed: {name} ({stages}): fixed? drop its {KNOWN} line once its issue is")
-    new = sum(1 for k, _, _ in rows if k == "NEW")
+            stale.append(f"   KNOWN-BUT-PASSED: {name} ({stages}; {', '.join(dict.fromkeys(i for i, _, r in names[name] if not r))})")
+    if stale:
+        print(f"== KNOWN-BUT-PASSED ({len(stale)}): listed, not `rate:`, passing in this run. Remove each line from {KNOWN} "
+              "in this landing (and its issue, if fixed), or mark it `rate:` if its issue shows it fails on some seeds only")
+        print("\n".join(stale))
+    tail = f"; {len(stale)} KNOWN-BUT-PASSED to remove" if stale else ""
+    new = sum(1 for k, _, _ in rows if k in ("NEW", "NEW-TEXT"))
     old = sum(1 for k, _, _ in rows if k == "KNOWN")
     if new:
-        print(f"== gate FAILED: {new} NEW, {old} KNOWN")
+        print(f"== gate FAILED: {new} NEW, {old} KNOWN{tail}")
         return 1
     if old:
-        print(f"== gate FAILED, KNOWN failures only ({old}, {KNOWN}): mergeable (notes/coordination.md, Known failures)")
+        print(f"== gate FAILED, KNOWN failures only ({old}, {KNOWN}): mergeable (notes/coordination.md, Known failures){tail}")
         return 3
     if failed:
         print(f"== gate FAILED: {failed} stages failed, the summary found no failure in them: read their output")

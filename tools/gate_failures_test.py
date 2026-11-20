@@ -212,7 +212,7 @@ rc, out = summary(LISTED, [("gate.sim", "101", SIM_HUNG)])
 check("sim hung exit of a known scenario: NEW", (rc, "1 NEW, 0 KNOWN" in out), (1, True))
 # a new bug in a listed test: a seed line no pattern names
 rc, out = summary(LISTED.replace("(, Lists)?", ""), [("default-tests", "101", KNOWN_ONLY + COUNT1)])
-check("listed test, new failure text: NEW", (rc, "1 NEW, 1 KNOWN" in out, "matches none of its patterns: seed 42, Lists" in out), (1, True, True))
+check("listed test, new failure text: NEW-TEXT", (rc, "1 NEW, 1 KNOWN" in out, "NEW-TEXT default-tests  order::known_plain: listed (issues/known.md), but this failure matches none of its patterns: seed 42, Lists" in out), (1, True, True))
 rc, out = summary(f"{SEEDS}\nother_large 1 issues/known.md hung\n", [("default-tests", "101", KNOWN_ONLY + COUNT1)])
 check("listed test without seeds, other panic: NEW", (rc, "1 NEW, 1 KNOWN" in out), (1, True))
 rc, out = summary("", [("gate.properties", "101", KNOWN_ONLY + COUNT1)])
@@ -229,14 +229,16 @@ rc, out = summary(LISTED, [], ["default-tests"])
 check("no results at all (the hold never ran) is NEW", (rc, "NEW   default-tests  did not run" in out), (1, True))
 rc, out = summary(LISTED, [("default-tests", "0", ""), ("gate.sim", "0", "")])
 check("pass", (rc, out), (0, "== test stages: 2 run of 2, 0 failed\n"))
+rc, out = summary(f"{LISTED}ok 1 issues/known.md x\n", [("default-tests", "0", "test ok ... ok\n")])
+check("pass with a stale line: exit 0, listed", (rc, out.split("\n")[-2]), (0, "   KNOWN-BUT-PASSED: ok (default-tests; issues/known.md)"))
 # a listed test that ran and passed is reported, its exit unchanged; one failing elsewhere is not
 rc, out = summary(f"{LISTED}ok 1 issues/known.md x\nfine 1 issues/known.md x\ndrift_parks 1 issues/sim.md x\nsim-sweep:drift_parks 1 issues/sim.md x\n", [("default-tests", "101", KNOWN_ONLY + COUNT1), ("gate.gui", "0", HUNG.replace("test fine ... ok", "test ok ... ok")), ("gate.sim", "1", SIM)])
-check("known but passed", (rc, [l for l in out.split("\n") if "KNOWN but passed" in l]), (3, ["   KNOWN but passed: ok (default-tests, gate.gui): fixed? drop its tools/known_failures.txt line once its issue is", "   KNOWN but passed: sim-sweep:drift_parks (gate.sim): fixed? drop its tools/known_failures.txt line once its issue is"]))
+check("known but passed", (rc, [l for l in out.split("\n") if "KNOWN-BUT-PASSED:" in l], out.split("\n")[-2].endswith("; 2 KNOWN-BUT-PASSED to remove")), (3, ["   KNOWN-BUT-PASSED: ok (default-tests, gate.gui; issues/known.md)", "   KNOWN-BUT-PASSED: sim-sweep:drift_parks (gate.sim; issues/sim.md)"], True))
 rc, out = summary(f"{LISTED}quick 1 issues/known.md x\n", [("default-tests", "0", "test quick ... ok\n"), ("gate.gui", "101", "     Running tests/q.rs (q-1)\n\nrunning 1 test\ntest quick ... FAILED\n\nfailures:\n\n---- quick stdout ----\nx\n\nfailures:\n    quick\n\ntest result: FAILED. 0 passed; 1 failed\n\nerror: test failed, to rerun pass `--test q`\n" + COUNT1)])
-check("known, passed in one stage, failed in another: not reported", (rc, "KNOWN but passed" in out), (3, False))
+check("known, passed in one stage, failed in another: not reported", (rc, "KNOWN-BUT-PASSED" in out), (3, False))
 # a line failing at a rate: passing is expected, said so; a name with one plain line keeps the question
 rc, out = summary(f"{LISTED}ok rate:S=1 issues/known.md x\nfine rate:S=1 issues/known.md x\nfine 2 issues/sim.md y\n", [("default-tests", "101", KNOWN_ONLY + COUNT1), ("gate.gui", "0", HUNG.replace("test fine ... ok", "test ok ... ok") + "test fine ... ok\n")])
-check("known at a rate, passed", (rc, [l for l in out.split("\n") if "passed:" in l]), (3, ["   KNOWN but passed: fine (gate.gui): fixed? drop its tools/known_failures.txt line once its issue is", "   KNOWN, passed: ok (default-tests, gate.gui): fails at a rate (issues/known.md): passing this run is expected"]))
+check("known at a rate, passed", (rc, [l for l in out.split("\n") if "passed:" in l or "   KNOWN-BUT-PASSED:" in l]), (3, ["   KNOWN, passed: ok (default-tests, gate.gui): fails at a rate (issues/known.md): passing this run is expected", "   KNOWN-BUT-PASSED: fine (gate.gui; issues/sim.md)"]))
 # the property and sim stages' runs by CPU-s: runner summary lines (not progress lines), the order
 # harness's `NAME (SIZE)` line naming test NAME_SIZE, then tests with no line
 PROPS = """a::p_large: 3 seeds from 0 (OSIS_COVERED_START=0)
