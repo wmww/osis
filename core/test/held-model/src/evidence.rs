@@ -401,6 +401,11 @@ pub struct Rule {
     pub closure: Closure,
     /// Who runs the errand.
     pub runners: Runners,
+    /// A lowering's leaves, every one, are required with it wherever it is a body (under its own
+    /// thing's sync ID and each enclosing one), while it is held: so every holder of a removal
+    /// holds its leaves, and any runner can carry them (finding 30). False: a leaf only where a
+    /// body it reads is.
+    pub leaves_home: bool,
     /// The errand runs only in a pass of its runner (`Ev::Pass`), not as the removal is written:
     /// between, a removal is delivered by ordinary logging alone (the race with a thief).
     pub lag: bool,
@@ -409,7 +414,7 @@ pub struct Rule {
 impl Rule {
     /// The plan's reading (notes/redesign-plan.md A2, A3).
     pub fn design() -> Rule {
-        Rule { placement: Placement::Function, errand: Errand::Direct, reach: true, keys_open: false, author_reach: false, records: true, removals: Removals::TakesWrite, scope: Scope::Lowerings, leaves: Leaves::Evidence, standing: true, lists: Lists::Whole, closure: Closure::drafted(), runners: Runners::Remover, lag: false }
+        Rule { placement: Placement::Function, errand: Errand::Direct, reach: true, keys_open: false, author_reach: false, records: true, removals: Removals::TakesWrite, scope: Scope::Lowerings, leaves: Leaves::Evidence, standing: true, lists: Lists::Whole, closure: Closure::drafted(), runners: Runners::Remover, leaves_home: false, lag: false }
     }
     /// The design with the findings' fixes (notes/evidence-model-findings.md): the errand follows
     /// taken grants to the end.
@@ -417,9 +422,10 @@ impl Rule {
         Rule { errand: Errand::Transitive, ..Rule::design() }
     }
     /// `fixed` with content entries in leaves that travel as evidence of the commits they judge
-    /// (notes/evidence-model-findings.md 6: the rule A3 inherits).
+    /// (notes/evidence-model-findings.md 6), read only where their lowering takes write away (27),
+    /// and kept with their lowering wherever it is a body (30): A3's rule.
     pub fn listed() -> Rule {
-        Rule { lists: Lists::Travels(LeafKeep::Cuts), ..Rule::fixed() }
+        Rule { lists: Lists::Travels(LeafKeep::Cuts), leaves_home: true, ..Rule::fixed() }
     }
 }
 
@@ -1078,7 +1084,8 @@ impl World {
         let Lists::Travels(keep) = rule.lists else { return Leafs::new() };
         let req = self.req(rule, s, units, h);
         let ch = self.chained(h);
-        req.iter().flat_map(|&r| self.leaves_of(r)).filter(|&l| req.iter().any(|&j| self.evidence_of(keep, l, j, h, &ch))).collect()
+        let home = |l: Leaf| rule.leaves_home && units[&s].contains(&self.on(l.0));
+        req.iter().flat_map(|&r| self.leaves_of(r)).filter(|&l| home(l) || req.iter().any(|&j| self.evidence_of(keep, l, j, h, &ch))).collect()
     }
     /// Not an addendum, or one listing a held commit its list can keep (no edge-class part and no
     /// addendum, resting on its removal's edge): an addendum is evidence of those and leaves with
@@ -1377,6 +1384,9 @@ impl World {
     }
     fn round_function(&self, rule: &Rule, st: &mut State, fresh: &Set) {
         // nothing is kept for its past: an errand's entry stays while a holder's view requires it
+        // a destroyed node's entries stay at a store until a live honest syncer's view decides them
+        let live: Things = (0..self.nodes.len()).filter(|n| self.nodes[*n].honest && !st.gone.contains(n)).flat_map(|n| self.syncs(n, &st.units)).collect();
+        st.stored.retain(|s, _| !live.contains(s));
         let mut new: BTreeMap<Sid, Set> = self.sids.iter().map(|&s| (s, st.stored.get(&s).map(|e| e.difference(&st.forgotten).copied().collect()).unwrap_or_default())).collect();
         let mut new_leaves: BTreeMap<Sid, Leafs> = self.sids.iter().map(|&s| (s, Leafs::new())).collect();
         for n in 0..self.nodes.len() {
@@ -1415,8 +1425,9 @@ impl World {
             for (s, items) in items {
                 new.get_mut(&s).unwrap().extend(items);
             }
+            // an errand carries the leaves its runner holds
             for (s, l) in lv {
-                new_leaves.get_mut(&s).unwrap().extend(l);
+                new_leaves.get_mut(&s).unwrap().extend(l.intersection(&avail));
             }
             st.held[n] = held;
             st.held_leaves[n] = keep;

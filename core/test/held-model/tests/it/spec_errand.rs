@@ -1,7 +1,7 @@
 //! A3's delivery duty (the errand; notes/a3-spec/README.md, held_model::evidence `Runners`,
 //! `Rule::lag`, `Ev::Gone`, `Ev::Pass`): any honest holder of a removal runs it (no designated
 //! device), it runs in its runner's passes (a race with the thief), and the remover's node may be
-//! destroyed right after removing. Findings in notes/evidence-model-findings.md (29).
+//! destroyed right after removing. Findings in notes/evidence-model-findings.md (29, 30).
 use held_model::evidence::names::*;
 use held_model::evidence::*;
 use roles_model::paths::Id;
@@ -105,6 +105,34 @@ fn the_errand_runs_at_any_honest_holder_when_the_removers_node_is_lost() {
     assert!(s.window.iter().all(Vec::is_empty), "{:?}", s.window);
     assert!(st.entries[&D].contains(&r));
     assert_eq!(settled(&w, &rule, &st), vec![]);
+}
+
+/// Finding 30: K writes c on D through [A]; X removes K listing c (D's leaf) and is destroyed
+/// before any pass; Q runs the duty. A leaf only its remover held dies with it: D's reader holds
+/// the removal from Q, which cuts c, and waits for good for a leaf nobody live holds, where the
+/// node holding everything shows c. Kept with the removal wherever it is a body (under A's sync
+/// ID), every holder of the removal holds its leaves and Q carries them.
+#[test]
+fn f30_a_leaf_only_the_lost_remover_held_strands_what_it_lists() {
+    let pw = roles_model::paths::World::new(&[(X, A), (Y, D)]);
+    let mut w = World::new(pw, &[A, D]);
+    let (x, y, q, k) = (w.node(true, &[A]), w.node(true, &[D]), w.node(true, &[A]), w.node(false, &[]));
+    w.write(x, |p| p.edge(X, 1, &[], A, K, Role::Write, &[]));
+    w.write(y, |p| p.edge(Y, 1, &[], D, A, Role::Write, &[]));
+    let c = w.write(k, |p| p.content(K, 2, &[A], D));
+    w.write(x, |p| p.edge(X, 6, &[], A, K, Role::None, &[c]));
+    w.gone(x);
+    w.write(k, |p| p.content(K, 8, &[A], D));
+    w.pass(q);
+    let away = Rule { leaves_home: false, ..lagged(Runners::AnyHolder) };
+    let (_, st) = steps(&w, &away);
+    let f = settled(&w, &away, &st);
+    assert!(f.iter().any(|f| f.prop == "P1" && f.sid == D && f.id == c && f.reader == Some(Verdict::Pending) && f.full == Some(Verdict::Valid)), "{f:?}");
+    let rule = lagged(Runners::AnyHolder);
+    let (s, st) = steps(&w, &rule);
+    assert!(s.window.iter().all(Vec::is_empty), "{:?}", s.window);
+    assert_eq!(settled(&w, &rule, &st), vec![]);
+    assert_eq!(st.leaves[&A].len(), 1, "the leaf stays with its removal under A");
 }
 
 /// Idempotence: with every holder running the duty, a sync ID holds exactly what it holds with the
