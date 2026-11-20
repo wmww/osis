@@ -17,7 +17,7 @@ S's **required set** is its sync unit blobs (§1) plus what is logged there besi
 - cross-published `sync.0` commits (§1). *Stands.*
 - role commits naming an actor (spec/permissions.md §4 Role changes travel): *stands*, "as certificate copies where the bodies do not carry it". **(A3)** A removal is in it while its reach is held (spec/permissions.md §4), in place of `ROLE_KEEP` after its `ts`.
 
-Vouches are in S's evidence while the lowering they are keyed by is (spec/permissions.md §4): today's bullet on vouches goes.
+Vouches are in S's evidence while the lowering they are keyed by is and S's evidence holds something on their thing (spec/permissions.md §4): today's bullet on vouches goes.
 
 - **may-hold**, its list: not loggable, covered, out of history, parked, unfetched pages, dropped here, judged invalid. ("a certificate blob whose author has no other blob under the sync ID" goes: a copy is in S's evidence or not, whoever signed it.)
 - *Every other bullet of §2 stands.* Outside the required set stays judged only at the end of a complete pass begun after what decides the commit's place under S last moved: for a certificate copy, the bodies whose evidence held it, the edge writes on their paths and S's sync unit.

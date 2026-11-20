@@ -147,6 +147,121 @@ fn split_a_part_on_another_thing_adds_no_evidence_requirement() {
     }
 }
 
+/// Finding 6, in any order: X removes K at 6 listing c, which K stamped at 7 (its clock ahead)
+/// and X received first. The leaf is evidence of c though c is stamped after the lowering, so
+/// D's sync ID carries it and D's reader judges c valid (listed), as the node holding everything.
+/// A leaf kept only for the commits stamped before its lowering never reaches D: c invalid there.
+#[test]
+fn f6_a_leaf_is_evidence_of_a_commit_stamped_after_its_lowering() {
+    let pw = roles_model::paths::World::new(&[(X, A), (Y, D)]);
+    let mut w = World::new(pw, &[A, D]);
+    let (x, y, k) = (w.node(true, &[A]), w.node(true, &[D]), w.node(true, &[A]));
+    w.write(x, |p| p.edge(X, 1, &[], A, K, Role::Write, &[]));
+    w.write(y, |p| p.edge(Y, 1, &[], D, A, Role::Write, &[]));
+    let c = w.write(k, |p| p.content(K, 7, &[A], D));
+    w.write(x, |p| p.edge(X, 6, &[], A, K, Role::None, &[c]));
+    let rule = Rule::listed();
+    let st = w.run(&rule, |_| {});
+    assert_eq!(w.verdicts(&w.full(&st, &Set::new()), &st.written)[&c], Verdict::Valid);
+    assert_eq!(st.leaves[&D].len(), 1);
+    assert_eq!(w.verdicts(&w.reader(&rule, &st, D, &Set::new()), &Set::from([c]))[&c], Verdict::Valid);
+    assert_eq!(fails(&w, &rule), vec![]);
+}
+
+/// An addendum is evidence of the commits it lists that rest on its removal's edge and leaves
+/// with the last of them (`addendum_live`): Q's addendum on D lists c1; forgetting c1 takes it
+/// out of D's sync ID while c0, which it does not list, stays. Kept for good, it would outlive
+/// everything it can keep.
+#[test]
+fn an_addendum_leaves_with_the_last_commit_it_lists() {
+    let pw = roles_model::paths::World::new(&[(X, A), (Y, D)]);
+    let mut w = World::new(pw, &[A, D]);
+    let (x, y, k, q) = (w.node(true, &[A]), w.node(true, &[D]), w.node(true, &[A]), w.node(true, &[A]));
+    w.write(x, |p| p.edge(X, 1, &[], A, K, Role::Write, &[]));
+    w.write(x, |p| p.edge(X, 1, &[], A, Q, Role::Write, &[]));
+    w.write(y, |p| p.edge(Y, 1, &[], D, A, Role::Write, &[]));
+    let c0 = w.write(k, |p| p.content(K, 2, &[A], D));
+    let c1 = w.write(k, |p| p.content(K, 3, &[A], D));
+    let r = w.write(x, |p| p.edge(X, 6, &[], A, K, Role::None, &[]));
+    let ad = w.write(q, |p| p.addendum(Q, 7, &[A], D, r, &[c1]));
+    let rule = Rule::listed();
+    let mut st = w.run(&rule, |_| {});
+    assert!(st.entries[&D].contains(&ad));
+    w.forget(&rule, &mut st, c1);
+    assert!(st.entries[&D].contains(&c0));
+    assert!(!st.entries[&D].contains(&ad), "{:?}", st.entries[&D]);
+    assert_eq!(fails(&w, &rule), vec![]);
+}
+
+/// Finding 10: a vouch on N keyed by R counts parts on N alone, so D's evidence holds a vouch
+/// against a removal it holds only where it holds something on N. Y's vouch on F keyed by X's
+/// removal of K from A is in F's sync ID, not D's, though Y syncs both and D's evidence holds the
+/// removal; D's reader judges as the node holding everything.
+#[test]
+fn f10_a_vouch_on_a_thing_the_evidence_holds_nothing_on_stays_out() {
+    const F: roles_model::paths::Thing = 15;
+    let pw = roles_model::paths::World::new(&[(X, A), (Y, D), (Y, F)]);
+    let mut w = World::new(pw, &[A, D, F]);
+    let (x, y, k, z) = (w.node(true, &[A]), w.node(true, &[D, F]), w.node(true, &[A]), w.node(true, &[]));
+    w.write(x, |p| p.edge(X, 1, &[], A, K, Role::Admin, &[]));
+    w.write(y, |p| p.edge(Y, 1, &[], D, A, Role::Write, &[]));
+    w.write(k, |p| p.edge(K, 2, &[], A, Z, Role::Write, &[]));
+    w.write(z, |p| p.content(Z, 3, &[A], D));
+    let r = w.write(x, |p| p.edge(X, 6, &[], A, K, Role::None, &[]));
+    let vf = w.write(y, |p| p.vouch(Y, 7, &[], F, r, &[]));
+    let rule = Rule::fixed();
+    let st = w.run(&rule, |_| {});
+    assert!(st.entries[&D].contains(&r));
+    assert!(st.entries[&F].contains(&vf));
+    assert!(!st.entries[&D].contains(&vf), "{:?}", st.entries[&D]);
+    assert_eq!(fails(&w, &rule), vec![]);
+}
+
+/// Finding 11, pinned as the draft has it: a writer of A without admin writes `n` grants of
+/// admin on Q's edge, none of which applies; Q writes D through [A], so every one is in D's
+/// evidence (an edge write on an edge of the stated path, whatever its validity) and Q's node
+/// copies each under D. D's copies grow with what a non-admin of A writes, unbounded.
+#[test]
+fn f11_a_non_admin_of_a_path_thing_grows_the_evidence_with_writes_that_never_apply() {
+    let copies = |n: u32| {
+        let pw = roles_model::paths::World::new(&[(X, A), (Y, D)]);
+        let mut w = World::new(pw, &[A, D]);
+        let (x, y, k, q) = (w.node(true, &[A]), w.node(true, &[D]), w.node(false, &[A]), w.node(true, &[A]));
+        w.write(x, |p| p.edge(X, 1, &[], A, K, Role::Write, &[]));
+        w.write(x, |p| p.edge(X, 1, &[], A, Q, Role::Write, &[]));
+        w.write(y, |p| p.edge(Y, 1, &[], D, A, Role::Write, &[]));
+        let junk: Vec<Id> = (0..n).map(|i| w.write(k, |p| p.edge(K, 2 + i, &[], A, Q, Role::Admin, &[]))).collect();
+        w.write(q, |p| p.content(Q, 2 + n, &[A], D));
+        let st = w.run(&Rule::fixed(), |_| {});
+        let full = w.verdicts(&w.full(&st, &Set::new()), &st.written);
+        assert!(junk.iter().all(|j| full[j] == Verdict::Invalid));
+        assert!(junk.iter().all(|j| st.entries[&D].contains(j)));
+        w.copies(&st, D).len()
+    };
+    assert_eq!(copies(30) - copies(3), 27);
+}
+
+/// Finding 12: X removes K (5) and grants it again (6); K writes c on D at 7. D's reader holding
+/// the removal but not yet the re-grant judges c invalid, the node holding everything valid: a
+/// drop then (the control, acting on any arrival) discards a body the node holding everything
+/// shows; acting after a complete pass never does.
+#[test]
+fn f12_a_drop_on_partial_evidence_discards_a_valid_body() {
+    let pw = roles_model::paths::World::new(&[(X, A), (Y, D)]);
+    let mut w = World::new(pw, &[A, D]);
+    let (x, y, k) = (w.node(true, &[A]), w.node(true, &[D]), w.node(true, &[A]));
+    w.write(x, |p| p.edge(X, 1, &[], A, K, Role::Write, &[]));
+    w.write(y, |p| p.edge(Y, 1, &[], D, A, Role::Write, &[]));
+    w.write(x, |p| p.edge(X, 5, &[], A, K, Role::None, &[]));
+    w.write(x, |p| p.edge(X, 6, &[], A, K, Role::Write, &[]));
+    let c = w.write(k, |p| p.content(K, 7, &[A], D));
+    let rule = Rule::fixed();
+    let st = w.run(&rule, |_| {});
+    assert_eq!(w.p8_acts(&rule, &st, ActWhen::AfterPass, 5), vec![]);
+    let f = w.p8_acts(&rule, &st, ActWhen::WhenNothingPends, 5);
+    assert!(f.iter().any(|f| f.id == c && f.reader == Some(Verdict::Invalid) && f.full == Some(Verdict::Valid)), "{f:?}");
+}
+
 fn props(f: &[Fail]) -> Vec<&'static str> {
     let mut p: Vec<&str> = f.iter().map(|f| f.prop).collect();
     p.sort();

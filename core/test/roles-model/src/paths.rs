@@ -1671,7 +1671,8 @@ fn evidence_edges(w: &World, i: Id) -> Vec<Edge> {
 /// `unit`, the other parts of a held commit on the same thing (a part on another thing is that
 /// thing's unit's, with its own path: notes/path-form.md), every available edge write on an edge
 /// of a held part's path or on the remaining admin edge a held lowering names, every available
-/// vouch against a held removal.
+/// vouch against a held removal on a thing a held part is on (a vouch on N counts parts on N
+/// alone, so one on a thing the set holds nothing on is read by no verdict on it).
 pub fn evidence(w: &World, unit: &Set, avail: &Set) -> Set {
     let mut s = unit.clone();
     loop {
@@ -1683,7 +1684,8 @@ pub fn evidence(w: &World, unit: &Set, avail: &Set) -> Set {
             .filter(|i| !s.contains(i))
             .filter(|&i| cids.contains(&(w.cid(i), w.commits[i].on)) || match &w.commits[i].kind {
                 Kind::Edge { .. } => w.sets(i).is_some_and(|e| edges.contains(&e)),
-                Kind::Vouch { removal, .. } => s.contains(removal),
+                // a vouch on N counts only parts on N: read only where the set holds something on N
+                Kind::Vouch { removal, .. } => s.contains(removal) && s.iter().any(|&j| w.commits[j].on == w.commits[i].on),
                 _ => false,
             })
             .collect();
