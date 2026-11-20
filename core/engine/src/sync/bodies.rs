@@ -769,8 +769,8 @@ impl Engine {
         if osis_blob::blob_id(bytes) != *blob {
             return Ok(Opened::Bad);
         }
-        let wants = self.blob_wants()?;
-        if wants.missing.contains(blob) {
+        // a blob a waiting commit lacks (`reach::Walks`: one lookup, never the whole set)
+        if self.wants_blob(blob) {
             self.put_blobs(vec![(*blob, bytes.to_vec())])?;
             return Ok(Opened::Linked);
         }

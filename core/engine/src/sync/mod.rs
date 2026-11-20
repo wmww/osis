@@ -38,7 +38,6 @@ mod tests_tickets;
 
 pub use osis_blob::DialHint;
 
-use crate::apply::reach::Wants;
 use crate::engine::DropFor;
 use crate::error::{Error, Result};
 use crate::sync_ids::{Certs, HeadKeys};
@@ -445,11 +444,6 @@ pub(crate) fn recorded_ids(f: &osis_crdt::Fragment) -> BTreeSet<SyncId> {
 
 impl Engine {
     // Ingest
-
-    /// What to fetch: pages and header lists before apply.
-    pub fn wants(&mut self) -> Result<Arc<Wants>> {
-        Ok(Arc::new(self.blob_wants()?))
-    }
 
     // Held parts and bodies
 

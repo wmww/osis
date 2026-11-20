@@ -44,13 +44,13 @@ pub(crate) fn part_bound(p: &osis_commit::Part) -> Result<u64> {
     Ok(part_charge(heap, p.delta.len()))
 }
 
-/// What a walk calls per page reached (`reach::walk`): its blob, its plaintext.
+/// What a walk calls per page reached (`reach::walk_deltas`): its blob, its plaintext.
 pub(crate) type PageVisit<'a> = dyn FnMut(&[u8], &[u8]) -> Result<()> + 'a;
 
 /// Each page and link page held here that a paged part's `delta` links (spec/crdt.md §8), with
 /// its plaintext: a link from the delta or a page whose held blob is no tree node
-/// (`reach::walk`); a large value's root is no page, and nothing below it is visited. A delta
-/// or page that is not one CBOR value is `BadInput`.
+/// (`reach::walk_deltas`); a large value's root is no page, and nothing below it is visited. A delta
+/// that is not one CBOR value is `BadInput`; a page that is not ends that branch.
 pub(crate) fn each_page(tx: &mut Tx<'_>, delta: &[u8], f: &mut PageVisit<'_>) -> Result<()> {
     let limits = osis_base::Limits::new(osis_base::format::MAX_OBJECT_DEPTH, delta.len());
     osis_base::visit_links(delta, &limits, &mut |_| {}).map_err(|_| Error::BadInput("part not one CBOR value"))?;
@@ -79,7 +79,7 @@ pub(crate) fn new_parts_bound(tx: &mut Tx<'_>, blob: &CommitBlob) -> Result<u64>
 
 /// What a received memory commit meets before anything of it is decoded (spec/sync-compaction.md §2 caps),
 /// in stages: its header lists resolved, then every page and large value root its parts link
-/// held (`reach::walk`), else it waits for them, nothing decoded (`Some(Pending)`); then its
+/// held (its kept walks, `reach::wait_parts`), else it waits for them, nothing decoded (`Some(Pending)`); then its
 /// `new_parts_bound` (parts, pages, and what its values' roots say the rest of their trees
 /// holds) within the room node-sync gave (`Core::memory_room`), else `TooLarge` and nothing of
 /// it kept, no chunk of it fetched. Admitted, its value trees are fetched at once
@@ -88,6 +88,8 @@ pub(crate) fn new_parts_bound(tx: &mut Tx<'_>, blob: &CommitBlob) -> Result<u64>
 /// (`Engine::apply_waiting_memory`). `None`: go on. `signed`: its signature's verdict, as
 /// reached before (`signature`) and after.
 pub(crate) fn memory_gate(tx: &mut Tx<'_>, blob: &mut CommitBlob, id: &CommitId, signed: &mut Option<osis_commit::Signed>) -> Result<Option<crate::Ingested>> {
+    // its blob waits taken on from what arrived for them
+    super::reach::take_on(tx, id)?;
     let pending = tx.core.ix.pending.get(id).cloned();
     // only a commit its author signed is kept waiting (as `examine` keeps one): an author not
     // held makes it unjudgeable there, nothing kept; an epoch not held, pending unverified there
@@ -98,16 +100,24 @@ pub(crate) fn memory_gate(tx: &mut Tx<'_>, blob: &mut CommitBlob, id: &CommitId,
     if !blob.header.is_resolved() {
         // no dedup secret: examine finds it unjudgeable before it decodes anything
         let Some(dedup) = tx.core.dedup(&blob.header.signer) else { return Ok(None) };
+        // their walk lacks a blob: they cannot resolve yet
+        if tx.core.walks.waits(id, super::reach::Slot::Header) {
+            return wait(tx, blob, id, *signed).map(Some);
+        }
         match blob.header.resolve(&mut crate::engine::blobs::TxBlobs::new(&mut tx.blobs, true), &dedup) {
             Ok(()) => {}
-            Err(e) if super::is_missing_page(&e) => return wait(tx, blob, id, *signed).map(Some),
+            Err(e) if super::is_missing_page(&e) => {
+                super::reach::wait_header(tx, id, blob)?;
+                return wait(tx, blob, id, *signed).map(Some);
+            }
             Err(e) => return Err(e.into()),
         }
     }
     // a held commit's late parts wait alone for their pages (`examine`), decoded no further
-    // than the held pages `new_parts_bound` counts
+    // than the held pages `new_parts_bound` counts; a pending one is walked again only when its
+    // kept walks lack nothing (`Engine::apply_waiting_memory`)
     let held = tx.core.ix.commits.contains_key(id);
-    if !held && super::reach::walk(tx, blob, false, &mut |_, _| Ok(()))?.missing().next().is_some() {
+    if !held && (tx.core.walks.lacks(id) || super::reach::wait_parts(tx, id, blob)?) {
         return wait(tx, blob, id, *signed).map(Some);
     }
     let Some(room) = tx.core.memory_room else {

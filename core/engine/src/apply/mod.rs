@@ -522,11 +522,11 @@ fn retry_pending(tx: &mut Tx<'_>, id: CommitId, b: CommitBlob) -> Result<Option<
 }
 
 /// Whether pending commit `b` still waits for what can make it wait without anything else
-/// arriving: a blob its walk reaches (`reach::lacks`: header lists, pages, value roots), its
+/// arriving: a blob its kept walks lack (`reach::Walks::lacks`: header lists, pages, value roots), its
 /// `ts`, its author's epoch. `false` when it may apply (or be refused) now.
 fn still_waits(tx: &mut Tx<'_>, b: &CommitBlob) -> Result<bool> {
     let id = b.id();
-    if tx.core.ix.pending.get(&id) == Some(&Reason::WaitBlobs) && reach::lacks(tx, &id, b)? {
+    if tx.core.walks.lacks(&id) {
         return Ok(true);
     }
     if !b.header.is_resolved() {
@@ -562,6 +562,8 @@ fn still_waits(tx: &mut Tx<'_>, b: &CommitBlob) -> Result<bool> {
 /// Every wait only ends as the held set grows, so the applied parts are the least fixpoint of a
 /// monotone rule, one result for every order (`tests/it` `order::held_set_decides` plays them).
 pub(crate) fn examine(tx: &mut Tx<'_>, blob: &mut CommitBlob, id: &CommitId, skip: &BTreeSet<usize>, origin: Origin, known: &mut Option<osis_commit::Signed>) -> Result<Exam> {
+    // its blob waits taken on from what arrived for them (this transaction's holds among them)
+    reach::take_on(tx, id)?;
     if !blob.header.is_resolved() {
         // a held author's signature first: a false one costs no list. An author's record carried
         // by this commit waits for the lists: only the aspects say which part holds it
@@ -571,9 +573,16 @@ pub(crate) fn examine(tx: &mut Tx<'_>, blob: &mut CommitBlob, id: &CommitId, ski
             *known = Some(check_signature(tx, blob, id, &vk, *known)?);
         }
         let Some(dedup) = tx.core.dedup(&blob.header.signer) else { return Ok(Exam::Awaits(Reason::UnknownCreated(blob.header.signer))) };
+        // their walk lacks a blob: they cannot resolve yet (notes/sync-facade.md, Blob waits)
+        if tx.core.walks.waits(id, reach::Slot::Header) {
+            return Ok(Exam::Pending(Reason::WaitBlobs));
+        }
         match blob.header.resolve(&mut TxBlobs::new(&mut tx.blobs, tx.txn.is_memory()), &dedup) {
             Ok(()) => {}
-            Err(e) if is_missing_page(&e) => return Ok(Exam::Pending(Reason::WaitBlobs)),
+            Err(e) if is_missing_page(&e) => {
+                reach::wait_header(tx, id, blob)?;
+                return Ok(Exam::Pending(Reason::WaitBlobs));
+            }
             Err(e) => return Err(e.into()),
         }
     }
@@ -652,6 +661,8 @@ pub(crate) fn examine(tx: &mut Tx<'_>, blob: &mut CommitBlob, id: &CommitId, ski
     if only_junk {
         return Err(Error::BadInput("delta hash"));
     }
+    // the walks of parts no longer in it (junk, expired, stripped) go
+    tx.core.walks.keep_parts(id, &blob.parts.iter().map(|p| p.ai).filter(|ai| !skip.contains(ai)).collect());
     let unjudgeable = unjudged.values().next().cloned().filter(|_| blob.parts.iter().all(|p| skip.contains(&p.ai) || unjudged.contains_key(&p.ai)));
     let Some(vk) = author_key(tx.core, &h, &blob.sigs, &author)? else {
         if let Some(r) = unjudgeable {
@@ -697,9 +708,21 @@ pub(crate) fn examine(tx: &mut Tx<'_>, blob: &mut CommitBlob, id: &CommitId, ski
             }
             continue;
         }
+        // its pages' walk lacks a blob: it waits, not decoded again (notes/sync-facade.md, Blob
+        // waits). Invariant: a part is decoded while waiting for pages only when its walk lacks
+        // nothing, so filling it costs O(its pages) whatever the batching a server picks
+        if tx.core.walks.waits(id, reach::Slot::Part(p.ai)) {
+            aside.add(Reason::WaitBlobs, [p.ai]);
+            continue;
+        }
         let dedup = record(&a.tid).map(|r| dedup_secret(r.nonce())).ok_or(Error::UnknownThing(a.tid))?;
         // one step: a part set aside or bad leaves nothing of its judging
-        let wait = match tx.step(Step::Part, |tx| judge_part(tx, &h, id, p, a, &dedup, rules, &mut interner)) {
+        let judged = tx.step(Step::Part, |tx| judge_part(tx, &h, id, p, a, &dedup, rules, &mut interner));
+        match &judged {
+            Ok(Judged::Blobs) => reach::judged_waiting(tx, id, p.ai, &p.delta)?,
+            _ => tx.core.walks.drop_slot(*id, reach::Slot::Part(p.ai)),
+        }
+        let wait = match judged {
             Ok(Judged::Whole(part)) => {
                 out.whole.push(part);
                 continue;
@@ -1680,7 +1703,7 @@ impl Engine {
     /// Receives a memory commit (session form, spec/commits.md §2-§3) through the commit path,
     /// every row it derives in memory. `room`: what holding it may cost, as `memory_charge`
     /// counts it (the node cap, spec/sync-compaction.md §2 caps): it waits undecoded until its header lists,
-    /// pages and value roots are held (`reach::walk`), and when its parts not held here could
+    /// pages and value roots are held (`reach::wait_parts`), and when its parts not held here could
     /// cost more (`memory::new_parts_bound`, from their bytes, their pages' and their values'
     /// roots) it is `TooLarge`, nothing
     /// of it decoded, held or kept waiting (`memory::memory_gate`). One that waits is applied
@@ -1755,8 +1778,9 @@ impl Engine {
                 self.core.events.diagnostic(Diagnostic { kind: DiagnosticKind::BadInput, tids: Vec::new(), commit: raw_id(bytes).ok(), peer, detail: e.to_string() }, self.core.hlc.mono());
             }
             Ok(Ingested::Applied(_)) => self.reexamine()?,
-            // it awaits a record kept loose: learned now (`promote_loose`)
-            _ if self.core.waits.loose.has_due() => self.reexamine()?,
+            // it awaits a record kept loose: learned now (`promote_loose`); blobs it brought end
+            // other commits' waits (`reach::Walks`)
+            _ if self.core.waits.loose.has_due() || self.core.walks.due() => self.reexamine()?,
             _ => {}
         }
         r
@@ -1808,7 +1832,8 @@ impl Engine {
     }
 
     /// Re-examines the pending commits parked under what arrived since (`Wake`: a record, the
-    /// role inputs moving, a blob, the clock, an open) until none applies; nothing else is read.
+    /// role inputs moving, the clock, an open; a blob a slot of theirs lacked last, once it
+    /// lacks nothing: `reach::round`) until none applies; nothing else is read.
     /// Loose records something now awaits are learned first (`promote_loose`). Role commits are
     /// tried first.
     pub fn reexamine(&mut self) -> Result<()> {
@@ -1817,8 +1842,10 @@ impl Engine {
             self.promote_loose()?;
             // the commits parked under what arrived, and those whose boxes the reading-only
             // budget has room for now: examined again (`waits::wake`)
-            let ids: Vec<CommitId> = waits::wake(&mut self.core).into_iter().collect();
-            if ids.is_empty() {
+            let ids = waits::wake(&mut self.core);
+            // the blob waits the arrivals since reached, taken on in the round (`reach::round`)
+            let (arrived, lost) = self.core.walks.take_due();
+            if ids.is_empty() && arrived.is_empty() && lost.is_empty() {
                 return Ok(());
             }
             let _s = osis_base::costs::span("reexamine: round");
@@ -1828,6 +1855,11 @@ impl Engine {
                 #[cfg(test)]
                 if fail {
                     return Err(Error::Corrupt("a round failing (tests)"));
+                }
+                let mut ids = ids;
+                ids.append(&mut reach::round(tx, arrived, lost)?);
+                if ids.is_empty() {
+                    return Ok(false);
                 }
                 let mut blobs: Vec<(CommitId, CommitBlob)> = Vec::new();
                 let pending = &tx.core.ix.pending;

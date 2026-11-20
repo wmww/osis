@@ -1,7 +1,7 @@
 //! What a commit needs held, found by walking what it links (spec/sync-streams.md §5, spec/sync-compaction.md §2 caps;
 //! spec/commits.md §4): a header list given by link needs its whole chunk tree; a part needs its
 //! pages (followed: a page's links are pages or value roots) and, for the memory gate, its
-//! large values' roots (not followed: their chunks are fetched after, `Walks::trees`). A held
+//! large values' roots (not followed: their chunks are fetched once it applies, `Slot::Trees`). A held
 //! blob is told apart by its shape: a tree node parses as one (`osis_commit::tree::parse_node`),
 //! anything else a link reaches from a delta or page is a page. A hostile writer's blob of the
 //! wrong shape only fails its own commit, which judges every link it resolves.
@@ -15,12 +15,14 @@
 //! the delta), and a tree node's children lie a level below it. Who writes the input: any writer
 //! of a commit a node waits for.
 //!
-//! node-sync asks what waiting commits lack (`Engine::blob_wants`): each commit's walk is kept
-//! (`Walks`, memory only) and taken further from its missing blobs as they arrive, so a fill of
-//! a large paged commit costs each page one walk step, not one per batch.
+//! Blob waits (notes/sync-facade.md, Blob waits): each waiting slot keeps its walk (`Walks`,
+//! memory only), indexed by the blobs it lacks; a blob newly held takes on only the walks lacking
+//! it, from that blob (`advance`), and a commit is examined only when a slot of it lacks nothing.
+//! Invariant: a fill of P pages costs O(P) walk steps and one checked decode per part, whatever
+//! batching or order the node serving the pages picks (who drives it: any peer serving them).
 
 use crate::engine::{Engine, Tx};
-use crate::error::{Error, Result};
+use crate::error::Result;
 use osis_base::{BlobId, CommitId, Link, LinkSite};
 use osis_crdt::{LinkTree, TreePlace};
 use osis_commit::CommitBlob;
@@ -61,11 +63,11 @@ struct Shape {
     refused: bool,
 }
 
-/// One commit's walk.
+/// One walk: what it reached and where it stopped.
 #[derive(Clone, Debug, Default)]
 pub(crate) struct Walk {
     /// Every blob reached, held or not.
-    pub reached: BTreeSet<BlobId>,
+    reached: BTreeSet<BlobId>,
     /// Reached and not held: where the walk stopped.
     missing: BTreeMap<BlobId, (Link, At)>,
     /// Large values' roots reached and held.
@@ -75,35 +77,222 @@ pub(crate) struct Walk {
     /// Whether value trees are walked below their roots (an applied memory commit's, whose
     /// chunks are fetched at once: spec/sync-compaction.md §2).
     trees: bool,
+    /// Blobs `missing` gained (`true`) or lost since `Walks` indexed it, in order.
+    moved: Vec<(BlobId, bool)>,
 }
 
 impl Walk {
+    fn new(trees: bool) -> Walk {
+        Walk { trees, ..Walk::default() }
+    }
+
     /// Blobs reached and not held.
     pub fn missing(&self) -> impl Iterator<Item = &BlobId> {
         self.missing.keys()
     }
+
+    fn lack(&mut self, link: Link, at: At) {
+        if self.missing.insert(link.blob, (link, at)).is_none() {
+            self.moved.push((link.blob, true));
+        }
+    }
+
+    fn unlack(&mut self, b: &BlobId) -> Option<(Link, At)> {
+        let x = self.missing.remove(b)?;
+        self.moved.push((*b, false));
+        Some(x)
+    }
 }
 
-/// Walks kept for node-sync (`Engine::blob_wants`): of pending commits waiting for blobs, and
-/// of applied memory commits from others until their trees are whole. A cache of the store:
-/// each walk is checked against what is held as it goes on, and done again whole when it finds
-/// nothing missing while its commit still waits (a header resolved since, a page gone).
+/// Where a kept walk lies in its commit.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
+pub(crate) enum Slot {
+    /// Its header lists given by link, while they do not resolve.
+    Header,
+    /// Part `ai`'s pages and value roots, while it waits for them.
+    Part(usize),
+    /// Applied memory part `ai`'s value trees, until held whole (fetched at once).
+    Trees(usize),
+}
+
+impl Slot {
+    /// The slots a pending copy waits on (all but `Trees`).
+    fn pending_of(c: CommitId) -> std::ops::Range<(CommitId, Slot)> {
+        (c, Slot::Header)..(c, Slot::Trees(0))
+    }
+}
+
+/// Slots a blob held since the last round was wanted by, with the blob, by commit.
+pub(crate) type Arrived = BTreeMap<CommitId, BTreeSet<(Slot, BlobId)>>;
+
+/// The kept walks of blob waits (notes/sync-facade.md, Blob waits): memory only, a slot kept
+/// only while its walk lacks a blob. A function of the commits and the blobs held; derived again
+/// at open (every pending commit examined), and after a failed step or transaction for the
+/// commits it touched (`forget_since`, then `lost`).
 #[derive(Clone, Debug, Default)]
 pub(crate) struct Walks {
-    walks: BTreeMap<CommitId, Walk>,
-    /// Applied memory commits from others whose value trees may not be whole here.
-    trees: BTreeSet<CommitId>,
+    kept: BTreeMap<(CommitId, Slot), Walk>,
+    /// Each blob a kept walk lacks, and the slots lacking it: the wake index.
+    wanted: BTreeMap<BlobId, BTreeSet<(CommitId, Slot)>>,
+    /// Slots a blob held since the last round was wanted by, with the blob (`held`).
+    arrived: Arrived,
+    /// Commits whose walks a failed step or transaction dropped: examined at the next round
+    /// (pending), or their trees walked again (an applied memory commit).
+    lost: BTreeSet<CommitId>,
+    /// Memory commits admitted since the last round: their trees are walked once applied.
+    trees_due: BTreeSet<CommitId>,
+    /// Commits whose walks changed in the running transaction (`forget_since`).
+    log: Vec<CommitId>,
+    /// Commits given walks or unpended in the running transaction: their pending slots go at
+    /// its end if they do not pend then (`settle`).
+    unsettled: BTreeSet<CommitId>,
 }
 
 impl Walks {
     /// Memory commit `id` passed its gate: its value trees are fetched once it applies.
     pub fn trees_of(&mut self, id: CommitId) {
-        self.trees.insert(id);
+        self.trees_due.insert(id);
+    }
+
+    /// Takes `w`'s moves into the index under `(c, s)`.
+    fn index(&mut self, c: CommitId, s: Slot, w: &mut Walk) {
+        for (b, add) in w.moved.drain(..) {
+            if add {
+                self.wanted.entry(b).or_default().insert((c, s));
+            } else if let Some(x) = self.wanted.get_mut(&b) {
+                x.remove(&(c, s));
+                if x.is_empty() {
+                    self.wanted.remove(&b);
+                }
+            }
+        }
+    }
+
+    /// `w` is slot `s` of `c`'s walk from now on: kept while it lacks a blob.
+    fn put(&mut self, c: CommitId, s: Slot, mut w: Walk) {
+        self.unkeep(c, s);
+        self.log.push(c);
+        if !matches!(s, Slot::Trees(_)) {
+            self.unsettled.insert(c);
+        }
+        if w.missing.is_empty() {
+            return;
+        }
+        w.moved = w.missing.keys().map(|b| (*b, true)).collect();
+        self.index(c, s, &mut w);
+        self.kept.insert((c, s), w);
+    }
+
+    /// Slot `s` of `c` keeps no walk, its index entries gone.
+    fn unkeep(&mut self, c: CommitId, s: Slot) -> bool {
+        let Some(mut w) = self.kept.remove(&(c, s)) else { return false };
+        w.moved = w.missing.keys().map(|b| (*b, false)).collect();
+        self.index(c, s, &mut w);
+        true
+    }
+
+    /// Slot `s` of `c` waits no more (judged otherwise).
+    pub fn drop_slot(&mut self, c: CommitId, s: Slot) {
+        if self.unkeep(c, s) {
+            self.log.push(c);
+        }
+    }
+
+    /// `c` pends no more: its pending slots go at the transaction's end unless it pends again.
+    pub fn unpended(&mut self, c: &CommitId) {
+        self.unsettled.insert(*c);
+    }
+
+    /// `c` pends no more: the walks of its pending copy go.
+    fn drop_pending(&mut self, c: &CommitId) {
+        let slots: Vec<Slot> = self.kept.range(Slot::pending_of(*c)).map(|(k, _)| k.1).collect();
+        for s in slots {
+            self.drop_slot(*c, s);
+        }
+    }
+
+    /// `c` is forgotten: all its walks go.
+    pub fn drop_all(&mut self, c: &CommitId) {
+        let slots: Vec<Slot> = self.kept.range((*c, Slot::Header)..=(*c, Slot::Trees(usize::MAX))).map(|(k, _)| k.1).collect();
+        for s in slots {
+            self.drop_slot(*c, s);
+        }
+        self.trees_due.remove(c);
+    }
+
+    /// `c`'s header resolved: its pending slots other than parts `parts` go (parts no longer in
+    /// its pending copy).
+    pub fn keep_parts(&mut self, c: &CommitId, parts: &BTreeSet<usize>) {
+        let gone: Vec<Slot> = self.kept.range(Slot::pending_of(*c)).filter_map(|(k, _)| if let Slot::Part(ai) = k.1 { (!parts.contains(&ai)).then_some(k.1) } else { Some(k.1) }).collect();
+        for s in gone {
+            self.drop_slot(*c, s);
+        }
+    }
+
+    /// Whether slot `s` of `c` keeps a walk: it lacks a blob, so judging it now cannot end its wait.
+    pub fn waits(&self, c: &CommitId, s: Slot) -> bool {
+        self.kept.contains_key(&(*c, s))
+    }
+
+    /// Whether `c`'s pending copy lacks a blob a walk of it reaches.
+    pub fn lacks(&self, c: &CommitId) -> bool {
+        self.kept.range(Slot::pending_of(*c)).next().is_some()
+    }
+
+    /// Blob `b` is held here now (its transaction committed): the slots wanting it are due.
+    pub fn held(&mut self, b: &BlobId) {
+        for (c, s) in self.wanted.get(b).into_iter().flatten() {
+            self.arrived.entry(*c).or_default().insert((*s, *b));
+        }
+    }
+
+    /// Whether any walk is kept.
+    pub fn any(&self) -> bool {
+        !self.kept.is_empty()
+    }
+
+    /// Whether a kept walk lacks blob `b`.
+    pub fn wants(&self, b: &BlobId) -> bool {
+        self.wanted.contains_key(b)
+    }
+
+    /// Whether a round has work here (`Engine::next_timer`).
+    pub fn due(&self) -> bool {
+        !self.arrived.is_empty() || !self.lost.is_empty() || !self.trees_due.is_empty()
+    }
+
+    /// Takes what is due for a round: the arrivals, the lost commits, the trees to walk.
+    pub fn take_due(&mut self) -> (Arrived, BTreeSet<CommitId>) {
+        let mut lost = std::mem::take(&mut self.lost);
+        lost.append(&mut self.trees_due);
+        (std::mem::take(&mut self.arrived), lost)
+    }
+
+    /// `log`'s length (`Core::mark`).
+    pub fn mark(&self) -> usize {
+        self.log.len()
+    }
+
+    /// A step or transaction from `n` failed: the walks of the commits it touched go, those
+    /// commits due again (`lost`).
+    pub fn forget_since(&mut self, n: usize) {
+        for c in self.log.split_off(n.min(self.log.len())) {
+            let slots: Vec<Slot> = self.kept.range((c, Slot::Header)..=(c, Slot::Trees(usize::MAX))).map(|(k, _)| k.1).collect();
+            for s in slots {
+                self.unkeep(c, s);
+            }
+            self.lost.insert(c);
+        }
+    }
+
+    /// The running transaction committed.
+    pub fn committed(&mut self) {
+        self.log.clear();
     }
 }
 
 /// Takes `stack` as far as the held blobs go, into `w`. `on_page` sees each page reached (its
-/// blob, its plaintext); a page that is not one CBOR value is `BadInput`.
+/// blob, its plaintext).
 fn extend(tx: &mut Tx<'_>, w: &mut Walk, mut stack: Vec<(Link, At)>, on_page: &mut super::memory::PageVisit<'_>) -> Result<()> {
     while let Some((link, at)) = stack.pop() {
         if !w.reached.insert(link.blob) {
@@ -115,7 +304,9 @@ fn extend(tx: &mut Tx<'_>, w: &mut Walk, mut stack: Vec<(Link, At)>, on_page: &m
 }
 
 /// One reached link: missing, or opened and followed as far as `w` follows. `arrived`: it was
-/// missing when reached.
+/// missing when reached. Bytes it cannot follow (not opening under the link, a page not one CBOR
+/// value, a node of the wrong level, a page `LinkTree` refuses) end that branch: the commit's
+/// judging refuses them.
 fn step(tx: &mut Tx<'_>, w: &mut Walk, link: Link, at: At, arrived: bool, stack: &mut Vec<(Link, At)>, on_page: &mut super::memory::PageVisit<'_>) -> Result<()> {
     if let At::Page(p) = at
         && w.shapes.get(p.tree).is_none_or(|s| s.refused)
@@ -124,16 +315,15 @@ fn step(tx: &mut Tx<'_>, w: &mut Walk, link: Link, at: At, arrived: bool, stack:
     }
     if at == At::Chunk || matches!(at, At::Tree(_)) && !arrived {
         if !tx.blobs.held(&link.blob)? {
-            w.missing.insert(link.blob, (link, at));
+            w.lack(link, at);
         }
         return Ok(());
     }
     let Some(blob) = tx.blobs.get(&link.blob)? else {
-        w.missing.insert(link.blob, (link, at));
+        w.lack(link, at);
         return Ok(());
     };
     osis_base::costs::count("reach: blobs opened", 1);
-    // bytes that do not open under the link are no blob of it: the commit's own judging fails
     let Ok((_, pt)) = osis_blob::open(&blob, &osis_crypto::Secret32::from_bytes(link.key)) else { return Ok(()) };
     if let Ok((level, kids)) = osis_blob::tree::parse_node(&pt) {
         match at {
@@ -158,7 +348,9 @@ fn step(tx: &mut Tx<'_>, w: &mut Walk, link: Link, at: At, arrived: bool, stack:
     let At::Page(p) = at else { return Ok(()) };
     on_page(&blob, &pt)?;
     let mut sites = Vec::new();
-    sites_of(&pt, &mut sites).map_err(|_| Error::BadInput("page not one CBOR value"))?;
+    if sites_of(&pt, &mut sites).is_err() {
+        return Ok(());
+    }
     let Some(shape) = w.shapes.get_mut(p.tree) else { return Ok(()) };
     let fits = match sites.as_slice() {
         [LinkSite::List { links, top: true }] => shape.rule.link_page(p.place, links).map(|()| {
@@ -172,7 +364,6 @@ fn step(tx: &mut Tx<'_>, w: &mut Walk, link: Link, at: At, arrived: bool, stack:
     }
     Ok(())
 }
-
 /// The links in `bytes` (a delta or page), each with where it sits.
 fn sites_of(bytes: &[u8], out: &mut Vec<LinkSite>) -> std::result::Result<(), osis_base::DecodeError> {
     let limits = osis_base::Limits::new(osis_base::format::MAX_OBJECT_DEPTH, bytes.len());
@@ -203,27 +394,24 @@ fn refuse(w: &mut Walk, tree: usize) {
     if let Some(s) = w.shapes.get_mut(tree) {
         s.refused = true;
     }
-    w.missing.retain(|_, (_, at)| !matches!(at, At::Page(p) if p.tree == tree));
+    let gone: Vec<BlobId> = w.missing.iter().filter(|(_, (_, at))| matches!(at, At::Page(p) if p.tree == tree)).map(|(b, _)| *b).collect();
+    for b in gone {
+        w.unlack(&b);
+    }
 }
 
-/// The walk of `blob`: while its header lists given by link do not resolve from what is held,
-/// their trees; else its parts' pages and value roots (below them too with `trees`). A part
-/// that is not one CBOR value links nothing (its commit's judging refuses it).
-pub(crate) fn walk(tx: &mut Tx<'_>, blob: &CommitBlob, trees: bool, on_page: &mut super::memory::PageVisit<'_>) -> Result<Walk> {
-    if !blob.header.is_resolved() && !resolves(tx, blob)? {
-        let mut w = Walk { trees, ..Walk::default() };
-        let stack = osis_commit::ListField::ALL.into_iter().filter_map(|f| blob.header.links.get(f).copied()).map(|l| (l, At::Node(0))).collect();
-        extend(tx, &mut w, stack, on_page)?;
-        return Ok(w);
-    }
-    let deltas: Vec<&[u8]> = blob.parts.iter().map(|p| p.delta.as_slice()).collect();
-    walk_deltas(tx, &deltas, trees, on_page)
+/// The walk of `blob`'s header lists given by link: their whole trees.
+fn header_walk(tx: &mut Tx<'_>, blob: &CommitBlob) -> Result<Walk> {
+    let mut w = Walk::new(false);
+    let stack = osis_commit::ListField::ALL.into_iter().filter_map(|f| blob.header.links.get(f).copied()).map(|l| (l, At::Node(0))).collect();
+    extend(tx, &mut w, stack, &mut |_, _| Ok(()))?;
+    Ok(w)
 }
 
 /// The walk of `deltas`' links: pages followed, value roots (below them too with `trees`). A
 /// delta that is not one CBOR value links nothing (its commit's judging refuses it).
 pub(crate) fn walk_deltas(tx: &mut Tx<'_>, deltas: &[&[u8]], trees: bool, on_page: &mut super::memory::PageVisit<'_>) -> Result<Walk> {
-    let mut w = Walk { trees, ..Walk::default() };
+    let mut w = Walk::new(trees);
     let mut stack = Vec::new();
     for d in deltas {
         let mut sites = Vec::new();
@@ -235,117 +423,199 @@ pub(crate) fn walk_deltas(tx: &mut Tx<'_>, deltas: &[&[u8]], trees: bool, on_pag
     Ok(w)
 }
 
-/// Whether `blob`'s header lists resolve from the blobs held (bad lists count as resolving:
-/// nothing more to fetch, its judging refuses them).
-fn resolves(tx: &mut Tx<'_>, blob: &CommitBlob) -> Result<bool> {
-    let Some(dedup) = tx.core.dedup(&blob.header.signer) else { return Ok(true) };
-    let mut h = blob.header.clone();
-    match h.resolve(&mut crate::engine::blobs::TxBlobs::new(&mut tx.blobs, tx.txn.is_memory()), &dedup) {
-        Err(e) if super::is_missing_page(&e) => Ok(false),
-        _ => Ok(true),
-    }
+/// Pending commit `id`'s header lists did not resolve (`blob`): their walk kept until they may.
+/// One pass over the list nodes held.
+pub(crate) fn wait_header(tx: &mut Tx<'_>, id: &CommitId, blob: &CommitBlob) -> Result<()> {
+    let w = header_walk(tx, blob)?;
+    debug_assert!(w.missing().next().is_some(), "header lists of {id:?} missing a blob no walk reaches");
+    tx.core.walks.put(*id, Slot::Header, w);
+    Ok(())
 }
 
-/// `w` taken on from its missing blobs held now.
-fn refresh(tx: &mut Tx<'_>, w: &mut Walk) -> Result<()> {
-    let mut arrived = Vec::new();
-    for (b, x) in &w.missing {
-        if tx.blobs.held(b)? {
-            arrived.push(*x);
+/// Part `ai` of pending commit `id` (`delta`) waits for its pages: its walk kept until it lacks
+/// nothing. One pass over the pages held.
+pub(crate) fn wait_part(tx: &mut Tx<'_>, id: &CommitId, ai: usize, delta: &[u8]) -> Result<()> {
+    let w = walk_deltas(tx, &[delta], false, &mut |_, _| Ok(()))?;
+    tx.core.walks.put(*id, Slot::Part(ai), w);
+    Ok(())
+}
+
+/// `wait_part` of a part its judging found missing a page: its walk must lack one, or nothing
+/// would wake it (the walk and the decoders apply one tree rule, notes/decode-bounds.md).
+pub(crate) fn judged_waiting(tx: &mut Tx<'_>, id: &CommitId, ai: usize, delta: &[u8]) -> Result<()> {
+    wait_part(tx, id, ai, delta)?;
+    debug_assert!(tx.core.walks.waits(id, Slot::Part(ai)), "part {ai} of {id:?} judged missing a page its walk does not lack");
+    Ok(())
+}
+
+/// Memory commit `id` (`blob`, its header resolved): whether a part of it lacks a blob, each
+/// such part's walk kept.
+pub(crate) fn wait_parts(tx: &mut Tx<'_>, id: &CommitId, blob: &CommitBlob) -> Result<bool> {
+    for p in &blob.parts {
+        wait_part(tx, id, p.ai, &p.delta)?;
+    }
+    Ok(tx.core.walks.lacks(id))
+}
+
+/// Applied memory commit `id`'s value trees: walked, each part's kept until held whole.
+fn wait_trees(tx: &mut Tx<'_>, id: &CommitId) -> Result<()> {
+    if !tx.core.ix.commits.get(id).is_some_and(|m| m.view.memory) {
+        return Ok(());
+    }
+    let Some(blob) = tx.get_commit(id)? else { return Ok(()) };
+    for p in &blob.parts {
+        let w = walk_deltas(tx, &[&p.delta], true, &mut |_, _| Ok(()))?;
+        tx.core.walks.put(*id, Slot::Trees(p.ai), w);
+    }
+    Ok(())
+}
+
+/// The end of a transaction: the pending slots of commits that do not pend go.
+pub(crate) fn settle(core: &mut crate::engine::Core) {
+    for c in std::mem::take(&mut core.walks.unsettled) {
+        if !core.ix.pending.contains_key(&c) {
+            core.walks.drop_pending(&c);
         }
     }
-    let mut stack = Vec::new();
-    for (link, at) in arrived {
-        w.missing.remove(&link.blob);
-        step(tx, w, link, at, true, &mut stack, &mut |_, _| Ok(()))?;
-    }
-    extend(tx, w, stack, &mut |_, _| Ok(()))
 }
 
-/// Bad bytes stop a kept walk where they are: the commit's own judging refuses them.
-fn quiet(r: Result<()>) -> Result<()> {
-    match r {
-        Err(Error::BadInput(_)) => Ok(()),
-        r => r,
-    }
+/// Takes `c`'s walks on from the blobs held for them since they last moved (`Walks::held`):
+/// a commit about to be judged sees what the transaction held. Whether a pending slot came to
+/// lack nothing.
+pub(crate) fn take_on(tx: &mut Tx<'_>, c: &CommitId) -> Result<bool> {
+    let Some(a) = tx.core.walks.arrived.remove(c) else { return Ok(false) };
+    advance(tx, c, &a)
 }
 
-/// The kept walk of commit `id` (stored as `blob`), taken on to what is held now. A first walk
-/// (a walk kept while it waited stops at roots: applied, its trees are walked afresh), and of a
-/// waiting commit (not `trees`) one that lacks nothing while it still waits, is done whole.
-fn kept(tx: &mut Tx<'_>, id: &CommitId, blob: &CommitBlob, trees: bool) -> Result<Walk> {
-    let (mut w, fresh) = match tx.core.walks.walks.remove(id).filter(|w| w.trees == trees) {
-        Some(mut w) => {
-            quiet(refresh(tx, &mut w))?;
-            (w, false)
+/// Takes `c`'s walks on from the blobs that arrived for them (`Walks::held`): O(those blobs'
+/// links), never a pass over what each walk held before. Whether a slot of its pending copy
+/// came to lack nothing (it may be judged now). A slot lacking nothing goes.
+pub(crate) fn advance(tx: &mut Tx<'_>, c: &CommitId, arrived: &BTreeSet<(Slot, BlobId)>) -> Result<bool> {
+    let mut ready = false;
+    let slots: BTreeSet<Slot> = arrived.iter().map(|x| x.0).collect();
+    for s in slots {
+        let Some(mut w) = tx.core.walks.kept.remove(&(*c, s)) else { continue };
+        tx.core.walks.log.push(*c);
+        osis_base::costs::count("reach: walks advanced", 1);
+        let mut stack = Vec::new();
+        let mut r = Ok(());
+        for (_, b) in arrived.range((s, BlobId([0; 32]))..=(s, BlobId([0xff; 32]))) {
+            if let Some((link, at)) = w.unlack(b) {
+                r = step(tx, &mut w, link, at, true, &mut stack, &mut |_, _| Ok(()));
+                if r.is_err() {
+                    break;
+                }
+            }
         }
-        None => (Walk { trees, ..Walk::default() }, true),
-    };
-    if fresh || !trees && w.missing.is_empty() {
-        w = match walk(tx, blob, trees, &mut |_, _| Ok(())) {
-            Err(Error::BadInput(_)) => Walk { trees, ..Walk::default() },
-            r => r?,
-        };
+        let r = r.and_then(|()| extend(tx, &mut w, stack, &mut |_, _| Ok(())));
+        tx.core.walks.index(*c, s, &mut w);
+        if let Err(e) = r {
+            // a store error: the walk is unknown, the commit examined again (`lost`)
+            tx.core.walks.kept.insert((*c, s), w);
+            tx.core.walks.unkeep(*c, s);
+            tx.core.walks.lost.insert(*c);
+            return Err(e);
+        }
+        match w.missing.is_empty() {
+            true => ready |= !matches!(s, Slot::Trees(_)),
+            false => drop(tx.core.walks.kept.insert((*c, s), w)),
+        }
     }
-    tx.core.walks.walks.insert(*id, w.clone());
-    Ok(w)
+    Ok(ready)
 }
 
-/// Whether pending commit `id` (stored as `blob`) lacks a blob its walk reaches.
-pub(crate) fn lacks(tx: &mut Tx<'_>, id: &CommitId, blob: &CommitBlob) -> Result<bool> {
-    Ok(!kept(tx, id, blob, false)?.missing.is_empty())
+/// The start of a `reexamine` round: the walks the arrivals reached taken on, the lost commits'
+/// trees walked again. The pending commits to examine: a slot of theirs lacks nothing, or their
+/// walks were lost (examining derives them).
+pub(crate) fn round(tx: &mut Tx<'_>, arrived: Arrived, lost: BTreeSet<CommitId>) -> Result<BTreeSet<CommitId>> {
+    let mut out = BTreeSet::new();
+    for (c, blobs) in arrived {
+        if advance(tx, &c, &blobs)? {
+            out.insert(c);
+        }
+    }
+    for c in lost {
+        match tx.core.ix.pending.contains_key(&c) {
+            true => drop(out.insert(c)),
+            false => wait_trees(tx, &c)?,
+        }
+    }
+    out.retain(|c| tx.core.ix.pending.contains_key(c));
+    Ok(out)
 }
 
 /// What waiting commits need (`Engine::blob_wants`).
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct Wants {
-    /// Every blob their walks reach, held or not: what their unvouched entries keep.
-    pub reached: BTreeSet<BlobId>,
     /// Reached and not held: to fetch.
     pub missing: BTreeSet<BlobId>,
 }
 
 impl Engine {
-    /// The blobs commits here wait for (spec/sync-streams.md §5, spec/sync-compaction.md §2): of each pending commit waiting
-    /// for blobs, its header lists' trees while they do not resolve, then its pages and its
-    /// large values' roots; of each memory commit from others applied here, its value trees
-    /// (fetched at once: they are held in memory at peers). Costs the blobs that arrived since
-    /// the last call, and a whole walk of a commit whose walk lacks nothing while it still waits.
+    /// The blobs commits here wait for (spec/sync-streams.md §5, spec/sync-compaction.md §2 caps): of each pending commit waiting
+    /// for blobs, its header lists' trees while they do not resolve, then its waiting parts'
+    /// pages and large values' roots; of each memory commit from others applied here, its value
+    /// trees (fetched at once: they are held in memory at peers). The whole set: O(its size).
     pub fn blob_wants(&mut self) -> Result<Wants> {
-        let waiting: Vec<CommitId> = self.core.ix.pend_on.get(&super::Wake::Blobs).into_iter().flatten().copied().collect();
-        if waiting.is_empty() && self.core.walks.trees.is_empty() {
-            self.core.walks.walks.clear();
-            return Ok(Wants::default());
+        Ok(Wants { missing: self.core.walks.wanted.keys().copied().collect() })
+    }
+
+    /// Whether a commit here waits for blob `b` (`blob_wants`, one blob: O(log)).
+    pub fn wants_blob(&self, b: &BlobId) -> bool {
+        self.core.walks.wants(b)
+    }
+
+    /// Debug builds: the blob waits' index is exactly what the kept walks lack, each kept slot's
+    /// commit pends (or is an applied memory commit, for its trees), and no kept walk lacks a
+    /// blob held here whose arrival is not noted for the next round (a lost wake). With
+    /// `fresh`, each pending slot's walk equals one derived afresh from its stored copy (the
+    /// drop-time check: one pass over every waiting commit's pages).
+    #[cfg(debug_assertions)]
+    pub(crate) fn check_walks(&mut self, fresh: bool) -> Result<()> {
+        let w = &self.core.walks;
+        let mut index: BTreeMap<BlobId, BTreeSet<(CommitId, Slot)>> = BTreeMap::new();
+        for ((c, s), walk) in &w.kept {
+            assert!(!walk.missing.is_empty(), "blob waits: a kept walk of {c:?} {s:?} lacks nothing");
+            for b in walk.missing.keys() {
+                index.entry(*b).or_default().insert((*c, *s));
+            }
+            match s {
+                Slot::Trees(_) => assert!(self.core.ix.commits.get(c).is_some_and(|m| m.view.memory), "blob waits: trees kept for {c:?}, no applied memory commit"),
+                _ => assert!(self.core.ix.pending.contains_key(c), "blob waits: a walk kept for {c:?} {s:?}, not pending"),
+            }
         }
-        self.run(|tx| {
-            let mut out = Wants::default();
-            let trees: Vec<CommitId> = tx.core.walks.trees.iter().copied().filter(|c| !waiting.contains(c)).collect();
-            let keep: BTreeSet<CommitId> = waiting.iter().chain(&trees).copied().collect();
-            tx.core.walks.walks.retain(|c, _| keep.contains(c));
-            for id in &waiting {
-                let Some(b) = tx.txn.get_pending(id)?.and_then(|p| CommitBlob::decode_stored(&p.bytes).ok()) else { continue };
-                let w = kept(tx, id, &b, false)?;
-                out.reached.extend(w.reached);
-                out.missing.extend(w.missing.into_keys());
+        assert!(index == w.wanted, "blob waits: the index is not what the kept walks lack");
+        let lacking: Vec<((CommitId, Slot), BlobId, bool)> = w.kept.iter().flat_map(|(k, walk)| walk.missing.iter().map(move |(b, (_, at))| (*k, *b, *at == At::Chunk || matches!(at, At::Tree(_))))).collect();
+        let arrived = w.arrived.clone();
+        let pending: Vec<((CommitId, Slot), BTreeSet<BlobId>)> = w.kept.iter().filter(|(k, _)| !matches!(k.1, Slot::Trees(_))).map(|(k, walk)| (*k, walk.missing.keys().copied().collect())).collect();
+        osis_base::costs::paused(|| osis_base::memo::unrecorded(|| self.read(|tx| {
+            for ((c, s), b, chunk) in &lacking {
+                let held = if *chunk { tx.blobs.held(b)? } else { tx.blobs.get(b)?.is_some() };
+                assert!(!held || arrived.get(c).is_some_and(|x| x.contains(&(*s, *b))), "blob waits: {c:?} {s:?} lacks {b:?}, held here, its arrival not noted (a lost wake)");
             }
-            for id in &trees {
-                let memory = tx.core.ix.commits.get(id).is_some_and(|m| m.view.memory);
-                let blob = if memory { tx.get_commit(id)? } else { None };
-                let Some(blob) = blob else {
-                    tx.core.walks.trees.remove(id);
-                    tx.core.walks.walks.remove(id);
-                    continue;
+            if !fresh {
+                return Ok(());
+            }
+            for ((c, s), kept) in &pending {
+                let Some(p) = tx.txn.get_pending(c)? else { continue };
+                let Ok(blob) = CommitBlob::decode_stored(&p.bytes) else { continue };
+                let delta = match s {
+                    Slot::Part(ai) => blob.part(*ai).map(|p| p.delta.as_slice()),
+                    _ => None,
                 };
-                let w = kept(tx, id, &blob, true)?;
-                if w.missing.is_empty() {
-                    tx.core.walks.trees.remove(id);
-                    tx.core.walks.walks.remove(id);
+                assert!(!matches!(s, Slot::Part(_)) || delta.is_some(), "blob waits: {c:?} keeps a walk for {s:?}, not in its pending copy");
+                let again = match delta {
+                    Some(d) => walk_deltas(tx, &[d], false, &mut |_, _| Ok(()))?,
+                    None => header_walk(tx, &blob)?,
+                };
+                let again: BTreeSet<BlobId> = again.missing.keys().copied().collect();
+                // a slot with a noted arrival is behind until the round takes it on
+                if !arrived.get(c).is_some_and(|x| x.iter().any(|x| x.0 == *s)) {
+                    assert!(again == *kept, "blob waits: {c:?} {s:?} kept {kept:?}, derived afresh {again:?}");
                 }
-                out.reached.extend(w.reached);
-                out.missing.extend(w.missing.into_keys());
             }
-            Ok(out)
-        })
+            Ok(())
+        })))
     }
 }
 

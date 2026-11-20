@@ -1229,6 +1229,48 @@ fn each_waiting_part_joins_at_its_own_record_spec_commits_4() {
     }
 }
 
+// spec/commits.md §4 (Unjudgeable; Examined again), notes/sync-facade.md Blob waits: a
+// commit with a paged part whose pages are away and a part whose thing's record is away: the
+// record coming joins its part without decoding the paged part again (its walk still lacks
+// pages: none of its held pages read), and the pages coming join theirs. Fails with the paged
+// part decoded at each examination.
+#[test]
+fn a_record_joins_its_part_beside_a_part_waiting_for_pages_spec_commits_4() {
+    let map: osis_base::ValueMap = (0..2000).map(|i| (Value::Str(format!("key {i:05}")), Value::Str("v".repeat(60)))).collect();
+    let mut lp = net_one(2); // 1 a node of 0's account
+    let u = new_thing(&mut lp, 0);
+    sync(&mut lp, 0, 1);
+    let t = new_thing(&mut lp, 0);
+    let tc = creation_of(&mut lp, 0, 1, t);
+    let mut m = Mutation::new();
+    m.set(u, &BIG, &Value::Map(map.clone())).unwrap();
+    m.set(t, &REG, &s("t")).unwrap();
+    let c = lp.peers[0].commit(m).unwrap().unwrap();
+    let cp = package_for(&mut lp, 0, 1, c);
+    assert!(!cp.blobs.is_empty(), "paged");
+    let e = &mut lp.peers[1].engine;
+    e.ingest(&cp.bytes, Vec::new()).unwrap();
+    assert!(e.pending().iter().any(|x| x.0 == c), "its parts wait");
+    // half the pages its walk asks for: some held, more wanted
+    let held: std::collections::BTreeMap<_, _> = cp.blobs.iter().cloned().collect();
+    let mut give: Vec<_> = e.blob_wants().unwrap().missing.iter().filter_map(|b| held.get(b).map(|x| (*b, x.clone()))).collect();
+    give.truncate(give.len() / 2);
+    assert!(!give.is_empty());
+    e.put_blobs(give).unwrap();
+    assert!(e.blob_wants().unwrap().missing.iter().any(|b| held.contains_key(b)), "more pages wanted");
+    osis_base::costs::take();
+    e.ingest(&tc.bytes, Vec::new()).unwrap();
+    let costs = osis_base::costs::take();
+    let read = costs.iter().find(|x| x.0 == "pages read").map_or(0, |x| x.2);
+    assert_eq!(e.get(&t, &ak("t:reg.0")).unwrap(), Some(s("t")), "the record's part joins");
+    assert_eq!(e.get_typed(&u, &BIG).unwrap(), None, "the paged part still waits");
+    assert_eq!(read, 0, "the paged part not decoded again");
+    assert_eq!(e.lost_wakes().unwrap(), Vec::new());
+    e.put_blobs(cp.blobs.clone()).unwrap();
+    assert_eq!(e.get_typed(&u, &BIG).unwrap(), Some(Value::Map(map)));
+    assert!(e.pending().is_empty(), "{:?}", e.pending());
+}
+
 // spec/commits.md §4 (Pending storage): the waiting part is kept only while a carrier is; with
 // its last carrier gone it counts as never received, and a copy brings it again.
 #[test]

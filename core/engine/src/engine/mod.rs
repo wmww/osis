@@ -1091,6 +1091,8 @@ pub(crate) struct CoreMark {
     records: u64,
     /// `reach_log`'s length.
     reached: usize,
+    /// `walks`' log length (`Walks::forget_since`).
+    walked: usize,
 }
 
 /// A held compaction snapshot of an aspect: `ts`, ID, frontiers, `Absorbed` (commit, author),
@@ -1510,7 +1512,7 @@ pub struct Core {
     /// Pending commits known to be memory commits, which `reexamine` leaves to node-sync (a
     /// cache of what their stored copies say; pruned to the pending set at each reexamine).
     pub memory_waits: BTreeSet<CommitId>,
-    /// Walks of what waiting commits link, kept for node-sync (`Engine::blob_wants`).
+    /// The blob waits: kept walks of what waiting commits lack, indexed by blob (`reach::Walks`).
     pub(crate) walks: crate::apply::reach::Walks,
     /// `Engine::owned_sync_ids` per thing (`memo`).
     pub(crate) sync_ids: memo::Memo<Tid, Arc<Vec<crate::sync::OwnedSyncId>>>,
@@ -1989,6 +1991,7 @@ impl Core {
         self.waits.retake_committed();
         self.written.clear();
         self.reach_log.clear();
+        self.walks.committed();
         self.dirty = false;
     }
 
@@ -2024,6 +2027,7 @@ impl Core {
             dirty: self.dirty,
             records: self.store_rows.get(),
             reached: self.reach_log.len(),
+            walked: self.walks.mark(),
         }
     }
 
@@ -2140,8 +2144,8 @@ impl Core {
             // placement again, one more relist)
             fallen: _,
             // a call's parameter (`memory_room`) and caches true of the store whatever a
-            // rollback undoes (`memory_waits`: a pending row's class never changes; `walks`
-            // checks what is held as it goes on)
+            // rollback undoes (`memory_waits`: a pending row's class never changes); `walks`
+            // drops what a failed step or transaction touched (`Walks::forget_since`)
             memory_room: _,
             memory_waits: _,
             walks: _,
@@ -2983,6 +2987,7 @@ impl Tx<'_> {
                 self.txn.rollback_to(sp);
                 self.blobs.rollback_to(held);
                 self.core.forget_reach_since(m.reached);
+                self.core.walks.forget_since(m.walked);
                 self.core.rollback_to(m);
                 Err(e)
             }
@@ -4162,6 +4167,8 @@ impl Engine {
         // debug builds: whether the transaction was durable (`flows::vouches::missed` after it)
         #[cfg(debug_assertions)]
         let mut durable = false;
+        // the blobs it held, once committed
+        let mut newly_held: Vec<BlobId> = Vec::new();
         let r = match self.store.transaction(&mut self.store_rng) {
             Ok(txn) => {
                 let mut tx = Tx { txn, blobs: blobs::Cipher::new(&*self.blobs, &self.blob_stamps, self.blob_seq), core: &mut self.core, rng: &mut *self.rng, bound: None };
@@ -4311,6 +4318,8 @@ impl Engine {
                     r = r.and_then(|v| crate::apply::carriers::settle(&mut tx).map(|_| v));
                 }
                 tx.core.carriers_due.clear();
+                // the blob waits of what pends no more go (`apply::reach::settle`)
+                crate::apply::reach::settle(tx.core);
                 // every state written above stored in its form (`Tx::settle_states`)
                 if r.is_ok() {
                     r = r.and_then(|v| tx.settle_placements().and_then(|()| tx.settle_states()).map(|_| v));
@@ -4334,6 +4343,7 @@ impl Engine {
                 match persisted {
                     Ok(v) => {
                         let Tx { mut txn, mut blobs, .. } = tx;
+                        let held: Vec<BlobId> = blobs.newly_held().copied().collect();
                         let _s = osis_base::costs::span("tx: store commit");
                         // add before, remove after: the ciphertext store's holds commit first,
                         // the engine's store records this transaction's sequence with its own
@@ -4352,6 +4362,7 @@ impl Engine {
                                 if noted {
                                     self.blob_seq += 1;
                                 }
+                                newly_held = held;
                                 // a failure leaves the note: the next settle finishes it
                                 self.blobs_unsettled |= blobs.after().is_err();
                                 Ok(v)
@@ -4373,6 +4384,10 @@ impl Engine {
                     self.core.timelines.aside().saved(d);
                 }
                 self.core.commit_journal();
+                // the blob waits wanting what it held are due (`apply::reach::Walks`)
+                for b in &newly_held {
+                    self.core.walks.held(b);
+                }
                 self.core.memory_tx = false;
                 self.core.events.flush();
                 // what the transaction moved may end a setting wait or start one again
@@ -4397,12 +4412,18 @@ impl Engine {
                 #[cfg(debug_assertions)]
                 if durable && !self.loading {
                     self.check_vouches_missed("after a transaction");
+                    // no blob wait wants a blob held here unnoted (a lost wake)
+                    if self.core.walks.any() {
+                        let r = self.check_walks(false);
+                        assert!(matches!(r, Ok(()) | Err(Error::Store(_))), "blob waits after a transaction: {:?}", r.err());
+                    }
                 }
                 Ok(v)
             }
             Err(e) => {
                 self.core.walks_done = None;
                 self.core.forget_reach_since(start.reached);
+                self.core.walks.forget_since(start.walked);
                 self.core.rollback_to(start);
                 #[cfg(debug_assertions)]
                 {
@@ -4673,6 +4694,8 @@ impl Drop for Engine {
         assert!(matches!(r, Ok(()) | Err(Error::Store(_))), "end of history: {:?}", r.err());
         if r.is_ok() {
             self.check_vouches_missed("end of history");
+            let r = self.check_walks(true);
+            assert!(matches!(r, Ok(()) | Err(Error::Store(_))), "blob waits at the end of history: {:?}", r.err());
         }
     }
 }

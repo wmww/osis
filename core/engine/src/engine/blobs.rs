@@ -145,6 +145,11 @@ impl<'a> Cipher<'a> {
         self.failed |= r.is_err();
     }
 
+    /// The blobs this transaction newly held.
+    pub fn newly_held(&self) -> impl Iterator<Item = &BlobId> {
+        self.held.iter().map(|(b, _)| b)
+    }
+
     /// Whether this transaction held, released or forgot anything (`Engine::read`'s check).
     pub fn changed(&self) -> bool {
         !self.held.is_empty() || !self.journal.is_empty() || !self.forgot.is_empty()
@@ -295,7 +300,7 @@ impl crate::engine::Engine {
         }
         if !self.run(|tx| tx.store_blobs(blobs))?.is_empty() {
             self.blobs_stored();
-            // what waited for them (`apply::Wake::Blobs`)
+            // what waited for them (`apply::reach::Walks`)
             self.reexamine()?;
         }
         Ok(())
@@ -318,7 +323,6 @@ impl crate::engine::Engine {
     /// noted missing was re-delivered.
     pub fn blobs_stored(&mut self) {
         self.core.missed.clear();
-        self.core.waits.blobs_due = true;
     }
 
     /// A read of `tid`'s `ak` (its state, or with `entry` that commit's part) found a
@@ -344,6 +348,9 @@ impl crate::engine::Tx<'_> {
         let memory = self.txn.is_memory();
         for (id, b) in blobs {
             if osis_blob::blob_id(&b) == id && self.blobs.hold(&id, b, memory)? {
+                // the blob waits wanting it, taken on when their commit is next judged, in
+                // this transaction too (`apply::reach::take_on`)
+                self.core.walks.held(&id);
                 stored.push(id);
             }
         }

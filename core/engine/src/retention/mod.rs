@@ -1305,7 +1305,9 @@ impl Engine {
         let drift = crate::apply::next_at(core);
         // a failed write's reload (`Engine::reload_owed`): the tick's transaction runs it
         let reload = self.reload_owed().then(|| self.now().0);
-        Ok(part.into_iter().chain(aspect).chain(live).chain(fallen).chain(drift).chain(reload).min())
+        // blob waits a round takes on (`apply::reach::Walks::due`)
+        let walks = core.walks.due().then(|| self.now().0);
+        Ok(part.into_iter().chain(aspect).chain(live).chain(fallen).chain(drift).chain(reload).chain(walks).min())
     }
 
     /// Whether held commit `c` is an own replace of `(tid, ak)` (`snapshot::covered`).

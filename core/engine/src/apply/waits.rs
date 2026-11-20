@@ -23,8 +23,6 @@ pub enum Wake {
     Moved,
     /// The wall clock reaching this time (a `ts` ahead, `Reason::Drift`).
     At(u64),
-    /// A blob stored (a page, a header list's tree: `Reason::WaitBlobs`).
-    Blobs,
     /// An epoch an account's chain came to hold (the rotation minting it held with its chain, a
     /// merge's tips and a certificate: `Reason::Epoch`). Holding the rotation alone opens nothing:
     /// its key is known once the chain holds its epoch.
@@ -46,7 +44,8 @@ pub(crate) fn wakes_of(core: &Core, id: &CommitId, r: &Reason, h: Option<&osis_c
             Some(h) => vec![Wake::At(h.ts.wall_ms().0.saturating_sub(osis_base::format::MAX_DRIFT_MS))],
             None => vec![Wake::Moved],
         },
-        Reason::WaitBlobs => vec![Wake::Blobs],
+        // keyed by the blobs its walks lack (`reach::Walks`)
+        Reason::WaitBlobs => Vec::new(),
         Reason::Epoch(e) => vec![Wake::Epoch(*e), Wake::Moved],
     };
     // every record a part of it awaits (`parts_await`), whatever its first reason: any arriving
@@ -79,6 +78,11 @@ pub(crate) fn wakes_of(core: &Core, id: &CommitId, r: &Reason, h: Option<&osis_c
 /// door to `Indexes::pending`, so `pend_on` follows it in every transaction and rollback.
 pub(crate) fn set_pending(core: &mut Core, id: &CommitId, r: Option<(Reason, Option<&osis_commit::Header>)>) {
     let wakes = r.as_ref().map(|(r, h)| wakes_of(core, id, r, *h)).unwrap_or_default();
+    // pending no more: the blob waits of its pending copy go at the transaction's end, unless
+    // it pends again in it (`reach::settle`)
+    if r.is_none() {
+        core.walks.unpended(id);
+    }
     if core.ix.pend_keys.get(id).map(|w| w.as_slice()) != Some(wakes.as_slice()) {
         for w in core.ix.pend_keys.get(id).cloned().unwrap_or_default().iter() {
             core.ix.pend_on.remove(w, id);
@@ -339,8 +343,6 @@ pub(crate) struct Waits {
     pub unpended: osis_base::memo::Stamps,
     /// The next `reexamine` wakes `Wake::Open` (an open loaded the pending commits).
     pub open_due: bool,
-    /// A blob was stored since the last `wake`: `Wake::Blobs` is due.
-    pub blobs_due: bool,
     /// Things whose value-less lists or purge requests moved since the last `wake`: `Wake::Thing`.
     pub lists_moved: BTreeSet<Tid>,
     /// Epochs an account's chain came to hold since the last `wake` (`account::refresh_epochs`):
@@ -526,9 +528,6 @@ pub(crate) fn wake(core: &mut Core) -> BTreeSet<CommitId> {
     let mut keys: Vec<Wake> = records.iter().map(|t| Wake::Record(*t)).collect();
     if !moved.is_empty() || !records.is_empty() {
         keys.push(Wake::Moved);
-    }
-    if std::mem::take(&mut core.waits.blobs_due) {
-        keys.push(Wake::Blobs);
     }
     if std::mem::take(&mut core.waits.open_due) {
         keys.push(Wake::Open);

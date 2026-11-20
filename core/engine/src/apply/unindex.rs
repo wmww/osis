@@ -48,6 +48,8 @@ fn unindex(tx: &mut Tx<'_>, id: &CommitId, marks: bool) -> Result<()> {
         crate::sync::bodies::forget(tx, id)?;
     }
     tx.core.redeliver.remove(id);
+    // its blob waits (an applied memory commit's trees)
+    tx.core.walks.drop_all(id);
     // a fire carries nothing once forgotten (spec/commits.md §4 Pending storage)
     super::carriers::fire_gone(tx, id)?;
     // a memory commit's held parts go with it: what they link joins the freed sets

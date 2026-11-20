@@ -1903,34 +1903,333 @@ fn deepest_nested_pages_sync_through_the_fetch_walk_spec_wire_6() {
     assert_eq!(w.lp.peers[3].engine.get(&t, &a).unwrap(), Some(nested(d)));
 }
 
-/// issues/blob-wait-examined-per-wake.md: pages read while a paged commit fills, its pages given
-/// all at once each round or one at a time (a server trickling them). Fails today: one at a time
-/// the commit is examined, each examine decoding the pages held, at every page stored.
+/// How node 3 is given the blobs of the commits it waits for.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Deliver {
+    /// Every blob its walks want, a round at a time.
+    Rounds,
+    /// One wanted blob per delivery (a server trickling them).
+    One,
+    /// Every blob of the package one per delivery, last first.
+    Reverse,
+    /// Every blob of the package one per delivery, first first (leaves before the link pages above).
+    Forward,
+    /// One wanted blob of the first commit, then one of the second, then one blob nobody wants.
+    Interleaved,
+}
+
+/// A paged map of `n` entries, generation `g`, written by node 0 on aspect `a`, as a package.
+fn paged_package(w: &mut World, a: &Ak, n: u64, g: u64) -> Package {
+    let t = w.t;
+    let mut m = Mutation::new();
+    m.set(t, a, &Value::Map((0..n).map(|i| (Value::Int(i as i64), s(i, g))).collect())).unwrap();
+    let c = w.lp.peers[0].commit(m).unwrap().unwrap();
+    w.lp.peers[0].engine.package(&c).unwrap().unwrap()
+}
+
+/// What node 3 did to fill paged commits of `n` entries given as `how`: (blobs delivered, pages
+/// the decoders read, blobs the walks opened, examinations, signature checks).
+fn fill_costs(n: u64, how: Deliver) -> (usize, u64, u64, u64, u64) {
+    let params = small_pages();
+    let _pages = osis_crdt::PageParams::set_test(Some(params));
+    let [_, mix, set, _] = aks();
+    let mut w = world_under(params);
+    let mut pks = vec![paged_package(&mut w, &mix, n, 0)];
+    if how == Deliver::Interleaved {
+        pks.push(paged_package(&mut w, &set, n, 1));
+    }
+    // a commit node 3 never sees: its blobs are wanted by nothing there
+    let other = paged_package(&mut w, &mix, n, 2);
+    let held: BTreeMap<osis_base::BlobId, Vec<u8>> = pks.iter().flat_map(|p| p.blobs.iter().cloned()).collect();
+    let e = &mut w.lp.peers[3].engine;
+    for pk in &pks {
+        e.ingest(&pk.bytes, Vec::new()).unwrap();
+    }
+    osis_base::costs::take();
+    let mut given = 0;
+    let put = |e: &mut crate::Engine, given: &mut usize, b: Vec<(osis_base::BlobId, Vec<u8>)>| {
+        *given += b.len();
+        e.put_blobs(b).unwrap();
+    };
+    match how {
+        Deliver::Rounds | Deliver::One | Deliver::Interleaved => {
+            let mut unrelated = other.blobs.iter();
+            for round in 0.. {
+                assert!(round < 50_000, "rounds bounded");
+                let wants = e.blob_wants().unwrap();
+                let mut give: Vec<_> = wants.missing.iter().filter_map(|b| held.get(b).map(|x| (*b, x.clone()))).collect();
+                if give.is_empty() {
+                    break;
+                }
+                match how {
+                    Deliver::Rounds => put(e, &mut given, give),
+                    Deliver::One => put(e, &mut given, vec![give.swap_remove(0)]),
+                    _ => {
+                        // one of each commit's wants, then an unrelated blob
+                        for pk in &pks {
+                            if let Some(b) = give.iter().position(|(b, _)| pk.blobs.iter().any(|x| x.0 == *b)) {
+                                put(e, &mut given, vec![give.swap_remove(b)]);
+                            }
+                        }
+                        if let Some(b) = unrelated.next() {
+                            put(e, &mut given, vec![b.clone()]);
+                        }
+                    }
+                }
+            }
+        }
+        Deliver::Reverse => pks[0].blobs.iter().rev().for_each(|b| put(e, &mut given, vec![b.clone()])),
+        Deliver::Forward => pks[0].blobs.iter().for_each(|b| put(e, &mut given, vec![b.clone()])),
+    }
+    let costs = osis_base::costs::take();
+    let get = |k: &str| costs.iter().find(|c| c.0 == k).map_or(0, |c| c.2);
+    for pk in &pks {
+        assert!(!e.pending().iter().any(|x| x.0 == pk.id), "{how:?}: applied, not left waiting");
+    }
+    let t = w.t;
+    let want = Value::Map((0..n).map(|i| (Value::Int(i as i64), s(i, 0))).collect());
+    assert_eq!(w.lp.peers[3].engine.get(&t, &mix).unwrap(), Some(want), "{how:?}: node 3 reads the map");
+    (given, get("pages read"), get("reach: blobs opened"), get("examine"), get("examine: signature"))
+}
+
+/// notes/sync-facade.md (Blob waits), spec/commits.md §4: filling a paged commit costs each
+/// page it delivers a bounded number of reads, whatever the batching a server picks: given a
+/// round at a time, one page per delivery (a server trickling them), every blob last first or
+/// first first, and interleaved with the pages of another waiting commit and with blobs nothing
+/// waits for. At n and 10n entries: pages read by the decoders and blobs opened by the walks
+/// within a constant per page delivered, and the commit examined (decoded, its signature
+/// checked) once, not once per page. Fails with every waiting commit
+/// examined at each blob stored (quadratic one page at a time).
 #[test]
-#[ignore = "issues/blob-wait-examined-per-wake.md"]
 fn a_trickled_fill_reads_each_page_a_bounded_number_of_times_spec_commits_4() {
+    let mut out = Vec::new();
+    for how in [Deliver::Rounds, Deliver::One, Deliver::Reverse, Deliver::Forward, Deliver::Interleaved] {
+        for n in [60u64, 600] {
+            let (given, read, opened, examines, sigs) = fill_costs(n, how);
+            out.push((how, n, given, read, opened, examines, sigs));
+        }
+    }
+    eprintln!("(delivery, entries, blobs given, pages read, walk opens, examines, signature checks): {out:#?}");
+    // per page: one walk step (and the compaction trigger's weighing after), two reads (the
+    // checked decode once it lacks nothing, the streamed apply); per commit one examination
+    for (how, n, given, read, opened, examines, sigs) in &out {
+        let (given, commits) = (*given as u64, if *how == Deliver::Interleaved { 2 } else { 1 });
+        assert!(*read <= 2 * given && *opened <= 2 * given, "{how:?} {n}: reads per blob delivered bounded: {out:?}");
+        assert!(*examines <= commits && *sigs <= commits, "{how:?} {n}: examined once: {out:?}");
+    }
+}
+
+/// spec/commits.md §4, notes/sync-facade.md (Blob waits): a blob arriving costs only the
+/// waits that want it. With 1 and 10 commits waiting on node 3 for disjoint pages: a blob
+/// nothing waits for opens nothing, takes no walk on and examines nothing; a page one of them
+/// wants takes exactly that one's walk on (examining nothing while it still lacks pages). Fails
+/// with every waiting commit examined at each blob stored.
+#[test]
+fn a_blob_costs_only_the_waits_that_want_it_spec_commits_4() {
+    let params = small_pages();
+    let _pages = osis_crdt::PageParams::set_test(Some(params));
+    let [_, mix, _, _] = aks();
+    for k in [1u64, 10] {
+        let mut w = world_under(params);
+        let pks: Vec<Package> = (0..k).map(|g| paged_package(&mut w, &mix, 60, g)).collect();
+        let other = paged_package(&mut w, &mix, 60, 99);
+        let e = &mut w.lp.peers[3].engine;
+        for pk in &pks {
+            e.ingest(&pk.bytes, Vec::new()).unwrap();
+        }
+        assert_eq!(e.pending().len(), k as usize, "{k}: each waits for its pages");
+        let wants = e.blob_wants().unwrap().missing;
+        let examined = e.examined();
+        osis_base::costs::take();
+        // a blob nothing here waits for (a peer's, a page of a commit not held)
+        e.put_blobs(vec![other.blobs[0].clone()]).unwrap();
+        let costs = osis_base::costs::take();
+        let get = |costs: &[(&str, std::time::Duration, u64)], k: &str| costs.iter().find(|c| c.0 == k).map_or(0, |c| c.2);
+        assert_eq!((e.examined() - examined, get(&costs, "reach: walks advanced"), get(&costs, "reach: blobs opened"), get(&costs, "pages read")), (0, 0, 0, 0), "{k}: an unrelated blob costs nothing");
+        // a page the last commit wants: its walk alone is taken on
+        let last = pks.last().unwrap();
+        let b = last.blobs.iter().find(|(b, _)| wants.contains(b)).unwrap().clone();
+        e.put_blobs(vec![b]).unwrap();
+        let costs = osis_base::costs::take();
+        assert_eq!(get(&costs, "reach: walks advanced"), 1, "{k}: one walk taken on");
+        assert_eq!(e.examined() - examined, 0, "{k}: nothing examined while it lacks pages");
+        assert_eq!(get(&costs, "pages read"), 0, "{k}: nothing decoded");
+    }
+}
+
+/// spec/commits.md §4: two waiting commits linking the same pages (a forger reusing another
+/// commit's links) are both woken by each page, each walk placing it once; both apply. The
+/// same page delivered twice brings nothing the second time.
+#[test]
+fn commits_sharing_pages_are_each_woken_once_per_page_spec_commits_4() {
     let params = small_pages();
     let _pages = osis_crdt::PageParams::set_test(Some(params));
     let a = aks()[1].clone();
-    let mut out = Vec::new();
-    for n in [100u64, 400] {
-        for one in [false, true] {
+    let mut w = world_under(params);
+    let map = |n: u64| Value::Map((0..n).map(|i| (Value::Int(i as i64), s(i, 0))).collect());
+    let forge = |w: &mut World, reroot: Option<Reroot<'_>>, ms: u64| {
+        w.lp.advance(ms);
+        let now = osis_base::Ts::make(w.lp.peers[0].engine.now(), 0).unwrap();
+        let mut wr = osis_crdt::Writer::new(now, made_up(0x80), 1 << 40);
+        let f = osis_crdt::create(&mut wr, &osis_crdt::AnyView, &map(60)).unwrap();
+        forge_snapshot_in(w, 0, &a, now, f, &|_, _| {}, false, reroot)
+    };
+    let first = forge(&mut w, None, 1);
+    let delta = &osis_commit::CommitBlob::decode(&first.bytes).unwrap().parts[0].delta;
+    let mut top = Vec::new();
+    osis_base::visit_link_sites(delta, &osis_base::Limits::DEFAULT, &mut |s| {
+        if let (osis_base::LinkSite::List { links, .. }, true) = (s, top.is_empty()) {
+            top = links;
+        }
+    })
+    .unwrap();
+    let same: Reroot<'_> = &|_, _| top.clone();
+    let second = forge(&mut w, Some(same), 1_000);
+    assert_ne!(first.id, second.id);
+    let held: BTreeMap<osis_base::BlobId, Vec<u8>> = first.blobs.iter().cloned().collect();
+    let e = &mut w.lp.peers[3].engine;
+    e.ingest(&first.bytes, Vec::new()).unwrap();
+    e.ingest(&second.bytes, Vec::new()).unwrap();
+    assert_eq!(e.pending().len(), 2);
+    osis_base::costs::take();
+    let mut given = 0u64;
+    loop {
+        let wants = e.blob_wants().unwrap().missing;
+        let Some(b) = wants.iter().find_map(|b| held.get(b).map(|x| (*b, x.clone()))) else { break };
+        given += 1;
+        e.put_blobs(vec![b.clone()]).unwrap();
+        // again: held already, nothing new
+        e.put_blobs(vec![b]).unwrap();
+    }
+    let costs = osis_base::costs::take();
+    let get = |k: &str| costs.iter().find(|c| c.0 == k).map_or(0, |c| c.2);
+    assert!(e.pending().is_empty(), "both applied: {:?}", e.pending());
+    assert_eq!(given, first.blobs.len() as u64);
+    assert_eq!(get("reach: walks advanced"), 2 * given, "each page wakes both, once");
+    assert_eq!(get("reach: blobs opened"), 2 * given, "each walk places each page once");
+    assert_eq!(get("examine"), 2, "each examined once, when it lacks nothing");
+}
+
+/// spec/wire.md §6 (page by page), notes/decode-bounds.md (Link trees): a page that makes its
+/// tree refusable refuses the commit's part as soon as it is held, delivered one page at a time:
+/// arriving first (held before the link page naming it), while a sibling page stays missing for
+/// good, or trickled as the walk asks; the commit examined at most twice. The shape: an honest root list's first
+/// link, then a link page whose first link is a one-link page (off its level's end).
+#[test]
+fn a_refusing_page_refuses_as_it_is_held_spec_wire_6() {
+    let a = aks()[0].clone();
+    let roomy = osis_crdt::PageParams { target: 1000, ..small_pages() };
+    let _roomy = osis_crdt::PageParams::set_test(Some(roomy));
+    let map = |n: u64| Value::Map((0..n).map(|i| (Value::Int(i as i64), s(i, 0))).collect());
+    // (the one-link page `y`, its link page `l`, the honest root's first link `top0`)
+    let ids: std::cell::RefCell<Vec<osis_base::BlobId>> = Default::default();
+    let level2: Reroot<'_> = &|put, top| {
+        let (y, z) = (put(&top[1..2]), put(&top[2..]));
+        let l = put(&[y, z]);
+        *ids.borrow_mut() = vec![y.blob, l.blob, top[0].blob];
+        vec![top[0], l]
+    };
+    for order in ["first", "trickled", "sibling missing"] {
+        let mut w = world_under(roomy);
+        let t = w.t;
+        let now = osis_base::Ts::make(w.lp.peers[0].engine.now(), 0).unwrap();
+        let mut wr = osis_crdt::Writer::new(now, made_up(0x80), 1 << 40);
+        let f = osis_crdt::create(&mut wr, &osis_crdt::AnyView, &map(300)).unwrap();
+        let pk = forge_snapshot_in(&mut w, 0, &a, now, f, &|_, _| {}, false, Some(level2));
+        let [y, l, top0] = ids.borrow().clone().try_into().unwrap();
+        let held: BTreeMap<osis_base::BlobId, Vec<u8>> = pk.blobs.iter().cloned().collect();
+        let e = &mut w.lp.peers[3].engine;
+        e.ingest(&pk.bytes, Vec::new()).unwrap();
+        let waits = |e: &crate::Engine| e.core.ix.pending.contains_key(&pk.id);
+        assert!(waits(e), "{order}: waits for its pages");
+        osis_base::costs::take();
+        let put = |e: &mut crate::Engine, b: &osis_base::BlobId| e.put_blobs(vec![(*b, held[b].clone())]);
+        match order {
+            "first" => {
+                put(e, &y).unwrap();
+                assert!(waits(e), "{order}: not wanted yet");
+                put(e, &l).unwrap();
+            }
+            "trickled" => loop {
+                let wants = e.blob_wants().unwrap().missing;
+                let Some(b) = wants.iter().find(|b| held.contains_key(b)).copied() else { break };
+                put(e, &b).unwrap();
+            },
+            _ => {
+                put(e, &l).unwrap();
+                assert!(waits(e) && e.wants_blob(&top0), "{order}: its sibling wanted");
+                put(e, &y).unwrap();
+            }
+        }
+        assert!(!waits(e), "{order}: refused");
+        let costs = osis_base::costs::take();
+        let examines = costs.iter().find(|c| c.0 == "examine").map_or(0, |c| c.2);
+        assert!(examines <= 2, "{order}: examined {examines} times");
+        assert_eq!(e.get(&t, &a).unwrap(), None, "{order}: nothing applied");
+    }
+}
+
+/// spec/commits.md §4 (Examined again), every path
+/// a blob wait goes through: a page held in a transaction that fails at each store write in
+/// turn, in a waking round that fails, and a reload midway (the walks derived again from what is
+/// held): the fill goes on, one page at a time as node-sync would ask, and the commit applies.
+/// Fails with a blob wait lost when its walk goes (nothing names the pages again).
+#[test]
+fn a_fill_goes_on_past_failed_writes_rounds_and_reloads_spec_commits_4() {
+    let params = small_pages();
+    let _pages = osis_crdt::PageParams::set_test(Some(params));
+    let [_, mix, _, _] = aks();
+    let want = Value::Map((0..60).map(|i| (Value::Int(i), s(i as u64, 0))).collect());
+    // what the walks ask for, one blob at a time, `n` of them (all with `None`)
+    let fill = |e: &mut crate::Engine, held: &BTreeMap<osis_base::BlobId, Vec<u8>>, n: Option<usize>| {
+        for _ in 0..n.unwrap_or(usize::MAX) {
+            let wants = e.blob_wants().unwrap().missing;
+            let Some(b) = wants.iter().find_map(|b| held.get(b).map(|x| (*b, x.clone()))) else { break };
+            e.put_blobs(vec![b]).unwrap();
+        }
+    };
+    for case in ["failed write", "failed round", "reload"] {
+        for n in 0.. {
             let mut w = world_under(params);
             let t = w.t;
-            let mut m = Mutation::new();
-            m.set(t, &a, &Value::Map((0..n).map(|i| (Value::Int(i as i64), s(i, 0))).collect())).unwrap();
-            let c = w.lp.peers[0].commit(m).unwrap().unwrap();
-            let pk = w.lp.peers[0].engine.package(&c).unwrap().unwrap();
-            osis_base::costs::take();
-            let (rounds, waits) = walk_fill(&mut w, &pk, one);
-            let costs = osis_base::costs::take();
-            let get = |k: &str| costs.iter().find(|c| c.0 == k).map_or(0, |c| c.2);
-            assert!(!waits);
-            out.push((n, one, pk.blobs.len(), rounds, get("examine"), get("pages read")));
+            let pk = paged_package(&mut w, &mix, 60, 0);
+            let held: BTreeMap<osis_base::BlobId, Vec<u8>> = pk.blobs.iter().cloned().collect();
+            let p = &mut w.lp.peers[3];
+            p.engine.ingest(&pk.bytes, Vec::new()).unwrap();
+            fill(&mut p.engine, &held, Some(10));
+            assert!(p.engine.pending().iter().any(|x| x.0 == pk.id), "{case}: waits midway");
+            let b = p.engine.blob_wants().unwrap().missing.into_iter().find(|b| held.contains_key(b)).unwrap();
+            match case {
+                "failed write" => {
+                    p.backend.faults().at(n, osis_store::Fault::Fail);
+                    let r = p.engine.put_blobs(vec![(b, held[&b].clone())]);
+                    if p.backend.faults().writes() <= n {
+                        r.unwrap();
+                        break;
+                    }
+                    assert!(r.is_err(), "{case} {n}");
+                    p.backend.faults().revive();
+                }
+                "failed round" => {
+                    p.engine.fail_round = true;
+                    assert!(p.engine.put_blobs(vec![(b, held[&b].clone())]).is_err(), "{case}: the round failed");
+                    p.tick().unwrap();
+                }
+                _ => {
+                    osis_base::costs::take();
+                    p.engine.reload().unwrap();
+                    p.tick().unwrap();
+                    let costs = osis_base::costs::take();
+                    let get = |k: &str| costs.iter().find(|c| c.0 == k).map_or(0, |c| c.2);
+                    assert!(get("examine") <= 1 && get("reach: blobs opened") <= held.len() as u64, "{case}: one examination, one pass over the pages held: {costs:?}");
+                }
+            }
+            fill(&mut p.engine, &held, None);
+            assert!(p.engine.pending().is_empty(), "{case} {n}: applied, not left waiting: {:?}", p.engine.pending());
+            assert_eq!(p.engine.get(&t, &mix).unwrap(), Some(want.clone()), "{case} {n}");
+            if case != "failed write" {
+                break;
+            }
         }
-    }
-    eprintln!("(entries, one at a time, blobs, rounds, examines, pages read): {out:?}");
-    for (_, _, blobs, _, _, read) in &out {
-        assert!(*read <= 8 * *blobs as u64, "pages read per page delivered bounded: {out:?}");
     }
 }
