@@ -28,7 +28,7 @@ Each a question about the model, with what a user would observe.
 ## The map
 | draft section | replaces | oracle (held-model `evidence`, `Stage::A3`, `Rule::listed`) | status |
 |---|---|---|---|
-| permissions §5.1 Frontier: root (role entries) and per-thing leaves, an entry naming its part on its leaf's thing alone | A1's §5.1 Frontier (one list over every thing) and its bound | `Lists::Travels`, `leaves_of`, `World::own_leaf` (finding 24); P1, P7; `f4_*`, `f6_*`, `gaps_a_list_entry_names_*` | SETTLED (bytes OPEN 1; role entries OPEN 3; bound OPEN 10) |
+| permissions §5.1 Frontier: root (role entries) and per-thing leaves, an entry naming its part on its leaf's thing alone | A1's §5.1 Frontier (one list over every thing) and its bound | `Lists::Travels`, `leaves_of`, roles-model `World::in_leaves` (finding 24); P1, P7; `f4_*`, `f6_*`, `gaps_a_list_entry_names_*` | SETTLED (bytes OPEN 1; role entries OPEN 3; bound OPEN 10) |
 | permissions §5.1 Reading a list: read only where the lowering cuts the part; listed / not listed / nothing listed | (new) | `LeafKeep::Cuts`, `World::cuts_write`, `pend_leaf`; P1, P7; `f27_*`, the large property from start 0 | SETTLED for content needing write; admin-only content OPEN 7 (finding 35) |
 | permissions §5.1 The list, per form | A1's The list | roles-model `paths` `Rules::stands` (role entries only decide) | SETTLED |
 | permissions §5.1 A remover that does not hold a thing | (new; account-membership §4 without the hear-out) | `family` (`listed` false: X lists nothing), addendum and vouch shapes | SETTLED (role writes: vouch or remake, OPEN 9) |
