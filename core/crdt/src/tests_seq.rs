@@ -1401,7 +1401,7 @@ fn a_join_splitting_a_range_record_supersedes_at_its_reach_what_it_does_whole_sp
                     for how in 0..3 {
                         let (before, y) = (wrap(how, before.clone()), wrap(how, y.clone()));
                         let after = joined(&before, &y);
-                        crate::tests_model::reach_holds_the_change(&before, &after, &y);
+                        crate::tests_model::reach_holds_the_change(&before, &after, &y, true);
                     }
                 }
             }
@@ -1465,7 +1465,7 @@ fn a_move_below_its_creation_dies_at_the_creation_though_a_delete_beats_it_spec_
     held.note(&at.held_writes(), |_, _| ());
     held.note(&y.held_writes(), |_, _| ());
     assert_eq!(held.first_superseding(w, |s, _| Some(s.ts)), Some(ts(10 << 16)), "dated by the creation");
-    crate::tests_model::reach_holds_the_change(&state, &after, &y);
+    crate::tests_model::reach_holds_the_change(&state, &after, &y, true);
 }
 
 /// The writes a join of `y` into `state` kills, each with its date read as `Killed::note` reads
@@ -1475,7 +1475,7 @@ fn deaths_dated(state: &Fragment, y: &Fragment) -> Vec<(crate::winners::Kind, Op
     let mut before = at.winners();
     before.extend(y.winners());
     let after = joined(state, y);
-    crate::tests_model::reach_holds_the_change(state, &after, y);
+    crate::tests_model::reach_holds_the_change(state, &after, y, true);
     let mut held = crate::winners::ByWrite::<()>::default();
     let at_after = after.reach_after(y, &at);
     held.note(&at.held_writes(), |_, _| ());

@@ -9,6 +9,8 @@ What happens:
 
 Tests: `LocalPeer::receive_with` panics on `Error::Corrupt`, so engine tests and the simulator fail at the receive that trips one.
 
+Known reachable from forged input: issues/forged-copy-death-corrupt.md.
+
 Open: a commit whose examination errs locally could stay pending, marked, out of the round (examined again after an upgrade or restart), so the rest applies and the node keeps serving, the error reported as a node status rather than a failed step. Which engine `Corrupt` sites can a forged commit reach (each should be `BadInput`)?
 
 Also owed (notes/sync-facade.md Pending): one small world per wait reason and waking event asserting `lost_wakes` empty; a box the reading-only budget refused, freed by room alone, has no wake until the next arrival or tick.
