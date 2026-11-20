@@ -1439,3 +1439,31 @@ fn each_element_of_a_split_range_record_dies_at_its_own_delete_spec_commits_5() 
         st = after;
     }
 }
+
+/// spec/crdt.md §4.8 When, spec/commits.md §5: a move stamped below its element's creation (a
+/// writer's clock behind) held alone wins; a snapshot carrying the creation and a later delete
+/// kills it, the creation superseding it though it wins nowhere (the delete beats it). Its death
+/// is dated by the creation, the earliest write held that supersedes it, never by the delete.
+#[test]
+fn a_move_below_its_creation_dies_at_the_creation_though_a_delete_beats_it_spec_4_8() {
+    let d = Dot::new(node(1), 1);
+    let mv = SeqElem { pos: vec![(st(5, 2, 1), Anchor::Head, None)], ..SeqElem::bare() };
+    let state = one(d.clone(), mv);
+    let y = one(d.clone(), SeqElem { deleted: Some((st(20, 3, 1), true)), ..char_at(d.clone(), 10, Anchor::Head, 'a') });
+    let at = state.reach(&y);
+    let mut before = at.winners();
+    before.extend(y.winners());
+    let after = joined(&state, &y);
+    let dead = before.minus(&after.reach_after(&y, &at).winners());
+    assert_eq!(dead.iter().map(|w| w.kind).collect::<Vec<_>>(), vec![crate::winners::Kind::Pos], "the move dies");
+    let w = dead.first().unwrap();
+    let mut winning = crate::winners::ByWrite::<()>::default();
+    winning.note(&before, |_, _| ());
+    winning.note(&after.winners(), |_, _| ());
+    assert_eq!(winning.first_superseding(w, |s, _| Some(s.ts)), None, "no winning write supersedes it");
+    let mut held = crate::winners::ByWrite::<()>::default();
+    held.note(&at.held_writes(), |_, _| ());
+    held.note(&y.held_writes(), |_, _| ());
+    assert_eq!(held.first_superseding(w, |s, _| Some(s.ts)), Some(ts(10 << 16)), "dated by the creation");
+    crate::tests_model::reach_holds_the_change(&state, &after, &y);
+}
