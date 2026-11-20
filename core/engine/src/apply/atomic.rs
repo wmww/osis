@@ -181,7 +181,7 @@ pub(crate) fn join_into_state(tx: &mut Tx<'_>, tid: &Tid, ak: &Ak, mut delta: Fr
         d
     });
     if let (Some(dead), Some((w, d))) = (dead, before) {
-        dead.note(&w, &st, &d);
+        dead.note(&w, &st, &d)?;
     }
     let roots = roots.map(|(b, d)| (b, crate::retention::compact::roots(ak, &st, &d)));
     let secrets = secrets.and_then(|(mut read, d)| super::keys::secrets_patch(std::sync::Arc::make_mut(&mut read), &d, &st).then_some(read));

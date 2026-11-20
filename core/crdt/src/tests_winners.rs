@@ -241,7 +241,13 @@ fn winners_check(seed: u64, types: &[Ty], honest: bool) {
         assert_eq!(dead, want, "dead in a join: the winners the other side's writes supersede");
         let mut other: ByWrite<()> = ByWrite::default();
         other.note(&b.held_writes(), |_, _| ());
+        // what the engine dates a death by (`Killed::note`): the winners before and after the join
+        let mut won: ByWrite<()> = ByWrite::default();
+        for x in [&a, &b, &ab] {
+            won.note(&x.winners(), |_, _| ());
+        }
         for w in &dead {
+            assert!(won.first_superseding(w, |s, _| Some(s.ts)).is_some(), "a dead write dies by a write winning before or after the join: {w:?} in {ab:?}");
             assert!(a.holds_stamp(&w.stamp), "a dead write is the side's by exact stamp: {w:?}");
             assert!(other.first_superseding(w, |_, _| Some(w.stamp.ts)).is_some(), "a dead write dies by a write the other side holds: {w:?} in {ab:?}");
         }

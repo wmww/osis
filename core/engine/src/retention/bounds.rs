@@ -396,23 +396,23 @@ pub(crate) struct Killed {
 impl Killed {
     /// Notes the writes the join of `d` into `st` superseded: `before` (`Killed::before`) against
     /// `st` after the join, at the same records of each key (`Fragment::reach_after`: a record
-    /// the join took out of `d`'s reach is no death).
-    pub(crate) fn note(&mut self, before: &KillBefore, st: &Fragment, d: &Fragment) {
+    /// the join took out of `d`'s reach is no death). A dead write's superseder wins before the
+    /// join (`d`'s) or after it (osis-crdt `winners_from_scratch_*`); none is `Corrupt`.
+    pub(crate) fn note(&mut self, before: &KillBefore, st: &Fragment, d: &Fragment) -> Result<()> {
         let after = st.reach_after(d, &before.reach).winners();
         let dead = before.winners.minus(&after);
         if dead.is_empty() {
-            return;
+            return Ok(());
         }
         let mut by = osis_crdt::ByWrite::<()>::default();
         by.note(&before.winners, |_, _| ());
         by.note(&after, |_, _| ());
         for w in dead {
-            let first = by.first_superseding(&w, |s, _| Some(s.ts));
-            // a dead write's superseder is held: before the join (`d`'s) or after it
-            debug_assert!(first.is_some(), "a dead write nothing in its join supersedes: {w:?}");
-            self.at = self.at.max(first.or_else(|| after.iter().map(|w| w.stamp.ts).max()));
+            let first = by.first_superseding(&w, |s, _| Some(s.ts)).ok_or(Error::Corrupt("a dead write nothing in its join supersedes"))?;
+            self.at = self.at.max(Some(first));
             self.dots.insert(w.stamp.dot);
         }
+        Ok(())
     }
     /// What `note` compares with: the winners `st ⊔ d` may supersede (of `st` at `d`'s reach,
     /// and of `d`), and that reach.

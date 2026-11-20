@@ -631,6 +631,110 @@ fn rekill_dated_by_its_superseder_paged_or_whole_spec_commits_5() {
     assert_eq!(told(true), vec![true, false], "whole: node 1's fill leaves an hour after the replace");
 }
 
+/// What node 3's commit listener hears of `big` on a tick: the commits named.
+fn heard_on(w: &mut World, a: &Ak) -> std::collections::BTreeSet<CommitId> {
+    w.lp.peers[3].tick().unwrap();
+    let mut out = std::collections::BTreeSet::new();
+    for e in w.lp.peers[3].drain_events() {
+        if let crate::Event::Commits(ch) = e {
+            out.extend(ch.iter().filter(|x| x.ak == *a).map(|x| x.id));
+        }
+    }
+    out
+}
+
+/// Node 0 puts key `k` in `big`, then a second entry of `k` beside it (a concurrent put's
+/// shape); node 1, holding only the first, removes `k`: a removal of the first entry alone. Node
+/// 3 gets all three, joined in pieces or whole: the first is told leaving history an hour after
+/// the removal, the second never (it still wins, spec/commits.md §5), though the removal's join
+/// took the first entry's keyed record, and with it key `k`, out of the records it reaches
+/// (`Fragment::reach_after`).
+#[test]
+fn removal_of_one_entry_of_a_key_kills_it_alone_spec_commits_5() {
+    let key = || Value::Str("k".into());
+    for whole in [false, true] {
+        let mut w = world(whole);
+        let (t, a) = (w.t, aks()[0].clone());
+        let mut m = Mutation::new();
+        m.set(t, &a, &Value::Map(osis_base::ValueMap::from([(key(), s(0, 0))]))).unwrap();
+        let first = w.lp.peers[0].commit(m).unwrap().unwrap();
+        let pk = packages(&mut w, 0, &[first]);
+        w.lp.deliver(1, &pk[0]).unwrap();
+        let mut m = Mutation::new();
+        m.op(t, &a, PathOp { path: vec![PathSeg::Key(key())], op: Op::Put(s(0, 1)) }).unwrap();
+        let second = w.lp.peers[0].commit(m).unwrap().unwrap();
+        w.lp.advance(60_000);
+        let mut m = Mutation::new();
+        m.op(t, &a, PathOp { path: Vec::new(), op: Op::Remove(key()) }).unwrap();
+        let removal = w.lp.peers[1].commit(m).unwrap().unwrap();
+        let mut pks = packages(&mut w, 0, &[first, second]);
+        pks.extend(packages(&mut w, 1, &[removal]));
+        w.lp.peers[3].engine.listen_commits(std::sync::Arc::new(|_: &Tid| true));
+        for pk in &pks {
+            w.lp.deliver(3, pk).unwrap();
+        }
+        assert_eq!(w.lp.peers[3].engine.get(&t, &a).unwrap(), Some(Value::Map(osis_base::ValueMap::from([(key(), s(0, 1))]))), "{whole}: the second entry reads");
+        heard_on(&mut w, &a);
+        w.lp.advance(3_600_000 + 60_000);
+        let left = heard_on(&mut w, &a);
+        assert!(left.contains(&first), "{whole}: the removed entry leaves history: {left:?}");
+        assert!(!left.contains(&second), "{whole}: the entry still winning is never told leaving: {left:?}");
+    }
+}
+
+/// Node 3 holds node 0's entry; node 1 overwrites it, ten minutes later node 2, holding that,
+/// overwrites it again; node 3 gets the two overwrites in either order. The entry was replaced
+/// by node 1's write (spec/commits.md §5), so in either order it is judged replaced then and is
+/// never told leaving history before an hour after it; the order the second overwrite came
+/// first in may tell it late (a row is a schedule, never early: notes/engine-retention-history.md).
+#[test]
+fn overwrites_in_either_order_never_tell_early_spec_commits_5() {
+    let at = |first_later: bool| {
+        let mut w = world(false);
+        let (t, a) = (w.t, aks()[0].clone());
+        let entry = |g: u64| PathOp { path: vec![PathSeg::Key(Value::Int(0))], op: Op::Set(s(0, g)) };
+        let mut m = Mutation::new();
+        m.set(t, &a, &Value::Map(osis_base::ValueMap::from([(Value::Int(0), s(0, 0))]))).unwrap();
+        let fill = w.lp.peers[0].commit(m).unwrap().unwrap();
+        let pk = packages(&mut w, 0, &[fill]);
+        for to in [1, 2, 3] {
+            w.lp.deliver(to, &pk[0]).unwrap();
+        }
+        w.lp.advance(60_000);
+        let mut m = Mutation::new();
+        m.op(t, &a, entry(1)).unwrap();
+        let one = w.lp.peers[1].commit(m).unwrap().unwrap();
+        let p1 = packages(&mut w, 1, &[one]);
+        w.lp.deliver(2, &p1[0]).unwrap();
+        w.lp.advance(600_000);
+        let mut m = Mutation::new();
+        m.op(t, &a, entry(2)).unwrap();
+        let two = w.lp.peers[2].commit(m).unwrap().unwrap();
+        let p2 = packages(&mut w, 2, &[two]);
+        w.lp.peers[3].engine.listen_commits(std::sync::Arc::new(|_: &Tid| true));
+        let order = if first_later { [&p2[0], &p1[0]] } else { [&p1[0], &p2[0]] };
+        for pk in order {
+            w.lp.deliver(3, pk).unwrap();
+        }
+        let replaced = w.lp.peers[3].engine.replaced_at(&fill, &t, &a).unwrap();
+        heard_on(&mut w, &a);
+        // a minute short of an hour after node 1's write, then by minutes
+        w.lp.advance(3_600_000 - 600_000 - 60_000);
+        let mut told = None;
+        for i in 0..14 {
+            if heard_on(&mut w, &a).contains(&fill) {
+                told = Some(i);
+                break;
+            }
+            w.lp.advance(60_000);
+        }
+        (replaced, told)
+    };
+    let (in_order, reversed) = (at(false), at(true));
+    assert_eq!(in_order.0, reversed.0, "judged replaced alike in either order");
+    assert!(in_order.1.is_some_and(|i| i >= 1) && reversed.1.is_some_and(|i| i >= 1), "never told early: {in_order:?} {reversed:?}");
+}
+
 /// Node 3 holds node 0's fill; three hours later node 0 overwrites its first entry and
 /// snapshots; node 3 gets the snapshot alone, which also carries the fill's other entries,
 /// stamped at the fill. The fill was replaced by the overwrite, so it stays in history (an hour
