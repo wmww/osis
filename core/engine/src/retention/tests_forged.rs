@@ -281,3 +281,35 @@ fn a_removal_dates_a_write_a_later_reset_prunes_spec_crdt_4_8() {
         }
     }
 }
+
+// spec/commits.md §5, spec/crdt.md §4.8 When: a node holding a set element's write (W) gets one
+// body holding a value removal hiding it (an hour after W) and a reset of the element (three
+// hours after W) that prunes it in the join: the kill's row (when leaving is told) is due a day
+// (the kept period) after the removal, never after the reset. Fails with the hiders of the
+// apply not noted from the state before the join (the pruned write's value not read).
+#[test]
+fn a_kill_by_a_removal_and_a_reset_in_one_body_is_told_at_the_removal_spec_commits_5() {
+    use crdt_model::state::{Composite, Elem as MElem, Removal};
+    const HOUR: u64 = 3_600_000;
+    let strong = crdt_model::value::Value::Strong([2; 15]);
+    let (mut lp, t) = world();
+    let base = osis_base::Clock::now_wall_ms(&*lp.peers[0].clock).0 - 10 * HOUR;
+    let set = |es: Vec<(u64, MElem)>| MFrag::Set { c: Composite::default(), elems: es.into_iter().map(|(c, e)| (mdot(c), e)).collect() };
+    let w = set(vec![(1, MElem { reset: None, frag: Some(Box::new(MFrag::Register { reset: None, write: Some((mstamp(base, 1), Some(strong.clone()))) })), gone: None })]);
+    let rx = set(vec![
+        (1, MElem { reset: Some(mstamp(base + 3 * HOUR, 9)), frag: None, gone: None }),
+        (7, MElem { reset: None, frag: None, gone: Some(Removal { stamp: mstamp(base + HOUR, 7), value: strong, seen: vec![(mdot(1), 3)] }) }),
+    ]);
+    let cw = forge(&mut lp, t, carried(&w).expect("a wire form")).expect("the forger makes it");
+    let crx = forge(&mut lp, t, carried(&rx).expect("a wire form")).expect("the forger makes it");
+    deliver(&mut lp, 2, &cw);
+    lp.peers[2].engine.listen_commits(std::sync::Arc::new(move |x: &Tid| *x == t));
+    deliver(&mut lp, 2, &crx);
+    lp.peers[2].drain_events();
+    assert_eq!(lp.peers[2].engine.replaced_at(&cw, &t, &ak()).unwrap(), Some(Ts::from_u64(mstamp(base + HOUR, 0).ts).unwrap()));
+    // a minute past a day after the removal
+    lp.advance(base + HOUR + 86_400_000 + 60_000 - osis_base::Clock::now_wall_ms(&*lp.peers[0].clock).0);
+    lp.peers[2].tick().unwrap();
+    let told = lp.peers[2].drain_events().into_iter().any(|e| matches!(e, crate::Event::Commits(ch) if ch.iter().any(|x| x.id == cw)));
+    assert!(told, "W's body is told leaving a day after the removal");
+}
