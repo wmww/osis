@@ -1,7 +1,7 @@
 # Actors, signing and forks as one mechanism
 > Summary: An account is a special kind of thing (members by signing chain, no grants on it, its own fork and merge rules, an account root standing in for it); target: an ordinary independent thing whose members are signers, with no concept of an account in core. Designed in notes/account-membership-design.md (membership, removal, vouching, hidden mode as a design) and notes/write-path-design.md (paths, purge author, evidence, the public actor, external grants, the last admin, core without accounts); here: Tess's direction and answers and what the design settled. Open questions and the staged build: notes/redesign-plan.md.
 > Priority: normal
-> Tags: tess-call, perm, crypto, keys, spec
+> Tags: perm, crypto, keys, spec
 
 ## What is special today
 An account's members are its nodes, kept by its signing chain (spec/permissions.md §5.4-§5.5, spec/crypto.md §9, notes/engine-validity-epochs.md), not by role grants: no edge write targets it, nothing derives from its epochs (things minted with it as admin are independent at birth), and the account root stands in for it wherever a thing is needed. So an account cannot hold a role on another account's account. It has its own fork rules (sides by first revocation seen; merges of concurrent rotations) beside the admin-dispute rules and the role-key rule (forks stand).
