@@ -139,7 +139,7 @@ FlagW    := [i_from, i_to, Stamp, bool] | [i_from, i_to, Stamp, false, string]  
   - text: the creation's char (one Unicode scalar value) of each element not deleted (§5.7: its winning flag write is no delete) after the run's `FlagW` are applied (an undelete's char rides its `FlagW`);
   - list: one fragment per element whose fragment is non-empty (§4.2 Emptiness) after the run's `FlagW` (element resets, §5.7) are applied. A list run is uniform in this (rule 3), so a list `Content` is empty or has exactly `n` fragments;
   - `[]` means no content carried for any element (a pure flag or position delta, or, with a `Creation`, value-less text creations, §4.7).
-- **`PosW`** are position writes other than the creation write.
+- **`PosW`** are position writes other than the creation write; one stamped with its element's dot is bad input (a dot is one write, §2.1: that element's creation).
 - **`FlagW`** are deleted-flag writes for text, an undelete's with the chars it carries, and element resets (`true` only) for lists (§5.7).
 
 **Creation stamps.** A map entry's **creation** is a write with stamp `(ts, entry dot)` (§5.6).
@@ -336,12 +336,14 @@ A write is **dead** at a node once the join has superseded it:
 - not a text element's creation while its winning flag is a delete, but for an embedded char (§7), which dies with its register's write;
 - of a map dot's records, the writes of their join (a write beaten at its position by one in another record of the dot is beaten).
 
+Copies of one write (§4.1) are one write: what copy order decides (a key, a value, a reference, a removal's reference and parts, an anchor, a char) never makes a copy another write, so a copy losing by copy order is no death. Which elements a value removal hides is read in the state as joined. A register write is also the reset its stamp implies (§5.1), so a reset of that stamp at its position (another encoding's) is no death while the write wins.
+
 A write of fragment `A` is dead in `A ⊔ B` iff it wins in `A` and not in `A ⊔ B`.
 
 **When.** It dies at the earliest `ts` among the valid writes the node holds that supersede it, or at T by expiry (which dates no body, spec/commits.md §5).
 - Each is judged against the write alone, so the order of arrival does not matter; a write is held while any held body holds it (its own commit, or a snapshot carrying it).
 - A write's `ts` is its own commit's, also when a snapshot carries it: a valid snapshot's copy of a write whose own delta is held invalid counts as the write itself.
-- A text element's creation dies only by a delete stamped after the latest undelete of the element the node holds.
+- A text element's creation dies only by a delete beating the latest undelete of the element the node holds: stamped after it, or a copy of its stamp (a delete wins the tie, §4.1).
 
 **Revival.** Un-merge (§4.6) is the only way a dead write revives.
 - The invalid deltas' writes supersede nothing, so a write only they superseded has no death.

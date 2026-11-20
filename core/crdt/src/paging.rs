@@ -347,10 +347,14 @@ impl Fragment {
         (f.elem_count() != Some(0)).then_some(f)
     }
 
-    /// The keys of a map's records of dot `d`, content or not.
-    pub fn dot_keys(&self, d: &Dot) -> Vec<&Value> {
+    /// The values whose records the records of dot `d` here are read with (`PagedTouch::values`):
+    /// a map's keys of the dot's records, content or not; a set's references its element and value
+    /// removal there name (a join may replace that copy, §4.1, so what it hid or was hidden by
+    /// is read again).
+    pub fn dot_values(&self, d: &Dot) -> Vec<&Value> {
         match self {
             Fragment::Map(m) => m.of_dot(d).filter_map(|(id, _)| id.key()).collect(),
+            Fragment::Set(s) => s.elems.get(d).into_iter().flat_map(crate::fragment::Elem::references).collect(),
             _ => Vec::new(),
         }
     }

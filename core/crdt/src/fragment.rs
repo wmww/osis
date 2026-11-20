@@ -302,6 +302,25 @@ pub struct Set {
 }
 
 impl Set {
+    /// The records at `d`'s dots, and with `refs` the records of the references named there by
+    /// `d`'s records, this set's and `prior`'s (a copy's reference is payload, decided by copy
+    /// order, §4.1), which hide or are hidden by them (§5.5): what a join of `d` supersedes.
+    fn at(&self, d: &Set, prior: Option<&Set>, refs: bool) -> Set {
+        let mut keep: BTreeMap<Dot, Elem> = d.elems.keys().filter_map(|k| Some((k.clone(), self.elems.get(k)?.clone()))).collect();
+        if refs {
+            let theirs = |k: &Dot| prior.and_then(|p| p.elems.get(k));
+            let named: BTreeSet<Value> = d.elems.iter().flat_map(|(k, e)| e.references().chain(keep.get(k).into_iter().flat_map(Elem::references)).chain(theirs(k).into_iter().flat_map(Elem::references))).cloned().collect();
+            if !named.is_empty() {
+                for (k, e) in &self.elems {
+                    if e.references().any(|v| named.contains(v)) {
+                        keep.entry(k.clone()).or_insert_with(|| e.clone());
+                    }
+                }
+            }
+        }
+        Set { meta: self.meta.clone(), elems: keep }
+    }
+
     pub(crate) fn new(meta: Meta, elems: BTreeMap<Dot, Elem>) -> Set {
         Set { meta, elems }
     }
@@ -507,8 +526,9 @@ impl Fragment {
     /// narrowed the same way), of a map every record of the dots `x` holds records of, of a set
     /// or bag the elements `x` holds, of a sequence the records holding a dot of `x`'s, each with
     /// this fragment's meta; anything else whole. A narrowed field left empty is left out (a join
-    /// drops empty children). Of a set also the records of the references `x` names (they hide
-    /// or are hidden by `x`'s, §5.5): what a join of `x` supersedes.
+    /// drops empty children). Of a set also the records of the references `x` names or this
+    /// fragment's records at `x`'s dots name (they hide or are hidden by those, §5.5; a copy's
+    /// reference is payload, §4.1): what a join of `x` supersedes.
     pub fn part_at(&self, x: &Fragment) -> Fragment {
         self.piece_at(x, true)
     }
@@ -532,20 +552,7 @@ impl Fragment {
                 }
                 Fragment::Map(Map::new(s.meta.clone(), keep))
             }
-            // a set: also the records of the references `x`'s elements and value removals name, which hide
-            // or are hidden by them (§5.5)
-            (Fragment::Set(s), Fragment::Set(d)) => {
-                let mut keep: BTreeMap<Dot, Elem> = d.elems.keys().filter_map(|k| Some((k.clone(), s.elems.get(k)?.clone()))).collect();
-                let refs: BTreeSet<&Value> = if refs { d.elems.values().flat_map(Elem::references).collect() } else { BTreeSet::new() };
-                if !refs.is_empty() {
-                    for (k, e) in &s.elems {
-                        if e.references().any(|v| refs.contains(v)) {
-                            keep.entry(k.clone()).or_insert_with(|| e.clone());
-                        }
-                    }
-                }
-                Fragment::Set(Set { meta: s.meta.clone(), elems: keep })
-            }
+            (Fragment::Set(s), Fragment::Set(d)) => Fragment::Set(s.at(d, None, refs)),
             (Fragment::Bag(s), Fragment::Bag(d)) if s.kind == d.kind => Fragment::Bag(Bag { kind: s.kind, meta: s.meta.clone(), elems: d.elems.keys().filter_map(|k| Some((k.clone(), s.elems.get(k)?.clone()))).collect() }),
             (Fragment::Seq(s), Fragment::Seq(d)) if s.encoding() == d.encoding() => Fragment::Seq(s.footprint(d)),
             _ => self.clone(),
@@ -610,6 +617,15 @@ impl Fragment {
                 }
                 Fragment::Map(Map::new(s.meta.clone(), keep))
             }
+            // a set: the references the records before the join named too
+            (Fragment::Set(s), Fragment::Set(d)) => Fragment::Set(s.at(
+                d,
+                match before {
+                    Some(Fragment::Set(b)) => Some(b),
+                    _ => None,
+                },
+                true,
+            )),
             // a range record the join split (a write into one of its elements) is reached still
             // at every element: the records holding a dot of `before`'s
             (Fragment::Seq(s), Fragment::Seq(d)) if s.encoding() == d.encoding() => match before {

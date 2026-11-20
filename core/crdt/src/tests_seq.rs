@@ -1401,7 +1401,7 @@ fn a_join_splitting_a_range_record_supersedes_at_its_reach_what_it_does_whole_sp
                     for how in 0..3 {
                         let (before, y) = (wrap(how, before.clone()), wrap(how, y.clone()));
                         let after = joined(&before, &y);
-                        crate::tests_model::reach_holds_the_change(&before, &after, &y, true);
+                        crate::tests_model::reach_holds_the_change(&before, &after, &y);
                     }
                 }
             }
@@ -1434,7 +1434,7 @@ fn each_element_of_a_split_range_record_dies_at_its_own_delete_spec_commits_5() 
         assert_eq!(dead.len(), 1, "join {i}: one write dies");
         for w in &dead {
             assert_eq!(w.path.last(), Some(&crate::winners::Place::Item(item.clone())), "join {i}: the hit element's");
-            assert_eq!(by.first_superseding(w, |s, _| Some(s.ts)), Some(ts(t << 16)), "join {i}: dated by its own delete");
+            assert_eq!(by.first_superseding(w, &Default::default(), |s, _| Some(s.ts)), Some(ts(t << 16)), "join {i}: dated by its own delete");
         }
         st = after;
     }
@@ -1460,53 +1460,10 @@ fn a_move_below_its_creation_dies_at_the_creation_though_a_delete_beats_it_spec_
     let mut winning = crate::winners::ByWrite::<()>::default();
     winning.note(&before, |_, _| ());
     winning.note(&after.winners(), |_, _| ());
-    assert_eq!(winning.first_superseding(w, |s, _| Some(s.ts)), None, "no winning write supersedes it");
+    assert_eq!(winning.first_superseding(w, &Default::default(), |s, _| Some(s.ts)), None, "no winning write supersedes it");
     let mut held = crate::winners::ByWrite::<()>::default();
     held.note(&at.held_writes(), |_, _| ());
     held.note(&y.held_writes(), |_, _| ());
-    assert_eq!(held.first_superseding(w, |s, _| Some(s.ts)), Some(ts(10 << 16)), "dated by the creation");
-    crate::tests_model::reach_holds_the_change(&state, &after, &y, true);
-}
-
-/// The writes a join of `y` into `state` kills, each with its date read as `Killed::note` reads
-/// it (the held writes at the reach before the join and in `y`), after the reach law holds.
-fn deaths_dated(state: &Fragment, y: &Fragment) -> Vec<(crate::winners::Kind, Option<osis_base::Ts>)> {
-    let at = state.reach(y);
-    let mut before = at.winners();
-    before.extend(y.winners());
-    let after = joined(state, y);
-    crate::tests_model::reach_holds_the_change(state, &after, y, true);
-    let mut held = crate::winners::ByWrite::<()>::default();
-    let at_after = after.reach_after(y, &at);
-    held.note(&at.held_writes(), |_, _| ());
-    held.note(&y.held_writes(), |_, _| ());
-    held.note(&at_after.held_writes(), |_, _| ());
-    before.minus(&at_after.winners()).iter().map(|w| (w.kind, held.first_superseding(w, |s, _| Some(s.ts)))).collect()
-}
-
-/// spec/crdt.md §2.3, §4.8, §5.7 Join (a forged copy: the creator repeats its element's counter
-/// on a later move): the move stamped with the element's own dot, above the creation, is a
-/// position write of its own, not the creation's, so a move it beats dies by it.
-#[test]
-fn a_move_beaten_by_a_move_stamped_with_the_elements_dot_dies_by_it_spec_4_8() {
-    let (a, b) = (Dot::new(node(1), 1), Dot::new(node(1), 2));
-    let mut e = char_at(a.clone(), 10, Anchor::Head, 'a');
-    e.pos.insert(0, (st(30, 1, 1), Anchor::Dot(b.clone()), None));
-    let state = seq_of(BTreeMap::from([(a.clone(), e), (b.clone(), char_at(b.clone(), 10, Anchor::Dot(a.clone()), 'b'))]), None);
-    let y = one(a.clone(), SeqElem { pos: vec![(st(20, 2, 1), Anchor::Head, None)], ..SeqElem::bare() });
-    assert_eq!(deaths_dated(&state, &y), vec![(crate::winners::Kind::Pos, Some(ts(30 << 16)))]);
-}
-
-/// spec/crdt.md §2.3, §4.8: a forged copy as above, in a delta without the creation: the
-/// move stamped with the element's dot reads as the creation's own in the delta alone, and as a
-/// move of its own once joined beside the creation, where it beats the state's move: that move
-/// dies by it (the engine reads the held writes at the reach after the join too).
-#[test]
-fn a_move_stamped_with_the_elements_dot_in_a_delta_without_the_creation_kills_by_itself_spec_4_8() {
-    let (a, b) = (Dot::new(node(1), 1), Dot::new(node(1), 2));
-    let mut e = char_at(a.clone(), 10, Anchor::Head, 'a');
-    e.pos.insert(0, (st(20, 2, 1), Anchor::Dot(b.clone()), None));
-    let state = seq_of(BTreeMap::from([(a.clone(), e), (b.clone(), char_at(b.clone(), 10, Anchor::Dot(a.clone()), 'b'))]), None);
-    let y = one(a.clone(), SeqElem { pos: vec![(st(30, 1, 1), Anchor::Head, None)], ..SeqElem::bare() });
-    assert_eq!(deaths_dated(&state, &y), vec![(crate::winners::Kind::Pos, Some(ts(30 << 16)))]);
+    assert_eq!(held.first_superseding(w, &Default::default(), |s, _| Some(s.ts)), Some(ts(10 << 16)), "dated by the creation");
+    crate::tests_model::reach_holds_the_change(&state, &after, &y);
 }

@@ -1,5 +1,6 @@
 //! Random values and ops for property tests (notes/crdt.md, Reference model). Deterministic from a seed.
 use crate::ops::{self, Ty, Writer};
+use crate::stamp::{Dot, Source};
 use crate::state::{BagKind, Content, Frag};
 use crate::value::Value;
 use std::collections::BTreeMap;
@@ -250,3 +251,199 @@ pub fn random_op(r: &mut Rng, w: &mut Writer, ty: &Ty, state: Option<&Frag>) -> 
         _ => None,
     }
 }
+
+/// Model join of a delta into an optional state (core/test/crdt-model/tests/props.rs `apply`).
+pub fn apply(state: &mut Option<Frag>, d: Frag) {
+    match state {
+        None => {
+            let mut s = d;
+            s.prune(None);
+            *state = Some(s);
+        }
+        Some(s) => s.join(d),
+    }
+}
+
+/// One commit of the random history.
+pub struct Commit {
+    pub w: Writer,
+    pub delta: Frag,
+}
+
+/// `n` writers (one per source) make `rounds` rounds of random ops, writer `i` with type
+/// `types[i % len]`, seeing a random part of the others' commits: commits in creation order. With
+/// `bulk` each ends with a large write (`bulk_value`); `honest`: a clock past every commit seen and
+/// keyless removals (else odd writers remove keyed, §5.6); `twins`: writers 0 and 1 share a source
+/// (pass it twice) and a clock but choose their ops apart, so copies of one write (equal stamps)
+/// differ in payload and one dot has two stamps, as forged copies carry (spec/permissions.md §5.2).
+pub fn history(r: &mut Rng, types: &[Ty], sources: Vec<Source>, rounds: usize, bulk: bool, honest: bool, twins: bool) -> Vec<Commit> {
+    let n = sources.len();
+    // odd writers remove keyed (role-class aspects), even ones keyless (§5.6)
+    let mut ws: Vec<Writer> = sources.into_iter().enumerate().map(|(i, s)| Writer { keyed: !honest && i % 2 == 1, ..Writer::new(s, 1 << 16, 0) }).collect();
+    let mut states: Vec<Option<Frag>> = vec![None; n];
+    let mut seen: Vec<usize> = vec![0; n];
+    let mut commits: Vec<Commit> = Vec::new();
+    for round in 0..rounds {
+        for i in 0..n {
+            // catch up on a random prefix of the others' commits
+            let upto = seen[i] + r.below(commits.len() - seen[i] + 1);
+            for c in &commits[seen[i]..upto] {
+                apply(&mut states[i], c.delta.clone());
+            }
+            seen[i] = upto;
+            let t = ((round as u64 * 10 + r.below(10) as u64 + 1) << 16) + i as u64;
+            let t = t.max(ws[i].ts + 1);
+            let t = if honest { commits[..upto].iter().fold(t, |t, c| t.max(c.w.ts + 1)) } else { t };
+            let t = if twins && i == 1 { ws[0].ts.max(ws[1].ts + 1) } else { t };
+            let before = ws[i].clone();
+            ws[i].next_commit(t);
+            let ty = &types[i % types.len()];
+            let op = if bulk && round + 1 == rounds {
+                let v = bulk_value(r, ty, 0);
+                crate::diff::diff(&mut ws[i], states[i].as_ref().and_then(|s| s.slot(ty.enc())).filter(|s| s.present()), ty, &v)
+            } else {
+                random_op(r, &mut ws[i], ty, states[i].as_ref())
+            };
+            match op {
+                Some(d) => {
+                    apply(&mut states[i], d.clone());
+                    commits.push(Commit { w: ws[i].clone(), delta: d });
+                }
+                None => ws[i] = before,
+            }
+        }
+    }
+    commits
+}
+
+/// A value of `ty` large enough to page at small page parameters: long texts, many elements.
+pub fn bulk_value(r: &mut Rng, ty: &Ty, depth: u32) -> Value {
+    use Value as V;
+    let many = |r: &mut Rng| if depth <= 1 { 40 + r.below(160) } else { r.below(6) };
+    match ty {
+        Ty::Text => V::Str(random_text(r, if depth <= 1 { 300 } else { 40 })),
+        Ty::Struct(fts) => V::fields(fts.iter().map(|(id, t)| (*id, bulk_value(r, t, depth + 1))).collect()),
+        Ty::Set(et) => V::set((0..many(r)).map(|_| random_value(r, et, depth + 1)).collect()),
+        Ty::Map(kt, vt) => V::map((0..many(r)).map(|_| (bulk_value(r, kt, depth + 1), random_value(r, vt, depth + 1))).collect()),
+        Ty::List(et) => V::List((0..many(r)).map(|_| random_value(r, et, depth + 1)).collect()),
+        Ty::Register if depth > 0 => V::Str(random_text(r, 12)),
+        _ => random_value(r, ty, depth),
+    }
+}
+
+/// Hostile single-record deltas on one text or list (§5.7, §6): creation chains anchored at
+/// random dots (their own run, unknown dots, later dots), forged copies of one creation or
+/// position write with other anchors or keys, moves with random anchors and sibling keys (cycles
+/// through chains and range records), deletes, undeletes, resets; with `slots` (text), register
+/// writes of strings at the position (§7: embedded chars, `Derived` dots moved, deleted and
+/// anchored at, held or not). Joined into deltas of 1..4 writes each.
+pub fn hostile(r: &mut Rng, list: bool, slots: bool) -> Vec<Frag> {
+    let mut deltas = Vec::new();
+    let mut single = hostile_writes(r, list, slots, 48).into_iter().peekable();
+    while single.peek().is_some() {
+        let mut d = None;
+        for w in single.by_ref().take(1 + r.below(4)) {
+            apply(&mut d, w);
+        }
+        deltas.extend(d);
+    }
+    // a char without a creation (no wire form: rejected, §3.3 rule 7) joins as none
+    for w in &mut deltas {
+        if let Frag::Seq { text: true, elems, .. } = w {
+            for e in elems.values_mut().filter(|e| e.created.is_none()) {
+                if r.chance(1, 4) {
+                    e.content = Content::Char(char::from(b'a' + r.below(4) as u8));
+                }
+            }
+        }
+    }
+    deltas
+}
+
+fn hostile_writes(r: &mut Rng, list: bool, slots: bool, n: usize) -> Vec<Frag> {
+    use crate::stamp::Stamp as MStamp;
+    use crate::state::{Anchor as MAnchor, Composite, SeqElem as MElem};
+    let srcs = [Source::session(1, 0), Source::session(2, 0), Source::session(3, 0)];
+    // the dots of the register writes so far (their embedded chars: `Derived(d)`, 1..)
+    let mut regs: Vec<Dot> = Vec::new();
+    fn dot(r: &mut Rng, srcs: &[Source; 3], regs: &[Dot]) -> Dot {
+        if !regs.is_empty() && r.chance(1, 4) {
+            return Dot { source: Source::Derived(Box::new(regs[r.below(regs.len())].clone())), ctr: 1 + r.below(4) as u64 };
+        }
+        Dot { source: srcs[r.below(3)].clone(), ctr: 1 + r.below(12) as u64 }
+    }
+    fn anchor(r: &mut Rng, srcs: &[Source; 3], regs: &[Dot]) -> MAnchor {
+        if r.chance(1, 6) { MAnchor::Head } else { MAnchor::Dot(dot(r, srcs, regs)) }
+    }
+    let content = |r: &mut Rng, s: &MStamp| Content::Frag(Box::new(Frag::Register { reset: None, write: Some((s.clone(), Some(Value::Int(r.below(3) as i64)))) }));
+    // chars at random: creation copies of one dot and undeletes may carry other chars (forged
+    // copies, §4.1 copy order, §5.7)
+    let any_char = |r: &mut Rng| char::from(b'a' + r.below(4) as u8);
+    let seq = |elems: BTreeMap<Dot, MElem>, reset: Option<MStamp>| Frag::Seq { text: !list, c: Composite { reset, w: None, w_valueless: false }, elems };
+    // stamps: ts in a small range so writes interleave; position write counters apart from dots
+    let mut pos_ctr = 100u64;
+    let mut out = Vec::new();
+    for _ in 0..n {
+        let t = (1 + r.below(30) as u64) << 16;
+        let k = r.below(20);
+        let mut elems = BTreeMap::new();
+        if k < 8 {
+            // a creation chain of 1..4 elements (never of a `Derived` source: a writer's delta
+            // rejects them)
+            let d = Dot { source: srcs[r.below(3)].clone(), ctr: 1 + r.below(12) as u64 };
+            let len = 1 + r.below(4) as u64;
+            let mut a = anchor(r, &srcs, &regs);
+            // mostly one creation `ts` per dot (so copies of one stamp meet, differing in char
+            // or anchor), sometimes another (a forged copy under another `ts`, §5.7 Join)
+            let forged = r.chance(1, 4);
+            for i in 0..len {
+                let e = Dot { source: d.source.clone(), ctr: d.ctr + i };
+                let ct = if forged { t } else { (1 + (srcs.iter().position(|x| *x == e.source).unwrap() as u64 * 7 + e.ctr * 3) % 30) << 16 };
+                let s = MStamp { ts: ct, dot: e.clone() };
+                let c = if list { content(r, &s) } else { Content::Char(any_char(r)) };
+                elems.insert(e.clone(), MElem::new(s, a.clone(), c));
+                a = MAnchor::Dot(e);
+            }
+        } else if k < 15 {
+            // a move (or a forged copy of an earlier position write: same counter)
+            let d = dot(r, &srcs, &regs);
+            if r.chance(1, 4) {
+                pos_ctr = pos_ctr.saturating_sub(r.below(3) as u64);
+            }
+            pos_ctr += 1;
+            let src = srcs[r.below(3)].clone();
+            let s = MStamp { ts: t, dot: Dot { source: src, ctr: pos_ctr } };
+            let key = if r.chance(1, 3) && t > 1 << 16 { Some(MStamp { ts: t - (1 << 16), dot: dot(r, &srcs, &[]) }) } else { None };
+            elems.insert(d, MElem::write(Content::None, vec![(s, anchor(r, &srcs, &regs), key)], None));
+        } else if k < 19 {
+            // a delete or (text) an undelete with a char; a run of 1..3
+            let d = dot(r, &srcs, &regs);
+            let len = 1 + r.below(3) as u64;
+            pos_ctr += 1;
+            let s = MStamp { ts: t, dot: Dot { source: srcs[r.below(3)].clone(), ctr: pos_ctr } };
+            let undel = !list && r.chance(1, 3);
+            for i in 0..len {
+                let e = Dot { source: d.source.clone(), ctr: d.ctr + i };
+                // an undelete's chars: some elements' missing (the undo buffer lacked them)
+                let c = if undel && !r.chance(1, 5) { Some(any_char(r)) } else { None };
+                elems.insert(e, MElem::flag(s.clone(), !undel, c));
+            }
+        } else if slots && r.chance(1, 2) {
+            // an old app's save: a register write of a string (a reset of everything older)
+            pos_ctr += 1;
+            let d = Dot { source: srcs[r.below(3)].clone(), ctr: pos_ctr };
+            let v: String = (0..r.below(4)).map(|i| char::from(b'a' + ((d.ctr + i as u64 + 1) % 4) as u8)).collect();
+            out.push(Frag::Register { reset: None, write: Some((MStamp { ts: t, dot: d.clone() }, Some(Value::Str(v)))) });
+            regs.push(d);
+            continue;
+        } else {
+            pos_ctr += 1;
+            let s = MStamp { ts: t / 2, dot: Dot { source: srcs[r.below(3)].clone(), ctr: pos_ctr } };
+            out.push(seq(elems, Some(s)));
+            continue;
+        }
+        out.push(seq(elems, None));
+    }
+    out
+}
+

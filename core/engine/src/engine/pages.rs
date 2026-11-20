@@ -514,16 +514,15 @@ pub fn ensure_touch(txn: &mut Transaction<'_>, tid: &Tid, ak: &Ak, idx: &mut Sta
         }
     }
     // every record of the values whose read the join may move (`PagedTouch::values`), through
-    // the value index; in a map also the keys of the state's records of the delta's dots (a
-    // key-erased removal names none, and resets every record of its dot)
+    // the value index; also those the state's records of the delta's dots name (`dot_values`: a
+    // map's keys, as a key-erased removal names none and resets every record of its dot; a set's
+    // references, as a copy the join replaces may name others)
     let paths: BTreeSet<&Vec<Step>> = touch.values.keys().chain(touch.elems.keys()).collect();
     for p in paths {
         let Some(set) = idx.sets.get_mut(p) else { return Ok(false) };
         let mut vs: BTreeSet<Value> = touch.values.get(p).into_iter().flatten().cloned().collect();
-        if set.enc == Encoding::Map
-            && let Some(m) = f.at_steps(p)
-        {
-            vs.extend(touch.elems.get(p).into_iter().flatten().flat_map(|d| m.dot_keys(d)).cloned());
+        if let Some(m) = f.at_steps(p) {
+            vs.extend(touch.elems.get(p).into_iter().flatten().flat_map(|d| m.dot_values(d)).cloned());
         }
         for v in &vs {
             for d in key_dots(txn, tid, ak, set, v)? {

@@ -15,7 +15,7 @@ use crate::wire::{Delta, Frontiers, Snapshot};
 use crdt_model::ops::{Ty, Writer as MWriter};
 use crdt_model::r#gen::{Rng, kitchen_sink};
 use crdt_model::stamp::{Dot as MDot, Source as MSource};
-use crdt_model::state::{Content, Frag as MFrag};
+use crdt_model::state::Frag as MFrag;
 use crdt_model::wire::Ctx;
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -139,11 +139,15 @@ fn case(k: u64) -> (crate::testutil::SeedRng, Case) {
         Mode::Twins => {
             let types = pick(&mut r, &[vec![kitchen_sink()], vec![Ty::Text], vec![Ty::List(Box::new(Ty::Register))], vec![Ty::Register, Ty::Text, Ty::Counter, Ty::Set(Box::new(Ty::Register))], map_of_text()]);
             let srcs = vec![MSource::session(1, 0), MSource::session(1, 0), MSource::session(2, 0)];
-            (from(history_twins(&mut r, &types, srcs, rounds)), false)
+            // a forged copy reaches a node as bytes (a snapshot: a twin's delta may carry its
+            // twin's dots): each delta as the wire carries it, one it cannot carry dropped as bad
+            // input (a position write stamped with its element's dot, §3.3 rule 5)
+            let carried = |d: &MFrag| crdt_model::wire::decode_snapshot(&crdt_model::wire::encode_snapshot(d, &[], [3; 16], &mut snap_mcx()), &mut snap_mcx()).ok().map(|x| x.0);
+            (from(history_twins(&mut r, &types, srcs, rounds)).into_iter().filter_map(|(d, w)| Some((carried(&d)?, w))).collect(), false)
         }
         Mode::Hostile => {
             let (list, slots) = pick(&mut r, &[(false, false), (false, true), (true, false)]);
-            (hostile_deltas(&mut r, list, slots).into_iter().map(|d| (d, None)).collect(), false)
+            (crdt_model::r#gen::hostile(&mut r, list, slots).into_iter().map(|d| (d, None)).collect(), false)
         }
     };
     let writers: Vec<MSource> = deltas.iter().filter_map(|(_, w)| w.as_ref().map(|w| w.source.clone())).collect();
@@ -153,122 +157,6 @@ fn case(k: u64) -> (crate::testutil::SeedRng, Case) {
         None => Gone { src: MSource::session(1, 0), upto: 6 },
     };
     (r, Case { mode, deltas, honest, bad, gone })
-}
-
-/// Hostile single-record deltas on one text or list (§5.7, §6): creation chains anchored at
-/// random dots (their own run, unknown dots, later dots), forged copies of one creation or
-/// position write with other anchors or keys, moves with random anchors and sibling keys (cycles
-/// through chains and range records), deletes, undeletes, resets; with `slots` (text), register
-/// writes of strings at the position (§7: embedded chars, `Derived` dots moved, deleted and
-/// anchored at, held or not). Joined into deltas of 1..4 writes each.
-fn hostile_deltas(r: &mut Rng, list: bool, slots: bool) -> Vec<MFrag> {
-    let mut deltas = Vec::new();
-    let mut single = hostile_writes(r, list, slots, 48).into_iter().peekable();
-    while single.peek().is_some() {
-        let mut d = None;
-        for w in single.by_ref().take(1 + r.below(4)) {
-            mapply(&mut d, w);
-        }
-        deltas.extend(d);
-    }
-    // a char without a creation (no wire form: rejected, §3.3 rule 7) joins as none
-    for w in &mut deltas {
-        if let MFrag::Seq { text: true, elems, .. } = w {
-            for e in elems.values_mut().filter(|e| e.created.is_none()) {
-                if r.chance(1, 4) {
-                    e.content = Content::Char(char::from(b'a' + r.below(4) as u8));
-                }
-            }
-        }
-    }
-    deltas
-}
-
-fn hostile_writes(r: &mut Rng, list: bool, slots: bool, n: usize) -> Vec<MFrag> {
-    use crdt_model::stamp::Stamp as MStamp;
-    use crdt_model::state::{Anchor as MAnchor, Composite, SeqElem as MElem};
-    let srcs = [MSource::session(1, 0), MSource::session(2, 0), MSource::session(3, 0)];
-    // the dots of the register writes so far (their embedded chars: `Derived(d)`, 1..)
-    let mut regs: Vec<MDot> = Vec::new();
-    fn dot(r: &mut Rng, srcs: &[MSource; 3], regs: &[MDot]) -> MDot {
-        if !regs.is_empty() && r.chance(1, 4) {
-            return MDot { source: MSource::Derived(Box::new(regs[r.below(regs.len())].clone())), ctr: 1 + r.below(4) as u64 };
-        }
-        MDot { source: srcs[r.below(3)].clone(), ctr: 1 + r.below(12) as u64 }
-    }
-    fn anchor(r: &mut Rng, srcs: &[MSource; 3], regs: &[MDot]) -> MAnchor {
-        if r.chance(1, 6) { MAnchor::Head } else { MAnchor::Dot(dot(r, srcs, regs)) }
-    }
-    let content = |r: &mut Rng, s: &MStamp| Content::Frag(Box::new(MFrag::Register { reset: None, write: Some((s.clone(), Some(crdt_model::value::Value::Int(r.below(3) as i64)))) }));
-    // chars at random: creation copies of one dot and undeletes may carry other chars (forged
-    // copies, §4.1 copy order, §5.7)
-    let any_char = |r: &mut Rng| char::from(b'a' + r.below(4) as u8);
-    let seq = |elems: BTreeMap<MDot, MElem>, reset: Option<MStamp>| MFrag::Seq { text: !list, c: Composite { reset, w: None, w_valueless: false }, elems };
-    // stamps: ts in a small range so writes interleave; position write counters apart from dots
-    let mut pos_ctr = 100u64;
-    let mut out = Vec::new();
-    for _ in 0..n {
-        let t = (1 + r.below(30) as u64) << 16;
-        let k = r.below(20);
-        let mut elems = BTreeMap::new();
-        if k < 8 {
-            // a creation chain of 1..4 elements (never of a `Derived` source: a writer's delta
-            // rejects them)
-            let d = MDot { source: srcs[r.below(3)].clone(), ctr: 1 + r.below(12) as u64 };
-            let len = 1 + r.below(4) as u64;
-            let mut a = anchor(r, &srcs, &regs);
-            // mostly one creation `ts` per dot (so copies of one stamp meet, differing in char
-            // or anchor), sometimes another (a forged copy under another `ts`, §5.7 Join)
-            let forged = r.chance(1, 4);
-            for i in 0..len {
-                let e = MDot { source: d.source.clone(), ctr: d.ctr + i };
-                let ct = if forged { t } else { (1 + (srcs.iter().position(|x| *x == e.source).unwrap() as u64 * 7 + e.ctr * 3) % 30) << 16 };
-                let s = MStamp { ts: ct, dot: e.clone() };
-                let c = if list { content(r, &s) } else { Content::Char(any_char(r)) };
-                elems.insert(e.clone(), MElem::new(s, a.clone(), c));
-                a = MAnchor::Dot(e);
-            }
-        } else if k < 15 {
-            // a move (or a forged copy of an earlier position write: same counter)
-            let d = dot(r, &srcs, &regs);
-            if r.chance(1, 4) {
-                pos_ctr = pos_ctr.saturating_sub(r.below(3) as u64);
-            }
-            pos_ctr += 1;
-            let src = srcs[r.below(3)].clone();
-            let s = MStamp { ts: t, dot: MDot { source: src, ctr: pos_ctr } };
-            let key = if r.chance(1, 3) && t > 1 << 16 { Some(MStamp { ts: t - (1 << 16), dot: dot(r, &srcs, &[]) }) } else { None };
-            elems.insert(d, MElem::write(Content::None, vec![(s, anchor(r, &srcs, &regs), key)], None));
-        } else if k < 19 {
-            // a delete or (text) an undelete with a char; a run of 1..3
-            let d = dot(r, &srcs, &regs);
-            let len = 1 + r.below(3) as u64;
-            pos_ctr += 1;
-            let s = MStamp { ts: t, dot: MDot { source: srcs[r.below(3)].clone(), ctr: pos_ctr } };
-            let undel = !list && r.chance(1, 3);
-            for i in 0..len {
-                let e = MDot { source: d.source.clone(), ctr: d.ctr + i };
-                // an undelete's chars: some elements' missing (the undo buffer lacked them)
-                let c = if undel && !r.chance(1, 5) { Some(any_char(r)) } else { None };
-                elems.insert(e, MElem::flag(s.clone(), !undel, c));
-            }
-        } else if slots && r.chance(1, 2) {
-            // an old app's save: a register write of a string (a reset of everything older)
-            pos_ctr += 1;
-            let d = MDot { source: srcs[r.below(3)].clone(), ctr: pos_ctr };
-            let v: String = (0..r.below(4)).map(|i| char::from(b'a' + ((d.ctr + i as u64 + 1) % 4) as u8)).collect();
-            out.push(MFrag::Register { reset: None, write: Some((MStamp { ts: t, dot: d.clone() }, Some(crdt_model::value::Value::Str(v)))) });
-            regs.push(d);
-            continue;
-        } else {
-            pos_ctr += 1;
-            let s = MStamp { ts: t / 2, dot: MDot { source: srcs[r.below(3)].clone(), ctr: pos_ctr } };
-            out.push(seq(elems, Some(s)));
-            continue;
-        }
-        out.push(seq(elems, None));
-    }
-    out
 }
 
 fn joined(a: &Fragment, b: &Fragment) -> Fragment {
@@ -312,7 +200,7 @@ fn piece_laws(x: &Fragment, y: &Fragment, honest: bool) {
 /// reference index counts a join there alone, notes/engine-refs.md). The writes it supersedes,
 /// read at the reaches as the engine dates them (`Killed::note`), are the whole state's: a range
 /// record the join split is reached at each of its elements.
-pub(crate) fn reach_holds_the_change(before: &Fragment, after: &Fragment, y: &Fragment, superseders: bool) {
+pub(crate) fn reach_holds_the_change(before: &Fragment, after: &Fragment, y: &Fragment) {
     let diff = |a: &Fragment, b: &Fragment| {
         let mut m: BTreeMap<osis_base::Value, i64> = BTreeMap::new();
         a.each_read_value(&mut |v| *m.entry(v.clone()).or_default() -= 1);
@@ -331,19 +219,16 @@ pub(crate) fn reach_holds_the_change(before: &Fragment, after: &Fragment, y: &Fr
     let killed = dead(&at, &at_after);
     assert_eq!(killed, dead(before, after), "a join supersedes at its reach what it supersedes in the whole state");
     // what the engine dates a death by (`Killed::note`): each write dead at the reach dies by a
-    // write held there before or after the join or in the delta, winning or not (one write reads
-    // as a creation's own in a delta without the creation, as a move of its own beside it).
-    // Interim (issues/forged-copy-death-corrupt.md): checked for honest histories alone; some
-    // forged copies die with no superseder found, a `Corrupt` at the node
-    if !superseders {
-        return;
-    }
+    // write held there before or after the join or in the delta, winning or not, or by a value
+    // removal hiding it in the state as joined (`hiders`): every input, forged copies included,
+    // since a node that found none would fail the join with a local error
     let mut by: crate::ByWrite<()> = crate::ByWrite::default();
     by.note(&at.held_writes(), |_, _| ());
     by.note(&y.held_writes(), |_, _| ());
     by.note(&at_after.held_writes(), |_, _| ());
+    let hiders = at_after.hiders();
     for w in killed {
-        assert!(by.first_superseding(&w, |s, _| Some(s.ts)).is_some(), "a write dead at the reach dies by a write held there before the join: {w:?}");
+        assert!(by.first_superseding(&w, &hiders, |s, _| Some(s.ts)).is_some(), "a write dead at the reach dies by a write held there: {w:?}");
     }
 }
 
@@ -382,7 +267,7 @@ fn joins(r: &mut Rng, c: &Case) -> Option<MFrag> {
                 mapply(&mut model, d.clone());
                 let before = ours.clone();
                 ours.join(fd.clone());
-                reach_holds_the_change(&before, &ours, &fd, c.honest);
+                reach_holds_the_change(&before, &ours, &fd);
                 check_lin(&ours);
                 assert_eq!(ours, ostate(&model), "state after joining delta {k}");
                 assert_eq!(ours.read(), mread(&model), "read after delta {k}");

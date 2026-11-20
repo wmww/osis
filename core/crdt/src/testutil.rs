@@ -6,7 +6,7 @@ use crate::seq::{Anchor, Seq, SeqContent, SeqElem};
 use crate::seq_span::nth;
 use crate::stamp::{CounterRange, Dot, Source, Stamp};
 use crate::wire::{DeltaCtx, DeltaKind, Snapshot};
-use crdt_model::r#gen::{Rng, random_op};
+use crdt_model::r#gen::Rng;
 use crdt_model::ops::{Ty, Writer as MWriter};
 use crdt_model::state as m;
 use osis_base::{CommitId, Float, Tid, Ts, Value};
@@ -329,23 +329,7 @@ pub fn struct_list() -> Ty {
     Ty::List(Box::new(Ty::Struct([(1, Ty::Register), (2, Ty::Set(Box::new(Ty::Register)))].into_iter().collect())))
 }
 
-/// Model join of a delta into an optional state (core/test/crdt-model/tests/props.rs `apply`).
-pub fn mapply(state: &mut Option<m::Frag>, d: m::Frag) {
-    match state {
-        None => {
-            let mut s = d;
-            s.prune(None);
-            *state = Some(s);
-        }
-        Some(s) => s.join(d),
-    }
-}
-
-/// One commit of the random history.
-pub struct MCommit {
-    pub w: MWriter,
-    pub delta: m::Frag,
-}
+pub use crdt_model::r#gen::{Commit as MCommit, apply as mapply};
 
 /// `n` writers make `rounds` rounds of random ops, writer `i` with type `types[i % len]`, seeing
 /// a random part of the others' commits. Returns the commits in creation order.
@@ -356,83 +340,27 @@ pub fn history(r: &mut Rng, types: &[Ty], n: usize, rounds: usize) -> Vec<MCommi
 
 /// `history` with the given writer sources (commit form: a `Commit` source per writer).
 pub fn history_with(r: &mut Rng, types: &[Ty], sources: Vec<crdt_model::stamp::Source>, rounds: usize) -> Vec<MCommit> {
-    history_from(r, types, sources, rounds, false, false, false)
+    crdt_model::r#gen::history(r, types, sources, rounds, false, false, false)
 }
 
 /// `history_with` whose writers 0 and 1 share a source (pass it twice) and a clock but choose
 /// their ops apart: copies of one write (equal stamps) with differing payloads, and one dot under
 /// two stamps, as a forged copy carries (spec/permissions.md §5.2).
 pub fn history_twins(r: &mut Rng, types: &[Ty], sources: Vec<crdt_model::stamp::Source>, rounds: usize) -> Vec<MCommit> {
-    history_from(r, types, sources, rounds, false, false, true)
+    crdt_model::r#gen::history(r, types, sources, rounds, false, false, true)
 }
 
 /// `history` as honest nodes of a non-role-class aspect write it: a clock past every commit seen
 /// (a removal is newer than what it removes), keyless removals (§5.6).
 pub fn history_honest(r: &mut Rng, types: &[Ty], n: usize, rounds: usize) -> Vec<MCommit> {
     let sources = (0..n).map(|i| crdt_model::stamp::Source::session(i as u8 + 1, 0)).collect();
-    history_from(r, types, sources, rounds, false, true, false)
-}
-
-/// A value of `ty` large enough to page at small page parameters: long texts, many elements.
-pub fn bulk_value(r: &mut Rng, ty: &Ty, depth: u32) -> crdt_model::value::Value {
-    use crdt_model::r#gen::{random_text, random_value};
-    use crdt_model::value::Value as V;
-    let many = |r: &mut Rng| if depth <= 1 { 40 + r.below(160) } else { r.below(6) };
-    match ty {
-        Ty::Text => V::Str(random_text(r, if depth <= 1 { 300 } else { 40 })),
-        Ty::Struct(fts) => V::fields(fts.iter().map(|(id, t)| (*id, bulk_value(r, t, depth + 1))).collect()),
-        Ty::Set(et) => V::set((0..many(r)).map(|_| random_value(r, et, depth + 1)).collect()),
-        Ty::Map(kt, vt) => V::map((0..many(r)).map(|_| (bulk_value(r, kt, depth + 1), random_value(r, vt, depth + 1))).collect()),
-        Ty::List(et) => V::List((0..many(r)).map(|_| random_value(r, et, depth + 1)).collect()),
-        Ty::Register if depth > 0 => V::Str(random_text(r, 12)),
-        _ => random_value(r, ty, depth),
-    }
+    crdt_model::r#gen::history(r, types, sources, rounds, false, true, false)
 }
 
 /// `history_with` whose writers each end with a large write (`bulk_value`), so states and
 /// those deltas page at small page parameters.
 pub fn history_bulk(r: &mut Rng, types: &[Ty], sources: Vec<crdt_model::stamp::Source>, rounds: usize) -> Vec<MCommit> {
-    history_from(r, types, sources, rounds, true, false, false)
-}
-
-fn history_from(r: &mut Rng, types: &[Ty], sources: Vec<crdt_model::stamp::Source>, rounds: usize, bulk: bool, honest: bool, twins: bool) -> Vec<MCommit> {
-    let n = sources.len();
-    // odd writers remove keyed (role-class aspects), even ones keyless (§5.6)
-    let mut ws: Vec<MWriter> = sources.into_iter().enumerate().map(|(i, s)| MWriter { keyed: !honest && i % 2 == 1, ..MWriter::new(s, 1 << 16, 0) }).collect();
-    let mut states: Vec<Option<m::Frag>> = vec![None; n];
-    let mut seen: Vec<usize> = vec![0; n];
-    let mut commits: Vec<MCommit> = Vec::new();
-    for round in 0..rounds {
-        for i in 0..n {
-            // catch up on a random prefix of the others' commits
-            let upto = seen[i] + r.below(commits.len() - seen[i] + 1);
-            for c in &commits[seen[i]..upto] {
-                mapply(&mut states[i], c.delta.clone());
-            }
-            seen[i] = upto;
-            let t = ((round as u64 * 10 + r.below(10) as u64 + 1) << 16) + i as u64;
-            let t = t.max(ws[i].ts + 1);
-            let t = if honest { commits[..upto].iter().fold(t, |t, c| t.max(c.w.ts + 1)) } else { t };
-            let t = if twins && i == 1 { ws[0].ts.max(ws[1].ts + 1) } else { t };
-            let before = ws[i].clone();
-            ws[i].next_commit(t);
-            let ty = &types[i % types.len()];
-            let op = if bulk && round + 1 == rounds {
-                let v = bulk_value(r, ty, 0);
-                crdt_model::diff::diff(&mut ws[i], states[i].as_ref().and_then(|s| s.slot(ty.enc())).filter(|s| s.present()), ty, &v)
-            } else {
-                random_op(r, &mut ws[i], ty, states[i].as_ref())
-            };
-            match op {
-                Some(d) => {
-                    mapply(&mut states[i], d.clone());
-                    commits.push(MCommit { w: ws[i].clone(), delta: d });
-                }
-                None => ws[i] = before,
-            }
-        }
-    }
-    commits
+    crdt_model::r#gen::history(r, types, sources, rounds, true, false, false)
 }
 
 /// The model's schema type as a writer's view (identity projection, no defaults).

@@ -1525,6 +1525,8 @@ impl Engine {
 #[cfg(test)]
 mod tests_carried;
 #[cfg(test)]
+mod tests_forged;
+#[cfg(test)]
 mod tests {
     #![allow(clippy::unwrap_used)]
     use crate::Mutation;

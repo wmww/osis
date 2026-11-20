@@ -3,7 +3,7 @@
 //! stamping many writes of which only some die.
 
 use crate::delta::DeltaBuilder;
-use crate::fragment::{Elem, Fragment, Key, Meta};
+use crate::fragment::{Elem, Fragment, Meta};
 use crate::ops::{Op, PathOp, Writer};
 use crate::seq::{Seq, SeqContent, SeqElem};
 use crate::stamp::{Dot, Source, Stamp};
@@ -23,6 +23,10 @@ struct Raw {
     /// A creation's own position write: it beats position writes below it, but is the
     /// creation, not a write of its own.
     shadow: bool,
+    /// A set element's register write: the value its copy holds.
+    value: Option<Value>,
+    /// A set's value removal: its reference and parts.
+    removal: Option<(Value, Vec<crate::stamp::DotRange>)>,
 }
 
 /// Every write `f` holds, by position as `winners` keys them: every record of a map dot, both
@@ -34,7 +38,7 @@ fn raw(f: &Fragment) -> Vec<Raw> {
 }
 
 fn put(out: &mut Vec<Raw>, path: &[Place], kind: Kind, s: &Stamp) {
-    out.push(Raw { w: Won { path: path.to_vec(), kind, stamp: s.clone() }, text_creation: false, shadow: false });
+    out.push(Raw { w: Won { path: path.to_vec(), kind, stamp: s.clone() }, text_creation: false, shadow: false, value: None, removal: None });
 }
 
 fn walk(f: &Fragment, path: &mut Vec<Place>, out: &mut Vec<Raw>) {
@@ -76,23 +80,18 @@ fn walk(f: &Fragment, path: &mut Vec<Place>, out: &mut Vec<Raw>) {
             meta(out, path, &b.meta);
             for (d, e) in &b.elems {
                 if let Some(g) = &e.gone {
-                    path.push(Place::Gone(Key(std::sync::Arc::new(g.value.clone())), d.clone(), g.seen.clone()));
+                    path.push(Place::Gone(d.clone()));
                     put(out, path, Kind::Reset, &g.stamp);
+                    out.last_mut().unwrap().removal = Some((g.value.clone(), g.seen.clone()));
                     path.pop();
                 }
                 path.push(Place::Elem(d.clone()));
                 e.reset.iter().for_each(|s| put(out, path, Kind::Reset, s));
-                match e.written() {
-                    Some((Some(v @ (Value::Strong(_) | Value::Weak(_) | Value::Ticket(_))), s)) => {
-                        path.push(Place::Ref(Key(std::sync::Arc::new(v.clone()))));
-                        put(out, path, Kind::Value, s);
-                        path.pop();
-                    }
-                    _ => {
-                        if let Some(x) = e.frag.as_deref() {
-                            inside(x, path, out);
-                        }
-                    }
+                if let Some(x) = e.frag.as_deref() {
+                    let from = out.len();
+                    inside(x, path, out);
+                    let v = e.written().and_then(|w| w.0.cloned());
+                    out[from..].iter_mut().filter(|r| r.w.kind == Kind::Value).for_each(|r| r.value = v.clone());
                 }
                 path.pop();
             }
@@ -133,10 +132,10 @@ fn walk(f: &Fragment, path: &mut Vec<Place>, out: &mut Vec<Raw>) {
                     let (d, e) = crate::seq_span::piece(d, e, k, 1);
                     path.push(Place::Item(d.clone()));
                     if let Some((c, _)) = &e.created {
-                        out.push(Raw { w: Won { path: path.clone(), kind: Kind::Created, stamp: c.clone() }, text_creation: s.text && !d.src.is_derived(), shadow: false });
+                        out.push(Raw { w: Won { path: path.clone(), kind: Kind::Created, stamp: c.clone() }, text_creation: s.text && !d.src.is_derived(), shadow: false, value: None, removal: None });
                     }
                     for p in &e.pos {
-                        out.push(Raw { w: Won { path: path.clone(), kind: Kind::Pos, stamp: p.0.clone() }, text_creation: false, shadow: p.0.dot == d });
+                        out.push(Raw { w: Won { path: path.clone(), kind: Kind::Pos, stamp: p.0.clone() }, text_creation: false, shadow: p.0.dot == d, value: None, removal: None });
                     }
                     if let Some((st, v)) = &e.deleted {
                         let kind = match (s.text, v) {
@@ -144,7 +143,7 @@ fn walk(f: &Fragment, path: &mut Vec<Place>, out: &mut Vec<Raw>) {
                             (true, true) => Kind::Delete,
                             (true, false) => Kind::Undelete,
                         };
-                        out.push(Raw { w: Won { path: path.clone(), kind, stamp: st.clone() }, text_creation: false, shadow: false });
+                        out.push(Raw { w: Won { path: path.clone(), kind, stamp: st.clone() }, text_creation: false, shadow: false, value: None, removal: None });
                     }
                     if let SeqContent::Frag(x) = &e.content {
                         inside(x, path, out);
@@ -161,7 +160,10 @@ fn walk(f: &Fragment, path: &mut Vec<Place>, out: &mut Vec<Raw>) {
 fn pruned(w: &Raw, all: &[Raw]) -> bool {
     let prefix = |p: &[Place]| w.w.path.starts_with(p);
     // a value removal of a set: its tid's elements there, hidden (§5.5)
-    let removes = |s: &Raw| matches!((s.w.path.split_last(), w.w.path.as_slice()), (Some((Place::Gone(g, _, seen), at)), [up @ .., Place::Elem(d), Place::Ref(t)]) if at == up && g == t && seen.iter().any(|r| r.covers(d)));
+    let removes = |s: &Raw| match (s.w.path.split_last(), w.w.path.as_slice(), &s.removal, &w.value) {
+        (Some((Place::Gone(_), at)), [up @ .., Place::Elem(d), Place::In], Some((g, seen)), Some(v)) => at == up && g == v && seen.iter().any(|r| r.covers(d)),
+        _ => false,
+    };
     all.iter().any(|s| {
         s.w.stamp > w.w.stamp
             && match s.w.kind {
@@ -247,9 +249,9 @@ fn winners_check(seed: u64, types: &[Ty], honest: bool) {
             won.note(&x.winners(), |_, _| ());
         }
         for w in &dead {
-            assert!(won.first_superseding(w, |s, _| Some(s.ts)).is_some(), "a dead write dies by a write winning before or after the join: {w:?} in {ab:?}");
+            assert!(won.first_superseding(w, &ab.hiders(), |s, _| Some(s.ts)).is_some(), "a dead write dies by a write winning before or after the join: {w:?} in {ab:?}");
             assert!(a.holds_stamp(&w.stamp), "a dead write is the side's by exact stamp: {w:?}");
-            assert!(other.first_superseding(w, |_, _| Some(w.stamp.ts)).is_some(), "a dead write dies by a write the other side holds: {w:?} in {ab:?}");
+            assert!(other.first_superseding(w, &ab.hiders(), |_, _| Some(w.stamp.ts)).is_some(), "a dead write dies by a write the other side holds: {w:?} in {ab:?}");
         }
     }
 }
@@ -265,13 +267,14 @@ fn first_superseding_check(bodies: &[Fragment]) {
         ix.note(&b.held_writes(), |_, x| *x = Some(x.map_or(d, |y| y.min(d))));
     }
     let all: Vec<Raw> = bodies.iter().flat_map(raw).collect();
+    let hiders = bodies.iter().fold(Fragment::default(), |f, b| join(&f, b)).hiders();
     for w in all.iter().filter(|w| !w.shadow) {
         let undeleted = all.iter().filter(|s| s.w.kind == Kind::Undelete && s.w.path == w.w.path).map(|s| &s.w.stamp).max();
-        let counts = |s: &Raw| kills(s, w) && !(w.text_creation && s.w.kind == Kind::Delete && undeleted.is_some_and(|u| s.w.stamp <= *u));
+        let counts = |s: &Raw| kills(s, w) && !(w.text_creation && s.w.kind == Kind::Delete && undeleted.is_some_and(|u| s.w.stamp < *u));
         let want = bodies.iter().filter(|b| raw(b).iter().any(counts)).map(date).min();
-        assert_eq!(ix.first_superseding(&w.w, |_, x| *x), want, "the earliest body superseding {w:?}");
+        assert_eq!(ix.first_superseding(&w.w, &hiders, |_, x| *x), want, "the earliest body superseding {w:?}");
         let by_stamp = all.iter().filter(|s| counts(s)).map(|s| s.w.stamp.ts).min();
-        assert_eq!(ix.first_superseding(&w.w, |s, _| Some(s.ts)), by_stamp, "the earliest write superseding {w:?}");
+        assert_eq!(ix.first_superseding(&w.w, &hiders, |s, _| Some(s.ts)), by_stamp, "the earliest write superseding {w:?}");
     }
 }
 
@@ -420,4 +423,107 @@ fn record_pair_cross_death_spec_5_6() {
         assert!(pw.contains(gone.iter().next().unwrap()));
         assert!(ab.holds_stamp(&gone.iter().next().unwrap().stamp), "each record keeps its write");
     }
+}
+
+/// A set of the given element records (§5.5).
+fn set_of(elems: Vec<(Dot, Elem)>) -> Fragment {
+    Fragment::Set(crate::fragment::Set { meta: Meta::default(), elems: elems.into_iter().collect() })
+}
+
+/// Set element `v` written at `s`.
+fn elem_at(s: &Stamp, v: Value) -> Elem {
+    use crate::fragment::{RegWrite, Register};
+    Elem { reset: None, frag: Some(Box::new(Fragment::Register(Register { reset: None, write: Some(RegWrite { stamp: s.clone(), value: Some(v) }) }))), gone: None }
+}
+
+/// A value removal of `v` at `s`, naming the parts of `x()` from counter 1 below `hi`.
+fn removal_at(s: &Stamp, v: Value, hi: u64) -> Elem {
+    let seen = vec![crate::stamp::DotRange { first: Dot::new(x(), 1), hi }];
+    Elem { reset: None, frag: None, gone: Some(crate::fragment::Removal { stamp: s.clone(), value: v, seen }) }
+}
+
+/// The writes a join of `y` into `st` kills, each dated as the engine dates it (`Killed::note`:
+/// the writes held at the reach before and after the join and in `y`, and what hides a write in
+/// the join), the reach law checked first.
+fn killed(st: &Fragment, y: &Fragment) -> Vec<(Won, Option<Ts>)> {
+    let after = join(st, y);
+    crate::tests_model::reach_holds_the_change(st, &after, y);
+    let at = st.reach(y);
+    let at_after = after.reach_after(y, &at);
+    let mut before = at.winners();
+    before.extend(y.winners());
+    let mut by: ByWrite<()> = ByWrite::default();
+    for f in [&at, y, &at_after] {
+        by.note(&f.held_writes(), |_, _| ());
+    }
+    let hiders = at_after.hiders();
+    before.minus(&at_after.winners()).into_iter().map(|w| { let t = by.first_superseding(&w, &hiders, |s, _| Some(s.ts)); (w, t) }).collect()
+}
+
+/// §4.1 Copy order, §4.8 Which write: copies of a set element's write (one stamp) holding a
+/// reference and a plain value, or two references, are one write: whichever copy wins the join,
+/// nothing dies (a forged copy, as a snapshot carries it; a node finding a death with no
+/// superseder there failed the join with a local error).
+#[test]
+fn set_element_copies_are_one_write_whatever_they_hold_spec_4_1() {
+    let (d, s) = (Dot::new(x(), 1), Stamp::new(ts(5), x(), 1));
+    let (strong, weak) = (Value::Strong(Tid::from_bytes([0; 15])), Value::Weak(Tid::from_bytes([2; 15])));
+    for (a, b) in [(Value::Int(5), strong.clone()), (strong, weak)] {
+        let (fa, fb) = (set_of(vec![(d.clone(), elem_at(&s, a.clone()))]), set_of(vec![(d.clone(), elem_at(&s, b.clone()))]));
+        assert!(killed(&fa, &fb).is_empty(), "{a:?} then {b:?}");
+        assert!(killed(&fb, &fa).is_empty(), "{b:?} then {a:?}");
+    }
+}
+
+/// §4.1, §4.8 When, §5.5: a copy of a set element's write that wins the join and holds a reference
+/// a held value removal names is hidden: the write dies at that removal, the one hiding it in the
+/// state as joined, never at an earlier removal of the copy it replaced. And copies of a removal
+/// naming other references are one write: the element the losing copy hid shows again (no
+/// death), the one the winning copy hides dies at it.
+#[test]
+fn a_copy_hidden_by_a_removal_dies_at_it_spec_4_8() {
+    let (t_a, t_b) = (Value::Strong(Tid::from_bytes([1; 15])), Value::Strong(Tid::from_bytes([2; 15])));
+    let (d, s) = (Dot::new(x(), 1), Stamp::new(ts(5), x(), 1));
+    let (ra, rb) = (Dot::new(x(), 7), Dot::new(x(), 8));
+    // removals of A at t7 and of B at t9, both naming d's part
+    let st = set_of(vec![(d.clone(), elem_at(&s, t_a.clone())), (rb.clone(), removal_at(&Stamp::new(ts(9), x(), 8), t_b.clone(), 4))]);
+    let y = set_of(vec![(d.clone(), elem_at(&s, t_b.clone())), (ra.clone(), removal_at(&Stamp::new(ts(7), x(), 7), t_a.clone(), 4))]);
+    for (a, b) in [(&st, &y), (&y, &st)] {
+        let k = killed(a, b);
+        assert_eq!(k.iter().map(|(w, t)| (w.kind, w.stamp.clone(), *t)).collect::<Vec<_>>(), vec![(Kind::Value, s.clone(), Some(ts(9)))], "dies at B's removal, never A's");
+    }
+    // copies of one removal (t8), naming A in one and B in the other; e holds B
+    let (e, se) = (Dot::new(x(), 2), Stamp::new(ts(5), x(), 2));
+    let base = set_of(vec![(d.clone(), elem_at(&s, t_a.clone())), (e.clone(), elem_at(&se, t_b.clone())), (rb.clone(), removal_at(&Stamp::new(ts(8), x(), 8), t_a.clone(), 4))]);
+    let copy = set_of(vec![(rb.clone(), removal_at(&Stamp::new(ts(8), x(), 8), t_b.clone(), 4))]);
+    let k = killed(&base, &copy);
+    assert_eq!(k.iter().map(|(w, t)| (w.path.clone(), *t)).collect::<Vec<_>>(), vec![(vec![Place::Elem(e.clone()), Place::In], Some(ts(8)))], "e dies at the removal as joined; d shows again");
+    assert_eq!(join(&base, &copy).read(), Some(Value::Set([t_a].into_iter().collect())));
+}
+
+/// §4.1, §5.1, §7: copies of one stamp (a forged copy), one a text's reset (`remove_aspect`), the
+/// other a register write at the position: the write implies the reset, so it stands for it and
+/// nothing dies, in either order.
+#[test]
+fn a_register_write_stands_for_a_reset_copy_of_its_stamp_spec_5_1() {
+    use crate::fragment::{RegWrite, Register};
+    let s = Stamp::new(ts(5), x(), 3);
+    let reset = Fragment::Seq(Seq::new(true, Meta { reset: Some(s.clone()), ..Meta::default() }, BTreeMap::new()));
+    let write = Fragment::Register(Register { reset: None, write: Some(RegWrite { stamp: s, value: Some(Value::Int(2)) }) });
+    assert!(killed(&reset, &write).is_empty());
+    assert!(killed(&write, &reset).is_empty());
+}
+
+/// §4.1, §4.8 When, §5.7: an undelete and a forged copy of its flag write that is a delete (one
+/// stamp): the delete wins the tie, so the element's creation dies, at that stamp, as does the
+/// undelete.
+#[test]
+fn a_delete_copy_of_an_undelete_kills_the_creation_at_its_stamp_spec_4_8() {
+    let d = Dot::new(x(), 1);
+    let (c, f) = (Stamp::new(ts(4), x(), 1), Stamp::new(ts(25), x(), 7));
+    let one = |el: SeqElem| Fragment::Seq(Seq::new(true, Meta::default(), BTreeMap::from([(d.clone(), el)])));
+    let undeleted = one(SeqElem { created: Some((c.clone(), crate::seq::Anchor::Head)), content: SeqContent::Char('d'), pos: vec![(c.clone(), crate::seq::Anchor::Head, None)], deleted: Some((f.clone(), false)), undel: Some('d'), ..SeqElem::bare() });
+    let deleted = one(SeqElem { deleted: Some((f.clone(), true)), ..SeqElem::bare() });
+    let k: Vec<(Kind, Stamp, Option<Ts>)> = killed(&undeleted, &deleted).into_iter().map(|(w, t)| (w.kind, w.stamp, t)).collect();
+    assert_eq!(k, vec![(Kind::Created, c, Some(ts(25))), (Kind::Undelete, f, Some(ts(25)))]);
 }
