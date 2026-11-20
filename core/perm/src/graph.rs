@@ -751,18 +751,18 @@ impl<'a> View<'a> {
     /// taken in the order the edge state lists them; with the earliest `until` it followed. A
     /// mint ancestor two or more record edges up reaches a thing by its direct edge only as a hop
     /// marked direct (notes/a1-spec/permissions.md §1 Path, Direct mark): ways are the fewest
-    /// marked hops first, then the fewest edges, so a descent is stated wherever one gives the
-    /// need and the mark only where the direct edge alone does. With no such edge held this is
-    /// the breadth-first search. O(things reaching `y` × their edges into it × log).
+    /// edges (a descent counts each record edge), then the fewest marked hops, so a far mint
+    /// ancestor's direct edge is stated wherever it gives the need: a write rests on the one
+    /// edge rather than the record chain. The breadth-first search, ties to fewer marks. O(things reaching `y` × their edges into it × log).
     pub(crate) fn ways_to(&self, y: &Tid, need: Need) -> (Ways, Option<WallMs>) {
         let mut expires: Option<WallMs> = None;
         let mut next: BTreeMap<Tid, Tid> = BTreeMap::new();
         let mut settled: BTreeSet<Tid> = BTreeSet::new();
-        // (marked hops, edges, order met) → (thing, the thing it reaches next)
+        // (edges, marked hops, order met) → (thing, the thing it reaches next)
         let mut queue: BTreeMap<(u32, u32, u64), (Tid, Option<Tid>)> = BTreeMap::from([((0, 0, 0), (*y, None))]);
         let mut met = 0u64;
         let role = need.role();
-        while let Some(((marks, len, _), (t, via))) = queue.pop_first() {
+        while let Some(((len, marks, _), (t, via))) = queue.pop_first() {
             if !settled.insert(t) {
                 continue;
             }
@@ -783,7 +783,7 @@ impl<'a> View<'a> {
             for (m, marked) in found {
                 if !settled.contains(&m) {
                     met += 1;
-                    queue.insert((marks + u32::from(marked), len + 1, met), (m, Some(t)));
+                    queue.insert((len + 1, marks + u32::from(marked), met), (m, Some(t)));
                 }
             }
         }

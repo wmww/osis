@@ -399,8 +399,8 @@ pub(crate) fn interim_path(signer: Tid, actor: Tid) -> osis_commit::Path {
 pub(crate) type Found = (Vec<Tid>, osis_base::format::PathMarks, bool);
 
 /// The path from `node` into `tid` giving at least `need` at `ts` (notes/a1-spec/permissions.md §1 Path):
-/// `Found`, a descent wherever one gives it and a hop marked direct only where a mint ancestor's
-/// direct edge alone does (`osis_perm::graph::View::ways_to`). A thing the commit creates
+/// `Found`, the fewest edges, then the fewest hops marked direct: a mint ancestor's direct edge
+/// giving it is stated, marked, before the descent (`osis_perm::graph::View::ways_to`). A thing the commit creates
 /// (`records`) is reached as its mint admin is, then by its record edge. `None`: no path gives it.
 pub(crate) fn path_with(core: &Core, node: Tid, records: Records<'_>, tid: &Tid, need: Need, ts: Ts) -> Option<Found> {
     if *tid == node {

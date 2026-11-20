@@ -587,8 +587,9 @@ fn finding_an_invite_grants_path_does_not_grow_with_history_spec_wire_4() {
 // (detaching T from its folder). A's later content and role writes on T state the empty path with
 // its one hop marked direct (A's own grant: the descent is cut, so no unmarked path gives the
 // role), and are applied by today's walk and by the new walk alike: B, granted write, reads A's
-// value; no edge write's verdict or final role differs. Before the detach, A's writes state the
-// descent, unmarked (a descent wherever one gives the need).
+// value; no edge write's verdict or final role differs. Before its own grant, A's writes state the
+// descent, unmarked; once it holds the grant, the marked hop (the fewest edges), before the detach
+// too.
 #[test]
 fn a_detached_things_owner_states_a_marked_hop_both_walks_apply_spec_wire_4() {
     let (mut lp, ps) = people(2);
@@ -599,6 +600,9 @@ fn a_detached_things_owner_states_a_marked_hop_both_walks_apply_spec_wire_4() {
     m.set(t, &REG, &s("before")).unwrap();
     let before = lp.peers[0].commit(m).unwrap().unwrap();
     grant(&mut lp, 0, t, ps[0], edge_of(Role::Admin));
+    let mut m = Mutation::new();
+    m.set(t, &REG, &s("both routes")).unwrap();
+    let both = lp.peers[0].commit(m).unwrap().unwrap();
     remove(&mut lp, 0, t, g);
     let mut m = Mutation::new();
     m.set(t, &REG, &s("detached")).unwrap();
@@ -614,6 +618,7 @@ fn a_detached_things_owner_states_a_marked_hop_both_walks_apply_spec_wire_4() {
     assert_eq!(path(before), osis_commit::Path::default(), "the descent, unmarked");
     let marked = osis_commit::Path { purge: 0, things: vec![], direct: 1 };
     assert_eq!(path(content), marked);
+    assert_eq!(path(both), marked, "the direct edge, fewer edges than the descent");
     assert!(!role.is_empty() && role.iter().all(|id| path(*id) == marked), "{role:?}");
     assert_eq!(lp.peers[1].engine.get(&t, &ak("t:reg.0")).unwrap(), Some(s("detached")), "B reads A's write");
     assert_eq!(lp.peers[1].engine.core.timelines.role(&ps[1], &t, At::END), Some(Role::Write));
