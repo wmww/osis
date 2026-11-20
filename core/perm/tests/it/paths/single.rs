@@ -250,16 +250,16 @@ fn mk(id: u64, ts: u64, signer: u32, parts: Vec<Part>) -> Commit {
 /// listing `list`.
 fn ew(on: u32, path: &[u32], holder: u32, role: Option<Role>, list: &[u64]) -> Part {
     let frontier = Some(Arc::new(Frontier::new(list.iter().map(|&c| cm(c)))));
-    Part { on: th(on), path: path.iter().map(|&x| th(x)).collect(), kind: PartKind::Edge(EdgeWrite { holder: th(holder), value: role.map(Edge::new), frontier, remains: None, adminless: false }) }
+    Part { on: th(on), path: path.iter().map(|&x| th(x)).collect(), direct: 0, kind: PartKind::Edge(EdgeWrite { holder: th(holder), value: role.map(Edge::new), frontier, remains: None, adminless: false }) }
 }
 
 fn role_delta(on: u32, path: &[u32]) -> Part {
     let d = Delta { aspect: Ak::new("keys.0").unwrap(), needs: Role::Write, purge_author: 0, retention: PurgeBy::AuthorOrAdmin, class: DeltaClass::RoleClass };
-    Part { on: th(on), path: path.iter().map(|&x| th(x)).collect(), kind: PartKind::Delta(d) }
+    Part { on: th(on), path: path.iter().map(|&x| th(x)).collect(), direct: 0, kind: PartKind::Delta(d) }
 }
 
 fn vouch(on: u32, removal: u64, list: &[u64]) -> Part {
-    Part { on: th(on), path: vec![], kind: PartKind::Vouch { removal: cm(removal), list: Frontier::new(list.iter().map(|&c| cm(c))) } }
+    Part { on: th(on), path: vec![], direct: 0, kind: PartKind::Vouch { removal: cm(removal), list: Frontier::new(list.iter().map(|&c| cm(c))) } }
 }
 
 const H: u32 = 1;
@@ -383,14 +383,14 @@ fn every_forget_of_a_world_of_every_case_reads_as_from_scratch() {
 /// A `doc.0` delta on `on` along `path` of `retention`, its signer its purge author.
 fn doc(on: u32, path: &[u32], retention: PurgeBy) -> Part {
     let d = Delta { aspect: Ak::new("doc.0").unwrap(), needs: Role::Write, purge_author: 0, retention, class: DeltaClass::Plain };
-    Part { on: th(on), path: path.iter().map(|&x| th(x)).collect(), kind: PartKind::Delta(d) }
+    Part { on: th(on), path: path.iter().map(|&x| th(x)).collect(), direct: 0, kind: PartKind::Delta(d) }
 }
 
 /// A purge request on `on` along `path` naming `names` on `doc.0` (a destruction: on `created.0`).
 fn req(on: u32, path: &[u32], names: Names) -> Part {
     let aspect = Ak::new(if names == Names::Destroy { "created.0" } else { "doc.0" }).unwrap();
     let d = Delta { aspect, needs: Role::Write, purge_author: 0, retention: PurgeBy::AuthorOrAdmin, class: DeltaClass::Purge { names } };
-    Part { on: th(on), path: path.iter().map(|&x| th(x)).collect(), kind: PartKind::Delta(d) }
+    Part { on: th(on), path: path.iter().map(|&x| th(x)).collect(), direct: 0, kind: PartKind::Delta(d) }
 }
 
 /// A world of every purge case (draft §6): H grants X admin on A (1); H's `writer` delta on A
@@ -534,4 +534,26 @@ fn liveness_reads_alike_in_every_arrival_order() {
         assert_eq!(differs(&mut p, &mut scratch, false), None, "order {order:?}");
     }
     assert_eq!(alike(&recs(), &BTreeSet::new(), &c, 3, true), None);
+}
+
+// notes/perm-paths.md, Components and inert parts: a part arriving inert (B holds nothing on A,
+// so its path through [A] waits) ordered before a lowering already judged on an edge it rests on
+// (H's removal of A's record edge on T1, by H's marked direct hop) is put in question by that
+// lowering as from scratch: its component is walked again from it. Arriving last, it was left
+// out of the lowering's drops.
+#[test]
+fn an_inert_part_arriving_before_a_judged_lowering_is_dropped_by_it() {
+    let mut w = m::account();
+    let g = w.push(m::H, 1, &[m::A], m::T1, m::Kind::set(m::H, roles_model::Role::Admin));
+    w.push_marked(m::H, 6, &[], m::T1, m::Kind::set(m::A, roles_model::Role::None).listing(w.cut(&[g])), &[0]);
+    let late = w.push(m::B, 2, &[m::A], m::T1, m::Kind::set(m::N5, roles_model::Role::None));
+    let inp = input(&w, &m::View::all(&w));
+    let mut one = Paths::single(&inp.records, BTreeSet::new());
+    one.add(&inp.commits);
+    let mut p = Paths::new(&inp.records, BTreeSet::new());
+    for c in &inp.commits {
+        p.add(std::slice::from_ref(c));
+    }
+    let id = inp.ids[&late];
+    assert_eq!((p.status(&id), one.status(&id)), (Some(Status::Dropped), Some(Status::Dropped)));
 }

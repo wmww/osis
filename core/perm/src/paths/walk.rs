@@ -660,7 +660,7 @@ impl Walk {
                 PartKind::Vouch { .. } => None,
                 PartKind::Delta(_) => continue,
             };
-            let sh = shape(&self.mint, c.signer, &p.path, p.on, holder, true);
+            let sh = shape(&self.mint, c.signer, &p.path, p.direct, p.on, holder, true);
             let on = self.thing(&p.on);
             let hops: Vec<E> = sh.hops.iter().map(|&e| self.intern(e)).collect();
             // the part on an edge of the commit's own path comes last on its thing: a self-removal
@@ -746,8 +746,16 @@ impl Walk {
             for e in dead {
                 self.waiting.entry(e).or_default().push(s);
             }
+            // a lowering after it on an edge it rests on, judged already, would drop it: walk its
+            // component again from it
+            let k = it.key;
             for e in rests {
                 self.inert_rest[e].insert(s);
+                let c = self.find(e);
+                if self.comps.contains_key(&c) {
+                    let d = self.dirty.entry(c).or_insert((k, BTreeSet::new()));
+                    d.0 = d.0.min(k);
+                }
             }
         } else {
             self.activate(s);
@@ -1609,8 +1617,9 @@ impl Walk {
     }
 
     /// Edge `e` read back along the writes this pass applied on it before `key`, latest first,
-    /// passing over the drops and the grants that do not keep in turn: the first left decides by
-    /// `accept`; with none left, a record edge keeps.
+    /// passing over the drops and the grants that do not keep in turn, and reading through the
+    /// self-removals (each must pass `accept` too: `Leaves`): the first left decides by `accept`;
+    /// with none left, a record edge keeps.
     fn setter_keeps(&mut self, l: &Judging, cdrops: &[Slot], e: E, key: Key, accept: Accept, chk: &mut Check) -> bool {
         self.chase(l, cdrops, Frame::Setter { e, upper: key, start: key, accept }, chk)
     }
@@ -1655,17 +1664,17 @@ impl Walk {
                 Frame::Setter { e, mut upper, start, accept } => {
                     // (the bounds answered: from this one up to `start`; the deciding entry's key,
                     // none: no setter left)
-                    let mut decided: Option<(Bound<Key>, Option<Key>)> = None;
+                    let mut decided: Option<(Bound<Key>, Option<Key>, Leaves)> = None;
                     if ret.take() == Some(true) {
-                        decided = Some((Excluded(upper), Some(upper)));
+                        decided = Some((Excluded(upper), Some(upper), Leaves::NONE));
                     }
                     while decided.is_none() {
-                        if let Some(&d) = chk.found.get(&(e, upper)) {
-                            decided = Some((Included(upper), d));
+                        if let Some(&(d, lv)) = chk.found.get(&(e, upper)) {
+                            decided = Some((Included(upper), d, lv));
                             break;
                         }
                         let Some((&k, &Entry { slot: j, .. })) = self.hist[e].range(..upper).next_back() else {
-                            decided = Some((Unbounded, None));
+                            decided = Some((Unbounded, None, Leaves::NONE));
                             break;
                         };
                         upper = k;
@@ -1674,7 +1683,11 @@ impl Walk {
                             continue;
                         }
                         let jt = &self.items[j];
-                        let decides = jt.lowering_shape() || jt.leave || match chk.memo.get(&j) {
+                        // a self-removal lowers: read through, its value taken in `Leaves` below
+                        if jt.leave {
+                            continue;
+                        }
+                        let decides = jt.lowering_shape() || match chk.memo.get(&j) {
                             Some(&m) => m,
                             None => {
                                 stack.push(Frame::Setter { e, upper, start, accept });
@@ -1683,18 +1696,24 @@ impl Walk {
                             }
                         };
                         if decides {
-                            decided = Some((Excluded(k), Some(k)));
+                            decided = Some((Excluded(k), Some(k), Leaves::NONE));
                         }
                     }
-                    let (lo, d) = decided.unwrap_or((Included(start), None));
-                    let passed: Vec<Key> = self.hist[e].range((lo, Excluded(start))).map(|(k, _)| *k).collect();
-                    for b in passed.into_iter().chain([start]) {
-                        chk.found.insert((e, b), d);
+                    let (lo, d, mut lv) = decided.unwrap_or((Included(start), None, Leaves::NONE));
+                    // per bound, the self-removals left between the decider and it
+                    let passed: Vec<(Key, Slot, Option<Edge>)> = self.hist[e].range((lo, Excluded(start))).map(|(k, y)| (*k, y.slot, y.a.value)).collect();
+                    for (b, j, v) in passed {
+                        chk.found.insert((e, b), (d, lv));
+                        if self.items[j].leave && !cdrops.contains(&j) && !self.gone(l, j) {
+                            lv = lv.with(v.as_ref());
+                        }
                     }
-                    ret = Some(match d.and_then(|k| self.hist[e].get(&k)) {
-                        Some(y) => Self::accepts(accept, y.a.value.as_ref()),
-                        None => self.record[e],
-                    });
+                    chk.found.insert((e, start), (d, lv));
+                    ret = Some(lv.passes(accept)
+                        && match d.and_then(|k| self.hist[e].get(&k)) {
+                            Some(y) => Self::accepts(accept, y.a.value.as_ref()),
+                            None => self.record[e],
+                        });
                 }
             }
         }
@@ -1901,11 +1920,36 @@ enum Frame {
 }
 
 /// One void check's memory: `keeps` per part, and per (edge, bound) the key of the entry
-/// deciding a scan below it (none: no setter left).
+/// deciding a scan below it (none: no setter left) and the self-removals left between them.
 #[derive(Default)]
 struct Check {
     memo: BTreeMap<Slot, bool>,
-    found: BTreeMap<(E, Key), Option<Key>>,
+    found: BTreeMap<(E, Key), (Option<Key>, Leaves)>,
+}
+
+/// The self-removals a scan reads through (draft §5.1 step 4; notes/path-model-findings.md 43):
+/// each lowers, so the edge past them gives what an `Accept` asks only where each of them does
+/// and the setter below them does: admin while every one is admin, until the earliest `until`.
+#[derive(Clone, Copy, Debug)]
+struct Leaves {
+    admin: bool,
+    until: Option<osis_base::WallMs>,
+}
+
+impl Leaves {
+    const NONE: Leaves = Leaves { admin: true, until: None };
+
+    fn with(self, v: Option<&Edge>) -> Leaves {
+        let until = match (self.until, v.and_then(|v| v.until)) {
+            (Some(a), Some(b)) => Some(a.min(b)),
+            (a, b) => a.or(b),
+        };
+        Leaves { admin: self.admin && v.is_some_and(|v| v.role == Role::Admin), until }
+    }
+
+    fn passes(self, accept: Accept) -> bool {
+        self.admin && Walk::accepts(accept, Some(&Edge { until: self.until, ..Edge::new(Role::Admin) }))
+    }
 }
 
 /// A table indexed by an interned number the walk made itself; an index past it reads its nil

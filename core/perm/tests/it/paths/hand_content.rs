@@ -567,12 +567,12 @@ fn ms(n: u64) -> Ts {
 
 fn role_class(on: u32, path: &[u32]) -> Part {
     let d = Delta { aspect: Ak::new("keys.0").unwrap(), needs: R::Admin, purge_author: 0, retention: PurgeBy::Admin, class: DeltaClass::RoleClass };
-    Part { on: t(on), path: path.iter().map(|&x| t(x)).collect(), kind: PartKind::Delta(d) }
+    Part { on: t(on), path: path.iter().map(|&x| t(x)).collect(), direct: 0, kind: PartKind::Delta(d) }
 }
 
 fn edge(on: u32, path: &[u32], holder: u32, value: Option<Edge>, listing: Option<&[u64]>) -> Part {
     let frontier = listing.map(|l| Arc::new(Frontier::new(l.iter().map(|&i| c(i)))));
-    Part { on: t(on), path: path.iter().map(|&x| t(x)).collect(), kind: PartKind::Edge(EdgeWrite { holder: t(holder), value, frontier, remains: None, adminless: false }) }
+    Part { on: t(on), path: path.iter().map(|&x| t(x)).collect(), direct: 0, kind: PartKind::Edge(EdgeWrite { holder: t(holder), value, frontier, remains: None, adminless: false }) }
 }
 
 fn c(i: u64) -> CommitId {
@@ -649,13 +649,13 @@ fn a_vouch_counts_against_a_removal_of_a_holder_already_gone() {
         commit(1, 1, KH, vec![edge(KA, &[], KX, admin(), Some(&[]))]),
         commit(2, 1, KH, vec![edge(KA, &[], KB, admin(), Some(&[]))]),
         commit(3, 2, KX, vec![edge(KT, &[KA], 7, Some(Edge::new(R::Write)), Some(&[]))]),
-        commit(4, 3, KX, vec![Part { on: t(KA), path: vec![], kind: PartKind::Edge(EdgeWrite { holder: t(KX), value: None, frontier: None, remains: Some(t(KH)), adminless: false }) }]),
+        commit(4, 3, KX, vec![Part { on: t(KA), path: vec![], direct: 0, kind: PartKind::Edge(EdgeWrite { holder: t(KX), value: None, frontier: None, remains: Some(t(KH)), adminless: false }) }]),
         commit(5, 6, KH, vec![edge(KA, &[], KX, None, Some(&[4]))]),
     ];
     let p = Paths::evaluate(&recs(), BTreeSet::new(), &commits);
     assert_eq!((p.status(&WriteId(c(4), 0)), p.status(&WriteId(c(5), 0))), (Some(Status::Applied), Some(Status::Applied)));
     assert_eq!(p.status(&WriteId(c(3), 0)), Some(Status::Dropped));
-    let vouch = commit(6, 7, KB, vec![Part { on: t(KT), path: vec![t(KA)], kind: PartKind::Vouch { removal: c(5), list: Frontier::new([c(3)]) } }]);
+    let vouch = commit(6, 7, KB, vec![Part { on: t(KT), path: vec![t(KA)], direct: 0, kind: PartKind::Vouch { removal: c(5), list: Frontier::new([c(3)]) } }]);
     let p = Paths::evaluate(&recs(), BTreeSet::new(), &[commits, vec![vouch]].concat());
     assert_eq!(p.counting(), &BTreeSet::from([(c(5), c(3), t(KT))]));
     assert_eq!(p.status(&WriteId(c(3), 0)), Some(Status::Applied));
@@ -674,12 +674,12 @@ fn a_counting_entry_keeps_its_commits_parts_on_its_vouchs_thing_alone() {
         commit(2, 1, KH, vec![edge(KT, &[KA], KB, admin(), Some(&[]))]),
         commit(3, 2, KX, vec![edge(KT, &[KA], 7, Some(Edge::new(R::Write)), Some(&[])), edge(KS, &[KA], 7, Some(Edge::new(R::Write)), Some(&[]))]),
         commit(5, 6, KH, vec![edge(KA, &[], KX, None, Some(&[]))]),
-        commit(6, 7, KB, vec![Part { on: t(KT), path: vec![], kind: PartKind::Vouch { removal: c(5), list: Frontier::new([c(3)]) } }]),
+        commit(6, 7, KB, vec![Part { on: t(KT), path: vec![], direct: 0, kind: PartKind::Vouch { removal: c(5), list: Frontier::new([c(3)]) } }]),
     ];
     let p = Paths::evaluate(&recs(), BTreeSet::from([WriteId(c(5), 0)]), &commits);
     assert_eq!(p.counting(), &BTreeSet::from([(c(5), c(3), t(KT))]));
     assert_eq!((p.status(&WriteId(c(3), 0)), p.status(&WriteId(c(3), 1))), (Some(Status::Applied), Some(Status::Dropped)));
-    let on_s = commit(7, 7, KH, vec![Part { on: t(KS), path: vec![t(KA)], kind: PartKind::Vouch { removal: c(5), list: Frontier::new([c(3)]) } }]);
+    let on_s = commit(7, 7, KH, vec![Part { on: t(KS), path: vec![t(KA)], direct: 0, kind: PartKind::Vouch { removal: c(5), list: Frontier::new([c(3)]) } }]);
     let p = Paths::evaluate(&recs(), BTreeSet::from([WriteId(c(5), 0)]), &[commits, vec![on_s]].concat());
     assert_eq!(p.counting(), &BTreeSet::from([(c(5), c(3), t(KT)), (c(5), c(3), t(KS))]));
     assert_eq!((p.status(&WriteId(c(3), 0)), p.status(&WriteId(c(3), 1))), (Some(Status::Applied), Some(Status::Applied)));
@@ -688,7 +688,7 @@ fn a_counting_entry_keeps_its_commits_parts_on_its_vouchs_thing_alone() {
 fn admin_only(on: u32, path: &[u32], class: DeltaClass) -> Part {
     let aspect = Ak::new(if matches!(class, DeltaClass::Addendum { .. }) { "addenda.0" } else { "doc^.0" }).unwrap();
     let d = Delta { aspect, needs: R::Admin, purge_author: 0, retention: PurgeBy::AuthorOrAdmin, class };
-    Part { on: t(on), path: path.iter().map(|&x| t(x)).collect(), kind: PartKind::Delta(d) }
+    Part { on: t(on), path: path.iter().map(|&x| t(x)).collect(), direct: 0, kind: PartKind::Delta(d) }
 }
 
 // spec/permissions.md §5.2: an admin-only delta is judged with admin in place of write: cut by a
@@ -704,7 +704,7 @@ fn an_addendum_vouches_for_admin_only_content_only_by_admin() {
         commit(3, 1, KH, vec![edge(KA, &[], KN, Some(Edge::new(R::Write)), Some(&[]))]),
         commit(4, 2, KX, vec![admin_only(KT, &[KA], DeltaClass::Plain)]),
         commit(5, 2, KX, vec![role_class(KT, &[KA])]),
-        commit(6, 2, KX, vec![Part { kind: PartKind::Delta(Delta { aspect: Ak::new("doc.0").unwrap(), needs: R::Write, purge_author: 0, retention: PurgeBy::AuthorOrAdmin, class: DeltaClass::Plain }), ..role_class(KT, &[KA]) }]),
+        commit(6, 2, KX, vec![Part { direct: 0, kind: PartKind::Delta(Delta { aspect: Ak::new("doc.0").unwrap(), needs: R::Write, purge_author: 0, retention: PurgeBy::AuthorOrAdmin, class: DeltaClass::Plain }), ..role_class(KT, &[KA]) }]),
         commit(7, 5, KH, vec![edge(KA, &[], KX, Some(Edge::new(R::Write)), Some(&[]))]),
     ];
     let by = |signer, id| commit(id, 6, signer, vec![admin_only(KT, &[KA], DeltaClass::Addendum { removal: c(7), list: Frontier::new([c(4), c(5)]) })]);
@@ -724,7 +724,7 @@ fn an_addendum_vouches_for_no_commit_carrying_a_purge_request() {
     let base = vec![
         commit(1, 1, KH, vec![edge(KA, &[], KX, admin(), Some(&[]))]),
         commit(2, 1, KH, vec![edge(KA, &[], KB, admin(), Some(&[]))]),
-        commit(4, 2, KX, vec![admin_only(KT, &[KA], DeltaClass::Plain), Part { kind: PartKind::Delta(Delta { aspect: Ak::new("doc^.0").unwrap(), needs: R::Write, purge_author: 1, retention: PurgeBy::AuthorOrAdmin, class: DeltaClass::Purge { names: osis_perm::paths::Names::Author(t(KA)) } }), ..role_class(KT, &[KA]) }]),
+        commit(4, 2, KX, vec![admin_only(KT, &[KA], DeltaClass::Plain), Part { direct: 0, kind: PartKind::Delta(Delta { aspect: Ak::new("doc^.0").unwrap(), needs: R::Write, purge_author: 1, retention: PurgeBy::AuthorOrAdmin, class: DeltaClass::Purge { names: osis_perm::paths::Names::Author(t(KA)) } }), ..role_class(KT, &[KA]) }]),
         commit(5, 2, KX, vec![admin_only(KT, &[KA], DeltaClass::Plain)]),
         commit(7, 5, KH, vec![edge(KA, &[], KX, None, Some(&[]))]),
         commit(8, 6, KB, vec![admin_only(KT, &[KA], DeltaClass::Addendum { removal: c(7), list: Frontier::new([c(4), c(5)]) })]),
@@ -744,7 +744,7 @@ fn a_vouch_names_no_commit_ordered_after_its_removal() {
         commit(2, 1, KH, vec![edge(KT, &[KA], KB, admin(), Some(&[]))]),
         commit(5, 6, KH, vec![edge(KA, &[], KX, None, Some(&[]))]),
         commit(3, 7, KX, vec![role_class(KT, &[KA])]),
-        commit(6, 8, KB, vec![Part { on: t(KT), path: vec![], kind: PartKind::Vouch { removal: c(5), list: Frontier::new([c(3)]) } }]),
+        commit(6, 8, KB, vec![Part { on: t(KT), path: vec![], direct: 0, kind: PartKind::Vouch { removal: c(5), list: Frontier::new([c(3)]) } }]),
     ];
     let p = Paths::evaluate(&recs(), BTreeSet::new(), &commits);
     assert!(p.counting().is_empty());
@@ -759,7 +759,7 @@ const KG: u32 = 5;
 
 fn doc(on: u32, path: &[u32], aspect: &str, class: DeltaClass) -> Part {
     let d = Delta { aspect: Ak::new(aspect).unwrap(), needs: R::Write, purge_author: 0, retention: PurgeBy::AuthorOrAdmin, class };
-    Part { on: t(on), path: path.iter().map(|&x| t(x)).collect(), kind: PartKind::Delta(d) }
+    Part { on: t(on), path: path.iter().map(|&x| t(x)).collect(), direct: 0, kind: PartKind::Delta(d) }
 }
 
 fn plain(on: u32) -> Part {
@@ -775,7 +775,7 @@ fn snapshot(on: u32, aspect: &str, carries: &[u64]) -> Part {
 }
 
 fn vouch(on: u32, path: &[u32], removal: u64, list: &[u64]) -> Part {
-    Part { on: t(on), path: path.iter().map(|&x| t(x)).collect(), kind: PartKind::Vouch { removal: c(removal), list: Frontier::new(list.iter().map(|&i| c(i))) } }
+    Part { on: t(on), path: path.iter().map(|&x| t(x)).collect(), direct: 0, kind: PartKind::Vouch { removal: c(removal), list: Frontier::new(list.iter().map(|&i| c(i))) } }
 }
 
 /// H grants each of `who` admin on A at 1 (commit IDs 100 on).

@@ -112,10 +112,7 @@ fn only(mode: &str, k: u64) -> i32 {
         return 2;
     };
     if mode.starts_with("paths-tiny") {
-        let invites = mode.starts_with("paths-tiny-invites");
-        let rest = mode.strip_prefix(if invites { "paths-tiny-invites" } else { "paths-tiny" }).unwrap_or("");
-        let honest = if rest.starts_with("-honest-writers") { Honesty::Writers } else if rest.starts_with("-honest") { Honesty::Lists } else { Honesty::None };
-        let t = tiny_world(k, TinyMode { invites, honest }, &rules);
+        let t = tiny_world(k, TinyMode::named(mode), &rules);
         let mut st = TinyStats::default();
         tiny_check(k, &t, &rules, &mut st);
         println!("{mode} world {k}: trust {:?}, received {:?}\n{}commits:\n{}checks {:?}, noted {:?}, failing {:?}", t.v.trust, t.recv, tiny_trace(&t.w), whole(&t.w), st.checked, st.noted, st.fails);

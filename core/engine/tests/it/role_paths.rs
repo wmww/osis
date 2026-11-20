@@ -277,12 +277,12 @@ pub(crate) fn new_walk(e: &osis_engine::Engine) -> (osis_perm::paths::Paths, BTr
                         trust.insert(nid);
                     }
                     ids.insert(nid, (w, t));
-                    parts.push(Part { on: t, path: path.clone(), kind: PartKind::Edge(EdgeWrite { holder: op.holder, value: op.edge, frontier: c.frontier.clone(), remains: h.remains, adminless: h.adminless }) });
+                    parts.push(Part { on: t, path: path.clone(), direct: 0, kind: PartKind::Edge(EdgeWrite { holder: op.holder, value: op.edge, frontier: c.frontier.clone(), remains: h.remains, adminless: h.adminless }) });
                 }
             }
             for v in e.core.ix.held.vouches_on(&t).filter(|v| v.id == id) {
                 for (r, list) in &v.entries {
-                    parts.push(Part { on: t, path: path.clone(), kind: PartKind::Vouch { removal: *r, list: (**list).clone() } });
+                    parts.push(Part { on: t, path: path.clone(), direct: 0, kind: PartKind::Vouch { removal: *r, list: (**list).clone() } });
                 }
             }
         }

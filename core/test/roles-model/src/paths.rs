@@ -587,9 +587,12 @@ impl World {
     pub fn push(&mut self, signer: Thing, ts: u32, path: &[Thing], on: Thing, kind: Kind) -> Id {
         self.push_marked(signer, ts, path, on, kind, &[])
     }
-    /// `push` with the member pairs `direct` (by index: 0 joins the signer to the first member
-    /// after it) joined by their direct edge though the first is a mint ancestor of the second
-    /// (notes/a1-spec/README.md Open 21: a hop the path marks as direct; no wire form has one yet).
+    /// `push` with the hops `direct` (by index: hop 0 joins the signer to the first member after
+    /// it) marked direct: joined by their direct edge though the first is a mint ancestor of the
+    /// second (notes/a1-spec/permissions.md §1 Path, Direct mark; spec/wire.md §4 `marks`). A mark
+    /// is allowed only on a hop otherwise read as a descent of two steps or more; on any other
+    /// (no record chain between them, a one-step descent whose record edge is the direct edge, a
+    /// position past the members) the part applies nowhere, as a member named twice does.
     pub fn push_marked(&mut self, signer: Thing, ts: u32, path: &[Thing], on: Thing, mut kind: Kind, direct: &[usize]) -> Id {
         let mut all = vec![signer];
         all.extend(path);
@@ -604,7 +607,8 @@ impl World {
         if let Kind::Edge { holder, finalize, .. } = &mut kind {
             *finalize = *finalize && !leave && *holder != signer;
         }
-        let well = all.iter().collect::<BTreeSet<_>>().len() == all.len();
+        let marks_ok = direct.iter().all(|&k| k + 1 < all.len() && self.joins(all[k], all[k + 1]).len() >= 2);
+        let well = all.iter().collect::<BTreeSet<_>>().len() == all.len() && marks_ok;
         let hops = if well { all.windows(2).enumerate().flat_map(|(k, p)| if direct.contains(&k) { vec![(p[0], p[1])] } else { self.joins(p[0], p[1]) }).collect() } else { vec![] };
         let i = self.commits.len();
         self.commits.push(Commit { signer, ts, path: path.to_vec(), on, kind, hops, well, leave, pa: 0, ret: Retention::AuthorOrAdmin, own: false, cid: i, own_path: false, direct: direct.to_vec() });
@@ -616,14 +620,18 @@ impl World {
     /// descent ends with; neither changes the other's path) last. Two parts on one holder's edge are
     /// bad input, applying nowhere (the `roles.0` delta's map keys would repeat: spec/data-model.md
     /// deterministic CBOR).
-    pub fn commit(&mut self, signer: Thing, ts: u32, path: &[Thing], on: Thing, mut parts: Vec<Kind>) -> Vec<Id> {
+    pub fn commit(&mut self, signer: Thing, ts: u32, path: &[Thing], on: Thing, parts: Vec<Kind>) -> Vec<Id> {
+        self.commit_marked(signer, ts, path, on, parts, &[])
+    }
+    /// `commit` with the hops `direct` marked direct (`push_marked`).
+    pub fn commit_marked(&mut self, signer: Thing, ts: u32, path: &[Thing], on: Thing, mut parts: Vec<Kind>, direct: &[usize]) -> Vec<Id> {
         let ak = *path.last().unwrap_or(&signer);
-        let last = self.joins(ak, on).last().copied();
+        let last = if direct.contains(&path.len()) { Some((ak, on)) } else { self.joins(ak, on).last().copied() };
         parts.sort_by_key(|k| match k {
             Kind::Edge { holder, .. } => (*holder == ak || last == Some((*holder, on)), *holder),
             _ => panic!("a commit of several parts carries edge writes"),
         });
-        let ids: Vec<Id> = parts.into_iter().map(|k| self.push(signer, ts, path, on, k)).collect();
+        let ids: Vec<Id> = parts.into_iter().map(|k| self.push_marked(signer, ts, path, on, k, direct)).collect();
         self.group(&ids);
         ids
     }
@@ -1236,8 +1244,9 @@ fn keeps(w: &World, p: &Pass, gone: &dyn Fn(Id) -> bool, i: Id, memo: &mut BTree
 }
 
 /// Edge `e` read back along the applied writes setting it before `key`, latest first, skipping
-/// those gone and grants that do not keep in turn: the first left decides by `accept` (a
-/// lowering or a self-removal as it stands), a record edge at the bottom.
+/// those gone, grants that do not keep in turn, and self-removals `accept` passes (a self-removal
+/// lowers, so it passes only where the edge before it did): the first left decides by `accept`
+/// (a lowering as it stands; a self-removal it refuses), a record edge at the bottom.
 #[allow(clippy::too_many_arguments)]
 fn setter_keeps(w: &World, p: &Pass, gone: &dyn Fn(Id) -> bool, e: Edge, key: Key, accept: &dyn Fn(Val) -> bool, memo: &mut BTreeMap<Id, bool>, checked: &mut u64) -> bool {
     for &(k, v) in p.hist.get(&e).into_iter().flatten().rev().filter(|x| x.0 < key) {
@@ -1246,7 +1255,15 @@ fn setter_keeps(w: &World, p: &Pass, gone: &dyn Fn(Id) -> bool, e: Edge, key: Ke
         if gone(j) {
             continue;
         }
-        if w.lowers(j).is_some() || w.leave(j) || keeps(w, p, gone, j, memo, checked) {
+        // a self-removal lowers: the edge after it gives what `accept` asks only where the edge
+        // before it did, so one that would pass is read through (notes/path-model-findings.md 43)
+        if w.leave(j) {
+            if accept(v) {
+                continue;
+            }
+            return false;
+        }
+        if w.lowers(j).is_some() || keeps(w, p, gone, j, memo, checked) {
             return accept(v);
         }
     }

@@ -38,9 +38,9 @@ fn a_write_by_descent_is_judged_along_the_record_edges() {
 }
 
 // notes/a1-spec/README.md Open 21: H takes admin on T1 (its direct edge, by [A]) and removes A's
-// record edge on T1 by the descent []: a later grant by H stated along the descent rests on the
-// removed record edge and applies nowhere, as in the model. The model's marked direct hop, which
-// gives H's write, is not in the walk's input yet (notes/perm-paths.md, Owed).
+// record edge on T1 by the descent []: later content and grants by H stated along the descent or
+// through [A] rest on the removed record edge and apply nowhere; marking the hop H to T1 direct
+// (H's own grant), they apply, as in the model.
 #[test]
 fn a_detached_things_owner_writes_it_only_by_a_marked_direct_hop() {
     let mut w = account();
@@ -49,8 +49,105 @@ fn a_detached_things_owner_writes_it_only_by_a_marked_direct_hop() {
     w.rely(cut, H);
     w.edge(H, 4, &[], T1, B, Write, &[]);
     w.edge(H, 4, &[A], T1, N5, Write, &[]);
+    w.content(H, 3, &[], T1);
+    w.content(H, 3, &[A], T1);
+    w.push_marked(H, 3, &[], T1, Kind::Content, &[0]);
+    w.push_marked(H, 5, &[], T1, Kind::set(Z, Write), &[0]);
     agree_all(&w, &[]);
     agree_all(&w, &[cut]);
+}
+
+// The one-encoding rule (draft §1 Path, Direct mark): a mark on a hop not otherwise read as a
+// descent of two steps or more applies nowhere (B's direct grant; A's record edge; a hop past the
+// members); H's marked hop applies where it holds a direct edge, nowhere before.
+#[test]
+fn a_mark_off_a_descent_of_two_steps_applies_nowhere() {
+    let mut w = account();
+    w.push(H, 1, &[A], T1, Kind::set(B, Admin));
+    w.content(B, 2, &[], T1);
+    w.push_marked(B, 2, &[], T1, Kind::Content, &[0]);
+    w.push_marked(B, 2, &[], T1, Kind::set(N5, Write), &[0]);
+    w.content(A, 2, &[], T1);
+    w.push_marked(A, 2, &[], T1, Kind::Content, &[0]);
+    w.push_marked(B, 2, &[], T1, Kind::Content, &[1]);
+    w.push_marked(H, 2, &[], T1, Kind::Content, &[0]);
+    w.push_marked(H, 2, &[], T1, Kind::set(Z, Write), &[0]);
+    w.content(H, 2, &[], T1);
+    w.push(H, 3, &[A], T1, Kind::set(H, Write));
+    w.push_marked(H, 4, &[], T1, Kind::Content, &[0]);
+    agree_all(&w, &[]);
+}
+
+// A final hop marked direct is the path's last edge (draft §1 Path's last edge): the last-admin
+// rule and the path's invite read the direct edge, as the model.
+#[test]
+fn a_marked_final_hop_is_the_last_edge() {
+    let mut w = account();
+    let gh = w.push(H, 1, &[A], T1, Kind::set(H, Admin));
+    let gb = w.push(H, 1, &[A], T1, Kind::set(B, Admin));
+    w.push(H, 2, &[], T1, Kind::set(A, Gone).listing(w.cut(&[gh, gb])).relying(H));
+    w.push_marked(H, 3, &[], T1, Kind::set(B, Gone), &[0]);
+    agree_all(&w, &[]);
+    let mut w = account();
+    let gh = w.push(H, 1, &[A], T1, Kind::set(H, Write).inviting(Read));
+    let gb = w.push(H, 1, &[A], T1, Kind::set(B, Admin));
+    w.push(B, 2, &[], T1, Kind::set(A, Gone).listing(w.cut(&[gh, gb])));
+    w.push_marked(H, 3, &[], T1, Kind::set(Z, Read), &[0]);
+    w.push_marked(H, 3, &[], T1, Kind::set(N5, Write), &[0]);
+    agree_all(&w, &[]);
+}
+
+// Two routes, two claims (draft §1 Path, Direct mark): a remover takes both, as the model.
+#[test]
+fn a_party_with_both_routes_is_cut_off_by_removing_both() {
+    for listed in [true, false] {
+        let mut w = account();
+        let gh = w.push(H, 1, &[A], T1, Kind::set(H, Admin));
+        let gb = w.push(H, 1, &[A], T1, Kind::set(B, Admin));
+        let detach = w.push(B, 3, &[], T1, Kind::set(A, Gone).listing(w.cut(&[gh, gb])));
+        w.content(H, 4, &[], T1);
+        let marked = w.push_marked(H, 4, &[], T1, Kind::Content, &[0]);
+        let list = if listed { vec![marked] } else { vec![] };
+        let r = w.push(B, 5, &[], T1, Kind::set(H, Gone).listing(w.cut(&list)));
+        w.push_marked(H, 6, &[], T1, Kind::Content, &[0]);
+        agree_all(&w, &[]);
+        agree_all(&w, &[r]);
+        agree_all(&w, &[detach]);
+    }
+}
+
+// The thief with the far ancestor's key (draft §1 Path, Direct mark): backdated marked writes
+// fall with the removal of H's direct grant, trusted or not.
+#[test]
+fn a_removed_far_ancestors_backdated_marked_writes_fall() {
+    let mut w = account();
+    let gh = w.push(H, 1, &[A], T1, Kind::set(H, Admin));
+    let gb = w.push(H, 1, &[A], T1, Kind::set(B, Admin));
+    w.push(H, 2, &[], T1, Kind::set(A, Gone).listing(w.cut(&[gh, gb])).relying(H));
+    let r = w.push(B, 5, &[], T1, Kind::set(H, Gone));
+    w.push_marked(H, 4, &[], T1, Kind::Content, &[0]);
+    w.push_marked(H, 4, &[], T1, Kind::set(Z, Admin), &[0]);
+    w.push(H, 4, &[], T1, Kind::set(N5, Admin));
+    agree_all(&w, &[]);
+    agree_all(&w, &[r]);
+}
+
+// notes/path-model-findings.md 43: a self-removal rewriting its holder's own admin unchanged keeps
+// no admin past a lowering's drops: B's removal of H, dropping H's grant of B, is void.
+#[test]
+fn a_self_rewrite_keeps_no_admin_its_grant_lost() {
+    for rewrite in [false, true] {
+        let mut w = account();
+        w.push(H, 1, &[], A, Kind::set(B, Admin));
+        if rewrite {
+            w.push(B, 2, &[], A, Kind::set(B, Admin));
+        }
+        let r = w.push(B, 3, &[], A, Kind::set(H, Gone));
+        agree_all(&w, &[]);
+        agree_all(&w, &[r]);
+        let (_, p) = super::walk(&w, &View::all(&w));
+        assert_eq!(p.status(&super::input(&w, &View::all(&w)).ids[&r]), Some(osis_perm::paths::Status::Void), "{rewrite}");
+    }
 }
 
 // spec/permissions.md §2: a self-removal (a path ending at the holder) audits nothing and raises

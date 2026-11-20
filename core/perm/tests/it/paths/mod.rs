@@ -130,7 +130,8 @@ pub fn input(w: &World, v: &View) -> Input {
                 Kind::Vouch { removal, list } => PartKind::Vouch { removal: cid(w.cid(*removal)), list: Frontier::new(list.iter().map(|&j| cid(w.cid(j)))) },
                 _ => PartKind::Delta(delta(w, i)),
             };
-            out.push(Part { on: tid(k.on), path: k.path.iter().map(|&t| tid(t)).collect(), kind });
+            let direct = k.direct.iter().fold(0, |m, &j| m | 1 << j);
+            out.push(Part { on: tid(k.on), path: k.path.iter().map(|&t| tid(t)).collect(), direct, kind });
         }
         commits.push(Commit { id: cid(c), ts: ts(first.ts), signer: tid(first.signer), parts: out });
     }
@@ -282,13 +283,16 @@ pub fn agree_all(w: &World, trust: &[Id]) {
     agree(w, &View::all(w).trusting(trust));
 }
 
-const MODES: [TinyMode; 6] = [
-    TinyMode { invites: false, honest: Honesty::None },
-    TinyMode { invites: true, honest: Honesty::None },
-    TinyMode { invites: false, honest: Honesty::Lists },
-    TinyMode { invites: true, honest: Honesty::Lists },
-    TinyMode { invites: false, honest: Honesty::Writers },
-    TinyMode { invites: true, honest: Honesty::Writers },
+const MODES: [TinyMode; 9] = [
+    TinyMode { invites: false, detached: false, honest: Honesty::None },
+    TinyMode { invites: true, detached: false, honest: Honesty::None },
+    TinyMode { invites: false, detached: true, honest: Honesty::None },
+    TinyMode { invites: false, detached: false, honest: Honesty::Lists },
+    TinyMode { invites: true, detached: false, honest: Honesty::Lists },
+    TinyMode { invites: false, detached: true, honest: Honesty::Lists },
+    TinyMode { invites: false, detached: false, honest: Honesty::Writers },
+    TinyMode { invites: true, detached: false, honest: Honesty::Writers },
+    TinyMode { invites: false, detached: true, honest: Honesty::Writers },
 ];
 
 /// Tiny worlds `start..start + n` of every kind; the failures, at most three.
@@ -331,8 +335,8 @@ fn story_run(start: u64, n: u64, disputes: bool) -> Vec<String> {
     fails
 }
 
-// spec/permissions.md §5.1: the walk reads small worlds of admins and of invites as the model
-// does, at every honesty, disputes included.
+// spec/permissions.md §5.1: the walk reads small worlds of admins, of invites and of a detached
+// thing written by marked direct hops as the model does, at every honesty, disputes included.
 #[test]
 fn tiny_worlds_agree() {
     let f = tiny_run(0, 150, true);
@@ -353,7 +357,7 @@ fn story_worlds_agree() {
 #[test]
 #[ignore]
 fn paths_tiny_agree_large() {
-    let f: Vec<String> = sharded(160_000, 0x5eed_0a1a, |n, seed| tiny_run(seeded(seed) % (1 << 40), n.div_ceil(6), true)).concat();
+    let f: Vec<String> = sharded(160_000, 0x5eed_0a1a, |n, seed| tiny_run(seeded(seed) % (1 << 40), n.div_ceil(MODES.len() as u64), true)).concat();
     assert!(f.is_empty(), "{}", f.join("\n"));
 }
 

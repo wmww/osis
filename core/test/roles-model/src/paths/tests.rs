@@ -1564,22 +1564,23 @@ fn a_thiefs_lowering_after_the_removal_holds_nothing() {
     assert!((rd.role(H, A), rd.role(X, A), rd.role(M, A)) == (Admin, Gone, Admin) && rd.void.is_empty());
 }
 
-/// Small worlds of admins granting and removing each other (`tiny`), and of invites (`tiny_invites`;
-/// README.md, Paths, for the search): one reading under a relabelling. Control: a lowering whose drops take its author's
+/// Small worlds of admins granting and removing each other (`tiny`), of invites (`tiny_invites`;
+/// README.md, Paths, for the search), and of a thing detached from its folder written by marked
+/// direct hops (`tiny_detached`): one reading under a relabelling. Control: a lowering whose drops take its author's
 /// standing applying, A is left with no admin (counted).
 #[test]
 #[ignore = "property"]
 fn small_worlds_hold_plain() {
-    for invites in [false, true] {
+    for (invites, detached) in [(false, false), (true, false), (false, true)] {
         for honest in [Honesty::None, Honesty::Lists, Honesty::Writers] {
-            let st = tiny_run(3000, &Rules::fixed(), TinyMode { invites, honest });
+            let st = tiny_run(3000, &Rules::fixed(), TinyMode { invites, detached, honest });
             // honest writers make few writes that do not apply: their worlds check `honest` alone here
             let ran = |k: &str| st.checked.get(k).is_some_and(|n| *n > 0);
             let keys: &[&str] = if honest == Honesty::Writers { &["honest", "admin T"] } else { &["void", "admin T", "honest", "idle N", "unapplied N"] };
-            assert!(st.failures() == 0 && keys.iter().all(|k| ran(k)), "{invites} {honest:?} {:?} {:?} {:?}", st.checked, st.fails, st.first);
+            assert!(st.failures() == 0 && keys.iter().all(|k| ran(k)), "{invites} {detached} {honest:?} {:?} {:?} {:?}", st.checked, st.fails, st.first);
         }
     }
-    let no_void = tiny_run(300, &Rules { self_void: false, ..Rules::fixed() }, TinyMode { invites: false, honest: Honesty::None });
+    let no_void = tiny_run(300, &Rules { self_void: false, ..Rules::fixed() }, TinyMode { invites: false, detached: false, honest: Honesty::None });
     assert!(no_void.noted.contains_key("admin N"));
 }
 
@@ -2753,6 +2754,155 @@ fn a_hop_read_by_the_direct_edges_held_lets_another_admin_void_a_mint_ancestors_
     assert_eq!(rd.role(H, T), Role::Read);
 }
 
+/// A self-removal rewriting its holder's own admin unchanged (it lowers, so it applies) does not
+/// keep that admin past a lowering's drops (notes/path-model-findings.md 43): H grants B admin on
+/// A; B rewrites its own grant unchanged; B removes H listing nothing, which drops H's grant of B,
+/// the only authority B's removal had. `keeps` reads B's edge back past the rewrite (it gives at
+/// most what the edge gave before it, here nothing): the removal is void, H stays an admin, as
+/// without the rewrite.
+#[test]
+fn a_self_rewrite_keeps_no_admin_its_grant_lost() {
+    for rewrite in [false, true] {
+        let mut w = account();
+        let gb = w.push(H, 1, &[], A, Kind::set(B, Admin));
+        if rewrite {
+            w.push(B, 2, &[], A, Kind::set(B, Admin));
+        }
+        let r = w.push(B, 3, &[], A, Kind::set(H, Gone));
+        let rd = fixed(&w, &[]);
+        assert!(rd.applied.contains(&gb) && !rd.applied.contains(&r) && rd.voided.contains(&r), "{rewrite}: {rd:?}");
+        assert_eq!((rd.role(H, A), rd.role(B, A)), (Admin, Admin), "{rewrite}");
+    }
+}
+
+/// The one-encoding rule (notes/a1-spec/permissions.md §1 Path, Direct mark): a mark only on a
+/// hop otherwise read as a descent of two steps or more. B holds a direct grant on T1 (B is on no
+/// record chain of T1): [] marked applies nowhere, unmarked applies. A, T1's mint admin, holds the
+/// record edge, which is its direct edge: its write by [] marked applies nowhere, unmarked applies.
+/// A mark past the members (hop 1 of a path of one hop) applies nowhere. H's marked hop, where H
+/// holds a direct edge on T1, applies; where it holds none, nowhere (no edge, not the descent).
+#[test]
+fn a_mark_off_a_descent_of_two_steps_applies_nowhere() {
+    let mut w = account();
+    w.push(H, 1, &[A], T1, Kind::set(B, Admin));
+    let b_plain = w.content(B, 2, &[], T1);
+    let b_marked = w.push_marked(B, 2, &[], T1, Kind::Content, &[0]);
+    let a_plain = w.content(A, 2, &[], T1);
+    let a_marked = w.push_marked(A, 2, &[], T1, Kind::Content, &[0]);
+    let past = w.push_marked(B, 2, &[], T1, Kind::Content, &[1]);
+    let h_none = w.push_marked(H, 2, &[], T1, Kind::Content, &[0]);
+    let h_descent = w.content(H, 2, &[], T1);
+    w.push(H, 3, &[A], T1, Kind::set(H, Write));
+    let h_marked = w.push_marked(H, 4, &[], T1, Kind::Content, &[0]);
+    assert!(!w.well(b_marked) && !w.well(a_marked) && !w.well(past) && w.well(h_none));
+    let rd = fixed(&w, &[]);
+    assert!(rd.valid.contains(&b_plain) && rd.valid.contains(&a_plain) && rd.valid.contains(&h_descent) && rd.valid.contains(&h_marked), "{rd:?}");
+    assert!([b_marked, a_marked, past, h_none].iter().all(|i| !rd.valid.contains(i)), "{rd:?}");
+}
+
+/// A final hop marked direct is the path's last edge (notes/a1-spec/permissions.md §1 Path's last
+/// edge): T1 detached, H holds admin on it by its direct grant, B by its own. H removes B naming no
+/// remaining admin: along the marked hop its last edge (H's grant) stands, so it applies; read as
+/// the descent it would have none (and its path would give nothing). H, given write inviting read
+/// on T1 in place of admin, invites Z to read along the marked hop: the last edge's invite.
+#[test]
+fn a_marked_final_hop_is_the_last_edge() {
+    let mut w = account();
+    let gh = w.push(H, 1, &[A], T1, Kind::set(H, Admin));
+    let gb = w.push(H, 1, &[A], T1, Kind::set(B, Admin));
+    w.push(H, 2, &[], T1, Kind::set(A, Gone).listing(w.cut(&[gh, gb])).relying(H));
+    let r = w.push_marked(H, 3, &[], T1, Kind::set(B, Gone), &[0]);
+    let rd = fixed(&w, &[]);
+    assert!(rd.applied.contains(&r) && rd.role(B, T1) == Gone, "{rd:?}");
+    let mut w = account();
+    let gh = w.push(H, 1, &[A], T1, Kind::set(H, Write).inviting(Role::Read));
+    let gb = w.push(H, 1, &[A], T1, Kind::set(B, Admin));
+    w.push(B, 2, &[], T1, Kind::set(A, Gone).listing(w.cut(&[gh, gb])));
+    let inv = w.push_marked(H, 3, &[], T1, Kind::set(Z, Role::Read), &[0]);
+    let too_much = w.push_marked(H, 3, &[], T1, Kind::set(N5, Write), &[0]);
+    let rd = fixed(&w, &[]);
+    assert!(rd.invited.contains(&inv) && !rd.applied.contains(&too_much) && rd.role(Z, T1) == Role::Read, "{rd:?}");
+}
+
+/// Two routes, two claims (notes/a1-spec/permissions.md §1 Path, Direct mark): H holds T1 by the
+/// descent and by its own direct grant; B holds a direct admin grant on T1. B removes A's record
+/// edge on T1, detaching it: H's write along the descent stamped after applies nowhere, the one
+/// along its marked direct hop stands. B then removes H's direct grant listing that write: H's
+/// later marked write falls, the listed one stays; unlisted, it falls too. A remover takes both
+/// routes, as any party's two grants.
+#[test]
+fn a_party_with_both_routes_is_cut_off_by_removing_both() {
+    let mut w = account();
+    let gh = w.push(H, 1, &[A], T1, Kind::set(H, Admin));
+    let gb = w.push(H, 1, &[A], T1, Kind::set(B, Admin));
+    let detach = w.push(B, 3, &[], T1, Kind::set(A, Gone).listing(w.cut(&[gh, gb])));
+    let by_descent = w.content(H, 4, &[], T1);
+    let marked = w.push_marked(H, 4, &[], T1, Kind::Content, &[0]);
+    let rd = fixed(&w, &[]);
+    assert!(rd.applied.contains(&gb) && rd.applied.contains(&detach), "{rd:?}");
+    assert!(!rd.valid.contains(&by_descent) && rd.valid.contains(&marked), "{rd:?}");
+    let r = w.push(B, 5, &[], T1, Kind::set(H, Gone).listing(w.cut(&[marked])));
+    let later = w.push_marked(H, 6, &[], T1, Kind::Content, &[0]);
+    let rd = fixed(&w, &[]);
+    assert!(rd.applied.contains(&r) && rd.valid.contains(&marked) && !rd.valid.contains(&later), "{rd:?}");
+    assert_eq!(rd.role(H, T1), Gone);
+    w.edit(r, |k| k.listing(BTreeMap::new()));
+    let rd = fixed(&w, &[]);
+    assert!(rd.applied.contains(&r) && !rd.valid.contains(&marked), "unlisted, the marked write falls with the grant: {rd:?}");
+}
+
+/// The thief with the far ancestor's key (notes/a1-spec/permissions.md §1 Path, Direct mark): H
+/// holds T1 by its direct grant only (A's record edge removed), B by its own. After B removes H's
+/// grant, the thief holding H's key backdates a marked write and a marked grant of Z: both fall,
+/// trusting the removal or not; a grant along the cut descent applies nowhere at all.
+#[test]
+fn a_removed_far_ancestors_backdated_marked_writes_fall() {
+    let mut w = account();
+    let gh = w.push(H, 1, &[A], T1, Kind::set(H, Admin));
+    let gb = w.push(H, 1, &[A], T1, Kind::set(B, Admin));
+    w.push(H, 2, &[], T1, Kind::set(A, Gone).listing(w.cut(&[gh, gb])).relying(H));
+    let r = w.push(B, 5, &[], T1, Kind::set(H, Gone));
+    let back = w.push_marked(H, 4, &[], T1, Kind::Content, &[0]);
+    let grant = w.push_marked(H, 4, &[], T1, Kind::set(Z, Admin), &[0]);
+    let descent = w.push(H, 4, &[], T1, Kind::set(N5, Admin));
+    for t in [&[][..], &[r]] {
+        let rd = fixed(&w, t);
+        assert!(rd.applied.contains(&r) && !rd.valid.contains(&back) && !rd.applied.contains(&grant) && !rd.applied.contains(&descent), "{t:?} {rd:?}");
+        assert_eq!((rd.role(Z, T1), rd.role(N5, T1), rd.role(H, T1)), (Gone, Gone, Gone));
+        let st = tiny_gates_under(&w, t, &Rules::fixed());
+        assert!(st.failures() == 0, "{t:?}: {:?} {:?}", st.fails, st.first);
+    }
+}
+
+/// `tiny_detached` reaches every case its doc names (counted over its first 300 worlds, every
+/// count above zero): a marked hop applying, one applying nowhere (no direct edge, or a mark off a
+/// descent), A's record edge removed (T1 detached), and an unmarked descent applying nowhere.
+#[test]
+fn tiny_detached_worlds_reach_the_marked_cases() {
+    let mut n = BTreeMap::<&str, u64>::new();
+    for i in 0..300 {
+        let t = tiny_world(i, TinyMode { invites: false, detached: true, honest: Honesty::None }, &Rules::fixed());
+        let rd = judge(&t.w, &Rules::fixed(), &t.v);
+        for (k, c) in t.w.commits.iter().enumerate() {
+            let does = rd.applied.contains(&k) || rd.valid.contains(&k);
+            let key = match (c.direct.is_empty(), t.w.well(k), does) {
+                (false, true, true) => "marked applies",
+                (false, true, false) => "marked applies nowhere",
+                (false, false, _) => "mark off a descent",
+                (true, _, false) if c.on == T1 && c.signer == H && c.path.is_empty() => "descent applies nowhere",
+                _ => "other",
+            };
+            *n.entry(key).or_default() += 1;
+            if rd.applied.contains(&k) && matches!(&c.kind, Kind::Edge { holder, role: Role::None, .. } if *holder == A) {
+                *n.entry("detached").or_default() += 1;
+            }
+        }
+    }
+    for k in ["marked applies", "marked applies nowhere", "mark off a descent", "descent applies nowhere", "detached"] {
+        assert!(n.get(k).is_some_and(|c| *c > 0), "{k}: {n:?}");
+    }
+}
+
 // ---- The remaining admin past the lowering's drops (notes/a1-spec/README.md, OPEN 5) ----
 
 /// M mints A, grants H admin until 20 and X admin, and leaves naming X; X grants B admin. H
@@ -3386,9 +3536,9 @@ fn remake_small_family_holds_large() {
 /// story) read alike under both rule sets, so the `tiny` searches are not run under it.
 #[test]
 fn tiny_worlds_read_alike_under_remake() {
-    for invites in [false, true] {
+    for (invites, detached) in [(false, false), (true, false), (false, true)] {
         for i in 0..200 {
-            let t = tiny_world(i, TinyMode { invites, honest: Honesty::None }, &Rules::fixed());
+            let t = tiny_world(i, TinyMode { invites, detached, honest: Honesty::None }, &Rules::fixed());
             let (f, r) = (judge(&t.w, &Rules::fixed(), &t.v), judge(&t.w, &Rules::remake(), &t.v));
             assert!(f.observed(&t.w) == r.observed(&t.w) && f.applied == r.applied && f.dropped == r.dropped && f.void == r.void, "{invites} {i}");
         }

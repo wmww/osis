@@ -42,7 +42,7 @@ fn records() -> BTreeMap<Tid, Tid> {
 fn write(id: u64, signer: u32, ts: u64, path: &[u32], on: u32, holder: u32, role: Option<Role>) -> Commit {
     let frontier = Some(Arc::new(Frontier::new([])));
     let ew = EdgeWrite { holder: t(holder), value: role.map(Edge::new), frontier, remains: Some(t(H)), adminless: false };
-    Commit { id: cid(id), ts: Ts::make(WallMs(ts), 0).unwrap(), signer: t(signer), parts: vec![Part { on: t(on), path: path.iter().map(|&x| t(x)).collect(), kind: PartKind::Edge(ew) }] }
+    Commit { id: cid(id), ts: Ts::make(WallMs(ts), 0).unwrap(), signer: t(signer), parts: vec![Part { on: t(on), path: path.iter().map(|&x| t(x)).collect(), direct: 0, kind: PartKind::Edge(ew) }] }
 }
 
 fn cid(id: u64) -> CommitId {
@@ -409,7 +409,7 @@ fn content(id: u64, signer: u32, ts: u64, path: &[u32], on: u32, against: Option
     };
     let aspect = Ak::new(if against.is_some() { "addenda.0" } else { "doc.0" }).unwrap();
     let d = Delta { aspect, needs: Role::Write, purge_author: 0, retention: PurgeBy::AuthorOrAdmin, class };
-    Commit { id: cid(id), ts: Ts::make(WallMs(ts), 0).unwrap(), signer: t(signer), parts: vec![Part { on: t(on), path: path.iter().map(|&x| t(x)).collect(), kind: PartKind::Delta(d) }] }
+    Commit { id: cid(id), ts: Ts::make(WallMs(ts), 0).unwrap(), signer: t(signer), parts: vec![Part { on: t(on), path: path.iter().map(|&x| t(x)).collect(), direct: 0, kind: PartKind::Delta(d) }] }
 }
 
 /// H grants X admin on A at 1; X writes n deltas on C (minted with A) along [A] at 10..; the
@@ -578,7 +578,7 @@ fn the_first_walk_runs_only_where_a_vouch_is() {
         let (d, _) = cost_of(&history(n), write(1, H, end, &[], A, X, Some(Role::Admin)));
         assert_eq!((d.steps, d.passes), (1, 1), "no vouch at n {n}: {d:?}");
         let mut base = history(n);
-        base.push(Commit { id: cid(2), ts: Ts::make(WallMs(5), 0).unwrap(), signer: t(H), parts: vec![Part { on: t(A), path: vec![], kind: PartKind::Vouch { removal: cid(3), list: Frontier::new([]) } }] });
+        base.push(Commit { id: cid(2), ts: Ts::make(WallMs(5), 0).unwrap(), signer: t(H), parts: vec![Part { on: t(A), path: vec![], direct: 0, kind: PartKind::Vouch { removal: cid(3), list: Frontier::new([]) } }] });
         let (d, _) = cost_of(&base, write(1, H, end, &[], A, X, Some(Role::Admin)));
         assert_eq!((d.steps, d.passes), (2, 2), "a vouch at n {n}: {d:?}");
     }

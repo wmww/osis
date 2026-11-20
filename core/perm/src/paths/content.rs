@@ -359,7 +359,7 @@ impl<S: Store> Facts<S> {
                 let id = WriteId(c.id, ix);
                 match &p.kind {
                     PartKind::Edge(ew) => {
-                        let sh = shape(&self.mint, c.signer, &p.path, p.on, Some(ew.holder), true);
+                        let sh = shape(&self.mint, c.signer, &p.path, p.direct, p.on, Some(ew.holder), true);
                         cf.role_on.insert(p.on);
                         role = true;
                         cf.rests.extend(sh.hops.iter().map(|&e| (p.on, e)));
@@ -374,13 +374,13 @@ impl<S: Store> Facts<S> {
                         }
                     }
                     PartKind::Vouch { .. } => {
-                        let sh = shape(&self.mint, c.signer, &p.path, p.on, None, true);
+                        let sh = shape(&self.mint, c.signer, &p.path, p.direct, p.on, None, true);
                         cf.role_on.insert(p.on);
                         role = true;
                         cf.rests.extend(sh.hops.iter().map(|&e| (p.on, e)));
                     }
                     PartKind::Delta(d) => {
-                        let sh = shape(&self.mint, c.signer, &p.path, p.on, None, false);
+                        let sh = shape(&self.mint, c.signer, &p.path, p.direct, p.on, None, false);
                         cf.rests.extend(sh.hops.iter().map(|&e| (p.on, e)));
                         let chain: Vec<Tid> = std::iter::once(c.signer).chain(p.path.iter().copied()).collect();
                         let purge_author = usize::try_from(d.purge_author).ok().and_then(|i| chain.get(i).copied());

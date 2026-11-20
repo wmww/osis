@@ -2065,7 +2065,7 @@ pub fn family_run(rules: &Rules, stride: usize) -> Stats {
 pub fn mode_rules(mode: &str) -> Option<Rules> {
     let f = Rules::fixed();
     let rest = mode.strip_prefix("paths").unwrap_or(mode);
-    let rest = rest.strip_prefix("-exh").or_else(|| rest.strip_prefix("-tiny-invites")).or_else(|| rest.strip_prefix("-tiny")).unwrap_or(rest);
+    let rest = rest.strip_prefix("-exh").or_else(|| rest.strip_prefix("-tiny-invites")).or_else(|| rest.strip_prefix("-tiny-detached")).or_else(|| rest.strip_prefix("-tiny")).unwrap_or(rest);
     let rest = rest.strip_prefix("-honest-writers").or_else(|| rest.strip_prefix("-honest")).unwrap_or(rest);
     Some(match rest {
         "" => f,
@@ -2178,6 +2178,65 @@ pub fn tiny_invites(i: u64, n: usize) -> World {
     w
 }
 
+/// A small world of a thing detached from its folder (notes/a1-spec/permissions.md §1 Path,
+/// Direct mark): T1 under A under H, so H is T1's mint ancestor two record edges up. `n` commits by
+/// a random party at a random `ts`, one in five on A (granting or removing a party's admin there,
+/// so it reaches T1 through [A]), else on T1: content, or setting a random holder's edge (A's is
+/// T1's record edge, a third of the time: removing it detaches T1) to admin (standing or until two
+/// ticks on) or none (half the time),
+/// naming a random remaining admin half the time, listing each earlier write with probability one
+/// half. Each commit on T1 states, for H: the descent [], the descent through [A], or [] with its
+/// hop marked direct (H's direct grant); for another party: [] (its direct edge), [A], or one in
+/// six [] marked (a mark on no descent: the part applies nowhere). Half the worlds open with H
+/// granting itself admin on T1 by [A] (its direct edge) at 1. A stolen key of the far
+/// ancestor, a removed far ancestor backdating by its direct edge, a mark where no direct edge
+/// stands, and a party holding both routes using the one a removal did not cut are each some
+/// world's commits.
+pub fn tiny_detached(i: u64, n: usize) -> World {
+    let mut rng = Rng::thread(0xde7a, i as usize);
+    let mut w = account();
+    let parties = [H, B, N5, Z, N6];
+    if rng.below(2) == 0 {
+        w.push(H, 1, &[A], T1, Kind::set(H, Role::Admin));
+    }
+    for _ in 0..n {
+        let s = parties[rng.below(5)];
+        let ts = 1 + rng.below(n) as u32;
+        let list: Vec<Id> = (0..w.commits.len()).filter(|_| rng.below(2) == 0).collect();
+        let relying = |k: Kind, rng: &mut Rng| if rng.below(2) == 0 { k.relying([H, B, N5, Z, N6][rng.below(5)]) } else { k };
+        if rng.below(5) == 0 {
+            let h = parties[rng.below(5)];
+            let k = if rng.below(2) == 0 { Kind::set(h, Role::Admin) } else { Kind::set(h, Role::None) };
+            let k = relying(k, &mut rng).listing(w.cut(&list));
+            w.push(s, ts, &[], A, k);
+            continue;
+        }
+        let (path, direct): (&[Thing], &[usize]) = match (s == H, rng.below(6)) {
+            (true, 0 | 1) => (&[], &[]),
+            (true, 2 | 3) => (&[], &[0]),
+            (true, _) => (&[A], &[]),
+            (false, 0) => (&[], &[0]),
+            (false, 1 | 2) => (&[A], &[]),
+            (false, _) => (&[], &[]),
+        };
+        let kind = match rng.below(5) {
+            0 => Kind::Content,
+            r => {
+                // A, T1's mint admin, a third of the time: its record edge, lowered to detach T1
+                let h = if rng.below(3) == 0 { A } else { parties[rng.below(5)] };
+                let k = match r {
+                    1 => Kind::set(h, Role::Admin),
+                    2 => Kind::set(h, Role::Admin).until(ts + 2),
+                    _ => Kind::set(h, Role::None),
+                };
+                relying(k, &mut rng).listing(w.cut(&list))
+            }
+        };
+        w.push_marked(s, ts, path, T1, kind, direct);
+    }
+    w
+}
+
 /// A small world to check: its commits, the view, and per commit (by ID) what its writer had
 /// received when writing it, in the order received.
 #[derive(Clone, Debug)]
@@ -2187,11 +2246,25 @@ pub struct Tiny {
     pub recv: Vec<Vec<Id>>,
 }
 
-/// Which small worlds: `tiny` or `tiny_invites`, and how honest their writers are.
+/// Which small worlds: `tiny`, `tiny_invites` or `tiny_detached`, and how honest their writers
+/// are.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct TinyMode {
     pub invites: bool,
+    pub detached: bool,
     pub honest: Honesty,
+}
+
+impl TinyMode {
+    /// The mode a `paths-tiny[-invites|-detached][-honest[-writers]]` name gives.
+    pub fn named(mode: &str) -> TinyMode {
+        let invites = mode.starts_with("paths-tiny-invites");
+        let detached = mode.starts_with("paths-tiny-detached");
+        let rest = mode.strip_prefix("paths-tiny").unwrap_or("");
+        let rest = rest.strip_prefix(if invites { "-invites" } else if detached { "-detached" } else { "" }).unwrap_or(rest);
+        let honest = if rest.starts_with("-honest-writers") { Honesty::Writers } else if rest.starts_with("-honest") { Honesty::Lists } else { Honesty::None };
+        TinyMode { invites, detached, honest }
+    }
 }
 
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -2213,7 +2286,7 @@ pub enum Honesty {
 /// held; trusting nothing, or (every third world) one held lowering.
 pub fn tiny_world(i: u64, mode: TinyMode, rules: &Rules) -> Tiny {
     let n = 3 + (i % 10) as usize;
-    let mut w = if mode.invites { tiny_invites(i, n) } else { tiny(i, n) };
+    let mut w = if mode.invites { tiny_invites(i, n) } else if mode.detached { tiny_detached(i, n) } else { tiny(i, n) };
     let mut recv: Vec<Vec<Id>> = (0..w.commits.len()).map(|k| (0..w.cid(k)).collect()).collect();
     if mode.honest != Honesty::None {
         let mut rng = Rng::thread(0x4e57, i as usize);
@@ -2461,7 +2534,7 @@ pub fn shrink_world(t: &Tiny, fails: &dyn Fn(&Tiny) -> bool) -> Tiny {
     }
 }
 
-/// `-- N paths-tiny[-invites][-honest[-writers]][-variant]`: N small worlds.
+/// `-- N paths-tiny[-invites|-detached][-honest[-writers]][-variant]`: N small worlds.
 pub fn tiny_run(n: u64, rules: &Rules, mode: TinyMode) -> TinyStats {
     tiny_run_from(0, n, rules, mode)
 }
@@ -2569,7 +2642,7 @@ pub fn compare(start: u64, n: u64) -> Compare {
 }
 
 /// `-- N paths[-control]` (random worlds), `-- 0 paths-exh[-control]` (the small family),
-/// `-- N paths-tiny[-invites][-honest[-writers]][-control]` (small worlds); random and small worlds from
+/// `-- N paths-tiny[-invites|-detached][-honest[-writers]][-control]` (small worlds); random and small worlds from
 /// index `from` on (`-- N paths --from K`). Returns the failing checks.
 pub fn run(samples: u64, from: u64, mode: &str) -> u64 {
     // `-- N paths-purge[-variant]`: purge worlds (`purge_rules`)
@@ -2587,10 +2660,7 @@ pub fn run(samples: u64, from: u64, mode: &str) -> u64 {
         return 1;
     };
     if mode.starts_with("paths-tiny") {
-        let invites = mode.starts_with("paths-tiny-invites");
-        let rest = mode.strip_prefix(if invites { "paths-tiny-invites" } else { "paths-tiny" }).unwrap_or("");
-        let honest = if rest.starts_with("-honest-writers") { Honesty::Writers } else if rest.starts_with("-honest") { Honesty::Lists } else { Honesty::None };
-        let mode = TinyMode { invites, honest };
+        let mode = TinyMode::named(mode);
         let st = tiny_run_from(from, samples, &rules, mode);
         tiny_print(&st, &rules, mode);
         return st.failures();

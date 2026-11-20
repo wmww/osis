@@ -22,9 +22,8 @@ pub struct Path {
     pub direct: Marks,
 }
 
-/// Hops marked direct, bit j for hop j (spec/wire.md §4 `marks`): at most `MAX_PATH_THINGS` + 1
-/// hops, so 65 bits.
-pub type Marks = u128;
+/// Hops marked direct, bit j for hop j (spec/wire.md §4 `marks`).
+pub type Marks = osis_base::format::PathMarks;
 
 /// The canonical `marks` bytes: bit j in byte j div 8, least significant first, no trailing zero
 /// byte; empty for none (then absent from the encoding).

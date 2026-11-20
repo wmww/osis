@@ -116,6 +116,10 @@ pub const MAX_CHAIN_DEPTH: usize = 64;
 /// path parks a commit on as many records as its writer lists. Matches `MAX_CHAIN_DEPTH`. fixed.
 pub const MAX_PATH_THINGS: usize = 64;
 
+/// The hops of a stated path marked direct (spec/wire.md §4 `marks`; spec/permissions.md §1 Path):
+/// bit j marks hop j, joining members j and j + 1. A path has at most `MAX_PATH_THINGS` + 1 hops.
+pub type PathMarks = u128;
+
 /// Node policy default, not a format constant (spec/wire.md §2).
 pub const TOMBSTONE_LIFETIME_MS: u64 = 30 * DAY_MS;
 

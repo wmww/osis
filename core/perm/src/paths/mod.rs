@@ -39,6 +39,9 @@ pub struct Part {
     pub on: Tid,
     /// [A1..Ak]: the things between the signer and `on` (draft §1 Path).
     pub path: Vec<Tid>,
+    /// The hops its path marks direct (draft §1 Path, Direct mark): bit j for the hop joining
+    /// members j and j + 1 of [S, A1..Ak, on].
+    pub direct: osis_base::format::PathMarks,
     pub kind: PartKind,
 }
 

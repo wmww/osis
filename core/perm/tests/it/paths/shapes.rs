@@ -33,7 +33,7 @@ fn ms(n: u64) -> Ts {
 
 fn edge(on: u32, path: &[u32], holder: u32, value: Option<Edge>, frontier: Option<&[u64]>, remains: Option<u32>) -> Part {
     let frontier = frontier.map(|f| Arc::new(Frontier::new(f.iter().map(|&c| cid(c)))));
-    Part { on: t(on), path: path.iter().map(|&x| t(x)).collect(), kind: PartKind::Edge(EdgeWrite { holder: t(holder), value, frontier, remains: remains.map(t), adminless: false }) }
+    Part { on: t(on), path: path.iter().map(|&x| t(x)).collect(), direct: 0, kind: PartKind::Edge(EdgeWrite { holder: t(holder), value, frontier, remains: remains.map(t), adminless: false }) }
 }
 
 fn commit(id: u64, ts: Ts, signer: u32, parts: Vec<Part>) -> Commit {
@@ -123,7 +123,7 @@ fn records() -> BTreeMap<Tid, Tid> {
 #[test]
 fn a_vouch_is_taken_before_its_commits_own_path_part() {
     let grant = commit(1, ms(1), H, vec![edge(LK, &[A], Y, Some(Edge::new(Role::Admin)), Some(&[]), None)]);
-    let vouch = Part { on: t(LK), path: vec![], kind: PartKind::Vouch { removal: cid(9), list: Frontier::new([]) } };
+    let vouch = Part { on: t(LK), path: vec![], direct: 0, kind: PartKind::Vouch { removal: cid(9), list: Frontier::new([]) } };
     let both = commit(2, ms(3), Y, vec![edge(LK, &[], Y, None, None, Some(A)), vouch]);
     let p = Paths::evaluate(&records(), BTreeSet::new(), &[grant, both]);
     assert_eq!(p.status(&WriteId(cid(2), 0)), Some(Status::Applied), "the self-removal");
@@ -248,7 +248,7 @@ pub(super) fn soup(i: u64) -> (BTreeMap<Tid, Tid>, Vec<Commit>) {
                 let remains = (r.below(3) == 0).then(|| t(thing(&mut r)));
                 PartKind::Edge(EdgeWrite { holder: t(thing(&mut r)), value, frontier, remains, adminless: r.below(8) == 0 })
             };
-            parts.push(Part { on, path, kind });
+            parts.push(Part { on, path, direct: 0, kind });
         }
         commits.push(Commit { id: cid(id), ts: ms(r.below(6) as u64), signer: t(thing(&mut r)), parts });
     }
@@ -267,7 +267,7 @@ fn random_part_soups_judge_alike_however_they_arrive() {
 
 fn delta(on: u32, path: &[u32], needs: Role, class: DeltaClass) -> Part {
     let aspect = Ak::new(if matches!(class, DeltaClass::Addendum { .. }) { "addenda.0" } else { "doc.0" }).unwrap();
-    Part { on: t(on), path: path.iter().map(|&x| t(x)).collect(), kind: PartKind::Delta(Delta { aspect, needs, purge_author: 0, retention: PurgeBy::AuthorOrAdmin, class }) }
+    Part { on: t(on), path: path.iter().map(|&x| t(x)).collect(), direct: 0, kind: PartKind::Delta(Delta { aspect, needs, purge_author: 0, retention: PurgeBy::AuthorOrAdmin, class }) }
 }
 
 fn ids(l: &[u64]) -> Frontier {
@@ -287,7 +287,7 @@ fn hostile_vouches_addenda_and_snapshots_judge_alike_without_panicking() {
     let rz = commit(4, ms(4), H, vec![edge(A, &[], Z, None, Some(&[]), None)]);
     let base = [gy, gz, zc, rz];
     let with = |more: Vec<Commit>| base.iter().cloned().chain(more).collect::<Vec<_>>();
-    let vouch = |id, removal, list: &[u64], signer| commit(id, ms(5), signer, vec![Part { on: t(A), path: vec![], kind: PartKind::Vouch { removal: cid(removal), list: ids(list) } }]);
+    let vouch = |id, removal, list: &[u64], signer| commit(id, ms(5), signer, vec![Part { on: t(A), path: vec![], direct: 0, kind: PartKind::Vouch { removal: cid(removal), list: ids(list) } }]);
     // a vouch keyed by itself, listing itself, its signer's commit, and its own removal
     for v in [vouch(9, 9, &[9], Y), vouch(9, 4, &[9, 1], Y), vouch(9, 4, &[4], Y)] {
         let p = robust(&records(), &with(vec![v]), &mut rng);
