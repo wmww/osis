@@ -4311,6 +4311,143 @@ fn finding_a_path_does_not_grow_with_history_spec_wire_4() {
     assert!(small.0 > 0 && small.1 == 0, "walked once while the roles stand: {small:?}");
 }
 
+// Interim, spec/permissions.md §5.2 Acting: whatever path and purge-author index a writer
+// states, the old walk reads only the thing the index names, and the Acting check holds that
+// thing to one its signer writes: naming its signer reads as its own write (as the empty path
+// does), naming a thing it may not write (or a made-up one) holds no part, and things listed
+// but not named are not read. Bob writes T and X, not Y; Z is made up.
+#[test]
+fn a_stated_index_acts_no_wider_than_the_acting_check_spec_permissions_5_2() {
+    let mut lp = net(2, 0);
+    lp.sync_all().unwrap();
+    let (t, x, y) = (new_thing(&mut lp, 0), new_thing(&mut lp, 0), new_thing(&mut lp, 0));
+    let b = lp.peers[1].engine.me();
+    for w in [t, x] {
+        set_edge(&mut lp.peers[0].engine, w, b, Some(edge(Role::Write)), None);
+    }
+    lp.sync_all().unwrap();
+    lp.advance(1_000);
+    let z = Tid::from_bytes([0x7a; 15]);
+    let mut shown = None;
+    let cases = [
+        (osis_commit::Path { purge: 0, things: vec![y] }, Some(b)),
+        (osis_commit::Path::through(y), None),
+        (osis_commit::Path::through(x), Some(x)),
+        (osis_commit::Path { purge: 2, things: vec![x, y] }, None),
+        (osis_commit::Path { purge: 2, things: vec![y, x] }, Some(x)),
+        (osis_commit::Path::through(z), None),
+    ];
+    for (i, (path, actor)) in cases.into_iter().enumerate() {
+        lp.peers[1].engine.core.forced_paths = [(t, path.clone())].into();
+        let mut m = Mutation::new();
+        m.set(t, &REG, &s(&format!("case {i}"))).unwrap();
+        let id = lp.peers[1].commit(m);
+        lp.peers[1].engine.core.forced_paths.clear();
+        lp.sync_all().unwrap();
+        if actor.is_some() {
+            shown = Some(s(&format!("case {i}")));
+        }
+        let a = &mut lp.peers[0].engine;
+        assert_eq!(a.get(&t, &ak("t:reg.0")).unwrap(), shown, "case {i}: {path:?}");
+        if let (Some(w), Ok(Some(id))) = (actor, id) {
+            assert_eq!(a.commit_acting(&id, &t), Some(w), "case {i}: the actor");
+        }
+    }
+}
+
+// Interim (notes/a1-spec/README.md step 3), spec/commits.md §4 Unjudgeable: a hashed commit's
+// part on E acting for a thing whose record is not held is unjudgeable alone; its part on D
+// still applies, at a node that opened E's section as at one that did not. Bob writes D along
+// `[D]` and E along `[Z]`, Z his own thing Alice does not hold yet; Alice opens both, Carol D's alone.
+#[test]
+fn a_hashed_part_acting_for_an_unknown_thing_waits_alone_spec_commits_4() {
+    let mut lp = net(3, 0);
+    lp.sync_all().unwrap();
+    let (d, e) = (new_thing(&mut lp, 0), new_thing(&mut lp, 0));
+    let b = lp.peers[1].engine.me();
+    for t in [d, e] {
+        set_edge(&mut lp.peers[0].engine, t, b, Some(edge(Role::Write)), None);
+    }
+    let carol = lp.peers[2].engine.me();
+    set_edge(&mut lp.peers[0].engine, d, carol, Some(edge(Role::Read)), None);
+    lp.sync_all().unwrap();
+    lp.advance(1_000);
+    let z = new_thing(&mut lp, 1);
+    lp.peers[1].engine.core.forced_paths = [(d, osis_commit::Path::through(d)), (e, osis_commit::Path::through(z))].into();
+    let mut m = Mutation::new();
+    m.set(d, &REG, &s("on d")).unwrap();
+    m.set(e, &REG, &s("on e")).unwrap();
+    let id = lp.peers[1].commit(m).unwrap().unwrap();
+    lp.peers[1].engine.core.forced_paths.clear();
+    let c = osis_commit::CommitBlob::decode(&lp.peers[1].engine.package(&id).unwrap().unwrap().bytes).unwrap();
+    assert!(matches!(&c.header.path, osis_commit::Paths::Hashed(_)));
+    let only_d = osis_commit::rewrite(&c, |ai| c.header.aspects[ai].tid != d).encode();
+    for (i, bytes) in [(0, c.encode()), (2, only_d)] {
+        let p = &mut lp.peers[i];
+        let _ = p.engine.ingest(&bytes, Vec::new());
+        p.reexamine().unwrap();
+        p.engine.check_index();
+        assert_eq!(p.engine.get(&d, &ak("t:reg.0")).unwrap(), Some(s("on d")), "peer {i} reads D");
+    }
+    assert_eq!(lp.peers[0].engine.get(&e, &ak("t:reg.0")).unwrap(), Some(s("new")), "Alice: E's part waits");
+    lp.sync_all().unwrap();
+    assert_eq!(lp.peers[0].engine.get(&e, &ak("t:reg.0")).unwrap(), Some(s("on e")), "Alice: Z's record come, E's part applies");
+    lp.peers[0].engine.check_index();
+}
+
+// notes/a1-spec/permissions.md §1 Path; spec/wire.md §4 field 2: the path a write states is the
+// shortest on the edges alive at its `ts`: a direct grant ending with no edge write since, the
+// path goes through the holder; a shorter one granted, it is taken; removed, the holder again.
+#[test]
+fn a_writes_path_follows_its_edges_and_their_ends_spec_wire_4() {
+    let (mut lp, chain, t, _) = holders_world(1);
+    let b = lp.peers[1].engine.me();
+    let until = WallMs(lp.peers[0].engine.now().0 + 5_000);
+    set_edge(&mut lp.peers[0].engine, t, b, Some(osis_schema::core_types::Edge { until: Some(until), ..edge(Role::Write) }), None);
+    lp.sync_all().unwrap();
+    let write = |lp: &mut LocalPeer, v: &str| {
+        let mut m = Mutation::new();
+        m.set(t, &REG, &s(v)).unwrap();
+        let osis_commit::Paths::One(p) = bobs_path(lp, m) else { panic!("one path") };
+        p.things
+    };
+    assert_eq!(write(&mut lp, "direct"), Vec::<Tid>::new(), "direct while it lasts");
+    lp.advance(10_000);
+    assert_eq!(write(&mut lp, "ended"), chain, "through the holder once it ends");
+    set_edge(&mut lp.peers[0].engine, t, b, Some(edge(Role::Write)), None);
+    lp.sync_all().unwrap();
+    assert_eq!(write(&mut lp, "granted"), Vec::<Tid>::new(), "a shorter path granted");
+    lp.peers[0].engine.demote(&t, &osis_engine::flows::Demotion { holder: b, new: None, retain: None }).unwrap();
+    lp.sync_all().unwrap();
+    assert_eq!(write(&mut lp, "removed"), chain, "the used path removed");
+}
+
+// notes/a1-spec/permissions.md §1 Path: among paths as short, the writer's choice is a function
+// of the edges it holds, not of the order they came in: Bob reaches T through H1 or H2.
+#[test]
+fn a_writes_path_is_a_function_of_the_held_edges_spec_wire_4() {
+    let chosen = |first: usize| {
+        let mut lp = net(2, 0);
+        lp.sync_all().unwrap();
+        let hs = [new_thing(&mut lp, 0), new_thing(&mut lp, 0)];
+        let t = new_thing(&mut lp, 0);
+        let b = lp.peers[1].engine.me();
+        for i in [first, 1 - first] {
+            set_edge(&mut lp.peers[0].engine, hs[i], b, Some(edge(Role::Write)), None);
+            lp.sync_all().unwrap();
+            set_edge(&mut lp.peers[0].engine, t, hs[i], Some(edge(Role::Write)), None);
+            lp.sync_all().unwrap();
+        }
+        lp.advance(1_000);
+        let mut m = Mutation::new();
+        m.set(t, &REG, &s("x")).unwrap();
+        let osis_commit::Paths::One(p) = bobs_path(&mut lp, m) else { panic!("one path") };
+        assert_eq!(p.things.len(), 1);
+        hs.iter().position(|h| *h == p.things[0]).unwrap()
+    };
+    assert_eq!(chosen(0), chosen(1));
+}
+
 // spec/wire.md §4 (one path): a writer states one path where every thing's is the same; Interim
 // (notes/a1-spec/README.md step 2): every commit the engine writes has one acting thing, so it
 // states its path once in the clear, whatever it writes: a creation (the thing and where it is

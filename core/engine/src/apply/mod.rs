@@ -562,13 +562,17 @@ pub(crate) fn examine(tx: &mut Tx<'_>, blob: &mut CommitBlob, id: &CommitId, ski
     let h = blob.header.clone();
     let carried = carried_records(&h, blob, id);
     // Interim (notes/a1-spec/README.md step 3): the record of every thing a held part's path lists
-    let acting = blob.acting().all();
-    let held: BTreeMap<Tid, CreationRecord> = h.aspects.iter().map(|a| a.tid).chain([h.signer]).chain(acting.iter().copied()).filter_map(|t| tx.core.created(&t).map(|r| (t, r.clone()))).collect();
+    let acting = blob.acting();
+    let held: BTreeMap<Tid, CreationRecord> = h.aspects.iter().map(|a| a.tid).chain([h.signer]).chain(acting.all()).filter_map(|t| tx.core.created(&t).map(|r| (t, r.clone()))).collect();
     let chain_rec = |t: &Tid, core: &crate::engine::Core| -> Option<CreationRecord> { core.created(t).cloned().or_else(|| carried.get(t).cloned()) };
     let record = |t: &Tid| -> Option<CreationRecord> { held.get(t).cloned().or_else(|| carried.get(t).cloned()) };
     let Some(author) = record(&h.signer) else { return Ok(Exam::Awaits(Reason::MissingChain(h.signer))) };
-    if let Some(x) = acting.iter().find(|x| record(x).is_none()) {
-        return Ok(Exam::Awaits(Reason::UnknownCreated(*x)));
+    // one path in the clear acts for one thing on all: the commit awaits its record; a thing's own
+    // hashed path's waits with that thing's parts alone (below)
+    if let osis_commit::Acting::All(x) = acting
+        && record(&x).is_none()
+    {
+        return Ok(Exam::Awaits(Reason::UnknownCreated(x)));
     }
     // a part it cannot judge (its thing's record, record chain or the author's reach) waits; with
     // every held part such the commit is unjudgeable (spec/commits.md §4), found before a missing
@@ -580,6 +584,8 @@ pub(crate) fn examine(tx: &mut Tx<'_>, blob: &mut CommitBlob, id: &CommitId, ski
         }
         if let Some(wait) = thing_wait(tx.core, &h, a, &record, &chain_rec) {
             unjudged.insert(ai, wait);
+        } else if let Some(x) = acting.on(&a.tid).filter(|x| record(x).is_none()) {
+            unjudged.insert(ai, Reason::UnknownCreated(x));
         } else if origin == Origin::Remote && record(&a.tid).is_some_and(|r| !crate::retention::needed::applies_on(tx.core, &a.tid, &a.ak, &r)) {
             // nothing but certificates applies on a thing outside the node closure: content waits
             // until it enters (a node's own commits write only what it holds, `check_written`)
