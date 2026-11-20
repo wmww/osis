@@ -108,12 +108,18 @@ fn an_appended_part_costs_its_own_step() {
 // Components). Mutation: one component (every part joins the first edge's): n + 1 on B too.
 #[test]
 fn a_backdated_part_walks_again_its_component_only() {
-    for n in [100u32, 1000] {
+    for n in [100u32, 1000, 10_000] {
         let (d, _) = cost_of(&history(n), write(1, H, 1, &[], A, X, Some(Role::Admin)));
         assert_eq!((d.steps, d.passes), (W * (n as u64 + 1), W), "on A at n {n}: {d:?}");
         let (d, _) = cost_of(&history(n), write(2, H, 1, &[], B, X, Some(Role::Admin)));
         assert_eq!((d.steps, d.passes), (W, W), "on B at n {n}: {d:?}");
     }
+    // the control: partitioning off (`Paths::single`), the part on B walks A's history too
+    let mut p = Paths::single(&records(), BTreeSet::new());
+    p.add(&history(100));
+    let before = p.counts();
+    p.add(&[write(2, H, 1, &[], B, X, Some(Role::Admin))]);
+    assert_eq!(delta(before, p.counts()).steps, 101);
 }
 
 /// Things 100.. minted by H, `c` of them.
@@ -134,7 +140,7 @@ fn components(c: u32, k: u32) -> Vec<Commit> {
 #[test]
 fn a_part_among_c_components_walks_its_own() {
     let k = 20u32;
-    for c in [10u32, 100] {
+    for c in [10u32, 100, 1000] {
         let base = components(c, k);
         let mut p = Paths::evaluate(&many(c), BTreeSet::new(), &base);
         let before = p.counts();
@@ -146,6 +152,13 @@ fn a_part_among_c_components_walks_its_own() {
         let d = delta(before, p.counts());
         assert_eq!((d.steps, d.passes), (W * (k as u64 + 2), W), "backdated at c {c}: {d:?}");
     }
+    // the control: partitioning off (`Paths::single`), backdated walks every component
+    let c = 10;
+    let mut p = Paths::single(&many(c), BTreeSet::new());
+    p.add(&components(c, k));
+    let before = p.counts();
+    p.add(&[write(2, H, 1, &[], 100, Y, Some(Role::Admin))]);
+    assert_eq!(delta(before, p.counts()).steps, (c * k + 1) as u64);
 }
 
 const Y: u32 = 3;
@@ -468,7 +481,7 @@ fn a_delta_under_k_cuts_is_a_point_query() {
 #[test]
 fn an_update_judges_again_only_the_addenda_it_reaches() {
     let mut per = vec![];
-    for k in [100u64, 1000] {
+    for k in [100u64, 1000, 10_000] {
         let mut c = writes(10);
         c.push(write(2, H, 50, &[], A, X, None));
         c.push(write(4, H, 1, &[], A, Y, Some(Role::Admin)));
@@ -481,7 +494,7 @@ fn an_update_judges_again_only_the_addenda_it_reaches() {
         let (d, _) = cost_of(&c, write(3, H, 2, &[], A, Y, Some(Role::Admin)));
         per.push(d.addenda);
     }
-    assert!(per[1] >= 9 * per[0] && per[1] <= 11 * per[0], "{per:?}");
+    assert!(per[1] >= 9 * per[0] && per[1] <= 11 * per[0] && per[2] >= 9 * per[1] && per[2] <= 11 * per[1], "{per:?}");
 }
 
 // The first walk (vouch entries unread) runs only in a component holding a vouch
@@ -601,11 +614,46 @@ fn a_dispute_probe_reads_its_component_alone() {
         c.push(write(5, H, 1, &[], B, 88, Some(Role::Admin)));
         c.extend((0..n).map(|i| write(500_000 + i, H, 10 + i, &[], B, holder(i as u32), Some(Role::Admin))));
         c.extend((0..n).map(|i| content(600_000 + i, 88, 10 + i, &[B], 99, None)));
-        let p = Paths::evaluate(&records(), BTreeSet::new(), &c);
+        let mut p = Paths::evaluate(&records(), BTreeSet::new(), &c);
         let mut k = Counts::default();
         let d = p.disputes_counted(&mut k);
         assert!(d.contains(&WriteId(cid(4), 0)), "{d:?}");
         per.push((k.steps, k.content));
     }
     assert_eq!(per[0], per[1], "{per:?}");
+}
+
+// The honest shape components do not split (notes/perm-paths.md, Cost shapes): an organisation O
+// (minted by H) whose admin Y grants a member on each of its k teams through O is one component,
+// since every such write rests on Y's edge on O. A backdated part on one team walks every team's
+// parts after it: k + 1 steps at k = 100 and 1000. Teams joined once by a hub (H's grants of A on
+// each, then Y's writes through A) stay joined when the hub's writes are forgotten: the same.
+#[test]
+fn an_organisation_is_one_component() {
+    const O: u32 = 20;
+    let team = |i: u32| 3000 + i;
+    for k in [100u32, 1000] {
+        let mut recs = records();
+        recs.insert(t(O), t(H));
+        recs.extend((0..k).map(|i| (t(team(i)), t(O))));
+        let mut base = vec![write(1, H, 2, &[], O, Y, Some(Role::Admin))];
+        base.extend((0..k).map(|i| write(10 + i as u64, Y, 10 + i as u64, &[O], team(i), holder(i), Some(Role::Write))));
+        let mut p = Paths::evaluate(&recs, BTreeSet::new(), &base);
+        let before = p.counts();
+        p.add(&[write(2, H, 3, &[O], team(0), X, Some(Role::Write))]);
+        assert_eq!(delta(before, p.counts()).steps, W * (k as u64 + 1), "backdated on one team at k {k}");
+        // teams of their own (minted by H), joined once through A: H grants A on each, X (admin
+        // on A) writes on each through A; the joining writes forgotten, the join stays
+        let mut recs = records();
+        recs.extend((0..k).map(|i| (t(team(i)), t(H))));
+        let mut base = vec![write(1, H, 1, &[], A, X, Some(Role::Admin))];
+        base.extend((0..k).map(|i| write(10 + i as u64, H, 10, &[], team(i), holder(i), Some(Role::Admin))));
+        let hub: Vec<Commit> = (0..k).flat_map(|i| [write(100_000 + i as u64, H, 20, &[], team(i), A, Some(Role::Admin)), write(200_000 + i as u64, X, 30, &[A], team(i), holder(5000 + i), Some(Role::Write))]).collect();
+        base.extend(hub.iter().cloned());
+        let mut p = Paths::evaluate(&recs, BTreeSet::new(), &base);
+        p.forget(&hub.iter().map(|c| c.id).collect::<Vec<_>>());
+        let before = p.counts();
+        p.add(&[write(2, H, 5, &[], team(0), X, Some(Role::Write))]);
+        assert_eq!(delta(before, p.counts()).steps, W * (k as u64 + 1), "backdated after the hub forgotten at k {k}");
+    }
 }

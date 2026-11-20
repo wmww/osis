@@ -7,7 +7,7 @@
 
 use super::{input, rules, MODES};
 use osis_base::{CommitId, Role, Tid};
-use osis_perm::paths::{Changed, Commit, Content, History, Key, Paths, Status};
+use osis_perm::paths::{Changed, Commit, Content, History, Key, Paths, Status, Store};
 use osis_perm::WriteId;
 use roles_model::paths as m;
 use roles_model::Rng;
@@ -16,7 +16,7 @@ use std::collections::{BTreeMap, BTreeSet};
 type Finals = BTreeMap<(Tid, Tid), (Option<Role>, Option<Role>)>;
 type Reading = (BTreeMap<WriteId, Status>, BTreeMap<(Tid, Tid), History>, Finals, BTreeMap<WriteId, Content>, BTreeSet<CommitId>, BTreeSet<WriteId>, BTreeMap<(Tid, Tid), [Option<Key>; 2]>);
 
-pub(super) fn reading(p: &Paths) -> Reading {
+pub(super) fn reading<S: Store>(p: &Paths<S>) -> Reading {
     (p.statuses(), p.histories(), p.finals(), p.contents(), p.copies(), p.purged(), p.chained())
 }
 
@@ -329,7 +329,7 @@ fn forgetting(w: &m::World, v: &m::View, seed: u64) -> Option<String> {
         }
     }
     let rest: Vec<Commit> = (0..n).filter(|&i| held[i]).map(|i| inp.commits[i].clone()).collect();
-    let scratch = Paths::evaluate(&inp.records, inp.trust.clone(), &rest);
+    let mut scratch = Paths::evaluate(&inp.records, inp.trust.clone(), &rest);
     if reading(&p) != reading(&scratch) || p.counting() != scratch.counting() || p.void_trusted() != scratch.void_trusted() {
         return Some(format!("forgetting and from scratch differ, held {held:?}\n{}", m::tiny_trace(w)));
     }

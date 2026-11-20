@@ -372,6 +372,10 @@ pub(super) struct Walk {
     /// The timeline: it walks every component and keeps the chained pass (content reads it). The
     /// first walk walks only the components holding a vouch (notes/perm-paths.md, Two walks).
     timeline: bool,
+    /// Partitioning off (`Paths::single`, a test mode): every part walked, in one component.
+    single: bool,
+    /// The single component's first edge (`single` only).
+    anchor: Option<E>,
     // ---- components ----
     /// The union-find over edges; a root names its component.
     parent: Tab<E>,
@@ -444,7 +448,7 @@ struct Journal {
 }
 
 impl Walk {
-    pub(super) fn new(records: &BTreeMap<Tid, Tid>, timeline: bool) -> Walk {
+    pub(super) fn new(records: &BTreeMap<Tid, Tid>, timeline: bool, single: bool) -> Walk {
         let mut w = Walk {
             things: BTreeMap::new(),
             names: Tab::new(Tid::from_bytes([0; 15])),
@@ -461,6 +465,8 @@ impl Walk {
             inert_rest: Tab::new(BTreeSet::new()),
             held: BTreeSet::new(),
             timeline,
+            single,
+            anchor: None,
             parent: Tab::new(E::MAX),
             comps: BTreeMap::new(),
             live: Tab::new(false),
@@ -713,7 +719,7 @@ impl Walk {
         let it = &self.items[s];
         let dead: Vec<E> = it.path.iter().copied().filter(|&e| !self.live[e]).collect();
         let rests = it.rests();
-        if !it.shape_well || !dead.is_empty() {
+        if !self.single && (!it.shape_well || !dead.is_empty()) {
             for e in dead {
                 self.waiting.entry(e).or_default().push(s);
             }
@@ -745,6 +751,12 @@ impl Walk {
             let mut root = self.find(a);
             for &e in &touch {
                 root = self.union(root, e);
+            }
+            if self.single {
+                match self.anchor {
+                    Some(x) => root = self.union(root, x),
+                    None => self.anchor = Some(root),
+                }
             }
             // a counting entry makes a removal's list read the vouch's verdict
             let partners: Vec<Slot> = match &it.vouch {

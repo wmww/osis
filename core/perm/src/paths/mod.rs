@@ -174,6 +174,15 @@ impl Paths<MemStore> {
         Paths::with_store(records, trust, MemStore::default())
     }
 
+    /// As `new`, partitioning off: every part walked, inert or not, in one component. A test
+    /// mode: the walk by components must read exactly as this (notes/perm-paths.md, Components).
+    pub fn single(records: &BTreeMap<Tid, Tid>, trust: BTreeSet<WriteId>) -> Paths {
+        let mut p = Paths::new(records, trust);
+        p.first = walk::Walk::new(records, false, true);
+        p.timeline = walk::Walk::new(records, true, true);
+        p
+    }
+
     /// The settled walks of `commits` from scratch.
     pub fn evaluate(records: &BTreeMap<Tid, Tid>, trust: BTreeSet<WriteId>, commits: &[Commit]) -> Paths {
         let mut p = Paths::new(records, trust);
@@ -186,8 +195,8 @@ impl<S: Store> Paths<S> {
     /// An empty held set over `records` and `trust`, delta facts kept in `store`.
     pub fn with_store(records: &BTreeMap<Tid, Tid>, trust: BTreeSet<WriteId>, store: S) -> Paths<S> {
         Paths {
-            first: walk::Walk::new(records, false),
-            timeline: walk::Walk::new(records, true),
+            first: walk::Walk::new(records, false, false),
+            timeline: walk::Walk::new(records, true, false),
             trust,
             active: BTreeSet::new(),
             void: BTreeSet::new(),
@@ -545,50 +554,44 @@ impl<S: Store> Paths<S> {
 
     /// The held lowerings whose trust would change what applies, which deltas are valid or the
     /// final roles (draft §5.1 Trust set, dispute; `Candidates::Explicit`): per candidate the
-    /// trust switched on and back in one copy, each an update of the candidate's component, and
-    /// the readings compared only where the switch's `Changed` reaches (notes/perm-paths.md, Trust
-    /// per component).
-    pub fn disputes(&self) -> BTreeSet<WriteId> {
+    /// trust switched on and back in place, each an update of the candidate's component, the
+    /// readings compared only where the switch's `Changed` reaches (notes/perm-paths.md, Trust
+    /// per component). The reading after equals the reading before.
+    pub fn disputes(&mut self) -> BTreeSet<WriteId> {
         self.disputes_counted(&mut Counts::default())
     }
 
-    /// `disputes`, counting into `counts` the work of the copy's walks and of the verdicts
+    /// `disputes`, counting into `counts` the work of the switches' walks and of the verdicts
     /// compared.
-    pub fn disputes_counted(&self, counts: &mut Counts) -> BTreeSet<WriteId> {
+    pub fn disputes_counted(&mut self, counts: &mut Counts) -> BTreeSet<WriteId> {
         let mut out = BTreeSet::new();
         let cands = self.timeline.candidates();
-        if cands.is_empty() {
-            return out;
-        }
-        let mut t = self.clone();
-        let base = t.counts();
+        let base = self.counts();
+        let held = self.trust.clone();
         for id in cands {
-            let mut trust = self.trust.clone();
+            let mut trust = held.clone();
             trust.insert(id);
-            let ch = t.set_trust(trust);
-            if t.status(&id) != Some(Status::Invited) && self.differs(&t, &ch, counts) {
+            let ch = self.set_trust(trust);
+            let invited = self.status(&id) == Some(Status::Invited);
+            let reached = self.facts.reached(&ch);
+            let with = self.probe(&ch, &reached, counts);
+            self.set_trust(held.clone());
+            if !invited && self.probe(&ch, &reached, counts) != with {
                 out.insert(id);
             }
-            t.set_trust(self.trust.clone());
         }
-        counts.add(&t.counts().since(&base));
+        counts.add(&self.counts().since(&base));
         out
     }
 
-    /// Whether `t`, reached from this reading by an update reporting `ch`, applies other parts,
-    /// gives other final roles or holds other deltas valid: read only where `ch` reaches.
-    fn differs(&self, t: &Paths<S>, ch: &Changed, counts: &mut Counts) -> bool {
-        let applied = |p: &Paths<S>, id: &WriteId| matches!(p.status(id), Some(Status::Applied | Status::Invited));
-        if ch.parts.iter().any(|id| applied(self, id) != applied(t, id)) {
-            return true;
-        }
-        if ch.regrant.iter().any(|(h, e)| self.timeline.final_of(h, e) != t.timeline.final_of(h, e)) {
-            return true;
-        }
-        let valid = |p: &Paths<S>, id: &WriteId, c: &mut Counts| matches!(p.content_counted(id, c), Some(Content::Valid(_)));
-        t.facts.reached(ch).iter().any(|id| valid(self, id, counts) != valid(t, id, counts))
+    /// What a dispute compares, read only where `ch` reaches: whether each part it reports
+    /// applies, the final role of each edge it reports, whether each delta `reached` is valid.
+    fn probe(&self, ch: &Changed, reached: &BTreeSet<WriteId>, counts: &mut Counts) -> (Vec<bool>, Vec<Option<Role>>, Vec<bool>) {
+        let applied = ch.parts.iter().map(|id| matches!(self.status(id), Some(Status::Applied | Status::Invited))).collect();
+        let finals = ch.regrant.iter().map(|(h, e)| self.timeline.final_of(h, e)).collect();
+        let valid = reached.iter().map(|id| matches!(self.content_counted(id, counts), Some(Content::Valid(_)))).collect();
+        (applied, finals, valid)
     }
-
 
     /// Where no counting entry's removal is, the first walk reads as the timeline
     /// (notes/perm-paths.md, Two walks): the first part of a component holding a vouch whose

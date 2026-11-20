@@ -60,7 +60,7 @@ pub enum FactClass {
 /// The delta facts content reads, by point lookups (notes/perm-paths.md, The delta-facts seam):
 /// the engine backs it with its store index, `MemStore` keeps it in memory. Its indexes follow
 /// `put` and `remove`; the stored addenda verdicts are its too.
-pub trait Store: Clone {
+pub trait Store {
     fn put(&mut self, f: Fact);
     fn remove(&mut self, id: &WriteId) -> Option<Fact>;
     fn get(&self, id: &WriteId) -> Option<Fact>;

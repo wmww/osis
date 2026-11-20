@@ -13,6 +13,7 @@ mod hand;
 mod hand_content;
 mod incremental;
 mod shapes;
+mod single;
 
 use crate::common::{seeded, sharded};
 use osis_base::{Ak, CommitId, PurgeBy, Role, Tid, Ts, WallMs};
@@ -125,12 +126,12 @@ pub fn diff(w: &World, v: &View, disputes: bool) -> Option<String> {
     let w = &as_known(w, v);
     let rd = m::judge(w, &rules, v);
     let inp = input(w, v);
-    let p = Paths::evaluate(&inp.records, inp.trust.clone(), &inp.commits);
+    let mut p = Paths::evaluate(&inp.records, inp.trust.clone(), &inp.commits);
     // where no entry counts, the first walk reads as the timeline (notes/perm-paths.md, Two walks)
     if let Some(id) = p.first_walk_differs() {
         return Some(format!("the first walk differs from the timeline at {id:?}, no entry counting there"));
     }
-    compare(w, v, &rules, &rd, &inp, &p, disputes)
+    compare(w, v, &rules, &rd, &inp, &mut p, disputes)
 }
 
 /// `w` as node view `v` can know it (notes/a1-spec/README.md Open 19, (a) as the walk takes it): a
@@ -149,7 +150,7 @@ pub fn as_known(w: &World, v: &View) -> World {
     w
 }
 
-fn compare(w: &World, v: &View, rules: &Rules, rd: &Reading, inp: &Input, p: &Paths, disputes: bool) -> Option<String> {
+fn compare(w: &World, v: &View, rules: &Rules, rd: &Reading, inp: &Input, p: &mut Paths, disputes: bool) -> Option<String> {
     let back: BTreeMap<WriteId, Id> = inp.ids.iter().map(|(&i, &id)| (id, i)).collect();
     for (&i, id) in &inp.ids {
         if !w.edge_class(i) {

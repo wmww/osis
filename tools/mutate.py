@@ -27,8 +27,10 @@ selection the build adds `--tests` (doctests would run while building, not from 
 its timeout: set OSIS_SEED_TIMEOUT_SECS to a few times a seed's normal CPU-s for seeded tests.
 
 Each mutation's test output goes whole to a file (MUTATE_OUT, a directory, or a fresh one under
-TMPDIR), printed on stderr with each failing test's panic message, so a failure under a plant is
-read without rebuilding it. MUTATE_HEAVY=1 runs the tests in holds of tools/heavy,
+TMPDIR), its path printed on stderr for every row (with each failing test's panic message), so a
+failure under a plant is read without rebuilding it. After a mutation that does not build, the
+others are built and numbered again (`mutant-<k>.log` is the k-th of those, not of the mutations
+given): read a row's log by the path printed with it, and recheck a "none" by hand. MUTATE_HEAVY=1 runs the tests in holds of tools/heavy,
 MUTATE_PER_HOLD mutations per hold (never run mutate.py itself under it: a batch would hold the
 lock for its whole length).
 The variable is read once per site, so a plant in a hot path costs nothing per call."""
@@ -230,8 +232,10 @@ def built(muts, group, rest, cargo_args, test_args, texts, mutated, saved, sites
         with open(log, "w") as f:
             f.write("".join(out))
         print(f"{row} {', '.join(failed) if failed else 'none'} |", flush=True)
+        # every row names its log: after a mutation that does not build the rest are built again
+        # and numbered anew, so mutant-<k> is not the k-th mutation given
+        print(f"mutate: mutation {i}'s output: {log}", file=sys.stderr)
         if failed:
-            print(f"mutate: mutation {i}'s output: {log}", file=sys.stderr)
             for line in panics("".join(out)):
                 print(f"  {line}", file=sys.stderr)
         sys.stderr.flush()

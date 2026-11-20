@@ -204,7 +204,7 @@ fn hostile_shapes_judge_alike_without_panicking() {
 /// A random soup of parts over 8 things: records with cycles, paths repeating things, any holder,
 /// value, frontier (naming any commit, held or not), remaining admin, mark; vouches; several parts
 /// per commit; ties in `ts` and signer.
-fn soup(i: u64) -> (BTreeMap<Tid, Tid>, Vec<Commit>) {
+pub(super) fn soup(i: u64) -> (BTreeMap<Tid, Tid>, Vec<Commit>) {
     let mut r = Rng(i);
     let thing = |r: &mut Rng| 1 + r.below(8) as u32;
     let mut records = BTreeMap::new();
