@@ -4727,8 +4727,13 @@ impl Drop for Engine {
 
 #[cfg(debug_assertions)]
 impl Engine {
-    /// Debug builds: no vouch or addendum trigger missed (`flows::vouches::missed`), and no
-    /// waiting split path a fresh attempt opens (`apply::paths::missed`), counting nothing.
+    /// Debug builds: the shadow walk's comparisons so far and the differences each designed
+    /// class took in them (`walk::shadow`); `None` before its first durable transaction.
+    #[doc(hidden)]
+    pub fn shadow_seen(&self) -> Option<(u64, std::collections::BTreeMap<&'static str, u64>)> {
+        self.shadow.as_ref().map(|s| s.seen.clone())
+    }
+
     /// Debug builds: the walk along stated paths differs from today's only by design, and (at the
     /// drop) reads incrementally as from scratch (`walk::shadow`), counting nothing.
     fn check_shadow(&mut self, drop: bool) {
@@ -4746,6 +4751,8 @@ impl Engine {
         });
     }
 
+    /// Debug builds: no vouch or addendum trigger missed (`flows::vouches::missed`), and no
+    /// waiting split path a fresh attempt opens (`apply::paths::missed`), counting nothing.
     fn check_vouches_missed(&mut self, when: &str) {
         let m = osis_base::costs::paused(|| osis_perm::uncounted(|| memo::unrecorded(|| self.read(crate::flows::vouches::missed))));
         assert!(matches!(m, Ok(None) | Err(Error::Store(_))), "{when}: a vouch trigger missed: {m:?}");

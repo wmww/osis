@@ -569,6 +569,29 @@ fn new_walk_differs_only_by_design() {
     assert!(bad.is_empty(), "differences outside their class: {bad:#?}");
 }
 
+// notes/perm-paths.md, The switch: the shadow walk runs at every durable transaction and takes a
+// designed difference by its class, so a class count of 0 over the suites means no difference,
+// never a shadow that did not run. A and B, T's only admins, leave at once: each leave names the
+// other, who left first, so the walk applies neither (`LAST_ADMIN`). spec: none (the shadow is a
+// debug check).
+#[cfg(debug_assertions)]
+#[test]
+fn the_shadow_walk_runs_and_classes_a_designed_difference() {
+    let (mut lp, ps) = people(2);
+    let t = thing_of(&mut lp, 0, ps[0]);
+    grant(&mut lp, 0, t, ps[1], edge_of(Role::Admin));
+    for (p, holder) in lp.peers.iter_mut().zip(&ps) {
+        p.engine.demote(&t, &Demotion { holder: *holder, new: None, retain: None }).unwrap();
+    }
+    lp.advance(1000);
+    spread(&mut lp);
+    for (i, p) in lp.peers.iter().enumerate() {
+        let (checks, seen) = p.engine.shadow_seen().expect("the shadow walk built");
+        assert!(checks > 0, "peer {i}: no comparison made");
+        assert!(seen.get(osis_engine::walk::classes::LAST_ADMIN.name).is_some_and(|n| *n > 0), "peer {i}: {seen:?}");
+    }
+}
+
 // notes/principles.md Check scaling, notes/a1-spec/permissions.md §2 Path's invite: finding an
 // invite grant's path (`Need::Invite`: the role on every edge but the last, as an invite on the
 // last) walks the things reaching its target, as many at 10n unrelated role commits held as at n.

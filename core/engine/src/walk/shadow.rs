@@ -33,6 +33,10 @@ pub(crate) struct Shadow {
     listers: BTreeMap<CommitId, BTreeSet<CommitId>>,
     /// Commits adapted by syncs since built (count tests).
     pub(crate) adapted: u64,
+    /// Comparisons made, and the differences each designed class took in them, since the engine
+    /// first built its shadow (kept across rebuilds): what shows the shadow ran
+    /// (`Engine::shadow_seen`).
+    pub(crate) seen: (u64, BTreeMap<&'static str, u64>),
 }
 
 impl Shadow {
@@ -53,16 +57,16 @@ impl Shadow {
                 listers.entry(c).or_default().insert(*id);
             }
         }
-        Shadow { paths, fed, records, trust, listers, adapted: 0 }
+        Shadow { paths, fed, records, trust, listers, adapted: 0, seen: (0, BTreeMap::new()) }
     }
 
     /// Brings the walk to what `core` holds now.
     fn sync(&mut self, core: &mut Core) {
         let moved = core.ix.held.take_walk_moved();
         if moved.epochs || (moved.records && input::records(core) != self.records) {
-            let adapted = self.adapted;
+            let (adapted, seen) = (self.adapted, std::mem::take(&mut self.seen));
             *self = Shadow::build(core);
-            self.adapted = adapted;
+            (self.adapted, self.seen) = (adapted, seen);
             return;
         }
         let mut ids: BTreeSet<CommitId> = moved.commits;
@@ -146,10 +150,14 @@ pub(crate) fn at_drop(shadow: &mut Option<Shadow>, core: &mut Core) {
 /// appends every difference with its class and the test's name (worker threads carry their
 /// test's name: `testenv::spawn_named`), one line each: the class counts of notes/perm-paths.md,
 /// The switch.
-fn check(s: &Shadow, core: &Core, when: &str) {
+fn check(s: &mut Shadow, core: &Core, when: &str) {
     let w = World { core, inputs: &s.fed, paths: &s.paths };
     let all = classes::differences(core, &s.fed, &s.paths);
     let classed: Vec<_> = all.iter().zip(classes::classify_all(&w, &all)).collect();
+    s.seen.0 += 1;
+    for c in classed.iter().filter_map(|x| x.1) {
+        *s.seen.1.entry(c.name).or_default() += 1;
+    }
     if let Ok(f) = std::env::var("OSIS_SHADOW_LOG") {
         let name = std::thread::current().name().unwrap_or("?").to_string();
         let out: String = classed.iter().map(|(d, c)| format!("{name}\t{}\t{when}\t{d:?}\n", c.map_or("UNCLASSED", |c| c.name))).collect();

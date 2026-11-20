@@ -1,0 +1,3 @@
+- notes/perm-paths.md named a `FINDINGS` list in `walk::classes` that the code does not have; read the code, not the note, for what the shadow excepts.
+- Walk-side plants over the engine lib and `it` cost a whole engine suite per plant (about 1,400 CPU-s, 100 s held each): 14 plants held the lock about 30 min. Whether a plant was swallowed or unreached needs `OSIS_SHADOW_LOG` class counts, one `mutate.py` call per plant (the log carries no mutant number).
+- The by-hand `role_paths::new_walk_differs_only_by_design` was the only check that the shadow sees anything; a default test now asserts it ran (`Engine::shadow_seen`).

@@ -9,7 +9,7 @@ This is the one list of questions waiting on you. Answer in conversation or by e
 | B. How a removal reaches far documents | 8 | 5 |
 | C. Storage a removal leaves behind | 3 | 1 |
 | D. What readers of one thing learn about others | 5 | 1 |
-| E. What a removal keeps of the removed party's work | 3 | 1 |
+| E. What a removal keeps of the removed party's work | 4 | 2 |
 | F. Deleting and history | 9 | 0 |
 | G. Workflow | 1 | 0 |
 | H. Older questions, parked | 9 | 0 |
@@ -173,6 +173,13 @@ Question: Xavier removed Nina; only Bea's device saw it; then Hal removes Xavier
   4. Two witnesses racing: which of Xavier's writes survive depends on which device wrote first.
 - Questions: are 1 to 4 acceptable? If any answer is no, which of the two indistinguishable worlds should the model get wrong, and for whom?
 - Lean: the proposal. Blocks no stage (the A3 draft holds under either); four known-failing gate searches (about 1,700 CPU-s of every roles-model gate) and one option of item 24 wait on it. Source: notes/role-remake-model.md For Tess; issues/role-vouch-contested.md.
+
+### 37. Can a writer keep a removed member's key change? — BLOCKING
+Question: Xavier changes a document's read keys (a writer or admin may); Bea, a writer, receives the change; then Hal removes Xavier, not having seen it. The requirements keep edits "the remover or another remaining writer vouches for having received by then". Should Bea's vouch keep Xavier's key change?
+- **Today:** yes: Bea's device vouches and the key change stays.
+- **After the switch (the draft and the model):** only an admin's vouch keeps key changes and role changes; a writer keeps only plain content. Xavier's key change is undone unless an admin saw it, and members it reached may need their keys again from a device that may change keys. Needs the requirements sentence narrowed to plain content for writers.
+- **Requirement as written:** whoever holds the role a part needed keeps it (Bea could have changed the read keys herself). One more rule in the new walk and its model.
+- Close to item 25 (role changes themselves), which this does not decide. No lean. Blocks: the A1 switch. Source: notes/a1-spec/README.md Open 27.
 
 ### 26. Must every fight among admins be shown?
 Question: when admins lower each other at about the same time, every device holding the same writes and trust reaches one result, and a device trusting one side is safe; but which admin wins can turn on a third party's write that ends up doing nothing, and a device trusting nobody is not always shown that a fight happened. Smallest honest case: H makes B admin; B ends H's admin, then makes Z admin; Z makes H admin again; H, having seen only Z's grant, removes B. With Z's grant held H wins, without it B and Z do; no dispute is shown either way. About 47 such cases per million small random histories, about 9 per million with only honest writers. The requirements say a dispute is reported: for every fight, or only where trust decides the reading?

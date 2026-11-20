@@ -47,8 +47,8 @@ const fn class(name: &'static str, draft: &'static str) -> Class {
 pub const VOUCH_OUTLIVES_LEAVE: Class = class("a vouch outlives its voucher's own leave", "permissions.md §2 Self-removal: it audits nothing (today's walk ends an entry at each later lowering of its voucher)");
 /// An edge write taking a standing admin edge, applied today, applying nowhere in the walk:
 /// neither its path's last edge nor its named remaining admin's edge is a standing admin edge
-/// just before it. What follows from the rule: a difference that goes when the walk reads every
-/// edge write as carrying the adminless mark (`classify_all`).
+/// just before it. What follows from the rule: a difference that goes when the walk reads each
+/// write the rule so stops as carrying the adminless mark (`classify_all`).
 pub const LAST_ADMIN: Class = class("the last-admin rule is a validity rule", "permissions.md §1 The last admin: With neither it does not apply (README What A1 removes: today it is the writer's check; Open 26: a backdated timed rewrite of the remover's own edge)");
 /// An invite grant along a last edge giving admin with no invite named.
 pub const ADMIN_INVITES: Class = class("an admin edge gives every invite", "permissions.md §2 Path's invite: every invite where it gives admin");
@@ -159,11 +159,6 @@ fn hops(core: &Core, signer: Tid, path: &[Tid], on: Tid, leave: bool, direct: os
     }).collect()
 }
 
-/// An edge whose value just before `key` is a standing admin (admin, no `until`).
-fn standing<S: Store>(w: &World<'_, S>, e: (Tid, Tid), key: &Key) -> bool {
-    w.paths.value_before(&e.0, &e.1, key).is_some_and(|v| v.role == Role::Admin && v.until.is_none())
-}
-
 fn applies(s: Option<Status>) -> bool {
     matches!(s, Some(Status::Applied | Status::Invited))
 }
@@ -177,43 +172,76 @@ fn edge_part<'a, S: Store>(w: &'a World<'_, S>, id: &WriteId) -> Option<(WriteId
     Some((WriteId(id.0, u32::try_from(ix).ok()?), part, e))
 }
 
-/// What commit `c`'s signed header states for thing `on`: its path [A1..Ak], marks and named
-/// remaining admin, read off the header, never off the adapted input, so an excuse is computed
-/// from what was written (notes/principles.md: an excuse in an oracle is a carve-out). `None`
-/// for the split form, whose entries the adapter opens.
-fn stated(core: &Core, c: &CommitId, on: &Tid) -> Option<(Vec<Tid>, osis_base::format::PathMarks, Option<Tid>)> {
-    let h = core.ix.commits.get(c)?.header.decoded()?;
-    match &h.path {
-        osis_commit::Paths::One(p) => Some((p.to(on).to_vec(), p.direct, h.remains)),
-        osis_commit::Paths::Split(_) => None,
-    }
-}
-
-/// Whether the walk's input `i` states what its commit's header states for each part (path,
-/// marks, an edge write's named remaining admin; a split commit's entries as the adapter opened
-/// them): the shadow checks each input it is given, so no class reads an adapter's misreading of
-/// the path or `remains` as a designed difference.
+/// Whether the walk's input `i` states what its commit's signed header states, read off the
+/// header, never off the adapted input, so no class reads an adapter's misreading as a designed
+/// difference (notes/principles.md: an excuse in an oracle is a carve-out): per part its path and
+/// marks (a split commit's entries as the adapter opened them: not checked), a delta's purge
+/// author, an edge write's named remaining admin and adminless mark, and its list: present iff the
+/// header carries a frontier, naming on each thing a held commit writes exactly the frontier's
+/// held commits (a frontier by link: not checked). Not checked here: what perm's held reading
+/// gives of a body (an edge write's holder and value, a vouch's or addendum's entries).
 pub(crate) fn as_written(core: &Core, i: &Input) -> bool {
-    i.commit.parts.iter().all(|p| {
-        stated(core, &i.commit.id, &p.on).is_none_or(|(path, direct, r)| path == p.path && direct == p.direct && !matches!(&p.kind, PartKind::Edge(e) if e.remains != r))
-    })
+    let Some(h) = core.ix.commits.get(&i.commit.id).and_then(|m| m.header.decoded()) else { return false };
+    let author = h.purge_author();
+    let list = |l: &osis_perm::paths::List| -> Option<bool> {
+        let f = h.frontier.as_ref()?;
+        let want: BTreeSet<(Tid, CommitId)> = f.iter().filter_map(|c| core.ix.commits.get(c).map(|m| (c, m))).flat_map(|(c, m)| m.view.aspects.iter().map(move |a| (a.tid, *c))).collect();
+        Some(l.entries().collect::<BTreeSet<_>>() == want)
+    };
+    i.commit.signer == h.signer
+        && i.commit.parts.iter().all(|p| {
+            let path = match &h.path {
+                osis_commit::Paths::One(x) => x.to(&p.on) == p.path.as_slice() && x.direct == p.direct,
+                osis_commit::Paths::Split(_) => true,
+            };
+            path && match &p.kind {
+                PartKind::Edge(e) => {
+                    e.remains == h.remains
+                        && e.adminless == h.adminless
+                        && match &e.frontier {
+                            None => h.frontier.is_none() && h.links.frontier.is_none(),
+                            Some(l) => list(l).unwrap_or(h.links.frontier.is_some()),
+                        }
+                }
+                PartKind::Delta(d) => std::iter::once(&h.signer).chain(&p.path).position(|x| *x == author).unwrap_or(p.path.len() + 1) == d.purge_author as usize,
+                PartKind::Vouch { .. } => true,
+            }
+        })
 }
 
 /// Whether today's edge write `id` (applied today, applying nowhere in the walk) falls by the
 /// last-admin rule: it takes a standing admin edge, carries no adminless mark, and neither its
 /// path's last edge nor its named remaining admin's edge on its thing is standing just before it.
-fn last_admin<S: Store>(w: &World<'_, S>, id: &WriteId, signer: &Tid) -> bool {
-    let Some((nid, part, e)) = edge_part(w, id) else { return false };
-    let Some(key) = w.paths.key(&nid) else { return false };
+fn last_admin<S: Store>(w: &World<'_, S>, id: &WriteId) -> bool {
+    edge_part(w, id).is_some_and(|(nid, _, _)| rule_stops(w, &nid))
+}
+
+/// Whether the last-admin rule's sentence (`sentence`) leaves the walk's edge write `nid` (its
+/// input's index) unapplied.
+fn rule_stops<S: Store>(w: &World<'_, S>, nid: &WriteId) -> bool {
+    sentence(w, w.paths, nid, true)
+}
+
+/// The last-admin rule's sentence for edge write `nid` of `w`'s input (its marks), read in walk
+/// `state` (its edges; `unapplied`: and its status there): it takes a standing admin edge, carries
+/// no adminless mark, and neither its path's last edge nor its named remaining admin's edge on its
+/// thing is standing just before it.
+fn sentence<S: Store, T: Store>(w: &World<'_, S>, state: &Paths<T>, nid: &WriteId, unapplied: bool) -> bool {
+    let Some(input) = w.inputs.get(&nid.0) else { return false };
+    let signer = &input.commit.signer;
+    let Some(part) = input.commit.parts.get(nid.1 as usize) else { return false };
+    let PartKind::Edge(e) = &part.kind else { return false };
+    let Some(key) = state.key(nid) else { return false };
     let on = part.on;
-    let takes = standing(w, (e.holder, on), &key) && e.value.is_none_or(|v| v.role < Role::Admin || v.until.is_some());
-    if !takes || e.adminless || w.paths.status(&nid) != Some(Status::Unapplied) {
+    let standing = |x: (Tid, Tid)| state.value_before(&x.0, &x.1, &key).is_some_and(|v| v.role == Role::Admin && v.until.is_none());
+    let takes = standing((e.holder, on)) && e.value.is_none_or(|v| v.role < Role::Admin || v.until.is_some());
+    if !takes || e.adminless || (unapplied && state.status(nid) != Some(Status::Unapplied)) {
         return false;
     }
     let ak = part.path.last().copied().unwrap_or(*signer);
     let leave = e.holder == ak;
     let last = (!leave).then(|| hops(w.core, *signer, &part.path, on, false, part.direct).last().copied()).flatten().filter(|l| *l == (ak, on));
-    let ok = |x: (Tid, Tid)| x != (e.holder, on) && standing(w, x, &key);
+    let ok = |x: (Tid, Tid)| x != (e.holder, on) && standing(x);
     !last.is_some_and(ok) && !e.remains.is_some_and(|r| ok((r, on)))
 }
 
@@ -224,10 +252,10 @@ fn edge_class<S: Store>(w: &World<'_, S>, id: &WriteId, signer: &Tid, on: &Tid, 
     if !old && new == Some(Status::Applied) && e.holder == part.path.last().copied().unwrap_or(*signer) && e.value.is_some() && w.paths.value_before(&e.holder, on, &key) == e.value {
         return Some(UNCHANGED_SELF);
     }
-    if !old && applies(new) && w.paths.counting().iter().any(|(_, c, t)| *c == id.0 && t == on) {
+    if !old && applies(new) && outlives_leave(w, &id.0, on) {
         return Some(VOUCH_OUTLIVES_LEAVE);
     }
-    if old && new == Some(Status::Unapplied) && last_admin(w, id, signer) {
+    if old && new == Some(Status::Unapplied) && last_admin(w, id) {
         return Some(LAST_ADMIN);
     }
     // a write today's walk drops by a lowering on its thing (`Timeline::dropped`) whose part
@@ -252,7 +280,7 @@ fn edge_class<S: Store>(w: &World<'_, S>, id: &WriteId, signer: &Tid, on: &Tid, 
     }
     if old && new == Some(Status::Dropped) && w.core.timelines.role(signer, on, At::END) == Some(Role::Admin) {
         let mine = hops(w.core, *signer, &part.path, *on, e.holder == last, part.direct);
-        if mine.iter().any(|(a, b)| w.paths.writes(a, b).iter().any(|x| x.key > key && x.explicit && x.value.is_none_or(|v| v.role < Role::Admin))) {
+        if mine.iter().any(|(a, b)| w.paths.writes(a, b).iter().any(|x| x.key > key && x.explicit && x.value.is_none_or(|v| v.role < Role::Admin) && !lists(w, &x.key, &id.0, on))) {
             return Some(STATED_PATH);
         }
     }
@@ -260,6 +288,24 @@ fn edge_class<S: Store>(w: &World<'_, S>, id: &WriteId, signer: &Tid, on: &Tid, 
         return Some(PATH_GIVES_NOTHING);
     }
     None
+}
+
+/// `VOUCH_OUTLIVES_LEAVE`: a held vouch on `on` keyed by removal R listing commit `c`, its entry
+/// counting in the walk, is ordered after R's parts, and the last edge of its stated path is
+/// lowered below admin after it (its voucher's leave, which today's walk ends the entry at).
+fn outlives_leave<S: Store>(w: &World<'_, S>, c: &CommitId, on: &Tid) -> bool {
+    w.inputs.values().any(|i| {
+        (0u32..).zip(&i.commit.parts).any(|(x, p)| {
+            let PartKind::Vouch { removal, list } = &p.kind else { return false };
+            if p.on != *on || !list.commits().contains(c) || !w.paths.counting().contains(&(*removal, *c, *on)) {
+                return false;
+            }
+            let Some(vkey) = w.paths.key(&WriteId(i.commit.id, x)) else { return false };
+            let after_removal = w.inputs.get(removal).is_some_and(|r| (0u32..).zip(&r.commit.parts).any(|(y, _)| w.paths.key(&WriteId(*removal, y)).is_some_and(|k| k < vkey)));
+            let last = hops(w.core, i.commit.signer, &p.path, p.on, false, p.direct).last().copied();
+            after_removal && last.is_some_and(|(a, b)| w.paths.writes(&a, &b).iter().any(|l| l.key > vkey && l.value.filter(|v| v.alive_at(Some(l.key.ts))).map(|v| v.role) < Some(Role::Admin)))
+        })
+    })
 }
 
 /// `SIBLINGS`: another edge-class part of `nid`'s commit on `on` is dropped in the walk and not
@@ -296,7 +342,17 @@ fn stated_cut<S: Store>(w: &World<'_, S>, nid: &WriteId, signer: &Tid, on: &Tid,
             PartKind::Edge(_) => false,
         })
     };
-    hops.iter().any(|(a, b)| w.paths.writes(a, b).iter().any(|x| x.key >= pos && x.cuts(needs) && (elsewhere || x.key.signer == *signer || blamed(&x.key.commit))))
+    hops.iter().any(|(a, b)| w.paths.writes(a, b).iter().any(|x| x.key >= pos && x.cuts(needs) && !lists(w, &x.key, &nid.0, on) && (elsewhere || x.key.signer == *signer || blamed(&x.key.commit))))
+}
+
+/// Whether the list of the edge write at `cut` names commit `c`'s parts on `on`: its frontier as
+/// adapted (checked against its header: `as_written`), or a counting entry keyed by its commit.
+fn lists<S: Store>(w: &World<'_, S>, cut: &Key, c: &CommitId, on: &Tid) -> bool {
+    let frontier = match w.inputs.get(&cut.commit).and_then(|i| i.commit.parts.get(cut.part as usize)).map(|p| &p.kind) {
+        Some(PartKind::Edge(e)) => e.frontier.as_ref().is_some_and(|l| l.names(c, on)),
+        _ => false,
+    };
+    frontier || w.paths.counting().contains(&(cut.commit, *c, *on))
 }
 
 /// `OWN_LIST`: delta `nid` on `on`, its hops each giving `needs` just before it, has cuts below
@@ -306,11 +362,7 @@ fn own_list<S: Store>(w: &World<'_, S>, nid: &WriteId, on: &Tid, needs: Role) ->
     if !hops.iter().all(|(a, b)| w.paths.role_before(a, b, &pos) >= Some(needs)) {
         return false;
     }
-    let names = |k: &Key| match w.inputs.get(&k.commit).and_then(|i| i.commit.parts.get(k.part as usize)).map(|p| &p.kind) {
-        Some(PartKind::Edge(e)) => e.frontier.as_ref().is_some_and(|l| l.names(&nid.0, on)),
-        _ => false,
-    };
-    let cuts: Vec<bool> = hops.iter().flat_map(|(a, b)| w.paths.writes(a, b)).filter(|x| x.key >= pos && x.cuts(needs)).map(|x| names(&x.key)).collect();
+    let cuts: Vec<bool> = hops.iter().flat_map(|(a, b)| w.paths.writes(a, b)).filter(|x| x.key >= pos && x.cuts(needs)).map(|x| lists(w, &x.key, &nid.0, on)).collect();
     cuts.contains(&true) && cuts.contains(&false)
 }
 
@@ -318,14 +370,21 @@ fn own_list<S: Store>(w: &World<'_, S>, nid: &WriteId, on: &Tid, needs: Role) ->
 /// ordered after it on one of them is the removal a held vouch lists its commit against, the
 /// vouch unapplied in the walk.
 fn vouch_admin<S: Store>(w: &World<'_, S>, nid: &WriteId, needs: Role) -> bool {
-    let Some((hops, pos)) = w.paths.rests(nid) else { return false };
-    if !hops.iter().all(|(a, b)| w.paths.role_before(a, b, &pos) >= Some(needs)) {
+    let Some((rests, pos)) = w.paths.rests(nid) else { return false };
+    if !rests.iter().all(|(a, b)| w.paths.role_before(a, b, &pos) >= Some(needs)) {
         return false;
     }
     let vouched = |cut: &CommitId| {
-        w.inputs.values().any(|i| (0u32..).zip(&i.commit.parts).any(|(x, p)| matches!(&p.kind, PartKind::Vouch { removal, list } if removal == cut && list.commits().contains(&nid.0)) && w.paths.status(&WriteId(i.commit.id, x)) == Some(Status::Unapplied)))
+        w.inputs.values().any(|i| {
+            (0u32..).zip(&i.commit.parts).any(|(x, p)| {
+                let v = WriteId(i.commit.id, x);
+                // its stated path gives its voucher below admin on its thing just before it
+                let below = || w.paths.key(&v).is_some_and(|k| hops(w.core, i.commit.signer, &p.path, p.on, false, p.direct).iter().any(|(a, b)| w.paths.role_before(a, b, &k) < Some(Role::Admin)));
+                matches!(&p.kind, PartKind::Vouch { removal, list } if removal == cut && list.commits().contains(&nid.0)) && w.paths.status(&v) == Some(Status::Unapplied) && below()
+            })
+        })
     };
-    hops.iter().any(|(a, b)| w.paths.writes(a, b).iter().any(|x| x.key >= pos && x.cuts(needs) && vouched(&x.key.commit)))
+    rests.iter().any(|(a, b)| w.paths.writes(a, b).iter().any(|x| x.key >= pos && x.cuts(needs) && vouched(&x.key.commit)))
 }
 
 /// `VOUCH_THING`: a counting entry keeps commit `c` on its vouch's thing alone, where today's
@@ -380,21 +439,14 @@ pub fn classify<S: Store>(w: &World<'_, S>, d: &Difference, all: &[Difference]) 
     }
 }
 
-/// Each difference's class (`classify`); where some stay unclassed, those that go when the walk
-/// reads every edge write as carrying the adminless mark (the last-admin rule off, as today's walk
-/// reads it: a walk from scratch over that input), or that a designed class takes there, follow
-/// from the rule and take `LAST_ADMIN`: a write the rule stops in one pass changes what later
-/// parts read, and a verdict given then stands (README Open 13); then what follows a classified
-/// difference (`follow`).
+/// Each difference's class (`classify`); where some stay unclassed, those that go with the rule
+/// off where its sentence stops a write (`rule_off`), or that a designed class takes there,
+/// follow from the rule and take `LAST_ADMIN`: a write the rule stops in one pass changes what
+/// later parts read, and a verdict given then stands (README Open 13); then what follows a
+/// classified difference (`follow`).
 pub fn classify_all<S: Store>(w: &World<'_, S>, all: &[Difference]) -> Vec<Option<Class>> {
     let mut out: Vec<Option<Class>> = all.iter().map(|d| classify(w, d, all)).collect();
-    // the last-admin rule off: every edge write read as carrying the adminless mark
-    counterfactual(w, all, &mut out, LAST_ADMIN, |_, p| {
-        if let PartKind::Edge(e) = &mut p.kind {
-            e.adminless = true;
-        }
-        true
-    });
+    rule_off(w, all, &mut out);
     follow(w, all, &mut out);
     out
 }
@@ -444,29 +496,47 @@ fn follow<S: Store>(w: &World<'_, S>, all: &[Difference], out: &mut [Option<Clas
     }
 }
 
-/// Where some of `all` stay unclassed in `out`: the walk from scratch over the input `keep`
-/// rewrites (a part dropped where it answers false), and every unclassed difference that is not
-/// among its differences, or that a designed class takes there, takes `class`. A delta's difference is compared without its part
-/// index, which leaving parts out moves.
-fn counterfactual<S: Store>(w: &World<'_, S>, all: &[Difference], out: &mut [Option<Class>], class: Class, keep: impl Fn(&WriteId, &mut osis_perm::paths::Part) -> bool) {
+/// Where some of `all` stay unclassed in `out`: the walk from scratch with the last-admin rule
+/// off where its sentence stops a write (`sentence`: in the walk as unapplied, or in the walk with
+/// the rule off everywhere, as a write the rule stopped in an earlier pass may apply settled),
+/// read again in each such walk until
+/// it stops no more (a write it no longer stops changes what later writes read: one it then
+/// stops is the rule's too), those writes read as carrying the adminless mark. Not every write:
+/// a walk stopping a write the sentence does not (a remaining admin standing) differs there too.
+/// Every unclassed difference not among that walk's differences, or that a designed class takes
+/// there, takes `LAST_ADMIN`. A delta's difference is compared without its part index.
+fn rule_off<S: Store>(w: &World<'_, S>, all: &[Difference], out: &mut [Option<Class>]) {
     if out.iter().all(Option::is_some) {
         return;
     }
     let mut inputs = w.inputs.clone();
-    for i in inputs.values_mut() {
-        let id = i.commit.id;
-        let (mut parts, mut origins) = (Vec::new(), Vec::new());
-        for ((x, mut p), o) in (0u32..).zip(std::mem::take(&mut i.commit.parts)).zip(std::mem::take(&mut i.origins)) {
-            if keep(&WriteId(id, x), &mut p) {
-                parts.push(p);
-                origins.push(o);
+    let records = crate::walk::input::records(w.core);
+    let ids: Vec<WriteId> = w.inputs.iter().flat_map(|(id, i)| (0u32..).take(i.commit.parts.len()).map(move |x| WriteId(*id, x))).collect();
+    // a write the rule stopped in an earlier pass may apply in the settled walk (README Open 13):
+    // its sentence is read in the walk with the rule off everywhere too
+    let mut off = w.inputs.clone();
+    for p in off.values_mut().flat_map(|i| &mut i.commit.parts) {
+        if let PartKind::Edge(e) = &mut p.kind {
+            e.adminless = true;
+        }
+    }
+    let commits: Vec<_> = off.values().map(|i| i.commit.clone()).collect();
+    let none = Paths::evaluate(&records, crate::walk::input::trust(w.core, &off), &commits);
+    let mut stopped: Vec<WriteId> = ids.iter().filter(|id| rule_stops(w, id) || sentence(w, &none, id, false)).copied().collect();
+    let paths = loop {
+        for id in &stopped {
+            if let Some(PartKind::Edge(e)) = inputs.get_mut(&id.0).and_then(|i| i.commit.parts.get_mut(id.1 as usize)).map(|p| &mut p.kind) {
+                e.adminless = true;
             }
         }
-        (i.commit.parts, i.origins) = (parts, origins);
-    }
-    inputs.retain(|_, i| !i.commit.parts.is_empty());
-    let commits: Vec<_> = inputs.values().map(|i| i.commit.clone()).collect();
-    let paths = Paths::evaluate(&crate::walk::input::records(w.core), crate::walk::input::trust(w.core, &inputs), &commits);
+        let commits: Vec<_> = inputs.values().map(|i| i.commit.clone()).collect();
+        let paths = Paths::evaluate(&records, crate::walk::input::trust(w.core, &inputs), &commits);
+        let cw = World { core: w.core, inputs: &inputs, paths: &paths };
+        stopped = inputs.iter().flat_map(|(id, i)| (0u32..).take(i.commit.parts.len()).map(move |x| WriteId(*id, x))).filter(|id| rule_stops(&cw, id)).collect();
+        if stopped.is_empty() {
+            break paths;
+        }
+    };
     let norm = |d: &Difference| match d {
         Difference::Delta { id, signer, on, aspect, path, old, new, .. } => Difference::Delta { id: *id, part: 0, signer: *signer, on: *on, aspect: aspect.clone(), path: path.clone(), old: *old, new: *new },
         x => x.clone(),
@@ -480,7 +550,7 @@ fn counterfactual<S: Store>(w: &World<'_, S>, all: &[Difference], out: &mut [Opt
     let all_there: Vec<Difference> = there.iter().map(norm).collect();
     for (c, d) in out.iter_mut().zip(all) {
         if c.is_none() && (!all_there.contains(&norm(d)) || !left.contains(&norm(d))) {
-            *c = Some(class);
+            *c = Some(LAST_ADMIN);
         }
     }
 }
