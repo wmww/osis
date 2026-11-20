@@ -74,6 +74,9 @@ pub trait Store: Clone {
     fn requests(&self, on: &Tid, aspect: &Ak, author: &Tid) -> Vec<WriteId>;
     /// The addenda with edge `e` on their path, positioned within (`from`, `to`).
     fn addenda_through(&self, e: &Pair, from: Bound<Key>, to: Bound<Key>) -> Vec<WriteId>;
+    /// Every delta with edge `e` on its path, positioned within (`from`, `to`): the index that
+    /// turns `Changed` into the deltas to judge again.
+    fn through(&self, e: &Pair, from: Bound<Key>, to: Bound<Key>) -> Vec<WriteId>;
     fn valid_addendum(&self, id: &WriteId) -> bool;
     fn set_valid_addendum(&mut self, id: &WriteId, valid: bool);
     /// Every delta held (full readings: tests, disputes).
@@ -89,7 +92,25 @@ pub struct MemStore {
     carrying: BTreeMap<CommitId, BTreeSet<WriteId>>,
     requests: BTreeMap<(Tid, Ak, Tid), BTreeSet<WriteId>>,
     addenda_on: BTreeMap<Pair, BTreeSet<(Key, WriteId)>>,
+    through: BTreeMap<Pair, BTreeSet<(Key, WriteId)>>,
     valid: BTreeSet<WriteId>,
+}
+
+/// The entries of `m[e]` positioned within (`from`, `to`).
+fn in_range(m: &BTreeMap<Pair, BTreeSet<(Key, WriteId)>>, e: &Pair, from: Bound<Key>, to: Bound<Key>) -> Vec<WriteId> {
+    let lo = WriteId(CommitId([0; 32]), 0);
+    let hi = WriteId(CommitId([u8::MAX; 32]), u32::MAX);
+    let from = match from {
+        Bound::Included(k) => Bound::Included((k, lo)),
+        Bound::Excluded(k) => Bound::Excluded((k, hi)),
+        Bound::Unbounded => Bound::Unbounded,
+    };
+    let to = match to {
+        Bound::Included(k) => Bound::Included((k, hi)),
+        Bound::Excluded(k) => Bound::Excluded((k, lo)),
+        Bound::Unbounded => Bound::Unbounded,
+    };
+    m.get(e).into_iter().flat_map(|s| s.range((from, to))).map(|x| x.1).collect()
 }
 
 impl MemStore {
@@ -107,6 +128,9 @@ impl MemStore {
             }
         }
         set(&mut self.by_commit_on, (f.commit(), f.on), f.id, add);
+        for e in &f.hops {
+            set(&mut self.through, *e, (f.pos, f.id), add);
+        }
         match &f.class {
             FactClass::Addendum(_, list) => {
                 for x in list.commits() {
@@ -157,19 +181,10 @@ impl Store for MemStore {
         self.requests.get(&(*on, aspect.clone(), *author)).into_iter().flatten().copied().collect()
     }
     fn addenda_through(&self, e: &Pair, from: Bound<Key>, to: Bound<Key>) -> Vec<WriteId> {
-        let lo = WriteId(CommitId([0; 32]), 0);
-        let hi = WriteId(CommitId([u8::MAX; 32]), u32::MAX);
-        let from = match from {
-            Bound::Included(k) => Bound::Included((k, lo)),
-            Bound::Excluded(k) => Bound::Excluded((k, hi)),
-            Bound::Unbounded => Bound::Unbounded,
-        };
-        let to = match to {
-            Bound::Included(k) => Bound::Included((k, hi)),
-            Bound::Excluded(k) => Bound::Excluded((k, lo)),
-            Bound::Unbounded => Bound::Unbounded,
-        };
-        self.addenda_on.get(e).into_iter().flat_map(|s| s.range((from, to))).map(|x| x.1).collect()
+        in_range(&self.addenda_on, e, from, to)
+    }
+    fn through(&self, e: &Pair, from: Bound<Key>, to: Bound<Key>) -> Vec<WriteId> {
+        in_range(&self.through, e, from, to)
     }
     fn valid_addendum(&self, id: &WriteId) -> bool {
         self.valid.contains(id)
@@ -673,6 +688,36 @@ impl<S: Store> Facts<S> {
                 }
             }
         }
+    }
+
+    /// The deltas `ch` reaches whose validity may have moved (a hop in `edges` before its
+    /// position, in `cuts` at or after it, in `regrant`; its commit in `named`; reported in
+    /// `parts`), and those an addendum reported names: an addendum is the one namer validity
+    /// reads (snapshots and requests move copies and purges alone).
+    pub(super) fn reached(&self, ch: &Changed) -> BTreeSet<WriteId> {
+        let mut out: BTreeSet<WriteId> = BTreeSet::new();
+        for (e, k) in &ch.edges {
+            out.extend(self.store.through(e, Bound::Excluded(*k), Bound::Unbounded));
+        }
+        for (e, k) in &ch.cuts {
+            out.extend(self.store.through(e, Bound::Unbounded, Bound::Included(*k)));
+        }
+        for e in &ch.regrant {
+            out.extend(self.store.through(e, Bound::Unbounded, Bound::Unbounded));
+        }
+        for c in &ch.named {
+            out.extend(self.store.of_commit(c, None));
+        }
+        for id in &ch.parts {
+            let Some(f) = self.store.get(id) else { continue };
+            out.insert(*id);
+            if let FactClass::Addendum(_, list) = &f.class {
+                for c in list.commits() {
+                    out.extend(self.targets(c, f.on));
+                }
+            }
+        }
+        out
     }
 
     /// The held deltas on `on` a list entry `c` names: `c`'s own, and where `c` is a snapshot of

@@ -542,37 +542,53 @@ impl<S: Store> Paths<S> {
         self.void.clone()
     }
 
-    /// The held deltas valid (copies aside).
-    fn valid_set(&self) -> BTreeSet<WriteId> {
-        self.contents().into_iter().filter(|(_, c)| matches!(c, Content::Valid(_))).map(|(id, _)| id).collect()
-    }
 
     /// The held lowerings whose trust would change what applies, which deltas are valid or the
-    /// final roles (draft §5.1 Trust set, dispute; `Candidates::Explicit`): both walks per
-    /// candidate.
+    /// final roles (draft §5.1 Trust set, dispute; `Candidates::Explicit`): per candidate the
+    /// trust switched on and back in one copy, each an update of the candidate's component, and
+    /// the readings compared only where the switch's `Changed` reaches (notes/perm-paths.md, Trust
+    /// per component).
     pub fn disputes(&self) -> BTreeSet<WriteId> {
-        let applied = self.timeline.applied_ids();
-        let roles = self.roles();
-        let valid = self.valid_set();
+        self.disputes_counted(&mut Counts::default())
+    }
+
+    /// `disputes`, counting into `counts` the work of the copy's walks and of the verdicts
+    /// compared.
+    pub fn disputes_counted(&self, counts: &mut Counts) -> BTreeSet<WriteId> {
         let mut out = BTreeSet::new();
-        for id in self.timeline.candidates() {
-            let mut t = self.clone();
-            let mut trust = t.trust.clone();
+        let cands = self.timeline.candidates();
+        if cands.is_empty() {
+            return out;
+        }
+        let mut t = self.clone();
+        let base = t.counts();
+        for id in cands {
+            let mut trust = self.trust.clone();
             trust.insert(id);
-            t.set_trust(trust);
-            if t.status(&id) == Some(Status::Invited) {
-                continue;
-            }
-            if t.timeline.applied_ids() != applied || t.roles() != roles || t.valid_set() != valid {
+            let ch = t.set_trust(trust);
+            if t.status(&id) != Some(Status::Invited) && self.differs(&t, &ch, counts) {
                 out.insert(id);
             }
+            t.set_trust(self.trust.clone());
         }
+        counts.add(&t.counts().since(&base));
         out
     }
 
-    fn roles(&self) -> BTreeMap<(Tid, Tid), Option<Role>> {
-        self.finals().into_iter().map(|(k, v)| (k, v.0)).collect()
+    /// Whether `t`, reached from this reading by an update reporting `ch`, applies other parts,
+    /// gives other final roles or holds other deltas valid: read only where `ch` reaches.
+    fn differs(&self, t: &Paths<S>, ch: &Changed, counts: &mut Counts) -> bool {
+        let applied = |p: &Paths<S>, id: &WriteId| matches!(p.status(id), Some(Status::Applied | Status::Invited));
+        if ch.parts.iter().any(|id| applied(self, id) != applied(t, id)) {
+            return true;
+        }
+        if ch.regrant.iter().any(|(h, e)| self.timeline.final_of(h, e) != t.timeline.final_of(h, e)) {
+            return true;
+        }
+        let valid = |p: &Paths<S>, id: &WriteId, c: &mut Counts| matches!(p.content_counted(id, c), Some(Content::Valid(_)));
+        t.facts.reached(ch).iter().any(|id| valid(self, id, counts) != valid(t, id, counts))
     }
+
 
     /// Where no counting entry's removal is, the first walk reads as the timeline
     /// (notes/perm-paths.md, Two walks): the first part of a component holding a vouch whose

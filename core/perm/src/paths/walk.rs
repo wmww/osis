@@ -108,6 +108,22 @@ pub struct Counts {
 }
 
 impl Counts {
+    /// The work done since `earlier`.
+    pub fn since(&self, earlier: &Counts) -> Counts {
+        Counts {
+            steps: self.steps - earlier.steps,
+            passes: self.passes - earlier.passes,
+            restarts: self.restarts - earlier.restarts,
+            setters: self.setters - earlier.setters,
+            audited: self.audited - earlier.audited,
+            scratch: self.scratch - earlier.scratch,
+            content: self.content - earlier.content,
+            addenda: self.addenda - earlier.addenda,
+            merged: self.merged - earlier.merged,
+            chained: self.chained - earlier.chained,
+        }
+    }
+
     pub(super) fn add(&mut self, o: &Counts) {
         self.steps += o.steps;
         self.passes += o.passes;
@@ -1699,9 +1715,6 @@ impl Walk {
         self.find_edge(holder, target).and_then(|e| final_role(self.val[e]))
     }
 
-    pub(super) fn applied_ids(&self) -> BTreeSet<WriteId> {
-        (0..self.items.len()).filter(|&s| self.applied[s]).map(|s| self.items[s].id).collect()
-    }
 
     /// Per edge, the key of its first chained write giving write and admin (draft §4).
     pub(super) fn chained(&self) -> BTreeMap<(Tid, Tid), [Option<Key>; 2]> {

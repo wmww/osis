@@ -545,6 +545,10 @@ impl Store for Counting {
         self.tick();
         self.inner.addenda_through(e, from, to)
     }
+    fn through(&self, e: &Pair, from: Bound<Key>, to: Bound<Key>) -> Vec<WriteId> {
+        self.tick();
+        self.inner.through(e, from, to)
+    }
     fn valid_addendum(&self, id: &WriteId) -> bool {
         self.tick();
         self.inner.valid_addendum(id)
@@ -579,6 +583,29 @@ fn delta_facts_live_in_the_store() {
         p.add(&[content(9, X, 20 + n + 5, &[A], C, None)]);
         assert_eq!(p.content(&WriteId(cid(9), 0)), Some(Content::Valid(By::Held)));
         per.push((foot, lookups.get() - before));
+    }
+    assert_eq!(per[0], per[1], "{per:?}");
+}
+
+// Disputes are read per candidate in the candidate's component (notes/perm-paths.md, Trust per
+// component): X and Y remove each other on A (Y's removal, applying nowhere, a dispute: trusted
+// it drops X's), beside n grants and n deltas on B; probing the candidates
+// walks A's parts and compares the verdicts its switch reaches: the same work at n = 100 and
+// 1000. Mutation: every delta's verdict compared per candidate (`reached` returning `all`):
+// content work tenfold.
+#[test]
+fn a_dispute_probe_reads_its_component_alone() {
+    let mut per = vec![];
+    for n in [100u64, 1000] {
+        let mut c = vec![write(1, H, 1, &[], A, X, Some(Role::Admin)), write(2, H, 1, &[], A, Y, Some(Role::Admin)), write(3, X, 3, &[], A, Y, None), write(4, Y, 4, &[], A, X, None)];
+        c.push(write(5, H, 1, &[], B, 88, Some(Role::Admin)));
+        c.extend((0..n).map(|i| write(500_000 + i, H, 10 + i, &[], B, holder(i as u32), Some(Role::Admin))));
+        c.extend((0..n).map(|i| content(600_000 + i, 88, 10 + i, &[B], 99, None)));
+        let p = Paths::evaluate(&records(), BTreeSet::new(), &c);
+        let mut k = Counts::default();
+        let d = p.disputes_counted(&mut k);
+        assert!(d.contains(&WriteId(cid(4), 0)), "{d:?}");
+        per.push((k.steps, k.content));
     }
     assert_eq!(per[0], per[1], "{per:?}");
 }
