@@ -333,6 +333,16 @@ impl Trigger {
         }
     }
 
+    /// Aspect `k`'s weighing or snapshot failed (its own data, `Engine::compactions`): it is
+    /// weighed again once what it may hold passes `FACTOR` times its estimate now (or when asked,
+    /// `weigh`), not at its next body. Each try reads its bodies and encodes its state, so tries
+    /// cost about what the bodies since brought (a geometric series), never a state encode per
+    /// body; a failure that the state's growth cures is tried again within that.
+    fn failed(&mut self, k: &(Tid, Ak)) {
+        let e = self.est.entry(k.clone()).or_default();
+        e.snapshot = e.snapshot.max(e.held).max(1);
+    }
+
     /// `k` is weighed at the next step whatever its estimate.
     pub(crate) fn weigh(&mut self, k: (Tid, Ak)) {
         if compactable(&k.1) {
@@ -766,12 +776,13 @@ impl Engine {
                     return Err(e);
                 }
                 // a snapshot this node cannot write (its own data, not its store) costs that aspect
-                // its compaction alone: its estimate stays, so it is weighed again at its next
-                // body, and the step goes on to the others. Failing the step would fail every
-                // step (the driver closes its connections) for as long as the aspect stays so.
-                // Reported (deduped: once per aspect and error).
+                // its compaction alone: it is weighed again once its estimate grows `FACTOR`-fold
+                // (`Trigger::failed`), and the step goes on to the others. Failing the step would
+                // fail every step (the driver closes its connections) for as long as the aspect
+                // stays so. Reported (deduped: once per aspect and error).
                 Err(e) => {
                     osis_base::costs::count("compact: snapshots failed", 1);
+                    self.core.compaction.failed(&k);
                     let d = crate::events::Diagnostic { kind: crate::events::DiagnosticKind::OwnWriteFailed, tids: vec![k.0], commit: None, peer: None, detail: format!("compaction snapshot of {}: {e}", k.1.as_str()) };
                     self.core.events.diagnostic(d, self.core.hlc.mono());
                 }
@@ -1052,7 +1063,9 @@ mod tests {
     // spec/sync-compaction.md §1 (trigger): a snapshot this node cannot write (a local error of
     // its own, not its store's) costs that aspect alone: the step weighs and compacts the aspects
     // after it and does not fail, the failure is reported (`OwnWriteFailed`), and the failing one
-    // is weighed again at its next body
+    // is weighed again once what it holds doubles (`Trigger::failed`), not per body: n bodies
+    // after the failure cost about log2 n weighings (each a state encode), at n and 10n; once
+    // it may write, it compacts at the next weighing
     #[test]
     fn a_failing_snapshot_leaves_the_other_aspects_compacted_spec_sync_7() {
         let (x, y) = (Ak::new("x:m.0").unwrap(), Ak::new("y:m.0").unwrap());
@@ -1084,9 +1097,27 @@ mod tests {
         let reported: Vec<_> = rx.try_iter().filter_map(|e| if let crate::events::Event::Diagnostic(d) = e { Some(d) } else { None }).filter(|d| d.kind == crate::events::DiagnosticKind::OwnWriteFailed).collect();
         assert!(reported.len() == 1 && reported[0].tids == [t] && reported[0].detail.contains("x:m.0"), "reported to the host: {reported:?}");
         assert!(p.engine.compactions().unwrap().is_empty(), "nothing due until x's next body");
+        let mut weighed = |p: &mut crate::local_peer::Peer, bodies: usize| {
+            osis_base::costs::take();
+            for i in 0..bodies {
+                fill(p, &x, i);
+                assert!(p.engine.compactions().unwrap().is_empty(), "x still fails");
+            }
+            osis_base::costs::take().iter().find(|c| c.0 == "compact: aspects weighed").map_or(0, |c| c.2)
+        };
+        let (n, ten) = (weighed(p, 20), weighed(p, 200));
+        assert!((1..=6).contains(&n) && (1..=6).contains(&ten), "weighings per doubling, not per body: {n} at 20 bodies, {ten} at 200 after");
         p.engine.core.snapshot_fault = None;
-        fill(p, &x, 0);
-        assert_eq!(p.engine.compactions().unwrap().into_iter().map(|c| c.1).collect::<Vec<_>>(), [x], "x at its next body");
+        let mut tries = 0;
+        let done = loop {
+            fill(p, &x, tries);
+            tries += 1;
+            let done = p.engine.compactions().unwrap();
+            if !done.is_empty() || tries > 400 {
+                break done;
+            }
+        };
+        assert_eq!(done.into_iter().map(|c| c.1).collect::<Vec<_>>(), [x], "x compacts at its next weighing ({tries} bodies)");
     }
 
     // spec/sync-compaction.md §1 (trigger): where the setting keeps live bodies, those that left history
