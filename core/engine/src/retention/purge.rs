@@ -43,15 +43,16 @@ pub(crate) struct Target {
 
 // Interim (notes/a1-spec/README.md step 4): a delta's purge author is the thing its commit acts
 // on, known where its path is in the clear or a section of it opened here.
-/// The thing commit `c` (header `h`) acts on, as known here (`View::acting`).
-fn acting(core: &Core, c: &CommitId, h: &Header) -> Option<Tid> {
-    core.ix.commits.get(c).and_then(|m| m.view.acting).or_else(|| h.acting())
+/// The thing commit `c` (header `h`) acts on, on thing `t`, as known here (`View::acting`). A
+/// purge request states one path in the clear, so its own is read off its header everywhere.
+fn acting(core: &Core, c: &CommitId, h: &Header, t: &Tid) -> Option<Tid> {
+    core.ix.commits.get(c).and_then(|m| m.view.acting_on(t)).or_else(|| h.acting())
 }
 
 impl Target {
     /// Delta `a` of commit `c` (header `h`); `None` where the thing `c` acts on is not known here.
     pub(crate) fn of(core: &Core, h: &Header, a: &AspectEntry, c: &CommitId) -> Option<Target> {
-        Some(Target { tid: a.tid, ak: a.ak.clone(), ts: h.ts, src: h.form.own_source(h.signer, *c), actor: acting(core, c, h)?, by: a.retention.by, expires: h.expires, own_writes: h.kind.has_own_writes() })
+        Some(Target { tid: a.tid, ak: a.ak.clone(), ts: h.ts, src: h.form.own_source(h.signer, *c), actor: acting(core, c, h, &a.tid)?, by: a.retention.by, expires: h.expires, own_writes: h.kind.has_own_writes() })
     }
 
     /// The commit stamped `ts` of `src` on `(tid, ak)` as a snapshot states it (`snapshot::stated`:
@@ -95,7 +96,7 @@ fn names(core: &Core, p: &Header, a: &AspectEntry, ch: &Header, c: &CommitId) ->
 pub(super) fn would_hold_right(core: &Core, who: &Tid, ts: Ts, c: &CommitId, tid: &Tid, ak: &Ak) -> bool {
     let Some(m) = core.ix.commits.get(c) else { return false };
     let Some(a) = m.aspect(tid, ak).and_then(|ai| m.header.aspects.get(ai)) else { return false };
-    let Some(author) = m.view.acting else { return false };
+    let Some(author) = m.view.acting_on(tid) else { return false };
     let point = Point { ts, node: *who, commit: CommitId([0xff; 32]) };
     core.timelines.get(&a.tid).is_some_and(|tl| tl.purge_stands(who, &a.tid, a.retention.by, &author, point))
 }
@@ -108,7 +109,7 @@ pub(super) fn would_hold_right(core: &Core, who: &Tid, ts: Ts, c: &CommitId, tid
 /// void set and the headers, so any node holding them judges alike, in any arrival order;
 /// `rejudge_purges` follows it when those change.
 pub(super) fn holds_right(core: &Core, p: &Header, pc: &CommitId, a: &AspectEntry, ch: &Header, c: &CommitId) -> bool {
-    let Some(actor) = acting(core, c, ch) else { return false };
+    let Some(actor) = acting(core, c, ch, &a.tid) else { return false };
     right_holds(core, p, pc, &Right { tid: a.tid, ak: a.ak.clone(), by: a.retention.by, actor })
 }
 
@@ -132,7 +133,7 @@ fn right_holds(core: &Core, p: &Header, pc: &CommitId, a: &Right) -> bool {
     }
     let point = Point { ts: p.ts, node: p.signer, commit: *pc };
     let (by, actor) = (a.by, a.actor);
-    let Some(acts) = acting(core, pc, p) else { return false };
+    let Some(acts) = acting(core, pc, p, &a.tid) else { return false };
     let judge = |tl: &osis_perm::Timeline| tl.purge_stands(&p.signer, &a.tid, by, &actor, point) && (acts == p.signer || tl.purge_stands(&acts, &a.tid, by, &actor, point));
     // a destruction is judged by the thing's history before it: nothing written on the thing after it
     // counts (spec/commits.md §5 Destruction), so an edge write on it stamped later, held here before
@@ -219,7 +220,7 @@ pub(crate) fn check_request(core: &Core, p: &Header, pc: &CommitId) -> Result<()
         for c in named_by(core, item, p.ts) {
             let Some((m, ai)) = core.ix.commits.get(&c).and_then(|m| Some((m, m.aspect(item.tid(), item.ak())?))) else { continue };
             let Some(a) = m.header.aspects.get(ai).filter(|a| names(core, p, a, &m.header, &c)) else { continue };
-            let Some(author) = m.view.acting else { continue };
+            let Some(author) = m.view.acting_on(item.tid()) else { continue };
             if *rights.entry((a.retention.by as u64, author)).or_insert_with(|| holds_right(core, p, pc, a, &m.header, &c)) {
                 break;
             }
@@ -251,14 +252,14 @@ fn signers_could(core: &Core, p: &Header, pc: &CommitId, a: &Right) -> bool {
             || (by.writer() && held.ever_writers(&a.tid).contains(who))
             || (by.author() && (*who == actor || held.ever_writers(&actor).contains(who)) && held.ever_writers(&a.tid).contains(&actor))
     };
-    let Some(acts) = acting(core, pc, p) else { return false };
+    let Some(acts) = acting(core, pc, p, &a.tid) else { return false };
     could(&p.signer) && (acts == p.signer || could(&acts))
 }
 
 /// Whether a request with header `p` names delta `a` of commit `c` (header `ch`), signed by ones
 /// that could ever hold the right.
 fn could_stand(core: &Core, p: &Header, pc: &CommitId, a: &AspectEntry, ch: &Header, c: &CommitId) -> bool {
-    let Some(actor) = acting(core, c, ch) else { return false };
+    let Some(actor) = acting(core, c, ch, &a.tid) else { return false };
     names(core, p, a, ch, c) && signers_could(core, p, pc, &Right { tid: a.tid, ak: a.ak.clone(), by: a.retention.by, actor })
 }
 
@@ -369,7 +370,7 @@ fn named_by(core: &Core, item: &PurgeItem, at: Ts) -> Vec<CommitId> {
     }
     let held = core.ix.by_aspect.get(&(*item.tid(), item.ak().clone())).into_iter().flatten();
     let by = |c: &CommitId| match item {
-        PurgeItem::Author { author, .. } => core.ix.commits.get(c).is_some_and(|m| m.view.acting == Some(*author)),
+        PurgeItem::Author { author, .. } => core.ix.commits.get(c).is_some_and(|m| m.view.acting_on(item.tid()) == Some(*author)),
         _ => true,
     };
     held.take_while(|x| stamped_before(at, item.ak(), x.0)).map(|x| x.1).filter(by).collect()
@@ -392,7 +393,8 @@ pub(crate) fn requests_resting_on(core: &Core, node: &Tid, things: &BTreeSet<Tid
     let mut reach: BTreeMap<Tid, bool> = BTreeMap::new();
     let mut out = Vec::new();
     for (pc, m) in core.ix.commits.iter().filter(|(_, m)| m.view.purges) {
-        if !(m.view.signer == *node || m.view.acting == Some(*node) || writers.contains(&m.view.signer) || m.view.acting.is_some_and(|x| writers.contains(&x))) {
+        let acting = m.view.acting.all();
+        if !(m.view.signer == *node || acting.contains(node) || writers.contains(&m.view.signer) || acting.iter().any(|x| writers.contains(x))) {
             continue;
         }
         let on = |t: &Tid| *reach.entry(*t).or_insert_with(|| things.contains(t) || !core.ix.held.ever_writers(t).is_disjoint(things));
@@ -718,7 +720,7 @@ pub(super) fn apply_request(tx: &mut Tx<'_>, id: &CommitId, h: &Header, purged: 
             let Some(a) = m.header.aspects.get(ai) else { continue };
             // applied here: held, or dropped as covered (its writes in the state through its cover)
             let applied = m.view.kind.has_own_writes() && (!m.body_gone(ai) || m.dropped(ai).is_some_and(|d| d.as_cover()));
-            if (matches!(item, PurgeItem::Commit { .. }) || m.view.acting.is_some_and(|x| *rights.entry((a.retention.by as u64, x)).or_insert_with(|| holds_right(core, h, id, a, &m.header, &c))))
+            if (matches!(item, PurgeItem::Commit { .. }) || m.view.acting_on(&a.tid).is_some_and(|x| *rights.entry((a.retention.by as u64, x)).or_insert_with(|| holds_right(core, h, id, a, &m.header, &c))))
                 && purge_one(tx, id, &c, ai, purged)?
             {
                 stood = true;

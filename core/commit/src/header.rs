@@ -223,9 +223,9 @@ impl Header {
     }
 
     // Interim (notes/a1-spec/README.md step 3): the walk judges each thing along its own path.
-    /// The thing the walk reads it as acting on, from the header alone: its path's last listed
-    /// thing (the signer for the empty path) where the path is in the clear; `None` where its
-    /// paths are hashed (`CommitBlob::acting` reads their sections).
+    /// The thing the walk reads it as acting on every thing it writes, from the header alone: its
+    /// path's purge author (`Path::acting`) where the path is in the clear; `None` where its
+    /// paths are hashed (`CommitBlob::acting` reads each thing's in its sections).
     pub fn acting(&self) -> Option<Tid> {
         self.path_in_clear().map(|p| p.acting(self.signer))
     }

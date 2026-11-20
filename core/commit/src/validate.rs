@@ -43,6 +43,11 @@ impl Header {
                 if self.rotation.is_some() || self.reseal.is_some() {
                     return Err(Error::Invalid("a rotation or seed re-seal stating hashed paths"));
                 }
+                // a purge request is judged along its one path on every thing it purges, read
+                // from the header by every reader alike (spec/permissions.md §6)
+                if !self.purge.is_empty() || self.links.purge.is_some() {
+                    return Err(Error::Invalid("a purge request stating hashed paths"));
+                }
             }
         }
         // the remaining admin rides on a role commit's edge writes (spec/wire.md §4 field 17)
@@ -200,10 +205,9 @@ impl Header {
         // a rotation and a seed re-seal state the empty path, the signer writing itself
         // (spec/wire.md §4 fields 15, 16)
         let own = self.rotation.is_none() && self.reseal.is_none() || p.things.is_empty();
-        // Interim (notes/a1-spec/README.md step 3): the index names the thing the old walk reads
-        // (i = k), and a role commit states the empty path (the old walk judges an edge write by
-        // its signer alone).
-        let interim = p.interim_index() && (self.kind != Kind::Role || p.things.is_empty());
+        // Interim (notes/a1-spec/README.md step 3): a role commit's index names its signer (the
+        // old walk judges an edge write by its signer alone, as acting for itself).
+        let interim = self.kind != Kind::Role || p.purge == 0;
         own && interim
     }
 }

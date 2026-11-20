@@ -15,7 +15,7 @@
 
 use crate::cbor::{item, strictly_ascending};
 use crate::header::{Header, LIMITS};
-use crate::path::{Path, Paths, Salted};
+use crate::path::{Acting, Path, Paths, Salted};
 use crate::Error;
 use osis_base::cbor::{Item, MAJOR_ARRAY, MAJOR_UINT, encode_into, head, put_array, put_bytes, put_uint};
 use osis_base::{CommitId, Tid, Value};
@@ -153,20 +153,24 @@ impl CommitBlob {
     }
 
     // Interim (notes/a1-spec/README.md step 3): the walk judges each thing along its own path.
-    /// The thing the walk reads it as acting on: its paths' last listed thing (the signer for the
-    /// empty path), alike on every thing it writes; `None` where its paths are hashed and no
-    /// section of it is opened here.
-    pub fn acting(&self) -> Option<Tid> {
+    /// What the walk reads it as acting on, per thing it writes (`Acting`): one thing for all
+    /// where its path is in the clear, else each thing's own path's, for the things whose
+    /// `Salted` is known here.
+    pub fn acting(&self) -> Acting {
+        let s = self.header.signer;
         match &self.header.path {
-            Paths::One(p) => Some(p.acting(self.header.signer)),
-            Paths::Hashed(_) => self.salted.values().next().map(|s| s.path.acting(self.header.signer)),
+            Paths::One(p) => Acting::All(p.acting(s)),
+            Paths::Hashed(_) => {
+                let things = self.header.things();
+                Acting::Each(self.salted.iter().filter_map(|(i, x)| Some((*things.get(*i)?, x.path.acting(s)))).collect())
+            }
         }
     }
 
-    // Interim (notes/a1-spec/README.md step 3): one acting thing for all its paths.
     /// Checks `salted` against the header: each entry hashing to the hash at its index and a
-    /// path it may state (spec/wire.md §4), one acting thing for all; once the aspect list is
-    /// resolved, every held part's thing among them.
+    /// path it may state (spec/wire.md §4); once the aspect list is resolved, every held part's
+    /// thing among them. Each thing is judged along its own path, so the paths of different
+    /// things are not compared.
     pub fn check_paths(&self) -> Result<(), Error> {
         let h = &self.header;
         let hashes = match &h.path {
@@ -183,11 +187,6 @@ impl CommitBlob {
             if self.parts.iter().any(|p| h.aspects.get(p.ai).and_then(|a| things.iter().position(|t| *t == a.tid)).is_none_or(|i| !self.salted.contains_key(&i))) {
                 return Err(Error::Malformed("a part without its thing's path"));
             }
-        }
-        let mut acting = self.salted.values().map(|s| s.path.acting(h.signer));
-        let first = acting.next();
-        if acting.any(|a| Some(a) != first) {
-            return Err(Error::Malformed("paths acting for different things"));
         }
         Ok(())
     }

@@ -262,7 +262,7 @@ pub(crate) type Gives = (osis_crdt::Frontiers, Vec<(CommitId, Tid)>, osis_crdt::
 impl Meta {
     /// A commit's meta from its decoded header: parts in `missing` missing, the rest as `head`
     /// says (`Hold::stored`).
-    pub(crate) fn new(header: Arc<Header>, acting: Option<Tid>, valid: Vec<bool>, mut head: index::RecordHead, missing: BTreeSet<usize>) -> Meta {
+    pub(crate) fn new(header: Arc<Header>, acting: osis_commit::Acting, valid: Vec<bool>, mut head: index::RecordHead, missing: BTreeSet<usize>) -> Meta {
         let hold = (0..valid.len()).map(|ai| Hold::stored(ai, &mut head, missing.contains(&ai), false)).collect();
         Meta { view: Arc::new(View::of(&header, acting)), header: LazyHeader::ready(header), received: head.received, origin: head.origin, repair: head.repair.clone(), signed: head.signed, valid, hold }
     }
@@ -388,9 +388,10 @@ pub struct View {
     pub form: Form,
     pub signer: Tid,
     // Interim (notes/a1-spec/README.md step 3): the walk judges each thing along its own path.
-    /// The thing the walk reads the commit as acting on (`CommitBlob::acting`): `None` where its
-    /// paths are hashed and no section of it is opened here.
-    pub acting: Option<Tid>,
+    /// What the walk reads the commit as acting on, per thing (`CommitBlob::acting`): each thing's
+    /// as known here, learned from its sections and kept apart from them (a commit whose parts
+    /// all go keeps it, so a rebuild from the held records reads what the live index learned).
+    pub acting: osis_commit::Acting,
     /// Some list goes by link: the header is resolved from blobs at open (decoded there).
     pub linked: bool,
     /// A memory commit (the ephemeral marker): held in memory, never durable to node-sync,
@@ -424,7 +425,7 @@ pub struct AspectView {
 
 impl View {
     /// The view of `h`, acting on `acting` (`CommitBlob::acting`).
-    pub fn of(h: &Header, acting: Option<Tid>) -> View {
+    pub fn of(h: &Header, acting: osis_commit::Acting) -> View {
         // what `View::aspect` searches by (spec/wire.md §4)
         debug_assert!(h.aspects.is_sorted_by_key(|a| (a.tid, a.ak.as_str().len(), a.ak.as_str().as_bytes())), "aspects sorted");
         View {
@@ -444,9 +445,17 @@ impl View {
     }
 
     // Interim (notes/a1-spec/README.md step 3): the walk judges along the stated paths.
-    /// The thing it acts on where that is not its signer, as known here (`acting`).
-    pub fn acts_for(&self) -> Option<Tid> {
-        self.acting.filter(|a| *a != self.signer)
+    /// What it acts on, on thing `t`, as known here (`acting`).
+    pub fn acting_on(&self, t: &Tid) -> Option<Tid> {
+        self.acting.on(t)
+    }
+
+    // Interim (notes/a1-spec/README.md step 3): the walk judges along the stated paths.
+    /// The things it acts on other than its signer, as known here (`acting`).
+    pub fn acts_for(&self) -> BTreeSet<Tid> {
+        let mut a = self.acting.all();
+        a.remove(&self.signer);
+        a
     }
 
     /// The index of aspect `(tid, ak)` (`osis_commit::aspect_position`).
@@ -550,7 +559,7 @@ impl StoredHeader {
             Some(h) => {
                 // the persisted view is the header's (index check: an open from the index
                 // equals a rebuild from the commit records)
-                debug_assert_eq!(View::of(&h, self.view.acting), *self.view, "meta row of {:?} is stale", self.id);
+                debug_assert_eq!(View::of(&h, self.view.acting.clone()), *self.view, "meta row of {:?} is stale", self.id);
                 Ok(Arc::new(h))
             }
             None => {
@@ -1237,11 +1246,16 @@ pub struct Core {
     pub(crate) redeliver: BTreeSet<CommitId>,
     /// Aspects whose deltas `Engine::commit_forged` replaces by bytes that do not decode.
     pub(crate) forge_bad: BTreeSet<(Tid, Ak)>,
-    /// Tests: a commit acting for a thing other than its signer states, on every thing it writes
-    /// but the first, its path with this thing listed before the acting one, so its paths go
-    /// hashed (spec/wire.md §4 field 2; what step 2 of notes/a1-spec/README.md writes).
+    /// Tests: a commit writing two things or more (no rotation, seed re-seal or purge request)
+    /// states, on every thing it writes but the first, its path with this thing listed first and
+    /// the same purge author, so its paths go hashed and it acts on the same thing on each
+    /// (spec/wire.md §4 field 2): runs a suite in the hashed form.
     #[doc(hidden)]
     pub hashed_through: Option<Tid>,
+    /// Tests: the path a commit states for each of these things it writes, in place of the
+    /// engine's (a hostile writer's paths acting on different things).
+    #[doc(hidden)]
+    pub forced_paths: BTreeMap<Tid, osis_commit::Path>,
     /// Tests: the running transaction writes states no held body gives (`Engine::damage_index`:
     /// another build's rules), so the rebuild check (`apply::check_rebuilt`) skips it.
     #[cfg(debug_assertions)]
@@ -1604,6 +1618,7 @@ impl Core {
             redeliver: self.redeliver.clone(),
             forge_bad: self.forge_bad.clone(),
             hashed_through: self.hashed_through,
+            forced_paths: self.forced_paths.clone(),
             #[cfg(debug_assertions)]
             unchecked_tx: self.unchecked_tx.clone(),
             #[cfg(debug_assertions)]
@@ -2251,6 +2266,7 @@ impl Core {
             commit_listeners: _,
             forge_bad: _,
             hashed_through: _,
+            forced_paths: _,
             forged: _,
             header_fault: _,
             key_actors: _,
@@ -2466,6 +2482,7 @@ impl Core {
             redeliver: BTreeSet::new(),
             forge_bad: BTreeSet::new(),
             hashed_through: None,
+            forced_paths: BTreeMap::new(),
             #[cfg(debug_assertions)]
             unchecked_tx: false,
             #[cfg(debug_assertions)]

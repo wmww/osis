@@ -130,7 +130,7 @@ fn validate_role_commit() {
     let mut x = h.clone();
     x.form = crate::tests::SESSION;
     assert!(invalid(&x).to_string().contains("session form outside a content commit"));
-    // Interim (notes/a1-spec/README.md step 3): a role commit states the empty path
+    // Interim (notes/a1-spec/README.md step 3): a role commit's index names its signer
     let mut x = h.clone();
     x.path = Paths::One(Path::through(t(9)));
     assert!(invalid(&x).to_string().contains("a path this commit may not state"));

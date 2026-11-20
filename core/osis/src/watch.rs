@@ -576,13 +576,31 @@ fn origin_of(id: CommitId, from: EventOrigin, actor: Tid, ts: Ts, received: Time
     if from == EventOrigin::Local { Origin::Local(i) } else { Origin::Remote(i) }
 }
 
-/// The aspects an event changed, with its origin.
-fn aspect_event(m: &Msg) -> Option<(&[(Tid, Ak)], Origin)> {
+/// Where an event's changes come from: a commit (what it acts on, per thing) or a cause.
+enum Src<'a> {
+    Commit { id: CommitId, from: EventOrigin, acting: &'a osis_commit::Acting, ts: Ts, received: Time },
+    Derived(Origin),
+}
+
+impl Src<'_> {
+    /// The origin of its change on thing `t`: `None` for a commit whose path for `t` is not
+    /// known here (it changed no read here).
+    fn on(&self, t: &Tid) -> Option<Origin> {
+        match self {
+            Src::Commit { id, from, acting, ts, received } => Some(origin_of(*id, *from, acting.on(t)?, *ts, *received)),
+            Src::Derived(o) => Some(*o),
+        }
+    }
+}
+
+/// The aspects an event changed, with where they come from.
+fn aspect_event(m: &Msg) -> Option<(&[(Tid, Ak)], Src<'_>)> {
     match m {
-        // a commit changing a read here opened a section of it: the thing it acts on is known
-        Msg::Event(Event::Applied { id, origin, acting: Some(actor), ts, received, changed, .. }) => Some((changed, origin_of(CommitId(*id), *origin, *actor, *ts, *received))),
-        Msg::Event(Event::Ephemeral { id, origin, acting: Some(actor), ts, received, changed, .. }) => Some((changed, origin_of(CommitId(*id), *origin, *actor, *ts, *received))),
-        Msg::Event(Event::Changed { cause, changed }) => Some((changed, Origin::Derived((*cause).into()))),
+        // a commit changing a read here opened a section of it: the path it states there is known
+        Msg::Event(Event::Applied { id, origin, acting, ts, received, changed, .. }) | Msg::Event(Event::Ephemeral { id, origin, acting, ts, received, changed, .. }) => {
+            Some((changed, Src::Commit { id: CommitId(*id), from: *origin, acting, ts: *ts, received: *received }))
+        }
+        Msg::Event(Event::Changed { cause, changed }) => Some((changed, Src::Derived(Origin::Derived((*cause).into())))),
         _ => None,
     }
 }
@@ -669,7 +687,7 @@ fn targets(sh: &Shared, _db: &Osis, seq: u64, m: &Msg) -> Vec<(Arc<Sub>, Pre)> {
             .filter_map(|(id, i)| {
                 let s = r.sub(id, seq)?;
                 let pre = match changed.get(i) {
-                    Some((t, ak)) => Pre::Aspect { tid: *t, ak: ak.clone(), origin },
+                    Some((t, ak)) => Pre::Aspect { tid: *t, ak: ak.clone(), origin: origin.on(t)? },
                     None => Pre::Ready(Delivery::Due),
                 };
                 Some((s, pre))
@@ -786,6 +804,7 @@ impl Pump {
                     for (s2, m2) in &self.buf {
                         if let Some((changed, src)) = aspect_event(m2)
                             && changed.iter().any(|(t, a)| *t == tid && *a == ak)
+                            && let Some(src) = src.on(&tid)
                         {
                             origin = src;
                             last = *s2;

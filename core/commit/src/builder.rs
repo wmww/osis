@@ -267,8 +267,6 @@ impl CommitBuilder {
         let sigs = Sigs::signed(&id, key, inner, more, merge);
         let parts = deltas.into_iter().enumerate().map(|(ai, delta)| Part { ai, delta }).collect();
         let commit = CommitBlob { header, sigs, parts, salted };
-        // Interim (notes/a1-spec/README.md step 3): one acting thing for all its paths, as a
-        // reader checks them
         commit.check_paths().map_err(build_err)?;
         // paging keeps deltas far below a blob; a commit whose paged roots still pass it is
         // refused here (spec/commits.md §1)

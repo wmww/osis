@@ -562,15 +562,13 @@ pub(crate) fn examine(tx: &mut Tx<'_>, blob: &mut CommitBlob, id: &CommitId, ski
     let h = blob.header.clone();
     let carried = carried_records(&h, blob, id);
     // Interim (notes/a1-spec/README.md step 3): the record of every thing a held part's path lists
-    let acting = blob.acting();
-    let held: BTreeMap<Tid, CreationRecord> = h.aspects.iter().map(|a| a.tid).chain([h.signer]).chain(acting).filter_map(|t| tx.core.created(&t).map(|r| (t, r.clone()))).collect();
+    let acting = blob.acting().all();
+    let held: BTreeMap<Tid, CreationRecord> = h.aspects.iter().map(|a| a.tid).chain([h.signer]).chain(acting.iter().copied()).filter_map(|t| tx.core.created(&t).map(|r| (t, r.clone()))).collect();
     let chain_rec = |t: &Tid, core: &crate::engine::Core| -> Option<CreationRecord> { core.created(t).cloned().or_else(|| carried.get(t).cloned()) };
     let record = |t: &Tid| -> Option<CreationRecord> { held.get(t).cloned().or_else(|| carried.get(t).cloned()) };
     let Some(author) = record(&h.signer) else { return Ok(Exam::Awaits(Reason::MissingChain(h.signer))) };
-    if let Some(x) = acting
-        && record(&x).is_none()
-    {
-        return Ok(Exam::Awaits(Reason::UnknownCreated(x)));
+    if let Some(x) = acting.iter().find(|x| record(x).is_none()) {
+        return Ok(Exam::Awaits(Reason::UnknownCreated(*x)));
     }
     // a part it cannot judge (its thing's record, record chain or the author's reach) waits; with
     // every held part such the commit is unjudgeable (spec/commits.md §4), found before a missing
@@ -1916,9 +1914,9 @@ impl Engine {
     }
 
     // Interim (notes/a1-spec/README.md step 3): a commit acts along a path per thing.
-    /// The thing held commit `id` acts on, as known here (`View::acting`).
-    pub fn commit_acting(&self, id: &CommitId) -> Option<Tid> {
-        self.core.ix.commits.get(id).and_then(|m| m.view.acting)
+    /// The thing held commit `id` acts on, on thing `t`, as known here (`View::acting`).
+    pub fn commit_acting(&self, id: &CommitId, t: &Tid) -> Option<Tid> {
+        self.core.ix.commits.get(id).and_then(|m| m.view.acting_on(t))
     }
 
     /// The header of an applied commit (none if its stored bytes fail to decode: `LazyHeader`).
@@ -1936,7 +1934,7 @@ impl Engine {
             let m = self.core.ix.commits.get(id)?;
             let ai = m.aspect(tid, &ak)?;
             // a valid part is held: its section opened, its path known
-            let actor = m.view.acting.filter(|_| m.valid_at(ai))?;
+            let actor = m.view.acting_on(tid).filter(|_| m.valid_at(ai))?;
             Some(Creation { commit: *id, ts: m.header.ts, node: m.header.signer, actor, received: m.received })
         })
     }
@@ -1964,7 +1962,7 @@ impl Engine {
                 if m.header.kind != Kind::Content || !valid {
                     continue;
                 }
-                let Some(actor) = m.view.acting else { continue };
+                let Some(actor) = m.view.acting_on(tid) else { continue };
                 let c = Creation { commit: *id, ts: m.header.ts, node: m.header.signer, actor, received: m.received };
                 if best.as_ref().is_none_or(|b| shown(&c) > shown(b)) {
                     best = Some(c);
@@ -2138,7 +2136,9 @@ pub(crate) fn load(tx: &mut Tx<'_>, rebuild: bool) -> Result<Option<Vec<(Tid, os
             let h = Arc::new(blob.header.clone());
             let valid = vec![true; h.aspects.len()];
             let missing = (0..h.aspects.len()).filter(|ai| blob.part(*ai).is_none() && !head.dropped.contains_key(ai) && !head.stripped.contains(ai)).collect();
-            let m = Meta::new(h.clone(), blob.acting(), valid, head, missing);
+            // what it acts on as learned here, kept in its record beside what its sections say
+            let acting = blob.acting().join(&osis_commit::Acting::Each(head.acting.clone()));
+            let m = Meta::new(h.clone(), acting, valid, head, missing);
             // what a dropped part judged, kept in its record (`Dropped::role`)
             for (ai, d) in m.dropped_parts() {
                 if let Some(r) = d.role {
@@ -2205,7 +2205,7 @@ pub(crate) fn load(tx: &mut Tx<'_>, rebuild: bool) -> Result<Option<Vec<(Tid, os
             atomic::note_role_sigs(tx.core, b.header.kind, b.header.epoch.is_some(), &id, &b.sigs);
             validity::note_required(tx.core, &b.header, &id, &read);
             validity::note_settings(tx.core, &b.header, &id, &parts);
-            validity::note_addenda(tx.core, &b.header, b.acting(), &id, &parts);
+            validity::note_addenda(tx.core, &b.header, &b.acting(), &id, &parts);
             if !b.header.kind.is_role() {
                 continue;
             }

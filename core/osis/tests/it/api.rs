@@ -447,7 +447,7 @@ fn act_as_spec_commits_1() {
     w.act_as(t);
     w.at(t, osis::DynamicAspectKey::untyped(ak("t:x.0"))).set(&Value::Int(1)).unwrap();
     let c2 = w.commit().unwrap().unwrap();
-    let actor = |c: osis::internals::RawCommitId| db.engine(|e| e.commit_acting(&c).unwrap());
+    let actor = |c: osis::internals::RawCommitId| db.engine(|e| e.commit_acting(&c, &t).unwrap());
     assert_eq!((actor(c1.stamp.id.raw()), actor(c2.stamp.id.raw())), (db.me(), t));
     // an empty write commits nothing
     assert_eq!(db.write().commit().unwrap(), None);

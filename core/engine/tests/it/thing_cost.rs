@@ -74,7 +74,7 @@ fn make(lp: &mut LocalPeer, admin: Tid, label: &str, show: bool) -> (Cost, Tid) 
         cost.download += size;
         if show {
             let h = &blob.header;
-            eprintln!("  commit {:?} by {}: {} B (header {} B, {} delete keys, {} blobs)", h.kind, if blob.acting() == Some(h.signer) { "self" } else { "other" }, size, h.encode().len(), h.keys.len(), pk.blobs.len());
+            eprintln!("  commit {:?} by {}: {} B (header {} B, {} delete keys, {} blobs)", h.kind, if blob.acting() == osis_commit::Acting::All(h.signer) { "self" } else { "other" }, size, h.encode().len(), h.keys.len(), pk.blobs.len());
             for p in &blob.parts {
                 let a = &h.aspects[p.ai];
                 let whose = if a.tid == t { "t" } else if a.tid == admin { "admin" } else { "other" };

@@ -168,7 +168,7 @@ pub(crate) fn free_part(tx: &mut Tx<'_>, c: &CommitId, ai: usize) -> Result<()> 
     let Some(a) = m.header.aspects.get(ai) else { return Ok(()) };
     // Interim (notes/a1-spec/README.md step 4): the purge author is the thing it acts on; a
     // held part's section opened, so it is known
-    let Some(author) = m.view.acting else { return Ok(()) };
+    let Some(author) = m.view.acting_on(&a.tid) else { return Ok(()) };
     let (tid, memory) = (a.tid, m.view.memory);
     for link in part_links(tx, c, ai)? {
         let blob = link.blob;

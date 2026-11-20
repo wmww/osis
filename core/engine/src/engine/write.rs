@@ -696,13 +696,23 @@ fn build(tx: &mut Tx<'_>, plan: CommitPlan, deltas: Vec<Resolved>) -> Result<osi
     // commit writes, stated once in the clear (`thing_paths` left empty)
     let mut b = CommitBuilder::new(plan.kind, plan.ts, node, interim_path(node, plan.actor), plan.form);
     if let Some(z) = tx.core.hashed_through
-        && let Some(acting) = b.path.things.last().copied()
+        && plan.rotation.is_none()
+        && plan.reseal.is_none()
+        && plan.purge.is_empty()
     {
-        let p = osis_commit::Path { purge: 2, things: vec![z, acting] };
+        // the same purge author, so the same thing acted on, along a path listing `z` first
+        let mut p = b.path.clone();
+        p.things.insert(0, z);
+        p.purge += usize::from(p.purge > 0);
         let mut things: Vec<Tid> = writes.iter().map(|w| w.tid).collect();
         things.sort();
         things.dedup();
         b.thing_paths = things.into_iter().skip(1).map(|t| (t, p.clone())).collect();
+    }
+    for w in &writes {
+        if let Some(p) = tx.core.forced_paths.get(&w.tid) {
+            b.thing_paths.insert(w.tid, p.clone());
+        }
     }
     b.expires = plan.expires;
     b.aspects = writes;

@@ -7,7 +7,7 @@ use crate::cbor::item;
 use osis_base::cbor::{Item, put_array, put_bytes, put_uint};
 use osis_base::format::MAX_PATH_THINGS;
 use osis_base::Tid;
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 
 /// One stated path `[i, A1, …, Ak]`: the purge-author index `purge` (0 names the signer, j the
 /// listed thing Aj, spec/permissions.md §6) and the listed things in order. The empty path naming
@@ -30,17 +30,10 @@ impl Path {
     }
 
     // Interim (notes/a1-spec/README.md step 3): the walk judges along every edge of the path.
-    /// The thing the walk reads as the commit acting on it: the last listed thing, `signer` for
-    /// the empty path. Things listed before it are not yet read.
+    /// The thing the old walk reads as the commit acting on the thing this path is stated for:
+    /// its purge author (`purge_author`). No other listed thing is read yet.
     pub fn acting(&self, signer: Tid) -> Tid {
-        self.things.last().copied().unwrap_or(signer)
-    }
-
-    // Interim (notes/a1-spec/README.md step 3): any index i ≤ k, judged along the path.
-    /// Whether its purge-author index names the last listed thing (i = k), as the walk that
-    /// reads only that thing needs.
-    pub fn interim_index(&self) -> bool {
-        self.purge == self.things.len()
+        self.purge_author(signer)
     }
 
     /// Canonical bytes.
@@ -147,5 +140,43 @@ impl Salted {
     pub(crate) fn read(v: Item, signer: &Tid) -> Result<Salted, Error> {
         let Some([salt, path]) = item::list(v)?.tuple() else { return Err(Error::Malformed("salted path arity")) };
         Ok(Salted { salt: item::bytes(salt)?, path: Path::read(path, signer)? })
+    }
+}
+
+// Interim (notes/a1-spec/README.md step 3): the walk judges each thing along its own path.
+/// What the old walk reads a commit as acting on, per thing it writes (`Path::acting`): one
+/// thing for all where its path is in the clear; else each thing's own, for the things whose
+/// path is known here (a section of it opened, or learned so before and kept). A thing whose
+/// path is not known holds no part here, so nothing judges it.
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+pub enum Acting {
+    All(Tid),
+    Each(BTreeMap<Tid, Tid>),
+}
+
+impl Acting {
+    /// What it acts on, on thing `t`, where known here.
+    pub fn on(&self, t: &Tid) -> Option<Tid> {
+        match self {
+            Acting::All(x) => Some(*x),
+            Acting::Each(m) => m.get(t).copied(),
+        }
+    }
+
+    /// Every thing it acts on, as known here, distinct.
+    pub fn all(&self) -> BTreeSet<Tid> {
+        match self {
+            Acting::All(x) => BTreeSet::from([*x]),
+            Acting::Each(m) => m.values().copied().collect(),
+        }
+    }
+
+    /// `self` with what `o` knows besides (both of one commit).
+    pub fn join(&self, o: &Acting) -> Acting {
+        match (self, o) {
+            (Acting::Each(a), Acting::Each(b)) => Acting::Each(a.iter().chain(b).map(|(k, v)| (*k, *v)).collect()),
+            (Acting::All(_), _) => self.clone(),
+            (_, Acting::All(_)) => o.clone(),
+        }
     }
 }

@@ -71,7 +71,7 @@ impl Engine {
             self.eph.signals.push(c);
         }
         let (node, received) = (self.core.writer()?, self.now());
-        let fired = fired(signals, id, actor, node, ts, received);
+        let fired = fired(signals.into_iter().map(|(t, ak, v)| (t, ak, v, actor)).collect(), id, node, ts, received);
         self.core.commits_fired(fired);
         Ok(Written { id, ts })
     }
@@ -149,13 +149,16 @@ impl Engine {
         // judged as its author's write at its `ts` (spec/permissions.md §5.2), on an ephemeral signal
         // key, the author acting for its actor, an account's at an epoch that counts (§5.5: no
         // addendum lists a commit never held)
-        let acts = core.standing_of(&id, h) == osis_perm::EpochStanding::Counts && crate::apply::validity::acts_for(core, h, blob.acting(), &id);
+        let counts = core.standing_of(&id, h) == osis_perm::EpochStanding::Counts;
+        let acting = blob.acting();
         let mut signals = Vec::new();
         for (ai, s) in &decoded {
             let Some(a) = h.aspects.get(*ai) else { continue };
-            let valid = a.ak.signal() && a.ak.ephemeral() && a.replaces.is_none() && acts && check_role_with(core, h.signer, &|_| None, &a.tid, a.ak.as_str(), Role::Write, h.ts).is_ok();
+            // the parts read opened their sections, so the path stated for each thing is known
+            let Some(actor) = acting.on(&a.tid) else { continue };
+            let valid = a.ak.signal() && a.ak.ephemeral() && a.replaces.is_none() && counts && crate::apply::validity::acts_for(core, h, Some(actor), &id) && check_role_with(core, h.signer, &|_| None, &a.tid, a.ak.as_str(), Role::Write, h.ts).is_ok();
             if valid && let Some(v) = s.fragment.read() {
-                signals.push((a.tid, a.ak.clone(), v));
+                signals.push((a.tid, a.ak.clone(), v, actor));
             }
         }
         // delivered once per part
@@ -167,7 +170,7 @@ impl Engine {
                 BTreeSet::new()
             }
         };
-        signals.retain(|(t, ak, _)| !decoded.iter().any(|(ai, _)| seen.contains(ai) && h.aspects.get(*ai).is_some_and(|a| a.tid == *t && a.ak == *ak)));
+        signals.retain(|(t, ak, _, _)| !decoded.iter().any(|(ai, _)| seen.contains(ai) && h.aspects.get(*ai).is_some_and(|a| a.tid == *t && a.ak == *ak)));
         let mut all = seen;
         all.extend(decoded.iter().map(|(ai, _)| *ai));
         r.parts.insert(id, all);
@@ -183,9 +186,7 @@ impl Engine {
         }
         r.floor.retain(|_, f| f.saturating_add(MAX_DRIFT_MS) >= now);
         let received = self.now();
-        // the parts read opened their sections, so the thing it acts on is known
-        let Some(acting) = blob.acting() else { return Ok(false) };
-        let fired = fired(signals, id, acting, h.signer, h.ts, received);
+        let fired = fired(signals, id, h.signer, h.ts, received);
         self.core.commits_fired(fired);
         Ok(true)
     }
@@ -193,8 +194,10 @@ impl Engine {
 
 /// A fired ephemeral signal commit as it arrived, told at each signal it fired: a fire is
 /// content, though its relay-only commit is snapshot-encoded.
-fn fired(signals: Vec<(Tid, Ak, Value)>, id: CommitId, actor: Tid, node: Tid, ts: Ts, received: osis_base::WallMs) -> Vec<CommitChange> {
-    let parts: Vec<PartRow> = signals.into_iter().map(|(tid, ak, v)| PartRow { tid, ak, valid: true, version: None, body: PartBody::Held(Some(v)) }).collect();
+fn fired(signals: Vec<(Tid, Ak, Value, Tid)>, id: CommitId, node: Tid, ts: Ts, received: osis_base::WallMs) -> Vec<CommitChange> {
+    // what it acts on on the first signal's thing (an honest writer acts as one thing on all)
+    let Some(actor) = signals.first().map(|s| s.3) else { return Vec::new() };
+    let parts: Vec<PartRow> = signals.into_iter().map(|(tid, ak, v, _)| PartRow { tid, ak, valid: true, version: None, body: PartBody::Held(Some(v)) }).collect();
     let row = CommitRow { id, kind: Kind::Content, undoes: None, actor, node, ts, received, parts };
     row.parts.iter().map(|p| CommitChange { tid: p.tid, ak: p.ak.clone(), id, fired: Some(row.clone()) }).collect()
 }

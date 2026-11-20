@@ -76,7 +76,8 @@ fn unindex(tx: &mut Tx<'_>, id: &CommitId, marks: bool) -> Result<()> {
         core.ix.by_thing.remove(&(a.tid, v.signer), id);
         core.ix.role_on.remove(&(a.tid, v.signer), id);
         core.ix.purges_on.remove(&a.tid, id);
-        if let Some(x) = v.acts_for() {
+        let x = v.acting_on(&a.tid).filter(|x| *x != v.signer);
+        if let Some(x) = x {
             core.ix.acting_on.remove(&(a.tid, v.signer, x), id);
         }
         // a chain goes once no held commit on the thing needs it (`Indexes::chains_on`)
@@ -84,7 +85,7 @@ fn unindex(tx: &mut Tx<'_>, id: &CommitId, marks: bool) -> Result<()> {
         if !core.ix.by_thing.contains_key(&(a.tid, v.signer)) {
             core.ix.chains_on.remove(&a.tid, &(v.signer, a.tid));
         }
-        if let Some(x) = v.acts_for()
+        if let Some(x) = x
             && x != a.tid
             && !core.ix.acting_on.contains_key(&(a.tid, v.signer, x))
         {
@@ -110,7 +111,7 @@ fn unindex(tx: &mut Tx<'_>, id: &CommitId, marks: bool) -> Result<()> {
             core.ix.forgotten.insert(k, v.ts);
         }
     }
-    if let Some(x) = v.acts_for() {
+    for x in v.acts_for() {
         core.ix.by_actor.remove(&(x, v.signer), id);
     }
     if let Some(e) = v.epoch {

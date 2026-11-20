@@ -169,32 +169,51 @@ fn hashed_paths_ride_in_their_sections() {
     assert!(e.open(|_| vec![secret.clone()]).unwrap().commit.parts.is_empty());
 }
 
-// Interim (notes/a1-spec/README.md step 3): the walk reads the path's last listed thing as the
-// commit acting on it, its signer for the empty path, alike in both forms (a hashed one known
-// once a section opens); a path whose index does not name that thing, a role commit's path listing
-// a thing, or hashed paths acting on different things, are invalid.
+// Interim (notes/a1-spec/README.md step 3): the walk reads, on each thing a commit writes, the
+// purge author of the path it states for that thing as the commit acting on it, its signer for
+// index 0, alike in both forms (a hashed one known per thing once its section opens; each thing
+// judged by its own, so hashed paths acting on different things stand, and a node opening one
+// section reads on that thing what a node opening every section reads there). A role commit
+// whose index names a listed thing is invalid; a purge request states one path in the clear.
 #[test]
-fn interim_acting_is_the_last_listed_thing() {
-    for (path, acting) in [(Path::default(), t(1)), (Path::through(t(2)), t(2))] {
+fn interim_acting_is_each_things_purge_author() {
+    let deep = Path { purge: 1, things: vec![t(2), t(4)] };
+    for (path, acting) in [(Path::default(), t(1)), (Path::through(t(2)), t(2)), (deep.clone(), t(2))] {
         for n in [1, 3] {
             let mut b = content(n);
             b.path = path.clone();
             let c = built(b);
-            assert_eq!(c.acting(), Some(acting), "{n} things");
+            assert_eq!(c.acting(), Acting::All(acting), "{n} things");
             assert_eq!(c.header.acting(), Some(acting));
         }
     }
-    let c = built(differing(3));
-    assert_eq!((c.acting(), c.header.acting()), (Some(t(2)), None));
-    let h = one(Path { purge: 0, things: vec![t(2)] });
-    assert!(matches!(h.validate(), Err(Error::Invalid(_))), "index naming the signer");
-    let mut b = content(1);
-    b.path = Path { purge: 1, things: vec![t(2), t(4)] };
-    assert!(b.build(&key(), &TestSecrets { admin: true }, &mut MemoryBlobs::default(), &mut rng()).is_err());
     let mut b = differing(3);
     let last = b.aspects[2].tid;
     b.thing_paths.insert(last, Path::through(t(4)));
-    assert!(b.build(&key(), &TestSecrets { admin: true }, &mut MemoryBlobs::default(), &mut rng()).is_err(), "two acting things");
+    let c = built(b);
+    let things = c.header.things();
+    let want = [t(2), t(2), t(4)];
+    for (x, w) in things.iter().zip(want) {
+        assert_eq!(c.acting().on(x), Some(w));
+    }
+    assert_eq!(c.header.acting(), None);
+    // opened one section at a time, each thing reads what it reads with every section open
+    let secret = Secret32::from_bytes([3; 32]);
+    let env = seal_commit(&c, &c.header, |_| (), |_, _| Some((secret.clone(), vec![])), &[], &mut rng()).unwrap();
+    for (i, s) in env.sections.iter().enumerate() {
+        let only = env.open(|x| if x.ais == s.ais { vec![secret.clone()] } else { vec![] }).unwrap().commit;
+        let x = c.header.aspects[s.ais[0]].tid;
+        assert_eq!(only.acting(), Acting::Each([(x, c.acting().on(&x).unwrap())].into()), "section {i}");
+    }
+    one(Path { purge: 0, things: vec![t(2)] }).validate().unwrap();
+    let mut r = crate::tests::validate::role_header("roles.0");
+    r.path = Paths::One(Path::through(t(9)));
+    assert!(r.validate().unwrap_err().to_string().contains("a path this commit may not state"), "a role commit's index names its signer");
+    r.path = Paths::One(Path { purge: 0, things: vec![t(9)] });
+    r.validate().unwrap();
+    let mut b = differing(2);
+    b.purge = vec![PurgeItem::Aspect { tid: b.aspects[0].tid, ak: b.aspects[0].ak.clone() }];
+    assert!(b.build(&key(), &TestSecrets { admin: true }, &mut MemoryBlobs::default(), &mut rng()).is_err(), "a purge request stating hashed paths");
 }
 
 // spec/wire.md §4 field 17: `remains` sits only on a role commit writing `roles.0`, without the

@@ -11,7 +11,7 @@ use std::collections::{BTreeMap, BTreeSet};
 #[doc(hidden)]
 pub struct HeldBody {
     pub id: CommitId,
-    /// The thing its commit acts on (`View::acting`).
+    /// The thing its commit acts on there (`View::acting`).
     pub acting: Option<Tid>,
     pub ts: osis_base::Ts,
     pub valid: bool,
@@ -379,7 +379,7 @@ impl Engine {
             for (ts, c) in &page {
                 let Some(m) = tx.core.ix.commits.get(c) else { continue };
                 let Some(ai) = m.aspect(&tid, &ak) else { continue };
-                let (acting, valid) = (m.view.acting, m.valid_at(ai));
+                let (acting, valid) = (m.view.acting_on(&tid), m.valid_at(ai));
                 let mut v = None;
                 crate::apply::each_held_piece(tx, c, ai, &mut |_, f| {
                     v = f.read();

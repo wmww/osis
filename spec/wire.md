@@ -102,7 +102,7 @@ Header fields by position:
    - **One path**: where every thing the commit writes is written along the same path, `path` is that `Path`, stated once for all; a writer MUST use this form then.
    - **Hashed**: where the paths of the n ≥ 2 distinct tids `aspects` names differ, `path` is n 32-byte hashes, one per tid in the order `aspects` lists them; the hash of thing T's is `kdf("path", salt, canonical bytes of T's Path)` with a 16-byte `salt` the writer draws at random per thing; T's sections carry the salt and the Path (`Section`, below). The hashes are always inline, outside Inline or link: a reader needs them before it opens any section, and they are bounded by the things the commit writes (34 bytes each, §12).
    - A decoder accepts the one-path form for any number of things (it cannot check that the things' paths were equal without opening every section). Bad input: a hashed `path` on a commit writing one thing, a hash count other than n, or a `Path` with i > k, k > `MAX_PATH_THINGS`, a tid twice or a tid equal to `signer`.
-   - A rotation (field 15) and a seed re-seal (field 16) state `[0]`: the signer writing itself.
+   - A rotation (field 15) and a seed re-seal (field 16) state `[0]`: the signer writing itself. A commit carrying a purge request (field 8) states one path; a hashed `path` beside one is bad input (spec/permissions.md §6).
 3. `kind`: 0 content, 1 role, 2 content compaction snapshot, 3 role compaction snapshot (spec/commits.md §2).
 4. `ts` (spec/crdt.md §2.2). 5. `form`: 0 commit form, or `[1, nonce]` session form with the session's 16-byte nonce (spec/commits.md §3).
 6. `expires`: `Opt(T)`, the commit's expiry, wall ms (spec/commits.md §6).

@@ -4146,6 +4146,67 @@ fn acting_on_two(hashed: bool) -> (LocalPeer, Tid, Tid, osis_base::CommitId, osi
     (lp, d, e, id, osis_commit::CommitBlob::decode(&pk.bytes).unwrap())
 }
 
+// spec/wire.md §4 `Contents`, spec/commits.md §5 Purge; Interim (notes/a1-spec/README.md step 3):
+// what a hashed commit acts on, learned from a thing's section, outlives that thing's parts:
+// Alice holds Bob's commit whole and purges his part on E, and her store rebuilt from its records
+// reads what her live index learned (the record keeps it apart from the sections).
+#[test]
+fn a_hashed_commits_path_outlives_its_parts_spec_wire_4() {
+    let (mut lp, d, e, id, c) = acting_on_two(true);
+    let a = &mut lp.peers[0];
+    let _ = a.engine.ingest(&c.encode(), Vec::new());
+    a.reexamine().unwrap();
+    assert_eq!(a.engine.commit_acting(&id, &e), Some(d));
+    let mut m = Mutation::new();
+    let now = a.engine.now();
+    m.set(e, &osis_schema::core_types::PURGE, &now).unwrap();
+    m.purge(osis_commit::PurgeItem::Aspect { tid: e, ak: ak("t:reg.0") });
+    lp.peers[0].commit(m).unwrap().unwrap();
+    let a = &mut lp.peers[0];
+    assert_eq!(a.engine.get(&e, &ak("t:reg.0")).unwrap(), None, "purged");
+    assert_eq!(a.engine.commit_acting(&id, &e), Some(d), "learned, kept");
+    a.engine.check_index();
+}
+
+// spec/wire.md §4 `Contents`; Interim (notes/a1-spec/README.md step 3): each thing a hashed commit
+// writes is judged along its own path, so what a node reads of one thing does not depend on the
+// sections of other things it opened. Bob writes D along `[D]` and E along `[E]` (a writer of
+// both, acting on each): Alice opens both sections, Carol only D's; both read D alike, and Alice
+// E too (a section of another thing does not void it).
+#[test]
+fn a_hashed_commit_reads_alike_whatever_sections_opened_spec_wire_4() {
+    let mut lp = net(3, 0);
+    lp.sync_all().unwrap();
+    let (d, e) = (new_thing(&mut lp, 0), new_thing(&mut lp, 0));
+    let b = lp.peers[1].engine.me();
+    for t in [d, e] {
+        set_edge(&mut lp.peers[0].engine, t, b, Some(edge(Role::Write)), None);
+    }
+    let carol = lp.peers[2].engine.me();
+    set_edge(&mut lp.peers[0].engine, d, carol, Some(edge(Role::Read)), None);
+    lp.sync_all().unwrap();
+    lp.advance(1_000);
+    lp.peers[1].engine.core.forced_paths = [(d, osis_commit::Path::through(d)), (e, osis_commit::Path::through(e))].into();
+    let mut m = Mutation::new();
+    m.set(d, &REG, &s("on d")).unwrap();
+    m.set(e, &REG, &s("on e")).unwrap();
+    let id = lp.peers[1].commit(m).unwrap().unwrap();
+    lp.peers[1].engine.core.forced_paths.clear();
+    let c = osis_commit::CommitBlob::decode(&lp.peers[1].engine.package(&id).unwrap().unwrap().bytes).unwrap();
+    assert!(matches!(&c.header.path, osis_commit::Paths::Hashed(_)));
+    assert_eq!((c.acting().on(&d), c.acting().on(&e)), (Some(d), Some(e)), "acting apart");
+    let only_d = osis_commit::rewrite(&c, |ai| c.header.aspects[ai].tid != d).encode();
+    for (i, bytes) in [(0, c.encode()), (2, only_d)] {
+        let p = &mut lp.peers[i];
+        let _ = p.engine.ingest(&bytes, Vec::new());
+        p.reexamine().unwrap();
+        p.engine.check_index();
+        assert!(p.engine.commit_ids().contains(&id), "peer {i}");
+        assert_eq!(p.engine.get(&d, &ak("t:reg.0")).unwrap(), Some(s("on d")), "peer {i} reads D");
+    }
+    assert_eq!(lp.peers[0].engine.get(&e, &ak("t:reg.0")).unwrap(), Some(s("on e")), "Alice reads E");
+}
+
 // spec/wire.md §4 (one path): a writer states one path where every thing's is the same; Interim
 // (notes/a1-spec/README.md step 2): every commit the engine writes has one acting thing, so it
 // states its path once in the clear, whatever it writes: a creation (the thing and where it is
@@ -4178,7 +4239,7 @@ fn hashed_paths_learned_late_judge_as_whole_spec_wire_4() {
     };
     let (_, (d, e, id, c)) = fresh();
     assert!(matches!(&c.header.path, osis_commit::Paths::Hashed(hs) if hs.len() == 2));
-    assert_eq!(c.acting(), Some(d));
+    assert!(c.header.things().iter().all(|x| c.acting().on(x) == Some(d)));
     let only = |keep: Option<Tid>| osis_commit::rewrite(&c, |ai| Some(c.header.aspects[ai].tid) != keep).encode();
     for (name, order) in [("whole", vec![c.encode()]), ("header, e, d", vec![only(None), only(Some(e)), only(Some(d))]), ("header, d, e", vec![only(None), only(Some(d)), only(Some(e))]), ("e, d", vec![only(Some(e)), only(Some(d))])] {
         let (mut lp, _) = fresh();
