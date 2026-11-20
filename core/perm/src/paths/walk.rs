@@ -109,7 +109,7 @@ pub struct Counts {
     pub content: u64,
     /// Addenda judged and entries read by the addenda fixpoint.
     pub addenda: u64,
-    /// Entries (parts, events, chained-capable writes, vouches) moved by component merges.
+    /// Entries (parts, events, edge-class parts in the chained pass, vouches) moved by component merges.
     pub merged: u64,
     /// Chained writes replayed by the chained pass.
     pub chained: u64,
@@ -328,7 +328,7 @@ enum Accept {
 }
 
 /// One component (notes/perm-paths.md, Components): its parts in key order, its event log by
-/// (reach, sequence), its chained-capable writes by key.
+/// (reach, sequence), its edge-class parts the chained pass judges, by key.
 #[derive(Clone)]
 struct Comp {
     /// Its edges: the union keeps the larger root.
@@ -444,7 +444,7 @@ pub(super) struct Walk {
     // ---- the chained pass (draft §4) ----
     /// Per edge, the chained writes setting it, by threshold (`ROLE`, `INVITE`).
     chain_by: Tab<[BTreeSet<Key>; 8]>,
-    /// Per edge, the chained-capable writes with it on their path.
+    /// Per edge, the edge-class parts with it on their path (the chained pass reads it).
     chain_readers: Tab<BTreeSet<(Key, Slot)>>,
     /// Per part, whether it is chained.
     chained: Tab<bool>,
@@ -1510,11 +1510,12 @@ impl Walk {
 
     // ---- the chained pass (draft §4 Chained writes) ----
 
-    /// Judges again component `c`'s chained-capable writes in `todo`, in key order (whole: every
+    /// Judges again component `c`'s edge-class parts in `todo`, in key order (whole: every
     /// one from the earliest): a write is chained where every edge of its path is a record edge
     /// or set at admin by a chained write of an earlier commit (an invite grant: its role on each
-    /// edge but the last, an invite of it on the last); a chained write sets its edge at the role
-    /// and invite it sets, `until` disregarded. A write reads, per edge of its path and threshold,
+    /// edge but the last, an invite of it on the last; a finalize: at write; a vouch or a
+    /// self-removal: at admin); a chained write that sets an edge sets it at the role and invite
+    /// it sets, `until` disregarded. A write reads, per edge of its path and threshold,
     /// only whether the earliest chained key meeting it is before its commit: where that earliest
     /// key moves, the writes whose commit it crosses are judged again (notes/perm-paths.md, Reach).
     fn chain_run(&mut self, c: E, mut todo: BTreeSet<(Key, Slot)>) {
