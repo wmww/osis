@@ -3802,3 +3802,21 @@ fn a_list_entry_names_its_part_on_its_leafs_thing_alone() {
     let rd = fixed(&w2, &[]);
     assert!(rd.valid.contains(&on_t1) && rd.valid.contains(&on_a), "{rd:?}");
 }
+
+/// The same for an edge-class part, which a lowering's audit drops: X's one commit grants K write
+/// on T1 through [A] and B write on A; H removes X from A listing the commit in T1's leaf alone:
+/// the grant on T1 stays, the grant on A drops; listed in both leaves, both stay.
+#[test]
+fn a_list_entry_keeps_an_edge_class_part_on_its_leafs_thing_alone() {
+    for both in [false, true] {
+        let mut w = World::new(&[(H, A), (A, T1)]);
+        w.edge(H, 1, &[], A, X, Admin, &[]);
+        let on_t1 = w.push(X, 2, &[A], T1, Kind::set(K, Write));
+        let on_a = w.push(X, 2, &[], A, Kind::set(B, Write));
+        w.group(&[on_t1, on_a]);
+        let list = if both { w.cut(&[on_t1, on_a]) } else { w.cut(&[on_t1]) };
+        w.push(H, 4, &[], A, Kind::set(X, Gone).listing(list));
+        let rd = fixed(&w, &[]);
+        assert!(rd.applied.contains(&on_t1) && rd.applied.contains(&on_a) == both, "both {both}: {rd:?}");
+    }
+}

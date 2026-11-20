@@ -1174,3 +1174,20 @@ fn a_list_entry_names_its_part_on_its_leafs_thing_alone() {
     agree_all(&w2, &[]);
     assert_eq!(verdict(&w2, &all(&w2, &[]), on_a), Some(Content::Valid(By::Listed)));
 }
+
+// spec/permissions.md §5.1 (the list): the same for edge-class parts a lowering's audit drops: X's
+// commit granting on T1 through [A] and on A, listed in T1's leaf alone, keeps the grant on T1 and
+// drops the one on A. Mutation: `List::names` reading every leaf fails it.
+#[test]
+fn a_list_entry_keeps_an_edge_class_part_on_its_leafs_thing_alone() {
+    for both in [false, true] {
+        let mut w = World::new(&[(H, A), (A, T1)]);
+        w.edge(H, 1, &[], A, X, Admin, &[]);
+        let on_t1 = w.push(X, 2, &[A], T1, Kind::set(K, Write));
+        let on_a = w.push(X, 2, &[], A, Kind::set(B, Write));
+        w.group(&[on_t1, on_a]);
+        let list = if both { w.cut(&[on_t1, on_a]) } else { w.cut(&[on_t1]) };
+        w.push(H, 4, &[], A, Kind::set(X, Gone).listing(list));
+        agree_all(&w, &[]);
+    }
+}
