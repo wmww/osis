@@ -1648,4 +1648,126 @@ mod tests_levels {
         }
         assert!(deepest >= 8, "deep trees reached: {deepest}");
     }
+
+    /// The pages under root list `out` in `sink`: each page's place, its links if a link page,
+    /// and the index of the link page holding it (`None`: the root list).
+    fn tree_pages(out: &[u8], sink: &Biased) -> Vec<(TreePlace, Option<Vec<Link>>, Option<usize>)> {
+        let links = |b: &[u8]| match osis_base::decode(b, &osis_base::Limits::DEFAULT) {
+            Ok(Value::List(items)) => items.iter().map(|x| if let Value::Link(l) = x { Some(**l) } else { None }).collect::<Option<Vec<Link>>>(),
+            _ => None,
+        };
+        let top = links(out).unwrap();
+        let mut todo: Vec<(Link, TreePlace, Option<usize>)> = top.iter().enumerate().map(|(i, l)| (*l, TreePlace::of(None, i, top.len()), None)).collect();
+        let mut pages = Vec::new();
+        while let Some((l, at, up)) = todo.pop() {
+            let inner = links(&sink.by[&l.hash]);
+            if let Some(inner) = &inner {
+                todo.extend(inner.iter().enumerate().map(|(i, x)| (*x, TreePlace::of(Some(at), i, inner.len()), Some(pages.len()))));
+            }
+            pages.push((at, inner, up));
+        }
+        pages
+    }
+
+    /// spec/wire.md §6, page by page: no tree the encoder builds is ever refused, whatever order
+    /// its pages arrive in and whichever of them a reader holds (a page is placed once the link
+    /// page naming it is held, as sync's walk and the decoder meet it): fan-outs 2, 3, 4 and 7,
+    /// groups closing by hash and by count, trees to 6 levels or more, random arrival orders, some
+    /// held whole and some with random subtrees never delivered.
+    #[test]
+    fn honest_trees_pass_in_any_order_and_subset_spec_wire_6() {
+        let one = links_len(&[Sink(0).put(&[]).unwrap()]) - head_len(1);
+        let mut r = crdt_model::r#gen::Rng(7);
+        let (mut deepest, mut partial) = (0, 0);
+        for zero in [0.0, 0.5, 1.0] {
+            for fanout in [2, 3, 4, 7] {
+                for fit in [0, 1, 3] {
+                    let params = PageParams { target: head_len(fit as u64) + fit * one, fanout, ..PageParams::FORMAT };
+                    for n in (1..=12).chain([40, 100, 257, 600]) {
+                        let mut sink = Biased { zero, ..Biased::default() };
+                        let mut levels = Levels::default();
+                        for i in 0..n as u64 {
+                            let l = sink.put(&i.to_le_bytes()).unwrap();
+                            levels.push(0, l, params, &mut sink).unwrap();
+                        }
+                        let mut out = Vec::new();
+                        levels.finish(params, &mut sink, &mut out).unwrap();
+                        let pages = tree_pages(&out, &sink);
+                        deepest = deepest.max(pages.iter().map(|p| p.0.depth()).max().unwrap_or(0));
+                        for trial in 0..6 {
+                            // half the trials hold everything; the others drop each page with
+                            // its subtree one time in five
+                            let whole = trial % 2 == 0;
+                            let mut tree = LinkTree::new(params);
+                            let mut held = vec![false; pages.len()];
+                            let mut ready: Vec<usize> = (0..pages.len()).filter(|i| pages[*i].2.is_none()).collect();
+                            let mut placed = 0;
+                            while !ready.is_empty() {
+                                let i = ready.swap_remove(r.below(ready.len()));
+                                if !whole && r.chance(1, 5) {
+                                    continue;
+                                }
+                                let (at, inner, _) = &pages[i];
+                                let got = match inner {
+                                    Some(ls) => tree.link_page(*at, ls),
+                                    None => tree.leaf(*at),
+                                };
+                                if let Err(e) = got {
+                                    panic!("zero {zero}, fanout {fanout}, fit {fit}, n {n}, trial {trial}: page at {at:?} refused: {e}");
+                                }
+                                held[i] = true;
+                                placed += 1;
+                                ready.extend((0..pages.len()).filter(|j| pages[*j].2 == Some(i)));
+                            }
+                            if whole {
+                                assert_eq!(placed, pages.len());
+                            } else if placed < pages.len() {
+                                partial += 1;
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        assert!(deepest >= 6 && partial > 100, "deep trees: {deepest} levels; partial holdings: {partial}");
+    }
+
+    /// spec/wire.md §6, page by page: each clause of `LinkTree` at its bound, accepted on one side
+    /// and refused one step past it (fan-out 4; `c` a link closing a group, `o` one that does not).
+    #[test]
+    fn link_tree_clauses_at_their_bounds_spec_wire_6() {
+        let params = PageParams { fanout: 4, ..PageParams::FORMAT };
+        let link = |closes: bool, i: u8| {
+            let mut hash = [i; 32];
+            hash[0] = u8::from(!closes);
+            Link { hash, blob: osis_base::BlobId(hash), suite: 1, key: [0; 32], salt: [0; 16], del: osis_base::Del::NONE }
+        };
+        let (c, o) = (|i| link(true, i), |i| link(false, i));
+        let fresh = || LinkTree::new(params);
+        // the root list's first of two links: not last, not sole; its last: last
+        let (inner, last) = (TreePlace::of(None, 0, 2), TreePlace::of(None, 1, 2));
+        let sole = TreePlace::of(None, 0, 1);
+        let ok = |at, ls: &[Link]| fresh().link_page(at, ls).is_ok();
+        // fan-out
+        assert!(ok(last, &[o(1), o(2), o(3), o(4)]) && !ok(last, &[o(1), o(2), o(3), o(4), o(5)]), "fan-out");
+        // a closing link may stand first or last, not in between
+        assert!(ok(inner, &[c(1), o(2), c(3)]) && !ok(inner, &[o(1), c(2), o(3), c(4)]) && !ok(last, &[o(1), o(2), c(3), o(4)]), "close before the last");
+        // a group before its level's last closes by the rule: two or more ending closing, or the fan-out
+        assert!(ok(inner, &[o(1), c(2)]) && ok(inner, &[o(1), o(2), o(3), o(4)]) && !ok(inner, &[o(1), o(2), o(3)]) && !ok(inner, &[c(1)]), "not closed");
+        assert!(ok(last, &[o(1), o(2), o(3)]) && ok(last, &[c(1)]), "the last closes at the end");
+        // one link on a level of one page
+        assert!(!ok(sole, &[o(1)]) && ok(sole, &[o(1), o(2)]) && ok(last, &[o(1)]), "alone on its level");
+        let below_sole = TreePlace::of(Some(TreePlace::of(None, 0, 1)), 0, 1);
+        assert!(!fresh().link_page(below_sole, &[o(1)]).is_ok() && fresh().link_page(TreePlace::of(Some(last), 0, 1), &[o(1)]).is_ok(), "alone below a sole path");
+        // leaves at one depth, below every link page, in either order
+        let (d1, d2, d3) = (last, TreePlace::of(Some(last), 0, 1), TreePlace::of(Some(TreePlace::of(Some(last), 0, 1)), 0, 1));
+        let mut t = fresh();
+        assert!(t.link_page(d1, &[o(1)]).is_ok() && t.leaf(d2).is_ok() && t.leaf(d2).is_ok() && t.leaf(d3).is_err(), "leaves at two depths");
+        let mut t = fresh();
+        assert!(t.leaf(d3).is_ok() && t.leaf(d2).is_err(), "a shallower leaf after a deeper one");
+        let mut t = fresh();
+        assert!(t.leaf(d2).is_ok() && t.link_page(d1, &[o(1)]).is_ok() && t.link_page(d2, &[o(1)]).is_err(), "a link page at a leaf's depth");
+        let mut t = fresh();
+        assert!(t.link_page(d2, &[o(1)]).is_ok() && t.leaf(d2).is_err() && t.leaf(d3).is_ok(), "a leaf at a link page's depth");
+    }
 }

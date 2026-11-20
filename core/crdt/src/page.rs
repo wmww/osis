@@ -56,10 +56,24 @@ impl PageParams {
         TEST_PARAMS.with(Cell::get).unwrap_or(PageParams::FORMAT)
     }
 
-    /// Tests: this thread's page plugs page with `p` (`None`: `FORMAT`); returns what was set.
+    /// Tests: this thread's page plugs page with `p` (`None`: `FORMAT`) until the guard drops,
+    /// which sets back what was set. Bind the guard before the worlds built under it: locals drop
+    /// in reverse, so they drop (and run their last checks) under the pages they were written
+    /// with; a state read under other parameters fails the tree rule.
     #[doc(hidden)]
-    pub fn set_test(p: Option<PageParams>) -> Option<PageParams> {
-        TEST_PARAMS.with(|c| c.replace(p))
+    pub fn set_test(p: Option<PageParams>) -> TestPages {
+        TestPages(TEST_PARAMS.with(|c| c.replace(p)))
+    }
+}
+
+/// `PageParams::set_test` in force until dropped.
+#[doc(hidden)]
+#[must_use = "the parameters are set back when this drops"]
+pub struct TestPages(Option<PageParams>);
+
+impl Drop for TestPages {
+    fn drop(&mut self) {
+        TEST_PARAMS.with(|c| c.set(self.0));
     }
 }
 

@@ -516,7 +516,7 @@ fn wire_depth(w: &mut World, n: usize, c: &CommitId, ai: usize) -> usize {
 #[test]
 fn deep_link_tree_compacts_syncs_and_reads_spec_crdt_8() {
     let small = osis_crdt::PageParams { target: 400, cut: osis_base::ChunkParams { min: 32, max: 160, mask_bits: 5 }, fanout: 3, ..osis_crdt::PageParams::FORMAT };
-    let was = osis_crdt::PageParams::set_test(Some(small));
+    let _pages = osis_crdt::PageParams::set_test(Some(small));
     let a = aks()[0].clone();
     let map = Value::Map((0..300).map(|i| (Value::Int(i), s(i as u64, 0))).collect());
     let (_, mut worlds) = both_in(
@@ -544,9 +544,6 @@ fn deep_link_tree_compacts_syncs_and_reads_spec_crdt_8() {
         assert_eq!(w.lp.peers[3].engine.get_at(&t, &a, &path).unwrap(), w.lp.peers[0].engine.get_at(&t, &a, &path).unwrap(), "entry {i}");
         assert_eq!(w.lp.peers[3].engine.get_at(&t, &a, &path).unwrap(), Some(s(i as u64, 0)));
     }
-    // the worlds' last checks read under the pages they were written with
-    drop(worlds);
-    osis_crdt::PageParams::set_test(was);
 }
 
 /// What a commit listener on node 3 hears of `big` once the keep bound (an hour after replaced)
@@ -1712,7 +1709,7 @@ fn hostile_link_trees_cost_rounds_by_pages_spec_wire_6() {
     let fan = |fanout| osis_crdt::PageParams { target: 400, cut: osis_base::ChunkParams { min: 32, max: 160, mask_bits: 5 }, fanout, ..osis_crdt::PageParams::FORMAT };
     // leaf pages larger than a link: a few fit the root list
     let wide = osis_crdt::PageParams { cut: osis_base::ChunkParams { min: 128, max: 512, mask_bits: 7 }, ..fan(3) };
-    let was = osis_crdt::PageParams::set_test(Some(fan(3)));
+    let _pages = osis_crdt::PageParams::set_test(Some(fan(3)));
     // a world built under the pages it runs with (its states' link pages are read by that rule)
     let world_at = |params: osis_crdt::PageParams| {
         let (lp, t) = LocalPeer::cached(&format!("apply::tests_paged::world {params:?}"), || build(0));
@@ -1740,7 +1737,7 @@ fn hostile_link_trees_cost_rounds_by_pages_spec_wire_6() {
     let mut depths = Vec::new();
     for (params, n) in [(wide, 12), (fan(3), 10), (fan(3), 20), (fan(2), 300)] {
         let fanout = params.fanout;
-        osis_crdt::PageParams::set_test(Some(params));
+        let _params = osis_crdt::PageParams::set_test(Some(params));
         let mut w = world_at(params);
         let pk = forge(&mut w, n, None);
         let levels = levels_in(&pk, &top(&pk));
@@ -1754,7 +1751,7 @@ fn hostile_link_trees_cost_rounds_by_pages_spec_wire_6() {
     assert!(depths.contains(&2) && depths.contains(&3) && depths.iter().any(|d| *d >= 4), "{depths:?}");
     // a root list of several links (each about 230 bytes with its delete keys)
     let roomy = osis_crdt::PageParams { target: 1000, ..fan(3) };
-    osis_crdt::PageParams::set_test(Some(roomy));
+    let _roomy = osis_crdt::PageParams::set_test(Some(roomy));
     let chain: Reroot<'_> = &|put, top| {
         let mut l = put(&top);
         for _ in 0..1_000 {
@@ -1796,5 +1793,144 @@ fn hostile_link_trees_cost_rounds_by_pages_spec_wire_6() {
         let reads: Vec<Option<Value>> = w.lp.peers.iter_mut().map(|p| p.engine.get(&t, &a).unwrap()).collect();
         assert!(reads.iter().all(|r| *r == reads[0]), "{name}: all read alike: {reads:?}");
     }
-    osis_crdt::PageParams::set_test(was);
+}
+
+/// Small pages: a 400-byte target, leaf pages cut at 32 to 160 bytes, fan-out 3.
+fn small_pages() -> osis_crdt::PageParams {
+    osis_crdt::PageParams { target: 400, cut: osis_base::ChunkParams { min: 32, max: 160, mask_bits: 5 }, fanout: 3, ..osis_crdt::PageParams::FORMAT }
+}
+
+/// A copy of the shared world built under `params` (its states' pages read by that rule).
+fn world_under(params: osis_crdt::PageParams) -> World {
+    let (lp, t) = LocalPeer::cached(&format!("apply::tests_paged::world {params:?}"), || build(0));
+    of(lp, t, false)
+}
+
+/// Node 3 gets commit `pk` without its blobs, then each round the blobs its walk names
+/// (`Engine::blob_wants`) from `pk` (`one`: only the first of them, as a server trickling them
+/// would), until the walk names none it lacks; then every blob of `pk` (large values' chunks,
+/// fetched lazily). The rounds, and whether the commit still waited when the walk ran dry.
+fn walk_fill(w: &mut World, pk: &Package, one: bool) -> (usize, bool) {
+    let held: BTreeMap<osis_base::BlobId, Vec<u8>> = pk.blobs.iter().cloned().collect();
+    let e = &mut w.lp.peers[3].engine;
+    e.ingest(&pk.bytes, Vec::new()).unwrap();
+    let mut rounds = 0;
+    loop {
+        let wants = e.blob_wants().unwrap();
+        let mut give: Vec<_> = wants.missing.iter().filter_map(|b| held.get(b).map(|x| (*b, x.clone()))).collect();
+        if give.is_empty() {
+            break;
+        }
+        if one {
+            give.truncate(1);
+        }
+        assert!(rounds < 5_000, "rounds bounded");
+        rounds += 1;
+        e.put_blobs(give).unwrap();
+    }
+    let waits = e.pending().into_iter().any(|x| x.0 == pk.id);
+    e.put_blobs(pk.blobs.clone()).unwrap();
+    (rounds, waits)
+}
+
+/// spec/sync-streams.md (page discovery), spec/wire.md §6: every value an honest writer commits,
+/// paged small, is fetched whole by sync's walk alone and applies: the reference model's bulk
+/// values over every encoding (nested maps, sets, lists, structs, enums), and large values
+/// standing alone, in a list of links in a register, and as one-link lists in the entries of a
+/// paged map (the walk takes a list of links for a position's tree; their blobs are tree roots).
+#[test]
+fn honest_values_sync_through_the_fetch_walk_spec_wire_6() {
+    use crdt_model::r#gen::{Rng as MRng, bulk_value, kitchen_sink};
+    let params = small_pages();
+    let _pages = osis_crdt::PageParams::set_test(Some(params));
+    let a = aks()[1].clone();
+    let big = |i: u64| Value::Str(format!("{:x}", i % 16).repeat(osis_base::format::CHUNK_THRESHOLD + 1 + i as usize));
+    let mut paged = 0;
+    for seed in 0..8u64 {
+        let mut r = MRng(seed + 1);
+        let generated = osis_base::decode(&bulk_value(&mut r, &kitchen_sink(), 0).canonical(), &osis_base::Limits::DEFAULT).unwrap();
+        let mut v = vec![(Value::Str("gen".into()), generated)];
+        if seed < 2 {
+            v.push((Value::Str("lone".into()), big(seed * 100)));
+            v.push((Value::Str("list".into()), Value::List(vec![big(seed * 100 + 1), big(seed * 100 + 2)])));
+            v.push((Value::Str("map".into()), Value::Map((0..12).map(|i| (Value::Int(i), Value::List(vec![big(seed * 100 + 10 + i as u64)]))).collect())));
+        }
+        let v = Value::Map(v.into_iter().collect());
+        let mut w = world_under(params);
+        let t = w.t;
+        let mut m = Mutation::new();
+        m.set(t, &a, &v).unwrap();
+        let c = w.lp.peers[0].commit(m).unwrap().unwrap();
+        let pk = w.lp.peers[0].engine.package(&c).unwrap().unwrap();
+        let (rounds, waits) = walk_fill(&mut w, &pk, false);
+        assert!(!waits, "seed {seed}: left waiting after {rounds} rounds");
+        paged += usize::from(rounds > 1);
+        let want = w.lp.peers[0].engine.get(&t, &a).unwrap();
+        assert!(want.is_some() && w.lp.peers[3].engine.get(&t, &a).unwrap() == want, "seed {seed}: node 3 reads what node 0 does");
+    }
+    assert!(paged >= 4, "paged values reached: {paged}");
+}
+
+/// spec/sync-streams.md (page discovery), spec/crdt.md §3.3 rule 7: the walk follows paged
+/// positions as deep as a writer may nest them. A map paged at every level, nested as deep as
+/// the writer takes (`MAX_VALUE_DEPTH`), is fetched whole by the walk alone (a round per level
+/// at least) and applies; one level deeper the writer refuses it. Fails with the walk's nesting
+/// cut below `MAX_VALUE_DEPTH` (the commit left waiting for pages nobody fetches).
+#[test]
+fn deepest_nested_pages_sync_through_the_fetch_walk_spec_wire_6() {
+    let params = small_pages();
+    let _pages = osis_crdt::PageParams::set_test(Some(params));
+    let a = aks()[1].clone();
+    let level = |inner: Option<Value>, d: u64| Value::Map((0..20).map(|i| (Value::Int(i as i64), s(i, d))).chain(inner.map(|v| (Value::Str("n".into()), v))).collect());
+    let nested = |d: u64| (0..d).fold(None, |acc, i| Some(level(acc, i))).unwrap();
+    let mut w = world_under(params);
+    let t = w.t;
+    let mut deepest = None;
+    for d in (40..=osis_base::format::MAX_VALUE_DEPTH as u64 + 2).rev() {
+        let mut m = Mutation::new();
+        if m.set(t, &a, &nested(d)).is_ok()
+            && let Ok(Some(c)) = w.lp.peers[0].commit(m)
+        {
+            deepest = Some((d, c));
+            break;
+        }
+    }
+    let (d, c) = deepest.expect("a nesting the writer takes");
+    assert!(d + 1 >= osis_base::format::MAX_VALUE_DEPTH as u64, "nested {d} deep");
+    let pk = w.lp.peers[0].engine.package(&c).unwrap().unwrap();
+    let (rounds, waits) = walk_fill(&mut w, &pk, false);
+    assert!(!waits && rounds as u64 >= d, "{d} levels: {rounds} rounds, waits {waits}");
+    assert_eq!(w.lp.peers[3].engine.get(&t, &a).unwrap(), Some(nested(d)));
+}
+
+/// issues/blob-wait-examined-per-wake.md: pages read while a paged commit fills, its pages given
+/// all at once each round or one at a time (a server trickling them). Fails today: one at a time
+/// the commit is examined, each examine decoding the pages held, at every page stored.
+#[test]
+#[ignore = "issues/blob-wait-examined-per-wake.md"]
+fn a_trickled_fill_reads_each_page_a_bounded_number_of_times_spec_commits_4() {
+    let params = small_pages();
+    let _pages = osis_crdt::PageParams::set_test(Some(params));
+    let a = aks()[1].clone();
+    let mut out = Vec::new();
+    for n in [100u64, 400] {
+        for one in [false, true] {
+            let mut w = world_under(params);
+            let t = w.t;
+            let mut m = Mutation::new();
+            m.set(t, &a, &Value::Map((0..n).map(|i| (Value::Int(i as i64), s(i, 0))).collect())).unwrap();
+            let c = w.lp.peers[0].commit(m).unwrap().unwrap();
+            let pk = w.lp.peers[0].engine.package(&c).unwrap().unwrap();
+            osis_base::costs::take();
+            let (rounds, waits) = walk_fill(&mut w, &pk, one);
+            let costs = osis_base::costs::take();
+            let get = |k: &str| costs.iter().find(|c| c.0 == k).map_or(0, |c| c.2);
+            assert!(!waits);
+            out.push((n, one, pk.blobs.len(), rounds, get("examine"), get("pages read")));
+        }
+    }
+    eprintln!("(entries, one at a time, blobs, rounds, examines, pages read): {out:?}");
+    for (_, _, blobs, _, _, read) in &out {
+        assert!(*read <= 8 * *blobs as u64, "pages read per page delivered bounded: {out:?}");
+    }
 }

@@ -1097,7 +1097,7 @@ mod tests {
         let reported: Vec<_> = rx.try_iter().filter_map(|e| if let crate::events::Event::Diagnostic(d) = e { Some(d) } else { None }).filter(|d| d.kind == crate::events::DiagnosticKind::OwnWriteFailed).collect();
         assert!(reported.len() == 1 && reported[0].tids == [t] && reported[0].detail.contains("x:m.0"), "reported to the host: {reported:?}");
         assert!(p.engine.compactions().unwrap().is_empty(), "nothing due until x's next body");
-        let mut weighed = |p: &mut crate::local_peer::Peer, bodies: usize| {
+        let weighed = |p: &mut crate::local_peer::Peer, bodies: usize| {
             osis_base::costs::take();
             for i in 0..bodies {
                 fill(p, &x, i);
@@ -1107,6 +1107,12 @@ mod tests {
         };
         let (n, ten) = (weighed(p, 20), weighed(p, 200));
         assert!((1..=6).contains(&n) && (1..=6).contains(&ten), "weighings per doubling, not per body: {n} at 20 bodies, {ten} at 200 after");
+        // the failure mark is memory only: after a restart x is weighed at its first body (and,
+        // failing again, not at the next)
+        p.restart(1).unwrap();
+        p.engine.core.snapshot_fault = Some((t, x.clone()));
+        assert_eq!(weighed(p, 1), 1, "weighed at the first body after a restart");
+        assert_eq!(weighed(p, 1), 0, "then not at the next");
         p.engine.core.snapshot_fault = None;
         let mut tries = 0;
         let done = loop {

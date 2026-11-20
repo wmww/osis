@@ -84,7 +84,7 @@ pub use ops::{Op, PathOp, PathSeg, Writer, create, diff, diff_values, remove, re
 pub use undo::{Undone, restores, undo};
 pub use stream::{Checked, Head, Piece, Want, decode_checked, stream_checked, stream_checked_some, stream_delta, stream_snapshot};
 pub use page_index::{PageIndex, Wanted};
-pub use page::{MemoryPages, PageError, PageParams, PageSink, PageSource, Unpaged};
+pub use page::{MemoryPages, PageError, PageParams, PageSink, PageSource, TestPages, Unpaged};
 pub use paging::{PagedTouch, Paths, Step};
 pub use state::SlotRef;
 pub use seq::{Anchor, Seq, SeqContent, SeqElem};

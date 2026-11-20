@@ -331,6 +331,8 @@ impl LinkSource for BlobReader<'_> {
 
 impl PageSource for BlobReader<'_> {
     fn get(&mut self, link: &Link) -> Result<Vec<u8>, PageError> {
+        // counted: tests read how many pages decodes and walks opened
+        osis_base::costs::count("pages read", 1);
         let pt = self.open_link(link)?;
         if link_hash(self.dedup, &pt) != link.hash {
             return Err(PageError::Corrupt);
