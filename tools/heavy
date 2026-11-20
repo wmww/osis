@@ -12,7 +12,9 @@ test runs stay unlocked. The lock is ${XDG_RUNTIME_DIR:-/tmp}/osis-gate.lock (fl
 flock(1)); the command inherits it, so it stays held while the command runs even if this wrapper
 dies. The command sees HEAVY_HELD=1; a tools/heavy inside it refuses (it would wait on itself).
 --log FILE sends the command's stdout and stderr to FILE, making its directory first: a shell
-redirect into a missing directory fails before tools/heavy starts, so nothing runs (exit 1).
+redirect into a missing directory fails before tools/heavy starts, so nothing runs (exit 1). A
+wait for the lock is written there too (since when, then how long), so the file is never silently
+empty while it queues.
 
 A `cargo test` or `cargo run` (maybe after `env VAR=VAL...`) builds before queueing, with
 tools/heavy as cargo's runner (`--record`): cargo compiles and chooses each binary, its args, cwd
@@ -282,6 +284,13 @@ def run(cmd, name, out=None, short=False):
         shutil.rmtree(rec, ignore_errors=True)
 
 
+def note(out, msg):
+    """msg on stderr, and in --log's file when there is one."""
+    print(msg, file=sys.stderr)
+    if out:
+        print(msg, file=out, flush=True)
+
+
 def hold(cmd, name, out, who, runs, sub, lane=None):
     """Take the lock (with lane, the short lane's: its (CPU-s, wall) caps) and run each of runs in
     order. A cargo test stops at the first failing binary unless --no-fail-fast, and exits 101 when
@@ -292,12 +301,13 @@ def hold(cmd, name, out, who, runs, sub, lane=None):
     try:
         fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
     except BlockingIOError:
-        print(f"heavy: waiting for {path} ({'another short run' if lane else 'another all-core run'})", file=sys.stderr)
+        # to --log's file too: a log empty for minutes otherwise reads as a hung run
+        note(out, f"heavy: waiting for {path} ({'another short run' if lane else 'another all-core run'}) since {time.strftime('%H:%M:%S')}")
         fcntl.flock(fd, fcntl.LOCK_EX)
     t1 = time.time()
     log("acq", wait=round(t1 - t0, 1), busy0=b0, all0=a0, **(dict(lane="short") if lane else {}), **who)
     if t1 - t0 >= 1:
-        print(f"heavy: waited {t1 - t0:.0f} s for the lock", file=sys.stderr)
+        note(out, f"heavy: waited {t1 - t0:.0f} s for the lock")
     if os.environ.get("HEAVY_WAIT_FILE"):
         try:
             with open(os.environ["HEAVY_WAIT_FILE"], "w") as f:

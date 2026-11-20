@@ -109,6 +109,18 @@ binary("ok", "echo edited")
 fcntl.flock(lock, fcntl.LOCK_UN)
 out, _ = p.communicate()
 expect("stale-free", (p.returncode, lines(out)), (0, [f"ok {d} by-cargo 1"]))
+
+# queued with --log, the log file says it waits before the run's own output
+fcntl.flock(lock, fcntl.LOCK_EX)
+logf = os.path.join(d, "logs", "q.log")
+p = subprocess.Popen([HEAVY, "--log", logf, "sh", "-c", "echo ran"], env=ENV, cwd=d, stderr=subprocess.PIPE, text=True)
+for line in p.stderr:
+    if "waiting for" in line:
+        break
+expect("log says waiting", [l.split(" (")[0] for l in open(logf).read().splitlines()], ["heavy: waiting for " + os.path.join(d, "osis-gate.lock")])
+fcntl.flock(lock, fcntl.LOCK_UN)
+p.communicate()
+expect("log then the run", [l for l in open(logf).read().splitlines() if not l.startswith("heavy: waited")][1:], ["ran"])
 expect("copies removed", [x for x in os.listdir(d) if x.startswith("osis-heavy-")], [])
 
 # the short lane runs beside a held heavy lock without waiting, and logs its run as the lane's
