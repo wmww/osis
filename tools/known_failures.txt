@@ -9,7 +9,6 @@ osis-app/fields::a_tile_tells_of_emails_it_cannot_read - issues/app-tile-unreada
 roles-model/custody::tests::random_worlds_hold_large rate:OSIS_ROLES_START=647344785567 issues/custody-model-flip.md FAIL flip: node \w+ at \d+ dropped a taken revocation
 roles-model/custody::tests::random_worlds_hold_large rate:OSIS_ROLES_START=567669682357 issues/custody-model-lost-write.md FAIL writes: node \w+ settled without \w+'s write \d+ on \w+
 held-model/spec_gaps::evidence_reach_and_generator_gaps_large rate:OSIS_HELD_START=14204407677 issues/held-model-brief3-read-hop-delivery.md \d+ fail, first: reach-no-errand worse than today
-held-model/spec_evidence::one_sync_id_reader_judges_as_everything_large rate:OSIS_HELD_START=0 issues/held-model-leaf-of-a-non-cut.md \d+ worlds fail, first: listed random seed \d+
 roles-model/paths::tests::random_worlds_hold_large OSIS_ROLES_START=0,OSIS_ROLES_SEEDS=13000 issues/role-vouch-contested.md counts:admin=7,dispute=170,idle_gains=147,liveness=3519,own_path=444,purge=5,removal=675,removal_kept=4,safety=1675,safety_N=14 OSIS_ROLES_START=\d+: \{
 roles-model/paths::tests::small_family_holds_large - issues/role-vouch-contested.md counts:dispute=196,liveness=8031,own_path=444,removal=794,safety=1596,safety_N=74 family: \{
 roles-model/paths::tests::remake_random_worlds_hold_large OSIS_ROLES_START=0,OSIS_ROLES_SEEDS=13000 issues/role-vouch-contested.md counts:admin=6,dispute=114,idle_gains=88,liveness=1240,own_path=216,removal=272,safety=3070,safety_N=124 remake OSIS_ROLES_START=\d+: \{
