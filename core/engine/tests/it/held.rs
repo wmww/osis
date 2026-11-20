@@ -134,6 +134,11 @@ impl History {
         History { headers, sync_ids, judged: Default::default(), paged: Default::default(), frags: Default::default() }
     }
 
+    /// Commit `c`'s number in held-model's messages (`#N`): its sync ID, for the order dump.
+    pub(crate) fn number(&self, c: &CommitId) -> Option<u32> {
+        self.sync_ids.get(c).copied()
+    }
+
     /// Whether a delta of commit `c` as `e` holds it links a blob (a large value's tree): a
     /// function of the bytes, kept per bytes.
     fn paged(&self, e: &mut Engine, c: &CommitId) -> bool {

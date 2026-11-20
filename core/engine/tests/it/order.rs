@@ -2263,6 +2263,14 @@ type Job<'j> = (Key, Box<dyn Fn() -> Result<Seen, String> + Sync + 'j>);
 /// and node (`Tree::shape`); what goes unwalked counts in `Seen::alike`.
 fn walk(played: &Played, tree: &Tree, threads: usize, jobs: &[Job], alike: bool, end: &(dyn Fn(End, Peer) -> Result<Seen, String> + Sync)) -> Vec<(Key, Result<Seen, String>)> {
     let out = std::sync::Mutex::new(Vec::new());
+    // a shrink's candidate (`SHRINKING`) stops at its first failure: no task starts after one
+    let (stop_first, stopped) = (SHRINKING.get(), std::sync::atomic::AtomicBool::new(false));
+    let put = |k: Key, r: Result<Seen, String>| {
+        if stop_first && r.is_err() {
+            stopped.store(true, std::sync::atomic::Ordering::Relaxed);
+        }
+        out.lock().unwrap_or_else(|e| e.into_inner()).push((k, r));
+    };
     let met = std::sync::Mutex::new(std::collections::HashSet::new());
     // whether node `p` is the first met of `what` (an end's class or a branch's shape)
     let first = |what: (u8, u64), p: &mut Peer| !alike || met.lock().unwrap().insert((what, node_key(played, p)));
@@ -2276,6 +2284,9 @@ fn walk(played: &Played, tree: &Tree, threads: usize, jobs: &[Job], alike: bool,
     let root = std::sync::Arc::new(std::sync::Mutex::new(judged_node(played)));
     let tasks: Vec<Task> = (0..jobs.len()).map(Task::Job).chain([Task::Down(tree, None, root)]).collect();
     pool(tasks, threads, |task, add| {
+        if stopped.load(std::sync::atomic::Ordering::Relaxed) {
+            return;
+        }
         let r = match task {
             Task::Job(j) => (jobs[j].0, caught(&jobs[j].1)),
             Task::End(e, at) => (e.key(), caught(|| judge(e, take_node(played, at)))),
@@ -2298,7 +2309,7 @@ fn walk(played: &Played, tree: &Tree, threads: usize, jobs: &[Job], alike: bool,
                     Ok(x) => x,
                     Err(d) => {
                         let first = below.first();
-                        out.lock().unwrap_or_else(|e| e.into_inner()).push((first.key(), Err(format!("on the way to {first:?}: {d}"))));
+                        put(first.key(), Err(format!("on the way to {first:?}: {d}")));
                         return;
                     }
                 };
@@ -2308,7 +2319,7 @@ fn walk(played: &Played, tree: &Tree, threads: usize, jobs: &[Job], alike: bool,
                 } else {
                     let mut p = p;
                     if !first((6, t.shape()), &mut p) {
-                        out.lock().unwrap_or_else(|e| e.into_inner()).push((t.first().key(), Ok(Seen { alike: t.count(), ..Seen::default() })));
+                        put(t.first().key(), Ok(Seen { alike: t.count(), ..Seen::default() }));
                         return;
                     }
                     let at = std::sync::Arc::new(std::sync::Mutex::new(p));
@@ -2322,7 +2333,7 @@ fn walk(played: &Played, tree: &Tree, threads: usize, jobs: &[Job], alike: bool,
                 }
             }
         };
-        out.lock().unwrap_or_else(|e| e.into_inner()).push(r);
+        put(r.0, r.1);
     });
     let mut out = out.into_inner().unwrap_or_else(|e| e.into_inner());
     out.sort_by_key(|a| a.0);
@@ -2386,14 +2397,7 @@ fn explain(played: &Played, held: &[usize], p: &mut Peer, what: &str) {
     let mut out = format!("index differences ({what}), node at {:?}:\n", p.engine.now());
     let pack = |c: &CommitId| played.packs.iter().position(|q| q.id == *c);
     for (i, pk) in played.packs.iter().enumerate() {
-        let shown = |e: &osis_engine::Engine, c: Option<&osis_engine::engine::CommitDigest>| match c {
-            None => "absent".to_string(),
-            Some(c) => {
-                let why: Vec<String> = e.core.ix.commits.get(&pk.id).map(|m| m.dropped_parts().map(|(ai, d)| format!("{ai}: {:?} by {:?}", d.why, d.covered_by.iter().map(pack).collect::<Vec<_>>())).collect()).unwrap_or_default();
-                format!("valid {:?} dropped {:?} {why:?} stands in {:?} stripped {:?} valued {:?} missing {:?}", c.valid, c.dropped, c.stands_in, c.stripped, c.valued, c.missing)
-            }
-        };
-        let (x, y) = (shown(&p.engine, a.commits.get(&pk.id)), shown(&o.engine, b.commits.get(&pk.id)));
+        let (x, y) = (commit_state(played, &p.engine, &a, &pk.id), commit_state(played, &o.engine, &b, &pk.id));
         if x == y {
             continue;
         }
@@ -2416,9 +2420,25 @@ fn explain(played: &Played, held: &[usize], p: &mut Peer, what: &str) {
     eprintln!("{out}");
 }
 
-/// `OSIS_ORDER_DUMP`: on an order's failure, prints the packs (index: id, author, kind, aspects)
-/// and what the order's node reads as it changes after every ingest. Every failing check prints,
-/// the shrink's too (`OSIS_ORDER_SHRINK=1`).
+/// Commit `id`'s index entry at engine `e` (its digest `d`), for the dumps: valid per part, the
+/// parts dropped and why (`DropFor`: covered by which packs, invalid, ...), stood in, stripped,
+/// valued, missing; `absent` when the node holds no entry.
+fn commit_state(played: &Played, e: &osis_engine::Engine, d: &osis_engine::engine::IndexDigest, id: &CommitId) -> String {
+    let pack = |c: &CommitId| played.packs.iter().position(|q| q.id == *c);
+    match d.commits.get(id) {
+        None => "absent".to_string(),
+        Some(c) => {
+            let why: Vec<String> = e.core.ix.commits.get(id).map(|m| m.dropped_parts().map(|(ai, d)| format!("{ai}: {:?} by {:?}", d.why, d.covered_by.iter().map(pack).collect::<Vec<_>>())).collect()).unwrap_or_default();
+            format!("valid {:?} dropped {:?} {why:?} stands in {:?} stripped {:?} valued {:?} missing {:?}", c.valid, c.dropped, c.stands_in, c.stripped, c.valued, c.missing)
+        }
+    }
+}
+
+/// `OSIS_ORDER_DUMP`: on an order's failure, prints the packs (index, held-model's `#N`: id, author, kind, aspects)
+/// and, after every ingest of the order's node, each read that changed (a value, or `absent` once a
+/// key is gone, as when its thing leaves the node closure) and each commit whose index entry
+/// changed (`commit_state`: a part dropped while invalid shows its `Invalid` drop, then `missing`
+/// once it is valid again). Every failing check prints, the shrink's too (`OSIS_ORDER_SHRINK=1`).
 fn dump_order(played: &Played, order: &[usize]) {
     if std::env::var("OSIS_ORDER_DUMP").is_err() {
         return;
@@ -2427,10 +2447,12 @@ fn dump_order(played: &Played, order: &[usize]) {
     let p = deliver(played, order);
     for (i, pk) in played.packs.iter().enumerate() {
         let who = played.authors.get(i).map_or("?".into(), |a| a.to_string());
+        // held-model's messages number commits by sync ID (`#N`)
+        let model = played.model.as_ref().and_then(|m| m.0.number(&pk.id)).map_or(String::new(), |n| format!(" (model #{n})"));
         match p.engine.header(&pk.id) {
             Some(h) => {
                 let aspects: Vec<String> = h.aspects.iter().map(|a| format!("{:?} {}", a.tid, a.ak.as_str())).collect();
-                let _ = writeln!(out, "#{i} {:?} peer {who} {:?} {:?} {:?}: {}", pk.id, h.kind, h.form, h.ts, aspects.join(", "));
+                let _ = writeln!(out, "#{i}{model} {:?} peer {who} {:?} {:?} {:?}: {}", pk.id, h.kind, h.form, h.ts, aspects.join(", "));
                 if h.links.purge.is_some() && h.purge.is_empty() {
                     let _ = writeln!(out, "  purges by link (unresolved)");
                 }
@@ -2443,16 +2465,29 @@ fn dump_order(played: &Played, order: &[usize]) {
             }
         }
     }
-    let _ = writeln!(out, "--- order {order:?}: reads as they change");
+    let _ = writeln!(out, "--- order {order:?}: reads and index entries as they change");
     let mut last = Shown::new();
+    let mut states: Vec<String> = vec!["absent".to_string(); played.packs.len()];
     let mut n = 0;
     deliver_with(played, order, None, None, None, &mut |p| {
         let step = order.get(n).map_or("end".to_string(), |i| format!("#{i}"));
         n += 1;
-        for (k, v) in shown(p, &played.things) {
-            if last.get(&k) != Some(&v) {
+        let now = shown(p, &played.things);
+        for (k, v) in &now {
+            if last.get(k) != Some(v) {
                 let _ = writeln!(out, "  after {step}: {} {} = {v}", k.0, k.1);
-                last.insert(k, v);
+            }
+        }
+        for k in last.keys().filter(|k| !now.contains_key(*k)) {
+            let _ = writeln!(out, "  after {step}: {} {} absent", k.0, k.1);
+        }
+        last = now;
+        let d = p.engine.index_digest();
+        for (i, pk) in played.packs.iter().enumerate() {
+            let st = commit_state(played, &p.engine, &d, &pk.id);
+            if st != states[i] {
+                let _ = writeln!(out, "  after {step}: index #{i} {st}");
+                states[i] = st;
             }
         }
     });
@@ -3053,34 +3088,135 @@ fn reference(played: &Played, held: &[usize], whole: bool, p: &mut Peer) -> Seen
     seen
 }
 
-/// Drops steps while the history still fails, pass after pass until a whole pass drops none (a
-/// removal redraws the seed's orders and held sets, so a step one pass kept may go in the next):
-/// a failing history no single step can leave. A `settled` history keeps its settling tail
-/// whole: one cut short settles nothing. With `OSIS_SHRINK_MATCH` set, a candidate fails only
-/// when its failure contains that text (a seed failing two ways keeps the one studied).
-fn shrink(threads: usize, seed: u64, mut steps: Vec<Step>, cfg: Cfg) -> (Vec<Step>, String) {
-    let pattern = std::env::var("OSIS_SHRINK_MATCH").ok();
-    let mut err = check_on(threads, seed, &steps, cfg).unwrap_err();
+/// Shrinks a failing history: chunks of steps dropped ddmin-style, halves first down to single
+/// steps, swept again while any drops (`testenv::shrink`, at most `SHRINK_CANDIDATES` candidates;
+/// a removal redraws the seed's orders and held sets, so a step one sweep kept may go in the
+/// next); a halving shortens every later candidate, which single-step passes reached only one
+/// step at a time. A `settled` history keeps its settling tail whole: one cut short settles
+/// nothing. A candidate fails only as the original did (`failure_class`: its check and what
+/// differs, numbers and lists aside), so the shrink cannot drift to another bug; another failure
+/// is printed once per kind. `OSIS_SHRINK_MATCH=<text>` keeps to failures containing the text
+/// instead, `OSIS_SHRINK_ANY=1` to any failure. A candidate's checks stop at its first failure
+/// (`SHRINKING`); the shrunk history is checked whole once more for the failure it reports.
+fn shrink(threads: usize, seed: u64, steps: Vec<Step>, cfg: Cfg) -> (Vec<Step>, String) {
+    use osis_base::testenv::{SHRINK_CANDIDATES, str_var, u64_var};
+    let first = check_on(threads, seed, &steps, cfg).unwrap_err();
+    let class = failure_class(&first);
+    let pattern = str_var("OSIS_SHRINK_MATCH");
+    let any = u64_var("OSIS_SHRINK_ANY").is_some_and(|n| n != 0);
+    let keeps = |e: &str| match &pattern {
+        Some(p) => e.contains(p.as_str()),
+        None => any || failure_class(e) == class,
+    };
+    eprintln!("seed {seed}: shrinking {} steps, keeping to {}", steps.len(), pattern.as_ref().map_or(if any { "any failure".to_string() } else { format!("failures of the kind {class:?}") }, |p| format!("failures containing {p:?}")));
     let tail = if cfg.settled { settled(Vec::new()).len() } else { 0 };
-    loop {
-        let before = steps.len();
-        let mut i = 0;
-        while i + tail < steps.len() {
-            let mut fewer = steps.clone();
-            fewer.remove(i);
-            match check_on(threads, seed, &fewer, cfg) {
-                Err(e) if pattern.as_ref().is_none_or(|p| e.contains(p.as_str())) => {
-                    steps = fewer;
-                    err = e;
+    let (head, kept) = steps.split_at(steps.len() - tail);
+    let mut others = BTreeSet::new();
+    let fails = |h: &[Step]| {
+        let all: Vec<Step> = h.iter().chain(kept).cloned().collect();
+        SHRINKING.set(true);
+        let r = check_on(threads, seed, &all, cfg);
+        SHRINKING.set(false);
+        match r {
+            Err(e) if keeps(&e) => true,
+            Err(e) => {
+                if others.insert(failure_class(&e)) {
+                    eprintln!("seed {seed}: shrink: a candidate of {} steps fails otherwise (not kept): {}", all.len(), e.lines().next().unwrap_or(""));
                 }
-                _ => i += 1,
+                false
+            }
+            Ok(_) => false,
+        }
+    };
+    let found = |h: &[Step], tried: u64| eprintln!("seed {seed}: shrink: {} steps fail after {tried} candidates", h.len() + tail);
+    let shrunk = osis_base::testenv::shrink(head.to_vec(), SHRINK_CANDIDATES, fails, |_| Vec::new(), found);
+    let cut = if shrunk.candidates >= SHRINK_CANDIDATES { " (budget spent: SHRINK_CANDIDATES)" } else { "" };
+    let out: Vec<Step> = shrunk.steps.into_iter().chain(kept.iter().cloned()).collect();
+    eprintln!("seed {seed}: shrunk {} -> {} steps in {} candidates{cut}", steps.len(), out.len(), shrunk.candidates);
+    let err = check_on(threads, seed, &out, cfg).expect_err("the shrunk history fails");
+    (out, err)
+}
+
+thread_local! {
+    /// A shrink's candidate is being checked on this thread: `walk` stops at its first failure.
+    static SHRINKING: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+}
+
+/// What kind of failure `err` is, for a shrink to keep to: its first line, every bracketed or
+/// parenthesized group as `…` and every word holding a digit as `#` (commit numbers, IDs, clocks,
+/// orders), without the order's preamble (`held … of # commits`, which order, `after # ingests`,
+/// `now`/`later`, `on the way to …`): the check that failed and what differed. A shrink redraws
+/// orders and held sets, so the same bug turns up under another preamble.
+fn failure_class(err: &str) -> String {
+    let line = err.lines().next().unwrap_or("");
+    let mut out = String::new();
+    let (mut depth, mut word) = (0usize, String::new());
+    let flush = |out: &mut String, word: &mut String| {
+        out.push_str(if word.chars().any(|c| c.is_ascii_digit()) { "#" } else { word });
+        word.clear();
+    };
+    for c in line.chars() {
+        match c {
+            '(' | '[' | '{' => {
+                flush(&mut out, &mut word);
+                if depth == 0 {
+                    out.push('…');
+                }
+                depth += 1;
+            }
+            ')' | ']' | '}' => depth = depth.saturating_sub(1),
+            _ if depth > 0 => {}
+            c if c.is_alphanumeric() || c == '_' => word.push(c),
+            c => {
+                flush(&mut out, &mut word);
+                out.push(c);
             }
         }
-        eprintln!("seed {seed}: shrink pass {before} -> {} steps", steps.len());
-        if steps.len() == before {
-            return (steps, err);
-        }
     }
+    flush(&mut out, &mut word);
+    let preamble = |seg: &str| seg.starts_with("held …") || seg.starts_with("held ") || seg.starts_with("on the way to") || seg.starts_with("order ") || seg.starts_with("after # ingests") || seg == "now" || seg == "later";
+    let segs: Vec<&str> = out.split(": ").skip_while(|seg| preamble(seg)).collect();
+    let rest = segs.join(": ");
+    rest.strip_prefix("now, ").or_else(|| rest.strip_prefix("later, ")).unwrap_or(&rest).to_string()
+}
+
+/// `steps` as Rust a scripted test compiles (`use Step::*;` in scope): `{:?}` with the boxes of
+/// `Aim` and `Old` and the paths of `Role` (whose variants `Sync` and `Write` are also steps') and
+/// `Twins` written out.
+fn rust_of(x: &impl std::fmt::Debug) -> String {
+    let text = format!("{x:?}");
+    let mut out = String::new();
+    let mut boxed = Vec::new();
+    let mut rest = text.as_str();
+    while let Some(c) = rest.chars().next() {
+        if c.is_alphabetic() {
+            let n = rest.find(|c: char| !c.is_alphanumeric() && c != '_').unwrap_or(rest.len());
+            let (word, after) = rest.split_at(n);
+            match word {
+                "Aim" | "Old" if after.starts_with('(') => {
+                    out.push_str(word);
+                    out.push_str("(Box::new(");
+                    boxed.push(true);
+                    rest = &after[1..];
+                    continue;
+                }
+                "Sync" | "Read" | "Write" | "Admin" if !after.starts_with(" {") => out.push_str("Role::"),
+                "First" | "Share" => out.push_str("Twins::"),
+                _ => {}
+            }
+            out.push_str(word);
+            rest = after;
+            continue;
+        }
+        match c {
+            '(' => boxed.push(false),
+            ')' if boxed.pop() == Some(true) => out.push(')'),
+            _ => {}
+        }
+        out.push(c);
+        rest = &rest[c.len_utf8()..];
+    }
+    if out.starts_with('[') { format!("vec!{out}") } else { out }
 }
 
 /// What a seed leans toward, by `seed % 8`: every feature is drawn in every history, each from its
@@ -3399,7 +3535,7 @@ fn held_set_decides_at(sizes: Vec<Size>) {
                 None => steps,
             };
             if std::env::var("OSIS_ORDER_STATS").is_ok() {
-                eprintln!("seed {seed} ({e:?}): vec!{steps:?}");
+                eprintln!("seed {seed} ({e:?}): {}", rust_of(&steps));
             }
             let r = check_on(threads, seed, &steps, cfg).map(|s| Seen { emphases: BTreeMap::from([(format!("{e:?}"), 1)]), ..s });
             let fail = r.as_ref().is_err().then(|| {
@@ -3408,7 +3544,7 @@ fn held_set_decides_at(sizes: Vec<Size>) {
                 let what = if shrunk { "shrunk" } else { "as made; OSIS_ORDER_SHRINK=1 shrinks it" };
                 // the failure's first line on the seed line: what tools/known_failures.txt patterns match
                 let (head, rest) = err.split_once('\n').unwrap_or((&err, ""));
-                let msg = format!("seed {seed}, {e:?} (replay: {}; {what}, for check({seed}, &h, {cfg:?})): {head}\nh = vec!{steps:?}\n{rest}", size.replay(seed));
+                let msg = format!("seed {seed}, {e:?} (replay: {}; {what}, for check({seed}, &h, {})): {head}\nlet h = {};\n{rest}", size.replay(seed), rust_of(&cfg), rust_of(&steps));
                 eprintln!("{msg}\n");
                 msg
             });
@@ -3448,6 +3584,23 @@ fn held_set_decides_at(sizes: Vec<Size>) {
 #[test]
 fn held_set_decides() {
     held_set_decides_at(quick());
+}
+
+// The shrink's harness pieces: a failure's kind ignores which order and held set found it and
+// every number and list, never the check or what differed; a printed history is the Rust that
+// built it.
+#[test]
+fn shrink_keeps_the_failures_kind_and_prints_rust() {
+    use Step::*;
+    let a = failure_class("held [0, 1, 2] of 31 commits (base 24), order #3 [2, 0, 1]: now: held-model differs: commit c0ffee (#91) on Tid(7a) t:reg.0: the node holds its body, a held right holder's snapshot covers it\nmodel input ...");
+    let b = failure_class("held [0, 2] of 12 commits (base 9): order #0 at an earlier clock Clock { at: 5 } [0, 2]: after 4 ingests at WallMs(17): held-model differs: commit beef12 (#7) on Tid(01) t:reg.0: the node holds its body, a held right holder's snapshot covers it");
+    assert_eq!(a, b);
+    assert_eq!(a, "held-model differs: commit # … on Tid… t:reg.#: the node holds its body, a held right holder's snapshot covers it");
+    assert_ne!(a, failure_class("held [0] of 3 commits (base 2), order #0 [0]: later: the permission index differs from its walk from scratch"));
+    assert_eq!(failure_class("on the way to Order(0, 1): panicked: receiving fails the node: Corrupt(\"x\")"), "panicked: receiving fails the node: Corrupt…");
+    let h = vec![Aim(Box::new(Edge { by: 0, t: 1, holder: 2, role: Some(Role::Write) })), Write { by: 1, t: 0, op: 3, k: 0, v: 2 }, Old(Box::new(Sync { from: 0, to: 1 })), TwoEdges { by: 0, a: 0, b: 1, holder: 2, role: Role::Sync }];
+    assert_eq!(rust_of(&h), "vec![Aim(Box::new(Edge { by: 0, t: 1, holder: 2, role: Some(Role::Write) })), Write { by: 1, t: 0, op: 3, k: 0, v: 2 }, Old(Box::new(Sync { from: 0, to: 1 })), TwoEdges { by: 0, a: 0, b: 1, holder: 2, role: Role::Sync }]");
+    assert!(rust_of(&ORDERS).contains("split: Twins::First(2)"));
 }
 
 // A delivery tree's failure on the way to its ends (here an ingest of a pack the history lacks)
