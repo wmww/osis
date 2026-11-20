@@ -7,7 +7,7 @@
 //! walk's first chained keys per edge (no invite grants: the walk does not report an invite
 //! grant's chained-ness, notes/evidence-derivation.md).
 use osis_base::{Ak, CommitId, PurgeBy, Role, Tid, Ts, WallMs};
-use osis_engine::evidence::{Config, CopyId, Evidence, Hop, Kind, Part, Write};
+use osis_engine::evidence::{Config, CopyId, Evidence, Gives, Hop, Kind, Need, Part, Write};
 use osis_perm::paths::{Commit, Content, Delta, DeltaClass, EdgeWrite, Key, Part as PPart, PartKind, Paths};
 use osis_perm::{Edge, Frontier, WriteId};
 use std::collections::{BTreeMap, BTreeSet};
@@ -137,7 +137,7 @@ impl Node {
                         let role = e.value.map(|v| v.role);
                         let wr = Write {
                             holder: e.holder,
-                            grant: role.is_some() && !leave,
+                            grant: role.filter(|_| !leave).map(Gives::role),
                             removal: role.is_none_or(|r| r < Role::Write) && !finalize,
                             gives_write: role.is_some_and(|r| r >= Role::Write),
                             gives_read: role.is_some_and(|r| r >= Role::Read) && !leave,
@@ -153,7 +153,14 @@ impl Node {
                     PartKind::Delta(_) => (Kind::Content, false),
                 };
                 let pos = if matches!(p.kind, PartKind::Delta(_)) { Key::start(c.ts) } else { Key { part: i as u32, ..start } };
-                let hops = Some(hs.iter().map(|&edge| Hop { edge, record: record(&edge) }).collect());
+                // what the part needs of each hop: write for content (admin for an admin-only
+                // aspect), write for a finalize, admin for any other edge-class part
+                let need = match &p.kind {
+                    PartKind::Delta(d) => Need::Role(d.needs),
+                    PartKind::Edge(e) if e.value.is_none() && e.frontier.is_none() && e.holder != *p.path.last().unwrap_or(&c.signer) => Need::Role(Role::Write),
+                    _ => Need::Role(Role::Admin),
+                };
+                let hops = Some(hs.iter().map(|&edge| Hop { edge, record: record(&edge), need }).collect());
                 by.entry(p.on).or_default().push(Part { kind, hops, pos, chained });
             }
             for (t, parts) in by {

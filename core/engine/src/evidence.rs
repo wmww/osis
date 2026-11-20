@@ -16,6 +16,7 @@
 //! record edges, from a sync ID's actor to the holders whose role changes travel under it. Record
 //! edges are an input of their own (`add_record`), standing for good.
 
+use osis_base::Role;
 use std::collections::{BTreeMap, BTreeSet};
 use std::fmt::Debug;
 use std::ops::Bound;
@@ -34,20 +35,59 @@ type Pending<C, T> = BTreeMap<T, BTreeMap<CopyId<C, T>, CopyId<C, T>>>;
 /// A part of a held copy: (copy, part index).
 type PartId<C, T> = (CopyId<C, T>, usize);
 
+/// What a part needs of one hop of its stated path, at least (spec/permissions.md §5.1 step 3, a
+/// part's least need): a role (write for content, admin for an edge write, write for a finalize,
+/// an invite grant's level on its path's hops but the last), or an invite (an invite grant's level
+/// on its path's last hop). A grant joins the hop for the part only giving it (notes/a2-spec
+/// README.md OPEN 16: a hop granted too little joins nothing, so the part waits).
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
+pub enum Need {
+    Role(Role),
+    Invite(Role),
+}
+
+impl Need {
+    const ALL: [Need; 8] = [Need::Role(Role::Sync), Need::Role(Role::Read), Need::Role(Role::Write), Need::Role(Role::Admin), Need::Invite(Role::Sync), Need::Invite(Role::Read), Need::Invite(Role::Write), Need::Invite(Role::Admin)];
+}
+
+/// What a grant gives a hop, `until` disregarded: its role, and the invite it gives (every invite
+/// for an admin grant, else its invite field at most its role; None: no invite).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Gives {
+    pub role: Role,
+    pub invite: Option<Role>,
+}
+
+impl Gives {
+    /// A grant of `role` carrying no invite (an admin grant gives every invite).
+    pub fn role(role: Role) -> Gives {
+        Gives { role, invite: (role == Role::Admin).then_some(Role::Admin) }
+    }
+    pub fn meets(&self, n: Need) -> bool {
+        match n {
+            Need::Role(l) => self.role >= l,
+            Need::Invite(l) => self.invite.is_some_and(|i| i >= l),
+        }
+    }
+}
+
 /// One edge of a stated path.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Hop<T> {
     pub edge: Edge<T>,
     /// A record edge (the mint admin's): no grant joins it, none needed.
     pub record: bool,
+    /// What the part needs of it.
+    pub need: Need,
 }
 
 /// An edge write's facts (its edge is (holder, the copy's thing)).
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Write<C, T> {
     pub holder: T,
-    /// It sets a role above none (no self-removal, no finalize): it can join a path.
-    pub grant: bool,
+    /// It sets a role above none (no self-removal, no finalize), giving this: it can join a
+    /// path's hop for a part needing no more.
+    pub grant: Option<Gives>,
     /// (reach) It gives below write at its own `ts`, and is no finalize: a self-removal and a
     /// grant of read have this shape, a demotion from admin to write has not. Such a write is a
     /// removal for reach only where it takes write away: ordered after a held chained write on
@@ -229,10 +269,11 @@ struct Ix<C, T, K> {
     on_thing: BTreeMap<T, BTreeSet<C>>,
     /// Copies with a chained write on the edge.
     taken_on: BTreeMap<Edge<T>, BTreeSet<CopyId<C, T>>>,
-    /// Chained grants on the edge, by key: the first decides which parts the edge joins.
-    grants: BTreeMap<Edge<T>, ByKey<C, T, K>>,
-    /// Parts whose known path uses the edge (no record edge), by `pos`.
-    resting: BTreeMap<Edge<T>, ByKey<C, T, K>>,
+    /// Chained grants on the edge meeting the need, by key: the first decides which parts needing
+    /// it the edge joins.
+    grants: BTreeMap<(Edge<T>, Need), ByKey<C, T, K>>,
+    /// Parts whose known path uses the edge (no record edge) with that need, by `pos`.
+    resting: BTreeMap<(Edge<T>, Need), ByKey<C, T, K>>,
     /// Copies with a chained write naming the holder.
     by_holder: BTreeMap<T, BTreeSet<CopyId<C, T>>>,
     /// Copies with a chained vouch keyed by the copy.
@@ -504,6 +545,13 @@ where
         if g.writes != self.ix.writes || g.reads != self.ix.reads || g.write_keys != self.ix.write_keys || g.removal_keys != self.ix.removal_keys || g.removals_on != self.ix.removals_on {
             return Err("a reach or keys-open graph does not hold exactly the chained parts and records".into());
         }
+        for (c, h) in &self.ix.copies {
+            for (i, (p, j)) in h.parts.iter().zip(&h.joined).enumerate() {
+                if *j != self.joined(p) {
+                    return Err(format!("copy {c:?} part {i}: joined {j}, computed {}", !j));
+                }
+            }
+        }
         for (sid, s) in &self.sids {
             // the same copies (each with the first reason found, which may differ)
             let scratch = self.from_scratch(sid).unwrap_or_default();
@@ -681,7 +729,7 @@ where
             }
             if let Some(hops) = &p.hops {
                 for h in hops.iter().filter(|h| !h.record) {
-                    self.ix.resting.entry(h.edge).or_default().entry(p.pos).or_default().insert((c, i));
+                    self.ix.resting.entry((h.edge, h.need)).or_default().entry(p.pos).or_default().insert((c, i));
                 }
             }
         }
@@ -737,7 +785,7 @@ where
         for (i, p) in h.parts.iter().enumerate() {
             if let Some(hops) = &p.hops {
                 for hp in hops.iter().filter(|hp| !hp.record) {
-                    remove_by_key(&mut self.ix.resting, &hp.edge, &p.pos, &(*c, i));
+                    remove_by_key(&mut self.ix.resting, &(hp.edge, hp.need), &p.pos, &(*c, i));
                 }
             }
         }
@@ -800,7 +848,7 @@ where
         }
         let pos = p.pos;
         for h in hops.iter().filter(|h| !h.record) {
-            self.ix.resting.entry(h.edge).or_default().entry(pos).or_default().insert((*c, i));
+            self.ix.resting.entry((h.edge, h.need)).or_default().entry(pos).or_default().insert((*c, i));
         }
         p.hops = Some(hops);
         let mut todo = Todo::default();
@@ -868,11 +916,13 @@ where
                         self.removal_on(c, todo);
                     }
                 }
-                if w.grant {
-                    let before = first(self.ix.grants.get(&e));
-                    self.ix.grants.entry(e).or_default().entry(p.pos).or_default().insert((*c, i));
-                    if before.is_none_or(|b| p.pos < b) {
-                        self.rejoin(&e, Some(p.pos), before, todo);
+                if let Some(g) = w.grant {
+                    for n in Need::ALL.into_iter().filter(|&n| g.meets(n)) {
+                        let before = first(self.ix.grants.get(&(e, n)));
+                        self.ix.grants.entry((e, n)).or_default().entry(p.pos).or_default().insert((*c, i));
+                        if before.is_none_or(|b| p.pos < b) {
+                            self.rejoin(&(e, n), Some(p.pos), before, todo);
+                        }
                     }
                 }
             }
@@ -945,12 +995,14 @@ where
                     remove_by_key(&mut self.ix.removal_keys, &e, &p.pos, &(*c, i));
                     remove_from(&mut self.ix.removals_on, &c.1, &(*c, i));
                 }
-                if w.grant {
-                    let before = first(self.ix.grants.get(&e));
-                    remove_by_key(&mut self.ix.grants, &e, &p.pos, &(*c, i));
-                    let after = first(self.ix.grants.get(&e));
-                    if after != before {
-                        self.unjoin(&e, before, after, todo);
+                if let Some(g) = w.grant {
+                    for n in Need::ALL.into_iter().filter(|&n| g.meets(n)) {
+                        let before = first(self.ix.grants.get(&(e, n)));
+                        remove_by_key(&mut self.ix.grants, &(e, n), &p.pos, &(*c, i));
+                        let after = first(self.ix.grants.get(&(e, n)));
+                        if after != before {
+                            self.unjoin(&(e, n), before, after, todo);
+                        }
                     }
                 }
             }
@@ -1218,9 +1270,9 @@ where
         self.ix.copies.get(c).and_then(|h| h.parts.get(i)).cloned()
     }
 
-    /// The first chained grant on `e` moved earlier, from `old` to `new`: the parts resting on
-    /// `e` ordered after `new` and not after `old` may be joined now.
-    fn rejoin(&mut self, e: &Edge<T>, new: Option<K>, old: Option<K>, todo: &mut Todo<C, T>) {
+    /// The first chained grant on `e` meeting a need moved earlier, from `old` to `new`: the parts
+    /// resting on `e` with that need ordered after `new` and not after `old` may be joined now.
+    fn rejoin(&mut self, e: &(Edge<T>, Need), new: Option<K>, old: Option<K>, todo: &mut Todo<C, T>) {
         let Some(new) = new else { return };
         let hi = old.map_or(Bound::Unbounded, Bound::Included);
         let parts: Vec<PartId<C, T>> = self.ix.resting.get(e).map(|r| r.range((Bound::Excluded(new), hi)).flat_map(|(_, s)| s.iter().copied()).collect()).unwrap_or_default();
@@ -1229,9 +1281,10 @@ where
         }
     }
 
-    /// The first chained grant on `e` moved later or went, from `old` to `new`: the parts resting
-    /// on `e` ordered after `old` and not after `new` are no longer joined.
-    fn unjoin(&mut self, e: &Edge<T>, old: Option<K>, new: Option<K>, todo: &mut Todo<C, T>) {
+    /// The first chained grant on `e` meeting a need moved later or went, from `old` to `new`: the
+    /// parts resting on `e` with that need ordered after `old` and not after `new` are no longer
+    /// joined.
+    fn unjoin(&mut self, e: &(Edge<T>, Need), old: Option<K>, new: Option<K>, todo: &mut Todo<C, T>) {
         let Some(old) = old else { return };
         let hi = new.map_or(Bound::Unbounded, Bound::Included);
         let parts: Vec<PartId<C, T>> = self.ix.resting.get(e).map(|r| r.range((Bound::Excluded(old), hi)).flat_map(|(_, s)| s.iter().copied()).collect()).unwrap_or_default();
@@ -1272,9 +1325,9 @@ where
     }
 
     /// A part's path is joined: each edge that is no record edge holds a held chained grant
-    /// ordered before the part.
+    /// giving what the part needs there, ordered before the part.
     fn joined(&self, p: &Part<C, T, K>) -> bool {
-        p.hops.as_ref().is_some_and(|hops| hops.iter().filter(|h| !h.record).all(|h| first(self.ix.grants.get(&h.edge)).is_some_and(|f| f < p.pos)))
+        p.hops.as_ref().is_some_and(|hops| hops.iter().filter(|h| !h.record).all(|h| first(self.ix.grants.get(&(h.edge, h.need))).is_some_and(|f| f < p.pos)))
     }
 
     /// The edges body `c` brings: each joined part's path edges, each edge write's remaining

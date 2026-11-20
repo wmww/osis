@@ -8,7 +8,7 @@
 use super::*;
 use held_model::evidence::names::*;
 use held_model::evidence::State;
-use osis_engine::evidence::Reason;
+use osis_engine::evidence::{Gives, Need, Reason};
 
 /// The derivation under `cfg` over a held set of `w`'s end state under brief 3's delivery
 /// (vouches counting).
@@ -190,8 +190,8 @@ fn open14_keys_open_travel_carries_a_removal_to_the_things_reading_through_it() 
 fn a_removal_on_two_things_reaches_by_each_copy_spec_permissions_4() {
     type E = Evidence<u32, Thing, u32>;
     const B: Thing = 20;
-    let w = |holder: Thing, grant: bool| Kind::Write(Write { holder, grant, removal: !grant, gives_write: grant, gives_read: grant, relies: None, creation: None });
-    let rec = |a: Thing, b: Thing| Hop { edge: (a, b), record: true };
+    let w = |holder: Thing, grant: bool| Kind::Write(Write { holder, grant: grant.then(|| Gives::role(osis_base::Role::Write)), removal: !grant, gives_write: grant, gives_read: grant, relies: None, creation: None });
+    let rec = |a: Thing, b: Thing| Hop { edge: (a, b), record: true, need: Need::Role(osis_base::Role::Write) };
     let mut ev = E::new(BRIEF3);
     ev.add_sid(D, D);
     ev.join(&D, D);
@@ -400,8 +400,8 @@ fn a_record_edges_removal_reaches_with_no_witness_spec_permissions_4() {
 #[test]
 fn forgetting_a_ways_last_edge_held_as_a_body_takes_the_reach_away_spec_permissions_4() {
     type E = Evidence<u32, Thing, u32>;
-    let w = |holder: Thing, grant: bool| Kind::Write(Write { holder, grant, removal: !grant, gives_write: grant, gives_read: grant, relies: None, creation: None });
-    let rec = |a: Thing, b: Thing| Hop { edge: (a, b), record: true };
+    let w = |holder: Thing, grant: bool| Kind::Write(Write { holder, grant: grant.then(|| Gives::role(osis_base::Role::Write)), removal: !grant, gives_write: grant, gives_read: grant, relies: None, creation: None });
+    let rec = |a: Thing, b: Thing| Hop { edge: (a, b), record: true, need: Need::Role(osis_base::Role::Write) };
     let mut ev = E::new(BRIEF3);
     ev.add_sid(D, D);
     ev.join(&D, D);

@@ -7,8 +7,8 @@
 //! `Rule::fixed`) and on (brief 3's, `Stage::ReachNoErrand`: notes/a2-spec/README.md OPEN 14),
 //! vouches counting and not. Hand worlds per model test naming a rule or finding (reach's in
 //! `reach.rs`); the derivation's own (a waiting path entry); count tests.
-use held_model::evidence::{self as hm, Open10, Rule, Shape, Stage, World};
-use osis_engine::evidence::{Config, CopyId, Evidence, Hop, Kind, Part, Write};
+use held_model::evidence::{self as hm, Join, Open10, Rule, Shape, Stage, World};
+use osis_engine::evidence::{Config, CopyId, Evidence, Gives, Hop, Kind, Need, Part, Write};
 use roles_model::paths::{self, Id, Key, Rules, Set, Thing, Things, Vouch};
 use roles_model::Role;
 use std::collections::{BTreeMap, BTreeSet};
@@ -57,9 +57,9 @@ fn part(w: &World, ch: &Set, i: Id) -> Part<Id, Thing, Key> {
     let pw = &w.w;
     let c = &pw.commits[i];
     let kind = match &c.kind {
-        paths::Kind::Edge { holder, role, relies, .. } => Kind::Write(Write {
+        paths::Kind::Edge { holder, role, relies, invite, .. } => Kind::Write(Write {
             holder: *holder,
-            grant: w.grant(i),
+            grant: w.grant(i).then(|| Gives { role: level(*role), invite: (*role == Role::Admin || *invite > Role::None).then(|| level(if *role == Role::Admin { Role::Admin } else { (*invite).min(*role) })) }),
             removal: w.removes(i).is_some(),
             gives_write: *role >= Role::Write,
             gives_read: *role >= Role::Read && !pw.leave(i),
@@ -69,9 +69,31 @@ fn part(w: &World, ch: &Set, i: Id) -> Part<Id, Thing, Key> {
         paths::Kind::Vouch { removal, .. } => Kind::Vouch { keyed: (pw.cid(*removal), pw.commits[*removal].on) },
         _ => Kind::Content,
     };
-    let hops = pw.hops(i).iter().map(|&edge| Hop { edge, record: pw.records.contains(&edge) }).collect();
+    let hops = pw.hops(i).iter().map(|&edge| Hop { edge, record: pw.records.contains(&edge), need: need(w, i, edge) }).collect();
     let pos = if pw.edge_class(i) { pw.key(i) } else { pw.pos(i) };
     Part { kind, hops: Some(hops), pos, chained: ch.contains(&i) }
+}
+
+/// The engine's role for a model role above none.
+fn level(r: Role) -> osis_base::Role {
+    match r {
+        Role::None => panic!("no grant gives none"),
+        Role::Read => osis_base::Role::Read,
+        Role::Write => osis_base::Role::Write,
+        Role::Admin => osis_base::Role::Admin,
+    }
+}
+
+/// What part `i` needs of hop `e` as the model's `Join` reads it: under `Join::Needed` its least
+/// need (`World::need`), else any grant (every grant gives read).
+fn need(w: &World, i: Id, e: paths::Edge) -> Need {
+    if w.join != Join::Needed {
+        return Need::Role(osis_base::Role::Read);
+    }
+    match w.need(i, e) {
+        (r, true) => Need::Invite(level(r)),
+        (r, false) => Need::Role(level(r)),
+    }
 }
 
 /// The held copies of `h` with their held parts in id order.

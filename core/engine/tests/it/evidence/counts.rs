@@ -1,7 +1,7 @@
 //! Count tests (spec/permissions.md §4; notes/evidence-derivation.md, Incremental): the work each change does, at n and
 //! 10n, on the derivation alone. K writes D along a path of k holder things H1..Hk outside D's
 //! unit (X mints them and D; X grants K on H1, each Hj on the next, Hk on D).
-use osis_engine::evidence::{Config, Counts, Evidence, Hop, Kind, Part, Write};
+use osis_engine::evidence::{Config, Counts, Evidence, Gives, Hop, Kind, Need, Part, Write};
 
 type E = Evidence<u32, u16, u32>;
 const X: u16 = 1;
@@ -11,13 +11,13 @@ const D: u16 = 100;
 const D2: u16 = 101;
 
 fn rec(a: u16, b: u16) -> Hop<u16> {
-    Hop { edge: (a, b), record: true }
+    Hop { edge: (a, b), record: true, need: Need::Role(osis_base::Role::Write) }
 }
 fn hop(a: u16, b: u16) -> Hop<u16> {
-    Hop { edge: (a, b), record: false }
+    Hop { edge: (a, b), record: false, need: Need::Role(osis_base::Role::Write) }
 }
 fn write(holder: u16) -> Kind<u32, u16> {
-    Kind::Write(Write { holder, grant: true, removal: false, gives_write: true, gives_read: true, relies: None, creation: None })
+    Kind::Write(Write { holder, grant: Some(Gives::role(osis_base::Role::Write)), removal: false, gives_write: true, gives_read: true, relies: None, creation: None })
 }
 
 fn minus(a: Counts, b: Counts) -> Counts {
@@ -288,7 +288,7 @@ impl Reach {
     fn edge(&mut self, holder: u16, on: u16, grant: bool, chained: bool) -> (u32, u16) {
         let c = (self.next, on);
         self.next += 1;
-        let kind = Kind::Write(Write { holder, grant, removal: !grant, gives_write: grant, gives_read: grant, relies: None, creation: None });
+        let kind = Kind::Write(Write { holder, grant: grant.then(|| Gives::role(osis_base::Role::Write)), removal: !grant, gives_write: grant, gives_read: grant, relies: None, creation: None });
         self.ev.add(c, vec![Part { kind, hops: Some(vec![rec(X, on)]), pos: c.0, chained }]);
         c
     }
@@ -367,7 +367,7 @@ fn content_junk_and_other_role_changes_do_no_reach_work() {
     let finalize = w.work(|w| {
         let c = (w.next, A);
         w.next += 1;
-        let kind = Kind::Write(Write { holder: Q, grant: false, removal: false, gives_write: false, gives_read: false, relies: None, creation: None });
+        let kind = Kind::Write(Write { holder: Q, grant: None, removal: false, gives_write: false, gives_read: false, relies: None, creation: None });
         w.ev.add(c, vec![Part { kind, hops: Some(vec![rec(X, A)]), pos: c.0, chained: true }]);
     });
     let vouch = w.work(|w| {
@@ -516,14 +516,14 @@ fn an_organisations_documents_each_carry_every_removal_above_them() {
         }
         for j in 1..=r {
             let creation = Some(grants[j as usize]);
-            let kind = Kind::Write(Write { holder: 2000 + j, grant: false, removal: true, gives_write: false, gives_read: false, relies: None, creation });
+            let kind = Kind::Write(Write { holder: 2000 + j, grant: None, removal: true, gives_write: false, gives_read: false, relies: None, creation });
             add(&mut ev, O, kind, vec![rec(X, O)]);
         }
         for j in 0..x {
             let h = 3000 + j;
-            let read = Kind::Write(Write { holder: h, grant: true, removal: true, gives_write: false, gives_read: true, relies: None, creation: None });
+            let read = Kind::Write(Write { holder: h, grant: Some(Gives::role(osis_base::Role::Read)), removal: true, gives_write: false, gives_read: true, relies: None, creation: None });
             let g = add(&mut ev, O, read, vec![rec(X, O)]);
-            let kind = Kind::Write(Write { holder: h, grant: false, removal: true, gives_write: false, gives_read: false, relies: None, creation: Some(g) });
+            let kind = Kind::Write(Write { holder: h, grant: None, removal: true, gives_write: false, gives_read: false, relies: None, creation: Some(g) });
             add(&mut ev, O, kind, vec![rec(X, O)]);
         }
         ev.check().unwrap();

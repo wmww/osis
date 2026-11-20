@@ -80,6 +80,41 @@ fn gaps_a_split_commit_is_judged_per_part_by_each_unit() {
     assert_eq!(rd(R)[&ids[1]], Verdict::Valid);
 }
 
+/// A list entry names its part on its leaf's thing alone (finding 24; `wide` seed 14204407701,
+/// split, late and mint, shrunk): Z writes one commit in the split form, a part on D through
+/// [A, O] and a part on A directly; X removes Z from A listing the commit in D's leaf only (it
+/// lists what it chooses: nothing checks a list). A's reader holds no leaf of D (no edge write on
+/// D under A where keys-open travel is off) and judges Z's part on A unlisted (invalid). Read
+/// commit-wide (the control: roles-model `paths` names every part of a listed commit, whatever
+/// leaf lists it) the node holding everything, seeing D's leaf, keeps it (valid): P1 fails under
+/// A3 and the actor seed. Read per leaf (`own_leaf`), both drop it, at every stage.
+#[test]
+fn gaps_a_list_entry_names_its_part_on_its_leafs_thing_alone() {
+    let pw = paths::World::new(&[(X, A), (W, O), (Y, D)]);
+    let mut w = World::new(pw, &[A, O, D]);
+    let (x, wn, y, z) = (w.node(true, &[A]), w.node(true, &[O]), w.node(true, &[D]), w.node(true, &[A, D]));
+    w.write(x, |p| p.edge(X, 1, &[], A, Z, Role::Write, &[]));
+    w.write(wn, |p| p.edge(W, 1, &[], O, A, Role::Write, &[]));
+    w.write(y, |p| p.edge(Y, 1, &[], D, O, Role::Write, &[]));
+    let ids = w.write_parts(z, |p| p.split(Z, 2, Z, &[(&[A, O], D), (&[], A)]));
+    w.write(x, |p| p.edge(X, 3, &[], A, Z, Role::None, &[ids[0]]));
+    for own_leaf in [true, false] {
+        w.own_leaf = own_leaf;
+        for s in Stage::ALL {
+            let f = gap_fails(&w, s, true, &[]);
+            let fails = f.iter().any(|f| f.prop == "P1" && f.sid == A && f.id == ids[1] && f.reader == Some(Verdict::Invalid) && f.full == Some(Verdict::Valid));
+            assert_eq!(fails, !own_leaf && matches!(s, Stage::A3 | Stage::A2Actor), "own_leaf {own_leaf} {}: {f:?}", s.name());
+            assert!(f.iter().all(|f| f.prop.starts_with("P1") || f.prop == "P8-act"), "own_leaf {own_leaf} {}: {f:?}", s.name());
+        }
+    }
+    let mut wl = w.clone();
+    wl.own_leaf = true;
+    let rule = Stage::A3.set(&mut wl, Rule::fixed());
+    let st = wl.run(&rule, |_| {});
+    let full = wl.verdicts(&wl.full(&st, &Set::new()), &Set::from([ids[0], ids[1]]));
+    assert_eq!((full[&ids[0]], full[&ids[1]]), (Verdict::Valid, Verdict::Invalid));
+}
+
 /// A path entry opening late: K writes D along [A]; its entry opens only when Y's key commit on D
 /// arrives. Until then D's reader and the node holding everything pend on it and D's evidence
 /// takes nothing of its path (no copy of K's grant); once it opens the grant is a copy and the
@@ -278,10 +313,12 @@ fn gaps_show() {
 
 /// Finding 20 (`wide` seed 14204407699, split and late, shrunk): K writes O through [A], where A holds
 /// only read on O, after X removed K from A; nobody honest syncs A and O. The write is invalid
-/// everywhere (no write reaches O through A), with or without the removal; the path is joined (a
-/// grant joins (A, O)), so O's evidence closure over everything holds the removal, which no rule
-/// delivers to O (no write path leads from A into O, so neither reach nor the errand goes there).
-/// P3 owed it all the same; it is owed where it can move a verdict: where its reach is held. Once
+/// everywhere (no write reaches O through A), with or without the removal. Where any grant joins a
+/// hop (J1) the path is joined, so O's evidence closure over everything holds the removal, which no
+/// rule delivers to O (no write path leads from A into O, so neither reach nor the errand goes
+/// there); P3 owes it where it can move a verdict: where its reach is held. Where only a grant
+/// giving what the write needs joins (J2, finding 23) the closure stops at the read hop and the
+/// write waits everywhere. Once
 /// W raises A to write on O (backdated, after the removal), reach holds and A3's standing errand
 /// carries it, while every stage without the errand misses it (finding 17's class, today too).
 #[test]
@@ -299,17 +336,23 @@ fn gaps_a_removal_on_a_path_through_a_read_hop_is_owed_once_it_has_reach() {
         }
         (w, r, c)
     };
-    let (w, r, c) = base(false);
-    let mut wr = w.clone();
-    let rule = Stage::A3.set(&mut wr, Rule::fixed());
-    let st = wr.run(&rule, |_| {});
-    let all = wr.full(&st, &Set::new()).v.held;
-    // the old P3: the full closure of O's bodies holds the removal, O's reader does not require it
-    assert!(wr.closure(&rule, &wr.owed_bodies(&st, O), &all).contains(&r));
-    assert!(!wr.req(&rule, O, &st.units, &st.entries[&O]).contains(&r));
-    assert_eq!(wr.verdicts(&wr.full(&st, &Set::new()), &Set::from([c]))[&c], Verdict::Invalid);
-    for s in Stage::ALL {
-        assert_eq!(gap_fails(&w, s, true, &[]), vec![], "{}", s.name());
+    let (mut w, r, c) = base(false);
+    for join in [Join::Any, Join::Needed] {
+        w.join = join;
+        let mut wr = w.clone();
+        let rule = Stage::A3.set(&mut wr, Rule::fixed());
+        let st = wr.run(&rule, |_| {});
+        let all = wr.full(&st, &Set::new()).v.held;
+        // J1: the full closure of O's bodies holds the removal (a read grant joins (A, O)), O's
+        // reader does not require it, the write is invalid; J2: the read hop joins nothing for a
+        // write, so the closure stops there and the write waits everywhere
+        let any = join == Join::Any;
+        assert_eq!(wr.closure(&rule, &wr.owed_bodies(&st, O), &all).contains(&r), any);
+        assert!(!wr.req(&rule, O, &st.units, &st.entries[&O]).contains(&r));
+        assert_eq!(wr.verdicts(&wr.full(&st, &Set::new()), &Set::from([c]))[&c], if any { Verdict::Invalid } else { Verdict::Pending });
+        for s in Stage::ALL {
+            assert_eq!(gap_fails(&w, s, true, &[]), vec![], "{} {}", join.name(), s.name());
+        }
     }
     let (w, r, _) = base(true);
     for s in Stage::ALL {
@@ -322,11 +365,11 @@ fn gaps_a_removal_on_a_path_through_a_read_hop_is_owed_once_it_has_reach() {
 /// only read on O (W's grant), O write on R; X, W and Y each sync their own thing alone and the
 /// thief logs no grant giving below write. The node holding everything judges the write invalid
 /// (no write reaches R through a read hop); R's reader, lacking W's read grant, holds no chained
-/// grant on (A, O) and pends. Every stage without the errand fails P1 so, today's included; A3
-/// held only while every edge write giving below write reached (`Removals::Any`): W's errand
-/// carried its own fresh read grant to R as a removal. Pinned: the fix proposed (README OPEN 16)
-/// is joined-ness and pending at the role a part needs on each hop, so the node holding
-/// everything pends too.
+/// grant on (A, O). Under J1 (a hop joined by any chained grant) it pends: P1 fails at every
+/// stage, today's included. Under J2 (joined and pending by a grant giving the role the part
+/// needs) the node holding everything pends too; under J3 (a hop no grant joins judged invalid)
+/// the reader judges it invalid. Either holds P1 at every stage; J3 leaves X's grant to K, which
+/// the thief logs, held under R and required by no reader (P4).
 #[test]
 fn gaps_a_write_through_a_read_hop_pends_at_a_reader_lacking_the_read_grant() {
     let pw = paths::World::new(&[(X, A), (W, O), (Y, R)]);
@@ -336,11 +379,71 @@ fn gaps_a_write_through_a_read_hop_pends_at_a_reader_lacking_the_read_grant() {
     w.write(wn, |p| p.edge(W, 1, &[], O, A, Role::Read, &[]));
     w.write(y, |p| p.edge(Y, 1, &[], R, O, Role::Write, &[]));
     let c = w.write(k, |p| p.content(K, 5, &[A, O], R));
-    for (removals, a3_holds) in [(Removals::TakesWrite, false), (Removals::Any, true)] {
+    for join in Join::ALL {
+        w.join = join;
         for s in Stage::ALL {
-            let f = crate::spec_reach::stage_fails_with(&w, s, true, |r| Rule { removals, ..r });
+            let f = crate::spec_reach::stage_fails(&w, s, true);
             let pends = f.iter().any(|f| f.prop == "P1" && f.sid == R && f.id == c && f.reader == Some(Verdict::Pending) && f.full == Some(Verdict::Invalid));
-            assert_eq!(pends, !(s == Stage::A3 && a3_holds), "{removals:?} {}: {f:?}", s.name());
+            assert_eq!(pends, join == Join::Any, "{} {}: {f:?}", join.name(), s.name());
+            assert!(f.iter().all(|f| matches!(f.prop, "P1" | "P4-held")), "{} {}: {f:?}", join.name(), s.name());
+            // the thief logs X's grant to K under R, which R's reader requires only where it
+            // joins the path: never under J1 or J3 (no grant on (A, O) held), and under J2 the
+            // thief's closure takes it only through today's any-path chains
+            let held = f.iter().any(|f| f.prop == "P4-held");
+            assert_eq!(held, join != Join::Needed || s == Stage::Today, "{} {}: {f:?}", join.name(), s.name());
+        }
+    }
+}
+
+/// The generator reaches finding 23's shape at default size (`wide`'s read-hop move): among the
+/// first `wide` worlds (no options) some hold the thief's write through a read hop that a reader
+/// without the read grant pends on while the node holding everything judges it invalid, under A3
+/// with J1 (a hop joined by any grant); with J2 A3 holds each of them. (The sampled searches run
+/// every world under J2.)
+#[test]
+fn gaps_wide_worlds_reach_the_read_hop() {
+    let mut hit = vec![];
+    for seed in 0..16 {
+        let mut w = wide(seed, 16, Wide::default());
+        w.join = Join::Any;
+        if crate::spec_reach::stage_fails(&w, Stage::A3, true).iter().any(|f| f.prop == "P1" && f.reader == Some(Verdict::Pending) && f.full == Some(Verdict::Invalid)) {
+            hit.push(seed);
+            w.join = Join::Needed;
+            assert_eq!(crate::spec_reach::stage_fails(&w, Stage::A3, true), vec![], "seed {seed}");
+        }
+    }
+    assert!(!hit.is_empty(), "the generator no longer reaches finding 23's read hop in 16 worlds: raise its rate");
+}
+
+/// Finding 28 (`wide` seed 14204407714, split, shrunk): X removes K and Q from A in one commit; Q
+/// (its node honest, syncing A and D) then writes D through [A], A holding only read on D; the
+/// stolen K writes R through [A]. Y syncs D and R; nobody honest syncs A and R. Without the
+/// errand the removal reaches R only by riding Q's write: where a read hop joins a path (J1, J4's
+/// closure, today's any-path chains), D's evidence takes the removal's copy (Q's removal is in it),
+/// Y holds it and R's reader requires it; under J2 Q's write through the read hop brings nothing
+/// and R's reader shows K's write valid (brief 3's rule less safe than today there). A3's errand
+/// carries it under every rule.
+#[test]
+fn gaps_a_removal_rides_a_write_through_a_read_hop_only_where_read_joins() {
+    let pw = paths::World::new(&[(X, A), (Y, D), (Y, R)]);
+    let mut w = World::new(pw, &[A, D, R]);
+    let (x, y, q, k) = (w.node(true, &[A]), w.node(true, &[D, R]), w.node(true, &[A, D]), w.node(false, &[]));
+    w.write(x, |p| p.edge(X, 1, &[], A, K, Role::Admin, &[]));
+    w.write(x, |p| p.edge(X, 1, &[], A, Q, Role::Write, &[]));
+    w.write(y, |p| p.edge(Y, 1, &[], D, A, Role::Read, &[]));
+    w.write(y, |p| p.edge(Y, 1, &[], R, A, Role::Write, &[]));
+    w.write_parts(x, |p| p.commit(X, 3, &[], A, vec![paths::Kind::set(K, Role::None), paths::Kind::set(Q, Role::None)]));
+    w.write(q, |p| p.content(Q, 4, &[A], D));
+    let c = w.write(k, |p| p.content(K, 5, &[A], R));
+    for join in Join::ALL {
+        w.join = join;
+        for s in Stage::ALL {
+            let f = gap_fails(&w, s, true, &[]);
+            let shows = f.iter().any(|f| f.prop == "P1" && f.sid == R && f.id == c && f.reader == Some(Verdict::Valid) && f.full == Some(Verdict::Invalid));
+            assert_eq!(shows, join == Join::Needed && matches!(s, Stage::ReachNoErrand | Stage::A2 | Stage::A2Actor), "{} {}: {f:?}", join.name(), s.name());
+            if matches!(s, Stage::A3 | Stage::Today) {
+                assert_eq!(f, vec![], "{} {}", join.name(), s.name());
+            }
         }
     }
 }

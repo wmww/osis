@@ -4,7 +4,7 @@
 use super::*;
 use held_model::evidence::names::*;
 use held_model::evidence::State;
-use osis_engine::evidence::Reason;
+use osis_engine::evidence::{Gives, Need, Reason};
 use roles_model::paths::Kind as PKind;
 
 /// The derivation over `held` of the end state of `w`'s run under (iv).
@@ -318,9 +318,9 @@ fn a_body_whose_path_waits_brings_nothing_until_it_opens_spec_permissions_4() {
     type Copies32 = BTreeSet<CopyId<u32, Thing>>;
     ev.add_sid(D, D);
     ev.join(&D, D);
-    let write = |holder: Thing| Kind::Write(Write { holder, grant: true, removal: false, gives_write: true, gives_read: true, relies: None, creation: None });
-    let rec = |a: Thing, b: Thing| Hop { edge: (a, b), record: true };
-    let hop = |a: Thing, b: Thing| Hop { edge: (a, b), record: false };
+    let write = |holder: Thing| Kind::Write(Write { holder, grant: Some(Gives::role(osis_base::Role::Write)), removal: false, gives_write: true, gives_read: true, relies: None, creation: None });
+    let rec = |a: Thing, b: Thing| Hop { edge: (a, b), record: true, need: Need::Role(osis_base::Role::Write) };
+    let hop = |a: Thing, b: Thing| Hop { edge: (a, b), record: false, need: Need::Role(osis_base::Role::Write) };
     // Y grants A write on D (a body); K writes D along [A], its path waiting; X grants K on A
     // before the write
     ev.add((1, D), vec![Part { kind: write(A), hops: Some(vec![rec(Y, D)]), pos: 1, chained: true }]);
@@ -355,9 +355,9 @@ fn the_first_grant_joins_and_a_forgotten_member_leaves_spec_permissions_4() {
         ev.check().unwrap();
         inc
     };
-    let write = |holder: Thing| Kind::Write(Write { holder, grant: true, removal: false, gives_write: true, gives_read: true, relies: None, creation: None });
-    let rec = |a: Thing, b: Thing| Hop { edge: (a, b), record: true };
-    let hop = |a: Thing, b: Thing| Hop { edge: (a, b), record: false };
+    let write = |holder: Thing| Kind::Write(Write { holder, grant: Some(Gives::role(osis_base::Role::Write)), removal: false, gives_write: true, gives_read: true, relies: None, creation: None });
+    let rec = |a: Thing, b: Thing| Hop { edge: (a, b), record: true, need: Need::Role(osis_base::Role::Write) };
+    let hop = |a: Thing, b: Thing| Hop { edge: (a, b), record: false, need: Need::Role(osis_base::Role::Write) };
     let mut ev = E::new(Config { vouches: true, reach: true, keys_open: false });
     ev.add_sid(D, D);
     ev.join(&D, D);
@@ -376,8 +376,8 @@ fn the_first_grant_joins_and_a_forgotten_member_leaves_spec_permissions_4() {
 #[test]
 fn a_removal_by_its_reach_is_a_seed_only_with_the_switch_on_spec_permissions_4() {
     type E = Evidence<u32, Thing, u32>;
-    let rec = |a: Thing, b: Thing| Hop { edge: (a, b), record: true };
-    let w = |holder: Thing, grant: bool| Kind::Write(Write { holder, grant, removal: !grant, gives_write: grant, gives_read: grant, relies: None, creation: None });
+    let rec = |a: Thing, b: Thing| Hop { edge: (a, b), record: true, need: Need::Role(osis_base::Role::Write) };
+    let w = |holder: Thing, grant: bool| Kind::Write(Write { holder, grant: grant.then(|| Gives::role(osis_base::Role::Write)), removal: !grant, gives_write: grant, gives_read: grant, relies: None, creation: None });
     for reach in [false, true] {
         let mut ev = E::new(Config { vouches: true, reach, keys_open: false });
         ev.add_sid(D, D);
@@ -396,4 +396,25 @@ fn a_removal_by_its_reach_is_a_seed_only_with_the_switch_on_spec_permissions_4()
         ev.check().unwrap();
         assert!(ev.required(&D).unwrap().is_empty());
     }
+}
+
+/// Finding 23 (held-model `gaps_a_write_through_a_read_hop_pends_at_a_reader_lacking_the_read_grant`):
+/// the stolen K writes R through [A, O], A holding only read on O. A hop joins a part only by a
+/// grant giving what the part needs there (write for content), so at a node holding everything
+/// the path is not joined and R's evidence takes nothing of it: no copy of X's grant to K, nor of
+/// W's read grant. Read as joined by any grant, both would be copies.
+#[test]
+fn f23_a_read_hop_joins_no_write_spec_permissions_4() {
+    let pw = paths::World::new(&[(X, A), (W, O), (Y, R)]);
+    let mut w = World::new(pw, &[A, O, R]);
+    let (x, wn, y, k) = (w.node(true, &[A]), w.node(true, &[O]), w.node(true, &[R]), w.node(false, &[]));
+    let gk = w.write(x, |p| p.edge(X, 1, &[], A, K, Role::Write, &[]));
+    let ga = w.write(wn, |p| p.edge(W, 1, &[], O, A, Role::Read, &[]));
+    w.write(y, |p| p.edge(Y, 1, &[], R, O, Role::Write, &[]));
+    w.write(k, |p| p.content(K, 5, &[A, O], R));
+    w.join = Join::Needed;
+    assert_agrees("f23", &w);
+    let (d, _) = at_end(&w, true, |st| st.written.clone());
+    let req = d.ev.required(&R).cloned().unwrap_or_default();
+    assert!(!req.contains_key(&(gk, A)) && !req.contains_key(&(ga, O)), "{req:?}");
 }

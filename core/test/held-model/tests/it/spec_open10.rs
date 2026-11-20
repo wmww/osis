@@ -127,7 +127,9 @@ fn f13_a_path_set_only_by_junk_waits_at_the_reader_where_the_draft_refuses() {
     let full = |w: &World| w.verdicts(&w.full(&st, &Set::new()), &Set::from([c, junk]));
     assert_eq!(full(&w)[&c], Verdict::Invalid);
     assert_eq!(full(&wg)[&c], Verdict::Pending);
-    assert_eq!(full(&wg)[&junk], Verdict::Invalid);
+    // the junk itself (K, a writer of A, granting on A): refused where any grant joins (K, A), and
+    // waiting where only a grant giving what it needs (admin) does (finding 23, J2)
+    assert_eq!(full(&wg)[&junk], if wg.join == Join::Needed { Verdict::Pending } else { Verdict::Invalid });
 }
 
 const M1: Thing = 30;
