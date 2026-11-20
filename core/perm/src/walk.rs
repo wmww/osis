@@ -1699,7 +1699,8 @@ impl<'a> Pass<'a> {
 pub(crate) fn judge(view: &View<'_>, old: Option<&Edge>, c: &RoleCommit, k: usize, best: &BTreeMap<Tid, Role>) -> Option<Attr> {
     let op = c.ops.get(k)?;
     let (a, m, t) = (c.signer, op.holder, op.target);
-    if m == t {
+    // no edge write targets a key actor: it has no roster (spec/permissions.md §1 Key actor)
+    if m == t || view.is_key(&t) {
         return None;
     }
     let new = op.edge;

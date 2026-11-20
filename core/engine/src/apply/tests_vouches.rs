@@ -620,7 +620,12 @@ fn an_open_reads_each_commits_role_parts_a_bounded_number_of_times_spec_perm_5_1
 /// (`Indexes::vouch_wake`).
 fn wake_entries(members: usize) -> usize {
     let (mut lp, t) = world(4);
-    let team = lp.peers[3].engine.me();
+    // the team: an ordinary thing peer 3 makes, its members granted on it
+    let me3 = lp.peers[3].engine.me();
+    let mut m = Mutation::new();
+    let team = lp.peers[3].engine.new_thing(&mut m, me3);
+    lp.peers[3].commit(m).unwrap();
+    lp.hold(team);
     for i in 0..members {
         let who = Tid::from_bytes([u8::try_from(i + 1).unwrap(); 15]);
         let mut m = Mutation::new();
@@ -629,8 +634,11 @@ fn wake_entries(members: usize) -> usize {
     }
     lp.sync_all().unwrap();
     for _ in 0..5 {
-        grant(&mut lp, 0, t, 3, Role::Write);
-        remove(&mut lp, 0, t, 3);
+        lp.peers[0].engine.grant(&t, &team, &edge(Role::Write)).unwrap();
+        lp.advance(1000);
+        lp.advance(1000);
+        lp.peers[0].engine.demote(&t, &Demotion { holder: team, new: None, retain: None }).unwrap();
+        lp.advance(1000);
     }
     lp.sync(0, 2).unwrap();
     lp.peers[2].engine.core.ix.vouch_wake.len()

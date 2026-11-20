@@ -491,26 +491,27 @@ fn forged_actor_invalid_spec_perm_5_2() {
 }
 
 // spec/permissions.md §5.2 (acting), spec/commits.md §4 (order independence):
-// Dave (3), with no right on D, grants Bob write on himself; Bob writes D acting for Dave.
-// Alice gets the write before the grant (invalid: Bob cannot act for Dave as far as she knows)
-// and judges it valid once the grant arrives, though nothing about D changed.
+// Dave (3), with no right on D, grants Bob write on X, a thing Dave makes; Bob writes D acting
+// for X. Alice gets the write before the grant (invalid: Bob cannot act for X as far as she
+// knows) and judges it valid once the grant arrives, though nothing about D changed.
 #[test]
 fn acting_valid_once_grant_arrives_spec_perm_5_2() {
     let mut lp = net(4, 0);
     lp.sync_all().unwrap();
     let d = new_thing(&mut lp, 0);
-    let (b, dave) = (lp.peers[1].engine.me(), lp.peers[3].engine.me());
+    let x = new_thing(&mut lp, 3);
+    let b = lp.peers[1].engine.me();
     set_edge(&mut lp.peers[0].engine, d, b, Some(edge(Role::Write)), None);
     lp.sync_all().unwrap();
     lp.advance(1_000);
-    set_edge(&mut lp.peers[3].engine, dave, b, Some(edge(Role::Write)), None);
+    set_edge(&mut lp.peers[3].engine, x, b, Some(edge(Role::Write)), None);
     sync(&mut lp, 3, 1);
     lp.advance(1_000);
     let mut m = Mutation::new();
     m.set(d, &REG, &s("for dave")).unwrap();
-    // Dave's node has no write secret to derive an author-class delete key from
+    // X's holders' write secrets are not Bob's to derive an author-class delete key from
     m.retention(d, &REG, crate::common::purgeable_by(osis_base::PurgeBy::Admin)).unwrap();
-    m.act_as(dave);
+    m.act_as(x);
     let id = lp.peers[1].commit(m).unwrap().unwrap();
     let pk = lp.peers[1].engine.package(&id).unwrap().unwrap();
     lp.deliver(0, &pk).unwrap();
@@ -521,6 +522,45 @@ fn acting_valid_once_grant_arrives_spec_perm_5_2() {
     assert_eq!(lp.peers[0].engine.get(&d, &ak("t:reg.0")).unwrap(), Some(s("new")));
     lp.deliver(0, &pk).unwrap();
     assert_eq!(lp.peers[0].engine.get(&d, &ak("t:reg.0")).unwrap(), Some(s("for dave")));
+}
+
+// spec/permissions.md §1 Key actor ("No edge write targets a key actor: it has no roster"): the
+// engine refuses an edge write on a key actor, its own included; one a hostile writer makes
+// anyway (peer 2 giving B write on its own key actor, as a "team") applies nowhere at any node:
+// no roster entry, no role, the edge write unapplied by the walk.
+#[test]
+fn an_edge_write_on_a_key_actor_is_refused_and_applies_nowhere_spec_permissions_1() {
+    let mut lp = net(3, 0);
+    lp.sync_all().unwrap();
+    let (b, k2) = (lp.peers[1].engine.me(), lp.peers[2].engine.me());
+    let write = |k: Tid| {
+        let mut m = Mutation::new();
+        m.op(k, &osis_schema::core_types::ROLES, osis_crdt::PathOp { path: vec![osis_crdt::PathSeg::Key(Value::Weak(b))], op: osis_crdt::Op::Set(edge(Role::Write).to_value()) }).unwrap();
+        m
+    };
+    // on its own key actor, where it holds admin, and on another's, where it holds nothing
+    let r = lp.peers[2].engine.commit(write(k2));
+    assert!(matches!(r, Err(osis_engine::Error::Misuse(m)) if m.contains("key actor")), "{r:?}");
+    let k0 = lp.peers[0].engine.me();
+    assert!(lp.peers[2].engine.commit(write(k0)).is_err());
+    assert!(matches!(lp.peers[2].engine.grant(&k2, &b, &edge(Role::Write)), Err(osis_engine::Error::Misuse(_))));
+    lp.peers[2].engine.core.skip_writer_rules = true;
+    let id = lp.peers[2].engine.commit(write(k2)).unwrap().unwrap();
+    lp.peers[2].engine.core.skip_writer_rules = false;
+    lp.advance(1_000);
+    let pk = lp.peers[2].engine.package(&id).unwrap().unwrap();
+    for i in [0, 1] {
+        lp.deliver(i, &pk).unwrap();
+    }
+    for i in 0..3 {
+        let e = &lp.peers[i].engine;
+        assert!(e.header(&id).is_some(), "peer {i} holds the write");
+        assert_eq!(e.roster(&k2).get(&b), None, "peer {i}");
+        assert_eq!(e.key_role(&k2, &b), None, "peer {i}");
+        if let Some(tl) = e.core.timelines.get(&k2) {
+            assert!(tl.held_on(&k2).all(|(w, _, _)| !tl.is_applied(&w)), "peer {i}: applied");
+        }
+    }
 }
 
 /// A role commit signed by peer `by`'s key writing `v` to `ak` on `t`, built by hand past

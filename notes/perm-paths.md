@@ -24,7 +24,7 @@ Plain structs (`paths::Commit`, `Part`, `PartKind`, `EdgeWrite`, `Delta`, `Delta
 - Trust set: `WriteId`s of edge writes.
 - A finalize is not flagged: it is a removal of another holder's grant with no frontier that is not a self-removal (spec/permissions.md §2 Finalize), read off the part.
 - Order within a commit (§5.1 step 1): by thing written, then the part setting an edge of the commit's own path after every other part on that thing, vouches included (a self-removal of the path's last thing, or the final record edge of a descent), then `roles.0` before `vouches.0`, then holder tid. Assumed: the header orders its aspects by thing then AK; step 2 checks this against the header.
-- Bad input the walk sees: members naming a thing twice (content too), an edge-class part on its own signer (no edge write targets a key actor: a key actor's self-removal on itself would otherwise apply), two edge writes on one holder in a commit. A part on another key actor needs the adapter, which knows which tids are key actors: the walk applies it nowhere only because no grant on a key actor exists.
+- Bad input the walk sees: members naming a thing twice (content too), an edge-class part on its own signer (no edge write targets a key actor: a key actor's self-removal on itself would otherwise apply), two edge writes on one holder in a commit. A part on another key actor applies nowhere because no grant on a key actor exists (the engine writes none, today's walk applies none); the adapter, which knows which tids are key actors, may refuse it outright.
 - A key actor's delta on itself along the empty path has the members [S] and no hop: valid (draft §1 Path). Along any other path it names S twice.
 
 ## Output

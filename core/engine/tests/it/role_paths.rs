@@ -465,15 +465,17 @@ fn class_worlds() -> Vec<ClassWorld> {
     lp.peers[0].engine.finalize_link(&link.k, &l).unwrap();
     spread(&mut lp);
     out.push(("single-use link redeemed twice", Some("a forged earlier redemption's leave outlives the sharer's removal of L"), lp));
-    // a key actor's edge write on itself: peer 2's own actor gives B write on itself
+    // a key actor's edge write on itself, made anyway: both walks apply it nowhere
     let (mut lp, ps) = people(3);
     let team = lp.peers[2].engine.me();
     let mut m = Mutation::new();
     m.op(team, &ct::ROLES, osis_crdt::PathOp { path: vec![osis_crdt::PathSeg::Key(osis_base::Value::Weak(ps[1]))], op: osis_crdt::Op::Set(osis_schema::Codec::to_value(&edge_of(Role::Write))) }).unwrap();
+    lp.peers[2].engine.core.skip_writer_rules = true;
     lp.peers[2].engine.commit(m).unwrap().unwrap();
+    lp.peers[2].engine.core.skip_writer_rules = false;
     lp.advance(1000);
     spread(&mut lp);
-    out.push(("a key actor's roster", Some("an edge-class part on its own signer is bad input"), lp));
+    out.push(("a key actor's roster", None, lp));
     out
 }
 

@@ -549,6 +549,10 @@ impl<'a> View<'a> {
         let over = Some(&edges.over).filter(|o| !o.is_empty());
         View { records: edges.records, edges: edges.base, over, ts, patch: None }
     }
+    /// Whether `t` is a key actor by its record.
+    pub fn is_key(&self, t: &Tid) -> bool {
+        self.records.is_key(t)
+    }
     /// The same view with edge (holder, target) set to `edge`.
     pub fn patched(self, holder: Tid, target: Tid, edge: Option<Edge>) -> View<'a> {
         View { patch: Some((holder, target, edge)), ..self }

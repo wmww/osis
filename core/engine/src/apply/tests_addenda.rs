@@ -282,9 +282,9 @@ fn forge_addendum(lp: &mut LocalPeer, by: usize, t: Tid, r: CommitId, lists: &[C
     id
 }
 
-/// A team T (peer 3's actor) holds write on N; Bob (1) is a member of T; Mallory (2) writes N
-/// but not T. Alice (0) removes T from N; Bob's write on N acting for T reached nobody before
-/// the removal. Returns (lp, N, T, removal, Bob's write).
+/// A team T (a thing peer 3 makes and administers) holds write on N; Bob (1) is a member of T;
+/// Mallory (2) writes N and only reads T, as Alice (0) does. Alice (0) removes T from N; Bob's write on N acting for T
+/// reached nobody before the removal. Returns (lp, N, T, removal, Bob's write).
 fn team_world() -> (LocalPeer, Tid, Tid, CommitId, CommitId) {
     let (lp, (n, team, r, e)) = LocalPeer::cached("apply::tests_addenda::team_world", || {
         let (lp, n, team, r, e) = build_team();
@@ -295,16 +295,24 @@ fn team_world() -> (LocalPeer, Tid, Tid, CommitId, CommitId) {
 
 fn build_team() -> (LocalPeer, Tid, Tid, CommitId, CommitId) {
     let (mut lp, n) = build(4, &[Role::Read, Role::Write]);
-    let (bob, team) = (lp.peers[1].engine.me(), lp.peers[3].engine.me());
+    let (bob, me3) = (lp.peers[1].engine.me(), lp.peers[3].engine.me());
+    let mut m = Mutation::new();
+    let team = lp.peers[3].engine.new_thing(&mut m, me3);
+    lp.peers[3].commit(m).unwrap();
+    lp.hold(team);
+    lp.sync_all().unwrap();
     lp.peers[0].engine.grant(&n, &team, &edge(Role::Write)).unwrap();
-    // T is peer 3's own actor: a plain edge write, as for an account's nodes
     let mut m = Mutation::new();
     m.op(team, &ct::ROLES, osis_crdt::PathOp { path: vec![osis_crdt::PathSeg::Key(Value::Weak(bob))], op: osis_crdt::Op::Set(osis_schema::Codec::to_value(&edge(Role::Write))) }).unwrap();
     lp.peers[3].commit(m).unwrap().unwrap();
+    // Alice and Mallory read T: they hold what is written on it
+    lp.share(3, team);
     lp.sync_all().unwrap();
     lp.advance(1000);
     let e = write_as(&mut lp, 1, team, n, "x:e.0", 7);
-    let r = remove(&mut lp, 0, n, 3);
+    lp.advance(1000);
+    let r = *lp.peers[0].engine.demote(&n, &Demotion { holder: team, new: None, retain: None }).unwrap().commits.last().unwrap();
+    lp.advance(1000);
     (lp, n, team, r, e)
 }
 

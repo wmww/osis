@@ -964,6 +964,12 @@ fn build(tx: &mut Tx<'_>, plan: CommitPlan, deltas: Vec<Resolved>) -> Result<osi
     // more than its author meant
     let adminless = plan.adminless && crate::apply::validity::needs_adminless_mark(tx.core, deltas.iter().map(|d| (d.tid, &d.ak, &d.fragment)));
     let edges = if plan.kind == Kind::Role { crate::apply::validity::edge_writes(tx.core, deltas.iter().map(|d| (d.tid, &d.ak, &d.fragment))) } else { Vec::new() };
+    // no edge write targets a key actor: it has no roster (spec/permissions.md §1 Key actor);
+    // tests let a local writer break this, to test receivers
+    let key_actor = |t: &Tid| tx.core.is_key_actor(t) || matches!(plan.creates.get(t), Some(CreationRecord::KeyActor { .. }));
+    if !tx.core.skip_writer_rules && edges.iter().any(|(t, _, _)| key_actor(t)) {
+        return Err(Error::Misuse("no edge write targets a key actor: it has no roster"));
+    }
     let mut writes = Vec::with_capacity(deltas.len());
     for d in deltas {
         let (retention, expires) = settle(tx.core, tx.txn.is_memory(), plan.kind, plan.ts, &d.tid, &d.ak, d.schema.as_deref(), d.replaces.is_some(), d.retention, d.expires)?;
