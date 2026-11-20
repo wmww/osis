@@ -1,0 +1,85 @@
+#!/usr/bin/env python3
+"""tools/claim BRANCH [--from REF]: the one command that starts an agent's task (notes/coordination.md,
+The task loop). Fetches origin; `wt claim BRANCH origin/main`; checks `wt list` shows BRANCH on the
+path claimed; then brings the branch to its pushed copy: REF, or else the one remote branch named
+`origin/<coordinator>-BRANCH` if exactly one exists (a worker's push), fast-forwarding, or resetting
+a local branch that is no ancestor of it (`wt claim` checks out a local branch as it is, ignoring the
+base: a reviewer got a stale pre-rebase copy twice). With no pushed copy, a branch lacking
+origin/main is reported (a claim of an old local branch). Sets the repo's known-failures merge
+driver (tools/known_failures_merge.py) on the way. Prints the worktree's path, last, on stdout:
+`W=$(tools/claim BRANCH)`.
+
+Exit 1 when the claim failed (a release still holding BRANCH says so: retry once `wt list` shows
+its worktree free) or the worktree is not clean (nothing moved)."""
+import glob, os, subprocess, sys
+
+
+def run(*a, cwd=None, check=True):
+    r = subprocess.run(list(a), cwd=cwd, capture_output=True, text=True)
+    if check and r.returncode:
+        sys.exit(f"claim: {' '.join(a)}: {(r.stderr or r.stdout).strip()}")
+    return r
+
+
+def git(*a, cwd=None, check=True):
+    return run("git", *a, cwd=cwd, check=check).stdout.strip()
+
+
+def wt():
+    """The wt script: on PATH, else the newest reasonable-rust-builds plugin copy."""
+    from shutil import which
+    if which("wt"):
+        return which("wt")
+    copies = glob.glob(os.path.expanduser("~/.claude/plugins/cache/wmww-agent-skills/reasonable-rust-builds/*/bin/wt"))
+    if not copies:
+        sys.exit("claim: no `wt` on PATH or in the plugin cache: ask Tess to install reasonable-rust-builds")
+    return max(copies, key=lambda p: [int(x) if x.isdigit() else 0 for x in p.split("/")[-3].split(".")])
+
+
+def main(argv):
+    if not argv or argv[0].startswith("-") or len(argv) not in (1, 3) or len(argv) == 3 and argv[1] != "--from":
+        sys.exit(__doc__)
+    branch, ref = argv[0], argv[2] if len(argv) == 3 else None
+    git("fetch", "-q", "origin")
+    git("config", "merge.known-failures.driver", "python3 tools/known_failures_merge.py %O %A %B")
+    if ref is None:
+        pushed = [r for r in git("for-each-ref", "--format=%(refname:short)", f"refs/remotes/origin/*-{branch}").split() if r]
+        if len(pushed) > 1:
+            sys.exit(f"claim: several pushed copies {pushed}: name one with --from")
+        ref = pushed[0] if pushed else None
+    elif run("git", "rev-parse", "--verify", "-q", ref, check=False).returncode:
+        sys.exit(f"claim: no such ref {ref}")
+    r = run(wt(), "claim", branch, "origin/main", check=False)
+    if r.returncode:
+        hint = ("\nclaim: a `wt release` of that worktree is still pruning (notes/build.md, Footguns): "
+                "retry once `wt list` shows it free") if "already used by worktree" in r.stderr else ""
+        sys.exit(f"claim: wt claim failed: {r.stderr.strip()}{hint}")
+    sys.stderr.write(r.stderr)
+    path = r.stdout.strip().splitlines()[-1]
+    listed = run(wt(), "list").stdout.splitlines()
+    if not any(l.split()[:2] == [path, branch] for l in listed):
+        sys.exit(f"claim: `wt list` does not show {branch} on {path}:\n" + "\n".join(listed))
+    if git("status", "--porcelain", cwd=path):
+        sys.exit(f"claim: {path} is not clean: nothing moved")
+    head = git("rev-parse", "HEAD", cwd=path)
+    if ref:
+        to = git("rev-parse", ref)
+        if head != to:
+            if run("git", "merge-base", "--is-ancestor", head, to, cwd=path, check=False).returncode == 0:
+                git("merge", "-q", "--ff-only", ref, cwd=path)
+                print(f"claim: fast-forwarded {branch} to {ref}", file=sys.stderr)
+            else:
+                lost = git("log", "--oneline", f"{to}..{head}", cwd=path)
+                git("reset", "-q", "--hard", ref, cwd=path)
+                print(f"claim: reset {branch} from {head[:9]} to {ref} ({to[:9]}); the local commits it dropped stay in "
+                      f"`git reflog`:\n{lost}", file=sys.stderr)
+    elif run("git", "merge-base", "--is-ancestor", "origin/main", "HEAD", cwd=path, check=False).returncode:
+        behind = git("rev-list", "--count", "HEAD..origin/main", cwd=path)
+        print(f"claim: {branch} is an existing local branch {behind} commits behind origin/main and has no pushed copy: "
+              f"rebase it, or `git reset --hard origin/main` if it is stale", file=sys.stderr)
+    print(f"claim: {branch} at {git('log', '--oneline', '-1', cwd=path)}", file=sys.stderr)
+    print(path)
+
+
+if __name__ == "__main__":
+    main(sys.argv[1:])
