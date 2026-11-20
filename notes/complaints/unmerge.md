@@ -1,3 +1,0 @@
-- `tools/bin-at` builds in the task worktree and copies out, but leaves `target/debug/deps/it-<hash>` as REV's build: a later direct run of that path runs the old code until the next `cargo test` rebuilds it.
-- A known_failures line ("left 7, right 5") stayed for days after the engine change that removed its cause (the addendum window rule); the second failure was filed as hidden behind it while the count already passed on main. Re-running a known failure on main before filing beside it would have shown it.
-- The old layout (core/node, osis-node) needs path-rewritten patches for `bin-at --patch` against older revs.

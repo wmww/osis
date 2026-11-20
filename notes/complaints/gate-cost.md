@@ -1,3 +1,0 @@
-# gate-cost
-- `tools/pertest.py top` ranks by each test alone in its own process, so a cached fixture is paid by every test using it: osis-sync's four `first::` tests read 17.8 G each, while the whole `first::` module in one process is 17.8 G; `keep::readers_logging_the_same_records_settle_on_one_record_blob` "8 s" is mostly its fixture. For what a gate pays, count modules in one process (`tools/icount BIN -q <module>::`); pertest only for which test moved. A per-module script over every binary took 15 min of mostly waiting.
-- The gate's `gate` CPU total includes `build` (265-1312 CPU-s in the last four gates): a rebase over a low-crate change moves a gate's total more than any test change does, so compare the hold, not the total, when judging test cost.

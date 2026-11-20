@@ -1,4 +1,0 @@
-# m1-open-review
-- A generator change that "fixed" a failing gate (multi-part commits restricted to lowerings) only reshuffled the rng: the failing class (finding 34) needs no multi-part commit. Reverting the generator and gating the weaker property found it again in 3 of 1,000,000 worlds.
-- The hand test for "a commit setting an edge of its own path applies nowhere" set the signer's own edge, which is a self-removal: removing the own-path clause from `World::group` failed no default test. A part setting an edge of its path that is no self-removal sets the record edge a descent ends with.
-- The draft's "bad input" for several edge writes contradicts spec/commits.md §2's surviving "a receiver does not check them" and voids the single-use link redemption; no model world has a redemption, so nothing caught it.
