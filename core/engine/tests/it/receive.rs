@@ -144,9 +144,9 @@ fn a_removal_leads_no_author_to_a_thing_spec_commits_4() {
     lp.hold(u);
     lp.peers[1].engine.demote(&t, &osis_engine::flows::Demotion { holder: a, new: None, retain: None }).unwrap();
     // the grant that makes 0 able to sign, held back from 2 till the end
-    lp.peers[1].engine.grant(&t, &a, &Edge { role: Role::Read, until: None, invite: None, retain: false, floor: None }).unwrap();
-    let grant = packages(&mut lp, 1).pop().unwrap();
-    for p in packages(&mut lp, 1) {
+    let grant = *lp.peers[1].engine.grant(&t, &a, &Edge { role: Role::Read, until: None, invite: None, retain: false, floor: None }).unwrap().commits.last().unwrap();
+    let grant = package_for(&mut lp, 1, 2, grant);
+    for p in packages_to(&mut lp, 1, 0) {
         lp.deliver(0, &p).unwrap();
     }
     let mut m = Mutation::new();
@@ -155,9 +155,9 @@ fn a_removal_leads_no_author_to_a_thing_spec_commits_4() {
         m.op(x, &ROLES, PathOp { path: vec![PathSeg::Key(Value::Weak(a))], op: Op::Set(Edge { role: Role::Admin, until: None, invite: None, retain: false, floor: None }.to_value()) }).unwrap();
     }
     let forged = lp.peers[0].engine.commit_hostile(m).unwrap().unwrap();
-    let forged = packages(&mut lp, 0).into_iter().find(|p| p.id == forged).unwrap();
+    let forged = package_for(&mut lp, 0, 2, forged);
     let rosters = |lp: &mut osis_engine::local_peer::LocalPeer| [t, u].map(|x| lp.peers[2].engine.roster(&x));
-    for p in packages(&mut lp, 1).iter().chain(&packages(&mut lp, 0)).filter(|p| p.id != forged.id && p.id != grant.id) {
+    for p in packages_for(&mut lp, 1, 2).iter().chain(&packages_for(&mut lp, 0, 2)).filter(|p| p.id != forged.id && p.id != grant.id) {
         lp.deliver(2, p).unwrap();
     }
     let before = rosters(&mut lp);
@@ -227,8 +227,8 @@ fn drift_parks_spec_crdt_2_2() {
     lp.peers[0].clock.advance(2 * 3_600_000);
     let mut m = Mutation::new();
     m.set(t, &REG, &s("future")).unwrap();
-    lp.peers[0].commit(m).unwrap();
-    let pk = packages(&mut lp, 0).pop().unwrap();
+    let id = lp.peers[0].commit(m).unwrap().unwrap();
+    let pk = package_for(&mut lp, 0, 1, id);
     assert!(matches!(lp.deliver(1, &pk).unwrap(), Ingested::Pending(_, Reason::Drift)));
     lp.peers[1].tick().unwrap();
     assert_eq!(lp.peers[1].engine.pending().len(), 1);
@@ -266,7 +266,7 @@ fn applies_what_is_held_and_late_delta_spec_commits_4() {
     m.set(u, &TAGS, &Value::Set([s("a")].into_iter().collect())).unwrap();
     let id = lp.peers[0].commit(m).unwrap().unwrap();
     let h = lp.peers[0].engine.header(&id).unwrap();
-    let pk = packages(&mut lp, 0).pop().unwrap();
+    let pk = package_for(&mut lp, 0, 1, id);
     let partial = without_parts(&pk.bytes, |a| a == "t:reg.0", &h);
     // another thing, not synced: applies with what arrived
     assert!(matches!(lp.peers[1].receive(&partial, Vec::new()).unwrap(), Ingested::Applied(_)));
@@ -285,7 +285,7 @@ fn applies_what_is_held_and_late_delta_spec_commits_4() {
     m.set(t, &TAGS, &Value::Set([s("a")].into_iter().collect())).unwrap();
     let id = lp.peers[0].commit(m).unwrap().unwrap();
     let h = lp.peers[0].engine.header(&id).unwrap();
-    let pk = packages(&mut lp, 0).pop().unwrap();
+    let pk = package_for(&mut lp, 0, 1, id);
     let partial = without_parts(&pk.bytes, |a| a == "t:reg.0", &h);
     assert_eq!(lp.peers[1].receive(&partial, Vec::new()).unwrap(), Ingested::Applied(id));
     assert_eq!(lp.peers[1].engine.get(&t, &ak("t:reg.0")).unwrap(), Some(s("r")));
@@ -301,7 +301,7 @@ fn applies_what_is_held_and_late_delta_spec_commits_4() {
     m.set(u, &TAGS, &Value::Set([s("a")].into_iter().collect())).unwrap();
     let id = lp.peers[0].commit(m).unwrap().unwrap();
     let h = lp.peers[0].engine.header(&id).unwrap();
-    let pk = packages(&mut lp, 0).pop().unwrap();
+    let pk = package_for(&mut lp, 0, 1, id);
     let partial = without_parts(&pk.bytes, |a| a == "t:reg.0", &h);
     assert_eq!(lp.peers[1].receive(&partial, Vec::new()).unwrap(), Ingested::Applied(id));
     assert_eq!(lp.peers[1].engine.get(&t, &ak("t:reg.0")).unwrap(), Some(s("r")));
@@ -417,7 +417,7 @@ fn grantee_waits_for_grant_spec_commits_4() {
     // peer 2 reads t first
     let r = lp.peers[2].engine.me();
     set_edge(&mut lp.peers[0].engine, t, r, Some(edge(Role::Read)), None);
-    for pk in packages(&mut lp, 0) {
+    for pk in packages_to(&mut lp, 0, 2) {
         lp.deliver(2, &pk).unwrap();
     }
     let b = lp.peers[1].engine.me();
@@ -427,7 +427,7 @@ fn grantee_waits_for_grant_spec_commits_4() {
     m.set(t, &REG, &s("from b")).unwrap();
     lp.peers[1].commit(m).unwrap();
     // then b's own commits, then a's
-    for pk in packages(&mut lp, 1) {
+    for pk in packages_for(&mut lp, 1, 2) {
         if lp.peers[1].engine.header(&pk.id).unwrap().signer == b {
             lp.deliver(2, &pk).unwrap();
         }
@@ -482,7 +482,7 @@ fn junk_first_while_a_record_is_away_goes_once_it_comes_spec_commits_4() {
     let mut m = Mutation::new();
     m.set(t, &REG, &s("true")).unwrap();
     let w = lp.peers[0].commit(m).unwrap().unwrap();
-    let pks = packages(&mut lp, 0);
+    let pks = packages_to(&mut lp, 0, 1);
     let c = creation_of(&mut lp, &pks, t);
     for p in &pks[..c] {
         lp.deliver(1, p).unwrap();

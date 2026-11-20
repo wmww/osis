@@ -323,7 +323,29 @@ pub fn sync(lp: &mut LocalPeer, from: usize, to: usize) {
 }
 
 pub fn packages(lp: &mut LocalPeer, from: usize) -> Vec<Package> {
-    lp.packages(from).unwrap()
+    lp.whole_packages(from).unwrap()
+}
+
+/// What `from` sends peer `to` in a sync, `to`'s sync set as it stands (`LocalPeer::packages_for`).
+pub fn packages_for(lp: &mut LocalPeer, from: usize, to: usize) -> Vec<Package> {
+    lp.packages_for(from, to).unwrap()
+}
+
+/// Commit `id` as `from` sends it to peer `to` (`packages_for`); panics when no sync ID `to`
+/// syncs carries it.
+pub fn package_for(lp: &mut LocalPeer, from: usize, to: usize, id: CommitId) -> Package {
+    packages_for(lp, from, to).into_iter().find(|p| p.id == id).unwrap_or_else(|| panic!("{from} sends {to} no {id:?}"))
+}
+
+/// Commit `id` as `from` sends `to`, a node apart (`LocalPeer::packages_to_peer`).
+pub fn package_to_peer(lp: &mut LocalPeer, from: usize, to: &mut osis_engine::local_peer::Peer, id: CommitId) -> Package {
+    lp.packages_to_peer(from, to).unwrap().into_iter().find(|p| p.id == id).unwrap_or_else(|| panic!("{from} sends no {id:?}"))
+}
+
+/// Every commit `from` holds, whole, whatever the receiver syncs (`LocalPeer::whole_packages`):
+/// only for a test of what a hostile or broken sender hands over.
+pub fn whole_packages(lp: &mut LocalPeer, from: usize) -> Vec<Package> {
+    lp.whole_packages(from).unwrap()
 }
 
 /// What `from` sends peer `to` once `to` syncs what a sync from `from` brings it to sync (its

@@ -717,9 +717,15 @@ impl LocalPeer {
         p.engine.commit_ids().into_iter().filter(|id| !p.engine.header(id).is_some_and(|h| h.aspects.iter().all(|a| Some(a.tid) == root))).collect()
     }
 
-    /// Every commit `from` holds (applied), packaged, but those on its node root alone (local: no
-    /// sync ID carries them, spec/sync-set.md §1).
+    /// Every commit `from` holds (applied), packaged whole, but those on its node root alone
+    /// (local: no sync ID carries them, spec/sync-set.md §1): what a hostile or broken sender
+    /// may hand over whatever the receiver syncs. A test of real delivery uses `packages_for`
+    /// and kin (content outside the receiver's node closure waits there for good).
     pub fn packages(&mut self, from: usize) -> Result<Vec<Package>> {
+        self.whole_packages(from)
+    }
+
+    pub fn whole_packages(&mut self, from: usize) -> Result<Vec<Package>> {
         Ok(self.whole(from)?.iter().map(|w| w.0.0.clone()).collect())
     }
 

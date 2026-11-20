@@ -28,7 +28,7 @@ fn carrierless(writes: Vec<Mutate>) -> (LocalPeer, Tid, Vec<osis_engine::local_p
         let mut m = Mutation::new();
         w(&mut m, t);
         let id = lp.peers[0].commit(m).unwrap().unwrap();
-        out.push(packages(&mut lp, 0).into_iter().find(|p| p.id == id).unwrap());
+        out.push(package_for(&mut lp, 0, 1, id));
     }
     (lp, t, out)
 }
@@ -80,12 +80,12 @@ fn forged_purge_on_replace_class_gives_no_rights_spec_commits_4() {
     let mut m = Mutation::new();
     mixed("forged", Some("forged"), by_writer())(&mut m, t);
     let forged = lp.peers[2].commit(m).unwrap().unwrap();
-    let pk = packages(&mut lp, 2).into_iter().find(|p| p.id == forged).unwrap();
+    let pk = package_for(&mut lp, 2, 1, forged);
     lp.advance(10);
     let mut m = Mutation::new();
     mixed("later", None, None)(&mut m, t);
     let later = lp.peers[2].commit(m).unwrap().unwrap();
-    let pl = packages(&mut lp, 2).into_iter().find(|p| p.id == later).unwrap();
+    let pl = package_for(&mut lp, 2, 1, later);
     lp.peers[1].receive(&reg_only(&pk), Vec::new()).unwrap();
     lp.deliver(1, &pl).unwrap();
     lp.peers[1].reexamine().unwrap();
@@ -164,7 +164,7 @@ fn expiring_part_stays_to_join_past_snapshot_spec_commits_5() {
         }
         let held = holders.then(|| {
             let id = lp.peers[0].engine.snapshot(&t, &map).unwrap().unwrap();
-            packages(&mut lp, 0).into_iter().find(|p| p.id == id).unwrap()
+            package_for(&mut lp, 0, 1, id)
         });
         lp.peers[1].receive(&reg_only(&c[0]), Vec::new()).unwrap();
         lp.deliver(1, &c[1]).unwrap();
@@ -206,14 +206,14 @@ fn expired_entry_keeps_nested_write_alike_spec_crdt_4_7() {
     m.expires(t, &map, WallMs(T0.0 + 3_600_000)).unwrap();
     m.op(t, &map, put("a")).unwrap();
     let c1 = lp.peers[0].commit(m).unwrap().unwrap();
-    let p1 = packages(&mut lp, 0).into_iter().find(|p| p.id == c1).unwrap();
+    let p1 = package_for(&mut lp, 0, 1, c1);
     lp.deliver(1, &p1).unwrap();
     let mut m = Mutation::new();
     m.retention(t, &map, r).unwrap();
     m.op(t, &map, put("b")).unwrap();
     let c2 = lp.peers[1].commit(m).unwrap().unwrap();
     assert_eq!(lp.peers[1].engine.header(&c2).unwrap().expires, None, "the put's own expiry");
-    let p2 = packages(&mut lp, 1).into_iter().find(|p| p.id == c2).unwrap();
+    let p2 = package_for(&mut lp, 1, 2, c2);
     lp.deliver(2, &p1).unwrap();
     lp.deliver(2, &p2).unwrap();
     lp.deliver(3, &p2).unwrap();
@@ -309,7 +309,7 @@ fn pages_away_hold_back_only_their_part_spec_commits_4() {
         m.set(t, &BIG, &Value::Map(map.clone())).unwrap();
         let id = lp.peers[0].commit(m).unwrap().unwrap();
         assert!(!linked_blobs(&mut lp.peers[0].engine, &id).is_empty(), "paged delta links its pages");
-        let pk = packages(&mut lp, 0).into_iter().find(|p| p.id == id).unwrap();
+        let pk = package_for(&mut lp, 0, 1, id);
         assert!(!pk.blobs.is_empty(), "paged");
         let e = &mut lp.peers[1].engine;
         let r = e.ingest(&pk.bytes, Vec::new()).unwrap();
@@ -339,7 +339,7 @@ fn cross_thing_part_shows_spec_commits_4() {
         m.set(u, &REG, &s("u")).unwrap();
         let id = lp.peers[0].commit(m).unwrap().unwrap();
         let h = lp.peers[0].engine.header(&id).unwrap();
-        let pk = packages(&mut lp, 0).into_iter().find(|p| p.id == id).unwrap();
+        let pk = package_for(&mut lp, 0, 1, id);
         let e = &mut lp.peers[1].engine;
         e.ingest(&only(&pk.bytes, &h, |x, _| x == t), Vec::new()).unwrap();
         let away = e.get(&t, &ak("t:reg.0")).unwrap();
@@ -378,10 +378,9 @@ fn list_element_overwritten_stays_past_expiry_spec_crdt_5_7() {
     assert_eq!(lp.peers[1].engine.get(&t, &k).unwrap(), edited, "rebuilt");
     // past T, a snapshot carries the value-less creation to a node without the expired commit
     lp.peers[1].engine.snapshot(&t, &k).unwrap().unwrap();
-    let pks = packages(&mut lp, 1);
     let mut late = fresh_copy(&mut obs, lp.peers[1].engine.now());
-    for pk in &pks {
-        let _ = late.engine.ingest(&pk.bytes, pk.blobs.clone());
+    for pk in &lp.packages_to_peer(1, &mut late).unwrap() {
+        late.receive_with(&pk.bytes, pk.blobs.clone(), &pk.lists).unwrap();
     }
     assert_eq!(late.engine.get(&t, &k).unwrap(), edited, "a late node");
 }
@@ -446,10 +445,10 @@ fn purged_list_element_keeps_edit_in_any_order_spec_crdt_4_7() {
     for order in [[&body, &edit, &request], [&request, &edit, &body], [&request, &body, &edit], [&edit, &request, &body]] {
         let mut q = fresh.copy().unwrap();
         for x in &rest {
-            let _ = q.receive(&x.bytes, x.blobs.clone());
+            q.receive(&x.bytes, x.blobs.clone()).unwrap();
         }
         for x in order {
-            let _ = q.receive(&x.bytes, x.blobs.clone());
+            q.receive(&x.bytes, x.blobs.clone()).unwrap();
         }
         assert_eq!(q.engine.get(&t, &k).unwrap(), Some(Value::List(vec![s("edited")])));
         digests.push(q.engine.state_digest(&t, &k).unwrap());
@@ -486,13 +485,13 @@ fn expired_list_element_survives_unmerge_spec_crdt_4_6() {
     m.op(t, &LIST, osis_crdt::PathOp { path: vec![], op: osis_crdt::Op::Insert { at: 0, items: vec![s("late")] } }).unwrap();
     let bad = lp.peers[2].commit(m).unwrap().unwrap();
     let pk = lp.peers[2].engine.package(&bad).unwrap().unwrap();
-    let _ = lp.deliver(1, &pk);
+    lp.deliver(1, &pk).unwrap();
     assert_eq!(lp.peers[1].engine.get(&t, &k).unwrap(), Some(Value::List(vec![s("late"), s("edited"), s("kept")])));
     lp.advance(2 * 3_600_000);
     lp.peers[1].tick().unwrap();
     assert_eq!(lp.peers[1].engine.get(&t, &k).unwrap(), Some(Value::List(vec![s("late"), s("edited")])));
     let pk = lp.peers[0].engine.package(&d).unwrap().unwrap();
-    let _ = lp.deliver(1, &pk);
+    lp.deliver(1, &pk).unwrap();
     assert_eq!(lp.peers[1].engine.get(&t, &k).unwrap(), Some(Value::List(vec![s("edited")])), "un-merged");
 }
 
@@ -514,7 +513,7 @@ fn snapshot_past_expiry_beside_body_spec_crdt_4_7() {
     let c = lp.peers[1].engine.snapshot(&t, &k).unwrap().unwrap();
     let pk = lp.peers[1].engine.package(&c).unwrap().unwrap();
     lp.peers[2].drain_events();
-    let _ = lp.deliver(2, &pk);
+    lp.deliver(2, &pk).unwrap();
     lp.peers[2].reexamine().unwrap();
     assert_eq!(lp.peers[2].engine.get(&t, &k).unwrap(), Some(Value::List(vec![s("hello")])));
     lp.peers[2].clock.advance(2_000);
@@ -547,14 +546,14 @@ fn list_element_expiry_in_any_order_spec_crdt_5_7() {
     for (first, second, past) in [(a, b, false), (b, a, false), (a, b, true), (b, a, true)] {
         let mut p = fresh.copy().unwrap();
         for x in &rest {
-            let _ = p.receive(&x.bytes, x.blobs.clone());
+            p.receive(&x.bytes, x.blobs.clone()).unwrap();
         }
-        let _ = p.receive(&first.bytes, first.blobs.clone());
+        p.receive(&first.bytes, first.blobs.clone()).unwrap();
         if past {
             p.clock.advance(2 * 3_600_000);
             p.tick().unwrap();
         }
-        let _ = p.receive(&second.bytes, second.blobs.clone());
+        p.receive(&second.bytes, second.blobs.clone()).unwrap();
         if !past {
             assert_eq!(p.engine.get(&t, &k).unwrap(), Some(Value::List(vec![s("edited")])));
             p.clock.advance(2 * 3_600_000);
@@ -843,13 +842,13 @@ fn partial_receipt_survives_compaction_spec_sync_7() {
     m.op(t, &BIG, osis_crdt::PathOp { path: vec![osis_crdt::PathSeg::Key(s("k"))], op: osis_crdt::Op::Set(s("edited")) }).unwrap();
     let edit = lp.peers[1].commit(m).unwrap().unwrap();
     let pk = lp.peers[1].engine.package(&edit).unwrap().unwrap();
-    let _ = lp.deliver(2, &pk);
+    lp.deliver(2, &pk).unwrap();
     assert_eq!(lp.peers[2].engine.get(&t, &k).unwrap(), Some(Value::Map(Default::default())));
     let before = lp.peers[2].engine.commit_ids().len();
     lp.peers[2].engine.snapshot(&t, &k).unwrap().unwrap();
     assert_eq!(lp.peers[2].engine.commit_ids().len(), before + 1, "the snapshot alone, no sweep");
     let pk = lp.peers[0].engine.package(&put).unwrap().unwrap();
-    let _ = lp.deliver(2, &pk);
+    lp.deliver(2, &pk).unwrap();
     assert_eq!(lp.peers[2].engine.get(&t, &k).unwrap(), Some(Value::Map([(s("k"), s("edited"))].into_iter().collect())));
 }
 
@@ -894,10 +893,10 @@ fn list_element_in_snapshot_before_expiry_reads_alike_spec_crdt_5_7() {
     lp.peers[1].commit(m).unwrap().unwrap();
     lp.advance(10);
     let snap = lp.peers[1].engine.snapshot(&t, &k).unwrap().unwrap();
-    let pks = packages(&mut lp, 1);
+    let pks = packages_for(&mut lp, 1, 2);
     let held: Vec<_> = pks.iter().filter(|p| p.id != c && (p.id == snap || lp.peers[1].engine.header(&p.id).is_some_and(|h| !h.aspects.iter().any(|a| a.ak == k)))).collect();
     for pk in held {
-        let _ = lp.deliver(2, pk);
+        lp.deliver(2, pk).unwrap();
     }
     lp.advance(2 * 3_600_000);
     for i in [1, 2] {
@@ -1035,17 +1034,21 @@ fn record_and_reach(seed: u64) -> (Reason, Tid, Option<Value>) {
     let r = lp.peers[2].engine.me();
     lp.peers[1].engine.grant(&y, &r, &Edge { role: Role::Read, until: None, invite: None, retain: false, floor: None }).unwrap();
     sync(&mut lp, 1, 0);
-    lp.peers[1].engine.grant(&y, &a, &Edge { role: Role::Write, until: None, invite: None, retain: false, floor: None }).unwrap();
-    let grant = packages(&mut lp, 1).pop().unwrap();
+    let grant = *lp.peers[1].engine.grant(&y, &a, &Edge { role: Role::Write, until: None, invite: None, retain: false, floor: None }).unwrap().commits.last().unwrap();
+    let grant = package_for(&mut lp, 1, 2, grant);
     sync(&mut lp, 1, 0);
+    // 2 reads x too: else no sync ID it syncs carries the commit's part on x
     let x = new_thing(&mut lp, 0);
-    let xc = packages(&mut lp, 0).pop().unwrap();
+    let xc = creation_of(&mut lp, 0, 2, x);
+    lp.peers[0].engine.grant(&x, &r, &Edge { role: Role::Read, until: None, invite: None, retain: false, floor: None }).unwrap();
     let mut m = Mutation::new();
     m.set(y, &REG, &s("y")).unwrap();
     m.set(x, &REG, &s("x")).unwrap();
     let c = lp.peers[0].commit(m).unwrap().unwrap();
     let held_back = [grant.id, xc.id, c];
-    let pks: Vec<_> = packages(&mut lp, 1).into_iter().chain(packages(&mut lp, 0)).collect();
+    // what 1 and 0 send 2 once it syncs what they bring it to sync (on a copy of 2)
+    let mut w = lp.peers[2].copy().unwrap();
+    let pks: Vec<_> = [1, 0].into_iter().flat_map(|i| lp.packages_to_peer(i, &mut w).unwrap()).collect();
     for p in pks.iter().filter(|p| !held_back.contains(&p.id)) {
         lp.deliver(2, p).unwrap();
     }
@@ -1075,13 +1078,14 @@ fn a_reach_wakes_a_commit_awaiting_a_record_too_spec_commits_4() {
 #[test]
 fn an_expiry_passed_while_pending_sets_no_timer_spec_commits_4() {
     let mut lp = net(2, 0);
-    let t = new_thing(&mut lp, 0);
+    // 1 reads t, its record away
+    let t = new_shared(&mut lp, 0);
     let mut m = Mutation::new();
     m.set(t, &REG, &s("brief")).unwrap();
     let at = lp.peers[0].engine.now().0 + 3_600_000;
     m.expires(t, &REG, WallMs(at)).unwrap();
     let c = lp.peers[0].commit(m).unwrap().unwrap();
-    let pk = packages(&mut lp, 0).into_iter().find(|p| p.id == c).unwrap();
+    let pk = packages_to(&mut lp, 0, 1).into_iter().find(|p| p.id == c).unwrap();
     assert!(matches!(lp.deliver(1, &pk).unwrap(), Ingested::Pending(..)));
     assert!(lp.peers[1].engine.next_timer().unwrap().is_some_and(|x| x <= at), "a wake at its expiry");
     lp.peers[1].clock.advance(2 * 3_600_000);
@@ -1127,7 +1131,7 @@ fn once_each(seed: u64, n: usize, m: usize) -> (Vec<Option<Value>>, Vec<Option<V
         }
         ids.push(lp.peers[0].commit(mu).unwrap().unwrap());
     }
-    let pks = packages(&mut lp, 0);
+    let pks = packages_for(&mut lp, 0, 1);
     let mut order: Vec<_> = ids.iter().map(|c| pks.iter().find(|p| p.id == *c).unwrap().clone()).collect();
     for i in (1..order.len()).rev() {
         order.swap(i, rng.below(i as u64 + 1) as usize);
@@ -1150,9 +1154,9 @@ fn once_each(seed: u64, n: usize, m: usize) -> (Vec<Option<Value>>, Vec<Option<V
     (want, got, lp.peers[1].engine.pending().len())
 }
 
-/// Peer `i`'s package carrying `t`'s creation record.
-fn creation_of(lp: &mut LocalPeer, i: usize, t: Tid) -> osis_engine::local_peer::Package {
-    packages(lp, i).into_iter().find(|p| osis_commit::CommitBlob::decode(&p.bytes).unwrap().header.aspects.iter().any(|a| a.tid == t && a.ak.as_str() == "created.0")).unwrap()
+/// Peer `i`'s package carrying `t`'s creation record, as it sends peer `to`.
+fn creation_of(lp: &mut LocalPeer, i: usize, to: usize, t: Tid) -> osis_engine::local_peer::Package {
+    packages_for(lp, i, to).into_iter().find(|p| osis_commit::CommitBlob::decode(&p.bytes).unwrap().header.aspects.iter().any(|a| a.tid == t && a.ak.as_str() == "created.0")).unwrap()
 }
 
 // spec/commits.md §4 (Unjudgeable; Pending storage), spec/requirements.md Deterministic: a part
@@ -1165,12 +1169,12 @@ fn an_applied_commits_part_joins_when_its_record_comes_spec_commits_4() {
     let u = new_shared(&mut lp, 0);
     sync(&mut lp, 0, 1);
     let x = new_shared(&mut lp, 0);
-    let xc = creation_of(&mut lp, 0, x);
+    let xc = creation_of(&mut lp, 0, 1, x);
     let mut m = Mutation::new();
     m.set(u, &REG, &s("u")).unwrap();
     m.set(x, &REG, &s("x")).unwrap();
     let c = lp.peers[0].commit(m).unwrap().unwrap();
-    let cp = packages(&mut lp, 0).into_iter().find(|p| p.id == c).unwrap();
+    let cp = package_for(&mut lp, 0, 1, c);
     let e = &mut lp.peers[1].engine;
     assert_eq!(e.ingest(&cp.bytes, Vec::new()).unwrap(), Ingested::Applied(c));
     assert_eq!(e.get(&u, &ak("t:reg.0")).unwrap(), Some(s("u")), "the part held applies");
@@ -1196,7 +1200,7 @@ fn each_waiting_part_joins_at_its_own_record_spec_commits_4() {
         let mut made = Vec::new();
         for _ in 0..2 {
             let t = new_thing(&mut lp, 0);
-            let pk = creation_of(&mut lp, 0, t);
+            let pk = creation_of(&mut lp, 0, 1, t);
             made.push((t, pk));
         }
         let mut m = Mutation::new();
@@ -1205,7 +1209,7 @@ fn each_waiting_part_joins_at_its_own_record_spec_commits_4() {
             m.set(*t, &REG, &s("c")).unwrap();
         }
         let c = lp.peers[0].commit(m).unwrap().unwrap();
-        let cp = packages(&mut lp, 0).into_iter().find(|p| p.id == c).unwrap();
+        let cp = package_for(&mut lp, 0, 1, c);
         let e = &mut lp.peers[1].engine;
         assert_eq!(e.ingest(&cp.bytes, Vec::new()).unwrap(), Ingested::Applied(c));
         let (t, pk) = &made[first];
@@ -1223,12 +1227,12 @@ fn an_applied_commits_waiting_part_goes_with_its_carrier_spec_commits_4() {
     let u = new_thing(&mut lp, 0);
     sync(&mut lp, 0, 1);
     let x = new_thing(&mut lp, 0);
-    let xc = creation_of(&mut lp, 0, x);
+    let xc = creation_of(&mut lp, 0, 1, x);
     let mut m = Mutation::new();
     m.set(u, &REG, &s("u")).unwrap();
     m.set(x, &REG, &s("x")).unwrap();
     let c = lp.peers[0].commit(m).unwrap().unwrap();
-    let cp = packages(&mut lp, 0).into_iter().find(|p| p.id == c).unwrap();
+    let cp = package_for(&mut lp, 0, 1, c);
     let e = &mut lp.peers[1].engine;
     e.ingest(&cp.bytes, Vec::new()).unwrap();
     assert!(e.release_entry(&c).unwrap());
