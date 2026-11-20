@@ -64,6 +64,13 @@ pub enum Policy {
     Any,
     /// The built rule: `Any`, and the remover's own snapshot of what it forgot.
     HeldList,
+    /// `HeldList`, each list entry (a frontier's, an addendum's) kept at a node only while it
+    /// holds the commit the entry names, and coming back with that commit (an entry is evidence
+    /// of its commit and leaves with it: issues/zero-growth.md, Proposals).
+    Travels,
+    /// `HeldList`, an entry gone for good at a node once it forgot the commit named, even when
+    /// the commit comes back to it: the control for `Travels`.
+    Stranded,
 }
 
 impl Policy {
@@ -72,11 +79,17 @@ impl Policy {
             Policy::ListAll => "list all",
             Policy::Any => "any cover, forget",
             Policy::HeldList => "list what is held, own snapshot for what is forgotten",
+            Policy::Travels => "held list, entries leave and come back with their commit",
+            Policy::Stranded => "held list, entries gone for good once their commit is forgotten",
         }
     }
     /// Lists leave out what the leaver's own valid held snapshot carries and name it.
     fn own_cover(self) -> bool {
         self != Policy::ListAll
+    }
+    /// The built rule's lists and own snapshot (`HeldList` and its entry variants).
+    fn held_list(self) -> bool {
+        matches!(self, Policy::HeldList | Policy::Travels | Policy::Stranded)
     }
 }
 
@@ -167,6 +180,10 @@ pub struct Out {
     pub applied: Vec<BTreeSet<u32>>,
     /// Per node, the kept writes it holds the header of while it drops their body.
     pub kept_dropped: Vec<BTreeSet<u32>>,
+    /// List entries held at the end over every node but Frank, every entry of a held list.
+    pub entries_all: u64,
+    /// The same, only entries naming a commit the node holds (what `Travels` keeps).
+    pub entries_travel: u64,
 }
 
 struct Run<'a> {
@@ -283,7 +300,8 @@ impl<'a> Run<'a> {
                 }
             }
         }
-        let e = Ctx::new(&self.w, View { l1: &l1, hdr: &hdr, body: &body }, self.rules()).eval();
+        let w = self.entries_at(v, &hdr);
+        let e = Ctx::new(w.as_ref().unwrap_or(&self.w), View { l1: &l1, hdr: &hdr, body: &body }, self.rules()).eval();
         // A commit on a counter a valid held snapshot covers reads as covered.
         let mut e = e;
         for i in 0..n {
@@ -297,6 +315,52 @@ impl<'a> Run<'a> {
             }
         }
         (l1, e, hdr, body)
+    }
+
+    /// Node v's lists under `Travels` and `Stranded`: the world with every entry v does not
+    /// keep taken out (`None`: every entry kept).
+    fn entries_at(&self, v: usize, hdr: &[bool]) -> Option<World> {
+        let keeps = |id: &u32| match self.p {
+            Policy::Travels => self.idx.get(id).map_or(false, |&c| hdr[c]),
+            Policy::Stranded => !self.forgot[v].contains(id),
+            _ => true,
+        };
+        if !matches!(self.p, Policy::Travels | Policy::Stranded) {
+            return None;
+        }
+        let mut w = self.w.clone();
+        for f in w.frontier.values_mut() {
+            f.retain(|id| keeps(id));
+        }
+        for it in &mut w.items {
+            if let Kind::Add { lists, .. } = &mut it.kind {
+                lists.retain(|id| keeps(id));
+            }
+        }
+        Some(w)
+    }
+
+    /// List entries (frontiers' and held addenda's) held over every node but Frank: each entry
+    /// at each node holding its list (`HeldList`), or holding its list and the commit it names
+    /// (`Travels`).
+    fn entries_held(&self, travels: bool) -> u64 {
+        let mut n = 0;
+        for v in 0..FRANK {
+            let holds = |id: &u32| !travels || self.idx.get(id).map_or(false, |&c| self.hdr[v][c].is_some());
+            for (i, w) in self.w.roles.writes.iter().enumerate() {
+                if self.rh[v][i] {
+                    n += self.w.frontier.get(&w.id).map_or(0, |f| f.iter().filter(|id| holds(id)).count() as u64);
+                }
+            }
+            for (a, it) in self.w.items.iter().enumerate() {
+                if let Kind::Add { lists, .. } = &it.kind {
+                    if self.hdr[v][a].is_some() {
+                        n += lists.iter().filter(|id| holds(id)).count() as u64;
+                    }
+                }
+            }
+        }
+        n
     }
 
     fn rules(&self) -> Cover {
@@ -406,7 +470,7 @@ impl<'a> Run<'a> {
         if wr.role < Role::Write {
             let victim = wr.holder;
             let lists = self.own_list(v, wr.t, victim, false);
-            if self.p == Policy::HeldList {
+            if self.p.held_list() {
                 let (_, e, held, _) = self.eval(v, Some(wr.t));
                 let n = self.w.items.len();
                 let carries: Vec<u32> = (0..n).filter(|&c| e.visible[c] && self.w.items[c].author == victim && is_write(self.w.items[c].id) && !held[c]).map(|c| self.w.items[c].id).collect();
@@ -609,7 +673,8 @@ impl<'a> Run<'a> {
         let forgot = (0..NN).map(|v| self.forgot[v].iter().filter(|id| self.hdr[v][self.idx[id]].is_none()).copied().collect()).collect();
         let applied = (0..NN).map(|v| { let l1 = self.eval(v, None).0; self.w.roles.writes.iter().map(|w| w.id).filter(|&id| l1.applied(id)).collect() }).collect();
         let kept_dropped = (0..NN).map(|v| { let (_, e, hdr, body) = self.eval(v, None); (0..self.w.items.len()).filter(|&i| hdr[i] && e.valid[i] && !body[i] && self.s.kept.contains(&self.w.items[i].id) && (0..NN).any(|u| self.body[u][i])).map(|i| self.w.items[i].id).collect() }).collect();
-        Out { visible, forgot, agree, orders_agree, frontier_ids: self.frontier_ids, rounds_cut: self.rounds_cut, used: self.used.clone(), applied, kept_dropped }
+        let (entries_all, entries_travel) = (self.entries_held(false), self.entries_held(true));
+        Out { visible, forgot, agree, orders_agree, frontier_ids: self.frontier_ids, rounds_cut: self.rounds_cut, used: self.used.clone(), applied, kept_dropped, entries_all, entries_travel }
     }
 }
 
@@ -673,6 +738,58 @@ pub fn search() -> u64 {
     println!("{}: {} worlds | loses what Any shows {} | kept body dropped {} | disagree/order/forget-reads {} | attacks (gain or honest loss) {}", Policy::HeldList.name(), c[0], c[1], c[3], c[4], c[6]);
     println!("  counted: loses against listing all {} (Any: {}); removal stands, remover's receipt lost {}", c[5], c[7], c[2]);
     c[1] + c[3] + c[4] + c[6]
+}
+
+/// Entries leave with their commit (`Travels` against `HeldList`), over the member family
+/// (kept history 0, 1 or 2 writes; one world in `FORGET_SLICE`, default 8) and the attack
+/// family. Failures: `Travels` reads otherwise than `HeldList` at any node, its nodes disagree
+/// or settle no fixpoint where `HeldList`'s do, or it shows a forged write `HeldList` does not
+/// (the default test adds `judge`'s order and forgetting checks on a slice). Counted: worlds where `Stranded` (the entry gone for good)
+/// reads otherwise, the first printed, and entries held at the end under each rule.
+pub fn entries_search() -> u64 {
+    let slice = std::env::var("FORGET_SLICE").ok().and_then(|x| x.parse().ok()).unwrap_or(8);
+    // [worlds, travels differs, travels fails a check, stranded differs, entries all, entries travel]
+    let c = crate::on_every_core(|th, threads, c: &mut [u64; 6]| {
+        let mut rng = Rng(0x5eed ^ th as u64);
+        let mut first = th == 0;
+        let mut one = |s: &Script, c: &mut [u64; 6], rng: &mut Rng, attack: bool| {
+            let o = run(s, Policy::HeldList);
+            let t = run(s, Policy::Travels);
+            let st = run(s, Policy::Stranded);
+            c[0] += 1;
+            let differs = t.visible != o.visible;
+            c[1] += differs as u64;
+            let fails = |o: &Out| !o.agree || o.rounds_cut;
+            let checks = fails(&t) && !fails(&o) || attack && {
+                let forged: HashSet<u32> = s.writes.iter().filter(|w| w.forged).map(|w| w.id).collect();
+                (0..FRANK).any(|v| t.visible[v].iter().any(|id| forged.contains(id)) && !o.visible[v].iter().any(|id| forged.contains(id)))
+            };
+            let _ = &rng;
+            c[2] += checks as u64;
+            if differs || checks {
+                println!("travels fails:\n{}", show(s));
+            }
+            let sd = st.visible != o.visible;
+            c[3] += sd as u64;
+            if sd && first {
+                first = false;
+                println!("stranded differs (HeldList {:?} | Stranded {:?}):\n{}", o.visible, st.visible, show(s));
+            }
+            c[4] += o.entries_all;
+            c[5] += o.entries_travel;
+        };
+        member_family((th * slice, threads * slice), |base_s| {
+            for kept in 0..3 {
+                let mut s = base_s.clone();
+                s.kept = match kept { 0 => HashSet::new(), 1 => [1].into(), _ => [1, 2].into() };
+                one(&s, c, &mut rng, false);
+            }
+        });
+        attack_family((th, threads), |s| one(&s, c, &mut rng, true));
+    });
+    println!("{}: {} worlds | reads otherwise than the held list {} | fails a check it passes {}", Policy::Travels.name(), c[0], c[1], c[2]);
+    println!("  counted: {} reads otherwise in {} worlds; entries held at the end {} (all) vs {} (travels)", Policy::Stranded.name(), c[3], c[4], c[5]);
+    c[1] + c[2]
 }
 
 /// One script's checks of `p` against the reference run `base`: whether it loses a write
@@ -953,6 +1070,44 @@ mod tests {
         assert!(o.visible[ALICE].contains(&C) && o.visible[ALICE].contains(&2));
         assert!(o.forgot[ALICE].contains(&2) && !o.forgot[ALICE].contains(&C));
         assert!(o.kept_dropped.iter().all(|k| k.is_empty()));
+    }
+
+    /// Entries leave with their commit: on a slice of both families `Travels` reads as the held
+    /// list at every node and passes the same checks.
+    #[test]
+    fn entries_leaving_with_their_commit_change_no_reading() {
+        let mut rng = Rng(2);
+        let mut n = 0;
+        let mut check = |s: &Script, rng: &mut Rng| {
+            let (o, t) = (run(s, Policy::HeldList), run(s, Policy::Travels));
+            assert_eq!(o.visible, t.visible, "{}", show(s));
+            let base = run(s, Policy::ListAll);
+            assert!(judge(s, Policy::Travels, &base, rng).1 <= judge(s, Policy::HeldList, &base, rng).1, "{}", show(s));
+            n += 1;
+        };
+        member_family((0, 4000), |s| check(&s, &mut rng));
+        attack_family((0, 400), |s| check(&s, &mut rng));
+        assert!(n > 0);
+    }
+
+    /// Alice's removal of Bob lists his edit; she then forgets it under Dave's snapshot, which
+    /// falls once Carol's earlier removal of Dave reaches her; Eve still holds the edit and hands
+    /// it back. With the entry back beside it the edit reads as before; with the entry gone for
+    /// good (`Stranded`) Alice and Dave (who forgot it under his own snapshot) judge it unlisted
+    /// and lose it, while Eve and the others keep it: the nodes disagree.
+    #[test]
+    fn an_entry_comes_back_with_its_commit() {
+        let mut s = Script::new();
+        s.write(C, BOB, 1, &[(ALICE, 2), (DAVE, 2), (EVE, 2)]);
+        s.remove(1000, ALICE, BOB, 6, &[(BOB, 7), (CAROL, 7), (DAVE, 7), (EVE, 7)]);
+        s.snap(100, DAVE, 8, &[(ALICE, 9)]);
+        s.remove(1001, CAROL, DAVE, 7, &[(ALICE, 10), (BOB, 10), (EVE, 10)]);
+        for p in [Policy::HeldList, Policy::Travels] {
+            let o = run(&s, p);
+            assert!(o.agree && o.visible[ALICE].contains(&C), "{}: {:?}", p.name(), o.visible);
+        }
+        let o = run(&s, Policy::Stranded);
+        assert!(!o.agree && !o.visible[ALICE].contains(&C) && o.visible[EVE].contains(&C), "stranded: {:?}", o.visible);
     }
 
     /// A slice of the member family: every check of `search` holds.
