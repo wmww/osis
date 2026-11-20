@@ -413,3 +413,23 @@ fn forgetting_a_ways_last_edge_held_as_a_body_takes_the_reach_away_spec_permissi
     ev.check().unwrap();
     assert!(ev.required(&D).unwrap().is_empty(), "{:?}", ev.required(&D));
 }
+
+/// A removal's witness moves: X grants K write on A (3) and removes K (6), the grant its witness
+/// under D; Q (admin) grants K write at 2, arriving last: the first write on (K, A), so the new
+/// witness. Every sync ID holding the removal takes the new witness and drops the old (the
+/// differential's `check` compares the incremental reach with from scratch at every step).
+#[test]
+fn a_removals_witness_moves_to_an_earlier_write_grant_arriving_late_spec_permissions_4() {
+    let pw = paths::World::new(&[(X, A), (Y, D)]);
+    let mut w = World::new(pw, &[A, D]);
+    let (x, y, q) = (w.node(true, &[A, D]), w.node(true, &[D]), w.node(true, &[A]));
+    w.write(x, |p| p.edge(X, 1, &[], A, Q, Role::Admin, &[]));
+    w.write(y, |p| p.edge(Y, 1, &[], D, A, Role::Write, &[]));
+    let late = w.write(x, |p| p.edge(X, 3, &[], A, K, Role::Write, &[]));
+    let r = w.write(x, |p| p.edge(X, 6, &[], A, K, Role::None, &[]));
+    let first = w.write(q, |p| p.edge(Q, 2, &[], A, K, Role::Write, &[]));
+    assert_agrees("witness moves", &w);
+    let (ev, _) = at_end(&w, BRIEF3, everything);
+    let req = ev.required(&D).unwrap();
+    assert!(req.contains_key(&(r, A)) && req.contains_key(&(first, A)) && !req.contains_key(&(late, A)), "{req:?}");
+}
