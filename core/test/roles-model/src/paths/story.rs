@@ -1251,10 +1251,12 @@ pub fn fight_among(w: &World, rules: &Rules, v: &View, rd: &Reading, parts: &[Id
 /// the thief's and which side of H's removal it decides; one with a dispute shown (`fight`); any
 /// effect in an honest history (`honest`); `void shown`, `unapplied shown`, `idle shown` (only which
 /// writes apply differs). Failing, `idle gains`: an unshown effect making a commit of the thief's
-/// show that is signed by a key that never legitimately held the right (Z, N5's after its removal),
-/// at any node, or, at a node trusting the removal, made by X after it through A.
+/// show that is signed by a key that never legitimately held the right (Z, N5's after its removal)
+/// and that holds no right by a path X keeps (`by_right`, safety's own reading: Z invited by X
+/// through A2 writes by that invite), at any node, or, at a node trusting the removal, made by X
+/// after it through A.
 #[allow(clippy::too_many_arguments)]
-fn void_checks(w: &World, rules: &Rules, v: &View, rd: &Reading, n: Thing, t: bool, quiet: bool, relabel: bool, m: &Sim, st: &mut Stats) {
+fn void_checks(w: &World, rules: &Rules, v: &View, rd: &Reading, n: Thing, t: bool, quiet: bool, relabel: bool, by_right: &dyn Fn(Id) -> bool, m: &Sim, st: &mut Stats) {
     st.count("self-taken");
     if !rd.self_taken.is_empty() {
         st.fail("self-taken", m, format!("node {n}: commits {:?} lose their path's authority to their own drops", rd.self_taken));
@@ -1300,6 +1302,9 @@ fn void_checks(w: &World, rules: &Rules, v: &View, rd: &Reading, n: Thing, t: bo
                 let c = &w.commits[i];
                 let late = m.made[i] >= w.commits[m.r].ts;
                 let (bad, key) = match (c.signer, c.path.first() == Some(&A2)) {
+                    // a key holding its write by a path X keeps (an invite through A2) gains
+                    // nothing it did not hold: the effect only moves which content counts
+                    (Z | N5, _) if by_right(i) => (false, if t { "thief gains T by right" } else { "thief gains N by right" }),
                     (Z | N5, _) => (true, ""),
                     (_, true) => (false, if t { "thief gains T by X through A2" } else { "thief gains N by X through A2" }),
                     _ if t => (late, "thief gains T by X through A, made before the removal"),
@@ -1435,25 +1440,29 @@ pub fn check(m: &Sim, rules: &Rules, st: &mut Stats) {
     // node trusting nothing (`late`) only what the thief stamped after the removal, or signed with
     // N5's key, counts: what X stamped before it is X's standing, which is the dispute.
     let rts = w.commits[m.r].ts;
+    // a thief's commit that is its right by a path X keeps
+    let by_right = |i: Id| {
+        let c = &w.commits[i];
+        // X's own writes along A2, a path it keeps (a vouch there showing is its right; what it names
+        // is judged apart)
+        (c.signer == X && x_keeps_a2 && c.path == [A2] && !matches!(c.kind, Kind::Edge { .. }) && !(m.r3.is_some() && !(s.regrant && b_admin) && [T1, D1].contains(&c.on)))
+            // X leaving A by itself: a self-removal is always open to the holder, and takes nothing X still holds
+            || (w.leave(i) && w.sets(i) == Some((X, A)))
+            // X inviting (or finalizing) at read through A2, which it keeps writing, by A2's invite
+            || (c.signer == X && x_invites > Role::None && c.path == [A2] && matches!(c.kind, Kind::Edge { role, .. } if role <= x_invites))
+            // Z writing T1 by X's invite at write, where that is X's right
+            || (c.signer == Z && x_invites >= Role::Write && c.on == T1 && c.path.is_empty() && matches!(c.kind, Kind::Content))
+            // move 52: X granting Z admin on A2, which it administers for good; Z's vouch on T1,
+            // the part on T1 it keeps, and what Z writes on T1 along A2 (an admin there) or its own edge (the kept part)
+            || (m.thief.get(&i) == Some(&52) && c.on == A2 && s.x_a2 == 3)
+            || (c.on == T1 && z_t1 && (m.thief.get(&i) == Some(&52) || (c.signer == Z && matches!(c.path.as_slice(), [] | [A2]))))
+    };
     let safety = |n: Thing, v: &View, rd: &Reading, prop: &'static str, late: bool, st: &mut Stats| {
         // what it holds, and what the covers it holds carry
         let seen: Set = v.held.iter().flat_map(|&c| std::iter::once(c).chain(match &w.commits[c].kind { Kind::Cover { carries } => carries.iter().copied().collect(), _ => vec![] })).collect();
         for &i in seen.iter().filter(|&&i| m.hostile(i) && (!late || w.commits[i].ts > rts || w.commits[i].signer == N5)) {
             st.count(prop);
-            let c = &w.commits[i];
-            // X's own writes along A2, a path it keeps (a vouch there showing is its right; what it names
-            // is judged apart)
-            let by_right = (c.signer == X && x_keeps_a2 && c.path == [A2] && !matches!(c.kind, Kind::Edge { .. }) && !(m.r3.is_some() && !(s.regrant && b_admin) && [T1, D1].contains(&c.on)))
-                // X leaving A by itself: a self-removal is always open to the holder, and takes nothing X still holds
-                || (w.leave(i) && w.sets(i) == Some((X, A)))
-                // X inviting (or finalizing) at read through A2, which it keeps writing, by A2's invite
-                || (c.signer == X && x_invites > Role::None && c.path == [A2] && matches!(c.kind, Kind::Edge { role, .. } if role <= x_invites))
-                // Z writing T1 by X's invite at write, where that is X's right
-                || (c.signer == Z && x_invites >= Role::Write && c.on == T1 && c.path.is_empty() && matches!(c.kind, Kind::Content))
-                // move 52: X granting Z admin on A2, which it administers for good; Z's vouch on T1,
-                // the part on T1 it keeps, and what Z writes on T1 along A2 (an admin there) or its own edge (the kept part)
-                || (m.thief.get(&i) == Some(&52) && c.on == A2 && s.x_a2 == 3)
-                || (c.on == T1 && z_t1 && (m.thief.get(&i) == Some(&52) || (c.signer == Z && matches!(c.path.as_slice(), [] | [A2]))));
+            let by_right = by_right(i);
             // the accepted window (spec/permissions.md §5.2 Copies, §5.3): shown only by a cover's
             // copy, carried first by a cover whose writer did not yet hold a removal when it made it
             let window = !rd.valid.contains(&i) && rd.copied.contains(&i) && m.smuggled.contains(&i);
@@ -1509,7 +1518,7 @@ pub fn check(m: &Sim, rules: &Rules, st: &mut Stats) {
             st.fail("settles", m, format!("node {n}: the vouches do not settle"));
         }
         st.most("rounds", rd.rounds as u64);
-        void_checks(w, rules, v, rd, n, true, quiet, n == pick, m, st);
+        void_checks(w, rules, v, rd, n, true, quiet, n == pick, &by_right, m, st);
         st.count("removal");
         if !rd.void.is_empty() {
             st.fail("removal", m, format!("node {n}: its trusted removal {:?} is void", rd.void));
@@ -1622,7 +1631,7 @@ pub fn check(m: &Sim, rules: &Rules, st: &mut Stats) {
         if rd.circle {
             st.fail("untrusted", m, format!("node {n}: the vouches do not settle"));
         }
-        void_checks(w, rules, v, rd, n, false, quiet, n == pick, m, st);
+        void_checks(w, rules, v, rd, n, false, quiet, n == pick, &by_right, m, st);
         // where every honest removal it holds applies (else X keeps its standing there: a dispute)
         if m.removals().iter().all(|r| !v.held.contains(r) || rd.applied.contains(r)) {
             st.count("admin N");

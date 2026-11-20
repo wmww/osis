@@ -1257,6 +1257,31 @@ fn small_family_holds_large() {
     assert_holds(&st, "family");
 }
 
+/// What the story's `idle gains` gate must not count as a gain (`void_checks`, `by_right`): A2
+/// administers T1 and X writes A2, a path H's removal of X from A does not touch. After the
+/// removal X invites Z at write through [A2] at 7, by right, and Z writes T1 at 7, before its
+/// invite in key order. X's grant of write to Z through [A], stamped at the removal's `ts` and
+/// ordered after it, applies nowhere; held, it is the edge's first chained grant, so Z's write
+/// counts from 6 (finding 9: no new right, an earlier `ts`). Z holds write with or without the
+/// dead grant: its write showing is no gain by a key that never held the right.
+#[test]
+fn a_dead_grant_moves_an_invited_keys_first_point_back() {
+    let (mut w, ..) = paired();
+    w.edge(K, 1, &[], A2, X, Write, &[]);
+    w.edge(H, 1, &[A], T1, A2, Admin, &[]);
+    let r = w.edge(H, 6, &[], A, X, Gone, &[]);
+    let dead = w.edge(X, 6, &[A], T1, Z, Write, &[]);
+    let inv = w.edge(X, 7, &[A2], T1, Z, Write, &[]);
+    let c = w.content(Z, 7, &[], T1);
+    assert!(w.key(r) < w.key(dead) && w.pos(c) < w.key(inv));
+    let x = Rules::fixed();
+    let v = View::all(&w).trusting(&[r]);
+    let rd = judge(&w, &x, &v);
+    assert!(!rd.applied.contains(&dead) && rd.invited.contains(&inv) && rd.role(Z, T1) == Write && rd.valid.contains(&c), "{rd:?}");
+    let rd = judge(&w, &x, &v.without(&[dead]));
+    assert!(rd.invited.contains(&inv) && rd.role(Z, T1) == Write && !rd.valid.contains(&c), "{rd:?}");
+}
+
 
 // ---- Each lowering judged once (notes/write-path-design.md §1; findings 16, 17) ----
 
