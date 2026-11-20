@@ -26,6 +26,7 @@ mod pieces;
 mod streams;
 mod world;
 mod deletes;
+mod delete_keys;
 mod again;
 mod destruction;
 mod driver;

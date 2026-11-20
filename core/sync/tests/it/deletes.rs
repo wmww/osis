@@ -23,7 +23,7 @@ fn three() -> (World, Tid, SyncId) {
 }
 
 /// `three` with node 3 a second writer, built once per process (`fixture_with`).
-fn four() -> (World, Tid, SyncId) {
+pub(crate) fn four() -> (World, Tid, SyncId) {
     let (w, (t, s)) = fixture_with("deletes four", || {
         let mut w = world(0, 4);
         w.cap = 20_000;
