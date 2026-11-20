@@ -262,6 +262,21 @@ fn paged(f: &Fragment, params: PageParams) -> (Vec<u8>, Recording) {
     (bytes, rec)
 }
 
+/// The page levels of `bytes`'s one paged position (a set's elements), leaves included: the
+/// links followed down from the first.
+fn depth(bytes: &[u8], pages: &mut dyn crate::page::PageSource) -> usize {
+    let mut at = first_link(&osis_base::decode(bytes, &osis_base::Limits::DEFAULT).unwrap());
+    let mut n = 0;
+    while let Some(l) = at {
+        n += 1;
+        at = match osis_base::decode(&pages.get(&l).unwrap(), &osis_base::Limits::DEFAULT).unwrap() {
+            Value::List(items) => items.first().and_then(|x| if let Value::Link(l) = x { Some(**l) } else { None }),
+            _ => None,
+        };
+    }
+    n
+}
+
 /// `bytes` decoded as a snapshot whose pages are read from `pages`.
 fn unpage(bytes: &[u8], pages: &mut dyn crate::page::PageSource) -> Result<Fragment, crate::Error> {
     decode_snapshot(bytes, &snap_cx(), &mut Interner::new(), Some(pages)).map(|s| s.fragment)
@@ -269,8 +284,8 @@ fn unpage(bytes: &[u8], pages: &mut dyn crate::page::PageSource) -> Result<Fragm
 
 /// §8: a fragment pages iff its plain array is above the target, into pages of whole elements
 /// ending once they reach the cut maximum, under link pages of at most `fanout` links: one level
-/// (100 elements) or two (600). It round-trips, and equal states give equal pages; a fragment
-/// that would need a third level cannot be written. The paging is canonical: pages cut by other
+/// (100 elements) or two (600), and as many as the array needs (tiny pages). It round-trips, and
+/// equal states give equal pages. The paging is canonical: pages cut by other
 /// parameters, missing pages and an unpaged fragment where paging is mandatory are rejected.
 #[test]
 fn paging_spec_8() {
@@ -298,7 +313,9 @@ fn paging_spec_8() {
         assert_eq!(other, st);
         assert_eq!(paged(&other, SMALL).1.pages, rec.pages, "equal states, equal pages");
         let tiny = PageParams { target: 200, cut: ChunkParams { min: 64, max: 256, mask_bits: 4 }, fanout: 2, ..PageParams::FORMAT };
-        assert!(encode_snapshot(&snapshot(&st), &snap_cx(), Some(&mut MemoryPages::with_params(tiny))).is_err(), "a third level");
+        let (deep, mut deep_rec) = paged(&st, tiny);
+        assert!(depth(&deep, &mut deep_rec.inner) > 3, "levels as needed");
+        assert_eq!(unpage(&deep, &mut deep_rec.inner).unwrap(), st);
         // a source with other parameters would have cut elsewhere: the paging is not canonical
         let mut cut = MemoryPages::with_params(PageParams { cut: ChunkParams { min: 200, max: 1024, mask_bits: 6 }, ..SMALL });
         for p in &rec.pages {
@@ -309,6 +326,111 @@ fn paging_spec_8() {
         let plain = paged(&st, PageParams { target: usize::MAX, ..SMALL }).0;
         assert!(unpage(&plain, &mut rec.inner).is_err(), "unpaged where paging is mandatory");
     }
+}
+
+/// A content-addressed page store (equal plaintexts, equal links), counting fetches.
+#[derive(Default)]
+struct Cas {
+    params: Option<PageParams>,
+    pages: std::collections::HashMap<[u8; 32], Vec<u8>>,
+    fetched: usize,
+}
+
+impl PageSink for Cas {
+    fn put(&mut self, p: &[u8]) -> Result<osis_base::Link, crate::PageError> {
+        let hash = osis_base::hash::hash(p);
+        self.pages.insert(hash, p.to_vec());
+        Ok(osis_base::Link { hash, blob: osis_base::BlobId(hash), suite: 1, key: [0; 32], salt: [0; 16], del: osis_base::Del::NONE })
+    }
+    fn params(&self) -> PageParams {
+        self.params.unwrap_or(PageParams::FORMAT)
+    }
+}
+
+impl crate::page::PageSource for Cas {
+    fn get(&mut self, l: &osis_base::Link) -> Result<Vec<u8>, crate::PageError> {
+        self.fetched += 1;
+        self.pages.get(&l.hash).cloned().ok_or(crate::PageError::Missing)
+    }
+    fn params(&self) -> PageParams {
+        self.params.unwrap_or(PageParams::FORMAT)
+    }
+}
+
+/// §8 scaling, counted (notes/principles.md, Check scaling): a set at n, 10n and 100n elements
+/// under small pages has 2, 3 and 4 page levels. Encoding puts and decoding fetches every page
+/// once (linear in the pages); a read of one element fetches one page per level; an edit of one
+/// element changes a few leaf pages whatever n (content-defined cuts resync). Link pages change
+/// above them, and after them too where the leaf count moves and groups close by count: at
+/// these fan-outs every group does, at the format's (512 against a 1/256 hash cut) about one in
+/// seven. (The encoder's memory per level: codec `tests_levels`.)
+#[test]
+fn page_levels_scale_spec_8() {
+    use crate::stream::{Checked, stream_checked, stream_checked_some};
+    let params = PageParams { target: 1500, cut: ChunkParams { min: 16, max: 512, mask_bits: 6 }, fanout: 8, ..PageParams::FORMAT };
+    let mut seen = Vec::new();
+    for (n, levels) in [(100usize, 2usize), (1000, 3), (10_000, 4)] {
+        let st = big_set(n, 1);
+        let mut cas = Cas { params: Some(params), ..Cas::default() };
+        let bytes = encode_snapshot(&snapshot(&st), &snap_cx(), Some(&mut cas)).unwrap();
+        let pages = cas.pages.len();
+        let d = depth(&bytes, &mut cas);
+        assert_eq!(d, levels, "n = {n}: levels");
+        // decode: every page once
+        cas.fetched = 0;
+        assert_eq!(unpage(&bytes, &mut cas).unwrap(), st);
+        assert_eq!(cas.fetched, pages, "n = {n}: decode fetches each page once");
+        // a read of one element: one page per level
+        let mut index = crate::PageIndex::default();
+        stream_checked(Checked::verified(&bytes), &snap_cx(), &mut Interner::new(), Some(&mut cas), &mut |p| {
+            index.add(&p);
+            Ok(())
+        })
+        .unwrap();
+        let Fragment::Set(set) = &st else { panic!("a set") };
+        let (dot, el) = set.elems.iter().nth(n / 2).unwrap();
+        let mut one = set.clone();
+        one.elems = [(dot.clone(), el.clone())].into();
+        let wanted = index.wanted(&Fragment::Set(one));
+        cas.fetched = 0;
+        let mut got = None;
+        stream_checked_some(Checked::verified(&bytes), &snap_cx(), &mut Interner::new(), Some(&mut cas), &|p, at| wanted.wants(p, at), &mut |p| {
+            if let crate::Piece::Page { fragment: Fragment::Set(s), .. } = p
+                && got.is_none()
+            {
+                got = s.elems.get(dot).cloned();
+            }
+            Ok(())
+        })
+        .unwrap();
+        assert_eq!(cas.fetched, levels, "n = {n}: one page per level");
+        assert_eq!(got.as_ref(), Some(el), "n = {n}: the element read");
+        // one element's value changed: the pages on its path change, and a neighbour where a
+        // cut moves
+        let mut edited = Fragment::default();
+        for i in 0..n {
+            let mut w = Writer::new(ts(((i as u64 % 7) + 1) << 16), node((i % 3) as u8 + 1), 1 + i as u64);
+            let v = if i == n / 2 { format!("element changed {i}") } else { format!("element number {i}") };
+            edited.join(create(&mut w, &AnyView, &Value::Set([Value::Str(v)].into_iter().collect())).unwrap());
+        }
+        let mut again = Cas { params: Some(params), ..Cas::default() };
+        encode_snapshot(&snapshot(&edited), &snap_cx(), Some(&mut again)).unwrap();
+        let is_links = |p: &[u8]| matches!(osis_base::decode(p, &osis_base::Limits::DEFAULT), Ok(Value::List(i)) if i.iter().all(|x| matches!(x, Value::Link(_))));
+        let new: Vec<&Vec<u8>> = again.pages.iter().filter(|(h, _)| !cas.pages.contains_key(*h)).map(|x| x.1).collect();
+        let leaves = new.iter().filter(|p| !is_links(p)).count();
+        let changed = (leaves, new.len() - leaves);
+        assert!((1..=8).contains(&leaves), "n = {n}: {leaves} leaf pages changed");
+        seen.push((n, levels, pages, changed));
+    }
+    println!("(n, levels, pages, (leaf, link) pages changed by one edit): {seen:?}");
+    let pages: Vec<usize> = seen.iter().map(|x| x.2).collect();
+    assert!(pages.windows(2).all(|w| (8 * w[0]..=12 * w[0]).contains(&w[1])), "pages linear in n: {pages:?}");
+}
+
+/// The first link in a value, depth first.
+fn first_link(v: &Value) -> Option<osis_base::Link> {
+    let Value::List(items) = v else { return None };
+    items.iter().find_map(|x| if let Value::Link(l) = x { Some(**l) } else { first_link(x) })
 }
 
 /// §8 at the format's sizes: a set above 64 KiB pages and round-trips, and a writer's delta pages

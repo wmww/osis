@@ -49,9 +49,10 @@ fn links_len(links: &[Link]) -> usize {
 /// spec/wire.md §6), written element by element: itself while its plain encoding is at or below
 /// the page target; past it, cut into pages as elements come (`PageCutter`; a field's key and
 /// value bytes are one element, a page of fields a map), each page put through the sink as it
-/// closes; at the end `[Link+]`, or link pages when that list is above the target. Holds the
-/// bytes of one page's elements (all of them while the array may still be plain) and the links.
-/// The collecting pass keeps nothing (§3.3 rule 1 notes sources as elements are encoded).
+/// closes, its link going to the link levels (`Levels`); at the end the top level's `[Link+]`.
+/// Holds the bytes of one page's elements (all of them while the array may still be plain) and
+/// per link level at most a target's links or one open group. The collecting pass keeps nothing
+/// (§3.3 rule 1 notes sources as elements are encoded).
 pub(crate) struct Pager {
     map: bool,
     keep: bool,
@@ -68,7 +69,7 @@ pub(crate) struct Pager {
     count: usize,
     size: usize,
     paging: bool,
-    links: Vec<Link>,
+    levels: Levels,
     /// The test oracle's whole paging (`oracle`): every element held, then cut at the end.
     #[cfg(any(test, fuzzing))]
     whole: bool,
@@ -88,7 +89,7 @@ impl Pager {
             count: 0,
             size: 0,
             paging: false,
-            links: Vec::new(),
+            levels: Levels::default(),
             #[cfg(any(test, fuzzing))]
             whole: false,
         }
@@ -166,7 +167,8 @@ impl Pager {
         let sink = sink.ok_or(Error::Mismatch("a paged array needs a page sink"))?;
         let mut page = Vec::with_capacity(head_len(self.held as u64) + self.buf.len());
         self.put_plain(&mut page);
-        self.links.push(sink.put(&page)?);
+        let link = sink.put(&page)?;
+        self.levels.push(0, link, self.params, sink)?;
         self.buf.clear();
         (self.held, self.mark) = (0, 0);
         Ok(())
@@ -208,29 +210,92 @@ impl Pager {
         if self.held > 0 {
             self.put_page(re(&mut sink))?;
         }
-        link_list(sink, &self.links, self.params, out)
+        let sink = sink.ok_or(Error::Mismatch("a paged array needs a page sink"))?;
+        self.levels.finish(self.params, sink, out)
     }
 }
 
-/// `[Link+]` of an array's pages, or of link pages when that list is above the target (§8,
-/// spec/wire.md §6: the tree-node grouping rule, level 1 only).
-fn link_list(sink: Option<&mut dyn PageSink>, links: &[Link], params: PageParams, out: &mut Vec<u8>) -> Result<(), Error> {
-    if links_len(links) <= params.target {
-        put_links(out, links);
-        return Ok(());
+/// The link levels above a paged array's leaf pages (§8, spec/wire.md §6), built as links come.
+/// Level 0 holds the leaf pages' links, level `k + 1` the links of level `k`'s link pages. A level
+/// holds its links while their list fits the page target; past it, it groups them by the
+/// tree-node rule into link pages as groups close, each page's link going to the level above.
+/// The first level that fits is the array's `[Link+]`. Memory: per level a target's links or one
+/// open group (at most the fan-out); the depth grows as the array needs, about
+/// log_fanout of its pages.
+#[derive(Default)]
+struct Levels(Vec<Level>);
+
+#[derive(Default)]
+struct Level {
+    /// The level's links while it fits the target; once grouping, the open group's.
+    links: Vec<Link>,
+    /// `links_len(links) - head`, while not grouping.
+    size: usize,
+    grouping: bool,
+}
+
+impl Levels {
+    /// A link at level `k`.
+    fn push(&mut self, k: usize, link: Link, params: PageParams, sink: &mut dyn PageSink) -> Result<(), Error> {
+        if self.0.len() <= k {
+            self.0.resize_with(k + 1, Level::default);
+        }
+        let Some(lv) = self.0.get_mut(k) else { return Err(Error::Mismatch("link level")) };
+        if lv.grouping {
+            lv.links.push(link);
+            return self.close(k, params, sink);
+        }
+        lv.size = lv.size.saturating_add(link_len(&link));
+        lv.links.push(link);
+        // a list above the target holds two links or more at any sensible parameters; one link
+        // stays a list whatever its size, so the levels end
+        if head_len(lv.links.len() as u64).saturating_add(lv.size) <= params.target || lv.links.len() < 2 {
+            return Ok(());
+        }
+        // grouped from here: the held links go into groups as they would have come
+        lv.grouping = true;
+        for l in std::mem::take(&mut lv.links) {
+            let Some(lv) = self.0.get_mut(k) else { return Err(Error::Mismatch("link level")) };
+            lv.links.push(l);
+            self.close(k, params, sink)?;
+        }
+        Ok(())
     }
-    let sink = sink.ok_or(Error::Mismatch("a paged array needs a page sink"))?;
-    let mut top = Vec::new();
-    for g in link_groups(links, params.fanout) {
-        let mut page = Vec::with_capacity(links_len(g));
-        put_links(&mut page, g);
-        top.push(sink.put(&page)?);
+
+    /// Closes level `k`'s open group when the tree-node rule ends it after its last link: a link
+    /// whose hash starts with a zero byte, from the group's second, or the fan-out.
+    fn close(&mut self, k: usize, params: PageParams, sink: &mut dyn PageSink) -> Result<(), Error> {
+        let Some(lv) = self.0.get_mut(k) else { return Err(Error::Mismatch("link level")) };
+        let n = lv.links.len();
+        let zero = lv.links.last().is_some_and(|l| l.hash.first() == Some(&0));
+        if (n >= 2 && zero) || n >= params.fanout { self.put_group(k, params, sink) } else { Ok(()) }
     }
-    if links_len(&top) > params.target {
-        return Err(Error::Mismatch("fragment needs a third page level"));
+
+    /// Level `k`'s open group as a link page, its link to level `k + 1`.
+    fn put_group(&mut self, k: usize, params: PageParams, sink: &mut dyn PageSink) -> Result<(), Error> {
+        let Some(lv) = self.0.get_mut(k) else { return Err(Error::Mismatch("link level")) };
+        let mut page = Vec::with_capacity(links_len(&lv.links));
+        put_links(&mut page, &lv.links);
+        lv.links.clear();
+        let link = sink.put(&page)?;
+        self.push(k + 1, link, params, sink)
     }
-    put_links(out, &top);
-    Ok(())
+
+    /// The last group of each grouping level, from the bottom, then the first level that fits.
+    fn finish(mut self, params: PageParams, sink: &mut dyn PageSink, out: &mut Vec<u8>) -> Result<(), Error> {
+        let mut k = 0;
+        while let Some(lv) = self.0.get(k) {
+            if !lv.grouping {
+                put_links(out, &lv.links);
+                return Ok(());
+            }
+            if !lv.links.is_empty() {
+                self.put_group(k, params, sink)?;
+            }
+            k += 1;
+        }
+        Err(Error::Mismatch("a paged array with no links"))
+    }
 }
 
 /// `sink` reborrowed.
@@ -242,7 +307,8 @@ fn re<'s>(sink: &'s mut Option<&mut dyn PageSink>) -> Option<&'s mut dyn PageSin
 }
 
 /// An element array as written (§8, spec/wire.md §6): itself at or below the sink's page target,
-/// else `[Link+]` to pages, or to link pages when that list is above the target. Pages are put
+/// else `[Link+]` to pages, grouped into levels of link pages until a level's list fits the
+/// target (`Levels`). Pages are put
 /// through the sink; `None` is fine only for an array that does not page.
 pub fn page_array(mut pages: Option<&mut dyn PageSink>, items: &[Value]) -> Result<Vec<u8>, Error> {
     let mut p = Pager::new(false, pages.as_ref().map_or(PageParams::FORMAT, |p| p.params()));
@@ -253,25 +319,6 @@ pub fn page_array(mut pages: Option<&mut dyn PageSink>, items: &[Value]) -> Resu
     let mut out = Vec::new();
     p.finish(pages, &mut out)?;
     Ok(out)
-}
-
-/// Links grouped into link pages by the tree-node rule (spec/wire.md §6): a group closes after
-/// a link whose hash starts with a zero byte (from its second link) or at `fanout` links.
-pub(crate) fn link_groups(links: &[Link], fanout: usize) -> Vec<&[Link]> {
-    let mut out = Vec::new();
-    let mut start = 0;
-    for (i, l) in links.iter().enumerate() {
-        let zero = l.hash.first() == Some(&0);
-        let n = i + 1 - start;
-        if (n >= 2 && zero) || n >= fanout {
-            out.push(links.get(start..=i).unwrap_or_default());
-            start = i + 1;
-        }
-    }
-    if start < links.len() {
-        out.push(links.get(start..).unwrap_or_default());
-    }
-    out
 }
 
 /// A bag or set element `[Dot, R, Opt(Fragment)]`, with a value removal
@@ -551,7 +598,7 @@ pub(crate) type Fetched = Vec<(Vec<u8>, osis_base::Link)>;
 
 /// Fetches a page, checked. Each blob is read once per delta, so expansion is bounded by the
 /// distinct pages that exist.
-pub(crate) fn fetch_page(cx: &mut Dec, link: &osis_base::Link) -> Result<CanonicalBytes, Error> {
+fn fetch_page(cx: &mut Dec, link: &osis_base::Link) -> Result<CanonicalBytes, Error> {
     if !cx.links_seen.insert(link.blob) {
         return Err(Error::Malformed("a page linked twice"));
     }
@@ -566,32 +613,79 @@ fn page_links(page: &CanonicalBytes) -> Result<Option<Vec<osis_base::Link>>, Err
     page.item().as_list().map_or(Ok(None), links)
 }
 
-/// The leaf pages under a paged position `v` holding links `top`, in order, and its link pages
-/// (§8, at most two levels).
-fn leaf_pages(cx: &mut Dec, v: Item, top: &[osis_base::Link]) -> Result<(Vec<(CanonicalBytes, osis_base::Link)>, Fetched), Error> {
+/// Where a leaf page lies in its position's link tree (§8): the index of the link taken at each
+/// level on the way down, the root list's first. Leaves ascend in this order; a link page's place
+/// is a prefix of its leaves'.
+pub type PageAt = Vec<usize>;
+
+/// A page `walk_tree` reached.
+pub(crate) enum Visit {
+    Link(CanonicalBytes, osis_base::Link),
+    Leaf(CanonicalBytes, osis_base::Link, PageAt),
+}
+
+/// Walks the link tree under a paged position's root list `top` (§8, spec/wire.md §6) depth
+/// first, in leaf order, handing each page to `on` as it is fetched (a link page before its
+/// pages). Each link is offered to `want` with its place before it is fetched; one it declines is
+/// not fetched, nor anything below it. Bad input: a link page above the fan-out, leaves at two
+/// depths. Bounded by the input: each page is fetched once (`fetch_page`: a blob linked twice is
+/// bad input, so no cycle), and memory is the link lists on the way down, a page's worth per
+/// level reached, every level a page the author delivered.
+pub(crate) fn walk_tree(cx: &mut Dec, top: Vec<osis_base::Link>, want: &dyn Fn(&[usize]) -> bool, on: &mut dyn FnMut(&mut Dec, Visit) -> Result<(), Error>) -> Result<(), Error> {
+    let fanout = cx.pages.as_ref().map_or(PageParams::FORMAT, |p| p.params()).fanout;
+    // each level's links and the index of the next one to take
+    let mut stack = vec![(top, 0usize)];
+    // the depth every leaf lies at, once a leaf is reached
+    let mut leaves_at = None;
+    while let Some((links, next)) = stack.last_mut() {
+        let Some(l) = links.get(*next).copied() else {
+            stack.pop();
+            continue;
+        };
+        *next += 1;
+        let at: PageAt = stack.iter().map(|(_, i)| i.saturating_sub(1)).collect();
+        if !want(&at) {
+            continue;
+        }
+        let depth = stack.len();
+        let page = fetch_page(cx, &l)?;
+        match page_links(&page)? {
+            Some(inner) => {
+                if leaves_at.is_some_and(|d| d <= depth) {
+                    return Err(Error::Malformed("leaf pages at different depths"));
+                }
+                if inner.len() > fanout {
+                    return Err(Error::Malformed("link page above the fan-out"));
+                }
+                on(cx, Visit::Link(page, l))?;
+                stack.push((inner, 0));
+            }
+            None => {
+                if leaves_at.is_some_and(|d| d != depth) {
+                    return Err(Error::Malformed("leaf pages at different depths"));
+                }
+                leaves_at = Some(depth);
+                on(cx, Visit::Leaf(page, l, at))?;
+            }
+        }
+    }
+    Ok(())
+}
+
+/// The leaf pages under a paged position `v` holding links `top`, in order, and its link pages.
+fn leaf_pages(cx: &mut Dec, v: Item, top: Vec<osis_base::Link>) -> Result<(Vec<(CanonicalBytes, osis_base::Link)>, Fetched), Error> {
     let params = cx.pages.as_ref().map_or(PageParams::FORMAT, |p| p.params());
     if v.bytes().len() > params.target {
         return Err(Error::Malformed("link list above the page target"));
     }
     let (mut leaves, mut link_pages) = (Vec::new(), Vec::new());
-    for l in top {
-        let page = fetch_page(cx, l)?;
-        let Some(inner) = page_links(&page)? else {
-            leaves.push((page, *l));
-            continue;
-        };
-        link_pages.push((page.into_bytes(), *l));
-        if inner.len() > params.fanout {
-            return Err(Error::Malformed("link page above the fan-out"));
+    walk_tree(cx, top, &|_| true, &mut |_, v| {
+        match v {
+            Visit::Link(page, l) => link_pages.push((page.into_bytes(), l)),
+            Visit::Leaf(page, l, _) => leaves.push((page, l)),
         }
-        for l in &inner {
-            let page = fetch_page(cx, l)?;
-            if page_links(&page)?.is_some() {
-                return Err(Error::Malformed("a third page level"));
-            }
-            leaves.push((page, *l));
-        }
-    }
+        Ok(())
+    })?;
     Ok((leaves, link_pages))
 }
 
@@ -605,7 +699,7 @@ pub(crate) fn leaf_items(page: Item) -> Result<List, Error> {
 pub(crate) fn elem_items(cx: &mut Dec, v: Item, each: &mut dyn FnMut(&mut Dec, List) -> Result<(), Error>) -> Result<(), Error> {
     let items = as_array(v)?;
     let Some(top) = links(items)? else { return each(cx, items) };
-    let (leaves, link_pages) = leaf_pages(cx, v, &top)?;
+    let (leaves, link_pages) = leaf_pages(cx, v, top)?;
     for (p, _) in &leaves {
         leaf_items(p.item())?;
     }
@@ -732,7 +826,7 @@ fn decode_children(cx: &mut Dec, v: Item, step: fn(u64) -> Step) -> Result<BTree
     }
     let items = v.as_list().ok_or(Error::Malformed("expected a map"))?;
     let top = links(items)?.ok_or(Error::Malformed("expected a map or links"))?;
-    let (leaves, link_pages) = leaf_pages(cx, v, &top)?;
+    let (leaves, link_pages) = leaf_pages(cx, v, top)?;
     for (page, _) in &leaves {
         decode_fields(cx, page.item(), true, step, &mut out)?;
     }
@@ -1124,7 +1218,23 @@ pub mod oracle {
                 from = i + 1;
             }
         }
-        link_list(Some(&mut **sink), &links, params, out)
+        // level by level until a level's list fits (spec/wire.md §6)
+        while links_len(&links) > params.target && links.len() >= 2 {
+            let mut up = Vec::new();
+            let mut start = 0;
+            for (i, l) in links.iter().enumerate() {
+                let n = i + 1 - start;
+                if (n >= 2 && l.hash.first() == Some(&0)) || n >= params.fanout || i + 1 == links.len() {
+                    let mut page = Vec::new();
+                    put_links(&mut page, links.get(start..=i).unwrap_or_default());
+                    up.push(sink.put(&page)?);
+                    start = i + 1;
+                }
+            }
+            links = up;
+        }
+        put_links(out, &links);
+        Ok(())
     }
 
     /// A content-addressed sink (`twin`): equal pages get equal links whatever the order of puts.
@@ -1261,4 +1371,48 @@ pub fn decoded_bound(bytes: &[u8]) -> Result<usize, Error> {
         sum = sum.saturating_add(each);
     })?;
     Ok(sum.saturating_add(bytes.len().saturating_mul(BYTE_BYTES)))
+}
+
+#[cfg(test)]
+mod tests_levels {
+    use super::*;
+
+    /// Links by count, each hash from a counter (a zero first byte one time in 256).
+    struct Sink(u64);
+
+    impl PageSink for Sink {
+        fn put(&mut self, _: &[u8]) -> Result<Link, PageError> {
+            self.0 += 1;
+            let hash = osis_base::hash::hash(&self.0.to_le_bytes());
+            Ok(Link { hash, blob: osis_base::BlobId(hash), suite: 1, key: [0; 32], salt: [0; 16], del: osis_base::Del::NONE })
+        }
+    }
+
+    /// spec/wire.md §6, notes/decode-bounds.md: the link levels hold at most a target's links or
+    /// one open group per level, whatever the array's size: at 10^3, 10^4 and 10^5 leaf pages
+    /// (4, 5 and 6 page levels at these parameters, leaves included) the most held is the levels
+    /// times the larger of the two, and the levels grow by one per tenfold.
+    #[test]
+    fn link_levels_hold_a_page_per_level_spec_8() {
+        let params = PageParams { target: 1500, fanout: 8, ..PageParams::FORMAT };
+        let per_level = params.fanout.max(params.target / 100);
+        let mut depths = Vec::new();
+        for n in [1_000u64, 10_000, 100_000] {
+            let mut sink = Sink(0);
+            let mut levels = Levels::default();
+            let mut most = 0;
+            for _ in 0..n {
+                let l = sink.put(&[]).unwrap();
+                levels.push(0, l, params, &mut sink).unwrap();
+                most = most.max(levels.0.iter().map(|x| x.links.len()).sum::<usize>());
+            }
+            let depth = levels.0.len();
+            assert!(most <= depth * per_level, "n = {n}: {most} links held at {depth} levels");
+            let mut out = Vec::new();
+            levels.finish(params, &mut sink, &mut out).unwrap();
+            assert!(out.len() <= params.target);
+            depths.push(depth);
+        }
+        assert_eq!(depths, [4, 5, 6], "a level per tenfold");
+    }
 }

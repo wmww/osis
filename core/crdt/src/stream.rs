@@ -16,7 +16,7 @@
 //! the root decode met them, which for canonical bytes is the order the check's root re-encode
 //! meets them.
 
-use crate::codec::{Pager, leaf_items, put_absorbed, canonical, check_root, decode_entries, decode_elem_items, decode_fields, decode_fragment, derived_ok, encode_elem, encode_entry, encode_field, encode_fragment, fetch_page, links, nonce, prune_stable, root_tables, snapshot_tail, LIMITS};
+use crate::codec::{PageAt, Pager, Visit, leaf_items, walk_tree, put_absorbed, canonical, check_root, decode_entries, decode_elem_items, decode_fields, decode_fragment, derived_ok, encode_elem, encode_entry, encode_field, encode_fragment, links, nonce, prune_stable, root_tables, snapshot_tail, LIMITS};
 use crate::error::Error;
 use crate::fragment::{Bag, Eid, Encoding, Entry, Enum, Fragment, Map, Meta, Set, Struct};
 use crate::page::{PageParams, PageSource};
@@ -26,7 +26,7 @@ use crate::seq_wire::Runs;
 use crate::stamp::{Dot, Interner, Stamp, max_opt};
 use crate::wire::{Dec, DeltaCtx, DeltaKind, Enc, Ev, Frontiers, NONCE_LEN, Track, as_array};
 use osis_base::cbor::{Item, put_array, put_bytes};
-use osis_base::{CanonicalBytes, CommitId, Tid, Value};
+use osis_base::{CommitId, Tid, Value};
 use std::collections::BTreeMap;
 
 /// A paged collection of the root left for streaming: its link list as written, its encoding,
@@ -68,14 +68,10 @@ pub enum Piece {
     Page { path: Vec<Step>, at: PageAt, fragment: Fragment },
 }
 
-/// Where a leaf page lies in its collection's link tree: the index of its link in the root's
-/// link list, and its index in the link page that link names, if it names one. Leaves ascend
-/// in this order.
-pub type PageAt = (usize, Option<usize>);
-
-/// Which pages a decode-only read fetches (`stream_checked_some`): asked of each root link with
-/// `None` below it before it is fetched, and of each leaf of a link page.
-pub type Want<'w> = &'w dyn Fn(&[Step], PageAt) -> bool;
+/// Which pages a decode-only read fetches (`stream_checked_some`): asked of each link of a
+/// collection's link tree with its place (`PageAt`) before it is fetched; a link page's place is
+/// a prefix of its leaves'.
+pub type Want<'w> = &'w dyn Fn(&[Step], &[usize]) -> bool;
 
 /// A snapshot root's tables besides its fragment.
 #[derive(Debug, Default)]
@@ -288,7 +284,7 @@ fn prune_page(f: &Fragment, e: Option<&Stamp>, carry: &mut Vec<(Eid, Entry)>) ->
 /// link list as written (spec/wire.md §6: paged, leaf order, link pages). `want` (decode-only,
 /// the position's path with it): the links it does not name are not fetched.
 fn position(dec: &mut Dec, mut enc: Option<&mut Enc>, d: &Deferred, (path, want): (&[Step], Option<Want<'_>>), wrap: &WrapPath, e: Option<&Stamp>, each: &mut dyn FnMut(Raw) -> Result<(), Error>) -> Result<(), Error> {
-    let wants = |at: PageAt| want.is_none_or(|w| w(path, at));
+    let wants = |at: &[usize]| want.is_none_or(|w| w(path, at));
     let params = dec.pages.as_ref().map_or(PageParams::FORMAT, |p| p.params());
     if d.top.len() > params.target {
         return Err(Error::Malformed("link list above the page target"));
@@ -296,14 +292,23 @@ fn position(dec: &mut Dec, mut enc: Option<&mut Enc>, d: &Deferred, (path, want)
     let top = links(as_array(Item::parse(&d.top, &LIMITS)?)?)?.unwrap_or_default();
     let mut out = Out::new(d.enc, params);
     let mut carry = Vec::new();
-    let mut leaf = |dec: &mut Dec, enc: Option<&mut Enc>, page: CanonicalBytes, l: osis_base::Link, at: PageAt| -> Result<(), Error> {
+    walk_tree(dec, top, &wants, &mut |dec, v| {
+        let (page, l, at) = match v {
+            Visit::Link(page, l) => {
+                if let Some(c) = enc.as_mut().and_then(|enc| enc.check.as_mut()) {
+                    c.replay.extend(vec![(page.into_bytes(), l)]);
+                }
+                return Ok(());
+            }
+            Visit::Leaf(page, l, at) => (page, l, at),
+        };
         let before = std::mem::take(&mut dec.fetched);
         dec.depth = d.depth;
         let inner = decode_page(dec, page.item(), d.enc);
         dec.depth = 0;
         let inner = inner?;
         let nested = std::mem::take(&mut dec.fetched);
-        if let Some(enc) = enc {
+        if let Some(enc) = enc.as_deref_mut() {
             if let Some(c) = enc.check.as_mut() {
                 c.replay.extend(vec![(page.into_bytes(), l)]);
                 c.replay.extend(before);
@@ -313,33 +318,7 @@ fn position(dec: &mut Dec, mut enc: Option<&mut Enc>, d: &Deferred, (path, want)
             prune_page(&inner, e, &mut carry)?;
         }
         each(Raw::Page(wrap, at, inner))
-    };
-    for (i, l) in top.iter().enumerate() {
-        if !wants((i, None)) {
-            continue;
-        }
-        let page = fetch_page(dec, l)?;
-        let Some(inner) = page.item().as_list().map_or(Ok(None), links)? else {
-            leaf(dec, enc.as_deref_mut(), page, *l, (i, None))?;
-            continue;
-        };
-        if inner.len() > params.fanout {
-            return Err(Error::Malformed("link page above the fan-out"));
-        }
-        if let Some(c) = enc.as_mut().and_then(|enc| enc.check.as_mut()) {
-            c.replay.extend(vec![(page.into_bytes(), *l)]);
-        }
-        for (j, l) in inner.iter().enumerate() {
-            if !wants((i, Some(j))) {
-                continue;
-            }
-            let page = fetch_page(dec, l)?;
-            if page.item().as_list().map_or(Ok(None), links)?.is_some() {
-                return Err(Error::Malformed("a third page level"));
-            }
-            leaf(dec, enc.as_deref_mut(), page, *l, (i, Some(j)))?;
-        }
-    }
+    })?;
     if let Some(enc) = enc
         && out.finish(enc)? != d.top
     {

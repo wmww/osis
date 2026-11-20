@@ -52,8 +52,8 @@ impl PageSource for Blobs {
     }
 }
 
-/// Small enough that most fragments page, some at two levels.
-const TINY: PageParams = PageParams { target: 1500, cut: ChunkParams { min: 48, max: 192, mask_bits: 4 }, fanout: 8, ..PageParams::FORMAT };
+/// Small enough that most fragments page, some at three levels or more.
+const TINY: PageParams = PageParams { target: 600, cut: ChunkParams { min: 48, max: 192, mask_bits: 4 }, fanout: 4, ..PageParams::FORMAT };
 /// Larger pages: one level, pages of several sequence runs.
 const SMALL: PageParams = PageParams { target: 2000, cut: ChunkParams { min: 128, max: 1024, mask_bits: 6 }, fanout: 8, ..PageParams::FORMAT };
 

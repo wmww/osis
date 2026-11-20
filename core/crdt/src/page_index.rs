@@ -14,7 +14,8 @@ use crate::fragment::{Encoding, Fragment};
 use crate::paging::Step;
 use crate::seq_span::nth;
 use crate::stamp::Dot;
-use crate::stream::{PageAt, Piece};
+use crate::codec::PageAt;
+use crate::stream::Piece;
 use std::collections::{BTreeMap, BTreeSet};
 
 /// A leaf's first element.
@@ -54,14 +55,13 @@ pub struct PageIndex {
 pub struct Wanted(BTreeMap<Vec<Step>, Option<BTreeSet<PageAt>>>);
 
 impl Wanted {
-    /// Whether the leaf `at` of the collection at `path` is fetched; a root link (`at.1` none)
-    /// is fetched when a leaf under it is (or it is that leaf).
-    pub fn wants(&self, path: &[Step], at: PageAt) -> bool {
+    /// Whether the page at `at` of the collection at `path` is fetched: a leaf named, or a link
+    /// page above one (its place a prefix of the leaf's).
+    pub fn wants(&self, path: &[Step], at: &[usize]) -> bool {
         match self.0.get(path) {
             None => false,
             Some(None) => true,
-            Some(Some(set)) if at.1.is_some() => set.contains(&at),
-            Some(Some(set)) => set.range((at.0, None)..).next().is_some_and(|x| x.0 == at.0),
+            Some(Some(set)) => set.range(at.to_vec()..).next().is_some_and(|x| x.starts_with(at)),
         }
     }
 }
@@ -90,7 +90,7 @@ impl PageIndex {
             _ => None,
         };
         let reach = l.leaves.last().and_then(|x| x.reach.clone()).into_iter().chain(end).max();
-        l.leaves.push(Leaf { at: *at, first, reach });
+        l.leaves.push(Leaf { at: at.clone(), first, reach });
     }
 
     /// Whether the part has no paged collection: it streams as its skeleton alone.
@@ -100,7 +100,7 @@ impl PageIndex {
 
     /// About the bytes held (`Fragment::approx_bytes`'s measure).
     pub fn approx_bytes(&self) -> usize {
-        self.paths.iter().map(|(p, l)| size_of::<Leaves>() + p.len() * size_of::<Step>() + l.leaves.len() * size_of::<Leaf>()).sum()
+        self.paths.iter().map(|(p, l)| size_of::<Leaves>() + p.len() * size_of::<Step>() + l.leaves.iter().map(|x| size_of::<Leaf>() + x.at.len() * size_of::<usize>()).sum::<usize>()).sum()
     }
 
     /// The leaves holding what `positions_at(body)` takes of the part.
@@ -128,7 +128,7 @@ impl Leaves {
         let lt = |k: &First| self.leaves.partition_point(|x| x.first < *k);
         let mut out = BTreeSet::new();
         // the leaves from the `lo`th through the one before the `hi`th
-        let mut take = |lo: usize, hi: usize| out.extend(self.leaves.get(lo..hi).into_iter().flatten().map(|x| x.at));
+        let mut take = |lo: usize, hi: usize| out.extend(self.leaves.get(lo..hi).into_iter().flatten().map(|x| x.at.clone()));
         let dot = |d: &Dot| First::Dot(d.clone());
         match (self.enc?, b) {
             // the records holding a dot of the body's span: from the first leaf whose runs reach
@@ -198,11 +198,11 @@ mod tests {
         let rec = |span| SeqElem { created: None, content: SeqContent::None, pos: Vec::new(), deleted: None, undel: None, valueless: false, span };
         let seq = |d: Dot, span| Fragment::Seq(Seq::new(true, Default::default(), [(d, rec(span))].into()));
         let mut ix = PageIndex::default();
-        ix.add(&Piece::Page { path: Vec::new(), at: (0, None), fragment: seq(Dot::new(s.clone(), 1), 10) });
-        ix.add(&Piece::Page { path: Vec::new(), at: (1, None), fragment: seq(Dot::new(derived, 1), 1) });
+        ix.add(&Piece::Page { path: Vec::new(), at: vec![0], fragment: seq(Dot::new(s.clone(), 1), 10) });
+        ix.add(&Piece::Page { path: Vec::new(), at: vec![1], fragment: seq(Dot::new(derived, 1), 1) });
         let w = ix.wanted(&seq(Dot::new(s.clone(), 7), 1));
-        assert!(w.wants(&[], (0, None)), "the page whose run covers (s, 7): {w:?}");
+        assert!(w.wants(&[], &[0]), "the page whose run covers (s, 7): {w:?}");
         let w = ix.wanted(&seq(Dot::new(s, 11), 1));
-        assert!(!w.wants(&[], (0, None)) && !w.wants(&[], (1, None)), "a dot no record holds: no page: {w:?}");
+        assert!(!w.wants(&[], &[0]) && !w.wants(&[], &[1]), "a dot no record holds: no page: {w:?}");
     }
 }

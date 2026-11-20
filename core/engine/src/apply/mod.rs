@@ -2458,7 +2458,7 @@ pub(crate) fn held_part_at(tx: &mut Tx<'_>, id: &CommitId, ai: usize, at: &osis_
         return Ok((d.fragment().positions_at(at), Some(gives)));
     }
     let wanted = kept.as_ref().map(|k| k.wanted(at));
-    let want = wanted.as_ref().map(|w| move |path: &[osis_crdt::Step], x: osis_crdt::PageAt| w.wants(path, x));
+    let want = wanted.as_ref().map(|w| move |path: &[osis_crdt::Step], x: &[usize]| w.wants(path, x));
     let mut part = osis_crdt::Fragment::default();
     let mut index = (stored.is_some() && kept.is_none()).then(osis_crdt::PageIndex::default);
     let gives = each_held_page(tx, id, ai, want.as_ref().map(|w| w as osis_crdt::Want<'_>), &mut |_, p| {

@@ -147,14 +147,69 @@ fn paging_rejections_spec_8() {
     rejects(&snapshot_with(Value::List(vec![Value::link(page), element(2)])), &mut pages, "mixed");
     // one page linked twice
     rejects(&snapshot_with(Value::List(vec![Value::link(page), Value::link(page)])), &mut pages, "twice");
-    // a third level: a link page of link pages
+    // link pages where the array would not page
     let inner = pages.put(&osis_base::encode(&Value::List(vec![Value::link(page)]))).unwrap();
     let outer = pages.put(&osis_base::encode(&Value::List(vec![Value::link(inner)]))).unwrap();
-    rejects(&snapshot_with(Value::List(vec![Value::link(outer)])), &mut pages, "third");
+    rejects(&snapshot_with(Value::List(vec![Value::link(outer)])), &mut pages, "not canonical");
     // a link page above the fan-out
     let many: Vec<Link> = (0..9).map(|i| pages.put(&osis_base::encode(&Value::List(vec![element(10 + i)]))).unwrap()).collect();
     let wide = pages.put(&osis_base::encode(&Value::List(many.into_iter().map(Value::link).collect()))).unwrap();
     rejects(&snapshot_with(Value::List(vec![Value::link(wide)])), &mut pages, "fan-out");
+}
+
+/// Counts the pages a decode fetches.
+struct Counting<'p> {
+    inner: &'p mut MemoryPages,
+    fetched: usize,
+}
+
+impl crate::page::PageSource for Counting<'_> {
+    fn get(&mut self, l: &Link) -> Result<Vec<u8>, crate::PageError> {
+        self.fetched += 1;
+        self.inner.get(l)
+    }
+    fn params(&self) -> PageParams {
+        crate::page::PageSource::params(&*self.inner)
+    }
+}
+
+/// §8, spec/wire.md §12: a link tree of any depth decodes within what its author delivered, each
+/// hostile shape refused: a chain of single-link link pages 10,000 deep fetches each page once
+/// (no recursion: the walk keeps a link list per level, a page's worth), leaves at two depths
+/// stop at the second depth met, and a page reached twice (a diamond; a cycle would need a page
+/// holding its own hash) stops at the second link to it.
+#[test]
+fn hostile_link_trees_are_bounded_by_their_pages_spec_8() {
+    let mut pages = MemoryPages::with_params(SMALL);
+    let leaf = |pages: &mut MemoryPages, i: i64| pages.put(&osis_base::encode(&Value::List(vec![element(i)]))).unwrap();
+    let link_page = |pages: &mut MemoryPages, ls: &[Link]| pages.put(&osis_base::encode(&Value::List(ls.iter().copied().map(Value::link).collect()))).unwrap();
+    let decode = |root: Value, pages: &mut MemoryPages| {
+        let mut c = Counting { inner: pages, fetched: 0 };
+        let e = decode_snapshot(&snapshot_with(root), &scx(), &mut Interner::new(), Some(&mut c)).unwrap_err();
+        (e.to_string(), c.fetched)
+    };
+    // a chain 10,000 deep over one leaf
+    let mut top = leaf(&mut pages, 1);
+    for _ in 0..10_000 {
+        top = link_page(&mut pages, &[top]);
+    }
+    let (e, fetched) = decode(Value::List(vec![Value::link(top)]), &mut pages);
+    assert!(e.contains("not canonical"), "{e}");
+    assert_eq!(fetched, 10_001, "each page once");
+    // a leaf beside a link page, either way round
+    let (a, b, c) = (leaf(&mut pages, 2), leaf(&mut pages, 3), leaf(&mut pages, 4));
+    let lp = link_page(&mut pages, &[b]);
+    let (e, fetched) = decode(Value::List(vec![Value::link(a), Value::link(lp)]), &mut pages);
+    assert!(e.contains("different depths") && fetched == 2, "{e}, {fetched}");
+    let lp2 = link_page(&mut pages, &[c]);
+    let a2 = leaf(&mut pages, 5);
+    let (e, fetched) = decode(Value::List(vec![Value::link(lp2), Value::link(a2)]), &mut pages);
+    assert!(e.contains("different depths") && fetched == 3, "{e}, {fetched}");
+    // a diamond: two link pages naming one leaf
+    let d = leaf(&mut pages, 6);
+    let (l1, l2) = (link_page(&mut pages, &[d]), link_page(&mut pages, &[d]));
+    let (e, fetched) = decode(Value::List(vec![Value::link(l1), Value::link(l2)]), &mut pages);
+    assert!(e.contains("twice") && fetched == 3, "{e}, {fetched}");
 }
 
 /// A valid paged snapshot still decodes after the expansion limits.
