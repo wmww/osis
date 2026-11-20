@@ -87,6 +87,10 @@ pub const STATED_CUT: Class = class("content cut on its stated path that today's
 /// ends there), so the direct edge, which is none.
 pub const DEPTH: Class = class("no descent past the record chain's depth", "permissions.md §1 Hops: p is on q's record chain (spec/permissions.md §1: within MAX_CHAIN_DEPTH links)");
 
+/// A delta valid today, cut in the walk, with two cuts of its stated path after it, one whose
+/// list names it and one whose list does not: a cut's list answers that cut alone, where today
+/// any later lowering's list keeps it.
+pub const OWN_LIST: Class = class("a cut's list answers that cut alone", "permissions.md §5.2 Content: per edge of its path, every cut after it answered by its own list (README Open 24)");
 /// A delta valid today, cut in the walk, that a held vouch against the cut lists where the vouch
 /// applies nowhere in the walk (its path gives its signer no admin on its thing): today's entry
 /// counts for a voucher who could write the commit.
@@ -100,7 +104,7 @@ pub const VOUCH_ADMIN: Class = class("a vouch needs admin on its thing", "README
 pub const ACTING: Class = class("a write acting for a thing states the Interim [X]", "README Open 16 (Tess): act_as");
 
 /// The classes, in the order a difference is matched against them.
-pub const CLASSES: &[Class] = &[UNCHANGED_SELF, VOUCH_OUTLIVES_LEAVE, LAST_ADMIN, ADMIN_INVITES, VOID_LOWERING, PATH_GIVES_NOTHING, SIBLINGS, STATED_PATH, VOUCH_THING, STATED_CUT, DEPTH, VOUCH_ADMIN];
+pub const CLASSES: &[Class] = &[UNCHANGED_SELF, VOUCH_OUTLIVES_LEAVE, LAST_ADMIN, ADMIN_INVITES, VOID_LOWERING, PATH_GIVES_NOTHING, SIBLINGS, STATED_PATH, VOUCH_THING, STATED_CUT, DEPTH, VOUCH_ADMIN, OWN_LIST];
 /// Owed classes, each to be made designed or gone before the switch.
 pub const OPEN: &[Class] = &[ACTING];
 
@@ -295,6 +299,21 @@ fn stated_cut<S: Store>(w: &World<'_, S>, nid: &WriteId, signer: &Tid, on: &Tid,
     hops.iter().any(|(a, b)| w.paths.writes(a, b).iter().any(|x| x.key >= pos && x.cuts(needs) && (elsewhere || x.key.signer == *signer || blamed(&x.key.commit))))
 }
 
+/// `OWN_LIST`: delta `nid` on `on`, its hops each giving `needs` just before it, has cuts below
+/// `needs` after it on them, one whose list names it and one whose list does not.
+fn own_list<S: Store>(w: &World<'_, S>, nid: &WriteId, on: &Tid, needs: Role) -> bool {
+    let Some((hops, pos)) = w.paths.rests(nid) else { return false };
+    if !hops.iter().all(|(a, b)| w.paths.role_before(a, b, &pos) >= Some(needs)) {
+        return false;
+    }
+    let names = |k: &Key| match w.inputs.get(&k.commit).and_then(|i| i.commit.parts.get(k.part as usize)).map(|p| &p.kind) {
+        Some(PartKind::Edge(e)) => e.frontier.as_ref().is_some_and(|l| l.names(&nid.0, on)),
+        _ => false,
+    };
+    let cuts: Vec<bool> = hops.iter().flat_map(|(a, b)| w.paths.writes(a, b)).filter(|x| x.key >= pos && x.cuts(needs)).map(|x| names(&x.key)).collect();
+    cuts.contains(&true) && cuts.contains(&false)
+}
+
 /// `VOUCH_ADMIN`: delta `nid`'s hops each gave `needs` just before it, and a cut below `needs`
 /// ordered after it on one of them is the removal a held vouch lists its commit against, the
 /// vouch unapplied in the walk.
@@ -355,6 +374,7 @@ pub fn classify<S: Store>(w: &World<'_, S>, d: &Difference, all: &[Difference]) 
                 .or_else(|| vouch_thing(w, &id.0, on, *old, new.as_ref()).then_some(VOUCH_THING))
                 .or_else(|| (*old && stated_cut(w, &nid, signer, on, needs)).then_some(STATED_CUT))
                 .or_else(|| (*old && vouch_admin(w, &nid, needs)).then_some(VOUCH_ADMIN))
+                .or_else(|| (*old && own_list(w, &nid, on, needs)).then_some(OWN_LIST))
                 .or_else(|| acting(w, &id.0))
         }
     }

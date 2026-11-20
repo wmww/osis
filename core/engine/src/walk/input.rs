@@ -26,7 +26,8 @@
 use crate::engine::Core;
 use osis_base::{CommitId, PurgeBy, Tid};
 use osis_commit::{Header, Kind, Paths as Stated, ThingPath};
-use osis_perm::paths::{Commit, Delta, DeltaClass, EdgeWrite, Part, PartKind};
+use osis_perm::paths::{Commit, Delta, DeltaClass, EdgeWrite, List, Part, PartKind};
+use std::sync::Arc;
 use osis_perm::WriteId;
 use osis_schema::core_types as ct;
 use std::collections::{BTreeMap, BTreeSet};
@@ -121,7 +122,7 @@ pub fn commit(core: &Core, id: &CommitId) -> Option<Input> {
             for (i, op) in (0u32..).zip(&rc.ops) {
                 // a role commit states one path in the clear: every op has one
                 let (p, _, direct) = path(&op.target)?;
-                parts.push(Part { on: op.target, path: p, direct, kind: PartKind::Edge(EdgeWrite { holder: op.holder, value: op.edge, frontier: rc.frontier.clone(), remains: h.remains, adminless: h.adminless }) });
+                parts.push(Part { on: op.target, path: p, direct, kind: PartKind::Edge(EdgeWrite { holder: op.holder, value: op.edge, frontier: rc.frontier.as_deref().map(|f| Arc::new(single_list(core, f))), remains: h.remains, adminless: h.adminless }) });
                 origins.push(Origin::Edge(i));
             }
         }
@@ -163,6 +164,19 @@ pub fn commit(core: &Core, id: &CommitId) -> Option<Input> {
         return None;
     }
     Some(Input { commit: Commit { id: *id, ts: v.ts, signer: v.signer, parts }, origins })
+}
+
+/// A1's single list as the walk reads lists by leaf (notes/a1-spec/README.md step 3, For the
+/// wiring): each listed commit held here in the leaf of every thing it writes. A listed commit not
+/// held names nothing until it arrives; its arrival changes the list's reading, so the shadow
+/// adapts again every removal listing it (`Shadow::listers`).
+pub fn single_list(core: &Core, f: &osis_perm::Frontier) -> List {
+    List::new(f.commits().iter().flat_map(|c| core.ix.commits.get(c).map(|m| m.view.aspects.iter().map(|a| (a.tid, *c)).collect::<Vec<_>>()).unwrap_or_default()))
+}
+
+/// The commits role commit `id`'s list names, held or not.
+pub fn listed(core: &Core, id: &CommitId) -> Vec<CommitId> {
+    core.ix.commits.get(id).and_then(|m| m.view.frontier.as_ref()).map(|f| f.commits().to_vec()).unwrap_or_default()
 }
 
 /// Every held commit the walk reads, by ID.

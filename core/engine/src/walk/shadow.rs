@@ -28,6 +28,9 @@ pub(crate) struct Shadow {
     fed: BTreeMap<CommitId, Input>,
     records: BTreeMap<Tid, Tid>,
     trust: BTreeSet<WriteId>,
+    /// Per commit, the held removals whose list names it: its arrival or forgetting changes their
+    /// lists' reading (`input::single_list`), so they are adapted again with it.
+    listers: BTreeMap<CommitId, BTreeSet<CommitId>>,
     /// Commits adapted by syncs since built (count tests).
     pub(crate) adapted: u64,
 }
@@ -44,7 +47,13 @@ impl Shadow {
         let commits: Vec<_> = fed.values().map(|i| i.commit.clone()).collect();
         let mut paths = Paths::with_store(&records, trust.clone(), EngineStore::default());
         paths.add(&commits);
-        Shadow { paths, fed, records, trust, adapted: 0 }
+        let mut listers: BTreeMap<CommitId, BTreeSet<CommitId>> = BTreeMap::new();
+        for id in fed.keys() {
+            for c in input::listed(core, id) {
+                listers.entry(c).or_default().insert(*id);
+            }
+        }
+        Shadow { paths, fed, records, trust, listers, adapted: 0 }
     }
 
     /// Brings the walk to what `core` holds now.
@@ -56,7 +65,9 @@ impl Shadow {
             self.adapted = adapted;
             return;
         }
-        let ids: BTreeSet<CommitId> = moved.commits;
+        let mut ids: BTreeSet<CommitId> = moved.commits;
+        let listing: Vec<CommitId> = ids.iter().filter_map(|c| self.listers.get(c)).flatten().copied().collect();
+        ids.extend(listing);
         let (mut add, mut upd, mut gone) = (Vec::new(), Vec::new(), Vec::new());
         for id in ids {
             self.adapted += 1;
@@ -67,14 +78,25 @@ impl Shadow {
             match (self.fed.get(&id), now) {
                 (None, None) => {}
                 (Some(_), None) => {
+                    for c in input::listed(core, &id) {
+                        if let Some(l) = self.listers.get_mut(&c) {
+                            l.remove(&id);
+                        }
+                    }
                     self.fed.remove(&id);
                     gone.push(id);
                 }
                 (None, Some(n)) => {
+                    for c in input::listed(core, &id) {
+                        self.listers.entry(c).or_default().insert(id);
+                    }
                     add.push(n.commit.clone());
                     self.fed.insert(id, n);
                 }
                 (Some(was), Some(n)) if !was.same(&n) => {
+                    for c in input::listed(core, &id) {
+                        self.listers.entry(c).or_default().insert(id);
+                    }
                     upd.push(n.commit.clone());
                     self.fed.insert(id, n);
                 }
