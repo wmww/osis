@@ -4,7 +4,8 @@
 //! `addenda_owed`). Vouches: for
 //! each held removal R applying in its first walk as an explicit lowering of another's grant
 //! (not at the node that wrote R, nor at one acting as a party in question at R), and each thing
-//! N of R's component in its node closure: the commits in question at R with a role-class part
+//! N of R's component (written once N is in its node closure, `note_entered`): the commits in
+//! question at R with a role-class part
 //! on N, ordered before R, received in R's window (`window`: by its `ts` and before R) and not
 //! listed by R's frontier are its
 //! candidates; while one of them is one this node could write now and no counting vouch of its
@@ -27,7 +28,8 @@
 //! not applying), its component walked anew (`note_evaluated`), a commit ordered no later than
 //! it applying or changing its standing and reaching a party R names or R's author (`wake`,
 //! filed per such party, `Indexes::vouch_wake`), this node's roles moving on a thing it is filed under
-//! (`note_roles_moved`: decided again, the gathering kept). Another party's role change, or a
+//! (`note_roles_moved`: decided again, the gathering kept), a thing it is filed under entering
+//! the node closure (`note_entered`: likewise). Another party's role change, or a
 //! removed party's commits that change no walk, judge nothing. The window (`window`)
 //! closes at R's own arrival, so its candidates' receipts are final once R is held. So a
 //! removal owing nothing costs nothing per step, and a node ingesting a history it received
@@ -100,6 +102,24 @@ pub(crate) fn note_roles_moved(core: &mut Core, moved: &BTreeSet<Tid>, under: &B
         return;
     }
     for t in under {
+        let rs: Vec<CommitId> = core.ix.vouch_watch.get(t).into_iter().flatten().copied().collect();
+        for r in rs {
+            core.ix.vouches_due.insert(r);
+        }
+    }
+}
+
+/// The things `came` may have entered the node closure (`apply::wake_entered`, from the closure's
+/// own log of its members: every entry passes through it): where one now holds it, the removals
+/// filed under it (`Indexes::vouch_watch`: every thing a candidate is on, held or not) are due
+/// again, their gathering kept. A vouch or addendum owed on a thing outside the node closure
+/// waits for it (spec/sync-set.md §2 Writing); nothing else it reads moved. Leaving the closure
+/// owes nothing new.
+pub(crate) fn note_entered(core: &mut Core, came: &BTreeSet<Tid>) {
+    if core.ix.vouch_watch.is_empty() {
+        return;
+    }
+    for t in came.iter().filter(|t| core.ix.closure.holds(t)) {
         let rs: Vec<CommitId> = core.ix.vouch_watch.get(t).into_iter().flatten().copied().collect();
         for r in rs {
             core.ix.vouches_due.insert(r);
@@ -262,8 +282,9 @@ fn may_owe(core: &Core, r: &CommitId, rc: &osis_perm::RoleCommit, frontier: &osi
 /// Writes every vouch owed for the due removals (`Indexes::vouches_due`), each removal once per
 /// call, each in a step of its own (`Tx::step`): one that fails leaves nothing, is reported
 /// (`DiagnosticKind::OwnWriteFailed`) and stays due. A removal owing a vouch on a thing this node
-/// may write on only later (outside its node closure, keys not here) stays due, judged again at
-/// the end of each transaction until written.
+/// may write on only once its minting or keys arrive stays due, judged again at the end of each
+/// transaction until written; one owed on a thing outside the node closure is filed under it and
+/// judged again as it enters (`note_entered`).
 pub(crate) fn write_owed(tx: &mut Tx<'_>) -> Result<()> {
     if !(tx.core.vouches_on || tx.core.addenda_on) || tx.core.ix.vouches_due.is_empty() {
         return Ok(());
@@ -328,7 +349,9 @@ fn write_for(tx: &mut Tx<'_>, r: &CommitId, me: Tid) -> Result<()> {
         debug_assert!(v.now.keys().all(|n| !again.on.contains_key(n)), "a vouch written here does not count here: {r:?} on {:?}", again.on.keys().collect::<Vec<_>>());
         debug_assert!(a.now.keys().all(|n| !again.addenda.contains_key(n)), "an addendum written here does not count here: {r:?} on {:?}", again.addenda.keys().collect::<Vec<_>>());
     }
-    if v.later || !v.unheld.is_empty() || a.later || !a.unheld.is_empty() {
+    // an answer on a thing outside the node closure waits for it to enter (`note_entered`: it is
+    // a candidate's thing, so filed under it below)
+    if v.later || a.later {
         return Ok(());
     }
     tx.core.ix.vouches_due.remove(r);
@@ -437,8 +460,8 @@ fn gather(core: &Core, r: &CommitId, me: Tid, count: bool) -> Option<Gathered> {
 /// What removal `r`, gathered as `g`, owes at this node (account `me`) at `now`: vouches
 /// (spec/permissions.md §5.1 Vouches, Writing) and addenda (§5.2 Addenda, Writing), by one rule.
 /// Reads, beside `g`, only what may change while `g` holds: this node's roles, its own counting
-/// answers, the node closure, the components, the epoch rule's counting and the commits still
-/// held.
+/// answers, the components, the epoch rule's counting and the commits still held (the node
+/// closure is read where the answers are written, `writable_split`).
 fn owed(core: &Core, r: &CommitId, g: &Gathered, me: Tid, now: Ts) -> Owed {
     let mut out = Owed::default();
     if !g.applies {
@@ -485,7 +508,8 @@ fn vouch_candidates(core: &Core, in_question: &BTreeSet<Tid>, r: &CommitId, m: &
     cands
 }
 
-/// The vouches removal `r` owes (`owed`): on each thing N of R's component in the node closure,
+/// The vouches removal `r` owes (`owed`): on each thing N of R's component (written once N is
+/// in the node closure: `writable_split`, `note_entered`),
 /// while one of its candidates there that still counts (`Held::is_uncounted`) is one this node
 /// could write now and no counting vouch of its own lists, one vouch listing every candidate (the
 /// writers' leaving out applied).
@@ -498,7 +522,9 @@ fn vouches_owed(core: &Core, tl: &osis_perm::Timeline, r: &CommitId, cands: &BTr
     let own = tl.counted_by(&me, r);
     let parts = |c: &CommitId| core.ix.held.parts_of(c).map(|p| p.parts.clone()).unwrap_or_default();
     for (n, cs) in cands {
-        if core.timelines.component(n) != comp || !core.ix.closure.holds(n) {
+        // a thing outside the node closure is owed too, written as it enters (`writable_split`,
+        // `note_entered`)
+        if core.timelines.component(n) != comp {
             continue;
         }
         let owes = |cs: &[CommitId]| cs.iter().any(|c| !own.contains(c) && tl.could_write(&me, c, &parts(c), now));

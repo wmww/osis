@@ -839,3 +839,111 @@ fn repro_a_voucher_holds_admin_by_a_share_only_a_vouch_removes_spec_perm_5_1() {
         }
     }
 }
+// spec/permissions.md §5.1 Vouches (Writing), spec/sync-set.md §2 (Writing: an owed write
+// waits): team N (peer 0's thing) holds admin through `t`'s grant; X (peer 1) grants K (peer 3)
+// write on N (c), received by W (peer 2) alone, W not holding N. H removes X from `t` (R): X
+// falls on N with it, c is a candidate and W could write it, but N is outside W's node closure,
+// so the vouch waits. N then enters it: W vouches, and K's grant stands at every node.
+#[test]
+fn a_vouch_owed_on_a_thing_outside_the_node_closure_is_written_as_it_enters_spec_perm_5_1() {
+    let (mut lp, t) = world(4);
+    let h = lp.peers[0].engine.me();
+    let mut m = Mutation::new();
+    let n = lp.peers[0].engine.new_thing(&mut m, h);
+    lp.peers[0].commit(m).unwrap();
+    for p in [0, 1, 3] {
+        lp.hold_at(p, n);
+    }
+    lp.peers[0].engine.grant(&n, &t, &edge(Role::Admin)).unwrap();
+    lp.advance(1000);
+    lp.sync_all().unwrap();
+    assert!(!lp.peers[2].engine.closure_holds(&n), "W does not hold N");
+    assert_eq!(role(&lp, 2, 2, n), Some(Role::Admin), "W holds admin on N through t");
+    let c = grant(&mut lp, 1, n, 3, Role::Write);
+    let pk = lp.peers[1].engine.package(&c).unwrap().unwrap();
+    lp.deliver(2, &pk).unwrap();
+    lp.advance(1000);
+    assert!(lp.peers[2].engine.core.ix.commits.contains_key(&c), "W holds c");
+    let r = remove(&mut lp, 0, t, 1);
+    lp.sync(0, 2).unwrap();
+    lp.peers[2].tick().unwrap();
+    assert!(vouches(&lp, 2, n).is_empty(), "the vouch waits for N");
+    lp.hold_at(2, n);
+    lp.advance(1000);
+    lp.peers[2].tick().unwrap();
+    let w = lp.peers[2].engine.me();
+    let mine: Vec<CommitId> = vouches(&lp, 2, n).into_iter().filter(|(a, _)| *a == w).map(|(_, v)| v).collect();
+    assert_eq!(mine.len(), 1, "W vouches once N enters its node closure");
+    let tl = lp.peers[2].engine.core.timelines.get(&n).unwrap();
+    assert!(tl.counted().any(|(rr, cc)| rr == r && cc == c), "W's vouch keyed by R lists c");
+    lp.sync_all().unwrap();
+    for p in 0..4 {
+        assert_eq!(role(&lp, p, 3, n), Some(Role::Write), "peer {p}: K's grant stands");
+    }
+}
+
+// spec/permissions.md §5.1 Vouches (Writing: R applying in its own first walk): Y (peer 3) is
+// made an admin of `t` by G, which W (peer 2) receives only after Y's removal of X (R). X's
+// grant of K (peer 4), received by W alone, is a candidate of R; W judges R not applying (Y no
+// admin yet), owing nothing. G then arrives, ordered before R: R applies (its own change in the
+// walk moved), W vouches, and K's grant stands at every node.
+#[test]
+fn a_removal_applying_after_it_arrived_is_vouched_for_then_spec_perm_5_1() {
+    let (mut lp, t) = world(5);
+    let g = grant(&mut lp, 0, t, 3, Role::Admin);
+    lp.sync(0, 3).unwrap();
+    let c = grant(&mut lp, 1, t, 4, Role::Write);
+    let pk = lp.peers[1].engine.package(&c).unwrap().unwrap();
+    lp.deliver(2, &pk).unwrap();
+    let r = remove(&mut lp, 3, t, 1);
+    let pk = lp.peers[3].engine.package(&r).unwrap().unwrap();
+    lp.deliver(2, &pk).unwrap();
+    lp.advance(1000);
+    lp.peers[2].tick().unwrap();
+    let tl = lp.peers[2].engine.core.timelines.get(&t).unwrap();
+    assert!(!tl.is_applied(&osis_perm::WriteId(r, 0)), "R applies not without G");
+    assert!(vouches(&lp, 2, t).is_empty(), "nothing owed while R applies not");
+    let pk = lp.peers[0].engine.package(&g).unwrap().unwrap();
+    lp.deliver(2, &pk).unwrap();
+    lp.advance(1000);
+    lp.peers[2].tick().unwrap();
+    let w = lp.peers[2].engine.me();
+    assert_eq!(vouches(&lp, 2, t).iter().filter(|(a, _)| *a == w).count(), 1, "W vouches once R applies");
+    lp.sync_all().unwrap();
+    for p in 0..5 {
+        assert_eq!(role(&lp, p, 4, t), Some(Role::Write), "peer {p}: K's grant stands");
+        assert_eq!(role(&lp, p, 1, t), None, "peer {p}: X removed");
+    }
+}
+
+// spec/permissions.md §5.1 Vouches (Writing), notes/engine-roles.md (Vouches, Write: R's late
+// parts): H's removal of X (R) reaches W (peer 2) first without its `roles.0` part, then the
+// part alone. With the part W judges R anew: it vouches for X's grant of K, received in time,
+// and the grant stands at every node.
+#[test]
+fn a_removal_whose_edge_part_arrives_late_is_vouched_for_then_spec_perm_5_1() {
+    let (mut lp, t) = world(4);
+    let c = grant(&mut lp, 1, t, 3, Role::Write);
+    lp.sync(1, 2).unwrap();
+    let r = remove(&mut lp, 0, t, 1);
+    let pk = lp.peers[0].engine.package(&r).unwrap().unwrap();
+    let blob = osis_commit::CommitBlob::decode(&pk.bytes).unwrap();
+    let h = lp.peers[0].engine.header(&r).unwrap();
+    let edge_ai = h.aspects.iter().position(|a| a.ak.as_str() == "roles.0" && a.tid == t).unwrap();
+    let rest: std::collections::BTreeSet<usize> = blob.parts.iter().map(|p| p.ai).filter(|ai| *ai != edge_ai).collect();
+    assert!(!rest.is_empty(), "R carries parts beside its edge write");
+    lp.deliver(2, &crate::local_peer::holding(&pk, &blob, &rest)).unwrap();
+    lp.peers[2].tick().unwrap();
+    assert!(vouches(&lp, 2, t).is_empty(), "no edge write held: nothing owed");
+    lp.deliver(2, &crate::local_peer::holding(&pk, &blob, &std::collections::BTreeSet::from([edge_ai]))).unwrap();
+    lp.advance(1000);
+    lp.peers[2].tick().unwrap();
+    let w = lp.peers[2].engine.me();
+    let mine: Vec<CommitId> = vouches(&lp, 2, t).into_iter().filter(|(a, _)| *a == w).map(|(_, v)| v).collect();
+    assert_eq!(mine.len(), 1, "W vouches once R's edge part arrives");
+    lp.sync_all().unwrap();
+    for p in 0..4 {
+        assert_eq!(role(&lp, p, 3, t), Some(Role::Write), "peer {p}: K's grant stands");
+    }
+    let _ = c;
+}
