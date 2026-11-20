@@ -591,7 +591,7 @@ fn perms(v: &[usize]) -> Vec<Vec<usize>> {
         .collect()
 }
 
-/// spec/commits.md §5 (nodes holding the same bodies judge alike, one holding more no later),
+/// spec/commits.md §5 (nodes holding the same bodies judge alike; one holding more judges no later),
 /// §4.8 When: `w`, the write of `bodies[0]`, dated by every held set holding it, in every
 /// arrival order: `want` gives each set's date by mask over `bodies[1..]` (`None`: not dead), the
 /// same in every order the set's bodies are noted; an apply's kill (`killed`) in every order of

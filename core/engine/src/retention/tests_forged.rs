@@ -245,8 +245,8 @@ fn forged_copies_fail_no_node_large() {
     assert!(made > 0, "forged nothing");
 }
 
-// spec/crdt.md §4.8 When, §5.5, spec/commits.md §5 (nodes holding the same bodies judge alike, one
-// holding more no later): a value removal hiding a set element's write (t3, removal t15) dates its
+// spec/crdt.md §4.8 When, §5.5, spec/commits.md §5 (nodes holding the same bodies judge alike;
+// one holding more judges no later): a value removal hiding a set element's write (t3, removal t15) dates its
 // death, though a later reset of the element (t29) prunes the write from the state: in each of the
 // six arrival orders, at each step holding the write, peers 0 and 2 date it by the held set alone:
 // t15 holding the removal, t29 holding the reset alone, not replaced holding neither. Fails with
