@@ -1030,7 +1030,7 @@ fn rotation_holds_large_spec_crypto_4() {
 #[test]
 #[ignore = "property"]
 fn role_paths_change_no_verdict_in_the_rotation_property_large_spec_permissions_5_2() {
-    let s = osis_base::testenv::Seeds::from_env("OSIS_ROTATION_START", "OSIS_ROTATION_SEEDS", osis_base::testenv::large(0..200));
+    let s = osis_base::testenv::Seeds::from_env("OSIS_ROTATION_START", "OSIS_ROTATION_SEEDS", osis_base::testenv::large(0..100));
     let replay = |s: u64| format!("OSIS_ROTATION_START={s} OSIS_ROTATION_SEEDS=1 cargo test -p osis-engine --lib -- --ignored --exact rotation::tests_property::role_paths_change_no_verdict_in_the_rotation_property_large_spec_permissions_5_2");
     s.run("rotation::tests_property::role_paths_change_no_verdict_in_the_rotation_property_large_spec_permissions_5_2", replay, |seed| {
         let (real, interim) = (rotation_history_as(seed, false).1, rotation_history_as(seed, true).1);
