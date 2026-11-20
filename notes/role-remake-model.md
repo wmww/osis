@@ -19,15 +19,15 @@ Rejected: the remover making again what reaches it after its removal (the study'
 The story's thief never lowered a witness, so 400,000 worlds passed a rule two hand commits break. Added: `Setup::n5` 4 (X's removal of N5 reaches B in time and H only at the settle), moves 53 to 60 (N5's key removing or demoting B before X's removal of N5; X's backdated removal of B with N5's vouch for it; X removing or demoting B backdated; X removing K from A2; a made-up key, by X's or N5's key, removing B after the theft). Not added: lowerings of a witness heard before the removal (the remover lists them: they stand by design), and the pair's honest mirror in the story (B's key is never the thief's there; the hand worlds hold it). Replay one world: `cargo run --bin roles-model -- I paths-replay[-remake]` (random world I; `paths-exh-replay` a family world); a run prints the first failing world indices per check; `-- N paths-compare` runs both rule sets on each random world and splits each failing check by rule set and by generator part.
 
 ## Results
-Story, 400,000 random worlds and every 367th family world (30,637), each rule set with the same menu; check failures counted per node (roles-model README.md, Paths). Failing worlds split by `-- 40000 paths-compare`.
+Story, 400,000 random worlds and every 367th family world (30,637), each rule set with the same menu; check failures counted per node (roles-model README.md, Paths). Failing worlds split by `-- 40000 paths-compare` (run before the rebase over main's vouch counting change, which moved the story counts by under 0.2%).
 
 | gate | `fixed` 400,000 / family | `remake` 400,000 / family |
 |---|---|---|
-| safety | 53,225 / 1,596 | 93,577 / 4,851 |
-| liveness | 108,058 / 8,041 | 39,476 / 4,507 (the weaker one below) |
-| removal (no trusted removal void) | 19,508 / 794 | 7,237 / 417 |
+| safety | 53,224 / 1,596 | 93,576 / 4,851 |
+| liveness | 107,851 / 8,031 | 39,411 / 4,506 (the weaker one below) |
+| removal (no trusted removal void) | 19,503 / 794 | 7,237 / 417 |
 | own path | 13,176 / 444 | 5,874 / 366 |
-| idle gains | 5,779 / 0 | 3,127 / 0 |
+| idle gains | 5,780 / 0 | 3,127 / 0 |
 | dispute | 5,282 / 196 | 3,112 / 126 |
 | safety N | 729 / 74 | 3,308 / 340 |
 | admin, purge, removal kept, own path N | 350, 90, 38, 14 | 159, 27, 0, 4 |
@@ -37,7 +37,7 @@ Story, 400,000 random worlds and every 367th family world (30,637), each rule se
 
 **`remake`**: required gates under it, stated:
 - Safety (at trusting nodes nothing by a key that never held the right, or by X after its removal, shows; N5's key counts as removed only where H held X's removal of N5 or a witness that could make it again received it in time): fails. Every failing world holds `Setup::n5` 4: the only witnesses of X's removal of N5 are B and N5's own device, and either B lost its right before writing (`two_witnesses_race_and_neither_order_makes_both_writes_again`: N5's device, an admin in its own walk, makes X's demotion of B again first; story worlds 75, 540, 601) or N5's device is the only one left and its leave makes nothing again (`a_demotion_only_its_victim_received_is_lost_under_remake`; story world 385). Today N5's device vouches for its own removal and B's vouch reads B's right with X's writes dropped, so both pass there.
-- Liveness, weaker: a role write X made before the removal, unlisted, that an honest node able to make it again (admin of its thing in its own walk, its path not ending at the holder) received in time shows by that node's write made again (from then on), unless a later honest write replaced it or the node does not sync its thing. Everything else as today, but writes that show only where the removal had listed every role write a witness received in time are counted, not failed (`lost: written under a role write before it was made again`: 151,455 node checks; content K wrote under a share counts back and does not appear there). Fails in the same `n5` 4 worlds as safety, plus 4 of 40,000 worlds where an invite X gave under its own share is lost (counted shape, missed by the counting: story worlds 13844, 19387).
+- Liveness, weaker: a role write X made before the removal, unlisted, that an honest node able to make it again (admin of its thing in its own walk, its path not ending at the holder) received in time shows by that node's write made again (from then on), unless a later honest write replaced it or the node does not sync its thing. Everything else as today, but writes that show only where the removal had listed every role write a witness received in time are counted, not failed (`lost: written under a role write before it was made again`: 151,450 node checks; content K wrote under a share counts back and does not appear there). Fails in the same `n5` 4 worlds as safety, plus 4 of 40,000 worlds where an invite X gave under its own share is lost (counted shape, missed by the counting: story worlds 13844, 19387).
 - One reading, alike, quiet (re-makes in honest histories are shown as no dispute: 92,174 checks), settles, self-taken: hold.
 - Disputes at nodes trusting nothing: the pair's two worlds are each shown, and trusting the witness's write gives world 1's reading (`the_pair_under_remake_is_an_ordinary_fight_shown_to_both_worlds`); story failures are again `n5` 4 worlds.
 - Small worlds (`tiny`): read alike under both rule sets (no vouch, no story writer: `tiny_worlds_read_alike_under_remake`), so not rerun.
