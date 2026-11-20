@@ -2601,7 +2601,7 @@ fn views_differing(m: &Sim, rules: &Rules) -> u64 {
 /// reading there (its reach elsewhere: `tiny`'s commits of several parts, the differentials).
 #[test]
 #[ignore = "by hand: Open 23's readings against fixed"]
-fn leave_readings_change_no_story_reading_large() {
+fn leave_readings_change_no_story_reading() {
     let start = var("OSIS_ROLES_START").unwrap_or(0);
     let n = var("OSIS_ROLES_SEEDS").unwrap_or(13_000);
     let mut out = vec![];
