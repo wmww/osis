@@ -46,6 +46,20 @@ Memory per sync ID: its used edges, its members and their reasons (the output), 
 
 **The engine's memo machinery.** The module is pure: it takes changes by call (`add`, `forget`, `set_chained`, `open_path`, `join`, `leave`) and does work in proportion to them. Brief 3 drives it from `memo::Feed`/`Effects` followers over the held set, the units and the walk's chained flips, as `sync/certified.rs` follows `Indexes::chains_on` and `apply/paths.rs` follows `paths_unknown`; the derivation itself keeps no stamps.
 
+## Draft sentences the text left open (fixed in notes/a2-spec/permissions.md §4)
+- Joined: a chained write *setting a role above none* (no self-removal, no finalize, `until` disregarded), ordered before the *part* (by key for an edge-class part, at the start of its `ts` for content); the named remaining admin edge taken joined or not.
+- Finding 9 under the proposal: the creation of the entry each of the commit's edge writes on that thing resets, its own included (a grant's too, as the model has it: notes/a2-spec/README.md OPEN 13).
+- A copy enters whole: each of its parts, chained or not, brings what a member brings.
+
+## What brief 3 (the switch) must know
+- The adapter gives each held copy every part of its commit on that thing; per edge-class part its chained-ness from the walk. osis-perm `paths` exposes first chained keys per edge (write, admin): enough for a write needing admin (or write, a finalize) on each hop, not for an invite grant (it needs the invite level on its last hop): the walk's chained pass must report per-write chained-ness, or its flips, before the switch.
+- `creation` per edge write is the entry its reset names (spec/permissions.md §2); OPEN 13 decides whether a grant's counts.
+- A vouch's `keyed` is the copy (removal commit, thing of its lowering part).
+- A split body whose entry has not opened is added with `hops: None` and `open_path` when `apply::paths::refresh` opens it.
+- The reach clause (A3) recomputes every sync ID's seeds on each chained removal or write grant change: brute force until A3.
+- Records (members' creation records up their chains) are not output: taken from `required`'s copies' and the bodies' paths.
+- The derivation keeps its own indexes (per edge, per holder, per thing): the engine's own (`ix.held`, the walk's resting index) can feed or replace them.
+
 ## Seams
 - **(A3) list leaves**: a leaf (R, t) is required while R is in the set and a body on t rests on R's edge: count bodies per (edge, thing) beside the per-edge atoms, and a leaf joins `required` keyed (R, t). Not built.
 - Records (the members' creation records up their chains, record blobs) are not output: brief 3 takes them from the members' paths of `required`'s copies and of the bodies (spec, Logging evidence: record blobs stand).
@@ -59,6 +73,11 @@ Against held-model `evidence::World::req` under `Open10::Granted` with entry cre
 - Default: every 97th family world (`the_derivation_agrees_with_the_model_on_a_family_slice_spec_permissions_4`, over 1,000 comparisons with copies), the story world of seed 0 under each of the six unit crossings.
 - Properties: `the_derivation_agrees_with_the_model_plain_spec_permissions_4` (106 family, 20 random, 2 story seeds × 6 crossings × vouches: 150 worlds, about 26 CPU-s), `_large` (full: every 17th family world, 1,500 random, 60 story seeds; the gate's a tenth of the seeds and every 97th family world). 0 disagreements at both sizes.
 - Hand worlds (`hand.rs`): each model hand test naming a rule or finding (f2, f9, f10, f11, f13, f14, f15 and OPEN 10's junk and admin counts, split, P4, the vouch switch) with the copy its rule decides; the other model hand worlds (f1, f3 to f6, f12, risk 3, P2, the addendum) as differentials; the derivation's own: a body whose path entry waits brings nothing until it opens, and a chained grant ordered after a write joins nothing.
+
+## Mutations
+Each planted (`tools/mutate.py` over `-p osis-engine --test it -- evidence::`) fails a default test:
+- OPEN 10's variants taken by the derivation: (i) every edge write on every path (unchained writes taken, joined-ness ignored): the junk count, the family and story differentials; (ii)/(iii)-like joined-ness ignored: `f11_*`, the waiting-path world; (vi) applied in place of chained (the adapter feeding the walk's applied set): `f14_*`, `f10_*`, the vouch world, `f15_*`, both differentials; no entry creations: `f9_*` and nine others. Leaves forgotten with the last named commit: not applicable (A3: no leaves built). A waiting path entry contributing requirements is not expressible (a part with no known path has no edges); its opening missed is below.
+- Implementation: a path's first edge skipped (13 tests); the remaining admin edge skipped (the story differential); a copy keyed by commit without its thing (the adapter merging a commit's things: `split_*`); a retag not closed again (the story differential); a forget not moving atoms (both differentials, the other hand worlds); the vouch switch ignored (the vouch world, the family differential); a member copy's own path not closed over (6 tests); a path entry's opening not rechecked (the waiting-path world); reach not recomputed on role changes (10 tests); joined by the last chained grant in place of the first (`the_first_grant_joins_and_a_forgotten_member_leaves_spec_permissions_4`); a new copy not taken through the edge index (the role-commit count, both differentials); a forgotten member not closed again (the same hand world).
 
 ## Counts (`counts.rs`, at n and 10n)
 - A body appended on a path of k edges: k + 1 atoms, no closure work, no body but itself, the same at 10 and 100 held bodies.

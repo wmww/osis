@@ -321,20 +321,51 @@ fn a_body_whose_path_waits_brings_nothing_until_it_opens_spec_permissions_4() {
     let write = |holder: Thing| Kind::Write(Write { holder, grant: true, removal: false, gives_write: true, relies: None, creation: None });
     let rec = |a: Thing, b: Thing| Hop { edge: (a, b), record: true };
     let hop = |a: Thing, b: Thing| Hop { edge: (a, b), record: false };
-    // Y grants A write on D (a body); K writes D along [A], its path waiting
+    // Y grants A write on D (a body); K writes D along [A], its path waiting; X grants K on A
+    // before the write
     ev.add((1, D), vec![Part { kind: write(A), hops: Some(vec![rec(Y, D)]), pos: 1, chained: true }]);
     ev.add((5, D), vec![Part { kind: Kind::Content, hops: None, pos: 5, chained: false }]);
     assert_eq!(check(&ev), Copies32::new());
-    // the path opens: (K, A) holds no chained grant yet, so it is not joined
-    ev.open_path(&(5, D), 0, vec![hop(K, A), hop(A, D)]);
-    assert_eq!(check(&ev), Copies32::new());
-    // X's grant to K on A, ordered before the write, joins it
     ev.add((2, A), vec![Part { kind: write(K), hops: Some(vec![rec(X, A)]), pos: 2, chained: true }]);
+    assert_eq!(check(&ev), Copies32::new());
+    // the path opens onto a joined path
+    ev.open_path(&(5, D), 0, vec![hop(K, A), hop(A, D)]);
     assert_eq!(check(&ev), Copies32::from([(2, A)]));
     assert_eq!(ev.required(&D).unwrap().get(&(2, A)), Some(&Reason::Edge((K, A))));
-    // a grant ordered after the write joins nothing
     ev.forget(&(2, A));
     assert_eq!(check(&ev), Copies32::new());
-    ev.add((7, A), vec![Part { kind: write(K), hops: Some(vec![rec(X, A)]), pos: 7, chained: true }]);
+    // a second write's path opens with no grant on (K, A): not joined; a grant ordered between
+    // the two writes joins the later one only
+    ev.add((9, D), vec![Part { kind: Kind::Content, hops: None, pos: 9, chained: false }]);
+    ev.open_path(&(9, D), 0, vec![hop(K, A), hop(A, D)]);
     assert_eq!(check(&ev), Copies32::new());
+    ev.add((7, A), vec![Part { kind: write(K), hops: Some(vec![rec(X, A)]), pos: 7, chained: true }]);
+    assert_eq!(check(&ev), Copies32::from([(7, A)]));
+}
+
+/// The derivation's own: a path is joined by the first chained grant on each edge (a later one
+/// joins nothing), and a member copy forgotten leaves though no body's joined-ness moves. Each
+/// step incremental equals from scratch.
+#[test]
+fn the_first_grant_joins_and_a_forgotten_member_leaves_spec_permissions_4() {
+    type E = Evidence<u32, Thing, u32>;
+    type Copies32 = BTreeSet<CopyId<u32, Thing>>;
+    let check = |ev: &E| {
+        let inc: Copies32 = ev.required(&D).unwrap().keys().copied().collect();
+        assert_eq!(inc, ev.from_scratch(&D).unwrap().into_keys().collect::<Copies32>());
+        inc
+    };
+    let write = |holder: Thing| Kind::Write(Write { holder, grant: true, removal: false, gives_write: true, relies: None, creation: None });
+    let rec = |a: Thing, b: Thing| Hop { edge: (a, b), record: true };
+    let hop = |a: Thing, b: Thing| Hop { edge: (a, b), record: false };
+    let mut ev = E::new(Config { vouches: true });
+    ev.add_sid(D, D);
+    ev.join(&D, D);
+    ev.add((1, D), vec![Part { kind: write(A), hops: Some(vec![rec(Y, D)]), pos: 1, chained: true }]);
+    ev.add((2, A), vec![Part { kind: write(K), hops: Some(vec![rec(X, A)]), pos: 2, chained: true }]);
+    ev.add((8, A), vec![Part { kind: write(K), hops: Some(vec![rec(X, A)]), pos: 8, chained: true }]);
+    ev.add((5, D), vec![Part { kind: Kind::Content, hops: Some(vec![hop(K, A), hop(A, D)]), pos: 5, chained: false }]);
+    assert_eq!(check(&ev), Copies32::from([(2, A), (8, A)]));
+    ev.forget(&(8, A));
+    assert_eq!(check(&ev), Copies32::from([(2, A)]));
 }
