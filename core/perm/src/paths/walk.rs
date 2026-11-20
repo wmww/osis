@@ -747,12 +747,12 @@ impl Walk {
                 self.waiting.entry(e).or_default().push(s);
             }
             // a lowering after it on an edge it rests on, judged already, would drop it: walk its
-            // component again from it
+            // component again from it (only then: a part that waits on a hop costs no walk)
             let k = it.key;
             for e in rests {
                 self.inert_rest[e].insert(s);
                 let c = self.find(e);
-                if self.comps.contains_key(&c) {
+                if self.comps.contains_key(&c) && self.lowered_after(e, k) {
                     let d = self.dirty.entry(c).or_insert((k, BTreeSet::new()));
                     d.0 = d.0.min(k);
                 }
@@ -767,6 +767,15 @@ impl Walk {
                 self.seed(s, 1);
             }
         }
+    }
+
+    /// Whether a write applied on `e` after `k` fell there (an explicit write below the edge as
+    /// restored, `apply`'s `falls`): a lowering judging the parts resting on `e` before it.
+    fn lowered_after(&self, e: E, k: Key) -> bool {
+        self.hist[e].range((Excluded(k), Unbounded)).any(|(_, y)| {
+            let it = &self.items[y.slot];
+            y.a.explicit && (y.a.restored > it.after() || y.a.restored_invite > it.after_inv())
+        })
     }
 
     /// Walks part `s` from now on: it joins its touched edges' components (and, a vouch, its

@@ -134,6 +134,30 @@ fn a_backdated_part_walks_again_what_reads_its_change() {
     assert_eq!(d.steps, 100 + m as u64 + 1, "{d:?}");
 }
 
+// An inert part (a stranger's write through [X, A] on C: it holds nothing on X, so its first hop
+// waits) backdated into a component costs no walk where no lowering after it on an edge it rests
+// on is judged already (notes/perm-paths.md, Inert parts): any signer writes such parts. Where H
+// removed X from A at the end, the same part is walked again under that removal.
+#[test]
+fn an_inert_part_walks_nothing_unless_a_later_lowering_rests_on_it() {
+    let base = |n: u32| {
+        let mut c = vec![write(1, H, 1, &[], A, X, Some(Role::Admin))];
+        c.extend(history(n));
+        c.extend((0..5u32).map(|i| write(50 + i as u64, X, 20 + n as u64 + i as u64, &[A], C, holder(9000 + i), Some(Role::Read))));
+        c
+    };
+    let junk = || write(7, holder(8000), 5, &[X, A], C, holder(8001), Some(Role::Read));
+    for n in [100u32, 1000] {
+        let (d, p) = cost_of(&base(n), junk());
+        assert_eq!((d.steps, d.passes), (0, 0), "at n {n}: {d:?}");
+        assert_eq!(p.status(&WriteId(cid(7), 0)), Some(Status::Unapplied));
+    }
+    let mut lowered = base(100);
+    lowered.push(write(8, H, 200, &[], A, X, None));
+    let (d, _) = cost_of(&lowered, junk());
+    assert!(d.passes > 0, "{d:?}");
+}
+
 /// Things 100.. minted by H, `c` of them.
 fn many(c: u32) -> BTreeMap<Tid, Tid> {
     let mut r = records();
