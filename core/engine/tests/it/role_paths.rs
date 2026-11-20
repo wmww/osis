@@ -452,20 +452,31 @@ fn class_worlds() -> Vec<ClassWorld> {
     // a single-use link redeemed by a forger first, unseen by the sharer, then by P1, whom the
     // sharer saw; the sharer's removal of L lists P1's redemption alone: the forger's grant falls
     // and its leave with it, P1 is in (notes/a1-spec/README.md Open 23)
-    let (mut lp, ps) = people(3);
-    let d = thing_of(&mut lp, 0, ps[0]);
-    let (link, _, _) = lp.peers[0].engine.create_link(&ps[0], &LinkSpec { target: d, role: Role::Read, until: None, peers: Vec::new(), single_use: true }).unwrap();
-    follow(&mut lp, &link);
-    spread(&mut lp);
-    let l = osis_engine::identity::Identity::from_seed(link.seed.clone()).tid();
-    lp.peers[2].engine.redeem(&link, &ps[2], true).unwrap();
-    lp.peers[1].clock.advance(1000);
-    lp.peers[1].engine.redeem(&link, &ps[1], true).unwrap();
-    lp.sync(1, 0).unwrap();
-    lp.peers[0].clock.advance(2000);
-    lp.peers[0].engine.finalize_link(&link.k, &l).unwrap();
-    spread(&mut lp);
-    out.push(("single-use link redeemed twice", None, lp));
+    // (roles-model `a_single_use_link_redeemed_twice_stays_with_the_redemption_the_sharer_listed`:
+    // its worlds `unseen`, `later` (P1 first, the forger later and unseen), `both` and `neither`
+    // (the sharer saw both, or none))
+    // The forger later: its grant finds the link spent and its leave is a no-op; the sharer's
+    // finalize drops the grant and, in the new walk, the leave with it: no role differs.
+    let later = Some("a no-op leave falls with its commit's dropped grant");
+    for (name, class, thief_first, seen) in [("single-use link redeemed twice", None, true, &[1][..]), ("single-use link, the forger later", later, false, &[1]), ("single-use link, both seen", None, true, &[1, 2]), ("single-use link, none seen", None, true, &[])] {
+        let (mut lp, ps) = people(3);
+        let d = thing_of(&mut lp, 0, ps[0]);
+        let (link, _, _) = lp.peers[0].engine.create_link(&ps[0], &LinkSpec { target: d, role: Role::Read, until: None, peers: Vec::new(), single_use: true }).unwrap();
+        follow(&mut lp, &link);
+        spread(&mut lp);
+        let l = osis_engine::identity::Identity::from_seed(link.seed.clone()).tid();
+        for (k, i) in (if thief_first { [2, 1] } else { [1, 2] }).into_iter().enumerate() {
+            lp.peers[i].clock.advance(1000 * k as u64);
+            lp.peers[i].engine.redeem(&link, &ps[i], true).unwrap();
+        }
+        for &i in seen {
+            lp.sync(i, 0).unwrap();
+        }
+        lp.peers[0].clock.advance(3000);
+        lp.peers[0].engine.finalize_link(&link.k, &l).unwrap();
+        spread(&mut lp);
+        out.push((name, class, lp));
+    }
     // a key actor's edge write on itself, made anyway: both walks apply it nowhere
     let (mut lp, ps) = people(3);
     let team = lp.peers[2].engine.me();
@@ -487,6 +498,23 @@ fn class_worlds() -> Vec<ClassWorld> {
     remove(&mut lp, 0, t, g);
     grant(&mut lp, 0, t, ps[1], edge_of(Role::Write));
     out.push(("a detached thing", Some("a mint ancestor's direct edge with its descent cut"), lp));
+    // a writer's commit of two invites on T (read to C, write to D), unseen by A, who then lowers
+    // the writer's invite to read: both grants fall under both walks (C's by Open 23's rule)
+    let (mut lp, ps) = people(4);
+    let t = thing_of(&mut lp, 0, ps[0]);
+    spread(&mut lp);
+    grant(&mut lp, 0, t, ps[1], invite(Role::Write, Role::Write));
+    let mut m = Mutation::new();
+    for (to, r) in [(ps[2], Role::Read), (ps[3], Role::Write)] {
+        m.op(t, &ct::ROLES, osis_crdt::PathOp { path: vec![osis_crdt::PathSeg::Key(osis_base::Value::Weak(to))], op: osis_crdt::Op::Set(osis_schema::Codec::to_value(&edge_of(r))) }).unwrap();
+    }
+    // this engine's writer refuses it (a writer's raw role write needs admin): another one's
+    lp.peers[1].engine.commit_hostile(m).unwrap().unwrap();
+    lp.advance(1000);
+    lp.peers[0].engine.demote(&t, &Demotion { holder: ps[1], new: Some(invite(Role::Write, Role::Read)), retain: None }).unwrap();
+    lp.advance(1000);
+    spread(&mut lp);
+    out.push(("a writer's two invites in one commit", None, lp));
     out
 }
 
@@ -510,6 +538,7 @@ fn new_walk_differs_only_by_design() {
                 None => d.is_empty(),
                 Some(c) if c.starts_with("a vouch") => d.len() == 2,
                 Some(c) if c.starts_with("a leave") => !d.is_empty() && d.iter().all(|x| x.contains("old true, new Some(Unapplied)") || x.contains("roles on")),
+                Some(c) if c.starts_with("a no-op leave") => !d.is_empty() && d.iter().all(|x| x.contains("old true, new Some(Dropped)")),
                 Some(c) if c.starts_with("a mint ancestor") => !d.is_empty() && d.iter().all(|x| x.contains("old true, new Some(Unapplied)") || x.contains("roles on")),
                 Some(c) => panic!("no rule for class {c}"),
             };

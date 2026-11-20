@@ -2547,6 +2547,39 @@ fn a_single_use_link_redeemed_twice_stays_with_the_redemption_the_sharer_listed(
     }
 }
 
+/// What `Drops::Commit` changes outside links: parts of one commit on a thing differ in need only
+/// where its path gives less than admin (invite grants, a finalize, a leave). B holds write
+/// inviting write on A and, in one commit, invites Z as reader and N5 as writer; H, not having
+/// received it, then lowers B's invite to read. N5's grant needs invite write and falls; Z's needs
+/// invite read, which B keeps: by its own need it stands (control `-part-drops`), under the rule
+/// it falls with N5's (the commit's `roles.0` delta on A is one part), as today's walk has it
+/// (engine `role_paths` class world "a writer's two invites in one commit"). No generator makes
+/// parts of one commit whose needs differ (`tiny_invites` never lowers an invite alone, `tiny`
+/// commits no leave beside another part), so `-part-drops` reads every generated world alike.
+/// And B hands A over to N5
+/// (invite and leave in one commit), unseen by H, who then removes B or lowers it to read: N5
+/// falls and B ends as H set it under either reading.
+#[test]
+fn a_writers_commit_on_a_thing_falls_together_where_its_parts_need_differ() {
+    for part in [false, true] {
+        let rules = Rules { drops: if part { Drops::Part } else { Drops::Commit }, ..Rules::fixed() };
+        let mut w = account();
+        w.push(H, 1, &[], A, Kind::set(B, Write).inviting(Write));
+        w.commit(B, 2, &[], A, vec![Kind::set(Z, Role::Read), Kind::set(N5, Write)]);
+        w.push(H, 3, &[], A, Kind::set(B, Write).inviting(Role::Read));
+        let rd = judge(&w, &rules, &View::all(&w));
+        assert_eq!((rd.role(Z, A), rd.role(N5, A), rd.role(B, A)), (if part { Role::Read } else { Gone }, Gone, Write), "part {part}: {rd:?}");
+        for to in [Gone, Role::Read] {
+            let mut w = account();
+            w.push(H, 1, &[], A, Kind::set(B, Write).inviting(Write));
+            w.commit(B, 2, &[], A, vec![Kind::set(N5, Write), Kind::set(B, Gone)]);
+            w.push(H, 3, &[], A, Kind::set(B, to));
+            let rd = judge(&w, &rules, &View::all(&w));
+            assert_eq!((rd.role(N5, A), rd.role(B, A)), (Gone, to), "part {part} {to:?}: {rd:?}");
+        }
+    }
+}
+
 /// The nodes' views of story world `m` whose reading under `rules` differs from `Rules::fixed`'s:
 /// what users observe or which edge-class parts apply.
 fn views_differing(m: &Sim, rules: &Rules) -> u64 {
@@ -2609,7 +2642,8 @@ fn two_admins_leaving_at_once_keep_the_later_one() {
 /// admin on T, B holds write on M. B's grants on T through [M] apply as invite grants up to B's
 /// role on M (the path's invite: the least of its edges' roles but the last, and the last's
 /// invite, every invite at admin): read and write apply, admin does not (it needs admin along the
-/// path). Today a grant names its invite and M's names none, so none of B's applies.
+/// path). X, a reader of M, so invites readers and not writers. Today a grant names its invite
+/// and M's names none, so none of B's or X's applies.
 #[test]
 fn a_writer_of_an_admin_team_invites_up_to_its_own_role() {
     const M: Thing = 41;
@@ -2620,9 +2654,14 @@ fn a_writer_of_an_admin_team_invites_up_to_its_own_role() {
     let read = w.push(B, 2, &[M], T, Kind::set(Z, Role::Read));
     let write = w.push(B, 2, &[M], T, Kind::set(N5, Write).inviting(Role::Read));
     let admin = w.push(B, 2, &[M], T, Kind::set(N6, Admin));
+    // a reader of M invites readers to T
+    w.edge(H, 1, &[], M, X, Role::Read, &[]);
+    let x_read = w.push(X, 3, &[M], T, Kind::set(K, Role::Read));
+    let x_write = w.push(X, 3, &[M], T, Kind::set(A2, Write));
     let rd = keyed(&w);
     assert!(rd.invited.contains(&read) && rd.invited.contains(&write) && !rd.applied.contains(&admin), "{rd:?}");
-    assert_eq!((rd.role(Z, T), rd.role(N5, T), rd.role(N6, T)), (Role::Read, Write, Gone));
+    assert!(rd.invited.contains(&x_read) && !rd.applied.contains(&x_write), "{rd:?}");
+    assert_eq!((rd.role(Z, T), rd.role(N5, T), rd.role(N6, T), rd.role(K, T), rd.role(A2, T)), (Role::Read, Write, Gone, Role::Read, Gone));
     tiny_gates(&w, &[]);
 }
 
@@ -2657,6 +2696,28 @@ fn a_detached_things_owner_writes_it_only_by_a_marked_direct_hop() {
         let st = tiny_gates_under(&w, t, &Rules::fixed());
         assert!(st.failures() == 0, "{t:?}: {:?} {:?}", st.fails, st.first);
     }
+}
+
+/// Why the hop is stated, not read off what is held (notes/a1-spec/README.md Open 21): H, two
+/// record edges above T, makes M admin on T and writes T by the descent []. M then grants H read
+/// on T, stamped before H's write. Were a hop from a mint ancestor read as direct wherever a
+/// direct edge is held (`push_marked` standing for that reading), M's grant would turn H's write
+/// into one through a read edge: invalid. M, by granting, decides how H's earlier writes are
+/// read. Stated, H's write stays a descent and valid whatever edge M writes.
+#[test]
+fn a_hop_read_by_the_direct_edges_held_lets_another_admin_void_a_mint_ancestors_writes() {
+    const T: Thing = 40;
+    const M: Thing = 41;
+    let mut w = World::new(&[(H, A), (A, T)]);
+    w.push(H, 1, &[], T, Kind::set(M, Admin));
+    let stated = w.content(H, 3, &[], T);
+    let as_direct = w.push_marked(H, 3, &[], T, Kind::Content, &[0]);
+    let rd = fixed(&w, &[]);
+    assert!(rd.valid.contains(&stated) && !rd.valid.contains(&as_direct), "no direct edge: {rd:?}");
+    w.push(M, 2, &[], T, Kind::set(H, Role::Read));
+    let rd = fixed(&w, &[]);
+    assert!(rd.valid.contains(&stated) && !rd.valid.contains(&as_direct), "M's read grant: {rd:?}");
+    assert_eq!(rd.role(H, T), Role::Read);
 }
 
 // ---- The remaining admin past the lowering's drops (notes/a1-spec/README.md, OPEN 5) ----
