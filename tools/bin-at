@@ -1,7 +1,8 @@
 #!/bin/sh
-# tools/bin-at REV OUT (-p CRATE [--test NAME] | --lib CRATE) [--release] [--patch FILE]... [--take PATH]...:
+# tools/bin-at REV OUT (-p CRATE [--test NAME | --bin NAME] | --lib CRATE) [--release] [--patch FILE]... [--take PATH]...:
 # REV's test binary (CRATE's `it`, or `--test NAME`, dev profile; `--lib CRATE`: that crate's lib
-# unit tests, e.g. osis-engine's `rotation::tests`), built in this worktree and copied to
+# unit tests, e.g. osis-engine's `rotation::tests`; `--bin NAME`: CRATE's binary NAME, e.g. a model's
+# search driver `-p roles-model --bin roles-model`), built in this worktree and copied to
 # OUT, for old-vs-new runs and `tools/icount` comparisons (notes/build.md). To build a new test
 # against an old REV: `--patch FILE` applies a diff (`git apply --index`) on top of REV, `--take
 # PATH` (a file or directory) copies PATH as the starting commit holds it (`git checkout <start>
@@ -18,11 +19,11 @@
 # fail to link with undefined symbols: `cargo clean -p <crate>` for the crate the error names
 # (notes/build.md, Footguns; deleting incremental dirs leaves a fresh-looking rlib unrebuilt).
 set -eu
-usage="usage: tools/bin-at REV OUT (-p CRATE [--test NAME] | --lib CRATE) [--release] [--patch FILE]... [--take PATH]..."
+usage="usage: tools/bin-at REV OUT (-p CRATE [--test NAME | --bin NAME] | --lib CRATE) [--release] [--patch FILE]... [--take PATH]..."
 [ $# -ge 2 ] || { echo "$usage" >&2; exit 2; }
 rev=$1 out=$2
 shift 2
-profile="" crate="" test=it lib="" patches="" takes=""
+profile="" crate="" test=it lib="" bin="" patches="" takes=""
 nl='
 '
 while [ $# -gt 0 ]; do
@@ -31,6 +32,7 @@ while [ $# -gt 0 ]; do
         -p) crate=$2; shift ;;
         --test) test=$2; shift ;;
         --lib) crate=$2 lib=1; shift ;;
+        --bin) bin=$2; shift ;;
         --patch) [ -f "$2" ] || { echo "bin-at: no patch file $2" >&2; exit 2; }
             patches="$patches$(cd "$(dirname "$2")" && pwd)/$(basename "$2")$nl"; shift ;;
         --take) takes="$takes$2$nl"; shift ;;
@@ -52,7 +54,7 @@ dirty=
 restore() { [ -z "$dirty" ] || git reset -q --hard; git checkout -q "$back"; }
 trap restore EXIT
 trap 'exit 1' HUP INT TERM
-echo "bin-at: building $sha detached; returns to $back (if killed: git checkout $back)" >&2
+echo "bin-at: building $sha detached; returns to $back (if killed: git checkout $back). Until then the tree is $sha's: edit nothing, read the branch as git show $back:PATH" >&2
 git checkout -q --detach "$sha"
 dirty=1
 IFS=$nl
@@ -62,13 +64,19 @@ unset IFS
 [ -n "$patches$takes" ] || dirty=
 if [ -n "$lib" ]; then
     target="--lib" pick='.profile.test and (.target.kind | index("lib"))'
+elif [ -n "$bin" ]; then
+    target="--bin $bin" pick='.target.name == "'"$bin"'" and (.target.kind | index("bin"))'
 else
     target="--test $test" pick='.target.name == "'"$test"'"'
 fi
 json=$(mktemp)
 trap 'rm -f "$json"; restore' EXIT
 # shellcheck disable=SC2086
-cargo test $profile -p "$crate" $target --no-run --message-format=json-render-diagnostics > "$json"
+if [ -n "$bin" ]; then
+    cargo build $profile -p "$crate" $target --message-format=json-render-diagnostics > "$json"
+else
+    cargo test $profile -p "$crate" $target --no-run --message-format=json-render-diagnostics > "$json"
+fi
 exe=$(jq -r 'select(.reason == "compiler-artifact" and .executable != null and '"$pick"') | .executable' "$json" | tail -n 1)
 [ -n "$exe" ] || { echo "bin-at: no executable for $crate $target" >&2; exit 1; }
 mkdir -p "$(dirname "$out")"

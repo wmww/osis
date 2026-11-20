@@ -100,6 +100,12 @@ expect("release refused", (rc, out, "release" in err), (1, [], True))
 expect("release with HEAVY_RELEASE", heavy("cargo", "run", "--release", "--bin", "ok", HEAVY_RELEASE="1")[0], 0)
 expect("--release after -- is the binary's", heavy("cargo", "run", "--bin", "ok", "--", "--release")[0], 0)
 
+# a module filter beside a name-fragment filter under --ignored is refused (libtest ORs them)
+rc, out, err = heavy("cargo", "test", "-p", "x", "--", "--ignored", "paths::", "_plain")
+expect("OR'd filters refused", (rc, out, "ORs filters" in err), (1, [], True))
+expect("with --exact it runs", heavy("cargo", "test", "-p", "x", "--", "--ignored", "--exact", "paths::a_plain")[0], 0)
+expect("a list of names runs", heavy("cargo", "test", "-p", "x", "--", "--ignored", "a_plain", "b_large", "--skip", "repro_")[0], 0)
+
 # a non-cargo command runs as given
 rc, out, _ = heavy("sh", "-c", "echo $HEAVY_HELD; exit 4")
 expect("plain", (rc, out), (4, ["1"]))

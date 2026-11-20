@@ -3,8 +3,11 @@
 with it, puts the file back, then runs the built tests and prints one Markdown table row per
 mutation: the mutation and the tests that failed ("none": no test catches it).
 
-Usage: python3 tools/mutate.py FILE OLD NEW [FILE OLD NEW]... -- <cargo test args> [-- <test binary args>]
+Usage: python3 tools/mutate.py FILE OLD NEW [+ FILE OLD NEW]... [FILE OLD NEW ...]... -- <cargo test args> [-- <test binary args>]
   e.g. python3 tools/mutate.py core/sync/src/read/judge.rs 'a >= b' 'a > b' -- -p osis-sync --test it -- read::
+
+A `+` between two FILE OLD NEW sites makes them one mutation (a control spanning two sites:
+both planted together, one row).
 
 OLD must occur exactly once in FILE; NEW must be non-empty and differ from OLD. One mutation is a
 plain edit. Several are built once: each OLD, an expression, becomes
@@ -90,10 +93,20 @@ def main(argv):
         with open(os.path.join(argv[1], "out.json"), "w") as f:
             json.dump(run_bins(bins, mutants), f)
         return 0
-    if "--" not in argv or argv.index("--") % 3 or not argv.index("--"):
+    if "--" not in argv or not argv.index("--"):
         sys.exit(__doc__)
     k = argv.index("--")
-    muts = [tuple(argv[i : i + 3]) for i in range(0, k, 3)]
+    # sites (FILE, OLD, NEW), each with its mutation's index: a `+` joins a site to the one before
+    muts, group, i = [], [], 0
+    while i < k:
+        joined = argv[i] == "+" and bool(muts)
+        i += joined
+        if i + 3 > k or "+" in argv[i : i + 3]:
+            sys.exit(__doc__)
+        muts.append(tuple(argv[i : i + 3]))
+        group.append(group[-1] if joined else len(set(group)))
+        i += 3
+    n = len(set(group))
     rest = argv[k + 1 :]
     cargo_args, test_args = (rest[: rest.index("--")], rest[rest.index("--") + 1 :]) if "--" in rest else (rest, [])
     texts = {}
@@ -103,18 +116,18 @@ def main(argv):
             sys.exit(f"mutate: OLD occurs {texts[path].count(old)} times in {path}; it must occur once: {old!r}")
         if not new or new == old:
             sys.exit("mutate: NEW must be non-empty and differ from OLD")
-        for x in (old, new) if len(muts) > 1 else ():
+        for x in (old, new) if n > 1 else ():
             if x.lstrip().startswith(".") or x.rstrip().endswith(";"):
                 sys.exit(f"mutate: {x!r} is not an expression ({'a method-call suffix' if x.lstrip().startswith('.') else 'a statement'}): "
                          "with several mutations each OLD and NEW is wrapped as one; include the receiver, drop the `;`, or give it alone")
     # each OLD's span in its file as read; spans of one file must be disjoint
     spans = {}
     for i, (path, old, new) in enumerate(muts):
-        if len(muts) == 1:
+        if n == 1:
             sub = new
         else:
             # the variable read once per site: a read per call slows hot paths several-fold
-            on = f'{{ static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new(); *ON.get_or_init(|| std::env::var_os("{VAR}").is_some_and(|v| v == "{i}")) }}'
+            on = f'{{ static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new(); *ON.get_or_init(|| std::env::var_os("{VAR}").is_some_and(|v| v == "{group[i]}")) }}'
             sub = f"(if {on} {{ {new} }} else {{ {old} }})"
         at = texts[path].index(old)
         spans.setdefault(path, []).append((at, at + len(old), sub, i))
@@ -143,12 +156,12 @@ def main(argv):
         with open(path, "w") as f:
             f.write(mutated[path])
     try:
-        return built(muts, rest, cargo_args, test_args, texts, mutated, saved, sites, rec)
+        return built(muts, group, rest, cargo_args, test_args, texts, mutated, saved, sites, rec)
     finally:
         shutil.rmtree(rec, ignore_errors=True)
 
 
-def built(muts, rest, cargo_args, test_args, texts, mutated, saved, sites, rec):
+def built(muts, group, rest, cargo_args, test_args, texts, mutated, saved, sites, rec):
     """Build with the mutated texts in place (copies of the binaries into rec), put the files back,
     then run and report."""
     select = [] if any(a.split("=")[0] in SELECT for a in cargo_args) else ["--tests"]
@@ -166,7 +179,9 @@ def built(muts, rest, cargo_args, test_args, texts, mutated, saved, sites, rec):
                 os.remove(saved[path])
             else:
                 print(f"mutate: {path} changed during the build; left as it is, the original is at {saved[path]}", file=sys.stderr)
-    rows = [f"| `{path}`: `{old}` -> `{new}` |" for path, old, new in muts]
+    n = len(set(group))
+    rows = [" + ".join(f"| `{path}`: `{old}` -> `{new}`"[2 * (k > 0):] for k, (path, old, new) in enumerate(m for m, g in zip(muts, group) if g == j)) + " |"
+            for j in range(n)]
     if rc != 0:
         errors, other = [], []
         for line in build_out.splitlines():
@@ -181,15 +196,19 @@ def built(muts, rest, cargo_args, test_args, texts, mutated, saved, sites, rec):
         if not errors:  # not a compile error (a bad cargo argument): cargo's own words
             print("\n".join(l for l in other if not l.lstrip().startswith(("Compiling", "Checking"))), file=sys.stderr)
         # the mutations whose substituted lines an error points into
-        bad = {i for e in errors for sp in e.get("spans", []) for i, (path, lo, hi) in enumerate(sites)
+        bad = {group[i] for e in errors for sp in e.get("spans", []) for i, (path, lo, hi) in enumerate(sites)
                if os.path.abspath(sp["file_name"]) == os.path.abspath(path) and sp["line_start"] <= hi and sp["line_end"] >= lo}
         for i in sorted(bad) or range(len(rows)):
             print(f"{rows[i]} does not build |")
-        rest_muts = [m for i, m in enumerate(muts) if i not in bad]
-        if bad and rest_muts:
+        kept = [j for j in range(n) if j not in bad]
+        if bad and kept:
             # the others built again without the broken ones (one more build, not a lost batch)
-            print(f"mutate: {len(bad)} mutation(s) do not build; building the other {len(rest_muts)} again", file=sys.stderr)
-            return main([x for m in rest_muts for x in m] + ["--", *rest])
+            print(f"mutate: {len(bad)} mutation(s) do not build; building the other {len(kept)} again", file=sys.stderr)
+            args = []
+            for j in kept:
+                for k, m in enumerate(m for m, g in zip(muts, group) if g == j):
+                    args += (["+"] if k else []) + list(m)
+            return main(args + ["--", *rest])
         return 0
     out_dir = os.environ.get("MUTATE_OUT") or tempfile.mkdtemp(prefix="mutate-")
     os.makedirs(out_dir, exist_ok=True)
@@ -198,7 +217,7 @@ def built(muts, rest, cargo_args, test_args, texts, mutated, saved, sites, rec):
     for i, row in enumerate(rows):
         if i not in done:
             ids = list(range(i, min(i + per, len(rows))))
-            res = run_bins(bins, [str(k) if len(muts) > 1 else None for k in ids])
+            res = run_bins(bins, [str(k) if n > 1 else None for k in ids])
             done.update(zip(ids, res))
         failed, out = [], []
         for exe, rc, text in done.pop(i):

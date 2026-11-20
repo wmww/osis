@@ -302,6 +302,13 @@ def refusal(cmd, top):
     args = cmd[:cmd.index("--")] if "--" in cmd else cmd
     if ("--release" in args or "-r" in args or any(a.startswith("--profile") for a in args)) and not os.environ.get("HEAVY_RELEASE"):
         return "a release or other-profile build: the dev profile only inside a task (notes/build.md, Profile and command forms; HEAVY_RELEASE=1 for the coordinator's benches)"
+    # libtest ORs its filters: `--ignored paths:: _plain` runs every ignored test of either (every
+    # crate's `_plain` and `repro_`), not paths' plain ones
+    after = cmd[cmd.index("--") + 1:] if "--" in cmd else []
+    filters = [a for i, a in enumerate(after) if not a.startswith("-") and (i == 0 or after[i - 1] not in ("--skip", "--test-threads", "--format"))]
+    if "--ignored" in after and "--exact" not in after and any(f.endswith("::") for f in filters) and any(f.startswith("_") for f in filters):
+        return (f"libtest ORs filters: {' '.join(filters)} runs every ignored test matching any of them, "
+                "not the module's tests ending so: name each test with --exact (notes/build.md, Profile and command forms)")
     common = git("rev-parse", "--path-format=absolute", "--git-common-dir")
     if common and os.path.dirname(common) == top:
         return f"{top} is the main checkout: build in your task worktree (`wt claim`)"

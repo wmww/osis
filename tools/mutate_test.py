@@ -70,6 +70,21 @@ with tempfile.TemporaryDirectory(prefix="mutate-test-") as d:
     check("no target selected: --tests", json.load(open(env["FAKE_ARGS"])), ["test", "--message-format=json", "--tests", "-p", "x", "--", "--exact", "t"])
     check("copies removed", [x for x in os.listdir(d) if x.startswith(("mutate-bins-", "osis-heavy-"))], [])
 
+    # `+` joins two sites into one mutation: one row, both planted under one OSIS_MUTANT value
+    with open(src, "w") as f:
+        f.write("fn f() -> bool { a < b && c || d }\n")
+    with open(env["FAKE_PLAN"], "w") as f:
+        json.dump([exe], f)
+    with open(exe, "w") as f:
+        f.write('#!/bin/sh\nif [ "$OSIS_MUTANT" = 1 ]; then echo "test t ... FAILED"; exit 101; fi\necho "test t ... ok"\n')
+    p = mutate(src, "a < b", "a <= b", "+", src, "c", "!c", src, "d", "!d", "--", "-p", "x")
+    out, err = p.communicate()
+    check("grouped rows", (p.returncode, [l for l in out.splitlines() if not l.startswith("   limit ")]),
+          (0, ["| `%s`: `a < b` -> `a <= b` + `%s`: `c` -> `!c` | none |" % (src, src), "| `%s`: `d` -> `!d` | t |" % src]))
+    check("grouped: file put back", open(src).read(), "fn f() -> bool { a < b && c || d }\n")
+    with open(src, "w") as f:
+        f.write("fn f() -> bool { a < b && c }\n")
+
     # an OLD found in another's wrapper text is no overlap (`c` above); overlapping spans are refused
     os.remove(env["FAKE_ARGS"])
     p = mutate(src, "a < b", "a <= b", src, "b && c", "b || c", "--", "--lib")
