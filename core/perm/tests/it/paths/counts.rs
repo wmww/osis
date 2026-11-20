@@ -293,3 +293,41 @@ fn addenda_arriving_one_at_a_time_cost_linear_work() {
     }
     assert!(per[1] >= 9 * per[0] && per[1] <= 11 * per[0], "{per:?}");
 }
+
+// spec/permissions.md §5.2: a delta's query reads one cut per hop (the edge's last), however many
+// cuts its edge holds: X's delta under k removals of X, each followed by a re-grant, reads the same
+// at k = 10 and 100 (valid again by the re-grant).
+#[test]
+fn a_delta_under_k_cuts_is_a_point_query() {
+    let mut per = vec![];
+    for k in [10u64, 100] {
+        let mut c = vec![write(1, H, 1, &[], A, X, Some(Role::Admin)), content(9, X, 5, &[A], C, None)];
+        for i in 0..k {
+            c.push(write(10 + 2 * i, H, 10 + 2 * i, &[], A, X, None));
+            c.push(write(11 + 2 * i, H, 11 + 2 * i, &[], A, X, Some(Role::Admin)));
+        }
+        let p = Paths::evaluate(&records(), BTreeSet::new(), &c);
+        assert_eq!(p.writes(&t(X), &t(A)).iter().filter(|w| w.cuts(Role::Write)).count() as u64, k);
+        let mut q = Counts::default();
+        assert_eq!(p.content_counted(&WriteId(cid(9), 0), &mut q), Some(Content::Valid(By::Regranted)));
+        per.push(q.content);
+    }
+    assert_eq!(per[0], per[1], "{per:?}");
+}
+
+// Owed (notes/perm-paths.md, Cost shapes, attacker-drivable): any update that changes the walk,
+// one stranger's edge write that applies nowhere among them, judges every held addendum again
+// (the fixpoint from scratch over every thing): k = 100 and 1000 addenda, tenfold work.
+#[test]
+fn any_walk_change_judges_every_addendum_again() {
+    let mut per = vec![];
+    for k in [100u64, 1000] {
+        let mut c = writes(10);
+        c.push(write(2, H, 50, &[], A, X, None));
+        c.extend((0..k).map(|i| content(300_000 + i, H, 60 + i, &[A], C, Some((2, &[200_000])))));
+        let (d, p) = cost_of(&c, write(3, 99, 5000, &[], A, holder(7), Some(Role::Admin)));
+        assert_eq!(p.status(&WriteId(cid(3), 0)), Some(Status::Unapplied));
+        per.push(d.addenda);
+    }
+    assert!(per[1] >= 9 * per[0], "{per:?}");
+}

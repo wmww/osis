@@ -262,14 +262,14 @@ impl Paths {
     }
 
     /// Derives the counting entries from the first walk (draft §5.1 Vouches): an entry of an
-    /// applied vouch V on N keyed by R and listing c counts where an edge write of R applies as
-    /// an explicit write taking from another holder's grant on h, V is ordered after it, and c,
+    /// applied vouch V on N keyed by R and listing c counts where an edge write of R on h applies
+    /// as a lowering, V is ordered after it, and c,
     /// held, has a role-class part on N, is ordered before R, rests on h and is not signed by V's
     /// signer. The commits whose entries changed.
     fn recount(&mut self) -> BTreeSet<CommitId> {
         let mut pairs = BTreeSet::new();
         for v in self.first.vouches() {
-            for (h, rkey) in self.first.takes(&v.removal) {
+            for (h, rkey) in self.first.lowers(&v.removal) {
                 if v.key <= rkey {
                     continue;
                 }

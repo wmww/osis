@@ -532,25 +532,28 @@ fn a_retain_removal_restores_read_as_the_draft_reads_it() {
     assert!(!w[2].cuts(R::Write) && w[1].cuts(R::Write));
 }
 
-// spec/permissions.md §5.1: the first counting condition (draft): the removal must take from the
-// edge's value just before it in the first walk. X left A by itself before H's removal, which
-// lists the leave, so the leave stands and the removal takes nothing (it still falls from X's edge
-// as restored and drops X's unlisted grant): B's vouch for that grant counts for nothing (roles-model
-// counts every vouch whose removal applies: notes/a1-spec/README.md Open 17).
+// spec/permissions.md §5.1: the first counting condition: an edge write of the removal applies as
+// a lowering in the first walk, whether or not it takes anything from the edge's value (a vouch is
+// part of its removal's list, read wherever the removal drops). X left A by itself before H's
+// removal, which lists the leave, so the removal takes nothing from X's value yet falls from X's
+// edge as restored and drops X's unlisted grant: B's vouch for that grant keeps it, as roles-model
+// `counting` reads it (notes/path-model-findings.md 22: R applies in the first walk).
 #[test]
-fn a_vouch_against_a_removal_taking_nothing_counts_for_nothing() {
-    let commits = [
+fn a_vouch_counts_against_a_removal_of_a_holder_already_gone() {
+    let commits = vec![
         commit(1, 1, KH, vec![edge(KA, &[], KX, admin(), Some(&[]))]),
         commit(2, 1, KH, vec![edge(KA, &[], KB, admin(), Some(&[]))]),
         commit(3, 2, KX, vec![edge(KT, &[KA], 7, Some(Edge::new(R::Write)), Some(&[]))]),
         commit(4, 3, KX, vec![Part { on: t(KA), path: vec![], kind: PartKind::Edge(EdgeWrite { holder: t(KX), value: None, frontier: None, remains: Some(t(KH)), adminless: false }) }]),
         commit(5, 6, KH, vec![edge(KA, &[], KX, None, Some(&[4]))]),
-        commit(6, 7, KB, vec![Part { on: t(KT), path: vec![t(KA)], kind: PartKind::Vouch { removal: c(5), list: Frontier::new([c(3)]) } }]),
     ];
     let p = Paths::evaluate(&recs(), BTreeSet::new(), &commits);
     assert_eq!((p.status(&WriteId(c(4), 0)), p.status(&WriteId(c(5), 0))), (Some(Status::Applied), Some(Status::Applied)));
-    assert!(p.counting().is_empty());
     assert_eq!(p.status(&WriteId(c(3), 0)), Some(Status::Dropped));
+    let vouch = commit(6, 7, KB, vec![Part { on: t(KT), path: vec![t(KA)], kind: PartKind::Vouch { removal: c(5), list: Frontier::new([c(3)]) } }]);
+    let p = Paths::evaluate(&recs(), BTreeSet::new(), &[commits, vec![vouch]].concat());
+    assert_eq!(p.counting(), &BTreeSet::from([(c(5), c(3))]));
+    assert_eq!(p.status(&WriteId(c(3), 0)), Some(Status::Applied));
 }
 
 // spec/permissions.md §5.1: a counting entry names its commit whole: B's vouch on T keeps X's
@@ -636,4 +639,203 @@ fn a_vouch_names_no_commit_ordered_after_its_removal() {
     let p = Paths::evaluate(&recs(), BTreeSet::new(), &commits);
     assert!(p.counting().is_empty());
     assert_eq!(p.content(&WriteId(c(3), 0)), Some(Content::Invalid));
+}
+
+// ---- Rules no model control names: one world each, failing where the rule is dropped ----
+
+const KZ: u32 = 4;
+const KY: u32 = 6;
+const KG: u32 = 5;
+
+fn doc(on: u32, path: &[u32], aspect: &str, class: DeltaClass) -> Part {
+    let d = Delta { aspect: Ak::new(aspect).unwrap(), needs: R::Write, purge_author: 0, retention: PurgeBy::AuthorOrAdmin, class };
+    Part { on: t(on), path: path.iter().map(|&x| t(x)).collect(), kind: PartKind::Delta(d) }
+}
+
+fn plain(on: u32) -> Part {
+    doc(on, &[KA], "doc.0", DeltaClass::Plain)
+}
+
+fn addendum(on: u32, removal: u64, list: &[u64]) -> Part {
+    doc(on, &[KA], "addenda.0", DeltaClass::Addendum { removal: c(removal), list: Frontier::new(list.iter().map(|&i| c(i))) })
+}
+
+fn snapshot(on: u32, aspect: &str, carries: &[u64]) -> Part {
+    doc(on, &[KA], aspect, DeltaClass::Snapshot { carries: Frontier::new(carries.iter().map(|&i| c(i))) })
+}
+
+fn vouch(on: u32, path: &[u32], removal: u64, list: &[u64]) -> Part {
+    Part { on: t(on), path: path.iter().map(|&x| t(x)).collect(), kind: PartKind::Vouch { removal: c(removal), list: Frontier::new(list.iter().map(|&i| c(i))) } }
+}
+
+/// H grants each of `who` admin on A at 1 (commit IDs 100 on).
+fn admins(who: &[u32]) -> Vec<Commit> {
+    (0u64..).zip(who).map(|(i, &k)| commit(100 + i, 1, KH, vec![edge(KA, &[], k, admin(), Some(&[]))])).collect()
+}
+
+fn verdicts(commits: &[Commit]) -> Paths {
+    Paths::evaluate(&recs(), BTreeSet::new(), commits)
+}
+
+// spec/permissions.md §5.2 Addenda: an addendum vouches only for a delta ordered before its
+// removal: X's write stamped after H's removal stays invalid whatever B's addendum lists (else a
+// colluding writer keeps the removed party's later writes).
+#[test]
+fn an_addendum_vouches_for_nothing_stamped_after_its_removal() {
+    let mut w = admins(&[KX, KB]);
+    w.push(commit(7, 6, KH, vec![edge(KA, &[], KX, None, Some(&[]))]));
+    w.push(commit(8, 8, KX, vec![plain(KT)]));
+    w.push(commit(9, 9, KB, vec![addendum(KT, 7, &[8])]));
+    assert_eq!(verdicts(&w).content(&WriteId(c(8), 0)), Some(Content::Invalid));
+}
+
+// spec/permissions.md §5.2 Addenda: an addendum vouches only for deltas on its own thing: B's
+// addendum on S names X's write on T in vain; the same on T vouches.
+#[test]
+fn an_addendum_vouches_only_on_its_own_thing() {
+    let base = [admins(&[KX, KB]), vec![commit(4, 2, KX, vec![plain(KT)]), commit(7, 6, KH, vec![edge(KA, &[], KX, None, Some(&[]))])]].concat();
+    let on = |thing| verdicts(&[base.clone(), vec![commit(9, 7, KB, vec![addendum(thing, 7, &[4])])]].concat()).content(&WriteId(c(4), 0));
+    assert_eq!(on(KS), Some(Content::Invalid));
+    assert_eq!(on(KT), Some(Content::Valid(By::Vouched)));
+}
+
+// spec/permissions.md §5.2 Copies: a list naming a snapshot names what it carries for that
+// snapshot's thing and aspect, and only a valid snapshot of the delta's thing and aspect shows its
+// copy: H's removal names B's snapshots of T's `other.0` and of S's `doc.0`, both carrying X's
+// write on T's `doc.0`, which stays cut and is no copy; a snapshot of T's `doc.0` names it.
+#[test]
+fn a_snapshot_names_and_copies_only_its_own_thing_and_aspect() {
+    let with = |s: Part| {
+        let w = [admins(&[KX, KB]), vec![commit(4, 2, KX, vec![plain(KT)]), commit(5, 3, KB, vec![s]), commit(7, 6, KH, vec![edge(KA, &[], KX, None, Some(&[5]))])]].concat();
+        verdicts(&w).content(&WriteId(c(4), 0))
+    };
+    assert_eq!(with(snapshot(KT, "other.0", &[4])), Some(Content::Invalid));
+    assert_eq!(with(snapshot(KS, "doc.0", &[4])), Some(Content::Invalid));
+    assert_eq!(with(snapshot(KT, "doc.0", &[4])), Some(Content::Valid(By::Listed)));
+}
+
+// spec/permissions.md §5.2 Addenda: addenda vouch for no snapshot: X's snapshot, cut, stays
+// invalid whatever B's addendum lists.
+#[test]
+fn an_addendum_vouches_for_no_snapshot() {
+    let w = [admins(&[KX, KB]), vec![commit(4, 2, KX, vec![snapshot(KT, "doc.0", &[])]), commit(7, 6, KH, vec![edge(KA, &[], KX, None, Some(&[]))]), commit(9, 7, KB, vec![addendum(KT, 7, &[4])])]].concat();
+    assert_eq!(verdicts(&w).content(&WriteId(c(4), 0)), Some(Content::Invalid));
+}
+
+// spec/permissions.md §5.1 Second walk, §5.2: §5.2 reads a removal's list with its counting
+// entries: X's key rotation on T, cut by H's removal, is valid as listed by B's vouch on T.
+#[test]
+fn a_counting_entry_lists_a_role_class_delta_for_content() {
+    let w = [admins(&[KX, KB]), vec![commit(4, 2, KX, vec![role_class(KT, &[KA])]), commit(7, 6, KH, vec![edge(KA, &[], KX, None, Some(&[]))])]].concat();
+    assert_eq!(verdicts(&w).content(&WriteId(c(4), 0)), Some(Content::Invalid));
+    let w = [w, vec![commit(9, 7, KB, vec![vouch(KT, &[KA], 7, &[4])])]].concat();
+    let p = verdicts(&w);
+    assert_eq!(p.counting(), &BTreeSet::from([(c(7), c(4))]));
+    assert_eq!(p.content(&WriteId(c(4), 0)), Some(Content::Valid(By::Listed)));
+}
+
+// spec/permissions.md §5.1 step 3, Vouches: no list names its own commit: H's commit removing G
+// from A also rotates T's keys along [G, A]; B's vouch naming that commit keeps nothing of it.
+#[test]
+fn a_vouch_names_nothing_of_its_removals_own_commit() {
+    let recs = BTreeMap::from([(t(KA), t(KH)), (t(KT), t(KA)), (t(KG), t(KH))]);
+    let w = [
+        admins(&[KB, KG]),
+        vec![commit(7, 6, KH, vec![edge(KA, &[], KG, None, Some(&[])), role_class(KT, &[KG, KA])]), commit(9, 7, KB, vec![vouch(KT, &[KA], 7, &[7])])],
+    ]
+    .concat();
+    let p = Paths::evaluate(&recs, BTreeSet::new(), &w);
+    assert_eq!(p.status(&WriteId(c(7), 0)), Some(Status::Applied));
+    assert!(p.counting().is_empty());
+    assert_eq!(p.content(&WriteId(c(7), 1)), Some(Content::Invalid));
+}
+
+// spec/permissions.md §5.2 Addenda (A is valid: the least fixpoint): validity passes along a chain
+// of addenda. X's write is cut by H's removal at 5; Y's addendum at 6 vouches for it, Y is removed
+// at 7; Z's addendum at 8 vouches for Y's, Z is removed at 9; B's at 10 vouches for Z's. Each
+// holds by the next; without B's none does.
+#[test]
+fn validity_passes_along_a_chain_of_addenda() {
+    let base = [
+        admins(&[KX, KB, KY, KZ]),
+        vec![
+            commit(10, 2, KX, vec![plain(KT)]),
+            commit(11, 5, KH, vec![edge(KA, &[], KX, None, Some(&[]))]),
+            commit(12, 6, KY, vec![addendum(KT, 11, &[10])]),
+            commit(13, 7, KH, vec![edge(KA, &[], KY, None, Some(&[]))]),
+            commit(14, 8, KZ, vec![addendum(KT, 13, &[12])]),
+            commit(15, 9, KH, vec![edge(KA, &[], KZ, None, Some(&[]))]),
+        ],
+    ]
+    .concat();
+    let ids = [10, 12, 14].map(|i| WriteId(c(i), 0));
+    let p = verdicts(&base);
+    assert!(ids.iter().all(|id| p.content(id) == Some(Content::Invalid)));
+    let p = verdicts(&[base, vec![commit(16, 10, KB, vec![addendum(KT, 15, &[14])])]].concat());
+    assert!(ids.iter().all(|id| p.content(id) == Some(Content::Valid(By::Vouched))), "{:?}", ids.map(|id| p.content(&id)));
+}
+
+// spec/permissions.md §5.2 Addenda: an addendum vouches only for a delta ordered before its
+// removal, which is ordered before the addendum, so support only runs back in position and no set
+// of addenda supports itself: Y's and Z's addenda, each cut, each naming the other against the
+// other's removal, stay invalid.
+#[test]
+fn addenda_naming_each_other_support_nothing() {
+    let w = [
+        admins(&[KB, KY, KZ]),
+        vec![
+            commit(12, 5, KY, vec![addendum(KT, 15, &[14])]),
+            commit(14, 5, KZ, vec![addendum(KT, 13, &[12])]),
+            commit(13, 6, KH, vec![edge(KA, &[], KY, None, Some(&[]))]),
+            commit(15, 6, KH, vec![edge(KA, &[], KZ, None, Some(&[]))]),
+        ],
+    ]
+    .concat();
+    let p = verdicts(&w);
+    assert_eq!((p.content(&WriteId(c(12), 0)), p.content(&WriteId(c(14), 0))), (Some(Content::Invalid), Some(Content::Invalid)));
+}
+
+// `Changed` names the commits whose counting entries changed: B's vouch arriving changes no edge's
+// history, yet lists X's key rotation; every arrival order reports it.
+#[test]
+fn a_counting_change_is_named() {
+    let w = [admins(&[KX, KB]), vec![commit(4, 2, KX, vec![role_class(KT, &[KA])]), commit(7, 6, KH, vec![edge(KA, &[], KX, None, Some(&[]))]), commit(9, 7, KB, vec![vouch(KT, &[KA], 7, &[4])])]].concat();
+    let mut orders: Vec<Vec<usize>> = vec![vec![]];
+    for k in 0..w.len() {
+        orders = orders.into_iter().flat_map(|o| (0..=o.len()).map(move |at| [&o[..at], &[k], &o[at..]].concat())).collect();
+    }
+    for order in orders {
+        let mut p = Paths::new(&recs(), BTreeSet::new());
+        for &k in &order {
+            let before = p.clone();
+            let ch = p.add(std::slice::from_ref(&w[k]));
+            assert_eq!(super::incremental::check(&before, &p, &ch), None, "order {order:?}, adding {k}");
+        }
+    }
+}
+
+// spec/permissions.md §5.2 Copies: no snapshot carries a role commit, so no list names one through
+// a snapshot and no snapshot shows one as a copy: H's removal names B's `keys.0` snapshot claiming
+// X's key rotation, which stays cut.
+#[test]
+fn no_snapshot_carries_a_role_commit() {
+    let snap = doc(KT, &[KA], "keys.0", DeltaClass::Snapshot { carries: Frontier::new([c(4)]) });
+    let snap = Part { kind: PartKind::Delta(Delta { needs: R::Admin, ..match snap.kind { PartKind::Delta(d) => d, _ => unreachable!() } }), ..snap };
+    let w = [admins(&[KX, KB]), vec![commit(4, 2, KX, vec![role_class(KT, &[KA])]), commit(5, 3, KB, vec![snap]), commit(7, 6, KH, vec![edge(KA, &[], KX, None, Some(&[5]))])]].concat();
+    let p = verdicts(&w);
+    assert_eq!(p.content(&WriteId(c(5), 0)), Some(Content::Valid(By::Held)));
+    assert_eq!(p.content(&WriteId(c(4), 0)), Some(Content::Invalid));
+    assert!(p.copies().is_empty());
+}
+
+// spec/permissions.md §5.1 Vouches, §5.2 Position: a commit with no edge-class part is ordered at
+// the start of its `ts`, so X's key rotation stamped in the millisecond of H's removal is ordered
+// before it (cut by it) and B's vouch keeps it, whatever the signers' tids.
+#[test]
+fn a_role_class_delta_in_its_removals_millisecond_is_ordered_before_it() {
+    let w = [admins(&[KX, KB]), vec![commit(4, 6, KX, vec![role_class(KT, &[KA])]), commit(7, 6, KH, vec![edge(KA, &[], KX, None, Some(&[]))])]].concat();
+    assert_eq!(verdicts(&w).content(&WriteId(c(4), 0)), Some(Content::Invalid));
+    let p = verdicts(&[w, vec![commit(9, 7, KB, vec![vouch(KT, &[KA], 7, &[4])])]].concat());
+    assert_eq!(p.counting(), &BTreeSet::from([(c(7), c(4))]));
+    assert_eq!(p.content(&WriteId(c(4), 0)), Some(Content::Valid(By::Listed)));
 }

@@ -122,57 +122,27 @@ fn model_status(rd: &Reading, i: Id) -> Status {
 /// also compares the dispute sets (a walk per candidate on each side).
 pub fn diff(w: &World, v: &View, disputes: bool) -> Option<String> {
     let rules = rules();
+    let w = &as_known(w, v);
     let rd = m::judge(w, &rules, v);
     let inp = input(w, v);
     let p = Paths::evaluate(&inp.records, inp.trust.clone(), &inp.commits);
     compare(w, v, &rules, &rd, &inp, &p, disputes)
 }
 
-/// notes/a1-spec/README.md Open 17, read from the model alone: under the view's trust set (and,
-/// for disputes, with each held lowering trusted too), the model's first walk applies a vouch
-/// whose removal applies there without any part taking from another holder's grant as an explicit
-/// write (the draft's first counting condition; the model asks only that the removal apply).
-/// Where the two readings differ only so, the walk follows the draft.
-pub fn open_17(w: &World, v: &View, disputes: bool) -> bool {
-    let first = Rules { vouch: m::Vouch::Off, ..Rules::fixed() };
-    let mut trusts = vec![v.clone()];
-    if disputes {
-        trusts.extend(v.held.iter().filter(|&&r| w.lowers(r).is_some()).map(|&r| v.clone().trusting_also(r)));
+/// `w` as node view `v` can know it (notes/a1-spec/README.md Open 19, (a) as the walk takes it): a
+/// cover the view does not hold carries nothing, since what a snapshot carries is known only from
+/// the snapshot, while roles-model's `World::names` reads every cover's carries world-wide. Nothing
+/// else the model judges reads a commit the view does not hold.
+pub fn as_known(w: &World, v: &View) -> World {
+    let mut w = w.clone();
+    for (i, k) in w.commits.iter_mut().enumerate() {
+        if let Kind::Cover { carries } = &mut k.kind
+            && !v.held.contains(&i)
+        {
+            carries.clear();
+        }
     }
-    trusts.iter().any(|v| {
-        let rd = m::judge(w, &first, v);
-        let before = |j: Id| -> Option<(roles_model::Role, Option<u32>)> {
-            let e = w.sets(j)?;
-            let rec = w.records.contains(&e).then_some((roles_model::Role::Admin, None));
-            rd.hist.get(&e).and_then(|h| h.iter().rev().find(|x| x.0 < w.key(j))).map(|x| x.1).or(rec).filter(|b| b.0 != roles_model::Role::None)
-        };
-        let takes = |j: Id| match (&w.commits[j].kind, before(j)) {
-            (Kind::Edge { holder, role, until, finalize: false, .. }, Some((brole, buntil))) => {
-                *holder != w.commits[j].signer && !w.leave(j) && !rd.invited.contains(&j) && rd.applied.contains(&j) && (*role < brole || until.is_some_and(|u| buntil.is_none_or(|b| u < b)))
-            }
-            _ => false,
-        };
-        rd.applied.iter().any(|&i| match &w.commits[i].kind {
-            Kind::Vouch { removal, .. } => {
-                let parts: Vec<Id> = v.held.iter().copied().filter(|&j| w.cid(j) == w.cid(*removal)).collect();
-                parts.iter().any(|j| rd.applied.contains(j)) && !parts.iter().any(|&j| takes(j))
-            }
-            _ => false,
-        })
-    })
-}
-
-/// notes/a1-spec/README.md Open 18, read from the model alone: a held list (a lowering's frontier
-/// in a leaf the node sees, an addendum's) names a cover the node does not hold that carries a
-/// commit it holds. The model reads what that cover carries; the walk knows only held covers.
-pub fn open_18(w: &World, v: &View) -> bool {
-    let seen = |t: &Thing| v.leaves.as_ref().is_none_or(|l| l.contains(t));
-    let names_unheld = |c: &Id| !v.held.contains(c) && matches!(&w.commits[*c].kind, Kind::Cover { carries } if carries.iter().any(|j| v.held.contains(j)));
-    v.held.iter().any(|&i| match &w.commits[i].kind {
-        Kind::Edge { frontier, .. } => frontier.iter().filter(|(t, _)| seen(t)).any(|(_, l)| l.iter().any(names_unheld)),
-        Kind::Addendum { list, .. } => list.iter().any(names_unheld),
-        _ => false,
-    })
+    w
 }
 
 fn compare(w: &World, v: &View, rules: &Rules, rd: &Reading, inp: &Input, p: &Paths, disputes: bool) -> Option<String> {

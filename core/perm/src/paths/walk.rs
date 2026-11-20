@@ -1089,17 +1089,17 @@ impl Walk {
         out
     }
 
-    /// The edge writes of `commit` applying as explicit writes that lower a grant whose holder is
-    /// not the commit's signer, taking from the edge's value just before them (draft §5.1
-    /// Vouches, the first counting condition): each one's edge and key.
-    pub(super) fn takes(&self, commit: &CommitId) -> Vec<((Tid, Tid), Key)> {
+    /// The edge writes of `commit` the walk applies as lowerings (explicit writes giving their
+    /// edge below admin at their `ts`: draft §5.1 Vouches, the first counting condition): each
+    /// one's edge and key.
+    pub(super) fn lowers(&self, commit: &CommitId) -> Vec<((Tid, Tid), Key)> {
         let mut out = vec![];
         for &s in self.by_commit.get(commit).into_iter().flatten() {
             let it = &self.items[s];
-            if it.edge.as_ref().is_none_or(|ei| ei.holder == it.signer) {
+            if !it.lowering() {
                 continue;
             }
-            if let Some((e, a)) = self.applied_write(&it.id).filter(|(_, a)| a.explicit && takes_from(a.value.as_ref(), a.before.as_ref())) {
+            if let Some((e, a)) = self.applied_write(&it.id).filter(|(_, a)| a.explicit) {
                 out.push((e, a.key));
             }
         }
@@ -1149,23 +1149,6 @@ impl Walk {
 /// The final role a value gives, every `until` counted removed.
 fn final_role(v: Option<Option<Edge>>) -> Lvl {
     v.flatten().filter(|v| v.until.is_none()).map(|v| v.role)
-}
-
-/// `new` takes from `old` (draft §5.1 Vouches): removing it, or setting a role, invite or `until`
-/// below it or a `floor` above it.
-fn takes_from(new: Option<&Edge>, old: Option<&Edge>) -> bool {
-    match (new, old) {
-        (_, None) => false,
-        (None, Some(_)) => true,
-        (Some(n), Some(o)) => {
-            let until_below = match (n.until, o.until) {
-                (Some(a), Some(b)) => a < b,
-                (Some(_), None) => true,
-                (None, _) => false,
-            };
-            n.role < o.role || n.invite < o.invite || until_below || n.floor.unwrap_or(0) > o.floor.unwrap_or(0)
-        }
-    }
 }
 
 #[derive(Clone, Copy)]

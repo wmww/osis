@@ -20,7 +20,7 @@ type ChainUndo = (Key, Pair, Option<(Lvl, Lvl)>, Option<[Option<Key>; 2]>);
 /// What a held commit is, for the counting rule and the addenda rule.
 #[derive(Clone)]
 pub(super) struct CommitFacts {
-    /// Its commit-level key (part 0).
+    /// Its commit-level key (part 0) where it has an edge-class part, else the start of its `ts`.
     pub key: Key,
     pub signer: Tid,
     /// The things it has a role-class part on (edge-class parts and role-class deltas).
@@ -91,7 +91,8 @@ pub(super) struct Facts {
     named: BTreeMap<CommitId, Vec<Namer>>,
     carried: BTreeMap<CommitId, Vec<usize>>,
     requests: BTreeMap<(Tid, Ak, Tid), Vec<usize>>,
-    addenda: Vec<usize>,
+    /// The held addenda (an addendum of a role commit is none).
+    addenda: BTreeSet<usize>,
     valid_addenda: BTreeSet<usize>,
     /// (removal, commit) by commit: the counting entries (draft §5.1 Vouches).
     counted: BTreeMap<CommitId, Vec<CommitId>>,
@@ -221,7 +222,7 @@ impl Facts {
                         for x in list.commits() {
                             self.named.entry(*x).or_default().push(Namer::Addendum(n));
                         }
-                        self.addenda.push(n);
+                        self.addenda.insert(n);
                         out.addenda.push(n);
                     }
                     Class::Snapshot(carries) => {
@@ -235,6 +236,11 @@ impl Facts {
                     }
                     _ => {}
                 }
+            }
+            // ordered for the counting rule as its parts are: by its edge-class parts' key, else
+            // at the start of its `ts` (§5.2 Position)
+            if !c.parts.iter().any(|p| matches!(p.kind, PartKind::Edge(_) | PartKind::Vouch { .. })) {
+                cf.key = Key::start(c.ts);
             }
             self.commits.insert(c.id, cf);
         }
@@ -333,7 +339,7 @@ impl Facts {
     /// carrying it.
     fn namers(&self, d: &D, counts: &mut Counts) -> Vec<Namer> {
         let mut out: Vec<Namer> = self.named.get(&d.commit).cloned().unwrap_or_default();
-        for &s in self.carried.get(&d.commit).into_iter().flatten() {
+        for &s in self.carriers(&d.commit) {
             counts.content += 1;
             let Some(sd) = self.deltas.get(s) else { continue };
             if sd.on == d.on && sd.aspect == d.aspect && sd.commit != d.commit {
@@ -445,9 +451,15 @@ impl Facts {
         })
     }
 
+    /// The held snapshots carrying held commit `c`: none for a role commit, which no snapshot
+    /// carries (draft §5.2 Copies: role commits are never compacted).
+    fn carriers(&self, c: &CommitId) -> impl Iterator<Item = &usize> {
+        self.carried.get(c).filter(|_| self.commits.get(c).is_some_and(|f| !f.role)).into_iter().flatten()
+    }
+
     /// Carried by a valid snapshot of its thing and aspect.
     fn copied(&self, tl: &Walk, d: &D, counts: &mut Counts) -> bool {
-        self.carried.get(&d.commit).into_iter().flatten().any(|&s| {
+        self.carriers(&d.commit).any(|&s| {
             counts.content += 1;
             self.deltas.get(s).is_some_and(|sd| sd.on == d.on && sd.aspect == d.aspect && sd.commit != d.commit && self.valid(tl, sd, counts).is_some())
         })
@@ -469,7 +481,7 @@ impl Facts {
                 out.push(a);
             }
         }
-        out.extend(self.carried.get(&d.commit).into_iter().flatten().copied().filter(|&s| self.deltas.get(s).is_some_and(|sd| sd.on == d.on && sd.aspect == d.aspect)));
+        out.extend(self.carriers(&d.commit).copied().filter(|&s| self.deltas.get(s).is_some_and(|sd| sd.on == d.on && sd.aspect == d.aspect)));
         if let Some(pa) = d.purge_author {
             let key = (d.on, d.aspect.clone(), pa);
             out.extend(self.requests.get(&key).into_iter().flatten().copied());
@@ -489,7 +501,7 @@ impl Facts {
             if self.valid(tl, s, counts).is_none() {
                 continue;
             }
-            for c in carries.commits() {
+            for c in carries.commits().iter().filter(|c| self.commits.get(c).is_none_or(|f| !f.role)) {
                 let valid_held = self.by_commit_on.get(&(*c, s.on)).into_iter().flatten().filter_map(|&n| self.deltas.get(n)).any(|d| d.aspect == s.aspect && self.valid(tl, d, counts).is_some());
                 if !valid_held && *c != s.commit {
                     out.insert(*c);
