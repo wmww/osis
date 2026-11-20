@@ -471,7 +471,8 @@ impl Facts {
         }
         out.extend(self.carried.get(&d.commit).into_iter().flatten().copied().filter(|&s| self.deltas.get(s).is_some_and(|sd| sd.on == d.on && sd.aspect == d.aspect)));
         if let Some(pa) = d.purge_author {
-            out.extend(self.requests.get(&(d.on, d.aspect.clone(), pa)).into_iter().flatten().copied());
+            let key = (d.on, d.aspect.clone(), pa);
+            out.extend(self.requests.get(&key).into_iter().flatten().copied());
         }
         out.into_iter().filter_map(|n| self.deltas.get(n)).map(|x| x.id).collect()
     }

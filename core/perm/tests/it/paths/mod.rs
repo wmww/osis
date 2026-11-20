@@ -128,12 +128,12 @@ pub fn diff(w: &World, v: &View, disputes: bool) -> Option<String> {
     compare(w, v, &rules, &rd, &inp, &p, disputes)
 }
 
-/// notes/a1-spec/README.md Open 16, read from the model alone: under the view's trust set (and,
+/// notes/a1-spec/README.md Open 17, read from the model alone: under the view's trust set (and,
 /// for disputes, with each held lowering trusted too), the model's first walk applies a vouch
 /// whose removal applies there without any part taking from another holder's grant as an explicit
 /// write (the draft's first counting condition; the model asks only that the removal apply).
 /// Where the two readings differ only so, the walk follows the draft.
-pub fn open_16(w: &World, v: &View, disputes: bool) -> bool {
+pub fn open_17(w: &World, v: &View, disputes: bool) -> bool {
     let first = Rules { vouch: m::Vouch::Off, ..Rules::fixed() };
     let mut trusts = vec![v.clone()];
     if disputes {
@@ -159,6 +159,19 @@ pub fn open_16(w: &World, v: &View, disputes: bool) -> bool {
             }
             _ => false,
         })
+    })
+}
+
+/// notes/a1-spec/README.md Open 18, read from the model alone: a held list (a lowering's frontier
+/// in a leaf the node sees, an addendum's) names a cover the node does not hold that carries a
+/// commit it holds. The model reads what that cover carries; the walk knows only held covers.
+pub fn open_18(w: &World, v: &View) -> bool {
+    let seen = |t: &Thing| v.leaves.as_ref().is_none_or(|l| l.contains(t));
+    let names_unheld = |c: &Id| !v.held.contains(c) && matches!(&w.commits[*c].kind, Kind::Cover { carries } if carries.iter().any(|j| v.held.contains(j)));
+    v.held.iter().any(|&i| match &w.commits[i].kind {
+        Kind::Edge { frontier, .. } => frontier.iter().filter(|(t, _)| seen(t)).any(|(_, l)| l.iter().any(names_unheld)),
+        Kind::Addendum { list, .. } => list.iter().any(names_unheld),
+        _ => false,
     })
 }
 

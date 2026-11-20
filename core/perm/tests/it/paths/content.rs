@@ -9,7 +9,7 @@
 //! vouches on A or T1 against an earlier lowering.
 //! spec/permissions.md §5.1, §5.2, §6 (the draft replaces them: notes/a1-spec/permissions.md).
 
-use super::{diff, open_16};
+use super::{diff, open_17, open_18};
 use crate::common::{seeded, sharded};
 use roles_model::paths::{self as m, Id, Kind, Set, Thing, View, World};
 use roles_model::{Rng, Role};
@@ -115,8 +115,8 @@ pub fn run(start: u64, n: u64, disputes: bool) -> Vec<String> {
     let mut fails = vec![];
     for i in start..start + n {
         let (w, v) = world(i);
-        // the draft's first counting condition where the model reads otherwise (Open 16)
-        if let Some(d) = diff(&w, &v, disputes).filter(|_| !open_16(&w, &v, disputes)) {
+        // where the model reads otherwise and the walk follows the draft (Open 17, Open 18)
+        if let Some(d) = diff(&w, &v, disputes).filter(|_| !open_17(&w, &v, disputes) && !open_18(&w, &v)) {
             fails.push(format!("content world {i}: {d}\nheld {:?} trust {:?}\n{}", v.held, v.trust, m::tiny_trace(&w)));
             if fails.len() >= 3 {
                 return fails;

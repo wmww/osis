@@ -202,7 +202,49 @@ fn a_backdated_grant_moves_a_current_holders_first_point_back() {
     assert_eq!(verdict(&w, &all(&w, &[r]), early), Some(Content::Valid(By::Regranted)));
 }
 
+// spec/permissions.md §5.2: a re-granted path counts from the latest of its edges' first chained
+// writes: X's write through A2 before A2's share of T1 stays invalid though X's own grant on A2 is
+// older (the walk's own world, read by the model too).
+#[test]
+fn a_re_grant_counts_from_the_latest_edges_first_chained_write() {
+    let mut w = account();
+    w.edge(K, 1, &[], A2, X, Write, &[]);
+    let early = w.content(X, 3, &[A2], T1);
+    w.edge(H, 5, &[A], T1, A2, Write, &[]);
+    let late = w.content(X, 6, &[A2], T1);
+    agree_all(&w, &[]);
+    assert_eq!(verdict(&w, &all(&w, &[]), early), Some(Content::Invalid));
+    assert_eq!(verdict(&w, &all(&w, &[]), late), Some(Content::Valid(By::Held)));
+}
+
+// spec/permissions.md §4: a write no record or earlier chained write gives (a stranger's) is no
+// chained write, so it moves no first point back (the walk's own world, read by the model too).
+#[test]
+fn a_strangers_grant_moves_no_first_point_back() {
+    let mut w = account();
+    w.edge(Z, 2, &[], T1, A2, Write, &[]);
+    let early = w.content(K, 4, &[A2], T1);
+    w.edge(H, 7, &[A], T1, A2, Write, &[]);
+    agree_all(&w, &[]);
+    assert_eq!(verdict(&w, &all(&w, &[]), early), Some(Content::Invalid));
+}
+
 // ---- Addenda ----
+
+// spec/permissions.md §5.2: an addendum vouches only against a removal ordered before it: B's
+// addendum stamped before H's removal keeps nothing; the one after keeps X's write.
+#[test]
+fn an_addendum_vouches_only_after_its_removal() {
+    let (mut w, ..) = paired();
+    let xc = w.content(X, 3, &[A], T1);
+    let r = w.edge(H, 6, &[], A, X, Gone, &[]);
+    w.addendum(B, 5, &[A], T1, r, &[xc]);
+    agree_all(&w, &[r]);
+    assert_eq!(verdict(&w, &all(&w, &[r]), xc), Some(Content::Invalid));
+    w.addendum(B, 7, &[A], T1, r, &[xc]);
+    agree_all(&w, &[r]);
+    assert_eq!(verdict(&w, &all(&w, &[r]), xc), Some(Content::Valid(By::Vouched)));
+}
 
 // spec/permissions.md §5.2: an addendum vouches for no commit of its own signer.
 #[test]
@@ -223,10 +265,12 @@ fn a_removed_signer_vouches_for_nothing_of_its_own() {
     let (mut w, ..) = paired();
     w.edge(K, 1, &[], A2, X, Admin, &[]);
     w.edge(H, 1, &[A], T1, A2, Admin, &[]);
-    w.edge(X, 2, &[A], T1, Z, Admin, &[]);
+    let gz = w.edge(X, 2, &[A], T1, Z, Admin, &[]);
     let r = w.edge(H, 6, &[], A, X, Gone, &[]);
-    w.vouch(X, 7, &[A2], T1, r, &[2]);
+    w.vouch(X, 7, &[A2], T1, r, &[gz]);
     agree_all(&w, &[r]);
+    let (inp, p) = walk(&w, &all(&w, &[r]));
+    assert!(p.counting().is_empty() && p.status(&inp.ids[&gz]) == Some(Status::Dropped));
 }
 
 // spec/permissions.md §5.2: a re-granted writer's addendum written after its new grant vouches.
@@ -492,7 +536,7 @@ fn a_retain_removal_restores_read_as_the_draft_reads_it() {
 // edge's value just before it in the first walk. X left A by itself before H's removal, which
 // lists the leave, so the leave stands and the removal takes nothing (it still falls from X's edge
 // as restored and drops X's unlisted grant): B's vouch for that grant counts for nothing (roles-model
-// counts every vouch whose removal applies: notes/a1-spec/README.md Open 16).
+// counts every vouch whose removal applies: notes/a1-spec/README.md Open 17).
 #[test]
 fn a_vouch_against_a_removal_taking_nothing_counts_for_nothing() {
     let commits = [
@@ -526,4 +570,70 @@ fn a_counting_entry_keeps_its_commits_parts_on_other_things() {
     let p = Paths::evaluate(&recs(), BTreeSet::from([WriteId(c(5), 0)]), &commits);
     assert_eq!(p.counting(), &BTreeSet::from([(c(5), c(3))]));
     assert_eq!((p.status(&WriteId(c(3), 0)), p.status(&WriteId(c(3), 1))), (Some(Status::Applied), Some(Status::Applied)));
+}
+
+fn admin_only(on: u32, path: &[u32], class: DeltaClass) -> Part {
+    let aspect = Ak::new(if matches!(class, DeltaClass::Addendum { .. }) { "addenda.0" } else { "doc^.0" }).unwrap();
+    let d = Delta { aspect, needs: R::Admin, purge_author: 0, retention: PurgeBy::AuthorOrAdmin, class };
+    Part { on: t(on), path: path.iter().map(|&x| t(x)).collect(), kind: PartKind::Delta(d) }
+}
+
+// spec/permissions.md §5.2: an admin-only delta is judged with admin in place of write: cut by a
+// fall from admin, vouched for only by an addendum whose path gives admin. X, admin on A, writes
+// admin-only content on T; H demotes X to write listing nothing; N's addendum (write on A) vouches
+// for nothing, B's (admin) does. X's plain write stays valid: the demotion is no cut below write.
+#[test]
+fn an_addendum_vouches_for_admin_only_content_only_by_admin() {
+    const KN: u32 = 4;
+    let base = vec![
+        commit(1, 1, KH, vec![edge(KA, &[], KX, admin(), Some(&[]))]),
+        commit(2, 1, KH, vec![edge(KA, &[], KB, admin(), Some(&[]))]),
+        commit(3, 1, KH, vec![edge(KA, &[], KN, Some(Edge::new(R::Write)), Some(&[]))]),
+        commit(4, 2, KX, vec![admin_only(KT, &[KA], DeltaClass::Plain)]),
+        commit(5, 2, KX, vec![role_class(KT, &[KA])]),
+        commit(6, 2, KX, vec![Part { kind: PartKind::Delta(Delta { aspect: Ak::new("doc.0").unwrap(), needs: R::Write, purge_author: 0, retention: PurgeBy::AuthorOrAdmin, class: DeltaClass::Plain }), ..role_class(KT, &[KA]) }]),
+        commit(7, 5, KH, vec![edge(KA, &[], KX, Some(Edge::new(R::Write)), Some(&[]))]),
+    ];
+    let by = |signer, id| commit(id, 6, signer, vec![admin_only(KT, &[KA], DeltaClass::Addendum { removal: c(7), list: Frontier::new([c(4), c(5)]) })]);
+    let p = Paths::evaluate(&recs(), BTreeSet::new(), &[base.clone(), vec![by(KN, 8)]].concat());
+    assert_eq!(p.content(&WriteId(c(4), 0)), Some(Content::Invalid));
+    assert_eq!(p.content(&WriteId(c(6), 0)), Some(Content::Valid(By::Held)));
+    let p = Paths::evaluate(&recs(), BTreeSet::new(), &[base, vec![by(KB, 8)]].concat());
+    assert_eq!(p.content(&WriteId(c(4), 0)), Some(Content::Valid(By::Vouched)));
+    // a role-class delta is no content an addendum vouches for
+    assert_eq!(p.content(&WriteId(c(5), 0)), Some(Content::Invalid));
+}
+
+// spec/permissions.md §5.2: a commit carrying a purge request is no content an addendum vouches
+// for: X's commit of a write and a purge request, cut, stays invalid whatever B's addendum lists.
+#[test]
+fn an_addendum_vouches_for_no_commit_carrying_a_purge_request() {
+    let base = vec![
+        commit(1, 1, KH, vec![edge(KA, &[], KX, admin(), Some(&[]))]),
+        commit(2, 1, KH, vec![edge(KA, &[], KB, admin(), Some(&[]))]),
+        commit(4, 2, KX, vec![admin_only(KT, &[KA], DeltaClass::Plain), Part { kind: PartKind::Delta(Delta { aspect: Ak::new("doc^.0").unwrap(), needs: R::Write, purge_author: 1, retention: PurgeBy::AuthorOrAdmin, class: DeltaClass::PurgeByAuthor { author: t(KA) } }), ..role_class(KT, &[KA]) }]),
+        commit(5, 2, KX, vec![admin_only(KT, &[KA], DeltaClass::Plain)]),
+        commit(7, 5, KH, vec![edge(KA, &[], KX, None, Some(&[]))]),
+        commit(8, 6, KB, vec![admin_only(KT, &[KA], DeltaClass::Addendum { removal: c(7), list: Frontier::new([c(4), c(5)]) })]),
+    ];
+    let p = Paths::evaluate(&recs(), BTreeSet::new(), &base);
+    assert_eq!(p.content(&WriteId(c(4), 0)), Some(Content::Invalid));
+    assert_eq!(p.content(&WriteId(c(5), 0)), Some(Content::Valid(By::Vouched)));
+}
+
+// spec/permissions.md §5.1: an entry counts only for a commit ordered before its removal: B's vouch
+// naming X's key rotation made after H's removal keeps nothing of it (as a cut's list it would keep
+// it whatever the order, §5.2).
+#[test]
+fn a_vouch_names_no_commit_ordered_after_its_removal() {
+    let commits = [
+        commit(1, 1, KH, vec![edge(KA, &[], KX, admin(), Some(&[]))]),
+        commit(2, 1, KH, vec![edge(KT, &[KA], KB, admin(), Some(&[]))]),
+        commit(5, 6, KH, vec![edge(KA, &[], KX, None, Some(&[]))]),
+        commit(3, 7, KX, vec![role_class(KT, &[KA])]),
+        commit(6, 8, KB, vec![Part { on: t(KT), path: vec![], kind: PartKind::Vouch { removal: c(5), list: Frontier::new([c(3)]) } }]),
+    ];
+    let p = Paths::evaluate(&recs(), BTreeSet::new(), &commits);
+    assert!(p.counting().is_empty());
+    assert_eq!(p.content(&WriteId(c(3), 0)), Some(Content::Invalid));
 }
