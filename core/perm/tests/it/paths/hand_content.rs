@@ -412,6 +412,38 @@ fn a_vouch_counts_only_where_its_removal_applies_in_the_first_walk() {
     agree_all(&w, &[r]);
 }
 
+/// N5's removal of H from A (listing B's grant and H's share of T1, not N5's own grant) and of
+/// A2's share of T1 (through A), in one commit or (`one` false) two; B vouches on A against the
+/// removal on A for N5's grant. The world and the two removals.
+pub(super) fn removals_on_two_things(one: bool) -> (World, Id, Id) {
+    let mut w = account();
+    let gb = w.edge(H, 1, &[], A, B, Admin, &[]);
+    let g5 = w.edge(H, 1, &[], A, N5, Admin, &[]);
+    let share = w.edge(H, 1, &[A], T1, A2, Write, &[]);
+    let on_a = w.edge(N5, 5, &[], A, H, Gone, &[gb, share]);
+    let on_t = w.edge(N5, 5, &[A], T1, A2, Gone, &[]);
+    if one {
+        w.group(&[on_a, on_t]);
+    }
+    w.vouch(B, 6, &[], A, on_a, &[g5]);
+    (w, on_a, on_t)
+}
+
+// notes/a1-spec/permissions.md §5.1 Vouches, the third counting condition: the removal on T1
+// applies in the first walk and the one on A is void there; B's entry names a commit resting on
+// (H, A), not on (A2, T1), so it keeps nothing and the removal on A stays void, as where the two
+// are separate commits (a commit's parts on different things judged each on its own).
+#[test]
+fn a_vouch_counts_only_for_a_commit_resting_on_an_edge_its_removal_lowers_in_the_first_walk() {
+    for one in [true, false] {
+        let (w, on_a, on_t) = removals_on_two_things(one);
+        agree_all(&w, &[]);
+        let (inp, p) = walk(&w, &all(&w, &[]));
+        assert_eq!((p.status(&inp.ids[&on_a]), p.status(&inp.ids[&on_t])), (Some(Status::Void), Some(Status::Applied)), "{one}");
+        assert!(p.counting().is_empty(), "{one}");
+    }
+}
+
 // ---- Purge authors ----
 
 // spec/permissions.md §6: a request by author takes exactly the deltas naming that purge author.

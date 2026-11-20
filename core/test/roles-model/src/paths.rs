@@ -905,6 +905,8 @@ pub struct Reading {
     /// (valid, their writer holding write at their key).
     pub counting: Set,
     pub vouching: Set,
+    /// The entries of the counting vouches.
+    entries: Vouched,
     pub dropped: Set,
     /// Commits of several parts whose own drops took their path's authority (`Walk::self_taken`).
     pub self_taken: Set,
@@ -1091,15 +1093,19 @@ fn listed(w: &World, v: &View, vouched: &Vouched, r: Id, j: Id) -> bool {
     w.in_leaves(r, j, v.leaves.as_ref()) || vouched.contains(&(w.cid(r), w.cid(j), w.commits[j].on))
 }
 
-/// What vouch `i`'s entries keep (it counting): each listed role write on its own thing, not
-/// its own signer's under `no_own_vouch`, kept on that thing (`Entry::OnThing`) or on every thing
-/// its commit writes (`Entry::Whole`).
-fn entries(w: &World, rules: &Rules, i: Id) -> Vouched {
+/// What vouch `i`'s entries keep (it counting against the removal's edge writes on `lowered`, the
+/// edges the first walk applies them on as lowerings): each listed role write on its own thing
+/// whose commit rests there on one of those edges by a part on that thing (a removal's write
+/// void in the first walk keeps nothing by a vouch, though another write of its commit counts),
+/// not its own signer's under `no_own_vouch`, kept on that thing (`Entry::OnThing`) or on every
+/// thing its commit writes (`Entry::Whole`).
+fn entries(w: &World, rules: &Rules, i: Id, lowered: &[Edge]) -> Vouched {
     let Kind::Vouch { removal, list } = &w.commits[i].kind else { return Vouched::new() };
     let on = w.commits[i].on;
     let own = |j: Id| rules.no_own_vouch && w.commits[j].signer == w.commits[i].signer;
+    let rests = |j: Id| w.part_ids(w.cid(j)).any(|x| w.commits[x].on == on && lowered.iter().any(|&h| rests_on(w, rules, x, h)));
     let mut out = Vouched::new();
-    for &j in list.iter().filter(|&&j| w.edge_class(j) && w.commits[j].on == on && !own(j)) {
+    for &j in list.iter().filter(|&&j| w.edge_class(j) && w.commits[j].on == on && !own(j) && rests(j)) {
         let (r, c) = (w.cid(*removal), w.cid(j));
         match rules.entry {
             Entry::OnThing => {
@@ -1541,9 +1547,10 @@ fn counting(w: &World, rules: &Rules, wk: &Walk) -> (Set, Vouched) {
     let lowers = |a: Id| rules.lowering(w, a).is_some() && !w.leave(a) && !wk.pass.invited.contains(&a);
     for &i in &wk.pass.applied {
         if let Kind::Vouch { removal, .. } = &w.commits[i].kind {
-            if w.key(*removal) < w.key(i) && wk.pass.applied.iter().any(|&a| w.cid(a) == w.cid(*removal) && lowers(a)) {
+            let lowered: Vec<Edge> = wk.pass.applied.iter().copied().filter(|&a| w.cid(a) == w.cid(*removal) && lowers(a)).filter_map(|a| w.sets(a)).collect();
+            if w.key(*removal) < w.key(i) && !lowered.is_empty() {
                 ids.insert(i);
-                out.extend(entries(w, rules, i));
+                out.extend(entries(w, rules, i, &lowered));
             }
         }
     }
@@ -1553,7 +1560,7 @@ fn counting(w: &World, rules: &Rules, wk: &Walk) -> (Set, Vouched) {
 /// The settled walk under the active trusted writes (its rounds and passes counting every walk
 /// made), the seeds with their trusted writes, the first walk's state, the counting vouches, and
 /// whether the vouches settled.
-fn settle(w: &World, rules: &Rules, v: &View, active: &Set) -> (Walk, BTreeMap<Id, Id>, BTreeMap<Edge, Val>, Set, bool) {
+fn settle(w: &World, rules: &Rules, v: &View, active: &Set) -> (Walk, BTreeMap<Id, Id>, BTreeMap<Edge, Val>, Set, Vouched, bool) {
     let none = Vouched::new();
     let (mut rounds, mut passes, mut walked, mut checked) = (0, 0, 0, 0);
     let mut run = |vouched: &Vouched| {
@@ -1570,13 +1577,13 @@ fn settle(w: &World, rules: &Rules, v: &View, active: &Set) -> (Walk, BTreeMap<I
         Vouch::Off => {
             let (wk, d0) = run(&none);
             let first = wk.pass.state.clone();
-            (wk, d0, first, Set::new(), false)
+            (wk, d0, first, Set::new(), Vouched::new(), false)
         }
         Vouch::BaseWalk => {
             let base = run(&none).0;
             let (ids, vouched) = counting(w, rules, &base);
             let (wk, d0) = run(&vouched);
-            (wk, d0, base.pass.state, ids, false)
+            (wk, d0, base.pass.state, ids, vouched, false)
         }
         Vouch::SameWalk => {
             let mut seen = vec![none.clone()];
@@ -1587,7 +1594,7 @@ fn settle(w: &World, rules: &Rules, v: &View, active: &Set) -> (Walk, BTreeMap<I
                 if next == vouched || seen.contains(&next) {
                     let circle = next != vouched;
                     let first = wk.pass.state.clone();
-                    return (wk, d0, first, ids, circle);
+                    return (wk, d0, first, ids, next, circle);
                 }
                 seen.push(next.clone());
                 vouched = next;
@@ -1824,7 +1831,7 @@ pub fn judge(w: &World, rules: &Rules, v: &View) -> Reading {
     let mut void = Set::new();
     let (mut rounds, mut passes, mut walked, mut checked) = (0, 0, 0, 0);
     loop {
-        let (wk, d0, first, counting, circle) = settle(w, rules, v, &active);
+        let (wk, d0, first, counting, entries, circle) = settle(w, rules, v, &active);
         rounds += wk.rounds;
         passes += wk.passes;
         walked += wk.walked;
@@ -1862,6 +1869,7 @@ pub fn judge(w: &World, rules: &Rules, v: &View) -> Reading {
             state: wk.pass.state.clone(),
             first,
             counting,
+            entries,
             vouching,
             applied,
             dropped: wk.dropped,
@@ -1884,10 +1892,7 @@ pub fn judge(w: &World, rules: &Rules, v: &View) -> Reading {
 /// The dropped commits whose drop the reading does not justify (`Reading::stray`): read from
 /// the reading's applied set, trust set, lists and counting vouches alone.
 fn unjustified(w: &World, rules: &Rules, v: &View, rd: &Reading) -> Set {
-    let mut vouched = Vouched::new();
-    for &a in &rd.counting {
-        vouched.extend(entries(w, rules, a));
-    }
+    let vouched = &rd.entries;
     rd.dropped
         .iter()
         .copied()
@@ -1896,7 +1901,7 @@ fn unjustified(w: &World, rules: &Rules, v: &View, rd: &Reading) -> Set {
             let seed = v.trust.contains(&r) && !rd.void.contains(&r);
             let Some(h) = w.sets(r) else { return true };
             let lowering = seed || (rules.lowering(w, r).is_some() && !w.leave(r));
-            !(rd.applied.contains(&r) && lowering && (w.key(j) < w.key(r) || past_end(w, rules, r, j)) && rests_on(w, rules, j, h) && !listed(w, v, &vouched, r, j))
+            !(rd.applied.contains(&r) && lowering && (w.key(j) < w.key(r) || past_end(w, rules, r, j)) && rests_on(w, rules, j, h) && !listed(w, v, vouched, r, j))
         })
         .collect()
 }

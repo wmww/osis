@@ -1906,6 +1906,39 @@ fn a_vouch_counts_only_where_its_removal_applies_in_the_first_walk() {
     assert!(rd.void.is_empty() && rd.role(N5, A) == Gone && rd.role(H, A) == Admin && !rd.shows(timed) && rd.roles == plain.roles);
 }
 
+/// N5's removal of H from A (listing B's grant and H's share of T1, not N5's own grant) and of
+/// A2's share of T1 (through A), in one commit or two; B vouches on A against the removal on A for
+/// N5's grant. Returns the world, the two removals and the vouch.
+fn removals_on_two_things(one: bool) -> (World, Id, Id, Id) {
+    let mut w = account();
+    let gb = w.edge(H, 1, &[], A, B, Admin, &[]);
+    let g5 = w.edge(H, 1, &[], A, N5, Admin, &[]);
+    let share = w.edge(H, 1, &[A], T1, A2, Write, &[]);
+    let on_a = w.edge(N5, 5, &[], A, H, Gone, &[gb, share]);
+    let on_t = w.edge(N5, 5, &[A], T1, A2, Gone, &[]);
+    if one {
+        w.group(&[on_a, on_t]);
+    }
+    let v = w.vouch(B, 6, &[], A, on_a, &[g5]);
+    (w, on_a, on_t, v)
+}
+
+/// notes/a1-spec/permissions.md §5.1 Vouches, the third counting condition: an entry counts only
+/// for a commit resting on the edge of an edge write of R that the first walk applies as a
+/// lowering (finding 6). In the first walk N5's removal on A is void (it would drop N5's own
+/// grant) and its removal on T1 applies; B's entry names N5's grant, resting on (H, A) and not on
+/// (A2, T1), so it keeps nothing, and the removal on A stays void whether or not the removal on
+/// T1 shares its commit: a commit's parts on different things are judged each on its own.
+#[test]
+fn a_vouch_counts_only_for_a_commit_resting_on_an_edge_its_removal_lowers_in_the_first_walk() {
+    for one in [true, false] {
+        let (w, on_a, on_t, _) = removals_on_two_things(one);
+        let rd = fixed(&w, &[]);
+        assert!(rd.voided.contains(&on_a) && rd.applied.contains(&on_t) && rd.dropped.is_empty(), "{one}: {rd:?}");
+        assert_eq!((rd.role(H, A), rd.role(N5, A), rd.role(A2, T1)), (Admin, Admin, Gone), "{one}");
+    }
+}
+
 // ---- Invites and finalizes (spec/permissions.md §2 along one path; notes/write-path-design.md §1, Edge writes) ----
 
 /// A with H; A2 (K's) shares T1 at write inviting read (by H, through A); K gives X write on A2.

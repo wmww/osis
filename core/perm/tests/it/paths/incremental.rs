@@ -502,6 +502,77 @@ fn a_verdict_kept_past_a_later_restart_would_misjudge() {
     }
 }
 
+// The vouch counting world of `hand_content` (a removal of two edge writes on two things, one
+// void in the first walk, a vouch for a commit resting on the void one's edge alone): in one
+// commit and in two, trusting nothing or either removal, every arrival order reads as from
+// scratch, and every subset of commits forgotten as from scratch and as the model there.
+#[test]
+fn a_vouch_against_a_removal_of_two_things_reads_alike_in_every_order_and_forget() {
+    for one in [true, false] {
+        let (w, on_a, on_t) = super::hand_content::removals_on_two_things(one);
+        every_order(&w);
+        for trust in [vec![], vec![on_a], vec![on_t]] {
+            let all = m::View::all(&w).trusting(&trust);
+            let inp = input(&w, &all);
+            let n = inp.commits.len();
+            let full = Paths::evaluate(&inp.records, inp.trust.clone(), &inp.commits);
+            for mask in 0u32..1 << n {
+                let gone: Vec<CommitId> = (0..n).filter(|k| mask >> k & 1 == 1).map(|k| inp.commits[k].id).collect();
+                let held: m::Set = all.held.iter().copied().filter(|&i| !gone.contains(&inp.ids[&i].0)).collect();
+                super::agree(&w, &m::View { held, leaves: None, trust: all.trust.clone() });
+                let mut p = full.clone();
+                let ch = p.forget(&gone);
+                assert_eq!(check(&full, &p, &ch), None, "{one} {trust:?} forgetting {gone:?}");
+                let rest: Vec<Commit> = inp.commits.iter().filter(|c| !gone.contains(&c.id)).cloned().collect();
+                assert!(reading(&p) == reading(&Paths::evaluate(&inp.records, inp.trust.clone(), &rest)), "{one} {trust:?} forgetting {gone:?}");
+            }
+        }
+    }
+}
+
+// Draft §5.1 step 3 and step 5 (a commit's edge-class parts on a thing fall together; nothing is
+// undropped): X's one commit removes N5 from A (dropping N5's grant of Z) and lowers B to write;
+// H then removes X listing nothing (or listing X's commit), dropping both of X's lowerings, the
+// applied one's drop staying. Trusting nothing or H's removal: every arrival order and every
+// subset forgotten reads as from scratch and as the model.
+#[test]
+fn two_lowerings_on_one_thing_fall_together_in_every_order_and_forget() {
+    use m::{account, A, B, H, N5, X, Z};
+    use roles_model::Role::{Admin, None as Gone, Write};
+    for listed in [false, true] {
+        let mut w = account();
+        for h in [X, N5, B] {
+            w.edge(H, 1, &[], A, h, Admin, &[]);
+        }
+        w.edge(N5, 3, &[], A, Z, Admin, &[]);
+        let out = w.edge(X, 5, &[], A, N5, Gone, &[]);
+        let low = w.edge(X, 5, &[], A, B, Write, &[]);
+        w.group(&[out, low]);
+        let list = if listed { vec![out] } else { vec![] };
+        let r = w.edge(H, 7, &[], A, X, Gone, &list);
+        every_order(&w);
+        for trust in [vec![], vec![r]] {
+            let all = m::View::all(&w).trusting(&trust);
+            let inp = input(&w, &all);
+            let n = inp.commits.len();
+            let full = Paths::evaluate(&inp.records, inp.trust.clone(), &inp.commits);
+            for mask in 0u32..1 << n {
+                let gone: Vec<CommitId> = (0..n).filter(|k| mask >> k & 1 == 1).map(|k| inp.commits[k].id).collect();
+                let held: m::Set = all.held.iter().copied().filter(|&i| !gone.contains(&inp.ids[&i].0)).collect();
+                super::agree(&w, &m::View { held, leaves: None, trust: all.trust.clone() });
+                let mut p = full.clone();
+                let ch = p.forget(&gone);
+                assert_eq!(check(&full, &p, &ch), None, "{listed} {trust:?} forgetting {gone:?}");
+                let rest: Vec<Commit> = inp.commits.iter().filter(|c| !gone.contains(&c.id)).cloned().collect();
+                assert!(reading(&p) == reading(&Paths::evaluate(&inp.records, inp.trust.clone(), &rest)), "{listed} {trust:?} forgetting {gone:?}");
+            }
+            let st = |i| full.status(&inp.ids[&i]);
+            let fallen = if listed { Status::Applied } else { Status::Dropped };
+            assert_eq!((st(out), st(low)), (Some(fallen), Some(fallen)), "{listed} {trust:?}");
+        }
+    }
+}
+
 // notes/perm-paths.md, Reach: a part reads its named remaining admin's edge, so a write on that
 // edge arriving before it walks it again. H leaves A relying on B (a self-removal: no path, its
 // own edge not B's), and a timed admin S's removal of X relying on B; B's grant, before them,

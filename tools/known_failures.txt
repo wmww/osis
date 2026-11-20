@@ -12,6 +12,5 @@ roles-model/paths::tests::small_family_holds_large - issues/role-vouch-contested
 roles-model/paths::tests::remake_random_worlds_hold_large - issues/role-vouch-contested.md remake OSIS_ROLES_START=\d+: \{
 roles-model/paths::tests::remake_small_family_holds_large - issues/role-vouch-contested.md remake family: \{
 roles-model/custody::tests::random_worlds_hold_large rate:OSIS_ROLES_START=567669682357 issues/custody-model-lost-write.md FAIL writes: node \w+ settled without \w+'s write \d+ on \w+
-osis-perm/paths::content::paths_content_agree_large rate:OSIS_PERM_SEED=567669682357 issues/walk-sibling-drop-content-world.md content world \d+: part \d+: model Applied, walk Some\(Void\)
 held-model/spec_gaps::evidence_reach_and_generator_gaps_large rate:OSIS_HELD_START=14204407677 issues/held-model-a3-wide-p1.md \d+ fail, first: a3 vouches \w+ wide Wide
 held-model/spec_gaps::evidence_reach_and_generator_gaps_plain rate:OSIS_HELD_START=14204407685 issues/held-model-a3-wide-p1.md \d+ fail, first: a3 vouches \w+ wide Wide
