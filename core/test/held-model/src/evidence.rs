@@ -86,6 +86,17 @@ pub enum Errand {
     Transitive,
 }
 
+/// Who runs the errand (A3's delivery duty).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Runners {
+    /// The remover's node alone.
+    Remover,
+    /// Every honest node holding the removal (no designated device): each runs the duty for every
+    /// removal it holds, as the remover does for its own; copies are identified by (commit,
+    /// thing), so several runners log one entry.
+    AnyHolder,
+}
+
 /// What travels by errand.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Scope {
@@ -125,6 +136,12 @@ pub enum LeafKeep {
     /// The commits whose verdict reads it: on its thing, without edge-class parts, resting on the
     /// lowered edge (named or not, in any order).
     Judged,
+    /// `Judged`, where the lowering takes away what the commit needs on its edge (a list is read
+    /// only for a cut, spec/permissions.md §5.2): for content, write, so a held chained write on
+    /// the lowered edge giving write or above is ordered before it (its witness, as reach reads
+    /// it), or the edge is a record edge (`World::cuts_write`). A lowering cutting nothing has a
+    /// leaf read by no verdict, waited on by nobody (notes/evidence-model-findings.md 27).
+    Cuts,
 }
 
 /// Which edge-class commits the evidence closure takes beyond the bodies (notes/a2-spec/README.md
@@ -382,12 +399,17 @@ pub struct Rule {
     pub standing: bool,
     pub lists: Lists,
     pub closure: Closure,
+    /// Who runs the errand.
+    pub runners: Runners,
+    /// The errand runs only in a pass of its runner (`Ev::Pass`), not as the removal is written:
+    /// between, a removal is delivered by ordinary logging alone (the race with a thief).
+    pub lag: bool,
 }
 
 impl Rule {
     /// The plan's reading (notes/redesign-plan.md A2, A3).
     pub fn design() -> Rule {
-        Rule { placement: Placement::Function, errand: Errand::Direct, reach: true, keys_open: false, author_reach: false, records: true, removals: Removals::TakesWrite, scope: Scope::Lowerings, leaves: Leaves::Evidence, standing: true, lists: Lists::Whole, closure: Closure::drafted() }
+        Rule { placement: Placement::Function, errand: Errand::Direct, reach: true, keys_open: false, author_reach: false, records: true, removals: Removals::TakesWrite, scope: Scope::Lowerings, leaves: Leaves::Evidence, standing: true, lists: Lists::Whole, closure: Closure::drafted(), runners: Runners::Remover, lag: false }
     }
     /// The design with the findings' fixes (notes/evidence-model-findings.md): the errand follows
     /// taken grants to the end.
@@ -397,7 +419,7 @@ impl Rule {
     /// `fixed` with content entries in leaves that travel as evidence of the commits they judge
     /// (notes/evidence-model-findings.md 6: the rule A3 inherits).
     pub fn listed() -> Rule {
-        Rule { lists: Lists::Travels(LeafKeep::Judged), ..Rule::fixed() }
+        Rule { lists: Lists::Travels(LeafKeep::Cuts), ..Rule::fixed() }
     }
 }
 
@@ -411,6 +433,8 @@ pub type Leafs = std::collections::BTreeSet<Leaf>;
 pub struct Seen {
     pub v: View,
     pub lists: Option<Leafs>,
+    /// Which bodies a leaf is read for (`Lists::Travels`' keep).
+    pub keep: LeafKeep,
 }
 
 /// An action taken on a verdict (spec/sync-judgement.md §2, spec/sync-inbox.md §4,
@@ -448,6 +472,11 @@ pub enum Ev {
     /// The thing joins the sync ID's unit (a strong added), or leaves it.
     Join(Thing, Sid),
     Leave(Thing, Sid),
+    /// The node is destroyed: it holds, syncs and logs nothing from now; what it logged stays at
+    /// the stores of the sync IDs it synced (`State::stored`).
+    Gone(usize),
+    /// A pass of the node: under `Rule::lag` its errands run now.
+    Pass(usize),
 }
 
 #[derive(Clone, Debug)]
@@ -507,6 +536,13 @@ pub struct State {
     /// `Lists::Travels`: the leaves logged under each sync ID, and per node the leaves it holds.
     pub leaves: BTreeMap<Sid, Leafs>,
     pub held_leaves: Vec<Leafs>,
+    /// Destroyed nodes (`Ev::Gone`).
+    pub gone: BTreeSet<usize>,
+    /// Per sync ID, the entries a destroyed node left at its stores (kept: nothing deletes them).
+    pub stored: BTreeMap<Sid, Set>,
+    /// The node whose pass this settle is (`Ev::Pass`), or every live node (`pass_all`).
+    pub passing: Option<usize>,
+    pub pass_all: bool,
     /// A settle that did not reach a fixpoint.
     pub unsettled: bool,
     /// Logging rounds over all settles (cost).
@@ -549,6 +585,14 @@ impl World {
     }
     pub fn leave(&mut self, x: Thing, s: Sid) {
         self.events.push(Ev::Leave(x, s));
+    }
+    /// Node `n` is destroyed now.
+    pub fn gone(&mut self, n: usize) {
+        self.events.push(Ev::Gone(n));
+    }
+    /// A pass of node `n` now (its errands, under `Rule::lag`).
+    pub fn pass(&mut self, n: usize) {
+        self.events.push(Ev::Pass(n));
     }
     /// In the unit from the start.
     pub fn member(&mut self, x: Thing, s: Sid) {
@@ -1003,18 +1047,29 @@ impl World {
             _ => Leafs::new(),
         }
     }
-    /// Leaf `l`'s verdict reads commit `j`: `j` on its thing, with no edge-class part, resting on
-    /// the lowered edge, in any order (a list keeps what its writer received, stamped after the
-    /// lowering or not). What a reader without the leaf must wait on.
-    pub fn reads(&self, l: Leaf, j: Id) -> bool {
+    /// Leaf `l`'s verdict reads commit `j` over held set `h` (`ch` its chained writes): `j` on its
+    /// thing, with no edge-class part, resting on the lowered edge, in any order (a list keeps what
+    /// its writer received, stamped after the lowering or not), and under `LeafKeep::Cuts` the
+    /// lowering taking write away there (`cuts_write`). What a reader without the leaf waits on.
+    pub fn reads(&self, keep: LeafKeep, l: Leaf, j: Id, h: &Set, ch: &Set) -> bool {
         let (r, t) = l;
-        self.on(j) == t && !self.w.edge_class(j) && self.w.sets(r).is_some_and(|e| self.w.hops(j).contains(&e))
+        self.on(j) == t && !self.w.edge_class(j) && self.w.sets(r).is_some_and(|e| self.w.hops(j).contains(&e)) && (keep != LeafKeep::Cuts || self.cuts_write(r, h, ch))
     }
-    /// Leaf `l` is evidence of `j` under `keep`.
-    fn evidence_of(&self, keep: LeafKeep, l: Leaf, j: Id) -> bool {
+    /// Lowering `r` takes write away over held set `h` (`ch` its chained writes): it gives its
+    /// edge below write at its `ts` (`removes`), and the edge is a record edge or a held chained
+    /// write on it giving write or above is ordered before it. What content resting on the edge
+    /// needs is write, so this is when its list is read for content (a superset of the walk's
+    /// cuts: every write the walk applies is chained). The same test as reach's
+    /// `Removals::TakesWrite`, so a leaf waited on travels with the errand.
+    pub fn cuts_write(&self, r: Id, h: &Set, ch: &Set) -> bool {
+        let Some(e) = self.removes(r) else { return false };
+        self.w.records.contains(&e) || h.iter().any(|&j| ch.contains(&j) && self.gives_write(j) == Some(e) && self.w.key(j) < self.w.key(r))
+    }
+    /// Leaf `l` is evidence of `j` under `keep` over `h` (`ch` its chained writes).
+    fn evidence_of(&self, keep: LeafKeep, l: Leaf, j: Id, h: &Set, ch: &Set) -> bool {
         match keep {
             LeafKeep::Named => self.on(j) == l.1 && self.content_entries(l.0, l.1).iter().any(|&c| self.w.names(c, j)),
-            LeafKeep::Judged => self.reads(l, j),
+            LeafKeep::Judged | LeafKeep::Cuts => self.reads(keep, l, j, h, ch),
         }
     }
     /// The leaves S requires over held set `h`: of each lowering in S's required set, the leaf
@@ -1022,7 +1077,8 @@ impl World {
     pub fn req_leaves(&self, rule: &Rule, s: Sid, units: &BTreeMap<Sid, Things>, h: &Set) -> Leafs {
         let Lists::Travels(keep) = rule.lists else { return Leafs::new() };
         let req = self.req(rule, s, units, h);
-        req.iter().flat_map(|&r| self.leaves_of(r)).filter(|&l| req.iter().any(|&j| self.evidence_of(keep, l, j))).collect()
+        let ch = self.chained(h);
+        req.iter().flat_map(|&r| self.leaves_of(r)).filter(|&l| req.iter().any(|&j| self.evidence_of(keep, l, j, h, &ch))).collect()
     }
     /// Not an addendum, or one listing a held commit its list can keep (no edge-class part and no
     /// addendum, resting on its removal's edge): an addendum is evidence of those and leaves with
@@ -1082,6 +1138,17 @@ impl World {
     /// the target whose sync IDs it goes to.
     fn errand_items(&self, rule: &Rule, own: &Set, held: &Set, fresh: &Set) -> Vec<(Id, Thing)> {
         let mut out = vec![];
+        if rule.runners == Runners::AnyHolder {
+            // every held removal, the node's own or another's
+            for &i in held.difference(own) {
+                if !rule.standing && !fresh.contains(&i) {
+                    continue;
+                }
+                if let Some((_, t)) = self.removes(i) {
+                    out.push((i, t));
+                }
+            }
+        }
         for &i in own {
             if !rule.standing && !fresh.contains(&i) {
                 continue;
@@ -1140,7 +1207,7 @@ impl World {
     fn errands(&self, rule: &Rule, st: &State, n: usize, held: &Set, fresh: &Set) -> (BTreeMap<Sid, Set>, BTreeMap<Sid, Leafs>) {
         let mut out: BTreeMap<Sid, Set> = BTreeMap::new();
         let mut lv: BTreeMap<Sid, Leafs> = BTreeMap::new();
-        if !self.nodes[n].honest {
+        if !self.nodes[n].honest || st.gone.contains(&n) {
             return (out, lv);
         }
         let own = self.own(st, n);
@@ -1154,7 +1221,7 @@ impl World {
                 out.entry(hd).or_default().extend(self.closure(rule, &Set::from([i]), held));
             }
         }
-        if rule.errand == Errand::Off {
+        if rule.errand == Errand::Off || (rule.lag && !st.pass_all && st.passing != Some(n)) {
             return (out, lv);
         }
         for (i, t) in self.errand_items(rule, &own, held, fresh).into_iter().filter(|(i, _)| taken(i)) {
@@ -1175,7 +1242,8 @@ impl World {
                 out.entry(x).or_default().extend(self.closure(rule, &seed, &h));
                 if let Lists::Travels(keep) = rule.lists {
                     let bodies = self.bodies(x, &st.units, &h);
-                    lv.entry(x).or_default().extend(self.leaves_of(i).into_iter().filter(|&l| bodies.iter().any(|&j| self.evidence_of(keep, l, j))));
+                    let ch = self.chained(&h);
+                    lv.entry(x).or_default().extend(self.leaves_of(i).into_iter().filter(|&l| bodies.iter().any(|&j| self.evidence_of(keep, l, j, &h, &ch))));
                 }
             }
         }
@@ -1205,9 +1273,29 @@ impl World {
                     self.unplace(st, s, |i| self.on(i) == x);
                 }
             }
+            Ev::Gone(n) => {
+                for s in self.syncs(n, &st.units) {
+                    let left: Set = st.entries[&s].intersection(&st.held[n]).copied().collect();
+                    st.stored.entry(s).or_default().extend(left);
+                }
+                st.gone.insert(n);
+                st.held[n].clear();
+                st.held_leaves[n].clear();
+            }
+            Ev::Pass(n) => st.passing = Some(n),
         }
         st.step = k + 1;
         self.settle(rule, st, &fresh);
+        st.passing = None;
+    }
+    /// `st` after a pass of every live node (their errands run): what the duty gives once each
+    /// live holder has passed (P1-window).
+    pub fn pass_all(&self, rule: &Rule, st: &State) -> State {
+        let mut s2 = st.clone();
+        s2.pass_all = true;
+        self.settle(rule, &mut s2, &Set::new());
+        s2.pass_all = false;
+        s2
     }
     /// `AtLog`: removes S's bodies matching `gone` and every copy left placed for nothing.
     fn unplace(&self, st: &mut State, s: Sid, gone: impl Fn(Id) -> bool) {
@@ -1289,9 +1377,12 @@ impl World {
     }
     fn round_function(&self, rule: &Rule, st: &mut State, fresh: &Set) {
         // nothing is kept for its past: an errand's entry stays while a holder's view requires it
-        let mut new: BTreeMap<Sid, Set> = self.sids.iter().map(|&s| (s, Set::new())).collect();
+        let mut new: BTreeMap<Sid, Set> = self.sids.iter().map(|&s| (s, st.stored.get(&s).map(|e| e.difference(&st.forgotten).copied().collect()).unwrap_or_default())).collect();
         let mut new_leaves: BTreeMap<Sid, Leafs> = self.sids.iter().map(|&s| (s, Leafs::new())).collect();
         for n in 0..self.nodes.len() {
+            if st.gone.contains(&n) {
+                continue;
+            }
             let sy = self.syncs(n, &st.units);
             let own = self.own(st, n);
             let mut held: Set = st.held[n].iter().chain(&own).copied().chain(sy.iter().flat_map(|s| st.entries[s].iter().copied())).filter(|i| !st.forgotten.contains(i)).collect();
@@ -1404,8 +1495,8 @@ impl World {
     }
     /// Under `Lists::Travels`: `i` has no edge-class part and a held lowering's root shows a leaf
     /// for `i`'s thing that would read `i`, not held: `i` waits for it.
-    pub fn pend_leaf(&self, h: &Set, l: &Leafs, i: Id) -> bool {
-        !self.w.edge_class(i) && h.iter().any(|&r| self.w.lowers(r).is_some() && self.leaves_of(r).contains(&(r, self.on(i))) && self.reads((r, self.on(i)), i) && !l.contains(&(r, self.on(i))))
+    pub fn pend_leaf(&self, keep: LeafKeep, h: &Set, ch: &Set, l: &Leafs, i: Id) -> bool {
+        !self.w.edge_class(i) && h.iter().any(|&r| self.w.lowers(r).is_some() && self.leaves_of(r).contains(&(r, self.on(i))) && self.reads(keep, (r, self.on(i)), i, h, ch) && !l.contains(&(r, self.on(i))))
     }
     /// The verdict on each of `ids` at a node judging from `s`.
     pub fn verdicts(&self, s: &Seen, ids: &Set) -> BTreeMap<Id, Verdict> {
@@ -1418,10 +1509,11 @@ impl World {
             }
         }
         let ch = (self.pend == Pend::Granted).then(|| self.chained(&s.v.held));
+        let leaf_ch = if s.lists.is_some() && s.keep == LeafKeep::Cuts { ch.clone().unwrap_or_else(|| self.chained(&s.v.held)) } else { Set::new() };
         ids.iter()
             .map(|&i| {
                 let ok = if self.w.edge_class(i) { rd.applied.contains(&i) } else { rd.valid.contains(&i) || rd.copied.contains(&i) };
-                let waits = self.pend_with(&s.v.held, ch.as_ref(), i) || s.lists.as_ref().is_some_and(|l| self.pend_leaf(&s.v.held, l, i));
+                let waits = self.pend_with(&s.v.held, ch.as_ref(), i) || s.lists.as_ref().is_some_and(|l| self.pend_leaf(s.keep, &s.v.held, &leaf_ch, l, i));
                 (i, if waits { Verdict::Pending } else if ok { Verdict::Valid } else { Verdict::Invalid })
             })
             .collect()
@@ -1430,8 +1522,9 @@ impl World {
     pub fn reader(&self, rule: &Rule, st: &State, s: Sid, without: &Set) -> Seen {
         let held: Set = st.entries[&s].difference(without).copied().collect();
         let mut seen = self.reader_of(rule, &st.units[&s], held);
-        if let Lists::Travels(_) = rule.lists {
+        if let Lists::Travels(keep) = rule.lists {
             seen.lists = Some(st.leaves[&s].iter().copied().filter(|l| seen.v.held.contains(&l.0)).collect());
+            seen.keep = keep;
             seen.v.leaves = None;
         }
         seen
@@ -1442,13 +1535,13 @@ impl World {
             leaves.extend(held.iter().filter(|&&i| self.w.edge_class(i)).map(|&i| self.on(i)));
         }
         let trust = self.trust.intersection(&held).copied().collect();
-        Seen { v: View { held, leaves: Some(leaves), trust }, lists: None }
+        Seen { v: View { held, leaves: Some(leaves), trust }, lists: None, keep: LeafKeep::Judged }
     }
     /// What the node holding everything written (and not forgotten) judges from.
     pub fn full(&self, st: &State, without: &Set) -> Seen {
         let held: Set = st.written.iter().copied().filter(|i| !st.forgotten.contains(i) && !without.contains(i)).collect();
         let trust = self.trust.intersection(&held).copied().collect();
-        Seen { v: View { held, leaves: None, trust }, lists: None }
+        Seen { v: View { held, leaves: None, trust }, lists: None, keep: LeafKeep::Judged }
     }
     /// What S should carry as bodies: every written commit on its unit's things.
     pub fn owed_bodies(&self, st: &State, s: Sid) -> Set {
@@ -1541,7 +1634,7 @@ impl World {
     /// What each honest node logs under each sync ID it syncs at `st`: (node, sync ID, logs).
     fn honest_logs(&self, rule: &Rule, st: &State) -> Vec<(usize, Sid, Set)> {
         let mut out = vec![];
-        for n in (0..self.nodes.len()).filter(|&n| self.nodes[n].honest) {
+        for n in (0..self.nodes.len()).filter(|&n| self.nodes[n].honest && !st.gone.contains(&n)) {
             for s in self.syncs(n, &st.units) {
                 out.push((n, s, self.req(rule, s, &st.units, &st.held[n])));
             }
@@ -1727,8 +1820,9 @@ impl World {
             let seen = self.reader(rule, st, s, &Set::new());
             let bodies = self.bodies(s, &st.units, &seen.v.held);
             let held_leaves = seen.lists.clone().unwrap_or_default();
+            let ch = self.chained(&seen.v.held);
             for &i in &bodies {
-                for &l in held_leaves.iter().filter(|&&l| self.reads(l, i)) {
+                for &l in held_leaves.iter().filter(|&&l| self.reads(seen.keep, l, i, &seen.v.held, &ch)) {
                     let mut short = seen.clone();
                     short.lists.as_mut().unwrap().remove(&l);
                     let r = self.verdicts(&short, &Set::from([i]))[&i];

@@ -75,6 +75,31 @@ fn p7_a_commit_held_without_its_leaf_waits_and_the_leaf_leaves_with_what_it_read
     assert_eq!(w.p4(&rule, &st, false), vec![]);
 }
 
+/// Finding 27: X removes Z from A at 3 though Z never held write there (the removal takes no
+/// write away), listing Z's earlier write c0 in D's leaf; X then grants Z write and Z writes c1 on
+/// D through [A]. D's reader holds the removal (an edge write on c1's path) and, under `Judged`,
+/// waits for its D leaf, which only X holds: X syncs A alone and no errand carries a removal that
+/// takes no write away. Under `Cuts` a leaf is read only where its lowering takes away what the
+/// commit needs, so nothing waits on a lowering that cuts nothing.
+#[test]
+fn f27_a_leaf_of_a_lowering_that_cuts_nothing_is_waited_on_by_nobody() {
+    let pw = roles_model::paths::World::new(&[(X, A), (Y, D)]);
+    let mut w = World::new(pw, &[A, D]);
+    let (x, y, z) = (w.node(true, &[A]), w.node(true, &[D]), w.node(true, &[]));
+    w.write(y, |p| p.edge(Y, 1, &[], D, A, Role::Write, &[]));
+    let c0 = w.write(z, |p| p.content(Z, 2, &[A], D));
+    w.write(x, |p| p.edge(X, 3, &[], A, Z, Role::None, &[c0]));
+    w.write(x, |p| p.edge(X, 4, &[], A, Z, Role::Write, &[]));
+    let c1 = w.write(z, |p| p.content(Z, 5, &[A], D));
+    let judged = Rule { lists: Lists::Travels(LeafKeep::Judged), ..Rule::fixed() };
+    let f = fails(&w, &judged);
+    assert!(f.iter().any(|f| f.prop == "P1" && f.sid == D && f.id == c1 && f.reader == Some(Verdict::Pending) && f.full == Some(Verdict::Valid)), "{f:?}");
+    assert_eq!(fails(&w, &Rule::listed()), vec![]);
+    // the leaf exists and is read by nothing: D's reader holds the removal, not the leaf
+    let st = w.run(&Rule::listed(), |_| {});
+    assert!(st.leaves[&D].is_empty() && w.reader(&Rule::listed(), &st, D, &Set::new()).v.held.contains(&2));
+}
+
 /// P8 and finding 5: D's reader holding the thief's write and K's grant but not X's earlier
 /// removal finds nothing pending; acting then (a promotion of a deposit, a cover dropping what it
 /// covers) contradicts the verdict of the node holding everything. Acting only on D's whole
@@ -513,6 +538,7 @@ fn variants() -> Vec<(&'static str, Rule)> {
         ("unit-leaves", Rule { leaves: Leaves::Unit, ..d }),
         ("once", Rule { standing: false, ..d }),
         ("listed", Rule::listed()),
+        ("listed-judged", Rule { lists: Lists::Travels(LeafKeep::Judged), ..Rule::fixed() }),
         ("listed-named", Rule { lists: Lists::Travels(LeafKeep::Named), ..Rule::fixed() }),
     ]
 }
