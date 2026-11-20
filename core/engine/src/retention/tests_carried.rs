@@ -395,3 +395,90 @@ fn an_expiring_purge_of_a_forgotten_write_is_refused_spec_commits_5() {
         assert!(matches!(r, Err(crate::Error::Clash(_))), "forget {forget}: {r:?}");
     }
 }
+
+/// `world` with admin 0's thing X, which writer 1 writes and which holds write on the thing:
+/// writer 1 writes `SECRET` acting as X, purgeable by its author or an admin (X its purge author,
+/// writer 1 its signer); admin 0 gets it and writes a snapshot of the register. X, the commit and
+/// admin 0's snapshot.
+fn written_as_x(lp: &mut LocalPeer, t: Tid) -> (Tid, CommitId, CommitId) {
+    let mut m = Mutation::new();
+    let me = lp.peers[0].engine.me();
+    let x = lp.peers[0].engine.new_thing(&mut m, me);
+    lp.peers[0].commit(m).unwrap();
+    lp.hold(x);
+    let edge = ct::Edge { role: Role::Write, until: None, invite: None, retain: false, floor: None };
+    let w = lp.peers[1].engine.me();
+    lp.peers[0].engine.grant(&x, &w, &edge).unwrap();
+    lp.peers[0].engine.grant(&t, &x, &edge).unwrap();
+    lp.sync_all().unwrap();
+    lp.advance(1_000);
+    let mut m = Mutation::new();
+    m.retention(t, &reg(), Retention { by: PurgeBy::AuthorOrAdmin }).unwrap();
+    m.set(t, &reg(), &Value::Str("SECRET".into())).unwrap();
+    m.act_as(x);
+    let c = lp.peers[1].commit(m).unwrap().unwrap();
+    assert_eq!(lp.peers[1].engine.header(&c).unwrap().purge_author(), x, "X is the commit's purge author");
+    lp.advance(1_000);
+    lp.sync(1, 0).unwrap();
+    let s = lp.peers[0].engine.snapshot(&t, &reg()).unwrap().unwrap();
+    lp.advance(1_000);
+    (x, c, s)
+}
+
+/// Whether reader 2, given packages `ids` (by peer) and admin 0's request by author `author`
+/// and never the commit `c`, reads `SECRET`.
+fn reads_after(lp: &mut LocalPeer, t: Tid, c: CommitId, ids: &[(usize, CommitId)], author: Tid) -> bool {
+    let p = request(lp, 0, t, PurgeItem::Author { tid: t, ak: reg(), author });
+    for (from, id) in ids.iter().chain([&(0, p)]) {
+        let pk = lp.peers[*from].engine.package(id).unwrap().unwrap();
+        lp.deliver(2, &pk).unwrap();
+    }
+    let e = &mut lp.peers[2].engine;
+    assert!(!e.commit_ids().contains(&c), "the commit never reached the reader");
+    e.get(&t, &reg()).unwrap() == Some(Value::Str("SECRET".into()))
+}
+
+// spec/crdt.md §8 (Facts: its purge author where that is not its signer),
+// spec/commits.md §5 (Without the header): admin 0's snapshot states, for writer 1's write made as X, the
+// purge author its own commit named: X, neither writer 1 (its signer) nor admin 0 (the
+// snapshot's). Reader 2, holding the snapshot and never the commit, has the copy taken by a
+// request by author X and kept against one by author writer 1. Fails with a fact naming the
+// snapshot's signer or the carried commit's.
+#[test]
+fn a_snapshot_states_each_carried_writes_own_purge_author_spec_crdt_8() {
+    for (by_x, takes) in [(true, true), (false, false)] {
+        let (mut lp, t) = world();
+        let (x, c, s) = written_as_x(&mut lp, t);
+        let author = if by_x { x } else { lp.peers[1].engine.me() };
+        assert_eq!(!reads_after(&mut lp, t, c, &[(0, s)], author), takes, "by author X {by_x}");
+    }
+}
+
+// spec/commits.md §5 (Without the header: dropped only if it stands by every held valid snapshot),
+// issues/forged-copy-undetected.md (a snapshot's word for a carried write is never compared with
+// the original): admin 0's snapshot
+// misnames writer 1's write made as X, stating its signer, writer 1, as its purge author
+// (a fact naming none). Reader 2 holding that
+// snapshot alone has the copy taken by a request by author writer 1, as by any snapshot's word
+// (today's behaviour, the owner's question); holding writer 1's honest snapshot too, the two
+// disagree and the request takes nothing.
+#[test]
+fn a_misnamed_purge_author_misleads_only_a_node_holding_no_honest_snapshot_spec_commits_5() {
+    for honest_too in [false, true] {
+        let (mut lp, t) = world();
+        let me = lp.peers[1].engine.me();
+        let (_, c, _) = written_as_x(&mut lp, t);
+        let honest = lp.peers[1].engine.snapshot(&t, &reg()).unwrap().unwrap();
+        let item = lp.peers[0].engine.purge_item(&c, t, reg()).unwrap();
+        let PurgeItem::Commit { ts, src, .. } = item else { unreachable!() };
+        lp.peers[0].engine.core.lie_facts = Some([((ts, src), osis_crdt::Fact { by: PurgeBy::AuthorOrAdmin, purge_author: None })].into());
+        lp.advance(1_000);
+        let lie = lp.peers[0].engine.snapshot(&t, &reg()).unwrap().unwrap();
+        lp.advance(1_000);
+        let mut held = vec![(0, lie)];
+        if honest_too {
+            held.push((1, honest));
+        }
+        assert_eq!(reads_after(&mut lp, t, c, &held, me), honest_too, "honest snapshot held too {honest_too}");
+    }
+}
