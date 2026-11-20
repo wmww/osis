@@ -1,27 +1,29 @@
 //! The walk along stated paths against its oracle, core/test/roles-model `paths` under
-//! `Rules::fixed` with vouches unread (A1 step 3a: notes/perm-paths.md; the draft spec
-//! notes/a1-spec/permissions.md §1, §2, §5.1). For each node's view of a world (what it holds,
-//! the frontier leaves it sees, its trust set) both read: every edge-class part's status, every
-//! edge's history, the final roles and invites, the trusted writes left void and the dispute set.
-//! spec/permissions.md §5.1 (the draft replaces it: notes/a1-spec/permissions.md §5.1).
+//! `Rules::fixed` (vouches read by the second walk; A1 step 3: notes/perm-paths.md; the draft
+//! spec notes/a1-spec/permissions.md §1, §2, §5.1, §5.2, §6). For each node's view of a world
+//! (what it holds, the frontier leaves it sees, its trust set) both read: every edge-class part's
+//! status, every edge's history, the final roles and invites, the trusted writes left void, every
+//! delta's validity, the copies valid snapshots show, the purged deltas and the dispute set.
+//! spec/permissions.md §5.1, §5.2 (the draft replaces them: notes/a1-spec/permissions.md).
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::indexing_slicing)]
 
+mod content;
 mod counts;
 mod hand;
 mod incremental;
 mod shapes;
 
 use crate::common::{seeded, sharded};
-use osis_base::{CommitId, Role, Tid, Ts, WallMs};
-use osis_perm::paths::{Commit, EdgeWrite, Part, PartKind, Paths, Status};
+use osis_base::{Ak, CommitId, PurgeBy, Role, Tid, Ts, WallMs};
+use osis_perm::paths::{Commit, Content, Delta, DeltaClass, EdgeWrite, Part, PartKind, Paths, Status};
 use osis_perm::{Edge, Frontier, WriteId};
-use roles_model::paths::{self as m, Honesty, Id, Kind, Reading, Rules, Thing, TinyMode, View, Vouch, World};
+use roles_model::paths::{self as m, Honesty, Id, Kind, Reading, Rules, Thing, TinyMode, View, World};
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
 
-/// The model's rules for step 3a: `Rules::fixed`, every vouch's entries unread (the first walk).
+/// The model's rules: `Rules::fixed` (vouches counted by the first walk, read by the second).
 pub fn rules() -> Rules {
-    Rules { vouch: Vouch::Off, ..Rules::fixed() }
+    Rules::fixed()
 }
 
 fn tid(t: Thing) -> Tid {
@@ -45,9 +47,24 @@ fn role(r: roles_model::Role) -> Option<Role> {
     }
 }
 
-/// A world as one node's input: its held edge-class parts, commits grouped by the model's
-/// commit ID, each part's frontier cut to the leaves the node sees; and the model part each
-/// `WriteId` is.
+/// A delta of the model's content-class kinds: content and purge requests on `doc.0`, covers its
+/// snapshots, addenda on `addenda.0`; retention author or admin (the model's purge right is the
+/// `author` class).
+fn delta(w: &World, i: Id) -> Delta {
+    let k = &w.commits[i];
+    let ids = |s: &m::Set| Frontier::new(s.iter().map(|&j| cid(w.cid(j))));
+    let (aspect, class) = match &k.kind {
+        Kind::Content => ("doc.0", DeltaClass::Plain),
+        Kind::Purge { author } => ("doc.0", DeltaClass::PurgeByAuthor { author: tid(*author) }),
+        Kind::Cover { carries } => ("doc.0", DeltaClass::Snapshot { carries: ids(carries) }),
+        Kind::Addendum { removal, list } => ("addenda.0", DeltaClass::Addendum { removal: cid(w.cid(*removal)), list: ids(list) }),
+        _ => unreachable!("content-class kinds only"),
+    };
+    Delta { aspect: Ak::new(aspect).unwrap(), needs: Role::Write, purge_author: w.chain(i).iter().position(|&t| t == w.purge_author(i)).unwrap() as u32, retention: PurgeBy::AuthorOrAdmin, class }
+}
+
+/// A world as one node's input: its held parts, commits grouped by the model's commit ID, each
+/// part's frontier cut to the leaves the node sees; and the model part each `WriteId` is.
 pub struct Input {
     pub records: BTreeMap<Tid, Tid>,
     pub commits: Vec<Commit>,
@@ -58,7 +75,7 @@ pub struct Input {
 pub fn input(w: &World, v: &View) -> Input {
     let records = w.records.iter().map(|&(a, t)| (tid(t), tid(a))).collect();
     let mut by: BTreeMap<Id, Vec<Id>> = BTreeMap::new();
-    for &i in v.held.iter().filter(|&&i| w.edge_class(i)) {
+    for &i in &v.held {
         by.entry(w.cid(i)).or_default().push(i);
     }
     let mut ids = BTreeMap::new();
@@ -78,7 +95,7 @@ pub fn input(w: &World, v: &View) -> Input {
                     PartKind::Edge(EdgeWrite { holder: tid(*holder), value, frontier, remains: relies.map(tid), adminless: *adminless })
                 }
                 Kind::Vouch { removal, list } => PartKind::Vouch { removal: cid(w.cid(*removal)), list: Frontier::new(list.iter().map(|&j| cid(w.cid(j)))) },
-                _ => unreachable!("edge-class parts only"),
+                _ => PartKind::Delta(delta(w, i)),
             };
             out.push(Part { on: tid(k.on), path: k.path.iter().map(|&t| tid(t)).collect(), kind });
         }
@@ -110,13 +127,62 @@ pub fn diff(w: &World, v: &View, disputes: bool) -> Option<String> {
     compare(w, v, &rules, &rd, &inp, &p, disputes)
 }
 
+/// notes/a1-spec/README.md Open 16, read from the model alone: under the view's trust set (and,
+/// for disputes, with each held lowering trusted too), the model's first walk applies a vouch
+/// whose removal applies there without any part taking from another holder's grant as an explicit
+/// write (the draft's first counting condition; the model asks only that the removal apply).
+/// Where the two readings differ only so, the walk follows the draft.
+pub fn open_16(w: &World, v: &View, disputes: bool) -> bool {
+    let first = Rules { vouch: m::Vouch::Off, ..Rules::fixed() };
+    let mut trusts = vec![v.clone()];
+    if disputes {
+        trusts.extend(v.held.iter().filter(|&&r| w.lowers(r).is_some()).map(|&r| v.clone().trusting_also(r)));
+    }
+    trusts.iter().any(|v| {
+        let rd = m::judge(w, &first, v);
+        let before = |j: Id| -> Option<(roles_model::Role, Option<u32>)> {
+            let e = w.sets(j)?;
+            let rec = w.records.contains(&e).then_some((roles_model::Role::Admin, None));
+            rd.hist.get(&e).and_then(|h| h.iter().rev().find(|x| x.0 < w.key(j))).map(|x| x.1).or(rec).filter(|b| b.0 != roles_model::Role::None)
+        };
+        let takes = |j: Id| match (&w.commits[j].kind, before(j)) {
+            (Kind::Edge { holder, role, until, finalize: false, .. }, Some((brole, buntil))) => {
+                *holder != w.commits[j].signer && !w.leave(j) && !rd.invited.contains(&j) && rd.applied.contains(&j) && (*role < brole || until.is_some_and(|u| buntil.is_none_or(|b| u < b)))
+            }
+            _ => false,
+        };
+        rd.applied.iter().any(|&i| match &w.commits[i].kind {
+            Kind::Vouch { removal, .. } => {
+                let parts: Vec<Id> = v.held.iter().copied().filter(|&j| w.cid(j) == w.cid(*removal)).collect();
+                parts.iter().any(|j| rd.applied.contains(j)) && !parts.iter().any(|&j| takes(j))
+            }
+            _ => false,
+        })
+    })
+}
+
 fn compare(w: &World, v: &View, rules: &Rules, rd: &Reading, inp: &Input, p: &Paths, disputes: bool) -> Option<String> {
     let back: BTreeMap<WriteId, Id> = inp.ids.iter().map(|(&i, &id)| (id, i)).collect();
     for (&i, id) in &inp.ids {
+        if !w.edge_class(i) {
+            let (a, b) = (rd.valid.contains(&i), p.content(id));
+            if a != matches!(b, Some(Content::Valid(_))) {
+                return Some(format!("delta {i}: model valid {a}, walk {b:?}"));
+            }
+            continue;
+        }
         let (a, b) = (model_status(rd, i), p.status(id));
         if Some(a) != b {
             return Some(format!("part {i}: model {a:?}, walk {b:?}"));
         }
+    }
+    let copied: BTreeSet<CommitId> = rd.copied.iter().map(|&i| cid(w.cid(i))).collect();
+    if copied != p.copies() {
+        return Some(format!("copies: model {copied:?}, walk {:?}", p.copies()));
+    }
+    let purged: BTreeSet<WriteId> = rd.purged.iter().filter_map(|i| inp.ids.get(i).copied()).collect();
+    if purged != p.purged() {
+        return Some(format!("purged: model {purged:?}, walk {:?}", p.purged()));
     }
     // histories: the applied writes on each edge, in key order
     let mine: BTreeMap<(Tid, Tid), Vec<Id>> = p
@@ -138,7 +204,7 @@ fn compare(w: &World, v: &View, rules: &Rules, rd: &Reading, inp: &Input, p: &Pa
         return Some(format!("void trusted: model {void:?}, walk {:?}", p.void_trusted()));
     }
     if disputes {
-        let md: BTreeSet<WriteId> = m::disputes_by(w, rules, v, |t, r| t.applied != r.applied || t.roles != r.roles).into_iter().map(|i| inp.ids[&i]).collect();
+        let md: BTreeSet<WriteId> = m::disputes(w, rules, v).into_iter().map(|i| inp.ids[&i]).collect();
         let pd = p.disputes();
         if md != pd {
             return Some(format!("disputes: model {md:?}, walk {pd:?}"));

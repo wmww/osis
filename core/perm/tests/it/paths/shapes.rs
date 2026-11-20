@@ -6,7 +6,7 @@
 //! update path: notes/perm-paths.md, One definition.
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::indexing_slicing)]
 
-use super::incremental::{diff, reading};
+use super::incremental::{check, reading};
 use osis_base::{CommitId, Role, Tid, Ts, WallMs};
 use osis_perm::paths::{Commit, EdgeWrite, Part, PartKind, Paths, Status};
 use osis_perm::{Edge, Frontier, WriteId};
@@ -46,9 +46,8 @@ fn arrive(records: &BTreeMap<Tid, Tid>, trust: &BTreeSet<WriteId>, commits: &[Co
     for &k in order {
         let before = p.clone();
         let ch = p.add(std::slice::from_ref(&commits[k]));
-        let want = diff(&before, &p);
-        if ch != want {
-            return Some(format!("adding commit {k}: reported {ch:?}, readings differ by {want:?}"));
+        if let Some(d) = check(&before, &p, &ch) {
+            return Some(format!("adding commit {k}: {d}"));
         }
     }
     let scratch = Paths::evaluate(records, trust.clone(), commits);
@@ -76,7 +75,7 @@ fn robust(records: &BTreeMap<Tid, Tid>, commits: &[Commit], rng: &mut Rng) -> Pa
         for trust in [BTreeSet::from([*id]), BTreeSet::new()] {
             let before = p.clone();
             let ch = p.set_trust(trust.clone());
-            assert_eq!(ch, diff(&before, &p), "trust {trust:?}\n{commits:#?}");
+            assert_eq!(check(&before, &p, &ch), None, "trust {trust:?}\n{commits:#?}");
             assert!(reading(&p) == reading(&Paths::evaluate(records, trust.clone(), commits)), "trust {trust:?}");
             if !trust.is_empty() && arrive(records, &trust, commits, &shuffled).is_some() {
                 panic!("arrival under trust {trust:?} differs\n{commits:#?}");

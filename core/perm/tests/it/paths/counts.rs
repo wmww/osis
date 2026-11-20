@@ -46,8 +46,12 @@ fn cid(id: u64) -> CommitId {
     CommitId(b)
 }
 
+/// Both walks (the first and the timeline, notes/perm-paths.md) do each walk's work: the walk
+/// counts below are per walk, times this.
+const W: u64 = 2;
+
 fn delta(a: Counts, b: Counts) -> Counts {
-    Counts { steps: b.steps - a.steps, passes: b.passes - a.passes, restarts: b.restarts - a.restarts, setters: b.setters - a.setters, audited: b.audited - a.audited, scratch: b.scratch - a.scratch }
+    Counts { steps: b.steps - a.steps, passes: b.passes - a.passes, restarts: b.restarts - a.restarts, setters: b.setters - a.setters, audited: b.audited - a.audited, scratch: b.scratch - a.scratch, content: b.content - a.content, addenda: b.addenda - a.addenda }
 }
 
 /// H grants n holders admin on A, one commit each at ts 10..: a history of n parts.
@@ -70,14 +74,14 @@ fn an_appended_part_costs_its_own_step() {
     for n in [100, 1000] {
         let end = 10 + n as u64 + 5;
         let (d, p) = cost_of(&history(n), write(1, H, end, &[], A, X, Some(Role::Admin)));
-        assert_eq!((d.steps, d.passes, d.restarts, d.audited), (1, 1, 0, 0), "grant at n {n}: {d:?}");
+        assert_eq!((d.steps, d.passes, d.restarts, d.audited), (W, W, 0, 0), "grant at n {n}: {d:?}");
         assert_eq!(p.status(&WriteId(cid(1), 0)), Some(Status::Applied));
         // holder 0, admin on A, grants X on C (minted with A) through [A]: two hops
         let (d, p) = cost_of(&history(n), write(2, holder(0), end, &[A], C, X, Some(Role::Read)));
-        assert_eq!((d.steps, d.passes), (1, 1), "path at n {n}: {d:?}");
+        assert_eq!((d.steps, d.passes), (W, W), "path at n {n}: {d:?}");
         assert_eq!(p.status(&WriteId(cid(2), 0)), Some(Status::Applied));
         let (d, p) = cost_of(&history(n), write(3, H, end, &[], A, holder(1), None));
-        assert_eq!((d.steps, d.passes, d.restarts, d.audited), (1, 1, 0, 0), "removal at n {n}: {d:?}");
+        assert_eq!((d.steps, d.passes, d.restarts, d.audited), (W, W, 0, 0), "removal at n {n}: {d:?}");
         assert_eq!(p.status(&WriteId(cid(3), 0)), Some(Status::Applied));
     }
 }
@@ -89,9 +93,9 @@ fn an_appended_part_costs_its_own_step() {
 fn a_backdated_part_walks_again_what_follows_it() {
     for n in [100u32, 1000] {
         let (d, _) = cost_of(&history(n), write(1, H, 1, &[], A, X, Some(Role::Admin)));
-        assert_eq!((d.steps, d.passes), (n as u64 + 1, 1), "on A at n {n}: {d:?}");
+        assert_eq!((d.steps, d.passes), (W * (n as u64 + 1), W), "on A at n {n}: {d:?}");
         let (d, _) = cost_of(&history(n), write(2, H, 1, &[], B, X, Some(Role::Admin)));
-        assert_eq!((d.steps, d.passes), (n as u64 + 1, 1), "on B at n {n}: {d:?}");
+        assert_eq!((d.steps, d.passes), (W * (n as u64 + 1), W), "on B at n {n}: {d:?}");
     }
 }
 
@@ -107,10 +111,10 @@ fn a_lowering_with_drops_restarts_once_from_its_earliest_drop() {
         base.extend(history(n));
         let end = 10 + n as u64 + 5;
         let (d, p) = cost_of(&base, write(2, H, end, &[], A, X, None));
-        assert_eq!(d.restarts, 1, "{d:?}");
-        assert_eq!(d.audited, k as u64, "{d:?}");
+        assert_eq!(d.restarts, W, "{d:?}");
+        assert_eq!(d.audited, W * k as u64, "{d:?}");
         // the removal, then from the earliest drop: the n grants and the removal again
-        assert_eq!(d.steps, 1 + n as u64 + 1, "{d:?}");
+        assert_eq!(d.steps, W * (1 + n as u64 + 1), "{d:?}");
         assert!((0..k).all(|i| p.status(&WriteId(cid(10 + i as u64), 0)) == Some(Status::Dropped)));
     }
 }
@@ -132,7 +136,7 @@ fn k_lowerings_with_drops_restart_k_times() {
         base.extend((0..k).map(|i| write(60 + i as u64, H, end + i as u64, &[], A, y(i), None)));
         let p = Paths::evaluate(&records(), BTreeSet::new(), &base);
         let c = p.counts();
-        assert_eq!(c.restarts, k as u64, "{c:?}");
+        assert_eq!(c.restarts, W * k as u64, "{c:?}");
         assert!((0..k).all(|i| p.status(&WriteId(cid(40 + i as u64), 0)) == Some(Status::Dropped)));
         per.push(c.steps);
     }
@@ -163,7 +167,7 @@ fn a_void_check_reads_its_own_grant_chain() {
         let base = chain(k, 0);
         let (d, p) = cost_of(&base, chain(k, 1).pop().unwrap());
         assert_eq!(p.status(&WriteId(cid(100_000), 0)), Some(Status::Void));
-        assert_eq!((d.steps, d.restarts), (1, 0), "{d:?}");
+        assert_eq!((d.steps, d.restarts), (W, 0), "{d:?}");
         per.push(d.setters);
         let all = Paths::evaluate(&records(), BTreeSet::new(), &chain(k, k));
         assert_eq!(all.counts().restarts, 0);
@@ -201,5 +205,5 @@ fn a_void_check_rescans_an_edge_per_setter_through_it() {
 fn from_scratch_is_linear_in_the_parts() {
     let small = Paths::evaluate(&records(), BTreeSet::new(), &history(100)).counts();
     let large = Paths::evaluate(&records(), BTreeSet::new(), &history(1000)).counts();
-    assert_eq!((small.steps, small.passes, large.steps, large.passes), (100, 1, 1000, 1));
+    assert_eq!((small.steps, small.passes, large.steps, large.passes), (W * 100, W, W * 1000, W));
 }
