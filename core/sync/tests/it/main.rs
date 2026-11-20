@@ -17,6 +17,7 @@ mod tickets;
 mod session;
 mod sims;
 mod read;
+mod reach_cost;
 mod retention;
 mod status;
 mod suspect;

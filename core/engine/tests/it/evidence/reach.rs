@@ -191,3 +191,118 @@ fn a_removal_on_two_things_reaches_by_each_copy_spec_permissions_4() {
     let req = ev.required(&D).unwrap();
     assert!(req.contains_key(&(3, A)) && !req.contains_key(&(3, B)), "{req:?}");
 }
+
+/// Reach reads grants at any time, the converse: Y grants A write on D, then removes it, and only
+/// then X removes K from A. The removal still reaches D: a write K made through [A] while A held
+/// write on D, stamped before either removal (a stolen key's backdated write), is judged by the
+/// removal's frontier, so D's readers need it.
+#[test]
+fn a_grant_removed_before_the_removal_still_reaches_spec_permissions_4() {
+    let pw = paths::World::new(&[(X, A), (Y, D)]);
+    let mut w = World::new(pw, &[A, D]);
+    let (x, y, k) = (w.node(true, &[A, D]), w.node(true, &[D]), w.node(false, &[]));
+    w.write(x, |p| p.edge(X, 1, &[], A, K, Role::Write, &[]));
+    w.write(y, |p| p.edge(Y, 1, &[], D, A, Role::Write, &[]));
+    w.write(k, |p| p.content(K, 2, &[A], D));
+    w.write(y, |p| p.edge(Y, 4, &[], D, A, Role::None, &[]));
+    let r = w.write(x, |p| p.edge(X, 6, &[], A, K, Role::None, &[]));
+    assert_agrees("removed before", &w);
+    let (ev, _) = at_end(&w, BRIEF3, everything);
+    assert!(ev.required(&D).unwrap().contains_key(&(r, A)));
+}
+
+/// A removal on a thing of the unit is a body: no reach seed, no way taken, nothing required by
+/// reach. X removes K from D (D in its own unit), A writes D.
+#[test]
+fn a_removal_on_a_unit_thing_has_no_reach_spec_permissions_4() {
+    let pw = paths::World::new(&[(X, D), (Y, A)]);
+    let mut w = World::new(pw, &[A, D]);
+    let (x, y) = (w.node(true, &[A, D]), w.node(true, &[A]));
+    w.write(y, |p| p.edge(Y, 1, &[], A, K, Role::Write, &[]));
+    w.write(x, |p| p.edge(X, 1, &[], D, A, Role::Write, &[]));
+    w.write(x, |p| p.edge(X, 1, &[], D, K, Role::Write, &[]));
+    w.write(x, |p| p.edge(X, 6, &[], D, K, Role::None, &[]));
+    assert_agrees("unit removal", &w);
+    let (ev, _) = at_end(&w, BRIEF3, everything);
+    assert_eq!(ev.reach_size(&D), Some((0, 0)));
+}
+
+/// Reach through a cycle of grants (A writes B, B writes A, B writes D) and by two paths into the
+/// unit (A writes O1 and O2, each writes D): every edge of every way is required, the cycle's
+/// back edge (B, A) too, since a path from A into D may go round it.
+#[test]
+fn reach_takes_every_way_through_a_cycle_and_two_paths_spec_permissions_4() {
+    const B: Thing = 20;
+    const O2: Thing = 21;
+    let pw = paths::World::new(&[(X, A), (Y, B), (Y, D), (Y, O), (Y, O2)]);
+    let mut w = World::new(pw, &[A, B, O, O2, D]);
+    let (x, y) = (w.node(true, &[A]), w.node(true, &[B, O, O2, D]));
+    w.write(x, |p| p.edge(X, 1, &[], A, K, Role::Write, &[]));
+    let ab = w.write(y, |p| p.edge(Y, 1, &[], B, A, Role::Write, &[]));
+    let ba = w.write(x, |p| p.edge(X, 1, &[], A, B, Role::Write, &[]));
+    w.write(y, |p| p.edge(Y, 1, &[], D, B, Role::Write, &[]));
+    let ao = w.write(y, |p| p.edge(Y, 1, &[], O, A, Role::Write, &[]));
+    let ao2 = w.write(y, |p| p.edge(Y, 1, &[], O2, A, Role::Write, &[]));
+    w.write(y, |p| p.edge(Y, 1, &[], D, O, Role::Write, &[]));
+    w.write(y, |p| p.edge(Y, 1, &[], D, O2, Role::Write, &[]));
+    let r = w.write(x, |p| p.edge(X, 6, &[], A, K, Role::None, &[]));
+    assert_agrees("cycle and two paths", &w);
+    let (ev, _) = at_end(&w, BRIEF3, everything);
+    let req = ev.required(&D).unwrap();
+    for (c, t) in [(r, A), (ab, B), (ba, A), (ao, O), (ao2, O2)] {
+        assert!(req.contains_key(&(c, t)), "{c} on {t}: {req:?}");
+    }
+}
+
+/// An edge write no chained authority makes (K, no admin of A, "removes" Q from A) is junk: no
+/// reach seed and no copy anywhere, though A writes D (P10).
+#[test]
+fn an_unchained_removal_reaches_nothing_spec_permissions_4() {
+    let pw = paths::World::new(&[(X, A), (Y, D)]);
+    let mut w = World::new(pw, &[A, D]);
+    let (x, y, k) = (w.node(true, &[A, D]), w.node(true, &[D]), w.node(false, &[]));
+    w.write(x, |p| p.edge(X, 1, &[], A, K, Role::Write, &[]));
+    w.write(x, |p| p.edge(X, 1, &[], A, Q, Role::Write, &[]));
+    w.write(y, |p| p.edge(Y, 1, &[], D, A, Role::Write, &[]));
+    let junk = w.write(k, |p| p.edge(K, 6, &[], A, Q, Role::None, &[]));
+    assert_agrees("junk removal", &w);
+    let (ev, _) = at_end(&w, BRIEF3, everything);
+    assert!(!ev.required(&D).unwrap().contains_key(&(junk, A)));
+    assert_eq!(ev.reach_size(&D), Some((0, 0)));
+}
+
+/// A grant of read on a hub is a removal as drafted (it gives below write at its `ts`), so a fresh
+/// reader's grant on O, who never held write there, is required under every document O writes,
+/// as a removed member's removal is: reach grows a document with every reader added to the hub.
+/// The model agrees (`World::removes`); notes/a2-spec/README.md OPEN 16.
+#[test]
+fn a_fresh_read_grant_on_a_hub_is_required_under_its_documents_spec_permissions_4() {
+    let pw = paths::World::new(&[(X, O), (Y, D)]);
+    let mut w = World::new(pw, &[O, D]);
+    let (x, y) = (w.node(true, &[O, D]), w.node(true, &[D]));
+    w.write(y, |p| p.edge(Y, 1, &[], D, O, Role::Write, &[]));
+    let g = w.write(x, |p| p.edge(X, 2, &[], O, Q, Role::Read, &[]));
+    assert_agrees("fresh read grant", &w);
+    let (ev, _) = at_end(&w, BRIEF3, everything);
+    assert_eq!(ev.required(&D).unwrap().get(&(g, O)), Some(&Reason::Removal));
+}
+
+/// The derivation's own: the last edge of a way is often a body (A's grant on D, on D's unit):
+/// forgetting it, no reach seed of D's names it, yet D's reach goes (no way into D is left), and
+/// the removal leaves D's evidence.
+#[test]
+fn forgetting_a_ways_last_edge_held_as_a_body_takes_the_reach_away_spec_permissions_4() {
+    type E = Evidence<u32, Thing, u32>;
+    let w = |holder: Thing, grant: bool| Kind::Write(Write { holder, grant, removal: !grant, gives_write: grant, gives_read: grant, relies: None, creation: None });
+    let rec = |a: Thing, b: Thing| Hop { edge: (a, b), record: true };
+    let mut ev = E::new(BRIEF3);
+    ev.add_sid(D, D);
+    ev.join(&D, D);
+    ev.add((1, D), vec![Part { kind: w(A, true), hops: Some(vec![rec(Y, D)]), pos: 1, chained: true }]);
+    ev.add((2, A), vec![Part { kind: w(K, true), hops: Some(vec![rec(X, A)]), pos: 2, chained: true }]);
+    ev.add((3, A), vec![Part { kind: w(K, false), hops: Some(vec![rec(X, A)]), pos: 3, chained: true }]);
+    assert!(ev.required(&D).unwrap().contains_key(&(3, A)));
+    ev.forget(&(1, D));
+    ev.check().unwrap();
+    assert!(ev.required(&D).unwrap().is_empty(), "{:?}", ev.required(&D));
+}
