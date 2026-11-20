@@ -115,6 +115,30 @@ fn a_lowering_with_drops_restarts_once_from_its_earliest_drop() {
     }
 }
 
+// Restarts multiply: k lowerings at the end, each dropping one early write, restart k times, each
+// from its drop, walking the n parts after it again: about k·n steps (k = 10, n = 100 and 1000:
+// tenfold). A party holding admin forces it with its own 3k writes (k holders it grants, one grant
+// by each, its removals of them listing nothing). Step 7's components bound it by the component.
+#[test]
+fn k_lowerings_with_drops_restart_k_times() {
+    let k = 10u32;
+    let mut per = vec![];
+    for n in [100u32, 1000] {
+        let y = |i: u32| 7000 + i;
+        let mut base: Vec<Commit> = (0..k).map(|i| write(20 + i as u64, H, 1, &[], A, y(i), Some(Role::Admin))).collect();
+        base.extend((0..k).map(|i| write(40 + i as u64, y(i), 2, &[], A, holder(8000 + i), Some(Role::Admin))));
+        base.extend(history(n));
+        let end = 10 + n as u64 + 5;
+        base.extend((0..k).map(|i| write(60 + i as u64, H, end + i as u64, &[], A, y(i), None)));
+        let p = Paths::evaluate(&records(), BTreeSet::new(), &base);
+        let c = p.counts();
+        assert_eq!(c.restarts, k as u64, "{c:?}");
+        assert!((0..k).all(|i| p.status(&WriteId(cid(40 + i as u64), 0)) == Some(Status::Dropped)));
+        per.push(c.steps);
+    }
+    assert!(per[1] >= 9 * per[0] && per[1] <= 11 * per[0], "{per:?}");
+}
+
 /// X grants z0 admin, each zi grants zi+1 (k grants); z(k-1) removes X `voids` times listing
 /// nothing: each removal would drop X's grant of z0, its own chain: void.
 fn chain(k: u32, voids: u32) -> Vec<Commit> {
@@ -148,6 +172,28 @@ fn a_void_check_reads_its_own_grant_chain() {
     // one check: linear in k; k checks: quadratic
     assert!(per[2] >= 9 * per[0] && per[2] <= 11 * per[0], "{per:?}");
     assert!(per[3] >= 90 * per[1], "{per:?}");
+}
+
+// A void check rescans an edge's history for each setter it chases through it: H grants X; X
+// grants F admin m times (each resting on X's edge); F grants E admin m times after them (each
+// through F's edge); E removes X listing nothing. Its drops are X's m grants of F, so chasing each
+// of F's grants of E rescans F's edge past all m of them: one check reads about m² setters (m = 10
+// and 100: a hundredfold), and the removal is void.
+#[test]
+fn a_void_check_rescans_an_edge_per_setter_through_it() {
+    const F: u32 = 20;
+    const E: u32 = 21;
+    let mut per = vec![];
+    for m in [10u32, 100] {
+        let mut c = vec![write(1, H, 1, &[], A, X, Some(Role::Admin))];
+        c.extend((0..m).map(|i| write(100 + i as u64, X, 2 + i as u64, &[], A, F, Some(Role::Admin))));
+        c.extend((0..m).map(|i| write(1000 + i as u64, F, 1000 + i as u64, &[], A, E, Some(Role::Admin))));
+        let base = c.clone();
+        let (d, p) = cost_of(&base, write(9, E, 5000, &[], A, X, None));
+        assert_eq!(p.status(&WriteId(cid(9), 0)), Some(Status::Void));
+        per.push(d.setters);
+    }
+    assert!(per[1] >= 90 * per[0], "{per:?}");
 }
 
 // From scratch: one step per part (no lowering, no restart), so linear in the parts.

@@ -443,7 +443,7 @@ impl World {
         World { records: records.to_vec(), commits: vec![] }
     }
     /// A commit; its hops are read from its stated path once, here (`World::hops`).
-    pub fn push(&mut self, signer: Thing, ts: u32, path: &[Thing], on: Thing, kind: Kind) -> Id {
+    pub fn push(&mut self, signer: Thing, ts: u32, path: &[Thing], on: Thing, mut kind: Kind) -> Id {
         let mut all = vec![signer];
         all.extend(path);
         // the path's end decides the class: an edge write whose path ends at the holder is a
@@ -451,6 +451,11 @@ impl World {
         let leave = matches!(&kind, Kind::Edge { holder, .. } if all.last() == Some(holder));
         if !leave {
             all.push(on);
+        }
+        // a finalize is a shape (spec/permissions.md §2 Finalize): a frontier-less removal of
+        // another holder's grant that is no self-removal; the flag marks only the frontier's absence
+        if let Kind::Edge { holder, finalize, .. } = &mut kind {
+            *finalize = *finalize && !leave && *holder != signer;
         }
         let well = all.iter().collect::<BTreeSet<_>>().len() == all.len();
         let hops = if well { all.windows(2).flat_map(|p| self.joins(p[0], p[1])).collect() } else { vec![] };
@@ -1118,8 +1123,10 @@ fn walk(w: &World, rules: &Rules, v: &View, d0: &Set, vouched: &Vouched) -> Walk
                 None
             };
             let old = p.state.get(&e).copied().unwrap_or((Role::None, None));
-            // a self-removal only lowers: no component above the grant's
-            if leave && (new.0 > old.0 || old.1.is_some_and(|u| new.1.is_none_or(|n| n > u))) {
+            // a self-removal only lowers: it removes the grant, or sets no component (role, invite,
+            // `until`) above the grant's
+            let old_inv = p.inv.get(&e).copied().unwrap_or(Role::None);
+            if leave && new.0 > Role::None && (new.0 > old.0 || *invite > old_inv || old.1.is_some_and(|u| new.1.is_none_or(|n| n > u))) {
                 continue;
             }
             let restored = p.restored.get(&e).copied().unwrap_or(Role::None).max(p.at(e, c.ts));

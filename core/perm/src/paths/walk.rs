@@ -18,8 +18,10 @@ type E = u32;
 type Slot = u32;
 /// An edge's history: the applied writes, in key order.
 pub type History = Vec<(Key, Option<Edge>)>;
-/// A part's place within its commit: (thing written, a vouch, on the commit's own path, holder).
-type PartOrder = (Tid, u8, bool, Tid);
+/// A part's place within its commit: (thing written, on the commit's own path, a vouch, holder):
+/// the part setting an edge of the commit's own path after every other part on its thing, vouches
+/// included, so no part's path is changed by an earlier part of its commit (draft §5.1 step 1).
+type PartOrder = (Tid, bool, u8, Tid);
 /// A role; `None` is no role.
 type Lvl = Option<Role>;
 
@@ -388,7 +390,7 @@ impl Walk {
                 }
                 PartKind::Vouch { .. } => None,
             };
-            let sort = (p.on, u8::from(edge.is_none()), own, holder.map_or(Tid::from_bytes([0; 15]), |h| self.names[h]));
+            let sort = (p.on, own, u8::from(edge.is_none()), holder.map_or(Tid::from_bytes([0; 15]), |h| self.names[h]));
             let key = Key { ts: c.ts, signer: c.signer, commit: c.id, part: 0 };
             made.push((sort, ix as u32, Item { key, id: WriteId(c.id, ix as u32), ts: c.ts, signer, hops, well, leave, edge }));
         }
@@ -622,7 +624,7 @@ impl Walk {
             self.applied[u.slot] = false;
             self.invited[u.slot] = false;
             if let Some((e, v, r, ri)) = u.edge {
-                                self.val[e] = v;
+                self.val[e] = v;
                 self.restored[e] = r;
                 self.rinv[e] = ri;
                 self.hist[e].pop();

@@ -1852,7 +1852,8 @@ fn a_finalize_ends_an_ended_grant_and_an_invite_follows_it() {
     let mut w = invited();
     let timed = w.push(X, 2, &[A2], T1, Kind::set(Z, Role::Read).until(4));
     let early = w.push(K, 3, &[A2], T1, Kind::finalize(Z));
-    let by_reader = w.push(Z, 3, &[], T1, Kind::finalize(Z));
+    w.push(X, 2, &[A2], T1, Kind::set(N6, Role::Read));
+    let by_reader = w.push(N6, 3, &[], T1, Kind::finalize(Z));
     let fin = w.push(K, 4, &[A2], T1, Kind::finalize(Z));
     let again = w.push(X, 5, &[A2], T1, Kind::set(Z, Role::Read));
     let rd = fixed(&w, &[]);
@@ -1871,6 +1872,45 @@ fn a_finalize_ends_an_ended_grant_and_an_invite_follows_it() {
     let by_admin = w.push(B, 6, &[A], T1, Kind::finalize(N6));
     let rd = fixed(&w, &[]);
     assert!(!rd.applied.contains(&by_writer) && rd.applied.contains(&by_admin));
+}
+
+/// A finalize is a shape (spec/permissions.md §2 Finalize: a frontier-less removal of another
+/// holder's grant that is no self-removal), whatever a writer means: Z removing its own grant by
+/// the empty path with no frontier is a self-removal and applies, so the finalize after it ends
+/// nothing; Z removing its own grant along a path ending elsewhere is an explicit removal listing
+/// nothing, which drops the grant Z made through it.
+#[test]
+fn a_frontier_less_removal_of_ones_own_grant_is_no_finalize() {
+    let mut w = invited();
+    w.push(X, 2, &[A2], T1, Kind::set(Z, Role::Read).until(4));
+    let leave = w.push(Z, 3, &[], T1, Kind::finalize(Z));
+    let fin = w.push(K, 4, &[A2], T1, Kind::finalize(Z));
+    let rd = fixed(&w, &[]);
+    assert!(rd.applied.contains(&leave) && !rd.applied.contains(&fin));
+    let mut w = account();
+    w.edge(H, 1, &[], A, Z, Admin, &[]);
+    w.push(H, 1, &[A], T1, Kind::set(Z, Admin).until(3));
+    let n5 = w.edge(Z, 2, &[], T1, N5, Write, &[]);
+    let own = w.push(Z, 5, &[A], T1, Kind::finalize(Z));
+    let rd = fixed(&w, &[]);
+    assert!(rd.applied.contains(&own) && rd.dropped.contains(&n5));
+}
+
+/// A self-removal lowers in every component (spec/permissions.md §2 Self-removal): a removal
+/// always lowers, a timed grant's included; a rewrite raising the invite applies nothing; one
+/// bringing the `until` earlier applies.
+#[test]
+fn a_self_removal_lowers_in_every_component() {
+    let timed = |k: Kind| {
+        let mut w = invited();
+        w.push(X, 2, &[A2], T1, Kind::set(Z, Role::Read).until(9));
+        let leave = w.push(Z, 3, &[], T1, k);
+        fixed(&w, &[]).applied.contains(&leave)
+    };
+    assert!(timed(Kind::set(Z, Gone)));
+    assert!(timed(Kind::set(Z, Role::Read).until(5)));
+    assert!(!timed(Kind::set(Z, Role::Read).until(9).inviting(Role::Read)));
+    assert!(!timed(Kind::set(Z, Role::Read)));
 }
 
 /// spec/permissions.md §7, a link: L, timed with an invite, invites; its `until` passing and the

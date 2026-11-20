@@ -16,12 +16,12 @@ use std::collections::{BTreeMap, BTreeSet};
 type Finals = BTreeMap<(Tid, Tid), (Option<Role>, Option<Role>)>;
 type Reading = (BTreeMap<WriteId, Status>, BTreeMap<(Tid, Tid), History>, Finals);
 
-fn reading(p: &Paths) -> Reading {
+pub(super) fn reading(p: &Paths) -> Reading {
     (p.statuses(), p.histories(), p.finals())
 }
 
 /// What changed from `a` to `b`, read from the two readings.
-fn diff(a: &Paths, b: &Paths) -> Changed {
+pub(super) fn diff(a: &Paths, b: &Paths) -> Changed {
     let (sa, ha, _) = reading(a);
     let (sb, hb, _) = reading(b);
     let mut out = Changed::default();
@@ -82,6 +82,70 @@ fn paths_incremental_agrees_large() {
     })
     .concat();
     assert!(f.is_empty(), "{}", f.join("\n"));
+}
+
+/// Every arrival order of `w`'s commits (all held, trusting nothing): each `Changed` exact, the
+/// end as from scratch; from scratch as the model reads it.
+#[track_caller]
+fn every_order(w: &m::World) {
+    super::agree_all(w, &[]);
+    let inp = input(w, &m::View::all(w));
+    let n = inp.commits.len();
+    let mut orders = vec![vec![]];
+    for k in 0..n {
+        orders = orders.into_iter().flat_map(|o: Vec<usize>| (0..=o.len()).map(move |at| [&o[..at], &[k], &o[at..]].concat())).collect();
+    }
+    let scratch = Paths::evaluate(&inp.records, BTreeSet::new(), &inp.commits);
+    for order in orders {
+        let mut p = Paths::new(&inp.records, BTreeSet::new());
+        for &k in &order {
+            let before = p.clone();
+            let ch = p.add(std::slice::from_ref(&inp.commits[k]));
+            assert_eq!(ch, diff(&before, &p), "order {order:?}, adding {k}");
+        }
+        assert!(reading(&p) == reading(&scratch), "order {order:?}");
+    }
+}
+
+// A commit arriving before a lowering's verdict undoes it: H removes B at 5, so B's removal of X
+// at 10 no longer holds its right, and X's grant of N5 at 2, which that removal dropped, applies
+// again (the update rolls back to the drop, not only to the new commit's key).
+#[test]
+fn a_commit_before_a_verdict_undoes_its_drops() {
+    use m::{account, A, B, H, N5, X};
+    use roles_model::Role::{Admin, None as Gone};
+    let mut w = account();
+    w.edge(H, 1, &[], A, X, Admin, &[]);
+    w.edge(H, 1, &[], A, B, Admin, &[]);
+    w.edge(X, 2, &[], A, N5, Admin, &[]);
+    w.edge(B, 10, &[], A, X, Gone, &[]);
+    w.edge(H, 5, &[], A, B, Gone, &[]);
+    every_order(&w);
+    // the same, the late commit ordered before the restart point (X's grant at 2)
+    let mut w = account();
+    w.edge(H, 1, &[], A, X, Admin, &[]);
+    w.edge(H, 1, &[], A, B, Admin, &[]);
+    w.edge(X, 2, &[], A, N5, Admin, &[]);
+    w.edge(B, 10, &[], A, X, Gone, &[]);
+    w.edge(H, 2, &[], A, X, Gone, &[]);
+    every_order(&w);
+}
+
+// A commit arriving far before a void lowering makes it applied: B's removal of X at 10 would drop
+// X's grant of B, its own authority (void), until H's own grant of B at 3 arrives; and with H's
+// removal of B at 4 it holds no right at all.
+#[test]
+fn a_commit_far_before_a_void_lowering_flips_it() {
+    use m::{account, A, B, H, X};
+    use roles_model::Role::{Admin, None as Gone};
+    let mut w = account();
+    w.edge(H, 1, &[], A, X, Admin, &[]);
+    w.edge(X, 2, &[], A, B, Admin, &[]);
+    w.edge(B, 10, &[], A, X, Gone, &[]);
+    w.edge(H, 3, &[], A, B, Admin, &[]);
+    every_order(&w);
+    w.edge(H, 4, &[], A, B, Gone, &[1, 3]);
+    every_order(&w);
 }
 
 // Switching the trust set reads as evaluating under the new one, and reports what changed: from

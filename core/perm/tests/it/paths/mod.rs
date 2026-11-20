@@ -9,6 +9,7 @@
 mod counts;
 mod hand;
 mod incremental;
+mod shapes;
 
 use crate::common::{seeded, sharded};
 use osis_base::{CommitId, Role, Tid, Ts, WallMs};

@@ -719,25 +719,64 @@ fn a_finalize_ends_an_ended_grant_and_an_invite_follows_it() {
     let mut w = invited();
     w.push(X, 2, &[A2], T1, Kind::set(Z, Read).until(4));
     w.push(K, 3, &[A2], T1, Kind::finalize(Z));
+    w.push(X, 2, &[A2], T1, Kind::set(N6, Read));
+    w.push(N6, 3, &[], T1, Kind::finalize(Z));
     let fin = w.push(K, 4, &[A2], T1, Kind::finalize(Z));
     w.push(X, 5, &[A2], T1, Kind::set(Z, Read));
     agree_all(&w, &[]);
     agree(&w, &View::all(&w).without(&[fin]));
-    // the model's test also has Z remove its own grant by the empty path, flagged a finalize: the
-    // model judges the flag; on the wire a finalize is a shape (a frontier-less removal of another
-    // holder's grant that is no self-removal: spec/permissions.md §2 Finalize), and this write is a
-    // self-removal by path end, which applies (notes/perm-paths.md, Where the walk departs from
-    // the model)
-    let by_reader = w.push(Z, 3, &[], T1, Kind::finalize(Z));
-    let inp = super::input(&w, &View::all(&w));
-    let p = osis_perm::paths::Paths::evaluate(&inp.records, inp.trust, &inp.commits);
-    assert_eq!(p.status(&inp.ids[&by_reader]), Some(osis_perm::paths::Status::Applied));
     let mut w = invited();
     w.edge(H, 1, &[], A, B, Admin, &[]);
     w.push(H, 2, &[A], T1, Kind::set(N6, Admin).until(4));
     w.push(K, 5, &[A2], T1, Kind::finalize(N6));
     w.push(B, 6, &[A], T1, Kind::finalize(N6));
     agree_all(&w, &[]);
+}
+
+// spec/permissions.md §2 (Finalize): a finalize is a shape: a frontier-less removal of one's own
+// grant by path end is a self-removal, along a path ending elsewhere an explicit removal.
+#[test]
+fn a_frontier_less_removal_of_ones_own_grant_is_no_finalize() {
+    let mut w = invited();
+    w.push(X, 2, &[A2], T1, Kind::set(Z, Read).until(4));
+    w.push(Z, 3, &[], T1, Kind::finalize(Z));
+    w.push(K, 4, &[A2], T1, Kind::finalize(Z));
+    agree_all(&w, &[]);
+    let mut w = account();
+    w.edge(H, 1, &[], A, Z, Admin, &[]);
+    w.push(H, 1, &[A], T1, Kind::set(Z, Admin).until(3));
+    w.edge(Z, 2, &[], T1, N5, Write, &[]);
+    w.push(Z, 5, &[A], T1, Kind::finalize(Z));
+    agree_all(&w, &[]);
+}
+
+// spec/permissions.md §2 (Self-removal): it lowers in every component; a removal always lowers.
+#[test]
+fn a_self_removal_lowers_in_every_component() {
+    for k in [Kind::set(Z, Gone), Kind::set(Z, Read).until(5), Kind::set(Z, Read).until(9).inviting(Read), Kind::set(Z, Read)] {
+        let mut w = invited();
+        w.push(X, 2, &[A2], T1, Kind::set(Z, Read).until(9));
+        w.push(Z, 3, &[], T1, k);
+        agree_all(&w, &[]);
+    }
+}
+
+// spec/permissions.md §5.1 step 2: a lowering applied by its verdict that would raise its edge's
+// invite (its role not above the edge as restored) applies only by admin along its path. N6,
+// admin by H's grant, gives Z write and then read inviting read (a fall, judged and applied); B
+// gave Z read at 2; B removes H not listing H's grant of N6, and the restart finds N6 with no
+// authority: Z stays at B's read, inviting nothing. (No model hand test: the walk's own.)
+#[test]
+fn a_lowering_applied_by_its_verdict_raises_no_invite() {
+    let mut w = account();
+    let gb = w.edge(H, 1, &[], A, B, Admin, &[]);
+    w.edge(H, 1, &[], A, N6, Admin, &[]);
+    w.edge(B, 2, &[], A, Z, Read, &[]);
+    w.edge(N6, 3, &[], A, Z, Write, &[]);
+    w.push(N6, 3, &[], A, Kind::set(Z, Read).inviting(Read));
+    let r = w.edge(B, 7, &[], A, H, Gone, &[gb]);
+    agree_all(&w, &[]);
+    agree_all(&w, &[r]);
 }
 
 #[test]
