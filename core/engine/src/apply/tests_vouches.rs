@@ -722,3 +722,59 @@ fn a_removed_partys_backdated_content_judges_nothing_spec_perm_5_1() {
     println!("vouches: removals judged by backdated content after R: {one} at 1, {ten} at 10");
     assert_eq!((one, ten), (0, 0));
 }
+
+// spec/permissions.md §5.1 Vouches ("W could write c": W holds the role each part of c needs):
+// H makes thing S and team A, gives A admin on `t` and on S, and makes X (peer 1) an admin of A
+// (its direct grant on `t` removed). X rotates the write keys of `t` and S in one commit c through
+// A, which W (peer 2, admin on `t` alone) receives; H removes X from A without c, and W vouches on
+// `t` for c. W could not write c's part on S, so the entry counts for nothing: c's parts fall on
+// both things at every node holding it: no vouch on `t` keeps a part on S (stated paths keep the
+// part on `t` alone: notes/a1-spec/permissions.md §5.1 Vouches). With W an admin of S too, both
+// stay.
+#[test]
+fn a_vouch_on_one_thing_keeps_nothing_on_another_its_voucher_holds_no_role_on_spec_perm_5_1() {
+    for w_on_s in [false, true] {
+        let (mut lp, t) = world(4);
+        for p in &mut lp.peers {
+            p.engine.write_vouches(false);
+        }
+        let h = lp.peers[0].engine.me();
+        let x = lp.peers[1].engine.me();
+        let mut m = Mutation::new();
+        let s = lp.peers[0].engine.new_thing(&mut m, h);
+        let a = lp.peers[0].engine.new_thing(&mut m, h);
+        lp.peers[0].commit(m).unwrap();
+        lp.hold(s);
+        lp.hold(a);
+        // X holds admin on `t` only through A
+        remove(&mut lp, 0, t, 1);
+        for on in [t, s] {
+            lp.peers[0].engine.grant(&on, &a, &edge(Role::Admin)).unwrap();
+        }
+        lp.peers[0].engine.grant(&a, &x, &edge(Role::Admin)).unwrap();
+        if w_on_s {
+            grant(&mut lp, 0, s, 2, Role::Admin);
+        }
+        lp.advance(1000);
+        lp.sync_all().unwrap();
+        let all: Vec<Tid> = lp.peers.iter().map(|p| p.engine.me()).collect();
+        let c = lp.peers[1].engine.rotate_boxing_only(&[t, s], &[Role::Write], &all).unwrap().unwrap();
+        let pk = lp.peers[1].engine.package(&c).unwrap().unwrap();
+        lp.deliver(2, &pk).unwrap();
+        lp.advance(1000);
+        let r = *lp.peers[0].engine.demote(&a, &Demotion { holder: x, new: None, retain: None }).unwrap().commits.last().unwrap();
+        lp.advance(1000);
+        lp.sync(0, 2).unwrap();
+        vouch(&mut lp, 2, t, r, &[c]);
+        lp.sync_all().unwrap();
+        // c's write-key rotation on each thing, valid or not, at every node holding it
+        let valid = |lp: &LocalPeer, p: usize, on: Tid| {
+            let m = lp.peers[p].engine.core.ix.commits.get(&c).unwrap();
+            let ai = m.view.aspects.iter().position(|x| x.ak.as_str() == "keys.0" && x.tid == on).unwrap();
+            m.valid_at(ai)
+        };
+        for p in [0, 2, 3] {
+            assert_eq!((valid(&lp, p, t), valid(&lp, p, s)), (w_on_s, w_on_s), "peer {p}, W on S {w_on_s}");
+        }
+    }
+}
