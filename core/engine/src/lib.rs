@@ -11,6 +11,7 @@ pub mod engine;
 pub mod ephemeral;
 pub mod error;
 pub mod events;
+pub mod evidence;
 pub mod flows;
 pub mod identity;
 pub mod sync_ids;

@@ -1,0 +1,178 @@
+//! Count tests (spec/permissions.md §4; notes/evidence-derivation.md, Incremental): the work each change does, at n and
+//! 10n, on the derivation alone. K writes D along a path of k holder things H1..Hk outside D's
+//! unit (X mints them and D; X grants K on H1, each Hj on the next, Hk on D).
+use osis_engine::evidence::{Config, Counts, Evidence, Hop, Kind, Part, Write};
+
+type E = Evidence<u32, u16, u32>;
+const X: u16 = 1;
+const K: u16 = 2;
+const Z: u16 = 3;
+const D: u16 = 100;
+const D2: u16 = 101;
+
+fn rec(a: u16, b: u16) -> Hop<u16> {
+    Hop { edge: (a, b), record: true }
+}
+fn hop(a: u16, b: u16) -> Hop<u16> {
+    Hop { edge: (a, b), record: false }
+}
+fn write(holder: u16) -> Kind<u32, u16> {
+    Kind::Write(Write { holder, grant: true, removal: false, gives_write: true, relies: None, creation: None })
+}
+
+fn minus(a: Counts, b: Counts) -> Counts {
+    Counts { atoms: a.atoms - b.atoms, edges: a.edges - b.edges, visits: a.visits - b.visits, rechecks: a.rechecks - b.rechecks, reach: a.reach - b.reach, closes: a.closes - b.closes, bodies: a.bodies - b.bodies }
+}
+
+struct World {
+    ev: E,
+    next: u32,
+    hs: Vec<u16>,
+}
+
+impl World {
+    /// The path of `k` holder things and `n` writes of K on `on` along it.
+    fn new(k: usize, n: usize) -> World {
+        let mut ev = E::new(Config { vouches: true });
+        for s in [D, D2] {
+            ev.add_sid(s, s);
+            ev.join(&s, s);
+        }
+        let hs: Vec<u16> = (0..k as u16).map(|j| 10 + j).collect();
+        let mut w = World { ev, next: 1, hs };
+        if let Some(&h0) = w.hs.first() {
+            w.grant(K, h0, vec![rec(X, h0)], true);
+        }
+        for j in 0..k {
+            let h = w.hs[j];
+            let next = w.hs.get(j + 1).copied().unwrap_or(D);
+            w.grant(h, next, vec![rec(X, next)], true);
+            if next == D {
+                w.grant(h, D2, vec![rec(X, D2)], true);
+            }
+        }
+        for _ in 0..n {
+            w.content(D);
+        }
+        w
+    }
+    fn grant(&mut self, holder: u16, on: u16, hops: Vec<Hop<u16>>, chained: bool) -> (u32, u16) {
+        let c = (self.next, on);
+        self.next += 1;
+        self.ev.add(c, vec![Part { kind: write(holder), hops: Some(hops), pos: c.0, chained }]);
+        c
+    }
+    fn content(&mut self, on: u16) {
+        let mut hops = vec![];
+        let mut prev = K;
+        for &h in &self.hs {
+            hops.push(hop(prev, h));
+            prev = h;
+        }
+        hops.push(hop(prev, on));
+        let c = (self.next, on);
+        self.next += 1;
+        self.ev.add(c, vec![Part { kind: Kind::Content, hops: Some(hops), pos: c.0, chained: false }]);
+    }
+    /// The work `f` does.
+    fn work(&mut self, f: impl FnOnce(&mut World)) -> Counts {
+        let before = self.ev.counts();
+        f(self);
+        minus(self.ev.counts(), before)
+    }
+}
+
+/// A body appended on a path of k edges: k + 1 atoms in D, no closure work, the same at n and 10n
+/// (O(k), independent of history).
+#[test]
+fn a_body_appended_costs_its_path_whatever_the_history() {
+    for k in [1, 3] {
+        let at = |n: usize| {
+            let mut w = World::new(k, n);
+            let c = w.work(|w| w.content(D));
+            assert_eq!(w.ev.required(&D).unwrap().len(), k);
+            c
+        };
+        let (a, b) = (at(10), at(100));
+        assert_eq!(a, b, "k {k}");
+        assert_eq!((a.atoms, a.edges, a.visits, a.closes, a.bodies), (k + 1, 0, 0, 0, 1), "k {k}: {a:?}");
+    }
+}
+
+/// A role commit on an edge m bodies use (X grants K on H1 again): one copy taken into each sync
+/// ID using the edge, found by the edge's index; no body read, no closure again, the same at m and
+/// 10m.
+#[test]
+fn a_role_commit_on_a_used_edge_reaches_its_sync_ids_by_the_edge_index() {
+    let at = |m: usize| {
+        let mut w = World::new(2, m);
+        let h0 = w.hs[0];
+        let before = w.ev.required(&D).unwrap().len();
+        let c = w.work(|w| {
+            w.grant(K, h0, vec![rec(X, h0)], true);
+        });
+        assert_eq!(w.ev.required(&D).unwrap().len(), before + 1);
+        c
+    };
+    let (a, b) = (at(10), at(100));
+    assert_eq!(a, b);
+    assert_eq!((a.bodies, a.closes, a.atoms), (0, 0, 0), "{a:?}");
+    assert!(a.visits <= 2, "{a:?}");
+}
+
+/// Junk (P10): unchained grants by a non-admin on a used edge cost their own arrival only (one
+/// recheck each) and are no copy; a sync ID taking the edge in later reads none of them.
+#[test]
+fn junk_costs_its_own_arrival_and_is_no_copy() {
+    let at = |n: usize| {
+        let mut w = World::new(2, 5);
+        let h0 = w.hs[0];
+        let before = w.ev.required(&D).cloned();
+        let c = w.work(|w| {
+            for _ in 0..n {
+                w.grant(K, h0, vec![hop(Z, h0)], false);
+            }
+        });
+        assert_eq!(w.ev.required(&D).cloned(), before);
+        // D2 takes the path's edges in with its first body: what it reads is the same however much
+        // junk lies on them
+        let later = w.work(|w| w.content(D2));
+        (c, later)
+    };
+    let ((a, la), (b, lb)) = (at(3), at(30));
+    assert_eq!((a.visits, a.edges, a.atoms, a.bodies, a.closes), (0, 0, 0, 0, 0), "{a:?}");
+    assert_eq!((a.rechecks, b.rechecks), (3, 30));
+    assert_eq!(la, lb);
+}
+
+/// A thing entering a unit with b bodies: each read once, its path's edges counted (O(b · path)).
+#[test]
+fn a_thing_entering_a_unit_reads_its_bodies_once() {
+    let at = |b: usize| {
+        let mut w = World::new(2, b);
+        w.ev.add_sid(200, 200);
+        w.work(|w| w.ev.join(&200, D))
+    };
+    // the b writes and Hk's grant on D, each write's 3 path edges and the grant's record edge
+    let (a, c) = (at(10), at(100));
+    assert_eq!((a.bodies, c.bodies), (11, 101));
+    assert_eq!((a.atoms, c.atoms), (31, 301));
+    assert_eq!(a.visits, c.visits);
+}
+
+/// From scratch is linear in the bodies; the memory a sync ID keeps (its edges, atoms and
+/// copies) is the edges its paths use, the same at n and 10n.
+#[test]
+fn from_scratch_is_linear_and_a_sync_id_keeps_its_edges_not_its_bodies() {
+    let at = |n: usize| {
+        let w = World::new(3, n);
+        let (copies, c) = w.ev.from_scratch_counted(&D).unwrap();
+        assert_eq!(copies.len(), 3);
+        let kept = (w.ev.edges(&D).unwrap().len(), w.ev.atoms(&D).unwrap().len(), w.ev.required(&D).unwrap().len());
+        (c, kept)
+    };
+    let ((a, ka), (b, kb)) = (at(10), at(100));
+    assert_eq!((a.bodies, b.bodies), (11, 101));
+    assert_eq!(a.visits, b.visits);
+    assert_eq!(ka, kb);
+}

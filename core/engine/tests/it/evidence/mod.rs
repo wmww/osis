@@ -1,0 +1,287 @@
+//! The evidence derivation (`osis_engine::evidence`, notes/evidence-derivation.md; spec/permissions.md
+//! §4, as notes/a2-spec/permissions.md drafts it) against
+//! held-model `evidence` (`World::req` under OPEN 10's (iv), `Open10::Granted`, entry creations
+//! on), the oracle: at every step of a world, for every node's held set and every sync ID's held
+//! entries, under every sync ID, the copies the derivation keeps incrementally and computes from
+//! scratch equal the model's required copies (vouches counting and not). Hand worlds per model test
+//! naming a rule or finding; the derivation's own (a waiting path entry); count tests.
+use held_model::evidence::{self as hm, Open10, Rule, Shape, World};
+use osis_engine::evidence::{Config, CopyId, Evidence, Hop, Kind, Part, Write};
+use roles_model::paths::{self, Id, Key, Rules, Set, Thing, Things, Vouch};
+use roles_model::Role;
+use std::collections::{BTreeMap, BTreeSet};
+
+mod counts;
+mod hand;
+
+type Ev = Evidence<Id, Thing, Key>;
+type Copies = BTreeSet<CopyId<Id, Thing>>;
+/// Held copies with their parts as the derivation takes them.
+type HeldCopies = BTreeMap<CopyId<Id, Thing>, Vec<Part<Id, Thing, Key>>>;
+
+/// The rules a world is judged by, vouches counting or not (as held-model's story tests).
+fn rules(vouches: bool) -> Rules {
+    Rules { vouch: if vouches { Vouch::BaseWalk } else { Vouch::Off }, ..Rules::fixed() }
+}
+
+/// `w` set to (iv) with entry creations, vouch evidence on or off.
+fn granted(w: &mut World, vouches: bool) -> Rule {
+    w.rules = rules(vouches);
+    let mut rule = Open10::Granted.set(w, Rule::fixed());
+    rule.closure.vouches = vouches;
+    rule
+}
+
+/// Part `i` of the model's world as the derivation's input, over held set `h` whose chained
+/// writes are `ch`.
+fn part(w: &World, ch: &Set, i: Id) -> Part<Id, Thing, Key> {
+    let pw = &w.w;
+    let c = &pw.commits[i];
+    let kind = match &c.kind {
+        paths::Kind::Edge { holder, role, relies, .. } => Kind::Write(Write {
+            holder: *holder,
+            grant: w.grant(i),
+            removal: w.removes(i).is_some(),
+            gives_write: *role >= Role::Write,
+            relies: *relies,
+            creation: w.creation(i).map(|j| (pw.cid(j), pw.commits[j].on)),
+        }),
+        paths::Kind::Vouch { removal, .. } => Kind::Vouch { keyed: (pw.cid(*removal), pw.commits[*removal].on) },
+        _ => Kind::Content,
+    };
+    let hops = pw.hops(i).iter().map(|&edge| Hop { edge, record: pw.records.contains(&edge) }).collect();
+    let pos = if pw.edge_class(i) { pw.key(i) } else { pw.pos(i) };
+    Part { kind, hops: Some(hops), pos, chained: ch.contains(&i) }
+}
+
+/// The held copies of `h` with their parts in id order: every part of the commit on that thing
+/// (a copy is whole; the model writes a commit's parts as one event each, so a step may hold
+/// some: an unheld part is unchained there, and its reset's creation is read as the model's
+/// closure reads it, off the commit).
+fn copies_of(w: &World, h: &Set) -> BTreeMap<CopyId<Id, Thing>, Vec<Id>> {
+    let mut out: BTreeMap<CopyId<Id, Thing>, Vec<Id>> = BTreeMap::new();
+    for &i in h {
+        out.entry((w.w.cid(i), w.on(i))).or_default();
+    }
+    for (c, parts) in out.iter_mut() {
+        parts.extend(w.w.part_ids(c.0).filter(|&p| w.on(p) == c.1));
+    }
+    out
+}
+
+/// One node's derivation, fed the model's held set and units step by step.
+struct Driver {
+    ev: Ev,
+    held: HeldCopies,
+    units: BTreeMap<Thing, Things>,
+}
+
+impl Driver {
+    fn new(w: &World, vouches: bool) -> Driver {
+        let mut ev = Ev::new(Config { vouches });
+        for &s in &w.sids {
+            ev.add_sid(s, s);
+        }
+        Driver { ev, held: BTreeMap::new(), units: w.sids.iter().map(|&s| (s, Things::new())).collect() }
+    }
+
+    /// Moves the derivation to held set `h` and units `units`: new copies, chained flips,
+    /// forgotten copies, retags.
+    fn step(&mut self, w: &World, h: &Set, units: &BTreeMap<Thing, Things>) {
+        let ch = w.chained(h);
+        let now: HeldCopies = copies_of(w, h).into_iter().map(|(c, ids)| (c, ids.iter().map(|&i| part(w, &ch, i)).collect())).collect();
+        for (c, parts) in &now {
+            match self.held.get(c) {
+                None => self.ev.add(*c, parts.clone()),
+                Some(old) if old.len() != parts.len() => self.ev.add(*c, parts.clone()),
+                Some(old) => {
+                    for (i, (a, b)) in old.iter().zip(parts).enumerate() {
+                        if a.chained != b.chained {
+                            self.ev.set_chained(c, i, b.chained);
+                        }
+                    }
+                }
+            }
+        }
+        for c in self.held.keys() {
+            if !now.contains_key(c) {
+                self.ev.forget(c);
+            }
+        }
+        self.held = now;
+        for (s, unit) in units {
+            let old = self.units.get(s).cloned().unwrap_or_default();
+            for &t in unit.difference(&old) {
+                self.ev.join(s, t);
+            }
+            for &t in old.difference(unit) {
+                self.ev.leave(s, t);
+            }
+        }
+        self.units = units.clone();
+    }
+
+    fn required(&self, s: Thing) -> Copies {
+        self.ev.required(&s).map(|m| m.keys().copied().collect()).unwrap_or_default()
+    }
+}
+
+/// The model's required copies of `s` over `h`: its required parts on things outside the unit,
+/// by (commit, thing).
+fn model_copies(w: &World, rule: &Rule, s: Thing, units: &BTreeMap<Thing, Things>, h: &Set) -> Copies {
+    w.req(rule, s, units, h).into_iter().filter(|&i| !units[&s].contains(&w.on(i))).map(|i| (w.w.cid(i), w.on(i))).collect()
+}
+
+/// What a run compared: disagreements, and comparisons where the model required some copy.
+#[derive(Default)]
+struct Run {
+    differ: Vec<String>,
+    copies: usize,
+}
+
+/// Every disagreement over the run of `w` under `rule`: per step, per node (its held set) and per
+/// sync ID's reader (its entries), for every sync ID: the derivation's copies (incremental and from
+/// scratch) against the model's.
+fn differ(w: &World, rule: &Rule, vouches: bool) -> Run {
+    let mut out = Run::default();
+    let mut nodes: Vec<Driver> = (0..w.nodes.len()).map(|_| Driver::new(w, vouches)).collect();
+    let mut readers: BTreeMap<Thing, Driver> = w.sids.iter().map(|&s| (s, Driver::new(w, vouches))).collect();
+    w.run(rule, |st| {
+        let mut held: Vec<(String, &Set, &mut Driver)> = vec![];
+        for (n, d) in nodes.iter_mut().enumerate() {
+            held.push((format!("node {n}"), &st.held[n], d));
+        }
+        for (s, d) in readers.iter_mut() {
+            held.push((format!("reader of {s}"), &st.entries[s], d));
+        }
+        for (who, h, d) in held {
+            d.step(w, h, &st.units);
+            for &s in &w.sids {
+                let model = model_copies(w, rule, s, &st.units, h);
+                let inc = d.required(s);
+                let scratch: Copies = d.ev.from_scratch(&s).map(|m| m.into_keys().collect()).unwrap_or_default();
+                out.copies += usize::from(!model.is_empty());
+                if inc != model || scratch != model {
+                    out.differ.push(format!("step {} {who} sid {s}: model {model:?} incremental {inc:?} from scratch {scratch:?}", st.step));
+                }
+            }
+        }
+    });
+    out
+}
+
+/// `differ` under (iv), vouches counting and not.
+fn differ_both(w: &World) -> Run {
+    let mut out = Run::default();
+    for vouches in [true, false] {
+        let mut w = w.clone();
+        let rule = granted(&mut w, vouches);
+        let r = differ(&w, &rule, vouches);
+        out.copies += r.copies;
+        out.differ.extend(r.differ.into_iter().map(|d| format!("vouches {vouches}: {d}")));
+    }
+    out
+}
+
+/// Asserts `w` agrees; the comparisons where the model required a copy.
+fn assert_agrees(name: &str, w: &World) -> usize {
+    let r = differ_both(w);
+    assert!(r.differ.is_empty(), "{name}: {} disagreements, first: {}", r.differ.len(), r.differ[0]);
+    r.copies
+}
+
+// ---- the family, story and random worlds ----
+
+/// Every 97th family world (the model's default slice).
+#[test]
+fn the_derivation_agrees_with_the_model_on_a_family_slice_spec_permissions_4() {
+    let mut copies = 0;
+    for i in (0..hm::FAMILY).step_by(97) {
+        copies += assert_agrees(&format!("{:?}", Shape::nth(i)), &hm::family(Shape::nth(i)));
+    }
+    assert!(copies > 1000, "{copies}");
+}
+
+/// roles-model's story world of seed 0 under each of the six unit crossings, vouches counting on
+/// every other one.
+#[test]
+fn the_derivation_agrees_with_the_model_on_story_worlds_spec_permissions_4() {
+    for u in 0..hm::STORY_UNITS {
+        let vouches = u % 2 == 0;
+        let sim = paths::random_world(0, &rules(vouches));
+        {
+            let mut w = hm::story_world(&sim, u);
+            let rule = granted(&mut w, vouches);
+            let r = differ(&w, &rule, vouches);
+            assert!(r.differ.is_empty(), "story units {u} vouches {vouches}: {} disagreements, first: {}", r.differ.len(), r.differ[0]);
+            eprintln!("story units {u} vouches {vouches}: {} comparisons with copies", r.copies);
+        }
+    }
+}
+
+/// Random worlds (junk, hostile paths, two-holder removals, retags), story worlds under the six
+/// crossings, a family slice: `n` random seeds and `story` story seeds from `OSIS_HELD_START`, a
+/// thread per core.
+fn search(family_step: usize, random_worlds: u64, story: u64) {
+    let start = std::env::var("OSIS_HELD_START").ok().filter(|v| !v.is_empty()).map_or(0, |v| v.parse::<u64>().expect("OSIS_HELD_START is a decimal u64"));
+    eprintln!("evidence derivation: random seeds {start}..{}, story seeds {start}..{}", start + random_worlds, start + story);
+    type Job = Box<dyn Fn() -> (String, Run) + Sync>;
+    let mut jobs: Vec<Job> = vec![];
+    for i in (0..hm::FAMILY).step_by(family_step) {
+        jobs.push(Box::new(move || (format!("{:?}", Shape::nth(i)), differ_both(&hm::family(Shape::nth(i))))));
+    }
+    for seed in start..start + random_worlds {
+        jobs.push(Box::new(move || (format!("random seed {seed}"), differ_both(&hm::random(seed, 14)))));
+    }
+    for seed in start..start + story {
+        for vouches in [true, false] {
+            for u in 0..hm::STORY_UNITS {
+                jobs.push(Box::new(move || {
+                    let sim = paths::random_world(seed, &rules(vouches));
+                    let mut w = hm::story_world(&sim, u);
+                    let rule = granted(&mut w, vouches);
+                    let r = differ(&w, &rule, vouches);
+                    (format!("story seed {seed} units {u} vouches {vouches}"), Run { differ: r.differ.into_iter().map(|d| format!("vouches {vouches}: {d}")).collect(), copies: r.copies })
+                }));
+            }
+        }
+    }
+    let next = std::sync::atomic::AtomicUsize::new(0);
+    let bad = std::sync::Mutex::new(vec![]);
+    let copies = std::sync::atomic::AtomicUsize::new(0);
+    let threads = std::thread::available_parallelism().map_or(1, |n| n.get());
+    std::thread::scope(|sc| {
+        for _ in 0..threads {
+            sc.spawn(|| loop {
+                let Some(j) = jobs.get(next.fetch_add(1, std::sync::atomic::Ordering::Relaxed)) else { return };
+                let (name, r) = j();
+                copies.fetch_add(r.copies, std::sync::atomic::Ordering::Relaxed);
+                let d = r.differ;
+                if !d.is_empty() {
+                    bad.lock().unwrap().push(format!("{name}: {} disagreements, first: {}", d.len(), d[0]));
+                }
+            });
+        }
+    });
+    let bad = bad.into_inner().unwrap();
+    assert!(bad.is_empty(), "{} worlds disagree, first: {}", bad.len(), bad[0]);
+    let copies = copies.into_inner();
+    eprintln!("{} worlds agree, {copies} comparisons with copies", jobs.len());
+    assert!(copies > jobs.len(), "{copies}");
+}
+
+#[test]
+#[ignore = "property"]
+fn the_derivation_agrees_with_the_model_plain_spec_permissions_4() {
+    search(97, 20, 2);
+}
+
+/// Full size (`OSIS_FULL=1`): every 17th family world, 1500 random and 60 story seeds; the
+/// gate's a tenth of the seeds and every 97th family world.
+#[test]
+#[ignore = "property"]
+fn the_derivation_agrees_with_the_model_large_spec_permissions_4() {
+    let full = osis_base::testenv::u64_var("OSIS_FULL") == Some(1);
+    search(if full { 17 } else { 97 }, osis_base::testenv::large_n(1500), osis_base::testenv::large_n(60));
+}
+

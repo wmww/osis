@@ -51,4 +51,18 @@ Memory per sync ID: its used edges, its members and their reasons (the output), 
 - Records (the members' creation records up their chains, record blobs) are not output: brief 3 takes them from the members' paths of `required`'s copies and of the bodies (spec, Logging evidence: record blobs stand).
 
 ## Built
-Nothing yet (design only).
+- `core/engine/src/evidence.rs`: `Evidence` (the derivation, from scratch and incremental), unused by the engine.
+- `core/engine/tests/it/evidence/`: the differential (`mod.rs`), hand worlds (`hand.rs`), count tests (`counts.rs`).
+
+## The differential
+Against held-model `evidence::World::req` under `Open10::Granted` with entry creations (`World::creations`), vouches counting and not. The adapter turns each model part into a `Part` (chained from `World::chained` over the held set, creation from `World::creation`, `pos` the model's key or `ts` start) and gives each held copy every part of its commit on that thing (the model writes a commit's parts as one event each; a copy is whole: an unheld part is unchained there). At every step of a world, for every node's held set and every sync ID's held entries (its one-sync-ID reader), for every sync ID: the derivation's copies kept incrementally (fed the step's new copies, chained flips, forgotten copies and retags) and from scratch against the model's required parts on things outside the unit, by (commit, thing).
+- Default: every 97th family world (`the_derivation_agrees_with_the_model_on_a_family_slice_spec_permissions_4`, over 1,000 comparisons with copies), the story world of seed 0 under each of the six unit crossings.
+- Properties: `the_derivation_agrees_with_the_model_plain_spec_permissions_4` (106 family, 20 random, 2 story seeds × 6 crossings × vouches: 150 worlds, about 26 CPU-s), `_large` (full: every 17th family world, 1,500 random, 60 story seeds; the gate's a tenth of the seeds and every 97th family world). 0 disagreements at both sizes.
+- Hand worlds (`hand.rs`): each model hand test naming a rule or finding (f2, f9, f10, f11, f13, f14, f15 and OPEN 10's junk and admin counts, split, P4, the vouch switch) with the copy its rule decides; the other model hand worlds (f1, f3 to f6, f12, risk 3, P2, the addendum) as differentials; the derivation's own: a body whose path entry waits brings nothing until it opens, and a chained grant ordered after a write joins nothing.
+
+## Counts (`counts.rs`, at n and 10n)
+- A body appended on a path of k edges: k + 1 atoms, no closure work, no body but itself, the same at 10 and 100 held bodies.
+- A role commit on an edge m bodies use: no body read, no closure again, at most 2 copies visited, the same at m = 10 and 100.
+- Junk (an unchained grant by a non-admin) on a used edge: one recheck each, nothing else, no copy; a sync ID later taking the edge in reads the same at 3 and 30 junk grants.
+- A thing entering a unit with b bodies: b + 1 bodies read, 3b + 1 atoms (b = 10, 100).
+- From scratch: one body read each (11 and 101), closure visits the same; a sync ID keeps the same edges, atoms and copies at n and 10n.
