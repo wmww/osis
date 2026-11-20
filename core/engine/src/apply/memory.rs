@@ -54,7 +54,7 @@ pub(crate) type PageVisit<'a> = dyn FnMut(&[u8], &[u8]) -> Result<()> + 'a;
 pub(crate) fn each_page(tx: &mut Tx<'_>, delta: &[u8], f: &mut PageVisit<'_>) -> Result<()> {
     let limits = osis_base::Limits::new(osis_base::format::MAX_OBJECT_DEPTH, delta.len());
     osis_base::visit_links(delta, &limits, &mut |_| {}).map_err(|_| Error::BadInput("part not one CBOR value"))?;
-    super::reach::walk_deltas(tx, &[delta], false, f).map(|_| ())
+    super::reach::walk_deltas(tx, &[delta], false, true, f).map(|_| ())
 }
 
 /// What the parts of `blob` not held or dropped here could cost decoded (`part_bound`), the
@@ -69,7 +69,7 @@ pub(crate) fn new_parts_bound(tx: &mut Tx<'_>, blob: &CommitBlob) -> Result<u64>
         sum = sum.saturating_add(part_bound(p)?);
     }
     let deltas: Vec<&[u8]> = parts.iter().map(|p| p.delta.as_slice()).collect();
-    let w = super::reach::walk_deltas(tx, &deltas, false, &mut |_, pt| {
+    let w = super::reach::walk_deltas(tx, &deltas, false, true, &mut |_, pt| {
         let heap = osis_crdt::decoded_bound(pt).map_err(|_| Error::BadInput("ephemeral page not one CBOR value"))?;
         sum = sum.saturating_add(part_charge(heap, pt.len()));
         Ok(())

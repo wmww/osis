@@ -715,8 +715,9 @@ impl LinkTree {
 /// cycle), and memory is the link lists on the way down, a page's worth per level reached, every
 /// level a page the author delivered.
 ///
-/// Checking (`Dec::checking`), a missing page does not end the walk: it goes on through the held
-/// pages, `on` no longer called, and ends missing only if none of them is refused. So a tree a
+/// Checking (`Dec::checking`), a missing page, its own or one of a position nested in a leaf
+/// (`on` ending missing), does not end the walk: it goes on through the held pages, `on` no
+/// longer called, and ends missing only if none of them is refused. So a tree a
 /// walk refused for a page it holds (sync's, which then fetches nothing more of it) is refused
 /// here whatever else is missing: the verdict grows with the held set, never waits on a page
 /// no walk fetches.
@@ -755,7 +756,12 @@ pub(crate) fn walk_tree(cx: &mut Dec, top: Vec<osis_base::Link>, want: &dyn Fn(&
             None => {
                 tree.leaf(place)?;
                 if !missing {
-                    on(cx, Visit::Leaf(page, l, at))?;
+                    match on(cx, Visit::Leaf(page, l, at)) {
+                        // a page missing in a position nested in this leaf: missing alike, this
+                        // tree's held pages still checked
+                        Err(Error::Page(PageError::Missing)) if cx.checking => missing = true,
+                        r => r?,
+                    }
                 }
             }
         }

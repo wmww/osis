@@ -719,7 +719,7 @@ pub(crate) fn examine(tx: &mut Tx<'_>, blob: &mut CommitBlob, id: &CommitId, ski
         // one step: a part set aside or bad leaves nothing of its judging
         let judged = tx.step(Step::Part, |tx| judge_part(tx, &h, id, p, a, &dedup, rules, &mut interner));
         match &judged {
-            Ok(Judged::Blobs) => reach::judged_waiting(tx, id, p.ai, &p.delta)?,
+            Ok(Judged::Blobs) => reach::judged_waiting(tx, id, p.ai, &p.delta, h.ephemeral.is_some())?,
             _ => tx.core.walks.drop_slot(*id, reach::Slot::Part(p.ai)),
         }
         let wait = match judged {

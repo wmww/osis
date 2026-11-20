@@ -34,8 +34,9 @@ enum At {
     /// In a non-empty array of links only, in a delta or page: a paged position's page (spec/crdt.md §8), or a
     /// large value's root (a value holding links only reads alike).
     Page(Pos),
-    /// Any other link in a delta or page: a large value's root, never a page.
-    Lone,
+    /// Any other link in a delta or page: a large value's root, never a page; in a leaf page of
+    /// this position's tree (`None`: in the delta).
+    Lone(Option<usize>),
     /// A header list's tree node at this level (0: the root, any level): its whole tree is walked.
     Node(u64),
     /// A large value's tree node below its root, at this level. One held when first reached is
@@ -59,8 +60,11 @@ struct Pos {
 #[derive(Clone, Debug)]
 struct Shape {
     rule: LinkTree,
-    /// A page it holds cannot lie in the canonical tree: nothing more of it is fetched.
+    /// A page it holds cannot lie in the canonical tree, or the tree whose leaf holds it is
+    /// refused: nothing more of it is fetched.
     refused: bool,
+    /// The tree whose leaf page holds this position (`None`: the delta's own).
+    parent: Option<usize>,
 }
 
 /// One walk: what it reached and where it stopped.
@@ -77,13 +81,21 @@ pub(crate) struct Walk {
     /// Whether value trees are walked below their roots (an applied memory commit's, whose
     /// chunks are fetched at once: spec/sync-compaction.md §2).
     trees: bool,
+    /// Whether a large value's root standing alone is lacked (a memory commit's gate needs its
+    /// roots; a durable part's decoders need none: spec/sync-streams.md §5, fetched lazily).
+    lone: bool,
     /// Blobs `missing` gained (`true`) or lost since `Walks` indexed it, in order.
     moved: Vec<(BlobId, bool)>,
 }
 
 impl Walk {
-    fn new(trees: bool) -> Walk {
-        Walk { trees, ..Walk::default() }
+    fn new(trees: bool, lone: bool) -> Walk {
+        Walk { trees, lone, ..Walk::default() }
+    }
+
+    /// Whether position tree `t` is refused.
+    fn refused(&self, t: usize) -> bool {
+        self.shapes.get(t).is_some_and(|s| s.refused)
     }
 
     /// Blobs reached and not held.
@@ -319,6 +331,11 @@ fn step(tx: &mut Tx<'_>, w: &mut Walk, link: Link, at: At, arrived: bool, stack:
         }
         return Ok(());
     }
+    if let At::Lone(t) = at
+        && (!w.lone || t.is_some_and(|t| w.refused(t)))
+    {
+        return Ok(());
+    }
     let Some(blob) = tx.blobs.get(&link.blob)? else {
         w.lack(link, at);
         return Ok(());
@@ -329,7 +346,7 @@ fn step(tx: &mut Tx<'_>, w: &mut Walk, link: Link, at: At, arrived: bool, stack:
         match at {
             // a level-k node links level k - 1 nodes (spec/wire.md §6): no other is followed
             At::Node(want) | At::Tree(want) if want != 0 && want != level => return Ok(()),
-            At::Page(_) | At::Lone => {
+            At::Page(_) | At::Lone(_) => {
                 w.roots.push(link);
                 if !w.trees {
                     return Ok(());
@@ -357,7 +374,7 @@ fn step(tx: &mut Tx<'_>, w: &mut Walk, link: Link, at: At, arrived: bool, stack:
             let n = links.len();
             stack.extend(links.iter().enumerate().map(|(i, l)| (*l, At::Page(Pos { place: TreePlace::of(Some(p.place), i, n), ..p }))));
         }),
-        _ => shape.rule.leaf(p.place).map(|()| push_sites(w, sites, p.nest + 1, stack)),
+        _ => shape.rule.leaf(p.place).map(|()| push_sites(w, sites, p.nest + 1, Some(p.tree), stack)),
     };
     if fits.is_err() {
         refuse(w, p.tree);
@@ -374,14 +391,14 @@ fn sites_of(bytes: &[u8], out: &mut Vec<LinkSite>) -> std::result::Result<(), os
 /// walk: each list a position's tree of its own (a value's links alike), unless nested deeper
 /// than any delta a decoder accepts (each paged position holding another adds a read level,
 /// spec/crdt.md §3.3 rule 7).
-fn push_sites(w: &mut Walk, sites: Vec<LinkSite>, nest: usize, stack: &mut Vec<(Link, At)>) {
+fn push_sites(w: &mut Walk, sites: Vec<LinkSite>, nest: usize, parent: Option<usize>, stack: &mut Vec<(Link, At)>) {
     for s in sites {
         match s {
-            LinkSite::Lone(l) => stack.push((l, At::Lone)),
+            LinkSite::Lone(l) => stack.push((l, At::Lone(parent))),
             LinkSite::List { .. } if nest > osis_base::format::MAX_VALUE_DEPTH + 1 => {}
             LinkSite::List { links, .. } => {
                 let tree = w.shapes.len();
-                w.shapes.push(Shape { rule: LinkTree::new(osis_crdt::PageParams::wire()), refused: false });
+                w.shapes.push(Shape { rule: LinkTree::new(osis_crdt::PageParams::wire()), refused: false, parent });
                 let n = links.len();
                 stack.extend(links.into_iter().enumerate().map(|(i, l)| (l, At::Page(Pos { tree, place: TreePlace::of(None, i, n), nest }))));
             }
@@ -389,12 +406,22 @@ fn push_sites(w: &mut Walk, sites: Vec<LinkSite>, nest: usize, stack: &mut Vec<(
     }
 }
 
-/// Position tree `tree` cannot be the canonical one: nothing more of it is fetched.
+/// Position tree `tree` cannot be the canonical one: nothing more of it, nor of the positions
+/// nested in its leaves, is fetched. The decoders refuse it whatever is missing in it or below
+/// it (`osis_crdt` `walk_tree`), so what the walk lacks after is one set whatever order its
+/// pages came in.
 fn refuse(w: &mut Walk, tree: usize) {
     if let Some(s) = w.shapes.get_mut(tree) {
         s.refused = true;
     }
-    let gone: Vec<BlobId> = w.missing.iter().filter(|(_, (_, at))| matches!(at, At::Page(p) if p.tree == tree)).map(|(b, _)| *b).collect();
+    // a nested tree comes after the tree holding it
+    for i in tree + 1..w.shapes.len() {
+        let below = w.shapes.get(i).and_then(|s| s.parent).is_some_and(|p| w.refused(p));
+        if let Some(s) = w.shapes.get_mut(i).filter(|_| below) {
+            s.refused = true;
+        }
+    }
+    let gone: Vec<BlobId> = w.missing.iter().filter(|(_, (_, at))| matches!(at, At::Page(Pos { tree: t, .. }) | At::Lone(Some(t)) if w.refused(*t))).map(|(b, _)| *b).collect();
     for b in gone {
         w.unlack(&b);
     }
@@ -402,21 +429,22 @@ fn refuse(w: &mut Walk, tree: usize) {
 
 /// The walk of `blob`'s header lists given by link: their whole trees.
 fn header_walk(tx: &mut Tx<'_>, blob: &CommitBlob) -> Result<Walk> {
-    let mut w = Walk::new(false);
+    let mut w = Walk::new(false, false);
     let stack = osis_commit::ListField::ALL.into_iter().filter_map(|f| blob.header.links.get(f).copied()).map(|l| (l, At::Node(0))).collect();
     extend(tx, &mut w, stack, &mut |_, _| Ok(()))?;
     Ok(w)
 }
 
-/// The walk of `deltas`' links: pages followed, value roots (below them too with `trees`). A
-/// delta that is not one CBOR value links nothing (its commit's judging refuses it).
-pub(crate) fn walk_deltas(tx: &mut Tx<'_>, deltas: &[&[u8]], trees: bool, on_page: &mut super::memory::PageVisit<'_>) -> Result<Walk> {
-    let mut w = Walk::new(trees);
+/// The walk of `deltas`' links: pages followed, value roots standing alone with `lone` (below
+/// them too with `trees`). A delta that is not one CBOR value links nothing (its commit's
+/// judging refuses it).
+pub(crate) fn walk_deltas(tx: &mut Tx<'_>, deltas: &[&[u8]], trees: bool, lone: bool, on_page: &mut super::memory::PageVisit<'_>) -> Result<Walk> {
+    let mut w = Walk::new(trees, lone);
     let mut stack = Vec::new();
     for d in deltas {
         let mut sites = Vec::new();
         if sites_of(d, &mut sites).is_ok() {
-            push_sites(&mut w, sites, 1, &mut stack);
+            push_sites(&mut w, sites, 1, None, &mut stack);
         }
     }
     extend(tx, &mut w, stack, on_page)?;
@@ -432,18 +460,18 @@ pub(crate) fn wait_header(tx: &mut Tx<'_>, id: &CommitId, blob: &CommitBlob) -> 
     Ok(())
 }
 
-/// Part `ai` of pending commit `id` (`delta`) waits for its pages: its walk kept until it lacks
-/// nothing. One pass over the pages held.
-pub(crate) fn wait_part(tx: &mut Tx<'_>, id: &CommitId, ai: usize, delta: &[u8]) -> Result<()> {
-    let w = walk_deltas(tx, &[delta], false, &mut |_, _| Ok(()))?;
+/// Part `ai` of pending commit `id` (`delta`) waits for its pages (and, of a `memory` commit, its
+/// values' roots): its walk kept until it lacks nothing. One pass over the pages held.
+pub(crate) fn wait_part(tx: &mut Tx<'_>, id: &CommitId, ai: usize, delta: &[u8], memory: bool) -> Result<()> {
+    let w = walk_deltas(tx, &[delta], false, memory, &mut |_, _| Ok(()))?;
     tx.core.walks.put(*id, Slot::Part(ai), w);
     Ok(())
 }
 
 /// `wait_part` of a part its judging found missing a page: its walk must lack one, or nothing
 /// would wake it (the walk and the decoders apply one tree rule, notes/decode-bounds.md).
-pub(crate) fn judged_waiting(tx: &mut Tx<'_>, id: &CommitId, ai: usize, delta: &[u8]) -> Result<()> {
-    wait_part(tx, id, ai, delta)?;
+pub(crate) fn judged_waiting(tx: &mut Tx<'_>, id: &CommitId, ai: usize, delta: &[u8], memory: bool) -> Result<()> {
+    wait_part(tx, id, ai, delta, memory)?;
     debug_assert!(tx.core.walks.waits(id, Slot::Part(ai)), "part {ai} of {id:?} judged missing a page its walk does not lack");
     Ok(())
 }
@@ -452,7 +480,7 @@ pub(crate) fn judged_waiting(tx: &mut Tx<'_>, id: &CommitId, ai: usize, delta: &
 /// such part's walk kept.
 pub(crate) fn wait_parts(tx: &mut Tx<'_>, id: &CommitId, blob: &CommitBlob) -> Result<bool> {
     for p in &blob.parts {
-        wait_part(tx, id, p.ai, &p.delta)?;
+        wait_part(tx, id, p.ai, &p.delta, true)?;
     }
     Ok(tx.core.walks.lacks(id))
 }
@@ -464,7 +492,7 @@ fn wait_trees(tx: &mut Tx<'_>, id: &CommitId) -> Result<()> {
     }
     let Some(blob) = tx.get_commit(id)? else { return Ok(()) };
     for p in &blob.parts {
-        let w = walk_deltas(tx, &[&p.delta], true, &mut |_, _| Ok(()))?;
+        let w = walk_deltas(tx, &[&p.delta], true, true, &mut |_, _| Ok(()))?;
         tx.core.walks.put(*id, Slot::Trees(p.ai), w);
     }
     Ok(())
@@ -590,7 +618,7 @@ impl Engine {
         let pending: Vec<((CommitId, Slot), BTreeSet<BlobId>)> = w.kept.iter().filter(|(k, _)| !matches!(k.1, Slot::Trees(_))).map(|(k, walk)| (*k, walk.missing.keys().copied().collect())).collect();
         osis_base::costs::paused(|| osis_base::memo::unrecorded(|| self.read(|tx| {
             for ((c, s), b, chunk) in &lacking {
-                let held = if *chunk { tx.blobs.held(b)? } else { tx.blobs.get(b)?.is_some() };
+                let held = if *chunk { tx.blobs.held(b)? } else { tx.blobs.len(b)?.is_some() };
                 assert!(!held || arrived.get(c).is_some_and(|x| x.contains(&(*s, *b))), "blob waits: {c:?} {s:?} lacks {b:?}, held here, its arrival not noted (a lost wake)");
             }
             if !fresh {
@@ -605,7 +633,7 @@ impl Engine {
                 };
                 assert!(!matches!(s, Slot::Part(_)) || delta.is_some(), "blob waits: {c:?} keeps a walk for {s:?}, not in its pending copy");
                 let again = match delta {
-                    Some(d) => walk_deltas(tx, &[d], false, &mut |_, _| Ok(()))?,
+                    Some(d) => walk_deltas(tx, &[d], false, blob.header.ephemeral.is_some(), &mut |_, _| Ok(()))?,
                     None => header_walk(tx, &blob)?,
                 };
                 let again: BTreeSet<BlobId> = again.missing.keys().copied().collect();
