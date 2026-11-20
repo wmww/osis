@@ -105,8 +105,8 @@ pub struct Snapshot {
 }
 
 /// A carried commit's facts a purge judges it by where its header is not held (§8 `Facts`,
-/// spec/commits.md §5 Purge): its purgeable-by class on the aspect, and its header actor where
-/// that is not its author.
+/// spec/commits.md §5 Purge): its purgeable-by class on the aspect, and its purge author where
+/// that is not its signer.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub struct Fact {
     pub by: osis_base::PurgeBy,

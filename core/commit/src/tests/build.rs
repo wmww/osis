@@ -90,7 +90,7 @@ fn build_role_commit_and_refusals() {
 fn list_overflow_links() {
     let mut sink = MemoryBlobs::default();
     let mut b = content(2000);
-    // a level-2 key listed, which the list blobs commit to alone
+    // a level-2 key listed, to which the list blobs do not commit
     for a in &mut b.aspects {
         a.retention = Retention { by: PurgeBy::AuthorOrAdmin };
     }
@@ -100,8 +100,9 @@ fn list_overflow_links() {
     assert!(h.links.keys.is_none());
     assert!(!built.list_blobs.is_empty());
     assert_eq!(built.list_blobs.len(), sink.blobs.len());
-    // past its lists by link, the header holds its path's hash per thing written (34 bytes each)
-    assert!(h.encode().len() < CHUNK_THRESHOLD + 34 * h.things().len());
+    // one path in the clear for its 2000 things: past its lists by link the header is small
+    assert!(matches!(h.path, crate::Paths::One(_)));
+    assert!(h.encode().len() < CHUNK_THRESHOLD);
     // header-list blobs commit to no delete key (spec/wire.md §5), under their own link
     // blinds (the sink draws each key)
     for (p, _) in sink.blobs.values() {

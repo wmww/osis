@@ -323,7 +323,8 @@ impl Vouching {
     /// The counting addenda vouching for the part at `at` on the thing needing `required` (write;
     /// admin for admin-only content that is not role-class, whose witness held admin at its
     /// addendum's key, §5.2): each witness and the addendum's key. A commit's Acting check is its
-    /// part on its header actor, needing write, vouched for on that actor's timeline.
+    /// part on the thing it acts on (its path's last listed thing), needing write, vouched for on
+    /// that thing's timeline.
     pub fn witnesses<'a>(&'a self, tl: &'a Timeline, at: Point, required: Role) -> impl Iterator<Item = (Tid, Point)> + 'a {
         self.counting.iter().filter(move |a| tl.vouches(&self.thing, a, at, required)).map(|a| (a.point.node, a.point))
     }

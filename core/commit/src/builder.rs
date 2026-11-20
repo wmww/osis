@@ -72,7 +72,7 @@ pub struct CommitBuilder {
     /// A rotation of the account's signing chain, with, for a merge certificate, a key per tip
     /// it names (in that order) signing the merge epoch's ID.
     pub rotation: Option<(RotationHeader, Vec<SigningSecret>)>,
-    /// The own-cover marker (spec/wire.md §4 field 17).
+    /// The own-cover marker (spec/wire.md §4 field 18).
     pub own_cover: bool,
     /// The adminless mark (`Header::adminless`).
     pub adminless: bool,

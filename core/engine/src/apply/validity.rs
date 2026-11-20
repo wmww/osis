@@ -861,8 +861,8 @@ impl<'a> Judge<'a> {
 
     /// Whether a counting addendum on `thing` vouches for the part of the commit at `point`
     /// there needing `required`: a witness with that role on the thing at the addendum's key (spec/permissions.md
-    /// §5.2, Addenda). The Acting check of a commit is a part on its header actor, vouched for
-    /// on that actor by a writer of it (`acts`).
+    /// §5.2, Addenda). The Acting check of a commit is a part on the thing it acts on,
+    /// vouched for there by a writer of it (`acts`).
     fn vouched(&mut self, thing: &Tid, point: Point, required: Role) -> bool {
         let core = self.core;
         let Some(v) = self.vouching(thing) else { return false };

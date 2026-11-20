@@ -405,7 +405,7 @@ pub struct View {
     /// The epoch an account's commit is signed at (spec/wire.md §4): what the epoch rule reads
     /// (`Core::standing`); `None` for any other author.
     pub epoch: Option<CommitId>,
-    /// The header's own-cover marker (spec/wire.md §4 field 17; `retention::others_own_cover`).
+    /// The header's own-cover marker (spec/wire.md §4 field 18; `retention::others_own_cover`).
     pub own_cover: bool,
 }
 
@@ -813,7 +813,7 @@ indexes! {
     /// on each thing it names, spec/commits.md §5): what finds a thing's requests
     /// (`retention::destroy`) without reading its other commits.
     pub purges_on: JSetMap<Tid, CommitId>,
-    /// Held commits per (header actor, author), where those differ: re-judging
+    /// Held commits per (acting thing, signer), where those differ: re-judging
     /// `validity::acts_for` when the actor's timeline changes, a demotion's frontier, the
     /// actors this node acts for (`Core::acting`).
     pub by_actor: JSetMap<(Tid, Tid), CommitId>,

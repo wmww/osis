@@ -29,6 +29,13 @@ impl Shred {
     }
 }
 
+/// Counts `n` bytes of durable rows (key and value; a removal its key) or blobs handed to the
+/// store: what an operation asks it to write, before paging into units, whose bytes move by a
+/// whole unit wherever a key lands (scale tests count this, `osis_base::costs`).
+fn written(n: usize) {
+    osis_base::costs::count_scoped("store bytes handed", n as u64);
+}
+
 /// A table: an ordered byte map paged into units (a large aspect state, its indexes), and the
 /// catalog row it belongs to (its aspect's unit, an index's name), whose stamp its rows share
 /// (`Stamping`).
@@ -643,6 +650,7 @@ impl Transaction<'_> {
             return Ok(());
         }
         let c = self.catalog();
+        written(key.len() + val.len());
         btree::put(self, c, key, val, shred.on()).map(|_| ())
     }
     fn durable_get(&mut self, key: &[u8]) -> Result<Option<Vec<u8>>, Error> {
@@ -652,7 +660,11 @@ impl Transaction<'_> {
     pub(crate) fn cat_remove(&mut self, key: &[u8], shred: Shred) -> Result<bool, Error> {
         let removed = self.mem.cat_remove(key);
         let c = self.catalog();
-        let removed = btree::remove(self, c, key, shred.on())? || removed;
+        let durable = btree::remove(self, c, key, shred.on())?;
+        if durable {
+            written(key.len());
+        }
+        let removed = durable || removed;
         // removing an absent row changes nothing: no reader moves
         if removed {
             osis_base::costs::count_scoped("store rows written", 1);
@@ -840,6 +852,7 @@ impl Transaction<'_> {
             debug_assert!(t.0 & MEM_TABLE != 0 || btree::get(self, t.0, key)?.is_none(), "a memory row over a durable one");
             return Ok(self.mem.row_put(t.0, key, val));
         }
+        written(key.len() + val.len());
         btree::put(self, t.0, key, val, shred.on())
     }
     /// Removes; true if the key was present.
@@ -849,7 +862,11 @@ impl Transaction<'_> {
         if t.0 & MEM_TABLE != 0 {
             return Ok(removed);
         }
-        Ok(btree::remove(self, t.0, key, shred.on())? || removed)
+        let gone = btree::remove(self, t.0, key, shred.on())?;
+        if gone {
+            written(key.len());
+        }
+        Ok(gone || removed)
     }
     /// Up to `limit` entries with `start <= key < end` in key order: a page of a stream (continue
     /// from the last key with a 0 byte appended).
@@ -1060,6 +1077,7 @@ impl Transaction<'_> {
             self.mem.blob_put(*id, ciphertext);
             return Ok(());
         }
+        written(ciphertext.len());
         self.pager.txn_put_blob(&mut self.d, *id, ciphertext, &mut *self.rng)
     }
     /// Deletes a blob. A memory blob never had a durable copy, and memory-mode work touches no

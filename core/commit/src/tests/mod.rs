@@ -109,6 +109,14 @@ fn rotation_header_spec_wire_4() {
         r.rotation = Some(bad);
         assert!(r.validate().is_err(), "a merge carrying {why}");
     }
+    // `path` the one-for-all `[0]`: never hashed, whatever else it writes
+    r.rotation = Some(rot);
+    let mut other = r.aspects[0].clone();
+    other.tid = Tid::from_bytes([0xee; 15]);
+    r.aspects.push(other);
+    r.validate().unwrap();
+    r.path = Paths::Hashed(vec![[1; 32], [2; 32]]);
+    assert!(matches!(r.validate(), Err(Error::Invalid(m)) if m.contains("hashed")), "a rotation stating hashed paths");
 }
 
 // spec/wire.md §4 field 16: a seed re-seal round-trips; it sits only on an account's role
@@ -138,6 +146,13 @@ fn reseal_header_spec_wire_4() {
     assert!(Header::decode(&x.encode()).is_err(), "boxes not ascending");
     x.reseal = Some(SeedReseal { seeds: vec![], ..rs });
     assert!(Header::decode(&x.encode()).is_err(), "no box");
+    // `path` the one-for-all `[0]`: never hashed
+    let mut other = r.aspects[0].clone();
+    other.tid = Tid::from_bytes([0xee; 15]);
+    r.aspects.push(other);
+    r.validate().unwrap();
+    r.path = Paths::Hashed(vec![[1; 32], [2; 32]]);
+    assert!(matches!(r.validate(), Err(Error::Invalid(m)) if m.contains("hashed")), "a seed re-seal stating hashed paths");
 }
 
 // spec/wire.md §4: a stored header (verified on arrival) reads back as `decode` reads it,

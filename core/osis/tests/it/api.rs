@@ -434,7 +434,7 @@ fn expiry_retention_purge_spec_commits_5_6() {
     assert_eq!(db.at(t, osis::DynamicAspectKey::untyped(r.clone())).get().unwrap(), None);
 }
 
-// notes/api.md Writes: `act_as` changes the header actor; the default is `me()`.
+// notes/api.md Writes: `act_as` changes the thing the header's path acts on; the default is `me()`.
 // spec/commits.md §1
 #[test]
 fn act_as_spec_commits_1() {

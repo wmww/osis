@@ -20,7 +20,7 @@ use std::collections::{BTreeSet, HashMap};
 /// §7).
 #[derive(Clone)]
 pub struct Framing {
-    /// The thing whose dedup secret `dedup` is (a header list's: its header's actor).
+    /// The thing whose dedup secret `dedup` is (a header list's: its header's signer).
     pub thing: Tid,
     pub dedup: Secret32,
     pub expiry: Option<WallMs>,

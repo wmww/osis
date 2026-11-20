@@ -1,6 +1,6 @@
 //! A node acting as an actor it administers, confined to that actor's rights (notes/client-port.md
-//! §3): receivers judge a commit by its author node's rights (spec/permissions.md §1; of the
-//! header's actor only that the node acts for it, §5.2), and this node's are usually wider than
+//! §3): receivers judge a commit by its signer node's rights (spec/permissions.md §1; of the
+//! thing its path acts on only that the node acts for it, §5.2), and this node's are usually wider than
 //! the actor's, so only this node can hold it to them. `Mutation::confine` asks for that check before a write;
 //! `readable_by`, `actor_role` and `revert_as` are the same rule for reads and reverts.
 

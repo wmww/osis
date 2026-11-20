@@ -451,23 +451,24 @@ fn replacing_edit(n: usize, map: &osis_schema::Aspect<Value>) -> u64 {
             lp.peers[0].commit(m).unwrap().unwrap();
         }
     });
-    w.io.written_bytes / edits
+    w.n("store bytes handed") / edits
 }
 
 // spec/commits.md §5 (purge on replace); spec/requirements.md (Cost the app chooses): under
 // purge on replace every edit that replaces earlier content costs a snapshot of the aspect,
-// O(its state); with no history promised an edit costs O(change). Store bytes per replacing edit
-// at n and 10n entries (rows and blobs; at 2000 about 300 KB, 246 KB of it the snapshot's body
-// blob, against about 30 KB): what purge on replace adds grows with the state.
+// O(its state); with no history promised an edit costs O(change). Bytes handed to the store per
+// replacing edit (rows and blobs, before paging: `all_flat`) at n and 10n entries (at 2000 about
+// 525 KB, the snapshot's body blob about 246 KB of it, against about 4 KB): what purge on replace
+// adds, the snapshot, grows with the state.
 #[test]
 fn purge_on_replace_pays_its_state() {
     let (gone, plain) = ([replacing_edit(200, &GONEMAP), replacing_edit(2000, &GONEMAP)], [replacing_edit(200, &BIG), replacing_edit(2000, &BIG)]);
-    linear("purge on replace: store bytes per edit", gone[0], gone[1]);
-    flat("no history: store bytes per edit", plain[0], plain[1]);
+    linear("purge on replace: store bytes handed per edit", gone[0], gone[1]);
+    flat("no history: store bytes handed per edit", plain[0], plain[1]);
     // what purge on replace adds, its snapshot, grows with the state
     let extra = |i: usize| gone[i].saturating_sub(plain[i]);
     assert!(extra(1) >= 5 * extra(0), "purge on replace pays O(state): {gone:?} against {plain:?}");
-    assert!(gone[1] <= 400_000 && plain[1] <= 40_000, "at 2000 entries: {} B with purge on replace, {} B with no history", gone[1], plain[1]);
+    assert!(gone[1] <= 600_000 && plain[1] <= 8_000, "at 2000 entries: {} B with purge on replace, {} B with no history", gone[1], plain[1]);
 }
 /// pending commits read again, perm commits walked and entries moved) added as spans.
 fn measured_at<T>(lp: &mut LocalPeer, i: usize, f: impl FnOnce(&mut LocalPeer) -> T) -> (T, Work) {
@@ -537,25 +538,38 @@ fn phases<'a>(small: &'a Work, big: &'a Work) -> BTreeSet<&'a str> {
     small.spans.keys().chain(big.spans.keys()).copied().collect()
 }
 
-/// Every counted phase and the store rows and bytes written grow at most like a log from n to
-/// 10n (rows are the sharper count: a write's fixed bytes hide a small per-commit term).
+/// The bytes one row write may move between sizes for no growth: a state crossing into paging, or
+/// a page split, rewrites one whole page (a state page about 3 KB, a store page at most 8 KB).
+const ONE_PAGE: u64 = 8 * 1024;
+
+/// Bytes handed to the store at 10n about those at n (`flat`), give or take `ONE_PAGE`.
+#[track_caller]
+fn flat_bytes(what: &str, small: u64, big: u64) {
+    println!("{what}: {small} at n, {big} at 10n");
+    assert!(big <= 2 * small + ONE_PAGE, "{what}: {small} at n, {big} at 10n: grows with the data");
+}
+
+/// Every counted phase grows at most like a log from n to 10n, the store's among them: rows and
+/// bytes handed to it ("store rows written"; "store bytes handed", within `ONE_PAGE`), and the
+/// units it wrote. Not the units' bytes: a unit holds 4-11 KB, and where keys land (commit IDs,
+/// splits) moves whole units between sizes, so their bytes are noise beside these counts.
 #[track_caller]
 fn all_flat(what: &str, small: &Work, big: &Work) {
     for k in phases(small, big) {
-        flat(&format!("{what}: {k}"), small.n(k), big.n(k));
+        let f = if k == "store bytes handed" { flat_bytes } else { flat };
+        f(&format!("{what}: {k}"), small.n(k), big.n(k));
     }
-    flat(&format!("{what}: store rows written"), small.io.writes, big.io.writes);
-    flat(&format!("{what}: store bytes written"), small.io.written_bytes, big.io.written_bytes);
+    flat(&format!("{what}: store units written"), small.io.writes, big.io.writes);
 }
 
-/// Every counted phase and the store rows and bytes written grow at most linearly from n to 10n.
+/// Every counted phase and the store units written grow at most linearly from n to 10n
+/// (`all_flat`).
 #[track_caller]
 fn all_linear(what: &str, small: &Work, big: &Work) {
     for k in phases(small, big) {
         linear(&format!("{what}: {k}"), small.n(k), big.n(k));
     }
-    linear(&format!("{what}: store rows written"), small.io.writes, big.io.writes);
-    linear(&format!("{what}: store bytes written"), small.io.written_bytes, big.io.written_bytes);
+    linear(&format!("{what}: store units written"), small.io.writes, big.io.writes);
 }
 
 // spec/commits.md §5 (when a body was replaced), spec/crdt.md §4.8; spec/requirements.md,

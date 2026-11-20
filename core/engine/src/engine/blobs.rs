@@ -259,7 +259,7 @@ impl osis_blob::BlobFetch for TxBlobs<'_, '_> {
 }
 
 /// Header-list chunk trees (osis-commit's traits): frames under the given prefix inputs, blinded
-/// by each blob's link blind bound to the header's actor (spec/crypto.md §7).
+/// by each blob's link blind bound to the header's signer (spec/crypto.md §7).
 pub struct ListBlobs<'t, 'a, 'r> {
     pub blobs: TxBlobs<'t, 'a>,
     pub rng: &'r mut dyn CryptoRngCore,

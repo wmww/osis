@@ -110,7 +110,7 @@ fn role_commit() -> CommitBlob {
     built(b)
 }
 
-/// `role_commit` with header flags bit 1 set (spec/wire.md §4 field 17).
+/// `role_commit` with header flags bit 1 set (spec/wire.md §4 field 18).
 fn adminless_role_commit() -> CommitBlob {
     let at = ts(1_700_000_001_000);
     let mut b = CommitBuilder::new(Kind::Role, at, SIGNER, osis_commit::Path::default(), Form::Commit);
@@ -180,7 +180,7 @@ pub fn headers() -> VecFile {
     let c = content();
     cases.push(record("minimal content commit", "spec/wire.md §4; spec/commits.md §1", &c));
     cases.push(record("role commit", "spec/wire.md §4; spec/commits.md §2", &role_commit()));
-    cases.push(record("role commit with the adminless mark", "spec/wire.md §4 field 17; spec/permissions.md §2", &adminless_role_commit()));
+    cases.push(record("role commit with the adminless mark", "spec/wire.md §4 field 18; spec/permissions.md §2", &adminless_role_commit()));
     cases.push(record("content compaction snapshot", "spec/wire.md §4; spec/commits.md §2, §5", &snapshot()));
     let e = ephemeral(osis_commit::EphClass::Plain);
     cases.push(record("ephemeral commit", "spec/wire.md §4; spec/commits.md §2", &e));
@@ -452,10 +452,10 @@ fn more_rejected(content: &Header) -> Vec<Record> {
     let bytes = osis_base::encode(&v);
     assert!(Header::decode(&bytes).is_err());
     out.push(case("unknown ephemeral marker", "spec/wire.md §4").with("header", hex(&bytes)).with("reject", "ephemeral"));
-    // header flags (field 17): 0 is absent, bits above 1 are reserved, bit 1 is a role commit's
+    // header flags (field 18): 0 is absent, bits above 1 are reserved, bit 1 is a role commit's
     let mut x = content.clone();
     x.adminless = true;
-    out.push(reject("adminless mark on a content commit", "spec/wire.md §4 field 17", &x, "flags"));
+    out.push(reject("adminless mark on a content commit", "spec/wire.md §4 field 18", &x, "flags"));
     for (name, f) in [("header flags of 0", 0), ("reserved header flag", 4)] {
         let mut v = osis_base::decode(&m.encode(), &osis_base::Limits::DEFAULT).unwrap();
         if let Value::List(items) = &mut v {
@@ -463,7 +463,7 @@ fn more_rejected(content: &Header) -> Vec<Record> {
         }
         let bytes = osis_base::encode(&v);
         assert!(Header::decode(&bytes).is_err(), "{name}");
-        out.push(case(name, "spec/wire.md §4 field 17").with("header", hex(&bytes)).with("reject", "flags"));
+        out.push(case(name, "spec/wire.md §4 field 18").with("header", hex(&bytes)).with("reject", "flags"));
     }
     // a delete key that is no valid Ed25519 point
     let mut x = content.clone();

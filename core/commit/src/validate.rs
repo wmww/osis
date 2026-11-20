@@ -37,7 +37,13 @@ impl Header {
                     return Err(Error::Invalid("a path this commit may not state"));
                 }
             }
-            Paths::Hashed(hs) => ord(hs.len() > 1 && hs.len() == self.things().len(), "hashed paths other than one per thing written, or for one thing")?,
+            Paths::Hashed(hs) => {
+                ord(hs.len() > 1 && hs.len() == self.things().len(), "hashed paths other than one per thing written, or for one thing")?;
+                // a rotation and a seed re-seal state the one-for-all `[0]` (fields 15, 16)
+                if self.rotation.is_some() || self.reseal.is_some() {
+                    return Err(Error::Invalid("a rotation or seed re-seal stating hashed paths"));
+                }
+            }
         }
         // the remaining admin rides on a role commit's edge writes (spec/wire.md §4 field 17)
         if self.remains.is_some() && (self.kind != Kind::Role || self.adminless || !self.aspects.iter().any(|a| a.ak.as_str() == "roles.0")) {

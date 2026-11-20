@@ -920,7 +920,7 @@ pub(crate) fn write_snapshot(tx: &mut Tx<'_>, tid: &Tid, ak: &Ak, memory: bool) 
 }
 
 /// This node's own cover of durable `(tid, ak)` at a removal (spec/permissions.md §5.1, Own
-/// cover): `write_snapshot` marked so (spec/wire.md §4 field 17).
+/// cover): `write_snapshot` marked so (spec/wire.md §4 field 18).
 pub(crate) fn write_own_cover(tx: &mut Tx<'_>, tid: &Tid, ak: &Ak) -> Result<Option<CommitId>> {
     snapshot_from_state(tx, tid, ak, false, true)
 }
