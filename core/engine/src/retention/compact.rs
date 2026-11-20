@@ -754,8 +754,10 @@ impl Engine {
         while let Some(k) = due.pop_first() {
             match self.weigh_due(&k, forced.contains(&k), quiet.contains(&k), &mut out) {
                 Ok(()) => {}
-                // a failed store: the step fails, and what was not weighed is due again, as it was
-                Err(e @ Error::Store(_)) => {
+                // a failed store, however the error came back (a store or blob write that failed
+                // owes a reload, `reload_owed`, or a settle, `blobs_unsettled`): the step fails,
+                // and what was not weighed is due again, as it was
+                Err(e) if matches!(e, Error::Store(_)) || self.reload_owed() || self.blobs_unsettled => {
                     due.insert(k);
                     let c = &mut self.core.compaction;
                     c.forced.extend(due.iter().filter(|k| forced.contains(*k)).cloned());
@@ -767,7 +769,12 @@ impl Engine {
                 // its compaction alone: its estimate stays, so it is weighed again at its next
                 // body, and the step goes on to the others. Failing the step would fail every
                 // step (the driver closes its connections) for as long as the aspect stays so.
-                Err(_) => osis_base::costs::count("compact: snapshots failed", 1),
+                // Reported (deduped: once per aspect and error).
+                Err(e) => {
+                    osis_base::costs::count("compact: snapshots failed", 1);
+                    let d = crate::events::Diagnostic { kind: crate::events::DiagnosticKind::OwnWriteFailed, tids: vec![k.0], commit: None, peer: None, detail: format!("compaction snapshot of {}: {e}", k.1.as_str()) };
+                    self.core.events.diagnostic(d, self.core.hlc.mono());
+                }
             }
         }
         Ok(out)
@@ -1044,7 +1051,8 @@ mod tests {
 
     // spec/sync-compaction.md §1 (trigger): a snapshot this node cannot write (a local error of
     // its own, not its store's) costs that aspect alone: the step weighs and compacts the aspects
-    // after it and does not fail, and the failing one is weighed again at its next body
+    // after it and does not fail, the failure is reported (`OwnWriteFailed`), and the failing one
+    // is weighed again at its next body
     #[test]
     fn a_failing_snapshot_leaves_the_other_aspects_compacted_spec_sync_7() {
         let (x, y) = (Ak::new("x:m.0").unwrap(), Ak::new("y:m.0").unwrap());
@@ -1067,11 +1075,14 @@ mod tests {
         }
         // x is weighed first
         p.engine.core.snapshot_fault = Some((t, x.clone()));
+        let rx = p.engine.subscribe();
         osis_base::costs::take();
         let done = p.engine.compactions().unwrap().into_iter().map(|c| c.1).collect::<Vec<_>>();
         let failed = osis_base::costs::take().iter().find(|c| c.0 == "compact: snapshots failed").map_or(0, |c| c.2);
         assert_eq!(done, std::slice::from_ref(&y), "y compacted, the step not failed");
         assert_eq!(failed, 1);
+        let reported: Vec<_> = rx.try_iter().filter_map(|e| if let crate::events::Event::Diagnostic(d) = e { Some(d) } else { None }).filter(|d| d.kind == crate::events::DiagnosticKind::OwnWriteFailed).collect();
+        assert!(reported.len() == 1 && reported[0].tids == [t] && reported[0].detail.contains("x:m.0"), "reported to the host: {reported:?}");
         assert!(p.engine.compactions().unwrap().is_empty(), "nothing due until x's next body");
         p.engine.core.snapshot_fault = None;
         fill(p, &x, 0);

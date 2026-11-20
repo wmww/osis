@@ -145,9 +145,10 @@ pub enum DiagnosticKind {
     DisputesUnexamined,
     /// This node could not make a write it makes on its own (its answer to a removal or an
     /// account's rotation, spec/permissions.md §5.2, §5.5; a purge-on-replace cover, spec/commits.md
-    /// §5): nothing of the attempt was kept; an answer stays due, tried again with the next
-    /// transaction, a cover with the next change to its aspect (`commit`: the removal or rotation
-    /// answered, `tids`: the thing covered, `detail`: why).
+    /// §5; a compaction snapshot, spec/sync-compaction.md §1): nothing of the attempt was kept; an
+    /// answer stays due, tried again with the next transaction, a cover or compaction snapshot
+    /// with the next change to its aspect (`commit`: the removal or rotation answered, `tids`: the
+    /// thing covered or compacted, `detail`: why).
     OwnWriteFailed,
     /// The `osis` sync driver died (a panic, or its runtime shut down with the store open):
     /// nothing syncs until the store is opened again; waits fail `Network` (`detail`: why).

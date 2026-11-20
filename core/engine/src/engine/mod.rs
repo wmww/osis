@@ -3721,7 +3721,7 @@ pub struct Engine {
     /// Stamps what the engine holds of `blobs`, by blob (`blobs::Cipher`).
     blob_stamps: osis_base::memo::Stamps,
     /// A transaction's commit or its releases failed: `settle_blobs` runs before the next.
-    blobs_unsettled: bool,
+    pub(crate) blobs_unsettled: bool,
     /// The store's `Writes::failed` and `Writes::unknown` when this engine last read it whole
     /// (`load`): the next transaction reads it again once either moves (`reload_owed`).
     failed_seen: (u64, u64),
