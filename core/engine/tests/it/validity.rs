@@ -121,7 +121,7 @@ fn carol_variant_spec_perm_5_2() {
     pks.reverse();
     for _ in 0..2 {
         for p in &pks {
-            let _ = lp2.deliver(0, p);
+            unless_refused(lp2.deliver(0, p));
         }
     }
     assert!(lp2.peers[0].engine.pending().is_empty(), "{:?}", lp2.peers[0].engine.pending());
@@ -245,9 +245,7 @@ fn revoked_writer_forging_into_covered_counters_spec_perm_5_1() {
     let forged = forge_reg(&mut lp, d, &reg, lo, ts, "forged");
     let mut fresh = LocalPeer::of(vec![obs], 1).unwrap();
     fresh.advance(3 * DAY);
-    for p in packages(&mut lp, 0).into_iter().filter(|p| p.id != first) {
-        fresh.deliver(0, &p).unwrap();
-    }
+    give_carried(&mut lp, 0, &mut fresh, 0, |p| p.id == first);
     fresh.peers[0].reexamine().unwrap();
     fresh.peers[0].receive(&forged, Vec::new()).unwrap();
     assert_eq!(fresh.peers[0].engine.get(&d, &reg).unwrap(), Some(s("alice")), "a fresh node");
@@ -314,9 +312,7 @@ fn frontier_lists_compacted_too_snapshot_vouches_at_fresh_node_spec_perm_5_1() {
     set_edge(&mut lp.peers[0].engine, d, b, None, Some(f.clone()));
     let mut fresh = fresh_net(&mut lp, 0, d, 1000); // a reader apart from lp's (its own seeds)
     fresh.advance(3 * DAY);
-    for p in packages(&mut lp, 0).into_iter().filter(|p| p.id != tag) {
-        fresh.deliver(0, &p).unwrap();
-    }
+    give_carried(&mut lp, 0, &mut fresh, 0, |p| p.id == tag);
     fresh.peers[0].reexamine().unwrap();
     for (i, l) in [(0, &mut lp), (0, &mut fresh)] {
         assert_eq!(tags(l, i, d), BTreeSet::from(["mon".to_string()]));
@@ -743,7 +739,7 @@ fn snapshot_vouches_for_its_writes_spec_perm_5_2() {
         let both = BTreeSet::from(["mon".to_string(), "x".to_string()]);
         assert_eq!(tags(&mut lp, 0, d), both, "Alice: the snapshot vouches for x");
         // Dave: everything of Alice's but Bob's own commits
-        let pks: Vec<_> = packages(&mut lp, 0).into_iter().filter(|p| lp.peers[0].engine.header(&p.id).is_some_and(|h| h.signer != b)).collect();
+        let pks: Vec<_> = packages_for(&mut lp, 0, 3).into_iter().filter(|p| lp.peers[0].engine.header(&p.id).is_some_and(|h| h.signer != b)).collect();
         let (late, early): (Vec<_>, Vec<_>) = pks.into_iter().partition(|p| if revoke_first { p.id == snap } else { p.id == rv });
         for pk in early.iter().chain(&late) {
             lp.deliver(3, pk).unwrap();
@@ -756,7 +752,7 @@ fn snapshot_vouches_for_its_writes_spec_perm_5_2() {
         assert_eq!(tags(&mut lp, 3, d), both, "after a restart");
         lp.advance(DAY);
         let g = set_edge(&mut lp.peers[0].engine, d, b, Some(edge(Role::Write)), None);
-        let pk = packages(&mut lp, 0).into_iter().find(|p| p.id == g).unwrap();
+        let pk = package_for(&mut lp, 0, 3, g);
         lp.deliver(3, &pk).unwrap();
         assert_eq!(tags(&mut lp, 3, d), both, "re-granted");
         assert_eq!(tags(&mut lp, 0, d), both, "Alice, re-granted");
@@ -861,7 +857,7 @@ fn snapshot_before_grant_counts_spec_perm_5_2() {
     lp.advance(DAY);
     let snap = lp.peers[0].engine.snapshot(&d, &ak("t:tags.0")).unwrap().unwrap();
     // Dave: Alice's commits but the grant, then the grant
-    let pks: Vec<_> = packages(&mut lp, 0).into_iter().filter(|p| lp.peers[0].engine.header(&p.id).is_some_and(|h| h.signer != b)).collect();
+    let pks: Vec<_> = packages_to(&mut lp, 0, 2).into_iter().filter(|p| lp.peers[0].engine.header(&p.id).is_some_and(|h| h.signer != b)).collect();
     let (holders, content): (Vec<_>, Vec<_>) = pks.into_iter().partition(|p| p.id == g);
     for pk in &content {
         lp.deliver(2, pk).unwrap();
@@ -964,7 +960,7 @@ fn entry_created_after_demotion(snapshot_first: bool) {
     let snap_id = match lp.peers[2].receive(&snap, Vec::new()).unwrap() { osis_engine::Ingested::Applied(id) => id, x => panic!("{x:?}") };
     // Dave: Alice's and Carol's commits (the snapshot among them), none of Bob's
     for from in [0, 2] {
-        let mut pks: Vec<_> = packages(&mut lp, from).into_iter().filter(|p| lp.peers[from].engine.header(&p.id).is_some_and(|h| h.signer != b)).collect();
+        let mut pks: Vec<_> = packages_for(&mut lp, from, 3).into_iter().filter(|p| lp.peers[from].engine.header(&p.id).is_some_and(|h| h.signer != b)).collect();
         if snapshot_first {
             pks.sort_by_key(|p| p.id != snap_id);
         }
@@ -1022,7 +1018,7 @@ fn differing_key_copy_shows_only_its_key_spec_crdt_4_6() {
     let want = BTreeSet::from([s("evil"), s("k")]);
     // Dave: everything, the snapshot first or last
     for (i, snap_first) in [(3, true), (0, false)] {
-        let mut pks: Vec<_> = [0, 1, 2].into_iter().flat_map(|from| packages(&mut lp, from)).collect();
+        let mut pks: Vec<_> = [0, 1, 2].into_iter().flat_map(|from| packages_for(&mut lp, from, i)).collect();
         pks.sort_by_key(|p| (p.bytes != snap) == snap_first);
         for pk in &pks {
             lp.deliver(i, pk).unwrap();
@@ -1388,7 +1384,7 @@ fn unmerge_paged_matches_fresh_large_spec_crdt_4_6() {
         let now = lp.peers[2].engine.now();
         let f = lp.peers[2].engine.frontier(&scope, now).unwrap();
         let rv = set_edge(&mut lp.peers[2].engine, d, b, None, Some(f.clone()));
-        let pk = packages(&mut lp, 2).into_iter().find(|p| p.id == rv).unwrap();
+        let pk = package_for(&mut lp, 2, 0, rv);
         osis_base::costs::take();
         lp.deliver(0, &pk).unwrap();
         let costs = osis_base::costs::take();
@@ -1398,7 +1394,7 @@ fn unmerge_paged_matches_fresh_large_spec_crdt_4_6() {
         assert_eq!(n("rejudge: rebuild"), 5, "one rebuild per flipped aspect");        // the fresh node, a reader holding d (a node not holding it keeps none of its content):
         // B's writes last
         let mut fresh = lp.fresh_reader(0, d, 8001);
-        let pks = packages(&mut lp, 0);
+        let pks = lp.packages_to_peer(0, &mut fresh).unwrap();
         let is_b = |lp: &LocalPeer, id: &osis_base::CommitId| lp.peers[0].engine.header(id).is_some_and(|h| h.signer == b && !is_role(&lp.peers[0].engine, id));
         for p in pks.iter().filter(|p| !is_b(&lp, &p.id)).chain(pks.iter().filter(|p| is_b(&lp, &p.id))) {
             fresh.engine.ingest(&p.bytes, p.blobs.clone()).unwrap();
@@ -1563,7 +1559,7 @@ fn differing_copies_join_by_copy_order_alike_spec_perm_5_2() {
     use osis_crdt::{Writer, create};
     let (mut lp, d, b, c) = setup();
     let mut obs = reader(&mut lp, 0, d, 0x5fc1);
-    let base = packages(&mut lp, 0);
+    let base = packages_for_peer(&mut lp, 0, &mut obs);
     lp.advance(1_000);
     let mut m = Mutation::new();
     m.set(d, &REG, &s("real")).unwrap();
@@ -1573,7 +1569,7 @@ fn differing_copies_join_by_copy_order_alike_spec_perm_5_2() {
     let h = lp.peers[1].engine.header(&real).unwrap();
     let reg = ak("t:reg.0");
     let lo = h.aspects.iter().find(|x| x.tid == d && x.ak == reg).unwrap().lo;
-    let rpk = packages(&mut lp, 1).into_iter().find(|p| p.id == real).unwrap();
+    let rpk = package_for_peer(&mut lp, 1, &mut obs, real);
     // a copy greater than "real" by the copy order, and one lesser
     for (forged_value, wins) in [("zzz forged", true), ("aaa", false)] {
         let mut w = Writer::new(h.ts, h.form.own_source(b, osis_base::CommitId([0; 32])), lo);
@@ -1634,7 +1630,7 @@ fn differing_copies_join_by_copy_order_alike_spec_perm_5_2() {
         let mut fr = lp.peers[0].engine.frontier(&scope, at).unwrap();
         fr.commits.remove(&fid.unwrap());
         let rv = set_edge(&mut lp.peers[0].engine, d, c, None, Some(fr.clone()));
-        let rv = packages(&mut lp, 0).into_iter().find(|p| p.id == rv).unwrap();
+        let rv = package_for(&mut lp, 0, p0, rv);
         for i in [p0, p1, p2] {
             lp.deliver(i, &rv).unwrap();
             lp.peers[i].reexamine().unwrap();
@@ -1659,7 +1655,7 @@ fn differing_copies_join_by_copy_order_alike_spec_perm_5_2() {
 fn valueless_copy_loses_to_held_value_spec_crdt_4_7() {
     use osis_crdt::{Writer, create};
     let (mut lp, d, b, _) = setup();
-    let base = packages(&mut lp, 0);
+    let base = lp.commit_ids(0);
     lp.advance(1_000);
     let mut m = Mutation::new();
     m.set(d, &REG, &s("real")).unwrap();
@@ -1689,12 +1685,12 @@ fn valueless_copy_loses_to_held_value_spec_crdt_4_7() {
     let reader = lp.fresh_reader(0, d, 0x5fe1);
     lp.peers.push(reader);
     lp.hold_at(3, d);
-    for p in &base {
+    for p in packages_for(&mut lp, 0, 3).iter().filter(|p| base.contains(&p.id)) {
         lp.deliver(3, p).unwrap();
     }
     lp.peers[3].receive(&forged, Vec::new()).unwrap();
     assert_eq!(lp.peers[3].engine.get(&d, &reg).unwrap(), None, "the snapshot alone: absent");
-    let rpk = packages(&mut lp, 1).into_iter().find(|p| p.id == real).unwrap();
+    let rpk = package_for(&mut lp, 1, 3, real);
     lp.deliver(3, &rpk).unwrap();
     lp.peers[3].reexamine().unwrap();
     assert_eq!(lp.peers[3].engine.get(&d, &reg).unwrap(), Some(s("real")), "with the commit");
@@ -1795,7 +1791,7 @@ fn snapshot_copy_of_a_delta_never_held_counts_spec_perm_5_2() {
     let (a, r) = (lp.peers[0].engine.me(), lp.peers[1].engine.me());
     set_edge(&mut lp.peers[0].engine, t, r, Some(edge(Role::Read)), None);
     let mut obs = reader(&mut lp, 0, t, 0x5f40);
-    let base = packages(&mut lp, 0);
+    let base = packages_for_peer(&mut lp, 0, &mut obs);
     let m_ak = ak("x:m.0");
     let mut m = Mutation::new();
     m.set(t, &m_ak, &Value::Map(osis_base::ValueMap::from([(s("k"), s("real"))]))).unwrap();
@@ -1804,7 +1800,7 @@ fn snapshot_copy_of_a_delta_never_held_counts_spec_perm_5_2() {
     lp.advance(1_000);
     let snap = lp.peers[0].engine.snapshot(&t, &m_ak).unwrap().unwrap();
     let want = states(&mut lp.peers[0].engine, &[t]);
-    let pks = packages(&mut lp, 0);
+    let pks = packages_for_peer(&mut lp, 0, &mut obs);
     let pk = |id| pks.iter().find(|p| p.id == id).unwrap().clone();
     let h = lp.peers[0].engine.header(&c).unwrap();
     let (ck, sk) = (pk(c), pk(snap));
@@ -1824,7 +1820,7 @@ fn snapshot_copy_of_a_delta_never_held_counts_spec_perm_5_2() {
             lp.deliver(i, p).unwrap();
         }
         for bytes in seq {
-            let _ = lp.peers[i].receive(bytes, Vec::new());
+            unless_refused(lp.peers[i].receive(bytes, Vec::new()));
             lp.peers[i].reexamine().unwrap();
         }
         i
@@ -2092,7 +2088,7 @@ fn demoted_compactor_snapshot_by_frontier_spec_perm_5_2() {
         };
         let all = BTreeSet::from(["alice".to_string(), "bob".to_string()]);
         assert_eq!(tags(&mut lp, 0, d), all, "Alice holds Bob's commit");
-        let pks: Vec<_> = packages(&mut lp, 0).into_iter().filter(|p| !bob.contains(&p.id)).collect();
+        let pks: Vec<_> = packages_to(&mut lp, 0, 3).into_iter().filter(|p| !bob.contains(&p.id)).collect();
         let (late, early): (Vec<_>, Vec<_>) = pks.into_iter().partition(|p| if demote_first { p.id == snap } else { p.id == rv });
         for pk in early.iter().chain(&late) {
             lp.deliver(3, pk).unwrap();
@@ -2132,9 +2128,9 @@ fn reader_copy_voids_no_valid_carrier_spec_perm_5_2() {
         let forged = forge_snapshot(&mut lp, 2, d, &ak("t:tags.0"), now, f);
         { let at = lp.peers[0].engine.now(); lp.peers.push(fresh_copy(&mut obs, at)); }
         if forged_first {
-            let _ = lp.peers[3].receive(&forged, Vec::new());
+            unless_refused(lp.peers[3].receive(&forged, Vec::new()));
         }
-        for pk in packages(&mut lp, 0).into_iter().filter(|p| !bob.contains(&p.id)) {
+        for pk in packages_for(&mut lp, 0, 3).into_iter().filter(|p| !bob.contains(&p.id)) {
             lp.deliver(3, &pk).unwrap();
         }
         lp.peers[3].receive(&forged, Vec::new()).unwrap();
@@ -2187,7 +2183,7 @@ fn demoted_writer_dropped_dot_copy_alike_spec_perm_5_2() {
     let forged = forge_snapshot_with(&mut lp, 1, t, &tags, now, f, osis_crdt::Frontiers::default());
     lp.advance(1_000);
     let rv = set_edge(&mut lp.peers[0].engine, t, w, None, Some(osis_schema::core_types::Frontier::default()));
-    let rv_pk = packages(&mut lp, 0).into_iter().find(|p| p.id == rv).unwrap();
+    let rv_pk = package_for(&mut lp, 0, 2, rv);
     // peer 2: the snapshot first (valid then), then the demotion; peer 3: the other way round
     lp.peers[2].receive(&forged, Vec::new()).unwrap();
     lp.deliver(2, &rv_pk).unwrap();
@@ -2224,7 +2220,7 @@ fn valid_carrier_dropped_alike_either_order_spec_perm_5_2() {
     let now = osis_base::Ts::make(lp.peers[2].engine.now(), 0).unwrap();
     let f = lp.peers[2].engine.state(&d, &ak("t:tags.0")).unwrap().unwrap().clone();
     let forged = forge_snapshot(&mut lp, 2, d, &ak("t:tags.0"), now, f);
-    let pks: Vec<_> = packages(&mut lp, 0).into_iter().filter(|p| !bob.contains(&p.id)).collect();
+    let pks: Vec<_> = packages_for_peer(&mut lp, 0, &mut obs).into_iter().filter(|p| !bob.contains(&p.id)).collect();
     let mut got = Vec::new();
     for (i, forged_first) in [(3, true), (4, false)] {
         { let at = lp.peers[0].engine.now(); lp.peers.push(fresh_copy(&mut obs, at)); }
@@ -2314,10 +2310,10 @@ fn snapshot_extra_dot_of_dropped_delta_joins_alike_spec_perm_5_2() {
         lp.peers[2].restart(0x5f89).unwrap();
         assert_eq!(lp.peers[2].engine.get(&t, &tags).unwrap(), before, "forged first: {forged_first}, restarted");
         // a node that never held C, only the snapshots
-        let pks: Vec<_> = packages(&mut lp, 0).into_iter().filter(|p| p.id != c).collect();
+        let pks: Vec<_> = packages_for(&mut lp, 0, 3).into_iter().filter(|p| p.id != c).collect();
         { let at = lp.peers[0].engine.now(); lp.peers.push(fresh_copy(&mut obs, at)); }
         for p in &pks {
-            let _ = lp.deliver(3, p);
+            unless_refused(lp.deliver(3, p));
         }
         lp.peers[3].receive(&forged, Vec::new()).unwrap();
         lp.peers[3].reexamine().unwrap();
@@ -2360,10 +2356,8 @@ fn removed_holder_write_compacted_earlier_stays_alike_spec_perm_5_2() {
     for i in [0, 2] {
         assert_eq!(tags(&mut lp, i, d), want, "peer {i}");
     }
-    let all: Vec<_> = packages(&mut lp, 2);
     let late = [x, y, snap, rv];
-    let base: Vec<_> = all.iter().filter(|p| !late.contains(&p.id)).cloned().collect();
-    let pk = |id| all.iter().find(|p| p.id == id).unwrap().clone();
+    let mut all: Vec<osis_engine::local_peer::Package> = Vec::new();
     let orders: Vec<Vec<osis_base::CommitId>> = vec![vec![snap, rv], vec![rv, snap], vec![x, y, snap, rv], vec![rv, x, y, snap], vec![snap, rv, y, x], vec![y, rv, snap, x]];
     let mut states = Vec::new();
     for (n, order) in orders.iter().enumerate() {
@@ -2371,6 +2365,12 @@ fn removed_holder_write_compacted_earlier_stays_alike_spec_perm_5_2() {
         let reader = lp.fresh_reader(0, d, 0x5f8b + n as u64);
         lp.peers.push(reader);
         lp.hold_at(i, d);
+        // what Carol sends a reader of d (alike for each)
+        if all.is_empty() {
+            all = packages_to(&mut lp, 2, i);
+        }
+        let base: Vec<_> = all.iter().filter(|p| !late.contains(&p.id)).cloned().collect();
+        let pk = |id| all.iter().find(|p| p.id == id).unwrap().clone();
         for p in base.iter().cloned().chain(order.iter().map(|id| pk(*id))) {
             lp.deliver(i, &p).unwrap();
         }
@@ -2421,7 +2421,7 @@ fn coverer_demoted_after_cover_drop_alike_spec_perm_5_2() {
             late.push(latest(&mut lp));
         }
         sync(&mut lp, 0, 2);
-        let pks: Vec<_> = packages(&mut lp, 2).into_iter().filter(|p| bob_held || !bob.contains(&p.id)).collect();
+        let pks: Vec<_> = packages_for_peer(&mut lp, 2, &mut obs).into_iter().filter(|p| bob_held || !bob.contains(&p.id)).collect();
         let pk = |id| pks.iter().find(|p| p.id == id).unwrap().clone();
         let base: Vec<_> = pks.iter().filter(|p| p.id != s2 && !late.contains(&p.id)).cloned().collect();
         let mut got = Vec::new();
@@ -2489,7 +2489,7 @@ fn invalidated_copy_of_shared_dot_goes_alike_spec_perm_5_2() {
     lp.advance(DAY);
     revoke(&mut lp, 0, d, c);
     let rv = *lp.peers[0].engine.commit_ids().iter().max_by_key(|x| lp.peers[0].engine.header(x).unwrap().ts).unwrap();
-    let pks: Vec<_> = packages(&mut lp, 0).into_iter().filter(|p| p.id != bob).collect();
+    let pks: Vec<_> = packages_for_peer(&mut lp, 0, &mut obs).into_iter().filter(|p| p.id != bob).collect();
     let pk = |id| pks.iter().find(|p| p.id == id).unwrap().clone();
     let base: Vec<_> = pks.iter().filter(|p| p.id != honest && p.id != rv).cloned().collect();
     let mut got = Vec::new();
@@ -2537,16 +2537,16 @@ fn covered_drop_restored_after_remover_revoked_alike_spec_perm_5_2() {
     lp.advance(1_000);
     let snap = lp.peers[0].engine.snapshot(&d, &tags_ak).unwrap().unwrap();
     lp.sync_all().unwrap();
-    let before = packages(&mut lp, 0);
+    let before = packages_for_peer(&mut lp, 0, &mut obs);
     lp.advance(1_000);
     let mut m = Mutation::new();
     m.op(d, &TAGS, osis_crdt::PathOp { path: Vec::new(), op: osis_crdt::Op::Remove(s("ash")) }).unwrap();
     let rm = lp.peers[1].commit(m).unwrap().unwrap();
-    let rm_pk = packages(&mut lp, 1).into_iter().find(|p| p.id == rm).unwrap();
+    let rm_pk = package_for_peer(&mut lp, 1, &mut obs, rm);
     lp.advance(1_000);
     revoke(&mut lp, 0, d, b); // without having seen the removal
     let known: BTreeSet<_> = before.iter().map(|p| p.id).collect();
-    let rv: Vec<_> = packages(&mut lp, 0).into_iter().filter(|p| !known.contains(&p.id)).collect();
+    let rv: Vec<_> = packages_for_peer(&mut lp, 0, &mut obs).into_iter().filter(|p| !known.contains(&p.id)).collect();
     let mut got = Vec::new();
     for (i, removal_first) in [(2, true), (3, false)] {
         { let at = lp.peers[0].engine.now(); lp.peers.push(fresh_copy(&mut obs, at)); }
@@ -2589,20 +2589,20 @@ fn covered_drop_coverer_and_remover_revoked_alike_spec_perm_5_2() {
     lp.sync_all().unwrap();
     let tags_ak = ak("t:tags.0");
     let added: BTreeSet<_> = lp.peers[0].engine.commit_ids().into_iter().filter(|x| lp.peers[0].engine.header(x).is_some_and(|h| h.kind == osis_commit::Kind::Content && h.aspects.iter().any(|a| a.ak == tags_ak))).collect();
-    let before = packages(&mut lp, 0);
+    let before = packages_for_peer(&mut lp, 0, &mut obs);
     lp.advance(1_000);
     let snap = lp.peers[2].engine.snapshot(&d, &tags_ak).unwrap().unwrap();
-    let snap_pk = packages(&mut lp, 2).into_iter().find(|p| p.id == snap).unwrap();
+    let snap_pk = package_for_peer(&mut lp, 2, &mut obs, snap);
     lp.advance(1_000);
     let mut m = Mutation::new();
     m.op(d, &TAGS, osis_crdt::PathOp { path: Vec::new(), op: osis_crdt::Op::Remove(s("ash")) }).unwrap();
     let rm = lp.peers[1].commit(m).unwrap().unwrap();
-    let rm_pk = packages(&mut lp, 1).into_iter().find(|p| p.id == rm).unwrap();
+    let rm_pk = package_for_peer(&mut lp, 1, &mut obs, rm);
     lp.advance(1_000);
     revoke(&mut lp, 0, d, c); // without having seen the removal or Carol's snapshot
     revoke(&mut lp, 0, d, b);
     let known: BTreeSet<_> = before.iter().map(|p| p.id).collect();
-    let rv: Vec<_> = packages(&mut lp, 0).into_iter().filter(|p| !known.contains(&p.id)).collect();
+    let rv: Vec<_> = packages_for_peer(&mut lp, 0, &mut obs).into_iter().filter(|p| !known.contains(&p.id)).collect();
     let mut got = Vec::new();
     // dropped under Carol's cover: the removal applied valid, or arrived voided; held throughout
     for (i, drop, removal_first) in [(3, true, true), (4, true, false), (5, false, false)] {
@@ -2673,18 +2673,18 @@ fn chained_cover_drop_restored_after_remover_revoked_alike_spec_perm_5_2() {
     lp.advance(1_000);
     let s2 = lp.peers[0].engine.snapshot(&d, &tags_ak).unwrap().unwrap();
     lp.sync_all().unwrap();
-    let all = packages(&mut lp, 0);
+    let all = packages_for_peer(&mut lp, 0, &mut obs);
     let s2_pk = all.iter().find(|p| p.id == s2).unwrap().clone();
     let before: Vec<_> = all.into_iter().filter(|p| p.id != s2).collect();
     lp.advance(1_000);
     let mut m = Mutation::new();
     m.op(d, &TAGS, osis_crdt::PathOp { path: Vec::new(), op: osis_crdt::Op::Remove(s("ash")) }).unwrap();
     let rm = lp.peers[1].commit(m).unwrap().unwrap();
-    let rm_pk = packages(&mut lp, 1).into_iter().find(|p| p.id == rm).unwrap();
+    let rm_pk = package_for_peer(&mut lp, 1, &mut obs, rm);
     lp.advance(1_000);
     revoke(&mut lp, 0, d, b);
     let known: BTreeSet<_> = before.iter().map(|p| p.id).chain([s2]).collect();
-    let rv: Vec<_> = packages(&mut lp, 0).into_iter().filter(|p| !known.contains(&p.id)).collect();
+    let rv: Vec<_> = packages_for_peer(&mut lp, 0, &mut obs).into_iter().filter(|p| !known.contains(&p.id)).collect();
     let mut got = Vec::new();
     for (i, removal_first) in [(3, true), (4, false)] {
         { let at = lp.peers[0].engine.now(); lp.peers.push(fresh_copy(&mut obs, at)); }
@@ -2724,7 +2724,7 @@ fn latest_of(lp: &mut LocalPeer, i: usize) -> osis_base::CommitId {
 /// Delivers commits `ids` held by peer `from` to peer `i` without their parts on aspect `a`: `i` holds their headers, their writes there only through snapshots (spec/crdt.md §8:
 /// a snapshot's frontier counts only on held headers).
 fn deliver_stripped(lp: &mut LocalPeer, from: usize, i: usize, ids: &BTreeSet<osis_base::CommitId>, a: &osis_base::Ak) -> Vec<Ingested> {
-    let pks: Vec<_> = packages(lp, from).into_iter().filter(|p| ids.contains(&p.id)).collect();
+    let pks: Vec<_> = packages_for(lp, from, i).into_iter().filter(|p| ids.contains(&p.id)).collect();
     pks.iter()
         .map(|p| {
             let h = lp.peers[from].engine.header(&p.id).unwrap();
@@ -2765,7 +2765,7 @@ fn cover_drop_coverer_flips_back_alike_spec_perm_5_2() {
     let mut all: BTreeMap<osis_base::CommitId, _> = BTreeMap::new();
     let mut order = Vec::new();
     for i in 0..3 {
-        for p in packages(&mut lp, i) {
+        for p in packages_for_peer(&mut lp, i, &mut obs) {
             all.entry(p.id).or_insert_with(|| {
                 order.push(p.id);
                 p
@@ -2845,7 +2845,7 @@ fn missing_snapshot_not_covered_by_older_spec_perm_5_2() {
     revoke(&mut lp, 0, d, c);
     let rv = latest_of(&mut lp, 0);
     sync(&mut lp, 0, 2);
-    let pks: Vec<_> = packages(&mut lp, 2).into_iter().filter(|p| !bob.contains(&p.id)).collect();
+    let pks: Vec<_> = packages_for_peer(&mut lp, 2, &mut obs).into_iter().filter(|p| !bob.contains(&p.id)).collect();
     let pk = |id| pks.iter().find(|p| p.id == id).unwrap().clone();
     let i = lp.peers.len();
     { let at = lp.peers[0].engine.now(); lp.peers.push(fresh_copy(&mut obs, at)); }
@@ -2888,15 +2888,17 @@ fn flipped_snapshot_leaves_frontier_alike_spec_perm_5_2() {
     f.commits.remove(&snap);
     set_edge(&mut lp.peers[0].engine, d, c, None, Some(f.clone()));
     let rv = *lp.peers[0].engine.commit_ids().iter().max_by_key(|x| lp.peers[0].engine.header(x).unwrap().ts).unwrap();
-    let pks: Vec<_> = packages(&mut lp, 0).into_iter().filter(|p| !bob.contains(&p.id)).collect();
-    let pk = |id| pks.iter().find(|p| p.id == id).unwrap().clone();
-    let base: Vec<_> = pks.iter().filter(|p| p.id != snap && p.id != rv).cloned().collect();
+    let held = lp.commit_ids(0);
     let of_bob = DemotionScope { roles: BTreeMap::from([(b, BTreeSet::from([d]))]), content: BTreeMap::from([(b, BTreeSet::from([d]))]) };
     let mut got = Vec::new();
     for (n, order) in [[snap, rv], [rv, snap]].into_iter().enumerate() {
+        // a reader of d: a node holding d with no role keeps none of its content
         let i = lp.peers.len();
-        lp.peers.push(osis_engine::local_peer::Peer::new(0x5fc1 + n as u64, lp.peers[0].engine.now()).unwrap());
-        lp.hold_at(i, d);
+        let r = lp.fresh_reader(0, d, 0x5fc1 + n as u64);
+        lp.peers.push(r);
+        let pks: Vec<_> = packages_to(&mut lp, 0, i).into_iter().filter(|p| held.contains(&p.id) && !bob.contains(&p.id)).collect();
+        let pk = |id| pks.iter().find(|p| p.id == id).unwrap().clone();
+        let base: Vec<_> = pks.iter().filter(|p| p.id != snap && p.id != rv).cloned().collect();
         for p in &base {
             lp.deliver(i, p).unwrap();
         }
@@ -2922,8 +2924,8 @@ fn flipped_snapshot_leaves_frontier_alike_spec_perm_5_2() {
 
 /// Bob's commit X (a tag and the register; commit form if `commit_form`), Carol's snapshot S of
 /// the tags listing X (frontier or `Absorbed`), Alice's removal R of Carol not listing S. Gives
-/// the packages Alice holds, X, S and R.
-fn listed_part_setup(commit_form: bool) -> (LocalPeer, Tid, Vec<osis_engine::local_peer::Package>, [osis_base::CommitId; 3]) {
+/// the commits Alice holds, X, S and R.
+fn listed_part_setup(commit_form: bool) -> (LocalPeer, Tid, BTreeSet<osis_base::CommitId>, [osis_base::CommitId; 3]) {
     let (mut lp, d, _, c) = setup();
     let mut m = Mutation::new();
     if commit_form {
@@ -2944,25 +2946,19 @@ fn listed_part_setup(commit_form: bool) -> (LocalPeer, Tid, Vec<osis_engine::loc
     f.commits.remove(&snap);
     set_edge(&mut lp.peers[0].engine, d, c, None, Some(f.clone()));
     let rv = latest_of(&mut lp, 0);
-    let pks = packages(&mut lp, 0);
-    (lp, d, pks, [x, snap, rv])
+    let held = lp.commit_ids(0);
+    (lp, d, held, [x, snap, rv])
 }
 
 /// A fresh peer holding `d`, granted read on it by Alice (`LocalPeer::fresh_reader`), given what
-/// the sync IDs it syncs carry of Alice's packages, with S, R and X (without its tags part) in
-/// `order`.
-fn listed_part_peer(lp: &mut LocalPeer, d: Tid, pks: &[osis_engine::local_peer::Package], ids: [osis_base::CommitId; 3], order: &[osis_base::CommitId], seed: u64) -> usize {
+/// the sync IDs it syncs once a sync from Alice ends carry of `held` (R moves `d`'s:
+/// spec/sync-ids.md), with S, R and X (without its tags part) in `order`; with those packages.
+fn listed_part_peer(lp: &mut LocalPeer, d: Tid, held: &BTreeSet<osis_base::CommitId>, ids: [osis_base::CommitId; 3], order: &[osis_base::CommitId], seed: u64) -> (usize, Vec<osis_engine::local_peer::Package>) {
     let [x, ..] = ids;
     let i = lp.peers.len();
     let r = lp.fresh_reader(0, d, seed);
     lp.peers.push(r);
-    // the sync IDs it syncs once a sync from Alice ends (R moves `d`'s: spec/sync-ids.md)
-    let synced = {
-        let mut c = lp.copy().unwrap();
-        c.sync(0, i).unwrap();
-        c.synced(i).unwrap()
-    };
-    let pks: Vec<_> = pks.iter().map(|p| lp.trimmed(0, p, &synced).unwrap()).collect();
+    let pks: Vec<_> = packages_to(lp, 0, i).into_iter().filter(|p| held.contains(&p.id)).collect();
     for p in pks.iter().filter(|p| !ids.contains(&p.id)) {
         lp.deliver(i, p).unwrap();
     }
@@ -2978,7 +2974,7 @@ fn listed_part_peer(lp: &mut LocalPeer, d: Tid, pks: &[osis_engine::local_peer::
         }
     }
     lp.peers[i].reexamine().unwrap();
-    i
+    (i, pks)
 }
 
 // spec/commits.md §4, spec/permissions.md §5.2: Carol's S lists Bob's X (its frontier, or its
@@ -2987,9 +2983,9 @@ fn listed_part_peer(lp: &mut LocalPeer, d: Tid, pks: &[osis_engine::local_peer::
 #[test]
 fn part_listed_by_invalid_snapshot_applies_spec_commits_4() {
     for commit_form in [false, true] {
-        let (mut lp, d, pks, ids) = listed_part_setup(commit_form);
+        let (mut lp, d, held, ids) = listed_part_setup(commit_form);
         let [x, snap, rv] = ids;
-        let i = listed_part_peer(&mut lp, d, &pks, ids, &[rv, snap, x], 0x5fd9);
+        let (i, pks) = listed_part_peer(&mut lp, d, &held, ids, &[rv, snap, x], 0x5fd9);
         assert!(lp.peers[i].engine.pending().is_empty(), "commit form {commit_form}: {:?}", lp.peers[i].engine.pending());
         assert_eq!(lp.peers[i].engine.get(&d, &ak("t:reg.0")).unwrap(), Some(s("bob")), "commit form {commit_form}");
         assert!(!tags(&mut lp, i, d).contains("bob"), "commit form {commit_form}");
@@ -3003,11 +2999,11 @@ fn part_listed_by_invalid_snapshot_applies_spec_commits_4() {
 // the tag does not, also after a restart.
 #[test]
 fn listed_part_alike_in_any_order_spec_commits_4() {
-    let (mut lp, d, pks, ids) = listed_part_setup(false);
+    let (mut lp, d, held, ids) = listed_part_setup(false);
     let [x, snap, rv] = ids;
     let orders = [[snap, x, rv], [x, snap, rv], [snap, rv, x], [rv, snap, x], [x, rv, snap], [rv, x, snap]];
     for (n, order) in orders.iter().enumerate() {
-        let i = listed_part_peer(&mut lp, d, &pks, ids, order, 0x5fdb + n as u64);
+        let (i, _) = listed_part_peer(&mut lp, d, &held, ids, order, 0x5fdb + n as u64);
         for restarted in [false, true] {
             if restarted {
                 lp.peers[i].restart(0x5fe9 + n as u64).unwrap();
@@ -3034,10 +3030,11 @@ fn late_snapshot_part_received_when_it_came_spec_perm_5_1() {
     lp.advance(1_000);
     let snap = lp.peers[2].engine.snapshot(&d, &ak("t:tags.0")).unwrap().unwrap();
     sync(&mut lp, 2, 0);
-    let pks: Vec<_> = packages(&mut lp, 0).into_iter().filter(|p| !bob.contains(&p.id)).collect();
+    let held = lp.commit_ids(0);
     let i = lp.peers.len();
     let reader = lp.fresh_reader(0, d, 0x5fd1);
     lp.peers.push(reader);
+    let pks: Vec<_> = packages_to(&mut lp, 0, i).into_iter().filter(|p| held.contains(&p.id) && !bob.contains(&p.id)).collect();
     lp.hold_at(i, d);
     // it keeps the writers' accounts, Carol's chain among them, as it arrives
     let writers: Vec<Tid> = (0..3).map(|j| lp.peers[j].engine.me()).collect();
@@ -3111,7 +3108,7 @@ fn inflated_snapshot_claims_count_nothing_spec_crdt_8() {
         let reader = lp.fresh_reader(0, d, 0x6110 + n as u64);
         lp.peers.push(reader);
         lp.hold_at(i, d);
-        for p in packages(&mut lp, 0).into_iter().filter(|p| p.id != rv) {
+        for p in packages_to(&mut lp, 0, i).into_iter().filter(|p| p.id != rv) {
             lp.deliver(i, &p).unwrap();
         }
         let got = deliver_stripped(&mut lp, 1, i, &late, &tags_ak);
@@ -3119,12 +3116,13 @@ fn inflated_snapshot_claims_count_nothing_spec_crdt_8() {
         assert!(!tags(&mut lp, i, d).contains("late"), "snap first {snap_first}");
         sync(&mut lp, 1, 0);
         assert_eq!(tags(&mut lp, 0, d), BTreeSet::from(["mon".to_string()]), "snap first {snap_first}: Alice");
-        let all = packages(&mut lp, 0);
+        let held = lp.commit_ids(0);
         for (k, removal_first) in [true, false].into_iter().enumerate() {
             let j = lp.peers.len();
             let reader = lp.fresh_reader(0, d, 0x6120 + 2 * n as u64 + k as u64);
             lp.peers.push(reader);
             lp.hold_at(j, d);
+            let all: Vec<_> = packages_to(&mut lp, 0, j).into_iter().filter(|p| held.contains(&p.id)).collect();
             let (first, second): (Vec<_>, Vec<_>) = all.iter().cloned().partition(|p| (p.id == rv) == removal_first || (!late.contains(&p.id) && p.id != rv));
             for p in first.iter().chain(&second) {
                 lp.deliver(j, p).unwrap();
@@ -3249,7 +3247,7 @@ fn a_minting_never_restores_a_destroyed_thing_spec_commits_5() {
         }
         assert!(matches!(lp.peers[2].receive(&after, Vec::new()), Ok(Ingested::Pending(_, osis_engine::Reason::UnknownCreated(_)))), "first {first}: destroyed, a minting stamped after waits");
         for b in [&before, &after] {
-            let _ = lp.peers[0].receive(b, Vec::new());
+            unless_refused(lp.peers[0].receive(b, Vec::new()));
         }
         lp.sync_all().unwrap();
         for i in 0..3 {
@@ -3325,7 +3323,7 @@ fn late_joiner_after_compaction_keeps_writes_spec_crdt_8() {
     sync(&mut lp, 2, 0);
     set_edge(&mut lp.peers[0].engine, d, j, Some(edge(Role::Admin)), None);
     lp.advance(1000);
-    for p in packages(&mut lp, 0).into_iter().filter(|p| !bob.contains(&p.id)) {
+    for p in packages_to(&mut lp, 0, 3).into_iter().filter(|p| !bob.contains(&p.id)) {
         lp.deliver(3, &p).unwrap();
     }
     lp.peers[3].reexamine().unwrap();
@@ -3339,7 +3337,7 @@ fn late_joiner_after_compaction_keeps_writes_spec_crdt_8() {
     lp.advance(1000);
     sync(&mut lp, 3, 0);
     sync(&mut lp, 3, 2);
-    let all = packages(&mut lp, 0);
+    let all = packages_for_peer(&mut lp, 0, &mut obs);
     for reversed in [false, true] {
         let i = lp.peers.len();
         { let at = lp.peers[0].engine.now(); lp.peers.push(fresh_copy(&mut obs, at)); }
@@ -3884,14 +3882,16 @@ fn invalid_insert_leaves_no_trace_in_order_spec_crdt_6_1() {
     assert_eq!(read(&mut lp, 0), want, "Alice: Bob's commit arrived invalid");
     assert_eq!(read(&mut lp, 2), want, "Carol: Bob's commit flipped invalid");
     // fresh nodes: without Bob's commit, with it first, with it last
-    let pks = packages(&mut lp, 0);
-    let (without, with_bob): (Vec<_>, Vec<_>) = pks.iter().partition(|p| p.id != bob);
-    let orders = [without.clone(), with_bob.iter().chain(&without).copied().collect(), without.iter().chain(&with_bob).copied().collect::<Vec<_>>()];
-    for (k, order) in orders.iter().enumerate() {
+    let held = lp.commit_ids(0);
+    for k in 0..3 {
         let i = lp.peers.len();
         let reader = lp.fresh_reader(0, d, 9500 + k as u64);
         lp.peers.push(reader);
         lp.hold_at(lp.peers.len() - 1, d);
+        let pks: Vec<_> = packages_to(&mut lp, 0, i).into_iter().filter(|p| held.contains(&p.id)).collect();
+        let (without, with_bob): (Vec<_>, Vec<_>) = pks.iter().partition(|p| p.id != bob);
+        let orders = [without.clone(), with_bob.iter().chain(&without).copied().collect(), without.iter().chain(&with_bob).copied().collect::<Vec<_>>()];
+        let order = &orders[k];
         for p in order {
             lp.deliver(i, p).unwrap();
         }
@@ -4016,13 +4016,13 @@ fn a_removed_writers_write_at_the_removals_ts_reads_alike_whatever_the_tids_spec
             for _ in 0..3 {
                 lp.sync_all().unwrap();
             }
-            let mut pks: Vec<_> = (0..3).flat_map(|i| packages(&mut lp, i)).collect();
+            let mut pks: Vec<_> = (0..3).flat_map(|i| packages_for_peer(&mut lp, i, &mut obs)).collect();
             pks.sort_by_key(|p| p.id);
             pks.dedup_by_key(|p| p.id);
             { let at = lp.peers[0].engine.now(); lp.peers.push(fresh_copy(&mut obs, at)); }
             for _ in 0..2 {
                 for p in &pks {
-                    let _ = lp.deliver(3, p);
+                    unless_refused(lp.deliver(3, p));
                 }
             }
             lp.peers[3].reexamine().unwrap();
@@ -4069,7 +4069,7 @@ fn a_removed_writers_write_forged_at_the_removals_ts_is_lost_everywhere_spec_per
         assert!(rm.iter().all(|r| lp.peers[a].engine.header(r).unwrap().ts == ts), "stamped at the removal's ts");
         let pk = unaware.engine.package(&f).unwrap().unwrap();
         for i in 0..3 {
-            let _ = lp.deliver(i, &pk);
+            unless_refused(lp.deliver(i, &pk));
         }
         for _ in 0..3 {
             lp.sync_all().unwrap();
@@ -4110,7 +4110,7 @@ fn a_removed_admins_grant_forged_at_the_removals_ts_counts_nowhere_spec_perm_5_1
         for f in &fs {
             let pk = unaware.engine.package(f).unwrap().unwrap();
             for i in 0..3 {
-                let _ = lp.deliver(i, &pk);
+                unless_refused(lp.deliver(i, &pk));
             }
         }
         for _ in 0..3 {
@@ -4154,7 +4154,7 @@ fn acting_on_two(hashed: bool) -> (LocalPeer, Tid, Tid, osis_base::CommitId, osi
 fn a_hashed_commits_path_outlives_its_parts_spec_wire_4() {
     let (mut lp, d, e, id, c) = acting_on_two(true);
     let a = &mut lp.peers[0];
-    let _ = a.engine.ingest(&c.encode(), Vec::new());
+    unless_refused(a.engine.ingest(&c.encode(), Vec::new()));
     a.reexamine().unwrap();
     assert_eq!(a.engine.commit_acting(&id, &e), Some(d));
     let mut m = Mutation::new();
@@ -4198,7 +4198,7 @@ fn a_hashed_commit_reads_alike_whatever_sections_opened_spec_wire_4() {
     let only_d = osis_commit::rewrite(&c, |ai| c.header.aspects[ai].tid != d).encode();
     for (i, bytes) in [(0, c.encode()), (2, only_d)] {
         let p = &mut lp.peers[i];
-        let _ = p.engine.ingest(&bytes, Vec::new());
+        unless_refused(p.engine.ingest(&bytes, Vec::new()));
         p.reexamine().unwrap();
         p.engine.check_index();
         assert!(p.engine.commit_ids().contains(&id), "peer {i}");
@@ -4384,7 +4384,7 @@ fn a_hashed_part_acting_for_an_unknown_thing_waits_alone_spec_commits_4() {
     let only_d = osis_commit::rewrite(&c, |ai| c.header.aspects[ai].tid != d).encode();
     for (i, bytes) in [(0, c.encode()), (2, only_d)] {
         let p = &mut lp.peers[i];
-        let _ = p.engine.ingest(&bytes, Vec::new());
+        unless_refused(p.engine.ingest(&bytes, Vec::new()));
         p.reexamine().unwrap();
         p.engine.check_index();
         assert_eq!(p.engine.get(&d, &ak("t:reg.0")).unwrap(), Some(s("on d")), "peer {i} reads D");
@@ -4486,7 +4486,7 @@ fn hashed_paths_learned_late_judge_as_whole_spec_wire_4() {
         let (mut lp, _) = fresh();
         let p = &mut lp.peers[0];
         for b in &order {
-            let _ = p.engine.ingest(b, Vec::new());
+            unless_refused(p.engine.ingest(b, Vec::new()));
             p.reexamine().unwrap();
             p.engine.check_index();
         }

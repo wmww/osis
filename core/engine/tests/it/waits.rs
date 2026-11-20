@@ -379,7 +379,7 @@ fn list_element_overwritten_stays_past_expiry_spec_crdt_5_7() {
     // past T, a snapshot carries the value-less creation to a node without the expired commit
     lp.peers[1].engine.snapshot(&t, &k).unwrap().unwrap();
     let mut late = fresh_copy(&mut obs, lp.peers[1].engine.now());
-    for pk in &lp.packages_to_peer(1, &mut late).unwrap() {
+    for pk in &packages_for_peer(&mut lp, 1, &mut late) {
         late.receive_with(&pk.bytes, pk.blobs.clone(), &pk.lists).unwrap();
     }
     assert_eq!(late.engine.get(&t, &k).unwrap(), edited, "a late node");

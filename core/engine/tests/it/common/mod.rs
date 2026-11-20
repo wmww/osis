@@ -337,6 +337,18 @@ pub fn package_for(lp: &mut LocalPeer, from: usize, to: usize, id: CommitId) -> 
     packages_for(lp, from, to).into_iter().find(|p| p.id == id).unwrap_or_else(|| panic!("{from} sends {to} no {id:?}"))
 }
 
+/// What `from` sends `p`, a node apart, in a sync: `packages_under` the sync IDs `p` syncs as it
+/// stands (an observer from `reader`, whose sync set its grant already moved).
+pub fn packages_for_peer(lp: &mut LocalPeer, from: usize, p: &mut osis_engine::local_peer::Peer) -> Vec<Package> {
+    let synced = p.engine.sync_set().unwrap().ids.keys().copied().collect();
+    lp.packages_under(from, &synced).unwrap()
+}
+
+/// Commit `id` as `from` sends `p`, a node apart (`packages_for_peer`).
+pub fn package_for_peer(lp: &mut LocalPeer, from: usize, p: &mut osis_engine::local_peer::Peer, id: CommitId) -> Package {
+    packages_for_peer(lp, from, p).into_iter().find(|x| x.id == id).unwrap_or_else(|| panic!("{from} sends no {id:?}"))
+}
+
 /// Commit `id` as `from` sends `to`, a node apart (`LocalPeer::packages_to_peer`).
 pub fn package_to_peer(lp: &mut LocalPeer, from: usize, to: &mut osis_engine::local_peer::Peer, id: CommitId) -> Package {
     lp.packages_to_peer(from, to).unwrap().into_iter().find(|p| p.id == id).unwrap_or_else(|| panic!("{from} sends no {id:?}"))
