@@ -65,14 +65,10 @@ pub(crate) fn blob_bound(c: &CommitBlob) -> usize {
 
 
 /// Purge rewrite: the same header and signature without the deltas `drop` names (header-only
-/// when none remain), and the path keys of the things whose parts remain or that it destroys
-/// (`Header::destroyed`; all, where the aspect list is not resolved). Its prefix groups are those
-/// of its remaining aspects (`prefix_groups`).
+/// when none remain), with every path key it holds: a path is header data, kept with the header
+/// (an encryption carries only its own parts' things' keys: `seal_commit`, `seal_header_only`).
+/// Its prefix groups are those of its remaining aspects (`prefix_groups`).
 pub fn rewrite(c: &CommitBlob, drop: impl Fn(usize) -> bool) -> CommitBlob {
     let parts: Vec<_> = c.parts.iter().filter(|p| !drop(p.ai)).cloned().collect();
-    let h = &c.header;
-    let things = h.things();
-    let kept = |i: &usize| !h.is_resolved() || things.get(*i).is_some_and(|t| h.destroyed().any(|d| d == t)) || parts.iter().any(|p| h.aspects.get(p.ai).and_then(|a| things.iter().position(|t| *t == a.tid)) == Some(*i));
-    let keys = c.keys.iter().filter(|(i, _)| kept(i)).map(|(i, k)| (*i, *k)).collect();
-    CommitBlob { header: h.clone(), sigs: c.sigs.clone(), parts, keys }
+    CommitBlob { header: c.header.clone(), sigs: c.sigs.clone(), parts, keys: c.keys.clone() }
 }

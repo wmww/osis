@@ -197,6 +197,12 @@ fn split_paths_open_from_the_roles_secret_and_from_every_encryption() {
     let copy = seal_commit(&c, &c.header, |_| (), |_, _| Some((blob.clone(), vec![])), &[], &mut rng()).unwrap();
     assert_eq!(copy.sections.len(), 1);
     assert_eq!(copy.open(|_| vec![blob.clone()]).unwrap().commit, c);
+    // a copy of one thing's parts (the record keeps every key) carries that thing's key alone
+    let first = things[0];
+    let one = rewrite(&c, |ai| c.header.aspects[ai].tid != first);
+    assert_eq!(one.keys, c.keys);
+    let e = seal_commit(&one, &c.header, |_| (), |_, _| Some((blob.clone(), vec![])), &[], &mut rng()).unwrap();
+    assert_eq!(e.open(|_| vec![blob.clone()]).unwrap().commit.keys, BTreeMap::from([(0, c.keys[&0])]));
     let plain = built(content(3));
     let e = seal_commit(&plain, &plain.header, |_| (), |_, _| Some((blob.clone(), vec![])), &[], &mut rng()).unwrap();
     assert_eq!(e.sections.len(), 1);
@@ -215,13 +221,14 @@ fn a_header_only_copy_carries_the_destroyed_things_path_key() {
     let c = built(b);
     let blob = Secret32::from_bytes([3; 32]);
     let bare = rewrite(&c, |_| true);
-    assert_eq!(bare.keys, BTreeMap::from([(1, c.keys[&1])]), "the purge rewrite keeps the destroyed thing's key");
+    assert_eq!(bare.keys, c.keys, "the purge rewrite keeps every path key: header data");
     let e = seal_header_only(&bare, &c.header, &blob, &mut rng()).unwrap();
     assert_eq!(e.sections.len(), 1);
     assert!(e.sections[0].ais.is_empty());
     let back = Envelope::decode(&e.encode()).unwrap();
     let o = back.open(|_| vec![blob.clone()]).unwrap().commit;
     assert!(o.parts.is_empty());
+    assert_eq!(o.keys, BTreeMap::from([(1, c.keys[&1])]), "the copy carries the destroyed thing's key alone");
     assert_eq!(o.path(&gone), Some(ThingPath::Known(Path { purge: 2, things: vec![t(9), t(2)] })));
     let plain = built(content(1));
     assert!(seal_header_only(&plain, &plain.header, &blob, &mut rng()).unwrap().sections.is_empty());
