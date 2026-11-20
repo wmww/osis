@@ -224,9 +224,12 @@ impl Paths {
         let _ = self.first.changed();
         let mut ch = self.timeline.changed();
         ch.regrant.extend(self.facts.chain_changed());
-        if ch != Changed::default() || taken.addendum || taken.snapshot || !named.is_empty() {
-            let changed = self.facts.addenda_fixpoint(&self.timeline);
-            ch.parts.extend(changed);
+        // the walk or the counting entries changed: from scratch; else only addenda or snapshots
+        // arrived: the fixpoint grows from where it stood
+        if ch != Changed::default() || !named.is_empty() {
+            ch.parts.extend(self.facts.addenda_fixpoint(&self.timeline));
+        } else if !taken.addenda.is_empty() || !taken.snapshots.is_empty() {
+            ch.parts.extend(self.facts.addenda_more(&self.timeline, &taken));
         }
         ch.parts.extend(taken.deltas);
         ch.named.extend(taken.carried);

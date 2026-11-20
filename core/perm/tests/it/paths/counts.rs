@@ -1,12 +1,13 @@
 //! How the walk's work scales (notes/perm-paths.md, Cost shapes), counted at n and 10n: a part
 //! appended at the end, a backdated part, a lowering applying with drops, a void lowering's check,
-//! from scratch. Where step 3a does not meet a shape step 7 owes, the test asserts what is true
+//! from scratch; content (step 3b): a delta appended, a removal cutting n deltas, a cut delta's
+//! query, k addenda arriving one at a time. Where step 3a does not meet a shape step 7 owes, the test asserts what is true
 //! and notes/perm-paths.md says what is owed.
 //! spec: none (cost, notes/perm-paths.md; the rules are those of spec/permissions.md §5.1).
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::indexing_slicing)]
 
-use osis_base::{CommitId, Role, Tid, Ts, WallMs};
-use osis_perm::paths::{Commit, Counts, EdgeWrite, Part, PartKind, Paths, Status};
+use osis_base::{Ak, CommitId, PurgeBy, Role, Tid, Ts, WallMs};
+use osis_perm::paths::{By, Commit, Content, Counts, Delta, DeltaClass, EdgeWrite, Part, PartKind, Paths, Status};
 use osis_perm::{Edge, Frontier, WriteId};
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
@@ -206,4 +207,89 @@ fn from_scratch_is_linear_in_the_parts() {
     let small = Paths::evaluate(&records(), BTreeSet::new(), &history(100)).counts();
     let large = Paths::evaluate(&records(), BTreeSet::new(), &history(1000)).counts();
     assert_eq!((small.steps, small.passes, large.steps, large.passes), (W * 100, W, W * 1000, W));
+}
+
+/// A content commit of one plain delta by `signer` on `on` along `path` (an addendum: `against`
+/// removal listing `list`).
+fn content(id: u64, signer: u32, ts: u64, path: &[u32], on: u32, against: Option<(u64, &[u64])>) -> Commit {
+    let class = match against {
+        Some((r, l)) => DeltaClass::Addendum { removal: cid(r), list: Frontier::new(l.iter().map(|&i| cid(i))) },
+        None => DeltaClass::Plain,
+    };
+    let aspect = Ak::new(if against.is_some() { "addenda.0" } else { "doc.0" }).unwrap();
+    let d = Delta { aspect, needs: Role::Write, purge_author: 0, retention: PurgeBy::AuthorOrAdmin, class };
+    Commit { id: cid(id), ts: Ts::make(WallMs(ts), 0).unwrap(), signer: t(signer), parts: vec![Part { on: t(on), path: path.iter().map(|&x| t(x)).collect(), kind: PartKind::Delta(d) }] }
+}
+
+/// H grants X admin on A at 1; X writes n deltas on C (minted with A) along [A] at 10..; the
+/// history of grants follows.
+fn writes(n: u32) -> Vec<Commit> {
+    let mut c = vec![write(1, H, 1, &[], A, X, Some(Role::Admin))];
+    c.extend((0..n).map(|i| content(200_000 + i as u64, X, 10 + i as u64, &[A], C, None)));
+    c.extend(history(n));
+    c
+}
+
+// spec/permissions.md §5.2: a delta appended at the end costs no walk step and its query reads its
+// path's edges alone, whatever the history.
+#[test]
+fn an_appended_delta_is_a_point_query() {
+    let mut per = vec![];
+    for n in [100u32, 1000] {
+        let end = 10 + n as u64 + 5;
+        let (d, p) = cost_of(&writes(n), content(9, X, end, &[A], C, None));
+        assert_eq!((d.steps, d.passes, d.addenda), (0, 0, 0), "{d:?}");
+        let mut q = Counts::default();
+        assert_eq!(p.content_counted(&WriteId(cid(9), 0), &mut q), Some(Content::Valid(By::Held)));
+        per.push(q.content);
+    }
+    assert_eq!(per[0], per[1], "{per:?}");
+}
+
+// spec/permissions.md §5.2: a removal cutting n deltas costs its own walk step: nothing per delta
+// it cuts, and `Changed` names one cut on X's edge; each cut delta's query then reads its path and
+// the removal naming it.
+#[test]
+fn a_removal_cutting_n_deltas_costs_nothing_per_delta() {
+    let mut per = vec![];
+    for n in [100u32, 1000] {
+        let end = 10 + n as u64 + 5;
+        let mut p = Paths::evaluate(&records(), BTreeSet::new(), &writes(n));
+        let before = p.counts();
+        // listing the first delta: it stays, by the list; the rest fall
+        let mut r = write(2, H, end, &[], A, X, None);
+        if let PartKind::Edge(ew) = &mut r.parts[0].kind {
+            ew.frontier = Some(Arc::new(Frontier::new([cid(200_000)])));
+        }
+        let ch = p.add(&[r]);
+        let d = delta(before, p.counts());
+        assert_eq!((d.steps, d.content), (W, 0), "{d:?}");
+        assert_eq!(ch.cuts.keys().copied().collect::<Vec<_>>(), vec![(t(X), t(A))]);
+        assert!(ch.parts.len() == 1 && ch.named.is_empty(), "{ch:?}");
+        let mut q = Counts::default();
+        assert_eq!(p.content_counted(&WriteId(cid(200_000), 0), &mut q), Some(Content::Valid(By::Listed)));
+        assert_eq!(p.content_counted(&WriteId(cid(200_001), 0), &mut q), Some(Content::Invalid));
+        per.push(q.content);
+    }
+    assert_eq!(per[0], per[1], "{per:?}");
+}
+
+// spec/permissions.md §5.2: k addenda arriving one at a time grow the fixpoint from where it stood:
+// work linear in k (k = 100 and 1000: tenfold), not k².
+#[test]
+fn addenda_arriving_one_at_a_time_cost_linear_work() {
+    let mut per = vec![];
+    for k in [100u64, 1000] {
+        let mut p = Paths::evaluate(&records(), BTreeSet::new(), &writes(10));
+        p.add(&[write(2, H, 50, &[], A, X, None)]);
+        let before = p.counts();
+        for i in 0..k {
+            p.add(&[content(300_000 + i, H, 60 + i, &[A], C, Some((2, &[200_000])))]);
+        }
+        let d = delta(before, p.counts());
+        assert_eq!(d.steps, 0, "{d:?}");
+        assert_eq!(p.content(&WriteId(cid(200_000), 0)), Some(Content::Valid(By::Vouched)));
+        per.push(d.addenda);
+    }
+    assert!(per[1] >= 9 * per[0] && per[1] <= 11 * per[0], "{per:?}");
 }

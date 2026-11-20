@@ -10,6 +10,7 @@
 mod content;
 mod counts;
 mod hand;
+mod hand_content;
 mod incremental;
 mod shapes;
 
@@ -217,6 +218,19 @@ fn compare(w: &World, v: &View, rules: &Rules, rd: &Reading, inp: &Input, p: &Pa
 fn p_index(p: &Paths, commits: &[Commit], k: &osis_perm::paths::Key) -> u32 {
     let c = commits.iter().find(|c| c.id == k.commit).unwrap();
     (0..c.parts.len() as u32).find(|&n| p.key(&WriteId(c.id, n)).as_ref() == Some(k)).unwrap()
+}
+
+/// The walk of `v` of `w`, with the input it read.
+pub fn walk(w: &World, v: &View) -> (Input, Paths) {
+    let inp = input(w, v);
+    let p = Paths::evaluate(&inp.records, inp.trust.clone(), &inp.commits);
+    (inp, p)
+}
+
+/// The walk's verdict on model delta `i` in `v` of `w`.
+pub fn verdict(w: &World, v: &View, i: Id) -> Option<Content> {
+    let (inp, p) = walk(w, v);
+    p.content(inp.ids.get(&i)?)
 }
 
 /// `diff`, panicking with the world's trace.

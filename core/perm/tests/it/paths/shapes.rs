@@ -1,14 +1,15 @@
 //! The walk on input no model generator makes: the order within a commit mixing edge writes and
-//! vouches, hostile shapes (long and made-up paths, cycles, a repeated holder, extreme times), and
-//! random soups of parts. Each must judge without panicking and read the same however its commits
+//! vouches, hostile shapes (long and made-up paths, cycles, a repeated holder, extreme times;
+//! vouches, addenda and snapshots naming what they should not), and random soups of parts and
+//! deltas. Each must judge without panicking and read the same however its commits
 //! arrive, each update's `Changed` exact.
 //! spec/permissions.md §5.1 (draft: notes/a1-spec/permissions.md §1 Path, §5.1 step 1); the
 //! update path: notes/perm-paths.md, One definition.
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::indexing_slicing)]
 
 use super::incremental::{check, reading};
-use osis_base::{CommitId, Role, Tid, Ts, WallMs};
-use osis_perm::paths::{Commit, EdgeWrite, Part, PartKind, Paths, Status};
+use osis_base::{Ak, CommitId, PurgeBy, Role, Tid, Ts, WallMs};
+use osis_perm::paths::{Commit, Content, Delta, DeltaClass, EdgeWrite, Part, PartKind, Paths, Status};
 use osis_perm::{Edge, Frontier, WriteId};
 use roles_model::Rng;
 use std::collections::{BTreeMap, BTreeSet};
@@ -203,8 +204,20 @@ fn soup(i: u64) -> (BTreeMap<Tid, Tid>, Vec<Commit>) {
         for _ in 0..1 + r.below(3) {
             let on = t(thing(&mut r));
             let path = (0..r.below(4)).map(|_| t(thing(&mut r))).collect();
-            let kind = if r.below(8) == 0 {
+            let pick = r.below(8);
+            let kind = if pick == 0 {
                 PartKind::Vouch { removal: cid(r.below(40) as u64), list: Frontier::new((0..r.below(3)).map(|_| cid(r.below(40) as u64))) }
+            } else if pick <= 2 {
+                let ids = |r: &mut Rng| Frontier::new((0..r.below(4)).map(|_| cid(r.below(40) as u64)));
+                let class = match r.below(5) {
+                    0 => DeltaClass::Plain,
+                    1 => DeltaClass::RoleClass,
+                    2 => DeltaClass::Snapshot { carries: ids(&mut r) },
+                    3 => DeltaClass::Addendum { removal: cid(r.below(40) as u64), list: ids(&mut r) },
+                    _ => DeltaClass::PurgeByAuthor { author: t(thing(&mut r)) },
+                };
+                let needs = [Role::Write, Role::Admin][r.below(2)];
+                PartKind::Delta(Delta { aspect: Ak::new(["doc.0", "addenda.0"][r.below(2)]).unwrap(), needs, purge_author: r.below(3) as u32, retention: PurgeBy::AuthorOrAdmin, class })
             } else {
                 let value = (r.below(4) > 0).then(|| Edge {
                     role: role(&mut r),
@@ -232,4 +245,89 @@ fn random_part_soups_judge_alike_however_they_arrive() {
         let (records, commits) = soup(i);
         robust(&records, &commits, &mut Rng(i));
     }
+}
+
+fn delta(on: u32, path: &[u32], needs: Role, class: DeltaClass) -> Part {
+    let aspect = Ak::new(if matches!(class, DeltaClass::Addendum { .. }) { "addenda.0" } else { "doc.0" }).unwrap();
+    Part { on: t(on), path: path.iter().map(|&x| t(x)).collect(), kind: PartKind::Delta(Delta { aspect, needs, purge_author: 0, retention: PurgeBy::AuthorOrAdmin, class }) }
+}
+
+fn ids(l: &[u64]) -> Frontier {
+    Frontier::new(l.iter().map(|&c| cid(c)))
+}
+
+// spec/permissions.md §5.1, §5.2 (draft: notes/a1-spec/permissions.md §5.1 Vouches, §5.2): hostile
+// vouches, addenda and snapshots judge without panicking, read alike however they arrive, and keep
+// nothing they should not.
+#[test]
+fn hostile_vouches_addenda_and_snapshots_judge_alike_without_panicking() {
+    let mut rng = Rng(11);
+    let admin = Some(Edge::new(Role::Admin));
+    let gy = commit(1, ms(1), H, vec![edge(A, &[], Y, admin, Some(&[]), None)]);
+    let gz = commit(2, ms(2), Y, vec![edge(A, &[], Z, admin, Some(&[]), None)]);
+    let zc = commit(3, ms(3), Z, vec![delta(T1, &[A], Role::Write, DeltaClass::Plain)]);
+    let rz = commit(4, ms(4), H, vec![edge(A, &[], Z, None, Some(&[]), None)]);
+    let base = [gy, gz, zc, rz];
+    let with = |more: Vec<Commit>| base.iter().cloned().chain(more).collect::<Vec<_>>();
+    let vouch = |id, removal, list: &[u64], signer| commit(id, ms(5), signer, vec![Part { on: t(A), path: vec![], kind: PartKind::Vouch { removal: cid(removal), list: ids(list) } }]);
+    // a vouch keyed by itself, listing itself, its signer's commit, and its own removal
+    for v in [vouch(9, 9, &[9], Y), vouch(9, 4, &[9, 1], Y), vouch(9, 4, &[4], Y)] {
+        let p = robust(&records(), &with(vec![v]), &mut rng);
+        assert!(p.counting().is_empty(), "{:?}", p.counting());
+        assert_eq!(p.content(&WriteId(cid(3), 0)), Some(Content::Invalid));
+    }
+    // an addendum keyed by a grant and by itself, naming role commits and itself
+    for (removal, list) in [(1, vec![2, 1]), (9, vec![9, 3]), (2, vec![3])] {
+        let ad = commit(9, ms(6), Y, vec![delta(T1, &[A], Role::Write, DeltaClass::Addendum { removal: cid(removal), list: ids(&list) })]);
+        let p = robust(&records(), &with(vec![ad]), &mut rng);
+        assert_eq!(p.content(&WriteId(cid(3), 0)), Some(Content::Invalid), "{removal} {list:?}");
+    }
+    // a snapshot claiming copies of commits not yet made, unknown, role commits and itself:
+    // copies are shown, never made valid; one by the removed party after its removal is invalid
+    for (signer, ts, carries) in [(Y, 6, vec![3, 30, 31, 1, 9]), (Z, 6, vec![3, 9])] {
+        let snap = commit(9, ms(ts), signer, vec![delta(T1, &[A], Role::Write, DeltaClass::Snapshot { carries: ids(&carries) })]);
+        let p = robust(&records(), &with(vec![snap]), &mut rng);
+        assert_eq!(p.content(&WriteId(cid(3), 0)), Some(if signer == Y { Content::Copied } else { Content::Invalid }));
+        assert!(!p.copies().contains(&cid(9)));
+    }
+    // deltas along made-up paths, a repeated thing, a purge author past the path
+    let made_up: Vec<u32> = (0..64).map(|i| 5000 + i).collect();
+    let mut odd = delta(T1, &[A], Role::Write, DeltaClass::Plain);
+    if let PartKind::Delta(d) = &mut odd.kind {
+        d.purge_author = 2;
+    }
+    let junk = vec![
+        commit(9, ms(6), Y, vec![delta(T1, &made_up, Role::Write, DeltaClass::Plain)]),
+        commit(10, ms(6), Y, vec![delta(T1, &[A, Y], Role::Write, DeltaClass::Plain)]),
+        commit(11, ms(6), Y, vec![odd]),
+        commit(12, ms(6), Y, vec![delta(T1, &[A], Role::Write, DeltaClass::PurgeByAuthor { author: t(Z) })]),
+    ];
+    let p = robust(&records(), &with(junk), &mut rng);
+    for id in 9..=11 {
+        assert_eq!(p.content(&WriteId(cid(id), 0)), Some(Content::Invalid), "{id}");
+    }
+    assert!(p.purged().is_empty());
+}
+
+// spec/permissions.md §5.2: thousands of addenda naming one commit: judging it reads each once.
+#[test]
+fn thousands_of_addenda_naming_one_commit_cost_one_read_each() {
+    let admin = Some(Edge::new(Role::Admin));
+    let mut per = vec![];
+    for k in [200u64, 2000] {
+        let mut c = vec![
+            commit(1, ms(1), H, vec![edge(A, &[], Y, admin, Some(&[]), None)]),
+            commit(2, ms(1), H, vec![edge(A, &[], Z, admin, Some(&[]), None)]),
+            commit(3, ms(3), Z, vec![delta(T1, &[A], Role::Write, DeltaClass::Plain)]),
+            commit(4, ms(4), H, vec![edge(A, &[], Z, None, Some(&[]), None)]),
+        ];
+        // Z's own (vouching for nothing of its signer), then one by Y that vouches
+        c.extend((0..k).map(|i| commit(100 + i, ms(5), Z, vec![delta(T1, &[A], Role::Write, DeltaClass::Addendum { removal: cid(4), list: ids(&[3]) })])));
+        c.push(commit(99, ms(6), Y, vec![delta(T1, &[A], Role::Write, DeltaClass::Addendum { removal: cid(4), list: ids(&[3]) })]));
+        let p = Paths::evaluate(&records(), BTreeSet::new(), &c);
+        let mut n = osis_perm::paths::Counts::default();
+        assert_eq!(p.content_counted(&WriteId(cid(3), 0), &mut n), Some(Content::Valid(osis_perm::paths::By::Vouched)));
+        per.push(n.content);
+    }
+    assert!(per[1] <= 11 * per[0] && per[1] >= 9 * per[0], "{per:?}");
 }

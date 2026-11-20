@@ -177,12 +177,10 @@ impl Facts {
                                 Class::Role
                             }
                             DeltaClass::Snapshot { carries } => {
-                                out.snapshot = true;
                                 out.carried.extend(carries.commits().iter().copied());
                                 Class::Snapshot(carries.clone())
                             }
                             DeltaClass::Addendum { removal, list } => {
-                                out.addendum = true;
                                 Class::Addendum(*removal, list.clone())
                             }
                             DeltaClass::PurgeByAuthor { author } => {
@@ -224,11 +222,13 @@ impl Facts {
                             self.named.entry(*x).or_default().push(Namer::Addendum(n));
                         }
                         self.addenda.push(n);
+                        out.addenda.push(n);
                     }
                     Class::Snapshot(carries) => {
                         for x in carries.commits() {
                             self.carried.entry(*x).or_default().push(n);
                         }
+                        out.snapshots.push(n);
                     }
                     Class::Purge(author) => {
                         self.requests.entry((d.on, d.aspect.clone(), *author)).or_default().push(n);
@@ -526,6 +526,49 @@ impl Facts {
             }
         }
         let mut valid = BTreeSet::new();
+        self.spread(tl, &mut valid, queue, &mut counts);
+        self.valid_addenda = valid;
+        self.counts.add(&counts);
+        was.symmetric_difference(&self.valid_addenda).filter_map(|&n| self.deltas.get(n)).map(|d| d.id).collect()
+    }
+
+    /// After addenda or snapshots arrived and nothing else changed: the least fixpoint only grows
+    /// (an addendum or a snapshot only adds what names a delta), so it continues from the stored
+    /// one: each new addendum, and each addendum a new snapshot carries, valid by (a), (b), (d)
+    /// or vouched for by a valid one, joins and vouches in turn. The addenda that became valid.
+    pub(super) fn addenda_more(&mut self, tl: &Walk, taken: &Taken) -> BTreeSet<WriteId> {
+        let mut counts = Counts::default();
+        let mut cands: Vec<usize> = taken.addenda.clone();
+        for &s in &taken.snapshots {
+            let Some(Class::Snapshot(carries)) = self.deltas.get(s).map(|d| &d.class) else { continue };
+            let on = self.deltas.get(s).map(|d| d.on);
+            for x in carries.commits() {
+                counts.addenda += 1;
+                if let Some(on) = on {
+                    cands.extend(self.by_commit_on.get(&(*x, on)).into_iter().flatten().filter(|n| self.addenda.contains(n)));
+                }
+            }
+        }
+        let mut queue: Vec<usize> = vec![];
+        for a in cands {
+            counts.addenda += 1;
+            if let Some(d) = self.deltas.get(a).filter(|_| !self.valid_addenda.contains(&a))
+                && (self.base(tl, d, &mut counts).is_some() || self.vouched(tl, d, &mut counts))
+            {
+                queue.push(a);
+            }
+        }
+        let was = self.valid_addenda.clone();
+        let mut valid = std::mem::take(&mut self.valid_addenda);
+        self.spread(tl, &mut valid, queue, &mut counts);
+        self.valid_addenda = valid;
+        self.counts.add(&counts);
+        self.valid_addenda.difference(&was).filter_map(|&n| self.deltas.get(n)).map(|d| d.id).collect()
+    }
+
+    /// The worklist: each addendum popped joins `valid` and the addenda its list names that it
+    /// vouches for are pushed.
+    fn spread(&self, tl: &Walk, valid: &mut BTreeSet<usize>, mut queue: Vec<usize>, counts: &mut Counts) {
         while let Some(a) = queue.pop() {
             if !valid.insert(a) {
                 continue;
@@ -541,16 +584,13 @@ impl Facts {
                     if let Some(td) = self.deltas.get(t)
                         && matches!(td.class, Class::Addendum(..))
                         && self.addenda.contains(&t)
-                        && self.vouches(tl, ad, td, &mut counts)
+                        && self.vouches(tl, ad, td, counts)
                     {
                         queue.push(t);
                     }
                 }
             }
         }
-        self.valid_addenda = valid;
-        self.counts.add(&counts);
-        was.symmetric_difference(&self.valid_addenda).filter_map(|&n| self.deltas.get(n)).map(|d| d.id).collect()
     }
 
     /// The held deltas on `on` a list entry `c` names: `c`'s own, and where `c` is a snapshot of
@@ -574,7 +614,8 @@ pub(super) struct Taken {
     pub deltas: Vec<WriteId>,
     pub carried: BTreeSet<CommitId>,
     pub role: bool,
-    pub addendum: bool,
-    pub snapshot: bool,
+    /// The new addenda and snapshots.
+    pub addenda: Vec<usize>,
+    pub snapshots: Vec<usize>,
     pub edge_from: Option<Key>,
 }
