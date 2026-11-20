@@ -12,7 +12,7 @@ fn at_end(w: &World, vouches: bool, held: impl Fn(&State) -> Set) -> (Driver, St
     let mut w = w.clone();
     let rule = granted(&mut w, vouches);
     let st = w.run(&rule, |_| {});
-    let mut d = Driver::new(&w, vouches);
+    let mut d = Driver::new(&w, vouches, false);
     d.step(&w, &held(&st), &st.units);
     (d, st)
 }
@@ -228,7 +228,7 @@ fn p4_a_copy_leaves_with_the_last_body_that_needed_it_spec_permissions_4() {
     let c1 = w.write(q, |p| p.content(Q, 3, &[A], D));
     let rule = granted(&mut w, true);
     let mut st = w.run(&rule, |_| {});
-    let mut d = Driver::new(&w, true);
+    let mut d = Driver::new(&w, true, false);
     d.step(&w, &st.entries[&D], &st.units);
     assert_eq!(d.required(D), Copies::from([(gq, A)]));
     for (i, left) in [(c0, true), (c1, false)] {
@@ -251,7 +251,7 @@ fn f2_a_retag_turns_what_bodies_still_need_into_copies_spec_permissions_4() {
     assert_agrees("f2", &w);
     let rule = granted(&mut w, true);
     let go = (0..w.w.commits.len()).find(|&i| w.w.sets(i) == Some((A, O))).unwrap();
-    let mut d = Driver::new(&w, true);
+    let mut d = Driver::new(&w, true, false);
     let mut seen = vec![];
     w.run(&rule, |st| {
         d.step(&w, &st.entries[&R], &st.units);
@@ -309,7 +309,7 @@ fn the_models_other_hand_worlds_agree_spec_permissions_4() {
 #[test]
 fn a_body_whose_path_waits_brings_nothing_until_it_opens_spec_permissions_4() {
     type E = Evidence<u32, Thing, u32>;
-    let mut ev = E::new(Config { vouches: true, reach: true });
+    let mut ev = E::new(Config { vouches: true, reach: true, keys_open: false });
     let check = |ev: &E| {
         let inc: Copies32 = ev.required(&D).unwrap().keys().copied().collect();
         ev.check().unwrap();
@@ -318,7 +318,7 @@ fn a_body_whose_path_waits_brings_nothing_until_it_opens_spec_permissions_4() {
     type Copies32 = BTreeSet<CopyId<u32, Thing>>;
     ev.add_sid(D, D);
     ev.join(&D, D);
-    let write = |holder: Thing| Kind::Write(Write { holder, grant: true, removal: false, gives_write: true, relies: None, creation: None });
+    let write = |holder: Thing| Kind::Write(Write { holder, grant: true, removal: false, gives_write: true, gives_read: true, relies: None, creation: None });
     let rec = |a: Thing, b: Thing| Hop { edge: (a, b), record: true };
     let hop = |a: Thing, b: Thing| Hop { edge: (a, b), record: false };
     // Y grants A write on D (a body); K writes D along [A], its path waiting; X grants K on A
@@ -355,10 +355,10 @@ fn the_first_grant_joins_and_a_forgotten_member_leaves_spec_permissions_4() {
         ev.check().unwrap();
         inc
     };
-    let write = |holder: Thing| Kind::Write(Write { holder, grant: true, removal: false, gives_write: true, relies: None, creation: None });
+    let write = |holder: Thing| Kind::Write(Write { holder, grant: true, removal: false, gives_write: true, gives_read: true, relies: None, creation: None });
     let rec = |a: Thing, b: Thing| Hop { edge: (a, b), record: true };
     let hop = |a: Thing, b: Thing| Hop { edge: (a, b), record: false };
-    let mut ev = E::new(Config { vouches: true, reach: true });
+    let mut ev = E::new(Config { vouches: true, reach: true, keys_open: false });
     ev.add_sid(D, D);
     ev.join(&D, D);
     ev.add((1, D), vec![Part { kind: write(A), hops: Some(vec![rec(Y, D)]), pos: 1, chained: true }]);
@@ -377,9 +377,9 @@ fn the_first_grant_joins_and_a_forgotten_member_leaves_spec_permissions_4() {
 fn a_removal_by_its_reach_is_a_seed_only_with_the_switch_on_spec_permissions_4() {
     type E = Evidence<u32, Thing, u32>;
     let rec = |a: Thing, b: Thing| Hop { edge: (a, b), record: true };
-    let w = |holder: Thing, grant: bool| Kind::Write(Write { holder, grant, removal: !grant, gives_write: grant, relies: None, creation: None });
+    let w = |holder: Thing, grant: bool| Kind::Write(Write { holder, grant, removal: !grant, gives_write: grant, gives_read: grant, relies: None, creation: None });
     for reach in [false, true] {
-        let mut ev = E::new(Config { vouches: true, reach });
+        let mut ev = E::new(Config { vouches: true, reach, keys_open: false });
         ev.add_sid(D, D);
         ev.join(&D, D);
         ev.add((1, D), vec![Part { kind: w(A, true), hops: Some(vec![rec(Y, D)]), pos: 1, chained: true }]);
@@ -388,7 +388,7 @@ fn a_removal_by_its_reach_is_a_seed_only_with_the_switch_on_spec_permissions_4()
         ev.check().unwrap();
         let req = ev.required(&D).unwrap();
         if reach {
-            assert_eq!(req.get(&(3, A)), Some(&Reason::Reach((3, A))), "{req:?}");
+            assert_eq!(req.get(&(3, A)), Some(&Reason::Removal), "{req:?}");
         } else {
             assert!(req.is_empty(), "{req:?}");
         }

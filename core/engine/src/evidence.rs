@@ -8,6 +8,12 @@
 //! the sync ID's seeds where it can shrink it. `from_scratch` is the same closure from nothing.
 //! Generic over the thing (`T`), commit (`C`) and key (`K`) types so it runs over held-model's
 //! worlds as over the engine's.
+//!
+//! Two seed relations are graphs over things, kept as indexes so a change reaches only the sync IDs
+//! it can move (notes/evidence-derivation.md, Reach and keys-open travel): **reach** (`Config::reach`)
+//! over chained write grants, from a removal's target into a unit; **keys-open travel**
+//! (`Config::keys_open`) over chained grants giving read, from a sync ID's actor to the holders whose
+//! role changes travel under it.
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::fmt::Debug;
@@ -24,6 +30,9 @@ pub type Required<C, T> = BTreeMap<CopyId<C, T>, Reason<C, T>>;
 /// Vouches waiting for a member on their thing, each with the lowering it is keyed by.
 type Pending<C, T> = BTreeMap<T, BTreeMap<CopyId<C, T>, CopyId<C, T>>>;
 
+/// A part of a held copy: (copy, part index).
+type PartId<C, T> = (CopyId<C, T>, usize);
+
 /// One edge of a stated path.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Hop<T> {
@@ -38,10 +47,14 @@ pub struct Write<C, T> {
     pub holder: T,
     /// It sets a role above none (no self-removal, no finalize): it can join a path.
     pub grant: bool,
-    /// (A3's reach) It gives below write at its own `ts`, and is no finalize.
+    /// (reach) It gives below write at its own `ts`, and is no finalize: a self-removal and a
+    /// grant of read are removals, a demotion from admin to write is not.
     pub removal: bool,
-    /// (A3's reach) It gives write or above (any `until`).
+    /// (reach) It gives write or above (any `until`): a step of a reach.
     pub gives_write: bool,
+    /// (keys-open travel) It gives read or above (any `until`) and is no self-removal: a step by
+    /// which keys open.
+    pub gives_read: bool,
     /// The remaining admin its header names.
     pub relies: Option<T>,
     /// The creation of the entry it resets, as its reset names it (spec/permissions.md §2).
@@ -79,19 +92,26 @@ pub enum Reason<C, T> {
     Creation(CopyId<C, T>),
     /// A vouch keyed by this member lowering.
     Vouch(CopyId<C, T>),
-    /// A chained write naming the sync ID's actor (Role changes travel).
-    Actor,
-    /// (A3) This removal, or a grant of its reach.
-    Reach(CopyId<C, T>),
+    /// A chained write naming this holder, whose role changes travel under the sync ID: its
+    /// actor, or (`keys_open`) a thing the actor's keys open (Role changes travel).
+    Travels(T),
+    /// (reach) A chained removal whose reach under the sync ID is held.
+    Removal,
+    /// (reach) A chained write grant on this edge of a held removal's reach.
+    Reach(Edge<T>),
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct Config {
     /// Vouches against a member lowering are evidence.
     pub vouches: bool,
-    /// (A3) A removal with its reach is a seed (draft §4 Evidence of a sync ID). Off until A3:
-    /// until then a removal travels as Role changes travel says.
+    /// (A3) A removal with its reach is a seed (draft §4 Evidence of a sync ID): on for brief 3's
+    /// switch (notes/a2-spec/README.md OPEN 14).
     pub reach: bool,
+    /// Role changes travel's keys-open half: a chained write naming a holder the actor holds read
+    /// or above on, through chained grants at any time, is a seed (held-model `Rule::keys_open`).
+    /// Off: only writes naming the actor.
+    pub keys_open: bool,
 }
 
 /// Work done, by kind (count tests: notes/evidence-derivation.md, Incremental).
@@ -105,13 +125,17 @@ pub struct Counts {
     pub visits: usize,
     /// Parts whose joined-ness was computed again.
     pub rechecks: usize,
-    /// (A3) Grants and removals a reach computation read.
+    /// (reach) Things and edges a reach computation walked.
     pub reach: usize,
+    /// (reach) Seeds a reach computation gave (a copy or edge per sync ID, new or not).
+    pub reach_seeds: usize,
+    /// (keys-open) Things and edges a keys-open computation walked.
+    pub opened: usize,
     /// Closures computed again from seeds.
     pub closes: usize,
     /// Bodies read (taken in or out of a sync ID).
     pub bodies: usize,
-    /// Writes naming an actor a seed computation read.
+    /// Writes naming a travelling holder a seed computation from nothing read.
     pub seeds: usize,
 }
 
@@ -122,7 +146,46 @@ struct Held<C, T, K> {
 }
 
 /// Parts by key: (copy, part index).
-type ByKey<C, T, K> = BTreeMap<K, BTreeSet<(CopyId<C, T>, usize)>>;
+type ByKey<C, T, K> = BTreeMap<K, BTreeSet<PartId<C, T>>>;
+
+/// A graph over things: per edge the chained parts setting it, and its adjacency both ways.
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct Graph<C, T> {
+    parts: BTreeMap<Edge<T>, BTreeSet<PartId<C, T>>>,
+    out: BTreeMap<T, BTreeSet<T>>,
+    inn: BTreeMap<T, BTreeSet<T>>,
+}
+
+impl<C: Ord + Copy, T: Ord + Copy> Graph<C, T> {
+    fn new() -> Self {
+        Graph { parts: BTreeMap::new(), out: BTreeMap::new(), inn: BTreeMap::new() }
+    }
+    /// True when the edge is new.
+    fn insert(&mut self, e: Edge<T>, p: PartId<C, T>) -> bool {
+        let s = self.parts.entry(e).or_default();
+        let new = s.is_empty();
+        s.insert(p);
+        if new {
+            self.out.entry(e.0).or_default().insert(e.1);
+            self.inn.entry(e.1).or_default().insert(e.0);
+        }
+        new
+    }
+    /// True when the edge is gone.
+    fn remove(&mut self, e: &Edge<T>, p: &PartId<C, T>) -> bool {
+        let Some(s) = self.parts.get_mut(e) else { return false };
+        if !s.remove(p) || !s.is_empty() {
+            return false;
+        }
+        self.parts.remove(e);
+        remove_from(&mut self.out, &e.0, &e.1);
+        remove_from(&mut self.inn, &e.1, &e.0);
+        true
+    }
+    fn next(&self, fwd: bool, x: T) -> impl Iterator<Item = T> + '_ {
+        if fwd { &self.out } else { &self.inn }.get(&x).into_iter().flatten().copied()
+    }
+}
 
 /// The held copies and what the closure looks them up by.
 #[derive(Clone, Debug)]
@@ -141,9 +204,12 @@ struct Ix<C, T, K> {
     vouches_by: BTreeMap<CopyId<C, T>, BTreeSet<CopyId<C, T>>>,
     /// Copies with a write whose reset names the copy as its entry's creation.
     resetters: BTreeMap<CopyId<C, T>, BTreeSet<CopyId<C, T>>>,
-    /// (A3) Chained parts giving write, and chained removals.
-    reach_grants: BTreeSet<(CopyId<C, T>, usize)>,
-    reach_removals: BTreeSet<(CopyId<C, T>, usize)>,
+    /// (reach) Chained parts giving write, by edge.
+    writes: Graph<C, T>,
+    /// (reach) Chained removals, by the thing they are on (the target of their edge).
+    removals_on: BTreeMap<T, BTreeSet<PartId<C, T>>>,
+    /// (keys-open travel) Chained parts giving read, by edge.
+    reads: Graph<C, T>,
 }
 
 /// A sync ID's closure over its seeds.
@@ -162,15 +228,47 @@ impl<C, T> Default for Closure<C, T> {
     }
 }
 
+/// A sync ID's reach: its removals with their reach (seeds outside the unit), and the edges of
+/// those reaches.
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct Reach<C, T> {
+    seeds: Required<C, T>,
+    ways: BTreeSet<Edge<T>>,
+}
+
+impl<C, T> Default for Reach<C, T> {
+    fn default() -> Self {
+        Reach { seeds: BTreeMap::new(), ways: BTreeSet::new() }
+    }
+}
+
+/// The holders whose role changes travel under a sync ID, and the writes naming them.
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct Travel<C, T> {
+    /// The actor and (`keys_open`) what it holds read or above on through chained grants.
+    open: BTreeSet<T>,
+    /// Chained writes naming a holder in `open`.
+    seeds: Required<C, T>,
+}
+
 #[derive(Clone, Debug)]
 struct Sid<C, T> {
     actor: T,
     unit: BTreeSet<T>,
     /// Per edge, the bodies bringing it.
     atoms: BTreeMap<Edge<T>, usize>,
-    /// Copies that are seeds by themselves: writes naming the actor, (A3) removals with their reach.
-    seeds: Required<C, T>,
+    travel: Travel<C, T>,
+    reach: Reach<C, T>,
     closure: Closure<C, T>,
+}
+
+impl<C: Ord + Copy, T: Ord + Copy> Sid<C, T> {
+    fn seeds(&self) -> impl Iterator<Item = (&CopyId<C, T>, &Reason<C, T>)> {
+        self.travel.seeds.iter().chain(&self.reach.seeds)
+    }
+    fn seeded(&self, c: &CopyId<C, T>) -> bool {
+        self.travel.seeds.contains_key(c) || self.reach.seeds.contains_key(c)
+    }
 }
 
 enum Item<C, T> {
@@ -180,17 +278,18 @@ enum Item<C, T> {
     Vouch(CopyId<C, T>, CopyId<C, T>),
 }
 
-/// What an update leaves to do: closures to extend, sync IDs to close again, seeds to recompute.
+/// What an update leaves to do: closures to extend, sync IDs to close again, seeds to compute
+/// again from nothing (`reach`, `travel`).
 struct Todo<C, T> {
     work: BTreeMap<T, Vec<Item<C, T>>>,
     dirty: BTreeSet<T>,
-    seeds: BTreeSet<T>,
-    reach: bool,
+    reach: BTreeSet<T>,
+    travel: BTreeSet<T>,
 }
 
 impl<C, T> Default for Todo<C, T> {
     fn default() -> Self {
-        Todo { work: BTreeMap::new(), dirty: BTreeSet::new(), seeds: BTreeSet::new(), reach: false }
+        Todo { work: BTreeMap::new(), dirty: BTreeSet::new(), reach: BTreeSet::new(), travel: BTreeSet::new() }
     }
 }
 
@@ -209,12 +308,57 @@ pub struct Evidence<C, T, K> {
     edge_sids: BTreeMap<Edge<T>, BTreeSet<T>>,
     member_sids: BTreeMap<CopyId<C, T>, BTreeSet<T>>,
     thing_sids: BTreeMap<T, BTreeSet<T>>,
-    actor_sids: BTreeMap<T, BTreeSet<T>>,
+    /// Thing → sync IDs whose `open` holds it.
+    open_sids: BTreeMap<T, BTreeSet<T>>,
+    /// (reach) Copy → sync IDs whose reach seeds hold it; edge → sync IDs whose reach ways hold it.
+    reach_sids: BTreeMap<CopyId<C, T>, BTreeSet<T>>,
+    way_sids: BTreeMap<Edge<T>, BTreeSet<T>>,
     counts: Counts,
 }
 
 fn first<K: Ord + std::marker::Copy, V>(m: Option<&BTreeMap<K, V>>) -> Option<K> {
     m.and_then(|m| m.keys().next().copied())
+}
+
+/// Breadth-first from `from` (included) by `next`: the things reached and every edge walked (as
+/// (holder, target): `fwd` walks holder to target). Each thing and edge counts one in `n`.
+fn bfs<T: Ord + Copy, I: IntoIterator<Item = T>>(from: impl IntoIterator<Item = T>, fwd: bool, next: impl Fn(T) -> I, n: &mut usize) -> (BTreeSet<T>, Vec<Edge<T>>) {
+    let mut seen = BTreeSet::new();
+    let mut todo = vec![];
+    for x in from {
+        if seen.insert(x) {
+            todo.push(x);
+        }
+    }
+    let mut edges = vec![];
+    while let Some(x) = todo.pop() {
+        *n += 1;
+        for y in next(x) {
+            *n += 1;
+            edges.push(if fwd { (x, y) } else { (y, x) });
+            if seen.insert(y) {
+                todo.push(y);
+            }
+        }
+    }
+    (seen, edges)
+}
+
+/// The adjacency of `edges`, holder to targets (`fwd`) or target to holders.
+fn adjacency<T: Ord + Copy>(edges: &[Edge<T>], fwd: bool) -> BTreeMap<T, Vec<T>> {
+    let mut m: BTreeMap<T, Vec<T>> = BTreeMap::new();
+    for &(a, b) in edges {
+        if fwd {
+            m.entry(a).or_default().push(b);
+        } else {
+            m.entry(b).or_default().push(a);
+        }
+    }
+    m
+}
+
+fn within<T: Ord + Copy>(m: &BTreeMap<T, Vec<T>>, x: T) -> impl Iterator<Item = T> + '_ {
+    m.get(&x).into_iter().flatten().copied()
 }
 
 impl<C, T, K> Evidence<C, T, K>
@@ -233,10 +377,11 @@ where
             by_holder: BTreeMap::new(),
             vouches_by: BTreeMap::new(),
             resetters: BTreeMap::new(),
-            reach_grants: BTreeSet::new(),
-            reach_removals: BTreeSet::new(),
+            writes: Graph::new(),
+            removals_on: BTreeMap::new(),
+            reads: Graph::new(),
         };
-        Evidence { cfg, ix, sids: BTreeMap::new(), edge_sids: BTreeMap::new(), member_sids: BTreeMap::new(), thing_sids: BTreeMap::new(), actor_sids: BTreeMap::new(), counts: Counts::default() }
+        Evidence { cfg, ix, sids: BTreeMap::new(), edge_sids: BTreeMap::new(), member_sids: BTreeMap::new(), thing_sids: BTreeMap::new(), open_sids: BTreeMap::new(), reach_sids: BTreeMap::new(), way_sids: BTreeMap::new(), counts: Counts::default() }
     }
 
     pub fn counts(&self) -> Counts {
@@ -256,6 +401,11 @@ where
     /// The edges S's bodies bring and how many bring each.
     pub fn atoms(&self, sid: &T) -> Option<&BTreeMap<Edge<T>, usize>> {
         self.sids.get(sid).map(|s| &s.atoms)
+    }
+
+    /// (reach) How many reach seeds S keeps, and how many edges of their reaches (memory counts).
+    pub fn reach_size(&self, sid: &T) -> Option<(usize, usize)> {
+        self.sids.get(sid).map(|s| (s.reach.seeds.len(), s.reach.ways.len()))
     }
 
     pub fn holds(&self, c: &CopyId<C, T>) -> bool {
@@ -283,7 +433,9 @@ where
             }
         }
         work.extend(atoms.keys().map(|e| Item::Edge(*e)));
-        work.extend(self.seeds_for(s, &mut counts).into_iter().map(|(c, r)| Item::Copy(c, r)));
+        let travel = self.travel_of(s.actor, &mut counts);
+        let reach = self.reach_of(&s.unit, &mut counts);
+        work.extend(travel.seeds.iter().chain(&reach.seeds).map(|(c, r)| Item::Copy(*c, *r)));
         work.extend(self.body_vouches(&s.unit));
         let mut cl = Closure::default();
         close(&self.ix, self.cfg, &s.unit, &mut cl, work, &mut counts);
@@ -291,13 +443,21 @@ where
     }
 
     /// Checks the incremental state against itself built from nothing (tests, at teardown or every
-    /// step): per sync ID its evidence, atoms and seeds equal from scratch, and the reverse
-    /// indexes (edge, member, thing, actor → sync IDs) hold exactly what the sync IDs do.
+    /// step): per sync ID its evidence, atoms, travelling holders and reach equal from scratch, the
+    /// reach and keys-open graphs hold exactly the held chained parts, and the reverse indexes
+    /// (edge, member, thing, open thing, reach copy and way → sync IDs) hold exactly what the sync
+    /// IDs do.
     pub fn check(&self) -> Result<(), String> {
         let mut edge_sids: BTreeMap<Edge<T>, BTreeSet<T>> = BTreeMap::new();
         let mut member_sids: BTreeMap<CopyId<C, T>, BTreeSet<T>> = BTreeMap::new();
         let mut thing_sids: BTreeMap<T, BTreeSet<T>> = BTreeMap::new();
-        let mut actor_sids: BTreeMap<T, BTreeSet<T>> = BTreeMap::new();
+        let mut open_sids: BTreeMap<T, BTreeSet<T>> = BTreeMap::new();
+        let mut reach_sids: BTreeMap<CopyId<C, T>, BTreeSet<T>> = BTreeMap::new();
+        let mut way_sids: BTreeMap<Edge<T>, BTreeSet<T>> = BTreeMap::new();
+        let (writes, removals_on, reads) = self.graphs();
+        if writes != self.ix.writes || removals_on != self.ix.removals_on || reads != self.ix.reads {
+            return Err("a reach or keys-open graph does not hold exactly the chained parts".into());
+        }
         for (sid, s) in &self.sids {
             // the same copies (each with the first reason found, which may differ)
             let scratch = self.from_scratch(sid).unwrap_or_default();
@@ -315,9 +475,13 @@ where
             if atoms != s.atoms {
                 return Err(format!("sid {sid:?}: atoms {:?}, counted {atoms:?}", s.atoms));
             }
-            let seeds = self.seeds_for(s, &mut Counts::default());
-            if seeds.keys().ne(s.seeds.keys()) {
-                return Err(format!("sid {sid:?}: seeds {:?}, computed {seeds:?}", s.seeds));
+            let travel = self.travel_of(s.actor, &mut Counts::default());
+            if travel.open != s.travel.open || travel.seeds.keys().ne(s.travel.seeds.keys()) {
+                return Err(format!("sid {sid:?}: travel {:?}, computed {travel:?}", s.travel));
+            }
+            let reach = self.reach_of(&s.unit, &mut Counts::default());
+            if reach.ways != s.reach.ways || reach.seeds.keys().ne(s.reach.seeds.keys()) {
+                return Err(format!("sid {sid:?}: reach {:?}, computed {reach:?}", s.reach));
             }
             for e in &s.closure.edges {
                 edge_sids.entry(*e).or_default().insert(*sid);
@@ -328,14 +492,47 @@ where
             for t in &s.unit {
                 thing_sids.entry(*t).or_default().insert(*sid);
             }
-            actor_sids.entry(s.actor).or_default().insert(*sid);
+            for t in &s.travel.open {
+                open_sids.entry(*t).or_default().insert(*sid);
+            }
+            for c in s.reach.seeds.keys() {
+                reach_sids.entry(*c).or_default().insert(*sid);
+            }
+            for e in &s.reach.ways {
+                way_sids.entry(*e).or_default().insert(*sid);
+            }
         }
         // `leave` may leave a thing's set empty
         let things: BTreeMap<T, BTreeSet<T>> = self.thing_sids.iter().filter(|(_, s)| !s.is_empty()).map(|(k, v)| (*k, v.clone())).collect();
-        if edge_sids != self.edge_sids || member_sids != self.member_sids || thing_sids != things || actor_sids != self.actor_sids {
-            return Err("a reverse index (edge, member, thing or actor → sync IDs) is stale".into());
+        if edge_sids != self.edge_sids || member_sids != self.member_sids || thing_sids != things || open_sids != self.open_sids || reach_sids != self.reach_sids || way_sids != self.way_sids {
+            return Err("a reverse index (edge, member, thing, open thing, reach copy or way → sync IDs) is stale".into());
         }
         Ok(())
+    }
+
+    /// The reach and keys-open graphs built from nothing over the held copies.
+    #[allow(clippy::type_complexity)]
+    fn graphs(&self) -> (Graph<C, T>, BTreeMap<T, BTreeSet<PartId<C, T>>>, Graph<C, T>) {
+        let (mut writes, mut removals_on, mut reads) = (Graph::new(), BTreeMap::new(), Graph::new());
+        for (c, h) in &self.ix.copies {
+            for (i, p) in h.parts.iter().enumerate() {
+                if let Kind::Write(w) = &p.kind
+                    && p.chained
+                {
+                    let e = (w.holder, c.1);
+                    if w.gives_write {
+                        writes.insert(e, (*c, i));
+                    }
+                    if w.gives_read {
+                        reads.insert(e, (*c, i));
+                    }
+                    if w.removal {
+                        removals_on.entry(c.1).or_insert_with(BTreeSet::new).insert((*c, i));
+                    }
+                }
+            }
+        }
+        (writes, removals_on, reads)
     }
 
     /// Registers sync ID `sid` with actor `actor` and an empty unit.
@@ -343,49 +540,49 @@ where
         if self.sids.contains_key(&sid) {
             return;
         }
-        self.sids.insert(sid, Sid { actor, unit: BTreeSet::new(), atoms: BTreeMap::new(), seeds: BTreeMap::new(), closure: Closure::default() });
-        self.actor_sids.entry(actor).or_default().insert(sid);
+        let travel = Travel { open: BTreeSet::new(), seeds: BTreeMap::new() };
+        self.sids.insert(sid, Sid { actor, unit: BTreeSet::new(), atoms: BTreeMap::new(), travel, reach: Reach::default(), closure: Closure::default() });
         let mut todo = Todo::default();
-        todo.seeds.insert(sid);
+        todo.travel.insert(sid);
         self.settle(todo);
     }
 
     /// `t` joins S's unit.
     pub fn join(&mut self, sid: &T, t: T) {
-        let Some(s) = self.sids.get_mut(sid) else { return };
-        if !s.unit.insert(t) {
-            return;
-        }
-        let had = s.closure.on.get(&t).is_some_and(|n| *n > 0);
-        self.thing_sids.entry(t).or_default().insert(*sid);
-        let mut todo = Todo::default();
-        for c in self.ix.on_thing.get(&t).cloned().unwrap_or_default() {
-            self.body_add(sid, &(c, t), &mut todo);
-        }
-        // copies on t are bodies now; the reach under the new unit
-        if had {
-            todo.dirty.insert(*sid);
-        }
-        todo.seeds.insert(*sid);
-        self.settle(todo);
+        self.retag(sid, t, true);
     }
 
     /// `t` leaves S's unit.
     pub fn leave(&mut self, sid: &T, t: T) {
+        self.retag(sid, t, false);
+    }
+
+    /// `t` joins S's unit (`joins`) or leaves it: copies on t become bodies, or what the bodies on
+    /// t still need becomes copies; S's reach is computed again under the new unit.
+    fn retag(&mut self, sid: &T, t: T, joins: bool) {
         let Some(s) = self.sids.get_mut(sid) else { return };
-        if !s.unit.remove(&t) {
+        let moved = if joins { s.unit.insert(t) } else { s.unit.remove(&t) };
+        if !moved {
             return;
         }
-        if let Some(x) = self.thing_sids.get_mut(&t) {
+        let had = s.closure.on.get(&t).is_some_and(|n| *n > 0);
+        if joins {
+            self.thing_sids.entry(t).or_default().insert(*sid);
+        } else if let Some(x) = self.thing_sids.get_mut(&t) {
             x.remove(sid);
         }
         let mut todo = Todo::default();
         for c in self.ix.on_thing.get(&t).cloned().unwrap_or_default() {
-            self.body_remove(sid, &(c, t), &mut todo);
+            if joins {
+                self.body_add(sid, &(c, t), &mut todo);
+            } else {
+                self.body_remove(sid, &(c, t), &mut todo);
+            }
         }
-        // what the bodies on t still need becomes copies
-        todo.dirty.insert(*sid);
-        todo.seeds.insert(*sid);
+        if had || !joins {
+            todo.dirty.insert(*sid);
+        }
+        todo.reach.insert(*sid);
         self.settle(todo);
     }
 
@@ -488,6 +685,15 @@ where
                 self.ix.on_thing.remove(&c.1);
             }
         }
+        // a travel seed it was leaves with it
+        let holders: BTreeSet<T> = h.parts.iter().filter_map(|p| if let Kind::Write(w) = &p.kind { Some(w.holder) } else { None }).collect();
+        for hd in holders {
+            for sid in self.open_sids.get(&hd).cloned().unwrap_or_default() {
+                if self.sids.get_mut(&sid).is_some_and(|s| s.travel.seeds.remove(c).is_some()) && !self.sids.get(&sid).is_some_and(|s| s.seeded(c)) {
+                    todo.dirty.insert(sid);
+                }
+            }
+        }
     }
 
     /// Part `i` of copy `c` is chained (or no longer is).
@@ -551,22 +757,31 @@ where
                     todo.push(&sid, Item::Copy(*c, Reason::Edge(e)));
                 }
                 self.ix.by_holder.entry(w.holder).or_default().insert(*c);
-                // a seed of each sync ID whose actor it names (Role changes travel)
-                for sid in self.actor_sids.get(&w.holder).cloned().unwrap_or_default() {
+                // a seed of each sync ID its holder's role changes travel under
+                for sid in self.open_sids.get(&w.holder).cloned().unwrap_or_default() {
                     if let Some(s) = self.sids.get_mut(&sid)
-                        && !s.seeds.contains_key(c)
+                        && !s.travel.seeds.contains_key(c)
                     {
-                        s.seeds.insert(*c, Reason::Actor);
-                        todo.push(&sid, Item::Copy(*c, Reason::Actor));
+                        s.travel.seeds.insert(*c, Reason::Travels(w.holder));
+                        todo.push(&sid, Item::Copy(*c, Reason::Travels(w.holder)));
                     }
                 }
+                if w.gives_read && self.ix.reads.insert(e, (*c, i)) {
+                    self.read_edge(e, todo);
+                }
                 if w.gives_write {
-                    self.ix.reach_grants.insert((*c, i));
-                    todo.reach = true;
+                    if self.ix.writes.insert(e, (*c, i)) {
+                        self.write_edge(e, todo);
+                    } else {
+                        // the edge is a way already: the part goes where the edge does
+                        for sid in self.way_sids.get(&e).cloned().unwrap_or_default() {
+                            self.reach_add(&sid, vec![*c], vec![], Reason::Reach(e), todo);
+                        }
+                    }
                 }
                 if w.removal {
-                    self.ix.reach_removals.insert((*c, i));
-                    todo.reach = true;
+                    self.ix.removals_on.entry(c.1).or_default().insert((*c, i));
+                    self.removal_on(c, todo);
                 }
                 if w.grant {
                     let before = first(self.ix.grants.get(&e));
@@ -600,14 +815,42 @@ where
                 if !still {
                     remove_from(&mut self.ix.taken_on, &e, c);
                     remove_from(&mut self.ix.by_holder, &w.holder, c);
-                    for sid in self.actor_sids.get(&w.holder).cloned().unwrap_or_default() {
-                        if self.sids.get_mut(&sid).is_some_and(|s| s.seeds.remove(c).is_some()) {
-                            todo.dirty.insert(sid);
+                    // a travel seed stays while another chained part names a travelling holder
+                    for sid in self.open_sids.get(&w.holder).cloned().unwrap_or_default() {
+                        let Some(s) = self.sids.get(&sid) else { continue };
+                        let other = self.ix.copies.get(c).and_then(|h| h.parts.iter().enumerate().find_map(|(j, q)| match &q.kind {
+                            Kind::Write(x) if j != i && q.chained && s.travel.open.contains(&x.holder) => Some(x.holder),
+                            _ => None,
+                        }));
+                        if let Some(s) = self.sids.get_mut(&sid) {
+                            match other {
+                                Some(h) => {
+                                    s.travel.seeds.insert(*c, Reason::Travels(h));
+                                }
+                                None => {
+                                    if s.travel.seeds.remove(c).is_some() && !s.seeded(c) {
+                                        todo.dirty.insert(sid);
+                                    }
+                                }
+                            }
                         }
                     }
                 }
-                if self.ix.reach_grants.remove(&(*c, i)) | self.ix.reach_removals.remove(&(*c, i)) {
-                    todo.reach = true;
+                // a shrink of a graph: the sync IDs it can move compute theirs again
+                if w.gives_read && self.ix.reads.remove(&e, &(*c, i)) {
+                    let (a, b) = (self.open_sids.get(&e.0), self.open_sids.get(&e.1));
+                    if let (Some(a), Some(b)) = (a, b) {
+                        todo.travel.extend(a.intersection(b).copied());
+                    }
+                }
+                if w.gives_write || w.removal {
+                    todo.reach.extend(self.reach_sids.get(c).into_iter().flatten().copied());
+                }
+                if w.gives_write && self.ix.writes.remove(&e, &(*c, i)) {
+                    todo.reach.extend(self.way_sids.get(&e).into_iter().flatten().copied());
+                }
+                if w.removal {
+                    remove_from(&mut self.ix.removals_on, &c.1, &(*c, i));
                 }
                 if w.grant {
                     let before = first(self.ix.grants.get(&e));
@@ -621,6 +864,220 @@ where
         }
     }
 
+    // ---- keys-open travel ----
+
+    /// The holders whose role changes travel under a sync ID with actor `actor`, and the chained
+    /// writes naming them, from nothing.
+    fn travel_of(&self, actor: T, counts: &mut Counts) -> Travel<C, T> {
+        let open = if self.cfg.keys_open { bfs([actor], true, |x| self.ix.reads.next(true, x), &mut counts.opened).0 } else { BTreeSet::from([actor]) };
+        let mut seeds = BTreeMap::new();
+        for h in &open {
+            for c in self.ix.by_holder.get(h).into_iter().flatten() {
+                counts.seeds += 1;
+                seeds.entry(*c).or_insert(Reason::Travels(*h));
+            }
+        }
+        Travel { open, seeds }
+    }
+
+    /// A new chained edge giving read: each sync ID whose open things hold its holder opens what
+    /// its target leads to, and takes the writes naming each thing it opens.
+    fn read_edge(&mut self, e: Edge<T>, todo: &mut Todo<C, T>) {
+        if !self.cfg.keys_open {
+            return;
+        }
+        for sid in self.open_sids.get(&e.0).cloned().unwrap_or_default() {
+            let Some(s) = self.sids.get(&sid) else { continue };
+            if s.travel.open.contains(&e.1) {
+                continue;
+            }
+            let open = &s.travel.open;
+            let (new, _) = bfs([e.1], true, |x| self.ix.reads.next(true, x).filter(|y| !open.contains(y)), &mut self.counts.opened);
+            for t in new {
+                self.open_sids.entry(t).or_default().insert(sid);
+                let writes = self.ix.by_holder.get(&t).cloned().unwrap_or_default();
+                let Some(s) = self.sids.get_mut(&sid) else { continue };
+                s.travel.open.insert(t);
+                for c in writes {
+                    if let std::collections::btree_map::Entry::Vacant(v) = s.travel.seeds.entry(c) {
+                        v.insert(Reason::Travels(t));
+                        todo.push(&sid, Item::Copy(c, Reason::Travels(t)));
+                    }
+                }
+            }
+        }
+    }
+
+    // ---- reach ----
+
+    /// S's reach from nothing (draft §4 Evidence of a sync ID, (A3)): each chained removal on a
+    /// thing t outside `unit` from which chained write grants lead into it, and each chained write
+    /// grant on an edge of such a way (a way from a removal's target into the unit, through any
+    /// things); the seeds on things outside the unit. Walks the things leading into the unit and
+    /// their edges once: O(the things that can write the unit, and their write grants).
+    fn reach_of(&self, unit: &BTreeSet<T>, counts: &mut Counts) -> Reach<C, T> {
+        if !self.cfg.reach || self.ix.removals_on.is_empty() {
+            return Reach::default();
+        }
+        let g = &self.ix.writes;
+        let (back, edges) = bfs(unit.iter().copied(), false, |x| g.next(false, x), &mut counts.reach);
+        let targets: Vec<T> = back.iter().filter(|t| !unit.contains(t) && self.ix.removals_on.contains_key(t)).copied().collect();
+        if targets.is_empty() {
+            return Reach::default();
+        }
+        // the edges walked are those into things leading into the unit: from the targets along
+        // them, every edge walked is a way
+        let fwd = adjacency(&edges, true);
+        let (_, ways) = bfs(targets.iter().copied(), true, |x| within(&fwd, x), &mut counts.reach);
+        let mut out = Reach::default();
+        self.emit(unit, &targets, &ways, &mut out, counts);
+        out
+    }
+
+    /// Adds to `out` the removals on `targets` and the write grants on `ways` (seeds on things
+    /// outside `unit`), and the ways.
+    fn emit(&self, unit: &BTreeSet<T>, targets: &[T], ways: &[Edge<T>], out: &mut Reach<C, T>, counts: &mut Counts) {
+        for t in targets {
+            for (c, _) in self.ix.removals_on.get(t).into_iter().flatten() {
+                counts.reach_seeds += 1;
+                out.seeds.entry(*c).or_insert(Reason::Removal);
+            }
+        }
+        for e in ways {
+            counts.reach_seeds += 1;
+            out.ways.insert(*e);
+            if unit.contains(&e.1) {
+                continue;
+            }
+            for (c, _) in self.ix.writes.parts.get(e).into_iter().flatten() {
+                counts.reach_seeds += 1;
+                out.seeds.entry(*c).or_insert(Reason::Reach(*e));
+            }
+        }
+    }
+
+    /// The sync IDs whose units hold a thing of `things`, each with those things.
+    fn units_among(&self, things: &BTreeSet<T>) -> BTreeMap<T, Vec<T>> {
+        let mut out: BTreeMap<T, Vec<T>> = BTreeMap::new();
+        for x in things {
+            for sid in self.thing_sids.get(x).into_iter().flatten() {
+                out.entry(*sid).or_default().push(*x);
+            }
+        }
+        out
+    }
+
+    /// A chained removal `c` arrived on thing t = `c.1`: each sync ID whose unit t's write grants
+    /// lead into (t outside it) takes it with the ways from t. Walks what t leads to once, then per
+    /// such sync ID only the ways into it: O(what t can write + the seeds it gives), never the
+    /// other sync IDs.
+    fn removal_on(&mut self, c: &CopyId<C, T>, todo: &mut Todo<C, T>) {
+        if !self.cfg.reach {
+            return;
+        }
+        let t = c.1;
+        let mut n = 0;
+        let g = &self.ix.writes;
+        let (below, edges) = bfs([t], true, |x| g.next(true, x), &mut n);
+        let back = adjacency(&edges, false);
+        let mut adds = vec![];
+        for (sid, starts) in self.units_among(&below) {
+            let Some(s) = self.sids.get(&sid) else { continue };
+            if s.unit.contains(&t) {
+                continue;
+            }
+            let (_, ways) = bfs(starts, false, |x| within(&back, x), &mut n);
+            let mut out = Reach::default();
+            let mut counts = Counts::default();
+            self.emit(&s.unit, &[t], &ways, &mut out, &mut counts);
+            self.counts.reach_seeds += counts.reach_seeds;
+            adds.push((sid, out));
+        }
+        self.counts.reach += n;
+        for (sid, out) in adds {
+            self.reach_merge(&sid, out, todo);
+        }
+    }
+
+    /// A new chained edge (a, b) giving write: each sync ID whose unit b leads into takes the
+    /// removals on things leading to a (outside its unit) with the ways from them through (a, b).
+    /// Walks what leads to a and, where a removal is among it, what b leads to: O(those, and the
+    /// seeds they give: removals above × sync IDs below).
+    fn write_edge(&mut self, e: Edge<T>, todo: &mut Todo<C, T>) {
+        if !self.cfg.reach || self.ix.removals_on.is_empty() {
+            return;
+        }
+        let (a, b) = e;
+        let mut n = 0;
+        let g = &self.ix.writes;
+        let (above, ea) = bfs([a], false, |x| g.next(false, x), &mut n);
+        let targets: Vec<T> = above.iter().filter(|t| self.ix.removals_on.contains_key(t)).copied().collect();
+        if targets.is_empty() {
+            self.counts.reach += n;
+            return;
+        }
+        let (below, eb) = bfs([b], true, |x| g.next(true, x), &mut n);
+        let (fa, bb) = (adjacency(&ea, true), adjacency(&eb, false));
+        let mut shared: Option<Vec<Edge<T>>> = None;
+        let mut adds = vec![];
+        for (sid, starts) in self.units_among(&below) {
+            let Some(s) = self.sids.get(&sid) else { continue };
+            let ts: Vec<T> = targets.iter().filter(|t| !s.unit.contains(t)).copied().collect();
+            if ts.is_empty() {
+                continue;
+            }
+            // the ways above (a, b): from the targets outside the unit to a
+            let above_ways = if ts.len() == targets.len() {
+                shared.get_or_insert_with(|| bfs(targets.iter().copied(), true, |x| within(&fa, x), &mut n).1).clone()
+            } else {
+                bfs(ts.iter().copied(), true, |x| within(&fa, x), &mut n).1
+            };
+            let (_, mut ways) = bfs(starts, false, |x| within(&bb, x), &mut n);
+            ways.extend(above_ways);
+            ways.push(e);
+            let mut out = Reach::default();
+            let mut counts = Counts::default();
+            self.emit(&s.unit, &ts, &ways, &mut out, &mut counts);
+            self.counts.reach_seeds += counts.reach_seeds;
+            adds.push((sid, out));
+        }
+        self.counts.reach += n;
+        for (sid, out) in adds {
+            self.reach_merge(&sid, out, todo);
+        }
+    }
+
+    /// Adds copies (with `why`) and ways to S's reach.
+    fn reach_add(&mut self, sid: &T, cs: Vec<CopyId<C, T>>, ways: Vec<Edge<T>>, why: Reason<C, T>, todo: &mut Todo<C, T>) {
+        let Some(s) = self.sids.get(sid) else { return };
+        let mut out = Reach::default();
+        for c in cs {
+            if !s.unit.contains(&c.1) {
+                self.counts.reach_seeds += 1;
+                out.seeds.insert(c, why);
+            }
+        }
+        out.ways.extend(ways);
+        self.reach_merge(sid, out, todo);
+    }
+
+    /// Merges `add` into S's reach; what is new joins the closure.
+    fn reach_merge(&mut self, sid: &T, add: Reach<C, T>, todo: &mut Todo<C, T>) {
+        let Some(s) = self.sids.get_mut(sid) else { return };
+        for e in add.ways {
+            if s.reach.ways.insert(e) {
+                self.way_sids.entry(e).or_default().insert(*sid);
+            }
+        }
+        for (c, r) in add.seeds {
+            if let std::collections::btree_map::Entry::Vacant(v) = s.reach.seeds.entry(c) {
+                v.insert(r);
+                self.reach_sids.entry(c).or_default().insert(*sid);
+                todo.push(sid, Item::Copy(c, r));
+            }
+        }
+    }
+
     fn part(&self, c: &CopyId<C, T>, i: usize) -> Option<Part<C, T, K>> {
         self.ix.copies.get(c).and_then(|h| h.parts.get(i)).cloned()
     }
@@ -630,7 +1087,7 @@ where
     fn rejoin(&mut self, e: &Edge<T>, new: Option<K>, old: Option<K>, todo: &mut Todo<C, T>) {
         let Some(new) = new else { return };
         let hi = old.map_or(Bound::Unbounded, Bound::Included);
-        let parts: Vec<(CopyId<C, T>, usize)> = self.ix.resting.get(e).map(|r| r.range((Bound::Excluded(new), hi)).flat_map(|(_, s)| s.iter().copied()).collect()).unwrap_or_default();
+        let parts: Vec<PartId<C, T>> = self.ix.resting.get(e).map(|r| r.range((Bound::Excluded(new), hi)).flat_map(|(_, s)| s.iter().copied()).collect()).unwrap_or_default();
         for (c, i) in parts {
             self.recheck(&c, i, todo);
         }
@@ -641,7 +1098,7 @@ where
     fn unjoin(&mut self, e: &Edge<T>, old: Option<K>, new: Option<K>, todo: &mut Todo<C, T>) {
         let Some(old) = old else { return };
         let hi = new.map_or(Bound::Unbounded, Bound::Included);
-        let parts: Vec<(CopyId<C, T>, usize)> = self.ix.resting.get(e).map(|r| r.range((Bound::Excluded(old), hi)).flat_map(|(_, s)| s.iter().copied()).collect()).unwrap_or_default();
+        let parts: Vec<PartId<C, T>> = self.ix.resting.get(e).map(|r| r.range((Bound::Excluded(old), hi)).flat_map(|(_, s)| s.iter().copied()).collect()).unwrap_or_default();
         for (c, i) in parts {
             self.recheck(&c, i, todo);
         }
@@ -756,81 +1213,50 @@ where
         }
     }
 
-    /// The copies that are seeds of S by themselves: chained writes naming its actor, and (A3)
-    /// each chained removal of an edge on a thing outside the unit joined to it by chained write
-    /// grants (its reach), with that reach.
-    fn seeds_for(&self, s: &Sid<C, T>, counts: &mut Counts) -> Required<C, T> {
-        let mut out: Required<C, T> = BTreeMap::new();
-        for c in self.ix.by_holder.get(&s.actor).into_iter().flatten() {
-            counts.seeds += 1;
-            out.entry(*c).or_insert(Reason::Actor);
-        }
-        if !self.cfg.reach || self.ix.reach_removals.is_empty() {
-            return out;
-        }
-        let grants: Vec<(Edge<T>, CopyId<C, T>)> = self.ix.reach_grants.iter().filter_map(|(c, i)| match self.ix.copies.get(c)?.parts.get(*i)?.kind {
-            Kind::Write(ref w) => Some(((w.holder, c.1), *c)),
-            _ => None,
-        }).collect();
-        counts.reach += grants.len() + self.ix.reach_removals.len();
-        // the things holding write or above on a unit thing, through chained grants
-        let mut back = s.unit.clone();
-        loop {
-            let n = back.len();
-            back.extend(grants.iter().filter(|(e, _)| back.contains(&e.1)).map(|(e, _)| e.0).collect::<Vec<_>>());
-            if back.len() == n {
-                break;
-            }
-        }
-        for (r, _) in &self.ix.reach_removals {
-            let t = r.1;
-            if s.unit.contains(&t) {
-                continue;
-            }
-            let mut fwd = BTreeSet::from([t]);
-            loop {
-                let n = fwd.len();
-                fwd.extend(grants.iter().filter(|(e, _)| fwd.contains(&e.0)).map(|(e, _)| e.1).collect::<Vec<_>>());
-                if fwd.len() == n {
-                    break;
-                }
-            }
-            if !fwd.iter().any(|x| s.unit.contains(x)) {
-                continue;
-            }
-            out.entry(*r).or_insert(Reason::Reach(*r));
-            for (e, g) in &grants {
-                if fwd.contains(&e.0) && back.contains(&e.1) {
-                    out.entry(*g).or_insert(Reason::Reach(*r));
-                }
-            }
-        }
-        out
-    }
-
     // ---- settling ----
 
     fn settle(&mut self, mut todo: Todo<C, T>) {
-        if todo.reach && self.cfg.reach {
-            todo.seeds.extend(self.sids.keys().copied());
-        }
-        for sid in std::mem::take(&mut todo.seeds) {
+        // seeds computed again from nothing where a change could shrink them
+        for sid in std::mem::take(&mut todo.travel) {
             let Some(s) = self.sids.get(&sid) else { continue };
             let mut counts = Counts::default();
-            let new = self.seeds_for(s, &mut counts);
-            self.counts.reach += counts.reach;
+            let new = self.travel_of(s.actor, &mut counts);
+            self.counts.opened += counts.opened;
             self.counts.seeds += counts.seeds;
-            let lost = s.seeds.keys().any(|c| !new.contains_key(c));
-            for (c, r) in &new {
-                if !s.seeds.contains_key(c) {
-                    todo.push(&sid, Item::Copy(*c, *r));
-                }
+            let old = s.travel.clone();
+            for t in old.open.difference(&new.open) {
+                remove_from(&mut self.open_sids, t, &sid);
             }
-            if lost {
-                todo.dirty.insert(sid);
+            for t in new.open.difference(&old.open) {
+                self.open_sids.entry(*t).or_default().insert(sid);
             }
+            self.reseed(&sid, &old.seeds, &new.seeds, &mut todo, true);
             if let Some(s) = self.sids.get_mut(&sid) {
-                s.seeds = new;
+                s.travel = new;
+            }
+        }
+        for sid in std::mem::take(&mut todo.reach) {
+            let Some(s) = self.sids.get(&sid) else { continue };
+            let mut counts = Counts::default();
+            let new = self.reach_of(&s.unit, &mut counts);
+            self.counts.reach += counts.reach;
+            self.counts.reach_seeds += counts.reach_seeds;
+            let old = s.reach.clone();
+            for c in old.seeds.keys().filter(|c| !new.seeds.contains_key(c)) {
+                remove_from(&mut self.reach_sids, c, &sid);
+            }
+            for c in new.seeds.keys().filter(|c| !old.seeds.contains_key(c)) {
+                self.reach_sids.entry(*c).or_default().insert(sid);
+            }
+            for e in old.ways.difference(&new.ways) {
+                remove_from(&mut self.way_sids, e, &sid);
+            }
+            for e in new.ways.difference(&old.ways) {
+                self.way_sids.entry(*e).or_default().insert(sid);
+            }
+            self.reseed(&sid, &old.seeds, &new.seeds, &mut todo, false);
+            if let Some(s) = self.sids.get_mut(&sid) {
+                s.reach = new;
             }
         }
         for sid in std::mem::take(&mut todo.dirty) {
@@ -839,6 +1265,21 @@ where
         }
         for (sid, work) in std::mem::take(&mut todo.work) {
             self.extend(&sid, work);
+        }
+    }
+
+    /// One kind of S's seeds (`travel`, else reach) moves from `old` to `new`: a seed lost from
+    /// both closes S again, a new one joins its closure.
+    fn reseed(&self, sid: &T, old: &Required<C, T>, new: &Required<C, T>, todo: &mut Todo<C, T>, travel: bool) {
+        let Some(s) = self.sids.get(sid) else { return };
+        let other = if travel { &s.reach.seeds } else { &s.travel.seeds };
+        if old.keys().any(|c| !new.contains_key(c) && !other.contains_key(c)) {
+            todo.dirty.insert(*sid);
+        }
+        for (c, r) in new {
+            if !old.contains_key(c) {
+                todo.push(sid, Item::Copy(*c, *r));
+            }
         }
     }
 
@@ -867,7 +1308,7 @@ where
         }
         let Some(s) = self.sids.get(sid) else { return };
         let mut work: Vec<Item<C, T>> = s.atoms.keys().map(|e| Item::Edge(*e)).collect();
-        work.extend(s.seeds.iter().map(|(c, r)| Item::Copy(*c, *r)));
+        work.extend(s.seeds().map(|(c, r)| Item::Copy(*c, *r)));
         work.extend(self.body_vouches(&s.unit));
         self.extend(sid, work);
     }
