@@ -561,8 +561,9 @@ impl Fragment {
     }
 
     /// `reach` of `x` in the state a join of `x` left, `before` its reach in the state joined:
-    /// a key the join took out of the records `x` reaches is reached still, so the two
-    /// reaches hold the same records of each key (`each_read_value` changes only there).
+    /// a key the join took out of the records `x` reaches, or an element of a sequence range
+    /// record the join split, is reached still, so the two reaches hold the same records of each
+    /// key and the same elements (`each_read_value` changes only there).
     pub fn reach_after(&self, x: &Fragment, before: &Fragment) -> Fragment {
         self.reach_with(x, Some(before))
     }
@@ -602,6 +603,12 @@ impl Fragment {
                 }
                 Fragment::Map(Map::new(s.meta.clone(), keep))
             }
+            // a range record the join split (a write into one of its elements) is reached still
+            // at every element: the records holding a dot of `before`'s
+            (Fragment::Seq(s), Fragment::Seq(d)) if s.encoding() == d.encoding() => match before {
+                Some(Fragment::Seq(b)) => Fragment::Seq(s.footprint_of(&[d, b])),
+                _ => self.part_at(x),
+            },
             _ => self.part_at(x),
         }
     }

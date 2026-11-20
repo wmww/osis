@@ -309,7 +309,9 @@ fn piece_laws(x: &Fragment, y: &Fragment, honest: bool) {
 
 /// A join of `y` changes the values a state reads (`each_read_value`) only at `y`'s reach
 /// (`Fragment::reach`, `reach_after`): `before` and `after` differ as their pieces at the reach do (the engine's
-/// reference index counts a join there alone, notes/engine-refs.md).
+/// reference index counts a join there alone, notes/engine-refs.md). The writes it supersedes,
+/// read at the reaches as the engine dates them (`Killed::note`), are the whole state's: a range
+/// record the join split is reached at each of its elements.
 fn reach_holds_the_change(before: &Fragment, after: &Fragment, y: &Fragment) {
     let diff = |a: &Fragment, b: &Fragment| {
         let mut m: BTreeMap<osis_base::Value, i64> = BTreeMap::new();
@@ -320,6 +322,12 @@ fn reach_holds_the_change(before: &Fragment, after: &Fragment, y: &Fragment) {
     };
     let at = before.reach(y);
     assert_eq!(diff(&at, &after.reach_after(y, &at)), diff(before, after), "a join changes read values only at its reach");
+    let dead = |b: &Fragment, a: &Fragment| {
+        let mut w = b.winners();
+        w.extend(y.winners());
+        w.minus(&a.winners())
+    };
+    assert_eq!(dead(&at, &after.reach_after(y, &at)), dead(before, after), "a join supersedes at its reach what it supersedes in the whole state");
 }
 
 /// The history joined in creation order, then twice in a random order with duplicates, by the

@@ -135,8 +135,12 @@ impl Seq {
     /// The records undoing `delta` reads (`seq_ops::undo` looks the pre-commit state up by the
     /// delta's dots): every record holding a dot of a delta record. O(delta), not O(sequence).
     pub(crate) fn footprint(&self, delta: &Seq) -> Seq {
+        self.footprint_of(&[delta])
+    }
+    /// `footprint` of every one of `deltas` at once.
+    pub(crate) fn footprint_of(&self, deltas: &[&Seq]) -> Seq {
         let mut keep = Elems::new();
-        for (d, e) in &delta.elems {
+        for (d, e) in deltas.iter().flat_map(|x| &x.elems) {
             if let Some((k, r)) = crate::seq_span::find(&self.elems, d) {
                 keep.insert(k.clone(), r.clone());
             }

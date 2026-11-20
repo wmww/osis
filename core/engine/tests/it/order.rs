@@ -1652,9 +1652,7 @@ fn oracle(played: &Played, held: &[usize]) -> Oracle {
     // a forged package may be refused, never fail the node
     for &i in held {
         let pk = &played.packs[i];
-        if let Err(e) = p.receive(&pk.bytes, pk.blobs.clone()) {
-            assert_ne!(osis_base::Classified::class(&e), osis_base::ErrorClass::Local, "the keep-everything node: {e}");
-        }
+        received(&mut p, &pk.bytes, pk.blobs.clone());
     }
     p.tick().unwrap();
     pass_end(&mut p);
@@ -1719,6 +1717,15 @@ fn synced(p: &mut Peer) -> BTreeSet<osis_base::SyncId> {
     p.engine.sync_set().map(|s| s.ids.keys().copied().collect()).unwrap_or_default()
 }
 
+/// Node `p` receives a package: a forged or unjudgeable one may be refused, but never fail the
+/// node (a local error, `Corrupt` among them, would leave it never holding the commit: a read
+/// difference far from its cause).
+fn received(p: &mut Peer, bytes: &[u8], blobs: Vec<(osis_base::BlobId, Vec<u8>)>) {
+    if let Err(e) = p.receive(bytes, blobs) {
+        assert_ne!(osis_base::Classified::class(&e), osis_base::ErrorClass::Local, "receiving fails the node: {e}");
+    }
+}
+
 /// Node `p` receives a package, as node-sync gives it: then each sync ID it pulled anew
 /// (spec/sync-judgement.md §3 Dropped bodies: a strong newly reaching a thing whose content it
 /// does not hold) or that joined its sync set (spec/sync-streams.md §4 Joining: from the start, a
@@ -1727,7 +1734,7 @@ fn synced(p: &mut Peer) -> BTreeSet<osis_base::SyncId> {
 /// their turn), again until no pull from the start is left.
 fn give(played: &Played, p: &mut Peer, bytes: &[u8], blobs: Vec<(osis_base::BlobId, Vec<u8>)>) {
     let mut before = synced(p);
-    let _ = p.receive(bytes, blobs);
+    received(p, bytes, blobs);
     // each round pulls only for a sync ID newly synced or a strong newly in the node closure,
     // brought by the round before: at most a round per pack given and one more
     for _ in 0..=played.packs.len() {
@@ -1740,7 +1747,7 @@ fn give(played: &Played, p: &mut Peer, bytes: &[u8], blobs: Vec<(osis_base::Blob
             let live = |pk: &Package| osis_commit::CommitBlob::decode(&pk.bytes).is_ok_and(|b| b.header.expires.is_none_or(|t| t > now));
             let again: Vec<&Package> = played.packs.iter().filter(|pk| p.given.contains(&pk.id) && live(pk)).collect();
             for pk in again {
-                let _ = p.receive(&pk.bytes, pk.blobs.clone());
+                received(p, &pk.bytes, pk.blobs.clone());
             }
         } else {
             return;
@@ -1881,7 +1888,7 @@ fn covered_away(played: &Played, o: &Oracle) -> Result<usize, String> {
     let mut full = fresh(played);
     full.engine.keep_bodies(true);
     for pk in &played.packs {
-        let _ = full.receive(&pk.bytes, pk.blobs.clone());
+        received(&mut full, &pk.bytes, pk.blobs.clone());
     }
     full.reexamine().unwrap();
     crate::disputes::walk_sides(&mut full);
@@ -4707,3 +4714,16 @@ fn a_thing_held_for_a_while_reads_as_one_never_held_once_the_pass_ends_spec_sync
     check(0, &h, NAMED).unwrap();
 }
 
+
+
+// spec/crdt.md §4.8: a delete arriving after a later delete of a range (the undo of an insert)
+// splits that range record; the join supersedes no write of the range's other element, which a
+// death read at the join's reach before and after (`Fragment::reach_after`) must not count as dead
+// (a death with no superseder is `Corrupt`, refusing the commit at that node for good). Reversed:
+// the undo, then the delete of "v" and "v", then the inserts.
+#[test]
+fn a_delete_splitting_a_held_range_delete_kills_nothing_of_its_other_elements_spec_crdt_4_8() {
+    use Step::*;
+    let h = vec![Typed { by: 0, t: 0, op: 10, k: 0, v: 0 }, Typed { by: 0, t: 0, op: 10, k: 0, v: 1 }, Typed { by: 0, t: 0, op: 11, k: 0, v: 0 }, Undo { by: 0, back: 1 }];
+    check(0, &h, NAMED).unwrap();
+}
