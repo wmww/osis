@@ -1,0 +1,2 @@
+- Per-trigger teeth were cheapest to check with a throwaway env switch (a non-`OSIS_` variable, which `testenv` does not refuse) in each trigger: one build, then each trigger and pair off over the vouch modules in a loop.
+- Wall time on the shared box swung 20 to 30 % between runs (load 15 to 40); only user+sys CPU of the copied test binaries compared before/after.

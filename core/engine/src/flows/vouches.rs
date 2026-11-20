@@ -121,6 +121,7 @@ pub(crate) fn note_entered(core: &mut Core, came: &BTreeSet<Tid>) {
     }
     for t in came.iter().filter(|t| core.ix.closure.holds(t)) {
         let rs: Vec<CommitId> = core.ix.vouch_watch.get(t).into_iter().flatten().copied().collect();
+        osis_base::costs::count("vouches: removals woken on entry", u64::try_from(rs.len()).unwrap_or(u64::MAX));
         for r in rs {
             core.ix.vouches_due.insert(r);
         }
@@ -375,7 +376,8 @@ fn write_for(tx: &mut Tx<'_>, r: &CommitId, me: Tid) -> Result<()> {
     Ok(())
 }
 
-/// Debug builds, at an engine's drop: no trigger was missed. Of every held removal not due, a
+/// Debug builds, after every durable transaction and at an engine's drop: no trigger was
+/// missed. Of every held removal not due, a
 /// kept gathering is what a fresh one gathers, and a fresh judgement owes nothing this node may
 /// write now: a stale gathering or an answer owed with no judgement due is a missed trigger, which
 /// the check at each judgement (`write_for`) cannot see. `Some`: what differs.

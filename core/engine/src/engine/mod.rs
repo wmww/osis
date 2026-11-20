@@ -4152,6 +4152,9 @@ impl Engine {
         // debug builds: whether the transaction changed a state or a part
         #[cfg(debug_assertions)]
         let mut changed = false;
+        // debug builds: whether the transaction was durable (`flows::vouches::missed` after it)
+        #[cfg(debug_assertions)]
+        let mut durable = false;
         let r = match self.store.transaction(&mut self.store_rng) {
             Ok(txn) => {
                 let mut tx = Tx { txn, blobs: blobs::Cipher::new(&*self.blobs, &self.blob_stamps, self.blob_seq), core: &mut self.core, rng: &mut *self.rng, bound: None };
@@ -4195,6 +4198,10 @@ impl Engine {
                         .and_then(|()| crate::sync::dial::drop_departed(&mut tx))
                 {
                     r = Err(e);
+                }
+                #[cfg(debug_assertions)]
+                {
+                    durable = !tx.txn.is_memory();
                 }
                 tx.core.notices_due.clear();
                 tx.core.removals_due.clear();
@@ -4377,6 +4384,12 @@ impl Engine {
                 #[cfg(test)]
                 if changed && self.check_every_tx && !self.index_poked {
                     self.check_index();
+                }
+                // no vouch or addendum trigger missed, at the end of every durable transaction (an
+                // answer owed only mid-history escapes a check at the drop alone)
+                #[cfg(debug_assertions)]
+                if durable && !self.loading {
+                    self.check_vouches_missed("after a transaction");
                 }
                 Ok(v)
             }
@@ -4651,12 +4664,19 @@ impl Drop for Engine {
         };
         // a store that fails (a crash test's) has nothing to check
         assert!(matches!(r, Ok(()) | Err(Error::Store(_))), "end of history: {:?}", r.err());
-        // no vouch or addendum trigger missed (`flows::vouches::missed`)
-        #[cfg(debug_assertions)]
         if r.is_ok() {
-            let m = osis_base::costs::paused(|| osis_perm::uncounted(|| memo::unrecorded(|| self.read(crate::flows::vouches::missed))));
-            assert!(matches!(m, Ok(None) | Err(Error::Store(_))), "end of history: a vouch trigger missed: {m:?}");
+            self.check_vouches_missed("end of history");
         }
+    }
+}
+
+#[cfg(debug_assertions)]
+impl Engine {
+    /// Debug builds: no vouch or addendum trigger missed (`flows::vouches::missed`), counting
+    /// nothing.
+    fn check_vouches_missed(&mut self, when: &str) {
+        let m = osis_base::costs::paused(|| osis_perm::uncounted(|| memo::unrecorded(|| self.read(crate::flows::vouches::missed))));
+        assert!(matches!(m, Ok(None) | Err(Error::Store(_))), "{when}: a vouch trigger missed: {m:?}");
     }
 }
 

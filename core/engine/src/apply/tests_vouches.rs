@@ -947,3 +947,62 @@ fn a_removal_whose_edge_part_arrives_late_is_vouched_for_then_spec_perm_5_1() {
     }
     let _ = c;
 }
+
+/// Things `n` and `elsewhere` (peer 0's), held through `t`'s admin grant by every peer but W
+/// (peer 2). `m` times H grants X (peer 1) admin on `t` again, X grants K (peer 3) write on
+/// `elsewhere`, received by W alone, and H removes X: `m` removals filed under `elsewhere`, owing
+/// a vouch there that waits. Last X grants K write on `n` the same way and H removes X: one
+/// removal filed under `n` (and `elsewhere`). The removals woken as `n` enters W's node closure.
+fn woken_on_entry(m: usize) -> u64 {
+    let (mut lp, t) = world(4);
+    let h = lp.peers[0].engine.me();
+    let mut things = Vec::new();
+    for _ in 0..2 {
+        let mut mu = Mutation::new();
+        let n = lp.peers[0].engine.new_thing(&mut mu, h);
+        lp.peers[0].commit(mu).unwrap();
+        for p in [0, 1, 3] {
+            lp.hold_at(p, n);
+        }
+        lp.peers[0].engine.grant(&n, &t, &edge(Role::Admin)).unwrap();
+        things.push(n);
+    }
+    let (n, elsewhere) = (things[0], things[1]);
+    lp.advance(1000);
+    lp.sync_all().unwrap();
+    for i in 0..=m {
+        if i > 0 {
+            grant(&mut lp, 0, t, 1, Role::Admin);
+            lp.sync(0, 1).unwrap();
+        }
+        let on = if i == m { n } else { elsewhere };
+        let c = grant(&mut lp, 1, on, 3, Role::Write);
+        let pk = lp.peers[1].engine.package(&c).unwrap().unwrap();
+        lp.deliver(2, &pk).unwrap();
+        lp.advance(1000);
+        remove(&mut lp, 0, t, 1);
+        lp.sync(0, 2).unwrap();
+        lp.peers[2].tick().unwrap();
+    }
+    let ix = &lp.peers[2].engine.core.ix;
+    assert_eq!(ix.vouch_watch.get(&elsewhere).map_or(0, |s| s.len()), m + 1, "every removal filed under `elsewhere`");
+    assert_eq!(ix.vouch_watch.get(&n).map_or(0, |s| s.len()), 1, "the last filed under `n`");
+    assert!(ix.vouches_due.is_empty(), "none polled while it waits");
+    osis_base::costs::take();
+    lp.hold_at(2, n);
+    let woken = osis_base::costs::take().into_iter().find(|(k, _, _)| *k == "vouches: removals woken on entry").map_or(0, |x| x.2);
+    let w = lp.peers[2].engine.me();
+    assert_eq!(vouches(&lp, 2, n).iter().filter(|(a, _)| *a == w).count(), 1, "W vouches on `n` as it enters");
+    assert!(vouches(&lp, 2, elsewhere).is_empty(), "and nothing on `elsewhere`, still outside");
+    woken
+}
+
+// spec/sync-set.md §2 (Writing: an owed write waits), notes/principles.md (Fast by construction):
+// a thing entering the node closure wakes the removals filed under it, whatever is filed
+// elsewhere, and none waits polled meanwhile.
+#[test]
+fn a_thing_entering_wakes_only_the_removals_filed_under_it_spec_perm_5_1() {
+    let (small, big) = (woken_on_entry(1), woken_on_entry(10));
+    println!("vouches: removals woken as a thing enters: {small} at 1 filed elsewhere, {big} at 10");
+    assert_eq!((small, big), (1, 1));
+}
