@@ -35,6 +35,10 @@ got = deprecated_probe.narrowed(SRC, [8, 9], {"X", "Q", "R"})
 ok = got == WANT
 if not ok:
     print(f"FAIL narrowed:\n got  {got!r}\n want {WANT!r}")
+# an error naming the alias a dropped `pub use` gave names its item
+if deprecated_probe.aliases(SRC) != {"Z": "Y", "S": "R"}:
+    print(f"FAIL aliases: {deprecated_probe.aliases(SRC)!r}")
+    ok = False
 ERR = "core/x/src/a.rs:3:5: error[E0364]: `X` is private, and cannot be re-exported"
 DEAD = "core/x/src/a.rs:9:8: warning: function `f` is never used"
 if not (deprecated_probe.ERROR.match(ERR) and deprecated_probe.DEAD.match(DEAD) and not deprecated_probe.ERROR.match(DEAD)):

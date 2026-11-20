@@ -18,7 +18,7 @@ to `pub(crate)` (a free item also leaves every `pub use` in src/ naming it), run
 constructed warnings (dead in the lib build: unused, or used by CRATE's tests alone), less those
 naming only items used outside CRATE by non-test code (a method of a narrowed type). An item a
 narrowing breaks the build over (a type named in a still-`pub` signature, a re-export the scan
-missed) is put back `pub` and the run repeated; those are listed as kept. Needs CRATE's src/
+missed, a use of the alias a dropped `pub use … as` gave it) is put back `pub` and the run repeated; those are listed as kept. Needs CRATE's src/
 committed (no diff against HEAD); after restoring, `git diff` of it must be empty again.
 Usage: tools/deprecated_probe.py [--dead] [-v] CRATE   (a package name, e.g. osis-blob; -v
 also lists every used item with its sites)"""
@@ -252,6 +252,16 @@ def narrowed(text, lines, free):
     return re.sub(r"^(\s*pub use )[^;]*;", drop, text, flags=re.M)
 
 
+def aliases(text):
+    """{alias: item name} of each `pub use` piece renaming its item (`X as Y`): an error naming the
+    alias, which narrowing X dropped, names X."""
+    out = {}
+    for stmt in re.findall(r"^\s*pub use ([^;]*);", text, flags=re.M):
+        for m in re.finditer(r"(?:\w+::)*(\w+)\s+as\s+(\w+)", stmt):
+            out[m.group(2)] = m.group(1)
+    return out
+
+
 def dead(crate, crate_dir, decls, free_names):
     """Narrow `decls` ({key: ["path:line"]}), clippy CRATE's lib, restore; returns (the dead-code
     warnings in CRATE's src/, the keys kept pub over a build error, the errors left if any)."""
@@ -267,7 +277,7 @@ def dead(crate, crate_dir, decls, free_names):
                 lines[os.path.join(ROOT, path)].add(int(n))
             if k in free_names:
                 free.add(k[1])
-        originals = {}
+        originals, renamed = {}, {}
         try:
             for dirpath, _, files in os.walk(os.path.join(crate_dir, "src")):
                 for f in files:
@@ -275,6 +285,7 @@ def dead(crate, crate_dir, decls, free_names):
                     if not f.endswith(".rs"):
                         continue
                     text = open(path).read()
+                    renamed.update(aliases(text))
                     new = narrowed(text, lines.get(path, ()), free)
                     if new != text:
                         originals[path] = text
@@ -295,6 +306,7 @@ def dead(crate, crate_dir, decls, free_names):
             return warnings, keep, []
         # put back `pub` on every narrowed item an error names (by name in backticks, or its line)
         named = set(re.findall(r"`(?:\w+::)*(\w+)`", " ".join(errors)))
+        named |= {renamed[n] for n in named if n in renamed}
         at = {(m.group(1), m.group(2)) for l in errors if (m := ERROR.match(l))}
         hit = {k for k, ds in decls.items() if k not in keep and (k[1] in named or any(tuple(d.rsplit(":", 1)) in at for d in ds))}
         if not hit:
