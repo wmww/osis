@@ -767,6 +767,9 @@ pub(crate) fn join_late(tx: &mut Tx<'_>, id: &CommitId, merged: &CommitBlob, par
     if learned {
         meta.view = Arc::new(crate::engine::View { paths, ..(*meta.view).clone() });
         index_acting(tx.core, id, &meta.view);
+        if !super::paths::undecided(&h, meta.view.paths.as_deref()) {
+            tx.core.ix.paths_unknown.remove(id);
+        }
         meta.valid = (0..meta.valid.len()).map(|ai| validity::part_valid(tx.core, &h, &meta.view, id, ai)).collect();
         tx.core.stale_commits.insert(*id);
     }

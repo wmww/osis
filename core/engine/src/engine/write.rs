@@ -469,7 +469,7 @@ pub(crate) fn stated_paths(core: &Core, plan: &CommitPlan, writes: &[AspectWrite
         return Ok(fallback);
     }
     if let Some(q) = osis_commit::Path::one_of(each.iter().map(|(t, (p, _))| (t, p)), node, actor)
-        && clear_tells_nothing(core, plan, writes, &q, &each)
+        && clear_tells_nothing(core, plan, &q, &each)
     {
         return Ok(Stated::One(q));
     }
@@ -493,10 +493,10 @@ pub(crate) fn stated_paths(core: &Core, plan: &CommitPlan, writes: &[AspectWrite
 /// to `t`'s independent: `w`'s readers read `t` whole, roster and record), or where that edge is
 /// `t`'s record edge (by descent) and `w` descends from `t` (`w`'s readers hold `w`'s record chain,
 /// `t`'s record on it).
-fn clear_tells_nothing(core: &Core, plan: &CommitPlan, writes: &[AspectWrite], q: &osis_commit::Path, each: &BTreeMap<Tid, (osis_commit::Path, bool)>) -> bool {
+fn clear_tells_nothing(core: &Core, plan: &CommitPlan, q: &osis_commit::Path, each: &BTreeMap<Tid, (osis_commit::Path, bool)>) -> bool {
     let Some(end) = q.things.last() else { return true };
     let rec = |t: &Tid| plan.creates.get(t).or_else(|| core.created(t)).cloned();
-    let independent = |t: &Tid| independent_in(core, plan, writes, t);
+    let independent = |t: &Tid| independent_in(core, t);
     // `w` on `t`'s record chain, `t` included, stopping past `t`'s independent (`upto`) or not
     let on_chain = |t: &Tid, w: &Tid, upto: bool| {
         let mut x = Some(*t);
@@ -515,19 +515,28 @@ fn clear_tells_nothing(core: &Core, plan: &CommitPlan, writes: &[AspectWrite], q
     each.iter().filter(|(t, _)| *t != end).all(|(t, (_, by_record))| each.keys().filter(|w| *w != t).all(|w| on_chain(t, w, true) || (*by_record && on_chain(w, t, false))))
 }
 
-/// Whether thing `t` reads by secrets of its own when commit `plan` writing `writes` applies: held
-/// as independent, a key actor, or minted by it with its own keys.
-fn independent_in(core: &Core, plan: &CommitPlan, writes: &[AspectWrite], t: &Tid) -> bool {
-    core.ix.independent.contains(t) || core.created(t).is_some_and(|r| r.mint_admin().is_none()) || (plan.creates.contains_key(t) && writes.iter().any(|w| w.tid == *t && w.ak.as_str() == "keys.0"))
+/// Whether thing `t` reads by secrets of its own when a content commit applies: held as
+/// independent, or a key actor (spec/crypto.md §3). A thing a content commit makes is dependent
+/// in it: only a role commit writing its `keys.0` makes it independent, and a role commit states
+/// no split path (`stated_paths`).
+fn independent_in(core: &Core, t: &Tid) -> bool {
+    core.ix.independent.contains(t) || core.created(t).is_some_and(|r| r.mint_admin().is_none())
 }
 
 /// The read roles secret the path key of thing `t` (written by commit `plan`) is derived from
 /// (spec/crypto.md §5 Path entry): of `t`'s independent (up its record chain, the commit's own
-/// records first), at the newest epoch held, which its sections go under.
-fn path_secret(core: &Core, plan: &CommitPlan, writes: &[AspectWrite], t: &Tid) -> Option<osis_crypto::Secret32> {
+/// records first), at the newest current epoch held, which its sections go under; else the
+/// newest whose roles secret is held (a holder left unboxed at the current epoch, spec/crypto.md
+/// §4 Low floor, writes on); else a fresh random one, so the write is never refused for its path
+/// (notes/path-form.md): only the encryptions of `t`'s parts, which carry the key, open the entry.
+fn path_secret(core: &Core, plan: &CommitPlan, t: &Tid, rng: &mut dyn osis_crypto::CryptoRngCore) -> osis_crypto::Secret32 {
+    held_path_secret(core, plan, t).unwrap_or_else(|| osis_crypto::Secret32::random(rng))
+}
+
+fn held_path_secret(core: &Core, plan: &CommitPlan, t: &Tid) -> Option<osis_crypto::Secret32> {
     let mut x = *t;
     for _ in 0..=osis_base::format::MAX_CHAIN_DEPTH + 1 {
-        if independent_in(core, plan, writes, &x) {
+        if independent_in(core, &x) {
             break;
         }
         match plan.creates.get(&x).or_else(|| core.created(&x)).and_then(CreationRecord::mint_admin) {
@@ -536,8 +545,7 @@ fn path_secret(core: &Core, plan: &CommitPlan, writes: &[AspectWrite], t: &Tid) 
         }
     }
     let e = core.epochs(&x)?;
-    let ep = osis_keys::wrap_epoch(&e.read)?;
-    e.read.roles_secret(&ep)
+    osis_keys::wrap_epoch(&e.read).and_then(|ep| e.read.roles_secret(&ep)).or_else(|| e.read.held_roles().pop().map(|(_, s)| s))
 }
 
 /// May `node` act for `actor` at `ts`: it is the actor or holds write on it? A receiver judges a
@@ -845,10 +853,7 @@ fn build(tx: &mut Tx<'_>, plan: CommitPlan, deltas: Vec<Resolved>) -> Result<osi
     match stated {
         Stated::One(p) => b.path = p,
         Stated::Split(author, paths) => {
-            let things = paths
-                .into_iter()
-                .map(|(t, listed)| path_secret(tx.core, &plan, &writes, &t).map(|s| (t, (listed, s))).ok_or(Error::Misuse("no read roles secret for a split path key")))
-                .collect::<Result<_>>()?;
+            let things = paths.into_iter().map(|(t, listed)| (t, (listed, path_secret(tx.core, &plan, &t, &mut *tx.rng)))).collect();
             b.split = Some(osis_commit::SplitWrite { author, things });
         }
     }

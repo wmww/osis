@@ -1942,6 +1942,32 @@ fn writer_rotating_to_itself_recovered_spec_perm_3() {
     assert_eq!(sealed_write(&mut lp, 2, d, "member"), BTreeSet::from([0]));
 }
 
+// The owner's rule (notes/path-form.md), spec/crypto.md §5 Path entry, §4 Low floor: a writer left
+// unboxed at a thing's current epoch writes on, its paths no reason to refuse: account 2 writes D
+// through team H and its own thing O in one commit while account 1 has rotated D boxing itself
+// alone. The commit states the split form, D's entry under the newest roles secret account 2 holds.
+#[test]
+fn a_writer_left_unboxed_writes_through_different_actors_in_one_commit_spec_crypto_5() {
+    let (mut lp, ps) = people(3);
+    let (d, h) = (thing_of(&mut lp, 0, ps[0]), thing_of(&mut lp, 0, ps[0]));
+    let o = thing_of(&mut lp, 2, ps[2]);
+    lp.peers[0].engine.grant(&d, &ps[1], &edge_of(Role::Write)).unwrap();
+    lp.peers[0].engine.grant(&h, &ps[2], &edge_of(Role::Write)).unwrap();
+    lp.peers[0].engine.grant(&d, &h, &edge_of(Role::Write)).unwrap();
+    spread(&mut lp);
+    lp.peers[1].engine.rotate_boxing_only(&[d], &[Role::Read, Role::Write], &[ps[1]]).unwrap().unwrap();
+    spread_sealed(&mut lp);
+    assert_eq!(newest_read(&lp, 2, d), None, "account 2 is left unboxed at D's current epoch");
+    let before = lp.peers[2].engine.commit_ids().len();
+    let mut m = Mutation::new();
+    m.set(d, &REG, &s("on d")).unwrap();
+    m.set(o, &REG, &s("on o")).unwrap();
+    let c = lp.peers[2].commit(m).unwrap().unwrap();
+    assert_eq!(lp.peers[2].engine.commit_ids().len(), before + 1, "one commit");
+    assert!(lp.peers[2].engine.header(&c).unwrap().is_split());
+    assert_eq!(lp.peers[2].engine.get(&d, &ak("t:reg.0")).unwrap(), Some(s("on d")));
+}
+
 // spec/crypto.md §4 (rotating needs only the right to rotate), spec/permissions.md §3: two writers each
 // rotate `d` from the same epoch boxing only themselves. Removing either rotates at once over
 // both forks, boxing the kept writer; removing the second rotates again. Either order; neither

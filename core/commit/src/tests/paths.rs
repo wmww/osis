@@ -290,6 +290,25 @@ fn a_forged_entry_harms_only_its_own_thing() {
         assert_eq!(theirs(&o, &things[2]), 1, "{why}");
         assert!(matches!(o.path(&things[2]), Some(ThingPath::Known(_))), "{why}");
     }
+    // one encoding: a section carrying a key beyond its parts' things (it opens its entry) holds
+    // nothing; a section of no part carrying the key of a thing the commit does not destroy too
+    let id = c.id();
+    let mut sections: Vec<Section> = things
+        .iter()
+        .enumerate()
+        .map(|(i, x)| {
+            let ps: Vec<&Part> = c.parts.iter().filter(|p| c.header.aspects[p.ai].tid == *x).collect();
+            let keys = if i == 0 { c.keys.clone() } else { BTreeMap::from([(i, c.keys[&i])]) };
+            Section::seal(&id, &ps, Some(&keys), vec![], &secret(x), &mut rng()).unwrap()
+        })
+        .collect();
+    sections.push(Section::seal(&id, &[] as &[Part], Some(&BTreeMap::from([(1, c.keys[&1])])), vec![], &blob, &mut rng()).unwrap());
+    sections.sort_by_key(|s| s.ais.first().copied());
+    let extra = Envelope { header: c.header.clone(), sigs: c.sigs.clone(), sections };
+    let o = extra.open(|s| s.ais.first().map_or(vec![blob.clone()], |ai| vec![secret(&c.header.aspects[*ai].tid)])).unwrap().commit;
+    assert_eq!(theirs(&o, &first), 0, "extra keys");
+    assert!(things[1..].iter().all(|x| theirs(&o, x) == 1), "extra keys harm only their section");
+    assert_eq!(o.keys.keys().copied().collect::<Vec<_>>(), vec![1, 2], "no key from a refused section");
     // a key from another commit's entry: opens nothing here
     let mut o = split(3);
     o.blind = Some([9; 16]);

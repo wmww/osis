@@ -4244,6 +4244,277 @@ fn split_paths_judge_alike_however_parts_come_spec_wire_4() {
     }
 }
 
+/// Bob's (1) split commit `c` with `entries` and purge author `author`, signed again: its header
+/// and signatures (no part).
+fn resigned(lp: &mut LocalPeer, c: &osis_commit::CommitBlob, entries: Vec<Vec<u8>>, author: Option<Tid>) -> osis_commit::CommitBlob {
+    let mut h = c.header.clone();
+    h.path = osis_commit::Paths::Split(osis_commit::Split { author, entries });
+    let mut cb = osis_commit::CommitBuilder::new(h.kind, h.ts, h.signer, osis_commit::Path::default(), h.form);
+    let key = lp.peers[1].engine.sign_forged(&mut cb);
+    let a = cb.account.unwrap();
+    let id = h.id();
+    let inner = osis_crypto::seal_inner(&a.inner, &id.0, &a.node, &a.node_key);
+    let sigs = osis_commit::Sigs::signed(&id, &key, Some(inner), Vec::new(), Vec::new());
+    osis_commit::CommitBlob { header: h, sigs, parts: Vec::new(), keys: BTreeMap::new() }
+}
+
+/// What a reader opening the sections of `f` (signed header) that hold `c`'s parts on the things
+/// at `places` gets (`Envelope::open`, the commit crate's opening): each such section carrying
+/// the path keys `keys(place)` names.
+fn opened_sections(f: &osis_commit::CommitBlob, c: &osis_commit::CommitBlob, places: &[usize], keys: &dyn Fn(usize) -> BTreeMap<usize, [u8; 32]>) -> Vec<u8> {
+    let things = c.header.things();
+    let secret = osis_crypto::Secret32::from_bytes([9; 32]);
+    let id = f.header.id();
+    let mut rng = osis_crypto::SeededRng::from_u64(0);
+    let mut sections: Vec<osis_commit::Section> = places
+        .iter()
+        .map(|i| {
+            let ps: Vec<&osis_commit::Part> = c.parts.iter().filter(|p| c.header.aspects[p.ai].tid == things[*i]).collect();
+            osis_commit::Section::seal(&id, &ps, Some(&keys(*i)), Vec::new(), &secret, &mut rng).unwrap()
+        })
+        .collect();
+    sections.sort_by_key(|s| s.ais.first().copied());
+    let env = osis_commit::Envelope { header: f.header.clone(), sigs: f.sigs.clone(), sections };
+    env.open(|_| vec![secret.clone()]).unwrap().commit.encode()
+}
+
+// spec/wire.md §4 `Split` (an entry that is no padded list, breaks `Path`'s rules or leaves out the
+// purge author leaves its thing's parts holding nothing at every reader of it; a section carrying a
+// key that does not open its entry, or a key beyond its parts' things, holds nothing), spec/commits.md
+// §4 Hostile input: Bob's split commit writing D (through H) and P, forged and signed again. Each
+// forgery harms only the things it forges, alike at every reader of them whatever sections each
+// opened and in whatever order: Alice (reads D and P) takes both sections at once, P's then D's, or
+// D's then P's; Carol (reads P) takes P's. An entry under a key of the writer's own, carried by
+// the thing's section, opens for every reader of that section (what a writer holding no roles
+// secret seals, `engine::write::path_secret`).
+#[test]
+fn hostile_split_commits_harm_only_their_forged_things_alike_everywhere_spec_wire_4() {
+    let fresh = || {
+        LocalPeer::cached("validity::two_paths_world", || {
+            let (mut lp, _, d, p) = two_paths_world();
+            let (id, c) = bob_writes_both(&mut lp, d, p);
+            (lp, (d, p, id, c))
+        })
+    };
+    let (mut lp, (d, p, _, c)) = fresh();
+    let h = *paths_stated(&c).iter().find(|(t, _)| *t == d).unwrap().1.first().unwrap();
+    let bob = lp.peers[1].engine.me();
+    let things = c.header.things();
+    let (id_, ip) = (things.iter().position(|t| *t == d).unwrap(), things.iter().position(|t| *t == p).unwrap());
+    let osis_commit::Paths::Split(sp) = &c.header.path else { panic!("split") };
+    let own = |i: usize| BTreeMap::from([(i, c.keys[&i])]);
+    let junk: Vec<u8> = (0..sp.entries[id_].len()).map(|i| (i * 37 % 251) as u8).collect();
+    let mine = [7u8; 32];
+    let with = |i: usize, e: Vec<u8>| {
+        let mut es = sp.entries.clone();
+        es[i] = e;
+        es
+    };
+    let mut swapped = sp.entries.clone();
+    swapped.swap(0, 1);
+    type Keys<'a> = Box<dyn Fn(usize) -> BTreeMap<usize, [u8; 32]> + 'a>;
+    // (name, entries, author, the keys each section carries, D applies, P applies)
+    type Case<'a> = (&'a str, Vec<Vec<u8>>, Option<Tid>, Keys<'a>, bool, bool);
+    let cases: Vec<Case<'_>> = vec![
+        ("honest", sp.entries.clone(), None, Box::new(own), true, true),
+        ("a forged entry", with(id_, junk), None, Box::new(own), false, true),
+        ("an entry under another key", with(id_, osis_commit::Split::seal(&mine, &[h]).unwrap()), None, Box::new(own), false, true),
+        ("an entry under the writer's own key, carried", with(id_, osis_commit::Split::seal(&mine, &[h]).unwrap()), None, Box::new(|i| if i == id_ { BTreeMap::from([(i, mine)]) } else { own(i) }), true, true),
+        ("entries swapped", swapped, None, Box::new(own), false, false),
+        ("a list naming the signer", with(id_, osis_commit::Split::seal(&c.keys[&id_], &[bob]).unwrap()), None, Box::new(own), false, true),
+        ("a purge author off P's path", sp.entries.clone(), Some(h), Box::new(own), true, false),
+        ("a key beyond P's section's things", sp.entries.clone(), None, Box::new(|i| if i == ip { c.keys.clone() } else { own(i) }), true, false),
+    ];
+    let reg = |lp: &mut LocalPeer, i: usize, t: Tid| lp.peers[i].engine.get(&t, &ak("t:reg.0")).unwrap();
+    for (name, entries, author, keys, d_ok, p_ok) in cases {
+        let f = resigned(&mut lp, &c, entries, author);
+        for (order, deliveries) in [("both", vec![vec![id_, ip]]), ("p, d", vec![vec![ip], vec![id_]]), ("d, p", vec![vec![id_], vec![ip]])] {
+            let (mut w, _) = fresh();
+            let before = (reg(&mut w, 0, d), reg(&mut w, 0, p));
+            for places in &deliveries {
+                unless_refused(w.peers[0].engine.ingest(&opened_sections(&f, &c, places, &*keys), Vec::new()));
+                w.peers[0].reexamine().unwrap();
+            }
+            unless_refused(w.peers[2].engine.ingest(&opened_sections(&f, &c, &[ip], &*keys), Vec::new()));
+            w.peers[2].reexamine().unwrap();
+            let at = format!("{name}, {order}");
+            assert_eq!(reg(&mut w, 0, d), if d_ok { Some(s("on d")) } else { before.0.clone() }, "{at}: Alice's D");
+            assert_eq!(reg(&mut w, 0, p), if p_ok { Some(s("on p")) } else { before.1.clone() }, "{at}: Alice's P");
+            assert_eq!(reg(&mut w, 2, p), reg(&mut w, 0, p), "{at}: Carol's P is Alice's");
+            for i in [0, 2] {
+                w.peers[i].engine.check_index();
+            }
+        }
+    }
+}
+
+// spec/commits.md §4 Unjudgeable (a split commit's thing whose entry opens nowhere here is
+// examined again when the held role inputs move), notes/sync-facade.md Pending: Carol, a reader
+// of P, holds Bob's split commit without D's part: D's path opens nowhere at her. Granted D (the
+// grant alone delivered, no part of the commit), she opens D's entry from D's roles secret at once,
+// with no restart.
+#[test]
+fn a_path_waiting_opens_when_its_roles_secret_comes_spec_commits_4() {
+    let (mut lp, _, d, p) = two_paths_world();
+    let (id, c) = bob_writes_both(&mut lp, d, p);
+    let ip = c.header.things().iter().position(|t| *t == p).unwrap();
+    let only_p = osis_commit::CommitBlob { keys: BTreeMap::from([(ip, c.keys[&ip])]), ..osis_commit::rewrite(&c, |ai| c.header.aspects[ai].tid != p) };
+    unless_refused(lp.peers[2].engine.ingest(&only_p.encode(), Vec::new()));
+    lp.peers[2].reexamine().unwrap();
+    assert_eq!(lp.peers[2].engine.get(&p, &ak("t:reg.0")).unwrap(), Some(s("on p")));
+    assert!(lp.peers[2].engine.core.ix.paths_unknown.contains(&id), "D's path opens nowhere at Carol");
+    let carol = lp.peers[2].engine.me();
+    let grant = lp.peers[0].engine.grant(&d, &carol, &edge(Role::Read)).unwrap().commits;
+    for g in grant {
+        let pk = lp.peers[0].engine.package(&g).unwrap().unwrap();
+        unless_refused(lp.peers[2].engine.ingest(&pk.bytes, pk.blobs.clone()));
+    }
+    lp.peers[2].reexamine().unwrap();
+    assert!(lp.peers[2].engine.epochs(&d).is_some_and(|e| !e.read.held_roles().is_empty()), "Carol holds D's roles secret");
+    assert!(!lp.peers[2].engine.core.ix.paths_unknown.contains(&id), "D's path opened");
+    assert_eq!(lp.peers[2].engine.core.ix.commits.get(&id).unwrap().view.paths.as_ref().unwrap().get(&d), Some(&true));
+    lp.peers[2].engine.check_index();
+}
+
+// notes/principles.md Fast by construction, notes/sync-facade.md Pending: a split commit whose
+// path opens nowhere waits on what may open it, never on everything: k commits forged by Bob
+// with D's entry opening nowhere, held at Alice, cost an unrelated write of hers nothing, at k = 1
+// and k = 10.
+#[test]
+fn split_commits_waiting_on_a_path_cost_an_unrelated_write_nothing_spec_commits_4() {
+    let work = |k: usize| {
+        let (mut lp, _, d, p) = two_paths_world();
+        let mine = new_thing(&mut lp, 0);
+        for n in 0..k {
+            let mut m = Mutation::new();
+            m.set(d, &REG, &s(&format!("on d {n}"))).unwrap();
+            m.set(p, &REG, &s(&format!("on p {n}"))).unwrap();
+            let id = lp.peers[1].commit(m).unwrap().unwrap();
+            let c = osis_commit::CommitBlob::decode(&lp.peers[1].engine.package(&id).unwrap().unwrap().bytes).unwrap();
+            let osis_commit::Paths::Split(sp) = &c.header.path else { panic!("split") };
+            let things = c.header.things();
+            let (id_, ip) = (things.iter().position(|t| *t == d).unwrap(), things.iter().position(|t| *t == p).unwrap());
+            let mut es = sp.entries.clone();
+            es[id_] = (0..es[id_].len()).map(|i| (i * 37 % 251) as u8).collect();
+            let f = resigned(&mut lp, &c, es, None);
+            unless_refused(lp.peers[0].engine.ingest(&opened_sections(&f, &c, &[ip], &|i| BTreeMap::from([(i, c.keys[&i])])), Vec::new()));
+            lp.peers[0].reexamine().unwrap();
+        }
+        assert_eq!(lp.peers[0].engine.core.ix.paths_unknown.len(), k);
+        osis_base::costs::take();
+        let mut m = Mutation::new();
+        m.set(mine, &REG, &s("unrelated")).unwrap();
+        lp.peers[0].commit(m).unwrap().unwrap();
+        let costs = osis_base::costs::take();
+        ["paths: waits settled", "paths: commits opened again"].map(|n| costs.iter().find(|x| x.0 == n).map_or(0, |x| x.2))
+    };
+    assert_eq!(work(1), [0, 0]);
+    assert_eq!(work(10), [0, 0]);
+}
+
+// The owner's rule (notes/path-form.md), spec/wire.md §4 `Split`: a write making things beside
+// writes reached another way is one commit, never refused: Bob makes X under D (through H), Y
+// under his own root and Z under P, each beside a write reached another way. Alice (D's and P's
+// admin) reads each new thing from that commit; Carol, a reader of P, reads Z from it; granted D
+// after, she reads X from what she then syncs.
+#[test]
+fn a_write_making_things_beside_writes_reached_another_way_is_one_commit_spec_wire_4() {
+    let (mut lp, _, d, p) = two_paths_world();
+    let root = lp.peers[1].engine.dependents_admin();
+    let mut made = Vec::new();
+    for (n, (under, beside)) in [(d, p), (root, d), (p, d)].into_iter().enumerate() {
+        let mut m = Mutation::new();
+        let x = lp.peers[1].engine.new_thing(&mut m, under);
+        m.set(x, &REG, &s("made")).unwrap();
+        m.set(beside, &REG, &s(&format!("beside {n}"))).unwrap();
+        let before = lp.peers[1].engine.commit_ids().len();
+        let id = lp.peers[1].commit(m).unwrap().unwrap();
+        assert_eq!(lp.peers[1].engine.commit_ids().len(), before + 1, "one commit");
+        assert!(lp.peers[1].engine.header(&id).unwrap().is_split(), "{under:?}: split");
+        made.push(x);
+    }
+    lp.sync_all().unwrap();
+    let reg = |lp: &mut LocalPeer, i: usize, t: Tid| lp.peers[i].engine.get(&t, &ak("t:reg.0")).unwrap();
+    for x in [made[0], made[2]] {
+        assert_eq!(reg(&mut lp, 0, x), Some(s("made")), "Alice reads {x:?}");
+    }
+    assert_eq!(reg(&mut lp, 2, made[2]), Some(s("made")), "Carol reads Z under P");
+    assert_eq!(reg(&mut lp, 1, made[1]), Some(s("made")), "Bob reads Y");
+    let c = lp.peers[2].engine.me();
+    set_edge(&mut lp.peers[0].engine, d, c, Some(edge(Role::Read)), None);
+    lp.hold(made[0]);
+    for _ in 0..2 {
+        lp.sync_all().unwrap();
+    }
+    assert_eq!(reg(&mut lp, 2, made[0]), Some(s("made")), "Carol, granted D later, reads X");
+    assert_eq!(reg(&mut lp, 2, d), Some(s("beside 2")), "and D");
+    for i in 0..3 {
+        lp.peers[i].engine.check_index();
+    }
+}
+
+// spec/crypto.md §5 Path entry, spec/wire.md §4 `PathKey`: every encryption of a thing's parts
+// carries its path key, so a reader holding none of the roles secrets the entry is under opens it
+// from the encryption it reads: Bob makes X under D beside a write of P (X's entry under D's roles
+// secret); X is then granted to Carol, which makes X independent: she holds X's own epochs and its
+// derived ones by history, never D's, and reads X from the sections sync seals.
+#[test]
+fn a_reader_holding_only_later_epochs_opens_the_path_from_its_section_spec_crypto_5() {
+    let (mut lp, _, d, p) = two_paths_world();
+    let mut m = Mutation::new();
+    let x = lp.peers[1].engine.new_thing(&mut m, d);
+    m.set(x, &REG, &s("made")).unwrap();
+    m.set(p, &REG, &s("beside")).unwrap();
+    let id = lp.peers[1].commit(m).unwrap().unwrap();
+    assert!(lp.peers[1].engine.header(&id).unwrap().is_split());
+    lp.hold(x);
+    lp.sync_all().unwrap();
+    let c = lp.peers[2].engine.me();
+    lp.peers[0].engine.grant(&x, &c, &edge(Role::Read)).unwrap();
+    for _ in 0..2 {
+        lp.sync_all().unwrap();
+    }
+    assert!(lp.peers[2].engine.epochs(&d).is_none_or(|e| e.read.held_roles().is_empty()), "Carol holds no roles secret of D");
+    assert_eq!(lp.peers[2].engine.get(&x, &ak("t:reg.0")).unwrap(), Some(s("made")), "Carol reads X");
+    lp.peers[2].engine.check_index();
+}
+
+// spec/wire.md §4 `PathKey` (a header-only copy of a split commit destroying things carries their
+// path keys), spec/commits.md §5 Destruction: Bob destroys his thing O in the commit that writes D
+// through H. Carol holds Q, made under O and granted to her (independent, so she holds no roles
+// secret of O): she needs O's destruction and takes it as the header-only copy carries it (no
+// part, O's path key alone), judging O destroyed.
+#[test]
+fn a_destruction_beside_a_write_through_another_actor_reaches_a_dependents_holder_spec_wire_4() {
+    let (mut lp, _, d, _) = two_paths_world();
+    let me = lp.peers[1].engine.me();
+    let o = crate::flows::thing_of(&mut lp, 1, me);
+    let q = crate::flows::thing_of(&mut lp, 1, o);
+    let c = lp.peers[2].engine.me();
+    lp.peers[1].engine.grant(&q, &c, &edge(Role::Read)).unwrap();
+    lp.sync_all().unwrap();
+    assert_eq!(lp.peers[2].engine.get(&q, &ak("t:reg.0")).unwrap(), Some(s("new")), "Carol reads Q");
+    assert!(lp.peers[2].engine.epochs(&o).is_none_or(|e| e.read.held_roles().is_empty()), "Carol holds no roles secret of O");
+    let mut m = Mutation::new();
+    let now = lp.peers[1].engine.now();
+    m.set(o, &osis_schema::core_types::PURGE, &now).unwrap();
+    m.purge(osis_commit::PurgeItem::Aspect { tid: o, ak: osis_schema::core_types::CREATED.name() });
+    m.set(d, &REG, &s("beside")).unwrap();
+    let id = lp.peers[1].commit(m).unwrap().unwrap();
+    let pk = lp.peers[1].engine.package(&id).unwrap().unwrap();
+    let whole = osis_commit::CommitBlob::decode(&pk.bytes).unwrap();
+    assert!(whole.header.is_split());
+    assert!(lp.peers[1].engine.destroyed(&o));
+    // what opening the header-only copy gives: the header and O's path key
+    let at = whole.header.things().iter().position(|t| *t == o).unwrap();
+    let keys = whole.keys.iter().filter(|(i, _)| **i == at).map(|(i, k)| (*i, *k)).collect();
+    let header_only = osis_commit::CommitBlob { header: whole.header.clone(), sigs: whole.sigs.clone(), parts: Vec::new(), keys };
+    unless_refused(lp.peers[2].engine.ingest(&header_only.encode(), pk.blobs.clone()));
+    lp.peers[2].reexamine().unwrap();
+    assert!(lp.peers[2].engine.destroyed(&o), "Carol holds O destroyed");
+    lp.peers[2].engine.check_index();
+}
+
 // spec/wire.md §4 field 2; notes/path-form.md The engine's choice: no honest commit states a wrong path. Over a world of
 // grants, holders and creations, every part's path read off what each commit Alice holds states is
 // a real chain: each hop an edge or a record descent held, from the signer to the thing.

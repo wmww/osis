@@ -297,6 +297,46 @@ fn disputes_listed_told_and_chosen_spec_permissions_5_1() {
     assert!(holds(&b, b.me()) && !holds(&b, a.me()));
 }
 
+// The owner's rule (notes/path-form.md; spec/wire.md §4 `Split`): one `Write` changing things its
+// signer reaches through different actors is one commit, never refused or split: Bob writes G,
+// which he reaches through team H, and his own thing O, and makes a thing under G. Carol, who reads
+// both G and O, and Alice, who reads G alone, each read what that commit wrote on what they read.
+#[test]
+fn the_owners_rule_one_write_through_different_actors_is_one_commit_spec_wire_4() {
+    let (alice, bob, carol) = (db(1), db(2), db(3));
+    let all = [&alice, &bob, &carol];
+    mesh(&all);
+    let (g, h) = alice.commit_with(|w| Ok((w.create_held()?, w.create_held()?))).unwrap();
+    alice.grant(h, bob.me(), Role::Write, Default::default()).unwrap();
+    alice.grant(g, h, Role::Write, Default::default()).unwrap();
+    alice.grant(g, carol.me(), Role::Read, Default::default()).unwrap();
+    let o = bob.commit_with(|w| w.create_held()).unwrap();
+    bob.grant(o, carol.me(), Role::Read, Default::default()).unwrap();
+    mesh(&all);
+    bob.hold(g).unwrap();
+    carol.hold(g).unwrap();
+    carol.hold(o).unwrap();
+    mesh(&all);
+    let k = || osis::DynamicAspectKey::untyped(ak("t:x.0"));
+    let before: std::collections::BTreeSet<_> = bob.engine(|e| e.commit_ids()).into_iter().collect();
+    let mut w = bob.write();
+    w.at(g, k()).set(&s("on g")).unwrap();
+    w.at(o, k()).set(&s("on o")).unwrap();
+    let x = w.create_held_with_admin(g).unwrap();
+    w.at(x, k()).set(&s("under g")).unwrap();
+    w.commit().unwrap().unwrap();
+    let new: Vec<_> = bob.engine(|e| e.commit_ids()).into_iter().filter(|id| !before.contains(id)).collect();
+    assert_eq!(new.len(), 1, "one commit");
+    assert!(bob.engine(|e| e.header(&new[0]).unwrap().is_split()), "each thing its own path");
+    mesh(&all);
+    for (who, db) in [("carol", &carol), ("alice", &alice)] {
+        assert_eq!(db.at(g, k()).get().unwrap(), Some(s("on g")), "{who} reads G");
+        assert_eq!(db.at(x, k()).get().unwrap(), Some(s("under g")), "{who} reads the thing made under G");
+    }
+    assert_eq!(carol.at(o, k()).get().unwrap(), Some(s("on o")), "carol reads O");
+    assert_eq!(alice.at(o, k()).get().unwrap(), None, "alice reads no O");
+}
+
 /// Carries every node's commits to every other, then settles each.
 fn mesh(dbs: &[&osis::Osis]) {
     for (i, from) in dbs.iter().enumerate() {

@@ -2,9 +2,9 @@
 //! Per consumer). A thing's path is header data: a node judging the thing's parts opens its entry
 //! with the path key an encryption of the thing's parts carried (`CommitBlob::keys`), else with
 //! the read roles secrets it holds of the things up the thing's record chain. A thing whose path
-//! opens to a bad list, or opens nowhere here, has its parts judged invalid (`View::path_known`);
-//! one opening nowhere here is opened again as the node's role inputs move (`refresh`, from
-//! `atomic::rejudged`) or a late encryption brings its key (`atomic::join_late`).
+//! opens to a bad list, or opens nowhere here, has its parts judged invalid (`View::paths`);
+//! one opening nowhere here waits (`Wait`) and is opened again when a roles secret or a record
+//! that may open it moves (`refresh`) or a late encryption brings its key (`atomic::join_late`).
 
 use crate::engine::{Core, Tx};
 use osis_base::Tid;
@@ -54,28 +54,106 @@ pub(crate) fn undecided(h: &Header, paths: Option<&BTreeMap<Tid, bool>>) -> bool
     paths.is_some_and(|p| h.things().iter().any(|t| !p.contains_key(t)))
 }
 
-/// Opens again the paths of every held split commit with a thing whose path opened nowhere here
-/// (`Indexes::paths_unknown`), the node's role inputs having moved: where more are decided, its
-/// view takes them and its parts are judged again. Such a thing has no key held, so only roles
-/// secrets are tried. Brute force over those commits (notes/path-form.md Per consumer: a holder
-/// lacking an entry's epoch and every encryption of the thing's parts).
+/// What the node holds of the things `open` tries for the things of commit `id` whose paths open
+/// nowhere here: per such thing, per thing up its record chain, the epochs of its own secrets
+/// whose roles secret is held (`Indexes::secrets`) and, for an account, the epochs whose seeds are
+/// held. What may open an entry, read from stamped containers alone (no state, no derivation): a
+/// `memo::Effects` following it is due exactly when one of them moves (a record learned up a
+/// chain, an independent thing's or an account's secrets). A key actor's are fixed.
+fn openers(core: &Core, id: &osis_base::CommitId) -> Openers {
+    let Some(m) = core.ix.commits.get(id) else { return Vec::new() };
+    let Some(paths) = m.view.paths.as_deref() else { return Vec::new() };
+    let mut undecided: Vec<Tid> = m.view.aspects.iter().map(|a| a.tid).filter(|t| !paths.contains_key(t)).collect();
+    undecided.dedup();
+    let mut out = Vec::new();
+    for t in undecided {
+        let mut x = Some(t);
+        for _ in 0..=osis_base::format::MAX_CHAIN_DEPTH + 1 {
+            let Some(cur) = x else { break };
+            let own = core.ix.secrets.get(&cur).map(|e| e.read.epochs().filter(|(ep, _)| e.read.roles_secret(ep).is_some()).map(|(ep, _)| *ep).collect()).unwrap_or_default();
+            let seeds = core.accounts.get(&cur).map(|a| a.keys.keys().cloned().collect()).unwrap_or_default();
+            out.push((cur, own, seeds));
+            x = core.created(&cur).and_then(osis_base::CreationRecord::mint_admin);
+        }
+    }
+    out
+}
+
+type Openers = Vec<(Tid, Vec<osis_crypto::Epoch>, Vec<osis_crypto::VerifyingKey>)>;
+
+/// The wait of held split commits with a thing whose path opens nowhere here
+/// (`Indexes::paths_unknown`, journaled): each followed (`memo::Effects`) by what may open it
+/// (`openers`), opened again only when that moves (notes/sync-facade.md Pending). In memory only:
+/// an open, a reload and a rollback build it again from `paths_unknown`, taking what they find as
+/// tried (each commit's view was decided against what was held when it was last judged).
+pub(crate) struct Wait {
+    fx: osis_base::memo::Effects<osis_base::CommitId, Openers>,
+    /// `paths_unknown`'s additions since: followed, and tried on their first settle.
+    added: osis_base::memo::Feed<osis_base::CommitId>,
+}
+
+/// Opens again the paths of the held split commits waiting in `Indexes::paths_unknown` whose
+/// openers moved (`Wait`): where more are decided, a commit's view takes them and its parts are
+/// judged again. Such a thing has no key held (a held part carries its own), so only roles
+/// secrets are tried. Costs the commits whose openers moved, never the commits waiting.
 pub(crate) fn refresh(tx: &mut Tx<'_>) {
-    let ids: Vec<osis_base::CommitId> = tx.core.ix.paths_unknown.iter().copied().collect();
-    for id in ids {
-        let Some(m) = tx.core.ix.commits.get(&id).cloned() else { continue };
-        let h = m.header.clone();
-        let mut now = m.view.paths.as_deref().cloned().unwrap_or_default();
-        let before = now.len();
-        for (i, t) in h.things().into_iter().enumerate() {
-            if !now.contains_key(&t)
-                && let Some(p) = open(tx.core, &h, None, i, &t)
-            {
-                now.insert(t, matches!(p, ThingPath::Known(_)));
+    let built = tx.core.paths_wait.is_none();
+    let mut w = tx.core.paths_wait.take().unwrap_or_else(|| Wait { fx: osis_base::memo::Effects::new("paths: wait"), added: tx.core.ix.paths_unknown.feed() });
+    let mut fresh = std::collections::BTreeSet::new();
+    if built {
+        for id in tx.core.ix.paths_unknown.iter() {
+            w.fx.want(*id);
+        }
+    }
+    for id in w.added.added() {
+        if tx.core.ix.paths_unknown.contains(&id) {
+            w.fx.want(id);
+            fresh.insert(id);
+        }
+    }
+    for id in w.fx.due() {
+        if !tx.core.ix.paths_unknown.contains(&id) {
+            w.fx.unwant(&id);
+            continue;
+        }
+        let core: &Core = tx.core;
+        let moved = w.fx.settle(&id, || {
+            osis_base::costs::count("paths: waits settled", 1);
+            openers(core, &id)
+        });
+        // a commit followed anew is tried once (what came in its own transaction); one built
+        // from the index again, only once its openers move
+        let tried = match moved {
+            Some((Some(_), _)) => true,
+            Some((None, _)) => fresh.contains(&id),
+            None => false,
+        };
+        if tried {
+            reopen(tx, &id);
+            if !tx.core.ix.paths_unknown.contains(&id) {
+                w.fx.unwant(&id);
             }
         }
-        if now.len() != before {
-            set_paths(tx, &id, Some(Arc::new(now)));
+    }
+    tx.core.paths_wait = Some(w);
+}
+
+/// Tries the roles secrets held on commit `id`'s things whose paths open nowhere here.
+fn reopen(tx: &mut Tx<'_>, id: &osis_base::CommitId) {
+    let Some(m) = tx.core.ix.commits.get(id).cloned() else { return };
+    osis_base::costs::count("paths: commits opened again", 1);
+    let h = m.header.clone();
+    let mut now = m.view.paths.as_deref().cloned().unwrap_or_default();
+    let before = now.len();
+    for (i, t) in h.things().into_iter().enumerate() {
+        if !now.contains_key(&t)
+            && let Some(p) = open(tx.core, &h, None, i, &t)
+        {
+            now.insert(t, matches!(p, ThingPath::Known(_)));
         }
+    }
+    if now.len() != before {
+        set_paths(tx, id, Some(Arc::new(now)));
     }
 }
 

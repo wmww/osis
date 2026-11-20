@@ -1133,6 +1133,9 @@ pub struct Core {
     /// (`sync::dial::drop_departed`), followed: settled at each transaction's end that moved what
     /// it read.
     pub(crate) dial_departed: memo::Effects<(), crate::sync::dial::Departed>,
+    /// The held split commits waiting for a path to open (`apply::paths::Wait`): built again
+    /// from `Indexes::paths_unknown` where `None` (an open, a rollback, a copy).
+    pub(crate) paths_wait: Option<crate::apply::paths::Wait>,
     /// `Engine::holders_named` per commit (`memo`): an admin's pass reads it for every inbox
     /// copy, and it decodes role parts.
     pub(crate) holders_named: memo::Memo<CommitId, Arc<BTreeMap<usize, BTreeSet<Tid>>>>,
@@ -1567,6 +1570,7 @@ impl Core {
             dial_peers: self.dial_peers.clone(),
             roster_holders: self.roster_holders.clone(),
             dial_departed: self.dial_departed.clone(),
+            paths_wait: None,
             holders_named: self.holders_named.clone(),
             certified: self.certified.clone(),
             listed: self.listed.clone(),
@@ -2067,6 +2071,8 @@ impl Core {
             // the node closure's follower, if it acted on what goes back (`sync::units::Follow`)
             self.closure_follow.rolled_back();
             self.touches.clear();
+            // what it followed may have gone back: built again from the restored index
+            self.paths_wait = None;
             if self.memory_tx {
                 self.memory_generation += 1;
             } else {
@@ -2166,6 +2172,8 @@ impl Core {
             dial_peers: _,
             roster_holders: _,
             dial_departed: _,
+            // built again from the journaled `ix.paths_unknown` (`apply::paths::Wait`)
+            paths_wait: _,
             holders_named: _,
             // followed (`Effects`): what a rollback restores moves its reads, so the next follow
             // indexes again
@@ -2423,6 +2431,7 @@ impl Core {
             dial_peers: memo::Memo::new("sync: dial peers"),
             roster_holders: memo::Memo::new("sync: roster holders"),
             dial_departed: memo::Effects::new("sync: dial list departed"),
+            paths_wait: None,
             holders_named: memo::Memo::new("holders named: read"),
             certified: Default::default(),
             listed: Default::default(),

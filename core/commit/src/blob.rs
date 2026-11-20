@@ -536,7 +536,7 @@ impl Envelope {
                 Paths::Split(sp) => sp.entries.as_slice(),
                 Paths::One(_) => &[],
             };
-            if c.keys.iter().any(|(i, k)| entries.get(*i).is_none_or(|e| crate::path::Split::open(k, e).is_none())) {
+            if c.keys.iter().any(|(i, k)| entries.get(*i).is_none_or(|e| crate::path::Split::open(k, e).is_none())) || (split && !keys_exact(h, &s.ais, &c.keys)) {
                 continue;
             }
             parts.extend(c.parts);
@@ -548,6 +548,25 @@ impl Envelope {
         commit.check_paths()?;
         Ok(Opened { commit, sealed })
     }
+}
+
+/// Whether a split commit's section on aspects `ais` carries the path keys of exactly the things
+/// its parts are on, or, holding no part, of things the commit destroys only (spec/wire.md §4
+/// `Contents`: one encoding; a key beyond them is bad input). Read once the aspect list is
+/// resolved: before, a section's things are unknown and its keys are checked against their
+/// entries alone.
+fn keys_exact(h: &Header, ais: &[usize], keys: &BTreeMap<usize, [u8; 32]>) -> bool {
+    if !h.is_resolved() {
+        return true;
+    }
+    let things = h.things();
+    let place = |t: &Tid| things.iter().position(|x| x == t);
+    if ais.is_empty() {
+        let destroyed: std::collections::BTreeSet<usize> = h.destroyed().filter_map(place).collect();
+        return !keys.is_empty() && keys.keys().all(|i| destroyed.contains(i));
+    }
+    let of_parts: std::collections::BTreeSet<usize> = ais.iter().filter_map(|ai| h.aspects.get(*ai)).filter_map(|a| place(&a.tid)).collect();
+    keys.keys().copied().eq(of_parts)
 }
 
 /// What opening an envelope gives: the commit with its opened parts, and the sections no held
