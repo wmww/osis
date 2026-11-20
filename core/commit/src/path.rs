@@ -11,19 +11,74 @@ use osis_base::Tid;
 use osis_crypto::Secret32;
 use std::collections::BTreeSet;
 
-/// One stated path `[i, A1, …, Ak]`: the purge-author index `purge` (0 names the signer, j the
-/// listed thing Aj, spec/permissions.md §6) and the listed things in order. The empty path naming
-/// the signer is `Path::default()`.
+/// One stated path `[i, A1, …, Ak, marks?]`: the purge-author index `purge` (0 names the signer, j
+/// the listed thing Aj, spec/permissions.md §6), the listed things in order, and the hops it marks
+/// direct (`direct`: bit j marks hop j, joining members j and j + 1; spec/permissions.md §1 Path,
+/// Direct mark). The empty path naming the signer is `Path::default()`.
 #[derive(Clone, Debug, Default, PartialEq, Eq, Hash)]
 pub struct Path {
     pub purge: usize,
     pub things: Vec<Tid>,
+    pub direct: Marks,
+}
+
+/// Hops marked direct, bit j for hop j (spec/wire.md §4 `marks`): at most `MAX_PATH_THINGS` + 1
+/// hops, so 65 bits.
+pub type Marks = u128;
+
+/// The canonical `marks` bytes: bit j in byte j div 8, least significant first, no trailing zero
+/// byte; empty for none (then absent from the encoding).
+pub fn marks_bytes(m: Marks) -> Vec<u8> {
+    let mut b = m.to_le_bytes().to_vec();
+    while b.last() == Some(&0) {
+        b.pop();
+    }
+    b
+}
+
+/// Reads `marks` bytes: 1 to 9 bytes, the last nonzero, no bit above `k` (spec/wire.md §4).
+fn read_marks(b: &[u8], k: usize) -> Option<Marks> {
+    if b.is_empty() || b.len() > MARKS_MAX || b.last() == Some(&0) {
+        return None;
+    }
+    let m = b.iter().rev().fold(0, |m: Marks, x| (m << 8) | Marks::from(*x));
+    (m >> (k + 1) == 0).then_some(m)
+}
+
+/// Bytes of the longest `marks`: `MAX_PATH_THINGS` + 1 hops.
+const MARKS_MAX: usize = (MAX_PATH_THINGS + 1).div_ceil(8);
+
+/// An array: `before` (a `Path`'s index), the things listed, then `marks`
+/// where any hop is marked: a `Path`, and a split entry's plaintext (no index).
+fn put_listed(out: &mut Vec<u8>, before: Option<u64>, things: &[Tid], m: Marks) {
+    let mb = marks_bytes(m);
+    put_array(out, usize::from(before.is_some()) + things.len() + usize::from(!mb.is_empty()));
+    before.iter().for_each(|i| put_uint(out, *i));
+    things.iter().for_each(|t| put_bytes(out, t.as_bytes()));
+    if !mb.is_empty() {
+        put_bytes(out, &mb);
+    }
+}
+
+/// Reads listed things and an optional trailing `marks` (a byte string of other than a tid's
+/// length) from `items`, against the count of things.
+fn read_listed(items: &[Item]) -> Result<(Vec<Tid>, Marks), Error> {
+    let (things, m) = match items.split_last() {
+        Some((last, rest)) if last.as_bytes().is_some_and(|b| b.len() != TID_LEN) => (rest, last.as_bytes()),
+        _ => (items, None),
+    };
+    let things = things.iter().map(|v| item::tid(*v)).collect::<Result<Vec<Tid>, Error>>()?;
+    let direct = match m {
+        Some(b) => read_marks(b, things.len()).ok_or(Error::Malformed("path marks not canonical or past its hops"))?,
+        None => 0,
+    };
+    Ok((things, direct))
 }
 
 impl Path {
     /// The path of one listed thing `x`, naming it as purge author.
     pub fn through(x: Tid) -> Path {
-        Path { purge: 1, things: vec![x] }
+        Path { purge: 1, things: vec![x], direct: 0 }
     }
 
     /// The purge author it names, `signer` for index 0.
@@ -52,8 +107,8 @@ impl Path {
         let below = p0.to(t0).to_vec();
         let ended: Vec<Tid> = below.iter().copied().chain([*t0]).collect();
         [p0.things.clone(), below, ended].into_iter().find_map(|things| {
-            let q = Path { purge: 0, things };
-            if !each.clone().into_iter().all(|(t, p)| q.to(t) == p.to(t)) {
+            let q = Path { purge: 0, things, direct: p0.direct };
+            if !each.clone().into_iter().all(|(t, p)| q.to(t) == p.to(t) && q.direct == p.direct) {
                 return None;
             }
             let purge = if author == signer { 0 } else { 1 + q.things.iter().position(|x| *x == author)? };
@@ -69,18 +124,17 @@ impl Path {
     }
 
     pub(crate) fn put(&self, out: &mut Vec<u8>) {
-        put_array(out, 1 + self.things.len());
-        put_uint(out, self.purge as u64);
-        self.things.iter().for_each(|t| put_bytes(out, t.as_bytes()));
+        put_listed(out, Some(self.purge as u64), &self.things, self.direct);
     }
 
     /// Reads a `Path` of a commit signed by `signer`: i ≤ k, k ≤ `MAX_PATH_THINGS`, no tid twice
     /// and none equal to `signer` (spec/wire.md §4), else malformed.
     pub(crate) fn read(v: Item, signer: &Tid) -> Result<Path, Error> {
-        let l = item::list(v)?;
-        let mut it = l.iter();
-        let purge = item::idx(it.next().ok_or(Error::Malformed("empty path"))?)?;
-        let p = Path { purge, things: it.map(item::tid).collect::<Result<Vec<Tid>, Error>>()? };
+        let l: Vec<Item> = item::list(v)?.iter().collect();
+        let (first, rest) = l.split_first().ok_or(Error::Malformed("empty path"))?;
+        let purge = item::idx(*first)?;
+        let (things, direct) = read_listed(rest)?;
+        let p = Path { purge, things, direct };
         p.check(signer)?;
         Ok(p)
     }
@@ -89,6 +143,9 @@ impl Path {
     pub(crate) fn check(&self, signer: &Tid) -> Result<(), Error> {
         if self.purge > self.things.len() {
             return Err(Error::Malformed("purge-author index out of range"));
+        }
+        if self.direct >> (self.things.len() + 1) != 0 {
+            return Err(Error::Malformed("path marks a hop past its own"));
         }
         listed_ok(&self.things, signer).then_some(()).ok_or(Error::Malformed("path longer than MAX_PATH_THINGS, or listing a thing twice or its signer"))
     }
@@ -107,9 +164,11 @@ fn listed_ok(things: &[Tid], signer: &Tid) -> bool {
 /// count (spec/wire.md §4 `Split`).
 pub const ENTRY_CLASSES: [usize; 3] = [4, 16, MAX_PATH_THINGS];
 
-/// Bytes of the canonical `[tid*]` of `k` things.
+/// Bytes of the canonical `[tid*, marks]` of `k` things with every one of its `k` + 1 hops
+/// marked: a class's padded plaintext (spec/wire.md §4 `Split`).
 fn listed_len(k: usize) -> usize {
-    head_len(k as u64) + k * (1 + TID_LEN)
+    let m = (k + 1).div_ceil(8);
+    head_len(k as u64 + 1) + k * (1 + TID_LEN) + head_len(m as u64) + m
 }
 
 /// Bytes of an entry's commitment to its path key (`key_commitment`).
@@ -163,11 +222,13 @@ impl Split {
     /// Thing `t`'s entry: the commitment to its path key, then its listed things, canonical,
     /// zero-padded to their class, sealed under that key, nonce zero, empty AD (one plaintext per
     /// key: the blind is fresh per commit).
-    pub fn seal(key: &[u8; 32], listed: &[Tid]) -> Result<Vec<u8>, Error> {
+    pub fn seal(key: &[u8; 32], listed: &[Tid], direct: Marks) -> Result<Vec<u8>, Error> {
         let len = entry_len(listed.len()).ok_or(Error::Build("path longer than MAX_PATH_THINGS"))? - COMMITMENT_LEN - osis_crypto::aead::TAG_LEN;
+        if direct >> (listed.len() + 1) != 0 {
+            return Err(Error::Build("path marks a hop past its own"));
+        }
         let mut pt = Vec::with_capacity(len);
-        put_array(&mut pt, listed.len());
-        listed.iter().for_each(|t| put_bytes(&mut pt, t.as_bytes()));
+        put_listed(&mut pt, None, listed, direct);
         pt.resize(len, 0);
         let mut out = key_commitment(key).to_vec();
         out.extend(osis_crypto::aead::seal(key, &osis_crypto::aead::ZERO_NONCE, &[], &pt)?);
@@ -175,23 +236,24 @@ impl Split {
     }
 
     /// Opens `entry` under `key`: `None` where the entry does not commit to `key` (it is no key of
-    /// this entry); else the things it lists, `None` inside where the committed key does not open
-    /// it or the plaintext is no canonical `[tid*]` padded with zeros to its class.
+    /// this entry); else the things it lists and the hops it marks, `None` inside where the
+    /// committed key does not open it or the plaintext is no canonical `[tid*, marks?]` padded
+    /// with zeros to its class.
     ///
     /// Invariant (spec/crypto.md §5 Path entry): every key an entry accepts is the one it commits
     /// to (up to a BLAKE3 collision), and XChaCha20-Poly1305 under one key opens one ciphertext
     /// to one plaintext, so every reader reading a thing's path reads the same one, whichever
     /// route its key came by (an encryption of the thing's parts, a copy, a header-only copy, a
     /// roles secret) and in whatever order: a reading is a function of the commit.
-    pub fn open(key: &[u8; 32], entry: &[u8]) -> Option<Option<Vec<Tid>>> {
+    pub fn open(key: &[u8; 32], entry: &[u8]) -> Option<Option<(Vec<Tid>, Marks)>> {
         let (commitment, sealed) = entry.split_at_checked(COMMITMENT_LEN)?;
         if *commitment != key_commitment(key) {
             return None;
         }
         let Ok(pt) = osis_crypto::aead::open(key, &osis_crypto::aead::ZERO_NONCE, &[], sealed) else { return Some(None) };
         let Ok(head) = osis_base::cbor::item_prefix(&pt, &crate::header::LIMITS) else { return Some(None) };
-        let listed = Item::parse(head, &crate::header::LIMITS).ok().and_then(|v| item::list(v).ok()).and_then(|l| l.iter().map(item::tid).collect::<Result<Vec<Tid>, _>>().ok());
-        let padded = listed.as_ref().is_some_and(|l| entry_len(l.len()) == Some(entry.len()) && listed_len(l.len()) == head.len() && pt.get(head.len()..).is_some_and(|r| r.iter().all(|b| *b == 0)));
+        let listed = Item::parse(head, &crate::header::LIMITS).ok().and_then(|v| item::list(v).ok()).and_then(|l| read_listed(&l.iter().collect::<Vec<_>>()).ok());
+        let padded = listed.as_ref().is_some_and(|(l, _)| entry_len(l.len()) == Some(entry.len()) && pt.get(head.len()..).is_some_and(|r| r.iter().all(|b| *b == 0)));
         Some(listed.filter(|_| padded))
     }
 
@@ -265,8 +327,8 @@ pub enum ThingPath {
 /// Reads the things thing `t`'s entry lists, opened, against the commit's signer and purge author
 /// `author`: `Path`'s rules, `t` listed last if at all, and `author` among `t`'s members
 /// [signer, listed…, t].
-pub(crate) fn thing_path(listed: Option<Vec<Tid>>, signer: &Tid, author: &Tid, t: &Tid) -> ThingPath {
-    let Some(mut things) = listed else { return ThingPath::Bad };
+pub(crate) fn thing_path(listed: Option<(Vec<Tid>, Marks)>, signer: &Tid, author: &Tid, t: &Tid) -> ThingPath {
+    let Some((mut things, direct)) = listed else { return ThingPath::Bad };
     if !listed_ok(&things, signer) || things.iter().rev().skip(1).any(|x| x == t) {
         return ThingPath::Bad;
     }
@@ -280,5 +342,5 @@ pub(crate) fn thing_path(listed: Option<Vec<Tid>>, signer: &Tid, author: &Tid, t
     } else {
         return ThingPath::Bad;
     };
-    ThingPath::Known(Path { purge, things })
+    ThingPath::Known(Path { purge, things, direct })
 }

@@ -4398,10 +4398,10 @@ fn hostile_split_commits_harm_only_their_forged_things_alike_everywhere_spec_wir
     let cases: Vec<Case<'_>> = vec![
         ("honest", sp.entries.clone(), None, Box::new(own), true, true),
         ("a forged entry", with(id_, junk), None, Box::new(own), false, true),
-        ("an entry under another key", with(id_, osis_commit::Split::seal(&mine, &[h]).unwrap()), None, Box::new(own), false, true),
-        ("an entry under the writer's own key, carried", with(id_, osis_commit::Split::seal(&mine, &[h]).unwrap()), None, Box::new(|i| if i == id_ { BTreeMap::from([(i, mine)]) } else { own(i) }), true, true),
+        ("an entry under another key", with(id_, osis_commit::Split::seal(&mine, &[h], 0).unwrap()), None, Box::new(own), false, true),
+        ("an entry under the writer's own key, carried", with(id_, osis_commit::Split::seal(&mine, &[h], 0).unwrap()), None, Box::new(|i| if i == id_ { BTreeMap::from([(i, mine)]) } else { own(i) }), true, true),
         ("entries swapped", swapped, None, Box::new(own), false, false),
-        ("a list naming the signer", with(id_, osis_commit::Split::seal(&c.keys[&id_], &[bob]).unwrap()), None, Box::new(own), false, true),
+        ("a list naming the signer", with(id_, osis_commit::Split::seal(&c.keys[&id_], &[bob], 0).unwrap()), None, Box::new(own), false, true),
         ("a purge author off P's path", sp.entries.clone(), Some(h), Box::new(own), true, false),
         ("a key beyond P's section's things", sp.entries.clone(), None, Box::new(|i| if i == ip { c.keys.clone() } else { own(i) }), true, false),
     ];
@@ -4825,10 +4825,10 @@ fn a_stated_index_acts_no_wider_than_the_acting_check_spec_permissions_5_2() {
     let id_ = things.iter().position(|t| *t == d).unwrap();
     let with_d = |listed: &[Tid]| {
         let mut es = sp.entries.clone();
-        es[id_] = Split::seal(&both.keys[&id_], listed).unwrap();
+        es[id_] = Split::seal(&both.keys[&id_], listed, 0).unwrap();
         es
     };
-    let clear = |purge: usize, things: Vec<Tid>| Paths::One(Path { purge, things });
+    let clear = |purge: usize, things: Vec<Tid>| Paths::One(Path { purge, things, direct: 0 });
     // (name, base commit, path, D applies, P applies)
     let cases: Vec<(&str, &osis_commit::CommitBlob, Paths, bool, bool)> = vec![
         ("clear, naming H", &one, clear(1, vec![h]), true, false),
@@ -5228,18 +5228,18 @@ fn a_write_states_the_holders_it_goes_through_spec_wire_4() {
     let (mut lp, chain, t, d) = holders_world(3);
     let mut m = Mutation::new();
     m.set(t, &REG, &s("on t")).unwrap();
-    assert_eq!(bobs_path(&mut lp, m), osis_commit::Paths::One(osis_commit::Path { purge: 0, things: chain.clone() }));
+    assert_eq!(bobs_path(&mut lp, m), osis_commit::Paths::One(osis_commit::Path { purge: 0, things: chain.clone(), direct: 0 }));
     let mut m = Mutation::new();
     m.set(d, &REG, &s("on d")).unwrap();
     assert_eq!(bobs_path(&mut lp, m), osis_commit::Paths::One(osis_commit::Path::default()));
     let mut m = Mutation::new();
     m.set(chain[2], &REG, &s("on c2")).unwrap();
-    assert_eq!(bobs_path(&mut lp, m), osis_commit::Paths::One(osis_commit::Path { purge: 0, things: chain[..2].to_vec() }));
+    assert_eq!(bobs_path(&mut lp, m), osis_commit::Paths::One(osis_commit::Path { purge: 0, things: chain[..2].to_vec(), direct: 0 }));
     // acting for a holder: the path goes through it, naming it
     let mut m = Mutation::new();
     m.set(t, &REG, &s("as c0")).unwrap();
     m.act_as(chain[0]);
-    assert_eq!(bobs_path(&mut lp, m), osis_commit::Paths::One(osis_commit::Path { purge: 1, things: chain.clone() }));
+    assert_eq!(bobs_path(&mut lp, m), osis_commit::Paths::One(osis_commit::Path { purge: 1, things: chain.clone(), direct: 0 }));
     let mut m = Mutation::new();
     m.set(t, &REG, &s("on t again")).unwrap();
     m.set(d, &REG, &s("on d again")).unwrap();
@@ -5382,7 +5382,7 @@ fn one_path_in_the_clear_only_where_it_shows_no_reader_another_roster_spec_wire_
     m.set(d, &REG, &s("beside x")).unwrap();
     let id = lp.peers[1].commit(m).unwrap().unwrap();
     let hd = lp.peers[1].engine.header(&id).unwrap();
-    assert_eq!(hd.path, osis_commit::Paths::One(osis_commit::Path { purge: 0, things: vec![h, d] }), "a dependent beside its parent");
+    assert_eq!(hd.path, osis_commit::Paths::One(osis_commit::Path { purge: 0, things: vec![h, d], direct: 0 }), "a dependent beside its parent");
     lp.sync_all().unwrap();
     assert_eq!(lp.peers[0].engine.get(&x, &ak("t:reg.0")).unwrap(), Some(s("under d")));
 }
@@ -5415,7 +5415,7 @@ fn the_engine_states_one_path_for_a_creation_spec_wire_4() {
     m.set(x, &REG, &s("under t")).unwrap();
     lp.peers[1].commit(m).unwrap();
     let h = lp.peers[1].engine.header(&made(&lp, 1, x)).unwrap();
-    assert_eq!(h.path, osis_commit::Paths::One(osis_commit::Path { purge: 0, things: vec![t] }));
+    assert_eq!(h.path, osis_commit::Paths::One(osis_commit::Path { purge: 0, things: vec![t], direct: 0 }));
     assert_eq!(path_bytes(&h), 35);
     let (_, d, _, _, c) = acting_on_two();
     assert_eq!(c.header.things().len(), 2);

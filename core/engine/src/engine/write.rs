@@ -457,13 +457,13 @@ pub(crate) fn stated_paths(core: &Core, plan: &CommitPlan, writes: &[AspectWrite
     let mut each: BTreeMap<Tid, (osis_commit::Path, bool)> = BTreeMap::new();
     for (t, r) in need {
         let path = if actor == node {
-            path_with(core, node, records, &t, Need::Role(r), plan.ts).map(|(things, rec)| (osis_commit::Path { purge: 0, things }, rec))
+            path_with(core, node, records, &t, Need::Role(r), plan.ts).map(|(things, rec)| (osis_commit::Path { purge: 0, things, direct: 0 }, rec))
         } else {
             // Open (notes/a1-spec/README.md Open 16): acting for a thing not on this thing's path
             // states the Interim `[actor]` below, as the Acting check accepts it
             path_with(core, node, records, &actor, Need::Role(r), plan.ts).zip(path_with(core, actor, records, &t, Need::Role(r), plan.ts)).map(|((to, _), (from, rec))| {
                 let purge = to.len() + 1;
-                (osis_commit::Path { purge, things: to.into_iter().chain([actor]).chain(from).collect() }, rec)
+                (osis_commit::Path { purge, things: to.into_iter().chain([actor]).chain(from).collect(), direct: 0 }, rec)
             })
         };
         let Some(path) = path.filter(|(p, _)| p.things.iter().collect::<BTreeSet<_>>().len() == p.things.len() && !p.things.contains(&node)) else { return Ok(fallback) };
@@ -565,7 +565,7 @@ fn role_path(core: &Core, plan: &CommitPlan, writes: &[AspectWrite], edges: &[(T
         if listed.len() > osis_base::format::MAX_PATH_THINGS {
             return Err(Error::Misuse("a path through more than MAX_PATH_THINGS (64) holders"));
         }
-        each.insert(t, osis_commit::Path { purge: 0, things: listed });
+        each.insert(t, osis_commit::Path { purge: 0, things: listed, direct: 0 });
     }
     let one = osis_commit::Path::one_of(each.iter(), node, node);
     debug_assert!(one.is_some() || each.is_empty(), "a role commit's things are reached along one path: {each:?}");
@@ -1016,7 +1016,7 @@ fn build(tx: &mut Tx<'_>, plan: CommitPlan, deltas: Vec<Resolved>) -> Result<osi
             b.path = p;
         }
         Stated::Split(author, paths) => {
-            let things = paths.into_iter().map(|(t, listed)| (t, (listed, path_secret(tx.core, &plan, &t, &mut *tx.rng)))).collect();
+            let things = paths.into_iter().map(|(t, listed)| (t, ((listed, 0), path_secret(tx.core, &plan, &t, &mut *tx.rng)))).collect();
             b.split = Some(osis_commit::SplitWrite { author, things });
         }
     }

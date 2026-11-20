@@ -15,7 +15,7 @@ One row added to the table:
 ```
 Header    := [version, signer, path, kind, ts, form, expires, aspects,
               purge, undoes, blind, keys, frontier, ephemeral, epoch, rotation, reseal, remains, flags?]
-Path      := [index, tid*]                 ; the purge-author index, then the listed things A1..Ak
+Path      := [index, tid*, marks?]         ; the purge-author index, the listed things A1..Ak, the hops marked direct
 Paths     := Path | Split                  ; one Path for every thing written, or the split form
 Split     := [Opt(tid), [bytes+]]          ; the purge author (absent: the signer), one sealed path per thing written
 PathKey   := [index, bytes]                ; a thing's index among the things written, its path key
@@ -61,4 +61,4 @@ The commitments bullet on header lists reads:
 
 ## 12. Decoder limits
 The Header line reads:
-- Header: each inline list at most `CHUNK_THRESHOLD` bytes, each linked one at most `MAX_LIST_BYTES`; a `Path` at most MAX_PATH_THINGS listed things; a `Split` one entry per thing written (113, 305 or 1074 bytes), always inline, within `MAX_BLOB` with the rest of the commit. The rest of the line stands.
+- Header: each inline list at most `CHUNK_THRESHOLD` bytes, each linked one at most `MAX_LIST_BYTES`; a `Path` at most MAX_PATH_THINGS listed things; a `Split` one entry per thing written (115, 309 or 1084 bytes), always inline, within `MAX_BLOB` with the rest of the commit. The rest of the line stands.

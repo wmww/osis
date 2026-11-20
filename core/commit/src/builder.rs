@@ -83,12 +83,13 @@ pub struct CommitBuilder {
 }
 
 /// The split form a commit states (spec/wire.md §4 `Split`): its purge author (`None`: the
-/// signer) and, per thing it writes, the things its path lists and the read roles secret of the
-/// thing's independent at the epoch its sections are sealed under (spec/crypto.md §5 Path entry).
+/// signer) and, per thing it writes, the things its path lists with the hops it marks direct, and
+/// the read roles secret of the thing's independent at the epoch its sections are sealed under
+/// (spec/crypto.md §5 Path entry).
 #[derive(Clone, Debug)]
 pub struct SplitWrite {
     pub author: Option<Tid>,
-    pub things: BTreeMap<Tid, (Vec<Tid>, Secret32)>,
+    pub things: BTreeMap<Tid, ((Vec<Tid>, crate::Marks), Secret32)>,
 }
 
 /// What an account's commit carries besides its epoch's signature (spec/wire.md §4): the epoch,
@@ -189,7 +190,7 @@ impl CommitBuilder {
                 for (i, t) in things.iter().enumerate() {
                     let (listed, roles) = sw.things.get(t).ok_or(Error::Build("a split path other than one per thing written"))?;
                     let key = crate::path::path_key(roles, &blind, t);
-                    es.push(Split::seal(&key, listed)?);
+                    es.push(Split::seal(&key, &listed.0, listed.1)?);
                     path_keys.insert(i, key);
                 }
                 Paths::Split(Split { author: sw.author.filter(|a| *a != self.signer), entries: es })

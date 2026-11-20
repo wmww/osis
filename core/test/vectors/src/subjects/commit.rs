@@ -325,7 +325,9 @@ fn more_accepted() -> Vec<Record> {
 /// A content commit writing two things along one listed thing: one `path` for both, in the clear
 /// (spec/wire.md §4 field 2); and with the second thing's path differing (`[A, LISTED]`, purge
 /// author LISTED): the split form, each entry sealed under its thing's path key from the read roles
-/// secret given (`roles-i`), the opened form carrying each key. The randomness is the header blind.
+/// secret given (`roles-i`), the second marking its hop into the thing direct (`marks`), the opened
+/// form carrying each key; and one path in the clear marking the hop past LISTED direct. The
+/// randomness is the header blind.
 fn several_things() -> Vec<Record> {
     let at = ts(1_700_000_005_000);
     let other = Tid::from_bytes([0x24; 15]);
@@ -335,12 +337,12 @@ fn several_things() -> Vec<Record> {
     }
     let key = SigningSecret::from_seed(&s32(0x35));
     let dedup = |_: &Tid| Some(s32(0x30));
-    let roles = [(THING, s32(0x3a), vec![LISTED]), (other, s32(0x3b), vec![Tid::from_bytes([0x26; 15]), LISTED])];
+    let roles = [(THING, s32(0x3a), vec![LISTED], 0), (other, s32(0x3b), vec![Tid::from_bytes([0x26; 15]), LISTED], 0b100)];
     let mut out = Vec::new();
     for split in [false, true] {
         let mut b = b.clone();
         if split {
-            b.split = Some(osis_commit::SplitWrite { author: Some(LISTED), things: roles.iter().map(|(t, s, p)| (*t, (p.clone(), s.clone()))).collect() });
+            b.split = Some(osis_commit::SplitWrite { author: Some(LISTED), things: roles.iter().map(|(t, s, p, m)| (*t, ((p.clone(), *m), s.clone()))).collect() });
         }
         let mut rec = Recording(osis_crypto::SeededRng::from_seed([0x38; 32]), Vec::new());
         let first = b.clone().build(&key, &VSecrets, &mut MemoryBlobs::default(), &mut rec).unwrap().commit;
@@ -354,7 +356,7 @@ fn several_things() -> Vec<Record> {
         }
         assert!(c.header.is_split());
         let mut r = record("several things: split paths", "spec/wire.md §4 field 2, spec/crypto.md §5 Path entry", &c).with("randomness", hex(&rec.1));
-        for (i, (t, s, _)) in roles.iter().enumerate() {
+        for (i, (t, s, ..)) in roles.iter().enumerate() {
             assert_eq!(c.keys.get(&i), Some(&osis_commit::path_key(s, &c.header.blind, t)));
             r = r.with(&format!("roles-{i}"), hex(s.expose())).with(&format!("path-key-{i}"), hex(&c.keys[&i]));
         }
@@ -365,6 +367,14 @@ fn several_things() -> Vec<Record> {
         assert!(CommitBlob::decode(&x.encode()).is_err());
         out.push(case("path key its entry does not commit to", "spec/wire.md §4 field 2, PathKey").with("blob", hex(&x.encode())).with("reject", "path-key"));
     }
+    let mut b = b;
+    b.path = osis_commit::Path { purge: 1, things: vec![LISTED], direct: 0b10 };
+    let mut rec = Recording(osis_crypto::SeededRng::from_seed([0x39; 32]), Vec::new());
+    let first = b.clone().build(&key, &VSecrets, &mut MemoryBlobs::default(), &mut rec).unwrap().commit;
+    let c = b.build(&key, &VSecrets, &mut MemoryBlobs::default(), &mut FixedRng::new(&[&rec.1])).unwrap().commit;
+    assert_eq!(first, c);
+    verify_blob(&c, &key.verifying_key(), &dedup, None).unwrap();
+    out.push(record("several things: one path marking a hop direct", "spec/wire.md §4 field 2, marks", &c).with("randomness", hex(&rec.1)));
     out
 }
 
@@ -373,10 +383,11 @@ fn more_rejected(content: &Header) -> Vec<Record> {
     // stated paths (spec/wire.md §4 field 2)
     let with_path = |p: osis_commit::Path| Header { path: osis_commit::Paths::One(p), ..content.clone() };
     let long: Vec<Tid> = (0..=osis_base::format::MAX_PATH_THINGS).map(|i| Tid::from_bytes([0x50 + i as u8; 15])).collect();
-    out.push(reject("path longer than MAX_PATH_THINGS", "spec/wire.md §4 field 2", &with_path(osis_commit::Path { purge: 0, things: long }), "path"));
-    out.push(reject("purge-author index past the path", "spec/wire.md §4 field 2", &with_path(osis_commit::Path { purge: 2, things: vec![LISTED] }), "path"));
-    out.push(reject("path listing a thing twice", "spec/wire.md §4 field 2", &with_path(osis_commit::Path { purge: 0, things: vec![LISTED, LISTED] }), "path"));
-    out.push(reject("path listing its signer", "spec/wire.md §4 field 2", &with_path(osis_commit::Path { purge: 0, things: vec![SIGNER] }), "path"));
+    out.push(reject("path longer than MAX_PATH_THINGS", "spec/wire.md §4 field 2", &with_path(osis_commit::Path { purge: 0, things: long, direct: 0 }), "path"));
+    out.push(reject("purge-author index past the path", "spec/wire.md §4 field 2", &with_path(osis_commit::Path { purge: 2, things: vec![LISTED], direct: 0 }), "path"));
+    out.push(reject("path listing a thing twice", "spec/wire.md §4 field 2", &with_path(osis_commit::Path { purge: 0, things: vec![LISTED, LISTED], direct: 0 }), "path"));
+    out.push(reject("path listing its signer", "spec/wire.md §4 field 2", &with_path(osis_commit::Path { purge: 0, things: vec![SIGNER], direct: 0 }), "path"));
+    out.push(reject("path marking a hop past the hop past its end", "spec/wire.md §4 field 2, marks", &with_path(osis_commit::Path { purge: 0, things: vec![LISTED], direct: 0b100 }), "path"));
     // entry `n` listing `k` things: its key commitment's first byte `n`
     let entry = |k: usize, n: u8| [vec![n], vec![0x5d; osis_commit::entry_len(k).unwrap() - 1]].concat();
     let split = |author: Option<Tid>, entries: Vec<Vec<u8>>| osis_commit::Paths::Split(osis_commit::Split { author, entries });

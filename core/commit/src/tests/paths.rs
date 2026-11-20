@@ -28,7 +28,7 @@ fn roles(t: &Tid) -> Secret32 {
 fn split(n: usize) -> CommitBuilder {
     let mut b = content(n);
     let things = b.aspects.iter().map(|a| a.tid).collect::<Vec<_>>();
-    let each = things.iter().enumerate().map(|(i, x)| (*x, (if i == 0 { vec![t(2)] } else { vec![t(9), t(2)] }, roles(x)))).collect();
+    let each = things.iter().enumerate().map(|(i, x)| (*x, ((if i == 0 { vec![t(2)] } else { vec![t(9), t(2)] }, 0), roles(x)))).collect();
     b.split = Some(SplitWrite { author: Some(t(2)), things: each });
     b
 }
@@ -47,17 +47,17 @@ fn path_len(h: &Header) -> usize {
 #[test]
 fn paths_decode_by_their_rules() {
     let many: Vec<_> = (0..MAX_PATH_THINGS).map(|i| osis_base::Tid::from_bytes([i as u8 + 20; 15])).collect();
-    for p in [Path::default(), Path::through(t(2)), Path { purge: 3, things: many.clone() }] {
+    for p in [Path::default(), Path::through(t(2)), Path { purge: 3, things: many.clone(), direct: 0 }] {
         let h = one(p);
         assert_eq!(Header::decode(&h.encode()).unwrap(), h);
     }
     let mut longer = many.clone();
     longer.push(t(200));
     for (p, why) in [
-        (Path { purge: 0, things: longer }, "longer than MAX_PATH_THINGS"),
-        (Path { purge: 2, things: vec![t(2)] }, "index out of range"),
-        (Path { purge: 0, things: vec![t(2), t(2)] }, "thing twice"),
-        (Path { purge: 0, things: vec![t(1)] }, "the signer"),
+        (Path { purge: 0, things: longer, direct: 0 }, "longer than MAX_PATH_THINGS"),
+        (Path { purge: 2, things: vec![t(2)], direct: 0 }, "index out of range"),
+        (Path { purge: 0, things: vec![t(2), t(2)], direct: 0 }, "thing twice"),
+        (Path { purge: 0, things: vec![t(1)], direct: 0 }, "the signer"),
     ] {
         assert!(matches!(Header::decode(&one(p).encode()), Err(Error::Malformed(_))), "{why}");
     }
@@ -88,12 +88,13 @@ fn paths_decode_by_their_rules() {
 }
 
 // For Tess 3 (notes/path-form.md): an entry's size shows only its class: up to 4 listed things,
-// up to 16, up to MAX_PATH_THINGS (each with its 32-byte key commitment).
+// up to 16, up to MAX_PATH_THINGS (each with its 32-byte key commitment), room for every hop
+// marked direct (`marks`) in each, so a mark shows nothing either.
 #[test]
 fn entries_pad_to_their_class() {
-    assert_eq!([0, 1, 4].map(|k| entry_len(k).unwrap()), [113; 3]);
-    assert_eq!([5, 16].map(|k| entry_len(k).unwrap()), [305; 2]);
-    assert_eq!([17, MAX_PATH_THINGS].map(|k| entry_len(k).unwrap()), [1074; 2]);
+    assert_eq!([0, 1, 4].map(|k| entry_len(k).unwrap()), [115; 3]);
+    assert_eq!([5, 16].map(|k| entry_len(k).unwrap()), [309; 2]);
+    assert_eq!([17, MAX_PATH_THINGS].map(|k| entry_len(k).unwrap()), [1084; 2]);
     assert_eq!(entry_len(MAX_PATH_THINGS + 1), None);
 }
 
@@ -129,7 +130,7 @@ fn path_forms_by_the_things_written() {
 #[test]
 fn one_path_reads_each_things_own() {
     let (s, d, x, y) = (t(1), t(2), t(3), t(4));
-    let p = |things: Vec<Tid>| Path { purge: 0, things };
+    let p = |things: Vec<Tid>| Path { purge: 0, things, direct: 0 };
     // creation under a granted parent: D along [D], the new thing along [D] one hop past
     let each = [(d, p(vec![d])), (x, p(vec![d]))];
     let q = Path::one_of(each.iter().map(|(a, b)| (a, b)), s, s).unwrap();
@@ -137,7 +138,7 @@ fn one_path_reads_each_things_own() {
     assert!(each.iter().all(|(a, b)| q.to(a) == b.to(a)));
     // the end's own path stated without it: [] for D, [D] for x
     let each = [(d, p(vec![])), (x, p(vec![d]))];
-    assert_eq!(Path::one_of(each.iter().map(|(a, b)| (a, b)), s, d), Some(Path { purge: 1, things: vec![d] }));
+    assert_eq!(Path::one_of(each.iter().map(|(a, b)| (a, b)), s, d), Some(Path { purge: 1, things: vec![d], direct: 0 }));
     // own things: the empty path
     let each = [(x, p(vec![])), (y, p(vec![]))];
     assert_eq!(Path::one_of(each.iter().map(|(a, b)| (a, b)), s, s), Some(Path::default()));
@@ -160,7 +161,7 @@ fn signer_path_and_remains_are_signed() {
         let flips: [&dyn Fn(&mut Header); 6] = [
             &|h| h.signer = t(77),
             &|h| h.path = Paths::One(Path::default()),
-            &|h| h.path = Paths::One(Path { purge: 0, things: vec![t(2)] }),
+            &|h| h.path = Paths::One(Path { purge: 0, things: vec![t(2)], direct: 0 }),
             &|h| h.remains = Some(t(5)),
             &|h| if let Paths::Split(s) = &mut h.path { s.author = None } else { h.signer = t(78) },
             &|h| if let Paths::Split(s) = &mut h.path { s.entries.swap(0, 1) } else { h.signer = t(79) },
@@ -185,8 +186,8 @@ fn split_paths_open_from_the_roles_secret_and_from_every_encryption() {
     let things = c.header.things();
     assert_eq!(c.header.purge_author(), t(2));
     let Paths::Split(sp) = &c.header.path else { panic!("split") };
-    assert_eq!((sp.entries.len(), path_len(&c.header)), (3, 1 + 17 + 1 + 3 * (2 + 113)));
-    let want = |i: usize| if i == 0 { Path::through(t(2)) } else { Path { purge: 2, things: vec![t(9), t(2)] } };
+    assert_eq!((sp.entries.len(), path_len(&c.header)), (3, 1 + 17 + 1 + 3 * (2 + 115)));
+    let want = |i: usize| if i == 0 { Path::through(t(2)) } else { Path { purge: 2, things: vec![t(9), t(2)], direct: 0 } };
     for (i, x) in things.iter().enumerate() {
         let k = path_key(&roles(x), &c.header.blind, x);
         assert_eq!(c.keys.get(&i), Some(&k));
@@ -246,7 +247,7 @@ fn a_header_only_copy_carries_the_destroyed_things_path_key() {
     let o = back.open(|_| vec![blob.clone()]).unwrap().commit;
     assert!(o.parts.is_empty());
     assert_eq!(o.keys, BTreeMap::from([(1, c.keys[&1])]), "the copy carries the destroyed thing's key alone");
-    assert_eq!(o.path(&gone), Some(ThingPath::Known(Path { purge: 2, things: vec![t(9), t(2)] })));
+    assert_eq!(o.path(&gone), Some(ThingPath::Known(Path { purge: 2, things: vec![t(9), t(2)], direct: 0 })));
     let plain = built(content(1));
     assert!(seal_header_only(&plain, &plain.header, &blob, &mut rng()).unwrap().sections.is_empty());
     let forged = Envelope { header: plain.header.clone(), sigs: plain.sigs.clone(), sections: e.sections.clone() };
@@ -271,13 +272,13 @@ fn a_forged_entry_harms_only_its_own_thing() {
     let with_entry = |listed: &[Tid]| -> CommitBlob {
         let mut f = c.clone();
         if let Paths::Split(s) = &mut f.header.path {
-            s.entries[0] = Split::seal(&c.keys[&0], listed).unwrap();
+            s.entries[0] = Split::seal(&c.keys[&0], listed, 0).unwrap();
         }
         f.sigs = Sigs::signed(&f.id(), &key(), None, vec![], vec![]);
         f
     };
     let mut b = split(3);
-    b.split.as_mut().unwrap().things.get_mut(&first).unwrap().0 = vec![t(9), t(9)];
+    b.split.as_mut().unwrap().things.get_mut(&first).unwrap().0 = (vec![t(9), t(9)], 0);
     assert!(b.build(&key(), &TestSecrets { admin: true }, &mut MemoryBlobs::default(), &mut rng()).is_err());
     for (forged, why) in [(with_entry(&[t(9), t(9)]), "a thing twice"), (with_entry(&[t(1)]), "the signer"), (with_entry(&[t(8)]), "author left out"), (with_entry(&[first, t(2)]), "the thing not last")] {
         assert_eq!(forged.path(&first), Some(ThingPath::Bad), "{why}");
@@ -355,7 +356,7 @@ fn an_entry_accepts_only_the_key_it_commits_to() {
     let (k1, k2) = (c.keys[&i], [0x77; 32]);
     let mut f = c.clone();
     if let Paths::Split(s) = &mut f.header.path {
-        s.entries[i] = [key_commitment(&k1).to_vec(), Split::seal(&k2, &[t(9), t(2)]).unwrap()[COMMITMENT_LEN..].to_vec()].concat();
+        s.entries[i] = [key_commitment(&k1).to_vec(), Split::seal(&k2, &[t(9), t(2)], 0).unwrap()[COMMITMENT_LEN..].to_vec()].concat();
     }
     f.sigs = Sigs::signed(&f.id(), &key(), None, vec![], vec![]);
     assert_eq!(f.header.open_path(i, &k2), None, "k2 is no key of the entry");
@@ -429,7 +430,7 @@ fn a_split_commit_lists_one_level_2_key() {
 // whose index names a listed thing is invalid.
 #[test]
 fn interim_acting_is_the_one_purge_author() {
-    let deep = Path { purge: 1, things: vec![t(2), t(4)] };
+    let deep = Path { purge: 1, things: vec![t(2), t(4)], direct: 0 };
     for (path, author) in [(Path::default(), t(1)), (Path::through(t(2)), t(2)), (deep.clone(), t(2))] {
         for n in [1, 3] {
             let mut b = content(n);
@@ -439,13 +440,13 @@ fn interim_acting_is_the_one_purge_author() {
     }
     let mut b = split(2);
     b.split.as_mut().unwrap().author = None;
-    b.split.as_mut().unwrap().things.values_mut().for_each(|p| p.0 = vec![]);
+    b.split.as_mut().unwrap().things.values_mut().for_each(|p| p.0 = (vec![], 0));
     assert_eq!(built(b).header.purge_author(), t(1));
-    one(Path { purge: 0, things: vec![t(2)] }).validate().unwrap();
+    one(Path { purge: 0, things: vec![t(2)], direct: 0 }).validate().unwrap();
     let mut r = crate::tests::validate::role_header("roles.0");
     r.path = Paths::One(Path::through(t(9)));
     assert!(r.validate().unwrap_err().to_string().contains("a path this commit may not state"), "a role commit's index names its signer");
-    r.path = Paths::One(Path { purge: 0, things: vec![t(9)] });
+    r.path = Paths::One(Path { purge: 0, things: vec![t(9)], direct: 0 });
     r.validate().unwrap();
 }
 
@@ -469,7 +470,7 @@ fn remains_only_beside_edge_writes() {
 // notes/path-form.md Bytes: a commit writing one thing along the empty path spends 19 bytes on
 // `signer`, `path` and `remains` (16 + 2 + 1); one listed thing adds 16, a remaining admin 16;
 // several things along one path cost what one does; the split form 3 bytes, an author's 16, and
-// an entry per thing (115 B up to four listed things), each section 38 B for its thing's key.
+// an entry per thing (117 B up to four listed things), each section 38 B for its thing's key.
 #[test]
 fn header_bytes_of_signer_path_and_remains() {
     let mut h = sample_header();
@@ -485,7 +486,7 @@ fn header_bytes_of_signer_path_and_remains() {
     assert_eq!(path_len(&built(content(3)).header), path_len(&built(content(1)).header));
     let mut b = split(2);
     b.split.as_mut().unwrap().author = None;
-    assert_eq!(path_len(&built(b).header), 3 + 2 * 115);
+    assert_eq!(path_len(&built(b).header), 3 + 2 * 117);
     // a section's path key: `[[Part*], [[i, key]]]` against `[Part*]`
     let c = built(split(2));
     let ps: Vec<&Part> = c.parts.iter().take(1).collect();
@@ -493,4 +494,57 @@ fn header_bytes_of_signer_path_and_remains() {
     let keyed = Section::seal(&c.id(), &ps, Some(&BTreeMap::from([(0, [0; 32])])), vec![], &s, &mut rng()).unwrap();
     let bare = Section::seal(&c.id(), &ps, None, vec![], &s, &mut rng()).unwrap();
     assert_eq!(keyed.encoded_len() - bare.encoded_len(), 1 + 1 + 1 + 1 + 34);
+}
+
+// spec/wire.md §4 `marks`: a path marking hops direct round-trips in the clear and in a split
+// entry, costing nothing where no hop is marked and 2 bytes where hops below 8 are; the decoder
+// rejects marks that are empty, end in a zero byte, set a bit past the hop past the last listed
+// thing, or run past 9 bytes; a split entry likewise reads as bad.
+#[test]
+fn marks_decode_by_their_rules() {
+    let many: Vec<_> = (0..MAX_PATH_THINGS).map(|i| osis_base::Tid::from_bytes([i as u8 + 20; 15])).collect();
+    let all_hops: crate::Marks = (1 << (MAX_PATH_THINGS + 1)) - 1;
+    for p in [Path { purge: 0, things: vec![], direct: 1 }, Path { purge: 1, things: vec![t(2)], direct: 0b10 }, Path { purge: 0, things: vec![t(2), t(4)], direct: 0b101 }, Path { purge: 3, things: many.clone(), direct: all_hops }, Path { purge: 0, things: many.clone(), direct: 1 << MAX_PATH_THINGS }] {
+        let h = one(p.clone());
+        assert_eq!(Header::decode(&h.encode()).unwrap(), h, "{p:?}");
+    }
+    assert_eq!(Path { purge: 0, things: vec![t(2)], direct: 0b10 }.encode().len(), Path::through(t(2)).encode().len() + 2);
+    assert_eq!(crate::marks_bytes(1 << MAX_PATH_THINGS).len(), 9);
+    // hand-built tails: [0, t(2), marks]
+    let raw = |marks: &[u8]| {
+        let mut b = Vec::new();
+        osis_base::cbor::put_array(&mut b, 3);
+        osis_base::cbor::put_uint(&mut b, 0);
+        osis_base::cbor::put_bytes(&mut b, t(2).as_bytes());
+        osis_base::cbor::put_bytes(&mut b, marks);
+        Path::read(osis_base::cbor::Item::parse(&b, &crate::header::LIMITS).unwrap(), &t(1))
+    };
+    assert_eq!(raw(&[0b11]).unwrap(), Path { purge: 0, things: vec![t(2)], direct: 0b11 });
+    for (m, why) in [(&[][..], "empty"), (&[1, 0][..], "a trailing zero byte"), (&[0b100][..], "a bit past the hop past the end"), (&[0; 10][..], "past 9 bytes")] {
+        assert!(matches!(raw(m), Err(Error::Malformed(_))), "{why}");
+    }
+    assert!(Split::seal(&[3; 32], &[t(2)], 0b100).is_err(), "a writer seals no mark past its hops");
+    for (listed, direct) in [(vec![], 1), (vec![t(2), t(4), t(5), t(6)], 0b11111), (many[..16].to_vec(), 1 << 16), (many.clone(), all_hops)] {
+        let e = Split::seal(&[3; 32], &listed, direct).unwrap();
+        assert_eq!(Some(e.len()), entry_len(listed.len()), "a mark keeps the entry's class");
+        assert_eq!(Split::open(&[3; 32], &e), Some(Some((listed, direct))));
+    }
+}
+
+// spec/wire.md §4 field 2: one path serves several things only where each thing's own marks are
+// its: a mark on the hop past the end (bit 1 of `[D]`) marks each thing one hop past D, and the
+// end D has no such hop, so D beside a marked thing past it is no one path.
+#[test]
+fn one_path_carries_its_marks() {
+    let (s, d) = (t(1), t(2));
+    let mk = |things: Vec<Tid>, direct| Path { purge: 0, things, direct };
+    let marked = mk(vec![d], 0b10);
+    let each = [(t(5), marked.clone()), (t(6), marked.clone())];
+    assert_eq!(Path::one_of(each.iter().map(|(a, b)| (a, b)), s, s), Some(marked.clone()));
+    let mixed = [(t(5), marked.clone()), (t(6), mk(vec![d], 0))];
+    assert_eq!(Path::one_of(mixed.iter().map(|(a, b)| (a, b)), s, s), None);
+    let with_end = [(d, mk(vec![], 0)), (t(5), marked.clone())];
+    assert_eq!(Path::one_of(with_end.iter().map(|(a, b)| (a, b)), s, s), None);
+    let first_hop = [(d, mk(vec![], 1)), (t(5), mk(vec![d], 1))];
+    assert_eq!(Path::one_of(first_hop.iter().map(|(a, b)| (a, b)), s, s), Some(mk(vec![d], 1)));
 }
