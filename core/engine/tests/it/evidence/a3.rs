@@ -344,6 +344,67 @@ fn an_addendum_leaves_with_the_last_commit_it_lists() {
     d.ev.check().unwrap();
     assert!(!d.required(D).contains(&(gq, A)));
     assert_eq!(d.required(D), model_copies(&w, &rule, D, &st.units, &h));
+    // the addendum forgotten too: nothing indexes it any more
+    w.forget(&rule, &mut st, ad);
+    let h = everything(&st);
+    d.step(&w, &h, &st.units);
+    d.ev.check().unwrap();
+    assert_eq!(d.required(D), model_copies(&w, &rule, D, &st.units, &h));
+}
+
+/// What a lowering cuts moves after it is held: X removes K from A at 6 listing K's write c on A;
+/// X's grant of write to K at 1 arrives after it. Until then the removal cuts nothing (no leaf
+/// read); with the grant it cuts c, so A requires its own thing's leaf, incrementally as from scratch.
+#[test]
+fn a_late_witness_makes_a_held_removals_leaf_read() {
+    let pw = paths::World::new(&[(X, A)]);
+    let mut w = World::new(pw, &[A]);
+    let (x, k) = (w.node(true, &[A]), w.node(true, &[A]));
+    let c = w.write(k, |p| p.content(K, 2, &[], A));
+    let r = w.write(x, |p| p.edge(X, 6, &[], A, K, Role::None, &[c]));
+    let g = w.write(x, |p| p.edge(X, 1, &[], A, K, Role::Write, &[]));
+    assert_agrees("late witness", &w);
+    let rule = a3(&mut w, true);
+    let mut d = Driver::a3(&w, true);
+    let mut seen = vec![];
+    w.run(&rule, |st| {
+        d.step(&w, &st.held[x], &st.units);
+        d.ev.check().unwrap();
+        if st.held[x].contains(&r) {
+            seen.push((st.held[x].contains(&g), d.ev.leaves(&A).unwrap().get(&(r, A)).copied()));
+        }
+    });
+    assert!(seen.contains(&(false, None)) && seen.contains(&(true, Some(LeafWhy::Reads))), "{seen:?}");
+}
+
+/// A lowering leaving a set as its closure is rebuilt takes its leaves with it: K writes D through
+/// [A] before X grants K write on A (the write joins nothing), X removes K listing it; the removal
+/// is in D's set only by its reach (A writes D), so D requires its leaf. Forgetting A's grant on D
+/// ends the reach: the removal and its leaf leave D's set, though the write still rests on its edge.
+#[test]
+fn a_lowering_leaving_a_set_takes_its_leaves() {
+    let pw = paths::World::new(&[(X, A), (Y, D)]);
+    let mut w = World::new(pw, &[A, D]);
+    let (x, y, k) = (w.node(true, &[A]), w.node(true, &[D]), w.node(true, &[]));
+    let way = w.write(y, |p| p.edge(Y, 1, &[], D, A, Role::Write, &[]));
+    let c = w.write(k, |p| p.content(K, 2, &[A], D));
+    w.write(x, |p| p.edge(X, 3, &[], A, K, Role::Write, &[]));
+    let r = w.write(x, |p| p.edge(X, 6, &[], A, K, Role::None, &[c]));
+    assert_agrees("reach member", &w);
+    let rule = a3(&mut w, true);
+    let mut st = w.run(&rule, |_| {});
+    let everything = |st: &State| st.written.difference(&st.forgotten).copied().collect::<Set>();
+    let mut d = Driver::a3(&w, true);
+    d.step(&w, &everything(&st), &st.units);
+    d.ev.check().unwrap();
+    assert_eq!(d.ev.leaves(&D).unwrap().get(&(r, D)), Some(&LeafWhy::Reads));
+    w.forget(&rule, &mut st, way);
+    let h = everything(&st);
+    d.step(&w, &h, &st.units);
+    d.ev.check().unwrap();
+    assert_eq!(d.ev.leaves(&D).unwrap().get(&(r, D)), None);
+    assert_eq!(model_leaves(&w, &rule, D, &st.units, &h), BTreeSet::new());
+    let _ = y;
 }
 
 /// Standing, the shrinking way: X removes K from A; A writes D (held), D writes E (read for the
