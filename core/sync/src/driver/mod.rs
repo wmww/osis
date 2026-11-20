@@ -222,12 +222,12 @@ macro_rules! cx {
 impl Node {
     /// A node over `engine`, whose ciphertext door is `store` (`Store::cipher`). Its first
     /// `handle` settles every module.
-    pub fn open(engine: Engine, store: Store, cfg: SyncConfig, rng: Box<dyn NodeRng>) -> Result<Node> {
+    pub fn open(engine: Engine, store: Store, cfg: SyncConfig, rng: Box<dyn NodeRng>) -> Node {
         let (now, mono) = (engine.now(), engine.mono());
         let store_handle = store.clone();
         let mut driver = Driver { engine_loads: engine.loads(), ..Driver::default() };
         driver.dials.set_node(cfg.key.map(|k| k.0), &cfg.policy);
-        Ok(Node { engine, store, rng, cfg, now, mono, rounds: 0, driver, opens: Opens::default(), read: Read::default(), unread: Unread::default(), streams: Streams::new(store_handle), inbox: Inbox::default(), status: Status::default(), leave: Leave::default(), life: Life::default() })
+        Node { engine, store, rng, cfg, now, mono, rounds: 0, driver, opens: Opens::default(), read: Read::default(), unread: Unread::default(), streams: Streams::new(store_handle), inbox: Inbox::default(), status: Status::default(), leave: Leave::default(), life: Life::default() }
     }
 
     /// One step: `input` taken, every module settled. The outputs must all reach `apply`.

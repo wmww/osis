@@ -648,7 +648,7 @@ fn real_node(seed: u64, key: [u8; 32]) -> osis_sync::Node {
     let mut engine = osis_engine::Engine::create(Box::new(MemoryBackend::new()), Box::new(MemoryRoot::new()), store.cipher(), osis_engine::Config::default(), clock, Box::new(SeededRng::from_u64(seed))).unwrap();
     engine.create_account().unwrap();
     let cfg = osis_sync::SyncConfig { key: Some(osis_sync::NodeKey(key)), ..osis_sync::SyncConfig::default() };
-    osis_sync::Node::open(engine, store, cfg, Box::new(SeededRng::from_u64(seed ^ 2))).unwrap()
+    osis_sync::Node::open(engine, store, cfg, Box::new(SeededRng::from_u64(seed ^ 2)))
 }
 
 /// Node A, configured with B's address, dials B over `ta`/`tb` (B listening at `url`) through

@@ -684,7 +684,7 @@ impl World {
         let mut key = [0u8; 32];
         self.rng.fill_bytes(&mut key);
         let key = NodeKey(key);
-        let node = Node::open(engine, store.clone(), SyncConfig { key: Some(key), ..SyncConfig::default() }, Box::new(SeededRng::from_u64(seed ^ 2))).expect("node");
+        let node = Node::open(engine, store.clone(), SyncConfig { key: Some(key), ..SyncConfig::default() }, Box::new(SeededRng::from_u64(seed ^ 2)));
         self.net.reach.place(i, &[0], Uplink::Public, &[]);
         self.net.reach.listen(i, key.0);
         self.net.online.push(true);
@@ -1240,7 +1240,7 @@ impl World {
         let engine = Engine::open(Box::new(d.engine.0.clone()), Box::new(d.engine.1.clone()), store.cipher(), osis_engine::Config::default(), clock, Box::new(SeededRng::from_u64(seed))).expect("engine reopens");
         let cfg = n.node.config().clone();
         n.store = store.clone();
-        n.node = Node::open(engine, store, cfg, Box::new(SeededRng::from_u64(seed ^ 2))).expect("node reopens");
+        n.node = Node::open(engine, store, cfg, Box::new(SeededRng::from_u64(seed ^ 2)));
     }
 
     pub fn power_on(&mut self, i: usize) {
