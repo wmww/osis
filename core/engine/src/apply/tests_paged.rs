@@ -571,11 +571,71 @@ fn leaving_told_alike_paged_or_whole_later_write_elsewhere_spec_commits_5() {
     assert_eq!(told(false), told(true));
 }
 
+/// Node 0 fills `mix` (a paged map under key `big`); node 1, holding the fill, fills `big`
+/// again (writes on the fill's entries); a minute later node 0, not holding that, replaces `mix`
+/// (a root reset: a new `big` record) and half an hour later adds an entry to the new `big`.
+/// Node 3 holds the fill and gets the replace, the later entry, then node 1's fill, joined in
+/// pieces or whole: node 1's writes die under the replace's reset, so node 1's fill is told
+/// leaving history an hour after the replace (spec/commits.md §5), never an hour after the
+/// later entry, which a whole join's reach takes in (the records of key `big`) and a piece's
+/// does not.
+#[test]
+fn rekill_dated_by_its_superseder_paged_or_whole_spec_commits_5() {
+    let told = |whole: bool| {
+        let mut w = world(whole);
+        let (t, a) = (w.t, aks()[1].clone());
+        let commit = |w: &mut World, by: usize, f: &dyn Fn(&mut Mutation)| {
+            let mut m = Mutation::new();
+            f(&mut m);
+            w.lp.peers[by].commit(m).unwrap().unwrap()
+        };
+        let fill = commit(&mut w, 0, &|m| {
+            m.set(t, &a, &fixed_fill(1, 0)).unwrap();
+        });
+        let pk = packages(&mut w, 0, &[fill]);
+        for to in [1, 3] {
+            w.lp.deliver(to, &pk[0]).unwrap();
+        }
+        let refill = commit(&mut w, 1, &|m| {
+            m.set(t, &a, &fixed_fill(1, 2)).unwrap();
+        });
+        w.lp.advance(60_000);
+        let replace = commit(&mut w, 0, &|m| {
+            m.replace(t, &a, &fixed_fill(1, 1)).unwrap();
+        });
+        w.lp.advance(1_800_000);
+        let later = commit(&mut w, 0, &|m| {
+            let path = vec![PathSeg::Key(Value::Str("big".into())), PathSeg::Key(Value::Int(ENTRIES as i64 + 10))];
+            m.op(t, &a, PathOp { path, op: Op::Set(s(0, 3)) }).unwrap();
+        });
+        let mut pks = packages(&mut w, 0, &[replace, later]);
+        pks.extend(packages(&mut w, 1, &[refill]));
+        w.lp.peers[3].engine.listen_commits(std::sync::Arc::new(|_: &Tid| true));
+        let heard = |w: &mut World| {
+            w.lp.peers[3].tick().unwrap();
+            w.lp.peers[3].drain_events().into_iter().any(|e| matches!(e, crate::Event::Commits(ch) if ch.iter().any(|x| x.id == refill && x.ak == a)))
+        };
+        for pk in &pks {
+            w.lp.deliver(3, pk).unwrap();
+        }
+        heard(&mut w);
+        // an hour after the replace (half an hour from now), then after the later entry
+        let mut at = Vec::new();
+        for _ in 0..2 {
+            w.lp.advance(1_800_000 + 60_000);
+            at.push(heard(&mut w));
+        }
+        at
+    };
+    assert_eq!(told(false), vec![true, false], "in pieces: node 1's fill leaves an hour after the replace");
+    assert_eq!(told(true), vec![true, false], "whole: node 1's fill leaves an hour after the replace");
+}
+
 /// Node 3 holds node 0's fill; three hours later node 0 overwrites its first entry and
 /// snapshots; node 3 gets the snapshot alone, which also carries the fill's other entries,
 /// stamped at the fill. The fill was replaced by the overwrite, so it stays in history (an hour
 /// after replaced) until an hour after the overwrite, joined in pieces or whole: a kill dates
-/// by the latest writes the join reaches, never the earliest.
+/// by what superseded the dying write, never by the writes the snapshot only carries.
 #[test]
 fn killed_fill_leaves_an_hour_after_its_overwrite_spec_commits_5() {
     for whole in [false, true] {

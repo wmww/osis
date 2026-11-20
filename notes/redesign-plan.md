@@ -41,7 +41,7 @@ Parallel lanes: {S1, S2, S3, M1} at once; S1 runs beside everything (sync and en
 Each brief ends at green commits and fits a session (notes/coordination.md, Briefs); a brief that turns out larger is split by its coordinator, never run long. "Gate" means the branch's reviewer runs `tools/gate.sh` once.
 
 ### G. Main's failing properties
-notes/priorities.md, First: issues/paged-apply-differs-from-whole.md, issues/app-tile-unreadable-emails-test.md [checked: tools/known_failures.txt].
+notes/priorities.md, First: issues/app-tile-unreadable-emails-test.md [checked: tools/known_failures.txt].
 
 ### S1. Cost defects of many sync IDs
 Any time.

@@ -379,11 +379,14 @@ fn bounded_part(core: &Core, c: &CommitId, tid: &Tid, ak: &Ak) -> Option<usize> 
 }
 
 /// The writes joins on an aspect superseded (spec/crdt.md §4.8), for `mark_killed`, by dot;
-/// `at`, the latest stamp among the writes winning, after each join, at its reach: no earlier
-/// than any death (each dead write's superseder wins there, or is beaten by a later winner), so
-/// a date never early. Noted join by join (a whole delta, each of its pieces, a paged reset's
-/// skeleton and each page): the reaches together are the whole join's, so how a delta was
-/// split never shows.
+/// `at`, the latest among them of the earliest stamp superseding each (`ByWrite::first_superseding`)
+/// among the join's writes (`d`'s, the state's at its reach before and after): no earlier than
+/// any death (that write is held), and a function of the dying write and what lies on its path,
+/// so the same however a delta was split. Noted join by join (a whole delta, each of its
+/// pieces, a paged reset's skeleton and each page): the reaches together are the whole join's,
+/// so how a delta was split never shows. Rejected: the latest winner at the join's reach (a
+/// map's reach takes in every record of the keys it names: a whole delta's more than a piece's,
+/// so a whole join dated a death later).
 #[derive(Debug, Default)]
 pub(crate) struct Killed {
     pub dots: BTreeSet<osis_crdt::Dot>,
@@ -391,20 +394,40 @@ pub(crate) struct Killed {
 }
 
 impl Killed {
-    /// Notes the writes the join of `d` into `st` superseded: `before`, the winners of `st` at
-    /// `d`'s reach and of `d` (`Killed::before`), against `st` after the join.
-    pub(crate) fn note(&mut self, before: &Winners, st: &Fragment, d: &Fragment) {
-        let after = st.reach(d).winners();
-        self.at = self.at.max(after.iter().map(|w| w.stamp.ts).max());
-        let dead = before.minus(&after);
-        self.dots.extend(dead.into_iter().map(|w| w.stamp.dot));
+    /// Notes the writes the join of `d` into `st` superseded: `before` (`Killed::before`) against
+    /// `st` after the join, at the same records of each key (`Fragment::reach_after`: a record
+    /// the join took out of `d`'s reach is no death).
+    pub(crate) fn note(&mut self, before: &KillBefore, st: &Fragment, d: &Fragment) {
+        let after = st.reach_after(d, &before.reach).winners();
+        let dead = before.winners.minus(&after);
+        if dead.is_empty() {
+            return;
+        }
+        let mut by = osis_crdt::ByWrite::<()>::default();
+        by.note(&before.winners, |_, _| ());
+        by.note(&after, |_, _| ());
+        for w in dead {
+            let first = by.first_superseding(&w, |s, _| Some(s.ts));
+            // a dead write's superseder is held: before the join (`d`'s) or after it
+            debug_assert!(first.is_some(), "a dead write nothing in its join supersedes: {w:?}");
+            self.at = self.at.max(first.or_else(|| after.iter().map(|w| w.stamp.ts).max()));
+            self.dots.insert(w.stamp.dot);
+        }
     }
-    /// What `note` compares with: the winners `st ⊔ d` may supersede.
-    pub(crate) fn before(st: &Fragment, d: &Fragment) -> Winners {
-        let mut w = st.reach(d).winners();
-        w.extend(d.winners());
-        w
+    /// What `note` compares with: the winners `st ⊔ d` may supersede (of `st` at `d`'s reach,
+    /// and of `d`), and that reach.
+    pub(crate) fn before(st: &Fragment, d: &Fragment) -> KillBefore {
+        let reach = st.reach(d);
+        let mut winners = reach.winners();
+        winners.extend(d.winners());
+        KillBefore { reach, winners }
     }
+}
+
+/// `Killed::before`.
+pub(crate) struct KillBefore {
+    reach: Fragment,
+    winners: Winners,
 }
 
 /// A join on `(tid, ak)` superseded `dead`: the held bodies with a relative bound it may have
