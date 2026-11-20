@@ -340,6 +340,15 @@ pub fn packages_for_peer(lp: &mut LocalPeer, from: usize, p: &mut osis_engine::l
     lp.packages_under(from, &synced).unwrap()
 }
 
+/// What `from` sends peer `to`, a reader of `t` given its grant alone (`LocalPeer::fresh_reader`):
+/// `packages_under` the sync IDs `to` syncs and `t`'s (as `from` holds them), which `to` syncs
+/// once it holds `t`'s record. `packages_to` without its copy of the world.
+pub fn packages_reading(lp: &mut LocalPeer, from: usize, to: usize, t: Tid) -> Vec<Package> {
+    let mut synced = lp.synced(to).unwrap();
+    synced.extend(lp.peers[from].engine.sync_ids(&t).unwrap().iter().map(|o| o.id));
+    lp.packages_under(from, &synced).unwrap()
+}
+
 /// Commit `id` as `from` sends `p`, a node apart (`packages_for_peer`).
 pub fn package_for_peer(lp: &mut LocalPeer, from: usize, p: &mut osis_engine::local_peer::Peer, id: CommitId) -> Package {
     packages_for_peer(lp, from, p).into_iter().find(|x| x.id == id).unwrap_or_else(|| panic!("{from} sends no {id:?}"))

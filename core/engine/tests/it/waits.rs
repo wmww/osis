@@ -1046,11 +1046,21 @@ fn record_and_reach(seed: u64) -> (Reason, Tid, Option<Value>) {
     m.set(x, &REG, &s("x")).unwrap();
     let c = lp.peers[0].commit(m).unwrap().unwrap();
     let held_back = [grant.id, xc.id, c];
-    // what 1 and 0 send 2 once it syncs what they bring it to sync (on a copy of 2)
-    let mut w = lp.peers[2].copy().unwrap();
-    let pks: Vec<_> = [1, 0].into_iter().flat_map(|i| lp.packages_to_peer(i, &mut w).unwrap()).collect();
-    for p in pks.iter().filter(|p| !held_back.contains(&p.id)) {
-        lp.deliver(2, p).unwrap();
+    // what 1 and 0 send 2, again while what it syncs grows; x's sync IDs among them, as 2
+    // syncs once it holds x's record (held back here)
+    let xs: std::collections::BTreeSet<_> = lp.peers[0].engine.sync_ids(&x).unwrap().iter().map(|o| o.id).collect();
+    let mut seen = xs.clone();
+    let mut pks: Vec<_> = Vec::new();
+    loop {
+        let synced = lp.synced(2).unwrap();
+        if !pks.is_empty() && synced.is_subset(&seen) {
+            break;
+        }
+        seen.extend(synced);
+        pks = [1, 0].into_iter().flat_map(|i| lp.packages_under(i, &seen).unwrap()).collect();
+        for p in pks.iter().filter(|p| !held_back.contains(&p.id)) {
+            lp.deliver(2, p).unwrap();
+        }
     }
     let cp = pks.iter().find(|p| p.id == c).unwrap();
     let Ingested::Pending(_, r) = lp.deliver(2, cp).unwrap() else { panic!("pends") };

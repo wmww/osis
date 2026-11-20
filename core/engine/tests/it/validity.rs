@@ -857,7 +857,7 @@ fn snapshot_before_grant_counts_spec_perm_5_2() {
     lp.advance(DAY);
     let snap = lp.peers[0].engine.snapshot(&d, &ak("t:tags.0")).unwrap().unwrap();
     // Dave: Alice's commits but the grant, then the grant
-    let pks: Vec<_> = packages_to(&mut lp, 0, 2).into_iter().filter(|p| lp.peers[0].engine.header(&p.id).is_some_and(|h| h.signer != b)).collect();
+    let pks: Vec<_> = packages_reading(&mut lp, 0, 2, d).into_iter().filter(|p| lp.peers[0].engine.header(&p.id).is_some_and(|h| h.signer != b)).collect();
     let (holders, content): (Vec<_>, Vec<_>) = pks.into_iter().partition(|p| p.id == g);
     for pk in &content {
         lp.deliver(2, pk).unwrap();
@@ -2088,7 +2088,7 @@ fn demoted_compactor_snapshot_by_frontier_spec_perm_5_2() {
         };
         let all = BTreeSet::from(["alice".to_string(), "bob".to_string()]);
         assert_eq!(tags(&mut lp, 0, d), all, "Alice holds Bob's commit");
-        let pks: Vec<_> = packages_to(&mut lp, 0, 3).into_iter().filter(|p| !bob.contains(&p.id)).collect();
+        let pks: Vec<_> = packages_reading(&mut lp, 0, 3, d).into_iter().filter(|p| !bob.contains(&p.id)).collect();
         let (late, early): (Vec<_>, Vec<_>) = pks.into_iter().partition(|p| if demote_first { p.id == snap } else { p.id == rv });
         for pk in early.iter().chain(&late) {
             lp.deliver(3, pk).unwrap();
@@ -2367,7 +2367,7 @@ fn removed_holder_write_compacted_earlier_stays_alike_spec_perm_5_2() {
         lp.hold_at(i, d);
         // what Carol sends a reader of d (alike for each)
         if all.is_empty() {
-            all = packages_to(&mut lp, 2, i);
+            all = packages_reading(&mut lp, 2, i, d);
         }
         let base: Vec<_> = all.iter().filter(|p| !late.contains(&p.id)).cloned().collect();
         let pk = |id| all.iter().find(|p| p.id == id).unwrap().clone();
@@ -2891,12 +2891,16 @@ fn flipped_snapshot_leaves_frontier_alike_spec_perm_5_2() {
     let held = lp.commit_ids(0);
     let of_bob = DemotionScope { roles: BTreeMap::from([(b, BTreeSet::from([d]))]), content: BTreeMap::from([(b, BTreeSet::from([d]))]) };
     let mut got = Vec::new();
+    let mut pks = Vec::new();
     for (n, order) in [[snap, rv], [rv, snap]].into_iter().enumerate() {
         // a reader of d: a node holding d with no role keeps none of its content
         let i = lp.peers.len();
         let r = lp.fresh_reader(0, d, 0x5fc1 + n as u64);
         lp.peers.push(r);
-        let pks: Vec<_> = packages_to(&mut lp, 0, i).into_iter().filter(|p| held.contains(&p.id) && !bob.contains(&p.id)).collect();
+        // what Alice sends a reader of d (alike for each)
+        if pks.is_empty() {
+            pks = packages_reading(&mut lp, 0, i, d).into_iter().filter(|p| held.contains(&p.id) && !bob.contains(&p.id)).collect();
+        }
         let pk = |id| pks.iter().find(|p| p.id == id).unwrap().clone();
         let base: Vec<_> = pks.iter().filter(|p| p.id != snap && p.id != rv).cloned().collect();
         for p in &base {
@@ -2958,7 +2962,7 @@ fn listed_part_peer(lp: &mut LocalPeer, d: Tid, held: &BTreeSet<osis_base::Commi
     let i = lp.peers.len();
     let r = lp.fresh_reader(0, d, seed);
     lp.peers.push(r);
-    let pks: Vec<_> = packages_to(lp, 0, i).into_iter().filter(|p| held.contains(&p.id)).collect();
+    let pks: Vec<_> = packages_reading(lp, 0, i, d).into_iter().filter(|p| held.contains(&p.id)).collect();
     for p in pks.iter().filter(|p| !ids.contains(&p.id)) {
         lp.deliver(i, p).unwrap();
     }
@@ -3034,7 +3038,7 @@ fn late_snapshot_part_received_when_it_came_spec_perm_5_1() {
     let i = lp.peers.len();
     let reader = lp.fresh_reader(0, d, 0x5fd1);
     lp.peers.push(reader);
-    let pks: Vec<_> = packages_to(&mut lp, 0, i).into_iter().filter(|p| held.contains(&p.id) && !bob.contains(&p.id)).collect();
+    let pks: Vec<_> = packages_reading(&mut lp, 0, i, d).into_iter().filter(|p| held.contains(&p.id) && !bob.contains(&p.id)).collect();
     lp.hold_at(i, d);
     // it keeps the writers' accounts, Carol's chain among them, as it arrives
     let writers: Vec<Tid> = (0..3).map(|j| lp.peers[j].engine.me()).collect();
@@ -3108,7 +3112,7 @@ fn inflated_snapshot_claims_count_nothing_spec_crdt_8() {
         let reader = lp.fresh_reader(0, d, 0x6110 + n as u64);
         lp.peers.push(reader);
         lp.hold_at(i, d);
-        for p in packages_to(&mut lp, 0, i).into_iter().filter(|p| p.id != rv) {
+        for p in packages_reading(&mut lp, 0, i, d).into_iter().filter(|p| p.id != rv) {
             lp.deliver(i, &p).unwrap();
         }
         let got = deliver_stripped(&mut lp, 1, i, &late, &tags_ak);
@@ -3116,13 +3120,14 @@ fn inflated_snapshot_claims_count_nothing_spec_crdt_8() {
         assert!(!tags(&mut lp, i, d).contains("late"), "snap first {snap_first}");
         sync(&mut lp, 1, 0);
         assert_eq!(tags(&mut lp, 0, d), BTreeSet::from(["mon".to_string()]), "snap first {snap_first}: Alice");
-        let held = lp.commit_ids(0);
+        // what Alice sends a reader of d: what reader i, which took it all, syncs
+        let synced = lp.synced(i).unwrap();
+        let all: Vec<_> = lp.packages_under(0, &synced).unwrap();
         for (k, removal_first) in [true, false].into_iter().enumerate() {
             let j = lp.peers.len();
             let reader = lp.fresh_reader(0, d, 0x6120 + 2 * n as u64 + k as u64);
             lp.peers.push(reader);
             lp.hold_at(j, d);
-            let all: Vec<_> = packages_to(&mut lp, 0, j).into_iter().filter(|p| held.contains(&p.id)).collect();
             let (first, second): (Vec<_>, Vec<_>) = all.iter().cloned().partition(|p| (p.id == rv) == removal_first || (!late.contains(&p.id) && p.id != rv));
             for p in first.iter().chain(&second) {
                 lp.deliver(j, p).unwrap();
@@ -3323,7 +3328,7 @@ fn late_joiner_after_compaction_keeps_writes_spec_crdt_8() {
     sync(&mut lp, 2, 0);
     set_edge(&mut lp.peers[0].engine, d, j, Some(edge(Role::Admin)), None);
     lp.advance(1000);
-    for p in packages_to(&mut lp, 0, 3).into_iter().filter(|p| !bob.contains(&p.id)) {
+    for p in packages_reading(&mut lp, 0, 3, d).into_iter().filter(|p| !bob.contains(&p.id)) {
         lp.deliver(3, &p).unwrap();
     }
     lp.peers[3].reexamine().unwrap();
@@ -3883,12 +3888,16 @@ fn invalid_insert_leaves_no_trace_in_order_spec_crdt_6_1() {
     assert_eq!(read(&mut lp, 2), want, "Carol: Bob's commit flipped invalid");
     // fresh nodes: without Bob's commit, with it first, with it last
     let held = lp.commit_ids(0);
+    let mut pks = Vec::new();
     for k in 0..3 {
         let i = lp.peers.len();
         let reader = lp.fresh_reader(0, d, 9500 + k as u64);
         lp.peers.push(reader);
         lp.hold_at(lp.peers.len() - 1, d);
-        let pks: Vec<_> = packages_to(&mut lp, 0, i).into_iter().filter(|p| held.contains(&p.id)).collect();
+        // what Alice sends a reader of d (alike for each)
+        if pks.is_empty() {
+            pks = packages_reading(&mut lp, 0, i, d).into_iter().filter(|p| held.contains(&p.id)).collect();
+        }
         let (without, with_bob): (Vec<_>, Vec<_>) = pks.iter().partition(|p| p.id != bob);
         let orders = [without.clone(), with_bob.iter().chain(&without).copied().collect(), without.iter().chain(&with_bob).copied().collect::<Vec<_>>()];
         let order = &orders[k];

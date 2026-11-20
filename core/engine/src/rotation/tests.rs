@@ -489,9 +489,23 @@ fn arrival_order_holds_alike_spec_permissions_3() {
                 e.reseal_after_pass(&g).unwrap();
             }
         }
-        // what A sends N and O once each syncs what that brings it to sync, by commit ID; the
-        // orders permute `all`, the union, and each receiver takes those it is sent
-        let sent: Vec<Vec<crate::local_peer::Package>> = [3, 4].iter().map(|i| lp.packages_to(0, *i).unwrap()).collect();
+        // whether N is a reader where every commit is held (the steps' guess is not: removals
+        // and grants cross)
+        let n_in = lp.peers[0].engine.core.role_now(&n, &g).is_some();
+        // what A sends N and O, by commit ID: what each syncs, and `g`'s sync IDs where it reads
+        // `g` (it syncs them once it holds `g`'s record); the orders permute `all`, the union,
+        // and each receiver takes those it is sent
+        let gs: BTreeSet<osis_base::SyncId> = lp.peers[0].engine.sync_ids(&g).unwrap().iter().map(|o| o.id).collect();
+        let sent: Vec<Vec<crate::local_peer::Package>> = [(3, n_in), (4, false)]
+            .into_iter()
+            .map(|(i, reads)| {
+                let mut synced = lp.synced(i).unwrap();
+                if reads {
+                    synced.extend(gs.iter().copied());
+                }
+                lp.packages_under(0, &synced).unwrap()
+            })
+            .collect();
         let mut all: Vec<osis_base::CommitId> = Vec::new();
         for pk in sent.iter().flatten() {
             if !all.contains(&pk.id) {
@@ -500,9 +514,6 @@ fn arrival_order_holds_alike_spec_permissions_3() {
         }
         let lists: Vec<BTreeMap<osis_base::CommitId, crate::local_peer::Package>> = sent.into_iter().map(|v| v.into_iter().map(|p| (p.id, p)).collect()).collect();
         let first_g = all.iter().position(|id| lp.peers[0].engine.header(id).is_some_and(|h| h.aspects.iter().any(|a| a.tid == g))).unwrap();
-        // whether N is a reader where every commit is held (the steps' guess is not: removals
-        // and grants cross)
-        let n_in = lp.peers[0].engine.core.role_now(&n, &g).is_some();
         let deliver = |lp: &mut LocalPeer, order: &[usize]| {
             for (i, list) in [3, 4].into_iter().zip(&lists) {
                 for _ in 0..=all.len() {

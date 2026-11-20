@@ -179,10 +179,11 @@ fn sample(shape: Shape) -> usize {
         _ => {}
     }
     lp.sync_all().unwrap();
-    // what A, B and C send D (its sync set as their packages move it)
+    // what A, B and C send D (a reader of G: its sync set as it stands)
+    let synced = fresh.engine.sync_set().unwrap().ids.keys().copied().collect();
     let mut packs: BTreeMap<CommitId, Package> = BTreeMap::new();
     for i in [0, 1, 2] {
-        for pk in lp.packages_to_peer(i, &mut fresh).unwrap() {
+        for pk in lp.packages_under(i, &synced).unwrap() {
             packs.entry(pk.id).or_insert(pk);
         }
     }

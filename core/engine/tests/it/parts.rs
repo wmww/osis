@@ -123,7 +123,7 @@ fn two_things(write: impl Fn(&mut Mutation, Tid, Tid)) -> (osis_engine::local_pe
     use crate::common::*;
     let mut lp = net_one(2); // 1 a node of 0's account
     let (g, h) = (new_thing(&mut lp, 0), new_thing(&mut lp, 0));
-    for pk in packages_to(&mut lp, 0, 1) {
+    for pk in packages_for(&mut lp, 0, 1) {
         lp.deliver(1, &pk).unwrap();
     }
     let mut m = Mutation::new();
@@ -179,7 +179,7 @@ fn parked_part_waits_alone_spec_versioning_2() {
     use osis_crdt::{Delta, Writer, create, encode_delta};
     let mut lp = net_one(2);
     let (g, h) = (new_thing(&mut lp, 0), new_thing(&mut lp, 0));
-    for pk in packages_to(&mut lp, 0, 1) {
+    for pk in packages_for(&mut lp, 0, 1) {
         lp.deliver(1, &pk).unwrap();
     }
     lp.peers[0].clock.advance(10);
@@ -245,7 +245,7 @@ fn waiting_parts_boxes_are_read_in_either_order_spec_crypto_4() {
     use osis_schema::{Codec, core_types as ct};
     let mut lp = net_one(2);
     let g = new_thing(&mut lp, 0);
-    let known = packages_to(&mut lp, 0, 1);
+    let known = packages_for(&mut lp, 0, 1);
     let h = new_thing(&mut lp, 0);
     let rcpt = read_recipient(&mut lp.peers[1].engine);
     let e = &mut lp.peers[0].engine;
@@ -591,7 +591,7 @@ fn wrong_class_delta_is_not_waited_for_spec_commits_4() {
     assert_eq!(e.get(&g, &ak("t:reg.0")).unwrap(), Some(s("kept")));
     // a copy holding one, while the commit waits, names nothing: such a part has no true copy to look for
     let mut lp = net(2, 0);
-    let known = packages_to(&mut lp, 0, 1);
+    let known = packages_for(&mut lp, 0, 1);
     let h = new_thing(&mut lp, 0);
     let mut m = Mutation::new();
     m.set(h, &REG, &s("kept")).unwrap();
@@ -617,7 +617,7 @@ fn pending_commit_judged_unjudgeable_awaits_its_record_spec_commits_4() {
     use osis_base::format::MAX_DRIFT_MS;
     let mut lp = net(2, 0);
     let g = new_shared(&mut lp, 0);
-    for pk in packages_to(&mut lp, 0, 1) {
+    for pk in packages_for(&mut lp, 0, 1) {
         lp.deliver(1, &pk).unwrap();
     }
     let h = new_shared(&mut lp, 0);
@@ -631,7 +631,7 @@ fn pending_commit_judged_unjudgeable_awaits_its_record_spec_commits_4() {
     lp.peers[1].tick().unwrap();
     assert!(lp.peers[1].engine.pending().iter().any(|(c, r)| *c == id && matches!(r, Reason::UnknownCreated(x) if *x == h)), "awaits h's record");
     assert!(!lp.peers[1].engine.commit_ids().contains(&id));
-    for pk in packages_to(&mut lp, 0, 1).into_iter().filter(|pk| pk.id != id) {
+    for pk in packages_for(&mut lp, 0, 1).into_iter().filter(|pk| pk.id != id) {
         lp.deliver(1, &pk).unwrap();
     }
     assert!(lp.peers[1].engine.commit_ids().contains(&id), "applied with the record: {:?}", lp.peers[1].engine.pending());
@@ -645,7 +645,7 @@ fn pending_commit_judged_unjudgeable_awaits_its_record_spec_commits_4() {
 fn pending_for_pages_then_unjudgeable_awaits_its_record_spec_commits_4() {
     use crate::common::*;
     let mut lp = net_one(2);
-    for pk in packages_to(&mut lp, 0, 1) {
+    for pk in packages_for(&mut lp, 0, 1) {
         lp.deliver(1, &pk).unwrap();
     }
     let h = new_thing(&mut lp, 0);
@@ -657,7 +657,7 @@ fn pending_for_pages_then_unjudgeable_awaits_its_record_spec_commits_4() {
     assert!(matches!(lp.peers[1].receive(&pk.bytes, Vec::new()).unwrap(), Ingested::Pending(_, Reason::WaitBlobs)));
     assert!(matches!(lp.peers[1].receive(&pk.bytes, pk.blobs.clone()).unwrap(), Ingested::Pending(_, osis_engine::Reason::MissingChain(_) | osis_engine::Reason::UnknownCreated(_))));
     assert!(lp.peers[1].engine.pending().iter().any(|(c, r)| *c == id && matches!(r, Reason::UnknownCreated(x) if *x == h)), "awaits h's record once its header resolves");
-    for pk in packages_to(&mut lp, 0, 1).into_iter().filter(|pk| pk.id != id) {
+    for pk in packages_for(&mut lp, 0, 1).into_iter().filter(|pk| pk.id != id) {
         lp.deliver(1, &pk).unwrap();
     }
     assert!(lp.peers[1].engine.commit_ids().contains(&id), "applied with the record");
@@ -722,7 +722,7 @@ fn bad_part_beside_a_waiting_part_alike_spec_commits_4() {
 fn true_record_replaces_junk_under_a_linked_header_spec_commits_4() {
     use crate::common::*;
     let mut lp = net_one(2);
-    let known = packages_to(&mut lp, 0, 1);
+    let known = packages_for(&mut lp, 0, 1);
     let e = &mut lp.peers[0].engine;
     let mut m = Mutation::new();
     let t = e.new_thing(&mut m, e.dependents_admin());
@@ -771,10 +771,15 @@ impl Forge {
 fn forge_setup() -> Forge {
     use crate::common::*;
     let mut lp = net_one(3);
-    let node = lp.peers.pop().unwrap();
+    let mut node = lp.peers.pop().unwrap();
     let (x, y, z) = (new_thing(&mut lp, 0), new_thing(&mut lp, 0), new_thing(&mut lp, 0));
-    let mut node = node;
-    let setup = lp.packages_to_peer(0, &mut node).unwrap();
+    // what 0 sends the node: what it syncs and x's, y's and z's sync IDs, which it syncs once it
+    // holds their records
+    let mut synced: std::collections::BTreeSet<_> = node.engine.sync_set().unwrap().ids.keys().copied().collect();
+    for t in [x, y, z] {
+        synced.extend(lp.peers[0].engine.sync_ids(&t).unwrap().iter().map(|o| o.id));
+    }
+    let setup = lp.packages_under(0, &synced).unwrap();
     Forge { lp, setup, x, y, z, node }
 }
 
