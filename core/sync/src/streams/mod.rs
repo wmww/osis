@@ -533,11 +533,13 @@ impl Streams {
         self.untell_full(&shredded);
     }
 
-    /// Notes a store failure: the step fails at the next settle.
+    /// Notes a store failure (or an engine's broken invariant, its text kept): the step fails at
+    /// the next settle.
     fn failed(&mut self, r: Result<()>) {
         if let Err(e) = r {
             self.fault.get_or_insert(match e {
-                Error::Store(e) => e,
+                Error::Store(e) | Error::Engine(osis_engine::Error::Store(e)) => e,
+                Error::Engine(osis_engine::Error::Corrupt(m)) => osis_store::Error::Corrupt(m),
                 _ => osis_store::Error::Corrupt("streams: store"),
             });
         }

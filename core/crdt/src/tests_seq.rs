@@ -1361,3 +1361,81 @@ fn a_record_without_its_creation_holds_no_live_write_of_its_creator_spec_commits
     let ours = |w: Vec<(Dot, Option<osis_base::Ts>)>| w.iter().any(|(x, _)| x.src == node(1));
     assert!(ours(f.writes()) && !ours(f.live_writes()), "live_writes agrees");
 }
+
+/// spec/crdt.md §4.8: a join that splits a range record (a delete of one of its elements, older
+/// or newer than the record's own delete), or joins a range record over pieces of itself (a join
+/// never merges records, so the pieces stay apart), supersedes at its reach before and after what it supersedes in the whole
+/// state (`Fragment::reach_after`: the engine dates deaths there, and a death with no superseder
+/// is `Corrupt`). Each element of a three-element range, a text and a list, alone, in a struct
+/// and in a map entry.
+#[test]
+fn a_join_splitting_a_range_record_supersedes_at_its_reach_what_it_does_whole_spec_4_8() {
+    use crdt_model::value::Value as MValue;
+    let wrap = |how: usize, f: Fragment| match how {
+        0 => f,
+        1 => Fragment::Struct(crate::fragment::Struct { meta: Meta::default(), fields: [(4, f)].into_iter().collect() }),
+        _ => {
+            let e = crate::fragment::Eid::new(Dot::new(node(9), 1), Some(Value::Int(7)));
+            let entry = crate::fragment::Entry { reset: None, frag: Some(Box::new(f)), created: Some(Stamp::new(ts(1), node(9), 1)) };
+            Fragment::Map(crate::fragment::Map::new(Meta::default(), [(e, entry)].into_iter().collect()))
+        }
+    };
+    let ranged = |f: &Fragment| matches!(f, Fragment::Seq(s) if s.elems().values().any(|e| e.span > 1));
+    for text in [true, false] {
+        let ty = if text { Ty::Text } else { Ty::List(Box::new(Ty::Register)) };
+        let v = if text { MValue::Str("abc".into()) } else { MValue::List(vec![MValue::Int(1), MValue::Int(2), MValue::Int(3)]) };
+        let mut m0 = mops::create(&mut mw(1, 1), &ty, &v);
+        m0.prune(None);
+        for (t1, t2) in [(5, 9), (9, 5)] {
+            let range = frag(&mops::seq_delete(&mut mw(3, t2), &m0, 0, 3).unwrap());
+            assert!(ranged(&range), "the delete is one range record");
+            for hit in 0..3 {
+                let one = frag(&mops::seq_delete(&mut mw(2, t1), &m0, hit, 1).unwrap());
+                // the range's own delete without element `hit`, the range joined over it
+                let Fragment::Seq(rs) = &range else { unreachable!() };
+                let mut gap = crate::seq_span::expand(rs.elems().clone());
+                gap.retain(|d, _| d.ctr != hit as u64 + 1);
+                let gap = Fragment::Seq(Seq::new(text, Meta::default(), crate::seq_span::coalesce(gap)));
+                for (before, y, split) in [(&range, &one, true), (&gap, &range, false)] {
+                    assert!(!split || records(&joined(before, y)) > records(before), "the join splits the range record");
+                    for how in 0..3 {
+                        let (before, y) = (wrap(how, before.clone()), wrap(how, y.clone()));
+                        let after = joined(&before, &y);
+                        crate::tests_model::reach_holds_the_change(&before, &after, &y);
+                    }
+                }
+            }
+        }
+    }
+}
+
+/// spec/commits.md §5, spec/crdt.md §4.8: the deaths of a join read at its reach before and after
+/// (as `Killed::note` reads them) are dated each by its own superseder, never an earlier write on
+/// another element of the same range record the wider reach after a split takes in: a range
+/// delete at t5, then its first element deleted again at t9, then its last at t12.
+#[test]
+fn each_element_of_a_split_range_record_dies_at_its_own_delete_spec_commits_5() {
+    use crdt_model::value::Value as MValue;
+    let mut m0 = mops::create(&mut mw(1, 1), &Ty::Text, &MValue::Str("abc".into()));
+    m0.prune(None);
+    let mut st = frag(&mops::seq_delete(&mut mw(3, 5), &m0, 0, 3).unwrap());
+    for (i, (t, hit)) in [(9, 0usize), (12, 2)].into_iter().enumerate() {
+        let y = frag(&mops::seq_delete(&mut mw(4, t), &m0, hit, 1).unwrap());
+        let at = st.reach(&y);
+        let mut before = at.winners();
+        before.extend(y.winners());
+        let after = joined(&st, &y);
+        let won = after.reach_after(&y, &at).winners();
+        let dead = before.minus(&won);
+        let mut by = crate::winners::ByWrite::<()>::default();
+        by.note(&before, |_, _| ());
+        by.note(&won, |_, _| ());
+        let item = Dot::new(source(&MSource::session(1, 0)), hit as u64 + 1);
+        assert_eq!(dead.len(), 1, "join {i}: one write dies");
+        for w in &dead {
+            assert_eq!(w.path.last(), Some(&crate::winners::Place::Item(item.clone())), "join {i}: the hit element's");
+            assert_eq!(by.first_superseding(w, |s, _| Some(s.ts)), Some(ts(t << 16)), "join {i}: dated by its own delete");
+        }
+        st = after;
+    }
+}

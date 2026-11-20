@@ -139,6 +139,13 @@ impl Peer {
             self.given.insert(b.id());
         }
         let r = self.engine.ingest_with_lists(bytes, blobs.clone(), None, lists);
+        // a broken engine invariant leaves the commit unreceived and fails node-sync's step: in a
+        // test it fails at once, not as a read difference far from its cause (a caller dropping
+        // the result would never see it)
+        #[allow(clippy::panic)] // a test harness (tests, the simulator): fail loudly
+        if let Err(crate::Error::Corrupt(m)) = &r {
+            panic!("receiving fails the node: engine invariant broken: {m}");
+        }
         if let Err(e) = &r
             && e.class() == osis_base::ErrorClass::BadInput
             && let Ok(b) = CommitBlob::decode(bytes)

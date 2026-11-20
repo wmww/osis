@@ -312,7 +312,7 @@ fn piece_laws(x: &Fragment, y: &Fragment, honest: bool) {
 /// reference index counts a join there alone, notes/engine-refs.md). The writes it supersedes,
 /// read at the reaches as the engine dates them (`Killed::note`), are the whole state's: a range
 /// record the join split is reached at each of its elements.
-fn reach_holds_the_change(before: &Fragment, after: &Fragment, y: &Fragment) {
+pub(crate) fn reach_holds_the_change(before: &Fragment, after: &Fragment, y: &Fragment) {
     let diff = |a: &Fragment, b: &Fragment| {
         let mut m: BTreeMap<osis_base::Value, i64> = BTreeMap::new();
         a.each_read_value(&mut |v| *m.entry(v.clone()).or_default() -= 1);
