@@ -96,6 +96,7 @@ impl Engine {
             }
             let things: Vec<Tid> = writes.iter().map(|w| w.tid).collect();
             let published = published_keys(tx, &creates, things)?;
+            // Interim (notes/a1-spec/README.md step 3): the relayed snapshot states no real path
             let mut b = CommitBuilder::new(Kind::ContentSnapshot, ts, me, crate::engine::write::interim_path(me, actor), Form::Commit);
             b.aspects = writes;
             b.ephemeral = Some(EphClass::Relay);

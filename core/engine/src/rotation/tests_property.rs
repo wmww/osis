@@ -390,10 +390,41 @@ impl Run {
 
 /// One seed: generates a history, settles it, and checks the property. Panics with what failed.
 fn rotation_history(seed: u64) -> Reached {
+    rotation_history_as(seed, false).0
+}
+
+/// Every peer's verdict on each edge write it holds on an actor, by (ts, signer, target, holder),
+/// and each actor's roster there.
+type Verdicts = Vec<(BTreeMap<(osis_base::Ts, Tid, Tid, Tid), bool>, BTreeMap<Tid, BTreeMap<Tid, osis_perm::Edge>>)>;
+
+fn verdicts(run: &Run) -> Verdicts {
+    let mut out = Vec::new();
+    for p in &run.lp.peers {
+        let e = &p.engine;
+        let (mut applied, mut rosters) = (BTreeMap::new(), BTreeMap::new());
+        for t in run.all() {
+            if let Some(tl) = e.core.timelines.get(&t) {
+                for (w, c, op) in tl.held_on(&t) {
+                    applied.insert((c.ts, c.signer, op.target, op.holder), tl.is_applied(&w));
+                }
+            }
+            rosters.insert(t, e.roster(&t));
+        }
+        out.push((applied, rosters));
+    }
+    out
+}
+
+/// `rotation_history`, every node's role commits stating the Interim empty path with `interim`
+/// (`Engine::interim_role_paths`); with every node's verdicts at the end.
+fn rotation_history_as(seed: u64, interim: bool) -> (Reached, Verdicts) {
     let mut reached = Reached::default();
     let emphasis = seed % 4;
     let mut rng = Rng(seed.wrapping_mul(0x9E37_79B9_7F4A_7C15) | 1);
     let mut lp = LocalPeer::new(N, seed, WallMs(1_700_000_000_000)).unwrap();
+    for p in &mut lp.peers {
+        p.engine.interim_role_paths(interim);
+    }
     lp.sync_all().unwrap();
     let tids: Vec<Tid> = (0..N).map(|i| lp.peers[i].engine.me()).collect();
     // actors: G (peer 0's); with holder actors, one or two more, some of peer 2's, granted
@@ -624,7 +655,8 @@ fn rotation_history(seed: u64) -> Reached {
     reached.forked = run.made.keys().any(|(t, r, e)| run.made.keys().any(|(t2, r2, e2)| t == t2 && r == r2 && e != e2 && e.n() == e2.n()));
     reached.invalid = invalid_rotations(&run);
     check(&mut run, seed, true);
-    reached
+    let v = verdicts(&run);
+    (reached, v)
 }
 
 /// Whether some rotation commit of the history is invalid (its rotator demoted unaware).
@@ -987,6 +1019,25 @@ fn rotation_holds_spec_crypto_4() {
 fn rotation_holds_large_spec_crypto_4() {
     let s = osis_base::testenv::Seeds::from_env("OSIS_ROTATION_START", "OSIS_ROTATION_SEEDS", osis_base::testenv::large(0..1_000));
     tally(&s.run("rotation::tests_property::rotation_holds_large_spec_crypto_4", replay, rotation_history));
+}
+
+// notes/a1-spec/README.md step 3 (Role paths), spec/permissions.md §5.2 Interim: stating real
+// paths on role commits changes no verdict of today's walk in the property's hostile histories
+// (forged leaves, holder actors in cycles, withheld departures): every node's verdict on every
+// edge write and every actor's roster equal those of the same seed with every role commit stating
+// the Interim empty path. Small size (a tenth of large) or large under `OSIS_FULL=1`; seeds:
+// OSIS_ROTATION_START, OSIS_ROTATION_SEEDS.
+#[test]
+#[ignore = "property"]
+fn role_paths_change_no_verdict_in_the_rotation_property_large_spec_permissions_5_2() {
+    let s = osis_base::testenv::Seeds::from_env("OSIS_ROTATION_START", "OSIS_ROTATION_SEEDS", osis_base::testenv::large(0..200));
+    let replay = |s: u64| format!("OSIS_ROTATION_START={s} OSIS_ROTATION_SEEDS=1 cargo test -p osis-engine --lib -- --ignored --exact rotation::tests_property::role_paths_change_no_verdict_in_the_rotation_property_large_spec_permissions_5_2");
+    s.run("rotation::tests_property::role_paths_change_no_verdict_in_the_rotation_property_large_spec_permissions_5_2", replay, |seed| {
+        let (real, interim) = (rotation_history_as(seed, false).1, rotation_history_as(seed, true).1);
+        for (i, (a, b)) in real.iter().zip(&interim).enumerate() {
+            assert_eq!(a, b, "seed {seed} peer {i}");
+        }
+    });
 }
 
 /// Peer `i` acts (`f`), logged, its new epochs recorded and the states noted, as a generated step

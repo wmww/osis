@@ -358,3 +358,184 @@ fn the_new_walk_judges_the_stated_role_paths_as_the_old_walk_does() {
         assert_eq!(differ, expected, "peer {i}");
     }
 }
+
+/// The newest role commit at peer `i` writing `holder`'s edge on `t`: its header, and the new
+/// walk's status of that edge write.
+fn newest_write(lp: &LocalPeer, i: usize, t: Tid, holder: Tid) -> (std::sync::Arc<osis_commit::Header>, Option<osis_perm::paths::Status>) {
+    let e = &lp.peers[i].engine;
+    let tl = e.core.timelines.get(&t).unwrap();
+    let (w, _, _) = tl.held_on(&t).filter(|(_, _, op)| op.holder == holder).max_by_key(|(_, c, _)| c.ts).unwrap();
+    let (paths, ids) = new_walk(e);
+    let nid = ids.iter().find(|(_, (x, _))| *x == w).map(|(n, _)| *n).unwrap();
+    (e.header(&w.0).unwrap(), paths.status(&nid))
+}
+
+fn one_path(h: &osis_commit::Header) -> Vec<Tid> {
+    let osis_commit::Paths::One(p) = &h.path else { panic!("one path") };
+    p.things.clone()
+}
+
+// notes/a1-spec/permissions.md §1 Path, §2 Self-removal, §1 The last admin: B, admin of team H,
+// removes H from T, where B's only admin on T is through H: a self-removal (its path, [H], ends at
+// the holder), carrying no frontier and naming T's mint admin A as the admin that remains
+// (roles-model `an_honest_holder_leave_is_no_dispute`: K makes A2 leave T1 by [A2], naming A).
+// With a direct admin grant of its own on T, the same removal is explicit: the empty path, a
+// frontier, and B's own edge the last edge, nothing named.
+#[test]
+fn removing_the_team_one_acts_through_is_a_self_removal_spec_permissions_2() {
+    for direct in [false, true] {
+        let (mut lp, ps) = people(2);
+        let (pa, pb) = (ps[0], ps[1]);
+        let t = thing_of(&mut lp, 0, pa);
+        let h = thing_of(&mut lp, 0, pa);
+        spread(&mut lp);
+        grant(&mut lp, 0, t, h, edge_of(Role::Admin));
+        grant(&mut lp, 0, h, pb, edge_of(Role::Admin));
+        if direct {
+            grant(&mut lp, 0, t, pb, edge_of(Role::Admin));
+        }
+        remove(&mut lp, 1, t, h);
+        for i in 0..2 {
+            let (hd, st) = newest_write(&lp, i, t, h);
+            if direct {
+                assert!(one_path(&hd).is_empty() && hd.frontier.is_some() && hd.remains.is_none(), "peer {i}: {:?} {:?}", hd.path, hd.remains);
+            } else {
+                assert!(one_path(&hd) == [h] && hd.frontier.is_none() && hd.remains == Some(pa), "peer {i}: {:?} {:?}", hd.path, hd.remains);
+            }
+            assert_eq!(st, Some(osis_perm::paths::Status::Applied), "peer {i} direct {direct}");
+            assert!(walks_differ(&lp.peers[i].engine).is_empty(), "peer {i}: {:?}", walks_differ(&lp.peers[i].engine));
+            assert_eq!(lp.peers[i].engine.roster(&t).get(&h), None);
+        }
+    }
+}
+
+// notes/a1-spec/permissions.md §2 Invite grant ("an edge write whose path gives admin on T is
+// explicit, whatever it sets"): B holds admin on T through H and a direct write grant inviting
+// read; its grant of read to C states the admin path [H], not its own invite (the empty path),
+// and applies as an explicit grant, not an invite grant.
+#[test]
+fn an_admin_holding_an_invite_grants_by_its_admin_path_spec_permissions_2() {
+    let (mut lp, ps) = people(3);
+    let (pa, pb, pc) = (ps[0], ps[1], ps[2]);
+    let t = thing_of(&mut lp, 0, pa);
+    let h = thing_of(&mut lp, 0, pa);
+    spread(&mut lp);
+    grant(&mut lp, 0, t, h, edge_of(Role::Admin));
+    grant(&mut lp, 0, h, pb, edge_of(Role::Admin));
+    grant(&mut lp, 0, t, pb, invite(Role::Write, Role::Read));
+    grant(&mut lp, 1, t, pc, edge_of(Role::Read));
+    for i in 0..3 {
+        let (hd, st) = newest_write(&lp, i, t, pc);
+        assert_eq!(one_path(&hd), [h], "peer {i}");
+        assert_eq!(st, Some(osis_perm::paths::Status::Applied), "peer {i}");
+        assert!(walks_differ(&lp.peers[i].engine).is_empty(), "peer {i}");
+    }
+}
+
+/// One world of `new_walk_differs_only_by_design`: its name, the class its differences show (or
+/// none), and its peers.
+type ClassWorld = (&'static str, Option<&'static str>, LocalPeer);
+
+/// The classes' worlds this binary builds (notes/a1-spec/README.md step 3, For the wiring).
+fn class_worlds() -> Vec<ClassWorld> {
+    let mut out: Vec<ClassWorld> = vec![("representative", Some("a vouch outlives its voucher's own leave"), world(false).lp)];
+    // the last-admin rule as a validity rule: A, T's mint admin, and B, granted admin, leave at once
+    let (mut lp, ps) = people(2);
+    let t = thing_of(&mut lp, 0, ps[0]);
+    grant(&mut lp, 0, t, ps[1], edge_of(Role::Admin));
+    for (p, holder) in lp.peers.iter_mut().zip(&ps) {
+        p.engine.demote(&t, &Demotion { holder: *holder, new: None, retain: None }).unwrap();
+    }
+    lp.advance(1000);
+    spread(&mut lp);
+    out.push(("concurrent leaves", Some("a leave whose named remaining admin left first applies nothing"), lp));
+    // a single-use link redeemed by a forger first, unseen by the sharer, then by P1, whom the
+    // sharer saw; the sharer's removal of L lists P1's redemption alone
+    let (mut lp, ps) = people(3);
+    let d = thing_of(&mut lp, 0, ps[0]);
+    let (link, _, _) = lp.peers[0].engine.create_link(&ps[0], &LinkSpec { target: d, role: Role::Read, until: None, peers: Vec::new(), single_use: true }).unwrap();
+    follow(&mut lp, &link);
+    spread(&mut lp);
+    let l = osis_engine::identity::Identity::from_seed(link.seed.clone()).tid();
+    lp.peers[2].engine.redeem(&link, &ps[2], true).unwrap();
+    lp.peers[1].clock.advance(1000);
+    lp.peers[1].engine.redeem(&link, &ps[1], true).unwrap();
+    lp.sync(1, 0).unwrap();
+    lp.peers[0].clock.advance(2000);
+    lp.peers[0].engine.finalize_link(&link.k, &l).unwrap();
+    spread(&mut lp);
+    out.push(("single-use link redeemed twice", Some("a forged earlier redemption's leave outlives the sharer's removal of L"), lp));
+    // a key actor's edge write on itself: peer 2's own actor gives B write on itself
+    let (mut lp, ps) = people(3);
+    let team = lp.peers[2].engine.me();
+    let mut m = Mutation::new();
+    m.op(team, &ct::ROLES, osis_crdt::PathOp { path: vec![osis_crdt::PathSeg::Key(osis_base::Value::Weak(ps[1]))], op: osis_crdt::Op::Set(osis_schema::Codec::to_value(&edge_of(Role::Write))) }).unwrap();
+    lp.peers[2].engine.commit(m).unwrap().unwrap();
+    lp.advance(1000);
+    spread(&mut lp);
+    out.push(("a key actor's roster", Some("an edge-class part on its own signer is bad input"), lp));
+    out
+}
+
+// spec/permissions.md §5.1, notes/a1-spec/README.md step 3 (For the wiring): the new walk over
+// the paths role commits state against today's walk, per world of a listed class: each world shows differences, and
+// only those of its class; a world of no class shows none. By hand: a measure for the wiring,
+// which extends it as it moves the engine to the walk (the full sweep, at every engine drop of
+// the engine suites, is the README's probe).
+#[test]
+#[ignore = "by hand: the wiring's measure of the new walk against today's"]
+fn new_walk_differs_only_by_design() {
+    let mut bad = Vec::new();
+    for (name, class, lp) in class_worlds() {
+        for (i, p) in lp.peers.iter().enumerate() {
+            let d = walks_differ(&p.engine);
+            println!("{name} (peer {i}, class {class:?}): {} differences", d.len());
+            for x in &d {
+                println!("  {x}");
+            }
+            // an edge write signed by its own target
+            let on_signer = |x: &str| x.split_once("by ").and_then(|(_, r)| r.split_once(" on (")).is_some_and(|(by, r)| r.ends_with(&format!(", {by}): old true, new Some(Unapplied)")));
+            let fits = match class {
+                None => d.is_empty(),
+                Some(c) if c.starts_with("a vouch") => d.len() == 2,
+                Some(c) if c.starts_with("a leave") => !d.is_empty() && d.iter().all(|x| x.contains("old true, new Some(Unapplied)") || x.contains("roles on")),
+                Some(c) if c.starts_with("a forged") => !d.is_empty() && d.iter().all(|x| x.contains("new Some(Unapplied)") || x.contains("new Some(Applied)") || x.contains("roles on")),
+                Some(_) => !d.is_empty() && d.iter().all(|x| on_signer(x) || !x.starts_with("edge write")),
+            };
+            let shown = class.is_none() || lp.peers.iter().any(|p| !walks_differ(&p.engine).is_empty());
+            if !fits || !shown {
+                bad.push(format!("{name} peer {i}: {d:?}"));
+            }
+        }
+    }
+    assert!(bad.is_empty(), "differences outside their class: {bad:#?}");
+}
+
+// notes/principles.md Check scaling, notes/a1-spec/permissions.md §2 Path's invite: finding an
+// invite grant's path (`Need::Invite`: the role on every edge but the last, as an invite on the
+// last) walks the things reaching its target, as many at 10n unrelated role commits held as at n.
+#[test]
+fn finding_an_invite_grants_path_does_not_grow_with_history_spec_wire_4() {
+    let walked = |n: usize| {
+        let (mut lp, ps) = people(3);
+        let (pa, pb, pc) = (ps[0], ps[1], ps[2]);
+        let t = thing_of(&mut lp, 0, pa);
+        let h = thing_of(&mut lp, 0, pa);
+        spread(&mut lp);
+        grant(&mut lp, 0, t, h, invite(Role::Write, Role::Read));
+        grant(&mut lp, 0, h, pb, edge_of(Role::Write));
+        for _ in 0..n {
+            let x = thing_of(&mut lp, 0, pa);
+            lp.peers[0].engine.grant(&x, &pb, &edge_of(Role::Read)).unwrap();
+        }
+        spread(&mut lp);
+        osis_base::costs::take();
+        lp.peers[1].engine.grant(&t, &pc, &edge_of(Role::Read)).unwrap();
+        let c = osis_base::costs::take().iter().find(|x| x.0 == "perm: ways walked").map_or(0, |x| x.2);
+        let h_path = one_path(&lp.peers[1].engine.header(&lp.peers[1].engine.commit_ids().into_iter().max_by_key(|id| lp.peers[1].engine.header(id).map(|h| h.ts)).unwrap()).unwrap());
+        (c, h_path == [h])
+    };
+    let (small, large) = (walked(1), walked(10));
+    assert!(small.1 && large.1, "the invite grant states [H]");
+    assert!(small.0 > 0 && small == large, "ways walked at n {small:?} and 10n {large:?}");
+}

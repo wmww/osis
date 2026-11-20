@@ -385,9 +385,9 @@ pub(crate) fn may_write_on(tx: &mut Tx<'_>, tid: &Tid) -> Result<MayWrite> {
     Ok(if tx.core.writable(tid) && super::secrets::ready_to_write_in(tx, tid)? { MayWrite::Yes } else { MayWrite::Later })
 }
 
-// Interim (notes/a1-spec/README.md step 3): a role commit's path, a commit no path gives the
-// role on a thing it writes, and one acting for a thing not on every thing's path (Open 16)
-// state this.
+// Interim (notes/a1-spec/README.md step 3): a commit no path gives the role on a thing it
+// writes (a role commit too: Open 20), one acting for a thing not on every thing's path (Open
+// 16), and a relayed signal's snapshot (`ephemeral::signal`) state this.
 /// The one path a commit signed by `signer` acting for `actor` states where it states no real
 /// one (`stated_paths`): empty for the signer itself, else `actor` alone, named as purge author.
 pub(crate) fn interim_path(signer: Tid, actor: Tid) -> osis_commit::Path {
@@ -511,7 +511,8 @@ fn role_way(core: &Core, plan: &CommitPlan, t: &Tid, edges: &[(Tid, Tid, Option<
         Some(tl) => tl.edges_at(None).get(m, t).copied(),
         None => (core.mint_admin(t) == Some(*m)).then(|| osis_perm::Edge::new(Role::Admin)),
     };
-    let lowers = on.iter().all(|(m, e)| m == h && old(m).is_some() && osis_perm::types::lowers(e.as_ref(), old(m).as_ref()));
+    // a removal of an absent grant lowers (notes/a1-spec/permissions.md §2 Self-removal)
+    let lowers = on.iter().all(|(m, e)| m == h && osis_perm::types::lowers(e.as_ref(), old(m).as_ref()));
     if lowers && (*h == node || crate::apply::validity::self_removal(core, &node, t, h, plan.ts)) {
         return Some(RoleWay::Leave(*h));
     }

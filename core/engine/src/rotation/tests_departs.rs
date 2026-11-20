@@ -426,3 +426,30 @@ fn a_sync_epoch_covers_a_departure_only_once_rotated_spec_sync_opens_4() {
         assert!(a.covers_departures(&s, *e).unwrap(), "{e:?} does not cover W's departure");
     }
 }
+
+// notes/a1-spec/permissions.md §2 Self-removal (a removal of an absent grant lowers): W, reading
+// `g` only through a holder actor H it administers, removes its own grant on `g`, which it never
+// held (the rotation property's forged leave): the path ends at W, the empty path, with no
+// frontier and nothing named. Stated as an explicit removal through [H] (H's write grant), it
+// would need admin there and apply in no pass of the walk by path, where today's walk applies it.
+#[test]
+fn a_removal_of_ones_own_absent_grant_states_the_empty_path_spec_permissions_2() {
+    let mut lp = synced(3);
+    let tids: Vec<Tid> = (0..3).map(|i| lp.peers[i].engine.me()).collect();
+    let g = independent_thing(&mut lp, A);
+    let h = independent_thing(&mut lp, A);
+    lp.peers[A].engine.grant(&g, &h, &edge(Role::Write)).unwrap();
+    lp.peers[A].engine.grant(&h, &tids[W], &edge(Role::Admin)).unwrap();
+    lp.sync_all().unwrap();
+    let before = super::tests::commit_ids(&mut lp, W);
+    leave(&mut lp, W, g, Forge::None).unwrap();
+    let new: Vec<_> = super::tests::commit_ids(&mut lp, W).difference(&before).copied().collect();
+    let e = &lp.peers[W].engine;
+    let leave = new.iter().filter_map(|id| e.header(id)).find(|hd| hd.kind.is_role()).unwrap();
+    let osis_commit::Paths::One(p) = &leave.path else { panic!("one path") };
+    assert!(p.things.is_empty() && leave.frontier.is_none() && leave.remains.is_none(), "{p:?}");
+    lp.sync_all().unwrap();
+    for i in 0..3 {
+        assert_eq!(lp.peers[i].engine.roster(&g).get(&tids[W]), None, "peer {i}");
+    }
+}
