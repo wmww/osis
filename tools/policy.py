@@ -2,7 +2,7 @@
 """Policy checks (notes/gate.md, Policy checks), each failure naming its rule: workspace lints on
 (so the compiler forbids unsafe; app/android denies it and keeps its one block), every external
 dependency has its line in notes/architecture.md §5, no target marked `test = false` /
-`doctest = false` has tests that would silently not run, held-model depends only on crdt-model,
+`doctest = false` has tests that would silently not run, held-model depends only on crdt-model and roles-model,
 core/base/testenv-known.txt lists exactly the `OSIS_*` variables the sources name (`env_vars`),
 dispute types stay private (`dispute_types`), no test binds the real LAN port or announces on the
 real LAN (`real_lan_tests`), a test peer ticks through its wake (`peer_ticks`), world copies stay
@@ -105,13 +105,13 @@ for m in members:
     man = load(os.path.join(m, "Cargo.toml"))
     lints = man.get("lints", {})
     is_model = rel.startswith(("core/test/crdt-model", "core/test/roles-model", "core/test/held-model"))
-    # held-model is an independent reading of the spec: its one workspace dependency is crdt-model,
-    # the other independent reading (its values)
+    # held-model is an independent reading of the spec: its workspace dependencies are the other
+    # models, crdt-model (its values) and roles-model (`evidence` judges by `paths`)
     if rel == "core/test/held-model":
         for table in dep_tables(man):
             for name, spec in table.items():
-                if name != "crdt-model" and (name in internal or (isinstance(spec, dict) and "path" in spec)):
-                    errs.append(f"{rel}: depends on workspace crate `{name}`; it may depend on crdt-model only")
+                if name not in ("crdt-model", "roles-model") and (name in internal or (isinstance(spec, dict) and "path" in spec)):
+                    errs.append(f"{rel}: depends on workspace crate `{name}`; it may depend on crdt-model and roles-model only")
     # app/android: the workspace lints with unsafe_code at deny, for its one unsafe call (the NDK
     # makes a native window of the view's Surface only through a raw JNI call; notes/android.md)
     is_android = rel == "app/android"

@@ -13,6 +13,7 @@ mod spec_signals;
 mod spec_strip;
 mod spec_thing_history;
 mod spec_edits;
+mod spec_evidence;
 mod spec_undo;
 mod spec_waits;
 mod props;

@@ -7,6 +7,7 @@
 pub mod closure;
 pub mod connlived;
 pub mod edits;
+pub mod evidence;
 pub mod external;
 pub mod fetch;
 pub mod freed;

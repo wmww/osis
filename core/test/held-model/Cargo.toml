@@ -10,9 +10,10 @@ test = false
 doctest = false
 
 # Independent of every osis crate on purpose (tools/policy.py checks it): values are crdt-model's,
-# the other independent reading of the spec.
+# the other independent reading of the spec; `evidence` judges by roles-model `paths`.
 [dependencies]
 crdt-model.workspace = true
+roles-model.workspace = true
 
 # Reference model: style lints off; correctness is checked by its tests.
 [lints.rust]

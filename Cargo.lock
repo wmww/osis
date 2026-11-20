@@ -1704,6 +1704,7 @@ name = "held-model"
 version = "0.0.0"
 dependencies = [
  "crdt-model",
+ "roles-model",
 ]
 
 [[package]]
