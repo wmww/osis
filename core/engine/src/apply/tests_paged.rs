@@ -2401,8 +2401,8 @@ fn a_refusal_beside_a_leaf_of_nested_positions_ends_alike_in_every_order_spec_wi
     }
 }
 
-/// spec/sync-streams.md §5 (a large value's chunks and tree nodes fetched lazily), spec/commits.md
-/// §4: a durable paged part waits for its pages only, never for its large values' trees: given
+/// spec/sync-streams.md §5 (Pages of a delta are fetched before its commit is applied: a large value's tree lazily),
+/// spec/commits.md §4: a durable paged part waits for its pages only, never for its large values' trees: given
 /// every page and none of the value's tree (a peer that applied it without fetching them), it
 /// applies. Fails with the part's wait keyed on the value's root as well.
 #[test]
