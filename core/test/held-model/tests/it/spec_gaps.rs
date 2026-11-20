@@ -317,3 +317,30 @@ fn gaps_a_removal_on_a_path_through_a_read_hop_is_owed_once_it_has_reach() {
         assert_eq!(f.iter().any(|f| f.prop == "P3" && f.id == r), s != Stage::A3, "{}: {f:?}", s.name());
     }
 }
+
+/// Finding 23 (`wide` seed 14204407685, shrunk): the stolen K writes R through [A, O], A holding
+/// only read on O (W's grant), O write on R; X, W and Y each sync their own thing alone and the
+/// thief logs no grant giving below write. The node holding everything judges the write invalid
+/// (no write reaches R through a read hop); R's reader, lacking W's read grant, holds no chained
+/// grant on (A, O) and pends. Every stage without the errand fails P1 so, today's included; A3
+/// held only while every edge write giving below write reached (`Removals::Any`): W's errand
+/// carried its own fresh read grant to R as a removal. Pinned: the fix proposed (README OPEN 16)
+/// is joined-ness and pending at the role a part needs on each hop, so the node holding
+/// everything pends too.
+#[test]
+fn gaps_a_write_through_a_read_hop_pends_at_a_reader_lacking_the_read_grant() {
+    let pw = paths::World::new(&[(X, A), (W, O), (Y, R)]);
+    let mut w = World::new(pw, &[A, O, R]);
+    let (x, wn, y, k) = (w.node(true, &[A]), w.node(true, &[O]), w.node(true, &[R]), w.node(false, &[]));
+    w.write(x, |p| p.edge(X, 1, &[], A, K, Role::Write, &[]));
+    w.write(wn, |p| p.edge(W, 1, &[], O, A, Role::Read, &[]));
+    w.write(y, |p| p.edge(Y, 1, &[], R, O, Role::Write, &[]));
+    let c = w.write(k, |p| p.content(K, 5, &[A, O], R));
+    for (removals, a3_holds) in [(Removals::TakesWrite, false), (Removals::Any, true)] {
+        for s in Stage::ALL {
+            let f = crate::spec_reach::stage_fails_with(&w, s, true, |r| Rule { removals, ..r });
+            let pends = f.iter().any(|f| f.prop == "P1" && f.sid == R && f.id == c && f.reader == Some(Verdict::Pending) && f.full == Some(Verdict::Invalid));
+            assert_eq!(pends, !(s == Stage::A3 && a3_holds), "{removals:?} {}: {f:?}", s.name());
+        }
+    }
+}
