@@ -37,7 +37,7 @@ mod stranded;
 mod suspect;
 mod tickets;
 
-pub use held::{Act, Judged, Promotion, adds_delta, promotion, to_clear};
+pub use held::{Judged, Promotion, adds_delta, promotion, to_clear};
 pub use offers::{BACKOFF_MAX_MS, BACKOFF_MIN_MS, Judge, Offers, Target, backoff_ms};
 pub use osis_engine::sync::Signers;
 pub use register::{Plan, Progress, plan};

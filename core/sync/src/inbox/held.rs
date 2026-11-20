@@ -29,7 +29,7 @@ type Key = (SyncId, BlobId);
 
 /// What one entry calls for.
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub enum Act {
+pub(crate) enum Act {
     /// Not held (gone, expired, never there).
     Gone,
     /// Nothing: a stamped entry.
@@ -38,8 +38,8 @@ pub enum Act {
     Promote,
     /// An own deposit: offered.
     Offer,
-    /// A deposit nothing is done with yet (`never`: promotable never).
-    Waiting { never: bool },
+    /// A deposit nothing is done with yet.
+    Waiting,
 }
 
 #[derive(Clone)]
@@ -95,7 +95,7 @@ impl Held {
 
     fn act(&mut self, offers: &mut Offers, k: &Key, now: &Act) {
         let (s, _) = k;
-        if matches!(now, Act::Promote | Act::Offer | Act::Waiting { .. }) || matches!(self.acts.get(k), Some(Act::Offer | Act::Waiting { .. })) {
+        if matches!(now, Act::Promote | Act::Offer | Act::Waiting) || matches!(self.acts.get(k), Some(Act::Offer | Act::Waiting)) {
             self.clear_due.insert(*s);
         }
         match now {
@@ -105,7 +105,7 @@ impl Held {
                 return;
             }
             Act::Offer => offers.add(*s, k.1, Target::Stores),
-            Act::Promote | Act::Waiting { .. } => {}
+            Act::Promote | Act::Waiting => {}
         }
         self.acts.insert(*k, now.clone());
     }
@@ -282,18 +282,13 @@ fn judge(engine: &mut Engine, store: &Store, k: &Key) -> Result<Act> {
         return Ok(Act::Offer);
     }
     // a peer's deposit under a read S this node writes: whether read promotes it
-    let promote = if !e.own
+    if !e.own
         && holding == Some(Holding::Read)
         && engine.signers(s, None)?.stamp.is_some()
         && let Some(c) = deposit_commit(engine, store, s, &e)?
+        && promotion(engine, store, s, &c, b)? == Promotion::Yes
     {
-        Some(promotion(engine, store, s, &c, b)?)
-    } else {
-        None
-    };
-    Ok(match promote {
-        Some(Promotion::Yes) => Act::Promote,
-        Some(Promotion::No) => Act::Waiting { never: true },
-        _ => Act::Waiting { never: false },
-    })
+        return Ok(Act::Promote);
+    }
+    Ok(Act::Waiting)
 }
