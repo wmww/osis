@@ -299,7 +299,7 @@ impl Rec for crate::retention::snapshot::Carried {
 }
 impl Rec for osis_crdt::Facts {
     fn to(&self) -> Value {
-        let row = |((ts, src), f): (&(Ts, osis_crdt::Source), &osis_crdt::Fact)| Value::List(vec![ts.to(), src.to(), Value::uint(f.by as u64), f.actor.to()]);
+        let row = |((ts, src), f): (&(Ts, osis_crdt::Source), &osis_crdt::Fact)| Value::List(vec![ts.to(), src.to(), Value::uint(f.by as u64), f.purge_author.to()]);
         Value::List(self.iter().map(row).collect())
     }
     fn from(v: &Value) -> Option<Self> {
@@ -307,9 +307,9 @@ impl Rec for osis_crdt::Facts {
         let mut out = osis_crdt::Facts::new();
         for e in x {
             let Value::List(r) = e else { return None };
-            let [ts, src, by, actor] = r.as_slice() else { return None };
+            let [ts, src, by, purge_author] = r.as_slice() else { return None };
             let by = osis_base::PurgeBy::from_id(<u64 as Rec>::from(by)?)?;
-            out.insert((<Ts as Rec>::from(ts)?, <osis_crdt::Source as Rec>::from(src)?), osis_crdt::Fact { by, actor: Rec::from(actor)? });
+            out.insert((<Ts as Rec>::from(ts)?, <osis_crdt::Source as Rec>::from(src)?), osis_crdt::Fact { by, purge_author: Rec::from(purge_author)? });
         }
         Some(out)
     }
@@ -768,7 +768,7 @@ pub(super) fn meta_row(core: &Core, id: &CommitId, m: &Meta) -> Vec<u8> {
     };
     w = w.raw(v.signer.as_bytes()).u8(u8::from(v.linked) | (u8::from(v.memory) << 1) | (u8::from(v.purges) << 2) | (u8::from(v.epoch.is_some()) << 3) | (u8::from(v.own_cover) << 4) | (u8::from(v.paths.is_some()) << 5));
     // its purge author; in a split commit, what is decided here of each thing's path
-    w = w.raw(v.acting.as_bytes());
+    w = w.raw(v.purge_author.as_bytes());
     if let Some(p) = &v.paths {
         w = w.raw(&(p.len() as u32).to_be_bytes());
         for (t, known) in p.iter() {
@@ -816,7 +816,7 @@ fn parse_meta_row(row: &[u8]) -> Result<(&[u8], super::View)> {
     };
     let signer = r.tid()?;
     let flags = r.u8()?;
-    let acting = r.tid()?;
+    let purge_author = r.tid()?;
     let paths = if flags & 32 == 0 {
         None
     } else {
@@ -846,7 +846,7 @@ fn parse_meta_row(row: &[u8]) -> Result<(&[u8], super::View)> {
         _ => return Err(Error::Corrupt("meta row frontier")),
     };
     r.end()?;
-    Ok((parts, super::View { ts, kind, form, signer, acting, paths, linked, memory, aspects, frontier, purges, epoch, own_cover }))
+    Ok((parts, super::View { ts, kind, form, signer, purge_author, paths, linked, memory, aspects, frontier, purges, epoch, own_cover }))
 }
 
 /// A commit record's head and its blob bytes.

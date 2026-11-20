@@ -358,25 +358,24 @@ pub(crate) fn walk_source<'r>(valid_on: &dyn Fn(&CommitId) -> bool, resets: &dyn
     (next, false)
 }
 
-// Interim (notes/a1-spec/README.md step 4): its purge author where that is not its signer.
 /// What delta `a` of a commit with view `v` is judged by in a purge (spec/crdt.md §8 `Facts`):
-/// its purgeable-by, and the thing it acts on where that is not its signer.
+/// its purgeable-by, and its purge author where that is not its signer.
 pub(crate) fn header_fact(v: &crate::engine::View, a: &osis_commit::AspectEntry) -> osis_crdt::Fact {
-    osis_crdt::Fact { by: a.retention.by, actor: v.acts_for() }
+    osis_crdt::Fact { by: a.retention.by, purge_author: v.other_purge_author() }
 }
 
-/// What a snapshot's `Facts` (with its `Absorbed` authors, `absorbed`) state of carried commit
-/// `k` (spec/crdt.md §8): its purgeable-by and its actor, the author where the fact names none (a
-/// session's node; a commit-form commit's `Absorbed` author). `None` where the snapshot names no
-/// author (a commit-form commit it does not list as absorbed): it states nothing of it.
+/// What a snapshot's `Facts` (with its `Absorbed` signers, `absorbed`) state of carried commit
+/// `k` (spec/crdt.md §8): its purgeable-by and its purge author, the signer where the fact names
+/// none (a session's tid; a commit-form commit's `Absorbed` signer). `None` where the snapshot
+/// names no signer (a commit-form commit it does not list as absorbed): it states nothing of it.
 pub(crate) fn stated(facts: &osis_crdt::Facts, absorbed: &dyn Fn(&CommitId) -> Option<Tid>, k: &(Ts, osis_crdt::Source)) -> Option<(osis_base::PurgeBy, Tid)> {
     let f = facts.get(k).copied().unwrap_or(osis_crdt::Fact::NARROWEST);
-    let author = match k.1.kind() {
+    let signer = match k.1.kind() {
         osis_crdt::SourceKind::Session(s) => Some(s.node),
         osis_crdt::SourceKind::Commit(c) => absorbed(c),
         osis_crdt::SourceKind::Derived(_) => None,
     };
-    Some((f.by, f.actor.or(author)?))
+    Some((f.by, f.purge_author.or(signer)?))
 }
 
 /// The carried commits `(ts, origin source)` whose writes `f` holds.
@@ -648,7 +647,7 @@ pub(crate) fn covered_join(tx: &mut Tx<'_>, s: &CommitId, c: &CommitId, tid: &Ti
             Some((bf, babs)) => both.iter().all(|k| stated(bf, &|x| babs.get(x).copied(), k) == cover(k)),
             None => {
                 let k = (h.ts, h.form.own_source(h.signer, *c));
-                !both.contains(&k) || h.aspects.get(cai).is_none_or(|a| cover(&k) == Some((a.retention.by, m.view.acting)))
+                !both.contains(&k) || h.aspects.get(cai).is_none_or(|a| cover(&k) == Some((a.retention.by, m.view.purge_author)))
             }
         };
         if held && !same {

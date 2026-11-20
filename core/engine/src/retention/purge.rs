@@ -26,7 +26,7 @@ fn stamped_before(at: Ts, ak: &Ak, ts: Ts) -> bool {
 }
 
 /// What a request judges a delta by (spec/commits.md §5 Purge): its thing and aspect, its stamp
-/// (`ts` and own source), its actor and purgeable-by, its expiry, and whether it has writes of
+/// (`ts` and own source), its purge author and purgeable-by, its expiry, and whether it has writes of
 /// its own. From the header where held (`of`), else for the copies a held snapshot carries of a
 /// commit this node does not hold, from that snapshot's `Facts` (`carried`).
 #[derive(Clone, Debug)]
@@ -35,7 +35,7 @@ pub(crate) struct Target {
     pub ak: Ak,
     pub ts: Ts,
     pub src: osis_crdt::Source,
-    pub actor: Tid,
+    pub purge_author: Tid,
     pub by: osis_base::PurgeBy,
     pub expires: Option<u64>,
     pub own_writes: bool,
@@ -44,23 +44,23 @@ pub(crate) struct Target {
 impl Target {
     /// Delta `a` of commit `c` (header `h`).
     pub(crate) fn of(h: &Header, a: &AspectEntry, c: &CommitId) -> Target {
-        Target { tid: a.tid, ak: a.ak.clone(), ts: h.ts, src: h.form.own_source(h.signer, *c), actor: h.purge_author(), by: a.retention.by, expires: h.expires, own_writes: h.kind.has_own_writes() }
+        Target { tid: a.tid, ak: a.ak.clone(), ts: h.ts, src: h.form.own_source(h.signer, *c), purge_author: h.purge_author(), by: a.retention.by, expires: h.expires, own_writes: h.kind.has_own_writes() }
     }
 
     /// The commit stamped `ts` of `src` on `(tid, ak)` as a snapshot states it (`snapshot::stated`:
-    /// class `by`, `actor`): a snapshot carries no value of a delta with an expiry (spec/crdt.md
+    /// class `by`, `purge_author`): a snapshot carries no value of a delta with an expiry (spec/crdt.md
     /// §8), so one whose values it carries has none.
-    pub(crate) fn carried(tid: Tid, ak: Ak, ts: Ts, src: osis_crdt::Source, by: osis_base::PurgeBy, actor: Tid) -> Target {
-        Target { tid, ak, ts, src, actor, by, expires: None, own_writes: true }
+    pub(crate) fn carried(tid: Tid, ak: Ak, ts: Ts, src: osis_crdt::Source, by: osis_base::PurgeBy, purge_author: Tid) -> Target {
+        Target { tid, ak, ts, src, purge_author, by, expires: None, own_writes: true }
     }
 }
 
-/// Whether `item` reaches delta `t` on its aspect: by its stamp, the whole aspect, or by its actor.
+/// Whether `item` reaches delta `t` on its aspect: by its stamp, the whole aspect, or by its purge author.
 fn reaches(item: &PurgeItem, t: &Target) -> bool {
     match item {
         PurgeItem::Commit { ts, src, .. } => *ts == t.ts && *src == t.src,
         PurgeItem::Aspect { .. } => true,
-        PurgeItem::Author { author, .. } => t.actor == *author,
+        PurgeItem::Author { author, .. } => t.purge_author == *author,
     }
 }
 
@@ -81,41 +81,42 @@ fn names(p: &Header, a: &AspectEntry, ch: &Header, c: &CommitId) -> bool {
     names_t(p, &Target::of(ch, a, c))
 }
 
-/// Whether a snapshot this node would write as `who` stamped `ts` (author and actor `who`) holds
+/// Whether a snapshot this node would write as `who` stamped `ts` (signer and purge author `who`) holds
 /// the right over held body `(tid, ak)` of `c` (`holds_right` for a snapshot not written yet: judged
 /// at the start of `ts`, its ID never counts). A purge-on-replace cover asks it
 /// (`replace::settle_none`).
 pub(super) fn would_hold_right(core: &Core, who: &Tid, ts: Ts, c: &CommitId, tid: &Tid, ak: &Ak) -> bool {
     let Some(m) = core.ix.commits.get(c) else { return false };
     let Some(a) = m.aspect(tid, ak).and_then(|ai| m.header.aspects.get(ai)) else { return false };
-    let author = m.view.acting;
+    let author = m.view.purge_author;
     let point = Point { ts, node: *who, commit: CommitId([0xff; 32]) };
     core.timelines.get(&a.tid).is_some_and(|tl| tl.purge_stands(who, &a.tid, a.retention.by, &author, point))
 }
 
 /// Whether commit `pc` (header `p`: a purge request or a compaction snapshot) holds the right over
-/// delta `a` of a commit with header `ch`, at its own key (spec/permissions.md §6): its author
-/// does, and the actor it acts for, neither by a role a demotion's frontier took from this commit.
-/// The actor holds a client to its own rights in any arrival order: its node's would reach a delta
-/// of the account it acts for that the node did not hold yet. A function of the role timeline, the
+/// delta `a` of a commit with header `ch`, at its own key (spec/permissions.md §6): its signer
+/// does, and so does its own purge author (`p_author`, which the old walk reads it as acting for:
+/// Interim, spec/permissions.md §5.2), neither by a role a demotion's frontier took from this
+/// commit. Judging the request's own purge author holds a client to its own rights in any arrival
+/// order: its node's would reach a delta of the account it acts for that the node did not hold yet. A function of the role timeline, the
 /// void set and the headers, so any node holding them judges alike, in any arrival order;
 /// `rejudge_purges` follows it when those change.
 pub(super) fn holds_right(core: &Core, p: &Header, pc: &CommitId, a: &AspectEntry, ch: &Header) -> bool {
-    let actor = ch.purge_author();
-    right_holds(core, p, pc, &Right { tid: a.tid, ak: a.ak.clone(), by: a.retention.by, actor })
+    let purge_author = ch.purge_author();
+    right_holds(core, p, pc, &Right { tid: a.tid, ak: a.ak.clone(), by: a.retention.by, purge_author })
 }
 
 /// `holds_right` over delta `t`.
 fn holds_right_t(core: &Core, p: &Header, pc: &CommitId, t: &Target) -> bool {
-    right_holds(core, p, pc, &Right { tid: t.tid, ak: t.ak.clone(), by: t.by, actor: t.actor })
+    right_holds(core, p, pc, &Right { tid: t.tid, ak: t.ak.clone(), by: t.by, purge_author: t.purge_author })
 }
 
-/// What the right over a delta depends on: its thing and aspect, purgeable-by and actor.
+/// What the right over a delta depends on: its thing and aspect, purgeable-by and purge author.
 struct Right {
     tid: Tid,
     ak: Ak,
     by: osis_base::PurgeBy,
-    actor: Tid,
+    purge_author: Tid,
 }
 
 /// `holds_right` over the delta `a` describes.
@@ -124,15 +125,15 @@ fn right_holds(core: &Core, p: &Header, pc: &CommitId, a: &Right) -> bool {
         return false;
     }
     let point = Point { ts: p.ts, node: p.signer, commit: *pc };
-    let (by, actor) = (a.by, a.actor);
-    let acts = p.purge_author();
-    let judge = |tl: &osis_perm::Timeline| tl.purge_stands(&p.signer, &a.tid, by, &actor, point) && (acts == p.signer || tl.purge_stands(&acts, &a.tid, by, &actor, point));
+    let (by, purge_author) = (a.by, a.purge_author);
+    let p_author = p.purge_author();
+    let judge = |tl: &osis_perm::Timeline| tl.purge_stands(&p.signer, &a.tid, by, &purge_author, point) && (p_author == p.signer || tl.purge_stands(&p_author, &a.tid, by, &purge_author, point));
     // a destruction is judged by the thing's history before it: nothing written on the thing after it
     // counts (spec/commits.md §5 Destruction), so an edge write on it stamped later, held here before
     // the destruction arrived, is left out of the walk that judges it. Such a write is not held once
     // the thing was destroyed (`destroy::Destruction`): a walk from scratch only while one is, only for signers
     // that could ever hold the right (held inputs only grow, so neither can a cut's), and only
-    // over what authority on the thing and the delta's actor comes from (`Held::upstream`), not
+    // over what authority on the thing and the delta's purge author comes from (`Held::upstream`), not
     // the node's whole role graph
     if a.ak.as_str() == osis_commit::retention::CREATED {
         // the edge writes and vouches on the thing stamped after the request (a vouch goes as an
@@ -143,7 +144,7 @@ fn right_holds(core: &Core, p: &Header, pc: &CommitId, a: &Right) -> bool {
             if !signers_could(core, p, a) {
                 return false;
             }
-            let things = core.ix.held.upstream(&BTreeSet::from([a.tid, actor]));
+            let things = core.ix.held.upstream(&BTreeSet::from([a.tid, purge_author]));
             osis_base::costs::count("destruction: cut walk things", things.len() as u64);
             let cut = Cut { held: &core.ix.held, things, later };
             return judge(&osis_perm::Timeline::evaluate_with(&cut, &core.sides.trust()));
@@ -206,13 +207,13 @@ pub(crate) fn check_request(core: &Core, p: &Header, pc: &CommitId) -> Result<()
                 return Err(Error::Clash(format!("a purge in a commit that expires reaches only commits expiring no later, and a forgotten commit on {} {} expires later or never. Write the purge as a commit of its own", item.tid(), item.ak())));
             }
         }
-        // the right once per class and actor, as `apply_request` judges it; `names` skips
+        // the right once per class and purge author, as `apply_request` judges it; `names` skips
         // snapshots, so whether one is held (a compaction, a purge's re-snapshot) never decides
         let mut rights: BTreeMap<(u64, Tid), bool> = BTreeMap::new();
         for c in named_by(core, item, p.ts) {
             let Some((m, ai)) = core.ix.commits.get(&c).and_then(|m| Some((m, m.aspect(item.tid(), item.ak())?))) else { continue };
             let Some(a) = m.header.aspects.get(ai).filter(|a| names(p, a, &m.header, &c)) else { continue };
-            let author = m.view.acting;
+            let author = m.view.purge_author;
             if *rights.entry((a.retention.by as u64, author)).or_insert_with(|| holds_right(core, p, pc, a, &m.header)) {
                 break;
             }
@@ -220,7 +221,7 @@ pub(crate) fn check_request(core: &Core, p: &Header, pc: &CommitId) -> Result<()
         // a commit forgotten here whose copies a held snapshot carries: judged by its name, as by
         // its header (`names`)
         for t in core.forgotten_on(item.tid(), item.ak()).into_iter().filter(|t| reaches(item, t) && names_t(p, t)) {
-            rights.entry((t.by as u64, t.actor)).or_insert_with(|| holds_right_t(core, p, pc, &t));
+            rights.entry((t.by as u64, t.purge_author)).or_insert_with(|| holds_right_t(core, p, pc, &t));
         }
         if !rights.is_empty() && !rights.values().any(|r| *r) {
             return Err(Error::Permission { tid: *item.tid(), needs: osis_base::Role::Admin });
@@ -238,24 +239,24 @@ pub(crate) fn stands(core: &Core, p: &Header, pc: &CommitId, a: &AspectEntry, ch
 /// `a` of a commit with header `ch`: `holds_right` with roles of any validity at any time, so held
 /// inputs only widen it.
 fn signers_could(core: &Core, p: &Header, a: &Right) -> bool {
-    let (held, by, actor) = (&core.ix.held, a.by, a.actor);
+    let (held, by, purge_author) = (&core.ix.held, a.by, a.purge_author);
     let could = |who: &Tid| {
         held.ever_admins(&a.tid).contains(who)
             || (by.writer() && held.ever_writers(&a.tid).contains(who))
-            || (by.author() && (*who == actor || held.ever_writers(&actor).contains(who)) && held.ever_writers(&a.tid).contains(&actor))
+            || (by.author() && (*who == purge_author || held.ever_writers(&purge_author).contains(who)) && held.ever_writers(&a.tid).contains(&purge_author))
     };
-    let acts = p.purge_author();
-    could(&p.signer) && (acts == p.signer || could(&acts))
+    let p_author = p.purge_author();
+    could(&p.signer) && (p_author == p.signer || could(&p_author))
 }
 
 /// Whether a request with header `p` names delta `a` of commit `c` (header `ch`), signed by ones
 /// that could ever hold the right.
 fn could_stand(core: &Core, p: &Header, a: &AspectEntry, ch: &Header, c: &CommitId) -> bool {
-    let actor = ch.purge_author();
-    names(p, a, ch, c) && signers_could(core, p, &Right { tid: a.tid, ak: a.ak.clone(), by: a.retention.by, actor })
+    let purge_author = ch.purge_author();
+    names(p, a, ch, c) && signers_could(core, p, &Right { tid: a.tid, ak: a.ak.clone(), by: a.retention.by, purge_author })
 }
 
-/// Whether snapshot `s` may stand for body `(tid, ak)` of `c`: its actor holds the right over it
+/// Whether snapshot `s` may stand for body `(tid, ak)` of `c`: its purge author holds the right over it
 /// (`holds_right`; spec/commits.md §5). Without it the snapshot still carries the body's live
 /// writes and leaves it may-hold, but no node drops it for this snapshot. Either class (a memory
 /// delta's retention is `writer`).
@@ -289,15 +290,15 @@ pub(crate) fn lasting(tx: &mut Tx<'_>, id: &CommitId, on: &dyn Fn(&Core, &Tid) -
 
 /// Whether request `pc` (header `p`) holds the right over no delta it could name, by the role
 /// timeline now (spec/permissions.md §6: an invalid request purges nothing): for each item, no
-/// purgeable-by class and no delta actor gives it, the widest class (`writer`, every member) over
-/// each actor the author could write (`Held::reach`) that could write the item's thing
+/// purgeable-by class and no delta purge author gives it, the widest class (`writer`, every member) over
+/// each purge author the signer could write (`Held::reach`) that could write the item's thing
 /// (`Held::upstream`). Forgetting such a request changes no read (`Engine::forgettable`); a
 /// re-grant giving it the right back brings it again as any forgotten commit.
 pub(crate) fn drops_nothing(core: &Core, pc: &CommitId, p: &Header) -> bool {
     let reach = core.ix.held.reach(&BTreeSet::from([p.signer]));
     p.purge.iter().all(|item| {
         let up = core.ix.held.upstream(&BTreeSet::from([*item.tid()]));
-        std::iter::once(&p.signer).chain(reach.intersection(&up)).all(|actor| !right_holds(core, p, pc, &Right { tid: *item.tid(), ak: item.ak().clone(), by: osis_base::PurgeBy::Writer, actor: *actor }))
+        std::iter::once(&p.signer).chain(reach.intersection(&up)).all(|purge_author| !right_holds(core, p, pc, &Right { tid: *item.tid(), ak: item.ak().clone(), by: osis_base::PurgeBy::Writer, purge_author: *purge_author }))
     })
 }
 
@@ -362,7 +363,7 @@ fn named_by(core: &Core, item: &PurgeItem, at: Ts) -> Vec<CommitId> {
     }
     let held = core.ix.by_aspect.get(&(*item.tid(), item.ak().clone())).into_iter().flatten();
     let by = |c: &CommitId| match item {
-        PurgeItem::Author { author, .. } => core.ix.commits.get(c).is_some_and(|m| m.view.acting == *author),
+        PurgeItem::Author { author, .. } => core.ix.commits.get(c).is_some_and(|m| m.view.purge_author == *author),
         _ => true,
     };
     held.take_while(|x| stamped_before(at, item.ak(), x.0)).map(|x| x.1).filter(by).collect()
@@ -377,7 +378,7 @@ pub(crate) fn purged_by(tx: &mut Tx<'_>, ch: &Header, c: &CommitId, ai: usize) -
 }
 
 /// The held purge requests whose right may rest on `node` standing on `things`: signed by it or a
-/// possible writer of it (the right by author runs signer, actor, thing), on one of `things` or on
+/// possible writer of it (the right by author runs signer, purge author, thing), on one of `things` or on
 /// a thing one of them may write. A role elsewhere on the path may stay, so the class falling on the
 /// request's own thing does not say. Listing one more costs its bytes only.
 pub(crate) fn requests_resting_on(core: &Core, node: &Tid, things: &BTreeSet<Tid>) -> Vec<CommitId> {
@@ -385,8 +386,8 @@ pub(crate) fn requests_resting_on(core: &Core, node: &Tid, things: &BTreeSet<Tid
     let mut reach: BTreeMap<Tid, bool> = BTreeMap::new();
     let mut out = Vec::new();
     for (pc, m) in core.ix.commits.iter().filter(|(_, m)| m.view.purges) {
-        let acting = m.view.acting;
-        if !(m.view.signer == *node || acting == *node || writers.contains(&m.view.signer) || writers.contains(&acting)) {
+        let purge_author = m.view.purge_author;
+        if !(m.view.signer == *node || purge_author == *node || writers.contains(&m.view.signer) || writers.contains(&purge_author)) {
             continue;
         }
         let on = |t: &Tid| *reach.entry(*t).or_insert_with(|| things.contains(t) || !core.ix.held.ever_writers(t).is_disjoint(things));
@@ -431,14 +432,14 @@ pub(crate) fn purged_aspects<'a>(tx: &mut Tx<'_>, things: &BTreeSet<Tid>, commit
 
 /// The held requests with an item on one aspect, asked per delta in one walk of it. Those by name
 /// wait under the commit they name. For the others, a request's right is the same for every delta
-/// of one class and actor, and of those reaching that actor the newest standing reaches every delta
-/// any of them does. So a walk costs the aspect's length, plus the requests per class and actor
+/// of one class and purge author, and of those reaching that purge author the newest standing reaches every delta
+/// any of them does. So a walk costs the aspect's length, plus the requests per class and purge author
 /// met, whatever their number.
 struct AspectRequests {
     /// By the stamp they name.
     named: BTreeMap<(Ts, osis_crdt::Source), Vec<Request>>,
     wide: Vec<(CommitId, PurgeItem, LazyHeader)>,
-    /// Per class and actor: the newest standing request of `wide`, its `ts` and ID.
+    /// Per class and purge author: the newest standing request of `wide`, its `ts` and ID.
     newest: BTreeMap<(u64, Tid), Option<(Ts, CommitId)>>,
 }
 
@@ -480,10 +481,10 @@ impl AspectRequests {
         if let Some((pc, _)) = by_name {
             return Some(*pc);
         }
-        let actor = t.actor;
+        let purge_author = t.purge_author;
         let wide = &self.wide;
-        let newest = self.newest.entry((t.by as u64, actor)).or_insert_with(|| {
-            let on = wide.iter().filter(|x| !matches!(&x.1, PurgeItem::Author { author: of, .. } if *of != actor));
+        let newest = self.newest.entry((t.by as u64, purge_author)).or_insert_with(|| {
+            let on = wide.iter().filter(|x| !matches!(&x.1, PurgeItem::Author { author: of, .. } if *of != purge_author));
             on.filter(|x| holds_right_t(core, &x.2, &x.0, t)).map(|x| (x.2.ts, x.0)).max()
         });
         newest.filter(|n| stamped_before(n.0, &t.ak, t.ts)).map(|n| n.1)
@@ -577,7 +578,7 @@ pub(crate) fn rejudge_purges(tx: &mut Tx<'_>, tid: &Tid, ak: &Ak, changed: &mut 
 }
 
 /// One commit this node holds no header of, as the held valid snapshots of its aspect carrying
-/// writes of it state it: the class and actor each states (`snapshot::stated`), the counters of
+/// writes of it state it: the class and purge author each states (`snapshot::stated`), the counters of
 /// its writes there.
 #[derive(Default)]
 struct Carried {
@@ -628,7 +629,7 @@ pub(crate) fn rejudge_carried(tx: &mut Tx<'_>, tid: &Tid, ak: &Ak, changed: &mut
             let k = (ts, osis_crdt::fact_source(&d.src));
             let e = carried.entry(k.clone()).or_default();
             e.ctrs.insert(d.ctr);
-            // each snapshot's actor is its own word (its fact, else the author it names): a
+            // each snapshot's purge author is its own word (its fact, else the author it names): a
             // snapshot naming no author states nothing of the commit
             if seen.insert(k.clone())
                 && let Some(x) = super::snapshot::stated(&facts, &|c| absorbed.iter().find(|a| a.0 == *c).map(|a| a.1), &k)
@@ -648,7 +649,7 @@ pub(crate) fn rejudge_carried(tx: &mut Tx<'_>, tid: &Tid, ak: &Ak, changed: &mut
         let named = core.forgotten_by_stamp(tid, ak, ts, &src);
         let stands = match named.is_empty() {
             false => named.iter().all(|t| requests.standing_t(core, t).is_some()),
-            true => !c.stated.is_empty() && c.stated.iter().all(|(by, actor)| requests.standing_t(core, &Target::carried(*tid, ak.clone(), ts, src.clone(), *by, *actor)).is_some()),
+            true => !c.stated.is_empty() && c.stated.iter().all(|(by, purge_author)| requests.standing_t(core, &Target::carried(*tid, ak.clone(), ts, src.clone(), *by, *purge_author)).is_some()),
         };
         if stands {
             want.push(Owned::Dots { src, ctrs: c.ctrs.into_iter().collect() });
@@ -702,7 +703,7 @@ pub(super) fn apply_request(tx: &mut Tx<'_>, id: &CommitId, h: &Header, purged: 
     // pending copies writing on what it names are looked at again (`apply::Wake::Thing`)
     tx.core.waits.lists_moved.extend(h.purge.iter().map(|i| *i.tid()));
     for item in h.purge.iter() {
-        // one that is not by name asks of every delta: the right once per class and actor, so a
+        // one that is not by name asks of every delta: the right once per class and purge author, so a
         // request with none costs a look per delta
         let mut rights: BTreeMap<(u64, Tid), bool> = BTreeMap::new();
         let (mut held, mut stood) = (BTreeSet::new(), false);
@@ -712,7 +713,7 @@ pub(super) fn apply_request(tx: &mut Tx<'_>, id: &CommitId, h: &Header, purged: 
             let Some(a) = m.header.aspects.get(ai) else { continue };
             // applied here: held, or dropped as covered (its writes in the state through its cover)
             let applied = m.view.kind.has_own_writes() && (!m.body_gone(ai) || m.dropped(ai).is_some_and(|d| d.as_cover()));
-            if (matches!(item, PurgeItem::Commit { .. }) || *rights.entry((a.retention.by as u64, m.view.acting)).or_insert_with(|| holds_right(core, h, id, a, &m.header)))
+            if (matches!(item, PurgeItem::Commit { .. }) || *rights.entry((a.retention.by as u64, m.view.purge_author)).or_insert_with(|| holds_right(core, h, id, a, &m.header)))
                 && purge_one(tx, id, &c, ai, purged)?
             {
                 stood = true;

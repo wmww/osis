@@ -71,7 +71,7 @@ impl Engine {
             self.eph.signals.push(c);
         }
         let (node, received) = (self.core.writer()?, self.now());
-        let fired = fired(signals.into_iter().map(|(t, ak, v)| (t, ak, v, actor)).collect(), id, node, ts, received);
+        let fired = fired(signals, id, node, actor, ts, received);
         self.core.commits_fired(fired);
         Ok(Written { id, ts })
     }
@@ -101,7 +101,7 @@ impl Engine {
             b.aspects = writes;
             b.ephemeral = Some(EphClass::Relay);
             let keys = crate::engine::secrets::KeyCache::default();
-            let secrets = CommitSecrets { core: tx.core, actor, created: &creates, published: &published, keys: &keys };
+            let secrets = CommitSecrets { core: tx.core, purge_author: actor, created: &creates, published: &published, keys: &keys };
             let account = tx.core.account_signing(&me)?;
             b.account = account.as_ref().map(|(epoch, k)| osis_commit::AccountSigner { epoch: *epoch, inner: k.inner.clone(), node: tx.core.id.tid(), node_key: tx.core.id.keys().signing.clone(), more: Vec::new() });
             let signing = account.as_ref().map_or(&tx.core.id.keys().signing, |(_, k)| &k.signing);
@@ -148,16 +148,16 @@ impl Engine {
             }
         }
         // judged as its author's write at its `ts` (spec/permissions.md §5.2), on an ephemeral signal
-        // key, the author acting for its actor, an account's at an epoch that counts (§5.5: no
+        // key, the signer acting for its purge author (Interim, §5.2), an account's at an epoch that counts (§5.5: no
         // addendum lists a commit never held)
         let counts = core.standing_of(&id, h) == osis_perm::EpochStanding::Counts;
-        let actor = h.purge_author();
+        let purge_author = h.purge_author();
         let mut signals = Vec::new();
         for (ai, s) in &decoded {
             let Some(a) = h.aspects.get(*ai) else { continue };
-            let valid = a.ak.signal() && a.ak.ephemeral() && a.replaces.is_none() && counts && crate::apply::validity::acts_for(core, h, actor, &id) && check_role_with(core, h.signer, &|_| None, &a.tid, a.ak.as_str(), Role::Write, h.ts).is_ok();
+            let valid = a.ak.signal() && a.ak.ephemeral() && a.replaces.is_none() && counts && crate::apply::validity::acts_for(core, h, purge_author, &id) && check_role_with(core, h.signer, &|_| None, &a.tid, a.ak.as_str(), Role::Write, h.ts).is_ok();
             if valid && let Some(v) = s.fragment.read() {
-                signals.push((a.tid, a.ak.clone(), v, actor));
+                signals.push((a.tid, a.ak.clone(), v));
             }
         }
         // delivered once per part
@@ -169,7 +169,7 @@ impl Engine {
                 BTreeSet::new()
             }
         };
-        signals.retain(|(t, ak, _, _)| !decoded.iter().any(|(ai, _)| seen.contains(ai) && h.aspects.get(*ai).is_some_and(|a| a.tid == *t && a.ak == *ak)));
+        signals.retain(|(t, ak, _)| !decoded.iter().any(|(ai, _)| seen.contains(ai) && h.aspects.get(*ai).is_some_and(|a| a.tid == *t && a.ak == *ak)));
         let mut all = seen;
         all.extend(decoded.iter().map(|(ai, _)| *ai));
         r.parts.insert(id, all);
@@ -185,7 +185,7 @@ impl Engine {
         }
         r.floor.retain(|_, f| f.saturating_add(MAX_DRIFT_MS) >= now);
         let received = self.now();
-        let fired = fired(signals, id, h.signer, h.ts, received);
+        let fired = fired(signals, id, h.signer, purge_author, h.ts, received);
         self.core.commits_fired(fired);
         Ok(true)
     }
@@ -193,10 +193,11 @@ impl Engine {
 
 /// A fired ephemeral signal commit as it arrived, told at each signal it fired: a fire is
 /// content, though its relay-only commit is snapshot-encoded.
-fn fired(signals: Vec<(Tid, Ak, Value, Tid)>, id: CommitId, node: Tid, ts: Ts, received: osis_base::WallMs) -> Vec<CommitChange> {
-    // what it acts on on the first signal's thing (an honest writer acts as one thing on all)
-    let Some(actor) = signals.first().map(|s| s.3) else { return Vec::new() };
-    let parts: Vec<PartRow> = signals.into_iter().map(|(tid, ak, v, _)| PartRow { tid, ak, valid: true, version: None, body: PartBody::Held(Some(v)) }).collect();
-    let row = CommitRow { id, kind: Kind::Content, undoes: None, actor, node, ts, received, parts };
+fn fired(signals: Vec<(Tid, Ak, Value)>, id: CommitId, node: Tid, purge_author: Tid, ts: Ts, received: osis_base::WallMs) -> Vec<CommitChange> {
+    if signals.is_empty() {
+        return Vec::new();
+    }
+    let parts: Vec<PartRow> = signals.into_iter().map(|(tid, ak, v)| PartRow { tid, ak, valid: true, version: None, body: PartBody::Held(Some(v)) }).collect();
+    let row = CommitRow { id, kind: Kind::Content, undoes: None, purge_author, node, ts, received, parts };
     row.parts.iter().map(|p| CommitChange { tid: p.tid, ak: p.ak.clone(), id, fired: Some(row.clone()) }).collect()
 }

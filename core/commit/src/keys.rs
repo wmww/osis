@@ -15,8 +15,8 @@ pub trait Secrets {
     /// The thing's admin delete key (level 1): derived from its newest admin secret, or the
     /// published one when that secret is not held.
     fn admin_key(&self, tid: &Tid) -> Option<VerifyingKey>;
-    /// The write delete key of the actor directly above the signing node in its chain (level 2).
-    fn chain_key(&self) -> Option<VerifyingKey>;
+    /// The write delete key of the commit's purge author (level 2, spec/crypto.md §7).
+    fn purge_author_key(&self) -> Option<VerifyingKey>;
     /// The thing's write delete key (level 3).
     fn write_key(&self, tid: &Tid) -> Option<VerifyingKey>;
 }
@@ -29,7 +29,7 @@ pub fn delete_keys(s: &dyn Secrets, tid: &Tid, r: &Retention) -> Result<Vec<Dele
         .map(|level| {
             let key = match *level {
                 DELETE_ADMIN => s.admin_key(tid).ok_or(Error::Build("admin delete key not supplied"))?,
-                DELETE_AUTHOR => s.chain_key().ok_or(Error::Build("author-chain delete key not supplied"))?,
+                DELETE_AUTHOR => s.purge_author_key().ok_or(Error::Build("purge author's delete key not supplied"))?,
                 _ => s.write_key(tid).ok_or(Error::Build("write delete key not supplied"))?,
             };
             Ok(DeleteKey::new(*level, &key))

@@ -24,7 +24,7 @@ impl Secrets for TestSecrets {
     fn admin_key(&self, tid: &Tid) -> Option<VerifyingKey> {
         self.admin.then(|| DeleteSecret::derive(&sec(0xa1, tid)).verifying_key())
     }
-    fn chain_key(&self) -> Option<VerifyingKey> {
+    fn purge_author_key(&self) -> Option<VerifyingKey> {
         Some(DeleteSecret::derive(&Secret32::from_bytes([0xc2; 32])).verifying_key())
     }
     fn write_key(&self, tid: &Tid) -> Option<VerifyingKey> {

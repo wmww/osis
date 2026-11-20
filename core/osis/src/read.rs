@@ -36,8 +36,8 @@ pub struct Grant {
 pub struct Stamp {
     /// The commit.
     pub id: CommitId,
-    /// The actor the author acted for.
-    pub actor: Tid,
+    /// Whom it is by: the identity it was written as (the writer's account, or what it acted as).
+    pub author: Tid,
     /// When it was written, by the author's clock: the same on every node.
     pub written: Time,
     /// When this node received it (per node).
@@ -47,8 +47,8 @@ pub struct Stamp {
 }
 
 impl Stamp {
-    pub(crate) fn new(id: CommitId, actor: Tid, ts: Ts, received: Time) -> Stamp {
-        Stamp { id, actor, written: ts.wall_ms(), received, ts }
+    pub(crate) fn new(id: CommitId, author: Tid, ts: Ts, received: Time) -> Stamp {
+        Stamp { id, author, written: ts.wall_ms(), received, ts }
     }
 
     /// The time to show and sort by: the earlier of `written` and `received`, as an author's clock
@@ -67,8 +67,8 @@ impl Stamp {
 pub struct ThingStamp {
     /// The commit.
     pub id: CommitId,
-    /// The actor the author acted for.
-    pub actor: Tid,
+    /// Whom it is by: the identity it was written as (the writer's account, or what it acted as).
+    pub author: Tid,
     /// When it was written, by the author's clock: the same on every node.
     pub written: Time,
     /// When this node received it (per node).
@@ -85,7 +85,7 @@ impl ThingStamp {
 }
 
 fn stamp(c: osis_engine::Creation) -> ThingStamp {
-    ThingStamp { id: CommitId(c.commit), written: c.ts.wall_ms(), ts: c.ts, actor: c.actor, received: c.received }
+    ThingStamp { id: CommitId(c.commit), written: c.ts.wall_ms(), ts: c.ts, author: c.purge_author, received: c.received }
 }
 
 /// The grants on a thing, by holder.

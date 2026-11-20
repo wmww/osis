@@ -572,8 +572,8 @@ impl DeleteSource {
 /// What a commit build asks for (osis-commit `Secrets`).
 pub struct CommitSecrets<'c> {
     pub core: &'c Core,
-    /// The actor the commit acts for.
-    pub actor: Tid,
+    /// The commit's purge author.
+    pub purge_author: Tid,
     /// Creation records of things the commit creates.
     pub created: &'c crate::engine::write::Creates,
     /// Delete keys published in `keys.0` of delete bases whose secret of that role is not held
@@ -641,7 +641,7 @@ pub(crate) fn published_keys(tx: &mut crate::engine::Tx<'_>, created: &crate::en
 /// write and [`usable_role`] agree.
 pub(crate) fn holds_listed_keys(core: &Core, created: &crate::engine::write::Creates, published: &BTreeMap<(Tid, Role), VerifyingKey>, keys: &KeyCache, tid: &Tid) -> bool {
     // a node that joined no account writes only its own card, as itself
-    let s = CommitSecrets { core, actor: core.me().unwrap_or(core.id.tid()), created, published, keys };
+    let s = CommitSecrets { core, purge_author: core.me().unwrap_or(core.id.tid()), created, published, keys };
     osis_commit::Secrets::admin_key(&s, tid).is_some() && osis_commit::Secrets::write_key(&s, tid).is_some()
 }
 
@@ -651,7 +651,7 @@ pub(crate) fn holds_listed_keys(core: &Core, created: &crate::engine::write::Cre
 pub(crate) fn writer_delete_key_in(tx: &mut crate::engine::Tx<'_>, t: &Tid) -> Result<Option<VerifyingKey>> {
     let created = Default::default();
     let published = published_keys(tx, &created, [*t])?;
-    let s = CommitSecrets { core: tx.core, actor: tx.core.me().unwrap_or(tx.core.id.tid()), created: &created, published: &published, keys: &KeyCache::default() };
+    let s = CommitSecrets { core: tx.core, purge_author: tx.core.me().unwrap_or(tx.core.id.tid()), created: &created, published: &published, keys: &KeyCache::default() };
     Ok(osis_commit::Secrets::write_key(&s, t))
 }
 
@@ -719,11 +719,11 @@ impl osis_commit::Secrets for CommitSecrets<'_> {
     fn admin_key(&self, tid: &Tid) -> Option<VerifyingKey> {
         self.key(tid, Role::Admin)
     }
-    fn chain_key(&self) -> Option<VerifyingKey> {
-        // the author's own actor: from a secret this node holds, never a published key (a node
-        // cannot sign as an actor it does not act for)
-        match self.core.delete_base(&self.actor)? {
-            DeleteBase::KeyActor(k) => self.chain_holder().then_some(k),
+    fn purge_author_key(&self) -> Option<VerifyingKey> {
+        // from a secret this node holds, never a published key (a node cannot write as a purge
+        // author it does not hold write on)
+        match self.core.delete_base(&self.purge_author)? {
+            DeleteBase::KeyActor(k) => self.holds_purge_author_key().then_some(k),
             DeleteBase::Actor(_, e) => newest_delete_key(&e?, Role::Write),
         }
     }
@@ -733,9 +733,9 @@ impl osis_commit::Secrets for CommitSecrets<'_> {
 }
 
 impl CommitSecrets<'_> {
-    /// Whether this node holds the key actor at the end of the commit actor's record chain.
-    fn chain_holder(&self) -> bool {
-        self.core.record_chain(&self.actor).filter_map(|s| s.thing()).any(|t| t == self.core.id.tid() || self.core.key_actors.contains_key(&t) || self.core.accounts.contains_key(&t))
+    /// Whether this node holds the key actor at the end of the purge author's record chain.
+    fn holds_purge_author_key(&self) -> bool {
+        self.core.record_chain(&self.purge_author).filter_map(|s| s.thing()).any(|t| t == self.core.id.tid() || self.core.key_actors.contains_key(&t) || self.core.accounts.contains_key(&t))
     }
 
     /// The delete key of role `r` of `tid`'s delete base: a key actor's signing key, else from

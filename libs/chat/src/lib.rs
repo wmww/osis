@@ -1,5 +1,5 @@
 //! Chat's shared rules (notes/chat.md): a chat is one actor C, participants hold write on it, a
-//! message is one fire of C's `chat:msg~0`, its sender the commit's verified actor, an edit its
+//! message is one fire of C's `chat:msg~0`, its sender the commit's verified author, an edit its
 //! sender's `replace` of it. Reading and writing are plain `osis` calls on the keys in `schema`;
 //! this crate holds what every chat writer must do alike: create a chat under its retention rules,
 //! edit as the chat's settings say, and read by arrival (no osis listing orders by it).

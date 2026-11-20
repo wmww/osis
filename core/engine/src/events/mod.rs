@@ -56,9 +56,9 @@ impl CommitChange {
 pub enum Event {
     /// A commit applied. `changed`: every `(tid, ak)` whose read may have changed. `acting`:
     /// its one purge author (`View::acting`).
-    Applied { id: CommitId, origin: Origin, signer: Tid, acting: Tid, ts: Ts, received: WallMs, changed: Vec<(Tid, Ak)> },
+    Applied { id: CommitId, origin: Origin, signer: Tid, purge_author: Tid, ts: Ts, received: WallMs, changed: Vec<(Tid, Ak)> },
     /// Late deltas of applied commit `id` joined (reads they changed come as `Changed`).
-    Joined { id: CommitId, origin: Origin, signer: Tid, acting: Tid, ts: Ts, received: WallMs },
+    Joined { id: CommitId, origin: Origin, signer: Tid, purge_author: Tid, ts: Ts, received: WallMs },
     /// Aspects changed outside a commit's application.
     Changed { cause: Cause, changed: Vec<(Tid, Ak)> },
     /// The role timeline's roster of `thing` may have changed.
@@ -71,7 +71,7 @@ pub enum Event {
     References(Arc<Vec<(Tid, Ak)>>),
     /// Ephemeral state changed in memory (notes/ephemeral.md): `id` is the ephemeral commit that
     /// carried the change.
-    Ephemeral { id: CommitId, origin: Origin, signer: Tid, acting: Tid, ts: Ts, received: WallMs, changed: Vec<(Tid, Ak)> },
+    Ephemeral { id: CommitId, origin: Origin, signer: Tid, purge_author: Tid, ts: Ts, received: WallMs, changed: Vec<(Tid, Ak)> },
     /// What these commits' parts on these aspects hold or are judged changed: new, turned valid or
     /// invalid, body arrived, dropped, purged (`Engine::commit_row` reads them), and ephemeral
     /// signals fired. One per transaction, or per fire; only once a commit watch was asked for

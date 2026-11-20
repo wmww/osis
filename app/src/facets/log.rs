@@ -91,7 +91,7 @@ fn who(k: &Commit, b: &Body<osis_chat::schema::Message>) -> String {
         Body::Held(Some(x)) => x.name.clone(),
         _ => None,
     };
-    name.filter(|n| !n.trim().is_empty()).unwrap_or_else(|| k.stamp.actor.to_string().chars().take(8).collect())
+    name.filter(|n| !n.trim().is_empty()).unwrap_or_else(|| k.stamp.author.to_string().chars().take(8).collect())
 }
 
 /// Message `id` as a reply names it, its sender and first line: `None` when it is not listed here.
@@ -122,7 +122,7 @@ fn lines(db: &ReadOnly, c: Tid, from: CommitFrom, n: usize, mut quote: impl FnMu
             Some(r) => Some((r, quote(r)?.unwrap_or_else(|| r.to_string()))),
             None => None,
         };
-        out.push(Line { id: k.stamp.id, pos: k.pos(), who: who(k, &p.body), time: k.stamp.shown().0, text: text_of(&p.body), reply_to, mine: k.stamp.actor == me, edited: p.edited.is_some() });
+        out.push(Line { id: k.stamp.id, pos: k.pos(), who: who(k, &p.body), time: k.stamp.shown().0, text: text_of(&p.body), reply_to, mine: k.stamp.author == me, edited: p.edited.is_some() });
     }
     Ok(out)
 }

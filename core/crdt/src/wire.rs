@@ -97,7 +97,7 @@ pub struct Snapshot {
     pub fragment: Fragment,
     pub frontiers: Frontiers,
     /// Commit-form commits whose writes in this aspect the
-    /// writer had applied, with their author nodes (§8).
+    /// writer had applied, with their signers (§8).
     pub absorbed: BTreeMap<CommitId, Tid>,
     /// The purge facts of the commits whose stamps the fragment carries, by `(ts, source)`
     /// (§8 `Facts`), but `Fact::NARROWEST`, which a missing one stands for.
@@ -110,12 +110,12 @@ pub struct Snapshot {
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub struct Fact {
     pub by: osis_base::PurgeBy,
-    pub actor: Option<Tid>,
+    pub purge_author: Option<Tid>,
 }
 
 impl Fact {
-    /// `admin`, no other actor: what only admins may purge, whoever wrote it.
-    pub const NARROWEST: Fact = Fact { by: osis_base::PurgeBy::Admin, actor: None };
+    /// `admin`, the signer its purge author: what only admins may purge, whoever wrote it.
+    pub const NARROWEST: Fact = Fact { by: osis_base::PurgeBy::Admin, purge_author: None };
 }
 
 /// A snapshot's facts per `Commits` entry `(ts, source)`; a commit is judged by its origin
@@ -506,13 +506,13 @@ impl<'p> Enc<'p> {
         }
     }
 
-    /// `Facts := [Fact*]`, `Fact := by | [by, actor]` (§8): one per `Commits` entry, in table
+    /// `Facts := [Fact*]`, `Fact := by | [by, tid]` (§8): one per `Commits` entry, in table
     /// order; a commit `facts` misses gets `Fact::NARROWEST`.
     pub(crate) fn put_facts(&self, out: &mut Vec<u8>, facts: &Facts) {
         put_array(out, self.commits.len());
         for c in &self.commits {
             let f = facts.get(&(c.ts, c.src.clone())).copied().unwrap_or(Fact::NARROWEST);
-            match f.actor {
+            match f.purge_author {
                 None => put_uint(out, f.by as u64),
                 Some(a) => {
                     put_array(out, 2);
@@ -916,9 +916,9 @@ impl<'a> Dec<'a> {
         Ok(())
     }
 
-    /// Reads `Facts` (§8): one per `Commits` entry, a purgeable-by class (0 to 3), an actor only
-    /// where it is not the commit's author (its session's tid; a commit-form one's `Absorbed`
-    /// author where listed). The narrowest are left out of the map.
+    /// Reads `Facts` (§8): one per `Commits` entry, a purgeable-by class (0 to 3), a purge author
+    /// only where it is not the commit's signer (its session's tid; a commit-form one's `Absorbed`
+    /// signer where listed). The narrowest are left out of the map.
     pub(crate) fn load_facts(&self, v: Item, absorbed: &BTreeMap<CommitId, Tid>) -> Result<Facts, Error> {
         let items = as_array(v)?;
         if items.len() != self.commits.len() {
@@ -926,21 +926,21 @@ impl<'a> Dec<'a> {
         }
         let mut out = Facts::new();
         for (c, f) in self.commits.iter().zip(items) {
-            let (by, actor) = match f.as_list().map(List::tuple) {
+            let (by, purge_author) = match f.as_list().map(List::tuple) {
                 Some(Some([by, a])) if a.as_tid().is_some() => (as_uint(by)?, a.as_tid()),
                 Some(_) => return Err(Error::Malformed("fact")),
                 None => (as_uint(f)?, None),
             };
             let by = osis_base::PurgeBy::from_id(by).ok_or(Error::Malformed("fact class"))?;
-            let author = match fact_source(&c.src).kind() {
+            let signer = match fact_source(&c.src).kind() {
                 SourceKind::Session(s) => Some(s.node),
                 SourceKind::Commit(id) => absorbed.get(id).copied(),
                 SourceKind::Derived(_) => None,
             };
-            if actor.is_some() && actor == author {
-                return Err(Error::Malformed("fact actor is the author"));
+            if purge_author.is_some() && purge_author == signer {
+                return Err(Error::Malformed("fact purge author is the signer"));
             }
-            let f = Fact { by, actor };
+            let f = Fact { by, purge_author };
             if f != Fact::NARROWEST {
                 out.insert((c.ts, c.src.clone()), f);
             }

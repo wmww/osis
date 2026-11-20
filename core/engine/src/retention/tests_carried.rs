@@ -128,7 +128,7 @@ fn a_wider_fact_never_covers_spec_commits_5() {
     lp.sync(1, 3).unwrap();
     let item = lp.peers[1].engine.purge_item(&c, t, reg()).unwrap();
     let PurgeItem::Commit { ts, src, .. } = item.clone() else { unreachable!() };
-    lp.peers[3].engine.core.lie_facts = Some([((ts, src), osis_crdt::Fact { by: PurgeBy::Writer, actor: None })].into());
+    lp.peers[3].engine.core.lie_facts = Some([((ts, src), osis_crdt::Fact { by: PurgeBy::Writer, purge_author: None })].into());
     let s2 = lp.peers[3].engine.snapshot(&t, &reg()).unwrap().unwrap();
     lp.advance(1_000);
     let p = request(&mut lp, 3, t, item);

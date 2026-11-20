@@ -1970,11 +1970,9 @@ impl Engine {
         v.into_iter().map(|x| x.1).collect()
     }
 
-    // Interim (notes/a1-spec/README.md step 3): the old walk reads a commit as acting for its one
-    // purge author on every thing.
-    /// The one purge author of held commit `id` (`View::acting`).
-    pub fn commit_acting(&self, id: &CommitId) -> Option<Tid> {
-        self.core.ix.commits.get(id).map(|m| m.view.acting)
+    /// The one purge author of held commit `id` (spec/permissions.md §6).
+    pub fn commit_purge_author(&self, id: &CommitId) -> Option<Tid> {
+        self.core.ix.commits.get(id).map(|m| m.view.purge_author)
     }
 
     /// The header of an applied commit (none if its stored bytes fail to decode: `LazyHeader`).
@@ -1991,8 +1989,8 @@ impl Engine {
         self.core.ix.by_aspect.get(&(*tid, ak.clone()))?.iter().find_map(|(_, id)| {
             let m = self.core.ix.commits.get(id)?;
             let ai = m.aspect(tid, &ak)?;
-            let actor = m.valid_at(ai).then_some(m.view.acting)?;
-            Some(Creation { commit: *id, ts: m.header.ts, node: m.header.signer, actor, received: m.received })
+            let purge_author = m.valid_at(ai).then_some(m.view.purge_author)?;
+            Some(Creation { commit: *id, ts: m.header.ts, node: m.header.signer, purge_author, received: m.received })
         })
     }
 
@@ -2019,8 +2017,8 @@ impl Engine {
                 if m.header.kind != Kind::Content || !valid {
                     continue;
                 }
-                let actor = m.view.acting;
-                let c = Creation { commit: *id, ts: m.header.ts, node: m.header.signer, actor, received: m.received };
+                let purge_author = m.view.purge_author;
+                let c = Creation { commit: *id, ts: m.header.ts, node: m.header.signer, purge_author, received: m.received };
                 if best.as_ref().is_none_or(|b| shown(&c) > shown(b)) {
                     best = Some(c);
                 }
@@ -2563,7 +2561,7 @@ pub struct Creation {
     pub commit: CommitId,
     pub ts: osis_base::Ts,
     pub node: Tid,
-    pub actor: Tid,
+    pub purge_author: Tid,
     pub received: WallMs,
 }
 

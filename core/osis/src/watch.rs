@@ -571,14 +571,14 @@ impl Dispatch {
     }
 }
 
-fn origin_of(id: CommitId, from: EventOrigin, actor: Tid, ts: Ts, received: Time) -> Origin {
-    let i = Stamp::new(id, actor, ts, received);
+fn origin_of(id: CommitId, from: EventOrigin, author: Tid, ts: Ts, received: Time) -> Origin {
+    let i = Stamp::new(id, author, ts, received);
     if from == EventOrigin::Local { Origin::Local(i) } else { Origin::Remote(i) }
 }
 
 /// Where an event's changes come from: a commit (its one purge author) or a cause.
 enum Src<'a> {
-    Commit { id: CommitId, from: EventOrigin, acting: &'a Tid, ts: Ts, received: Time },
+    Commit { id: CommitId, from: EventOrigin, purge_author: &'a Tid, ts: Ts, received: Time },
     Derived(Origin),
 }
 
@@ -586,7 +586,7 @@ impl Src<'_> {
     /// The origin of its changes.
     fn origin(&self) -> Origin {
         match self {
-            Src::Commit { id, from, acting, ts, received } => origin_of(*id, *from, **acting, *ts, *received),
+            Src::Commit { id, from, purge_author, ts, received } => origin_of(*id, *from, **purge_author, *ts, *received),
             Src::Derived(o) => *o,
         }
     }
@@ -596,8 +596,8 @@ impl Src<'_> {
 fn aspect_event(m: &Msg) -> Option<(&[(Tid, Ak)], Src<'_>)> {
     match m {
         // a commit changing a read here opened a section of it: the path it states there is known
-        Msg::Event(Event::Applied { id, origin, acting, ts, received, changed, .. }) | Msg::Event(Event::Ephemeral { id, origin, acting, ts, received, changed, .. }) => {
-            Some((changed, Src::Commit { id: CommitId(*id), from: *origin, acting, ts: *ts, received: *received }))
+        Msg::Event(Event::Applied { id, origin, purge_author, ts, received, changed, .. }) | Msg::Event(Event::Ephemeral { id, origin, purge_author, ts, received, changed, .. }) => {
+            Some((changed, Src::Commit { id: CommitId(*id), from: *origin, purge_author, ts: *ts, received: *received }))
         }
         Msg::Event(Event::Changed { cause, changed }) => Some((changed, Src::Derived(Origin::Derived((*cause).into())))),
         _ => None,

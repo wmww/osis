@@ -342,7 +342,7 @@ Steps and claim sets (§8) and `entry_box` (a `box` value, §7) are their canoni
   - **`max_reply`** is in `SMALL_REPLY..=REPLY_BUDGET`.
     - A Reply whose message exceeds it is replaced by `[1, 5, max_reply]`.
     - A delivery whose Notify would exceed its Sub's `max_reply` is sent as `[2, source]`, and a Notify still exceeding it as `[1]`.
-  - **Methods**: one line per row, `[arg*] -> value`; a method not listed is `[1, 11, text]`. Every row answers as its session's actor (above). The forms of a read result, path, write op, origin and commit: notes/client-port.md §2 until stable. `Opt(x)` is `[]` or `[x]`; a stamp is `[commit id, actor, ts, received]`.
+  - **Methods**: one line per row, `[arg*] -> value`; a method not listed is `[1, 11, text]`. Every row answers as its session's actor (above). The forms of a read result, path, write op, origin and commit: notes/client-port.md §2 until stable. `Opt(x)` is `[]` or `[x]`; a stamp is `[commit id, author, ts, received]` (author: the commit's purge author, spec/permissions.md §6).
 
     | method | row | args -> value |
     |---|---|---|
@@ -362,7 +362,7 @@ Steps and claim sets (§8) and `entry_box` (a `box` value, §7) are their canoni
     | 13 | revert | `[nonce, commit id] -> commit` |
     | 14 | undo target | `[scope] -> Opt(commit)` |
     | 15 | redo target | `[scope] -> Opt(commit)` |
-    | 16 | listing | `[address, query] -> [[commit*], more, complete]`, address `[0, scope]` a scope's writes, `[1, tid, ak]` a signal's fires, `[2, tid, ak, commit id]` a fire's versions; query `[from, Opt(limit), [actor*], [kind*], Opt(reverts), Opt(reverted_by), Opt(in_effect)]`, from `[0]` newest, `[1]` oldest, `[2, position]` before, `[3, position]` after; kind 0 content, 1 revert, 2 role, 3 snapshot; at most what fits `max_reply`, `more` set when cut |
+    | 16 | listing | `[address, query] -> [[commit*], more, complete]`, address `[0, scope]` a scope's writes, `[1, tid, ak]` a signal's fires, `[2, tid, ak, commit id]` a fire's versions; query `[from, Opt(limit), [author*], [kind*], Opt(reverts), Opt(reverted_by), Opt(in_effect)]`, from `[0]` newest, `[1]` oldest, `[2, position]` before, `[3, position]` after; kind 0 content, 1 revert, 2 role, 3 snapshot; at most what fits `max_reply`, `more` set when cut |
     | 17 | listed commit | `[address, commit id] -> Opt(commit)` |
     | 18 | contact card | `[] -> text`; main only |
     | 19 | settle | `[] -> []`, after every Notify for changes before it |

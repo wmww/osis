@@ -60,8 +60,8 @@ pub struct CommitQuery {
     pub from: CommitFrom,
     /// At most this many (`None`: as many as a page holds).
     pub limit: Option<usize>,
-    /// By any of these actors.
-    pub actors: Vec<Tid>,
+    /// By any of these authors (`Stamp::author`).
+    pub authors: Vec<Tid>,
     /// Of any of these kinds.
     pub kinds: Vec<CommitKind>,
     /// Reverts of this commit.
@@ -122,8 +122,8 @@ pub enum Body<T> {
     Purged {
         /// The purge.
         by: CommitId,
-        /// Who made it (`None`: not known here).
-        actor: Option<Tid>,
+        /// Whom it is by (`Stamp::author`; `None`: not known here).
+        author: Option<Tid>,
     },
     /// Not on this node yet: known of, and still to arrive. Not an absence.
     NotFetched,
@@ -132,7 +132,7 @@ pub enum Body<T> {
 /// One aspect's part of a commit: what it wrote there.
 #[derive(Clone, Debug, PartialEq)]
 pub struct Part<T> {
-    /// Valid here, now: it may change (a listener says when). The commit's actor is verified
+    /// Valid here, now: it may change (a listener says when). The commit's author is verified
     /// exactly when it is. An invalid part is listed only where this node wrote it.
     pub valid: bool,
     /// What is here of what it wrote; for a fire its author replaced (`replace`), of the newest
@@ -197,7 +197,7 @@ impl Commit {
                 })
             })),
             Body::TooLarge { limit } => Body::TooLarge { limit: *limit },
-            Body::Purged { by, actor } => Body::Purged { by: *by, actor: *actor },
+            Body::Purged { by, author } => Body::Purged { by: *by, author: *author },
             Body::NotFetched => Body::NotFetched,
         };
         Some(Part { valid: p.valid, body, edited: p.edited })
@@ -310,7 +310,7 @@ fn commit_of(r: &mut Reader<'_>, rel: &mut Relations, row: CommitRow, limit: usi
                 Err(_) => Body::NotFetched,
             },
             PartBody::TooLarge => Body::TooLarge { limit: limit as u64 },
-            PartBody::Purged(by) => Body::Purged { by: CommitId(by), actor: r.e.commit_acting(&by) },
+            PartBody::Purged(by) => Body::Purged { by: CommitId(by), author: r.e.commit_purge_author(&by) },
             PartBody::Dropped | PartBody::NotFetched => Body::NotFetched,
         };
         parts.push((p.tid, p.ak, Part { valid: p.valid, body, edited: p.version.map(CommitPos) }));
@@ -318,7 +318,7 @@ fn commit_of(r: &mut Reader<'_>, rel: &mut Relations, row: CommitRow, limit: usi
     let reverted_by = rel.reverters(r.e, id);
     let in_effect = rel.in_effect(r.e, id);
     Ok(Commit {
-        stamp: Stamp::new(id, row.actor, row.ts, row.received),
+        stamp: Stamp::new(id, row.purge_author, row.ts, row.received),
         kind: kind_of(row.kind, row.undoes.is_some()),
         reverts: row.undoes.map(CommitId),
         reverted_by,
@@ -330,7 +330,7 @@ fn commit_of(r: &mut Reader<'_>, rel: &mut Relations, row: CommitRow, limit: usi
 
 /// Whether `c` passes `q`'s filters.
 fn matches(q: &CommitQuery, c: &Commit) -> bool {
-    (q.actors.is_empty() || q.actors.contains(&c.stamp.actor))
+    (q.authors.is_empty() || q.authors.contains(&c.stamp.author))
         && (q.kinds.is_empty() || q.kinds.contains(&c.kind))
         && q.reverts.is_none_or(|x| c.reverts == Some(x))
         && q.reverted_by.is_none_or(|x| c.reverted_by.contains(&x))
@@ -341,7 +341,7 @@ fn matches(q: &CommitQuery, c: &Commit) -> bool {
 /// odd for an undo, even above 0 for a redo).
 struct Found {
     id: CommitId,
-    actor: Tid,
+    author: Tid,
     kind: CommitKind,
     in_effect: bool,
     depth: usize,
@@ -549,12 +549,12 @@ fn commit_in(r: &mut Reader<'_>, id: CommitId) -> Result<Option<Commit>> {
 
 /// The commit a write just made, as a listing then shows it; one nobody holds (an ephemeral
 /// signal's) with no parts: no listing shows it.
-pub(crate) fn written_in(r: &mut Reader<'_>, w: osis_engine::Written, actor: Tid) -> Result<Commit> {
+pub(crate) fn written_in(r: &mut Reader<'_>, w: osis_engine::Written, author: Tid) -> Result<Commit> {
     let id = CommitId(w.id);
     if let Some(c) = commit_in(r, id)? {
         return Ok(c);
     }
-    Ok(Commit { stamp: Stamp::new(id, actor, w.ts, w.ts.wall_ms()), kind: CommitKind::Content, reverts: None, reverted_by: Vec::new(), in_effect: true, parts: Vec::new(), report: Reporter::default() })
+    Ok(Commit { stamp: Stamp::new(id, author, w.ts, w.ts.wall_ms()), kind: CommitKind::Content, reverts: None, reverted_by: Vec::new(), in_effect: true, parts: Vec::new(), report: Reporter::default() })
 }
 
 /// Why a commit cannot be reverted.
@@ -797,7 +797,7 @@ impl crate::handle::ReadOnly {
             base.into_iter()
                 .map(|c| {
                     let id = CommitId(c.id);
-                    Found { id, actor: c.acting, kind: kind_of(c.header.kind, undoes(&c.header).is_some()), in_effect: !out_of.contains(&id), depth: depth_of(id) }
+                    Found { id, author: c.purge_author, kind: kind_of(c.header.kind, undoes(&c.header).is_some()), in_effect: !out_of.contains(&id), depth: depth_of(id) }
                 })
                 .collect::<Vec<_>>()
         });
@@ -809,7 +809,7 @@ impl crate::handle::ReadOnly {
     /// of this actor came after it.
     fn pick(&self, found: Vec<Found>, redo: bool) -> Option<Found> {
         let me = self.me();
-        let mut mine = found.into_iter().filter(|f| f.actor == me && matches!(f.kind, CommitKind::Content | CommitKind::Revert));
+        let mut mine = found.into_iter().filter(|f| f.author == me && matches!(f.kind, CommitKind::Content | CommitKind::Revert));
         if redo {
             mine.take_while(|f| f.depth > 0).find(|f| f.in_effect && f.depth % 2 == 1)
         } else {

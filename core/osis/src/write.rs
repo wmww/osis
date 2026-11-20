@@ -45,8 +45,8 @@ pub enum Purge {
     /// elsewhere, or later, still shows. A commit unknown here is refused (`Invalid`): this node
     /// holds nothing of that commit (never received, or forgotten once nothing of it was left).
     Commit(CommitId),
-    /// Every write by this actor stamped before this commit, those arriving later too. What the
-    /// actor writes later stays.
+    /// Every write by this author (`Stamp::author`) stamped before this commit, those arriving
+    /// later too. What the author writes later stays.
     Author(Tid),
 }
 
@@ -67,7 +67,7 @@ pub(crate) enum WriteOp {
     /// Purges one commit's deltas on the aspect.
     PurgeCommit { tid: Tid, key: u32, commit: osis_base::CommitId },
     /// Purges an author's deltas on the aspect.
-    PurgeAuthor { tid: Tid, key: u32, actor: Tid },
+    PurgeAuthor { tid: Tid, key: u32, author: Tid },
     /// Destroys the thing for everyone: purges its creation.
     PurgeThing(Tid),
 }
@@ -519,9 +519,9 @@ impl<'d> Write<'d> {
                     }
                     m.purge_commit(commit, tid, ak);
                 }
-                WriteOp::PurgeAuthor { tid, key: k, actor } => {
+                WriteOp::PurgeAuthor { tid, key: k, author } => {
                     m.op(tid, &osis_schema::core_types::PURGE, PathOp { path: Vec::new(), op: Op::Replace(r.e.now().to_value()) })?;
-                    m.purge(PurgeItem::Author { tid, ak: key(k)?.ak.clone(), author: actor });
+                    m.purge(PurgeItem::Author { tid, ak: key(k)?.ak.clone(), author });
                 }
                 WriteOp::PurgeThing(tid) => {
                     m.op(tid, &osis_schema::core_types::PURGE, PathOp { path: Vec::new(), op: Op::Replace(r.e.now().to_value()) })?;
@@ -577,7 +577,7 @@ impl<'w, 'd, K: AspectKey> AspectWrite<'w, 'd, K> {
         match what {
             Purge::All => self.push(WriteOp::Purge { tid: self.tid, key }),
             Purge::Commit(CommitId(commit)) => self.push(WriteOp::PurgeCommit { tid: self.tid, key, commit }),
-            Purge::Author(actor) => self.push(WriteOp::PurgeAuthor { tid: self.tid, key, actor }),
+            Purge::Author(author) => self.push(WriteOp::PurgeAuthor { tid: self.tid, key, author }),
         }
         Ok(())
     }

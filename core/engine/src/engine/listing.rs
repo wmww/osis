@@ -83,7 +83,7 @@ pub struct CommitRow {
     pub kind: Kind,
     /// The commit it reverts (a content commit's `undoes`).
     pub undoes: Option<CommitId>,
-    pub actor: Tid,
+    pub purge_author: Tid,
     pub node: Tid,
     pub ts: Ts,
     pub received: WallMs,
@@ -94,7 +94,7 @@ pub struct CommitRow {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct HeldPart {
     pub id: CommitId,
-    pub actor: Tid,
+    pub purge_author: Tid,
     pub ts: Ts,
     pub valid: bool,
     pub body: PartBody,
@@ -438,9 +438,9 @@ impl Engine {
     /// `held_parts` of one commit; `None` when it has no part there.
     pub fn held_part(&mut self, tid: &Tid, ak: &Ak, c: &CommitId, budget: usize) -> Result<Option<HeldPart>> {
         let Some(m) = self.core.ix.commits.get(c) else { return Ok(None) };
-        let actor = m.view.acting;
+        let purge_author = m.view.purge_author;
         let ts = m.view.ts;
-        Ok(self.part(tid, ak, c, budget)?.map(|p| HeldPart { id: *c, actor, ts, valid: p.valid, body: p.body }))
+        Ok(self.part(tid, ak, c, budget)?.map(|p| HeldPart { id: *c, purge_author, ts, valid: p.valid, body: p.body }))
     }
 
     /// Whether `c` has a listed part on one of `aspects`.
@@ -475,7 +475,7 @@ impl Engine {
     fn row(&mut self, c: &CommitId, shown: &dyn Fn(&mut Engine, &Tid) -> bool, budget: usize, itself: Option<(Tid, Ak)>) -> Result<Option<CommitRow>> {
         let Some(m) = self.core.ix.commits.get(c) else { return Ok(None) };
         // its one purge author, in the clear
-        let actor = m.view.acting;
+        let purge_author = m.view.purge_author;
         let (kind, node, ts, received) = (m.view.kind, m.view.signer, m.view.ts, m.received);
         let header = m.header.clone();
         let things: Vec<(usize, Tid, bool)> = m.view.aspects.iter().enumerate().map(|(ai, a)| (ai, a.tid, itself.as_ref().is_some_and(|(t, k)| *t == a.tid && *k == a.ak))).collect();
@@ -490,7 +490,7 @@ impl Engine {
             }
             Ok(parts)
         })?;
-        Ok(Some(CommitRow { id: c, kind, undoes: header.decoded().and_then(|h| undoes(&h)), actor, node, ts, received, parts }))
+        Ok(Some(CommitRow { id: c, kind, undoes: header.decoded().and_then(|h| undoes(&h)), purge_author, node, ts, received, parts }))
     }
 
     /// Up to `n` places a listing walks on `aspects` past `from` in its direction, each once, in

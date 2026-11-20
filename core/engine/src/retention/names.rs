@@ -30,7 +30,7 @@ pub struct Name {
     pub ts: Ts,
     /// Its own source (spec/crdt.md §2.1).
     pub src: Source,
-    pub actor: Tid,
+    pub purge_author: Tid,
     pub by: PurgeBy,
     pub expires: Option<u64>,
 }
@@ -38,11 +38,11 @@ pub struct Name {
 impl Name {
     /// The delta it names on `(tid, ak)`, as a request judges it.
     pub(crate) fn target(&self, tid: Tid, ak: Ak) -> Target {
-        Target { tid, ak, ts: self.ts, src: self.src.clone(), actor: self.actor, by: self.by, expires: self.expires, own_writes: true }
+        Target { tid, ak, ts: self.ts, src: self.src.clone(), purge_author: self.purge_author, by: self.by, expires: self.expires, own_writes: true }
     }
 
     fn encode(&self) -> Vec<u8> {
-        let w = Wr::new().u64(self.ts.to_u64()).u8(self.by as u8).raw(self.actor.as_bytes());
+        let w = Wr::new().u64(self.ts.to_u64()).u8(self.by as u8).raw(self.purge_author.as_bytes());
         let w = match self.expires {
             Some(e) => w.u8(1).u64(e),
             None => w.u8(0),
@@ -61,7 +61,7 @@ impl Name {
         let mut r = Rd::new(b);
         let ts = Ts::from_u64(r.u64()?).ok_or_else(bad)?;
         let by = PurgeBy::from_id(r.u8()?.into()).ok_or_else(bad)?;
-        let actor = r.tid()?;
+        let purge_author = r.tid()?;
         let expires = match r.u8()? {
             0 => None,
             1 => Some(r.u64()?),
@@ -73,7 +73,7 @@ impl Name {
             _ => return Err(bad()),
         };
         r.end()?;
-        Ok(Name { ts, src, actor, by, expires })
+        Ok(Name { ts, src, purge_author, by, expires })
     }
 }
 
@@ -84,7 +84,7 @@ fn key(tid: &Tid, ak: &Ak, c: &CommitId) -> Vec<u8> {
 /// Commit `id`, being forgotten: a name on each aspect it has writes of its own on where a
 /// snapshot is held (one may carry them; `settle_due` keeps it only if one does).
 pub(crate) fn note(tx: &mut Tx<'_>, id: &CommitId) -> Result<()> {
-    let Some((h, acting)) = tx.core.ix.commits.get(id).map(|m| (m.header.clone(), m.view.acting)) else { return Ok(()) };
+    let Some((h, purge_author)) = tx.core.ix.commits.get(id).map(|m| (m.header.clone(), m.view.purge_author)) else { return Ok(()) };
     // past its expiry a write has no value for a purge to act on
     if !h.kind.has_own_writes() || h.expires.is_some_and(|t| t <= tx.now().0) {
         return Ok(());
@@ -95,7 +95,7 @@ pub(crate) fn note(tx: &mut Tx<'_>, id: &CommitId) -> Result<()> {
         if tx.core.ix.snapshots.get(&k).is_none_or(|v| v.is_empty()) {
             continue;
         }
-        let n = Name { ts: h.ts, src: src.clone(), actor: acting, by: a.retention.by, expires: h.expires };
+        let n = Name { ts: h.ts, src: src.clone(), purge_author, by: a.retention.by, expires: h.expires };
         let row = n.encode();
         tx.in_class(a.ak.ephemeral(), |tx| Ok(tx.txn.put_local(&key(&a.tid, &a.ak, id), &row, Shred::No)?))?;
         tx.core.ix.forgotten_names.insert(k.clone(), *id, n);

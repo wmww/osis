@@ -34,14 +34,14 @@ fn who(sender: Tid, name: Option<&String>) -> String {
 fn shown(b: &Body<schema::Message>) -> String {
     match b {
         Body::Held(Some(m)) => m.text.clone(),
-        Body::Purged { actor: Some(w), .. } => format!("<deleted by {}>", w.to_uri()),
+        Body::Purged { author: Some(w), .. } => format!("<deleted by {}>", w.to_uri()),
         b => format!("<{}>", state(b).0),
     }
 }
 
 fn deleted_by(b: &Body<schema::Message>) -> J {
     J::opt(match b {
-        Body::Purged { actor, .. } => actor.map(J::tid),
+        Body::Purged { author, .. } => author.map(J::tid),
         _ => None,
     })
 }
@@ -76,7 +76,7 @@ fn message_line(db: &ReadOnly, c: Tid, json: bool, k: &Commit) -> anyhow::Result
         Some(newest) => earlier(db, c, k, newest)?,
         None => Vec::new(),
     };
-    let (sender, time) = (k.stamp.actor, k.stamp.shown().0);
+    let (sender, time) = (k.stamp.author, k.stamp.shown().0);
     if json {
         return Ok(Some(
             J::obj([
@@ -283,7 +283,7 @@ pub(crate) fn run(ctx: &mut Ctx<'_>, c: ChatCmd) -> anyhow::Result<()> {
             let k = find(ctx, t, &i)?;
             let Some(part) = k.at(t, MSG) else { return Err(exit(3, format!("no message {i}"))) };
             let Body::Held(Some(body)) = part.body else { return Err(exit(1, "its text is not here")) };
-            if part.valid || k.stamp.actor != db.me() {
+            if part.valid || k.stamp.author != db.me() {
                 return Err(exit(1, "only one's own undelivered message is sent again"));
             }
             let new = osis_chat::send(&db, t, &body)?;

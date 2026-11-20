@@ -161,13 +161,13 @@ fn a_watch_through_a_thin_client_spec_sync_transport_6() {
     cl.settle();
     let ch = rx.try_recv().unwrap();
     assert_eq!(ch.value, Ok(Some(Value::Int(6))));
-    assert!(matches!(ch.origin, Origin::Local(s) if s.actor == w.a.me()), "{:?}", ch.origin);
+    assert!(matches!(ch.origin, Origin::Local(s) if s.author == w.a.me()), "{:?}", ch.origin);
     let mut x = cl.write();
     x.at(w.t, v()).set(&Value::Int(7)).unwrap();
     x.commit().unwrap();
     cl.settle();
     let ch = rx.try_recv().unwrap();
-    assert!(matches!(ch.origin, Origin::Local(s) if s.actor == w.actor), "{:?}", ch.origin);
+    assert!(matches!(ch.origin, Origin::Local(s) if s.author == w.actor), "{:?}", ch.origin);
     assert!(rx.try_recv().is_err(), "an unchanged value is not told again");
     assert_eq!(w.a.watches(), before + 1);
     drop(sub);
@@ -474,7 +474,7 @@ fn a_group_read_at_another_node_spec_sync_set_5() {
     assert_eq!(b.at(w.t, v()).get().unwrap(), Some(Value::Int(5)));
     let mut x = b.write();
     x.at(w.t, v()).set(&Value::Int(6)).unwrap();
-    assert_eq!(x.commit().unwrap().unwrap().stamp.actor, w.actor);
+    assert_eq!(x.commit().unwrap().unwrap().stamp.author, w.actor);
     assert_eq!(w.a.at(w.t, v()).get().unwrap(), Some(Value::Int(6)));
     assert_eq!(b.grants(w.t).unwrap(), w.a.grants(w.t).unwrap(), "read at the source");
     {
@@ -648,7 +648,7 @@ fn undo_through_a_thin_client_spec_wire_11() {
     let made = x.commit().unwrap().unwrap();
     assert_eq!(cl.undo_target(&scope).unwrap().map(|c| c.stamp.id), Some(made.stamp.id));
     let undone = cl.undo(&scope).unwrap().expect("undone");
-    assert_eq!(undone.stamp.actor, w.actor);
+    assert_eq!(undone.stamp.author, w.actor);
     assert_eq!(cl.at(w.t, v()).get().unwrap(), Some(Value::Int(5)));
     assert_eq!(cl.redo_target(&scope).unwrap().map(|c| c.stamp.id), Some(undone.stamp.id));
     cl.redo(&scope).unwrap().expect("redone");
@@ -720,7 +720,7 @@ fn a_thing_watch_through_a_thin_client_spec_wire_11() {
         cl.settle();
         let c = read.try_recv().unwrap();
         assert_eq!((c.ak, c.value), (ak("x:v.0"), Ok(Some(Value::Int(n)))));
-        assert!(matches!(c.origin, Origin::Local(s) if s.actor == w.a.me()), "{:?}", c.origin);
+        assert!(matches!(c.origin, Origin::Local(s) if s.author == w.a.me()), "{:?}", c.origin);
     }
     assert!(hidden.try_recv().is_err() && unknown.try_recv().is_err());
     assert_eq!(notifies(), 3, "one per change of the thing it reads, none of the hidden one");

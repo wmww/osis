@@ -33,8 +33,8 @@ use std::sync::Arc;
 pub struct Freed {
     pub tid: Tid,
     pub link: Link,
-    /// The author of the body that freed it (whose chain holds a level-2 delete key it names).
-    pub author: Tid,
+    /// The purge author of the body that freed it (whose chain holds a level-2 delete key it names).
+    pub purge_author: Tid,
     /// Its thing blind (spec/crypto.md §7), kept when the key goes.
     blind: [u8; 16],
     /// Known to be a chunk (a level-1 node's child): judged without its bytes.
@@ -48,9 +48,9 @@ pub struct Freed {
 }
 
 impl Freed {
-    fn new(tid: Tid, link: Link, author: Tid, leaf: bool, memory: bool) -> Freed {
+    fn new(tid: Tid, link: Link, purge_author: Tid, leaf: bool, memory: bool) -> Freed {
         let blind = osis_crypto::thing_blind(&osis_crypto::link_blind(&link.key), tid.as_bytes());
-        Freed { tid, link, author, blind, leaf, judged: false, borne: false, memory }
+        Freed { tid, link, purge_author, blind, leaf, judged: false, borne: false, memory }
     }
 
     /// Whether it is a memory blob's (an ephemeral commit's piece).
@@ -69,7 +69,7 @@ impl Freed {
 
     fn encode(&self) -> Vec<u8> {
         let flags = u8::from(self.leaf) | u8::from(self.judged) << 1 | u8::from(self.borne) << 2 | u8::from(self.memory) << 3;
-        Wr::new().u8(flags).raw(self.author.as_bytes()).raw(&self.blind).raw(&osis_base::encode(&Value::Link(Box::new(self.link)))).take()
+        Wr::new().u8(flags).raw(self.purge_author.as_bytes()).raw(&self.blind).raw(&osis_base::encode(&Value::Link(Box::new(self.link)))).take()
     }
 
     fn decode(k: &[u8], v: &[u8]) -> Result<Freed> {
@@ -78,11 +78,11 @@ impl Freed {
         let tid = r.tid()?;
         let mut r = Rd::new(v);
         let flags = r.u8()?;
-        let author = r.tid()?;
+        let purge_author = r.tid()?;
         let blind = r.arr()?;
         let rest = r.rest();
         let Ok(Value::Link(link)) = osis_base::decode(rest, &osis_base::Limits::new(8, rest.len())) else { return Err(Error::Corrupt("freed link")) };
-        Ok(Freed { tid, link: *link, author, blind, leaf: flags & 1 != 0, judged: flags & 2 != 0, borne: flags & 4 != 0, memory: flags & 8 != 0 })
+        Ok(Freed { tid, link: *link, purge_author, blind, leaf: flags & 1 != 0, judged: flags & 2 != 0, borne: flags & 4 != 0, memory: flags & 8 != 0 })
     }
 }
 
@@ -166,13 +166,12 @@ pub(crate) fn part_links(tx: &mut Tx<'_>, c: &CommitId, ai: usize) -> Result<Vec
 pub(crate) fn free_part(tx: &mut Tx<'_>, c: &CommitId, ai: usize) -> Result<()> {
     let Some(m) = tx.core.ix.commits.get(c).cloned() else { return Ok(()) };
     let Some(a) = m.header.aspects.get(ai) else { return Ok(()) };
-    // Interim (notes/a1-spec/README.md step 4): the purge author is the thing it acts on; a
-    // held part's section opened, so it is known
-    let author = m.view.acting;
+    // its purge author's level-2 key (spec/crypto.md §7)
+    let purge_author = m.view.purge_author;
     let (tid, memory) = (a.tid, m.view.memory);
     for link in part_links(tx, c, ai)? {
         let blob = link.blob;
-        add(tx, Freed::new(tid, link, author, false, memory))?;
+        add(tx, Freed::new(tid, link, purge_author, false, memory))?;
         tx.core.freed_due.insert((tid, blob));
     }
     Ok(())
@@ -256,7 +255,7 @@ fn judge(tx: &mut Tx<'_>, fs: Vec<Freed>) -> Result<Judgment> {
                             if !f.leaf
                                 && let Some((leaf, links)) = crate::engine::large::kids_of(dedup.as_ref(), &crate::engine::large::opens(&f.link), &bytes)
                             {
-                                kids.extend(links.into_iter().map(|link| Freed::new(t, link, f.author, leaf, f.memory)));
+                                kids.extend(links.into_iter().map(|link| Freed::new(t, link, f.purge_author, leaf, f.memory)));
                             }
                             f.borne = true;
                             // its bytes go here (spec/sync-compaction.md §1: freed, the node keeps
@@ -451,10 +450,10 @@ impl Engine {
     }
 
     /// What a Delete by levels of freed link `f` signs for (`DeleteBasis`): one group, the keys
-    /// its link names (levels 1 and 3 along its thing's chain, level 2 along its author's).
+    /// its link names (levels 1 and 3 along its thing's chain, level 2 along its purge author's).
     pub fn freed_delete_basis(&self, f: &Freed) -> Option<crate::sync::DeleteBasis> {
         let (salt, blind) = f.blinding();
-        self.delete_basis(salt, blind, &f.author, &[(f.tid, f.link.del.iter().collect())])
+        self.delete_basis(salt, blind, &f.purge_author, &[(f.tid, f.link.del.iter().collect())])
     }
 }
 

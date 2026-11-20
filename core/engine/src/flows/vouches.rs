@@ -573,7 +573,7 @@ fn addenda_candidates(core: &Core, tl: &osis_perm::Timeline, r: &CommitId, m: &c
             }
             let listed = match below {
                 // a plain part on N, or the Acting check for N
-                Role::Write => v.aspects.iter().any(|a| plain_ak(&a.ak) && (a.tid == n || v.acting == n)),
+                Role::Write => v.aspects.iter().any(|a| plain_ak(&a.ak) && (a.tid == n || v.purge_author == n)),
                 Role::Admin => v.aspects.iter().any(|a| a.tid == n && admin_listable_ak(&a.ak)),
                 _ => false,
             };

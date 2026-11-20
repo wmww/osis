@@ -299,7 +299,7 @@ mod tests {
 
     // spec/sync-ids.md §1: the re-encryption rule: a reused blob keeps its encryption unless its
     // expiry is earlier than the new delta's or its commitments to the thing's delete keys are
-    // not exactly the new delta's; author-chain commitments need not match beside an admin or
+    // not exactly the new delta's; purge author's (level-2) commitments need not match beside an admin or
     // writer key, but need the new delta's own key where it lists no level 2 or only level 2: else
     // that author could delete a blob the delta's retention gives it no right over.
     #[test]

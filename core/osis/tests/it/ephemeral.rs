@@ -50,7 +50,7 @@ fn write_and_watch_without_commit_spec_data_model_2() {
     let win = db.engine(|e| e.header(&made.stamp.id.raw())).unwrap().aspects.iter().find(|a| a.ak.as_str() == "created.0").unwrap().tid;
     let c = db.created(win).unwrap().unwrap();
     // a record alone acts for its signer (spec/commits.md §2)
-    assert_eq!((c.id, c.ts(), c.actor, c.actor), (made.stamp.id, made.ts(), db.me(), db.me()), "a new thing is durable");
+    assert_eq!((c.id, c.ts(), c.author), (made.stamp.id, made.ts(), db.me()), "a new thing is durable");
     let before = durable_marks(&db);
     let mut w = db.write();
     w.at(win, state.clone()).set(&Value::Map([(Value::Int(0), s("draft")), (Value::Int(1), Value::List(vec![s("a")]))].into())).unwrap();
@@ -70,7 +70,7 @@ fn write_and_watch_without_commit_spec_data_model_2() {
     let done = w.commit().unwrap().unwrap();
     let ch = recv(&rx);
     match ch.origin {
-        Origin::Local(i) => assert_eq!((i.id, i.ts(), i.actor), (done.stamp.id, done.ts(), db.me())),
+        Origin::Local(i) => assert_eq!((i.id, i.ts(), i.author), (done.stamp.id, done.ts(), db.me())),
         other => panic!("{other:?}"),
     }
     assert_eq!(db.at(win, state.clone()).path(field(1)).get::<Vec<String>>().unwrap(), Some(vec!["a".to_string(), "b".to_string()]));
@@ -239,7 +239,7 @@ fn ephemeral_signal_fires_reach_history_listener_once_spec_data_model_2() {
                 assert_eq!(i, *id);
                 assert_eq!(c.stamp.id, *id);
                 let p = c.at(t, ring.clone()).unwrap();
-                assert_eq!((c.stamp.actor, c.kind, p.valid), (db.me(), osis::CommitKind::Content, true));
+                assert_eq!((c.stamp.author, c.kind, p.valid), (db.me(), osis::CommitKind::Content, true));
                 assert_eq!(p.body, osis::Body::Held(Some(s("ding"))));
             }
             e => panic!("{e:?}"),

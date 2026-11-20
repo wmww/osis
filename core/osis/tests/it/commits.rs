@@ -143,7 +143,7 @@ fn undo_redo_across_nodes_spec_commits_7() {
     sync2(&da, &db);
     assert_eq!(get(&da), None);
     let found = da.writes(&scope, &CommitQuery { reverts: Some(c1.stamp.id), ..Default::default() }).unwrap().commits;
-    assert_eq!(found.iter().map(|e| (e.stamp.id, e.stamp.actor)).collect::<Vec<_>>(), vec![(u.stamp.id, db.me())]);
+    assert_eq!(found.iter().map(|e| (e.stamp.id, e.stamp.author)).collect::<Vec<_>>(), vec![(u.stamp.id, db.me())]);
     let r = da.redo(&scope).unwrap().unwrap();
     assert_eq!(get(&da), Some(Value::Int(1)));
     sync2(&da, &db);

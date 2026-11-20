@@ -11,8 +11,8 @@ use std::collections::{BTreeMap, BTreeSet};
 #[doc(hidden)]
 pub struct HeldBody {
     pub id: CommitId,
-    /// The thing its commit acts on there (`View::acting`).
-    pub acting: Option<Tid>,
+    /// Its commit's purge author (`View::purge_author`).
+    pub purge_author: Option<Tid>,
     pub ts: osis_base::Ts,
     pub valid: bool,
     pub value: Option<osis_base::Value>,
@@ -389,13 +389,13 @@ impl Engine {
             for (ts, c) in &page {
                 let Some(m) = tx.core.ix.commits.get(c) else { continue };
                 let Some(ai) = m.aspect(&tid, &ak) else { continue };
-                let (acting, valid) = (Some(m.view.acting), m.valid_at(ai));
+                let (purge_author, valid) = (Some(m.view.purge_author), m.valid_at(ai));
                 let mut v = None;
                 crate::apply::each_held_piece(tx, c, ai, &mut |_, f| {
                     v = f.read();
                     Ok(())
                 })?;
-                out.push(HeldBody { id: *c, acting, ts: *ts, valid, value: v });
+                out.push(HeldBody { id: *c, purge_author, ts: *ts, valid, value: v });
             }
             Ok(out)
         })

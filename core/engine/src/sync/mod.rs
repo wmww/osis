@@ -598,20 +598,20 @@ impl Engine {
             }
         }
         // level 2 is the commit's one purge author's (spec/crypto.md §7)
-        let author = self.core.ix.commits.get(&row.commit).map(|m| m.view.acting)?;
-        self.delete_basis(row.salt, h.blind, &author, &groups)
+        let purge_author = self.core.ix.commits.get(&row.commit).map(|m| m.view.purge_author)?;
+        self.delete_basis(row.salt, h.blind, &purge_author, &groups)
     }
 
     /// A `DeleteBasis` of a blob with prefix `salt` and blind `blind` whose groups are `groups`
-    /// (each with the thing whose chain holds its level-1 and level-3 secrets), `author` the actor
-    /// whose chain holds level 2 (spec/crypto.md §7). `None`: a key that is no Ed25519 point.
-    pub(crate) fn delete_basis(&self, salt: [u8; 16], blind: [u8; 16], author: &Tid, groups: &[DeleteGroup]) -> Option<DeleteBasis> {
+    /// (each with the thing whose chain holds its level-1 and level-3 secrets), `purge_author` the
+    /// purge author whose chain holds level 2 (spec/crypto.md §7). `None`: a key that is no Ed25519 point.
+    pub(crate) fn delete_basis(&self, salt: [u8; 16], blind: [u8; 16], purge_author: &Tid, groups: &[DeleteGroup]) -> Option<DeleteBasis> {
         let mut keyed = Vec::with_capacity(groups.len());
         for (_, keys) in groups {
             keyed.push(keys.iter().map(|(l, k)| Some((*l, osis_crypto::VerifyingKey::from_bytes(k).ok()?))).collect::<Option<Vec<_>>>()?);
         }
         let prefix = osis_blob::Prefix::for_groups(salt, &blind, None, &keyed).ok()?;
-        let author = self.core.delete_chain(author);
+        let author = self.core.delete_chain(purge_author);
         let mut held: Vec<(u8, osis_crypto::DeleteSecret)> = Vec::new();
         for (t, keys) in groups {
             let thing = self.core.delete_chain(t);

@@ -445,7 +445,7 @@ pub fn forge_snapshot_with(lp: &mut LocalPeer, by: usize, t: Tid, a: &osis_base:
     forge_snapshot_absorbing(lp, by, t, a, ts, f, frontiers, Default::default())
 }
 
-/// `forge_snapshot_with` listing `absorbed` (commit ID -> author).
+/// `forge_snapshot_with` listing `absorbed` (commit ID -> signer).
 #[allow(clippy::too_many_arguments)]
 pub fn forge_snapshot_absorbing(lp: &mut LocalPeer, by: usize, t: Tid, a: &osis_base::Ak, ts: osis_base::Ts, f: osis_crdt::Fragment, frontiers: osis_crdt::Frontiers, absorbed: std::collections::BTreeMap<osis_base::CommitId, Tid>) -> Vec<u8> {
     use osis_commit::{Form, Kind, writer_ctx};
@@ -479,7 +479,7 @@ impl osis_commit::Secrets for Keys {
     fn admin_key(&self, _: &Tid) -> Option<osis_crypto::VerifyingKey> {
         Some(osis_crypto::DeleteSecret::derive(&osis_crypto::Secret32::from_bytes([3; 32])).verifying_key())
     }
-    fn chain_key(&self) -> Option<osis_crypto::VerifyingKey> {
+    fn purge_author_key(&self) -> Option<osis_crypto::VerifyingKey> {
         Some(osis_crypto::DeleteSecret::derive(&osis_crypto::Secret32::from_bytes([1; 32])).verifying_key())
     }
     fn write_key(&self, _: &Tid) -> Option<osis_crypto::VerifyingKey> {

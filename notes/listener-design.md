@@ -42,11 +42,11 @@ impl Commit {
     pub fn parts(&self) -> impl Iterator<Item = (Tid, &Ak, &Part<Value>)>;
 }
 pub struct Part<T> { pub valid: bool, pub body: Body<T>, pub edited: Option<CommitPos> }
-pub enum Body<T> { Held(Option<T>), TooLarge { limit: u64 }, Purged { by: CommitId, actor: Option<Tid> }, NotFetched }
+pub enum Body<T> { Held(Option<T>), TooLarge { limit: u64 }, Purged { by: CommitId, author: Option<Tid> }, NotFetched }
 ```
 - **Parts**: every listed part of the commit the caller may read, on any thing, value or signal, with its value from the commit's own body (a superseded one reads as written). `Held(None)`: a removal, or not a whole value of `K::T` (a `Mismatch` diagnostic, as for any typed read; the untyped key shows it). Decoding happens in `at`, so unread parts cost no typed read. `AspectKey` covers both key kinds: reading a part is neither writing nor firing.
 - **Which parts are listed**, one rule at every address: a part is listed while it is in its aspect's read, or in history (the thing's `retention^.0` setting, until the body leaves it), or a purge tombstone where it would otherwise be listed (so never past its expiry), or this node's own invalid write (kept, marked, so its user may write it again). Replaced with no history kept, expired, compacted, another node's invalid body: not listed anywhere, whatever this node still happens to hold. **A commit is listed at an address while it has a listed part there.** An aspect keeping history lists every write until its bound; one keeping none lists only commits still in its read; listing an aspect whose writes keep no history is no error. Every synced node lists the same commits (H3). Ephemeral commits list by the same rule; their kept history is in memory, as their values are. "Replaced" is revert's skip rule (spec/crdt.md §4.6): everything the part wrote is overwritten since.
-- `CommitQuery { from: CommitFrom, limit: Option<usize>, actors, kinds, reverts, reverted_by, in_effect }` (plain struct, `Default`; empty filters match all). `CommitFrom::{Newest, Oldest, Before(CommitPos), After(CommitPos)}`, neither bound counting itself; `CommitPos::time(t)` a time. `CommitPage { commits, more, complete }`: `more` past `limit`, an internal cap or the read limit; `complete: false` while a sync ID carrying the address has not finished a pass here.
+- `CommitQuery { from: CommitFrom, limit: Option<usize>, authors, kinds, reverts, reverted_by, in_effect }` (plain struct, `Default`; empty filters match all). `CommitFrom::{Newest, Oldest, Before(CommitPos), After(CommitPos)}`, neither bound counting itself; `CommitPos::time(t)` a time. `CommitPage { commits, more, complete }`: `more` past `limit`, an internal cap or the read limit; `complete: false` while a sync ID carrying the address has not finished a pass here.
 - `CommitEvent::{Commit { id, commit: Option<Commit> }, Reread, Ended(Error)}`: a commit as it reads when delivered (new, late, validity flip, body arriving, purged; `None`: no longer listed here). An ephemeral signal is the one commit nobody holds: its `on_fire` event carries it as it arrived, no page shows it.
 - Cost (stated): a listed commit reads all its readable parts; commits touch about 1.1 things. Each changed commit looks up the listeners at its aspects and thing: O(log S + matched) per commit.
 
@@ -56,7 +56,7 @@ Messages are the durable signal `chat:msg~0` (kept forever by the chat's setting
 fn entry_of(c: Tid, k: &Commit) -> Option<Entry> {
     let part = k.at(c, schema::MSG)?;
     let (body, replaces) = match part.body { osis::Body::Held(v) => /* decode */, /* no Gone: not listed */ };
-    Some(Entry { id: k.pos(), sender: k.stamp.actor, time: k.stamp.shown().0, valid: part.valid, body, /* .. */ })
+    Some(Entry { id: k.pos(), sender: k.stamp.author, time: k.stamp.shown().0, valid: part.valid, body, /* .. */ })
 }
 w.at(c, schema::MSG).fire(&message_of(d, r))?;
 let q = CommitQuery { from, limit: Some(limit), kinds: vec![CommitKind::Content], ..Default::default() };
@@ -89,7 +89,7 @@ Not at compile time:
 The principle's first sentence makes this possible: a read and its listener share an address, so a handle may do both. `ReadSet` and `db.tracking(&set) -> ReadOnly` (notes/api.md Watching) are this one read API with subscribing added at the same call; there is no second read path. Reads with no public listener (`aspects` as names, `role_on`, `holders`, `has_content`, `created`, `changed`, `profile_of`) get an internal one that re-reads and compares; one without any address it can honestly name is not on `ReadOnly`.
 
 ## Local writes are always included
-`origin` says `Local`; `commit.stamp.node` says which node. No option to exclude them: every use case is narrower than "local". A text session must see another session's or a `remove`'s writes (Text sessions); a bridge skips its own echo by commit id or value; a "new message" sound skips `commit.stamp.actor == me`; osis writes are local and synchronous, so there is no optimistic state to protect.
+`origin` says `Local`; `commit.stamp.author` says whom it is by. No option to exclude them: every use case is narrower than "local". A text session must see another session's or a `remove`'s writes (Text sessions); a bridge skips its own echo by commit id or value; a "new message" sound skips `commit.stamp.author == me`; osis writes are local and synchronous, so there is no optimistic state to protect.
 
 ## When it fires
 **A listener is due when a storage transaction ends having changed what it reads; when called it reads its address then.** It never shows a state from inside a transaction, and a commit that leaves a listing and comes back is told each time it reads otherwise. Callbacks run on the one dispatcher, in order, outside locks, any call allowed inside. Commits come from `Core::commit_changes` at the end of the transaction, with `listing::listing_moved`: a join tells each commit it superseded that no longer reads as listed, a rebuild compares the aspect's whole listing before and after; durable and ephemeral signal fires go through the same list.

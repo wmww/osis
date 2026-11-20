@@ -853,7 +853,7 @@ pub(crate) fn framing_for(core: &Core, memory: bool, plan: &CommitPlan, publishe
     if !super::secrets::holds_listed_keys(core, &plan.creates, published, keys, tid) {
         return Err(Error::Permission { tid: *tid, needs: Role::Write });
     }
-    let secrets = CommitSecrets { core, actor: plan.actor, created: &plan.creates, published, keys };
+    let secrets = CommitSecrets { core, purge_author: plan.actor, created: &plan.creates, published, keys };
     let keys = osis_commit::delete_keys(&secrets, tid, retention)?;
     let dedup = osis_commit::Secrets::dedup(&secrets, tid).ok_or(Error::UnknownThing(*tid))?;
     let class = if memory { osis_blob::Class::Ephemeral } else { osis_blob::Class::Durable };
@@ -1035,7 +1035,7 @@ fn build(tx: &mut Tx<'_>, plan: CommitPlan, deltas: Vec<Resolved>) -> Result<osi
     b.account = account.as_ref().map(|(epoch, k)| osis_commit::AccountSigner { epoch: *epoch, inner: k.inner.clone(), node: tx.core.id.tid(), node_key: tx.core.id.keys().signing.clone(), more });
     let built = {
         let core: &Core = tx.core;
-        let secrets = CommitSecrets { core, actor: plan.actor, created: &plan.creates, published: &published, keys: &keys };
+        let secrets = CommitSecrets { core, purge_author: plan.actor, created: &plan.creates, published: &published, keys: &keys };
         let mut seed = [0u8; 32];
         tx.rng.fill_bytes(&mut seed);
         let mut list_rng = osis_crypto::SeededRng::from_seed(seed);

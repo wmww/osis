@@ -812,7 +812,7 @@ fn show(ctx: &mut Ctx<'_>, t: &str, width: usize) -> anyhow::Result<()> {
     lines.push(format!("state\t{}", if known { "present" } else { "empty" }));
     lines.push(format!("role\t{}", role.map_or("none", role_text)));
     let changed = db.changed(t)?;
-    let stamp = |c: Option<osis::ThingStamp>| c.map_or("unknown".into(), |c| format!("{} by {}", ts_text(ctx.g.raw, c.written.0), c.actor.to_uri()));
+    let stamp = |c: Option<osis::ThingStamp>| c.map_or("unknown".into(), |c| format!("{} by {}", ts_text(ctx.g.raw, c.written.0), c.author.to_uri()));
     lines.push(format!("created\t{}", stamp(created)));
     lines.push(format!("changed\t{}", stamp(changed)));
     let j = J::obj([
@@ -827,7 +827,7 @@ fn show(ctx: &mut Ctx<'_>, t: &str, width: usize) -> anyhow::Result<()> {
 }
 
 fn stamp_json(c: osis::ThingStamp) -> J {
-    J::obj([("commit", J::str(c.id.to_string())), ("actor", J::tid(c.actor)), ("ts", J::int(c.written.0))])
+    J::obj([("commit", J::str(c.id.to_string())), ("author", J::tid(c.author)), ("ts", J::int(c.written.0))])
 }
 
 /// A change's line; its value printed by type `ty`, else by its aspect's.
@@ -852,7 +852,7 @@ fn change_line(ctx: &Ctx<'_>, c: &Change<Value>, ty: Ty<'_>) -> String {
             ("ak", J::str(c.ak.as_str())),
             ("origin", J::str(src)),
             ("commit", J::opt(info.map(|i| J::str(i.id.to_string())))),
-            ("actor", J::opt(info.map(|i| J::tid(i.actor)))),
+            ("author", J::opt(info.map(|i| J::tid(i.author)))),
             ("ts", J::opt(info.map(|i| J::int(i.written.0)))),
             ("value", vj),
         ])
@@ -861,7 +861,7 @@ fn change_line(ctx: &Ctx<'_>, c: &Change<Value>, ty: Ty<'_>) -> String {
         let d = |o: Option<String>| o.unwrap_or_else(|| "-".into());
         format!(
             "{src} {} {} {} {vt}",
-            d(info.map(|i| i.actor.to_uri())),
+            d(info.map(|i| i.author.to_uri())),
             d(info.map(|i| ts_text(ctx.g.raw, i.written.0))),
             c.ak.as_str()
         )
@@ -1001,7 +1001,7 @@ fn listing(ctx: &mut Ctx<'_>, at: &Listed, l: &ListArgs) -> anyhow::Result<()> {
     let q = CommitQuery {
         from,
         limit: Some(l.max),
-        actors: l.actor.iter().map(|a| ctx.tid(a)).collect::<anyhow::Result<_>>()?,
+        authors: l.author.iter().map(|a| ctx.tid(a)).collect::<anyhow::Result<_>>()?,
         kinds: l.kind.iter().map(|k| kind_of(k)).collect::<anyhow::Result<_>>()?,
         reverts: l.reverts.as_deref().map(parse_id).transpose()?,
         reverted_by: l.reverted_by.as_deref().map(parse_id).transpose()?,
@@ -1022,16 +1022,16 @@ fn body_text(b: &osis::Body<Value>) -> String {
         osis::Body::Held(Some(v)) => format!("{v:?}"),
         osis::Body::Held(None) => "held-empty".to_string(),
         osis::Body::TooLarge { .. } => "too-large".to_string(),
-        osis::Body::Purged { by, actor } => format!("purged={} by={}", by, actor.map_or_else(|| "?".to_string(), |a| a.to_uri())),
+        osis::Body::Purged { by, author } => format!("purged={} by={}", by, author.map_or_else(|| "?".to_string(), |a| a.to_uri())),
         osis::Body::NotFetched => "not-fetched".to_string(),
     }
 }
 
-/// One line per commit: place, ts, actor, node, kind, in effect or reverted, what it reverts, then
+/// One line per commit: place, ts, author, kind, in effect or reverted, what it reverts, then
 /// each part `T/AK valid|invalid body`.
 fn commit_line(ctx: &Ctx<'_>, c: &osis::Commit) -> String {
     let i = &c.stamp;
-    let mut l = format!("{} {} {} {} {}", c.pos(), ts_text(ctx.g.raw, i.written.0), i.actor.to_uri(), kind_text(c.kind), if c.in_effect { "in-effect" } else { "reverted" });
+    let mut l = format!("{} {} {} {} {}", c.pos(), ts_text(ctx.g.raw, i.written.0), i.author.to_uri(), kind_text(c.kind), if c.in_effect { "in-effect" } else { "reverted" });
     if let Some(r) = &c.reverts {
         l += &format!(" reverts={r}");
     }
@@ -1052,7 +1052,7 @@ fn commit_j(c: &osis::Commit) -> J {
         ("commit", J::str(i.id.to_string())),
         ("ts", J::int(i.written.0)),
         ("received", J::int(i.received.0)),
-        ("actor", J::tid(i.actor)),
+        ("author", J::tid(i.author)),
         ("kind", J::str(kind_text(c.kind))),
         ("in_effect", J::Bool(c.in_effect)),
         ("reverts", J::opt(c.reverts.as_ref().map(|r| J::str(r.to_string())))),
@@ -1240,7 +1240,7 @@ fn inspect(ctx: &mut Ctx<'_>, i: InspectCmd) -> anyhow::Result<()> {
                 lines.push(format!("aspect {} commits={} stored_size={}", ak.as_str(), changes.len(), size.map_or("-".into(), |s| s.to_string())));
                 for c in changes {
                     let h = &c.header;
-                    lines.push(format!("  commit {} kind={:?} ts={} acting={} signer={}{}", commit_text(&c.id), h.kind, h.ts.wall_ms().0, c.acting.to_uri(), h.signer.to_uri(), h.undoes.map_or(String::new(), |u| format!(" undoes={}", commit_text(&u)))));
+                    lines.push(format!("  commit {} kind={:?} ts={} purge_author={} signer={}{}", commit_text(&c.id), h.kind, h.ts.wall_ms().0, c.purge_author.to_uri(), h.signer.to_uri(), h.undoes.map_or(String::new(), |u| format!(" undoes={}", commit_text(&u)))));
                 }
                 if let Some(f) = frag {
                     lines.push(format!("  state {f}"));

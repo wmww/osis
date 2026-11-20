@@ -214,7 +214,7 @@ pub(crate) fn write_op_to(o: &WriteOp) -> Result<Value> {
         WriteOp::Retention { tid, key, r } => vec![u(4), tid_to(tid), k(key), retention_to(r)],
         WriteOp::Purge { tid, key } => vec![u(5), tid_to(tid), k(key)],
         WriteOp::PurgeCommit { tid, key, commit } => vec![u(6), tid_to(tid), k(key), commit_id_to(commit)],
-        WriteOp::PurgeAuthor { tid, key, actor } => vec![u(7), tid_to(tid), k(key), tid_to(actor)],
+        WriteOp::PurgeAuthor { tid, key, author } => vec![u(7), tid_to(tid), k(key), tid_to(author)],
         WriteOp::PurgeThing(t) => vec![u(9), tid_to(t)],
     }))
 }
@@ -254,7 +254,7 @@ pub(crate) fn write_op_from(v: Value) -> Result<WriteOp> {
         }
         7 => {
             want(4)?;
-            WriteOp::PurgeAuthor { tid: t(1)?, key: k(2)?, actor: t(3)? }
+            WriteOp::PurgeAuthor { tid: t(1)?, key: k(2)?, author: t(3)? }
         }
         9 => {
             want(2)?;
@@ -283,7 +283,7 @@ pub(crate) fn read_from(v: Value) -> Result<Result<Option<Value>>> {
 }
 
 fn stamp_to(s: &Stamp) -> Value {
-    Value::List(vec![commit_id_to(&s.id.0), tid_to(&s.actor), Value::uint(s.ts.to_u64()), Value::uint(s.received.0)])
+    Value::List(vec![commit_id_to(&s.id.0), tid_to(&s.author), Value::uint(s.ts.to_u64()), Value::uint(s.received.0)])
 }
 
 fn stamp_from(v: Value) -> Result<Stamp> {
@@ -328,7 +328,7 @@ fn body_to(b: &Body<Value>) -> Value {
     Value::List(match b {
         Body::Held(v) => vec![u(0), opt(v.clone())],
         Body::TooLarge { limit } => vec![u(1), u(*limit)],
-        Body::Purged { by, actor } => vec![u(2), commit_id_to(&by.0), opt(actor.as_ref().map(tid_to))],
+        Body::Purged { by, author } => vec![u(2), commit_id_to(&by.0), opt(author.as_ref().map(tid_to))],
         Body::NotFetched => vec![u(3)],
     })
 }
@@ -338,7 +338,7 @@ fn body_from(v: Value) -> Result<Body<Value>> {
     Ok(match a.as_slice() {
         [c, v] if c.as_uint() == Some(0) => Body::Held(opt_from(v.clone(), "body")?),
         [c, n] if c.as_uint() == Some(1) => Body::TooLarge { limit: uint(n, "body")? },
-        [c, by, actor] if c.as_uint() == Some(2) => Body::Purged { by: CommitId(commit_id_from(by)?), actor: opt_from(actor.clone(), "body")?.map(|t| tid(&t)).transpose()? },
+        [c, by, author] if c.as_uint() == Some(2) => Body::Purged { by: CommitId(commit_id_from(by)?), author: opt_from(author.clone(), "body")?.map(|t| tid(&t)).transpose()? },
         [c] if c.as_uint() == Some(3) => Body::NotFetched,
         _ => return Err(bad("body")),
     })
@@ -449,10 +449,10 @@ impl Form for Holder {
 /// `created`, `changed` (in an `Opt`): `[commit id, actor, ts, received]`.
 impl Form for ThingStamp {
     fn to_wire(&self) -> Value {
-        Value::List(vec![commit_id_to(&self.id.0), tid_to(&self.actor), Value::uint(self.ts.to_u64()), Value::uint(self.received.0)])
+        Value::List(vec![commit_id_to(&self.id.0), tid_to(&self.author), Value::uint(self.ts.to_u64()), Value::uint(self.received.0)])
     }
     fn from_wire(v: Value) -> Result<ThingStamp> {
-        stamp_from(v).map(|s| ThingStamp { id: s.id, actor: s.actor, written: s.written, received: s.received, ts: s.ts })
+        stamp_from(v).map(|s| ThingStamp { id: s.id, author: s.author, written: s.written, received: s.received, ts: s.ts })
     }
 }
 
@@ -784,7 +784,7 @@ impl Form for CommitQuery {
         Value::List(vec![
             self.from.to_wire(),
             opt(self.limit.map(usize_to)),
-            self.actors.to_wire(),
+            self.authors.to_wire(),
             self.kinds.to_wire(),
             self.reverts.to_wire(),
             self.reverted_by.to_wire(),
@@ -792,11 +792,11 @@ impl Form for CommitQuery {
         ])
     }
     fn from_wire(v: Value) -> Result<CommitQuery> {
-        let [from, limit, actors, kinds, reverts, reverted_by, in_effect] = <[Value; 7]>::try_from(list(v, "query")?).map_err(|_| bad("query"))?;
+        let [from, limit, authors, kinds, reverts, reverted_by, in_effect] = <[Value; 7]>::try_from(list(v, "query")?).map_err(|_| bad("query"))?;
         Ok(CommitQuery {
             from: Form::from_wire(from)?,
             limit: opt_from(limit, "query")?.map(|n| usize_from(&n)).transpose()?,
-            actors: Form::from_wire(actors)?,
+            authors: Form::from_wire(authors)?,
             kinds: Form::from_wire(kinds)?,
             reverts: Form::from_wire(reverts)?,
             reverted_by: Form::from_wire(reverted_by)?,

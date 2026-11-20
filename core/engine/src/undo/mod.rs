@@ -499,9 +499,8 @@ fn schema_of(core: &Core, ak: &Ak) -> Option<std::sync::Arc<osis_schema::Schema>
 pub struct HeldCommit {
     pub id: CommitId,
     pub header: std::sync::Arc<osis_commit::Header>,
-    /// The thing it acts on (`View::acting`), on the first of `aspects`: a valid part is held, so
-    /// it is known (an honest writer acts as one thing on all).
-    pub acting: Tid,
+    /// Its purge author (`View::purge_author`).
+    pub purge_author: Tid,
     pub received: osis_base::WallMs,
     /// `(tid, ak, body held)` of each valid aspect (in scope, when one is given).
     pub aspects: Vec<(Tid, Ak, bool)>,
@@ -583,8 +582,8 @@ impl Engine {
                     .filter(|(ai, a)| m.valid_at(*ai) && keep.as_ref().is_none_or(|k| k.contains(&(a.tid, a.ak.clone()))))
                     .map(|(ai, a)| (a.tid, a.ak.clone(), !m.body_gone(ai)))
                     .collect();
-                let acting = m.view.acting;
-                (!aspects.is_empty()).then_some(HeldCommit { id, header, acting, received: m.received, aspects })
+                let purge_author = m.view.purge_author;
+                (!aspects.is_empty()).then_some(HeldCommit { id, header, purge_author, received: m.received, aspects })
             })
             .collect()
     }

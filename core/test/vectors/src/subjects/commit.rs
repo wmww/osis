@@ -21,7 +21,7 @@ impl Secrets for VSecrets {
     fn admin_key(&self, _: &Tid) -> Option<osis_crypto::VerifyingKey> {
         Some(osis_crypto::DeleteSecret::derive(&s32(0x31)).verifying_key())
     }
-    fn chain_key(&self) -> Option<osis_crypto::VerifyingKey> {
+    fn purge_author_key(&self) -> Option<osis_crypto::VerifyingKey> {
         Some(osis_crypto::DeleteSecret::derive(&s32(0x32)).verifying_key())
     }
     fn write_key(&self, _: &Tid) -> Option<osis_crypto::VerifyingKey> {

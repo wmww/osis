@@ -83,7 +83,7 @@ pub(crate) fn note_role_sigs(core: &mut Core, kind: osis_commit::Kind, at_epoch:
 /// (`Indexes::acting_on`, `chains_on`, `by_actor`), and a split commit with a path undecided here
 /// to `Indexes::paths_unknown`.
 fn index_acting(core: &mut Core, id: &CommitId, h: &crate::engine::View) {
-    if let Some(x) = h.acts_for() {
+    if let Some(x) = h.other_purge_author() {
         for a in &h.aspects {
             core.ix.acting_on.insert((a.tid, h.signer, x), *id);
             core.ix.chains_on.insert(a.tid, (h.signer, x));
@@ -667,9 +667,9 @@ pub(crate) fn apply_verified(tx: &mut Tx<'_>, blob: &CommitBlob, parts: Parts, o
     // commit's
     crate::retention::compact::Trigger::applied(tx, &id, &h, blob)?;
     if h.ephemeral.is_some() {
-        tx.core.events.queue(Event::Ephemeral { id, origin, signer: h.signer, acting: view.acting, ts: h.ts, received, changed: changed.into_iter().collect() });
+        tx.core.events.queue(Event::Ephemeral { id, origin, signer: h.signer, purge_author: view.purge_author, ts: h.ts, received, changed: changed.into_iter().collect() });
     } else {
-        tx.core.events.queue(Event::Applied { id, origin, signer: h.signer, acting: view.acting, ts: h.ts, received, changed: changed.into_iter().collect() });
+        tx.core.events.queue(Event::Applied { id, origin, signer: h.signer, purge_author: view.purge_author, ts: h.ts, received, changed: changed.into_iter().collect() });
     }
     if !flipped.is_empty() {
         tx.core.events.queue(Event::Changed { cause: Cause::Validity, changed: flipped });
@@ -843,7 +843,7 @@ pub(crate) fn join_late(tx: &mut Tx<'_>, id: &CommitId, merged: &CommitBlob, par
             tx.core.events.queue(Event::Roster { thing });
         }
     }
-    tx.core.events.queue(Event::Joined { id: *id, origin: meta.origin, signer: h.signer, acting: meta.view.acting, ts: h.ts, received: meta.received });
+    tx.core.events.queue(Event::Joined { id: *id, origin: meta.origin, signer: h.signer, purge_author: meta.view.purge_author, ts: h.ts, received: meta.received });
     let changed = j.changed;
     if !changed.is_empty() {
         tx.core.events.queue(Event::Changed { cause: Cause::LateDelta, changed: changed.into_iter().collect() });

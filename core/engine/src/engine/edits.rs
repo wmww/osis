@@ -1,6 +1,6 @@
 //! Signal edits (spec/commits.md §5 Signals). A durable signal's part naming `replaces` is an
 //! honored version of the named fire while that fire is listed, valid and unreplaced, by the same
-//! verified actor, and sorts before it; the version then lists under the original.
+//! verified purge author, and sorts before it; the version then lists under the original.
 //!
 //! The rule, one derived state: `versions` is every valid claim (`index_commit`,
 //! `index_validity`); `originals` is every fire's place but the honored versions'. A claim's status
@@ -26,10 +26,10 @@ fn signal_parts(v: &View) -> impl Iterator<Item = (usize, &AspectView)> + '_ {
     v.aspects.iter().enumerate().filter(move |(_, a)| !v.memory && durable_signal(&a.ak))
 }
 
-// Interim (notes/a1-spec/README.md step 4): keyed by the purge author on `a`'s thing.
-/// The `versions` key of `v`'s claim at `a`, if any: keyed by the thing it acts on.
+/// The `versions` key of `v`'s claim at `a`, if any: keyed by its purge author (spec/commits.md
+/// §5 Signals: the same verified purge author).
 fn claim(v: &View, a: &AspectView) -> Option<(Tid, Ak, CommitId, Tid)> {
-    Some((a.tid, a.ak.clone(), a.replaces?, v.acting))
+    Some((a.tid, a.ak.clone(), a.replaces?, v.purge_author))
 }
 
 /// A held commit's claims join `versions` when indexed; `index_validity` takes the invalid out.
@@ -116,7 +116,7 @@ fn original(tx: &mut Tx<'_>, o: &CommitId, tid: &Tid, ak: &Ak) -> Result<bool> {
 }
 
 /// Puts claim `(ts, v)` where it belongs, the fold of its named commit judged as `fold` (`None`: it
-/// is no valid claim under an actor's original, so it stands alone). Returns whether it moved.
+/// is no valid claim under a purge author's original, so it stands alone). Returns whether it moved.
 fn place(tx: &mut Tx<'_>, tid: &Tid, ak: &Ak, ts: Ts, v: &CommitId, fold: Option<(Ts, CommitId, bool)>) -> bool {
     let at = (ts, *v);
     let folds = fold.is_some_and(|(ots, o, ok)| ok && (ots, o) < at);
@@ -126,8 +126,8 @@ fn place(tx: &mut Tx<'_>, tid: &Tid, ak: &Ak, ts: Ts, v: &CommitId, fold: Option
 
 /// Every claim under `o` re-placed; `o` told when its reading may have changed, its moved claims too.
 fn refold(tx: &mut Tx<'_>, tid: &Tid, ak: &Ak, o: &CommitId) -> Result<()> {
-    let Some((ots, actor)) = tx.core.ix.commits.get(o).map(|m| (m.view.ts, m.view.acting)) else { return Ok(()) };
-    let k = (*tid, ak.clone(), *o, actor);
+    let Some((ots, purge_author)) = tx.core.ix.commits.get(o).map(|m| (m.view.ts, m.view.purge_author)) else { return Ok(()) };
+    let k = (*tid, ak.clone(), *o, purge_author);
     let claims: Vec<(Ts, CommitId)> = tx.core.ix.versions.get(&k).map(|s| s.iter().copied().collect()).unwrap_or_default();
     if claims.is_empty() {
         return Ok(());
@@ -144,8 +144,8 @@ fn refold(tx: &mut Tx<'_>, tid: &Tid, ak: &Ak, o: &CommitId) -> Result<()> {
 
 /// Claim `v` on `(tid, ak)` naming `o` re-placed (`v` changed).
 fn reclaim(tx: &mut Tx<'_>, tid: &Tid, ak: &Ak, o: &CommitId, v: &CommitId, ts: Ts) -> Result<()> {
-    let actor = tx.core.ix.commits.get(v).map(|m| m.view.acting);
-    let fold = match (tx.core.ix.commits.get(o).map(|m| (m.view.ts, m.view.acting)), actor) {
+    let purge_author = tx.core.ix.commits.get(v).map(|m| m.view.purge_author);
+    let fold = match (tx.core.ix.commits.get(o).map(|m| (m.view.ts, m.view.purge_author)), purge_author) {
         (Some((ots, oa)), Some(va)) if oa == va && tx.core.ix.versions.get(&(*tid, ak.clone(), *o, va)).is_some_and(|s| s.contains(&(ts, *v))) => Some((ots, *o, original(tx, o, tid, ak)?)),
         _ => None,
     };
@@ -226,12 +226,12 @@ pub(super) fn newest_version(tx: &mut Tx<'_>, c: &CommitId, ai: usize, tid: &Tid
         return Ok(None);
     }
     let Some(m) = tx.core.ix.commits.get(c) else { return Ok(None) };
-    let actor = m.view.acting;
+    let purge_author = m.view.purge_author;
     let (place, own) = ((m.view.ts, *c), m.view.aspects.get(ai).and_then(|a| a.replaces));
     if own.is_some() {
         return Ok(None);
     }
-    let key = (*tid, ak.clone(), *c, actor);
+    let key = (*tid, ak.clone(), *c, purge_author);
     let mut below = None;
     loop {
         let Some(set) = tx.core.ix.versions.get(&key) else { return Ok(None) };
@@ -249,22 +249,22 @@ pub(super) fn newest_version(tx: &mut Tx<'_>, c: &CommitId, ai: usize, tid: &Tid
 }
 
 impl super::Engine {
-    /// Whether `actor` may replace fire `o` on `(tid, ak)` now: it is `actor`'s, held, listed and
+    /// Whether `purge_author` may replace fire `o` on `(tid, ak)` now: it is `purge_author`'s, held, listed and
     /// valid there, and replaces none itself, so a replacement written now is honored here
     /// (spec/commits.md §5 Signals).
-    pub fn replaceable(&mut self, tid: &Tid, ak: &Ak, o: &CommitId, actor: &Tid) -> Result<bool> {
-        if !durable_signal(ak) || self.core.ix.commits.get(o).is_none_or(|m| m.view.acting != *actor) {
+    pub fn replaceable(&mut self, tid: &Tid, ak: &Ak, o: &CommitId, purge_author: &Tid) -> Result<bool> {
+        if !durable_signal(ak) || self.core.ix.commits.get(o).is_none_or(|m| m.view.purge_author != *purge_author) {
             return Ok(false);
         }
         let (tid, ak, o) = (*tid, ak.clone(), *o);
         self.read(|tx| original(tx, &o, &tid, &ak))
     }
 
-    /// The valid claims naming `o` on `(tid, ak)` by `o`'s actor, honored or not: what a purge of
+    /// The valid claims naming `o` on `(tid, ak)` by `o`'s purge author, honored or not: what a purge of
     /// `o` names besides it.
     pub fn claims_on(&self, tid: &Tid, ak: &Ak, o: &CommitId) -> Vec<CommitId> {
-        let Some(actor) = self.core.ix.commits.get(o).map(|m| m.view.acting) else { return Vec::new() };
-        self.core.ix.versions.get(&(*tid, ak.clone(), *o, actor)).map(|s| s.iter().map(|x| x.1).collect()).unwrap_or_default()
+        let Some(purge_author) = self.core.ix.commits.get(o).map(|m| m.view.purge_author) else { return Vec::new() };
+        self.core.ix.versions.get(&(*tid, ak.clone(), *o, purge_author)).map(|s| s.iter().map(|x| x.1).collect()).unwrap_or_default()
     }
 
     /// Up to `n` places past `from` in its direction among original `o` on `(tid, ak)` and its
@@ -276,8 +276,8 @@ impl super::Engine {
         if !durable_signal(ak) || !self.core.ix.originals.get(&(*tid, ak.clone())).is_some_and(|s| s.contains(&place)) {
             return Vec::new();
         }
-        let acting = m.view.acting;
-        let key = (*tid, ak.clone(), *o, acting);
+        let purge_author = m.view.purge_author;
+        let key = (*tid, ak.clone(), *o, purge_author);
         let empty = BTreeSet::new();
         let set = self.core.ix.versions.get(&key).unwrap_or(&empty);
         let honored = |x: &&(Ts, CommitId)| folded(&self.core, &x.1, tid, ak);

@@ -935,7 +935,7 @@ impl osis_commit::Secrets for Forged {
     fn admin_key(&self, _: &Tid) -> Option<osis_crypto::VerifyingKey> {
         Some(osis_crypto::DeleteSecret::derive(&osis_crypto::Secret32::from_bytes([3; 32])).verifying_key())
     }
-    fn chain_key(&self) -> Option<osis_crypto::VerifyingKey> {
+    fn purge_author_key(&self) -> Option<osis_crypto::VerifyingKey> {
         Some(osis_crypto::DeleteSecret::derive(&osis_crypto::Secret32::from_bytes([1; 32])).verifying_key())
     }
     fn write_key(&self, _: &Tid) -> Option<osis_crypto::VerifyingKey> {

@@ -110,9 +110,9 @@ pub struct ListArgs {
     pub after: Option<String>,
     #[arg(long = "max", value_name = "N", default_value_t = PAGE)]
     pub max: usize,
-    /// By this actor (repeatable)
+    /// By this author (repeatable)
     #[arg(long, value_name = "A")]
-    pub actor: Vec<String>,
+    pub author: Vec<String>,
     /// content, revert, role or snapshot (repeatable)
     #[arg(long, value_name = "KIND")]
     pub kind: Vec<String>,

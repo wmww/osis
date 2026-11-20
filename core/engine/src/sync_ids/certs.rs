@@ -423,7 +423,7 @@ impl Engine {
         let evidence: Vec<CommitId> = std::iter::once(w.commit).chain(requests).collect();
         for c in &evidence {
             let Some(h) = self.header(c) else { continue };
-            let acting = self.core.ix.commits.get(c).map(|m| m.view.acting);
+            let acting = self.core.ix.commits.get(c).map(|m| m.view.purge_author);
             for x in [*t, h.signer].into_iter().chain(acting) {
                 // a header is judged by its author's edges and records; no keyset judges it
                 let mut cs = self.chain_to(&h.signer, &x);
@@ -521,7 +521,7 @@ impl Engine {
             return None;
         }
         let m = self.core.ix.commits.get(c)?;
-        let (h, acting) = (m.header.clone(), m.view.acting);
+        let (h, acting) = (m.header.clone(), m.view.purge_author);
         let mut things: BTreeSet<Tid> = parts.iter().filter_map(|ai| h.aspects.get(*ai)).map(|a| a.tid).collect();
         if !things.is_empty() {
             things.insert(acting);
@@ -639,7 +639,7 @@ impl Engine {
             if !fresh {
                 continue;
             }
-            let acting = self.core.ix.commits.get(&d).map(|m| m.view.acting);
+            let acting = self.core.ix.commits.get(&d).map(|m| m.view.purge_author);
             for x in things.into_iter().chain(acting) {
                 let cs = self.chain_to(&h.signer, &x);
                 self.cert_parts(&cs, out);

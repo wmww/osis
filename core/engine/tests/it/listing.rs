@@ -135,8 +135,8 @@ fn pages_by_time_both_ways_superseded_reads() {
     assert_eq!(p.engine.get(&d, &reg()).unwrap(), Some(s("e")), "only the last in the state");
     let (new, more) = page(p, d, CommitFrom::Newest, 2);
     assert_eq!((texts(&new), more), (vec!["e".to_string(), "d".to_string()], true));
-    assert_eq!(new[0].actor, ids[1]);
-    assert_eq!(new[1].actor, ids[3]);
+    assert_eq!(new[0].purge_author, ids[1]);
+    assert_eq!(new[1].purge_author, ids[3]);
     assert!(new.iter().all(|r| r.valid));
     let (older, more) = page(p, d, CommitFrom::Before(pos(&new[1])), 2);
     assert_eq!((texts(&older), more), (vec!["c".to_string(), "b".to_string()], true));
@@ -189,7 +189,7 @@ fn invalid_body_reads_marked() {
     let r = held(&mut lp.peers[0], d, &c);
     assert!(!r.valid);
     assert_eq!(r.body, PartBody::Dropped);
-    assert_eq!(r.actor, ids[1]);
+    assert_eq!(r.purge_author, ids[1]);
     sync(&mut lp, 0, 1);
     let r = held(&mut lp.peers[1], d, &c);
     assert!(!r.valid);
@@ -244,7 +244,7 @@ fn purged_and_dropped_parts_read_as_such_spec_commits_5() {
     p.tick().unwrap();
     assert_eq!(held(p, d, &expiring).body, PartBody::Dropped);
     let e = held(p, d, &b);
-    assert_eq!((e.actor, e.body.clone()), (ids[3], PartBody::Purged(first)));
+    assert_eq!((e.purge_author, e.body.clone()), (ids[3], PartBody::Purged(first)));
     assert!(e.valid);
     assert_eq!(held(p, d, &a).body, PartBody::Held(Some(s("a"))));
     let _ = second;
@@ -498,7 +498,7 @@ fn purge_by_author_any_order_spec_perm_6() {
                 assert_eq!(p.engine.body_not_dropped(&c, &d, &reg()), !want, "{why}");
                 assert!(p.engine.body_not_dropped(&other, &d, &reg()), "another's stays: {why}");
                 let e = held(&mut p, d, &c);
-                assert_eq!(e.actor, ids[1], "{why}");
+                assert_eq!(e.purge_author, ids[1], "{why}");
                 if want {
                     assert_eq!(e.body, PartBody::Purged(rq), "{why}");
                 } else {

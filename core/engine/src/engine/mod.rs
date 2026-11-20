@@ -256,7 +256,7 @@ impl HeldKeyset {
     }
 }
 
-/// A snapshot part's frontiers and `Absorbed` (commit, author).
+/// A snapshot part's frontiers and `Absorbed` (commit, signer).
 pub(crate) type Gives = (osis_crdt::Frontiers, Vec<(CommitId, Tid)>, osis_crdt::Facts);
 
 impl Meta {
@@ -387,10 +387,10 @@ pub struct View {
     pub kind: osis_commit::Kind,
     pub form: Form,
     pub signer: Tid,
-    // Interim (notes/a1-spec/README.md step 3): the walk judges each thing along its own path.
-    /// Its one purge author (`Header::purge_author`), in the clear in either path form: what the
-    /// old walk reads it as acting for on every thing it writes.
-    pub acting: Tid,
+    /// Its one purge author (`Header::purge_author`), in the clear in either path form. Interim
+    /// (notes/a1-spec/README.md step 3): the old walk reads it as the thing the commit acts for on
+    /// every thing it writes.
+    pub purge_author: Tid,
     /// In a split commit, what this node decided of each thing's path (`apply::paths::decided`:
     /// `true` known, `false` bad, absent while it opens nowhere here): a part on a thing not known
     /// is judged invalid. `None` where the path is in the clear.
@@ -436,7 +436,7 @@ impl View {
             kind: h.kind,
             form: h.form,
             signer: h.signer,
-            acting: h.purge_author(),
+            purge_author: h.purge_author(),
             paths,
             linked: h.links != osis_commit::Links::default(),
             memory: h.ephemeral.is_some(),
@@ -448,10 +448,9 @@ impl View {
         }
     }
 
-    // Interim (notes/a1-spec/README.md step 3): the walk judges along the stated paths.
-    /// The thing it acts for where that is not its signer (`acting`).
-    pub fn acts_for(&self) -> Option<Tid> {
-        Some(self.acting).filter(|x| *x != self.signer)
+    /// Its purge author where that is not its signer.
+    pub fn other_purge_author(&self) -> Option<Tid> {
+        Some(self.purge_author).filter(|x| *x != self.signer)
     }
 
     /// Whether the path it states for thing `t` is known here and not bad (`paths`).
@@ -1095,7 +1094,7 @@ pub(crate) struct CoreMark {
     walked: usize,
 }
 
-/// A held compaction snapshot of an aspect: `ts`, ID, frontiers, `Absorbed` (commit, author),
+/// A held compaction snapshot of an aspect: `ts`, ID, frontiers, `Absorbed` (commit, signer),
 /// and the bounds of what its held body carries valued and value-less (`retention::snapshot::Carried`).
 pub(crate) type HeldSnapshot = (Ts, CommitId, osis_crdt::Frontiers, Vec<(CommitId, Tid)>, crate::retention::snapshot::Carried);
 

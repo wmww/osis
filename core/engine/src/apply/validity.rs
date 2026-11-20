@@ -918,7 +918,7 @@ impl<'a> Judge<'a> {
         }
         // a split commit's part whose thing's path is not known here (or opened bad) is judged
         // invalid until it opens (spec/wire.md §4 `Split`, `apply::paths`)
-        if !view.path_known(&a.tid) || !self.acts(h, view.acting, id) {
+        if !view.path_known(&a.tid) || !self.acts(h, view.purge_author, id) {
             return false;
         }
         // an external fire (spec/permissions.md §5.2 External fires): valid by its author's

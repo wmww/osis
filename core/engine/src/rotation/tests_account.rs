@@ -47,7 +47,7 @@ impl osis_commit::Secrets for Dedup {
     fn admin_key(&self, _: &Tid) -> Option<osis_crypto::VerifyingKey> {
         Some(self.1)
     }
-    fn chain_key(&self) -> Option<osis_crypto::VerifyingKey> {
+    fn purge_author_key(&self) -> Option<osis_crypto::VerifyingKey> {
         Some(self.1)
     }
     fn write_key(&self, _: &Tid) -> Option<osis_crypto::VerifyingKey> {

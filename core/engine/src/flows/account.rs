@@ -888,7 +888,7 @@ impl Core {
 
 /// The things commit view `v` names words on: those it has a delta on, and the thing it acts on.
 pub(crate) fn things_of(v: &crate::engine::View) -> BTreeSet<Tid> {
-    v.aspects.iter().map(|a| a.tid).chain(v.acts_for()).collect()
+    v.aspects.iter().map(|a| a.tid).chain(v.other_purge_author()).collect()
 }
 
 /// Judges again what moved in the epochs of the accounts due (`Indexes::epochs_due`): those whose
