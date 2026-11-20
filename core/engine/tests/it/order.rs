@@ -72,6 +72,9 @@ pub(crate) enum Step {
     Leave { by: usize, t: usize },
     /// A compaction snapshot of one aspect (`op` as in `Write`).
     Compact { by: usize, t: usize, op: u8 },
+    /// A compaction snapshot of `holds.0` (`settled`): the strongs bringing things into the node
+    /// closure, which no op writes.
+    CompactHolds { by: usize, t: usize },
     /// A new thing whose mint admin is thing `parent`, with a write in its creation commit or not.
     New { by: usize, parent: usize, write: bool },
     /// `by` puts entry `k` (a struct, or a text when `text`) on `t`, sends that commit to
@@ -989,6 +992,10 @@ pub(crate) fn play_with(seed: u64, steps: &[Step], addenda: bool) -> Played {
                 no = why(&lp.peers[by].engine.snapshot(&th(t), &aspect_of(op)));
                 Some(by)
             }
+            Step::CompactHolds { by, t } => {
+                no = why(&lp.peers[by].engine.snapshot(&th(t), &ak("holds.0")));
+                Some(by)
+            }
             Step::New { by, parent: p, write } => {
                 let admin = th(p);
                 let mut m = Mutation::new();
@@ -1483,11 +1490,14 @@ pub(crate) fn play_with(seed: u64, steps: &[Step], addenda: bool) -> Played {
             if matches!(st, Step::Removals { .. }) {
                 own_sets.push((0..base).chain(before..packs.len()).collect());
             }
-            let kind = format!("{st:?}");
+            // a holds compaction tallies as a compaction: whether one commits follows the
+            // history's rights and what it made, as for any other aspect
+            let kind = if matches!(st, Step::CompactHolds { .. }) { "Compact".to_string() } else { format!("{st:?}") };
             let kind = kind.split(' ').next().unwrap().to_string() + if matches!(st, Step::Nested { text: true, .. }) { "(text)" } else if record { "(record)" } else { "" } + if old { "(old)" } else { "" };
             match st {
-                Step::Compact { t, op, .. } => {
-                    let k = (format!("{:?}", things[t % things.len()]), aspect_of(*op).as_str().to_string());
+                Step::Compact { t, .. } | Step::CompactHolds { t, .. } => {
+                    let a = if let Step::Compact { op, .. } = st { aspect_of(*op) } else { ak("holds.0") };
+                    let k = (format!("{:?}", things[t % things.len()]), a.as_str().to_string());
                     let could = packs.len() > before || !no.as_deref().is_some_and(|x| x.starts_with("Permission"));
                     *compacted_last.entry(k).or_default() |= could;
                 }
@@ -3638,7 +3648,9 @@ fn chainless_part_creation_missing_spec_commits_4() {
 
 /// `h`, then every peer holds what the others do, takes the walk's side in each dispute (as the
 /// judged nodes do), fetches again what it dropped while invalid on its first side (a snapshot
-/// written without it would not carry it) and compacts every aspect of every thing it may write: spec/commits.md §5's waiting part past its expiry and spec/requirements.md
+/// written without it would not carry it) and compacts every aspect of every thing it may write
+/// (`holds.0` first: a thing a strong dropped while invalid brings in is in no node closure, so
+/// nothing on it counts until the strong comes back): spec/commits.md §5's waiting part past its expiry and spec/requirements.md
 /// Deterministic's limits last until a writer next compacts or writes, so a node given the
 /// compactions last (each counting when it arrives: one dropped while it did not count repairs
 /// nothing, spec/commits.md §5 Invalid) shows what the keep-everything node does before its sync
@@ -3657,6 +3669,11 @@ fn settled(mut h: Vec<Step>) -> Vec<Step> {
     sync(&mut h);
     h.push(WalkSides);
     sync(&mut h);
+    // holds first: a node that dropped a strong while invalid holds the thing it brings in, so
+    // that thing's compactions count when they arrive
+    for t in 0..12 {
+        h.extend((0..3).map(|by| CompactHolds { by, t }));
+    }
     for t in 0..12 {
         for op in [0, 1, 3, 6, 8, 10, 12, 13, 14, 15, 16, 17, 18, 19, 21, 22, 27, 28, 29, 32, 35] {
             h.extend((0..3).map(|by| Compact { by, t, op }));
@@ -4450,6 +4467,35 @@ fn compaction_dropped_while_invalid_repairs_nothing_spec_commits_5() {
     assert_ne!(o.now[&g], "Ok(Some(Str(\"g\")))");
 }
 
+// spec/commits.md §5 Invalid: 2 makes thing T under G (its strong in G's `holds.0`) and writes
+// T's `t:docs.0`; then 0 lowers 2 to write on G. A node given that lowering, then the commit
+// making T, before 2's admin grant on G judges the strong invalid (2's only edge there is later)
+// and drops it; valid once the grant arrives, it is missing, so T is in no node closure there
+// and nothing on T applies, until the strong is fetched again or a writer compacts G's
+// `holds.0` (spec/requirements.md Deterministic). `settled` compacts holds before content, so a
+// node given the compactions last reads T as the node keeping every body does.
+#[test]
+fn strong_dropped_while_invalid_comes_back_by_a_holds_compaction_spec_commits_5() {
+    use Step::*;
+    let h = settled(vec![New { by: 2, parent: 0, write: false }, Typed { by: 2, t: 1, op: 26, k: 2, v: 4 }, Edge { by: 0, t: 0, holder: 2, role: Some(Role::Write) }]);
+    let played = settling(play(0, &h), &h);
+    let docs = (format!("{:?}", played.things[1]), "t:docs.0".to_string());
+    assert!(played.settled_last.contains(&docs), "every writer compacts T's docs last: {:?}", played.tally);
+    let n = played.packs.len();
+    let o = oracle(&played, &(0..n).collect::<Vec<_>>());
+    assert_eq!(o.now[&docs], "Ok(Some(Map({Str(\"k2\"): Str(\"v4\")})))");
+    let (grant, f) = (setup_grant(&played, 2), played.settle_from.unwrap());
+    let aspects = |i: usize| osis_commit::CommitBlob::decode_stored(&played.packs[i].bytes).map(|b| b.header.aspects.iter().map(|a| (a.tid, a.ak.as_str().to_string())).collect::<Vec<_>>()).unwrap_or_default();
+    let making = (played.base..f).find(|&i| aspects(i).iter().any(|a| a.1 == "holds.0")).unwrap();
+    let lower = (played.base..f).rfind(|&i| played.authors[i] == 0 && aspects(i).contains(&(played.things[0], "roles.0".to_string()))).unwrap();
+    let ahead: Vec<usize> = (0..played.base).filter(|&i| i != grant).chain([lower]).chain((played.base..f).filter(|&i| i != lower)).chain([grant]).collect();
+    let read = |p: &mut Peer| shown(p, &played.things).get(&docs).cloned().unwrap_or(NOTHING);
+    let mut p = deliver(&played, &ahead);
+    assert!(p.engine.commit_parts_missing().into_iter().any(|(c, m)| c == played.packs[making].id && !m.is_empty()), "the strong is dropped while invalid and missing");
+    assert_eq!(read(&mut p), NOTHING, "T is in no node closure");
+    assert_eq!(read(&mut deliver(&played, &ahead.into_iter().chain(f..n).collect::<Vec<_>>())), o.now[&docs]);
+}
+
 // spec/commits.md §4 (Unjudgeable): a node whose clock is behind gets a write on a new thing
 // first (thrown out: the thing's record is unknown), then the thing's creation (pending: its
 // `ts` past `MAX_DRIFT` ahead). When the clock catches up the creation applies, its record
@@ -4660,3 +4706,4 @@ fn a_thing_held_for_a_while_reads_as_one_never_held_once_the_pass_ends_spec_sync
     let h = vec![New { by: 2, parent: 0, write: true }, Edge { by: 0, t: 0, holder: 2, role: None }];
     check(0, &h, NAMED).unwrap();
 }
+
