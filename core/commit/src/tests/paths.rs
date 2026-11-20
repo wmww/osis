@@ -523,6 +523,13 @@ fn marks_decode_by_their_rules() {
     for (m, why) in [(&[][..], "empty"), (&[1, 0][..], "a trailing zero byte"), (&[0b100][..], "a bit past the hop past the end"), (&[0; 10][..], "past 9 bytes")] {
         assert!(matches!(raw(m), Err(Error::Malformed(_))), "{why}");
     }
+    // a list past 127 things with marks: malformed, not a shift past the marks' width
+    let mut b = Vec::new();
+    osis_base::cbor::put_array(&mut b, 202);
+    osis_base::cbor::put_uint(&mut b, 0);
+    (0..200u32).for_each(|i| osis_base::cbor::put_bytes(&mut b, osis_base::Tid::from_bytes([(i % 250) as u8, (i / 250) as u8, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7]).as_bytes()));
+    osis_base::cbor::put_bytes(&mut b, &[1]);
+    assert!(matches!(Path::read(osis_base::cbor::Item::parse(&b, &crate::header::LIMITS).unwrap(), &t(1)), Err(Error::Malformed(_))));
     assert!(Split::seal(&[3; 32], &[t(2)], 0b100).is_err(), "a writer seals no mark past its hops");
     for (listed, direct) in [(vec![], 1), (vec![t(2), t(4), t(5), t(6)], 0b11111), (many[..16].to_vec(), 1 << 16), (many.clone(), all_hops)] {
         let e = Split::seal(&[3; 32], &listed, direct).unwrap();

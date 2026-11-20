@@ -41,7 +41,13 @@ fn read_marks(b: &[u8], k: usize) -> Option<Marks> {
         return None;
     }
     let m = b.iter().rev().fold(0, |m: Marks, x| (m << 8) | Marks::from(*x));
-    (m >> (k + 1) == 0).then_some(m)
+    (!past(m, k)).then_some(m)
+}
+
+/// Whether `m` marks a hop past the `k` + 1 hops of a path listing `k` things (any `k`: a decoder
+/// meets lists longer than `MAX_PATH_THINGS` before checking their length).
+fn past(m: Marks, k: usize) -> bool {
+    u32::try_from(k + 1).ok().and_then(|s| m.checked_shr(s)).unwrap_or(0) != 0
 }
 
 /// Bytes of the longest `marks`: `MAX_PATH_THINGS` + 1 hops.
@@ -143,7 +149,7 @@ impl Path {
         if self.purge > self.things.len() {
             return Err(Error::Malformed("purge-author index out of range"));
         }
-        if self.direct >> (self.things.len() + 1) != 0 {
+        if past(self.direct, self.things.len()) {
             return Err(Error::Malformed("path marks a hop past its own"));
         }
         listed_ok(&self.things, signer).then_some(()).ok_or(Error::Malformed("path longer than MAX_PATH_THINGS, or listing a thing twice or its signer"))
@@ -223,7 +229,7 @@ impl Split {
     /// key: the blind is fresh per commit).
     pub fn seal(key: &[u8; 32], listed: &[Tid], direct: Marks) -> Result<Vec<u8>, Error> {
         let len = entry_len(listed.len()).ok_or(Error::Build("path longer than MAX_PATH_THINGS"))? - COMMITMENT_LEN - osis_crypto::aead::TAG_LEN;
-        if direct >> (listed.len() + 1) != 0 {
+        if past(direct, listed.len()) {
             return Err(Error::Build("path marks a hop past its own"));
         }
         let mut pt = Vec::with_capacity(len);
