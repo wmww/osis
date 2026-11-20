@@ -14,7 +14,9 @@ use std::sync::Arc;
 
 /// The path commit header `h` states for the thing `t` at place `i`, opened here: under `key`
 /// where an encryption carried it, else under the read roles secrets held of the things up `t`'s
-/// record chain (`t` itself, its mint admin, …), newest first. `None`: nothing held opens it.
+/// record chain (`t` itself, its mint admin, …), newest first. `None`: nothing held is the key
+/// the entry commits to. Every route gives that one key (`Split::open`), so which route or roles
+/// secret found it changes nothing.
 pub(crate) fn open(core: &Core, h: &Header, key: Option<&[u8; 32]>, i: usize, t: &Tid) -> Option<ThingPath> {
     if let Some(k) = key {
         return h.open_path(i, k);

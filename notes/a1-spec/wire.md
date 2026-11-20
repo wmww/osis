@@ -61,4 +61,4 @@ The commitments bullet on header lists reads:
 
 ## 12. Decoder limits
 The Header line reads:
-- Header: each inline list at most `CHUNK_THRESHOLD` bytes, each linked one at most `MAX_LIST_BYTES`; a `Path` at most MAX_PATH_THINGS listed things; a `Split` one entry per thing written (81, 273 or 1042 bytes), always inline, within `MAX_BLOB` with the rest of the commit. The rest of the line stands.
+- Header: each inline list at most `CHUNK_THRESHOLD` bytes, each linked one at most `MAX_LIST_BYTES`; a `Path` at most MAX_PATH_THINGS listed things; a `Split` one entry per thing written (113, 305 or 1074 bytes), always inline, within `MAX_BLOB` with the rest of the commit. The rest of the line stands.

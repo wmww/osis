@@ -359,11 +359,11 @@ fn several_things() -> Vec<Record> {
             r = r.with(&format!("roles-{i}"), hex(s.expose())).with(&format!("path-key-{i}"), hex(&c.keys[&i]));
         }
         out.push(r);
-        // a path key not opening its entry: the opened form carrying it is bad input
+        // a path key its entry does not commit to: the opened form carrying it is bad input
         let mut x = c.clone();
         x.keys.insert(0, [0x5c; 32]);
         assert!(CommitBlob::decode(&x.encode()).is_err());
-        out.push(case("path key not opening its entry", "spec/wire.md §4 field 2, PathKey").with("blob", hex(&x.encode())).with("reject", "path-key"));
+        out.push(case("path key its entry does not commit to", "spec/wire.md §4 field 2, PathKey").with("blob", hex(&x.encode())).with("reject", "path-key"));
     }
     out
 }
@@ -377,26 +377,31 @@ fn more_rejected(content: &Header) -> Vec<Record> {
     out.push(reject("purge-author index past the path", "spec/wire.md §4 field 2", &with_path(osis_commit::Path { purge: 2, things: vec![LISTED] }), "path"));
     out.push(reject("path listing a thing twice", "spec/wire.md §4 field 2", &with_path(osis_commit::Path { purge: 0, things: vec![LISTED, LISTED] }), "path"));
     out.push(reject("path listing its signer", "spec/wire.md §4 field 2", &with_path(osis_commit::Path { purge: 0, things: vec![SIGNER] }), "path"));
-    let entry = |k: usize| vec![0x5d; osis_commit::entry_len(k).unwrap()];
+    // entry `n` listing `k` things: its key commitment's first byte `n`
+    let entry = |k: usize, n: u8| [vec![n], vec![0x5d; osis_commit::entry_len(k).unwrap() - 1]].concat();
     let split = |author: Option<Tid>, entries: Vec<Vec<u8>>| osis_commit::Paths::Split(osis_commit::Split { author, entries });
-    let x = Header { path: split(None, vec![entry(0), entry(0)]), ..content.clone() };
+    let x = Header { path: split(None, vec![entry(0, 0), entry(0, 1)]), ..content.clone() };
     out.push(reject("split path on a commit writing one thing", "spec/wire.md §4 field 2", &x, "path-form"));
     let mut x = content.clone();
     let mut a = x.aspects[0].clone();
     a.tid = Tid::from_bytes([0x24; 15]);
     x.aspects.push(a);
     x.validate().unwrap();
-    x.path = split(None, vec![entry(0), entry(0), entry(0)]);
+    x.path = split(None, vec![entry(0, 0), entry(0, 1), entry(0, 2)]);
     out.push(reject("split path of another count than the things written", "spec/wire.md §4 field 2", &x, "path-form"));
-    x.path = split(None, vec![entry(0), vec![0x5d; 50]]);
+    x.path = split(None, vec![entry(0, 0), vec![0x5d; 50]]);
     out.push(reject("split path entry of no padded length", "spec/wire.md §4 field 2", &x, "path"));
-    x.path = split(Some(SIGNER), vec![entry(0), entry(0)]);
+    x.path = split(None, vec![entry(0, 0), vec![0x5d; osis_commit::entry_len(0).unwrap() - osis_commit::COMMITMENT_LEN]]);
+    out.push(reject("split path entry without its key commitment", "spec/wire.md §4 field 2", &x, "path"));
+    x.path = split(None, vec![entry(0, 0), entry(0, 0)]);
+    out.push(reject("split path entries committing to one key", "spec/wire.md §4 field 2", &x, "path"));
+    x.path = split(Some(SIGNER), vec![entry(0, 0), entry(0, 1)]);
     out.push(reject("split path naming its signer as purge author", "spec/wire.md §4 field 2", &x, "path"));
     let mut x = role_commit().header;
     let mut a = x.aspects[0].clone();
     a.tid = Tid::from_bytes([0x24; 15]);
     x.aspects.push(a);
-    x.path = split(None, vec![entry(0), entry(0)]);
+    x.path = split(None, vec![entry(0, 0), entry(0, 1)]);
     out.push(reject("split path on a role commit", "spec/wire.md §4 field 2", &x, "path-form"));
     let m = role_commit().header;
     let mut x = m.clone();

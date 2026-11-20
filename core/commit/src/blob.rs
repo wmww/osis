@@ -42,8 +42,8 @@ pub struct CommitBlob {
     /// Sorted by `ai`, distinct.
     pub parts: Vec<Part>,
     /// Where the header states the split form: the path key of each thing (by its place among
-    /// those written, `Header::things`) an opened encryption carried, each opening its entry;
-    /// empty where the path is in the clear.
+    /// those written, `Header::things`) an opened encryption carried, each the key its entry
+    /// commits to, so one per entry wherever it came from; empty where the path is in the clear.
     pub keys: BTreeMap<usize, [u8; 32]>,
 }
 
@@ -171,8 +171,8 @@ impl CommitBlob {
     }
 
     /// Checks `keys` against the header: none where the path is in the clear; else each in range
-    /// and opening its entry (spec/wire.md §4); once the aspect list is resolved, every held part's
-    /// thing with its key and a path that is not bad (`settle_paths` makes it so).
+    /// and the key its entry commits to (spec/wire.md §4); once the aspect list is resolved, every
+    /// held part's thing with its key and a path that is not bad (`settle_paths` makes it so).
     pub fn check_paths(&self) -> Result<(), Error> {
         let h = &self.header;
         let entries = match &h.path {
@@ -182,7 +182,7 @@ impl CommitBlob {
         for (i, k) in &self.keys {
             let Some(e) = entries.get(*i) else { return Err(Error::Malformed("a path key out of range")) };
             if crate::path::Split::open(k, e).is_none() {
-                return Err(Error::Malformed("a path key not opening its entry"));
+                return Err(Error::Malformed("a path key its entry does not commit to"));
             }
         }
         if h.is_resolved() && self.held_things().keys().any(|i| !matches!(self.keys.get(i).and_then(|k| h.open_path(*i, k)), Some(ThingPath::Known(_)))) {
@@ -517,9 +517,10 @@ impl Envelope {
 
     /// Opens every section `secrets` has a read secret for (asked per section): the commit with
     /// the parts opened, and the sections left sealed. In a split commit a section carrying a path
-    /// key that does not open its entry holds nothing (spec/wire.md §4); the parts of a thing
-    /// whose path key no opened section carries, or whose entry opens to a bad path, are dropped
-    /// once the aspect list is resolved (`CommitBlob::settle_paths`).
+    /// key its entry does not commit to holds nothing (spec/wire.md §4): it is no key of that
+    /// entry, so every section a reader takes carries the one key each entry accepts; the parts
+    /// of a thing whose path key no opened section carries, or whose entry opens to a bad path,
+    /// are dropped once the aspect list is resolved (`CommitBlob::settle_paths`).
     pub fn open(&self, mut secrets: impl FnMut(&Section) -> Vec<Secret32>) -> Result<Opened, Error> {
         let id = self.id();
         let h = &self.header;

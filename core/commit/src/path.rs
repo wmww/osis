@@ -112,10 +112,20 @@ fn listed_len(k: usize) -> usize {
     head_len(k as u64) + k * (1 + TID_LEN)
 }
 
-/// Bytes of a sealed entry of a path listing `k` things: its class's padded plaintext and the
-/// tag; `None` past `MAX_PATH_THINGS`.
+/// Bytes of an entry's commitment to its path key (`key_commitment`).
+pub const COMMITMENT_LEN: usize = 32;
+
+/// Bytes of a sealed entry of a path listing `k` things: the key commitment, its class's padded
+/// plaintext and the tag; `None` past `MAX_PATH_THINGS`.
 pub fn entry_len(k: usize) -> Option<usize> {
-    ENTRY_CLASSES.iter().find(|c| **c >= k).map(|c| listed_len(*c) + osis_crypto::aead::TAG_LEN)
+    ENTRY_CLASSES.iter().find(|c| **c >= k).map(|c| COMMITMENT_LEN + listed_len(*c) + osis_crypto::aead::TAG_LEN)
+}
+
+/// An entry's commitment to its path key (spec/crypto.md §5 Path entry): `kdf("path commit", key,
+/// "")`, 32 bytes, so a writer choosing both keys needs a BLAKE3 collision to make one entry
+/// accept two (128-bit security).
+pub fn key_commitment(key: &[u8; 32]) -> [u8; COMMITMENT_LEN] {
+    *osis_crypto::kdf::kdf(osis_crypto::kdf::PATH_COMMIT, key, b"").expose()
 }
 
 /// A header's `path` (spec/wire.md §4 `Paths`): one `Path` off which every thing's own path is
@@ -150,21 +160,35 @@ pub fn path_key(roles: &Secret32, blind: &[u8; 16], t: &Tid) -> [u8; 32] {
 }
 
 impl Split {
-    /// Thing `t`'s entry: its listed things, canonical, zero-padded to their class, sealed under its
-    /// path key, nonce zero, empty AD (one plaintext per key: the blind is fresh per commit).
+    /// Thing `t`'s entry: the commitment to its path key, then its listed things, canonical,
+    /// zero-padded to their class, sealed under that key, nonce zero, empty AD (one plaintext per
+    /// key: the blind is fresh per commit).
     pub fn seal(key: &[u8; 32], listed: &[Tid]) -> Result<Vec<u8>, Error> {
-        let len = entry_len(listed.len()).ok_or(Error::Build("path longer than MAX_PATH_THINGS"))? - osis_crypto::aead::TAG_LEN;
+        let len = entry_len(listed.len()).ok_or(Error::Build("path longer than MAX_PATH_THINGS"))? - COMMITMENT_LEN - osis_crypto::aead::TAG_LEN;
         let mut pt = Vec::with_capacity(len);
         put_array(&mut pt, listed.len());
         listed.iter().for_each(|t| put_bytes(&mut pt, t.as_bytes()));
         pt.resize(len, 0);
-        Ok(osis_crypto::aead::seal(key, &osis_crypto::aead::ZERO_NONCE, &[], &pt)?)
+        let mut out = key_commitment(key).to_vec();
+        out.extend(osis_crypto::aead::seal(key, &osis_crypto::aead::ZERO_NONCE, &[], &pt)?);
+        Ok(out)
     }
 
-    /// Opens `entry` under `key`: `None` where the key does not open it; else the things it lists,
-    /// `None` inside where the plaintext is no canonical `[tid*]` padded with zeros to its class.
+    /// Opens `entry` under `key`: `None` where the entry does not commit to `key` (it is no key of
+    /// this entry); else the things it lists, `None` inside where the committed key does not open
+    /// it or the plaintext is no canonical `[tid*]` padded with zeros to its class.
+    ///
+    /// Invariant (spec/crypto.md §5 Path entry): every key an entry accepts is the one it commits
+    /// to (up to a BLAKE3 collision), and XChaCha20-Poly1305 under one key opens one ciphertext
+    /// to one plaintext, so every reader reading a thing's path reads the same one, whichever
+    /// route its key came by (an encryption of the thing's parts, a copy, a header-only copy, a
+    /// roles secret) and in whatever order: a reading is a function of the commit.
     pub fn open(key: &[u8; 32], entry: &[u8]) -> Option<Option<Vec<Tid>>> {
-        let pt = osis_crypto::aead::open(key, &osis_crypto::aead::ZERO_NONCE, &[], entry).ok()?;
+        let (commitment, sealed) = entry.split_at_checked(COMMITMENT_LEN)?;
+        if *commitment != key_commitment(key) {
+            return None;
+        }
+        let Ok(pt) = osis_crypto::aead::open(key, &osis_crypto::aead::ZERO_NONCE, &[], sealed) else { return Some(None) };
         let Ok(head) = osis_base::cbor::item_prefix(&pt, &crate::header::LIMITS) else { return Some(None) };
         let listed = Item::parse(head, &crate::header::LIMITS).ok().and_then(|v| item::list(v).ok()).and_then(|l| l.iter().map(item::tid).collect::<Result<Vec<Tid>, _>>().ok());
         let padded = listed.as_ref().is_some_and(|l| entry_len(l.len()) == Some(entry.len()) && listed_len(l.len()) == head.len() && pt.get(head.len()..).is_some_and(|r| r.iter().all(|b| *b == 0)));
@@ -191,6 +215,12 @@ impl Split {
         }
         if entries.iter().any(|e| !ENTRY_CLASSES.iter().any(|c| entry_len(*c) == Some(e.len()))) {
             return Err(Error::Malformed("split path entry of no padded length"));
+        }
+        // one key per entry and one entry per key: two entries under one key would share its zero
+        // nonce
+        let mut seen = BTreeSet::new();
+        if !entries.iter().all(|e| seen.insert(e.get(..COMMITMENT_LEN))) {
+            return Err(Error::Malformed("split path entries committing to one key"));
         }
         Ok(Split { author, entries })
     }

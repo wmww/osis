@@ -107,12 +107,14 @@ pub const BEACON_REPLY: &str = "beacon reply";
 pub const SYNC_PROOF: &str = "sync proof";
 /// A thing's path key in a split commit, from its independent's read roles secret (spec/crypto.md §5).
 pub const PATH: &str = "path";
+/// A split entry's commitment to its path key (spec/crypto.md §5 Path entry).
+pub const PATH_COMMIT: &str = "path commit";
 
 /// Every kdf purpose, for distinctness checks and vectors.
-pub const PURPOSES: [&str; 41] = [
+pub const PURPOSES: [&str; 42] = [
     THING_SYNC, THING_READ, THING_WRITE, THING_ADMIN, ROLE_SYNC, ROLE_READ, ROLE_WRITE, ROLE_ADMIN, SIGN, KEM, CREATION_NONCE, BOX, HISTORY, EPOCH, ROLES, WRAP, SECTION,
     DELTA, LINK, LINK_TREE, DELETE_KEY, DELETE_BLIND, DELETE_NONCE, LINK_BLIND, THING_BLIND, SYNC_KEY, SYNC_WRITE, SYNC_DELETE, SYNC_DEPOSIT, SYNC_CLAIM,
-    INNER_SECRET, INNER, SEED_BOX, DEVICES, FIRST_DEVICE, MERGE_SEED, BEACON, BEACON_HIT, BEACON_REPLY, SYNC_PROOF, PATH,
+    INNER_SECRET, INNER, SEED_BOX, DEVICES, FIRST_DEVICE, MERGE_SEED, BEACON, BEACON_HIT, BEACON_REPLY, SYNC_PROOF, PATH, PATH_COMMIT,
 ];
 
 // Full derive_key contexts used directly (not through `kdf`).

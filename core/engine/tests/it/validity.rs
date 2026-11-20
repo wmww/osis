@@ -4320,7 +4320,7 @@ fn opened_sections(f: &osis_commit::CommitBlob, c: &osis_commit::CommitBlob, pla
 
 // spec/wire.md §4 `Split` (an entry that is no padded list, breaks `Path`'s rules or leaves out the
 // purge author leaves its thing's parts holding nothing at every reader of it; a section carrying a
-// key that does not open its entry, or a key beyond its parts' things, holds nothing), spec/commits.md
+// key its entry does not commit to, or a key beyond its parts' things, holds nothing), spec/commits.md
 // §4 Hostile input: Bob's split commit writing D (through H) and P, forged and signed again. Each
 // forgery harms only the things it forges, alike at every reader of them whatever sections each
 // opened and in whatever order: Alice (reads D and P) takes both sections at once, P's then D's, or
@@ -4482,10 +4482,11 @@ mod p1305 {
     }
 }
 
-/// A split entry of 81 bytes (class 4) that opens under both `k1` and `k2`: XChaCha20-Poly1305
-/// commits to no key, so whoever picks both keys solves one linear equation over Poly1305's field
-/// for one ciphertext block. Under `k1` it opens to a canonical list of four tids (a path of
-/// well-formed shape, purge author the signer); under `k2` to bytes that are no list.
+/// A split entry of class 4 committing to `k1` whose ciphertext opens under both `k1` and `k2`:
+/// XChaCha20-Poly1305 commits to no key, so whoever picks both keys solves one linear equation
+/// over Poly1305's field for one ciphertext block. Under `k1` it opens to a canonical list of four
+/// tids (a path of well-formed shape, purge author the signer); under `k2` to bytes that are no
+/// list. Its commitment (spec/crypto.md §5 Path entry) names `k1` alone.
 fn entry_under_two_keys(k1: &[u8; 32], k2: &[u8; 32]) -> Vec<u8> {
     use osis_crypto::aead::{Keystream, ZERO_NONCE, open};
     use p1305::*;
@@ -4540,21 +4541,23 @@ fn entry_under_two_keys(k1: &[u8; 32], k2: &[u8; 32]) -> Vec<u8> {
             let mut entry = ct[..65].to_vec();
             entry.extend_from_slice(&tag.to_le_bytes());
             assert!(open(k1, &ZERO_NONCE, &[], &entry).is_ok() && open(k2, &ZERO_NONCE, &[], &entry).is_ok());
-            return entry;
+            return [osis_commit::key_commitment(k1).to_vec(), entry].concat();
         }
     }
     panic!("no entry opening under both keys");
 }
 
 // spec/wire.md §4 `Split` (a reader opens a thing's entry with the path key an encryption of its
-// parts carries), spec/commits.md §4: a thing's parts are judged alike at every reader of it,
-// whatever order its encryptions come in. XChaCha20-Poly1305 commits to no key, so Bob seals D's
-// entry to open under two keys of his choosing, to a path under one and to no list under the
-// other, and seals D's parts twice, each encryption carrying one key. Alice takes both encryptions
-// in either order, or the path's alone: D's write applies, before and after a reopen. The other
-// alone is junk for D, as a copy whose parts miss their hash: D waits for a true copy.
-// issues/split-entry-key-commitment.md: two keys opening to two well-formed paths are not
-// told apart here (no part reads its path yet), but would be once parts are judged along them.
+// parts carries; an encryption carrying a key its entry does not commit to holds nothing),
+// spec/crypto.md §5 Path entry, spec/commits.md §4: a thing's path is one fact of the commit, read
+// alike by every reader in any order. XChaCha20-Poly1305 commits to no key, so Bob seals D's entry
+// to open under two keys of his choosing (a path under `k1`, no list under `k2`; the entry commits
+// to `k1`), and seals D's parts twice: `one` holds D's parts carrying `k1`; `other` D's parts
+// carrying `k2` and P's. Alice takes both in either order, or one alone. `k2` is no key of the
+// entry, so `other`'s D section holds nothing, wherever it comes: D's write applies wherever
+// `one` is held, P's wherever `other` is, and the key Alice keeps for D is `k1` in both orders,
+// before and after a reopen. Without the commitment, `other` after `one` would replace D's key
+// (one key per (commit, thing)) and void D's write that the other order applies.
 #[test]
 fn an_entry_opening_under_two_keys_judges_alike_in_any_order_spec_wire_4() {
     let fresh = || {
@@ -4573,24 +4576,88 @@ fn an_entry_opening_under_two_keys_judges_alike_in_any_order_spec_wire_4() {
     es[id_] = entry_under_two_keys(&k1, &k2);
     let f = resigned(&mut lp, &c, es, None);
     assert!(matches!(f.header.open_path(id_, &k1), Some(osis_commit::ThingPath::Known(_))), "a path under one key");
-    assert_eq!(f.header.open_path(id_, &k2), Some(osis_commit::ThingPath::Bad), "no list under the other");
-    let under = |k: [u8; 32]| opened_sections(&f, &c, &[id_, ip], &|i| BTreeMap::from([(i, if i == id_ { k } else { c.keys[&i] })]));
-    let (one, other) = (under(k1), under(k2));
-    let reg = |w: &mut LocalPeer| w.peers[0].engine.get(&d, &ak("t:reg.0")).unwrap();
+    assert_eq!(f.header.open_path(id_, &k2), None, "the other is no key of the entry");
+    assert!(osis_crypto::aead::open(&k2, &osis_crypto::aead::ZERO_NONCE, &[], &f_entry(&f, id_)[osis_commit::COMMITMENT_LEN..]).is_ok(), "though the ciphertext opens under it");
+    let under = |k: [u8; 32], places: &[usize]| opened_sections(&f, &c, places, &|i| BTreeMap::from([(i, if i == id_ { k } else { c.keys[&i] })]));
+    let (one, other) = (under(k1, &[id_]), under(k2, &[id_, ip]));
+    let reg = |w: &mut LocalPeer, t: Tid| w.peers[0].engine.get(&t, &ak("t:reg.0")).unwrap();
+    let id = f.header.id();
     for order in [vec![&one, &other], vec![&other, &one], vec![&one], vec![&other]] {
         let (mut w, _) = fresh();
-        let before = reg(&mut w);
+        let before = (reg(&mut w, d), reg(&mut w, p));
         for b in &order {
             unless_refused(w.peers[0].engine.ingest(b, Vec::new()));
             w.peers[0].reexamine().unwrap();
             w.peers[0].engine.check_index();
         }
-        crate::flows::reopen(&mut w, 0).unwrap();
-        // the other encryption alone is junk for D, as a part not matching its hash: D's parts
-        // wait for a true copy
-        let want = if order.len() == 1 && order[0] == &other { before } else { Some(s("on d")) };
-        assert_eq!(reg(&mut w), want, "Alice's D, holding {} encryption(s), the first {}", order.len(), if order[0] == &one { "the path's" } else { "the other" });
+        let at = format!("Alice holding {} encryption(s), the first {}", order.len(), if order[0] == &one { "one" } else { "the other" });
+        for reopened in [false, true] {
+            if reopened {
+                crate::flows::reopen(&mut w, 0).unwrap();
+            }
+            let held = osis_commit::CommitBlob::decode(&w.peers[0].engine.package(&id).unwrap().unwrap().bytes).unwrap();
+            assert_eq!(held.keys.get(&id_), order.contains(&&one).then_some(&k1), "{at}: D's key ({reopened})");
+            assert_eq!(reg(&mut w, d), if order.contains(&&one) { Some(s("on d")) } else { before.0.clone() }, "{at}: D ({reopened})");
+            assert_eq!(reg(&mut w, p), if order.contains(&&other) { Some(s("on p")) } else { before.1.clone() }, "{at}: P ({reopened})");
+        }
     }
+}
+
+// spec/wire.md §4 `Split` (a reader opens a thing's entry with the path key an encryption of its
+// parts carries, else with the read roles secrets it holds; a thing whose entry opens nowhere at a
+// node is judged there only once it opens), spec/crypto.md §5 Path entry (a reader accepts only
+// the key the entry commits to): the roles-secret route. Bob's entry for D commits to a key of his
+// own, `mine`, its ciphertext also opening (to no list) under the key Alice derives from D's roles
+// secret. Holding P's section alone, Alice tries her roles secret: it is no key of D's entry, so
+// D's path waits (undecided, the commit in `paths_unknown`), as it does where D's section carries
+// a key the entry does not commit to; once D's section carrying `mine` comes, D's path is known
+// and D's write applies. Every durable step checks that no waiting entry opens to a fresh attempt
+// (debug builds, `apply::paths::missed`).
+#[test]
+fn a_roles_secret_opens_an_entry_only_as_its_committed_key_spec_wire_4() {
+    let fresh = || {
+        LocalPeer::cached("validity::two_paths_world", || {
+            let (mut lp, _, d, p) = two_paths_world();
+            let (id, c) = bob_writes_both(&mut lp, d, p);
+            (lp, (d, p, id, c))
+        })
+    };
+    let (mut lp, (d, p, _, c)) = fresh();
+    let things = c.header.things();
+    let (id_, ip) = (things.iter().position(|t| *t == d).unwrap(), things.iter().position(|t| *t == p).unwrap());
+    let osis_commit::Paths::Split(sp) = &c.header.path else { panic!("split") };
+    let (mine, roles) = ([33u8; 32], c.keys[&id_]);
+    let mut es = sp.entries.clone();
+    es[id_] = entry_under_two_keys(&mine, &roles);
+    let f = resigned(&mut lp, &c, es, None);
+    assert_eq!(f.header.open_path(id_, &roles), None, "the roles secret's key is no key of D's entry");
+    let id = f.header.id();
+    let ck = &c.keys;
+    let keyed = |k: [u8; 32]| move |i: usize| BTreeMap::from([(i, if i == id_ { k } else { ck[&i] })]);
+    let state = |w: &mut LocalPeer| {
+        let e = &mut w.peers[0].engine;
+        let paths = e.core.ix.commits.get(&id).unwrap().view.paths.clone().unwrap();
+        (paths.get(&d).copied(), e.core.ix.paths_unknown.contains(&id), e.get(&d, &ak("t:reg.0")).unwrap())
+    };
+    for (name, first) in [("P's section alone", opened_sections(&f, &c, &[ip], &keyed(mine))), ("D's section carrying the roles key", opened_sections(&f, &c, &[id_, ip], &keyed(roles)))] {
+        let (mut w, _) = fresh();
+        let before = w.peers[0].engine.get(&d, &ak("t:reg.0")).unwrap();
+        unless_refused(w.peers[0].engine.ingest(&first, Vec::new()));
+        w.peers[0].reexamine().unwrap();
+        w.peers[0].engine.check_index();
+        assert_eq!(state(&mut w), (None, true, before), "{name}: D waits");
+        assert_eq!(w.peers[0].engine.get(&p, &ak("t:reg.0")).unwrap(), Some(s("on p")), "{name}: P applies");
+        unless_refused(w.peers[0].engine.ingest(&opened_sections(&f, &c, &[id_], &keyed(mine)), Vec::new()));
+        w.peers[0].reexamine().unwrap();
+        w.peers[0].engine.check_index();
+        assert_eq!(state(&mut w), (Some(true), false, Some(s("on d"))), "{name}, then D's section carrying the committed key");
+    }
+}
+
+/// Entry `i` of split commit `c`.
+fn f_entry(c: &osis_commit::CommitBlob, i: usize) -> Vec<u8> {
+    let osis_commit::Paths::Split(sp) = &c.header.path else { panic!("split") };
+    sp.entries[i].clone()
 }
 
 // spec/permissions.md §5.2 Interim (a commit acts on every thing for its one purge author, which

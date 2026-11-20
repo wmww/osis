@@ -43,10 +43,10 @@ prop_compose! {
         }
         let mut h = Header {
             signer,
-            // the split form (entries of each padded length), or the empty path or one through
-            // another thing in the clear
+            // the split form (entries of each padded length, their key commitments distinct), or
+            // the empty path or one through another thing in the clear
             path: match split {
-                Some((author, es)) => Paths::Split(Split { author: author.filter(|a| *a != signer), entries: es.into_iter().map(|(c, b)| vec![b; entry_len(ENTRY_CLASSES[c]).unwrap()]).collect() }),
+                Some((author, es)) => Paths::Split(Split { author: author.filter(|a| *a != signer), entries: es.into_iter().enumerate().map(|(i, (c, b))| [vec![i as u8], vec![b; entry_len(ENTRY_CLASSES[c]).unwrap() - 1]].concat()).collect() }),
                 None if actor == signer => Paths::default(),
                 None => Paths::One(Path::through(actor)),
             },

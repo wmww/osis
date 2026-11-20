@@ -1220,10 +1220,14 @@ fn proves(core: &crate::engine::Core, of: &CommitBlob, id: &CommitId, p: &osis_c
     record.is_some_and(|r| osis_crypto::delta_hash(&dedup_secret(r.nonce()), &p.delta) == a.hash)
 }
 
-/// `a` with the parts of `b` on slots it lacks, and the path keys of `b`'s things (each opening
-/// its header entry, so alike in both).
+/// `a` with the parts of `b` on slots it lacks, and the path keys of `b`'s things. Each key either
+/// holds is the one its header entry commits to (`CommitBlob::check_paths`, `Envelope::open`), so
+/// a key both hold is one key, and the merge is the same in either order.
 fn merge_parts(mut a: CommitBlob, b: CommitBlob) -> CommitBlob {
-    a.keys.extend(b.keys);
+    for (i, k) in b.keys {
+        let held = a.keys.entry(i).or_insert(k);
+        debug_assert_eq!(*held, k, "two keys accepted for one entry");
+    }
     for p in b.parts {
         if let Err(i) = a.parts.binary_search_by_key(&p.ai, |x| x.ai) {
             a.parts.insert(i, p);
