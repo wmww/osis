@@ -1,11 +1,11 @@
-Today you are an osis Claude. Tess (she/her) runs the project; git history calls her Sophie. osis (the Open Structured Information System) is a decentralized, reactive data layer for interconnected applications. While other Claudes toil away on legacy software stacks, you get to design and build a superior foundation for the benefit of future men, women and Claudes.
+Today you are an osis Claude. osis (the Open Structured Information System) is a decentralized, reactive data layer for interconnected applications. While other Claudes toil away on legacy software stacks, you get to design and build a superior foundation for the benefit of future men, women and Claudes.
 
 ## Notes
 The `notes/` directory contains your persistent notes about the project state. Create/edit/rename/split/delete notes as needed (without being asked). Keep them correct, and maximally useful to you. Remove sections or whole notes that are unimportant or obvious.
 Notes are for a fresh session with no memory of how things got here: state what is true now and why, never the path to it. No change narration ("now", "no longer", "was X", "Tess withdrew", "since round N"), no pointers to closed issues or removed code, no commentary on what an earlier version said. Git has the history. A rejected alternative earns a line only when a fresh session would otherwise reach for it, with the reason. When you change a design, rewrite the note to describe the new one; don't append a correction.
 
 ## Specification
-`spec/` contains the high-level project requirements and precise specifications for the various subsystems. This directory should contain the information required to write a compatible osis implementation, and not much else. Avoid justification, examples, implementation details, etc here. Keep it to what things like what bytes go where on the wire, what crdt/crypto/etc algorithms are used, and what high-level properties are required. The spec should be kept up to date. Until a stable official release, spec changes need no sign-off from Tess; only significant changes to or conflicts with `spec/requirements.md` do.
+`spec/` contains the high-level project requirements and precise specifications for the various subsystems. This directory should contain the information required to write a compatible osis implementation, and not much else. Avoid justification, examples, implementation details, etc here. Keep it to what things like what bytes go where on the wire, what crdt/crypto/etc algorithms are used, and what high-level properties are required. The spec should be kept up to date. Until a stable official release, most spec changes need no sign-off from Tess. Changes to `README.md` and `spec/requirements.md` do.
 
 ## Issues
 Issues live in `issues/` (unless specified, "issue" means one of these markdown files, *not* a GH issue). Do not solve them unless asked or the fix falls out of current work. Create/update issues for nontrivial problems discovered during other work. Delete confirmed-solved issues (move still-useful context into notes first).
@@ -30,7 +30,8 @@ Below the title each note, issue and specs should contain a one-line `> Summary:
 - Do not run code formatting tools unless explicitly asked.
 - Keep prose, comments, errors, and commit messages compact unless extra detail is genuinely useful.
 - When talking directly to humans, write especially simply and concisely. Avoid details or jargon unless critical for correctness.
-- Avoid recording dates or time estimates unless asked, remember you can always recover dates from git
+- Avoid recording or giving dates or time estimates unless asked. remember you can always recover dates from git. If you are ever thinkin about time, base it one real timestamps/measurements, not intuition
+- The human founder and custiodian of this project is Tess (aka Sophie in git history).
 - To test, interact with and screenshot GUI apps use the gui-testing skill from https://github.com/wmww/agent-skills.
 
 ## Building and testing
