@@ -62,6 +62,10 @@ Each control of the model that reaches edge-class parts, taken by the walk as a 
 ## Draft spec corrections
 - notes/a1-spec/permissions.md §5.1 step 4: the writes `keeps` passes over when their own `keeps` fails are grants and finalizes (the model reads any write that is neither lowering-shaped nor a self-removal so; a finalize is neither).
 
+## What step 3b needs from it
+- Content validity reads the settled walk's histories (role before a key: `role_before`) and its cuts: an applied explicit lowering on an edge of the path taking it, as restored, from the role needed to below. The edge as restored just before each applied explicit write is in its undo entry; expose it with the history.
+- Vouches' second walk: `listed` reads a lowering's frontier; the counting entries join it there (`Walk::listed`), and the first walk is this walk.
+
 ## What step 7 owes
-- Components: a backdated part or a restart walks only its component (things joined by a part's thing, holder, signer, path and named holder).
-- Trusted walks incremental; disputes walked per component, not over every thing.
+- Components: a backdated part or a restart walks only its component (things joined by a part's thing, holder, signer, path, named holder and record chains); today any backdated part walks every later part over every thing (`counts::a_backdated_part_walks_again_what_follows_it` asserts n + 1 for a thing the history never touches; with components it is 1).
+- Trusted walks incremental (today every change under a non-empty trust set is a walk from scratch, and each redo for a void trusted write another); disputes walked per component, not over every thing (Open 3).

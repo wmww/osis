@@ -83,3 +83,26 @@ fn paths_incremental_agrees_large() {
     .concat();
     assert!(f.is_empty(), "{}", f.join("\n"));
 }
+
+// Switching the trust set reads as evaluating under the new one, and reports what changed: from
+// nothing to each held lowering and back.
+#[test]
+fn a_trust_switch_equals_evaluating_under_it() {
+    for &mode in &MODES[..2] {
+        for i in 0..100 {
+            let mut t = m::tiny_world(i, mode, &rules());
+            t.v.trust.clear();
+            let inp = input(&t.w, &t.v);
+            let lows: Vec<WriteId> = (0..t.w.commits.len()).filter(|&k| t.w.lowers(k).is_some() && !t.w.leave(k)).map(|k| inp.ids[&k]).collect();
+            let mut p = Paths::evaluate(&inp.records, BTreeSet::new(), &inp.commits);
+            for r in lows {
+                for trust in [BTreeSet::from([r]), BTreeSet::new()] {
+                    let before = p.clone();
+                    let ch = p.set_trust(trust.clone());
+                    assert_eq!(ch, diff(&before, &p), "world {i} {mode:?} trust {trust:?}");
+                    assert!(reading(&p) == reading(&Paths::evaluate(&inp.records, trust.clone(), &inp.commits)), "world {i} {mode:?} trust {trust:?}");
+                }
+            }
+        }
+    }
+}
