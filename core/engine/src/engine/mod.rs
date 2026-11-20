@@ -3715,6 +3715,9 @@ pub struct Engine {
     /// The store's `Writes::failed` and `Writes::unknown` when this engine last read it whole
     /// (`load`): the next transaction reads it again once either moves (`reload_owed`).
     failed_seen: (u64, u64),
+    /// A transaction acting on in-memory work taken outside it failed (`run_taken`): the next
+    /// transaction reads the store again (`reload_owed`).
+    taken_failed: bool,
     /// How many times the in-memory indexes were read from the store again (`load_fresh`): each
     /// replaces every memo stamp and feed a follower read (`Engine::loads`).
     loads: u64,
@@ -3750,6 +3753,10 @@ pub struct Engine {
     /// only at the end (to find the transaction that diverged).
     #[cfg(test)]
     pub(crate) check_every_tx: bool,
+    /// Tests: the next round of `reexamine` fails before examining what it took, as a round
+    /// erring does (`run_taken`).
+    #[cfg(test)]
+    pub(crate) fail_round: bool,
 }
 
 type Nonce = [u8; osis_crdt::SESSION_NONCE_LEN];
@@ -3793,11 +3800,23 @@ impl Engine {
         self.store.writes()
     }
 
-    /// A store write failed since the store was last read whole: the next transaction reads it
-    /// again (`run`), and a tick is due (`next_timer`) so one runs with no other event.
+    /// A store write failed since the store was last read whole, or a transaction acting on work
+    /// taken outside it (`run_taken`): the next transaction reads it again (`run`), and a tick is
+    /// due (`next_timer`) so one runs with no other event.
     pub fn reload_owed(&self) -> bool {
         let w = self.store.writes();
-        (w.failed, w.unknown) != self.failed_seen
+        (w.failed, w.unknown) != self.failed_seen || self.taken_failed
+    }
+
+    /// `run` acting on in-memory work taken outside the transaction (what woke pending commits,
+    /// `apply::waits::wake`; loose records come to be awaited, `waits::Loose::take_due`): the
+    /// transaction failing, whatever failed (the store, or a round of examinations erring), owes a
+    /// reload, so what it took is derived again as an open derives it, never lost while the node
+    /// stays up (spec/commits.md §4: every arrival that applies examines again what waits for it).
+    pub(crate) fn run_taken<T>(&mut self, f: impl FnOnce(&mut Tx<'_>) -> Result<T>) -> Result<T> {
+        let r = self.run(f);
+        self.taken_failed |= r.is_err();
+        r
     }
 
     /// While this stands (no commit changed the store, the indexes stand, the clock stands) a
@@ -3816,7 +3835,7 @@ impl Engine {
         let id = Identity::generate(&mut *rng);
         let (session, expiring) = sessions(id.tid(), &mut *rng);
         let rows = store.row_changes();
-        let mut e = Engine { store, store_rng, blobs, blob_stamps: Default::default(), blob_seq: 1, blobs_unsettled: false, failed_seen: (0, 0), loads: 0, rng, core: Core::new(id, clock.clone(), session, expiring, rows), eph: crate::ephemeral::Eph::default(), clock, cfg, #[cfg(debug_assertions)] index_unchecked: false, #[cfg(debug_assertions)] verdicts_unchecked: false, #[cfg(debug_assertions)] last_tx_wall: None, #[cfg(debug_assertions)] loading: false, #[cfg(test)] index_poked: false, #[cfg(test)] check_every_tx: false };
+        let mut e = Engine { store, store_rng, blobs, blob_stamps: Default::default(), blob_seq: 1, blobs_unsettled: false, failed_seen: (0, 0), taken_failed: false, loads: 0, rng, core: Core::new(id, clock.clone(), session, expiring, rows), eph: crate::ephemeral::Eph::default(), clock, cfg, #[cfg(debug_assertions)] index_unchecked: false, #[cfg(debug_assertions)] verdicts_unchecked: false, #[cfg(debug_assertions)] last_tx_wall: None, #[cfg(debug_assertions)] loading: false, #[cfg(test)] index_poked: false, #[cfg(test)] check_every_tx: false, #[cfg(test)] fail_round: false };
         let seed_bytes = e.core.id.seed().expose().to_vec();
         // a new store: its (empty) persisted index is current
         e.run(|tx| {
@@ -3846,7 +3865,7 @@ impl Engine {
         };
         let (session, expiring) = sessions(id.tid(), &mut *rng);
         let rows = store.row_changes();
-        let mut e = Engine { store, store_rng, blobs, blob_stamps: Default::default(), blob_seq: 1, blobs_unsettled: false, failed_seen: (0, 0), loads: 0, rng, core: Core::new(id, clock.clone(), session, expiring, rows), eph: crate::ephemeral::Eph::default(), clock, cfg, #[cfg(debug_assertions)] index_unchecked: false, #[cfg(debug_assertions)] verdicts_unchecked: false, #[cfg(debug_assertions)] last_tx_wall: None, #[cfg(debug_assertions)] loading: false, #[cfg(test)] index_poked: false, #[cfg(test)] check_every_tx: false };
+        let mut e = Engine { store, store_rng, blobs, blob_stamps: Default::default(), blob_seq: 1, blobs_unsettled: false, failed_seen: (0, 0), taken_failed: false, loads: 0, rng, core: Core::new(id, clock.clone(), session, expiring, rows), eph: crate::ephemeral::Eph::default(), clock, cfg, #[cfg(debug_assertions)] index_unchecked: false, #[cfg(debug_assertions)] verdicts_unchecked: false, #[cfg(debug_assertions)] last_tx_wall: None, #[cfg(debug_assertions)] loading: false, #[cfg(test)] index_poked: false, #[cfg(test)] check_every_tx: false, #[cfg(test)] fail_round: false };
         e.core.node_root = node_root;
         e.load()?;
         Ok(e)
@@ -4087,9 +4106,10 @@ impl Engine {
         // debug builds: what the transaction notes (`osis_base::trace`) is tagged if it rolls back
         #[cfg(debug_assertions)]
         let (trace_mark, caller) = (osis_base::trace::len(), std::panic::Location::caller());
-        // a store write failed (the device staying up): everything is read again as an open reads
-        // it, so nothing kept in memory beside the store (work an operation took outside the
-        // transaction that failed: wakes, due lists) differs from what a restart derives. One
+        // a store write failed (the device staying up), or a transaction acting on work taken
+        // outside it (`run_taken`): everything is read again as an open reads it, so nothing kept
+        // in memory beside the store (work an operation took outside the transaction that failed:
+        // wakes, due lists) differs from what a restart derives. One
         // whose outcome was unknown (its sync failed) may have landed after all: read once the
         // store works again, under a fresh session (that commit's counters may be taken)
         // a memo running `f` reads what `f` reads: the transaction's own work around it (settling,
@@ -4097,11 +4117,13 @@ impl Engine {
         if self.reload_owed() {
             let w = self.store.writes();
             let seen = std::mem::replace(&mut self.failed_seen, (w.failed, w.unknown));
+            let taken = std::mem::take(&mut self.taken_failed);
             if w.unknown != seen.1 {
                 self.core.fresh_session();
             }
             if let Err(e) = memo::unrecorded(|| self.load()) {
                 self.failed_seen = seen;
+                self.taken_failed = taken;
                 return Err(e);
             }
             // what it read is durable: subscribers read everything again

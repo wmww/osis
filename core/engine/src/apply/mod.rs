@@ -474,6 +474,19 @@ pub(crate) fn unreceive_outside(tx: &mut Tx<'_>, t: &Tid) -> Result<()> {
     Ok(())
 }
 
+/// Learns `records` in transaction `tx` (`Engine::learn_records`): how many were new.
+fn learn_records_in(tx: &mut Tx<'_>, records: Vec<CreationRecord>) -> Result<usize> {
+    let mut n = 0;
+    for r in records {
+        n += usize::from(atomic::learn_record(tx, r)?);
+    }
+    if n > 0 {
+        tx.core.update_timelines();
+        atomic::rejudged(tx, true)?;
+    }
+    Ok(n)
+}
+
 /// Examines pending commit `id` (stored as `b`) again as one step: a commit refused leaves
 /// nothing of its examination or apply, and bad input forgets it. `None` when it was bad.
 fn retry_pending(tx: &mut Tx<'_>, id: CommitId, b: CommitBlob) -> Result<Option<Ingested>> {
@@ -1631,17 +1644,7 @@ impl Engine {
 
     /// `learn_records` without the `reexamine` after.
     fn learn_records_now(&mut self, records: Vec<CreationRecord>) -> Result<usize> {
-        self.run(|tx| {
-            let mut n = 0;
-            for r in records {
-                n += usize::from(atomic::learn_record(tx, r)?);
-            }
-            if n > 0 {
-                tx.core.update_timelines();
-                atomic::rejudged(tx, true)?;
-            }
-            Ok(n)
-        })
+        self.run(|tx| learn_records_in(tx, records))
     }
 
     /// Learns the loose records something here came to await, with the loose records on their
@@ -1653,7 +1656,9 @@ impl Engine {
             return Ok(false);
         }
         let recs = crate::sync::with_chains(&self.core, seeds, &BTreeMap::new());
-        Ok(self.learn_records_now(recs)? > 0)
+        // the due records were taken outside its transaction (`run_taken`)
+        let n = self.run_taken(|tx| learn_records_in(tx, recs));
+        Ok(n? > 0)
     }
 
     /// `ingest` of an account's rotation with list blobs that came with it (under the
@@ -1809,7 +1814,13 @@ impl Engine {
                 return Ok(());
             }
             let _s = osis_base::costs::span("reexamine: round");
-            let progressed = self.run(|tx| {
+            #[cfg(test)]
+            let fail = std::mem::take(&mut self.fail_round);
+            let progressed = self.run_taken(|tx| {
+                #[cfg(test)]
+                if fail {
+                    return Err(Error::Corrupt("a round failing (tests)"));
+                }
                 let mut blobs: Vec<(CommitId, CommitBlob)> = Vec::new();
                 let pending = &tx.core.ix.pending;
                 tx.core.memory_waits.retain(|id| pending.contains_key(id));

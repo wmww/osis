@@ -79,6 +79,7 @@ impl Engine {
                 blob_seq: self.blob_seq,
                 blobs_unsettled: self.blobs_unsettled,
                 failed_seen: self.failed_seen,
+                taken_failed: self.taken_failed,
                 loads: self.loads,
                 store_rng: self.store_rng.test_copy(),
                 rng: self.rng.test_copy(),
@@ -99,6 +100,8 @@ impl Engine {
                 index_poked: self.index_poked,
                 #[cfg(test)]
                 check_every_tx: self.check_every_tx,
+                #[cfg(test)]
+                fail_round: self.fail_round,
             })
         })
     }
