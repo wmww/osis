@@ -126,6 +126,10 @@ pub fn diff(w: &World, v: &View, disputes: bool) -> Option<String> {
     let rd = m::judge(w, &rules, v);
     let inp = input(w, v);
     let p = Paths::evaluate(&inp.records, inp.trust.clone(), &inp.commits);
+    // where no entry counts, the first walk reads as the timeline (notes/perm-paths.md, Two walks)
+    if let Some(id) = p.first_walk_differs() {
+        return Some(format!("the first walk differs from the timeline at {id:?}, no entry counting there"));
+    }
     compare(w, v, &rules, &rd, &inp, &p, disputes)
 }
 

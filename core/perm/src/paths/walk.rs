@@ -312,11 +312,14 @@ struct Comp {
     chain: BTreeMap<Key, Slot>,
     chain_undo: BTreeMap<Key, Vec<ChainUndo>>,
     vouches: BTreeSet<Slot>,
+    /// The first walk: its state is not this component's walk (it held no vouch when its input
+    /// changed), so it is walked from its start once it holds one.
+    stale: bool,
 }
 
 impl Comp {
     fn one() -> Comp {
-        Comp { edges: 1, order: BTreeMap::new(), log: BTreeMap::new(), reach: None, undo: BTreeMap::new(), chain: BTreeMap::new(), chain_undo: BTreeMap::new(), vouches: BTreeSet::new() }
+        Comp { edges: 1, order: BTreeMap::new(), log: BTreeMap::new(), reach: None, undo: BTreeMap::new(), chain: BTreeMap::new(), chain_undo: BTreeMap::new(), vouches: BTreeSet::new(), stale: false }
     }
 }
 
@@ -350,8 +353,9 @@ pub(super) struct Walk {
     /// Per edge, the inert parts resting on it.
     inert_rest: Tab<BTreeSet<Slot>>,
     held: BTreeSet<CommitId>,
-    /// Whether the walk keeps the chained pass (the timeline does: content reads it).
-    chains: bool,
+    /// The timeline: it walks every component and keeps the chained pass (content reads it). The
+    /// first walk walks only the components holding a vouch (notes/perm-paths.md, Two walks).
+    timeline: bool,
     // ---- components ----
     /// The union-find over edges; a root names its component.
     parent: Tab<E>,
@@ -424,7 +428,7 @@ struct Journal {
 }
 
 impl Walk {
-    pub(super) fn new(records: &BTreeMap<Tid, Tid>, chains: bool) -> Walk {
+    pub(super) fn new(records: &BTreeMap<Tid, Tid>, timeline: bool) -> Walk {
         let mut w = Walk {
             things: BTreeMap::new(),
             names: Tab::new(Tid::from_bytes([0; 15])),
@@ -440,7 +444,7 @@ impl Walk {
             resting: Tab::new(BTreeSet::new()),
             inert_rest: Tab::new(BTreeSet::new()),
             held: BTreeSet::new(),
-            chains,
+            timeline,
             parent: Tab::new(E::MAX),
             comps: BTreeMap::new(),
             live: Tab::new(false),
@@ -575,6 +579,7 @@ impl Walk {
         n += vs.len() as u64;
         big.vouches.extend(vs);
         big.reach = big.reach.max(small.reach);
+        big.stale |= small.stale;
         self.counts.merged += n;
         self.comps.insert(root, big);
         for d in [&mut self.dirty, &mut self.chain_dirty] {
@@ -742,7 +747,7 @@ impl Walk {
                 comp.vouches.insert(s);
             }
             let chained = it.edge.as_ref().is_some_and(|ei| ei.sets.is_some());
-            if self.chains && chained {
+            if self.timeline && chained {
                 self.comp_mut(root).chain.insert(it.key, s);
                 let m = self.chain_dirty.get(&root).map_or(it.key, |&j| j.min(it.key));
                 self.chain_dirty.insert(root, m);
@@ -839,7 +844,17 @@ impl Walk {
     /// Runs every component an input change reached from its earliest key (the walk and the
     /// chained pass); the components run join `ran`.
     pub(super) fn run_dirty(&mut self) {
-        for (c, p) in std::mem::take(&mut self.dirty) {
+        for (c, mut p) in std::mem::take(&mut self.dirty) {
+            if !self.timeline {
+                let comp = self.comp_mut(c);
+                if comp.vouches.is_empty() {
+                    comp.stale = true;
+                    continue;
+                }
+                if std::mem::take(&mut comp.stale) {
+                    p = Key::start(Ts::ZERO);
+                }
+            }
             let x = self.cut(c, p);
             self.run(c, x.commit_start());
             self.ran.insert(c);
@@ -1706,6 +1721,11 @@ impl Walk {
             out.push(it.id);
         }
         out
+    }
+
+    /// The components walked in the first walk (holding a vouch, not stale), each with its parts.
+    pub(super) fn vouch_comps(&self) -> Vec<(E, Vec<WriteId>)> {
+        self.comps.iter().filter(|(_, c)| !c.vouches.is_empty() && !c.stale).map(|(&r, c)| (r, c.order.values().map(|&s| self.items[s].id).collect())).collect()
     }
 
     /// Entries the walk keeps in memory: parts, edges, events, undo and chain entries, for the

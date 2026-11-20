@@ -556,6 +556,14 @@ impl Paths {
         self.finals().into_iter().map(|(k, v)| (k, v.0)).collect()
     }
 
+    /// Where no counting entry's removal is, the first walk reads as the timeline
+    /// (notes/perm-paths.md, Two walks): the first part of a component holding a vouch whose
+    /// statuses differ there, if any.
+    pub fn first_walk_differs(&self) -> Option<WriteId> {
+        let counted: BTreeSet<u32> = self.counting.iter().flat_map(|e| self.timeline.parts_of(&e.0)).filter_map(|id| self.timeline.comp_of(&id)).collect();
+        self.first.vouch_comps().into_iter().filter(|(c, _)| !counted.contains(c)).flat_map(|(_, ids)| ids).find(|id| self.first.status(id) != self.timeline.status(id))
+    }
+
     /// Entries the walks keep in memory (parts, edges, events, undo and chain entries,
     /// histories): edge-class state alone (notes/perm-paths.md, The delta-facts seam).
     pub fn footprint(&self) -> u64 {

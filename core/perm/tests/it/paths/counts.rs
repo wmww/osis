@@ -48,9 +48,10 @@ fn cid(id: u64) -> CommitId {
     CommitId(b)
 }
 
-/// Both walks (the first and the timeline, notes/perm-paths.md) do each walk's work: the walk
-/// counts below are per walk, times this.
-const W: u64 = 2;
+/// The walks doing each walk's work: the timeline alone, since the first walk runs only in a
+/// component holding a vouch (notes/perm-paths.md, Two walks) and no world here holds one but
+/// `the_first_walk_runs_only_where_a_vouch_is`'s.
+const W: u64 = 1;
 
 fn delta(a: Counts, b: Counts) -> Counts {
     Counts {
@@ -478,4 +479,21 @@ fn an_update_judges_again_only_the_addenda_it_reaches() {
         per.push(d.addenda);
     }
     assert!(per[1] >= 9 * per[0] && per[1] <= 11 * per[0], "{per:?}");
+}
+
+// The first walk (vouch entries unread) runs only in a component holding a vouch
+// (notes/perm-paths.md, Two walks): a part appended on A, which holds n grants, costs the
+// timeline's step alone; once a vouch is held on A, both walks' (the first walking A from its
+// start once). Mutation: the first walk in every component: two steps without the vouch.
+#[test]
+fn the_first_walk_runs_only_where_a_vouch_is() {
+    for n in [100u32, 1000] {
+        let end = 10 + n as u64 + 5;
+        let (d, _) = cost_of(&history(n), write(1, H, end, &[], A, X, Some(Role::Admin)));
+        assert_eq!((d.steps, d.passes), (1, 1), "no vouch at n {n}: {d:?}");
+        let mut base = history(n);
+        base.push(Commit { id: cid(2), ts: Ts::make(WallMs(5), 0).unwrap(), signer: t(H), parts: vec![Part { on: t(A), path: vec![], kind: PartKind::Vouch { removal: cid(3), list: Frontier::new([]) } }] });
+        let (d, _) = cost_of(&base, write(1, H, end, &[], A, X, Some(Role::Admin)));
+        assert_eq!((d.steps, d.passes), (2, 2), "a vouch at n {n}: {d:?}");
+    }
 }
