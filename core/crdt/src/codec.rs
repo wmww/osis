@@ -1218,7 +1218,12 @@ pub mod oracle {
                 from = i + 1;
             }
         }
-        // level by level until a level's list fits (spec/wire.md §6)
+        link_levels(links, params, &mut **sink, out)
+    }
+
+    /// The link levels over leaf links `links`, level by level until a level's list fits
+    /// (spec/wire.md §6): the oracle of `Levels`.
+    pub(crate) fn link_levels(mut links: Vec<Link>, params: PageParams, sink: &mut dyn PageSink, out: &mut Vec<u8>) -> Result<(), Error> {
         while links_len(&links) > params.target && links.len() >= 2 {
             let mut up = Vec::new();
             let mut start = 0;
@@ -1414,5 +1419,108 @@ mod tests_levels {
             depths.push(depth);
         }
         assert_eq!(depths, [4, 5, 6], "a level per tenfold");
+    }
+
+    /// spec/wire.md §6, the grind: a writer who knows the dedup secret can make every link hash
+    /// begin with a zero byte, closing every group at two links. At the format's sizes the tree
+    /// is then binary below a root list of a target's links: link levels about log2(leaves /
+    /// root links), so a point read or a sync's page discovery takes that many link pages more
+    /// (at 2^16 leaf pages, 1 GiB at least, 8), and link pages number about the leaves (each a
+    /// few hundred bytes against a leaf page's 16 KiB at least).
+    #[test]
+    fn a_grinding_writer_gets_a_binary_tree_spec_wire_6() {
+        let params = PageParams::FORMAT;
+        let one = links_len(&[Sink(0).put(&[]).unwrap()]) - head_len(1);
+        let root = params.target / one;
+        for n in [1usize << 10, 1 << 16] {
+            let mut sink = Biased { zero: 1.0, ..Biased::default() };
+            let mut levels = Levels::default();
+            for i in 0..n as u64 {
+                let l = sink.put(&i.to_le_bytes()).unwrap();
+                levels.push(0, l, params, &mut sink).unwrap();
+            }
+            let mut out = Vec::new();
+            levels.finish(params, &mut sink, &mut out).unwrap();
+            let link_pages = sink.pages.len() - n;
+            let depth = link_depth(&out, &sink);
+            let bound = (n as f64 / root as f64).log2().ceil() as usize + 1;
+            assert!(depth <= bound && depth + 1 >= bound && link_pages < n, "n = {n}: {depth} link levels (bound {bound}), {link_pages} link pages");
+        }
+    }
+
+    /// The link levels under root list `out` in `sink`: link pages followed down from the
+    /// root's first link.
+    fn link_depth(out: &[u8], sink: &Biased) -> usize {
+        let first = |b: &[u8]| match osis_base::decode(b, &osis_base::Limits::DEFAULT) {
+            Ok(Value::List(items)) => items.first().and_then(|x| if let Value::Link(l) = x { Some(**l) } else { None }),
+            _ => None,
+        };
+        let (mut at, mut d) = (first(out), 0);
+        while let Some(p) = at.and_then(|l| sink.by.get(&l.hash)) {
+            match first(p) {
+                Some(l) => (at, d) = (Some(l), d + 1),
+                None => break,
+            }
+        }
+        d
+    }
+
+    /// Content-addressed links whose hash begins with a zero byte for about one plaintext in
+    /// `1 / zero` (the tree-node rule's cut), so groups close by hash as often as by count.
+    #[derive(Default)]
+    struct Biased {
+        zero: f64,
+        pages: Vec<Vec<u8>>,
+        by: std::collections::HashMap<[u8; 32], Vec<u8>>,
+    }
+
+    impl PageSink for Biased {
+        fn put(&mut self, p: &[u8]) -> Result<Link, PageError> {
+            self.pages.push(p.to_vec());
+            let mut hash = osis_base::hash::hash(p);
+            hash[0] = if f64::from(hash[1]) < self.zero * 256.0 { 0 } else { 1 };
+            self.by.insert(hash, p.to_vec());
+            Ok(Link { hash, blob: osis_base::BlobId(hash), suite: 1, key: [0; 32], salt: [0; 16], del: osis_base::Del::NONE })
+        }
+    }
+
+    /// spec/wire.md §6, one encoding: the streaming levels group exactly as the whole oracle does,
+    /// level by level, for every mix of groups closing by hash and by count (closing by hash at one
+    /// level just as the level below closes by count), any count of leaf links from one up (a level
+    /// of one link, of two), and targets holding no link up to several: the same root and the same
+    /// pages.
+    #[test]
+    fn levels_group_as_the_whole_oracle_spec_wire_6() {
+        let one = links_len(&[Sink(0).put(&[]).unwrap()]) - head_len(1);
+        let mut deepest = 0;
+        for zero in [0.0, 0.25, 0.5, 1.0] {
+            for fanout in [2, 3, 4, 7] {
+                for fit in [0, 1, 2, 3, 5] {
+                    let params = PageParams { target: head_len(fit as u64) + fit * one, fanout, ..PageParams::FORMAT };
+                    for n in (1..=40).chain([64, 100, 257, 600]) {
+                        let leaves = |sink: &mut Biased| (0..n as u64).map(|i| sink.put(&i.to_le_bytes()).unwrap()).collect::<Vec<_>>();
+                        let mut a = Biased { zero, ..Biased::default() };
+                        let mut levels = Levels::default();
+                        for l in leaves(&mut a) {
+                            levels.push(0, l, params, &mut a).unwrap();
+                        }
+                        deepest = deepest.max(levels.0.len());
+                        let mut root_a = Vec::new();
+                        levels.finish(params, &mut a, &mut root_a).unwrap();
+                        let mut b = Biased { zero, ..Biased::default() };
+                        let ls = leaves(&mut b);
+                        let mut root_b = Vec::new();
+                        oracle::link_levels(ls, params, &mut b, &mut root_b).unwrap();
+                        let case = format!("zero {zero}, fanout {fanout}, fit {fit}, n {n}");
+                        assert_eq!(root_a, root_b, "{case}: root");
+                        assert!(root_a.len() <= params.target.max(head_len(1) + one), "{case}: the root fits, or is one link");
+                        a.pages.sort();
+                        b.pages.sort();
+                        assert_eq!(a.pages, b.pages, "{case}: pages");
+                    }
+                }
+            }
+        }
+        assert!(deepest >= 8, "deep trees reached: {deepest}");
     }
 }

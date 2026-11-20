@@ -427,6 +427,186 @@ fn page_levels_scale_spec_8() {
     assert!(pages.windows(2).all(|w| (8 * w[0]..=12 * w[0]).contains(&w[1])), "pages linear in n: {pages:?}");
 }
 
+/// §8 partial reads at any depth (`PageAt` paths, `Wanted::wants` by prefix): for sets paged at
+/// three and four levels, a read of any set of elements fetches exactly the pages on the paths
+/// down to the leaves holding them, each once (paths sharing a prefix share its pages), no leaf
+/// holding none of them, and every element asked for is read.
+#[test]
+fn partial_reads_fetch_the_paths_to_their_leaves_spec_8() {
+    use crate::stream::{Checked, stream_checked, stream_checked_some};
+    let three = PageParams { target: 1500, cut: ChunkParams { min: 16, max: 512, mask_bits: 6 }, fanout: 8, ..PageParams::FORMAT };
+    let four = PageParams { target: 400, cut: ChunkParams { min: 16, max: 256, mask_bits: 5 }, fanout: 3, ..PageParams::FORMAT };
+    for (params, n, levels) in [(three, 1000, 3), (four, 600, 4)] {
+        let st = big_set(n, 1);
+        let mut cas = Cas { params: Some(params), ..Cas::default() };
+        let bytes = encode_snapshot(&snapshot(&st), &snap_cx(), Some(&mut cas)).unwrap();
+        assert!(depth(&bytes, &mut cas) >= levels, "n = {n}: {levels} levels");
+        let mut index = crate::PageIndex::default();
+        stream_checked(Checked::verified(&bytes), &snap_cx(), &mut Interner::new(), Some(&mut cas), &mut |p| {
+            index.add(&p);
+            Ok(())
+        })
+        .unwrap();
+        let Fragment::Set(set) = &st else { panic!("a set") };
+        let dots: Vec<_> = set.elems.keys().cloned().collect();
+        let mut r = crate::testutil::rng(7);
+        for k in [1, 1, 2, 2, 3, 5, 8, 20] {
+            let mut want = set.clone();
+            want.elems = (0..k).map(|_| dots[r.below(dots.len())].clone()).map(|d| (d.clone(), set.elems[&d].clone())).collect();
+            let wanted = index.wanted(&Fragment::Set(want.clone()));
+            cas.fetched = 0;
+            let (mut got, mut ats) = (BTreeSet::new(), Vec::new());
+            stream_checked_some(Checked::verified(&bytes), &snap_cx(), &mut Interner::new(), Some(&mut cas), &|p, at| wanted.wants(p, at), &mut |p| {
+                if let crate::Piece::Page { fragment: Fragment::Set(s), at, .. } = p {
+                    assert!(s.elems.keys().any(|d| want.elems.contains_key(d)), "n = {n}, k = {k}: a leaf holding none asked for");
+                    got.extend(s.elems.keys().cloned());
+                    ats.push(at);
+                }
+                Ok(())
+            })
+            .unwrap();
+            assert!(want.elems.keys().all(|d| got.contains(d)), "n = {n}, k = {k}: every element asked for read");
+            let paths: BTreeSet<&[usize]> = ats.iter().flat_map(|at| (1..=at.len()).map(move |j| &at[..j])).collect();
+            assert_eq!(cas.fetched, paths.len(), "n = {n}, k = {k}: the pages on the paths to {} leaves", ats.len());
+        }
+    }
+}
+
+/// A link page of `ls` put into `cas`.
+fn link_page(cas: &mut Cas, ls: &[osis_base::Link]) -> osis_base::Link {
+    cas.put(&osis_base::encode(&Value::List(ls.iter().copied().map(Value::link).collect()))).unwrap()
+}
+
+/// The links a page of `cas` holds when it is a link page.
+fn page_links(cas: &Cas, l: &osis_base::Link) -> Option<Vec<osis_base::Link>> {
+    let Ok(Value::List(items)) = osis_base::decode(cas.pages.get(&l.hash)?, &osis_base::Limits::DEFAULT) else { return None };
+    items.iter().map(|x| if let Value::Link(l) = x { Some(**l) } else { None }).collect()
+}
+
+/// The leaf links under `top`, in order.
+fn leaves_under(cas: &Cas, top: &[osis_base::Link]) -> Vec<osis_base::Link> {
+    top.iter().flat_map(|l| page_links(cas, l).map_or_else(|| vec![*l], |ls| leaves_under(cas, &ls))).collect()
+}
+
+/// The pages a tree under `top` holds, leaves included.
+fn pages_under(cas: &Cas, top: &[osis_base::Link]) -> usize {
+    top.iter().map(|l| 1 + page_links(cas, l).map_or(0, |ls| pages_under(cas, &ls))).sum()
+}
+
+/// Links grouped level by level into link pages while the level's list is above the target,
+/// a group closing after a link where `close(level, links in the group so far, link)` says or
+/// at the level's end: the root list. `spec_rule` closes as spec/wire.md §6 does.
+fn grouped(cas: &mut Cas, mut links: Vec<osis_base::Link>, params: PageParams, close: &dyn Fn(usize, usize, &osis_base::Link) -> bool) -> Vec<osis_base::Link> {
+    let len = |ls: &[osis_base::Link]| osis_base::encode(&Value::List(ls.iter().copied().map(Value::link).collect())).len();
+    let mut level = 0;
+    while len(&links) > params.target && links.len() >= 2 {
+        let (mut up, mut group) = (Vec::new(), Vec::new());
+        for l in &links {
+            group.push(*l);
+            if close(level, group.len(), l) {
+                up.push(link_page(cas, &std::mem::take(&mut group)));
+            }
+        }
+        if !group.is_empty() {
+            up.push(link_page(cas, &group));
+        }
+        links = up;
+        level += 1;
+    }
+    links
+}
+
+/// `bytes` with its one paged position's root link list replaced by `top`.
+fn with_root(bytes: &[u8], top: &[osis_base::Link]) -> Vec<u8> {
+    fn swap(v: &mut Value, top: &[osis_base::Link]) -> bool {
+        let Value::List(items) = v else { return false };
+        if !items.is_empty() && items.iter().all(|x| matches!(x, Value::Link(_))) {
+            *items = top.iter().copied().map(Value::link).collect();
+            return true;
+        }
+        items.iter_mut().any(|x| swap(x, top))
+    }
+    let mut v = osis_base::decode(bytes, &osis_base::Limits::DEFAULT).unwrap();
+    assert!(swap(&mut v, top), "a paged position");
+    osis_base::encode(&v)
+}
+
+/// §8, spec/wire.md §6, one encoding: for a set paged at three levels, the tree the rule gives
+/// its leaves is the one both decoders accept, and every other tree over the same leaf pages a
+/// writer can build is refused by both, fetching at most its pages, each once: groups of two (a
+/// deeper balanced tree), one group boundary moved, groups closing a link before the fan-out, an
+/// extra level of single-link pages below or above, a level missing (a root list above the
+/// target), the root list the leaves themselves, and leaves at two depths.
+#[test]
+fn every_other_link_tree_is_refused_spec_8() {
+    use crate::stream::stream_snapshot;
+    let params = PageParams { target: 1500, cut: ChunkParams { min: 16, max: 512, mask_bits: 6 }, fanout: 8, ..PageParams::FORMAT };
+    let st = big_set(1000, 1);
+    let mut cas = Cas { params: Some(params), ..Cas::default() };
+    let bytes = encode_snapshot(&snapshot(&st), &snap_cx(), Some(&mut cas)).unwrap();
+    assert_eq!(depth(&bytes, &mut cas), 3, "three page levels");
+    let Some(Value::List(top)) = (|| {
+        fn find(v: &Value) -> Option<Value> {
+            let Value::List(items) = v else { return None };
+            if !items.is_empty() && items.iter().all(|x| matches!(x, Value::Link(_))) {
+                return Some(v.clone());
+            }
+            items.iter().find_map(find)
+        }
+        find(&osis_base::decode(&bytes, &osis_base::Limits::DEFAULT).unwrap())
+    })() else {
+        panic!("a root link list")
+    };
+    let top: Vec<osis_base::Link> = top.iter().map(|x| if let Value::Link(l) = x { **l } else { unreachable!() }).collect();
+    let leaves = leaves_under(&cas, &top);
+    let rule = |_: usize, n: usize, l: &osis_base::Link| (n >= 2 && l.hash[0] == 0) || n >= params.fanout;
+    assert_eq!(grouped(&mut cas, leaves.clone(), params, &rule), top, "the rule's tree is the encoder's");
+    assert_eq!(with_root(&bytes, &top), bytes);
+    // both decoders: refused, fetching each page of the tree at most once
+    let refused = |cas: &mut Cas, root: &[osis_base::Link], what: &str| {
+        let b = with_root(&bytes, root);
+        let most = pages_under(cas, root);
+        cas.fetched = 0;
+        let whole = decode_snapshot(&b, &snap_cx(), &mut Interner::new(), Some(&mut *cas));
+        assert!(whole.is_err() && cas.fetched <= most, "{what}: whole decode {:?}, {} fetched of {most}", whole.map(|_| ()), cas.fetched);
+        cas.fetched = 0;
+        let streamed = stream_snapshot(&b, &snap_cx(), &mut Interner::new(), Some(&mut *cas), &mut |_| Ok(()));
+        assert!(streamed.is_err() && cas.fetched <= most, "{what}: streamed decode {:?}, {} fetched of {most}", streamed.map(|_| ()), cas.fetched);
+    };
+    let twos = grouped(&mut cas, leaves.clone(), params, &|_, n, _| n >= 2);
+    refused(&mut cas, &twos, "groups of two");
+    let early = grouped(&mut cas, leaves.clone(), params, &|_, n, l| (n >= 2 && l.hash[0] == 0) || n + 1 >= params.fanout);
+    refused(&mut cas, &early, "a link before the fan-out");
+    // one boundary of the first level moved a link later
+    let first = grouped(&mut cas, leaves.clone(), PageParams { target: usize::MAX, ..params }, &|_, _, _| false);
+    assert_eq!(first, leaves);
+    let mut groups: Vec<Vec<osis_base::Link>> = Vec::new();
+    let mut g = Vec::new();
+    for l in &leaves {
+        g.push(*l);
+        if rule(0, g.len(), l) {
+            groups.push(std::mem::take(&mut g));
+        }
+    }
+    groups.push(g);
+    let moved = groups[1].remove(0);
+    groups[0].push(moved);
+    let level1: Vec<osis_base::Link> = groups.iter().filter(|g| !g.is_empty()).map(|g| link_page(&mut cas, g)).collect();
+    let shifted = grouped(&mut cas, level1, params, &rule);
+    refused(&mut cas, &shifted, "a boundary moved");
+    let wrapped: Vec<osis_base::Link> = leaves.iter().map(|l| link_page(&mut cas, &[*l])).collect();
+    let below = grouped(&mut cas, wrapped, params, &rule);
+    refused(&mut cas, &below, "single-link pages below");
+    let above = link_page(&mut cas, &top);
+    refused(&mut cas, &[above], "a single-link page above");
+    let lower: Vec<osis_base::Link> = top.iter().flat_map(|l| page_links(&cas, l).unwrap()).collect();
+    refused(&mut cas, &lower, "a level missing");
+    refused(&mut cas, &leaves, "the leaves as the root");
+    let mut uneven = page_links(&cas, &top[0]).unwrap();
+    uneven.extend(&top[1..]);
+    refused(&mut cas, &uneven, "leaves at two depths");
+}
+
 /// The first link in a value, depth first.
 fn first_link(v: &Value) -> Option<osis_base::Link> {
     let Value::List(items) = v else { return None };
