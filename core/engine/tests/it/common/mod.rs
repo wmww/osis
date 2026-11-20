@@ -342,6 +342,18 @@ pub fn package_to_peer(lp: &mut LocalPeer, from: usize, to: &mut osis_engine::lo
     lp.packages_to_peer(from, to).unwrap().into_iter().find(|p| p.id == id).unwrap_or_else(|| panic!("{from} sends no {id:?}"))
 }
 
+/// `r`, what a node under test made of hostile, partial or forged input: a refusal of the input
+/// (bad input, parked) is `None`; a local error (an engine invariant broken, a store failing)
+/// fails the test, as it would fail the node.
+pub fn unless_refused(r: osis_engine::Result<osis_engine::Ingested>) -> Option<osis_engine::Ingested> {
+    use osis_base::Classified;
+    match r {
+        Ok(x) => Some(x),
+        Err(e) if e.class() == osis_base::ErrorClass::Local => panic!("receiving fails the node: {e}"),
+        Err(_) => None,
+    }
+}
+
 /// Every commit `from` holds, whole, whatever the receiver syncs (`LocalPeer::whole_packages`):
 /// only for a test of what a hostile or broken sender hands over.
 pub fn whole_packages(lp: &mut LocalPeer, from: usize) -> Vec<Package> {

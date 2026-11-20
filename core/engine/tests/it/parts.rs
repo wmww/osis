@@ -55,7 +55,7 @@ fn deliver(played: &Played, order: &[Tok]) -> Peer {
         p.receive(&pk.bytes, pk.blobs.clone()).unwrap();
     }
     for (i, t) in order {
-        let _ = p.engine.ingest(&part(played, *i, *t), played.packs[*i].blobs.clone());
+        crate::common::unless_refused(p.engine.ingest(&part(played, *i, *t), played.packs[*i].blobs.clone()));
     }
     p.reexamine().unwrap();
     p.engine.settle_needs().unwrap();
@@ -123,13 +123,13 @@ fn two_things(write: impl Fn(&mut Mutation, Tid, Tid)) -> (osis_engine::local_pe
     use crate::common::*;
     let mut lp = net_one(2); // 1 a node of 0's account
     let (g, h) = (new_thing(&mut lp, 0), new_thing(&mut lp, 0));
-    for pk in packages(&mut lp, 0) {
+    for pk in packages_to(&mut lp, 0, 1) {
         lp.deliver(1, &pk).unwrap();
     }
     let mut m = Mutation::new();
     write(&mut m, g, h);
     let id = lp.peers[0].commit(m).unwrap().unwrap();
-    let pk = packages(&mut lp, 0).into_iter().find(|p| p.id == id).unwrap();
+    let pk = package_for(&mut lp, 0, 1, id);
     (lp, g, h, pk)
 }
 
@@ -156,7 +156,7 @@ fn part_missing_pages_waits_alone_spec_commits_4() {
         assert!(!pk.blobs.is_empty(), "paged");
         let e = &mut lp.peers[1].engine;
         for t in if first_g { [g, h] } else { [h, g] } {
-            let _ = e.ingest(&on(&pk, t), Vec::new());
+            crate::common::unless_refused(e.ingest(&on(&pk, t), Vec::new()));
         }
         e.reexamine().unwrap();
         assert_eq!(e.get(&g, &ak("t:reg.0")).unwrap(), Some(s("small")), "first_g {first_g}");
@@ -179,7 +179,7 @@ fn parked_part_waits_alone_spec_versioning_2() {
     use osis_crdt::{Delta, Writer, create, encode_delta};
     let mut lp = net_one(2);
     let (g, h) = (new_thing(&mut lp, 0), new_thing(&mut lp, 0));
-    for pk in packages(&mut lp, 0) {
+    for pk in packages_to(&mut lp, 0, 1) {
         lp.deliver(1, &pk).unwrap();
     }
     lp.peers[0].clock.advance(10);
@@ -209,20 +209,18 @@ fn parked_part_waits_alone_spec_versioning_2() {
     let e = &mut lp.peers[1].engine;
     let r = e.ingest(&part(h), Vec::new()).unwrap();
     assert!(matches!(r, Ingested::Applied(_)), "the header waits for no part: {r:?}");
-    let _ = e.ingest(&part(g), Vec::new());
+    crate::common::unless_refused(e.ingest(&part(g), Vec::new()));
     e.reexamine().unwrap();
     assert_eq!(e.get(&g, &ak("t:reg.0")).unwrap(), Some(s("ok")), "the rest applies");
     assert_eq!(e.pending(), vec![(id, Reason::Parked)], "the parked part stays");
     // the same from the other order, and together
     let (mut other, mut together) = (net_one(2), net_one(2));
     for lp2 in [&mut other, &mut together] {
-        for pk in packages(&mut lp, 0) {
-            lp2.deliver(1, &pk).unwrap();
-        }
+        give_carried(&mut lp, 0, lp2, 1, |_| false);
     }
-    let _ = other.peers[1].receive(&part(g), Vec::new());
-    let _ = other.peers[1].receive(&part(h), Vec::new());
-    let _ = together.peers[1].receive(&blob.encode(), Vec::new());
+    crate::common::unless_refused(other.peers[1].receive(&part(g), Vec::new()));
+    crate::common::unless_refused(other.peers[1].receive(&part(h), Vec::new()));
+    crate::common::unless_refused(together.peers[1].receive(&blob.encode(), Vec::new()));
     for x in [&mut other, &mut together] {
         assert_eq!(x.peers[1].engine.get(&g, &ak("t:reg.0")).unwrap(), Some(s("ok")));
         assert_eq!(x.peers[1].engine.pending(), vec![(id, Reason::Parked)]);
@@ -247,7 +245,7 @@ fn waiting_parts_boxes_are_read_in_either_order_spec_crypto_4() {
     use osis_schema::{Codec, core_types as ct};
     let mut lp = net_one(2);
     let g = new_thing(&mut lp, 0);
-    let known = packages(&mut lp, 0);
+    let known = packages_to(&mut lp, 0, 1);
     let h = new_thing(&mut lp, 0);
     let rcpt = read_recipient(&mut lp.peers[1].engine);
     let e = &mut lp.peers[0].engine;
@@ -308,7 +306,7 @@ fn waiting_parts_boxes_are_read_in_either_order_spec_crypto_4() {
         }
         let e = &mut lp2.peers[1].engine;
         for b in order {
-            let _ = e.ingest(b, Vec::new());
+            crate::common::unless_refused(e.ingest(b, Vec::new()));
         }
         e.reexamine().unwrap();
         assert_eq!(e.pending().iter().map(|x| x.0).collect::<Vec<_>>(), vec![id], "{name}: H's part cannot be judged: it waits in the applied commit's pending copy");
@@ -331,7 +329,7 @@ fn late_part_of_applied_commit_joins_alone_spec_commits_4() {
         let mut order: Vec<Tok> = setup.iter().filter(|x| !hidden.contains(&x.0)).copied().collect();
         order.push((last, Some(g)));
         let mut p = deliver(three, &order);
-        let _ = p.engine.ingest(&part(three, last, Some(c)), Vec::new());
+        crate::common::unless_refused(p.engine.ingest(&part(three, last, Some(c)), Vec::new()));
         p.reexamine().unwrap();
         assert_eq!(p.engine.get(&c, &reg()).unwrap(), v("v1"), "hidden {hidden:?}");
     }
@@ -392,7 +390,7 @@ fn bad_part_beside_good_ones_holds_nothing_back_spec_commits_4() {
         }
         let e = &mut lp2.peers[1].engine;
         for b in deliveries {
-            let _ = e.ingest(b, Vec::new());
+            crate::common::unless_refused(e.ingest(b, Vec::new()));
         }
         e.reexamine().unwrap();
         (e.get(&g, &ak("t:one.0")).unwrap(), e.get(&g, &ak("t:two.0")).unwrap(), e.commit_ids().contains(&id), e.pending())
@@ -482,7 +480,7 @@ fn expired_part_with_pages_away_order_spec_commits_4() {
         lp.peers[1].clock.advance(10_000_000);
         let e = &mut lp.peers[1].engine;
         for t in if first_g { [g, h] } else { [h, g] } {
-            let _ = e.ingest(&on(&pk, t), Vec::new());
+            crate::common::unless_refused(e.ingest(&on(&pk, t), Vec::new()));
         }
         e.reexamine().unwrap();
         read.push(e.get(&g, &ak("t:reg.0")).unwrap());
@@ -528,7 +526,7 @@ fn bad_part_every_shape_reads_alike_spec_commits_4() {
                     p.engine.ingest(&pk.bytes, pk.blobs.clone()).unwrap();
                 }
                 for x in &shape {
-                    let _ = p.engine.ingest(x, Vec::new());
+                    crate::common::unless_refused(p.engine.ingest(x, Vec::new()));
                 }
                 p.reexamine().unwrap();
                 p.engine.settle_needs().unwrap();
@@ -567,7 +565,7 @@ fn role_commit_of_junk_holds_nothing_spec_commits_4() {
     for pk in &role.packs[..last] {
         p.engine.ingest(&pk.bytes, pk.blobs.clone()).unwrap();
     }
-    let _ = p.engine.ingest(&junk, Vec::new());
+    crate::common::unless_refused(p.engine.ingest(&junk, Vec::new()));
     p.reexamine().unwrap();
     assert!(!p.engine.commit_ids().contains(&id), "junk is no part of it");
     p.engine.ingest(&role.packs[last].bytes, Vec::new()).unwrap();
@@ -593,7 +591,7 @@ fn wrong_class_delta_is_not_waited_for_spec_commits_4() {
     assert_eq!(e.get(&g, &ak("t:reg.0")).unwrap(), Some(s("kept")));
     // a copy holding one, while the commit waits, names nothing: such a part has no true copy to look for
     let mut lp = net(2, 0);
-    let known = packages(&mut lp, 0);
+    let known = packages_to(&mut lp, 0, 1);
     let h = new_thing(&mut lp, 0);
     let mut m = Mutation::new();
     m.set(h, &REG, &s("kept")).unwrap();
@@ -604,7 +602,7 @@ fn wrong_class_delta_is_not_waited_for_spec_commits_4() {
         p.engine.ingest(&pk0.bytes, pk0.blobs.clone()).unwrap();
     }
     for _ in 0..2 {
-        let _ = p.receive(&bytes, Vec::new());
+        crate::common::unless_refused(p.receive(&bytes, Vec::new()));
     }
     assert!(!p.engine.commit_ids().contains(&id));
     assert_eq!(p.redelivered, 0);
@@ -619,7 +617,7 @@ fn pending_commit_judged_unjudgeable_awaits_its_record_spec_commits_4() {
     use osis_base::format::MAX_DRIFT_MS;
     let mut lp = net(2, 0);
     let g = new_shared(&mut lp, 0);
-    for pk in packages(&mut lp, 0) {
+    for pk in packages_to(&mut lp, 0, 1) {
         lp.deliver(1, &pk).unwrap();
     }
     let h = new_shared(&mut lp, 0);
@@ -633,7 +631,7 @@ fn pending_commit_judged_unjudgeable_awaits_its_record_spec_commits_4() {
     lp.peers[1].tick().unwrap();
     assert!(lp.peers[1].engine.pending().iter().any(|(c, r)| *c == id && matches!(r, Reason::UnknownCreated(x) if *x == h)), "awaits h's record");
     assert!(!lp.peers[1].engine.commit_ids().contains(&id));
-    for pk in packages(&mut lp, 0).into_iter().filter(|pk| pk.id != id) {
+    for pk in packages_to(&mut lp, 0, 1).into_iter().filter(|pk| pk.id != id) {
         lp.deliver(1, &pk).unwrap();
     }
     assert!(lp.peers[1].engine.commit_ids().contains(&id), "applied with the record: {:?}", lp.peers[1].engine.pending());
@@ -647,7 +645,7 @@ fn pending_commit_judged_unjudgeable_awaits_its_record_spec_commits_4() {
 fn pending_for_pages_then_unjudgeable_awaits_its_record_spec_commits_4() {
     use crate::common::*;
     let mut lp = net_one(2);
-    for pk in packages(&mut lp, 0) {
+    for pk in packages_to(&mut lp, 0, 1) {
         lp.deliver(1, &pk).unwrap();
     }
     let h = new_thing(&mut lp, 0);
@@ -659,7 +657,7 @@ fn pending_for_pages_then_unjudgeable_awaits_its_record_spec_commits_4() {
     assert!(matches!(lp.peers[1].receive(&pk.bytes, Vec::new()).unwrap(), Ingested::Pending(_, Reason::WaitBlobs)));
     assert!(matches!(lp.peers[1].receive(&pk.bytes, pk.blobs.clone()).unwrap(), Ingested::Pending(_, osis_engine::Reason::MissingChain(_) | osis_engine::Reason::UnknownCreated(_))));
     assert!(lp.peers[1].engine.pending().iter().any(|(c, r)| *c == id && matches!(r, Reason::UnknownCreated(x) if *x == h)), "awaits h's record once its header resolves");
-    for pk in packages(&mut lp, 0).into_iter().filter(|pk| pk.id != id) {
+    for pk in packages_to(&mut lp, 0, 1).into_iter().filter(|pk| pk.id != id) {
         lp.deliver(1, &pk).unwrap();
     }
     assert!(lp.peers[1].engine.commit_ids().contains(&id), "applied with the record");
@@ -703,10 +701,10 @@ fn bad_part_beside_a_waiting_part_alike_spec_commits_4() {
     let read = |order: &[Vec<u8>]| {
         let mut p = Peer::new(FRESH, played.now).unwrap();
         for (_, pk) in played.packs.iter().enumerate().filter(|(i, _)| *i != hidden && *i != last) {
-            let _ = p.engine.ingest(&pk.bytes, pk.blobs.clone());
+            crate::common::unless_refused(p.engine.ingest(&pk.bytes, pk.blobs.clone()));
         }
         for t in order {
-            let _ = p.engine.ingest(t, Vec::new());
+            crate::common::unless_refused(p.engine.ingest(t, Vec::new()));
         }
         p.reexamine().unwrap();
         (observe(&mut p.engine, &ids), p.engine.commit_ids().contains(&played.packs[last].id))
@@ -724,7 +722,7 @@ fn bad_part_beside_a_waiting_part_alike_spec_commits_4() {
 fn true_record_replaces_junk_under_a_linked_header_spec_commits_4() {
     use crate::common::*;
     let mut lp = net_one(2);
-    let known = packages(&mut lp, 0);
+    let known = packages_to(&mut lp, 0, 1);
     let e = &mut lp.peers[0].engine;
     let mut m = Mutation::new();
     let t = e.new_thing(&mut m, e.dependents_admin());
@@ -775,7 +773,8 @@ fn forge_setup() -> Forge {
     let mut lp = net_one(3);
     let node = lp.peers.pop().unwrap();
     let (x, y, z) = (new_thing(&mut lp, 0), new_thing(&mut lp, 0), new_thing(&mut lp, 0));
-    let setup = packages(&mut lp, 0);
+    let mut node = node;
+    let setup = lp.packages_to_peer(0, &mut node).unwrap();
     Forge { lp, setup, x, y, z, node }
 }
 
@@ -852,13 +851,13 @@ fn parked_part_goes_at_its_expiry_spec_commits_5() {
     let mut new = |now| {
         let mut p = f.fresh(now);
         for pk in &f.setup {
-            let _ = p.engine.ingest(&pk.bytes, Vec::new());
+            crate::common::unless_refused(p.engine.ingest(&pk.bytes, Vec::new()));
         }
         p
     };
     // past T when it came: gone at once, flagged
     let mut p = new(late);
-    let _ = p.engine.ingest(&cut(&b, &[x]), Vec::new());
+    crate::common::unless_refused(p.engine.ingest(&cut(&b, &[x]), Vec::new()));
     assert!(!copy_held(&mut p), "no copy past T");
     assert!(p.engine.suspects().iter().any(|f| f.0 == x), "flagged");
     assert_eq!(p.engine.pending(), vec![]);
@@ -875,7 +874,7 @@ fn parked_part_goes_at_its_expiry_spec_commits_5() {
     }
     // the same with the clock alone, no tick: judged at the next look
     let mut p = new(live);
-    let _ = p.engine.ingest(&cut(&b, &[x]), Vec::new());
+    crate::common::unless_refused(p.engine.ingest(&cut(&b, &[x]), Vec::new()));
     p.clock.advance(5000);
     p.reexamine().unwrap();
     assert!(!copy_held(&mut p), "no copy past T");
@@ -939,7 +938,7 @@ fn parked_part_goes_at_its_purge_spec_commits_5() {
         pair_into(&mut f.lp, 0, &mut p);
         p.clock.set(now);
         for pk in &f.setup {
-            let _ = p.engine.ingest(&pk.bytes, pk.blobs.clone());
+            crate::common::unless_refused(p.engine.ingest(&pk.bytes, pk.blobs.clone()));
         }
         let parked = || b.encode();
         if parked_first {
@@ -1004,14 +1003,14 @@ fn forged_parts_beside_a_part_past_expiry(stride: usize) {
                 let order = picked[j as usize];
                 let mut p = node.lock().unwrap_or_else(|e| e.into_inner()).copy().unwrap();
                 for pk in &f.setup {
-                    let _ = p.engine.ingest(&pk.bytes, Vec::new());
+                    crate::common::unless_refused(p.engine.ingest(&pk.bytes, Vec::new()));
                 }
                 for i in order {
-                    let _ = p.engine.ingest(&items[*i], Vec::new());
+                    crate::common::unless_refused(p.engine.ingest(&items[*i], Vec::new()));
                     p.reexamine().unwrap();
                 }
                 for i in [0, 1, 2] {
-                    let _ = p.engine.ingest(&items[i], Vec::new());
+                    crate::common::unless_refused(p.engine.ingest(&items[i], Vec::new()));
                     p.reexamine().unwrap();
                 }
                 format!("applied {} pending {:?} flags {:?} reads {:?} {:?} {:?}", p.engine.commit_ids().contains(&b.id()), p.engine.pending(), p.engine.suspects().iter().map(|f| f.1.clone()).collect::<Vec<_>>(), p.engine.get(&x, &ak("t:brief.0")).unwrap(), p.engine.get(&y, &ak("t:reg.0")).unwrap(), p.engine.get(&z, &ak("t:reg.0")).unwrap())

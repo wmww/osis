@@ -118,7 +118,7 @@ fn frontier_gap_covers_what_joins_unchanged_spec_commits_5() {
     lp.advance(1_000);
     let new = set(&mut lp, 0, t, &REG, "new");
     let new_tag = tag(&mut lp, "y");
-    let pks = packages(&mut lp, 0);
+    let pks = packages_for(&mut lp, 0, 1);
     let pk = |c: &CommitId| pks.iter().find(|p| p.id == *c).unwrap();
     lp.deliver(1, pk(&new)).unwrap();
     lp.deliver(1, pk(&new_tag)).unwrap();
@@ -161,7 +161,7 @@ fn snapshot_covers_one_reaching_further_spec_commits_5() {
     let c = add(&mut lp, 0, "a");
     lp.advance(1_000);
     let z1 = lp.peers[0].engine.snapshot(&t, &tags).unwrap().unwrap();
-    let pk = packages(&mut lp, 0).into_iter().find(|p| p.id == z1).unwrap();
+    let pk = package_for(&mut lp, 0, 1, z1);
     lp.deliver(1, &pk).unwrap();
     lp.advance(1_000);
     add(&mut lp, 1, "b");
@@ -198,7 +198,7 @@ fn untraced_session_part_joins_late_spec_commits_4() {
     m.set(t, &REG, &s("a")).unwrap();
     m.op(t, &TAGS, osis_crdt::PathOp { path: Vec::new(), op: osis_crdt::Op::Add(s("a")) }).unwrap();
     let c = lp.peers[0].commit(m).unwrap().unwrap();
-    let pk = packages(&mut lp, 0).into_iter().find(|p| p.id == c).unwrap();
+    let pk = package_for(&mut lp, 0, 1, c);
     let h = lp.peers[0].engine.header(&c).unwrap();
     lp.advance(1_000);
     let snap = lp.peers[2].engine.snapshot(&t, &ak("t:tags.0")).unwrap().unwrap();
@@ -353,7 +353,7 @@ fn snapshot_not_covered_by_an_earlier_equal_spec_commits_4() {
     m.set(t, &REG, &s("a")).unwrap();
     m.op(t, &TAGS, osis_crdt::PathOp { path: Vec::new(), op: osis_crdt::Op::Add(s("a")) }).unwrap();
     let c = lp.peers[0].commit(m).unwrap().unwrap();
-    let pk = packages(&mut lp, 0).into_iter().find(|p| p.id == c).unwrap();
+    let pk = package_for(&mut lp, 0, 1, c);
     let h = lp.peers[0].engine.header(&c).unwrap();
     lp.advance(1_000);
     // a Z2 with the higher ID
@@ -365,7 +365,7 @@ fn snapshot_not_covered_by_an_earlier_equal_spec_commits_4() {
     sync(&mut lp, 2, 1);
     sync(&mut lp, 2, 4);
     // only the Z2 with the higher ID: the earlier tries stay at peer 3
-    let z2p = packages(&mut lp, 3).into_iter().find(|p| p.id == z2).unwrap();
+    let z2p = package_for(&mut lp, 3, 1, z2);
     lp.deliver(1, &z2p).unwrap();
     lp.deliver(4, &z2p).unwrap();
     let e = &mut lp.peers[4].engine;
@@ -414,7 +414,7 @@ fn flip_flag_on_a_pruned_session_settles_spec_permissions_4() {
     let f = osis_schema::core_types::Frontier { commits: Default::default() };
     let fall = set_edge(&mut lp.peers[0].engine, t, w, None, Some(f.clone()));
     // only the demotion: a full sync would give peer 1 the dropped body again
-    let fp = packages(&mut lp, 0).into_iter().find(|p| p.id == fall).unwrap();
+    let fp = package_for(&mut lp, 0, 1, fall);
     lp.deliver(1, &fp).unwrap();
     lp.deliver(3, &fp).unwrap();
     let flagged = |lp: &mut LocalPeer| lp.peers[1].engine.suspects().iter().any(|x| x.0 == t && x.1 == asp);
@@ -423,7 +423,7 @@ fn flip_flag_on_a_pruned_session_settles_spec_permissions_4() {
     let v3 = set(&mut lp, 3, t, &GONE, "v3");
     lp.advance(1_000);
     let z = lp.peers[3].engine.snapshot(&t, &asp).unwrap().unwrap();
-    for pk in packages(&mut lp, 3).into_iter().filter(|p| p.id == v3 || p.id == z) {
+    for pk in packages_for(&mut lp, 3, 1).into_iter().filter(|p| p.id == v3 || p.id == z) {
         lp.deliver(1, &pk).unwrap();
     }
     let e = &mut lp.peers[1].engine;
@@ -433,7 +433,7 @@ fn flip_flag_on_a_pruned_session_settles_spec_permissions_4() {
     // its author removed, listing none of its commits: it gives nothing, the flag shows again
     let f = osis_schema::core_types::Frontier { commits: Default::default() };
     let gone = set_edge(&mut lp.peers[0].engine, t, y, None, Some(f.clone()));
-    let gp = packages(&mut lp, 0).into_iter().find(|p| p.id == gone).unwrap();
+    let gp = package_for(&mut lp, 0, 1, gone);
     lp.deliver(1, &gp).unwrap();
     assert!(flagged(&mut lp), "the snapshot that settled it turned invalid");
 }
@@ -461,7 +461,7 @@ fn equal_stamped_snapshots_cover_each_other_spec_sync_7() {
     m.set(t, &REG, &s("a")).unwrap();
     m.op(t, &TAGS, osis_crdt::PathOp { path: Vec::new(), op: osis_crdt::Op::Add(s("a")) }).unwrap();
     let c = lp.peers[0].commit(m).unwrap().unwrap();
-    let pk = packages(&mut lp, 0).into_iter().find(|p| p.id == c).unwrap();
+    let pk = package_for(&mut lp, 0, 1, c);
     let h = lp.peers[0].engine.header(&c).unwrap();
     lp.advance(1_000);
     let a = lp.peers[2].engine.snapshot(&t, &tags).unwrap().unwrap();
@@ -518,7 +518,7 @@ fn invalid_or_lagging_later_snapshot_stays_and_stands_in_spec_commits_5() {
     m.set(t, &REG, &s("a")).unwrap();
     m.op(t, &TAGS, osis_crdt::PathOp { path: Vec::new(), op: osis_crdt::Op::Add(s("a")) }).unwrap();
     let c = lp.peers[0].commit(m).unwrap().unwrap();
-    let pk = packages(&mut lp, 0).into_iter().find(|p| p.id == c).unwrap();
+    let pk = package_for(&mut lp, 0, 1, c);
     let h = lp.peers[0].engine.header(&c).unwrap();
     lp.advance(1_000);
     let z2 = lp.peers[3].engine.snapshot(&t, &tags).unwrap().unwrap();
@@ -529,7 +529,7 @@ fn invalid_or_lagging_later_snapshot_stays_and_stands_in_spec_commits_5() {
     // Y removed, its snapshot listed by nothing: invalid, and still not covered
     let f = osis_schema::core_types::Frontier { commits: Default::default() };
     let gone = set_edge(&mut lp.peers[0].engine, t, y, None, Some(f.clone()));
-    let gp = packages(&mut lp, 0).into_iter().find(|p| p.id == gone).unwrap();
+    let gp = package_for(&mut lp, 0, 1, gone);
     lp.deliver(1, &gp).unwrap();
     let e = &mut lp.peers[1].engine;
     assert_eq!(e.covered(&z2, &z1, &t, &tags).unwrap(), Some(false), "an invalid snapshot covers nothing");
@@ -547,7 +547,7 @@ fn flip_flag_on(lp: &mut LocalPeer, t: Tid, asp: &Ak, body: &CommitId) {
     lp.advance(1_000);
     let f = osis_schema::core_types::Frontier { commits: Default::default() };
     let fall = set_edge(&mut lp.peers[0].engine, t, w, None, Some(f.clone()));
-    for p in packages(lp, 0).into_iter().filter(|p| p.id == fall) {
+    for p in packages_for(lp, 0, 1).into_iter().filter(|p| p.id == fall) {
         lp.deliver(1, &p).unwrap();
     }
     assert!(lp.peers[1].engine.suspects().iter().any(|x| x.0 == t && x.1 == *asp), "flagged");
@@ -559,7 +559,7 @@ fn later_snapshot_settles(lp: &mut LocalPeer, t: Tid, asp: &Ak) {
     let v = set(lp, 3, t, &GONE, "later");
     lp.advance(1_000);
     let z = lp.peers[3].engine.snapshot(&t, asp).unwrap().unwrap();
-    for p in packages(lp, 3).into_iter().filter(|p| p.id == v || p.id == z) {
+    for p in packages_for(lp, 3, 1).into_iter().filter(|p| p.id == v || p.id == z) {
         lp.deliver(1, &p).unwrap();
     }
     assert!(!lp.peers[1].engine.suspects().iter().any(|x| x.0 == t && x.1 == *asp), "settled");
