@@ -1803,6 +1803,21 @@ impl Walk {
         self.cuts[e].get(n).and_then(|c| c.last().copied())
     }
 
+    /// The cuts of (holder, target) below `r` in the settled walk ordered at or after `from`, by
+    /// `WriteId` (one range query; each cut a delta's path must answer, draft §5.2 Content).
+    pub(super) fn cuts_from(&self, holder: &Tid, target: &Tid, r: Role, from: &Key) -> Vec<WriteId> {
+        let Some(e) = self.find_edge(holder, target) else { return vec![] };
+        let n = usize::from(r == Role::Admin);
+        let ks = self.cuts[e].get(n).into_iter().flat_map(|c| c.range(*from..));
+        ks.filter_map(|k| self.hist[e].get(k)).map(|y| self.items[y.slot].id).collect()
+    }
+
+    /// The last applied write on (holder, target) ordered before `key`, by `WriteId`, and its entry.
+    pub(super) fn last_before(&self, holder: &Tid, target: &Tid, key: &Key) -> Option<(WriteId, Applied)> {
+        let e = self.find_edge(holder, target)?;
+        self.hist[e].range(..*key).next_back().map(|(_, y)| (self.items[y.slot].id, y.a))
+    }
+
     /// An applied edge write's edge and entry.
     pub(super) fn applied_write(&self, id: &WriteId) -> Option<((Tid, Tid), Applied)> {
         let s = *self.ids.get(id)?;

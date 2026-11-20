@@ -383,6 +383,25 @@ pub struct Rules {
     /// What a drop takes of the commit it drops a part of (notes/a1-spec/README.md Open 23: a
     /// single-use redemption's grant and its leave).
     pub drops: Drops,
+    /// What a cut's list (and an addendum against it) keeps of a delta it names (notes/
+    /// evidence-model-findings.md 26).
+    pub answers: Answers,
+}
+
+/// What a cut's list, or a valid addendum against the cut, keeps of a delta it names
+/// (notes/a1-spec/permissions.md §5.2 Content).
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum Answers {
+    /// The rule (`fixed`): it answers that cut alone, as a lowering's list exempts from its own
+    /// drops alone (§5.1): the delta is valid as if the cuts answering it had not cut it. Per edge
+    /// of its path the edge gives the role just before the delta, or its last write before the
+    /// delta is a cut answering it with the edge before that cut giving the role at the delta's
+    /// `ts`; and every cut of the edge ordered after the delta answers it.
+    PerCut,
+    /// Control (`-list-any-cut`): one answering cut of the path makes the delta valid, whatever
+    /// the path's other cuts took (a later remover of a writer of A lists a write A made through a
+    /// thing A had already lost, and revives it).
+    AnyCut,
 }
 
 /// What a drop (a lowering's audit, a trusted write's seeds) takes of a commit (Open 23).
@@ -492,6 +511,7 @@ impl Rules {
             purge_at_key: false,
             own_cover: false,
             drops: Drops::Part,
+            answers: Answers::AnyCut,
         }
     }
     /// The design: every fix the notes state, a removal judged in the world its list makes
@@ -532,6 +552,7 @@ impl Rules {
             purge_at_key: false,
             own_cover: false,
             drops: Drops::Commit,
+            answers: Answers::PerCut,
         }
     }
     /// The proposal (README.md, Paths, Making again; notes/role-remake-model.md): nothing vouches
@@ -1621,8 +1642,33 @@ fn settle(w: &World, rules: &Rules, v: &View, active: &Set) -> (Walk, BTreeMap<I
 }
 
 fn role_at(w: &World, p: &Pass, e: Edge, pos: Key) -> Role {
+    role_at_ts(w, p, e, pos, pos.0)
+}
+
+/// Whether a delta along `hops` positioned at `pos`, stamped `ts`, stands for role `r` against the
+/// cuts of its path (`cuts`: on its hops, below `r`), `answers` saying which cut its list or an
+/// addendum answers (notes/a1-spec/permissions.md §5.2 Content; `Answers`).
+#[allow(clippy::too_many_arguments)]
+fn stands(w: &World, rules: &Rules, p: &Pass, hops: &[Edge], pos: Key, ts: u32, r: Role, cuts: &[&Low], answers: &dyn Fn(&Low) -> bool) -> bool {
+    let after = |l: &&&Low| w.key(l.id) > pos;
+    if rules.answers == Answers::AnyCut {
+        return (hops.iter().all(|&e| role_at(w, p, e, pos) >= r) && !cuts.iter().any(|l| after(&l))) || cuts.iter().any(|l| answers(l));
+    }
+    hops.iter().all(|&e| {
+        let on = cuts.iter().filter(|l| l.edge == e);
+        on.clone().filter(after).all(|l| answers(l))
+            && (role_at(w, p, e, pos) >= r || {
+                // the edge's last write before the delta, a cut answering it: read as before it
+                let last = p.hist.get(&e).and_then(|h| h.iter().rev().find(|(k, _)| *k < pos)).map(|x| x.0);
+                last.is_some_and(|k| on.clone().any(|l| w.key(l.id) == k && answers(l)) && role_at_ts(w, p, e, k, ts) >= r)
+            })
+    })
+}
+
+/// The role edge `e` gives just before key `pos`, its `until` read at `ts`.
+fn role_at_ts(w: &World, p: &Pass, e: Edge, pos: Key, ts: u32) -> Role {
     let rec = if w.records.contains(&e) { (Role::Admin, None) } else { (Role::None, None) };
-    alive(p.hist.get(&e).and_then(|h| h.iter().rev().find(|(k, _)| *k < pos)).map_or(rec, |x| x.1), pos.0)
+    alive(p.hist.get(&e).and_then(|h| h.iter().rev().find(|(k, _)| *k < pos)).map_or(rec, |x| x.1), ts)
 }
 
 /// The first key after which every edge gives write in the settled walk (KEY0: from the start).
@@ -1715,20 +1761,24 @@ fn content(w: &World, rules: &Rules, v: &View, p: &Pass) -> (Set, Set) {
                 continue;
             }
             let cuts: Vec<&Low> = p.lows.iter().filter(|l| l.explicit && hops.contains(&l.edge) && l.before >= Role::Write && l.after < Role::Write).collect();
-            let held = hops.iter().all(|&e| role_at(w, p, e, pos) >= Role::Write);
-            let ok = (held && !cuts.iter().any(|l| w.key(l.id) > pos))
-                || cuts.iter().any(|l| listed(w, v, &none, l.id, i))
-                // an addendum vouches for no purge request (spec/permissions.md §6)
-                || valid.iter().any(|&a| match &w.commits[a].kind {
-                    Kind::Addendum { removal, list } if !matches!(w.commits[i].kind, Kind::Purge { .. }) => {
-                        w.commits[a].on == w.commits[i].on
-                            && list.iter().any(|&c| w.names(c, i))
-                            && !(rules.no_own_addendum && w.commits[a].signer == w.commits[i].signer)
-                            && cuts.iter().any(|l| l.id == *removal && w.key(l.id) > pos && w.key(l.id) < w.pos(a))
-                            && vouches(a)
-                    }
-                    _ => false,
-                })
+            // a cut is answered by its own list, or by a valid addendum against it (an addendum
+            // vouches for no purge request: spec/permissions.md §6)
+            let answers = |l: &Low| {
+                listed(w, v, &none, l.id, i)
+                    || valid.iter().any(|&a| match &w.commits[a].kind {
+                        Kind::Addendum { removal, list } if !matches!(w.commits[i].kind, Kind::Purge { .. }) => {
+                            w.commits[a].on == w.commits[i].on
+                                && list.iter().any(|&c| w.names(c, i))
+                                && !(rules.no_own_addendum && w.commits[a].signer == w.commits[i].signer)
+                                && l.id == *removal
+                                && w.key(l.id) > pos
+                                && w.key(l.id) < w.pos(a)
+                                && vouches(a)
+                        }
+                        _ => false,
+                    })
+            };
+            let ok = stands(w, rules, p, &hops, pos, w.commits[i].ts, Role::Write, &cuts, &answers)
                 || (hops.iter().all(|e| fin.get(e).is_some_and(|r| *r >= Role::Write)) && {
                     let from = match rules.regrant {
                         Regrant::FirstApplied => first_applied(w, p, &hops),
@@ -1801,10 +1851,9 @@ fn purges(w: &World, rules: &Rules, v: &View, p: &Pass, valid: &Set, copied: &Se
 }
 
 /// Whether request `q` holds role `r` on its thing (notes/a1-spec/permissions.md §6: exactly when a
-/// delta of it needing `r`, along its path, at its key would be valid, spec §5.2): its path gave
-/// `r` just before its position and no cut of its path below `r` is ordered after it; else a
-/// cut's list names it, a valid addendum by a holder of `r` against such a cut names it
-/// (`purge_addenda`), or the path is re-granted for `r`. A destruction's right reads no cut on an
+/// delta of it needing `r`, along its path, at its key would be valid, spec §5.2): it stands
+/// against each cut of its path below `r` (`stands`), a cut answered by its list or by a valid
+/// addendum by a holder of `r` against it (`purge_addenda`), or the path is re-granted for `r`. A destruction's right reads no cut on an
 /// edge into its own thing stamped after it. Under `purge_at_key` the first clause's role alone.
 #[allow(clippy::too_many_arguments)]
 fn holds(w: &World, rules: &Rules, v: &View, p: &Pass, valid: &Set, q: Id, r: Role, destroy: bool) -> bool {
@@ -1820,19 +1869,23 @@ fn holds(w: &World, rules: &Rules, v: &View, p: &Pass, valid: &Set, q: Id, r: Ro
     let cuts: Vec<&Low> = p.lows.iter().filter(|l| l.explicit && hops.contains(&l.edge) && l.before >= r && l.after < r && !(destroy && l.edge.1 == on && w.key(l.id) > pos)).collect();
     let none = Vouched::new();
     let gives = |a: Id| w.hops(a).iter().all(|&e| role_at(w, p, e, w.pos(a)) >= r);
-    (at && !cuts.iter().any(|l| w.key(l.id) > pos))
-        || cuts.iter().any(|l| listed(w, v, &none, l.id, q))
-        || (rules.purge_addenda
-            && valid.iter().any(|&a| match &w.commits[a].kind {
-                Kind::Addendum { removal, list } => {
-                    w.commits[a].on == on
-                        && list.iter().any(|&c| w.names(c, q))
-                        && !(rules.no_own_addendum && w.commits[a].signer == w.commits[q].signer)
-                        && cuts.iter().any(|l| l.id == *removal && w.key(l.id) > pos && w.key(l.id) < w.pos(a))
-                        && gives(a)
-                }
-                _ => false,
-            }))
+    let answers = |l: &Low| {
+        listed(w, v, &none, l.id, q)
+            || (rules.purge_addenda
+                && valid.iter().any(|&a| match &w.commits[a].kind {
+                    Kind::Addendum { removal, list } => {
+                        w.commits[a].on == on
+                            && list.iter().any(|&c| w.names(c, q))
+                            && !(rules.no_own_addendum && w.commits[a].signer == w.commits[q].signer)
+                            && l.id == *removal
+                            && w.key(l.id) > pos
+                            && w.key(l.id) < w.pos(a)
+                            && gives(a)
+                    }
+                    _ => false,
+                }))
+    };
+    stands(w, rules, p, &hops, pos, w.commits[q].ts, r, &cuts, &answers)
         || {
             let fin = finals(p);
             let chained = first_chained(w, &v.held, r);

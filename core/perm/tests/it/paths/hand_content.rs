@@ -985,3 +985,104 @@ fn a_role_class_delta_in_its_removals_millisecond_is_ordered_before_it() {
     assert_eq!(p.counting(), &BTreeSet::from([(c(7), c(4), t(KT))]));
     assert_eq!(p.content(&WriteId(c(4), 0)), Some(Content::Valid(By::Listed)));
 }
+
+// ---- A cut's list answers that cut alone (notes/evidence-model-findings.md 26) ----
+
+const CT: Thing = 43;
+
+/// Z holds write on A (H's grant at 1); A holds write on CT (M's grant at 2, M CT's mint).
+fn cut_twice() -> World {
+    let mut w = World::new(&[(H, A), (M, CT)]);
+    w.edge(H, 1, &[], A, Z, Write, &[]);
+    w.edge(M, 2, &[], CT, A, Write, &[]);
+    w
+}
+
+// spec/permissions.md §5.2 (content): M's cut of (A, CT) refuses Z's later write through [A];
+// H's later removal of Z listing it answers H's cut alone. Mutation: one answered cut answering
+// every cut fails it.
+#[test]
+fn a_cuts_list_keeps_a_write_from_that_cut_alone() {
+    let mut w = cut_twice();
+    w.edge(M, 4, &[], CT, A, Gone, &[]);
+    let c = w.content(Z, 5, &[A], CT);
+    let r = w.edge(H, 7, &[], A, Z, Gone, &[c]);
+    agree_all(&w, &[]);
+    agree_all(&w, &[r]);
+    assert_eq!(verdict(&w, &all(&w, &[]), c), Some(Content::Invalid));
+    w.edge(H, 1, &[], A, B, Write, &[]);
+    w.addendum(B, 8, &[A], CT, r, &[c]);
+    agree_all(&w, &[]);
+    assert_eq!(verdict(&w, &all(&w, &[]), c), Some(Content::Invalid));
+}
+
+// spec/permissions.md §5.2 (content): Z's write, stamped after both removals and received by
+// both removers, stands where each cut lists it; where only M lists it H's cut, the edge's last
+// write before it, refuses it.
+#[test]
+fn a_write_after_two_cuts_stands_where_each_lists_it() {
+    for both in [true, false] {
+        let mut w = cut_twice();
+        let c = w.content(Z, 5, &[A], CT);
+        w.edge(M, 4, &[], CT, A, Gone, &[c]);
+        let list = if both { vec![c] } else { vec![] };
+        w.edge(H, 4, &[], A, Z, Gone, &list);
+        agree_all(&w, &[]);
+        assert_eq!(verdict(&w, &all(&w, &[]), c), Some(if both { Content::Valid(By::Listed) } else { Content::Invalid }), "both {both}");
+    }
+}
+
+// spec/permissions.md §5.2 (content): two cuts of one edge after the write, the first listing it
+// or not: it stands only where each cut is answered, an addendum answering the cut it is against
+// alone. Mutations: an addendum answering any cut, a list answering every cut, fail it.
+#[test]
+fn a_write_stands_only_where_every_later_cut_of_its_edge_answers_it() {
+    for listed in [true, false] {
+        let mut w = World::new(&[(H, A)]);
+        w.edge(H, 1, &[], A, Z, Write, &[]);
+        w.edge(H, 1, &[], A, B, Write, &[]);
+        let c = w.content(Z, 2, &[], A);
+        let list = if listed { vec![c] } else { vec![] };
+        let r1 = w.edge(H, 4, &[], A, Z, Gone, &list);
+        w.edge(H, 5, &[], A, Z, Write, &[]);
+        let r2 = w.edge(H, 6, &[], A, Z, Gone, &[]);
+        agree_all(&w, &[]);
+        assert_eq!(verdict(&w, &all(&w, &[]), c), Some(Content::Invalid));
+        let mut w1 = w.clone();
+        w1.addendum(B, 7, &[], A, r1, &[c]);
+        agree_all(&w1, &[]);
+        assert_eq!(verdict(&w1, &all(&w1, &[]), c), Some(Content::Invalid), "listed {listed}");
+        w.addendum(B, 7, &[], A, r2, &[c]);
+        agree_all(&w, &[]);
+        assert_eq!(verdict(&w, &all(&w, &[]), c), Some(if listed { Content::Valid(By::Vouched) } else { Content::Invalid }), "listed {listed}");
+        w.addendum(B, 7, &[], A, r1, &[c]);
+        agree_all(&w, &[]);
+        assert_eq!(verdict(&w, &all(&w, &[]), c), Some(Content::Valid(By::Vouched)), "listed {listed}");
+    }
+}
+
+// spec/permissions.md §5.2 (content): a write stamped before its path gave the role, listed by a
+// later cut: the list answers the cut, not the missing grant.
+#[test]
+fn a_list_gives_no_role_the_path_never_gave() {
+    let mut w = World::new(&[(H, A)]);
+    let c = w.content(Z, 1, &[], A);
+    w.edge(H, 2, &[], A, Z, Write, &[]);
+    w.edge(H, 4, &[], A, Z, Gone, &[c]);
+    agree_all(&w, &[]);
+    assert_eq!(verdict(&w, &all(&w, &[]), c), Some(Content::Invalid));
+}
+
+// spec/permissions.md §5.2 (content): the edge before an answering cut is read at the write's
+// `ts`: a grant ended by then gives nothing back. Mutation: read at the cut's `ts` fails it.
+#[test]
+fn an_answered_cut_gives_back_only_what_the_edge_gave_at_the_write() {
+    for until in [true, false] {
+        let mut w = World::new(&[(H, A)]);
+        w.push(H, 1, &[], A, if until { Kind::set(Z, Write).until(3) } else { Kind::set(Z, Write) });
+        let c = w.content(Z, 5, &[], A);
+        w.edge(H, 2, &[], A, Z, Gone, &[c]);
+        agree_all(&w, &[]);
+        assert_eq!(verdict(&w, &all(&w, &[]), c), Some(if until { Content::Invalid } else { Content::Valid(By::Listed) }), "until {until}");
+    }
+}

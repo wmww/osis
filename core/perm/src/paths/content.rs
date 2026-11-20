@@ -554,14 +554,9 @@ impl<S: Store> Facts<S> {
         tl.applied_write(id).filter(|(e, a)| a.cuts(r) && hops.contains(e)).map(|(e, a)| (e, a.key))
     }
 
-    /// Whether a cut of `d`'s path at `(e, k)` is read: a destruction of thing `spare` reads no
-    /// cut on an edge into it ordered after it (draft §6 Destruction).
-    fn read_cut(d: &Fact, spare: Option<Tid>, (e, k): (Pair, Key)) -> bool {
-        !(spare == Some(e.1) && k > d.pos)
-    }
-
     /// (a): every hop gives `r` just before the delta's position and no cut of its path below
-    /// `r` (read, `read_cut`) is ordered after it.
+    /// `r` is ordered at or after it (a destruction of thing `spare` reads no cut on an edge into
+    /// it ordered after it: draft §6 Destruction).
     fn holds_role(&self, tl: &Walk, d: &Fact, r: Role, spare: Option<Tid>, counts: &mut Counts) -> bool {
         d.hops.iter().all(|&(h, t)| {
             counts.content += 1;
@@ -569,15 +564,52 @@ impl<S: Store> Facts<S> {
         })
     }
 
-    /// (b): a cut of its path below `r` lists its commit (its frontier, or a counting entry).
+    /// The edge writes answering `d` (draft §5.2 Content): those whose list names its commit
+    /// (a frontier, or a counting entry against them), and with `addenda` the removal parts a
+    /// valid addendum naming it vouches against. Each answers its own cut alone (`stands`).
+    fn answered(&self, tl: &Walk, d: &Fact, addenda: bool, counts: &mut Counts) -> BTreeSet<WriteId> {
+        let mut out = BTreeSet::new();
+        for n in self.namers(d, counts) {
+            match n {
+                Namer::Write(id) => {
+                    out.insert(id);
+                }
+                Namer::Addendum(a) if addenda && self.store.valid_addendum(&a) => {
+                    if let Some(ad) = self.store.get(&a) {
+                        out.extend(self.vouches(tl, &ad, d, counts));
+                    }
+                }
+                Namer::Addendum(_) => {}
+            }
+        }
+        for c in self.counted.get(&(d.commit(), d.on)).into_iter().flatten() {
+            counts.content += 1;
+            out.extend(tl.parts_of(c));
+        }
+        out
+    }
+
+    /// Whether `d` stands for `r` against every cut of its path below `r` (draft §5.2 Content):
+    /// per hop, every cut ordered at or after it (read: as `holds_role`) is answered, and the hop
+    /// gives `r` just before it, or its last write before it is an answered cut that the hop gave
+    /// `r` just before, read at `d`'s `ts`. A cut's answer speaks for that cut alone: valid as if
+    /// the cuts answering it had not cut it, the others standing.
+    fn stands(tl: &Walk, d: &Fact, r: Role, spare: Option<Tid>, answered: &BTreeSet<WriteId>, counts: &mut Counts) -> bool {
+        d.hops.iter().all(|&(h, t)| {
+            counts.content += 1;
+            let later = if spare == Some(t) { vec![] } else { tl.cuts_from(&h, &t, r, &d.pos) };
+            counts.content += later.len() as u64;
+            later.iter().all(|c| answered.contains(c))
+                && (tl.role_before(&h, &t, &d.pos) >= Some(r)
+                    || tl.last_before(&h, &t, &d.pos).is_some_and(|(id, a)| a.cuts(r) && answered.contains(&id) && a.before.filter(|v| v.alive_at(Some(d.pos.ts))).map(|v| v.role) >= Some(r)))
+        })
+    }
+
+    /// (b): it stands against every cut of its path below `r`, each answered by its own list
+    /// (a frontier, or a counting entry).
     fn listed(&self, tl: &Walk, d: &Fact, r: Role, spare: Option<Tid>, counts: &mut Counts) -> bool {
-        let read = |id: &WriteId| Self::cut_on(tl, id, r, &d.hops).is_some_and(|c| Self::read_cut(d, spare, c));
-        let by_frontier = self.namers(d, counts).iter().any(|n| matches!(n, Namer::Write(id) if read(id)));
-        by_frontier
-            || self.counted.get(&(d.commit(), d.on)).into_iter().flatten().any(|c| {
-                counts.content += 1;
-                tl.parts_of(c).iter().any(read)
-            })
+        let answered = self.answered(tl, d, false, counts);
+        !answered.is_empty() && Self::stands(tl, d, r, spare, &answered, counts)
     }
 
     /// Whether the delta is content an addendum may vouch for: a plain delta or an addendum of a
@@ -588,18 +620,23 @@ impl<S: Store> Facts<S> {
             && !self.store.of_commit(&d.commit(), None).iter().any(|id| self.store.get(id).is_some_and(|f| matches!(f.class, FactClass::Purge(_))))
     }
 
-    /// Whether addendum `a` (assumed valid) vouches for delta `d` (draft §5.2 Addenda).
-    fn vouches(&self, tl: &Walk, a: &Fact, d: &Fact, counts: &mut Counts) -> bool {
-        let FactClass::Addendum(removal, _) = &a.class else { return false };
+    /// The cuts of `d`'s path addendum `a` (assumed valid) vouches against for `d` (draft §5.2
+    /// Addenda): its removal's parts cutting the path below what `d` needs, ordered after `d` and
+    /// before `a`, where its other conditions hold.
+    fn vouches(&self, tl: &Walk, a: &Fact, d: &Fact, counts: &mut Counts) -> Vec<WriteId> {
+        let FactClass::Addendum(removal, _) = &a.class else { return vec![] };
         if a.on != d.on || a.signer == d.signer || !self.vouchable(d) || !d.well {
-            return false;
+            return vec![];
         }
         let need = d.needs.max(Role::Write);
         let path = a.hops.iter().all(|(h, t)| {
             counts.content += 1;
             tl.role_before(h, t, &a.pos) >= Some(need)
         });
-        path && tl.parts_of(removal).iter().any(|id| Self::cut_on(tl, id, d.needs, &d.hops).is_some_and(|(_, k)| k >= d.pos && k < a.pos))
+        if !path {
+            return vec![];
+        }
+        tl.parts_of(removal).into_iter().filter(|id| Self::cut_on(tl, id, d.needs, &d.hops).is_some_and(|(_, k)| k >= d.pos && k < a.pos)).collect()
     }
 
     /// (d): its path is re-granted for `r` and it is positioned after the latest of each edge's
@@ -659,12 +696,15 @@ impl<S: Store> Facts<S> {
         }
     }
 
+    /// It stands against every cut of its path, each answered by its own list or by a valid
+    /// addendum vouching against it, an addendum among them.
     fn vouched(&self, tl: &Walk, d: &Fact, counts: &mut Counts) -> bool {
-        self.vouchable(d)
-            && self.namers(d, counts).iter().any(|n| match n {
-                Namer::Addendum(a) => self.store.valid_addendum(a) && self.store.get(a).is_some_and(|ad| self.vouches(tl, &ad, d, counts)),
-                Namer::Write(_) => false,
-            })
+        if !self.vouchable(d) {
+            return false;
+        }
+        let lists = self.answered(tl, d, false, counts);
+        let answered = self.answered(tl, d, true, counts);
+        answered.len() > lists.len() && Self::stands(tl, d, d.needs, None, &answered, counts)
     }
 
     pub(super) fn content(&self, tl: &Walk, id: &WriteId, counts: &mut Counts) -> Option<Content> {
@@ -964,7 +1004,7 @@ impl<S: Store> Facts<S> {
     }
 
     /// The worklist: each addendum popped turns valid and the addenda its list names that it
-    /// vouches for are pushed.
+    /// vouches against a cut for, and that now stand against every cut, are pushed.
     fn spread(&mut self, tl: &Walk, mut queue: Vec<WriteId>, counts: &mut Counts) {
         while let Some(a) = queue.pop() {
             if self.store.valid_addendum(&a) {
@@ -981,7 +1021,8 @@ impl<S: Store> Facts<S> {
                     }
                     if let Some(td) = self.store.get(&t)
                         && self.is_addendum(&td)
-                        && self.vouches(tl, &ad, &td, counts)
+                        && !self.vouches(tl, &ad, &td, counts).is_empty()
+                        && self.vouched(tl, &td, counts)
                     {
                         queue.push(t);
                     }

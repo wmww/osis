@@ -567,6 +567,41 @@ fn a_delta_under_k_cuts_is_a_point_query() {
     assert_eq!(per[0], per[1], "{per:?}");
 }
 
+// spec/permissions.md §5.2 (content): a delta each of k cuts of its edge answers (every removal
+// lists it) stands only where every one does, so its query reads each cut once: linear in the cuts
+// after it on its path's edges (5 + 2k reads: 7, 9, 25 at k = 1, 2, 10). Who can
+// force it: the edge's admins, one cut per raise and lowering.
+#[test]
+fn a_delta_every_cut_answers_reads_each_cut_once() {
+    let mut per = vec![];
+    for k in [1u64, 2, 10] {
+        let mut c = vec![write(1, H, 1, &[], A, X, Some(Role::Admin)), content(9, X, 5, &[A], C, None)];
+        for i in 0..k {
+            let mut cut = write(10 + 2 * i, H, 10 + 2 * i, &[], A, X, None);
+            if let PartKind::Edge(ew) = &mut cut.parts[0].kind {
+                ew.frontier = Some(Arc::new(Frontier::new([cid(9)])));
+            }
+            c.push(cut);
+            c.push(write(11 + 2 * i, H, 11 + 2 * i, &[], A, X, Some(Role::Admin)));
+        }
+        // the last re-grant removed: no re-grant answers it, the lists alone
+        c.push(write(10 + 2 * k, H, 10 + 2 * k, &[], A, X, None));
+        let p = Paths::evaluate(&records(), BTreeSet::new(), &c);
+        let mut q = Counts::default();
+        assert_eq!(p.content_counted(&WriteId(cid(9), 0), &mut q), Some(Content::Invalid), "k {k}: the last cut lists nothing");
+        let mut c2 = c.clone();
+        if let Some(PartKind::Edge(ew)) = c2.last_mut().map(|x| &mut x.parts[0].kind) {
+            ew.frontier = Some(Arc::new(Frontier::new([cid(9)])));
+        }
+        let p = Paths::evaluate(&records(), BTreeSet::new(), &c2);
+        let mut q = Counts::default();
+        assert_eq!(p.content_counted(&WriteId(cid(9), 0), &mut q), Some(Content::Valid(By::Listed)), "k {k}");
+        per.push(q.content);
+    }
+    let step = per[1] - per[0];
+    assert!(step > 0 && per[2] - per[1] == 8 * step, "{per:?}");
+}
+
 // An update judges again only the addenda it reaches (notes/perm-paths.md, Counting entries and
 // addenda, by reach): Y's k addenda along [A] against H's removal of X; a stranger's write that
 // applies nowhere, a grant on B and a grant on A after them judge none, at k = 100 and 1000; a

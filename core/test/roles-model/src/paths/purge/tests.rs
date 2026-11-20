@@ -216,7 +216,8 @@ fn a_request_made_after_the_removal_is_kept_by_no_witness() {
 
 /// Purge worlds at small size: the draft's purge rules, under both role rule sets, hold every
 /// required gate but `purge witnessed` (finding 41), which its fix closes; `fixed` (the `author`
-/// class alone) fails `purge kept` (classes, selectors, copies owed); `-purge-at-key` fails safety.
+/// class alone) fails `purge kept` (classes, selectors, copies owed); `-purge-at-key` and
+/// `-list-any-cut` fail safety.
 #[test]
 #[ignore = "property"]
 fn purge_worlds_hold_plain() {
@@ -236,6 +237,8 @@ fn purge_worlds_hold_plain() {
     assert!(purge_run_from(0, n, &Rules::fixed()).fails.contains_key("purge kept"));
     assert!(purge_run_from(0, n, &Rules { purge_at_key: true, ..Rules::purging() }).fails.contains_key("purge safety"));
     assert!(purge_run_from(0, n, &Rules { own_cover: false, ..Rules::purging() }).fails.contains_key("own cover"));
+    // a cut's list answering every cut of the path: the thief's requests along [ORG] past B's cut
+    assert!(purge_run_from(0, n, &Rules { answers: Answers::AnyCut, ..Rules::purging() }).fails.contains_key("purge safety"));
 }
 
 /// As `purge_worlds_hold_plain` at the gate's size (4,000 worlds a rule set, about 16 CPU-s each):

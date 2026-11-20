@@ -3604,3 +3604,111 @@ fn a_removed_keys_backdated_lowering_drops_a_witness_write_for_good() {
         }
     }
 }
+
+// ---- A cut's list answers that cut alone (notes/evidence-model-findings.md 26) ----
+
+const CT: Thing = 43;
+
+/// Z holds write on A (H's grant at 1); A holds write on CT (M's grant at 2, M CT's mint).
+fn cut_twice() -> World {
+    let mut w = World::new(&[(H, A), (M, CT)]);
+    w.edge(H, 1, &[], A, Z, Write, &[]);
+    w.edge(M, 2, &[], CT, A, Write, &[]);
+    w
+}
+
+fn any_cut(w: &World) -> Reading {
+    fixed_but(w, &[], |r| r.answers = Answers::AnyCut)
+}
+
+/// M removes A from CT at 4, listing nothing; Z then writes CT through [A] at 5; H removes Z from
+/// A at 7 listing everything it received, Z's write included. H's list answers H's cut of (Z, A)
+/// alone: M's cut of (A, CT) already refused the write, and H holds no authority over that edge.
+/// Control `-list-any-cut`: H's list revives it.
+#[test]
+fn a_cuts_list_keeps_a_write_from_that_cut_alone() {
+    let mut w = cut_twice();
+    w.edge(M, 4, &[], CT, A, Gone, &[]);
+    let c = w.content(Z, 5, &[A], CT);
+    let r = w.edge(H, 7, &[], A, Z, Gone, &[c]);
+    for t in [&[][..], &[r]] {
+        let rd = judge(&w, &Rules::fixed(), &View::all(&w).trusting(t));
+        assert!(!rd.shows(c), "{rd:?}");
+    }
+    assert!(any_cut(&w).valid.contains(&c));
+    // an addendum against H's removal answers H's cut alone too
+    w.edge(H, 1, &[], A, B, Write, &[]);
+    w.addendum(B, 8, &[A], CT, r, &[c]);
+    assert!(!fixed(&w, &[]).shows(c));
+}
+
+/// Z's clock runs ahead: its write stamped 5 reaches both removers before they write at 4. Each
+/// cut lists it, so it stands against each: valid. Where only M lists it, H's cut of (Z, A), the
+/// edge's last write before it, refuses it.
+#[test]
+fn a_write_after_two_cuts_stands_where_each_lists_it() {
+    for both in [true, false] {
+        let mut w = cut_twice();
+        let c = w.content(Z, 5, &[A], CT);
+        w.edge(M, 4, &[], CT, A, Gone, &[c]);
+        let list = if both { vec![c] } else { vec![] };
+        w.edge(H, 4, &[], A, Z, Gone, &list);
+        assert_eq!(fixed(&w, &[]).valid.contains(&c), both, "both {both}");
+        assert!(any_cut(&w).valid.contains(&c));
+    }
+}
+
+/// One edge cut twice after the write: H's first removal lists it or not, the second (after a
+/// re-grant) does not. It stands only where each cut is answered: an addendum answers the cut it
+/// is against, not the other.
+#[test]
+fn a_write_stands_only_where_every_later_cut_of_its_edge_answers_it() {
+    for listed in [true, false] {
+        let mut w = World::new(&[(H, A)]);
+        w.edge(H, 1, &[], A, Z, Write, &[]);
+        w.edge(H, 1, &[], A, B, Write, &[]);
+        let c = w.content(Z, 2, &[], A);
+        let list = if listed { vec![c] } else { vec![] };
+        let r1 = w.edge(H, 4, &[], A, Z, Gone, &list);
+        w.edge(H, 5, &[], A, Z, Write, &[]);
+        let r2 = w.edge(H, 6, &[], A, Z, Gone, &[]);
+        assert!(!fixed(&w, &[]).shows(c));
+        assert_eq!(any_cut(&w).valid.contains(&c), listed);
+        // an addendum against the first cut alone
+        let mut w1 = w.clone();
+        w1.addendum(B, 7, &[], A, r1, &[c]);
+        assert!(!fixed(&w1, &[]).shows(c), "listed {listed}");
+        // against the second: valid where the first is answered too
+        w.addendum(B, 7, &[], A, r2, &[c]);
+        assert_eq!(fixed(&w, &[]).valid.contains(&c), listed, "listed {listed}");
+        w.addendum(B, 7, &[], A, r1, &[c]);
+        assert!(fixed(&w, &[]).valid.contains(&c), "listed {listed}");
+    }
+}
+
+/// A write stamped before its path gave the role, listed by a later cut: the list answers the
+/// cut, not the missing grant (valid as if the cut had not cut it: the edge gave nothing then).
+#[test]
+fn a_list_gives_no_role_the_path_never_gave() {
+    let mut w = World::new(&[(H, A)]);
+    let c = w.content(Z, 1, &[], A);
+    w.edge(H, 2, &[], A, Z, Write, &[]);
+    w.edge(H, 4, &[], A, Z, Gone, &[c]);
+    assert!(!fixed(&w, &[]).shows(c));
+    assert!(any_cut(&w).valid.contains(&c));
+}
+
+/// The edge before an answering cut is read at the write's `ts`: H's removal at 2 lists Z's write
+/// stamped 5 (Z's clock ahead), but Z's grant ended at 3: the cut not taken, the edge gave
+/// nothing at 5. With a standing grant it stands.
+#[test]
+fn an_answered_cut_gives_back_only_what_the_edge_gave_at_the_write() {
+    for until in [true, false] {
+        let mut w = World::new(&[(H, A)]);
+        w.push(H, 1, &[], A, if until { Kind::set(Z, Write).until(3) } else { Kind::set(Z, Write) });
+        let c = w.content(Z, 5, &[], A);
+        w.edge(H, 2, &[], A, Z, Gone, &[c]);
+        assert_eq!(fixed(&w, &[]).valid.contains(&c), !until, "until {until}");
+        assert!(any_cut(&w).valid.contains(&c));
+    }
+}

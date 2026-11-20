@@ -16,6 +16,9 @@
 //! the removal, racing it, or after) and along [A2], destructions along each, and a hidden write
 //! that a request names. Nodes: H, B, W, K, readers RD (T1) and LJ (T1, joining at 8: it holds
 //! only what was made from then, so earlier writes only as a cover's copies), N6 trusting nothing.
+//! One world in four (`PSetup::o_cut`) adds a path with two cuts: X admin on ORG (M's), ORG admin
+//! on T1 (B's), B removing ORG from T1 at 3, the thief requesting or destroying along [ORG] from
+//! then, and M removing X from ORG at 6 listing everything X made through it.
 
 use super::*;
 
@@ -45,10 +48,17 @@ pub struct PSetup {
     pub b_saw_own: bool,
     /// A destruction of T1 at 9 by B.
     pub destroy: bool,
+    /// Two cuts on two edges of one path (notes/evidence-model-findings.md 26): ORG (M's) holds
+    /// admin on T1 (B's grant at 1) and X admin on ORG (M's grant at 1); B removes ORG from T1 at
+    /// 3, listing what it received through it; the thief requests or destroys along [ORG] after
+    /// that, and M, hoodwinked, removes X from ORG at the removal listing everything X made
+    /// through it. M's list answers M's cut alone: the requests hold nothing.
+    pub o_cut: bool,
 }
 
 /// A thief move: `kind` 0 a request along [A], 1 along [A2], 2 a destruction along [A], 3 along
-/// [A2], 4 a hidden write and a request naming it; `sel` its names (as `PSetup::x_req`).
+/// [A2], 4 a hidden write and a request naming it, 5 a request along [ORG], 6 a destruction along
+/// [ORG] (`PSetup::o_cut`); `sel` its names (as `PSetup::x_req`).
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct PMove {
     pub kind: u8,
@@ -65,8 +75,11 @@ pub struct PWorld {
     pub made: Vec<u32>,
     pub recv: Vec<BTreeMap<Thing, u32>>,
     pub sync: BTreeMap<Thing, Things>,
-    /// H's removal of X; B's removal of H; H's own cover; what H forgot under it.
+    /// H's removal of X; B's removal of H; H's own cover; what H forgot under it; B's removal of
+    /// ORG from T1 and M's of X from ORG (`PSetup::o_cut`).
     pub r: Id,
+    pub rb: Option<Id>,
+    pub rm: Option<Id>,
     pub rh: Option<Id>,
     pub own: Option<Id>,
     pub forgot: Set,
@@ -177,8 +190,8 @@ pub fn purge_build(setup: &PSetup, moves: &[PMove], rules: &Rules, rng: &mut Rng
         (LJ, Things::from([T1])),
         (N6, Things::from([A, A2, T1])),
     ]);
-    let w = World::new(&[(H, A), (K, A2), (A, T1)]);
-    let mut m = PWorld { w, setup: s, moves: moves.to_vec(), made: vec![], recv: vec![], sync, r: 0, rh: None, own: None, forgot: Set::new(), thief: Set::new(), index: 0 };
+    let w = World::new(&if s.o_cut { vec![(H, A), (K, A2), (A, T1), (M, ORG)] } else { vec![(H, A), (K, A2), (A, T1)] });
+    let mut m = PWorld { w, setup: s, moves: moves.to_vec(), made: vec![], recv: vec![], sync, r: 0, rb: None, rm: None, rh: None, own: None, forgot: Set::new(), thief: Set::new(), index: 0 };
     let grant = Kind::set;
     m.put(H, 1, &[], A, grant(X, Role::Admin), 1, rng, false);
     m.put(H, 1, &[], A, grant(B, Role::Admin), 1, rng, false);
@@ -186,6 +199,10 @@ pub fn purge_build(setup: &PSetup, moves: &[PMove], rules: &Rules, rng: &mut Rng
     m.put(B, 1, &[A], T1, grant(A2, if s.ra_admin { Role::Admin } else { Role::Write }), 1, rng, false);
     if s.rx > 0 {
         m.put(K, 1, &[], A2, grant(X, if s.rx == 2 { Role::Admin } else { Role::Write }), 1, rng, false);
+    }
+    if s.o_cut {
+        m.put(M, 1, &[], ORG, grant(X, Role::Admin), 1, rng, false);
+        m.put(B, 1, &[A], T1, grant(ORG, Role::Admin), 1, rng, false);
     }
     for t in 2..=4 {
         for n in [H, B, W, K, X] {
@@ -204,16 +221,20 @@ pub fn purge_build(setup: &PSetup, moves: &[PMove], rules: &Rules, rng: &mut Rng
             m.recv[q].insert(n, if saw { 4 } else { SETTLE });
         }
     }
+    if s.o_cut {
+        let f = m.w.cut(&m.w.through((ORG, T1), |i| m.got(i, B, 3)));
+        m.rb = Some(m.put(B, 3, &[A], T1, grant(ORG, Role::None).listing(f), 3, rng, false));
+    }
     let thief = |m: &mut PWorld, mv: &PMove, rng: &mut Rng| {
         let first = m.w.commits.len();
         let late = mv.made > REMOVAL;
         let a2 = matches!(mv.kind, 1 | 3);
-        if a2 && s.rx == 0 {
+        if (a2 && s.rx == 0) || (mv.kind >= 5 && !s.o_cut) {
             return;
         }
-        let path: &[Thing] = if a2 { &[A2] } else { &[A] };
+        let path: &[Thing] = if a2 { &[A2] } else if mv.kind >= 5 { &[ORG] } else { &[A] };
         let names = match mv.kind {
-            2 | 3 => Names::Destroy,
+            2 | 3 | 6 => Names::Destroy,
             4 => {
                 let hidden = m.put(X, mv.ts.min(4), path, T1, Kind::Content, mv.made, rng, true);
                 Names::Commit(hidden)
@@ -250,6 +271,13 @@ pub fn purge_build(setup: &PSetup, moves: &[PMove], rules: &Rules, rng: &mut Rng
     let f = m.w.cut(&listed);
     m.r = m.w.push(H, REMOVAL, &[], A, grant(X, Role::None).listing(f));
     m.deliver(m.r, REMOVAL, rng, false, &[T1]);
+    if s.o_cut {
+        // M, hoodwinked, lists everything X made through (X, ORG) by the theft
+        let f = m.w.cut(&m.w.through((X, ORG), |i| m.made[i] <= STOLEN));
+        let rm = m.w.push(M, REMOVAL, &[], ORG, grant(X, Role::None).listing(f));
+        m.deliver(rm, REMOVAL, rng, false, &[T1]);
+        m.rm = Some(rm);
+    }
     for mv in moves.iter().filter(|mv| mv.made > STOLEN) {
         thief(&mut m, mv, rng);
     }
@@ -310,13 +338,22 @@ pub fn purge_world(i: u64, rules: &Rules) -> PWorld {
         own: rng.below(4) == 0,
         b_saw_own: b(&mut rng),
         destroy: rng.below(8) == 0,
+        o_cut: false,
     };
-    let moves: Vec<PMove> = (0..rng.below(4))
+    let mut moves: Vec<PMove> = (0..rng.below(4))
         .map(|_| {
             let made = [STOLEN, REMOVAL, 7, 8, 9][rng.below(5)];
             PMove { kind: rng.below(5) as u8, sel: 1 + rng.below(4) as u8, ts: 1 + rng.below(9) as u32, made }
         })
         .collect();
+    // (drawn apart, so the worlds without it are drawn as before)
+    let mut more = Rng::thread(0x9e7b, i as usize);
+    let s = PSetup { o_cut: more.below(4) == 0, ..s };
+    if s.o_cut {
+        for _ in 0..1 + more.below(2) {
+            moves.push(PMove { kind: 5 + more.below(2) as u8, sel: 1 + more.below(4) as u8, ts: 1 + more.below(STOLEN as usize) as u32, made: STOLEN });
+        }
+    }
     let mut m = purge_build(&s, &moves, rules, &mut rng);
     m.index = i;
     m
@@ -428,13 +465,21 @@ pub fn purge_check(m: &PWorld, rules: &Rules, st: &mut PStats) {
             (K, _) => by(ra),
             // (X's grant on A2 is stamped 1: a request stamped 1 is ordered before it)
             (X, [A2]) => by(if c.ts > 1 { xa2 } else { Role::None }),
-            // X along [A]: before the removal, kept by H's list
-            (X, _) => by(if w.in_frontier(m.r, q) { Role::Admin } else { Role::None }),
+            // X along [ORG]: past B's cut of (ORG, T1) at 3 and M's of (X, ORG), each answered by
+            // its own list alone, after X's grant (stamped 1); a destruction stamped by 3 reads no
+            // cut into T1 after it (§6)
+            (X, [ORG]) => {
+                let past_b = m.rb.is_some_and(|rb| w.in_frontier(rb, q)) || (matches!(c.kind, Kind::Purge { names: Names::Destroy }) && c.ts <= 3);
+                by(if c.ts > 1 && past_b && m.rm.is_some_and(|rm| w.in_frontier(rm, q)) { Role::Admin } else { Role::None })
+            }
+            // X along [A]: before the removal, kept by H's list where X's grant on A (stamped 1)
+            // gave it admin: a list answers its cut, never a role the path did not give
+            (X, _) => by(if w.in_frontier(m.r, q) && c.ts > 1 { Role::Admin } else { Role::None }),
             _ => (false, false),
         };
         let mut req = base;
         // (stamped after the removal, nothing vouches for it: it is no edit made before it)
-        if c.signer == X && c.path == [A] && !w.in_frontier(m.r, q) && m.made[q] <= REMOVAL && c.ts <= REMOVAL && held.contains(&m.r) {
+        if c.signer == X && c.path == [A] && !w.in_frontier(m.r, q) && m.made[q] <= REMOVAL && c.ts > 1 && c.ts <= REMOVAL && held.contains(&m.r) {
             for (wit, r) in [(B, Role::Admin), (W, Role::Write), (K, ra)] {
                 if m.got(q, wit, REMOVAL) {
                     req = (req.0 || r == Role::Admin, req.1 || r >= Role::Write);
@@ -577,6 +622,7 @@ pub fn purge_rules(mode: &str) -> Option<Rules> {
         "-at-key" => Rules { purge_at_key: true, ..p },
         "-no-copies" => Rules { purge_copies: false, ..p },
         "-no-own-cover" => Rules { own_cover: false, ..p },
+        "-list-any-cut" => Rules { answers: Answers::AnyCut, ..p },
         _ => return None,
     })
 }

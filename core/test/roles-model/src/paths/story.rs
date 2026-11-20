@@ -2060,7 +2060,8 @@ pub fn family_run(rules: &Rules, stride: usize) -> Stats {
 /// (a carried write judged by its own facts, not shown by a cover's copy: not the design),
 /// `-until-at-key` and `-until-past-end` (an end date on admin as a lowering: `Until`, both failing
 /// a required gate); what a drop takes of a commit (`Drops`): the control `-part-drops` (each
-/// part by its own need) and the variants `-leave-lowers`, `-leave-on-grant`, `-redemption-whole`.
+/// part by its own need) and the variants `-leave-lowers`, `-leave-on-grant`, `-redemption-whole`;
+/// `-list-any-cut` (one answering cut of a delta's path makes it valid: `Answers`).
 /// `-exh` runs the small family in place of random worlds.
 pub fn mode_rules(mode: &str) -> Option<Rules> {
     let f = Rules::fixed();
@@ -2100,6 +2101,7 @@ pub fn mode_rules(mode: &str) -> Option<Rules> {
         "-leave-lowers" => Rules { drops: Drops::LeaveLowers, ..f },
         "-leave-on-grant" => Rules { drops: Drops::LeaveOnGrant, ..f },
         "-redemption-whole" => Rules { drops: Drops::Redemption, ..f },
+        "-list-any-cut" => Rules { answers: Answers::AnyCut, ..f },
         _ => return None,
     })
 }
