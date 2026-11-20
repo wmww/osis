@@ -122,17 +122,43 @@ pub enum Kind {
     },
     Addendum { removal: Id, list: Set },
     Vouch { removal: Id, list: Set },
-    /// A purge request by author (spec/commits.md §5 Purge; notes/write-path-design.md §1, The
-    /// purge author): it names the earlier deltas on its thing whose purge author is `author`.
-    /// Content-class, judged as a content write along its path.
-    Purge { author: Thing },
+    /// A purge request (spec/commits.md §5 Purge; notes/a1-spec/permissions.md §6): it names
+    /// deltas on its thing (`Names`) and drops each it holds a right over (`purges`). Content-class,
+    /// judged as a content write along its path.
+    Purge { names: Names },
     /// A compaction snapshot of its thing (spec/commits.md §5 Covered), carrying the content
     /// commits on it that showed at its writer. Content-class, judged as a content write along its
     /// path. A list or addendum naming it names what it carries (an own cover).
     Cover { carries: Set },
 }
 
+/// What a purge request names on its thing (spec/wire.md §4 field 8, `PurgeItem`).
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum Names {
+    /// `[tid, ak, author]`: the deltas stamped before it whose purge author is exactly this thing.
+    Author(Thing),
+    /// `[tid, ak]`: every delta stamped before it.
+    Aspect,
+    /// `[tid, ak, ts, source]`: one delta, stamped before it.
+    Commit(Id),
+    /// `[tid, created.0]`: the thing's creation (spec/commits.md §5 Destruction): every delta on it,
+    /// whatever its `ts`, by the `admin` right alone.
+    Destroy,
+}
+
+/// Who may purge a delta (spec/commits.md §5 Who and how long), fixed when it is written.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum Retention {
+    Admin,
+    AuthorOrAdmin,
+    Writer,
+}
+
 impl Kind {
+    /// A purge request by author.
+    pub fn purge(author: Thing) -> Kind {
+        Kind::Purge { names: Names::Author(author) }
+    }
     /// An edge write setting `holder`'s edge to `role`, standing, listing nothing.
     pub fn set(holder: Thing, role: Role) -> Kind {
         Kind::Edge { holder, role, until: None, frontier: BTreeMap::new(), relies: None, adminless: false, invite: Role::None, finalize: false }
@@ -183,6 +209,10 @@ pub struct Commit {
     leave: bool,
     /// The purge author: an index into [signer, path..] (notes/write-path-design.md §1).
     pa: usize,
+    /// Who may purge its delta (content only; `Rules::purge_classes` reads it).
+    pub ret: Retention,
+    /// A compaction snapshot marked as its writer's own cover (`Rules::own_cover` reads it).
+    pub own: bool,
     /// The commit this part belongs to: the ID of its first part (its own for a commit of one
     /// part). A commit's parts are consecutive in key order (`World::commit`).
     cid: Id,
@@ -324,6 +354,28 @@ pub struct Rules {
     /// removed party's role write that the removal dropped makes the write again as its own, where
     /// it holds the right to (`Sim::remake_at`).
     pub remake: bool,
+    /// Purge rights by class (notes/a1-spec/permissions.md §6, *taken*): a request holds, over each
+    /// delta it names, each member of the delta's retention set it holds: `admin` where it is valid
+    /// as a delta needing admin along its path, `writer` as one needing write, `author` as one
+    /// needing write whose chain holds the delta's purge author; every selector (`Names`) read.
+    /// False (`fixed`, the unwired walk): the `author` class alone, by author alone, retention unread.
+    pub purge_classes: bool,
+    /// A request reaches the writes a valid cover shows of a commit the node does not hold (spec/
+    /// commits.md §5 Purge, Without the header: judged by the facts the cover states, here the
+    /// commit's own). False (`fixed`): held deltas alone.
+    pub purge_copies: bool,
+    /// OPEN-proposed: an addendum vouches for a purge request as for content, by a writer holding
+    /// the role the class needs (admin for `admin`). False (*taken*, spec/permissions.md §6 today):
+    /// no addendum vouches for one.
+    pub purge_addenda: bool,
+    /// Variant (`-purge-at-key`, "gone means gone"): a request holds a role iff its path gives it
+    /// at its key; no later cut takes the right.
+    pub purge_at_key: bool,
+    /// A cover marked as its writer's own cover is also valid while an explicit lowering the
+    /// timeline applies, signed by its writer, ordered at or after it, names it
+    /// (notes/a1-spec/permissions.md §5.2 Own cover, *taken*), whatever cuts its path later. False:
+    /// judged as any cover.
+    pub own_cover: bool,
 }
 
 /// What a counting vouch entry keeps of the commit `c` it names (notes/a1-spec/permissions.md
@@ -403,6 +455,11 @@ impl Rules {
             until: Until::Plain,
             entry: Entry::Whole,
             remake: false,
+            purge_classes: false,
+            purge_copies: false,
+            purge_addenda: false,
+            purge_at_key: false,
+            own_cover: false,
         }
     }
     /// The design: every fix the notes state, a removal judged in the world its list makes
@@ -437,6 +494,11 @@ impl Rules {
             until: Until::Plain,
             entry: Entry::OnThing,
             remake: false,
+            purge_classes: false,
+            purge_copies: false,
+            purge_addenda: false,
+            purge_at_key: false,
+            own_cover: false,
         }
     }
     /// The proposal (README.md, Paths, Making again; notes/role-remake-model.md): nothing vouches
@@ -444,6 +506,16 @@ impl Rules {
     /// removal dropped makes it again as its own write, judged by its own path at its own key.
     pub fn remake() -> Rules {
         Rules { vouch: Vouch::Off, remake: true, ..Rules::fixed() }
+    }
+    /// `fixed` with the purge readings the draft takes (notes/a1-spec/permissions.md §5.2 Own
+    /// cover, §6; notes/purge-model.md): rights by class, requests reaching copies, own covers
+    /// standing with their removal. Off in `fixed` while the walk (osis-perm `paths`) owes them.
+    pub fn purging() -> Rules {
+        Rules { purge_classes: true, purge_copies: true, own_cover: true, ..Rules::fixed() }
+    }
+    /// `remake` with the same purge readings.
+    pub fn purging_remake() -> Rules {
+        Rules { purge_classes: true, purge_copies: true, own_cover: true, ..Rules::remake() }
     }
     /// A lowering (`World::lowers`), and under `Until::AtKey`/`PastEnd` a write giving admin until
     /// an end after its `ts` (`World::ends`): judged where it takes its edge down, a dispute
@@ -496,7 +568,7 @@ impl World {
         let well = all.iter().collect::<BTreeSet<_>>().len() == all.len();
         let hops = if well { all.windows(2).flat_map(|p| self.joins(p[0], p[1])).collect() } else { vec![] };
         let i = self.commits.len();
-        self.commits.push(Commit { signer, ts, path: path.to_vec(), on, kind, hops, well, leave, pa: 0, cid: i, own_path: false });
+        self.commits.push(Commit { signer, ts, path: path.to_vec(), on, kind, hops, well, leave, pa: 0, ret: Retention::AuthorOrAdmin, own: false, cid: i, own_path: false });
         i
     }
     /// One commit of several edge writes on `on` along one path (spec/commits.md §2). Its parts
@@ -612,7 +684,20 @@ impl World {
     }
     /// A purge request by `author` on `on`, along `path`.
     pub fn purge(&mut self, signer: Thing, ts: u32, path: &[Thing], on: Thing, author: Thing) -> Id {
-        self.push(signer, ts, path, on, Kind::Purge { author })
+        self.push(signer, ts, path, on, Kind::purge(author))
+    }
+    /// A purge request naming `names` on `on`, along `path`.
+    pub fn request(&mut self, signer: Thing, ts: u32, path: &[Thing], on: Thing, names: Names) -> Id {
+        self.push(signer, ts, path, on, Kind::Purge { names })
+    }
+    /// Sets who may purge content `i`.
+    pub fn retain(&mut self, i: Id, r: Retention) {
+        self.commits[i].ret = r;
+    }
+    /// Marks cover `i` as its writer's own cover.
+    pub fn own_cover(&mut self, i: Id) {
+        assert!(matches!(self.commits[i].kind, Kind::Cover { .. }), "only a cover is an own cover");
+        self.commits[i].own = true;
     }
     /// [signer, path..]: the things a commit acts as.
     pub fn chain(&self, i: Id) -> Vec<Thing> {
@@ -1430,9 +1515,9 @@ fn first_applied(w: &World, p: &Pass, edges: &[Edge]) -> Option<Key> {
     keys.into_iter().find(|k| edges.iter().all(|&e| role_at(w, p, e, (k.0, k.1, k.2 + 1)) >= Role::Write))
 }
 
-/// Per edge, the key of the first chained write giving it write or above (spec/permissions.md
+/// Per edge, the key of the first chained write giving it `at` or above (spec/permissions.md
 /// §4 Chained writes, along the write's stated path, `until` disregarded).
-fn first_chained(w: &World, held: &Set) -> BTreeMap<Edge, Key> {
+fn first_chained(w: &World, held: &Set, at: Role) -> BTreeMap<Edge, Key> {
     let mut max: BTreeMap<Edge, Role> = w.records.iter().map(|&e| (e, Role::Admin)).collect();
     let mut inv: BTreeMap<Edge, Role> = w.records.iter().map(|&e| (e, Role::Admin)).collect();
     let mut first: BTreeMap<Edge, Key> = w.records.iter().map(|&e| (e, (0, 0, 0))).collect();
@@ -1450,7 +1535,7 @@ fn first_chained(w: &World, held: &Set) -> BTreeMap<Edge, Key> {
         if !admin && !invited {
             continue;
         }
-        if *role >= Role::Write {
+        if *role >= at {
             first.entry(e).or_insert(w.key(i));
         }
         let m = max.entry(e).or_insert(Role::None);
@@ -1482,7 +1567,7 @@ fn known(w: &World, rules: &Rules, v: &View) -> Set {
 
 /// Valid content-class commits, and the addenda among them that vouch.
 fn content(w: &World, rules: &Rules, v: &View, p: &Pass) -> (Set, Set) {
-    let chained = first_chained(w, &v.held);
+    let chained = first_chained(w, &v.held, Role::Write);
     let fin = finals(p);
     let none = Vouched::new();
     let vouches = |a: Id| w.hops(a).iter().all(|&e| role_at(w, p, e, w.pos(a)) >= Role::Write);
@@ -1499,6 +1584,11 @@ fn content(w: &World, rules: &Rules, v: &View, p: &Pass) -> (Set, Set) {
                 continue;
             }
             let pos = w.pos(i);
+            // an own cover stands while a lowering by its writer naming it applies (§5.2 Own cover)
+            if rules.own_cover && w.commits[i].own && p.lows.iter().any(|l| l.explicit && w.commits[l.id].signer == w.commits[i].signer && w.key(l.id) >= pos && listed(w, v, &none, l.id, i)) {
+                next.insert(i);
+                continue;
+            }
             let cuts: Vec<&Low> = p.lows.iter().filter(|l| l.explicit && hops.contains(&l.edge) && l.before >= Role::Write && l.after < Role::Write).collect();
             let held = hops.iter().all(|&e| role_at(w, p, e, pos) >= Role::Write);
             let ok = (held && !cuts.iter().any(|l| w.key(l.id) > pos))
@@ -1533,22 +1623,97 @@ fn content(w: &World, rules: &Rules, v: &View, p: &Pass) -> (Set, Set) {
     }
 }
 
-/// The held content a valid purge request holds the author right over (notes/write-path-design.md
-/// §1, What a purger must hold): a request by author P on T names the deltas on T of commits with
-/// a smaller `ts` whose purge author is exactly P; it holds the right iff it is valid (judged as a
-/// content write along its own path at its position) and its chain holds P.
-fn purges(w: &World, rules: &Rules, v: &View, valid: &Set) -> Set {
+/// The content a valid purge request holds a right over (notes/a1-spec/permissions.md §6). Under
+/// `purge_classes` each named delta is judged alone, by the members of its retention set the request
+/// holds (`holds`); else by the `author` class alone (a request by author P, valid, holds the right
+/// over the earlier deltas on its thing whose purge author is exactly P, P on its chain). Under
+/// `purge_copies` the writes a valid cover shows of a commit not held (`copied`) are named too.
+fn purges(w: &World, rules: &Rules, v: &View, p: &Pass, valid: &Set, copied: &Set) -> Set {
     let mut out = Set::new();
-    for &q in valid {
-        let Kind::Purge { author } = w.commits[q].kind else { continue };
+    let mut cands: Set = v.held.iter().copied().filter(|&d| matches!(w.commits[d].kind, Kind::Content)).collect();
+    if rules.purge_copies {
+        cands.extend(copied.iter().copied().filter(|&d| matches!(w.commits[d].kind, Kind::Content)));
+    }
+    for &q in &v.held {
+        let Kind::Purge { names } = w.commits[q].kind else { continue };
         let (on, ts) = (w.commits[q].on, w.commits[q].ts);
-        if rules.purge_chain && !w.chain(q).contains(&author) && !(rules.author_thing && author == on) {
+        let named = |d: Id| {
+            let c = &w.commits[d];
+            c.on == on
+                && match names {
+                    Names::Author(a) => c.ts < ts && if rules.purge_exact { w.purge_author(d) == a } else { w.chain(d).contains(&a) },
+                    Names::Aspect => c.ts < ts,
+                    Names::Commit(j) => w.cid(j) == w.cid(d) && c.ts < ts,
+                    Names::Destroy => true,
+                }
+        };
+        // the author class: the request's chain holds the delta's purge author
+        let on_chain = |d: Id| !rules.purge_chain || w.chain(q).contains(&w.purge_author(d)) || (rules.author_thing && w.purge_author(d) == on);
+        if !rules.purge_classes {
+            let Names::Author(a) = names else { continue };
+            if !valid.contains(&q) || (rules.purge_chain && !w.chain(q).contains(&a) && !(rules.author_thing && a == on)) {
+                continue;
+            }
+            out.extend(cands.iter().copied().filter(|&d| named(d)));
             continue;
         }
-        let names = |d: Id| if rules.purge_exact { w.purge_author(d) == author } else { w.chain(d).contains(&author) };
-        out.extend(v.held.iter().copied().filter(|&d| matches!(w.commits[d].kind, Kind::Content) && w.commits[d].on == on && w.commits[d].ts < ts && names(d)));
+        let destroy = names == Names::Destroy;
+        let admin = holds(w, rules, v, p, valid, q, Role::Admin, destroy);
+        // a destruction holds the `admin` right alone (`created.0` is purgeable by admin)
+        let write = !destroy && holds(w, rules, v, p, valid, q, Role::Write, false);
+        out.extend(cands.iter().copied().filter(|&d| {
+            named(d)
+                && (admin
+                    || (write
+                        && match w.commits[d].ret {
+                            Retention::Admin => false,
+                            Retention::AuthorOrAdmin => on_chain(d),
+                            Retention::Writer => true,
+                        }))
+        }));
     }
     out
+}
+
+/// Whether request `q` holds role `r` on its thing (notes/a1-spec/permissions.md §6: exactly when a
+/// delta of it needing `r`, along its path, at its key would be valid, spec §5.2): its path gave
+/// `r` just before its position and no cut of its path below `r` is ordered after it; else a
+/// cut's list names it, a valid addendum by a holder of `r` against such a cut names it
+/// (`purge_addenda`), or the path is re-granted for `r`. A destruction's right reads no cut on an
+/// edge into its own thing stamped after it. Under `purge_at_key` the first clause's role alone.
+#[allow(clippy::too_many_arguments)]
+fn holds(w: &World, rules: &Rules, v: &View, p: &Pass, valid: &Set, q: Id, r: Role, destroy: bool) -> bool {
+    let hops = w.hops(q);
+    if !w.well(q) {
+        return false;
+    }
+    let (pos, on) = (w.pos(q), w.commits[q].on);
+    let at = hops.iter().all(|&e| role_at(w, p, e, pos) >= r);
+    if rules.purge_at_key {
+        return at;
+    }
+    let cuts: Vec<&Low> = p.lows.iter().filter(|l| l.explicit && hops.contains(&l.edge) && l.before >= r && l.after < r && !(destroy && l.edge.1 == on && w.key(l.id) > pos)).collect();
+    let none = Vouched::new();
+    let gives = |a: Id| w.hops(a).iter().all(|&e| role_at(w, p, e, w.pos(a)) >= r);
+    (at && !cuts.iter().any(|l| w.key(l.id) > pos))
+        || cuts.iter().any(|l| listed(w, v, &none, l.id, q))
+        || (rules.purge_addenda
+            && valid.iter().any(|&a| match &w.commits[a].kind {
+                Kind::Addendum { removal, list } => {
+                    w.commits[a].on == on
+                        && list.iter().any(|&c| w.names(c, q))
+                        && !(rules.no_own_addendum && w.commits[a].signer == w.commits[q].signer)
+                        && cuts.iter().any(|l| l.id == *removal && w.key(l.id) > pos && w.key(l.id) < w.pos(a))
+                        && gives(a)
+                }
+                _ => false,
+            }))
+        || {
+            let fin = finals(p);
+            let chained = first_chained(w, &v.held, r);
+            hops.iter().all(|e| fin.get(e).is_some_and(|x| *x >= r))
+                && hops.iter().map(|e| chained.get(e).copied()).collect::<Option<Vec<Key>>>().and_then(|k| k.into_iter().max()).is_some_and(|k| k == (0, 0, 0) || pos > k)
+        }
 }
 
 /// A node's reading: a function of the world's rules, what it holds, the leaves it sees and
@@ -1574,12 +1739,12 @@ pub fn judge(w: &World, rules: &Rules, v: &View) -> Reading {
             continue;
         }
         let (valid, vouching) = content(w, rules, v, &wk.pass);
-        let purged = purges(w, rules, v, &valid);
         let copied = if !rules.cover_facts {
             valid.iter().filter_map(|&c| match &w.commits[c].kind { Kind::Cover { carries } => Some(carries.iter().copied().filter(|j| !valid.contains(j))), _ => None }).flatten().collect()
         } else {
             Set::new()
         };
+        let purged = purges(w, rules, v, &wk.pass, &valid, &copied);
         let mut dropper = wk.dropper;
         dropper.extend(d0);
         let fin = finals(&wk.pass);
@@ -1781,7 +1946,9 @@ pub fn current(eps: &[Epoch], s: &Side, rule: Withdraw) -> Vec<usize> {
     (0..eps.len()).filter(|&i| counts(eps, i, s, rule) && !(0..eps.len()).any(|f| counts(eps, f, s, rule) && eps[f].supersedes.contains(&i))).collect()
 }
 
+mod purge;
 mod story;
+pub use purge::*;
 pub use story::*;
 
 #[cfg(test)]

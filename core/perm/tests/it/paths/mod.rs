@@ -57,7 +57,7 @@ fn delta(w: &World, i: Id) -> Delta {
     let ids = |s: &m::Set| Frontier::new(s.iter().map(|&j| cid(w.cid(j))));
     let (aspect, class) = match &k.kind {
         Kind::Content => ("doc.0", DeltaClass::Plain),
-        Kind::Purge { author } => ("doc.0", DeltaClass::PurgeByAuthor { author: tid(*author) }),
+        Kind::Purge { names: m::Names::Author(author) } => ("doc.0", DeltaClass::PurgeByAuthor { author: tid(*author) }),
         Kind::Cover { carries } => ("doc.0", DeltaClass::Snapshot { carries: ids(carries) }),
         Kind::Addendum { removal, list } => ("addenda.0", DeltaClass::Addendum { removal: cid(w.cid(*removal)), list: ids(list) }),
         _ => unreachable!("content-class kinds only"),

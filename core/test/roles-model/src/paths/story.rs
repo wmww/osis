@@ -382,7 +382,7 @@ impl Sim {
         let x_role = if s.x_role == 2 && s.sharer_x { 0 } else { s.x_role };
         if x_role == 4 {
             // a purge request by author A on T1, before the theft (H receiving it as x_role_seen)
-            let g = m.put((X, 4, &[A], T1, Kind::Purge { author: A }), 4, rng, false);
+            let g = m.put((X, 4, &[A], T1, Kind::purge(A)), 4, rng, false);
             if m.sync[&H].contains(&T1) {
                 m.recv[g].insert(H, if s.x_role_seen { 4 } else { SETTLE });
             }
@@ -448,8 +448,8 @@ impl Sim {
             m.cover(K, t, &withheld, rules, rng);
         }
         // honest purges by author at 9: B of what A authored on T2, K of what A2 authored on T1
-        m.put((B, 9, &[A, ORG], T2, Kind::Purge { author: A }), 9, rng, false);
-        m.put((K, 9, &[A2], T1, Kind::Purge { author: A2 }), 9, rng, false);
+        m.put((B, 9, &[A, ORG], T2, Kind::purge(A)), 9, rng, false);
+        m.put((K, 9, &[A2], T1, Kind::purge(A2)), 9, rng, false);
         // K compacts T1 at 10, carrying what shows there in its own walk
         m.cover(K, 10, &[], rules, rng);
         if s.b_side_x {
@@ -884,7 +884,7 @@ impl Sim {
                 44 => (&[A2], A2),
                 _ => (&[A2], A),
             };
-            self.put((X, mv.ts, path, T1, Kind::Purge { author }), mv.made, rng, true);
+            self.put((X, mv.ts, path, T1, Kind::purge(author)), mv.made, rng, true);
             return;
         }
         if (40..43).contains(&mv.kind) {
@@ -1226,7 +1226,8 @@ pub fn trace(m: &Sim) -> String {
             }
             Kind::Addendum { removal, list } => format!("addendum against {removal} {list:?}"),
             Kind::Vouch { removal, list } => format!("vouch against {removal} {list:?}"),
-            Kind::Purge { author } => format!("purge by author {}", name(author)),
+            Kind::Purge { names: Names::Author(a) } => format!("purge by author {}", name(a)),
+            Kind::Purge { names } => format!("purge {names:?}"),
             Kind::Cover { carries } => format!("cover carrying {carries:?}"),
         };
         let kind = if matches!(c.kind, Kind::Content) && c.pa > 0 { format!("{kind} as {}", name(&m.w.purge_author(i))) } else { kind };
@@ -1253,11 +1254,14 @@ pub fn rebuild(w: &World, keep: &[Id]) -> (World, BTreeMap<Id, Id>) {
             Kind::Addendum { removal, list } => Kind::Addendum { removal: map[removal], list: ids(list) },
             Kind::Vouch { removal, list } => Kind::Vouch { removal: map[removal], list: ids(list) },
             Kind::Content => Kind::Content,
-            Kind::Purge { author } => Kind::Purge { author: *author },
+            Kind::Purge { names: Names::Commit(j) } => Kind::Purge { names: Names::Commit(map[j]) },
+            Kind::Purge { names } => Kind::Purge { names: *names },
             Kind::Cover { carries } => Kind::Cover { carries: ids(carries) },
         };
         let j = out.push(c.signer, c.ts, &c.path, c.on, kind);
         out.authored(j, c.pa);
+        out.commits[j].ret = c.ret;
+        out.commits[j].own = c.own;
     }
     // a commit's parts kept stay one commit
     let mut groups: BTreeMap<Id, Vec<Id>> = BTreeMap::new();
@@ -1819,7 +1823,7 @@ pub fn check(m: &Sim, rules: &Rules, st: &mut Stats) {
                     .filter(|&d| {
                         matches!(w.commits[d].kind, Kind::Content)
                             && reqs.iter().any(|&q| {
-                                let Kind::Purge { author } = w.commits[q].kind else { return false };
+                                let Kind::Purge { names: Names::Author(author) } = w.commits[q].kind else { return false };
                                 w.commits[q].on == w.commits[d].on && w.commits[d].ts < w.commits[q].ts && w.purge_author(d) == author && w.chain(q).contains(&author)
                             })
                     })
@@ -2562,6 +2566,16 @@ pub fn compare(start: u64, n: u64) -> Compare {
 /// `-- N paths-tiny[-invites][-honest[-writers]][-control]` (small worlds); random and small worlds from
 /// index `from` on (`-- N paths --from K`). Returns the failing checks.
 pub fn run(samples: u64, from: u64, mode: &str) -> u64 {
+    // `-- N paths-purge[-variant]`: purge worlds (`purge_rules`)
+    if mode.starts_with("paths-purge") {
+        let Some(rules) = purge_rules(mode) else {
+            eprintln!("unknown mode {mode}");
+            return 1;
+        };
+        let st = purge_run_from(from, samples, &rules);
+        st.print(mode);
+        return st.failures();
+    }
     let Some(rules) = mode_rules(mode) else {
         eprintln!("unknown mode {mode}");
         return 1;

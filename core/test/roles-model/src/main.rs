@@ -1,4 +1,4 @@
-//! Search driver for the roles model: `[samples] [edges|joint|disputes|disputes-random|digest|addenda|addenda-exh|addenda-covers|addenda-gaps|addenda-gaps-exh|addenda-gaps-no-admin|addenda-gaps-no-rewrite|forget|forget-entries|epochs|epochs-no-cutoff|epochs-own-only|epochs-void-uncounted|epochs-no-own-cover|epochs-open-carried|epochs-no-reanswer|custody|custody-exh|custody-judged|custody-roster-bare|custody-merge-random|custody-stale-shut|custody-merge-carries|custody-readd-beside|paths[-exh|-tiny[-invites][-honest]][-control|-remake] [--from K | --only K] (paths::mode_rules)|paths-compare [--from K]|vouches|vouches-exh|vouches-off|vouches-no-rewrite|vouches-held|vouches-state|vouches-stands|vouches-state-stands|vouches-exh-off|vouches-exh-no-rewrite|vouches-exh-held|vouches-exh-state|vouches-exh-stands]`.
+//! Search driver for the roles model: `[samples] [edges|joint|disputes|disputes-random|digest|addenda|addenda-exh|addenda-covers|addenda-gaps|addenda-gaps-exh|addenda-gaps-no-admin|addenda-gaps-no-rewrite|forget|forget-entries|epochs|epochs-no-cutoff|epochs-own-only|epochs-void-uncounted|epochs-no-own-cover|epochs-open-carried|epochs-no-reanswer|custody|custody-exh|custody-judged|custody-roster-bare|custody-merge-random|custody-stale-shut|custody-merge-carries|custody-readd-beside|paths[-exh|-tiny[-invites][-honest]][-control|-remake] [--from K | --only K] (paths::mode_rules)|paths-purge[-variant] (paths::purge_rules)|paths-compare [--from K]|vouches|vouches-exh|vouches-off|vouches-no-rewrite|vouches-held|vouches-state|vouches-stands|vouches-state-stands|vouches-exh-off|vouches-exh-no-rewrite|vouches-exh-held|vouches-exh-state|vouches-exh-stands]`.
 
 use roles_model::{edges, joint};
 
@@ -99,6 +99,14 @@ fn main() {
 /// check fails.
 fn only(mode: &str, k: u64) -> i32 {
     use roles_model::paths::*;
+    if let Some(rules) = purge_rules(mode) {
+        let m = purge_world(k, &rules);
+        let mut st = PStats::default();
+        purge_check(&m, &rules, &mut st);
+        println!("{mode} world {k}:\n{}", purge_trace(&m));
+        st.print(mode);
+        return i32::from(st.failures() > 0);
+    }
     let Some(rules) = mode_rules(mode) else {
         eprintln!("unknown mode {mode}");
         return 2;

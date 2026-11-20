@@ -3,7 +3,7 @@
 
 Replaces, in spec/crypto.md §7: the Levels table, the Header list bullet, the `blind` sub-bullet of Commitment, and the last bullet (a holder tries every epoch). Delete base, Delete key, Commitment's other sub-bullets, Certificate blobs and Delete signature stand.
 
-*Settled* for who holds the level-2 right: the purge author's chain (roles-model `paths` `purges`, control `-purge-any-path`). OPEN: delete keys are not modelled; that every holder of the `author` right holds level 2's secret is argued (its path gives write on every edge up to the purge author, so it reaches the purge author's write secret by derivation, spec/permissions.md §3).
+*Settled* for who holds the level-2 right: the purge author's chain (roles-model `paths` `purges`, control `-purge-any-path`), and that a store may act on whatever could hold it (purge worlds' `could hold`). OPEN, argued (notes/purge-model.md, Delete keys): keys are not modelled. Every holder of the `author` right holds level 2's secret (its path gives write on every edge up to the purge author, so it reaches the purge author's write secret by derivation, spec/permissions.md §3); a store checks one signature per commitment group (spec/sync-ids.md §6), so a deleter holds a right over every delta of the blob as of the epochs its header lists; a removed party's keys keep deleting blobs of epochs it held at unread stores until a writer holding the body logs it again, a later rotation keying only new blobs. One purge author per commit makes at most one level-2 key per commit the rule (wire field 11), not an Interim.
 
 ## 5. Blobs, wraps, sealed fires
 The Path entry bullet is built: spec/crypto.md §5.
