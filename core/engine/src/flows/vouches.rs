@@ -116,13 +116,16 @@ pub(crate) fn note_applied(core: &mut Core, id: &CommitId, h: &osis_commit::Head
 
 /// Commit `id` by `author` stamped `ts` applied or changed its standing in the walk: the
 /// removals stamped no earlier, filed under a party it reaches (`Indexes::vouch_wake`), are due
-/// again, gathered anew. A party comes into question at R, or a commit of one becomes a
-/// candidate, only by a commit ordered no later than R: by a party in question (it reaches a
-/// holder R names: `Held::reach` climbs to what a party holds), or naming one on a thing (a
-/// member joining a team R names: it reaches the team, as does the thing), or lowering the
-/// remover's authority (its holder reaches the remover). So live traffic (stamped after every
-/// filed removal) costs a comparison, and a backdated or late commit a climb from its author
-/// and the holders and targets of its edge writes.
+/// again, gathered anew. A party comes into question at R, falls at it or not, or a commit of
+/// one becomes a candidate, only by a commit ordered no later than R moving a path of a party
+/// that reaches a holder R names or R's author (`Held::reach` climbs to what a party holds): a
+/// commit of its own, or an edge write whose holder it is or stands behind (`Held::upstream`):
+/// a member joining a team R names, a named holder's or a member's other path to what R lowers
+/// taken away, the remover's authority lowered. So the climb is from the author, the edge writes'
+/// targets and everything upstream of their holders. Live traffic (stamped after every filed
+/// removal) costs a comparison, and a backdated or late commit that climb; one with no edge
+/// write wakes only the removals it arrived before (`window`), so a removed party's backdated
+/// content judges nothing.
 ///
 /// Invariant: every input a kept gathering reads besides R's own change in the walk
 /// (`note_changed`) and a re-walk of its component (`note_evaluated`) moves only by such a
@@ -135,13 +138,21 @@ fn wake(core: &mut Core, id: &CommitId, author: Tid, ts: Ts) {
     }
     osis_base::costs::count("vouches: wake climbs", 1);
     let mut from: BTreeSet<Tid> = BTreeSet::from([author]);
-    if let Some(rc) = core.ix.held.edge_commit(id) {
-        from.extend(rc.ops.iter().flat_map(|o| [o.holder, o.target]));
+    let edges = core.ix.held.edge_commit(id);
+    if let Some(rc) = edges {
+        let holders: BTreeSet<Tid> = rc.ops.iter().map(|o| o.holder).collect();
+        from.extend(core.ix.held.upstream(&holders));
+        from.extend(rc.ops.iter().map(|o| o.target));
     }
-    for t in core.ix.held.reach(&from) {
+    // one with no edge write moves no walk: it matters only as a candidate, received before R
+    let got = core.ix.commits.get(id).map(|m| m.received);
+    let edges = edges.is_some();
+    let parties = core.ix.held.reach(&from);
+    osis_base::costs::count("vouches: wake parties", u64::try_from(parties.len()).unwrap_or(u64::MAX));
+    for t in parties {
         let lo = (t, ts, CommitId([0; 32]));
         let hi = (t, Ts::MAX, CommitId([0xff; 32]));
-        let due: Vec<CommitId> = core.ix.vouch_wake.range(lo..=hi).map(|(_, _, r)| *r).collect();
+        let due: Vec<CommitId> = core.ix.vouch_wake.range(lo..=hi).map(|(_, _, r)| *r).filter(|r| edges || got.is_none_or(|g| core.ix.commits.get(r).is_none_or(|rm| g < rm.received))).collect();
         for r in due {
             osis_base::costs::count("vouches: removals woken", 1);
             note_due(core, &r);
@@ -339,6 +350,36 @@ fn write_for(tx: &mut Tx<'_>, r: &CommitId, me: Tid) -> Result<()> {
     }
     tx.core.ix.vouch_filed.insert(*r, Arc::new(watched));
     Ok(())
+}
+
+/// Debug builds, at an engine's drop: no trigger was missed. Of every held removal not due, a
+/// kept gathering is what a fresh one gathers, and a fresh judgement owes nothing this node may
+/// write now: a stale gathering or an answer owed with no judgement due is a missed trigger, which
+/// the check at each judgement (`write_for`) cannot see. `Some`: what differs.
+#[cfg(debug_assertions)]
+pub(crate) fn missed(tx: &mut Tx<'_>) -> Result<Option<String>> {
+    if !(tx.core.vouches_on || tx.core.addenda_on) {
+        return Ok(None);
+    }
+    let Some(me) = tx.core.member() else { return Ok(None) };
+    let now = tx.core.hlc.peek();
+    let rs: Vec<CommitId> = tx.core.ix.commits.iter().filter(|(id, m)| m.view.kind.is_role() && m.view.frontier.is_some() && !tx.core.ix.vouches_due.contains(id)).map(|(id, _)| *id).collect();
+    for r in rs {
+        let fresh = gather(tx.core, &r, me, false);
+        if let Some(kept) = tx.core.ix.vouch_gathered.get(&r)
+            && fresh.as_ref() != Some(&**kept)
+        {
+            return Ok(Some(format!("removal {r:?}: kept gathering {kept:?}, fresh {fresh:?}")));
+        }
+        let Some(g) = fresh else { continue };
+        let o = owed(tx.core, &r, &g, me, now);
+        let v = writable_split(tx, me, o.on, ct::VOUCHES_AK, Some(Role::Sync))?;
+        let a = writable_split(tx, me, o.addenda, ct::ADDENDA_AK, Some(Role::Write))?;
+        if !v.now.is_empty() || !a.now.is_empty() {
+            return Ok(Some(format!("removal {r:?}, not due, owes vouches on {:?}, addenda on {:?}", v.now.keys().collect::<Vec<_>>(), a.now.keys().collect::<Vec<_>>())));
+        }
+    }
+    Ok(None)
 }
 
 /// Writes one entry keyed by removal `r` listing `lists` on `n`'s aspect `ak` (`vouches.0` or

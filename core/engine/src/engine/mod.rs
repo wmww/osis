@@ -939,8 +939,8 @@ indexes! {
     pub vouch_gathered: JMap<CommitId, Arc<crate::flows::vouches::Gathered>>,
     /// The removals judged by `flows::vouches`, by the holders their edge writes name and their
     /// author: (party, the removal's `ts`, removal). A commit ordered no later than the removal,
-    /// applying and reaching one (`Held::reach` from its author and edge targets), makes it due
-    /// again (`flows::vouches::wake`).
+    /// applying and reaching one (`Held::reach` from its author, its edge targets and everything
+    /// upstream of its edge holders), makes it due again (`flows::vouches::wake`).
     pub vouch_wake: JSet<(Tid, osis_base::Ts, CommitId)>,
     /// `vouch_wake`'s removals by `ts`: a commit stamped after the newest wakes none.
     pub vouch_wake_ts: JSet<(osis_base::Ts, CommitId)>,
@@ -4576,6 +4576,12 @@ impl Drop for Engine {
         };
         // a store that fails (a crash test's) has nothing to check
         assert!(matches!(r, Ok(()) | Err(Error::Store(_))), "end of history: {:?}", r.err());
+        // no vouch or addendum trigger missed (`flows::vouches::missed`)
+        #[cfg(debug_assertions)]
+        if r.is_ok() {
+            let m = osis_base::costs::paused(|| osis_perm::uncounted(|| memo::unrecorded(|| self.read(crate::flows::vouches::missed))));
+            assert!(matches!(m, Ok(None) | Err(Error::Store(_))), "end of history: a vouch trigger missed: {m:?}");
+        }
     }
 }
 

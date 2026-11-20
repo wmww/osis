@@ -1404,3 +1404,100 @@ fn a_role_change_elsewhere_rescans_no_candidates_spec_perm_5_2() {
     println!("addenda: (judged, commits scanned) by a role change elsewhere: {small:?} at n = 5, {big:?} at n = 50");
     assert_eq!((small, big), ((0, 0), (0, 0)));
 }
+
+// spec/permissions.md §5.2 (Addenda; Writing: whenever its own current view shows a content
+// commit of X ordered before R...): Bob (1) holds write on `t` directly and through team Q
+// (Dave's thing, Bob its admin). Bob writes e, received by Carol (2) alone. Dave (3), an admin
+// of `t`, removes Q's grant (R1); then Alice (0) removes Bob's own grant (R), holding neither
+// e nor R1. Carol receives R first: Bob keeps write through Q, so R demotes nobody below write
+// and nothing is owed. R1 then reaches her, ordered before R: Bob falls below write at R, and
+// Carol owes an addendum for e, though R1 names neither Bob nor Alice. e stands at every node.
+#[test]
+fn a_late_removal_of_anothers_path_makes_an_addendum_owed_spec_perm_5_2() {
+    let (mut lp, t) = world(4, &[Role::Write, Role::Write, Role::Admin]);
+    let (bob, dave) = (lp.peers[1].engine.me(), lp.peers[3].engine.me());
+    let mut m = Mutation::new();
+    let q = lp.peers[3].engine.new_thing(&mut m, dave);
+    lp.peers[3].commit(m).unwrap();
+    lp.hold(q);
+    lp.sync_all().unwrap();
+    lp.peers[3].engine.grant(&q, &bob, &edge(Role::Admin)).unwrap();
+    lp.peers[0].engine.grant(&t, &q, &edge(Role::Write)).unwrap();
+    lp.advance(1000);
+    lp.sync_all().unwrap();
+    let e = write(&mut lp, 1, t, "x:e.0", 7);
+    lp.sync(1, 2).unwrap();
+    let d = Demotion { holder: q, new: None, retain: None };
+    let r1 = *lp.peers[3].engine.demote(&t, &d).unwrap().commits.last().unwrap();
+    lp.advance(1000);
+    let r = remove(&mut lp, 0, t, 1);
+    let pk = lp.peers[0].engine.package(&r).unwrap().unwrap();
+    lp.deliver(2, &pk).unwrap();
+    lp.advance(1000);
+    lp.peers[2].tick().unwrap();
+    let carol = lp.peers[2].engine.me();
+    assert_eq!(lp.peers[2].engine.core.timelines.role(&bob, &t, osis_perm::At::END), Some(Role::Write), "Bob keeps write through Q");
+    assert!(addenda(&lp, 2, t).iter().all(|(a, _)| *a != carol), "nothing owed while Bob keeps write");
+    let pk = lp.peers[3].engine.package(&r1).unwrap().unwrap();
+    lp.deliver(2, &pk).unwrap();
+    lp.advance(1000);
+    lp.peers[2].tick().unwrap();
+    assert!(lp.peers[2].engine.core.timelines.role(&bob, &t, osis_perm::At::END) < Some(Role::Write), "R1 ordered before R: Bob falls at R");
+    assert_eq!(addenda(&lp, 2, t).iter().filter(|(a, _)| *a == carol).count(), 1, "Carol answers once R1 arrives");
+    lp.sync_all().unwrap();
+    for p in 0..4 {
+        assert!(valid(&lp, p, &e, t, "x:e.0"), "peer {p}: e stands");
+    }
+}
+
+// spec/permissions.md §5.2 (Addenda; Writing): Yan (1), a reader of `t`, holds write on it through two teams
+// it minted, X and P. Yan writes e, received by Carol (2) alone. Dave removes
+// P's grant (R1); then Alice (0) removes X's (R), holding neither e nor R1. Carol receives R
+// first: Yan keeps write through P, so nothing is owed. R1 then reaches her, ordered before R:
+// Yan falls below write at R, and Carol owes an addendum for e, though R1 names neither X nor
+// Alice and Yan is filed nowhere. e stands at every node.
+#[test]
+fn a_late_removal_of_a_members_other_team_makes_an_addendum_owed_spec_perm_5_2() {
+    let (mut lp, t) = world(4, &[Role::Read, Role::Write, Role::Admin]);
+    let yan = lp.peers[1].engine.me();
+    let mut teams = Vec::new();
+    for _ in 0..2 {
+        let mut m = Mutation::new();
+        let q = lp.peers[1].engine.new_thing(&mut m, yan);
+        lp.peers[1].commit(m).unwrap();
+        lp.hold(q);
+        teams.push(q);
+    }
+    lp.sync_all().unwrap();
+    for q in &teams {
+        lp.peers[0].engine.grant(&t, q, &edge(Role::Write)).unwrap();
+    }
+    lp.advance(1000);
+    lp.sync_all().unwrap();
+    let (x, p) = (teams[0], teams[1]);
+    assert_eq!(lp.peers[2].engine.core.timelines.role(&yan, &t, osis_perm::At::END), Some(Role::Write), "Yan writes through the teams");
+    let e = write(&mut lp, 1, t, "x:e.0", 7);
+    lp.sync(1, 2).unwrap();
+    let r1 = *lp.peers[3].engine.demote(&t, &Demotion { holder: p, new: None, retain: None }).unwrap().commits.last().unwrap();
+    lp.advance(1000);
+    lp.advance(1000);
+    let r = *lp.peers[0].engine.demote(&t, &Demotion { holder: x, new: None, retain: None }).unwrap().commits.last().unwrap();
+    lp.advance(1000);
+    let pk = lp.peers[0].engine.package(&r).unwrap().unwrap();
+    lp.deliver(2, &pk).unwrap();
+    lp.advance(1000);
+    lp.peers[2].tick().unwrap();
+    let carol = lp.peers[2].engine.me();
+    assert_eq!(lp.peers[2].engine.core.timelines.role(&yan, &t, osis_perm::At::END), Some(Role::Write), "Yan keeps write through P");
+    assert!(addenda(&lp, 2, t).iter().all(|(a, _)| *a != carol), "nothing owed while Yan keeps write");
+    let pk = lp.peers[3].engine.package(&r1).unwrap().unwrap();
+    lp.deliver(2, &pk).unwrap();
+    lp.advance(1000);
+    lp.peers[2].tick().unwrap();
+    assert!(lp.peers[2].engine.core.timelines.role(&yan, &t, osis_perm::At::END) < Some(Role::Write), "R1 ordered before R: Yan falls at R");
+    assert_eq!(addenda(&lp, 2, t).iter().filter(|(a, _)| *a == carol).count(), 1, "Carol answers once R1 arrives");
+    lp.sync_all().unwrap();
+    for p in 0..4 {
+        assert!(valid(&lp, p, &e, t, "x:e.0"), "peer {p}: e stands");
+    }
+}

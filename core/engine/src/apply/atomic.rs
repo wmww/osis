@@ -612,14 +612,14 @@ pub(crate) fn apply_verified(tx: &mut Tx<'_>, blob: &CommitBlob, parts: Parts, o
     if h.kind.is_role() && view.frontier.is_some() {
         crate::flows::vouches::note_due(tx.core, &id);
     }
-    // a commit applying late may be a removal's candidate, or bring one into question
-    crate::flows::vouches::note_applied(tx.core, &id, &h);
     let valid: Vec<bool> = (0..h.aspects.len()).map(|ai| validity::part_valid(tx.core, &h, &id, ai)).collect();
     let missing: BTreeSet<usize> = (0..h.aspects.len()).filter(|ai| !parts.has(*ai)).collect();
     let hold = (0..h.aspects.len()).map(|ai| if missing.contains(&ai) { Hold::Missing(Missing::Plain) } else { Hold::Body { whole: false } }).collect();
     let meta = Meta { view, header: crate::engine::LazyHeader::ready(h.clone()), received, origin, repair: None, signed: parts.signed, valid: valid.clone(), hold };
     tx.core.put_meta(id, meta.clone());
     tx.core.index_validity(&id);
+    // a commit applying late (its receipt known) may be a removal's candidate, or bring one into question
+    crate::flows::vouches::note_applied(tx.core, &id, &h);
     // held now: what it names is judged (`lists::put_names`)
     crate::flows::lists::note_listing(tx, &h, &id, &parts.whole)?;
     crate::retention::note_requests(tx, &id, &h)?;

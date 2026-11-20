@@ -689,3 +689,36 @@ fn a_late_grant_bringing_a_party_into_question_is_vouched_for_spec_perm_5_1() {
         assert_eq!(role(&lp, p, 4, t), Some(Role::Write), "peer {p}: K's grant stands");
     }
 }
+
+/// H removes X (peer 1), W (2) holding X's grant of K received in time; X then signs `j`
+/// content commits on `t` stamped before R, reaching W after R: the removals W judges.
+fn backdated_content_judged(j: usize) -> u64 {
+    let (mut lp, t) = world(4);
+    grant(&mut lp, 1, t, 3, Role::Write);
+    lp.sync(1, 2).unwrap();
+    let r = remove(&mut lp, 0, t, 1);
+    let rts = lp.peers[0].engine.header(&r).unwrap().ts;
+    lp.sync_all().unwrap();
+    lp.peers[1].engine.core.skip_writer_rules = true;
+    for i in 0..j {
+        let mut m = Mutation::new();
+        m.set(t, &osis_base::Ak::new("x:j.0").unwrap(), &Value::Int(i64::try_from(i).unwrap())).unwrap();
+        m.ts = osis_base::Ts::from_u64(rts.to_u64() - 2 - u64::try_from(i).unwrap());
+        m.unchecked = true;
+        lp.peers[1].commit(m).unwrap();
+    }
+    osis_base::costs::take();
+    lp.sync(1, 2).unwrap();
+    osis_base::costs::take().into_iter().find(|(k, _, _)| *k == "vouches: removals judged").map_or(0, |x| x.2)
+}
+
+// spec/permissions.md §5.1 Vouches (Writing: R's window), notes/principles.md (Fast by
+// construction): a commit with no edge write moves no walk and is a candidate only of a removal
+// it reached a node before, so a removed party's backdated content arriving after R judges
+// nothing, however much of it.
+#[test]
+fn a_removed_partys_backdated_content_judges_nothing_spec_perm_5_1() {
+    let (one, ten) = (backdated_content_judged(1), backdated_content_judged(10));
+    println!("vouches: removals judged by backdated content after R: {one} at 1, {ten} at 10");
+    assert_eq!((one, ten), (0, 0));
+}
