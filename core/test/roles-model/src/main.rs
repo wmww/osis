@@ -1,4 +1,4 @@
-//! Search driver for the roles model: `[samples] [edges|joint|disputes|disputes-random|digest|addenda|addenda-exh|addenda-covers|addenda-gaps|addenda-gaps-exh|addenda-gaps-no-admin|addenda-gaps-no-rewrite|forget|forget-entries|epochs|epochs-no-cutoff|epochs-own-only|epochs-void-uncounted|epochs-no-own-cover|epochs-open-carried|epochs-no-reanswer|custody|custody-exh|custody-judged|custody-roster-bare|custody-merge-random|custody-stale-shut|custody-merge-carries|custody-readd-beside|paths[-exh|-tiny[-invites][-honest]][-control] [--from K] (paths::mode_rules)|vouches|vouches-exh|vouches-off|vouches-no-rewrite|vouches-held|vouches-state|vouches-stands|vouches-state-stands|vouches-exh-off|vouches-exh-no-rewrite|vouches-exh-held|vouches-exh-state|vouches-exh-stands]`.
+//! Search driver for the roles model: `[samples] [edges|joint|disputes|disputes-random|digest|addenda|addenda-exh|addenda-covers|addenda-gaps|addenda-gaps-exh|addenda-gaps-no-admin|addenda-gaps-no-rewrite|forget|forget-entries|epochs|epochs-no-cutoff|epochs-own-only|epochs-void-uncounted|epochs-no-own-cover|epochs-open-carried|epochs-no-reanswer|custody|custody-exh|custody-judged|custody-roster-bare|custody-merge-random|custody-stale-shut|custody-merge-carries|custody-readd-beside|paths[-exh|-tiny[-invites][-honest]][-control] [--from K | --only K] (paths::mode_rules)|vouches|vouches-exh|vouches-off|vouches-no-rewrite|vouches-held|vouches-state|vouches-stands|vouches-state-stands|vouches-exh-off|vouches-exh-no-rewrite|vouches-exh-held|vouches-exh-state|vouches-exh-stands]`.
 
 use roles_model::{edges, joint};
 
@@ -53,8 +53,13 @@ fn main() {
                 eprintln!("{why}");
                 std::process::exit(2);
             }
+            let index = |flag: &str| args.iter().position(|a| a == flag).and_then(|k| args.get(k + 1)).map(|v| v.parse::<u64>().unwrap_or_else(|_| panic!("{flag} takes a world index")));
+            // `--only K`: world K alone, printed whole with what each check found (`only`)
+            if let Some(k) = index("--only") {
+                std::process::exit(only(m, k));
+            }
             // `--from K`: random or small worlds K.. (a large sample split across runs)
-            let from = args.iter().position(|a| a == "--from").and_then(|k| args.get(k + 1)).map_or(0, |v| v.parse().expect("--from takes a world index"));
+            let from = index("--from").unwrap_or(0);
             if roles_model::paths::run(samples, from, m) > 0 {
                 std::process::exit(1);
             }
@@ -86,4 +91,47 @@ fn main() {
             std::process::exit(2);
         }
     }
+}
+
+/// `-- 0 paths[-exh|-tiny...][-control] --only K`: world K of the mode's worlds (random world K,
+/// family world K, or small world K), checked under the mode's rules: its trace, its commits in
+/// full (vouches, content and covers included), the checks made and what failed. Exit 1 when a
+/// check fails.
+fn only(mode: &str, k: u64) -> i32 {
+    use roles_model::paths::*;
+    let Some(rules) = mode_rules(mode) else {
+        eprintln!("unknown mode {mode}");
+        return 2;
+    };
+    if mode.starts_with("paths-tiny") {
+        let invites = mode.starts_with("paths-tiny-invites");
+        let rest = mode.strip_prefix(if invites { "paths-tiny-invites" } else { "paths-tiny" }).unwrap_or("");
+        let honest = if rest.starts_with("-honest-writers") { Honesty::Writers } else if rest.starts_with("-honest") { Honesty::Lists } else { Honesty::None };
+        let t = tiny_world(k, TinyMode { invites, honest }, &rules);
+        let mut st = TinyStats::default();
+        tiny_check(k, &t, &rules, &mut st);
+        println!("{mode} world {k}: trust {:?}, received {:?}\n{}commits:\n{}checks {:?}, noted {:?}, failing {:?}", t.v.trust, t.recv, tiny_trace(&t.w), whole(&t.w), st.checked, st.noted, st.fails);
+        for (prop, (_, _, what)) in &st.first {
+            println!("{prop}: {what}");
+        }
+        return i32::from(st.failures() > 0);
+    }
+    let family_world = mode.starts_with("paths-exh");
+    if family_world && k as usize >= FAMILY {
+        eprintln!("family worlds are 0..{FAMILY}");
+        return 2;
+    }
+    let m = if family_world { family(k as usize, &rules) } else { random_world(k, &rules) };
+    let mut st = Stats::default();
+    check(&m, &rules, &mut st);
+    println!("{mode} world {k}: {:?}\n{}commits:\n{}checks {:?}, noted {:?}, failing {:?}", m.spec, trace(&m), whole(&m.w), st.checked, st.noted, st.fails);
+    for (prop, (what, _)) in &st.first {
+        println!("{prop}: {what}");
+    }
+    i32::from(st.failures() > 0)
+}
+
+/// A world's commits whole, one a line (`tiny_trace` shows only edge writes).
+fn whole(w: &roles_model::paths::World) -> String {
+    w.commits.iter().enumerate().map(|(i, c)| format!("  {i}: {c:?}\n")).collect()
 }
