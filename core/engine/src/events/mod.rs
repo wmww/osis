@@ -54,8 +54,8 @@ impl CommitChange {
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Event {
-    /// A commit applied. `changed`: every `(tid, ak)` whose read may have changed. `acting`:
-    /// its one purge author (`View::acting`).
+    /// A commit applied. `changed`: every `(tid, ak)` whose read may have changed. `purge_author`:
+    /// its one purge author (`View::purge_author`).
     Applied { id: CommitId, origin: Origin, signer: Tid, purge_author: Tid, ts: Ts, received: WallMs, changed: Vec<(Tid, Ak)> },
     /// Late deltas of applied commit `id` joined (reads they changed come as `Changed`).
     Joined { id: CommitId, origin: Origin, signer: Tid, purge_author: Tid, ts: Ts, received: WallMs },
