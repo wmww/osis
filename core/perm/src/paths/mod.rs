@@ -18,6 +18,7 @@ use osis_base::{Ak, CommitId, PurgeBy, Role, Tid, Ts};
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
 
+pub use content::{Fact, FactClass, MemStore, Pair, Store};
 pub use walk::{Applied, Counts, History, Key};
 
 /// A held commit's parts.
@@ -149,9 +150,9 @@ pub struct Changed {
 /// A counting entry: (removal, commit, the vouch's thing).
 type Entry = (CommitId, CommitId, Tid);
 
-/// The walk over a held set of commits, under a trust set.
+/// The walk over a held set of commits, under a trust set, reading delta facts through `S`.
 #[derive(Clone)]
-pub struct Paths {
+pub struct Paths<S: Store = MemStore> {
     /// The first walk: vouch entries unread.
     first: walk::Walk,
     /// The second walk, the timeline: counting entries read as named by their removals' lists.
@@ -164,12 +165,26 @@ pub struct Paths {
     counting: BTreeSet<Entry>,
     keeping: BTreeMap<Entry, u32>,
     by_vouch: BTreeMap<WriteId, BTreeSet<Entry>>,
-    facts: content::Facts,
+    facts: content::Facts<S>,
 }
 
-impl Paths {
-    /// An empty held set over `records` (thing to mint admin) and `trust`.
+impl Paths<MemStore> {
+    /// An empty held set over `records` (thing to mint admin) and `trust`, delta facts in memory.
     pub fn new(records: &BTreeMap<Tid, Tid>, trust: BTreeSet<WriteId>) -> Paths {
+        Paths::with_store(records, trust, MemStore::default())
+    }
+
+    /// The settled walks of `commits` from scratch.
+    pub fn evaluate(records: &BTreeMap<Tid, Tid>, trust: BTreeSet<WriteId>, commits: &[Commit]) -> Paths {
+        let mut p = Paths::new(records, trust);
+        p.add(commits);
+        p
+    }
+}
+
+impl<S: Store> Paths<S> {
+    /// An empty held set over `records` and `trust`, delta facts kept in `store`.
+    pub fn with_store(records: &BTreeMap<Tid, Tid>, trust: BTreeSet<WriteId>, store: S) -> Paths<S> {
         Paths {
             first: walk::Walk::new(records, false),
             timeline: walk::Walk::new(records, true),
@@ -179,15 +194,13 @@ impl Paths {
             counting: BTreeSet::new(),
             keeping: BTreeMap::new(),
             by_vouch: BTreeMap::new(),
-            facts: content::Facts::new(records),
+            facts: content::Facts::new(records, store),
         }
     }
 
-    /// The settled walks of `commits` from scratch.
-    pub fn evaluate(records: &BTreeMap<Tid, Tid>, trust: BTreeSet<WriteId>, commits: &[Commit]) -> Paths {
-        let mut p = Paths::new(records, trust);
-        p.add(commits);
-        p
+    /// The delta facts store.
+    pub fn store(&self) -> &S {
+        &self.facts.store
     }
 
     /// Adds held commits (a commit already held is ignored) and settles again.
@@ -205,7 +218,7 @@ impl Paths {
     /// Forgets held commits (a commit not held is ignored): the reading is the walk without them
     /// (notes/perm-paths.md, Forget and update).
     pub fn forget(&mut self, ids: &[CommitId]) -> Changed {
-        let held: Vec<CommitId> = ids.iter().filter(|c| self.facts.commits.contains_key(c)).copied().collect::<BTreeSet<_>>().into_iter().collect();
+        let held: Vec<CommitId> = ids.iter().filter(|c| self.holds(c)).copied().collect::<BTreeSet<_>>().into_iter().collect();
         if held.is_empty() {
             return Changed::default();
         }
@@ -226,7 +239,7 @@ impl Paths {
             return Changed::default();
         }
         self.begin();
-        let held: Vec<CommitId> = given.iter().map(|c| c.id).filter(|c| self.facts.commits.contains_key(c)).collect();
+        let held: Vec<CommitId> = given.iter().map(|c| c.id).filter(|c| self.holds(c)).collect();
         let mut taken = self.let_go(&held);
         let mut named = self.drop_entries(&held);
         let t = self.take(&given);
@@ -257,7 +270,12 @@ impl Paths {
 
     fn fresh<'a>(&self, commits: &'a [Commit]) -> Vec<&'a Commit> {
         let mut seen = BTreeSet::new();
-        commits.iter().filter(|c| !self.facts.commits.contains_key(&c.id) && seen.insert(c.id)).collect()
+        commits.iter().filter(|c| !self.holds(&c.id) && seen.insert(c.id)).collect()
+    }
+
+    /// Whether commit `c` is held: by its edge-class parts, its role facts or its deltas.
+    fn holds(&self, c: &CommitId) -> bool {
+        self.timeline.holds(c) || self.facts.holds(c)
     }
 
     fn begin(&mut self) {
@@ -444,7 +462,7 @@ impl Paths {
     /// Every held delta's verdict.
     pub fn contents(&self) -> BTreeMap<WriteId, Content> {
         let mut c = Counts::default();
-        self.facts.ids().filter_map(|id| Some((*id, self.facts.content(&self.timeline, id, &mut c)?))).collect()
+        self.facts.ids().into_iter().filter_map(|id| Some((id, self.facts.content(&self.timeline, &id, &mut c)?))).collect()
     }
 
     /// Commits a valid snapshot carries that no valid held delta of its thing and aspect is: shown
@@ -456,7 +474,7 @@ impl Paths {
     /// Held deltas a valid request by author holds the right over (draft §6, `author` class).
     pub fn purged(&self) -> BTreeSet<WriteId> {
         let mut c = Counts::default();
-        self.facts.ids().filter(|id| self.facts.purged(&self.timeline, id, &mut c)).copied().collect()
+        self.facts.ids().into_iter().filter(|id| self.facts.purged(&self.timeline, id, &mut c)).collect()
     }
 
     /// Per edge, the key of its first chained write giving write and giving admin (draft §4).
@@ -567,7 +585,7 @@ impl Paths {
     /// Entries the walks keep in memory (parts, edges, events, undo and chain entries,
     /// histories): edge-class state alone (notes/perm-paths.md, The delta-facts seam).
     pub fn footprint(&self) -> u64 {
-        self.first.footprint() + self.timeline.footprint()
+        self.first.footprint() + self.timeline.footprint() + self.facts.footprint()
     }
 
     /// Work done since construction: both walks, the chained pass and the addenda.

@@ -680,7 +680,12 @@ impl Walk {
             if !self.held.insert(c.id) {
                 continue;
             }
-            for s in self.compile(c) {
+            let slots = self.compile(c);
+            // a commit with no edge-class part is content's alone
+            if slots.is_empty() {
+                self.held.remove(&c.id);
+            }
+            for s in slots {
                 self.note_new(s);
                 self.place(s);
             }
@@ -873,6 +878,11 @@ impl Walk {
     /// The components waiting to be walked, and those walked since `begin`.
     pub(super) fn touched(&self) -> BTreeSet<E> {
         self.dirty.keys().chain(self.ran.iter()).map(|&c| self.find(c)).collect()
+    }
+
+    /// Whether a commit with edge-class parts is held.
+    pub(super) fn holds(&self, c: &CommitId) -> bool {
+        self.held.contains(c)
     }
 
     /// The component a held part is in (its own edge's for an inert edge write).
@@ -1733,7 +1743,7 @@ impl Walk {
     pub(super) fn footprint(&self) -> u64 {
         let comps: usize = self.comps.values().map(|c| c.order.len() + c.log.len() + c.undo.len() + c.chain.len() + c.chain_undo.len()).sum();
         let hist: usize = (0..self.ends.len()).map(|e| self.hist[e].len()).sum();
-        (self.items.len() as usize + self.ends.len() as usize + comps + hist) as u64
+        (self.items.len() as usize + self.ends.len() as usize + self.held.len() + comps + hist) as u64
     }
 }
 

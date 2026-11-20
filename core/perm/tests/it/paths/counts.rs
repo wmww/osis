@@ -8,7 +8,10 @@
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::indexing_slicing)]
 
 use osis_base::{Ak, CommitId, PurgeBy, Role, Tid, Ts, WallMs};
-use osis_perm::paths::{By, Commit, Content, Counts, Delta, DeltaClass, EdgeWrite, Part, PartKind, Paths, Status};
+use osis_perm::paths::{By, Commit, Content, Counts, Delta, DeltaClass, EdgeWrite, Fact, Key, MemStore, Pair, Part, PartKind, Paths, Status, Store};
+use std::cell::Cell;
+use std::ops::Bound;
+use std::rc::Rc;
 use osis_perm::{Edge, Frontier, WriteId};
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
@@ -496,4 +499,86 @@ fn the_first_walk_runs_only_where_a_vouch_is() {
         let (d, _) = cost_of(&base, write(1, H, end, &[], A, X, Some(Role::Admin)));
         assert_eq!((d.steps, d.passes), (2, 2), "a vouch at n {n}: {d:?}");
     }
+}
+
+/// A `MemStore` counting its lookups (the engine's store index in the wiring).
+#[derive(Clone, Default)]
+struct Counting {
+    inner: MemStore,
+    lookups: Rc<Cell<u64>>,
+}
+
+impl Counting {
+    fn tick(&self) {
+        self.lookups.set(self.lookups.get() + 1);
+    }
+}
+
+impl Store for Counting {
+    fn put(&mut self, f: Fact) {
+        self.inner.put(f)
+    }
+    fn remove(&mut self, id: &WriteId) -> Option<Fact> {
+        self.inner.remove(id)
+    }
+    fn get(&self, id: &WriteId) -> Option<Fact> {
+        self.tick();
+        self.inner.get(id)
+    }
+    fn of_commit(&self, c: &CommitId, on: Option<&Tid>) -> Vec<WriteId> {
+        self.tick();
+        self.inner.of_commit(c, on)
+    }
+    fn listing(&self, c: &CommitId) -> Vec<WriteId> {
+        self.tick();
+        self.inner.listing(c)
+    }
+    fn carrying(&self, c: &CommitId) -> Vec<WriteId> {
+        self.tick();
+        self.inner.carrying(c)
+    }
+    fn requests(&self, on: &Tid, aspect: &Ak, author: &Tid) -> Vec<WriteId> {
+        self.tick();
+        self.inner.requests(on, aspect, author)
+    }
+    fn addenda_through(&self, e: &Pair, from: Bound<Key>, to: Bound<Key>) -> Vec<WriteId> {
+        self.tick();
+        self.inner.addenda_through(e, from, to)
+    }
+    fn valid_addendum(&self, id: &WriteId) -> bool {
+        self.tick();
+        self.inner.valid_addendum(id)
+    }
+    fn set_valid_addendum(&mut self, id: &WriteId, valid: bool) {
+        self.inner.set_valid_addendum(id, valid)
+    }
+    fn all(&self) -> Vec<WriteId> {
+        self.inner.all()
+    }
+}
+
+// The walk keeps in memory only edge-class state; delta facts live in the store
+// (notes/perm-paths.md, The delta-facts seam): 10 role commits and n content deltas along them
+// keep the same in-memory entries at n = 1000 and 10,000, and adding and judging a delta
+// appended at the end costs the same store lookups at both (a few per delta, its path's edges
+// read from the walk). Mutation: the walk holding every commit it is given (`held` kept for a
+// content commit): the entries grow with n.
+#[test]
+fn delta_facts_live_in_the_store() {
+    let mut per = vec![];
+    for n in [1000u64, 10_000] {
+        let mut c = vec![write(1, H, 1, &[], A, X, Some(Role::Admin))];
+        c.extend((0..9).map(|i| write(100 + i, H, 2 + i, &[], A, holder(i as u32), Some(Role::Admin))));
+        c.extend((0..n).map(|i| content(200_000 + i, X, 20 + i, &[A], C, None)));
+        let store = Counting::default();
+        let lookups = store.lookups.clone();
+        let mut p = Paths::with_store(&records(), BTreeSet::new(), store);
+        p.add(&c);
+        let foot = p.footprint();
+        let before = lookups.get();
+        p.add(&[content(9, X, 20 + n + 5, &[A], C, None)]);
+        assert_eq!(p.content(&WriteId(cid(9), 0)), Some(Content::Valid(By::Held)));
+        per.push((foot, lookups.get() - before));
+    }
+    assert_eq!(per[0], per[1], "{per:?}");
 }
