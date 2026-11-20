@@ -20,7 +20,7 @@ use osis_base::{Ak, CommitId, PurgeBy, Role, Tid, Ts};
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
 
-pub use content::{Fact, FactClass, MemStore, NameKey, Pair, Store};
+pub use content::{Fact, FactClass, Holding, MemStore, NameKey, Pair, Store};
 pub use walk::{Applied, Counts, History, Key};
 
 /// A held commit's parts.

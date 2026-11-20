@@ -8,7 +8,7 @@
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::indexing_slicing)]
 
 use osis_base::{Ak, CommitId, PurgeBy, Role, Tid, Ts, WallMs};
-use osis_perm::paths::{By, Commit, Content, Counts, Delta, DeltaClass, EdgeWrite, Fact, Key, MemStore, NameKey, Names, Pair, Part, PartKind, Paths, Right, Status, Store};
+use osis_perm::paths::{By, Commit, Content, Counts, Delta, DeltaClass, EdgeWrite, Fact, Holding, Key, MemStore, NameKey, Names, Pair, Part, PartKind, Paths, Right, Status, Store};
 use std::cell::Cell;
 use std::ops::Bound;
 use std::rc::Rc;
@@ -620,9 +620,9 @@ impl Store for Counting {
         self.tick();
         self.inner.carrying(c)
     }
-    fn requests(&self, key: &NameKey, after: Bound<Ts>) -> Vec<WriteId> {
+    fn latest(&self, key: &NameKey, holding: Holding) -> Option<Ts> {
         self.tick();
-        self.inner.requests(key, after)
+        self.inner.latest(key, holding)
     }
     fn requests_through(&self, e: &Pair, from: Bound<Key>, to: Bound<Key>) -> Vec<WriteId> {
         self.tick();

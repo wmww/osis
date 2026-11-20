@@ -410,17 +410,18 @@ fn hostile_requests_judge_alike_without_panicking() {
     assert!(p.copies().is_empty() && p.purged_copies().is_empty());
 }
 
-// spec/permissions.md §6: k requests holding a right name one delta: judging it reads each once
-// (k writers' requests by aspect, none holding the right over its `admin` retention: every one
-// read), the same per request at k = 200 and 2000; k requests holding no right (by the removed Z)
-// are no index entry, so the delta reads none of them. Who can force k: holders of a class's role,
-// each writing requests of its own.
+// spec/permissions.md §6: k requests holding a right name one delta: judging it is a point
+// lookup per selector naming it and per holding its retention asks (the latest stamp of the
+// requests holding it), whatever k: k writers' requests by aspect, none holding the right over
+// its `admin` retention, cost the same at k = 200 and 2000 as at none, and k requests holding no
+// right (by the removed Z) are no index entry. Who can force k: any holder of a class's role,
+// writing requests of its own.
 #[test]
-fn thousands_of_requests_naming_one_delta_cost_one_read_each() {
+fn thousands_of_requests_naming_one_delta_cost_what_none_do() {
     let admin = Some(Edge::new(Role::Admin));
     let write = Some(Edge::new(Role::Write));
     let mut per = vec![];
-    for k in [200u64, 2000] {
+    for k in [0u64, 200, 2000] {
         let mut c = vec![
             commit(1, ms(1), H, vec![edge(A, &[], Y, write, Some(&[]), None)]),
             commit(2, ms(1), H, vec![edge(A, &[], Z, admin, Some(&[]), None)]),
@@ -436,10 +437,12 @@ fn thousands_of_requests_naming_one_delta_cost_one_read_each() {
         c.extend((0..k).map(|i| commit(100 + i, ms(5), Y, vec![request(T1, &[A], Names::Aspect, PurgeBy::AuthorOrAdmin)])));
         c.extend((0..k).map(|i| commit(100_000 + i, ms(5), Z, vec![request(T1, &[A], Names::Aspect, PurgeBy::AuthorOrAdmin)])));
         let p = Paths::evaluate(&records(), BTreeSet::new(), &c);
+        if k > 0 {
+            assert_eq!(p.right(&WriteId(cid(100), 0)), Some(osis_perm::paths::Right { admin: false, write: true }));
+        }
         let mut n = osis_perm::paths::Counts::default();
         assert!(!p.is_purged_counted(&WriteId(cid(3), 0), &mut n));
-        assert_eq!(n.content, k, "k {k}");
         per.push(n.content);
     }
-    assert_eq!(per, vec![200, 2000]);
+    assert!(per[0] == per[1] && per[1] == per[2] && per[0] <= 4, "{per:?}");
 }

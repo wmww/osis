@@ -10,7 +10,7 @@ use super::{input, rules, MODES};
 use crate::common::{seeded, sharded};
 use osis_base::Tid;
 use osis_base::{Ak, CommitId, PurgeBy, Role, Ts, WallMs};
-use osis_perm::paths::{By, Commit, Content, Delta, DeltaClass, EdgeWrite, Fact, Key, MemStore, NameKey, Names, Pair, Part, PartKind, Paths, Right, Status, Store};
+use osis_perm::paths::{By, Commit, Content, Delta, DeltaClass, EdgeWrite, Fact, Holding, Key, MemStore, NameKey, Names, Pair, Part, PartKind, Paths, Right, Status, Store};
 use std::ops::Bound;
 use osis_perm::{Edge, Frontier, WriteId};
 use std::sync::Arc;
@@ -173,8 +173,8 @@ impl Store for Reversed {
     fn carrying(&self, c: &CommitId) -> Vec<WriteId> {
         rev(self.0.carrying(c))
     }
-    fn requests(&self, key: &NameKey, after: Bound<Ts>) -> Vec<WriteId> {
-        rev(self.0.requests(key, after))
+    fn latest(&self, key: &NameKey, holding: Holding) -> Option<Ts> {
+        self.0.latest(key, holding)
     }
     fn requests_through(&self, e: &Pair, from: Bound<Key>, to: Bound<Key>) -> Vec<WriteId> {
         rev(self.0.requests_through(e, from, to))
@@ -422,6 +422,53 @@ fn every_order_and_forget_of_a_purge_world_reads_as_from_scratch() {
     assert!(read(&c) && read(&without(&[6])) && read(&without(&[3, 6])));
     assert!(!read(&without(&[4, 6])) && read(&without(&[4])) && read(&without(&[4, 5])));
     for trust in [BTreeSet::new(), BTreeSet::from([WriteId(cm(5), 0)])] {
+        every_forget(&trust, &c);
+    }
+    let scratch = Paths::evaluate(&recs(), BTreeSet::new(), &c);
+    for order in perms(c.len()) {
+        let mut p = Paths::new(&recs(), BTreeSet::new());
+        for &k in &order {
+            let before = p.clone();
+            let ch = p.add(std::slice::from_ref(&c[k]));
+            assert_eq!(check(&before, &p, &ch), None, "order {order:?}, adding {k}");
+        }
+        assert!(reading(&p) == reading(&scratch), "order {order:?}");
+    }
+}
+
+/// A destruction racing cuts of its path on an edge into another thing (draft §6 Destruction:
+/// such a cut reads as for any request): M grants A admin on N (1); H grants X admin on A (2); M's
+/// `writer` delta on N (3); X destroys N along [A] at 5 (4); H's removal of X from A backdated to
+/// 4 listing nothing (5: ordered before the destruction, it takes the right); H's removal of X at
+/// 6 listing the destruction (6: it keeps it).
+fn destruction_race() -> Vec<Commit> {
+    let admin = Some(Role::Admin);
+    vec![
+        mk(1, 1, M, vec![ew(N, &[], A, admin, &[])]),
+        mk(2, 1, H, vec![ew(A, &[], X, admin, &[])]),
+        mk(3, 2, M, vec![doc(N, &[], PurgeBy::Writer)]),
+        mk(4, 5, X, vec![req(N, &[A], Names::Destroy)]),
+        mk(5, 4, H, vec![ew(A, &[], X, None, &[])]),
+        mk(6, 6, H, vec![ew(A, &[], X, None, &[4])]),
+    ]
+}
+
+// spec/permissions.md §6: draft Destruction, a cut of its path on another thing's edge reads as for
+// any request, in every arrival order and under every subset forgotten: the backdated removal
+// ordered before the destruction takes it (the later one's list cannot give back what was never
+// held); without it, the later removal keeps it by its list, and takes it listing nothing.
+#[test]
+fn every_order_and_forget_of_a_destruction_racing_a_cut_reads_as_from_scratch() {
+    let c = destruction_race();
+    let d = WriteId(cm(3), 0);
+    let read = |cs: &[Commit]| Paths::evaluate(&recs(), BTreeSet::new(), cs).purged().contains(&d);
+    let without = |gone: &[u64]| c.iter().filter(|x| !gone.iter().any(|g| x.id == cm(*g))).cloned().collect::<Vec<_>>();
+    assert!(!read(&c) && read(&without(&[5])) && read(&without(&[5, 6])) && !read(&without(&[4])));
+    let mut unlisted = without(&[5]);
+    unlisted.retain(|x| x.id != cm(6));
+    unlisted.push(mk(6, 6, H, vec![ew(A, &[], X, None, &[])]));
+    assert!(!read(&unlisted));
+    for trust in [BTreeSet::new(), BTreeSet::from([WriteId(cm(6), 0)])] {
         every_forget(&trust, &c);
     }
     let scratch = Paths::evaluate(&recs(), BTreeSet::new(), &c);

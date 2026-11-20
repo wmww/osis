@@ -75,6 +75,29 @@ fn name_key(f: &Fact) -> Option<NameKey> {
     Some((f.on, (names != Names::Destroy).then(|| f.aspect.clone()), names))
 }
 
+/// What a delta's purge asks of the requests naming it (draft §6 The right): one holding admin
+/// (any retention); one holding write (`writer`); one holding write whose chain holds this purge
+/// author (`author_or_admin`).
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
+pub enum Holding {
+    Admin,
+    Write,
+    WriteFor(Tid),
+}
+
+/// The holdings a request with right `r` and fact `f` is indexed under.
+fn holdings(f: &Fact, r: Right) -> BTreeSet<Holding> {
+    let mut out = BTreeSet::new();
+    if r.admin {
+        out.insert(Holding::Admin);
+    }
+    if r.write {
+        out.insert(Holding::Write);
+        out.extend(f.chain.iter().map(|t| Holding::WriteFor(*t)));
+    }
+    out
+}
+
 /// The delta facts content reads, by point lookups (notes/perm-paths.md, The delta-facts seam):
 /// the engine backs it with its store index, `MemStore` keeps it in memory. Its indexes follow
 /// `put` and `remove`; the stored addenda verdicts are its too.
@@ -88,9 +111,10 @@ pub trait Store {
     fn listing(&self, c: &CommitId) -> Vec<WriteId>;
     /// The snapshots carrying `c`.
     fn carrying(&self, c: &CommitId) -> Vec<WriteId>;
-    /// The requests indexed by `key` (thing, aspect, what they name) that hold a right
-    /// (`set_right`), stamped within `after`.
-    fn requests(&self, key: &NameKey, after: Bound<Ts>) -> Vec<WriteId>;
+    /// The greatest stamp of the requests indexed by `key` (thing, aspect, what they name) whose
+    /// stored right (`set_right`) gives `holding`: a delta's purge is a point lookup, whatever
+    /// the number of requests naming it.
+    fn latest(&self, key: &NameKey, holding: Holding) -> Option<Ts>;
     /// The requests with edge `e` on their path, positioned within (`from`, `to`).
     fn requests_through(&self, e: &Pair, from: Bound<Key>, to: Bound<Key>) -> Vec<WriteId>;
     /// A request's stored right (none until set).
@@ -117,7 +141,7 @@ pub struct MemStore {
     by_commit_on: BTreeMap<(CommitId, Tid), BTreeSet<WriteId>>,
     listing: BTreeMap<CommitId, BTreeSet<WriteId>>,
     carrying: BTreeMap<CommitId, BTreeSet<WriteId>>,
-    requests: BTreeMap<NameKey, BTreeSet<(Ts, WriteId)>>,
+    requests: BTreeMap<(NameKey, Holding), BTreeSet<(Ts, WriteId)>>,
     requests_on: BTreeMap<Pair, BTreeSet<(Key, WriteId)>>,
     rights: BTreeMap<WriteId, Right>,
     own: BTreeMap<Tid, BTreeSet<WriteId>>,
@@ -217,15 +241,8 @@ impl Store for MemStore {
     fn carrying(&self, c: &CommitId) -> Vec<WriteId> {
         self.carrying.get(c).into_iter().flatten().copied().collect()
     }
-    fn requests(&self, key: &NameKey, after: Bound<Ts>) -> Vec<WriteId> {
-        let lo = WriteId(CommitId([0; 32]), 0);
-        let hi = WriteId(CommitId([u8::MAX; 32]), u32::MAX);
-        let from = match after {
-            Bound::Included(t) => Bound::Included((t, lo)),
-            Bound::Excluded(t) => Bound::Excluded((t, hi)),
-            Bound::Unbounded => Bound::Unbounded,
-        };
-        self.requests.get(key).into_iter().flat_map(|s| s.range((from, Bound::Unbounded))).map(|x| x.1).collect()
+    fn latest(&self, key: &NameKey, holding: Holding) -> Option<Ts> {
+        self.requests.get(&(key.clone(), holding)).and_then(|s| s.last()).map(|x| x.0)
     }
     fn requests_through(&self, e: &Pair, from: Bound<Key>, to: Bound<Key>) -> Vec<WriteId> {
         in_range(&self.requests_on, e, from, to)
@@ -238,9 +255,11 @@ impl Store for MemStore {
         if was == right {
             return;
         }
-        let Some((key, ts)) = self.facts.get(id).and_then(|f| Some((name_key(f)?, f.ts))) else { return };
-        if was.any() != right.any() {
-            set(&mut self.requests, key, (ts, *id), right.any());
+        let Some(f) = self.facts.get(id) else { return };
+        let Some(key) = name_key(f) else { return };
+        let (old, new) = (holdings(f, was), holdings(f, right));
+        for h in old.symmetric_difference(&new) {
+            set(&mut self.requests, (key.clone(), *h), (f.ts, *id), new.contains(h));
         }
         if right.any() {
             self.rights.insert(*id, right);
@@ -739,26 +758,29 @@ impl<S: Store> Facts<S> {
     /// Whether a request holding a right names the delta (or copy) of `commit` on `on`'s `aspect`
     /// stamped `ts`, of purge author `author` and `retention`, and holds a right over it: `admin`
     /// over any; `writer` (write) over a `writer` delta; `author` (write, its path holding the
-    /// delta's purge author) over an `author_or_admin` one (draft §6). It reads the requests by
-    /// that author, by the aspect and by that commit stamped after it, and the destructions of
-    /// the thing, from the store's index of requests holding a right: each once.
+    /// delta's purge author) over an `author_or_admin` one (draft §6). Per selector naming it (by
+    /// that author, by the aspect, by that commit, a destruction of the thing) a point lookup of
+    /// the latest request holding what its retention asks: one stamped after it names it (a
+    /// destruction: whatever its stamp).
     #[allow(clippy::too_many_arguments)]
     fn purged_by(&self, on: Tid, aspect: &Ak, commit: CommitId, ts: Ts, author: Option<Tid>, retention: PurgeBy, counts: &mut Counts) -> bool {
-        let mut keys: Vec<(NameKey, Bound<Ts>)> = vec![((on, None, Names::Destroy), Bound::Unbounded)];
+        let mut keys: Vec<(NameKey, Option<Ts>)> = vec![((on, None, Names::Destroy), None)];
         for names in [Names::Aspect, Names::Commit(commit)].into_iter().chain(author.map(Names::Author)) {
-            keys.push(((on, Some(aspect.clone()), names), Bound::Excluded(ts)));
+            keys.push(((on, Some(aspect.clone()), names), Some(ts)));
         }
+        let asks: Vec<Holding> = [Some(Holding::Admin)]
+            .into_iter()
+            .chain([match retention {
+                PurgeBy::Admin => None,
+                PurgeBy::Writer => Some(Holding::Write),
+                PurgeBy::AuthorOrAdmin => author.map(Holding::WriteFor),
+            }])
+            .flatten()
+            .collect();
         keys.iter().any(|(k, after)| {
-            self.store.requests(k, *after).iter().any(|q| {
+            asks.iter().any(|h| {
                 counts.content += 1;
-                let right = self.store.right(q);
-                right.admin
-                    || (right.write
-                        && match retention {
-                            PurgeBy::Admin => false,
-                            PurgeBy::Writer => true,
-                            PurgeBy::AuthorOrAdmin => author.is_some_and(|a| self.store.get(q).is_some_and(|qf| qf.chain.contains(&a))),
-                        })
+                self.store.latest(k, *h).is_some_and(|t| after.is_none_or(|a| t > a))
             })
         })
     }
@@ -795,7 +817,7 @@ impl<S: Store> Facts<S> {
             return false;
         }
         if stated.is_empty() {
-            return self.store.requests(&(*on, None, Names::Destroy), Bound::Unbounded).iter().any(|q| self.store.right(q).admin);
+            return self.store.latest(&(*on, None, Names::Destroy), Holding::Admin).is_some();
         }
         stated.iter().all(|f| self.purged_by(*on, aspect, *c, f.ts, Some(f.purge_author), f.retention, counts))
     }

@@ -345,3 +345,32 @@ fn a_backdated_cut_listing_a_request_gives_its_right_back() {
     assert_eq!(purged(&w, &all(&w, &[])), Set::from([h]));
     super::incremental::every_order(&w);
 }
+
+// spec/commits.md §5 Purge, Without the header: a snapshot's stated facts are its signer's word
+// (issues/forged-copy-undetected.md): W's cover of T1 states itself purge author and `writer` of
+// H's `admin` write, and W purges by author itself. A node holding the cover and the request but
+// not the write reads the copy purged (the hole, by construction); holding the write too, its own
+// facts decide and nothing is purged, as the engine reads the header (`retention::tests_carried`).
+#[test]
+fn a_misstated_fact_steers_a_purge_only_where_the_original_is_not_held() {
+    let mut w = base();
+    let h = content(&mut w, H, 2, &[A], Retention::Admin);
+    let s = w.push(W, 3, &[], T1, Kind::Cover { carries: Set::from([h]) });
+    w.purge(W, 4, &[], T1, W);
+    let forge = |v: &View| {
+        let mut inp = super::input(&w, v);
+        let c = cid(w.cid(s));
+        let snap = inp.commits.iter_mut().find(|x| x.id == c).unwrap();
+        let PartKind::Delta(delta) = &mut snap.parts[0].kind else { panic!() };
+        let DeltaClass::Snapshot { stated, .. } = &mut delta.class else { panic!() };
+        stated.insert(cid(w.cid(h)), Stated { ts: osis_base::Ts::make(osis_base::WallMs(2), 0).unwrap(), purge_author: tid(W), retention: PurgeBy::Writer });
+        let p = Paths::evaluate(&inp.records, BTreeSet::new(), &inp.commits);
+        (inp, p)
+    };
+    // honest statements: nothing purged, held or not
+    assert!(purged(&w, &all(&w, &[])).is_empty() && purged(&w, &View::all(&w).without(&[h])).is_empty());
+    let (_, p) = forge(&View::all(&w).without(&[h]));
+    assert!(p.copies().contains(&cid(w.cid(h))) && p.purged_copies() == BTreeSet::from([cid(w.cid(h))]));
+    let (inp, p) = forge(&all(&w, &[]));
+    assert!(p.purged().is_empty() && p.purged_copies().is_empty() && matches!(p.content(&inp.ids[&h]), Some(Content::Valid(_))));
+}
