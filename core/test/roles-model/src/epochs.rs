@@ -1216,7 +1216,8 @@ mod tests {
     /// own covers (writes vouched for and saved by others' words: the hand tests, and counted by
     /// the large twin).
     #[test]
-    fn random_worlds_hold() {
+    #[ignore = "property"]
+    fn random_worlds_hold_plain() {
         let st = run_random(20, 5, Control::None);
         assert!(st.named > 0 && st.unaware > 0 && st.own_covers > 0 && st.obliged > 0, "{st:?}");
         assert_holds(&st, "random");
@@ -1228,17 +1229,20 @@ mod tests {
     }
 
     #[test]
-    fn no_cutoff_fails_safety() {
+    #[ignore = "property"]
+    fn no_cutoff_fails_safety_plain() {
         control_fails(Control::NoCutoff, "safety");
     }
 
     #[test]
-    fn own_only_fails_liveness() {
+    #[ignore = "property"]
+    fn own_only_fails_liveness_plain() {
         control_fails(Control::OwnOnly, "liveness");
     }
 
     #[test]
-    fn void_uncounted_fails_liveness() {
+    #[ignore = "property"]
+    fn void_uncounted_fails_liveness_plain() {
         control_fails(Control::VoidUncounted, "liveness");
     }
 

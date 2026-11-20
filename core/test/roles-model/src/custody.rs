@@ -2296,7 +2296,8 @@ mod tests {
 
     /// 40 random worlds: both schedules, X's side taken first, switches, twin certificates.
     #[test]
-    fn random_worlds_hold() {
+    #[ignore = "property"]
+    fn random_worlds_hold_plain() {
         let st = run_random(40, 1, Control::None);
         assert!(st.lockstep > 0 && st.twin_certs > 0 && st.cycle > 0, "{st:?}");
         assert_holds(&st, "random");
@@ -2305,7 +2306,8 @@ mod tests {
     /// Every 40th world of the small family under two setups (random and lockstep; B offline,
     /// C apart removing T, X's tick-0 rotation).
     #[test]
-    fn small_family_sample_holds() {
+    #[ignore = "property"]
+    fn small_family_sample_holds_plain() {
         let mut st = Stats::default();
         for prefix in [vec![0, 0, 1, 1, 1], vec![1, 1, 1, 1, 0]] {
             let mut od = Odometer::with_prefix(prefix);

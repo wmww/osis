@@ -227,14 +227,16 @@ fn a_removed_node_writing_a_grant_to_the_remover_stays_removed() {
 }
 
 #[test]
-fn random_worlds_hold() {
+#[ignore = "property"]
+fn random_worlds_hold_plain() {
     let st = random(4000, FIXED);
     assert_eq!(st.failures(), 0, "{}", st.ex.first().map_or(String::new(), |(l, w)| format!("{l}:\n{w}")));
     assert!(st.counted > 0 && st.kept_checked > 0 && st.made_checked > 0 && st.safety_checked > 0);
 }
 
 #[test]
-fn family_sample_holds_and_each_control_fails() {
+#[ignore = "property"]
+fn family_sample_holds_and_each_control_fails_plain() {
     let st = exhaustive(FIXED, 397);
     assert_eq!(st.failures(), 0);
     assert!(st.counted > 0);
@@ -296,7 +298,8 @@ fn an_empty_list_reviving_its_author_is_set_aside() {
 /// What vouches keep, as spec/permissions.md §5.1 promises it (`kept_end`), under the
 /// state-based writing; the control without vouches fails it.
 #[test]
-fn state_writing_keeps_what_the_spec_promises() {
+#[ignore = "property"]
+fn state_writing_keeps_what_the_spec_promises_plain() {
     let state = Rules { state: true, ..FIXED };
     let st = random(2000, state);
     assert_eq!(st.kept_end_fail, 0, "{}", st.ex.iter().find(|(l, _)| *l == "kept_end").map_or(String::new(), |(_, w)| format!("{w}")));

@@ -1526,7 +1526,8 @@ mod tests {
     }
 
     #[test]
-    fn gaps_random_and_family_sample_hold_and_controls_fail() {
+    #[ignore = "property"]
+    fn gaps_random_and_family_sample_hold_and_controls_fail_plain() {
         let mut st = GapStats::default();
         let mut rng = Rng(7);
         for _ in 0..300 {
@@ -1708,7 +1709,8 @@ mod tests {
     /// Leaving out only what the leaver's own named snapshot covers loses no visible write
     /// against listing every commit, over a slice of the cover family (whole: `addenda-covers`).
     #[test]
-    fn own_covers_lose_nothing() {
+    #[ignore = "property"]
+    fn own_covers_lose_nothing_plain() {
         let mut st = Stats::default();
         let mut rng = Rng(0);
         cover_worlds((0, 64), |[w, o, p]| check(&w, Some(&[o, p]), &mut st, &mut rng));
@@ -1730,7 +1732,8 @@ mod tests {
 
     /// The random search finds no failure (counters in `Stats::failures`).
     #[test]
-    fn random_search_holds() {
+    #[ignore = "property"]
+    fn random_search_holds_plain() {
         let st = random(1600, 0xadd);
         assert!(st.with_addenda > 0);
         assert_eq!(st.failures(), 0);

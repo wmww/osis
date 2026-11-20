@@ -609,7 +609,8 @@ mod tests {
     /// The searches' hard properties on a sample of each generator, and the exhaustive tier
     /// with one commit.
     #[test]
-    fn sample_searches() {
+    #[ignore = "property"]
+    fn sample_searches_plain() {
         let mut rng = Rng(0);
         let mut st = Stats::default();
         for (i, who) in [Who::OneRemover, Who::Rank, Who::RankFreeGrants, Who::Anyone].into_iter().enumerate() {

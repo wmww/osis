@@ -1098,7 +1098,7 @@ fn a_backdated_leave_undoes_nothing_the_removed_node_made() {
     assert!(rd.applied.contains(&leave) && !rd.applied.contains(&down) && rd.role(N5, A) == Gone);
 }
 
-// ---- The searches at small size ----
+// ---- The searches (properties: every roles-model gate selects them, and nothing else can move them) ----
 
 fn assert_holds(st: &Stats, what: &str) {
     for k in ["safety", "liveness", "alike", "removal kept", "removal", "own path", "admin", "untrusted", "dispute", "safety N", "admin N", "own path N"] {
@@ -1110,15 +1110,11 @@ fn assert_holds(st: &Stats, what: &str) {
     assert!(st.failures() == 0, "{what}: {:?}\n{:?}", st.fails, st.first);
 }
 
-#[test]
-fn random_worlds_hold() {
-    assert_holds(&random(400, &Rules::fixed()), "random");
-}
-
 /// Under the first round's reading the wanted behaviour fails where the findings say, and
 /// safety holds.
 #[test]
-fn the_notes_rules_fail_liveness_and_alike_never_safety() {
+#[ignore = "property"]
+fn the_notes_rules_fail_liveness_and_alike_never_safety_plain() {
     let st = random(400, &Rules::design());
     for k in ["liveness", "alike", "removal kept"] {
         assert!(st.fails.contains_key(k), "{k}: {:?}", st.fails);
@@ -1130,7 +1126,8 @@ fn the_notes_rules_fail_liveness_and_alike_never_safety() {
 
 /// Each fix alone is needed: without it the search fails.
 #[test]
-fn each_fix_is_needed() {
+#[ignore = "property"]
+fn each_fix_is_needed_plain() {
     let f = Rules::fixed();
     let cases = [
         ("vouch", Rules { vouch: Vouch::Off, ..f }),
@@ -1145,11 +1142,6 @@ fn each_fix_is_needed() {
     for (name, rules) in cases {
         assert!(random(100, &rules).failures() > 0, "{name}");
     }
-}
-
-#[test]
-fn small_family_sample_holds() {
-    assert_holds(&family_run(&Rules::fixed(), 4001), "family");
 }
 
 fn var(k: &str) -> Option<u64> {
@@ -1469,7 +1461,8 @@ fn a_thiefs_lowering_after_the_removal_holds_nothing() {
 /// README.md, Paths, for the search): one reading under a relabelling. Control: a lowering whose drops take its author's
 /// standing applying, A is left with no admin (counted).
 #[test]
-fn small_worlds_hold() {
+#[ignore = "property"]
+fn small_worlds_hold_plain() {
     for invites in [false, true] {
         for honest in [Honesty::None, Honesty::Lists, Honesty::Writers] {
             let st = tiny_run(3000, &Rules::fixed(), TinyMode { invites, honest });

@@ -957,7 +957,8 @@ mod tests {
 
     /// A slice of the member family: every check of `search` holds.
     #[test]
-    fn family_slice_holds() {
+    #[ignore = "property"]
+    fn family_slice_holds_plain() {
         let mut n = 0;
         let mut rng = Rng(1);
         member_family((0, 2000), |s| {
