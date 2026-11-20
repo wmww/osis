@@ -1,18 +1,22 @@
 //! The evidence derivation (`osis_engine::evidence`, notes/evidence-derivation.md; spec/permissions.md
-//! §4, as notes/a2-spec/permissions.md drafts it) against
+//! §4, as notes/a2-spec/permissions.md and notes/a3-spec/permissions.md draft it) against
 //! held-model `evidence` (`World::req` under OPEN 10's (iv), `Open10::Granted`, entry creations
-//! on, reach on), the oracle: at every step of a world, for every node's held set and every sync
-//! ID's held entries, under every sync ID, the copies the derivation keeps incrementally and
-//! computes from scratch equal the model's required copies, with keys-open travel off (A3's rule,
-//! `Rule::fixed`) and on (brief 3's, `Stage::ReachNoErrand`: notes/a2-spec/README.md OPEN 14),
-//! vouches counting and not. Hand worlds per model test naming a rule or finding (reach's in
-//! `reach.rs`); the derivation's own (a waiting path entry); count tests.
-use held_model::evidence::{self as hm, Join, Open10, Rule, Shape, Stage, World};
+//! on, reach on, keys-open travel on), the oracle: at every step of a world, for every node's held
+//! set and every sync ID's held entries, under every sync ID, the copies the derivation keeps
+//! incrementally and computes from scratch equal the model's required copies under A3's rule
+//! (`Stage::A3` with `Rule::listed`: leaves, addenda leaving) and brief 3's (`Stage::ReachNoErrand`),
+//! vouches counting and not; under A3's, the leaves equal `World::req_leaves`, each held part waits
+//! for a leaf exactly where `World::pend_leaf` says, and each honest node's duty targets equal what
+//! the model's errand logs (`World::errand_runs`). Hand worlds per model test naming a rule or
+//! finding (reach's in `reach.rs`, A3's in `a3.rs`); the derivation's own (a waiting path entry);
+//! count tests.
+use held_model::evidence::{self as hm, Chained, Join, LeafKeep, Leafs, Open10, Rule, Shape, Stage, State, World};
 use osis_engine::evidence::{Config, CopyId, Evidence, Gives, Hop, Kind, Need, Part, Write};
 use roles_model::paths::{self, Id, Key, Rules, Set, Thing, Things, Vouch};
 use roles_model::Role;
 use std::collections::{BTreeMap, BTreeSet};
 
+mod a3;
 mod counts;
 mod hand;
 mod reach;
@@ -45,10 +49,26 @@ fn brief3(w: &mut World, vouches: bool) -> Rule {
     rule
 }
 
-/// The delivery a world runs under for `vouches`: A3's (the errand) with vouches counting, brief
-/// 3's without. Each run compares both derivations (keys-open travel off and on) at every held set.
+/// `w` set to A3's rule (`Stage::A3` over `Rule::listed`: (iv), reach, keys-open travel, the
+/// errand, leaves read where they cut and far leaves kept at home, addenda leaving), vouch evidence
+/// on or off.
+fn a3(w: &mut World, vouches: bool) -> Rule {
+    w.rules = rules(vouches);
+    let mut rule = Stage::A3.set(w, Rule::listed());
+    rule.closure.vouches = vouches;
+    rule
+}
+
+/// The delivery a world runs under for `vouches`: A3's (the errand, leaves) with vouches counting,
+/// brief 3's without. Each run compares both derivations (A3's, brief 3's) at every held set.
 fn delivery(w: &mut World, vouches: bool) -> Rule {
-    if vouches { granted(w, vouches) } else { brief3(w, vouches) }
+    if vouches { a3(w, vouches) } else { brief3(w, vouches) }
+}
+
+/// The rules a held set is compared under, for `vouches`: A3's and brief 3's.
+fn compared(w: &World, vouches: bool) -> [Rule; 2] {
+    let mut w = w.clone();
+    [a3(&mut w, vouches), brief3(&mut w, vouches)]
 }
 
 /// Part `i` of the model's world as the derivation's input, over held set `h` whose chained
@@ -65,8 +85,10 @@ fn part(w: &World, ch: &Set, i: Id) -> Part<Id, Thing, Key> {
             gives_read: *role >= Role::Read && !pw.leave(i),
             relies: *relies,
             creation: w.creation(i).map(|j| (pw.cid(j), pw.commits[j].on)),
+            leaves: w.leaves_of(i).into_iter().map(|(_, t)| t).collect(),
         }),
         paths::Kind::Vouch { removal, .. } => Kind::Vouch { keyed: (pw.cid(*removal), pw.commits[*removal].on) },
+        paths::Kind::Addendum { removal, list } => Kind::Addendum { edge: pw.sets(*removal).expect("an addendum against an edge write"), lists: list.iter().map(|&j| (pw.cid(j), pw.commits[j].on)).collect() },
         _ => Kind::Content,
     };
     let hops = pw.hops(i).iter().map(|&edge| Hop { edge, record: pw.records.contains(&edge), need: need(w, i, edge) }).collect();
@@ -113,16 +135,28 @@ fn splits_a_copy(w: &World, h: &Set) -> bool {
     copies_of(w, h).iter().any(|(c, held)| w.w.part_ids(c.0).filter(|&p| w.on(p) == c.1).count() != held.len())
 }
 
-/// One node's derivation, fed the model's held set and units step by step.
+/// One node's derivation, fed the model's held set and units step by step, and what it reads for
+/// the duty.
 struct Driver {
     ev: Ev,
     held: HeldCopies,
     units: BTreeMap<Thing, Things>,
+    duty_held: HeldCopies,
 }
 
 impl Driver {
     fn new(w: &World, vouches: bool, keys_open: bool) -> Driver {
-        Driver::with(w, Config { vouches, reach: true, keys_open })
+        Driver::with(w, Config { vouches, reach: true, keys_open, leaves: false, duty: false })
+    }
+
+    /// A3's derivation: reach, keys-open travel, leaves and the duty; the node holding write on
+    /// every thing (the model runs the duty for every target: no right modelled).
+    fn a3(w: &World, vouches: bool) -> Driver {
+        let mut d = Driver::with(w, Config { vouches, ..A3 });
+        for t in 0..=Thing::MAX {
+            d.ev.set_role(t, Some(osis_base::Role::Write));
+        }
+        d
     }
 
     fn with(w: &World, cfg: Config) -> Driver {
@@ -133,7 +167,38 @@ impl Driver {
         for &s in &w.sids {
             ev.add_sid(s, s);
         }
-        Driver { ev, held: BTreeMap::new(), units: w.sids.iter().map(|&s| (s, Things::new())).collect() }
+        Driver { ev, held: BTreeMap::new(), units: w.sids.iter().map(|&s| (s, Things::new())).collect(), duty_held: BTreeMap::new() }
+    }
+
+    /// What the duty reads, as the sync side would: the edge writes under the own sync ID of each
+    /// target it runs for (`entries`), not held otherwise, each chained over what it holds and
+    /// reads; again until the targets stop moving.
+    fn feed_duty(&mut self, w: &World, h: &Set, entries: &BTreeMap<Thing, Set>) {
+        for _ in 0..64 {
+            let targets: Things = self.ev.duty().iter().map(|r| r.target).filter(|t| w.sids.contains(t)).collect();
+            let reads: Set = targets.iter().flat_map(|x| entries[x].iter().copied()).filter(|&i| !h.contains(&i) && w.w.edge_class(i)).collect();
+            let all: Set = h.union(&reads).copied().collect();
+            let ch = w.chained(&all);
+            let now: HeldCopies = copies_of(w, &reads).into_iter().filter(|(c, _)| !self.held.contains_key(c)).map(|(c, ids)| (c, ids.iter().map(|&i| part(w, &ch, i)).collect())).collect();
+            if now == self.duty_held {
+                return;
+            }
+            for c in self.duty_held.keys().filter(|c| !now.contains_key(c)) {
+                self.ev.duty_forget(c);
+            }
+            for (c, parts) in &now {
+                if self.duty_held.get(c) != Some(parts) {
+                    self.ev.duty_add(*c, parts.clone());
+                }
+            }
+            self.duty_held = now;
+        }
+        panic!("the duty's reads do not settle");
+    }
+
+    /// The (removal copy, target sync ID) pairs it runs the duty for.
+    fn duty(&self, w: &World) -> BTreeSet<(CopyId<Id, Thing>, Thing)> {
+        self.ev.duty().iter().filter(|r| w.sids.contains(&r.target)).map(|r| (r.removal, r.target)).collect()
     }
 
     /// Moves the derivation to held set `h` and units `units`: new copies, chained flips,
@@ -181,41 +246,85 @@ fn model_copies(w: &World, rule: &Rule, s: Thing, units: &BTreeMap<Thing, Things
     w.req(rule, s, units, h).into_iter().filter(|&i| !units[&s].contains(&w.on(i))).map(|i| (w.w.cid(i), w.on(i))).collect()
 }
 
-/// What a run compared: disagreements, comparisons where the model required some copy, held
-/// sets splitting a copy (not compared).
+/// A3's configuration: reach, keys-open travel (Role changes travel whole, finding 31), leaves and
+/// the duty.
+const A3: Config = Config { vouches: true, reach: true, keys_open: true, leaves: true, duty: true };
+
+/// The model's required leaves of `s` over `h` under `rule`, as (lowering commit, thing).
+fn model_leaves(w: &World, rule: &Rule, s: Thing, units: &BTreeMap<Thing, Things>, h: &Set) -> BTreeSet<(Id, Thing)> {
+    w.req_leaves(rule, s, units, h).into_iter().map(|(r, t)| (w.w.cid(r), t)).collect()
+}
+
+/// Every content-class part of `h` whose wait for a leaf (`World::pend_leaf`, holding leaves `l`)
+/// the derivation's `waits` does not match: (part, model, derivation).
+fn leaf_waits(w: &World, d: &mut Driver, h: &Set, l: &Leafs) -> (Vec<(Id, bool, bool)>, usize) {
+    let ch = Chained::new();
+    let held: BTreeSet<(Id, Thing)> = l.iter().map(|&(r, t)| (w.w.cid(r), t)).collect();
+    let mut bad = vec![];
+    let mut waiting = 0;
+    for &i in h.iter().filter(|&&i| !w.w.edge_class(i)) {
+        let model = w.pend_leaf(LeafKeep::Cuts, h, &ch, l, i);
+        let ours = d.ev.waits(&(w.w.cid(i), w.on(i)), |x| held.contains(x)).is_some();
+        waiting += usize::from(model);
+        if model != ours {
+            bad.push((i, model, ours));
+        }
+    }
+    (bad, waiting)
+}
+
+/// What a run compared: disagreements, comparisons where the model required some copy, some leaf,
+/// a part waiting on a leaf, some duty target; held sets splitting a copy (not compared).
 #[derive(Default)]
 struct Run {
     differ: Vec<String>,
     copies: usize,
+    leaves: usize,
+    waits: usize,
+    duty: usize,
     split: usize,
 }
 
+impl Run {
+    fn add(&mut self, r: Run) {
+        self.differ.extend(r.differ);
+        self.copies += r.copies;
+        self.leaves += r.leaves;
+        self.waits += r.waits;
+        self.duty += r.duty;
+        self.split += r.split;
+    }
+}
+
 /// Every disagreement over the run of `w` under `rule` (its delivery): per step, per node (its
-/// held set) and per sync ID's reader (its entries), for every sync ID, with keys-open travel off
-/// and on: the derivation's copies (incremental and from scratch) against the model's
-/// (`World::req` with `keys_open` alike).
+/// held set) and per sync ID's reader (its entries), for every sync ID, A3's derivation against
+/// the model under A3's rule (copies, leaves, waits on a leaf; at a node, its duty targets against
+/// the model's errand where the delivery runs one) and brief 3's against brief 3's rule (copies).
 fn differ(w: &World, rule: &Rule, vouches: bool) -> Run {
     let mut out = Run::default();
-    let keys = [false, true];
-    let mut nodes: Vec<[Driver; 2]> = (0..w.nodes.len()).map(|_| keys.map(|k| Driver::new(w, vouches, k))).collect();
-    let mut readers: BTreeMap<Thing, [Driver; 2]> = w.sids.iter().map(|&s| (s, keys.map(|k| Driver::new(w, vouches, k)))).collect();
-    let rules = keys.map(|keys_open| Rule { keys_open, ..*rule });
+    let [ra3, rb3] = compared(w, vouches);
+    let errand = rule.errand != hm::Errand::Off;
+    let mut nodes: Vec<[Driver; 2]> = (0..w.nodes.len()).map(|_| [Driver::a3(w, vouches), Driver::new(w, vouches, true)]).collect();
+    let mut readers: BTreeMap<Thing, [Driver; 2]> = w.sids.iter().map(|&s| (s, [Driver::a3(w, vouches), Driver::new(w, vouches, true)])).collect();
     w.run(rule, |st| {
-        let mut held: Vec<(String, &Set, &mut [Driver; 2])> = vec![];
+        // (who, its node, its held set and leaves, its derivations)
+        #[allow(clippy::type_complexity)]
+        let mut held: Vec<(String, Option<usize>, &Set, Leafs, &mut [Driver; 2])> = vec![];
         for (n, d) in nodes.iter_mut().enumerate() {
-            held.push((format!("node {n}"), &st.held[n], d));
+            held.push((format!("node {n}"), Some(n), &st.held[n], st.held_leaves[n].clone(), d));
         }
         for (s, d) in readers.iter_mut() {
-            held.push((format!("reader of {s}"), &st.entries[s], d));
+            let h = &st.entries[s];
+            held.push((format!("reader of {s}"), None, h, st.leaves[s].iter().copied().filter(|l| h.contains(&l.0)).collect(), d));
         }
-        for (who, h, ds) in held {
+        for (who, node, h, l, [da3, db3]) in held {
             let split = splits_a_copy(w, h);
             out.split += usize::from(split);
-            for (d, rule) in ds.iter_mut().zip(&rules) {
+            for (d, rule, name) in [(&mut *da3, &ra3, "a3"), (&mut *db3, &rb3, "brief3")] {
                 d.step(w, h, &st.units);
                 // incremental = from scratch, the reverse indexes current
                 if let Err(e) = d.ev.check() {
-                    out.differ.push(format!("step {} {who} keys-open {}: {e}", st.step, rule.keys_open));
+                    out.differ.push(format!("step {} {who} {name}: {e}", st.step));
                 }
                 if split {
                     continue;
@@ -225,12 +334,50 @@ fn differ(w: &World, rule: &Rule, vouches: bool) -> Run {
                     let inc = d.required(s);
                     out.copies += usize::from(!model.is_empty());
                     if inc != model {
-                        out.differ.push(format!("step {} {who} keys-open {} sid {s}: model {model:?} derivation {inc:?}", st.step, rule.keys_open));
+                        out.differ.push(format!("step {} {who} {name} sid {s}: model {model:?} derivation {inc:?}", st.step));
                     }
+                }
+            }
+            if split {
+                continue;
+            }
+            out.add(a3_checks(w, &ra3, st, &who, h, &l, da3));
+            if let Some(n) = node.filter(|&n| errand && w.nodes[n].honest) {
+                da3.feed_duty(w, h, &st.entries);
+                if let Err(e) = da3.ev.check() {
+                    out.differ.push(format!("step {} {who} duty: {e}", st.step));
+                }
+                let model: BTreeSet<(CopyId<Id, Thing>, Thing)> = w.errand_runs(&ra3, st, n).into_iter().flat_map(|(r, xs)| xs.into_iter().map(move |x| ((w.w.cid(r), w.on(r)), x))).collect();
+                let ours = da3.duty(w);
+                out.duty += usize::from(!model.is_empty());
+                if model != ours {
+                    out.differ.push(format!("step {} {who} duty: model {model:?} derivation {ours:?}", st.step));
                 }
             }
         }
     });
+    out
+}
+
+/// A3's leaf checks over held set `h` (holding leaves `l`): per sync ID the required leaves
+/// (incremental and from scratch) against `World::req_leaves`, and per held part its wait on a
+/// leaf against `World::pend_leaf`.
+fn a3_checks(w: &World, rule: &Rule, st: &State, who: &str, h: &Set, l: &Leafs, d: &mut Driver) -> Run {
+    let mut out = Run::default();
+    for &s in &w.sids {
+        let model = model_leaves(w, rule, s, &st.units, h);
+        let inc: BTreeSet<(Id, Thing)> = d.ev.leaves(&s).unwrap_or_default().into_keys().collect();
+        let scratch: BTreeSet<(Id, Thing)> = d.ev.leaves_from_scratch(&s).unwrap_or_default().into_keys().collect();
+        out.leaves += usize::from(!model.is_empty());
+        if inc != model || scratch != model {
+            out.differ.push(format!("step {} {who} sid {s} leaves: model {model:?} derivation {inc:?} from scratch {scratch:?}", st.step));
+        }
+    }
+    let (bad, waiting) = leaf_waits(w, d, h, l);
+    out.waits += waiting;
+    if !bad.is_empty() {
+        out.differ.push(format!("step {} {who} waits (part, model, derivation): {bad:?}", st.step));
+    }
     out
 }
 
@@ -241,18 +388,21 @@ fn differ_both(w: &World) -> Run {
         let mut w = w.clone();
         let rule = delivery(&mut w, vouches);
         let r = differ(&w, &rule, vouches);
-        out.copies += r.copies;
-        out.split += r.split;
-        out.differ.extend(r.differ.into_iter().map(|d| format!("vouches {vouches}: {d}")));
+        out.add(Run { differ: r.differ.into_iter().map(|d| format!("vouches {vouches}: {d}")).collect(), ..r });
     }
     out
 }
 
 /// Asserts `w` agrees; the comparisons where the model required a copy.
 fn assert_agrees(name: &str, w: &World) -> usize {
+    assert_agrees_run(name, w).copies
+}
+
+/// Asserts `w` agrees; what was compared.
+fn assert_agrees_run(name: &str, w: &World) -> Run {
     let r = differ_both(w);
     assert!(r.differ.is_empty(), "{name}: {} disagreements, first: {}", r.differ.len(), r.differ[0]);
-    r.copies
+    r
 }
 
 // ---- the family, story and random worlds ----
@@ -260,11 +410,12 @@ fn assert_agrees(name: &str, w: &World) -> usize {
 /// Every 291st family world (the model's default slice: 106 worlds over the three `Shape::mint` values).
 #[test]
 fn the_derivation_agrees_with_the_model_on_a_family_slice_spec_permissions_4() {
-    let mut copies = 0;
+    let mut r = Run::default();
     for i in (0..hm::FAMILY).step_by(97 * 3) {
-        copies += assert_agrees(&format!("{:?}", Shape::nth(i)), &hm::family(Shape::nth(i)));
+        r.add(assert_agrees_run(&format!("{:?}", Shape::nth(i)), &hm::family(Shape::nth(i))));
     }
-    assert!(copies > 1000, "{copies}");
+    eprintln!("copies {}, leaves {}, waits {}, duty {}", r.copies, r.leaves, r.waits, r.duty);
+    assert!(r.copies > 1000 && r.leaves > 0 && r.waits > 0 && r.duty > 0, "copies {}, leaves {}, waits {}, duty {}", r.copies, r.leaves, r.waits, r.duty);
 }
 
 /// roles-model's story world of seed 0 under each of the six unit crossings, vouches counting on
@@ -285,7 +436,8 @@ fn the_derivation_agrees_with_the_model_on_story_worlds_spec_permissions_4() {
 }
 
 /// Random worlds (junk, hostile paths, two-holder removals, retags), story worlds under the six
-/// crossings, a family slice: `n` random seeds and `story` story seeds from `OSIS_HELD_START`, a
+/// crossings, a family slice (each also with the remover's node lost and the duty run by every
+/// holder in its passes): `n` random seeds and `story` story seeds from `OSIS_HELD_START`, a
 /// thread per core.
 fn search(family_step: usize, random_worlds: u64, story: u64) {
     let start = std::env::var("OSIS_HELD_START").ok().filter(|v| !v.is_empty()).map_or(0, |v| v.parse::<u64>().expect("OSIS_HELD_START is a decimal u64"));
@@ -294,6 +446,11 @@ fn search(family_step: usize, random_worlds: u64, story: u64) {
     let mut jobs: Vec<Job> = vec![];
     for i in (0..hm::FAMILY).step_by(family_step) {
         jobs.push(Box::new(move || (format!("{:?}", Shape::nth(i)), differ_both(&hm::family(Shape::nth(i))))));
+        // the same world with the remover's node lost, the duty run by every holder in its passes
+        let sh = Shape::nth(i);
+        if let Some(w) = a3::remover_lost(hm::family(sh), 0, a3::family_q(sh)) {
+            jobs.push(Box::new(move || (format!("{sh:?} remover lost"), a3::differ_lagged(&w, &[true, false]))));
+        }
     }
     for seed in start..start + random_worlds {
         jobs.push(Box::new(move || (format!("random seed {seed}"), differ_both(&hm::random(seed, 14)))));
@@ -306,24 +463,22 @@ fn search(family_step: usize, random_worlds: u64, story: u64) {
                     let mut w = hm::story_world(&sim, u);
                     let rule = delivery(&mut w, vouches);
                     let r = differ(&w, &rule, vouches);
-                    (format!("story seed {seed} units {u} vouches {vouches}"), Run { differ: r.differ.into_iter().map(|d| format!("vouches {vouches}: {d}")).collect(), copies: r.copies, split: r.split })
+                    (format!("story seed {seed} units {u} vouches {vouches}"), Run { differ: r.differ.into_iter().map(|d| format!("vouches {vouches}: {d}")).collect(), ..r })
                 }));
             }
         }
     }
     let next = std::sync::atomic::AtomicUsize::new(0);
     let bad = std::sync::Mutex::new(vec![]);
-    let copies = std::sync::atomic::AtomicUsize::new(0);
-    let split = std::sync::atomic::AtomicUsize::new(0);
+    let total = std::sync::Mutex::new(Run::default());
     let threads = std::thread::available_parallelism().map_or(1, |n| n.get());
     std::thread::scope(|sc| {
         for _ in 0..threads {
             sc.spawn(|| loop {
                 let Some(j) = jobs.get(next.fetch_add(1, std::sync::atomic::Ordering::Relaxed)) else { return };
-                let (name, r) = j();
-                copies.fetch_add(r.copies, std::sync::atomic::Ordering::Relaxed);
-                split.fetch_add(r.split, std::sync::atomic::Ordering::Relaxed);
-                let d = r.differ;
+                let (name, mut r) = j();
+                let d = std::mem::take(&mut r.differ);
+                total.lock().unwrap().add(r);
                 if !d.is_empty() {
                     bad.lock().unwrap().push(format!("{name}: {} disagreements, first: {}", d.len(), d[0]));
                 }
@@ -332,9 +487,9 @@ fn search(family_step: usize, random_worlds: u64, story: u64) {
     });
     let bad = bad.into_inner().unwrap();
     assert!(bad.is_empty(), "{} worlds disagree, first: {}", bad.len(), bad[0]);
-    let copies = copies.into_inner();
-    eprintln!("{} worlds agree, {copies} comparisons with copies, {} held sets splitting a copy not compared", jobs.len(), split.into_inner());
-    assert!(copies > jobs.len(), "{copies}");
+    let r = total.into_inner().unwrap();
+    eprintln!("{} worlds agree; comparisons with copies {}, with leaves {}, parts waiting on a leaf {}, nodes with duty targets {}; {} held sets splitting a copy not compared", jobs.len(), r.copies, r.leaves, r.waits, r.duty, r.split);
+    assert!(r.copies > jobs.len() && r.leaves > 0 && r.waits > 0 && r.duty > 0, "copies {}, leaves {}, waits {}, duty {}", r.copies, r.leaves, r.waits, r.duty);
 }
 
 #[test]

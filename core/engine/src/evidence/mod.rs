@@ -15,11 +15,21 @@
 //! into a unit; **keys-open travel** (`Config::keys_open`) over chained grants giving read and
 //! record edges, from a sync ID's actor to the holders whose role changes travel under it. Record
 //! edges are an input of their own (`add_record`), standing for good.
+//!
+//! A3 (notes/a3-spec/permissions.md): a lowering's list **leaves** each sync ID requires
+//! (`Config::leaves`, `leaves.rs`), and the delivery **duty**'s targets this node runs
+//! (`Config::duty`, `duty.rs`).
 
 use osis_base::Role;
 use std::collections::{BTreeMap, BTreeSet};
 use std::fmt::Debug;
 use std::ops::Bound;
+
+mod duty;
+mod leaves;
+
+pub use duty::{Mode, Reached, Run};
+pub use leaves::LeafWhy;
 
 /// An edge: (holder, target).
 pub type Edge<T> = (T, T);
@@ -103,14 +113,29 @@ pub struct Write<C, T> {
     pub relies: Option<T>,
     /// The creation of the entry it resets, as its reset names it (spec/permissions.md §2).
     pub creation: Option<CopyId<C, T>>,
+    /// (leaves) The things its list root holds a leaf pair for (notes/a3-spec/permissions.md §5.1
+    /// Frontier): the leaf (commit ID, thing) exists for each.
+    pub leaves: Vec<T>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Kind<C, T> {
+    /// A part with no edge-class part: content, a purge request, a compaction snapshot.
     Content,
     Write(Write<C, T>),
     /// A vouch keyed by the lowering on that copy.
     Vouch { keyed: CopyId<C, T> },
+    /// (leaves) An addendum against a lowering of `edge` listing `lists`: with `Config::leaves` a
+    /// body only while it lists a held copy with a content part resting on `edge` (draft §4: an
+    /// addendum is evidence of those, and leaves with the last). Otherwise as content.
+    Addendum { edge: Edge<T>, lists: Vec<CopyId<C, T>> },
+}
+
+impl<C, T> Kind<C, T> {
+    /// No edge-class part: what a lowering's leaf is read for (content, an addendum).
+    fn content_class(&self) -> bool {
+        matches!(self, Kind::Content | Kind::Addendum { .. })
+    }
 }
 
 /// One part of a held copy.
@@ -159,6 +184,11 @@ pub struct Config {
     /// or above on, through chained grants at any time, is a seed (held-model `Rule::keys_open`).
     /// Off: only writes naming the actor.
     pub keys_open: bool,
+    /// (A3) A lowering's list leaves are evidence (`leaves`; draft §4 the leaf bullet) and an
+    /// addendum is a body only while it lists a held commit resting on its removal's edge.
+    pub leaves: bool,
+    /// (A3) The delivery duty's targets are kept (`duty`; draft §4 The delivery duty).
+    pub duty: bool,
 }
 
 /// Work done, by kind (count tests: notes/evidence-derivation.md, Incremental).
@@ -184,12 +214,44 @@ pub struct Counts {
     pub bodies: usize,
     /// Writes naming a travelling holder a seed computation from nothing read.
     pub seeds: usize,
+    /// (leaves) Lowering parts looked at for a leaf, and (a lowering, a thing) pairs whose leaf was
+    /// decided.
+    pub leaf_checks: usize,
+    /// (leaves) Held parts `judged_by` looked at.
+    pub judged: usize,
+    /// (duty) Things and edges a duty walk took.
+    pub duty: usize,
+}
+
+impl std::ops::Sub for Counts {
+    type Output = Counts;
+    fn sub(self, b: Counts) -> Counts {
+        let d = |x: usize, y: usize| x.saturating_sub(y);
+        Counts {
+            atoms: d(self.atoms, b.atoms),
+            edges: d(self.edges, b.edges),
+            visits: d(self.visits, b.visits),
+            rechecks: d(self.rechecks, b.rechecks),
+            reach: d(self.reach, b.reach),
+            reach_seeds: d(self.reach_seeds, b.reach_seeds),
+            opened: d(self.opened, b.opened),
+            closes: d(self.closes, b.closes),
+            bodies: d(self.bodies, b.bodies),
+            seeds: d(self.seeds, b.seeds),
+            leaf_checks: d(self.leaf_checks, b.leaf_checks),
+            judged: d(self.judged, b.judged),
+            duty: d(self.duty, b.duty),
+        }
+    }
 }
 
 #[derive(Clone, Debug)]
 struct Held<C, T, K> {
     parts: Vec<Part<C, T, K>>,
     joined: Vec<bool>,
+    /// A body where its thing is in a unit (`Config::leaves`: an addendum listing nothing it can
+    /// keep is none).
+    live: bool,
 }
 
 /// Parts by key: (copy, part index).
@@ -294,6 +356,8 @@ struct Ix<C, T, K> {
     removals_on: BTreeMap<T, BTreeSet<PartId<C, T>>>,
     /// (keys-open travel) Chained parts giving read, by edge.
     reads: Graph<C, T>,
+    /// (leaves) What leaves and addenda are looked up by.
+    lx: leaves::LeafIx<C, T>,
 }
 
 /// A sync ID's closure over its seeds.
@@ -344,6 +408,12 @@ struct Sid<C, T> {
     travel: Travel<C, T>,
     reach: Reach<C, T>,
     closure: Closure<C, T>,
+    /// (leaves) Per (edge, unit thing), the bodies on that thing with a content-class part
+    /// resting on the edge.
+    rest: BTreeMap<(Edge<T>, T), usize>,
+    /// (leaves) Per lowering copy in the set (a member or a body), the things whose leaf of it the
+    /// sync ID requires, each with why.
+    leaves: BTreeMap<CopyId<C, T>, BTreeMap<T, LeafWhy>>,
 }
 
 impl<C: Ord + Copy, T: Ord + Copy> Sid<C, T> {
@@ -363,17 +433,23 @@ enum Item<C, T> {
 }
 
 /// What an update leaves to do: closures to extend, sync IDs to close again, seeds to compute
-/// again from nothing (`reach`, `travel`).
+/// again from nothing (`reach`, `travel`); leaves to decide again (per sync ID, or per (sync ID,
+/// lowering copy)); duties to compute again, and edges new to or gone from the duty's graph.
 struct Todo<C, T> {
     work: BTreeMap<T, Vec<Item<C, T>>>,
     dirty: BTreeSet<T>,
     reach: BTreeSet<T>,
     travel: BTreeSet<T>,
+    leaves_all: BTreeSet<T>,
+    leaves: BTreeSet<(T, CopyId<C, T>)>,
+    duty: BTreeSet<CopyId<C, T>>,
+    duty_new: Vec<Edge<T>>,
+    duty_cut: Vec<Edge<T>>,
 }
 
 impl<C, T> Default for Todo<C, T> {
     fn default() -> Self {
-        Todo { work: BTreeMap::new(), dirty: BTreeSet::new(), reach: BTreeSet::new(), travel: BTreeSet::new() }
+        Todo { work: BTreeMap::new(), dirty: BTreeSet::new(), reach: BTreeSet::new(), travel: BTreeSet::new(), leaves_all: BTreeSet::new(), leaves: BTreeSet::new(), duty: BTreeSet::new(), duty_new: vec![], duty_cut: vec![] }
     }
 }
 
@@ -397,6 +473,8 @@ pub struct Evidence<C, T, K> {
     /// (reach) Copy → sync IDs whose reach seeds hold it; edge → sync IDs whose reach ways hold it.
     reach_sids: BTreeMap<CopyId<C, T>, BTreeSet<T>>,
     way_sids: BTreeMap<Edge<T>, BTreeSet<T>>,
+    /// (duty) The delivery duty's state.
+    duty: duty::Duty<C, T, K>,
     counts: Counts,
 }
 
@@ -467,8 +545,9 @@ where
             removal_keys: BTreeMap::new(),
             removals_on: BTreeMap::new(),
             reads: Graph::new(),
+            lx: leaves::LeafIx::default(),
         };
-        Evidence { cfg, ix, sids: BTreeMap::new(), edge_sids: BTreeMap::new(), member_sids: BTreeMap::new(), thing_sids: BTreeMap::new(), open_sids: BTreeMap::new(), reach_sids: BTreeMap::new(), way_sids: BTreeMap::new(), counts: Counts::default() }
+        Evidence { cfg, ix, sids: BTreeMap::new(), edge_sids: BTreeMap::new(), member_sids: BTreeMap::new(), thing_sids: BTreeMap::new(), open_sids: BTreeMap::new(), reach_sids: BTreeMap::new(), way_sids: BTreeMap::new(), duty: duty::Duty::default(), counts: Counts::default() }
     }
 
     pub fn counts(&self) -> Counts {
@@ -513,6 +592,9 @@ where
         for t in &s.unit {
             for c in self.ix.on_thing.get(t).into_iter().flatten() {
                 let copy = (*c, *t);
+                if !self.live(&copy) {
+                    continue;
+                }
                 for e in self.body_edges(&copy) {
                     *atoms.entry(e).or_insert(0) += 1;
                 }
@@ -551,7 +633,12 @@ where
                     return Err(format!("copy {c:?} part {i}: joined {j}, computed {}", !j));
                 }
             }
+            if h.live != self.live_of(c) {
+                return Err(format!("copy {c:?}: live {}, computed {}", h.live, !h.live));
+            }
         }
+        self.check_leaves()?;
+        self.check_duty()?;
         for (sid, s) in &self.sids {
             // the same copies (each with the first reason found, which may differ)
             let scratch = self.from_scratch(sid).unwrap_or_default();
@@ -561,6 +648,9 @@ where
             let mut atoms: BTreeMap<Edge<T>, usize> = BTreeMap::new();
             for t in &s.unit {
                 for c in self.ix.on_thing.get(t).into_iter().flatten() {
+                    if !self.live(&(*c, *t)) {
+                        continue;
+                    }
                     for e in self.body_edges(&(*c, *t)) {
                         *atoms.entry(e).or_insert(0) += 1;
                     }
@@ -648,7 +738,7 @@ where
             return;
         }
         let travel = Travel { open: BTreeSet::new(), seeds: BTreeMap::new() };
-        self.sids.insert(sid, Sid { actor, unit: BTreeSet::new(), atoms: BTreeMap::new(), travel, reach: Reach::default(), closure: Closure::default() });
+        self.sids.insert(sid, Sid { actor, unit: BTreeSet::new(), atoms: BTreeMap::new(), travel, reach: Reach::default(), closure: Closure::default(), rest: BTreeMap::new(), leaves: BTreeMap::new() });
         let mut todo = Todo::default();
         todo.travel.insert(sid);
         self.settle(todo);
@@ -706,6 +796,7 @@ where
         }
         if self.ix.writes.insert_record(e) {
             self.write_edge(e, &mut todo);
+            todo.duty_new.push(e);
         }
         self.recount(&e, true, &mut todo);
         self.settle(todo);
@@ -718,8 +809,13 @@ where
         }
         let mut todo = Todo::default();
         let n = parts.len();
-        self.ix.copies.insert(c, Held { parts, joined: vec![false; n] });
+        self.ix.copies.insert(c, Held { parts, joined: vec![false; n], live: true });
         self.ix.on_thing.entry(c.1).or_default().insert(c.0);
+        let live = self.live_of(&c);
+        if let Some(h) = self.ix.copies.get_mut(&c) {
+            h.live = live;
+        }
+        self.leaf_index(&c, true);
         let held = self.ix.copies.get(&c).map(|h| h.parts.clone()).unwrap_or_default();
         for (i, p) in held.iter().enumerate() {
             if let Kind::Write(w) = &p.kind
@@ -754,6 +850,8 @@ where
                 todo.push(&sid, Item::Copy(c, Reason::Creation(r)));
             }
         }
+        // an addendum listing it may keep something now
+        self.relive_listers(&c, &mut todo);
         self.settle(todo);
     }
 
@@ -803,6 +901,7 @@ where
                 }
             }
         }
+        self.leaf_index(c, false);
         self.ix.copies.remove(c);
         if let Some(s) = self.ix.on_thing.get_mut(&c.1) {
             s.remove(&c.0);
@@ -810,6 +909,7 @@ where
                 self.ix.on_thing.remove(&c.1);
             }
         }
+        self.relive_listers(c, todo);
         // a travel seed it was leaves with it
         let holders: BTreeSet<T> = h.parts.iter().filter_map(|p| if let Kind::Write(w) = &p.kind { Some(w.holder) } else { None }).collect();
         for hd in holders {
@@ -850,9 +950,22 @@ where
         for h in hops.iter().filter(|h| !h.record) {
             self.ix.resting.entry((h.edge, h.need)).or_default().entry(pos).or_default().insert((*c, i));
         }
-        p.hops = Some(hops);
         let mut todo = Todo::default();
+        // (leaves) what it rests on is known now: out with the old edges, in with the new
+        let sids = if self.live(c) { self.thing_sids.get(&c.1).cloned().unwrap_or_default() } else { BTreeSet::new() };
+        for sid in &sids {
+            self.rest_move(sid, c, false, &mut todo);
+        }
+        self.leaf_index(c, false);
+        if let Some(p) = self.ix.copies.get_mut(c).and_then(|h| h.parts.get_mut(i)) {
+            p.hops = Some(hops);
+        }
+        self.leaf_index(c, true);
+        for sid in &sids {
+            self.rest_move(sid, c, true, &mut todo);
+        }
         self.recheck(c, i, &mut todo);
+        self.relive_listers(c, &mut todo);
         self.settle(todo);
     }
 
@@ -862,7 +975,7 @@ where
     fn chained_on(&mut self, c: &CopyId<C, T>, i: usize, todo: &mut Todo<C, T>) {
         let Some(p) = self.part(c, i) else { return };
         match &p.kind {
-            Kind::Content => {}
+            Kind::Content | Kind::Addendum { .. } => {}
             Kind::Vouch { keyed } => {
                 self.ix.vouches_by.entry(*keyed).or_default().insert(*c);
                 if self.cfg.vouches {
@@ -897,6 +1010,7 @@ where
                 if w.gives_write {
                     if self.ix.writes.insert(e, (*c, i)) {
                         self.write_edge(e, todo);
+                        todo.duty_new.push(e);
                     } else {
                         // the edge is a way already: the part goes where the edge does
                         for sid in self.way_sids.get(&e).cloned().unwrap_or_default() {
@@ -914,6 +1028,7 @@ where
                     if self.takes_write(&e, p.pos) {
                         self.ix.removals_on.entry(c.1).or_default().insert((*c, i));
                         self.removal_on(c, todo);
+                        todo.duty.insert(*c);
                     }
                 }
                 if let Some(g) = w.grant {
@@ -934,7 +1049,7 @@ where
     fn chained_off(&mut self, c: &CopyId<C, T>, i: usize, todo: &mut Todo<C, T>) {
         let Some(p) = self.part(c, i) else { return };
         match &p.kind {
-            Kind::Content => {}
+            Kind::Content | Kind::Addendum { .. } => {}
             Kind::Vouch { keyed } => {
                 if let Some(s) = self.ix.vouches_by.get_mut(keyed) {
                     s.remove(c);
@@ -983,6 +1098,7 @@ where
                 }
                 if w.gives_write && self.ix.writes.remove(&e, &(*c, i)) {
                     todo.reach.extend(self.way_sids.get(&e).into_iter().flatten().copied());
+                    todo.duty_cut.push(e);
                 }
                 if w.gives_write {
                     let before = first(self.ix.write_keys.get(&e));
@@ -994,6 +1110,7 @@ where
                 if w.removal {
                     remove_by_key(&mut self.ix.removal_keys, &e, &p.pos, &(*c, i));
                     remove_from(&mut self.ix.removals_on, &c.1, &(*c, i));
+                    todo.duty.insert(*c);
                 }
                 if let Some(g) = w.grant {
                     for n in Need::ALL.into_iter().filter(|&n| g.meets(n)) {
@@ -1135,13 +1252,18 @@ where
             if now && !was {
                 self.ix.removals_on.entry(e.1).or_default().insert((c, i));
                 self.removal_on(&c, todo);
+                todo.duty.insert(c);
             } else if !now && was {
                 remove_from(&mut self.ix.removals_on, &e.1, &(c, i));
                 todo.reach.extend(self.reach_sids.get(&c).into_iter().flatten().copied());
+                todo.duty.insert(c);
             } else if now && witness_moved {
                 todo.reach.extend(self.reach_sids.get(&c).into_iter().flatten().copied());
             }
         }
+        // (leaves) what the lowerings of `e` cut moved: each with a leaf decides again where it
+        // is in a set
+        self.recut(e, todo);
     }
 
     /// The sync IDs whose units hold a thing of `things`, each with those things.
@@ -1305,8 +1427,9 @@ where
         }
         *was = now;
         let edges = p.hops.iter().flatten().map(|h| h.edge);
+        let bodies = if self.live(c) { self.thing_sids.get(&c.1).cloned().unwrap_or_default() } else { BTreeSet::new() };
         if !now {
-            for sid in self.thing_sids.get(&c.1).cloned().unwrap_or_default() {
+            for sid in bodies {
                 self.atoms_out(&sid, edges.clone(), todo);
             }
             for sid in self.member_sids.get(c).cloned().unwrap_or_default() {
@@ -1314,7 +1437,7 @@ where
             }
             return;
         }
-        for sid in self.thing_sids.get(&c.1).cloned().unwrap_or_default() {
+        for sid in bodies {
             self.atoms_in(&sid, edges.clone(), todo);
         }
         for sid in self.member_sids.get(c).cloned().unwrap_or_default() {
@@ -1382,8 +1505,17 @@ where
         }
     }
 
+    /// A held copy is a body where its thing is in a unit (`Config::leaves`: an addendum only
+    /// while it lists something it can keep).
+    fn live(&self, c: &CopyId<C, T>) -> bool {
+        self.ix.copies.get(c).is_some_and(|h| h.live)
+    }
+
     fn body_add(&mut self, sid: &T, c: &CopyId<C, T>, todo: &mut Todo<C, T>) {
         self.counts.bodies += 1;
+        if !self.live(c) {
+            return;
+        }
         let edges = self.body_edges(c);
         self.atoms_in(sid, edges.into_iter(), todo);
         if self.cfg.vouches {
@@ -1391,15 +1523,20 @@ where
                 todo.push(sid, Item::Vouch(*v, *c));
             }
         }
+        self.rest_move(sid, c, true, todo);
     }
 
     fn body_remove(&mut self, sid: &T, c: &CopyId<C, T>, todo: &mut Todo<C, T>) {
         self.counts.bodies += 1;
+        if !self.live(c) {
+            return;
+        }
         let edges = self.body_edges(c);
         self.atoms_out(sid, edges.into_iter(), todo);
         if self.ix.vouches_by.contains_key(c) {
             todo.dirty.insert(*sid);
         }
+        self.rest_move(sid, c, false, todo);
     }
 
     // ---- settling ----
@@ -1451,10 +1588,15 @@ where
         for sid in std::mem::take(&mut todo.dirty) {
             todo.work.remove(&sid);
             self.reclose(&sid);
+            todo.leaves_all.insert(sid);
         }
         for (sid, work) in std::mem::take(&mut todo.work) {
-            self.extend(&sid, work);
+            for m in self.extend(&sid, work) {
+                todo.leaves.insert((sid, m));
+            }
         }
+        self.settle_leaves(std::mem::take(&mut todo.leaves_all), std::mem::take(&mut todo.leaves));
+        self.settle_duty(std::mem::take(&mut todo.duty), std::mem::take(&mut todo.duty_new), std::mem::take(&mut todo.duty_cut));
     }
 
     /// One kind of S's seeds (`travel`, else reach) moves from `old` to `new`: a seed lost from
@@ -1472,16 +1614,17 @@ where
         }
     }
 
-    /// Extends S's closure by `work` and indexes what it added.
-    fn extend(&mut self, sid: &T, work: Vec<Item<C, T>>) {
-        let Some(s) = self.sids.get_mut(sid) else { return };
+    /// Extends S's closure by `work` and indexes what it added; the members it added.
+    fn extend(&mut self, sid: &T, work: Vec<Item<C, T>>) -> Vec<CopyId<C, T>> {
+        let Some(s) = self.sids.get_mut(sid) else { return vec![] };
         let (edges, members) = close(&self.ix, self.cfg, &s.unit, &mut s.closure, work, &mut self.counts);
         for e in edges {
             self.edge_sids.entry(e).or_default().insert(*sid);
         }
-        for m in members {
-            self.member_sids.entry(m).or_default().insert(*sid);
+        for m in &members {
+            self.member_sids.entry(*m).or_default().insert(*sid);
         }
+        members
     }
 
     /// Closes S again from its atoms and seeds.

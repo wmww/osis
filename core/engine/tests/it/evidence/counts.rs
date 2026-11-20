@@ -17,11 +17,11 @@ fn hop(a: u16, b: u16) -> Hop<u16> {
     Hop { edge: (a, b), record: false, need: Need::Role(osis_base::Role::Write) }
 }
 fn write(holder: u16) -> Kind<u32, u16> {
-    Kind::Write(Write { holder, grant: Some(Gives::role(osis_base::Role::Write)), removal: false, gives_write: true, gives_read: true, relies: None, creation: None })
+    Kind::Write(Write { holder, grant: Some(Gives::role(osis_base::Role::Write)), removal: false, gives_write: true, gives_read: true, relies: None, creation: None, leaves: vec![] })
 }
 
 fn minus(a: Counts, b: Counts) -> Counts {
-    Counts { atoms: a.atoms - b.atoms, edges: a.edges - b.edges, visits: a.visits - b.visits, rechecks: a.rechecks - b.rechecks, reach: a.reach - b.reach, reach_seeds: a.reach_seeds - b.reach_seeds, opened: a.opened - b.opened, closes: a.closes - b.closes, bodies: a.bodies - b.bodies, seeds: a.seeds - b.seeds }
+    a - b
 }
 
 struct World {
@@ -33,7 +33,7 @@ struct World {
 impl World {
     /// The path of `k` holder things and `n` writes of K on `on` along it.
     fn new(k: usize, n: usize) -> World {
-        let mut ev = E::new(Config { vouches: true, reach: false, keys_open: false });
+        let mut ev = E::new(Config { vouches: true, reach: false, keys_open: false, leaves: false, duty: false });
         for s in [D, D2] {
             ev.add_sid(s, s);
             ev.join(&s, s);
@@ -207,7 +207,7 @@ fn a_write_naming_the_actor_reads_none_of_its_earlier_ones() {
 fn a_forgotten_body_closes_again_only_when_it_was_the_last_on_an_edge() {
     const A: u16 = 50;
     let at = |m: u16| {
-        let mut ev = E::new(Config { vouches: true, reach: false, keys_open: false });
+        let mut ev = E::new(Config { vouches: true, reach: false, keys_open: false, leaves: false, duty: false });
         ev.add_sid(D, D);
         ev.join(&D, D);
         let mut next = 1u32;
@@ -250,7 +250,7 @@ fn a_forgotten_body_closes_again_only_when_it_was_the_last_on_an_edge() {
 #[test]
 fn a_compaction_forgetting_many_bodies_closes_once() {
     const A: u16 = 50;
-    let mut ev = E::new(Config { vouches: true, reach: false, keys_open: false });
+    let mut ev = E::new(Config { vouches: true, reach: false, keys_open: false, leaves: false, duty: false });
     ev.add_sid(D, D);
     ev.join(&D, D);
     ev.add((1, D), vec![Part { kind: write(A), hops: Some(vec![rec(X, D)]), pos: 1, chained: true }]);
@@ -279,7 +279,7 @@ struct Reach {
 
 impl Reach {
     fn new() -> Reach {
-        Reach { ev: E::new(Config { vouches: true, reach: true, keys_open: true }), next: 1 }
+        Reach { ev: E::new(Config { vouches: true, reach: true, keys_open: true, leaves: false, duty: false }), next: 1 }
     }
     fn sid(&mut self, s: u16) {
         self.ev.add_sid(s, s);
@@ -288,7 +288,7 @@ impl Reach {
     fn edge(&mut self, holder: u16, on: u16, grant: bool, chained: bool) -> (u32, u16) {
         let c = (self.next, on);
         self.next += 1;
-        let kind = Kind::Write(Write { holder, grant: grant.then(|| Gives::role(osis_base::Role::Write)), removal: !grant, gives_write: grant, gives_read: grant, relies: None, creation: None });
+        let kind = Kind::Write(Write { holder, grant: grant.then(|| Gives::role(osis_base::Role::Write)), removal: !grant, gives_write: grant, gives_read: grant, relies: None, creation: None, leaves: vec![] });
         self.ev.add(c, vec![Part { kind, hops: Some(vec![rec(X, on)]), pos: c.0, chained }]);
         c
     }
@@ -367,7 +367,7 @@ fn content_junk_and_other_role_changes_do_no_reach_work() {
     let finalize = w.work(|w| {
         let c = (w.next, A);
         w.next += 1;
-        let kind = Kind::Write(Write { holder: Q, grant: None, removal: false, gives_write: false, gives_read: false, relies: None, creation: None });
+        let kind = Kind::Write(Write { holder: Q, grant: None, removal: false, gives_write: false, gives_read: false, relies: None, creation: None, leaves: vec![] });
         w.ev.add(c, vec![Part { kind, hops: Some(vec![rec(X, A)]), pos: c.0, chained: true }]);
     });
     let vouch = w.work(|w| {
@@ -494,7 +494,7 @@ fn a_read_grant_opens_only_what_it_leads_to() {
 fn an_organisations_documents_each_carry_every_removal_above_them() {
     const O: u16 = 60;
     let at = |n: u16, r: u16, x: u16, reach: bool| {
-        let mut ev = E::new(Config { vouches: true, reach, keys_open: true });
+        let mut ev = E::new(Config { vouches: true, reach, keys_open: true, leaves: false, duty: false });
         let mut next = 1u32;
         let mut add = |ev: &mut E, on: u16, kind: Kind<u32, u16>, hops: Vec<Hop<u16>>| {
             let c = (next, on);
@@ -516,14 +516,14 @@ fn an_organisations_documents_each_carry_every_removal_above_them() {
         }
         for j in 1..=r {
             let creation = Some(grants[j as usize]);
-            let kind = Kind::Write(Write { holder: 2000 + j, grant: None, removal: true, gives_write: false, gives_read: false, relies: None, creation });
+            let kind = Kind::Write(Write { holder: 2000 + j, grant: None, removal: true, gives_write: false, gives_read: false, relies: None, creation, leaves: vec![] });
             add(&mut ev, O, kind, vec![rec(X, O)]);
         }
         for j in 0..x {
             let h = 3000 + j;
-            let read = Kind::Write(Write { holder: h, grant: Some(Gives::role(osis_base::Role::Read)), removal: true, gives_write: false, gives_read: true, relies: None, creation: None });
+            let read = Kind::Write(Write { holder: h, grant: Some(Gives::role(osis_base::Role::Read)), removal: true, gives_write: false, gives_read: true, relies: None, creation: None, leaves: vec![] });
             let g = add(&mut ev, O, read, vec![rec(X, O)]);
-            let kind = Kind::Write(Write { holder: h, grant: None, removal: true, gives_write: false, gives_read: false, relies: None, creation: Some(g) });
+            let kind = Kind::Write(Write { holder: h, grant: None, removal: true, gives_write: false, gives_read: false, relies: None, creation: Some(g), leaves: vec![] });
             add(&mut ev, O, kind, vec![rec(X, O)]);
         }
         ev.check().unwrap();
@@ -541,4 +541,174 @@ fn an_organisations_documents_each_carry_every_removal_above_them() {
     assert_eq!(at(10, 10, 1000, true), (21, 20, 1));
     assert_eq!(at(10, 10, 100, false), (1, 0, 0));
     assert_eq!(at(10, 100, 0, true), (201, 200, 1));
+}
+
+// ---- A3: leaves and the duty (notes/evidence-derivation.md, Leaves; The duty's targets) ----
+
+/// A3's derivation alone: K's write grant on A (X's, by A's record) is every removal's witness; X
+/// removes K from A any number of times, each listing what it names in its leaves.
+struct Lists {
+    ev: E,
+    next: u32,
+}
+
+const A3: Config = Config { vouches: true, reach: true, keys_open: true, leaves: true, duty: true };
+
+impl Lists {
+    fn new() -> Lists {
+        let mut ev = E::new(A3);
+        ev.add_record((X, A));
+        for t in 0..4000 {
+            ev.set_role(t, Some(osis_base::Role::Write));
+        }
+        let mut l = Lists { ev, next: 1 };
+        l.add(A, write(K), vec![rec(X, A)]);
+        l
+    }
+    fn add(&mut self, on: u16, kind: Kind<u32, u16>, hops: Vec<Hop<u16>>) -> (u32, u16) {
+        let c = (self.next, on);
+        self.next += 1;
+        let chained = !matches!(kind, Kind::Content);
+        self.ev.add(c, vec![Part { kind, hops: Some(hops), pos: c.0, chained }]);
+        c
+    }
+    /// A removal of `holder` from `on` with leaves for `leaves`.
+    fn removal(&mut self, holder: u16, on: u16, leaves: Vec<u16>) -> (u32, u16) {
+        self.add(on, Kind::Write(Write { holder, grant: None, removal: true, gives_write: false, gives_read: false, relies: None, creation: None, leaves }), vec![rec(X, on)])
+    }
+    /// A sync ID of `d`, A granted write on it (by its record), the grant a body there.
+    fn doc(&mut self, d: u16) {
+        self.ev.add_sid(d, d);
+        self.ev.join(&d, d);
+        self.ev.add_record((X, d));
+        self.add(d, write(A), vec![rec(X, d)]);
+    }
+    /// `who`'s write on `d` through [A].
+    fn body(&mut self, who: u16, d: u16) -> (u32, u16) {
+        self.add(d, Kind::Content, vec![hop(who, A), hop(A, d)])
+    }
+    fn work<R>(&mut self, f: impl FnOnce(&mut Lists) -> R) -> (Counts, R) {
+        let before = self.ev.counts();
+        let r = f(self);
+        (minus(self.ev.counts(), before), r)
+    }
+}
+
+/// A removal arriving: its duty walks the things it reaches from its target (A writing r things),
+/// O(those), nothing of the s things A does not reach (each writing the next) nor of the s other
+/// removals (Z's from each of s things), the same at s = 10, 100, 1,000.
+#[test]
+fn a_removal_arriving_walks_only_what_its_target_reaches() {
+    let at = |s: u16| {
+        let mut l = Lists::new();
+        for j in 0..3 {
+            l.add(1000 + j, write(A), vec![rec(X, 1000 + j)]);
+        }
+        for j in 0..s {
+            l.add(2001 + j, write(2000 + j), vec![rec(X, 2001 + j)]);
+            l.ev.add_record((X, 3000 + j));
+            l.add(3000 + j, write(Z), vec![rec(X, 3000 + j)]);
+            l.removal(Z, 3000 + j, vec![]);
+        }
+        let (c, r) = l.work(|l| l.removal(K, A, vec![]));
+        l.ev.check().unwrap();
+        assert_eq!(l.ev.reached(&r).unwrap().len(), 4);
+        c.duty
+    };
+    let (a, b, c) = (at(10), at(100), at(1000));
+    assert_eq!((a, b, c), (7, 7, 7));
+}
+
+/// A hub A writing d documents: a removal on A reaches each, O(d) per removal at this node; the
+/// node runs one (removal, document) per document it reads (N devices × D documents across an
+/// organisation: notes/a3-spec/README.md For Tess 3).
+#[test]
+fn a_hubs_removal_reaches_its_documents_once_each() {
+    let at = |d: u16| {
+        let mut l = Lists::new();
+        for j in 0..d {
+            l.doc(1000 + j);
+        }
+        let (c, r) = l.work(|l| l.removal(K, A, vec![]));
+        assert_eq!(l.ev.duty().iter().filter(|x| x.removal == r).count(), usize::from(d) + 1);
+        c.duty
+    };
+    assert_eq!((at(10), at(100)), (2 * 10 + 1, 2 * 100 + 1));
+}
+
+/// A body arriving on D where r removals of K from A have a leaf for D: the first such body sends
+/// each of them to decide its leaf again (2 checks each: found, decided), a later one none; which
+/// leaves judge a body looks up those r alone. Neither reads the u removals with a leaf for another
+/// thing or on another edge: the same at u = 10, 100, 1,000.
+#[test]
+fn a_body_arriving_looks_up_only_the_leaves_of_its_edges() {
+    let at = |u: u16| {
+        let mut l = Lists::new();
+        l.add(A, write(Q), vec![rec(X, A)]);
+        l.doc(D);
+        for _ in 0..3 {
+            l.removal(K, A, vec![D]);
+        }
+        for j in 0..u {
+            l.removal(K, A, vec![2000 + j]);
+            l.removal(Q, A, vec![D]);
+        }
+        let (first, _) = l.work(|l| l.body(K, D));
+        let (later, b) = l.work(|l| l.body(K, D));
+        let (look, judging) = l.work(|l| l.ev.reading(&b));
+        l.ev.check().unwrap();
+        assert_eq!(judging.len(), 3);
+        assert_eq!(l.ev.leaves(&D).unwrap().len(), 3);
+        (first.leaf_checks, later.leaf_checks, look.leaf_checks)
+    };
+    assert_eq!(at(10), (6, 0, 3));
+    assert_eq!(at(100), (6, 0, 3));
+    assert_eq!(at(1000), (6, 0, 3));
+}
+
+/// A leaf arriving judges the held parts it reads: n bodies on D resting on (K, A), none of the m
+/// resting on (Q, A), at n, m = 10, 100.
+#[test]
+fn a_leaf_judges_only_the_parts_resting_on_its_edge() {
+    let at = |n: u16, m: u16| {
+        let mut l = Lists::new();
+        l.add(A, write(Q), vec![rec(X, A)]);
+        l.doc(D);
+        for _ in 0..n {
+            l.body(K, D);
+        }
+        for _ in 0..m {
+            l.body(Q, D);
+        }
+        let r = l.removal(K, A, vec![D]);
+        let (c, judged) = l.work(|l| l.ev.judged_by(&r, D));
+        assert_eq!(judged.len(), usize::from(n));
+        c.judged
+    };
+    assert_eq!(at(10, 10), 10);
+    assert_eq!(at(10, 100), 10);
+    assert_eq!(at(100, 10), 100);
+}
+
+/// Memory per sync ID: a removal on A with a leaf for each of k documents, each with a body resting
+/// on (K, A): A keeps the k far leaves (its own sync ID, where the removal is a body), each
+/// document its own leaf alone, at k = 10, 100.
+#[test]
+fn a_document_keeps_its_own_leaf_and_the_removals_home_every_far_leaf() {
+    let at = |k: u16| {
+        let mut l = Lists::new();
+        l.ev.add_sid(A, A);
+        l.ev.join(&A, A);
+        let docs: Vec<u16> = (0..k).map(|j| 1000 + j).collect();
+        for &d in &docs {
+            l.doc(d);
+            l.body(K, d);
+        }
+        l.removal(K, A, docs.clone());
+        l.ev.check().unwrap();
+        let per: Vec<usize> = docs.iter().map(|d| l.ev.leaves(d).unwrap().len()).collect();
+        assert!(per.iter().all(|n| *n == 1), "{per:?}");
+        l.ev.leaves(&A).unwrap().len()
+    };
+    assert_eq!((at(10), at(100)), (10, 100));
 }

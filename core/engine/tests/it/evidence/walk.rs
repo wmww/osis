@@ -118,7 +118,7 @@ impl Node {
     fn new(w: &World, held: &[Commit], trust: BTreeSet<WriteId>, creations: &BTreeMap<WriteId, (CommitId, Tid)>, unit: &[u8]) -> Node {
         let paths = Paths::evaluate(&w.records, trust, held);
         let first = paths.chained();
-        let mut ev = Evidence::new(Config { vouches: true, reach: false, keys_open: false });
+        let mut ev = Evidence::new(Config { vouches: true, reach: false, keys_open: false, leaves: false, duty: false });
         ev.add_sid(tid(D), tid(D));
         for &t in unit {
             ev.join(&tid(D), tid(t));
@@ -145,6 +145,7 @@ impl Node {
                             gives_read: role.is_some_and(|r| r >= Role::Read) && !leave,
                             relies: e.remains,
                             creation: creations.get(&WriteId(c.id, i as u32)).copied(),
+                            leaves: vec![],
                         };
                         (Kind::Write(wr), if finalize { has(0) } else { has(1) })
                     }

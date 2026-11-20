@@ -309,7 +309,7 @@ fn the_models_other_hand_worlds_agree_spec_permissions_4() {
 #[test]
 fn a_body_whose_path_waits_brings_nothing_until_it_opens_spec_permissions_4() {
     type E = Evidence<u32, Thing, u32>;
-    let mut ev = E::new(Config { vouches: true, reach: true, keys_open: false });
+    let mut ev = E::new(Config { vouches: true, reach: true, keys_open: false, leaves: false, duty: false });
     let check = |ev: &E| {
         let inc: Copies32 = ev.required(&D).unwrap().keys().copied().collect();
         ev.check().unwrap();
@@ -318,7 +318,7 @@ fn a_body_whose_path_waits_brings_nothing_until_it_opens_spec_permissions_4() {
     type Copies32 = BTreeSet<CopyId<u32, Thing>>;
     ev.add_sid(D, D);
     ev.join(&D, D);
-    let write = |holder: Thing| Kind::Write(Write { holder, grant: Some(Gives::role(osis_base::Role::Write)), removal: false, gives_write: true, gives_read: true, relies: None, creation: None });
+    let write = |holder: Thing| Kind::Write(Write { holder, grant: Some(Gives::role(osis_base::Role::Write)), removal: false, gives_write: true, gives_read: true, relies: None, creation: None, leaves: vec![] });
     let rec = |a: Thing, b: Thing| Hop { edge: (a, b), record: true, need: Need::Role(osis_base::Role::Write) };
     let hop = |a: Thing, b: Thing| Hop { edge: (a, b), record: false, need: Need::Role(osis_base::Role::Write) };
     // Y grants A write on D (a body); K writes D along [A], its path waiting; X grants K on A
@@ -355,10 +355,10 @@ fn the_first_grant_joins_and_a_forgotten_member_leaves_spec_permissions_4() {
         ev.check().unwrap();
         inc
     };
-    let write = |holder: Thing| Kind::Write(Write { holder, grant: Some(Gives::role(osis_base::Role::Write)), removal: false, gives_write: true, gives_read: true, relies: None, creation: None });
+    let write = |holder: Thing| Kind::Write(Write { holder, grant: Some(Gives::role(osis_base::Role::Write)), removal: false, gives_write: true, gives_read: true, relies: None, creation: None, leaves: vec![] });
     let rec = |a: Thing, b: Thing| Hop { edge: (a, b), record: true, need: Need::Role(osis_base::Role::Write) };
     let hop = |a: Thing, b: Thing| Hop { edge: (a, b), record: false, need: Need::Role(osis_base::Role::Write) };
-    let mut ev = E::new(Config { vouches: true, reach: true, keys_open: false });
+    let mut ev = E::new(Config { vouches: true, reach: true, keys_open: false, leaves: false, duty: false });
     ev.add_sid(D, D);
     ev.join(&D, D);
     ev.add((1, D), vec![Part { kind: write(A), hops: Some(vec![rec(Y, D)]), pos: 1, chained: true }]);
@@ -377,9 +377,9 @@ fn the_first_grant_joins_and_a_forgotten_member_leaves_spec_permissions_4() {
 fn a_removal_by_its_reach_is_a_seed_only_with_the_switch_on_spec_permissions_4() {
     type E = Evidence<u32, Thing, u32>;
     let rec = |a: Thing, b: Thing| Hop { edge: (a, b), record: true, need: Need::Role(osis_base::Role::Write) };
-    let w = |holder: Thing, grant: bool| Kind::Write(Write { holder, grant: grant.then(|| Gives::role(osis_base::Role::Write)), removal: !grant, gives_write: grant, gives_read: grant, relies: None, creation: None });
+    let w = |holder: Thing, grant: bool| Kind::Write(Write { holder, grant: grant.then(|| Gives::role(osis_base::Role::Write)), removal: !grant, gives_write: grant, gives_read: grant, relies: None, creation: None, leaves: vec![] });
     for reach in [false, true] {
-        let mut ev = E::new(Config { vouches: true, reach, keys_open: false });
+        let mut ev = E::new(Config { vouches: true, reach, keys_open: false, leaves: false, duty: false });
         ev.add_sid(D, D);
         ev.join(&D, D);
         ev.add((1, D), vec![Part { kind: w(A, true), hops: Some(vec![rec(Y, D)]), pos: 1, chained: true }]);

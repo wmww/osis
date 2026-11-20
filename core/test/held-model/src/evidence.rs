@@ -1223,16 +1223,7 @@ impl World {
         if rule.errand == Errand::Off || (rule.lag && !st.pass_all && st.passing != Some(n)) {
             return (out, lv);
         }
-        for (i, t) in self.errand_items(rule, &own, held, fresh).into_iter().filter(|(i, _)| taken(i)) {
-            let (targets, h) = self.errand_targets(rule, st, t, held);
-            let hr: Set = match self.takes(rule, &h) {
-                Some(t) => h.iter().copied().filter(|i| t.contains(i) || !self.w.edge_class(*i)).collect(),
-                None => h.clone(),
-            };
-            if self.removes(i).is_some() && !self.reach_removal(rule, i, &hr) {
-                // a removal taking no write away travels as any edge write (Role changes travel)
-                continue;
-            }
+        for (i, t, targets, h, hr) in self.errand_plan(rule, st, n, held, fresh) {
             for x in targets {
                 let reach = self.reach(rule, t, &st.units[&x], &hr).unwrap_or_default();
                 let mut seed = reach;
@@ -1247,6 +1238,39 @@ impl World {
             }
         }
         (out, lv)
+    }
+    /// What node `n`'s errand runs for over `held`: each item (`errand_items`, taken) with the
+    /// thing its targets start from, its target sync IDs, what the runner held once it read them
+    /// (`errand_targets`) and the taken writes among that; a removal taking no write away is left
+    /// out (it travels as any edge write, Role changes travel).
+    #[allow(clippy::type_complexity)]
+    fn errand_plan(&self, rule: &Rule, st: &State, n: usize, held: &Set, fresh: &Set) -> Vec<(Id, Thing, Things, Set, Set)> {
+        let takes = self.takes(rule, held);
+        let taken = |i: &Id| takes.as_ref().is_none_or(|t| t.contains(i));
+        let mut out = vec![];
+        for (i, t) in self.errand_items(rule, &self.own(st, n), held, fresh).into_iter().filter(|(i, _)| taken(i)) {
+            let (targets, h) = self.errand_targets(rule, st, t, held);
+            let hr: Set = match self.takes(rule, &h) {
+                Some(t) => h.iter().copied().filter(|i| t.contains(i) || !self.w.edge_class(*i)).collect(),
+                None => h.clone(),
+            };
+            if self.removes(i).is_some() && !self.reach_removal(rule, i, &hr) {
+                continue;
+            }
+            out.push((i, t, targets, h, hr));
+        }
+        out
+    }
+    /// The duty node `n` runs over what it holds, as `Runners::AnyHolder` runs it whatever
+    /// `Rule::runners`, `Rule::lag` and the pass (A3's duty targets; the runner's right is not
+    /// modelled): per removal part it runs for, the sync IDs it logs it under. Nothing at a
+    /// dishonest or destroyed node.
+    pub fn errand_runs(&self, rule: &Rule, st: &State, n: usize) -> BTreeMap<Id, Things> {
+        if !self.nodes[n].honest || st.gone.contains(&n) {
+            return BTreeMap::new();
+        }
+        let rule = Rule { runners: Runners::AnyHolder, standing: true, ..*rule };
+        self.errand_plan(&rule, st, n, &st.held[n], &Set::new()).into_iter().filter(|(i, ..)| self.removes(*i).is_some()).map(|(i, _, targets, ..)| (i, targets)).collect()
     }
 
     /// The state before any event.

@@ -38,9 +38,9 @@ fn everything(st: &State) -> Set {
     st.written.clone()
 }
 
-const BRIEF3: Config = Config { vouches: true, reach: true, keys_open: true };
-const NO_REACH: Config = Config { vouches: true, reach: false, keys_open: true };
-const NO_KEYS: Config = Config { vouches: true, reach: true, keys_open: false };
+const BRIEF3: Config = Config { vouches: true, reach: true, keys_open: true, leaves: false, duty: false };
+const NO_REACH: Config = Config { vouches: true, reach: false, keys_open: true, leaves: false, duty: false };
+const NO_KEYS: Config = Config { vouches: true, reach: true, keys_open: false, leaves: false, duty: false };
 
 /// R's mint admin (finding 19's worlds).
 const V: Thing = 7;
@@ -190,7 +190,7 @@ fn open14_keys_open_travel_carries_a_removal_to_the_things_reading_through_it() 
 fn a_removal_on_two_things_reaches_by_each_copy_spec_permissions_4() {
     type E = Evidence<u32, Thing, u32>;
     const B: Thing = 20;
-    let w = |holder: Thing, grant: bool| Kind::Write(Write { holder, grant: grant.then(|| Gives::role(osis_base::Role::Write)), removal: !grant, gives_write: grant, gives_read: grant, relies: None, creation: None });
+    let w = |holder: Thing, grant: bool| Kind::Write(Write { holder, grant: grant.then(|| Gives::role(osis_base::Role::Write)), removal: !grant, gives_write: grant, gives_read: grant, relies: None, creation: None, leaves: vec![] });
     let rec = |a: Thing, b: Thing| Hop { edge: (a, b), record: true, need: Need::Role(osis_base::Role::Write) };
     let mut ev = E::new(BRIEF3);
     ev.add_sid(D, D);
@@ -400,7 +400,7 @@ fn a_record_edges_removal_reaches_with_no_witness_spec_permissions_4() {
 #[test]
 fn forgetting_a_ways_last_edge_held_as_a_body_takes_the_reach_away_spec_permissions_4() {
     type E = Evidence<u32, Thing, u32>;
-    let w = |holder: Thing, grant: bool| Kind::Write(Write { holder, grant: grant.then(|| Gives::role(osis_base::Role::Write)), removal: !grant, gives_write: grant, gives_read: grant, relies: None, creation: None });
+    let w = |holder: Thing, grant: bool| Kind::Write(Write { holder, grant: grant.then(|| Gives::role(osis_base::Role::Write)), removal: !grant, gives_write: grant, gives_read: grant, relies: None, creation: None, leaves: vec![] });
     let rec = |a: Thing, b: Thing| Hop { edge: (a, b), record: true, need: Need::Role(osis_base::Role::Write) };
     let mut ev = E::new(BRIEF3);
     ev.add_sid(D, D);
