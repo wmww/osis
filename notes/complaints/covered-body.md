@@ -1,3 +1,0 @@
-# covered-body
-- `OSIS_ORDER_SHRINK=1` on a 60-step plain seed: 21 min under `tools/heavy` (5 min of it waiting for the lock) and it stopped at 42 steps (one pass, then none dropped). The dump (`OSIS_ORDER_DUMP=1`) of a replay of the shrunk history plus a one-off eprintln in `settle_none` found the cause in minutes; for a "node holds/drops" difference, probing the drop decision first is faster than shrinking.
-- The held-model failure text names the model's commit numbers, the dump names pack numbers and the engine probe names commit IDs: matching them took manual work (which pack/ID is model #91).

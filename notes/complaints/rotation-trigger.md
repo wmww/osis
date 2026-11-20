@@ -1,3 +1,0 @@
-- The rotation property has no shrink and its history is not printed when the failure is the engine's drop-time check (the `Run` drops before its engines panic). Running `vouches::missed` at every transaction's end as a scratch probe found the first wrong transaction in one replay, faster than any shrink would have.
-- `testenv` refuses unknown `OSIS_*` variables, so a scratch probe gated on a new variable fails at start; gate it on nothing and revert it.
-- A build waiting behind another agent's heavy hold took 3 to 5 minutes for one-test runs.

@@ -1,4 +1,0 @@
-- `OSIS_ORDER_SHRINK=1` without `OSIS_SHRINK_MATCH` drifted to another failure (a Local error of the keep-everything node, then a reading difference) and reported that history: 11 min of heavy hold for the wrong bug. Set the match to the failure's message from the start (test-properties.md could say so at the replay line).
-- Both shrinks passed heavy's caps (CPU 1.0x and 1.7x, wall 1.1x and 1.4x): a 60-step shrink at 16 threads takes 11 to 14 min.
-- order's `give` dropped every error of a node under test, so a Corrupt in a reexamine round showed only as "missed by the wakes"; it now asserts no Local error.
-- The generic `reach_after` (joining in `part_at(before)`) passed engine and crdt tests but broke osis-sync's reference rows on maps: run osis-sync before trusting a crdt reach change.
