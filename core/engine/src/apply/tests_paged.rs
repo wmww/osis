@@ -410,12 +410,15 @@ fn paged_apply_matches_whole_large_spec_crdt_8() {
 /// Runs `script` in a world applying page by page and in one applying whole, then compares
 /// them (states, when replaced, indexes, each delivery's outcome or error); returns the cost counts of
 /// the page-by-page world's deliveries and their outcomes.
-fn both(script: impl Fn(&mut World) -> Vec<Package>) -> (BTreeMap<&'static str, u64>, Vec<String>) {
+fn both(script: impl Fn(&mut World) -> Vec<Package>) -> Both {
     both_in(world, script).0
 }
 
+/// What `both` returns: the cost counts and outcomes of the page-by-page world's deliveries.
+type Both = (BTreeMap<&'static str, u64>, Vec<String>);
+
 /// `both` in worlds `make` gives (applying whole if its argument), with the worlds.
-fn both_in(make: impl Fn(bool) -> World, script: impl Fn(&mut World) -> Vec<Package>) -> ((BTreeMap<&'static str, u64>, Vec<String>), Vec<World>) {
+fn both_in(make: impl Fn(bool) -> World, script: impl Fn(&mut World) -> Vec<Package>) -> (Both, Vec<World>) {
     let mut worlds = Vec::new();
     let mut counts = BTreeMap::new();
     let mut outs = Vec::new();

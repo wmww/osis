@@ -545,18 +545,14 @@ fn every_other_link_tree_is_refused_spec_8() {
     let mut cas = Cas { params: Some(params), ..Cas::default() };
     let bytes = encode_snapshot(&snapshot(&st), &snap_cx(), Some(&mut cas)).unwrap();
     assert_eq!(depth(&bytes, &mut cas), 3, "three page levels");
-    let Some(Value::List(top)) = (|| {
-        fn find(v: &Value) -> Option<Value> {
-            let Value::List(items) = v else { return None };
-            if !items.is_empty() && items.iter().all(|x| matches!(x, Value::Link(_))) {
-                return Some(v.clone());
-            }
-            items.iter().find_map(find)
+    fn find(v: &Value) -> Option<Value> {
+        let Value::List(items) = v else { return None };
+        if !items.is_empty() && items.iter().all(|x| matches!(x, Value::Link(_))) {
+            return Some(v.clone());
         }
-        find(&osis_base::decode(&bytes, &osis_base::Limits::DEFAULT).unwrap())
-    })() else {
-        panic!("a root link list")
-    };
+        items.iter().find_map(find)
+    }
+    let Some(Value::List(top)) = find(&osis_base::decode(&bytes, &osis_base::Limits::DEFAULT).unwrap()) else { panic!("a root link list") };
     let top: Vec<osis_base::Link> = top.iter().map(|x| if let Value::Link(l) = x { **l } else { unreachable!() }).collect();
     let leaves = leaves_under(&cas, &top);
     let rule = |_: usize, n: usize, l: &osis_base::Link| (n >= 2 && l.hash[0] == 0) || n >= params.fanout;
