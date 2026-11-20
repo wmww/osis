@@ -778,3 +778,64 @@ fn a_vouch_on_one_thing_keeps_nothing_on_another_its_voucher_holds_no_role_on_sp
         }
     }
 }
+
+// issues/voucher-admin-in-first-walk.md under today's rule (spec/permissions.md §5.1 Vouches: "W
+// could write c" judged in the first walk, where no vouch counts): K's team A2 holds admin on `t`
+// and X (peer 1) admin of A2. X removes A2 from `t`; W (peer 2) alone receives it; H removes X
+// from `t` without it, and W vouches for X's removal of A2. X then makes Z (peer 3) an admin of A2
+// and backdates a grant of write on `t` to Z, which Z vouches for. In the first walk X's removal of
+// A2 is dropped (only W's vouch keeps it), so Z could write the grant there and its entry counts;
+// in the reading A2 holds nothing on `t`, so Z never held the right, and the grant must fall, as it
+// does without Z's vouch. Today it stands with it at every node.
+#[test]
+#[ignore = "issues/voucher-admin-in-first-walk.md"]
+fn repro_a_voucher_holds_admin_by_a_share_only_a_vouch_removes_spec_perm_5_1() {
+    for z_vouches in [false, true] {
+        let (mut lp, t) = world(5);
+        for p in &mut lp.peers {
+            p.engine.write_vouches(false);
+        }
+        let k = lp.peers[4].engine.me();
+        let mut m = Mutation::new();
+        let a2 = lp.peers[4].engine.new_thing(&mut m, k);
+        lp.peers[4].commit(m).unwrap();
+        lp.hold(a2);
+        lp.sync_all().unwrap();
+        grant(&mut lp, 4, a2, 1, Role::Admin);
+        lp.peers[0].engine.grant(&t, &a2, &edge(Role::Admin)).unwrap();
+        lp.advance(1000);
+        lp.sync_all().unwrap();
+        let out = *lp.peers[1].engine.demote(&t, &Demotion { holder: a2, new: None, retain: None }).unwrap().commits.last().unwrap();
+        lp.advance(1000);
+        lp.sync(1, 2).unwrap();
+        let r = remove(&mut lp, 0, t, 1);
+        lp.sync(0, 2).unwrap();
+        vouch(&mut lp, 2, t, r, &[out]);
+        grant(&mut lp, 1, a2, 3, Role::Admin);
+        let rts = lp.peers[0].engine.header(&r).unwrap().ts;
+        let z = lp.peers[3].engine.me();
+        lp.peers[1].engine.core.skip_writer_rules = true;
+        let mut m = Mutation::new();
+        crate::flows::put_edge(&mut m, t, z, &edge(Role::Write)).unwrap();
+        m.ts = osis_base::Ts::from_u64(rts.to_u64() - 2);
+        m.unchecked = true;
+        let gz = lp.peers[1].commit(m).unwrap().unwrap();
+        lp.sync_all().unwrap();
+        // Z's vouch, which Z's own reading refuses (it holds no role on `t` there)
+        if z_vouches {
+            lp.peers[3].engine.core.skip_writer_rules = true;
+            let mut m = Mutation::new();
+            let list = ct::Frontier { commits: [gz].into_iter().collect() };
+            m.op(t, &ct::VOUCHES, PathOp { path: vec![PathSeg::Key(Value::bytes(&r.0))], op: Op::Put(list.to_value()) }).unwrap();
+            m.unchecked = true;
+            lp.peers[3].commit(m).unwrap();
+            lp.advance(1000);
+        }
+        lp.sync_all().unwrap();
+        for p in 0..5 {
+            let a2_on_t = lp.peers[p].engine.core.timelines.role(&a2, &t, At::END);
+            assert_eq!((a2_on_t, role(&lp, p, 1, t)), (None, None), "peer {p}: A2's removal kept by W's vouch, X removed");
+            assert_eq!(role(&lp, p, 3, t), None, "peer {p}, Z vouching {z_vouches}: Z's backdated grant falls");
+        }
+    }
+}

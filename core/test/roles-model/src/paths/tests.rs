@@ -195,7 +195,7 @@ fn a_commit_writing_two_things_stays_by_a_vouch_on_each() {
 /// backdates a grant of write on T1 to Z through [A], and Z vouches for it along [A2]. Z held admin
 /// on T1 only in the walk where A2's removal is dropped, yet its vouch keeps the grant.
 #[test]
-#[ignore = "notes/path-model-findings.md: a voucher holds admin by a share only a vouch removes"]
+#[ignore = "issues/voucher-admin-in-first-walk.md"]
 fn repro_a_voucher_holds_admin_by_a_share_only_a_vouch_removes() {
     let (mut w, ..) = paired();
     w.edge(K, 1, &[], A2, X, Admin, &[]);

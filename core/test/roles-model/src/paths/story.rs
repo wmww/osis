@@ -183,6 +183,9 @@ pub struct Sim {
     pub thief: BTreeMap<Id, usize>,
     /// Removals and the further units they are logged under.
     pub logged: BTreeMap<Id, Things>,
+    /// Move 52 was not made because X removed A2's share before the theft: an open safety hole
+    /// (issues/voucher-admin-in-first-walk.md), noted by `check` in every run.
+    pub voucher_admin_gap: bool,
 }
 
 fn role_path(n: Thing, on: Thing) -> Option<Vec<Thing>> {
@@ -292,7 +295,7 @@ impl Sim {
         sync.insert(RD3, Things::from([T1, D1]));
         sync.insert(J, Things::from([D1, T2]));
         let w = if s.mint > 0 { minted_by(M) } else { account() };
-        let mut m = Sim { w, spec, setup: s, made: vec![], recv: vec![], sync, r: 0, r2: None, r3: None, kiosk: None, rx: None, xfirst: None, gs: 0, g5: None, xrole: None, out5: None, gb5: None, gh: None, gx: 0, gi: None, cover_by_k: None, unaware: Set::new(), smuggled: Set::new(), thief: BTreeMap::new(), logged: BTreeMap::new() };
+        let mut m = Sim { w, spec, setup: s, made: vec![], recv: vec![], sync, r: 0, r2: None, r3: None, kiosk: None, rx: None, xfirst: None, gs: 0, g5: None, xrole: None, out5: None, gb5: None, gh: None, gx: 0, gi: None, cover_by_k: None, unaware: Set::new(), smuggled: Set::new(), thief: BTreeMap::new(), logged: BTreeMap::new(), voucher_admin_gap: false };
         let grant = Kind::set;
         if s.mint > 0 {
             m.gh = Some(m.put((M, 0, &[], A, grant(H, Role::Admin)), 0, rng, false));
@@ -698,8 +701,14 @@ impl Sim {
             return;
         }
         if mv.kind == 52 {
-            // (not where X removed A2 from T1 before the theft: `repro_a_voucher_holds_admin_by_a_share_only_a_vouch_removes`)
-            if self.setup.x_a2 != 3 || self.xrole.is_some_and(|g| self.w.lowers(g) == Some((A2, T1))) {
+            if self.setup.x_a2 != 3 {
+                return;
+            }
+            // Interim (issues/voucher-admin-in-first-walk.md): not where X removed A2 from T1
+            // before the theft, where the rule fails safety (`repro_a_voucher_holds_admin_by_a_share_only_a_vouch_removes`);
+            // the fix removes this skip
+            if self.xrole.is_some_and(|g| self.w.lowers(g) == Some((A2, T1))) {
+                self.voucher_admin_gap = true;
                 return;
             }
             let late = mv.ts.max(REMOVAL + 1);
@@ -1391,6 +1400,9 @@ pub fn check(m: &Sim, rules: &Rules, st: &mut Stats) {
     // removal is not void without them) and its voucher must be such a party (the vouch counts
     // only where its voucher holds admin in the first walk; once the removal is void it may count
     // no more, X then removing N5): no wider. Nothing else is checked in such a world.
+    if m.voucher_admin_gap {
+        st.note("skipped: issues/voucher-admin-in-first-walk.md", m, "move 52 not made: X removed A2's share before the theft".to_string());
+    }
     let kept5 = s.n5 == 1 && m.g5.is_some_and(in_r);
     let accomplices: Vec<Id> = m.thief.iter().filter(|(_, &k)| k == 36).map(|(&i, _)| i).collect();
     if kept5 && !accomplices.is_empty() {
@@ -1439,9 +1451,9 @@ pub fn check(m: &Sim, rules: &Rules, st: &mut Stats) {
                 // Z writing T1 by X's invite at write, where that is X's right
                 || (c.signer == Z && x_invites >= Role::Write && c.on == T1 && c.path.is_empty() && matches!(c.kind, Kind::Content))
                 // move 52: X granting Z admin on A2, which it administers for good; Z's vouch on T1,
-                // the part on T1 it keeps, and whatever Z writes on T1 (an admin there through A2)
+                // the part on T1 it keeps, and what Z writes on T1 along A2 (an admin there) or its own edge (the kept part)
                 || (m.thief.get(&i) == Some(&52) && c.on == A2 && s.x_a2 == 3)
-                || (c.on == T1 && z_t1 && (m.thief.get(&i) == Some(&52) || c.signer == Z));
+                || (c.on == T1 && z_t1 && (m.thief.get(&i) == Some(&52) || (c.signer == Z && matches!(c.path.as_slice(), [] | [A2]))));
             // the accepted window (spec/permissions.md §5.2 Copies, §5.3): shown only by a cover's
             // copy, carried first by a cover whose writer did not yet hold a removal when it made it
             let window = !rd.valid.contains(&i) && rd.copied.contains(&i) && m.smuggled.contains(&i);
@@ -1456,7 +1468,7 @@ pub fn check(m: &Sim, rules: &Rules, st: &mut Stats) {
             // N5, removed before the theft, stays removed
             let n5_holds = s.n5 == 3 && *e == (N5, A);
             // Z invited to read T1 through A2 by X, which keeps writing A2: X's right
-            let z_by_right = (*e == (Z, T1) && (*r <= x_invites || z_t1)) || (*e == (Z, A2) && s.x_a2 == 3 && m.thief.values().any(|&k| k == 52));
+            let z_by_right = (*e == (Z, T1) && (*r <= x_invites || (z_t1 && *r <= Role::Write))) || (*e == (Z, A2) && s.x_a2 == 3 && m.thief.values().any(|&k| k == 52));
             if *r > Role::None && ((e.0 == Z && !z_by_right) || x_holds || n5_holds) {
                 st.fail(prop, m, format!("node {n}: {e:?} ends {r:?}"));
             }
