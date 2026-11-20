@@ -431,9 +431,11 @@ impl Section {
     ///
     /// Every secret is tried until one's key opens the ciphertext: XChaCha20-Poly1305 commits to
     /// no key, so a writer can make one wrap open under two secrets to two keys, and a reader
-    /// taking the first that unwraps would read less for holding more. The wrap's AD (the commit
-    /// ID) fixes the contents, so no two keys open the ciphertext (spec/crypto.md §5 Section): what
-    /// opens is a function of the secrets held, never of their order.
+    /// taking the first that unwraps would read less for holding more. The commit ID (both AEADs'
+    /// AD) fixes the contents (parts by delta hash, path keys by commitment), so a key opening the
+    /// ciphertext to them is the only key opening it: a writer keeping a free block for a second
+    /// key has junk on both, bad at every reader alike. What a reader takes is a function of the
+    /// secrets it holds, never of their order (spec/crypto.md §5 Section).
     pub fn open(&self, commit: &CommitId, split: bool, secrets: &[Secret32]) -> Result<Option<Contents>, Error> {
         let mut opened = None;
         for s in secrets {
