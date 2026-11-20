@@ -7,7 +7,7 @@
 
 use super::{input, rules, MODES};
 use osis_base::{CommitId, Role, Tid};
-use osis_perm::paths::{Changed, Content, History, Key, Paths, Status};
+use osis_perm::paths::{Changed, Commit, Content, History, Key, Paths, Status};
 use osis_perm::WriteId;
 use roles_model::paths as m;
 use roles_model::Rng;
@@ -29,6 +29,12 @@ fn valid(c: Option<&Content>) -> bool {
 /// any other delta reported is one whose validity changed (an addendum's); and every delta whose
 /// verdict or purge changed is reachable from `ch` by `Changed`'s rule.
 pub(super) fn check(a: &Paths, b: &Paths, ch: &Changed) -> Option<String> {
+    check_renewed(a, b, ch, &BTreeSet::new())
+}
+
+/// `check`, where every part of a commit `renewed` (updated in place: `Paths::update`) may be
+/// reported as new.
+pub(super) fn check_renewed(a: &Paths, b: &Paths, ch: &Changed, renewed: &BTreeSet<CommitId>) -> Option<String> {
     let (sa, ha, fa, ca, _, pa, xa) = reading(a);
     let (sb, hb, fb, cb, _, pb, xb) = reading(b);
     let mut want = Changed::default();
@@ -38,7 +44,7 @@ pub(super) fn check(a: &Paths, b: &Paths, ch: &Changed) -> Option<String> {
         }
     }
     want.parts.extend(cb.keys().filter(|id| !ca.contains_key(id)));
-    let extra: Vec<&WriteId> = ch.parts.iter().filter(|id| !want.parts.contains(id)).collect();
+    let extra: Vec<&WriteId> = ch.parts.iter().filter(|id| !want.parts.contains(id) && !renewed.contains(&id.0)).collect();
     if let Some(id) = extra.iter().find(|id| !ca.contains_key(id) || valid(ca.get(id)) == valid(cb.get(id))) {
         return Some(format!("reported {id:?}, which did not change"));
     }
@@ -87,7 +93,10 @@ pub(super) fn rejudged(a: &Paths, b: &Paths, ch: &Changed) -> (BTreeSet<WriteId>
     };
     let moved: BTreeSet<WriteId> = cb.keys().filter(|id| ca.get(id) != cb.get(id) || pa.contains(id) != pb.contains(id)).copied().collect();
     let names: Vec<(WriteId, Vec<WriteId>)> = cb.keys().map(|id| (*id, b.naming(id))).collect();
-    let mut judged: BTreeSet<WriteId> = cb.keys().filter(|id| direct(id)).copied().collect();
+    // a forgotten delta counts as moved: what it named is judged again (the engine knows it)
+    let gone: BTreeSet<WriteId> = ca.keys().filter(|id| !cb.contains_key(id)).copied().collect();
+    let by_gone = |id: &WriteId| !gone.is_empty() && a.naming(id).iter().any(|n| gone.contains(n));
+    let mut judged: BTreeSet<WriteId> = cb.keys().filter(|id| direct(id) || by_gone(id)).copied().collect();
     let mut queue: Vec<WriteId> = judged.intersection(&moved).copied().collect();
     while let Some(n) = queue.pop() {
         for (id, by) in &names {
@@ -292,4 +301,104 @@ fn a_trust_switch_equals_evaluating_under_it() {
             }
         }
     }
+}
+
+/// A view's commits added and forgotten one to three at a time at random (a commit forgotten
+/// while not held, added while held, forgotten and added again), each `Changed` checked; the end
+/// reads as from scratch over what is held (counting entries and void trusted writes too; the
+/// dispute set in one world in eight).
+fn forgetting(w: &m::World, v: &m::View, seed: u64) -> Option<String> {
+    let inp = input(w, v);
+    let n = inp.commits.len();
+    let mut rng = Rng(seed);
+    let mut p = Paths::new(&inp.records, inp.trust.clone());
+    let mut held = vec![false; n];
+    for step in 0..3 * n {
+        let pick: Vec<usize> = (0..1 + rng.below(3)).map(|_| rng.below(n)).collect();
+        let before = p.clone();
+        let forget = rng.below(5) < 2;
+        let ch = if forget {
+            pick.iter().for_each(|&i| held[i] = false);
+            p.forget(&pick.iter().map(|&i| inp.commits[i].id).collect::<Vec<_>>())
+        } else {
+            pick.iter().for_each(|&i| held[i] = true);
+            p.add(&pick.iter().map(|&i| inp.commits[i].clone()).collect::<Vec<_>>())
+        };
+        if let Some(d) = check(&before, &p, &ch) {
+            return Some(format!("step {step}, {} {pick:?}: {d}\n{}", if forget { "forgetting" } else { "adding" }, m::tiny_trace(w)));
+        }
+    }
+    let rest: Vec<Commit> = (0..n).filter(|&i| held[i]).map(|i| inp.commits[i].clone()).collect();
+    let scratch = Paths::evaluate(&inp.records, inp.trust.clone(), &rest);
+    if reading(&p) != reading(&scratch) || p.counting() != scratch.counting() || p.void_trusted() != scratch.void_trusted() {
+        return Some(format!("forgetting and from scratch differ, held {held:?}\n{}", m::tiny_trace(w)));
+    }
+    if seed.is_multiple_of(8) && p.disputes() != scratch.disputes() {
+        return Some(format!("disputes differ after forgetting, held {held:?}\n{}", m::tiny_trace(w)));
+    }
+    None
+}
+
+/// A view seeing no frontier leaf: its commits added, then each commit updated with every leaf
+/// seen, one to three at a time (a chunked frontier's leaves arriving late), each `Changed`
+/// checked; the end reads as from scratch over the full view.
+fn leaves_arriving(w: &m::World, v: &m::View, seed: u64) -> Option<String> {
+    let mut part = v.clone();
+    part.leaves = Some(Default::default());
+    let mut full = v.clone();
+    full.leaves = None;
+    let (a, b) = (input(w, &part), input(w, &full));
+    let mut p = Paths::evaluate(&a.records, a.trust.clone(), &a.commits);
+    let mut rng = Rng(seed);
+    let mut order: Vec<usize> = (0..b.commits.len()).collect();
+    for k in (1..order.len()).rev() {
+        order.swap(k, rng.below(k + 1));
+    }
+    let mut rest = &order[..];
+    while !rest.is_empty() {
+        let (batch, more) = rest.split_at((1 + rng.below(3)).min(rest.len()));
+        let cs: Vec<Commit> = batch.iter().map(|&i| b.commits[i].clone()).collect();
+        let renewed: BTreeSet<CommitId> = cs.iter().map(|c| c.id).collect();
+        let before = p.clone();
+        let ch = p.update(&cs);
+        if let Some(d) = check_renewed(&before, &p, &ch, &renewed) {
+            return Some(format!("updating {renewed:?}: {d}\n{}", m::tiny_trace(w)));
+        }
+        rest = more;
+    }
+    let scratch = Paths::evaluate(&b.records, b.trust.clone(), &b.commits);
+    (reading(&p) != reading(&scratch) || p.counting() != scratch.counting()).then(|| format!("updated and from scratch differ\n{}", m::tiny_trace(w)))
+}
+
+/// Tiny worlds of every kind and content worlds `start..start + n`, forgetting and leaves
+/// arriving: the failures, at most three.
+fn forgets(start: u64, n: u64) -> Vec<String> {
+    let tiny = MODES.iter().flat_map(|&mode| {
+        (start..start + n).filter_map(move |i| {
+            let t = m::tiny_world(i, mode, &rules());
+            forgetting(&t.w, &t.v, i).or_else(|| leaves_arriving(&t.w, &t.v, i)).map(|d| format!("world {i} {mode:?}: {d}"))
+        })
+    });
+    let content = (start..start + n).filter_map(|i| {
+        let (w, v) = super::content::world(i);
+        forgetting(&w, &v, i).or_else(|| leaves_arriving(&w, &v, i)).map(|d| format!("content world {i}: {d}"))
+    });
+    tiny.chain(content).take(3).collect()
+}
+
+// notes/perm-paths.md, Forget and update: any order of adds and forgets (a forget of a commit not
+// held, a forget then the same add) and any order of frontier leaves arriving reads as from
+// scratch over what is held, each update's `Changed` exact.
+#[test]
+fn forgetting_and_updating_equal_from_scratch() {
+    let fails = forgets(0, 60);
+    assert!(fails.is_empty(), "{}", fails.join("\n"));
+}
+
+// As above, more worlds (a property).
+#[test]
+#[ignore]
+fn paths_forget_agrees_large() {
+    let f: Vec<String> = crate::common::sharded(30_000, 0x5eed_0a1d, |n, seed| forgets(crate::common::seeded(seed) % (1 << 40), n.div_ceil(7))).concat();
+    assert!(f.is_empty(), "{}", f.join("\n"));
 }

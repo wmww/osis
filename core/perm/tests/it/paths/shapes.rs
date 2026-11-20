@@ -9,7 +9,7 @@
 
 use super::incremental::{check, reading};
 use osis_base::{Ak, CommitId, PurgeBy, Role, Tid, Ts, WallMs};
-use osis_perm::paths::{Commit, Content, Delta, DeltaClass, EdgeWrite, Part, PartKind, Paths, Status};
+use osis_perm::paths::{Changed, Commit, Content, Delta, DeltaClass, EdgeWrite, Part, PartKind, Paths, Status};
 use osis_perm::{Edge, Frontier, WriteId};
 use roles_model::Rng;
 use std::collections::{BTreeMap, BTreeSet};
@@ -69,7 +69,25 @@ fn robust(records: &BTreeMap<Tid, Tid>, commits: &[Commit], rng: &mut Rng) -> Pa
             panic!("{d}\norder {order:?}\n{commits:#?}");
         }
     }
+    // forgetting (notes/perm-paths.md, Forget and update): a commit never added changes nothing;
+    // a shuffled half forgotten one at a time reads as from scratch over the rest; added again,
+    // as never forgotten
     let mut p = Paths::evaluate(records, none.clone(), commits);
+    assert_eq!(p.forget(&[cid(1 << 40)]), Changed::default());
+    let gone: Vec<usize> = shuffled.iter().copied().filter(|&k| k % 2 == 0).collect();
+    for &k in &gone {
+        let before = p.clone();
+        let ch = p.forget(&[commits[k].id]);
+        assert_eq!(check(&before, &p, &ch), None, "forgetting {k}\n{commits:#?}");
+    }
+    let rest: Vec<Commit> = (0..n).filter(|k| !gone.contains(k)).map(|k| commits[k].clone()).collect();
+    assert!(reading(&p) == reading(&Paths::evaluate(records, none.clone(), &rest)), "forgetting {gone:?}\n{commits:#?}");
+    for &k in &gone {
+        let before = p.clone();
+        let ch = p.add(std::slice::from_ref(&commits[k]));
+        assert_eq!(check(&before, &p, &ch), None, "adding {k} again\n{commits:#?}");
+    }
+    assert!(reading(&p) == reading(&Paths::evaluate(records, none.clone(), commits)), "forgotten and added again\n{commits:#?}");
     let _ = p.disputes();
     let ids: Vec<WriteId> = p.statuses().into_keys().collect();
     for id in ids.iter().take(6) {

@@ -1,21 +1,18 @@
 //! Content (draft §5.2): a delta's validity derived at read from the second walk's per-edge
-//! state, the chained points and what names the delta (notes/perm-paths.md, Step 3b design).
-//! Stored per delta: its facts alone. Stored per edge: the first chained key giving write and
-//! admin (draft §4 Chained writes), kept by one pass over the held edge writes with an undo
-//! stack. Addenda validity is the one stored verdict (a least fixpoint), recomputed after an
-//! update that may change it.
+//! state, its chained points and what names the delta (notes/perm-paths.md, Step 3b design).
+//! Stored per delta: its facts alone. Addenda validity is the one stored verdict (a least
+//! fixpoint), judged again for the addenda an update reached (notes/perm-paths.md, Counting
+//! entries and addenda, by reach).
 
 use super::path::shape;
 use super::walk::{Counts, Key, Walk};
-use super::{By, Commit, Content, DeltaClass, PartKind};
-use crate::types::{Edge, Frontier, WriteId};
+use super::{By, Changed, Commit, Content, DeltaClass, PartKind};
+use crate::types::{Frontier, WriteId};
 use osis_base::{Ak, CommitId, PurgeBy, Role, Tid, Ts};
 use std::collections::{BTreeMap, BTreeSet};
+use std::sync::Arc;
 
 type Pair = (Tid, Tid);
-type Lvl = Option<Role>;
-/// A chained set undone by a rollback: its commit's key, the edge, its level and first keys before.
-type ChainUndo = (Key, Pair, Option<(Lvl, Lvl)>, Option<[Option<Key>; 2]>);
 
 /// What a held commit is, for the counting rule and the addenda rule.
 #[derive(Clone)]
@@ -32,6 +29,8 @@ pub(super) struct CommitFacts {
     purge: bool,
     /// It is a role commit: it has a role-class part.
     role: bool,
+    /// Its edge writes' frontiers.
+    lists: Vec<(WriteId, Arc<Frontier>)>,
 }
 
 #[derive(Clone)]
@@ -66,56 +65,31 @@ struct D {
 }
 
 /// Who names a commit in a list.
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 enum Namer {
     Write(WriteId),
     Addendum(usize),
-}
-
-/// A held edge write, for the chained pass.
-#[derive(Clone)]
-struct Ew {
-    e: Pair,
-    hops: Vec<Pair>,
-    /// Well, no self-removal, no finalize, a value: it may set its edge.
-    sets: Option<Edge>,
-    ts: Ts,
 }
 
 #[derive(Clone, Default)]
 pub(super) struct Facts {
     mint: BTreeMap<Tid, Tid>,
     pub commits: BTreeMap<CommitId, CommitFacts>,
-    deltas: Vec<D>,
+    deltas: BTreeMap<usize, D>,
+    next: usize,
     ids: BTreeMap<WriteId, usize>,
     by_commit_on: BTreeMap<(CommitId, Tid), Vec<usize>>,
-    named: BTreeMap<CommitId, Vec<Namer>>,
-    carried: BTreeMap<CommitId, Vec<usize>>,
-    requests: BTreeMap<(Tid, Ak, Tid), Vec<usize>>,
-    /// The held addenda (an addendum of a role commit is none).
+    named: BTreeMap<CommitId, BTreeSet<Namer>>,
+    carried: BTreeMap<CommitId, BTreeSet<usize>>,
+    requests: BTreeMap<(Tid, Ak, Tid), BTreeSet<usize>>,
+    /// The held addenda (an addendum of a role commit is none), and by each edge of their paths.
     addenda: BTreeSet<usize>,
+    addenda_on: BTreeMap<Pair, BTreeSet<(Key, usize)>>,
     valid_addenda: BTreeSet<usize>,
     /// Removals by (commit, thing): the counting entries, each keeping the commit's parts on its
     /// vouch's thing (draft §5.1 Vouches).
     counted: BTreeMap<(CommitId, Tid), Vec<CommitId>>,
-    // the chained pass
-    writes: BTreeMap<Key, Ew>,
-    /// Per edge the highest role and invite chained writes set (record edges: admin, implicit).
-    level: BTreeMap<Pair, (Lvl, Lvl)>,
-    /// Per edge the first chained key giving write, and giving admin.
-    first: BTreeMap<Pair, [Option<Key>; 2]>,
-    chain_undo: Vec<ChainUndo>,
-    /// While an update runs: each touched edge's first chained keys before it.
-    chain_journal: BTreeMap<Pair, Option<[Option<Key>; 2]>>,
     pub counts: Counts,
-}
-
-fn give_invite(role: Lvl, field: Lvl) -> Lvl {
-    if role == Some(Role::Admin) { role } else { field.min(role) }
-}
-
-fn lvl_ix(r: Role) -> usize {
-    usize::from(r == Role::Admin)
 }
 
 impl Facts {
@@ -127,14 +101,13 @@ impl Facts {
         self.mint.get(&e.1) == Some(&e.0)
     }
 
-    /// Takes in new commits (the walks took their edge-class parts; `key` reads a part's key
-    /// there). Returns the new deltas, the snapshots' carried commits, whether a role-class part,
-    /// an addendum or a snapshot arrived, and the earliest new edge write's key.
-    pub(super) fn take(&mut self, commits: &[&Commit], key: impl Fn(&WriteId) -> Option<Key>) -> Taken {
+    /// Takes in new commits (the walks took their edge-class parts). Returns the new deltas, the
+    /// snapshots' carried commits, the role commits and the addenda that arrived.
+    pub(super) fn take(&mut self, commits: &[&Commit]) -> Taken {
         let mut out = Taken::default();
         for c in commits {
             let start = Key { ts: c.ts, signer: c.signer, commit: c.id, part: 0 };
-            let mut cf = CommitFacts { key: start, signer: c.signer, role_on: BTreeSet::new(), rests: BTreeSet::new(), purge: false, role: false };
+            let mut cf = CommitFacts { key: start, signer: c.signer, role_on: BTreeSet::new(), rests: BTreeSet::new(), purge: false, role: false, lists: vec![] };
             for (ix, p) in (0u32..).zip(c.parts.iter()) {
                 let id = WriteId(c.id, ix);
                 match &p.kind {
@@ -148,23 +121,16 @@ impl Facts {
                         }
                         if let Some(f) = &ew.frontier {
                             for x in f.commits() {
-                                self.named.entry(*x).or_default().push(Namer::Write(id));
+                                self.named.entry(*x).or_default().insert(Namer::Write(id));
                             }
+                            cf.lists.push((id, f.clone()));
                         }
-                        let finalize = ew.value.is_none() && ew.frontier.is_none() && !sh.leave && ew.holder != c.signer;
-                        let sets = ew.value.filter(|_| sh.well && !sh.leave && !finalize);
-                        if let Some(k) = key(&id) {
-                            out.edge_from = Some(out.edge_from.map_or(k, |f: Key| f.min(k)));
-                            self.writes.insert(k, Ew { e: (ew.holder, p.on), hops: sh.hops, sets, ts: c.ts });
-                        }
-                        out.role = true;
                     }
                     PartKind::Vouch { .. } => {
                         let sh = shape(&self.mint, c.signer, &p.path, p.on, None, true);
                         cf.role_on.insert(p.on);
                         cf.role = true;
                         cf.rests.extend(sh.hops.iter().map(|&e| (p.on, e)));
-                        out.role = true;
                     }
                     PartKind::Delta(d) => {
                         let sh = shape(&self.mint, c.signer, &p.path, p.on, None, false);
@@ -176,7 +142,6 @@ impl Facts {
                             DeltaClass::RoleClass => {
                                 cf.role_on.insert(p.on);
                                 cf.role = true;
-                                out.role = true;
                                 Class::Role
                             }
                             DeltaClass::Snapshot { carries } => {
@@ -191,9 +156,10 @@ impl Facts {
                                 Class::Purge(*author)
                             }
                         };
-                        let n = self.deltas.len();
+                        let n = self.next;
+                        self.next += 1;
                         let pos = Key::start(c.ts);
-                        self.deltas.push(D {
+                        self.deltas.insert(n, D {
                             id,
                             commit: c.id,
                             ts: c.ts,
@@ -218,23 +184,25 @@ impl Facts {
             // indexes that read the whole commit (an addendum written by a role commit is no
             // addendum: it names nothing)
             for n in self.by_commit_on.range((c.id, Tid::from_bytes([0; 15]))..).take_while(|(k, _)| k.0 == c.id).flat_map(|(_, v)| v.clone()).collect::<Vec<_>>() {
-                let Some(d) = self.deltas.get(n) else { continue };
+                let Some(d) = self.deltas.get(&n) else { continue };
                 match &d.class {
                     Class::Addendum(_, list) if !cf.role => {
                         for x in list.commits() {
-                            self.named.entry(*x).or_default().push(Namer::Addendum(n));
+                            self.named.entry(*x).or_default().insert(Namer::Addendum(n));
+                        }
+                        for e in &d.hops {
+                            self.addenda_on.entry(*e).or_default().insert((d.pos, n));
                         }
                         self.addenda.insert(n);
                         out.addenda.push(n);
                     }
                     Class::Snapshot(carries) => {
                         for x in carries.commits() {
-                            self.carried.entry(*x).or_default().push(n);
+                            self.carried.entry(*x).or_default().insert(n);
                         }
-                        out.snapshots.push(n);
                     }
                     Class::Purge(author) => {
-                        self.requests.entry((d.on, d.aspect.clone(), *author)).or_default().push(n);
+                        self.requests.entry((d.on, d.aspect.clone(), *author)).or_default().insert(n);
                     }
                     _ => {}
                 }
@@ -244,86 +212,88 @@ impl Facts {
             if !c.parts.iter().any(|p| matches!(p.kind, PartKind::Edge(_) | PartKind::Vouch { .. })) {
                 cf.key = Key::start(c.ts);
             }
+            if cf.role {
+                out.roles.insert(c.id);
+            }
             self.commits.insert(c.id, cf);
         }
         out
     }
 
-    // ---- the chained pass (draft §4 Chained writes) ----
-
-    /// Rolls the chained pass back to `p` and replays every held edge write from there, commit by
-    /// commit: a write is chained where every edge of its path is a record edge or set at admin
-    /// by a chained write of an earlier commit (an invite grant: its role on each edge but the
-    /// last, an invite of it on the last); a chained write sets its edge at the role and invite it
-    /// sets, `until` disregarded.
-    pub(super) fn chain_from(&mut self, p: Key) {
-        let p = p.commit_start();
-        while self.chain_undo.last().is_some_and(|u| u.0 >= p) {
-            let Some((_, e, lv, fi)) = self.chain_undo.pop() else { break };
-            self.chain_note(e);
-            match lv {
-                Some(v) => self.level.insert(e, v),
-                None => self.level.remove(&e),
-            };
-            match fi {
-                Some(v) => self.first.insert(e, v),
-                None => self.first.remove(&e),
-            };
-        }
-        let todo: Vec<(Key, Ew)> = self.writes.range(p..).map(|(k, w)| (*k, w.clone())).collect();
-        let mut i = 0;
-        while i < todo.len() {
-            let commit = todo.get(i).map(|t| t.0.commit);
-            let mut sets: Vec<(Key, Pair, Edge)> = vec![];
-            while let Some((k, w)) = todo.get(i).filter(|t| Some(t.0.commit) == commit) {
-                i += 1;
-                let Some(v) = w.sets else { continue };
-                let role = |h: &Pair| if self.record(*h) { Some(Role::Admin) } else { self.level.get(h).and_then(|l| l.0) };
-                let inv = |h: &Pair| if self.record(*h) { Some(Role::Admin) } else { self.level.get(h).and_then(|l| l.1) };
-                let admin = w.hops.iter().all(|h| role(h) == Some(Role::Admin));
-                let lvl = (v.invite <= Some(v.role) && v.role < Role::Admin && v.alive_at(Some(w.ts))).then_some(Some(v.role));
-                let invited = lvl.is_some_and(|l| w.hops.split_last().is_some_and(|(last, before)| inv(last) >= l && before.iter().all(|h| role(h) >= l)));
-                if admin || invited {
-                    sets.push((*k, w.e, v));
+    /// Forgets held commits: each delta leaves the indexes (no verdict was stored but an
+    /// addendum's); a frontier, an addendum or a snapshot forgotten changes what names the
+    /// commits it listed or carried, which `carried` reports. Work: per delta its path and lists.
+    pub(super) fn forget(&mut self, commits: &[CommitId]) -> Taken {
+        let mut out = Taken::default();
+        for c in commits {
+            let Some(cf) = self.commits.remove(c) else { continue };
+            if cf.role {
+                out.roles.insert(*c);
+            }
+            // a frontier's namers go with its commit's edge writes
+            for (id, f) in &cf.lists {
+                for x in f.commits() {
+                    if let Some(set) = self.named.get_mut(x) {
+                        set.remove(&Namer::Write(*id));
+                    }
+                    out.carried.insert(*x);
                 }
             }
-            for (k, e, v) in sets {
-                self.chain_note(e);
-                let old_l = self.level.get(&e).copied();
-                let old_f = self.first.get(&e).copied();
-                self.chain_undo.push((k.commit_start(), e, old_l, old_f));
-                let (r0, i0) = old_l.unwrap_or((None, None));
-                self.level.insert(e, (r0.max(Some(v.role)), i0.max(give_invite(Some(v.role), v.invite))));
-                if v.role < Role::Write {
-                    continue;
-                }
-                let f = self.first.entry(e).or_insert([None, None]);
-                for (n, r) in [Role::Write, Role::Admin].into_iter().enumerate() {
-                    if v.role >= r
-                        && let Some(slot) = f.get_mut(n)
-                        && slot.is_none()
-                    {
-                        *slot = Some(k);
+            let keys: Vec<(CommitId, Tid)> = self.by_commit_on.range((*c, Tid::from_bytes([0; 15]))..).take_while(|(k, _)| k.0 == *c).map(|(k, _)| *k).collect();
+            for k in keys {
+                for n in self.by_commit_on.remove(&k).unwrap_or_default() {
+                    let Some(d) = self.deltas.remove(&n) else { continue };
+                    self.ids.remove(&d.id);
+                    match &d.class {
+                        Class::Addendum(_, list) => {
+                            for x in list.commits() {
+                                if let Some(set) = self.named.get_mut(x) {
+                                    set.remove(&Namer::Addendum(n));
+                                }
+                                out.carried.insert(*x);
+                            }
+                            for e in &d.hops {
+                                if let Some(set) = self.addenda_on.get_mut(e) {
+                                    set.remove(&(d.pos, n));
+                                }
+                            }
+                            self.addenda.remove(&n);
+                            self.valid_addenda.remove(&n);
+                        }
+                        Class::Snapshot(carries) => {
+                            for x in carries.commits() {
+                                if let Some(set) = self.carried.get_mut(x) {
+                                    set.remove(&n);
+                                }
+                                out.carried.insert(*x);
+                            }
+                        }
+                        Class::Purge(author) => {
+                            if let Some(set) = self.requests.get_mut(&(d.on, d.aspect.clone(), *author)) {
+                                set.remove(&n);
+                            }
+                        }
+                        Class::Plain | Class::Role => {}
                     }
                 }
             }
         }
+        out
     }
 
-    /// Per edge, the first chained keys giving write and admin.
-    pub(super) fn chained(&self) -> BTreeMap<Pair, [Option<Key>; 2]> {
-        self.first.clone()
-    }
-
-    fn chain_note(&mut self, e: Pair) {
-        let was = self.first.get(&e).copied();
-        self.chain_journal.entry(e).or_insert(was);
-    }
-
-    /// The edges whose first chained keys changed since the last call.
-    pub(super) fn chain_changed(&mut self) -> BTreeSet<Pair> {
-        let j = std::mem::take(&mut self.chain_journal);
-        j.into_iter().filter(|(e, was)| self.first.get(e).copied() != *was).map(|(e, _)| e).collect()
+    /// What the held snapshots of commits `cs` carry (a list naming one names those).
+    pub(super) fn carried_by(&self, cs: &BTreeSet<CommitId>) -> BTreeSet<CommitId> {
+        let mut out = BTreeSet::new();
+        for c in cs {
+            for (_, ns) in self.by_commit_on.range((*c, Tid::from_bytes([0; 15]))..).take_while(|(k, _)| k.0 == *c) {
+                for n in ns {
+                    if let Some(Class::Snapshot(carries)) = self.deltas.get(n).map(|d| &d.class) {
+                        out.extend(carries.commits());
+                    }
+                }
+            }
+        }
+        out
     }
 
     // ---- counting entries as lists ----
@@ -340,10 +310,10 @@ impl Facts {
     /// The namers of delta `d`: what lists its commit, or a snapshot of its thing and aspect
     /// carrying it.
     fn namers(&self, d: &D, counts: &mut Counts) -> Vec<Namer> {
-        let mut out: Vec<Namer> = self.named.get(&d.commit).cloned().unwrap_or_default();
+        let mut out: Vec<Namer> = self.named.get(&d.commit).into_iter().flatten().copied().collect();
         for &s in self.carriers(&d.commit) {
             counts.content += 1;
-            let Some(sd) = self.deltas.get(s) else { continue };
+            let Some(sd) = self.deltas.get(&s) else { continue };
             if sd.on == d.on && sd.aspect == d.aspect && sd.commit != d.commit {
                 out.extend(self.named.get(&sd.commit).into_iter().flatten().copied());
             }
@@ -406,7 +376,7 @@ impl Facts {
                 return false;
             }
             if !self.record((h, t)) {
-                let Some(k) = self.first.get(&(h, t)).and_then(|f| f.get(lvl_ix(d.needs)).copied().flatten()) else { return false };
+                let Some(k) = tl.first_chained(&h, &t, d.needs) else { return false };
                 bound = Some(bound.map_or(k, |b| b.max(k)));
             }
         }
@@ -439,13 +409,13 @@ impl Facts {
     fn vouched(&self, tl: &Walk, d: &D, counts: &mut Counts) -> bool {
         self.vouchable(d)
             && self.namers(d, counts).iter().any(|n| match n {
-                Namer::Addendum(a) => self.valid_addenda.contains(a) && self.deltas.get(*a).is_some_and(|ad| self.vouches(tl, ad, d, counts)),
+                Namer::Addendum(a) => self.valid_addenda.contains(a) && self.deltas.get(a).is_some_and(|ad| self.vouches(tl, ad, d, counts)),
                 Namer::Write(_) => false,
             })
     }
 
     pub(super) fn content(&self, tl: &Walk, id: &WriteId, counts: &mut Counts) -> Option<Content> {
-        let d = self.deltas.get(*self.ids.get(id)?)?;
+        let d = self.deltas.get(self.ids.get(id)?)?;
         Some(match self.valid(tl, d, counts) {
             Some(b) => Content::Valid(b),
             None if self.copied(tl, d, counts) => Content::Copied,
@@ -463,32 +433,32 @@ impl Facts {
     fn copied(&self, tl: &Walk, d: &D, counts: &mut Counts) -> bool {
         self.carriers(&d.commit).any(|&s| {
             counts.content += 1;
-            self.deltas.get(s).is_some_and(|sd| sd.on == d.on && sd.aspect == d.aspect && sd.commit != d.commit && self.valid(tl, sd, counts).is_some())
+            self.deltas.get(&s).is_some_and(|sd| sd.on == d.on && sd.aspect == d.aspect && sd.commit != d.commit && self.valid(tl, sd, counts).is_some())
         })
     }
 
     /// A held delta's hops and position.
     pub(super) fn rests(&self, id: &WriteId) -> Option<(Vec<Pair>, Key)> {
-        self.ids.get(id).and_then(|&n| self.deltas.get(n)).map(|d| (d.hops.clone(), d.pos))
+        self.ids.get(id).and_then(|n| self.deltas.get(n)).map(|d| (d.hops.clone(), d.pos))
     }
 
     /// What names a held delta: the addenda listing its commit (or a snapshot carrying it), the
     /// snapshots of its thing and aspect carrying it, the requests by its purge author on its
     /// thing and aspect.
     pub(super) fn naming(&self, id: &WriteId) -> Vec<WriteId> {
-        let Some(d) = self.ids.get(id).and_then(|&n| self.deltas.get(n)) else { return vec![] };
+        let Some(d) = self.ids.get(id).and_then(|n| self.deltas.get(n)) else { return vec![] };
         let mut out: Vec<usize> = vec![];
         for n in self.namers(d, &mut Counts::default()) {
             if let Namer::Addendum(a) = n {
                 out.push(a);
             }
         }
-        out.extend(self.carriers(&d.commit).copied().filter(|&s| self.deltas.get(s).is_some_and(|sd| sd.on == d.on && sd.aspect == d.aspect)));
+        out.extend(self.carriers(&d.commit).copied().filter(|&s| self.deltas.get(&s).is_some_and(|sd| sd.on == d.on && sd.aspect == d.aspect)));
         if let Some(pa) = d.purge_author {
             let key = (d.on, d.aspect.clone(), pa);
             out.extend(self.requests.get(&key).into_iter().flatten().copied());
         }
-        out.into_iter().filter_map(|n| self.deltas.get(n)).map(|x| x.id).collect()
+        out.into_iter().filter_map(|n| self.deltas.get(&n)).map(|x| x.id).collect()
     }
 
     pub(super) fn ids(&self) -> impl Iterator<Item = &WriteId> {
@@ -498,13 +468,13 @@ impl Facts {
     /// Commits a valid snapshot carries that no valid held delta of its thing and aspect is.
     pub(super) fn copies(&self, tl: &Walk, counts: &mut Counts) -> BTreeSet<CommitId> {
         let mut out = BTreeSet::new();
-        for s in &self.deltas {
+        for s in self.deltas.values() {
             let Class::Snapshot(carries) = &s.class else { continue };
             if self.valid(tl, s, counts).is_none() {
                 continue;
             }
             for c in carries.commits().iter().filter(|c| self.commits.get(c).is_none_or(|f| !f.role)) {
-                let valid_held = self.by_commit_on.get(&(*c, s.on)).into_iter().flatten().filter_map(|&n| self.deltas.get(n)).any(|d| d.aspect == s.aspect && self.valid(tl, d, counts).is_some());
+                let valid_held = self.by_commit_on.get(&(*c, s.on)).into_iter().flatten().filter_map(|n| self.deltas.get(n)).any(|d| d.aspect == s.aspect && self.valid(tl, d, counts).is_some());
                 if !valid_held && *c != s.commit {
                     out.insert(*c);
                 }
@@ -517,68 +487,72 @@ impl Facts {
     /// class): a request on its thing and aspect stamped after it, naming exactly its purge
     /// author, whose chain holds that author, valid as a delta needing write along its path.
     pub(super) fn purged(&self, tl: &Walk, id: &WriteId, counts: &mut Counts) -> bool {
-        let Some(d) = self.ids.get(id).and_then(|&n| self.deltas.get(n)) else { return false };
+        let Some(d) = self.ids.get(id).and_then(|n| self.deltas.get(n)) else { return false };
         let (Class::Plain, Some(pa), true) = (&d.class, d.purge_author, d.retention.author()) else { return false };
         self.requests.get(&(d.on, d.aspect.clone(), pa)).into_iter().flatten().any(|&q| {
             counts.content += 1;
-            self.deltas.get(q).is_some_and(|qd| qd.ts > d.ts && qd.chain.contains(&pa) && self.valid(tl, qd, counts).is_some())
+            self.deltas.get(&q).is_some_and(|qd| qd.ts > d.ts && qd.chain.contains(&pa) && self.valid(tl, qd, counts).is_some())
         })
     }
 
-    // ---- addenda: the least fixpoint ----
+    // ---- addenda: the least fixpoint, by reach ----
 
-    /// Recomputes which addenda are valid; the addenda whose validity changed.
-    pub(super) fn addenda_fixpoint(&mut self, tl: &Walk) -> BTreeSet<WriteId> {
+    /// Judges again the addenda an update reached (notes/perm-paths.md, Counting entries and
+    /// addenda, by reach): those `ch` reaches as it reaches any delta (an edge of its path in
+    /// `edges` before its position, in `cuts` at or after it, in `regrant`; its commit in
+    /// `named`), those `fresh`, and every addendum their lists name, in turn (F). F leaves the
+    /// valid set; its members valid by (a), (b), (d) or by a valid namer outside F join it again
+    /// and vouch in turn. Outside F no read changed. The addenda whose validity changed.
+    pub(super) fn addenda_update(&mut self, tl: &Walk, ch: &Changed, fresh: &[usize]) -> BTreeSet<WriteId> {
         let mut counts = Counts::default();
-        let was = std::mem::take(&mut self.valid_addenda);
-        let mut queue: Vec<usize> = vec![];
-        for &a in &self.addenda {
-            counts.addenda += 1;
-            if let Some(d) = self.deltas.get(a)
-                && self.base(tl, d, &mut counts).is_some()
-            {
-                queue.push(a);
-            }
+        let mut f: BTreeSet<usize> = fresh.iter().copied().collect();
+        let low = (Key::start(Ts::ZERO), 0);
+        for (e, k) in &ch.edges {
+            f.extend(self.addenda_on.get(e).into_iter().flat_map(|x| x.range((std::ops::Bound::Excluded((*k, usize::MAX)), std::ops::Bound::Unbounded))).map(|x| x.1));
         }
-        let mut valid = BTreeSet::new();
-        self.spread(tl, &mut valid, queue, &mut counts);
-        self.valid_addenda = valid;
-        self.counts.add(&counts);
-        was.symmetric_difference(&self.valid_addenda).filter_map(|&n| self.deltas.get(n)).map(|d| d.id).collect()
-    }
-
-    /// After addenda or snapshots arrived and nothing else changed: the least fixpoint only grows
-    /// (an addendum or a snapshot only adds what names a delta), so it continues from the stored
-    /// one: each new addendum, and each addendum a new snapshot carries, valid by (a), (b), (d)
-    /// or vouched for by a valid one, joins and vouches in turn. The addenda that became valid.
-    pub(super) fn addenda_more(&mut self, tl: &Walk, taken: &Taken) -> BTreeSet<WriteId> {
-        let mut counts = Counts::default();
-        let mut cands: Vec<usize> = taken.addenda.clone();
-        for &s in &taken.snapshots {
-            let Some(Class::Snapshot(carries)) = self.deltas.get(s).map(|d| &d.class) else { continue };
-            let on = self.deltas.get(s).map(|d| d.on);
-            for x in carries.commits() {
+        for (e, k) in &ch.cuts {
+            f.extend(self.addenda_on.get(e).into_iter().flat_map(|x| x.range(low..=(*k, usize::MAX))).map(|x| x.1));
+        }
+        for e in &ch.regrant {
+            f.extend(self.addenda_on.get(e).into_iter().flatten().map(|x| x.1));
+        }
+        for c in &ch.named {
+            f.extend(self.by_commit_on.range((*c, Tid::from_bytes([0; 15]))..).take_while(|(k, _)| k.0 == *c).flat_map(|(_, v)| v.iter()).filter(|n| self.addenda.contains(n)));
+        }
+        let mut todo: Vec<usize> = f.iter().copied().collect();
+        while let Some(a) = todo.pop() {
+            let Some(Class::Addendum(_, list)) = self.deltas.get(&a).map(|d| &d.class) else { continue };
+            let on = self.deltas.get(&a).map(|d| d.on);
+            for c in list.commits() {
                 counts.addenda += 1;
-                if let Some(on) = on {
-                    cands.extend(self.by_commit_on.get(&(*x, on)).into_iter().flatten().filter(|n| self.addenda.contains(n)));
+                for t in on.map(|on| self.targets(c, on)).unwrap_or_default() {
+                    if self.addenda.contains(&t) && f.insert(t) {
+                        todo.push(t);
+                    }
                 }
             }
         }
+        let was: BTreeSet<usize> = self.valid_addenda.intersection(&f).copied().collect();
+        let mut valid = std::mem::take(&mut self.valid_addenda);
+        for a in &f {
+            valid.remove(a);
+        }
+        self.valid_addenda = valid;
         let mut queue: Vec<usize> = vec![];
-        for a in cands {
+        for &a in &f {
             counts.addenda += 1;
-            if let Some(d) = self.deltas.get(a).filter(|_| !self.valid_addenda.contains(&a))
+            if let Some(d) = self.deltas.get(&a)
+                && self.addenda.contains(&a)
                 && (self.base(tl, d, &mut counts).is_some() || self.vouched(tl, d, &mut counts))
             {
                 queue.push(a);
             }
         }
-        let was = self.valid_addenda.clone();
         let mut valid = std::mem::take(&mut self.valid_addenda);
         self.spread(tl, &mut valid, queue, &mut counts);
         self.valid_addenda = valid;
         self.counts.add(&counts);
-        self.valid_addenda.difference(&was).filter_map(|&n| self.deltas.get(n)).map(|d| d.id).collect()
+        f.iter().filter(|a| was.contains(a) != self.valid_addenda.contains(a)).filter_map(|a| self.deltas.get(a)).map(|d| d.id).collect()
     }
 
     /// The worklist: each addendum popped joins `valid` and the addenda its list names that it
@@ -588,7 +562,7 @@ impl Facts {
             if !valid.insert(a) {
                 continue;
             }
-            let Some(ad) = self.deltas.get(a) else { continue };
+            let Some(ad) = self.deltas.get(&a) else { continue };
             let Class::Addendum(_, list) = &ad.class else { continue };
             for c in list.commits() {
                 counts.addenda += 1;
@@ -596,7 +570,7 @@ impl Facts {
                     if valid.contains(&t) {
                         continue;
                     }
-                    if let Some(td) = self.deltas.get(t)
+                    if let Some(td) = self.deltas.get(&t)
                         && matches!(td.class, Class::Addendum(..))
                         && self.addenda.contains(&t)
                         && self.vouches(tl, ad, td, counts)
@@ -613,24 +587,25 @@ impl Facts {
     fn targets(&self, c: &CommitId, on: Tid) -> Vec<usize> {
         let mut out: Vec<usize> = self.by_commit_on.get(&(*c, on)).cloned().unwrap_or_default();
         for &s in self.by_commit_on.get(&(*c, on)).into_iter().flatten() {
-            let Some(Class::Snapshot(carries)) = self.deltas.get(s).map(|d| &d.class) else { continue };
-            let aspect = self.deltas.get(s).map(|d| d.aspect.clone());
+            let Some(Class::Snapshot(carries)) = self.deltas.get(&s).map(|d| &d.class) else { continue };
+            let aspect = self.deltas.get(&s).map(|d| d.aspect.clone());
             for x in carries.commits() {
-                out.extend(self.by_commit_on.get(&(*x, on)).into_iter().flatten().filter(|&&n| self.deltas.get(n).map(|d| d.aspect.clone()) == aspect));
+                out.extend(self.by_commit_on.get(&(*x, on)).into_iter().flatten().filter(|&n| self.deltas.get(n).map(|d| d.aspect.clone()) == aspect));
             }
         }
         out
     }
 }
 
-/// What `Facts::take` found.
+/// What `Facts::take` found, or `Facts::forget` let go.
 #[derive(Default)]
 pub(super) struct Taken {
     pub deltas: Vec<WriteId>,
+    /// Commits whose namers changed: carried by a snapshot taken or forgotten, listed by an
+    /// addendum or a frontier forgotten.
     pub carried: BTreeSet<CommitId>,
-    pub role: bool,
-    /// The new addenda and snapshots.
+    /// The role commits taken or forgotten.
+    pub roles: BTreeSet<CommitId>,
+    /// The new addenda.
     pub addenda: Vec<usize>,
-    pub snapshots: Vec<usize>,
-    pub edge_from: Option<Key>,
 }
