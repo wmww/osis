@@ -13,7 +13,7 @@ fn present(o: &Outcome) -> BTreeMap<(ThingId, Aspect), Value> {
     o.reads.iter().filter_map(|(k, r)| Some((*k, r.clone()?))).collect()
 }
 
-/// The default tests' seeds before `covering` adds the generator's rarer shapes: a tenth of the
+/// The `_plain` twins' seeds before `covering` adds the generator's rarer shapes: a tenth of the
 /// `_large` twins' small size.
 const SEEDS: u64 = 30;
 const LEN: usize = 24;
@@ -48,7 +48,8 @@ const COVER_ID: CommitId = 5_000_000;
 
 // spec/commits.md §4 (Order independence), spec/permissions.md §5: a function of the held set
 #[test]
-fn output_is_a_function_of_the_held_set_spec_commits_4() {
+#[ignore = "property"]
+fn output_is_a_function_of_the_held_set_plain_spec_commits_4() {
     output_is_a_function_of_the_held_set(covering(SEEDS, false));
 }
 
@@ -168,7 +169,8 @@ fn right_now(h: &Held, c: &Commit, p: &Part) -> bool {
 // spec/commits.md §5 (covered; signals): each drop a node may make changes no read and no
 // history(): a covered body, and a signal's out of history, read alike held or not.
 #[test]
-fn settled_histories_keep_their_laws_spec_commits_5() {
+#[ignore = "property"]
+fn settled_histories_keep_their_laws_plain_spec_commits_5() {
     settled_histories_keep_their_laws(covering(SEEDS, false));
 }
 
@@ -262,7 +264,8 @@ fn signal_history(h: &Held, gone: &BTreeSet<(ThingId, Aspect)>) -> BTreeMap<(Thi
 // commit arriving after the node acted on the rest reads as one held from the start, once a body
 // whose cover or purge fell is fetched again; a part gone at its expiry while waiting excepted
 #[test]
-fn late_commit_converges_after_repair_spec_commits_5() {
+#[ignore = "property"]
+fn late_commit_converges_after_repair_plain_spec_commits_5() {
     late_commit_converges_after_repair(covering(SEEDS, true));
 }
 
@@ -296,7 +299,8 @@ fn late_commit_converges_after_repair(seeds: Vec<u64>) {
 // time in any order, each acting as they come, read alike once bodies whose cover or purge fell
 // are fetched again; aspects where a part went at its expiry while waiting excepted
 #[test]
-fn arrival_orders_read_alike_after_repair_spec_commits_5() {
+#[ignore = "property"]
+fn arrival_orders_read_alike_after_repair_plain_spec_commits_5() {
     arrival_orders_read_alike_after_repair(covering(SEEDS / 3, false));
 }
 
@@ -343,7 +347,8 @@ fn arrival_orders_read_alike_after_repair(seeds: Vec<u64>) {
 // every write before the creations of their things reads, once the creations come and what waited
 // joins, as one given the creations first
 #[test]
-fn creations_last_read_like_creations_first_spec_commits_4() {
+#[ignore = "property"]
+fn creations_last_read_like_creations_first_plain_spec_commits_4() {
     creations_last_read_like_creations_first(covering(SEEDS / 3, false));
 }
 
@@ -373,7 +378,7 @@ fn creations_last_read_like_creations_first(seeds: Vec<u64>) {
     });
 }
 
-/// The shapes `histories_reach_destructions_unknown_things_and_settings` asks the generator for.
+/// The shapes `histories_reach_destructions_unknown_things_and_settings_plain` asks the generator for.
 const SHAPES: [&str; 9] = ["expiry", "purge", "unknown", "late setting", "invalid setting", "history", "signal history", "purge on replace", "signal past its bound"];
 
 /// The commit `late_commit_converges_after_repair` withholds from `h`, seed's history.
@@ -434,9 +439,9 @@ fn reach() -> &'static [BTreeSet<String>] {
     })
 }
 
-/// A default test's seeds: 0..n, then the first seeds below `10 * n` (the width its `_large` twin
+/// A `_plain` twin's seeds: 0..n, then the first seeds below `10 * n` (the width its `_large` twin
 /// runs at small size) that bring every kind those seeds reach (`kinds`; the withheld commit's
-/// fates only with `late`) to two seeds, or to as many as reach it: the default test meets every
+/// fates only with `late`) to two seeds, or to as many as reach it: the `_plain` twin meets every
 /// shape the twin's first seeds meet.
 fn covering(n: u64, late: bool) -> Vec<u64> {
     let seen: Vec<BTreeSet<&String>> = reach()[..10 * n as usize].iter().map(|k| k.iter().filter(|k| late || !k.starts_with("withheld ")).collect()).collect();
@@ -461,7 +466,8 @@ fn covering(n: u64, late: bool) -> Vec<u64> {
 // their keep bound (the optional drop `settled_histories_keep_their_laws` checks), each in at least
 // one seed in a hundred
 #[test]
-fn histories_reach_destructions_unknown_things_and_settings() {
+#[ignore = "property"]
+fn histories_reach_destructions_unknown_things_and_settings_plain() {
     let seen = &reach()[..100];
     let count = |what: &str| seen.iter().filter(|k| k.contains(what)).count();
     eprintln!("of 100: {:?}", SHAPES.iter().map(|w| (w, count(w))).collect::<Vec<_>>());
