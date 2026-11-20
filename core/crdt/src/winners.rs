@@ -82,10 +82,15 @@ pub struct Winners(BTreeMap<Vec<Place>, BTreeSet<(Kind, Stamp)>>);
 pub struct Hiders {
     values: BySetWrite<Option<Value>>,
     removals: BySetWrite<Removal>,
+    /// Each set's removals by the reference their joined copy names, as `removals` holds them.
+    named: BySet<BTreeMap<Value, BTreeSet<(Dot, Stamp)>>>,
 }
 
+/// By a set's path.
+type BySet<T> = BTreeMap<Vec<Place>, T>;
+
 /// By a set's path, then by a write's record dot and stamp.
-type BySetWrite<T> = BTreeMap<Vec<Place>, BTreeMap<(Dot, Stamp), T>>;
+type BySetWrite<T> = BySet<BTreeMap<(Dot, Stamp), T>>;
 
 impl Hiders {
     /// Notes every element write and value removal `f` holds, winning or not.
@@ -99,7 +104,9 @@ impl Hiders {
             _ => None,
         };
         at.into_iter().flat_map(move |(set, d, v)| {
-            self.removals.get(set).into_iter().flatten().filter(move |(_, r)| r.value == *v && r.hides(d, &w.stamp)).map(move |((rd, rs), _)| Won { path: [set, &[Place::Gone(rd.clone())]].concat(), kind: Kind::Reset, stamp: rs.clone() })
+            let rs = self.removals.get(set);
+            let named = self.named.get(set).and_then(|m| m.get(v)).into_iter().flatten();
+            named.filter_map(move |k| Some((k, rs?.get(k)?))).filter(move |(_, r)| r.hides(d, &w.stamp)).map(move |((rd, rs), _)| Won { path: [set, &[Place::Gone(rd.clone())]].concat(), kind: Kind::Reset, stamp: rs.clone() })
         })
     }
 }
@@ -265,12 +272,19 @@ impl Sink for Hiders {
             }
         }
         if let Some(g) = &e.gone {
-            let at = self.removals.entry(path.to_vec()).or_default();
+            let (k, at) = ((d.clone(), g.stamp.clone()), self.removals.entry(path.to_vec()).or_default());
             // copies of one removal: the greatest, as the state joins them (§5.5)
-            match at.get_mut(&(d.clone(), g.stamp.clone())) {
-                Some(x) if *x >= *g => {}
-                Some(x) => *x = g.clone(),
-                None => _ = at.insert((d.clone(), g.stamp.clone()), g.clone()),
+            if at.get(&k).is_none_or(|x| *g > *x) {
+                let named = self.named.entry(path.to_vec()).or_default();
+                if let Some(old) = at.insert(k.clone(), g.clone())
+                    && let Some(ks) = named.get_mut(&old.value)
+                {
+                    ks.remove(&k);
+                    if ks.is_empty() {
+                        named.remove(&old.value);
+                    }
+                }
+                named.entry(g.value.clone()).or_default().insert(k);
             }
         }
     }
