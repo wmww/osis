@@ -188,7 +188,7 @@ An oracle of a design that is not built and not in spec: a write states its path
 | `-- 1000000 paths-tiny-invites` | 1,000,000 (670,252 `N`, 76,580 `T`, 253,168 `V`; 347,597 with honest lists; unapplied N 2,252,230) | 0; counted: unapplied N 2 (34), both `fight legit`; fight 2, stray 197, 30, 70 |
 | `-- 1000000 paths-tiny-honest` / `paths-tiny-invites-honest` | 1,000,000 each, every list honest | 0; counted: honest 49 / 4 (36); unshown 35 / 3, all `fight legit` |
 | `-- 1000000 paths-tiny-honest-writers` / `paths-tiny-invites-honest-writers` | 1,000,000 each (idle commits 16,254 / 8,639: honest writers make few) | 0; counted: honest 11 / 2 (36: nobody hostile); unshown 9 (idle 7, unapplied N 2), all `fight legit` |
-| `-- 100000 paths-tiny-detached` / `-honest` / `-honest-writers` | 100,000 each | 0 (finding 42 found here: 14 / 6 / 0 `illegit gains` before it) |
+| `-- 100000 paths-tiny-detached` / `-honest` / `-honest-writers` | 100,000 each | 0 (finding 43 found here: 14 / 6 / 0 `illegit gains` before it) |
 | `-- 1000000 paths-tiny-own-drops` / `paths-tiny-invites-own-drops` (`keeps` over each lowering's own drops alone) | 1,000,000 / 1,000,000 | 0 (its hand world fails it) / self-taken 1 |
 | `-- 1000000 paths-tiny-remains-unkept` (the remaining admin read before the drops alone) | 1,000,000 | admin T 5 (counted: A with no admin 35 `N`, 8 `V`, against 3 and 1) |
 | `-- 8000 paths-last-any` (the remaining admin (Ak, T) wherever it is) | 8,000 | alike 30,476, dispute 742 (a reader of T2 against members, B's removal of J from D1) |
