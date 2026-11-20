@@ -6,8 +6,12 @@
 # against an old REV: `--patch FILE` applies a diff (`git apply --index`) on top of REV, `--take
 # PATH` (a file or directory) copies PATH as the starting commit holds it (`git checkout <start>
 # -- PATH`, root-relative); both undone before returning (`git reset --hard`). Needs a clean tree
-# (wip-commit first): checks out REV detached, builds, checks the starting branch or commit out again (also on failure). The
-# next build here recompiles what REV changed back. The binary keeps this worktree's manifest
+# (wip-commit first): checks out REV detached, builds, checks the starting branch or commit out again (also on failure). OUT
+# is the only copy of REV's binary: every executable it compiled at REV is deleted from target/
+# (cargo's path for it is the branch's, so running that path later would run REV's code). The
+# next build here recompiles what REV changed back. Several binaries at several revisions: one
+# spare worktree (`wt claim <name> <rev>`) per revision building them in one `cargo test -p A -p B
+# --no-run --message-format=json` costs one build each, where bin-at per binary rebuilds twice. The binary keeps this worktree's manifest
 # dirs: a test reading fixtures reads the checked-out ones. Refuses the main checkout (build only
 # in task worktrees). Killed hard (SIGKILL) mid-build, it leaves HEAD detached at REV: check the
 # branch it printed out again. Interrupted mid-build (seen with Ctrl-C), the next build here may
@@ -61,10 +65,19 @@ if [ -n "$lib" ]; then
 else
     target="--test $test" pick='.target.name == "'"$test"'"'
 fi
+json=$(mktemp)
+trap 'rm -f "$json"; restore' EXIT
 # shellcheck disable=SC2086
-exe=$(cargo test $profile -p "$crate" $target --no-run --message-format=json-render-diagnostics \
-    | jq -r 'select(.reason == "compiler-artifact" and .executable != null and '"$pick"') | .executable' | tail -n 1)
+cargo test $profile -p "$crate" $target --no-run --message-format=json-render-diagnostics > "$json"
+exe=$(jq -r 'select(.reason == "compiler-artifact" and .executable != null and '"$pick"') | .executable' "$json" | tail -n 1)
 [ -n "$exe" ] || { echo "bin-at: no executable for $crate $target" >&2; exit 1; }
 mkdir -p "$(dirname "$out")"
 cp "$exe" "$out"
+# Every executable this build compiled at REV is deleted from the target: the path is the one
+# cargo builds the branch's binary at (the hash does not follow the sources), so a direct run of
+# it would run REV's code until the next build. Deleted, it cannot; the next build compiles it
+# again, as it would anyway (the checkout back touched what REV changed). Executables cargo found
+# fresh were built from these same sources and stay.
+jq -r 'select(.reason == "compiler-artifact" and .executable != null and .fresh == false) | .executable' "$json" \
+    | while IFS= read -r x; do rm -f "$x"; done
 echo "bin-at: $(git log -1 --format='%h %s' "$sha")${patches:+ + patches}${takes:+ + taken files} -> $out" >&2
