@@ -712,3 +712,64 @@ fn a_document_keeps_its_own_leaf_and_the_removals_home_every_far_leaf() {
     };
     assert_eq!((at(10), at(100)), (10, 100));
 }
+
+/// A hub A writing d documents and r removals of K from A. Forgetting one of A's grants (the rare
+/// path: a purge of role commits) walks every removal reaching both its ends again from nothing:
+/// r (2d - 1), for r targets gone. A hold's end (A's grants on the d documents read for the duty
+/// only, released at once by `duty_forget_all`) walks each removal again once over what is left (A
+/// alone): r at d = 10, 100, where a release per copy walked about r d².
+#[test]
+fn a_cut_walks_each_removal_reaching_it_again_once() {
+    let at = |d: u16, r: u16| {
+        let mut l = Lists::new();
+        let grants: Vec<(u32, u16)> = (0..d).map(|j| l.add(1000 + j, write(A), vec![rec(X, 1000 + j)])).collect();
+        for _ in 0..r {
+            l.removal(K, A, vec![]);
+        }
+        let (forget, _) = l.work(|l| l.ev.forget(&grants[0]));
+        l.ev.check().unwrap();
+        let mut l = Lists::new();
+        let reads: Vec<(u32, u16)> = (0..d)
+            .map(|j| {
+                let c = (l.next, 1000 + j);
+                l.next += 1;
+                l.ev.duty_add(c, vec![Part { kind: write(A), hops: Some(vec![rec(X, 1000 + j)]), pos: c.0, chained: true }]);
+                c
+            })
+            .collect();
+        let rs: Vec<(u32, u16)> = (0..r).map(|_| l.removal(K, A, vec![])).collect();
+        assert!(rs.iter().all(|x| l.ev.reached(x).unwrap().len() == usize::from(d) + 1));
+        let (release, _) = l.work(|l| l.ev.duty_forget_all(reads.iter().copied()));
+        l.ev.check().unwrap();
+        assert!(rs.iter().all(|x| l.ev.reached(x).unwrap().len() == 1));
+        (forget.duty, release.duty)
+    };
+    assert_eq!(at(10, 10), (10 * 19, 10));
+    assert_eq!(at(100, 10), (10 * 199, 10));
+    assert_eq!(at(10, 100), (100 * 19, 100));
+}
+
+/// A closure rebuilt (the last body on an edge of A forgotten) decides its members' leaves again,
+/// never its bodies': r removals that are bodies of A, each with far leaves for k documents, cost
+/// nothing there, at (r, k) = (10, 10), (10, 100), (100, 10).
+#[test]
+fn a_rebuilt_closure_decides_only_its_members_leaves() {
+    let at = |r: u16, k: u16| {
+        let mut l = Lists::new();
+        l.ev.add_sid(A, A);
+        l.ev.join(&A, A);
+        let docs: Vec<u16> = (0..k).map(|j| 1000 + j).collect();
+        for _ in 0..r {
+            l.removal(K, A, docs.clone());
+        }
+        l.add(A, write(Q), vec![rec(X, A)]);
+        let b = l.add(A, Kind::Content, vec![hop(Q, A)]);
+        let (c, _) = l.work(|l| l.ev.forget(&b));
+        l.ev.check().unwrap();
+        assert_eq!(l.ev.leaves(&A).unwrap().len(), usize::from(r) * usize::from(k));
+        (c.closes, c.leaf_checks)
+    };
+    assert_eq!(at(10, 10), (1, 0));
+    assert_eq!(at(10, 100), (1, 0));
+    assert_eq!(at(100, 10), (1, 0));
+}

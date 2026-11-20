@@ -183,9 +183,7 @@ impl Driver {
             if now == self.duty_held {
                 return;
             }
-            for c in self.duty_held.keys().filter(|c| !now.contains_key(c)) {
-                self.ev.duty_forget(c);
-            }
+            self.ev.duty_forget_all(self.duty_held.keys().filter(|c| !now.contains_key(c)).copied());
             for (c, parts) in &now {
                 if self.duty_held.get(c) != Some(parts) {
                     self.ev.duty_add(*c, parts.clone());

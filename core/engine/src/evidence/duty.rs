@@ -92,11 +92,19 @@ where
 
     /// A copy no longer held for the duty.
     pub fn duty_forget(&mut self, c: &CopyId<C, T>) {
-        let Some(parts) = self.duty.held.remove(c) else { return };
+        self.duty_forget_all([*c]);
+    }
+
+    /// Copies no longer held for the duty, at once (a hold's end: every copy read under that
+    /// target): each removal they cut is walked again once, not once per copy.
+    pub fn duty_forget_all(&mut self, cs: impl IntoIterator<Item = CopyId<C, T>>) {
         let mut todo = Todo::default();
-        for (i, e) in duty_edges(c, &parts) {
-            if self.duty.graph.remove(&e, &(*c, i)) && !self.ix.writes.has(&e) {
-                todo.duty_cut.push(e);
+        for c in cs {
+            let Some(parts) = self.duty.held.remove(&c) else { continue };
+            for (i, e) in duty_edges(&c, &parts) {
+                if self.duty.graph.remove(&e, &(c, i)) && !self.ix.writes.has(&e) {
+                    todo.duty_cut.push(e);
+                }
             }
         }
         self.settle(todo);
@@ -229,8 +237,16 @@ where
             if scratch.keys().ne(m.keys()) {
                 return Err(format!("duty of {r:?}: reaches {:?}, from scratch {:?}", m.keys().collect::<Vec<_>>(), scratch.keys().collect::<Vec<_>>()));
             }
-            for t in m.keys() {
+            for (t, via) in m {
                 by.entry(*t).or_default().insert(*r);
+                // the edge first reached by: a walk edge into it from a thing reached (None: t)
+                let ok = match via {
+                    None => *t == r.1,
+                    Some(e) => e.1 == *t && m.contains_key(&e.0) && (self.ix.writes.has(e) || self.duty.graph.has(e)),
+                };
+                if !ok {
+                    return Err(format!("duty of {r:?}: {t:?} reached by {via:?}, no edge of its walk"));
+                }
             }
         }
         if by != self.duty.reached_by {

@@ -267,8 +267,10 @@ where
         }
     }
 
-    /// Decides the leaves again: every lowering in each sync ID of `all` (its closure changed), and
-    /// each (sync ID, lowering) of `some`.
+    /// Decides the leaves again: the members of each sync ID of `all` (its closure was rebuilt), and
+    /// each (sync ID, lowering) of `some`. A rebuilt closure moves which lowerings are members, never
+    /// a body's leaves (moved by what moves them: rest counts, cuts, liveness, the unit, each sending
+    /// its (sync ID, lowering) in `some`), so it costs O(members), not O(bodies' leaves).
     pub(super) fn settle_leaves(&mut self, all: BTreeSet<T>, some: BTreeSet<(T, CopyId<C, T>)>) {
         if !self.cfg.leaves {
             return;
@@ -276,11 +278,11 @@ where
         for sid in &all {
             let Some(s) = self.sids.get(sid) else { continue };
             let mut n = 0;
-            let mut out = BTreeMap::new();
-            for c in self.lowerings_in(s) {
-                let m = self.leaves_rule(&c, true, &s.unit, &s.rest, &mut n);
+            let mut out: BTreeMap<CopyId<C, T>, BTreeMap<T, LeafWhy>> = s.leaves.iter().filter(|(c, _)| s.unit.contains(&c.1)).map(|(c, m)| (*c, m.clone())).collect();
+            for c in s.closure.members.keys().filter(|c| self.ix.lx.leafy.get(&c.1).is_some_and(|l| l.contains(&c.0))) {
+                let m = self.leaves_rule(c, true, &s.unit, &s.rest, &mut n);
                 if !m.is_empty() {
-                    out.insert(c, m);
+                    out.insert(*c, m);
                 }
             }
             self.counts.leaf_checks += n;
@@ -289,9 +291,6 @@ where
             }
         }
         for (sid, c) in some {
-            if all.contains(&sid) {
-                continue;
-            }
             let Some(s) = self.sids.get(&sid) else { continue };
             let in_set = s.closure.members.contains_key(&c) || (s.unit.contains(&c.1) && self.live(&c));
             let mut n = 0;
@@ -305,15 +304,6 @@ where
                 }
             }
         }
-    }
-
-    /// The lowerings with leaves in S's set: its members, and its bodies.
-    fn lowerings_in(&self, s: &Sid<C, T>) -> BTreeSet<CopyId<C, T>> {
-        let mut out: BTreeSet<CopyId<C, T>> = s.closure.members.keys().filter(|c| self.ix.lx.leafy.get(&c.1).is_some_and(|l| l.contains(&c.0))).copied().collect();
-        for t in &s.unit {
-            out.extend(self.ix.lx.leafy.get(t).into_iter().flatten().map(|c| (*c, *t)).filter(|c| self.live(c)));
-        }
-        out
     }
 
     /// The leaves of lowering copy `c` a set with unit `unit` and rest counts `rest` requires, `c`
