@@ -17,11 +17,13 @@ use osis_schema::{Codec, RawKey};
 use osis_store::{Io, MemoryBackend};
 use std::collections::{BTreeMap, BTreeSet};
 
-/// What one operation did: the engine's cost spans by count, and the store's reads and writes.
+/// What one operation did: the engine's cost spans by count, the store's reads and writes, and
+/// the bytes handed to the store before paging (`osis_store::bytes_handed`).
 #[derive(Debug)]
 pub(crate) struct Work {
     pub(crate) spans: BTreeMap<&'static str, u64>,
     pub(crate) io: Io,
+    pub(crate) handed: u64,
 }
 
 impl Work {
@@ -41,10 +43,10 @@ impl Work {
 /// Runs `f`, counting its work on this thread (spans; debug-only checks excluded) and at `b`.
 pub(crate) fn measured<T>(b: &MemoryBackend, f: impl FnOnce() -> T) -> (T, Work) {
     osis_base::costs::take();
-    let io = b.io();
+    let (io, handed) = (b.io(), osis_store::bytes_handed());
     let r = f();
     let spans = osis_base::costs::take().into_iter().map(|(k, _, c)| (k, c)).collect();
-    (r, Work { spans, io: b.io() - io })
+    (r, Work { spans, io: b.io() - io, handed: osis_store::bytes_handed() - handed })
 }
 
 /// A cost at 10n about the cost at n: at most a log's growth (O(change)).
@@ -451,7 +453,7 @@ fn replacing_edit(n: usize, map: &osis_schema::Aspect<Value>) -> u64 {
             lp.peers[0].commit(m).unwrap().unwrap();
         }
     });
-    w.n("store bytes handed") / edits
+    w.handed / edits
 }
 
 // spec/commits.md §5 (purge on replace); spec/requirements.md (Cost the app chooses): under
@@ -549,26 +551,27 @@ fn flat_bytes(what: &str, small: u64, big: u64) {
     assert!(big <= 2 * small + ONE_PAGE, "{what}: {small} at n, {big} at 10n: grows with the data");
 }
 
-/// Every counted phase grows at most like a log from n to 10n, the store's among them: rows and
-/// bytes handed to it ("store rows written"; "store bytes handed", within `ONE_PAGE`), and the
+/// Every counted phase grows at most like a log from n to 10n, the store's among them: the rows
+/// handed to it ("store rows written"), their bytes (`Work::handed`, within `ONE_PAGE`) and the
 /// units it wrote. Not the units' bytes: a unit holds 4-11 KB, and where keys land (commit IDs,
 /// splits) moves whole units between sizes, so their bytes are noise beside these counts.
 #[track_caller]
 fn all_flat(what: &str, small: &Work, big: &Work) {
     for k in phases(small, big) {
-        let f = if k == "store bytes handed" { flat_bytes } else { flat };
-        f(&format!("{what}: {k}"), small.n(k), big.n(k));
+        flat(&format!("{what}: {k}"), small.n(k), big.n(k));
     }
+    flat_bytes(&format!("{what}: store bytes handed"), small.handed, big.handed);
     flat(&format!("{what}: store units written"), small.io.writes, big.io.writes);
 }
 
-/// Every counted phase and the store units written grow at most linearly from n to 10n
-/// (`all_flat`).
+/// Every counted phase, the bytes handed to the store and the units it wrote grow at most
+/// linearly from n to 10n (`all_flat`).
 #[track_caller]
 fn all_linear(what: &str, small: &Work, big: &Work) {
     for k in phases(small, big) {
         linear(&format!("{what}: {k}"), small.n(k), big.n(k));
     }
+    linear(&format!("{what}: store bytes handed"), small.handed, big.handed);
     linear(&format!("{what}: store units written"), small.io.writes, big.io.writes);
 }
 

@@ -29,11 +29,21 @@ impl Shred {
     }
 }
 
-/// Counts `n` bytes of durable rows (key and value; a removal its key) or blobs handed to the
-/// store: what an operation asks it to write, before paging into units, whose bytes move by a
-/// whole unit wherever a key lands (scale tests count this, `osis_base::costs`).
+thread_local! {
+    static HANDED: std::cell::Cell<u64> = const { std::cell::Cell::new(0) };
+}
+
+/// Counts `n` bytes of durable rows (key and value; a removal its key) or blobs handed to a
+/// store on this thread (`bytes_handed`).
 fn written(n: usize) {
-    osis_base::costs::count_scoped("store bytes handed", n as u64);
+    HANDED.with(|h| h.set(h.get() + n as u64));
+}
+
+/// Bytes of durable rows (key and value; a removal its key) and blobs handed to stores on this
+/// thread so far: what operations asked them to write, before paging into units, whose bytes move
+/// by a whole unit wherever a key lands (scale tests count this at two sizes).
+pub fn bytes_handed() -> u64 {
+    HANDED.with(std::cell::Cell::get)
 }
 
 /// A table: an ordered byte map paged into units (a large aspect state, its indexes), and the
