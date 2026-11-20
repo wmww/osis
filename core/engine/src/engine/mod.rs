@@ -1986,6 +1986,8 @@ impl Core {
 
     /// The running transaction committed: its journal is forgotten.
     fn commit_journal(&mut self) {
+        #[cfg(debug_assertions)]
+        self.note_walk_moved();
         self.closure_follow.committed();
         self.ix.commit();
         self.schemas.commit();
@@ -1995,6 +1997,16 @@ impl Core {
         self.reach_log.clear();
         self.walks.committed();
         self.dirty = false;
+    }
+
+    /// Debug builds: the commits whose record (`ix.commits`: parts held, validity, paths decided)
+    /// or rotation role the running transaction changed, for the shadow walk (`Held::
+    /// take_walk_moved`): before a commit or a rollback forgets the journal.
+    #[cfg(debug_assertions)]
+    fn note_walk_moved(&mut self) {
+        let ids: Vec<CommitId> = self.ix.commits.before().keys().map(|k| **k).chain(self.ix.rotation_role.before().keys().map(|k| k.0)).chain(self.ix.addenda.before().keys().map(|k| k.1)).chain(self.ix.grant_overreach.before_keys().map(|k| k.0)).collect();
+        let epochs = self.ix.epochs.before().keys().next().is_some();
+        self.ix.held.note_walk_moved(ids, epochs);
     }
 
     /// Drops the `tree_reach` of every thing a question took since `n` (`reach_log`): what it
@@ -2091,6 +2103,8 @@ impl Core {
         }
         self.dirty = m.dirty;
         self.waits.retake_rolled_back();
+        #[cfg(debug_assertions)]
+        self.note_walk_moved();
         self.ix.rollback_to(m.ix);
         self.schemas.rollback_to(m.schemas);
         // the timelines follow the restored held set; validity flags are restored with `commits`
@@ -3762,6 +3776,10 @@ pub struct Engine {
     /// the drop checks nothing.
     #[cfg(debug_assertions)]
     loading: bool,
+    /// Debug builds: the walk along stated paths kept beside today's and compared with it
+    /// (`walk::shadow`); built at the first durable transaction after an open.
+    #[cfg(debug_assertions)]
+    pub(crate) shadow: Option<crate::walk::shadow::Shadow>,
     /// Tests: an index was edited in memory past the store, so `check_index` does not run.
     #[cfg(test)]
     pub(crate) index_poked: bool,
@@ -3851,7 +3869,7 @@ impl Engine {
         let id = Identity::generate(&mut *rng);
         let (session, expiring) = sessions(id.tid(), &mut *rng);
         let rows = store.row_changes();
-        let mut e = Engine { store, store_rng, blobs, blob_stamps: Default::default(), blob_seq: 1, blobs_unsettled: false, failed_seen: (0, 0), taken_failed: false, loads: 0, rng, core: Core::new(id, clock.clone(), session, expiring, rows), eph: crate::ephemeral::Eph::default(), clock, cfg, #[cfg(debug_assertions)] index_unchecked: false, #[cfg(debug_assertions)] verdicts_unchecked: false, #[cfg(debug_assertions)] last_tx_wall: None, #[cfg(debug_assertions)] loading: false, #[cfg(test)] index_poked: false, #[cfg(test)] check_every_tx: false, #[cfg(test)] fail_round: false };
+        let mut e = Engine { store, store_rng, blobs, blob_stamps: Default::default(), blob_seq: 1, blobs_unsettled: false, failed_seen: (0, 0), taken_failed: false, loads: 0, rng, core: Core::new(id, clock.clone(), session, expiring, rows), eph: crate::ephemeral::Eph::default(), clock, cfg, #[cfg(debug_assertions)] index_unchecked: false, #[cfg(debug_assertions)] verdicts_unchecked: false, #[cfg(debug_assertions)] last_tx_wall: None, #[cfg(debug_assertions)] loading: false, #[cfg(debug_assertions)] shadow: None, #[cfg(test)] index_poked: false, #[cfg(test)] check_every_tx: false, #[cfg(test)] fail_round: false };
         let seed_bytes = e.core.id.seed().expose().to_vec();
         // a new store: its (empty) persisted index is current
         e.run(|tx| {
@@ -3881,7 +3899,7 @@ impl Engine {
         };
         let (session, expiring) = sessions(id.tid(), &mut *rng);
         let rows = store.row_changes();
-        let mut e = Engine { store, store_rng, blobs, blob_stamps: Default::default(), blob_seq: 1, blobs_unsettled: false, failed_seen: (0, 0), taken_failed: false, loads: 0, rng, core: Core::new(id, clock.clone(), session, expiring, rows), eph: crate::ephemeral::Eph::default(), clock, cfg, #[cfg(debug_assertions)] index_unchecked: false, #[cfg(debug_assertions)] verdicts_unchecked: false, #[cfg(debug_assertions)] last_tx_wall: None, #[cfg(debug_assertions)] loading: false, #[cfg(test)] index_poked: false, #[cfg(test)] check_every_tx: false, #[cfg(test)] fail_round: false };
+        let mut e = Engine { store, store_rng, blobs, blob_stamps: Default::default(), blob_seq: 1, blobs_unsettled: false, failed_seen: (0, 0), taken_failed: false, loads: 0, rng, core: Core::new(id, clock.clone(), session, expiring, rows), eph: crate::ephemeral::Eph::default(), clock, cfg, #[cfg(debug_assertions)] index_unchecked: false, #[cfg(debug_assertions)] verdicts_unchecked: false, #[cfg(debug_assertions)] last_tx_wall: None, #[cfg(debug_assertions)] loading: false, #[cfg(debug_assertions)] shadow: None, #[cfg(test)] index_poked: false, #[cfg(test)] check_every_tx: false, #[cfg(test)] fail_round: false };
         e.core.node_root = node_root;
         e.load()?;
         Ok(e)
@@ -3893,6 +3911,7 @@ impl Engine {
         #[cfg(debug_assertions)]
         {
             self.loading = true;
+            self.shadow = None;
         }
         self.settle_blobs()?;
         // the account first: judging what is held reads which commits are this node's own (an own
@@ -4416,6 +4435,7 @@ impl Engine {
                 #[cfg(debug_assertions)]
                 if durable && !self.loading {
                     self.check_vouches_missed("after a transaction");
+                    self.check_shadow(false);
                     // no blob wait wants a blob held here unnoted (a lost wake)
                     if self.core.walks.any() {
                         let r = self.check_walks(false);
@@ -4698,6 +4718,7 @@ impl Drop for Engine {
         assert!(matches!(r, Ok(()) | Err(Error::Store(_))), "end of history: {:?}", r.err());
         if r.is_ok() {
             self.check_vouches_missed("end of history");
+            self.check_shadow(true);
             let r = self.check_walks(true);
             assert!(matches!(r, Ok(()) | Err(Error::Store(_))), "blob waits at the end of history: {:?}", r.err());
         }
@@ -4708,6 +4729,23 @@ impl Drop for Engine {
 impl Engine {
     /// Debug builds: no vouch or addendum trigger missed (`flows::vouches::missed`), and no
     /// waiting split path a fresh attempt opens (`apply::paths::missed`), counting nothing.
+    /// Debug builds: the walk along stated paths differs from today's only by design, and (at the
+    /// drop) reads incrementally as from scratch (`walk::shadow`), counting nothing.
+    fn check_shadow(&mut self, drop: bool) {
+        let Engine { shadow, core, .. } = self;
+        osis_base::costs::paused(|| {
+            osis_perm::uncounted(|| {
+                memo::unrecorded(|| {
+                    if drop {
+                        crate::walk::shadow::at_drop(shadow, core);
+                    } else {
+                        crate::walk::shadow::after_transaction(shadow, core, "after a transaction");
+                    }
+                })
+            })
+        });
+    }
+
     fn check_vouches_missed(&mut self, when: &str) {
         let m = osis_base::costs::paused(|| osis_perm::uncounted(|| memo::unrecorded(|| self.read(crate::flows::vouches::missed))));
         assert!(matches!(m, Ok(None) | Err(Error::Store(_))), "{when}: a vouch trigger missed: {m:?}");

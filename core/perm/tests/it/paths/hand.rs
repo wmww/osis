@@ -8,6 +8,7 @@
 
 use super::{agree, agree_all};
 use roles_model::paths::*;
+use osis_perm::paths::Status;
 use roles_model::Role::{self, Admin, None as Gone, Read, Write};
 use std::collections::BTreeMap;
 
@@ -1142,4 +1143,48 @@ fn an_end_judged_at_its_key_applies_for_good_and_can_strand_the_thing() {
     w.push(N6, 3, &[], A, Kind::set(H, Gone).listing(w.cut(&[gn])));
     w.commit(B, 3, &[], A, vec![Kind::set(H, Admin).until(5).listing(w.cut(&[gb, gn])), Kind::set(N6, Admin).until(5).listing(w.cut(&[gb]))]);
     agree_all(&w, &[]);
+}
+
+// notes/a1-spec/README.md Open 26 (engine `flows::grantor_cannot_backdate_removers_edge_spec_perm_5_1`):
+// X grants B admin on A (g); B removes X listing g; X, removed, backdates a timed rewrite of B's
+// edge before the removal (f, unlisted). B's own edge is then no standing admin just before the
+// removal and it names no other: by §1 The last admin the removal applies nowhere, X stays and f
+// stands. With f untimed the removal applies and drops f.
+#[test]
+fn a_backdated_timed_rewrite_of_the_removers_edge_leaves_its_removal_applying_nowhere() {
+    for timed in [true, false] {
+        let mut w = account();
+        w.edge(H, 1, &[], A, X, Admin, &[]);
+        let g = w.edge(X, 2, &[], A, B, Admin, &[]);
+        let f = w.edge(X, 3, &[], A, B, Admin, &[]);
+        if timed {
+            w.set_until(f, 100);
+        }
+        let r = w.edge(B, 6, &[], A, X, Gone, &[g]);
+        let v = View::all(&w);
+        let rd = roles_model::paths::judge(&w, &super::rules(), &v);
+        let want = if timed { [Status::Applied, Status::Unapplied] } else { [Status::Dropped, Status::Applied] };
+        assert_eq!([super::model_status(&rd, f), super::model_status(&rd, r)], want, "timed {timed}");
+        agree_all(&w, &[]);
+    }
+}
+
+// engine `order::held_set_decides_plain` (its seed 3), notes/path-model-findings.md 42: X, granted
+// admin on A by A's mint H, rewrites its own admin (an unchanged rewrite: a no-op self-removal)
+// and then lowers H's record edge listing nothing. Its drops take H's grant of X, and keeps reads
+// through the self-write to that grant: the lowering is void, with the self-write or without it.
+#[test]
+fn a_no_op_self_write_keeps_no_lowering_of_the_mint() {
+    for idle in [true, false] {
+        let mut w = account();
+        w.edge(H, 1, &[], A, Z, Write, &[]);
+        let gx = w.edge(H, 2, &[], A, X, Admin, &[]);
+        if idle {
+            w.edge(X, 6, &[], A, X, Admin, &[]);
+        }
+        let low = w.edge(X, 7, &[], A, H, Write, &[]);
+        let rd = roles_model::paths::judge(&w, &super::rules(), &View::all(&w));
+        assert_eq!([super::model_status(&rd, gx), super::model_status(&rd, low)], [Status::Applied, Status::Void], "idle {idle}");
+        agree_all(&w, &[]);
+    }
 }

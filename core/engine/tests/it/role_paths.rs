@@ -442,11 +442,11 @@ fn an_admin_holding_an_invite_grants_by_its_admin_path_spec_permissions_2() {
 
 /// One world of `new_walk_differs_only_by_design`: its name, the class its differences show (or
 /// none), and its peers.
-type ClassWorld = (&'static str, Option<&'static str>, LocalPeer);
+type ClassWorld = (&'static str, Vec<&'static str>, LocalPeer);
 
 /// The classes' worlds this binary builds (notes/a1-spec/README.md step 3, For the wiring).
 fn class_worlds() -> Vec<ClassWorld> {
-    let mut out: Vec<ClassWorld> = vec![("representative", Some("a vouch outlives its voucher's own leave"), world(false).lp)];
+    let mut out: Vec<ClassWorld> = vec![("representative", vec![osis_engine::walk::classes::VOUCH_OUTLIVES_LEAVE.name], world(false).lp)];
     // the last-admin rule as a validity rule: A, T's mint admin, and B, granted admin, leave at once
     let (mut lp, ps) = people(2);
     let t = thing_of(&mut lp, 0, ps[0]);
@@ -456,7 +456,7 @@ fn class_worlds() -> Vec<ClassWorld> {
     }
     lp.advance(1000);
     spread(&mut lp);
-    out.push(("concurrent leaves", Some("a leave whose named remaining admin left first applies nothing"), lp));
+    out.push(("concurrent leaves", vec![osis_engine::walk::classes::LAST_ADMIN.name], lp));
     // a single-use link redeemed by a forger first, unseen by the sharer, then by P1, whom the
     // sharer saw; the sharer's removal of L lists P1's redemption alone: the forger's grant falls
     // and its leave with it, P1 is in (notes/a1-spec/README.md Open 23)
@@ -465,8 +465,8 @@ fn class_worlds() -> Vec<ClassWorld> {
     // (the sharer saw both, or none))
     // The forger later: its grant finds the link spent and its leave is a no-op; the sharer's
     // finalize drops the grant and, in the new walk, the leave with it: no role differs.
-    let later = Some("a no-op leave falls with its commit's dropped grant");
-    for (name, class, thief_first, seen) in [("single-use link redeemed twice", None, true, &[1][..]), ("single-use link, the forger later", later, false, &[1]), ("single-use link, both seen", None, true, &[1, 2]), ("single-use link, none seen", None, true, &[])] {
+    let later = vec![osis_engine::walk::classes::SIBLINGS.name];
+    for (name, class, thief_first, seen) in [("single-use link redeemed twice", vec![], true, &[1][..]), ("single-use link, the forger later", later, false, &[1]), ("single-use link, both seen", vec![], true, &[1, 2]), ("single-use link, none seen", vec![], true, &[])] {
         let (mut lp, ps) = people(3);
         let d = thing_of(&mut lp, 0, ps[0]);
         let (link, _, _) = lp.peers[0].engine.create_link(&ps[0], &LinkSpec { target: d, role: Role::Read, until: None, peers: Vec::new(), single_use: true }).unwrap();
@@ -495,7 +495,7 @@ fn class_worlds() -> Vec<ClassWorld> {
     lp.peers[2].engine.core.skip_writer_rules = false;
     lp.advance(1000);
     spread(&mut lp);
-    out.push(("a key actor's roster", None, lp));
+    out.push(("a key actor's roster", vec![], lp));
     // a thing detached from its folder: A makes G and T under G, takes admin on T and removes G's
     // record edge there, then grants B write on T along its hop marked direct (Open 21): alike
     let (mut lp, ps) = people(2);
@@ -505,7 +505,9 @@ fn class_worlds() -> Vec<ClassWorld> {
     grant(&mut lp, 0, t, ps[0], edge_of(Role::Admin));
     remove(&mut lp, 0, t, g);
     grant(&mut lp, 0, t, ps[1], edge_of(Role::Write));
-    out.push(("a detached thing", None, lp));
+    // A's writes on T along the descent before its own detach (T's creation boxes among them),
+    // which its removal of G's record edge lists nowhere, are cut in the walk (`STATED_CUT`)
+    out.push(("a detached thing", vec![osis_engine::walk::classes::STATED_CUT.name], lp));
     // a writer's commit of two invites on T (read to C, write to D), unseen by A, who then lowers
     // the writer's invite to read: both grants fall under both walks (C's by Open 23's rule)
     let (mut lp, ps) = people(4);
@@ -522,37 +524,46 @@ fn class_worlds() -> Vec<ClassWorld> {
     lp.peers[0].engine.demote(&t, &Demotion { holder: ps[1], new: Some(invite(Role::Write, Role::Read)), retain: None }).unwrap();
     lp.advance(1000);
     spread(&mut lp);
-    out.push(("a writer's two invites in one commit", None, lp));
+    out.push(("a writer's two invites in one commit", vec![], lp));
     out
 }
 
+/// Where the new walk over what engine `e` holds (the engine's adapter, `walk::input`) differs
+/// from today's, each with the designed class it falls in (`walk::classes`), if any.
+fn classified(e: &osis_engine::Engine) -> Vec<(osis_engine::walk::classes::Difference, Option<&'static str>)> {
+    use osis_engine::walk::{classes, input};
+    let inputs = input::all(&e.core);
+    let commits: Vec<_> = inputs.values().map(|i| i.commit.clone()).collect();
+    let paths = osis_perm::paths::Paths::evaluate(&input::records(&e.core), input::trust(&e.core, &inputs), &commits);
+    let w = classes::World { core: &e.core, inputs: &inputs, paths: &paths };
+    let all = classes::differences(&e.core, &inputs, &paths);
+    all.iter().zip(classes::classify_all(&w, &all)).map(|(d, c)| (d.clone(), c.map(|c| c.name))).collect()
+}
+
 // spec/permissions.md §5.1, notes/a1-spec/README.md step 3 (For the wiring): the new walk over
-// the paths role commits state against today's walk, per world of a listed class: each world shows differences, and
-// only those of its class; a world of no class shows none. By hand: a measure for the wiring,
-// which extends it as it moves the engine to the walk (the full sweep, at every engine drop of
-// the engine suites, is the README's probe).
+// the paths every commit states against today's walk, per world of a listed class: each world
+// shows differences, every one in its class by the predicates the engine's shadow walk reads
+// (`walk::classes`); a world of no class shows none. By hand: the shadow walk checks every
+// engine test's world at each durable transaction and drop.
 #[test]
 #[ignore = "by hand: the wiring's measure of the new walk against today's"]
 fn new_walk_differs_only_by_design() {
     let mut bad = Vec::new();
     for (name, class, lp) in class_worlds() {
+        let mut shown = false;
         for (i, p) in lp.peers.iter().enumerate() {
-            let d = walks_differ(&p.engine);
+            let d = classified(&p.engine);
             println!("{name} (peer {i}, class {class:?}): {} differences", d.len());
             for x in &d {
-                println!("  {x}");
+                println!("  {x:?}");
             }
-            let fits = match class {
-                None => d.is_empty(),
-                Some(c) if c.starts_with("a vouch") => d.len() == 2,
-                Some(c) if c.starts_with("a leave") => !d.is_empty() && d.iter().all(|x| x.contains("old true, new Some(Unapplied)") || x.contains("roles on")),
-                Some(c) if c.starts_with("a no-op leave") => !d.is_empty() && d.iter().all(|x| x.contains("old true, new Some(Dropped)")),
-                Some(c) => panic!("no rule for class {c}"),
-            };
-            let shown = class.is_none() || lp.peers.iter().any(|p| !walks_differ(&p.engine).is_empty());
-            if !fits || !shown {
+            shown |= !d.is_empty();
+            if d.iter().any(|(_, c)| !c.is_some_and(|c| class.contains(&c))) {
                 bad.push(format!("{name} peer {i}: {d:?}"));
             }
+        }
+        if !class.is_empty() && !shown {
+            bad.push(format!("{name}: no difference shown"));
         }
     }
     assert!(bad.is_empty(), "differences outside their class: {bad:#?}");

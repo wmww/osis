@@ -21,6 +21,8 @@ pub mod rotation;
 pub mod sides;
 pub mod sync;
 pub mod undo;
+#[doc(hidden)]
+pub mod walk;
 
 pub use apply::{Creation, Ingested, Reason};
 pub use apply::carriers::Carrier;

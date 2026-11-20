@@ -139,7 +139,7 @@ pub fn input(w: &World, v: &View) -> Input {
     Input { records, commits, trust, ids }
 }
 
-fn model_status(rd: &Reading, i: Id) -> Status {
+pub fn model_status(rd: &Reading, i: Id) -> Status {
     if rd.applied.contains(&i) {
         if rd.invited.contains(&i) { Status::Invited } else { Status::Applied }
     } else if rd.dropped.contains(&i) {

@@ -181,6 +181,17 @@ fn add_child_cpu(ns: u64) {
     CHILD_NS.set(CHILD_NS.get() + ns);
 }
 
+/// `f` on a scoped thread named as the calling thread (a test's name: debug checks that read it
+/// read a test's workers as the test).
+pub fn spawn_named<'s, 'e, T: Send + 's>(s: &'s std::thread::Scope<'s, 'e>, f: impl FnOnce() -> T + Send + 's) -> std::thread::ScopedJoinHandle<'s, T> {
+    let b = std::thread::Builder::new();
+    let b = match std::thread::current().name() {
+        Some(n) => b.name(n.to_string()),
+        None => b,
+    };
+    b.spawn_scoped(s, f).expect("spawn a thread")
+}
+
 /// `f` over `items` on up to `threads` threads, results in order; the threads' CPU counts in the
 /// caller's `Cpu`.
 pub fn par_map<T: Send>(items: &[u64], threads: usize, f: impl Fn(u64) -> T + Sync) -> Vec<T> {
@@ -191,7 +202,7 @@ pub fn par_map<T: Send>(items: &[u64], threads: usize, f: impl Fn(u64) -> T + Sy
     let mut out: Vec<(usize, T)> = std::thread::scope(|s| {
         let hs: Vec<_> = (0..threads)
             .map(|_| {
-                s.spawn(move || {
+                spawn_named(s, move || {
                     let cpu = Cpu::now();
                     let mut mine = Vec::new();
                     loop {
@@ -511,7 +522,7 @@ pub fn run_jobs<J: Sync, T: Send>(name: &str, jobs: &[J], threads: usize, visibl
     };
     let results = std::thread::scope(|s| {
         for _ in 0..threads {
-            s.spawn(worker);
+            spawn_named(s, worker);
         }
         let mut g = lock();
         let mut progress = t0 + Duration::from_secs(PROGRESS_SECS);
@@ -536,7 +547,7 @@ pub fn run_jobs<J: Sync, T: Send>(name: &str, jobs: &[J], threads: usize, visibl
                     g.stop = true;
                 } else {
                     g.live += 1;
-                    s.spawn(worker);
+                    spawn_named(s, worker);
                 }
             }
             if now >= progress {

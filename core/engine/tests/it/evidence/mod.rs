@@ -473,7 +473,7 @@ fn search(family_step: usize, random_worlds: u64, story: u64) {
     let threads = std::thread::available_parallelism().map_or(1, |n| n.get());
     std::thread::scope(|sc| {
         for _ in 0..threads {
-            sc.spawn(|| loop {
+            osis_base::testenv::spawn_named(sc, || loop {
                 let Some(j) = jobs.get(next.fetch_add(1, std::sync::atomic::Ordering::Relaxed)) else { return };
                 let (name, mut r) = j();
                 let d = std::mem::take(&mut r.differ);

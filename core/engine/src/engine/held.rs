@@ -86,6 +86,21 @@ pub struct Held {
     /// Stamps each (holder, thing) pair of `holders` as it comes or goes (`is_named`,
     /// `pairs_feed`).
     pairs: Stamps,
+    /// What the walk along stated paths reads that moved (`take_walk_moved`): debug builds' shadow
+    /// walk (`crate::walk::shadow`) takes it; not journaled (a rollback moves what it undoes).
+    #[cfg(debug_assertions)]
+    walk_moved: WalkMoved,
+}
+
+/// The role commits whose held reading changed, and whether a record did, since the last
+/// `Held::take_walk_moved`.
+#[cfg(debug_assertions)]
+#[derive(Clone, Debug, Default)]
+pub(crate) struct WalkMoved {
+    pub commits: BTreeSet<CommitId>,
+    pub records: bool,
+    /// An account's judged epochs moved: which of its commits count may have (`Core::standing`).
+    pub epochs: bool,
 }
 
 /// A key of `Held`'s maps, as `Held::rest` stamps it.
@@ -109,6 +124,47 @@ fn named(c: &RoleCommit) -> Vec<(Tid, Tid)> {
 }
 
 impl Held {
+    /// Notes what `u` (a change made or undone) moved for the walk's shadow.
+    #[cfg(debug_assertions)]
+    fn walk_note(&mut self, u: &Undo) {
+        match u {
+            Undo::Created(..) => self.walk_moved.records = true,
+            Undo::AddedCommit(c) | Undo::Removed(c) => {
+                self.walk_moved.commits.insert(c.id);
+            }
+            Undo::Counted(id, _) | Undo::Vouching(id, _) => {
+                self.walk_moved.commits.insert(*id);
+            }
+        }
+    }
+    #[cfg(not(debug_assertions))]
+    fn walk_note(&mut self, _u: &Undo) {}
+
+    /// Pushes `u` on the journal.
+    fn push(&mut self, u: Undo) {
+        self.walk_note(&u);
+        self.log.push(u);
+    }
+
+    /// Notes commits whose record moved (`Core::note_walk_moved`).
+    #[cfg(debug_assertions)]
+    pub(crate) fn note_walk_moved(&mut self, ids: impl IntoIterator<Item = CommitId>, epochs: bool) {
+        self.walk_moved.commits.extend(ids);
+        self.walk_moved.epochs |= epochs;
+    }
+
+    /// What moved for the walk since the last call.
+    #[cfg(debug_assertions)]
+    pub(crate) fn take_walk_moved(&mut self) -> WalkMoved {
+        std::mem::take(&mut self.walk_moved)
+    }
+
+    /// The vouches held of role commit `id`, one per thing.
+    pub(crate) fn vouches_of(&self, id: &CommitId) -> &[Arc<Vouch>] {
+        self.rest.read(&Row::Parts(id));
+        self.vouching.get(id).map(|v| v.vouches.as_slice()).unwrap_or_default()
+    }
+
     /// The record of `t`.
     pub fn created(&self, t: &Tid) -> Option<&CreationRecord> {
         self.records_read.read(t);
@@ -532,23 +588,23 @@ impl Held {
         let t = record.tid();
         self.records.push(t);
         let old = self.set_created(t, Some(record));
-        self.log.push(Undo::Created(t, old));
+        self.push(Undo::Created(t, old));
     }
 
     /// Forgets a thing's record (`retention::destroy`: the thing was destroyed).
     pub fn forget_record(&mut self, t: &Tid) {
         let old = self.set_created(*t, None);
-        self.log.push(Undo::Created(*t, old));
+        self.push(Undo::Created(*t, old));
     }
 
     pub fn add_commit(&mut self, c: RoleCommit) {
         // an ID is held once: a re-derived commit replaces the earlier
         if let Some(removed) = self.take(&c.id) {
-            self.log.push(Undo::Removed(removed));
+            self.push(Undo::Removed(removed));
         }
         let c = Arc::new(c);
         self.put_commit(c.clone());
-        self.log.push(Undo::AddedCommit(c));
+        self.push(Undo::AddedCommit(c));
     }
 
     /// Whether perm reads anything of role commit `id` here: edge writes, vouches or other
@@ -587,7 +643,7 @@ impl Held {
             return;
         }
         let old = self.put_vouching(id, now);
-        self.log.push(Undo::Vouching(id, old));
+        self.push(Undo::Vouching(id, old));
     }
 
     fn put_vouching(&mut self, id: CommitId, now: Option<Vouching>) -> Option<Vouching> {
@@ -676,7 +732,7 @@ impl Held {
             return;
         }
         self.mark_counted(id, counts);
-        self.log.push(Undo::Counted(id, !counts));
+        self.push(Undo::Counted(id, !counts));
     }
 
     fn mark_counted(&mut self, id: CommitId, counts: bool) {
@@ -710,7 +766,7 @@ impl Held {
     /// applying none).
     pub fn remove_edges(&mut self, id: &CommitId) {
         if let Some(c) = self.take(id) {
-            self.log.push(Undo::Removed(c));
+            self.push(Undo::Removed(c));
         }
     }
 
@@ -773,6 +829,7 @@ impl Journaled for Held {
     fn rollback_to(&mut self, m: usize) {
         while self.log.len() > m {
             let Some(u) = self.log.pop() else { break };
+            self.walk_note(&u);
             match u {
                 Undo::Created(t, old) => {
                     self.set_created(t, old);

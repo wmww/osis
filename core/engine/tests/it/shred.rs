@@ -708,7 +708,7 @@ fn past_expiry_and_purge_alike(every: bool) {
     let (base, items, orders, shapes, cases, ids) = (&base, &items, &orders, &shapes, &cases, &ids);
     std::thread::scope(|sc| {
         for _ in 0..threads {
-            sc.spawn(|| loop {
+            osis_base::testenv::spawn_named(sc, || loop {
                 let at = next.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
                 let Some(&(n, o)) = cases.get(at) else { return };
                 let ((restart, k, tick), order) = (shapes[n], &orders[o]);

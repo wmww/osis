@@ -96,6 +96,8 @@ impl Engine {
                 last_tx_wall: self.last_tx_wall,
                 #[cfg(debug_assertions)]
                 loading: self.loading,
+                #[cfg(debug_assertions)]
+                shadow: None,
                 #[cfg(test)]
                 index_poked: self.index_poked,
                 #[cfg(test)]

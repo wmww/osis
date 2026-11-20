@@ -239,8 +239,9 @@ def paths_of(text, crate):
 # notes/disputes.md, the coherence rule: the dispute types are private to osis-perm and
 # the API layer; nothing else names a side or asks whether a dispute is open.
 # The trust store (core/engine/src/sides.rs) is the rule's second exception: durable sides, fed
-# to the walk; its end-to-end tests are core/engine/tests/it/disputes.rs.
-DISPUTE_DIRS = ("core/perm/", "core/osis/", "core/engine/src/sides.rs", "core/engine/tests/it/disputes.rs")
+# to the walk; its end-to-end tests are core/engine/tests/it/disputes.rs. The walk along stated
+# paths' engine side (core/engine/src/walk/) feeds the same sides to that walk.
+DISPUTE_DIRS = ("core/perm/", "core/osis/", "core/engine/src/sides.rs", "core/engine/tests/it/disputes.rs", "core/engine/src/walk/")
 DISPUTE_PATHS = {"Trust", "Dispute", "Detected", "trust", "DETECT_MAX"}
 DISPUTE_CALLS = re.compile(r"\.(set_trust|disputes|disputes_up_to|evaluate_with|trusted_active|take_detected)\s*\(|\bTrust\s*\{|\bDispute\s*\{")
 # The engine's own dispute names (the store, its event and diagnostic) outside the store itself:

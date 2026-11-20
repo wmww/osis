@@ -269,6 +269,10 @@ impl<T: Ord + Clone + Hash> Deref for JSet<T> {
 }
 
 impl<T: Ord + Clone + Hash + Send + Sync + 'static> JSet<T> {
+    /// The items the running transaction added or removed (journaled since its start).
+    pub fn before_keys(&self) -> impl Iterator<Item = &T> {
+        self.log.iter().map(|(t, _)| t)
+    }
     /// A reader's cursor over the items added from now on (`memo::Feed`), an undo restoring one
     /// included.
     pub fn feed(&self) -> osis_base::memo::Feed<T> {
