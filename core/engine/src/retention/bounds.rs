@@ -46,7 +46,7 @@ pub(crate) fn written_of(tx: &mut Tx<'_>, h: &Header, c: &CommitId, ai: usize) -
         return Ok(own);
     }
     let (tid, ak) = (a.tid, a.ak.clone());
-    let (dead, _) = dating_deaths(tx, h, c, ai, &tid, &ak)?;
+    let dead = dating_deaths(tx, h, c, ai, &tid, &ak)?;
     Ok(dead.iter().map(|w| w.stamp.ts).min().unwrap_or(own))
 }
 
@@ -175,8 +175,8 @@ fn part_replaced_at(tx: &mut Tx<'_>, h: &Header, c: &CommitId, ai: usize) -> Res
 /// When part `ai` of `c` was replaced, whatever its aspect's bounds (also what purge on replace
 /// asks, `replace::under_purge`). A write of the held valid part is dead when it wins in the part
 /// and not once the part joins the state (spec/crdt.md §4.8, `Fragment::winners`); it died at the
-/// earliest `ts` among the held valid writes superseding it alone, or hiding it in the state as
-/// joined (a value removal, `Fragment::hiders`), read from any held body holding one
+/// earliest `ts` among the held valid writes superseding it alone, a value removal hiding it
+/// judged in the held copies as joined (`HeldWrites::hiders`), read from any held body holding one
 /// (`HeldWrites::holds`: its own commit, or a snapshot carrying it), by the write's own `ts`
 /// wherever it is read (a valid snapshot's copy of a write whose own delta is
 /// held invalid counts as the write itself, spec/crdt.md §4.8 When). The part is replaced at the
@@ -207,17 +207,17 @@ fn judge_replaced_at(tx: &mut Tx<'_>, h: &Header, c: &CommitId, ai: usize) -> Re
     if held_part(tx.core, c, &tid, &ak) != Some(ai) || tx.core.ix.commits.get(c).is_none_or(|m| m.bare(ai) || !m.valid_at(ai)) {
         return Ok(None);
     }
-    let (dead, hiders) = dating_deaths(tx, h, c, ai, &tid, &ak)?;
+    let dead = dating_deaths(tx, h, c, ai, &tid, &ak)?;
     if dead.is_empty() {
         return Ok(None);
     }
     let held = held_writes(tx, &tid, &ak)?;
     // the state is the join of the held bodies (un-merged, spec/crdt.md §4.6), so a held body
     // holds each superseder, dated by its own stamp whichever body holds it. The part's own body
-    // may hold it: a removal that hides the state's copy of a write, not the part's (§4.1 copies)
+    // may hold it: a removal that hides the joined copy of a write, not the part's (§4.1 copies)
     let mut out: Option<Ts> = None;
     for w in &dead {
-        let d = held.holds.first_superseding(w, &hiders, |s, _| Some(s.ts)).ok_or(Error::Corrupt("a dead write no held body supersedes"))?;
+        let d = held.holds.first_superseding(w, &held.hiders, |s, _| Some(s.ts)).ok_or(Error::Corrupt("a dead write no held body supersedes"))?;
         out = out.max(Some(d));
     }
     Ok(out)
@@ -226,13 +226,13 @@ fn judge_replaced_at(tx: &mut Tx<'_>, h: &Header, c: &CommitId, ai: usize) -> Re
 /// The dead writes that date held valid part `ai` of `c` (`deaths`), a snapshot's leaving out
 /// those a held valid snapshot stamped later holds as winners (`HeldWrites::carried`: that one
 /// keeps their history).
-fn dating_deaths(tx: &mut Tx<'_>, h: &Header, c: &CommitId, ai: usize, tid: &Tid, ak: &Ak) -> Result<(BTreeSet<Won>, Hiders)> {
-    let (mut dead, hiders) = deaths(tx, c, ai, tid, ak)?;
+fn dating_deaths(tx: &mut Tx<'_>, h: &Header, c: &CommitId, ai: usize, tid: &Tid, ak: &Ak) -> Result<BTreeSet<Won>> {
+    let mut dead = deaths(tx, c, ai, tid, ak)?;
     if h.kind.is_compaction() && !dead.is_empty() {
         let held = held_writes(tx, tid, ak)?;
         dead.retain(|w| !held.carried.get(w).is_some_and(|v| v.iter().any(|(t, x)| *t > h.ts && x != c)));
     }
-    Ok((dead, hiders))
+    Ok(dead)
 }
 
 /// What `dated_replaced_at` reads of the held bodies of an aspect, by write (`osis_crdt::ByWrite`).
@@ -247,6 +247,9 @@ pub(crate) struct HeldWrites {
     /// state joins it (an invalid delta's writes left out, a valid snapshot's body whole, an
     /// invalid snapshot's giving nothing).
     holds: ByWrite<()>,
+    /// What decides which value removals hide which set element writes, of the copies the held
+    /// bodies hold, joined as the state joins them (`osis_crdt::Hiders`).
+    hiders: Hiders,
     /// The writes each held valid snapshot with values holds as winners: its `ts` and ID, in
     /// that order.
     carried: ByWrite<Vec<(Ts, CommitId)>>,
@@ -344,20 +347,20 @@ fn note_body(tx: &mut Tx<'_>, tid: &Tid, ak: &Ak, ts: Ts, x: CommitId, out: &mut
         });
     }
     out.holds.note(&f.held_writes(), |_, _| ());
+    out.hiders.note(&f);
     Ok(())
 }
 
 /// The writes of held part `ai` of `c` the state supersedes (spec/crdt.md §4.8): the part's
 /// winners that do not win once it joins, whole, a copy of the state at its positions
-/// (`Tx::state_part_at`: O(part), whatever the state's size); and what hides a write in that join
-/// (`Fragment::hiders`).
-fn deaths(tx: &mut Tx<'_>, c: &CommitId, ai: usize, tid: &Tid, ak: &Ak) -> Result<(BTreeSet<Won>, Hiders)> {
+/// (`Tx::state_part_at`: O(part), whatever the state's size).
+fn deaths(tx: &mut Tx<'_>, c: &CommitId, ai: usize, tid: &Tid, ak: &Ak) -> Result<BTreeSet<Won>> {
     let Some(f) = crate::apply::held_fragment(tx, c, ai)? else { return Ok(Default::default()) };
     let Some(mut st) = tx.state_part_at(tid, ak, &f)? else { return Ok(Default::default()) };
     let mine = winners_of(tx, &f);
     st.join(f);
     let joined = winners_of(tx, &st);
-    Ok((mine.minus(&joined), st.hiders()))
+    Ok(mine.minus(&joined))
 }
 
 /// `deaths` of `c`'s part on `(tid, ak)`, and the oracle's (`oracle::deaths`: the part joined
@@ -365,7 +368,7 @@ fn deaths(tx: &mut Tx<'_>, c: &CommitId, ai: usize, tid: &Tid, ak: &Ak) -> Resul
 #[cfg(test)]
 pub(crate) fn deaths_and_whole(tx: &mut Tx<'_>, c: &CommitId, tid: &Tid, ak: &Ak) -> Result<Option<(BTreeSet<Won>, BTreeSet<Won>)>> {
     let Some(ai) = held_part(tx.core, c, tid, ak) else { return Ok(None) };
-    Ok(Some((deaths(tx, c, ai, tid, ak)?.0, oracle::deaths(tx, c, ai, tid, ak)?)))
+    Ok(Some((deaths(tx, c, ai, tid, ak)?, oracle::deaths(tx, c, ai, tid, ak)?)))
 }
 
 /// The aspect index of `(tid, ak)` in `c` if that part is held with values (a bare leftover has
@@ -395,9 +398,9 @@ impl Killed {
     /// the join took out of `d`'s reach is no death). Each dies at the earliest write held at the
     /// join's reach, before or after it, or in `d`, that supersedes it, winning or not
     /// (spec/crdt.md §4.8 When: a creation beating a move stamped below it supersedes it though a
-    /// delete beat the creation), or at the earliest value removal hiding it after the join
-    /// (`Fragment::hiders`: which removals hide a write is read in the state as joined, §4.1
-    /// copies).
+    /// delete beat the creation), or at the earliest value removal among those hiding it
+    /// (`osis_crdt::Hiders`: read in the copies of the same three as joined, §4.1 copies, so a
+    /// reset pruning the write in the join hides nothing of the removal).
     ///
     /// Invariant: hostile input never produces a local error. Any writer can send any bytes the
     /// decoders accept, forged copies of others' writes included, so for every such input one of
@@ -410,10 +413,11 @@ impl Killed {
             return Ok(());
         }
         let mut by = osis_crdt::ByWrite::<()>::default();
-        by.note(&before.reach.held_writes(), |_, _| ());
-        by.note(&d.held_writes(), |_, _| ());
-        by.note(&reach.held_writes(), |_, _| ());
-        let hiders = reach.hiders();
+        let mut hiders = Hiders::default();
+        for f in [&before.reach, d, &reach] {
+            by.note(&f.held_writes(), |_, _| ());
+            hiders.note(f);
+        }
         for w in dead {
             let first = by.first_superseding(&w, &hiders, |s, _| Some(s.ts)).ok_or(Error::Corrupt("a dead write nothing in its join supersedes"))?;
             self.at = self.at.max(Some(first));

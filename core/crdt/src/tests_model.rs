@@ -220,13 +220,14 @@ pub(crate) fn reach_holds_the_change(before: &Fragment, after: &Fragment, y: &Fr
     assert_eq!(killed, dead(before, after), "a join supersedes at its reach what it supersedes in the whole state");
     // what the engine dates a death by (`Killed::note`): each write dead at the reach dies by a
     // write held there before or after the join or in the delta, winning or not, or by a value
-    // removal hiding it in the state as joined (`hiders`): every input, forged copies included,
+    // removal hiding it in the copies as joined (`hiders`): every input, forged copies included,
     // since a node that found none would fail the join with a local error
     let mut by: crate::ByWrite<()> = crate::ByWrite::default();
-    by.note(&at.held_writes(), |_, _| ());
-    by.note(&y.held_writes(), |_, _| ());
-    by.note(&at_after.held_writes(), |_, _| ());
-    let hiders = at_after.hiders();
+    let mut hiders = crate::Hiders::default();
+    for f in [&at, y, &at_after] {
+        by.note(&f.held_writes(), |_, _| ());
+        hiders.note(f);
+    }
     for w in killed {
         assert!(by.first_superseding(&w, &hiders, |s, _| Some(s.ts)).is_some(), "a write dead at the reach dies by a write held there: {w:?}");
     }

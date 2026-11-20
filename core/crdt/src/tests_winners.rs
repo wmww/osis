@@ -8,7 +8,7 @@ use crate::ops::{Op, PathOp, Writer};
 use crate::seq::{Seq, SeqContent, SeqElem};
 use crate::stamp::{Dot, Source, Stamp};
 use crate::testutil::{TyView, frag, history, history_honest, sess, sink_no_seq, ts};
-use crate::winners::{ByWrite, Kind, Place, Won};
+use crate::winners::{ByWrite, Hiders, Kind, Place, Won};
 use crdt_model::ops::Ty;
 use osis_base::{Tid, Ts, Value};
 use proptest::prelude::*;
@@ -243,22 +243,52 @@ fn winners_check(seed: u64, types: &[Ty], honest: bool) {
         assert_eq!(dead, want, "dead in a join: the winners the other side's writes supersede");
         let mut other: ByWrite<()> = ByWrite::default();
         other.note(&b.held_writes(), |_, _| ());
-        // what the engine dates a death by (`Killed::note`): the winners before and after the join
-        let mut won: ByWrite<()> = ByWrite::default();
+        // what the engine dates a death by (`Killed::note`): the writes held before and after the
+        // join, winning or not (§4.8 When: a creation beats a position write below it though a
+        // delete beat the creation)
+        let mut held: ByWrite<()> = ByWrite::default();
         for x in [&a, &b, &ab] {
-            won.note(&x.winners(), |_, _| ());
+            held.note(&x.held_writes(), |_, _| ());
         }
+        let mut hiders = a.hiders();
+        hiders.note(&b);
         for w in &dead {
-            assert!(won.first_superseding(w, &ab.hiders(), |s, _| Some(s.ts)).is_some(), "a dead write dies by a write winning before or after the join: {w:?} in {ab:?}");
+            assert!(held.first_superseding(w, &hiders, |s, _| Some(s.ts)).is_some(), "a dead write dies by a write held before or after the join: {w:?} in {ab:?}");
             assert!(a.holds_stamp(&w.stamp), "a dead write is the side's by exact stamp: {w:?}");
-            assert!(other.first_superseding(w, &ab.hiders(), |_, _| Some(w.stamp.ts)).is_some(), "a dead write dies by a write the other side holds: {w:?} in {ab:?}");
+            assert!(other.first_superseding(w, &hiders, |_, _| Some(w.stamp.ts)).is_some(), "a dead write dies by a write the other side holds: {w:?} in {ab:?}");
+        }
+    }
+}
+
+/// Each copy's payload as the copies of `all` join (§4.1 copy order): a set element's value, a
+/// removal's reference and parts. Which elements a removal hides is read so (§4.8 Which write).
+fn as_joined(all: &mut [Raw]) {
+    let mut values: BTreeMap<Won, Option<Value>> = BTreeMap::new();
+    let mut removals: BTreeMap<Won, (Value, Vec<crate::stamp::DotRange>)> = BTreeMap::new();
+    for r in all.iter() {
+        if r.w.kind == Kind::Value {
+            let v = values.entry(r.w.clone()).or_default();
+            if crate::state::opt_value_cmp(r.value.as_ref(), v.as_ref()).is_gt() {
+                *v = r.value.clone();
+            }
+        }
+        if let Some(g) = &r.removal {
+            removals.entry(r.w.clone()).and_modify(|x| *x = x.clone().max(g.clone())).or_insert_with(|| g.clone());
+        }
+    }
+    for r in all.iter_mut() {
+        if let Some(v) = values.get(&r.w) {
+            r.value = v.clone();
+        }
+        if let Some(g) = removals.get(&r.w) {
+            r.removal = Some(g.clone());
         }
     }
 }
 
 /// `first_superseding` against the from-scratch earliest: each write's stamp, read from a body
 /// holding it, and the bodies' own latest stamps as notes; a text element's creation only by
-/// deletes after the latest undelete held (§4.8 When).
+/// deletes after the latest undelete held (§4.8 When); hiding read in the copies as joined.
 fn first_superseding_check(bodies: &[Fragment]) {
     let date = |b: &Fragment| raw(b).iter().map(|x| x.w.stamp.ts).max().unwrap_or_default();
     let mut ix: ByWrite<Option<Ts>> = ByWrite::default();
@@ -266,12 +296,16 @@ fn first_superseding_check(bodies: &[Fragment]) {
         let d = date(b);
         ix.note(&b.held_writes(), |_, x| *x = Some(x.map_or(d, |y| y.min(d))));
     }
-    let all: Vec<Raw> = bodies.iter().flat_map(raw).collect();
-    let hiders = bodies.iter().fold(Fragment::default(), |f, b| join(&f, b)).hiders();
+    // each write with its body's date
+    let mut all: Vec<Raw> = bodies.iter().flat_map(raw).collect();
+    let dates: Vec<Ts> = bodies.iter().flat_map(|b| std::iter::repeat_n(date(b), raw(b).len())).collect();
+    as_joined(&mut all);
+    let mut hiders = Hiders::default();
+    bodies.iter().for_each(|b| hiders.note(b));
     for w in all.iter().filter(|w| !w.shadow) {
         let undeleted = all.iter().filter(|s| s.w.kind == Kind::Undelete && s.w.path == w.w.path).map(|s| &s.w.stamp).max();
         let counts = |s: &Raw| kills(s, w) && !(w.text_creation && s.w.kind == Kind::Delete && undeleted.is_some_and(|u| s.w.stamp < *u));
-        let want = bodies.iter().filter(|b| raw(b).iter().any(counts)).map(date).min();
+        let want = all.iter().zip(&dates).filter(|(s, _)| counts(s)).map(|(_, d)| *d).min();
         assert_eq!(ix.first_superseding(&w.w, &hiders, |_, x| *x), want, "the earliest body superseding {w:?}");
         let by_stamp = all.iter().filter(|s| counts(s)).map(|s| s.w.stamp.ts).min();
         assert_eq!(ix.first_superseding(&w.w, &hiders, |s, _| Some(s.ts)), by_stamp, "the earliest write superseding {w:?}");
@@ -453,10 +487,11 @@ fn killed(st: &Fragment, y: &Fragment) -> Vec<(Won, Option<Ts>)> {
     let mut before = at.winners();
     before.extend(y.winners());
     let mut by: ByWrite<()> = ByWrite::default();
+    let mut hiders = Hiders::default();
     for f in [&at, y, &at_after] {
         by.note(&f.held_writes(), |_, _| ());
+        hiders.note(f);
     }
-    let hiders = at_after.hiders();
     before.minus(&at_after.winners()).into_iter().map(|w| { let t = by.first_superseding(&w, &hiders, |s, _| Some(s.ts)); (w, t) }).collect()
 }
 
@@ -492,13 +527,36 @@ fn a_copy_hidden_by_a_removal_dies_at_it_spec_4_8() {
         let k = killed(a, b);
         assert_eq!(k.iter().map(|(w, t)| (w.kind, w.stamp.clone(), *t)).collect::<Vec<_>>(), vec![(Kind::Value, s.clone(), Some(ts(9)))], "dies at B's removal, never A's");
     }
+    first_superseding_check(&[st.clone(), y.clone()]);
     // copies of one removal (t8), naming A in one and B in the other; e holds B
     let (e, se) = (Dot::new(x(), 2), Stamp::new(ts(5), x(), 2));
     let base = set_of(vec![(d.clone(), elem_at(&s, t_a.clone())), (e.clone(), elem_at(&se, t_b.clone())), (rb.clone(), removal_at(&Stamp::new(ts(8), x(), 8), t_a.clone(), 4))]);
     let copy = set_of(vec![(rb.clone(), removal_at(&Stamp::new(ts(8), x(), 8), t_b.clone(), 4))]);
+    first_superseding_check(&[base.clone(), copy.clone()]);
     let k = killed(&base, &copy);
     assert_eq!(k.iter().map(|(w, t)| (w.path.clone(), *t)).collect::<Vec<_>>(), vec![(vec![Place::Elem(e.clone()), Place::In], Some(ts(8)))], "e dies at the removal as joined; d shows again");
     assert_eq!(join(&base, &copy).read(), Some(Value::Set([t_a].into_iter().collect())));
+}
+
+/// §4.8 When, §5.5: a value removal hiding a set element's write supersedes it whether or not a
+/// later reset of the element prunes it in the join: the write dies at the removal, the earliest
+/// superseder, whether the reset arrives with it, after it or before the write (a node holding
+/// more dates no later, spec/commits.md §5).
+#[test]
+fn a_removal_hides_a_write_a_later_reset_prunes_spec_4_8() {
+    let b = Value::Strong(Tid::from_bytes([2; 15]));
+    let (d, s) = (Dot::new(x(), 1), Stamp::new(ts(3), x(), 1));
+    let w = set_of(vec![(d.clone(), elem_at(&s, b.clone()))]);
+    let r = set_of(vec![(Dot::new(x(), 7), removal_at(&Stamp::new(ts(15), x(), 7), b, 4))]);
+    let tomb = set_of(vec![(d, Elem::tomb(&Stamp::new(ts(29), x(), 9)))]);
+    let rt = join(&r, &tomb);
+    let want = vec![(Kind::Value, s, Some(ts(15)))];
+    for (st, y) in [(&w, &r), (&w, &rt), (&rt, &w)] {
+        let k: Vec<(Kind, Stamp, Option<Ts>)> = killed(st, y).into_iter().map(|(w, t)| (w.kind, w.stamp, t)).collect();
+        assert_eq!(k, want, "{st:?} then {y:?}");
+    }
+    first_superseding_check(&[w.clone(), r.clone(), tomb]);
+    first_superseding_check(&[w, rt]);
 }
 
 /// §4.1, §5.1, §7: copies of one stamp (a forged copy), one a text's reset (`remove_aspect`), the

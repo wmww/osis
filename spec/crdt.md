@@ -336,7 +336,7 @@ A write is **dead** at a node once the join has superseded it:
 - not a text element's creation while its winning flag is a delete, but for an embedded char (§7), which dies with its register's write;
 - of a map dot's records, the writes of their join (a write beaten at its position by one in another record of the dot is beaten).
 
-Copies of one write (§4.1) are one write: what copy order decides (a key, a value, a reference, a removal's reference and parts, an anchor, a char) never makes a copy another write, so a copy losing by copy order is no death. Which elements a value removal hides is read in the state as joined. A register write is also the reset its stamp implies (§5.1), so a reset of that stamp at its position (another encoding's) is no death while the write wins.
+Copies of one write (§4.1) are one write: what copy order decides (a key, a value, a reference, a removal's reference and parts, an anchor, a char) never makes a copy another write, so a copy losing by copy order is no death. Which elements a value removal hides is read in the copies held as they join (§4.1), whether or not a reset prunes the element's write or the removal from the state. A register write is also the reset its stamp implies (§5.1), so a reset of that stamp at its position (another encoding's) is no death while the write wins.
 
 A write of fragment `A` is dead in `A ⊔ B` iff it wins in `A` and not in `A ⊔ B`.
 

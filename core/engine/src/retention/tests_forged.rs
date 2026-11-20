@@ -244,3 +244,35 @@ fn forged_copies_fail_no_node_large() {
     let made: usize = s.run("retention::tests_forged::forged_copies_fail_no_node_large", replay, forged_copies_case).into_iter().sum();
     assert!(made > 0, "forged nothing");
 }
+
+// spec/crdt.md §4.8 When, §5.5, spec/commits.md §5 (one holding more judges no later): a value
+// removal hiding a set element's write (t3, removal t15) dates its death, though a later reset of
+// the element (t29) prunes the write from the state: the body is replaced at t15 at a node
+// holding the removal alone and at one holding both, whatever the order they came in. Fails with
+// the removals hiding a write read from the state as joined (a pruned write hidden by none).
+#[test]
+fn a_removal_dates_a_write_a_later_reset_prunes_spec_crdt_4_8() {
+    use crdt_model::state::{Composite, Elem as MElem, Removal};
+    let strong = crdt_model::value::Value::Strong([2; 15]);
+    let set = |e: MElem| MFrag::Set { c: Composite::default(), elems: [(if e.gone.is_some() { mdot(7) } else { mdot(1) }, e)].into_iter().collect() };
+    let w = set(MElem { reset: None, frag: Some(Box::new(MFrag::Register { reset: None, write: Some((mstamp(3, 1), Some(strong.clone()))) })), gone: None });
+    let r = set(MElem { reset: None, frag: None, gone: Some(Removal { stamp: mstamp(15, 7), value: strong, seen: vec![(mdot(1), 3)] }) });
+    let x = set(MElem { reset: Some(mstamp(29, 9)), frag: None, gone: None });
+    let (mut lp, t) = world();
+    let made: Vec<CommitId> = [w, r, x].iter().map(|f| {
+        let c = forge(&mut lp, t, carried(f).expect("a wire form")).expect("the forger makes it");
+        lp.advance(10);
+        c
+    }).collect();
+    let at = Some(mstamp(15, 7).ts).map(|x| Ts::from_u64(x).unwrap());
+    deliver(&mut lp, 0, &made[0]);
+    deliver(&mut lp, 0, &made[1]);
+    assert_eq!(lp.peers[0].engine.replaced_at(&made[0], &t, &ak()).unwrap(), at, "the removal alone");
+    deliver(&mut lp, 0, &made[2]);
+    for c in made.iter().rev() {
+        deliver(&mut lp, 2, c);
+    }
+    for p in [0, 1, 2] {
+        assert_eq!(lp.peers[p].engine.replaced_at(&made[0], &t, &ak()).unwrap(), at, "peer {p}: the reset too");
+    }
+}

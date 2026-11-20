@@ -2,10 +2,10 @@
 //! write of `a` is dead in `a ⊔ b` iff it wins in `a` and not in `a ⊔ b`; retention dates bodies
 //! from that set (spec/commits.md §5).
 
-use crate::fragment::{Bag, Elem, Enum, Fragment, Map, Meta, Register, Set, Slots, Struct};
+use crate::fragment::{Bag, Elem, Enum, Fragment, Map, Meta, Register, Removal, Set, Slots, Struct};
 use crate::seq::{Seq, SeqContent, SeqElem};
 use crate::stamp::{Dot, Stamp};
-use osis_base::Ts;
+use osis_base::{Ts, Value};
 use std::collections::{BTreeMap, BTreeSet};
 
 /// A step from a position into one inside it. A `Slots` position adds none: its slots are one
@@ -27,7 +27,7 @@ pub enum Place {
     /// A set's value removal, beside its elements, by its record's dot (§5.5). Its reference and
     /// parts are payload, decided by copy order like a value (§4.1), never which write it is: so
     /// are a set element's value, so its register sits at `In` whatever it holds. Which elements
-    /// a removal hides is read in the state as joined (`Fragment::hiders`).
+    /// a removal hides is read in the copies held as they join (`Hiders`).
     Gone(Dot),
 }
 
@@ -71,12 +71,38 @@ pub struct Won {
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct Winners(BTreeMap<Vec<Place>, BTreeSet<(Kind, Stamp)>>);
 
-/// The value removals hiding each set element's register write in a fragment (§5.5), keyed by
-/// the write's path (`Fragment::hiders`). What hides a write depends on the copies held (an
-/// element's reference and a removal's reference and parts are payload, §4.1), so it is read in
-/// the state as joined, never per body: a death by hiding is dated by these (`first_superseding`).
-#[derive(Clone, Debug, Default, PartialEq, Eq)]
-pub struct Hiders(BTreeMap<Vec<Place>, Vec<Won>>);
+/// What decides which value removals hide which set element writes (§5.5), of every copy noted
+/// (`note`, any fragments: the bodies or states a join reads): each element register write's
+/// value and each removal's reference and parts, by write (set path, dot, stamp), the copies of
+/// one write joined by copy order (§4.1) as the state joins them. So hiding is judged write
+/// against write in the copies as joined, whether or not a reset prunes either from a state
+/// (§4.8 When: each superseder judged against the write alone): a death by hiding is dated by
+/// these (`first_superseding`).
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct Hiders {
+    values: BySetWrite<Option<Value>>,
+    removals: BySetWrite<Removal>,
+}
+
+/// By a set's path, then by a write's record dot and stamp.
+type BySetWrite<T> = BTreeMap<Vec<Place>, BTreeMap<(Dot, Stamp), T>>;
+
+impl Hiders {
+    /// Notes every element write and value removal `f` holds, winning or not.
+    pub fn note(&mut self, f: &Fragment) {
+        collect(f, &mut Vec::new(), self);
+    }
+    /// The value removals noted that hide `w`, a set element's register write, as `Won`s.
+    fn hiding<'a>(&'a self, w: &'a Won) -> impl Iterator<Item = Won> + 'a {
+        let at = match (w.kind, w.path.as_slice()) {
+            (Kind::Value, [set @ .., Place::Elem(d), Place::In]) => self.values.get(set).and_then(|x| x.get(&(d.clone(), w.stamp.clone()))).and_then(|v| v.as_ref()).map(|v| (set, d, v)),
+            _ => None,
+        };
+        at.into_iter().flat_map(move |(set, d, v)| {
+            self.removals.get(set).into_iter().flatten().filter(move |(_, r)| r.value == *v && r.hides(d, &w.stamp)).map(move |((rd, rs), _)| Won { path: [set, &[Place::Gone(rd.clone())]].concat(), kind: Kind::Reset, stamp: rs.clone() })
+        })
+    }
+}
 
 impl Winners {
     pub fn iter(&self) -> impl Iterator<Item = Won> + '_ {
@@ -141,17 +167,15 @@ impl<T> ByWrite<T> {
     /// stamp's `ts`: per kind at each position on `w`'s path, the writes are read in stamp order
     /// from `w`'s until one stamped at or after the least date found, so about as many as
     /// supersede `w` earliest; and of a set element's register write, the value removals
-    /// `hiders` (of the state as joined) say hide it, as noted here. A text element's creation
+    /// `hiders` (noted from the same copies as these) say hide it, as noted here. A text element's creation
     /// dies only by a delete beating the latest undelete of the element noted here: stamped after
     /// it, or a copy of its stamp, a delete winning the tie (spec/crdt.md §4.1, §4.8 When).
     pub fn first_superseding(&self, w: &Won, hiders: &Hiders, date: impl Fn(&Stamp, &T) -> Option<Ts>) -> Option<Ts> {
         let undeleted = if w.kind == Kind::Created { self.0.get(&w.path).and_then(|s| s.keys().filter(|x| x.0 == Kind::Undelete).map(|x| &x.1).max()) } else { None };
         let mut best: Option<Ts> = None;
-        if w.kind == Kind::Value {
-            for h in hiders.0.get(&w.path).into_iter().flatten().filter(|h| h.stamp > w.stamp) {
-                if let Some(d) = self.get(h).and_then(|t| date(&h.stamp, t)) {
-                    best = Some(best.map_or(d, |b| b.min(d)));
-                }
+        for h in hiders.hiding(w) {
+            if let Some(d) = self.get(&h).and_then(|t| date(&h.stamp, t)) {
+                best = Some(best.map_or(d, |b| b.min(d)));
             }
         }
         for (n, s) in on_path(&self.0, w) {
@@ -206,9 +230,8 @@ fn supersedes(depth: usize, kind: Kind, s: &Stamp, w: &Won) -> bool {
 trait Sink {
     const ALL: bool;
     fn put(&mut self, path: &[Place], kind: Kind, s: &Stamp);
-    /// A set element's register write at `path`, hidden by the value removals `by` (left out of
-    /// the winners).
-    fn hide(&mut self, _path: &[Place], _by: Vec<Won>) {}
+    /// A set or bag element record at dot `d` of the set at `path`.
+    fn elem(&mut self, _path: &[Place], _d: &Dot, _e: &Elem) {}
 }
 
 impl Sink for Winners {
@@ -232,10 +255,24 @@ impl Sink for Held {
 }
 
 impl Sink for Hiders {
-    const ALL: bool = false;
+    const ALL: bool = true;
     fn put(&mut self, _: &[Place], _: Kind, _: &Stamp) {}
-    fn hide(&mut self, path: &[Place], by: Vec<Won>) {
-        self.0.insert(path.to_vec(), by);
+    fn elem(&mut self, path: &[Place], d: &Dot, e: &Elem) {
+        if let Some((v, s)) = e.written() {
+            let at = self.values.entry(path.to_vec()).or_default().entry((d.clone(), s.clone())).or_insert(None);
+            if crate::state::opt_value_cmp(v, at.as_ref()) == std::cmp::Ordering::Greater {
+                *at = v.cloned();
+            }
+        }
+        if let Some(g) = &e.gone {
+            let at = self.removals.entry(path.to_vec()).or_default();
+            // copies of one removal: the greatest, as the state joins them (§5.5)
+            match at.get_mut(&(d.clone(), g.stamp.clone())) {
+                Some(x) if *x >= *g => {}
+                Some(x) => *x = g.clone(),
+                None => _ = at.insert((d.clone(), g.stamp.clone()), g.clone()),
+            }
+        }
     }
 }
 
@@ -274,11 +311,11 @@ impl Fragment {
         out.0
     }
 
-    /// The value removals hiding each set element's register write here (`Hiders`), read as the
-    /// winners are (a map dot's records joined).
+    /// What decides which value removals hide which set element writes here (`Hiders`), every
+    /// copy held.
     pub fn hiders(&self) -> Hiders {
         let mut out = Hiders::default();
-        collect(self, &mut Vec::new(), &mut out);
+        out.note(self);
         out
     }
 
@@ -314,32 +351,20 @@ fn reg<S: Sink>(out: &mut S, path: &[Place], r: &Register) {
 fn elems<S: Sink>(out: &mut S, path: &mut Vec<Place>, m: &Meta, es: &BTreeMap<Dot, Elem>) {
     meta(out, path, m);
     // a value removal wins while held; an element it hides does not: it stays hidden (§5.5)
-    let mut gone: BTreeMap<&osis_base::Value, Vec<(&Dot, &crate::fragment::Removal)>> = BTreeMap::new();
-    if !S::ALL {
-        for (d, g) in es.iter().filter_map(|(d, e)| Some((d, e.gone.as_ref()?))) {
-            gone.entry(&g.value).or_default().push((d, g));
-        }
-    }
+    let gone = if S::ALL { BTreeMap::new() } else { crate::fragment::removed(es) };
     for (d, e) in es {
+        out.elem(path, d, e);
         if let Some(g) = &e.gone {
             path.push(Place::Gone(d.clone()));
             out.put(path, Kind::Reset, &g.stamp);
             path.pop();
         }
-        let by: Vec<Won> = match e.written() {
-            Some((Some(v), s)) => gone.get(v).into_iter().flatten().filter(|(_, g)| g.hides(d, s)).map(|(rd, g)| Won { path: [path.as_slice(), &[Place::Gone((*rd).clone())]].concat(), kind: Kind::Reset, stamp: g.stamp.clone() }).collect(),
-            _ => Vec::new(),
-        };
         path.push(Place::Elem(d.clone()));
         opt(out, path, Kind::Reset, &e.reset);
-        if let Some(f) = e.frag.as_deref() {
-            path.push(Place::In);
-            if by.is_empty() {
-                collect(f, path, out);
-            } else {
-                out.hide(path, by);
-            }
-            path.pop();
+        if let Some(f) = e.frag.as_deref()
+            && !crate::fragment::hidden(d, e, &gone)
+        {
+            inside(f, path, out);
         }
         path.pop();
     }
