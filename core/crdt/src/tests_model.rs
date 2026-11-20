@@ -331,10 +331,12 @@ pub(crate) fn reach_holds_the_change(before: &Fragment, after: &Fragment, y: &Fr
     let killed = dead(&at, &at_after);
     assert_eq!(killed, dead(before, after), "a join supersedes at its reach what it supersedes in the whole state");
     // what the engine dates a death by (`Killed::note`): each write dead at the reach dies by a
-    // write held there before the join or in the delta, winning or not
+    // write held there before or after the join or in the delta, winning or not (one write reads
+    // as a creation's own in a delta without the creation, as a move of its own beside it)
     let mut by: crate::ByWrite<()> = crate::ByWrite::default();
     by.note(&at.held_writes(), |_, _| ());
     by.note(&y.held_writes(), |_, _| ());
+    by.note(&at_after.held_writes(), |_, _| ());
     for w in killed {
         assert!(by.first_superseding(&w, |s, _| Some(s.ts)).is_some(), "a write dead at the reach dies by a write held there before the join: {w:?}");
     }

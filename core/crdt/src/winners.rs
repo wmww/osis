@@ -409,7 +409,9 @@ fn item<S: Sink>(out: &mut S, path: &mut Vec<Place>, text: bool, d: &Dot, e: &Se
     {
         out.put(path, Kind::Created, c);
     }
-    for p in e.pos.iter().take(if S::ALL { e.pos.len() } else { 1 }).filter(|p| p.0.dot != *d) {
+    // the creation's own position write is the creation: one stamped with the element's dot
+    // otherwise (a repeated counter, a forged copy, §2.3) is a position write of its own
+    for p in e.pos.iter().take(if S::ALL { e.pos.len() } else { 1 }).filter(|p| p.0.dot != *d || e.created.as_ref().is_some_and(|c| c.0 != p.0)) {
         out.put(path, Kind::Pos, &p.0);
     }
     // a text flag write below the creation is held, beaten (§5.7), as `prev` is
