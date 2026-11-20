@@ -11,7 +11,8 @@ test-only (`test_copies`), only the engine's `apply::checked` vouches for checke
 no hashed collection (`sync_hashed`), sync's tests pin no harness seed (`pinned_seeds`),
 tools/known_failures.txt names existing issues, tests and valid patterns (`known_failures`), an
 `#[ignore = "..."]` naming an issue names an existing issues/ file (`ignore_issues`),
-union-merged lists have no duplicate and a stale-line check (`union_lists`), no destruction named
+union-merged lists have no duplicate and a stale-line check (`union_lists`), a notes section
+marked `<!-- registry -->` numbers its items uniquely and increasingly (`registries`), no destruction named
 "ended" (`ended_names`) and no deprecated term (`old_words`) in code, store row keys and sync's
 record tags are distinct and never literals (`row_prefixes`, `record_tags`), every pointer into
 notes/, issues/ or spec/ names an existing file and section (tools/doc_refs.py), and every code name
@@ -148,6 +149,36 @@ if len(android_unsafe) > 1:
 for name, where in sorted(external.items()):
     if f"`{name}`" not in allow:
         errs.append(f"dependency `{name}` ({where}) has no line in notes/architecture.md §5")
+
+REGISTRY = "<!-- registry -->"
+
+
+def registries():
+    """A notes section marked as a registry (REGISTRY on the line under its heading: its items are
+    cited by number elsewhere, `OPEN 10`, finding 31) numbers its top-level items uniquely and in
+    increasing order: two branches each adding the next number collide, and a reader of either
+    citation finds the wrong item. A new item takes the next number at rebase time."""
+    for path in glob.glob(os.path.join(ROOT, "notes", "**", "*.md"), recursive=True):
+        rel = os.path.relpath(path, ROOT)
+        lines = read(path).splitlines()
+        for i, line in enumerate(lines):
+            if line.strip() != REGISTRY:
+                continue
+            if i == 0 or not lines[i - 1].startswith("#"):
+                yield f"{rel}:{i + 1}: {REGISTRY} belongs on the line under a section's heading"
+                continue
+            last = None
+            for n, item in enumerate(lines[i + 1:], i + 2):
+                if item.startswith("#"):
+                    break
+                m = re.match(r"(\d+)\. ", item)
+                if not m:
+                    continue
+                k = int(m[1])
+                if last is not None and k <= last:
+                    yield f"{rel}:{n}: registry item {k} after {last} in {lines[i - 1].strip()}: numbers unique and increasing (take the next free number at rebase time)"
+                last = k
+
 
 def env_vars():
     """core/base/testenv-known.txt names every `OSIS_*` variable the repo's sources name, and no other
@@ -528,7 +559,7 @@ def spec_anchors():
 
 
 # the slowest first, so the pool balances
-CHECKS = [doc_refs.check, spec_anchors, code_refs.check, row_prefixes, record_tags, ended_names, old_words, known_failures, union_lists, test_copies, ignore_issues, checked_bytes, kept_verdicts, sync_hashed, pinned_seeds, real_lan_tests, peer_ticks, env_vars, dispute_types]
+CHECKS = [doc_refs.check, spec_anchors, code_refs.check, row_prefixes, record_tags, ended_names, old_words, known_failures, union_lists, registries, test_copies, ignore_issues, checked_bytes, kept_verdicts, sync_hashed, pinned_seeds, real_lan_tests, peer_ticks, env_vars, dispute_types]
 
 
 def run(check):

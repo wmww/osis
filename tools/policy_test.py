@@ -110,6 +110,8 @@ PLANTS = [
     ("notes/build.md", None, "\nSee notes/planted-fresh.md, `core/base/src/planted_fresh.rs` and `planted_fresh_fn`.\n"),
     # spec_anchors: a test citing nothing, an anchor naming no rule
     ("core/base/src/planted_spec.rs", None, "#[test]\nfn planted_uncited() {}\n\n// spec/wire.md §4 (planted no such anchor)\n#[test]\nfn planted_stray() {}\n"),
+    # registries: a number taken twice; a marker off its heading; an unmarked list after (a near miss)
+    ("notes/planted-registry.md", None, "# Planted\n> Summary: planted.\n\n## Open\n<!-- registry -->\n1. a\n2. b\n2. c\n\n## Other\n5. x\n1. y\ntext\n<!-- registry -->\n"),
     # union_lists: a duplicate line in each union-merged list, a key listed twice, a union list unchecked
     ("core/base/testenv-known.txt", None, f"{V}BENCH_MS\n"),
     ("tools/known_failures.txt", None, f"osis-engine/planted::no_such_test_fn - {ISSUE} x\n"),
@@ -168,6 +170,8 @@ EXPECT = [  # regexes the output must hold
     r"core/base/testenv-known\.txt:\d+: duplicate of line \d+",
     r"tools/known_failures\.txt:\d+: duplicate of line \d+",
     r"\.gitattributes: notes/time-limits\.md has merge=union but no stale-line check",
+    r"notes/planted-registry\.md:\d+: registry item 2 after 2 in ## Open",
+    r"notes/planted-registry\.md:\d+: <!-- registry --> belongs on the line under a section's heading",
     r"spec_map: uncited test: \S*planted_uncited",
     r"spec_map: stray anchor: `\S*planted_stray`",
 ]
@@ -178,6 +182,7 @@ ABSENT = [  # near misses: what the plants show must not be reported
     r"core/transport/src/lib\.rs:\d+: `hosts`",
     r"faults\.rs:\d+: (world|history)\(",
     r"planted.fresh",
+    r"registry item 1 after 5",
 ]
 
 

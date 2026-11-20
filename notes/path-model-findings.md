@@ -4,6 +4,7 @@
 The model: core/test/roles-model/README.md (Paths). Each finding has a hand world in `src/paths/tests.rs`: a `repro_*` test, ignored, asserting the wanted behaviour under the reading it broke and failing, or a test asserting the hole and its fix side by side, or, for an accepted one, a test asserting the outcome and why it is accepted. The model has one rule set, `Rules::fixed` (the design: each lowering judged once at its key, finding 16); `Rules::design` is the first round's reading the `repro_*` tests fail under, and each control is `Rules::fixed` with one rule undone. X is the stolen node, H its remover, R the removal, B another node of account A, K a node of the collaborator account A2, T1 a thing A administers, M a mint admin of A who paired H, N5 a node of A (paired by X, or paired by H and removed by X before the theft, its key the thief's), N6 and RD3 nodes trusting nothing.
 
 ## Findings
+<!-- registry -->
 Numbered as found. 4, 7, 12 and 15 are one class (how a removal's own authority meets what it audits and lists) and have one answer; 13 and 24 are no hole.
 
 1. **Removing a node undoes its role writes where the remover did not hold them, removals included** (`repro_a_grant_the_remover_did_not_hold_stands`, `repro_a_removal_the_removed_node_made_stays`).
@@ -137,6 +138,7 @@ Numbered as found. 4, 7, 12 and 15 are one class (how a removal's own authority 
     - Fix modelled (`Entry::OnThing`): an entry keeps the commit's parts on its vouch's thing alone, as an addendum keeps content on its own thing; a commit writing several things is kept on each by a vouch there. The honest cost: a witness holding one of the things keeps only that part; the writers' rule has every witness vouch on each thing it administers, and liveness holds with honest two-thing commits (story `Setup::x_role` 5: K, holding T1 alone, vouches for the part on T1; B and H for both).
 
 ## Open
+<!-- registry -->
 For the design notes before A1's spec brief, each with what the model gives it:
 0. **What detecting a dispute costs** (16): a dispute is a lowering whose trust changes the reading, so a node finds them by a walk per held lowering of another holder's edge that it does not trust (today detection scans only writes that stop applying). Honest histories raise none in the model (`quiet`). Not designed: which lowerings a node must try, and when.
 1. **What a removal's result names** (19): the members a kept lowering of the remover by X dropped, beside those X lowered.
