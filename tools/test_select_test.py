@@ -63,7 +63,7 @@ for path, (name, deps) in CRATES.items():
     write(f"{path}/Cargo.toml", f'[package]\nname = "{name}"\nversion = "0.1.0"\nedition = "2021"\n[lib]\npath = "src/lib.rs"\n[dependencies]\n{deps}')
 write("core/base/src/lib.rs", PROP.format("base_prop_large") + '#[test] #[ignore] fn base_inline_large() {}\n#[test]\n#[ignore]\n// fn decoy_large names nothing\nfn base_after_comment_large() {}\n')
 # a size word in the middle, a repro, a by-hand run, an example, a networking test: none are properties
-write("core/mid/src/lib.rs", PROP.format("mid_prop_plain_spec_crdt_4") + PROP.format("mid_by_hand_spec_crdt_4") + PROP.format("quic_large_transfer") + PROP.format("repro_big_large") + "#[test]\nfn mid_quick() {}\n")
+write("core/mid/src/lib.rs", "#[cfg(test)]\n// helpers\nmod t;\n#[cfg(test)] pub(crate) mod t2;\n#[cfg(any(test, feature = \"x\"))]\nmod t3;\n" + PROP.format("mid_prop_plain_spec_crdt_4") + PROP.format("mid_by_hand_spec_crdt_4") + PROP.format("quic_large_transfer") + PROP.format("repro_big_large") + "#[test]\nfn mid_quick() {}\n")
 write("core/mid/tests/it/main.rs", PROP.format("mid_it_plain") + PROP.format("mid_it_plain_over_quic"))
 # reaching the dev dependency: naming it, through a module that does (not std's of that name, not
 # another target's), as a child of a module that does
@@ -83,6 +83,14 @@ write("core/pathy/src/b.rs", "fn f() { helper::g() }\n" + PROP.format("pathy_lar
 write("core/mid/tests/it/kids/mod.rs", "use held_model::Y;\nmod child;\n")
 write("core/mid/tests/it/kids/child.rs", "use super::*;\n" + PROP.format("mid_child_large"))
 write("core/mid/src/other.rs", "fn f() { helper::g() }\n" + PROP.format("mid_other_target_large"))
+# test-only code: modules under exactly #[cfg(test)] (on the line before, on the same line, or by a
+# parent module that is); not cfg(any(test, ..)); a tests/ file a dependent reads as text
+write("core/mid/src/t.rs", "mod inner;\n" + PROP.format("mid_cfg_test_large"))
+write("core/mid/src/t/inner.rs", "")
+write("core/mid/src/t2.rs", "")
+write("core/mid/src/t3.rs", "")
+write("core/mid/tests/it/read.rs", "")
+write("core/top/src/r.rs", 'const S: &str = include_str!("../../mid/tests/it/read.rs");\n')
 write("core/fz/src/lib.rs", "#[cfg(fuzzing)]\npub use held_model::X;\n")
 write("core/fz/src/a.rs", PROP.format("fz_large"))
 write("core/fzuser/src/lib.rs", PROP.format("fzuser_large"))
@@ -116,6 +124,25 @@ check("env", t, "OSIS_ORDER_START=7", "OSIS_CRDT_SEED=7", absent=["OSIS_ORDER_SE
 t = out("--paths", "core/test/model/src/lib.rs")
 check("dev edge selects and stops", t, "crates selected: 4 of 9", "held-model: model_large", "osis-mid: mid_child_large mid_dup_large mid_helper_large mid_macro_large mid_renamed_large mid_single_large mid_via_helper_large\n", "osis-pathy: pathy_large",
       "osis-mid through dev dependencies only", "osis-fz: fz_large", absent=["osis-top:", "every scenario", "fzuser_large", "mid_it_plain ", "mid_prop_plain", "mid_std_large", "mid_other_target_large", "--skip model_large", "--skip mid_dup_large"])
+
+# test-only edits select their own crate's properties in the same place (tests/ or src/), no dependent
+t = out("--paths", "core/mid/tests/it/via.rs")
+check("tests/ edit", t, "crates selected: 1 of 9: osis-mid", "test-only edits: the properties under its tests/", "mid_it_plain ", "mid_helper_large", "mid_single_large",
+      absent=["mid_prop_plain_spec_crdt_4", "mid_cfg_test_large", "top_exhaustive", "every scenario"])
+for f in ("core/mid/src/t.rs", "core/mid/src/t/inner.rs", "core/mid/src/t2.rs"):
+    t = out("--paths", f)
+    check(f"cfg(test) edit {f}", t, "crates selected: 1 of 9: osis-mid", "under its src/", "mid_cfg_test_large", "mid_prop_plain_spec_crdt_4", "mid_other_target_large", absent=["mid_it_plain ", "top_exhaustive", "every scenario"])
+t = out("--paths", "core/mid/src/t.rs", "core/mid/tests/it/via.rs")
+check("both targets", t, "under its src/ and tests/", "mid_cfg_test_large", "mid_it_plain ", absent=["top_exhaustive"])
+for f, why in (("core/mid/src/t3.rs", "cfg(any(test, ..))"), ("core/mid/tests/it/read.rs", "read as text by a dependent"), ("core/mid/src/gone.rs", "not in the tree"),
+               ("core/mid/build.rs", "outside tests/ and src/"), ("core/pathy/src/b.rs", "a #[path] crate")):
+    t = out("--paths", f)
+    check(f"not test-only: {why}", t, absent=["test-only"])
+check("not test-only: carries on", out("--paths", "core/mid/src/t3.rs"), "top_exhaustive", "every scenario")
+t = out("--paths", "core/mid/tests/it/via.rs", "core/mid/src/lib.rs")
+check("test-only beside code: the code's selection", t, "crates selected: 3 of 9", "top_exhaustive", "mid_it_plain ", absent=["test-only"])
+t = out("--paths", "core/mid/tests/it/via.rs", "core/test/model/src/lib.rs")
+check("test-only beside a dev-reach of the same crate", t, "mid_it_plain ", "mid_helper_large", "model_large", absent=["top_exhaustive", "mid_cfg_test_large"])
 
 t = out("--paths", "core/base/src/lib.rs")
 check("low crate", t, "crates selected: 6 of 9", "(nearly everything", "base_prop_large", "fzuser_large", "base_inline_large", "base_after_comment_large", "top_exhaustive", "every scenario", absent=["leaf_large", "held-model:", "decoy_large"])
@@ -161,7 +188,7 @@ if kinds != ["kept", "build", "build", "check", "run", "run"]:
     print(f"FAIL --emit: line kinds {kinds}\n" + "\n".join(lines))
     fails = 1
 check("--emit", "\n".join(lines), "build cargo test --locked -p osis-mid -p osis-top --tests --no-run", "build cargo build --locked --bin sim-sweep",
-      "check python3 tools/test_select.py --listed mid_child_large ", " model_large top_exhaustive -- cargo", "cargo test --locked --quiet -p osis-mid -p osis-top --tests -- --list --ignored ",
+      "check python3 tools/test_select.py --listed mid_cfg_test_large mid_child_large ", "_RUNNER=" + test_select.RUNNER + " cargo test --locked --no-fail-fast ", " model_large top_exhaustive -- cargo", "cargo test --locked --quiet -p osis-mid -p osis-top --tests -- --list --ignored ",
       "run gate.properties env ", "OSIS_ORDER_START=7 ", "run gate.sim cargo run --locked --bin sim-sweep -- --seeds 15 --from 7",
       absent=["paths:", "crates selected"])
 write(emitted, "")

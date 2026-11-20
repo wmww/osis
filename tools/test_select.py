@@ -9,6 +9,9 @@ size, computed from what it touched. tools/gate.sh runs them in its one hold of 
 
 The default base is the merge base with origin/main as last fetched, as in the gate (local main lags).
 
+The properties run under tools/prop_run.py (cargo's runner): each test in its own process, its CPU
+measured by the gate.
+
 The set: every property test, at small size, of the crates the paths touch and their dependents
 (the Cargo graph), and every sim scenario if osis-sim is one of those; `--all` selects every crate.
 A file in PINNED (run-time data whose meaning an instant check fixes) selects nothing.
@@ -106,15 +109,21 @@ def schema_readers(path, dirs):
 
 
 def classify(paths, dirs):
-    """(crates touched, whole workspace?, {path: why it selects nothing})."""
-    touched, whole, nothing = set(), False, {}
+    """(crates touched, whole workspace?, {path: why it selects nothing}, {crate: the target
+    directories of its test-only files}). A crate whose every touched file is test-only code
+    (`test_only`) is in the last only."""
+    touched, whole, nothing, local = set(), False, {}, {}
     for p in paths:
         c = owner(p, dirs)
         pinned = next((why for f, why in PINNED if p == f), None)
         if pinned:
             nothing[p] = pinned
         elif c:
-            touched.add(c)
+            t = test_only(p, dirs[c])
+            if t:
+                local.setdefault(c, set()).add(t)
+            else:
+                touched.add(c)
         elif p.startswith(WHOLE):
             whole = True
         elif p.startswith("schema/") and p.endswith(".osis"):
@@ -124,7 +133,65 @@ def classify(paths, dirs):
                 nothing[p] = "no workspace crate reads it"
         else:
             nothing[p] = next((why for prefix, why in OUTSIDE if p.startswith(prefix)), "no crate, not classified: read it")
-    return touched, whole, nothing
+    return touched, whole, nothing, {c: t for c, t in local.items() if c not in touched}
+
+
+# Test-only code (`test_only`): a .rs file only its own crate's test binaries compile, so no
+# dependent's test (and no other target of its crate) can see it: Cargo links a dependency's
+# library built without cfg(test), and never its tests/. An edit there selects the properties of
+# that crate's files in the same place (tests/, or the library's src/) and nothing else.
+# Falls back to the crate and its dependents (as any edit) when unsure: a file outside tests/ and
+# src/, a crate mounting code by `#[path]` or `include!` (a module not named by its file), a .rs
+# file a source reads as text (tools/gate_paths.py's `sources_read`), a src/ file not in the tree
+# (deleted: nothing left says how it was mounted), or one with any declaration not under exactly
+# `#[cfg(test)]` (`cfg(any(test, ...))` compiles for dependents too).
+def test_only(path, cdir):
+    """`tests` or `src` (the target directory under cdir) when `path` is test-only code, else None."""
+    rel = os.path.relpath(path, cdir)
+    top = rel.split("/", 1)[0]
+    if not path.endswith(".rs") or top not in ("tests", "src") or "/" not in rel:
+        return None
+    files = [f for f in run("git", "ls-files", "--", cdir).split("\n") if f.endswith(".rs")]
+    if any(re.search(r"#\[\s*path\b|\binclude!", open(f, encoding="utf-8").read()) for f in files if os.path.exists(f)):
+        return None
+    if gate_paths.sources_read([path]):
+        return None
+    if top == "tests":
+        return "tests"
+    return "src" if os.path.exists(path) and cfg_test_module(path, os.path.join(cdir, "src")) else None
+
+
+def cfg_test_module(path, src):
+    """Whether every declaration of `path`'s module is `#[cfg(test)] mod NAME;` or sits in a
+    module that is (none found: not)."""
+    d, base = os.path.split(path)
+    name = os.path.basename(d) if base == "mod.rs" else base[:-3]
+    parent = os.path.dirname(d) if base == "mod.rs" else d
+    if name in ("lib", "main") and parent == src:
+        return False
+    owners = [parent + ".rs", os.path.join(parent, "mod.rs")]
+    if parent == src:
+        owners += [os.path.join(src, "lib.rs"), os.path.join(src, "main.rs")]
+    decl = re.compile(rf"^\s*(?:pub(?:\([^)]*\))?\s+)?mod\s+{re.escape(name)}\s*;")
+    found = 0
+    for o in owners:
+        if not os.path.exists(o):
+            continue
+        lines = open(o, encoding="utf-8").read().split("\n")
+        for i, l in enumerate(lines):
+            code = re.sub(r"^\s*(#\[[^\]]*\]\s*)+", "", l)
+            if not decl.match(code):
+                continue
+            found += 1
+            attrs = re.findall(r"#\[[^\]]*\]", l[:len(l) - len(code)])
+            j = i - 1
+            while j >= 0 and re.match(r"^\s*(#\[.*\]|//.*)\s*$", lines[j]):
+                attrs += re.findall(r"#\[[^\]]*\]", lines[j])
+                j -= 1
+            if not any(re.fullmatch(r"#\[\s*cfg\s*\(\s*test\s*\)\s*\]", a) for a in attrs) and not (
+                    os.path.basename(o) not in ("lib.rs", "main.rs") and cfg_test_module(o, src)):
+                return False
+    return found > 0
 
 
 def closure(touched, users):
@@ -210,16 +277,23 @@ def ignored_tests(files):
     return names, unread
 
 
-def properties(selected, dirs):
+def properties(selected, dirs, local=None):
     """({crate: property test names}, other `#[ignore]` names in those crates, unread `#[ignore]`s).
-    A crate reached through dev dependencies only keeps the properties in files reaching them."""
+    A crate reached through dev dependencies only keeps the properties in files reaching them; one
+    in `local` (test-only edits: {crate: target dirs}) those in files under those dirs too."""
+    local = local or {}
     props, others, unread = {}, set(), []
-    for c in sorted(selected):
+    for c in sorted(set(selected) | set(local)):
         nested = [d for n, d in dirs.items() if n != c and d.startswith(dirs[c] + "/")]
         files = crate_files(dirs[c], nested)
         names, missed = ignored_tests(files)
         unread += missed
-        keep = reaching(files, selected[c]) if selected[c] else None
+        if c in selected and not selected[c]:
+            keep = None
+        else:
+            keep = reaching(files, selected[c]) if c in selected else set()
+            if keep is not None:
+                keep |= {f for f in files if os.path.relpath(f, dirs[c]).split("/", 1)[0] in local.get(c, ())}
         chosen = {n for n, fs in names.items() if SIZE_WORD.search(n) and not n.startswith("repro_") and (keep is None or not fs.isdisjoint(keep))}
         if chosen:
             props[c] = sorted(chosen)
@@ -242,6 +316,16 @@ def envs(offset):
     known = open("core/base/testenv-known.txt").read().split()
     vs = sorted(v for v in known if v.endswith("_START") or v in XOR_SEEDS)
     return [f"{v}={offset}" for v in vs]
+
+
+RUNNER = os.path.join(os.path.dirname(os.path.abspath(__file__)), "prop_run.py")
+
+
+def runner_var():
+    """Cargo's runner variable for the host: the properties run under tools/prop_run.py, each test
+    in its own process, so the gate measures each one's CPU (its line in the summary's cost table)."""
+    host = next(l.split()[1] for l in run("rustc", "-vV").split("\n") if l.startswith("host:"))
+    return "CARGO_TARGET_" + re.sub(r"[^A-Z0-9]", "_", host.upper()) + "_RUNNER"
 
 
 def listed(wanted, cmd):
@@ -293,10 +377,11 @@ def main():
         offset = random.randrange(10**12)
 
     dirs, users = metadata()
-    touched, whole, nothing = classify(paths, dirs)
+    touched, whole, nothing, local = classify(paths, dirs)
     whole = whole or every
     selected = dict.fromkeys(dirs) if whole else closure(touched, users)
-    props, others, unread = properties(selected, dirs)
+    local = {} if whole else {c: t for c, t in local.items() if selected.get(c, 0) is not None}
+    props, others, unread = properties(selected, dirs, local)
     sim = "osis-sim" in selected
 
     # unlocked builds first, with the same cargo arguments as the runs, so the runs build nothing
@@ -306,7 +391,7 @@ def main():
         build.append(["cargo", "test", "--locked", *pkgs, "--tests", "--no-run"])
         wanted = sorted({t for v in props.values() for t in v})
         checks.append(["python3", "tools/test_select.py", "--listed", *wanted, "--", "cargo", "test", "--locked", "--quiet", *pkgs, "--tests", "--", "--list", *filters])
-        cmds.append(("gate.properties", ["env", *envs(offset), "cargo", "test", "--locked", "--no-fail-fast", *pkgs, "--tests", "--", *filters]))
+        cmds.append(("gate.properties", ["env", *envs(offset), f"{runner_var()}={RUNNER}", "cargo", "test", "--locked", "--no-fail-fast", *pkgs, "--tests", "--", *filters]))
     if sim:
         build.append(["cargo", "build", "--locked", "--bin", "sim-sweep"])
         cmds.append(("gate.sim", ["cargo", "run", "--locked", "--bin", "sim-sweep", "--", "--seeds", str(SIM_SEEDS), "--from", str(offset)]))
@@ -317,13 +402,16 @@ def main():
     print(f"paths: {'every crate (--all)' if every else len(paths)}")
     for p, why in sorted(nothing.items()):
         print(f"  selects nothing: {p} ({why})")
-    print(f"crates touched: {', '.join(sorted(touched)) or 'none'}{' (workspace build config: every crate)' if whole and not every else ''}")
+    print(f"crates touched: {', '.join(sorted(touched | set(local))) or 'none'}{' (workspace build config: every crate)' if whole and not every else ''}")
     # more than half: the graph says so, and trimming it by hand would hide a real dependent
-    note = " (nearly everything: expected for a crate this far down the graph)" if not whole and len(selected) * 2 > len(dirs) else ""
-    print(f"crates selected: {len(selected)} of {len(dirs)}{note}: {', '.join(sorted(selected)) or 'none'}")
+    chosen = set(selected) | set(local)
+    note = " (nearly everything: expected for a crate this far down the graph)" if not whole and len(chosen) * 2 > len(dirs) else ""
+    print(f"crates selected: {len(chosen)} of {len(dirs)}{note}: {', '.join(sorted(chosen)) or 'none'}")
     for c, via in sorted(selected.items()):
         if via:
             print(f"  {c} through dev dependencies only: the properties in files reaching {', '.join(sorted(via))}")
+    for c, t in sorted(local.items()):
+        print(f"  {c}: test-only edits: the properties under its {' and '.join(f'{x}/' for x in sorted(t))} (its dependents never link them)")
     count = sum(len(v) for v in props.values())
     print(f"property tests: {count}")
     for c, names in props.items():

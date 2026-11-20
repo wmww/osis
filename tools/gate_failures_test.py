@@ -175,9 +175,14 @@ def known(text):
 
 
 ns, errs = known("# comment\norder::known_plain OSIS_ORDER_SEED=1 issues/known.md ^seed \\d+, Lists # not a comment\n")
-check("known", ({k: [(i, p.pattern, r) for i, p, r in v] for k, v in ns.items()}, errs), ({"order::known_plain": [("issues/known.md", "^seed \\d+, Lists # not a comment", False)]}, []))
+check("known", ({k: [(x.issue, x.pattern.pattern, x.rate) for x in v] for k, v in ns.items()}, errs), ({"order::known_plain": [("issues/known.md", "^seed \\d+, Lists # not a comment", False)]}, []))
 ns, _ = known("a rate:OSIS_ORDER_START=3 issues/known.md x\n")
-check("known rate", [r for _, _, r in ns["a"]], [True])
+check("known rate", [x.rate for x in ns["a"]], [True])
+ns, errs = known("a OSIS_ROLES_START=0,OSIS_ROLES_SEEDS=2 issues/known.md counts:safety_N=3,admin=12 family: \\{\n")
+check("known counts", ([(x.counts, x.env, x.pattern.pattern) for x in ns["a"]], errs), ([({"safety_N": 3, "admin": 12}, {"OSIS_ROLES_START": "0", "OSIS_ROLES_SEEDS": "2"}, "family: \\{")], []))
+check("counted envs", gate_failures.counted_envs(d), {"a": {"OSIS_ROLES_START": "0", "OSIS_ROLES_SEEDS": "2"}})
+_, errs = known("a rate:S=1 issues/known.md counts:x=1 p\nb - issues/known.md counts:x p\nc - issues/known.md counts:x=1\nd - issues/known.md counts:x=1 p\nd - issues/known.md q\n")
+check("known counts refuses", [e.split(":", 2)[-1].strip()[:40] for e in errs], ["a `counts:` line's REPRO is the setting ", "want `NAME REPRO ISSUE counts:CHECK=N,..", "want `NAME REPRO ISSUE counts:CHECK=N,..", "a test with a `counts:` line has no othe"])
 _, errs = known("a 1 issues/gone.md x\nb 2 issues/known.md\nc 3 notes/x.md x\nd 4 issues/known.md (\n")
 check("known refuses", [e.split(": ", 1)[1].split(":")[0] for e in errs], ["issues/gone.md", "want `NAME REPRO ISSUE PATTERN`, got 'b 2 issues/known.md'", "notes/x.md", "bad pattern '('"])
 
@@ -251,8 +256,41 @@ test b::q_exhaustive ... ok
 """
 check("costs", gate_failures.costs(PROPS), ([(1000.5, 70.5, "a::p_large"), (120.0, 9.0, "order::held_set_decides (plain)")], ["b::q_exhaustive"]))
 rc, out = summary("", [("default-tests", "0", "a::x: 1 of 1 run, 0 failing, 0 hung, 1 threads, 1.0 s, 5.0 CPU-s\n"), ("gate.properties", "0", PROPS), ("gate.sim", "0", "sim-sweep: 75 of 75 run, 0 failing, 0 hung, 16 threads, 10.9 s, 150.0 CPU-s\n")])
-check("cost table", (rc, out.split("== test stages")[0]), (0, "== property and sim CPU-s, costliest first (1270 CPU-s on the seed runners)\n"
+check("cost table", (rc, out.split("== test stages")[0]), (0, "== property and sim CPU-s, costliest first (1270 CPU-s measured)\n"
       "     1000.5 CPU-s    70.5 s  a::p_large\n      150.0 CPU-s    10.9 s  sim-sweep\n      120.0 CPU-s     9.0 s  order::held_set_decides (plain)\n          (no CPU line)  b::q_exhaustive\n"))
+# tools/prop_run.py's per-process lines replace the tests' own in that log; a test with none is listed
+PROCESS = PROPS + "gate: cost a::p_large: 71.0 s, 1010.0 CPU-s\ngate: cost order::held_set_decides_plain: 9.5 s, 125.0 CPU-s\ngate: cost c::r_plain: 2.0 s, 30.0 CPU-s\ntest c::r_plain ... ok\n"
+check("process costs", gate_failures.costs(PROCESS), ([(1010.0, 71.0, "a::p_large"), (125.0, 9.5, "order::held_set_decides_plain"), (30.0, 2.0, "c::r_plain")], ["b::q_exhaustive"]))
+# a `counts:` line: the same failing counts are KNOWN, other counts NEW-COUNTS (the branch changed what fails)
+FAMILY = """     Running unittests src/lib.rs (target/debug/deps/roles-1)
+
+running 1 test
+test paths::tests::small_family_holds_large ... FAILED
+gate: cost paths::tests::small_family_holds_large: 9.0 s, 80.0 CPU-s
+
+failures:
+
+---- paths::tests::small_family_holds_large stdout ----
+panicked at x.rs:1:1:
+family: {"admin": 12, "safety N": 3}
+{"admin": "first: {\\"x\\": 5}"}
+
+failures:
+    paths::tests::small_family_holds_large
+
+test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 0 filtered out; finished in 9.00s
+
+error: test failed, to rerun pass `--lib`
+"""
+LINE = "roles-model/paths::tests::small_family_holds_large - issues/known.md counts:admin=12,safety_N=3 family: \\{\n"
+rc, out = summary(LINE, [("gate.properties", "101", FAMILY + COUNT1)])
+check("same counts: KNOWN", (rc, "KNOWN gate.properties  paths::tests::small_family_holds_large: issues/known.md, same failing counts" in out), (3, True))
+rc, out = summary(LINE.replace("admin=12", "admin=11"), [("gate.properties", "101", FAMILY + COUNT1)])
+check("other counts: NEW-COUNTS", (rc, "NEW-COUNTS gate.properties  paths::tests::small_family_holds_large: listed (issues/known.md) with failing counts admin=11,safety_N=3, this run admin=12,safety_N=3" in out, "1 NEW, 0 KNOWN" in out), (1, True, True))
+rc, out = summary(LINE.replace(",safety_N=3", ""), [("gate.properties", "101", FAMILY + COUNT1)])
+check("a check failing beyond the baseline: NEW-COUNTS", (rc, "NEW-COUNTS" in out), (1, True))
+rc, out = summary(LINE.replace("family: ", "other: "), [("gate.properties", "101", FAMILY + COUNT1)])
+check("counts line, other text: NEW-TEXT", (rc, "NEW-TEXT" in out), (1, True))
 rc, out = summary("x 1 issues/gone.md p\n", [("default-tests", "0", "")])
 check("a bad list fails the gate", (rc, "NEW   known list" in out), (1, True))
 

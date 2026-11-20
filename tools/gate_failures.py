@@ -18,7 +18,10 @@ searched in each failing unit of NAME's text: each `seed N ... (replay: ...)` li
 (of each failing sim seed, its lines), or its whole panic when it names no seed. A failure is
 KNOWN when every unit matches a pattern listed for its NAME (the gate's seeds are random: its
 failing seed is never REPRO's); a listed NAME failing with a unit no pattern matches is NEW-TEXT (a
-second failure behind the known one). A target tools/test_watch.py stopped as hung fails each test it
+second failure behind the known one). A line may carry a baseline before PATTERN, `counts:CHECK=N,...`
+(REPRO then the setting tools/prop_run.py runs that test at: `-` or `VAR=VAL,...`): the failure's
+counts (`"CHECK": N` pairs from PATTERN's match to the next `}`, a space in CHECK as `_`) equal to it
+are KNOWN (`same failing counts`), else NEW-COUNTS, counted NEW. A target tools/test_watch.py stopped as hung fails each test it
 names, its unit `hung: no test finished for N s`. Anything the parser cannot account for is NEW: a
 stage that did not run, a target that ended before its summary (a crash, a signal, a hung-seed
 exit, a hang naming no test) or exited non-zero after it, an `error` cargo printed outside a target, a failed-target count that does not
@@ -30,9 +33,10 @@ landing removes it) unless it fails at a rate; when every line of NAME is a `rat
 passing is expected instead. It changes no exit code: the exit-3 line counts them, and
 tools/gate.sh's pass line does from this output.
 
-First it lists the property and sim stages' runs by CPU-seconds, costliest first: each summary line
-ending `..., W s, C CPU-s` (osis_base::testenv::run_jobs, the order harness's `NAME (SIZE): ...`
-line, which names test NAME_SIZE), then each test the stage ran that printed none.
+First it lists the property and sim stages' runs by CPU-seconds, costliest first: each test's own
+process (tools/prop_run.py's `gate: cost NAME: W s, C CPU-s`), or in a log without those each summary
+line ending `..., W s, C CPU-s` (osis_base::testenv::run_jobs, sim-sweep, the order harness's
+`NAME (SIZE): ...` line, which names test NAME_SIZE), then each test the stage ran with neither.
 """
 import collections, os, re, sys
 
@@ -53,12 +57,20 @@ HUNG = re.compile(r"^gate: hung: (no test finished .*)$")
 HUNG_TEST = re.compile(r"^gate: hung test: (.+)$")
 # a runner's summary line (not its `(running)` progress line): `NAME[ (SIZE)]: ..., W s, C CPU-s`
 CPU = re.compile(r"^(\S+?)(?: \(([^()]*)\))?: .*, ([\d.]+) s, ([\d.]+) CPU-s(?:;.*)?$")
+# tools/prop_run.py's line: one test's own process
+PROCESS_CPU = re.compile(r"^gate: cost (\S+): ([\d.]+) s, ([\d.]+) CPU-s$")
 COST_STAGES = ("gate.properties", "gate.sim")
 
 
+Known = collections.namedtuple("Known", "issue pattern rate counts env")
+COUNTS = re.compile(r"^counts:((?:[^\s=,]+=\d+)(?:,[^\s=,]+=\d+)*)$")
+SETTING = re.compile(r"^-$|^(\w+=[^\s,]*)(,\w+=[^\s,]*)*$")
+
+
 def known(root=ROOT):
-    """({NAME: [(issue, pattern, rate), ...]}, [error, ...]) from the known-failures list; `rate`
-    when its REPRO is `rate:...` (fails on some seeds only)."""
+    """({NAME: [Known, ...]}, [error, ...]) from the known-failures list. `rate` when its REPRO is
+    `rate:...` (fails on some seeds only); `counts` ({check: failing count}) when the line has a
+    `counts:` baseline, then `env` its REPRO's settings, which the gate runs it at."""
     names, errs, seen = {}, [], {}
     path = os.path.join(root, KNOWN)
     if not os.path.exists(path):
@@ -72,6 +84,19 @@ def known(root=ROOT):
             continue
         seen[line] = n
         f = line.split(None, 3)
+        counts, env = None, {}
+        if len(f) == 4 and f[3].startswith("counts:"):
+            c, _, pat = f[3].partition(" ")
+            m = COUNTS.match(c)
+            if not m or not pat.strip():
+                errs.append(f"{KNOWN}:{n}: want `NAME REPRO ISSUE counts:CHECK=N,... PATTERN` (a space in CHECK written `_`), got {line!r}")
+                continue
+            counts = {k: int(v) for k, v in (kv.split("=") for kv in m.group(1).split(","))}
+            if not SETTING.match(f[1]):
+                errs.append(f"{KNOWN}:{n}: a `counts:` line's REPRO is the setting the gate runs it at: `-` or `VAR=VAL,...`, got {f[1]!r}")
+                continue
+            env = dict(kv.split("=", 1) for kv in f[1].split(",")) if f[1] != "-" else {}
+            f[3] = pat.strip()
         if len(f) != 4:
             errs.append(f"{KNOWN}:{n}: want `NAME REPRO ISSUE PATTERN`, got {line!r}")
             continue
@@ -84,8 +109,26 @@ def known(root=ROOT):
         except re.error as e:
             errs.append(f"{KNOWN}:{n}: bad pattern {pat!r}: {e}")
             continue
-        names.setdefault(test_path(name), []).append((issue, pat, repro.startswith("rate:")))
+        names.setdefault(test_path(name), []).append(Known(issue, pat, repro.startswith("rate:"), counts, env))
+    for name, ks in names.items():
+        if any(k.counts is not None for k in ks) and len(ks) > 1:
+            errs.append(f"{KNOWN}: {name}: a test with a `counts:` line has no other line (its counts are the whole of its failure)")
     return names, errs
+
+
+def counted_envs(root=ROOT):
+    """{test path: its `counts:` line's settings}: what tools/prop_run.py runs each at."""
+    return {name: ks[0].env for name, ks in known(root)[0].items() if ks[0].counts is not None}
+
+
+def failing_counts(unit, pattern):
+    """{check: count} a failure states: the `"CHECK": N` pairs from the end of the pattern's match
+    to the next `}` (a Debug map printed after the pattern), each CHECK's spaces as `_`."""
+    m = pattern.search(unit)
+    if not m:
+        return None
+    body = unit[m.end():].split("}", 1)[0]
+    return {re.sub(r"\s", "_", k): int(v) for k, v in re.findall(r'"([^"\\]+)": (\d+)\b', body)}
 
 
 def test_path(name):
@@ -210,16 +253,28 @@ def sim_failures(text):
     return out
 
 
+def fmt_counts(c):
+    return ",".join(f"{k}={v}" for k, v in sorted(c.items())) or "none"
+
+
 def costs(text):
-    """([(cpu, wall, name)], [test]) of a stage log: each runner summary line's cost, and each
-    test that ran (passed or failed) with no summary line of its own."""
-    rows, named = [], set()
+    """([(cpu, wall, name)], [test]) of a stage log: each test's own process as tools/prop_run.py
+    measured it (`gate: cost NAME: W s, C CPU-s`) when the log has those, else each runner
+    summary line's cost; and each test that ran (passed or failed) with neither."""
+    rows, named, own = [], set(), []
     for l in text.split("\n"):
+        m = PROCESS_CPU.match(l)
+        if m:
+            rows.append((float(m.group(3)), float(m.group(2)), m.group(1)))
+            named.add(m.group(1))
+            continue
         m = CPU.match(l)
         if m:
             name = m.group(1) + (f" ({m.group(2)})" if m.group(2) else "")
-            rows.append((float(m.group(4)), float(m.group(3)), name))
-            named.add(m.group(1) + ("_" + re.sub(r"\W+", "_", m.group(2)) if m.group(2) else ""))
+            own.append(((float(m.group(4)), float(m.group(3)), name), m.group(1) + ("_" + re.sub(r"\W+", "_", m.group(2)) if m.group(2) else "")))
+    if not rows:
+        rows = [r for r, _ in own]
+        named = {n for _, n in own}
     ran = [m.group(1) for l in text.split("\n") if (m := PASSED.match(l) or FAILED.match(l))]
     return sorted(rows, reverse=True), [t for t in dict.fromkeys(ran) if t not in named]
 
@@ -257,12 +312,21 @@ def main():
                 rows.append(("NEW", stage, us))
                 continue
             listed = names.get(name, [])
-            hit = [next((i for i, p, _ in listed if p.search(u)), None) for u in us]
-            if listed and all(hit):
-                rows.append(("KNOWN", stage, f"{name}: {', '.join(dict.fromkeys(hit))}"))
+            hit = [next((k.issue for k in listed if k.pattern.search(u)), None) for u in us]
+            base = listed[0].counts if listed else None
+            now = None
+            if base is not None and all(hit):
+                now = collections.Counter()
+                for u in us:
+                    now.update(failing_counts(u, listed[0].pattern))
+            if now is not None and dict(now) != base:
+                rows.append(("NEW-COUNTS", stage, f"{name}: listed ({listed[0].issue}) with failing counts {fmt_counts(base)}, this run {fmt_counts(now)}: "
+                             "the branch changed what fails: read it; a landing that explains it refreshes the `counts:` (notes/coordination.md, Known failures)"))
+            elif listed and all(hit):
+                rows.append(("KNOWN", stage, f"{name}: {', '.join(dict.fromkeys(hit))}{', same failing counts' if now is not None else ''}"))
             elif listed:
                 miss = next(u for u, h in zip(us, hit) if h is None).strip().split("\n")[0][:200]
-                rows.append(("NEW-TEXT", stage, f"{name}: listed ({', '.join(dict.fromkeys(i for i, _, _ in listed))}), but this failure matches none of its patterns: {miss}"))
+                rows.append(("NEW-TEXT", stage, f"{name}: listed ({', '.join(dict.fromkeys(k.issue for k in listed))}), but this failure matches none of its patterns: {miss}"))
             else:
                 rows.append(("NEW", stage, name))
             rows += [("", "", s) for s in shown[:3]] + ([("", "", f"... {len(shown) - 3} more seeds")] if len(shown) > 3 else [])
@@ -273,7 +337,7 @@ def main():
             cost += c
             bare += b
     if cost or bare:
-        print(f"== property and sim CPU-s, costliest first ({sum(c for c, _, _ in cost):.0f} CPU-s on the seed runners)")
+        print(f"== property and sim CPU-s, costliest first ({sum(c for c, _, _ in cost):.0f} CPU-s measured)")
         for c, w, name in sorted(cost, reverse=True):
             print(f"   {c:8.1f} CPU-s {w:7.1f} s  {name}")
         for name in bare:
@@ -285,17 +349,17 @@ def main():
     stale = []
     for name in sorted(n for n in names if n in ok and n not in bad):
         stages = ', '.join(sorted(ok[name]))
-        if all(r for _, _, r in names[name]):
-            issues = ', '.join(dict.fromkeys(i for i, _, _ in names[name]))
+        if all(k.rate for k in names[name]):
+            issues = ', '.join(dict.fromkeys(k.issue for k in names[name]))
             print(f"   KNOWN, passed: {name} ({stages}): fails at a rate ({issues}): passing this run is expected")
         else:
-            stale.append(f"   KNOWN-BUT-PASSED: {name} ({stages}; {', '.join(dict.fromkeys(i for i, _, r in names[name] if not r))})")
+            stale.append(f"   KNOWN-BUT-PASSED: {name} ({stages}; {', '.join(dict.fromkeys(k.issue for k in names[name] if not k.rate))})")
     if stale:
         print(f"== KNOWN-BUT-PASSED ({len(stale)}): listed, not `rate:`, passing in this run. Remove each line from {KNOWN} "
               "in this landing (and its issue, if fixed), or mark it `rate:` if its issue shows it fails on some seeds only")
         print("\n".join(stale))
     tail = f"; {len(stale)} KNOWN-BUT-PASSED to remove" if stale else ""
-    new = sum(1 for k, _, _ in rows if k in ("NEW", "NEW-TEXT"))
+    new = sum(1 for k, _, _ in rows if k in ("NEW", "NEW-TEXT", "NEW-COUNTS"))
     old = sum(1 for k, _, _ in rows if k == "KNOWN")
     if new:
         print(f"== gate FAILED: {new} NEW, {old} KNOWN{tail}")
