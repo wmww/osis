@@ -1,6 +1,0 @@
-# The paths walk drops a vouch the model leaves unapplied under a trusted leave
-> Summary: osis_perm::paths reads a vouch with no right at its key as Dropped by a trusted self-removal's seeds where roles-model `paths` reads it Unapplied: paths_content_agree_large fails at OSIS_PERM_SEED=148495092592 (content world 149452638306), on main's code too.
-> Priority: normal
-> Tags: perm, tests
-
-Content world 149452638306 (`paths::content::paths_content_agree_large`; the same world built by hand fails with main's walk and model): H pairs B, X, N5 on A at 1; H removes X at 7 listing, among others, X's vouch on A at 7 (ordered after the removal: same ms, H's tid first) keyed by K's grant of Z on A2; X's leave of A at 9 is trusted. The model reads X's vouch Unapplied (X holds no admin on A at its key); the walk reads it Dropped (the trusted leave seeds the held commits before it resting on X's edge, the never-applied vouch among them). Which reading the draft wants (notes/a1-spec/permissions.md §5.1 Trust set, Seeds: "the held edge-class commits ordered before R whose path holds h ... whose need R's value does not meet") decides the fix; build the hand world (both sides, one assertion) first, as a default test.

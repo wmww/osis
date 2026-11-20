@@ -1342,14 +1342,15 @@ fn past_end(w: &World, rules: &Rules, r: Id, j: Id) -> bool {
     rules.until == Until::PastEnd && w.ends(r).is_some() && matches!(w.commits[r].kind, Kind::Edge { until: Some(u), .. } if w.commits[j].ts >= u)
 }
 
-/// The vouches a walk applies after their removal, where it applies that removal too
-/// (notes/account-membership-design.md §4, It counts), and the (removal, role write) pairs they
-/// name.
+/// The vouches a walk applies after their removal, where it applies an edge write of that
+/// removal as a lowering (an explicit write: no self-removal, invite grant or finalize;
+/// notes/a1-spec/permissions.md §5.1 Vouches), and the (removal, role write) pairs they name.
 fn counting(w: &World, rules: &Rules, wk: &Walk) -> (Set, Vouched) {
     let (mut ids, mut out) = (Set::new(), Vouched::new());
+    let lowers = |a: Id| rules.lowering(w, a).is_some() && !w.leave(a) && !wk.pass.invited.contains(&a);
     for &i in &wk.pass.applied {
         if let Kind::Vouch { removal, .. } = &w.commits[i].kind {
-            if w.key(*removal) < w.key(i) && wk.pass.applied.iter().any(|&a| w.cid(a) == w.cid(*removal)) {
+            if w.key(*removal) < w.key(i) && wk.pass.applied.iter().any(|&a| w.cid(a) == w.cid(*removal) && lowers(a)) {
                 ids.insert(i);
                 out.extend(entries(w, rules, i));
             }

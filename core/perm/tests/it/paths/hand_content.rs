@@ -136,6 +136,41 @@ fn a_vouch_counts_only_after_its_removal_and_on_its_own_thing() {
     assert!(walk(&w, &all(&w, &[r])).1.counting().is_empty());
 }
 
+// spec/permissions.md §5.1 Vouches (draft: an entry counts only against an edge write applying
+// as a lowering, an explicit write; Trust set, Seeds: a part that never applied is seeded and
+// dropped all the same): X grants Z write on A and leaves A; N5 vouches against the leave,
+// naming the grant. The leave trusted (no draft trust set holds a self-removal; the generators
+// trust one), it seeds the grant and the vouch keeps nothing. X's vouch on A after H's removal of
+// X applies nowhere; the trusted leave seeds it (Dropped, not Unapplied), N5's vouch naming it.
+#[test]
+fn a_vouch_against_a_self_removal_never_counts() {
+    let mut w = account();
+    w.edge(H, 1, &[], A, X, Admin, &[]);
+    w.edge(H, 1, &[], A, N5, Admin, &[]);
+    let g = w.edge(X, 2, &[], A, Z, Write, &[]);
+    let leave = w.push(X, 3, &[], A, Kind::set(X, Gone).relying(H));
+    w.vouch(N5, 4, &[], A, leave, &[g]);
+    agree_all(&w, &[leave]);
+    let (inp, p) = walk(&w, &all(&w, &[leave]));
+    assert!(p.counting().is_empty());
+    assert_eq!((p.status(&inp.ids[&leave]), p.status(&inp.ids[&g])), (Some(Status::Applied), Some(Status::Dropped)));
+
+    // the content world's shape: X's vouch stamped with H's removal of X, ordered after it
+    let mut w = account();
+    w.edge(H, 1, &[], A, X, Admin, &[]);
+    w.edge(H, 1, &[], A, N5, Admin, &[]);
+    let r = w.edge(H, 3, &[], A, X, Gone, &[]);
+    let xv = w.vouch(X, 3, &[], A, r, &[]);
+    let leave = w.edge(X, 4, &[], A, X, Gone, &[]);
+    w.vouch(N5, 5, &[], A, leave, &[xv]);
+    agree_all(&w, &[leave]);
+    let (inp, p) = walk(&w, &all(&w, &[leave]));
+    assert!(p.counting().is_empty());
+    assert_eq!((p.status(&inp.ids[&leave]), p.status(&inp.ids[&xv])), (Some(Status::Applied), Some(Status::Dropped)));
+    let (inp, p) = walk(&w, &all(&w, &[]));
+    assert_eq!(p.status(&inp.ids[&xv]), Some(Status::Unapplied));
+}
+
 /// X's one commit grants G write on T1 and on T2, both through A; H removes X listing nothing; B,
 /// admin on T1 alone (H's grant through A), vouches on T1 for it.
 fn two_things() -> (World, Id, Id, Id) {

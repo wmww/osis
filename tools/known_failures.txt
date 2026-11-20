@@ -7,4 +7,3 @@
 held-model/props::settled_histories_keep_their_laws_large_spec_commits_5 rate:OSIS_HELD_START=387315248891 issues/held-model-until-no-deadline.md seed \d+: output changed before its first deadline
 osis-app/fields::a_tile_tells_of_emails_it_cannot_read - issues/app-tile-unreadable-emails-test.md Err\(osis::Error::TooLarge
 roles-model/custody::tests::random_worlds_hold_large rate:OSIS_ROLES_START=647344785567 issues/custody-model-flip.md FAIL flip: node \w+ at \d+ dropped a taken revocation
-osis-perm/paths::content::paths_content_agree_large rate:OSIS_PERM_SEED=148495092592 issues/paths-trusted-leave-seeds-unapplied-vouch.md part \d+: model Unapplied, walk Some\(Dropped\)

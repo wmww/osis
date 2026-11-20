@@ -146,6 +146,23 @@ fn a_vouch_counts_only_after_its_removal_and_on_its_own_thing() {
     assert!(!rd.applied.contains(&gs) && !rd.valid.contains(&kc));
 }
 
+/// notes/a1-spec/permissions.md §5.1 Vouches, the first counting condition: an entry counts only
+/// against a removal applying as a lowering (an explicit write), never against a self-removal. X
+/// grants Z write on A and leaves A; N5 vouches on A against the leave, naming the grant. Trusted
+/// (no draft trust set holds a self-removal, but the generators trust one), the leave seeds the
+/// grant, and the vouch keeps nothing.
+#[test]
+fn a_vouch_against_a_self_removal_never_counts() {
+    let mut w = account();
+    w.edge(H, 1, &[], A, X, Admin, &[]);
+    w.edge(H, 1, &[], A, N5, Admin, &[]);
+    let g = w.edge(X, 2, &[], A, Z, Write, &[]);
+    let leave = w.push(X, 3, &[], A, Kind::set(X, Gone).relying(H));
+    w.vouch(N5, 4, &[], A, leave, &[g]);
+    let rd = fixed(&w, &[leave]);
+    assert_eq!((rd.applied.contains(&leave), rd.counting.is_empty(), rd.dropped.contains(&g), rd.role(Z, A)), (true, true, true, Gone));
+}
+
 /// X's one commit grants G write on T1 and on T2, both through A; H removes X listing nothing; B,
 /// admin on T1 alone (H's grant through A), vouches on T1 for it.
 fn two_things() -> (World, Id, Id, Id) {
