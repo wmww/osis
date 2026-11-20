@@ -1,0 +1,17 @@
+#!/bin/sh
+# tools/land: push HEAD to origin's main, the landing step (notes/coordination.md, The task loop).
+# Pushes only when the tree has no uncommitted tracked change (policy would read what the push
+# lacks), `tools/policy.py --baseline` passes on that tree, and HEAD contains origin/main as just
+# fetched. One command, so no `;` or `echo $?` between the check and the push drops the check's
+# exit (that pushed policy violations to main twice). Exit 1 refused, else git push's.
+set -eu
+cd "$(git rev-parse --show-toplevel)"
+[ -z "$(git status --porcelain --untracked-files=no)" ] || { echo "land: uncommitted changes: commit them or drop them first; not pushed" >&2; exit 1; }
+git fetch -q origin main
+git merge-base --is-ancestor origin/main HEAD || {
+    echo "land: HEAD lacks origin/main ($(git rev-list --count HEAD..origin/main) commits): git -c rerere.enabled=false rebase origin/main, read its result; not pushed" >&2; exit 1; }
+python3 tools/policy.py --baseline || { echo "land: policy failed (above); not pushed" >&2; exit 1; }
+echo "land: pushing $(git rev-list --count origin/main..HEAD) commits:" >&2
+git log --oneline origin/main..HEAD >&2
+git push -q origin HEAD:main
+echo "land: main is $(git rev-parse --short HEAD)" >&2
