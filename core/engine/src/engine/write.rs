@@ -384,12 +384,76 @@ pub(crate) fn may_write_on(tx: &mut Tx<'_>, tid: &Tid) -> Result<MayWrite> {
     Ok(if tx.core.writable(tid) && super::secrets::ready_to_write_in(tx, tid)? { MayWrite::Yes } else { MayWrite::Later })
 }
 
-// Interim (notes/a1-spec/README.md step 2): the engine states the path to the thing it acts
-// on; until then the old information in the new form.
-/// The path a commit signed by `signer` acting for `actor` states: empty for the signer itself,
-/// else `actor` alone, named as purge author.
+// Interim (notes/a1-spec/README.md step 3): a role commit's paths, and a commit whose things'
+// paths differ (issues/hashed-paths-forced-suite-gaps.md), state this.
+/// The one path a commit signed by `signer` acting for `actor` states where it states no real
+/// one (`stated_paths`): empty for the signer itself, else `actor` alone, named as purge author.
 pub(crate) fn interim_path(signer: Tid, actor: Tid) -> osis_commit::Path {
     if actor == signer { osis_commit::Path::default() } else { osis_commit::Path::through(actor) }
+}
+
+/// The path from `node` into `tid` giving at least `need` at `ts` (notes/a1-spec/permissions.md §1 Path):
+/// the things listed, and whether its last hop is a record edge. A thing the commit creates
+/// (`records`) is reached as its mint admin is, then by its record edge. `None`: no path gives it.
+pub(crate) fn path_with(core: &Core, node: Tid, records: Records<'_>, tid: &Tid, need: Role, ts: Ts) -> Option<(Vec<Tid>, bool)> {
+    if *tid == node {
+        return Some((Vec::new(), true));
+    }
+    match record_chain(*tid, |t| records(t).map(CreationRecord::record_link)).next() {
+        Some(ChainStep::Up { admin, .. }) => {
+            let (mut listed, descent) = path_with(core, node, records, &admin, need, ts)?;
+            // reached by a direct edge, the mint admin is listed; by descent, the descent goes on
+            if !descent {
+                listed.push(admin);
+            }
+            Some((listed, true))
+        }
+        Some(ChainStep::Unknown(t)) => core.timelines.path_now(&node, &t, need, ts),
+        Some(ChainStep::Key(_) | ChainStep::TooDeep) | None => None,
+    }
+}
+
+/// What a commit states (spec/wire.md §4 field 2): the path every thing it writes is written
+/// along, where they are all one, as `CommitBuilder::path`. Each thing's is the path from the
+/// signer giving the strictest role its aspects need there (`path_with`): through the thing the
+/// commit acts for, named as purge author, where it acts for one, else naming the signer. Where
+/// no path gives it (a fire valid by its thing's setting, an actor holding no role on the thing)
+/// or the things' paths differ, `interim_path`; a role commit, a rotation and a seed re-seal state
+/// that too. A path listing more than `MAX_PATH_THINGS` things is refused.
+fn stated_path(core: &Core, plan: &CommitPlan, writes: &[AspectWrite]) -> Result<osis_commit::Path> {
+    let (node, actor) = (plan.signer, plan.actor);
+    let fallback = interim_path(node, actor);
+    if plan.kind.is_role() || plan.rotation.is_some() || plan.reseal.is_some() {
+        return Ok(fallback);
+    }
+    let mut need: BTreeMap<Tid, Role> = BTreeMap::new();
+    for w in writes {
+        let r = if plan.kind.is_compaction() { snapshot_role(w.ak.as_str()) } else { required_role(w.ak.as_str()) };
+        let e = need.entry(w.tid).or_insert(r);
+        *e = (*e).max(r);
+    }
+    let records: Records<'_> = &|t| plan.creates.get(t);
+    let mut one: Option<osis_commit::Path> = None;
+    for (t, r) in need {
+        let path = if actor == node {
+            path_with(core, node, records, &t, r, plan.ts).map(|(things, _)| osis_commit::Path { purge: 0, things })
+        } else {
+            path_with(core, node, records, &actor, r, plan.ts).zip(path_with(core, actor, records, &t, r, plan.ts)).map(|((to, _), (from, _))| {
+                let purge = to.len() + 1;
+                osis_commit::Path { purge, things: to.into_iter().chain([actor]).chain(from).collect() }
+            })
+        };
+        let Some(path) = path.filter(|p| p.things.iter().collect::<BTreeSet<_>>().len() == p.things.len() && !p.things.contains(&node)) else { return Ok(fallback) };
+        if path.things.len() > osis_base::format::MAX_PATH_THINGS {
+            return Err(Error::Misuse("a path through more than MAX_PATH_THINGS (64) holders"));
+        }
+        match &one {
+            Some(p) if *p != path => return Ok(fallback),
+            Some(_) => {}
+            None => one = Some(path),
+        }
+    }
+    Ok(one.unwrap_or(fallback))
 }
 
 /// May `node` act for `actor` at `ts`: it is the actor or holds write on it? A receiver judges a
@@ -692,9 +756,8 @@ fn build(tx: &mut Tx<'_>, plan: CommitPlan, deltas: Vec<Resolved>) -> Result<osi
         let bytes = if tx.core.forge_bad.contains(&(d.tid, d.ak.clone())) { osis_base::encode(&osis_base::Value::List(vec![osis_base::Value::Int(1)])) } else { bytes };
         writes.push(AspectWrite { tid: d.tid, ak: d.ak, lo: d.lo, hi: d.hi, delta: bytes, retention, replaces: d.replaces, original_floor: d.original_floor });
     }
-    // Interim (notes/a1-spec/README.md step 2): one acting thing, so one path for every thing a
-    // commit writes, stated once in the clear (`thing_paths` left empty)
-    let mut b = CommitBuilder::new(plan.kind, plan.ts, node, interim_path(node, plan.actor), plan.form);
+    let path = stated_path(tx.core, &plan, &writes)?;
+    let mut b = CommitBuilder::new(plan.kind, plan.ts, node, path, plan.form);
     if let Some(z) = tx.core.hashed_through
         && plan.rotation.is_none()
         && plan.reseal.is_none()

@@ -740,6 +740,36 @@ impl<'a> View<'a> {
         (best, expires)
     }
 
+    /// The ways into `y` giving at least `need` (`Ways`): breadth first, backward from `y`, over
+    /// edges alive at the view's `ts` each giving `need` or more, holders taken in the order the
+    /// edge state lists them; with the earliest `until` it followed. A mint ancestor two or more
+    /// record edges up reaches a thing by descent only (notes/a1-spec/permissions.md §1 Path, Hops), so
+    /// its direct edge on it is not followed. O(things reaching `y` × their edges into it).
+    pub(crate) fn ways_to(&self, y: &Tid, need: Role) -> (Ways, Option<WallMs>) {
+        let mut expires: Option<WallMs> = None;
+        let mut next: BTreeMap<Tid, Tid> = BTreeMap::new();
+        let mut queue = std::collections::VecDeque::from([*y]);
+        while let Some(t) = queue.pop_front() {
+            let parent = self.records.mint_admin(&t);
+            let up: BTreeSet<Tid> = std::iter::successors(parent.and_then(|p| self.records.mint_admin(&p)), |a| self.records.mint_admin(a)).take(osis_base::format::MAX_CHAIN_DEPTH).collect();
+            let mut found: Vec<Tid> = Vec::new();
+            self.each_holder(&t, |m, e| {
+                if e.alive_at(self.ts) && e.role >= need && !up.contains(m) {
+                    expires = earliest(expires, e.until);
+                    found.push(*m);
+                }
+            });
+            for m in found {
+                if m != *y && !next.contains_key(&m) {
+                    next.insert(m, t);
+                    queue.push_back(m);
+                }
+            }
+        }
+        osis_base::costs::count("perm: ways walked", next.len() as u64 + 1);
+        (Ways { to: *y, next }, expires)
+    }
+
     /// Effective invite on `n` given `x`'s roles (spec/permissions.md §2).
     pub fn invite(&self, best: &BTreeMap<Tid, Role>, n: &Tid) -> Option<Role> {
         let mut inv = None;
@@ -801,5 +831,40 @@ impl<'a> View<'a> {
             }
         }
         seen
+    }
+}
+
+/// Every thing's shortest way into one thing `to` by edges giving some role (`View::ways_to`):
+/// per thing, the next one on its way. A function of the edge state alone: the shortest way by
+/// edges, and among ways as short the one the backward search met first (holders in the order the
+/// edge state lists them).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Ways {
+    to: Tid,
+    next: BTreeMap<Tid, Tid>,
+}
+
+impl Ways {
+    /// The path from `from` into the thing (notes/a1-spec/permissions.md §1 Path): the things listed
+    /// between them, each hop a direct edge or a descent (a run of record edges, whose things in
+    /// between are not listed), and whether its last hop is a record edge (so the thing's own
+    /// dependents are reached from the same listed things); the empty path for `from` itself.
+    /// `None` where `from` has no way in. O(its length).
+    pub fn path(&self, records: &Records, from: &Tid) -> Option<(Vec<Tid>, bool)> {
+        if *from == self.to {
+            return Some((Vec::new(), true));
+        }
+        let mut hops = vec![*from];
+        let mut at = *from;
+        while at != self.to {
+            at = *self.next.get(&at)?;
+            hops.push(at);
+        }
+        let listed = hops.windows(3).filter_map(|w| match w {
+            [p, q, r] if !(records.is_record_edge(p, q) && records.is_record_edge(q, r)) => Some(*q),
+            _ => None,
+        }).collect();
+        let last = hops.iter().rev().nth(1).is_some_and(|p| records.is_record_edge(p, &self.to));
+        Some((listed, last))
     }
 }

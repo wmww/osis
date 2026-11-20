@@ -93,6 +93,7 @@ type Valid = BTreeMap<(Point, Tid, Role), crate::content::Validity>;
 
 /// One `Memo::on_now` entry.
 type OnNow = (Arc<BTreeMap<Tid, Role>>, Ts, Option<WallMs>);
+type WaysNow = (Arc<crate::graph::Ways>, Ts, Option<WallMs>);
 
 /// An explicit demotion as `Timeline::demoted_by` gives it: (node, thing, the role it fell below).
 pub type Demoted = (Tid, Tid, Role);
@@ -109,6 +110,10 @@ pub(crate) struct Memo {
     /// `roles_on` on the current edges, per thing: (the answer, from what ts, the earliest
     /// `until` it followed). A walk per thing while the edges stay and no followed edge ends.
     pub on_now: Mutex<BTreeMap<Tid, OnNow>>,
+    /// `ways_to` on the current edges, per (thing, role): (the ways, from what ts, the earliest
+    /// `until` they followed). A walk per thing and role while the edges stay and no followed edge
+    /// ends.
+    pub ways: Mutex<BTreeMap<(Tid, Role), WaysNow>>,
     /// Walks made for `on_now` (a measure).
     pub on_walks: std::sync::atomic::AtomicU64,
     /// What a node reaches over chained edges (`cert`), per node `closure` met: the asker (a
@@ -152,6 +157,7 @@ impl Memo {
         m(&mut self.valid).retain(|(_, t, _), _| !new.contains(t));
         m(&mut self.on_end).retain(|t, _| !new.contains(t));
         m(&mut self.on_now).retain(|t, _| !new.contains(t));
+        m(&mut self.ways).retain(|(t, _), _| !new.contains(t));
         m(&mut self.certificates).retain(|(_, t), _| !new.contains(t));
         for reach in m(&mut self.forward).values_mut() {
             // through mint admins that are new leaves too
@@ -180,6 +186,7 @@ impl Clone for Memo {
             valid: get(&self.valid),
             on_end: get(&self.on_end),
             on_now: get(&self.on_now),
+            ways: get(&self.ways),
             on_walks: n(&self.on_walks),
             forward: get(&self.forward),
             forward_walks: n(&self.forward_walks),
@@ -1194,6 +1201,27 @@ impl Timeline {
             m.insert(*thing, (r.clone(), ts, expires));
         }
         (r, expires)
+    }
+
+    /// The path from `node` into `thing` giving at least `need` on the current edges at `ts`
+    /// (`graph::Ways::path`): the things listed and whether the last hop is a record edge.
+    /// Walked once per thing and role while it holds (counted: "perm: ways walked").
+    pub fn path_now(&self, node: &Tid, thing: &Tid, need: Role, ts: Ts) -> Option<(Vec<Tid>, bool)> {
+        let held = |e: &WaysNow| e.1 <= ts && e.2.is_none_or(|u| ts.wall_ms() < u);
+        let cached = self.memo.ways.lock().ok().and_then(|m| m.get(&(*thing, need)).filter(|e| held(e)).map(|e| e.0.clone()));
+        let ways = match cached {
+            Some(w) => w,
+            None => {
+                let edges = self.edges_at(None);
+                let (w, expires) = View::at(&edges, Some(ts)).ways_to(thing, need);
+                let w = Arc::new(w);
+                if let Ok(mut m) = self.memo.ways.lock() {
+                    m.insert((*thing, need), (w.clone(), ts, expires));
+                }
+                w
+            }
+        };
+        ways.path(self.records(), node)
     }
 
     /// `roles_on` over the edges not in `skip`, each named (target, holder).

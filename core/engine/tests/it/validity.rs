@@ -4207,6 +4207,110 @@ fn a_hashed_commit_reads_alike_whatever_sections_opened_spec_wire_4() {
     assert_eq!(lp.peers[0].engine.get(&e, &ak("t:reg.0")).unwrap(), Some(s("on e")), "Alice reads E");
 }
 
+/// Bob (1) writes `m`: the header's path.
+fn bobs_path(lp: &mut LocalPeer, m: Mutation) -> osis_commit::Paths {
+    let id = lp.peers[1].commit(m).unwrap().unwrap();
+    lp.peers[1].engine.header(&id).unwrap().path.clone()
+}
+
+/// Bob (1) holds write on `chain[0]`, each thing of `chain` on the next, the last on `t`, and
+/// write on `d` directly; Alice (0) mints them all.
+fn holders_world(n: usize) -> (LocalPeer, Vec<Tid>, Tid, Tid) {
+    let mut lp = net(2, 0);
+    lp.sync_all().unwrap();
+    let chain: Vec<Tid> = (0..n).map(|_| new_thing(&mut lp, 0)).collect();
+    let (t, d) = (new_thing(&mut lp, 0), new_thing(&mut lp, 0));
+    let b = lp.peers[1].engine.me();
+    let mut holder = b;
+    for x in chain.iter().copied().chain([t]) {
+        set_edge(&mut lp.peers[0].engine, x, holder, Some(edge(Role::Write)), None);
+        holder = x;
+    }
+    set_edge(&mut lp.peers[0].engine, d, b, Some(edge(Role::Write)), None);
+    lp.sync_all().unwrap();
+    lp.advance(1_000);
+    (lp, chain, t, d)
+}
+
+// notes/a1-spec/permissions.md §1 Path, spec/wire.md §4 field 2: a write states the chain of
+// holders by which its signer reaches what it writes, naming the signer as purge author (the
+// thing it acts for, listed, where it acts for one): none for what it holds directly, three for a
+// thing reached through three; every node applies it as before (Interim, spec/permissions.md
+// §5.2). Interim (notes/a1-spec/
+// README.md step 2): where the things' paths differ the commit states the empty path for all.
+#[test]
+fn a_write_states_the_holders_it_goes_through_spec_wire_4() {
+    let (mut lp, chain, t, d) = holders_world(3);
+    let mut m = Mutation::new();
+    m.set(t, &REG, &s("on t")).unwrap();
+    assert_eq!(bobs_path(&mut lp, m), osis_commit::Paths::One(osis_commit::Path { purge: 0, things: chain.clone() }));
+    let mut m = Mutation::new();
+    m.set(d, &REG, &s("on d")).unwrap();
+    assert_eq!(bobs_path(&mut lp, m), osis_commit::Paths::One(osis_commit::Path::default()));
+    let mut m = Mutation::new();
+    m.set(chain[2], &REG, &s("on c2")).unwrap();
+    assert_eq!(bobs_path(&mut lp, m), osis_commit::Paths::One(osis_commit::Path { purge: 0, things: chain[..2].to_vec() }));
+    // acting for a holder: the path goes through it, naming it
+    let mut m = Mutation::new();
+    m.set(t, &REG, &s("as c0")).unwrap();
+    m.act_as(chain[0]);
+    assert_eq!(bobs_path(&mut lp, m), osis_commit::Paths::One(osis_commit::Path { purge: 1, things: chain.clone() }));
+    let mut m = Mutation::new();
+    m.set(t, &REG, &s("on t again")).unwrap();
+    m.set(d, &REG, &s("on d again")).unwrap();
+    assert_eq!(bobs_path(&mut lp, m), osis_commit::Paths::One(osis_commit::Path::default()), "paths differ");
+    lp.sync_all().unwrap();
+    for i in 0..2 {
+        let e = &mut lp.peers[i].engine;
+        assert_eq!((e.get(&t, &ak("t:reg.0")).unwrap(), e.get(&d, &ak("t:reg.0")).unwrap()), (Some(s("on t again")), Some(s("on d again"))), "peer {i}");
+        e.check_index();
+    }
+}
+
+// spec/wire.md §2 MAX_PATH_THINGS: a write through 64 holders states them all; one through 65 is
+// refused, naming the limit.
+#[test]
+#[ignore = "by hand: 66 role commits, about 10 s"]
+fn a_path_holds_at_most_max_path_things_spec_wire_2() {
+    let (mut lp, chain, t, _) = holders_world(osis_base::format::MAX_PATH_THINGS + 1);
+    let last = *chain.last().unwrap();
+    let mut m = Mutation::new();
+    m.set(last, &REG, &s("64 through")).unwrap();
+    let osis_commit::Paths::One(p) = bobs_path(&mut lp, m) else { panic!("one path") };
+    assert_eq!(p.things.len(), osis_base::format::MAX_PATH_THINGS);
+    let mut m = Mutation::new();
+    m.set(t, &REG, &s("65 through")).unwrap();
+    let err = lp.peers[1].commit(m).unwrap_err().to_string();
+    assert!(err.contains("MAX_PATH_THINGS"), "{err}");
+}
+
+// spec/wire.md §4 field 2, notes/principles.md Check scaling: finding a write's path walks the things reaching what it
+// writes, once per role change: as many at 10n role commits held elsewhere as at n, and none for
+// a second write while the roles stand.
+#[test]
+fn finding_a_path_does_not_grow_with_history_spec_wire_4() {
+    let walked = |n: usize| {
+        let (mut lp, _, t, _) = holders_world(1);
+        let b = lp.peers[1].engine.me();
+        for _ in 0..n {
+            let x = new_thing(&mut lp, 0);
+            set_edge(&mut lp.peers[0].engine, x, b, Some(edge(Role::Read)), None);
+        }
+        lp.sync_all().unwrap();
+        let count = |lp: &mut LocalPeer, v: &str| {
+            osis_base::costs::take();
+            let mut m = Mutation::new();
+            m.set(t, &REG, &s(v)).unwrap();
+            lp.peers[1].commit(m).unwrap().unwrap();
+            osis_base::costs::take().iter().find(|x| x.0 == "perm: ways walked").map_or(0, |x| x.2)
+        };
+        (count(&mut lp, "first"), count(&mut lp, "second"))
+    };
+    let (small, large) = (walked(3), walked(30));
+    assert_eq!(small, large, "at n and 10n role commits held elsewhere");
+    assert!(small.0 > 0 && small.1 == 0, "walked once while the roles stand: {small:?}");
+}
+
 // spec/wire.md §4 (one path): a writer states one path where every thing's is the same; Interim
 // (notes/a1-spec/README.md step 2): every commit the engine writes has one acting thing, so it
 // states its path once in the clear, whatever it writes: a creation (the thing and where it is

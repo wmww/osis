@@ -1065,6 +1065,18 @@ impl Timelines {
         (roles.get(node).copied(), until)
     }
 
+    /// The path from `node` into `thing` giving at least `need` on the current edges at `ts`
+    /// (`osis_perm::Timeline::path_now`): the things listed, and whether its last hop is a record
+    /// edge.
+    pub fn path_now(&self, node: &Tid, thing: &Tid, need: Role, ts: osis_base::Ts) -> Option<(Vec<Tid>, bool)> {
+        let Some(tl) = self.of.get(thing) else {
+            self.stamps.read(&Read::Things);
+            return None;
+        };
+        self.stamps.read(&Read::Into(*thing));
+        tl.path_now(node, thing, need, ts)
+    }
+
     /// Every actor's effective role on `thing` on the current edges at `ts`, and the earliest
     /// `until` before which they hold (`role_now` for every holder), read as it is and by the
     /// edges into `thing`.
