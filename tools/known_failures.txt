@@ -8,3 +8,4 @@ held-model/props::settled_histories_keep_their_laws_large_spec_commits_5 rate:OS
 osis-app/fields::a_tile_tells_of_emails_it_cannot_read - issues/app-tile-unreadable-emails-test.md Err\(osis::Error::TooLarge
 roles-model/custody::tests::random_worlds_hold_large rate:OSIS_ROLES_START=647344785567 issues/custody-model-flip.md FAIL flip: node \w+ at \d+ dropped a taken revocation
 osis-engine/rotation::tests_property::rotation_holds_large_spec_crypto_4 rate:OSIS_ROTATION_START=352928056231 issues/rotation-vouch-trigger-missed.md end of history: a vouch trigger missed
+osis-engine/order::held_set_decides_plain rate:OSIS_ORDER_SEED=96748645654 issues/order-settled-body-keeper.md settled: shows other than the node keeping every body
