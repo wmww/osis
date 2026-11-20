@@ -1086,6 +1086,12 @@ pub(crate) fn on_late(tx: &mut Tx<'_>, id: &CommitId, ais: Option<&BTreeSet<usiz
     Ok(())
 }
 
+/// Whether `(tid, ak)` lists copies of source `src`'s writes value-less as a commit not held here
+/// (`purge::rejudge_carried`'s entries).
+fn carried_valueless(core: &Core, tid: &Tid, ak: &Ak, src: &osis_crdt::Source) -> bool {
+    core.ix.valueless.get(&(*tid, ak.clone())).into_iter().flatten().any(|o| matches!(o, Owned::Dots { src: s, .. } if s == src))
+}
+
 /// Parts `ais` of applied commit `id`: expiry (now or by timer), held purge requests naming
 /// them, held snapshots' parts carrying purged values, and on a memory commit what it supersedes
 /// or covers. One held value-less (a copy of an expired or purged delta, joined stripped) is held
@@ -1104,9 +1110,10 @@ fn on_parts(tx: &mut Tx<'_>, id: &CommitId, h: &Header, ais: BTreeSet<usize>, pu
             }
         }
         purge::purge_arrived(tx, id, h, ai, purged)?;
-        // a snapshot's copies of commits not held here, judged by its facts
-        if h.kind.is_compaction()
-            && let Some(a) = h.aspects.get(ai)
+        // a snapshot's copies of commits not held here, judged by its facts; a commit whose copies
+        // were judged so: its header decides from now on (spec/commits.md §5 Without the header)
+        if let Some(a) = h.aspects.get(ai)
+            && (h.kind.is_compaction() || carried_valueless(tx.core, &a.tid, &a.ak, &h.form.own_source(h.signer, *id)))
         {
             purge::rejudge_carried(tx, &a.tid, &a.ak, purged)?;
         }

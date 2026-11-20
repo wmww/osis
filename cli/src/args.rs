@@ -277,7 +277,7 @@ pub enum Cmd {
         /// Only this commit's write
         #[arg(long, value_name = "C", conflicts_with = "author")]
         commit: Option<String>,
-        /// Only this actor's writes stamped before now, also those arriving later
+        /// Only this author's writes stamped before now, also those arriving later
         #[arg(long, value_name = "A")]
         author: Option<String>,
     },

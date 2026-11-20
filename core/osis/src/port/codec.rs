@@ -287,9 +287,9 @@ fn stamp_to(s: &Stamp) -> Value {
 }
 
 fn stamp_from(v: Value) -> Result<Stamp> {
-    let [id, actor, ts, received] = <[Value; 4]>::try_from(list(v, "stamp")?).map_err(|_| bad("stamp"))?;
+    let [id, author, ts, received] = <[Value; 4]>::try_from(list(v, "stamp")?).map_err(|_| bad("stamp"))?;
     let ts = Ts::from_u64(uint(&ts, "stamp")?).ok_or_else(|| bad("stamp"))?;
-    Ok(Stamp::new(CommitId(commit_id_from(&id)?), tid(&actor)?, ts, Time(uint(&received, "stamp")?)))
+    Ok(Stamp::new(CommitId(commit_id_from(&id)?), tid(&author)?, ts, Time(uint(&received, "stamp")?)))
 }
 
 const DERIVED: [DerivedFrom; 7] = [DerivedFrom::ValidityChanged, DerivedFrom::Expired, DerivedFrom::Purged, DerivedFrom::Arrived, DerivedFrom::LostAccess, DerivedFrom::Recovered, DerivedFrom::Released];

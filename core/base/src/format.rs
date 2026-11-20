@@ -77,8 +77,7 @@ pub const PREFIX_FIXED_LEN: usize = 28;
 /// Bytes of one prefix commitment: level, then the 32-byte blinded delete key (spec/wire.md §5).
 pub const COMMITMENT_LEN: usize = 33;
 /// Delete levels (spec/crypto.md §7): keys derived from the thing's admin secret, from the write
-/// secret of the actor directly above the author node (the author chain), from the thing's write
-/// secret. fixed.
+/// secret of the commit's purge author, from the thing's write secret. fixed.
 pub const DELETE_ADMIN: u8 = 1;
 /// See `DELETE_ADMIN`. fixed.
 pub const DELETE_AUTHOR: u8 = 2;

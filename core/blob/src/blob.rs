@@ -11,7 +11,7 @@ const MAX_LEVELS: usize = 3;
 /// Most groups a prefix lists: its le16 count (spec/wire.md §5).
 const MAX_GROUPS: usize = u16::MAX as usize;
 
-/// A delete level (spec/wire.md §1): 1 thing admin, 2 author chain, 3 thing write.
+/// A delete level (spec/wire.md §1): 1 thing admin, 2 the commit's purge author, 3 thing write.
 pub type Level = u8;
 
 /// A blob's class (spec/wire.md §5, spec/sync-ids.md §1): what a peer does with it. Durable

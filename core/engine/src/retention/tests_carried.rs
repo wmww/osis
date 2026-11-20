@@ -482,3 +482,42 @@ fn a_misnamed_purge_author_misleads_only_a_node_holding_no_honest_snapshot_spec_
         assert_eq!(reads_after(&mut lp, t, c, &held, me), honest_too, "honest snapshot held too {honest_too}");
     }
 }
+
+// spec/commits.md §5 (Without the header), spec/permissions.md §6 (author: the purge author with
+// write on the thing), issues/forged-copy-undetected.md: a writer's snapshot misnaming the purge
+// author of an ADMIN's write as the writer itself lets the writer's own request by author take
+// that write at a node holding the snapshot and the request alone: a writer erases a write only
+// admins may purge (`author_or_admin`, the admin its author), there. Admin 0, holding the header,
+// still reads it; reader 2 reads it again once the commit reaches it (the header decides), so
+// the loss lasts only while no honest carrying body reaches it: the lie never covers the
+// original (its facts disagree with the header, spec/commits.md §5 Covered), so honest holders
+// keep logging it. Today's behaviour, the owner's question (the issue).
+#[test]
+fn a_writers_misnamed_fact_lets_it_erase_an_admins_write_at_a_snapshot_only_node_spec_commits_5() {
+    let (mut lp, t) = world();
+    let mut m = Mutation::new();
+    m.retention(t, &reg(), Retention { by: PurgeBy::AuthorOrAdmin }).unwrap();
+    m.set(t, &reg(), &Value::Str("SECRET".into())).unwrap();
+    let c = lp.peers[0].commit(m).unwrap().unwrap();
+    lp.advance(1_000);
+    lp.sync(0, 1).unwrap();
+    let forger = lp.peers[1].engine.me();
+    let item = lp.peers[1].engine.purge_item(&c, t, reg()).unwrap();
+    let PurgeItem::Commit { ts, src, .. } = item else { unreachable!() };
+    lp.peers[1].engine.core.lie_facts = Some([((ts, src), osis_crdt::Fact { by: PurgeBy::AuthorOrAdmin, purge_author: Some(forger) })].into());
+    let lie = lp.peers[1].engine.snapshot(&t, &reg()).unwrap().unwrap();
+    lp.advance(1_000);
+    let p = request(&mut lp, 1, t, PurgeItem::Author { tid: t, ak: reg(), author: forger });
+    let secret = |lp: &mut LocalPeer, i: usize| lp.peers[i].engine.get(&t, &reg()).unwrap() == Some(Value::Str("SECRET".into()));
+    for id in [lie, p] {
+        let pk = lp.peers[1].engine.package(&id).unwrap().unwrap();
+        lp.deliver(2, &pk).unwrap();
+        lp.deliver(0, &pk).unwrap();
+    }
+    assert!(!lp.peers[2].engine.commit_ids().contains(&c), "the commit never reached the reader");
+    assert!(!secret(&mut lp, 2), "the writer's request took the admin's write at the reader");
+    assert!(secret(&mut lp, 0), "the admin, holding the header, still reads it");
+    let pk = lp.peers[0].engine.package(&c).unwrap().unwrap();
+    lp.deliver(2, &pk).unwrap();
+    assert!(secret(&mut lp, 2), "the header decides once it arrives");
+}

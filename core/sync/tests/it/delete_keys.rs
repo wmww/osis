@@ -15,7 +15,8 @@ use osis_base::{Ak, BlobId, CommitId, PurgeBy, SyncId, Tid, Value};
 use osis_blob::{DeleteItem, Level};
 use osis_crypto::{DeleteSecret, RoleKey, SigningSecret};
 use osis_engine::Mutation;
-use osis_proto::Code;
+use osis_proto::{Code, Msg, encode_frame};
+use osis_sync::Out;
 
 /// The role keys node `by` holds for node 1's head of S (thing `t`'s).
 fn head_keys(w: &mut World, by: usize, t: Tid, s: &SyncId) -> osis_engine::sync_ids::HeadKeys {
@@ -55,6 +56,17 @@ fn forged(w: &mut World, by: usize, of: &BlobId, keys: &osis_engine::sync_ids::H
 /// Node 1's store takes `item` under `s` by a store credential (`Store::take_delete`).
 fn take(w: &World, s: &SyncId, item: DeleteItem) -> Code {
     w.store(1).clone().take_delete(s, &[item], true).unwrap()[0]
+}
+
+/// Node `from` sends node 1 a Delete of `items` under `s` as a peer's frame on a connection up
+/// between them, and the world delivers it: node 1's session and its Delete handler
+/// (`inbox::serve`: the connection's credential for S, then the store) judge it as any peer's.
+/// The reply answers an id `from`'s session never used, which it drops; tests read the store.
+fn over_wire(w: &mut World, from: usize, s: &SyncId, items: Vec<DeleteItem>) {
+    let conn = w.links_of(from).into_iter().find(|(_, j)| *j == 1).map(|(c, _)| c).expect("a connection up to node 1");
+    let m = Msg::Delete { id: 0x3fff_0000, sync_id: *s, items };
+    w.apply_as(from, vec![Out::Send(conn, encode_frame(&m.encode()))]);
+    w.flush();
 }
 
 /// The level-`l` delete secret node `by` holds for blob `b` (from its `DeleteBasis`).
@@ -142,6 +154,38 @@ fn a_party_without_the_right_signs_no_delete_a_store_takes_spec_sync_ids_6() {
     assert!(!held(&w, &s, &b));
 }
 
+// spec/sync-ids.md §6 (Delete), spec/wire.md §11.2 (Delete): the two refusals above as a peer
+// sends them. Writer 2 sends node 1, in one Delete, its level-2 signature alone over a blob
+// holding an admin-only delta beside its own (one group of two covered), then writer 3 sends its
+// own level-2 key over writer 2's blob; each message also carries the sender's honest Delete of
+// a write of its own (`by_levels`), which node 1 takes: S was open by a store credential on the
+// connection, so the refusals are the levels'. Fails with the peer's path taking a Delete the
+// store's own check refuses.
+#[test]
+fn a_peers_delete_by_levels_is_judged_as_the_stores_spec_sync_ids_6() {
+    let (mut w, t, s) = crate::deletes::four();
+    let mixed = write(&mut w, 2, t, &[("u:a.0", PurgeBy::Admin), ("u:b.0", PurgeBy::AuthorOrAdmin)]);
+    let own2 = write(&mut w, 2, t, &[("u:c.0", PurgeBy::AuthorOrAdmin)]);
+    let theirs = write(&mut w, 2, t, &[("u:d.0", PurgeBy::AuthorOrAdmin)]);
+    let own3 = write(&mut w, 3, t, &[("u:e.0", PurgeBy::AuthorOrAdmin)]);
+    w.run();
+    let [bm, b2, bt, b3] = [mixed, own2, theirs, own3].map(|c| entry(&mut w, if c == own3 { 3 } else { 2 }, &s, &c));
+    let keys2 = head_keys(&mut w, 2, t, &s);
+    let two = secret(&mut w, 2, &bm, 2);
+    let alone = forged(&mut w, 2, &bm, &keys2, &[(2, &two)], &s, &bm);
+    let honest2 = by_levels(&mut w, 2, t, &s, &b2).expect("writer 2 covers its own write");
+    over_wire(&mut w, 2, &s, vec![alone, honest2]);
+    assert!(!held(&w, &s, &b2), "writer 2's honest Delete went: S is open on the connection");
+    assert!(held(&w, &s, &bm), "a Delete covering one group of two, sent by a peer");
+    let keys3 = head_keys(&mut w, 3, t, &s);
+    let its = secret(&mut w, 3, &b3, 2);
+    let other = forged(&mut w, 3, &bt, &keys3, &[(2, &its)], &s, &bt);
+    let honest3 = by_levels(&mut w, 3, t, &s, &b3).expect("writer 3 covers its own write");
+    over_wire(&mut w, 3, &s, vec![other, honest3]);
+    assert!(!held(&w, &s, &b3), "writer 3's honest Delete went");
+    assert!(held(&w, &s, &bt), "another purge author's level-2 key, sent by a peer");
+}
+
 /// The blobs of commit `c` node 1 holds under `s` (as node 0 opens them).
 fn blobs_of(w: &mut World, s: &SyncId, c: &CommitId) -> Vec<BlobId> {
     let es = w.store(1).entries(s).unwrap();
@@ -163,10 +207,14 @@ fn told(w: &mut World) {
 // author's, never revoked) and the sync key it still holds, node 2 deletes the write at node 1
 // with no purge: node 1 takes it. The holders log the body again once; node 2 deletes those too
 // and they stay deleted (a second delete stands until the head moves or a part falls), while every
-// reader still reads the write. What it does today (notes/purge-model.md, For Tess 4): an old
-// writer keeps its writes out of a store that cannot read, not erased while a holder keeps the
-// body. Node 2 removed outright instead: S's sync key rotates, and its old keys' Delete answers
-// 9 (an earlier head's key): the blob stays.
+// reader still reads the write. A known weakness, pinned as today's behaviour
+// (issues/demoted-writer-deletes-at-stores.md, notes/purge-model.md For Tess 4): a writer lowered
+// to read, holding no author's right any more (spec/permissions.md §6), keeps its old writes out
+// of a store that cannot read, so a reader syncing only through that store lacks them; nothing is
+// erased while a holder keeps the body. The lowering rotated write (its write key is an earlier
+// head's), not sync, and a level-2 Delete goes with the sync key. Node 2 removed outright
+// instead: S's sync key rotates, and its old keys' Delete answers 9 (an earlier head's key): the
+// blob stays.
 #[test]
 fn a_demoted_writers_old_keys_keep_its_writes_out_of_an_unread_store_spec_permissions_6() {
     for lower in [true, false] {
@@ -187,6 +235,7 @@ fn a_demoted_writers_old_keys_keep_its_writes_out_of_an_unread_store_spec_permis
             assert_eq!(blobs_of(&mut w, &s, &c), vec![b], "removed: the blob stays");
             continue;
         }
+        assert!(head_keys(&mut w, 2, t, &s).write.is_none_or(|k| Some(k.verifying_key()) != keys.write.as_ref().map(|k| k.verifying_key())), "demoted: write rotated, its write key is an earlier head's");
         assert_eq!(take(&w, &s, old), Code::OK, "demoted: its old keys delete");
         told(&mut w);
         let again = blobs_of(&mut w, &s, &c);

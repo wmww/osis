@@ -79,8 +79,9 @@ pub(crate) fn note_role_sigs(core: &mut Core, kind: osis_commit::Kind, at_epoch:
     }
 }
 
-/// Adds a commit acting on a thing other than its signer to the indexes of acting
-/// (`Indexes::acting_on`, `chains_on`, `by_actor`), and a split commit with a path undecided here
+/// Adds a commit whose purge author is not its signer to the indexes the old walk reads it by as
+/// acting for that thing (Interim, notes/a1-spec/README.md step 3: `Indexes::acting_on`,
+/// `chains_on`, `by_actor`), and a split commit with a path undecided here
 /// to `Indexes::paths_unknown`.
 fn index_acting(core: &mut Core, id: &CommitId, h: &crate::engine::View) {
     if let Some(x) = h.other_purge_author() {
