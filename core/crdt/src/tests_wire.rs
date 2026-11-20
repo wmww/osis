@@ -550,3 +550,46 @@ fn value_removal_form_spec_3_2() {
         assert!(crdt_model::wire::decode_delta(&bytes, &mut Ctx::writer(mw.ts, mw.source.clone(), mw.lo, mw.hi())).is_err(), "the model refuses it: {bad:?}");
     }
 }
+
+/// §2.1, §3.2 `PosW`, §3.3 rule 5: a position write stamped with its element's dot is that
+/// element's creation (a dot is one write), so a `PosW` carrying one, beside the creation (a
+/// later `ts`) or in a run without it, is bad input at both decoders, the streaming one too: no
+/// node holds such a write (winners take that stamp as the creation's own). The bytes are a
+/// carried move under counter 9 with the counter set to the element's (no encoder writes one).
+#[test]
+fn a_position_write_stamped_with_its_elements_dot_is_bad_input_spec_3_2() {
+    use crdt_model::stamp::{Dot as MDot, Stamp as MStamp};
+    use crdt_model::state::{Anchor as MAnchor, Composite, Content, Frag as MFrag, SeqElem as MElem};
+    let src = MSource::session(1, 0);
+    let (a, other) = (MDot { source: src.clone(), ctr: 1 }, MDot { source: src.clone(), ctr: 9 });
+    let at = |t: u64, d: &MDot| MStamp { ts: t << 16, dot: d.clone() };
+    let text = |e: MElem| MFrag::Seq { text: true, c: Composite { reset: None, w: None, w_valueless: false }, elems: BTreeMap::from([(a.clone(), e)]) };
+    let mut beside = MElem::new(at(10, &a), MAnchor::Head, Content::Char('a'));
+    beside.pos.insert(0, (at(30, &other), MAnchor::Head, None));
+    let alone = MElem::write(Content::None, vec![(at(30, &other), MAnchor::Head, None)], None);
+    // the commits table's stamp of counter 9 (`[ts, Ci, 9]`) given counter 1
+    fn patch(v: &mut Value) -> usize {
+        match v {
+            Value::List(xs) if matches!(xs.as_slice(), [Value::Int(_), Value::Int(0), Value::Int(9)]) => {
+                xs[2] = Value::Int(1);
+                1
+            }
+            Value::List(xs) => xs.iter_mut().map(patch).sum(),
+            _ => 0,
+        }
+    }
+    let decodes = |bytes: &[u8]| {
+        let checked = decode_snapshot(bytes, &snap_cx(), &mut Interner::new(), None).map(|_| ()).map_err(|e| e.class());
+        let streamed = crate::stream_snapshot(bytes, &snap_cx(), &mut Interner::new(), None, &mut |_| Ok(())).map(|_| ()).map_err(|e| e.class());
+        (checked, streamed)
+    };
+    for e in [beside, alone] {
+        let bytes = crdt_model::wire::encode_snapshot(&text(e), &[], [3; 16], &mut Ctx::new(1 << 40, MSource::session(250, 0), 1));
+        assert_eq!(decodes(&bytes), (Ok(()), Ok(())), "the move under counter 9 is carried");
+        let mut v = osis_base::cbor::decode(&bytes, &osis_base::cbor::Limits::DEFAULT).unwrap();
+        assert_eq!(patch(&mut v), 1);
+        let forged = osis_base::encode(&v);
+        assert_eq!(decodes(&forged), (Err(ErrorClass::BadInput), Err(ErrorClass::BadInput)), "{v:?}");
+        assert!(crdt_model::wire::decode_snapshot(&forged, &mut Ctx::new(1 << 40, MSource::session(250, 0), 1)).is_err(), "the model refuses it");
+    }
+}

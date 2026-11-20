@@ -1,0 +1,13 @@
+# A writer's forged copy of another's write changes what it reads, unattributed and undetected
+> Summary: a valid snapshot may carry another author's write under its stamp with another payload; copy order (spec/crdt.md §4.1) can pick the forged payload, so every reader shows the forger's value in place of the author's, with `changed` still naming the author's commit and no history entry for the change. A node holding both copies has proof (the author's signed delta, the forger's signed snapshot) but by spec never compares them. Should it?
+> Priority: low
+> Tags: security, crdt, tess-call
+
+What a forger (any writer of the thing) can do, by spec (spec/permissions.md §5.2 Copies):
+- Copy order decides each part by bytes (the greater value, a valued copy over a value-less one), so the forger picks a payload that wins: every node holding both copies reads it (osis-engine `retention::tests_forged`: all nodes alike, the forger's reference in place of admin 0's int).
+- The author's write is not dead (copies are one write, spec/crdt.md §4.8), so its body is not replaced and stays (never covered by the forger's snapshot: spec/commits.md §5 Covered), and kept history shows no change. `Osis::changed` names the author's commit (snapshots are no change, notes/api.md Attribution); a watch hears the snapshot as `Origin` only where it arrives after the original.
+- An app pairing `changed` with the read ("edited by A") shows the forger's value under A's name. No API call attributes a value, so no API states it; but nothing shows the forger either.
+
+Not wider than other snapshot powers: a writer's snapshot may carry a write no one made, under any stamp below its own (vouched, never judged as its claimed author's), with the same read and `changed`; that one at least kills the author's write, so history shows it replaced (by no attributable commit). Retention: a copy's superseding is dated at stamps no earlier than the victim's own, as a backdated replace is (issues/backdated-replace-cuts-history.md); same right (write).
+
+The model question: a copy differing from a held original in a value (not by expiry, purge or key erasure) is a signed contradiction of a signed delta. Options: (1) as now, never compared; (2) a node holding both judges the snapshot invalid (it vouches for something its signer did not see), or flags its signer to the host, the read keeping the original's payload; (3) copies differing in value never join (the original's payload wins wherever held). (2) and (3) make reads depend on whether the original is held, which (1) avoids for nodes holding the snapshot alone anyway; a fabricated write (no original anywhere) stays undetectable under any option.

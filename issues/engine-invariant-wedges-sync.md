@@ -1,5 +1,5 @@
 # A broken engine invariant on one commit stops the node, and spins it on reloads
-> Summary: an engine `Corrupt` (or other local-class error) while applying a commit is lossless but a deterministic one stops the node for good: node-sync's step fails at every retry, and one in a re-examination round reloads the store in a loop with no pending commit of that round applying. No peer input is known to reach one (spec/commits.md §4: no local error from peer bytes); the failure mode for an engine bug stays: proposal below (set the faulting commit aside as locally unappliable). One encoder path left to check.
+> Summary: an engine `Corrupt` (or other local-class error) while applying a commit is lossless but a deterministic one stops the node for good: node-sync's step fails at every retry, and one in a re-examination round reloads the store in a loop with no pending commit of that round applying. No peer input is known to reach one on apply (spec/commits.md §4: no local error from peer bytes; a writer's oversized collection fails compaction, issues/collection-past-two-page-levels.md); the failure mode for an engine bug stays: proposal below (set the faulting commit aside as locally unappliable).
 > Priority: normal
 > Tags: engine, sync, security
 
@@ -16,7 +16,7 @@ Tests: `LocalPeer::receive_with` panics on `Error::Corrupt`, so engine tests and
 | `retention/bounds.rs` `judge_replaced_at` (tick, setting change, open, purge-on-replace) | a body's dead write with no superseder in another held body | Was, same classes (a copy swap read as a death; a removal held only by the judged body hiding the state's copy). Closed alike; any held body may hold the superseder. |
 | `engine/refs.rs` reference and ticket counts below zero, `refs/kept.rs`, `tree_refs.rs` | a join's reach missing a value whose read it moves, so the index misses an increment and a later decrement goes below zero | Was: a value removal copy naming another reference showed elements of the first again outside the set's reach. Closed: a set's reach takes the references the state's records at the delta's dots name (`Set::at`), a paged set loads them (`Fragment::dot_values`); the reach law's read-values assertion runs over every history. |
 | `apply/atomic.rs` "a verified delta failed to decode again" | decode-only reread of bytes this node checked | No: the checked and checking decoders give the same pieces for every accepted input (osis-crdt `tests_stream`). |
-| crdt `Error::Mismatch` (local) from `codec` "fragment needs a third page level" | encoding a state the node stores or snapshots | To check: whether a joined state built from accepted peer deltas can need a third page level when the node pages it (the read-depth rule bounds nesting; not traced). |
+| crdt `Error::Mismatch` (local) from `codec::link_list` "fragment needs a third page level" | encoding a snapshot of a collection past two page levels (about 1 GB or more of one array) | Yes, by any writer growing one collection (honest growth too): a writer node's compaction of the aspect fails each tick (issues/collection-past-two-page-levels.md). Not reached on apply (paged states are kept by the page index). |
 | `flows/account.rs` "the account's open epoch" | sealing a box (a local write) | No (local action). |
 | the rest (about 150 sites: index rows, records, pages, keys, counters this node wrote) | reading back the node's own store | No: store damage only. |
 
@@ -27,6 +27,8 @@ What it needs:
 - a durable `unappliable` row per commit with the build that set it, read at open: a newer build clears them and the commits are examined again.
 - `run_taken` examining commits one transaction each after a round fails (or bisecting the round), so the round's other commits apply; `reload_owed` dropped for logic faults.
 - sync: an unappliable commit counts as received (cursors pass it) but its parts as missing for judging, so peers' copies are not fetched in a loop; held for retry.
+- a set-aside commit counts as not applied for everything the node writes or claims: frontiers of its snapshots and covers (else a cover drops peers' bodies it does not carry), addenda, a removal's frontier.
+- `Corrupt` from store damage (a bad row) is not a logic fault: setting aside commits for it hides the damage; it stays a node error.
 - tests: a planted fault on one commit of a round (a test hook in the apply path) leaves the others applied, the node serving, the fault reported, and the commit applied after a reopen with the hook cleared.
 
 Also owed (notes/sync-facade.md Pending): one small world per wait reason and waking event asserting `lost_wakes` empty; a box the reading-only budget refused, freed by room alone, has no wake until the next arrival or tick.

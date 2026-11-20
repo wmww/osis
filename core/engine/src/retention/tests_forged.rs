@@ -114,6 +114,76 @@ fn carried(d: &MFrag) -> Option<Fragment> {
     osis_crdt::decode_snapshot(&bytes, &cx, &mut Interner::new(), None).ok().map(|s| s.fragment)
 }
 
+/// Writer 1 forges two snapshots carrying copies `a` and `b` of one write (one stamp, other
+/// payloads); peer 0 receives them in that order, peer 2 reversed: no node fails, all read alike
+/// (the forger's own applies included). What every node reads.
+fn forged_pair(a: &MFrag, b: &MFrag) -> Option<Value> {
+    let (mut lp, t) = world();
+    let (fa, fb) = (carried(a).expect("a has a wire form"), carried(b).expect("b has a wire form"));
+    let ca = forge(&mut lp, t, fa).expect("the forger makes a");
+    lp.advance(10);
+    let cb = forge(&mut lp, t, fb).expect("the forger makes b");
+    for c in [&ca, &cb] {
+        deliver(&mut lp, 0, c);
+    }
+    for c in [&cb, &ca] {
+        deliver(&mut lp, 2, c);
+    }
+    settle_alike(&mut lp, t);
+    lp.peers[2].engine.get(&t, &ak()).unwrap()
+}
+
+/// Model stamp `(t, (session 1, ctr))`, and its dot.
+fn mstamp(t: u64, ctr: u64) -> crdt_model::stamp::Stamp {
+    crdt_model::stamp::Stamp { ts: t << 16, dot: mdot(ctr) }
+}
+
+fn mdot(ctr: u64) -> crdt_model::stamp::Dot {
+    crdt_model::stamp::Dot { source: MSource::session(1, 0), ctr }
+}
+
+// spec/crdt.md §4.1, §4.8, §5.5: copies of one value removal naming other references (and parts):
+// one write, whichever wins; the element the losing copy hid shows again, the one the winning
+// copy hides dies at the removal. Fails with a removal keyed by its reference and parts.
+#[test]
+fn forged_copies_of_a_value_removal_fail_no_node_spec_crdt_5_5() {
+    use crdt_model::state::{Composite, Elem as MElem, Removal};
+    use crdt_model::value::Value as MValue;
+    let (wa, wb) = (MValue::Weak([1; 15]), MValue::Weak([2; 15]));
+    let elem = |ctr: u64, v: &MValue| (mdot(ctr), MElem { reset: None, frag: Some(Box::new(MFrag::Register { reset: None, write: Some((mstamp(5, ctr), Some(v.clone()))) })), gone: None });
+    let removal = |v: &MValue| (mdot(9), MElem { reset: None, frag: None, gone: Some(Removal { stamp: mstamp(8, 9), value: v.clone(), seen: vec![(mdot(1), 3)] }) });
+    let set = |elems: Vec<(crdt_model::stamp::Dot, MElem)>| MFrag::Set { c: Composite::default(), elems: elems.into_iter().collect() };
+    let a = set(vec![elem(1, &wa), elem(2, &wb), removal(&wa)]);
+    let b = set(vec![removal(&wb)]);
+    // the copy naming B wins (the greater reference): B hidden, A shows again
+    assert_eq!(forged_pair(&a, &b), Some(Value::Set([Value::Weak(Tid::from_bytes([1; 15]))].into_iter().collect())));
+}
+
+// spec/crdt.md §4.1, §5.1, §7: copies of one stamp, a register write and a text's reset at the
+// aspect root (another encoding): the write implies the reset, so nothing dies. Fails without
+// a register write standing for the reset of its stamp.
+#[test]
+fn a_forged_reset_copy_of_a_register_write_fails_no_node_spec_crdt_5_1() {
+    use crdt_model::state::Composite;
+    let write = MFrag::Register { reset: None, write: Some((mstamp(5, 3), Some(crdt_model::value::Value::Int(2)))) };
+    let reset = MFrag::Seq { text: true, c: Composite { reset: Some(mstamp(5, 3)), w: None, w_valueless: false }, elems: Default::default() };
+    assert_eq!(forged_pair(&write, &reset), Some(Value::Int(2)));
+}
+
+// spec/crdt.md §4.1, §4.8 When, §5.7: an undelete and a forged delete copy of its flag write (one
+// stamp): the delete wins the tie, so the element's creation dies at that stamp. Fails with a
+// creation dying only by a delete stamped after the latest undelete.
+#[test]
+fn a_forged_delete_copy_of_an_undelete_fails_no_node_spec_crdt_4_8() {
+    use crdt_model::state::{Anchor as MAnchor, Composite, Content, SeqElem as MSeqElem};
+    let text = |e: MSeqElem| MFrag::Seq { text: true, c: Composite::default(), elems: [(mdot(1), e)].into_iter().collect() };
+    let mut undeleted = MSeqElem::new(mstamp(4, 1), MAnchor::Head, Content::Char('d'));
+    undeleted.deleted = Some((mstamp(25, 7), false));
+    undeleted.undel = Some('d');
+    let deleted = MSeqElem::flag(mstamp(25, 7), true, None);
+    assert_eq!(forged_pair(&text(undeleted), &text(deleted)), Some(Value::Str(String::new())));
+}
+
 /// Seed `k`'s forged history (crdt-model's generators, notes/crdt.md Tests): writers 0 and 1
 /// sharing a source and clock (copies of one write differing in payload, one dot under two
 /// stamps) on a random type, or hostile single-record text and list writes.

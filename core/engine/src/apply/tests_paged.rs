@@ -1508,3 +1508,48 @@ fn internal_reads_hold_a_piece_at_a_time_spec_wire_12() {
     assert!(big[0] <= 2 * small[0] && big[0] * 8 < big[1], "a state piece, flat in the size: {says}");
     assert!(big[2] * 3 < big[3], "a body group, far below the body: {says}");
 }
+
+/// spec/crdt.md §4.1, §4.8, §8: a paged set of references nested in a map entry (`mix`, history
+/// kept); node 1 forges snapshots carrying copies of the set's lowest and highest elements'
+/// writes, each holding one new, greater reference (copy order picks it: two elements then read
+/// as one value). Node 3, holding the fill, applies them page by page as it does whole: the
+/// set's reach takes the references the state's copies at the forged dots name (the reference
+/// index moves off the replaced ones), and nothing fails.
+#[test]
+fn forged_copies_in_a_paged_nested_set_apply_as_whole_spec_crdt_4_1() {
+    let (c, outs) = both(|w| {
+        let (t, a) = (w.t, aks()[1].clone());
+        let weak = |i: u64| Value::Weak(Tid::from_bytes({
+            let mut b = [0u8; 15];
+            b[7..].copy_from_slice(&i.to_be_bytes());
+            b
+        }));
+        let n = 4000;
+        let mut m = Mutation::new();
+        m.set(t, &a, &Value::Map(osis_base::ValueMap::from([(Value::Str("refs".into()), Value::Set((1..=n).map(weak).collect())), (Value::Str("x".into()), Value::Int(1))]))).unwrap();
+        let fill = w.lp.peers[0].commit(m).unwrap().unwrap();
+        let pk = packages(w, 0, &[fill]);
+        w.lp.deliver(1, &pk[0]).unwrap();
+        w.lp.deliver(3, &pk[0]).unwrap();
+        let st = w.lp.peers[1].engine.stored_state(&t, &a).unwrap().unwrap();
+        // the set's elements: every write but the entry creations, lowest and highest counter
+        let mut ws: Vec<(osis_crdt::Dot, osis_base::Ts)> = st.writes().into_iter().filter_map(|(d, ts)| Some((d, ts?))).collect();
+        ws.sort_by_key(|(d, _)| d.ctr);
+        let (lo, hi) = (ws[ws.len() - n as usize].clone(), ws[ws.len() - 1].clone());
+        let copy = |(d, ts): &(osis_crdt::Dot, osis_base::Ts), v: Value| {
+            let mut b = osis_crdt::DeltaBuilder::new(&st, osis_crdt::Writer::new(*ts, d.src.clone(), d.ctr));
+            b.apply(&PathOp { path: vec![PathSeg::Key(Value::Str("refs".into()))], op: Op::Add(v) }, &osis_crdt::AnyView).unwrap();
+            b.finish().unwrap().0
+        };
+        let mut out = Vec::new();
+        for (x, v) in [(&lo, weak(n + 1)), (&hi, weak(n + 1))] {
+            w.lp.advance(1_000);
+            let now = osis_base::Ts::make(w.lp.peers[1].engine.now(), 0).unwrap();
+            out.push(forge_snapshot(w, 1, &a, now, copy(x, v), &|_, _| {}));
+        }
+        assert!(out[0].blobs.is_empty(), "a copy is one element: unpaged");
+        out
+    });
+    assert!(outs.iter().all(|o| o.contains("Applied")), "{outs:?}");
+    assert!(c.get("state page load").is_some_and(|n| *n > 0) && c.get("apply: piece").is_some_and(|n| *n > 0), "the nested set paged: {c:?}");
+}
