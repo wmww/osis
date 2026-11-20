@@ -321,13 +321,23 @@ pub(crate) fn reach_holds_the_change(before: &Fragment, after: &Fragment, y: &Fr
         m
     };
     let at = before.reach(y);
-    assert_eq!(diff(&at, &after.reach_after(y, &at)), diff(before, after), "a join changes read values only at its reach");
+    let at_after = after.reach_after(y, &at);
+    assert_eq!(diff(&at, &at_after), diff(before, after), "a join changes read values only at its reach");
     let dead = |b: &Fragment, a: &Fragment| {
         let mut w = b.winners();
         w.extend(y.winners());
         w.minus(&a.winners())
     };
-    assert_eq!(dead(&at, &after.reach_after(y, &at)), dead(before, after), "a join supersedes at its reach what it supersedes in the whole state");
+    let killed = dead(&at, &at_after);
+    assert_eq!(killed, dead(before, after), "a join supersedes at its reach what it supersedes in the whole state");
+    // what the engine dates a death by (`Killed::note`): each write dead at the reach dies by a
+    // write held there before the join or in the delta, winning or not
+    let mut by: crate::ByWrite<()> = crate::ByWrite::default();
+    by.note(&at.held_writes(), |_, _| ());
+    by.note(&y.held_writes(), |_, _| ());
+    for w in killed {
+        assert!(by.first_superseding(&w, |s, _| Some(s.ts)).is_some(), "a write dead at the reach dies by a write held there before the join: {w:?}");
+    }
 }
 
 /// The history joined in creation order, then twice in a random order with duplicates, by the

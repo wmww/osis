@@ -380,7 +380,7 @@ fn bounded_part(core: &Core, c: &CommitId, tid: &Tid, ak: &Ak) -> Option<usize> 
 
 /// The writes joins on an aspect superseded (spec/crdt.md §4.8), for `mark_killed`, by dot;
 /// `at`, the latest among them of the earliest stamp superseding each (`ByWrite::first_superseding`)
-/// among the join's writes (`d`'s, the state's at its reach before and after): no earlier than
+/// among the join's writes (`d`'s, the state's at its reach), winning or not: no earlier than
 /// any death (that write is held), and a function of the dying write and what lies on its path,
 /// so the same however a delta was split. Noted join by join (a whole delta, each of its
 /// pieces, a paged reset's skeleton and each page): the reaches together are the whole join's,
@@ -396,8 +396,11 @@ pub(crate) struct Killed {
 impl Killed {
     /// Notes the writes the join of `d` into `st` superseded: `before` (`Killed::before`) against
     /// `st` after the join, at the same records of each key (`Fragment::reach_after`: a record
-    /// the join took out of `d`'s reach is no death). A dead write's superseder wins before the
-    /// join (`d`'s) or after it (osis-crdt `winners_from_scratch_*`); none is `Corrupt`.
+    /// the join took out of `d`'s reach is no death). Each dies at the earliest write held at the
+    /// join's reach that supersedes it, winning or not (spec/crdt.md §4.8 When: a creation
+    /// beating a move stamped below it supersedes it though a delete beat the creation); the
+    /// join holds no write the reach before and `d` did not, and one of them supersedes every
+    /// dead write (osis-crdt `winners_from_scratch_*`), so none is `Corrupt`.
     pub(crate) fn note(&mut self, before: &KillBefore, st: &Fragment, d: &Fragment) -> Result<()> {
         let after = st.reach_after(d, &before.reach).winners();
         let dead = before.winners.minus(&after);
@@ -405,8 +408,8 @@ impl Killed {
             return Ok(());
         }
         let mut by = osis_crdt::ByWrite::<()>::default();
-        by.note(&before.winners, |_, _| ());
-        by.note(&after, |_, _| ());
+        by.note(&before.reach.held_writes(), |_, _| ());
+        by.note(&d.held_writes(), |_, _| ());
         for w in dead {
             let first = by.first_superseding(&w, |s, _| Some(s.ts)).ok_or(Error::Corrupt("a dead write nothing in its join supersedes"))?;
             self.at = self.at.max(Some(first));
