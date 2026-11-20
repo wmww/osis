@@ -491,14 +491,9 @@ fn search(family_step: usize, random_worlds: u64, story: u64) {
     assert!(r.copies > jobs.len() && r.leaves > 0 && r.waits > 0 && r.duty > 0, "copies {}, leaves {}, waits {}, duty {}", r.copies, r.leaves, r.waits, r.duty);
 }
 
-#[test]
-#[ignore = "property"]
-fn the_derivation_agrees_with_the_model_plain_spec_permissions_4() {
-    search(97, 20, 2);
-}
-
 /// Full size (`OSIS_FULL=1`): every 17th family world, 1500 random and 60 story seeds; the
-/// gate's a tenth of the seeds and every 97th family world.
+/// gate's a tenth of the seeds and every 97th family world. No `_plain` twin: at the gate's one
+/// offset it would run a subset of these worlds again.
 #[test]
 #[ignore = "property"]
 fn the_derivation_agrees_with_the_model_large_spec_permissions_4() {
