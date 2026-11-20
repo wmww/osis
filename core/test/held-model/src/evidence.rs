@@ -19,10 +19,11 @@
 //!   admin edge a lowering names, every held vouch against a held removal, closed under the same
 //!   for what it adds) of the seeds: the bodies; the grants naming S's thing as holder (a holder's
 //!   grants travel under its sync ID: taken-ness is not modelled, every grant counts); and every
-//!   held lowering of an edge (h, t) whose **reach** (held edge writes giving write or above, at any
-//!   time, joining t to a thing of the unit) is held, with that reach (a removal is logged for good
-//!   where its holder could write: notes/write-path-design.md §2, A3). What of it lies on things
-//!   outside the unit is a copy, the rest bodies.
+//!   held removal of an edge (h, t) taking write away (`Rule::removals`), with its witness, whose
+//!   **reach** (held edge writes giving write or above and record edges, at any time, joining t to
+//!   a thing of the unit) is held, with that reach (a removal is logged for good where its holder
+//!   could write: notes/write-path-design.md §2, A3). What of it lies on things outside the unit is
+//!   a copy, the rest bodies.
 //! - **Delivery** (`Placement`): nodes sync sync IDs (`Node::syncs`, closed under the standing duty:
 //!   a node syncing S syncs every sync ID of a thing in S's unit) and hold what those carry and what
 //!   they wrote. An honest node logs under each sync ID it syncs what its own view requires there;
@@ -305,6 +306,20 @@ impl Stage {
     }
 }
 
+/// Which removals are reach seeds (notes/a2-spec/README.md OPEN 16).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Removals {
+    /// Every held removal (`World::removes`: an edge write giving below write at its `ts`, a fresh
+    /// grant of read and a reader's removal included).
+    Any,
+    /// A removal that takes write away: one ordered (by key) after a held taken edge write on its
+    /// own edge giving write or above, or on a record edge (standing admin from the thing's
+    /// creation). With it, its **witness** (the first such write by key, none for a record edge)
+    /// is a seed too, so a reader holding the removal requires it as the node does. Monotone in the
+    /// held set: a write grant arriving later with an earlier key makes a held removal one.
+    TakesWrite,
+}
+
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Rule {
     pub placement: Placement,
@@ -323,6 +338,13 @@ pub struct Rule {
     /// from h to it over record edges and chained grants, any time), with the writes of that
     /// chain's edges.
     pub author_reach: bool,
+    /// Record edges are edges of the reach graph and of the read graph and steps of the errand
+    /// (each a mint admin's admin edge on the thing it minted, at any time: `World::reach`,
+    /// `World::opened`): today's keys open through them (spec/sync-set.md §2) and its chains
+    /// climb them. False: the control (grants only), which under-reads today (README OPEN 17).
+    pub records: bool,
+    /// Which held removals reach (`World::reach_removal`; README OPEN 16).
+    pub removals: Removals,
     pub scope: Scope,
     pub leaves: Leaves,
     /// The errand is a standing duty: the remover logs again whenever its view shows a new
@@ -335,7 +357,7 @@ pub struct Rule {
 impl Rule {
     /// The plan's reading (notes/redesign-plan.md A2, A3).
     pub fn design() -> Rule {
-        Rule { placement: Placement::Function, errand: Errand::Direct, reach: true, keys_open: false, author_reach: false, scope: Scope::Lowerings, leaves: Leaves::Evidence, standing: true, lists: Lists::Whole, closure: Closure::drafted() }
+        Rule { placement: Placement::Function, errand: Errand::Direct, reach: true, keys_open: false, author_reach: false, records: true, removals: Removals::TakesWrite, scope: Scope::Lowerings, leaves: Leaves::Evidence, standing: true, lists: Lists::Whole, closure: Closure::drafted() }
     }
     /// The design with the findings' fixes (notes/evidence-model-findings.md): the errand follows
     /// taken grants to the end.
@@ -519,13 +541,15 @@ impl World {
 
     // ---- What a sync ID requires ----
 
-    /// The held grants (write or above, any time) joining `t` to a thing of `unit`; None when
-    /// none does. Empty when `t` is in the unit.
-    pub fn reach(&self, t: Thing, unit: &Things, h: &Set) -> Option<Set> {
+    /// The held grants (write or above, any time) joining `t` to a thing of `unit`, record edges
+    /// counting as such grants (a mint admin's admin edge, standing since the thing's creation:
+    /// read at any time as grants are); None when none joins it. Empty when `t` is in the unit.
+    /// Returns the grants on the ways (record edges are no copies).
+    pub fn reach(&self, rule: &Rule, t: Thing, unit: &Things, h: &Set) -> Option<Set> {
         if unit.contains(&t) {
             return Some(Set::new());
         }
-        let grants: Vec<(Id, Edge)> = h.iter().filter_map(|&i| self.gives_write(i).map(|e| (i, e))).collect();
+        let grants: Vec<(Option<Id>, Edge)> = self.records(rule).map(|e| (None, e)).chain(h.iter().filter_map(|&i| self.gives_write(i).map(|e| (Some(i), e)))).collect();
         let mut fwd = Things::from([t]);
         loop {
             let n = fwd.len();
@@ -545,7 +569,7 @@ impl World {
         if !fwd.iter().any(|x| unit.contains(x)) {
             return None;
         }
-        Some(grants.iter().filter(|(_, e)| fwd.contains(&e.0) && back.contains(&e.1)).map(|(i, _)| *i).collect())
+        Some(grants.iter().filter(|(_, e)| fwd.contains(&e.0) && back.contains(&e.1)).filter_map(|(i, _)| *i).collect())
     }
     /// The seeds of S's required set over `h`, its unit `unit`: the bodies, and of the edge-class
     /// commits the closure takes (`takes`), the grants naming S's thing and the removals with
@@ -566,9 +590,13 @@ impl World {
         if rule.reach {
             for &l in &hr {
                 if let Some((hd, t)) = self.removes(l) {
-                    if let Some(r) = self.reach(t, unit, &hr) {
+                    if !self.reach_removal(rule, l, &hr) {
+                        continue;
+                    }
+                    if let Some(r) = self.reach(rule, t, unit, &hr) {
                         seed.insert(l);
                         seed.extend(r);
+                        seed.extend(self.witness(rule, l, &hr));
                         if rule.scope == Scope::Edge {
                             seed.extend(hr.iter().copied().filter(|&j| self.w.sets(j) == Some((hd, t)) && self.w.key(l) < self.w.key(j)));
                         }
@@ -603,12 +631,18 @@ impl World {
         self.closure_with(rule, &seeds, edges, h)
     }
     /// The things whose holder roles travel under S over taken writes `hr`: S's own, and under
-    /// `keys_open` those S's thing holds read or above on through them, at any time.
+    /// `keys_open` those S's thing holds read or above on through them and through record edges,
+    /// at any time. A record edge opens as a grant of admin from the mint admin to the thing it
+    /// minted (spec/sync-set.md §2 T's keys open: effective role over paths that climb record
+    /// edges; a dependent's secrets derive from its mint admin's), standing since the thing's
+    /// creation, ordered before every write (spec/crypto.md §4 Key access), and read at any time as
+    /// grants are: a record edge removed later still opens (as a grant removed later does).
     pub fn opened(&self, rule: &Rule, s: Sid, hr: &Set) -> Things {
         let mut open = Things::from([s]);
         if rule.keys_open {
+            let edges: Vec<Edge> = self.records(rule).chain(hr.iter().filter_map(|&i| self.gives_read(i))).collect();
             loop {
-                let more: Vec<Thing> = hr.iter().filter_map(|&i| self.gives_read(i)).filter(|e| open.contains(&e.0) && !open.contains(&e.1)).map(|e| e.1).collect();
+                let more: Vec<Thing> = edges.iter().filter(|e| open.contains(&e.0) && !open.contains(&e.1)).map(|e| e.1).collect();
                 if more.is_empty() {
                     break;
                 }
@@ -616,6 +650,29 @@ impl World {
             }
         }
         open
+    }
+    /// The record edges reach, keys-open travel and the errand step along (`Rule::records`).
+    fn records<'a>(&'a self, rule: &Rule) -> impl Iterator<Item = Edge> + 'a {
+        let on = rule.records;
+        self.w.records.iter().copied().filter(move |_| on)
+    }
+    /// Removal `l` (`removes`) is a reach seed over taken writes `hr` (`Rule::removals`).
+    pub fn reach_removal(&self, rule: &Rule, l: Id, hr: &Set) -> bool {
+        let Some(e) = self.removes(l) else { return false };
+        match rule.removals {
+            Removals::Any => true,
+            Removals::TakesWrite => self.w.records.contains(&e) || self.witness(rule, l, hr).is_some(),
+        }
+    }
+    /// Under `Removals::TakesWrite`, removal `l`'s witness over taken writes `hr`: the first (by
+    /// key) write on its own edge giving write or above ordered before it; none on a record edge
+    /// (the record, which every reader holds, is its witness).
+    pub fn witness(&self, rule: &Rule, l: Id, hr: &Set) -> Option<Id> {
+        let e = self.removes(l)?;
+        if rule.removals == Removals::Any || self.w.records.contains(&e) {
+            return None;
+        }
+        hr.iter().copied().filter(|&j| self.gives_write(j) == Some(e) && self.w.key(j) < self.w.key(l)).min_by_key(|&j| self.w.key(j))
     }
     /// A held edge write giving read or above (any `until`): a link by which keys open.
     fn gives_read(&self, i: Id) -> Option<Edge> {
@@ -961,11 +1018,10 @@ impl World {
             }
             // the grants the closure takes (a write no walk applies leads nowhere)
             let takes = self.takes(rule, &h);
-            for &j in h.iter().filter(|j| takes.as_ref().is_none_or(|t| t.contains(j))) {
-                if let Some((hd, y)) = self.gives_write(j) {
-                    if hd == x {
-                        todo.push((y, depth + 1));
-                    }
+            let steps: Vec<Edge> = self.records(rule).chain(h.iter().filter(|j| takes.as_ref().is_none_or(|t| t.contains(j))).filter_map(|&j| self.gives_write(j))).collect();
+            for (hd, y) in steps {
+                if hd == x {
+                    todo.push((y, depth + 1));
                 }
             }
         }
@@ -1000,10 +1056,15 @@ impl World {
                 Some(t) => h.iter().copied().filter(|i| t.contains(i) || !self.w.edge_class(*i)).collect(),
                 None => h.clone(),
             };
+            if self.removes(i).is_some() && !self.reach_removal(rule, i, &hr) {
+                // a removal taking no write away travels as any edge write (Role changes travel)
+                continue;
+            }
             for x in targets {
-                let reach = self.reach(t, &st.units[&x], &hr).unwrap_or_default();
+                let reach = self.reach(rule, t, &st.units[&x], &hr).unwrap_or_default();
                 let mut seed = reach;
                 seed.insert(i);
+                seed.extend(self.witness(rule, i, &hr));
                 out.entry(x).or_default().extend(self.closure(rule, &seed, &h));
                 if let Lists::Travels(keep) = rule.lists {
                     let bodies = self.bodies(x, &st.units, &h);
@@ -1429,17 +1490,24 @@ impl World {
         let ch = self.chained(&full.v.held);
         paths::judge(&self.w, &self.rules, &full.v).applied.difference(&ch).map(|&i| Fail { prop: "P0-unchained-applies", step: st.step, sid: 0, id: i, reader: None, full: None }).collect()
     }
-    /// P3: every lowering by an honest node that the full closure of a sync ID's bodies holds is
-    /// carried there and judged required by its reader from its own holdings.
+    /// P3: every removal by an honest node that the full closure of a sync ID's bodies holds and
+    /// that can move a verdict there (it takes write away and its reach under S is held over
+    /// everything written, at any time: notes/evidence-model-findings.md 20) is carried there and
+    /// judged required by its reader from its own holdings.
     pub fn p3(&self, rule: &Rule, st: &State) -> Vec<Fail> {
         let all = self.full(st, &Set::new()).v.held;
+        let taken: Set = match self.takes(rule, &all) {
+            Some(t) => all.iter().copied().filter(|i| t.contains(i)).collect(),
+            None => all.clone(),
+        };
         let mut out = vec![];
         for &s in &self.sids {
             let closure = self.closure(rule, &self.owed_bodies(st, s), &all);
             let held = &st.entries[&s];
             let req = self.req(rule, s, &st.units, held);
             for &l in &closure {
-                if self.removes(l).is_some() && self.nodes[self.by[l]].honest && !req.contains(&l) {
+                let owed = self.removes(l).is_some_and(|(_, t)| self.reach_removal(rule, l, &taken) && self.reach(rule, t, &st.units[&s], &taken).is_some());
+                if owed && self.nodes[self.by[l]].honest && !req.contains(&l) {
                     out.push(Fail { prop: "P3", step: st.step, sid: s, id: l, reader: None, full: None });
                 }
             }
@@ -1664,9 +1732,15 @@ pub struct Shape {
     /// K holds admin on A and grants Z write on A after its first write; Z writes D; the removal
     /// does not list the grant and Q (admin) vouches for it.
     pub vouch: bool,
+    /// Record edges on K's path (README OPEN 17): 0 grants only; 1 the hop after A a record edge
+    /// (A mints O, or, with K writing through [A], A mints D); 2 a mint chain two deep (A mints O,
+    /// O mints D: K's path [A, O] or [A] (by descent) climbs records past A). Where the last hop
+    /// into D is a record edge, `raised` is X (D's admin by descent) lowering it to read before
+    /// K's first write and raising it after the removal: a record edge changed later.
+    pub mint: u8,
 }
 
-pub const FAMILY: usize = 2 * 5 * 2 * 2 * 2 * 2 * 2 * 2 * 2 * 2 * 2 * 2;
+pub const FAMILY: usize = 2 * 5 * 2 * 2 * 2 * 2 * 2 * 2 * 2 * 2 * 2 * 2 * 3;
 
 impl Shape {
     pub fn nth(mut i: usize) -> Shape {
@@ -1688,17 +1762,24 @@ impl Shape {
             y_a: take(2) == 1,
             org_apart: take(2) == 1,
             vouch: take(2) == 1,
+            mint: take(3) as u8,
         }
     }
 }
 
 /// The stolen-node story over units. X mints A (the account; K and Q its members), Y mints D, R
-/// and O (or W does); A reaches D directly or through O; K writes D, X removes K, and the shape's
-/// other moves. Nodes: X (syncs A), Y (D, R), W (O), Q (A), K (the thief: A, O, D, R), Z; each
-/// also syncs what it writes.
+/// and O (or W does, or A mints O and A or O mints D: `Shape::mint`); A reaches D directly or
+/// through O; K writes D, X removes K, and the shape's other moves. Nodes: X (syncs A), Y (D, R),
+/// W (O), Q (A), K (the thief: A, O, D, R), Z; each also syncs what it writes.
 pub fn family(sh: Shape) -> World {
     use names::*;
-    let pw = paths::World::new(&[(X, A), (if sh.org_apart { W } else { Y }, O), (Y, D), (Y, R)]);
+    let o_mint = if sh.mint > 0 { A } else if sh.org_apart { W } else { Y };
+    let d_mint = match (sh.mint, sh.via_org) {
+        (1, false) => A,
+        (2, _) => O,
+        _ => Y,
+    };
+    let pw = paths::World::new(&[(X, A), (o_mint, O), (d_mint, D), (Y, R)]);
     let mut w = World::new(pw, &[A, O, D, R]);
     let x = w.node(true, &[A]);
     let y = w.node(true, &if sh.y_a { vec![D, R, A] } else { vec![D, R] });
@@ -1727,12 +1808,17 @@ pub fn family(sh: Shape) -> World {
     w.write(x, |p| p.edge(X, 1, &[], A, K, member, &[]));
     w.write(x, |p| p.edge(X, 1, &[], A, Q, member, &[]));
     let on_d = if sh.raised { Role::Read } else { Role::Write };
-    let (holder, last) = if sh.via_org { (O, D) } else { (A, D) };
-    if sh.via_org {
-        let ow = if sh.org_apart { W } else { Y };
-        w.write(o, |p| p.edge(ow, 2, &[], O, A, Role::Write, &[]));
+    let (holder, last) = if sh.via_org || sh.mint == 2 { (O, D) } else { (A, D) };
+    if sh.via_org && o_mint != A {
+        w.write(o, |p| p.edge(o_mint, 2, &[], O, A, Role::Write, &[]));
     }
-    w.write(y, |p| p.edge(Y, 2, &[], last, holder, on_d, &[]));
+    // D's admin: Y, or X by descent where D is minted down A's chain (its stated path the records)
+    let (dn, ds) = if d_mint == Y { (y, Y) } else { (x, X) };
+    if d_mint == Y {
+        w.write(y, |p| p.edge(Y, 2, &[], last, holder, on_d, &[]));
+    } else if sh.raised {
+        w.write(x, |p| p.edge(X, 2, &[], last, holder, Role::Read, &[]));
+    }
     let first = if sh.raised { None } else { Some(w.write(k, |p| p.content(K, 3, &path, D))) };
     match sh.units {
         2 => w.join(D, R),
@@ -1751,7 +1837,7 @@ pub fn family(sh: Shape) -> World {
         w.write(q, |p| p.vouch(Q, 7, &[], A, r, &[gz]));
     }
     if sh.raised {
-        w.write(y, |p| p.edge(Y, 7, &[], last, holder, Role::Write, &[]));
+        w.write(dn, |p| p.edge(ds, 7, &[], last, holder, Role::Write, &[]));
     }
     if sh.addendum {
         if let Some(f) = first {
@@ -1776,11 +1862,18 @@ pub fn family(sh: Shape) -> World {
 /// lowering A's or O's edge, retags among the four things, a member's edge write on A or O to any
 /// holder (junk where it holds no admin), content along [A, R] (A writing R half the time, R
 /// holding nothing on D) or [O, A]; random node sync sets beside each mint admin syncing its
-/// things.
+/// things. A third of the worlds have A mint O, and half of those O mint D (README OPEN 17):
+/// records on the members' paths in place of the starting grants, changed later by the moves
+/// that change A's or O's edge (by X, their admin by descent).
 pub fn random(seed: u64, len: usize) -> World {
     use names::*;
     let mut rng = roles_model::Rng::thread(seed, 0);
-    let pw = paths::World::new(&[(X, A), (W, O), (Y, D), (Y, R)]);
+    let mint = rng.below(6);
+    let (o_mint, d_mint) = match mint {
+        0 | 1 => (A, if mint == 0 { O } else { Y }),
+        _ => (W, Y),
+    };
+    let pw = paths::World::new(&[(X, A), (o_mint, O), (d_mint, D), (Y, R)]);
     let mut w = World::new(pw, &[A, O, D, R]);
     let things = [A, O, D, R];
     for &(x, s) in &[(D, R), (O, R), (O, D), (D, O)] {
@@ -1792,14 +1885,26 @@ pub fn random(seed: u64, len: usize) -> World {
     let pick = |rng: &mut roles_model::Rng, mine: &[Thing]| -> Vec<Thing> { things.iter().copied().filter(|t| mine.contains(t) || rng.below(3) == 0).collect() };
     let (x, y, wn, q, z) = (w.node(true, &pick(&mut rng, &[A])), w.node(true, &pick(&mut rng, &[D, R])), w.node(true, &pick(&mut rng, &[O])), w.node(true, &pick(&mut rng, &[])), w.node(true, &pick(&mut rng, &[])));
     let k = w.node(false, &[]);
+    // a thing's admin by its record chain: the key actor at its top, writing by descent
+    let admin = |t: Thing| -> (Thing, usize) {
+        match (t, o_mint, d_mint) {
+            (O, A, _) | (D, _, O) => (X, x),
+            (O, _, _) => (W, wn),
+            _ => (Y, y),
+        }
+    };
+    let records = w.w.records.clone();
     let roles = [Role::Read, Role::Write, Role::Admin];
     let up = |rng: &mut roles_model::Rng| roles[1 + rng.below(2)];
     let (rk, rq) = (up(&mut rng), up(&mut rng));
     w.write(x, |p| p.edge(X, 1, &[], A, K, rk, &[]));
     w.write(x, |p| p.edge(X, 1, &[], A, Q, rq, &[]));
-    w.write(y, |p| p.edge(Y, 1, &[], D, A, Role::Write, &[]));
-    w.write(wn, |p| p.edge(W, 1, &[], O, A, Role::Write, &[]));
-    w.write(y, |p| p.edge(Y, 1, &[], D, O, Role::Write, &[]));
+    for (on, hd) in [(D, A), (O, A), (D, O)] {
+        if !records.contains(&(hd, on)) {
+            let (a, n) = admin(on);
+            w.write(n, |p| p.edge(a, 1, &[], on, hd, Role::Write, &[]));
+        }
+    }
     if rng.below(2) == 0 {
         // A writes R, which holds nothing on D: [A, R] is a path to D no grant joins
         w.write(y, |p| p.edge(Y, 1, &[], R, A, Role::Write, &[]));
@@ -1844,11 +1949,9 @@ pub fn random(seed: u64, len: usize) -> World {
             }
             7 => {
                 let role = [Role::None, Role::Read, Role::Write][rng.below(3)];
-                match rng.below(3) {
-                    0 => w.write(y, |p| p.edge(Y, bts, &[], D, A, role, &[])),
-                    1 => w.write(y, |p| p.edge(Y, bts, &[], D, O, role, &[])),
-                    _ => w.write(wn, |p| p.edge(W, bts, &[], O, A, role, &[])),
-                };
+                let (on, hd) = [(D, A), (D, O), (O, A)][rng.below(3)];
+                let (a, n) = admin(on);
+                w.write(n, |p| p.edge(a, bts, &[], on, hd, role, &[]));
             }
             10 => {
                 // a member's edge write on A or O, any holder and role: junk where it holds no
@@ -1889,6 +1992,11 @@ pub struct Wide {
     /// A content part whose path entry opens late (`World::opens`): its opener (a content commit
     /// on its thing by the thing's mint admin) written some moves later, or never.
     pub late: bool,
+    /// Each of O, H, D, R minted by an earlier one of the five one time in three (README OPEN 17:
+    /// record edges anywhere on a route, mint chains up to four deep, a minted thing in a unit, a
+    /// record edge changed by churn), its admin the key actor at the top of its record chain,
+    /// writing by descent. False: every thing minted by a key actor, the worlds as without it.
+    pub mint: bool,
 }
 
 /// A random world of paths up to four holder things long (sampled searches): X mints A (members
@@ -1902,12 +2010,17 @@ pub struct Wide {
 /// to any holder, K granting Z, Q's vouches and addenda, direct routes granted and removed, retags
 /// among the five; with `opt` split commits and late path entries. Random node sync sets beside
 /// each mint admin syncing its things (each other thing one chance in five: honest bridges
-/// between two things are rare enough that delivery decides).
+/// between two things are rare enough that delivery decides). With `opt.mint` things minted by
+/// things.
 pub fn wide(seed: u64, len: usize, opt: Wide) -> World {
     use names::*;
     let mut rng = roles_model::Rng::thread(seed, 1);
     let things = [A, O, H, D, R];
-    let pw = paths::World::new(&[(X, A), (W, O), (W, H), (Y, D), (Y, R)]);
+    let mut recs = vec![(X, A)];
+    for (j, key) in [(1, W), (2, W), (3, Y), (4, Y)] {
+        recs.push((if opt.mint && rng.below(3) == 0 { things[rng.below(j)] } else { key }, things[j]));
+    }
+    let pw = paths::World::new(&recs);
     let mut w = World::new(pw, &things);
     for &(x, s) in &[(D, R), (O, R), (H, D), (O, H), (D, O), (A, H)] {
         if rng.below(4) == 0 {
@@ -1917,10 +2030,17 @@ pub fn wide(seed: u64, len: usize, opt: Wide) -> World {
     let pick = |rng: &mut roles_model::Rng, mine: &[Thing]| -> Vec<Thing> { things.iter().copied().filter(|t| mine.contains(t) || rng.below(5) == 0).collect() };
     let (x, wn, y, q, z) = (w.node(true, &pick(&mut rng, &[A])), w.node(true, &pick(&mut rng, &[O, H])), w.node(true, &pick(&mut rng, &[D, R])), w.node(true, &pick(&mut rng, &[])), w.node(true, &pick(&mut rng, &[])));
     let k = w.node(false, &[]);
-    let admin = |t: Thing| match t {
-        A => (X, x),
-        O | H => (W, wn),
-        _ => (Y, y),
+    // the key actor at the top of t's record chain, and its node
+    let admin = |t: Thing| {
+        let mut top = t;
+        while let Some(&(m, _)) = recs.iter().find(|e| e.1 == top) {
+            top = m;
+        }
+        match top {
+            X => (X, x),
+            W => (W, wn),
+            _ => (Y, y),
+        }
     };
     let members = [(K, k), (Q, q), (Z, z)];
     let roles = [Role::Read, Role::Write, Role::Admin];
@@ -1931,7 +2051,7 @@ pub fn wide(seed: u64, len: usize, opt: Wide) -> World {
     }
     for i in 0..things.len() {
         for j in i + 1..things.len() {
-            if rng.below(2) == 0 {
+            if rng.below(2) == 0 && !recs.contains(&(things[i], things[j])) {
                 let (a, n) = admin(things[j]);
                 let r = [Role::Write, Role::Write, Role::Read, Role::Admin][rng.below(4)];
                 w.write(n, |p| p.edge(a, 1, &[], things[j], things[i], r, &[]));
@@ -2089,7 +2209,7 @@ fn wide_route(w: &World, rng: &mut roles_model::Rng, signer: Thing) -> (Vec<Thin
     use names::*;
     let things = [A, O, H, D, R];
     if rng.below(4) != 0 {
-        let edges: BTreeSet<Edge> = (0..w.by.len()).filter_map(|i| w.w.sets(i)).filter(|e| things.contains(&e.1)).collect();
+        let edges: BTreeSet<Edge> = (0..w.by.len()).filter_map(|i| w.w.sets(i)).chain(w.w.records.iter().copied()).filter(|e| things.contains(&e.1)).collect();
         let mut path: Vec<Thing> = vec![];
         let mut cur = signer;
         loop {

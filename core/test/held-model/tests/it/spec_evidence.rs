@@ -272,7 +272,7 @@ fn props(f: &[Fail]) -> Vec<&'static str> {
 /// K writes D through [A, O]; O is W's, and W syncs O alone; X (syncing A) removes K, listing
 /// nothing. No honest node syncs both O and D.
 fn org_apart() -> World {
-    family(Shape { via_org: true, units: 0, listed: false, thief: false, regrant: false, addendum: false, raised: false, q_d: false, q_r: false, y_a: false, org_apart: true, vouch: false })
+    family(Shape { via_org: true, units: 0, listed: false, thief: false, regrant: false, addendum: false, raised: false, q_d: false, q_r: false, y_a: false, org_apart: true, vouch: false, mint: 0 })
 }
 
 /// Finding 1: the remover's errand by direct taken grants (A's grant on O) never reaches D, two
@@ -401,22 +401,27 @@ fn p2_a_write_under_two_sync_ids_is_judged_alike_by_each() {
     }
 }
 
-/// P4: forgetting K's writes takes the copy of K's grant out of D's sync ID; nothing else moves.
+/// P4: forgetting K's writes takes out of D's sync ID everything only they needed: what stays is
+/// X's removal of K, whose reach (A writes D) keeps it for good, and under `Removals::TakesWrite`
+/// its witness, K's grant (with every removal: `Removals::Any`, the grant leaves).
 #[test]
 fn p4_evidence_leaves_with_the_last_commit_that_needed_it() {
     let mut sh = Shape::nth(0);
     sh.listed = true;
     let w = family(sh);
-    let rule = Rule::fixed();
-    let mut st = w.run(&rule, |_| {});
-    let gk = 0;
-    assert!(w.copies(&st, D).contains(&gk));
-    let kw: Vec<Id> = st.entries[&D].iter().copied().filter(|&i| w.w.commits[i].signer == K).collect();
-    for i in kw {
-        w.forget(&rule, &mut st, i);
+    let (gk, r) = (0, 4);
+    assert_eq!(w.removes(r), Some((K, A)));
+    for (removals, left) in [(Removals::TakesWrite, Set::from([gk, r])), (Removals::Any, Set::from([r]))] {
+        let rule = Rule { removals, ..Rule::fixed() };
+        let mut st = w.run(&rule, |_| {});
+        assert!(w.copies(&st, D).contains(&gk));
+        let kw: Vec<Id> = st.entries[&D].iter().copied().filter(|&i| w.w.commits[i].signer == K).collect();
+        for i in kw {
+            w.forget(&rule, &mut st, i);
+        }
+        assert_eq!(w.copies(&st, D), left, "{removals:?}");
+        assert_eq!(w.p4(&rule, &st, true), vec![]);
     }
-    assert!(!w.copies(&st, D).contains(&gk), "{:?}", st.entries[&D]);
-    assert_eq!(w.p4(&rule, &st, true), vec![]);
 }
 
 /// P6: copies under D after n writes along a path of k holder things, m of them outside D's
@@ -432,16 +437,17 @@ fn p6_copies_are_shared_by_the_writes_along_a_path() {
 }
 
 /// P1 to P5 over a slice of the family under the fixed rule; the design fails only where
-/// finding 1 says.
+/// finding 1 says: D two errand steps from A (through O, granted or minted, or down a mint chain
+/// two deep) with no honest node syncing O (W apart, or O minted by A: nobody writes O).
 #[test]
 fn p1_to_p5_hold_on_a_slice_of_the_family() {
-    for i in (0..FAMILY).step_by(97) {
+    for i in (0..FAMILY).step_by(97 * 3) {
         let sh = Shape::nth(i);
         let w = family(sh);
         assert_eq!(fails(&w, &Rule::fixed()), vec![], "{sh:?}");
         assert_eq!(fails(&w, &Rule::listed()), vec![], "{sh:?}");
         let d = fails(&w, &Rule::design());
-        assert!(d.is_empty() || (sh.via_org && sh.org_apart), "{sh:?} {d:?}");
+        assert!(d.is_empty() || ((sh.via_org || sh.mint == 2) && (sh.org_apart || sh.mint > 0)), "{sh:?} {d:?}");
     }
 }
 

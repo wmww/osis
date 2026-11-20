@@ -11,9 +11,10 @@
 //!
 //! Two seed relations are graphs over things, kept as indexes so a change reaches only the sync IDs
 //! it can move (notes/evidence-derivation.md, Reach and keys-open travel): **reach** (`Config::reach`)
-//! over chained write grants, from a removal's target into a unit; **keys-open travel**
-//! (`Config::keys_open`) over chained grants giving read, from a sync ID's actor to the holders whose
-//! role changes travel under it.
+//! over chained write grants and record edges, from the target of a removal that takes write away
+//! into a unit; **keys-open travel** (`Config::keys_open`) over chained grants giving read and
+//! record edges, from a sync ID's actor to the holders whose role changes travel under it. Record
+//! edges are an input of their own (`add_record`), standing for good.
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::fmt::Debug;
@@ -48,7 +49,10 @@ pub struct Write<C, T> {
     /// It sets a role above none (no self-removal, no finalize): it can join a path.
     pub grant: bool,
     /// (reach) It gives below write at its own `ts`, and is no finalize: a self-removal and a
-    /// grant of read are removals, a demotion from admin to write is not.
+    /// grant of read have this shape, a demotion from admin to write has not. Such a write is a
+    /// removal for reach only where it takes write away: ordered after a held chained write on
+    /// its edge giving write or above, or on a record edge (the derivation decides, from what is
+    /// held: notes/a2-spec/README.md OPEN 16).
     pub removal: bool,
     /// (reach) It gives write or above (any `until`): a step of a reach.
     pub gives_write: bool,
@@ -95,8 +99,11 @@ pub enum Reason<C, T> {
     /// A chained write naming this holder, whose role changes travel under the sync ID: its
     /// actor, or (`keys_open`) a thing the actor's keys open (Role changes travel).
     Travels(T),
-    /// (reach) A chained removal whose reach under the sync ID is held.
+    /// (reach) A chained removal taking write away, whose reach under the sync ID is held.
     Removal,
+    /// (reach) The first chained write giving write or above on the edge of this removal, ordered
+    /// before it: what makes it take write away, so its reader judges it a removal too.
+    Witness(CopyId<C, T>),
     /// (reach) A chained write grant on this edge of a held removal's reach.
     Reach(Edge<T>),
 }
@@ -148,26 +155,42 @@ struct Held<C, T, K> {
 /// Parts by key: (copy, part index).
 type ByKey<C, T, K> = BTreeMap<K, BTreeSet<PartId<C, T>>>;
 
-/// A graph over things: per edge the chained parts setting it, and its adjacency both ways.
+/// A graph over things: per edge the chained parts setting it, the record edges (standing with no
+/// part), and the adjacency both ways.
 #[derive(Clone, Debug, PartialEq, Eq)]
 struct Graph<C, T> {
     parts: BTreeMap<Edge<T>, BTreeSet<PartId<C, T>>>,
+    records: BTreeSet<Edge<T>>,
     out: BTreeMap<T, BTreeSet<T>>,
     inn: BTreeMap<T, BTreeSet<T>>,
 }
 
 impl<C: Ord + Copy, T: Ord + Copy> Graph<C, T> {
     fn new() -> Self {
-        Graph { parts: BTreeMap::new(), out: BTreeMap::new(), inn: BTreeMap::new() }
+        Graph { parts: BTreeMap::new(), records: BTreeSet::new(), out: BTreeMap::new(), inn: BTreeMap::new() }
+    }
+    fn has(&self, e: &Edge<T>) -> bool {
+        self.records.contains(e) || self.parts.contains_key(e)
+    }
+    fn link(&mut self, e: Edge<T>) {
+        self.out.entry(e.0).or_default().insert(e.1);
+        self.inn.entry(e.1).or_default().insert(e.0);
     }
     /// True when the edge is new.
     fn insert(&mut self, e: Edge<T>, p: PartId<C, T>) -> bool {
-        let s = self.parts.entry(e).or_default();
-        let new = s.is_empty();
-        s.insert(p);
+        let new = !self.has(&e);
+        self.parts.entry(e).or_default().insert(p);
         if new {
-            self.out.entry(e.0).or_default().insert(e.1);
-            self.inn.entry(e.1).or_default().insert(e.0);
+            self.link(e);
+        }
+        new
+    }
+    /// A record edge; true when the edge is new.
+    fn insert_record(&mut self, e: Edge<T>) -> bool {
+        let new = !self.has(&e);
+        self.records.insert(e);
+        if new {
+            self.link(e);
         }
         new
     }
@@ -178,6 +201,9 @@ impl<C: Ord + Copy, T: Ord + Copy> Graph<C, T> {
             return false;
         }
         self.parts.remove(e);
+        if self.records.contains(e) {
+            return false;
+        }
         remove_from(&mut self.out, &e.0, &e.1);
         remove_from(&mut self.inn, &e.1, &e.0);
         true
@@ -185,6 +211,15 @@ impl<C: Ord + Copy, T: Ord + Copy> Graph<C, T> {
     fn next(&self, fwd: bool, x: T) -> impl Iterator<Item = T> + '_ {
         if fwd { &self.out } else { &self.inn }.get(&x).into_iter().flatten().copied()
     }
+}
+
+/// `Evidence::graphs`: the reach and keys-open indexes built from nothing.
+struct Graphs<C, T, K> {
+    writes: Graph<C, T>,
+    reads: Graph<C, T>,
+    write_keys: BTreeMap<Edge<T>, ByKey<C, T, K>>,
+    removal_keys: BTreeMap<Edge<T>, ByKey<C, T, K>>,
+    removals_on: BTreeMap<T, BTreeSet<PartId<C, T>>>,
 }
 
 /// The held copies and what the closure looks them up by.
@@ -204,9 +239,17 @@ struct Ix<C, T, K> {
     vouches_by: BTreeMap<CopyId<C, T>, BTreeSet<CopyId<C, T>>>,
     /// Copies with a write whose reset names the copy as its entry's creation.
     resetters: BTreeMap<CopyId<C, T>, BTreeSet<CopyId<C, T>>>,
-    /// (reach) Chained parts giving write, by edge.
+    /// Record edges (each a mint admin's edge on the thing it minted).
+    records: BTreeSet<Edge<T>>,
+    /// (reach) Chained parts giving write, by edge; with the record edges.
     writes: Graph<C, T>,
-    /// (reach) Chained removals, by the thing they are on (the target of their edge).
+    /// (reach) Chained parts giving write, per edge by key: the first decides which removals on
+    /// the edge take write away, and is their witness.
+    write_keys: BTreeMap<Edge<T>, ByKey<C, T, K>>,
+    /// (reach) Chained parts of a removal's shape (`Write::removal`), per edge by key.
+    removal_keys: BTreeMap<Edge<T>, ByKey<C, T, K>>,
+    /// (reach) Chained removals taking write away, by the thing they are on (the target of their
+    /// edge).
     removals_on: BTreeMap<T, BTreeSet<PartId<C, T>>>,
     /// (keys-open travel) Chained parts giving read, by edge.
     reads: Graph<C, T>,
@@ -377,7 +420,10 @@ where
             by_holder: BTreeMap::new(),
             vouches_by: BTreeMap::new(),
             resetters: BTreeMap::new(),
+            records: BTreeSet::new(),
             writes: Graph::new(),
+            write_keys: BTreeMap::new(),
+            removal_keys: BTreeMap::new(),
             removals_on: BTreeMap::new(),
             reads: Graph::new(),
         };
@@ -454,9 +500,9 @@ where
         let mut open_sids: BTreeMap<T, BTreeSet<T>> = BTreeMap::new();
         let mut reach_sids: BTreeMap<CopyId<C, T>, BTreeSet<T>> = BTreeMap::new();
         let mut way_sids: BTreeMap<Edge<T>, BTreeSet<T>> = BTreeMap::new();
-        let (writes, removals_on, reads) = self.graphs();
-        if writes != self.ix.writes || removals_on != self.ix.removals_on || reads != self.ix.reads {
-            return Err("a reach or keys-open graph does not hold exactly the chained parts".into());
+        let g = self.graphs();
+        if g.writes != self.ix.writes || g.reads != self.ix.reads || g.write_keys != self.ix.write_keys || g.removal_keys != self.ix.removal_keys || g.removals_on != self.ix.removals_on {
+            return Err("a reach or keys-open graph does not hold exactly the chained parts and records".into());
         }
         for (sid, s) in &self.sids {
             // the same copies (each with the first reason found, which may differ)
@@ -510,10 +556,14 @@ where
         Ok(())
     }
 
-    /// The reach and keys-open graphs built from nothing over the held copies.
-    #[allow(clippy::type_complexity)]
-    fn graphs(&self) -> (Graph<C, T>, BTreeMap<T, BTreeSet<PartId<C, T>>>, Graph<C, T>) {
-        let (mut writes, mut removals_on, mut reads) = (Graph::new(), BTreeMap::new(), Graph::new());
+    /// The reach and keys-open graphs and the removal indexes built from nothing over the held
+    /// copies and records.
+    fn graphs(&self) -> Graphs<C, T, K> {
+        let mut g = Graphs { writes: Graph::new(), reads: Graph::new(), write_keys: BTreeMap::new(), removal_keys: BTreeMap::new(), removals_on: BTreeMap::new() };
+        for e in &self.ix.records {
+            g.writes.insert_record(*e);
+            g.reads.insert_record(*e);
+        }
         for (c, h) in &self.ix.copies {
             for (i, p) in h.parts.iter().enumerate() {
                 if let Kind::Write(w) = &p.kind
@@ -521,18 +571,27 @@ where
                 {
                     let e = (w.holder, c.1);
                     if w.gives_write {
-                        writes.insert(e, (*c, i));
+                        g.writes.insert(e, (*c, i));
+                        g.write_keys.entry(e).or_default().entry(p.pos).or_default().insert((*c, i));
                     }
                     if w.gives_read {
-                        reads.insert(e, (*c, i));
+                        g.reads.insert(e, (*c, i));
                     }
                     if w.removal {
-                        removals_on.entry(c.1).or_insert_with(BTreeSet::new).insert((*c, i));
+                        g.removal_keys.entry(e).or_default().entry(p.pos).or_default().insert((*c, i));
                     }
                 }
             }
         }
-        (writes, removals_on, reads)
+        for (e, byk) in &g.removal_keys {
+            let first = first(g.write_keys.get(e));
+            for (pos, ps) in byk {
+                if self.ix.records.contains(e) || first.is_some_and(|f| f < *pos) {
+                    g.removals_on.entry(e.1).or_default().extend(ps.iter().copied());
+                }
+            }
+        }
+        g
     }
 
     /// Registers sync ID `sid` with actor `actor` and an empty unit.
@@ -583,6 +642,24 @@ where
             todo.dirty.insert(*sid);
         }
         todo.reach.insert(*sid);
+        self.settle(todo);
+    }
+
+    /// Record edge `e` (holder: the mint admin; target: the thing it minted), standing for good: an
+    /// edge of the reach and keys-open graphs (an admin edge, giving write and read) and the
+    /// witness of every removal on it. Records are identity: none is ever taken back.
+    pub fn add_record(&mut self, e: Edge<T>) {
+        if !self.ix.records.insert(e) {
+            return;
+        }
+        let mut todo = Todo::default();
+        if self.ix.reads.insert_record(e) {
+            self.read_edge(e, &mut todo);
+        }
+        if self.ix.writes.insert_record(e) {
+            self.write_edge(e, &mut todo);
+        }
+        self.recount(&e, true, &mut todo);
         self.settle(todo);
     }
 
@@ -778,10 +855,18 @@ where
                             self.reach_add(&sid, vec![*c], vec![], Reason::Reach(e), todo);
                         }
                     }
+                    let before = first(self.ix.write_keys.get(&e));
+                    self.ix.write_keys.entry(e).or_default().entry(p.pos).or_default().insert((*c, i));
+                    if before.is_none_or(|b| p.pos < b) {
+                        self.recount(&e, !self.ix.records.contains(&e), todo);
+                    }
                 }
                 if w.removal {
-                    self.ix.removals_on.entry(c.1).or_default().insert((*c, i));
-                    self.removal_on(c, todo);
+                    self.ix.removal_keys.entry(e).or_default().entry(p.pos).or_default().insert((*c, i));
+                    if self.takes_write(&e, p.pos) {
+                        self.ix.removals_on.entry(c.1).or_default().insert((*c, i));
+                        self.removal_on(c, todo);
+                    }
                 }
                 if w.grant {
                     let before = first(self.ix.grants.get(&e));
@@ -849,7 +934,15 @@ where
                 if w.gives_write && self.ix.writes.remove(&e, &(*c, i)) {
                     todo.reach.extend(self.way_sids.get(&e).into_iter().flatten().copied());
                 }
+                if w.gives_write {
+                    let before = first(self.ix.write_keys.get(&e));
+                    remove_by_key(&mut self.ix.write_keys, &e, &p.pos, &(*c, i));
+                    if first(self.ix.write_keys.get(&e)) != before {
+                        self.recount(&e, !self.ix.records.contains(&e), todo);
+                    }
+                }
                 if w.removal {
+                    remove_by_key(&mut self.ix.removal_keys, &e, &p.pos, &(*c, i));
                     remove_from(&mut self.ix.removals_on, &c.1, &(*c, i));
                 }
                 if w.grant {
@@ -934,13 +1027,17 @@ where
         out
     }
 
-    /// Adds to `out` the removals on `targets` and the write grants on `ways` (seeds on things
-    /// outside `unit`), and the ways.
+    /// Adds to `out` the removals on `targets` with their witnesses and the write grants on `ways`
+    /// (seeds on things outside `unit`), and the ways.
     fn emit(&self, unit: &BTreeSet<T>, targets: &[T], ways: &[Edge<T>], out: &mut Reach<C, T>, counts: &mut Counts) {
         for t in targets {
-            for (c, _) in self.ix.removals_on.get(t).into_iter().flatten() {
+            for (c, i) in self.ix.removals_on.get(t).into_iter().flatten() {
                 counts.reach_seeds += 1;
                 out.seeds.entry(*c).or_insert(Reason::Removal);
+                if let Some(wc) = self.witness(c, *i) {
+                    counts.reach_seeds += 1;
+                    out.seeds.entry(wc).or_insert(Reason::Witness(*c));
+                }
             }
         }
         for e in ways {
@@ -952,6 +1049,45 @@ where
             for (c, _) in self.ix.writes.parts.get(e).into_iter().flatten() {
                 counts.reach_seeds += 1;
                 out.seeds.entry(*c).or_insert(Reason::Reach(*e));
+            }
+        }
+    }
+
+    /// A removal-shaped part on `e` at `pos` takes write away: `e` is a record edge, or a held
+    /// chained write on `e` giving write or above is ordered before it.
+    fn takes_write(&self, e: &Edge<T>, pos: K) -> bool {
+        self.ix.records.contains(e) || first(self.ix.write_keys.get(e)).is_some_and(|f| f < pos)
+    }
+
+    /// The witness of removal part `i` of `c` (taking write away): the copy of the first chained
+    /// write on its edge giving write or above; none on a record edge (the record is its witness).
+    fn witness(&self, c: &CopyId<C, T>, i: usize) -> Option<CopyId<C, T>> {
+        let Some(Kind::Write(w)) = self.ix.copies.get(c).and_then(|h| h.parts.get(i)).map(|p| &p.kind) else { return None };
+        let e = (w.holder, c.1);
+        if self.ix.records.contains(&e) {
+            return None;
+        }
+        self.ix.write_keys.get(&e).and_then(|m| m.values().next()).and_then(|ps| ps.iter().next()).map(|p| p.0)
+    }
+
+    /// What takes write away on `e` moved (its first write giving write or above, or a record
+    /// edge arrived): each removal-shaped part on `e` that now takes write away joins the reach
+    /// graph's removals, each that no longer does leaves it, and (`witness_moved`) the sync IDs
+    /// holding one that still does compute their reach again (its witness changed). A first write
+    /// arriving with an earlier key is the late, backdated grant: O(removals on `e`), rare.
+    fn recount(&mut self, e: &Edge<T>, witness_moved: bool, todo: &mut Todo<C, T>) {
+        let parts: Vec<(K, PartId<C, T>)> = self.ix.removal_keys.get(e).map(|m| m.iter().flat_map(|(k, ps)| ps.iter().map(|p| (*k, *p))).collect()).unwrap_or_default();
+        for (pos, (c, i)) in parts {
+            let now = self.takes_write(e, pos);
+            let was = self.ix.removals_on.get(&e.1).is_some_and(|s| s.contains(&(c, i)));
+            if now && !was {
+                self.ix.removals_on.entry(e.1).or_default().insert((c, i));
+                self.removal_on(&c, todo);
+            } else if !now && was {
+                remove_from(&mut self.ix.removals_on, &e.1, &(c, i));
+                todo.reach.extend(self.reach_sids.get(&c).into_iter().flatten().copied());
+            } else if now && witness_moved {
+                todo.reach.extend(self.reach_sids.get(&c).into_iter().flatten().copied());
             }
         }
     }

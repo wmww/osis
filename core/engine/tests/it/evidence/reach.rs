@@ -13,11 +13,22 @@ use osis_engine::evidence::Reason;
 /// The derivation under `cfg` over a held set of `w`'s end state under brief 3's delivery
 /// (vouches counting).
 fn at_end(w: &World, cfg: Config, held: impl Fn(&State) -> Set) -> (Ev, Set) {
+    at_end_records(w, cfg, true, held)
+}
+
+/// `at_end`, with the world's record edges given to the derivation or not (the control).
+fn at_end_records(w: &World, cfg: Config, records: bool, held: impl Fn(&State) -> Set) -> (Ev, Set) {
     let mut w = w.clone();
     let rule = brief3(&mut w, true);
     let st = w.run(&rule, |_| {});
     let h = held(&st);
     let mut d = Driver::with(&w, cfg);
+    if !records {
+        d.ev = Ev::new(cfg);
+        for &s in &w.sids {
+            d.ev.add_sid(s, s);
+        }
+    }
     d.step(&w, &h, &st.units);
     (d.ev, h)
 }
@@ -31,6 +42,9 @@ const BRIEF3: Config = Config { vouches: true, reach: true, keys_open: true };
 const NO_REACH: Config = Config { vouches: true, reach: false, keys_open: true };
 const NO_KEYS: Config = Config { vouches: true, reach: true, keys_open: false };
 
+/// R's mint admin (finding 19's worlds).
+const V: Thing = 7;
+
 fn removal_of(w: &World, e: (Thing, Thing)) -> Id {
     (0..w.w.commits.len()).find(|&i| w.removes(i) == Some(e)).unwrap()
 }
@@ -41,7 +55,7 @@ fn removal_of(w: &World, e: (Thing, Thing)) -> Id {
 /// under brief 3 never holds it (only A3's errand carries it there, as today).
 #[test]
 fn open14_with_no_honest_node_between_only_the_errand_reaches_d() {
-    let w = hm::family(Shape { via_org: true, units: 0, listed: false, thief: true, regrant: false, addendum: false, raised: false, q_d: false, q_r: false, y_a: false, org_apart: true, vouch: false });
+    let w = hm::family(Shape { via_org: true, units: 0, listed: false, thief: true, regrant: false, addendum: false, raised: false, q_d: false, q_r: false, y_a: false, org_apart: true, vouch: false, mint: 0 });
     assert_agrees("open14 f1", &w);
     let r = removal_of(&w, (K, A));
     let (all, _) = at_end(&w, BRIEF3, everything);
@@ -149,7 +163,6 @@ fn open14_a_removed_writers_other_route_carried_the_removal_today() {
 /// it under R only (D writes R); without keys-open travel A requires nothing of it.
 #[test]
 fn open14_keys_open_travel_carries_a_removal_to_the_things_reading_through_it() {
-    const V: Thing = 7;
     let pw = paths::World::new(&[(X, A), (W, O), (Y, D), (V, R)]);
     let mut w = World::new(pw, &[A, O, D, R]);
     let (x, wn, y, v, k) = (w.node(true, &[A]), w.node(true, &[O]), w.node(true, &[D, A]), w.node(true, &[R]), w.node(false, &[]));
@@ -271,20 +284,114 @@ fn an_unchained_removal_reaches_nothing_spec_permissions_4() {
     assert_eq!(ev.reach_size(&D), Some((0, 0)));
 }
 
-/// A grant of read on a hub is a removal as drafted (it gives below write at its `ts`), so a fresh
-/// reader's grant on O, who never held write there, is required under every document O writes,
-/// as a removed member's removal is: reach grows a document with every reader added to the hub.
-/// The model agrees (`World::removes`); notes/a2-spec/README.md OPEN 16.
+/// OPEN 16 (held-model `open16_a_plain_readers_grant_and_removal_on_a_hub_stay_off_its_documents`):
+/// a grant of read on a hub and a reader's removal give below write, but take no write away (the
+/// reader never held write on O), so neither is required under the documents O writes; a removed
+/// writer's removal is, with its witness, its grant.
 #[test]
-fn a_fresh_read_grant_on_a_hub_is_required_under_its_documents_spec_permissions_4() {
+fn a_plain_readers_grant_and_removal_on_a_hub_stay_off_its_documents_spec_permissions_4() {
     let pw = paths::World::new(&[(X, O), (Y, D)]);
     let mut w = World::new(pw, &[O, D]);
     let (x, y) = (w.node(true, &[O, D]), w.node(true, &[D]));
     w.write(y, |p| p.edge(Y, 1, &[], D, O, Role::Write, &[]));
     let g = w.write(x, |p| p.edge(X, 2, &[], O, Q, Role::Read, &[]));
-    assert_agrees("fresh read grant", &w);
+    let r = w.write(x, |p| p.edge(X, 3, &[], O, Q, Role::None, &[]));
+    let gk = w.write(x, |p| p.edge(X, 2, &[], O, K, Role::Write, &[]));
+    let rk = w.write(x, |p| p.edge(X, 3, &[], O, K, Role::None, &[]));
+    assert_agrees("plain reader", &w);
     let (ev, _) = at_end(&w, BRIEF3, everything);
-    assert_eq!(ev.required(&D).unwrap().get(&(g, O)), Some(&Reason::Removal));
+    let req = ev.required(&D).unwrap();
+    assert!(!req.contains_key(&(g, O)) && !req.contains_key(&(r, O)), "{req:?}");
+    // the witness is required (as the creation the removal's reset names, here, the first reason)
+    assert!(req.get(&(rk, O)) == Some(&Reason::Removal) && req.contains_key(&(gk, O)), "{req:?}");
+}
+
+/// OPEN 16, finding 3's shape (held-model `open16_a_backdated_write_grant_arriving_late_*`): K's
+/// write grant on A, backdated before X's removal, arrives after it; until then the removal takes
+/// no write away and reaches nothing; then it reaches D with the grant as its witness. The
+/// differential checks every step (the incremental flip against from scratch).
+#[test]
+fn open16_a_backdated_write_grant_arriving_late_makes_the_removal_reach_then_spec_permissions_4() {
+    let pw = paths::World::new(&[(X, A), (Y, D), (Y, R)]);
+    let mut w = World::new(pw, &[A, D, R]);
+    let (x, y, q, k) = (w.node(true, &[A, D]), w.node(true, &[D, R]), w.node(true, &[A]), w.node(false, &[]));
+    w.write(x, |p| p.edge(X, 1, &[], A, Q, Role::Admin, &[]));
+    w.write(x, |p| p.edge(X, 1, &[], A, K, Role::Read, &[]));
+    w.write(y, |p| p.edge(Y, 1, &[], D, A, Role::Write, &[]));
+    w.write(y, |p| p.edge(Y, 1, &[], R, A, Role::Write, &[]));
+    w.write(y, |p| p.edge(Y, 1, &[], D, K, Role::Write, &[]));
+    w.write(k, |p| p.content(K, 3, &[], D));
+    let r = w.write(x, |p| p.edge(X, 6, &[], A, K, Role::None, &[]));
+    let g = w.write(q, |p| p.edge(Q, 2, &[], A, K, Role::Write, &[]));
+    w.write(k, |p| p.content(K, 8, &[A], R));
+    assert_agrees("open16 late grant", &w);
+    let (ev, _) = at_end(&w, BRIEF3, everything);
+    let req = ev.required(&D).unwrap();
+    assert!(req.get(&(r, A)) == Some(&Reason::Removal) && req.contains_key(&(g, A)), "{req:?}");
+    let (before, _) = at_end(&w, BRIEF3, |st| st.written.iter().copied().filter(|&i| i != g).collect());
+    assert!(!before.required(&D).unwrap().contains_key(&(r, A)));
+}
+
+/// OPEN 17 (held-model `open17_keys_open_through_a_mint_admins_record_edge`): finding 19's world
+/// with O minted by A. A's keys open O through its record edge, so Y's removal of O from D travels
+/// under A (keys-open travel): the derivation takes record edges as standing read edges. Without
+/// them (the control) A's evidence lacks it.
+#[test]
+fn open17_keys_open_through_a_mint_admins_record_edge_spec_permissions_4() {
+    let pw = paths::World::new(&[(X, A), (A, O), (Y, D), (V, R)]);
+    let mut w = World::new(pw, &[A, O, D, R]);
+    let (x, y, v, k) = (w.node(true, &[A]), w.node(true, &[D, A]), w.node(true, &[R]), w.node(false, &[]));
+    w.node(true, &[A, R]);
+    w.write(x, |p| p.edge(X, 1, &[], A, K, Role::Write, &[]));
+    w.write(y, |p| p.edge(Y, 1, &[], D, O, Role::Write, &[]));
+    w.write(v, |p| p.edge(V, 1, &[], R, D, Role::Write, &[]));
+    w.write(k, |p| p.content(K, 2, &[A, O, D], R));
+    let r = w.write(y, |p| p.edge(Y, 6, &[], D, O, Role::None, &[]));
+    w.write(k, |p| p.content(K, 8, &[A, O, D], R));
+    assert_agrees("open17 keys open", &w);
+    let (ev, _) = at_end(&w, BRIEF3, everything);
+    assert_eq!(ev.required(&A).unwrap().get(&(r, D)), Some(&Reason::Travels(O)));
+    let (control, _) = at_end_records(&w, BRIEF3, false, everything);
+    assert!(!control.required(&A).unwrap().contains_key(&(r, D)));
+}
+
+/// OPEN 17, reach through a record edge (held-model `open17_a_removed_writers_other_route_through_a_record_edge`):
+/// finding 18's world with D minted by A. X removes K from A; A writes D by its record edge, so
+/// the removal reaches D (its witness K's grant). Without record edges (the control) it does not.
+#[test]
+fn open17_reach_through_a_record_edge_spec_permissions_4() {
+    let pw = paths::World::new(&[(X, A), (A, D), (Y, R)]);
+    let mut w = World::new(pw, &[A, D, R]);
+    let (x, y, k) = (w.node(true, &[A, D]), w.node(true, &[D, R]), w.node(false, &[]));
+    let gk = w.write(x, |p| p.edge(X, 1, &[], A, K, Role::Write, &[]));
+    w.write(y, |p| p.edge(Y, 1, &[], R, A, Role::Write, &[]));
+    w.write(x, |p| p.edge(X, 1, &[], D, K, Role::Write, &[]));
+    w.write(k, |p| p.content(K, 2, &[], D));
+    let r = w.write(x, |p| p.edge(X, 6, &[], A, K, Role::None, &[]));
+    w.write(k, |p| p.content(K, 8, &[A], R));
+    assert_agrees("open17 reach", &w);
+    let (ev, _) = at_end(&w, BRIEF3, everything);
+    let req = ev.required(&D).unwrap();
+    assert!(req.get(&(r, A)) == Some(&Reason::Removal) && req.contains_key(&(gk, A)), "{req:?}");
+    let (control, _) = at_end_records(&w, BRIEF3, false, everything);
+    assert!(!control.required(&D).unwrap().contains_key(&(r, A)));
+}
+
+/// A record edge's removal (A leaving O, which it minted, by self-removal) takes write away with no
+/// witness: O writes D, so it reaches D alone.
+#[test]
+fn a_record_edges_removal_reaches_with_no_witness_spec_permissions_4() {
+    let pw = paths::World::new(&[(X, A), (A, O), (Y, D)]);
+    let mut w = World::new(pw, &[A, O, D]);
+    let (x, y) = (w.node(true, &[A, O, D]), w.node(true, &[D]));
+    w.write(y, |p| p.edge(Y, 1, &[], D, O, Role::Write, &[]));
+    let r = w.write(x, |p| p.edge(X, 5, &[A], O, A, Role::None, &[]));
+    assert_eq!(w.removes(r), Some((A, O)));
+    assert_agrees("record removal", &w);
+    let (ev, _) = at_end(&w, BRIEF3, everything);
+    let req = ev.required(&D).unwrap();
+    assert_eq!(req.get(&(r, O)), Some(&Reason::Removal), "{req:?}");
+    assert_eq!(ev.reach_size(&D), Some((1, 1)));
 }
 
 /// The derivation's own: the last edge of a way is often a body (A's grant on D, on D's unit):

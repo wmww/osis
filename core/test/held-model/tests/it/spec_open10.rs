@@ -221,17 +221,17 @@ fn f15_a_writers_finalizes_and_an_inviters_grants_are_chained_and_copied() {
 }
 
 /// Finding 9, made expressible (`World::creations`: a part resetting an entry waits for its
-/// creation; a commit's edge writes on a thing apply together): X removes K and Q from A in one
-/// commit C; K writes D through [A] after it. D's evidence holds C (on K's edge) and C's part on
-/// Q's edge, not X's grant to Q, the creation of the entry that part resets: D's reader never
-/// applies C and shows K's write pending where the node holding everything judges it invalid.
-/// The draft's clause (every write on the commit's other edges on the thing) or the creations
-/// alone close it.
+/// creation; a commit's edge writes on a thing apply together): X removes K and Q (a reader of
+/// A) from A in one commit C; K writes D through [A] after it. D's evidence holds C (on K's edge)
+/// and C's part on Q's edge, not X's grant to Q, the creation of the entry that part resets (Q's
+/// removal takes no write away, so reach brings no witness of it): D's reader never applies C
+/// and shows K's write pending where the node holding everything judges it invalid. The draft's
+/// clause (every write on the commit's other edges on the thing) or the creations alone close it.
 #[test]
 fn f9_a_removal_of_two_holders_waits_for_each_creation() {
     let (mut w, [x, _, _, _]) = base();
     let kn = w.node(true, &[A]);
-    w.write(x, |p| p.edge(X, 1, &[], A, Q, Role::Write, &[]));
+    w.write(x, |p| p.edge(X, 1, &[], A, Q, Role::Read, &[]));
     w.write_parts(x, |p| p.commit(X, 5, &[], A, vec![paths::Kind::set(K, Role::None), paths::Kind::set(Q, Role::None)]));
     let c = w.write(kn, |p| p.content(K, 6, &[A], D));
     for v in [Open10::Drafted, Open10::Granted] {

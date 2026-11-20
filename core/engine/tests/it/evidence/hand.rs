@@ -264,7 +264,7 @@ fn f2_a_retag_turns_what_bodies_still_need_into_copies_spec_permissions_4() {
 /// worlds): the derivation agrees at every step.
 #[test]
 fn the_models_other_hand_worlds_agree_spec_permissions_4() {
-    let org_apart = Shape { via_org: true, units: 0, listed: false, thief: false, regrant: false, addendum: false, raised: false, q_d: false, q_r: false, y_a: false, org_apart: true, vouch: false };
+    let org_apart = Shape { via_org: true, units: 0, listed: false, thief: false, regrant: false, addendum: false, raised: false, q_d: false, q_r: false, y_a: false, org_apart: true, vouch: false, mint: 0 };
     assert_agrees("f1", &hm::family(org_apart));
     let mut sh = Shape::nth(0);
     (sh.raised, sh.thief) = (true, true);

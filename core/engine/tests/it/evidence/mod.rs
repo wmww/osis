@@ -105,6 +105,9 @@ impl Driver {
 
     fn with(w: &World, cfg: Config) -> Driver {
         let mut ev = Ev::new(cfg);
+        for &e in &w.w.records {
+            ev.add_record(e);
+        }
         for &s in &w.sids {
             ev.add_sid(s, s);
         }
@@ -232,11 +235,11 @@ fn assert_agrees(name: &str, w: &World) -> usize {
 
 // ---- the family, story and random worlds ----
 
-/// Every 97th family world (the model's default slice).
+/// Every 291st family world (the model's default slice: 106 worlds over the three `Shape::mint` values).
 #[test]
 fn the_derivation_agrees_with_the_model_on_a_family_slice_spec_permissions_4() {
     let mut copies = 0;
-    for i in (0..hm::FAMILY).step_by(97) {
+    for i in (0..hm::FAMILY).step_by(97 * 3) {
         copies += assert_agrees(&format!("{:?}", Shape::nth(i)), &hm::family(Shape::nth(i)));
     }
     assert!(copies > 1000, "{copies}");

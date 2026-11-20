@@ -316,8 +316,8 @@ const Q: u16 = 4;
 
 /// A removal arriving: of s sync IDs, r lie below its target (A writes H, H writes D1..Dr; another
 /// hub writes the other s - r). It walks what A leads to once and, per sync ID reached, the way
-/// into it: work 7r + 3, the same at s = 10, 100 and 1,000; each reached sync ID takes the removal
-/// and A's grant on H.
+/// into it: work 7r + 3, the same at s = 10, 100 and 1,000; each reached sync ID takes the removal,
+/// its witness (K's grant on A) and A's grant on H.
 #[test]
 fn a_removal_arriving_reaches_only_the_sync_ids_below_it() {
     let at = |s: u16, r: u16| {
@@ -338,7 +338,7 @@ fn a_removal_arriving_reaches_only_the_sync_ids_below_it() {
     };
     let (a, b, c) = (at(10, 5), at(100, 5), at(1000, 5));
     assert_eq!((a, a), (b, c));
-    assert_eq!((a.reach, a.reach_seeds, a.closes), (7 * 5 + 3, 4 * 5, 0), "{a:?}");
+    assert_eq!((a.reach, a.reach_seeds, a.closes), (7 * 5 + 3, 5 * 5, 0), "{a:?}");
     assert_eq!(at(100, 50).reach, 7 * 50 + 3);
 }
 
@@ -382,7 +382,8 @@ fn content_junk_and_other_role_changes_do_no_reach_work() {
 
 /// A write grant joining two parts of the grant graph (H writes H2) with a removals above (each
 /// Aj writes H, K removed from each) and b sync IDs below (H2 writes D1..Db): each sync ID below
-/// takes each removal above, with the ways: b (2a + 1) seeds, once. The same grant again goes
+/// takes each removal above with its witness (K's grant on Aj), with the ways: b (3a + 1) seeds,
+/// once. The same grant again goes
 /// where the edge does (b seeds, no walk); a write grant elsewhere with no removal above walks only
 /// what leads to it.
 #[test]
@@ -404,7 +405,7 @@ fn a_write_grant_joining_removals_above_to_sync_ids_below_costs_their_product_on
         });
         for i in 0..b {
             let (seeds, _) = w.ev.reach_size(&(1000 + i)).unwrap();
-            assert_eq!(seeds, 2 * a as usize + 1);
+            assert_eq!(seeds, 3 * a as usize + 1);
         }
         let again = w.work(|w| {
             w.grant(H, H2);
@@ -415,9 +416,9 @@ fn a_write_grant_joining_removals_above_to_sync_ids_below_costs_their_product_on
         (join, again, elsewhere)
     };
     let ((j1, g1, e1), (j2, g2, e2)) = (at(2, 3), at(4, 6));
-    // seeds given: per sync ID below, the a removals, the a + 2 ways ((Aj, H), (H, H2), (H2, Di))
-    // and the a + 1 grants on them off the unit: b (3a + 3), a product
-    assert_eq!((j1.reach_seeds, j2.reach_seeds), (3 * (3 * 2 + 3), 6 * (3 * 4 + 3)), "{j1:?} {j2:?}");
+    // seeds given: per sync ID below, the a removals and their a witnesses, the a + 2 ways ((Aj,
+    // H), (H, H2), (H2, Di)) and the a + 1 grants on them off the unit: b (4a + 3), a product
+    assert_eq!((j1.reach_seeds, j2.reach_seeds), (3 * (4 * 2 + 3), 6 * (4 * 4 + 3)), "{j1:?} {j2:?}");
     // the walks, linear: above (H, Aj, K and their edges, 3a + 2) and below (H2, Di and their
     // edges, 2b + 1) once, each sync ID's way in (3b), the ways from the targets once (2a + 1)
     assert_eq!((j1.reach, j2.reach), (5 * 2 + 5 * 3 + 4, 5 * 4 + 5 * 6 + 4), "{j1:?} {j2:?}");
@@ -483,14 +484,16 @@ fn a_read_grant_opens_only_what_it_leads_to() {
 }
 
 /// Memory and copies in an organisation: O has m members (write grants by X) and n documents
-/// (each its own sync ID, O writes it); M1 writes each document through [O]; X removes r members.
-/// With reach each document requires the r removals and the r grants their resets name, besides
-/// M1's grant: 2r + 1 copies, flat in n; without reach, M1's grant alone. The reach index holds r
-/// seeds and one way per document.
+/// (each its own sync ID, O writes it); M1 writes each document through [O]; X removes r members,
+/// and grants x readers read on O and removes them. With reach each document requires the r
+/// removals and the r grants their resets name (each removal's witness too), besides M1's grant:
+/// 2r + 1 copies, flat in n and in x (a reader's grant or removal takes no write away: OPEN 16);
+/// without reach, M1's grant alone. The reach index holds 2r seeds (removals and witnesses) and
+/// one way per document.
 #[test]
 fn an_organisations_documents_each_carry_every_removal_above_them() {
     const O: u16 = 60;
-    let at = |n: u16, r: u16, reach: bool| {
+    let at = |n: u16, r: u16, x: u16, reach: bool| {
         let mut ev = E::new(Config { vouches: true, reach, keys_open: true });
         let mut next = 1u32;
         let mut add = |ev: &mut E, on: u16, kind: Kind<u32, u16>, hops: Vec<Hop<u16>>| {
@@ -516,6 +519,13 @@ fn an_organisations_documents_each_carry_every_removal_above_them() {
             let kind = Kind::Write(Write { holder: 2000 + j, grant: false, removal: true, gives_write: false, gives_read: false, relies: None, creation });
             add(&mut ev, O, kind, vec![rec(X, O)]);
         }
+        for j in 0..x {
+            let h = 3000 + j;
+            let read = Kind::Write(Write { holder: h, grant: true, removal: true, gives_write: false, gives_read: true, relies: None, creation: None });
+            let g = add(&mut ev, O, read, vec![rec(X, O)]);
+            let kind = Kind::Write(Write { holder: h, grant: false, removal: true, gives_write: false, gives_read: false, relies: None, creation: Some(g) });
+            add(&mut ev, O, kind, vec![rec(X, O)]);
+        }
         ev.check().unwrap();
         let per: Vec<(usize, usize, usize)> = (0..n).map(|i| {
             let d = 1000 + i;
@@ -525,8 +535,10 @@ fn an_organisations_documents_each_carry_every_removal_above_them() {
         assert!(per.iter().all(|p| *p == per[0]), "{per:?}");
         per[0]
     };
-    assert_eq!(at(10, 10, true), (21, 10, 1));
-    assert_eq!(at(100, 10, true), (21, 10, 1));
-    assert_eq!(at(10, 10, false), (1, 0, 0));
-    assert_eq!(at(10, 100, true), (201, 100, 1));
+    assert_eq!(at(10, 10, 0, true), (21, 20, 1));
+    assert_eq!(at(100, 10, 0, true), (21, 20, 1));
+    assert_eq!(at(10, 10, 100, true), (21, 20, 1));
+    assert_eq!(at(10, 10, 1000, true), (21, 20, 1));
+    assert_eq!(at(10, 10, 100, false), (1, 0, 0));
+    assert_eq!(at(10, 100, 0, true), (201, 200, 1));
 }
