@@ -3642,8 +3642,8 @@ fn a_cuts_list_keeps_a_write_from_that_cut_alone() {
     assert!(!fixed(&w, &[]).shows(c));
 }
 
-/// Z's clock runs ahead: its write stamped 5 reaches both removers before they write at 4. Each
-/// cut lists it, so it stands against each: valid. Where only M lists it, H's cut of (Z, A), the
+/// Both removals, stamped 4, list Z's write stamped 5: backdated (an honest remover's clock passes
+/// what it received, spec/crdt.md HLC rules). Each cut lists it, so it stands against each: valid. Where only M lists it, H's cut of (Z, A), the
 /// edge's last write before it, refuses it.
 #[test]
 fn a_write_after_two_cuts_stands_where_each_lists_it() {
@@ -3699,7 +3699,7 @@ fn a_list_gives_no_role_the_path_never_gave() {
 }
 
 /// The edge before an answering cut is read at the write's `ts`: H's removal at 2 lists Z's write
-/// stamped 5 (Z's clock ahead), but Z's grant ended at 3: the cut not taken, the edge gave
+/// stamped 5 (backdated, as above), but Z's grant ended at 3: the cut not taken, the edge gave
 /// nothing at 5. With a standing grant it stands.
 #[test]
 fn an_answered_cut_gives_back_only_what_the_edge_gave_at_the_write() {
@@ -3711,6 +3711,56 @@ fn an_answered_cut_gives_back_only_what_the_edge_gave_at_the_write() {
         assert_eq!(fixed(&w, &[]).valid.contains(&c), !until, "until {until}");
         assert!(any_cut(&w).valid.contains(&c));
     }
+}
+
+/// H cuts (Z, A) listing nothing, grants it again and cuts it again listing both of Z's writes:
+/// the one made after the re-grant needs only the second cut's answer; the one the first cut
+/// refused stays refused (the final state gives nothing, so no re-grant).
+#[test]
+fn a_second_cut_of_an_edge_answers_only_what_the_first_left_standing() {
+    let mut w = World::new(&[(H, A)]);
+    w.edge(H, 1, &[], A, Z, Write, &[]);
+    let c0 = w.content(Z, 2, &[], A);
+    w.edge(H, 3, &[], A, Z, Gone, &[]);
+    w.edge(H, 4, &[], A, Z, Write, &[]);
+    let c1 = w.content(Z, 5, &[], A);
+    w.edge(H, 6, &[], A, Z, Gone, &[c0, c1]);
+    let rd = fixed(&w, &[]);
+    assert!(rd.valid.contains(&c1) && !rd.shows(c0), "{rd:?}");
+    assert!(any_cut(&w).valid.contains(&c0));
+}
+
+/// B's addendum against H's removal of Z keeps Z's write; H then removes B: the addendum, B's
+/// write, stands against that cut of its own path only where H's list names it, and Z's write
+/// with it.
+#[test]
+fn an_addendum_keeps_a_write_while_it_stands_against_its_witness_removal() {
+    for listed in [true, false] {
+        let mut w = World::new(&[(H, A)]);
+        w.edge(H, 1, &[], A, Z, Write, &[]);
+        w.edge(H, 1, &[], A, B, Write, &[]);
+        let c = w.content(Z, 2, &[], A);
+        let r1 = w.edge(H, 4, &[], A, Z, Gone, &[]);
+        let a = w.addendum(B, 5, &[], A, r1, &[c]);
+        w.edge(H, 7, &[], A, B, Gone, &if listed { vec![a] } else { vec![] });
+        let rd = fixed(&w, &[]);
+        assert_eq!((rd.valid.contains(&a), rd.valid.contains(&c)), (listed, listed), "listed {listed}");
+    }
+}
+
+/// Z's one commit writes CT through [A] and A directly; M cuts (A, CT), then H removes Z listing
+/// the commit in both leaves: the part on A stands by H's list; the part on CT falls to M's cut,
+/// which H's list does not answer.
+#[test]
+fn a_commits_parts_answer_the_cuts_of_their_own_paths() {
+    let mut w = cut_twice();
+    let parts = w.split(Z, 3, Z, &[(&[A], CT), (&[], A)]);
+    w.edge(M, 4, &[], CT, A, Gone, &[]);
+    let honest = w.through((Z, A), |_| true);
+    w.edge(H, 5, &[], A, Z, Gone, &honest);
+    let rd = fixed(&w, &[]);
+    assert!(rd.valid.contains(&parts[1]) && !rd.shows(parts[0]), "{rd:?}");
+    assert!(any_cut(&w).valid.contains(&parts[0]));
 }
 
 // ---- A list entry names its part on its leaf's thing alone (notes/evidence-model-findings.md 24) ----

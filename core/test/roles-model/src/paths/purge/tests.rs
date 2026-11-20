@@ -224,6 +224,7 @@ fn purge_worlds_hold_plain() {
     let n = 400;
     for rules in [Rules::purging(), Rules::purging_remake()] {
         let st = purge_run_from(0, n, &rules);
+        st.print("paths-purge");
         let others: u64 = st.fails.iter().filter(|(k, _)| **k != "purge witnessed").map(|(_, n)| n).sum();
         assert!(others == 0 && st.fails.contains_key("purge witnessed"), "{:?} {:?}", st.fails, st.first);
         for k in ["purge kept", "purge safety", "alike", "could hold", "own cover", "bodies"] {
@@ -248,6 +249,8 @@ fn purge_worlds_hold_plain() {
 #[ignore = "property"]
 fn purge_worlds_hold_large() {
     let st = purge_run_from(0, 4000, &Rules::purging());
+    // the noted counts (an excused destruction among them) are the run's to read
+    st.print("paths-purge");
     let others: u64 = st.fails.iter().filter(|(k, _)| **k != "purge witnessed").map(|(_, n)| n).sum();
     assert!(others == 0 && st.fails.contains_key("purge witnessed"), "{:?} {:?}", st.fails, st.first);
     let st = purge_run_from(0, 4000, &Rules { purge_addenda: true, ..Rules::purging() });

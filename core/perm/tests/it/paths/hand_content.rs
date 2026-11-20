@@ -1016,8 +1016,9 @@ fn a_cuts_list_keeps_a_write_from_that_cut_alone() {
     assert_eq!(verdict(&w, &all(&w, &[]), c), Some(Content::Invalid));
 }
 
-// spec/permissions.md §5.2 (content): Z's write, stamped after both removals and received by
-// both removers, stands where each cut lists it; where only M lists it H's cut, the edge's last
+// spec/permissions.md §5.2 (content): Z's write, stamped after both removals and listed by both
+// (backdated removals: an honest remover's clock passes what it received, spec/crdt.md HLC
+// rules), stands where each cut lists it; where only M lists it H's cut, the edge's last
 // write before it, refuses it.
 #[test]
 fn a_write_after_two_cuts_stands_where_each_lists_it() {
@@ -1085,6 +1086,54 @@ fn an_answered_cut_gives_back_only_what_the_edge_gave_at_the_write() {
         agree_all(&w, &[]);
         assert_eq!(verdict(&w, &all(&w, &[]), c), Some(if until { Content::Invalid } else { Content::Valid(By::Listed) }), "until {until}");
     }
+}
+
+// spec/permissions.md §5.2 (content): an edge cut, re-granted and cut again, the second cut listing
+// both of Z's writes: the one after the re-grant stands by it, the one the first cut refused stays
+// refused.
+#[test]
+fn a_second_cut_of_an_edge_answers_only_what_the_first_left_standing() {
+    let mut w = World::new(&[(H, A)]);
+    w.edge(H, 1, &[], A, Z, Write, &[]);
+    let c0 = w.content(Z, 2, &[], A);
+    w.edge(H, 3, &[], A, Z, Gone, &[]);
+    w.edge(H, 4, &[], A, Z, Write, &[]);
+    let c1 = w.content(Z, 5, &[], A);
+    w.edge(H, 6, &[], A, Z, Gone, &[c0, c1]);
+    agree_all(&w, &[]);
+    assert_eq!(verdict(&w, &all(&w, &[]), c0), Some(Content::Invalid));
+    assert_eq!(verdict(&w, &all(&w, &[]), c1), Some(Content::Valid(By::Listed)));
+}
+
+// spec/permissions.md §5.2 (addenda): B's addendum against H's removal of Z keeps Z's write while
+// the addendum stands against H's later removal of B: where H's list names it.
+#[test]
+fn an_addendum_keeps_a_write_while_it_stands_against_its_witness_removal() {
+    for listed in [true, false] {
+        let mut w = World::new(&[(H, A)]);
+        w.edge(H, 1, &[], A, Z, Write, &[]);
+        w.edge(H, 1, &[], A, B, Write, &[]);
+        let c = w.content(Z, 2, &[], A);
+        let r1 = w.edge(H, 4, &[], A, Z, Gone, &[]);
+        let a = w.addendum(B, 5, &[], A, r1, &[c]);
+        w.edge(H, 7, &[], A, B, Gone, &if listed { vec![a] } else { vec![] });
+        agree_all(&w, &[]);
+        assert_eq!(verdict(&w, &all(&w, &[]), c), Some(if listed { Content::Valid(By::Vouched) } else { Content::Invalid }), "listed {listed}");
+    }
+}
+
+// spec/permissions.md §5.2 (content): Z's one commit on CT through [A] and on A; M cuts (A, CT),
+// then H removes Z listing the commit in both leaves: the part on A stands, the part on CT falls.
+#[test]
+fn a_commits_parts_answer_the_cuts_of_their_own_paths() {
+    let mut w = cut_twice();
+    let parts = w.split(Z, 3, Z, &[(&[A], CT), (&[], A)]);
+    w.edge(M, 4, &[], CT, A, Gone, &[]);
+    let honest = w.through((Z, A), |_| true);
+    w.edge(H, 5, &[], A, Z, Gone, &honest);
+    agree_all(&w, &[]);
+    assert_eq!(verdict(&w, &all(&w, &[]), parts[0]), Some(Content::Invalid));
+    assert_eq!(verdict(&w, &all(&w, &[]), parts[1]), Some(Content::Valid(By::Listed)));
 }
 
 // spec/permissions.md §5.1 (the list): an entry in thing t's leaf names its commit's part on t

@@ -506,6 +506,12 @@ pub fn purge_check(m: &PWorld, rules: &Rules, st: &mut PStats) {
         }
         let (mut rule, mut req) = (Set::new(), Set::new());
         for &q in v.held.iter().filter(|&&q| matches!(w.commits[q].kind, Kind::Purge { .. })) {
+            let c = &w.commits[q];
+            // the story's one excuse: X's destruction along [ORG] stamped by B's cut of (ORG, T1)
+            // at 3, which only the destruction rule lets stand (issues/destruction-by-removed-direct-admin.md)
+            if c.signer == X && c.path == [ORG] && matches!(c.kind, Kind::Purge { names: Names::Destroy }) && (2..=3).contains(&c.ts) && !m.rb.is_some_and(|rb| w.in_frontier(rb, q)) && m.rm.is_some_and(|rm| w.in_frontier(rm, q)) {
+                st.note("destroyed past a cut into its thing (issues/destruction-by-removed-direct-admin.md)", i, format!("node {n}: X's destruction {q} along [ORG] stamped {}", c.ts));
+            }
             let (base, with) = story(q, &v.held);
             let base = if rules.purge_addenda { with } else { base };
             for &d in cands.iter().filter(|&&d| named(w, q, d)) {
