@@ -4244,6 +4244,41 @@ fn split_paths_judge_alike_however_parts_come_spec_wire_4() {
     }
 }
 
+// spec/wire.md §4 `PathKey` (an encryption carries the path keys of its parts' things and no other),
+// spec/sync-judgement.md §1: Bob's split commit sealed as sync IDs carry it (`Engine::seal_package`,
+// a section per thing under its read secret), not handed over opened. Carol, reading P alone and
+// holding no secret of D, opens P's section: she holds P's path key alone and judges P from it,
+// while D's path opens nowhere at her and waits; Alice opens both sections and decides both.
+#[test]
+fn a_sealed_split_commit_gives_each_reader_its_own_things_keys_spec_wire_4() {
+    let (mut lp, (d, p, id, _)) = LocalPeer::cached("validity::two_paths_world", || {
+        let (mut lp, _, d, p) = two_paths_world();
+        let (id, c) = bob_writes_both(&mut lp, d, p);
+        (lp, (d, p, id, c))
+    });
+    let pks = lp.sealed(1, &[id]).unwrap();
+    assert_eq!(pks.len(), 1);
+    for i in [2, 0] {
+        assert!(lp.deliver_sealed(i, &pks).unwrap().is_empty(), "peer {i} opened a section");
+    }
+    let held = |lp: &mut LocalPeer, i: usize| {
+        let e = &mut lp.peers[i].engine;
+        let c = osis_commit::CommitBlob::decode(&e.package(&id).unwrap().unwrap().bytes).unwrap();
+        let things = c.header.things();
+        let keys: Vec<Tid> = c.keys.keys().map(|i| things[*i]).collect();
+        let paths = e.core.ix.commits.get(&id).unwrap().view.paths.clone().unwrap();
+        (keys, paths.get(&d).copied(), paths.get(&p).copied(), e.core.ix.paths_unknown.contains(&id))
+    };
+    assert_eq!(held(&mut lp, 2), (vec![p], None, Some(true), true), "Carol: P's key alone, D waits");
+    assert_eq!(lp.peers[2].engine.get(&p, &ak("t:reg.0")).unwrap(), Some(s("on p")));
+    let alice = held(&mut lp, 0);
+    assert_eq!((alice.1, alice.2, alice.3), (Some(true), Some(true), false), "Alice decides both");
+    assert_eq!(lp.peers[0].engine.get(&d, &ak("t:reg.0")).unwrap(), Some(s("on d")));
+    for i in [0, 2] {
+        lp.peers[i].engine.check_index();
+    }
+}
+
 /// Bob's (1) split commit `c` with `entries` and purge author `author`, signed again: its header
 /// and signatures (no part).
 fn resigned(lp: &mut LocalPeer, c: &osis_commit::CommitBlob, entries: Vec<Vec<u8>>, author: Option<Tid>) -> osis_commit::CommitBlob {
@@ -4353,6 +4388,211 @@ fn hostile_split_commits_harm_only_their_forged_things_alike_everywhere_spec_wir
     }
 }
 
+/// Arithmetic modulo 2^130 − 5, Poly1305's field: little-endian 64-bit limbs.
+mod p1305 {
+    pub type N = [u64; 3];
+    pub const P: N = [0xffff_ffff_ffff_fffb, u64::MAX, 3];
+
+    fn ge(a: &N, b: &N) -> bool {
+        (0..3).rev().find(|i| a[*i] != b[*i]).is_none_or(|i| a[i] > b[i])
+    }
+
+    fn sub_raw(a: &N, b: &N) -> N {
+        let mut out = [0u64; 3];
+        let mut borrow = false;
+        for i in 0..3 {
+            let (d1, b1) = a[i].overflowing_sub(b[i]);
+            let (d2, b2) = d1.overflowing_sub(u64::from(borrow));
+            out[i] = d2;
+            borrow = b1 || b2;
+        }
+        out
+    }
+
+    fn reduce(mut x: [u64; 6]) -> N {
+        loop {
+            let h = [(x[2] >> 2) | (x[3] << 62), (x[3] >> 2) | (x[4] << 62), (x[4] >> 2) | (x[5] << 62), x[5] >> 2];
+            if h == [0; 4] {
+                break;
+            }
+            let l = [x[0], x[1], x[2] & 3];
+            let mut carry = 0u128;
+            for (i, xi) in x.iter_mut().enumerate() {
+                let v = u128::from(l.get(i).copied().unwrap_or(0)) + 5 * u128::from(h.get(i).copied().unwrap_or(0)) + carry;
+                *xi = v as u64;
+                carry = v >> 64;
+            }
+        }
+        let mut r = [x[0], x[1], x[2]];
+        while ge(&r, &P) {
+            r = sub_raw(&r, &P);
+        }
+        r
+    }
+
+    pub fn add(a: &N, b: &N) -> N {
+        let mut out = [0u64; 6];
+        let mut carry = 0u128;
+        for i in 0..3 {
+            let v = u128::from(a[i]) + u128::from(b[i]) + carry;
+            out[i] = v as u64;
+            carry = v >> 64;
+        }
+        out[3] = carry as u64;
+        reduce(out)
+    }
+
+    pub fn sub(a: &N, b: &N) -> N {
+        add(a, &sub_raw(&P, &reduce([b[0], b[1], b[2], 0, 0, 0])))
+    }
+
+    pub fn mul(a: &N, b: &N) -> N {
+        let mut o = [0u64; 6];
+        for i in 0..3 {
+            let mut carry = 0u128;
+            for j in 0..3 {
+                let v = u128::from(o[i + j]) + u128::from(a[i]) * u128::from(b[j]) + carry;
+                o[i + j] = v as u64;
+                carry = v >> 64;
+            }
+            o[i + 3] = carry as u64;
+        }
+        reduce(o)
+    }
+
+    pub fn pow(a: &N, e: &N) -> N {
+        let mut out: N = [1, 0, 0];
+        for bit in (0..192).rev() {
+            out = mul(&out, &out);
+            if e[bit / 64] >> (bit % 64) & 1 == 1 {
+                out = mul(&out, a);
+            }
+        }
+        out
+    }
+
+    pub fn inv(a: &N) -> N {
+        pow(a, &sub_raw(&P, &[2, 0, 0]))
+    }
+
+    /// A 16-byte little-endian block, with `top` the bit above it (Poly1305's 2^128).
+    pub fn block(b: &[u8], top: u64) -> N {
+        let w = |i: usize| u64::from_le_bytes(b[i..i + 8].try_into().unwrap());
+        [w(0), w(8), top]
+    }
+}
+
+/// A split entry of 81 bytes (class 4) that opens under both `k1` and `k2`: XChaCha20-Poly1305
+/// commits to no key, so whoever picks both keys solves one linear equation over Poly1305's field
+/// for one ciphertext block. Under `k1` it opens to a canonical list of four tids (a path of
+/// well-formed shape, purge author the signer); under `k2` to bytes that are no list.
+fn entry_under_two_keys(k1: &[u8; 32], k2: &[u8; 32]) -> Vec<u8> {
+    use osis_crypto::aead::{Keystream, ZERO_NONCE, open};
+    use p1305::*;
+    let (ks1, ks2) = (Keystream::new(k1, &ZERO_NONCE), Keystream::new(k2, &ZERO_NONCE));
+    let rs = |ks: &Keystream| {
+        let pk = ks.poly_key();
+        let mut r = pk;
+        for i in [3, 7, 11, 15] {
+            r[i] &= 15;
+        }
+        for i in [4, 8, 12] {
+            r[i] &= 252;
+        }
+        (block(&r[..16], 0), u128::from_le_bytes(pk[16..].try_into().unwrap()))
+    };
+    let ((r1, s1), (r2, s2)) = (rs(&ks1), rs(&ks2));
+    // the MAC's blocks: the 65-byte ciphertext padded to five, then the lengths (no AD)
+    let mut lens = [0u8; 16];
+    lens[8..].copy_from_slice(&65u64.to_le_bytes());
+    let coef = |r: &N, i: usize| pow(r, &[6 - i as u64, 0, 0]);
+    let mac = |r: &N, s: u128, ct: &[u8; 80]| {
+        let acc = (0..5).map(|i| block(&ct[16 * i..16 * i + 16], 1)).chain([block(&lens, 1)]).enumerate().fold([0, 0, 0], |acc, (i, m)| add(&acc, &mul(&m, &coef(r, i))));
+        (u128::from(acc[0]) | (u128::from(acc[1]) << 64)).wrapping_add(s)
+    };
+    // block 2 (bytes 32..47) solved for; its byte 1 is a tid's head (0x4f) under `k1`
+    let c_inv = inv(&sub(&coef(&r1, 2), &coef(&r2, 2)));
+    for n in 0u64..1_000_000 {
+        let mut pt = vec![0x84u8];
+        for j in 0..4u64 {
+            pt.push(0x4f);
+            pt.extend_from_slice(&osis_base::hash::hash(&(4 * n + j).to_le_bytes())[..15]);
+        }
+        let mut ct = [0u8; 80];
+        for i in 0..65 {
+            ct[i] = pt[i] ^ ks1.byte(i);
+        }
+        let rest = |r: &N| (0..6).filter(|i| *i != 2).map(|i| if i < 5 { (i, block(&ct[16 * i..16 * i + 16], 1)) } else { (i, block(&lens, 1)) }).fold([0, 0, 0], |acc, (i, m)| add(&acc, &mul(&m, &coef(r, i))));
+        let base = sub(&rest(&r1), &rest(&r2));
+        let ds = s2.wrapping_sub(s1);
+        for k in 0..4u64 {
+            let want = [ds as u64, (ds >> 64) as u64, k];
+            let m = mul(&sub(&want, &base), &c_inv);
+            if m[2] != 1 || (m[0] >> 8) as u8 != 0x4f ^ ks1.byte(33) {
+                continue;
+            }
+            ct[32..40].copy_from_slice(&m[0].to_le_bytes());
+            ct[40..48].copy_from_slice(&m[1].to_le_bytes());
+            let tag = mac(&r1, s1, &ct);
+            if tag != mac(&r2, s2, &ct) {
+                continue;
+            }
+            let mut entry = ct[..65].to_vec();
+            entry.extend_from_slice(&tag.to_le_bytes());
+            assert!(open(k1, &ZERO_NONCE, &[], &entry).is_ok() && open(k2, &ZERO_NONCE, &[], &entry).is_ok());
+            return entry;
+        }
+    }
+    panic!("no entry opening under both keys");
+}
+
+// spec/wire.md §4 `Split` (a reader opens a thing's entry with the path key an encryption of its
+// parts carries), spec/commits.md §4 (a thing's parts are judged alike at every reader of it,
+// whatever order its encryptions come in): XChaCha20-Poly1305 commits to no key, so Bob seals D's
+// entry to open under two keys of his choosing, to a path under one and to no list under the
+// other, and seals D's parts twice, each encryption carrying one key. Alice takes both encryptions
+// in either order, or the path's alone: D's write applies, before and after a reopen. The other
+// alone is junk for D, as a copy whose parts miss their hash: D waits for a true copy.
+// issues/split-entry-key-commitment.md: two keys opening to two well-formed paths are not
+// told apart here (no part reads its path yet), but would be once parts are judged along them.
+#[test]
+fn an_entry_opening_under_two_keys_judges_alike_in_any_order_spec_wire_4() {
+    let fresh = || {
+        LocalPeer::cached("validity::two_paths_world", || {
+            let (mut lp, _, d, p) = two_paths_world();
+            let (id, c) = bob_writes_both(&mut lp, d, p);
+            (lp, (d, p, id, c))
+        })
+    };
+    let (mut lp, (d, p, _, c)) = fresh();
+    let things = c.header.things();
+    let (id_, ip) = (things.iter().position(|t| *t == d).unwrap(), things.iter().position(|t| *t == p).unwrap());
+    let osis_commit::Paths::Split(sp) = &c.header.path else { panic!("split") };
+    let (k1, k2) = ([11u8; 32], [22u8; 32]);
+    let mut es = sp.entries.clone();
+    es[id_] = entry_under_two_keys(&k1, &k2);
+    let f = resigned(&mut lp, &c, es, None);
+    assert!(matches!(f.header.open_path(id_, &k1), Some(osis_commit::ThingPath::Known(_))), "a path under one key");
+    assert_eq!(f.header.open_path(id_, &k2), Some(osis_commit::ThingPath::Bad), "no list under the other");
+    let under = |k: [u8; 32]| opened_sections(&f, &c, &[id_, ip], &|i| BTreeMap::from([(i, if i == id_ { k } else { c.keys[&i] })]));
+    let (one, other) = (under(k1), under(k2));
+    let reg = |w: &mut LocalPeer| w.peers[0].engine.get(&d, &ak("t:reg.0")).unwrap();
+    for order in [vec![&one, &other], vec![&other, &one], vec![&one], vec![&other]] {
+        let (mut w, _) = fresh();
+        let before = reg(&mut w);
+        for b in &order {
+            unless_refused(w.peers[0].engine.ingest(b, Vec::new()));
+            w.peers[0].reexamine().unwrap();
+            w.peers[0].engine.check_index();
+        }
+        crate::flows::reopen(&mut w, 0).unwrap();
+        // the other encryption alone is junk for D, as a part not matching its hash: D's parts
+        // wait for a true copy
+        let want = if order.len() == 1 && order[0] == &other { before } else { Some(s("on d")) };
+        assert_eq!(reg(&mut w), want, "Alice's D, holding {} encryption(s), the first {}", order.len(), if order[0] == &one { "the path's" } else { "the other" });
+    }
+}
+
 // spec/permissions.md §5.2 Interim (a commit acts on every thing for its one purge author, which
 // its signer must be or hold write on, the Acting check), spec/wire.md §4: a hand-built purge
 // author acts no wider than that check allows, in either path form. Bob (writer of H, H of D, Bob
@@ -4444,6 +4684,34 @@ fn a_creation_under_a_forged_entry_makes_nothing_spec_wire_4() {
     let held = e.get(&d, &ak("holds.0")).unwrap();
     assert!(matches!(&held, Some(Value::Set(h)) if h.contains(&Value::Strong(x))), "D's strong to X stands: {held:?}");
     e.check_index();
+}
+
+// spec/wire.md §4 `Split` (a path is header data), spec/commits.md §5 Purge: what a node decided of
+// a split commit's paths outlives the parts that brought the keys. Alice holds Bob's split commit
+// whole and purges his part on P; P's path stays known, live and after a reopen, and D's write
+// stands.
+#[test]
+fn a_split_commits_path_outlives_its_parts_spec_wire_4() {
+    let (mut lp, _, d, p) = two_paths_world();
+    let (id, _) = bob_writes_both(&mut lp, d, p);
+    lp.sync_all().unwrap();
+    let mut m = Mutation::new();
+    let now = lp.peers[0].engine.now();
+    m.set(p, &osis_schema::core_types::PURGE, &now).unwrap();
+    m.purge(osis_commit::PurgeItem::Aspect { tid: p, ak: ak("t:reg.0") });
+    lp.peers[0].commit(m).unwrap().unwrap();
+    for reopened in [false, true] {
+        if reopened {
+            crate::flows::reopen(&mut lp, 0).unwrap();
+        }
+        let e = &mut lp.peers[0].engine;
+        assert_eq!(e.get(&p, &ak("t:reg.0")).unwrap(), None, "purged ({reopened})");
+        assert_eq!(e.get(&d, &ak("t:reg.0")).unwrap(), Some(s("on d")), "D stands ({reopened})");
+        let paths = e.core.ix.commits.get(&id).unwrap().view.paths.clone().unwrap();
+        assert_eq!((paths.get(&p), paths.get(&d)), (Some(&true), Some(&true)), "kept ({reopened})");
+        assert!(!e.core.ix.paths_unknown.contains(&id));
+        e.check_index();
+    }
 }
 
 // spec/commits.md §4 (while its header lists are not resolved): a split
@@ -4873,6 +5141,44 @@ fn a_writes_path_is_a_function_of_the_held_edges_spec_wire_4() {
         hs.iter().position(|h| *h == p.things[0]).unwrap()
     };
     assert_eq!(chosen(0), chosen(1));
+}
+
+// spec/wire.md §4 field 2 (one path unless it tells a reader of one thing written a fact of
+// another's roster), spec/requirements.md Confidentiality between readers: Bob writes through his
+// holder H. Two things H holds by grant, D and P, written together, are one hop past `[H]` alike,
+// but `[H]` would show D's readers that H holds P (and P's that H holds D): split. D and X, made
+// under D through H, state `[H, D]` in the clear: X derives from D, so D's readers read X whole.
+#[test]
+fn one_path_in_the_clear_only_where_it_shows_no_reader_another_roster_spec_wire_4() {
+    let mut lp = net(3, 0);
+    lp.sync_all().unwrap();
+    let (h, d, p) = (new_thing(&mut lp, 0), new_thing(&mut lp, 0), new_thing(&mut lp, 0));
+    let b = lp.peers[1].engine.me();
+    set_edge(&mut lp.peers[0].engine, h, b, Some(edge(Role::Write)), None);
+    for t in [d, p] {
+        set_edge(&mut lp.peers[0].engine, t, h, Some(edge(Role::Admin)), None);
+    }
+    lp.sync_all().unwrap();
+    let mut m = Mutation::new();
+    m.set(d, &REG, &s("on d")).unwrap();
+    m.set(p, &REG, &s("on p")).unwrap();
+    let id = lp.peers[1].commit(m).unwrap().unwrap();
+    let c = osis_commit::CommitBlob::decode(&lp.peers[1].engine.package(&id).unwrap().unwrap().bytes).unwrap();
+    assert!(c.header.is_split(), "two grants past one holder: {:?}", c.header.path);
+    let mut got = paths_stated(&c);
+    got.sort();
+    let mut want = vec![(d, vec![h]), (p, vec![h])];
+    want.sort();
+    assert_eq!(got, want);
+    let mut m = Mutation::new();
+    let x = lp.peers[1].engine.new_thing(&mut m, d);
+    m.set(x, &REG, &s("under d")).unwrap();
+    m.set(d, &REG, &s("beside x")).unwrap();
+    let id = lp.peers[1].commit(m).unwrap().unwrap();
+    let hd = lp.peers[1].engine.header(&id).unwrap();
+    assert_eq!(hd.path, osis_commit::Paths::One(osis_commit::Path { purge: 0, things: vec![h, d] }), "a dependent beside its parent");
+    lp.sync_all().unwrap();
+    assert_eq!(lp.peers[0].engine.get(&x, &ak("t:reg.0")).unwrap(), Some(s("under d")));
 }
 
 // spec/wire.md §4 field 2; notes/path-form.md One path: a creation states one path in the

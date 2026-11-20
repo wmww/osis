@@ -106,6 +106,16 @@ impl Keystream {
         s
     }
 
+    /// The one-time Poly1305 key (block 0): forensic tests building a ciphertext that
+    /// authenticates under two keys (Poly1305 commits to no key).
+    pub fn poly_key(&self) -> [u8; 32] {
+        let mut key = [0u8; 32];
+        for (k, w) in key.as_chunks_mut::<4>().0.iter_mut().zip(self.block(0)) {
+            *k = w.to_le_bytes();
+        }
+        key
+    }
+
     /// Keystream byte `i` of the message.
     pub fn byte(&self, i: usize) -> u8 {
         let at = |b: &[u32; 16]| b.get(i % 64 / 4).map_or(0, |w| (w >> (8 * (i % 4))) as u8);
@@ -133,11 +143,7 @@ impl Keystream {
     /// whether `open` would.
     pub fn authentic(&self, ad: &[u8], sealed: &[u8]) -> bool {
         let Some((ct, tag)) = sealed.len().checked_sub(TAG_LEN).map(|n| sealed.split_at(n)) else { return false };
-        let mut key = [0u8; 32];
-        for (k, w) in key.as_chunks_mut::<4>().0.iter_mut().zip(self.block(0)) {
-            *k = w.to_le_bytes();
-        }
-        let mut p = Poly1305::new(&key);
+        let mut p = Poly1305::new(&self.poly_key());
         p.padded(ad);
         p.padded(ct);
         let mut lens = [0u8; 16];

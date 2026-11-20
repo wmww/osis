@@ -4679,11 +4679,13 @@ impl Drop for Engine {
 
 #[cfg(debug_assertions)]
 impl Engine {
-    /// Debug builds: no vouch or addendum trigger missed (`flows::vouches::missed`), counting
-    /// nothing.
+    /// Debug builds: no vouch or addendum trigger missed (`flows::vouches::missed`), and no
+    /// waiting split path a fresh attempt opens (`apply::paths::missed`), counting nothing.
     fn check_vouches_missed(&mut self, when: &str) {
         let m = osis_base::costs::paused(|| osis_perm::uncounted(|| memo::unrecorded(|| self.read(crate::flows::vouches::missed))));
         assert!(matches!(m, Ok(None) | Err(Error::Store(_))), "{when}: a vouch trigger missed: {m:?}");
+        let p = osis_base::costs::paused(|| osis_perm::uncounted(|| memo::unrecorded(|| self.read(crate::apply::paths::missed))));
+        assert!(matches!(p, Ok(None) | Err(Error::Store(_))), "{when}: a split path's wake missed: {p:?}");
     }
 }
 

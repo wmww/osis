@@ -138,6 +138,27 @@ pub(crate) fn refresh(tx: &mut Tx<'_>) {
     tx.core.paths_wait = Some(w);
 }
 
+/// Debug builds, after every durable transaction and at an engine's drop: no wake of the wait was
+/// missed. No thing of a commit waiting in `Indexes::paths_unknown` has an entry a fresh attempt
+/// with what is held now opens. `Some`: the first that does.
+#[cfg(debug_assertions)]
+pub(crate) fn missed(tx: &mut Tx<'_>) -> crate::Result<Option<String>> {
+    let core: &Core = tx.core;
+    for id in core.ix.paths_unknown.iter() {
+        let Some(m) = core.ix.commits.get(id) else { return Ok(Some(format!("{id:?} waits, not held"))) };
+        let h = m.header.clone();
+        let known = m.view.paths.as_deref();
+        for (i, t) in h.things().into_iter().enumerate() {
+            if known.is_some_and(|p| !p.contains_key(&t))
+                && let Some(p) = open(core, &h, None, i, &t)
+            {
+                return Ok(Some(format!("{id:?} waits on {t:?}, whose entry opens to {p:?}")));
+            }
+        }
+    }
+    Ok(None)
+}
+
 /// Tries the roles secrets held on commit `id`'s things whose paths open nowhere here.
 fn reopen(tx: &mut Tx<'_>, id: &osis_base::CommitId) {
     let Some(m) = tx.core.ix.commits.get(id).cloned() else { return };

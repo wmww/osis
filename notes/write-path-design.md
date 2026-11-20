@@ -83,7 +83,7 @@ Who may purge an edit is fixed when it is written (spec/requirements.md Deletion
 ### What changes for users
 - **Removing M from A** touches every write whose path passes through (M, A), on A and on everything A reaches, and nothing M wrote by another path.
 - **A write whose path is valid and another would also have been** is judged by its own path: it falls with that path's removal unless named, vouched for or re-granted; the other path does not save it (spec/requirements.md Permissions, judged along them alone). Its writer's node is told (spec/permissions.md §6, own commits) and may write it again along a current path. Which path a node states is writer policy; the default is the session's configured path, and the engine prefers the path whose first holder is nearest the signer.
-- **Adversarial checks** (argued; the model checks them): a writer cannot pick a path that survives a removal it should not: a removal audits every write through the edge it lowers, and a write through no lowered edge stands only on a path that held at its key and was never explicitly cut, a right the writer holds. A lowering of any edge, descent edges included, audits every path through it, and a path naming an edge the reader holds no write for is unjudgeable, never valid (§2). A forged path in a reader's re-encryption fails the header's hash.
+- **Adversarial checks** (argued; the model checks them): a writer cannot pick a path that survives a removal it should not: a removal audits every write through the edge it lowers, and a write through no lowered edge stands only on a path that held at its key and was never explicitly cut, a right the writer holds. A lowering of any edge, descent edges included, audits every path through it, and a path naming an edge the reader holds no write for is unjudgeable, never valid (§2). A path is header data: a re-encryption carries only the thing's path key, which opens the signed entry (notes/path-form.md).
 - Possible admins and writers (spec/commits.md §4, purge requests a node cannot fully judge) may read stated paths instead of every grant; not needed for correctness (argued).
 
 ### osis-perm
@@ -94,11 +94,8 @@ Who may purge an edit is fixed when it is written (spec/requirements.md Deletion
 
 ### Where the path sits, and bytes
 - Header: `signer` (the key thing's tid) replaces `author` and `actor`. A field `path`:
-  - one path, its purge-author index then its tids, when every thing the commit writes uses it;
-  - else, per thing in the order of their first aspects, a 32-byte hash `BLAKE3(salt ‖ path)`; the thing's section carries the salt and the path (salt 16 random bytes; without it a reader of another thing could test guessed paths).
-- One path for all or one per thing, never a default with exceptions: a default overridden by some things would show their readers a path naming holders with no role on them (spec/requirements.md Confidentiality between readers) (argued).
-- A section whose path does not hash to the header's entry is not that thing's part (as a delta hash mismatch, spec/commits.md §4 Judged alone).
-- Bytes (CBOR: a tid 16 B with its header, an array 1 B, the index 1 B): common case 2 + 16k in the header, so [A] is 18 B against today's `actor` 16 B; [A, Org] 34 B. Per thing with paths of their own: 33 B in the header plus 17 + 2 + 16k in its section.
+  - one path, its purge-author index then its tids, where every thing's own path is read off it and it tells no reader a roster fact it could not read;
+  - else the split form: the purge author in the clear and each thing's path sealed in the header under that thing's path key, which every encryption of its parts carries. Built: notes/path-form.md (rules, what readers learn, bytes).
 
 ## 2. Evidence in the sync unit
 ### What a unit carries
