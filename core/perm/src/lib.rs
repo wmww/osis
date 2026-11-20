@@ -13,6 +13,7 @@ pub mod epochs;
 pub mod graph;
 pub mod held;
 pub mod incremental;
+pub mod paths;
 pub mod purge;
 pub mod scope;
 pub mod timeline;

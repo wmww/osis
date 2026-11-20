@@ -1543,6 +1543,12 @@ fn unjustified(w: &World, rules: &Rules, v: &View, rd: &Reading) -> Set {
 /// the reading once trusted and is shown only by this rule (finding 16). A grant at admin is never
 /// one: trusted, its seeds drop its holder's earlier writes, so an honest re-grant would be shown.
 pub fn disputes(w: &World, rules: &Rules, v: &View) -> Vec<Id> {
+    disputes_by(w, rules, v, |t, rd| t.applied != rd.applied || t.valid != rd.valid || t.roles != rd.roles)
+}
+
+/// `disputes`, with what a candidate's trust must change given: `differs(trusting it, the
+/// reading)` (osis-perm's walk judges edge-class parts first: what applies and the roles).
+pub fn disputes_by(w: &World, rules: &Rules, v: &View, differs: impl Fn(&Reading, &Reading) -> bool) -> Vec<Id> {
     let rd = judge(w, rules, v);
     let explicit = rules.candidates == Candidates::Explicit;
     let mut out = vec![];
@@ -1555,7 +1561,7 @@ pub fn disputes(w: &World, rules: &Rules, v: &View) -> Vec<Id> {
         if explicit && t.invited.contains(&r) {
             continue;
         }
-        if t.applied != rd.applied || t.valid != rd.valid || t.roles != rd.roles {
+        if differs(&t, &rd) {
             out.push(r);
         }
     }
