@@ -15,7 +15,136 @@ fn fails(w: &World, rule: &Rule) -> Vec<Fail> {
     out.extend(w.p3(rule, &st));
     out.extend(w.p4(rule, &st, true));
     out.extend(w.p5_order(rule, &st, 5).0);
+    out.extend(w.p7_leaf_waits(rule, &st));
+    out.extend(w.p8_acts(rule, &st, ActWhen::AfterPass, 0));
     out
+}
+
+/// K writes c0 and c1 on D along [A]; X, having received c0 alone, removes K listing it. X syncs
+/// A, Y syncs D, K's node is honest. Returns the world and (c0, c1).
+fn listed_one_of_two() -> (World, Id, Id) {
+    let pw = roles_model::paths::World::new(&[(X, A), (Y, D)]);
+    let mut w = World::new(pw, &[A, D]);
+    let (x, y, k) = (w.node(true, &[A]), w.node(true, &[D]), w.node(true, &[A]));
+    w.write(x, |p| p.edge(X, 1, &[], A, K, Role::Write, &[]));
+    w.write(y, |p| p.edge(Y, 1, &[], D, A, Role::Write, &[]));
+    let c0 = w.write(k, |p| p.content(K, 2, &[A], D));
+    let c1 = w.write(k, |p| p.content(K, 3, &[A], D));
+    w.write(x, |p| p.edge(X, 6, &[], A, K, Role::None, &[c0]));
+    (w, c0, c1)
+}
+
+/// Finding 6: a leaf kept only with the commits it names (the growth study's literal rule)
+/// leaves with c0 once c0 is forgotten (covered), and c1, which it does not name but whose
+/// verdict reads it (on its thing, resting on the lowered edge),
+/// then waits for good at D's reader where it was invalid. Kept with every commit it reads, it
+/// stays.
+#[test]
+fn f6_a_leaf_kept_with_the_commits_it_names_strands_one_it_does_not_name() {
+    let (w, _, c1) = listed_one_of_two();
+    let named = Rule { lists: Lists::Travels(LeafKeep::Named), ..Rule::fixed() };
+    let f = fails(&w, &named);
+    assert!(f.iter().any(|f| f.prop == "P4-forget" && f.sid == D && f.id == c1 && f.reader == Some(Verdict::Pending) && f.full == Some(Verdict::Invalid)), "{f:?}");
+    assert_eq!(fails(&w, &Rule::listed()), vec![]);
+    assert_eq!(fails(&w, &Rule::fixed()), vec![]);
+}
+
+/// P7: a commit held without the leaf that reads it waits: D's reader holding c0, c1 and the
+/// removal but not its leaf for D judges both pending, never invalid; with the leaf, c0 valid
+/// and c1 invalid. Forgetting c0 and c1 takes the leaf out of D's sync ID; the removal's role
+/// entries stay with it.
+#[test]
+fn p7_a_commit_held_without_its_leaf_waits_and_the_leaf_leaves_with_what_it_reads() {
+    let (w, c0, c1) = listed_one_of_two();
+    let rule = Rule::listed();
+    let mut st = w.run(&rule, |_| {});
+    let seen = w.reader(&rule, &st, D, &Set::new());
+    let both = Set::from([c0, c1]);
+    let v = w.verdicts(&seen, &both);
+    assert_eq!((v[&c0], v[&c1]), (Verdict::Valid, Verdict::Invalid));
+    assert_eq!(st.leaves[&D].len(), 1);
+    let mut short = seen.clone();
+    short.lists = Some(Default::default());
+    let v = w.verdicts(&short, &both);
+    assert_eq!((v[&c0], v[&c1]), (Verdict::Pending, Verdict::Pending));
+    assert_eq!(w.p7_leaf_waits(&rule, &st), vec![]);
+    w.forget(&rule, &mut st, c0);
+    assert_eq!(st.leaves[&D].len(), 1, "c1 still reads it");
+    w.forget(&rule, &mut st, c1);
+    assert!(st.leaves[&D].is_empty(), "{:?}", st.leaves);
+    assert_eq!(w.p4(&rule, &st, false), vec![]);
+}
+
+/// P8 and finding 5: D's reader holding the thief's write and K's grant but not X's earlier
+/// removal finds nothing pending; acting then (a promotion of a deposit, a cover dropping what it
+/// covers) contradicts the verdict of the node holding everything. Acting only on D's whole
+/// entries (after a complete pass) never does.
+#[test]
+fn p8_acting_before_a_complete_pass_is_reversed_by_what_it_lacked() {
+    let mut sh = Shape::nth(0);
+    sh.thief = true;
+    let w = family(sh);
+    let st = w.run(&Rule::fixed(), |_| {});
+    assert_eq!(w.p8_acts(&Rule::fixed(), &st, ActWhen::AfterPass, 5), vec![]);
+    let f = w.p8_acts(&Rule::fixed(), &st, ActWhen::WhenNothingPends, 5);
+    assert!(f.iter().any(|f| f.sid == D && f.reader == Some(Verdict::Valid) && f.full == Some(Verdict::Invalid)), "{f:?}");
+}
+
+/// P8: an act taken after a complete pass is reversed only by a write made later (the node
+/// holding everything reverses with it): X re-grants K after removing it, so D's reader drops
+/// K's first write as invalid, then judges it valid again; the drop must be undoable (the body
+/// fetched again, spec/sync-judgement.md §3 Dropped bodies), never final.
+#[test]
+fn p8_an_act_after_a_complete_pass_is_reversed_only_by_a_later_write() {
+    let mut sh = Shape::nth(0);
+    sh.regrant = true;
+    let w = family(sh);
+    let rule = Rule::fixed();
+    let mut taken: Vec<(usize, Act)> = vec![];
+    let st = w.run(&rule, |st| {
+        let seen = w.reader(&rule, st, D, &Set::new());
+        for a in w.acts(&seen, &w.bodies(D, &st.units, &seen.v.held)) {
+            taken.push((st.step, a));
+        }
+        assert_eq!(w.p8_acts(&rule, st, ActWhen::AfterPass, 0), vec![]);
+    });
+    let fin = w.verdicts(&w.full(&st, &Set::new()), &st.written);
+    let reversed: Vec<(usize, Act)> = taken.iter().copied().filter(|&(_, a)| matches!(a, Act::Drop(i) if fin[&i] == Verdict::Valid)).collect();
+    assert!(!reversed.is_empty(), "{taken:?}");
+    for (step, _) in reversed {
+        // every later step that reversed it is a write
+        assert!(w.events[step..].iter().any(|e| matches!(e, Ev::Write(_))));
+    }
+}
+
+/// The split path form (notes/path-form.md): K writes T1 along [A] and T2 along [B] in one
+/// commit; Y removes K from B. T1's sync ID requires nothing of T2's path (its readers cannot
+/// open T2's entry, and need not): T1's part is valid there and T2's invalid at T2's reader,
+/// each judged as the node holding everything.
+#[test]
+fn split_a_part_on_another_thing_adds_no_evidence_requirement() {
+    const T1: roles_model::paths::Thing = 30;
+    const T2: roles_model::paths::Thing = 31;
+    const B: roles_model::paths::Thing = 32;
+    let pw = roles_model::paths::World::new(&[(X, A), (X, T1), (Y, B), (Y, T2)]);
+    let mut w = World::new(pw, &[A, B, T1, T2]);
+    let (x, y, k) = (w.node(true, &[A, T1]), w.node(true, &[B, T2]), w.node(true, &[]));
+    w.write(x, |p| p.edge(X, 1, &[], A, K, Role::Write, &[]));
+    w.write(x, |p| p.edge(X, 1, &[], T1, A, Role::Write, &[]));
+    w.write(y, |p| p.edge(Y, 1, &[], B, K, Role::Write, &[]));
+    let gt2 = w.write(y, |p| p.edge(Y, 1, &[], T2, B, Role::Write, &[]));
+    // the split commit: two parts, one commit (`World::split`)
+    let parts = w.write_parts(k, |p| p.split(K, 2, K, &[(&[A], T1), (&[B], T2)]));
+    w.write(y, |p| p.edge(Y, 6, &[], B, K, Role::None, &[]));
+    let st = w.run(&Rule::fixed(), |_| {});
+    let full = w.verdicts(&w.full(&st, &Set::new()), &st.written);
+    assert_eq!((full[&parts[0]], full[&parts[1]]), (Verdict::Valid, Verdict::Invalid));
+    for rule in [Rule::fixed(), Rule::listed()] {
+        assert_eq!(fails(&w, &rule), vec![]);
+        let st = w.run(&rule, |_| {});
+        let on_b: Vec<Id> = st.entries[&T1].iter().copied().filter(|&i| w.on(i) == B || w.on(i) == T2 || i == gt2).collect();
+        assert!(on_b.is_empty(), "{on_b:?}");
+    }
 }
 
 fn props(f: &[Fail]) -> Vec<&'static str> {
@@ -195,6 +324,7 @@ fn p1_to_p5_hold_on_a_slice_of_the_family() {
         let sh = Shape::nth(i);
         let w = family(sh);
         assert_eq!(fails(&w, &Rule::fixed()), vec![], "{sh:?}");
+        assert_eq!(fails(&w, &Rule::listed()), vec![], "{sh:?}");
         let d = fails(&w, &Rule::design());
         assert!(d.is_empty() || (sh.via_org && sh.org_apart), "{sh:?} {d:?}");
     }
@@ -207,16 +337,18 @@ fn seeds(n: u64) -> std::ops::Range<u64> {
     start..start + n
 }
 
-/// P1 to P5 under the fixed rule over every `family_step`th family world and `random` random
-/// worlds of 14 moves, a thread per core.
+/// P1 to P8 under the fixed rule and under `listed` (leaves travelling as evidence) over every
+/// `family_step`th family world and `random` random worlds of 14 moves, a thread per core.
 fn search(family_step: usize, random_worlds: u64) {
-    let rule = Rule::fixed();
     let mut jobs: Vec<Box<dyn Fn() -> (String, Vec<Fail>) + Sync>> = vec![];
-    for i in (0..FAMILY).step_by(family_step) {
-        jobs.push(Box::new(move || (format!("{:?}", Shape::nth(i)), fails(&family(Shape::nth(i)), &rule))));
-    }
-    for seed in seeds(random_worlds) {
-        jobs.push(Box::new(move || (format!("random seed {seed}"), fails(&random(seed, 14), &rule))));
+    // `listed` (A3's) on half the worlds `fixed` (A2's) runs on
+    for (name, rule, part) in [("fixed", Rule::fixed(), 1), ("listed", Rule::listed(), 2)] {
+        for i in (0..FAMILY).step_by(family_step * part) {
+            jobs.push(Box::new(move || (format!("{name} {:?}", Shape::nth(i)), fails(&family(Shape::nth(i)), &rule))));
+        }
+        for seed in seeds(random_worlds / part as u64) {
+            jobs.push(Box::new(move || (format!("{name} random seed {seed}"), fails(&random(seed, 14), &rule))));
+        }
     }
     let next = std::sync::atomic::AtomicUsize::new(0);
     let bad = std::sync::Mutex::new(vec![]);
@@ -259,6 +391,8 @@ fn variants() -> Vec<(&'static str, Rule)> {
         ("transitive+edge", Rule { errand: Errand::Transitive, scope: Scope::Edge, ..d }),
         ("unit-leaves", Rule { leaves: Leaves::Unit, ..d }),
         ("once", Rule { standing: false, ..d }),
+        ("listed", Rule::listed()),
+        ("listed-named", Rule { lists: Lists::Travels(LeafKeep::Named), ..Rule::fixed() }),
     ]
 }
 
@@ -276,7 +410,7 @@ fn tally(w: &World, rule: &Rule, out: &mut BTreeMap<&'static str, usize>, first:
     if st.unsettled {
         *out.entry("unsettled").or_default() += 1;
     }
-    for f in w.p3(rule, &st).iter().chain(&w.p4(rule, &st, true)) {
+    for f in w.p3(rule, &st).iter().chain(&w.p4(rule, &st, true)).chain(&w.p7_leaf_waits(rule, &st)) {
         note(f, out);
     }
 }
@@ -382,7 +516,9 @@ fn random_shape() {
 fn show_random() {
     let seed: u64 = std::env::var("OSIS_HELD_START").ok().and_then(|v| v.parse().ok()).unwrap_or(0);
     let w = random(seed, 12);
-    show(&w, &Rule::design());
+    let name = std::env::var("OSIS_EV_RULE").unwrap_or_else(|_| "design".into());
+    let rule = variants().into_iter().find(|v| v.0 == name).expect("OSIS_EV_RULE names a variant").1;
+    show(&w, &rule);
 }
 
 pub fn show(w: &World, rule: &Rule) {
