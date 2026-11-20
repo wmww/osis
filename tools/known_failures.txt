@@ -14,3 +14,4 @@ roles-model/paths::tests::small_family_holds_large - issues/role-vouch-contested
 roles-model/paths::tests::remake_random_worlds_hold_large OSIS_ROLES_START=0,OSIS_ROLES_SEEDS=13000 issues/role-vouch-contested.md counts:admin=6,dispute=114,idle_gains=88,liveness=1240,own_path=216,removal=272,safety=3070,safety_N=124 remake OSIS_ROLES_START=\d+: \{
 roles-model/paths::tests::remake_small_family_holds_large - issues/role-vouch-contested.md counts:dispute=126,liveness=4506,own_path=366,removal=417,safety=4851,safety_N=340 remake family: \{
 osis-perm/paths::single::paths_components_agree_large rate:OSIS_PERM_SEED=513418300552 issues/perm-components-unapplied-vs-dropped.md Unapplied, Some\(Dropped\)
+osis-engine/retention::tests_forged::forged_copies_fail_no_node_large rate:OSIS_FORGED_START=513663451504 issues/forged-text-dead-write-no-superseder.md panicked: peer \d+ ticking: corrupt local record: a dead write no held body supersedes
