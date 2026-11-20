@@ -470,6 +470,7 @@ pub(crate) fn stated_paths(core: &Core, plan: &CommitPlan, writes: &[AspectWrite
     }
     if let Some(q) = osis_commit::Path::one_of(each.iter().map(|(t, (p, _))| (t, p)), node, actor)
         && clear_tells_nothing(core, plan, &q, &each)
+        && !forced_split(each.len())
     {
         return Ok(Stated::One(q));
     }
@@ -478,6 +479,27 @@ pub(crate) fn stated_paths(core: &Core, plan: &CommitPlan, writes: &[AspectWrite
     // last where it is the purge author
     let paths = each.into_iter().map(|(t, (p, _))| (t, p.things)).collect();
     Ok(Stated::Split(author, paths))
+}
+
+#[cfg(test)]
+thread_local! {
+    /// Lib tests (`apply::tests_validity::split_and_clear_forms_apply_alike_spec_wire_4`): every
+    /// commit writing two things or more states the split form, so a suite checks it behaves as the
+    /// clear form for the same write. No build outside the lib's tests has it.
+    pub(crate) static FORCE_SPLIT: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+}
+
+/// Whether the split form is forced for a commit writing `things` things (`FORCE_SPLIT`).
+fn forced_split(things: usize) -> bool {
+    #[cfg(test)]
+    {
+        things >= 2 && FORCE_SPLIT.with(std::cell::Cell::get)
+    }
+    #[cfg(not(test))]
+    {
+        let _ = things;
+        false
+    }
 }
 
 // For Tess 3 (notes/path-form.md, One path): the rule below closes what the clear

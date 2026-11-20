@@ -16,6 +16,54 @@ fn thing(lp: &mut LocalPeer, admin: Tid) -> Tid {
 mod tests {
     #![allow(clippy::unwrap_used)]
     use super::thing;
+
+    // spec/wire.md §4 field 2: the split form judges as the clear form does for the same write:
+    // a node writing its own thing, a thing made under it and a thing of another account it
+    // writes, once in each form (`engine::write::FORCE_SPLIT`), every other node reading what it
+    // reads ends with the same values and the same verdicts; reopened, the same.
+    #[test]
+    fn split_and_clear_forms_apply_alike_spec_wire_4() {
+        let run = |split: bool| {
+            let mut lp = LocalPeer::fresh(3, WallMs(1_700_000_000_000));
+            lp.sync_all().unwrap();
+            let (me, b) = (lp.peers[0].engine.me(), lp.peers[1].engine.me());
+            let (t, g) = (thing(&mut lp, me), thing(&mut lp, me));
+            let edge = ct::Edge { role: Role::Write, until: None, invite: None, retain: false, floor: None };
+            lp.peers[0].engine.grant(&g, &b, &edge).unwrap();
+            let o = {
+                let mut m = Mutation::new();
+                let o = lp.peers[1].engine.new_thing(&mut m, b);
+                m.set(o, &osis_base::Ak::new("x:a.0").unwrap(), &Value::Int(2)).unwrap();
+                lp.peers[1].commit(m).unwrap();
+                lp.hold(o);
+                o
+            };
+            lp.sync_all().unwrap();
+            let a = osis_base::Ak::new("x:a.0").unwrap();
+            let mut m = Mutation::new();
+            let x = lp.peers[1].engine.new_thing(&mut m, o);
+            for (n, y) in [g, o, x].into_iter().enumerate() {
+                m.set(y, &a, &Value::Int(10 + n as i64)).unwrap();
+            }
+            crate::engine::write::FORCE_SPLIT.with(|f| f.set(split));
+            let id = lp.peers[1].commit(m).unwrap().unwrap();
+            crate::engine::write::FORCE_SPLIT.with(|f| f.set(false));
+            assert_eq!(lp.peers[1].engine.header(&id).unwrap().is_split(), split);
+            lp.hold(x);
+            lp.sync_all().unwrap();
+            for i in 0..3 {
+                lp.peers[i].restart(1).unwrap();
+            }
+            (0..3).map(|i| {
+                let e = &mut lp.peers[i].engine;
+                let vals: Vec<_> = [t, g, o, x].iter().map(|y| e.get(y, &a).unwrap()).collect();
+                (vals, e.core.ix.commits.get(&id).map(|m| m.valid.clone()))
+            }).collect::<Vec<_>>()
+        };
+        let clear = run(false);
+        assert!(clear[1].0[1..].iter().all(Option::is_some) && clear[0].0[..2].iter().all(Option::is_some) && clear.iter().all(|(_, v)| v.is_some()), "{clear:?}");
+        assert_eq!(run(true), clear);
+    }
     use crate::local_peer::LocalPeer;
     use crate::Mutation;
     use osis_base::{Role, Value, WallMs};

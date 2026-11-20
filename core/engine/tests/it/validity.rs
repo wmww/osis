@@ -4247,8 +4247,13 @@ fn split_paths_judge_alike_however_parts_come_spec_wire_4() {
 /// Bob's (1) split commit `c` with `entries` and purge author `author`, signed again: its header
 /// and signatures (no part).
 fn resigned(lp: &mut LocalPeer, c: &osis_commit::CommitBlob, entries: Vec<Vec<u8>>, author: Option<Tid>) -> osis_commit::CommitBlob {
+    resigned_with(lp, c, osis_commit::Paths::Split(osis_commit::Split { author, entries }))
+}
+
+/// Bob's (1) commit `c` stating `path`, signed again: its header and signatures (no part).
+fn resigned_with(lp: &mut LocalPeer, c: &osis_commit::CommitBlob, path: osis_commit::Paths) -> osis_commit::CommitBlob {
     let mut h = c.header.clone();
-    h.path = osis_commit::Paths::Split(osis_commit::Split { author, entries });
+    h.path = path;
     let mut cb = osis_commit::CommitBuilder::new(h.kind, h.ts, h.signer, osis_commit::Path::default(), h.form);
     let key = lp.peers[1].engine.sign_forged(&mut cb);
     let a = cb.account.unwrap();
@@ -4348,6 +4353,169 @@ fn hostile_split_commits_harm_only_their_forged_things_alike_everywhere_spec_wir
     }
 }
 
+// spec/permissions.md §5.2 Interim (a commit acts on every thing for its one purge author, which
+// its signer must be or hold write on, the Acting check), spec/wire.md §4: a hand-built purge
+// author acts no wider than that check allows, in either path form. Bob (writer of H, H of D, Bob
+// of P) restates his writes: clear, naming H (accepted), a thing Q he holds nothing on (invalid),
+// an index past its things (refused), a made-up thing (waits for its record, never applies), H then
+// Q naming Q; split, naming H (D's entry lists H: D applies; P's members leave H out: P holds
+// nothing), Q listed on D's entry (invalid), a made-up author (never applies). Each reader ends as
+// the Acting check says.
+#[test]
+fn a_stated_index_acts_no_wider_than_the_acting_check_spec_permissions_5_2() {
+    use osis_commit::{Path, Paths, Split};
+    let (mut lp, h, d, p) = two_paths_world();
+    let q = new_thing(&mut lp, 0);
+    let made_up = Tid::from_bytes([77; 15]);
+    lp.sync_all().unwrap();
+    // Bob's write of D alone (one path, `[H]`) and of D and P (split)
+    let mut m = Mutation::new();
+    m.set(d, &REG, &s("forged d")).unwrap();
+    let one_id = lp.peers[1].commit(m).unwrap().unwrap();
+    let one = osis_commit::CommitBlob::decode(&lp.peers[1].engine.package(&one_id).unwrap().unwrap().bytes).unwrap();
+    let (_, both) = bob_writes_both(&mut lp, d, p);
+    let osis_commit::Paths::Split(sp) = &both.header.path else { panic!("split") };
+    let things = both.header.things();
+    let id_ = things.iter().position(|t| *t == d).unwrap();
+    let with_d = |listed: &[Tid]| {
+        let mut es = sp.entries.clone();
+        es[id_] = Split::seal(&both.keys[&id_], listed).unwrap();
+        es
+    };
+    let clear = |purge: usize, things: Vec<Tid>| Paths::One(Path { purge, things });
+    // (name, base commit, path, D applies, P applies)
+    let cases: Vec<(&str, &osis_commit::CommitBlob, Paths, bool, bool)> = vec![
+        ("clear, naming H", &one, clear(1, vec![h]), true, false),
+        ("clear, naming Q", &one, clear(1, vec![q]), false, false),
+        ("clear, an index past its things", &one, clear(2, vec![h]), false, false),
+        ("clear, naming a made-up thing", &one, clear(1, vec![made_up]), false, false),
+        ("clear, H then Q, naming Q", &one, clear(2, vec![h, q]), false, false),
+        ("split, naming H", &both, Paths::Split(Split { author: Some(h), entries: sp.entries.clone() }), true, false),
+        ("split, naming Q listed on D's entry", &both, Paths::Split(Split { author: Some(q), entries: with_d(&[q]) }), false, false),
+        ("split, naming a made-up thing listed on D's entry", &both, Paths::Split(Split { author: Some(made_up), entries: with_d(&[made_up]) }), false, false),
+    ];
+    for (name, base, path, d_ok, p_ok) in cases {
+        let mut w = lp.copy().unwrap();
+        let before = (w.peers[0].engine.get(&d, &ak("t:reg.0")).unwrap(), w.peers[0].engine.get(&p, &ak("t:reg.0")).unwrap());
+        let f = resigned_with(&mut w, base, path);
+        let all: Vec<usize> = (0..base.header.things().len()).collect();
+        let bytes = if base.header.is_split() { opened_sections(&f, base, &all, &|i| BTreeMap::from([(i, base.keys[&i])])) } else { osis_commit::CommitBlob { parts: base.parts.clone(), ..f }.encode() };
+        for i in [0, 2] {
+            unless_refused(w.peers[i].engine.ingest(&bytes, Vec::new()));
+            w.peers[i].reexamine().unwrap();
+        }
+        let want_d = if d_ok { Some(s(if base.header.is_split() { "on d" } else { "forged d" })) } else { before.0.clone() };
+        assert_eq!(w.peers[0].engine.get(&d, &ak("t:reg.0")).unwrap(), want_d, "{name}: D");
+        assert_eq!(w.peers[0].engine.get(&p, &ak("t:reg.0")).unwrap(), if p_ok { Some(s("on p")) } else { before.1.clone() }, "{name}: P");
+        assert_eq!(w.peers[2].engine.get(&p, &ak("t:reg.0")).unwrap(), w.peers[0].engine.get(&p, &ak("t:reg.0")).unwrap(), "{name}: Carol's P");
+        for i in [0, 2] {
+            w.peers[i].engine.check_index();
+        }
+    }
+}
+
+// spec/wire.md §4 `Split` (an entry that opens nowhere leaves its thing's parts holding nothing),
+// spec/commits.md §5 (a thing is known by its creation record): Bob makes X under D beside a write of P,
+// X's entry forged. Alice, holding every section, holds no minting of X (X's section, its key
+// opening nothing, holds nothing): X is unknown there, nothing on it applies; D's strong to X and
+// P's write stand, as any write naming a thing never made.
+#[test]
+fn a_creation_under_a_forged_entry_makes_nothing_spec_wire_4() {
+    let (mut lp, _, d, p) = two_paths_world();
+    let mut m = Mutation::new();
+    let x = lp.peers[1].engine.new_thing(&mut m, d);
+    m.set(x, &REG, &s("made")).unwrap();
+    m.set(p, &REG, &s("beside")).unwrap();
+    let id = lp.peers[1].commit(m).unwrap().unwrap();
+    let c = osis_commit::CommitBlob::decode(&lp.peers[1].engine.package(&id).unwrap().unwrap().bytes).unwrap();
+    let osis_commit::Paths::Split(sp) = &c.header.path else { panic!("split") };
+    let things = c.header.things();
+    let ix = things.iter().position(|t| *t == x).unwrap();
+    let mut es = sp.entries.clone();
+    es[ix] = (0..es[ix].len()).map(|i| (i * 37 % 251) as u8).collect();
+    let f = resigned(&mut lp, &c, es, None);
+    let all: Vec<usize> = (0..things.len()).collect();
+    unless_refused(lp.peers[0].engine.ingest(&opened_sections(&f, &c, &all, &|i| BTreeMap::from([(i, c.keys[&i])])), Vec::new()));
+    lp.peers[0].reexamine().unwrap();
+    let e = &mut lp.peers[0].engine;
+    assert!(!e.knows(&x), "no minting of X");
+    assert_eq!(e.get(&x, &ak("t:reg.0")).unwrap(), None);
+    assert_eq!(e.get(&p, &ak("t:reg.0")).unwrap(), Some(s("beside")), "P's write stands");
+    let held = e.get(&d, &ak("holds.0")).unwrap();
+    assert!(matches!(&held, Some(Value::Set(h)) if h.contains(&Value::Strong(x))), "D's strong to X stands: {held:?}");
+    e.check_index();
+}
+
+// spec/commits.md §4 (while its header lists are not resolved): a split
+// commit whose aspect list goes by link judges nothing before the list comes: Bob writes P's
+// aspects past a list's threshold and one of D; Alice, given the commit without its list blobs, holds nothing of it
+// and P stays as it was; given the blobs, both apply.
+#[test]
+fn a_split_commit_with_its_aspect_list_by_link_waits_for_it_spec_commits_4() {
+    let (mut lp, _, d, p) = two_paths_world();
+    let mut m = Mutation::new();
+    let first = link_aspects(&mut m, p);
+    m.set(d, &REG, &s("on d")).unwrap();
+    let id = lp.peers[1].commit(m).unwrap().unwrap();
+    let pk = lp.peers[1].engine.package(&id).unwrap().unwrap();
+    let h = lp.peers[1].engine.header(&id).unwrap();
+    assert!(h.is_split() && h.links != osis_commit::Links::default(), "split, its aspect list by link: {} aspects, split {}", h.aspects.len(), h.is_split());
+    assert!(!pk.blobs.is_empty());
+    unless_refused(lp.peers[0].engine.ingest(&pk.bytes, Vec::new()));
+    lp.peers[0].reexamine().unwrap();
+    assert!(!lp.peers[0].engine.commit_ids().contains(&id), "nothing judged before the list");
+    assert_eq!(lp.peers[0].engine.get(&p, &first).unwrap(), None);
+    unless_refused(lp.peers[0].engine.ingest(&pk.bytes, pk.blobs.clone()));
+    lp.peers[0].reexamine().unwrap();
+    assert!(lp.peers[0].engine.commit_ids().contains(&id));
+    assert_eq!(lp.peers[0].engine.get(&p, &first).unwrap(), Some(s("v")));
+    assert_eq!(lp.peers[0].engine.get(&d, &ak("t:reg.0")).unwrap(), Some(s("on d")));
+    lp.peers[0].engine.check_index();
+}
+
+// spec/permissions.md §6 (The right), §5.2 Interim (the one purge author, in the clear),
+// notes/path-form.md Per consumer: a purge request is judged alike in both path forms: Bob purges
+// his own write on D (through H, purgeable by its author) alone (one path, `[H]`) and beside a write
+// of P (split). At every node the outcome is the same in either form: his write goes; Alice's
+// write on P, which he has no right to purge, he cannot request gone in either form.
+#[test]
+fn a_purge_request_is_judged_alike_in_both_path_forms_spec_permissions_6() {
+    let mut outcomes = Vec::new();
+    for beside in [false, true] {
+        let (mut lp, _, d, p) = two_paths_world();
+        let by = osis_schema::Retention { by: osis_base::PurgeBy::AuthorOrAdmin };
+        let mut m = Mutation::new();
+        m.set(d, &REG, &s("his")).unwrap();
+        m.retention(d, &REG, by).unwrap();
+        let his = lp.peers[1].commit(m).unwrap().unwrap();
+        let mut m = Mutation::new();
+        m.set(p, &REG, &s("hers")).unwrap();
+        let hers = lp.peers[0].commit(m).unwrap().unwrap();
+        lp.sync_all().unwrap();
+        let mut m = Mutation::new();
+        let now = lp.peers[1].engine.now();
+        m.set(d, &osis_schema::core_types::PURGE, &now).unwrap();
+        m.purge_commit(his, d, ak("t:reg.0"));
+        if beside {
+            m.set(p, &osis_base::Ak::new("t:other.0").unwrap(), &s("beside")).unwrap();
+        }
+        let id = lp.peers[1].commit(m).unwrap().unwrap();
+        assert_eq!(lp.peers[1].engine.header(&id).unwrap().is_split(), beside);
+        // a request on Alice's write, which he has no right to purge: refused at his node
+        let mut m = Mutation::new();
+        m.set(p, &osis_schema::core_types::PURGE, &now).unwrap();
+        m.purge_commit(hers, p, ak("t:reg.0"));
+        m.set(d, &osis_base::Ak::new("t:other.0").unwrap(), &s("beside")).unwrap();
+        assert!(lp.peers[1].commit(m).is_err(), "no right on hers");
+        lp.sync_all().unwrap();
+        let reads = (0..3).map(|i| (lp.peers[i].engine.get(&d, &ak("t:reg.0")).unwrap(), lp.peers[i].engine.get(&p, &ak("t:reg.0")).unwrap())).collect::<Vec<_>>();
+        assert_eq!(reads[0].0, None, "his write purged ({beside})");
+        assert_eq!(reads[0].1, Some(s("hers")), "hers stays ({beside})");
+        outcomes.push(reads);
+    }
+    assert_eq!(outcomes[0], outcomes[1]);
+}
+
 // spec/commits.md §4 Unjudgeable (a split commit's thing whose entry opens nowhere here is
 // examined again when the held role inputs move), notes/sync-facade.md Pending: Carol, a reader
 // of P, holds Bob's split commit without D's part: D's path opens nowhere at her. Granted D (the
@@ -4376,7 +4544,7 @@ fn a_path_waiting_opens_when_its_roles_secret_comes_spec_commits_4() {
     lp.peers[2].engine.check_index();
 }
 
-// notes/principles.md Fast by construction, notes/sync-facade.md Pending: a split commit whose
+// spec/commits.md §4 Unjudgeable; notes/principles.md Fast by construction, notes/sync-facade.md Pending: a split commit whose
 // path opens nowhere waits on what may open it, never on everything: k commits forged by Bob
 // with D's entry opening nowhere, held at Alice, cost an unrelated write of hers nothing, at k = 1
 // and k = 10.
