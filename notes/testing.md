@@ -18,6 +18,7 @@
 | build costs; gate stage costs and time limits | notes/build.md, What things should cost; notes/time-limits.md |
 | what a good test is, what finds bugs, open test-system work | notes/test-design.md |
 | the default-test cost, per-test profiles | notes/test-harnesses.md, Default-test cost |
+| what a gate pays and where to cut: per module (`tools/pertest.py run OUT --modules`, a cached fixture paid once as in the gate); which test moved: per test (`tools/pertest.py run OUT`, every test paying its fixtures whole) | notes/test-harnesses.md, Default-test cost |
 
 ## Principles
 - The spec is the oracle: every MUST has a test that fails without it, and every test cites the spec section it checks, so `grep` (or notes/testing-map.md: notes/gate.md, Spec-to-test map) answers "what checks §X".

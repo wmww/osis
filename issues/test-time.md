@@ -49,4 +49,4 @@ Rejected: `opt-level` 2 for the workspace (3-10%); fake or memoized crypto in te
 - **Real time waited out** in osis real-runtime tests (300 ms to 2 s timeouts in `runtime.rs`, `port.rs`); quadratic helpers (`apply::keys::tests::spread`).
 
 ## Method
-Per test: `tools/pertest.py` (`top`, `compare`). Whole binaries: `tools/icount <bin> -q`, under `tools/heavy`. Profile: `tools/cpuprof OUT <bin> -q`, or callgrind. Why a judgement re-ran: `osis_base::costs::take()` around the step, read the `"<effects> <- <cause>"` counts (notes/engine.md, Why a key went due). CPU seconds move 20-40% between identical runs: compare instructions.
+Per test or per module: `tools/pertest.py` (`top`, `compare`; `run --modules` for what a gate pays). Whole binaries: `tools/icount <bin> -q`, under `tools/heavy`. Profile: `tools/cpuprof OUT <bin> -q`, or callgrind. Why a judgement re-ran: `osis_base::costs::take()` around the step, read the `"<effects> <- <cause>"` counts (notes/engine.md, Why a key went due). CPU seconds move 20-40% between identical runs: compare instructions.

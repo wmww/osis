@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
-"""Every default test alone under tools/icount (notes/test-harnesses.md, Measuring).
+"""Every default test, or every module's tests, under tools/icount (notes/test-harnesses.md, Measuring).
 
-  tools/pertest.py run OUT [--jobs N] [MATCH...]
+  tools/pertest.py run OUT [--jobs N] [--modules] [MATCH...]
       build the default tests (`cargo test --no-run`, this checkout) and copy the binaries to
       OUT.bins/, then, under tools/heavy (taken here, after the build: edits made while it waits
       for the lock change nothing it measures), run each listed, non-ignored test as its own
@@ -10,14 +10,19 @@
       instructions, CPU-s, exit code. MATCH keeps the tests whose "binary test" contains one of
       them (binary is `<package> <target>`, e.g. `osis-engine it`). --jobs 1 takes no lock.
       PERTEST_KEEP_BINS=1 keeps OUT.bins/ (several GB) for a whole-binary `tools/icount BIN -q`.
+      --modules: one process per top-level module of each binary instead (`--exact` every test of
+      it, one thread), the test column `MODULE::*`: a cached fixture is paid once per module, as
+      in a gate's one process per binary, where per test every test using it pays it whole (four
+      tests reading 17.8 G each where the module is 17.8 G). Read modules for what a gate pays and
+      where to cut; tests for which test moved.
   tools/pertest.py top OUT [N]          per-binary totals, then the N costliest tests (default 30)
   tools/pertest.py compare OLD NEW [N]  per-binary totals of both, then the N largest moves by
                                         test (default 30); tests in one file only are listed apart
 
 A test's count repeats to under 0.1% run to run; its CPU-s move 20-40% with load. Against an older
-revision: a second worktree (`wt claim <name> <rev>`), `run` there, `compare` here. Each test runs
-in a fresh process, so a cached setup (notes/test-harnesses.md, Copied worlds) is built by every
-test using it: measure a cached setup's saving over the whole binary (`tools/icount BIN -q`).
+revision: a second worktree (`wt claim <name> <rev>`), `run` there, `compare` here (both runs in
+one mode). Without --modules each test runs in a fresh process, so a cached setup
+(notes/test-harnesses.md, Copied worlds) is built by every test using it.
 """
 import json, os, shutil, subprocess, sys, time
 from collections import defaultdict
@@ -64,15 +69,26 @@ def timed(cmd, cwd=None, env=None):
     return os.waitstatus_to_exitcode(status), ru.ru_utime + ru.ru_stime, time.time() - t0, out.decode(errors="replace")
 
 
-def run(out, jobs, match):
+def by_module(todo):
+    """[(exe, cwd, label, "MODULE::*" or the test, [names])]: each binary's tests grouped by their
+    first path segment; a test at the crate root stays alone."""
+    groups = {}
+    for exe, cwd, label, n in todo:
+        mod, sep, _ = n.partition("::")
+        groups.setdefault((exe, cwd, label, f"{mod}::*" if sep else n), []).append(n)
+    return [(*k, v) for k, v in groups.items()]
+
+
+def run(out, jobs, match, modules=False):
     todo = [t for t in default_tests() if not match or any(m in f"{t[2]} {t[3]}" for m in match)]
+    todo = by_module(todo) if modules else [(*t, [t[3]]) for t in todo]
     copy = out + ".bins"
     os.makedirs(copy, exist_ok=True)
     placed = {}
     for exe in sorted({t[0] for t in todo}):
         placed[exe] = os.path.join(copy, os.path.basename(exe))
         shutil.copy2(exe, placed[exe])
-    todo = [(placed[e], c, b, n) for e, c, b, n in todo]
+    todo = [(placed[e], c, b, n, ns) for e, c, b, n, ns in todo]
     with open(out + ".todo", "w") as f:
         json.dump(todo, f)
     me = [sys.executable, os.path.abspath(__file__), "measure", out, str(jobs)]
@@ -89,12 +105,12 @@ def run(out, jobs, match):
 
 def measure(out, jobs):
     todo = [tuple(t) for t in json.load(open(out + ".todo"))]
-    print(f"{len(todo)} tests in {len({t[2] for t in todo})} binaries, {jobs} at a time", flush=True)
+    print(f"{len(todo)} processes in {len({t[2] for t in todo})} binaries, {jobs} at a time", flush=True)
     env = test_env()
 
     def one(t):
-        exe, cwd, label, n = t
-        rc, cpu, _, text = timed([ICOUNT, exe, "--exact", n, "--test-threads=1"], cwd, env)
+        exe, cwd, label, n, names = t
+        rc, cpu, _, text = timed([ICOUNT, exe, "--exact", *names, "--test-threads=1"], cwd, env)
         instr = [l for l in text.splitlines() if l.startswith("INSTR ")]
         return label, n, int(instr[-1].split()[1]) if instr else -1, cpu, rc
     with ThreadPoolExecutor(jobs) as ex, open(out, "w") as f:
@@ -167,7 +183,8 @@ if __name__ == "__main__":
         return default
     if a[:1] == ["run"] and len(a) >= 2:
         jobs = int(opt("--jobs", max(1, os.cpu_count() // 2)))
-        sys.exit(run(a[1], jobs, a[2:]))
+        modules = "--modules" in a
+        sys.exit(run(a[1], jobs, [m for m in a[2:] if m != "--modules"], modules))
     elif a[:1] == ["measure"] and len(a) == 3:
         sys.exit(measure(a[1], int(a[2])))
     elif a[:1] == ["top"] and len(a) in (2, 3):
