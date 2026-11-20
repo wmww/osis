@@ -434,7 +434,7 @@ fn purge_of_a_waiting_part_reads_alike_spec_commits_5() {
         lp.sync(0, 1).unwrap();
         let had: std::collections::BTreeSet<_> = lp.commit_ids(0).into_iter().collect();
         let t2 = new_thing(&mut lp, 0);
-        let rec: Vec<_> = lp.packages(0).unwrap().into_iter().filter(|p| !had.contains(&p.id)).collect();
+        let rec: Vec<_> = lp.packages_for(0, 1).unwrap().into_iter().filter(|p| !had.contains(&p.id)).collect();
         lp.advance(5);
         let mut m = Mutation::new();
         m.set(t, &REG, &s("SECRET-9c2e")).unwrap();
@@ -584,7 +584,7 @@ fn stripped_delta_goes_with_its_part_past_expiry_spec_commits_5() {
     lp.peers[1].receive(&part_on(&pk, y, &ak("t:reg.0"), false), Vec::new()).unwrap();
     assert!(lp.peers[1].engine.commit_ids().contains(&c) && lp.peers[1].engine.pending().is_empty(), "{:?}", lp.peers[1].engine.pending());
     assert_eq!(lp.peers[1].engine.stripped_count(&c).unwrap(), 0);
-    let _ = lp.peers[1].receive(&part_on(&pk, t, &ak("t:reg.0"), true), Vec::new());
+    unless_refused(lp.peers[1].receive(&part_on(&pk, t, &ak("t:reg.0"), true), Vec::new()));
     assert!(lp.peers[1].engine.pending().is_empty());
     assert!(!recoverable(&mut lp.peers[1], b"SECRET-R5b"));
 }
@@ -653,11 +653,11 @@ fn past_expiry_and_purge_alike_in_every_order_by_hand_spec_commits_5() {
 fn past_expiry_and_purge_alike(every: bool) {
     let mut lp = net2();
     // the nodes judged: nodes of 0's account
-    let node = node_of(&mut lp, 0);
+    let mut node = node_of(&mut lp, 0);
     let (t2, t3) = (new_thing(&mut lp, 0), new_thing(&mut lp, 0));
-    let setup = lp.packages(0).unwrap();
+    let setup = lp.packages_to_peer(0, &mut node).unwrap();
     let t = new_thing(&mut lp, 0);
-    let rec: Vec<_> = lp.packages(0).unwrap().into_iter().filter(|p| !setup.iter().any(|k| k.id == p.id)).collect();
+    let rec: Vec<_> = lp.packages_to_peer(0, &mut node).unwrap().into_iter().filter(|p| !setup.iter().any(|k| k.id == p.id)).collect();
     assert_eq!(rec.len(), 1);
     lp.advance(5);
     let start = lp.peers[0].engine.now().0;
@@ -729,7 +729,7 @@ fn past_expiry_and_purge_alike(every: bool) {
                     if i == 3 && restart {
                         p = reopened(p, FRESH + 1);
                     }
-                    let _ = p.receive(&items[*x].0, items[*x].1.clone());
+                    unless_refused(p.receive(&items[*x].0, items[*x].1.clone()));
                     p.reexamine().unwrap();
                     // never shown past its expiry (a value held before T goes at the tick), nor after the request
                     if (k == 0 || tick) && p.engine.now().0 >= exp.0 {
@@ -747,7 +747,7 @@ fn past_expiry_and_purge_alike(every: bool) {
                     assert_eq!(p.engine.stripped_count(&c).unwrap(), 0, "order {order:?}: nothing waits");
                 }
                 for x in [1, 2, 3] {
-                    let _ = p.receive(&items[x].0, items[x].1.clone());
+                    unless_refused(p.receive(&items[x].0, items[x].1.clone()));
                     p.reexamine().unwrap();
                 }
                 p.tick().unwrap();
@@ -792,10 +792,10 @@ fn tombstone_alike(stride: u64) {
     let marker = "TOMBSTONE-SECRET-8e1a";
     let mut lp = net2();
     // the nodes judged: nodes of 0's account
-    let node = node_of(&mut lp, 0);
-    let setup = lp.packages(0).unwrap();
+    let mut node = node_of(&mut lp, 0);
+    let setup = lp.packages_to_peer(0, &mut node).unwrap();
     let t = new_thing_keeping(&mut lp, 0, &[("t:reg.0", osis_schema::History::FOREVER)]);
-    let rec: Vec<_> = lp.packages(0).unwrap().into_iter().filter(|p| !setup.iter().any(|k| k.id == p.id)).collect();
+    let rec: Vec<_> = lp.packages_to_peer(0, &mut node).unwrap().into_iter().filter(|p| !setup.iter().any(|k| k.id == p.id)).collect();
     assert_eq!(rec.len(), 1);
     lp.advance(5);
     let mut m = Mutation::new();
@@ -1422,9 +1422,10 @@ fn purge_strips_carrying_snapshots_alike_in_every_order_spec_commits_5() {
     assert!(purged.len() >= 2, "{purged:?}");
 }
 
-/// Peer 0's packages carrying a part on `t` (its record, before anything else is written there).
+/// Peer 0's packages to peer 1 carrying a part on `t` (its record, before anything else is
+/// written there).
 fn record_of(lp: &mut LocalPeer, t: Tid) -> Vec<osis_engine::local_peer::Package> {
-    lp.packages(0).unwrap().into_iter().filter(|p| osis_commit::CommitBlob::decode(&p.bytes).unwrap().header.aspects.iter().any(|a| a.tid == t)).collect()
+    lp.packages_for(0, 1).unwrap().into_iter().filter(|p| osis_commit::CommitBlob::decode(&p.bytes).unwrap().header.aspects.iter().any(|a| a.tid == t)).collect()
 }
 
 // spec/commits.md §4 (Unjudgeable; Pending storage), §5 (Purge): a commit pending for its `ts`,

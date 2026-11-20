@@ -119,7 +119,7 @@ fn sample(shape: Shape) -> usize {
         (lp, (g, base))
     });
     // a node apart from A, B and C, a reader of G holding it, as of the base
-    let fresh = lp.peers.pop().unwrap();
+    let mut fresh = lp.peers.pop().unwrap();
     let b = lp.peers[1].engine.me();
     lp.advance(1_000);
     let mut m = Mutation::new();
@@ -179,9 +179,10 @@ fn sample(shape: Shape) -> usize {
         _ => {}
     }
     lp.sync_all().unwrap();
+    // what A, B and C send D (its sync set as their packages move it)
     let mut packs: BTreeMap<CommitId, Package> = BTreeMap::new();
     for i in [0, 1, 2] {
-        for pk in lp.packages(i).unwrap() {
+        for pk in lp.packages_to_peer(i, &mut fresh).unwrap() {
             packs.entry(pk.id).or_insert(pk);
         }
     }

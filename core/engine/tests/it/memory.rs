@@ -231,8 +231,10 @@ fn big_map_apply_memory() {
         let mut pks = decode_packages(&bytes);
         let (target, t) = (pks.pop().unwrap(), pks.pop().unwrap());
         let Value::List(t) = osis_base::decode(&t.bytes, &osis_base::Limits::new(4, t.bytes.len())).unwrap() else { panic!() };
-        let (Value::Weak(t), Value::Int(now)) = (&t[0], &t[1]) else { panic!() };
+        let (Value::Weak(t), Value::Int(now), Value::Weak(reader)) = (&t[0], &t[1], &t[2]) else { panic!() };
         let mut p = osis_engine::local_peer::Peer::new(5, WallMs(*now as u64)).unwrap();
+        assert_eq!(p.engine.me(), *reader, "the reader the parent granted");
+        p.engine.hold(osis_base::Strong(*t)).unwrap();
         for pk in &pks {
             p.engine.ingest(&pk.bytes, pk.blobs.clone()).unwrap();
         }
@@ -265,7 +267,12 @@ fn big_map_apply_memory() {
     let t = lp.peers[0].engine.new_thing(&mut m, me);
     lp.peers[0].commit(m).unwrap().unwrap();
     lp.hold(t);
-    let setup = lp.packages(0).unwrap();
+    // the child's node: a reader of t (seed 5, made at the clock's time; a node holding t with no
+    // role keeps none of its content), given what t's sync IDs carry
+    let mut r = crate::common::reader(&mut lp, 0, t, 5);
+    let setup = crate::common::packages_for_peer(&mut lp, 0, &mut r);
+    let reader_id = r.engine.me();
+    drop(r);
     let kv: osis_base::ValueMap = (0..n as i64).map(|i| (Value::Int(i), Value::Int(i))).collect();
     let mut fill = None;
     step(&format!("n={n} write the commit"), &mut || {
@@ -283,7 +290,7 @@ fn big_map_apply_memory() {
     println!("n={n}: commit {} KiB, snapshot {} KiB with pages", size_of(&fill) / 1024, size_of(&snap) / 1024);
     // the thing and the clock, as a package for the child
     let now = lp.peers[0].clock.now_wall_ms().0 as i64;
-    let meta = osis_engine::local_peer::Package { id: fill.id, bytes: osis_base::encode(&Value::List(vec![Value::Weak(t), Value::Int(now)])), blobs: Vec::new(), lists: Vec::new() };
+    let meta = osis_engine::local_peer::Package { id: fill.id, bytes: osis_base::encode(&Value::List(vec![Value::Weak(t), Value::Int(now), Value::Weak(reader_id)])), blobs: Vec::new(), lists: Vec::new() };
     drop(lp);
     for (what, pk) in [("commit", &fill), ("snapshot", &snap), ("covered", &snap)] {
         let file = std::path::Path::new(env!("CARGO_TARGET_TMPDIR")).join(format!("big-map-apply-{}.bin", std::process::id()));

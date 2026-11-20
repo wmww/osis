@@ -150,7 +150,7 @@ fn purge_drops_late_snapshot_spec_commits_5() {
     m.set(t, &REG, &s("public")).unwrap();
     m.purge_commit(secret, t, reg.clone());
     lp.peers[0].commit(m).unwrap();
-    let rest: Vec<Package> = packages(&mut lp, 0).into_iter().filter(|p| p.id != snap && p.id != secret).collect();
+    let rest: Vec<Package> = packages_to(&mut lp, 0, 1).into_iter().filter(|p| p.id != snap && p.id != secret).collect();
     let check = |e: &mut osis_engine::Engine, why: &str| {
         assert!(!e.body_not_dropped(&snap, &t, &reg), "{why}: snapshot dropped");
         assert_eq!(e.get(&t, &reg).unwrap(), Some(s("public")), "{why}");
@@ -208,7 +208,7 @@ fn late_snapshot_of_purged_value_reads_nothing_spec_crdt_4_7() {
     m.set(u, &REG, &s("other")).unwrap();
     m.purge_commit(secret, t, reg.clone());
     lp.peers[0].commit(m).unwrap();
-    for p in packages(&mut lp, 0).into_iter().filter(|p| p.id != snap) {
+    for p in packages_to(&mut lp, 0, 1).into_iter().filter(|p| p.id != snap) {
         lp.deliver(1, &p).unwrap();
     }
     lp.peers[1].reexamine().unwrap();
