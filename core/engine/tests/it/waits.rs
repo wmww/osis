@@ -1251,3 +1251,49 @@ fn every_part_given_once_joins_in_any_order_spec_commits_4() {
         assert_eq!(left, 0, "seed {seed}: nothing pends");
     }
 }
+
+// spec/commits.md §4 (Unjudgeable: every arrival that applies examines again what waits for
+// it; a node applies in one storage transaction): one failed write (the device stays up) at any
+// write of the arrival letting a pending commit be judged leaves that commit to be judged, as an
+// open of the store judges every pending commit: at the next tick, or when a copy comes again
+#[test]
+fn a_failed_write_in_a_waking_arrival_leaves_the_wait_due_spec_commits_4() {
+    for again in [true, false] {
+        for n in 0.. {
+            let mut lp = net(3, 0);
+            let t = new_thing(&mut lp, 0);
+            let (w, r) = (lp.peers[1].engine.me(), lp.peers[2].engine.me());
+            set_edge(&mut lp.peers[0].engine, t, r, Some(edge(osis_base::Role::Read)), None);
+            sync(&mut lp, 0, 2);
+            let g = set_edge(&mut lp.peers[0].engine, t, w, Some(edge(osis_base::Role::Write)), None);
+            sync(&mut lp, 0, 1);
+            let mut m = Mutation::new();
+            m.set(t, &REG, &s("written")).unwrap();
+            let c = lp.peers[1].commit(m).unwrap().unwrap();
+            let cp = lp.peers[1].engine.package(&c).unwrap().unwrap();
+            let gp = lp.peers[0].engine.package(&g).unwrap().unwrap();
+            // the writer's grant not held: its write waits
+            let got = lp.peers[2].engine.ingest(&cp.bytes, cp.blobs.clone()).unwrap();
+            assert_eq!(got, Ingested::Pending(c, Reason::MissingChain(w)));
+            let p = &mut lp.peers[2];
+            p.backend.faults().at(n, osis_store::Fault::Fail);
+            let res = p.engine.ingest(&gp.bytes, gp.blobs.clone());
+            if p.backend.faults().writes() <= n {
+                assert_eq!(res.unwrap(), Ingested::Applied(g));
+                assert!(n >= 2, "the grant and the write's wake are two transactions: {n}");
+                break;
+            }
+            p.backend.faults().revive();
+            let e = &mut p.engine;
+            // the grant again, as a peer gives what failed (a duplicate where it landed)
+            e.ingest(&gp.bytes, gp.blobs.clone()).unwrap();
+            if again {
+                e.ingest(&cp.bytes, cp.blobs.clone()).unwrap();
+            } else {
+                e.tick().unwrap();
+            }
+            assert!(e.pending().is_empty(), "write {n} (copy again: {again}): {:?}", e.pending());
+            assert_eq!(e.get(&t, &ak("t:reg.0")).unwrap(), Some(s("written")), "write {n}");
+        }
+    }
+}

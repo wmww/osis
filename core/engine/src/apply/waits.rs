@@ -340,6 +340,11 @@ pub(crate) struct Waits {
     pub unpended: osis_base::memo::Stamps,
     /// The next `reexamine` wakes `Wake::Open` (an open loaded the pending commits).
     pub open_due: bool,
+    /// Pending commits a `wake` named whose round did not land (its transaction failed, the
+    /// device staying up): what woke them was taken with the round, so the next `wake` names them
+    /// again and a copy received again is judged (`rearrival`), as an open examines every pending
+    /// commit once.
+    pub due: BTreeSet<CommitId>,
     /// A blob was stored since the last `wake`: `Wake::Blobs` is due.
     pub blobs_due: bool,
     /// Things whose value-less lists or purge requests moved since the last `wake`: `Wake::Thing`.
@@ -541,6 +546,7 @@ pub(crate) fn wake(core: &mut Core) -> BTreeSet<CommitId> {
     if std::mem::take(&mut core.waits.every_due) {
         out.extend(core.ix.pending.keys().copied());
     }
+    out.extend(std::mem::take(&mut core.waits.due));
     for w in &keys {
         out.extend(pend_on.get(w).into_iter().flatten().copied());
     }

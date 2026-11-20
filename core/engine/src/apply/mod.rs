@@ -871,7 +871,7 @@ fn arrive(tx: &mut Tx<'_>, id: &CommitId, blob: CommitBlob, blobs: bool) -> Resu
 /// What a copy of commit `id` held or pending here returns when it brings nothing: each part it
 /// carries is held as its body (an applied commit's) or is the stored pending copy's part byte
 /// for byte, under the stored copy's signatures, that copy not past its expiry (`expire_stored`)
-/// and no clock wake of it due (`Wake::At`: its `ts` came within reach before a tick ran).
+/// and no wake of it due (`Wake::At`: its `ts` came within reach before a tick ran; `Waits::due`).
 /// Ingesting it would end where it began (the stored copy, its receipt, its wait); a carrier it
 /// came by is still noted (`carriers::taken`, after). `None`: it may bring something, so
 /// `ingest_blob` judges it. Bytes decide, not a part's hash in the header: a pending commit may
@@ -887,9 +887,10 @@ fn rearrival(tx: &mut Tx<'_>, id: &CommitId, blob: &CommitBlob) -> Result<Option
         let applied = tx.core.ix.commits.contains_key(id) && held.len() == blob.parts.len();
         return Ok(applied.then_some(Ingested::Duplicate(*id)));
     };
-    // a clock wake due and not yet run (its `ts` within reach, before a tick): examined now
+    // a wake due and not yet run (its `ts` within reach, before a tick; one a failed round
+    // left, `Waits::due`): examined now
     let now = tx.now().0;
-    if tx.core.ix.pend_keys.get(id).is_some_and(|ws| ws.iter().any(|w| matches!(w, Wake::At(t) if *t <= now))) {
+    if tx.core.waits.due.contains(id) || tx.core.ix.pend_keys.get(id).is_some_and(|ws| ws.iter().any(|w| matches!(w, Wake::At(t) if *t <= now))) {
         return Ok(None);
     }
     let Some(stored) = tx.txn.get_pending(id)? else { return Ok(None) };
@@ -1646,8 +1647,15 @@ impl Engine {
         if seeds.is_empty() {
             return Ok(false);
         }
-        let recs = crate::sync::with_chains(&self.core, seeds, &BTreeMap::new());
-        Ok(self.learn_records_now(recs)? > 0)
+        let recs = crate::sync::with_chains(&self.core, seeds.clone(), &BTreeMap::new());
+        // a failed transaction learned nothing: each is awaited still, so due again
+        let n = self.learn_records_now(recs).inspect_err(|_| {
+            for t in &seeds {
+                self.core.waits.loose.want(t);
+            }
+            self.core.timer_floor = 0;
+        })?;
+        Ok(n > 0)
     }
 
     /// `ingest` of an account's rotation with list blobs that came with it (under the
@@ -1803,11 +1811,11 @@ impl Engine {
                 return Ok(());
             }
             let _s = osis_base::costs::span("reexamine: round");
-            let progressed = self.run(|tx| {
+            let r = self.run(|tx| {
                 let mut blobs: Vec<(CommitId, CommitBlob)> = Vec::new();
                 let pending = &tx.core.ix.pending;
                 tx.core.memory_waits.retain(|id| pending.contains_key(id));
-                for id in ids {
+                for id in ids.iter().copied() {
                     // a memory commit waits for node-sync, which applies it within its sync ID's
                     // room (`apply_waiting_memory`): woken, it is stamped for it
                     if !tx.core.memory_waits.contains(&id) {
@@ -1828,6 +1836,12 @@ impl Engine {
                     progressed |= matches!(retry_pending(tx, id, b)?, Some(Ingested::Applied(_)));
                 }
                 Ok(progressed)
+            });
+            // a failed round took what woke its commits with it: they stay due (`Waits::due`),
+            // and a tick is (a host ticks at `next_timer`)
+            let progressed = r.inspect_err(|_| {
+                self.core.waits.due.extend(ids.iter().copied());
+                self.core.timer_floor = 0;
             })?;
             // a commit examined again may now await a record kept loose (`set_pending` named it
             // due): learned at the next round's `promote_loose`, though nothing applied

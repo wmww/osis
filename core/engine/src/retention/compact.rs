@@ -747,62 +747,77 @@ impl Engine {
     /// snapshots written, by aspect: an ephemeral one's covered bodies are dropped as it applies
     /// (`retention::memory::drop_covered`), a durable one's by node-sync.
     pub fn compactions(&mut self) -> Result<Vec<(Tid, Ak, CommitId)>> {
-        let due = std::mem::take(&mut self.core.compaction.due);
+        let mut due = std::mem::take(&mut self.core.compaction.due);
         let forced = std::mem::take(&mut self.core.compaction.forced);
         let quiet = std::mem::take(&mut self.core.compaction.quiet_due);
         let mut out = Vec::new();
-        for k in due {
-            let (est, last) = self.core.compaction.est.get(&k).map_or((0, 0), |e| (e.held, e.snapshot));
-            if !forced.contains(&k) && est <= FACTOR.saturating_mul(last) {
-                continue;
-            }
-            let (tid, ak) = k.clone();
-            // an aspect of one body or none has nothing to compact: weighed again at its next write
-            if self.core.created(&tid).is_none() || self.core.ix.by_aspect.get(&k).is_none_or(|s| s.len() <= 1) {
-                self.core.compaction.est.remove(&k);
-                continue;
-            }
-            // a node that may not write the aspect leaves compaction to one that may, and owes
-            // the weighing for when it may (`owe_unwritable`)
-            if !self.run(|tx| owe_unwritable(tx, &k, quiet.contains(&k)))? {
-                continue;
-            }
-            let Ok(me) = self.core.writer_for(&tid) else { continue };
-            let quiet_owed = self.core.compaction.est.get(&k).is_some_and(|e| e.quiet);
-            // counted: tests read how often the trigger weighs and fires per write
-            osis_base::costs::count("compact: aspects weighed", 1);
-            let Some((l, stops)) = Load::of(self, &tid, &ak, me)? else {
-                self.core.compaction.est.remove(&k);
-                continue;
-            };
-            // cover once quiet: a leftover is the one carrier of an expired write's creations and
-            // resets to a node that missed it (peers deleted the body at its expiry)
-            let full = l.bodies >= 2 && l.held > FACTOR.saturating_mul(l.snapshot);
-            let fire = full || (quiet.contains(&k) || quiet_owed) && l.leftovers > 0;
-            let mut held = l.held;
-            if fire {
-                match self.snapshot(&tid, &ak) {
-                    Ok(Some(c)) => {
-                        osis_base::costs::count("compact: snapshots written", 1);
-                        if !full {
-                            // counted: tests read how often a quiet aspect is covered
-                            osis_base::costs::count("compact: quiet snapshots", 1);
-                        }
-                        out.push((tid, ak.clone(), c));
-                        held = 0;
-                    }
-                    Ok(None) | Err(Error::Permission { .. }) => {}
-                    Err(e) => return Err(e),
-                }
-            }
-            // an aspect of one body or none weighs again at its next write (O(1)): nothing kept
-            if self.core.ix.by_aspect.get(&k).is_none_or(|s| s.len() <= 1) {
-                self.core.compaction.est.remove(&k);
-            } else {
-                self.core.compaction.est.insert(k, Est { held, snapshot: l.snapshot, stops, owed: false, quiet: false });
+        while let Some(k) = due.pop_first() {
+            if let Err(e) = self.weigh_due(&k, forced.contains(&k), quiet.contains(&k), &mut out) {
+                // a failed transaction: what was not weighed is due again, as it was
+                due.insert(k);
+                let c = &mut self.core.compaction;
+                c.forced.extend(due.iter().filter(|k| forced.contains(*k)).cloned());
+                c.quiet_due.extend(due.iter().filter(|k| quiet.contains(*k)).cloned());
+                c.due.extend(due);
+                return Err(e);
             }
         }
         Ok(out)
+    }
+
+    /// `compactions` of due aspect `k` (`forced`: weighed whatever its estimate; `quiet`: its
+    /// quiet time passed), a snapshot written going to `out`.
+    fn weigh_due(&mut self, k: &(Tid, Ak), forced: bool, quiet: bool, out: &mut Vec<(Tid, Ak, CommitId)>) -> Result<()> {
+        let (est, last) = self.core.compaction.est.get(k).map_or((0, 0), |e| (e.held, e.snapshot));
+        if !forced && est <= FACTOR.saturating_mul(last) {
+            return Ok(());
+        }
+        let (tid, ak) = k.clone();
+        // an aspect of one body or none has nothing to compact: weighed again at its next write
+        if self.core.created(&tid).is_none() || self.core.ix.by_aspect.get(k).is_none_or(|s| s.len() <= 1) {
+            self.core.compaction.est.remove(k);
+            return Ok(());
+        }
+        // a node that may not write the aspect leaves compaction to one that may, and owes
+        // the weighing for when it may (`owe_unwritable`)
+        if !self.run(|tx| owe_unwritable(tx, k, quiet))? {
+            return Ok(());
+        }
+        let Ok(me) = self.core.writer_for(&tid) else { return Ok(()) };
+        let quiet_owed = self.core.compaction.est.get(k).is_some_and(|e| e.quiet);
+        // counted: tests read how often the trigger weighs and fires per write
+        osis_base::costs::count("compact: aspects weighed", 1);
+        let Some((l, stops)) = Load::of(self, &tid, &ak, me)? else {
+            self.core.compaction.est.remove(k);
+            return Ok(());
+        };
+        // cover once quiet: a leftover is the one carrier of an expired write's creations and
+        // resets to a node that missed it (peers deleted the body at its expiry)
+        let full = l.bodies >= 2 && l.held > FACTOR.saturating_mul(l.snapshot);
+        let fire = full || (quiet || quiet_owed) && l.leftovers > 0;
+        let mut held = l.held;
+        if fire {
+            match self.snapshot(&tid, &ak) {
+                Ok(Some(c)) => {
+                    osis_base::costs::count("compact: snapshots written", 1);
+                    if !full {
+                        // counted: tests read how often a quiet aspect is covered
+                        osis_base::costs::count("compact: quiet snapshots", 1);
+                    }
+                    out.push((tid, ak.clone(), c));
+                    held = 0;
+                }
+                Ok(None) | Err(Error::Permission { .. }) => {}
+                Err(e) => return Err(e),
+            }
+        }
+        // an aspect of one body or none weighs again at its next write (O(1)): nothing kept
+        if self.core.ix.by_aspect.get(k).is_none_or(|s| s.len() <= 1) {
+            self.core.compaction.est.remove(k);
+        } else {
+            self.core.compaction.est.insert(k.clone(), Est { held, snapshot: l.snapshot, stops, owed: false, quiet: false });
+        }
+        Ok(())
     }
 
     /// At open: every compactable aspect of more than one body that this node may not write
@@ -984,6 +999,38 @@ mod tests {
             let l = gap_load(e);
             assert!(l.held <= FACTOR * l.snapshot + l.largest, "n={n}: {l:?}");
             assert!(written >= 1 && weighed <= n as u64 / 2, "n={n}: {weighed} weighings, {written} snapshots over {n} fills");
+        }
+    }
+
+    // spec/sync-compaction.md §1 (trigger): one failed write (the device stays up) at any write of
+    // a step leaves what it had to weigh due: the aspect is compacted once, at that step or the next
+    #[test]
+    fn a_failed_write_in_a_step_leaves_its_aspects_due_spec_sync_7() {
+        let x = Ak::new("x:m.0").unwrap();
+        for n in 0.. {
+            let mut lp = LocalPeer::fresh(1, osis_base::WallMs(1_700_000_000_000));
+            let p = &mut lp.peers[0];
+            let me = p.engine.me();
+            let mut m = Mutation::new();
+            let t = p.engine.new_thing(&mut m, me);
+            m.set(t, &x, &Value::Map(Default::default())).unwrap();
+            p.commit(m).unwrap();
+            for i in 0..2 * FACTOR + 2 {
+                let mut m = Mutation::new();
+                m.op(t, &x, osis_crdt::PathOp { path: vec![osis_crdt::PathSeg::Key(Value::Str("k".into()))], op: osis_crdt::Op::Set(Value::Str(format!("v{i}"))) }).unwrap();
+                p.commit(m).unwrap();
+            }
+            p.backend.faults().at(n, osis_store::Fault::Fail);
+            let r = p.engine.compactions();
+            if p.backend.faults().writes() <= n {
+                assert_eq!(r.unwrap().len(), 1, "compacted");
+                assert!(n >= 1, "a snapshot is a write: {n}");
+                break;
+            }
+            p.backend.faults().revive();
+            let first = r.map_or(0, |s| s.len());
+            let next = p.engine.compactions().unwrap().len();
+            assert_eq!(first + next, 1, "write {n}: compacted once, at the failed step or the next");
         }
     }
 
