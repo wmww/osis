@@ -20,7 +20,7 @@ Tests: the hand worlds are default tests; every sampled search (random worlds, f
 | `forget` | 0 (one member-family world in 8, each with Bob's writes in or out of kept history, plus the attack family) | below, Own cover |
 | `forget-entries` | 0 (the same worlds; `FORGET_SLICE` sets the slice) | below, Entries leave with their commit |
 | `digest` | 1,000,000 | notes/test-properties.md, Models |
-| `paths` | 400,000 (random worlds, about 10,000 CPU-s, as four `--from` runs); `paths-remake` the same (about 10,000); `-- I paths-replay[-remake]` world I alone, traced; `-- N paths-compare` both rule sets per world; `paths-exh` 367 (every 367th family world; the whole family, 11,243,520 worlds, about 110,000 CPU-s, by hand); `paths-tiny[-invites][-honest[-writers]]` 1,000,000; controls `paths-*` 8,000 (about 130 CPU-s each) | below, Paths |
+| `paths` | 400,000 (random worlds, about 10,000 CPU-s, as four `--from` runs); `paths-remake` the same (about 10,000); `-- 0 paths[-remake] --only I` world I alone, traced; `-- N paths-compare` both rule sets per world; `paths-exh` 367 (every 367th family world; the whole family, 11,243,520 worlds, about 110,000 CPU-s, by hand); `paths-tiny[-invites][-honest[-writers]]` 1,000,000; controls `paths-*` 8,000 (about 130 CPU-s each) | below, Paths |
 | `vouches` | 1,000,000 (random, 15 s); `vouches-exh` 0 (the small family, 385,236 worlds, 7 s); controls `vouches-off`, `vouches-no-rewrite`, the held-set writings `vouches-held` and `vouches-state`, and `vouches-exh-*` alike | below, Vouches |
 | `addenda-gaps` | 1,000,000 (random with admin-only content, 15 s); `addenda-gaps-exh` 0 (the gaps family, 2,829,888 worlds, 45 s); controls `-no-admin`, `-no-rewrite` on either | below, Addenda gaps |
 

@@ -149,7 +149,7 @@ pub struct Spec {
     pub setup: Setup,
     pub moves: Vec<Move>,
     pub rng: u64,
-    /// The world's index in its run (random or family), for `-- I paths-replay`.
+    /// The world's index in its run (random or family), for `-- 0 <mode> --only I`.
     pub index: u64,
 }
 
@@ -1066,7 +1066,7 @@ pub struct Stats {
     /// Known failures of a property, counted and printed but not failing the run: each names its
     /// finding (notes/path-model-findings.md).
     pub noted: BTreeMap<&'static str, u64>,
-    /// Per failing property, the indices of the first worlds failing it (`-- I paths-replay`).
+    /// Per failing property, the indices of the first worlds failing it (`--only I` replays one).
     pub failing: BTreeMap<&'static str, BTreeSet<u64>>,
 }
 
@@ -2558,44 +2558,10 @@ pub fn compare(start: u64, n: u64) -> Compare {
     })
 }
 
-/// One world's trace, setup and moves, and what `check` finds there (each failing or counted check
-/// with what it says). Returns the failing checks.
-pub fn replay(m: &Sim, rules: &Rules) -> u64 {
-    let mut st = Stats::default();
-    check(m, rules, &mut st);
-    println!("{:?} moves {:?} rng {}\n{}", m.setup, m.spec.moves, m.spec.rng, trace(m));
-    if !m.remade.is_empty() {
-        println!("made again (write <- original): {:?}", m.remade);
-    }
-    for (k, (what, _)) in &st.first {
-        let tag = if st.fails.contains_key(k) { "FAIL" } else { "NOTED" };
-        println!("{tag} {k} ({}): {what}", st.fails.get(k).or(st.noted.get(k)).copied().unwrap_or(0));
-    }
-    st.failures()
-}
-
 /// `-- N paths[-control]` (random worlds), `-- 0 paths-exh[-control]` (the small family),
 /// `-- N paths-tiny[-invites][-honest[-writers]][-control]` (small worlds); random and small worlds from
 /// index `from` on (`-- N paths --from K`). Returns the failing checks.
 pub fn run(samples: u64, from: u64, mode: &str) -> u64 {
-    // `-- I paths-replay[-variant]` (random world I) or `-- I paths-exh-replay[-variant]` (family
-    // world I): that one world, its trace and every check failing or counted, unshrunk
-    if mode == "paths-compare" {
-        let c = compare(from, samples);
-        for ((p, side, cause), (n, f)) in &c.0 {
-            println!("{p} / {side} / {cause}: {n} worlds, first {f:?}");
-        }
-        return 0;
-    }
-    if mode.contains("-replay") {
-        let mode = mode.replacen("-replay", "", 1);
-        let Some(rules) = mode_rules(&mode) else {
-            eprintln!("unknown mode {mode}");
-            return 1;
-        };
-        let m = if mode.starts_with("paths-exh") { family(samples as usize, &rules) } else { random_world(samples, &rules) };
-        return replay(&m, &rules);
-    }
     let Some(rules) = mode_rules(mode) else {
         eprintln!("unknown mode {mode}");
         return 1;
