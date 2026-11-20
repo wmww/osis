@@ -78,7 +78,7 @@ impl Engine {
                 blob_stamps: self.blob_stamps.clone(),
                 blob_seq: self.blob_seq,
                 blobs_unsettled: self.blobs_unsettled,
-                unknown_seen: self.unknown_seen,
+                failed_seen: self.failed_seen,
                 loads: self.loads,
                 store_rng: self.store_rng.test_copy(),
                 rng: self.rng.test_copy(),

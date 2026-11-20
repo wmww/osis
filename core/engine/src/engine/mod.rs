@@ -3695,8 +3695,9 @@ pub struct Engine {
     blob_stamps: osis_base::memo::Stamps,
     /// A transaction's commit or its releases failed: `settle_blobs` runs before the next.
     blobs_unsettled: bool,
-    /// The store's `Writes::unknown` when this engine last read it whole (`load`).
-    unknown_seen: u64,
+    /// The store's `Writes::failed` and `Writes::unknown` when this engine last read it whole
+    /// (`load`): the next transaction reads it again once either moves (`reload_owed`).
+    failed_seen: (u64, u64),
     /// How many times the in-memory indexes were read from the store again (`load_fresh`): each
     /// replaces every memo stamp and feed a follower read (`Engine::loads`).
     loads: u64,
@@ -3775,6 +3776,13 @@ impl Engine {
         self.store.writes()
     }
 
+    /// A store write failed since the store was last read whole: the next transaction reads it
+    /// again (`run`), and a tick is due (`next_timer`) so one runs with no other event.
+    pub fn reload_owed(&self) -> bool {
+        let w = self.store.writes();
+        (w.failed, w.unknown) != self.failed_seen
+    }
+
     /// While this stands (no commit changed the store, the indexes stand, the clock stands) a
     /// read of the engine repeats itself.
     pub fn point(&self) -> ReadPoint {
@@ -3791,7 +3799,7 @@ impl Engine {
         let id = Identity::generate(&mut *rng);
         let (session, expiring) = sessions(id.tid(), &mut *rng);
         let rows = store.row_changes();
-        let mut e = Engine { store, store_rng, blobs, blob_stamps: Default::default(), blob_seq: 1, blobs_unsettled: false, unknown_seen: 0, loads: 0, rng, core: Core::new(id, clock.clone(), session, expiring, rows), eph: crate::ephemeral::Eph::default(), clock, cfg, #[cfg(debug_assertions)] index_unchecked: false, #[cfg(debug_assertions)] verdicts_unchecked: false, #[cfg(debug_assertions)] last_tx_wall: None, #[cfg(debug_assertions)] loading: false, #[cfg(test)] index_poked: false, #[cfg(test)] check_every_tx: false };
+        let mut e = Engine { store, store_rng, blobs, blob_stamps: Default::default(), blob_seq: 1, blobs_unsettled: false, failed_seen: (0, 0), loads: 0, rng, core: Core::new(id, clock.clone(), session, expiring, rows), eph: crate::ephemeral::Eph::default(), clock, cfg, #[cfg(debug_assertions)] index_unchecked: false, #[cfg(debug_assertions)] verdicts_unchecked: false, #[cfg(debug_assertions)] last_tx_wall: None, #[cfg(debug_assertions)] loading: false, #[cfg(test)] index_poked: false, #[cfg(test)] check_every_tx: false };
         let seed_bytes = e.core.id.seed().expose().to_vec();
         // a new store: its (empty) persisted index is current
         e.run(|tx| {
@@ -3821,7 +3829,7 @@ impl Engine {
         };
         let (session, expiring) = sessions(id.tid(), &mut *rng);
         let rows = store.row_changes();
-        let mut e = Engine { store, store_rng, blobs, blob_stamps: Default::default(), blob_seq: 1, blobs_unsettled: false, unknown_seen: 0, loads: 0, rng, core: Core::new(id, clock.clone(), session, expiring, rows), eph: crate::ephemeral::Eph::default(), clock, cfg, #[cfg(debug_assertions)] index_unchecked: false, #[cfg(debug_assertions)] verdicts_unchecked: false, #[cfg(debug_assertions)] last_tx_wall: None, #[cfg(debug_assertions)] loading: false, #[cfg(test)] index_poked: false, #[cfg(test)] check_every_tx: false };
+        let mut e = Engine { store, store_rng, blobs, blob_stamps: Default::default(), blob_seq: 1, blobs_unsettled: false, failed_seen: (0, 0), loads: 0, rng, core: Core::new(id, clock.clone(), session, expiring, rows), eph: crate::ephemeral::Eph::default(), clock, cfg, #[cfg(debug_assertions)] index_unchecked: false, #[cfg(debug_assertions)] verdicts_unchecked: false, #[cfg(debug_assertions)] last_tx_wall: None, #[cfg(debug_assertions)] loading: false, #[cfg(test)] index_poked: false, #[cfg(test)] check_every_tx: false };
         e.core.node_root = node_root;
         e.load()?;
         Ok(e)
@@ -4062,17 +4070,21 @@ impl Engine {
         // debug builds: what the transaction notes (`osis_base::trace`) is tagged if it rolls back
         #[cfg(debug_assertions)]
         let (trace_mark, caller) = (osis_base::trace::len(), std::panic::Location::caller());
-        // a store write's outcome was unknown (its sync failed): a commit answered `Err` may have
-        // landed after all, so once the store works again everything is read as an open reads
-        // it, under a fresh session (that commit's counters may be taken)
+        // a store write failed (the device staying up): everything is read again as an open reads
+        // it, so nothing kept in memory beside the store (work an operation took outside the
+        // transaction that failed: wakes, due lists) differs from what a restart derives. One
+        // whose outcome was unknown (its sync failed) may have landed after all: read once the
+        // store works again, under a fresh session (that commit's counters may be taken)
         // a memo running `f` reads what `f` reads: the transaction's own work around it (settling,
         // its end's follow-ups, persisting, checks) is no part of `f`'s answer
-        let unknown = self.store.writes().unknown;
-        if unknown != self.unknown_seen {
-            let seen = std::mem::replace(&mut self.unknown_seen, unknown);
-            self.core.fresh_session();
+        if self.reload_owed() {
+            let w = self.store.writes();
+            let seen = std::mem::replace(&mut self.failed_seen, (w.failed, w.unknown));
+            if w.unknown != seen.1 {
+                self.core.fresh_session();
+            }
             if let Err(e) = memo::unrecorded(|| self.load()) {
-                self.unknown_seen = seen;
+                self.failed_seen = seen;
                 return Err(e);
             }
             // what it read is durable: subscribers read everything again
@@ -4358,6 +4370,11 @@ impl Engine {
         fresh.accounts = std::mem::take(&mut self.core.accounts);
         fresh.redeliver = std::mem::take(&mut self.core.redeliver);
         fresh.waits = std::mem::take(&mut self.core.waits);
+        // the trigger's estimates and due aspects (in memory, an open starts them empty): a write
+        // that failed counted more than landed, which costs a weighing at most
+        fresh.compaction = std::mem::take(&mut self.core.compaction);
+        // memory snapshots owed (a superset is harmless; no open derives them)
+        fresh.fallen = std::mem::take(&mut self.core.fallen);
         fresh.wakes = self.core.wakes.take();
         // the sync units' sources are the handle's, set between transactions (`set_sourced`)
         fresh.sourced_elsewhere = std::mem::take(&mut self.core.sourced_elsewhere);
@@ -4576,7 +4593,7 @@ impl Drop for Engine {
     fn drop(&mut self) {
         // nor on a half-loaded core, nor when a write's outcome is unknown (the next transaction
         // would load the store again)
-        if std::thread::panicking() || self.loading || self.store.writes().unknown != self.unknown_seen {
+        if std::thread::panicking() || self.loading || self.store.writes().unknown != self.failed_seen.1 {
             return;
         }
         // a by-hand replay inspecting a failing world (`OSIS_NO_END_CHECKS=1`)

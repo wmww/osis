@@ -99,8 +99,6 @@ struct Driver {
     failing: Option<Stretch>,
     /// Restarts in place so far (tests).
     restarts: u64,
-    /// The engine store's writes of unknown outcome as of the last look (`engine_reloaded`).
-    engine_unknown: u64,
     /// `Engine::loads` as of the last look (`engine_reloaded`).
     engine_loads: u64,
     /// What the client port's owner has to answer or forget (`Node::port`).
@@ -887,19 +885,17 @@ impl Node {
         }
     }
 
-    /// The engine read its store again since the last look (`Engine::loads`: a write of unknown
-    /// outcome), which replaces every index the modules follow (memo feeds,
+    /// The engine read its store again since the last look (`Engine::loads`), or owes it (a
+    /// failed write, `Engine::reload_owed`): that replaces every index the modules follow (memo feeds,
     /// stamps): every connection closes and the modules start again from the store, as at an open
     /// (spec/sync-ids.md §5: the store is the truth after a failure). One rule for every reload:
     /// the settle ends at the round it happened in (`settle`), and the step restarts here. Whether
     /// it restarted.
     fn engine_reloaded(&mut self, out: &mut Vec<Out>) -> bool {
-        let unknown = self.engine.store_writes().unknown;
-        if unknown == self.driver.engine_unknown && self.engine.loads() == self.driver.engine_loads {
+        if !self.engine.reload_owed() && self.engine.loads() == self.driver.engine_loads {
             return false;
         }
-        self.driver.engine_unknown = unknown;
-        // a write of unknown outcome: the engine reads its store at its next transaction
+        // a failed write: the engine reads its store at its next transaction
         let r = self.engine.run(|_| Ok(()));
         self.driver.engine_loads = self.engine.loads();
         if let Err(e) = r {

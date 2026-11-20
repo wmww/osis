@@ -1285,9 +1285,9 @@ impl Engine {
 
     /// Whether a retention timer, durable or memory, is due by the wall
     /// clock: in memory, no store read (a timer removed without running may leave a false
-    /// `true`, which the next `tick` clears).
+    /// `true`, which the next `tick` clears); or a failed write's reload (`Engine::reload_owed`).
     pub fn timers_due(&self) -> bool {
-        self.core.timer_floor <= self.now().0
+        self.core.timer_floor <= self.now().0 || self.reload_owed()
     }
 
     /// When the next retention timer is due (wall ms).
@@ -1303,7 +1303,9 @@ impl Engine {
         let fallen = (!core.fallen.is_empty()).then(|| self.now().0);
         // a commit pending for its `ts` ahead (`apply::Wake::At`)
         let drift = crate::apply::next_at(core);
-        Ok(part.into_iter().chain(aspect).chain(live).chain(fallen).chain(drift).min())
+        // a failed write's reload (`Engine::reload_owed`): the tick's transaction runs it
+        let reload = self.reload_owed().then(|| self.now().0);
+        Ok(part.into_iter().chain(aspect).chain(live).chain(fallen).chain(drift).chain(reload).min())
     }
 
     /// Whether held commit `c` is an own replace of `(tid, ak)` (`snapshot::covered`).
