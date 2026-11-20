@@ -912,6 +912,32 @@ fn a_link_redemption_grants_once_and_ends_the_link() {
     agree_all(&w2, &[end]);
 }
 
+// notes/a1-spec/README.md Open 23 (draft §5.1 step 3: a drop takes a commit's edge-class parts on
+// its thing together): a single-use link redeemed twice, the sharer listing what it saw, at nodes
+// trusting nothing and trusting the removal; roles-model
+// `a_single_use_link_redeemed_twice_stays_with_the_redemption_the_sharer_listed`, its worlds.
+#[test]
+fn a_single_use_link_redeemed_twice_stays_with_the_redemption_the_sharer_listed() {
+    // (the thief's ts, the seen redeemer's ts, the sharer lists the thief's too, single use)
+    for (t2, t1, both, single) in [(3, 4, false, true), (2, 3, false, true), (4, 3, false, true), (3, 4, true, true), (3, 4, false, false)] {
+        for neither in [false, true] {
+            let mut w = link();
+            let one = |w: &mut World, ts: u32, r: Thing| if single { redeem(w, ts, r) } else { vec![w.push(L, ts, &[], LK, Kind::set(r, Read))] };
+            let (seen, thief) = if t2 < t1 {
+                let b = one(&mut w, t2, R2);
+                (one(&mut w, t1, R1), b)
+            } else {
+                let a = one(&mut w, t1, R1);
+                (a, one(&mut w, t2, R2))
+            };
+            let list: Vec<Id> = if neither { vec![] } else if both { seen.iter().chain(&thief).copied().collect() } else { seen.clone() };
+            let end = w.push(H, 6, &[A], LK, Kind::set(L, Gone).listing(w.cut(&list)));
+            agree_all(&w, &[]);
+            agree_all(&w, &[end]);
+        }
+    }
+}
+
 // ---- Writes that apply nowhere and still decide a fight (findings 33 to 36: accepted) ----
 
 #[test]

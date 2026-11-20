@@ -2476,6 +2476,156 @@ fn a_thief_with_the_link_key_after_redemption_keeps_nothing_past_the_sharers_rem
     assert!(rd.applied.contains(&end) && rd.applied.contains(&back) && rd.role(z2, LK) == Role::Read, "{rd:?}");
 }
 
+/// Every gate of the `tiny` search holds of `w` read with `trust` under `rules`.
+fn tiny_gates_under(w: &World, trust: &[Id], rules: &Rules) -> TinyStats {
+    let mut st = TinyStats::default();
+    let recv = (0..w.commits.len()).map(|k| (0..w.cid(k)).collect()).collect();
+    tiny_check(0, &Tiny { w: w.clone(), v: View::all(w).trusting(trust), recv }, rules, &mut st);
+    st
+}
+
+/// A single-use link redeemed twice, the sharer H removing L at 6 listing what it received
+/// (notes/a1-spec/README.md Open 23), under the rule and each other reading of what a drop takes
+/// (`Drops`), trusting nothing and trusting the removal alike: who holds LK in the end,
+/// (R1, R2). R2 is the thief, R1 the redeemer the sharer saw.
+/// - `unseen`: R2 redeems at 3, unseen by H; R1 at 4; H lists R1's redemption.
+/// - `backdated`: as `unseen`, R2's redemption stamped 2 (made after R1's).
+/// - `later`: R1 at 3, R2 at 4 unseen; H lists R1's.
+/// - `both`: R2 at 3, R1 at 4, H lists both: the first in key order holds it.
+/// - `neither`: as `unseen`, H lists nothing.
+/// - `multi`: a link for many (no leave part): R2 at 3 unseen, R1 at 4 listed.
+/// The rule (`Drops::Commit`): R2's grant falls and its leave with it (one commit's parts on LK),
+/// so R1's grant applies: R1 holds LK, as today's walk has it. Control `-part-drops`: in `unseen`
+/// and `backdated`, at a node not trusting the removal, R2's leave stands (its need at L's edge,
+/// admin, was never met there), so R1's grant finds L's edge gone and nobody holds LK; a node
+/// trusting it seeds the leave too (a seed asks only that the removal's value not meet the need)
+/// and gives R1 LK: the nodes read differently by trust. The other worlds read alike under every
+/// reading and trust.
+#[test]
+fn a_single_use_link_redeemed_twice_stays_with_the_redemption_the_sharer_listed() {
+    type Want = (Role, Role);
+    let read = Role::Read;
+    let worlds: Vec<(&str, World, Id, Want, Want)> = {
+        let mut out = vec![];
+        let mut add = |name: &'static str, t2: Option<u32>, t1: u32, list: &dyn Fn(&[Id], &[Id]) -> Vec<Id>, single: bool, fixed: Want, fair: Want| {
+            let mut w = link();
+            let one = |w: &mut World, ts: u32, r: Thing| if single { redeem(w, ts, r) } else { vec![w.push(L, ts, &[], LK, Kind::set(r, Role::Read))] };
+            let (a, b) = match t2 {
+                Some(t2) if t2 < t1 => {
+                    let b = one(&mut w, t2, R2);
+                    (one(&mut w, t1, R1), b)
+                }
+                _ => {
+                    let a = one(&mut w, t1, R1);
+                    (a, one(&mut w, t2.unwrap_or(4), R2))
+                }
+            };
+            let end = w.push(H, 6, &[A], LK, Kind::set(L, Gone).listing(w.cut(&list(&a, &b))));
+            out.push((name, w, end, fixed, fair));
+        };
+        add("unseen", Some(3), 4, &|a, _| a.to_vec(), true, (Gone, Gone), (read, Gone));
+        add("backdated", Some(2), 3, &|a, _| a.to_vec(), true, (Gone, Gone), (read, Gone));
+        add("later", Some(4), 3, &|a, _| a.to_vec(), true, (read, Gone), (read, Gone));
+        add("both", Some(3), 4, &|a, b| a.iter().chain(b).copied().collect(), true, (Gone, read), (Gone, read));
+        add("neither", Some(3), 4, &|_, _| vec![], true, (Gone, Gone), (Gone, Gone));
+        add("multi", Some(3), 4, &|a, _| a.to_vec(), false, (read, Gone), (read, Gone));
+        out
+    };
+    let readings = [Drops::Commit, Drops::Part, Drops::LeaveLowers, Drops::LeaveOnGrant, Drops::Redemption];
+    for (name, w, end, fixed_want, fair) in &worlds {
+        for ln in readings {
+            let rules = Rules { drops: ln, ..Rules::fixed() };
+            for t in [&[][..], &[*end]] {
+                let rd = judge(w, &rules, &View::all(w).trusting(t));
+                let want = if ln == Drops::Part && t.is_empty() { *fixed_want } else { *fair };
+                assert_eq!((rd.role(R1, LK), rd.role(R2, LK), rd.role(L, LK)), (want.0, want.1, Gone), "{name} {ln:?} trust {t:?}: {rd:?}");
+                assert!(rd.applied.contains(end), "{name} {ln:?}");
+                let st = tiny_gates_under(w, t, &rules);
+                assert!(st.failures() == 0, "{name} {ln:?} trust {t:?}: {:?} {:?}", st.fails, st.first);
+            }
+        }
+    }
+}
+
+/// The nodes' views of story world `m` whose reading under `rules` differs from `Rules::fixed`'s:
+/// what users observe or which edge-class parts apply.
+fn views_differing(m: &Sim, rules: &Rules) -> u64 {
+    let f = Rules::fixed();
+    m.honest()
+        .iter()
+        .filter(|&&n| {
+            let v = m.view(n, &f);
+            let (a, b) = (judge(&m.w, &f, &v), judge(&m.w, rules, &v));
+            a.observed(&m.w) != b.observed(&m.w) || a.applied != b.applied
+        })
+        .count() as u64
+}
+
+/// By hand (notes/a1-spec/README.md Open 23): the story's worlds (no link in them) read alike under
+/// `fixed` (`Drops::Commit`) and each other reading of what a drop takes but `-leave-lowers`, at
+/// every honest node: the random worlds from `OSIS_ROLES_START` (`OSIS_ROLES_SEEDS`, 13,000) and
+/// every 367th family world, the gate's sizes. The rule meant for redemptions changes no other
+/// reading there (its reach elsewhere: `tiny`'s commits of several parts, the differentials).
+#[test]
+#[ignore = "by hand: Open 23's readings against fixed"]
+fn leave_readings_change_no_story_reading_large() {
+    let start = var("OSIS_ROLES_START").unwrap_or(0);
+    let n = var("OSIS_ROLES_SEEDS").unwrap_or(13_000);
+    let mut out = vec![];
+    for ln in [Drops::Part, Drops::LeaveLowers, Drops::LeaveOnGrant, Drops::Redemption] {
+        let rules = Rules { drops: ln, ..Rules::fixed() };
+        let random: u64 = crate::on_every_core(|th, threads, c: &mut u64| {
+            for i in (start + th as u64..start + n).step_by(threads) {
+                *c += views_differing(&random_world(i, &Rules::fixed()), &rules);
+            }
+        });
+        let fam: u64 = crate::family_on_every_core(FAMILY, 367, |i, c: &mut u64| *c += views_differing(&family(i, &Rules::fixed()), &rules));
+        println!("{ln:?}: views reading otherwise: random {random}, family {fam}");
+        out.push((ln, random, fam));
+    }
+    assert!(out.iter().filter(|x| x.0 != Drops::LeaveLowers).all(|x| x.1 == 0 && x.2 == 0), "{out:?}");
+}
+
+/// Two admins leaving at once (notes/a1-spec/README.md step 3, For Tess before the switch): H (A's
+/// mint admin) and B (granted admin) each leave A at 3, each naming the other as the admin that
+/// remains, as each saw it standing. The leave first in key order applies; the later one's named
+/// remaining admin has left in the pass, so it applies nothing and its signer stays A's admin:
+/// A keeps one admin, the one whose leave came later. Today's walk applies both (the last-admin
+/// rule is the writer's check there) and A has none.
+#[test]
+fn two_admins_leaving_at_once_keep_the_later_one() {
+    let mut w = account();
+    w.edge(H, 1, &[], A, B, Admin, &[]);
+    let lh = w.push(H, 3, &[], A, Kind::set(H, Gone).relying(B));
+    let lb = w.push(B, 3, &[], A, Kind::set(B, Gone).relying(H));
+    assert!(w.leave(lh) && w.leave(lb) && w.key(lh) < w.key(lb));
+    let rd = keyed(&w);
+    assert!(rd.applied.contains(&lh) && !rd.applied.contains(&lb), "{rd:?}");
+    assert_eq!((rd.role(H, A), rd.role(B, A)), (Gone, Admin));
+    tiny_gates(&w, &[]);
+}
+
+/// An admin edge gives every invite (notes/a1-spec/permissions.md §2 Path's invite): team M holds
+/// admin on T, B holds write on M. B's grants on T through [M] apply as invite grants up to B's
+/// role on M (the path's invite: the least of its edges' roles but the last, and the last's
+/// invite, every invite at admin): read and write apply, admin does not (it needs admin along the
+/// path). Today a grant names its invite and M's names none, so none of B's applies.
+#[test]
+fn a_writer_of_an_admin_team_invites_up_to_its_own_role() {
+    const M: Thing = 41;
+    const T: Thing = 42;
+    let mut w = World::new(&[(H, M), (H, T)]);
+    w.edge(H, 1, &[], T, M, Admin, &[]);
+    w.edge(H, 1, &[], M, B, Write, &[]);
+    let read = w.push(B, 2, &[M], T, Kind::set(Z, Role::Read));
+    let write = w.push(B, 2, &[M], T, Kind::set(N5, Write).inviting(Role::Read));
+    let admin = w.push(B, 2, &[M], T, Kind::set(N6, Admin));
+    let rd = keyed(&w);
+    assert!(rd.invited.contains(&read) && rd.invited.contains(&write) && !rd.applied.contains(&admin), "{rd:?}");
+    assert_eq!((rd.role(Z, T), rd.role(N5, T), rd.role(N6, T)), (Role::Read, Write, Gone));
+    tiny_gates(&w, &[]);
+}
+
 // ---- The remaining admin past the lowering's drops (notes/a1-spec/README.md, OPEN 5) ----
 
 /// M mints A, grants H admin until 20 and X admin, and leaves naming X; X grants B admin. H

@@ -31,8 +31,9 @@
 //!   from admin, **as restored** (the highest role since the last explicit write on h, values an
 //!   `until` or a self-removal took included), to below puts in question every earlier held
 //!   edge-class commit whose path holds h, not dropped and not void (`Rules::audit_held`, as the
-//!   seeds); those its list does not name (`listed`) join D and the walk restarts from the
-//!   earliest. A self-removal audits nothing. D only grows until a pass adds nothing.
+//!   seeds); those its list does not name (`listed`) join D, each with its commit's other
+//!   edge-class parts on its thing (`Drops::Commit`), and the walk restarts from the earliest. A
+//!   self-removal audits nothing. D only grows until a pass adds nothing.
 //! - **Each lowering judged once, at its key** (`Rules::self_void`; finding 16): nothing is
 //!   exempt from a lowering's drops and no entry of its list is read as absent. A lowering (an
 //!   explicit edge write giving below admin at its `ts`) is judged the first time a pass reaches
@@ -376,6 +377,33 @@ pub struct Rules {
     /// (notes/a1-spec/permissions.md §5.2 Own cover, *taken*), whatever cuts its path later. False:
     /// judged as any cover.
     pub own_cover: bool,
+    /// What a drop takes of the commit it drops a part of (notes/a1-spec/README.md Open 23: a
+    /// single-use redemption's grant and its leave).
+    pub drops: Drops,
+}
+
+/// What a drop (a lowering's audit, a trusted write's seeds) takes of a commit (Open 23).
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum Drops {
+    /// The rule (`fixed`): a commit's edge-class parts on one thing fall together. A part another
+    /// part of its commit on the same thing would be dropped beside (put in question and not
+    /// listed) is dropped with it, as a list keeps a commit whole: the redemption's leave falls
+    /// with its grant, so the link stays with the redemption the sharer listed.
+    Commit,
+    /// Control (`-part-drops`): each part alone, by its own need: a redemption whose grant falls
+    /// keeps its leave (its need at the link's edge is admin, never met by a read grant), so a
+    /// forged earlier redemption the sharer never saw burns the link for the one it saw.
+    Part,
+    /// Variant (`-leave-lowers`, rejected: fails `safety N` in 26 more of the gate's 13,000 random
+    /// worlds): as `Part`, a leave's need at the edge it lowers being that the edge gives more
+    /// than it sets, so any lowering leaving it out drops it.
+    LeaveLowers,
+    /// Variant (`-leave-on-grant`): as `Part`, and a leave of edge h is dropped with its commit's
+    /// other parts stating h as their path's last edge (a link's grant).
+    LeaveOnGrant,
+    /// Variant (`-redemption-whole`, a carve-out for links): as `Part`, and a lowering of h leaving
+    /// out a commit holding a leave of h and a part stating h as its path's last edge drops it whole.
+    Redemption,
 }
 
 /// What a counting vouch entry keeps of the commit `c` it names (notes/a1-spec/permissions.md
@@ -460,6 +488,7 @@ impl Rules {
             purge_addenda: false,
             purge_at_key: false,
             own_cover: false,
+            drops: Drops::Part,
         }
     }
     /// The design: every fix the notes state, a removal judged in the world its list makes
@@ -499,6 +528,7 @@ impl Rules {
             purge_addenda: false,
             purge_at_key: false,
             own_cover: false,
+            drops: Drops::Commit,
         }
     }
     /// The proposal (README.md, Paths, Making again; notes/role-remake-model.md): nothing vouches
@@ -983,6 +1013,8 @@ fn give_invite(role: Role, field: Role) -> Role {
 enum Need {
     Role(Role),
     Invite(Role),
+    /// More than this role or this invite (a leave's need at the edge it lowers, `Drops::LeaveLowers`).
+    Above(Role, Role),
 }
 
 impl Need {
@@ -990,6 +1022,7 @@ impl Need {
         match self {
             Need::Role(r) => role >= r,
             Need::Invite(r) => invite >= r,
+            Need::Above(r, i) => role > r || invite > i,
         }
     }
 }
@@ -1010,6 +1043,13 @@ fn invite_grant(w: &World, i: Id) -> Option<Role> {
 /// before the last and as an invite on the last (`Rules::invite_check`; else as a role there too).
 fn need(w: &World, rules: &Rules, i: Id, e: Edge, as_invite: bool) -> Need {
     let hops = w.hops(i);
+    // a leave applies at the edge it lowers by that edge giving more than it sets
+    if rules.drops == Drops::LeaveLowers && w.leave(i) && w.sets(i) == Some(e) {
+        if let Kind::Edge { role, until, invite, .. } = &w.commits[i].kind {
+            let a = alive((*role, *until), w.commits[i].ts);
+            return Need::Above(a, give_invite(a, *invite));
+        }
+    }
     match (as_invite, invite_grant(w, i)) {
         (true, Some(r)) if rules.invite_check && hops.last() == Some(&e) => Need::Invite(r),
         (true, Some(r)) => Need::Role(r),
@@ -1084,6 +1124,36 @@ fn chain(w: &World, held: &Set, r: Id) -> Set {
 /// `leave_in_question`) it is a self-removal of `e`.
 fn rests_on(w: &World, rules: &Rules, j: Id, e: Edge) -> bool {
     w.hops(j).contains(&e) || (rules.leave_in_question && w.leave(j) && w.sets(j) == Some(e))
+}
+
+/// The parts lowering `r` of edge `e` drops beside `q` (its drops, each unlisted) under
+/// `Rules::drops`, of `cands` (the held edge-class parts it may drop: ordered before it, not
+/// dropped, not void): `Commit` (for seeds; the walk's audit reads it in `gone`), every part on the
+/// same thing of a commit it drops a part of; `Grant`, the leaves
+/// resting on a dropped part (of its commit, lowering the edge that part's path ends with);
+/// `Redemption`, the commits it does not list holding a leave of `e` and a part whose path ends
+/// with `e`, whole.
+fn widen(w: &World, rules: &Rules, v: &View, vouched: &Vouched, r: Id, e: Edge, cands: &[Id], q: &Set) -> Set {
+    let mut out = Set::new();
+    let other = |j: Id| w.cid(j) != w.cid(r) && !q.contains(&j) && !listed(w, v, vouched, r, j);
+    match rules.drops {
+        Drops::Part | Drops::LeaveLowers => {}
+        Drops::Commit => {
+            let cids: BTreeSet<(Id, Thing)> = q.iter().map(|&j| (w.cid(j), w.commits[j].on)).collect();
+            out.extend(cands.iter().copied().filter(|&j| cids.contains(&(w.cid(j), w.commits[j].on)) && other(j)));
+        }
+        Drops::LeaveOnGrant => {
+            for &j in q {
+                let Some(&h) = w.hops(j).last() else { continue };
+                out.extend(cands.iter().copied().filter(|&l| w.cid(l) == w.cid(j) && w.leave(l) && w.sets(l) == Some(h) && other(l)));
+            }
+        }
+        Drops::Redemption => {
+            let redemption = |c: Id| w.part_ids(c).any(|x| w.leave(x) && w.sets(x) == Some(e)) && w.part_ids(c).any(|x| !w.leave(x) && w.hops(x).last() == Some(&e));
+            out.extend(cands.iter().copied().filter(|&j| redemption(w.cid(j)) && other(j)));
+        }
+    }
+    out
 }
 
 fn order(w: &World, held: &Set) -> Vec<Id> {
@@ -1332,10 +1402,17 @@ fn walk(w: &World, rules: &Rules, v: &View, d0: &Set, vouched: &Vouched) -> Walk
                 let exempt = if rules.exempt_chain { chain(w, &v.held, i) } else { Set::new() };
                 // in question: a write resting on the edge whose need there the edge as restored
                 // met and its new value does not, of another commit (no list can name its own)
-                let gone = |j: Id| {
+                let alone = |j: Id| {
                     let n = need(w, rules, j, e, p.invited.contains(&j) || !p.applied.contains(&j));
                     let (a, ai) = at(w.commits[j].ts);
                     w.cid(j) != c.cid && rests_on(w, rules, j, e) && !exempt.contains(&j) && !listed(w, v, vouched, i, j) && n.met(restored, rinv) && !n.met(a, ai)
+                };
+                // `Drops::Commit`: with another part of its commit on its thing, not dropped or void
+                let gone = |j: Id| {
+                    alone(j)
+                        || (rules.drops == Drops::Commit
+                            && w.cid(j) != c.cid
+                            && w.part_ids(w.cid(j)).any(|x| x != j && w.commits[x].on == w.commits[j].on && !dropped.contains(&x) && verdict.get(&x) != Some(&Verdict::Void) && alone(x)))
                 };
                 // `Until::PastEnd`: the held writes after it resting on its edge whose need there its
                 // value met at its own `ts` and does not at theirs (stamped at or past its end)
@@ -1367,7 +1444,10 @@ fn walk(w: &World, rules: &Rules, v: &View, d0: &Set, vouched: &Vouched) -> Walk
                         continue;
                     }
                 }
-                q = before().into_iter().filter(|&j| gone(j)).collect();
+                let cands = before();
+                q = cands.iter().copied().filter(|&j| gone(j)).collect();
+                let more = if rules.drops == Drops::Commit { Set::new() } else { widen(w, rules, v, vouched, i, e, &cands, &q.iter().copied().collect()) };
+                q.extend(more);
                 q.extend(order[k + 1..].iter().copied().filter(|&j| !dropped.contains(&j) && past(j)));
                 verdict.insert(i, Verdict::Applied);
                 judged_here.push(i);
@@ -1429,6 +1509,11 @@ fn seeds(w: &World, rules: &Rules, v: &View, active: &Set, vouched: &Vouched) ->
             if w.edge_class(j) && w.cid(j) != w.cid(r) && rests_on(w, rules, j, h) && !exempt.contains(&j) && !listed(w, v, vouched, r, j) && when {
                 d.entry(j).or_insert(r);
             }
+        }
+        let cands: Vec<Id> = v.held.iter().copied().filter(|&j| w.edge_class(j) && w.key(j) < w.key(r)).collect();
+        let mine: Set = d.iter().filter(|(_, x)| **x == r).map(|(j, _)| *j).collect();
+        for j in widen(w, rules, v, vouched, r, h, &cands, &mine) {
+            d.entry(j).or_insert(r);
         }
     }
     d

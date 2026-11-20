@@ -450,7 +450,8 @@ fn class_worlds() -> Vec<ClassWorld> {
     spread(&mut lp);
     out.push(("concurrent leaves", Some("a leave whose named remaining admin left first applies nothing"), lp));
     // a single-use link redeemed by a forger first, unseen by the sharer, then by P1, whom the
-    // sharer saw; the sharer's removal of L lists P1's redemption alone
+    // sharer saw; the sharer's removal of L lists P1's redemption alone: the forger's grant falls
+    // and its leave with it, P1 is in (notes/a1-spec/README.md Open 23)
     let (mut lp, ps) = people(3);
     let d = thing_of(&mut lp, 0, ps[0]);
     let (link, _, _) = lp.peers[0].engine.create_link(&ps[0], &LinkSpec { target: d, role: Role::Read, until: None, peers: Vec::new(), single_use: true }).unwrap();
@@ -464,7 +465,7 @@ fn class_worlds() -> Vec<ClassWorld> {
     lp.peers[0].clock.advance(2000);
     lp.peers[0].engine.finalize_link(&link.k, &l).unwrap();
     spread(&mut lp);
-    out.push(("single-use link redeemed twice", Some("a forged earlier redemption's leave outlives the sharer's removal of L"), lp));
+    out.push(("single-use link redeemed twice", None, lp));
     // a key actor's edge write on itself, made anyway: both walks apply it nowhere
     let (mut lp, ps) = people(3);
     let team = lp.peers[2].engine.me();
@@ -495,14 +496,11 @@ fn new_walk_differs_only_by_design() {
             for x in &d {
                 println!("  {x}");
             }
-            // an edge write signed by its own target
-            let on_signer = |x: &str| x.split_once("by ").and_then(|(_, r)| r.split_once(" on (")).is_some_and(|(by, r)| r.ends_with(&format!(", {by}): old true, new Some(Unapplied)")));
             let fits = match class {
                 None => d.is_empty(),
                 Some(c) if c.starts_with("a vouch") => d.len() == 2,
                 Some(c) if c.starts_with("a leave") => !d.is_empty() && d.iter().all(|x| x.contains("old true, new Some(Unapplied)") || x.contains("roles on")),
-                Some(c) if c.starts_with("a forged") => !d.is_empty() && d.iter().all(|x| x.contains("new Some(Unapplied)") || x.contains("new Some(Applied)") || x.contains("roles on")),
-                Some(_) => !d.is_empty() && d.iter().all(|x| on_signer(x) || !x.starts_with("edge write")),
+                Some(c) => panic!("no rule for class {c}"),
             };
             let shown = class.is_none() || lp.peers.iter().any(|p| !walks_differ(&p.engine).is_empty());
             if !fits || !shown {

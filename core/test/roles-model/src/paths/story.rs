@@ -2059,7 +2059,9 @@ pub fn family_run(rules: &Rules, stride: usize) -> Stats {
 /// request by author matches every delta whose chain holds that author); the variants `-facts`
 /// (a carried write judged by its own facts, not shown by a cover's copy: not the design),
 /// `-until-at-key` and `-until-past-end` (an end date on admin as a lowering: `Until`, both failing
-/// a required gate). `-exh` runs the small family in place of random worlds.
+/// a required gate); what a drop takes of a commit (`Drops`): the control `-part-drops` (each
+/// part by its own need) and the variants `-leave-lowers`, `-leave-on-grant`, `-redemption-whole`.
+/// `-exh` runs the small family in place of random worlds.
 pub fn mode_rules(mode: &str) -> Option<Rules> {
     let f = Rules::fixed();
     let rest = mode.strip_prefix("paths").unwrap_or(mode);
@@ -2094,6 +2096,10 @@ pub fn mode_rules(mode: &str) -> Option<Rules> {
         "-until-past-end" => Rules { until: Until::PastEnd, ..f },
         "-vouch-whole" => Rules { entry: Entry::Whole, ..f },
         "-remake" => Rules::remake(),
+        "-part-drops" => Rules { drops: Drops::Part, ..f },
+        "-leave-lowers" => Rules { drops: Drops::LeaveLowers, ..f },
+        "-leave-on-grant" => Rules { drops: Drops::LeaveOnGrant, ..f },
+        "-redemption-whole" => Rules { drops: Drops::Redemption, ..f },
         _ => return None,
     })
 }

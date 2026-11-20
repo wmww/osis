@@ -1061,6 +1061,9 @@ impl Walk {
                 now.insert(j);
             }
         }
+        // a commit's edge-class parts on a thing fall together (draft §5.1 step 3)
+        let more: Vec<Slot> = now.iter().flat_map(|&j| self.siblings(j)).filter(|&x| !self.listed(r, x)).collect();
+        now.extend(more);
         let was = self.seeds.insert(r, now.clone()).unwrap_or_default();
         for &j in was.difference(&now) {
             self.seed(j, -1);
@@ -1319,9 +1322,22 @@ impl Walk {
         it.hops.contains(&e) || (it.leave && it.edge.as_ref().is_some_and(|ei| ei.e == e))
     }
 
-    /// Whether lowering `l` puts `j` in question and drops it: of another commit, resting on
-    /// its edge, not named by its list, its need there met as restored and not by the new value.
+    /// Whether lowering `l` drops `j` (draft §5.1 step 3): it puts `j` in question and its list
+    /// does not name it, or it so drops another part of `j`'s commit on `j`'s thing, not dropped,
+    /// seeded or void (a commit's edge-class parts on a thing fall together).
     fn gone(&self, l: &Judging, j: Slot) -> bool {
+        self.gone_alone(l, j) || (self.items[j].key.commit != l.commit && self.siblings(j).any(|x| self.dropped[x].is_none() && self.seeded[x] == 0 && self.verdict[x] != Some(Verdict::Void) && self.gone_alone(l, x)))
+    }
+
+    /// The other parts of `j`'s commit on `j`'s thing.
+    fn siblings(&self, j: Slot) -> impl Iterator<Item = Slot> + '_ {
+        let it = &self.items[j];
+        self.by_commit.get(&it.key.commit).into_iter().flatten().copied().filter(move |&x| x != j && self.items[x].on == it.on)
+    }
+
+    /// Whether lowering `l` puts `j` in question and drops it, alone: of another commit, resting
+    /// on its edge, not named by its list, its need there met as restored and not by the new value.
+    fn gone_alone(&self, l: &Judging, j: Slot) -> bool {
         let it = &self.items[j];
         if it.key.commit == l.commit || !self.rests_on(j, l.e) || self.listed(l.slot, j) {
             return false;
@@ -1450,6 +1466,15 @@ impl Walk {
                 self.counts.audited += 1;
                 if self.items[j].key < key && self.gone(&l, j) {
                     qi.push(j);
+                }
+            }
+            // the parts of their commits on their things not resting on the edge fall with them
+            let more: BTreeSet<Slot> = q.iter().chain(&qi).flat_map(|&j| self.siblings(j)).filter(|x| !q.contains(x) && !qi.contains(x)).collect();
+            for x in more {
+                if self.inert[x] {
+                    qi.push(x);
+                } else if self.dropped[x].is_none() && self.seeded[x] == 0 && self.verdict[x] != Some(Verdict::Void) {
+                    q.push(x);
                 }
             }
             self.set_verdict(s, Some(Verdict::Applied));
