@@ -155,6 +155,19 @@ fn none_body_is_owed_a_cover_at_the_kill_and_drops_covered_spec_commits_5() {
     assert!(o.under_purge.is_empty() && o.owed.is_empty());
 }
 
+// spec/commits.md §5 (Covered): a snapshot marked as its writer's own cover (spec/permissions.md
+// §5.1) drops a held body only at that writer. A replaced purge-on-replace body it covers stays
+// at a reader (no other cover held) and goes at the writer (order seed 148495092593)
+#[test]
+fn own_cover_drops_a_held_body_only_at_its_writer_spec_commits_5() {
+    let own = Commit { own_cover: true, ..snap(12, MINT_ADMIN, 3, REG, Retention::WRITER, vec![set(2, 11, 2)]) };
+    let cs = vec![setting(5, 0, REG, Opt::Purge), reg(10, MINT_ADMIN, 1, REG, Retention::PLAIN, 1), reg(11, MINT_ADMIN, 2, REG, Retention::PLAIN, 2), own];
+    let mut reader = held(3, cs.clone());
+    reader.me = 3;
+    assert_eq!(fate(&reader, 10), Fate::Keep(KeepWhy::Plain));
+    assert_eq!(fate(&held(3, cs), 10), Fate::MustDrop(DropWhy::Covered { by: 12 }));
+}
+
 // spec/commits.md §5 (Purge): a commit carrying a purge request keeps its blobs until wall(ts) +
 // ROLE_KEEP, whatever the setting says (seed 9450000)
 #[test]

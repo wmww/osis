@@ -1001,11 +1001,12 @@ fn fate(
     // Covers: a valid snapshot whose part on the aspect covers the body by the join; an expiring
     // delta only once no value of it lives (a snapshot carries its values value-less,
     // spec/crdt.md §8); a snapshot body only by one stamped later, or at the same `ts` by one with
-    // a lower commit ID (covered-equal, spec/sync-compaction.md §1). Each with whether its commit holds the
-    // purge right over the body.
+    // a lower commit ID (covered-equal, spec/sync-compaction.md §1); another node's own cover
+    // never (only its writer drops a held body under it, spec/commits.md §5 Covered). Each with
+    // whether its commit holds the purge right over the body.
     let covering: Vec<(CommitId, bool)> = live
         .iter()
-        .filter(|s| s.kind == CommitKind::Snapshot && s.id != c.id && o.applied.contains(&s.id) && !(c.kind == CommitKind::Snapshot && (c.ts, s.id) > (s.ts, c.id)))
+        .filter(|s| s.kind == CommitKind::Snapshot && s.id != c.id && o.applied.contains(&s.id) && !(c.kind == CommitKind::Snapshot && (c.ts, s.id) > (s.ts, c.id)) && (!s.own_cover || s.signer == me))
         .filter(|s| {
             s.parts.iter().enumerate().any(|(j, q)| {
                 q.thing == t && q.aspect == a && o.valid.get(&(s.id, j)) == Some(&true) && !never_received(s, q) && body(q).is_some_and(|sw| covers(sw, &ws))
@@ -1047,7 +1048,7 @@ fn fate(
 pub fn cover(h: &Held, o: &Outcome, thing: ThingId, aspect: Aspect, id: CommitId, ts: u64) -> Commit {
     let f = snapshot_state(h, o, thing, aspect);
     let part = Part { thing, aspect, retention: Retention::WRITER, body: Body::Held(Delta::Writes(f)), stripped: Default::default(), replaces: None };
-    Commit { id, signer: h.me, acting: h.me, ts, expires: None, kind: CommitKind::Snapshot, parts: vec![part], purge: vec![], frontier: None, undoes: None , boxes: vec![] }
+    Commit { id, signer: h.me, acting: h.me, ts, expires: None, kind: CommitKind::Snapshot, parts: vec![part], purge: vec![], frontier: None, undoes: None, own_cover: false, boxes: vec![] }
 }
 
 /// What a snapshot of an aspect carries: the state, writes of expiring deltas value-less

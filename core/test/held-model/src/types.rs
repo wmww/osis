@@ -306,6 +306,9 @@ pub struct Commit {
     pub frontier: Option<Vec<CommitId>>,
     /// `undoes` (spec/commits.md §7).
     pub undoes: Option<CommitId>,
+    /// Snapshots only: marked as its signer's own cover (spec/wire.md §4 field 18 bit 0,
+    /// spec/permissions.md §5.1 Own cover): only its signer drops a held body under it.
+    pub own_cover: bool,
     /// `secrets.0` boxes it carries for the node (`fetch`): each opens with the node's own key
     /// and may be forged (it then opens nothing).
     pub boxes: Vec<KeyBox>,

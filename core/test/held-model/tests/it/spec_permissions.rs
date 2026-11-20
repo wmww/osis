@@ -19,6 +19,27 @@ fn demotion_frontier_keeps_listed_writes_spec_permissions_5_2() {
     assert_eq!(o.valid[&(11, 0)], false);
 }
 
+// spec/permissions.md §5.2 (Own cover): 1, admin, snapshots REG and removes 2 naming the
+// snapshot; 0 then removes 1 listing that removal but not the snapshot. The snapshot stands on
+// the removal only when marked as an own cover; unmarked it falls with 1's other writes
+#[test]
+fn only_a_marked_own_cover_stands_on_its_removal_spec_permissions_5_2() {
+    let cs = |own_cover: bool| {
+        vec![
+            edge(5, MINT_ADMIN, 0, 1, Some(Role::Admin), None),
+            edge(6, MINT_ADMIN, 0, 2, Some(Role::Write), None),
+            reg(10, 2, 1, REG, Retention::PLAIN, 1),
+            Commit { own_cover, ..snap(11, 1, 2, REG, Retention::WRITER, vec![set(1, 10, 1)]) },
+            edge(12, 1, 3, 2, None, Some(vec![10, 11])),
+            edge(20, MINT_ADMIN, 4, 1, None, Some(vec![5, 6, 10, 12])),
+        ]
+    };
+    let o = evaluate(&held(5, cs(true)));
+    assert_eq!(o.valid[&(12, 0)], true);
+    assert_eq!(o.valid[&(11, 0)], true);
+    assert_eq!(evaluate(&held(5, cs(false))).valid[&(11, 0)], false);
+}
+
 // spec/permissions.md §5.2: a demotion from admin to write takes the admin-only writes before it
 // and leaves the dependent ones: each need judged by its own demotions
 #[test]

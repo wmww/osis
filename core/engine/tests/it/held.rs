@@ -571,7 +571,7 @@ fn convert(e: &mut Engine, hist: &History) -> Input {
         // a commit none of whose sections opened here holds no part the acting thing judges
         let (signer, acting) = (cv.id(&h.signer), cv.id(&h.aspects.iter().find_map(|a| e.commit_acting(id, &a.tid)).unwrap_or(h.signer)));
         let undoes = h.undoes.as_ref().map(|c| cv.commit(c));
-        commits.push(hm::Commit { id: sync_id, signer, acting, ts: h.ts.to_u64(), expires: h.expires, kind, parts, purge, frontier, undoes, boxes: vec![] });
+        commits.push(hm::Commit { id: sync_id, signer, acting, ts: h.ts.to_u64(), expires: h.expires, kind, parts, purge, frontier, undoes, own_cover: h.own_cover, boxes: vec![] });
     }
     let me = cv.id(&e.me());
     // every record the node holds of an id named, mint admins naming more

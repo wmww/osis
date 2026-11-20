@@ -455,12 +455,12 @@ impl Timeline {
             return acts && self.valid_addenda.contains(&(c.id, thing));
         }
         let need = need(aspect);
-        let own = c.kind == CommitKind::Snapshot && self.own_cover(x, thing, need, key, c.id);
+        let own = c.kind == CommitKind::Snapshot && c.own_cover && self.own_cover(x, thing, need, key, c.id);
         acts && (self.valid_as(x, thing, need, key, c.id) || own || plain && need == Role::Write && aspect != Aspect::ROLES && self.vouched(thing, x, key, c.id))
     }
 
-    /// spec/permissions.md §5.2 (Compaction snapshot, Own cover): snapshot `c` by X at `key`,
-    /// made while X held `need` on the thing, is named by the frontier of an applied explicit
+    /// spec/permissions.md §5.2 (Compaction snapshot, Own cover): snapshot `c` (marked an own
+    /// cover) by X at `key`, made while X held `need` on the thing, is named by the frontier of an applied explicit
     /// write by X ordered at or after it that demotes some node on the thing (below write or
     /// admin): it stands while that write applies.
     fn own_cover(&self, x: NodeId, thing: ThingId, need: Role, key: Key, c: CommitId) -> bool {

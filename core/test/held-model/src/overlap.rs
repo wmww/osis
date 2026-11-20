@@ -88,7 +88,7 @@ pub struct Event {
 }
 
 fn commit(id: CommitId, author: NodeId, h: u64, kind: CommitKind, parts: Vec<Part>, frontier: Option<Vec<CommitId>>) -> Commit {
-    Commit { id, signer: author, acting: author, ts: hour(h), expires: None, kind, parts, purge: vec![], frontier, undoes: None, boxes: vec![] }
+    Commit { id, signer: author, acting: author, ts: hour(h), expires: None, kind, parts, purge: vec![], frontier, undoes: None, own_cover: false, boxes: vec![] }
 }
 
 fn part(aspect: Aspect, body: Body) -> Part {

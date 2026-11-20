@@ -113,7 +113,7 @@ pub const CREATION_ID: CommitId = 2_000_000;
 /// Thing `t`'s creation commit (one `created.0` part), by `author` at `ts`.
 pub fn creation(t: ThingId, link: RecordLink, author: NodeId, ts: u64, retention: Retention, expires: Option<u64>) -> Commit {
     let part = Part { thing: t, aspect: Aspect::CREATED, retention, body: Body::Held(Delta::Created(link)), stripped: Default::default(), replaces: None };
-    Commit { id: CREATION_ID + t, signer: author, acting: author, ts, expires, kind: CommitKind::Content, parts: vec![part], purge: vec![], frontier: None, undoes: None , boxes: vec![] }
+    Commit { id: CREATION_ID + t, signer: author, acting: author, ts, expires, kind: CommitKind::Content, parts: vec![part], purge: vec![], frontier: None, undoes: None, own_cover: false, boxes: vec![] }
 }
 
 /// Every `CREATIONS` thing's creation, an hour before `START`, durable and purgeable by admins.
@@ -245,7 +245,7 @@ pub fn history(seed: u64, n: usize) -> Held {
             let d = Delta::Retention(setting(&mut r, START));
             let part = plain_part(t, Aspect::RETENTION, Retention::ADMIN, d);
             let id = new_id(&mut r);
-            commits.push(Commit { id, signer: chief, acting: chief, ts: (START - HOUR / 2) * MS + k as u64, expires: None, kind: CommitKind::Content, parts: vec![part], purge: vec![], frontier: None, undoes: None, boxes: vec![] });
+            commits.push(Commit { id, signer: chief, acting: chief, ts: (START - HOUR / 2) * MS + k as u64, expires: None, kind: CommitKind::Content, parts: vec![part], purge: vec![], frontier: None, undoes: None, own_cover: false, boxes: vec![] });
         }
     }
     let base = |id, author, ts| Commit {
@@ -259,6 +259,7 @@ pub fn history(seed: u64, n: usize) -> Held {
         purge: vec![],
         frontier: None,
         undoes: None,
+        own_cover: false,
         boxes: vec![],
     };
     // half the histories set a link up: K's edge on thing 10, L's (invite) edge on K

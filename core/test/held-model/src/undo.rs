@@ -78,5 +78,5 @@ pub fn undo(h: &Held, target: CommitId, id: CommitId, ts: u64, author: NodeId) -
         return None;
     }
     let expires = expiries.into_iter().next().flatten();
-    Some(Commit { id, signer: author, acting: author, ts, expires, kind: CommitKind::Content, parts, purge: vec![], frontier: None, undoes: Some(target) , boxes: vec![] })
+    Some(Commit { id, signer: author, acting: author, ts, expires, kind: CommitKind::Content, parts, purge: vec![], frontier: None, undoes: Some(target), own_cover: false, boxes: vec![] })
 }
