@@ -1,103 +1,124 @@
-# One path per commit
-> Summary: Proposal (not built, not in spec; the coordinator decides): a commit states ONE path, to the place it acts from, and writes that thing and things one hop past it; the hashed per-thing form goes, and a write whose things need two paths is refused whole. Who reads a path without opening a section; every multi-thing commit the engine and apps write, under the built rule and this one; whom a write is by (`act_as`, a1-spec Open 16); what steps 2 to 4 build and delete; bytes; the model's reading (roles-model `paths`: `World::stated`, variant `author_thing`); what needs Tess.
+# Path form
+> Summary: Proposal (not built, not in spec; the coordinator puts the open points to Tess): how a commit states the path each thing it writes is judged along. One path in the clear where one serves every thing (almost every commit); else the split form: one purge author in the clear and each thing's path sealed in the header under that thing's roles secret. Who reads a path, per consumer (no node that cannot read a thing ever needs its path); purge per thing; one purge author per commit (`act_as`, a1-spec Open 16); the engine's search; what replaces the hashed form, in steps; bytes; the model check (roles-model `paths`: `World::split`); what needs Tess.
 
-**Principle: a commit acts from one place. Its path leads there; everything it writes is that thing or one hop past it, and it is by one of the things the path names.** A path is a fact of the header, read by every node that holds the header, so it is stated once, in the clear, for the whole commit.
+**Principle: a thing's path is header data, readable exactly by the nodes that judge that thing's parts.** Every node that holds a header and judges a thing reads the thing's path from the header, with or without the thing's section. Where one path serves every thing written, it is stated once in the clear (every header reader judges, or may learn, the same chain). Where things need different paths, each thing's path is sealed to the nodes that judge that thing, and nothing else of it is in the clear. A write is never refused or split for its paths: a commit may span things its signer reaches through different actors.
 
-Status: *proposed*. Built today: notes/a1-spec/README.md (step 2), spec/wire.md §4 (one path in the clear, else a salted hash per thing).
+Status: *proposed*. Built today: notes/a1-spec/README.md (step 2), spec/wire.md §4 (one path in the clear, else the hashed form: a salted hash per thing in the header, each thing's path in its sections).
 
-## Who reads a path without opening a section
-Every reader that holds the header, for every thing of the commit it holds. Nobody else: a store or a node keeping the unit unread opens no blob (it reads the blob prefix: delete commitments, expiry), so it reads no header and no path.
+## Who reads a path, and who never needs one
+A thing T's path is read by every node that judges T's parts, for every commit writing T it holds, section or not: what a part waits on (`apply/waits.rs`), the validity of every aspect row of T (`apply/atomic.rs` `part_valid`; a part not held, joining late, undone, replaced; held-model's `held_set_decides`), a purge request on T, the chain certificates of T's parts, addenda and vouches on T, a cover's facts (these read only the purge author). The nodes that judge T's parts are T's holders: a node holding T whole reads it (spec/commits.md §4 Outside the node closure: content on a thing the node does not read applies nothing; other parts wait until it holds it whole), and every holder of T opens T's role parts with T's **roles secret** (spec/crypto.md §4 Roles secrets: a holder of a floor included). So T's roles secret is the key that reaches exactly T's judges; the path, a fact of T's roster, is what roles secrets already open.
 
-A reader reads a thing's path where it has no section of that thing (late, stripped, purged, forgotten, covered, never sent to it):
-- what a pending commit waits on (`apply/waits.rs` `pend_needs`: the things its path lists), before any part is opened;
-- the validity of every aspect row of the header, body or not (`apply/atomic.rs`: `part_valid` over `h.aspects`; a part joining late, an undo, a replaced creation and held-model's `held_set_decides` all read a part that is not there);
-- purge: the author of a target delta and the path of the request, which names things in the header's `purge` field and need write no part on them (`retention/purge.rs` `acting`);
-- level-2 delete keys of a delta (`retention/names.rs`, `retention/freed.rs`, `sync/mod.rs` level-2 row);
-- a cover's facts: the purge author of each commit it absorbs, whose bodies then go (`retention/snapshot.rs` `header_fact`);
-- certificates today and evidence at A2 (`sync_ids/certs.rs`; notes/write-path-design.md §2: the closure over the paths of the commits a unit holds, computed by its readers per held commit, body kept or not);
-- the indexes by acting thing, listing rows, stamps, fired signals.
+Two kinds of parts are judged by nodes that do not hold their thing, so their commits state one path in the clear:
+- role commits (kind 1, 3): their parts travel as chain certificates and role entries to nodes reading only things the edge leads to (spec/permissions.md §4, spec/sync-judgement.md §2); a role commit writes one target (spec/commits.md §2), so one path serves it;
+- a request destroying a thing (`[tid, created.0]`): its header goes as a certificate to nodes needing the destroyed thing (spec/commits.md §5 Destruction).
 
-So a path is header data like an `aspects` row. A path kept in a section is missing exactly where these read it; every gap of the hashed form (issues/hashed-paths-forced-suite-gaps.md) is this one fact. The header has no per-thing confidentiality, so a per-thing path has no place to be: in the clear it shows one thing's readers another thing's holder chain; sealed per thing it is a second sealed field with its own "unknown here" state.
+Stores and nodes keeping a sync ID unread open no blob, so read no header and no path: they act on delete commitments alone.
 
-## The rule
-- **Path**: a commit states one path [A1, …, Ak], k ≥ 0, and one purge-author index. Its **end** is Ak (the signer S where k = 0).
-- **Members** for a thing T it writes: [S, A1, …, Ak, T]; where T is the end they stop there: [S, A1, …, Ak]. Hops, descent, edges, the last edge, a self-removal ending at its holder, "a thing named twice is invalid": all as notes/a1-spec/permissions.md §1 reads members. "For a commit by a key actor on itself, [S]" is the case k = 0 of the same sentence.
-- So one commit writes: its end; the things the end holds a direct grant on; the things descending from the end by record edges. A thing listed before the end, or reached from no hop of the end, has no valid members (named twice, or an edge nobody set).
-- **Nobody learns a chain that is not its own thing's**: for every thing written the stated path is that thing's own holder chain (with the thing itself last, for the end). This is why things may hang only from the end: a thing hanging from an earlier member would show its readers the holders after it, which give no role on it (spec/requirements.md, Confidentiality between readers).
-- **Form**: `Path := [index, tid*]`, alone. Two statements with the same members (D written alone as `[]` or as `[D]`) are judged alike; the engine states the shorter. No decoder rule tells them apart: it would buy nothing.
-- **A write whose things need two paths is refused whole** (`Invalid`, naming two of the things), as a write with two expiries or mixing durable and ephemeral is (osis `Write`: "What cannot share a commit fails `commit` ... writing it as several commits is up to the app"). spec/requirements.md already says a write is one commit or is refused, and that a write too large is "refused whole, never split".
-- The engine searches ONE path serving every thing of the commit (each thing at the role its aspects need), not a path per thing compared afterwards: two per-thing searches can pick different routes where one route serves both (D by an admin route for an admin-only aspect, its child by a shorter writer route).
+## One path
+- **Path**: `[i, A1, …, Ak]`, k ≥ 0: the purge-author index then the listed things. Its **end** is Ak (the signer S where k = 0).
+- **Members** for a thing T written along it: [S, A1, …, Ak, T]; where T is the end, [S, A1, …, Ak]. Hops, descent, the last edge, a self-removal ending at its holder, "a thing named twice is invalid": as notes/a1-spec/permissions.md §1.
+- So one path writes its end, the things the end holds a direct grant on, and the things descending from the end by record edges (one hop past the end). For every thing written the path is that thing's own holder chain, so no reader learns a chain that is not its own thing's (spec/requirements.md, Confidentiality between readers).
+- A commit states one path wherever one gives every thing written the role its parts need: a writer rule (a decoder cannot check it). Of about 6,350 commits writing two things or more in the default tests, one needs two paths (`validity::a_write_states_the_holders_it_goes_through_spec_wire_4`, built by hand); every creation under a granted parent is one path (`[D]`: D the end, the new thing one record edge past it).
 
-### What it makes one path
-The built rule lists the granted thing D on the path of what is under it and not on D's own, so every commit writing D and something under D "differs by necessity". Here that commit states `[D]`: D is the end, the child hangs from it by its record edge. Deeper things already hung by descent (a mint ancestor two or more record edges up is never listed); the end is the same reading at zero steps.
+## Several paths: the split form
+Wire text (draft for spec/wire.md §4; notes/a1-spec/wire.md holds it in place):
+```
+Paths     := Path | Split
+Split     := [Opt(tid), [bytes+]]   ; the purge author (absent: the signer), then one sealed path per thing written
+PathKey   := [index, bytes]         ; in a copy: a thing's index among the things written, its path key
+```
+- `Split` is stated where no one path serves every thing; one entry per distinct tid `aspects` names, in that order, n ≥ 2 (bad input otherwise, checked once `aspects` resolves).
+- Entry of thing T: XChaCha20-Poly1305 of the canonical `[tid*]` (T's listed things A1..Ak, read with T's members as above; no index), nonce 24 zero bytes, empty AD, under T's **path key** `kdf("path", roles secret, blind ‖ T's tid)`: the roles secret (spec/crypto.md §4, `kdf("roles", s)`) of T's read secret s (own or derived, spec/crypto.md §3) at the epoch T's section is sealed under (the writer's newest current read epoch of T), `blind` the header's field 10. One plaintext per key: the blind is fresh per commit and the tid distinct per entry. 17 + 16k bytes.
+- A reader of T tries the roles secrets it holds of T, own and derived up T's record chain, newest first, as for a section. The decrypted list obeys `Path`'s rules (k ≤ MAX_PATH_THINGS, no tid twice, none equal to `signer`), else T's parts hold nothing (as bytes that do not match the header's delta hash: invalid at every reader of T alike).
+- **Purge author**: one per commit, in either form: a Path's index, a Split's `Opt(tid)` (not `signer`). It is a member of every thing's members: a reader of T judges that for T; where it is not, T's parts are invalid (Open 16 below). Being on every thing's path, it shows each thing's readers nothing beyond their own thing's chain; the header's one level-2 key (spec/crypto.md §7: the purge author's) shows them no more.
+- Bad input: `Split` on a role commit (kind 1, 3), beside a purge item on `created.0`, with fewer than two things, an entry count other than the things written, an entry shorter than 17 bytes or longer than a `Path` of MAX_PATH_THINGS sealed.
+- **Copies**: a copy's section (spec/sync-judgement.md §1, under its blob key) is `[[Part*], [PathKey*]]`: for each thing whose parts it holds, where the header is `Split`, that thing's path key, so whoever opens a copy of T's parts opens T's path (a node reading T only by copies, as for a destroyed mint admin's dependents, judges T's parts). A thing's own section is `[Part*]`.
+- Signed: entries and author sit in the header, so the commit ID covers them; an entry opens only under its own thing's key for this commit (key from T's secret, T's tid and this header's blind), so it cannot be moved to another thing or commit, and no path can be swapped under a signature.
 
-| commit | things | built rule | this rule |
-|---|---|---|---|
-| edit of one thing | 1 | one | one |
-| dependent creation under the signer's own things (`created.0`, parts, the holder's `holds.0` or other aspect with the strong) | new, holder | equal `[]` | equal |
-| dependent creation under a granted D (a message in a shared room) | new `[D]`, D `[]` | differ | one: `[D]` |
-| the same, D reached through holders X.. | new `[X, D]`, D `[X]` | differ | one: `[X, D]` |
-| creation under a dependent C below granted D | new `[D]`, C `[D]` | equal | equal |
-| edit of D and of a thing under D; of siblings under D | | differ; equal | one; one |
-| independent thing with the account as mint admin, held from a granted D | new `[]` (descent), D `[]` (grant) | equal | equal |
-| creation with its mint admin under one end and its strong in a thing under another (CLI `create --admin` with another `holder`; kit `grow` tagging with an own tag a thing made in a shared group) | | differ | two paths: refused |
-| app `Write` over things of two shared things, or own things and things under a granted D | | differ | two paths: refused |
-| hold, unhold, tag: one `holds.0` | 1 | one | one |
-| a grant, demotion, removal, finalize, invite grant: `roles.0`, `secrets.0`, `keys.0` of one target; a redemption's grant and self-removal | 1 | one | one |
-| account creation (P, its root, profile and inbox records, signed by P); pairing, device change, rotation (P's `keys.0`, the root's `account.0`, `secrets.0`) | signer and what it minted | equal `[]` | equal |
-| link creation: a commit per thing, but the seed thing with the root's `holds.0` | seed, root | equal `[]` | equal |
-| vouches, addenda, listings owed over several things | one commit per thing | one | one |
-| snapshot, own cover | 1 | one | one |
-| undo | the undone commit's things | as that commit | as that commit (by another signer reaching them two ways: refused) |
+What a reader of A learns of another thing B of a split commit: that B is written (its tid, as in any commit), that the commit is split (no one path served both), and B's entry size, so the number of things B's path lists (Open for Tess, below). Nothing names a holder on B's chain.
 
-A thing never moves (notes/moves.md), so no commit re-parents.
+### Per consumer: does a node that cannot read B ever need B's path
+"Cannot read B": holds the header but no roles secret of B at the epoch B's entry is sealed under.
 
-Counted with a probe in `stated_path` over the default tests: osis-engine, 4,910 commits writing two things or more, 13 differing under the built rule, 12 of them one path here (creations under a granted parent), 1 with two paths (`validity::a_write_states_the_holders_it_goes_through_spec_wire_4`, a batch built by hand to differ); osis, osis-chat and osis-cli, 1,444, 1 differing, none here. No engine flow writes two paths: every flow that spans ends already writes a commit per thing in one transaction (`flows/links.rs`, `flows/vouches.rs`, `flows/signing.rs`).
+| consumer | who needs B's path | a non-reader of B |
+|---|---|---|
+| pending, waits (`pend_needs`) | per part: B's part waits on the records its own path lists and on its edges (spec/commits.md §4 Unjudgeable reads a held part's own path); the commit waits only while every held part does | never: B's content applies nothing there and other parts on B wait as outside the node closure, reading no path. A holder of B lacking that epoch (its box not yet in) waits on B's part alone, examined again when the held role inputs move |
+| validity of B's rows, held or not | B's holders | never: it judges no part of B |
+| purge request on B | judged along B's own path (the commit has a delta on every thing a request names, spec/commits.md §5), applied by the nodes holding B's deltas: B's readers | never (it holds no content of B; stores delete by keys). A destroying request, judged by non-holders, states one clear path |
+| could hold the right (spec/commits.md §4 draft) | per thing, along that thing's path, at nodes holding it whole | never |
+| level-2 delete keys | one per commit: the purge author's, in the clear | never needs a path: keys follow the clear purge author (`retention/names.rs`, `freed.rs`, the level-2 row of `sync/mod.rs`) |
+| cover facts (`snapshot::header_fact`) | the purge author and class, clear | never needs a path |
+| chain certificates, A2 evidence | S's body carries the chain certificates of its parts' things, each along its own path (spec/permissions.md §4 draft): the evidence of S is the closure over the paths of the parts of its bodies, computed by S's readers, who open each such thing's path (its secrets derive from S's actor or come boxed to it, spec/sync-judgement.md §1; copies carry path keys) | never: B's chain goes only under sync IDs whose bodies hold B's parts, so A's readers never receive B's certificates |
+| frontier of a lowering of h | the remover lists every received commit resting on h | lists every received commit with an entry it cannot open: a list naming a commit none of whose parts rests on h changes nothing (spec/permissions.md §5.1: lists are read only for parts resting on h), and one whose part on B does is one it received |
+| addenda, vouches on N | their writer, a reader of N | never |
+| listing rows, `HeldCommit.acting`, stamps (`Stamp.actor`), fired signals, `replaces` honoured | the purge author, clear, one per commit | never needs a path |
+| undo | the undone commit's parts per thing; an undo spanning places is itself split | a part it cannot judge is not held: the commit cannot be undone there (spec/commits.md §7) |
 
-**What stays two paths**: one app write spanning two places the signer reaches differently: two shared things; a shared thing's children and the signer's own things; a thing made under one and held or tagged from another. After A4 (the account a listed thing) the split is the same one level down (`[A]` own, `[A, D]` under D).
+So the "unknown" state is a header holder without B's roles secret at that epoch: either not a holder of B (it judges nothing of B anyway) or a holder whose box has not arrived (B's part alone waits, as for any role input). Two nodes holding the same data, secrets included, judge alike.
 
-### What users lose, and the question for Tess
-Atomicity across two places: such a write is two writes, and another node may apply one before the other. Nothing in the engine needs them together: a creation's hold is checked at the transaction's end (`wrote_on`), not per commit, so a thing made in one commit and held by the next in the same transaction is sound.
-
-The cost is an asymmetry an app meets late: a write over a room's messages and the writer's own things is one commit in a room the writer made (everything descends from the signer) and refused in a room it joined. spec/requirements.md does not promise such a write today in so many words ("A commit may touch thousands of things, of any reader sets"; "A write is one commit or is refused"), but the first sentence reads as if any set of things will do. **For Tess**: add the property "the things of one write are all reached the same way: one thing its writer reaches, what that thing holds directly and what was made under it; a write spanning two is refused whole, never split", and say in the API docs where it bites. The alternative that keeps any set of things in one commit is the hashed form, at the cost below.
+A commit is half valid where a removal cuts one thing's path and not another's: each part is judged on its own and an invalid one is un-merged alone (spec/commits.md §4: "Each delta is judged on its own ... the commit's other deltas stand"; notes/a1-spec/commits.md §2: a receiver judges a commit part by part), as for any multi-thing commit today.
 
 ## Whom a write is by (`act_as`, a1-spec Open 16)
-**A write is by one of the things its authority passes through, the thing written included; nobody names a thing its authority does not pass through.**
-- The purge author is a member: the index names S or a listed thing, and the thing written is named by listing it last (`[.., T]`, index k): no index value of its own. `act_as(X)` asks the engine for a path through X; the engine finds it (to X, X, on to the thing), as built.
-- **X holding no role on the thing**: a write error (`Permission`, needing write through X). Main accepts it on the signer's write on X alone, which the thing's readers can check only by X's roster, a roster giving no role on the thing (spec/requirements.md, Confidentiality between readers: "nothing of rosters that give no role on it"), and which evidence along stated paths (A2) does not carry: an unchecked label. What it gave: an identity label on a thing that identity cannot reach. Granting X a role gives the same with a checked path. No caller in chat, app, kit or CLI uses `act_as`.
-- **X the thing written** (T on T): allowed, the path listing T last. It is "by the thing itself": any valid request by author T on T holds the right (T is a member of every path to T), and level 2 is T's write secret, which every writer of T holds. A commit acting as a room D that makes a thing under D writes D's own part by D too, so refusing T on T would refuse that commit.
-- A request by author holds the right over a delta iff the author is among the request's members for that thing and the request is valid (notes/write-path-design.md §1, What a purger must hold, with "members" for "path").
+- One purge author per commit (above), so at most one level-2 key in `keys` (the Interim check in `validate.rs` is the rule) and one actor per commit for every consumer reading "the actor".
+- The purge author is a member of every thing's path: S, a listed thing, or the thing written (T is always a member of its own members; one path names it by listing it last, index k). `act_as(X)` asks the engine for paths through X for every thing.
+- **X not on some thing's path** (X holds no role leading to it): a write error (`Permission`), proposed. Main accepts it where the signer may write X (the Acting check), which the thing's readers check only through X's roster, one giving no role on the thing (spec/requirements.md, Confidentiality between readers) and absent from evidence along stated paths (A2). Removed capability: labelling a write as by an identity whose authority does not reach what it writes, including acting as X in a write that also writes things X does not reach. Granting X a role gives the label with a checked path. No caller in chat, app, kit or CLI uses `act_as`. **For Tess** (below).
+- **X the thing written** (T on T): allowed. A commit acting as room D that writes D and a thing under D is one path `[D]`, index 1.
+- A request by author holds the right over a delta iff the author is among the request's members for that thing and the request is valid (notes/write-path-design.md §1, with "members" for "path").
 
-## Rejected
-- **Keep the hashed form and close its gaps**: the path sits where header readers cannot reach it, so each consumer above needs a per-thing "unknown here" case for good: two header forms and a MUST no decoder can check; `Salted` in every section and copies split per thing; section membership differing by form; paths learned late and kept past their parts; validity of a part not held differing by form; purge requests barred from the form; a level-2 key per purge author; listing rows, held commits, level-2 rows and signals reading one actor; both forms in vectors, fuzz corpus and hooks. All of it exercised only by rare commits. About 107 B more than one path per two-thing commit.
-- **Every thing's path in the clear**: the header names tids unblinded (the thing blind of spec/crypto.md §7 blinds delete commitments, not header tids), so a reader of A would read the holders through which the signer reaches B: rosters that give no role on A. It would weaken Confidentiality between readers, and keeps per-thing acting in every consumer.
-- **A thing's path sealed in the header under its read secret**: closes the section gaps, keeps the unknown state (a header reader without that thing's secret at that epoch), adds a sealed field and a key use per thing.
-- **Paths in sections only**: every header-level reader above has none.
-- **Things hanging from any listed member** (own things and a room's in one commit under `[D]`): shows the own things' readers that their writer holds a role on D.
-- **Always listing the thing entered by grant** (D written alone as `[D]`): 16 B on every write of a granted thing, and an own independent thing held from a granted D, one path today, would split.
-- **The engine splitting a write per path**: atomicity lost silently, `commit` returning several commits, an undo reverting half. Refusing is what `Write` does for every other clash.
+## The engine's search
+- First ONE path serving every thing (each at the role its aspects need), through X where acting for X: one search over the things together, not per-thing searches compared afterwards (per-thing searches can pick different routes where one serves both).
+- None: the split form, each thing its own path, the shortest by edges from the signer (through X: to X, X, then X's path to the thing), ties by the backward breadth-first search's first meeting (`osis_perm::graph::View::ways_to`, memoized per (thing, role)). Both are functions of the held edges.
+- No grouping of things into "as few paths as possible" is attempted: each thing has its own entry under its own key either way, so grouping saves nothing.
+- osis-perm `paths` takes each part with its own `on` and `path` (`paths::Part`): the adapter hands each part its thing's path (less a trailing `on`); the walk is unchanged. Content parts reach it at 3b by the same input.
+
+## What replaces the hashed form
+Map: origin/windlass-one-path (208b825d6, not for building) touches every site in core/commit; `Path::to` there is the one-hop reading in code.
+| hashed form | replaced by |
+|---|---|
+| `Paths::Hashed`, header hashes, `kdf("path", salt, Path)` | `Paths::Split { author, entries }`; `kdf("path", roles secret, blind ‖ tid)` |
+| `Salted` in every section of a thing and copy; `Contents := [Opt(Salted), [Part*]]`; `CommitBlob::salted`, `salted_of`, `check_paths`; the stored and fire-payload `[[i, Salted]+]` | nothing in a thing's section (`[Part*]`, 2 B smaller); a copy's `[PathKey*]`; a thing's path opened from the header with held secrets, cached in the commit record as header data |
+| the per-thing section split in `seal_commit` and copies (the issue's first class) | sections as in the clear form: no path rides in them |
+| `Acting::Each`, `View::acting_on(t)` | one purge author per commit, clear: `View::acting` |
+| late-learned acting (`atomic::join_late`), `RecordHead::acting` | nothing: the author is clear; a thing's path is known once its secret is held, its part examined again then |
+| per-part hashed wait in `apply::examine` | the per-part wait on a part's own path (kept), plus "entry not opened yet": waits on the held role inputs |
+| `undo::undone_parts`' unknown-path case | a part its node cannot judge is not held |
+| `Header::validate`'s hashed-beside-purge | `Split` beside a destroying request, or on a role commit, is bad input |
+| hooks `Core::hashed_through`, `Core::forced_paths`; the four `validity::*hashed*` tests; the `commit_header` corpus' hashed entries | tests writing across two places for real; a wip-only forcing of the split form on every multi-thing commit to run the suites once; split entries in the corpus; vectors regenerated |
+| the Interim's "where paths differ, one path for all" in `stated_path` | the search above |
+
+The issue's second class (a part not held, its path unknown) goes because the path is in the header: a node holding the thing holds the key.
 
 ## Steps
 Each leaves main working; spec and code together (notes/a1-spec/README.md, Order of the code briefs).
-- **Step 2, the rest.** spec/wire.md §4: `path` is one `Path`; `Paths`, the hashed bullet, `Salted`, `Contents`' head (`Contents := [Part*]`), the copy's "one per thing where hashed", §12's hashed line and the `"path"` kdf label go; the draft's §1 Path takes the members sentence above. Engine: `stated_path` finds one path for the commit or fails `Invalid`; `act_as(X)` with no path through X fails `Permission`; `interim_path` stays only for role commits, rotations, re-seals and a fire valid by its thing's setting (step 3). osis `Write` doc: the third "cannot share a commit" bullet. Deleted: `Paths::Hashed`, `Salted`, `Acting::Each` (`Acting` is one tid: `View::acting_on(t)` becomes `acting`), `CommitBuilder::thing_paths`, the per-thing split in `seal_commit` and in copies, `CommitBlob::salted`, `salted_of`, `check_paths`, the stored and fire-payload `[[i, Salted]+]`, `RecordHead::acting`, `atomic::join_late`'s learning of an acting thing, the per-part hashed wait in `apply::examine`, the unknown-path case of `undo::undone_parts`, `Header::validate`'s hashed-beside-purge, the hooks `Core::hashed_through` and `Core::forced_paths`, the four `validity::*hashed*` tests, the hashed entries of the `commit_header` corpus; vectors regenerated. The consumers reading "the actor" from the first thing (listing row, `HeldCommit.acting`, the level-2 row, fired signals) are then right as written. issues/hashed-paths-forced-suite-gaps.md closes.
-- **Step 3.** The walk by path: the engine hands osis-perm `paths` each part with the stated path less a trailing `on` (`Part.path` is the things between signer and `on`, unchanged); role commits state real paths (one target, or the signer and what it minted: always one path); the Interim and Acting go.
-- **Step 4.** One purge author per commit: header `keys` holds at most one level-2 key (the Interim check in `validate.rs` becomes the rule); a purge request acts along the commit's path on every thing it names, so the things it names are those one commit can write; the author right reads members.
-- Later steps unchanged; step 5's evidence of a commit is the edges of one path and each thing's descent.
+1. **The form** (step 2, the rest, first brief): spec/wire.md §4 (`Paths`, `Split`, entries, path key, the copy's path keys, `Contents := [Part*]`, the copy's section, bad input), §12; spec/crypto.md §5 a Path entry bullet; core/commit (`Paths::Split`, builder `thing_paths` with each thing's roles secret, `author`; opening an entry); engine sealing, opening, `acting` one tid, the per-part "entry not opened" wait; every row of the table above but the last; the engine still writes one path (Interim), a test hook writes the split form.
+2. **The engine writes it** (second brief): `stated_path` as The engine's search; `act_as(X)` with no path through X for some thing fails `Permission`; the frontier lists commits with entries it cannot open; S's bodies carry the chain certificates of their parts' things only (spec/permissions.md §4, spec/sync-judgement.md §2 certificate blobs: "to each thing of the body under S"); the hooks go; issues/hashed-paths-forced-suite-gaps.md closes once the suites pass with the form forced (wip) and for real.
+3. **Step 3** (the walk by path) unchanged: each part with its own path; role commits state real paths (always one).
+4. **Step 4**: one purge author per commit is the encoding already; a purge request is judged per thing it names along that thing's path; the author right reads members.
 
 ## Bytes
-Header fields `signer`, `path`, `remains` (a tid 16 B encoded); accounts as today (after A4 one more listed thing, 16 B, on each line).
+Header fields `signer`, `path`, `remains` (a tid 16 B encoded); accounts as today.
 | commit | bytes |
 |---|---|
-| ordinary, own things | 19 (16 + `[0]` 2 + 1) |
-| dependent creation under own root | 19 |
-| dependent creation under a granted parent | 35 (hashed form: 86 in the header and 56 in its two sections) |
-| a granted thing written alone | 19 |
-| write at or under the last of k holders | 19 + 16k |
-Every section is 2 B smaller (no `Contents` head).
+| own things (one path `[0]`) | 19 |
+| creation under a granted parent (`[0, D]`) | 35 (hashed form: 86 in the header, 56 in its two sections) |
+| at or under the last of k holders | 19 + 16k |
+| two paths: an own thing and a thing under D | 73: `Split` 56 (3 + an entry of `[]` 18 + of `[D]` 35) |
+| n things, thing i's path listing k_i | 20 + Σ e(k_i), e(0) = 18, e(k) = 19 + 16k for k ≥ 1 (n ≥ 24: +1); +16 for a purge author other than the signer |
+A copy of a split commit adds about 36 B per thing whose parts it holds (its path key). Every section is 2 B smaller than built (no `Contents` head).
 
 ## The model
-roles-model `paths` judges a part by (signer, path, `on`), that is by members, and this rule leaves every part's members as they are: it changes only how one stated path gives each thing its part's path (drop a trailing `on`). `World::push`, `joins`, the hops of a descent, `remains` and `Rules::last_hop` read the same members as before: for the end thing the last edge is the hop from A(k-1) to Ak where that is one edge, as for path `[A1..A(k-1)]` on Ak today. `World::stated` is that mapping, with the hand world `a_commit_writes_its_paths_end_and_what_hangs_from_it` (the end, its child and grandchild along one path, cut alike by a removal; a thing the end does not reach and a thing listed before the end are invalid). Whom a write is by adds one reading, as the variant `Rules::author_thing` (off in `Rules::fixed`): an index one past the part's path names the thing written and a request's chain holds its thing (`a_write_by_the_thing_it_writes_is_purged_by_any_writer_of_it`; without the variant nothing is purged). `fixed` is untouched: default tests and the gate's paths properties (`random_worlds_hold_large`, `small_family_holds_large`, `small_worlds_hold_plain`) hold. Owed if the proposal is taken: `author_thing` on in `fixed`, with deltas by their own thing in the `tiny` generator's purge worlds.
+roles-model `paths` judges each part by (signer, its own path, `on`), so a split commit changes no reading: `World::split` writes one commit (grouped, so a list naming it names every part) with each thing's own path and one purge author. Hand world `a_commit_spanning_two_paths_is_judged_per_thing_as_one_commit_per_thing`: X writes T1 along [A] and A2 along its own grant, as one commit and as two at the same key; every reading (valid, purged, applied, roles) agrees across: no removal, H's removal of X from A (T1's part falls, A2's stands), K's removal from A2 (the reverse), a removal listing the commit, X's purge by author on T1 (T1's part alone). Order within a commit (a1-spec Open 14) reads only edge writes, which a split commit has none of (role commits are one path). `evidence` takes a held commit's other parts only on the same thing: a unit holding T1's part needs no edge of A2's path (asserted in the same test). Every grouped commit the generators make is on one thing (`World::commit`), so no generated world reads differently; default tests pass, the gate's paths properties are not re-run. Owed if Open 16 is taken as proposed: `Rules::author_thing` on in `fixed`, with deltas by their own thing in the `tiny` purge worlds.
 
-## Not settled here
-- The path of a fire valid by its thing's setting alone (its signer holds no role): step 3.
-- Whether a decoder should refuse the longer of two statements with the same members: taken as no.
+## Rejected
+- **Refuse or split a multi-path write**: rejected by the owner: a commit may span things reached through different actors.
+- **The hashed form** (each path in its thing's sections): a path is header data; in a section it is missing exactly where the consumers above read it (a second "unknown here" case per consumer, `Salted` in every section, copies split per thing, paths learned late and kept past their parts).
+- **A clear primary path for the things it serves, sealed paths for the rest**: the primary's chain is shown to the other things' readers (rosters giving no role on them); it is safe only as the empty path, a second form saving about 18 B a thing on rare commits.
+- **Every path sealed, one-path commits too**: about 18 B on every thing of every commit, and every header reader of a one-path commit needs a secret for what is shown to all alike.
+- **Paths in the clear with members blinded per thing**: a blinded member resolves only by testing candidates a reader already knows, but a pending part needs the tid of a record it has not seen to fetch it; a per-commit blind keyed by B's secret is sealing at the same cost.
+- **A path entry under the read secret**: a holder of a floor (roles secrets alone for older epochs) judges B's parts but could not open it.
+- **A purge author per thing**: a level-2 key per author, shown in the clear to every thing's readers, names a holder on another thing's chain; one author per write is what `act_as` offers.
+
+## For Tess
+1. Proposed property (spec/requirements.md, Commits or Confidentiality between readers): "A write may span things reached through different actors; it is one commit."
+2. Open 16, the capability: may a write's author (`act_as(X)`) be a thing whose authority does not reach every thing the write writes? Proposed no (error). Lost: labelling a write as by an identity with no role on what it writes (no caller does); granting X a role gives the same with a checked path.
+3. Path length: in a split commit a reader of A sees the size of B's entry, so how many things B's path lists (no identity). (a) Accept, as section sizes are (*taken*). (b) Pad every entry to MAX_PATH_THINGS: closes it, about 1 KiB a thing on split commits (a split commit can write thousands of things). (c) Pad entries to the commit's longest: shows the longest only. "Learn nothing of rosters that give no role on it" reads (a) as a size leak of a roster fact; (a) needs her word if the requirement is read strictly.

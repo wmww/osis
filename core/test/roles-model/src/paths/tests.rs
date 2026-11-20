@@ -1992,7 +1992,7 @@ fn a_purge_by_author_takes_exactly_that_authors_deltas() {
     assert!(fixed_but(&w, &[], |r| r.purge_exact = false).purged.contains(&b_as_b));
 }
 
-/// One commit states one path (notes/path-form.md, The rule): X, granted admin on A, writes A,
+/// One commit states one path (notes/path-form.md, One path): X, granted admin on A, writes A,
 /// T1 (minted by A) and D1 (minted by T1) stating [A]: A is the path's end, the others hang from
 /// it by record edges, and every part rests on (X, A) alone above the descent. H's removal of X
 /// cuts them alike. A thing the path's end does not reach (A2), and a thing listed before the
@@ -2032,6 +2032,57 @@ fn a_write_by_the_thing_it_writes_is_purged_by_any_writer_of_it() {
     assert_eq!(rd.purged, Set::from([by_thing]));
     assert!(!rd.purged.contains(&by_a) && !rd.purged.contains(&own));
     assert!(fixed(&w, &[]).purged.is_empty());
+}
+
+/// A commit whose things need different paths (notes/path-form.md, Several paths) is judged per
+/// thing exactly as one commit per thing at the same key: X writes T1 along [A] (H's grant) and
+/// A2 along its own grant from K ([]), in one commit and as two. Every reading agrees: both valid;
+/// H's removal of X from A takes T1's part and leaves A2's (the commit half valid, as any commit
+/// whose deltas are judged on their own, spec/commits.md §4); K's removal the other way round; a
+/// removal listing the commit keeps T1's part; X's purge by author on T1 takes T1's part alone. A
+/// unit holding T1's part needs no edge of A2's path as evidence, and the reverse.
+#[test]
+fn a_commit_spanning_two_paths_is_judged_per_thing_as_one_commit_per_thing() {
+    // `then` adds the later writes to both worlds alike; the parts keep their ids in both
+    let build = |one: bool, then: &dyn Fn(&mut World, [Id; 2])| {
+        let (mut w, ..) = paired();
+        let gk = w.edge(K, 1, &[], A2, X, Write, &[]);
+        let s = if one {
+            let v = w.split(X, 3, X, &[(&[A], T1), (&[], A2)]);
+            [v[0], v[1]]
+        } else {
+            [w.content(X, 3, &[A], T1), w.content(X, 3, &[], A2)]
+        };
+        then(&mut w, s);
+        (w, s, gk)
+    };
+    type Then = Box<dyn Fn(&mut World, [Id; 2]) -> Vec<Id>>;
+    // (later writes, trusted among them, which parts stand, which are purged)
+    let cases: Vec<(Then, [bool; 2], [bool; 2])> = vec![
+        (Box::new(|_, _| vec![]), [true, true], [false, false]),
+        (Box::new(|w, _| vec![w.edge(H, 6, &[], A, X, Gone, &[])]), [false, true], [false, false]),
+        (Box::new(|w, _| vec![w.edge(K, 6, &[], A2, X, Gone, &[])]), [true, false], [false, false]),
+        (Box::new(|w, s| vec![w.edge(H, 6, &[], A, X, Gone, &[s[0]])]), [true, true], [false, false]),
+        (Box::new(|w, _| { w.purge(X, 4, &[A], T1, X); vec![] }), [true, true], [true, false]),
+    ];
+    for (k, (then, stand, purged)) in cases.iter().enumerate() {
+        let trust = std::cell::RefCell::new(vec![]);
+        let run = |one| {
+            let (w, s, _) = build(one, &|w, s| *trust.borrow_mut() = then(w, s));
+            (fixed(&w, &trust.borrow()), w, s)
+        };
+        let (rd1, w1, s) = run(true);
+        let (rd2, ..) = run(false);
+        assert_eq!(w1.cid(s[0]), w1.cid(s[1]), "one commit");
+        assert_eq!((&rd1.valid, &rd1.purged, &rd1.applied, &rd1.roles), (&rd2.valid, &rd2.purged, &rd2.applied, &rd2.roles), "case {k}");
+        assert_eq!(s.map(|i| rd1.valid.contains(&i)), *stand, "case {k}");
+        assert_eq!(s.map(|i| rd1.purged.contains(&i)), *purged, "case {k}");
+    }
+    let (w, s, k_grant) = build(true, &|_, _| {});
+    let all = View::all(&w).held;
+    let of_t1 = evidence(&w, &Set::from([s[0]]), &all);
+    assert!(!of_t1.contains(&s[1]) && !of_t1.contains(&k_grant));
+    assert!(evidence(&w, &Set::from([s[1]]), &all).contains(&k_grant));
 }
 
 /// The author right is held only through the request's own chain: a member writing through A2

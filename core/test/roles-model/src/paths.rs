@@ -547,7 +547,7 @@ impl World {
         assert!(ix <= self.commits[i].path.len() + 1, "a purge author index past the thing written is bad input");
         self.commits[i].pa = ix;
     }
-    /// One content commit as the header states it (notes/path-form.md, The rule): ONE path
+    /// One content commit as the header states it (notes/path-form.md, One path): ONE path
     /// [A1..Ak] and purge-author index for every thing in `on`. A thing that is the path's last
     /// is written along the path ending at it (its part's path is the stated one less that
     /// thing); every other thing is one hop past the path's end. The index reads into
@@ -561,6 +561,21 @@ impl World {
                 self.content_as(signer, ts, own, t, ix)
             })
             .collect()
+    }
+    /// One content commit in the split form (notes/path-form.md, Several paths): each thing in
+    /// `parts` with its own path, one purge author `author` for the commit, a member of every
+    /// thing's members ([signer, A1..Ak, thing]). Its parts are one commit (a list naming it names
+    /// them all), each judged along its own path.
+    pub fn split(&mut self, signer: Thing, ts: u32, author: Thing, parts: &[(&[Thing], Thing)]) -> Vec<Id> {
+        let ids: Vec<Id> = parts
+            .iter()
+            .map(|&(path, on)| {
+                let ix = std::iter::once(signer).chain(path.iter().copied()).chain([on]).position(|m| m == author);
+                self.content_as(signer, ts, path, on, ix.expect("the purge author is a member of every thing's path"))
+            })
+            .collect();
+        self.group(&ids);
+        ids
     }
     /// A purge request by `author` on `on`, along `path`.
     pub fn purge(&mut self, signer: Thing, ts: u32, path: &[Thing], on: Thing, author: Thing) -> Id {
@@ -1609,18 +1624,20 @@ fn evidence_edges(w: &World, i: Id) -> Vec<Edge> {
 }
 
 /// The evidence closure of `unit` over `avail` (notes/write-path-design.md §2): the commits in
-/// `unit`, the other parts of a held commit, every available edge write on an edge of a held commit's path or on the remaining
-/// admin edge a held lowering names, every available vouch against a held removal.
+/// `unit`, the other parts of a held commit on the same thing (a part on another thing is that
+/// thing's unit's, with its own path: notes/path-form.md), every available edge write on an edge
+/// of a held part's path or on the remaining admin edge a held lowering names, every available
+/// vouch against a held removal.
 pub fn evidence(w: &World, unit: &Set, avail: &Set) -> Set {
     let mut s = unit.clone();
     loop {
         let edges: BTreeSet<Edge> = s.iter().flat_map(|&i| evidence_edges(w, i)).collect();
-        let cids: BTreeSet<Id> = s.iter().map(|&i| w.cid(i)).collect();
+        let cids: BTreeSet<(Id, Thing)> = s.iter().map(|&i| (w.cid(i), w.commits[i].on)).collect();
         let more: Vec<Id> = avail
             .iter()
             .copied()
             .filter(|i| !s.contains(i))
-            .filter(|&i| cids.contains(&w.cid(i)) || match &w.commits[i].kind {
+            .filter(|&i| cids.contains(&(w.cid(i), w.commits[i].on)) || match &w.commits[i].kind {
                 Kind::Edge { .. } => w.sets(i).is_some_and(|e| edges.contains(&e)),
                 Kind::Vouch { removal, .. } => s.contains(removal),
                 _ => false,

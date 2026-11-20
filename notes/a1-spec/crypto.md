@@ -1,9 +1,12 @@
 # A1 draft: spec/crypto.md
-> Summary: Draft spec text for stage A1 (not in spec, not built): spec/crypto.md §7's delete-key level 2 as the purge author's, the header list's base and thing blind under the signer, and a holder's level-2 signing. Map and status: notes/a1-spec/README.md.
+> Summary: Draft spec text for stage A1 (not in spec, not built): spec/crypto.md §5's path entry of a split commit (DRAFT, notes/path-form.md), §7's delete-key level 2 as the commit's one purge author's, the header list's base and thing blind under the signer, and a holder's level-2 signing. Map and status: notes/a1-spec/README.md.
 
 Replaces, in spec/crypto.md §7: the Levels table, the Header list bullet, the `blind` sub-bullet of Commitment, and the last bullet (a holder tries every epoch). Delete base, Delete key, Commitment's other sub-bullets, Certificate blobs and Delete signature stand.
 
 *Settled* for who holds the level-2 right: the purge author's chain (roles-model `paths` `purges`, control `-purge-any-path`). OPEN: delete keys are not modelled; that every holder of the `author` right holds level 2's secret is argued (its path gives write on every edge up to the purge author, so it reaches the purge author's write secret by derivation, spec/permissions.md §3).
+
+## 5. Blobs, wraps, sealed fires (one bullet added, DRAFT)
+- **Path entry** (per thing, in a split commit's header, spec/wire.md §4 `Split`): the thing's path under its path key `kdf("path", roles secret, blind ‖ tid)`, the roles secret of the read epoch its section is sealed under (Section, above), nonce 24 zero bytes: one plaintext per key. Whoever opens the thing's role parts at that epoch opens it, a holder of a floor included (§4 Roles secrets); a copy's section carries the key for the things whose parts it holds.
 
 ## 7. Delete keys
 - **Levels** of a delta, by its retention (spec/commits.md §5), one per member of its set:
@@ -11,7 +14,7 @@ Replaces, in spec/crypto.md §7: the Levels table, the Header list bullet, the `
   | level | retention set members | secret |
   |---|---|---|
   | 1, admin | `admin`, `author_or_admin`, `writer` | the admin secret of its thing |
-  | 2, author | `author_or_admin`, `writer` | the write secret of the delta's purge author (spec/permissions.md §6), at the purge author's delete base (below; a key actor's: its signing key) |
+  | 2, author | `author_or_admin`, `writer` | the write secret of the commit's one purge author (spec/permissions.md §6), at the purge author's delete base (below; a key actor's: its signing key) |
   | 3, writer | `writer` | the write secret of its thing |
 
 - **Header list**: a header lists, per level of each delta, the first of these for the level's base (the delete base of the delta's thing at levels 1 and 3, of its purge author at level 2); a writer holding none of them cannot write:
