@@ -2,13 +2,13 @@
 //! state, its chained points and what names the delta (notes/perm-paths.md, Step 3b design).
 //! Delta facts are read through the `Store` seam the engine backs with its store index
 //! (notes/perm-paths.md, The delta-facts seam); in memory stay only role commits' facts and the
-//! frontiers naming commits. Addenda validity is the one stored verdict (a least fixpoint), judged
-//! again for the addenda an update reached (notes/perm-paths.md, Counting entries and addenda,
-//! by reach).
+//! frontiers naming commits. Addenda validity (a least fixpoint) and purge requests' rights are
+//! the stored verdicts, judged again for those an update reached (notes/perm-paths.md, Counting
+//! entries and addenda, by reach; Purges).
 
 use super::path::shape;
 use super::walk::{Counts, Key, Walk};
-use super::{By, Changed, Commit, Content, DeltaClass, PartKind};
+use super::{By, Changed, Commit, Content, DeltaClass, Names, PartKind, Right, Scope, Stated};
 use crate::types::{Frontier, WriteId};
 use osis_base::{Ak, CommitId, PurgeBy, Role, Tid, Ts};
 use std::collections::{BTreeMap, BTreeSet};
@@ -50,11 +50,29 @@ impl Fact {
 pub enum FactClass {
     Plain,
     Role,
-    Snapshot(Frontier),
+    /// What it carries, what it states of each, and whether it is its signer's own cover.
+    Snapshot { carries: Frontier, stated: BTreeMap<CommitId, Stated>, own: bool },
     /// Its removal and list.
     Addendum(CommitId, Frontier),
-    /// A request by author.
-    Purge(Tid),
+    /// A purge request.
+    Purge(Names),
+}
+
+impl Fact {
+    /// A purge request's scope.
+    pub fn scope(&self) -> Option<Scope> {
+        let FactClass::Purge(names) = self.class else { return None };
+        Some(Scope { on: self.on, aspect: self.aspect.clone(), names, ts: self.ts })
+    }
+}
+
+/// The key a request is indexed by: its thing, its aspect (none for a destruction), what it
+/// names.
+pub type NameKey = (Tid, Option<Ak>, Names);
+
+fn name_key(f: &Fact) -> Option<NameKey> {
+    let FactClass::Purge(names) = f.class else { return None };
+    Some((f.on, (names != Names::Destroy).then(|| f.aspect.clone()), names))
 }
 
 /// The delta facts content reads, by point lookups (notes/perm-paths.md, The delta-facts seam):
@@ -70,8 +88,17 @@ pub trait Store {
     fn listing(&self, c: &CommitId) -> Vec<WriteId>;
     /// The snapshots carrying `c`.
     fn carrying(&self, c: &CommitId) -> Vec<WriteId>;
-    /// The requests by `author` on (`on`, `aspect`).
-    fn requests(&self, on: &Tid, aspect: &Ak, author: &Tid) -> Vec<WriteId>;
+    /// The requests indexed by `key` (thing, aspect, what they name) that hold a right
+    /// (`set_right`), stamped within `after`.
+    fn requests(&self, key: &NameKey, after: Bound<Ts>) -> Vec<WriteId>;
+    /// The requests with edge `e` on their path, positioned within (`from`, `to`).
+    fn requests_through(&self, e: &Pair, from: Bound<Key>, to: Bound<Key>) -> Vec<WriteId>;
+    /// A request's stored right (none until set).
+    fn right(&self, id: &WriteId) -> Right;
+    /// Sets a request's stored right: it is in `requests` while it holds one.
+    fn set_right(&mut self, id: &WriteId, right: Right);
+    /// The own covers signed by `signer`.
+    fn own_covers(&self, signer: &Tid) -> Vec<WriteId>;
     /// The addenda with edge `e` on their path, positioned within (`from`, `to`).
     fn addenda_through(&self, e: &Pair, from: Bound<Key>, to: Bound<Key>) -> Vec<WriteId>;
     /// Every delta with edge `e` on its path, positioned within (`from`, `to`): the index that
@@ -90,7 +117,10 @@ pub struct MemStore {
     by_commit_on: BTreeMap<(CommitId, Tid), BTreeSet<WriteId>>,
     listing: BTreeMap<CommitId, BTreeSet<WriteId>>,
     carrying: BTreeMap<CommitId, BTreeSet<WriteId>>,
-    requests: BTreeMap<(Tid, Ak, Tid), BTreeSet<WriteId>>,
+    requests: BTreeMap<NameKey, BTreeSet<(Ts, WriteId)>>,
+    requests_on: BTreeMap<Pair, BTreeSet<(Key, WriteId)>>,
+    rights: BTreeMap<WriteId, Right>,
+    own: BTreeMap<Tid, BTreeSet<WriteId>>,
     addenda_on: BTreeMap<Pair, BTreeSet<(Key, WriteId)>>,
     through: BTreeMap<Pair, BTreeSet<(Key, WriteId)>>,
     valid: BTreeSet<WriteId>,
@@ -114,19 +144,9 @@ fn in_range(m: &BTreeMap<Pair, BTreeSet<(Key, WriteId)>>, e: &Pair, from: Bound<
 }
 
 impl MemStore {
-    /// Every index entry `f` has: (commit, thing), what it lists or carries, its request key,
-    /// its addenda edges.
+    /// Every index entry `f` has: (commit, thing), what it lists or carries, its request edges,
+    /// its addenda edges, an own cover's signer (a request's named key follows its right).
     fn index(&mut self, f: &Fact, add: bool) {
-        fn set<K: Ord, V: Ord>(m: &mut BTreeMap<K, BTreeSet<V>>, k: K, v: V, add: bool) {
-            if add {
-                m.entry(k).or_default().insert(v);
-            } else if let Some(s) = m.get_mut(&k) {
-                s.remove(&v);
-                if s.is_empty() {
-                    m.remove(&k);
-                }
-            }
-        }
         set(&mut self.by_commit_on, (f.commit(), f.on), f.id, add);
         for e in &f.hops {
             set(&mut self.through, *e, (f.pos, f.id), add);
@@ -140,13 +160,32 @@ impl MemStore {
                     set(&mut self.addenda_on, *e, (f.pos, f.id), add);
                 }
             }
-            FactClass::Snapshot(carries) => {
+            FactClass::Snapshot { carries, own, .. } => {
                 for x in carries.commits() {
                     set(&mut self.carrying, *x, f.id, add);
                 }
+                if *own {
+                    set(&mut self.own, f.signer, f.id, add);
+                }
             }
-            FactClass::Purge(author) => set(&mut self.requests, (f.on, f.aspect.clone(), *author), f.id, add),
+            FactClass::Purge(_) => {
+                for e in &f.hops {
+                    set(&mut self.requests_on, *e, (f.pos, f.id), add);
+                }
+            }
             FactClass::Plain | FactClass::Role => {}
+        }
+    }
+}
+
+/// Adds `v` to `m[k]`, or takes it out (and an emptied entry).
+fn set<K: Ord, V: Ord>(m: &mut BTreeMap<K, BTreeSet<V>>, k: K, v: V, add: bool) {
+    if add {
+        m.entry(k).or_default().insert(v);
+    } else if let Some(s) = m.get_mut(&k) {
+        s.remove(&v);
+        if s.is_empty() {
+            m.remove(&k);
         }
     }
 }
@@ -157,6 +196,7 @@ impl Store for MemStore {
         self.facts.insert(f.id, f);
     }
     fn remove(&mut self, id: &WriteId) -> Option<Fact> {
+        self.set_right(id, Right::default());
         let f = self.facts.remove(id)?;
         self.index(&f, false);
         self.valid.remove(id);
@@ -177,8 +217,39 @@ impl Store for MemStore {
     fn carrying(&self, c: &CommitId) -> Vec<WriteId> {
         self.carrying.get(c).into_iter().flatten().copied().collect()
     }
-    fn requests(&self, on: &Tid, aspect: &Ak, author: &Tid) -> Vec<WriteId> {
-        self.requests.get(&(*on, aspect.clone(), *author)).into_iter().flatten().copied().collect()
+    fn requests(&self, key: &NameKey, after: Bound<Ts>) -> Vec<WriteId> {
+        let lo = WriteId(CommitId([0; 32]), 0);
+        let hi = WriteId(CommitId([u8::MAX; 32]), u32::MAX);
+        let from = match after {
+            Bound::Included(t) => Bound::Included((t, lo)),
+            Bound::Excluded(t) => Bound::Excluded((t, hi)),
+            Bound::Unbounded => Bound::Unbounded,
+        };
+        self.requests.get(key).into_iter().flat_map(|s| s.range((from, Bound::Unbounded))).map(|x| x.1).collect()
+    }
+    fn requests_through(&self, e: &Pair, from: Bound<Key>, to: Bound<Key>) -> Vec<WriteId> {
+        in_range(&self.requests_on, e, from, to)
+    }
+    fn right(&self, id: &WriteId) -> Right {
+        self.rights.get(id).copied().unwrap_or_default()
+    }
+    fn set_right(&mut self, id: &WriteId, right: Right) {
+        let was = self.right(id);
+        if was == right {
+            return;
+        }
+        let Some((key, ts)) = self.facts.get(id).and_then(|f| Some((name_key(f)?, f.ts))) else { return };
+        if was.any() != right.any() {
+            set(&mut self.requests, key, (ts, *id), right.any());
+        }
+        if right.any() {
+            self.rights.insert(*id, right);
+        } else {
+            self.rights.remove(id);
+        }
+    }
+    fn own_covers(&self, signer: &Tid) -> Vec<WriteId> {
+        self.own.get(signer).into_iter().flatten().copied().collect()
     }
     fn addenda_through(&self, e: &Pair, from: Bound<Key>, to: Bound<Key>) -> Vec<WriteId> {
         in_range(&self.addenda_on, e, from, to)
@@ -215,6 +286,9 @@ pub(super) struct CommitFacts {
     pub rests: BTreeSet<(Tid, Pair)>,
     /// Its edge writes' frontiers.
     lists: Vec<(WriteId, Arc<Frontier>)>,
+    /// The edges its edge writes set, each with the role it sets (draft spec/commits.md §4
+    /// Could hold the right).
+    sets: Vec<(Pair, Role)>,
 }
 
 #[derive(Clone)]
@@ -227,13 +301,16 @@ pub(super) struct Facts<S> {
     /// Removals by (commit, thing): the counting entries, each keeping the commit's parts on its
     /// vouch's thing (draft §5.1 Vouches).
     counted: BTreeMap<(CommitId, Tid), Vec<CommitId>>,
+    /// Per edge, how many held edge writes set it at each role (`Role::ALL`'s order), whatever
+    /// their validity: what a node that cannot judge reads (Could hold the right).
+    ever: BTreeMap<Pair, [u32; 4]>,
     pub store: S,
     pub counts: Counts,
 }
 
 impl<S: Store> Facts<S> {
     pub(super) fn new(records: &BTreeMap<Tid, Tid>, store: S) -> Facts<S> {
-        Facts { mint: records.clone(), commits: BTreeMap::new(), named: BTreeMap::new(), counted: BTreeMap::new(), store, counts: Counts::default() }
+        Facts { mint: records.clone(), commits: BTreeMap::new(), named: BTreeMap::new(), counted: BTreeMap::new(), ever: BTreeMap::new(), store, counts: Counts::default() }
     }
 
     fn record(&self, e: Pair) -> bool {
@@ -245,9 +322,9 @@ impl<S: Store> Facts<S> {
         self.commits.contains_key(c) || !self.store.of_commit(c, None).is_empty()
     }
 
-    /// Entries kept in memory: role commits and the frontiers' names.
+    /// Entries kept in memory: role commits, the frontiers' names, the edges role writes set.
     pub(super) fn footprint(&self) -> u64 {
-        (self.commits.len() + self.named.values().map(BTreeSet::len).sum::<usize>() + self.counted.len()) as u64
+        (self.commits.len() + self.named.values().map(BTreeSet::len).sum::<usize>() + self.counted.len() + self.ever.len()) as u64
     }
 
     /// Takes in new commits (the walks took their edge-class parts). Returns the new deltas, the
@@ -256,7 +333,7 @@ impl<S: Store> Facts<S> {
         let mut out = Taken::default();
         for c in commits {
             let start = Key { ts: c.ts, signer: c.signer, commit: c.id, part: 0 };
-            let mut cf = CommitFacts { key: start, signer: c.signer, role_on: BTreeSet::new(), rests: BTreeSet::new(), lists: vec![] };
+            let mut cf = CommitFacts { key: start, signer: c.signer, role_on: BTreeSet::new(), rests: BTreeSet::new(), lists: vec![], sets: vec![] };
             let mut role = false;
             let mut facts = vec![];
             for (ix, p) in (0u32..).zip(c.parts.iter()) {
@@ -272,6 +349,9 @@ impl<S: Store> Facts<S> {
                         }
                         if let Some(f) = &ew.frontier {
                             cf.lists.push((id, f.clone()));
+                        }
+                        if let Some(v) = &ew.value {
+                            cf.sets.push(((ew.holder, p.on), v.role));
                         }
                     }
                     PartKind::Vouch { .. } => {
@@ -292,12 +372,12 @@ impl<S: Store> Facts<S> {
                                 role = true;
                                 FactClass::Role
                             }
-                            DeltaClass::Snapshot { carries } => {
+                            DeltaClass::Snapshot { carries, stated, own } => {
                                 out.carried.extend(carries.commits().iter().copied());
-                                FactClass::Snapshot(carries.clone())
+                                FactClass::Snapshot { carries: carries.clone(), stated: stated.clone(), own: *own }
                             }
                             DeltaClass::Addendum { removal, list } => FactClass::Addendum(*removal, list.clone()),
-                            DeltaClass::PurgeByAuthor { author } => FactClass::Purge(*author),
+                            DeltaClass::Purge { names } => FactClass::Purge(*names),
                         };
                         facts.push(Fact {
                             id,
@@ -336,6 +416,11 @@ impl<S: Store> Facts<S> {
                         self.named.entry(*x).or_default().insert(*id);
                     }
                 }
+                for (e, r) in &cf.sets {
+                    if let Some(n) = self.ever.entry(*e).or_default().get_mut(level(*r)) {
+                        *n += 1;
+                    }
+                }
                 out.roles.insert(c.id);
                 self.commits.insert(c.id, cf);
             }
@@ -351,6 +436,16 @@ impl<S: Store> Facts<S> {
         for c in commits {
             if let Some(cf) = self.commits.remove(c) {
                 out.roles.insert(*c);
+                for (e, r) in &cf.sets {
+                    if let Some(n) = self.ever.get_mut(e) {
+                        if let Some(x) = n.get_mut(level(*r)) {
+                            *x = x.saturating_sub(1);
+                        }
+                        if *n == [0; 4] {
+                            self.ever.remove(e);
+                        }
+                    }
+                }
                 for (id, f) in &cf.lists {
                     for x in f.commits() {
                         if let Some(set) = self.named.get_mut(x) {
@@ -364,10 +459,13 @@ impl<S: Store> Facts<S> {
                 }
             }
             for id in self.store.of_commit(c, None) {
+                // a request holding a right takes it with it
+                let right = self.store.right(&id);
                 let Some(f) = self.store.remove(&id) else { continue };
                 match &f.class {
                     FactClass::Addendum(_, list) => out.carried.extend(list.commits()),
-                    FactClass::Snapshot(carries) => out.carried.extend(carries.commits()),
+                    FactClass::Snapshot { carries, .. } => out.carried.extend(carries.commits()),
+                    FactClass::Purge(_) if right.any() => out.scopes.extend(f.scope()),
                     _ => {}
                 }
             }
@@ -380,7 +478,7 @@ impl<S: Store> Facts<S> {
         let mut out = BTreeSet::new();
         for c in cs {
             for id in self.store.of_commit(c, None) {
-                if let Some(FactClass::Snapshot(carries)) = self.store.get(&id).map(|f| f.class) {
+                if let Some(FactClass::Snapshot { carries, .. }) = self.store.get(&id).map(|f| f.class) {
                     out.extend(carries.commits());
                 }
             }
@@ -432,27 +530,34 @@ impl<S: Store> Facts<S> {
         out
     }
 
-    /// Whether `id` is an applied cut, below `r`, of an edge of `hops`; its key.
-    fn cut_on(tl: &Walk, id: &WriteId, r: Role, hops: &[Pair]) -> Option<Key> {
-        tl.applied_write(id).filter(|(e, a)| a.cuts(r) && hops.contains(e)).map(|(_, a)| a.key)
+    /// Whether `id` is an applied cut, below `r`, of an edge of `hops`: that edge and its key.
+    fn cut_on(tl: &Walk, id: &WriteId, r: Role, hops: &[Pair]) -> Option<(Pair, Key)> {
+        tl.applied_write(id).filter(|(e, a)| a.cuts(r) && hops.contains(e)).map(|(e, a)| (e, a.key))
     }
 
-    /// (a): every hop gives `needs` just before the delta's position and no cut of its path
-    /// below `needs` is ordered after it.
-    fn holds_role(&self, tl: &Walk, d: &Fact, counts: &mut Counts) -> bool {
-        d.hops.iter().all(|(h, t)| {
+    /// Whether a cut of `d`'s path at `(e, k)` is read: a destruction of thing `spare` reads no
+    /// cut on an edge into it ordered after it (draft §6 Destruction).
+    fn read_cut(d: &Fact, spare: Option<Tid>, (e, k): (Pair, Key)) -> bool {
+        !(spare == Some(e.1) && k > d.pos)
+    }
+
+    /// (a): every hop gives `r` just before the delta's position and no cut of its path below
+    /// `r` (read, `read_cut`) is ordered after it.
+    fn holds_role(&self, tl: &Walk, d: &Fact, r: Role, spare: Option<Tid>, counts: &mut Counts) -> bool {
+        d.hops.iter().all(|&(h, t)| {
             counts.content += 1;
-            tl.role_before(h, t, &d.pos) >= Some(d.needs) && tl.last_cut(h, t, d.needs).is_none_or(|k| k < d.pos)
+            tl.role_before(&h, &t, &d.pos) >= Some(r) && (spare == Some(t) || tl.last_cut(&h, &t, r).is_none_or(|k| k < d.pos))
         })
     }
 
-    /// (b): a cut of its path below `needs` lists its commit (its frontier, or a counting entry).
-    fn listed(&self, tl: &Walk, d: &Fact, counts: &mut Counts) -> bool {
-        let by_frontier = self.namers(d, counts).iter().any(|n| matches!(n, Namer::Write(id) if Self::cut_on(tl, id, d.needs, &d.hops).is_some()));
+    /// (b): a cut of its path below `r` lists its commit (its frontier, or a counting entry).
+    fn listed(&self, tl: &Walk, d: &Fact, r: Role, spare: Option<Tid>, counts: &mut Counts) -> bool {
+        let read = |id: &WriteId| Self::cut_on(tl, id, r, &d.hops).is_some_and(|c| Self::read_cut(d, spare, c));
+        let by_frontier = self.namers(d, counts).iter().any(|n| matches!(n, Namer::Write(id) if read(id)));
         by_frontier
-            || self.counted.get(&(d.commit(), d.on)).into_iter().flatten().any(|r| {
+            || self.counted.get(&(d.commit(), d.on)).into_iter().flatten().any(|c| {
                 counts.content += 1;
-                tl.parts_of(r).iter().any(|id| Self::cut_on(tl, id, d.needs, &d.hops).is_some())
+                tl.parts_of(c).iter().any(read)
             })
     }
 
@@ -475,36 +580,53 @@ impl<S: Store> Facts<S> {
             counts.content += 1;
             tl.role_before(h, t, &a.pos) >= Some(need)
         });
-        path && tl.parts_of(removal).iter().any(|id| Self::cut_on(tl, id, d.needs, &d.hops).is_some_and(|k| k >= d.pos && k < a.pos))
+        path && tl.parts_of(removal).iter().any(|id| Self::cut_on(tl, id, d.needs, &d.hops).is_some_and(|(_, k)| k >= d.pos && k < a.pos))
     }
 
-    /// (d): its path is re-granted for `needs` and it is positioned after the latest of each
-    /// edge's first chained write giving `needs` (a record edge: from the start).
-    fn regranted(&self, tl: &Walk, d: &Fact, counts: &mut Counts) -> bool {
+    /// (d): its path is re-granted for `r` and it is positioned after the latest of each edge's
+    /// first chained write giving `r` (a record edge: from the start).
+    fn regranted(&self, tl: &Walk, d: &Fact, r: Role, counts: &mut Counts) -> bool {
         let mut bound: Option<Key> = None;
         for &(h, t) in &d.hops {
             counts.content += 1;
-            if tl.final_of(&h, &t) < Some(d.needs) {
+            if tl.final_of(&h, &t) < Some(r) {
                 return false;
             }
             if !self.record((h, t)) {
-                let Some(k) = tl.first_chained(&h, &t, d.needs) else { return false };
+                let Some(k) = tl.first_chained(&h, &t, r) else { return false };
                 bound = Some(bound.map_or(k, |b| b.max(k)));
             }
         }
         bound.is_none_or(|b| d.pos > b)
     }
 
-    /// Valid by (a), (b) or (d), addenda aside.
+    /// An own cover (draft §5.2 Own cover): its path gave the role it needs just before its
+    /// position, and an explicit lowering the timeline applies, signed by its signer, ordered at
+    /// or after it, lists it.
+    fn own_cover(&self, tl: &Walk, d: &Fact, counts: &mut Counts) -> bool {
+        let FactClass::Snapshot { own: true, .. } = d.class else { return false };
+        let gave = d.hops.iter().all(|(h, t)| {
+            counts.content += 1;
+            tl.role_before(h, t, &d.pos) >= Some(d.needs)
+        });
+        gave && self.named.get(&d.commit()).into_iter().flatten().any(|w| {
+            counts.content += 1;
+            tl.applied_write(w).is_some_and(|(_, a)| a.explicit && a.key.signer == d.signer && a.key >= d.pos && a.value.filter(|v| v.alive_at(Some(a.key.ts))).map(|v| v.role) < Some(Role::Admin))
+        })
+    }
+
+    /// Valid by (a), (b) or (d), an own cover by its removal, addenda aside.
     fn base(&self, tl: &Walk, d: &Fact, counts: &mut Counts) -> Option<By> {
         if !d.well {
             None
-        } else if self.holds_role(tl, d, counts) {
+        } else if self.holds_role(tl, d, d.needs, None, counts) {
             Some(By::Held)
-        } else if self.listed(tl, d, counts) {
+        } else if self.listed(tl, d, d.needs, None, counts) {
             Some(By::Listed)
-        } else if self.regranted(tl, d, counts) {
+        } else if self.regranted(tl, d, d.needs, counts) {
             Some(By::Regranted)
+        } else if self.own_cover(tl, d, counts) {
+            Some(By::OwnCover)
         } else {
             None
         }
@@ -555,8 +677,7 @@ impl<S: Store> Facts<S> {
     }
 
     /// What names a held delta: the addenda listing its commit (or a snapshot carrying it), the
-    /// snapshots of its thing and aspect carrying it, the requests by its purge author on its
-    /// thing and aspect.
+    /// snapshots of its thing and aspect carrying it.
     pub(super) fn naming(&self, id: &WriteId) -> Vec<WriteId> {
         let Some(d) = self.store.get(id) else { return vec![] };
         let mut out: Vec<WriteId> = vec![];
@@ -566,9 +687,6 @@ impl<S: Store> Facts<S> {
             }
         }
         out.extend(self.carriers(&d.commit()).into_iter().filter(|s| self.store.get(s).is_some_and(|sd| sd.on == d.on && sd.aspect == d.aspect)));
-        if let Some(pa) = d.purge_author {
-            out.extend(self.store.requests(&d.on, &d.aspect, &pa));
-        }
         out
     }
 
@@ -581,7 +699,7 @@ impl<S: Store> Facts<S> {
         let mut out = BTreeSet::new();
         for id in self.store.all() {
             let Some(s) = self.store.get(&id) else { continue };
-            let FactClass::Snapshot(carries) = &s.class else { continue };
+            let FactClass::Snapshot { carries, .. } = &s.class else { continue };
             if self.valid(tl, &s, counts).is_none() {
                 continue;
             }
@@ -595,16 +713,176 @@ impl<S: Store> Facts<S> {
         out
     }
 
-    /// Whether a valid request by author holds the right over delta `id` (draft §6, the `author`
-    /// class): a request on its thing and aspect stamped after it, naming exactly its purge
-    /// author, whose chain holds that author, valid as a delta needing write along its path.
-    pub(super) fn purged(&self, tl: &Walk, id: &WriteId, counts: &mut Counts) -> bool {
-        let Some(d) = self.store.get(id) else { return false };
-        let (FactClass::Plain, Some(pa), true) = (&d.class, d.purge_author, d.retention.author()) else { return false };
-        self.store.requests(&d.on, &d.aspect, &pa).iter().any(|q| {
-            counts.content += 1;
-            self.store.get(q).is_some_and(|qd| qd.ts > d.ts && qd.chain.contains(&pa) && self.valid(tl, &qd, counts).is_some())
+    // ---- purges (draft §6): a reading, by point query over the requests holding a right ----
+
+    /// Whether request `q` holds role `r` (draft §6 Holding a role): exactly where a delta of it
+    /// needing `r` would be valid by (a), (b) or (d), no addendum vouching; a destruction reads no
+    /// cut on an edge into its own thing ordered after it.
+    fn holds_right(&self, tl: &Walk, q: &Fact, r: Role, counts: &mut Counts) -> bool {
+        let spare = matches!(q.class, FactClass::Purge(Names::Destroy)).then_some(q.on);
+        q.well && (self.holds_role(tl, q, r, spare, counts) || self.listed(tl, q, r, spare, counts) || self.regranted(tl, q, r, counts))
+    }
+
+    /// The right request `q` holds: admin, and write (none for a destruction, which holds the
+    /// `admin` right alone).
+    fn right_fact(&self, tl: &Walk, q: &Fact, counts: &mut Counts) -> Right {
+        let FactClass::Purge(names) = q.class else { return Right::default() };
+        Right { admin: self.holds_right(tl, q, Role::Admin, counts), write: names != Names::Destroy && self.holds_right(tl, q, Role::Write, counts) }
+    }
+
+    /// A held request's right, judged now (a point query along its path).
+    pub(super) fn right_of(&self, tl: &Walk, id: &WriteId, counts: &mut Counts) -> Option<Right> {
+        let q = self.store.get(id).filter(|q| matches!(q.class, FactClass::Purge(_)))?;
+        Some(self.right_fact(tl, &q, counts))
+    }
+
+    /// Whether a request holding a right names the delta (or copy) of `commit` on `on`'s `aspect`
+    /// stamped `ts`, of purge author `author` and `retention`, and holds a right over it: `admin`
+    /// over any; `writer` (write) over a `writer` delta; `author` (write, its path holding the
+    /// delta's purge author) over an `author_or_admin` one (draft §6). It reads the requests by
+    /// that author, by the aspect and by that commit stamped after it, and the destructions of
+    /// the thing, from the store's index of requests holding a right: each once.
+    #[allow(clippy::too_many_arguments)]
+    fn purged_by(&self, on: Tid, aspect: &Ak, commit: CommitId, ts: Ts, author: Option<Tid>, retention: PurgeBy, counts: &mut Counts) -> bool {
+        let mut keys: Vec<(NameKey, Bound<Ts>)> = vec![((on, None, Names::Destroy), Bound::Unbounded)];
+        for names in [Names::Aspect, Names::Commit(commit)].into_iter().chain(author.map(Names::Author)) {
+            keys.push(((on, Some(aspect.clone()), names), Bound::Excluded(ts)));
+        }
+        keys.iter().any(|(k, after)| {
+            self.store.requests(k, *after).iter().any(|q| {
+                counts.content += 1;
+                let right = self.store.right(q);
+                right.admin
+                    || (right.write
+                        && match retention {
+                            PurgeBy::Admin => false,
+                            PurgeBy::Writer => true,
+                            PurgeBy::AuthorOrAdmin => author.is_some_and(|a| self.store.get(q).is_some_and(|qf| qf.chain.contains(&a))),
+                        })
+            })
         })
+    }
+
+    /// Whether a request holds a right over held plain delta `id`, by its own facts.
+    pub(super) fn purged(&self, id: &WriteId, counts: &mut Counts) -> bool {
+        let Some(d) = self.store.get(id) else { return false };
+        matches!(d.class, FactClass::Plain) && self.purged_by(d.on, &d.aspect, d.commit(), d.ts, d.purge_author, d.retention, counts)
+    }
+
+    /// Whether a request holds a right over the copy of commit `c` on `on`'s `aspect`, `c` held
+    /// there by no delta: shown by a valid held snapshot of `on`'s `aspect`, and named and held a
+    /// right over by the facts every such snapshot states of it.
+    pub(super) fn copy_purged(&self, tl: &Walk, c: &CommitId, on: &Tid, aspect: &Ak, counts: &mut Counts) -> bool {
+        let mut shown = false;
+        let mut stated: Vec<Stated> = vec![];
+        for s in self.carriers(c) {
+            counts.content += 1;
+            let Some(sf) = self.store.get(&s) else { continue };
+            let FactClass::Snapshot { stated: st, .. } = &sf.class else { continue };
+            if sf.on == *on && sf.aspect == *aspect && sf.commit() != *c && self.valid(tl, &sf, counts).is_some() {
+                shown = true;
+                stated.extend(st.get(c));
+            }
+        }
+        shown && self.copy_purged_by(c, on, aspect, &stated, counts)
+    }
+
+    /// `copy_purged` once its valid carriers' statements are read: by every fact stated (one
+    /// stating none states nothing; with none stated, only a destruction names it), `c` held there
+    /// by no delta.
+    fn copy_purged_by(&self, c: &CommitId, on: &Tid, aspect: &Ak, stated: &[Stated], counts: &mut Counts) -> bool {
+        if self.store.of_commit(c, Some(on)).iter().any(|id| self.store.get(id).is_some_and(|d| d.aspect == *aspect)) {
+            return false;
+        }
+        if stated.is_empty() {
+            return self.store.requests(&(*on, None, Names::Destroy), Bound::Unbounded).iter().any(|q| self.store.right(q).admin);
+        }
+        stated.iter().all(|f| self.purged_by(*on, aspect, *c, f.ts, Some(f.purge_author), f.retention, counts))
+    }
+
+    /// Every copy of a commit held by no delta on its snapshot's thing and aspect that a request
+    /// holds a right over (each snapshot judged once).
+    pub(super) fn purged_copies(&self, tl: &Walk, counts: &mut Counts) -> BTreeSet<CommitId> {
+        let mut shown: BTreeMap<(CommitId, Tid, Ak), Vec<Stated>> = BTreeMap::new();
+        for id in self.store.all() {
+            let Some(s) = self.store.get(&id) else { continue };
+            let FactClass::Snapshot { carries, stated, .. } = &s.class else { continue };
+            if self.valid(tl, &s, counts).is_none() {
+                continue;
+            }
+            for c in carries.commits().iter().filter(|c| !self.commits.contains_key(c) && **c != s.commit()) {
+                shown.entry((*c, s.on, s.aspect.clone())).or_default().extend(stated.get(c));
+            }
+        }
+        shown.into_iter().filter(|((c, on, aspect), st)| self.copy_purged_by(c, on, aspect, st, counts)).map(|((c, ..), _)| c).collect()
+    }
+
+    /// Judges again the rights of the requests an update reached, as it reaches any delta (an
+    /// edge of its path in `edges` before its position, in `cuts` at or after it, in `regrant`;
+    /// its commit in `named`), and of those `fresh`; stores each right that changed. The scopes
+    /// of the requests whose right changed (a fresh one: that holds one).
+    pub(super) fn rights_update(&mut self, tl: &Walk, ch: &Changed, fresh: &[WriteId]) -> BTreeSet<Scope> {
+        let mut counts = Counts::default();
+        let mut f: BTreeSet<WriteId> = fresh.iter().copied().collect();
+        for (e, k) in &ch.edges {
+            f.extend(self.store.requests_through(e, Bound::Excluded(*k), Bound::Unbounded));
+        }
+        for (e, k) in &ch.cuts {
+            f.extend(self.store.requests_through(e, Bound::Unbounded, Bound::Included(*k)));
+        }
+        for e in &ch.regrant {
+            f.extend(self.store.requests_through(e, Bound::Unbounded, Bound::Unbounded));
+        }
+        for c in &ch.named {
+            f.extend(self.store.of_commit(c, None));
+        }
+        let mut out = BTreeSet::new();
+        for q in f {
+            let Some(qf) = self.store.get(&q).filter(|x| matches!(x.class, FactClass::Purge(_))) else { continue };
+            let now = self.right_fact(tl, &qf, &mut counts);
+            if now != self.store.right(&q) {
+                self.store.set_right(&q, now);
+                out.extend(qf.scope());
+            }
+        }
+        self.counts.add(&counts);
+        out
+    }
+
+    /// The own covers that a lowering among `parts` (whose status changed) lists, by its signer:
+    /// such a cover's validity reads that lowering (draft §5.2 Own cover).
+    pub(super) fn own_listed(&self, parts: &BTreeSet<WriteId>) -> BTreeSet<CommitId> {
+        let mut out = BTreeSet::new();
+        for id in parts {
+            let Some(cf) = self.commits.get(&id.0).filter(|cf| cf.lists.iter().any(|(w, _)| w == id)) else { continue };
+            for s in self.store.own_covers(&cf.signer) {
+                if self.named.get(&s.0).is_some_and(|n| n.contains(id)) {
+                    out.insert(s.0);
+                }
+            }
+        }
+        out
+    }
+
+    /// Whether held request `id` could hold role `r`: each edge of its path a record edge or
+    /// set at `r` or above by some held edge write (draft spec/commits.md §4 Could hold the right).
+    pub(super) fn could_give(&self, id: &WriteId, r: Role) -> Option<bool> {
+        let q = self.store.get(id).filter(|q| matches!(q.class, FactClass::Purge(_)))?;
+        let from = level(r);
+        Some(q.well && q.hops.iter().all(|e| self.record(*e) || self.ever.get(e).is_some_and(|n| n.iter().skip(from).any(|x| *x > 0))))
+    }
+
+    /// Whether held request `id` could hold the right over a delta of `retention` and purge
+    /// author `author`: admin, or write where the class allows a writer (a destruction: admin).
+    pub(super) fn could_hold(&self, id: &WriteId, retention: PurgeBy, author: Option<&Tid>) -> Option<bool> {
+        let q = self.store.get(id).filter(|q| matches!(q.class, FactClass::Purge(_)))?;
+        let writer = !matches!(q.class, FactClass::Purge(Names::Destroy))
+            && match retention {
+                PurgeBy::Admin => false,
+                PurgeBy::Writer => true,
+                PurgeBy::AuthorOrAdmin => author.is_some_and(|a| q.chain.contains(a)),
+            };
+        Some(self.could_give(id, Role::Admin)? || (writer && self.could_give(id, Role::Write)?))
     }
 
     // ---- addenda: the least fixpoint, by reach ----
@@ -727,7 +1005,7 @@ impl<S: Store> Facts<S> {
         let mut out = own.clone();
         for s in own {
             let Some(sf) = self.store.get(&s) else { continue };
-            let FactClass::Snapshot(carries) = &sf.class else { continue };
+            let FactClass::Snapshot { carries, .. } = &sf.class else { continue };
             for x in carries.commits() {
                 out.extend(self.store.of_commit(x, Some(&on)).into_iter().filter(|n| self.store.get(n).is_some_and(|d| d.aspect == sf.aspect)));
             }
@@ -754,4 +1032,11 @@ pub(super) struct Taken {
     pub roles: BTreeSet<CommitId>,
     /// The new addenda.
     pub addenda: Vec<WriteId>,
+    /// The scopes of the requests forgotten holding a right.
+    pub scopes: BTreeSet<Scope>,
+}
+
+/// A role's place in `Role::ALL`.
+fn level(r: Role) -> usize {
+    Role::ALL.iter().position(|&x| x == r).unwrap_or(0)
 }

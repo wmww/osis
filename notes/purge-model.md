@@ -26,7 +26,7 @@ The three readings of a request whose right a later cut takes:
 - **(c) Never cut** (`-purge-at-key`: the right read at the request's key alone, "gone means gone"): a stolen key's backdated request stamped before the removal holds for good. Fails `purge safety`. Rejected: against a stolen key, "gone means gone" and "a removed key erases nothing" cannot both hold; the requirements choose the second (Deletion: "A purge counts only if its author had the right to make it, judged as an edit's validity is").
 
 ## The rule as modelled
-roles-model `paths` (`purges`, `holds`, `Names`, `Retention`; README.md, Paths, Purges): rule switches `purge_classes`, `purge_copies`, `own_cover` (the draft's readings, *taken*; `Rules::purging`, `Rules::purging_remake`), `purge_addenda` (OPEN-proposed, finding 41), `purge_at_key` (variant (c)). All off in `Rules::fixed`, which the unwired walk (osis-perm `paths`) differentially matches: its `purge` is the `author` class by author over held deltas, retention unread. A destruction's right reads no cut on an edge into its own thing stamped after it (spec/commits.md §5 Destruction); the walk does not refuse edge writes on a destroyed thing (content on it reads purged).
+roles-model `paths` (`purges`, `holds`, `Names`, `Retention`; README.md, Paths, Purges): rule switches `purge_classes`, `purge_copies`, `own_cover` (the draft's readings, *taken*; `Rules::purging`, `Rules::purging_remake`), `purge_addenda` (OPEN-proposed, finding 41), `purge_at_key` (variant (c)). All off in `Rules::fixed`. The unwired walk (osis-perm `paths`, notes/perm-paths.md, Purges) builds `Rules::purging` and is compared under it (every differential, the purge worlds at every node). A destruction's right reads no cut on an edge into its own thing ordered after it (spec/commits.md §5 Destruction); the walk does not refuse edge writes on a destroyed thing (content on it reads purged). An own cover stands by an applied explicit lowering of its writer listing it whatever that lowering takes at the reading node, its path having given write just before it.
 
 ## Results
 Purge worlds (`-- N paths-purge[-variant]`; module doc of `src/paths/purge.rs`): about 4 ms of CPU a world.
@@ -35,7 +35,7 @@ Purge worlds (`-- N paths-purge[-variant]`; module doc of `src/paths/purge.rs`):
 |---|---|---|---|
 | `paths-purge` (`Rules::purging`, the draft) / `-remake` (`Rules::purging_remake`) | 100,000 each (checks: alike 9.0M, could hold 2.67M, purge kept 700,000, own cover 50,936) | purge witnessed 115,482 (finding 41); nothing else | restored from a body 47,116; lost to the thief's window 1,838; lost, an honest purge fell 733 |
 | `-addenda` / `-remake-addenda` (finding 41's fix) | 100,000 each | 0 | restored 6,843; lost to the thief's window 1,130; honest loss 0 |
-| `-fixed` (the unwired walk: author class, held deltas) | 8,000 | purge kept 35,952, purge witnessed 5,107, own cover 1,249, alike 1,095, purge safety 223 (an `admin`-retention delta taken by the author class), could hold 193 | |
+| `-fixed` (`Rules::fixed`: author class, held deltas) | 8,000 | purge kept 35,952, purge witnessed 5,107, own cover 1,249, alike 1,095, purge safety 223 (an `admin`-retention delta taken by the author class), could hold 193 | |
 | `-at-key` (variant (c)) | 8,000 | purge safety 6,875, purge kept 1,836, purge witnessed 126 | |
 | `-no-copies` | 8,000 | alike 11,468, purge witnessed 9,117, purge kept 2,876 | |
 | `-no-own-cover` | 8,000 | own cover 1,102, purge kept 210, purge witnessed 9,176 | |

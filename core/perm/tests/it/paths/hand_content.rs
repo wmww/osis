@@ -692,7 +692,7 @@ fn an_addendum_vouches_for_no_commit_carrying_a_purge_request() {
     let base = vec![
         commit(1, 1, KH, vec![edge(KA, &[], KX, admin(), Some(&[]))]),
         commit(2, 1, KH, vec![edge(KA, &[], KB, admin(), Some(&[]))]),
-        commit(4, 2, KX, vec![admin_only(KT, &[KA], DeltaClass::Plain), Part { kind: PartKind::Delta(Delta { aspect: Ak::new("doc^.0").unwrap(), needs: R::Write, purge_author: 1, retention: PurgeBy::AuthorOrAdmin, class: DeltaClass::PurgeByAuthor { author: t(KA) } }), ..role_class(KT, &[KA]) }]),
+        commit(4, 2, KX, vec![admin_only(KT, &[KA], DeltaClass::Plain), Part { kind: PartKind::Delta(Delta { aspect: Ak::new("doc^.0").unwrap(), needs: R::Write, purge_author: 1, retention: PurgeBy::AuthorOrAdmin, class: DeltaClass::Purge { names: osis_perm::paths::Names::Author(t(KA)) } }), ..role_class(KT, &[KA]) }]),
         commit(5, 2, KX, vec![admin_only(KT, &[KA], DeltaClass::Plain)]),
         commit(7, 5, KH, vec![edge(KA, &[], KX, None, Some(&[]))]),
         commit(8, 6, KB, vec![admin_only(KT, &[KA], DeltaClass::Addendum { removal: c(7), list: Frontier::new([c(4), c(5)]) })]),
@@ -739,7 +739,7 @@ fn addendum(on: u32, removal: u64, list: &[u64]) -> Part {
 }
 
 fn snapshot(on: u32, aspect: &str, carries: &[u64]) -> Part {
-    doc(on, &[KA], aspect, DeltaClass::Snapshot { carries: Frontier::new(carries.iter().map(|&i| c(i))) })
+    doc(on, &[KA], aspect, DeltaClass::Snapshot { carries: Frontier::new(carries.iter().map(|&i| c(i))), stated: BTreeMap::new(), own: false })
 }
 
 fn vouch(on: u32, path: &[u32], removal: u64, list: &[u64]) -> Part {
@@ -897,7 +897,7 @@ fn a_counting_change_is_named() {
 // X's key rotation, which stays cut.
 #[test]
 fn no_snapshot_carries_a_role_commit() {
-    let snap = doc(KT, &[KA], "keys.0", DeltaClass::Snapshot { carries: Frontier::new([c(4)]) });
+    let snap = doc(KT, &[KA], "keys.0", DeltaClass::Snapshot { carries: Frontier::new([c(4)]), stated: BTreeMap::new(), own: false });
     let snap = Part { kind: PartKind::Delta(Delta { needs: R::Admin, ..match snap.kind { PartKind::Delta(d) => d, _ => unreachable!() } }), ..snap };
     let w = [admins(&[KX, KB]), vec![commit(4, 2, KX, vec![role_class(KT, &[KA])]), commit(5, 3, KB, vec![snap]), commit(7, 6, KH, vec![edge(KA, &[], KX, None, Some(&[5]))])]].concat();
     let p = verdicts(&w);

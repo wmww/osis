@@ -7,17 +7,21 @@
 
 use super::{input, rules, MODES};
 use osis_base::{CommitId, Role, Tid};
-use osis_perm::paths::{Changed, Commit, Content, History, Key, Paths, Status, Store};
+use osis_perm::paths::{Changed, Commit, Content, History, Key, Paths, Right, Status, Store};
 use osis_perm::WriteId;
 use roles_model::paths as m;
 use roles_model::Rng;
 use std::collections::{BTreeMap, BTreeSet};
 
 type Finals = BTreeMap<(Tid, Tid), (Option<Role>, Option<Role>)>;
-type Reading = (BTreeMap<WriteId, Status>, BTreeMap<(Tid, Tid), History>, Finals, BTreeMap<WriteId, Content>, BTreeSet<CommitId>, BTreeSet<WriteId>, BTreeMap<(Tid, Tid), [Option<Key>; 2]>);
+type Reading = (BTreeMap<WriteId, Status>, BTreeMap<(Tid, Tid), History>, Finals, BTreeMap<WriteId, Content>, BTreeSet<CommitId>, BTreeSet<WriteId>, BTreeMap<(Tid, Tid), [Option<Key>; 2]>, Purges);
+/// The purged copies, each request's right, each edge-class part's chained-ness.
+type Purges = (BTreeSet<CommitId>, BTreeMap<WriteId, Right>, BTreeMap<WriteId, bool>);
 
 pub(super) fn reading<S: Store>(p: &Paths<S>) -> Reading {
-    (p.statuses(), p.histories(), p.finals(), p.contents(), p.copies(), p.purged(), p.chained())
+    let rights = p.store().all().into_iter().filter_map(|id| Some((id, p.right(&id)?))).collect();
+    let chained = p.statuses().into_keys().filter_map(|id| Some((id, p.is_chained(&id)?))).collect();
+    (p.statuses(), p.histories(), p.finals(), p.contents(), p.copies(), p.purged(), p.chained(), (p.purged_copies(), rights, chained))
 }
 
 fn valid(c: Option<&Content>) -> bool {
@@ -35,8 +39,8 @@ pub(super) fn check(a: &Paths, b: &Paths, ch: &Changed) -> Option<String> {
 /// `check`, where every part of a commit `renewed` (updated in place: `Paths::update`) may be
 /// reported as new.
 pub(super) fn check_renewed(a: &Paths, b: &Paths, ch: &Changed, renewed: &BTreeSet<CommitId>) -> Option<String> {
-    let (sa, ha, fa, ca, _, pa, xa) = reading(a);
-    let (sb, hb, fb, cb, _, pb, xb) = reading(b);
+    let (sa, ha, fa, ca, _, pa, xa, (_, ra, _)) = reading(a);
+    let (sb, hb, fb, cb, _, pb, xb, (_, rb, _)) = reading(b);
     let mut want = Changed::default();
     for (id, s) in &sb {
         if sa.get(id) != Some(s) {
@@ -73,6 +77,35 @@ pub(super) fn check_renewed(a: &Paths, b: &Paths, ch: &Changed, renewed: &BTreeS
     if (&ch.edges, &ch.cuts, &ch.regrant) != (&want.edges, &want.cuts, &want.regrant) {
         return Some(format!("reported {ch:?}, readings differ by {want:?}"));
     }
+    // chained-ness: exactly the parts that flipped (a part of a commit updated in place may be
+    // reported as it leaves and comes back)
+    for id in sa.keys().chain(sb.keys()) {
+        if a.is_chained(id).unwrap_or(false) != b.is_chained(id).unwrap_or(false) {
+            want.chained.insert(*id);
+        }
+    }
+    if !want.chained.is_subset(&ch.chained) || ch.chained.iter().any(|id| !want.chained.contains(id) && !renewed.contains(&id.0)) {
+        return Some(format!("reported chained {:?}, flipped {:?}", ch.chained, want.chained));
+    }
+    // purges: exactly the scopes of the requests whose right changed (arrived or went holding
+    // one), each request's stored right its right judged now
+    if let Some((id, r)) = rb.iter().find(|(id, r)| b.store().right(id) != **r) {
+        return Some(format!("request {id:?}: stored right {:?}, judged {r:?}", b.store().right(id)));
+    }
+    let scope = |id: &WriteId| a.store().get(id).or_else(|| b.store().get(id)).and_then(|f| f.scope()).unwrap();
+    let mut renewed_scopes = BTreeSet::new();
+    for id in ra.keys().chain(rb.keys()) {
+        let (x, y) = (ra.get(id).copied().unwrap_or_default(), rb.get(id).copied().unwrap_or_default());
+        if x != y {
+            want.purges.insert(scope(id));
+        }
+        if renewed.contains(&id.0) && (x.any() || y.any()) {
+            renewed_scopes.insert(scope(id));
+        }
+    }
+    if !want.purges.is_subset(&ch.purges) || ch.purges.iter().any(|s| !want.purges.contains(s) && !renewed_scopes.contains(s)) {
+        return Some(format!("reported purges {:?}, rights changed for {:?}", ch.purges, want.purges));
+    }
     let (judged, moved) = rejudged(a, b, ch);
     if let Some(id) = moved.difference(&judged).next() {
         return Some(format!("delta {id:?} moved from {:?} to {:?} (purged {} to {}) unreached by {ch:?}", ca.get(id), cb.get(id), pa.contains(id), pb.contains(id)));
@@ -80,16 +113,18 @@ pub(super) fn check_renewed(a: &Paths, b: &Paths, ch: &Changed, renewed: &BTreeS
     None
 }
 
-/// The deltas an engine holding only `ch` and the indexes (`Paths::rests`, `Paths::naming`) judges
-/// again after the update from `a` to `b`: those `ch` reaches (new or in `parts`, its commit in
-/// `named`, a hop in `edges` before its position, in `cuts` at or after it, in `regrant`), then,
-/// while one judged again moved, every delta it names; and the deltas whose verdict or purge moved.
+/// The deltas an engine holding only `ch` and the indexes (`Paths::rests`, `Paths::naming`, its
+/// deltas' facts) judges again after the update from `a` to `b`: those `ch` reaches (new or in
+/// `parts`, its commit in `named`, a hop in `edges` before its position, in `cuts` at or after
+/// it, in `regrant`, a scope in `purges` covering it), then, while one judged again moved, every
+/// delta it names; and the deltas whose verdict or purge moved.
 pub(super) fn rejudged(a: &Paths, b: &Paths, ch: &Changed) -> (BTreeSet<WriteId>, BTreeSet<WriteId>) {
     let (ca, cb, pa, pb) = (a.contents(), b.contents(), a.purged(), b.purged());
     let direct = |id: &WriteId| -> bool {
         ch.parts.contains(id)
             || ch.named.contains(&id.0)
             || b.rests(id).is_some_and(|(hops, pos)| hops.iter().any(|e| ch.edges.get(e).is_some_and(|k| *k < pos) || ch.cuts.get(e).is_some_and(|k| *k >= pos) || ch.regrant.contains(e)))
+            || b.store().get(id).is_some_and(|f| ch.purges.iter().any(|s| s.covers(&f.on, &f.aspect, f.ts, &f.commit(), f.purge_author.as_ref())))
     };
     let moved: BTreeSet<WriteId> = cb.keys().filter(|id| ca.get(id) != cb.get(id) || pa.contains(id) != pb.contains(id)).copied().collect();
     let names: Vec<(WriteId, Vec<WriteId>)> = cb.keys().map(|id| (*id, b.naming(id))).collect();
@@ -156,7 +191,19 @@ fn arrivals(start: u64, n: u64) -> Vec<String> {
         let (w, v) = super::content::world(i);
         shuffled(&w, &v, i).map(|d| format!("content world {i}: {d}"))
     });
-    tiny.chain(content).take(3).collect()
+    tiny.chain(content).chain(purges(start, n, shuffled)).take(3).collect()
+}
+
+/// Purge worlds `start..start + n / 4` (each about twice a content world's commits), each at one
+/// node's view (in turn), `f` run on each; the failures.
+fn purges(start: u64, n: u64, f: fn(&m::World, &m::View, u64) -> Option<String>) -> impl Iterator<Item = String> {
+    (start..start + n.div_ceil(4)).filter_map(move |i| {
+        let pw = m::purge_world(i, &rules());
+        let node = pw.nodes()[i as usize % pw.nodes().len()];
+        let v = pw.view_at(node, None);
+        let w = super::as_known(&pw.w, &v);
+        f(&w, &v, i).map(|d| format!("purge world {i} node {node}: {d}"))
+    })
 }
 
 // What an engine judges again from `Changed` (`rejudged`) holds every delta whose verdict moved,
@@ -202,7 +249,7 @@ fn paths_incremental_agrees_large() {
 /// Every arrival order of `w`'s commits (all held, trusting nothing): each `Changed` exact, the
 /// end as from scratch; from scratch as the model reads it.
 #[track_caller]
-fn every_order(w: &m::World) {
+pub(super) fn every_order(w: &m::World) {
     super::agree_all(w, &[]);
     let inp = input(w, &m::View::all(w));
     let n = inp.commits.len();
@@ -383,7 +430,8 @@ fn forgets(start: u64, n: u64) -> Vec<String> {
         let (w, v) = super::content::world(i);
         forgetting(&w, &v, i).or_else(|| leaves_arriving(&w, &v, i)).map(|d| format!("content world {i}: {d}"))
     });
-    tiny.chain(content).take(3).collect()
+    let purge = purges(start, n, |w, v, i| forgetting(w, v, i).or_else(|| leaves_arriving(w, v, i)));
+    tiny.chain(content).chain(purge).take(3).collect()
 }
 
 // notes/perm-paths.md, Forget and update: any order of adds and forgets (a forget of a commit not

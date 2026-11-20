@@ -2,12 +2,14 @@
 //! notes/a1-spec/permissions.md §1, §2, §5.1, §5.2, §6): every edge-class part (edge writes,
 //! vouches) is judged along the one path its commit states for its thing, in key order, each
 //! lowering judged once, in two walks (vouch entries unread, then read); every delta is judged
-//! along its path by point queries on the second walk. Not yet called by the engine (A1 steps 2
-//! and 3 wire it in).
+//! along its path by point queries on the second walk, and a purge request's right as a delta of
+//! it needing each role its class needs, so whether a delta is purged is a reading too (§6). Not
+//! yet called by the engine (A1 steps 2 and 3 wire it in).
 //!
 //! The input is plain structs, independent of the header's types; the output is per part
-//! (`Status`, `Content`), per edge (history, point queries, final values), the trusted writes
-//! left void, the dispute set and, per update, `Changed`.
+//! (`Status`, `Content`, chained-ness), per delta and copy (purged), per request (its right,
+//! what it could hold), per edge (history, point queries, final values), the trusted writes left
+//! void, the dispute set and, per update, `Changed`.
 
 mod content;
 mod path;
@@ -18,7 +20,7 @@ use osis_base::{Ak, CommitId, PurgeBy, Role, Tid, Ts};
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
 
-pub use content::{Fact, FactClass, MemStore, Pair, Store};
+pub use content::{Fact, FactClass, MemStore, NameKey, Pair, Store};
 pub use walk::{Applied, Counts, History, Key};
 
 /// A held commit's parts.
@@ -84,13 +86,84 @@ pub enum DeltaClass {
     /// A role-class delta judged like content (`secrets.0`, `keys.0`, `sync.0`, draft §5.1).
     RoleClass,
     /// A compaction snapshot's delta, carrying copies of these commits' writes on its thing and
-    /// aspect; a list naming the snapshot names them (draft §5.1 Own cover).
-    Snapshot { carries: Frontier },
+    /// aspect; a list naming the snapshot names them (draft §5.1 Own cover). `stated`: what it
+    /// states of each carried commit (spec/crdt.md §8 `Facts`), read for a copy whose commit is not
+    /// held (draft §6 Copies); `own`: marked as its signer's own cover (draft §5.2 Own cover).
+    Snapshot { carries: Frontier, stated: BTreeMap<CommitId, Stated>, own: bool },
     /// An `addenda.0` entry its delta creates (draft §5.2 Addenda).
     Addendum { removal: CommitId, list: Frontier },
-    /// A purge request by author on this part's thing and aspect (draft §6), judged as a delta
-    /// needing write along its path.
-    PurgeByAuthor { author: Tid },
+    /// A purge request on this part's thing (draft §6), naming deltas of its aspect (a
+    /// destruction: of every aspect): an edit, judged as a delta along its path.
+    Purge { names: Names },
+}
+
+/// What a purge request names on its thing (draft §6; spec/wire.md §4 field 8).
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub enum Names {
+    /// The deltas of its aspect stamped before it whose purge author is exactly this thing.
+    Author(Tid),
+    /// Every delta of its aspect stamped before it.
+    Aspect,
+    /// This commit's delta of its aspect, stamped before it.
+    Commit(CommitId),
+    /// A destruction (a request on `created.0`): every delta of the thing, whatever its aspect and
+    /// `ts`, by the `admin` right alone.
+    Destroy,
+}
+
+/// What a snapshot states of a commit it carries (spec/crdt.md §8 `Facts`): its stamp, purge
+/// author and retention.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Stated {
+    pub ts: Ts,
+    pub purge_author: Tid,
+    pub retention: PurgeBy,
+}
+
+/// A purge request's description of what it names (its thing, aspect, selector and stamp): the
+/// engine finds the deltas and copies it covers in its own index (`Scope::covers`).
+#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct Scope {
+    pub on: Tid,
+    pub aspect: Ak,
+    pub names: Names,
+    pub ts: Ts,
+}
+
+impl Scope {
+    /// Whether it names the delta (or copy) of `commit` on `on`'s `aspect` stamped `ts` with
+    /// purge author `author` (draft §6: by author exactly that author's, by aspect every one, by
+    /// commit that one, each stamped before it; a destruction every delta of the thing).
+    pub fn covers(&self, on: &Tid, aspect: &Ak, ts: Ts, commit: &CommitId, author: Option<&Tid>) -> bool {
+        *on == self.on
+            && match &self.names {
+                Names::Destroy => true,
+                n => {
+                    *aspect == self.aspect
+                        && ts < self.ts
+                        && match n {
+                            Names::Author(a) => author == Some(a),
+                            Names::Commit(c) => c == commit,
+                            Names::Aspect | Names::Destroy => true,
+                        }
+                }
+            }
+    }
+}
+
+/// The right a purge request holds (draft §6 Holding a role): admin, and write, each judged as a
+/// delta of it needing that role (a later cut below write that its list leaves out takes write
+/// alone where a cut below admin listing it keeps admin). A destruction holds admin alone.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct Right {
+    pub admin: bool,
+    pub write: bool,
+}
+
+impl Right {
+    pub fn any(self) -> bool {
+        self.admin || self.write
+    }
 }
 
 /// What the settled walk did with an edge-class part.
@@ -127,12 +200,15 @@ pub enum By {
     Vouched,
     /// Its path is re-granted.
     Regranted,
+    /// An own cover whose writer's applied lowering lists it (draft §5.2 Own cover).
+    OwnCover,
 }
 
 /// What an update changed. A delta's verdict can change only where: it is in `parts` (new), an
 /// edge of its path is in `edges` at a key before its position, in `cuts` at a key at or after
-/// it, or in `regrant`, its commit is in `named`, or an addendum in `parts` names it; a purge
-/// follows its requests.
+/// it, or in `regrant`, its commit is in `named`, or an addendum in `parts` names it. Whether a
+/// delta or copy is purged changes only where it is new, a `purges` scope covers it, or (a copy)
+/// a snapshot carrying it changed its verdict.
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct Changed {
     /// Edge-class parts whose status changed, every new part, addenda whose validity changed.
@@ -143,8 +219,15 @@ pub struct Changed {
     pub cuts: BTreeMap<(Tid, Tid), Key>,
     /// Edges whose final role or first chained point changed.
     pub regrant: BTreeSet<(Tid, Tid)>,
-    /// Commits whose namers changed: carried by a new snapshot, or a counting entry's.
+    /// Commits whose namers changed: carried by a new snapshot, or a counting entry's; an own
+    /// cover a lowering of its signer lists whose status changed.
     pub named: BTreeSet<CommitId>,
+    /// What the requests whose right changed, arrived holding one or went name (draft §6): a
+    /// description, never a list of deltas.
+    pub purges: BTreeSet<Scope>,
+    /// Edge-class parts whose chained-ness changed (draft §4), a held one turning chained on
+    /// arrival and a chained one forgotten included.
+    pub chained: BTreeSet<WriteId>,
 }
 
 /// A counting entry: (removal, commit, the vouch's thing).
@@ -341,8 +424,13 @@ impl<S: Store> Paths<S> {
         ch.named.extend(taken.carried);
         ch.named.extend(through);
         ch.named.extend(named);
+        let own = self.facts.own_listed(&ch.parts);
+        ch.named.extend(own);
         let addenda = self.facts.addenda_update(&self.timeline, &ch, &taken.addenda);
         ch.parts.extend(addenda);
+        let purges = self.facts.rights_update(&self.timeline, &ch, &taken.deltas);
+        ch.purges.extend(purges);
+        ch.purges.extend(taken.scopes);
         ch.parts.extend(taken.deltas);
         ch
     }
@@ -490,10 +578,61 @@ impl<S: Store> Paths<S> {
         self.facts.copies(&self.timeline, &mut Counts::default())
     }
 
-    /// Held deltas a valid request by author holds the right over (draft §6, `author` class).
+    /// Held plain deltas a request holds a right over (draft §6): a full reading of `is_purged`.
     pub fn purged(&self) -> BTreeSet<WriteId> {
         let mut c = Counts::default();
-        self.facts.ids().into_iter().filter(|id| self.facts.purged(&self.timeline, id, &mut c)).collect()
+        self.facts.ids().into_iter().filter(|id| self.facts.purged(id, &mut c)).collect()
+    }
+
+    /// Whether a request holds a right over held delta `id` (draft §6): a point query over the
+    /// requests that name it and hold a right (by its thing, aspect, purge author, commit, stamp).
+    pub fn is_purged(&self, id: &WriteId) -> bool {
+        self.facts.purged(id, &mut Counts::default())
+    }
+
+    /// `is_purged`, counting its work into `counts`.
+    pub fn is_purged_counted(&self, id: &WriteId, counts: &mut Counts) -> bool {
+        self.facts.purged(id, counts)
+    }
+
+    /// The copies (`copies`) of commits not held on the snapshot's thing and aspect that a request
+    /// holds a right over, judged by what every valid held snapshot carrying them states (draft
+    /// §6 Copies).
+    pub fn purged_copies(&self) -> BTreeSet<CommitId> {
+        self.facts.purged_copies(&self.timeline, &mut Counts::default())
+    }
+
+    /// Whether a request holds a right over the copy of `commit`'s write on `on`'s `aspect` (a
+    /// point query; false where no valid held snapshot shows one).
+    pub fn copy_purged(&self, commit: &CommitId, on: &Tid, aspect: &Ak) -> bool {
+        self.facts.copy_purged(&self.timeline, commit, on, aspect, &mut Counts::default())
+    }
+
+    /// The right a held purge request holds (draft §6 Holding a role): a point query along its
+    /// path, as a delta's validity.
+    pub fn right(&self, id: &WriteId) -> Option<Right> {
+        self.facts.right_of(&self.timeline, id, &mut Counts::default())
+    }
+
+    /// Whether held request `id` could hold role `r` (draft spec/commits.md §4 Could hold the
+    /// right): every edge of its path a record edge or set at `r` or above by some held edge
+    /// write, whatever that write's validity. What a node that cannot judge acts on.
+    pub fn could_give(&self, id: &WriteId, r: Role) -> Option<bool> {
+        self.facts.could_give(id, r)
+    }
+
+    /// Whether held request `id` could hold the right over a delta of `retention` whose purge
+    /// author is `author` (draft spec/commits.md §4 Could hold the right): admin on every edge,
+    /// or write where the class allows a writer (`writer`; `author_or_admin` where its path holds
+    /// the author). A destruction: admin.
+    pub fn could_hold(&self, id: &WriteId, retention: PurgeBy, author: Option<&Tid>) -> Option<bool> {
+        self.facts.could_hold(id, retention, author)
+    }
+
+    /// Whether held edge-class part `id` is chained (draft §4 Chained writes; a vouch, a
+    /// self-removal by admin on its path, a finalize by write).
+    pub fn is_chained(&self, id: &WriteId) -> Option<bool> {
+        self.timeline.is_chained(id)
     }
 
     /// Per edge, the key of its first chained write giving write and giving admin (draft §4).
@@ -507,8 +646,8 @@ impl<S: Store> Paths<S> {
         self.facts.rests(id)
     }
 
-    /// What names a held delta: addenda listing it, snapshots carrying it, requests by its purge
-    /// author. A delta's verdict follows theirs (`Changed`).
+    /// What names a held delta: addenda listing it, snapshots carrying it. A delta's verdict
+    /// follows theirs (`Changed`); its purge follows `Changed::purges`.
     pub fn naming(&self, id: &WriteId) -> Vec<WriteId> {
         self.facts.naming(id)
     }

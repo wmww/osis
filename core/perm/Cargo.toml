@@ -18,4 +18,5 @@ workspace = true
 osis-base.workspace = true
 
 [dev-dependencies]
+held-model.workspace = true
 roles-model.workspace = true

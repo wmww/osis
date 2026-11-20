@@ -1,33 +1,39 @@
 //! The walk along stated paths against its oracle, core/test/roles-model `paths` under
-//! `Rules::fixed` (vouches read by the second walk; A1 step 3: notes/perm-paths.md; the draft
-//! spec notes/a1-spec/permissions.md §1, §2, §5.1, §5.2, §6). For each node's view of a world
-//! (what it holds, the frontier leaves it sees, its trust set) both read: every edge-class part's
-//! status, every edge's history, the final roles and invites, the trusted writes left void, every
-//! delta's validity, the copies valid snapshots show, the purged deltas and the dispute set.
+//! `Rules::purging` (vouches read by the second walk, purge rights by class, copies, own covers;
+//! A1 steps 3 and 4: notes/perm-paths.md; the draft spec notes/a1-spec/permissions.md §1, §2,
+//! §5.1, §5.2, §6). For each node's view of a world (what it holds, the frontier leaves it sees,
+//! its trust set) both read: every edge-class part's status, every edge's history, the final
+//! roles and invites, the trusted writes left void, every delta's validity, the copies valid
+//! snapshots show, the purged deltas and copies, what a request could hold, and the dispute set.
 //! spec/permissions.md §5.1, §5.2 (the draft replaces them: notes/a1-spec/permissions.md).
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::indexing_slicing)]
 
+mod chained;
 mod content;
 mod counts;
 mod dump;
 mod hand;
 mod hand_content;
+mod hand_purge;
 mod incremental;
+mod purge;
 mod reach;
 mod shapes;
 mod single;
 
 use crate::common::{seeded, sharded};
 use osis_base::{Ak, CommitId, PurgeBy, Role, Tid, Ts, WallMs};
-use osis_perm::paths::{Commit, Content, Delta, DeltaClass, EdgeWrite, Part, PartKind, Paths, Status};
+use osis_perm::paths::{Commit, Content, Delta, DeltaClass, EdgeWrite, Names, Part, PartKind, Paths, Stated, Status};
 use osis_perm::{Edge, Frontier, WriteId};
 use roles_model::paths::{self as m, Honesty, Id, Kind, Reading, Rules, Thing, TinyMode, View, World};
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
 
-/// The model's rules: `Rules::fixed` (vouches counted by the first walk, read by the second).
+/// The model's rules: `Rules::purging` (`Rules::fixed`, vouches counted by the first walk and
+/// read by the second, with the draft's purge readings: rights by class and selector, requests
+/// reaching copies, own covers standing with their removal).
 pub fn rules() -> Rules {
-    Rules::fixed()
+    Rules::purging()
 }
 
 pub fn tid(t: Thing) -> Tid {
@@ -51,20 +57,43 @@ fn role(r: roles_model::Role) -> Option<Role> {
     }
 }
 
-/// A delta of the model's content-class kinds: content and purge requests on `doc.0`, covers its
-/// snapshots, addenda on `addenda.0`; retention author or admin (the model's purge right is the
-/// `author` class).
+pub fn retention(r: m::Retention) -> PurgeBy {
+    match r {
+        m::Retention::Admin => PurgeBy::Admin,
+        m::Retention::AuthorOrAdmin => PurgeBy::AuthorOrAdmin,
+        m::Retention::Writer => PurgeBy::Writer,
+    }
+}
+
+fn ts(t: u32) -> Ts {
+    Ts::make(WallMs(t as u64), 0).unwrap()
+}
+
+/// A delta of the model's content-class kinds: content and purge requests on `doc.0` (a
+/// destruction on `created.0`), covers its snapshots (stating each carried commit's own stamp,
+/// purge author and retention, as an honest snapshot does), addenda on `addenda.0`.
 fn delta(w: &World, i: Id) -> Delta {
     let k = &w.commits[i];
     let ids = |s: &m::Set| Frontier::new(s.iter().map(|&j| cid(w.cid(j))));
     let (aspect, class) = match &k.kind {
         Kind::Content => ("doc.0", DeltaClass::Plain),
-        Kind::Purge { names: m::Names::Author(author) } => ("doc.0", DeltaClass::PurgeByAuthor { author: tid(*author) }),
-        Kind::Cover { carries } => ("doc.0", DeltaClass::Snapshot { carries: ids(carries) }),
+        Kind::Purge { names } => {
+            let names = match *names {
+                m::Names::Author(a) => Names::Author(tid(a)),
+                m::Names::Aspect => Names::Aspect,
+                m::Names::Commit(j) => Names::Commit(cid(w.cid(j))),
+                m::Names::Destroy => Names::Destroy,
+            };
+            (if names == Names::Destroy { "created.0" } else { "doc.0" }, DeltaClass::Purge { names })
+        }
+        Kind::Cover { carries } => {
+            let stated = carries.iter().map(|&j| (cid(w.cid(j)), Stated { ts: ts(w.commits[j].ts), purge_author: tid(w.purge_author(j)), retention: retention(w.commits[j].ret) })).collect();
+            ("doc.0", DeltaClass::Snapshot { carries: ids(carries), stated, own: k.own })
+        }
         Kind::Addendum { removal, list } => ("addenda.0", DeltaClass::Addendum { removal: cid(w.cid(*removal)), list: ids(list) }),
         _ => unreachable!("content-class kinds only"),
     };
-    Delta { aspect: Ak::new(aspect).unwrap(), needs: Role::Write, purge_author: w.chain(i).iter().position(|&t| t == w.purge_author(i)).unwrap() as u32, retention: PurgeBy::AuthorOrAdmin, class }
+    Delta { aspect: Ak::new(aspect).unwrap(), needs: Role::Write, purge_author: w.chain(i).iter().position(|&t| t == w.purge_author(i)).unwrap() as u32, retention: retention(k.ret), class }
 }
 
 /// A world as one node's input: its held parts, commits grouped by the model's commit ID, each
@@ -103,7 +132,7 @@ pub fn input(w: &World, v: &View) -> Input {
             };
             out.push(Part { on: tid(k.on), path: k.path.iter().map(|&t| tid(t)).collect(), kind });
         }
-        commits.push(Commit { id: cid(c), ts: Ts::make(WallMs(first.ts as u64), 0).unwrap(), signer: tid(first.signer), parts: out });
+        commits.push(Commit { id: cid(c), ts: ts(first.ts), signer: tid(first.signer), parts: out });
     }
     let trust = v.trust.iter().filter_map(|i| ids.get(i).copied()).collect();
     Input { records, commits, trust, ids }
@@ -174,6 +203,22 @@ fn compare(w: &World, v: &View, rules: &Rules, rd: &Reading, inp: &Input, p: &mu
     let purged: BTreeSet<WriteId> = rd.purged.iter().filter_map(|i| inp.ids.get(i).copied()).collect();
     if purged != p.purged() {
         return Some(format!("purged: model {purged:?}, walk {:?}", p.purged()));
+    }
+    let copies: BTreeSet<CommitId> = rd.purged.iter().filter(|i| !v.held.contains(i)).map(|&i| cid(w.cid(i))).collect();
+    if copies != p.purged_copies() {
+        return Some(format!("purged copies: model {copies:?}, walk {:?}", p.purged_copies()));
+    }
+    // what a node that cannot judge acts on: each request's path as could give admin and write
+    for (&i, id) in &inp.ids {
+        if !matches!(w.commits[i].kind, Kind::Purge { .. }) {
+            continue;
+        }
+        for (r, mr) in [(Role::Admin, roles_model::Role::Admin), (Role::Write, roles_model::Role::Write)] {
+            let (a, b) = (m::could_hold(w, &v.held, i, mr), p.could_give(id, r));
+            if Some(a) != b {
+                return Some(format!("request {i} could give {r:?}: model {a}, walk {b:?}"));
+            }
+        }
     }
     // histories: the applied writes on each edge, in key order
     let mine: BTreeMap<(Tid, Tid), Vec<Id>> = p

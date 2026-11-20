@@ -10,7 +10,7 @@ use super::{input, rules, MODES};
 use crate::common::{seeded, sharded};
 use osis_base::Tid;
 use osis_base::{Ak, CommitId, PurgeBy, Role, Ts, WallMs};
-use osis_perm::paths::{By, Commit, Content, Delta, DeltaClass, EdgeWrite, Fact, Key, MemStore, Pair, Part, PartKind, Paths, Status, Store};
+use osis_perm::paths::{By, Commit, Content, Delta, DeltaClass, EdgeWrite, Fact, Key, MemStore, NameKey, Names, Pair, Part, PartKind, Paths, Right, Status, Store};
 use std::ops::Bound;
 use osis_perm::{Edge, Frontier, WriteId};
 use std::sync::Arc;
@@ -173,8 +173,20 @@ impl Store for Reversed {
     fn carrying(&self, c: &CommitId) -> Vec<WriteId> {
         rev(self.0.carrying(c))
     }
-    fn requests(&self, on: &Tid, aspect: &Ak, author: &Tid) -> Vec<WriteId> {
-        rev(self.0.requests(on, aspect, author))
+    fn requests(&self, key: &NameKey, after: Bound<Ts>) -> Vec<WriteId> {
+        rev(self.0.requests(key, after))
+    }
+    fn requests_through(&self, e: &Pair, from: Bound<Key>, to: Bound<Key>) -> Vec<WriteId> {
+        rev(self.0.requests_through(e, from, to))
+    }
+    fn right(&self, id: &WriteId) -> Right {
+        self.0.right(id)
+    }
+    fn set_right(&mut self, id: &WriteId, right: Right) {
+        self.0.set_right(id, right)
+    }
+    fn own_covers(&self, signer: &Tid) -> Vec<WriteId> {
+        rev(self.0.own_covers(signer))
     }
     fn addenda_through(&self, e: &Pair, from: Bound<Key>, to: Bound<Key>) -> Vec<WriteId> {
         rev(self.0.addenda_through(e, from, to))
@@ -365,6 +377,62 @@ fn every_forget_of_a_world_of_every_case_reads_as_from_scratch() {
     assert_eq!(p.counting().len(), 1);
     for trust in [BTreeSet::new(), BTreeSet::from([WriteId(cm(5), 0)]), BTreeSet::from([WriteId(cm(6), 0)])] {
         every_forget(&trust, &c);
+    }
+}
+
+/// A `doc.0` delta on `on` along `path` of `retention`, its signer its purge author.
+fn doc(on: u32, path: &[u32], retention: PurgeBy) -> Part {
+    let d = Delta { aspect: Ak::new("doc.0").unwrap(), needs: Role::Write, purge_author: 0, retention, class: DeltaClass::Plain };
+    Part { on: th(on), path: path.iter().map(|&x| th(x)).collect(), kind: PartKind::Delta(d) }
+}
+
+/// A purge request on `on` along `path` naming `names` on `doc.0` (a destruction: on `created.0`).
+fn req(on: u32, path: &[u32], names: Names) -> Part {
+    let aspect = Ak::new(if names == Names::Destroy { "created.0" } else { "doc.0" }).unwrap();
+    let d = Delta { aspect, needs: Role::Write, purge_author: 0, retention: PurgeBy::AuthorOrAdmin, class: DeltaClass::Purge { names } };
+    Part { on: th(on), path: path.iter().map(|&x| th(x)).collect(), kind: PartKind::Delta(d) }
+}
+
+/// A world of every purge case (draft §6): H grants X admin on A (1); H's `writer` delta on A
+/// (2); X's request by aspect (3) and destruction of A (4); H removes X listing nothing (5: it takes
+/// the request's right, not the destruction's: a cut on an edge into A stamped after it); H grants
+/// X admin again (6: the request re-granted, as an edit made before the cut would be).
+fn purge_world() -> Vec<Commit> {
+    let admin = Some(Role::Admin);
+    vec![
+        mk(1, 1, H, vec![ew(A, &[], X, admin, &[])]),
+        mk(2, 2, H, vec![doc(A, &[], PurgeBy::Writer)]),
+        mk(3, 3, X, vec![req(A, &[], Names::Aspect)]),
+        mk(4, 4, X, vec![req(A, &[], Names::Destroy)]),
+        mk(5, 5, H, vec![ew(A, &[], X, None, &[])]),
+        mk(6, 6, H, vec![ew(A, &[], X, admin, &[])]),
+    ]
+}
+
+// spec/permissions.md §6: draft purges a reading, restore: in every arrival order and under every
+// subset of the purge world forgotten, purges read as from scratch, `Changed` exact (each request
+// whose right moved reported by its scope), the single walk alike; without the destruction the
+// removal takes the request's right and the re-grant gives it back.
+#[test]
+fn every_order_and_forget_of_a_purge_world_reads_as_from_scratch() {
+    let c = purge_world();
+    let d = WriteId(cm(2), 0);
+    let read = |cs: &[Commit]| Paths::evaluate(&recs(), BTreeSet::new(), cs).purged().contains(&d);
+    let without = |gone: &[u64]| c.iter().filter(|x| !gone.iter().any(|g| x.id == cm(*g))).cloned().collect::<Vec<_>>();
+    assert!(read(&c) && read(&without(&[6])) && read(&without(&[3, 6])));
+    assert!(!read(&without(&[4, 6])) && read(&without(&[4])) && read(&without(&[4, 5])));
+    for trust in [BTreeSet::new(), BTreeSet::from([WriteId(cm(5), 0)])] {
+        every_forget(&trust, &c);
+    }
+    let scratch = Paths::evaluate(&recs(), BTreeSet::new(), &c);
+    for order in perms(c.len()) {
+        let mut p = Paths::new(&recs(), BTreeSet::new());
+        for &k in &order {
+            let before = p.clone();
+            let ch = p.add(std::slice::from_ref(&c[k]));
+            assert_eq!(check(&before, &p, &ch), None, "order {order:?}, adding {k}");
+        }
+        assert!(reading(&p) == reading(&scratch), "order {order:?}");
     }
 }
 

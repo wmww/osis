@@ -466,6 +466,8 @@ struct Journal {
     edges: BTreeMap<E, Noted>,
     /// Per edge, its first chained keys before the update.
     chain: BTreeMap<E, [Option<Key>; 2]>,
+    /// Per part, its ID and whether it was chained before the update.
+    chained: BTreeMap<Slot, (WriteId, bool)>,
 }
 
 impl Walk {
@@ -803,8 +805,8 @@ impl Walk {
             if it.vouch.is_some() {
                 comp.vouches.insert(s);
             }
-            let chained = it.edge.as_ref().is_some_and(|ei| ei.sets.is_some());
-            if self.timeline && chained {
+            // every edge-class part is judged chained or not; those setting an edge set it
+            if self.timeline {
                 self.comp_mut(root).chain.insert(it.key, s);
                 self.chain_dirty.entry(root).or_default().insert((it.key, s));
                 for &h in it.path.iter().collect::<BTreeSet<_>>() {
@@ -1174,6 +1176,11 @@ impl Walk {
                 out.regrant.insert(self.name(e));
             }
         }
+        for (s, (id, was)) in j.chained {
+            if was != (!self.dead[s] && self.chained[s]) {
+                out.chained.insert(id);
+            }
+        }
         out
     }
 
@@ -1519,20 +1526,35 @@ impl Walk {
         while let Some((k, s)) = todo.pop_first() {
             self.counts.chained += 1;
             let it = &self.items[s];
-            let Some((e, v)) = it.edge.as_ref().and_then(|ei| Some((ei.e, ei.sets?))) else { continue };
             let cs = k.commit_start();
             // set at `r` (role, or invite) or above by a chained write of an earlier commit
             let set = |h: E, n: usize| self.record[h] || self.chain_min(h, n).is_some_and(|f| f < cs);
-            let now = !self.dead[s] && {
-                let admin = it.path.iter().all(|&h| set(h, ROLE + 3));
-                let lvl = (v.invite <= Some(v.role) && v.role < Role::Admin && v.alive_at(Some(it.ts))).then_some(v.role);
-                let invited = lvl.is_some_and(|l| it.path.split_last().is_some_and(|(last, before)| set(*last, INVITE + ri(l)) && before.iter().all(|&h| set(h, ROLE + ri(l)))));
-                admin || invited
-            };
+            let all = |n: usize| it.path.iter().all(|&h| set(h, n));
+            let now = !self.dead[s]
+                && it.shape_well
+                && match &it.edge {
+                    // a vouch, by admin on its thing; a self-removal, by admin up to its holder
+                    None => all(ROLE + 3),
+                    Some(_) if it.leave => all(ROLE + 3),
+                    // a finalize, by write on its target
+                    Some(ei) if ei.finalize => all(ROLE + ri(Role::Write)),
+                    Some(ei) => {
+                        let lvl = ei.value.filter(|v| v.invite <= Some(v.role) && v.role < Role::Admin && v.alive_at(Some(it.ts))).map(|v| v.role);
+                        let invited = lvl.is_some_and(|l| it.path.split_last().is_some_and(|(last, before)| set(*last, INVITE + ri(l)) && before.iter().all(|&h| set(h, ROLE + ri(l)))));
+                        all(ROLE + 3) || invited
+                    }
+                };
             if now == self.chained[s] {
                 continue;
             }
+            let (id, sets) = (it.id, it.edge.as_ref().and_then(|ei| Some((ei.e, ei.sets?))));
             self.chained[s] = now;
+            if let Some(j) = &mut self.journal {
+                j.chained.entry(s).or_insert((id, !now));
+            }
+            // a chained write that sets no edge (a removal, a self-removal, a finalize, a vouch)
+            // moves no threshold
+            let Some((e, v)) = sets else { continue };
             self.chain_note(e);
             let was: [Option<Key>; 8] = std::array::from_fn(|n| self.chain_min(e, n));
             let inv = give_invite(Some(v.role), v.invite);
@@ -1817,6 +1839,11 @@ impl Walk {
     /// Per edge, the key of its first chained write giving write and admin (draft §4).
     pub(super) fn chained(&self) -> BTreeMap<(Tid, Tid), [Option<Key>; 2]> {
         (0..self.ends.len()).filter(|&e| self.first[e] != [None, None]).map(|e| (self.name(e), self.first[e])).collect()
+    }
+
+    /// Whether a held edge-class part is chained (draft §4).
+    pub(super) fn is_chained(&self, id: &WriteId) -> Option<bool> {
+        self.ids.get(id).map(|&s| self.chained[s])
     }
 
     /// The first chained key of (holder, target) giving `r`.

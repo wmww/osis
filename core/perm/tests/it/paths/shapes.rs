@@ -9,7 +9,7 @@
 
 use super::incremental::{check, reading};
 use osis_base::{Ak, CommitId, PurgeBy, Role, Tid, Ts, WallMs};
-use osis_perm::paths::{Changed, Commit, Content, Delta, DeltaClass, EdgeWrite, Part, PartKind, Paths, Status};
+use osis_perm::paths::{Changed, Commit, Content, Delta, DeltaClass, EdgeWrite, Names, Part, PartKind, Paths, Status};
 use osis_perm::{Edge, Frontier, WriteId};
 use roles_model::Rng;
 use std::collections::{BTreeMap, BTreeSet};
@@ -230,9 +230,9 @@ pub(super) fn soup(i: u64) -> (BTreeMap<Tid, Tid>, Vec<Commit>) {
                 let class = match r.below(5) {
                     0 => DeltaClass::Plain,
                     1 => DeltaClass::RoleClass,
-                    2 => DeltaClass::Snapshot { carries: ids(&mut r) },
+                    2 => DeltaClass::Snapshot { carries: ids(&mut r), stated: BTreeMap::new(), own: false },
                     3 => DeltaClass::Addendum { removal: cid(r.below(40) as u64), list: ids(&mut r) },
-                    _ => DeltaClass::PurgeByAuthor { author: t(thing(&mut r)) },
+                    _ => DeltaClass::Purge { names: Names::Author(t(thing(&mut r))) },
                 };
                 let needs = [Role::Write, Role::Admin][r.below(2)];
                 PartKind::Delta(Delta { aspect: Ak::new(["doc.0", "addenda.0"][r.below(2)]).unwrap(), needs, purge_author: r.below(3) as u32, retention: PurgeBy::AuthorOrAdmin, class })
@@ -303,7 +303,7 @@ fn hostile_vouches_addenda_and_snapshots_judge_alike_without_panicking() {
     // a snapshot claiming copies of commits not yet made, unknown, role commits and itself:
     // copies are shown, never made valid; one by the removed party after its removal is invalid
     for (signer, ts, carries) in [(Y, 6, vec![3, 30, 31, 1, 9]), (Z, 6, vec![3, 9])] {
-        let snap = commit(9, ms(ts), signer, vec![delta(T1, &[A], Role::Write, DeltaClass::Snapshot { carries: ids(&carries) })]);
+        let snap = commit(9, ms(ts), signer, vec![delta(T1, &[A], Role::Write, DeltaClass::Snapshot { carries: ids(&carries), stated: BTreeMap::new(), own: false })]);
         let p = robust(&records(), &with(vec![snap]), &mut rng);
         assert_eq!(p.content(&WriteId(cid(3), 0)), Some(if signer == Y { Content::Copied } else { Content::Invalid }));
         assert!(!p.copies().contains(&cid(9)));
@@ -318,13 +318,14 @@ fn hostile_vouches_addenda_and_snapshots_judge_alike_without_panicking() {
         commit(9, ms(6), Y, vec![delta(T1, &made_up, Role::Write, DeltaClass::Plain)]),
         commit(10, ms(6), Y, vec![delta(T1, &[A, Y], Role::Write, DeltaClass::Plain)]),
         commit(11, ms(6), Y, vec![odd]),
-        commit(12, ms(6), Y, vec![delta(T1, &[A], Role::Write, DeltaClass::PurgeByAuthor { author: t(Z) })]),
+        commit(12, ms(6), Y, vec![delta(T1, &[A], Role::Write, DeltaClass::Purge { names: Names::Author(t(Z)) })]),
     ];
     let p = robust(&records(), &with(junk), &mut rng);
     for id in 9..=11 {
         assert_eq!(p.content(&WriteId(cid(id), 0)), Some(Content::Invalid), "{id}");
     }
-    assert!(p.purged().is_empty());
+    // Y's request by author Z, off its chain, takes Z's delta by the `admin` class alone (draft §6)
+    assert_eq!(p.purged(), BTreeSet::from([WriteId(cid(3), 0)]));
 }
 
 // spec/permissions.md §5.2: thousands of addenda naming one commit: judging it reads each once.
@@ -348,4 +349,97 @@ fn thousands_of_addenda_naming_one_commit_cost_one_read_each() {
         per.push(n.content);
     }
     assert!(per[1] <= 11 * per[0] && per[1] >= 9 * per[0], "{per:?}");
+}
+
+fn request(on: u32, path: &[u32], names: Names, retention: PurgeBy) -> Part {
+    let aspect = Ak::new(if names == Names::Destroy { "created.0" } else { "doc.0" }).unwrap();
+    let mut p = delta(on, path, Role::Write, DeltaClass::Purge { names });
+    if let PartKind::Delta(d) = &mut p.kind {
+        d.aspect = aspect;
+        d.retention = retention;
+    }
+    p
+}
+
+// spec/permissions.md §6: draft a request is an edit; What it names: hostile requests judge
+// without panicking, read alike however they arrive, and take nothing they should not: by a
+// made-up commit, a made-up author, a made-up aspect, along a made-up path, a destruction by the
+// removed Z, a request naming its own commit; Y's (admin) by aspect takes Z's delta, by whatever
+// path it lists, and Z's copy a held snapshot carries; a copy carried by a snapshot the node does
+// not hold is no copy to purge.
+#[test]
+fn hostile_requests_judge_alike_without_panicking() {
+    let mut rng = Rng(12);
+    let admin = Some(Edge::new(Role::Admin));
+    let base = [
+        commit(1, ms(1), H, vec![edge(A, &[], Y, admin, Some(&[]), None)]),
+        commit(2, ms(2), H, vec![edge(A, &[], Z, admin, Some(&[]), None)]),
+        commit(3, ms(3), Z, vec![delta(T1, &[A], Role::Write, DeltaClass::Plain)]),
+        commit(4, ms(4), H, vec![edge(A, &[], Z, None, Some(&[3]), None)]),
+    ];
+    let with = |more: Vec<Commit>| base.iter().cloned().chain(more).collect::<Vec<_>>();
+    let made_up: Vec<u32> = (0..64).map(|i| 5000 + i).collect();
+    let mut odd = request(T1, &[A], Names::Aspect, PurgeBy::AuthorOrAdmin);
+    if let PartKind::Delta(d) = &mut odd.kind {
+        d.aspect = Ak::new("nope.0").unwrap();
+    }
+    let junk = vec![
+        commit(9, ms(6), Y, vec![request(T1, &[A], Names::Commit(cid(999)), PurgeBy::AuthorOrAdmin)]),
+        commit(10, ms(6), Y, vec![request(T1, &[A], Names::Author(t(777)), PurgeBy::AuthorOrAdmin)]),
+        commit(11, ms(6), Y, vec![odd]),
+        commit(12, ms(6), Y, vec![request(T1, &made_up, Names::Aspect, PurgeBy::AuthorOrAdmin)]),
+        commit(13, ms(6), Z, vec![request(T1, &[A], Names::Destroy, PurgeBy::Admin)]),
+        commit(14, ms(6), Y, vec![request(T1, &[A], Names::Commit(cid(14)), PurgeBy::AuthorOrAdmin)]),
+    ];
+    let p = robust(&records(), &with(junk), &mut rng);
+    assert!(p.purged().is_empty(), "{:?}", p.purged());
+    assert_eq!(p.right(&WriteId(cid(13), 0)), Some(Default::default()));
+    let by_y = commit(15, ms(6), Y, vec![request(T1, &[A], Names::Aspect, PurgeBy::AuthorOrAdmin)]);
+    let p = robust(&records(), &with(vec![by_y]), &mut rng);
+    assert_eq!(p.purged(), BTreeSet::from([WriteId(cid(3), 0)]));
+    // a snapshot not held: what it carries is no copy here, so nothing names it as one
+    let stated = BTreeMap::from([(cid(3), osis_perm::paths::Stated { ts: ms(3), purge_author: t(Z), retention: PurgeBy::AuthorOrAdmin })]);
+    let snap = commit(16, ms(5), Y, vec![delta(T1, &[A], Role::Write, DeltaClass::Snapshot { carries: ids(&[3]), stated, own: false })]);
+    let by_y = commit(15, ms(6), Y, vec![request(T1, &[A], Names::Aspect, PurgeBy::AuthorOrAdmin)]);
+    let mut cs = with(vec![by_y, snap]);
+    cs.retain(|c| c.id != cid(3));
+    let p = robust(&records(), &cs, &mut rng);
+    assert!(p.copies().contains(&cid(3)) && p.purged_copies() == BTreeSet::from([cid(3)]));
+    cs.retain(|c| c.id != cid(16));
+    let p = robust(&records(), &cs, &mut rng);
+    assert!(p.copies().is_empty() && p.purged_copies().is_empty());
+}
+
+// spec/permissions.md §6: k requests holding a right name one delta: judging it reads each once
+// (k writers' requests by aspect, none holding the right over its `admin` retention: every one
+// read), the same per request at k = 200 and 2000; k requests holding no right (by the removed Z)
+// are no index entry, so the delta reads none of them. Who can force k: holders of a class's role,
+// each writing requests of its own.
+#[test]
+fn thousands_of_requests_naming_one_delta_cost_one_read_each() {
+    let admin = Some(Edge::new(Role::Admin));
+    let write = Some(Edge::new(Role::Write));
+    let mut per = vec![];
+    for k in [200u64, 2000] {
+        let mut c = vec![
+            commit(1, ms(1), H, vec![edge(A, &[], Y, write, Some(&[]), None)]),
+            commit(2, ms(1), H, vec![edge(A, &[], Z, admin, Some(&[]), None)]),
+            commit(3, ms(3), H, vec![{
+                let mut d = delta(T1, &[A], Role::Write, DeltaClass::Plain);
+                if let PartKind::Delta(x) = &mut d.kind {
+                    x.retention = PurgeBy::Admin;
+                }
+                d
+            }]),
+            commit(4, ms(4), H, vec![edge(A, &[], Z, None, Some(&[]), None)]),
+        ];
+        c.extend((0..k).map(|i| commit(100 + i, ms(5), Y, vec![request(T1, &[A], Names::Aspect, PurgeBy::AuthorOrAdmin)])));
+        c.extend((0..k).map(|i| commit(100_000 + i, ms(5), Z, vec![request(T1, &[A], Names::Aspect, PurgeBy::AuthorOrAdmin)])));
+        let p = Paths::evaluate(&records(), BTreeSet::new(), &c);
+        let mut n = osis_perm::paths::Counts::default();
+        assert!(!p.is_purged_counted(&WriteId(cid(3), 0), &mut n));
+        assert_eq!(n.content, k, "k {k}");
+        per.push(n.content);
+    }
+    assert_eq!(per, vec![200, 2000]);
 }

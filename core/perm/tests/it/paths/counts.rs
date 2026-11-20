@@ -8,7 +8,7 @@
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::indexing_slicing)]
 
 use osis_base::{Ak, CommitId, PurgeBy, Role, Tid, Ts, WallMs};
-use osis_perm::paths::{By, Commit, Content, Counts, Delta, DeltaClass, EdgeWrite, Fact, Key, MemStore, Pair, Part, PartKind, Paths, Status, Store};
+use osis_perm::paths::{By, Commit, Content, Counts, Delta, DeltaClass, EdgeWrite, Fact, Key, MemStore, NameKey, Names, Pair, Part, PartKind, Paths, Right, Status, Store};
 use std::cell::Cell;
 use std::ops::Bound;
 use std::rc::Rc;
@@ -119,8 +119,9 @@ fn a_backdated_part_walks_again_what_reads_its_change() {
     };
     for n in [100u32, 1000, 10_000] {
         let (d, p) = cost_of(&base(n), write(2, H, 5, &[], A, X, None));
-        // a removal sets no chained point (draft §4: chained writes are never removed)
-        assert_eq!((d.steps, d.passes, d.chained), (W * (1 + m as u64), W, 0), "on A at n {n}: {d:?}");
+        // a removal sets no chained point (draft §4: chained writes are never removed): the
+        // chained pass judges it alone (it is chained or not)
+        assert_eq!((d.steps, d.passes, d.chained), (W * (1 + m as u64), W, 1), "on A at n {n}: {d:?}");
         assert_eq!(p.status(&WriteId(cid(50), 0)), Some(Status::Unapplied));
         let (d, _) = cost_of(&base(n), write(3, H, 5, &[], B, X, Some(Role::Admin)));
         assert_eq!((d.steps, d.passes, d.chained), (W, W, 1), "on B at n {n}: {d:?}");
@@ -464,6 +465,43 @@ fn a_removal_cutting_n_deltas_costs_nothing_per_delta() {
     assert_eq!(per[0], per[1], "{per:?}");
 }
 
+/// X's request by whole aspect on C along [A], stamped `ts`.
+fn request(id: u64, ts: u64) -> Commit {
+    let mut c = content(id, X, ts, &[A], C, None);
+    if let PartKind::Delta(d) = &mut c.parts[0].kind {
+        d.class = DeltaClass::Purge { names: Names::Aspect };
+    }
+    c
+}
+
+// spec/permissions.md §6: draft a request is an edit; purges a reading: a request by whole
+// aspect over n deltas costs the same at n = 100 and 1000: its arrival judges its own right and
+// reports one scope (`Changed::purges`), never a list of deltas; a removal of its signer cutting
+// its right (restore) reports its scope again, as does the re-grant giving the right back; each
+// delta's purge is a point query reading the same at both sizes.
+#[test]
+fn a_request_over_n_deltas_reports_one_scope() {
+    let mut per = vec![];
+    for n in [100u32, 1000] {
+        let end = 10 + n as u64 + 5;
+        let mut p = Paths::evaluate(&records(), BTreeSet::new(), &writes(n));
+        let before = p.counts();
+        let ch = p.add(&[request(3, end)]);
+        let arrive = delta(before, p.counts());
+        assert_eq!((ch.purges.len(), arrive.steps), (1, 0), "{ch:?}");
+        let mut q = Counts::default();
+        assert!(p.is_purged_counted(&WriteId(cid(200_000), 0), &mut q));
+        let before = p.counts();
+        let ch = p.add(&[write(2, H, end + 1, &[], A, X, None)]);
+        let cut = delta(before, p.counts());
+        assert!(ch.purges.len() == 1 && !p.is_purged(&WriteId(cid(200_000), 0)));
+        let ch = p.add(&[write(4, H, end + 2, &[], A, X, Some(Role::Admin))]);
+        assert!(ch.purges.len() == 1 && p.is_purged(&WriteId(cid(200_000), 0)));
+        per.push((arrive.content, cut.content, q.content));
+    }
+    assert_eq!(per[0], per[1], "{per:?}");
+}
+
 // spec/permissions.md §5.2: k addenda arriving one at a time grow the fixpoint from where it stood:
 // work linear in k (k = 100 and 1000: tenfold), not k².
 #[test]
@@ -582,9 +620,24 @@ impl Store for Counting {
         self.tick();
         self.inner.carrying(c)
     }
-    fn requests(&self, on: &Tid, aspect: &Ak, author: &Tid) -> Vec<WriteId> {
+    fn requests(&self, key: &NameKey, after: Bound<Ts>) -> Vec<WriteId> {
         self.tick();
-        self.inner.requests(on, aspect, author)
+        self.inner.requests(key, after)
+    }
+    fn requests_through(&self, e: &Pair, from: Bound<Key>, to: Bound<Key>) -> Vec<WriteId> {
+        self.tick();
+        self.inner.requests_through(e, from, to)
+    }
+    fn right(&self, id: &WriteId) -> Right {
+        self.tick();
+        self.inner.right(id)
+    }
+    fn set_right(&mut self, id: &WriteId, right: Right) {
+        self.inner.set_right(id, right)
+    }
+    fn own_covers(&self, signer: &Tid) -> Vec<WriteId> {
+        self.tick();
+        self.inner.own_covers(signer)
     }
     fn addenda_through(&self, e: &Pair, from: Bound<Key>, to: Bound<Key>) -> Vec<WriteId> {
         self.tick();
@@ -719,7 +772,7 @@ fn an_organisation_costs_what_reads_the_change() {
         let d = org_cost(k, p, 0, false, &|q| {
             q.add(std::slice::from_ref(&lead0));
         });
-        assert_eq!((d.steps, d.restarts, d.chained), (1 + pp, 0, 0), "one team's lead removed at k {k}: {d:?}");
+        assert_eq!((d.steps, d.restarts, d.chained), (1 + pp, 0, 1), "one team's lead removed at k {k}: {d:?}");
         let mut late = write(3, Y, 6000, &[O], team(0), lead(0), None);
         if let PartKind::Edge(ew) = &mut late.parts[0].kind {
             ew.frontier = Some(Arc::new(Frontier::new([])));

@@ -1,14 +1,15 @@
 //! A by-hand comparison of two builds of the walk: every reading and every update's `Changed`
 //! over the differential worlds and soups (arrival in a shuffled order, half forgotten one at a
 //! time, an edge write trusted and put aside, disputes), written one line per world to
-//! `OSIS_DUMP`, so a build before a rewrite of the walk and the build after it can be diffed.
+//! `OSIS_DUMP`, so a build before a rewrite of the walk and the build after it can be diffed; the
+//! purged deltas, and the other purge readings with chained-ness, hash in columns of their own.
 //! spec: none (test infrastructure: a comparison of two builds).
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::indexing_slicing)]
 
 use super::incremental::reading;
 use super::{input, rules, MODES};
 use osis_base::Tid;
-use osis_perm::paths::{Commit, Paths};
+use osis_perm::paths::{Changed, Commit, Paths};
 use osis_perm::WriteId;
 use roles_model::paths as m;
 use roles_model::Rng;
@@ -16,44 +17,63 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::fmt::Write as _;
 use std::hash::{DefaultHasher, Hash, Hasher};
 
-fn full(p: &mut Paths, disputes: bool) -> String {
-    let mut s = format!("{:?}|{:?}|{:?}", reading(p), p.counting(), p.void_trusted());
+/// A reading, as three strings: every reading but the purged deltas and the purge readings; the
+/// purged deltas; the purge readings (purged copies, requests' rights, parts' chained-ness).
+fn full(p: &mut Paths, disputes: bool) -> [String; 3] {
+    let (st, h, f, c, cp, pu, ch, more) = reading(p);
+    let mut s = format!("{st:?}|{h:?}|{f:?}|{c:?}|{cp:?}|{ch:?}|{:?}|{:?}", p.counting(), p.void_trusted());
     if disputes {
         let _ = write!(s, "|{:?}", p.disputes());
     }
-    s
+    [s, format!("{pu:?}"), format!("{more:?}")]
 }
 
-fn trace(records: &BTreeMap<Tid, Tid>, trust: &BTreeSet<WriteId>, commits: &[Commit], seed: u64, disputes: bool) -> String {
-    let mut out = String::new();
+/// What an update reported: of the readings `full` hashes first, and of purges and chained-ness.
+fn changed(c: &Changed) -> [String; 3] {
+    [format!("{:?}{:?}{:?}{:?}{:?}", c.parts, c.edges, c.cuts, c.regrant, c.named), String::new(), format!("{:?}{:?}", c.purges, c.chained)]
+}
+
+fn trace(records: &BTreeMap<Tid, Tid>, trust: &BTreeSet<WriteId>, commits: &[Commit], seed: u64, disputes: bool) -> [String; 3] {
+    let mut out: [String; 3] = Default::default();
+    let mut take = |x: [String; 3]| {
+        for (o, x) in out.iter_mut().zip(x) {
+            *o += &x;
+        }
+    };
     let mut p = Paths::new(records, trust.clone());
-    let _ = write!(out, "{:?}", p.add(commits));
-    out += &full(&mut p, false);
+    take(changed(&p.add(commits)));
+    take(full(&mut p, false));
     let mut rng = Rng(seed);
     let order = rng.perm(commits.len());
     let mut p = Paths::new(records, trust.clone());
     for &k in &order {
-        let _ = write!(out, "{:?}", p.add(std::slice::from_ref(&commits[k])));
+        take(changed(&p.add(std::slice::from_ref(&commits[k]))));
     }
-    out += &full(&mut p, false);
+    take(full(&mut p, false));
     for &k in order.iter().filter(|&&k| k % 2 == seed as usize % 2) {
-        let _ = write!(out, "{:?}", p.forget(&[commits[k].id]));
+        take(changed(&p.forget(&[commits[k].id])));
     }
-    out += &full(&mut p, false);
+    take(full(&mut p, false));
     if let Some(id) = p.statuses().into_keys().nth(rng.below(4)) {
         let mut more = trust.clone();
         more.insert(id);
-        let _ = write!(out, "{:?}", p.set_trust(more));
-        let _ = write!(out, "{:?}", p.set_trust(trust.clone()));
+        take(changed(&p.set_trust(more)));
+        take(changed(&p.set_trust(trust.clone())));
     }
-    out += &full(&mut p, disputes);
+    take(full(&mut p, disputes));
     out
 }
 
-fn line(out: &mut String, what: String, t: String) {
-    let mut h = DefaultHasher::new();
-    t.hash(&mut h);
-    let _ = writeln!(out, "{what} {:016x}", h.finish());
+/// One world's line: its name, the hash of every reading and `Changed` but the purge readings,
+/// the hash of the purged deltas, the hash of the other purge readings (and what `Changed` says
+/// of them and of chained-ness).
+fn line(out: &mut String, what: String, t: [String; 3]) {
+    let hash = |x: &str| {
+        let mut h = DefaultHasher::new();
+        x.hash(&mut h);
+        h.finish()
+    };
+    let _ = writeln!(out, "{what} {:016x} {:016x} {:016x}", hash(&t[0]), hash(&t[1]), hash(&t[2]));
 }
 
 // Writes the dump (OSIS_DUMP: the file; OSIS_DUMP_N: worlds per kind, default 300).
@@ -93,6 +113,14 @@ fn paths_dump_readings() {
             let inp = input(&w, &v);
             line(&mut out, format!("story {i} {node}"), trace(&inp.records, &inp.trust, &inp.commits, i, false));
         }
+    }
+    for i in 0..n.div_ceil(4) {
+        let pw = m::purge_world(i, &rules());
+        let node = pw.nodes()[i as usize % pw.nodes().len()];
+        let v = pw.view_at(node, None);
+        let w = super::as_known(&pw.w, &v);
+        let inp = input(&w, &v);
+        line(&mut out, format!("purge {i} {node}"), trace(&inp.records, &inp.trust, &inp.commits, i, i % 4 == 0));
     }
     std::fs::write(path, out).unwrap();
 }
