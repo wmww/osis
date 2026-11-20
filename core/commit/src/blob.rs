@@ -426,10 +426,25 @@ impl Section {
 
     /// Opens this section with one of `secrets` (newest first): its `Contents` (path keys only
     /// where `split`), the parts exactly on the aspects listed. `None`: no secret opens the wrap. A
-    /// section that opens to parts disagreeing with its list is bad input.
+    /// section whose wrap some secret opens to a key opening nothing, or that opens to parts
+    /// disagreeing with its list, is bad input.
+    ///
+    /// Every secret is tried until one's key opens the ciphertext: XChaCha20-Poly1305 commits to
+    /// no key, so a writer can make one wrap open under two secrets to two keys, and a reader
+    /// taking the first that unwraps would read less for holding more. The wrap's AD (the commit
+    /// ID) fixes the contents, so no two keys open the ciphertext (spec/crypto.md §5 Section): what
+    /// opens is a function of the secrets held, never of their order.
     pub fn open(&self, commit: &CommitId, split: bool, secrets: &[Secret32]) -> Result<Option<Contents>, Error> {
-        let Some(key) = secrets.iter().find_map(|s| osis_crypto::unwrap_section(s, commit, &self.wrap).ok()) else { return Ok(None) };
-        let pt = osis_crypto::open_section(commit, &key, &self.ciphertext)?;
+        let mut opened = None;
+        for s in secrets {
+            let Ok(key) = osis_crypto::unwrap_section(s, commit, &self.wrap) else { continue };
+            opened = Some(osis_crypto::open_section(commit, &key, &self.ciphertext));
+            if opened.as_ref().is_some_and(|r| r.is_ok()) {
+                break;
+            }
+        }
+        let Some(pt) = opened else { return Ok(None) };
+        let pt = pt?;
         let v = Item::parse(&pt, &LIMITS)?;
         let (parts, keys) = if split {
             let Some([pv, kv]) = item::list(v)?.tuple() else { return Err(Error::Malformed("section contents arity")) };
