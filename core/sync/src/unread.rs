@@ -66,8 +66,6 @@ pub struct Kept {
 
 /// What one S is judged on, every value read by key (spec/sync-judgement.md §6).
 pub struct Judged<'a> {
-    /// S itself.
-    pub s: SyncId,
     /// The sync secrets of S's thing held here, by epoch.
     pub secrets: &'a [(osis_crypto::Epoch, Secret32)],
     /// S's verified path as Registers gave it (its head last).
@@ -132,11 +130,6 @@ impl Unread {
         self.kept.get(s).is_some_and(|k| k.stranded)
     }
 
-    /// Whether S is kept unread here: listed, or leaving and still waiting (stamped read).
-    pub fn keeps(&self, s: &SyncId) -> bool {
-        self.kept.contains_key(s)
-    }
-
     /// Keeps, or drops its copy at a head past its keys; whether anything another module reads
     /// changed.
     pub fn settle(&mut self, cx: &mut Cx) -> Result<bool> {
@@ -183,5 +176,5 @@ impl Unread {
 fn judge_s(cx: &mut Cx, s: &SyncId) -> Result<Kept> {
     let secrets = cx.engine.kept_sync_secrets(s);
     let path = cx.store.path(s)?;
-    Ok(judge(&Judged { s: *s, secrets: &secrets, steps: path.as_ref().map(|p| p.steps.as_slice()).unwrap_or_default() }))
+    Ok(judge(&Judged { secrets: &secrets, steps: path.as_ref().map(|p| p.steps.as_slice()).unwrap_or_default() }))
 }

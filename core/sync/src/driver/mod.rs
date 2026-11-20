@@ -295,12 +295,6 @@ impl Node {
         &self.driver.dials
     }
 
-    /// Tests only: the lifecycle duties (`life`).
-    #[doc(hidden)]
-    pub fn life(&self) -> &Life {
-        &self.life
-    }
-
     /// Tests only: the opens (`Opens`).
     #[doc(hidden)]
     pub fn opens(&self) -> &Opens {
@@ -467,14 +461,6 @@ impl Node {
 
     fn net(&self) -> NetView<'_> {
         NetView { streams: &self.streams, unread: &self.unread }
-    }
-
-    /// Tests only: where a member of S opened by `by` would end if ended now (`opens`' `until`,
-    /// spec/sync-opens.md §6).
-    #[doc(hidden)]
-    pub fn member_until(&mut self, s: &SyncId, by: &crate::types::Credential) -> crate::types::Position {
-        let mut out = Vec::new();
-        crate::opens::holds::member_until(&mut cx!(self, &mut out), s, by).unwrap_or(0)
     }
 
     /// Tests only: the settle rounds the last step took (the harness caps them: a settle loop

@@ -19,7 +19,7 @@ use crate::store::Store;
 use crate::types::{Entry, Holding, Result};
 use osis_base::format::{DEPOSITS_WAITING, DEPOSITS_WAITING_BYTES};
 use osis_base::memo::{Effects, Feed};
-use osis_base::{BlobId, CommitId, SyncId, WallMs};
+use osis_base::{BlobId, CommitId, SyncId};
 use osis_engine::Engine;
 use osis_engine::sync::{Opened, PartSet, Promote, SealedSet};
 use std::collections::{BTreeMap, BTreeSet};
@@ -183,37 +183,6 @@ pub fn adds_delta(need: &PartSet, mine: &Judged, stamped: &[Judged]) -> bool {
     !mine.sealed.is_empty() && !stamped.iter().any(covered) && !stamped.iter().enumerate().any(bytes_only)
 }
 
-/// What one held entry is judged on (spec/sync-inbox.md §3, §4).
-#[derive(Clone, Debug)]
-pub struct Facts {
-    pub blob: BlobId,
-    pub deposited: bool,
-    pub own: bool,
-    pub expires: Option<WallMs>,
-    /// This node holds S's head write key.
-    pub writer: bool,
-    /// How this node holds S.
-    pub holding: Option<Holding>,
-    /// A deposit under a read S this node writes: whether read promotes it (`promotion`).
-    pub promote: Option<Promotion>,
-}
-
-/// The act one held entry calls for, from its facts alone.
-pub fn act_of(f: &Facts) -> Act {
-    if !f.deposited {
-        return Act::Nothing;
-    }
-    // an own deposit is offered until stamped (read stamps it once this node writes S's head)
-    if f.own && f.holding.is_some() {
-        return Act::Offer;
-    }
-    match f.promote {
-        Some(Promotion::Yes) => Act::Promote,
-        Some(Promotion::No) => Act::Waiting { never: true },
-        _ => Act::Waiting { never: false },
-    }
-}
-
 /// Whether read promotes deposit `b` of commit `c` under `s` (spec/sync-inbox.md §4).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Promotion {
@@ -304,13 +273,27 @@ fn judge(engine: &mut Engine, store: &Store, k: &Key) -> Result<Act> {
     osis_base::costs::count("inbox: held judged", 1);
     let (s, b) = k;
     let Some(e) = store.entry(s, b)? else { return Ok(Act::Gone) };
-    let holding = store.holding(s);
-    let mut f = Facts { blob: *b, deposited: e.deposited, own: e.own, expires: e.expires, writer: false, holding, promote: None };
-    if e.deposited && !e.own && holding == Some(Holding::Read) && engine.signers(s, None)?.stamp.is_some() {
-        f.writer = true;
-        if let Some(c) = deposit_commit(engine, store, s, &e)? {
-            f.promote = Some(promotion(engine, store, s, &c, b)?);
-        }
+    if !e.deposited {
+        return Ok(Act::Nothing);
     }
-    Ok(act_of(&f))
+    let holding = store.holding(s);
+    // an own deposit is offered until stamped (read stamps it once this node writes S's head)
+    if e.own && holding.is_some() {
+        return Ok(Act::Offer);
+    }
+    // a peer's deposit under a read S this node writes: whether read promotes it
+    let promote = if !e.own
+        && holding == Some(Holding::Read)
+        && engine.signers(s, None)?.stamp.is_some()
+        && let Some(c) = deposit_commit(engine, store, s, &e)?
+    {
+        Some(promotion(engine, store, s, &c, b)?)
+    } else {
+        None
+    };
+    Ok(match promote {
+        Some(Promotion::Yes) => Act::Promote,
+        Some(Promotion::No) => Act::Waiting { never: true },
+        _ => Act::Waiting { never: false },
+    })
 }

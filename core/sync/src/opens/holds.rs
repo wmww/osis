@@ -53,16 +53,6 @@ impl From<&Named> for Who {
     }
 }
 
-impl Who {
-    /// Every actor named, ascending.
-    pub fn actors(&self) -> Vec<Tid> {
-        let mut v: Vec<Tid> = self.account.into_iter().chain(self.node).chain(self.key_actors.iter().copied()).collect();
-        v.sort();
-        v.dedup();
-        v
-    }
-}
-
 /// Who a peer may be, for what it could still take or tell (spec/sync-set.md §3 to be waited
 /// for, spec/sync-status.md §1), ascending: a node of this account it names while that node is
 /// ours (a removed node takes nothing back), else its account at the key it proved with until

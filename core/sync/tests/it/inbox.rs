@@ -1,5 +1,5 @@
 //! Inbox, deposits, steps and Register (osis_sync::inbox): each rule's decision over plain values
-//! (`act_of`, `adds_delta`, `to_clear`, `plan`), and Deposit items out (`Offers`) over a real
+//! (`adds_delta`, `to_clear`, `plan`), and Deposit items out (`Offers`) over a real
 //! store and a `Net` that records what is sent. One test per rule of spec/sync-inbox.md §2-§4 and
 //! spec/sync-ids.md §6 Steps and Register it implements. The module in a node over the engine
 //! (a sealed fire offered and taken) is tests/it/keep.rs.

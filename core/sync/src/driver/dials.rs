@@ -596,11 +596,6 @@ impl Dials {
         self.conns.get(&conn).and_then(|k| self.cands.get(k)).and_then(|c| c.address()).cloned()
     }
 
-    /// The candidate a dialed connection is to.
-    pub fn dialed(&self, conn: ConnId) -> Option<[u8; 32]> {
-        self.conns.get(&conn).copied()
-    }
-
     /// Tests only: why `key` is a candidate.
     #[doc(hidden)]
     pub fn why(&self, key: &[u8; 32]) -> Vec<Why> {

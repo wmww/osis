@@ -88,7 +88,7 @@ Messages: what a peer controls reaches the owed tables only by answering N's off
 Store rows `I/x/` (whom each stranded report went to), `I/s/` (the state last snapshotted per reporter and aspect), `I/r/` (links being redeemed, shredded: they hold the seed) and `I/p/` (joined links' dial hints). Everything else is followed again from the engine and the store at a start.
 
 ## Seams
-It reads the facade and the store directly (`Here`: engine, status at a settle, store, time, rng) and the network through `inbox::Net` (sessions, opens, streams; `Links` the product's). Each rule's decision is a plain-value function the tests drive (`held::act_of`, `adds_delta`, `to_clear`, `register::plan`); `Offers` reads the engine through `offers::Judge` (deposit keys, who a peer counts as) and runs over a test `Net`, a test `Judge` and a real store.
+It reads the facade and the store directly (`Here`: engine, status at a settle, store, time, rng) and the network through `inbox::Net` (sessions, opens, streams; `Links` the product's). Each rule's decision is a plain-value function the tests drive (`held::adds_delta`, `to_clear`, `register::plan`); `Offers` reads the engine through `offers::Judge` (deposit keys, who a peer counts as) and runs over a test `Net`, a test `Judge` and a real store.
 
 ## Not built
 issues/sync-unbuilt.md (inbox): a grant's `profile` ticket to a stranger; clearing at sources keeping S unread (needs streams' `known` to carry each entry's deposited flag and blob size). issues/sync-link-first-contact.md: K's commits do not apply at a redeemer.

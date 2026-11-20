@@ -23,8 +23,8 @@
 //!
 //! It reads the engine through its facade (`osis_engine::sync`) and the store directly; `Net`
 //! is how it reads and sends through sessions, opens and streams (`Links` is the product's).
-//! Each rule's decision is a function of plain values (`held::act_of`, `held::adds_delta`,
-//! `held::to_clear`, `register::plan`) that tests drive directly; `Offers` reads the
+//! Each rule's decision is a function of plain values (`held::adds_delta`, `held::to_clear`,
+//! `register::plan`) that tests drive directly; `Offers` reads the
 //! engine through `offers::Judge`, so it runs over a test's `Net`, `Judge` and store as in a node.
 
 mod fires;
@@ -37,7 +37,7 @@ mod stranded;
 mod suspect;
 mod tickets;
 
-pub use held::{Act, Facts, Judged, Promotion, act_of, adds_delta, promotion, to_clear};
+pub use held::{Act, Judged, Promotion, adds_delta, promotion, to_clear};
 pub use offers::{BACKOFF_MAX_MS, BACKOFF_MIN_MS, Judge, Offers, Target, backoff_ms};
 pub use osis_engine::sync::Signers;
 pub use register::{Plan, Progress, plan};
