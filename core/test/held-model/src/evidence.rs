@@ -35,6 +35,13 @@
 //!   unit's things and (`Leaves::Evidence`) for every thing a held edge write is on, and trusts
 //!   what the world trusts that it holds. The node holding everything sees every leaf.
 //!
+//! - **List leaves** (`Lists::Travels`, A3): a lowering's content entries in a leaf per thing,
+//!   evidence of the bodies on that thing whose verdict reads it (`LeafKeep`), held and logged
+//!   as any evidence; a body lacking a leaf a held root shows pends (`pend_leaf`). Addenda leave
+//!   with the last held commit they can keep (`addendum_live`).
+//! - **Acting** (`acts`, `p8_acts`): what a reader does on a verdict, after a complete pass of
+//!   its sync ID or (the control) on any partial arrival.
+//!
 //! Left out: records (static, `paths::World::records`), keys and sealing, rotations, `@` signals,
 //! covers, the deposit path, invites as a reach (a removal's reach is write), taken-ness of a grant,
 //! multi-thing role commits, how units are computed (an input: `closure` checks the walk).
