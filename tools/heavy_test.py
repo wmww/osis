@@ -93,6 +93,13 @@ plan((ok, [], d))
 rc, out, _ = heavy("cargo", "test", FAKE_RC="7")
 expect("build failure", (rc, out), (7, []))
 
+# a release build is refused before anything builds, unless HEAVY_RELEASE is set
+plan((ok, [], d))
+rc, out, err = heavy("cargo", "run", "--release", "--bin", "ok")
+expect("release refused", (rc, out, "release" in err), (1, [], True))
+expect("release with HEAVY_RELEASE", heavy("cargo", "run", "--release", "--bin", "ok", HEAVY_RELEASE="1")[0], 0)
+expect("--release after -- is the binary's", heavy("cargo", "run", "--bin", "ok", "--", "--release")[0], 0)
+
 # a non-cargo command runs as given
 rc, out, _ = heavy("sh", "-c", "echo $HEAVY_HELD; exit 4")
 expect("plain", (rc, out), (4, ["1"]))
@@ -172,10 +179,24 @@ for p in left:
     os.kill(p, 9)
 got, err = lane(60, 1, big, "sleep", "30")
 expect("wall cap", (got, "wall" in err), (["137"], True))
+expect("a stop names the hold to use and the CPU-s", ("\n  tools/heavy sleep 30" in err, " CPU-s in " in err), (True, True))
 got, err = lane(60, 60, "1", "sleep", "30")
 expect("memory cap", (got, "resident" in err), (["137"], True))
 got, _ = lane(60, 60, big, "sh", "-c", "exit 5")
 expect("within the caps: the command's code", got, ["5"])
+
+# a --short of a command the lane stopped, or a hold found over the lane's cap, is refused at once
+# with the plain command; another command runs
+logf = os.path.join(d, ".cache/osis/heavy.log")
+with open(logf, "a") as f:
+    for pid, cmd, rel in ((9001, "sh -c 'echo once'", dict(cpu=130.0, stop="CPU-s 130 past the lane's 115")), (9002, "sh -c 'echo big'", dict(cpu=1e6))):
+        f.write(json.dumps(dict(ev="acq", t=time.time(), pid=pid, cmd=cmd)) + "\n")
+        f.write(json.dumps(dict(ev="rel", t=time.time(), pid=pid, held=1, rc=137, **rel)) + "\n")
+for what in ("once", "big"):
+    rc, out, err = heavy("--short", "sh", "-c", f"echo {what}")
+    expect(f"refused after {what}", (rc, out, f"\n  tools/heavy sh -c 'echo {what}'" in err), (2, [], True))
+rc, out, _ = heavy("--short", "sh", "-c", "echo fits")
+expect("another command runs", (rc, out), (0, ["fits"]))
 
 # a quiet hold yields to a waiter: window and sampling shrunk to fit a test
 HOLD = r"""

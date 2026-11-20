@@ -39,7 +39,10 @@ beside a hold) and is stopped, its whole process tree killed (exit 137), once it
 limit `heavy.short` or its processes' resident memory passes SHORT_RSS. The run's CPU-s counts every
 process it started, finished or running; for a cargo test, only the copies' run (the build is
 unlocked anyway). Never for a command that edits the tree (tools/mutate.py): a stop leaves its edit
-in place. Every hold prints whether it would have fit the lane.
+in place. Every hold prints whether it would have fit the lane. A stop prints the CPU-s used and the
+plain tools/heavy command to run instead; a --short of a command whose last logged run was stopped
+in the lane or took more CPU-s than its cap in a hold is refused at once (exit 2, the same line),
+before any build: the run it would repeat is the one that queues for a hold.
 
 A quiet hold yields (notes/build.md, Heavy lock): the lock keeps all-core runs apart, so a hold
 whose process tree has used under YIELD_CORES cores over the last YIELD_WINDOW_S, at most SHORT_RSS
@@ -270,7 +273,15 @@ def run(cmd, name, out=None, short=False):
         lane, why = limits.limit("heavy.short")
         if lane is None:
             sys.exit(f"heavy: --short: {why}; run it without --short")
+        past = past_cost(who["cmd"], lane)
+        if past:
+            print(f"heavy: --short refused: this command {past}, past the lane's {lane[0]:.0f} CPU-s; run it in a hold:\n"
+                  f"  {plain(cmd, out)}", file=sys.stderr)
+            return 2
     sub = cargo_sub(cmd)
+    refused = sub and refusal(cmd, top)
+    if refused:
+        sys.exit(f"heavy: {refused}")
     if not sub:
         return hold(cmd, name, out, who, [dict(argv=cmd, cwd=None, env=None)], sub, lane)
     rec = tempfile.mkdtemp(prefix="osis-heavy-")
@@ -284,11 +295,50 @@ def run(cmd, name, out=None, short=False):
         shutil.rmtree(rec, ignore_errors=True)
 
 
+def refusal(cmd, top):
+    """Why a cargo test/run cmd must not run here, or None: a release build (a second artifact set,
+    minutes of thin LTO: never inside a task, notes/build.md; the coordinator's benches set
+    HEAVY_RELEASE=1), or a build in the main checkout (top: the git toplevel; task worktrees only)."""
+    args = cmd[:cmd.index("--")] if "--" in cmd else cmd
+    if ("--release" in args or "-r" in args or any(a.startswith("--profile") for a in args)) and not os.environ.get("HEAVY_RELEASE"):
+        return "a release or other-profile build: the dev profile only inside a task (notes/build.md, Profile and command forms; HEAVY_RELEASE=1 for the coordinator's benches)"
+    common = git("rev-parse", "--path-format=absolute", "--git-common-dir")
+    if common and os.path.dirname(common) == top:
+        return f"{top} is the main checkout: build in your task worktree (`wt claim`)"
+    return None
+
+
+def plain(cmd, out):
+    """The tools/heavy command that runs cmd in a hold, as the short lane's caller gave it."""
+    return shlex.join(["tools/heavy", *(["--log", out.name] if out else []), *cmd])
+
+
+def past_cost(cmd, lane):
+    """How the log's last run of cmd (as `acq` records it) went past the lane's CPU cap: stopped in
+    the lane, or over its CPU-s in a hold; None if it fit or never ran. So a command the lane
+    stopped once is sent to a hold at once, not built and stopped again."""
+    last = None
+    acq = {}
+    for o in limits.jsonl((LOG + ".1", LOG)):
+        if o["ev"] == "acq":
+            acq[o["pid"]] = o
+        elif o["ev"] == "rel" and acq.get(o["pid"], {}).get("cmd") == cmd:
+            last = o
+            acq.pop(o["pid"])
+    if last is None:
+        return None
+    if last.get("stop"):
+        return f"was stopped in the lane ({last['stop']}, after {last['cpu']:.0f} CPU-s)"
+    if last["cpu"] > lane[0]:
+        return f"last took {last['cpu']:.0f} CPU-s in a hold"
+    return None
+
+
 def note(out, msg):
-    """msg on stderr, and in --log's file when there is one."""
-    print(msg, file=sys.stderr)
+    """msg in --log's file when there is one, then on stderr (a reader of stderr finds it in the file)."""
     if out:
         print(msg, file=out, flush=True)
+    print(msg, file=sys.stderr, flush=True)
 
 
 def hold(cmd, name, out, who, runs, sub, lane=None):
@@ -401,10 +451,11 @@ def hold(cmd, name, out, who, runs, sub, lane=None):
                 if stop:
                     kill_tree(p.pid)
                     p.wait()
-                    print(f"heavy: --short run stopped, {stop} (limit heavy.short, SHORT_RSS): run it without --short",
-                          file=out or sys.stderr)
+                    msg = (f"heavy: --short run stopped, {stop} (limit heavy.short, SHORT_RSS) after {cpu:.0f} CPU-s in "
+                           f"{time.time() - t1:.0f} s; run it in a hold (a later --short of it is refused):\n  {plain(cmd, out)}")
+                    print(msg, file=out or sys.stderr)
                     if out:
-                        print(f"heavy: --short run stopped, {stop}: run it without --short", file=sys.stderr)
+                        print(msg, file=sys.stderr)
                     break
         if stop:
             rc = 137
