@@ -288,9 +288,10 @@ pub(super) struct Walk {
     resting: Tab<Vec<Slot>>,
     held: BTreeSet<CommitId>,
     trust: BTreeSet<Slot>,
-    /// (removal, commit) pairs the counting vouch entries add to removals' lists: empty in the
-    /// first walk, the counting entries in the second (draft §5.1 Vouches).
-    vouched: BTreeSet<(CommitId, CommitId)>,
+    /// (removal, commit, thing) triples the counting vouch entries add to removals' lists, each
+    /// naming the commit's parts on that thing alone: empty in the first walk, the counting entries
+    /// in the second (draft §5.1 Vouches).
+    vouched: BTreeSet<(CommitId, CommitId, Tid)>,
     // carried from pass to pass
     verdict: Tab<Option<Verdict>>,
     dropped: Tab<Option<Dropper>>,
@@ -520,7 +521,7 @@ impl Walk {
 
     /// Sets the counting entries' pairs (the second walk); the earliest key of a held removal
     /// whose list they change.
-    pub(super) fn set_vouched(&mut self, vouched: BTreeSet<(CommitId, CommitId)>) -> Option<Key> {
+    pub(super) fn set_vouched(&mut self, vouched: BTreeSet<(CommitId, CommitId, Tid)>) -> Option<Key> {
         let changed: BTreeSet<CommitId> = self.vouched.symmetric_difference(&vouched).map(|p| p.0).collect();
         self.vouched = vouched;
         changed.iter().filter_map(|r| self.by_commit.get(r)).flatten().map(|&s| self.items[s].key).min()
@@ -723,10 +724,11 @@ impl Walk {
         give_invite(self.at(e, ts), self.val[e].flatten().and_then(|v| v.invite))
     }
 
-    /// `r`'s list names `j` (draft §5.1): its frontier, or (the second walk) a counting entry.
+    /// `r`'s list names `j` (draft §5.1): its frontier, or (the second walk) a counting entry on
+    /// `j`'s thing.
     fn listed(&self, r: Slot, j: Slot) -> bool {
         let c = self.items[j].key.commit;
-        self.items[r].edge.as_ref().and_then(|ei| ei.frontier.as_ref()).is_some_and(|f| f.covers(&c)) || self.vouched.contains(&(self.items[r].key.commit, c))
+        self.items[r].edge.as_ref().and_then(|ei| ei.frontier.as_ref()).is_some_and(|f| f.covers(&c)) || self.vouched.contains(&(self.items[r].key.commit, c, self.names[self.items[j].on]))
     }
 
     /// What part `j` needs of edge `e` it rests on (draft §5.1 step 3): an invite grant (applied

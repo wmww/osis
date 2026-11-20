@@ -5,8 +5,9 @@
 //! write A's edges (admin or none,
 //! each listing earlier commits at random), T1's edges along [A] (A2's grant: write or
 //! none), content on T1 along [A] or [A2] (a purge author of the signer or the listed thing),
-//! addenda against an earlier lowering, covers carrying earlier content, purges by author, and
-//! vouches on A or T1 against an earlier lowering.
+//! one commit writing an edge on A and A2's on T1 (write, admin or none), addenda against an
+//! earlier lowering, covers carrying earlier content, purges by author, and vouches on A or on T1
+//! (along [A] or [A2]) against an earlier lowering.
 //! spec/permissions.md §5.1, §5.2, §6 (the draft replaces them: notes/a1-spec/permissions.md).
 
 use super::diff;
@@ -63,7 +64,19 @@ pub fn world(i: u64) -> (World, View) {
             2 => {
                 let role = if rng.below(2) == 0 { Role::Write } else { Role::None };
                 let l = list(&mut rng, &|_| true);
-                w.edge(s, ts, &[m::A], m::T1, m::A2, role, &l);
+                if rng.below(2) == 0 {
+                    w.edge(s, ts, &[m::A], m::T1, m::A2, role, &l);
+                } else {
+                    // one commit writing two things: a holder's edge on A and A2's on T1 (admin one
+                    // time in two, so K and Z vouch on T1 along [A2] for its part there alone)
+                    let h = PARTIES[rng.below(PARTIES.len())];
+                    let a = if rng.below(2) == 0 { Role::Admin } else { Role::None };
+                    let role = if role == Role::Write && rng.below(2) == 0 { Role::Admin } else { role };
+                    let (fa, ft) = (w.cut(&l), w.cut(&list(&mut rng, &|_| true)));
+                    let on_a = w.push(s, ts, &[], m::A, Kind::set(h, a).listing(fa));
+                    let on_t = w.push(s, ts, &[m::A], m::T1, Kind::set(m::A2, role).listing(ft));
+                    w.group(&[on_a, on_t]);
+                }
             }
             3 | 4 => {
                 let (path, ix) = if rng.below(3) == 0 { (vec![m::A2], rng.below(2)) } else { (vec![m::A], rng.below(2)) };
@@ -89,7 +102,11 @@ pub fn world(i: u64) -> (World, View) {
             _ => {
                 // stamped after its removal, listing role writes on its thing before it
                 if let Some(r) = pick(&mut rng, &lowerings) {
-                    let (path, on) = if rng.below(2) == 0 { (vec![], m::A) } else { (vec![m::A], m::T1) };
+                    let (path, on) = match rng.below(4) {
+                        0 | 1 => (vec![], m::A),
+                        2 => (vec![m::A], m::T1),
+                        _ => (vec![m::A2], m::T1),
+                    };
                     let rts = w.commits[r].ts;
                     let x = w.sets(r).map(|e| e.0);
                     let l = list(&mut rng, &|j| edges.contains(&j) && w.commits[j].on == on && w.commits[j].ts <= rts && (Some(w.commits[j].signer) == x || rng_free(j)));

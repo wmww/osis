@@ -25,8 +25,9 @@ pub(super) struct CommitFacts {
     pub signer: Tid,
     /// The things it has a role-class part on (edge-class parts and role-class deltas).
     pub role_on: BTreeSet<Tid>,
-    /// The edges its parts rest on (their paths', and the edges its self-removals lower).
-    pub rests: BTreeSet<Pair>,
+    /// The edges its parts rest on (their paths', and the edges its self-removals lower), each
+    /// with the thing of the part resting on it.
+    pub rests: BTreeSet<(Tid, Pair)>,
     /// It carries a purge request.
     purge: bool,
     /// It is a role commit: it has a role-class part.
@@ -94,8 +95,9 @@ pub(super) struct Facts {
     /// The held addenda (an addendum of a role commit is none).
     addenda: BTreeSet<usize>,
     valid_addenda: BTreeSet<usize>,
-    /// (removal, commit) by commit: the counting entries (draft §5.1 Vouches).
-    counted: BTreeMap<CommitId, Vec<CommitId>>,
+    /// Removals by (commit, thing): the counting entries, each keeping the commit's parts on its
+    /// vouch's thing (draft §5.1 Vouches).
+    counted: BTreeMap<(CommitId, Tid), Vec<CommitId>>,
     // the chained pass
     writes: BTreeMap<Key, Ew>,
     /// Per edge the highest role and invite chained writes set (record edges: admin, implicit).
@@ -140,9 +142,9 @@ impl Facts {
                         let sh = shape(&self.mint, c.signer, &p.path, p.on, Some(ew.holder), true);
                         cf.role_on.insert(p.on);
                         cf.role = true;
-                        cf.rests.extend(sh.hops.iter().copied());
+                        cf.rests.extend(sh.hops.iter().map(|&e| (p.on, e)));
                         if sh.leave {
-                            cf.rests.insert((ew.holder, p.on));
+                            cf.rests.insert((p.on, (ew.holder, p.on)));
                         }
                         if let Some(f) = &ew.frontier {
                             for x in f.commits() {
@@ -161,12 +163,12 @@ impl Facts {
                         let sh = shape(&self.mint, c.signer, &p.path, p.on, None, true);
                         cf.role_on.insert(p.on);
                         cf.role = true;
-                        cf.rests.extend(sh.hops);
+                        cf.rests.extend(sh.hops.iter().map(|&e| (p.on, e)));
                         out.role = true;
                     }
                     PartKind::Delta(d) => {
                         let sh = shape(&self.mint, c.signer, &p.path, p.on, None, false);
-                        cf.rests.extend(sh.hops.iter().copied());
+                        cf.rests.extend(sh.hops.iter().map(|&e| (p.on, e)));
                         let chain: Vec<Tid> = std::iter::once(c.signer).chain(p.path.iter().copied()).collect();
                         let purge_author = usize::try_from(d.purge_author).ok().and_then(|i| chain.get(i).copied());
                         let class = match &d.class {
@@ -326,10 +328,10 @@ impl Facts {
 
     // ---- counting entries as lists ----
 
-    pub(super) fn set_counted(&mut self, pairs: &BTreeSet<(CommitId, CommitId)>) {
+    pub(super) fn set_counted(&mut self, entries: &BTreeSet<(CommitId, CommitId, Tid)>) {
         self.counted.clear();
-        for (r, c) in pairs {
-            self.counted.entry(*c).or_default().push(*r);
+        for (r, c, on) in entries {
+            self.counted.entry((*c, *on)).or_default().push(*r);
         }
     }
 
@@ -368,7 +370,7 @@ impl Facts {
     fn listed(&self, tl: &Walk, d: &D, counts: &mut Counts) -> bool {
         let by_frontier = self.namers(d, counts).iter().any(|n| matches!(n, Namer::Write(id) if Self::cut_on(tl, id, d.needs, &d.hops).is_some()));
         by_frontier
-            || self.counted.get(&d.commit).into_iter().flatten().any(|r| {
+            || self.counted.get(&(d.commit, d.on)).into_iter().flatten().any(|r| {
                 counts.content += 1;
                 tl.parts_of(r).iter().any(|id| Self::cut_on(tl, id, d.needs, &d.hops).is_some())
             })

@@ -155,8 +155,8 @@ pub struct Paths {
     timeline: walk::Walk,
     trust: BTreeSet<WriteId>,
     void: BTreeSet<WriteId>,
-    /// The counting entries' (removal, commit) pairs.
-    counting: BTreeSet<(CommitId, CommitId)>,
+    /// The counting entries: (removal, commit, the vouch's thing).
+    counting: BTreeSet<(CommitId, CommitId, Tid)>,
     facts: content::Facts,
 }
 
@@ -264,8 +264,9 @@ impl Paths {
     /// Derives the counting entries from the first walk (draft §5.1 Vouches): an entry of an
     /// applied vouch V on N keyed by R and listing c counts where an edge write of R on h applies
     /// as a lowering, V is ordered after it, and c,
-    /// held, has a role-class part on N, is ordered before R, rests on h and is not signed by V's
-    /// signer. The commits whose entries changed.
+    /// held, has a role-class part on N, is ordered before R, rests on h by a part on N and is not
+    /// signed by V's signer. It keeps c's parts on N alone: V applies by its voucher's admin on N, which says
+    /// nothing of another thing c writes. The commits whose entries changed.
     fn recount(&mut self) -> BTreeSet<CommitId> {
         let mut pairs = BTreeSet::new();
         for v in self.first.vouches() {
@@ -275,8 +276,8 @@ impl Paths {
                 }
                 for c in v.list.commits() {
                     let Some(cf) = self.facts.commits.get(c) else { continue };
-                    if cf.key < rkey.commit_start() && cf.role_on.contains(&v.on) && cf.rests.contains(&h) && cf.signer != v.signer {
-                        pairs.insert((v.removal, *c));
+                    if cf.key < rkey.commit_start() && cf.role_on.contains(&v.on) && cf.rests.contains(&(v.on, h)) && cf.signer != v.signer {
+                        pairs.insert((v.removal, *c, v.on));
                     }
                 }
             }
@@ -341,8 +342,8 @@ impl Paths {
         self.facts.naming(id)
     }
 
-    /// The counting entries' (removal, commit) pairs.
-    pub fn counting(&self) -> &BTreeSet<(CommitId, CommitId)> {
+    /// The counting entries: (removal, commit, the vouch's thing).
+    pub fn counting(&self) -> &BTreeSet<(CommitId, CommitId, Tid)> {
         &self.counting
     }
 

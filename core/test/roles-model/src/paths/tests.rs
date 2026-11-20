@@ -146,6 +146,71 @@ fn a_vouch_counts_only_after_its_removal_and_on_its_own_thing() {
     assert!(!rd.applied.contains(&gs) && !rd.valid.contains(&kc));
 }
 
+/// X's one commit grants G write on T1 and on T2, both through A; H removes X listing nothing; B,
+/// admin on T1 alone (H's grant through A), vouches on T1 for it.
+fn two_things() -> (World, Id, Id, Id) {
+    let mut w = account();
+    w.edge(H, 1, &[], A, X, Admin, &[]);
+    w.edge(H, 1, &[A], T1, B, Admin, &[]);
+    let on1 = w.push(X, 2, &[A], T1, Kind::set(G, Write));
+    let on2 = w.push(X, 2, &[A, ORG], T2, Kind::set(G, Write));
+    w.group(&[on1, on2]);
+    let r = w.edge(H, 6, &[], A, X, Gone, &[]);
+    w.vouch(B, 7, &[], T1, r, &[on1]);
+    (w, on1, on2, r)
+}
+
+/// notes/a1-spec/permissions.md §5.1 Vouches (`Entry::OnThing`): a counting entry keeps its
+/// commit's parts on the vouch's own thing alone. B's vouch keeps X's grant on T1, where B is an
+/// admin, and not the one on T2, where B holds nothing: with a thief who backdated the commit and
+/// an accomplice holding T1, authority on T1 would keep a write on T2 no holder of T2 vouched for.
+/// Control (`Entry::Whole`, the commit named whole): the grant on T2 stands.
+#[test]
+fn a_vouch_keeps_a_commits_parts_on_its_own_thing_alone() {
+    let (w, on1, on2, r) = two_things();
+    let rd = fixed(&w, &[r]);
+    assert!(rd.applied.contains(&on1) && !rd.applied.contains(&on2), "{rd:?}");
+    assert_eq!((rd.role(G, T1), rd.role(G, T2)), (Write, Gone));
+    let whole = fixed_but(&w, &[r], |x| x.entry = Entry::Whole);
+    assert!(whole.applied.contains(&on1) && whole.applied.contains(&on2));
+}
+
+/// The honest cost: X's two-thing commit reached B (admin on T1) and H's co-admin N5 (admin on A,
+/// so on T2) in time. Each vouches on the things it administers, as the writers' rule asks, and both
+/// parts stay; without N5's vouch the part on T2 falls unless the remover lists it.
+#[test]
+fn a_commit_writing_two_things_stays_by_a_vouch_on_each() {
+    let (mut w, on1, on2, r) = two_things();
+    w.edge(H, 1, &[], A, N5, Admin, &[]);
+    let v5 = w.vouch(N5, 7, &[A, ORG], T2, r, &[on2]);
+    let rd = fixed(&w, &[r]);
+    assert!(rd.applied.contains(&on1) && rd.applied.contains(&on2), "{rd:?}");
+    let rd = judge(&w, &Rules::fixed(), &View::all(&w).trusting(&[r]).without(&[v5]));
+    assert!(rd.applied.contains(&on1) && !rd.applied.contains(&on2));
+}
+
+/// notes/path-model-findings.md 39: a voucher's admin is read in the walk with no vouch counting,
+/// where a lowering only a vouch keeps is dropped. X, keeping admin on A2, removed A2's share of T1
+/// before the theft (B received it and vouches for it); after H's removal X makes Z an admin of A2,
+/// backdates a grant of write on T1 to Z through [A], and Z vouches for it along [A2]. Z held admin
+/// on T1 only in the walk where A2's removal is dropped, yet its vouch keeps the grant.
+#[test]
+#[ignore = "notes/path-model-findings.md: a voucher holds admin by a share only a vouch removes"]
+fn repro_a_voucher_holds_admin_by_a_share_only_a_vouch_removes() {
+    let (mut w, ..) = paired();
+    w.edge(K, 1, &[], A2, X, Admin, &[]);
+    w.edge(H, 1, &[A], T1, A2, Admin, &[]);
+    let out = w.edge(X, 3, &[A], T1, A2, Gone, &[]);
+    let gz = w.edge(X, 5, &[A], T1, Z, Write, &[]);
+    let r = w.edge(H, 6, &[], A, X, Gone, &[]);
+    w.vouch(B, 7, &[A], T1, r, &[out]);
+    w.edge(X, 7, &[], A2, Z, Admin, &[]);
+    w.vouch(Z, 7, &[A2], T1, r, &[gz]);
+    let rd = fixed(&w, &[r]);
+    assert!(rd.applied.contains(&out) && rd.role(A2, T1) == Gone);
+    assert!(!rd.applied.contains(&gz) && rd.role(Z, T1) == Gone, "{rd:?}");
+}
+
 /// B shares T1 with A2, X removes A2 again, K writes on; H, who does not sync T1, removes X.
 fn unshared_by_x() -> (World, Id, Id, Id) {
     let (mut w, ..) = paired();
@@ -1161,16 +1226,16 @@ fn random_worlds_hold_large() {
     assert_holds(&st, &format!("OSIS_ROLES_START={start}"));
 }
 
-/// Every 301st world of the small family (21,228 worlds, about 300 CPU-s; `-- 0 paths-exh` runs all
-/// of them by hand): a stride coprime with every dimension's size (2, 4, 5, 6, 52;
+/// Every 367th world of the small family (21,295 worlds, about 300 CPU-s; `-- 0 paths-exh` runs all
+/// of them by hand): a stride coprime with every dimension's size (2, 4, 6, 53;
 /// `family_on_every_core` refuses one that is not), so every value of every dimension is reached
 /// and none is tied to another (an even stride keeps `h_t1` false in every world): each thief
-/// move about 408 times, stamped before and after the removal alike, each setup field's values
+/// move about 400 times, stamped before and after the removal alike, each setup field's values
 /// in equal shares.
 #[test]
 #[ignore = "property"]
 fn small_family_holds_large() {
-    let st = family_run(&Rules::fixed(), 301);
+    let st = family_run(&Rules::fixed(), 367);
     st.print("paths family", &Rules::fixed());
     assert_holds(&st, "family");
 }

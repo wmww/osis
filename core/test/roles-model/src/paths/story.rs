@@ -69,7 +69,9 @@ pub struct Setup {
     pub n5: u8,
     /// X's role write before the theft. 0: none; 1: demotes B to write on A; 2: removes A2 from
     /// T1 (when B shared it); 3: grants A2 admin on T2; 4: a purge request by author A on T1 (not
-    /// a role write: content-class, kept only by H's list).
+    /// a role write: content-class, kept only by H's list); 5: one commit granting RD read on T1
+    /// through [A] and A2 admin on T2 through [A, ORG] (two things: K, holding T1 alone where A2
+    /// administers it, vouches for its part on T1 only).
     pub x_role: u8,
     /// H received it before its removal.
     pub x_role_seen: bool,
@@ -117,8 +119,11 @@ pub struct Move {
 /// removing H and B in one commit (spec/commits.md §2), listing nothing; 49 to 51 put an end date on
 /// an admin edge (`Until`): X ending H's admin at the removal, backdated; X ending H's admin a tick
 /// after its own `ts`, stamped after the theft; X ending A's admin on T1 at the removal through A2,
-/// backdated (the edge above the signer's on B's removal of A2 from T1, where B makes it).
-pub const MOVES: usize = 52;
+/// backdated (the edge above the signer's on B's removal of A2 from T1, where B makes it); 52,
+/// where X administers A2 for good and A2 administers T1 (`Setup::x_a2` 3), is an accomplice
+/// holding T1 alone: X makes Z an admin of A2 (its right), backdates one commit granting Z write on
+/// T1 through [A] and admin on T2 through [A, ORG], and Z vouches on T1 for it along [A2].
+pub const MOVES: usize = 53;
 /// N5 grants H admin, standing or until just after the removal; N5 removes H; N5 demotes H; N5
 /// vouches against H's removal for X's role writes on A. Each stamped before X's removal of N5
 /// but the vouch.
@@ -215,12 +220,30 @@ impl Sim {
         }
         ids
     }
+    /// One commit of edge writes on several things, each `(path, on, kind)` (`World::group`),
+    /// received as one by every node syncing one of them.
+    fn put_group(&mut self, signer: Thing, ts: u32, parts: Vec<(&[Thing], Thing, Kind)>, made: u32, rng: &mut Rng, hostile: bool) -> Vec<Id> {
+        let ids: Vec<Id> = parts.into_iter().map(|(path, on, kind)| self.w.push(signer, ts, path, on, kind)).collect();
+        self.w.group(&ids);
+        self.deliver(ids[0], made, rng, hostile);
+        for _ in &ids[1..] {
+            self.made.push(made);
+            self.recv.push(self.recv[ids[0]].clone());
+        }
+        ids
+    }
+    /// The units commit `i` goes to: the things its commit's parts are on, and those a removal is
+    /// logged under.
+    fn units(&self, i: Id) -> Things {
+        let mut units: Things = self.w.part_ids(self.w.cid(i)).map(|p| self.w.commits[p].on).collect();
+        units.extend(self.logged.get(&i).into_iter().flatten());
+        units
+    }
     /// Commit `i`'s receipt times.
     fn deliver(&mut self, i: Id, made: u32, rng: &mut Rng, hostile: bool) {
-        let (signer, on) = (self.w.commits[i].signer, self.w.commits[i].on);
+        let signer = self.w.commits[i].signer;
         self.made.push(made);
-        let mut units = Things::from([on]);
-        units.extend(self.logged.get(&i).into_iter().flatten());
+        let units = self.units(i);
         let mut recv = BTreeMap::new();
         for (&n, syncs) in &self.sync {
             if !syncs.iter().any(|u| units.contains(u)) {
@@ -345,6 +368,17 @@ impl Sim {
                 m.recv[g].insert(H, if s.x_role_seen { 4 } else { SETTLE });
             }
             m.xrole = Some(g);
+        } else if x_role == 5 {
+            // one commit writing two things: RD read on T1 through A, A2 admin on T2 through A, ORG
+            let f1 = m.w.cut(&m.w.through((RD, T1), |_| true));
+            let f2 = m.w.cut(&m.w.through((A2, T2), |_| true));
+            let ids = m.put_group(X, 3, vec![(&[A], T1, grant(RD, Role::Read).listing(f1)), (&[A, ORG], T2, grant(A2, Role::Admin).listing(f2))], 3, rng, false);
+            if m.sync[&H].contains(&T1) || m.sync[&H].contains(&T2) {
+                for &g in &ids {
+                    m.recv[g].insert(H, if s.x_role_seen { 3 } else { SETTLE });
+                }
+            }
+            m.xrole = Some(ids[0]);
         } else if x_role > 0 {
             let (path, on, holder, role): (&[Thing], _, _, _) = match x_role {
                 1 => (&[], A, B, Role::Write),
@@ -405,9 +439,7 @@ impl Sim {
         }
         // the settle: whatever exists reaches every node syncing its unit
         for i in 0..m.w.commits.len() {
-            let on = m.w.commits[i].on;
-            let mut units = Things::from([on]);
-            units.extend(m.logged.get(&i).into_iter().flatten());
+            let units = m.units(i);
             for (&n, syncs) in &m.sync {
                 if syncs.iter().any(|u| units.contains(u)) {
                     let t = m.recv[i].entry(n).or_insert(SETTLE);
@@ -663,6 +695,17 @@ impl Sim {
                 _ => (mv.ts.min(REMOVAL - 1), &[A2], T1, grant(A, Role::Admin).until(REMOVAL)),
             };
             self.put((X, c.0, c.1, c.2, c.3), mv.made, rng, true);
+            return;
+        }
+        if mv.kind == 52 {
+            // (not where X removed A2 from T1 before the theft: `repro_a_voucher_holds_admin_by_a_share_only_a_vouch_removes`)
+            if self.setup.x_a2 != 3 || self.xrole.is_some_and(|g| self.w.lowers(g) == Some((A2, T1))) {
+                return;
+            }
+            let late = mv.ts.max(REMOVAL + 1);
+            self.put((X, late, &[], A2, grant(Z, Role::Admin)), mv.made, rng, true);
+            let ids = self.put_group(X, mv.ts.min(REMOVAL - 1), vec![(&[A], T1, grant(Z, Role::Write)), (&[A, ORG], T2, grant(Z, Role::Admin))], mv.made, rng, true);
+            self.put((Z, late, &[A2], T1, Kind::Vouch { removal: self.r, list: Set::from([ids[0]]) }), mv.made, rng, true);
             return;
         }
         if mv.kind == 48 {
@@ -1327,6 +1370,10 @@ pub fn check(m: &Sim, rules: &Rules, st: &mut Stats) {
         _ => false,
     };
     let x_keeps_a2 = matches!(s.x_a2, 1 | 3 | 4 | 5);
+    // move 52: Z, made an admin of A2 by X (its right where it administers A2), administers T1
+    // through A2 unless X's removal of A2 from T1 stands: its vouch on T1, and what that keeps there
+    // of X's backdated commit, are that right; the commit's part on T2 is not
+    let z_t1 = s.x_a2 == 3 && m.thief.values().any(|&k| k == 52) && !(x_removed_a2 && m.xrole.is_some_and(saved));
     // what X, writing A2 for good, invites on T1 through A2 by right: read where A2's share
     // invites read (the kiosk's from its demotion on), write where the kiosk's share stays admin
     let x_invites = match s.x_a2 {
@@ -1390,7 +1437,11 @@ pub fn check(m: &Sim, rules: &Rules, st: &mut Stats) {
                 // X inviting (or finalizing) at read through A2, which it keeps writing, by A2's invite
                 || (c.signer == X && x_invites > Role::None && c.path == [A2] && matches!(c.kind, Kind::Edge { role, .. } if role <= x_invites))
                 // Z writing T1 by X's invite at write, where that is X's right
-                || (c.signer == Z && x_invites >= Role::Write && c.on == T1 && c.path.is_empty() && matches!(c.kind, Kind::Content));
+                || (c.signer == Z && x_invites >= Role::Write && c.on == T1 && c.path.is_empty() && matches!(c.kind, Kind::Content))
+                // move 52: X granting Z admin on A2, which it administers for good; Z's vouch on T1,
+                // the part on T1 it keeps, and whatever Z writes on T1 (an admin there through A2)
+                || (m.thief.get(&i) == Some(&52) && c.on == A2 && s.x_a2 == 3)
+                || (c.on == T1 && z_t1 && (m.thief.get(&i) == Some(&52) || c.signer == Z));
             // the accepted window (spec/permissions.md §5.2 Copies, §5.3): shown only by a cover's
             // copy, carried first by a cover whose writer did not yet hold a removal when it made it
             let window = !rd.valid.contains(&i) && rd.copied.contains(&i) && m.smuggled.contains(&i);
@@ -1405,7 +1456,7 @@ pub fn check(m: &Sim, rules: &Rules, st: &mut Stats) {
             // N5, removed before the theft, stays removed
             let n5_holds = s.n5 == 3 && *e == (N5, A);
             // Z invited to read T1 through A2 by X, which keeps writing A2: X's right
-            let z_by_right = *e == (Z, T1) && *r <= x_invites;
+            let z_by_right = (*e == (Z, T1) && (*r <= x_invites || z_t1)) || (*e == (Z, A2) && s.x_a2 == 3 && m.thief.values().any(|&k| k == 52));
             if *r > Role::None && ((e.0 == Z && !z_by_right) || x_holds || n5_holds) {
                 st.fail(prop, m, format!("node {n}: {e:?} ends {r:?}"));
             }
@@ -1663,7 +1714,7 @@ pub fn random_world(i: u64, rules: &Rules) -> Sim {
         b_offline: b(&mut rng),
         sharer_x: b(&mut rng),
         n5: rng.below(4) as u8,
-        x_role: rng.below(5) as u8,
+        x_role: rng.below(6) as u8,
         x_role_seen: b(&mut rng),
         x_a2: rng.below(6) as u8,
         b_side_x: rng.below(4) == 0,
@@ -1705,7 +1756,7 @@ pub fn random_from(start: u64, n: u64, rules: &Rules) -> Stats {
 /// removal (stamped before, an `early` move is made at 5, heard before the removal); `mint` and
 /// `x_first` as one dimension (none, M naming H, M naming timed B, X removing H first). `i` in
 /// `0..FAMILY`.
-pub const FAMILY: usize = 2 * 2 * 2 * 2 * 4 * 5 * 2 * 6 * 2 * 2 * 4 * MOVES * 2;
+pub const FAMILY: usize = 2 * 2 * 2 * 2 * 4 * 6 * 2 * 6 * 2 * 2 * 4 * MOVES * 2;
 
 pub fn family(mut i: usize, rules: &Rules) -> Sim {
     let mut take = |n: usize| {
@@ -1719,7 +1770,7 @@ pub fn family(mut i: usize, rules: &Rules) -> Sim {
         b_offline: take(2) == 1,
         sharer_x: take(2) == 1,
         n5: take(4) as u8,
-        x_role: take(5) as u8,
+        x_role: take(6) as u8,
         x_role_seen: take(2) == 1,
         x_a2: take(6) as u8,
         b_side_x: take(2) == 1,
@@ -1790,6 +1841,7 @@ pub fn mode_rules(mode: &str) -> Option<Rules> {
         "-refuse-shapes" => Rules { refuse_shapes: true, ..f },
         "-until-at-key" => Rules { until: Until::AtKey, ..f },
         "-until-past-end" => Rules { until: Until::PastEnd, ..f },
+        "-vouch-whole" => Rules { entry: Entry::Whole, ..f },
         _ => return None,
     })
 }

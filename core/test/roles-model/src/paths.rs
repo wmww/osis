@@ -318,6 +318,21 @@ pub struct Rules {
     pub refuse_shapes: bool,
     /// How a write putting an end on a standing admin edge (or shortening its end) is judged.
     pub until: Until,
+    /// What a counting vouch's entry keeps of the commit it names.
+    pub entry: Entry,
+}
+
+/// What a counting vouch entry keeps of the commit `c` it names (notes/a1-spec/permissions.md
+/// §5.1 Vouches): a vouch on thing N applies where its voucher's path gives admin on N, so it
+/// speaks for N alone.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum Entry {
+    /// The rule: c's parts on the vouch's own thing, as an addendum keeps content on its own
+    /// thing. A commit writing several things needs a vouch on each.
+    OnThing,
+    /// Control (`-vouch-whole`): c whole, its parts on every thing it writes, so authority on N
+    /// keeps a part on another thing no holder of that thing vouched for.
+    Whole,
 }
 
 /// An **end**: a write giving an edge that gives admin at its `ts` a value giving admin until an
@@ -382,6 +397,7 @@ impl Rules {
             seeds_by_need: false,
             refuse_shapes: false,
             until: Until::Plain,
+            entry: Entry::Whole,
         }
     }
     /// The design: every fix the notes state, a removal judged in the world its list makes
@@ -414,6 +430,7 @@ impl Rules {
             seeds_by_need: true,
             refuse_shapes: false,
             until: Until::Plain,
+            entry: Entry::OnThing,
         }
     }
     /// A lowering (`World::lowers`), and under `Until::AtKey`/`PastEnd` a write giving admin until
@@ -510,6 +527,10 @@ impl World {
     /// The number of parts of commit `cid`.
     pub fn parts(&self, cid: Id) -> usize {
         self.commits.iter().filter(|c| c.cid == cid).count()
+    }
+    /// The parts of commit `cid`.
+    pub fn part_ids(&self, cid: Id) -> impl Iterator<Item = Id> + '_ {
+        (0..self.commits.len()).filter(move |&i| self.commits[i].cid == cid)
     }
     /// The mint admin of `t`: the holder of its record edge.
     fn mint_of(&self, t: Thing) -> Option<Thing> {
@@ -668,9 +689,15 @@ impl World {
             _ => None,
         }
     }
+    /// `r`'s frontier names `j` in some leaf (notes/a1-spec/permissions.md §5.1: a list names a
+    /// part whose commit's ID is in it, so an entry names every part of its commit).
     fn in_frontier(&self, r: Id, j: Id) -> bool {
+        self.in_leaves(r, j, None)
+    }
+    /// `r`'s frontier names `j` in a leaf for one of `leaves` (None: any leaf).
+    fn in_leaves(&self, r: Id, j: Id, leaves: Option<&Things>) -> bool {
         match &self.commits[r].kind {
-            Kind::Edge { frontier, .. } => frontier.get(&self.commits[j].on).is_some_and(|l| l.iter().any(|&c| self.names(c, j))),
+            Kind::Edge { frontier, .. } => frontier.iter().any(|(t, l)| leaves.is_none_or(|s| s.contains(t)) && l.iter().any(|&c| self.names(c, j))),
             _ => false,
         }
     }
@@ -908,13 +935,34 @@ struct Walk {
     checked: u64,
 }
 
-/// (removal, commit) pairs a counting vouch names, by commit ID.
-type Vouched = BTreeSet<(Id, Id)>;
+/// (removal, commit, thing) triples counting vouches keep, by commit ID: the parts of the commit
+/// on the thing (`Rules::entry`).
+type Vouched = BTreeSet<(Id, Id, Thing)>;
 
-/// R's list names `j`: its frontier, in a leaf the node sees, or a counting vouch against it.
+/// R's list names `j`: its frontier, in a leaf the node sees, or a counting vouch against it
+/// keeping `j`'s thing.
 fn listed(w: &World, v: &View, vouched: &Vouched, r: Id, j: Id) -> bool {
-    let seen = v.leaves.as_ref().is_none_or(|l| l.contains(&w.commits[j].on));
-    (seen && w.in_frontier(r, j)) || vouched.contains(&(w.cid(r), w.cid(j)))
+    w.in_leaves(r, j, v.leaves.as_ref()) || vouched.contains(&(w.cid(r), w.cid(j), w.commits[j].on))
+}
+
+/// What vouch `i`'s entries keep (it counting): each listed role write on its own thing, not
+/// its own signer's under `no_own_vouch`, kept on that thing (`Entry::OnThing`) or on every thing
+/// its commit writes (`Entry::Whole`).
+fn entries(w: &World, rules: &Rules, i: Id) -> Vouched {
+    let Kind::Vouch { removal, list } = &w.commits[i].kind else { return Vouched::new() };
+    let on = w.commits[i].on;
+    let own = |j: Id| rules.no_own_vouch && w.commits[j].signer == w.commits[i].signer;
+    let mut out = Vouched::new();
+    for &j in list.iter().filter(|&&j| w.edge_class(j) && w.commits[j].on == on && !own(j)) {
+        let (r, c) = (w.cid(*removal), w.cid(j));
+        match rules.entry {
+            Entry::OnThing => {
+                out.insert((r, c, on));
+            }
+            Entry::Whole => out.extend(w.part_ids(c).map(|p| (r, c, w.commits[p].on))),
+        }
+    }
+    out
 }
 
 /// Control `exempt_chain`: the grants R's own authority rests on, as the held writes give them:
@@ -1300,11 +1348,10 @@ fn past_end(w: &World, rules: &Rules, r: Id, j: Id) -> bool {
 fn counting(w: &World, rules: &Rules, wk: &Walk) -> (Set, Vouched) {
     let (mut ids, mut out) = (Set::new(), Vouched::new());
     for &i in &wk.pass.applied {
-        if let Kind::Vouch { removal, list } = &w.commits[i].kind {
+        if let Kind::Vouch { removal, .. } = &w.commits[i].kind {
             if w.key(*removal) < w.key(i) && wk.pass.applied.iter().any(|&a| w.cid(a) == w.cid(*removal)) {
                 ids.insert(i);
-                let own = |j: Id| rules.no_own_vouch && w.commits[j].signer == w.commits[i].signer;
-                out.extend(list.iter().filter(|&&j| w.edge_class(j) && w.commits[j].on == w.commits[i].on && !own(j)).map(|&j| (w.cid(*removal), w.cid(j))));
+                out.extend(entries(w, rules, i));
             }
         }
     }
@@ -1560,10 +1607,7 @@ pub fn judge(w: &World, rules: &Rules, v: &View) -> Reading {
 fn unjustified(w: &World, rules: &Rules, v: &View, rd: &Reading) -> Set {
     let mut vouched = Vouched::new();
     for &a in &rd.counting {
-        if let Kind::Vouch { removal, list } = &w.commits[a].kind {
-            let own = |j: Id| rules.no_own_vouch && w.commits[j].signer == w.commits[a].signer;
-            vouched.extend(list.iter().filter(|&&j| w.edge_class(j) && w.commits[j].on == w.commits[a].on && !own(j)).map(|&j| (w.cid(*removal), w.cid(j))));
-        }
+        vouched.extend(entries(w, rules, a));
     }
     rd.dropped
         .iter()

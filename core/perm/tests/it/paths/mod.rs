@@ -27,7 +27,7 @@ pub fn rules() -> Rules {
     Rules::fixed()
 }
 
-fn tid(t: Thing) -> Tid {
+pub fn tid(t: Thing) -> Tid {
     let mut b = [0u8; 15];
     b[0] = t;
     Tid::from_bytes(b)
