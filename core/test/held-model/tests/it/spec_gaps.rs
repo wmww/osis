@@ -87,7 +87,8 @@ fn gaps_a_split_commit_is_judged_per_part_by_each_unit() {
 /// D under A where keys-open travel is off) and judges Z's part on A unlisted (invalid). Read
 /// commit-wide (the control: roles-model `paths` names every part of a listed commit, whatever
 /// leaf lists it) the node holding everything, seeing D's leaf, keeps it (valid): P1 fails under
-/// A3 and the actor seed. Read per leaf (`own_leaf`), both drop it, at every stage.
+/// the actor seed (keys-open travel puts a write on D under A by chance in every other stage).
+/// Read per leaf (`own_leaf`), both drop it, at every stage.
 #[test]
 fn gaps_a_list_entry_names_its_part_on_its_leafs_thing_alone() {
     let pw = paths::World::new(&[(X, A), (W, O), (Y, D)]);
@@ -103,7 +104,7 @@ fn gaps_a_list_entry_names_its_part_on_its_leafs_thing_alone() {
         for s in Stage::ALL {
             let f = gap_fails(&w, s, true, &[]);
             let fails = f.iter().any(|f| f.prop == "P1" && f.sid == A && f.id == ids[1] && f.reader == Some(Verdict::Invalid) && f.full == Some(Verdict::Valid));
-            assert_eq!(fails, !own_leaf && matches!(s, Stage::A3 | Stage::A2Actor), "own_leaf {own_leaf} {}: {f:?}", s.name());
+            assert_eq!(fails, !own_leaf && s == Stage::A2Actor, "own_leaf {own_leaf} {}: {f:?}", s.name());
             assert!(f.iter().all(|f| f.prop.starts_with("P1") || f.prop == "P8-act"), "own_leaf {own_leaf} {}: {f:?}", s.name());
         }
     }

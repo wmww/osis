@@ -115,12 +115,13 @@ fn p8_acting_before_a_complete_pass_is_reversed_by_what_it_lacked() {
     assert!(f.iter().any(|f| f.sid == D && f.reader == Some(Verdict::Valid) && f.full == Some(Verdict::Invalid)), "{f:?}");
 }
 
-/// P8: an act taken after a complete pass is reversed only by a write made later (the node
-/// holding everything reverses with it): X re-grants K after removing it, so D's reader drops
-/// K's first write as invalid, then judges it valid again; the drop must be undoable (the body
-/// fetched again, spec/sync-judgement.md §3 Dropped bodies), never final.
+/// P8: an act taken after a complete pass is reversed by a write made later (the node holding
+/// everything reverses with it; one made earlier and delivered late does too, finding 33): X
+/// re-grants K after removing it, so D's reader drops K's first write as invalid, then judges it
+/// valid again; the drop must be undoable (the body fetched again, spec/sync-judgement.md §3
+/// Dropped bodies), never final.
 #[test]
-fn p8_an_act_after_a_complete_pass_is_reversed_only_by_a_later_write() {
+fn p8_an_act_after_a_complete_pass_is_reversed_by_a_later_write() {
     let mut sh = Shape::nth(0);
     sh.regrant = true;
     let w = family(sh);

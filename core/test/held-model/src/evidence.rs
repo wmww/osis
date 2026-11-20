@@ -86,6 +86,22 @@ pub enum Errand {
     Transitive,
 }
 
+/// Which leaves of a lowering stay with it wherever it is a body (under its own thing's sync ID
+/// and each enclosing one), while it is held, besides where a body they read is.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Home {
+    /// None: a leaf only where a body it reads is (the control of finding 30).
+    None,
+    /// Its leaves for other things than its own: every holder of a removal holds what any runner
+    /// of its duty carries (finding 30). Its own thing's leaf is read only by bodies on that
+    /// thing, which are in every unit the lowering is a body of, so it leaves with the last of
+    /// them (finding 34).
+    Far,
+    /// Every leaf, its own thing's too: kept for good where the lowering is a body (the control
+    /// of finding 34).
+    All,
+}
+
 /// Who runs the errand (A3's delivery duty).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Runners {
@@ -309,7 +325,10 @@ impl Open10 {
 /// closure and judge.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Stage {
-    /// A3: removals with their reach, the remover's errand followed to the end (`Rule::fixed`).
+    /// A3: removals with their reach, the remover's errand followed to the end (`Rule::fixed`),
+    /// and Role changes travel whole (its keys-open half carries what the errand cannot once the
+    /// remover's node is lost before its first pass, finding 31, and grants and readers' removals,
+    /// which read access through a holder thing reads).
     A3,
     /// Brief 3 with reach on (`Config::reach`, unindexed) and Role changes travel, no errand
     /// (the errand is A3's).
@@ -343,7 +362,7 @@ impl Stage {
     pub fn set(self, w: &mut World, rule: Rule) -> Rule {
         let r = Rule { errand: Errand::Off, reach: false, keys_open: true, ..Open10::Granted.set(w, rule) };
         match self {
-            Stage::A3 => Rule { errand: Errand::Transitive, reach: true, keys_open: false, ..r },
+            Stage::A3 => Rule { errand: Errand::Transitive, reach: true, ..r },
             Stage::ReachNoErrand => Rule { reach: true, ..r },
             Stage::A2 => r,
             Stage::A2Actor => Rule { keys_open: false, ..r },
@@ -401,11 +420,8 @@ pub struct Rule {
     pub closure: Closure,
     /// Who runs the errand.
     pub runners: Runners,
-    /// A lowering's leaves, every one, are required with it wherever it is a body (under its own
-    /// thing's sync ID and each enclosing one), while it is held: so every holder of a removal
-    /// holds its leaves, and any runner can carry them (finding 30). False: a leaf only where a
-    /// body it reads is.
-    pub leaves_home: bool,
+    /// Which of a lowering's leaves are required with it wherever it is a body (findings 30, 34).
+    pub leaves_home: Home,
     /// The errand runs only in a pass of its runner (`Ev::Pass`), not as the removal is written:
     /// between, a removal is delivered by ordinary logging alone (the race with a thief).
     pub lag: bool,
@@ -414,7 +430,7 @@ pub struct Rule {
 impl Rule {
     /// The plan's reading (notes/redesign-plan.md A2, A3).
     pub fn design() -> Rule {
-        Rule { placement: Placement::Function, errand: Errand::Direct, reach: true, keys_open: false, author_reach: false, records: true, removals: Removals::TakesWrite, scope: Scope::Lowerings, leaves: Leaves::Evidence, standing: true, lists: Lists::Whole, closure: Closure::drafted(), runners: Runners::Remover, leaves_home: false, lag: false }
+        Rule { placement: Placement::Function, errand: Errand::Direct, reach: true, keys_open: false, author_reach: false, records: true, removals: Removals::TakesWrite, scope: Scope::Lowerings, leaves: Leaves::Evidence, standing: true, lists: Lists::Whole, closure: Closure::drafted(), runners: Runners::Remover, leaves_home: Home::None, lag: false }
     }
     /// The design with the findings' fixes (notes/evidence-model-findings.md): the errand follows
     /// taken grants to the end.
@@ -423,9 +439,10 @@ impl Rule {
     }
     /// `fixed` with content entries in leaves that travel as evidence of the commits they judge
     /// (notes/evidence-model-findings.md 6), read only where their lowering takes write away (27),
-    /// and kept with their lowering wherever it is a body (30): A3's rule.
+    /// and those for other things kept with their lowering wherever it is a body (30, 34): A3's
+    /// list rule (`Stage::A3` adds Role changes travel's keys-open half, finding 31).
     pub fn listed() -> Rule {
-        Rule { lists: Lists::Travels(LeafKeep::Cuts), leaves_home: true, ..Rule::fixed() }
+        Rule { lists: Lists::Travels(LeafKeep::Cuts), leaves_home: Home::Far, ..Rule::fixed() }
     }
 }
 
@@ -1087,7 +1104,14 @@ impl World {
         let Lists::Travels(keep) = rule.lists else { return Leafs::new() };
         let req = self.req(rule, s, units, h);
         let ch = Chained::new();
-        let home = |l: Leaf| rule.leaves_home && units[&s].contains(&self.on(l.0));
+        let home = |l: Leaf| {
+            let kept = match rule.leaves_home {
+                Home::None => false,
+                Home::Far => l.1 != self.on(l.0),
+                Home::All => true,
+            };
+            kept && units[&s].contains(&self.on(l.0))
+        };
         req.iter().flat_map(|&r| self.leaves_of(r)).filter(|&l| home(l) || req.iter().any(|&j| self.evidence_of(keep, l, j, h, &ch))).collect()
     }
     /// Not an addendum, or one listing a held commit its list can keep (no edge-class part and no

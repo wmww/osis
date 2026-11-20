@@ -4,8 +4,11 @@
 //! destroyed right after removing. Findings in notes/evidence-model-findings.md (29, 30).
 use held_model::evidence::names::*;
 use held_model::evidence::*;
-use roles_model::paths::Id;
+use roles_model::paths::{Id, Set};
 use roles_model::Role;
+
+/// R's mint admin (finding 19's world).
+const V: roles_model::paths::Thing = 7;
 
 /// X removes K from A at 6; K's node is the thief; A writes D; X and Q sync A, Y syncs D, nobody
 /// honest syncs both. `gone`: X's node is destroyed right after removing. Then the thief writes D
@@ -124,7 +127,7 @@ fn f30_a_leaf_only_the_lost_remover_held_strands_what_it_lists() {
     w.gone(x);
     w.write(k, |p| p.content(K, 8, &[A], D));
     w.pass(q);
-    let away = Rule { leaves_home: false, ..lagged(Runners::AnyHolder) };
+    let away = Rule { leaves_home: Home::None, ..lagged(Runners::AnyHolder) };
     let (_, st) = steps(&w, &away);
     let f = settled(&w, &away, &st);
     assert!(f.iter().any(|f| f.prop == "P1" && f.sid == D && f.id == c && f.reader == Some(Verdict::Pending) && f.full == Some(Verdict::Valid)), "{f:?}");
@@ -236,4 +239,126 @@ fn a_lost_removers_duty_falls_to_another_holder_plain() {
 #[ignore = "property"]
 fn a_lost_removers_duty_falls_to_another_holder_large() {
     search(7, 200);
+}
+
+/// Finding 19's world (K writes R through [A, O, D]; Y, syncing D and A, removes O from D; N syncs
+/// A and R; V syncs R alone) with W's node (O's only syncer) destroyed after granting A write on
+/// O, Y's node destroyed right after removing, then the stolen K's late write on R, then a pass of
+/// every live node. Returns the world and the late write.
+fn keys_open_lost() -> (World, Id) {
+    let pw = roles_model::paths::World::new(&[(X, A), (W, O), (Y, D), (V, R)]);
+    let mut w = World::new(pw, &[A, O, D, R]);
+    let (x, wn, y, v, k) = (w.node(true, &[A]), w.node(true, &[O]), w.node(true, &[D, A]), w.node(true, &[R]), w.node(false, &[]));
+    let n = w.node(true, &[A, R]);
+    w.write(x, |p| p.edge(X, 1, &[], A, K, Role::Write, &[]));
+    w.write(wn, |p| p.edge(W, 1, &[], O, A, Role::Write, &[]));
+    w.gone(wn);
+    w.write(y, |p| p.edge(Y, 1, &[], D, O, Role::Write, &[]));
+    w.write(v, |p| p.edge(V, 1, &[], R, D, Role::Write, &[]));
+    w.write(k, |p| p.content(K, 2, &[A, O, D], R));
+    w.write(y, |p| p.edge(Y, 6, &[], D, O, Role::None, &[]));
+    w.gone(y);
+    let late = w.write(k, |p| p.content(K, 8, &[A, O, D], R));
+    for m in [x, v, n] {
+        w.pass(m);
+    }
+    (w, late)
+}
+
+/// Finding 31: Role changes travel's keys-open half carries a removal the duty cannot once the
+/// remover's node is lost before its first pass. Today Y logs its removal under A as it writes it
+/// (A reads through O), N carries it to R as evidence of the thief's write there. As drafted (the
+/// keys-open half gone) only the syncers of D and of O (the holder's own sync ID) hold it, and
+/// none is live: nobody runs the duty and R's reader shows the late write for good. With the half
+/// kept (`Stage::A3`), A3 holds as today.
+#[test]
+fn f31_dropping_the_keys_open_half_loses_a_removal_when_its_remover_is_lost() {
+    let (w, late) = keys_open_lost();
+    let at = |stage: Stage, keys_open: bool| {
+        let mut w = w.clone();
+        let rule = Rule { runners: Runners::AnyHolder, lag: true, keys_open, ..stage.set(&mut w, Rule::listed()) };
+        lost_fails(&w, &rule).into_iter().filter(|f| f.sid == R && f.id == late).collect::<Vec<_>>()
+    };
+    let drafted = at(Stage::A3, false);
+    assert!(drafted.iter().any(|f| f.prop == "P1-window" && f.reader == Some(Verdict::Valid) && f.full == Some(Verdict::Invalid)), "{drafted:?}");
+    assert_eq!(at(Stage::Today, true), vec![]);
+    assert_eq!(at(Stage::A3, true), vec![]);
+}
+
+/// Finding 32: the duty's right is per target, not per removal. X removes K from A; A writes D, D
+/// writes E; X syncs A and D (so the removal is under D at once), Y syncs D alone (it reads D,
+/// not A), V syncs E alone. X's node is destroyed right after removing; the stolen K writes E
+/// through [A, D]; Y passes. Y holds the removal and read on E (through D), not on A: run by every
+/// holder, its duty reaches E; by the remover alone (the outcome of the draft's "read or above on
+/// the target t", which Y lacks), E's reader shows the write for good.
+#[test]
+fn f32_a_holder_reading_only_a_reached_thing_runs_the_duty_there() {
+    let pw = roles_model::paths::World::new(&[(X, A), (Y, D), (V, E)]);
+    let mut w = World::new(pw, &[A, D, E]);
+    let (x, y, v, k) = (w.node(true, &[A, D]), w.node(true, &[D]), w.node(true, &[E]), w.node(false, &[]));
+    w.write(x, |p| p.edge(X, 1, &[], A, K, Role::Write, &[]));
+    w.write(y, |p| p.edge(Y, 1, &[], D, A, Role::Write, &[]));
+    w.write(v, |p| p.edge(V, 1, &[], E, D, Role::Write, &[]));
+    let r = w.write(x, |p| p.edge(X, 6, &[], A, K, Role::None, &[]));
+    w.gone(x);
+    let late = w.write(k, |p| p.content(K, 8, &[A, D], E));
+    w.pass(y);
+    let rule = lagged(Runners::AnyHolder);
+    let (s, st) = steps(&w, &rule);
+    assert!(s.window.iter().all(Vec::is_empty), "{:?}", s.window);
+    assert!(st.entries[&E].contains(&r));
+    assert_eq!(settled(&w, &rule, &st), vec![]);
+    let f = lost_fails(&w, &lagged(Runners::Remover));
+    assert!(f.iter().any(|f| f.prop == "P1-window" && f.sid == E && f.id == late && f.reader == Some(Verdict::Valid)), "{f:?}");
+}
+
+/// Finding 33: an act after a complete pass that no rule undoes (a drop of a body judged invalid)
+/// is wrong while an earlier-ordered removal voiding the cut has not landed. Q, made admin of A by
+/// X, removes K (6) listing nothing; K's write c on D (2) is cut by it; K's node is gone. Q's pass
+/// logs its removal under D, whose reader drops c after a complete pass. X then removes Q at 5
+/// (before Q's removal by key: it is void), so c is valid at the node holding everything; until
+/// X's pass reaches D, D's reader holds the void removal alone and drops c, which nobody else holds.
+#[test]
+fn f33_a_drop_after_a_complete_pass_is_wrong_while_a_voiding_removal_lags() {
+    let pw = roles_model::paths::World::new(&[(X, A), (Y, D)]);
+    let mut w = World::new(pw, &[A, D]);
+    let (x, q, y, k) = (w.node(true, &[A]), w.node(true, &[A]), w.node(true, &[D]), w.node(true, &[]));
+    w.write(x, |p| p.edge(X, 1, &[], A, Q, Role::Admin, &[]));
+    w.write(x, |p| p.edge(X, 1, &[], A, K, Role::Write, &[]));
+    w.write(y, |p| p.edge(Y, 1, &[], D, A, Role::Write, &[]));
+    let c = w.write(k, |p| p.content(K, 2, &[A], D));
+    w.gone(k);
+    w.write(q, |p| p.edge(Q, 6, &[], A, K, Role::None, &[]));
+    w.pass(q);
+    w.write(x, |p| p.edge(X, 5, &[], A, Q, Role::None, &[]));
+    w.pass(x);
+    let rule = lagged(Runners::AnyHolder);
+    let (s, st) = steps(&w, &rule);
+    let n = s.p8.len();
+    assert!(s.p8[n - 3].is_empty(), "the drop agrees before the void removal: {:?}", s.p8[n - 3]);
+    assert!(s.p8[n - 2].iter().any(|f| f.sid == D && f.id == c && f.reader == Some(Verdict::Invalid) && f.full == Some(Verdict::Valid)), "{:?}", s.p8[n - 2]);
+    assert!(s.window.iter().all(Vec::is_empty), "{:?}", s.window);
+    assert_eq!(settled(&w, &rule, &st), vec![]);
+}
+
+/// Finding 34: a removal's leaf for its own thing is read only by bodies on that thing, which sit
+/// with the removal in every unit it is a body of, so it leaves with the last of them; kept with
+/// the removal for good (`Home::All`), a thing's own removals keep every list they made.
+#[test]
+fn f34_a_removals_leaf_for_its_own_thing_leaves_with_what_it_reads() {
+    let pw = roles_model::paths::World::new(&[(X, A)]);
+    let mut w = World::new(pw, &[A]);
+    let (x, k) = (w.node(true, &[A]), w.node(true, &[A]));
+    w.write(x, |p| p.edge(X, 1, &[], A, K, Role::Write, &[]));
+    let c = w.write(k, |p| p.content(K, 2, &[], A));
+    w.write(x, |p| p.edge(X, 6, &[], A, K, Role::None, &[c]));
+    for (home, left) in [(Home::Far, 0), (Home::All, 1)] {
+        let rule = Rule { leaves_home: home, ..Rule::listed() };
+        let mut st = w.run(&rule, |_| {});
+        assert_eq!(st.leaves[&A].len(), 1);
+        assert_eq!(w.verdicts(&w.reader(&rule, &st, A, &Set::new()), &Set::from([c]))[&c], Verdict::Valid);
+        w.forget(&rule, &mut st, c);
+        assert_eq!(st.leaves[&A].len(), left, "{home:?}");
+        assert_eq!(w.p4(&rule, &st, false), vec![]);
+    }
 }
