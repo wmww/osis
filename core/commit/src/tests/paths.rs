@@ -406,6 +406,24 @@ fn seal_commit_unchecked(c: &CommitBlob, secret: &dyn Fn(&Tid) -> Secret32) -> E
     Envelope { header: c.header.clone(), sigs: c.sigs.clone(), sections }
 }
 
+// spec/wire.md §4 field 11 (at level 2 at most one, the commit's purge author's), spec/crypto.md §7
+// (Levels): a split commit writing three things, each along its own path, under retentions
+// calling for level 2 lists one level-2 key, which every such aspect names; its other levels are
+// per thing.
+#[test]
+fn a_split_commit_lists_one_level_2_key() {
+    for by in [osis_schema::PurgeBy::AuthorOrAdmin, osis_schema::PurgeBy::Writer] {
+        let mut b = split(3);
+        b.aspects.iter_mut().for_each(|a| a.retention = osis_schema::Retention { by });
+        let h = built(b).header;
+        assert!(h.is_split());
+        let level_2: Vec<usize> = (0..h.keys.len()).filter(|i| h.keys[*i].level == 2).collect();
+        assert_eq!(level_2.len(), 1, "{by:?}: one level-2 key");
+        assert!(h.aspects.iter().all(|a| a.keys.contains(&level_2[0])), "{by:?}: every aspect names it");
+        h.validate().unwrap();
+    }
+}
+
 // Interim (notes/a1-spec/README.md step 3): the walk reads every thing a commit writes as acting
 // for its one purge author, in the clear in either form, the signer for index 0. A role commit
 // whose index names a listed thing is invalid.

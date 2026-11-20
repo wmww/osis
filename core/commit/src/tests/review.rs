@@ -121,8 +121,8 @@ fn expiry_range() {
     assert!(h.validate().is_err());
 }
 
-// spec/wire.md §4 field 11 (Interim, notes/a1-spec/README.md step 4: one purge author per commit):
-// a header listing two level-2 delete keys is bad input.
+// spec/wire.md §4 field 11 (at level 2 at most one): one purge author per commit, so a header
+// listing two level-2 delete keys is bad input, also where each aspect lists one.
 #[test]
 fn one_level_2_key() {
     let mut h = sample_header();

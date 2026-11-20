@@ -115,8 +115,8 @@ impl Header {
                 return Err(Error::Invalid("expires not after the commit's ts"));
             }
         }
-        // Interim (notes/a1-spec/README.md step 4): one purge author per commit, so at most one
-        // level-2 key; then one per distinct purge author of a delta calling for level 2.
+        // one purge author per commit (spec/permissions.md §6), so at most one level-2 key: its
+        // (spec/wire.md §4 field 11)
         if self.keys.iter().filter(|k| k.level == DELETE_AUTHOR).count() > 1 {
             return Err(Error::Invalid("more than one level-2 delete key"));
         }

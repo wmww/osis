@@ -270,14 +270,14 @@ A **holder actor** of A is a holder for keys of A (its mint admin included while
   | level | retention set members | secret |
   |---|---|---|
   | 1, admin | `admin`, `author_or_admin`, `writer` | the admin secret of its thing |
-  | 2, author | `author_or_admin`, `writer` | the write secret of the delta's purge author (its commit's actor, spec/permissions.md §5.2 Interim) |
+  | 2, author | `author_or_admin`, `writer` | the write secret of the commit's one purge author (spec/permissions.md §6), at the purge author's delete base (a key actor's: its signing key) |
   | 3, writer | `writer` | the write secret of its thing |
 
 - **Delete base**: a dependent thing (§3) uses those of its independent, the last thing of its derivation chain (§3): its delete base.
 - **Delete key** of a role secret s: the Ed25519 key with seed `kdf("delete key", s)` (secret scalar a, public key A = a·B, RFC 8032).
   - Each keyset in `keys.0` publishes its epoch's (§3).
   - A delete base that is a key actor has its signing key (§3) as delete key at every level; an account's is the signing key of its preferred head at the writer (spec/permissions.md §5.4).
-- **Header list**: a header lists, per level of each delta, the first of these for the base; a writer holding none of them cannot write:
+- **Header list**: a header lists, per level of each delta, the first of these for the level's base (the delete base of the delta's thing at levels 1 and 3, of its purge author at level 2); a writer holding none of them cannot write:
   - the base's delete key of the newest current epoch of that level's secret the writer holds;
   - the `delete_key` of the base's `keys.0` keyset of that role it holds;
   - A linked header list's chunks carry one empty group (spec/wire.md §4, §5): no delete key covers them; they go by the delete key or at their expiry (spec/sync-ids.md §6 Delete).
@@ -290,7 +290,7 @@ A **holder actor** of A is a holder for keys of A (its mint admin included while
 - **Delete signature** for a blob: Ed25519 (RFC 8032 signing) over `"osis v1 delete" || digest` (§2, spec/wire.md §11.2) with secret scalar h·a mod ℓ, nonce prefix `kdf("delete nonce", seed, prefix salt || blind)` (seed: the delete key's RFC 8032 seed), and public key A'.
   - It verifies strictly under A' (§1).
   - A node keeping the sync ID unread checks it against the blob prefix's commitment at its level in a group, one per group for a Delete, and requires the sync ID signature the levels call for (spec/sync-ids.md §6).
-- A holder tries every epoch it holds of the level's secret up the thing's record chain (a thing that became independent keeps its earlier content under its mint admin's keys) and signs with the one whose key the header lists, or, for a linked blob, the link names (spec/sync-compaction.md §1; level 2 along the chain of the dropped body's purge author, spec/permissions.md §5.2 Interim).
+- A holder tries every epoch it holds of the level's secret up the thing's record chain (a thing that became independent keeps its earlier content under its mint admin's keys) and signs with the one whose key the header lists, or, for a linked blob, the link names (spec/sync-compaction.md §1; level 2 up the dropped body's purge author's chain).
 
 ## 8. Agility
 - Keys, KEM public keys and sealed boxes are enums (`signing_key`, `kem_key`, `sealed`) with one case today. Cases are never removed; a new primitive is a new case.

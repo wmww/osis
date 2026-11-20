@@ -419,6 +419,21 @@ fn more_rejected(content: &Header) -> Vec<Record> {
     let mut x = content.clone();
     x.keys.push(DeleteKey::new(3, &osis_crypto::DeleteSecret::derive(&s32(0x37)).verifying_key()));
     out.push(reject("delete key no aspect lists", "spec/wire.md §4", &x, "unused-key"));
+    // one purge author per commit: a second level-2 key, listed by a second aspect, is bad input
+    let mut x = content.clone();
+    let (k1, k2) = (x.keys[0], x.keys[1]);
+    let other = DeleteKey::new(2, &osis_crypto::DeleteSecret::derive(&s32(0x38)).verifying_key());
+    x.keys.push(other);
+    x.keys.sort();
+    let ix = |k: &DeleteKey| x.keys.iter().position(|y| y == k).unwrap();
+    let (i1, i2, io) = (ix(&k1), ix(&k2), ix(&other));
+    x.aspects[0].keys = vec![i1, i2];
+    let mut a = x.aspects[0].clone();
+    a.ak = Ak::new("app:title2.0").unwrap();
+    a.keys = vec![i1, io];
+    x.aspects.push(a);
+    assert!(x.validate().is_err_and(|e| e.to_string().contains("level-2")), "the level-2 rule refuses it");
+    out.push(reject("two level-2 delete keys", "spec/wire.md §4 field 11", &x, "level-2"));
     let mut x = content.clone();
     x.keys.remove(1);
     x.aspects[0].keys = vec![0];
