@@ -1757,11 +1757,15 @@ fn give(played: &Played, p: &mut Peer, bytes: &[u8], blobs: Vec<(osis_base::Blob
 }
 
 /// A pass ends, as at a node's sync with no source in flight (spec/sync-set.md §3 Release: at
-/// once): every thing that left the node closure is released, then what the pass brought that
-/// nothing held needs goes (`Engine::settle_needs`). Without the release a thing a strong held
-/// for a while (until a removal arrived invalidating it) stays, one never held goes: what a node
-/// holds would follow arrival order.
+/// once): a loss of read access judged before it drops (`Engine::role_duties`, spec/permissions.md
+/// §3 Lost access, When it learns it: a complete pass begun after the loss ended), every thing
+/// that left the node closure is released, then what the pass brought that nothing held needs
+/// goes (`Engine::settle_needs`). Without the drop a node given a grant and then its removal
+/// keeps the secrets the grant gave and reads on, where one given the removal first never took
+/// them; without the release a thing a strong held for a while (until a removal arrived
+/// invalidating it) stays, one never held goes: what a node holds would follow arrival order.
 fn pass_end(p: &mut Peer) {
+    p.engine.role_duties().unwrap();
     let left: BTreeSet<Tid> = p.engine.left_closure().into_keys().collect();
     p.engine.released(&left).unwrap();
     p.engine.settle_needs().unwrap();
@@ -4509,6 +4513,39 @@ fn strong_dropped_while_invalid_comes_back_by_a_holds_compaction_spec_commits_5(
     assert_eq!(read(&mut deliver(&played, &ahead.into_iter().chain(f..n).collect::<Vec<_>>())), o.now[&docs]);
 }
 
+// spec/permissions.md §3 Lost access, No secret taken back: 0 makes T under G, takes admin there
+// and removes G's record edge, grants G read (T gets secrets of its own, boxed to G), writes T's
+// `t:docs.0`, then removes G. A reader of G given that as made takes T's read secrets with the
+// grant and keeps them past the removal until a pass begun after the loss ends (When it learns
+// it); one given T's creation last applies the rest at once, where its roles give no secret, and
+// never takes them. So a pass end runs the lost-access drop (`pass_end`): then both read T as
+// the node holding every commit does, as absent.
+#[test]
+fn secrets_of_a_removed_grant_drop_at_the_pass_end_spec_permissions_3() {
+    use Step::*;
+    let h = vec![
+        New { by: 0, parent: 0, write: false },
+        Edge { by: 0, t: 1, holder: 0, role: Some(Role::Admin) },
+        RemoveFlow { by: 0, t: 1, holder: 3, lower: false },
+        GrantFlow { by: 0, t: 1, holder: 3, role: Role::Read },
+        Typed { by: 0, t: 1, op: 26, k: 2, v: 1 },
+        RemoveFlow { by: 0, t: 1, holder: 3, lower: false },
+    ];
+    let played = play(0, &h);
+    assert!(played.tally.refused.is_empty(), "{:?}", played.tally.refused);
+    let (n, base) = (played.packs.len(), played.base);
+    let docs = (format!("{:?}", played.things[1]), "t:docs.0".to_string());
+    let read = |p: &mut Peer| shown(p, &played.things).get(&docs).cloned().unwrap_or(NOTHING);
+    let o = oracle(&played, &(0..n).collect::<Vec<_>>());
+    assert_eq!(o.now.get(&docs).cloned().unwrap_or(NOTHING), NOTHING);
+    let mut read_t = false;
+    let mut p = deliver_with(&played, &(0..n).collect::<Vec<_>>(), None, None, None, &mut |p| read_t |= read(p) != NOTHING);
+    assert!(read_t, "as made, the grant's secrets read T");
+    assert_eq!(read(&mut p), NOTHING);
+    let creation_last: Vec<usize> = (0..base).chain(base + 1..n).chain([base]).collect();
+    assert_eq!(read(&mut deliver(&played, &creation_last)), NOTHING);
+}
+
 // spec/commits.md §4 (Unjudgeable): a node whose clock is behind gets a write on a new thing
 // first (thrown out: the thing's record is unknown), then the thing's creation (pending: its
 // `ts` past `MAX_DRIFT` ahead). When the clock catches up the creation applies, its record
@@ -4733,3 +4770,4 @@ fn a_delete_splitting_a_held_range_delete_kills_nothing_of_its_other_elements_sp
     let h = vec![Typed { by: 0, t: 0, op: 10, k: 0, v: 0 }, Typed { by: 0, t: 0, op: 10, k: 0, v: 1 }, Typed { by: 0, t: 0, op: 11, k: 0, v: 0 }, Undo { by: 0, back: 1 }];
     check(0, &h, NAMED).unwrap();
 }
+
