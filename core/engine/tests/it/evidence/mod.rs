@@ -155,6 +155,7 @@ impl Driver {
         let mut d = Driver::with(w, Config { vouches, ..A3 });
         for t in 0..=Thing::MAX {
             d.ev.set_role(t, Some(osis_base::Role::Write));
+            d.ev.set_dependent(t, !w.sids.contains(&t));
         }
         d
     }
@@ -175,7 +176,7 @@ impl Driver {
     /// reads; again until the targets stop moving.
     fn feed_duty(&mut self, w: &World, h: &Set, entries: &BTreeMap<Thing, Set>) {
         for _ in 0..64 {
-            let targets: Things = self.ev.duty().iter().map(|r| r.target).filter(|t| w.sids.contains(t)).collect();
+            let targets: Things = self.ev.duty().iter().map(|r| r.target).collect();
             let reads: Set = targets.iter().flat_map(|x| entries[x].iter().copied()).filter(|&i| !h.contains(&i) && w.w.edge_class(i)).collect();
             let all: Set = h.union(&reads).copied().collect();
             let ch = w.chained(&all);
@@ -195,8 +196,8 @@ impl Driver {
     }
 
     /// The (removal copy, target sync ID) pairs it runs the duty for.
-    fn duty(&self, w: &World) -> BTreeSet<(CopyId<Id, Thing>, Thing)> {
-        self.ev.duty().iter().filter(|r| w.sids.contains(&r.target)).map(|r| (r.removal, r.target)).collect()
+    fn duty(&self) -> BTreeSet<(CopyId<Id, Thing>, Thing)> {
+        self.ev.duty().iter().map(|r| (r.removal, r.target)).collect()
     }
 
     /// Moves the derivation to held set `h` and units `units`: new copies, chained flips,
@@ -346,7 +347,7 @@ fn differ(w: &World, rule: &Rule, vouches: bool) -> Run {
                     out.differ.push(format!("step {} {who} duty: {e}", st.step));
                 }
                 let model: BTreeSet<(CopyId<Id, Thing>, Thing)> = w.errand_runs(&ra3, st, n).into_iter().flat_map(|(r, xs)| xs.into_iter().map(move |x| ((w.w.cid(r), w.on(r)), x))).collect();
-                let ours = da3.duty(w);
+                let ours = da3.duty();
                 out.duty += usize::from(!model.is_empty());
                 if model != ours {
                     out.differ.push(format!("step {} {who} duty: model {model:?} derivation {ours:?}", st.step));

@@ -23,8 +23,8 @@ pub enum Mode {
 pub struct Run<C, T> {
     /// The removal's copy (commit ID, the thing it is on: t).
     pub removal: CopyId<C, T>,
-    /// The thing whose own sync ID it is logged under (a thing with no sync ID of its own, a
-    /// dependent, the caller skips: its enclosing units get it from their readers' required sets).
+    /// The thing whose own sync ID it is logged under (never a dependent: a thing with no sync ID
+    /// of its own, whose enclosing units get it from their readers' required sets).
     pub target: T,
     pub mode: Mode,
     /// The edge the walk reached the target by (None: t itself).
@@ -46,6 +46,8 @@ pub(super) struct Duty<C, T, K> {
     graph: Graph<C, T>,
     /// The node's own role on each thing, by a path, as its walk reads it.
     roles: BTreeMap<T, Role>,
+    /// Things with no sync ID of their own: walked through, never targets.
+    dependents: BTreeSet<T>,
     /// Per removal the things it reaches, each with the edge first reached by.
     runs: BTreeMap<CopyId<C, T>, Reached<T>>,
     /// Reverse: thing → removals reaching it.
@@ -54,7 +56,7 @@ pub(super) struct Duty<C, T, K> {
 
 impl<C: Ord + Copy, T: Ord + Copy, K> Default for Duty<C, T, K> {
     fn default() -> Self {
-        Duty { held: BTreeMap::new(), graph: Graph::new(), roles: BTreeMap::new(), runs: BTreeMap::new(), reached_by: BTreeMap::new() }
+        Duty { held: BTreeMap::new(), graph: Graph::new(), roles: BTreeMap::new(), dependents: BTreeSet::new(), runs: BTreeMap::new(), reached_by: BTreeMap::new() }
     }
 }
 
@@ -71,6 +73,16 @@ where
             Some(r) => self.duty.roles.insert(t, r),
             None => self.duty.roles.remove(&t),
         };
+    }
+
+    /// Whether `t` is a dependent (a thing with no sync ID of its own): the duty walks through it
+    /// and never runs there.
+    pub fn set_dependent(&mut self, t: T, dependent: bool) {
+        if dependent {
+            self.duty.dependents.insert(t);
+        } else {
+            self.duty.dependents.remove(&t);
+        }
     }
 
     /// A copy read for the duty under a target's own sync ID (a grant naming the target as holder),
@@ -111,7 +123,7 @@ where
     }
 
     /// Every (removal, target) the node runs the duty for now, with its mode: the targets it holds
-    /// read or above on (by `set_role`).
+    /// read or above on (by `set_role`), no dependent among them.
     pub fn duty(&self) -> Vec<Run<C, T>> {
         self.duty.runs.iter().flat_map(|(r, m)| m.iter().filter_map(move |(t, via)| self.runs(r, *t).map(|mode| Run { removal: *r, target: *t, mode, via: *via }))).collect()
     }
@@ -124,8 +136,11 @@ where
 
     /// Who runs the duty for removal `r` at target `t`, and how: the one predicate (notes/a3-spec
     /// README.md OPEN 2: every honest holder reading the target, *taken*; a narrowing of who runs is
-    /// a change here).
+    /// a change here). A dependent is no target.
     fn runs(&self, _r: &CopyId<C, T>, t: T) -> Option<Mode> {
+        if self.duty.dependents.contains(&t) {
+            return None;
+        }
         match self.duty.roles.get(&t) {
             Some(r) if *r >= Role::Write => Some(Mode::Stamp),
             Some(r) if *r >= Role::Read => Some(Mode::Deposit),
