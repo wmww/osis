@@ -1992,6 +1992,48 @@ fn a_purge_by_author_takes_exactly_that_authors_deltas() {
     assert!(fixed_but(&w, &[], |r| r.purge_exact = false).purged.contains(&b_as_b));
 }
 
+/// One commit states one path (notes/path-form.md, The rule): X, granted admin on A, writes A,
+/// T1 (minted by A) and D1 (minted by T1) stating [A]: A is the path's end, the others hang from
+/// it by record edges, and every part rests on (X, A) alone above the descent. H's removal of X
+/// cuts them alike. A thing the path's end does not reach (A2), and a thing listed before the
+/// end (A stated [A, T1]: named twice), are written by no part of it.
+#[test]
+fn a_commit_writes_its_paths_end_and_what_hangs_from_it() {
+    let (mut w, ..) = paired();
+    let ids = w.stated(X, 3, &[A], 0, &[A, T1, D1]);
+    assert_eq!(w.hops(ids[0]), &[(X, A)]);
+    assert_eq!(w.hops(ids[1]), &[(X, A), (A, T1)]);
+    assert_eq!(w.hops(ids[2]), &[(X, A), (A, T1), (T1, D1)]);
+    let off = w.stated(X, 3, &[A], 0, &[A2])[0];
+    let above = w.stated(X, 3, &[A, T1], 0, &[A, T1]);
+    assert!(!w.well(above[0]) && w.well(above[1]));
+    let rd = fixed(&w, &[]);
+    assert!(ids.iter().all(|i| rd.valid.contains(i)) && !rd.valid.contains(&off) && !rd.valid.contains(&above[0]) && rd.valid.contains(&above[1]));
+    let r = w.edge(H, 6, &[], A, X, Gone, &[ids[1]]);
+    let rd = fixed(&w, &[r]);
+    assert!(rd.valid.contains(&ids[1]) && !rd.valid.contains(&ids[0]) && !rd.valid.contains(&ids[2]));
+}
+
+/// Proposed (`Rules::author_thing`): a write may be by the thing it writes. X writes T1 stating
+/// [A, T1] and naming T1; B, another writer of T1, purges by author T1 and takes exactly that
+/// delta, not X's edit by A nor its own. Without the variant no request's chain holds T1. A
+/// request by a signer with no path to T1 is invalid and takes nothing either way.
+#[test]
+fn a_write_by_the_thing_it_writes_is_purged_by_any_writer_of_it() {
+    let (mut w, ..) = paired();
+    let by_thing = w.stated(X, 2, &[A, T1], 2, &[T1])[0];
+    assert_eq!(w.purge_author(by_thing), T1);
+    let by_a = w.content_as(X, 2, &[A], T1, 1);
+    let own = w.content(B, 2, &[A], T1);
+    let q = w.purge(B, 3, &[A], T1, T1);
+    let stray = w.purge(Z, 3, &[], T1, T1);
+    let rd = fixed_but(&w, &[], |r| r.author_thing = true);
+    assert!(rd.valid.contains(&q) && !rd.valid.contains(&stray));
+    assert_eq!(rd.purged, Set::from([by_thing]));
+    assert!(!rd.purged.contains(&by_a) && !rd.purged.contains(&own));
+    assert!(fixed(&w, &[]).purged.is_empty());
+}
+
 /// The author right is held only through the request's own chain: a member writing through A2
 /// purges what A2 authored; an admin of the thing by another path names A2 and holds nothing
 /// (the model's right is the `author` class alone).

@@ -282,6 +282,11 @@ pub struct Rules {
     /// A request by author matches the deltas naming exactly that purge author. False (control
     /// `-purge-contains`): every delta whose chain holds it.
     pub purge_exact: bool,
+    /// Proposed (notes/path-form.md, Whom a write is by; not in `fixed`): a write may name the
+    /// thing it writes as its purge author (on the wire its path lists that thing last), and a
+    /// request's chain holds the thing it is on, so any valid request by that author takes it.
+    /// False: a delta naming its own thing has no author a request's chain holds.
+    pub author_thing: bool,
     /// The variant `-facts`, not the design: a carried write is judged by its own facts (signer,
     /// `ts`, path, ID), a valid cover only standing in for its body, which closes the window a
     /// cover by a writer not yet holding a removal opens but makes every snapshot state those
@@ -368,6 +373,7 @@ impl Rules {
             any_fall: true,
             purge_chain: true,
             purge_exact: true,
+            author_thing: false,
             cover_facts: false,
             commit_drops: true,
             remains_kept: false,
@@ -399,6 +405,7 @@ impl Rules {
             any_fall: true,
             purge_chain: true,
             purge_exact: true,
+            author_thing: false,
             cover_facts: false,
             commit_drops: true,
             remains_kept: true,
@@ -535,9 +542,25 @@ impl World {
         self.authored(i, ix);
         i
     }
+    /// `ix` one past the path names the thing written (`Rules::author_thing`).
     pub fn authored(&mut self, i: Id, ix: usize) {
-        assert!(ix <= self.commits[i].path.len(), "a purge author index past the path is bad input");
+        assert!(ix <= self.commits[i].path.len() + 1, "a purge author index past the thing written is bad input");
         self.commits[i].pa = ix;
+    }
+    /// One content commit as the header states it (notes/path-form.md, The rule): ONE path
+    /// [A1..Ak] and purge-author index for every thing in `on`. A thing that is the path's last
+    /// is written along the path ending at it (its part's path is the stated one less that
+    /// thing); every other thing is one hop past the path's end. The index reads into
+    /// [signer, A1..Ak] for every part, so one naming Ak names, on Ak's own part, the thing
+    /// written.
+    pub fn stated(&mut self, signer: Thing, ts: u32, path: &[Thing], ix: usize, on: &[Thing]) -> Vec<Id> {
+        assert!(ix <= path.len(), "a purge author index past the path is bad input");
+        on.iter()
+            .map(|&t| {
+                let own = if path.last() == Some(&t) { &path[..path.len() - 1] } else { path };
+                self.content_as(signer, ts, own, t, ix)
+            })
+            .collect()
     }
     /// A purge request by `author` on `on`, along `path`.
     pub fn purge(&mut self, signer: Thing, ts: u32, path: &[Thing], on: Thing, author: Thing) -> Id {
@@ -548,9 +571,9 @@ impl World {
         let c = &self.commits[i];
         std::iter::once(c.signer).chain(c.path.iter().copied()).collect()
     }
-    /// The thing a commit names as its purge author.
+    /// The thing a commit names as its purge author: of [signer, path..], or the thing written.
     pub fn purge_author(&self, i: Id) -> Thing {
-        self.chain(i)[self.commits[i].pa]
+        self.chain(i).get(self.commits[i].pa).copied().unwrap_or(self.commits[i].on)
     }
     /// A frontier listing `ids`, cut per thing.
     pub fn cut(&self, ids: &[Id]) -> BTreeMap<Thing, Set> {
@@ -1443,10 +1466,10 @@ fn purges(w: &World, rules: &Rules, v: &View, valid: &Set) -> Set {
     let mut out = Set::new();
     for &q in valid {
         let Kind::Purge { author } = w.commits[q].kind else { continue };
-        if rules.purge_chain && !w.chain(q).contains(&author) {
+        let (on, ts) = (w.commits[q].on, w.commits[q].ts);
+        if rules.purge_chain && !w.chain(q).contains(&author) && !(rules.author_thing && author == on) {
             continue;
         }
-        let (on, ts) = (w.commits[q].on, w.commits[q].ts);
         let names = |d: Id| if rules.purge_exact { w.purge_author(d) == author } else { w.chain(d).contains(&author) };
         out.extend(v.held.iter().copied().filter(|&d| matches!(w.commits[d].kind, Kind::Content) && w.commits[d].on == on && w.commits[d].ts < ts && names(d)));
     }

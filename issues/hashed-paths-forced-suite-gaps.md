@@ -3,6 +3,8 @@
 > Priority: normal
 > Tags: engine, commit, sync
 
+Proposed in its place (notes/path-form.md; notes/a1-spec/README.md Open 17): one path per commit and no hashed form, which closes both classes below by deleting the form; this issue then goes with it. Both classes are one fact: a path is read from the header where no section of its thing is held.
+
 The engine states its real per-thing paths only where all are equal; where they differ it states one for all (Interim, notes/a1-spec/README.md step 2), so only the test hooks write the hashed form. Run a suite in it by setting `hashed_through: Some(..)` in `Core`'s constructor (engine/mod.rs) on a wip commit.
 
 - **Section membership.** `seal_commit` splits sections by (key, thing) where paths are hashed. In the clear form a part may sit under another thing's key: a dependent creation's parent `holds.0` part and the new thing's parts go under the new thing's read secret. Hashed, the parent's part gets a section of its own carrying the parent's `Salted`, and a reader of the new thing selects secrets by the section's thing (`sync_ids::blobs` `thing_of`), so it opens neither: `holding::a_reader_of_a_holder_holds_its_targets_boxes_to_it_spec_sync_judgement_2` (reader 1 missing parts 0 and 2 while it holds the created thing's `created.0`), `differential::histories_hold_their_closure`, `first::a_first_sync_of_n_sync_ids_takes_the_same_round_trips_spec_sync_streams_4` (121 deliveries at 5n, 109 at n). Spec/wire.md §4 says a section holds one thing's parts in both forms; the clear form's mixing is the thing to settle first.
