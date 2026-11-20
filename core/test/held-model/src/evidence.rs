@@ -521,14 +521,6 @@ pub struct World {
     pub pend: Pend,
     /// What joins a hop under `Pend::Granted`, for joined paths and pending alike.
     pub join: Join,
-    /// A content entry of a lowering's leaf for thing t names its commit's parts on t alone (the
-    /// leaf form, notes/a2-spec/permissions.md §5.1 (A3)): the judge (roles-model `paths`, whose
-    /// lists name every part of a commit, `World::in_leaves`) runs on a world where a content
-    /// commit's parts on different things are commits of their own. False: the control, a leaf
-    /// naming the commit's parts on every thing (A1's commit-wide list read through leaves).
-    pub own_leaf: bool,
-    /// The judging world under `own_leaf`, computed once the world is written.
-    pub judge_memo: std::sync::OnceLock<paths::World>,
     /// A removal waits for the creation of the entry it resets, and a commit's edge writes on a
     /// thing apply together (spec/permissions.md §2 Edge writes; engine `add_role_commit`): an
     /// edge-class part pends while a part of its commit on its thing leaving its holder no grant
@@ -581,7 +573,7 @@ impl World {
     pub fn new(w: paths::World, sids: &[Thing]) -> World {
         let sids: Things = sids.iter().copied().collect();
         let units = sids.iter().map(|&s| (s, Things::from([s]))).collect();
-        World { w, rules: Rules::fixed(), sids, units, events: vec![], nodes: vec![], by: vec![], trust: Set::new(), pend: Pend::Any, join: join_default(), own_leaf: true, judge_memo: Default::default(), creations: false, creation_memo: Default::default(), opens: BTreeMap::new() }
+        World { w, rules: Rules::fixed(), sids, units, events: vec![], nodes: vec![], by: vec![], trust: Set::new(), pend: Pend::Any, join: join_default(), creations: false, creation_memo: Default::default(), opens: BTreeMap::new() }
     }
     pub fn node(&mut self, honest: bool, syncs: &[Thing]) -> usize {
         self.nodes.push(Node { honest, syncs: syncs.iter().copied().collect() });
@@ -828,7 +820,7 @@ impl World {
             Takes::Chained => Some(self.chained(h)),
             Takes::Applied => {
                 let trust = self.trust.intersection(h).copied().collect();
-                Some(paths::judge(&self.judging(), &self.rules, &View { held: h.clone(), leaves: None, trust }).applied)
+                Some(paths::judge(&self.w, &self.rules, &View { held: h.clone(), leaves: None, trust }).applied)
             }
         }
     }
@@ -906,33 +898,6 @@ impl World {
         };
         let memo = self.creation_memo.get_or_init(compute);
         if memo.len() == n { memo[i] } else { compute()[i] }
-    }
-    /// The world the judge reads (`own_leaf`): a content commit's parts on different things made
-    /// commits of their own, so a list entry (whose leaf is its part's thing, `paths::World::cut`)
-    /// names the parts on its own thing alone. `self.w` itself without `own_leaf`.
-    pub fn judging(&self) -> std::borrow::Cow<'_, paths::World> {
-        if !self.own_leaf {
-            return std::borrow::Cow::Borrowed(&self.w);
-        }
-        let compute = || {
-            let mut jw = self.w.clone();
-            let n = jw.commits.len();
-            for c in 0..n {
-                if self.w.cid(c) != c || self.w.edge_class(c) {
-                    continue;
-                }
-                let parts: Vec<Id> = self.w.part_ids(c).collect();
-                let on: Things = parts.iter().map(|&p| self.on(p)).collect();
-                if on.len() > 1 {
-                    for t in on {
-                        jw.group(&parts.iter().copied().filter(|&p| self.on(p) == t).collect::<Vec<_>>());
-                    }
-                }
-            }
-            jw
-        };
-        let memo = self.judge_memo.get_or_init(compute);
-        if memo.commits.len() == self.w.commits.len() { std::borrow::Cow::Borrowed(memo) } else { std::borrow::Cow::Owned(compute()) }
     }
     /// `j` is ordered before `i` as `i`'s verdict reads it: by key for an edge-class `i`, by `ts`
     /// (the start of its `ts`) for content.
@@ -1126,7 +1091,7 @@ impl World {
     /// The reading world of a node holding leaves `l`: each lowering's frontier keeps its role
     /// entries and the content entries of the leaves held.
     fn listed_world(&self, l: &Leafs) -> paths::World {
-        let mut w = self.judging().into_owned();
+        let mut w = self.w.clone();
         for r in 0..w.commits.len() {
             let ec: Set = (0..w.commits.len()).filter(|&c| self.w.edge_class(c)).collect();
             w.edit(r, |k| match k {
@@ -1540,7 +1505,7 @@ impl World {
     pub fn verdicts(&self, s: &Seen, ids: &Set) -> BTreeMap<Id, Verdict> {
         let (rd, lw);
         match &s.lists {
-            None => rd = paths::judge(&self.judging(), &self.rules, &s.v),
+            None => rd = paths::judge(&self.w, &self.rules, &s.v),
             Some(l) => {
                 lw = self.listed_world(l);
                 rd = paths::judge(&lw, &self.rules, &View { leaves: None, ..s.v.clone() });
@@ -1740,7 +1705,7 @@ impl World {
     pub fn p0_applied_chained(&self, st: &State) -> Vec<Fail> {
         let full = self.full(st, &Set::new());
         let ch = self.chained(&full.v.held);
-        paths::judge(&self.judging(), &self.rules, &full.v).applied.difference(&ch).map(|&i| Fail { prop: "P0-unchained-applies", step: st.step, sid: 0, id: i, reader: None, full: None }).collect()
+        paths::judge(&self.w, &self.rules, &full.v).applied.difference(&ch).map(|&i| Fail { prop: "P0-unchained-applies", step: st.step, sid: 0, id: i, reader: None, full: None }).collect()
     }
     /// P3: every removal by an honest node that the full closure of a sync ID's bodies holds and
     /// that can move a verdict there (it takes write away and its reach under S is held over

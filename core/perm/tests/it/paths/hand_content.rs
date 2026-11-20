@@ -571,7 +571,7 @@ fn role_class(on: u32, path: &[u32]) -> Part {
 }
 
 fn edge(on: u32, path: &[u32], holder: u32, value: Option<Edge>, listing: Option<&[u64]>) -> Part {
-    let frontier = listing.map(|l| Arc::new(Frontier::new(l.iter().map(|&i| c(i)))));
+    let frontier = listing.map(|l| Arc::new(super::whole(&[KH, KX, KB, KA, KT, KS, KZ, KY, KG].map(t), l.iter().map(|&i| c(i)))));
     Part { on: t(on), path: path.iter().map(|&x| t(x)).collect(), direct: 0, kind: PartKind::Edge(EdgeWrite { holder: t(holder), value, frontier, remains: None, adminless: false }) }
 }
 
@@ -1085,4 +1085,25 @@ fn an_answered_cut_gives_back_only_what_the_edge_gave_at_the_write() {
         agree_all(&w, &[]);
         assert_eq!(verdict(&w, &all(&w, &[]), c), Some(if until { Content::Invalid } else { Content::Valid(By::Listed) }), "until {until}");
     }
+}
+
+// spec/permissions.md §5.1 (the list): an entry in thing t's leaf names its commit's part on t
+// alone: Z's commit on T1 through [A] and on A, listed in T1's leaf only, keeps its part on T1 and
+// loses its part on A; listed in both leaves (the honest remover), both stand. Mutation: an entry
+// naming its commit's parts on every thing fails it.
+#[test]
+fn a_list_entry_names_its_part_on_its_leafs_thing_alone() {
+    let (mut w, ..) = paired();
+    w.edge(H, 1, &[], A, Z, Write, &[]);
+    let parts = w.split(Z, 2, Z, &[(&[A], T1), (&[], A)]);
+    let (on_t1, on_a) = (parts[0], parts[1]);
+    let mut w2 = w.clone();
+    w.edge(H, 4, &[], A, Z, Gone, &[on_t1]);
+    agree_all(&w, &[]);
+    assert_eq!(verdict(&w, &all(&w, &[]), on_t1), Some(Content::Valid(By::Listed)));
+    assert_eq!(verdict(&w, &all(&w, &[]), on_a), Some(Content::Invalid));
+    let honest = w2.through((Z, A), |_| true);
+    w2.edge(H, 4, &[], A, Z, Gone, &honest);
+    agree_all(&w2, &[]);
+    assert_eq!(verdict(&w2, &all(&w2, &[]), on_a), Some(Content::Valid(By::Listed)));
 }

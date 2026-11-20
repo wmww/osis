@@ -8,7 +8,7 @@
 
 use super::path::shape;
 use super::walk::{Counts, Key, Walk};
-use super::{By, Changed, Commit, Content, DeltaClass, Names, PartKind, Right, Scope, Stated};
+use super::{By, Changed, Commit, Content, DeltaClass, List, Names, PartKind, Right, Scope, Stated};
 use crate::types::{Frontier, WriteId};
 use osis_base::{Ak, CommitId, PurgeBy, Role, Tid, Ts};
 use std::collections::{BTreeMap, BTreeSet};
@@ -304,7 +304,7 @@ pub(super) struct CommitFacts {
     /// with the thing of the part resting on it.
     pub rests: BTreeSet<(Tid, Pair)>,
     /// Its edge writes' frontiers.
-    lists: Vec<(WriteId, Arc<Frontier>)>,
+    lists: Vec<(WriteId, Arc<List>)>,
     /// The edges its edge writes set, each with the role it sets (draft spec/commits.md §4
     /// Could hold the right).
     sets: Vec<(Pair, Role)>,
@@ -315,8 +315,8 @@ pub(super) struct Facts<S> {
     mint: BTreeMap<Tid, Tid>,
     /// The held role commits (a commit with a role-class part).
     pub commits: BTreeMap<CommitId, CommitFacts>,
-    /// Per commit, the frontiers (edge writes) listing it.
-    named: BTreeMap<CommitId, BTreeSet<WriteId>>,
+    /// Per (commit, thing), the frontiers (edge writes) whose leaf of the thing lists it.
+    named: BTreeMap<(CommitId, Tid), BTreeSet<WriteId>>,
     /// Removals by (commit, thing): the counting entries, each keeping the commit's parts on its
     /// vouch's thing (draft §5.1 Vouches).
     counted: BTreeMap<(CommitId, Tid), Vec<CommitId>>,
@@ -431,8 +431,8 @@ impl<S: Store> Facts<S> {
                     cf.key = Key::start(c.ts);
                 }
                 for (id, f) in &cf.lists {
-                    for x in f.commits() {
-                        self.named.entry(*x).or_default().insert(*id);
+                    for x in f.entries() {
+                        self.named.entry((x.1, x.0)).or_default().insert(*id);
                     }
                 }
                 for (e, r) in &cf.sets {
@@ -466,14 +466,14 @@ impl<S: Store> Facts<S> {
                     }
                 }
                 for (id, f) in &cf.lists {
-                    for x in f.commits() {
-                        if let Some(set) = self.named.get_mut(x) {
+                    for (t, x) in f.entries() {
+                        if let Some(set) = self.named.get_mut(&(x, t)) {
                             set.remove(id);
                             if set.is_empty() {
-                                self.named.remove(x);
+                                self.named.remove(&(x, t));
                             }
                         }
-                        out.carried.insert(*x);
+                        out.carried.insert(x);
                     }
                 }
             }
@@ -542,7 +542,7 @@ impl<S: Store> Facts<S> {
         }
         let mut out = vec![];
         for c in commits {
-            out.extend(self.named.get(&c).into_iter().flatten().map(|&w| Namer::Write(w)));
+            out.extend(self.named.get(&(c, d.on)).into_iter().flatten().map(|&w| Namer::Write(w)));
             out.extend(self.addenda_listing(&c).into_iter().map(Namer::Addendum));
         }
         counts.content += out.len() as u64;
@@ -665,7 +665,7 @@ impl<S: Store> Facts<S> {
             counts.content += 1;
             tl.role_before(h, t, &d.pos) >= Some(d.needs)
         });
-        gave && self.named.get(&d.commit()).into_iter().flatten().any(|w| {
+        gave && self.named.get(&(d.commit(), d.on)).into_iter().flatten().any(|w| {
             counts.content += 1;
             tl.applied_write(w).is_some_and(|(_, a)| a.explicit && a.key.signer == d.signer && a.key >= d.pos && a.value.filter(|v| v.alive_at(Some(a.key.ts))).map(|v| v.role) < Some(Role::Admin))
         })
@@ -918,7 +918,8 @@ impl<S: Store> Facts<S> {
         for id in parts {
             let Some(cf) = self.commits.get(&id.0).filter(|cf| cf.lists.iter().any(|(w, _)| w == id)) else { continue };
             for s in self.store.own_covers(&cf.signer) {
-                if self.named.get(&s.0).is_some_and(|n| n.contains(id)) {
+                let on = self.store.get(&s).map(|f| f.on);
+                if on.is_some_and(|on| self.named.get(&(s.0, on)).is_some_and(|n| n.contains(id))) {
                     out.insert(s.0);
                 }
             }

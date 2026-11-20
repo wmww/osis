@@ -23,7 +23,7 @@ mod single;
 
 use crate::common::{seeded, sharded};
 use osis_base::{Ak, CommitId, PurgeBy, Role, Tid, Ts, WallMs};
-use osis_perm::paths::{Commit, Content, Delta, DeltaClass, EdgeWrite, Names, Part, PartKind, Paths, Stated, Status};
+use osis_perm::paths::{Commit, Content, Delta, DeltaClass, EdgeWrite, List, Names, Part, PartKind, Paths, Stated, Status};
 use osis_perm::{Edge, Frontier, WriteId};
 use roles_model::paths::{self as m, Honesty, Id, Kind, Reading, Rules, Thing, TinyMode, View, World};
 use std::collections::{BTreeMap, BTreeSet};
@@ -123,8 +123,8 @@ pub fn input(w: &World, v: &View) -> Input {
             let kind = match &k.kind {
                 Kind::Edge { holder, role: r, until, frontier, relies, adminless, invite, finalize } => {
                     let value = role(*r).map(|r| Edge { role: r, until: until.map(|u| WallMs(u as u64)), invite: role(*invite), retain: false, floor: None });
-                    let listed = frontier.iter().filter(|(t, _)| seen(t)).flat_map(|(_, l)| l.iter().map(|&j| cid(w.cid(j))));
-                    let frontier = (!finalize).then(|| Arc::new(Frontier::new(listed)));
+                    let listed = frontier.iter().filter(|(t, _)| seen(t)).flat_map(|(t, l)| l.iter().map(|&j| (tid(*t), cid(w.cid(j)))));
+                    let frontier = (!finalize).then(|| Arc::new(List::new(listed)));
                     PartKind::Edge(EdgeWrite { holder: tid(*holder), value, frontier, remains: relies.map(tid), adminless: *adminless })
                 }
                 Kind::Vouch { removal, list } => PartKind::Vouch { removal: cid(w.cid(*removal)), list: Frontier::new(list.iter().map(|&j| cid(w.cid(j)))) },
@@ -264,6 +264,13 @@ pub fn walk(w: &World, v: &View) -> (Input, Paths) {
 }
 
 /// The walk's verdict on model delta `i` in `v` of `w`.
+/// A list naming each of `commits` whole: in the leaf of each of `things` (as A1's single list
+/// reads, for hand worlds whose rule is not the leaf's).
+pub fn whole(things: &[Tid], commits: impl IntoIterator<Item = CommitId>) -> List {
+    let cs: Vec<CommitId> = commits.into_iter().collect();
+    List::new(things.iter().flat_map(|&t| cs.iter().map(move |&c| (t, c))))
+}
+
 pub fn verdict(w: &World, v: &View, i: Id) -> Option<Content> {
     let (inp, p) = walk(w, v);
     p.content(inp.ids.get(&i)?)

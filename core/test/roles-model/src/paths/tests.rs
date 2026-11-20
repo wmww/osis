@@ -3712,3 +3712,26 @@ fn an_answered_cut_gives_back_only_what_the_edge_gave_at_the_write() {
         assert!(any_cut(&w).valid.contains(&c));
     }
 }
+
+// ---- A list entry names its part on its leaf's thing alone (notes/evidence-model-findings.md 24) ----
+
+/// Z writes one commit with a part on T1 through [A] and a part on A; H removes Z from A listing
+/// the commit in T1's leaf alone. The entry names the part on T1, not the part on A: a reader of A
+/// holds no leaf of T1, so only this reading is one every node can make. Listed in both leaves
+/// (the honest remover: each part resting on the lowered edge, in its own thing's leaf), both stand.
+#[test]
+fn a_list_entry_names_its_part_on_its_leafs_thing_alone() {
+    let (mut w, ..) = paired();
+    w.edge(H, 1, &[], A, Z, Write, &[]);
+    let parts = w.split(Z, 2, Z, &[(&[A], T1), (&[], A)]);
+    let (on_t1, on_a) = (parts[0], parts[1]);
+    let mut w2 = w.clone();
+    w.edge(H, 4, &[], A, Z, Gone, &[on_t1]);
+    let rd = fixed(&w, &[]);
+    assert!(rd.valid.contains(&on_t1) && !rd.shows(on_a), "{rd:?}");
+    let honest = w2.through((Z, A), |_| true);
+    assert!(honest.contains(&on_t1) && honest.contains(&on_a));
+    w2.edge(H, 4, &[], A, Z, Gone, &honest);
+    let rd = fixed(&w2, &[]);
+    assert!(rd.valid.contains(&on_t1) && rd.valid.contains(&on_a), "{rd:?}");
+}

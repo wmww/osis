@@ -854,15 +854,17 @@ impl World {
             _ => None,
         }
     }
-    /// `r`'s frontier names `j` in some leaf (notes/a1-spec/permissions.md §5.1: a list names a
-    /// part whose commit's ID is in it, so an entry names every part of its commit).
+    /// `r`'s frontier names `j` (notes/a1-spec/permissions.md §5.1 The list: an entry in thing t's
+    /// leaf names its commit's parts on t alone, notes/evidence-model-findings.md 24).
     fn in_frontier(&self, r: Id, j: Id) -> bool {
         self.in_leaves(r, j, None)
     }
-    /// `r`'s frontier names `j` in a leaf for one of `leaves` (None: any leaf).
+    /// `r`'s frontier names `j` in the leaf of `j`'s own thing, where that leaf is one of `leaves`
+    /// (None: any leaf): a reader holding one thing's leaf reads it alone.
     fn in_leaves(&self, r: Id, j: Id, leaves: Option<&Things>) -> bool {
+        let on = self.commits[j].on;
         match &self.commits[r].kind {
-            Kind::Edge { frontier, .. } => frontier.iter().any(|(t, l)| leaves.is_none_or(|s| s.contains(t)) && l.iter().any(|&c| self.names(c, j))),
+            Kind::Edge { frontier, .. } => leaves.is_none_or(|s| s.contains(&on)) && frontier.get(&on).is_some_and(|l| l.iter().any(|&c| self.names(c, j))),
             _ => false,
         }
     }

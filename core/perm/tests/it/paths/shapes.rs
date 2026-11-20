@@ -9,7 +9,7 @@
 
 use super::incremental::{check, reading};
 use osis_base::{Ak, CommitId, PurgeBy, Role, Tid, Ts, WallMs};
-use osis_perm::paths::{Changed, Commit, Content, Delta, DeltaClass, EdgeWrite, Names, Part, PartKind, Paths, Status};
+use osis_perm::paths::{Changed, Commit, Content, Delta, DeltaClass, EdgeWrite, List, Names, Part, PartKind, Paths, Status};
 use osis_perm::{Edge, Frontier, WriteId};
 use roles_model::Rng;
 use std::collections::{BTreeMap, BTreeSet};
@@ -32,7 +32,7 @@ fn ms(n: u64) -> Ts {
 }
 
 fn edge(on: u32, path: &[u32], holder: u32, value: Option<Edge>, frontier: Option<&[u64]>, remains: Option<u32>) -> Part {
-    let frontier = frontier.map(|f| Arc::new(Frontier::new(f.iter().map(|&c| cid(c)))));
+    let frontier = frontier.map(|f| Arc::new(super::whole(&[H, Y, Z, A, LK, T1].map(t), f.iter().map(|&c| cid(c)))));
     Part { on: t(on), path: path.iter().map(|&x| t(x)).collect(), direct: 0, kind: PartKind::Edge(EdgeWrite { holder: t(holder), value, frontier, remains: remains.map(t), adminless: false }) }
 }
 
@@ -244,7 +244,7 @@ pub(super) fn soup(i: u64) -> (BTreeMap<Tid, Tid>, Vec<Commit>) {
                     retain: false,
                     floor: (r.below(6) == 0).then(|| r.below(3) as u64),
                 });
-                let frontier = (r.below(4) > 0).then(|| Arc::new(Frontier::new((0..r.below(4)).map(|_| cid(r.below(40) as u64)))));
+                let frontier = (r.below(4) > 0).then(|| Arc::new(List::new((0..r.below(4)).map(|_| (t(thing(&mut r)), cid(r.below(40) as u64))))));
                 let remains = (r.below(3) == 0).then(|| t(thing(&mut r)));
                 PartKind::Edge(EdgeWrite { holder: t(thing(&mut r)), value, frontier, remains, adminless: r.below(8) == 0 })
             };

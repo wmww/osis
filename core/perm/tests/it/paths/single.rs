@@ -249,7 +249,7 @@ fn mk(id: u64, ts: u64, signer: u32, parts: Vec<Part>) -> Commit {
 /// An edge write on `on` along `path` setting `holder` to `role` (none: a removal), its frontier
 /// listing `list`.
 fn ew(on: u32, path: &[u32], holder: u32, role: Option<Role>, list: &[u64]) -> Part {
-    let frontier = Some(Arc::new(Frontier::new(list.iter().map(|&c| cm(c)))));
+    let frontier = Some(Arc::new(super::whole(&[H, M, X, Y, Z, W, A, B, C, N].map(th), list.iter().map(|&c| cm(c)))));
     Part { on: th(on), path: path.iter().map(|&x| th(x)).collect(), direct: 0, kind: PartKind::Edge(EdgeWrite { holder: th(holder), value: role.map(Edge::new), frontier, remains: None, adminless: false }) }
 }
 

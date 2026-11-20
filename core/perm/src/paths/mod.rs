@@ -55,6 +55,34 @@ pub enum PartKind {
     Delta(Delta),
 }
 
+/// A lowering's list (draft §5.1 The list) by leaf: per thing, the commits its leaf names. An
+/// entry in thing t's leaf names its commit's parts on t alone, so a reader holding t's leaf alone
+/// reads it as a node holding every leaf (notes/evidence-model-findings.md 24). A single list
+/// naming commits whole (A1's header field) is the leaf of every thing those commits write.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct List(BTreeMap<Tid, Frontier>);
+
+impl List {
+    /// The list of entries (thing, commit).
+    pub fn new(entries: impl IntoIterator<Item = (Tid, CommitId)>) -> List {
+        let mut by: BTreeMap<Tid, BTreeSet<CommitId>> = BTreeMap::new();
+        for (t, c) in entries {
+            by.entry(t).or_default().insert(c);
+        }
+        List(by.into_iter().map(|(t, cs)| (t, Frontier::new(cs))).collect())
+    }
+
+    /// Whether it names `commit`'s parts on `on`: its leaf of `on` lists the commit.
+    pub fn names(&self, commit: &CommitId, on: &Tid) -> bool {
+        self.0.get(on).is_some_and(|f| f.covers(commit))
+    }
+
+    /// Its entries, (thing, commit).
+    pub fn entries(&self) -> impl Iterator<Item = (Tid, CommitId)> + '_ {
+        self.0.iter().flat_map(|(t, f)| f.commits().iter().map(|c| (*t, *c)))
+    }
+}
+
 /// A `roles.0` write on `holder`'s grant.
 #[derive(Clone, Debug)]
 pub struct EdgeWrite {
@@ -62,7 +90,7 @@ pub struct EdgeWrite {
     /// `None`: a removal.
     pub value: Option<Edge>,
     /// A removal of another holder's grant with none that is no self-removal is a finalize.
-    pub frontier: Option<Arc<Frontier>>,
+    pub frontier: Option<Arc<List>>,
     /// The holder whose edge on `on` is the remaining admin the write names (header `remains`).
     pub remains: Option<Tid>,
     /// The adminless mark (header flags bit 1).
@@ -352,7 +380,7 @@ impl<S: Store> Paths<S> {
         for c in &given {
             for p in &c.parts {
                 if let PartKind::Edge(EdgeWrite { frontier: Some(f), .. }) = &p.kind {
-                    taken.carried.extend(f.commits());
+                    taken.carried.extend(f.entries().map(|(_, c)| c));
                 }
             }
         }

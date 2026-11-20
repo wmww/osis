@@ -280,7 +280,12 @@ pub(crate) fn new_walk(e: &osis_engine::Engine) -> (osis_perm::paths::Paths, BTr
                         trust.insert(nid);
                     }
                     ids.insert(nid, (w, t));
-                    parts.push(Part { on: t, path: path.clone(), direct: p.direct, kind: PartKind::Edge(EdgeWrite { holder: op.holder, value: op.edge, frontier: c.frontier.clone(), remains: h.remains, adminless: h.adminless }) });
+                    // A1's single list: each commit in the leaf of every thing it writes
+                    let frontier = c.frontier.as_ref().map(|f| {
+                        let things = |x: &osis_base::CommitId| e.header(x).map(|lh| lh.aspects.iter().map(|a| a.tid).collect::<Vec<Tid>>()).unwrap_or_default();
+                        std::sync::Arc::new(osis_perm::paths::List::new(f.commits().iter().flat_map(|x| things(x).into_iter().map(move |t| (t, *x))).collect::<Vec<_>>()))
+                    });
+                    parts.push(Part { on: t, path: path.clone(), direct: p.direct, kind: PartKind::Edge(EdgeWrite { holder: op.holder, value: op.edge, frontier, remains: h.remains, adminless: h.adminless }) });
                 }
             }
             for v in e.core.ix.held.vouches_on(&t).filter(|v| v.id == id) {

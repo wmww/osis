@@ -8,7 +8,7 @@
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::indexing_slicing)]
 
 use osis_base::{Ak, CommitId, PurgeBy, Role, Tid, Ts, WallMs};
-use osis_perm::paths::{By, Commit, Content, Counts, Delta, DeltaClass, EdgeWrite, Fact, Holding, Key, MemStore, NameKey, Names, Pair, Part, PartKind, Paths, Right, Status, Store};
+use osis_perm::paths::{By, Commit, Content, Counts, Delta, DeltaClass, EdgeWrite, Fact, List, Holding, Key, MemStore, NameKey, Names, Pair, Part, PartKind, Paths, Right, Status, Store};
 use std::cell::Cell;
 use std::ops::Bound;
 use std::rc::Rc;
@@ -40,7 +40,7 @@ fn records() -> BTreeMap<Tid, Tid> {
 /// A commit of one edge write by `signer` at `ts` (whole ms) on `on` along `path`, setting
 /// `holder`'s edge to `role` (none: a removal listing nothing).
 fn write(id: u64, signer: u32, ts: u64, path: &[u32], on: u32, holder: u32, role: Option<Role>) -> Commit {
-    let frontier = Some(Arc::new(Frontier::new([])));
+    let frontier = Some(Arc::new(List::default()));
     let ew = EdgeWrite { holder: t(holder), value: role.map(Edge::new), frontier, remains: Some(t(H)), adminless: false };
     Commit { id: cid(id), ts: Ts::make(WallMs(ts), 0).unwrap(), signer: t(signer), parts: vec![Part { on: t(on), path: path.iter().map(|&x| t(x)).collect(), direct: 0, kind: PartKind::Edge(ew) }] }
 }
@@ -474,7 +474,7 @@ fn a_removal_cutting_n_deltas_costs_nothing_per_delta() {
         // listing the first delta: it stays, by the list; the rest fall
         let mut r = write(2, H, end, &[], A, X, None);
         if let PartKind::Edge(ew) = &mut r.parts[0].kind {
-            ew.frontier = Some(Arc::new(Frontier::new([cid(200_000)])));
+            ew.frontier = Some(Arc::new(List::new([(t(C), cid(200_000))])));
         }
         let ch = p.add(&[r]);
         let d = delta(before, p.counts());
@@ -579,7 +579,7 @@ fn a_delta_every_cut_answers_reads_each_cut_once() {
         for i in 0..k {
             let mut cut = write(10 + 2 * i, H, 10 + 2 * i, &[], A, X, None);
             if let PartKind::Edge(ew) = &mut cut.parts[0].kind {
-                ew.frontier = Some(Arc::new(Frontier::new([cid(9)])));
+                ew.frontier = Some(Arc::new(List::new([(t(C), cid(9))])));
             }
             c.push(cut);
             c.push(write(11 + 2 * i, H, 11 + 2 * i, &[], A, X, Some(Role::Admin)));
@@ -591,7 +591,7 @@ fn a_delta_every_cut_answers_reads_each_cut_once() {
         assert_eq!(p.content_counted(&WriteId(cid(9), 0), &mut q), Some(Content::Invalid), "k {k}: the last cut lists nothing");
         let mut c2 = c.clone();
         if let Some(PartKind::Edge(ew)) = c2.last_mut().map(|x| &mut x.parts[0].kind) {
-            ew.frontier = Some(Arc::new(Frontier::new([cid(9)])));
+            ew.frontier = Some(Arc::new(List::new([(t(C), cid(9))])));
         }
         let p = Paths::evaluate(&records(), BTreeSet::new(), &c2);
         let mut q = Counts::default();
@@ -782,7 +782,7 @@ fn org(k: u32, p: u32, removals: u32) -> (BTreeMap<Tid, Tid>, Vec<Commit>) {
         for j in 0..removals {
             let mut r = write(800_000 + (i * 100 + j) as u64, lead(i), 9000 + (i * removals + j) as u64, &[], team(i), member(i, j) as u32, None);
             if let PartKind::Edge(ew) = &mut r.parts[0].kind {
-                ew.frontier = Some(Arc::new(Frontier::new([cid(member(i, j))])));
+                ew.frontier = Some(Arc::new(List::new([(t(team(i)), cid(member(i, j)))])));
             }
             base.push(r);
         }
@@ -834,7 +834,7 @@ fn an_organisation_costs_what_reads_the_change() {
         assert_eq!((d.steps, d.restarts, d.chained), (1 + pp, 0, 1), "one team's lead removed at k {k}: {d:?}");
         let mut late = write(3, Y, 6000, &[O], team(0), lead(0), None);
         if let PartKind::Edge(ew) = &mut late.parts[0].kind {
-            ew.frontier = Some(Arc::new(Frontier::new([])));
+            ew.frontier = Some(Arc::new(List::default()));
         }
         let d = org_cost(k, p, 0, false, &|q| {
             q.add(std::slice::from_ref(&late));

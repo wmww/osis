@@ -8,7 +8,7 @@
 //! grant's chained-ness, notes/evidence-derivation.md).
 use osis_base::{Ak, CommitId, PurgeBy, Role, Tid, Ts, WallMs};
 use osis_engine::evidence::{Config, CopyId, Evidence, Gives, Hop, Kind, Need, Part, Write};
-use osis_perm::paths::{Commit, Content, Delta, DeltaClass, EdgeWrite, Key, Part as PPart, PartKind, Paths};
+use osis_perm::paths::{Commit, Content, Delta, DeltaClass, EdgeWrite, Key, List, Part as PPart, PartKind, Paths};
 use osis_perm::{Edge, Frontier, WriteId};
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
@@ -56,7 +56,9 @@ impl World {
     /// on it directly).
     fn set(&mut self, t: u64, signer: u8, on: u8, holder: u8, role: Option<Role>, frontier: &[CommitId]) -> CommitId {
         let value = role.map(Edge::new);
-        let frontier = Some(Arc::new(Frontier::new(frontier.iter().copied())));
+        // A1's single list: each commit in the leaf of every thing it writes
+        let entries = frontier.iter().flat_map(|x| self.commits.iter().filter(move |c| c.id == *x).flat_map(|c| c.parts.iter().map(|p| (p.on, c.id))));
+        let frontier = Some(Arc::new(List::new(entries.collect::<Vec<_>>())));
         self.push(t, signer, vec![edge_part(&[], on, holder, value, frontier)])
     }
     fn content(&mut self, t: u64, signer: u8, path: &[u8], on: u8) -> CommitId {
@@ -67,7 +69,7 @@ impl World {
     }
 }
 
-fn edge_part(path: &[u8], on: u8, holder: u8, value: Option<Edge>, frontier: Option<Arc<Frontier>>) -> PPart {
+fn edge_part(path: &[u8], on: u8, holder: u8, value: Option<Edge>, frontier: Option<Arc<List>>) -> PPart {
     PPart { on: tid(on), path: path.iter().map(|&t| tid(t)).collect(), direct: 0, kind: PartKind::Edge(EdgeWrite { holder: tid(holder), value, frontier, remains: None, adminless: false }) }
 }
 fn content_part(path: &[u8], on: u8) -> PPart {
@@ -406,7 +408,7 @@ fn f9_a_removal_of_two_holders_brings_both_creations_under_the_walk_spec_permiss
     let gk = w.set(1, X, A, K, Some(Role::Write), &[]);
     let gq = w.set(1, X, A, Q, Some(Role::Write), &[]);
     let ck = w.content(2, K, &[A], D);
-    let fr = Some(Arc::new(Frontier::new([ck])));
+    let fr = Some(Arc::new(List::new([(tid(D), ck)])));
     let rm = w.push(5, X, vec![edge_part(&[], A, K, None, fr.clone()), edge_part(&[], A, Q, None, fr)]);
     let ck2 = w.content(6, K, &[A], D);
     let (req, wv) = reader_agrees(&w, &[D], &[]);

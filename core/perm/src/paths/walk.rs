@@ -5,7 +5,7 @@
 //! component.
 
 use super::path::shape;
-use super::{Changed, Commit, PartKind, Status};
+use super::{Changed, Commit, List, PartKind, Status};
 use crate::types::{lowers, Edge, Frontier, WriteId};
 use osis_base::{CommitId, Role, Tid, Ts};
 use std::collections::{BTreeMap, BTreeSet};
@@ -157,7 +157,7 @@ struct EdgeItem {
     e: E,
     holder: T,
     value: Option<Edge>,
-    frontier: Option<Arc<Frontier>>,
+    frontier: Option<Arc<List>>,
     remains: Option<E>,
     adminless: bool,
     finalize: bool,
@@ -1325,7 +1325,7 @@ impl Walk {
     /// `j`'s thing.
     fn listed(&self, r: Slot, j: Slot) -> bool {
         let c = self.items[j].key.commit;
-        self.items[r].edge.as_ref().and_then(|ei| ei.frontier.as_ref()).is_some_and(|f| f.covers(&c)) || self.vouched.contains(&(self.items[r].key.commit, c, self.names[self.items[j].on]))
+        self.items[r].edge.as_ref().and_then(|ei| ei.frontier.as_ref()).is_some_and(|f| f.names(&c, &self.names[self.items[j].on])) || self.vouched.contains(&(self.items[r].key.commit, c, self.names[self.items[j].on]))
     }
 
     /// What part `j` needs of edge `e` it rests on (draft §5.1 step 3): an invite grant (applied
