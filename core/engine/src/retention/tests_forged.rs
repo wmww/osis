@@ -245,10 +245,11 @@ fn forged_copies_fail_no_node_large() {
     assert!(made > 0, "forged nothing");
 }
 
-// spec/crdt.md §4.8 When, §5.5, spec/commits.md §5 (one holding more judges no later): a value
-// removal hiding a set element's write (t3, removal t15) dates its death, though a later reset of
-// the element (t29) prunes the write from the state: the body is replaced at t15 at a node
-// holding the removal alone and at one holding both, whatever the order they came in. Fails with
+// spec/crdt.md §4.8 When, §5.5, spec/commits.md §5 (nodes holding the same bodies judge alike, one
+// holding more no later): a value removal hiding a set element's write (t3, removal t15) dates its
+// death, though a later reset of the element (t29) prunes the write from the state: in each of the
+// six arrival orders, at each step holding the write, peers 0 and 2 date it by the held set alone:
+// t15 holding the removal, t29 holding the reset alone, not replaced holding neither. Fails with
 // the removals hiding a write read from the state as joined (a pruned write hidden by none).
 #[test]
 fn a_removal_dates_a_write_a_later_reset_prunes_spec_crdt_4_8() {
@@ -264,15 +265,19 @@ fn a_removal_dates_a_write_a_later_reset_prunes_spec_crdt_4_8() {
         lp.advance(10);
         c
     }).collect();
-    let at = Some(mstamp(15, 7).ts).map(|x| Ts::from_u64(x).unwrap());
-    deliver(&mut lp, 0, &made[0]);
-    deliver(&mut lp, 0, &made[1]);
-    assert_eq!(lp.peers[0].engine.replaced_at(&made[0], &t, &ak()).unwrap(), at, "the removal alone");
-    deliver(&mut lp, 0, &made[2]);
-    for c in made.iter().rev() {
-        deliver(&mut lp, 2, c);
-    }
-    for p in [0, 1, 2] {
-        assert_eq!(lp.peers[p].engine.replaced_at(&made[0], &t, &ak()).unwrap(), at, "peer {p}: the reset too");
+    let at = |s: u64| Some(Ts::from_u64(mstamp(s, 0).ts).unwrap());
+    for order in [[0, 1, 2], [0, 2, 1], [1, 0, 2], [1, 2, 0], [2, 0, 1], [2, 1, 0]] {
+        let mut lp = lp.copy().unwrap();
+        let mut held = [false; 3];
+        for i in order {
+            held[i] = true;
+            for p in [0, 2] {
+                deliver(&mut lp, p, &made[i]);
+                if held[0] {
+                    let want = if held[1] { at(15) } else if held[2] { at(29) } else { None };
+                    assert_eq!(lp.peers[p].engine.replaced_at(&made[0], &t, &ak()).unwrap(), want, "peer {p}, order {order:?}, holding {held:?}");
+                }
+            }
+        }
     }
 }

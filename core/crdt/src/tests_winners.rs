@@ -559,6 +559,176 @@ fn a_removal_hides_a_write_a_later_reset_prunes_spec_4_8() {
     first_superseding_check(&[w, rt]);
 }
 
+/// What a node holding `held` dates `w` (a write of `held[0]`) at: `None` while the join of
+/// `held` keeps it winning, else the earliest superseder by the held writes and the hiders noted
+/// from `held` in that order (as `dated_replaced_at` reads the held bodies).
+fn held_date(held: &[&Fragment], w: &Won) -> Option<Option<Ts>> {
+    let joined = held.iter().fold(Fragment::default(), |f, b| join(&f, b));
+    if joined.winners().iter().any(|x| x == *w) {
+        return None;
+    }
+    let (mut by, mut hiders) = (ByWrite::<()>::default(), Hiders::default());
+    for b in held {
+        by.note(&b.held_writes(), |_, _| ());
+        hiders.note(b);
+    }
+    Some(by.first_superseding(w, &hiders, |s, _| Some(s.ts)))
+}
+
+fn perms(v: &[usize]) -> Vec<Vec<usize>> {
+    if v.len() <= 1 {
+        return vec![v.to_vec()];
+    }
+    (0..v.len())
+        .flat_map(|i| {
+            let mut rest = v.to_vec();
+            let x = rest.remove(i);
+            perms(&rest).into_iter().map(move |mut p| {
+                p.insert(0, x);
+                p
+            })
+        })
+        .collect()
+}
+
+/// spec/commits.md §5 (nodes holding the same bodies judge alike, one holding more no later),
+/// §4.8 When: `w`, the write of `bodies[0]`, dated by every held set holding it, in every
+/// arrival order: `want` gives each set's date by mask over `bodies[1..]` (`None`: not dead), the
+/// same in every order the set's bodies are noted; an apply's kill (`killed`) in every order of
+/// every body is never earlier than its held set's date. With `monotone`, a set holding more
+/// dates no later.
+fn held_set_dates(bodies: &[Fragment], w: &Won, want: &[Option<Option<Ts>>], monotone: bool) {
+    let n = bodies.len() - 1;
+    let set = |mask: usize| -> Vec<usize> { std::iter::once(0).chain((0..n).filter(|i| mask >> i & 1 == 1).map(|i| i + 1)).collect() };
+    let dates: Vec<Option<Option<Ts>>> = (0..1usize << n)
+        .map(|mask| {
+            let got: Vec<_> = perms(&set(mask)).iter().map(|p| held_date(&p.iter().map(|i| &bodies[*i]).collect::<Vec<_>>(), w)).collect();
+            assert!(got.iter().all(|g| *g == got[0]), "set {mask:b}: alike in every order: {got:?}");
+            assert_ne!(got[0], Some(None), "set {mask:b}: a dead write dates by a held superseder");
+            assert_eq!(got[0], want[mask], "set {mask:b}");
+            got[0]
+        })
+        .collect();
+    if monotone {
+        for (a, b) in (0..1usize << n).flat_map(|a| (0..1usize << n).map(move |b| (a, b))).filter(|(a, b)| a & b == *a && a != b) {
+            if let (Some(Some(da)), Some(Some(db))) = (dates[a], dates[b]) {
+                assert!(db <= da, "holding {b:b} dates no later than {a:b}");
+            }
+        }
+    }
+    let mut kills = 0;
+    for p in perms(&(0..=n).collect::<Vec<_>>()) {
+        let (mut st, mut mask, mut has_w) = (Fragment::default(), 0usize, false);
+        for i in p {
+            let k = killed(&st, &bodies[i]);
+            st = join(&st, &bodies[i]);
+            match i {
+                0 => has_w = true,
+                i => mask |= 1 << (i - 1),
+            }
+            for (_, t) in k.into_iter().filter(|(k, _)| k == w) {
+                kills += 1;
+                assert!(has_w, "only a holder of {w:?} kills it");
+                let (Some(Some(want)), Some(t)) = (dates[mask], t) else { panic!("a kill of {w:?} dated {t:?}, the held set {:?}", dates[mask]) };
+                assert!(t >= want, "a kill of {w:?} dated {t:?} before its held set's {want:?}");
+            }
+        }
+    }
+    assert!(kills > 0, "some order kills {w:?}");
+}
+
+/// §4.8 When, §5.5, spec/commits.md §5: a write hidden by a removal (t15) and pruned by a later
+/// reset (t29), and one hidden by two removals (t10, t20): every held set dates it alike in any
+/// arrival order, holding more no later, by the earliest superseder held.
+#[test]
+fn hiding_dates_by_the_held_set_in_any_order_spec_4_8() {
+    let b = Value::Strong(Tid::from_bytes([2; 15]));
+    let (d, s) = (Dot::new(x(), 1), Stamp::new(ts(3), x(), 1));
+    let won = Won { path: vec![Place::Elem(d.clone()), Place::In], kind: Kind::Value, stamp: s.clone() };
+    let w = set_of(vec![(d.clone(), elem_at(&s, b.clone()))]);
+    let r = |c: u64, t: u64| set_of(vec![(Dot::new(x(), c), removal_at(&Stamp::new(ts(t), x(), c), b.clone(), 4))]);
+    let tomb = set_of(vec![(d.clone(), Elem::tomb(&Stamp::new(ts(29), x(), 9)))]);
+    let at = |t| Some(Some(ts(t)));
+    // masks over [R15, X29]
+    held_set_dates(&[w.clone(), r(7, 15), tomb.clone()], &won, &[None, at(15), at(29), at(15)], true);
+    // masks over [R10, R20, X29]
+    held_set_dates(&[w.clone(), r(7, 10), r(8, 20), tomb.clone()], &won, &[None, at(10), at(20), at(10), at(29), at(10), at(20), at(10)], true);
+    first_superseding_check(&[w, r(7, 10), r(8, 20), tomb]);
+}
+
+/// §4.1 Copy order, §4.8, §5.5: copies of one removal (t15), one naming the part holding the
+/// write's dot, the other (greater, so it wins the join) not: the write is hidden only where the
+/// covering copy alone is held, the date a function of the copies held, alike in every order. A
+/// node holding the forged copy too dates later (t29, by the reset) or not at all: a forged copy
+/// un-hides, so holding more dates later here (issues/forged-copy-undetected.md).
+#[test]
+fn removal_copies_covering_the_dot_in_one_date_by_the_joined_copy_spec_4_8() {
+    let b = Value::Strong(Tid::from_bytes([2; 15]));
+    let (d, s) = (Dot::new(x(), 1), Stamp::new(ts(3), x(), 1));
+    let won = Won { path: vec![Place::Elem(d.clone()), Place::In], kind: Kind::Value, stamp: s.clone() };
+    let w = set_of(vec![(d.clone(), elem_at(&s, b.clone()))]);
+    let (rd, rs) = (Dot::new(x(), 7), Stamp::new(ts(15), x(), 7));
+    let covering = set_of(vec![(rd.clone(), removal_at(&rs, b.clone(), 4))]);
+    let seen = vec![crate::stamp::DotRange { first: Dot::new(x(), 2), hi: 4 }];
+    let other = set_of(vec![(rd, Elem::removal(crate::fragment::Removal { stamp: rs, value: b, seen }))]);
+    let tomb = set_of(vec![(d, Elem::tomb(&Stamp::new(ts(29), x(), 9)))]);
+    let at = |t| Some(Some(ts(t)));
+    // masks over [covering, other, X29]
+    held_set_dates(&[w.clone(), covering.clone(), other.clone(), tomb.clone()], &won, &[None, at(15), None, None, at(29), at(15), at(29), at(29)], false);
+    first_superseding_check(&[w, covering, other, tomb]);
+}
+
+/// §5.5 Live, §4.8: a removal hides a write only when its value is the removal's, its dot lies in
+/// the removal's parts and it is stamped below the removal: at each boundary but the last (one
+/// above), the write dies by the later reset alone (t29), never at the removal.
+#[test]
+fn a_removal_dates_only_writes_it_hides_spec_5_5() {
+    let (b, c) = (Value::Strong(Tid::from_bytes([2; 15])), Value::Strong(Tid::from_bytes([3; 15])));
+    let (d, s) = (Dot::new(x(), 1), Stamp::new(ts(3), x(), 1));
+    let won = Won { path: vec![Place::Elem(d.clone()), Place::In], kind: Kind::Value, stamp: s.clone() };
+    let w = set_of(vec![(d.clone(), elem_at(&s, b.clone()))]);
+    let tomb = set_of(vec![(d, Elem::tomb(&Stamp::new(ts(29), x(), 9)))]);
+    let removal = |rs: Stamp, v: Value, first: u64| {
+        let seen = vec![crate::stamp::DotRange { first: Dot::new(x(), first), hi: 4 }];
+        set_of(vec![(Dot::new(x(), 7), Elem::removal(crate::fragment::Removal { stamp: rs, value: v, seen }))])
+    };
+    let cases = [
+        ("stamped as the write", removal(s.clone(), b.clone(), 1), None),
+        ("stamped below", removal(Stamp::new(ts(2), x(), 7), b.clone(), 1), None),
+        ("another value", removal(Stamp::new(ts(15), x(), 7), c, 1), None),
+        ("parts not holding the dot", removal(Stamp::new(ts(15), x(), 7), b.clone(), 2), None),
+        ("one above", removal(Stamp::new(ts(3), x(), 2), b, 1), Some(ts(3))),
+    ];
+    for (what, r, hides) in cases {
+        assert_eq!(held_date(&[&w, &r], &won), hides.map(Some), "{what}: the removal alone");
+        let want = hides.unwrap_or(ts(29));
+        assert_eq!(held_date(&[&w, &r, &tomb], &won), Some(Some(want)), "{what}");
+        for (st, y) in [(w.clone(), join(&r, &tomb)), (join(&w, &r), tomb.clone()), (join(&r, &tomb), w.clone())] {
+            let k: Vec<Option<Ts>> = killed(&st, &y).into_iter().filter(|(k, _)| *k == won).map(|(_, t)| t).collect();
+            assert!(k.iter().all(|t| *t == Some(want)), "{what}: the kill {k:?}");
+        }
+        first_superseding_check(&[w.clone(), r, tomb.clone()]);
+    }
+}
+
+/// §4.8 When (each superseder judged against the write alone), §5.7: a move of a text element
+/// (t17) dies by the element's creation stamped above it (t19), though a delete (t38) beats the
+/// creation: a held write that wins nowhere still supersedes. (A from-scratch seed's case.)
+#[test]
+fn a_move_dies_by_a_deleted_creation_above_it_spec_4_8() {
+    let d = Dot::new(x(), 3);
+    let mv = Stamp::new(ts(17), sess(Tid::from_bytes([4; 15])), 1);
+    let (c, del) = (Stamp::new(ts(19), x(), 3), Stamp::new(ts(38), sess(Tid::from_bytes([4; 15])), 6));
+    let one = |el: SeqElem| Fragment::Seq(Seq::new(true, Meta::default(), BTreeMap::from([(d.clone(), el)])));
+    let moved = one(SeqElem { pos: vec![(mv.clone(), crate::seq::Anchor::Head, None)], ..SeqElem::bare() });
+    let created = one(SeqElem { created: Some((c.clone(), crate::seq::Anchor::Head)), content: SeqContent::Char('a'), pos: vec![(c, crate::seq::Anchor::Head, None)], deleted: Some((del, true)), ..SeqElem::bare() });
+    for (st, y) in [(&moved, &created), (&created, &moved)] {
+        let k: Vec<(Kind, Stamp, Option<Ts>)> = killed(st, y).into_iter().map(|(w, t)| (w.kind, w.stamp, t)).collect();
+        assert_eq!(k, vec![(Kind::Pos, mv.clone(), Some(ts(19)))], "{st:?} then {y:?}");
+    }
+    first_superseding_check(&[moved, created]);
+}
+
 /// §4.1, §5.1, §7: copies of one stamp (a forged copy), one a text's reset (`remove_aspect`), the
 /// other a register write at the position: the write implies the reset, so it stands for it and
 /// nothing dies, in either order.
