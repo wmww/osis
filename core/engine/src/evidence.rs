@@ -89,6 +89,9 @@ pub enum Reason<C, T> {
 pub struct Config {
     /// Vouches against a member lowering are evidence.
     pub vouches: bool,
+    /// (A3) A removal with its reach is a seed (draft §4 Evidence of a sync ID). Off until A3:
+    /// until then a removal travels as Role changes travel says.
+    pub reach: bool,
 }
 
 /// Work done, by kind (count tests: notes/evidence-derivation.md, Incremental).
@@ -108,6 +111,8 @@ pub struct Counts {
     pub closes: usize,
     /// Bodies read (taken in or out of a sync ID).
     pub bodies: usize,
+    /// Writes naming an actor a seed computation read.
+    pub seeds: usize,
 }
 
 #[derive(Clone, Debug)]
@@ -285,6 +290,54 @@ where
         Some((cl.members, counts))
     }
 
+    /// Checks the incremental state against itself built from nothing (tests, at teardown or every
+    /// step): per sync ID its evidence, atoms and seeds equal from scratch, and the reverse
+    /// indexes (edge, member, thing, actor → sync IDs) hold exactly what the sync IDs do.
+    pub fn check(&self) -> Result<(), String> {
+        let mut edge_sids: BTreeMap<Edge<T>, BTreeSet<T>> = BTreeMap::new();
+        let mut member_sids: BTreeMap<CopyId<C, T>, BTreeSet<T>> = BTreeMap::new();
+        let mut thing_sids: BTreeMap<T, BTreeSet<T>> = BTreeMap::new();
+        let mut actor_sids: BTreeMap<T, BTreeSet<T>> = BTreeMap::new();
+        for (sid, s) in &self.sids {
+            // the same copies (each with the first reason found, which may differ)
+            let scratch = self.from_scratch(sid).unwrap_or_default();
+            if scratch.keys().ne(s.closure.members.keys()) {
+                return Err(format!("sid {sid:?}: incremental {:?} from scratch {scratch:?}", s.closure.members));
+            }
+            let mut atoms: BTreeMap<Edge<T>, usize> = BTreeMap::new();
+            for t in &s.unit {
+                for c in self.ix.on_thing.get(t).into_iter().flatten() {
+                    for e in self.body_edges(&(*c, *t)) {
+                        *atoms.entry(e).or_insert(0) += 1;
+                    }
+                }
+            }
+            if atoms != s.atoms {
+                return Err(format!("sid {sid:?}: atoms {:?}, counted {atoms:?}", s.atoms));
+            }
+            let seeds = self.seeds_for(s, &mut Counts::default());
+            if seeds.keys().ne(s.seeds.keys()) {
+                return Err(format!("sid {sid:?}: seeds {:?}, computed {seeds:?}", s.seeds));
+            }
+            for e in &s.closure.edges {
+                edge_sids.entry(*e).or_default().insert(*sid);
+            }
+            for m in s.closure.members.keys() {
+                member_sids.entry(*m).or_default().insert(*sid);
+            }
+            for t in &s.unit {
+                thing_sids.entry(*t).or_default().insert(*sid);
+            }
+            actor_sids.entry(s.actor).or_default().insert(*sid);
+        }
+        // `leave` may leave a thing's set empty
+        let things: BTreeMap<T, BTreeSet<T>> = self.thing_sids.iter().filter(|(_, s)| !s.is_empty()).map(|(k, v)| (*k, v.clone())).collect();
+        if edge_sids != self.edge_sids || member_sids != self.member_sids || thing_sids != things || actor_sids != self.actor_sids {
+            return Err("a reverse index (edge, member, thing or actor → sync IDs) is stale".into());
+        }
+        Ok(())
+    }
+
     /// Registers sync ID `sid` with actor `actor` and an empty unit.
     pub fn add_sid(&mut self, sid: T, actor: T) {
         if self.sids.contains_key(&sid) {
@@ -384,10 +437,24 @@ where
 
     /// A copy no longer held.
     pub fn forget(&mut self, c: &CopyId<C, T>) {
-        let Some(h) = self.ix.copies.get(c).cloned() else { return };
+        self.forget_all([*c]);
+    }
+
+    /// Copies no longer held, settled once (a compaction dropping many bodies closes each sync ID
+    /// it shrinks once, not once per body). A forget only shrinks: it queues closes again, never
+    /// closure work, so the copies' order is free.
+    pub fn forget_all(&mut self, cs: impl IntoIterator<Item = CopyId<C, T>>) {
         let mut todo = Todo::default();
+        for c in cs {
+            self.forget_one(&c, &mut todo);
+        }
+        self.settle(todo);
+    }
+
+    fn forget_one(&mut self, c: &CopyId<C, T>, todo: &mut Todo<C, T>) {
+        let Some(h) = self.ix.copies.get(c).cloned() else { return };
         for sid in self.thing_sids.get(&c.1).cloned().unwrap_or_default() {
-            self.body_remove(&sid, c, &mut todo);
+            self.body_remove(&sid, c, todo);
         }
         for sid in self.member_sids.get(c).cloned().unwrap_or_default() {
             todo.dirty.insert(sid);
@@ -402,7 +469,7 @@ where
         }
         for (i, p) in h.parts.iter().enumerate() {
             if p.chained {
-                self.chained_off(c, i, &mut todo);
+                self.chained_off(c, i, todo);
             }
             if let Kind::Write(w) = &p.kind
                 && let Some(cr) = w.creation
@@ -421,7 +488,6 @@ where
                 self.ix.on_thing.remove(&c.1);
             }
         }
-        self.settle(todo);
     }
 
     /// Part `i` of copy `c` is chained (or no longer is).
@@ -485,7 +551,15 @@ where
                     todo.push(&sid, Item::Copy(*c, Reason::Edge(e)));
                 }
                 self.ix.by_holder.entry(w.holder).or_default().insert(*c);
-                todo.seeds.extend(self.actor_sids.get(&w.holder).into_iter().flatten().copied());
+                // a seed of each sync ID whose actor it names (Role changes travel)
+                for sid in self.actor_sids.get(&w.holder).cloned().unwrap_or_default() {
+                    if let Some(s) = self.sids.get_mut(&sid)
+                        && !s.seeds.contains_key(c)
+                    {
+                        s.seeds.insert(*c, Reason::Actor);
+                        todo.push(&sid, Item::Copy(*c, Reason::Actor));
+                    }
+                }
                 if w.gives_write {
                     self.ix.reach_grants.insert((*c, i));
                     todo.reach = true;
@@ -526,8 +600,12 @@ where
                 if !still {
                     remove_from(&mut self.ix.taken_on, &e, c);
                     remove_from(&mut self.ix.by_holder, &w.holder, c);
+                    for sid in self.actor_sids.get(&w.holder).cloned().unwrap_or_default() {
+                        if self.sids.get_mut(&sid).is_some_and(|s| s.seeds.remove(c).is_some()) {
+                            todo.dirty.insert(sid);
+                        }
+                    }
                 }
-                todo.seeds.extend(self.actor_sids.get(&w.holder).into_iter().flatten().copied());
                 if self.ix.reach_grants.remove(&(*c, i)) | self.ix.reach_removals.remove(&(*c, i)) {
                     todo.reach = true;
                 }
@@ -684,9 +762,10 @@ where
     fn seeds_for(&self, s: &Sid<C, T>, counts: &mut Counts) -> Required<C, T> {
         let mut out: Required<C, T> = BTreeMap::new();
         for c in self.ix.by_holder.get(&s.actor).into_iter().flatten() {
+            counts.seeds += 1;
             out.entry(*c).or_insert(Reason::Actor);
         }
-        if self.ix.reach_removals.is_empty() {
+        if !self.cfg.reach || self.ix.reach_removals.is_empty() {
             return out;
         }
         let grants: Vec<(Edge<T>, CopyId<C, T>)> = self.ix.reach_grants.iter().filter_map(|(c, i)| match self.ix.copies.get(c)?.parts.get(*i)?.kind {
@@ -732,7 +811,7 @@ where
     // ---- settling ----
 
     fn settle(&mut self, mut todo: Todo<C, T>) {
-        if todo.reach {
+        if todo.reach && self.cfg.reach {
             todo.seeds.extend(self.sids.keys().copied());
         }
         for sid in std::mem::take(&mut todo.seeds) {
@@ -740,6 +819,7 @@ where
             let mut counts = Counts::default();
             let new = self.seeds_for(s, &mut counts);
             self.counts.reach += counts.reach;
+            self.counts.seeds += counts.seeds;
             let lost = s.seeds.keys().any(|c| !new.contains_key(c));
             for (c, r) in &new {
                 if !s.seeds.contains_key(c) {

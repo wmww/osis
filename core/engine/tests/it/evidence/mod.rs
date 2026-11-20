@@ -13,6 +13,7 @@ use std::collections::{BTreeMap, BTreeSet};
 
 mod counts;
 mod hand;
+mod walk;
 
 type Ev = Evidence<Id, Thing, Key>;
 type Copies = BTreeSet<CopyId<Id, Thing>>;
@@ -54,19 +55,21 @@ fn part(w: &World, ch: &Set, i: Id) -> Part<Id, Thing, Key> {
     Part { kind, hops: Some(hops), pos, chained: ch.contains(&i) }
 }
 
-/// The held copies of `h` with their parts in id order: every part of the commit on that thing
-/// (a copy is whole; the model writes a commit's parts as one event each, so a step may hold
-/// some: an unheld part is unchained there, and its reset's creation is read as the model's
-/// closure reads it, off the commit).
+/// The held copies of `h` with their held parts in id order.
 fn copies_of(w: &World, h: &Set) -> BTreeMap<CopyId<Id, Thing>, Vec<Id>> {
     let mut out: BTreeMap<CopyId<Id, Thing>, Vec<Id>> = BTreeMap::new();
     for &i in h {
-        out.entry((w.w.cid(i), w.on(i))).or_default();
-    }
-    for (c, parts) in out.iter_mut() {
-        parts.extend(w.w.part_ids(c.0).filter(|&p| w.on(p) == c.1));
+        out.entry((w.w.cid(i), w.on(i))).or_default().push(i);
     }
     out
+}
+
+/// `h` holds some parts of a commit on a thing and not others. The model writes each part of a
+/// commit as an event of its own; no node holds such a set: a commit's edge writes on a thing are
+/// one `roles.0` delta (spec/crdt.md §2: one delta per tid and aspect), and a copy is held whole or
+/// not at all (notes/a2-spec/permissions.md §4 Copies). Not compared.
+fn splits_a_copy(w: &World, h: &Set) -> bool {
+    copies_of(w, h).iter().any(|(c, held)| w.w.part_ids(c.0).filter(|&p| w.on(p) == c.1).count() != held.len())
 }
 
 /// One node's derivation, fed the model's held set and units step by step.
@@ -78,7 +81,7 @@ struct Driver {
 
 impl Driver {
     fn new(w: &World, vouches: bool) -> Driver {
-        let mut ev = Ev::new(Config { vouches });
+        let mut ev = Ev::new(Config { vouches, reach: true });
         for &s in &w.sids {
             ev.add_sid(s, s);
         }
@@ -93,7 +96,8 @@ impl Driver {
         for (c, parts) in &now {
             match self.held.get(c) {
                 None => self.ev.add(*c, parts.clone()),
-                Some(old) if old.len() != parts.len() => self.ev.add(*c, parts.clone()),
+                // other parts held (the model's per-part events): taken again
+                Some(old) if old.len() != parts.len() || old.iter().zip(parts).any(|(a, b)| a.kind != b.kind || a.hops != b.hops || a.pos != b.pos) => self.ev.add(*c, parts.clone()),
                 Some(old) => {
                     for (i, (a, b)) in old.iter().zip(parts).enumerate() {
                         if a.chained != b.chained {
@@ -103,11 +107,8 @@ impl Driver {
                 }
             }
         }
-        for c in self.held.keys() {
-            if !now.contains_key(c) {
-                self.ev.forget(c);
-            }
-        }
+        // forgotten together, as a compaction drops its bodies
+        self.ev.forget_all(self.held.keys().filter(|c| !now.contains_key(c)).copied());
         self.held = now;
         for (s, unit) in units {
             let old = self.units.get(s).cloned().unwrap_or_default();
@@ -132,11 +133,13 @@ fn model_copies(w: &World, rule: &Rule, s: Thing, units: &BTreeMap<Thing, Things
     w.req(rule, s, units, h).into_iter().filter(|&i| !units[&s].contains(&w.on(i))).map(|i| (w.w.cid(i), w.on(i))).collect()
 }
 
-/// What a run compared: disagreements, and comparisons where the model required some copy.
+/// What a run compared: disagreements, comparisons where the model required some copy, held
+/// sets splitting a copy (not compared).
 #[derive(Default)]
 struct Run {
     differ: Vec<String>,
     copies: usize,
+    split: usize,
 }
 
 /// Every disagreement over the run of `w` under `rule`: per step, per node (its held set) and per
@@ -156,13 +159,20 @@ fn differ(w: &World, rule: &Rule, vouches: bool) -> Run {
         }
         for (who, h, d) in held {
             d.step(w, h, &st.units);
+            // incremental = from scratch, the reverse indexes current
+            if let Err(e) = d.ev.check() {
+                out.differ.push(format!("step {} {who}: {e}", st.step));
+            }
+            if splits_a_copy(w, h) {
+                out.split += 1;
+                continue;
+            }
             for &s in &w.sids {
                 let model = model_copies(w, rule, s, &st.units, h);
                 let inc = d.required(s);
-                let scratch: Copies = d.ev.from_scratch(&s).map(|m| m.into_keys().collect()).unwrap_or_default();
                 out.copies += usize::from(!model.is_empty());
-                if inc != model || scratch != model {
-                    out.differ.push(format!("step {} {who} sid {s}: model {model:?} incremental {inc:?} from scratch {scratch:?}", st.step));
+                if inc != model {
+                    out.differ.push(format!("step {} {who} sid {s}: model {model:?} derivation {inc:?}", st.step));
                 }
             }
         }
@@ -178,6 +188,7 @@ fn differ_both(w: &World) -> Run {
         let rule = granted(&mut w, vouches);
         let r = differ(&w, &rule, vouches);
         out.copies += r.copies;
+        out.split += r.split;
         out.differ.extend(r.differ.into_iter().map(|d| format!("vouches {vouches}: {d}")));
     }
     out
@@ -241,7 +252,7 @@ fn search(family_step: usize, random_worlds: u64, story: u64) {
                     let mut w = hm::story_world(&sim, u);
                     let rule = granted(&mut w, vouches);
                     let r = differ(&w, &rule, vouches);
-                    (format!("story seed {seed} units {u} vouches {vouches}"), Run { differ: r.differ.into_iter().map(|d| format!("vouches {vouches}: {d}")).collect(), copies: r.copies })
+                    (format!("story seed {seed} units {u} vouches {vouches}"), Run { differ: r.differ.into_iter().map(|d| format!("vouches {vouches}: {d}")).collect(), copies: r.copies, split: r.split })
                 }));
             }
         }
@@ -249,6 +260,7 @@ fn search(family_step: usize, random_worlds: u64, story: u64) {
     let next = std::sync::atomic::AtomicUsize::new(0);
     let bad = std::sync::Mutex::new(vec![]);
     let copies = std::sync::atomic::AtomicUsize::new(0);
+    let split = std::sync::atomic::AtomicUsize::new(0);
     let threads = std::thread::available_parallelism().map_or(1, |n| n.get());
     std::thread::scope(|sc| {
         for _ in 0..threads {
@@ -256,6 +268,7 @@ fn search(family_step: usize, random_worlds: u64, story: u64) {
                 let Some(j) = jobs.get(next.fetch_add(1, std::sync::atomic::Ordering::Relaxed)) else { return };
                 let (name, r) = j();
                 copies.fetch_add(r.copies, std::sync::atomic::Ordering::Relaxed);
+                split.fetch_add(r.split, std::sync::atomic::Ordering::Relaxed);
                 let d = r.differ;
                 if !d.is_empty() {
                     bad.lock().unwrap().push(format!("{name}: {} disagreements, first: {}", d.len(), d[0]));
@@ -266,7 +279,7 @@ fn search(family_step: usize, random_worlds: u64, story: u64) {
     let bad = bad.into_inner().unwrap();
     assert!(bad.is_empty(), "{} worlds disagree, first: {}", bad.len(), bad[0]);
     let copies = copies.into_inner();
-    eprintln!("{} worlds agree, {copies} comparisons with copies", jobs.len());
+    eprintln!("{} worlds agree, {copies} comparisons with copies, {} held sets splitting a copy not compared", jobs.len(), split.into_inner());
     assert!(copies > jobs.len(), "{copies}");
 }
 

@@ -309,10 +309,10 @@ fn the_models_other_hand_worlds_agree_spec_permissions_4() {
 #[test]
 fn a_body_whose_path_waits_brings_nothing_until_it_opens_spec_permissions_4() {
     type E = Evidence<u32, Thing, u32>;
-    let mut ev = E::new(Config { vouches: true });
+    let mut ev = E::new(Config { vouches: true, reach: true });
     let check = |ev: &E| {
         let inc: Copies32 = ev.required(&D).unwrap().keys().copied().collect();
-        assert_eq!(inc, ev.from_scratch(&D).unwrap().into_keys().collect::<Copies32>());
+        ev.check().unwrap();
         inc
     };
     type Copies32 = BTreeSet<CopyId<u32, Thing>>;
@@ -352,13 +352,13 @@ fn the_first_grant_joins_and_a_forgotten_member_leaves_spec_permissions_4() {
     type Copies32 = BTreeSet<CopyId<u32, Thing>>;
     let check = |ev: &E| {
         let inc: Copies32 = ev.required(&D).unwrap().keys().copied().collect();
-        assert_eq!(inc, ev.from_scratch(&D).unwrap().into_keys().collect::<Copies32>());
+        ev.check().unwrap();
         inc
     };
     let write = |holder: Thing| Kind::Write(Write { holder, grant: true, removal: false, gives_write: true, relies: None, creation: None });
     let rec = |a: Thing, b: Thing| Hop { edge: (a, b), record: true };
     let hop = |a: Thing, b: Thing| Hop { edge: (a, b), record: false };
-    let mut ev = E::new(Config { vouches: true });
+    let mut ev = E::new(Config { vouches: true, reach: true });
     ev.add_sid(D, D);
     ev.join(&D, D);
     ev.add((1, D), vec![Part { kind: write(A), hops: Some(vec![rec(Y, D)]), pos: 1, chained: true }]);
@@ -368,4 +368,32 @@ fn the_first_grant_joins_and_a_forgotten_member_leaves_spec_permissions_4() {
     assert_eq!(check(&ev), Copies32::from([(2, A), (8, A)]));
     ev.forget(&(8, A));
     assert_eq!(check(&ev), Copies32::from([(2, A)]));
+}
+
+/// (A3) The reach switch: X removes K on A while A writes D (Y's grant) and no body of D rests on
+/// K's edge. With reach on (A3's clause, the model's) the removal and the grant joining A to D are
+/// seeds; off (A2: a removal travels as Role changes travel says) D requires nothing of A.
+#[test]
+fn a_removal_by_its_reach_is_a_seed_only_with_the_switch_on_spec_permissions_4() {
+    type E = Evidence<u32, Thing, u32>;
+    let rec = |a: Thing, b: Thing| Hop { edge: (a, b), record: true };
+    let w = |holder: Thing, grant: bool| Kind::Write(Write { holder, grant, removal: !grant, gives_write: grant, relies: None, creation: None });
+    for reach in [false, true] {
+        let mut ev = E::new(Config { vouches: true, reach });
+        ev.add_sid(D, D);
+        ev.join(&D, D);
+        ev.add((1, D), vec![Part { kind: w(A, true), hops: Some(vec![rec(Y, D)]), pos: 1, chained: true }]);
+        ev.add((2, A), vec![Part { kind: w(K, true), hops: Some(vec![rec(X, A)]), pos: 2, chained: true }]);
+        ev.add((3, A), vec![Part { kind: w(K, false), hops: Some(vec![rec(X, A)]), pos: 3, chained: true }]);
+        ev.check().unwrap();
+        let req = ev.required(&D).unwrap();
+        if reach {
+            assert_eq!(req.get(&(3, A)), Some(&Reason::Reach((3, A))), "{req:?}");
+        } else {
+            assert!(req.is_empty(), "{req:?}");
+        }
+        ev.forget(&(3, A));
+        ev.check().unwrap();
+        assert!(ev.required(&D).unwrap().is_empty());
+    }
 }

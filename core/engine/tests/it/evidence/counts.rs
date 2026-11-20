@@ -21,7 +21,7 @@ fn write(holder: u16) -> Kind<u32, u16> {
 }
 
 fn minus(a: Counts, b: Counts) -> Counts {
-    Counts { atoms: a.atoms - b.atoms, edges: a.edges - b.edges, visits: a.visits - b.visits, rechecks: a.rechecks - b.rechecks, reach: a.reach - b.reach, closes: a.closes - b.closes, bodies: a.bodies - b.bodies }
+    Counts { atoms: a.atoms - b.atoms, edges: a.edges - b.edges, visits: a.visits - b.visits, rechecks: a.rechecks - b.rechecks, reach: a.reach - b.reach, closes: a.closes - b.closes, bodies: a.bodies - b.bodies, seeds: a.seeds - b.seeds }
 }
 
 struct World {
@@ -33,7 +33,7 @@ struct World {
 impl World {
     /// The path of `k` holder things and `n` writes of K on `on` along it.
     fn new(k: usize, n: usize) -> World {
-        let mut ev = E::new(Config { vouches: true });
+        let mut ev = E::new(Config { vouches: true, reach: false });
         for s in [D, D2] {
             ev.add_sid(s, s);
             ev.join(&s, s);
@@ -175,4 +175,96 @@ fn from_scratch_is_linear_and_a_sync_id_keeps_its_edges_not_its_bodies() {
     assert_eq!((a.bodies, b.bodies), (11, 101));
     assert_eq!(a.visits, b.visits);
     assert_eq!(ka, kb);
+}
+
+/// Role changes travel: a write naming a sync ID's actor is a seed by itself, found by the holder
+/// index; it reads none of the actor's earlier writes (the same at n and 10n of them).
+#[test]
+fn a_write_naming_the_actor_reads_none_of_its_earlier_ones() {
+    let at = |n: usize| {
+        let mut w = World::new(1, 1);
+        w.ev.add_sid(Z, Z);
+        for j in 0..n {
+            w.grant(Z, 500 + j as u16, vec![rec(X, 500 + j as u16)], true);
+        }
+        let c = w.work(|w| {
+            w.grant(Z, 499, vec![rec(X, 499)], true);
+        });
+        assert_eq!(w.ev.required(&Z).unwrap().len(), n + 1);
+        w.ev.check().unwrap();
+        c
+    };
+    let (a, b) = (at(10), at(100));
+    assert_eq!(a, b);
+    assert_eq!((a.seeds, a.closes, a.bodies), (0, 0, 0), "{a:?}");
+}
+
+/// A body forgotten (a compaction covering it, a purge): under an organisation A with m members,
+/// each granted write on A and writing D through [A] twice, D's evidence holds m grants. A body
+/// whose edge another body still uses costs its path's atoms and no closure; the last body on an
+/// edge closes D again from its atoms and seeds: closure-sized work (m visits), never body-sized.
+#[test]
+fn a_forgotten_body_closes_again_only_when_it_was_the_last_on_an_edge() {
+    const A: u16 = 50;
+    let at = |m: u16| {
+        let mut ev = E::new(Config { vouches: true, reach: false });
+        ev.add_sid(D, D);
+        ev.join(&D, D);
+        let mut next = 1u32;
+        let mut add = |ev: &mut E, on: u16, kind: Kind<u32, u16>, hops: Vec<Hop<u16>>, chained: bool| {
+            let c = (next, on);
+            ev.add(c, vec![Part { kind, hops: Some(hops), pos: next, chained }]);
+            next += 1;
+            c
+        };
+        add(&mut ev, D, write(A), vec![rec(X, D)], true);
+        let mut bodies = vec![];
+        for j in 0..m {
+            let k = 1000 + j;
+            add(&mut ev, A, write(k), vec![rec(X, A)], true);
+            for _ in 0..2 {
+                bodies.push(add(&mut ev, D, Kind::Content, vec![hop(k, A), hop(A, D)], false));
+            }
+        }
+        assert_eq!(ev.required(&D).unwrap().len(), m as usize);
+        let before = ev.counts();
+        ev.forget(&bodies[0]);
+        let shared = minus(ev.counts(), before);
+        let before = ev.counts();
+        ev.forget(&bodies[1]);
+        let last = minus(ev.counts(), before);
+        ev.check().unwrap();
+        assert_eq!(ev.required(&D).unwrap().len(), m as usize - 1);
+        (shared, last)
+    };
+    let ((s10, l10), (s1000, l1000)) = (at(10), at(1000));
+    assert_eq!(s10, s1000);
+    assert_eq!((s10.closes, s10.visits, s10.atoms), (0, 0, 2), "{s10:?}");
+    assert_eq!((l10.closes, l1000.closes), (1, 1));
+    // the close takes every edge and copy in again: m visits, m + 2 edges, however few it lost
+    assert_eq!((l10.visits, l1000.visits, l10.edges, l1000.edges), (10, 1000, 12, 1002), "{l10:?} {l1000:?}");
+}
+
+/// A compaction dropping the last bodies of many writers at once (`forget_all`): one close of D,
+/// not one per body.
+#[test]
+fn a_compaction_forgetting_many_bodies_closes_once() {
+    const A: u16 = 50;
+    let mut ev = E::new(Config { vouches: true, reach: false });
+    ev.add_sid(D, D);
+    ev.join(&D, D);
+    ev.add((1, D), vec![Part { kind: write(A), hops: Some(vec![rec(X, D)]), pos: 1, chained: true }]);
+    let mut bodies = vec![];
+    for j in 0..20u16 {
+        let (g, b) = (2 + 2 * j as u32, 3 + 2 * j as u32);
+        ev.add((g, A), vec![Part { kind: write(1000 + j), hops: Some(vec![rec(X, A)]), pos: g, chained: true }]);
+        ev.add((b, D), vec![Part { kind: Kind::Content, hops: Some(vec![hop(1000 + j, A), hop(A, D)]), pos: b, chained: false }]);
+        bodies.push((b, D));
+    }
+    let before = ev.counts();
+    ev.forget_all(bodies[..10].iter().copied());
+    let c = minus(ev.counts(), before);
+    ev.check().unwrap();
+    assert_eq!(ev.required(&D).unwrap().len(), 10);
+    assert_eq!((c.closes, c.bodies), (1, 10), "{c:?}");
 }
