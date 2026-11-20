@@ -20,7 +20,7 @@ Each prints its wall and CPU-s (compare CPU-s; wall follows load) and checks its
 6. The unification check, when a `Cargo.toml`, `Cargo.lock` or `.cargo/` changed (notes/build-internals.md, Feature unification); `osis schema check` on every `schema/*.osis`; `cargo deny check`, then core's bans alone (deny.toml skip-trees the GUI stack, which would hide a core duplicate with a copy there).
 7. One `tools/heavy` hold: the default tests (`cargo test --locked --no-fail-fast`), the selected properties, the selected sim scenarios at 15 seeds.
 8. The GUI tests (`cargo test -p osis-kit -p osis-app -p osis-android`), when libs/kit/ or app/ changed.
-9. The summary (below).
+9. The summary (below). Before it, the whole gate against its cap (`gate`, notes/time-limits.md, Limits) without its lock wait and its build stage, whose CPU-s and wall it prints: the cap bounds test cost, and a rebuild after a rebase is not test cost.
 
 ## Components pay for themselves
 Iterating on one project must not run the others' checks. The paths changed since the merge base with origin/main (committed or not, untracked included) pick the steps; `tools/gate_paths.py BASE` decides (its docstring has the exact rules; `-v` says why a diff of comments and docs took the full gate):

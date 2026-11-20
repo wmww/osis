@@ -124,12 +124,17 @@ t0=$(date +%s)
 # the selection (`run` lines: the test stages expected) and every test stage's result
 sel=$tmp/sel
 results=$sel.res
-# The whole gate against its limit (`gate`, Tess's cap: `LIMIT CAP`), its lock wait (seconds, $1) left out, naming each
+# The whole gate against its limit (`gate`, Tess's cap: `LIMIT CAP`), its lock wait (seconds, $1)
+# and its build stage left out (the cap bounds test cost; a rebuild after a rebase over a low crate
+# swings a gate by up to 1,300 CPU-s and is no test cost: `build` has its own limit), naming each
 # stage over its share when over; then every test stage's failure, KNOWN or NEW, and the pass
 # line or the summary's exit.
+build_cpu=0
+build_wall=0
 passed() {
   cpu
-  python3 "$tools/limits.py" check gate "$cpu" $(( $(date +%s) - t0 - $1 )) --since "$t0" || true
+  echo "== the gate without its build and lock wait, against its cap (build: $build_cpu CPU-s, ${build_wall}s, left out)"
+  python3 "$tools/limits.py" check gate $(( cpu - build_cpu )) $(( $(date +%s) - t0 - $1 - build_wall )) --since "$t0" || true
   # once a stage is expected (`$sel` exists), the summary decides: a hold that never ran (a
   # refused or failed tools/heavy) leaves its stages unrun, which the summary counts NEW
   stale=
@@ -223,6 +228,7 @@ builds() {
   done < "$sel"
 }
 limited build builds
+build_cpu=$step_cpu build_wall=$step_wall
 # every selected property in a built target (`check` lines, tools/test_select.py --listed): a name
 # no target compiles would match nothing and pass silently
 while IFS= read -r l; do

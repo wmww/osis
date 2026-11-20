@@ -6,7 +6,7 @@ Each box's checks go to its own `~/.cache/osis/limits.log`, the record of every 
 ## Limits
 Every timed run has a CPU limit (tight: other work barely moves CPU-s) and a wall limit (looser: it also catches waiting, idle cores, a demoted process), as multiples of the box's base unit `u` (policy: notes/coordination.md, Time limits). `u` is the CPU-s of one fixed work quantum of `tools/baseunit.c` with every hardware thread busy; a CPU limit is `k u`, a wall limit `k u 16/threads`. Measure a box's with `tools/heavy tools/limits.py unit` (median of 5; varies 2-4% with load) and add its row. `tools/limits.py` reads both tables below: keep their shape.
 
-`gate` and `gate.hold` are Tess's 5-minute cap, never raised. Every gate stage is a share of one of them (`share of`), each whole's shares summing to at most it with 1 u wall and 10 u CPU left for the steps between (`tools/limits.py split`, a gate instant check), so a gate over its cap names the stages over their share. The shares follow ostrich's cost when set and are all under what their stage takes today, so gates hit them until issues/test-time.md is done: such hits belong to that issue. A hit is reported and logged, never fatal.
+`gate` and `gate.hold` are Tess's 5-minute cap, never raised. The cap bounds test cost creep, so `gate` is judged without the gate's `build` stage (the rebuild after a rebase: up to 1,300 CPU-s of swing between gates of one branch, set by what main changed below the branch, not by its tests), which has a limit of its own; the gate prints the build's CPU-s and wall beside the check. Every gate stage is a share of one of them (`share of`), each whole's shares summing to at most it with 1 u wall and 10 u CPU left for the steps between (`tools/limits.py split`, a gate instant check), so a gate over its cap names the stages over their share. The shares follow ostrich's cost when set and are all under what their stage takes today, so gates hit them until issues/test-time.md is done: such hits belong to that issue. A hit is reported and logged, never fatal.
 
 | box | unit (CPU-s) |
 |---|---|
@@ -17,7 +17,7 @@ Every timed run has a CPU limit (tight: other work barely moves CPU-s) and a wal
 |---|---|---|---|---|
 | `test` | 4.5 | 6.5 |  | one default test alone (`tools/limits.py tests`): over 10 s needs a reason |
 | `rebuild` | 70 | 13 |  | an osis-base edit, `cargo build --all-targets` (`tools/limits.py run rebuild cargo build --all-targets`): one comment line, warm, 330-390 / 41-53 s at load 9-14 (notes/time-limits.md, Investigations) |
-| `build` | 55 | 10 | `gate` | the gate's builds: 8-108 / 4-42 s with nothing below the branch's top crates changed since the target's build; any change below osis-engine 330 / 41 s at best, 500-1350 / 70-370 s in gates |
+| `build` | 55 | 10 |  | the gate's builds, outside `gate` (a rebuild is no test cost): 8-108 / 4-42 s with nothing below the branch's top crates changed since the target's build; any change below osis-engine 330 / 41 s at best, 500-1350 / 70-370 s in gates |
 | `default-tests` | 700 | 50 | `gate.hold` | `cargo test --no-fail-fast`, built: 1190 / 123 s at load 16 (per test and binary: notes/test-harnesses.md, Default-test cost) |
 | `gate.checks` | 5 | 3 | `gate` | the instant checks: the tools' own tests when tools/ changed (9 / 11 s at load 1: gate_select_test.sh 3 / 5 s, policy_test.py 3 / 3 s) |
 | `gate.clippy` | 20 | 4 | `gate` | core clippy, warm: 15 / 5 s |
@@ -29,7 +29,7 @@ Every timed run has a CPU limit (tight: other work barely moves CPU-s) and a wal
 | `gate.doctests` | 55 | 10 |  | the comments path's doctests (notes/gate.md, Components pay for themselves): the changed crates' test build and their doctests, as `build` |
 | `gate.gui-tests` | 10 | 2 | `gate` | GUI tests: 72 / 20 s |
 | `gate.hold` | 1650 | 105 | `gate` | the gate's one heavy-lock hold: 2580 / 246 s at load 25 |
-| `gate` | 1780 | 130 |  | the whole gate but its lock wait: 2920 / 338 s at load 24; 5 minutes wall is Tess's cap, its CPU what 5 minutes at the box's usual 85% busy allows |
+| `gate` | 1780 | 130 |  | the whole gate but its lock wait and its `build` stage: 2920 / 338 s at load 24; 5 minutes wall is Tess's cap, its CPU what 5 minutes at the box's usual 85% busy allows |
 | `heavy` | 2200 | 260 |  | any other heavy-lock hold |
 | `heavy.short` | 50 | 100 |  | a cap, not a check: `tools/heavy --short` stops its run past either (notes/build.md, Heavy lock). CPU: a lane run adds at most its CPU-s / 16 to a hold's wall beside it (7 s on ostrich, 1-3% of a gate) while holding every roles-model search, held-model twin and seed replay that waited 5-20 min behind gates (4-95 CPU-s); 0 closes the lane, infinity is no lock. Wall: a run within the CPU cap on one core still fits, 0 stops every run, infinity lets a hung run keep the lane |
 
