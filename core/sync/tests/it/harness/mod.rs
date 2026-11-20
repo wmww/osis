@@ -11,7 +11,6 @@
 //! and copied per test (`fixture`). Random layers write a `Vec<Step>` and replay it with `play`;
 //! a failure prints the script, `OSIS_SYNC_SHRINK=1` shrinks it.
 
-#![allow(dead_code)]
 
 pub mod history;
 pub mod lies;
@@ -717,13 +716,6 @@ impl World {
         n.node.engine().forensic(&eb, &sb).expect("forensic")
     }
 
-    /// Node `i`'s store device (sync's store per sync ID): every row it was ever given (under
-    /// `record`), the live rows and the live blobs.
-    pub fn recorded(&self, i: usize) -> (Vec<osis_store::KeyValue>, Vec<osis_store::KeyValue>, Vec<Vec<u8>>) {
-        let b = &self.node(i).disks.store.0;
-        (b.history(), b.dump(), b.blob_history().into_iter().filter_map(|(_, x)| x).collect())
-    }
-
     /// What node `i`'s two disks hold, engine's then store's: (rows, row bytes, blobs, blob bytes).
     pub fn disk_use(&self, i: usize) -> [(u64, u64, u64, u64); 2] {
         let d = &self.node(i).disks;
@@ -777,16 +769,6 @@ impl World {
 
     pub fn status(&self, i: usize) -> std::collections::BTreeMap<osis_base::SyncId, osis_sync::status::SyncStatus> {
         self.node(i).node.status()
-    }
-
-    /// Where a member of S opened by `by` at node `i` would end if ended now (`Node::member_until`).
-    pub fn member_until(&mut self, i: usize, s: &osis_base::SyncId, by: &osis_sync::types::Credential) -> osis_sync::types::Position {
-        self.nodes.get_mut(i).expect("no such node").node.member_until(s, by)
-    }
-
-    /// Where node `i`'s wait on `scope` stands now (`Node::wait`).
-    pub fn wait(&mut self, i: usize, scope: osis_sync::types::Scope) -> osis_sync::types::Waiting {
-        self.nodes.get_mut(i).expect("no such node").node.wait(scope)
     }
 
     /// Node `i`'s address: its dialable key and what it lists in `reach.0`.

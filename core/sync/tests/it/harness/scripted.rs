@@ -391,8 +391,6 @@ pub struct Pair {
     pub log: Vec<(bool, Msg)>,
 }
 
-pub const CH_A: [u8; 32] = [0xa1; 32];
-pub const CH_B: [u8; 32] = [0xb2; 32];
 pub const KEY_B: [u8; 32] = [0x4b; 32];
 
 /// The binds of a connection `a` dialed, a direct one (rank 1): `a`'s and `b`'s.
@@ -468,7 +466,6 @@ impl Pair {
 /// sends what it builds. `bind` is its own view of the connection.
 pub struct Adv {
     pub bind: Bind,
-    pub conn: ConnId,
     /// The honest side's connection.
     pub peer: ConnId,
     next: u32,
@@ -489,7 +486,7 @@ impl Adv {
         let peer = if h_dialed { ConnId(9) } else { ConnId(ConnId::ACCEPTED | 9) };
         h.pipe.binds.insert(peer, (hb, adv_proves));
         h.take(peer, Incoming::Proved);
-        Adv { bind: ab, conn: ConnId(99), peer, next: 0 }
+        Adv { bind: ab, peer, next: 0 }
     }
 
     pub fn id(&mut self) -> Id {

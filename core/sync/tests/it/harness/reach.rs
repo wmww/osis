@@ -49,13 +49,6 @@ pub enum Route {
     Relay(RelayId),
 }
 
-impl Route {
-    /// The relay this route's connection goes through.
-    pub fn relayed_by(self) -> Option<RelayId> {
-        if let Route::Relay(r) = self { Some(r) } else { None }
-    }
-}
-
 #[derive(Clone, Debug)]
 struct Place {
     lan: Vec<(Seg, IpAddr)>,
@@ -79,20 +72,13 @@ pub struct Reach {
     places: BTreeMap<usize, Place>,
     relays: Vec<RelayPlace>,
     nats: Vec<Nat>,
-    /// Listening key -> node: the dialable key and LAN transport keys.
+    /// Listening key -> node: its dialable key.
     keys: BTreeMap<[u8; 32], usize>,
-    /// Node and segment -> its LAN listener's key (`lan_key`).
-    lan_keys: BTreeMap<(usize, Seg), [u8; 32]>,
     /// Addresses handed out so far (each address unique).
     next_ip: u32,
 }
 
 impl Reach {
-    /// Any node placed: the scenario has peer links.
-    pub fn is_used(&self) -> bool {
-        !self.places.is_empty()
-    }
-
     /// A NAT behaving as `nat`.
     pub fn add_nat(&mut self, nat: Nat) -> usize {
         self.nats.push(nat);
@@ -137,21 +123,12 @@ impl Reach {
                 *v = new;
             }
         }
-        self.lan_keys = std::mem::take(&mut self.lan_keys).into_iter().map(|((n, s), k)| ((if n == old { new } else { n }, s), k)).collect();
     }
 
-    /// Node `n` listens with `key` as its dialable key: an earlier dialable key stops.
+    /// Node `n` listens with `key` as its dialable key: an earlier one stops.
     pub fn listen(&mut self, n: usize, key: [u8; 32]) {
-        let lan: BTreeSet<[u8; 32]> = self.lan_keys.iter().filter(|((m, _), _)| *m == n).map(|(_, k)| *k).collect();
-        self.keys.retain(|k, m| *m != n || lan.contains(k));
+        self.keys.retain(|_, m| *m != n);
         self.keys.insert(key, n);
-    }
-
-    /// Node `n`'s LAN listener on segment `s`, made with `make` at its first join.
-    pub fn lan_key(&mut self, n: usize, s: Seg, make: impl FnOnce() -> [u8; 32]) -> [u8; 32] {
-        let k = *self.lan_keys.entry((n, s)).or_insert_with(make);
-        self.keys.insert(k, n);
-        k
     }
 
     /// The node listening with `key`.
@@ -173,30 +150,16 @@ impl Reach {
         self.places.get(&n)?.lan.iter().find(|(x, _)| *x == s).map(|(_, ip)| SocketAddr::new(*ip, PORT))
     }
 
-    /// The segments node `n` sits on.
-    pub fn segments(&self, n: usize) -> Vec<Seg> {
-        self.places.get(&n).map(|p| p.lan.iter().map(|x| x.0).collect()).unwrap_or_default()
-    }
-
-    /// The other placed nodes on segment `s`.
-    pub fn on_segment(&self, s: Seg, except: usize) -> Vec<usize> {
-        self.places.iter().filter(|(m, p)| **m != except && p.lan.iter().any(|x| x.0 == s)).map(|(m, _)| *m).collect()
-    }
-
     /// A relay's own item, for a URL by hand.
     pub fn relay_item(&self, r: RelayId) -> Option<String> {
         self.relays.get(r).map(|x| x.relay.item())
     }
 
-    /// A relay starts or stops. What it carried is the caller's to cut (`Route::relayed_by`).
+    /// A relay starts or stops. What it carried is the caller's to cut.
     pub fn set_relay_up(&mut self, r: RelayId, up: bool) {
         if let Some(x) = self.relays.get_mut(r) {
             x.up = up;
         }
-    }
-
-    pub fn relay_count(&self) -> usize {
-        self.relays.len()
     }
 
     fn reaches_relay(&self, p: &Place, r: &RelayPlace) -> bool {
@@ -258,22 +221,6 @@ impl Reach {
         best
     }
 
-    /// Whether nodes `a` and `b` can connect either way: each dialing what the other lists in
-    /// `reach.0`, or a LAN address it would hear announced, both listening.
-    pub fn linked(&self, a: usize, b: usize, blocked: impl Fn(Who, Who) -> bool) -> bool {
-        let listens = |n| self.keys.values().any(|m| *m == n);
-        if !listens(a) || !listens(b) {
-            return false;
-        }
-        let url = |to: usize, from: usize| {
-            let mut items = self.items(to);
-            for s in self.segments(to).into_iter().filter(|s| self.segments(from).contains(s)) {
-                items.extend(self.lan_addr(to, s).map(|x| x.to_string()));
-            }
-            osis_transport::peer_url(&items)
-        };
-        self.route(a, b, &url(b, a), &blocked).is_some() || self.route(b, a, &url(a, b), &blocked).is_some()
-    }
 }
 
 fn lan_ip(s: Seg, i: u32) -> IpAddr {
