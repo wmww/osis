@@ -3,3 +3,7 @@
 # other's change comes back; tools/policy.py (`union_lists`) refuses both.
 tools/code_refs_allow.txt merge=union
 core/base/testenv-known.txt merge=union
+# Records, merged three ways as a set (tools/known_failures_merge.py): a line either side removed
+# stays removed. Needs `merge.known-failures.driver` in the repo's config (tools/claim sets it);
+# without it git conflicts as usual.
+tools/known_failures.txt merge=known-failures
