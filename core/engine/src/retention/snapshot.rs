@@ -1124,6 +1124,10 @@ impl Engine {
         if ak.signal() {
             return Ok(None);
         }
+        #[cfg(test)]
+        if self.core.snapshot_fault.as_ref() == Some(&(tid, ak.clone())) {
+            return Err(Error::Crdt(osis_crdt::Error::Mismatch("snapshot fault")));
+        }
         // an ephemeral aspect's snapshot is a memory commit (spec/commits.md §2)
         let memory = ak.ephemeral();
         self.run(|tx| {

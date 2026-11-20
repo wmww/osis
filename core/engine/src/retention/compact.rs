@@ -752,14 +752,22 @@ impl Engine {
         let quiet = std::mem::take(&mut self.core.compaction.quiet_due);
         let mut out = Vec::new();
         while let Some(k) = due.pop_first() {
-            if let Err(e) = self.weigh_due(&k, forced.contains(&k), quiet.contains(&k), &mut out) {
-                // a failed transaction: what was not weighed is due again, as it was
-                due.insert(k);
-                let c = &mut self.core.compaction;
-                c.forced.extend(due.iter().filter(|k| forced.contains(*k)).cloned());
-                c.quiet_due.extend(due.iter().filter(|k| quiet.contains(*k)).cloned());
-                c.due.extend(due);
-                return Err(e);
+            match self.weigh_due(&k, forced.contains(&k), quiet.contains(&k), &mut out) {
+                Ok(()) => {}
+                // a failed store: the step fails, and what was not weighed is due again, as it was
+                Err(e @ Error::Store(_)) => {
+                    due.insert(k);
+                    let c = &mut self.core.compaction;
+                    c.forced.extend(due.iter().filter(|k| forced.contains(*k)).cloned());
+                    c.quiet_due.extend(due.iter().filter(|k| quiet.contains(*k)).cloned());
+                    c.due.extend(due);
+                    return Err(e);
+                }
+                // a snapshot this node cannot write (its own data, not its store) costs that aspect
+                // its compaction alone: its estimate stays, so it is weighed again at its next
+                // body, and the step goes on to the others. Failing the step would fail every
+                // step (the driver closes its connections) for as long as the aspect stays so.
+                Err(_) => osis_base::costs::count("compact: snapshots failed", 1),
             }
         }
         Ok(out)
@@ -1032,6 +1040,42 @@ mod tests {
             let next = p.engine.compactions().unwrap().len();
             assert_eq!(first + next, 1, "write {n}: compacted once, at the failed step or the next");
         }
+    }
+
+    // spec/sync-compaction.md §1 (trigger): a snapshot this node cannot write (a local error of
+    // its own, not its store's) costs that aspect alone: the step weighs and compacts the aspects
+    // after it and does not fail, and the failing one is weighed again at its next body
+    #[test]
+    fn a_failing_snapshot_leaves_the_other_aspects_compacted_spec_sync_7() {
+        let (x, y) = (Ak::new("x:m.0").unwrap(), Ak::new("y:m.0").unwrap());
+        let mut lp = LocalPeer::fresh(1, osis_base::WallMs(1_700_000_000_000));
+        let p = &mut lp.peers[0];
+        let me = p.engine.me();
+        let mut m = Mutation::new();
+        let t = p.engine.new_thing(&mut m, me);
+        m.set(t, &x, &Value::Map(Default::default())).unwrap();
+        m.set(t, &y, &Value::Map(Default::default())).unwrap();
+        p.commit(m).unwrap();
+        let fill = |p: &mut crate::local_peer::Peer, ak: &Ak, i: usize| {
+            let mut m = Mutation::new();
+            m.op(t, ak, osis_crdt::PathOp { path: vec![osis_crdt::PathSeg::Key(Value::Str("k".into()))], op: osis_crdt::Op::Set(Value::Str(format!("v{i}"))) }).unwrap();
+            p.commit(m).unwrap();
+        };
+        for i in 0..2 * FACTOR + 2 {
+            fill(p, &x, i);
+            fill(p, &y, i);
+        }
+        // x is weighed first
+        p.engine.core.snapshot_fault = Some((t, x.clone()));
+        osis_base::costs::take();
+        let done = p.engine.compactions().unwrap().into_iter().map(|c| c.1).collect::<Vec<_>>();
+        let failed = osis_base::costs::take().iter().find(|c| c.0 == "compact: snapshots failed").map_or(0, |c| c.2);
+        assert_eq!(done, std::slice::from_ref(&y), "y compacted, the step not failed");
+        assert_eq!(failed, 1);
+        assert!(p.engine.compactions().unwrap().is_empty(), "nothing due until x's next body");
+        p.engine.core.snapshot_fault = None;
+        fill(p, &x, 0);
+        assert_eq!(p.engine.compactions().unwrap().into_iter().map(|c| c.1).collect::<Vec<_>>(), [x], "x at its next body");
     }
 
     // spec/sync-compaction.md §1 (trigger): where the setting keeps live bodies, those that left history

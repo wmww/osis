@@ -1306,6 +1306,10 @@ pub struct Core {
     /// Tests: the facts this node's snapshots state, over the true ones (`snapshot::facts_of`).
     #[cfg(test)]
     pub(crate) lie_facts: Option<osis_crdt::Facts>,
+    /// Tests: this node's snapshots of this aspect fail with a local error of their own
+    /// (`Engine::snapshot`), as one it cannot encode would.
+    #[cfg(test)]
+    pub(crate) snapshot_fault: Option<(Tid, Ak)>,
     /// Tests: the original's floor this node's edits claim, over the true one (`commit_in`).
     #[cfg(test)]
     pub(crate) lie_floor: Option<u64>,
@@ -1642,6 +1646,8 @@ impl Core {
             step_fault: self.step_fault.clone(),
             #[cfg(test)]
             lie_facts: self.lie_facts.clone(),
+            #[cfg(test)]
+            snapshot_fault: self.snapshot_fault.clone(),
             #[cfg(test)]
             lie_floor: self.lie_floor,
             #[cfg(test)]
@@ -2298,6 +2304,8 @@ impl Core {
             #[cfg(test)]
             lie_facts: _,
             #[cfg(test)]
+            snapshot_fault: _,
+            #[cfg(test)]
             lie_floor: _,
             #[cfg(test)]
             faults: _,
@@ -2506,6 +2514,8 @@ impl Core {
             step_fault: None,
             #[cfg(test)]
             lie_facts: None,
+            #[cfg(test)]
+            snapshot_fault: None,
             #[cfg(test)]
             lie_floor: None,
             #[cfg(test)]
