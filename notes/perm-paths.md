@@ -41,13 +41,26 @@ With a non-empty trust set the walk is evaluated from scratch on every change (s
 
 ## The differential
 `core/perm/tests/it/paths/` against roles-model `paths` under `Rules::fixed` with `Vouch::Off` (the first walk: vouches walked, entries unread). Per node view (held set, the frontier leaves it sees, its trust set) it compares every edge-class part's status, every edge's history (the applied writes in key order), the final roles and invites (every edge the walk set, as the model's `roles`), the void trusted writes, and the dispute set (the model's `disputes_by` with what applies and the roles; content validity is step 3b's).
-- Hand worlds (`hand.rs`): a counterpart of each rule-naming model hand test, same names, at the views the model's test reads.
-- Default: `tiny_worlds_agree` (150 worlds of each of the six `tiny` kinds, disputes compared) and `story_worlds_agree` (36 story worlds at every node, disputes in 6).
-- Properties: `paths_tiny_agree_large` (160,000 worlds of the six kinds), `paths_story_agree_large` (8,000 story worlds at every node, disputes compared). Passed with 0 disagreements at full size (`OSIS_FULL=1`): about 60 and 130 CPU-s; the gate's tenth about 6 and 13.
+- Hand worlds (`hand.rs`): a counterpart of each rule-naming model hand test, same names, at the views the model's test reads; two of the walk's own (`an_ended_value_restores_its_role`, `keeps_passes_over_a_fallen_finalize`) where no model test reached a rule.
+- Default: `tiny_worlds_agree` (150 worlds of each of the six `tiny` kinds, disputes compared), `story_worlds_agree` (36 story worlds at every node, disputes in 6), `incremental::incremental_equals_from_scratch` (200 worlds of each kind, commits added one at a time in a shuffled order: each `Changed` equals the difference of the readings, the end equals from scratch).
+- Properties: `paths_tiny_agree_large` (160,000 worlds), `paths_story_agree_large` (8,000 story worlds at every node), `paths_incremental_agrees_large` (60,000 worlds). All 0 disagreements at full size (`OSIS_FULL=1`), about 60, 130 and 40 CPU-s; the gate runs a tenth: about 25 CPU-s together.
+
+## Mutations
+Each control of the model that reaches edge-class parts, taken by the walk as a source edit, fails the default tests, each by its named hand world: `-no-void`, `-exempt`, `-audit-applied`, `-admin-falls`, `-own-drops`, `-remains-unkept`, `-leave`, `-invite-role`, `-any-edge`, `-timed`, `-last-any`, `-all-candidates`, `-seeds-all`, `-refuse-shapes`. So do rules with no control: the verdict's raise check (finding 27), no drop or seed reaching its own commit, the own-path part last, a finalize's role, an invite grant's need as an invite, a self-removal only lowering, the edge as restored disregarding `until`, `keeps` passing over a fallen finalize. Not applicable here: `-once`, `-listed`, `-key-order` (writing policy: step 5), `-own-vouch` (vouch counting: 3b).
+
+## Counts (`counts.rs`, at n = 100 and 1000)
+- A part appended at the end: 1 step, 1 pass, nothing audited (a grant, a write along two hops, a removal of an edge nothing rests on).
+- A backdated part: n + 1 steps (the walk from it on), also on a thing the history never touches: no components yet.
+- A lowering applying with drops: 1 restart, from its earliest drop (the parts after it walked again, never those before); audited = the parts resting on its edge.
+- A void lowering at the end of a chain of k grants: its check reads about k setters (k = 10 and 100: tenfold); k of them about k² (finding 17, accepted).
+- From scratch: one step per part.
 
 ## Where the walk departs from the model
 - A finalize is a shape on the wire (a frontier-less removal of another holder's grant that is no self-removal); the model flags it. A frontier-less removal of a holder's own grant by a path ending at it is therefore a self-removal and applies; the model, reading its flag, judges it a finalize (`a_finalize_ends_an_ended_grant_and_an_invite_follows_it` pins the walk's reading). No generator makes such a write.
 - A self-removal lowers in every component the spec names: role, invite, `until` and `floor` (`types::lowers`); the model compares role and `until`, and reads a removal as role none with no `until`, so its self-removal removing a timed grant raises the `until` and applies nowhere, where the spec's removal always lowers. Its generators make neither case (0 disagreements at full size).
+
+## Draft spec corrections
+- notes/a1-spec/permissions.md §5.1 step 4: the writes `keeps` passes over when their own `keeps` fails are grants and finalizes (the model reads any write that is neither lowering-shaped nor a self-removal so; a finalize is neither).
 
 ## What step 7 owes
 - Components: a backdated part or a restart walks only its component (things joined by a part's thing, holder, signer, path and named holder).

@@ -128,6 +128,46 @@ fn an_until_passing_audits_nothing_the_next_explicit_write_does() {
     agree_all(&w, &[r]);
 }
 
+// spec/permissions.md §5.1: the edge as restored reads each value's role with its `until`
+// disregarded, a value already ended at its own `ts` included: H gives B admin ending at 2 at 3
+// (a lowering), B grants N5 at 4 (holding nothing), H removes B at 5 listing nothing: restored at
+// admin, the removal falls and drops B's grant. (No model hand test: the walk's own world.)
+#[test]
+fn an_ended_value_restores_its_role() {
+    let mut w = account();
+    let gb = w.edge(H, 1, &[], A, B, Admin, &[]);
+    let ended = w.edge(H, 3, &[], A, B, Admin, &[gb]);
+    w.set_until(ended, 2);
+    w.edge(B, 4, &[], A, N5, Admin, &[]);
+    let r = w.edge(H, 5, &[], A, B, Gone, &[]);
+    agree_all(&w, &[]);
+    agree_all(&w, &[r]);
+}
+
+// spec/permissions.md §5.1 step 4: `keeps` passes over a finalize whose own `keeps` fails, as over
+// a grant. H grants N5 and B admin; N5 grants N6; N6 gives B admin until 4, finalizes it at 5
+// and grants B admin again at 6; B grants Z; Z removes N5 listing nothing. Its drop of N5's grant
+// takes N6's writes' authority without dropping them: reading B's edge back for Z's path, N6's
+// re-grant, finalize and timed grant are all passed over and H's grant decides: the removal
+// applies. Stopping at the finalize would make it void. (No model hand test: the walk's own.)
+#[test]
+fn keeps_passes_over_a_fallen_finalize() {
+    let mut w = account();
+    w.edge(H, 1, &[], A, N5, Admin, &[]);
+    w.edge(H, 1, &[], A, B, Admin, &[]);
+    w.edge(N5, 2, &[], A, N6, Admin, &[]);
+    let g = w.edge(N6, 3, &[], A, B, Admin, &[]);
+    w.set_until(g, 4);
+    w.push(N6, 5, &[], A, Kind::finalize(B));
+    w.edge(N6, 6, &[], A, B, Admin, &[]);
+    w.edge(B, 7, &[], A, Z, Admin, &[]);
+    let l = w.edge(Z, 8, &[], A, N5, Gone, &[]);
+    agree_all(&w, &[]);
+    agree_all(&w, &[l]);
+    let rd = judge(&w, &super::rules(), &View::all(&w));
+    assert!(rd.applied.contains(&l), "{rd:?}");
+}
+
 // ---- The last admin ----
 
 // spec/permissions.md §1 (The last admin): an unmarked write taking the last standing admin

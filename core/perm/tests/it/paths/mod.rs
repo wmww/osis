@@ -6,7 +6,9 @@
 //! spec/permissions.md §5.1 (the draft replaces it: notes/a1-spec/permissions.md §5.1).
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::indexing_slicing)]
 
+mod counts;
 mod hand;
+mod incremental;
 
 use crate::common::{seeded, sharded};
 use osis_base::{CommitId, Role, Tid, Ts, WallMs};
