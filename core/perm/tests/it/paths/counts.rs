@@ -103,23 +103,34 @@ fn an_appended_part_costs_its_own_step() {
     }
 }
 
-// A backdated part walks again every part of its component after it: n + 1 on A, whose history
-// it joins; its own step on B, which the history never touches (notes/perm-paths.md,
-// Components). Mutation: one component (every part joins the first edge's): n + 1 on B too.
+// A backdated part walks again only the parts whose step reads what it changed
+// (notes/perm-paths.md, Reach): H removes X from A early, before X's m writes on C (minted with A)
+// through [A] and after n grants on A: the removal and X's m writes, the same at n = 100, 1000 and
+// 10,000; a grant on B, which nothing reads, its own step. The control: the whole walk
+// (`Paths::whole`), every part of the component after the key: n + m + 1.
 #[test]
-fn a_backdated_part_walks_again_its_component_only() {
+fn a_backdated_part_walks_again_what_reads_its_change() {
+    let m = 5u32;
+    let base = |n: u32| {
+        let mut c = vec![write(1, H, 1, &[], A, X, Some(Role::Admin))];
+        c.extend(history(n));
+        c.extend((0..m).map(|i| write(50 + i as u64, X, 20 + n as u64 + i as u64, &[A], C, holder(9000 + i), Some(Role::Read))));
+        c
+    };
     for n in [100u32, 1000, 10_000] {
-        let (d, _) = cost_of(&history(n), write(1, H, 1, &[], A, X, Some(Role::Admin)));
-        assert_eq!((d.steps, d.passes), (W * (n as u64 + 1), W), "on A at n {n}: {d:?}");
-        let (d, _) = cost_of(&history(n), write(2, H, 1, &[], B, X, Some(Role::Admin)));
-        assert_eq!((d.steps, d.passes), (W, W), "on B at n {n}: {d:?}");
+        let (d, p) = cost_of(&base(n), write(2, H, 5, &[], A, X, None));
+        // a removal sets no chained point (draft §4: chained writes are never removed)
+        assert_eq!((d.steps, d.passes, d.chained), (W * (1 + m as u64), W, 0), "on A at n {n}: {d:?}");
+        assert_eq!(p.status(&WriteId(cid(50), 0)), Some(Status::Unapplied));
+        let (d, _) = cost_of(&base(n), write(3, H, 5, &[], B, X, Some(Role::Admin)));
+        assert_eq!((d.steps, d.passes, d.chained), (W, W, 1), "on B at n {n}: {d:?}");
     }
-    // the control: partitioning off (`Paths::single`), the part on B walks A's history too
-    let mut p = Paths::single(&records(), BTreeSet::new());
-    p.add(&history(100));
+    let mut p = Paths::whole(&records(), BTreeSet::new());
+    p.add(&base(100));
     let before = p.counts();
-    p.add(&[write(2, H, 1, &[], B, X, Some(Role::Admin))]);
-    assert_eq!(delta(before, p.counts()).steps, 101);
+    p.add(&[write(2, H, 5, &[], A, X, None)]);
+    let d = delta(before, p.counts());
+    assert_eq!(d.steps, 100 + m as u64 + 1, "{d:?}");
 }
 
 /// Things 100.. minted by H, `c` of them.
@@ -134,31 +145,36 @@ fn components(c: u32, k: u32) -> Vec<Commit> {
     (0..c).flat_map(|i| (0..k).map(move |j| write(1_000_000 + (i * k + j) as u64, H, 10 + j as u64, &[], 100 + i, holder(j), Some(Role::Admin)))).collect()
 }
 
-// A part on one thing among c components walks its own component alone: appended, its own step;
-// backdated, its component's k parts again, the same at c = 10 and 100. Mutation: one component:
-// backdated, c·k.
+// Components bound what an update forgets of the event log (notes/perm-paths.md, Reach, What stays
+// component-wide): among c components of k grants and one later removal each, a part appended on
+// one costs its own step; one backdated there its step and its own component's removal judged
+// again (the verdict given after the walk reached its key), the same at c = 10, 100 and 1000. The
+// control: partitioning off (`Paths::single`, one component, walked whole): c(k + 1) + 1.
 #[test]
 fn a_part_among_c_components_walks_its_own() {
     let k = 20u32;
+    let base = |c: u32| {
+        let mut b = components(c, k);
+        b.extend((0..c).map(|i| write(2_000_000 + i as u64, H, 1000, &[], 100 + i, holder(0), None)));
+        b
+    };
     for c in [10u32, 100, 1000] {
-        let base = components(c, k);
-        let mut p = Paths::evaluate(&many(c), BTreeSet::new(), &base);
+        let mut p = Paths::evaluate(&many(c), BTreeSet::new(), &base(c));
         let before = p.counts();
-        p.add(&[write(1, H, 500, &[], 100, X, Some(Role::Admin))]);
+        p.add(&[write(1, H, 5000, &[], 100, X, Some(Role::Admin))]);
         let d = delta(before, p.counts());
         assert_eq!((d.steps, d.passes), (W, W), "appended at c {c}: {d:?}");
         let before = p.counts();
         p.add(&[write(2, H, 1, &[], 100, Y, Some(Role::Admin))]);
         let d = delta(before, p.counts());
-        assert_eq!((d.steps, d.passes), (W * (k as u64 + 2), W), "backdated at c {c}: {d:?}");
+        assert_eq!((d.steps, d.passes), (W * 2, W), "backdated at c {c}: {d:?}");
     }
-    // the control: partitioning off (`Paths::single`), backdated walks every component
     let c = 10;
     let mut p = Paths::single(&many(c), BTreeSet::new());
-    p.add(&components(c, k));
+    p.add(&base(c));
     let before = p.counts();
     p.add(&[write(2, H, 1, &[], 100, Y, Some(Role::Admin))]);
-    assert_eq!(delta(before, p.counts()).steps, (c * k + 1) as u64);
+    assert_eq!(delta(before, p.counts()).steps, (c * (k + 1) + 1) as u64);
 }
 
 const Y: u32 = 3;
@@ -237,10 +253,11 @@ fn a_trusted_component_takes_an_appended_part_in_its_own_step() {
 }
 
 // Forgetting a content commit walks nothing (no verdict of a delta is stored); forgetting an edge
-// part walks its own component from its key: n + 1 steps on A, none on B's n parts
-// (notes/perm-paths.md, Forget and update). Mutation: one component: B's parts walked too.
+// part walks what read it (notes/perm-paths.md, Forget and update; Reach): X's grant, which no
+// part's path reads (X's deltas are content), its own step beside n grants on A and n on B. The
+// control: the whole walk, A's n grants after it.
 #[test]
-fn a_forget_walks_its_component_from_its_key() {
+fn a_forget_walks_what_read_the_part() {
     for n in [100u32, 1000] {
         let mut base = writes(n);
         base.extend((0..n).map(|i| write(500_000 + i as u64, H, 10 + i as u64, &[], B, holder(i), Some(Role::Admin))));
@@ -252,14 +269,20 @@ fn a_forget_walks_its_component_from_its_key() {
         let before = p.counts();
         p.forget(&[cid(1)]);
         let d = delta(before, p.counts());
-        assert_eq!((d.steps, d.passes), (W * n as u64, W), "an edge part at n {n}: {d:?}");
+        assert_eq!((d.steps, d.passes), (W, W), "an edge part at n {n}: {d:?}");
+        let mut p = Paths::whole(&records(), BTreeSet::new());
+        p.add(&base);
+        let before = p.counts();
+        p.forget(&[cid(1)]);
+        assert_eq!(delta(before, p.counts()).steps, n as u64 + 1, "whole at n {n}");
     }
 }
 
 
 // A lowering applying with drops restarts once, from its earliest drop: X, granted at 1, grants k
 // holders on A at 2; n unrelated grants follow; H removes X at the end listing nothing. The
-// restart walks the n grants again (they follow the earliest drop), never the history before it.
+// restart walks its k drops again, which nothing reads, never the n grants after them (the
+// whole walk: those too).
 #[test]
 fn a_lowering_with_drops_restarts_once_from_its_earliest_drop() {
     let k = 5u32;
@@ -271,16 +294,22 @@ fn a_lowering_with_drops_restarts_once_from_its_earliest_drop() {
         let (d, p) = cost_of(&base, write(2, H, end, &[], A, X, None));
         assert_eq!(d.restarts, W, "{d:?}");
         assert_eq!(d.audited, W * k as u64, "{d:?}");
-        // the removal, then from the earliest drop: the n grants and the removal again
-        assert_eq!(d.steps, W * (1 + n as u64 + 1), "{d:?}");
+        // the removal, then its drops
+        assert_eq!(d.steps, W * (1 + k as u64), "{d:?}");
         assert!((0..k).all(|i| p.status(&WriteId(cid(10 + i as u64), 0)) == Some(Status::Dropped)));
+        let mut p = Paths::whole(&records(), BTreeSet::new());
+        p.add(&base);
+        let before = p.counts();
+        p.add(&[write(2, H, end, &[], A, X, None)]);
+        assert_eq!(delta(before, p.counts()).steps, 1 + k as u64 + n as u64 + 1, "whole at n {n}");
     }
 }
 
 // Restarts multiply: k lowerings at the end, each dropping one early write, restart k times, each
-// from its drop, walking the n parts after it again: about k·n steps (k = 10, n = 100 and 1000:
-// tenfold). A party holding admin forces it with its own 3k writes (k holders it grants, one grant
-// by each, its removals of them listing nothing). Step 7's components bound it by the component.
+// walking its drop again (nothing reads it): from scratch n + 4k steps over n + 3k parts. The
+// whole walk restarts from each drop through the n parts after it: about k·n (k = 10, n = 100
+// and 1000: tenfold), which a party holding admin forces with its own 3k writes (k holders it
+// grants, one grant by each, its removals of them listing nothing).
 #[test]
 fn k_lowerings_with_drops_restart_k_times() {
     let k = 10u32;
@@ -294,11 +323,14 @@ fn k_lowerings_with_drops_restart_k_times() {
         base.extend((0..k).map(|i| write(60 + i as u64, H, end + i as u64, &[], A, y(i), None)));
         let p = Paths::evaluate(&records(), BTreeSet::new(), &base);
         let c = p.counts();
-        assert_eq!(c.restarts, W * k as u64, "{c:?}");
+        assert_eq!((c.restarts, c.steps), (W * k as u64, n as u64 + 4 * k as u64), "{c:?}");
         assert!((0..k).all(|i| p.status(&WriteId(cid(40 + i as u64), 0)) == Some(Status::Dropped)));
-        per.push(c.steps);
+        let mut w = Paths::whole(&records(), BTreeSet::new());
+        w.add(&base);
+        per.push(w.counts().steps);
     }
-    assert!(per[1] >= 9 * per[0] && per[1] <= 11 * per[0], "{per:?}");
+    // the whole walk: k·n and the parts once (1,240 and 11,140)
+    assert!(per[1] >= 8 * per[0] && per[1] <= 11 * per[0], "{per:?}");
 }
 
 /// X grants z0 admin, each zi grants zi+1 (k grants); z(k-1) removes X `voids` times listing
@@ -623,37 +655,189 @@ fn a_dispute_probe_reads_its_component_alone() {
     assert_eq!(per[0], per[1], "{per:?}");
 }
 
-// The honest shape components do not split (notes/perm-paths.md, Cost shapes): an organisation O
-// (minted by H) whose admin Y grants a member on each of its k teams through O is one component,
-// since every such write rests on Y's edge on O. A backdated part on one team walks every team's
-// parts after it: k + 1 steps at k = 100 and 1000. Teams joined once by a hub (H's grants of A on
-// each, then Y's writes through A) stay joined when the hub's writes are forgotten: the same.
+/// The organisation world (notes/perm-paths.md, Reach): O minted by H, k teams minted by O; H
+/// grants Y admin on O at 2; Y grants each team's lead admin on it through [O] at 10..; each lead
+/// grants p members write on its team at 5000..; with `removals`, each lead removes its first
+/// member at 9000 (listing it: no drops).
+fn org(k: u32, p: u32, removals: bool) -> (BTreeMap<Tid, Tid>, Vec<Commit>) {
+    let mut recs = records();
+    recs.insert(t(O), t(H));
+    recs.extend((0..k).map(|i| (t(team(i)), t(O))));
+    let mut base = vec![write(1, H, 2, &[], O, Y, Some(Role::Admin))];
+    base.extend((0..k).map(|i| write(10 + i as u64, Y, 10 + i as u64, &[O], team(i), lead(i), Some(Role::Admin))));
+    for i in 0..k {
+        base.extend((0..p).map(|j| write(member(i, j), lead(i), 5000 + (i * p + j) as u64, &[], team(i), member(i, j) as u32, Some(Role::Write))));
+        if removals {
+            let mut r = write(800_000 + i as u64, lead(i), 9000 + i as u64, &[], team(i), member(i, 0) as u32, None);
+            if let PartKind::Edge(ew) = &mut r.parts[0].kind {
+                ew.frontier = Some(Arc::new(Frontier::new([cid(member(i, 0))])));
+            }
+            base.push(r);
+        }
+    }
+    (recs, base)
+}
+
+const O: u32 = 20;
+fn team(i: u32) -> u32 {
+    3000 + i
+}
+fn lead(i: u32) -> u32 {
+    10_000 + i
+}
+/// A member's tid number and the commit granting it.
+fn member(i: u32, j: u32) -> u64 {
+    100_000 + (i * 100 + j) as u64
+}
+
+/// The work one update does over the organisation world, by reach (`whole`: the whole walk).
+fn org_cost(k: u32, p: u32, removals: bool, whole: bool, f: &dyn Fn(&mut Paths)) -> Counts {
+    let (recs, base) = org(k, p, removals);
+    let mut q = if whole { Paths::whole(&recs, BTreeSet::new()) } else { Paths::new(&recs, BTreeSet::new()) };
+    q.add(&base);
+    let before = q.counts();
+    f(&mut q);
+    delta(before, q.counts())
+}
+
+// An organisation is one component by design: every team's writes rest on Y's edge on O
+// (notes/perm-paths.md, Components). By reach a backdated part costs what reads its change
+// (notes/perm-paths.md, Reach), at k = 10, 100 and 1000 teams of p = 5 members:
+// - a backdated removal of one team's lead: the removal and that team's p member grants;
+// - a backdated lowering with drops (a lead removed after its member grants, listing none): the
+//   removal and its p drops, one restart;
+// - forgetting one lead's grant: that grant and its team's members;
+// - a backdated grant on the hub edge re-stating its value, and a write applying nowhere: 1;
+// - a backdated removal of the hub edge (every team's path reads it): all k(1 + p) + 1, inherent.
+// The control: the whole walk (`Paths::whole`) walks every team after the key.
 #[test]
-fn an_organisation_is_one_component() {
-    const O: u32 = 20;
-    let team = |i: u32| 3000 + i;
+fn an_organisation_costs_what_reads_the_change() {
+    let p = 5u32;
+    for k in [10u32, 100, 1000] {
+        let pp = p as u64;
+        let lead0 = write(2, Y, 100, &[O], team(0), lead(0), None);
+        let d = org_cost(k, p, false, false, &|q| {
+            q.add(std::slice::from_ref(&lead0));
+        });
+        assert_eq!((d.steps, d.restarts, d.chained), (1 + pp, 0, 0), "one team's lead removed at k {k}: {d:?}");
+        let mut late = write(3, Y, 6000, &[O], team(0), lead(0), None);
+        if let PartKind::Edge(ew) = &mut late.parts[0].kind {
+            ew.frontier = Some(Arc::new(Frontier::new([])));
+        }
+        let d = org_cost(k, p, false, false, &|q| {
+            q.add(std::slice::from_ref(&late));
+        });
+        assert_eq!((d.steps, d.restarts, d.audited), (1 + pp, 1, pp), "a lowering with drops at k {k}: {d:?}");
+        let d = org_cost(k, p, false, false, &|q| {
+            q.forget(&[cid(10)]);
+        });
+        // the members' grants are no longer chained either
+        assert_eq!((d.steps, d.chained), (1 + pp, 1 + pp), "a lead's grant forgotten at k {k}: {d:?}");
+        let d = org_cost(k, p, false, false, &|q| {
+            q.add(&[write(4, H, 3, &[], O, Y, Some(Role::Admin))]);
+        });
+        assert_eq!((d.steps, d.chained), (1, 1), "the hub re-granted at k {k}: {d:?}");
+        let d = org_cost(k, p, false, false, &|q| {
+            q.add(&[write(5, Y, 1, &[O], team(0), X, Some(Role::Admin))]);
+        });
+        assert_eq!((d.steps, d.chained), (1, 1), "a write applying nowhere at k {k}: {d:?}");
+        let d = org_cost(k, p, false, false, &|q| {
+            q.add(&[write(6, H, 3, &[], O, Y, None)]);
+        });
+        assert_eq!(d.steps, 1 + k as u64 * (1 + pp), "the hub removed at k {k}: {d:?}");
+    }
+    let d = org_cost(100, p, false, true, &|q| {
+        q.add(&[write(2, Y, 100, &[O], team(0), lead(0), None)]);
+    });
+    assert!(d.steps > 100 * p as u64, "the whole walk: {d:?}");
+}
+
+// What reach leaves component-wide (notes/perm-paths.md, Reach, What stays component-wide): an
+// update forgets every verdict given after the walk reached its key (the event log by reach), so
+// the lowerings judged after it, on every team, are judged again: a backdated removal of one
+// team's lead where each of k teams' leads removed a member later costs about k more steps
+// (1 + p + k: the lowerings judged again, each giving the verdict it had). Without the later
+// removals: 1 + p.
+#[test]
+fn an_organisation_judges_again_the_lowerings_after_the_key() {
+    let p = 5u32;
+    for k in [10u32, 100, 1000] {
+        let d = org_cost(k, p, true, false, &|q| {
+            q.add(&[write(2, Y, 100, &[O], team(0), lead(0), None)]);
+        });
+        assert_eq!(d.steps, 1 + p as u64 + k as u64, "at k {k}: {d:?}");
+    }
+}
+
+// Teams joined once by a hub's writes stay one component after those writes are forgotten
+// (notes/perm-paths.md, Forget and update), and cost no more for it: H's grants of A on each
+// team, X (admin on A) writing on each through A, all forgotten; a backdated part on one team
+// costs its own step at k = 100 and 1000.
+#[test]
+fn teams_once_joined_cost_as_if_never_joined() {
     for k in [100u32, 1000] {
-        let mut recs = records();
-        recs.insert(t(O), t(H));
-        recs.extend((0..k).map(|i| (t(team(i)), t(O))));
-        let mut base = vec![write(1, H, 2, &[], O, Y, Some(Role::Admin))];
-        base.extend((0..k).map(|i| write(10 + i as u64, Y, 10 + i as u64, &[O], team(i), holder(i), Some(Role::Write))));
-        let mut p = Paths::evaluate(&recs, BTreeSet::new(), &base);
-        let before = p.counts();
-        p.add(&[write(2, H, 3, &[O], team(0), X, Some(Role::Write))]);
-        assert_eq!(delta(before, p.counts()).steps, W * (k as u64 + 1), "backdated on one team at k {k}");
-        // teams of their own (minted by H), joined once through A: H grants A on each, X (admin
-        // on A) writes on each through A; the joining writes forgotten, the join stays
         let mut recs = records();
         recs.extend((0..k).map(|i| (t(team(i)), t(H))));
         let mut base = vec![write(1, H, 1, &[], A, X, Some(Role::Admin))];
-        base.extend((0..k).map(|i| write(10 + i as u64, H, 10, &[], team(i), holder(i), Some(Role::Admin))));
-        let hub: Vec<Commit> = (0..k).flat_map(|i| [write(100_000 + i as u64, H, 20, &[], team(i), A, Some(Role::Admin)), write(200_000 + i as u64, X, 30, &[A], team(i), holder(5000 + i), Some(Role::Write))]).collect();
+        base.extend((0..k).map(|i| write(10 + i as u64, H, 10, &[], team(i), lead(i), Some(Role::Admin))));
+        let hub: Vec<Commit> = (0..k).flat_map(|i| [write(100_000 + i as u64, H, 20, &[], team(i), A, Some(Role::Admin)), write(200_000 + i as u64, X, 30, &[A], team(i), lead(5000 + i), Some(Role::Write))]).collect();
         base.extend(hub.iter().cloned());
-        let mut p = Paths::evaluate(&recs, BTreeSet::new(), &base);
-        p.forget(&hub.iter().map(|c| c.id).collect::<Vec<_>>());
-        let before = p.counts();
-        p.add(&[write(2, H, 5, &[], team(0), X, Some(Role::Write))]);
-        assert_eq!(delta(before, p.counts()).steps, W * (k as u64 + 1), "backdated after the hub forgotten at k {k}");
+        let mut q = Paths::evaluate(&recs, BTreeSet::new(), &base);
+        q.forget(&hub.iter().map(|c| c.id).collect::<Vec<_>>());
+        let before = q.counts();
+        q.add(&[write(2, H, 5, &[], team(0), X, Some(Role::Write))]);
+        assert_eq!(delta(before, q.counts()).steps, W, "at k {k}");
     }
+}
+
+// Hostile shapes for reach (notes/perm-paths.md, Reach):
+// - a chain where every part walked again changes the next one's edge (X grants z0, each zi
+//   grants zi+1), closed into a cycle of holders (the last grants z0 again): a backdated removal
+//   of X walks the whole chain once, 1 + k + 1 (bounded by the parts reading what changed, each
+//   once per change: the worklist runs forward in key order, so a cycle ends);
+// - a part stated along 64 edges, each re-granted m times: indexing it costs its path, about
+//   three entries per edge (its readers' and chained-pass indexes), the same at m = 10 and 100;
+//   a backdated grant on one of its edges walks that edge's next grant (unchanged after it)
+//   alone; a removal of that edge just before it, the removal and the part.
+#[test]
+fn reach_on_hostile_shapes() {
+    let z = |i: u32| 3000 + i;
+    for k in [10u32, 100] {
+        let mut base = chain(k, 0);
+        base.push(write(999_999, z(k - 1), 5000, &[], A, z(0), Some(Role::Admin)));
+        let (d, p) = cost_of(&base, write(9, H, 1, &[], A, X, None));
+        assert_eq!(d.steps, 1 + k as u64 + 1, "chain of {k}: {d:?}");
+        assert_eq!(p.status(&WriteId(cid(999_999), 0)), Some(Status::Unapplied));
+    }
+    let thing = |i: u32| 50_000 + i;
+    let mut per = vec![];
+    for m in [10u32, 100] {
+        let mut recs = records();
+        recs.extend((0..=64).map(|i| (t(thing(i)), t(H))));
+        let mut base = vec![write(1, H, 1, &[], thing(0), X, Some(Role::Admin))];
+        for r in 0..m {
+            base.extend((0..64).map(|i| write(1000 + (r * 64 + i) as u64, H, 10 + r as u64, &[], thing(i + 1), thing(i), Some(Role::Admin))));
+        }
+        let path: Vec<u32> = (0..64).map(thing).collect();
+        let part = write(2, X, 10_000, &path, thing(64), Y, Some(Role::Write));
+        let mut p = Paths::evaluate(&recs, BTreeSet::new(), &base);
+        let foot = p.footprint();
+        let before = p.counts();
+        p.add(std::slice::from_ref(&part));
+        let d = delta(before, p.counts());
+        assert_eq!(p.status(&WriteId(cid(2), 0)), Some(Status::Applied));
+        assert_eq!(d.steps, 1, "{d:?}");
+        let grown = p.footprint() - foot;
+        let before = p.counts();
+        p.add(&[write(3, H, 5, &[], thing(6), thing(5), Some(Role::Admin))]);
+        let d = delta(before, p.counts());
+        assert_eq!(d.steps, 2, "a backdated grant on its fifth edge at m {m}: {d:?}");
+        let before = p.counts();
+        p.add(&[write(4, H, 9000, &[], thing(6), thing(5), None)]);
+        let d = delta(before, p.counts());
+        assert_eq!(d.steps, 2, "its fifth edge removed before it at m {m}: {d:?}");
+        assert_eq!(p.status(&WriteId(cid(2), 0)), Some(Status::Unapplied));
+        per.push(grown);
+    }
+    assert!(per[0] == per[1] && per[0] <= 3 * 64 + 10, "{per:?}");
 }

@@ -8,7 +8,7 @@ use super::{Changed, Commit, PartKind, Status};
 use crate::types::{lowers, Edge, Frontier, WriteId};
 use osis_base::{CommitId, Role, Tid, Ts};
 use std::collections::{BTreeMap, BTreeSet};
-use std::ops::Bound::{Excluded, Unbounded};
+use std::ops::Bound::{self, Excluded, Included, Unbounded};
 use std::sync::Arc;
 
 /// A thing, interned.
@@ -43,12 +43,19 @@ impl Applied {
     }
 }
 
-/// An applied write in the pass: its entry and its slot.
-#[derive(Clone, Copy)]
+/// An applied write in the pass: its entry, its slot, and the edge as restored just after it
+/// (its value after is `a.value`): what a part after it reads of the edge.
+#[derive(Clone, Copy, PartialEq, Eq)]
 struct Entry {
     a: Applied,
     slot: Slot,
+    restored: Lvl,
+    rinv: Lvl,
 }
+
+/// An edge's state at a point: its value (`None`: never set), and its edge as restored, in role
+/// and invite.
+type State = (Option<Option<Edge>>, Lvl, Lvl);
 
 /// The two levels a cut is counted at (draft §5.2: write, admin).
 const LEVELS: [Role; 2] = [Role::Write, Role::Admin];
@@ -242,6 +249,12 @@ impl Item {
         t.extend(self.edge.as_ref().and_then(|ei| ei.remains));
         t
     }
+    /// The edges its step reads at its key: those it touches and its path's last edge.
+    fn reads(&self) -> BTreeSet<E> {
+        let mut r: BTreeSet<E> = self.touches().into_iter().collect();
+        r.extend(self.edge.as_ref().and_then(|ei| ei.last));
+        r
+    }
 }
 
 /// What a part needs of one edge of its path.
@@ -260,17 +273,17 @@ impl Need {
     }
 }
 
-/// An applied part's change, undone by a rollback.
-#[derive(Clone)]
-struct Undo {
-    slot: Slot,
-    /// The edge it set and that edge's value and edge as restored before (none for a vouch).
-    edge: Option<(E, Option<Option<Edge>>, Lvl, Lvl)>,
-}
+/// Per edge, the chained-pass sets by level: `ROLE + i` holds the keys of the chained writes
+/// setting it at `Role::ALL[i]`, `INVITE + i` those setting an invite of `Role::ALL[i]` (each
+/// chained write in one of each); a threshold's earliest key is the least over its level and
+/// those above.
+const ROLE: usize = 0;
+const INVITE: usize = 4;
 
-/// A chained set undone by a rollback of the chained pass: the edge, its levels and first keys
-/// before.
-type ChainUndo = (E, (Lvl, Lvl), [Option<Key>; 2]);
+/// A role's place in `Role::ALL`.
+fn ri(r: Role) -> usize {
+    Role::ALL.iter().position(|&x| x == r).unwrap_or(0)
+}
 
 /// What a vouch is, for the counting rule (draft §5.1 Vouches): its key, thing, signer, removal
 /// and list.
@@ -315,7 +328,7 @@ enum Accept {
 }
 
 /// One component (notes/perm-paths.md, Components): its parts in key order, its event log by
-/// (reach, sequence), its undo stack by key, its chained writes and their undo by commit.
+/// (reach, sequence), its chained writes and their undo by commit.
 #[derive(Clone)]
 struct Comp {
     /// Its edges: the union keeps the larger root.
@@ -324,9 +337,7 @@ struct Comp {
     log: BTreeMap<(Key, u64), Event>,
     /// The greatest key the walk had reached when giving its last kept event.
     reach: Option<Key>,
-    undo: BTreeMap<Key, Undo>,
     chain: BTreeMap<Key, Slot>,
-    chain_undo: BTreeMap<Key, Vec<ChainUndo>>,
     vouches: BTreeSet<Slot>,
     /// The first walk: its state is not this component's walk (it held no vouch when its input
     /// changed), so it is walked from its start once it holds one.
@@ -335,7 +346,7 @@ struct Comp {
 
 impl Comp {
     fn one() -> Comp {
-        Comp { edges: 1, order: BTreeMap::new(), log: BTreeMap::new(), reach: None, undo: BTreeMap::new(), chain: BTreeMap::new(), chain_undo: BTreeMap::new(), vouches: BTreeSet::new(), stale: false }
+        Comp { edges: 1, order: BTreeMap::new(), log: BTreeMap::new(), reach: None, chain: BTreeMap::new(), vouches: BTreeSet::new(), stale: false }
     }
 }
 
@@ -372,8 +383,15 @@ pub(super) struct Walk {
     /// The timeline: it walks every component and keeps the chained pass (content reads it). The
     /// first walk walks only the components holding a vouch (notes/perm-paths.md, Two walks).
     timeline: bool,
-    /// Partitioning off (`Paths::single`, a test mode): every part walked, in one component.
+    /// Partitioning off (`Paths::single`, a test mode): every part walked, in one component,
+    /// and walked again whole.
     single: bool,
+    /// Every part of a component after the earliest change walked again (`Paths::whole`,
+    /// `single`: test modes), not only the parts whose reads changed.
+    whole: bool,
+    /// Per edge, the walked parts whose step reads it (notes/perm-paths.md, Reach): its writers,
+    /// and the parts with it on their path or as their remaining admin, by key.
+    readers: Tab<BTreeSet<(Key, Slot)>>,
     /// The single component's first edge (`single` only).
     anchor: Option<E>,
     // ---- components ----
@@ -389,9 +407,10 @@ pub(super) struct Walk {
     /// Vouches by the removal they name, and by each commit they list.
     by_removal: BTreeMap<CommitId, BTreeSet<Slot>>,
     listing: BTreeMap<CommitId, BTreeSet<Slot>>,
-    /// Per component, the earliest key to update from (walk and chained pass).
-    dirty: BTreeMap<E, Key>,
-    chain_dirty: BTreeMap<E, Key>,
+    /// Per component, the earliest key an input changed at and the parts whose input changed
+    /// (the walk); the earliest key for the chained pass.
+    dirty: BTreeMap<E, (Key, BTreeSet<Slot>)>,
+    chain_dirty: BTreeMap<E, BTreeSet<(Key, Slot)>>,
     /// The components updated since `begin`.
     ran: BTreeSet<E>,
     // ---- trust ----
@@ -415,17 +434,20 @@ pub(super) struct Walk {
     // ---- the pass ----
     /// The component being walked.
     cur: E,
-    val: Tab<Option<Option<Edge>>>,
-    restored: Tab<Lvl>,
-    rinv: Tab<Lvl>,
-    hist: Tab<Vec<Entry>>,
-    /// Per edge, per level (`LEVELS`), the keys of its cuts in the pass, ascending.
-    cuts: Tab<[Vec<Key>; 2]>,
+    /// Per edge, its applied writes by key, each with the state just after it: the state at any
+    /// key is read off the entry before it, so a part can be walked again on its own.
+    hist: Tab<BTreeMap<Key, Entry>>,
+    /// Per edge, per level (`LEVELS`), the keys of its cuts.
+    cuts: Tab<[BTreeSet<Key>; 2]>,
     applied: Tab<bool>,
     invited: Tab<bool>,
     // ---- the chained pass (draft §4) ----
-    /// Per edge the highest role and invite chained writes set (record edges: admin, implicit).
-    level: Tab<(Lvl, Lvl)>,
+    /// Per edge, the chained writes setting it, by threshold (`ROLE`, `INVITE`).
+    chain_by: Tab<[BTreeSet<Key>; 8]>,
+    /// Per edge, the chained-capable writes with it on their path.
+    chain_readers: Tab<BTreeSet<(Key, Slot)>>,
+    /// Per part, whether it is chained.
+    chained: Tab<bool>,
     /// Per edge the first chained key giving write, and giving admin.
     first: Tab<[Option<Key>; 2]>,
     /// While an update runs: each part's status and each edge's history before it first changed.
@@ -433,22 +455,21 @@ pub(super) struct Walk {
     pub(super) counts: Counts,
 }
 
-/// An edge's journal entry: the earliest key changed, its entries from there as they were, and
-/// its final value before the update.
-type Noted = (Key, Vec<Applied>, Option<Option<Edge>>);
+/// An edge's journal entry: each key whose entry changed with its entry as it was, and the
+/// edge's final value before the update.
+type Noted = (BTreeMap<Key, Option<Applied>>, Option<Option<Edge>>);
 
 #[derive(Clone, Default)]
 struct Journal {
     parts: BTreeMap<Slot, Option<Status>>,
-    /// Per edge: the earliest key changed, and the entries from it on as they were, with the
-    /// final value before the update.
+    /// Per edge: the entries changed, as they were, and the final value before the update.
     edges: BTreeMap<E, Noted>,
     /// Per edge, its first chained keys before the update.
     chain: BTreeMap<E, [Option<Key>; 2]>,
 }
 
 impl Walk {
-    pub(super) fn new(records: &BTreeMap<Tid, Tid>, timeline: bool, single: bool) -> Walk {
+    pub(super) fn new(records: &BTreeMap<Tid, Tid>, timeline: bool, single: bool, whole: bool) -> Walk {
         let mut w = Walk {
             things: BTreeMap::new(),
             names: Tab::new(Tid::from_bytes([0; 15])),
@@ -466,6 +487,8 @@ impl Walk {
             held: BTreeSet::new(),
             timeline,
             single,
+            whole: whole || single,
+            readers: Tab::new(BTreeSet::new()),
             anchor: None,
             parent: Tab::new(E::MAX),
             comps: BTreeMap::new(),
@@ -487,14 +510,13 @@ impl Walk {
             inert_by: BTreeMap::new(),
             seq: 0,
             cur: E::MAX,
-            val: Tab::new(None),
-            restored: Tab::new(None),
-            rinv: Tab::new(None),
-            hist: Tab::new(vec![]),
-            cuts: Tab::new([vec![], vec![]]),
+            hist: Tab::new(BTreeMap::new()),
+            cuts: Tab::new([BTreeSet::new(), BTreeSet::new()]),
             applied: Tab::new(false),
             invited: Tab::new(false),
-            level: Tab::new((None, None)),
+            chain_by: Tab::new(Default::default()),
+            chain_readers: Tab::new(BTreeSet::new()),
+            chained: Tab::new(false),
             first: Tab::new([None, None]),
             journal: None,
             counts: Counts::default(),
@@ -504,9 +526,6 @@ impl Walk {
             let e = w.edge(a, t);
             w.record[e] = true;
             w.live[e] = true;
-            w.val[e] = Some(Some(Edge::new(Role::Admin)));
-            w.restored[e] = ADMIN;
-            w.rinv[e] = ADMIN;
         }
         w
     }
@@ -533,12 +552,11 @@ impl Walk {
         self.inert_rest.push(BTreeSet::new());
         self.parent.push(e);
         self.live.push(false);
-        self.val.push(None);
-        self.restored.push(None);
-        self.rinv.push(None);
-        self.hist.push(vec![]);
-        self.cuts.push([vec![], vec![]]);
-        self.level.push((None, None));
+        self.readers.push(BTreeSet::new());
+        self.hist.push(BTreeMap::new());
+        self.cuts.push([BTreeSet::new(), BTreeSet::new()]);
+        self.chain_by.push(Default::default());
+        self.chain_readers.push(BTreeSet::new());
         self.first.push([None, None]);
         e
     }
@@ -584,16 +602,7 @@ impl Walk {
         big.edges += small.edges;
         let mut n = absorb(&mut big.order, small.order);
         n += absorb(&mut big.log, small.log);
-        n += absorb(&mut big.undo, small.undo);
         n += absorb(&mut big.chain, small.chain);
-        let mut cu = small.chain_undo;
-        if big.chain_undo.len() < cu.len() {
-            std::mem::swap(&mut big.chain_undo, &mut cu);
-        }
-        for (k, mut v) in cu {
-            n += v.len() as u64;
-            big.chain_undo.entry(k).or_default().append(&mut v);
-        }
         let mut vs = small.vouches;
         if big.vouches.len() < vs.len() {
             std::mem::swap(&mut big.vouches, &mut vs);
@@ -604,24 +613,35 @@ impl Walk {
         big.stale |= small.stale;
         self.counts.merged += n;
         self.comps.insert(root, big);
-        for d in [&mut self.dirty, &mut self.chain_dirty] {
-            if let Some(k) = d.remove(&other) {
-                let m = d.get(&root).map_or(k, |&j: &Key| j.min(k));
-                d.insert(root, m);
+        if let Some((k, mut slots)) = self.dirty.remove(&other) {
+            let (j, mut at) = self.dirty.remove(&root).unwrap_or((k, BTreeSet::new()));
+            if at.len() < slots.len() {
+                std::mem::swap(&mut at, &mut slots);
             }
+            at.extend(slots);
+            self.dirty.insert(root, (j.min(k), at));
+        }
+        if let Some(mut k) = self.chain_dirty.remove(&other) {
+            let mut at = self.chain_dirty.remove(&root).unwrap_or_default();
+            if at.len() < k.len() {
+                std::mem::swap(&mut at, &mut k);
+            }
+            at.extend(k);
+            self.chain_dirty.insert(root, at);
         }
         root
     }
 
-    /// The component `s` is updated in from its key.
+    /// Part `s`'s input changed: its component is updated from its key, `s` walked again.
     fn mark(&mut self, s: Slot) {
         if self.inert[s] || self.dead[s] {
             return;
         }
         let Some(c) = self.home(s) else { return };
         let k = self.items[s].key;
-        let m = self.dirty.get(&c).map_or(k, |&j| j.min(k));
-        self.dirty.insert(c, m);
+        let d = self.dirty.entry(c).or_insert((k, BTreeSet::new()));
+        d.0 = d.0.min(k);
+        d.1.insert(s);
     }
 
     // ---- input ----
@@ -690,6 +710,7 @@ impl Walk {
             self.seeded.push(0);
             self.applied.push(false);
             self.invited.push(false);
+            self.chained.push(false);
             slots.push(s);
         }
         slots
@@ -774,6 +795,9 @@ impl Walk {
                 self.inert_rest[e].remove(&s);
                 self.resting[e].insert(s);
             }
+            for e in it.reads() {
+                self.readers[e].insert((it.key, s));
+            }
             let comp = self.comp_mut(root);
             comp.order.insert(it.key, s);
             if it.vouch.is_some() {
@@ -782,8 +806,10 @@ impl Walk {
             let chained = it.edge.as_ref().is_some_and(|ei| ei.sets.is_some());
             if self.timeline && chained {
                 self.comp_mut(root).chain.insert(it.key, s);
-                let m = self.chain_dirty.get(&root).map_or(it.key, |&j| j.min(it.key));
-                self.chain_dirty.insert(root, m);
+                self.chain_dirty.entry(root).or_default().insert((it.key, s));
+                for &h in it.path.iter().collect::<BTreeSet<_>>() {
+                    self.chain_readers[h].insert((it.key, s));
+                }
             }
             self.mark(s);
             // its own edge turns live: wake what waited on it
@@ -818,13 +844,18 @@ impl Walk {
                 let it = self.items[s].clone();
                 if !self.inert[s] {
                     self.mark(s);
+                    for e in it.reads() {
+                        self.readers[e].remove(&(it.key, s));
+                    }
                     if let Some(root) = self.home(s) {
                         let comp = self.comp_mut(root);
                         comp.order.remove(&it.key);
                         comp.vouches.remove(&s);
                         if comp.chain.remove(&it.key).is_some() {
-                            let m = self.chain_dirty.get(&root).map_or(it.key, |&j| j.min(it.key));
-                            self.chain_dirty.insert(root, m);
+                            self.chain_dirty.entry(root).or_default().insert((it.key, s));
+                            for &h in &it.path {
+                                self.chain_readers[h].remove(&(it.key, s));
+                            }
                         }
                     }
                 }
@@ -871,29 +902,43 @@ impl Walk {
             self.seeded[s] = 0;
             self.applied[s] = false;
             self.invited[s] = false;
+            self.chained[s] = false;
         }
     }
 
     /// Runs every component an input change reached from its earliest key (the walk and the
     /// chained pass); the components run join `ran`.
     pub(super) fn run_dirty(&mut self) {
-        for (c, mut p) in std::mem::take(&mut self.dirty) {
+        for (c, (mut p, slots)) in std::mem::take(&mut self.dirty) {
+            let mut todo: BTreeSet<(Key, Slot)> = slots.iter().map(|&s| (self.items[s].key, s)).collect();
+            let mut whole = self.whole;
             if !self.timeline {
                 let comp = self.comp_mut(c);
                 if comp.vouches.is_empty() {
                     comp.stale = true;
+                    // walked from its start once it holds a vouch: a forgotten part's entry goes now
+                    for (k, s) in todo {
+                        if self.dead[s] {
+                            self.put_entry(s, k, None, &mut BTreeSet::new());
+                        }
+                    }
                     continue;
                 }
                 if std::mem::take(&mut comp.stale) {
                     p = Key::start(Ts::ZERO);
+                    whole = true;
                 }
             }
-            let x = self.cut(c, p);
-            self.run(c, x.commit_start());
+            let x = self.cut(c, p, &mut todo).commit_start();
+            if whole {
+                let all = self.comps.get(&c).map(|comp| comp.order.range(x..).map(|(k, s)| (*k, *s)).collect::<Vec<_>>()).unwrap_or_default();
+                todo.extend(all);
+            }
+            self.run(c, todo, whole);
             self.ran.insert(c);
         }
-        for (c, p) in std::mem::take(&mut self.chain_dirty) {
-            self.chain_from(c, p);
+        for (c, todo) in std::mem::take(&mut self.chain_dirty) {
+            self.chain_run(c, todo);
         }
         self.bury();
     }
@@ -920,8 +965,9 @@ impl Walk {
     }
 
     /// Forgets component `c`'s events reaching `p` or past it (notes/perm-paths.md, The event log
-    /// by reach); the key to roll back to: the earliest of `p` and those events' keys and drops.
-    fn cut(&mut self, c: E, p: Key) -> Key {
+    /// by reach): each one's lowering and drops join `todo`, their verdicts and drops cleared;
+    /// the earliest of `p` and those events' keys and drops.
+    fn cut(&mut self, c: E, p: Key, todo: &mut BTreeSet<(Key, Slot)>) -> Key {
         let comp = self.comp_mut(c);
         let later = comp.log.split_off(&(p, 0));
         comp.reach = comp.log.last_key_value().map(|(k, _)| k.0);
@@ -929,9 +975,12 @@ impl Walk {
         for (_, ev) in later {
             x = x.min(ev.key);
             self.set_verdict(ev.slot, None);
+            todo.insert((ev.key, ev.slot));
             for d in ev.drops {
-                x = x.min(self.items[d].key);
+                let k = self.items[d].key;
+                x = x.min(k);
                 self.set_dropped(d, None);
+                todo.insert((k, d));
             }
             for j in ev.inert {
                 self.note_part(j);
@@ -1060,25 +1109,13 @@ impl Walk {
         }
     }
 
-    /// Before `hist[e]` changes at `k`: keeps its entries from `k` on as they were (entries
-    /// before the earliest change noted are untouched, so the copy only grows downward).
+    /// Before `hist[e]` changes at `k`: keeps its entry at `k` as it was (and, the first time, the
+    /// edge's final value).
     fn note_edge(&mut self, e: E, k: Key) {
+        let fin = self.final_val(e);
         let Some(j) = &mut self.journal else { return };
         let h = &self.hist[e];
-        let from = h.partition_point(|y| y.a.key < k);
-        match j.edges.get_mut(&e) {
-            None => {
-                j.edges.insert(e, (k, h.iter().skip(from).map(|y| y.a).collect(), self.val[e]));
-            }
-            Some((kmin, old, _)) if k < *kmin => {
-                let upto = h.partition_point(|y| y.a.key < *kmin);
-                let mut head: Vec<Applied> = h.iter().skip(from).take(upto.saturating_sub(from)).map(|y| y.a).collect();
-                head.append(old);
-                *old = head;
-                *kmin = k;
-            }
-            Some(_) => {}
-        }
+        j.edges.entry(e).or_insert_with(|| (BTreeMap::new(), fin)).0.entry(k).or_insert_with(|| h.get(&k).map(|y| y.a));
     }
 
     fn set_verdict(&mut self, s: Slot, v: Option<Verdict>) {
@@ -1102,19 +1139,30 @@ impl Walk {
                 out.parts.insert(self.items[s].id);
             }
         }
-        for (e, (kmin, old, was)) in j.edges {
+        for (e, (old, was)) in j.edges {
             let h = &self.hist[e];
-            let now: Vec<Applied> = h.iter().skip(h.partition_point(|y| y.a.key < kmin)).map(|y| y.a).collect();
             let name = self.name(e);
-            let at = old.iter().zip(&now).position(|(p, q)| (p.key, p.value) != (q.key, q.value)).unwrap_or(old.len().min(now.len()));
-            if let Some(k) = old.get(at).map(|p| p.key).into_iter().chain(now.get(at).map(|q| q.key)).min() {
+            let cut = |a: Option<&Applied>| a.map_or([false; 2], |a| LEVELS.map(|r| a.cuts(r)));
+            // only the keys noted can differ: the first whose (key, value) differs, the last whose
+            // cuts do
+            let mut first = None;
+            let mut last = None;
+            for (k, was_at) in &old {
+                let now = h.get(k).map(|y| y.a);
+                if was_at.map(|a| a.value) != now.map(|a| a.value) {
+                    first = first.or(Some(*k));
+                }
+                if cut(was_at.as_ref()) != cut(now.as_ref()) {
+                    last = Some(*k);
+                }
+            }
+            if let Some(k) = first {
                 out.edges.insert(name, k);
             }
-            let cut_keys = |v: &[Applied]| -> BTreeSet<(Key, [bool; 2])> { v.iter().map(|a| (a.key, LEVELS.map(|r| a.cuts(r)))).filter(|c| c.1 != [false, false]).collect() };
-            if let Some(k) = cut_keys(&old).symmetric_difference(&cut_keys(&now)).map(|c| c.0).max() {
+            if let Some(k) = last {
                 out.cuts.insert(name, k);
             }
-            if final_role(was) != final_role(self.val[e]) {
+            if final_role(was) != final_role(self.final_val(e)) {
                 out.regrant.insert(name);
             }
         }
@@ -1133,86 +1181,117 @@ impl Walk {
 
     // ---- the walk ----
 
-    /// Runs component `c`'s passes from `from` until one adds nothing to D; a pass ending at a
-    /// lowering whose drops joined D continues from its earliest drop's commit, the state rolled
-    /// back there.
-    fn run(&mut self, c: E, mut from: Key) {
+    /// Edge `e`'s state just before key `k`: off the entry before it, else its start.
+    fn state(&self, e: E, k: Key) -> State {
+        match self.hist[e].range(..k).next_back() {
+            Some((_, y)) => (Some(y.a.value), y.restored, y.rinv),
+            None => self.init(e),
+        }
+    }
+
+    /// An edge's state before every part: a record edge admin, any other unset.
+    fn init(&self, e: E) -> State {
+        if self.record[e] { (Some(Some(Edge::new(Role::Admin))), ADMIN, ADMIN) } else { (None, None, None) }
+    }
+
+    /// Edge `e`'s value after every part.
+    fn final_val(&self, e: E) -> Option<Option<Edge>> {
+        match self.hist[e].last_key_value() {
+            Some((_, y)) => Some(y.a.value),
+            None => self.init(e).0,
+        }
+    }
+
+    /// Walks component `c` again from `todo` (notes/perm-paths.md, Reach): the parts in key
+    /// order, each walked again from the state before its key; a part whose entry changes the
+    /// state after its key puts its edge's readers up to the edge's next entry in `todo`. A
+    /// lowering applied with drops ends the pass once its commit took effect; the dropped parts
+    /// join `todo` (`whole`: every part from the earliest drop's commit), and the next pass starts
+    /// there. Passes run until one adds nothing to D.
+    fn run(&mut self, c: E, mut todo: BTreeSet<(Key, Slot)>, whole: bool) {
         self.cur = c;
-        loop {
-            self.rollback(c, from);
-            self.counts.passes += 1;
-            match self.pass(c, from) {
-                Some(r) => {
-                    from = r.commit_start();
-                    self.counts.restarts += 1;
-                }
-                None => return,
-            }
-        }
-    }
-
-    fn rollback(&mut self, c: E, x: Key) {
-        let tail = self.comp_mut(c).undo.split_off(&x);
-        for (k, u) in tail.into_iter().rev() {
-            self.note_part(u.slot);
-            if let Some((e, ..)) = u.edge {
-                self.note_edge(e, k);
-            }
-            self.applied[u.slot] = false;
-            self.invited[u.slot] = false;
-            if let Some((e, v, r, ri)) = u.edge {
-                self.val[e] = v;
-                self.restored[e] = r;
-                self.rinv[e] = ri;
-                if let Some(y) = self.hist[e].pop() {
-                    for (n, lvl) in LEVELS.into_iter().enumerate() {
-                        if y.a.cuts(lvl)
-                            && let Some(c) = self.cuts[e].get_mut(n)
-                        {
-                            c.pop();
-                        }
-                    }
-                }
-            }
-        }
-    }
-
-    /// One pass of component `c` from `from`; the earliest drop's key where a commit's lowerings
-    /// dropped something.
-    fn pass(&mut self, c: E, from: Key) -> Option<Key> {
-        let mut cur: Option<CommitId> = None;
+        self.counts.passes += 1;
         let mut cdrops: Vec<Slot> = vec![];
-        let next_of = |w: &Walk, k: Option<Key>| -> Option<(Key, Slot)> {
-            let comp = w.comps.get(&c)?;
-            match k {
-                None => comp.order.range(from..).next(),
-                Some(k) => comp.order.range((Excluded(k), Unbounded)).next(),
-            }
-            .map(|(k, s)| (*k, *s))
-        };
-        let mut next = next_of(self, None);
-        while let Some((k, s)) = next {
-            if cur != Some(k.commit) {
-                if !cdrops.is_empty() {
-                    return cdrops.iter().map(|&d| self.items[d].key).min();
+        let mut commit: Option<CommitId> = None;
+        loop {
+            match todo.first().copied() {
+                Some((k, s)) if cdrops.is_empty() || commit == Some(k.commit) => {
+                    todo.pop_first();
+                    commit = Some(k.commit);
+                    self.restep(s, &mut cdrops, &mut todo);
                 }
-                cur = Some(k.commit);
+                _ if cdrops.is_empty() => return,
+                _ => {
+                    self.counts.restarts += 1;
+                    self.counts.passes += 1;
+                    let from = cdrops.iter().map(|&d| self.items[d].key.commit_start()).min();
+                    for d in std::mem::take(&mut cdrops) {
+                        todo.insert((self.items[d].key, d));
+                    }
+                    if whole && let (Some(from), Some(comp)) = (from, self.comps.get(&c)) {
+                        todo.extend(comp.order.range(from..).map(|(k, s)| (*k, *s)));
+                    }
+                    commit = None;
+                }
             }
-            if self.dropped[s].is_none() && self.seeded[s] == 0 {
-                self.counts.steps += 1;
-                self.step(s, &mut cdrops);
-            }
-            next = next_of(self, Some(k));
         }
-        cdrops.iter().map(|&d| self.items[d].key).min()
     }
 
-    fn at(&self, e: E, ts: Ts) -> Lvl {
-        self.val[e].and_then(|v| alive(v.as_ref(), ts))
+    /// Walks part `s` again: its entry (none where it is forgotten, dropped or seeded, or does
+    /// not apply) replaces the one it had.
+    fn restep(&mut self, s: Slot, cdrops: &mut Vec<Slot>, todo: &mut BTreeSet<(Key, Slot)>) {
+        self.counts.steps += 1;
+        self.note_part(s);
+        self.applied[s] = false;
+        self.invited[s] = false;
+        let key = self.items[s].key;
+        let new = if self.dead[s] || self.dropped[s].is_some() || self.seeded[s] > 0 { None } else { self.step(s, cdrops) };
+        self.put_entry(s, key, new, todo);
     }
 
-    fn invite_at(&self, e: E, ts: Ts) -> Lvl {
-        give_invite(self.at(e, ts), self.val[e].flatten().and_then(|v| v.invite))
+    /// Sets part `s`'s entry at `k` on its edge (none: none there); where the edge's state after
+    /// `k` changes, its readers after `k` up to its next entry join `todo` (past that entry they
+    /// read the state that entry sets, which changes only if its own part's does).
+    fn put_entry(&mut self, s: Slot, k: Key, new: Option<Entry>, todo: &mut BTreeSet<(Key, Slot)>) {
+        let Some(e) = self.items[s].edge.as_ref().map(|ei| ei.e) else { return };
+        let old = self.hist[e].get(&k).copied();
+        if old == new {
+            return;
+        }
+        self.note_edge(e, k);
+        let before = self.state(e, k);
+        let after = |y: Option<Entry>| y.map_or(before, |y| (Some(y.a.value), y.restored, y.rinv));
+        let moved = after(old) != after(new);
+        for (n, lvl) in LEVELS.into_iter().enumerate() {
+            if let Some(c) = self.cuts[e].get_mut(n) {
+                if old.is_some_and(|y| y.a.cuts(lvl)) {
+                    c.remove(&k);
+                }
+                if new.is_some_and(|y| y.a.cuts(lvl)) {
+                    c.insert(k);
+                }
+            }
+        }
+        match new {
+            Some(y) => self.hist[e].insert(k, y),
+            None => self.hist[e].remove(&k),
+        };
+        if moved {
+            let hi = match self.hist[e].range((Excluded(k), Unbounded)).next() {
+                Some((n, _)) => Included((*n, Slot::MAX)),
+                None => Unbounded,
+            };
+            todo.extend(self.readers[e].range((Excluded((k, Slot::MAX)), hi)).copied());
+        }
+    }
+
+    fn at(&self, e: E, k: Key, ts: Ts) -> Lvl {
+        self.state(e, k).0.and_then(|v| alive(v.as_ref(), ts))
+    }
+
+    fn invite_at(&self, e: E, k: Key, ts: Ts) -> Lvl {
+        let v = self.state(e, k).0;
+        give_invite(v.and_then(|v| alive(v.as_ref(), ts)), v.flatten().and_then(|v| v.invite))
     }
 
     /// `r`'s list names `j` (draft §5.1): its frontier, or (the second walk) a counting entry on
@@ -1259,11 +1338,11 @@ impl Walk {
         if ei.adminless {
             return Some(None);
         }
-        let old = self.val[ei.e].flatten();
+        let old = self.state(ei.e, it.key).0.flatten();
         if !standing(old.as_ref()) || standing(ei.value.as_ref()) {
             return Some(None);
         }
-        let ok = |x: E| x != ei.e && standing(self.val[x].flatten().as_ref());
+        let ok = |x: E| x != ei.e && standing(self.state(x, it.key).0.flatten().as_ref());
         if let Some(l) = ei.last.filter(|&l| ok(l)) {
             return Some(Some(l));
         }
@@ -1280,10 +1359,11 @@ impl Walk {
         comp.log.insert((reach, seq), ev);
     }
 
-    /// Takes part `s` in the pass (draft §5.1 steps 2 and 3).
-    fn step(&mut self, s: Slot, cdrops: &mut Vec<Slot>) {
+    /// Takes part `s` in the pass (draft §5.1 steps 2 and 3), reading the state before its key:
+    /// its entry where it applies as an edge write (a vouch that applies is marked applied).
+    fn step(&mut self, s: Slot, cdrops: &mut Vec<Slot>) -> Option<Entry> {
         let it = &self.items[s];
-        let ts = it.ts;
+        let (key, ts) = (it.key, it.ts);
         let judged = if it.lowering() { self.verdict[s] } else { None };
         let mut as_invite = false;
         let mut as_finalize = false;
@@ -1292,27 +1372,27 @@ impl Walk {
                 // applied for good where it takes its edge as restored down or keeps it; where it
                 // would raise it, only by admin along its path
                 if let Some(ei) = &it.edge {
-                    let e = ei.e;
-                    let raises = it.after() > self.restored[e].max(self.at(ei.e, ts)) || it.after_inv() > self.rinv[e].max(self.invite_at(ei.e, ts));
-                    if raises && !it.hops.iter().all(|&h| self.at(h, ts) == ADMIN) {
-                        return;
+                    let st = self.state(ei.e, key);
+                    let raises = it.after() > st.1.max(self.at(ei.e, key, ts)) || it.after_inv() > st.2.max(self.invite_at(ei.e, key, ts));
+                    if raises && !it.hops.iter().all(|&h| self.at(h, key, ts) == ADMIN) {
+                        return None;
                     }
                 }
             }
-            Some(Verdict::Void) => return,
+            Some(Verdict::Void) => return None,
             None => {
                 if !it.well {
-                    return;
+                    return None;
                 }
-                let path_role = it.hops.iter().map(|&h| self.at(h, ts)).min().unwrap_or(ADMIN);
+                let path_role = it.hops.iter().map(|&h| self.at(h, key, ts)).min().unwrap_or(ADMIN);
                 match &it.edge {
                     Some(ei) if ei.finalize => {
                         // it ends a grant past its `until`, along a path giving write and the
                         // grant's role
-                        let old = self.val[ei.e].flatten();
+                        let old = self.state(ei.e, key).0.flatten();
                         let ended = old.is_some_and(|v| !v.alive_at(Some(ts)));
                         if !(ended && path_role >= old.map(|v| v.role).max(Some(Role::Write))) {
-                            return;
+                            return None;
                         }
                         as_finalize = true;
                     }
@@ -1320,55 +1400,45 @@ impl Walk {
                     Some(ei) => {
                         // an invite grant: a holder with no current grant, its level within the
                         // path's invite (the roles before the last edge, the last edge's invite)
-                        let Some(lvl) = it.invite_level() else { return };
-                        let Some((last, before)) = it.hops.split_last() else { return };
-                        if self.at(ei.e, ts).is_some() || !before.iter().all(|&h| self.at(h, ts) >= Some(lvl)) || self.invite_at(*last, ts) < Some(lvl) {
-                            return;
+                        let lvl = it.invite_level()?;
+                        let (last, before) = it.hops.split_last()?;
+                        if self.at(ei.e, key, ts).is_some() || !before.iter().all(|&h| self.at(h, key, ts) >= Some(lvl)) || self.invite_at(*last, key, ts) < Some(lvl) {
+                            return None;
                         }
                         as_invite = true;
                     }
-                    None => return,
+                    None => return None,
                 }
             }
         }
-        let key = it.key;
-        let c = self.cur;
         let Some(ei) = it.edge.clone() else {
-            self.note_part(s);
             self.applied[s] = true;
-            self.comp_mut(c).undo.insert(key, Undo { slot: s, edge: None });
-            return;
+            return None;
         };
         let leave = it.leave;
         let explicit = !leave && !as_invite && !as_finalize;
-        let relied = if judged.is_none() && !as_invite && !as_finalize {
-            match self.remains(s) {
-                None => return,
-                Some(r) => r,
-            }
-        } else {
-            None
-        };
+        let relied = if judged.is_none() && !as_invite && !as_finalize { self.remains(s)? } else { None };
         let e = ei.e;
-        let old = self.val[e].flatten();
+        let (val, restored_field, rinv_field) = self.state(e, key);
+        let old = val.flatten();
         // a self-removal only lowers (draft §2)
         if leave && !lowers(ei.value.as_ref(), old.as_ref()) {
-            return;
+            return None;
         }
-        let restored = self.restored[e].max(self.at(ei.e, ts));
-        let rinv = self.rinv[e].max(self.invite_at(ei.e, ts));
+        let restored = restored_field.max(self.at(e, key, ts));
+        let rinv = rinv_field.max(self.invite_at(e, key, ts));
         let (after, after_inv) = (it.after(), it.after_inv());
         let falls = restored > after || rinv > after_inv;
         let mut q = vec![];
         let mut qi = vec![];
         if judged.is_none() && explicit && falls {
-            let l = Judging { slot: s, commit: key.commit, e: ei.e, restored, rinv, after, after_inv };
+            let l = Judging { slot: s, commit: key.commit, e, restored, rinv, after, after_inv };
             let mut chk = Check::default();
             let kept = self.keeps(&l, cdrops, s, &mut chk) && relied.is_none_or(|r| self.setter_keeps(&l, cdrops, r, key, Accept::Standing, &mut chk));
             if !kept {
                 self.set_verdict(s, Some(Verdict::Void));
                 self.log_event(Event { key, slot: s, drops: vec![], inert: vec![] });
-                return;
+                return None;
             }
             for &j in &self.resting[e] {
                 self.counts.audited += 1;
@@ -1385,29 +1455,16 @@ impl Walk {
             self.set_verdict(s, Some(Verdict::Applied));
             self.log_event(Event { key, slot: s, drops: q.clone(), inert: qi.clone() });
         }
-        self.note_part(s);
-        self.note_edge(ei.e, key);
-        let u = Undo { slot: s, edge: Some((ei.e, self.val[e], self.restored[e], self.rinv[e])) };
-        self.comp_mut(c).undo.insert(key, u);
-        let a = Applied { key, value: ei.value, before: self.val[e].flatten(), explicit, restored, restored_invite: rinv };
-        for (n, lvl) in LEVELS.into_iter().enumerate() {
-            if a.cuts(lvl)
-                && let Some(c) = self.cuts[e].get_mut(n)
-            {
-                c.push(key);
-            }
-        }
-        self.val[e] = Some(ei.value);
-        if explicit {
-            self.restored[e] = ei.value.map(|v| v.role);
-            self.rinv[e] = after_inv;
+        let a = Applied { key, value: ei.value, before: old, explicit, restored, restored_invite: rinv };
+        let (r, ri) = if explicit {
+            (ei.value.map(|v| v.role), after_inv)
         } else if as_invite {
-            self.restored[e] = self.restored[e].max(ei.value.map(|v| v.role));
-            self.rinv[e] = self.rinv[e].max(after_inv);
-            self.invited[s] = true;
-        }
-        self.hist[e].push(Entry { a, slot: s });
+            (restored_field.max(ei.value.map(|v| v.role)), rinv_field.max(after_inv))
+        } else {
+            (restored_field, rinv_field)
+        };
         self.applied[s] = true;
+        self.invited[s] = as_invite;
         for j in q {
             self.set_dropped(j, Some(s));
             cdrops.push(j);
@@ -1416,63 +1473,76 @@ impl Walk {
             self.note_part(j);
             self.inert_by.entry(j).or_default().insert(s);
         }
+        Some(Entry { a, slot: s, restored: r, rinv: ri })
     }
 
     // ---- the chained pass (draft §4 Chained writes) ----
 
-    /// Rolls component `c`'s chained pass back to `p` and replays its chained writes from there,
-    /// commit by commit: a write is chained where every edge of its path is a record edge or set
-    /// at admin by a chained write of an earlier commit (an invite grant: its role on each edge
-    /// but the last, an invite of it on the last); a chained write sets its edge at the role and
-    /// invite it sets, `until` disregarded.
-    fn chain_from(&mut self, c: E, p: Key) {
-        let p = p.commit_start();
-        let tail = self.comp_mut(c).chain_undo.split_off(&p);
-        for (_, us) in tail.into_iter().rev() {
-            for (e, lv, fi) in us.into_iter().rev() {
-                self.chain_note(e);
-                self.level[e] = lv;
-                self.first[e] = fi;
-            }
+    /// Judges again component `c`'s chained-capable writes in `todo`, in key order (whole: every
+    /// one from the earliest): a write is chained where every edge of its path is a record edge
+    /// or set at admin by a chained write of an earlier commit (an invite grant: its role on each
+    /// edge but the last, an invite of it on the last); a chained write sets its edge at the role
+    /// and invite it sets, `until` disregarded. A write reads, per edge of its path and threshold,
+    /// only whether the earliest chained key meeting it is before its commit: where that earliest
+    /// key moves, the writes whose commit it crosses are judged again (notes/perm-paths.md, Reach).
+    fn chain_run(&mut self, c: E, mut todo: BTreeSet<(Key, Slot)>) {
+        if self.whole
+            && let (Some(&(p, _)), Some(comp)) = (todo.first(), self.comps.get(&c))
+        {
+            todo.extend(comp.chain.range(p.commit_start()..).map(|(k, s)| (*k, *s)));
         }
-        let todo: Vec<(Key, Slot)> = self.comps.get(&c).map(|x| x.chain.range(p..).map(|(k, s)| (*k, *s)).collect()).unwrap_or_default();
-        let mut i = 0;
-        while i < todo.len() {
-            let commit = todo.get(i).map(|t| t.0.commit);
-            let mut sets: Vec<(Key, E, Edge)> = vec![];
-            while let Some(&(k, s)) = todo.get(i).filter(|t| Some(t.0.commit) == commit) {
-                i += 1;
-                self.counts.chained += 1;
-                let it = &self.items[s];
-                let Some((e, v)) = it.edge.as_ref().and_then(|ei| Some((ei.e, ei.sets?))) else { continue };
-                let role = |h: E| if self.record[h] { ADMIN } else { self.level[h].0 };
-                let inv = |h: E| if self.record[h] { ADMIN } else { self.level[h].1 };
-                let admin = it.path.iter().all(|&h| role(h) == ADMIN);
-                let lvl = (v.invite <= Some(v.role) && v.role < Role::Admin && v.alive_at(Some(it.ts))).then_some(Some(v.role));
-                let invited = lvl.is_some_and(|l| it.path.split_last().is_some_and(|(last, before)| inv(*last) >= l && before.iter().all(|&h| role(h) >= l)));
-                if admin || invited {
-                    sets.push((k, e, v));
-                }
+        while let Some((k, s)) = todo.pop_first() {
+            self.counts.chained += 1;
+            let it = &self.items[s];
+            let Some((e, v)) = it.edge.as_ref().and_then(|ei| Some((ei.e, ei.sets?))) else { continue };
+            let cs = k.commit_start();
+            // set at `r` (role, or invite) or above by a chained write of an earlier commit
+            let set = |h: E, n: usize| self.record[h] || self.chain_min(h, n).is_some_and(|f| f < cs);
+            let now = !self.dead[s] && {
+                let admin = it.path.iter().all(|&h| set(h, ROLE + 3));
+                let lvl = (v.invite <= Some(v.role) && v.role < Role::Admin && v.alive_at(Some(it.ts))).then_some(v.role);
+                let invited = lvl.is_some_and(|l| it.path.split_last().is_some_and(|(last, before)| set(*last, INVITE + ri(l)) && before.iter().all(|&h| set(h, ROLE + ri(l)))));
+                admin || invited
+            };
+            if now == self.chained[s] {
+                continue;
             }
-            for (k, e, v) in sets {
-                self.chain_note(e);
-                let undo = (e, self.level[e], self.first[e]);
-                self.comp_mut(c).chain_undo.entry(k.commit_start()).or_default().push(undo);
-                let (r0, i0) = self.level[e];
-                self.level[e] = (r0.max(Some(v.role)), i0.max(give_invite(Some(v.role), v.invite)));
-                if v.role < Role::Write {
-                    continue;
-                }
-                for (n, r) in LEVELS.into_iter().enumerate() {
-                    if v.role >= r
-                        && let Some(slot) = self.first[e].get_mut(n)
-                        && slot.is_none()
-                    {
-                        *slot = Some(k);
+            self.chained[s] = now;
+            self.chain_note(e);
+            let was: [Option<Key>; 8] = std::array::from_fn(|n| self.chain_min(e, n));
+            let inv = give_invite(Some(v.role), v.invite);
+            for i in [Some(ROLE + ri(v.role)), inv.map(|r| INVITE + ri(r))].into_iter().flatten() {
+                if let Some(x) = self.chain_by[e].get_mut(i) {
+                    if now {
+                        x.insert(k);
+                    } else {
+                        x.remove(&k);
                     }
                 }
             }
+            for (n, was) in was.into_iter().enumerate() {
+                let is = self.chain_min(e, n);
+                if was == is {
+                    continue;
+                }
+                // the writes whose commit start lies after the earlier of the two and at or
+                // before the later
+                let lo = was.min(is).unwrap_or(k);
+                let hi = match was.zip(is) {
+                    Some((a, b)) => Included((Key { part: u32::MAX, ..a.max(b) }, Slot::MAX)),
+                    None => Unbounded,
+                };
+                todo.extend(self.chain_readers[e].range((Excluded((Key { part: u32::MAX, ..lo }, Slot::MAX)), hi)).copied());
+            }
+            self.first[e] = [Role::Write, Role::Admin].map(|r| self.chain_min(e, ROLE + ri(r)));
         }
+    }
+
+    /// The earliest chained key setting edge `e` at threshold `n` (`ROLE + i`, `INVITE + i`) or
+    /// above.
+    fn chain_min(&self, e: E, n: usize) -> Option<Key> {
+        let group = n - n % 4;
+        (n..group + 4).filter_map(|i| self.chain_by[e].get(i).and_then(|x| x.first().copied())).min()
     }
 
     fn chain_note(&mut self, e: E) {
@@ -1494,15 +1564,15 @@ impl Walk {
     /// passing over the drops and the grants that do not keep in turn: the first left decides by
     /// `accept`; with none left, a record edge keeps.
     fn setter_keeps(&mut self, l: &Judging, cdrops: &[Slot], e: E, key: Key, accept: Accept, chk: &mut Check) -> bool {
-        let upper = self.hist[e].partition_point(|y| y.a.key < key);
-        self.chase(l, cdrops, Frame::Setter { e, upper, start: upper, accept }, chk)
+        self.chase(l, cdrops, Frame::Setter { e, upper: key, start: key, accept }, chk)
     }
 
     /// `keeps` and `setter_keeps` as one loop over an explicit stack: a grant chain is as long as
-    /// its writers make it. Within one check the setter deciding a scan of an edge below a
-    /// position is the same whoever chased it there (the check's drops and memo are fixed), so it
-    /// is cached per (edge, position), every position a scan passed included: each edge position
-    /// is read once per check (notes/perm-paths.md, The void check).
+    /// its writers make it. Within one check the setter deciding a scan of an edge below a key is
+    /// the same whoever chased it there (the check's drops and memo are fixed), so it is cached
+    /// per (edge, bound), every entry a scan passed included: each edge entry is read once per
+    /// check (notes/perm-paths.md, The void check). Only entries before the bound are read: the
+    /// pass state before the part judged.
     fn chase(&mut self, l: &Judging, cdrops: &[Slot], top: Frame, chk: &mut Check) -> bool {
         let mut stack = vec![top];
         // the answer of the frame popped last, for its parent
@@ -1530,31 +1600,27 @@ impl Walk {
                         ret = Some(true);
                         continue;
                     };
-                    let (key, ts) = (it.key, it.ts);
-                    let upper = self.hist[e].partition_point(|y| y.a.key < key);
+                    let key = it.key;
                     stack.push(Frame::Keeps { w, hop });
-                    stack.push(Frame::Setter { e, upper, start: upper, accept: Accept::AdminAt(ts) });
+                    stack.push(Frame::Setter { e, upper: key, start: key, accept: Accept::AdminAt(it.ts) });
                 }
                 Frame::Setter { e, mut upper, start, accept } => {
-                    // (the lowest position answered, the deciding entry: none left reads the record)
-                    let mut decided: Option<(usize, Option<usize>)> = None;
+                    // (the bounds answered: from this one up to `start`; the deciding entry's key,
+                    // none: no setter left)
+                    let mut decided: Option<(Bound<Key>, Option<Key>)> = None;
                     if ret.take() == Some(true) {
-                        decided = Some((upper + 1, Some(upper)));
+                        decided = Some((Excluded(upper), Some(upper)));
                     }
                     while decided.is_none() {
                         if let Some(&d) = chk.found.get(&(e, upper)) {
-                            decided = Some((upper, d));
+                            decided = Some((Included(upper), d));
                             break;
                         }
-                        if upper == 0 {
-                            decided = Some((0, None));
-                            break;
-                        }
-                        upper -= 1;
-                        let Some(&Entry { slot: j, .. }) = self.hist[e].get(upper) else {
-                            decided = Some((upper, None));
+                        let Some((&k, &Entry { slot: j, .. })) = self.hist[e].range(..upper).next_back() else {
+                            decided = Some((Unbounded, None));
                             break;
                         };
+                        upper = k;
                         self.counts.setters += 1;
                         if cdrops.contains(&j) || self.gone(l, j) {
                             continue;
@@ -1569,14 +1635,15 @@ impl Walk {
                             }
                         };
                         if decides {
-                            decided = Some((upper + 1, Some(upper)));
+                            decided = Some((Excluded(k), Some(k)));
                         }
                     }
-                    let (lo, d) = decided.unwrap_or((start, None));
-                    for p in lo..=start {
-                        chk.found.insert((e, p), d);
+                    let (lo, d) = decided.unwrap_or((Included(start), None));
+                    let passed: Vec<Key> = self.hist[e].range((lo, Excluded(start))).map(|(k, _)| *k).collect();
+                    for b in passed.into_iter().chain([start]) {
+                        chk.found.insert((e, b), d);
                     }
-                    ret = Some(match d.and_then(|i| self.hist[e].get(i)) {
+                    ret = Some(match d.and_then(|k| self.hist[e].get(&k)) {
                         Some(y) => Self::accepts(accept, y.a.value.as_ref()),
                         None => self.record[e],
                     });
@@ -1627,18 +1694,18 @@ impl Walk {
     }
 
     pub(super) fn history(&self, holder: &Tid, target: &Tid) -> History {
-        self.find_edge(holder, target).map_or(vec![], |e| self.hist[e].iter().map(|y| (y.a.key, y.a.value)).collect())
+        self.find_edge(holder, target).map_or(vec![], |e| self.hist[e].values().map(|y| (y.a.key, y.a.value)).collect())
     }
 
     pub(super) fn writes(&self, holder: &Tid, target: &Tid) -> Vec<Applied> {
-        self.find_edge(holder, target).map_or(vec![], |e| self.hist[e].iter().map(|y| y.a).collect())
+        self.find_edge(holder, target).map_or(vec![], |e| self.hist[e].values().map(|y| y.a).collect())
     }
 
     pub(super) fn histories(&self) -> BTreeMap<(Tid, Tid), History> {
         let mut out = BTreeMap::new();
         for e in 0..self.ends.len() {
             if self.record[e] || !self.hist[e].is_empty() {
-                out.insert(self.name(e), self.hist[e].iter().map(|y| (y.a.key, y.a.value)).collect());
+                out.insert(self.name(e), self.hist[e].values().map(|y| (y.a.key, y.a.value)).collect());
             }
         }
         out
@@ -1646,11 +1713,7 @@ impl Walk {
 
     pub(super) fn value_before(&self, holder: &Tid, target: &Tid, key: &Key) -> Option<Edge> {
         let e = self.find_edge(holder, target)?;
-        let h = &self.hist[e];
-        match h.partition_point(|y| y.a.key < *key) {
-            0 => self.record[e].then(|| Edge::new(Role::Admin)),
-            n => h.get(n - 1).and_then(|y| y.a.value),
-        }
+        self.state(e, *key).0.flatten()
     }
 
     pub(super) fn role_before(&self, holder: &Tid, target: &Tid, key: &Key) -> Lvl {
@@ -1669,9 +1732,7 @@ impl Walk {
         let s = *self.ids.get(id)?;
         let it = &self.items[s];
         let ei = it.edge.as_ref().filter(|_| self.applied[s])?;
-        let h = &self.hist[ei.e];
-        let y = h.get(h.partition_point(|y| y.a.key < it.key))?;
-        (y.a.key == it.key).then_some((self.name(ei.e), y.a))
+        self.hist[ei.e].get(&it.key).map(|y| (self.name(ei.e), y.a))
     }
 
     /// The edge-class parts of `commit` held here, by `WriteId`.
@@ -1714,7 +1775,7 @@ impl Walk {
     pub(super) fn finals(&self) -> BTreeMap<(Tid, Tid), (Lvl, Lvl)> {
         let mut out = BTreeMap::new();
         for e in 0..self.ends.len() {
-            if let Some(v) = self.val[e] {
+            if let Some(v) = self.final_val(e) {
                 let role = final_role(Some(v));
                 out.insert(self.name(e), (role, give_invite(role, v.and_then(|v| v.invite))));
             }
@@ -1724,7 +1785,7 @@ impl Walk {
 
     /// The final role of (holder, target), every `until` counted removed.
     pub(super) fn final_of(&self, holder: &Tid, target: &Tid) -> Lvl {
-        self.find_edge(holder, target).and_then(|e| final_role(self.val[e]))
+        self.find_edge(holder, target).and_then(|e| final_role(self.final_val(e)))
     }
 
 
@@ -1766,8 +1827,8 @@ impl Walk {
     /// Entries the walk keeps in memory: parts, edges, events, undo and chain entries, for the
     /// memory count (notes/perm-paths.md, The delta-facts seam).
     pub(super) fn footprint(&self) -> u64 {
-        let comps: usize = self.comps.values().map(|c| c.order.len() + c.log.len() + c.undo.len() + c.chain.len() + c.chain_undo.len()).sum();
-        let hist: usize = (0..self.ends.len()).map(|e| self.hist[e].len()).sum();
+        let comps: usize = self.comps.values().map(|c| c.order.len() + c.log.len() + c.chain.len()).sum();
+        let hist: usize = (0..self.ends.len()).map(|e| self.hist[e].len() + self.readers[e].len()).sum();
         (self.items.len() as usize + self.ends.len() as usize + self.held.len() + comps + hist) as u64
     }
 }
@@ -1781,17 +1842,17 @@ fn final_role(v: Option<Option<Edge>>) -> Lvl {
 enum Frame {
     /// `keeps(w)`, at its `hop`th edge.
     Keeps { w: Slot, hop: usize },
-    /// `setter_keeps` on `e`, below hist index `upper`, begun at `start`; where it waits on a
-    /// grant's own `keeps`, that grant is at index `upper`.
-    Setter { e: E, upper: usize, start: usize, accept: Accept },
+    /// `setter_keeps` on `e`, below key `upper`, begun at `start`; where it waits on a grant's
+    /// own `keeps`, that grant's entry is at `upper`.
+    Setter { e: E, upper: Key, start: Key, accept: Accept },
 }
 
-/// One void check's memory: `keeps` per part, and per (edge, position) the entry deciding a
-/// scan below it (none: no setter left).
+/// One void check's memory: `keeps` per part, and per (edge, bound) the key of the entry
+/// deciding a scan below it (none: no setter left).
 #[derive(Default)]
 struct Check {
     memo: BTreeMap<Slot, bool>,
-    found: BTreeMap<(E, usize), Option<usize>>,
+    found: BTreeMap<(E, Key), Option<Key>>,
 }
 
 /// A table indexed by an interned number the walk made itself; an index past it reads its nil

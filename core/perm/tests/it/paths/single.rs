@@ -21,7 +21,7 @@ use std::collections::{BTreeMap, BTreeSet};
 /// Where the walk by components and the single walk read `commits` otherwise (statuses,
 /// histories, finals, verdicts, copies, purges, chained points, counting entries, void trusted
 /// writes, and with `disputes` the dispute set): the first difference.
-fn differs(a: &mut Paths, b: &mut Paths, disputes: bool) -> Option<String> {
+pub(super) fn differs(a: &mut Paths, b: &mut Paths, disputes: bool) -> Option<String> {
     if reading(a) != reading(b) {
         let (ra, rb) = (reading(a), reading(b));
         let what = if ra.0 != rb.0 {
@@ -79,9 +79,13 @@ pub(super) fn alike(records: &BTreeMap<Tid, Tid>, trust: &BTreeSet<WriteId>, com
     differs(&mut p, &mut one, disputes).map(|d| format!("forgetting {gone:?}: {d}"))
 }
 
-/// Tiny worlds of every kind, story worlds at every node, content worlds and soups from `start`:
-/// the failures, at most three.
-fn run(start: u64, n: u64) -> Vec<String> {
+/// A comparison of two walks over `(records, trust, commits, seed, disputes)`: the first
+/// difference.
+pub(super) type Alike = fn(&BTreeMap<Tid, Tid>, &BTreeSet<WriteId>, &[Commit], u64, bool) -> Option<String>;
+
+/// `alike` over tiny worlds of every kind, story worlds at every node, content worlds and soups
+/// from `start`: the failures, at most three.
+pub(super) fn run(start: u64, n: u64, alike: Alike) -> Vec<String> {
     let mut fails = vec![];
     let mut note = |f: Option<String>, what: &dyn Fn() -> String| {
         if let Some(d) = f {
@@ -128,7 +132,7 @@ fn run(start: u64, n: u64) -> Vec<String> {
 // components reads every world as the single walk does, from scratch, on arrival and on forgetting.
 #[test]
 fn components_read_as_one_walk() {
-    let f = run(0, 60);
+    let f = run(0, 60, alike);
     assert!(f.is_empty(), "{}", f.join("\n"));
 }
 
@@ -136,7 +140,7 @@ fn components_read_as_one_walk() {
 #[test]
 #[ignore]
 fn paths_components_agree_large() {
-    let f: Vec<String> = sharded(100_000, 0x5eed_0a1e, |n, seed| run(seeded(seed) % (1 << 40), n.div_ceil(9))).concat();
+    let f: Vec<String> = sharded(100_000, 0x5eed_0a1e, |n, seed| run(seeded(seed) % (1 << 40), n.div_ceil(9), alike)).concat();
     assert!(f.is_empty(), "{}", f.join("\n"));
 }
 

@@ -12,6 +12,7 @@ mod counts;
 mod hand;
 mod hand_content;
 mod incremental;
+mod reach;
 mod shapes;
 mod single;
 

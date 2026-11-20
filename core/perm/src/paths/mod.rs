@@ -178,8 +178,18 @@ impl Paths<MemStore> {
     /// mode: the walk by components must read exactly as this (notes/perm-paths.md, Components).
     pub fn single(records: &BTreeMap<Tid, Tid>, trust: BTreeSet<WriteId>) -> Paths {
         let mut p = Paths::new(records, trust);
-        p.first = walk::Walk::new(records, false, true);
-        p.timeline = walk::Walk::new(records, true, true);
+        p.first = walk::Walk::new(records, false, true, true);
+        p.timeline = walk::Walk::new(records, true, true, true);
+        p
+    }
+
+    /// As `new`, every part of a component after an update's earliest change walked again, not
+    /// only those whose reads changed. A test mode: the walk by reach must read exactly as this
+    /// (notes/perm-paths.md, Reach).
+    pub fn whole(records: &BTreeMap<Tid, Tid>, trust: BTreeSet<WriteId>) -> Paths {
+        let mut p = Paths::new(records, trust);
+        p.first = walk::Walk::new(records, false, false, true);
+        p.timeline = walk::Walk::new(records, true, false, true);
         p
     }
 
@@ -195,8 +205,8 @@ impl<S: Store> Paths<S> {
     /// An empty held set over `records` and `trust`, delta facts kept in `store`.
     pub fn with_store(records: &BTreeMap<Tid, Tid>, trust: BTreeSet<WriteId>, store: S) -> Paths<S> {
         Paths {
-            first: walk::Walk::new(records, false, false),
-            timeline: walk::Walk::new(records, true, false),
+            first: walk::Walk::new(records, false, false, false),
+            timeline: walk::Walk::new(records, true, false, false),
             trust,
             active: BTreeSet::new(),
             void: BTreeSet::new(),
