@@ -1,7 +1,8 @@
-//! The walk itself (notes/perm-paths.md, One definition): the pass state with an undo
-//! entry per applied part, and the event log of verdicts by reach, both per component of the
-//! edges, so a restart, an update and a forget all roll a component's state back to a key and
-//! continue there. Parts that can never apply (inert) are walked by no component.
+//! The walk itself (notes/perm-paths.md, One definition): the pass state as each edge's applied
+//! writes by key, each with the edge's state just after it, and the event log of verdicts by
+//! reach, both per component of the edges; a restart, an update and a forget walk again only the
+//! parts whose reads changed (Reach). Parts that can never apply (inert) are walked by no
+//! component.
 
 use super::path::shape;
 use super::{Changed, Commit, PartKind, Status};
@@ -108,7 +109,7 @@ pub struct Counts {
     pub content: u64,
     /// Addenda judged and entries read by the addenda fixpoint.
     pub addenda: u64,
-    /// Entries (parts, events, undo and chain entries, vouches) moved by component merges.
+    /// Entries (parts, events, chained-capable writes, vouches) moved by component merges.
     pub merged: u64,
     /// Chained writes replayed by the chained pass.
     pub chained: u64,
@@ -249,11 +250,10 @@ impl Item {
         t.extend(self.edge.as_ref().and_then(|ei| ei.remains));
         t
     }
-    /// The edges its step reads at its key: those it touches and its path's last edge.
+    /// The edges its step reads at its key: those it touches (its path's last edge is a hop of
+    /// its stated path).
     fn reads(&self) -> BTreeSet<E> {
-        let mut r: BTreeSet<E> = self.touches().into_iter().collect();
-        r.extend(self.edge.as_ref().and_then(|ei| ei.last));
-        r
+        self.touches().into_iter().collect()
     }
 }
 
@@ -328,7 +328,7 @@ enum Accept {
 }
 
 /// One component (notes/perm-paths.md, Components): its parts in key order, its event log by
-/// (reach, sequence), its chained writes and their undo by commit.
+/// (reach, sequence), its chained-capable writes by key.
 #[derive(Clone)]
 struct Comp {
     /// Its edges: the union keeps the larger root.
@@ -370,7 +370,7 @@ pub(super) struct Walk {
     mint: BTreeMap<Tid, Tid>,
     record: Tab<bool>,
     items: Tab<Item>,
-    /// A forgotten part's slot (left nil once its component rolled it back: `graves`).
+    /// A forgotten part's slot (left nil once its component walked it out: `graves`).
     dead: Tab<bool>,
     graves: Vec<Slot>,
     ids: BTreeMap<WriteId, Slot>,
@@ -893,7 +893,7 @@ impl Walk {
         }
     }
 
-    /// Drops the forgotten parts' remains once their components rolled them back.
+    /// Drops the forgotten parts' remains once their components walked them out.
     fn bury(&mut self) {
         for s in std::mem::take(&mut self.graves) {
             self.items[s] = Item::nil();
@@ -1824,8 +1824,8 @@ impl Walk {
         self.comps.iter().filter(|(_, c)| !c.vouches.is_empty() && !c.stale).map(|(&r, c)| (r, c.order.values().map(|&s| self.items[s].id).collect())).collect()
     }
 
-    /// Entries the walk keeps in memory: parts, edges, events, undo and chain entries, for the
-    /// memory count (notes/perm-paths.md, The delta-facts seam).
+    /// Entries the walk keeps in memory: parts, edges, events, chain entries, histories and
+    /// readers, for the memory count (notes/perm-paths.md, The delta-facts seam).
     pub(super) fn footprint(&self) -> u64 {
         let comps: usize = self.comps.values().map(|c| c.order.len() + c.log.len() + c.chain.len()).sum();
         let hist: usize = (0..self.ends.len()).map(|e| self.hist[e].len() + self.readers[e].len()).sum();

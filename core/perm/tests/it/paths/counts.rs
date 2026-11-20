@@ -657,9 +657,9 @@ fn a_dispute_probe_reads_its_component_alone() {
 
 /// The organisation world (notes/perm-paths.md, Reach): O minted by H, k teams minted by O; H
 /// grants Y admin on O at 2; Y grants each team's lead admin on it through [O] at 10..; each lead
-/// grants p members write on its team at 5000..; with `removals`, each lead removes its first
-/// member at 9000 (listing it: no drops).
-fn org(k: u32, p: u32, removals: bool) -> (BTreeMap<Tid, Tid>, Vec<Commit>) {
+/// grants p members write on its team at 5000..; then each lead removes its first `removals`
+/// members at 9000.. (each listing its grant: no drops).
+fn org(k: u32, p: u32, removals: u32) -> (BTreeMap<Tid, Tid>, Vec<Commit>) {
     let mut recs = records();
     recs.insert(t(O), t(H));
     recs.extend((0..k).map(|i| (t(team(i)), t(O))));
@@ -667,10 +667,10 @@ fn org(k: u32, p: u32, removals: bool) -> (BTreeMap<Tid, Tid>, Vec<Commit>) {
     base.extend((0..k).map(|i| write(10 + i as u64, Y, 10 + i as u64, &[O], team(i), lead(i), Some(Role::Admin))));
     for i in 0..k {
         base.extend((0..p).map(|j| write(member(i, j), lead(i), 5000 + (i * p + j) as u64, &[], team(i), member(i, j) as u32, Some(Role::Write))));
-        if removals {
-            let mut r = write(800_000 + i as u64, lead(i), 9000 + i as u64, &[], team(i), member(i, 0) as u32, None);
+        for j in 0..removals {
+            let mut r = write(800_000 + (i * 100 + j) as u64, lead(i), 9000 + (i * removals + j) as u64, &[], team(i), member(i, j) as u32, None);
             if let PartKind::Edge(ew) = &mut r.parts[0].kind {
-                ew.frontier = Some(Arc::new(Frontier::new([cid(member(i, 0))])));
+                ew.frontier = Some(Arc::new(Frontier::new([cid(member(i, j))])));
             }
             base.push(r);
         }
@@ -691,7 +691,7 @@ fn member(i: u32, j: u32) -> u64 {
 }
 
 /// The work one update does over the organisation world, by reach (`whole`: the whole walk).
-fn org_cost(k: u32, p: u32, removals: bool, whole: bool, f: &dyn Fn(&mut Paths)) -> Counts {
+fn org_cost(k: u32, p: u32, removals: u32, whole: bool, f: &dyn Fn(&mut Paths)) -> Counts {
     let (recs, base) = org(k, p, removals);
     let mut q = if whole { Paths::whole(&recs, BTreeSet::new()) } else { Paths::new(&recs, BTreeSet::new()) };
     q.add(&base);
@@ -716,7 +716,7 @@ fn an_organisation_costs_what_reads_the_change() {
     for k in [10u32, 100, 1000] {
         let pp = p as u64;
         let lead0 = write(2, Y, 100, &[O], team(0), lead(0), None);
-        let d = org_cost(k, p, false, false, &|q| {
+        let d = org_cost(k, p, 0, false, &|q| {
             q.add(std::slice::from_ref(&lead0));
         });
         assert_eq!((d.steps, d.restarts, d.chained), (1 + pp, 0, 0), "one team's lead removed at k {k}: {d:?}");
@@ -724,29 +724,29 @@ fn an_organisation_costs_what_reads_the_change() {
         if let PartKind::Edge(ew) = &mut late.parts[0].kind {
             ew.frontier = Some(Arc::new(Frontier::new([])));
         }
-        let d = org_cost(k, p, false, false, &|q| {
+        let d = org_cost(k, p, 0, false, &|q| {
             q.add(std::slice::from_ref(&late));
         });
         assert_eq!((d.steps, d.restarts, d.audited), (1 + pp, 1, pp), "a lowering with drops at k {k}: {d:?}");
-        let d = org_cost(k, p, false, false, &|q| {
+        let d = org_cost(k, p, 0, false, &|q| {
             q.forget(&[cid(10)]);
         });
         // the members' grants are no longer chained either
         assert_eq!((d.steps, d.chained), (1 + pp, 1 + pp), "a lead's grant forgotten at k {k}: {d:?}");
-        let d = org_cost(k, p, false, false, &|q| {
+        let d = org_cost(k, p, 0, false, &|q| {
             q.add(&[write(4, H, 3, &[], O, Y, Some(Role::Admin))]);
         });
         assert_eq!((d.steps, d.chained), (1, 1), "the hub re-granted at k {k}: {d:?}");
-        let d = org_cost(k, p, false, false, &|q| {
+        let d = org_cost(k, p, 0, false, &|q| {
             q.add(&[write(5, Y, 1, &[O], team(0), X, Some(Role::Admin))]);
         });
         assert_eq!((d.steps, d.chained), (1, 1), "a write applying nowhere at k {k}: {d:?}");
-        let d = org_cost(k, p, false, false, &|q| {
+        let d = org_cost(k, p, 0, false, &|q| {
             q.add(&[write(6, H, 3, &[], O, Y, None)]);
         });
         assert_eq!(d.steps, 1 + k as u64 * (1 + pp), "the hub removed at k {k}: {d:?}");
     }
-    let d = org_cost(100, p, false, true, &|q| {
+    let d = org_cost(100, p, 0, true, &|q| {
         q.add(&[write(2, Y, 100, &[O], team(0), lead(0), None)]);
     });
     assert!(d.steps > 100 * p as u64, "the whole walk: {d:?}");
@@ -762,10 +762,21 @@ fn an_organisation_costs_what_reads_the_change() {
 fn an_organisation_judges_again_the_lowerings_after_the_key() {
     let p = 5u32;
     for k in [10u32, 100, 1000] {
-        let d = org_cost(k, p, true, false, &|q| {
+        let d = org_cost(k, p, 1, false, &|q| {
             q.add(&[write(2, Y, 100, &[O], team(0), lead(0), None)]);
         });
         assert_eq!(d.steps, 1 + p as u64 + k as u64, "at k {k}: {d:?}");
+    }
+    // r removals per team (a role history; p = r members): the backdated removal walks its team's
+    // r grants and judges again every later lowering of every team, k·r steps; each lowering
+    // still holding its right reads its void check's setters (2: the lead's grant, Y's), the
+    // backdated removal 1 (k·r judgments per backdated part: 2,000 at k = 100, r = 20)
+    for (k, r) in [(10u32, 2u32), (100, 2), (100, 20)] {
+        let d = org_cost(k, r, r, false, &|q| {
+            q.add(&[write(2, Y, 100, &[O], team(0), lead(0), None)]);
+        });
+        let kr = (k * r) as u64;
+        assert_eq!((d.steps, d.setters), (1 + r as u64 + kr, 2 * (kr - r as u64) + 1), "at k {k}, r {r}: {d:?}");
     }
 }
 

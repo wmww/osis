@@ -611,8 +611,8 @@ impl<S: Store> Paths<S> {
         self.first.vouch_comps().into_iter().filter(|(c, _)| !counted.contains(c)).flat_map(|(_, ids)| ids).find(|id| self.first.status(id) != self.timeline.status(id))
     }
 
-    /// Entries the walks keep in memory (parts, edges, events, undo and chain entries,
-    /// histories): edge-class state alone (notes/perm-paths.md, The delta-facts seam).
+    /// Entries the walks keep in memory (parts, edges, events, chain entries, histories,
+    /// readers): edge-class state alone (notes/perm-paths.md, The delta-facts seam).
     pub fn footprint(&self) -> u64 {
         self.first.footprint() + self.timeline.footprint() + self.facts.footprint()
     }

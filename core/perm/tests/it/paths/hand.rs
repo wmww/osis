@@ -835,6 +835,26 @@ fn a_commit_whose_drops_together_take_its_path_applies_only_what_keeps_it() {
     agree_all(&w, &[ids[0]]);
 }
 
+// spec/permissions.md §5.1 step 2: a commit's later part is taken in the same pass as an earlier
+// part's drops, before the restart: X's commit removes B on A (dropping B's grant of X on ORG) and
+// N5 on ORG through that grant, which still stands there, so the second applies, falls and is
+// judged with the first's drops passed over: void (taken only after the restart it would apply
+// nowhere and get no verdict).
+#[test]
+fn a_commits_later_part_is_taken_before_the_restart_its_earlier_drops_start() {
+    let mut w = account();
+    w.edge(H, 1, &[], A, X, Admin, &[]);
+    w.edge(H, 1, &[], A, B, Admin, &[]);
+    w.edge(H, 1, &[A], ORG, N5, Admin, &[]);
+    w.edge(B, 2, &[A], ORG, X, Admin, &[]);
+    let p1 = w.push(X, 5, &[], A, Kind::set(B, Gone));
+    let p2 = w.push(X, 5, &[], ORG, Kind::set(N5, Gone));
+    w.group(&[p1, p2]);
+    agree_all(&w, &[]);
+    let rd = judge(&w, &super::rules(), &View::all(&w));
+    assert!(rd.applied.contains(&p1) && !rd.applied.contains(&p2), "the model: p1 applied, p2 not");
+}
+
 // spec/commits.md §2: the part on an edge of the commit's own path last; two parts on one edge
 // are bad input (control `-refuse-shapes`).
 #[test]

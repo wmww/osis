@@ -224,7 +224,7 @@ fn every_order(w: &m::World) {
 
 // A commit arriving before a lowering's verdict undoes it: H removes B at 5, so B's removal of X
 // at 10 no longer holds its right, and X's grant of N5 at 2, which that removal dropped, applies
-// again (the update rolls back to the drop, not only to the new commit's key).
+// again (the update walks again from the drop, not only from the new commit's key).
 #[test]
 fn a_commit_before_a_verdict_undoes_its_drops() {
     use m::{account, A, B, H, N5, X};
@@ -401,4 +401,80 @@ fn forgetting_and_updating_equal_from_scratch() {
 fn paths_forget_agrees_large() {
     let f: Vec<String> = crate::common::sharded(30_000, 0x5eed_0a1d, |n, seed| forgets(crate::common::seeded(seed) % (1 << 40), n.div_ceil(7))).concat();
     assert!(f.is_empty(), "{}", f.join("\n"));
+}
+
+// notes/perm-paths.md, Reach, What stays component-wide: which of two lowerings a pass reaches
+// first is set by the component's restart sequence, so an update forgets every verdict given after
+// its key. X (admin on A by H) grants B admin on T1 at 40 (j: sets g = B's edge, rests on X's);
+// B removes Z from T1 at 60 along g (Q); H removes X from A at 70 listing nothing (E: drops j, the
+// pass restarts, Q applies by its verdict). A part at 50 changes what Q reads and nothing E reads
+// (H granting Z write on T1; or B write, where Q then holds no right): Q is judged before E's drop of j, as the model reads it
+// from scratch. Every arrival order, and every subset forgotten from all held, reads as from
+// scratch and as the model at that held set.
+#[test]
+fn a_verdict_kept_past_a_later_restart_would_misjudge() {
+    use m::{account, A, B, H, T1, X, Z};
+    use roles_model::Role::{Admin, None as Gone, Write};
+    for variant in 0..3 {
+        let mut w = account();
+        w.edge(H, 1, &[], A, X, Admin, &[]);
+        w.edge(H, 2, &[A], T1, Z, Admin, &[]);
+        let j = w.edge(X, 40, &[A], T1, B, Admin, &[]);
+        match variant {
+            0 => {}
+            1 => {
+                w.edge(H, 50, &[A], T1, Z, Write, &[]);
+            }
+            _ => {
+                w.edge(H, 50, &[A], T1, B, Write, &[]);
+            }
+        }
+        let q = w.edge(B, 60, &[], T1, Z, Gone, &[]);
+        let e = w.edge(H, 70, &[], A, X, Gone, &[]);
+        let all = m::View::all(&w);
+        let rd = m::judge(&w, &rules(), &all);
+        // (variant 2: B holds only write on T1 at 60, so Q holds no right)
+        assert_eq!(rd.applied.contains(&q), variant < 2, "variant {variant}: Q");
+        assert!(rd.applied.contains(&e) && !rd.applied.contains(&j), "variant {variant}: the model applies E, drops j");
+        every_order(&w);
+        let n = w.commits.len();
+        let inp = input(&w, &all);
+        let full = Paths::evaluate(&inp.records, BTreeSet::new(), &inp.commits);
+        assert_eq!(full.status(&inp.ids[&q]) == Some(Status::Applied), variant < 2, "variant {variant}");
+        for mask in 0u32..1 << n {
+            let gone: Vec<usize> = (0..n).filter(|k| mask >> k & 1 == 1).collect();
+            let kept: m::Set = (0..n).filter(|k| mask >> k & 1 == 0).collect();
+            super::agree(&w, &m::View { held: kept.clone(), leaves: None, trust: m::Set::new() });
+            let mut p = full.clone();
+            let ch = p.forget(&gone.iter().map(|&k| inp.commits[k].id).collect::<Vec<_>>());
+            assert_eq!(check(&full, &p, &ch), None, "variant {variant} forgetting {gone:?}");
+            let rest: Vec<Commit> = (0..n).filter(|k| kept.contains(k)).map(|k| inp.commits[k].clone()).collect();
+            assert!(reading(&p) == reading(&Paths::evaluate(&inp.records, BTreeSet::new(), &rest)), "variant {variant} forgetting {gone:?}");
+        }
+    }
+}
+
+// notes/perm-paths.md, Reach: a part reads its named remaining admin's edge, so a write on that
+// edge arriving before it walks it again. H leaves A relying on B (a self-removal: no path, its
+// own edge not B's), and a timed admin S's removal of X relying on B; B's grant, before them,
+// arriving last makes each apply (the last-admin rule).
+#[test]
+fn the_named_remaining_admin_arriving_late_walks_its_reader_again() {
+    use m::{account, A, B, H, N5, X};
+    use roles_model::Role::{Admin, None as Gone};
+    let mut w = account();
+    w.edge(H, 1, &[], A, B, Admin, &[]);
+    let leave = w.edge(H, 3, &[], A, H, Gone, &[]);
+    w.rely(leave, B);
+    every_order(&w);
+    let mut w = account();
+    w.edge(H, 1, &[], A, X, Admin, &[]);
+    let s = w.edge(H, 1, &[], A, N5, Admin, &[]);
+    w.set_until(s, 50);
+    w.edge(H, 2, &[], A, B, Admin, &[]);
+    let r = w.edge(N5, 4, &[], A, X, Gone, &[]);
+    w.rely(r, B);
+    let leave = w.edge(H, 5, &[], A, H, Gone, &[]);
+    w.rely(leave, B);
+    every_order(&w);
 }

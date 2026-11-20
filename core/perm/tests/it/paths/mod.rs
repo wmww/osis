@@ -9,6 +9,7 @@
 
 mod content;
 mod counts;
+mod dump;
 mod hand;
 mod hand_content;
 mod incremental;
