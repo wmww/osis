@@ -179,13 +179,14 @@ fn a_void_check_reads_its_own_grant_chain() {
     assert!(per[3] >= 90 * per[1], "{per:?}");
 }
 
-// A void check rescans an edge's history for each setter it chases through it: H grants X; X
-// grants F admin m times (each resting on X's edge); F grants E admin m times after them (each
-// through F's edge); E removes X listing nothing. Its drops are X's m grants of F, so chasing each
-// of F's grants of E rescans F's edge past all m of them: one check reads about m² setters (m = 10
-// and 100: a hundredfold), and the removal is void.
+// One void check reads each edge position once (notes/perm-paths.md, The void check): H grants X;
+// X grants F admin m times (each resting on X's edge); F grants E admin m times after them (each
+// through F's edge); E removes X listing nothing. Its drops are X's m grants of F; chasing each of
+// F's grants of E scans F's edge below it, which the check caches per position after the first
+// scan: about 2m setters (m = 10 and 100: tenfold), and the removal is void. Mutation: no cache
+// (`chk.found` never read): m², a hundredfold.
 #[test]
-fn a_void_check_rescans_an_edge_per_setter_through_it() {
+fn a_void_check_reads_each_setter_once() {
     const F: u32 = 20;
     const E: u32 = 21;
     let mut per = vec![];
@@ -198,7 +199,7 @@ fn a_void_check_rescans_an_edge_per_setter_through_it() {
         assert_eq!(p.status(&WriteId(cid(9), 0)), Some(Status::Void));
         per.push(d.setters);
     }
-    assert!(per[1] >= 90 * per[0], "{per:?}");
+    assert!(per[1] >= 9 * per[0] && per[1] <= 11 * per[0], "{per:?}");
 }
 
 // From scratch: one step per part (no lowering, no restart), so linear in the parts.

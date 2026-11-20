@@ -860,8 +860,8 @@ impl Walk {
         let mut q = vec![];
         if judged.is_none() && explicit && falls {
             let l = Judging { slot: s, commit: key.commit, e: ei.e, restored, rinv, after, after_inv };
-            let mut memo = BTreeMap::new();
-            let kept = self.keeps(&l, cdrops, s, &mut memo) && relied.is_none_or(|r| self.setter_keeps(&l, cdrops, r, key, Accept::Standing, &mut memo));
+            let mut chk = Check::default();
+            let kept = self.keeps(&l, cdrops, s, &mut chk) && relied.is_none_or(|r| self.setter_keeps(&l, cdrops, r, key, Accept::Standing, &mut chk));
             if !kept {
                 self.set_verdict(s, Some(Verdict::Void));
                 self.log.push(Event { key, slot: s, drops: vec![] });
@@ -908,21 +908,24 @@ impl Walk {
 
     /// Whether part `w`, applied in this pass, keeps admin on every edge of its path once
     /// lowering `l`'s drops and its commit's earlier drops are passed over.
-    fn keeps(&mut self, l: &Judging, cdrops: &[Slot], w: Slot, memo: &mut BTreeMap<Slot, bool>) -> bool {
-        self.chase(l, cdrops, Frame::Keeps { w, hop: 0 }, memo)
+    fn keeps(&mut self, l: &Judging, cdrops: &[Slot], w: Slot, chk: &mut Check) -> bool {
+        self.chase(l, cdrops, Frame::Keeps { w, hop: 0 }, chk)
     }
 
     /// Edge `e` read back along the writes this pass applied on it before `key`, latest first,
     /// passing over the drops and the grants that do not keep in turn: the first left decides by
     /// `accept`; with none left, a record edge keeps.
-    fn setter_keeps(&mut self, l: &Judging, cdrops: &[Slot], e: E, key: Key, accept: Accept, memo: &mut BTreeMap<Slot, bool>) -> bool {
+    fn setter_keeps(&mut self, l: &Judging, cdrops: &[Slot], e: E, key: Key, accept: Accept, chk: &mut Check) -> bool {
         let upper = self.hist[e].partition_point(|y| y.a.key < key);
-        self.chase(l, cdrops, Frame::Setter { e, upper, accept, waiting: None }, memo)
+        self.chase(l, cdrops, Frame::Setter { e, upper, start: upper, accept }, chk)
     }
 
     /// `keeps` and `setter_keeps` as one loop over an explicit stack: a grant chain is as long as
-    /// its writers make it.
-    fn chase(&mut self, l: &Judging, cdrops: &[Slot], top: Frame, memo: &mut BTreeMap<Slot, bool>) -> bool {
+    /// its writers make it. Within one check the setter deciding a scan of an edge below a
+    /// position is the same whoever chased it there (the check's drops and memo are fixed), so it
+    /// is cached per (edge, position), every position a scan passed included: each edge position
+    /// is read once per check (notes/perm-paths.md, The void check).
+    fn chase(&mut self, l: &Judging, cdrops: &[Slot], top: Frame, chk: &mut Check) -> bool {
         let mut stack = vec![top];
         // the answer of the frame popped last, for its parent
         let mut ret: Option<bool> = None;
@@ -931,13 +934,13 @@ impl Walk {
                 Frame::Keeps { w, mut hop } => {
                     match ret.take() {
                         Some(false) => {
-                            memo.insert(w, false);
+                            chk.memo.insert(w, false);
                             ret = Some(false);
                             continue;
                         }
                         Some(true) => hop += 1,
                         None => {
-                            if let Some(&m) = memo.get(&w) {
+                            if let Some(&m) = chk.memo.get(&w) {
                                 ret = Some(m);
                                 continue;
                             }
@@ -945,43 +948,60 @@ impl Walk {
                     }
                     let it = &self.items[w];
                     let Some(&e) = it.hops.get(hop) else {
-                        memo.insert(w, true);
+                        chk.memo.insert(w, true);
                         ret = Some(true);
                         continue;
                     };
                     let (key, ts) = (it.key, it.ts);
                     let upper = self.hist[e].partition_point(|y| y.a.key < key);
                     stack.push(Frame::Keeps { w, hop });
-                    stack.push(Frame::Setter { e, upper, accept: Accept::AdminAt(ts), waiting: None });
+                    stack.push(Frame::Setter { e, upper, start: upper, accept: Accept::AdminAt(ts) });
                 }
-                Frame::Setter { e, mut upper, accept, waiting } => {
+                Frame::Setter { e, mut upper, start, accept } => {
+                    // (the lowest position answered, the deciding entry: none left reads the record)
+                    let mut decided: Option<(usize, Option<usize>)> = None;
                     if ret.take() == Some(true) {
-                        ret = Some(Self::accepts(accept, waiting.flatten().as_ref()));
-                        continue;
+                        decided = Some((upper + 1, Some(upper)));
                     }
-                    while upper > 0 {
+                    while decided.is_none() {
+                        if let Some(&d) = chk.found.get(&(e, upper)) {
+                            decided = Some((upper, d));
+                            break;
+                        }
+                        if upper == 0 {
+                            decided = Some((0, None));
+                            break;
+                        }
                         upper -= 1;
-                        let Some(&Entry { slot: j, a }) = self.hist[e].get(upper) else { break };
-                        let v = a.value;
+                        let Some(&Entry { slot: j, .. }) = self.hist[e].get(upper) else {
+                            decided = Some((upper, None));
+                            break;
+                        };
                         self.counts.setters += 1;
                         if cdrops.contains(&j) || self.gone(l, j) {
                             continue;
                         }
                         let jt = &self.items[j];
-                        let decides = jt.lowering_shape() || jt.leave || match memo.get(&j) {
+                        let decides = jt.lowering_shape() || jt.leave || match chk.memo.get(&j) {
                             Some(&m) => m,
                             None => {
-                                stack.push(Frame::Setter { e, upper, accept, waiting: Some(v) });
+                                stack.push(Frame::Setter { e, upper, start, accept });
                                 stack.push(Frame::Keeps { w: j, hop: 0 });
                                 continue 'frames;
                             }
                         };
                         if decides {
-                            ret = Some(Self::accepts(accept, v.as_ref()));
-                            continue 'frames;
+                            decided = Some((upper + 1, Some(upper)));
                         }
                     }
-                    ret = Some(self.record[e]);
+                    let (lo, d) = decided.unwrap_or((start, None));
+                    for p in lo..=start {
+                        chk.found.insert((e, p), d);
+                    }
+                    ret = Some(match d.and_then(|i| self.hist[e].get(i)) {
+                        Some(y) => Self::accepts(accept, y.a.value.as_ref()),
+                        None => self.record[e],
+                    });
                 }
             }
         }
@@ -1157,9 +1177,17 @@ fn final_role(v: Option<Option<Edge>>) -> Lvl {
 enum Frame {
     /// `keeps(w)`, at its `hop`th edge.
     Keeps { w: Slot, hop: usize },
-    /// `setter_keeps` on `e`, below hist index `upper`; `waiting`: the value of the grant whose
-    /// own `keeps` is being chased.
-    Setter { e: E, upper: usize, accept: Accept, waiting: Option<Option<Edge>> },
+    /// `setter_keeps` on `e`, below hist index `upper`, begun at `start`; where it waits on a
+    /// grant's own `keeps`, that grant is at index `upper`.
+    Setter { e: E, upper: usize, start: usize, accept: Accept },
+}
+
+/// One void check's memory: `keeps` per part, and per (edge, position) the entry deciding a
+/// scan below it (none: no setter left).
+#[derive(Default)]
+struct Check {
+    memo: BTreeMap<Slot, bool>,
+    found: BTreeMap<(E, usize), Option<usize>>,
 }
 
 /// A table indexed by an interned number the walk made itself; an index past it reads its nil
