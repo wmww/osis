@@ -283,11 +283,18 @@ impl Sim {
         Failure { scenario: self.scenario.clone(), setup: self.seed, seed: self.seed, step: self.report.steps, what: what.into(), trace: self.trace.iter().cloned().collect() }
     }
 
+    /// Keeps the last `TRACE` lines for a failure's report; with `OSIS_SIM_TRACE=1` prints every
+    /// line as it happens too (a wait that began earlier than the kept tail shows).
     fn note(&mut self, s: String) {
+        static ALL: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
         if self.trace.len() == TRACE {
             self.trace.pop_front();
         }
-        self.trace.push_back(format!("[{} t+{}ms] {s}", self.report.steps, self.elapsed));
+        let line = format!("[{} t+{}ms] {s}", self.report.steps, self.elapsed);
+        if *ALL.get_or_init(|| osis_base::testenv::u64_var("OSIS_SIM_TRACE").is_some_and(|n| n != 0)) {
+            eprintln!("{} {line}", self.scenario);
+        }
+        self.trace.push_back(line);
     }
 
     fn node(&mut self, i: usize) -> Res<&mut Node> {
