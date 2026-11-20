@@ -4722,10 +4722,10 @@ fn section_wrap_under_two_secrets(e1: &osis_crypto::Secret32, e2: &osis_crypto::
     panic!("no section wrap opening under both secrets");
 }
 
-// spec/wire.md §4 (a reader tries, per section, the read secrets it holds of the section's thing;
-// the section opens under the one whose wrap gives the key that opens it), spec/commits.md §4 (a
-// reading is a function of the held set, never of the order secrets are tried in): a section
-// wrap commits to no key, so Bob seals D's section under a wrap that opens to its key under D's
+// spec/wire.md §4 (taking the first whose wrap gives a key that opens the ciphertext),
+// spec/crypto.md §5 Section, spec/commits.md §4 (No local error from peer bytes: judged a
+// function of the held set, never of the order secrets are tried in): a section wrap commits to
+// no key, so Bob seals D's section under a wrap that opens to its key under D's
 // epoch e1 and to another key under e2. A reader holding e1 alone, e2 and e1 (tried newest first),
 // or e1 and e2, reads D's parts alike; one holding e2 alone, whose key opens nothing, reads the
 // encryption as bad input, as any section a held secret unwraps to a key opening nothing.
