@@ -74,7 +74,7 @@ mod tests_winners;
 pub use changes::Changes;
 pub use winners::{ByWrite, Hiders, Kind, Place, Winners, Won};
 pub use copies::CopyIndex;
-pub use codec::{PageAt, decoded_bound, decode_delta, decode_snapshot, encode_delta, encode_snapshot, page_array, page_items, sources_of};
+pub use codec::{LinkTree, PageAt, TreePlace, decoded_bound, decode_delta, decode_snapshot, encode_delta, encode_snapshot, page_array, page_items, sources_of};
 pub use error::Error;
 pub use fragment::{BagKind, Bag, CaseWrite, Eid, Elem, Encoding, Entry, Key, Enum, Fragment, Map, Meta, RegWrite, Register, Set, Slots, Struct};
 pub use delta::{DeltaBuilder, out_of_profile};

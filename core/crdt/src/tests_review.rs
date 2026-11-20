@@ -147,10 +147,14 @@ fn paging_rejections_spec_8() {
     rejects(&snapshot_with(Value::List(vec![Value::link(page), element(2)])), &mut pages, "mixed");
     // one page linked twice
     rejects(&snapshot_with(Value::List(vec![Value::link(page), Value::link(page)])), &mut pages, "twice");
-    // link pages where the array would not page
+    // link pages where the array would not page: a level of one link page of one link
     let inner = pages.put(&osis_base::encode(&Value::List(vec![Value::link(page)]))).unwrap();
     let outer = pages.put(&osis_base::encode(&Value::List(vec![Value::link(inner)]))).unwrap();
-    rejects(&snapshot_with(Value::List(vec![Value::link(outer)])), &mut pages, "not canonical");
+    rejects(&snapshot_with(Value::List(vec![Value::link(outer)])), &mut pages, "one link page of one link");
+    // a link page of two leaves where the array would not page (the tree rule allows it)
+    let p2 = pages.put(&osis_base::encode(&Value::List(vec![element(3)]))).unwrap();
+    let two = pages.put(&osis_base::encode(&Value::List(vec![Value::link(page), Value::link(p2)]))).unwrap();
+    rejects(&snapshot_with(Value::List(vec![Value::link(two)])), &mut pages, "not canonical");
     // a link page above the fan-out
     let many: Vec<Link> = (0..9).map(|i| pages.put(&osis_base::encode(&Value::List(vec![element(10 + i)]))).unwrap()).collect();
     let wide = pages.put(&osis_base::encode(&Value::List(many.into_iter().map(Value::link).collect()))).unwrap();
@@ -173,11 +177,12 @@ impl crate::page::PageSource for Counting<'_> {
     }
 }
 
-/// §8, spec/wire.md §12: a link tree of any depth decodes within what its author delivered, each
-/// hostile shape refused: a chain of single-link link pages 10,000 deep fetches each page once
-/// (no recursion: the walk keeps a link list per level, a page's worth), leaves at two depths
-/// stop at the second depth met, and a page reached twice (a diamond; a cycle would need a page
-/// holding its own hash) stops at the second link to it.
+/// §8, spec/wire.md §6, §12: a link tree decodes within what its author delivered, each hostile
+/// shape refused at the first page the tree rule (`LinkTree`) cannot place: a chain of
+/// single-link link pages 10,000 deep at its first page (a level of one page of one link), a
+/// leaf beside a link page either way round at the second depth met, a link page of one link
+/// before its level's last at that page, a page reached twice (a diamond) at the second link to
+/// it, a right spine of single-link pages under a full left page at the left page's leaves.
 #[test]
 fn hostile_link_trees_are_bounded_by_their_pages_spec_8() {
     let mut pages = MemoryPages::with_params(SMALL);
@@ -194,8 +199,7 @@ fn hostile_link_trees_are_bounded_by_their_pages_spec_8() {
         top = link_page(&mut pages, &[top]);
     }
     let (e, fetched) = decode(Value::List(vec![Value::link(top)]), &mut pages);
-    assert!(e.contains("not canonical"), "{e}");
-    assert_eq!(fetched, 10_001, "each page once");
+    assert!(e.contains("one link page of one link") && fetched == 1, "{e}, {fetched}");
     // a leaf beside a link page, either way round
     let (a, b, c) = (leaf(&mut pages, 2), leaf(&mut pages, 3), leaf(&mut pages, 4));
     let lp = link_page(&mut pages, &[b]);
@@ -204,12 +208,55 @@ fn hostile_link_trees_are_bounded_by_their_pages_spec_8() {
     let lp2 = link_page(&mut pages, &[c]);
     let a2 = leaf(&mut pages, 5);
     let (e, fetched) = decode(Value::List(vec![Value::link(lp2), Value::link(a2)]), &mut pages);
-    assert!(e.contains("different depths") && fetched == 3, "{e}, {fetched}");
+    assert!(e.contains("not closed by the tree-node rule") && fetched == 1, "{e}, {fetched}");
+    // full groups (the fan-out, 8) over leaves, none closing early by hash
+    let mut n = 100;
+    let mut full = |pages: &mut MemoryPages| -> Vec<Link> {
+        let mut out = Vec::new();
+        while out.len() < 8 {
+            let l = leaf(pages, n);
+            n += 1;
+            if out.is_empty() || l.hash[0] != 0 {
+                out.push(l);
+            }
+        }
+        out
+    };
     // a diamond: two link pages naming one leaf
-    let d = leaf(&mut pages, 6);
-    let (l1, l2) = (link_page(&mut pages, &[d]), link_page(&mut pages, &[d]));
+    let mut g = full(&mut pages);
+    let (l1, l2) = (link_page(&mut pages, &g), link_page(&mut pages, &[g.pop().unwrap()]));
     let (e, fetched) = decode(Value::List(vec![Value::link(l1), Value::link(l2)]), &mut pages);
-    assert!(e.contains("twice") && fetched == 3, "{e}, {fetched}");
+    assert!(e.contains("twice") && fetched == 10, "{e}, {fetched}");
+    // a right spine: a full left page, then single-link pages down the last path; refused at the
+    // spine's first page lying at the left page's leaves' depth
+    let lefts = full(&mut pages);
+    let left = link_page(&mut pages, &lefts);
+    let mut spine = leaf(&mut pages, 1000);
+    for _ in 0..50 {
+        spine = link_page(&mut pages, &[spine]);
+    }
+    let (e, fetched) = decode(Value::List(vec![Value::link(left), Value::link(spine)]), &mut pages);
+    assert!(e.contains("different depths") && fetched == 11, "{e}, {fetched}");
+}
+
+/// §8, spec/wire.md §6: a full check (`Dec::checking`) refuses a tree for a held page the rule
+/// cannot place even with a page before it missing, so a commit sync stopped fetching (its walk
+/// refused that tree) is refused, not left waiting for pages nobody fetches; a decode-only read
+/// stops at the missing page.
+#[test]
+fn a_refused_page_past_a_missing_one_refuses_the_tree_spec_wire_6() {
+    let mut pages = MemoryPages::with_params(SMALL);
+    let missing = MemoryPages::with_params(SMALL).put(&osis_base::encode(&Value::List(vec![element(1)]))).unwrap();
+    let a = pages.put(&osis_base::encode(&Value::List(vec![element(2)]))).unwrap();
+    let one = pages.put(&osis_base::encode(&Value::List(vec![Value::link(a)]))).unwrap();
+    let b = pages.put(&osis_base::encode(&Value::List(vec![element(3)]))).unwrap();
+    let root = snapshot_with(Value::List(vec![Value::link(missing), Value::link(one), Value::link(b)]));
+    rejects(&root, &mut pages, "not closed by the tree-node rule");
+    let only_missing = snapshot_with(Value::List(vec![Value::link(missing), Value::link(b)]));
+    let e = decode_snapshot(&only_missing, &scx(), &mut Interner::new(), Some(&mut pages)).unwrap_err();
+    assert!(matches!(e, crate::Error::Page(crate::PageError::Missing)), "{e}");
+    let e = crate::stream_checked(crate::Checked::verified(&root), &scx(), &mut Interner::new(), Some(&mut pages), &mut |_| Ok(())).unwrap_err();
+    assert!(matches!(e, crate::Error::Page(crate::PageError::Missing)), "decode-only: {e}");
 }
 
 /// A valid paged snapshot still decodes after the expansion limits.

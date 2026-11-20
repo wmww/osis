@@ -544,6 +544,8 @@ fn deep_link_tree_compacts_syncs_and_reads_spec_crdt_8() {
         assert_eq!(w.lp.peers[3].engine.get_at(&t, &a, &path).unwrap(), w.lp.peers[0].engine.get_at(&t, &a, &path).unwrap(), "entry {i}");
         assert_eq!(w.lp.peers[3].engine.get_at(&t, &a, &path).unwrap(), Some(s(i as u64, 0)));
     }
+    // the worlds' last checks read under the pages they were written with
+    drop(worlds);
     osis_crdt::PageParams::set_test(was);
 }
 
@@ -965,11 +967,17 @@ impl osis_crdt::PageSink for Mutating<'_, '_> {
 /// A content snapshot of `(w.t, ak)` by peer `by` at `ts` carrying `f`, paged, each page first
 /// changed by `mutate` (hand-built, unchecked).
 fn forge_snapshot(w: &mut World, by: usize, ak: &Ak, ts: osis_base::Ts, f: osis_crdt::Fragment, mutate: &dyn Fn(usize, &mut Vec<u8>)) -> Package {
-    forge_snapshot_in(w, by, ak, ts, f, mutate, false)
+    forge_snapshot_in(w, by, ak, ts, f, mutate, false, None)
 }
 
-/// `forge_snapshot`, an ephemeral commit if `memory` (its pages ephemeral blobs).
-fn forge_snapshot_in(w: &mut World, by: usize, ak: &Ak, ts: osis_base::Ts, f: osis_crdt::Fragment, mutate: &dyn Fn(usize, &mut Vec<u8>), memory: bool) -> Package {
+/// Makes a paged position's root list from the encoder's (`forge_snapshot_in`), putting link
+/// pages through the closure it is given.
+type Reroot<'a> = &'a dyn Fn(&mut dyn FnMut(&[osis_base::Link]) -> osis_base::Link, Vec<osis_base::Link>) -> Vec<osis_base::Link>;
+
+/// `forge_snapshot`, an ephemeral commit if `memory` (its pages ephemeral blobs), the first paged
+/// position's root list made by `reroot` if given.
+#[allow(clippy::too_many_arguments)]
+fn forge_snapshot_in(w: &mut World, by: usize, ak: &Ak, ts: osis_base::Ts, f: osis_crdt::Fragment, mutate: &dyn Fn(usize, &mut Vec<u8>), memory: bool, reroot: Option<Reroot<'_>>) -> Package {
     use osis_commit::{AspectWrite, CommitBuilder, Form, Kind, writer_ctx};
     let t = w.t;
     let rec = w.lp.peers[0].engine.get_typed(&t, &ct::CREATED).unwrap().unwrap();
@@ -984,7 +992,23 @@ fn forge_snapshot_in(w: &mut World, by: usize, ak: &Ak, ts: osis_base::Ts, f: os
     let snap = osis_crdt::Snapshot { absorbed: Default::default(), facts: Default::default(), nonce: [7; 16], fragment: f, frontiers: Default::default() };
     let bytes = {
         let mut sink = Mutating { inner: osis_blob::BlobWriter::new(&framing, &mut blobs, &mut rng), n: 0, mutate };
-        osis_crdt::encode_snapshot(&snap, &writer_ctx(Form::Commit, Kind::ContentSnapshot, ts, author, 0, 0), Some(&mut sink)).unwrap()
+        let mut bytes = osis_crdt::encode_snapshot(&snap, &writer_ctx(Form::Commit, Kind::ContentSnapshot, ts, author, 0, 0), Some(&mut sink)).unwrap();
+        if let Some(reroot) = reroot {
+            let list = |ls: &[osis_base::Link]| osis_base::encode(&Value::List(ls.iter().map(|l| Value::link(*l)).collect()));
+            let mut top = None;
+            osis_base::visit_link_sites(&bytes, &osis_base::Limits::DEFAULT, &mut |s| {
+                if let (osis_base::LinkSite::List { links, .. }, None) = (s, &top) {
+                    top = Some(links);
+                }
+            })
+            .unwrap();
+            let top = top.expect("a paged position");
+            let old = list(&top);
+            let new = list(&reroot(&mut |ls| osis_crdt::PageSink::put(&mut sink.inner, &list(ls)).unwrap(), top));
+            let at = bytes.windows(old.len()).position(|x| x == old).unwrap();
+            bytes.splice(at..at + old.len(), new);
+        }
+        bytes
     };
     let mut aw = AspectWrite::new(t, ak.clone(), 0, 0, bytes);
     aw.retention = retention;
@@ -1061,7 +1085,7 @@ fn ephemeral_page_past_items_refused_spec_crdt_8() {
     let mut wr = osis_crdt::Writer::new(now, made_up(0x80), 1 << 40);
     let v = Value::Map(osis_base::ValueMap::from([(Value::Int(1), Value::Str("t".repeat(osis_base::format::MAX_PAGE_ITEMS + 1)))]));
     let f = osis_crdt::create(&mut wr, &osis_crdt::AnyView, &v).unwrap();
-    let pk = forge_snapshot_in(&mut w, 1, &ak, now, f, &|_, _| {}, true);
+    let pk = forge_snapshot_in(&mut w, 1, &ak, now, f, &|_, _| {}, true, None);
     assert_eq!(pk.blobs.len(), 1, "one page");
     let e = &mut w.lp.peers[3].engine;
     e.put_memory_blobs(pk.blobs.clone()).unwrap();
@@ -1079,7 +1103,7 @@ fn memory_commit_waits_only_signed_spec_sync_9() {
     let mut w = world(false);
     let ak = Ak::new("t:big+.0").unwrap();
     let now = osis_base::Ts::make(w.lp.peers[0].engine.now(), 0).unwrap();
-    let pk = forge_snapshot_in(&mut w, 1, &ak, now, forged_map(now, ENTRIES, 0x80), &|_, _| {}, true);
+    let pk = forge_snapshot_in(&mut w, 1, &ak, now, forged_map(now, ENTRIES, 0x80), &|_, _| {}, true, None);
     assert!(pk.blobs.len() >= 2, "paged");
     let mut forged = osis_commit::CommitBlob::decode(&pk.bytes).unwrap();
     forged.sigs = osis_commit::Sigs::signed(&pk.id, &osis_crypto::SigningSecret::from_seed(&osis_crypto::Secret32::from_bytes([5; 32])), forged.sigs.inner, Vec::new(), Vec::new());
@@ -1625,4 +1649,152 @@ fn forged_copies_in_a_paged_nested_set_apply_as_whole_spec_crdt_4_1() {
     });
     assert!(outs.iter().all(|o| o.contains("Applied")), "{outs:?}");
     assert!(c.get("state page load").is_some_and(|n| *n > 0) && c.get("apply: piece").is_some_and(|n| *n > 0), "the nested set paged: {c:?}");
+}
+
+/// The link pages of a paged position under `top` as delivered in `pk`, followed down the first
+/// link: its levels, leaves included.
+fn levels_in(pk: &Package, top: &[osis_base::Link]) -> usize {
+    let blobs: BTreeMap<osis_base::BlobId, &Vec<u8>> = pk.blobs.iter().map(|(b, x)| (*b, x)).collect();
+    let (mut at, mut d) = (top.first().copied(), 0);
+    while let Some(l) = at {
+        d += 1;
+        let (_, pt) = osis_blob::open(blobs[&l.blob], &osis_crypto::Secret32::from_bytes(l.key)).unwrap();
+        at = match osis_base::decode(&pt, &osis_base::Limits::DEFAULT).unwrap() {
+            Value::List(items) => items.first().and_then(|x| if let Value::Link(l) = x { Some(**l) } else { None }),
+            _ => None,
+        };
+    }
+    d
+}
+
+/// Node 3 gets commit `pk` without its blobs, then each round the blobs its walk names
+/// (`Engine::blob_wants`, as node-sync fetches them) from `pk`, until it waits for nothing: the
+/// rounds, the blobs delivered, and what node 3 reads of `a` then.
+fn fetch_rounds(w: &mut World, pk: &Package, a: &Ak) -> (usize, usize, Option<Value>) {
+    let held: BTreeMap<osis_base::BlobId, Vec<u8>> = pk.blobs.iter().cloned().collect();
+    let t = w.t;
+    let e = &mut w.lp.peers[3].engine;
+    e.ingest(&pk.bytes, Vec::new()).unwrap();
+    let waits = |e: &mut crate::Engine| e.pending().into_iter().find(|x| x.0 == pk.id).map(|x| x.1);
+    assert_eq!(waits(e), Some(crate::Reason::WaitBlobs), "its part waits for its pages");
+    let (mut rounds, mut blobs) = (0, 0);
+    loop {
+        let wants = e.blob_wants().unwrap();
+        let give: Vec<_> = wants.missing.iter().filter_map(|b| held.get(b).map(|x| (*b, x.clone()))).collect();
+        if give.is_empty() {
+            break;
+        }
+        assert!(rounds < 100, "rounds bounded");
+        rounds += 1;
+        blobs += give.len();
+        if let Err(err) = e.put_blobs(give) {
+            assert_ne!(osis_base::Classified::class(&err), osis_base::ErrorClass::Local, "{err}");
+        }
+    }
+    assert_eq!(waits(e), None, "applied or refused, not left waiting");
+    (rounds, blobs, e.get(&t, a).unwrap())
+}
+
+/// spec/sync-streams.md (page discovery), spec/wire.md §6 (page by page):
+/// sync's walk applies the tree rule (`osis_crdt::LinkTree`) as pages come, so fetch rounds stay
+/// within about log2 of the pages delivered whatever the shape. Under small pages (fan-out 3,
+/// and 2: a binary tree, what a writer grinding link hashes gets): honest trees take a round per
+/// level and apply; a chain of 1,000 single-link pages is refused at its first page; a right
+/// spine of single-link pages beside an honest subtree, at the subtree's leaf depth (the
+/// subtree's pages delivered); a level-2 page off its level's end holding one link, in round 2.
+/// Every refused shape delivered whole to nodes 1 and 2 is bad input there, no local error, and
+/// every node reads the aspect alike. Fails without the tree rule (the chain takes a round per
+/// page), and with the decoder stopping at a missing page (the level-2 shape is left waiting for
+/// pages the walk no longer fetches).
+#[test]
+fn hostile_link_trees_cost_rounds_by_pages_spec_wire_6() {
+    let a = aks()[0].clone();
+    let fan = |fanout| osis_crdt::PageParams { target: 400, cut: osis_base::ChunkParams { min: 32, max: 160, mask_bits: 5 }, fanout, ..osis_crdt::PageParams::FORMAT };
+    // leaf pages larger than a link: a few fit the root list
+    let wide = osis_crdt::PageParams { cut: osis_base::ChunkParams { min: 128, max: 512, mask_bits: 7 }, ..fan(3) };
+    let was = osis_crdt::PageParams::set_test(Some(fan(3)));
+    // a world built under the pages it runs with (its states' link pages are read by that rule)
+    let world_at = |params: osis_crdt::PageParams| {
+        let (lp, t) = LocalPeer::cached(&format!("apply::tests_paged::world {params:?}"), || build(0));
+        of(lp, t, false)
+    };
+    let map = |n: u64| Value::Map((0..n).map(|i| (Value::Int(i as i64), s(i, 0))).collect());
+    let forge = |w: &mut World, n: u64, reroot: Option<Reroot<'_>>| {
+        let now = osis_base::Ts::make(w.lp.peers[0].engine.now(), 0).unwrap();
+        let mut wr = osis_crdt::Writer::new(now, made_up(0x80), 1 << 40);
+        let f = osis_crdt::create(&mut wr, &osis_crdt::AnyView, &map(n)).unwrap();
+        forge_snapshot_in(w, 0, &a, now, f, &|_, _| {}, false, reroot)
+    };
+    let top = |pk: &Package| {
+        let delta = &osis_commit::CommitBlob::decode(&pk.bytes).unwrap().parts[0].delta;
+        let mut top = Vec::new();
+        osis_base::visit_link_sites(delta, &osis_base::Limits::DEFAULT, &mut |s| {
+            if let (osis_base::LinkSite::List { links, .. }, true) = (s, top.is_empty()) {
+                top = links;
+            }
+        })
+        .unwrap();
+        top
+    };
+    // honest trees: a round per level
+    let mut depths = Vec::new();
+    for (params, n) in [(wide, 12), (fan(3), 10), (fan(3), 20), (fan(2), 300)] {
+        let fanout = params.fanout;
+        osis_crdt::PageParams::set_test(Some(params));
+        let mut w = world_at(params);
+        let pk = forge(&mut w, n, None);
+        let levels = levels_in(&pk, &top(&pk));
+        let (rounds, blobs, read) = fetch_rounds(&mut w, &pk, &a);
+        assert!(read == Some(map(n)) && rounds == levels, "fan-out {fanout}, {n} entries: {rounds} rounds, {levels} levels");
+        if fanout == 2 {
+            assert!(1usize << (levels - 2) <= blobs, "binary: {levels} levels over {blobs} pages");
+        }
+        depths.push(levels);
+    }
+    assert!(depths.contains(&2) && depths.contains(&3) && depths.iter().any(|d| *d >= 4), "{depths:?}");
+    // a root list of several links (each about 230 bytes with its delete keys)
+    let roomy = osis_crdt::PageParams { target: 1000, ..fan(3) };
+    osis_crdt::PageParams::set_test(Some(roomy));
+    let chain: Reroot<'_> = &|put, top| {
+        let mut l = put(&top);
+        for _ in 0..1_000 {
+            l = put(&[l]);
+        }
+        vec![l]
+    };
+    // beside the first of the honest root list's link pages (closed by the rule), a spine of 50
+    let spine: Reroot<'_> = &|put, top| {
+        let mut l = put(&top[1..]);
+        for _ in 0..50 {
+            l = put(&[l]);
+        }
+        vec![top[0], l]
+    };
+    // the honest root's first link, then a link page of a one-link page and the rest
+    let level2: Reroot<'_> = &|put, top| {
+        let (y, z) = (put(&top[1..2]), put(&top[2..]));
+        vec![top[0], put(&[y, z])]
+    };
+    for (name, reroot, want_rounds) in [("chain", chain, 1), ("spine", spine, 0), ("level 2", level2, 2)] {
+        let mut w = world_at(roomy);
+        let honest = forge(&mut w, 300, None);
+        let ht = top(&honest);
+        assert!(ht.len() >= 3, "{name}: the honest root list holds three links or more");
+        let levels = levels_in(&honest, &ht);
+        let pk = forge(&mut w, 300, Some(reroot));
+        let (rounds, blobs, read) = fetch_rounds(&mut w, &pk, &a);
+        assert_eq!(read, None, "{name}: refused");
+        let want = if want_rounds == 0 { levels } else { want_rounds };
+        assert_eq!(rounds, want, "{name}: rounds ({blobs} blobs; honest {levels} levels)");
+        assert!(blobs < honest.blobs.len(), "{name}: {blobs} blobs, fewer than the honest tree's {}", honest.blobs.len());
+        for to in [1, 2] {
+            if let Err(err) = w.lp.deliver(to, &pk) {
+                assert_ne!(osis_base::Classified::class(&err), osis_base::ErrorClass::Local, "{name}: node {to}: {err}");
+            }
+        }
+        let t = w.t;
+        let reads: Vec<Option<Value>> = w.lp.peers.iter_mut().map(|p| p.engine.get(&t, &a).unwrap()).collect();
+        assert!(reads.iter().all(|r| *r == reads[0]), "{name}: all read alike: {reads:?}");
+    }
+    osis_crdt::PageParams::set_test(was);
 }

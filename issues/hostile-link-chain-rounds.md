@@ -1,8 +1,0 @@
-# A hostile link-page chain costs a fetch round per page before it is refused
-> Summary: the reach walk (`apply/reach.rs`) follows every link a page holds, whatever the shape, so a writer's delta whose link pages form a chain of N single-link pages (or any tree deeper than its leaves need) makes every requester take N fetch rounds of one small blob each before the decode refuses it as not canonical. N is bounded only by the blobs the writer stored; other commits are not held up (the wants are the union over waiting commits).
-> Priority: normal
-> Tags: security, sync, engine
-
-- The decoders refuse every such tree (crdt `tests_life::every_other_link_tree_is_refused_spec_8`, `tests_review::hostile_link_trees_are_bounded_by_their_pages_spec_8`), but only once every page is held: the fetching is done before.
-- Any tree the rule gives (spec/wire.md §6) is at most about log2 of its leaf pages deep: every link page but the last of its level holds two links or more, a level with one page is the root's level, and leaves lie at one depth.
-- Fix: the walk checks those as it goes, per paged position: a link page holding one link off its level's last path (or under a one-link list) and a leaf at another depth than one reached stop the walk for that commit (its judging refuses it). A round fetching all known missing pages then reaches depth k only after the writer delivered about 2^(k-1) pages, so rounds stay within log2 of the bytes delivered. The walk keeps no position structure today (a link reached from a delta is a page or a value root), so it needs the depth and last-path flag per reached link.

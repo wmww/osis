@@ -150,6 +150,7 @@ pub(crate) fn stream<'a>(bytes: &[u8], cx: &DeltaCtx, interner: &'a mut Interner
         (true, _, _) => return Err(Error::Malformed("snapshot arity")),
     };
     let mut dec = Dec::new(cx, interner, pages);
+    dec.checking = check;
     root_tables(&mut dec, sources, commits)?;
     dec.streaming = Some((Track::new(), BTreeMap::new()));
     let skeleton = decode_fragment(&mut dec, frag, true);

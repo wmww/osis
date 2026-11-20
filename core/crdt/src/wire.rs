@@ -699,12 +699,15 @@ pub struct Dec<'a> {
     /// While a root is decoded for streaming: where the walk is, and the paged positions
     /// reached through steps, left undecoded (`stream`).
     pub(crate) streaming: Option<(Track, BTreeMap<Vec<crate::paging::Step>, crate::stream::Deferred>)>,
+    /// A full check, not a decode-only read of checked bytes: a link tree's walk goes on past a
+    /// missing page for the tree rule (`codec::walk_tree`).
+    pub(crate) checking: bool,
 }
 
 impl<'a> Dec<'a> {
     pub(crate) fn new(cx: &DeltaCtx, interner: &'a mut Interner, pages: Option<&'a mut dyn PageSource>) -> Dec<'a> {
         let own = interner.intern(&cx.own);
-        Dec { ts: cx.ts, own, range: cx.range, kind: cx.kind, sources: Vec::new(), commits: Vec::new(), interner, pages, fetched: Vec::new(), links_seen: Default::default(), depth: 0, bare: 0, streaming: None }
+        Dec { ts: cx.ts, own, range: cx.range, kind: cx.kind, sources: Vec::new(), commits: Vec::new(), interner, pages, fetched: Vec::new(), links_seen: Default::default(), depth: 0, bare: 0, streaming: None, checking: true }
     }
 
     pub fn kind(&self) -> DeltaKind {

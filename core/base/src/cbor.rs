@@ -623,8 +623,26 @@ pub fn visit_items(input: &[u8], limits: &Limits, visit: &mut dyn FnMut(Place, u
 /// value spanning all of `input`, in order, by its heads alone: nothing else is decoded or
 /// allocated.
 pub fn visit_links(input: &[u8], limits: &Limits, f: &mut dyn FnMut(Link)) -> Result<(), DecodeError> {
+    visit_link_sites(input, limits, &mut |s| match s {
+        LinkSite::List { links, .. } => links.into_iter().for_each(&mut *f),
+        LinkSite::Lone(l) => f(l),
+    })
+}
+
+/// Where `visit_link_sites` finds a link.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum LinkSite {
+    /// The links of a non-empty array holding links only; `top`: that array is the whole value.
+    List { links: Vec<Link>, top: bool },
+    /// A link anywhere else.
+    Lone(Link),
+}
+
+/// `visit_links`, each link with where it sits: a non-empty array of links only is handed over
+/// whole, after its links are read (a link array holds what its bytes paid for).
+pub fn visit_link_sites(input: &[u8], limits: &Limits, f: &mut dyn FnMut(LinkSite)) -> Result<(), DecodeError> {
     let mut d = Decoder::new(input, limits);
-    d.links(0, f)?;
+    d.links(0, true, f)?;
     if d.pos != input.len() {
         return Err(DecodeError::Trailing);
     }
@@ -899,7 +917,7 @@ impl<'a> Decoder<'a> {
     }
 
     /// `skip`, calling `f` for each link stepped over (`visit_links`).
-    fn links(&mut self, depth: usize, f: &mut dyn FnMut(Link)) -> Result<(), DecodeError> {
+    fn links(&mut self, depth: usize, top: bool, f: &mut dyn FnMut(LinkSite)) -> Result<(), DecodeError> {
         let Some(ib) = self.buf.get(self.pos).copied() else { return Err(self.short()) };
         match ib >> 5 {
             MAJOR_ARRAY | MAJOR_MAP => {
@@ -907,8 +925,20 @@ impl<'a> Decoder<'a> {
                 self.enter(depth + 1)?;
                 let per = if ib >> 5 == MAJOR_MAP { 2 } else { 1 };
                 let n = self.len(ib, per)?;
+                // an array's links while every item so far is one
+                let mut list = (per == 1 && n > 0).then(Vec::new);
                 for _ in 0..n * per {
-                    self.links(depth + 1, f)?;
+                    match (self.link_item(depth + 1)?, &mut list) {
+                        (Some(l), Some(ls)) => ls.push(l),
+                        (Some(l), None) => f(LinkSite::Lone(l)),
+                        (None, _) => {
+                            list.take().into_iter().flatten().for_each(|l| f(LinkSite::Lone(l)));
+                            self.links(depth + 1, false, f)?;
+                        }
+                    }
+                }
+                if let Some(links) = list {
+                    f(LinkSite::List { links, top });
                 }
             }
             MAJOR_TAG => {
@@ -917,14 +947,32 @@ impl<'a> Decoder<'a> {
                 self.enter(depth + 1)?;
                 if tag == TAG_LINK {
                     self.enter(depth + 2)?;
-                    f(self.link_content(depth + 2)?);
+                    f(LinkSite::Lone(self.link_content(depth + 2)?));
                 } else {
-                    self.links(depth + 1, f)?;
+                    self.links(depth + 1, false, f)?;
                 }
             }
             _ => self.skip(depth)?,
         }
         Ok(())
+    }
+
+    /// The link at the read position, read, when the item there is one (`links` at `depth`);
+    /// else nothing read.
+    fn link_item(&mut self, depth: usize) -> Result<Option<Link>, DecodeError> {
+        let Some(ib) = self.buf.get(self.pos).copied() else { return Err(self.short()) };
+        if ib >> 5 != MAJOR_TAG {
+            return Ok(None);
+        }
+        let at = self.pos;
+        self.pos += 1;
+        if self.arg(ib)? != TAG_LINK {
+            self.pos = at;
+            return Ok(None);
+        }
+        self.enter(depth + 1)?;
+        self.enter(depth + 2)?;
+        Ok(Some(self.link_content(depth + 2)?))
     }
 
     /// `skip`, calling `visit` for each item stepped over (`visit_items`).

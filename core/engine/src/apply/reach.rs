@@ -6,29 +6,59 @@
 //! anything else a link reaches from a delta or page is a page. A hostile writer's blob of the
 //! wrong shape only fails its own commit, which judges every link it resolves.
 //!
+//! A paged position's link pages are checked as they come by the one tree rule the decoders
+//! apply (`osis_crdt::LinkTree`, spec/wire.md §6): a page that cannot lie in the canonical tree
+//! stops the walk of that tree (nothing more of it is fetched; the commit's judging refuses it,
+//! its decoder checking the held pages past any missing one). Invariant: fetch rounds for a
+//! position are at most about log2 of the pages its author delivered, plus two, whatever the
+//! tree's shape; positions nest at most `MAX_VALUE_DEPTH + 1` deep (deeper, no decoder accepts
+//! the delta), and a tree node's children lie a level below it. Who writes the input: any writer
+//! of a commit a node waits for.
+//!
 //! node-sync asks what waiting commits lack (`Engine::blob_wants`): each commit's walk is kept
 //! (`Walks`, memory only) and taken further from its missing blobs as they arrive, so a fill of
 //! a large paged commit costs each page one walk step, not one per batch.
 
 use crate::engine::{Engine, Tx};
 use crate::error::{Error, Result};
-use osis_base::{BlobId, CommitId, Link};
+use osis_base::{BlobId, CommitId, Link, LinkSite};
+use osis_crdt::{LinkTree, TreePlace};
 use osis_commit::CommitBlob;
 use std::collections::{BTreeMap, BTreeSet};
 
 /// What a link is known to be before its blob is opened.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum At {
-    /// Linked from a delta or page: a page, or a large value's root.
-    Linked,
-    /// A header list's tree node: its whole tree is walked.
-    Node,
-    /// A large value's tree node below its root. One held when first reached is taken as whole
-    /// (it came with the tree that linked it before, whose walk fetched what lies below), so an
-    /// edit reusing most of a value walks only the nodes it brings.
-    Tree,
+    /// In a non-empty array of links only, in a delta or page: a paged position's page (spec/crdt.md §8), or a
+    /// large value's root (a value holding links only reads alike).
+    Page(Pos),
+    /// Any other link in a delta or page: a large value's root, never a page.
+    Lone,
+    /// A header list's tree node at this level (0: the root, any level): its whole tree is walked.
+    Node(u64),
+    /// A large value's tree node below its root, at this level. One held when first reached is
+    /// taken as whole (it came with the tree that linked it before, whose walk fetched what lies
+    /// below), so an edit reusing most of a value walks only the nodes it brings.
+    Tree(u64),
     /// A chunk: never opened.
     Chunk,
+}
+
+/// Where a page link lies: its position's tree (an index into `Walk::shapes`), its place there,
+/// and how many positions' trees it lies in (the delta's own: 1).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct Pos {
+    tree: usize,
+    place: TreePlace,
+    nest: usize,
+}
+
+/// A paged position's tree as walked so far.
+#[derive(Clone, Debug)]
+struct Shape {
+    rule: LinkTree,
+    /// A page it holds cannot lie in the canonical tree: nothing more of it is fetched.
+    refused: bool,
 }
 
 /// One commit's walk.
@@ -40,6 +70,8 @@ pub(crate) struct Walk {
     missing: BTreeMap<BlobId, (Link, At)>,
     /// Large values' roots reached and held.
     pub roots: Vec<Link>,
+    /// The paged positions' trees reached.
+    shapes: Vec<Shape>,
     /// Whether value trees are walked below their roots (an applied memory commit's, whose
     /// chunks are fetched at once: spec/sync-compaction.md §2).
     trees: bool,
@@ -85,7 +117,12 @@ fn extend(tx: &mut Tx<'_>, w: &mut Walk, mut stack: Vec<(Link, At)>, on_page: &m
 /// One reached link: missing, or opened and followed as far as `w` follows. `arrived`: it was
 /// missing when reached.
 fn step(tx: &mut Tx<'_>, w: &mut Walk, link: Link, at: At, arrived: bool, stack: &mut Vec<(Link, At)>, on_page: &mut super::memory::PageVisit<'_>) -> Result<()> {
-    if at == At::Chunk || at == At::Tree && !arrived {
+    if let At::Page(p) = at
+        && w.shapes.get(p.tree).is_none_or(|s| s.refused)
+    {
+        return Ok(());
+    }
+    if at == At::Chunk || matches!(at, At::Tree(_)) && !arrived {
         if !tx.blobs.held(&link.blob)? {
             w.missing.insert(link.blob, (link, at));
         }
@@ -99,30 +136,74 @@ fn step(tx: &mut Tx<'_>, w: &mut Walk, link: Link, at: At, arrived: bool, stack:
     // bytes that do not open under the link are no blob of it: the commit's own judging fails
     let Ok((_, pt)) = osis_blob::open(&blob, &osis_crypto::Secret32::from_bytes(link.key)) else { return Ok(()) };
     if let Ok((level, kids)) = osis_blob::tree::parse_node(&pt) {
-        if at == At::Linked {
-            w.roots.push(link);
-            if !w.trees {
-                return Ok(());
+        match at {
+            // a level-k node links level k - 1 nodes (spec/wire.md §6): no other is followed
+            At::Node(want) | At::Tree(want) if want != 0 && want != level => return Ok(()),
+            At::Page(_) | At::Lone => {
+                w.roots.push(link);
+                if !w.trees {
+                    return Ok(());
+                }
             }
+            _ => {}
         }
         let below = match (level <= 1, at) {
             (true, _) => At::Chunk,
-            (false, At::Node) => At::Node,
-            (false, _) => At::Tree,
+            (false, At::Node(_)) => At::Node(level - 1),
+            (false, _) => At::Tree(level - 1),
         };
         stack.extend(kids.into_iter().map(|(l, _)| (l, below)));
         return Ok(());
     }
-    if at == At::Linked {
-        on_page(&blob, &pt)?;
-        links_of(&pt, stack).map_err(|_| Error::BadInput("page not one CBOR value"))?;
+    let At::Page(p) = at else { return Ok(()) };
+    on_page(&blob, &pt)?;
+    let mut sites = Vec::new();
+    sites_of(&pt, &mut sites).map_err(|_| Error::BadInput("page not one CBOR value"))?;
+    let Some(shape) = w.shapes.get_mut(p.tree) else { return Ok(()) };
+    let fits = match sites.as_slice() {
+        [LinkSite::List { links, top: true }] => shape.rule.link_page(p.place, links).map(|()| {
+            let n = links.len();
+            stack.extend(links.iter().enumerate().map(|(i, l)| (*l, At::Page(Pos { place: TreePlace::of(Some(p.place), i, n), ..p }))));
+        }),
+        _ => shape.rule.leaf(p.place).map(|()| push_sites(w, sites, p.nest + 1, stack)),
+    };
+    if fits.is_err() {
+        refuse(w, p.tree);
     }
     Ok(())
 }
 
-fn links_of(bytes: &[u8], stack: &mut Vec<(Link, At)>) -> std::result::Result<(), osis_base::DecodeError> {
+/// The links in `bytes` (a delta or page), each with where it sits.
+fn sites_of(bytes: &[u8], out: &mut Vec<LinkSite>) -> std::result::Result<(), osis_base::DecodeError> {
     let limits = osis_base::Limits::new(osis_base::format::MAX_OBJECT_DEPTH, bytes.len());
-    osis_base::visit_links(bytes, &limits, &mut |l| stack.push((l, At::Linked)))
+    osis_base::visit_link_sites(bytes, &limits, &mut |s| out.push(s))
+}
+
+/// The links of a delta (`nest` 1) or of a leaf page lying in `nest - 1` positions' trees, to
+/// walk: each list a position's tree of its own (a value's links alike), unless nested deeper
+/// than any delta a decoder accepts (each paged position holding another adds a read level,
+/// spec/crdt.md §3.3 rule 7).
+fn push_sites(w: &mut Walk, sites: Vec<LinkSite>, nest: usize, stack: &mut Vec<(Link, At)>) {
+    for s in sites {
+        match s {
+            LinkSite::Lone(l) => stack.push((l, At::Lone)),
+            LinkSite::List { .. } if nest > osis_base::format::MAX_VALUE_DEPTH + 1 => {}
+            LinkSite::List { links, .. } => {
+                let tree = w.shapes.len();
+                w.shapes.push(Shape { rule: LinkTree::new(osis_crdt::PageParams::wire()), refused: false });
+                let n = links.len();
+                stack.extend(links.into_iter().enumerate().map(|(i, l)| (l, At::Page(Pos { tree, place: TreePlace::of(None, i, n), nest }))));
+            }
+        }
+    }
+}
+
+/// Position tree `tree` cannot be the canonical one: nothing more of it is fetched.
+fn refuse(w: &mut Walk, tree: usize) {
+    if let Some(s) = w.shapes.get_mut(tree) {
+        s.refused = true;
+    }
+    w.missing.retain(|_, (_, at)| !matches!(at, At::Page(p) if p.tree == tree));
 }
 
 /// The walk of `blob`: while its header lists given by link do not resolve from what is held,
@@ -131,7 +212,7 @@ fn links_of(bytes: &[u8], stack: &mut Vec<(Link, At)>) -> std::result::Result<()
 pub(crate) fn walk(tx: &mut Tx<'_>, blob: &CommitBlob, trees: bool, on_page: &mut super::memory::PageVisit<'_>) -> Result<Walk> {
     if !blob.header.is_resolved() && !resolves(tx, blob)? {
         let mut w = Walk { trees, ..Walk::default() };
-        let stack = osis_commit::ListField::ALL.into_iter().filter_map(|f| blob.header.links.get(f).copied()).map(|l| (l, At::Node)).collect();
+        let stack = osis_commit::ListField::ALL.into_iter().filter_map(|f| blob.header.links.get(f).copied()).map(|l| (l, At::Node(0))).collect();
         extend(tx, &mut w, stack, on_page)?;
         return Ok(w);
     }
@@ -145,7 +226,10 @@ pub(crate) fn walk_deltas(tx: &mut Tx<'_>, deltas: &[&[u8]], trees: bool, on_pag
     let mut w = Walk { trees, ..Walk::default() };
     let mut stack = Vec::new();
     for d in deltas {
-        let _ = links_of(d, &mut stack);
+        let mut sites = Vec::new();
+        if sites_of(d, &mut sites).is_ok() {
+            push_sites(&mut w, sites, 1, &mut stack);
+        }
     }
     extend(tx, &mut w, stack, on_page)?;
     Ok(w)

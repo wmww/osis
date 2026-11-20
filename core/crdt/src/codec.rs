@@ -624,50 +624,144 @@ pub(crate) enum Visit {
     Leaf(CanonicalBytes, osis_base::Link, PageAt),
 }
 
+/// Where a link lies in a paged position's link tree (spec/wire.md §6): its depth (the root
+/// list's links are at 1), whether it is on the tree's last path (the last link of every list
+/// above it), and whether every list above it, its own included, holds one link.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct TreePlace {
+    depth: usize,
+    last: bool,
+    sole: bool,
+}
+
+impl TreePlace {
+    /// Link `i` of a list of `n` links: the root list (`above` `None`) or a link page at `above`.
+    pub fn of(above: Option<TreePlace>, i: usize, n: usize) -> TreePlace {
+        let (depth, last, sole) = above.map_or((0, true, true), |p| (p.depth, p.last, p.sole));
+        TreePlace { depth: depth + 1, last: last && i + 1 == n, sole: sole && n == 1 }
+    }
+
+    pub fn depth(self) -> usize {
+        self.depth
+    }
+}
+
+/// The one canonical tree rule of a paged position's link pages (spec/wire.md §6), checked a page
+/// at a time as pages come, in any order: by the decoders (`walk_tree`) and by sync's walk of what
+/// a commit links (osis-engine `apply::reach`), so both refuse the same pages.
+///
+/// Invariant: a page this accepts can lie in the one tree the rule gives some leaves, so every
+/// link page but the last of its level holds two links or more and a level of one page is the
+/// root list's. A tree whose pages all pass therefore has about 2^(k-2) pages or more at depth k:
+/// a walk taking a level per round reaches depth k only after the author delivered that many
+/// pages (rounds at most about log2 of the pages delivered, plus two), whatever its shape.
+/// Who writes the input: any writer (a commit's pages), or a holder relaying them.
+#[derive(Clone, Debug)]
+pub struct LinkTree {
+    fanout: usize,
+    /// The depth every leaf lies at, once a leaf is seen.
+    leaves_at: Option<usize>,
+    /// The deepest link page seen (0: none).
+    deepest_link: usize,
+}
+
+impl LinkTree {
+    pub fn new(params: PageParams) -> LinkTree {
+        LinkTree { fanout: params.fanout, leaves_at: None, deepest_link: 0 }
+    }
+
+    /// A link page holding `links` at `at`. Bad input: above the fan-out, at or below a leaf's
+    /// depth, a group's closing link before its last (a link whose hash begins with a zero byte
+    /// from the second on), a group off its level's last path that the rule does not close
+    /// there (by hash or at the fan-out), one link alone on a level of one page.
+    pub fn link_page(&mut self, at: TreePlace, links: &[Link]) -> Result<(), Error> {
+        let n = links.len();
+        if n > self.fanout {
+            return Err(Error::Malformed("link page above the fan-out"));
+        }
+        if self.leaves_at.is_some_and(|d| d <= at.depth) {
+            return Err(Error::Malformed("leaf pages at different depths"));
+        }
+        let closes = |l: &Link| l.hash.first() == Some(&0);
+        if links.iter().take(n.saturating_sub(1)).skip(1).any(closes) {
+            return Err(Error::Malformed("link page past its group's close"));
+        }
+        let closed = n == self.fanout || n >= 2 && links.last().is_some_and(closes);
+        if !at.last && !closed {
+            return Err(Error::Malformed("link page not closed by the tree-node rule"));
+        }
+        if n == 1 && at.sole {
+            return Err(Error::Malformed("one link page of one link on its level"));
+        }
+        self.deepest_link = self.deepest_link.max(at.depth);
+        Ok(())
+    }
+
+    /// A leaf page at `at`. Bad input: leaves at two depths, a leaf at or above a link page's depth.
+    pub fn leaf(&mut self, at: TreePlace) -> Result<(), Error> {
+        if self.leaves_at.is_some_and(|d| d != at.depth) || at.depth <= self.deepest_link {
+            return Err(Error::Malformed("leaf pages at different depths"));
+        }
+        self.leaves_at = Some(at.depth);
+        Ok(())
+    }
+}
+
 /// Walks the link tree under a paged position's root list `top` (§8, spec/wire.md §6) depth
 /// first, in leaf order, handing each page to `on` as it is fetched (a link page before its
 /// pages). Each link is offered to `want` with its place before it is fetched; one it declines is
-/// not fetched, nor anything below it. Bad input: a link page above the fan-out, leaves at two
-/// depths. Bounded by the input: each page is fetched once (`fetch_page`: a blob linked twice is
-/// bad input, so no cycle), and memory is the link lists on the way down, a page's worth per
-/// level reached, every level a page the author delivered.
+/// not fetched, nor anything below it. Bad input: any page `LinkTree` refuses. Bounded by the
+/// input: each page is fetched once (`fetch_page`: a blob linked twice is bad input, so no
+/// cycle), and memory is the link lists on the way down, a page's worth per level reached, every
+/// level a page the author delivered.
+///
+/// Checking (`Dec::checking`), a missing page does not end the walk: it goes on through the held
+/// pages, `on` no longer called, and ends missing only if none of them is refused. So a tree a
+/// walk refused for a page it holds (sync's, which then fetches nothing more of it) is refused
+/// here whatever else is missing: the verdict grows with the held set, never waits on a page
+/// no walk fetches.
 pub(crate) fn walk_tree(cx: &mut Dec, top: Vec<osis_base::Link>, want: &dyn Fn(&[usize]) -> bool, on: &mut dyn FnMut(&mut Dec, Visit) -> Result<(), Error>) -> Result<(), Error> {
-    let fanout = cx.pages.as_ref().map_or_else(PageParams::wire, |p| p.params()).fanout;
-    // each level's links and the index of the next one to take
-    let mut stack = vec![(top, 0usize)];
-    // the depth every leaf lies at, once a leaf is reached
-    let mut leaves_at = None;
-    while let Some((links, next)) = stack.last_mut() {
+    let mut tree = LinkTree::new(cx.pages.as_ref().map_or_else(PageParams::wire, |p| p.params()));
+    // each level's links, the index of the next one to take, and the place of the link page
+    // holding them (`None`: the root list)
+    let mut stack: Vec<(Vec<Link>, usize, Option<TreePlace>)> = vec![(top, 0, None)];
+    let mut missing = false;
+    while let Some((links, next, above)) = stack.last_mut() {
         let Some(l) = links.get(*next).copied() else {
             stack.pop();
             continue;
         };
+        let place = TreePlace::of(*above, *next, links.len());
         *next += 1;
-        let at: PageAt = stack.iter().map(|(_, i)| i.saturating_sub(1)).collect();
+        let at: PageAt = stack.iter().map(|(_, i, _)| i.saturating_sub(1)).collect();
         if !want(&at) {
             continue;
         }
-        let depth = stack.len();
-        let page = fetch_page(cx, &l)?;
+        let page = match fetch_page(cx, &l) {
+            Err(Error::Page(PageError::Missing)) if cx.checking => {
+                missing = true;
+                continue;
+            }
+            r => r?,
+        };
         match page_links(&page)? {
             Some(inner) => {
-                if leaves_at.is_some_and(|d| d <= depth) {
-                    return Err(Error::Malformed("leaf pages at different depths"));
+                tree.link_page(place, &inner)?;
+                if !missing {
+                    on(cx, Visit::Link(page, l))?;
                 }
-                if inner.len() > fanout {
-                    return Err(Error::Malformed("link page above the fan-out"));
-                }
-                on(cx, Visit::Link(page, l))?;
-                stack.push((inner, 0));
+                stack.push((inner, 0, Some(place)));
             }
             None => {
-                if leaves_at.is_some_and(|d| d != depth) {
-                    return Err(Error::Malformed("leaf pages at different depths"));
+                tree.leaf(place)?;
+                if !missing {
+                    on(cx, Visit::Leaf(page, l, at))?;
                 }
-                leaves_at = Some(depth);
-                on(cx, Visit::Leaf(page, l, at))?;
             }
         }
+    }
+    if missing {
+        return Err(Error::Page(PageError::Missing));
     }
     Ok(())
 }
@@ -1448,6 +1542,35 @@ mod tests_levels {
         }
     }
 
+    /// The tree under root list `out` in `sink` walked level by level, as sync's walk meets it,
+    /// every page put to `LinkTree`: its depth, leaves included.
+    fn placed(out: &[u8], sink: &Biased, params: PageParams) -> Result<usize, Error> {
+        let links = |b: &[u8]| match osis_base::decode(b, &osis_base::Limits::DEFAULT) {
+            Ok(Value::List(items)) => items.iter().map(|x| if let Value::Link(l) = x { Some(**l) } else { None }).collect::<Option<Vec<Link>>>(),
+            _ => None,
+        };
+        let mut tree = LinkTree::new(params);
+        let top = links(out).ok_or(Error::Malformed("root"))?;
+        let mut level: Vec<(Link, TreePlace)> = top.iter().enumerate().map(|(i, l)| (*l, TreePlace::of(None, i, top.len()))).collect();
+        let mut depth = 0;
+        while !level.is_empty() {
+            depth += 1;
+            let mut next = Vec::new();
+            for (l, at) in level {
+                let page = sink.by.get(&l.hash).ok_or(Error::Malformed("page"))?;
+                match links(page) {
+                    Some(inner) => {
+                        tree.link_page(at, &inner)?;
+                        next.extend(inner.iter().enumerate().map(|(i, x)| (*x, TreePlace::of(Some(at), i, inner.len()))));
+                    }
+                    None => tree.leaf(at)?,
+                }
+            }
+            level = next;
+        }
+        Ok(depth)
+    }
+
     /// The link levels under root list `out` in `sink`: link pages followed down from the
     /// root's first link.
     fn link_depth(out: &[u8], sink: &Biased) -> usize {
@@ -1514,6 +1637,8 @@ mod tests_levels {
                         let case = format!("zero {zero}, fanout {fanout}, fit {fit}, n {n}");
                         assert_eq!(root_a, root_b, "{case}: root");
                         assert!(root_a.len() <= params.target.max(head_len(1) + one), "{case}: the root fits, or is one link");
+                        let depth = placed(&root_a, &a, params).unwrap_or_else(|e| panic!("{case}: {e}"));
+                        assert!(n < 2 || 1usize << depth.saturating_sub(2) <= n, "{case}: {depth} levels over {n} leaves");
                         a.pages.sort();
                         b.pages.sort();
                         assert_eq!(a.pages, b.pages, "{case}: pages");
