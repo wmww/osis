@@ -38,6 +38,7 @@ Maker to reader, the waste (10.3 KB per member at main): a certificate copy carr
 By design, per member (each stage's baseline):
 - The member's keyset (9.3 KB, four KEM keys) fetched twice: under the root's sync ID (its unit carries the member) and as another blob under the member's own (per-sync-ID copies, spec/sync-judgement.md §1). The multi-unit carriage stays; the keyset's size is A5's (cards, the KEM keys most things publish; notes/thing-cost.md).
 - At the grant, the maker logs four certificate copies under each member's sync ID (the grant, its chain, node 2's account chain: spec/permissions.md §4 Role changes travel, Logging certificates) and stamps them: about 4 signs and 0.6 KB of entries per member before the reader connects: A2 (evidence per sync unit; issues/certificate-copy-never-shrinks.md).
+- A2 replaces the certificate copies by evidence along stated paths (held-model `evidence` `cost_with`, notes/evidence-model-findings.md Cost): copies under a sync ID are the chained role commits on the edges outside its unit that its bodies' paths use, flat in writes, one more per role change on such an edge, repeated under each sync ID carrying the thing; no rotations, no account chains. A unit written by one signer through [A] holds one copy (the signer's grant on A) plus that edge's changes.
 - The reader writes one account ticket per member on its account root (spec/sync-set.md §1 The account's tickets): a commit, a sign, transactions: A4 (accounts; the account root's tickets go).
 
 ## Record-keyed state, as built

@@ -8,7 +8,7 @@ Written over A1's draft, whose words will stand in spec/ when A2 starts: notes/a
 
 ## 4. Verifying signers: evidence
 - A write's authority is checked along its stated path (§1 Path): each edge a record edge (the tid commits to the mint admin) or set by edge writes, its signer a key actor whose tid commits to its public key; **(until A4)** an account's commit also through its signing chain to the epoch it names (§5.4, §5.5). No secrets are needed. *Stands (A1).*
-- **Chained writes**: *stands (A1)*. Read by §5.2 Re-grant only.
+- **Chained writes**: *stands (A1)*. Read by §5.2 Re-grant only (OPEN 10's proposal: by evidence and spec/commits.md §4 Unjudgeable too).
 - **Evidence of a commit** for a thing T it writes: the least set holding, of what the node holds,
   - every edge write on an edge of the path the commit states for T (§1 Path: its direct edges; a descent's record edges have none), and, for an edge write whose header names a remaining admin (spec/wire.md §4 `remains`), on that holder's edge on its target: grants, lowerings, removals, self-removals, invite grants and finalizes alike, whatever their validity or order (OPEN 10, notes/a2-spec/README.md: whether only chained writes);
   - for each edge write in the set, every edge write on each other edge its commit writes on the same thing: a commit's edge writes apply together or not at all, and a removal among them waits for the creation of each entry it resets (§2 Edge writes);
@@ -21,7 +21,7 @@ Written over A1's draft, whose words will stand in spec/ when A2 starts: notes/a
 - **Evidence of a sync ID S**, at a node, over what it holds now: the least set holding
   - the evidence of each body under S (spec/sync-judgement.md §1: a commit's parts on things of S's sync unit) for each thing of S's sync unit it has a part on, and of nothing else of it (a commit's part on a thing outside the unit brings no evidence, whatever it writes);
   - each edge write naming S's actor holder (not its own record edge) and its evidence (Role changes travel);
-  - **(A3)** each held removal (an explicit edge write giving its edge (h, t) below write at its `ts`) whose **reach** under S is held: the held edge writes giving write or above, at any `ts` and whatever their validity, that join t to a thing of S's sync unit (t itself in the unit: none needed); with that reach. Until A3: a removal goes under S as Role changes travel says.
+  - **(A3)** each held removal (an explicit edge write giving its edge (h, t) below write at its `ts`) whose **reach** under S is held: the held edge writes giving write or above, at any `ts` and whatever their validity, that join t to a thing of S's sync unit (t itself in the unit: none needed); with that reach (OPEN 10's proposal: chained ones only, as every logging path's). Until A3: a removal goes under S as Role changes travel says.
   - **(A3)** each list leaf (§5.1 Frontier) of a lowering in the set, for a thing of the unit, while a body under S on that thing with no edge-class part rests on the lowering's edge (named by the leaf or not, stamped before or after the lowering); each addendum on a thing of the unit while it lists a held commit with no edge-class part (an addendum is no such commit) resting on its removal's edge; else neither is in the set.
   - closed as Evidence of a commit is.
 
