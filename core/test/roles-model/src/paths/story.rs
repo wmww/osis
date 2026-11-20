@@ -1258,7 +1258,7 @@ pub fn rebuild(w: &World, keep: &[Id]) -> (World, BTreeMap<Id, Id>) {
             Kind::Purge { names } => Kind::Purge { names: *names },
             Kind::Cover { carries } => Kind::Cover { carries: ids(carries) },
         };
-        let j = out.push(c.signer, c.ts, &c.path, c.on, kind);
+        let j = out.push_marked(c.signer, c.ts, &c.path, c.on, kind, &c.direct);
         out.authored(j, c.pa);
         out.commits[j].ret = c.ret;
         out.commits[j].own = c.own;

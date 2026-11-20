@@ -37,6 +37,22 @@ fn a_write_by_descent_is_judged_along_the_record_edges() {
     agree_all(&w, &[low]);
 }
 
+// notes/a1-spec/README.md Open 21: H takes admin on T1 (its direct edge, by [A]) and removes A's
+// record edge on T1 by the descent []: a later grant by H stated along the descent rests on the
+// removed record edge and applies nowhere, as in the model. The model's marked direct hop, which
+// gives H's write, is not in the walk's input yet (notes/perm-paths.md, Owed).
+#[test]
+fn a_detached_things_owner_writes_it_only_by_a_marked_direct_hop() {
+    let mut w = account();
+    let g = w.edge(H, 1, &[A], T1, H, Admin, &[]);
+    let cut = w.edge(H, 2, &[], T1, A, Gone, &[g]);
+    w.rely(cut, H);
+    w.edge(H, 4, &[], T1, B, Write, &[]);
+    w.edge(H, 4, &[A], T1, N5, Write, &[]);
+    agree_all(&w, &[]);
+    agree_all(&w, &[cut]);
+}
+
 // spec/permissions.md §2: a self-removal (a path ending at the holder) audits nothing and raises
 // nothing.
 #[test]

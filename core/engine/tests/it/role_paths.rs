@@ -477,6 +477,16 @@ fn class_worlds() -> Vec<ClassWorld> {
     lp.advance(1000);
     spread(&mut lp);
     out.push(("a key actor's roster", None, lp));
+    // a thing detached from its folder: A makes G and T under G, takes admin on T and removes G's
+    // record edge there, then grants B write on T: no path states A's direct edge (Open 21)
+    let (mut lp, ps) = people(2);
+    let g = thing_of(&mut lp, 0, ps[0]);
+    let t = thing_of(&mut lp, 0, g);
+    spread(&mut lp);
+    grant(&mut lp, 0, t, ps[0], edge_of(Role::Admin));
+    remove(&mut lp, 0, t, g);
+    grant(&mut lp, 0, t, ps[1], edge_of(Role::Write));
+    out.push(("a detached thing", Some("a mint ancestor's direct edge with its descent cut"), lp));
     out
 }
 
@@ -500,6 +510,7 @@ fn new_walk_differs_only_by_design() {
                 None => d.is_empty(),
                 Some(c) if c.starts_with("a vouch") => d.len() == 2,
                 Some(c) if c.starts_with("a leave") => !d.is_empty() && d.iter().all(|x| x.contains("old true, new Some(Unapplied)") || x.contains("roles on")),
+                Some(c) if c.starts_with("a mint ancestor") => !d.is_empty() && d.iter().all(|x| x.contains("old true, new Some(Unapplied)") || x.contains("roles on")),
                 Some(c) => panic!("no rule for class {c}"),
             };
             let shown = class.is_none() || lp.peers.iter().any(|p| !walks_differ(&p.engine).is_empty());

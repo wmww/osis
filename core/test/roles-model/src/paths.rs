@@ -21,8 +21,8 @@
 //!   with a later `until` on a standing admin edge (an **end**) is a grant: the last-admin rule
 //!   alone reads it (`Rules::until`; as a lowering it fails a required gate either way).
 //! - **Hops.** Consecutive members of [signer, A1..Ak, end] are joined by descent (the record
-//!   edges down the mint chain) where the first is a mint ancestor of the second, else by their
-//!   direct edge. The end is the thing written, except for an edge write whose path ends at the
+//!   edges down the mint chain) where the first is a mint ancestor of the second and the path does
+//!   not mark the pair direct (`World::push_marked`), else by their direct edge. The end is the thing written, except for an edge write whose path ends at the
 //!   holder of the edge it sets: a **self-removal**, needing admin on the holder (a signer
 //!   leaving by itself states no hop).
 //! - **Walk** (§5.1 along one path). Edge-class commits (edge writes, vouches) in key order
@@ -220,6 +220,8 @@ pub struct Commit {
     /// A part of a commit of several parts one of which sets an edge of the commit's stated path
     /// (`World::group`; read only by the control `Rules::refuse_shapes`).
     own_path: bool,
+    /// The member pairs its path marks as joined by their direct edge (`World::push_marked`).
+    pub direct: Vec<usize>,
 }
 
 /// How role writes a removal does not list are vouched for (issues/actors-one-mechanism.md,
@@ -581,7 +583,13 @@ impl World {
         World { records: records.to_vec(), commits: vec![] }
     }
     /// A commit; its hops are read from its stated path once, here (`World::hops`).
-    pub fn push(&mut self, signer: Thing, ts: u32, path: &[Thing], on: Thing, mut kind: Kind) -> Id {
+    pub fn push(&mut self, signer: Thing, ts: u32, path: &[Thing], on: Thing, kind: Kind) -> Id {
+        self.push_marked(signer, ts, path, on, kind, &[])
+    }
+    /// `push` with the member pairs `direct` (by index: 0 joins the signer to the first member
+    /// after it) joined by their direct edge though the first is a mint ancestor of the second
+    /// (notes/a1-spec/README.md Open 21: a hop the path marks as direct; no wire form has one yet).
+    pub fn push_marked(&mut self, signer: Thing, ts: u32, path: &[Thing], on: Thing, mut kind: Kind, direct: &[usize]) -> Id {
         let mut all = vec![signer];
         all.extend(path);
         // the path's end decides the class: an edge write whose path ends at the holder is a
@@ -596,9 +604,9 @@ impl World {
             *finalize = *finalize && !leave && *holder != signer;
         }
         let well = all.iter().collect::<BTreeSet<_>>().len() == all.len();
-        let hops = if well { all.windows(2).flat_map(|p| self.joins(p[0], p[1])).collect() } else { vec![] };
+        let hops = if well { all.windows(2).enumerate().flat_map(|(k, p)| if direct.contains(&k) { vec![(p[0], p[1])] } else { self.joins(p[0], p[1]) }).collect() } else { vec![] };
         let i = self.commits.len();
-        self.commits.push(Commit { signer, ts, path: path.to_vec(), on, kind, hops, well, leave, pa: 0, ret: Retention::AuthorOrAdmin, own: false, cid: i, own_path: false });
+        self.commits.push(Commit { signer, ts, path: path.to_vec(), on, kind, hops, well, leave, pa: 0, ret: Retention::AuthorOrAdmin, own: false, cid: i, own_path: false, direct: direct.to_vec() });
         i
     }
     /// One commit of several edge writes on `on` along one path (spec/commits.md §2). Its parts

@@ -2626,6 +2626,39 @@ fn a_writer_of_an_admin_team_invites_up_to_its_own_role() {
     tiny_gates(&w, &[]);
 }
 
+/// A thing detached from its folder (notes/a1-spec/README.md Open 21): H mints A (the folder),
+/// A mints T. H grants itself admin on T by [A] (its direct edge (H, T)), then removes A's record
+/// edge on T by its descent [], naming itself as the admin that remains: both apply. A record edge
+/// is an edge like any (the walk starts it at admin and edge writes move it), and a descent rests
+/// on each of its record edges as they stand at the part's key: so H's later content and grant on
+/// T, stated along the descent [] or through [A], apply nowhere, though H holds admin on T by its
+/// own direct edge, which no unmarked path can state (a hop from a mint ancestor is a descent).
+/// Marking the hop H to T as the direct edge, both apply, as today's walk has it.
+#[test]
+fn a_detached_things_owner_writes_it_only_by_a_marked_direct_hop() {
+    const T: Thing = 40;
+    let mut w = World::new(&[(H, A), (A, T)]);
+    let g = w.push(H, 1, &[A], T, Kind::set(H, Admin));
+    let cut = w.push(H, 2, &[], T, Kind::set(A, Gone).listing(w.cut(&[g])).relying(H));
+    assert_eq!(w.hops(cut), [(H, A), (A, T)], "the removal of A's record edge rests on its descent");
+    let by_descent = w.content(H, 3, &[], T);
+    let through_a = w.content(H, 3, &[A], T);
+    let marked = w.push_marked(H, 3, &[], T, Kind::Content, &[0]);
+    assert_eq!(w.hops(marked), [(H, T)]);
+    let grant_descent = w.push(H, 4, &[], T, Kind::set(B, Write));
+    let grant_marked = w.push_marked(H, 5, &[], T, Kind::set(N5, Write), &[0]);
+    for t in [&[][..], &[cut]] {
+        let rd = fixed(&w, t);
+        assert!(rd.applied.contains(&g) && rd.applied.contains(&cut), "{t:?} {rd:?}");
+        assert_eq!((rd.role(H, T), rd.role(A, T)), (Admin, Gone));
+        assert!(!rd.valid.contains(&by_descent) && !rd.valid.contains(&through_a) && rd.valid.contains(&marked), "{t:?} {rd:?}");
+        assert!(!rd.applied.contains(&grant_descent) && rd.applied.contains(&grant_marked), "{t:?} {rd:?}");
+        assert_eq!((rd.role(B, T), rd.role(N5, T)), (Gone, Write));
+        let st = tiny_gates_under(&w, t, &Rules::fixed());
+        assert!(st.failures() == 0, "{t:?}: {:?} {:?}", st.fails, st.first);
+    }
+}
+
 // ---- The remaining admin past the lowering's drops (notes/a1-spec/README.md, OPEN 5) ----
 
 /// M mints A, grants H admin until 20 and X admin, and leaves naming X; X grants B admin. H
