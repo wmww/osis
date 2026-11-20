@@ -4543,9 +4543,11 @@ fn entry_under_two_keys(k1: &[u8; 32], k2: &[u8; 32]) -> Vec<u8> {
         (block(&r[..16], 0), u128::from_le_bytes(pk[16..].try_into().unwrap()))
     };
     let ((r1, s1), (r2, s2)) = (rs(&ks1), rs(&ks2));
-    // the MAC's blocks: the 65-byte ciphertext padded to five, then the lengths (no AD)
+    // the MAC's blocks: the class's 67-byte ciphertext (four tids and two zero bytes of padding)
+    // padded to five, then the lengths (no AD)
+    const LEN: usize = 67;
     let mut lens = [0u8; 16];
-    lens[8..].copy_from_slice(&65u64.to_le_bytes());
+    lens[8..].copy_from_slice(&(LEN as u64).to_le_bytes());
     let coef = |r: &N, i: usize| pow(r, &[6 - i as u64, 0, 0]);
     let mac = |r: &N, s: u128, ct: &[u8; 80]| {
         let acc = (0..5).map(|i| block(&ct[16 * i..16 * i + 16], 1)).chain([block(&lens, 1)]).enumerate().fold([0, 0, 0], |acc, (i, m)| add(&acc, &mul(&m, &coef(r, i))));
@@ -4559,8 +4561,9 @@ fn entry_under_two_keys(k1: &[u8; 32], k2: &[u8; 32]) -> Vec<u8> {
             pt.push(0x4f);
             pt.extend_from_slice(&osis_base::hash::hash(&(4 * n + j).to_le_bytes())[..15]);
         }
+        pt.resize(LEN, 0);
         let mut ct = [0u8; 80];
-        for i in 0..65 {
+        for i in 0..LEN {
             ct[i] = pt[i] ^ ks1.byte(i);
         }
         let rest = |r: &N| (0..6).filter(|i| *i != 2).map(|i| if i < 5 { (i, block(&ct[16 * i..16 * i + 16], 1)) } else { (i, block(&lens, 1)) }).fold([0, 0, 0], |acc, (i, m)| add(&acc, &mul(&m, &coef(r, i))));
@@ -4578,7 +4581,7 @@ fn entry_under_two_keys(k1: &[u8; 32], k2: &[u8; 32]) -> Vec<u8> {
             if tag != mac(&r2, s2, &ct) {
                 continue;
             }
-            let mut entry = ct[..65].to_vec();
+            let mut entry = ct[..LEN].to_vec();
             entry.extend_from_slice(&tag.to_le_bytes());
             assert!(open(k1, &ZERO_NONCE, &[], &entry).is_ok() && open(k2, &ZERO_NONCE, &[], &entry).is_ok());
             return [osis_commit::key_commitment(k1).to_vec(), entry].concat();

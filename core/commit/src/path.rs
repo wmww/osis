@@ -13,8 +13,8 @@ use std::collections::BTreeSet;
 
 /// One stated path `[i, A1, …, Ak, marks?]`: the purge-author index `purge` (0 names the signer, j
 /// the listed thing Aj, spec/permissions.md §6), the listed things in order, and the hops it marks
-/// direct (`direct`: bit j marks hop j, joining members j and j + 1; spec/permissions.md §1 Path,
-/// Direct mark). The empty path naming the signer is `Path::default()`.
+/// direct (`direct`: bit j marks hop j, joining members j and j + 1; notes/a1-spec/permissions.md §1
+/// Path, Direct mark). The empty path naming the signer is `Path::default()`.
 #[derive(Clone, Debug, Default, PartialEq, Eq, Hash)]
 pub struct Path {
     pub purge: usize,

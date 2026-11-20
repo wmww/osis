@@ -1066,9 +1066,9 @@ impl Timelines {
     }
 
     /// The path from `node` into `thing` giving `need` on the current edges at `ts`
-    /// (`osis_perm::Timeline::path_now`): the things listed, and whether its last hop is a record
-    /// edge.
-    pub fn path_now(&self, node: &Tid, thing: &Tid, need: osis_perm::graph::Need, ts: osis_base::Ts) -> Option<(Vec<Tid>, bool)> {
+    /// (`osis_perm::Timeline::path_now`): the things listed, the hops marked direct, and whether
+    /// its last hop is a record edge.
+    pub fn path_now(&self, node: &Tid, thing: &Tid, need: osis_perm::graph::Need, ts: osis_base::Ts) -> Option<(Vec<Tid>, osis_base::format::PathMarks, bool)> {
         let Some(tl) = self.of.get(thing) else {
             self.stamps.read(&Read::Things);
             return None;

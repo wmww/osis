@@ -386,30 +386,35 @@ pub(crate) fn may_write_on(tx: &mut Tx<'_>, tid: &Tid) -> Result<MayWrite> {
 }
 
 // Interim (notes/a1-spec/README.md step 3): a commit no path gives the role on a thing it
-// writes (a role commit too: Open 20), one acting for a thing not on every thing's path (Open
-// 16), and a relayed signal's snapshot (`ephemeral::signal`) state this.
+// writes (a fire valid by its thing's setting; a hostile writer's), one acting for a thing not on
+// every thing's path (Open 16), and a relayed signal's snapshot (`ephemeral::signal`) state this.
 /// The one path a commit signed by `signer` acting for `actor` states where it states no real
 /// one (`stated_paths`): empty for the signer itself, else `actor` alone, named as purge author.
 pub(crate) fn interim_path(signer: Tid, actor: Tid) -> osis_commit::Path {
     if actor == signer { osis_commit::Path::default() } else { osis_commit::Path::through(actor) }
 }
 
+/// A path found (`path_with`): the things listed, the hops marked direct, and whether its last hop
+/// is a record edge.
+pub(crate) type Found = (Vec<Tid>, osis_base::format::PathMarks, bool);
+
 /// The path from `node` into `tid` giving at least `need` at `ts` (notes/a1-spec/permissions.md §1 Path):
-/// the things listed, and whether its last hop is a record edge. A thing the commit creates
+/// `Found`, a descent wherever one gives it and a hop marked direct only where a mint ancestor's
+/// direct edge alone does (`osis_perm::graph::View::ways_to`). A thing the commit creates
 /// (`records`) is reached as its mint admin is, then by its record edge. `None`: no path gives it.
-pub(crate) fn path_with(core: &Core, node: Tid, records: Records<'_>, tid: &Tid, need: Need, ts: Ts) -> Option<(Vec<Tid>, bool)> {
+pub(crate) fn path_with(core: &Core, node: Tid, records: Records<'_>, tid: &Tid, need: Need, ts: Ts) -> Option<Found> {
     if *tid == node {
-        return Some((Vec::new(), true));
+        return Some((Vec::new(), 0, true));
     }
     match record_chain(*tid, |t| records(t).map(CreationRecord::record_link)).next() {
         Some(ChainStep::Up { admin, .. }) => {
             // the record edge gives every invite: the path to the mint admin needs the role alone
-            let (mut listed, descent) = path_with(core, node, records, &admin, Need::Role(need.role()), ts)?;
+            let (mut listed, marks, descent) = path_with(core, node, records, &admin, Need::Role(need.role()), ts)?;
             // reached by a direct edge, the mint admin is listed; by descent, the descent goes on
             if !descent {
                 listed.push(admin);
             }
-            Some((listed, true))
+            Some((listed, marks, true))
         }
         Some(ChainStep::Unknown(t)) => core.timelines.path_now(&node, &t, need, ts),
         Some(ChainStep::Key(_) | ChainStep::TooDeep) | None => None,
@@ -420,8 +425,8 @@ pub(crate) fn path_with(core: &Core, node: Tid, records: Records<'_>, tid: &Tid,
 pub(crate) enum Stated {
     /// One path in the clear (`CommitBuilder::path`).
     One(osis_commit::Path),
-    /// The split form (`CommitBuilder::split`): the purge author, each thing's path.
-    Split(Option<Tid>, BTreeMap<Tid, Vec<Tid>>),
+    /// The split form (`CommitBuilder::split`): the purge author, each thing's path and its marks.
+    Split(Option<Tid>, BTreeMap<Tid, (Vec<Tid>, osis_base::format::PathMarks)>),
 }
 
 /// What a commit states (spec/wire.md §4 field 2; notes/path-form.md The engine's choice). Each
@@ -457,13 +462,15 @@ pub(crate) fn stated_paths(core: &Core, plan: &CommitPlan, writes: &[AspectWrite
     let mut each: BTreeMap<Tid, (osis_commit::Path, bool)> = BTreeMap::new();
     for (t, r) in need {
         let path = if actor == node {
-            path_with(core, node, records, &t, Need::Role(r), plan.ts).map(|(things, rec)| (osis_commit::Path { purge: 0, things, direct: 0 }, rec))
+            path_with(core, node, records, &t, Need::Role(r), plan.ts).map(|(things, direct, rec)| (osis_commit::Path { purge: 0, things, direct }, rec))
         } else {
             // Open (notes/a1-spec/README.md Open 16): acting for a thing not on this thing's path
             // states the Interim `[actor]` below, as the Acting check accepts it
-            path_with(core, node, records, &actor, Need::Role(r), plan.ts).zip(path_with(core, actor, records, &t, Need::Role(r), plan.ts)).map(|((to, _), (from, rec))| {
+            path_with(core, node, records, &actor, Need::Role(r), plan.ts).zip(path_with(core, actor, records, &t, Need::Role(r), plan.ts)).map(|((to, to_marks, _), (from, from_marks, rec))| {
                 let purge = to.len() + 1;
-                (osis_commit::Path { purge, things: to.into_iter().chain([actor]).chain(from).collect(), direct: 0 }, rec)
+                // `from`'s hops follow `to`'s and the hop into the actor
+                let direct = to_marks | from_marks << purge;
+                (osis_commit::Path { purge, things: to.into_iter().chain([actor]).chain(from).collect(), direct }, rec)
             })
         };
         let Some(path) = path.filter(|(p, _)| p.things.iter().collect::<BTreeSet<_>>().len() == p.things.len() && !p.things.contains(&node)) else { return Ok(fallback) };
@@ -484,7 +491,7 @@ pub(crate) fn stated_paths(core: &Core, plan: &CommitPlan, writes: &[AspectWrite
     let author = (actor != node).then_some(actor);
     // each thing's listed things: its own path as `Path::to` reads it, the thing itself listed
     // last where it is the purge author
-    let paths = each.into_iter().map(|(t, (p, _))| (t, p.things)).collect();
+    let paths = each.into_iter().map(|(t, (p, _))| (t, (p.things, p.direct))).collect();
     Ok(Stated::Split(author, paths))
 }
 
@@ -541,31 +548,31 @@ fn role_path(core: &Core, plan: &CommitPlan, writes: &[AspectWrite], edges: &[(T
     let mut each: BTreeMap<Tid, osis_commit::Path> = BTreeMap::new();
     for t in things {
         let found = match role_way(core, plan, &t, edges) {
-            Some(RoleWay::Leave(h)) => path_with(core, node, records, &h, Need::Role(Role::Admin), plan.ts).map(|(mut listed, _)| {
+            Some(RoleWay::Leave(h)) => path_with(core, node, records, &h, Need::Role(Role::Admin), plan.ts).map(|(mut listed, marks, _)| {
                 if h != node {
                     listed.push(h);
                 }
-                listed
+                (listed, marks)
             }),
-            Some(RoleWay::Invite(r)) => path_with(core, node, records, &t, Need::Invite(r), plan.ts).map(|(listed, _)| listed),
+            Some(RoleWay::Invite(r)) => path_with(core, node, records, &t, Need::Invite(r), plan.ts).map(|(listed, marks, _)| (listed, marks)),
             None => {
                 let need = if plan.kind.is_compaction() { writes.iter().filter(|w| w.tid == t).map(|w| snapshot_role(w.ak.as_str())).max() } else { role_with(core, node, records, &t, plan.ts) };
                 let found = need.and_then(|r| path_with(core, node, records, &t, Need::Role(r), plan.ts));
                 let own = edges.iter().any(|(x, h, _)| *x == t && *h == node);
                 match (found, plan.creates.get(&t).or_else(|| core.created(&t)).and_then(CreationRecord::mint_admin)) {
-                    (Some((listed, _)), Some(m)) if own && listed.is_empty() && m != node => path_with(core, node, records, &m, Need::Role(Role::Admin), plan.ts).map(|(mut l, _)| {
+                    (Some((listed, _, _)), Some(m)) if own && listed.is_empty() && m != node => path_with(core, node, records, &m, Need::Role(Role::Admin), plan.ts).map(|(mut l, marks, _)| {
                         l.push(m);
-                        l
+                        (l, marks)
                     }),
-                    (found, _) => found.map(|(listed, _)| listed),
+                    (found, _) => found.map(|(listed, marks, _)| (listed, marks)),
                 }
             }
         };
-        let Some(listed) = found.filter(|l| l.iter().collect::<BTreeSet<_>>().len() == l.len() && !l.contains(&node)) else { return Ok(None) };
+        let Some((listed, direct)) = found.filter(|(l, _)| l.iter().collect::<BTreeSet<_>>().len() == l.len() && !l.contains(&node)) else { return Ok(None) };
         if listed.len() > osis_base::format::MAX_PATH_THINGS {
             return Err(Error::Misuse("a path through more than MAX_PATH_THINGS (64) holders"));
         }
-        each.insert(t, osis_commit::Path { purge: 0, things: listed, direct: 0 });
+        each.insert(t, osis_commit::Path { purge: 0, things: listed, direct });
     }
     let one = osis_commit::Path::one_of(each.iter(), node, node);
     debug_assert!(one.is_some() || each.is_empty(), "a role commit's things are reached along one path: {each:?}");
@@ -603,8 +610,10 @@ fn remains_of(core: &Core, plan: &CommitPlan, path: &osis_commit::Path, edges: &
     let end = path.things.last().copied().unwrap_or(plan.signer);
     let mint = |x: &Tid| plan.creates.get(x).or_else(|| core.created(x)).and_then(CreationRecord::mint_admin);
     let up_two = std::iter::successors(mint(t).and_then(|p| mint(&p)), |a| mint(a)).take(osis_base::format::MAX_CHAIN_DEPTH).any(|a| a == end);
+    // a final hop marked direct is one edge: the end's direct edge
+    let marked = path.direct >> path.to(t).len() & 1 == 1;
     let leave = matches!(role_way(core, plan, t, edges), Some(RoleWay::Leave(_)));
-    let last = (!leave && !up_two).then_some(end);
+    let last = (!leave && (!up_two || marked)).then_some(end);
     if last.is_some_and(|l| !taken.contains(&l) && after(&l)) {
         return None;
     }
@@ -1016,7 +1025,7 @@ fn build(tx: &mut Tx<'_>, plan: CommitPlan, deltas: Vec<Resolved>) -> Result<osi
             b.path = p;
         }
         Stated::Split(author, paths) => {
-            let things = paths.into_iter().map(|(t, listed)| (t, ((listed, 0), path_secret(tx.core, &plan, &t, &mut *tx.rng)))).collect();
+            let things = paths.into_iter().map(|(t, listed)| (t, (listed, path_secret(tx.core, &plan, &t, &mut *tx.rng)))).collect();
             b.split = Some(osis_commit::SplitWrite { author, things });
         }
     }

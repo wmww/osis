@@ -1204,9 +1204,10 @@ impl Timeline {
     }
 
     /// The path from `node` into `thing` giving `need` on the current edges at `ts`
-    /// (`graph::Ways::path`): the things listed and whether the last hop is a record edge.
+    /// (`graph::Ways::path`): the things listed, the hops marked direct and whether the last hop is
+    /// a record edge.
     /// Walked once per thing and need while it holds (counted: "perm: ways walked").
-    pub fn path_now(&self, node: &Tid, thing: &Tid, need: crate::graph::Need, ts: Ts) -> Option<(Vec<Tid>, bool)> {
+    pub fn path_now(&self, node: &Tid, thing: &Tid, need: crate::graph::Need, ts: Ts) -> Option<(Vec<Tid>, osis_base::format::PathMarks, bool)> {
         let held = |e: &WaysNow| e.1 <= ts && e.2.is_none_or(|u| ts.wall_ms() < u);
         let cached = self.memo.ways.lock().ok().and_then(|m| m.get(&(*thing, need)).filter(|e| held(e)).map(|e| e.0.clone()));
         let ways = match cached {

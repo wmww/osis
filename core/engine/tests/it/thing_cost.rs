@@ -72,6 +72,9 @@ fn make(lp: &mut LocalPeer, admin: Tid, label: &str, show: bool) -> (Cost, Tid) 
         let blob = osis_commit::CommitBlob::decode(&pk.bytes).unwrap();
         let size = pk.bytes.len() + pk.blobs.iter().map(|b| b.1.len()).sum::<usize>() + pk.lists.iter().map(Vec::len).sum::<usize>();
         cost.download += size;
+        // spec/wire.md §4 field 2: an ordinary commit states the empty path, unmarked: 2 bytes
+        assert_eq!(blob.header.path, osis_commit::Paths::One(osis_commit::Path::default()), "{label}");
+        assert_eq!(osis_commit::Path::default().encode().len(), 2);
         if show {
             let h = &blob.header;
             eprintln!("  commit {:?} by {}: {} B (header {} B, {} delete keys, {} blobs)", h.kind, if h.purge_author() == h.signer { "self" } else { "other" }, size, h.encode().len(), h.keys.len(), pk.blobs.len());

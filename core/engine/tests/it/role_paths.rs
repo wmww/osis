@@ -150,8 +150,11 @@ fn above(e: &osis_engine::Engine, p: Tid, q: Tid) -> bool {
 
 /// The role and invite hop `p` to `q` gives just before `point`: admin for a descent, else `p`'s
 /// direct edge on `q` (`None`: no edge held).
-fn hop(e: &osis_engine::Engine, p: Tid, q: Tid, point: Point) -> Option<(Role, Option<Role>)> {
-    if above(e, p, q) {
+fn hop(e: &osis_engine::Engine, p: Tid, q: Tid, marked: bool, point: Point) -> Option<(Role, Option<Role>)> {
+    // a hop marked direct reads the direct edge, and only off a descent of two steps or more
+    if marked {
+        assert!(above(e, p, q) && e.core.created(&q).and_then(|r| r.mint_admin()) != Some(p), "a mark off a descent of two steps: {p:?} {q:?}");
+    } else if above(e, p, q) {
         return Some((Role::Admin, Some(Role::Admin)));
     }
     let tl = e.core.timelines.get(&q)?;
@@ -198,7 +201,7 @@ fn every_stated_role_path_is_a_chain_of_held_edges_spec_wire_4() {
             let leave = !ops.is_empty() && ops.iter().any(|(m, _)| *m == end);
             // a key actor writing itself: [S] (notes/a1-spec/permissions.md §1 Path)
             let members: Vec<Tid> = std::iter::once(h.signer).chain(listed.iter().copied()).chain((!leave && t != h.signer).then_some(t)).collect();
-            let hops: Vec<(Role, Option<Role>)> = members.windows(2).map(|x| hop(e, x[0], x[1], point).unwrap_or_else(|| panic!("{id:?}: {:?} holds nothing on {:?} (path to {t:?}: {listed:?}; {:?}, effective {:?}, record {:?})", x[0], x[1], h.aspects.iter().map(|a| (a.tid, a.ak.as_str().to_string())).collect::<Vec<_>>(), e.core.timelines.role(&h.signer, &t, At::before(point)), e.core.created(&t)))).collect();
+            let hops: Vec<(Role, Option<Role>)> = members.windows(2).enumerate().map(|(j, x)| hop(e, x[0], x[1], p.direct >> j & 1 == 1, point).unwrap_or_else(|| panic!("{id:?}: {:?} holds nothing on {:?} (path to {t:?}: {listed:?}; {:?}, effective {:?}, record {:?})", x[0], x[1], h.aspects.iter().map(|a| (a.tid, a.ak.as_str().to_string())).collect::<Vec<_>>(), e.core.timelines.role(&h.signer, &t, At::before(point)), e.core.created(&t)))).collect();
             let role = hops.iter().map(|x| x.0).min().unwrap_or(Role::Admin);
             let has = |ak: &str| h.aspects.iter().any(|a| a.tid == t && a.ak.as_str() == ak);
             let effective = e.core.timelines.role(&h.signer, &t, At::before(point));
@@ -277,12 +280,12 @@ pub(crate) fn new_walk(e: &osis_engine::Engine) -> (osis_perm::paths::Paths, BTr
                         trust.insert(nid);
                     }
                     ids.insert(nid, (w, t));
-                    parts.push(Part { on: t, path: path.clone(), direct: 0, kind: PartKind::Edge(EdgeWrite { holder: op.holder, value: op.edge, frontier: c.frontier.clone(), remains: h.remains, adminless: h.adminless }) });
+                    parts.push(Part { on: t, path: path.clone(), direct: p.direct, kind: PartKind::Edge(EdgeWrite { holder: op.holder, value: op.edge, frontier: c.frontier.clone(), remains: h.remains, adminless: h.adminless }) });
                 }
             }
             for v in e.core.ix.held.vouches_on(&t).filter(|v| v.id == id) {
                 for (r, list) in &v.entries {
-                    parts.push(Part { on: t, path: path.clone(), direct: 0, kind: PartKind::Vouch { removal: *r, list: (**list).clone() } });
+                    parts.push(Part { on: t, path: path.clone(), direct: p.direct, kind: PartKind::Vouch { removal: *r, list: (**list).clone() } });
                 }
             }
         }
@@ -489,7 +492,7 @@ fn class_worlds() -> Vec<ClassWorld> {
     spread(&mut lp);
     out.push(("a key actor's roster", None, lp));
     // a thing detached from its folder: A makes G and T under G, takes admin on T and removes G's
-    // record edge there, then grants B write on T: no path states A's direct edge (Open 21)
+    // record edge there, then grants B write on T along its hop marked direct (Open 21): alike
     let (mut lp, ps) = people(2);
     let g = thing_of(&mut lp, 0, ps[0]);
     let t = thing_of(&mut lp, 0, g);
@@ -497,7 +500,7 @@ fn class_worlds() -> Vec<ClassWorld> {
     grant(&mut lp, 0, t, ps[0], edge_of(Role::Admin));
     remove(&mut lp, 0, t, g);
     grant(&mut lp, 0, t, ps[1], edge_of(Role::Write));
-    out.push(("a detached thing", Some("a mint ancestor's direct edge with its descent cut"), lp));
+    out.push(("a detached thing", None, lp));
     // a writer's commit of two invites on T (read to C, write to D), unseen by A, who then lowers
     // the writer's invite to read: both grants fall under both walks (C's by Open 23's rule)
     let (mut lp, ps) = people(4);
@@ -539,7 +542,6 @@ fn new_walk_differs_only_by_design() {
                 Some(c) if c.starts_with("a vouch") => d.len() == 2,
                 Some(c) if c.starts_with("a leave") => !d.is_empty() && d.iter().all(|x| x.contains("old true, new Some(Unapplied)") || x.contains("roles on")),
                 Some(c) if c.starts_with("a no-op leave") => !d.is_empty() && d.iter().all(|x| x.contains("old true, new Some(Dropped)")),
-                Some(c) if c.starts_with("a mint ancestor") => !d.is_empty() && d.iter().all(|x| x.contains("old true, new Some(Unapplied)") || x.contains("roles on")),
                 Some(c) => panic!("no rule for class {c}"),
             };
             let shown = class.is_none() || lp.peers.iter().any(|p| !walks_differ(&p.engine).is_empty());
@@ -577,5 +579,79 @@ fn finding_an_invite_grants_path_does_not_grow_with_history_spec_wire_4() {
     };
     let (small, large) = (walked(1), walked(10));
     assert!(small.1 && large.1, "the invite grant states [H]");
+    assert!(small.0 > 0 && small == large, "ways walked at n {small:?} and 10n {large:?}");
+}
+
+// notes/a1-spec/permissions.md §1 Path, Direct mark; spec/wire.md §4 `marks` (README Open 21): A
+// makes G and T under G, takes admin on T by its own grant and removes G's record edge there
+// (detaching T from its folder). A's later content and role writes on T state the empty path with
+// its one hop marked direct (A's own grant: the descent is cut, so no unmarked path gives the
+// role), and are applied by today's walk and by the new walk alike: B, granted write, reads A's
+// value; no edge write's verdict or final role differs. Before the detach, A's writes state the
+// descent, unmarked (a descent wherever one gives the need).
+#[test]
+fn a_detached_things_owner_states_a_marked_hop_both_walks_apply_spec_wire_4() {
+    let (mut lp, ps) = people(2);
+    let g = thing_of(&mut lp, 0, ps[0]);
+    let t = thing_of(&mut lp, 0, g);
+    spread(&mut lp);
+    let mut m = Mutation::new();
+    m.set(t, &REG, &s("before")).unwrap();
+    let before = lp.peers[0].commit(m).unwrap().unwrap();
+    grant(&mut lp, 0, t, ps[0], edge_of(Role::Admin));
+    remove(&mut lp, 0, t, g);
+    let mut m = Mutation::new();
+    m.set(t, &REG, &s("detached")).unwrap();
+    let content = lp.peers[0].commit(m).unwrap().unwrap();
+    let role = lp.peers[0].engine.grant(&t, &ps[1], &edge_of(Role::Write)).unwrap().commits;
+    lp.advance(1000);
+    spread(&mut lp);
+    let e = &lp.peers[0].engine;
+    let path = |id| match &e.header(&id).unwrap().path {
+        osis_commit::Paths::One(p) => p.clone(),
+        x => panic!("{x:?}"),
+    };
+    assert_eq!(path(before), osis_commit::Path::default(), "the descent, unmarked");
+    let marked = osis_commit::Path { purge: 0, things: vec![], direct: 1 };
+    assert_eq!(path(content), marked);
+    assert!(!role.is_empty() && role.iter().all(|id| path(*id) == marked), "{role:?}");
+    assert_eq!(lp.peers[1].engine.get(&t, &ak("t:reg.0")).unwrap(), Some(s("detached")), "B reads A's write");
+    assert_eq!(lp.peers[1].engine.core.timelines.role(&ps[1], &t, At::END), Some(Role::Write));
+    for p in &lp.peers {
+        let d = walks_differ(&p.engine);
+        assert!(d.is_empty(), "{d:?}");
+        let (paths, ids) = new_walk(&p.engine);
+        let applied = ids.iter().filter(|(nid, (w, _))| role.contains(&w.0) && matches!(paths.status(nid), Some(osis_perm::paths::Status::Applied))).count();
+        assert_eq!(applied, 1, "the new walk applies A's grant along the marked hop");
+    }
+}
+
+// notes/principles.md Check scaling, notes/a1-spec/permissions.md §1 Path, Direct mark: finding
+// a detached thing's path (A's direct edge, marked) walks the things reaching it, as many at 10n
+// unrelated role commits held as at n.
+#[test]
+fn finding_a_marked_path_does_not_grow_with_history_spec_wire_4() {
+    let walked = |n: usize| {
+        let (mut lp, ps) = people(2);
+        let g = thing_of(&mut lp, 0, ps[0]);
+        let t = thing_of(&mut lp, 0, g);
+        spread(&mut lp);
+        grant(&mut lp, 0, t, ps[0], edge_of(Role::Admin));
+        remove(&mut lp, 0, t, g);
+        for _ in 0..n {
+            let x = thing_of(&mut lp, 0, g);
+            lp.peers[0].engine.grant(&x, &ps[1], &edge_of(Role::Read)).unwrap();
+        }
+        spread(&mut lp);
+        osis_base::costs::take();
+        let mut m = Mutation::new();
+        m.set(t, &REG, &s("x")).unwrap();
+        let id = lp.peers[0].commit(m).unwrap().unwrap();
+        let c = osis_base::costs::take().iter().find(|x| x.0 == "perm: ways walked").map_or(0, |x| x.2);
+        let osis_commit::Paths::One(p) = lp.peers[0].engine.header(&id).unwrap().path.clone() else { panic!("one path") };
+        (c, p.direct)
+    };
+    let (small, large) = (walked(1), walked(10));
+    assert!(small.1 == 1 && large.1 == 1, "the marked hop: {small:?} {large:?}");
     assert!(small.0 > 0 && small == large, "ways walked at n {small:?} and 10n {large:?}");
 }

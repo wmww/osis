@@ -6,6 +6,7 @@
 
 use crate::held::HeldSet;
 use crate::types::{earliest, mark, put, Edge};
+use osis_base::format::{PathMarks, MAX_CHAIN_DEPTH};
 use osis_base::{CreationRecord, RecordLink, Role, Tid, Ts, WallMs};
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
@@ -747,31 +748,42 @@ impl<'a> View<'a> {
     /// The ways into `y` giving at least `need` (`Ways`): breadth first, backward from `y`, over
     /// edges alive at the view's `ts` each giving `need` or more (for `Need::Invite`, the edges
     /// into `y` giving it as an invite: notes/a1-spec/permissions.md §2 Path's invite), holders
-    /// taken in the order the edge state lists them; with the earliest `until` it followed. A mint
-    /// ancestor two or more record edges up reaches a thing by descent only
-    /// (notes/a1-spec/permissions.md §1 Path, Hops), so its direct edge on it is not followed.
-    /// O(things reaching `y` × their edges into it).
+    /// taken in the order the edge state lists them; with the earliest `until` it followed. A
+    /// mint ancestor two or more record edges up reaches a thing by its direct edge only as a hop
+    /// marked direct (notes/a1-spec/permissions.md §1 Path, Direct mark): ways are the fewest
+    /// marked hops first, then the fewest edges, so a descent is stated wherever one gives the
+    /// need and the mark only where the direct edge alone does. With no such edge held this is
+    /// the breadth-first search. O(things reaching `y` × their edges into it × log).
     pub(crate) fn ways_to(&self, y: &Tid, need: Need) -> (Ways, Option<WallMs>) {
         let mut expires: Option<WallMs> = None;
         let mut next: BTreeMap<Tid, Tid> = BTreeMap::new();
-        let mut queue = std::collections::VecDeque::from([*y]);
+        let mut settled: BTreeSet<Tid> = BTreeSet::new();
+        // (marked hops, edges, order met) → (thing, the thing it reaches next)
+        let mut queue: BTreeMap<(u32, u32, u64), (Tid, Option<Tid>)> = BTreeMap::from([((0, 0, 0), (*y, None))]);
+        let mut met = 0u64;
         let role = need.role();
-        while let Some(t) = queue.pop_front() {
+        while let Some(((marks, len, _), (t, via))) = queue.pop_first() {
+            if !settled.insert(t) {
+                continue;
+            }
+            if let Some(v) = via {
+                next.insert(t, v);
+            }
             let parent = self.records.mint_admin(&t);
             let up: BTreeSet<Tid> = std::iter::successors(parent.and_then(|p| self.records.mint_admin(&p)), |a| self.records.mint_admin(a)).take(osis_base::format::MAX_CHAIN_DEPTH).collect();
-            let mut found: Vec<Tid> = Vec::new();
+            let mut found: Vec<(Tid, bool)> = Vec::new();
             let invite = matches!(need, Need::Invite(_)) && t == *y;
             self.each_holder(&t, |m, e| {
                 let gives = if invite { e.role == Role::Admin || e.invite.is_some_and(|i| i.min(e.role) >= role) } else { e.role >= role };
-                if e.alive_at(self.ts) && gives && !up.contains(m) {
+                if e.alive_at(self.ts) && gives {
                     expires = earliest(expires, e.until);
-                    found.push(*m);
+                    found.push((*m, up.contains(m)));
                 }
             });
-            for m in found {
-                if m != *y && !next.contains_key(&m) {
-                    next.insert(m, t);
-                    queue.push_back(m);
+            for (m, marked) in found {
+                if !settled.contains(&m) {
+                    met += 1;
+                    queue.insert((marks + u32::from(marked), len + 1, met), (m, Some(t)));
                 }
             }
         }
@@ -874,12 +886,13 @@ pub struct Ways {
 impl Ways {
     /// The path from `from` into the thing (notes/a1-spec/permissions.md §1 Path): the things listed
     /// between them, each hop a direct edge or a descent (a run of record edges, whose things in
-    /// between are not listed), and whether its last hop is a record edge (so the thing's own
-    /// dependents are reached from the same listed things); the empty path for `from` itself.
-    /// `None` where `from` has no way in. O(its length).
-    pub fn path(&self, records: &Records, from: &Tid) -> Option<(Vec<Tid>, bool)> {
+    /// between are not listed), the hops marked direct (a mint ancestor two or more record edges
+    /// up reaching by its direct edge), and whether its last hop is a record edge (so the thing's
+    /// own dependents are reached from the same listed things); the empty path for `from` itself.
+    /// `None` where `from` has no way in. O(its length × the record chains' depth).
+    pub fn path(&self, records: &Records, from: &Tid) -> Option<(Vec<Tid>, PathMarks, bool)> {
         if *from == self.to {
-            return Some((Vec::new(), true));
+            return Some((Vec::new(), 0, true));
         }
         let mut hops = vec![*from];
         let mut at = *from;
@@ -887,11 +900,25 @@ impl Ways {
             at = *self.next.get(&at)?;
             hops.push(at);
         }
-        let listed = hops.windows(3).filter_map(|w| match w {
+        let listed: Vec<Tid> = hops.windows(3).filter_map(|w| match w {
             [p, q, r] if !(records.is_record_edge(p, q) && records.is_record_edge(q, r)) => Some(*q),
             _ => None,
         }).collect();
+        // a step that is no record edge from a mint ancestor of its target is a marked hop: its
+        // first thing is a member (listed, or `from`), the hop's index its place among them
+        let mut marks: PathMarks = 0;
+        let mut members = 1u32;
+        for w in hops.windows(2) {
+            if let [p, q] = w {
+                if !records.is_record_edge(p, q) && std::iter::successors(records.mint_admin(q), |a| records.mint_admin(a)).take(MAX_CHAIN_DEPTH).any(|a| a == *p) {
+                    marks |= 1 << (members - 1);
+                }
+                if listed.contains(q) {
+                    members += 1;
+                }
+            }
+        }
         let last = hops.iter().rev().nth(1).is_some_and(|p| records.is_record_edge(p, &self.to));
-        Some((listed, last))
+        Some((listed, marks, last))
     }
 }

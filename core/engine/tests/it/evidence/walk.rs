@@ -63,16 +63,16 @@ impl World {
         self.push(t, signer, vec![content_part(path, on)])
     }
     fn vouch(&mut self, t: u64, signer: u8, on: u8, removal: CommitId, list: &[CommitId]) -> CommitId {
-        self.push(t, signer, vec![PPart { on: tid(on), path: vec![], kind: PartKind::Vouch { removal, list: Frontier::new(list.iter().copied()) } }])
+        self.push(t, signer, vec![PPart { on: tid(on), path: vec![], direct: 0, kind: PartKind::Vouch { removal, list: Frontier::new(list.iter().copied()) } }])
     }
 }
 
 fn edge_part(path: &[u8], on: u8, holder: u8, value: Option<Edge>, frontier: Option<Arc<Frontier>>) -> PPart {
-    PPart { on: tid(on), path: path.iter().map(|&t| tid(t)).collect(), kind: PartKind::Edge(EdgeWrite { holder: tid(holder), value, frontier, remains: None, adminless: false }) }
+    PPart { on: tid(on), path: path.iter().map(|&t| tid(t)).collect(), direct: 0, kind: PartKind::Edge(EdgeWrite { holder: tid(holder), value, frontier, remains: None, adminless: false }) }
 }
 fn content_part(path: &[u8], on: u8) -> PPart {
     let delta = Delta { aspect: Ak::new("doc.0").unwrap(), needs: Role::Write, purge_author: 0, retention: PurgeBy::AuthorOrAdmin, class: DeltaClass::Plain };
-    PPart { on: tid(on), path: path.iter().map(|&t| tid(t)).collect(), kind: PartKind::Delta(delta) }
+    PPart { on: tid(on), path: path.iter().map(|&t| tid(t)).collect(), direct: 0, kind: PartKind::Delta(delta) }
 }
 
 /// The edges joining path members (draft §1 Hops): record edges down a mint chain, else direct.
