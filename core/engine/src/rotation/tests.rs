@@ -489,17 +489,30 @@ fn arrival_order_holds_alike_spec_permissions_3() {
                 e.reseal_after_pass(&g).unwrap();
             }
         }
-        let all = lp.packages(0).unwrap();
-        let first_g = all.iter().position(|pk| osis_commit::CommitBlob::decode(&pk.bytes).unwrap().header.aspects.iter().any(|a| a.tid == g)).unwrap();
+        // what A sends N and O once each syncs what that brings it to sync, by commit ID; the
+        // orders permute `all`, the union, and each receiver takes those it is sent
+        let sent: Vec<Vec<crate::local_peer::Package>> = [3, 4].iter().map(|i| lp.packages_to(0, *i).unwrap()).collect();
+        let mut all: Vec<osis_base::CommitId> = Vec::new();
+        for pk in sent.iter().flatten() {
+            if !all.contains(&pk.id) {
+                all.push(pk.id);
+            }
+        }
+        let lists: Vec<BTreeMap<osis_base::CommitId, crate::local_peer::Package>> = sent.into_iter().map(|v| v.into_iter().map(|p| (p.id, p)).collect()).collect();
+        let first_g = all.iter().position(|id| lp.peers[0].engine.header(id).is_some_and(|h| h.aspects.iter().any(|a| a.tid == g))).unwrap();
         // whether N is a reader where every commit is held (the steps' guess is not: removals
         // and grants cross)
         let n_in = lp.peers[0].engine.core.role_now(&n, &g).is_some();
         let deliver = |lp: &mut LocalPeer, order: &[usize]| {
-            for i in [3, 4] {
+            for (i, list) in [3, 4].into_iter().zip(&lists) {
                 for _ in 0..=all.len() {
                     let mut applied = false;
-                    for &j in order {
-                        applied |= matches!(lp.peers[i].receive(&all[j].bytes, all[j].blobs.clone()), Ok(crate::Ingested::Applied(_)));
+                    for pk in order.iter().filter_map(|j| list.get(&all[*j])) {
+                        let r = lp.peers[i].receive(&pk.bytes, pk.blobs.clone());
+                        if let Err(e) = &r {
+                            assert_ne!(osis_base::Classified::class(e), osis_base::ErrorClass::Local, "receiving fails the node: {e}");
+                        }
+                        applied |= matches!(r, Ok(crate::Ingested::Applied(_)));
                         // the lost-access trigger, as node-sync runs it every step
                         lp.peers[i].engine.role_duties().unwrap();
                     }

@@ -3950,7 +3950,10 @@ fn purged_covered_leftover_survives_unmerge_spec_crdt_4_6() {
     grant_fresh(&mut lp, 0, g);
     lp.sync_all().unwrap();
     // the setup as made, so the fresh nodes are granted G before they take what it holds
-    let mut packs: Vec<Package> = lp.packages(0).unwrap();
+    let mut packs: Vec<Package> = {
+        let at = lp.peers[0].engine.now();
+        lp.packages_to_peer(0, &mut fresh_holding(at, g)).unwrap()
+    };
     let mut seen: BTreeSet<CommitId> = packs.iter().map(|p| p.id).collect();
     let mut take = |lp: &mut LocalPeer, i: usize| -> CommitId {
         let mut last = None;
@@ -4061,12 +4064,15 @@ fn cover_leftover_outlives_its_cover_spec_perm_5_2() {
     let mut m = edge_write(&lp.peers[0].engine, g, ids[2], None);
     m.frontier(osis_perm::Frontier::new(f.commits));
     let demote = lp.peers[0].commit(m).unwrap().unwrap();
-    let pks = lp.packages(0).unwrap();
+    let now = lp.peers.iter().map(|p| p.engine.now()).max().unwrap();
+    // the history from peer 1, which holds the write whole (peer 0 purged it), then the
+    // snapshot, then peer 0's purge and demotion
+    let base = lp.packages_to_peer(1, &mut fresh_holding(now, g)).unwrap();
+    let pks = lp.packages_to_peer(0, &mut fresh_holding(now, g)).unwrap();
     let by = |id: CommitId| pks.iter().find(|p| p.id == id).unwrap().clone();
     let snap_pk = lp.peers[2].engine.package(&snap).unwrap().unwrap();
-    let now = lp.peers.iter().map(|p| p.engine.now()).max().unwrap();
     let mut p = fresh_holding(now, g);
-    for pk in pks.iter().filter(|pk| ![snap, purge, demote].contains(&pk.id)) {
+    for pk in base.iter().filter(|pk| ![snap, purge, demote].contains(&pk.id)) {
         p.receive(&pk.bytes, pk.blobs.clone()).unwrap();
     }
     p.receive(&snap_pk.bytes, snap_pk.blobs.clone()).unwrap();

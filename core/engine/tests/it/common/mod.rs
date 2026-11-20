@@ -322,10 +322,6 @@ pub fn sync(lp: &mut LocalPeer, from: usize, to: usize) {
     lp.sync(from, to).unwrap();
 }
 
-pub fn packages(lp: &mut LocalPeer, from: usize) -> Vec<Package> {
-    lp.whole_packages(from).unwrap()
-}
-
 /// What `from` sends peer `to` in a sync, `to`'s sync set as it stands (`LocalPeer::packages_for`).
 pub fn packages_for(lp: &mut LocalPeer, from: usize, to: usize) -> Vec<Package> {
     lp.packages_for(from, to).unwrap()
@@ -349,11 +345,6 @@ pub fn package_for_peer(lp: &mut LocalPeer, from: usize, p: &mut osis_engine::lo
     packages_for_peer(lp, from, p).into_iter().find(|x| x.id == id).unwrap_or_else(|| panic!("{from} sends no {id:?}"))
 }
 
-/// Commit `id` as `from` sends `to`, a node apart (`LocalPeer::packages_to_peer`).
-pub fn package_to_peer(lp: &mut LocalPeer, from: usize, to: &mut osis_engine::local_peer::Peer, id: CommitId) -> Package {
-    lp.packages_to_peer(from, to).unwrap().into_iter().find(|p| p.id == id).unwrap_or_else(|| panic!("{from} sends no {id:?}"))
-}
-
 /// `r`, what a node under test made of hostile, partial or forged input: a refusal of the input
 /// (bad input, parked) is `None`; a local error (an engine invariant broken, a store failing)
 /// fails the test, as it would fail the node.
@@ -366,11 +357,6 @@ pub fn unless_refused(r: osis_engine::Result<osis_engine::Ingested>) -> Option<o
     }
 }
 
-/// Every commit `from` holds, whole, whatever the receiver syncs (`LocalPeer::whole_packages`):
-/// only for a test of what a hostile or broken sender hands over.
-pub fn whole_packages(lp: &mut LocalPeer, from: usize) -> Vec<Package> {
-    lp.whole_packages(from).unwrap()
-}
 
 /// What `from` sends peer `to` once `to` syncs what a sync from `from` brings it to sync (its
 /// sync set after `LocalPeer::sync`, on a copy of the world): what those sync IDs carry and every
