@@ -4547,8 +4547,8 @@ fn entry_under_two_keys(k1: &[u8; 32], k2: &[u8; 32]) -> Vec<u8> {
 }
 
 // spec/wire.md §4 `Split` (a reader opens a thing's entry with the path key an encryption of its
-// parts carries), spec/commits.md §4 (a thing's parts are judged alike at every reader of it,
-// whatever order its encryptions come in): XChaCha20-Poly1305 commits to no key, so Bob seals D's
+// parts carries), spec/commits.md §4: a thing's parts are judged alike at every reader of it,
+// whatever order its encryptions come in. XChaCha20-Poly1305 commits to no key, so Bob seals D's
 // entry to open under two keys of his choosing, to a path under one and to no list under the
 // other, and seals D's parts twice, each encryption carrying one key. Alice takes both encryptions
 // in either order, or the path's alone: D's write applies, before and after a reopen. The other
@@ -5143,8 +5143,8 @@ fn a_writes_path_is_a_function_of_the_held_edges_spec_wire_4() {
     assert_eq!(chosen(0), chosen(1));
 }
 
-// spec/wire.md §4 field 2 (one path unless it tells a reader of one thing written a fact of
-// another's roster), spec/requirements.md Confidentiality between readers: Bob writes through his
+// spec/wire.md §4 (one path), spec/requirements.md Confidentiality between readers: one path in
+// the clear unless it would tell a reader of one thing written a fact of another's roster. Bob writes through his
 // holder H. Two things H holds by grant, D and P, written together, are one hop past `[H]` alike,
 // but `[H]` would show D's readers that H holds P (and P's that H holds D): split. D and X, made
 // under D through H, state `[H, D]` in the clear: X derives from D, so D's readers read X whole.
