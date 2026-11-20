@@ -4195,11 +4195,11 @@ fn held_model_agrees_on_purge_rights_spec_commits_5() {
 // its leftover (spec/commits.md §5: a purged leftover is never dropped for keep bounds), in
 // whichever order the request and the named delta arrive.
 #[test]
-#[ignore = "fails on its store rng: issues/osis-tests-depend-on-store-rng.md"]
 fn kill_and_purge_in_one_commit_keeps_leftover_spec_commits_5() {
     use Step::*;
-    // 1 writes before the setting reaches it: it owes no cover of its own
-    let h = vec![Setting { by: 0, t: 0, op: 17, rule: 3 }, Write { by: 1, t: 0, op: 0, k: 0, v: 1 }, Sync { from: 1, to: 0 }, Purge { by: 0, t: 0, of: 1, back: 0, v: 2 }];
+    // 1 writes before the setting reaches it: it owes no cover of its own; a moment after the
+    // setting's register write, so its own write wins until the request's kills it
+    let h = vec![Setting { by: 0, t: 0, op: 17, rule: 3 }, Advance { who: None, ms: 1 }, Write { by: 1, t: 0, op: 0, k: 0, v: 1 }, Sync { from: 1, to: 0 }, Purge { by: 0, t: 0, of: 1, back: 0, v: 2 }];
     let played = play(0, &h);
     let n = played.packs.len();
     let (t, a) = (played.things[0], ak("t:reg.0"));
