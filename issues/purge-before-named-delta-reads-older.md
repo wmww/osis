@@ -1,6 +1,0 @@
-# A delta arriving after the purge naming it reads as absent, not value-less
-> Summary: a writer's register write purged by commit, delivered to a node only after the request naming it, leaves the node reading the older value; delivered first it reads none (value-less write wins): reads depend on arrival order, against spec/commits.md §5 Purge ("whatever the order").
-> Priority: normal
-> Tags: engine, tests
-
-Reproducer: engine `resnapshot::purged(lp, t, late)` (core/engine/tests/it/resnapshot.rs): admin 0 writes "old" then "SECRET" on `x:a.0` (retention `writer`), purges "SECRET" by commit; node 1 gets the commits in order and reads `None`; with `late` it gets the request before "SECRET" and reads `Some("old")`, also after `reexamine` and `tick`. `purge_arrived` (core/engine/src/retention/purge.rs) drops the late delta, but the state it leaves is not the one the request applied after the delta gives. A test asserting both orders read alike belongs beside `owed_resnapshot_whichever_comes_first_spec_commits_5`. The two readings outlive sync: node 1's re-snapshot (owed in either order) delivered to node 0 leaves node 0 reading `None` and node 1 `Some("old")`. Not from the owed re-snapshot: the late delta is dropped at arrival (`purge_one`) as before it.

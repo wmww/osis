@@ -42,22 +42,37 @@ fn world(keys: bool) -> (LocalPeer, Tid, Vec<osis_engine::local_peer::Package>) 
     (lp, t, rest)
 }
 
+/// How the secret reaches 1 (`purged`).
+#[derive(Clone, Copy, Debug)]
+enum Secret {
+    /// Before the request.
+    First,
+    /// After the request, whole: a copy taken before 0 purged it.
+    LateBody,
+    /// After the request, as 0 holds it then: the header without the purged body.
+    LateHeader,
+}
+
 /// Admin 0 writes over an older value with a secret on `t`, 1 applying each; 0 purges the secret
 /// and 1 applies the request (node-sync, which would write the re-snapshot at once, does not run).
-/// `late`: the secret reaches 1 only after the request naming it.
-fn purged(lp: &mut LocalPeer, t: Tid, late: bool) {
+/// Where 1 held the secret's body it holds its leftover and reads nothing, whichever came first
+/// (spec/commits.md §5 Purge, spec/crdt.md §4.7: a value-less winner reads absent).
+fn purged(lp: &mut LocalPeer, t: Tid, secret: Secret) {
     let send = |lp: &mut LocalPeer, id: CommitId| {
         let pk = lp.peers[0].engine.package(&id).unwrap().unwrap();
         lp.deliver(1, &pk).unwrap();
     };
     let mut c = None;
+    let mut early = None;
     for v in ["old", "SECRET"] {
         let mut m = Mutation::new();
         m.retention(t, &reg(), Retention { by: PurgeBy::Writer }).unwrap();
         m.set(t, &reg(), &Value::Str(v.into())).unwrap();
         let id = lp.peers[0].commit(m).unwrap().unwrap();
-        if !(late && v == "SECRET") {
+        if v == "old" || matches!(secret, Secret::First) {
             send(lp, id);
+        } else {
+            early = lp.peers[0].engine.package(&id).unwrap();
         }
         c = Some(id);
         lp.advance(1_000);
@@ -67,11 +82,15 @@ fn purged(lp: &mut LocalPeer, t: Tid, late: bool) {
     m.purge(lp.peers[0].engine.purge_item(&c.unwrap(), t, reg()).unwrap());
     let p = lp.peers[0].commit(m).unwrap().unwrap();
     send(lp, p);
-    if late {
-        send(lp, c.unwrap());
-    } else {
-        // read with the secret late: issues/purge-before-named-delta-reads-older.md
-        assert_eq!(lp.peers[1].engine.get(&t, &reg()).unwrap(), None, "the purge applied");
+    match secret {
+        Secret::First => {}
+        Secret::LateBody => {
+            lp.deliver(1, &early.unwrap()).unwrap();
+        }
+        Secret::LateHeader => send(lp, c.unwrap()),
+    }
+    if !matches!(secret, Secret::LateHeader) {
+        assert_eq!(lp.peers[1].engine.get(&t, &reg()).unwrap(), None, "the purge applied, {secret:?}");
     }
 }
 
@@ -87,7 +106,7 @@ fn own_snapshots(lp: &LocalPeer, t: Tid) -> usize {
 #[test]
 fn owed_resnapshot_survives_a_stop_spec_commits_5() {
     let (mut lp, t, _) = world(true);
-    purged(&mut lp, t, false);
+    purged(&mut lp, t, Secret::First);
     assert_eq!(own_snapshots(&lp, t), 0, "not written yet");
     lp.peers[1].restart(1).unwrap();
     lp.peers[1].engine.purge_resnapshots().unwrap();
@@ -103,7 +122,7 @@ fn owed_resnapshot_survives_a_stop_spec_commits_5() {
 #[test]
 fn owed_resnapshot_waits_for_delete_keys_spec_commits_5() {
     let (mut lp, t, keys) = world(false);
-    purged(&mut lp, t, false);
+    purged(&mut lp, t, Secret::First);
     lp.peers[1].engine.purge_resnapshots().unwrap();
     assert_eq!(own_snapshots(&lp, t), 0, "the keys are not here");
     for pk in &keys {
@@ -118,10 +137,31 @@ fn owed_resnapshot_waits_for_delete_keys_spec_commits_5() {
 // request and the delta it names came first: the request dropped something here either way
 #[test]
 fn owed_resnapshot_whichever_comes_first_spec_commits_5() {
-    for late in [false, true] {
+    for secret in [Secret::First, Secret::LateBody, Secret::LateHeader] {
         let (mut lp, t, _) = world(true);
-        purged(&mut lp, t, late);
+        purged(&mut lp, t, secret);
         lp.peers[1].engine.purge_resnapshots().unwrap();
-        assert_eq!(own_snapshots(&lp, t), 1, "late {late}");
+        assert_eq!(own_snapshots(&lp, t), 1, "{secret:?}");
+    }
+}
+
+// spec/commits.md §5 Purge, spec/requirements.md Convergence: admin and writer read nothing in the
+// purged secret's place, whichever of it and the request reached the writer first, also after
+// exchanging their re-snapshots. A writer given only the secret's header (0 dropped its body)
+// never held it, so it lacks its leftover and reads what it replaced until a writer that held
+// the body re-snapshots (0 here: its snapshot carries the secret value-less)
+#[test]
+fn purged_secret_reads_nothing_whatever_reaches_first_spec_commits_5() {
+    for secret in [Secret::First, Secret::LateBody, Secret::LateHeader] {
+        let (mut lp, t, _) = world(true);
+        purged(&mut lp, t, secret);
+        for i in [0, 1] {
+            lp.peers[i].engine.purge_resnapshots().unwrap();
+        }
+        lp.sync(1, 0).unwrap();
+        lp.sync(0, 1).unwrap();
+        for i in [0, 1] {
+            assert_eq!(lp.peers[i].engine.get(&t, &reg()).unwrap(), None, "peer {i}, {secret:?}");
+        }
     }
 }
