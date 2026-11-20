@@ -562,8 +562,8 @@ pub fn purge_run_from(start: u64, n: u64, rules: &Rules) -> PStats {
     })
 }
 
-/// The rules of `paths-purge[-variant]`: the draft's (`Rules::purging`), `-fixed` (the unwired
-/// walk's), `-remake` (the proposal's role rules, the same purge readings), `-addenda` (an addendum
+/// The rules of `paths-purge[-variant]`: the draft's (`Rules::purging`), `-fixed` (the `author`
+/// class alone), `-remake` (the proposal's role rules, the same purge readings), `-addenda` (an addendum
 /// vouches for a purge request: OPEN-proposed), `-at-key` (a request's right read at its key alone:
 /// "gone means gone"), `-no-copies`, `-no-own-cover`, `-remake-addenda`.
 pub fn purge_rules(mode: &str) -> Option<Rules> {

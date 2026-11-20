@@ -26,7 +26,7 @@ fn content(w: &mut World, n: Thing, t: u32, path: &[Thing], ret: Retention) -> I
 /// Each named delta is judged alone by the members of its retention set the request holds
 /// (draft §6): a writer's request by whole aspect takes the `writer` deltas and its own
 /// `author_or_admin` one, never an `admin` delta or another author's; an admin's takes them all.
-/// The unwired walk (`fixed`) reads requests by author alone.
+/// `fixed` reads requests by author alone.
 #[test]
 fn a_request_holds_each_class_of_its_named_deltas_alone() {
     let mut w = base();
@@ -120,8 +120,8 @@ fn an_addendum_by_a_holder_of_the_class_keeps_a_request() {
 
 /// A request reaches a write a node holds only as a valid cover's copy (spec/commits.md §5 Purge,
 /// Without the header): K compacts T1 carrying B's write; LJ holds the cover and B's later request,
-/// not the write. Under `purging` it reads the copy purged, as a node holding the write does; the
-/// unwired walk (`fixed`, held deltas alone) leaves the copy showing at LJ.
+/// not the write. Under `purging` it reads the copy purged, as a node holding the write does;
+/// `fixed` (held deltas alone) leaves the copy showing at LJ.
 #[test]
 fn a_request_reaches_the_copy_of_a_write_the_node_does_not_hold() {
     let mut w = base();
@@ -161,6 +161,41 @@ fn an_own_cover_stands_while_its_removal_applies() {
     }
 }
 
+/// An own cover stands while its removal applies, whatever that removal takes from its edge at
+/// the node reading it (draft §5.2 Own cover: "an explicit lowering R the timeline applies"): a
+/// node holding H's removal of X but not H's grant of X (nothing to take there) reads H's own cover
+/// as H does. Read only where the removal falls, the cover would stand at H and fall at that node
+/// for want of an unrelated grant.
+#[test]
+fn an_own_cover_stands_while_its_removal_applies_whatever_it_takes_here() {
+    let mut w = base();
+    let x = w.content(X, 2, &[A], T1);
+    let s = w.push(H, 5, &[A], T1, Kind::Cover { carries: Set::from([x]) });
+    w.own_cover(s);
+    let r = w.edge(H, 6, &[], A, X, Gone, &[s]);
+    let got: Vec<Id> = w.through((H, A), |i| i != s);
+    let rh = w.edge(B, 9, &[], A, H, Gone, &got);
+    // the grant of X (commit 0) not held: the removal applies and takes nothing
+    let v = View::all(&w).without(&[0, x]).trusting(&[r, rh]);
+    let rd = judge(&w, &Rules::purging(), &v);
+    assert!(rd.applied.contains(&r) && rd.valid.contains(&s) && rd.shows(x));
+}
+
+/// An own cover whose path gave its writer no role just before it stands by nothing (draft §5.2
+/// Own cover: "valid when its path gave the role S needs on the thing just before S's key"): Z,
+/// granted admin on A only after writing it, lists it in its removal of B.
+#[test]
+fn an_own_cover_whose_path_gave_no_role_stands_by_nothing() {
+    let mut w = base();
+    let d = w.content(B, 2, &[A], T1);
+    let s = w.push(Z, 5, &[A], T1, Kind::Cover { carries: Set::from([d]) });
+    w.own_cover(s);
+    w.edge(H, 6, &[], A, Z, Admin, &[]);
+    let r = w.edge(Z, 7, &[], A, B, Gone, &[s, d]);
+    let rd = read(&w, &Rules::purging(), &[r]);
+    assert!(rd.applied.contains(&r) && !rd.valid.contains(&s));
+}
+
 /// The pair (notes/purge-model.md, Indistinguishable pairs): an honest X purging at 4, witnessed by
 /// B, before H removes it, and a thief with X's key making the same request in the window before the
 /// removal, witnessed by B. The held sets are one, so every rule reads them alike: keeping a witnessed
@@ -180,8 +215,8 @@ fn a_request_made_after_the_removal_is_kept_by_no_witness() {
 }
 
 /// Purge worlds at small size: the draft's purge rules, under both role rule sets, hold every
-/// required gate but `purge witnessed` (finding 41), which its fix closes; the unwired walk's rules
-/// (`fixed`) fail `purge kept` (classes, selectors, copies owed); `-purge-at-key` fails safety.
+/// required gate but `purge witnessed` (finding 41), which its fix closes; `fixed` (the `author`
+/// class alone) fails `purge kept` (classes, selectors, copies owed); `-purge-at-key` fails safety.
 #[test]
 #[ignore = "property"]
 fn purge_worlds_hold_plain() {

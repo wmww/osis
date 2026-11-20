@@ -361,7 +361,7 @@ pub struct Rules {
     /// delta it names, each member of the delta's retention set it holds: `admin` where it is valid
     /// as a delta needing admin along its path, `writer` as one needing write, `author` as one
     /// needing write whose chain holds the delta's purge author; every selector (`Names`) read.
-    /// False (`fixed`, the unwired walk): the `author` class alone, by author alone, retention unread.
+    /// False (`fixed`): the `author` class alone, by author alone, retention unread.
     pub purge_classes: bool,
     /// A request reaches the writes a valid cover shows of a commit the node does not hold (spec/
     /// commits.md §5 Purge, Without the header: judged by the facts the cover states, here the
@@ -374,8 +374,9 @@ pub struct Rules {
     /// Variant (`-purge-at-key`, "gone means gone"): a request holds a role iff its path gives it
     /// at its key; no later cut takes the right.
     pub purge_at_key: bool,
-    /// A cover marked as its writer's own cover is also valid while an explicit lowering the
-    /// timeline applies, signed by its writer, ordered at or after it, names it
+    /// A cover marked as its writer's own cover is also valid, where its path gave write just
+    /// before it, while an explicit lowering the timeline applies (whatever it takes from its edge
+    /// at this node), signed by its writer, ordered at or after it, names it
     /// (notes/a1-spec/permissions.md §5.2 Own cover, *taken*), whatever cuts its path later. False:
     /// judged as any cover.
     pub own_cover: bool,
@@ -1677,8 +1678,15 @@ fn content(w: &World, rules: &Rules, v: &View, p: &Pass) -> (Set, Set) {
                 continue;
             }
             let pos = w.pos(i);
-            // an own cover stands while a lowering by its writer naming it applies (§5.2 Own cover)
-            if rules.own_cover && w.commits[i].own && p.lows.iter().any(|l| l.explicit && w.commits[l.id].signer == w.commits[i].signer && w.key(l.id) >= pos && listed(w, v, &none, l.id, i)) {
+            // an own cover stands while an explicit lowering by its writer naming it applies,
+            // whatever it takes from its edge where this node holds it, its path having given the
+            // role just before it (§5.2 Own cover)
+            let lowering = |l: Id| w.lowers(l).is_some() && !w.leave(l) && !p.invited.contains(&l);
+            if rules.own_cover
+                && w.commits[i].own
+                && hops.iter().all(|&e| role_at(w, p, e, pos) >= Role::Write)
+                && p.applied.iter().any(|&l| lowering(l) && w.commits[l].signer == w.commits[i].signer && w.key(l) >= pos && listed(w, v, &none, l, i))
+            {
                 next.insert(i);
                 continue;
             }
