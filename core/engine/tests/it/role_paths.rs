@@ -242,3 +242,119 @@ fn every_stated_role_path_is_a_chain_of_held_edges_spec_wire_4() {
     let addenda = e.commit_ids().into_iter().filter_map(|id| e.header(&id)).filter(|h| h.kind == osis_commit::Kind::Content && h.aspects.iter().any(|a| a.ak.as_str() == "addenda.0")).count();
     assert!(addenda >= 1, "an addendum is written");
 }
+
+/// The new walk (`osis_perm::paths`, notes/perm-paths.md) over the role commits engine `e` holds
+/// as it holds them: each edge write a part along the path its commit states for its target (the
+/// old walk's own reading of its value and frontier, the header's `remains` and adminless mark),
+/// each vouch entry a part; `e`'s trust set; records for every thing named. With each edge part's
+/// old-walk ID and target.
+pub(crate) fn new_walk(e: &osis_engine::Engine) -> (osis_perm::paths::Paths, BTreeMap<osis_perm::WriteId, (osis_perm::WriteId, Tid)>) {
+    use osis_perm::paths::{Commit, EdgeWrite, Part, PartKind};
+    let mut commits = Vec::new();
+    let mut ids = BTreeMap::new();
+    let mut named: std::collections::BTreeSet<Tid> = std::collections::BTreeSet::new();
+    let mut trust = std::collections::BTreeSet::new();
+    for id in e.commit_ids() {
+        let Some(h) = e.header(&id) else { continue };
+        if h.kind != osis_commit::Kind::Role {
+            continue;
+        }
+        let osis_commit::Paths::One(p) = &h.path else { panic!("a role commit states one path") };
+        let mut parts = Vec::new();
+        named.insert(h.signer);
+        named.extend(p.things.iter().copied());
+        let things: std::collections::BTreeSet<Tid> = h.aspects.iter().map(|a| a.tid).collect();
+        for t in things {
+            named.insert(t);
+            let path = p.to(&t).to_vec();
+            if let Some(tl) = e.core.timelines.get(&t) {
+                let mut ops: Vec<_> = tl.held_on(&t).filter(|(w, _, _)| w.0 == id).collect();
+                ops.sort_by_key(|(_, _, op)| op.holder);
+                for (w, c, op) in ops {
+                    named.insert(op.holder);
+                    let nid = osis_perm::WriteId(id, parts.len() as u32);
+                    if tl.trust().contains(&w) {
+                        trust.insert(nid);
+                    }
+                    ids.insert(nid, (w, t));
+                    parts.push(Part { on: t, path: path.clone(), kind: PartKind::Edge(EdgeWrite { holder: op.holder, value: op.edge, frontier: c.frontier.clone(), remains: h.remains, adminless: h.adminless }) });
+                }
+            }
+            for v in e.core.ix.held.vouches_on(&t).filter(|v| v.id == id) {
+                for (r, list) in &v.entries {
+                    parts.push(Part { on: t, path: path.clone(), kind: PartKind::Vouch { removal: *r, list: (**list).clone() } });
+                }
+            }
+        }
+        if !parts.is_empty() {
+            commits.push(Commit { id, ts: h.ts, signer: h.signer, parts });
+        }
+    }
+    // every record up each named thing's chain
+    let mut records = BTreeMap::new();
+    let mut todo: Vec<Tid> = named.into_iter().collect();
+    while let Some(t) = todo.pop() {
+        if let Some(a) = e.core.created(&t).and_then(|r| r.mint_admin())
+            && records.insert(t, a).is_none()
+        {
+            todo.push(a);
+        }
+    }
+    (osis_perm::paths::Paths::evaluate(&records, trust, &commits), ids)
+}
+
+/// Where the new walk judging the stated paths differs from the old walk at engine `e`: each edge
+/// write whose applied/not differs, and each edge whose final role differs (every `until` counted
+/// removed).
+pub(crate) fn walks_differ(e: &osis_engine::Engine) -> Vec<String> {
+    let (paths, ids) = new_walk(e);
+    let mut out = Vec::new();
+    for (nid, (w, t)) in &ids {
+        let tl = e.core.timelines.get(t).unwrap();
+        let old = tl.is_applied(w);
+        let new = matches!(paths.status(nid), Some(osis_perm::paths::Status::Applied | osis_perm::paths::Status::Invited));
+        if old != new {
+            let (signer, holder, _) = tl.edge_op(w).unwrap();
+            out.push(format!("edge write {:?} by {signer:?} on ({holder:?}, {t:?}): old {old}, new {:?}", w.0, paths.status(nid)));
+        }
+    }
+    let finals = paths.finals();
+    let mut targets: std::collections::BTreeSet<Tid> = finals.keys().map(|k| k.1).collect();
+    targets.extend(ids.values().map(|x| x.1));
+    for t in targets {
+        let Some(tl) = e.core.timelines.get(&t) else { continue };
+        let edges = tl.edges_at(None);
+        let old: BTreeMap<Tid, Role> = edges.holders(&t).filter(|(_, x)| x.until.is_none()).map(|(m, x)| (*m, x.role)).collect();
+        let new: BTreeMap<Tid, Role> = finals.iter().filter(|(k, v)| k.1 == t && v.0.is_some()).map(|(k, v)| (k.0, v.0.unwrap())).collect();
+        if old != new {
+            out.push(format!("roles on {t:?}: old {old:?}, new {new:?}"));
+        }
+    }
+    out
+}
+
+// notes/a1-spec/README.md step 3 (For the wiring): the new walk judging the paths role commits
+// state gives every edge write the old walk's verdict and every edge the old walk's final role,
+// at every node of the representative world, but where the two rules differ by design. One such
+// difference is in it: C's vouch keeps B's grant of D on T6 past A's removal of B, and C then
+// leaves T6 itself. The old walk counts an entry only while its voucher could write the commit
+// at each later lowering of the voucher (spec/permissions.md §5.1 Vouches), so C's leave ends it
+// and the grant falls; in the new walk the vouch is a part resting on C's path, which a
+// self-removal puts in nothing's question (it audits nothing, notes/a1-spec/permissions.md §2
+// Self-removal), so the grant stays.
+#[test]
+fn the_new_walk_judges_the_stated_role_paths_as_the_old_walk_does() {
+    let w = world(false);
+    let (t6, d) = (w.things[10], w.lp.peers[3].engine.me());
+    for i in 0..4 {
+        let e = &w.lp.peers[i].engine;
+        let differ = walks_differ(e);
+        let tl = e.core.timelines.get(&t6).unwrap();
+        let grant = tl.held_on(&t6).find(|(_, _, op)| op.holder == d).map(|(w, _, _)| w).unwrap();
+        let expected = vec![
+            format!("edge write {:?} by {:?} on ({d:?}, {t6:?}): old false, new Some(Applied)", grant.0, tl.edge_op(&grant).unwrap().0),
+            format!("roles on {t6:?}: old {:?}, new {:?}", BTreeMap::from([(w.lp.peers[0].engine.me(), Role::Admin)]), BTreeMap::from([(w.lp.peers[0].engine.me(), Role::Admin), (d, Role::Write)])),
+        ];
+        assert_eq!(differ, expected, "peer {i}");
+    }
+}

@@ -191,7 +191,6 @@ pub(crate) fn grant_history(tx: &mut Tx<'_>, signer: Option<Tid>, target: Tid, h
     }
     if !admin {
         m.unchecked();
-        m.way = Some(crate::engine::write::RoleWay::Invite(edge.role));
     }
     let c = Engine::commit_tx(tx, m)?;
     if let Some(rot) = &cut {
@@ -352,7 +351,6 @@ pub(crate) fn demote_in(tx: &mut Tx<'_>, signer: Option<Tid>, target: Tid, d: &D
     }
     if selfr {
         m.unchecked();
-        m.way = Some(crate::engine::write::RoleWay::Leave(holder));
     }
     let c = Engine::commit_tx(tx, m)?;
     if let Some(r) = &rot {
