@@ -48,7 +48,7 @@
 
 use roles_model::paths::{self, Edge, Id, Kind, Rules, Set, Thing, Things, View};
 use roles_model::Role;
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 
 pub type Sid = Thing;
 
@@ -144,6 +144,13 @@ pub enum Takes {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Closure {
     pub takes: Takes,
+    /// Today's chain certificates (spec/permissions.md §4 Chain certificates, as main builds
+    /// them: `osis_perm` `Timeline::certificates`) in place of stated paths: a member brings every
+    /// taken write on an edge between two things of its signer's **chain** to its thing (the
+    /// signer and the things on any path from it to the thing over record edges and edges chained
+    /// grants set, at any time), and an edge write also its signer's chain to its holder (closed
+    /// under authors). `joined` is read for stated paths only.
+    pub any_path: bool,
     /// A member brings the writes on its stated path's edges only where the path is **joined**:
     /// each edge of it that is no record edge holds a held chained grant (`World::grants`) ordered
     /// before the member. Its named remaining admin edge it brings whatever.
@@ -173,11 +180,11 @@ impl Closure {
     /// The draft (notes/a2-spec/permissions.md §4 Evidence of a commit): `paths::evidence` with
     /// finding 9's clause in the draft's words.
     pub fn drafted() -> Closure {
-        Closure { takes: Takes::All, joined: false, vouches: true, commit_edges: CommitEdges::AllWrites }
+        Closure { takes: Takes::All, any_path: false, joined: false, vouches: true, commit_edges: CommitEdges::AllWrites }
     }
     /// OPEN 10 (b): chained writes, along joined paths.
     pub fn joined() -> Closure {
-        Closure { takes: Takes::Chained, joined: true, vouches: true, commit_edges: CommitEdges::Creations }
+        Closure { takes: Takes::Chained, any_path: false, joined: true, vouches: true, commit_edges: CommitEdges::Creations }
     }
 }
 
@@ -233,7 +240,7 @@ impl Open10 {
             Open10::Joined | Open10::Granted => (Takes::Chained, true),
             Open10::Applied => (Takes::Applied, true),
         };
-        Closure { takes, joined, vouches: true, commit_edges: CommitEdges::Creations }
+        Closure { takes, any_path: false, joined, vouches: true, commit_edges: CommitEdges::Creations }
     }
     pub fn pend(self) -> Pend {
         match self {
@@ -250,10 +257,72 @@ impl Open10 {
     }
 }
 
+/// The delivery rules OPEN 14 compares (notes/a2-spec/README.md), each over OPEN 10's (iv)
+/// closure and judge.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Stage {
+    /// A3: removals with their reach, the remover's errand followed to the end (`Rule::fixed`).
+    A3,
+    /// Brief 3 with reach on (`Config::reach`, unindexed) and Role changes travel, no errand
+    /// (the errand is A3's).
+    ReachNoErrand,
+    /// Brief 3 as drafted: no reach, no errand, Role changes travel.
+    A2,
+    /// Brief 3 as the built derivation computes it alone: no reach, no errand, the actor seed
+    /// (Role changes travel's keys-open half left out).
+    A2Actor,
+    /// Main today: chain certificates on any path, closed under authors, the account's chain
+    /// under each sync ID it logs to (spec/permissions.md §4 Logging certificates: read as the
+    /// chain of each signer of a body there), Role changes travel; no errand.
+    Today,
+    /// Brief 3 with today's any-path chains kept for removals alone (`Rule::author_reach`).
+    A2AuthorReach,
+}
+
+impl Stage {
+    pub const ALL: [Stage; 6] = [Stage::A3, Stage::ReachNoErrand, Stage::A2, Stage::A2Actor, Stage::Today, Stage::A2AuthorReach];
+    pub fn name(self) -> &'static str {
+        match self {
+            Stage::A3 => "a3",
+            Stage::ReachNoErrand => "reach-no-errand",
+            Stage::A2 => "a2",
+            Stage::A2Actor => "a2-actor",
+            Stage::Today => "today",
+            Stage::A2AuthorReach => "a2-author-reach",
+        }
+    }
+    /// `rule` (keeping its `vouches`) under (iv) with this stage's delivery; `w` judging as (iv).
+    pub fn set(self, w: &mut World, rule: Rule) -> Rule {
+        let r = Rule { errand: Errand::Off, reach: false, keys_open: true, ..Open10::Granted.set(w, rule) };
+        match self {
+            Stage::A3 => Rule { errand: Errand::Transitive, reach: true, keys_open: false, ..r },
+            Stage::ReachNoErrand => Rule { reach: true, ..r },
+            Stage::A2 => r,
+            Stage::A2Actor => Rule { keys_open: false, ..r },
+            Stage::Today => Rule { closure: Closure { any_path: true, joined: false, ..r.closure }, ..r },
+            Stage::A2AuthorReach => Rule { author_reach: true, ..r },
+        }
+    }
+}
+
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Rule {
     pub placement: Placement,
     pub errand: Errand,
+    /// (A3) Each held removal of (h, t) whose reach under S is held (taken write grants joining
+    /// t to a thing of the unit) is a seed, with that reach (draft §4 Evidence of a sync ID). Off:
+    /// until A3, "a removal goes under S as Role changes travel says" (notes/a2-spec/README.md
+    /// OPEN 14).
+    pub reach: bool,
+    /// Role changes travel's keys-open half: an edge write naming holder h is a seed also of the
+    /// sync ID of each thing whose keys open h (holding read or above on h through taken grants,
+    /// at any time: `ROLE_KEEP` read as for good). The half naming S's own thing is always on.
+    pub keys_open: bool,
+    /// Today's any-path chains kept for removals alone: a held taken removal of (h, t) is a seed
+    /// of S where h signs a held body of S and t lies on h's chain to that body's thing (a path
+    /// from h to it over record edges and chained grants, any time), with the writes of that
+    /// chain's edges.
+    pub author_reach: bool,
     pub scope: Scope,
     pub leaves: Leaves,
     /// The errand is a standing duty: the remover logs again whenever its view shows a new
@@ -266,7 +335,7 @@ pub struct Rule {
 impl Rule {
     /// The plan's reading (notes/redesign-plan.md A2, A3).
     pub fn design() -> Rule {
-        Rule { placement: Placement::Function, errand: Errand::Direct, scope: Scope::Lowerings, leaves: Leaves::Evidence, standing: true, lists: Lists::Whole, closure: Closure::drafted() }
+        Rule { placement: Placement::Function, errand: Errand::Direct, reach: true, keys_open: false, author_reach: false, scope: Scope::Lowerings, leaves: Leaves::Evidence, standing: true, lists: Lists::Whole, closure: Closure::drafted() }
     }
     /// The design with the findings' fixes (notes/evidence-model-findings.md): the errand follows
     /// taken grants to the end.
@@ -350,6 +419,11 @@ pub struct World {
     pub creations: bool,
     /// `creation` of every commit, computed once the world is written (`creations_of`).
     pub creation_memo: std::sync::OnceLock<Vec<Option<Id>>>,
+    /// Content parts whose path entry opens late (notes/path-form.md, the split form's waiting
+    /// paths), each with the commit opening it (a key arriving: a content commit on its thing by
+    /// its mint admin): a node holding the part without it knows no path for it, so the part
+    /// brings nothing and pends (`World::hidden`). `usize::MAX`: not opened (yet).
+    pub opens: BTreeMap<Id, Id>,
 }
 
 /// Where the model stands after some events.
@@ -382,7 +456,7 @@ impl World {
     pub fn new(w: paths::World, sids: &[Thing]) -> World {
         let sids: Things = sids.iter().copied().collect();
         let units = sids.iter().map(|&s| (s, Things::from([s]))).collect();
-        World { w, rules: Rules::fixed(), sids, units, events: vec![], nodes: vec![], by: vec![], trust: Set::new(), pend: Pend::Any, creations: false, creation_memo: Default::default() }
+        World { w, rules: Rules::fixed(), sids, units, events: vec![], nodes: vec![], by: vec![], trust: Set::new(), pend: Pend::Any, creations: false, creation_memo: Default::default(), opens: BTreeMap::new() }
     }
     pub fn node(&mut self, honest: bool, syncs: &[Thing]) -> usize {
         self.nodes.push(Node { honest, syncs: syncs.iter().copied().collect() });
@@ -476,31 +550,105 @@ impl World {
     /// The seeds of S's required set over `h`, its unit `unit`: the bodies, and of the edge-class
     /// commits the closure takes (`takes`), the grants naming S's thing and the removals with
     /// their reach.
-    fn seeds(&self, rule: &Rule, s: Sid, unit: &Things, h: &Set) -> Set {
+    /// And the edges whose taken writes are seeds too (`Stage::Today`'s account chains).
+    fn seeds(&self, rule: &Rule, s: Sid, unit: &Things, h: &Set) -> (Set, BTreeSet<Edge>) {
         let takes = self.takes(rule, h);
         let ok = |i: &Id| takes.as_ref().is_none_or(|t| t.contains(i));
-        let mut seed: Set = h.iter().copied().filter(|&i| unit.contains(&self.on(i)) || (self.holder(i) == Some(s) && ok(&i))).collect();
+        let hr: Set = h.iter().copied().filter(ok).collect();
+        // the things whose holder roles travel under S: its own, and under Role changes travel
+        // those S's thing holds read or above on, through taken grants at any time
+        let open = self.opened(rule, s, &hr);
+        let mut seed: Set = h.iter().copied().filter(|&i| unit.contains(&self.on(i)) || (self.holder(i).is_some_and(|hd| open.contains(&hd)) && ok(&i))).collect();
         if let Lists::Travels(_) = rule.lists {
             // an addendum is evidence of the commits it lists, and leaves with the last of them
             seed.retain(|&i| self.addendum_live(i, h));
         }
-        let hr: Set = h.iter().copied().filter(ok).collect();
-        for &l in &hr {
-            if let Some((hd, t)) = self.removes(l) {
-                if let Some(r) = self.reach(t, unit, &hr) {
-                    seed.insert(l);
-                    seed.extend(r);
-                    if rule.scope == Scope::Edge {
-                        seed.extend(hr.iter().copied().filter(|&j| self.w.sets(j) == Some((hd, t)) && self.w.key(l) < self.w.key(j)));
+        if rule.reach {
+            for &l in &hr {
+                if let Some((hd, t)) = self.removes(l) {
+                    if let Some(r) = self.reach(t, unit, &hr) {
+                        seed.insert(l);
+                        seed.extend(r);
+                        if rule.scope == Scope::Edge {
+                            seed.extend(hr.iter().copied().filter(|&j| self.w.sets(j) == Some((hd, t)) && self.w.key(l) < self.w.key(j)));
+                        }
                     }
                 }
             }
         }
-        seed
+        let mut edges = BTreeSet::new();
+        if rule.closure.any_path || rule.author_reach {
+            let ch = self.chained(h);
+            let bodies: Vec<Id> = h.iter().copied().filter(|&i| unit.contains(&self.on(i)) && !self.hidden(h, i)).collect();
+            for &b in &bodies {
+                let a = self.w.commits[b].signer;
+                if rule.closure.any_path {
+                    // the account's chain for S's thing, logged by each node logging there
+                    edges.extend(self.edges_among(h, &self.chain_things(h, &ch, a, s)));
+                }
+                if rule.author_reach {
+                    // with the chain's taken writes, so a reader holding them requires it too
+                    let among = self.edges_among(h, &self.chain_things(h, &ch, a, self.on(b)));
+                    if hr.iter().any(|&l| self.removes(l).is_some_and(|e| among.contains(&e))) {
+                        seed.extend(hr.iter().copied().filter(|&l| self.w.sets(l).is_some_and(|e| among.contains(&e))));
+                    }
+                }
+            }
+        }
+        (seed, edges)
     }
     /// S's required set over held set `h` with units `units`: bodies and copies.
     pub fn req(&self, rule: &Rule, s: Sid, units: &BTreeMap<Sid, Things>, h: &Set) -> Set {
-        self.closure(rule, &self.seeds(rule, s, &units[&s], h), h)
+        let (seeds, edges) = self.seeds(rule, s, &units[&s], h);
+        self.closure_with(rule, &seeds, edges, h)
+    }
+    /// The things whose holder roles travel under S over taken writes `hr`: S's own, and under
+    /// `keys_open` those S's thing holds read or above on through them, at any time.
+    pub fn opened(&self, rule: &Rule, s: Sid, hr: &Set) -> Things {
+        let mut open = Things::from([s]);
+        if rule.keys_open {
+            loop {
+                let more: Vec<Thing> = hr.iter().filter_map(|&i| self.gives_read(i)).filter(|e| open.contains(&e.0) && !open.contains(&e.1)).map(|e| e.1).collect();
+                if more.is_empty() {
+                    break;
+                }
+                open.extend(more);
+            }
+        }
+        open
+    }
+    /// A held edge write giving read or above (any `until`): a link by which keys open.
+    fn gives_read(&self, i: Id) -> Option<Edge> {
+        match &self.w.commits[i].kind {
+            Kind::Edge { holder, role, .. } if *role >= Role::Read && !self.w.leave(i) => Some((*holder, self.on(i))),
+            _ => None,
+        }
+    }
+    /// The things of `a`'s chain to `t` over `h` (spec/permissions.md §4 Chain certificates, as
+    /// main builds them): `a` and the things on any path from `a` to `t` over record edges and
+    /// edges chained grants of `ch` set, at any time.
+    pub fn chain_things(&self, h: &Set, ch: &Set, a: Thing, t: Thing) -> Things {
+        let edges: Vec<Edge> = self.w.records.iter().copied().chain(h.iter().filter(|&&i| ch.contains(&i) && self.grant(i)).filter_map(|&i| self.w.sets(i))).collect();
+        let grow = |mut x: Things, fwd: bool| loop {
+            let n = x.len();
+            x.extend(edges.iter().filter(|e| x.contains(if fwd { &e.0 } else { &e.1 })).map(|e| if fwd { e.1 } else { e.0 }).collect::<Vec<_>>());
+            if x.len() == n {
+                return x;
+            }
+        };
+        let (fwd, back) = (grow(Things::from([a]), true), grow(Things::from([t]), false));
+        let mut out: Things = fwd.intersection(&back).copied().collect();
+        out.insert(a);
+        out
+    }
+    /// The edges of `h`'s edge writes joining two of `things`.
+    fn edges_among(&self, h: &Set, things: &Things) -> BTreeSet<Edge> {
+        h.iter().filter_map(|&i| self.w.sets(i)).filter(|e| things.contains(&e.0) && things.contains(&e.1)).collect()
+    }
+    /// Part `i`'s stated path is not known over `h`: its entry opens late (`World::opens`) and
+    /// `h` lacks what opens it.
+    pub fn hidden(&self, h: &Set, i: Id) -> bool {
+        self.opens.get(&i).is_some_and(|o| !h.contains(o))
     }
 
     // ---- The closure (OPEN 10) ----
@@ -604,21 +752,32 @@ impl World {
     /// (`vouches`) the taken vouches against a member lowering on a thing a member is on.
     /// The draft is `paths::evidence`.
     pub fn closure(&self, rule: &Rule, seeds: &Set, avail: &Set) -> Set {
+        self.closure_with(rule, seeds, BTreeSet::new(), avail)
+    }
+    /// `closure`, with `edges` brought from the start.
+    fn closure_with(&self, rule: &Rule, seeds: &Set, mut edges: BTreeSet<Edge>, avail: &Set) -> Set {
         let c = rule.closure;
-        if c == (Closure { commit_edges: CommitEdges::Off, ..Closure::drafted() }) {
+        if c == (Closure { commit_edges: CommitEdges::Off, ..Closure::drafted() }) && edges.is_empty() && self.opens.is_empty() {
             return paths::evidence(&self.w, seeds, avail);
         }
         let takes = self.takes(rule, avail);
         let ok = |i: Id| takes.as_ref().is_none_or(|t| t.contains(&i));
-        let ch = if c.joined { self.chained(avail) } else { Set::new() };
+        let ch = if c.joined || c.any_path { self.chained(avail) } else { Set::new() };
         let mut s = seeds.clone();
         let mut done = Set::new();
-        let mut edges: std::collections::BTreeSet<Edge> = Default::default();
         let mut brought = Set::new();
         loop {
             for &m in s.difference(&done.clone()) {
                 done.insert(m);
-                if !c.joined || self.joined(avail, &ch, m) {
+                if self.hidden(avail, m) {
+                    // a part whose path entry has not opened brings nothing
+                } else if c.any_path {
+                    let a = self.w.commits[m].signer;
+                    edges.extend(self.edges_among(avail, &self.chain_things(avail, &ch, a, self.on(m))));
+                    if let Some(hd) = self.holder(m) {
+                        edges.extend(self.edges_among(avail, &self.chain_things(avail, &ch, a, hd)));
+                    }
+                } else if !c.joined || self.joined(avail, &ch, m) {
                     edges.extend(self.w.hops(m).iter().copied());
                 }
                 if let Kind::Edge { relies: Some(n), .. } = &self.w.commits[m].kind {
@@ -750,7 +909,9 @@ impl World {
     /// What the thief logs under S: its own bodies there and the grants (no lowering) they rest on.
     fn thief_logs(&self, rule: &Rule, s: Sid, units: &BTreeMap<Sid, Things>, held: &Set, own: &Set) -> Set {
         let mine: Set = own.iter().copied().filter(|&i| units[&s].contains(&self.on(i))).collect();
-        self.closure(rule, &mine, held).into_iter().filter(|&i| own.contains(&i) || self.removes(i).is_none()).collect()
+        // it knows its own paths, opened or not
+        let known: Set = held.iter().chain(own.iter().filter_map(|i| self.opens.get(i)).filter(|&&o| o < self.by.len())).copied().collect();
+        self.closure(rule, &mine, &known).into_iter().filter(|&i| held.contains(&i) && (own.contains(&i) || self.removes(i).is_none())).collect()
     }
     /// The commits node `n`'s errand carries: its own lowerings, and under `Scope::Edge` its own
     /// later edge writes on a held lowering's edge and vouches against a held lowering; each with
@@ -1054,6 +1215,9 @@ impl World {
     }
     /// `pend` with `h`'s chained writes given under `Pend::Granted`.
     fn pend_with(&self, h: &Set, ch: Option<&Set>, i: Id) -> bool {
+        if self.hidden(h, i) {
+            return true;
+        }
         if self.creations && self.w.edge_class(i) && self.w.part_ids(self.w.cid(i)).any(|p| self.on(p) == self.on(i) && self.creation(p).is_some_and(|c| !h.contains(&c))) {
             return true;
         }
@@ -1158,12 +1322,22 @@ impl World {
     /// body it should carry as the node holding everything does (a body it lacks is judged
     /// absent: `None`).
     pub fn p1(&self, rule: &Rule, st: &State) -> Vec<Fail> {
-        let fv = self.verdicts(&self.full(st, &Set::new()), &st.written);
+        self.p1_trusting(rule, st, &self.trust, "P1")
+    }
+    /// `p1` (`prop` naming its failures) for readers and a node holding everything that trust
+    /// `trust` (each what of it it holds) in place of the world's: evidence carries no trust, so a
+    /// reader trusting otherwise must still hold everything its own walk reads.
+    pub fn p1_trusting(&self, rule: &Rule, st: &State, trust: &Set, prop: &'static str) -> Vec<Fail> {
+        let trusting = |mut s: Seen| {
+            s.v.trust = trust.intersection(&s.v.held).copied().collect();
+            s
+        };
+        let fv = self.verdicts(&trusting(self.full(st, &Set::new())), &st.written);
         let mut out = vec![];
         let mut seen: BTreeMap<Id, Vec<(Sid, Option<Verdict>)>> = BTreeMap::new();
         for &s in &self.sids {
             let owed = self.owed(rule, st, s);
-            let v = self.reader(rule, st, s, &Set::new());
+            let v = trusting(self.reader(rule, st, s, &Set::new()));
             let rv = self.verdicts(&v, &owed.intersection(&v.v.held).copied().collect());
             for &i in &owed {
                 let r = rv.get(&i).copied();
@@ -1173,7 +1347,7 @@ impl World {
                     continue;
                 }
                 if r != Some(fv[&i]) {
-                    out.push(Fail { prop: if r.is_none() { "P1-carried" } else { "P1" }, step: st.step, sid: s, id: i, reader: r, full: Some(fv[&i]) });
+                    out.push(Fail { prop: if r.is_none() { "P1-carried" } else { prop }, step: st.step, sid: s, id: i, reader: r, full: Some(fv[&i]) });
                 }
             }
         }
@@ -1212,17 +1386,21 @@ impl World {
     }
     /// P9, no roster leaks: every copy an honest node logs under S is on a thing whose roster
     /// gives a role on a thing of S's unit (`roster_reach`), or in the closure of the grants
-    /// naming S's thing (Role changes travel: S's own roles, by design).
+    /// naming S's thing or (`keys_open`) a thing it reads through, or on such a thing (Role
+    /// changes travel: S's own roles, and the rosters of things S's readers read, by design).
     pub fn p9_leak(&self, rule: &Rule, st: &State) -> Vec<Fail> {
         let mut out = vec![];
         for (n, s, logs) in self.honest_logs(rule, st) {
             let unit = &st.units[&s];
             let reach = self.roster_reach(st, unit);
             let held = &st.held[n];
-            let own: Set = held.iter().copied().filter(|&i| self.holder(i) == Some(s)).collect();
+            let takes = self.takes(rule, held);
+            let hr: Set = held.iter().copied().filter(|i| takes.as_ref().is_none_or(|t| t.contains(i))).collect();
+            let open = self.opened(rule, s, &hr);
+            let own: Set = held.iter().copied().filter(|&i| self.holder(i).is_some_and(|hd| open.contains(&hd))).collect();
             let roles = self.closure(rule, &own, held);
             for &c in &logs {
-                if !unit.contains(&self.on(c)) && !roles.contains(&c) && !reach.contains(&self.on(c)) {
+                if !unit.contains(&self.on(c)) && !roles.contains(&c) && !reach.contains(&self.on(c)) && !open.contains(&self.on(c)) {
                     out.push(Fail { prop: "P9-leak", step: st.step, sid: s, id: c, reader: None, full: None });
                 }
             }
@@ -1291,7 +1469,8 @@ impl World {
         }
         for &s in &self.sids {
             let before_v = self.reader(rule, st, s, &Set::new());
-            let content: Vec<Id> = self.bodies(s, &st.units, &st.entries[&s]).into_iter().filter(|&i| matches!(self.w.commits[i].kind, Kind::Content)).collect();
+            // (an opener of a late path entry is a key, not a body anyone forgets)
+            let content: Vec<Id> = self.bodies(s, &st.units, &st.entries[&s]).into_iter().filter(|&i| matches!(self.w.commits[i].kind, Kind::Content) && !self.opens.values().any(|&o| o == i)).collect();
             for i in content {
                 let mut st2 = st.clone();
                 self.forget(rule, &mut st2, i);
@@ -1452,6 +1631,8 @@ pub mod names {
     pub const R: Thing = 13;
     /// A dependent of R (no sync ID of its own).
     pub const E: Thing = 14;
+    /// A third holder thing (W's), for paths of up to four holder things (`wide`).
+    pub const H: Thing = 15;
 }
 
 /// The family's shape (`family`): each field one dimension.
@@ -1698,6 +1879,237 @@ pub fn random(seed: u64, len: usize) -> World {
         }
     }
     w
+}
+
+/// What `wide` adds to its base moves.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct Wide {
+    /// Content commits in the split form: parts on two things, each with its own path.
+    pub split: bool,
+    /// A content part whose path entry opens late (`World::opens`): its opener (a content commit
+    /// on its thing by the thing's mint admin) written some moves later, or never.
+    pub late: bool,
+}
+
+/// A random world of paths up to four holder things long (sampled searches): X mints A (members
+/// K, Q, Z), W mints O and H, Y mints D and R; the five things ordered A, O, H, D, R, each holding
+/// a random role on each later one (a random graph of routes), members sometimes granted directly
+/// on another thing (a second route); then `len` moves: a member's content (K's half the time)
+/// along a route (`wide_route`: mostly along edges written, else any increasing path; sometimes
+/// backdated), K removed or re-granted on any thing it has a route on, X removing
+/// or re-granting a member (a random frontier) or two in one commit, an admin's churn on any edge
+/// between the things (a removal with a random frontier), junk edge writes by members on any thing
+/// to any holder, K granting Z, Q's vouches and addenda, direct routes granted and removed, retags
+/// among the five; with `opt` split commits and late path entries. Random node sync sets beside
+/// each mint admin syncing its things (each other thing one chance in five: honest bridges
+/// between two things are rare enough that delivery decides).
+pub fn wide(seed: u64, len: usize, opt: Wide) -> World {
+    use names::*;
+    let mut rng = roles_model::Rng::thread(seed, 1);
+    let things = [A, O, H, D, R];
+    let pw = paths::World::new(&[(X, A), (W, O), (W, H), (Y, D), (Y, R)]);
+    let mut w = World::new(pw, &things);
+    for &(x, s) in &[(D, R), (O, R), (H, D), (O, H), (D, O), (A, H)] {
+        if rng.below(4) == 0 {
+            w.member(x, s);
+        }
+    }
+    let pick = |rng: &mut roles_model::Rng, mine: &[Thing]| -> Vec<Thing> { things.iter().copied().filter(|t| mine.contains(t) || rng.below(5) == 0).collect() };
+    let (x, wn, y, q, z) = (w.node(true, &pick(&mut rng, &[A])), w.node(true, &pick(&mut rng, &[O, H])), w.node(true, &pick(&mut rng, &[D, R])), w.node(true, &pick(&mut rng, &[])), w.node(true, &pick(&mut rng, &[])));
+    let k = w.node(false, &[]);
+    let admin = |t: Thing| match t {
+        A => (X, x),
+        O | H => (W, wn),
+        _ => (Y, y),
+    };
+    let members = [(K, k), (Q, q), (Z, z)];
+    let roles = [Role::Read, Role::Write, Role::Admin];
+    let up = |rng: &mut roles_model::Rng| roles[1 + rng.below(2)];
+    for &(m, _) in &members[..2 + rng.below(2)] {
+        let r = up(&mut rng);
+        w.write(x, |p| p.edge(X, 1, &[], A, m, r, &[]));
+    }
+    for i in 0..things.len() {
+        for j in i + 1..things.len() {
+            if rng.below(2) == 0 {
+                let (a, n) = admin(things[j]);
+                let r = [Role::Write, Role::Write, Role::Read, Role::Admin][rng.below(4)];
+                w.write(n, |p| p.edge(a, 1, &[], things[j], things[i], r, &[]));
+            }
+        }
+    }
+    // second routes: a member granted directly on another thing
+    for m in [K, Q, Z] {
+        if rng.below(3) == 0 {
+            let on = things[1 + rng.below(4)];
+            let (a, n) = admin(on);
+            w.write(n, |p| p.edge(a, 1, &[], on, m, Role::Write, &[]));
+        }
+    }
+    let mut pending: Vec<(Id, Thing)> = vec![];
+    let mut ts = 2;
+    for _ in 0..len {
+        ts += rng.below(2) as u32;
+        let bts = if rng.below(5) == 0 && ts > 3 { ts - 2 } else { ts };
+        let removals: Vec<Id> = (0..w.by.len()).filter(|&j| w.removes(j).is_some()).collect();
+        match rng.below(14) {
+            0..=3 => {
+                // the thief half the time
+                let (sg, n) = if rng.below(2) == 0 { members[0] } else { members[rng.below(3)] };
+                let (path, on) = wide_route(&w, &mut rng, sg);
+                w.write(n, |p| p.content(sg, bts, &path, on));
+            }
+            4 | 5 if rng.below(2) == 0 => {
+                // K removed or re-granted on A or on a thing it holds a direct route on
+                let on = [A, A, O, H, D, R][rng.below(6)];
+                let role = if rng.below(3) == 0 { up(&mut rng) } else { Role::None };
+                let front: Vec<Id> = (0..w.by.len()).filter(|&j| w.w.hops(j).contains(&(K, on)) && rng.below(2) == 0).collect();
+                let (a, n) = admin(on);
+                w.write(n, |p| p.edge(a, bts, &[], on, K, role, if role == Role::None { &front } else { &[] }));
+            }
+            4 => {
+                let m = [K, Q, Z][rng.below(3)];
+                let role = if rng.below(2) == 0 { Role::None } else { up(&mut rng) };
+                let front: Vec<Id> = (0..w.by.len()).filter(|&j| w.w.hops(j).contains(&(m, A)) && rng.below(2) == 0).collect();
+                w.write(x, |p| p.edge(X, bts, &[], A, m, role, if role == Role::None { &front } else { &[] }));
+            }
+            5 => {
+                let role = if rng.below(2) == 0 { Role::None } else { up(&mut rng) };
+                let (a, b) = [(K, Q), (K, Z), (Q, Z)][rng.below(3)];
+                w.write_parts(x, |p| p.commit(X, bts, &[], A, vec![paths::Kind::set(a, role), paths::Kind::set(b, role)]));
+            }
+            6 => {
+                // churn on an edge between two things, by the target's admin
+                let j = 1 + rng.below(things.len() - 1);
+                let (hd, on) = (things[rng.below(j)], things[j]);
+                let role = [Role::None, Role::Read, Role::Write, Role::Admin][rng.below(4)];
+                let front: Vec<Id> = (0..w.by.len()).filter(|&c| w.w.hops(c).contains(&(hd, on)) && rng.below(2) == 0).collect();
+                let (a, n) = admin(on);
+                w.write(n, |p| p.edge(a, bts, &[], on, hd, role, if role == Role::None { &front } else { &[] }));
+            }
+            7 => {
+                // a member's edge write on any thing to any holder: junk where it holds no admin
+                let (sg, n) = members[rng.below(3)];
+                let (path, on) = wide_route(&w, &mut rng, sg);
+                let hd = [K, Q, Z, A, O, H, D, R][rng.below(8)];
+                if hd != on && !path.contains(&hd) {
+                    let r = roles[rng.below(3)];
+                    w.write(n, |p| p.edge(sg, bts, &path, on, hd, r, &[]));
+                }
+            }
+            8 if !removals.is_empty() => {
+                let r = removals[rng.below(removals.len())];
+                let on = w.on(r);
+                let list: Vec<Id> = (0..w.by.len()).filter(|&j| j != r && rng.below(2) == 0).collect();
+                if rng.below(2) == 0 {
+                    let vs: Vec<Id> = list.iter().copied().filter(|&j| w.w.edge_class(j) && w.on(j) == on).collect();
+                    w.write(q, |p| p.vouch(Q, bts, &[A], on, r, &vs));
+                } else {
+                    let t = things[3 + rng.below(2)];
+                    let adds: Vec<Id> = list.iter().copied().filter(|&j| !w.w.edge_class(j) && w.on(j) == t).collect();
+                    w.write(q, |p| p.addendum(Q, bts, &[A], t, r, &adds));
+                }
+            }
+            9 => {
+                let (sg, n) = members[rng.below(3)];
+                let hd = [K, Q, Z][rng.below(3)];
+                if hd != sg {
+                    let r = up(&mut rng);
+                    w.write(n, |p| p.edge(sg, bts, &[], A, hd, r, &[]));
+                }
+            }
+            10 => {
+                let (xx, ss) = (things[rng.below(5)], things[rng.below(5)]);
+                if xx != ss {
+                    if rng.below(2) == 0 {
+                        w.join(xx, ss);
+                    } else {
+                        w.leave(xx, ss);
+                    }
+                }
+            }
+            11 if opt.split => {
+                let (sg, n) = members[rng.below(3)];
+                let ((p1, t1), (p2, t2)) = (wide_route(&w, &mut rng, sg), wide_route(&w, &mut rng, sg));
+                if t1 != t2 {
+                    let ids = w.write_parts(n, |p| p.split(sg, bts, sg, &[(&p1, t1), (&p2, t2)]));
+                    if opt.late && rng.below(2) == 0 {
+                        let i = ids[rng.below(2)];
+                        w.opens.insert(i, usize::MAX);
+                        pending.push((i, w.on(i)));
+                    }
+                }
+            }
+            12 => {
+                // a direct route: a thing's admin grants (or removes) a member on it
+                let m = [K, Q, Z][rng.below(3)];
+                let on = things[1 + rng.below(4)];
+                let role = if rng.below(3) == 0 { Role::None } else { up(&mut rng) };
+                let front: Vec<Id> = (0..w.by.len()).filter(|&c| w.w.hops(c).contains(&(m, on)) && rng.below(2) == 0).collect();
+                let (a, n) = admin(on);
+                w.write(n, |p| p.edge(a, bts, &[], on, m, role, if role == Role::None { &front } else { &[] }));
+            }
+            13 if opt.late => {
+                let (sg, n) = members[rng.below(3)];
+                let (path, on) = wide_route(&w, &mut rng, sg);
+                let i = w.write(n, |p| p.content(sg, bts, &path, on));
+                w.opens.insert(i, usize::MAX);
+                pending.push((i, on));
+            }
+            _ => {}
+        }
+        // a pending path entry opens now and then: its thing's key arrives
+        let mut keep = vec![];
+        for (i, on) in std::mem::take(&mut pending) {
+            if rng.below(3) == 0 {
+                let (a, n) = admin(on);
+                let o = w.write(n, |p| p.content(a, ts, &[], on));
+                w.opens.insert(i, o);
+            } else {
+                keep.push((i, on));
+            }
+        }
+        pending = keep;
+    }
+    // one never opening waits for good, at every node alike
+    for (i, on) in pending {
+        if rng.below(2) == 0 {
+            let (a, n) = admin(on);
+            let o = w.write(n, |p| p.content(a, ts, &[], on));
+            w.opens.insert(i, o);
+        }
+    }
+    w
+}
+
+/// A path for `signer` in a `wide` world and the thing written at its end: three times in four a
+/// walk from `signer` along edges some edge write set (granted, removed or junk; one to five
+/// things), else a random increasing subset of the things before a random target.
+fn wide_route(w: &World, rng: &mut roles_model::Rng, signer: Thing) -> (Vec<Thing>, Thing) {
+    use names::*;
+    let things = [A, O, H, D, R];
+    if rng.below(4) != 0 {
+        let edges: BTreeSet<Edge> = (0..w.by.len()).filter_map(|i| w.w.sets(i)).filter(|e| things.contains(&e.1)).collect();
+        let mut path: Vec<Thing> = vec![];
+        let mut cur = signer;
+        loop {
+            let next: Vec<Thing> = edges.iter().filter(|e| e.0 == cur && !path.contains(&e.1)).map(|e| e.1).collect();
+            if next.is_empty() {
+                break;
+            }
+            cur = next[rng.below(next.len())];
+            path.push(cur);
+            if path.len() == 5 || rng.below(3) == 0 {
+                break;
+            }
+        }
+        if let Some(on) = path.pop() {
+            return (path, on);
+        }
+    }
+    let ti = rng.below(things.len());
+    let path: Vec<Thing> = things[..ti].iter().copied().filter(|_| rng.below(2) == 0).collect();
+    (path, things[ti])
 }
 
 // ---- Cost (P6) ----

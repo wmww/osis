@@ -16,6 +16,8 @@ mod spec_edits;
 mod spec_evidence;
 mod spec_open10;
 mod spec_story;
+mod spec_reach;
+mod spec_gaps;
 mod spec_undo;
 mod spec_waits;
 mod props;
