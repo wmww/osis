@@ -3748,6 +3748,23 @@ fn an_addendum_keeps_a_write_while_it_stands_against_its_witness_removal() {
     }
 }
 
+/// M cuts (A, CT) and H removes Z from A after Z's write through [A], neither listing it; W,
+/// writing CT directly, writes an addendum against H's removal: it answers H's cut alone, so the
+/// write stands only once W answers M's cut too.
+#[test]
+fn an_addendum_answers_the_cut_it_is_against_alone() {
+    let mut w = cut_twice();
+    w.edge(M, 1, &[], CT, W, Write, &[]);
+    let c = w.content(Z, 3, &[A], CT);
+    let rm = w.edge(M, 4, &[], CT, A, Gone, &[]);
+    let rh = w.edge(H, 5, &[], A, Z, Gone, &[]);
+    w.addendum(W, 6, &[], CT, rh, &[c]);
+    assert!(!fixed(&w, &[]).shows(c));
+    assert!(any_cut(&w).valid.contains(&c));
+    w.addendum(W, 7, &[], CT, rm, &[c]);
+    assert!(fixed(&w, &[]).valid.contains(&c));
+}
+
 /// Z's one commit writes CT through [A] and A directly; M cuts (A, CT), then H removes Z listing
 /// the commit in both leaves: the part on A stands by H's list; the part on CT falls to M's cut,
 /// which H's list does not answer.

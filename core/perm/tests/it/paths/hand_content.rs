@@ -1122,6 +1122,24 @@ fn an_addendum_keeps_a_write_while_it_stands_against_its_witness_removal() {
     }
 }
 
+// spec/permissions.md §5.2 (addenda): M cuts (A, CT) and H removes Z after Z's write through [A],
+// neither listing it; W's addendum against H's removal answers H's cut alone: the write stands once
+// W answers M's cut too. Mutation: an addendum answering every cut of the path fails it.
+#[test]
+fn an_addendum_answers_the_cut_it_is_against_alone() {
+    let mut w = cut_twice();
+    w.edge(M, 1, &[], CT, W, Write, &[]);
+    let c = w.content(Z, 3, &[A], CT);
+    let rm = w.edge(M, 4, &[], CT, A, Gone, &[]);
+    let rh = w.edge(H, 5, &[], A, Z, Gone, &[]);
+    w.addendum(W, 6, &[], CT, rh, &[c]);
+    agree_all(&w, &[]);
+    assert_eq!(verdict(&w, &all(&w, &[]), c), Some(Content::Invalid));
+    w.addendum(W, 7, &[], CT, rm, &[c]);
+    agree_all(&w, &[]);
+    assert_eq!(verdict(&w, &all(&w, &[]), c), Some(Content::Valid(By::Vouched)));
+}
+
 // spec/permissions.md §5.2 (content): Z's one commit on CT through [A] and on A; M cuts (A, CT),
 // then H removes Z listing the commit in both leaves: the part on A stands, the part on CT falls.
 #[test]
