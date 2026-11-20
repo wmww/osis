@@ -150,6 +150,26 @@ fn a_self_rewrite_keeps_no_admin_its_grant_lost() {
     }
 }
 
+// roles-model `a_marked_hop_under_a_removal_with_a_list_and_a_vouch`: a grant along a marked
+// direct hop of a detached thing, under a removal listing other writes and a co-admin's vouch.
+#[test]
+fn a_marked_hop_under_a_removal_with_a_list_and_a_vouch() {
+    for (marked, vouched) in [(true, true), (true, false), (false, true)] {
+        let mut w = account();
+        let gs: Vec<Id> = [H, B, N5].iter().map(|&h| w.push(H, 1, &[A], T1, Kind::set(h, Admin))).collect();
+        w.push(H, 2, &[], T1, Kind::set(A, Gone).listing(w.cut(&gs)).relying(H));
+        let gx = w.push_marked(H, 3, &[], T1, Kind::set(X, Write), if marked { &[0] } else { &[] });
+        let hc = w.push_marked(H, 4, &[], T1, Kind::Content, &[0]);
+        w.content(X, 5, &[], T1);
+        let r = w.push(B, 6, &[], T1, Kind::set(H, Gone).listing(w.cut(&[hc])));
+        if vouched {
+            w.vouch(N5, 7, &[], T1, r, &[gx]);
+        }
+        agree_all(&w, &[]);
+        agree_all(&w, &[r]);
+    }
+}
+
 // spec/permissions.md §2: a self-removal (a path ending at the holder) audits nothing and raises
 // nothing.
 #[test]

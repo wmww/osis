@@ -2874,6 +2874,39 @@ fn a_removed_far_ancestors_backdated_marked_writes_fall() {
     }
 }
 
+/// The mark meets the other rules (notes/a1-spec/permissions.md §1 Path, Direct mark; §5.1):
+/// T1 under A under H. H grants itself, B and N5 admin on T1 (direct grants through [A]), then
+/// detaches T1 (A's record edge removed, listing those grants). Along its marked direct hop H
+/// grants X write and writes content; X writes. B removes H listing H's content: H's grant of X
+/// rests on the removed edge, so it falls with X's write unless N5, a co-admin, vouches for it;
+/// the listed content stays. The grant stated by the cut descent instead applies nowhere.
+#[test]
+fn a_marked_hop_under_a_removal_with_a_list_and_a_vouch() {
+    for (marked, vouched) in [(true, true), (true, false), (false, true)] {
+        let mut w = account();
+        let gs: Vec<Id> = [H, B, N5].iter().map(|&h| w.push(H, 1, &[A], T1, Kind::set(h, Admin))).collect();
+        let detach = w.push(H, 2, &[], T1, Kind::set(A, Gone).listing(w.cut(&gs)).relying(H));
+        let mark: &[usize] = if marked { &[0] } else { &[] };
+        let gx = w.push_marked(H, 3, &[], T1, Kind::set(X, Write), mark);
+        let hc = w.push_marked(H, 4, &[], T1, Kind::Content, &[0]);
+        let xc = w.content(X, 5, &[], T1);
+        let r = w.push(B, 6, &[], T1, Kind::set(H, Gone).listing(w.cut(&[hc])));
+        if vouched {
+            w.vouch(N5, 7, &[], T1, r, &[gx]);
+        }
+        for t in [&[][..], &[r]] {
+            let rd = fixed(&w, t);
+            let ctx = format!("{marked} {vouched} {t:?}: {rd:?}");
+            assert!(rd.applied.contains(&detach) && rd.applied.contains(&r) && rd.valid.contains(&hc), "{ctx}");
+            assert_eq!(rd.role(H, T1), Gone, "{ctx}");
+            let stays = marked && vouched;
+            assert_eq!((rd.applied.contains(&gx), rd.valid.contains(&xc), rd.role(X, T1)), (stays, stays, if stays { Write } else { Gone }), "{ctx}");
+            let st = tiny_gates_under(&w, t, &Rules::fixed());
+            assert!(st.failures() == 0, "{ctx}: {:?} {:?}", st.fails, st.first);
+        }
+    }
+}
+
 /// `tiny_detached` reaches every case its doc names (counted over its first 300 worlds, every
 /// count above zero): a marked hop applying, one applying nowhere (no direct edge, or a mark off a
 /// descent), A's record edge removed (T1 detached), and an unmarked descent applying nowhere.
