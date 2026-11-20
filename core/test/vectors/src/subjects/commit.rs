@@ -388,6 +388,15 @@ fn more_rejected(content: &Header) -> Vec<Record> {
     out.push(reject("path listing a thing twice", "spec/wire.md §4 field 2", &with_path(osis_commit::Path { purge: 0, things: vec![LISTED, LISTED], direct: 0 }), "path"));
     out.push(reject("path listing its signer", "spec/wire.md §4 field 2", &with_path(osis_commit::Path { purge: 0, things: vec![SIGNER], direct: 0 }), "path"));
     out.push(reject("path marking a hop past the hop past its end", "spec/wire.md §4 field 2, marks", &with_path(osis_commit::Path { purge: 0, things: vec![LISTED], direct: 0b100 }), "path"));
+    // `marks` not canonical: the bytes of `[0, LISTED, h'03']` with that byte string rewritten
+    let marked = with_path(osis_commit::Path { purge: 0, things: vec![LISTED], direct: 0b11 }).encode();
+    let at = [LISTED.as_bytes(), &[0x41, 0x03][..]].concat();
+    let pos = marked.windows(at.len()).position(|w| w == at).expect("the marked path's bytes") + LISTED.as_bytes().len();
+    for (name, m) in [("empty", vec![0x40]), ("ending in a zero byte", vec![0x42, 0x03, 0x00]), ("of 10 bytes", [vec![0x4a, 0x03], vec![0; 8], vec![0x01]].concat())] {
+        let bytes = [&marked[..pos], &m[..], &marked[pos + 2..]].concat();
+        assert!(Header::decode(&bytes).and_then(|x| x.validate()).is_err(), "marks {name}");
+        out.push(case(&format!("path marks {name}"), "spec/wire.md §4 field 2, marks").with("header", hex(&bytes)).with("reject", "path"));
+    }
     // entry `n` listing `k` things: its key commitment's first byte `n`
     let entry = |k: usize, n: u8| [vec![n], vec![0x5d; osis_commit::entry_len(k).unwrap() - 1]].concat();
     let split = |author: Option<Tid>, entries: Vec<Vec<u8>>| osis_commit::Paths::Split(osis_commit::Split { author, entries });
