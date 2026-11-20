@@ -382,7 +382,7 @@ impl Engine {
             for (ts, c) in &page {
                 let Some(m) = tx.core.ix.commits.get(c) else { continue };
                 let Some(ai) = m.aspect(&tid, &ak) else { continue };
-                let (acting, valid) = (m.view.acting_on(&tid), m.valid_at(ai));
+                let (acting, valid) = (Some(m.view.acting), m.valid_at(ai));
                 let mut v = None;
                 crate::apply::each_held_piece(tx, c, ai, &mut |_, f| {
                     v = f.read();
@@ -758,6 +758,7 @@ fn tables(ix: &super::Indexes) -> Vec<(&'static str, &dyn Table)> {
         ("by_thing", &*ix.by_thing),
         ("chains_on", &*ix.chains_on),
         ("acting_on", &*ix.acting_on),
+        ("paths_unknown", &*ix.paths_unknown),
         ("by_actor", &*ix.by_actor),
         ("role_on", &*ix.role_on),
         ("purges_on", &*ix.purges_on),
@@ -1062,7 +1063,8 @@ impl osis_store::Section for ForensicSection {
     fn open(&self, t: &osis_crypto::Trial) -> Option<Vec<u8>> {
         let sk = match t.unwrap_section(&self.id, &self.s.wrap) {
             Ok(sk) => sk,
-            Err(_) if self.s.may_open_with(t.zero()) => t.key().clone(),
+            // either `Contents` form: a commit stating one path, or the split form
+            Err(_) if self.s.may_open_with(t.zero(), false) || self.s.may_open_with(t.zero(), true) => t.key().clone(),
             Err(_) => return None,
         };
         osis_crypto::open_section(&self.id, &sk, &self.s.ciphertext).ok()

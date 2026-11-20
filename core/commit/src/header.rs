@@ -3,7 +3,7 @@
 
 use crate::Error;
 use crate::cbor::item;
-use crate::path::{Path, Paths};
+use crate::path::{Path, Paths, Split, ThingPath};
 use osis_base::cbor::{Item, MAJOR_TAG, encode_into, head, put_array, put_bytes, put_link, put_map, put_text, put_uint};
 use osis_base::format::{CHUNK_THRESHOLD, DELETE_ADMIN, DELETE_WRITER, FORMAT_VERSION, MAX_BLOB, MAX_OBJECT_DEPTH, TAG_SET, TID_LEN};
 use osis_base::{Ak, CommitId, Limits, Link, Reader, Tid, Ts, Value};
@@ -200,7 +200,8 @@ impl Header {
         aspects_on(&self.aspects, tid, |a| &a.tid)
     }
 
-    /// The things it writes, distinct, in the order of its aspects (that of `path`'s hashes).
+    /// The things it writes, distinct, in the order of its aspects (that of a split path's
+    /// entries).
     pub fn things(&self) -> Vec<Tid> {
         let mut out: Vec<Tid> = self.aspects.iter().map(|a| a.tid).collect();
         out.dedup();
@@ -211,23 +212,35 @@ impl Header {
     pub fn path_in_clear(&self) -> Option<&Path> {
         match &self.path {
             Paths::One(p) => Some(p),
-            Paths::Hashed(_) => None,
+            Paths::Split(_) => None,
         }
     }
 
-    /// The hash its `path` holds for thing `t`, where its paths are hashed.
-    pub fn path_hash(&self, t: &Tid) -> Option<[u8; 32]> {
-        let Paths::Hashed(hs) = &self.path else { return None };
-        let i = self.things().iter().position(|x| x == t)?;
-        hs.get(i).copied()
+    /// Its one purge author (spec/permissions.md §6), in the clear in either form. Interim
+    /// (notes/a1-spec/README.md step 3): the thing the old walk reads it as acting for on every
+    /// thing it writes.
+    pub fn purge_author(&self) -> Tid {
+        self.path.purge_author(self.signer)
     }
 
-    // Interim (notes/a1-spec/README.md step 3): the walk judges each thing along its own path.
-    /// The thing the walk reads it as acting on every thing it writes, from the header alone: its
-    /// path's purge author (`Path::acting`) where the path is in the clear; `None` where its
-    /// paths are hashed (`CommitBlob::acting` reads each thing's in its sections).
-    pub fn acting(&self) -> Option<Tid> {
-        self.path_in_clear().map(|p| p.acting(self.signer))
+    /// The path a split commit states for the thing at `i` among those it writes, opened under
+    /// path key `key`: `None` where it is no split commit or the key does not open that entry.
+    pub fn open_path(&self, i: usize, key: &[u8; 32]) -> Option<ThingPath> {
+        let Paths::Split(s) = &self.path else { return None };
+        let listed = Split::open(key, s.entries.get(i)?)?;
+        let t = self.things().get(i).copied()?;
+        Some(crate::path::thing_path(listed, &self.signer, &self.purge_author(), &t))
+    }
+
+    /// Whether it states the split form.
+    pub fn is_split(&self) -> bool {
+        matches!(self.path, Paths::Split(_))
+    }
+
+    /// The things a request destroying a thing names (`[tid, created.0]`, spec/commits.md §5
+    /// Destruction): a header-only copy of a split commit carries their path keys.
+    pub fn destroyed(&self) -> impl Iterator<Item = &Tid> {
+        self.purge.iter().filter(|p| matches!(p, PurgeItem::Aspect { ak, .. } if ak.as_str() == crate::retention::CREATED)).map(|p| p.tid())
     }
 }
 

@@ -53,25 +53,26 @@ pub(crate) fn blob_bound(c: &CommitBlob) -> usize {
     let things = h.aspects.iter().map(|a| a.tid).collect::<std::collections::BTreeSet<_>>().len().max(1);
     let groups = prefix_groups(h, 0..h.aspects.len()).map_or(h.aspects.len(), |g| g.len());
     let fixed = 1usize.saturating_add(h.encode().len()).saturating_add(c.sigs.encoded_len()).saturating_add(head_len(things as u64));
-    // each section's `Contents` head and its thing's `Salted` (the widest of them)
-    let salted = 2 + c.salted.values().map(|s| 1 + 17 + s.path.encode().len()).max().unwrap_or(0);
-    let section = Section { ais: Vec::new(), chain: vec![osis_base::Tid::from_bytes([0; 15]); osis_base::format::MAX_CHAIN_DEPTH], wrap: vec![0; osis_crypto::SECTION_WRAP_LEN], ciphertext: vec![0; 16 + 9] }.encoded_len() + salted;
+    // in a split commit each section's `Contents` head and key list head, and each thing's path
+    // key in its content and its role section (`[index, bytes]` at its widest)
+    let keyed = if h.is_split() { things.saturating_mul(2 * (2 + 2 * 9 + 1 + 9 + 32)) } else { 0 };
+    let section = Section { ais: Vec::new(), chain: vec![osis_base::Tid::from_bytes([0; 15]); osis_base::format::MAX_CHAIN_DEPTH], wrap: vec![0; osis_crypto::SECTION_WRAP_LEN], ciphertext: vec![0; 16 + 9] }.encoded_len();
     let heads = h.aspects.len().saturating_add(things).saturating_mul(head_len(h.aspects.len() as u64)).saturating_add(things.saturating_mul(8));
     let parts: usize = c.parts.iter().map(part_len).fold(0, usize::saturating_add);
     let prefix = PREFIX_FIXED_LEN.saturating_add(groups.saturating_mul(1 + 3 * COMMITMENT_LEN));
-    osis_crypto::blob_len(prefix, fixed.saturating_add(parts).saturating_add(things.saturating_mul(section)).saturating_add(heads))
+    osis_crypto::blob_len(prefix, fixed.saturating_add(parts).saturating_add(things.saturating_mul(section)).saturating_add(heads).saturating_add(keyed))
 }
 
 
 /// Purge rewrite: the same header and signature without the deltas `drop` names (header-only
-/// when none remain), and the paths of the things whose parts remain (all, where the aspect list
-/// is not resolved and a part remains). Its prefix groups are those of its remaining aspects
-/// (`prefix_groups`).
+/// when none remain), and the path keys of the things whose parts remain or that it destroys
+/// (`Header::destroyed`; all, where the aspect list is not resolved). Its prefix groups are those
+/// of its remaining aspects (`prefix_groups`).
 pub fn rewrite(c: &CommitBlob, drop: impl Fn(usize) -> bool) -> CommitBlob {
     let parts: Vec<_> = c.parts.iter().filter(|p| !drop(p.ai)).cloned().collect();
     let h = &c.header;
     let things = h.things();
-    let kept = |i: &usize| if h.is_resolved() { parts.iter().any(|p| h.aspects.get(p.ai).and_then(|a| things.iter().position(|t| *t == a.tid)) == Some(*i)) } else { !parts.is_empty() };
-    let salted = c.salted.iter().filter(|(i, _)| kept(i)).map(|(i, s)| (*i, s.clone())).collect();
-    CommitBlob { header: h.clone(), sigs: c.sigs.clone(), parts, salted }
+    let kept = |i: &usize| !h.is_resolved() || things.get(*i).is_some_and(|t| h.destroyed().any(|d| d == t)) || parts.iter().any(|p| h.aspects.get(p.ai).and_then(|a| things.iter().position(|t| *t == a.tid)) == Some(*i));
+    let keys = c.keys.iter().filter(|(i, _)| kept(i)).map(|(i, k)| (*i, *k)).collect();
+    CommitBlob { header: h.clone(), sigs: c.sigs.clone(), parts, keys }
 }

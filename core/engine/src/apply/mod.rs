@@ -13,6 +13,7 @@ mod waits;
 pub mod keys;
 pub(crate) mod receipt;
 pub(crate) mod validity;
+pub(crate) mod paths;
 #[cfg(test)]
 mod tests_validity;
 #[cfg(test)]
@@ -576,20 +577,21 @@ pub(crate) fn examine(tx: &mut Tx<'_>, blob: &mut CommitBlob, id: &CommitId, ski
             Err(e) => return Err(e.into()),
         }
     }
+    // a split commit's parts whose thing's path key no opened encryption carried, or whose entry
+    // opens to a bad path, hold nothing (spec/wire.md §4 `Split`): every held part's path is known
+    blob.settle_paths();
     let h = blob.header.clone();
     let carried = carried_records(&h, blob, id);
-    // Interim (notes/a1-spec/README.md step 3): the record of every thing a held part's path lists
-    let acting = blob.acting();
-    let held: BTreeMap<Tid, CreationRecord> = h.aspects.iter().map(|a| a.tid).chain([h.signer]).chain(acting.all()).filter_map(|t| tx.core.created(&t).map(|r| (t, r.clone()))).collect();
+    // Interim (notes/a1-spec/README.md step 3): the record of the one purge author, which the old
+    // walk reads as acting on every thing
+    let acting = h.purge_author();
+    let held: BTreeMap<Tid, CreationRecord> = h.aspects.iter().map(|a| a.tid).chain([h.signer, acting]).filter_map(|t| tx.core.created(&t).map(|r| (t, r.clone()))).collect();
     let chain_rec = |t: &Tid, core: &crate::engine::Core| -> Option<CreationRecord> { core.created(t).cloned().or_else(|| carried.get(t).cloned()) };
     let record = |t: &Tid| -> Option<CreationRecord> { held.get(t).cloned().or_else(|| carried.get(t).cloned()) };
     let Some(author) = record(&h.signer) else { return Ok(Exam::Awaits(Reason::MissingChain(h.signer))) };
-    // one path in the clear acts for one thing on all: the commit awaits its record; a thing's own
-    // hashed path's waits with that thing's parts alone (below)
-    if let osis_commit::Acting::All(x) = acting
-        && record(&x).is_none()
-    {
-        return Ok(Exam::Awaits(Reason::UnknownCreated(x)));
+    // it acts for one thing on all: the commit awaits its record
+    if record(&acting).is_none() {
+        return Ok(Exam::Awaits(Reason::UnknownCreated(acting)));
     }
     // a part it cannot judge (its thing's record, record chain or the author's reach) waits; with
     // every held part such the commit is unjudgeable (spec/commits.md §4), found before a missing
@@ -601,8 +603,6 @@ pub(crate) fn examine(tx: &mut Tx<'_>, blob: &mut CommitBlob, id: &CommitId, ski
         }
         if let Some(wait) = thing_wait(tx.core, &h, a, &record, &chain_rec) {
             unjudged.insert(ai, wait);
-        } else if let Some(x) = acting.on(&a.tid).filter(|x| record(x).is_none()) {
-            unjudged.insert(ai, Reason::UnknownCreated(x));
         } else if origin == Origin::Remote && record(&a.tid).is_some_and(|r| !crate::retention::needed::applies_on(tx.core, &a.tid, &a.ak, &r)) {
             // nothing but certificates applies on a thing outside the node closure: content waits
             // until it enters (a node's own commits write only what it holds, `check_written`)
@@ -1188,7 +1188,7 @@ fn with_pending(tx: &mut Tx<'_>, id: &CommitId, mut blob: CommitBlob) -> Result<
         }
         blob.parts = rest;
         if !others.is_empty() {
-            keys::read_pending_boxes(tx, &CommitBlob { header: old.header.clone(), sigs: old.sigs.clone(), parts: others, salted: blob.salted.clone() }, id)?;
+            keys::read_pending_boxes(tx, &CommitBlob { header: old.header.clone(), sigs: old.sigs.clone(), parts: others, keys: blob.keys.clone() }, id)?;
         }
         let sigs = blob.sigs.clone();
         let mut merged = merge_parts(old, blob);
@@ -1216,14 +1216,14 @@ fn with_pending(tx: &mut Tx<'_>, id: &CommitId, mut blob: CommitBlob) -> Result<
 fn proves(core: &crate::engine::Core, of: &CommitBlob, id: &CommitId, p: &osis_commit::Part) -> bool {
     let h = &of.header;
     let Some(a) = h.aspects.get(p.ai).filter(|_| h.is_resolved()) else { return false };
-    let record = core.created(&a.tid).cloned().or_else(|| carried_records(h, &CommitBlob { header: h.clone(), sigs: of.sigs.clone(), parts: vec![p.clone()], salted: of.salted.clone() }, id).remove(&a.tid));
+    let record = core.created(&a.tid).cloned().or_else(|| carried_records(h, &CommitBlob { header: h.clone(), sigs: of.sigs.clone(), parts: vec![p.clone()], keys: of.keys.clone() }, id).remove(&a.tid));
     record.is_some_and(|r| osis_crypto::delta_hash(&dedup_secret(r.nonce()), &p.delta) == a.hash)
 }
 
-/// `a` with the parts of `b` on slots it lacks, and the paths of `b`'s things (each hashing to
+/// `a` with the parts of `b` on slots it lacks, and the path keys of `b`'s things (each opening
 /// its header entry, so alike in both).
 fn merge_parts(mut a: CommitBlob, b: CommitBlob) -> CommitBlob {
-    a.salted.extend(b.salted);
+    a.keys.extend(b.keys);
     for p in b.parts {
         if let Err(i) = a.parts.binary_search_by_key(&p.ai, |x| x.ai) {
             a.parts.insert(i, p);
@@ -1934,10 +1934,11 @@ impl Engine {
         v.into_iter().map(|x| x.1).collect()
     }
 
-    // Interim (notes/a1-spec/README.md step 3): a commit acts along a path per thing.
-    /// The thing held commit `id` acts on, on thing `t`, as known here (`View::acting`).
-    pub fn commit_acting(&self, id: &CommitId, t: &Tid) -> Option<Tid> {
-        self.core.ix.commits.get(id).and_then(|m| m.view.acting_on(t))
+    // Interim (notes/a1-spec/README.md step 3): the old walk reads a commit as acting for its one
+    // purge author on every thing.
+    /// The one purge author of held commit `id` (`View::acting`).
+    pub fn commit_acting(&self, id: &CommitId) -> Option<Tid> {
+        self.core.ix.commits.get(id).map(|m| m.view.acting)
     }
 
     /// The header of an applied commit (none if its stored bytes fail to decode: `LazyHeader`).
@@ -1954,8 +1955,7 @@ impl Engine {
         self.core.ix.by_aspect.get(&(*tid, ak.clone()))?.iter().find_map(|(_, id)| {
             let m = self.core.ix.commits.get(id)?;
             let ai = m.aspect(tid, &ak)?;
-            // a valid part is held: its section opened, its path known
-            let actor = m.view.acting_on(tid).filter(|_| m.valid_at(ai))?;
+            let actor = m.valid_at(ai).then_some(m.view.acting)?;
             Some(Creation { commit: *id, ts: m.header.ts, node: m.header.signer, actor, received: m.received })
         })
     }
@@ -1983,7 +1983,7 @@ impl Engine {
                 if m.header.kind != Kind::Content || !valid {
                     continue;
                 }
-                let Some(actor) = m.view.acting_on(tid) else { continue };
+                let actor = m.view.acting;
                 let c = Creation { commit: *id, ts: m.header.ts, node: m.header.signer, actor, received: m.received };
                 if best.as_ref().is_none_or(|b| shown(&c) > shown(b)) {
                     best = Some(c);
@@ -2157,9 +2157,9 @@ pub(crate) fn load(tx: &mut Tx<'_>, rebuild: bool) -> Result<Option<Vec<(Tid, os
             let h = Arc::new(blob.header.clone());
             let valid = vec![true; h.aspects.len()];
             let missing = (0..h.aspects.len()).filter(|ai| blob.part(*ai).is_none() && !head.dropped.contains_key(ai) && !head.stripped.contains(ai)).collect();
-            // what it acts on as learned here, kept in its record beside what its sections say
-            let acting = blob.acting().join(&osis_commit::Acting::Each(head.acting.clone()));
-            let m = Meta::new(h.clone(), acting, valid, head, missing);
+            // the paths of a split commit's things as the held keys and secrets open them, again
+            // as the secrets load (`paths::refresh`)
+            let m = Meta::new(h.clone(), paths::decided(tx.core, &h, &blob.keys), valid, head, missing);
             // what a dropped part judged, kept in its record (`Dropped::role`)
             for (ai, d) in m.dropped_parts() {
                 if let Some(r) = d.role {
@@ -2226,7 +2226,7 @@ pub(crate) fn load(tx: &mut Tx<'_>, rebuild: bool) -> Result<Option<Vec<(Tid, os
             atomic::note_role_sigs(tx.core, b.header.kind, b.header.epoch.is_some(), &id, &b.sigs);
             validity::note_required(tx.core, &b.header, &id, &read);
             validity::note_settings(tx.core, &b.header, &id, &parts);
-            validity::note_addenda(tx.core, &b.header, &b.acting(), &id, &parts);
+            validity::note_addenda(tx.core, &b.header, &id, &parts);
             if !b.header.kind.is_role() {
                 continue;
             }
@@ -2316,6 +2316,8 @@ pub(crate) fn load(tx: &mut Tx<'_>, rebuild: bool) -> Result<Option<Vec<(Tid, os
         let actors: BTreeSet<Tid> = tx.core.ix.commits.values().flat_map(|m| m.view.aspects.iter().filter(|a| a.ak.as_str() == "keys.0").map(|a| a.tid)).collect();
         keys::rebuild_keysets(tx, &actors)?;
     }
+    // the split commits' paths the loaded secrets open (`paths::refresh`)
+    paths::refresh(tx);
     // what vouches are owed is re-derived, never kept (`flows::vouches`)
     crate::flows::vouches::all_due(tx.core);
     if fast {

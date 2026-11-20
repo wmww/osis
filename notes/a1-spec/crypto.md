@@ -1,12 +1,12 @@
 # A1 draft: spec/crypto.md
-> Summary: Draft spec text for stage A1 (not in spec, not built): spec/crypto.md §5's path entry of a split commit (DRAFT, notes/path-form.md), §7's delete-key level 2 as the commit's one purge author's, the header list's base and thing blind under the signer, and a holder's level-2 signing. Map and status: notes/a1-spec/README.md.
+> Summary: Draft spec text for stage A1 (not in spec, not built, but §5's path entry, which spec/crypto.md holds): §7's delete-key level 2 as the commit's one purge author's, the header list's base and thing blind under the signer, and a holder's level-2 signing. Map and status: notes/a1-spec/README.md.
 
 Replaces, in spec/crypto.md §7: the Levels table, the Header list bullet, the `blind` sub-bullet of Commitment, and the last bullet (a holder tries every epoch). Delete base, Delete key, Commitment's other sub-bullets, Certificate blobs and Delete signature stand.
 
 *Settled* for who holds the level-2 right: the purge author's chain (roles-model `paths` `purges`, control `-purge-any-path`). OPEN: delete keys are not modelled; that every holder of the `author` right holds level 2's secret is argued (its path gives write on every edge up to the purge author, so it reaches the purge author's write secret by derivation, spec/permissions.md §3).
 
-## 5. Blobs, wraps, sealed fires (one bullet added, DRAFT)
-- **Path entry** (per thing, in a split commit's header, spec/wire.md §4 `Split`): the thing's path under its path key `kdf("path", roles secret, blind ‖ tid)`, the read roles secret of the thing's independent (§3; the thing itself where independent) at the epoch the writer seals the thing's section under (Section, above), nonce 24 zero bytes: one plaintext per key (`blind` is fresh per commit, the tid distinct per entry; the header is never encrypted again, so an entry never is). Every holder of the independent at that epoch opens it, a holder of a floor included (§4 Roles secrets: it holds the roles secrets of earlier epochs, never a dependent thing's derived ones, which is why the key is the independent's); every encryption of the thing's parts in the commit carries the key, so a reader opening a re-encryption under a later epoch opens it too.
+## 5. Blobs, wraps, sealed fires
+The Path entry bullet is built: spec/crypto.md §5.
 
 ## 7. Delete keys
 - **Levels** of a delta, by its retention (spec/commits.md §5), one per member of its set:

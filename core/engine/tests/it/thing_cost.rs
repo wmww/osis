@@ -74,7 +74,7 @@ fn make(lp: &mut LocalPeer, admin: Tid, label: &str, show: bool) -> (Cost, Tid) 
         cost.download += size;
         if show {
             let h = &blob.header;
-            eprintln!("  commit {:?} by {}: {} B (header {} B, {} delete keys, {} blobs)", h.kind, if blob.acting() == osis_commit::Acting::All(h.signer) { "self" } else { "other" }, size, h.encode().len(), h.keys.len(), pk.blobs.len());
+            eprintln!("  commit {:?} by {}: {} B (header {} B, {} delete keys, {} blobs)", h.kind, if h.purge_author() == h.signer { "self" } else { "other" }, size, h.encode().len(), h.keys.len(), pk.blobs.len());
             for p in &blob.parts {
                 let a = &h.aspects[p.ai];
                 let whose = if a.tid == t { "t" } else if a.tid == admin { "admin" } else { "other" };
@@ -121,8 +121,8 @@ fn what_a_thing_costs() {
     let e = &mut lp.peers[0].engine;
     assert!(e.sync_id_of(&pt).unwrap().is_none() && e.sync_id_of(&kt).unwrap().is_some());
     assert_eq!((dependent.commits, independent.commits), (1, 2), "its rotation carrying its record, then what the dependent one writes");
-    assert!(dependent.maker_rows < 1_700 && dependent.reader_rows < 1_700 && dependent.download < 800, "{dependent:?}");
-    assert!(independent.maker_rows < 15_000 && independent.reader_rows < 15_300 && independent.download < 9_500, "{independent:?}");
+    assert!(dependent.maker_rows < 1_700 && dependent.reader_rows < 1_700 && dependent.download < 700, "{dependent:?}");
+    assert!(independent.maker_rows < 15_000 && independent.reader_rows < 15_300 && independent.download < 9_400, "{independent:?}");
     assert_eq!(independent.maker_ops.get("kem: keygen"), Some(&4), "a KEM key per role");
     assert!(!independent.reader_ops.keys().any(|k| k.starts_with("kem")), "the account's node opens symmetric boxes");
 }
@@ -172,5 +172,5 @@ fn what_a_reader_costs() {
     }
     eprintln!("grant read to another account: (commits, grant bytes, granter rows, reader rows, granter ops, reader ops) {:?}", each[1]);
     let (commits, bytes, _, reader, _, _) = &each[1];
-    assert!(*commits == 1 && *bytes < 4_200 && *reader < 31_500, "{:?}", each[1]);
+    assert!(*commits == 1 && *bytes < 4_000 && *reader < 31_500, "{:?}", each[1]);
 }

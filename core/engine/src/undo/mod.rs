@@ -391,9 +391,9 @@ fn undone_parts(tx: &mut Tx<'_>, target: &CommitId, ts: Ts) -> Result<Vec<Invert
         if a.ak.signal() || a.ak.as_str() == CREATED.ak() || a.ak.as_str() == osis_commit::retention::RETENTION || a.ak.as_str() == osis_commit::retention::PURGE {
             continue;
         }
-        // a part not received on a thing whose stated path is not known here is not judged
-        // here: invalid only until its section arrives
-        if m.missing(ai) && m.view.acting_on(&a.tid).is_none() {
+        // a part not received on a thing whose path opens nowhere here is not judged here: the
+        // commit cannot be undone here (spec/commits.md §7)
+        if m.missing(ai) && !m.view.path_known(&a.tid) {
             return Err(Error::NotKept(*target));
         }
         if !m.valid_at(ai) {
@@ -583,7 +583,7 @@ impl Engine {
                     .filter(|(ai, a)| m.valid_at(*ai) && keep.as_ref().is_none_or(|k| k.contains(&(a.tid, a.ak.clone()))))
                     .map(|(ai, a)| (a.tid, a.ak.clone(), !m.body_gone(ai)))
                     .collect();
-                let acting = aspects.iter().find_map(|a| m.view.acting_on(&a.0))?;
+                let acting = m.view.acting;
                 (!aspects.is_empty()).then_some(HeldCommit { id, header, acting, received: m.received, aspects })
             })
             .collect()
@@ -1041,23 +1041,14 @@ mod tests {
 
     // spec/commits.md §7: an undo reverts every part of the commit or there is none, alike at
     // every node. T writes `x` on P and `y` on Q; B holds T's part on Q as missing. A's undo
-    // reverts both; B's is `NotKept`, never an undo of `x` alone, until the part arrives; alike
-    // where T states its paths hashed (spec/wire.md §4), so B knows none for Q.
+    // reverts both; B's is `NotKept`, never an undo of `x` alone, until the part arrives.
     #[test]
     fn undo_needs_every_part_held_spec_commits_7() {
-        for hashed in [false, true] {
-            undo_needs_every_part_held(hashed);
-        }
-    }
-
-    fn undo_needs_every_part_held(hashed: bool) {
         let (mut lp, ts, x, y) = writable(2);
         let (p, q) = (ts[0], ts[1]);
         let mut m = Mutation::new();
         m.set(p, &x, &Value::Int(1)).unwrap().set(q, &y, &Value::Int(1)).unwrap();
-        lp.peers[0].engine.core.hashed_through = hashed.then(|| osis_base::Tid::from_bytes([0x5a; 15]));
         let t = lp.peers[0].commit(m).unwrap().unwrap();
-        lp.peers[0].engine.core.hashed_through = None;
         deliver_leaving(&mut lp, 0, 1, t, q);
         lp.advance(10);
         let b = &mut lp.peers[1].engine;

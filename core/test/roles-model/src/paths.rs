@@ -583,7 +583,7 @@ impl World {
             })
             .collect()
     }
-    /// One content commit in the split form (notes/path-form.md, Several paths): each thing in
+    /// One content commit in the split form (notes/path-form.md, The split form): each thing in
     /// `parts` with its own path, one purge author `author` for the commit, a member of every
     /// thing's members ([signer, A1..Ak, thing]). Its parts are one commit (a list naming it names
     /// them all), each judged along its own path.

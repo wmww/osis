@@ -262,9 +262,9 @@ pub(crate) type Gives = (osis_crdt::Frontiers, Vec<(CommitId, Tid)>, osis_crdt::
 impl Meta {
     /// A commit's meta from its decoded header: parts in `missing` missing, the rest as `head`
     /// says (`Hold::stored`).
-    pub(crate) fn new(header: Arc<Header>, acting: osis_commit::Acting, valid: Vec<bool>, mut head: index::RecordHead, missing: BTreeSet<usize>) -> Meta {
+    pub(crate) fn new(header: Arc<Header>, paths: Option<Arc<BTreeMap<Tid, bool>>>, valid: Vec<bool>, mut head: index::RecordHead, missing: BTreeSet<usize>) -> Meta {
         let hold = (0..valid.len()).map(|ai| Hold::stored(ai, &mut head, missing.contains(&ai), false)).collect();
-        Meta { view: Arc::new(View::of(&header, acting)), header: LazyHeader::ready(header), received: head.received, origin: head.origin, repair: head.repair.clone(), signed: head.signed, valid, hold }
+        Meta { view: Arc::new(View::of(&header, paths)), header: LazyHeader::ready(header), received: head.received, origin: head.origin, repair: head.repair.clone(), signed: head.signed, valid, hold }
     }
     /// The index of aspect `(tid, ak)` in the commit.
     pub(crate) fn aspect(&self, tid: &Tid, ak: &Ak) -> Option<usize> {
@@ -388,10 +388,13 @@ pub struct View {
     pub form: Form,
     pub signer: Tid,
     // Interim (notes/a1-spec/README.md step 3): the walk judges each thing along its own path.
-    /// What the walk reads the commit as acting on, per thing (`CommitBlob::acting`): each thing's
-    /// as known here, learned from its sections and kept apart from them (a commit whose parts
-    /// all go keeps it, so a rebuild from the held records reads what the live index learned).
-    pub acting: osis_commit::Acting,
+    /// Its one purge author (`Header::purge_author`), in the clear in either path form: what the
+    /// old walk reads it as acting for on every thing it writes.
+    pub acting: Tid,
+    /// In a split commit, what this node decided of each thing's path (`apply::paths::decided`:
+    /// `true` known, `false` bad, absent while it opens nowhere here): a part on a thing not known
+    /// is judged invalid. `None` where the path is in the clear.
+    pub paths: Option<Arc<BTreeMap<Tid, bool>>>,
     /// Some list goes by link: the header is resolved from blobs at open (decoded there).
     pub linked: bool,
     /// A memory commit (the ephemeral marker): held in memory, never durable to node-sync,
@@ -424,8 +427,8 @@ pub struct AspectView {
 }
 
 impl View {
-    /// The view of `h`, acting on `acting` (`CommitBlob::acting`).
-    pub fn of(h: &Header, acting: osis_commit::Acting) -> View {
+    /// The view of `h`, the things of a split commit whose paths are known here `paths`.
+    pub fn of(h: &Header, paths: Option<Arc<BTreeMap<Tid, bool>>>) -> View {
         // what `View::aspect` searches by (spec/wire.md §4)
         debug_assert!(h.aspects.is_sorted_by_key(|a| (a.tid, a.ak.as_str().len(), a.ak.as_str().as_bytes())), "aspects sorted");
         View {
@@ -433,7 +436,8 @@ impl View {
             kind: h.kind,
             form: h.form,
             signer: h.signer,
-            acting,
+            acting: h.purge_author(),
+            paths,
             linked: h.links != osis_commit::Links::default(),
             memory: h.ephemeral.is_some(),
             aspects: h.aspects.iter().map(|a| AspectView { tid: a.tid, ak: a.ak.clone(), lo: a.lo, hi: a.hi, replaces: a.replaces, original_floor: a.original_floor }).collect(),
@@ -445,17 +449,14 @@ impl View {
     }
 
     // Interim (notes/a1-spec/README.md step 3): the walk judges along the stated paths.
-    /// What it acts on, on thing `t`, as known here (`acting`).
-    pub fn acting_on(&self, t: &Tid) -> Option<Tid> {
-        self.acting.on(t)
+    /// The thing it acts for where that is not its signer (`acting`).
+    pub fn acts_for(&self) -> Option<Tid> {
+        Some(self.acting).filter(|x| *x != self.signer)
     }
 
-    // Interim (notes/a1-spec/README.md step 3): the walk judges along the stated paths.
-    /// The things it acts on other than its signer, as known here (`acting`).
-    pub fn acts_for(&self) -> BTreeSet<Tid> {
-        let mut a = self.acting.all();
-        a.remove(&self.signer);
-        a
+    /// Whether the path it states for thing `t` is known here and not bad (`paths`).
+    pub fn path_known(&self, t: &Tid) -> bool {
+        self.paths.as_ref().is_none_or(|p| p.get(t) == Some(&true))
     }
 
     /// The index of aspect `(tid, ak)` (`osis_commit::aspect_position`).
@@ -559,7 +560,7 @@ impl StoredHeader {
             Some(h) => {
                 // the persisted view is the header's (index check: an open from the index
                 // equals a rebuild from the commit records)
-                debug_assert_eq!(View::of(&h, self.view.acting.clone()), *self.view, "meta row of {:?} is stale", self.id);
+                debug_assert_eq!(View::of(&h, self.view.paths.clone()), *self.view, "meta row of {:?} is stale", self.id);
                 Ok(Arc::new(h))
             }
             None => {
@@ -815,6 +816,9 @@ indexes! {
     /// Held commits per (thing, author, actor) with a delta on the thing whose actor is not their
     /// author: when the last goes, `chains_on` loses (author, actor).
     pub acting_on: JSetMap<(Tid, Tid, Tid), CommitId>,
+    /// Held split commits with a thing whose path opens nowhere here yet (`View::paths`), opened
+    /// again as role inputs move (`apply::paths::refresh`).
+    pub paths_unknown: JSet<CommitId>,
     /// `by_thing` for role commits alone: what an account's chain reads of its role commits on
     /// its account root (`Core::devices_read`), so a content write on D (its `holds.0`, its tickets) moves no account's chain.
     pub role_on: JSetMap<(Tid, Tid), CommitId>,
@@ -1246,16 +1250,6 @@ pub struct Core {
     pub(crate) redeliver: BTreeSet<CommitId>,
     /// Aspects whose deltas `Engine::commit_forged` replaces by bytes that do not decode.
     pub(crate) forge_bad: BTreeSet<(Tid, Ak)>,
-    /// Tests: a commit writing two things or more (no rotation, seed re-seal or purge request)
-    /// states, on every thing it writes but the first, its path with this thing listed first and
-    /// the same purge author, so its paths go hashed and it acts on the same thing on each
-    /// (spec/wire.md §4 field 2): runs a suite in the hashed form.
-    #[doc(hidden)]
-    pub hashed_through: Option<Tid>,
-    /// Tests: the path a commit states for each of these things it writes, in place of the
-    /// engine's (a hostile writer's paths acting on different things).
-    #[doc(hidden)]
-    pub forced_paths: BTreeMap<Tid, osis_commit::Path>,
     /// Tests: the running transaction writes states no held body gives (`Engine::damage_index`:
     /// another build's rules), so the rebuild check (`apply::check_rebuilt`) skips it.
     #[cfg(debug_assertions)]
@@ -1621,8 +1615,6 @@ impl Core {
             to_date: self.to_date.clone(),
             redeliver: self.redeliver.clone(),
             forge_bad: self.forge_bad.clone(),
-            hashed_through: self.hashed_through,
-            forced_paths: self.forced_paths.clone(),
             #[cfg(debug_assertions)]
             unchecked_tx: self.unchecked_tx.clone(),
             #[cfg(debug_assertions)]
@@ -2271,8 +2263,6 @@ impl Core {
             refs_watched: _,
             commit_listeners: _,
             forge_bad: _,
-            hashed_through: _,
-            forced_paths: _,
             forged: _,
             header_fault: _,
             key_actors: _,
@@ -2489,8 +2479,6 @@ impl Core {
             to_date: Vec::new(),
             redeliver: BTreeSet::new(),
             forge_bad: BTreeSet::new(),
-            hashed_through: None,
-            forced_paths: BTreeMap::new(),
             #[cfg(debug_assertions)]
             unchecked_tx: false,
             #[cfg(debug_assertions)]

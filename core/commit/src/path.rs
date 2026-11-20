@@ -1,13 +1,15 @@
-//! Stated paths (spec/wire.md §4 `Path`, `Paths`, `Salted`; spec/permissions.md §5.2 Interim): what
-//! a commit acts along on each thing it writes: one path in the clear where every thing's is the
-//! same, else a salted hash per thing in the header with each thing's own path in its sections.
+//! Stated paths (spec/wire.md §4 `Path`, `Paths`, `Split`; spec/permissions.md §1): what a commit
+//! is judged along on each thing it writes: one path in the clear where every thing's own path is
+//! read off it, else the split form, one purge author in the clear and each thing's path sealed
+//! under that thing's path key (spec/crypto.md §5 Path entry).
 
 use crate::Error;
 use crate::cbor::item;
-use osis_base::cbor::{Item, put_array, put_bytes, put_uint};
-use osis_base::format::MAX_PATH_THINGS;
+use osis_base::cbor::{Item, head_len, put_array, put_bytes, put_uint};
+use osis_base::format::{MAX_PATH_THINGS, TID_LEN};
 use osis_base::Tid;
-use std::collections::{BTreeMap, BTreeSet};
+use osis_crypto::Secret32;
+use std::collections::BTreeSet;
 
 /// One stated path `[i, A1, …, Ak]`: the purge-author index `purge` (0 names the signer, j the
 /// listed thing Aj, spec/permissions.md §6) and the listed things in order. The empty path naming
@@ -29,11 +31,34 @@ impl Path {
         self.purge.checked_sub(1).and_then(|j| self.things.get(j)).copied().unwrap_or(signer)
     }
 
-    // Interim (notes/a1-spec/README.md step 3): the walk judges along every edge of the path.
-    /// The thing the old walk reads as the commit acting on the thing this path is stated for:
-    /// its purge author (`purge_author`). No other listed thing is read yet.
-    pub fn acting(&self, signer: Tid) -> Tid {
-        self.purge_author(signer)
+    /// The things between the signer and `t` along which it writes `t` (spec/permissions.md §1
+    /// Path): the listed things, less the last where that is `t` (the end, written along the path
+    /// ending there); every other thing is written one hop past the end.
+    pub fn to(&self, t: &Tid) -> &[Tid] {
+        match self.things.split_last() {
+            Some((last, rest)) if last == t => rest,
+            _ => &self.things,
+        }
+    }
+
+    /// The one path off which every `(thing, own path)` of `each` is read (`to` of each thing
+    /// equal to its own path's), its index naming `author`; `None` where they are no one path
+    /// (the split form) or `author` is not on it. Of the paths that serve, the one listing a
+    /// written thing last where that is the end of every other thing's path, or the first thing's
+    /// own as stated.
+    pub fn one_of<'a>(each: impl IntoIterator<Item = (&'a Tid, &'a Path)> + Clone, signer: Tid, author: Tid) -> Option<Path> {
+        let (t0, p0) = each.clone().into_iter().next()?;
+        // the first thing is the end, or one hop past it
+        let below = p0.to(t0).to_vec();
+        let ended: Vec<Tid> = below.iter().copied().chain([*t0]).collect();
+        [p0.things.clone(), below, ended].into_iter().find_map(|things| {
+            let q = Path { purge: 0, things };
+            if !each.clone().into_iter().all(|(t, p)| q.to(t) == p.to(t)) {
+                return None;
+            }
+            let purge = if author == signer { 0 } else { 1 + q.things.iter().position(|x| *x == author)? };
+            Some(Path { purge, ..q })
+        })
     }
 
     /// Canonical bytes.
@@ -62,26 +87,43 @@ impl Path {
 
     /// The decoder's rules on a path of a commit signed by `signer` (spec/wire.md §4).
     pub(crate) fn check(&self, signer: &Tid) -> Result<(), Error> {
-        if self.things.len() > MAX_PATH_THINGS {
-            return Err(Error::Malformed("path longer than MAX_PATH_THINGS"));
-        }
         if self.purge > self.things.len() {
             return Err(Error::Malformed("purge-author index out of range"));
         }
-        let mut seen = BTreeSet::new();
-        if !self.things.iter().all(|t| t != signer && seen.insert(*t)) {
-            return Err(Error::Malformed("path lists a thing twice or its signer"));
-        }
-        Ok(())
+        listed_ok(&self.things, signer).then_some(()).ok_or(Error::Malformed("path longer than MAX_PATH_THINGS, or listing a thing twice or its signer"))
     }
 }
 
-/// A header's `path` (spec/wire.md §4 `Paths`): one `Path` for every thing it writes, where all are
-/// equal, else one 32-byte hash per thing it writes, in the order of its aspects' tids.
+/// `Path`'s rules on listed things: at most `MAX_PATH_THINGS`, no tid twice, none the signer.
+fn listed_ok(things: &[Tid], signer: &Tid) -> bool {
+    let mut seen = BTreeSet::new();
+    things.len() <= MAX_PATH_THINGS && things.iter().all(|t| t != signer && seen.insert(*t))
+}
+
+// For Tess 3 (notes/path-form.md): what a split entry's size shows of the count of things its path
+// lists. Padding to these classes shows only the class; `[MAX_PATH_THINGS]` alone hides the count
+// at about 1 KiB a thing; no padding shows it exactly.
+/// The listed-thing counts a split entry's plaintext is padded to: the smallest at or above its
+/// count (spec/wire.md §4 `Split`).
+pub const ENTRY_CLASSES: [usize; 3] = [4, 16, MAX_PATH_THINGS];
+
+/// Bytes of the canonical `[tid*]` of `k` things.
+fn listed_len(k: usize) -> usize {
+    head_len(k as u64) + k * (1 + TID_LEN)
+}
+
+/// Bytes of a sealed entry of a path listing `k` things: its class's padded plaintext and the
+/// tag; `None` past `MAX_PATH_THINGS`.
+pub fn entry_len(k: usize) -> Option<usize> {
+    ENTRY_CLASSES.iter().find(|c| **c >= k).map(|c| listed_len(*c) + osis_crypto::aead::TAG_LEN)
+}
+
+/// A header's `path` (spec/wire.md §4 `Paths`): one `Path` off which every thing's own path is
+/// read, or the split form.
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
 pub enum Paths {
     One(Path),
-    Hashed(Vec<[u8; 32]>),
+    Split(Split),
 }
 
 impl Default for Paths {
@@ -90,93 +132,123 @@ impl Default for Paths {
     }
 }
 
+/// The split form `[Opt(tid), [bytes+]]` (spec/wire.md §4): the purge author (`None`: the
+/// signer), then one sealed entry per thing written, in the order of the things (`Header::things`).
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+pub struct Split {
+    pub author: Option<Tid>,
+    pub entries: Vec<Vec<u8>>,
+}
+
+/// A thing's path key (spec/crypto.md §5 Path entry): `kdf("path", roles, blind ‖ tid)`, `roles`
+/// the read roles secret of the thing's independent at the epoch its section is sealed under.
+pub fn path_key(roles: &Secret32, blind: &[u8; 16], t: &Tid) -> [u8; 32] {
+    let mut input = Vec::with_capacity(16 + TID_LEN);
+    input.extend_from_slice(blind);
+    input.extend_from_slice(t.as_bytes());
+    *osis_crypto::kdf::kdf(osis_crypto::kdf::PATH, roles.expose(), &input).expose()
+}
+
+impl Split {
+    /// Thing `t`'s entry: its listed things, canonical, zero-padded to their class, sealed under its
+    /// path key, nonce zero, empty AD (one plaintext per key: the blind is fresh per commit).
+    pub fn seal(key: &[u8; 32], listed: &[Tid]) -> Result<Vec<u8>, Error> {
+        let len = entry_len(listed.len()).ok_or(Error::Build("path longer than MAX_PATH_THINGS"))? - osis_crypto::aead::TAG_LEN;
+        let mut pt = Vec::with_capacity(len);
+        put_array(&mut pt, listed.len());
+        listed.iter().for_each(|t| put_bytes(&mut pt, t.as_bytes()));
+        pt.resize(len, 0);
+        Ok(osis_crypto::aead::seal(key, &osis_crypto::aead::ZERO_NONCE, &[], &pt)?)
+    }
+
+    /// Opens `entry` under `key`: `None` where the key does not open it; else the things it lists,
+    /// `None` inside where the plaintext is no canonical `[tid*]` padded with zeros to its class.
+    pub fn open(key: &[u8; 32], entry: &[u8]) -> Option<Option<Vec<Tid>>> {
+        let pt = osis_crypto::aead::open(key, &osis_crypto::aead::ZERO_NONCE, &[], entry).ok()?;
+        let Ok(head) = osis_base::cbor::item_prefix(&pt, &crate::header::LIMITS) else { return Some(None) };
+        let listed = Item::parse(head, &crate::header::LIMITS).ok().and_then(|v| item::list(v).ok()).and_then(|l| l.iter().map(item::tid).collect::<Result<Vec<Tid>, _>>().ok());
+        let padded = listed.as_ref().is_some_and(|l| entry_len(l.len()) == Some(entry.len()) && listed_len(l.len()) == head.len() && pt.get(head.len()..).is_some_and(|r| r.iter().all(|b| *b == 0)));
+        Some(listed.filter(|_| padded))
+    }
+
+    fn put(&self, out: &mut Vec<u8>) {
+        put_array(out, 2);
+        put_array(out, usize::from(self.author.is_some()));
+        self.author.iter().for_each(|a| put_bytes(out, a.as_bytes()));
+        put_array(out, self.entries.len());
+        self.entries.iter().for_each(|e| put_bytes(out, e));
+    }
+
+    fn read(v: Item, signer: &Tid) -> Result<Split, Error> {
+        let Some([a, es]) = item::list(v)?.tuple() else { return Err(Error::Malformed("split path arity")) };
+        let author = item::opt(a)?.map(item::tid).transpose()?;
+        if author == Some(*signer) {
+            return Err(Error::Malformed("split path naming its signer as purge author"));
+        }
+        let entries = item::list(es)?.iter().map(|e| e.as_bytes().map(<[u8]>::to_vec).ok_or(Error::Malformed("split path entry"))).collect::<Result<Vec<_>, _>>()?;
+        if entries.len() < 2 {
+            return Err(Error::Malformed("split path of fewer than two things"));
+        }
+        if entries.iter().any(|e| !ENTRY_CLASSES.iter().any(|c| entry_len(*c) == Some(e.len()))) {
+            return Err(Error::Malformed("split path entry of no padded length"));
+        }
+        Ok(Split { author, entries })
+    }
+}
+
 impl Paths {
+    /// Its one purge author (spec/permissions.md §6), `signer` where it names none.
+    pub fn purge_author(&self, signer: Tid) -> Tid {
+        match self {
+            Paths::One(p) => p.purge_author(signer),
+            Paths::Split(s) => s.author.unwrap_or(signer),
+        }
+    }
+
     pub(crate) fn put(&self, out: &mut Vec<u8>) {
         match self {
             Paths::One(p) => p.put(out),
-            Paths::Hashed(hs) => {
-                put_array(out, hs.len());
-                hs.iter().for_each(|h| put_bytes(out, h));
-            }
+            Paths::Split(s) => s.put(out),
         }
     }
 
-    /// Reads a header's `path`: a `Path` (its first item a uint) or two or more hashes.
+    /// Reads a header's `path`: a `Path` (its first item a uint) or a `Split`.
     pub(crate) fn read(v: Item, signer: &Tid) -> Result<Paths, Error> {
-        let l = item::list(v)?;
-        match l.first() {
+        match item::list(v)?.first() {
             Some(first) if first.as_uint().is_some() => Ok(Paths::One(Path::read(v, signer)?)),
-            _ => {
-                let hs = l.iter().map(item::bytes::<32>).collect::<Result<Vec<_>, Error>>()?;
-                if hs.len() < 2 {
-                    return Err(Error::Malformed("hashed path of fewer than two things"));
-                }
-                Ok(Paths::Hashed(hs))
-            }
+            _ => Ok(Paths::Split(Split::read(v, signer)?)),
         }
     }
 }
 
-/// A thing's path in its sections where its commit's paths are hashed (spec/wire.md §4
-/// `Salted`): the random salt its header's hash is keyed by, and the path.
+/// What a node knows of the path a split commit states for one thing (`Header::open_path`).
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
-pub struct Salted {
-    pub salt: [u8; 16],
-    pub path: Path,
+pub enum ThingPath {
+    /// Its path, the purge author's index naming it (the thing itself listed last where it is
+    /// the author and not listed: the same members).
+    Known(Path),
+    /// An entry opening to a list breaking `Path`'s rules, or whose members leave out the purge
+    /// author (notes/a1-spec/README.md Open 16): the thing's parts hold nothing, at every reader.
+    Bad,
 }
 
-impl Salted {
-    /// Its entry in the header: `kdf("path", salt, canonical bytes of the Path)`.
-    pub fn hash(&self) -> [u8; 32] {
-        *osis_crypto::kdf::kdf(osis_crypto::kdf::PATH, &self.salt, &self.path.encode()).expose()
+/// Reads the things thing `t`'s entry lists, opened, against the commit's signer and purge author
+/// `author`: `Path`'s rules, `t` listed last if at all, and `author` among `t`'s members
+/// [signer, listed…, t].
+pub(crate) fn thing_path(listed: Option<Vec<Tid>>, signer: &Tid, author: &Tid, t: &Tid) -> ThingPath {
+    let Some(mut things) = listed else { return ThingPath::Bad };
+    if !listed_ok(&things, signer) || things.iter().rev().skip(1).any(|x| x == t) {
+        return ThingPath::Bad;
     }
-
-    pub(crate) fn put(&self, out: &mut Vec<u8>) {
-        put_array(out, 2);
-        put_bytes(out, &self.salt);
-        self.path.put(out);
-    }
-
-    pub(crate) fn read(v: Item, signer: &Tid) -> Result<Salted, Error> {
-        let Some([salt, path]) = item::list(v)?.tuple() else { return Err(Error::Malformed("salted path arity")) };
-        Ok(Salted { salt: item::bytes(salt)?, path: Path::read(path, signer)? })
-    }
-}
-
-// Interim (notes/a1-spec/README.md step 3): the walk judges each thing along its own path.
-/// What the old walk reads a commit as acting on, per thing it writes (`Path::acting`): one
-/// thing for all where its path is in the clear; else each thing's own, for the things whose
-/// path is known here (a section of it opened, or learned so before and kept). A thing whose
-/// path is not known holds no part here, so nothing judges it.
-#[derive(Clone, Debug, PartialEq, Eq, Hash)]
-pub enum Acting {
-    All(Tid),
-    Each(BTreeMap<Tid, Tid>),
-}
-
-impl Acting {
-    /// What it acts on, on thing `t`, where known here.
-    pub fn on(&self, t: &Tid) -> Option<Tid> {
-        match self {
-            Acting::All(x) => Some(*x),
-            Acting::Each(m) => m.get(t).copied(),
-        }
-    }
-
-    /// Every thing it acts on, as known here, distinct.
-    pub fn all(&self) -> BTreeSet<Tid> {
-        match self {
-            Acting::All(x) => BTreeSet::from([*x]),
-            Acting::Each(m) => m.values().copied().collect(),
-        }
-    }
-
-    /// `self` with what `o` knows besides (both of one commit).
-    pub fn join(&self, o: &Acting) -> Acting {
-        match (self, o) {
-            (Acting::Each(a), Acting::Each(b)) => Acting::Each(a.iter().chain(b).map(|(k, v)| (*k, *v)).collect()),
-            (Acting::All(_), _) => self.clone(),
-            (_, Acting::All(_)) => o.clone(),
-        }
-    }
+    let purge = if author == signer {
+        0
+    } else if let Some(j) = things.iter().position(|x| x == author) {
+        j + 1
+    } else if author == t {
+        things.push(*t);
+        things.len()
+    } else {
+        return ThingPath::Bad;
+    };
+    ThingPath::Known(Path { purge, things })
 }

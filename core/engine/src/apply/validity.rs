@@ -122,16 +122,16 @@ pub(crate) fn index_addenda(core: &mut Core, point: Point, parts: &AddendaParts)
 
 /// Indexes commit `id`'s addendum deltas (spec/permissions.md §5.2, Addenda): every `addenda.0`
 /// delta its header names is its signer's write, whether its body is held or not; `parts`, the
-/// bodies just held, say its entries. A delta of a commit acting on another thing (`acting`), or
-/// of a commit other than a content one, is no addendum.
-pub(crate) fn note_addenda(core: &mut Core, h: &Header, acting: &osis_commit::Acting, id: &CommitId, parts: &[(usize, Decoded)]) {
-    if h.kind != Kind::Content {
+/// bodies just held, say its entries. A delta of a commit acting on another thing (its purge
+/// author not its signer), or of a commit other than a content one, is no addendum.
+pub(crate) fn note_addenda(core: &mut Core, h: &Header, id: &CommitId, parts: &[(usize, Decoded)]) {
+    if h.kind != Kind::Content || h.purge_author() != h.signer {
         return;
     }
     let point = Point { ts: h.ts, node: h.signer, commit: *id };
     let mut out = Vec::new();
     // Interim (notes/a1-spec/README.md step 3): an addendum's path gives write on its edge
-    for (ai, a) in h.aspects.iter().enumerate().filter(|(_, a)| ct::is_addenda(a.ak.as_str()) && acting.on(&a.tid) == Some(h.signer)) {
+    for (ai, a) in h.aspects.iter().enumerate().filter(|(_, a)| ct::is_addenda(a.ak.as_str())) {
         match parts.iter().find(|(x, _)| *x == ai) {
             Some((_, d)) => out.push((a.tid, entries_of(h, id, ai, d))),
             None if !core.ix.addenda.contains_key(&(a.tid, *id)) => out.push((a.tid, Vec::new())),
@@ -724,25 +724,24 @@ pub(crate) fn too_deep(core: &Core, t: &Tid) -> bool {
     !core.ix.held.chain_held(t)
 }
 
-/// Is aspect `ai` of a held commit acting as `acting` says (`View::acting`) valid
-/// (spec/permissions.md §5.2)?
-pub(crate) fn part_valid(core: &Core, h: &Header, acting: &osis_commit::Acting, id: &CommitId, ai: usize) -> bool {
-    Judge::new(core).part(h, acting, id, ai)
+/// Is aspect `ai` of a held commit whose view is `view` (its purge author, the paths known here)
+/// valid (spec/permissions.md §5.2)?
+pub(crate) fn part_valid(core: &Core, h: &Header, view: &crate::engine::View, id: &CommitId, ai: usize) -> bool {
+    Judge::new(core).part(h, view, id, ai)
 }
 
 // Interim (notes/a1-spec/README.md step 3): each part is judged along the path its commit states
 // for its thing; until then the old walk judges the signer acting on the path's last thing.
-/// Whether the signer of commit `id` could act on `acting`, the thing the path it states for a
-/// thing reads as acting on (`CommitBlob::acting`, spec/permissions.md §5.2 Interim): it is the
-/// signer, or its write on that thing at the commit's key is valid as a delta on it needing write
-/// would be (same timeline, demotions and frontiers). The parts on a thing whose path fails this
-/// are invalid; one whose path is unknown here holds no part. A role commit's path names its
-/// signer, so the timeline never depends on this.
+/// Whether the signer of commit `id` could act on `acting`, its one purge author
+/// (`Header::purge_author`, spec/permissions.md §5.2 Interim): it is the signer, or its write on
+/// that thing at the commit's key is valid as a delta on it needing write would be (same
+/// timeline, demotions and frontiers). Every part of a commit failing this is invalid. A role
+/// commit's path names its signer, so the timeline never depends on this.
 ///
 /// Invariant (arrival-order independence): a function of the acting thing's timeline alone, so it
 /// changes only when that timeline does; `rejudge_once` re-judges the commits acting for a
 /// thing whose timeline changed (`by_actor`).
-pub(crate) fn acts_for(core: &Core, h: &Header, acting: Option<Tid>, id: &CommitId) -> bool {
+pub(crate) fn acts_for(core: &Core, h: &Header, acting: Tid, id: &CommitId) -> bool {
     Judge::new(core).acts(h, acting, id)
 }
 
@@ -888,8 +887,7 @@ impl<'a> Judge<'a> {
 
     /// `acts_for`, its `valid_from` bound found once per (signer, acting thing); else an
     /// addendum on the acting thing vouching for the commit (spec/permissions.md §5.2 Interim).
-    fn acts(&mut self, h: &Header, acting: Option<Tid>, id: &CommitId) -> bool {
-        let Some(x) = acting else { return false };
+    fn acts(&mut self, h: &Header, x: Tid, id: &CommitId) -> bool {
         if h.signer == x {
             return true;
         }
@@ -901,7 +899,7 @@ impl<'a> Judge<'a> {
         acts_on(tl, h, &x, id) || plain_commit(h) && self.vouched(&x, Point { ts: h.ts, node: h.signer, commit: *id }, Role::Write)
     }
 
-    pub(crate) fn part(&mut self, h: &Header, acting: &osis_commit::Acting, id: &CommitId, ai: usize) -> bool {
+    pub(crate) fn part(&mut self, h: &Header, view: &crate::engine::View, id: &CommitId, ai: usize) -> bool {
         let core = self.core;
         if core.ix.void.contains(id) {
             return false;
@@ -918,7 +916,9 @@ impl<'a> Judge<'a> {
         if !ct::is_addenda(ak) && !self.counts(h, id, a) {
             return false;
         }
-        if !self.acts(h, acting.on(&a.tid), id) {
+        // a split commit's part whose thing's path is not known here (or opened bad) is judged
+        // invalid until it opens (spec/wire.md §4 `Split`, `apply::paths`)
+        if !view.path_known(&a.tid) || !self.acts(h, view.acting, id) {
             return false;
         }
         // an external fire (spec/permissions.md §5.2 External fires): valid by its author's
@@ -1023,6 +1023,7 @@ pub(crate) fn rejudge_all(tx: &mut Tx<'_>, rebuild: bool) -> Result<Vec<(Tid, Ak
     let _s = osis_base::costs::span("rejudge");
     let mut out: BTreeSet<(Tid, Ak)> = BTreeSet::new();
     loop {
+        super::paths::refresh(tx);
         out.extend(rejudge_once(tx, rebuild)?);
         // a part `uncover` made missing loses the role its body required (`parts_moved`): perm
         // reads the commit anew
@@ -1056,7 +1057,7 @@ fn misjudged_on<'a>(core: &Core, things: impl Iterator<Item = &'a Tid>) -> Optio
 
 fn misjudged_one(core: &Core, id: &CommitId, m: &Meta) -> Option<String> {
     let h = &m.header;
-    let now: Vec<bool> = (0..h.aspects.len()).map(|ai| part_valid(core, h, &m.view.acting, id, ai)).collect();
+    let now: Vec<bool> = (0..h.aspects.len()).map(|ai| part_valid(core, h, &m.view, id, ai)).collect();
     (now != m.valid).then(|| {
         let parts: Vec<_> = h.aspects.iter().zip(m.valid.iter().zip(&now)).filter(|(_, (a, b))| a != b).map(|(x, (a, _))| (x.tid, x.ak.as_str(), *a)).collect();
         format!("validity of {id:?} ({:?} by {}): {parts:?}", h.kind, h.signer)
@@ -1111,7 +1112,7 @@ fn rejudge_once(tx: &mut Tx<'_>, rebuild: bool) -> Result<Vec<(Tid, Ak)>> {
                 if !(whole || things.contains(&a.tid) || under.contains(&a.tid) && authors.contains(&m.view.signer)) {
                     continue;
                 }
-                let v = judge.part(&m.header, &m.view.acting, id, ai);
+                let v = judge.part(&m.header, &m.view, id, ai);
                 let old = m.valid_at(ai);
                 if v != old {
                     let n = now.get_or_insert_with(|| m.valid.clone());

@@ -680,9 +680,6 @@ pub(crate) struct RecordHead {
     pub stripped: BTreeSet<usize>,
     pub valued: BTreeSet<usize>,
     pub lists: Vec<(osis_commit::ListField, Vec<u8>)>,
-    /// Where its paths are hashed, what it acts on per thing as learned here (`View::acting`):
-    /// kept apart from its parts, so a record whose sections went still says it.
-    pub acting: BTreeMap<Tid, Tid>,
 }
 
 impl RecordHead {
@@ -751,14 +748,6 @@ pub(crate) fn record_head(m: &Meta) -> Vec<u8> {
     for (f, b) in &lists {
         w = w.u8(osis_commit::ListField::ALL.iter().position(|x| x == f).unwrap_or_default() as u8).bytes(b);
     }
-    let each = match &m.view.acting {
-        osis_commit::Acting::Each(e) => e.iter().collect(),
-        osis_commit::Acting::All(_) => Vec::new(),
-    };
-    w = w.u32(each.len() as u32);
-    for (t, x) in each {
-        w = w.raw(t.as_bytes()).raw(x.as_bytes());
-    }
     w.take()
 }
 
@@ -777,21 +766,14 @@ pub(super) fn meta_row(core: &Core, id: &CommitId, m: &Meta) -> Vec<u8> {
         osis_commit::Form::Commit => w.u8(0),
         osis_commit::Form::Session(n) => w.u8(1).raw(&n),
     };
-    let each = match &v.acting {
-        osis_commit::Acting::All(_) => None,
-        osis_commit::Acting::Each(m) => Some(m),
-    };
-    w = w.raw(v.signer.as_bytes()).u8(u8::from(v.linked) | (u8::from(v.memory) << 1) | (u8::from(v.purges) << 2) | (u8::from(v.epoch.is_some()) << 3) | (u8::from(v.own_cover) << 4) | (u8::from(each.is_some()) << 5));
-    // what it acts on: one thing for all, or each thing's known here (`osis_commit::Acting`)
-    match (&v.acting, each) {
-        (osis_commit::Acting::All(x), _) => w = w.raw(x.as_bytes()),
-        (_, Some(m)) => {
-            w = w.raw(&(m.len() as u32).to_be_bytes());
-            for (t, x) in m {
-                w = w.raw(t.as_bytes()).raw(x.as_bytes());
-            }
+    w = w.raw(v.signer.as_bytes()).u8(u8::from(v.linked) | (u8::from(v.memory) << 1) | (u8::from(v.purges) << 2) | (u8::from(v.epoch.is_some()) << 3) | (u8::from(v.own_cover) << 4) | (u8::from(v.paths.is_some()) << 5));
+    // its purge author; in a split commit, what is decided here of each thing's path
+    w = w.raw(v.acting.as_bytes());
+    if let Some(p) = &v.paths {
+        w = w.raw(&(p.len() as u32).to_be_bytes());
+        for (t, known) in p.iter() {
+            w = w.raw(t.as_bytes()).u8(u8::from(*known));
         }
-        _ => {}
     }
     if let Some(e) = &v.epoch {
         w = w.raw(&e.0);
@@ -834,14 +816,15 @@ fn parse_meta_row(row: &[u8]) -> Result<(&[u8], super::View)> {
     };
     let signer = r.tid()?;
     let flags = r.u8()?;
-    let acting = if flags & 32 == 0 {
-        osis_commit::Acting::All(r.tid()?)
+    let acting = r.tid()?;
+    let paths = if flags & 32 == 0 {
+        None
     } else {
         let mut m = std::collections::BTreeMap::new();
         for _ in 0..r.u32()? {
-            m.insert(r.tid()?, r.tid()?);
+            m.insert(r.tid()?, r.u8()? != 0);
         }
-        osis_commit::Acting::Each(m)
+        Some(Arc::new(m))
     };
     let (linked, memory, purges) = (flags & 1 != 0, flags & 2 != 0, flags & 4 != 0);
     let epoch = if flags & 8 != 0 { Some(CommitId(r.arr()?)) } else { None };
@@ -863,7 +846,7 @@ fn parse_meta_row(row: &[u8]) -> Result<(&[u8], super::View)> {
         _ => return Err(Error::Corrupt("meta row frontier")),
     };
     r.end()?;
-    Ok((parts, super::View { ts, kind, form, signer, acting, linked, memory, aspects, frontier, purges, epoch, own_cover }))
+    Ok((parts, super::View { ts, kind, form, signer, acting, paths, linked, memory, aspects, frontier, purges, epoch, own_cover }))
 }
 
 /// A commit record's head and its blob bytes.
@@ -936,11 +919,7 @@ pub(crate) fn parse_head(v: &[u8]) -> Result<(RecordHead, &[u8])> {
         let f = *osis_commit::ListField::ALL.get(<usize as From<u8>>::from(r.u8()?)).ok_or(Error::Corrupt("header list field"))?;
         lists.push((f, r.bytes()?.to_vec()));
     }
-    let mut acting = BTreeMap::new();
-    for _ in 0..r.u32()? {
-        acting.insert(r.tid()?, r.tid()?);
-    }
-    Ok((RecordHead { received, origin, repair, signed, dropped, stripped, valued, lists, acting }, r.rest()))
+    Ok((RecordHead { received, origin, repair, signed, dropped, stripped, valued, lists }, r.rest()))
 }
 
 /// Writes the given changes (`all`: everything) of the indexes to the persisted index.
@@ -1151,7 +1130,7 @@ pub(crate) fn load(tx: &mut Tx<'_>) -> Result<()> {
             // lists by link from the record
             let mut h = super::decode_stored_header(&id, &bytes).ok_or(Error::Corrupt("commit record header"))?;
             head.resolve(&mut h)?;
-            debug_assert_eq!(super::View::of(&h, view.acting.clone()), *view, "meta row of {id:?} is stale");
+            debug_assert_eq!(super::View::of(&h, view.paths.clone()), *view, "meta row of {id:?} is stale");
             super::LazyHeader::ready(Arc::new(h))
         } else {
             // a debug build checks the view against the header where it decodes

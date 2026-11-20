@@ -150,13 +150,11 @@ impl Engine {
         // key, the author acting for its actor, an account's at an epoch that counts (§5.5: no
         // addendum lists a commit never held)
         let counts = core.standing_of(&id, h) == osis_perm::EpochStanding::Counts;
-        let acting = blob.acting();
+        let actor = h.purge_author();
         let mut signals = Vec::new();
         for (ai, s) in &decoded {
             let Some(a) = h.aspects.get(*ai) else { continue };
-            // the parts read opened their sections, so the path stated for each thing is known
-            let Some(actor) = acting.on(&a.tid) else { continue };
-            let valid = a.ak.signal() && a.ak.ephemeral() && a.replaces.is_none() && counts && crate::apply::validity::acts_for(core, h, Some(actor), &id) && check_role_with(core, h.signer, &|_| None, &a.tid, a.ak.as_str(), Role::Write, h.ts).is_ok();
+            let valid = a.ak.signal() && a.ak.ephemeral() && a.replaces.is_none() && counts && crate::apply::validity::acts_for(core, h, actor, &id) && check_role_with(core, h.signer, &|_| None, &a.tid, a.ak.as_str(), Role::Write, h.ts).is_ok();
             if valid && let Some(v) = s.fragment.read() {
                 signals.push((a.tid, a.ak.clone(), v, actor));
             }

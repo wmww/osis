@@ -207,7 +207,7 @@ fn forged(lp: &mut LocalPeer, g: Tid, w: CommitId, junk: CommitId) -> crate::syn
     let part = osis_commit::Part { ai, delta: j.parts.iter().find(|p| j.header.aspects[p.ai].ak.as_str() == "x:m.0").unwrap().delta.clone() };
     let secret = lp.peers[M].engine.epochs(&g).unwrap().read.newest_held().unwrap().1.clone();
     let mut rng = osis_crypto::SeededRng::from_u64(3);
-    let sec = osis_commit::Section::seal(&w, c.salted_of(&g), &[part], Vec::new(), &secret, &mut rng).unwrap();
+    let sec = osis_commit::Section::seal(&w, &[part], None, Vec::new(), &secret, &mut rng).unwrap();
     let env = osis_commit::Envelope { header: c.header.clone(), sigs: c.sigs.clone(), sections: vec![sec] };
     crate::sync_ids::frame_envelope(&env, &c.header, osis_blob::Class::Durable, &mut rng, &c).unwrap()
 }
@@ -658,7 +658,7 @@ fn planted_copy_unlocks_no_reseal_spec_crypto_5() {
     let part = osis_commit::Part { ai, delta: j.parts.iter().find(|p| j.header.aspects[p.ai].ak.as_str() == "x:m.0").unwrap().delta.clone() };
     let mut rng = osis_crypto::SeededRng::from_u64(31);
     let key = osis_crypto::Secret32::random(&mut rng);
-    let sec = osis_commit::Section::seal(&w, c.salted_of(&g), &[part], Vec::new(), &key, &mut rng).unwrap();
+    let sec = osis_commit::Section::seal(&w, &[part], None, Vec::new(), &key, &mut rng).unwrap();
     let env = osis_commit::Envelope { header: c.header.clone(), sigs: c.sigs.clone(), sections: vec![sec] };
     let f = crate::sync_ids::frame_envelope(&env, &c.header, osis_blob::Class::Durable, &mut rng, &c).unwrap();
     let mk = lp.peers[M].engine.epochs(&g).unwrap().read.newest_held().unwrap().1.clone();

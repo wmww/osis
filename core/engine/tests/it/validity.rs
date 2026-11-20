@@ -4133,9 +4133,10 @@ fn a_removed_admins_grant_forged_at_the_removals_ts_counts_nowhere_spec_perm_5_1
     }
 }
 
-/// Bob (1), a writer of D and E (minted by Alice, 0), writes both acting for D, with
-/// `hashed_through` set or not: the commit's ID and its opened form.
-fn acting_on_two(hashed: bool) -> (LocalPeer, Tid, Tid, osis_base::CommitId, osis_commit::CommitBlob) {
+/// Bob (1), a writer of D and E (minted by Alice, 0), writes both acting for D: the commit's ID
+/// and its opened form. D holds no role on E, so no path to E goes through D: Open
+/// (notes/a1-spec/README.md Open 16), the Interim `[D]` for both, as the Acting check accepts it.
+fn acting_on_two() -> (LocalPeer, Tid, Tid, osis_base::CommitId, osis_commit::CommitBlob) {
     let mut lp = net(2, 0);
     lp.sync_all().unwrap();
     let (d, e) = (new_thing(&mut lp, 0), new_thing(&mut lp, 0));
@@ -4144,76 +4145,139 @@ fn acting_on_two(hashed: bool) -> (LocalPeer, Tid, Tid, osis_base::CommitId, osi
     set_edge(&mut lp.peers[0].engine, e, b, Some(edge(Role::Write)), None);
     lp.sync_all().unwrap();
     lp.advance(1_000);
-    lp.peers[1].engine.core.hashed_through = hashed.then(|| Tid::from_bytes([0x5a; 15]));
     let mut m = Mutation::new();
     m.set(d, &REG, &s("on d")).unwrap();
     m.set(e, &REG, &s("on e")).unwrap();
     m.act_as(d);
     let id = lp.peers[1].commit(m).unwrap().unwrap();
-    lp.peers[1].engine.core.hashed_through = None;
     let pk = lp.peers[1].engine.package(&id).unwrap().unwrap();
     (lp, d, e, id, osis_commit::CommitBlob::decode(&pk.bytes).unwrap())
 }
 
-// spec/wire.md §4 `Contents`, spec/commits.md §5 Purge; Interim (notes/a1-spec/README.md step 3):
-// what a hashed commit acts on, learned from a thing's section, outlives that thing's parts:
-// Alice holds Bob's commit whole and purges his part on E, and her store rebuilt from its records
-// reads what her live index learned (the record keeps it apart from the sections).
-#[test]
-fn a_hashed_commits_path_outlives_its_parts_spec_wire_4() {
-    let (mut lp, d, e, id, c) = acting_on_two(true);
-    let a = &mut lp.peers[0];
-    unless_refused(a.engine.ingest(&c.encode(), Vec::new()));
-    a.reexamine().unwrap();
-    assert_eq!(a.engine.commit_acting(&id, &e), Some(d));
-    let mut m = Mutation::new();
-    let now = a.engine.now();
-    m.set(e, &osis_schema::core_types::PURGE, &now).unwrap();
-    m.purge(osis_commit::PurgeItem::Aspect { tid: e, ak: ak("t:reg.0") });
-    lp.peers[0].commit(m).unwrap().unwrap();
-    let a = &mut lp.peers[0];
-    assert_eq!(a.engine.get(&e, &ak("t:reg.0")).unwrap(), None, "purged");
-    assert_eq!(a.engine.commit_acting(&id, &e), Some(d), "learned, kept");
-    a.engine.check_index();
-}
-
-// spec/wire.md §4 `Contents`; Interim (notes/a1-spec/README.md step 3): each thing a hashed commit
-// writes is judged along its own path, so what a node reads of one thing does not depend on the
-// sections of other things it opened. Bob writes D along `[D]` and E along `[E]` (a writer of
-// both, acting on each): Alice opens both sections, Carol only D's; both read D alike, and Alice
-// E too (a section of another thing does not void it).
-#[test]
-fn a_hashed_commit_reads_alike_whatever_sections_opened_spec_wire_4() {
+/// Alice (0) mints D, P and the holder H; Bob (1) holds write on H, H on D, Bob on P directly;
+/// Carol (2) reads P alone. Bob's write on D goes through H, on P along the empty path: one
+/// write of both states the split form.
+fn two_paths_world() -> (LocalPeer, Tid, Tid, Tid) {
     let mut lp = net(3, 0);
     lp.sync_all().unwrap();
-    let (d, e) = (new_thing(&mut lp, 0), new_thing(&mut lp, 0));
-    let b = lp.peers[1].engine.me();
-    for t in [d, e] {
-        set_edge(&mut lp.peers[0].engine, t, b, Some(edge(Role::Write)), None);
-    }
-    let carol = lp.peers[2].engine.me();
-    set_edge(&mut lp.peers[0].engine, d, carol, Some(edge(Role::Read)), None);
+    let (h, d, p) = (new_thing(&mut lp, 0), new_thing(&mut lp, 0), new_thing(&mut lp, 0));
+    let (b, c) = (lp.peers[1].engine.me(), lp.peers[2].engine.me());
+    set_edge(&mut lp.peers[0].engine, h, b, Some(edge(Role::Write)), None);
+    set_edge(&mut lp.peers[0].engine, d, h, Some(edge(Role::Write)), None);
+    set_edge(&mut lp.peers[0].engine, p, b, Some(edge(Role::Write)), None);
+    set_edge(&mut lp.peers[0].engine, p, c, Some(edge(Role::Read)), None);
     lp.sync_all().unwrap();
     lp.advance(1_000);
-    lp.peers[1].engine.core.forced_paths = [(d, osis_commit::Path::through(d)), (e, osis_commit::Path::through(e))].into();
+    (lp, h, d, p)
+}
+
+/// Bob's (1) one write of D and P in `two_paths_world`: its ID and opened form.
+fn bob_writes_both(lp: &mut LocalPeer, d: Tid, p: Tid) -> (osis_base::CommitId, osis_commit::CommitBlob) {
     let mut m = Mutation::new();
     m.set(d, &REG, &s("on d")).unwrap();
-    m.set(e, &REG, &s("on e")).unwrap();
+    m.set(p, &REG, &s("on p")).unwrap();
     let id = lp.peers[1].commit(m).unwrap().unwrap();
-    lp.peers[1].engine.core.forced_paths.clear();
-    let c = osis_commit::CommitBlob::decode(&lp.peers[1].engine.package(&id).unwrap().unwrap().bytes).unwrap();
-    assert!(matches!(&c.header.path, osis_commit::Paths::Hashed(_)));
-    assert_eq!((c.acting().on(&d), c.acting().on(&e)), (Some(d), Some(e)), "acting apart");
-    let only_d = osis_commit::rewrite(&c, |ai| c.header.aspects[ai].tid != d).encode();
-    for (i, bytes) in [(0, c.encode()), (2, only_d)] {
-        let p = &mut lp.peers[i];
-        unless_refused(p.engine.ingest(&bytes, Vec::new()));
-        p.reexamine().unwrap();
-        p.engine.check_index();
-        assert!(p.engine.commit_ids().contains(&id), "peer {i}");
-        assert_eq!(p.engine.get(&d, &ak("t:reg.0")).unwrap(), Some(s("on d")), "peer {i} reads D");
+    let pk = lp.peers[1].engine.package(&id).unwrap().unwrap();
+    (id, osis_commit::CommitBlob::decode(&pk.bytes).unwrap())
+}
+
+/// Each thing's path as commit `c` states it: read off its one path, or its entry opened.
+fn paths_stated(c: &osis_commit::CommitBlob) -> Vec<(Tid, Vec<Tid>)> {
+    c.header.things().into_iter().map(|t| match c.path(&t) {
+        Some(osis_commit::ThingPath::Known(p)) => (t, p.to(&t).to_vec()),
+        x => panic!("{t:?}: {x:?}"),
+    }).collect()
+}
+
+// The owner's rule (notes/path-form.md; a1-spec Open 17), spec/wire.md §4 `Split`: a write of things
+// its signer reaches through different actors is one commit, never refused or split: Bob writes D
+// through H and P directly, and the commit states each thing's own path, sealed. Alice reads both;
+// Carol, who opens P's section alone, reads P as Alice does; every node's index is its store's.
+#[test]
+fn a_write_through_different_actors_is_one_split_commit_spec_wire_4() {
+    let (mut lp, h, d, p) = two_paths_world();
+    let (id, c) = bob_writes_both(&mut lp, d, p);
+    assert!(c.header.is_split(), "{:?}", c.header.path);
+    assert_eq!(c.header.purge_author(), lp.peers[1].engine.me());
+    let mut want = vec![(d, vec![h]), (p, vec![])];
+    want.sort();
+    let mut got = paths_stated(&c);
+    got.sort();
+    assert_eq!(got, want, "each thing's own path");
+    lp.sync_all().unwrap();
+    for i in 0..3 {
+        let e = &mut lp.peers[i].engine;
+        assert!(e.commit_ids().contains(&id), "peer {i} holds it");
+        assert_eq!(e.get(&p, &ak("t:reg.0")).unwrap(), Some(s("on p")), "peer {i} reads P");
+        e.check_index();
     }
-    assert_eq!(lp.peers[0].engine.get(&e, &ak("t:reg.0")).unwrap(), Some(s("on e")), "Alice reads E");
+    assert_eq!(lp.peers[0].engine.get(&d, &ak("t:reg.0")).unwrap(), Some(s("on d")), "Alice reads D");
+}
+
+// spec/wire.md §4 `Split`, `PathKey`; notes/path-form.md Per consumer: a node judges a split
+// commit's thing by the path key an encryption of its parts carried or by the roles secret it
+// holds, so it ends where the whole commit takes it however the parts come (whole, header first,
+// one thing's copy before the other's), its live index what its store loads.
+#[test]
+fn split_paths_judge_alike_however_parts_come_spec_wire_4() {
+    let fresh = || {
+        LocalPeer::cached("validity::two_paths_world", || {
+            let (mut lp, _, d, p) = two_paths_world();
+            let (id, c) = bob_writes_both(&mut lp, d, p);
+            (lp, (d, p, id, c))
+        })
+    };
+    let (_, (d, p, id, c)) = fresh();
+    assert!(c.header.is_split());
+    let only = |keep: Option<Tid>| osis_commit::rewrite(&c, |ai| Some(c.header.aspects[ai].tid) != keep).encode();
+    for (name, order) in [("whole", vec![c.encode()]), ("header, p, d", vec![only(None), only(Some(p)), only(Some(d))]), ("header, d, p", vec![only(None), only(Some(d)), only(Some(p))]), ("p, d", vec![only(Some(p)), only(Some(d))])] {
+        let (mut lp, _) = fresh();
+        let a = &mut lp.peers[0];
+        for b in &order {
+            unless_refused(a.engine.ingest(b, Vec::new()));
+            a.reexamine().unwrap();
+            a.engine.check_index();
+        }
+        assert!(a.engine.commit_ids().contains(&id), "{name}");
+        assert_eq!(a.engine.get(&d, &ak("t:reg.0")).unwrap(), Some(s("on d")), "{name}");
+        assert_eq!(a.engine.get(&p, &ak("t:reg.0")).unwrap(), Some(s("on p")), "{name}");
+    }
+}
+
+// spec/wire.md §4 field 2; notes/path-form.md The engine's choice: no honest commit states a wrong path. Over a world of
+// grants, holders and creations, every part's path read off what each commit Alice holds states is
+// a real chain: each hop an edge or a record descent held, from the signer to the thing.
+#[test]
+fn every_stated_path_is_a_chain_of_held_edges_spec_wire_4() {
+    let (mut lp, _, d, p) = two_paths_world();
+    bob_writes_both(&mut lp, d, p);
+    let mut m = Mutation::new();
+    m.set(d, &REG, &s("d alone")).unwrap();
+    lp.peers[1].commit(m).unwrap().unwrap();
+    lp.sync_all().unwrap();
+    let e = &mut lp.peers[0].engine;
+    let ids = e.commit_ids();
+    let mut checked = 0;
+    for id in ids {
+        let Some(h) = e.header(&id) else { continue };
+        if h.kind.is_role() || h.purge_author() != h.signer {
+            continue;
+        }
+        let pk = e.package(&id).unwrap().unwrap();
+        let c = osis_commit::CommitBlob::decode(&pk.bytes).unwrap();
+        // the record chain of `x`, `x` first
+        let chain = |e: &osis_engine::Engine, x: Tid| std::iter::successors(Some(x), |y| e.core.created(y).and_then(|r| r.mint_admin())).take(70).collect::<Vec<_>>();
+        let hop = |e: &osis_engine::Engine, from: Tid, to: Tid| from == to || e.key_role(&to, &from).is_some() || chain(e, to).contains(&from);
+        for (t, listed) in paths_stated(&c) {
+            let mut at = h.signer;
+            for x in listed.iter().copied().chain([t]) {
+                assert!(hop(e, at, x), "{id:?}: {at:?} holds nothing on {x:?} (path to {t:?}: {listed:?})");
+                at = x;
+            }
+            checked += 1;
+        }
+    }
+    assert!(checked >= 4, "{checked} paths checked");
 }
 
 /// Bob (1) writes `m`: the header's path.
@@ -4245,8 +4309,7 @@ fn holders_world(n: usize) -> (LocalPeer, Vec<Tid>, Tid, Tid) {
 // holders by which its signer reaches what it writes, naming the signer as purge author (the
 // thing it acts for, listed, where it acts for one): none for what it holds directly, three for a
 // thing reached through three; every node applies it as before (Interim, spec/permissions.md
-// §5.2). Interim (notes/a1-spec/
-// README.md step 2): where the things' paths differ the commit states the empty path for all.
+// §5.2). Where the things' paths differ the commit states the split form (notes/path-form.md).
 #[test]
 fn a_write_states_the_holders_it_goes_through_spec_wire_4() {
     let (mut lp, chain, t, d) = holders_world(3);
@@ -4267,7 +4330,7 @@ fn a_write_states_the_holders_it_goes_through_spec_wire_4() {
     let mut m = Mutation::new();
     m.set(t, &REG, &s("on t again")).unwrap();
     m.set(d, &REG, &s("on d again")).unwrap();
-    assert_eq!(bobs_path(&mut lp, m), osis_commit::Paths::One(osis_commit::Path::default()), "paths differ");
+    assert!(matches!(bobs_path(&mut lp, m), osis_commit::Paths::Split(sp) if sp.author.is_none() && sp.entries.len() == 2), "paths differ");
     lp.sync_all().unwrap();
     for i in 0..2 {
         let e = &mut lp.peers[i].engine;
@@ -4318,90 +4381,6 @@ fn finding_a_path_does_not_grow_with_history_spec_wire_4() {
     let (small, large) = (walked(3), walked(30));
     assert_eq!(small, large, "at n and 10n role commits held elsewhere");
     assert!(small.0 > 0 && small.1 == 0, "walked once while the roles stand: {small:?}");
-}
-
-// Interim, spec/permissions.md §5.2 Acting: whatever path and purge-author index a writer
-// states, the old walk reads only the thing the index names, and the Acting check holds that
-// thing to one its signer writes: naming its signer reads as its own write (as the empty path
-// does), naming a thing it may not write (or a made-up one) holds no part, and things listed
-// but not named are not read. Bob writes T and X, not Y; Z is made up.
-#[test]
-fn a_stated_index_acts_no_wider_than_the_acting_check_spec_permissions_5_2() {
-    let mut lp = net(2, 0);
-    lp.sync_all().unwrap();
-    let (t, x, y) = (new_thing(&mut lp, 0), new_thing(&mut lp, 0), new_thing(&mut lp, 0));
-    let b = lp.peers[1].engine.me();
-    for w in [t, x] {
-        set_edge(&mut lp.peers[0].engine, w, b, Some(edge(Role::Write)), None);
-    }
-    lp.sync_all().unwrap();
-    lp.advance(1_000);
-    let z = Tid::from_bytes([0x7a; 15]);
-    let mut shown = None;
-    let cases = [
-        (osis_commit::Path { purge: 0, things: vec![y] }, Some(b)),
-        (osis_commit::Path::through(y), None),
-        (osis_commit::Path::through(x), Some(x)),
-        (osis_commit::Path { purge: 2, things: vec![x, y] }, None),
-        (osis_commit::Path { purge: 2, things: vec![y, x] }, Some(x)),
-        (osis_commit::Path::through(z), None),
-    ];
-    for (i, (path, actor)) in cases.into_iter().enumerate() {
-        lp.peers[1].engine.core.forced_paths = [(t, path.clone())].into();
-        let mut m = Mutation::new();
-        m.set(t, &REG, &s(&format!("case {i}"))).unwrap();
-        let id = lp.peers[1].commit(m);
-        lp.peers[1].engine.core.forced_paths.clear();
-        lp.sync_all().unwrap();
-        if actor.is_some() {
-            shown = Some(s(&format!("case {i}")));
-        }
-        let a = &mut lp.peers[0].engine;
-        assert_eq!(a.get(&t, &ak("t:reg.0")).unwrap(), shown, "case {i}: {path:?}");
-        if let (Some(w), Ok(Some(id))) = (actor, id) {
-            assert_eq!(a.commit_acting(&id, &t), Some(w), "case {i}: the actor");
-        }
-    }
-}
-
-// Interim (notes/a1-spec/README.md step 3), spec/commits.md §4 Unjudgeable: a hashed commit's
-// part on E acting for a thing whose record is not held is unjudgeable alone; its part on D
-// still applies, at a node that opened E's section as at one that did not. Bob writes D along
-// `[D]` and E along `[Z]`, Z his own thing Alice does not hold yet; Alice opens both, Carol D's alone.
-#[test]
-fn a_hashed_part_acting_for_an_unknown_thing_waits_alone_spec_commits_4() {
-    let mut lp = net(3, 0);
-    lp.sync_all().unwrap();
-    let (d, e) = (new_thing(&mut lp, 0), new_thing(&mut lp, 0));
-    let b = lp.peers[1].engine.me();
-    for t in [d, e] {
-        set_edge(&mut lp.peers[0].engine, t, b, Some(edge(Role::Write)), None);
-    }
-    let carol = lp.peers[2].engine.me();
-    set_edge(&mut lp.peers[0].engine, d, carol, Some(edge(Role::Read)), None);
-    lp.sync_all().unwrap();
-    lp.advance(1_000);
-    let z = new_thing(&mut lp, 1);
-    lp.peers[1].engine.core.forced_paths = [(d, osis_commit::Path::through(d)), (e, osis_commit::Path::through(z))].into();
-    let mut m = Mutation::new();
-    m.set(d, &REG, &s("on d")).unwrap();
-    m.set(e, &REG, &s("on e")).unwrap();
-    let id = lp.peers[1].commit(m).unwrap().unwrap();
-    lp.peers[1].engine.core.forced_paths.clear();
-    let c = osis_commit::CommitBlob::decode(&lp.peers[1].engine.package(&id).unwrap().unwrap().bytes).unwrap();
-    assert!(matches!(&c.header.path, osis_commit::Paths::Hashed(_)));
-    let only_d = osis_commit::rewrite(&c, |ai| c.header.aspects[ai].tid != d).encode();
-    for (i, bytes) in [(0, c.encode()), (2, only_d)] {
-        let p = &mut lp.peers[i];
-        unless_refused(p.engine.ingest(&bytes, Vec::new()));
-        p.reexamine().unwrap();
-        p.engine.check_index();
-        assert_eq!(p.engine.get(&d, &ak("t:reg.0")).unwrap(), Some(s("on d")), "peer {i} reads D");
-    }
-    assert_eq!(lp.peers[0].engine.get(&e, &ak("t:reg.0")).unwrap(), Some(s("new")), "Alice: E's part waits");
-    lp.sync_all().unwrap();
-    assert_eq!(lp.peers[0].engine.get(&e, &ak("t:reg.0")).unwrap(), Some(s("on e")), "Alice: Z's record come, E's part applies");
-    lp.peers[0].engine.check_index();
 }
 
 // notes/a1-spec/permissions.md §1 Path; spec/wire.md §4 field 2: the path a write states is the
@@ -4457,50 +4436,37 @@ fn a_writes_path_is_a_function_of_the_held_edges_spec_wire_4() {
     assert_eq!(chosen(0), chosen(1));
 }
 
-// spec/wire.md §4 (one path): a writer states one path where every thing's is the same; Interim
-// (notes/a1-spec/README.md step 2): every commit the engine writes has one acting thing, so it
-// states its path once in the clear, whatever it writes: a creation (the thing and where it is
-// held) along the empty path, a write on two things acting for one of them along that thing.
+// spec/wire.md §4 field 2; notes/path-form.md One path: a creation states one path in the
+// clear: under the account root along the empty path (19 B on `signer`, `path`, `remains`); under a
+// parent the signer holds by a grant along `[D]` (35 B), the new thing one record edge past it. A
+// write acting for D whose path to E does not go through D states the Interim `[D]` (Open 16).
 #[test]
-fn the_engine_states_one_path_for_every_thing_spec_wire_4() {
-    let mut lp = net(1, 0);
+fn the_engine_states_one_path_for_a_creation_spec_wire_4() {
+    let path_bytes = |h: &osis_commit::Header| {
+        let all = h.encode();
+        let l = osis_base::cbor::Item::parse(&all, &osis_base::Limits::new(512, 1 << 24)).unwrap().as_list().unwrap();
+        [1, 2, 17].iter().map(|i| l.get(*i).unwrap().bytes().len()).sum::<usize>()
+    };
+    let mut lp = net(2, 0);
+    lp.sync_all().unwrap();
     let t = new_thing(&mut lp, 0);
-    let made = lp.peers[0].engine.commit_ids().into_iter().find(|c| lp.peers[0].engine.header(c).is_some_and(|h| h.aspects.iter().any(|a| a.tid == t && a.ak.as_str() == "created.0"))).unwrap();
-    let h = lp.peers[0].engine.header(&made).unwrap();
+    let made = |lp: &LocalPeer, i: usize, t: Tid| lp.peers[i].engine.commit_ids().into_iter().find(|c| lp.peers[i].engine.header(c).is_some_and(|h| h.aspects.iter().any(|a| a.tid == t && a.ak.as_str() == "created.0"))).unwrap();
+    let h = lp.peers[0].engine.header(&made(&lp, 0, t)).unwrap();
     assert!(h.things().len() > 1, "a creation writes the thing and its holder");
     assert_eq!(h.path, osis_commit::Paths::One(osis_commit::Path::default()));
-    let (_, d, _, _, c) = acting_on_two(false);
+    assert_eq!(path_bytes(&h), 19);
+    // under a parent Bob holds by a grant
+    let b = lp.peers[1].engine.me();
+    set_edge(&mut lp.peers[0].engine, t, b, Some(edge(Role::Admin)), None);
+    lp.sync_all().unwrap();
+    let mut m = Mutation::new();
+    let x = lp.peers[1].engine.new_thing(&mut m, t);
+    m.set(x, &REG, &s("under t")).unwrap();
+    lp.peers[1].commit(m).unwrap();
+    let h = lp.peers[1].engine.header(&made(&lp, 1, x)).unwrap();
+    assert_eq!(h.path, osis_commit::Paths::One(osis_commit::Path { purge: 0, things: vec![t] }));
+    assert_eq!(path_bytes(&h), 35);
+    let (_, d, _, _, c) = acting_on_two();
     assert_eq!(c.header.things().len(), 2);
     assert_eq!(c.header.path, osis_commit::Paths::One(osis_commit::Path::through(d)));
-}
-
-// spec/wire.md §4 field 2, `Contents`; Interim (notes/a1-spec/README.md step 3): a commit whose
-// things' paths differ states them hashed, so a node holding none of its sections knows no acting
-// thing for it and judges its parts with none; the first section it opens tells it (both paths act
-// for D), and it ends where the whole commit takes it, however the parts came, its live index
-// what its store loads.
-#[test]
-fn hashed_paths_learned_late_judge_as_whole_spec_wire_4() {
-    let fresh = || {
-        LocalPeer::cached("validity::acting_on_two", || {
-            let (lp, d, e, id, c) = acting_on_two(true);
-            (lp, (d, e, id, c))
-        })
-    };
-    let (_, (d, e, id, c)) = fresh();
-    assert!(matches!(&c.header.path, osis_commit::Paths::Hashed(hs) if hs.len() == 2));
-    assert!(c.header.things().iter().all(|x| c.acting().on(x) == Some(d)));
-    let only = |keep: Option<Tid>| osis_commit::rewrite(&c, |ai| Some(c.header.aspects[ai].tid) != keep).encode();
-    for (name, order) in [("whole", vec![c.encode()]), ("header, e, d", vec![only(None), only(Some(e)), only(Some(d))]), ("header, d, e", vec![only(None), only(Some(d)), only(Some(e))]), ("e, d", vec![only(Some(e)), only(Some(d))])] {
-        let (mut lp, _) = fresh();
-        let p = &mut lp.peers[0];
-        for b in &order {
-            unless_refused(p.engine.ingest(b, Vec::new()));
-            p.reexamine().unwrap();
-            p.engine.check_index();
-        }
-        assert!(p.engine.commit_ids().contains(&id), "{name}");
-        assert_eq!(p.engine.get(&d, &ak("t:reg.0")).unwrap(), Some(s("on d")), "{name}");
-        assert_eq!(p.engine.get(&e, &ak("t:reg.0")).unwrap(), Some(s("on e")), "{name}");
-    }
 }

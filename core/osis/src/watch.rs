@@ -576,19 +576,18 @@ fn origin_of(id: CommitId, from: EventOrigin, actor: Tid, ts: Ts, received: Time
     if from == EventOrigin::Local { Origin::Local(i) } else { Origin::Remote(i) }
 }
 
-/// Where an event's changes come from: a commit (what it acts on, per thing) or a cause.
+/// Where an event's changes come from: a commit (its one purge author) or a cause.
 enum Src<'a> {
-    Commit { id: CommitId, from: EventOrigin, acting: &'a osis_commit::Acting, ts: Ts, received: Time },
+    Commit { id: CommitId, from: EventOrigin, acting: &'a Tid, ts: Ts, received: Time },
     Derived(Origin),
 }
 
 impl Src<'_> {
-    /// The origin of its change on thing `t`: `None` for a commit whose path for `t` is not
-    /// known here (it changed no read here).
-    fn on(&self, t: &Tid) -> Option<Origin> {
+    /// The origin of its changes.
+    fn origin(&self) -> Origin {
         match self {
-            Src::Commit { id, from, acting, ts, received } => Some(origin_of(*id, *from, acting.on(t)?, *ts, *received)),
-            Src::Derived(o) => Some(*o),
+            Src::Commit { id, from, acting, ts, received } => origin_of(*id, *from, **acting, *ts, *received),
+            Src::Derived(o) => *o,
         }
     }
 }
@@ -687,7 +686,7 @@ fn targets(sh: &Shared, _db: &Osis, seq: u64, m: &Msg) -> Vec<(Arc<Sub>, Pre)> {
             .filter_map(|(id, i)| {
                 let s = r.sub(id, seq)?;
                 let pre = match changed.get(i) {
-                    Some((t, ak)) => Pre::Aspect { tid: *t, ak: ak.clone(), origin: origin.on(t)? },
+                    Some((t, ak)) => Pre::Aspect { tid: *t, ak: ak.clone(), origin: origin.origin() },
                     None => Pre::Ready(Delivery::Due),
                 };
                 Some((s, pre))
@@ -804,9 +803,8 @@ impl Pump {
                     for (s2, m2) in &self.buf {
                         if let Some((changed, src)) = aspect_event(m2)
                             && changed.iter().any(|(t, a)| *t == tid && *a == ak)
-                            && let Some(src) = src.on(&tid)
                         {
-                            origin = src;
+                            origin = src.origin();
                             last = *s2;
                         }
                     }

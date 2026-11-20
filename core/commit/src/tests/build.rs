@@ -474,15 +474,18 @@ fn section_key_filter_keeps_the_key() {
     let (commit, secret) = (CommitId([4; 32]), Secret32::from_bytes([1; 32]));
     let mut rng = SeededRng::from_u64(0);
     let mut wrong = 0;
-    for n in [0usize, 1, 3, 23, 24, 30] {
-        let parts: Vec<Part> = (0..n).map(|ai| Part { ai: ai * 30, delta: osis_base::encode(&Value::Int(ai as i64)) }).collect();
-        let s = Section::seal(&commit, None, &parts, vec![t(1)], &secret, &mut rng).unwrap();
-        let key = osis_crypto::unwrap_section(&secret, &commit, &s.wrap).unwrap();
-        let zero = |k: &[u8; 32]| osis_crypto::aead::Keystream::new(k, &osis_crypto::aead::ZERO_NONCE);
-        assert!(s.may_open_with(&zero(key.expose())), "{n} parts");
-        wrong += (0..64u8).filter(|i| s.may_open_with(&zero(&[*i; 32]))).count();
+    let keys = std::collections::BTreeMap::from([(0, [5; 32])]);
+    for split in [false, true] {
+        for n in [0usize, 1, 3, 23, 24, 30] {
+            let parts: Vec<Part> = (0..n).map(|ai| Part { ai: ai * 30, delta: osis_base::encode(&Value::Int(ai as i64)) }).collect();
+            let s = Section::seal(&commit, &parts, split.then_some(&keys), vec![t(1)], &secret, &mut rng).unwrap();
+            let key = osis_crypto::unwrap_section(&secret, &commit, &s.wrap).unwrap();
+            let zero = |k: &[u8; 32]| osis_crypto::aead::Keystream::new(k, &osis_crypto::aead::ZERO_NONCE);
+            assert!(s.may_open_with(&zero(key.expose()), split), "{n} parts");
+            wrong += (0..64u8).filter(|i| s.may_open_with(&zero(&[*i; 32]), split)).count();
+        }
     }
-    assert!(wrong < 64, "{wrong} of {} wrong keys pass", 6 * 64);
+    assert!(wrong < 64, "{wrong} of {} wrong keys pass", 12 * 64);
 }
 
 // spec/wire.md §4-§5: a linked list's links name no delete key; a root naming one, or a link

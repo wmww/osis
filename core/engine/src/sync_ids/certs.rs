@@ -423,7 +423,7 @@ impl Engine {
         let evidence: Vec<CommitId> = std::iter::once(w.commit).chain(requests).collect();
         for c in &evidence {
             let Some(h) = self.header(c) else { continue };
-            let acting = self.core.ix.commits.get(c).map(|m| m.view.acting.all()).unwrap_or_default();
+            let acting = self.core.ix.commits.get(c).map(|m| m.view.acting);
             for x in [*t, h.signer].into_iter().chain(acting) {
                 // a header is judged by its author's edges and records; no keyset judges it
                 let mut cs = self.chain_to(&h.signer, &x);
@@ -521,9 +521,11 @@ impl Engine {
             return None;
         }
         let m = self.core.ix.commits.get(c)?;
-        let (h, acting) = (m.header.clone(), m.view.acting.clone());
+        let (h, acting) = (m.header.clone(), m.view.acting);
         let mut things: BTreeSet<Tid> = parts.iter().filter_map(|ai| h.aspects.get(*ai)).map(|a| a.tid).collect();
-        things.extend(things.clone().iter().filter_map(|t| acting.on(t)));
+        if !things.is_empty() {
+            things.insert(acting);
+        }
         let found: Vec<osis_perm::Certificates> = things.iter().chain([&h.signer]).map(|t| self.chain_to(&h.signer, t)).collect();
         let mut out = Certs::default();
         for cs in &found {
@@ -637,7 +639,7 @@ impl Engine {
             if !fresh {
                 continue;
             }
-            let acting = self.core.ix.commits.get(&d).map(|m| m.view.acting.all()).unwrap_or_default();
+            let acting = self.core.ix.commits.get(&d).map(|m| m.view.acting);
             for x in things.into_iter().chain(acting) {
                 let cs = self.chain_to(&h.signer, &x);
                 self.cert_parts(&cs, out);

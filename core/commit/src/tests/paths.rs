@@ -1,12 +1,14 @@
 //! Stated paths in the header and sections (spec/wire.md §4 fields 1, 2, 17; `Path`, `Paths`,
-//! `Salted`, `Contents`).
+//! `Split`, `PathKey`, `Contents`; spec/crypto.md §5 Path entry).
 
 use crate::tests::build::{content, key, rng};
 use crate::tests::verify::TestSecrets;
 use crate::tests::{sample_header, t};
 use crate::*;
 use osis_base::format::MAX_PATH_THINGS;
+use osis_base::Tid;
 use osis_crypto::Secret32;
+use std::collections::BTreeMap;
 
 fn built(b: CommitBuilder) -> CommitBlob {
     b.build(&key(), &TestSecrets { admin: true }, &mut MemoryBlobs::default(), &mut rng()).unwrap().commit
@@ -16,11 +18,33 @@ fn one(path: Path) -> Header {
     Header { path: Paths::One(path), ..sample_header() }
 }
 
+/// The read roles secret the tests seal thing `t`'s entry under.
+fn roles(t: &Tid) -> Secret32 {
+    Secret32::from_bytes([t.as_bytes()[0] ^ 0x5a; 32])
+}
+
+/// `content(n)` stating the split form: its first thing along `[t(2)]`, the others along
+/// `[t(9), t(2)]`, purge author `t(2)`.
+fn split(n: usize) -> CommitBuilder {
+    let mut b = content(n);
+    let things = b.aspects.iter().map(|a| a.tid).collect::<Vec<_>>();
+    let each = things.iter().enumerate().map(|(i, x)| (*x, (if i == 0 { vec![t(2)] } else { vec![t(9), t(2)] }, roles(x)))).collect();
+    b.split = Some(SplitWrite { author: Some(t(2)), things: each });
+    b
+}
+
+fn path_len(h: &Header) -> usize {
+    let mut out = Vec::new();
+    h.path.put(&mut out);
+    out.len()
+}
+
 // spec/wire.md §4 field 2: a path in the clear round-trips with the empty path, one listed thing
 // and MAX_PATH_THINGS of them; the decoder rejects a path past MAX_PATH_THINGS, an index past
-// its things, a thing twice, the signer listed, and a hashed path of fewer than two hashes.
+// its things, a thing twice, the signer listed; a split path of one entry, an entry of no padded
+// length, or naming its signer as purge author.
 #[test]
-fn path_in_the_clear_decodes_by_its_rules() {
+fn paths_decode_by_their_rules() {
     let many: Vec<_> = (0..MAX_PATH_THINGS).map(|i| osis_base::Tid::from_bytes([i as u8 + 20; 15])).collect();
     for p in [Path::default(), Path::through(t(2)), Path { purge: 3, things: many.clone() }] {
         let h = one(p);
@@ -36,184 +60,277 @@ fn path_in_the_clear_decodes_by_its_rules() {
     ] {
         assert!(matches!(Header::decode(&one(p).encode()), Err(Error::Malformed(_))), "{why}");
     }
-    let h = Header { path: Paths::Hashed(vec![[1; 32]]), ..sample_header() };
-    assert!(Header::decode(&h.encode()).is_err(), "one hash");
-    let h = Header { path: Paths::Hashed(vec![[1; 32], [2; 32]]), ..sample_header() };
-    assert_eq!(Header::decode(&h.encode()).unwrap(), h);
+    let e = |k: usize| vec![7u8; entry_len(k).unwrap()];
+    let sp = |author, entries| Header { path: Paths::Split(Split { author, entries }), ..sample_header() };
+    for h in [sp(None, vec![e(0), e(5)]), sp(Some(t(2)), vec![e(64), e(1), e(16)])] {
+        assert_eq!(Header::decode(&h.encode()).unwrap(), h);
+    }
+    for (h, why) in [(sp(None, vec![e(0)]), "one entry"), (sp(None, vec![e(0), vec![7; 50]]), "no padded length"), (sp(Some(t(1)), vec![e(0), e(0)]), "the signer as author")] {
+        assert!(matches!(Header::decode(&h.encode()), Err(Error::Malformed(_))), "{why}");
+    }
 }
 
-// spec/wire.md §4 field 2: one path in the clear stands for any number of things written; a
-// hashed form on a commit writing one thing, or a hash count other than the things written, is
-// bad input.
+// For Tess 3 (notes/path-form.md): an entry's size shows only its class: up to 4 listed things,
+// up to 16, up to MAX_PATH_THINGS.
+#[test]
+fn entries_pad_to_their_class() {
+    assert_eq!([0, 1, 4].map(|k| entry_len(k).unwrap()), [81; 3]);
+    assert_eq!([5, 16].map(|k| entry_len(k).unwrap()), [273; 2]);
+    assert_eq!([17, MAX_PATH_THINGS].map(|k| entry_len(k).unwrap()), [1042; 2]);
+    assert_eq!(entry_len(MAX_PATH_THINGS + 1), None);
+}
+
+// spec/wire.md §4 field 2: one path in the clear stands for any number of things written; the
+// split form has an entry per thing written, never on a role commit.
 #[test]
 fn path_forms_by_the_things_written() {
     let mut h = sample_header();
     h.validate().unwrap();
-    h.path = Paths::Hashed(vec![[1; 32], [2; 32]]);
-    assert!(matches!(h.validate(), Err(Error::Malformed(_))), "hashed on one thing");
+    let e = vec![7u8; entry_len(0).unwrap()];
+    h.path = Paths::Split(Split { author: None, entries: vec![e.clone(), e.clone()] });
+    assert!(matches!(h.validate(), Err(Error::Malformed(_))), "split on one thing");
     let mut b = h.aspects[0].clone();
     b.tid = t(4);
     h.aspects.push(b);
     h.validate().unwrap();
-    h.path = Paths::Hashed(vec![[1; 32], [2; 32], [3; 32]]);
-    assert!(matches!(h.validate(), Err(Error::Malformed(_))), "three hashes for two things");
+    h.path = Paths::Split(Split { author: None, entries: vec![e.clone(), e.clone(), e.clone()] });
+    assert!(matches!(h.validate(), Err(Error::Malformed(_))), "three entries for two things");
     h.path = Paths::One(Path::through(t(2)));
     h.validate().unwrap();
+    let mut r = crate::tests::validate::role_header("roles.0");
+    let mut b = r.aspects[0].clone();
+    b.tid = t(4);
+    r.aspects.push(b);
+    r.validate().unwrap();
+    r.path = Paths::Split(Split { author: None, entries: vec![e.clone(), e] });
+    assert!(r.validate().unwrap_err().to_string().contains("split"), "a role commit states one path");
 }
 
-/// `content(n)` whose things after the first state `[2, t(9), t(2)]`: a path other than the
-/// first thing's, acting on the same thing (`t(2)`, the Interim's one acting thing).
-fn differing(n: usize) -> CommitBuilder {
-    let mut b = content(n);
-    let other = Path { purge: 2, things: vec![t(9), t(2)] };
-    b.thing_paths = b.aspects.iter().skip(1).map(|a| (a.tid, other.clone())).collect();
-    b
-}
-
-// spec/wire.md §4 (one path): every thing's path equal, the header states it once
-// in the clear, so a commit writing several things spends on its path what one writing one thing
-// does; paths that differ go hashed, one per thing.
+// spec/wire.md §4 field 2: the one path off which each thing's own
+// path is read: its end one of the things, the others one hop past it; none where a thing's own
+// path is not read off it, or the purge author is on no path.
 #[test]
-fn equal_paths_are_stated_once() {
-    let one = built(content(1));
-    let three = built(content(3));
-    assert_eq!(three.header.path, Paths::One(Path::through(t(2))));
-    assert!(three.salted.is_empty());
-    let path_len = |h: &Header| {
-        let mut out = Vec::new();
-        h.path.put(&mut out);
-        out.len()
-    };
-    assert_eq!(path_len(&three.header), path_len(&one.header));
-    for t in three.header.things() {
-        assert_eq!(three.path(&t), Some(&Path::through(crate::tests::t(2))));
-    }
-    let mut same = content(3);
-    same.thing_paths = same.aspects.iter().map(|a| (a.tid, Path::through(t(2)))).collect();
-    assert_eq!(built(same).header.path, three.header.path, "stated per thing, all equal");
-    let d = built(differing(3));
-    assert!(matches!(&d.header.path, Paths::Hashed(hs) if hs.len() == 3));
-    assert_eq!(path_len(&d.header), 1 + 3 * 34);
+fn one_path_reads_each_things_own() {
+    let (s, d, x, y) = (t(1), t(2), t(3), t(4));
+    let p = |things: Vec<Tid>| Path { purge: 0, things };
+    // creation under a granted parent: D along [D], the new thing along [D] one hop past
+    let each = [(d, p(vec![d])), (x, p(vec![d]))];
+    let q = Path::one_of(each.iter().map(|(a, b)| (a, b)), s, s).unwrap();
+    assert_eq!(q, p(vec![d]));
+    assert!(each.iter().all(|(a, b)| q.to(a) == b.to(a)));
+    // the end's own path stated without it: [] for D, [D] for x
+    let each = [(d, p(vec![])), (x, p(vec![d]))];
+    assert_eq!(Path::one_of(each.iter().map(|(a, b)| (a, b)), s, d), Some(Path { purge: 1, things: vec![d] }));
+    // own things: the empty path
+    let each = [(x, p(vec![])), (y, p(vec![]))];
+    assert_eq!(Path::one_of(each.iter().map(|(a, b)| (a, b)), s, s), Some(Path::default()));
+    // an own thing and a thing under D: two paths
+    let each = [(x, p(vec![])), (y, p(vec![d]))];
+    assert_eq!(Path::one_of(each.iter().map(|(a, b)| (a, b)), s, s), None);
+    // a purge author on no path
+    let each = [(x, p(vec![d])), (y, p(vec![d]))];
+    assert_eq!(Path::one_of(each.iter().map(|(a, b)| (a, b)), s, t(9)), None);
 }
 
-// spec/wire.md §4: the commit ID, and so the signature, covers `signer`, `path` and `remains`:
-// a relay changing any of them changes the ID and the signature no longer verifies.
+// spec/wire.md §4: the commit ID, and so the signature, covers `signer`, `path` (a split form's
+// author and entries included) and `remains`.
 #[test]
 fn signer_path_and_remains_are_signed() {
-    let c = built(content(1));
-    let k = key().verifying_key();
-    verify_signature(&c.id(), &c.sigs, &k).unwrap();
-    let flips: [&dyn Fn(&mut Header); 4] = [
-        &|h| h.signer = t(77),
-        &|h| h.path = Paths::One(Path::default()),
-        &|h| h.path = Paths::One(Path { purge: 0, things: vec![t(2)] }),
-        &|h| h.remains = Some(t(5)),
-    ];
-    for flip in flips {
-        let mut h = c.header.clone();
-        flip(&mut h);
-        assert_ne!(h.id(), c.id());
-        assert!(verify_signature(&h.id(), &c.sigs, &k).is_err());
+    for b in [content(1), split(2)] {
+        let c = built(b);
+        let k = key().verifying_key();
+        verify_signature(&c.id(), &c.sigs, &k).unwrap();
+        let flips: [&dyn Fn(&mut Header); 6] = [
+            &|h| h.signer = t(77),
+            &|h| h.path = Paths::One(Path::default()),
+            &|h| h.path = Paths::One(Path { purge: 0, things: vec![t(2)] }),
+            &|h| h.remains = Some(t(5)),
+            &|h| if let Paths::Split(s) = &mut h.path { s.author = None } else { h.signer = t(78) },
+            &|h| if let Paths::Split(s) = &mut h.path { s.entries.swap(0, 1) } else { h.signer = t(79) },
+        ];
+        for flip in flips {
+            let mut h = c.header.clone();
+            flip(&mut h);
+            assert_ne!(h.id(), c.id());
+            assert!(verify_signature(&h.id(), &c.sigs, &k).is_err());
+        }
     }
 }
 
-// spec/wire.md §4 `Salted`, `Contents`: a commit whose things' paths differ carries a salted hash
-// per thing, each section (a copy's too: one per thing) its thing's Salted; every reader gets the
-// path back, and a section whose Salted is missing or does not hash to its entry holds no part
-// (its parts dropped). A copy of a commit stating one path holds one section.
+// spec/wire.md §4 `Split`, `PathKey`, `Contents`; spec/crypto.md §5 Path entry: each thing's entry
+// opens under `kdf("path", roles secret, blind ‖ tid)` to its own path, its purge author in the
+// clear; every section carries the path keys of the things whose parts it holds, so a reader of
+// any one section (a re-encryption, a copy) opens that thing's path and no other; the stored form
+// keeps the keys. A copy of a commit stating one path holds one section with no keys.
 #[test]
-fn hashed_paths_ride_in_their_sections() {
-    let c = built(differing(3));
-    let Paths::Hashed(hs) = &c.header.path else { panic!("hashed") };
-    assert_eq!(hs.len(), 3);
-    assert_eq!(c.salted.len(), 3);
-    for (i, t) in c.header.things().into_iter().enumerate() {
-        let want = if i == 0 { Path::through(crate::tests::t(2)) } else { Path { purge: 2, things: vec![crate::tests::t(9), crate::tests::t(2)] } };
-        assert_eq!(c.path(&t), Some(&want));
-        assert_eq!(c.header.path_hash(&t), Some(c.salted_of(&t).unwrap().hash()));
+fn split_paths_open_from_the_roles_secret_and_from_every_encryption() {
+    let c = built(split(3));
+    let things = c.header.things();
+    assert_eq!(c.header.purge_author(), t(2));
+    let Paths::Split(sp) = &c.header.path else { panic!("split") };
+    assert_eq!((sp.entries.len(), path_len(&c.header)), (3, 1 + 17 + 1 + 3 * (2 + 81)));
+    let want = |i: usize| if i == 0 { Path::through(t(2)) } else { Path { purge: 2, things: vec![t(9), t(2)] } };
+    for (i, x) in things.iter().enumerate() {
+        let k = path_key(&roles(x), &c.header.blind, x);
+        assert_eq!(c.keys.get(&i), Some(&k));
+        assert_eq!(c.header.open_path(i, &k), Some(ThingPath::Known(want(i))));
+        assert_eq!(c.path(x), Some(ThingPath::Known(want(i))));
+        assert_eq!(c.header.open_path((i + 1) % 3, &k), None, "a key opens its own entry only");
     }
-    let secret = Secret32::from_bytes([3; 32]);
-    let env = seal_commit(&c, &c.header, |_| (), |_, _| Some((secret.clone(), vec![])), &[], &mut rng()).unwrap();
-    assert_eq!(env.sections.len(), 3, "a copy holds a section per thing");
-    let opened = env.open(|_| vec![secret.clone()]).unwrap().commit;
-    assert_eq!(opened, c);
-    assert_eq!(CommitBlob::decode(&opened.encode()).unwrap(), c);
+    assert_eq!(CommitBlob::decode(&c.encode()).unwrap(), c);
+    assert_eq!(CommitBlob::decode_stored(&c.encode()).unwrap(), c);
+    // sealed per thing; each section opened alone gives its thing's parts and path key
+    let secret = |r: &Tid| Secret32::from_bytes([r.as_bytes()[0]; 32]);
+    let env = seal_commit(&c, &c.header, |ai| c.header.aspects[ai].tid, |r, _| Some((secret(r), vec![])), &[], &mut rng()).unwrap();
+    assert_eq!(env.sections.len(), 3);
+    for (i, x) in things.iter().enumerate() {
+        let o = env.open(|s| if c.header.aspects[s.ais[0]].tid == *x { vec![secret(x)] } else { vec![] }).unwrap();
+        assert_eq!(o.commit.keys, BTreeMap::from([(i, c.keys[&i])]));
+        assert_eq!(o.commit.path(x), Some(ThingPath::Known(want(i))));
+        assert!(things.iter().filter(|y| *y != x).all(|y| o.commit.path(y).is_none()), "no other thing's path");
+        // re-encrypted from what it opened, the sealed ones copied: the same commit again
+        let again = seal_commit(&o.commit, &c.header, |ai| c.header.aspects[ai].tid, |r, _| Some((secret(r), vec![])), &o.sealed, &mut rng()).unwrap();
+        assert_eq!(again.open(|s| vec![secret(&c.header.aspects[s.ais[0]].tid)]).unwrap().commit, c);
+    }
+    // a copy: one section under the blob key carrying every key
+    let blob = Secret32::from_bytes([3; 32]);
+    let copy = seal_commit(&c, &c.header, |_| (), |_, _| Some((blob.clone(), vec![])), &[], &mut rng()).unwrap();
+    assert_eq!(copy.sections.len(), 1);
+    assert_eq!(copy.open(|_| vec![blob.clone()]).unwrap().commit, c);
     let plain = built(content(3));
-    let e = seal_commit(&plain, &plain.header, |_| (), |_, _| Some((secret.clone(), vec![])), &[], &mut rng()).unwrap();
-    assert_eq!(e.sections.len(), 1, "one path stated: a copy holds one section");
-    assert_eq!(e.open(|_| vec![secret.clone()]).unwrap().commit, plain);
-
-    // a Salted that does not hash: its section opens to nothing
-    let first = c.header.things()[0];
-    let mut forged = c.clone();
-    forged.salted.get_mut(&0).unwrap().salt[0] ^= 1;
-    assert!(CommitBlob::decode(&forged.encode()).is_err(), "the stored form checks it");
-    forged.check_paths().unwrap_err();
-    let parts: Vec<&Part> = forged.parts.iter().filter(|p| forged.header.aspects[p.ai].tid == first).collect();
-    let bad = Section::seal(&c.id(), forged.salted_of(&first), &parts, vec![], &secret, &mut rng()).unwrap();
-    let missing = Section::seal(&c.id(), None, &parts, vec![], &secret, &mut rng()).unwrap();
-    for s in [bad, missing] {
-        let mut e = env.clone();
-        let i = e.sections.iter().position(|x| x.ais == s.ais).unwrap();
-        e.sections[i] = s;
-        let o = e.open(|_| vec![secret.clone()]).unwrap().commit;
-        assert!(o.path(&first).is_none());
-        assert!(o.parts.iter().all(|p| o.header.aspects[p.ai].tid != first), "its parts dropped");
-        assert_eq!(o.parts.len(), c.parts.len() - parts.len());
-    }
-    // a Salted in a section of a commit stating its path in the clear holds no part either
-    let one = built(content(1));
-    let parts: Vec<&Part> = one.parts.iter().collect();
-    let s = Section::seal(&one.id(), c.salted_of(&first), &parts, vec![], &secret, &mut rng()).unwrap();
-    let e = Envelope { header: one.header.clone(), sigs: one.sigs.clone(), sections: vec![s] };
-    assert!(e.open(|_| vec![secret.clone()]).unwrap().commit.parts.is_empty());
+    let e = seal_commit(&plain, &plain.header, |_| (), |_, _| Some((blob.clone(), vec![])), &[], &mut rng()).unwrap();
+    assert_eq!(e.sections.len(), 1);
+    assert_eq!(e.open(|_| vec![blob.clone()]).unwrap().commit, plain);
 }
 
-// Interim (notes/a1-spec/README.md step 3): the walk reads, on each thing a commit writes, the
-// purge author of the path it states for that thing as the commit acting on it, its signer for
-// index 0, alike in both forms (a hashed one known per thing once its section opens; each thing
-// judged by its own, so hashed paths acting on different things stand, and a node opening one
-// section reads on that thing what a node opening every section reads there). A role commit
-// whose index names a listed thing is invalid; a purge request states one path in the clear.
+// spec/wire.md §4, spec/commits.md §5 Destruction: a header-only copy of a split commit destroying
+// a thing carries one section of no part holding that thing's path key, so the destroyed thing's
+// judges open its path; a header-only copy of anything else has no section; a section of no part
+// is bad input where the path is in the clear.
 #[test]
-fn interim_acting_is_each_things_purge_author() {
+fn a_header_only_copy_carries_the_destroyed_things_path_key() {
+    let mut b = split(2);
+    let gone = b.aspects[1].tid;
+    b.purge = vec![PurgeItem::Aspect { tid: gone, ak: osis_base::Ak::new(retention::CREATED).unwrap() }];
+    let c = built(b);
+    let blob = Secret32::from_bytes([3; 32]);
+    let bare = rewrite(&c, |_| true);
+    assert_eq!(bare.keys, BTreeMap::from([(1, c.keys[&1])]), "the purge rewrite keeps the destroyed thing's key");
+    let e = seal_header_only(&bare, &c.header, &blob, &mut rng()).unwrap();
+    assert_eq!(e.sections.len(), 1);
+    assert!(e.sections[0].ais.is_empty());
+    let back = Envelope::decode(&e.encode()).unwrap();
+    let o = back.open(|_| vec![blob.clone()]).unwrap().commit;
+    assert!(o.parts.is_empty());
+    assert_eq!(o.path(&gone), Some(ThingPath::Known(Path { purge: 2, things: vec![t(9), t(2)] })));
+    let plain = built(content(1));
+    assert!(seal_header_only(&plain, &plain.header, &blob, &mut rng()).unwrap().sections.is_empty());
+    let forged = Envelope { header: plain.header.clone(), sigs: plain.sigs.clone(), sections: e.sections.clone() };
+    assert!(Envelope::decode(&forged.encode()).is_err(), "a section of no part beside a path in the clear");
+}
+
+// spec/wire.md §4 `Split`: a forged entry harms only its own thing, alike at every reader of it:
+// an encryption whose key does not open its entry (a key for another entry, an entry sealed under
+// another key, entries swapped) holds nothing; an entry opening to a list breaking `Path`'s rules
+// or leaving out the purge author leaves its thing's parts holding nothing, whichever encryption
+// carried them; the other things' parts and paths stand.
+#[test]
+fn a_forged_entry_harms_only_its_own_thing() {
+    let c = built(split(3));
+    let things = c.header.things();
+    let first = things[0];
+    let blob = Secret32::from_bytes([3; 32]);
+    let secret = |r: &Tid| Secret32::from_bytes([r.as_bytes()[0]; 32]);
+    let theirs = |c: &CommitBlob, x: &Tid| c.parts.iter().filter(|p| c.header.aspects[p.ai].tid == *x).count();
+    // the same commit with the first entry replaced under its own key, re-signed (a writer
+    // refuses to build it)
+    let with_entry = |listed: &[Tid]| -> CommitBlob {
+        let mut f = c.clone();
+        if let Paths::Split(s) = &mut f.header.path {
+            s.entries[0] = Split::seal(&c.keys[&0], listed).unwrap();
+        }
+        f.sigs = Sigs::signed(&f.id(), &key(), None, vec![], vec![]);
+        f
+    };
+    let mut b = split(3);
+    b.split.as_mut().unwrap().things.get_mut(&first).unwrap().0 = vec![t(9), t(9)];
+    assert!(b.build(&key(), &TestSecrets { admin: true }, &mut MemoryBlobs::default(), &mut rng()).is_err());
+    for (forged, why) in [(with_entry(&[t(9), t(9)]), "a thing twice"), (with_entry(&[t(1)]), "the signer"), (with_entry(&[t(8)]), "author left out"), (with_entry(&[first, t(2)]), "the thing not last")] {
+        assert_eq!(forged.path(&first), Some(ThingPath::Bad), "{why}");
+        for (sel, name) in [(true, "own section"), (false, "copy")] {
+            let env = if sel {
+                seal_commit(&forged, &forged.header, |ai| forged.header.aspects[ai].tid, |r, _| Some((secret(r), vec![])), &[], &mut rng()).unwrap()
+            } else {
+                seal_commit(&forged, &forged.header, |_| (), |_, _| Some((blob.clone(), vec![])), &[], &mut rng()).unwrap()
+            };
+            let o = env.open(|s| vec![secret(&forged.header.aspects[s.ais[0]].tid), blob.clone()]).unwrap().commit;
+            assert_eq!(theirs(&o, &first), 0, "{why}, {name}");
+            assert!(things[1..].iter().all(|x| theirs(&o, x) == 1 && matches!(o.path(x), Some(ThingPath::Known(_)))), "{why}, {name}");
+        }
+    }
+    // keys that do not open their entries: the section carrying them holds nothing (a swap
+    // leaves both things' keys opening nothing)
+    let mut swapped = c.clone();
+    if let Paths::Split(s) = &mut swapped.header.path {
+        s.entries.swap(0, 1);
+    }
+    swapped.sigs = Sigs::signed(&swapped.id(), &key(), None, vec![], vec![]);
+    let mut wrong = c.clone();
+    wrong.keys.insert(0, [1; 32]);
+    for (e, why) in [(seal_commit_unchecked(&swapped, &secret), "entries swapped"), (seal_commit_unchecked(&wrong, &secret), "a key that opens nothing")] {
+        let o = e.open(|s| vec![secret(&e.header.aspects[s.ais[0]].tid)]).unwrap().commit;
+        assert_eq!(theirs(&o, &first), 0, "{why}");
+        assert_eq!(theirs(&o, &things[2]), 1, "{why}");
+        assert!(matches!(o.path(&things[2]), Some(ThingPath::Known(_))), "{why}");
+    }
+    // a key from another commit's entry: opens nothing here
+    let mut o = split(3);
+    o.blind = Some([9; 16]);
+    let other = built(o);
+    assert_eq!(c.header.open_path(0, &other.keys[&0]), None);
+    // the stored form refuses a key that does not open its entry
+    assert!(CommitBlob::decode(&wrong.encode()).is_err());
+}
+
+/// `c` sealed per thing with whatever keys it holds, unchecked: a forger's encryption.
+fn seal_commit_unchecked(c: &CommitBlob, secret: &dyn Fn(&Tid) -> Secret32) -> Envelope {
+    let id = c.id();
+    let things = c.header.things();
+    let mut sections: Vec<Section> = things
+        .iter()
+        .enumerate()
+        .map(|(i, x)| {
+            let ps: Vec<&Part> = c.parts.iter().filter(|p| c.header.aspects[p.ai].tid == *x).collect();
+            Section::seal(&id, &ps, Some(&BTreeMap::from([(i, c.keys[&i])])), vec![], &secret(x), &mut rng()).unwrap()
+        })
+        .collect();
+    sections.sort_by_key(|s| s.ais.first().copied());
+    Envelope { header: c.header.clone(), sigs: c.sigs.clone(), sections }
+}
+
+// Interim (notes/a1-spec/README.md step 3): the walk reads every thing a commit writes as acting
+// for its one purge author, in the clear in either form, the signer for index 0. A role commit
+// whose index names a listed thing is invalid.
+#[test]
+fn interim_acting_is_the_one_purge_author() {
     let deep = Path { purge: 1, things: vec![t(2), t(4)] };
-    for (path, acting) in [(Path::default(), t(1)), (Path::through(t(2)), t(2)), (deep.clone(), t(2))] {
+    for (path, author) in [(Path::default(), t(1)), (Path::through(t(2)), t(2)), (deep.clone(), t(2))] {
         for n in [1, 3] {
             let mut b = content(n);
             b.path = path.clone();
-            let c = built(b);
-            assert_eq!(c.acting(), Acting::All(acting), "{n} things");
-            assert_eq!(c.header.acting(), Some(acting));
+            assert_eq!(built(b).header.purge_author(), author, "{n} things");
         }
     }
-    let mut b = differing(3);
-    let last = b.aspects[2].tid;
-    b.thing_paths.insert(last, Path::through(t(4)));
-    let c = built(b);
-    let things = c.header.things();
-    let want = [t(2), t(2), t(4)];
-    for (x, w) in things.iter().zip(want) {
-        assert_eq!(c.acting().on(x), Some(w));
-    }
-    assert_eq!(c.header.acting(), None);
-    // opened one section at a time, each thing reads what it reads with every section open
-    let secret = Secret32::from_bytes([3; 32]);
-    let env = seal_commit(&c, &c.header, |_| (), |_, _| Some((secret.clone(), vec![])), &[], &mut rng()).unwrap();
-    for (i, s) in env.sections.iter().enumerate() {
-        let only = env.open(|x| if x.ais == s.ais { vec![secret.clone()] } else { vec![] }).unwrap().commit;
-        let x = c.header.aspects[s.ais[0]].tid;
-        assert_eq!(only.acting(), Acting::Each([(x, c.acting().on(&x).unwrap())].into()), "section {i}");
-    }
+    let mut b = split(2);
+    b.split.as_mut().unwrap().author = None;
+    b.split.as_mut().unwrap().things.values_mut().for_each(|p| p.0 = vec![]);
+    assert_eq!(built(b).header.purge_author(), t(1));
     one(Path { purge: 0, things: vec![t(2)] }).validate().unwrap();
     let mut r = crate::tests::validate::role_header("roles.0");
     r.path = Paths::One(Path::through(t(9)));
     assert!(r.validate().unwrap_err().to_string().contains("a path this commit may not state"), "a role commit's index names its signer");
     r.path = Paths::One(Path { purge: 0, things: vec![t(9)] });
     r.validate().unwrap();
-    let mut b = differing(2);
-    b.purge = vec![PurgeItem::Aspect { tid: b.aspects[0].tid, ak: b.aspects[0].ak.clone() }];
-    assert!(b.build(&key(), &TestSecrets { admin: true }, &mut MemoryBlobs::default(), &mut rng()).is_err(), "a purge request stating hashed paths");
 }
 
 // spec/wire.md §4 field 17: `remains` sits only on a role commit writing `roles.0`, without the
@@ -233,9 +350,10 @@ fn remains_only_beside_edge_writes() {
     assert!(x.validate().is_err(), "content commit");
 }
 
-// notes/a1-spec/README.md Bytes per commit: a commit writing one thing along the empty path
-// spends 19 bytes on `signer`, `path` and `remains` (16 + 2 + 1), against the 32 of the two tids
-// it replaces; one listed thing adds 16, a remaining admin 16.
+// notes/path-form.md Bytes: a commit writing one thing along the empty path spends 19 bytes on
+// `signer`, `path` and `remains` (16 + 2 + 1); one listed thing adds 16, a remaining admin 16;
+// several things along one path cost what one does; the split form 3 bytes, an author's 16, and
+// an entry per thing (83 B up to four listed things), each section 37 B for its thing's key.
 #[test]
 fn header_bytes_of_signer_path_and_remains() {
     let mut h = sample_header();
@@ -248,4 +366,15 @@ fn header_bytes_of_signer_path_and_remains() {
     h.path = Paths::default();
     h.remains = Some(t(9));
     assert_eq!(h.encode().len(), base + 16);
+    assert_eq!(path_len(&built(content(3)).header), path_len(&built(content(1)).header));
+    let mut b = split(2);
+    b.split.as_mut().unwrap().author = None;
+    assert_eq!(path_len(&built(b).header), 3 + 2 * 83);
+    // a section's path key: `[[Part*], [[i, key]]]` against `[Part*]`
+    let c = built(split(2));
+    let ps: Vec<&Part> = c.parts.iter().take(1).collect();
+    let s = Secret32::from_bytes([1; 32]);
+    let keyed = Section::seal(&c.id(), &ps, Some(&BTreeMap::from([(0, [0; 32])])), vec![], &s, &mut rng()).unwrap();
+    let bare = Section::seal(&c.id(), &ps, None, vec![], &s, &mut rng()).unwrap();
+    assert_eq!(keyed.encoded_len() - bare.encoded_len(), 1 + 1 + 1 + 1 + 34);
 }

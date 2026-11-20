@@ -29,24 +29,18 @@ impl Header {
                 ord(l.del == osis_base::Del::NONE, "header list link naming a delete key")?;
             }
         }
-        // one path in the clear for every thing, or a hash per thing for two or more
-        // (spec/wire.md §4 field 2)
+        // one path in the clear for every thing, or the split form: an entry per thing written,
+        // two or more, never on a role commit (spec/wire.md §4 field 2)
         match &self.path {
             Paths::One(p) => {
                 if !self.path_allowed(p) {
                     return Err(Error::Invalid("a path this commit may not state"));
                 }
             }
-            Paths::Hashed(hs) => {
-                ord(hs.len() > 1 && hs.len() == self.things().len(), "hashed paths other than one per thing written, or for one thing")?;
-                // a rotation and a seed re-seal state the one-for-all `[0]` (fields 15, 16)
-                if self.rotation.is_some() || self.reseal.is_some() {
-                    return Err(Error::Invalid("a rotation or seed re-seal stating hashed paths"));
-                }
-                // a purge request is judged along its one path on every thing it purges, read
-                // from the header by every reader alike (spec/permissions.md §6)
-                if !self.purge.is_empty() || self.links.purge.is_some() {
-                    return Err(Error::Invalid("a purge request stating hashed paths"));
+            Paths::Split(s) => {
+                ord(s.entries.len() == self.things().len(), "split path entries other than one per thing written")?;
+                if self.kind.is_role() {
+                    return Err(Error::Invalid("a role commit stating the split path form"));
                 }
             }
         }

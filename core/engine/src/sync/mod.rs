@@ -603,10 +603,8 @@ impl Engine {
                 groups.push((a.tid, keys));
             }
         }
-        // Interim (notes/a1-spec/README.md step 4): level 2 is the purge author's, the thing it
-        // acts on (one level-2 key per commit): read on the blob's first thing
-        let first = row.ais.iter().find_map(|ai| h.aspects.get(*ai))?.tid;
-        let author = self.core.ix.commits.get(&row.commit).and_then(|m| m.view.acting_on(&first))?;
+        // level 2 is the commit's one purge author's (spec/crypto.md §7)
+        let author = self.core.ix.commits.get(&row.commit).map(|m| m.view.acting)?;
         self.delete_basis(row.salt, h.blind, &author, &groups)
     }
 

@@ -310,7 +310,7 @@ fn commit_of(r: &mut Reader<'_>, rel: &mut Relations, row: CommitRow, limit: usi
                 Err(_) => Body::NotFetched,
             },
             PartBody::TooLarge => Body::TooLarge { limit: limit as u64 },
-            PartBody::Purged(by) => Body::Purged { by: CommitId(by), actor: r.e.commit_acting(&by, &p.tid) },
+            PartBody::Purged(by) => Body::Purged { by: CommitId(by), actor: r.e.commit_acting(&by) },
             PartBody::Dropped | PartBody::NotFetched => Body::NotFetched,
         };
         parts.push((p.tid, p.ak, Part { valid: p.valid, body, edited: p.version.map(CommitPos) }));

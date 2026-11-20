@@ -323,9 +323,9 @@ fn more_accepted() -> Vec<Record> {
 }
 
 /// A content commit writing two things along one listed thing: one `path` for both, in the clear
-/// (spec/wire.md §4 field 2); and with the second thing's path differing (`[2, A, LISTED]`): a
-/// salted hash per thing, each thing's `Salted` in the opened form's paths. The randomness is the
-/// header blind, then (hashed) a salt per thing in aspect order.
+/// (spec/wire.md §4 field 2); and with the second thing's path differing (`[A, LISTED]`, purge
+/// author LISTED): the split form, each entry sealed under its thing's path key from the read roles
+/// secret given (`roles-i`), the opened form carrying each key. The randomness is the header blind.
 fn several_things() -> Vec<Record> {
     let at = ts(1_700_000_005_000);
     let other = Tid::from_bytes([0x24; 15]);
@@ -335,42 +335,35 @@ fn several_things() -> Vec<Record> {
     }
     let key = SigningSecret::from_seed(&s32(0x35));
     let dedup = |_: &Tid| Some(s32(0x30));
+    let roles = [(THING, s32(0x3a), vec![LISTED]), (other, s32(0x3b), vec![Tid::from_bytes([0x26; 15]), LISTED])];
     let mut out = Vec::new();
-    for hashed in [false, true] {
+    for split in [false, true] {
         let mut b = b.clone();
-        if hashed {
-            b.thing_paths.insert(other, osis_commit::Path { purge: 2, things: vec![Tid::from_bytes([0x26; 15]), LISTED] });
+        if split {
+            b.split = Some(osis_commit::SplitWrite { author: Some(LISTED), things: roles.iter().map(|(t, s, p)| (*t, (p.clone(), s.clone()))).collect() });
         }
         let mut rec = Recording(osis_crypto::SeededRng::from_seed([0x38; 32]), Vec::new());
         let first = b.clone().build(&key, &VSecrets, &mut MemoryBlobs::default(), &mut rec).unwrap().commit;
         let c = b.build(&key, &VSecrets, &mut MemoryBlobs::default(), &mut FixedRng::new(&[&rec.1])).unwrap().commit;
         assert_eq!(first, c);
         verify_blob(&c, &key.verifying_key(), &dedup, None).unwrap();
-        if !hashed {
+        if !split {
             assert_eq!(c.header.path, osis_commit::Paths::One(osis_commit::Path::through(LISTED)));
             out.push(record("several things: one path", "spec/wire.md §4 field 2", &c).with("randomness", hex(&rec.1)));
             continue;
         }
-        assert!(matches!(c.header.path, osis_commit::Paths::Hashed(_)));
-        let mut r = record("several things: hashed paths", "spec/wire.md §4 field 2", &c).with("randomness", hex(&rec.1));
-        for (i, x) in &c.salted {
-            r = r.with(&format!("salted-{i}"), hex(&{
-                let mut b = Vec::new();
-                osis_base::cbor::put_array(&mut b, 2);
-                osis_base::cbor::put_bytes(&mut b, &x.salt);
-                b.extend_from_slice(&x.path.encode());
-                b
-            }));
+        assert!(c.header.is_split());
+        let mut r = record("several things: split paths", "spec/wire.md §4 field 2, spec/crypto.md §5 Path entry", &c).with("randomness", hex(&rec.1));
+        for (i, (t, s, _)) in roles.iter().enumerate() {
+            assert_eq!(c.keys.get(&i), Some(&osis_commit::path_key(s, &c.header.blind, t)));
+            r = r.with(&format!("roles-{i}"), hex(s.expose())).with(&format!("path-key-{i}"), hex(&c.keys[&i]));
         }
         out.push(r);
-        // a thing's Salted not hashing to its entry (its salt changed): its parts are no part of
-        // the commit, and the opened form carrying it is bad input
+        // a path key not opening its entry: the opened form carrying it is bad input
         let mut x = c.clone();
-        if let Some(s) = x.salted.values_mut().next() {
-            s.salt[0] ^= 1;
-        }
+        x.keys.insert(0, [0x5c; 32]);
         assert!(CommitBlob::decode(&x.encode()).is_err());
-        out.push(case("salted path not matching its hash", "spec/wire.md §4 field 2, Contents").with("blob", hex(&x.encode())).with("reject", "salted"));
+        out.push(case("path key not opening its entry", "spec/wire.md §4 field 2, PathKey").with("blob", hex(&x.encode())).with("reject", "path-key"));
     }
     out
 }
@@ -384,15 +377,27 @@ fn more_rejected(content: &Header) -> Vec<Record> {
     out.push(reject("purge-author index past the path", "spec/wire.md §4 field 2", &with_path(osis_commit::Path { purge: 2, things: vec![LISTED] }), "path"));
     out.push(reject("path listing a thing twice", "spec/wire.md §4 field 2", &with_path(osis_commit::Path { purge: 0, things: vec![LISTED, LISTED] }), "path"));
     out.push(reject("path listing its signer", "spec/wire.md §4 field 2", &with_path(osis_commit::Path { purge: 0, things: vec![SIGNER] }), "path"));
-    let x = Header { path: osis_commit::Paths::Hashed(vec![[1; 32], [2; 32]]), ..content.clone() };
-    out.push(reject("hashed path on a commit writing one thing", "spec/wire.md §4 field 2", &x, "path-form"));
+    let entry = |k: usize| vec![0x5d; osis_commit::entry_len(k).unwrap()];
+    let split = |author: Option<Tid>, entries: Vec<Vec<u8>>| osis_commit::Paths::Split(osis_commit::Split { author, entries });
+    let x = Header { path: split(None, vec![entry(0), entry(0)]), ..content.clone() };
+    out.push(reject("split path on a commit writing one thing", "spec/wire.md §4 field 2", &x, "path-form"));
     let mut x = content.clone();
     let mut a = x.aspects[0].clone();
     a.tid = Tid::from_bytes([0x24; 15]);
     x.aspects.push(a);
     x.validate().unwrap();
-    x.path = osis_commit::Paths::Hashed(vec![[1; 32], [2; 32], [3; 32]]);
-    out.push(reject("hashed path of another count than the things written", "spec/wire.md §4 field 2", &x, "path-form"));
+    x.path = split(None, vec![entry(0), entry(0), entry(0)]);
+    out.push(reject("split path of another count than the things written", "spec/wire.md §4 field 2", &x, "path-form"));
+    x.path = split(None, vec![entry(0), vec![0x5d; 50]]);
+    out.push(reject("split path entry of no padded length", "spec/wire.md §4 field 2", &x, "path"));
+    x.path = split(Some(SIGNER), vec![entry(0), entry(0)]);
+    out.push(reject("split path naming its signer as purge author", "spec/wire.md §4 field 2", &x, "path"));
+    let mut x = role_commit().header;
+    let mut a = x.aspects[0].clone();
+    a.tid = Tid::from_bytes([0x24; 15]);
+    x.aspects.push(a);
+    x.path = split(None, vec![entry(0), entry(0)]);
+    out.push(reject("split path on a role commit", "spec/wire.md §4 field 2", &x, "path-form"));
     let m = role_commit().header;
     let mut x = m.clone();
     x.purge.push(PurgeItem::Aspect { tid: THING, ak: Ak::new("app:title.0").unwrap() });

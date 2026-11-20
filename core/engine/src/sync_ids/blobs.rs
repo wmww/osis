@@ -96,8 +96,7 @@ impl OpenedBlob {
     }
 }
 
-/// Frames the opened form of a commit as a copy: every part in one section under the blob key (one
-/// per thing where its paths are hashed)
+/// Frames the opened form of a commit as a copy: every part in one section under the blob key
 /// (tests and tools: a node seals with `Engine::seal`, per independent, or `Engine::seal_to`).
 pub fn seal_plain(plaintext: &[u8], class: osis_blob::Class, rng: &mut dyn CryptoRngCore) -> Result<Sealed> {
     let c = CommitBlob::decode(plaintext)?;
@@ -225,7 +224,8 @@ impl Engine {
     }
 
     /// Seals a body's parts (`b.parts` alone) as a copy (spec/sync-judgement.md §1): a fresh blob of one
-    /// section (one per thing where its paths are hashed) under its own blob key (spec/wire.md §4), so
+    /// section under its own blob key (spec/wire.md §4; a header-only copy of a split commit
+    /// destroying a thing: one section of no part carrying that thing's path key), so
     /// whoever opens a wrap of it reads it: a certificate copy, wrapped under every sync ID needing exactly those parts, or a per-sync-ID
     /// copy (`Body::to_sync_id`).
     pub fn seal_to(&mut self, b: &Body, class: osis_blob::Class, rng: &mut dyn CryptoRngCore) -> Result<Option<Sealed>> {
@@ -237,7 +237,11 @@ impl Engine {
         let c = osis_commit::rewrite(&CommitBlob::decode_stored(&pt)?, |ai| !b.parts.contains(&ai));
         let resolved = self.resolved_header(&c);
         let key = osis_crypto::BlobKey::fresh(rng);
-        let env = osis_commit::seal_commit(&c, &resolved, |_| (), |_, _| Some((key.secret().clone(), Vec::new())), &[], rng)?;
+        let env = if c.parts.is_empty() {
+            osis_commit::seal_header_only(&c, &resolved, key.secret(), rng)?
+        } else {
+            osis_commit::seal_commit(&c, &resolved, |_| (), |_, _| Some((key.secret().clone(), Vec::new())), &[], rng)?
+        };
         framed(key, &env, &resolved, class, rng, &c).map(Some)
     }
 
@@ -441,11 +445,11 @@ impl Engine {
                 SectionOpens::Whole => own(sec),
                 SectionOpens::Record => {
                     if let Some(h) = &header
-                        && let Ok(Some((_, parts))) = sec.open(&id, &h.signer, &own(sec))
+                        && let Ok(Some(c)) = sec.open(&id, h.is_split(), &own(sec))
                     {
-                        // a record proves itself by its tid: its section's path is not read
-                        let parts = parts.into_iter().filter(|p| h.aspects.get(p.ai).is_some_and(|a| a.ak.as_str() == osis_commit::retention::CREATED)).collect();
-                        let c = CommitBlob { header: (**h).clone(), sigs: env.sigs.clone(), parts, salted: Default::default() };
+                        // a record proves itself by its tid: its thing's path is not read
+                        let parts = c.parts.into_iter().filter(|p| h.aspects.get(p.ai).is_some_and(|a| a.ak.as_str() == osis_commit::retention::CREATED)).collect();
+                        let c = CommitBlob { header: (**h).clone(), sigs: env.sigs.clone(), parts, keys: Default::default() };
                         records.extend(crate::apply::carried_records(h, &c, &id).into_values());
                     }
                     Vec::new()

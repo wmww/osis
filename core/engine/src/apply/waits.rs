@@ -118,9 +118,8 @@ pub(crate) fn set_pending(core: &mut Core, id: &CommitId, r: Option<(Reason, Opt
     };
     let needs: Vec<Tid> = match &r {
         Some((_, Some(h))) => {
-            // Interim (notes/a1-spec/README.md step 3): every thing a held part's path lists
-            let mut v = vec![h.signer];
-            v.extend(h.acting());
+            // Interim (notes/a1-spec/README.md step 3): the one purge author it acts for
+            let mut v = vec![h.signer, h.purge_author()];
             v.extend(awaits);
             v.sort();
             v.dedup();

@@ -438,7 +438,7 @@ impl Engine {
     /// `held_parts` of one commit; `None` when it has no part there.
     pub fn held_part(&mut self, tid: &Tid, ak: &Ak, c: &CommitId, budget: usize) -> Result<Option<HeldPart>> {
         let Some(m) = self.core.ix.commits.get(c) else { return Ok(None) };
-        let Some(actor) = m.view.acting_on(tid) else { return Ok(None) };
+        let actor = m.view.acting;
         let ts = m.view.ts;
         Ok(self.part(tid, ak, c, budget)?.map(|p| HeldPart { id: *c, actor, ts, valid: p.valid, body: p.body }))
     }
@@ -474,10 +474,8 @@ impl Engine {
 
     fn row(&mut self, c: &CommitId, shown: &dyn Fn(&mut Engine, &Tid) -> bool, budget: usize, itself: Option<(Tid, Ak)>) -> Result<Option<CommitRow>> {
         let Some(m) = self.core.ix.commits.get(c) else { return Ok(None) };
-        // a commit none of whose sections opened here shows nothing; one stating hashed paths
-        // shows what it acts on on the first thing it writes whose path is known here (an honest
-        // writer acts as one thing on all)
-        let Some(actor) = m.view.aspects.iter().find_map(|a| m.view.acting_on(&a.tid)) else { return Ok(None) };
+        // its one purge author, in the clear
+        let actor = m.view.acting;
         let (kind, node, ts, received) = (m.view.kind, m.view.signer, m.view.ts, m.received);
         let header = m.header.clone();
         let things: Vec<(usize, Tid, bool)> = m.view.aspects.iter().enumerate().map(|(ai, a)| (ai, a.tid, itself.as_ref().is_some_and(|(t, k)| *t == a.tid && *k == a.ak))).collect();

@@ -2116,7 +2116,7 @@ fn a_write_by_the_thing_it_writes_is_purged_by_any_writer_of_it() {
     assert!(fixed(&w, &[]).purged.is_empty());
 }
 
-/// A commit whose things need different paths (notes/path-form.md, Several paths) is judged per
+/// A commit whose things need different paths (notes/path-form.md, The split form) is judged per
 /// thing exactly as one commit per thing at the same key: X writes T1 along [A] (H's grant) and
 /// A2 along its own grant from K ([]), in one commit and as two. Every reading agrees: both valid;
 /// H's removal of X from A takes T1's part and leaves A2's (the commit half valid, as any commit

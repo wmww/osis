@@ -28,7 +28,7 @@ fn link() -> impl Strategy<Value = Link> {
 
 prop_compose! {
     fn header()(
-        signer in tid(), actor in tid(), hashed in proptest::option::of(proptest::collection::vec(any::<[u8; 32]>(), 2..4)), remains in proptest::option::of(tid()), kind in 0u64..4, wall in 0u64..1 << 46, form in any::<bool>(), expires in proptest::option::of(0u64..1 << 50),
+        signer in tid(), actor in tid(), split in proptest::option::of((proptest::option::of(tid()), proptest::collection::vec((0usize..3, any::<u8>()), 2..4))), remains in proptest::option::of(tid()), kind in 0u64..4, wall in 0u64..1 << 46, form in any::<bool>(), expires in proptest::option::of(0u64..1 << 50),
         aspects in proptest::collection::vec(aspect(), 0..4),
         purge in proptest::collection::vec((proptest::option::of(any::<[u8; 32]>()), tid()), 0..3),
         undoes in proptest::option::of(any::<[u8; 32]>()),
@@ -43,9 +43,10 @@ prop_compose! {
         }
         let mut h = Header {
             signer,
-            // a hashed path, or the empty one or one through another thing in the clear
-            path: match hashed {
-                Some(hs) => Paths::Hashed(hs),
+            // the split form (entries of each padded length), or the empty path or one through
+            // another thing in the clear
+            path: match split {
+                Some((author, es)) => Paths::Split(Split { author: author.filter(|a| *a != signer), entries: es.into_iter().map(|(c, b)| vec![b; entry_len(ENTRY_CLASSES[c]).unwrap()]).collect() }),
                 None if actor == signer => Paths::default(),
                 None => Paths::One(Path::through(actor)),
             },

@@ -76,7 +76,7 @@ fn unindex(tx: &mut Tx<'_>, id: &CommitId, marks: bool) -> Result<()> {
         core.ix.by_thing.remove(&(a.tid, v.signer), id);
         core.ix.role_on.remove(&(a.tid, v.signer), id);
         core.ix.purges_on.remove(&a.tid, id);
-        let x = v.acting_on(&a.tid).filter(|x| *x != v.signer);
+        let x = v.acts_for();
         if let Some(x) = x {
             core.ix.acting_on.remove(&(a.tid, v.signer, x), id);
         }
@@ -111,9 +111,10 @@ fn unindex(tx: &mut Tx<'_>, id: &CommitId, marks: bool) -> Result<()> {
             core.ix.forgotten.insert(k, v.ts);
         }
     }
-    for x in v.acts_for() {
+    if let Some(x) = v.acts_for() {
         core.ix.by_actor.remove(&(x, v.signer), id);
     }
+    core.ix.paths_unknown.remove(id);
     if let Some(e) = v.epoch {
         core.ix.role_sigs.remove(id);
         core.ix.by_epoch.remove(&(v.signer, e), id);

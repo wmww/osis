@@ -24,8 +24,8 @@ mod verify;
 #[cfg(test)]
 mod tests;
 
-pub use blob::{CommitBlob, Envelope, Opened, Part, Section, Sigs, seal_commit};
-pub use builder::{AccountSigner, AspectWrite, Built, CommitBuilder};
+pub use blob::{CommitBlob, Contents, Envelope, Opened, Part, Section, Sigs, seal_commit, seal_header_only};
+pub use builder::{AccountSigner, AspectWrite, Built, CommitBuilder, SplitWrite};
 pub use groups::{COMMIT_PAST_BLOB, blob_expiry, prefix_expiry, prefix_groups, rewrite};
 #[cfg(test)]
 use groups::blob_bound;
@@ -36,5 +36,5 @@ pub use osis_base::format::MAX_LIST_BYTES;
 pub use error::Error;
 pub use header::{AspectEntry, aspect_position, aspects_on, DeleteKey, EphClass, FIRST_EPOCH, FOREVER, Form, Header, frontier_ids, put_frontier, Kind, Links, ListField, PurgeItem, RotationHeader, SeedBox, SeedReseal, Signed, inner_seals, merge_epoch, verify_merge, verify_signature};
 pub use keys::{Prefix, Secrets, delete_keys};
-pub use path::{Acting, Path, Paths, Salted};
+pub use path::{ENTRY_CLASSES, Path, Paths, Split, ThingPath, entry_len, path_key};
 pub use verify::{Decoded, delta_ctx, read_part, read_part_whole, stream_part, verify_blob, verify_part, writer_ctx};

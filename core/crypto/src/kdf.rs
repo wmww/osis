@@ -105,7 +105,7 @@ pub const BEACON_HIT: &str = "beacon hit";
 pub const BEACON_REPLY: &str = "beacon reply";
 /// The proof credential of a sync key, from its seed (`sync_proof`).
 pub const SYNC_PROOF: &str = "sync proof";
-/// A stated path's hash in a header writing several things, keyed by its salt (spec/wire.md §4).
+/// A thing's path key in a split commit, from its independent's read roles secret (spec/crypto.md §5).
 pub const PATH: &str = "path";
 
 /// Every kdf purpose, for distinctness checks and vectors.

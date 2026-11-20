@@ -5,7 +5,7 @@
 Encoding: spec/wire.md §4. Fields:
 - Format version (spec/versioning.md §1).
 - The **signer**: the tid of the key actor whose key signs the commit (an account, or a key actor signing as itself), and the epoch an account signs at (spec/permissions.md §5.5); a rotation (spec/crypto.md §9).
-- The **paths**: for each thing the commit writes, the path it is written along and its purge author (spec/permissions.md §5.2 Interim; §6): one path in the clear where every thing is written along the same one, else hashed per thing in the header with each thing's own in its sections.
+- The **paths**: for each thing the commit writes, the path it is written along, and its one purge author (spec/permissions.md §5.2 Interim; §6): one path in the clear where every thing's is read off it, else the split form, the purge author in the clear and each thing's path sealed in the header to the nodes that judge that thing (spec/wire.md §4 field 2). A write is never refused or split for its paths: one commit may write things its signer reaches through different holders.
 - Kind: content or role (§2); compaction-snapshot marker.
 - `ts` (spec/crdt.md §2.2) and the dot form, commit or session (§3).
 - Optional `expires` (§6), the expiry of every delta of the commit.
