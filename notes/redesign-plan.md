@@ -136,7 +136,7 @@ The list stays in the removal, as built (notes/write-path-design.md §2, E4): th
 - **Removes**: the engine's unused leaves derivation (engine `evidence`, Leaves) and held-model's leaf rules; notes/a3-spec's leaf drafts.
 - **Briefs**: (1) spec; (2) the required-set rule for a removal's copy and the keyset seed; (3) counting: bytes a unit stores and a reader fetches per removal at n and 10n listed commits, and that copies leave.
 - **State**: notes/a3-spec/README.md (To recut).
-- **Depends on**: D2. Briefs inherit from issues/zero-growth.md: content and purge-request entries are evidence of the commit they name and leave with it. **Unblocks**: A4.
+- **Depends on**: D2. A removal's copy, list whole (E4), leaves a unit with the last write it judges there (A2's rule; issues/zero-growth.md): no entry of the list is kept or dropped apart from the removal. **Unblocks**: A4.
 
 ### A4. Accounts as ordinary things
 The flag day of the redesign: an account is an independent thing A, its members things holding roles on it: a node's thing with an owner key (its node root, or a thing per account where a node wants its accounts unlinked). A's sync unit is its readable closure, as the account root's is today: A, its dependents (home and the account's private things), and what A reads that their strongs reach.
