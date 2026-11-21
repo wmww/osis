@@ -17,3 +17,4 @@ roles-model/paths::tests::small_family_holds_large - issues/removed-key-backdate
 osis-sync/differential::histories_hold_their_closure_plain rate:OSIS_SYNC_START=959507911307 issues/differential-small-size-failures.md node \d+ keeps \d+ store entries under thing \d+'s sync ID, which it does not hold
 osis-sync/differential::histories_hold_their_closure_plain rate:OSIS_SYNC_START=959507911307 issues/differential-small-size-failures.md node \d+ reads thing \d+: Some\(Str\("v\d+"\)\), the model does not
 osis-sync/differential::histories_hold_their_closure_plain rate:OSIS_SYNC_START=318840271993 issues/differential-small-size-failures.md must-hold bodies a caught-up reader lacks at quiet
+osis-sync/differential::histories_hold_their_closure_plain rate:OSIS_SYNC_START=914688535823 issues/differential-small-size-failures.md must-hold bodies with no entry at quiet
