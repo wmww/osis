@@ -1,6 +1,9 @@
 # Engine store records and the persisted index
 > Summary: What the engine keeps in its encrypted `Store`: local record prefixes, store kinds (aspect units and their three tables), the rebuildable `node/*` index tables, and how an open uses them (the rules tag, `node/perm`, lazy headers, saved role walks), with open costs. Not here: the store itself (units, key tree, shredding: notes/local-store.md), sync's `y/` records (notes/sync.md), paging layouts (notes/engine-paged.md). Module map: notes/engine.md.
 
+## Principle
+The commit records and local records are the truth; every `node/*` table is an index, a function of the held commits that a rebuild must give, so a store whose index fails to read is rebuilt, never repaired. A fast open derives from the index and decodes no header.
+
 ## Local records
 Layouts in `engine/records.rs` (and the module named); all are `*_local` store records.
 
@@ -33,7 +36,7 @@ Other store kinds (osis-store's catalog):
 - Counters (memory overlay rows only, notes/engine-apply.md Counters), pending and parked commits, blob ciphertexts (pages, chunks, header-list trees).
 
 ## Index tables
-Rebuildable `node/*` tables (`engine/index.rs`), an index, never the truth: a store whose index fails to read is rebuilt from the commit records. Every row is a function of the held commits (the index check's rebuild must give it), and what the fast open derives decodes no header (the index check asserts `headers decoded` is 0): state that needs either is persisted in its own rows.
+Rebuildable `node/*` tables (`engine/index.rs`; Principle). The index check's rebuild must give every row, and asserts `headers decoded` is 0 for the fast open: state that needs either is persisted in its own rows.
 - `node/metas`: per commit a byte per part (valid, the rotation role it needs, a grant's overreach), and the header's `View`. Every input of a part's judgment that comes from its body is in the row, so a fast open judges a held part as the running node did.
 - `node/boxes to`, `node/epoch intro`, `node/keysets`, `node/delete hints`, `node/required`, `node/snapshots` (per aspect, with frontiers), `node/perm`, `node/walks`, `node/refs to` and `node/refs from` (the reference index, notes/engine-refs.md).
 

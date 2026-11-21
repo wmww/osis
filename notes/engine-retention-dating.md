@@ -1,7 +1,7 @@
 # Engine: when a body was replaced
 > Summary: How the engine dates a body's replacement for keep-for-D, a function of the held set judged when asked (`retention/bounds.rs`; spec/commits.md §5 Bodies and deaths, spec/crdt.md §4.8): which writes died and when, why a covered drop moves no date, dating only where history is kept, the unread delete margin, costs.
 
-## The rule
+## Principle
 - Tess: a body under keep-for-D is not dropped until D after the earliest valid replacing write the node holds. Judged when asked (sync's `part_keeps`, `drop_from` before a compaction drop, `Engine::replaced_at`), never stored: no death records, no replays, no crediting. Whether a write is dead, and when, is a function of the held bodies, never of how a part is paged.
 - Rejected: death dates stored per body (dated by arrival, with crediting, recomputes after flips: the class of bugs this rule removes); dating at the superseder the state holds now (a register changing within D keeps its old bodies for good); deaths reported by the join (a stamp names many writes, so per-stamp reports dated snapshots early); dating by the superseder's header (a header names the aspect, not the writes); walking the later bodies per judgment, joining each against the part (a pass quadratic in the aspect's bodies and their sizes); keeping a covered-dropped body while it dates a held write (purge on replace drops it at once).
 
@@ -30,7 +30,7 @@ Tests: setting.rs `covered_drops_move_nothing_*` (random histories, covered drop
 
 ## Dated only where history is kept (spec/commits.md §5 Keep bounds)
 - A covered drop needs the body out of history on the node's clock, `out(r) <= now`, and `out(r) >= r`, so a replacement dated after the clock waits for the clock (`bounds::at_clock` adds `r` to the drop bound: `part_keep`, `part_keeps`, so `drop_from`, `settle_none`, memory drops).
-- Per part: a part is dated only where the current setting keeps history for its own aspect (`bounded`, in `part_replaced_at`), by its own writes, kept by that aspect's entry; elsewhere it adds no bound, ahead of the clock or not (`replaced_ahead_of_the_clock_waits_only_where_kept_*`). Rejected: dating per thing (an aspect waited on unrelated aspects) or a commit's parts at the latest death of all of them (a covered drop on an unkept aspect redated another part and brought a body out of history back: `an_unkept_part_dates_no_other_part_*`).
+- Per part: a part is dated only where the current setting keeps history for its own aspect (`bounded`, in `part_replaced_at`), by its own writes, kept by that aspect's entry; elsewhere it adds no bound, ahead of the clock or not. Rejected: dating per thing (an aspect waited on unrelated aspects) or a commit's parts at the latest death of all of them (a covered drop on an unkept aspect redated another part and brought a body out of history back: `an_unkept_part_dates_no_other_part_*`).
 - Listing reads `body_history_keep` (the part's own history and the purge floor alone: purge on replace and no history list nothing, held-model AMBIGUITIES 68).
 - A wall clock set back is not noticed, so sync's cached keeps judged before it stand.
 

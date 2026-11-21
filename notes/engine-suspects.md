@@ -1,6 +1,9 @@
 # Engine: suspect flags and repair
 > Summary: Where the engine flags an aspect it may have computed from less than another holder (`retention/suspect.rs`, `q/`), what clears a flag (bodies back, dormant under a later valid snapshot, never for pending expiry), how suspect lists carry flags with state digests over connections and a writer re-snapshots once per state per reporter, the cases accepted, the rejected settling rules with their seeds, and how the order oracle treats flagged aspects. Rules: spec/permissions.md §4, spec/sync-compaction.md §1, spec/commits.md §5; the class it backstops: notes/engine-validity.md, Flips against dropped data. Not here: what drops the data (notes/engine-retention.md, notes/engine-validity.md).
 
+## Principle
+A suspect flag only asks a writer for a repair, an ordinary compaction snapshot; no read or state depends on it, and the oracles run with repair off.
+
 ## What it backstops
 Every writer dropped what a reader kept, so no writer can mend it and the reader's relay meets the tombstone: they read apart until the next write of that data (spec/requirements.md Deterministic). Rejected: a reader deposit, a new rule that lets a reader put back a value a writer deleted. The flag only asks for a repair; no read or state depends on it.
 - A node flags an aspect it cannot compute right (an un-merge or flip where it holds a body dropped other than as covered, a pending part dropped at T, a snapshot's writes removed where their bodies are gone); a writer whose state digest differs writes an ordinary compaction snapshot of the aspect. Readers cannot write snapshots; they only report. Repairs hide bugs, so each is a diagnostic and the oracles run with repair off.
