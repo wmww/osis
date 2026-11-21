@@ -376,6 +376,11 @@ fn hostile_writes(r: &mut Rng, list: bool, slots: bool, n: usize) -> Vec<Frag> {
         }
         Dot { source: srcs[r.below(3)].clone(), ctr: 1 + r.below(12) as u64 }
     }
+    // a position or flag write on register write `o`'s embedded char stamped with dot `o` has no
+    // wire form (§3.3 rule 7): a forged copy's reused counter skips it
+    fn theirs(d: &Dot, src: &Source, ctr: u64) -> bool {
+        matches!(&d.source, Source::Derived(o) if o.source == *src && o.ctr == ctr)
+    }
     fn anchor(r: &mut Rng, srcs: &[Source; 3], regs: &[Dot]) -> MAnchor {
         if r.chance(1, 6) { MAnchor::Head } else { MAnchor::Dot(dot(r, srcs, regs)) }
     }
@@ -429,6 +434,9 @@ fn hostile_writes(r: &mut Rng, list: bool, slots: bool, n: usize) -> Vec<Frag> {
             }
             pos_ctr += 1;
             let src = srcs[r.below(3)].clone();
+            while theirs(&d, &src, pos_ctr) {
+                pos_ctr += 1;
+            }
             let s = MStamp { ts: t, dot: Dot { source: src, ctr: pos_ctr } };
             let key = if r.chance(1, 3) && t > 1 << 16 { Some(MStamp { ts: t - (1 << 16), dot: dot(r, &srcs, &[]) }) } else { None };
             elems.insert(d, MElem::write(Content::None, vec![(s, anchor(r, &srcs, &regs), key)], None));
@@ -437,7 +445,11 @@ fn hostile_writes(r: &mut Rng, list: bool, slots: bool, n: usize) -> Vec<Frag> {
             let d = dot(r, &srcs, &regs);
             let len = 1 + r.below(3) as u64;
             pos_ctr += 1;
-            let s = MStamp { ts: t, dot: Dot { source: srcs[r.below(3)].clone(), ctr: pos_ctr } };
+            let src = srcs[r.below(3)].clone();
+            while theirs(&d, &src, pos_ctr) {
+                pos_ctr += 1;
+            }
+            let s = MStamp { ts: t, dot: Dot { source: src, ctr: pos_ctr } };
             let undel = !list && r.chance(1, 3);
             for i in 0..len {
                 let e = Dot { source: d.source.clone(), ctr: d.ctr + i };
