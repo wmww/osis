@@ -289,15 +289,15 @@ pub fn agree_all(w: &World, trust: &[Id]) {
 }
 
 const MODES: [TinyMode; 9] = [
-    TinyMode { flags: false, detached: false, honest: Honesty::None },
-    TinyMode { flags: true, detached: false, honest: Honesty::None },
-    TinyMode { flags: false, detached: true, honest: Honesty::None },
-    TinyMode { flags: false, detached: false, honest: Honesty::Lists },
-    TinyMode { flags: true, detached: false, honest: Honesty::Lists },
-    TinyMode { flags: false, detached: true, honest: Honesty::Lists },
-    TinyMode { flags: false, detached: false, honest: Honesty::Writers },
-    TinyMode { flags: true, detached: false, honest: Honesty::Writers },
-    TinyMode { flags: false, detached: true, honest: Honesty::Writers },
+    TinyMode { flags: false, detached: false, keys: false, honest: Honesty::None },
+    TinyMode { flags: true, detached: false, keys: false, honest: Honesty::None },
+    TinyMode { flags: false, detached: true, keys: false, honest: Honesty::None },
+    TinyMode { flags: false, detached: false, keys: false, honest: Honesty::Lists },
+    TinyMode { flags: true, detached: false, keys: false, honest: Honesty::Lists },
+    TinyMode { flags: false, detached: true, keys: false, honest: Honesty::Lists },
+    TinyMode { flags: false, detached: false, keys: false, honest: Honesty::Writers },
+    TinyMode { flags: true, detached: false, keys: false, honest: Honesty::Writers },
+    TinyMode { flags: false, detached: true, keys: false, honest: Honesty::Writers },
 ];
 
 /// Tiny worlds `start..start + n` of every kind; the failures, at most three.

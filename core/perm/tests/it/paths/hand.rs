@@ -55,6 +55,7 @@ fn a_detached_things_owner_writes_it_only_by_a_marked_direct_hop() {
 // descent of two steps or more applies nowhere (B's direct grant; A's record edge; a hop past the
 // members); H's marked hop applies where it holds a direct edge, nowhere before.
 #[test]
+#[ignore = "D2: walk rebuilt after D (notes/redesign-plan.md)"]
 fn a_mark_off_a_descent_of_two_steps_applies_nowhere() {
     let mut w = account();
     w.push(H, 1, &[A], T1, Kind::set(B, Admin));

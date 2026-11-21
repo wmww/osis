@@ -846,13 +846,14 @@ fn each_fix_is_needed_plain() {
         ("listed", Rules { stands: false, ..f }),
         ("exempt", Rules { exempt_chain: true, ..f }),
         ("once", Rules { rewrite: false, ..f }),
-        ("leave", Rules { leave_in_question: false, ..f }),
         ("no-own", Rules { sides: Sides::NoOwn, ..f }),
         ("no-receipt", Rules { sides: Sides::NoReceipt, ..f }),
     ];
     for (name, rules) in cases {
         assert!(random(100, &rules).failures() > 0, "{name}");
     }
+    // a backdated leave reaches the search through three of the thief's moves: 400 worlds
+    assert!(random(400, &Rules { leave_in_question: false, ..f }).failures() > 0, "leave");
     // the variant recording a lowering only where it took its hop down fails rarely (finding 52)
     assert!(random(1000, &Rules { sides: Sides::Lowered, ..f }).failures() > 0, "lowered");
 }
@@ -874,8 +875,8 @@ fn random_worlds_hold_large() {
     assert_holds(&st, &format!("OSIS_ROLES_START={start}"));
 }
 
-/// Every 367th world of the small family (21,697 worlds; `-- 0 paths-exh` runs all
-/// of them by hand): a stride coprime with every dimension's size (2, 4, 6, 54;
+/// Every 367th world of the small family (22,501 worlds; `-- 0 paths-exh` runs all
+/// of them by hand): a stride coprime with every dimension's size (2, 4, 6, 56;
 /// `family_on_every_core` refuses one that is not), so every value of every dimension is reached
 /// and none is tied to another (an even stride keeps `h_t1` false in every world): each thief
 /// move about 400 times, stamped before and after the removal alike, each setup field's values
@@ -1204,20 +1205,25 @@ fn a_thiefs_lowering_after_the_removal_holds_nothing() {
 #[test]
 #[ignore = "property"]
 fn small_worlds_hold_plain() {
-    for (flags, detached) in [(false, false), (true, false), (false, true)] {
+    for (flags, detached, owner) in [(false, false, false), (true, false, false), (false, true, false), (false, false, true)] {
         for honest in [Honesty::None, Honesty::Lists, Honesty::Writers] {
-            let st = tiny_run(3000, &Rules::fixed(), TinyMode { flags, detached, honest });
+            let st = tiny_run(3000, &Rules::fixed(), TinyMode { flags, detached, keys: owner, honest });
             // honest writers make few writes that do not apply: their worlds check `honest` alone here
             let ran = |k: &str| st.checked.get(k).is_some_and(|n| *n > 0);
             let keys: &[&str] = if honest == Honesty::Writers { &["honest"] } else { &["void", "honest", "idle N", "unapplied N"] };
-            assert!(st.failures() == 0 && keys.iter().all(|k| ran(k)), "{flags} {detached} {honest:?} {:?} {:?} {:?}", st.checked, st.fails, st.first);
+            assert!(st.failures() == 0 && keys.iter().all(|k| ran(k)), "{flags} {detached} {owner} {honest:?} {:?} {:?} {:?}", st.checked, st.fails, st.first);
         }
     }
-    let no_void = tiny_run(1000, &Rules { self_void: false, ..Rules::fixed() }, TinyMode { flags: false, detached: false, honest: Honesty::None });
+    let no_void = tiny_run(1000, &Rules { self_void: false, ..Rules::fixed() }, TinyMode { flags: false, detached: false, keys: false, honest: Honesty::None });
     assert!(no_void.fails.get("self-taken").is_some_and(|n| *n > 0), "{:?}", no_void.fails);
-    let flags = TinyMode { flags: true, detached: false, honest: Honesty::None };
+    let flags = TinyMode { flags: true, detached: false, keys: false, honest: Honesty::None };
     for (rules, k) in [(Rules { flag_check: false, ..Rules::fixed() }, "may-grant right"), (Rules { flag_falls: false, ..Rules::fixed() }, "may-grant audited")] {
         let st = tiny_run(3000, &rules, flags);
+        assert!(st.fails.get(k).is_some_and(|n| *n > 0), "{k} {:?}", st.fails);
+    }
+    let keys = TinyMode { flags: false, detached: false, keys: true, honest: Honesty::None };
+    for (rules, k) in [(Rules { key_hop: false, ..Rules::fixed() }, "key audited"), (Rules { list_writers: false, ..Rules::fixed() }, "list right")] {
+        let st = tiny_run(3000, &rules, keys);
         assert!(st.fails.get(k).is_some_and(|n| *n > 0), "{k} {:?}", st.fails);
     }
 }
@@ -1230,10 +1236,10 @@ fn small_worlds_hold_plain() {
 fn void_cost(k: usize) -> ((u32, u64, u64), (u32, u64, u64)) {
     let (mut w, ..) = paired();
     for z in 0..k {
-        w.edge(X, 1, &[], A, 30 + z as Thing, Admin, &[]);
+        w.edge(X, 1, &[], A, 23 + z as Thing, Admin, &[]);
     }
     for z in 0..k {
-        w.edge(30 + z as Thing, 2, &[], A, X, Gone, &[]);
+        w.edge(23 + z as Thing, 2, &[], A, X, Gone, &[]);
     }
     let r = w.edge(H, 6, &[], A, X, Gone, &[]);
     let plain = fixed(&w, &[]);
@@ -1262,7 +1268,7 @@ fn a_partys_self_voiding_writes_cost_linear_work() {
 fn a_void_check_reads_its_own_grant_chain() {
     let cost = |k: usize| {
         let (mut w, ..) = paired();
-        let z = |i: usize| 30 + i as Thing;
+        let z = |i: usize| 23 + i as Thing;
         w.edge(X, 1, &[], A, z(0), Admin, &[]);
         for i in 1..k {
             w.edge(z(i - 1), 1, &[], A, z(i), Admin, &[]);
@@ -2570,9 +2576,11 @@ fn a_self_rewrite_keeps_no_admin_its_grant_lost() {
 /// record edge, which is its direct edge: its write by [] marked applies nowhere, unmarked applies.
 /// A mark past the members (hop 1 of a path of one hop) applies nowhere. H's marked hop, where H
 /// holds a direct edge on T1, applies; where it holds none, nowhere (no edge, not the descent).
+/// (A, minted by H, signs by a key H adds as its first, O4 (b).)
 #[test]
 fn a_mark_off_a_descent_of_two_steps_applies_nowhere() {
     let mut w = account();
+    w.push(H, 1, &[], A, Kind::set(own_key(A), Admin));
     w.push(H, 1, &[A], T1, Kind::set(B, Admin));
     let b_plain = w.content(B, 2, &[], T1);
     let b_marked = w.push_marked(B, 2, &[], T1, Kind::Content, &[0]);
@@ -2701,7 +2709,7 @@ fn a_marked_hop_under_a_removal_with_a_list() {
 fn tiny_detached_worlds_reach_the_marked_cases() {
     let mut n = BTreeMap::<&str, u64>::new();
     for i in 0..300 {
-        let t = tiny_world(i, TinyMode { flags: false, detached: true, honest: Honesty::None }, &Rules::fixed());
+        let t = tiny_world(i, TinyMode { flags: false, detached: true, keys: false, honest: Honesty::None }, &Rules::fixed());
         let rd = judge(&t.w, &Rules::fixed(), &t.v);
         for (k, c) in t.w.commits.iter().enumerate() {
             let does = rd.applied.contains(&k) || rd.valid.contains(&k);
@@ -3453,4 +3461,276 @@ fn a_list_entry_keeps_an_edge_class_part_on_its_leafs_thing_alone() {
         let rd = fixed(&w, &[]);
         assert!(rd.applied.contains(&on_t1) && rd.applied.contains(&on_a) == both, "both {both}: {rd:?}");
     }
+}
+
+// ---- Owner keys (notes/write-path-design.md, Owner keys O1 to O9, The flow that must hold) ----
+
+/// A key the owner wrote down, and one the thief made up.
+const RK: Thing = KEYS | 0x40;
+const TK: Thing = KEYS | 0x41;
+/// A thing minted with an owner key (its own: no mint admin), and its dependent.
+const T: Thing = 40;
+const TD: Thing = 41;
+
+/// O1, O4 (b): a thing minted with an owner key signs as itself from the start; one minted with a
+/// mint admin lists no key and signs as nothing until an admin adds its first.
+#[test]
+fn a_thing_signs_by_the_key_its_record_holds_or_the_first_an_admin_adds() {
+    let mut w = account();
+    let t_own = w.content(T, 1, &[], T);
+    let a_none = w.content(A, 1, &[], A);
+    let add = w.push(H, 2, &[], A, Kind::set(RK, Admin));
+    let a_rk = w.push_signed(RK, A, 3, &[], A, Kind::Content);
+    let a_own = w.content(A, 3, &[], A);
+    let rd = fixed(&w, &[]);
+    assert!(rd.applied.contains(&add) && rd.valid.contains(&t_own) && rd.valid.contains(&a_rk), "{rd:?}");
+    assert!(!rd.valid.contains(&a_none) && !rd.valid.contains(&a_own), "{rd:?}");
+    // without the key hop A's own key signs as A
+    assert!(fixed_but(&w, &[], |r| r.key_hop = false).valid.contains(&a_own));
+}
+
+/// O4: where a key is listed no admin's write adds or removes one, and a key hop takes no
+/// `until`, flag or level; a listed key acting as itself writes any keys (control `-admin-lists`:
+/// the admin's writes apply).
+#[test]
+fn no_admin_writes_the_list_while_a_key_is_listed() {
+    let mut w = account();
+    w.push(H, 1, &[], A, Kind::set(RK, Admin));
+    let add = w.push(H, 2, &[], A, Kind::set(TK, Admin));
+    let rm = w.edge(H, 3, &[], A, RK, Gone, &[]);
+    let timed = w.push_signed(RK, A, 3, &[], A, Kind::set(TK, Admin).until(9));
+    let level = w.push_signed(RK, A, 3, &[], A, Kind::set(TK, Write));
+    let flag = w.push_signed(RK, A, 3, &[], A, Kind::set(TK, Admin).may_grant());
+    let as_tk = w.push_signed(TK, A, 4, &[], A, Kind::Content);
+    let rd = fixed(&w, &[]);
+    assert!([add, rm, timed, level, flag].iter().all(|i| !rd.applied.contains(i)) && !rd.valid.contains(&as_tk), "{rd:?}");
+    assert!(rd.listed(RK, A) && !rd.listed(TK, A));
+    let rd = fixed_but(&w, &[], |r| r.list_writers = false);
+    assert!(rd.applied.contains(&add) && rd.applied.contains(&rm) && rd.valid.contains(&as_tk), "{rd:?}");
+    // the listed key adds by acting as itself
+    let by_rk = w.push_signed(RK, A, 5, &[], A, Kind::set(TK, Admin));
+    let late = w.push_signed(TK, A, 6, &[], A, Kind::Content);
+    let rd = fixed(&w, &[]);
+    assert!(rd.applied.contains(&by_rk) && rd.valid.contains(&late), "{rd:?}");
+    // re-grant counts TK's content from the listed key's add, never from a list write that did not
+    // apply (the admin's, the timed one): earlier content stays out
+    assert!(!rd.valid.contains(&as_tk), "{rd:?}");
+}
+
+/// O5: a thing acting as itself is its own admin, by its key hop alone: it removes an admin and
+/// settles a fight among them whatever the trust set, and reaches its dependents by descent. A
+/// grant of the thing on itself changes nothing (no path names a thing twice).
+#[test]
+fn a_thing_acting_as_itself_is_its_own_admin_under_every_trust_set() {
+    let mut w = account();
+    w.records.push((T, TD));
+    w.push(T, 1, &[], T, Kind::set(H, Admin));
+    w.edge(H, 2, &[], T, M, Admin, &[]);
+    let mh = w.edge(M, 3, &[], T, H, Gone, &[]);
+    let out = w.edge(T, 4, &[], T, M, Gone, &[]);
+    let back = w.edge(T, 5, &[], T, H, Admin, &[]);
+    let down = w.content(T, 5, &[], TD);
+    for trust in [vec![], vec![mh], vec![out], vec![mh, out]] {
+        let rd = fixed(&w, &trust);
+        assert!(rd.applied.contains(&out) && rd.applied.contains(&back) && rd.valid.contains(&down), "{trust:?}: {rd:?}");
+        assert!(rd.role(H, T) == Admin && rd.role(M, T) == Gone, "{trust:?}: {rd:?}");
+    }
+    let mut w2 = w.clone();
+    let selfie = w2.push(H, 2, &[], T, Kind::set(T, Admin));
+    let (a, b) = (fixed(&w, &[]), fixed(&w2, &[]));
+    assert!(b.applied.contains(&selfie) && a.valid == b.valid && a.applied.iter().all(|i| b.applied.contains(i)));
+    assert_eq!(a.roles.iter().filter(|(e, _)| e.0 != T).collect::<Vec<_>>(), b.roles.iter().filter(|(e, _)| e.0 != T).collect::<Vec<_>>());
+}
+
+/// The flow that must hold (Tess), in a world `key` sets up: T lists an owner key (`k`, signing as
+/// T), T grants H admin, H shares adminship with M, M turns hostile and backdates (it adds its own
+/// key, removes H, writes), then T removes M by its key. No takeover and no dispute, at every
+/// trust set.
+fn the_flow(mut w: World, k: Thing, from: u32) {
+    let t = |w: &mut World, ts: u32, kind: Kind| w.push_signed(k, T, ts, &[], T, kind);
+    t(&mut w, from, Kind::set(H, Admin));
+    w.edge(H, from + 1, &[], T, M, Admin, &[]);
+    let tk = w.push(M, from + 2, &[], T, Kind::set(TK, Admin));
+    let mh = w.edge(M, from + 2, &[], T, H, Gone, &[]);
+    let by_tk = w.push_signed(TK, T, from + 3, &[], T, Kind::set(Z, Admin));
+    let mc = w.content(M, from + 3, &[], T);
+    let out = t(&mut w, from + 4, Kind::set(M, Gone));
+    let back = t(&mut w, from + 4, Kind::set(H, Admin));
+    for trust in [vec![], vec![mh], vec![out], vec![mh, out]] {
+        let v = View::all(&w).trusting(&trust);
+        let rd = judge(&w, &Rules::fixed(), &v);
+        assert!(rd.applied.contains(&out) && rd.applied.contains(&back) && !rd.applied.contains(&tk) && !rd.applied.contains(&by_tk), "{trust:?}: {rd:?}");
+        assert!(rd.role(M, T) == Gone && rd.role(Z, T) == Gone && !rd.listed(TK, T) && rd.role(H, T) == Admin && !rd.valid.contains(&mc), "{trust:?}: {rd:?}");
+        assert!(disputes(&w, &Rules::fixed(), &v).is_empty(), "{trust:?}");
+    }
+}
+
+/// The flow with T's key from its record (minted with it).
+#[test]
+fn the_flow_holds_with_the_key_from_the_record() {
+    the_flow(account(), own_key(T), 1);
+}
+
+/// The flow with the key added by T acting as itself (O4 (a)), the record's key then removed by
+/// itself (a self-removal of the key hop: it audits nothing).
+#[test]
+fn the_flow_holds_with_the_key_added_by_the_thing_itself() {
+    let mut w = account();
+    w.push(T, 1, &[], T, Kind::set(RK, Admin));
+    let gone = w.push(T, 2, &[], T, Kind::set(own_key(T), Gone));
+    assert!(w.leave(gone));
+    let late = w.content(T, 3, &[], T);
+    let rd = fixed(&w, &[]);
+    assert!(rd.applied.contains(&gone) && !rd.valid.contains(&late) && rd.listed(RK, T));
+    the_flow(w, RK, 3);
+}
+
+/// The flow on A, whose first key H added (O4 (b)): M's add of its own key, dated after H's
+/// grant of M (the key listed) or before it (no right), applies nowhere, and A's key removes M.
+#[test]
+fn a_backdated_add_against_a_key_an_admin_added_is_refused() {
+    let mut w = account();
+    w.push(H, 1, &[], A, Kind::set(RK, Admin));
+    w.edge(H, 3, &[], A, M, Admin, &[]);
+    let after = w.push(M, 4, &[], A, Kind::set(TK, Admin));
+    let before = w.push(M, 2, &[], A, Kind::set(TK, Admin));
+    let by_tk = w.push_signed(TK, A, 5, &[], A, Kind::set(Z, Admin));
+    let out = w.push_signed(RK, A, 6, &[], A, Kind::set(M, Gone));
+    for trust in [vec![], vec![out]] {
+        let v = View::all(&w).trusting(&trust);
+        let rd = judge(&w, &Rules::fixed(), &v);
+        assert!(!rd.applied.contains(&after) && !rd.applied.contains(&before) && !rd.applied.contains(&by_tk) && rd.applied.contains(&out), "{rd:?}");
+        assert!(rd.role(M, A) == Gone && !rd.listed(TK, A) && rd.role(Z, A) == Gone);
+        assert!(disputes(&w, &Rules::fixed(), &v).is_empty(), "{trust:?}");
+    }
+}
+
+/// The flow's failing variant (For Tess 1, issues/owner-key-first-attach.md; asserted as built,
+/// option 1): H attaches A's first key, makes M admin, and M removes H listing its own grant and
+/// leaving the attach out. The attach rests on H's admin path (O7), so it falls: A lists no key,
+/// M adds its own, and A's written-down key removes nobody. Under the issue's option 2 (variant
+/// `-attach-kept`: the attach rests on its key hop alone) the key stays and M is out.
+#[test]
+fn an_attach_falls_with_its_attacher_where_the_removal_leaves_it_out() {
+    let mut w = account();
+    let attach = w.push(H, 1, &[], A, Kind::set(RK, Admin));
+    let gm = w.edge(H, 2, &[], A, M, Admin, &[]);
+    let mh = w.edge(M, 3, &[], A, H, Gone, &[gm]);
+    let tk = w.push(M, 4, &[], A, Kind::set(TK, Admin));
+    let out = w.push_signed(RK, A, 5, &[], A, Kind::set(M, Gone));
+    for trust in [vec![], vec![mh]] {
+        let rd = fixed(&w, &trust);
+        assert!(rd.dropped.contains(&attach) && rd.applied.contains(&tk) && !rd.applied.contains(&out), "{trust:?}: {rd:?}");
+        assert!(rd.role(M, A) == Admin && !rd.listed(RK, A) && rd.listed(TK, A) && rd.role(H, A) == Gone);
+        let kept = fixed_but(&w, &trust, |r| r.attach_on_path = false);
+        assert!(kept.applied.contains(&attach) && !kept.applied.contains(&tk) && kept.applied.contains(&out), "{trust:?}: {kept:?}");
+        assert!(kept.role(M, A) == Gone && kept.listed(RK, A));
+    }
+}
+
+/// A stolen admin node backdates an add of its own key, made up, to before its removal (A listing
+/// none), and acts as A by it to remove the remover (listing H's grant of X, which its key rests
+/// on). Where the removal is trusted its seeds take the
+/// add and nothing of the key acts; where nothing is trusted the walk applies the made-up key's
+/// removal of H and shows H's removal of X as a dispute, whose choice reads as the trusting node.
+#[test]
+fn a_stolen_nodes_backdated_attach_falls_where_its_removal_is_trusted() {
+    let mut w = account();
+    let gx = w.edge(H, 1, &[], A, X, Admin, &[]);
+    let attach = w.push(X, 4, &[], A, Kind::set(TK, Admin));
+    let th = w.push_signed(TK, A, 5, &[], A, Kind::set(H, Gone).listing(w.cut(&[gx])));
+    let r = w.edge(H, 6, &[], A, X, Gone, &[]);
+    let t = fixed(&w, &[r]);
+    assert!(t.dropped.contains(&attach) && !t.applied.contains(&th) && t.applied.contains(&r), "{t:?}");
+    assert!(t.role(X, A) == Gone && !t.listed(TK, A) && t.role(H, A) == Admin);
+    let v = View::all(&w);
+    let plain = judge(&w, &Rules::fixed(), &v);
+    assert!(plain.applied.contains(&th) && !plain.applied.contains(&r), "{plain:?}");
+    assert_eq!(disputes(&w, &Rules::fixed(), &v), vec![r]);
+    // without the key hop the made-up key acts as A wherever its add falls
+    assert!(fixed_but(&w, &[r], |r| r.key_hop = false).applied.contains(&th));
+}
+
+/// O6: removing a key is the ordinary removal one hop earlier: what the key signed falls unless the
+/// removal lists it; a key removing itself audits nothing; two keys removing each other are an
+/// admin dispute at the key hop.
+#[test]
+fn removing_a_key_drops_what_it_signed_unless_listed() {
+    let base = || {
+        let mut w = account();
+        w.push(H, 1, &[], A, Kind::set(RK, Admin));
+        let add = w.push_signed(RK, A, 2, &[], A, Kind::set(TK, Admin));
+        let c1 = w.push_signed(TK, A, 3, &[], A, Kind::Content);
+        let g1 = w.push_signed(TK, A, 3, &[], A, Kind::set(Z, Write));
+        let c2 = w.push_signed(TK, A, 4, &[], A, Kind::Content);
+        let g2 = w.push_signed(TK, A, 4, &[], A, Kind::set(N6, Write));
+        (w, add, c1, g1, c2, g2)
+    };
+    let (mut w, _, c1, g1, c2, g2) = base();
+    let f = w.cut(&[c1, g1]);
+    let r = w.push_signed(RK, A, 5, &[], A, Kind::set(TK, Gone).listing(f));
+    for trust in [vec![], vec![r]] {
+        let rd = fixed(&w, &trust);
+        assert!(rd.valid.contains(&c1) && rd.applied.contains(&g1) && !rd.valid.contains(&c2) && rd.dropped.contains(&g2), "{trust:?}: {rd:?}");
+        assert!(!rd.listed(TK, A) && rd.role(Z, A) == Write && rd.role(N6, A) == Gone);
+    }
+    assert!(fixed_but(&w, &[], |r| r.key_hop = false).valid.contains(&c2));
+    // a key removing itself audits nothing
+    let (mut w, _, c1, g1, c2, g2) = base();
+    let own = w.push_signed(TK, A, 5, &[], A, Kind::set(TK, Gone));
+    let after = w.push_signed(TK, A, 6, &[], A, Kind::Content);
+    assert!(w.leave(own));
+    let rd = fixed(&w, &[]);
+    assert!([c1, c2].iter().all(|i| rd.valid.contains(i)) && [g1, g2, own].iter().all(|i| rd.applied.contains(i)) && !rd.valid.contains(&after), "{rd:?}");
+    assert!(disputes(&w, &Rules::fixed(), &View::all(&w)).is_empty());
+    // two keys removing each other: the earlier in key order applies, the other is a dispute (TK's
+    // lists RK's add of TK, which its own key rests on)
+    let (mut w, add, ..) = base();
+    let by_rk = w.push_signed(RK, A, 5, &[], A, Kind::set(TK, Gone));
+    let by_tk = w.push_signed(TK, A, 5, &[], A, Kind::set(RK, Gone).listing(w.cut(&[add])));
+    let v = View::all(&w);
+    let rd = judge(&w, &Rules::fixed(), &v);
+    assert!(rd.applied.contains(&by_rk) && !rd.applied.contains(&by_tk) && rd.listed(RK, A), "{rd:?}");
+    assert_eq!(disputes(&w, &Rules::fixed(), &v), vec![by_tk]);
+    let rd = fixed(&w, &[by_tk]);
+    assert!(rd.applied.contains(&by_tk) && !rd.listed(RK, A) && rd.listed(TK, A), "{rd:?}");
+}
+
+/// W4 reads the key hop: a key's removal of the key that added it, listing nothing, drops that add
+/// and so its own key hop: void. Listing the add, it applies (control `-no-key-hop`: nothing rests on
+/// the key hop, so it applies dropping nothing).
+#[test]
+fn a_key_removal_dropping_its_own_keys_add_is_void() {
+    let mut w = account();
+    w.push(H, 1, &[], A, Kind::set(RK, Admin));
+    let add = w.push_signed(RK, A, 2, &[], A, Kind::set(TK, Admin));
+    let r = w.push_signed(TK, A, 3, &[], A, Kind::set(RK, Gone));
+    let rd = fixed(&w, &[]);
+    assert!(rd.voided.contains(&r) && rd.listed(RK, A) && rd.listed(TK, A), "{rd:?}");
+    assert!(fixed_but(&w, &[], |r| r.key_hop = false).applied.contains(&r));
+    w.edit(r, |k| k.listing(BTreeMap::from([(A, Set::from([add]))])));
+    let rd = fixed(&w, &[]);
+    assert!(rd.applied.contains(&r) && !rd.listed(RK, A) && rd.listed(TK, A), "{rd:?}");
+}
+
+/// Finding 56: re-grant counts a path from each edge's first chained grant, `until` disregarded,
+/// so a grant by a party whose own grant had ended (no right at its key, applying nowhere) moves a
+/// re-granted holder's first point back: H gives B admin until 3; B gives N6 admin until 8 at 6;
+/// H gives B admin at 7; B gives N6 admin at 10; N6 writes at 9. With B's idle grant held N6's
+/// content shows by re-grant; without it, not: an idle write of a party that held its right in no
+/// reading changes what users see, unshown (`tiny_keys` worlds, gate `illegit gains N`; the
+/// story's `by_right` sets the same class aside, finding 9).
+#[test]
+#[ignore = "notes/path-model-findings.md 56: an idle grant with no right moves a re-granted holder's first point back"]
+fn repro_an_idle_grant_with_no_right_moves_no_first_point_back() {
+    let mut w = account();
+    w.push(H, 1, &[], A, Kind::set(B, Admin).until(3));
+    let idle = w.push(B, 6, &[], A, Kind::set(N6, Admin).until(8));
+    w.push(H, 7, &[], A, Kind::set(B, Admin));
+    w.push(B, 10, &[], A, Kind::set(N6, Admin));
+    let c = w.content(N6, 9, &[], A);
+    let rd = fixed(&w, &[]);
+    assert!(!rd.applied.contains(&idle));
+    let without = judge(&w, &Rules::fixed(), &View::all(&w).without(&[idle]));
+    assert_eq!(rd.valid.contains(&c), without.valid.contains(&c), "{rd:?}");
 }

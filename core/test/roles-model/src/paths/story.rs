@@ -35,6 +35,10 @@ pub const RD2: Thing = 21;
 /// Nodes that trust nothing (paired after the fact, or a reader that never chose a side): N6
 /// syncs what B does, RD3 only T1 and D1. Neither writes.
 pub const RD3: Thing = 22;
+/// An owner key a thing's members wrote down, and one a thief made up (notes/write-path-design.md,
+/// Owner keys).
+pub const RK: Thing = KEYS | 0x40;
+pub const TK: Thing = KEYS | 0x41;
 
 const SETTLE: u32 = 11;
 const AFTER: u32 = 12;
@@ -129,8 +133,11 @@ pub struct Move {
 /// removing or demoting B, stamped before X's removal of N5 (the pair's first world); 49 and 50, X
 /// removing or demoting B, stamped before X's role writes; 51, X removing K from A2 where it
 /// administers A2 (`Setup::x_a2` 3, 4), backdated; 52, a made-up key Z X backdates admin to removing
-/// B after the theft; 53, the same with Z made by N5's key before X's removal of N5.
-pub const MOVES: usize = 54;
+/// B after the theft; 53, the same with Z made by N5's key before X's removal of N5. 54 and 55 use
+/// an owner key the thief made up (TK): X attaches it as A's first (A lists none: notes/
+/// write-path-design.md, Owner keys O4 (b)), backdated before the removal, and acts as A by it,
+/// removing H (listing H's grant of X, which the key rests on) or writing T1.
+pub const MOVES: usize = 56;
 /// N5 grants H admin, standing or until just after the removal; N5 removes H; N5 demotes H. Each
 /// stamped before X's removal of N5.
 pub const N5_MOVES: std::ops::Range<usize> = 27..31;
@@ -227,8 +234,13 @@ type Owed = (Id, Thing, Vec<Thing>, Set);
 
 impl Sim {
     fn put(&mut self, c: (Thing, u32, &[Thing], Thing, Kind), made: u32, rng: &mut Rng, hostile: bool) -> Id {
+        let key = own_key(c.0);
+        self.put_signed(key, c, made, rng, hostile)
+    }
+    /// `put`, signed by owner key `key` as the signer.
+    fn put_signed(&mut self, key: Thing, c: (Thing, u32, &[Thing], Thing, Kind), made: u32, rng: &mut Rng, hostile: bool) -> Id {
         let (signer, ts, path, on, kind) = c;
-        let i = self.w.push(signer, ts, path, on, kind);
+        let i = self.w.push_signed(key, signer, ts, path, on, kind);
         self.deliver(i, made, rng, hostile);
         i
     }
@@ -720,6 +732,14 @@ impl Sim {
             }
             return;
         }
+        if (54..56).contains(&mv.kind) {
+            // a key the thief made up, attached as A's first by X backdated, acting as A
+            let at = mv.ts.min(REMOVAL - 1);
+            self.put((X, at, &[], A, grant(TK, Role::Admin)), mv.made, rng, true);
+            let (on, kind) = if mv.kind == 54 { (A, grant(H, Role::None).listing(self.w.cut(&[self.gx]))) } else { (T1, Kind::Content) };
+            self.put_signed(TK, (A, mv.ts.max(at), &[], on, kind), mv.made, rng, true);
+            return;
+        }
         if mv.kind == 41 {
             self.recv[self.r].insert(K, SETTLE);
             let i = self.put((X, mv.ts.max(REMOVAL + 1), &[A], T1, Kind::Content), mv.made, rng, true);
@@ -1071,7 +1091,7 @@ impl Sim {
     }
     /// A lowering of an edge a removal of X's own path stands on.
     fn lowers_remover(&self, i: Id) -> bool {
-        self.w.lowers(i).is_some_and(|e| [Some(self.r), self.r2].into_iter().flatten().any(|r| self.w.hops(r).contains(&e)))
+        self.w.lowers(i).is_some_and(|e| [Some(self.r), self.r2].into_iter().flatten().any(|r| self.w.rests(r).contains(&e)))
     }
 }
 
@@ -1272,7 +1292,7 @@ pub fn rebuild(w: &World, keep: &[Id]) -> (World, BTreeMap<Id, Id>) {
             Kind::Purge { names } => Kind::Purge { names: *names },
             Kind::Cover { carries } => Kind::Cover { carries: ids(carries) },
         };
-        let j = out.push_marked(c.signer, c.ts, &c.path, c.on, kind, &c.direct);
+        let j = out.put(c.key, c.signer, c.ts, &c.path, c.on, kind, &c.direct);
         out.authored(j, c.pa);
         out.commits[j].ret = c.ret;
         out.commits[j].own = c.own;
@@ -1333,7 +1353,7 @@ pub fn no_effect_of(w: &World, rules: &Rules, v: &View, rd: &Reading, xs: &[Id])
     for s in [&mut a.valid, &mut a.copied, &mut a.purged] {
         *s = less(s);
     }
-    let roles = a.roles == b.roles && a.grantable == b.grantable && a.timeline == b.timeline && a.cuts == b.cuts;
+    let roles = a.roles == b.roles && a.grantable == b.grantable && a.keys == b.keys && a.timeline == b.timeline && a.cuts == b.cuts;
     (a == b, o.applied == less(&rd.applied), roles)
 }
 
@@ -1418,10 +1438,10 @@ pub fn fight_among(w: &World, rules: &Rules, v: &View, rd: &Reading, parts: &[Id
     readings.push(rd.clone());
     readings.push(o.clone());
     let at = |r: &Reading, e: Edge, k: Key| {
-        let rec = if w.records.contains(&e) { (Role::Admin, None) } else { (Role::None, None) };
+        let rec = if w.is_record(e) { (Role::Admin, None) } else { (Role::None, None) };
         alive(r.hist.get(&e).and_then(|h| h.iter().rev().find(|(x, _)| *x < k)).map_or(rec, |x| x.1), k.0)
     };
-    let held = |i: Id| readings.iter().any(|r| r.applied.contains(&i) || (!w.hops(i).is_empty() && w.hops(i).iter().all(|&e| at(r, e, w.key(i)) == Role::Admin)));
+    let held = |i: Id| readings.iter().any(|r| r.applied.contains(&i) || (!w.rests(i).is_empty() && (!w.hops(i).is_empty() || w.commits[i].on == w.commits[i].signer) && w.rests(i).iter().all(|&e| at(r, e, w.key(i)) == Role::Admin)));
     let illegit: Set = involved.iter().copied().filter(|&i| !held(i)).collect();
     let gains = illegit.iter().copied().filter(|i| parts.contains(i) || (rd.applied.contains(i) && !o.applied.contains(i))).collect();
     Fight { involved, illegit, gains }
@@ -1641,7 +1661,8 @@ pub fn check(m: &Sim, rules: &Rules, st: &mut Stats) {
     let heard_lowering = m.thief.iter().any(|(&i, &k)| matches!(k, 11 | 25 | 43) && m.made[i] < REMOVAL);
     let under_h = |i: Id| heard_lowering && (w.hops(i).contains(&(H, A)) || [B, N5, K, X, M].contains(&w.commits[i].signer));
     // safety: no commit the thief made after the removal shows (but content on a path it still
-    // holds, and its own leave), and Z, X and N5 removed before the theft end with no role. At a
+    // holds, and its own leave), Z, X and N5 removed before the theft end with no role, and no key
+    // the thief made up ends on A's list. At a
     // node trusting nothing (`late`) only what the thief stamped after the removal, or signed with
     // N5's key, counts: what X stamped before it is X's standing, which is the dispute.
     let rts = w.commits[m.r].ts;
@@ -1682,6 +1703,10 @@ pub fn check(m: &Sim, rules: &Rules, st: &mut Stats) {
             if *r > Role::None && ((e.0 == Z && !z_by_right) || x_holds || n5_holds) {
                 st.fail(prop, m, format!("node {n}: {e:?} ends {r:?}"));
             }
+        }
+        // no key the thief made up stays on A's list
+        if rd.listed(TK, A) {
+            st.fail(prop, m, format!("node {n}: the thief's key stays on A's list"));
         }
     };
     // the remover keeps its own path: H ends a standing admin of A (X's lowering of it shows only
@@ -2040,12 +2065,14 @@ pub fn family_run(rules: &Rules, stride: usize) -> Stats {
 /// `-list-any-cut` (one answering cut of a delta's path makes it valid: `Answers`); `-no-end` (the
 /// remover keeps a role write wherever its removal applies with it, L3's end clause off); how a
 /// node records its sides (`Sides`): `-no-own`, `-no-receipt`, `-unapplied`, `-tie`, `-lowered`, `-both`,
-/// `-choice-adds`, `-choice-seeds`, `-key-own`, `-untold`, `-told-all`.
+/// `-choice-adds`, `-choice-seeds`, `-key-own`, `-untold`, `-told-all`; owner keys: `-no-key-hop`
+/// (the key hop unread), `-admin-lists` (any admin writes the list), variant `-attach-kept` (a
+/// first key added by an admin rests on its key hop alone: issues/owner-key-first-attach.md).
 /// `-exh` runs the small family in place of random worlds.
 pub fn mode_rules(mode: &str) -> Option<Rules> {
     let f = Rules::fixed();
     let rest = mode.strip_prefix("paths").unwrap_or(mode);
-    let rest = rest.strip_prefix("-exh").or_else(|| rest.strip_prefix("-tiny-flags")).or_else(|| rest.strip_prefix("-tiny-detached")).or_else(|| rest.strip_prefix("-tiny")).unwrap_or(rest);
+    let rest = rest.strip_prefix("-exh").or_else(|| rest.strip_prefix("-tiny-flags")).or_else(|| rest.strip_prefix("-tiny-detached")).or_else(|| rest.strip_prefix("-tiny-keys")).or_else(|| rest.strip_prefix("-tiny")).unwrap_or(rest);
     let rest = rest.strip_prefix("-honest-writers").or_else(|| rest.strip_prefix("-honest")).unwrap_or(rest);
     Some(match rest {
         "" => f,
@@ -2088,6 +2115,9 @@ pub fn mode_rules(mode: &str) -> Option<Rules> {
         "-leave-on-grant" => Rules { drops: Drops::LeaveOnGrant, ..f },
         "-redemption-whole" => Rules { drops: Drops::Redemption, ..f },
         "-list-any-cut" => Rules { answers: Answers::AnyCut, ..f },
+        "-no-key-hop" => Rules { key_hop: false, ..f },
+        "-admin-lists" => Rules { list_writers: false, ..f },
+        "-attach-kept" => Rules { attach_on_path: false, ..f },
         _ => return None,
     })
 }
@@ -2222,6 +2252,70 @@ pub fn tiny_detached(i: u64, n: usize) -> World {
     w
 }
 
+/// A small world of owner keys on A (H its mint admin, so A lists no key at the start): `n`
+/// commits at random `ts`, each signed by a random party as itself or (one in two) by RK or TK as
+/// A acting as itself, on A (half the worlds open with H adding RK, A's first key, at 1): content one in five, else one part or (one in four) two or three
+/// on distinct holders, each a party's edge (admin, standing or until two ticks on, or none) or,
+/// one in three, a list write adding or removing RK or TK (a key removing itself among them; one
+/// in nine with a value no key hop takes: `until`, a level, the flag),
+/// listing each earlier write with probability one half (notes/write-path-design.md, Owner keys
+/// O3 to O7). A party admin adds A's first key (O4 (b)); a listed key then writes the list and
+/// A's roles as A itself (O4 (a), O5); a removed key's commits fall unless listed (O6).
+pub fn tiny_keys(i: u64, n: usize) -> World {
+    let mut rng = Rng::thread(0x0e75, i as usize);
+    let mut w = account();
+    let parties = [H, B, N5, Z, N6];
+    let keys = [RK, TK];
+    if rng.below(2) == 0 {
+        w.push(H, 1, &[], A, Kind::set(RK, Role::Admin));
+    }
+    for _ in 0..n {
+        let key = if rng.below(2) == 0 { Some(keys[rng.below(2)]) } else { None };
+        let (k, s) = key.map_or_else(|| { let p = parties[rng.below(5)]; (own_key(p), p) }, |k| (k, A));
+        let ts = 1 + rng.below(n) as u32;
+        if rng.below(5) == 0 {
+            w.push_signed(k, s, ts, &[], A, Kind::Content);
+            continue;
+        }
+        let m = if rng.below(4) == 0 { 2 + rng.below(2) } else { 1 };
+        let mut parts: Vec<Kind> = vec![];
+        let mut holders = vec![];
+        for _ in 0..m {
+            let list: Vec<Id> = (0..w.commits.len()).filter(|_| rng.below(2) == 0).collect();
+            let (h, kind) = if rng.below(3) == 0 {
+                let h = keys[rng.below(2)];
+                // one in nine a value no key hop takes (O3: bad input)
+                (h, match rng.below(9) {
+                    0..=3 => Kind::set(h, Role::Admin),
+                    4..=7 => Kind::set(h, Role::None),
+                    _ => [Kind::set(h, Role::Admin).until(ts + 2), Kind::set(h, Role::Write), Kind::set(h, Role::Admin).may_grant()][rng.below(3)].clone(),
+                })
+            } else {
+                let h = parties[rng.below(5)];
+                (h, match rng.below(5) {
+                    0 | 1 => Kind::set(h, Role::Admin),
+                    2 => Kind::set(h, Role::Admin).until(ts + 2),
+                    _ => Kind::set(h, Role::None),
+                })
+            };
+            if h != s && !holders.contains(&h) {
+                holders.push(h);
+                parts.push(kind.listing(w.cut(&list)));
+            }
+        }
+        match parts.len() {
+            0 => {}
+            1 => {
+                w.push_signed(k, s, ts, &[], A, parts.pop().expect("one part"));
+            }
+            _ => {
+                w.commit_signed(k, s, ts, &[], A, parts, &[]);
+            }
+        }
+    }
+    w
+}
+
 /// A small world to check: its commits, the view, and per commit (by ID) what its writer had
 /// received when writing it, in the order received.
 #[derive(Clone, Debug)]
@@ -2237,6 +2331,7 @@ pub struct Tiny {
 pub struct TinyMode {
     pub flags: bool,
     pub detached: bool,
+    pub keys: bool,
     pub honest: Honesty,
 }
 
@@ -2245,10 +2340,11 @@ impl TinyMode {
     pub fn named(mode: &str) -> TinyMode {
         let flags = mode.starts_with("paths-tiny-flags");
         let detached = mode.starts_with("paths-tiny-detached");
+        let keys = mode.starts_with("paths-tiny-keys");
         let rest = mode.strip_prefix("paths-tiny").unwrap_or("");
-        let rest = rest.strip_prefix(if flags { "-flags" } else if detached { "-detached" } else { "" }).unwrap_or(rest);
+        let rest = rest.strip_prefix(if flags { "-flags" } else if detached { "-detached" } else if keys { "-keys" } else { "" }).unwrap_or(rest);
         let honest = if rest.starts_with("-honest-writers") { Honesty::Writers } else if rest.starts_with("-honest") { Honesty::Lists } else { Honesty::None };
-        TinyMode { flags, detached, honest }
+        TinyMode { flags, detached, keys, honest }
     }
 }
 
@@ -2271,7 +2367,7 @@ pub enum Honesty {
 /// held; trusting nothing, or (every third world) one held lowering.
 pub fn tiny_world(i: u64, mode: TinyMode, rules: &Rules) -> Tiny {
     let n = 3 + (i % 10) as usize;
-    let mut w = if mode.flags { tiny_flags(i, n) } else if mode.detached { tiny_detached(i, n) } else { tiny(i, n) };
+    let mut w = if mode.flags { tiny_flags(i, n) } else if mode.detached { tiny_detached(i, n) } else if mode.keys { tiny_keys(i, n) } else { tiny(i, n) };
     let mut recv: Vec<Vec<Id>> = (0..w.commits.len()).map(|k| (0..w.cid(k)).collect()).collect();
     if mode.honest != Honesty::None {
         let mut rng = Rng::thread(0x4e57, i as usize);
@@ -2328,7 +2424,7 @@ pub fn tiny_world(i: u64, mode: TinyMode, rules: &Rules) -> Tiny {
 /// The commits of `recv` resting on lowering `r`'s edge, its own commit's parts aside.
 fn resting(w: &World, r: Id, among: impl IntoIterator<Item = Id>) -> Vec<Id> {
     let h = w.sets(r).expect("a lowering sets an edge");
-    among.into_iter().filter(|&j| w.cid(j) != w.cid(r) && (w.hops(j).contains(&h) || (w.leave(j) && w.sets(j) == Some(h)))).collect()
+    among.into_iter().filter(|&j| w.cid(j) != w.cid(r) && (w.rests(j).contains(&h) || (w.leave(j) && w.sets(j) == Some(h)))).collect()
 }
 
 /// The list the writers' rule gives lowering `r`, its writer having received `recv` (in that order)
@@ -2424,7 +2520,7 @@ impl TinyStats {
 pub fn unright_flag_grants(w: &World, rd: &Reading) -> Vec<Id> {
     // edge `e`'s value and flag just before `i` in key order (a record edge starts at admin)
     let before = |e: Edge, i: Id| -> (Role, bool) {
-        let start = if w.records.contains(&e) { (Role::Admin, false) } else { (Role::None, false) };
+        let start = if w.is_record(e) { (Role::Admin, false) } else { (Role::None, false) };
         let k = w.key(i);
         rd.hist.get(&e).and_then(|h| h.iter().rev().find(|(kj, _)| *kj < k)).map_or(start, |&(kj, v)| {
             let flag = matches!(w.commits[kj.2].kind, Kind::Edge { may_grant: true, .. });
@@ -2463,9 +2559,82 @@ pub fn unaudited_flag_grants(w: &World, v: &View, rd: &Reading) -> Vec<Id> {
             h.iter().enumerate().any(|(n, &(kl, val))| {
                 let l = kl.2;
                 let explicit = !w.leave(l) && !rd.by_flag.contains(&l) && !matches!(w.commits[l].kind, Kind::Edge { finalize: true, .. });
-                let prev = if n == 0 { if w.records.contains(&last) { Role::Admin } else { Role::None } } else { gives(h[n - 1].0 .2, h[n - 1].1 .0) };
+                let prev = if n == 0 { if w.is_record(last) { Role::Admin } else { Role::None } } else { gives(h[n - 1].0 .2, h[n - 1].1 .0) };
                 kl > w.key(j) && explicit && w.cid(l) != w.cid(j) && !listed(w, v, l, j) && prev >= *r && gives(l, alive(val, w.commits[l].ts)) < *r
             })
+        })
+        .collect()
+}
+
+/// The value edge or key hop `e` gives just before `i` in the reading's own history (a record edge
+/// or record key hop starting at admin), its `until` read at `i`'s `ts`.
+fn before_in(w: &World, rd: &Reading, e: Edge, i: Id) -> Role {
+    let start = if w.is_record(e) { (Role::Admin, None) } else { (Role::None, None) };
+    alive(rd.hist.get(&e).and_then(|h| h.iter().rev().find(|(k, _)| *k < w.key(i))).map_or(start, |x| x.1), w.commits[i].ts)
+}
+
+/// The list writes of `rd` that no owner-key rule allows (notes/write-path-design.md, Owner keys
+/// O3, O4), read from the reading's own history (`Reading::hist`), not from the walk's rule: each
+/// sets a key hop to listed or not, no `until` or flag, and either acts as the thing itself, every
+/// hop it rests on giving admin just before it (a removal: judged once, W1, its shape alone), or
+/// adds a key where none was listed just before, every hop giving admin.
+pub fn unright_list_writes(w: &World, rd: &Reading) -> Vec<Id> {
+    rd.applied
+        .iter()
+        .copied()
+        .filter(|&i| w.list_write(i))
+        .filter(|&i| {
+            let c = &w.commits[i];
+            let Kind::Edge { role, until, may_grant, .. } = &c.kind else { return true };
+            let value = until.is_none() && !*may_grant && matches!(role, Role::Admin | Role::None);
+            let path = w.rests(i).iter().all(|&e| before_in(w, rd, e, i) == Role::Admin);
+            let itself = w.hops(i).is_empty() && c.on == c.signer;
+            let mut keys: BTreeSet<Edge> = rd.hist.keys().copied().filter(|e| is_key(e.0) && e.1 == c.on).collect();
+            keys.insert((own_key(c.on), c.on));
+            let listing = keys.into_iter().any(|e| before_in(w, rd, e, i) == Role::Admin);
+            // a removal is a lowering: judged once, it keeps its verdict where its key falls later
+            // (W1), so only its shape is read
+            let removal = *role == Role::None;
+            !(value && ((itself && (path || removal)) || (*role == Role::Admin && path && !listing)))
+        })
+        .collect()
+}
+
+/// The commits signed by a key that show past an applied explicit removal of that key hop, after
+/// them, not listing them, whose key was listed just before it (O6: a removed key's commits fall
+/// unless the removal lists them), read from the reading's own history. Content whose key is
+/// listed in the end is left to re-grant.
+pub fn unaudited_key_commits(w: &World, v: &View, rd: &Reading) -> Vec<Id> {
+    rd.applied
+        .iter()
+        .chain(rd.valid.iter().filter(|&&j| !w.edge_class(j) && !rd.keys.contains(&w.key_hop(j))))
+        .copied()
+        .filter(|&j| {
+            let h = w.key_hop(j);
+            let at = if w.edge_class(j) { w.key(j) } else { w.pos(j) };
+            let hist = rd.hist.get(&h).map_or(&[][..], |x| &x[..]);
+            hist.iter().enumerate().any(|(n, &(kl, val))| {
+                let l = kl.2;
+                let prev = if n == 0 { w.is_record(h) } else { alive(hist[n - 1].1, w.commits[l].ts) == Role::Admin };
+                kl > at && !w.leave(l) && alive(val, w.commits[l].ts) < Role::Admin && prev && w.cid(l) != w.cid(j) && !listed(w, v, l, j)
+            })
+        })
+        .collect()
+}
+
+/// The held edge writes of a thing acting as itself (signed as the thing written, nothing listed)
+/// that do not apply though their key hop is listed just before them in the reading's history and
+/// nothing dropped or voided them (O5: such a write rests on its key hop alone, so it applies under
+/// every trust set wherever that hop is listed). A list write among them is read with O3's value.
+pub fn unapplied_itself(w: &World, v: &View, rd: &Reading) -> Vec<Id> {
+    v.held
+        .iter()
+        .copied()
+        .filter(|&j| {
+            let c = &w.commits[j];
+            let Kind::Edge { role, until, may_grant, .. } = &c.kind else { return false };
+            let value = !w.list_write(j) || (until.is_none() && !*may_grant && matches!(role, Role::Admin | Role::None));
+            w.well(j) && w.hops(j).is_empty() && c.on == c.signer && value && !rd.dropped.contains(&j) && !rd.voided.contains(&j) && !rd.void.contains(&j) && before_in(w, rd, w.key_hop(j), j) == Role::Admin && !rd.applied.contains(&j)
         })
         .collect()
 }
@@ -2475,7 +2644,10 @@ pub fn unaudited_flag_grants(w: &World, v: &View, rd: &Reading) -> Vec<Id> {
 /// redone, notes/write-path-design.md §1). Failing: `one reading` (a relabelling keeping the
 /// order reads the same), `self-taken` (no applied commit's path loses its authority to the
 /// commit's own drops), `may-grant right` (every may-grant grant applied by a right its history shows: `unright_flag_grants`), `may-grant audited` (none stands past a lowering taking what it
-/// needs that does not list it: `unaudited_flag_grants`),
+/// needs that does not list it: `unaudited_flag_grants`), `list right` (every list write applied by
+/// a right its history shows: `unright_list_writes`), `key audited` (no commit a key signed shows
+/// past that key's unlisting removal: `unaudited_key_commits`), `itself applies` (a thing acting
+/// as itself applies wherever its key is listed: `unapplied_itself`),
 /// `illegit gains N`/`T`/`V` (an idle write's unshown effect never makes apply, nor is, a write whose signer held its right in no
 /// reading: `fight_among`). Counted: of each idle write (a void lowering, any other lowering, any
 /// other edge write, held and doing nothing), an effect users observe (`Reading::observed`)
@@ -2539,6 +2711,17 @@ pub fn tiny_check(i: u64, t: &Tiny, rules: &Rules, st: &mut TinyStats) {
     st.hit("may-grant right", true, !unright.is_empty(), i, w, || format!("may-grant grants {unright:?} made with no right"));
     let unaudited = unaudited_flag_grants(w, v, &rd);
     st.hit("may-grant audited", true, !unaudited.is_empty(), i, w, || format!("may-grant grants {unaudited:?} stand past a lowering taking their need"));
+    // reach: list writes applied by (a) and (b), and drops made by a key's removal
+    let n = |f: &dyn Fn(Id) -> bool| rd.applied.iter().filter(|&&j| f(j)).count() as u64;
+    *st.checked.entry("reach: list by itself").or_default() += n(&|j| w.list_write(j) && w.hops(j).is_empty());
+    *st.checked.entry("reach: list by admin").or_default() += n(&|j| w.list_write(j) && !w.hops(j).is_empty());
+    *st.checked.entry("reach: key drops").or_default() += rd.dropped.iter().filter(|j| rd.dropper.get(j).is_some_and(|&d| w.sets(d).is_some_and(|e| is_key(e.0)))).count() as u64;
+    let lists = unright_list_writes(w, &rd);
+    st.hit("list right", true, !lists.is_empty(), i, w, || format!("list writes {lists:?} made with no right"));
+    let kept = unaudited_key_commits(w, v, &rd);
+    st.hit("key audited", true, !kept.is_empty(), i, w, || format!("commits {kept:?} show past their key's removal, unlisted"));
+    let itself = unapplied_itself(w, v, &rd);
+    st.hit("itself applies", true, !itself.is_empty(), i, w, || format!("writes {itself:?} of a thing acting as itself, its key listed, do not apply"));
 }
 
 /// `t` less one commit at a time while `fails` holds of it (receipts follow the relabelling).
@@ -2596,13 +2779,20 @@ fn tiny_print(st: &TinyStats, rules: &Rules, mode: TinyMode) {
 
 /// A small world's commits, one a line.
 pub fn tiny_trace(w: &World) -> String {
-    let name = |t: &Thing| ["?", "H", "B", "X", "N5", "K", "Z", "N6"].get(*t as usize).copied().unwrap_or("?");
+    let name = |t: &Thing| match *t {
+        A => "A",
+        RK => "RK",
+        TK => "TK",
+        t if is_key(t) => "own key",
+        t => ["?", "H", "B", "X", "N5", "K", "Z", "N6"].get(t as usize).copied().unwrap_or("?"),
+    };
     let mut s = String::new();
     for (i, c) in w.commits.iter().enumerate() {
         if let Kind::Edge { holder, role, frontier, until, may_grant, finalize } = &c.kind {
             let what = if *finalize { "finalize".to_string() } else { format!("{role:?}{}{}", if *may_grant { " may grant" } else { "" }, until.map_or(String::new(), |u| format!(" until {u}"))) };
             let part = if w.parts(c.cid) > 1 { format!(" (commit {})", c.cid) } else { String::new() };
-            s += &format!("  {i}: {} ts {}{part}: {} := {what} listing {:?}\n", name(&c.signer), c.ts, name(holder), frontier.values().flatten().collect::<Vec<_>>());
+            let by = if c.key == own_key(c.signer) { String::new() } else { format!(" by {}", name(&c.key)) };
+            s += &format!("  {i}: {}{by} ts {}{part}: {} := {what} listing {:?}\n", name(&c.signer), c.ts, name(holder), frontier.values().flatten().collect::<Vec<_>>());
         }
     }
     s

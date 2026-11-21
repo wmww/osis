@@ -1,5 +1,5 @@
 # A first owner key attached by an admin falls with that admin
-> Summary: For Tess: an owner key a thing's admin attaches after the thing was made is undone when a later admin removes that admin and leaves the attach out of the removal's list, so the "attach a key, share adminship, take it back" flow fails in that one variant; keeping the key against that would let a stolen, removed node keep a thing by backdating an attach of its own key. Built meanwhile: the attach is an ordinary admin write.
+> Summary: For Tess: an owner key a thing's admin attaches after the thing was made is undone when a later admin removes that admin and leaves the attach out of the removal's list, so the "attach a key, share adminship, take it back" flow fails in that one variant; keeping the key against that would let a stolen, removed node keep a thing by backdating an attach of its own key. Modelled meanwhile as option 1: the attach is an ordinary admin write.
 > Priority: normal
 > Tags: tess-call, perm, keys
 
@@ -22,3 +22,5 @@ The same commits appear in the opposite story: your node is stolen, a later-pair
 Option 1 makes "add a recovery key later" weaker than "create with a recovery key" in a way a user cannot see until a co-admin turns on them. Option 2 makes the oldest device of an account a permanent risk once stolen. Option 3 is honest and limiting.
 
 Recommended: 1, with accounts made with a recovery key where the user wants one. Reversible: the rule is one clause of the walk (what a list write rests on).
+
+In roles-model `paths` (notes/path-model-findings.md 55): option 1 is `Rules::fixed`, asserted by `an_attach_falls_with_its_attacher_where_the_removal_leaves_it_out`; option 2 is the one clause flipped (`Rules::attach_on_path` false, variant `-attach-kept`: the attach rests on its key hop alone), which keeps the key in that world and fails the story's safety where a stolen node backdates an attach of a key it made up (moves 54, 55).
