@@ -749,11 +749,13 @@ impl Engine {
         Ok(self.passed_after(ids.iter(), since))
     }
 
-    /// The sync IDs of `a` this node syncs read: none once `a` left the sync set (a thing no
-    /// longer reached), whatever secrets of it are held, as no pass of them comes
-    /// (spec/permissions.md §3 Lost access: a node syncing none drops at once).
+    /// The sync IDs of `a` this node syncs read: in the sync set, or left the node closure and
+    /// not released yet (its sync IDs wait to stop by the release's timing, spec/sync-set.md §3
+    /// Stopping, so its own writes there are served first). None once released or sourced away,
+    /// whatever secrets of it are held, as no pass of them comes (spec/permissions.md §3 Lost
+    /// access: a node syncing none drops at once).
     fn read_ids(&mut self, a: &Tid) -> Result<Vec<osis_base::SyncId>> {
-        if !self.in_sync_things(a)? {
+        if !self.in_sync_things(a)? && !self.core.ix.closure.left().contains_key(a) {
             return Ok(Vec::new());
         }
         Ok(match self.thing_sync(a)? {

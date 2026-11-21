@@ -1422,3 +1422,57 @@ fn a_grant_no_longer_taken_up_reads_nothing_below_it_spec_permissions_3() {
     assert_eq!(value(&mut w, 0, &t2), None, "Alice reads T2: {}", w.why_role(0, &t2));
     assert!(w.engine(0).read_secrets(&t1).is_empty(), "Alice holds T1's secrets: {}", w.why_role(0, &t1));
 }
+
+// spec/permissions.md §3 (Lost access: what it can no longer read by another path), spec/sync-set.md
+// §2 Taken up: Bob grants Alice read on T1 and T3 and grants each of them read on T2; Alice holds all
+// three. She drops her strong to T1: T1 goes, T2 stays read through T3, whose grant she still takes up.
+#[test]
+fn a_thing_read_through_two_grants_stays_when_one_is_no_longer_taken_up_spec_permissions_3() {
+    let mut w = contacts();
+    let alice = w.node(0).account.unwrap();
+    let [t1, t2, t3] = ["t1", "t2", "t3"].map(|v| make(&mut w, 1, None, v));
+    for t in [t1, t3] {
+        w.write(1, |e| e.grant(&t, &alice, &edge(Role::Read))).unwrap();
+        w.write(1, |e| e.grant(&t2, &t, &edge(Role::Read))).unwrap();
+    }
+    for t in [t1, t2, t3] {
+        strong(&mut w, 0, None, t, true);
+    }
+    w.run();
+    assert_eq!(value(&mut w, 0, &t2), Some(Value::Str("t2".into())), "Alice reads T2");
+    strong(&mut w, 0, None, t1, false);
+    w.run();
+    assert_eq!(value(&mut w, 0, &t1), None, "Alice reads T1 no more");
+    assert!(w.engine(0).read_secrets(&t1).is_empty(), "T1's secrets go: {}", w.why_role(0, &t1));
+    assert_eq!(value(&mut w, 0, &t2), Some(Value::Str("t2".into())), "T2 stays through T3: {}", w.why_role(0, &t2));
+    assert!(!w.engine(0).read_secrets(&t2).is_empty(), "T2's secrets stay");
+    assert_eq!(value(&mut w, 0, &t3), Some(Value::Str("t3".into())));
+}
+
+// spec/sync-set.md §3 (Release: the node's own writes are served in the pass in flight before
+// it drops), spec/permissions.md §3 (Lost access: a node syncing a sync ID of the thing waits for
+// a complete pass): Bob grants Alice write on T, which she holds; she writes and drops her
+// strong before syncing. Her write reaches Bob before she lets T go.
+#[test]
+fn an_own_write_before_a_dropped_strong_reaches_its_peer_spec_sync_set_3() {
+    let mut w = contacts();
+    let alice = w.node(0).account.unwrap();
+    let t = make(&mut w, 1, None, "bob");
+    w.write(1, |e| e.grant(&t, &alice, &edge(Role::Write))).unwrap();
+    strong(&mut w, 0, None, t, true);
+    w.run();
+    assert_eq!(value(&mut w, 0, &t), Some(Value::Str("bob".into())), "Alice reads T");
+    // both before the node sends anything
+    w.write(0, |e| {
+        let mut m = Mutation::new();
+        m.set(t, &ak(), &Value::Str("alice".into())).unwrap();
+        e.commit(m).unwrap();
+        let d = e.account_root().unwrap();
+        let mut m = Mutation::new();
+        m.op(d, &ct::HOLDS, PathOp { path: vec![], op: Op::Remove(Value::Strong(t)) }).unwrap();
+        e.commit(m).unwrap();
+    });
+    w.run();
+    assert_eq!(value(&mut w, 0, &t), None, "Alice let T go");
+    assert_eq!(value(&mut w, 1, &t), Some(Value::Str("alice".into())), "Bob holds Alice's write");
+}
