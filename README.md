@@ -55,11 +55,11 @@ osis supports a highly composable feature set, carefully chosen to balance API s
   - **`read`**: allows decrypting.
   - **`write`**: allows editing/firing signals.
   - **`admin`**: allows editing permissions and other admin-only data.
+  - **`may_grant`**: optional flag that applies to any role, allows granting other things up to its role.
 - **Actor**: a thing which authorizes an action.
 - **Signer**: the actor which holds the keys that sign a commit.
 - **Actor chain**: starts with the commit's signer and ends with the thing being acted on. Each actor holds at least `write` on the next.
 - **Node**: an osis instance with its own key and store.
-- **Node root**: the signer for a node, and root of the node's reference graph.
 - **Peer**: another node a node syncs with directly.
 - **Relay**: forwards a connection's encrypted data. Stores nothing, and is not a node.
 - **Client**: anything using the osis client protocol to reach a node, on the same machine or another.
@@ -70,10 +70,10 @@ osis supports a highly composable feature set, carefully chosen to balance API s
 The implementation is complex, but the contract is compatively simple. This is what you need to understand to correctly use the osis API.
 
 ### Data structure
-Each osis node stores a graph of things beginning at the node root. A thing is a collection of aspects (key/value pairs). Each thing has at most one aspect with a given key. A schema defines aspect keys and their types. Aspect values must be of the correct type for their aspect key (enforced at read and write, but not sync). Edges of the graph are strong referencess between things. References may appear anywhere within an aspect value. When a thing or cluster of things is no longer strongly referenced by anything in the graph it may be guarbage collected. Weak references may be used to navigate the graph, but do not effect its structure.
+Each osis node stores a graph of things beginning at a root node. A thing is a collection of aspects (key/value pairs). Each thing has at most one aspect with a given key. A schema defines aspect keys and their types. Aspect values must be of the correct type for their aspect key (enforced at read and write, but not sync). Edges of the graph are strong referencess between things. References may appear anywhere within an aspect value. When a thing or cluster of things is no longer strongly referenced by anything in the graph it may be guarbage collected. Weak references may be used to navigate the graph, but do not effect its structure.
 
 ### Permissions
-A thing may grant any role to any other thing. A role is a property of the thing it is held on/grants permission to. The node writing a permissions change must hold admin on the thing the changed role is on, but need not hold any role on the holder. Roles may be held indirectly, in which case the role is the minimum of the chain.
+Any number of things may hold different roles on a thing. Roles may be held indirectly, in which case the role is the minimum of the chain. A node is considered to have a role if its signer has that role. One way for a role change to be valid is if the committer has admin on the thing the role is being granted on AND have at least write on the holder. for a grant specifically, the former can be replaced by the committer holding a row ≥ the granted on with the `may_grant` flag set. The latter may be replaced by the "external grant" flow (involves an admin enabling external grants, and a writer accepting it). A holder may always drop or lower its own grant.
 
 ### Sync
 When a node connects to a peer, it effeciently syncs all sync units reachable through both nodes' graphs. Roles alone do not cause sync, but they are required for a thing to appear in another's sync unit.
