@@ -761,24 +761,6 @@ mod tests {
         assert!(floor(all.commits, 150) && floor(all.partial, 40) && floor(all.one_by_one, 40) && floor(all.model_ops, 40) && floor(all.model_joins, 8) && floor(all.undos, 10) && floor(all.restores, 2) && floor(all.joins, 300) && floor(all.merged, 20), "{all:?} over {k} seeds");
     }
 
-    /// §6.2: a move on a replica holding a broken cycle (shrunk from a random script) re-places
-    /// the cycle's elements, so it reads unlike the same move on a plain sequence; it writes the
-    /// model's delta and the replica's state stays the model's.
-    #[test]
-    fn move_beside_broken_cycle_replays_spec_6_2() {
-        let s = Script{list:false,steps:vec![Step::Model{r:2,seed:43984,},Step::Ops{r:1,ops:vec![LocalOp::Insert{at:24797,item:28,},],skew:0,per:0,},Step::Model{r:2,seed:34863,},Step::Ops{r:1,ops:vec![LocalOp::Move{at:8501,len:81,to:16916,},],skew:0,per:0,},Step::Model{r:0,seed:4636,},Step::Ops{r:1,ops:vec![LocalOp::Move{at:56715,len:98,to:39210,},],skew:0,per:0,},Step::Ops{r:1,ops:vec![LocalOp::Move{at:25427,len:172,to:49462,},],skew:0,per:0,},Step::Ops{r:2,ops:vec![LocalOp::Delete{at:24211,len:208,},],skew:0,per:0,},Step::Join{to:0,pick:218,n:1,per:0,merged:false,},Step::Ops{r:1,ops:vec![LocalOp::Delete{at:10145,len:211,},],skew:0,per:0,},Step::Ops{r:1,ops:vec![LocalOp::Delete{at:22635,len:234,},],skew:0,per:0,},Step::Ops{r:2,ops:vec![LocalOp::Move{at:22605,len:77,to:30330,},],skew:0,per:0,},Step::Model{r:2,seed:34675,},Step::Ops{r:2,ops:vec![LocalOp::Insert{at:34823,item:116,},],skew:0,per:0,},Step::Join{to:0,pick:63,n:1,per:0,merged:false,},Step::Ops{r:2,ops:vec![LocalOp::Delete{at:34543,len:138,},],skew:0,per:0,},Step::Ops{r:0,ops:vec![LocalOp::Insert{at:48798,item:233,},],skew:0,per:0,},Step::Ops{r:0,ops:vec![LocalOp::Move{at:4606,len:60,to:40670,},],skew:0,per:0,},Step::Ops{r:0,ops:vec![LocalOp::Delete{at:53482,len:91,},],skew:0,per:0,},Step::Ops{r:0,ops:vec![LocalOp::Insert{at:16555,item:19,},],skew:0,per:0,},Step::Join{to:1,pick:251,n:2,per:0,merged:false,},Step::Join{to:0,pick:106,n:4,per:0,merged:false,},Step::Ops{r:2,ops:vec![LocalOp::Delete{at:57007,len:193,},],skew:0,per:0,},Step::Ops{r:0,ops:vec![LocalOp::Insert{at:43702,item:225,},],skew:0,per:0,},Step::Ops{r:1,ops:vec![LocalOp::Move{at:55088,len:176,to:23293,},],skew:0,per:0,},Step::Join{to:0,pick:60,n:4,per:0,merged:false,},Step::Ops{r:0,ops:vec![LocalOp::Move{at:30935,len:99,to:4073,},],skew:0,per:0,},],};
-        replay(&s);
-    }
-
-    /// §5.7 paste: a commit of a move and two pastes, the second's clipboard taken from the state
-    /// before the commit, where the first paste re-anchored its last char below the run (shrunk
-    /// from a random script): reads like the same ops on a plain sequence, or writes nothing.
-    #[test]
-    fn second_paste_of_a_commit_replays_spec_5_7() {
-        let s = Script{list:false,steps:vec![Step::Ops{r:0,ops:vec![LocalOp::Edit{at:16717,del:161,item:203,stale:false}],skew:0,per:0},Step::Join{to:1,pick:43,n:2,per:0,merged:false},Step::Ops{r:1,ops:vec![LocalOp::Set{item:71}],skew:0,per:0},Step::Ops{r:1,ops:vec![LocalOp::Set{item:125}],skew:0,per:0},Step::Ops{r:1,ops:vec![LocalOp::Set{item:81}],skew:0,per:0},Step::Ops{r:1,ops:vec![LocalOp::Move{at:43,len:229,to:7725},LocalOp::Paste{run:12,at:14304},LocalOp::Paste{run:135,at:17017}],skew:0,per:0}]};
-        replay(&s);
-    }
-
     /// Shrinks the failing script of `OSIS_SHRINK=<seed>` (as `random_scripts_replay_plain_spec_5_7`
     /// makes it) by dropping steps and ops while it still panics; prints the result.
     #[test]

@@ -897,6 +897,44 @@ fn move_matches_model_over_histories_spec_5_7() {
     assert!(checked > 100, "checked {checked}");
 }
 
+/// §5.7 move, §6.2: on a state holding a broken cycle (the worked example: "acb", a moved after
+/// b and b after a concurrently, b's older move demoted) every move writes what the model's does,
+/// write for write, and leaves the model's state, including moves that re-place the cycle's
+/// elements and so read unlike the same move on plain text.
+#[test]
+fn move_beside_broken_cycle_matches_model_spec_6_2() {
+    let mw = |n: u8, t: u64| MWriter::new(crdt_model::stamp::Source::session(n, 0), t << 16, 1);
+    let mut base = mops::seq_insert(&mut mw(1, 1), None, true, 0, "acb".chars().map(Content::Char).collect());
+    base.prune(None);
+    let mut ms = Some(base.clone());
+    mapply(&mut ms, mops::seq_move(&mut mw(2, 5), &base, 0, 1, 2).unwrap());
+    mapply(&mut ms, mops::seq_move(&mut mw(3, 4), &base, 2, 1, 1).unwrap());
+    let ms = ms.unwrap();
+    let st = frag(&ms);
+    assert_eq!(read_str(&st), "cba");
+    assert!(st.seq_place().is_some_and(|p| !p.top().cyc.is_empty()), "a broken cycle");
+    let mut replaced = 0;
+    for (at, len, to) in (0..3).flat_map(|at| (1..=3 - at).flat_map(move |len| (0..=3 - len).map(move |to| (at, len, to)))) {
+        let mut m = mw(4, 6);
+        let mut w = writer(&m);
+        let md = mops::seq_move(&mut m, &ms, at, len, to);
+        let d = crate::ops::leaf(&mut w, Some(&st), &text_view(), &Op::Move { at, len, to }, true).unwrap();
+        assert_eq!(d, md.as_ref().map(frag), "move {at} {len} {to}");
+        if let (Some(d), Some(md)) = (d, md) {
+            let (mut got, mut want) = (st.clone(), ms.clone());
+            got.join(d);
+            want.join(md);
+            assert_eq!(got, frag(&want), "move {at} {len} {to}");
+            let mut plain: Vec<char> = "cba".chars().collect();
+            let cut: Vec<char> = plain.drain(at..at + len).collect();
+            plain.splice(to..to, cut);
+            replaced += usize::from(read_str(&got) != plain.into_iter().collect::<String>());
+        }
+    }
+    // the corner: a move re-placing the cycle's elements reads unlike the same move on plain text
+    assert!(replaced > 0, "no move re-placed the cycle");
+}
+
 /// §5.7 cut, paste: a paste of cut text moves the original elements back and undeletes them; one
 /// whose clipboard the state does not hold fails.
 #[test]
