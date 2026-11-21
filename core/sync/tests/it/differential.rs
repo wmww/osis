@@ -1,7 +1,7 @@
 //! The reference-graph differential (harness::history, notes/test-properties.md): random
 //! histories over a few nodes of fewer accounts; at quiet every node holds what held-model
 //! `closure` says its node closure is, built from the history alone. Fresh worlds per seed;
-//! `OSIS_SYNC_SEED`/`OSIS_SYNC_SEEDS` pick the seeds (`history::size`: 6 at small size, 100
+//! `OSIS_SYNC_START`/`OSIS_SYNC_SEEDS` pick the seeds (`history::size`: 6 at small size, 100
 //! under `OSIS_FULL=1`); a failure prints the history as a script, `OSIS_SYNC_SHRINK=1` shrinks
 //! it. A failure is a finding: its reproducer is a new hand-written test, never the seed.
 
@@ -62,14 +62,14 @@ fn histories_hold_their_closure_plain() {
     worlds("histories_hold_their_closure_plain", |seed| history(seed, n, accounts, len, seed % 2 == 1));
 }
 
-/// `holds` for each seed of `OSIS_SYNC_SEED`/`OSIS_SYNC_SEEDS` (default: the size's range) on
+/// `holds` for each seed of `OSIS_SYNC_START`/`OSIS_SYNC_SEEDS` (default: the size's range) on
 /// the history `steps_of(seed)`, each failure shrunk under `OSIS_SYNC_SHRINK=1`. A shrunk script
 /// replays over many worlds, or shrinks further from where a seed timeout cut it, in a scratch
 /// test: `differential::worlds("scratch", |_| vec![New(2), ..])` (notes/sync-test-harness.md,
 /// Replaying a script).
 pub(crate) fn worlds(name: &str, steps_of: impl Fn(u64) -> Vec<Step> + Sync) {
-    let seeds = Seeds::from_env("OSIS_SYNC_SEED", "OSIS_SYNC_SEEDS", 0..size().3);
-    seeds.run(name, |s| format!("OSIS_SYNC_SEED={s} OSIS_SYNC_SEEDS=1"), |seed| {
+    let seeds = Seeds::from_env("OSIS_SYNC_START", "OSIS_SYNC_SEEDS", 0..size().3);
+    seeds.run(name, |s| format!("OSIS_SYNC_START={s} OSIS_SYNC_SEEDS=1"), |seed| {
         let h = steps_of(seed);
         let replay = format!("differential::holds({seed}, &script, String::new(), false)");
         let twice = seed.is_multiple_of(TWICE_EVERY);

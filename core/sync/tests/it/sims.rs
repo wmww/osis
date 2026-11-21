@@ -16,7 +16,7 @@ use osis_base::testenv::Seeds;
 /// Seeds `0..variants` at small size (`variants`: the scenario's choices by seed, at least 2).
 fn seeds(variants: u64) -> Seeds {
     let n = if osis_base::testenv::u64_var("OSIS_FULL") == Some(1) { 40 } else { variants.max(2) };
-    Seeds::from_env("OSIS_SYNC_SEED", "OSIS_SYNC_SEEDS", 0..n)
+    Seeds::from_env("OSIS_SYNC_START", "OSIS_SYNC_SEEDS", 0..n)
 }
 
 /// Every scenario's start.
@@ -37,7 +37,7 @@ fn end() -> Vec<Step> {
 /// Plays `start`, `body(seed)`, `end` on a fresh world of three nodes per seed (`seeds(variants)`),
 /// then the oracle and `outcome`.
 fn sim(name: &str, variants: u64, body: impl Fn(u64) -> Vec<Step> + Sync, outcome: impl Fn(&mut World) + Sync) {
-    seeds(variants).run(name, |s| format!("OSIS_SYNC_SEED={s} OSIS_SYNC_SEEDS=1"), |seed| {
+    seeds(variants).run(name, |s| format!("OSIS_SYNC_START={s} OSIS_SYNC_SEEDS=1"), |seed| {
         let steps: Vec<Step> = start().into_iter().chain(body(seed)).chain(end()).collect();
         let mut w = world(seed, 3);
         w.cap = crate::harness::STORM_CAP;
@@ -54,7 +54,7 @@ fn sim(name: &str, variants: u64, body: impl Fn(u64) -> Vec<Step> + Sync, outcom
 #[test]
 #[ignore = "property"]
 fn a_reader_through_a_node_keeping_it_unread_plain() {
-    seeds(2).run("a_reader_through_a_node_keeping_it_unread_plain", |s| format!("OSIS_SYNC_SEED={s} OSIS_SYNC_SEEDS=1"), |seed| {
+    seeds(2).run("a_reader_through_a_node_keeping_it_unread_plain", |s| format!("OSIS_SYNC_START={s} OSIS_SYNC_SEEDS=1"), |seed| {
         let steps: Vec<Step> = [start(), vec![PowerOff(1)], writes(2), vec![PowerOff(0), PowerOn(1), Run]].concat();
         let mut w = world(seed, 3);
         w.cap = crate::harness::STORM_CAP;

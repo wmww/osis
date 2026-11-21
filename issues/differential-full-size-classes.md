@@ -3,7 +3,7 @@
 > Priority: normal
 > Tags: sync, engine, tests
 
-Seed numbers move whenever commit bytes change (worlds are seeded by ID): work from scripts, and turn each class into a hand test (notes/principles.md, Never pin a seed). Replay: `OSIS_FULL=1 OSIS_SYNC_SEED=<n> OSIS_SYNC_SEEDS=1`. Run the 200 seeds as four `tools/heavy` holds of 50 (about 4 minutes each on an idle box).
+Seed numbers move whenever commit bytes change (worlds are seeded by ID): work from scripts, and turn each class into a hand test (notes/principles.md, Never pin a seed). Replay: `OSIS_FULL=1 OSIS_SYNC_START=<n> OSIS_SYNC_SEEDS=1`. Run the 200 seeds as four `tools/heavy` holds of 50 (about 4 minutes each on an idle box).
 
 ## S's required set hangs on what a node holds by other paths (189)
 - Shrunk script (8 steps): `New(3), NewIn(3, 0), Give(3, 1, Holder::Node(1), Syncs), Strong(1, None, 1), Strong(1, None, 0), Give(3, 0, Holder::Node(1), Reads), Run, Unstrong(0, Some(0), 1)`; seed-0 form: Alice makes T0, and T1 minted with admin T0 (held from T0 alone), grants Bob sync on T1 and read on T0, Bob holds both from his root, Alice drops T0 -> T1. Fails on most worlds.
