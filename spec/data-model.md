@@ -4,7 +4,7 @@
 ## 1. Things and tids
 - Every datum is an **aspect** of a **thing**. A thing holds aspects and nothing else.
 - A **tid** is 120 bits: the first 120 bits of BLAKE3 over the canonical encoding of the thing's **creation record** (spec/wire.md §3). Text form: 20 characters of unpadded base64url, prefixed `osis://` where ambiguous or user-visible.
-- Creation record of a thing: (mint admin's tid, 32-byte random nonce) (spec/permissions.md §1), with a `link` field naming the target on a link's actor K (spec/permissions.md §7) and an `expires` field on a thing that expires (spec/commits.md §5 Destruction). Of a **key actor** (account, node, link key), which holds admin on itself: (algorithm-tagged signing public key, 32-byte nonce), with an `account` flag on an account (spec/permissions.md §1). A link key's nonce derives from its seed (spec/crypto.md §3).
+- Creation record of a thing: (mint admin's tid, 32-byte random nonce) (spec/permissions.md §1), with a `link` field naming the target on a link's actor K (spec/permissions.md §7) and an `expires` field on a thing that expires (spec/commits.md §5 Destruction). Of a thing minted with an owner key in place of a mint admin (an account, a node, a link key: a **key actor**): (algorithm-tagged signing public key, 32-byte nonce), with an `account` flag on an account (spec/permissions.md §1). A link key's nonce derives from its seed (spec/crypto.md §3).
 - A node checks a creation record by hashing when it receives the thing's data.
 - A tid is never a value: a value names a thing only by a reference (§8), which may dangle, and the thing may lack the expected aspects.
 - A received record that hashes to a tid the node already holds a different record for is bad input: keep the held record, ignore the new one, report a diagnostic. Never panic on it.
@@ -122,7 +122,7 @@ Values are CBOR (RFC 8949) restricted to the following profile. A decoder MUST r
 - A ticket carries no address and adds nothing to a closure: it is a weak to its target.
 - A node **can open** a ticket when it holds a key its box opens under (spec/crypto.md §4 Boxes). The opened secret is held as the secret of the epoch the box names, as any box's, establishes nothing (spec/crypto.md §4) and is taken only as spec/permissions.md §3 No secret taken back allows.
 - A ticket is made from a secret of the target its maker holds, boxed to a holder of `role` or above on the target as the maker judges it, by one of:
-  - a node that may grant `role` on the target (spec/permissions.md §2: admin on it, or an effective invite of `role` or above);
+  - a node that may grant `role` on the target (spec/permissions.md §2: by a path giving admin on it, or may-grant at `role` or above);
   - a node changing the target's keys, for each holder the change boxes (spec/sync-inbox.md §5 Key changes);
   - a node for its own account: it grants nothing, the account already holds the role.
 - Anyone may copy one. Nothing signs it: its `sync_id` is its issuer's word (spec/sync-inbox.md §5 Ticket sync IDs) and `profile` a dial hint, never proof of who issued it.
@@ -135,7 +135,8 @@ Values are CBOR (RFC 8949) restricted to the following profile. A decoder MUST r
 ## 9. Core schema
 The core aspects form the core schema, evolving under spec/versioning.md. `schema/core.osis` (normative, in the DSL of notes/data-model.md) gives their exact types, flags and default purge-by; `creation`, `signing_key`, `signature`, `kem_key`, `sealed` are spec/wire.md §3. Rules beyond the types:
 
-- `roles.0` reads as the role timeline's roster (spec/permissions.md §5). `floor`: spec/permissions.md §2. `until` 0: a removal saying retain; `retain`: what a timed grant's `until` passing says (spec/permissions.md §2).
+- `roles.0` reads as the role timeline's roster (spec/permissions.md §5). A grant's value holds its role, its may-grant flag (`may_grant`, a bool: its holder may add new holders up to the grant's role, spec/permissions.md §2), and optionally `until`, `retain` and `floor`. `floor`: spec/permissions.md §2. `until` 0: a removal saying retain; `retain`: what a timed grant's `until` passing says (spec/permissions.md §2).
+- `owners.0` (`map<blob, bool>`, keyed by the canonical bytes of a `signing_key` value): the thing's owner-key list (spec/permissions.md §1, §2 List writes). A list write adding a key puts a new entry keyed by it holding `true` (spec/crdt.md §5.6 `put_new`); one removing a key resets that key's current entry, as an edge write resets a holder's (spec/permissions.md §2 Edge writes). A delta writing inside an entry it does not create, a value other than `true`, or a key that is no `signing_key` value is bad by itself (spec/commits.md §4). It reads as the role timeline's owner-key list (spec/permissions.md §5.1), beside the key the thing's creation record holds, not as the join of the stored deltas.
 - `addenda.0` is read per delta, never as state.
 - `keys.0`: spec/crypto.md §3, spec/sync-ids.md §2; `signing` is set only on an account's (the current epoch's signing key; `key` beside it is that epoch's KEM key). `secrets.0`: spec/crypto.md §4. `sync.0`: spec/sync-ids.md §4. `reach.0`: spec/sync-transport.md §3 (a node's dialable key, its global addresses and relays). Box payloads, history box layout and AD tuples: spec/wire.md §7.
 - **References in core aspects**: every thing a core aspect's value names (schema/core.osis) is named by a weak: a creation record's `admin` and `link`, `roles.0`'s holders, box keys' holders, `left_out`'s holders, `reach.0`'s account, `keys.0`'s inbox, `caps^.0`'s things, `clients^.0`'s client actors; but `holds.0` holds refs and `tickets.0` tickets.
@@ -151,7 +152,7 @@ The core aspects form the core schema, evolving under spec/versioning.md. `schem
 - **`clients^.0`**: clients acting as a thing of their own, by client actor (spec/sync-transport.md §6).
   - `secret_hash`: BLAKE3 of the client's 32-byte bearer secret. `until`: when its sessions end.
   - The client actor is an independent thing whose mint admin is the node's account, and what the client may do is its roles.
-- **Role-class aspects**: `roles.0`, `secrets.0`, `keys.0`, `sync.0`, `account.0`, `listing.0`. Their rules: spec/commits.md §2, spec/permissions.md. `addenda.0` is content with the retention of a role-class aspect (spec/commits.md §5), never compacted. Role-class aspects, `addenda.0`, `retention^.0` and `purge.0` have the fixed retention of spec/commits.md §5.
+- **Role-class aspects**: `roles.0`, `owners.0`, `secrets.0`, `keys.0`, `sync.0`, `account.0`, `listing.0`. Their rules: spec/commits.md §2, spec/permissions.md. `addenda.0` is content with the retention of a role-class aspect (spec/commits.md §5), never compacted. Role-class aspects, `addenda.0`, `retention^.0` and `purge.0` have the fixed retention of spec/commits.md §5.
 - `creation` holds exactly one of fields 0 and 1 (spec/wire.md §3): `created.0` is typed by that rule, not by the missing-field rule of spec/versioning.md §5.
 
 ## 10. Schemas
