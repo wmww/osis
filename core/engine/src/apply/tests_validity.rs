@@ -99,7 +99,7 @@ mod tests {
         let ai = h.aspects.iter().position(|a| a.ak.as_str() == "secrets.0").unwrap();
         assert!(lp.peers[0].engine.core.ix.grant_overreach.contains(&(id, ai)));
     }
-    // spec/permissions.md §2 (invite grant: its keys.0 only the records of its boxes), spec/crypto.md §4 (Stale: every box to a holder
+    // spec/permissions.md §2 (may-grant grant: its keys.0 only the records of its boxes), spec/crypto.md §4 (Stale: every box to a holder
     // actor is recorded beside it, whoever boxes): an invite holder granting a team carries the
     // team's box records in `keys.0` as puts keyed to its grantee: valid at a receiver, which
     // notes them. One also recording a box keyed to another holder gets no invite exemption.

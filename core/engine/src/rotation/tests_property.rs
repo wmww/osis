@@ -1039,7 +1039,7 @@ fn rotation_holds_large_spec_crypto_4() {
     tally(&s.run("rotation::tests_property::rotation_holds_large_spec_crypto_4", replay, rotation_history));
 }
 
-// notes/a1-spec/README.md step 3 (Role paths), spec/permissions.md §5.2 Interim: stating real
+// notes/a1-spec/README.md step 3 (Role paths), notes/redesign-plan.md, Interim in code: stating real
 // paths on role commits changes no verdict of today's walk in the property's hostile histories
 // (forged leaves, holder actors in cycles, withheld departures): every node's verdict on every
 // edge write and every actor's roster equal those of the same seed with every role commit stating

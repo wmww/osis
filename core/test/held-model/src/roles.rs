@@ -481,7 +481,7 @@ impl Timeline {
 
     /// spec/permissions.md §6: does a request (signer `q`, acting on `qa`, commit `qc` at `qkey`)
     /// hold the right over a delta purgeable by `by`, of purge author `actor` (its commit's acting
-    /// thing, spec/permissions.md §5.2 Interim), on the thing.
+    /// thing, notes/redesign-plan.md, Interim in code), on the thing.
     #[allow(clippy::too_many_arguments)]
     pub fn right(&self, q: NodeId, qa: NodeId, qkey: Key, qc: CommitId, by: PurgeBy, actor: NodeId, thing: ThingId) -> bool {
         let both = |need: Role| self.valid_as(q, thing, need, qkey, qc) && (qa == q || self.valid_as(qa, thing, need, qkey, qc));

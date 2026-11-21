@@ -747,10 +747,10 @@ impl<'a> View<'a> {
 
     /// The ways into `y` giving at least `need` (`Ways`): breadth first, backward from `y`, over
     /// edges alive at the view's `ts` each giving `need` or more (for `Need::Invite`, the edges
-    /// into `y` giving it as an invite: notes/a1-spec/permissions.md §2 Path's invite), holders
+    /// into `y` giving it as an invite: spec/permissions.md §2 Path's may-grant), holders
     /// taken in the order the edge state lists them; with the earliest `until` it followed. A
     /// mint ancestor two or more record edges up reaches a thing by its direct edge only as a hop
-    /// marked direct (notes/a1-spec/permissions.md §1 Path, Direct mark): ways are the fewest
+    /// marked direct (spec/permissions.md §1 Path, Direct mark): ways are the fewest
     /// edges (a descent counts each record edge), then the fewest marked hops, so a far mint
     /// ancestor's direct edge is stated wherever it gives the need: a write rests on the one
     /// edge rather than the record chain. The breadth-first search, ties to fewer marks. O(things reaching `y` × their edges into it × log).
@@ -855,7 +855,7 @@ impl<'a> View<'a> {
     }
 }
 
-/// What a path must give on the thing it ends at (notes/a1-spec/permissions.md §1 Path, §2).
+/// What a path must give on the thing it ends at (spec/permissions.md §1 Path, §2).
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
 pub enum Need {
     /// At least this role on every edge.
@@ -884,7 +884,7 @@ pub struct Ways {
 }
 
 impl Ways {
-    /// The path from `from` into the thing (notes/a1-spec/permissions.md §1 Path): the things listed
+    /// The path from `from` into the thing (spec/permissions.md §1 Path): the things listed
     /// between them, each hop a direct edge or a descent (a run of record edges, whose things in
     /// between are not listed), the hops marked direct (a mint ancestor two or more record edges
     /// up reaching by its direct edge), and whether its last hop is a record edge (so the thing's

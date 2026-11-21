@@ -2,7 +2,7 @@
 //! part walked, inert or not, in one component): a part's verdict reads only its own component
 //! (notes/perm-paths.md, Components). Compared on every differential world kind and on random
 //! part soups, from scratch, after arrival in a shuffled order and after forgetting half.
-//! spec/permissions.md §5.1, §5.2 (draft: notes/a1-spec/permissions.md §5.1, §5.2).
+//! spec/permissions.md §5.1, §5.2 (draft: spec/permissions.md §5.1, §5.2).
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::indexing_slicing)]
 
 use super::incremental::{check, check_renewed, reading};

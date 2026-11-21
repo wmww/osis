@@ -292,7 +292,7 @@ fn repro_evaluate_with_drops_linear() {
     assert!(b.0 <= 15 * a.0, "{a:?} -> {b:?}");
 }
 
-// spec/requirements.md Scale (no operation O(history)), spec/permissions.md §5.1 (demotes; aspects in question): a demotion's scope (`Timeline::demotion_scope`: the walk copied, the demotion
+// spec/requirements.md Scale (no operation O(history)), spec/permissions.md §5.1 (puts in question: the old walk's demotion scope): a demotion's scope (`Timeline::demotion_scope`: the walk copied, the demotion
 // appended) on the org with drops, removing a holder from a doc and an admin from the root, with
 // an empty frontier and one listing all held: placed walking a bounded number of commits, except
 // the admin's removal under an empty frontier, whose audit drops what it puts in question and

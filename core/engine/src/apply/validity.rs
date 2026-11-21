@@ -650,7 +650,7 @@ pub(crate) fn part_valid(core: &Core, h: &Header, view: &crate::engine::View, id
 // Interim (notes/a1-spec/README.md step 3): each part is judged along the path its commit states
 // for its thing; until then the old walk judges the signer acting on the path's last thing.
 /// Whether the signer of commit `id` could act on `acting`, its one purge author
-/// (`Header::purge_author`, spec/permissions.md §5.2 Interim): it is the signer, or its write on
+/// (`Header::purge_author`, notes/redesign-plan.md, Interim in code): it is the signer, or its write on
 /// that thing at the commit's key is valid as a delta on it needing write would be (same
 /// timeline, demotions and frontiers). Every part of a commit failing this is invalid. A role
 /// commit's path names its signer, so the timeline never depends on this.
@@ -803,7 +803,7 @@ impl<'a> Judge<'a> {
     }
 
     /// `acts_for`, its `valid_from` bound found once per (signer, acting thing); else an
-    /// addendum on the acting thing vouching for the commit (spec/permissions.md §5.2 Interim).
+    /// addendum on the acting thing vouching for the commit (notes/redesign-plan.md, Interim in code).
     fn acts(&mut self, h: &Header, x: Tid, id: &CommitId) -> bool {
         if h.signer == x {
             return true;

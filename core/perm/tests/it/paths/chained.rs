@@ -3,7 +3,7 @@
 //! over the differential worlds at every view, and hand worlds of each kind of part (an invite
 //! grant by its path's invite, a removal, a finalize by write, a self-removal), with
 //! `Changed::chained` reporting each flip, on arrival and on forget.
-//! spec/permissions.md §4 (the draft replaces it: notes/a1-spec/permissions.md §4 Chained writes).
+//! spec/permissions.md §4 (the draft replaces it: spec/permissions.md §4 Chained writes).
 
 use super::incremental::check;
 use super::{input, rules, MODES};

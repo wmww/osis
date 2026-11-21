@@ -113,7 +113,7 @@ pub enum Kind {
         finalize: bool,
     },
     Addendum { removal: Id, list: Set },
-    /// A purge request (spec/commits.md §5 Purge; notes/a1-spec/permissions.md §6): it names
+    /// A purge request (spec/commits.md §5 Purge; spec/permissions.md §6): it names
     /// deltas on its thing (`Names`) and drops each it holds a right over (`purges`). Content-class,
     /// judged as a content write along its path.
     Purge { names: Names },
@@ -372,7 +372,7 @@ pub struct Rules {
     pub refuse_shapes: bool,
     /// How a write putting an end on a standing admin edge (or shortening its end) is judged.
     pub until: Until,
-    /// Purge rights by class (notes/a1-spec/permissions.md §6, *taken*): a request holds, over each
+    /// Purge rights by class (spec/permissions.md §6, *taken*): a request holds, over each
     /// delta it names, each member of the delta's purge-by set it holds: `admin` where it is valid
     /// as a delta needing admin along its path, `writer` as one needing write, `author` as one
     /// needing write whose chain holds the delta's purge author; every selector (`Names`) read.
@@ -392,7 +392,7 @@ pub struct Rules {
     /// A cover marked as its writer's own cover is also valid, where its path gave write just
     /// before it, while an explicit lowering the timeline applies (whatever it takes from its edge
     /// at this node), signed by its writer, ordered at or after it, names it
-    /// (notes/a1-spec/permissions.md §5.2 Own cover, *taken*), whatever cuts its path later. False:
+    /// (spec/permissions.md §5.2 Own cover, *taken*), whatever cuts its path later. False:
     /// judged as any cover.
     pub own_cover: bool,
     /// What a drop takes of the commit it drops a part of (notes/a1-spec/README.md Open 23: a
@@ -404,7 +404,7 @@ pub struct Rules {
 }
 
 /// What a cut's list, or a valid addendum against the cut, keeps of a delta it names
-/// (notes/a1-spec/permissions.md §5.2 Content).
+/// (spec/permissions.md §5.2 Content).
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub enum Answers {
     /// The rule (`fixed`): it answers that cut alone, as a lowering's list exempts from its own
@@ -556,7 +556,7 @@ impl Rules {
             answers: Answers::PerCut,
         }
     }
-    /// `fixed` with the purge readings the draft takes (notes/a1-spec/permissions.md §5.2 Own
+    /// `fixed` with the purge readings the draft takes (spec/permissions.md §5.2 Own
     /// cover, §6; notes/purge-model.md): rights by class, requests reaching copies, own covers
     /// standing with their removal. Off in `fixed` while the walk (osis-perm `paths`) owes them.
     pub fn purging() -> Rules {
@@ -614,7 +614,7 @@ impl World {
     }
     /// `push` with the hops `direct` (by index: hop 0 joins the signer to the first member after
     /// it) marked direct: joined by their direct edge though the first is a mint ancestor of the
-    /// second (notes/a1-spec/permissions.md §1 Path, Direct mark; spec/wire.md §4 `marks`). A mark
+    /// second (spec/permissions.md §1 Path, Direct mark; spec/wire.md §4 `marks`). A mark
     /// is allowed only on a hop otherwise read as a descent of two steps or more; on any other
     /// (no record chain between them, a one-step descent whose record edge is the direct edge, a
     /// position past the members) the part applies nowhere, as a member named twice does.
@@ -886,7 +886,7 @@ impl World {
             _ => None,
         }
     }
-    /// `r`'s frontier names `j` (notes/a1-spec/permissions.md §5.1 The list: an entry in thing t's
+    /// `r`'s frontier names `j` (spec/permissions.md §5.1 The list: an entry in thing t's
     /// leaf names its commit's parts on t alone, notes/evidence-model-findings.md 24).
     fn in_frontier(&self, r: Id, j: Id) -> bool {
         self.in_leaves(r, j, None)
@@ -1602,7 +1602,7 @@ fn role_at(w: &World, p: &Pass, e: Edge, pos: Key) -> Role {
 
 /// Whether a delta along `hops` positioned at `pos`, stamped `ts`, stands for role `r` against the
 /// cuts of its path (`cuts`: on its hops, below `r`), `answers` saying which cut its list or an
-/// addendum answers (notes/a1-spec/permissions.md §5.2 Content; `Answers`).
+/// addendum answers (spec/permissions.md §5.2 Content; `Answers`).
 #[allow(clippy::too_many_arguments)]
 fn stands(w: &World, rules: &Rules, p: &Pass, hops: &[Edge], pos: Key, ts: u32, r: Role, cuts: &[&Low], answers: &dyn Fn(&Low) -> bool) -> bool {
     let after = |l: &&&Low| w.key(l.id) > pos;
@@ -1798,7 +1798,7 @@ fn content(w: &World, rules: &Rules, v: &View, p: &Pass) -> (Set, Set) {
     }
 }
 
-/// The content a valid purge request holds a right over (notes/a1-spec/permissions.md §6). Under
+/// The content a valid purge request holds a right over (spec/permissions.md §6). Under
 /// `purge_classes` each named delta is judged alone, by the members of its purge-by set the request
 /// holds (`holds`); else by the `author` class alone (a request by author P, valid, holds the right
 /// over the earlier deltas on its thing whose purge author is exactly P, P on its chain). Under
@@ -1850,7 +1850,7 @@ fn purges(w: &World, rules: &Rules, v: &View, p: &Pass, valid: &Set, copied: &Se
     out
 }
 
-/// Whether request `q` holds role `r` on its thing (notes/a1-spec/permissions.md §6: exactly when a
+/// Whether request `q` holds role `r` on its thing (spec/permissions.md §6: exactly when a
 /// delta of it needing `r`, along its path, at its key would be valid, spec §5.2): it stands
 /// against each cut of its path below `r` (`stands`), a cut answered by its list or by a valid
 /// addendum by a holder of `r` against it (`purge_addenda`), or the path is re-granted for `r`. A destruction's right reads no cut on an

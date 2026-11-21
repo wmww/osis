@@ -396,7 +396,7 @@ pub(crate) fn interim_path(signer: Tid, actor: Tid) -> osis_commit::Path {
 /// is a record edge.
 pub(crate) type Found = (Vec<Tid>, osis_base::format::PathMarks, bool);
 
-/// The path from `node` into `tid` giving at least `need` at `ts` (notes/a1-spec/permissions.md §1 Path):
+/// The path from `node` into `tid` giving at least `need` at `ts` (spec/permissions.md §1 Path):
 /// `Found`, the fewest edges, then the fewest hops marked direct: a mint ancestor's direct edge
 /// giving it is stated, marked, before the descent (`osis_perm::graph::View::ways_to`). A thing the commit creates
 /// (`records`) is reached as its mint admin is, then by its record edge. `None`: no path gives it.
@@ -494,7 +494,7 @@ pub(crate) fn stated_paths(core: &Core, plan: &CommitPlan, writes: &[AspectWrite
 }
 
 /// How a role commit's edge writes on a thing reach it where that is not by the signer's role
-/// there (notes/a1-spec/permissions.md §2), read off what they write.
+/// there (spec/permissions.md §2), read off what they write.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum RoleWay {
     /// An invite grant of this role (the signer holds no admin on the thing and the commit puts a
@@ -516,7 +516,7 @@ fn role_way(core: &Core, plan: &CommitPlan, t: &Tid, edges: &[(Tid, Tid, Option<
         Some(tl) => tl.edges_at(None).get(m, t).copied(),
         None => (core.mint_admin(t) == Some(*m)).then(|| osis_perm::Edge::new(Role::Admin)),
     };
-    // a removal of an absent grant lowers (notes/a1-spec/permissions.md §2 Self-removal)
+    // a removal of an absent grant lowers (spec/permissions.md §2 Self-removal)
     let lowers = on.iter().all(|(m, e)| m == h && osis_perm::types::lowers(e.as_ref(), old(m).as_ref()));
     if lowers && (*h == node || crate::apply::validity::self_removal(core, &node, t, h, plan.ts)) {
         return Some(RoleWay::Leave(*h));
@@ -578,7 +578,7 @@ fn role_path(core: &Core, plan: &CommitPlan, writes: &[AspectWrite], edges: &[(T
 }
 
 /// The holder whose edge on `t` an edge write of `plan` stating `path` names as its remaining
-/// admin (header `remains`, notes/a1-spec/permissions.md §1 The last admin), where the commit
+/// admin (header `remains`, spec/permissions.md §1 The last admin), where the commit
 /// takes a standing admin edge of `t` (`edges`: its edge writes, (target, holder, new edge)) and
 /// its path's last edge into `t` is none, one it takes, or standing no more with the commit's
 /// writes in effect. The last edge is the path's final hop where that is one edge from its end Ak

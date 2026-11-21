@@ -145,7 +145,7 @@ RULES = [
     ("spec/data-model.md", "6", "unreadable link", "A read that materializes a link it cannot read"),
     ("spec/permissions.md", "1", "mint admin removable", "Admins are equal and may remove each other, the mint admin included"),
     ("spec/permissions.md", "1", "role-class by admins", "are written only by its admins"),
-    ("spec/permissions.md", "2", "invite scope", "Invite holders cannot change or remove any other edge"),
+    ("spec/permissions.md", "2", "may-grant scope", "Holders by may-grant cannot change or remove any other edge"),
     ("spec/permissions.md", "3", "required rotation", "MUST do so before it next encrypts"),
     ("spec/permissions.md", "3", "holder actors", "boxes a holder actor M at the keysets Seal gives"),
     ("spec/permissions.md", "3", "removal logged first", "MUST, in the same sync and before anything else it logs"),

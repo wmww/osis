@@ -446,7 +446,7 @@ fn route_shape() -> (LocalPeer, Tid, Tid, Tid) {
 }
 
 // spec/requirements.md Permissions (a removal nobody stamps cuts off nothing by itself),
-// spec/permissions.md §5.1 (never demotes its own author): f removes its own route S
+// spec/permissions.md §5.1 (keeps: the old walk's rule that a write never demotes its own author): f removes its own route S
 // from M in a commit that also rotates M leaving S out. The rotation is valid
 // (f held write on M just before it), so f keeps the epoch it made; a1, holding M's keysets as
 // certificates only, seals M at f's keyset. Once m1, who knows S left, rotates M (listing f's

@@ -129,7 +129,7 @@ fn verdicts(w: &World, i: usize) -> Verdicts {
     (out, rosters)
 }
 
-// notes/a1-spec/README.md step 3 (Role paths), spec/permissions.md §5.2 Interim: stating real
+// spec/permissions.md §5.2; notes/a1-spec/README.md step 3 (Role paths), notes/redesign-plan.md, Interim in code: stating real
 // paths on role commits changes no verdict of the old walk: every node's verdict on every edge
 // write, and every thing's roster, equal those of the same world with every role commit stating
 // the Interim empty path.
@@ -163,7 +163,7 @@ fn hop(e: &osis_engine::Engine, p: Tid, q: Tid, marked: bool, point: Point) -> O
     Some((x.role, if x.role == Role::Admin { Some(Role::Admin) } else { x.invite.map(|i| i.min(x.role)) }))
 }
 
-// notes/a1-spec/permissions.md §1 Path, §2 Self-removal and Invite grant, spec/wire.md §4 field 2:
+// spec/permissions.md §1 Path, §2 Self-removal and Invite grant, spec/wire.md §4 field 2:
 // every role commit states a real path. Over the representative world, each role commit A holds
 // states one path, purge index 0, whose hops from its signer to each thing it writes (to the
 // holder, for a self-removal) are held edges or descents just before its key, giving what the
@@ -199,7 +199,7 @@ fn every_stated_role_path_is_a_chain_of_held_edges_spec_wire_4() {
             let tl = e.core.timelines.get(&t);
             let ops: Vec<(Tid, Option<osis_perm::Edge>)> = tl.map(|tl| tl.held_on(&t).filter(|(w, _, _)| w.0 == id).map(|(_, _, op)| (op.holder, op.edge)).collect()).unwrap_or_default();
             let leave = !ops.is_empty() && ops.iter().any(|(m, _)| *m == end);
-            // a key actor writing itself: [S] (notes/a1-spec/permissions.md §1 Path)
+            // a key actor writing itself: [S] (spec/permissions.md §1 Path)
             let members: Vec<Tid> = std::iter::once(h.signer).chain(listed.iter().copied()).chain((!leave && t != h.signer).then_some(t)).collect();
             let hops: Vec<(Role, Option<Role>)> = members.windows(2).enumerate().map(|(j, x)| hop(e, x[0], x[1], p.direct >> j & 1 == 1, point).unwrap_or_else(|| panic!("{id:?}: {:?} holds nothing on {:?} (path to {t:?}: {listed:?}; {:?}, effective {:?}, record {:?})", x[0], x[1], h.aspects.iter().map(|a| (a.tid, a.ak.as_str().to_string())).collect::<Vec<_>>(), e.core.timelines.role(&h.signer, &t, At::before(point)), e.core.created(&t)))).collect();
             let role = hops.iter().map(|x| x.0).min().unwrap_or(Role::Admin);
@@ -361,7 +361,7 @@ fn one_path(h: &osis_commit::Header) -> Vec<Tid> {
     p.things.clone()
 }
 
-// notes/a1-spec/permissions.md §1 Path, §2 Self-removal, §1 The last admin: B, admin of team H,
+// spec/permissions.md §1 Path, §2 Self-removal, §1 The last admin: B, admin of team H,
 // removes H from T, where B's only admin on T is through H: a self-removal (its path, [H], ends at
 // the holder), carrying no frontier and naming T's mint admin A as the admin that remains
 // (roles-model `an_honest_holder_leave_is_no_dispute`: K makes A2 leave T1 by [A2], naming A).
@@ -395,7 +395,7 @@ fn removing_the_team_one_acts_through_is_a_self_removal_spec_permissions_2() {
     }
 }
 
-// notes/a1-spec/permissions.md §2 Invite grant ("an edge write whose path gives admin on T is
+// spec/permissions.md §2 May-grant grant ("an edge write whose path gives admin on T is
 // explicit, whatever it sets"): B holds admin on T through H and a direct write grant inviting
 // read; its grant of read to C states the admin path [H], not its own invite (the empty path),
 // and applies as an explicit grant, not an invite grant.
@@ -535,7 +535,7 @@ fn new_walk_differs_only_by_design() {
     assert!(bad.is_empty(), "differences outside their class: {bad:#?}");
 }
 
-// notes/principles.md Check scaling, notes/a1-spec/permissions.md §2 Path's invite: finding an
+// notes/principles.md Check scaling, spec/permissions.md §2 Path's may-grant: finding an
 // invite grant's path (`Need::Invite`: the role on every edge but the last, as an invite on the
 // last) walks the things reaching its target, as many at 10n unrelated role commits held as at n.
 #[test]
@@ -564,7 +564,7 @@ fn finding_an_invite_grants_path_does_not_grow_with_history_spec_wire_4() {
     assert!(small.0 > 0 && small == large, "ways walked at n {small:?} and 10n {large:?}");
 }
 
-// notes/a1-spec/permissions.md §1 Path, Direct mark; spec/wire.md §4 `marks` (README Open 21): A
+// spec/permissions.md §1 Path, Direct mark; spec/wire.md §4 `marks` (README Open 21): A
 // makes G and T under G, takes admin on T by its own grant and removes G's record edge there
 // (detaching T from its folder). A's later content and role writes on T state the empty path with
 // its one hop marked direct (A's own grant: the descent is cut, so no unmarked path gives the
@@ -613,7 +613,7 @@ fn a_detached_things_owner_states_a_marked_hop_both_walks_apply_spec_wire_4() {
     }
 }
 
-// notes/principles.md Check scaling, notes/a1-spec/permissions.md §1 Path, Direct mark: finding
+// notes/principles.md Check scaling, spec/permissions.md §1 Path, Direct mark: finding
 // a detached thing's path (A's direct edge, marked) walks the things reaching it, as many at 10n
 // unrelated role commits held as at n.
 #[test]

@@ -1,4 +1,4 @@
-//! spec/permissions.md §1 (mint admin), §2 (self-removal, `until`, finalize, invites), §5.2 (acting),
+//! spec/permissions.md §1 (mint admin), §2 (self-removal, `until`, finalize, invites), §5.2 (content),
 //! §7 (links).
 use crate::util::*;
 use held_model::gen::{ACCOUNT, LINK_K, LINK_L, REG};
@@ -43,7 +43,7 @@ fn until_ends_an_edge_and_finalize_applies_only_past_it_spec_permissions_2() {
     assert!(evaluate(&held(5, cs(4))).valid[&(6, 0)]);
 }
 
-// spec/permissions.md §2 (Invite grant): an invite holder adds an edge up to its effective invite
+// spec/permissions.md §2 (May-grant grant: as today's invite levels): an invite holder adds an edge up to its effective invite
 #[test]
 fn invite_grant_up_to_the_invite_spec_permissions_2() {
     let inv = EdgeWrite { holder: 1, role: Some(Role::Write), invite: Some(Role::Write), until: None };
@@ -135,7 +135,7 @@ fn mint_admin_is_an_edge_spec_permissions_1() {
     assert!(!evaluate(&cs(true)).valid[&(10, 0)]);
 }
 
-// spec/permissions.md §5.2 (Acting): a delta acting for an actor is valid only while its author could
+// spec/permissions.md §5.2 (content: the old walk's Acting check, notes/redesign-plan.md, Interim in code): a delta acting for an actor is valid only while its author could
 // write on that actor
 #[test]
 fn acting_for_an_account_spec_permissions_5_2() {

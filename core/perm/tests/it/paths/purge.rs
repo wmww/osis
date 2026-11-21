@@ -2,8 +2,8 @@
 //! class and selector by honest parties and by a thief, destructions, a cover's copies read by a
 //! node holding only what was made after it, and an own cover whose writer is removed later,
 //! each read at every node's view by the walk and by the model under `Rules::purging`.
-//! spec/permissions.md §6, §5.2 (the draft replaces them: notes/a1-spec/permissions.md §6, §5.2
-//! Own cover); spec/commits.md §5 (draft notes/a1-spec/commits.md §4 Could hold the right, §5).
+//! spec/permissions.md §6, §5.2 (the draft replaces them: spec/permissions.md §6, §5.2
+//! Own cover); spec/commits.md §5 (draft spec/commits.md §4 Could hold the right, §5).
 
 use super::{diff, rules};
 use crate::common::{seeded, sharded};

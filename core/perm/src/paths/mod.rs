@@ -1,5 +1,5 @@
 //! The permission walk along stated paths (notes/perm-paths.md; draft spec
-//! notes/a1-spec/permissions.md §1, §2, §5.1, §5.2, §6): every edge-class part (an edge write)
+//! spec/permissions.md §1, §2, §5.1, §5.2, §6): every edge-class part (an edge write)
 //! is judged along the one path its commit states for its thing, in key order, each lowering
 //! judged once; every delta is judged along its path by point queries on the walk, and a purge
 //! request's right as a delta of

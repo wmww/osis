@@ -891,7 +891,7 @@ fn purge_rejudge(n: usize) -> [Work; 3] {
     [step(&mut lp, z, Some(Role::Write)), step(&mut lp, x, None), step(&mut lp, x, Some(Role::Admin))]
 }
 
-// spec/permissions.md §6 (a role counts toward the right exactly when); spec/
+// spec/permissions.md §6 (a request holds role r exactly where); spec/
 // requirements.md, Scale: on an aspect of n and 10n kept commits with n/10 named purge requests,
 // a join with no request does flat work; the requester's removal and re-grant, which make every
 // request fall or rise together, rebuild the aspect once (after every verdict, not once per

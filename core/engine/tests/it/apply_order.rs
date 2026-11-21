@@ -201,7 +201,7 @@ fn sample(shape: Shape) -> usize {
     each_order(fresh, &rest, &mut Vec::new(), &mut |order, p| assert_eq!(seen(p, &ids, &things), want, "arrival order {order:?}"))
 }
 
-// spec/permissions.md §5 (validity is a deterministic function of the commits a node holds), §5.2 (lists its commit, whatever their order), spec/crdt.md §4.6:
+// spec/permissions.md §5 (validity is a deterministic function of the commits a node holds), §5.2 (names its commit, whatever their order), spec/crdt.md §4.6:
 // frontiers before (backdated), inside and after the writer's writes; children of the demoted
 // actor created in one commit, a grandchild in a later commit or in theirs; a demotion by an admin other than the
 // mint admin; a commit naming a former leaf; B's last write at the demotion's `ts` (§5.2, Position).

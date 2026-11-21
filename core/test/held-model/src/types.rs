@@ -278,7 +278,7 @@ pub struct Commit {
     pub id: CommitId,
     /// The signing node (spec/wire.md §4 field 1).
     pub signer: NodeId,
-    /// The thing its path reads as acting on (spec/permissions.md §5.2 Interim, Acting): the
+    /// The thing its path reads as acting on (notes/redesign-plan.md, Interim in code): the
     /// signer for the empty path.
     pub acting: NodeId,
     pub ts: u64,

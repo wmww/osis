@@ -558,7 +558,7 @@ fn dropped_pending_grant_drops_reading_secrets_spec_crypto_4() {
 
 // spec/permissions.md §2: an invite holder grants a new holder up to its invite, and cannot
 // change or remove anyone else; a holder leaves by self-removal.
-// spec/permissions.md §2 (invite scope)
+// spec/permissions.md §2 (may-grant scope)
 #[test]
 fn invite_power_spec_perm_2() {
     let (mut lp, ps) = people(3);
@@ -1794,7 +1794,7 @@ fn frontier_lists_commit_ids_spec_perm_5_1() {
     assert!(!e.is_empty() && e.iter().all(|c| f.commits.contains(c)), "by ID: {f:?}");
 }
 
-// spec/permissions.md §5.1 Frontier, §5.2 Acting; notes/revocation.md, Frontier encoding (a kick
+// spec/permissions.md §5.1 Frontier; notes/redesign-plan.md, Interim in code; notes/revocation.md, Frontier encoding (a kick
 // never scales with history): node 1 writes doc X many times as its account P, compacted, and
 // once as P on its own thing Y. A demotion of P lists only what no snapshot covers: Y's write
 // (it would go invalid unlisted, though the node's own right on Y never fell), not every
@@ -2622,7 +2622,7 @@ fn concurrent_leaves_leave_no_admin_spec_perm_1() {
     }
 }
 
-// spec/permissions.md §1 (The last admin), §5.1 (audit): G's admin Y (granted by P) made Z the
+// spec/permissions.md §1 (The last admin), §5.1 (drops): G's admin Y (granted by P) made Z the
 // only standing admin of T, a thing minted with G, by granting Z and then removing G's record
 // edge on T. P removing Y from G audits Y's edge writes, T's included, but P's frontier lists
 // every write of Y's it holds, so at P they stand: the removal goes through and T keeps Z.

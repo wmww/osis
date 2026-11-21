@@ -320,7 +320,7 @@ fn frontier_lists_compacted_too_snapshot_vouches_at_fresh_node_spec_perm_5_1() {
     }
 }
 
-// spec/permissions.md §5.1 (frontier; had received of x's writes as of t): a backdated frontier lists Bob's
+// spec/permissions.md §5.1 (frontier; had received as of): a backdated frontier lists Bob's
 // commits Alice received by its cutoff, not those received after.
 // spec/permissions.md §5.1 (frontier received)
 #[test]
@@ -472,7 +472,7 @@ fn forge_acting(lp: &mut LocalPeer, d: Tid, actor: Tid, v: &str) -> Vec<u8> {
     cb.build(&forge_key, &Keys(rec), &mut MemoryBlobs::default(), &mut osis_crypto::SeededRng::from_u64(0)).unwrap().commit.encode()
 }
 
-// spec/permissions.md §5.2 (acting): Bob, a writer of D, signs a write naming
+// spec/permissions.md §5.2 (content: the old walk's Acting check, notes/redesign-plan.md, Interim in code): Bob, a writer of D, signs a write naming
 // Carol as its actor though he holds no write on her. Receivers judge it invalid, so it can
 // never read as Carol's; the same write naming Bob himself is valid.
 #[test]
@@ -489,7 +489,7 @@ fn forged_actor_invalid_spec_perm_5_2() {
     assert_eq!(lp.peers[0].engine.get(&d, &ak("t:reg.0")).unwrap(), Some(s("as bob")));
 }
 
-// spec/permissions.md §5.2 (acting), spec/commits.md §4 (order independence):
+// spec/permissions.md §5.2 (content: the old walk's Acting check, notes/redesign-plan.md, Interim in code), spec/commits.md §4 (order independence):
 // Dave (3), with no right on D, grants Bob write on X, a thing Dave makes; Bob writes D acting
 // for X. Alice gets the write before the grant (invalid: Bob cannot act for X as far as she
 // knows) and judges it valid once the grant arrives, though nothing about D changed.
@@ -700,7 +700,7 @@ fn admin_only_aspect_needs_admin_spec_perm_5_2() {
     }
 }
 
-// spec/permissions.md §5.1 (frontier; aspects in question): an
+// spec/permissions.md §5.1 (frontier: an admin-only write rests on the lowered hop): an
 // admin's `^` write the demoter had received stays valid when it demotes that admin to write;
 // one it had not received goes
 #[test]
@@ -1586,7 +1586,7 @@ fn late_invalid_part_unmerges_alike_spec_crdt_4_6() {
     assert!(!shown(&seen[0][0]), "elsewhere: {}", seen[0][0]);
 }
 
-// spec/permissions.md §5.2 (copies; a valid snapshot speaks for current state alone; never compared with it; a node attributes a write's author and time only to a commit it holds), spec/crdt.md §4.1 (copy order): Bob writes "real" (commit C); Carol, a
+// spec/permissions.md §5.2 (copies; a valid snapshot speaks for current state alone; never compared with it; a node attributes a write's signer and time only to a commit it holds), spec/crdt.md §4.1 (copy order): Bob writes "real" (commit C); Carol, a
 // writer, sends a snapshot carrying C's dot and `ts` with another value. Nodes holding C (after
 // or before the snapshot) read the greater copy by the copy order; a node holding only the
 // snapshot reads its copy, and once it holds C reads as the others. Only the holders of C
@@ -1940,7 +1940,7 @@ fn snapshot_covers_write_inside_earlier_entry_spec_commits_5() {
 }
 
 // spec/requirements.md, Threat model ("malicious readers can only waste storage"), Decentralization;
-// spec/permissions.md §5.2 (compaction snapshot; judged as its author's delta of that aspect): a
+// spec/permissions.md §5.2 (compaction snapshot; judged as a delta of that aspect): a
 // reader's snapshot gives nothing and covers nothing, whether it arrives after the mint admin's
 // commit C (a copy of peer 2) or before it (a copy of peer 3), across a restart. Forged: another
 // value under the dot and `ts` of C's session-form register write; a map entry under the dot and
@@ -3309,7 +3309,7 @@ fn late_joiner_after_compaction_keeps_writes_spec_crdt_8() {
 
 
 
-// spec/permissions.md §5.1 (frontier; had received of x's writes as of t; a commit is listed whether a still holds its body, dropped it or compacted it): Alice receives Bob's write before a backdated
+// spec/permissions.md §5.1 (frontier; had received as of; a commit is listed whether a still holds its body, dropped it or compacted it): Alice receives Bob's write before a backdated
 // revoke's cut and Bob's own snapshot covering it after. The snapshot is not listed (received
 // late), so it is invalid after the removal; the write must be listed and stay.
 #[test]
@@ -4035,7 +4035,7 @@ fn a_removed_writers_write_forged_at_the_removals_ts_is_lost_everywhere_spec_per
     }
 }
 
-// spec/permissions.md §5.1 (audits: falls, security), §5.2 Position: Bob, an admin, is removed; a copy
+// spec/permissions.md §5.1 (drops: falls, security), §5.2 Position: Bob, an admin, is removed; a copy
 // of his node from before he learned of it grants Carol admin stamped at exactly the removal's
 // `ts`, sent only after the removal reached every node. Ordered before the removal or after it by
 // the tids, the grant is no part of the removal's frontier: Carol's role is what Alice gave her at
@@ -4707,7 +4707,7 @@ fn a_section_wrap_opening_under_two_epochs_reads_alike_spec_wire_4() {
     assert!(env.open(|_| vec![e2.clone()]).is_err(), "e2 alone: bad input");
 }
 
-// spec/permissions.md §5.2 Interim (a commit acts on every thing for its one purge author, which
+// notes/redesign-plan.md, Interim in code (a commit acts on every thing for its one purge author, which
 // its signer must be or hold write on, the Acting check), spec/wire.md §4: a hand-built purge
 // author acts no wider than that check allows, in either path form. Bob (writer of H, H of D, Bob
 // of P) restates his writes: clear, naming H (accepted), a thing Q he holds nothing on (invalid),
@@ -4855,7 +4855,7 @@ fn a_split_commit_with_its_aspect_list_by_link_waits_for_it_spec_commits_4() {
     lp.peers[0].engine.check_index();
 }
 
-// spec/permissions.md §6 (The right), §5.2 Interim (the one purge author, in the clear),
+// spec/permissions.md §6 (The right); notes/redesign-plan.md, Interim in code (the one purge author, in the clear),
 // notes/path-form.md Per consumer: a purge request is judged alike in both path forms: Bob purges
 // his own write on D (through H, purgeable by its author) alone (one path, `[H]`) and beside a write
 // of P (split). At every node the outcome is the same in either form: his write goes; Alice's
@@ -5126,7 +5126,7 @@ fn holders_world(n: usize) -> (LocalPeer, Vec<Tid>, Tid, Tid) {
     (lp, chain, t, d)
 }
 
-// notes/a1-spec/permissions.md §1 Path, spec/wire.md §4 field 2: a write states the chain of
+// spec/permissions.md §1 Path, spec/wire.md §4 field 2: a write states the chain of
 // holders by which its signer reaches what it writes, naming the signer as purge author (the
 // thing it acts for, listed, where it acts for one): none for what it holds directly, three for a
 // thing reached through three; every node applies it as before (Interim, spec/permissions.md
@@ -5204,7 +5204,7 @@ fn finding_a_path_does_not_grow_with_history_spec_wire_4() {
     assert!(small.0 > 0 && small.1 == 0, "walked once while the roles stand: {small:?}");
 }
 
-// notes/a1-spec/permissions.md §1 Path; spec/wire.md §4 field 2: the path a write states is the
+// spec/permissions.md §1 Path; spec/wire.md §4 field 2: the path a write states is the
 // shortest on the edges alive at its `ts`: a direct grant ending with no edge write since, the
 // path goes through the holder; a shorter one granted, it is taken; removed, the holder again.
 #[test]
@@ -5231,7 +5231,7 @@ fn a_writes_path_follows_its_edges_and_their_ends_spec_wire_4() {
     assert_eq!(write(&mut lp, "removed"), chain, "the used path removed");
 }
 
-// notes/a1-spec/permissions.md §1 Path: among paths as short, the writer's choice is a function
+// spec/permissions.md §1 Path: among paths as short, the writer's choice is a function
 // of the edges it holds, not of the order they came in: Bob reaches T through H1 or H2.
 #[test]
 fn a_writes_path_is_a_function_of_the_held_edges_spec_wire_4() {

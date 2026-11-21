@@ -1,6 +1,6 @@
 //! Signal edits (notes/signal-edits-design.md, the design, not the engine). A part with `replaces` is
 //! honored when the named commit is listed on the same (thing, aspect), valid or a purge tombstone,
-//! has no `replaces` itself, acts on the same thing (spec/permissions.md §5.2 Interim: its path's last listed
+//! has no `replaces` itself, acts on the same thing (notes/redesign-plan.md, Interim in code: its path's last listed
 //! thing, verified) and sorts before it by (ts, ID); else it is a
 //! fire of its own. An original reads as its newest listed honored version (valid versions only);
 //! stamp, place and order stay the original's. A purge takes only the commits it names. Listing

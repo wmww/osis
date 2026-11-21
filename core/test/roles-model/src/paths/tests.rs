@@ -2575,7 +2575,7 @@ fn a_self_rewrite_keeps_no_admin_its_grant_lost() {
     }
 }
 
-/// The one-encoding rule (notes/a1-spec/permissions.md §1 Path, Direct mark): a mark only on a
+/// The one-encoding rule (spec/permissions.md §1 Path, Direct mark): a mark only on a
 /// hop otherwise read as a descent of two steps or more. B holds a direct grant on T1 (B is on no
 /// record chain of T1): [] marked applies nowhere, unmarked applies. A, T1's mint admin, holds the
 /// record edge, which is its direct edge: its write by [] marked applies nowhere, unmarked applies.
@@ -2602,7 +2602,7 @@ fn a_mark_off_a_descent_of_two_steps_applies_nowhere() {
     assert!([b_marked, a_marked, past, h_none].iter().all(|i| !rd.valid.contains(i)), "{rd:?}");
 }
 
-/// A final hop marked direct is the path's last edge (notes/a1-spec/permissions.md §1 Path's last
+/// A final hop marked direct is the path's last edge (spec/permissions.md §1 Path: its last
 /// edge): T1 detached, H holds admin on it by its direct grant, B by its own. H removes B along
 /// the marked hop: its last edge (H's grant) gives admin, so it applies (the descent would give
 /// nothing). H, given read with the flag on T1 in place of admin, grants Z read along the marked
@@ -2626,7 +2626,7 @@ fn a_marked_final_hop_is_the_last_edge() {
     assert!(rd.by_flag.contains(&inv) && !rd.applied.contains(&too_much) && rd.role(Z, T1) == Role::Read, "{rd:?}");
 }
 
-/// Two routes, two claims (notes/a1-spec/permissions.md §1 Path, Direct mark): H holds T1 by the
+/// Two routes, two claims (spec/permissions.md §1 Path, Direct mark): H holds T1 by the
 /// descent and by its own direct grant; B holds a direct admin grant on T1. B removes A's record
 /// edge on T1, detaching it: H's write along the descent stamped after applies nowhere, the one
 /// along its marked direct hop stands. B then removes H's direct grant listing that write: H's
@@ -2653,7 +2653,7 @@ fn a_party_with_both_routes_is_cut_off_by_removing_both() {
     assert!(rd.applied.contains(&r) && !rd.valid.contains(&marked), "unlisted, the marked write falls with the grant: {rd:?}");
 }
 
-/// The thief with the far ancestor's key (notes/a1-spec/permissions.md §1 Path, Direct mark): H
+/// The thief with the far ancestor's key (spec/permissions.md §1 Path, Direct mark): H
 /// holds T1 by its direct grant only (A's record edge removed), B by its own. After B removes H's
 /// grant, the thief holding H's key backdates a marked write and a marked grant of Z: both fall,
 /// trusting the removal or not; a grant along the cut descent applies nowhere at all.
@@ -2676,7 +2676,7 @@ fn a_removed_far_ancestors_backdated_marked_writes_fall() {
     }
 }
 
-/// The mark meets the other rules (notes/a1-spec/permissions.md §1 Path, Direct mark; §5.1):
+/// The mark meets the other rules (spec/permissions.md §1 Path, Direct mark; §5.1):
 /// T1 under A under H. H grants itself, B and N5 admin on T1 (direct grants through [A]), then
 /// detaches T1 (A's record edge removed, listing those grants). Along its marked direct hop H
 /// grants X write and writes content; X writes. B removes H listing H's content: H's grant of X

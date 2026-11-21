@@ -185,7 +185,7 @@ fn a_fallen_addendum_is_vouched_for_in_turn_spec_perm_5_2() {
     }
 }
 
-// spec/permissions.md §5.2 (addenda; w held write on n just before a's key): a reader's addendum vouches for nothing, however it
+// spec/permissions.md §5.2 (addenda; gives write just before a's key): a reader's addendum vouches for nothing, however it
 // got written.
 #[test]
 fn a_readers_addendum_counts_for_nothing_spec_perm_5_2() {
@@ -316,7 +316,7 @@ fn build_team() -> (LocalPeer, Tid, Tid, CommitId, CommitId) {
     (lp, n, team, r, e)
 }
 
-// spec/permissions.md §5.2 (addenda; acting): a lying writer of N (Mallory, received
+// spec/permissions.md §5.2 (addenda: with the old walk's Acting check, notes/redesign-plan.md, Interim in code): a lying writer of N (Mallory, received
 // Bob's write after the removal) vouches for the part on N; Bob still writes T, so the Acting
 // part needs no vouching and the write counts. The same as a lying witness for a removed
 // holder acting for itself: a writer can always vouch for the removed side's earlier writes on
@@ -335,7 +335,7 @@ fn lying_writer_vouches_for_a_removed_teams_write_spec_perm_5_2() {
     }
 }
 
-// spec/permissions.md §5.2 (Acting): with Bob also removed from T, a writer of N vouching for
+// spec/permissions.md §5.2 (content: the old walk's Acting check, notes/redesign-plan.md, Interim in code): with Bob also removed from T, a writer of N vouching for
 // the part on N makes nothing count: the Acting check fails, and with it every part of the
 // commit, until a writer of T vouches on T.
 #[test]
@@ -1237,7 +1237,7 @@ fn demote_to(lp: &mut LocalPeer, t: Tid, to: Option<Role>) -> CommitId {
     id
 }
 
-// spec/permissions.md §5.2 (addenda; w held write on n just before a's key, and admin where the
+// spec/permissions.md §5.2 (addenda; gives write just before a's key, and admin where the
 // delta needs admin): Bob, an admin, writes admin-only content; Alice removes him, or lowers him
 // to write, without it. Carol, an admin who received it, writes her addendum by the state rule
 // and it keeps Bob's write at every node; Dave, a writer who received it too, owes none.
@@ -1262,7 +1262,7 @@ fn admin_only_content_is_kept_by_an_admin_witness_spec_perm_5_2() {
     }
 }
 
-// spec/permissions.md §5.2 (addenda; w held write on n just before a's key, and admin where the
+// spec/permissions.md §5.2 (addenda; gives write just before a's key, and admin where the
 // delta needs admin): as above, but only Dave, a writer, received Bob's admin-only write; his
 // addendum listing it (written by hand: the state rule writes none) keeps nothing.
 #[test]

@@ -426,7 +426,7 @@ fn a_sync_epoch_covers_a_departure_only_once_rotated_spec_sync_opens_4() {
     }
 }
 
-// notes/a1-spec/permissions.md §2 Self-removal (a removal of an absent grant lowers): W, reading
+// spec/permissions.md §2 Self-removal (a removal of an absent grant lowers): W, reading
 // `g` only through a holder actor H it administers, removes its own grant on `g`, which it never
 // held (the rotation property's forged leave): the path ends at W, the empty path, with no
 // frontier and nothing named. Stated as an explicit removal through [H] (H's write grant), it

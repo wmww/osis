@@ -3,7 +3,7 @@
 //! rule has a small named world besides the random runs. Each world is built as the model's test
 //! builds it; `agree` compares the whole reading (statuses, histories, final roles and invites,
 //! void trusted writes, disputes). Content commits are left out: the walk judges edge-class parts.
-//! spec/permissions.md §5.1 (draft: notes/a1-spec/permissions.md §1, §2, §5.1).
+//! spec/permissions.md §5.1 (draft: spec/permissions.md §1, §2, §5.1).
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::indexing_slicing)]
 
 use super::{agree, agree_all};

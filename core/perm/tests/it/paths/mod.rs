@@ -1,11 +1,11 @@
 //! The walk along stated paths against its oracle, core/test/roles-model `paths` under
 //! `Rules::purging` (purge rights by class, copies, own covers;
-//! A1 steps 3 and 4: notes/perm-paths.md; the draft spec notes/a1-spec/permissions.md §1, §2,
+//! A1 steps 3 and 4: notes/perm-paths.md; the draft spec spec/permissions.md §1, §2,
 //! §5.1, §5.2, §6). For each node's view of a world (what it holds, the frontier leaves it sees,
 //! its trust set) both read: every edge-class part's status, every edge's history, the final
 //! roles and invites, the trusted writes left void, every delta's validity, the copies valid
 //! snapshots show, the purged deltas and copies, what a request could hold, and the dispute set.
-//! spec/permissions.md §5.1, §5.2 (the draft replaces them: notes/a1-spec/permissions.md).
+//! spec/permissions.md §5.1, §5.2 (the draft replaces them: spec/permissions.md).
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::indexing_slicing)]
 
 mod chained;

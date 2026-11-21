@@ -2230,7 +2230,7 @@ pub fn tiny_flags(i: u64, n: usize) -> World {
     w
 }
 
-/// A small world of a thing detached from its folder (notes/a1-spec/permissions.md §1 Path,
+/// A small world of a thing detached from its folder (spec/permissions.md §1 Path,
 /// Direct mark): T1 under A under H, so H is T1's mint ancestor two record edges up. `n` commits by
 /// a random party at a random `ts`, one in five on A (granting or removing a party's admin there,
 /// so it reaches T1 through [A]), else on T1: content, or setting a random holder's edge (A's is
