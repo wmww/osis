@@ -755,6 +755,75 @@ mod tests {
         assert_eq!(e.due(), [1], "given before, not settled since");
     }
 
+    // spec: none (internal). A prune hides no write beside it: in the window of a prune that
+    // moved the bucket of what a reader read, a write under a prefix it scanned, of an absent
+    // key it read (in this container or another), or of one written, removed and pruned there,
+    // moves it; one given by a write and pruned before its settle stays due until settled.
+    #[test]
+    fn a_prune_hides_no_write_beside_it() {
+        let ab = super::super::ABSENT_BUCKETS as u16;
+        let churn = |m: &mut Stamped<u16, u8>, from: u16| {
+            let was = lock(&m.stamps.0).absent;
+            for k in from..from + 4 * ab {
+                m.insert(k, 1);
+                m.remove(&k);
+            }
+            assert_ne!(lock(&m.stamps.0).absent, was, "a prune moved buckets");
+        };
+        // a prefix scanned, nothing under it
+        let s = Stamps::default();
+        let mut e: Effects<u16, u8> = Effects::new("test pruned prefix");
+        settle_once(&mut e, || {
+            s.read_prefix(b"p");
+            0
+        });
+        let churn_bytes = |s: &Stamps, tag: u8| {
+            let was = lock(&s.0).absent;
+            for i in 0..4 * ab {
+                let k = [b'q', tag, (i >> 8) as u8, i as u8];
+                s.wrote_bytes(&k, true);
+                s.wrote_bytes(&k, false);
+            }
+            assert_ne!(lock(&s.0).absent, was, "a prune moved buckets");
+        };
+        churn_bytes(&s, 0);
+        assert_eq!(e.due(), Vec::<u16>::new(), "nothing written under the prefix");
+        churn_bytes(&s, 1);
+        s.wrote_bytes(b"p1", true);
+        churn_bytes(&s, 2);
+        assert_eq!(e.due(), [1], "a write under the prefix among prunes");
+        // absent keys read, one of them written among prunes, here or in another container
+        let read = |m: &Stamped<u16, u8>, n: &Stamped<u16, u8>| m.get(&5000).copied().unwrap_or(0) + m.get(&6000).copied().unwrap_or(0) + n.get(&5000).copied().unwrap_or(0);
+        let mut m: Stamped<u16, u8> = Stamped::default();
+        let mut n: Stamped<u16, u8> = Stamped::default();
+        let mut e: Effects<u16, u8> = Effects::new("test pruned beside");
+        settle_once(&mut e, || read(&m, &n));
+        churn(&mut m, 0);
+        m.insert(6000, 1);
+        churn(&mut m, 1000);
+        assert_eq!(e.due(), [1], "another absent key read, written among prunes");
+        assert_eq!(e.settle(&1, || read(&m, &n)), Some((Some(0), 1)));
+        churn(&mut m, 2000);
+        n.insert(5000, 1);
+        assert_eq!(e.due(), [1], "an absent key of another container written beside a prune");
+        assert_eq!(e.settle(&1, || read(&m, &n)), Some((Some(1), 2)));
+        m.insert(5000, 1);
+        m.remove(&5000);
+        churn(&mut m, 3000);
+        assert!(!lock(&m.stamps.0).keys.contains_key(&super::super::hash(&5000u16)), "its removal pruned");
+        assert_eq!(e.due(), [1], "written, removed and pruned in one window");
+        assert_eq!(e.settle(&1, || read(&m, &n)), None);
+        // given by a write, then pruned before its settle
+        m.insert(5000, 3);
+        assert_eq!(e.due(), [1]);
+        m.remove(&5000);
+        churn(&mut m, 4000);
+        assert_eq!(e.due(), [1], "given before, removed and pruned since");
+        assert_eq!(e.settle(&1, || read(&m, &n)), None);
+        churn(&mut m, 7000);
+        assert_eq!(e.due(), Vec::<u16>::new(), "settled: prunes alone move it not");
+    }
+
     // spec: none (internal). Nothing reacts to what did not change: a reader of an absent key is
     // not moved by removing another absent key of its bucket, by `update` adding a key there and
     // editing it in place, nor by that key's removal.
