@@ -1,10 +1,9 @@
 # Handoff
-> Summary: For the next coordinator: what is left of the review session after Windlass's run: the owner-key word's last loose uses, osprey's base unit, and Tess's answers to the questions the drafts held, for when they are rewritten after D2. Delete once its items are taken.
+> Summary: For the next coordinator: what is left of the review session after Windlass's run: osprey's base unit, and Tess's answers to the questions the drafts held, for when they are rewritten after D2. Delete once its items are taken.
 
 Tess's decisions from that session are in notes/write-path-design.md (Decided, and the lettered rules), notes/account-membership-design.md and notes/terms.md; the plan is notes/redesign-plan.md; what runs beside it, notes/priorities.md.
 
 ## Left to take
-- **"Owner" for an admin**: core/engine/src/rotation/tests_members.rs uses "the owner" loosely for an admin in four comments: reword before owner keys roll out (notes/terms.md: always "owner key", never "owner" alone). A sync ID's owner (spec/sync-ids.md §4 Owner) is another sense and stays.
 - **osprey**: the box has no base unit in notes/time-limits.md, so `tools/limits.py` checks nothing there: `tools/heavy tools/limits.py unit`, then add its row, before a gate runs on it.
 - **The drafts' questions**: the For Tess and Open sections of notes/a1-spec, a2-spec and a3-spec and notes/path-form.md are answered by notes/write-path-design.md and the list below; the drafts are rewritten from their To recut sections after D2 (notes/redesign-plan.md, D. The design restated).
 
@@ -15,4 +14,3 @@ Read with her; none needs a design decision. Issues carry their own answer; for 
 - **What holds today, restated without the duty**: invitations by a removed member, deletes keeping list parts (notes/a3-spec For Tess 10 and 11).
 - **Requirements, approved and written**: growth "or on what its writers act through"; a removed writer's role changes kept only where the removal names them; a node granted sync learns the thing's identifier and who granted it. Needing no new sentence: a write spanning things reached through different actors is one commit (already "never split").
 - **Standing choices Windlass made, seen by Tess**: a hop to a far mint ancestor is marked direct; the engine prefers a far ancestor's direct grant to the chain through what holds the thing; a removal's result shows only what the removed party lowered; one commit's role parts on a thing fall together; removal copies that let a reader open through another thing are kept for good; the custody differential runs by hand, not in the gate (issues/custody-differential-failures.md).
-- The gate's cap is 10 minutes on ostrich (notes/time-limits.md); measure again after the prune before changing what a gate runs.

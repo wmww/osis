@@ -928,7 +928,7 @@ fn invalid_grant_box_judges_nothing_spec_crypto_4() {
 }
 
 // spec/requirements.md Permissions (a role M holds on A reaches M's holders; a secret once shared
-// cannot be un-shared): the owner demotes writer D on G to reader, rotating write to e1 that D
+// cannot be un-shared): the mint admin demotes writer D on G to reader, rotating write to e1 that D
 // lacks, then raises D on M, a writer of G, to write: D writes G through M again and opens e1 by
 // G's box to M. Removing M from G rotates write to e2, which D opens no way.
 #[test]
@@ -962,7 +962,7 @@ fn access_regained_through_a_holder_actor_reads_what_the_departure_rotated_spec_
 
 // spec/crypto.md §4 (Boxes: an invalid grant's box opens what its author held; Departures: the
 // author's own lowering rotates past it): admin A demotes writer D to reader, rotating write to
-// e1 that D lacks; the owner removes A, rotating write to e2; A, not knowing, re-grants D write,
+// e1 that D lacks; the mint admin removes A, rotating write to e2; A, not knowing, re-grants D write,
 // boxing e1. Settled, the grant is invalid and D a reader. D opens e1 (A held it and handed it
 // on: a secret once shared cannot be un-shared) but not e2, which every writer encrypts under.
 #[test]
@@ -995,11 +995,11 @@ fn invalid_regrant_hands_on_only_what_its_author_held_spec_crypto_4() {
     assert!(!opens.contains(&(g, Role::Write, e2)), "D opens no epoch made since A's removal");
     assert!(blocked_at(&mut lp, 0, g).is_empty());
     assert!(lp.peers[0].engine.ensure_rotated(&g).unwrap().0.commits.is_empty(), "nothing due");
-    assert_eq!(write(&lp, 0), Some(e2), "the owner writes under e2");
+    assert_eq!(write(&lp, 0), Some(e2), "the mint admin writes under e2");
 }
 
 // The same limit through a holder actor (spec/crypto.md §4, Boxes): holder actor M is admin of
-// G; A is admin of M. The owner demotes admin D of G to reader, rotating G's admin to e1, which
+// G; A is admin of M. The mint admin demotes admin D of G to reader, rotating G's admin to e1, which
 // boxes M at its keyset k; then removes A from M, rotating M and G past k. A, not knowing,
 // grants D admin of M, boxing k. Settled, the grant is invalid and D a reader of G. D opens e1
 // (through k, which A held and handed on, as A opens it) but nothing made since A's removal.
