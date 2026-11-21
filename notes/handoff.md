@@ -21,7 +21,6 @@
 
 ## What the run left
 - Stages A1 to A3 of notes/redesign-plan.md are on main as unused code beside the old: the path walk (osis-perm `paths`), the evidence derivation and its A3 leaves (engine `evidence`), with their models. Nothing is switched. A2 and A3 were built on an A1 that is not wired and on questions then open; the For Tess and Open sections of notes/a1-spec, a2-spec and a3-spec and notes/path-form.md are answered by this note and are rewritten with the drafts.
-- `windlass-wiring-1` (the A1 shadow), `windlass-voucher-standing` (dropped by the vouch decision; its study is the source of the issue): notes/priorities.md, Unlanded branches. `windlass-one-path` is stopped work, not for main. Other `origin/windlass-*` and `origin/fathom-*` branches, about 45 local branches and worktrees wt4 to wt9 (detached, clean) are unsorted.
 - The box osprey has no base unit in notes/time-limits.md, so `tools/limits.py` checks nothing there: `tools/heavy tools/limits.py unit`, then add its row, before a gate runs on it.
 - Known failures: tools/known_failures.txt; order in notes/priorities.md, First.
 - README.md's model sections are Tess's work in progress and bind nothing yet (CLAUDE.md); what she decided is in this note and the issues it names.
