@@ -1,9 +1,8 @@
-//! Named scenarios: each is a function of its seeds (a calm setup of the setup seed, then a
-//! random schedule and quiescence of the seed), so every scenario is also a seed family.
-//! `replay(name, setup, seed)` reruns one exactly.
+//! Named scenarios: each is a function of its seed, so every scenario is also a seed family.
+//! `replay(name, seed)` reruns one exactly.
 
 use crate::dice::Dice;
-use crate::harness::{ClockSpec, Config, Failure, NetFaults, Report, Res, Seeds, Sim, Weights};
+use crate::harness::{ClockSpec, Config, Failure, NetFaults, Report, Res, Sim, Weights};
 use crate::workload;
 use osis_base::format::MAX_DRIFT_MS;
 use osis_base::{Role, Value};
@@ -11,7 +10,7 @@ use osis_engine::{Ingested, Mutation, Reason};
 use osis_schema::RawKey;
 use std::panic::{AssertUnwindSafe, catch_unwind};
 
-pub type Scenario = fn(Seeds) -> Res<Report>;
+pub type Scenario = fn(u64) -> Res<Report>;
 
 /// Every scenario by name: commits carried engine to engine.
 pub const SCENARIOS: &[(&str, Scenario)] = &[
@@ -31,32 +30,19 @@ pub fn blocked(name: &str) -> Option<&'static str> {
     BLOCKED.iter().find(|b| b.0 == name).map(|b| b.1)
 }
 
-/// Runs scenario `name` with seeds `s`; a panic anywhere in node code is a failure. Every failure
-/// names `s`, what replays it.
-pub fn run(name: &str, s: Seeds, f: Scenario) -> Res<Report> {
-    let r = match catch_unwind(AssertUnwindSafe(|| f(s))) {
-        Ok(r) => r,
-        Err(p) => {
-            let what = format!("panic: {}", osis_base::testenv::panic_message(&*p));
-            Err(Failure { scenario: name.into(), setup: s.setup, seed: s.seed, step: 0, what, trace: Vec::new() })
-        }
-    };
-    r.map_err(|f| Failure { setup: s.setup, seed: s.seed, ..f })
+/// Runs scenario `name` with seed `seed`; a panic anywhere in node code is a failure.
+pub fn run(name: &str, seed: u64, f: Scenario) -> Res<Report> {
+    catch_unwind(AssertUnwindSafe(|| f(seed))).unwrap_or_else(|p| {
+        let what = format!("panic: {}", osis_base::testenv::panic_message(&*p));
+        Err(Failure { scenario: name.into(), seed, step: 0, what, trace: Vec::new() })
+    })
 }
 
-/// The setup seed of a by-hand sweep from `from`: `OSIS_SIM_SETUP`, by default `from` (as
-/// `sim-sweep --setup`).
-#[allow(clippy::panic)] // a by-hand harness's setting: fail loudly
-pub fn setup_seed(from: u64) -> u64 {
-    std::env::var("OSIS_SIM_SETUP").map_or(from, |v| v.parse().unwrap_or_else(|_| panic!("OSIS_SIM_SETUP={v}: not a number")))
-}
-
-/// Reruns scenario `name` with seed `seed` over the setup of seed `setup` (a sweep's `--setup`).
-pub fn replay(name: &str, setup: u64, seed: u64) -> Res<Report> {
-    let s = Seeds { setup, seed };
+/// Reruns scenario `name` with seed `seed`.
+pub fn replay(name: &str, seed: u64) -> Res<Report> {
     match SCENARIOS.iter().find(|x| x.0 == name) {
-        Some((n, f)) => run(n, s, *f),
-        None => Err(Failure { scenario: name.into(), setup, seed, step: 0, what: "no such scenario".into(), trace: Vec::new() }),
+        Some((n, f)) => run(n, seed, *f),
+        None => Err(Failure { scenario: name.into(), seed, step: 0, what: "no such scenario".into(), trace: Vec::new() }),
     }
 }
 
@@ -72,8 +58,7 @@ fn lossy() -> NetFaults {
 /// Two nodes of one account: an account actor with node 0 as mint admin and node 1 as admin
 /// (spec/permissions.md §1), a data thing minted with the account as admin; both write it concurrently under a
 /// lossy, reordering, duplicating network; they converge.
-pub fn two_nodes(s: Seeds) -> Res<Report> {
-    let seed = s.seed;
+pub fn two_nodes(seed: u64) -> Res<Report> {
     let mut d = Dice::new(seed ^ 0xc0f1);
     let cfg = Config { nodes: 2, clocks: clocks(&mut d, 2, 30_000, 100), net: lossy(), ..Config::default() };
     let mut sim = Sim::new("two_nodes", seed, cfg)?;
@@ -101,21 +86,20 @@ fn three_nodes(name: &str, seed: u64, weights: Weights, steps: u64) -> Res<Repor
 }
 
 /// Three nodes, two shared things, random writes and random delivery with every message fault.
-pub fn three_random(s: Seeds) -> Res<Report> {
-    three_nodes("three_random", s.seed, Weights::default(), 300)
+pub fn three_random(seed: u64) -> Res<Report> {
+    three_nodes("three_random", seed, Weights::default(), 300)
 }
 
 /// `three_random` with crashes (immediate, or at a node's next durable writes: mid-write) and
 /// restarts over the same backend: storage recovers, counters are never reused, convergence.
-pub fn crash_restart(s: Seeds) -> Res<Report> {
-    three_nodes("crash_restart", s.seed, Weights { crash: 1, restart: 2, ..Weights::default() }, 300)
+pub fn crash_restart(seed: u64) -> Res<Report> {
+    three_nodes("crash_restart", seed, Weights { crash: 1, restart: 2, ..Weights::default() }, 300)
 }
 
 /// spec/permissions.md §5: an admin removes a writer while it keeps writing under a lossy
 /// network; the removed writer's later deltas are judged invalid everywhere and un-merged, and
 /// every node converges, whatever arrived first.
-pub fn revoke_while_writing(s: Seeds) -> Res<Report> {
-    let seed = s.seed;
+pub fn revoke_while_writing(seed: u64) -> Res<Report> {
     let mut d = Dice::new(seed ^ 0x4e0);
     let cfg = Config { nodes: 3, clocks: clocks(&mut d, 3, 60_000, 100), net: lossy(), ..Config::default() };
     let mut sim = Sim::new("revoke_while_writing", seed, cfg)?;
@@ -138,8 +122,7 @@ pub fn revoke_while_writing(s: Seeds) -> Res<Report> {
 /// spec/crdt.md §2.2: a commit more than MAX_DRIFT ahead of the receiver's clock is parked until
 /// local time catches up, then joined; then a random run with one node two hours ahead. The
 /// clock jumps after setup (a node whose `created.0` is parked has its commits wait for the chain).
-pub fn drift_parks(s: Seeds) -> Res<Report> {
-    let seed = s.seed;
+pub fn drift_parks(seed: u64) -> Res<Report> {
     let cfg = Config { nodes: 2, net: lossy(), ..Config::default() };
     let mut sim = Sim::new("drift_parks", seed, cfg)?;
     let t = sim.create_thing(0, None)?;

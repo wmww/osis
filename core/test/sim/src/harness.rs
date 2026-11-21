@@ -1,6 +1,6 @@
 //! The harness: nodes (real engines over `MemoryBackend`s with a shared fault plan), virtual
 //! time, per-node clocks, an in-flight message queue, and a seeded scheduler choosing the next
-//! event. Everything is driven from one `Dice`, so (scenario, setup, seed) replays exactly.
+//! event. Everything is driven from one `Dice`, so (scenario, seed) replays exactly.
 
 use crate::check::{self, Checker};
 use crate::dice::Dice;
@@ -20,19 +20,11 @@ use std::sync::Arc;
 pub const T0: u64 = 1_700_000_000_000;
 const TRACE: usize = 40;
 
-/// What a scenario run is a function of: the seed of its calm setup (a sweep's seeds share one) and its own seed, which drives everything after the setup.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub struct Seeds {
-    pub setup: u64,
-    pub seed: u64,
-}
-
-/// A failed invariant (or a panic, or an engine error on honest input), with what replays it
-/// (`crate::run` sets `setup` and `seed` to the run's).
+/// A failed invariant (or a panic, or an engine error on honest input), with the seed that
+/// replays it.
 #[derive(Clone, Debug)]
 pub struct Failure {
     pub scenario: String,
-    pub setup: u64,
     pub seed: u64,
     pub step: u64,
     pub what: String,
@@ -41,8 +33,8 @@ pub struct Failure {
 
 impl fmt::Display for Failure {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        writeln!(f, "sim failure in scenario `{}`, setup {}, seed {}, step {}: {}", self.scenario, self.setup, self.seed, self.step, self.what)?;
-        writeln!(f, "replay: osis_sim::replay(\"{}\", {}, {})", self.scenario, self.setup, self.seed)?;
+        writeln!(f, "sim failure in scenario `{}`, seed {}, step {}: {}", self.scenario, self.seed, self.step, self.what)?;
+        writeln!(f, "replay: osis_sim::replay(\"{}\", {})", self.scenario, self.seed)?;
         for t in &self.trace {
             writeln!(f, "  {t}")?;
         }
@@ -256,7 +248,7 @@ impl Sim {
     }
 
     pub fn fail(&self, what: impl Into<String>) -> Failure {
-        Failure { scenario: self.scenario.clone(), setup: self.seed, seed: self.seed, step: self.report.steps, what: what.into(), trace: self.trace.iter().cloned().collect() }
+        Failure { scenario: self.scenario.clone(), seed: self.seed, step: self.report.steps, what: what.into(), trace: self.trace.iter().cloned().collect() }
     }
 
     /// Keeps the last `TRACE` lines for a failure's report; with `OSIS_SIM_TRACE=1` prints every

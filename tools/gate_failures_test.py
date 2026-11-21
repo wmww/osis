@@ -104,27 +104,27 @@ test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 0 filtered out; 
 
 error: doctest failed, to rerun pass `--doc`
 """
-SIM = """sim-sweep: 3 scenarios, setup 7, seeds 7..22, 16 jobs
-FAIL sim failure in scenario `three_random`, setup 7, seed 9, step 4: agreement lost
-replay: osis_sim::replay("three_random", 7, 9)
-FAIL sim failure in scenario `crash_restart`, setup 7, seed 8, step 2: agreement lost
-replay: osis_sim::replay("crash_restart", 7, 8)
+SIM = """sim-sweep: 3 scenarios, seeds 7..22, 16 jobs
+FAIL sim failure in scenario `three_random`, seed 9, step 4: agreement lost
+replay: osis_sim::replay("three_random", 9)
+FAIL sim failure in scenario `crash_restart`, seed 8, step 2: agreement lost
+replay: osis_sim::replay("crash_restart", 8)
 scenario seeds failed
 drift_parks 15 0
 three_random 15 1
 crash_restart 15 1
-failing: osis_sim::replay("crash_restart", 7, 8)  (sim-sweep --seeds 1 --from 8 --setup 7 --only crash_restart)
-failing: osis_sim::replay("three_random", 7, 9)  (sim-sweep --seeds 1 --from 9 --setup 7 --only three_random)
+failing: osis_sim::replay("crash_restart", 8)  (sim-sweep --seeds 1 --from 8 --only crash_restart)
+failing: osis_sim::replay("three_random", 9)  (sim-sweep --seeds 1 --from 9 --only three_random)
 elapsed 3 s
 """
 # a hung seed: the runner prints its failures and exits before the sweep's tally
-SIM_HUNG = """sim-sweep: 2 scenarios, setup 7, seeds 7..22, 16 jobs
-FAIL sim failure in scenario `three_random`, setup 7, seed 9, step 4: agreement lost
-replay: osis_sim::replay("three_random", 7, 9)
-sim-sweep: osis_sim::replay("drift_parks", 7, 7) used 600 CPU-s (OSIS_SEED_TIMEOUT_SECS): hung, moving on
+SIM_HUNG = """sim-sweep: 2 scenarios, seeds 7..22, 16 jobs
+FAIL sim failure in scenario `three_random`, seed 9, step 4: agreement lost
+replay: osis_sim::replay("three_random", 9)
+sim-sweep: osis_sim::replay("drift_parks", 7) used 600 CPU-s (OSIS_SEED_TIMEOUT_SECS): hung, moving on
 sim-sweep: 30 of 30 run, 1 failing, 1 hung
 failures:
-osis_sim::replay("three_random", 7, 9): agreement lost
+osis_sim::replay("three_random", 9): agreement lost
 """
 
 fails = 0
@@ -157,7 +157,7 @@ check("no count: cargo killed", names(KNOWN_ONLY), ["order::known_plain", "other
 check("truncated mid-target", names(KNOWN_ONLY + "     Running tests/b.rs (b-5)\n\nrunning 3 tests\ntest x ... ok\n"), ["order::known_plain", "other_large", None, None])
 check("cargo error outside a target", names(KNOWN_ONLY + "error: could not compile `osis-engine`\n" + COUNT1), ["order::known_plain", "other_large", None])
 check("passing log", gate_failures.cargo_failures(KNOWN_ONLY.split("     Running")[0] + "   Doc-tests probe\n\nrunning 0 tests\n\ntest result: ok. 0 passed\n"), [])
-check("sim", [(n, s) for n, _, s in gate_failures.sim_failures(SIM)], [("sim-sweep:crash_restart", ['seed 8 (replay: osis_sim::replay("crash_restart", 7, 8))']), ("sim-sweep:three_random", ['seed 9 (replay: osis_sim::replay("three_random", 7, 9))'])])
+check("sim", [(n, s) for n, _, s in gate_failures.sim_failures(SIM)], [("sim-sweep:crash_restart", ['seed 8 (replay: osis_sim::replay("crash_restart", 8))']), ("sim-sweep:three_random", ['seed 9 (replay: osis_sim::replay("three_random", 9))'])])
 check("sim unit has its failure", "agreement lost" in gate_failures.sim_failures(SIM)[1][1][0], True)
 check("sim hung exit", [n for n, _, _ in gate_failures.sim_failures(SIM_HUNG)], [None])
 check("sim tally off", [n for n, _, _ in gate_failures.sim_failures(SIM.replace("drift_parks 15 0", "drift_parks 15 1"))], [None, "sim-sweep:crash_restart", "sim-sweep:three_random"])
@@ -199,7 +199,7 @@ def summary(listed, stages, expected=None):
 
 
 SEEDS = r"order::known_plain 1 issues/known.md ^seed \d+(, Lists)? \(replay: "
-LISTED = f"{SEEDS}\nother_large 1 issues/known.md floor\nsim-sweep:three_random 7/9 issues/sim.md agreement\nsim-sweep:crash_restart 7/8 issues/sim.md agreement\n"
+LISTED = f"{SEEDS}\nother_large 1 issues/known.md floor\nsim-sweep:three_random 9 issues/sim.md agreement\nsim-sweep:crash_restart 8 issues/sim.md agreement\n"
 rc, out = summary(LISTED, [("default-tests", "101", KNOWN_ONLY + COUNT1), ("gate.sim", "1", SIM)])
 check("only known: exit 3", (rc, "KNOWN failures only (4," in out), (3, True))
 check("only known: issue shown", "KNOWN gate.sim  sim-sweep:three_random: issues/sim.md" in out, True)

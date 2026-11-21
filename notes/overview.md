@@ -21,7 +21,7 @@ Code map (crate DAG and rules: notes/architecture.md):
 How to run:
 - CLI: `cargo run --bin osis -- --help`; `osis -s DIR init`, writes, `osis serve` to keep a node running (notes/cli.md).
 - Standard data scenarios: core/osis's `contact`, `event`, `notes`, `tags` tests in `cargo test`.
-- Sim: `cargo run --bin sim-sweep -- --seeds N --budget-secs T`; replay a failing seed with `osis_sim::replay("<scenario>", <setup>, <seed>)`.
+- Sim: `cargo run --bin sim-sweep -- --seeds N --budget-secs T`; replay a failing seed with `osis_sim::replay("<scenario>", <seed>)`.
 - Models: `core/test/tla/run.sh <module>` (Java); their tests run in `cargo test`; `cargo run --bin roles-model`.
 
 Open work: issues/, by their Priority lines.
