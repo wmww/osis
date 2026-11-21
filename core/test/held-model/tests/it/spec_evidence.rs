@@ -3,7 +3,7 @@
 //! searches (`_plain`, `_large`). `explore` prints every rule variant's failures (by hand).
 use held_model::evidence::names::*;
 use held_model::evidence::*;
-use roles_model::paths::{self, Id, Set};
+use roles_model::paths::{Id, Set};
 use roles_model::Role;
 use std::collections::BTreeMap;
 
@@ -15,89 +15,8 @@ fn fails(w: &World, rule: &Rule) -> Vec<Fail> {
     out.extend(w.p3(rule, &st));
     out.extend(w.p4(rule, &st, true));
     out.extend(w.p5_order(rule, &st, 5).0);
-    out.extend(w.p7_leaf_waits(rule, &st));
     out.extend(w.p8_promotions(rule, &st, PromoteWhen::AfterPass, 0));
     out
-}
-
-/// K writes c0 and c1 on D along [A]; X, having received c0 alone, removes K listing it. X syncs
-/// A, Y syncs D, K's node is honest. Returns the world and (c0, c1).
-fn listed_one_of_two() -> (World, Id, Id) {
-    let pw = roles_model::paths::World::new(&[(X, A), (Y, D)]);
-    let mut w = World::new(pw, &[A, D]);
-    let (x, y, k) = (w.node(true, &[A]), w.node(true, &[D]), w.node(true, &[A]));
-    w.write(x, |p| p.edge(X, 1, &[], A, K, Role::Write, &[]));
-    w.write(y, |p| p.edge(Y, 1, &[], D, A, Role::Write, &[]));
-    let c0 = w.write(k, |p| p.content(K, 2, &[A], D));
-    let c1 = w.write(k, |p| p.content(K, 3, &[A], D));
-    w.write(x, |p| p.edge(X, 6, &[], A, K, Role::None, &[c0]));
-    (w, c0, c1)
-}
-
-/// Finding 6: a leaf kept only with the commits it names (the growth study's literal rule)
-/// leaves with c0 once c0 is forgotten (covered), and c1, which it does not name but whose
-/// verdict reads it (on its thing, resting on the lowered edge),
-/// then waits for good at D's reader where it was invalid. Kept with every commit it reads, it
-/// stays.
-#[test]
-fn f6_a_leaf_kept_with_the_commits_it_names_strands_one_it_does_not_name() {
-    let (w, _, c1) = listed_one_of_two();
-    let named = Rule { lists: Lists::Travels(LeafKeep::Named), ..Rule::fixed() };
-    let f = fails(&w, &named);
-    assert!(f.iter().any(|f| f.prop == "P4-forget" && f.sid == D && f.id == c1 && f.reader == Some(Verdict::Pending) && f.full == Some(Verdict::Invalid)), "{f:?}");
-    assert_eq!(fails(&w, &Rule::listed()), vec![]);
-    assert_eq!(fails(&w, &Rule::fixed()), vec![]);
-}
-
-/// P7: a commit held without the leaf that reads it waits: D's reader holding c0, c1 and the
-/// removal but not its leaf for D judges both pending, never invalid; with the leaf, c0 valid
-/// and c1 invalid. Forgetting c0 and c1 takes the leaf out of D's sync ID; the removal's role
-/// entries stay with it.
-#[test]
-fn p7_a_commit_held_without_its_leaf_waits_and_the_leaf_leaves_with_what_it_reads() {
-    let (w, c0, c1) = listed_one_of_two();
-    let rule = Rule::listed();
-    let mut st = w.run(&rule, |_| {});
-    let seen = w.reader(&rule, &st, D, &Set::new());
-    let both = Set::from([c0, c1]);
-    let v = w.verdicts(&seen, &both);
-    assert_eq!((v[&c0], v[&c1]), (Verdict::Valid, Verdict::Invalid));
-    assert_eq!(st.leaves[&D].len(), 1);
-    let mut short = seen.clone();
-    short.lists = Some(Default::default());
-    let v = w.verdicts(&short, &both);
-    assert_eq!((v[&c0], v[&c1]), (Verdict::Pending, Verdict::Pending));
-    assert_eq!(w.p7_leaf_waits(&rule, &st), vec![]);
-    w.forget(&rule, &mut st, c0);
-    assert_eq!(st.leaves[&D].len(), 1, "c1 still reads it");
-    w.forget(&rule, &mut st, c1);
-    assert!(st.leaves[&D].is_empty(), "{:?}", st.leaves);
-    assert_eq!(w.p4(&rule, &st, false), vec![]);
-}
-
-/// Finding 27: X removes Z from A at 3 though Z never held write there (the removal takes no
-/// write away), listing Z's earlier write c0 in D's leaf; X then grants Z write and Z writes c1 on
-/// D through [A]. D's reader holds the removal (an edge write on c1's path) and, under `Judged`,
-/// waits for its D leaf, which only X holds: X syncs A alone and no errand carries a removal that
-/// takes no write away. Under `Cuts` a leaf is read only where its lowering takes away what the
-/// commit needs, so nothing waits on a lowering that cuts nothing.
-#[test]
-fn f27_a_leaf_of_a_lowering_that_cuts_nothing_is_waited_on_by_nobody() {
-    let pw = roles_model::paths::World::new(&[(X, A), (Y, D)]);
-    let mut w = World::new(pw, &[A, D]);
-    let (x, y, z) = (w.node(true, &[A]), w.node(true, &[D]), w.node(true, &[]));
-    w.write(y, |p| p.edge(Y, 1, &[], D, A, Role::Write, &[]));
-    let c0 = w.write(z, |p| p.content(Z, 2, &[A], D));
-    w.write(x, |p| p.edge(X, 3, &[], A, Z, Role::None, &[c0]));
-    w.write(x, |p| p.edge(X, 4, &[], A, Z, Role::Write, &[]));
-    let c1 = w.write(z, |p| p.content(Z, 5, &[A], D));
-    let judged = Rule { lists: Lists::Travels(LeafKeep::Judged), ..Rule::fixed() };
-    let f = fails(&w, &judged);
-    assert!(f.iter().any(|f| f.prop == "P1" && f.sid == D && f.id == c1 && f.reader == Some(Verdict::Pending) && f.full == Some(Verdict::Valid)), "{f:?}");
-    assert_eq!(fails(&w, &Rule::listed()), vec![]);
-    // the leaf exists and is read by nothing: D's reader holds the removal, not the leaf
-    let st = w.run(&Rule::listed(), |_| {});
-    assert!(st.leaves[&D].is_empty() && w.reader(&Rule::listed(), &st, D, &Set::new()).v.held.contains(&2));
 }
 
 /// P8 and finding 5: D's reader holding the thief's write and K's grant but not X's earlier
@@ -162,58 +81,11 @@ fn split_a_part_on_another_thing_adds_no_evidence_requirement() {
     let st = w.run(&Rule::fixed(), |_| {});
     let full = w.verdicts(&w.full(&st, &Set::new()), &st.written);
     assert_eq!((full[&parts[0]], full[&parts[1]]), (Verdict::Valid, Verdict::Invalid));
-    for rule in [Rule::fixed(), Rule::listed()] {
-        assert_eq!(fails(&w, &rule), vec![]);
-        let st = w.run(&rule, |_| {});
-        let on_b: Vec<Id> = st.entries[&T1].iter().copied().filter(|&i| w.on(i) == B || w.on(i) == T2 || i == gt2).collect();
-        assert!(on_b.is_empty(), "{on_b:?}");
-    }
-}
-
-/// Finding 6, in any order: X removes K at 6 listing c, which K stamped at 7 (its clock ahead)
-/// and X received first. The leaf is evidence of c though c is stamped after the lowering, so
-/// D's sync ID carries it and D's reader judges c valid (listed), as the node holding everything.
-/// A leaf kept only for the commits stamped before its lowering never reaches D: c invalid there.
-#[test]
-fn f6_a_leaf_is_evidence_of_a_commit_stamped_after_its_lowering() {
-    let pw = roles_model::paths::World::new(&[(X, A), (Y, D)]);
-    let mut w = World::new(pw, &[A, D]);
-    let (x, y, k) = (w.node(true, &[A]), w.node(true, &[D]), w.node(true, &[A]));
-    w.write(x, |p| p.edge(X, 1, &[], A, K, Role::Write, &[]));
-    w.write(y, |p| p.edge(Y, 1, &[], D, A, Role::Write, &[]));
-    let c = w.write(k, |p| p.content(K, 7, &[A], D));
-    w.write(x, |p| p.edge(X, 6, &[], A, K, Role::None, &[c]));
-    let rule = Rule::listed();
+    let rule = Rule::fixed();
+    assert_eq!(fails(&w, &rule), vec![]);
     let st = w.run(&rule, |_| {});
-    assert_eq!(w.verdicts(&w.full(&st, &Set::new()), &st.written)[&c], Verdict::Valid);
-    assert_eq!(st.leaves[&D].len(), 1);
-    assert_eq!(w.verdicts(&w.reader(&rule, &st, D, &Set::new()), &Set::from([c]))[&c], Verdict::Valid);
-    assert_eq!(fails(&w, &rule), vec![]);
-}
-
-/// An addendum is evidence of the commits it lists that rest on its removal's edge and leaves
-/// with the last of them (`addendum_live`): Q's addendum on D lists c1; forgetting c1 takes it
-/// out of D's sync ID while c0, which it does not list, stays. Kept for good, it would outlive
-/// everything it can keep.
-#[test]
-fn an_addendum_leaves_with_the_last_commit_it_lists() {
-    let pw = roles_model::paths::World::new(&[(X, A), (Y, D)]);
-    let mut w = World::new(pw, &[A, D]);
-    let (x, y, k, q) = (w.node(true, &[A]), w.node(true, &[D]), w.node(true, &[A]), w.node(true, &[A]));
-    w.write(x, |p| p.edge(X, 1, &[], A, K, Role::Write, &[]));
-    w.write(x, |p| p.edge(X, 1, &[], A, Q, Role::Write, &[]));
-    w.write(y, |p| p.edge(Y, 1, &[], D, A, Role::Write, &[]));
-    let c0 = w.write(k, |p| p.content(K, 2, &[A], D));
-    let c1 = w.write(k, |p| p.content(K, 3, &[A], D));
-    let r = w.write(x, |p| p.edge(X, 6, &[], A, K, Role::None, &[]));
-    let ad = w.write(q, |p| p.addendum(Q, 7, &[A], D, r, &[c1]));
-    let rule = Rule::listed();
-    let mut st = w.run(&rule, |_| {});
-    assert!(st.entries[&D].contains(&ad));
-    w.forget(&rule, &mut st, c1);
-    assert!(st.entries[&D].contains(&c0));
-    assert!(!st.entries[&D].contains(&ad), "{:?}", st.entries[&D]);
-    assert_eq!(fails(&w, &rule), vec![]);
+    let on_b: Vec<Id> = st.entries[&T1].iter().copied().filter(|&i| w.on(i) == B || w.on(i) == T2 || i == gt2).collect();
+    assert!(on_b.is_empty(), "{on_b:?}");
 }
 
 /// Finding 11, pinned as the draft has it: a writer of A without admin writes `n` grants of
@@ -299,10 +171,10 @@ fn f3_an_errand_run_once_misses_a_holder_raised_after_the_removal() {
     assert_eq!(fails(&w, &Rule::design()), vec![]);
 }
 
-/// Finding 4: K (admin of A) grants Z on A; Z writes D; X removes K, its frontier listing the
-/// grant in A's leaf. D's reader seeing only its unit's leaves reads the grant unlisted and drops
-/// it (roles-model finding 5, reached here through units): the copy of a lowering carries its leaf
-/// for the thing it is on.
+/// Finding 4, the list whole (notes/write-path-design.md §2, E4): K (admin of A) grants Z on A; Z
+/// writes D; X removes K, its list naming the grant. A copy of the removal under D carries its
+/// whole list, so D's reader reads the grant listed; reading only its unit's entries (the control
+/// `Lists::Unit`) it reads the grant unlisted and drops it (roles-model finding 5, through units).
 #[test]
 fn f4_a_reader_needs_the_leaf_of_each_evidence_copy() {
     let pw = roles_model::paths::World::new(&[(X, A), (Y, D)]);
@@ -313,7 +185,7 @@ fn f4_a_reader_needs_the_leaf_of_each_evidence_copy() {
     let gz = w.write(k, |p| p.edge(K, 2, &[], A, Z, Role::Write, &[]));
     let zc = w.write(z, |p| p.content(Z, 3, &[A], D));
     w.write(x, |p| p.edge(X, 6, &[], A, K, Role::None, &[gz]));
-    let f = fails(&w, &Rule { leaves: Leaves::Unit, ..Rule::fixed() });
+    let f = fails(&w, &Rule { lists: Lists::Unit, ..Rule::fixed() });
     assert!(f.iter().any(|f| f.prop == "P1" && f.sid == D && f.id == zc && f.reader == Some(Verdict::Invalid)), "{f:?}");
     assert_eq!(fails(&w, &Rule::fixed()), vec![]);
 }
@@ -423,7 +295,6 @@ fn p1_to_p5_hold_on_a_slice_of_the_family() {
         let sh = Shape::nth(i);
         let w = family(sh);
         assert_eq!(fails(&w, &Rule::fixed()), vec![], "{sh:?}");
-        assert_eq!(fails(&w, &Rule::listed()), vec![], "{sh:?}");
         let d = fails(&w, &Rule::design());
         assert!(d.is_empty() || ((sh.via_org || sh.mint == 2) && (sh.org_apart || sh.mint > 0)), "{sh:?} {d:?}");
     }
@@ -436,18 +307,16 @@ fn seeds(n: u64) -> std::ops::Range<u64> {
     start..start + n
 }
 
-/// P1 to P8 under the fixed rule and under `listed` (leaves travelling as evidence) over every
-/// `family_step`th family world and `random` random worlds of 14 moves, a thread per core.
+/// P1 to P8 under the fixed rule over every `family_step`th family world and `random` random
+/// worlds of 14 moves, a thread per core.
 fn search(family_step: usize, random_worlds: u64) {
     let mut jobs: Vec<Box<dyn Fn() -> (String, Vec<Fail>) + Sync>> = vec![];
-    // `listed` (A3's) on half the worlds `fixed` (A2's) runs on
-    for (name, rule, part) in [("fixed", Rule::fixed(), 1), ("listed", Rule::listed(), 2)] {
-        for i in (0..FAMILY).step_by(family_step * part) {
-            jobs.push(Box::new(move || (format!("{name} {:?}", Shape::nth(i)), fails(&family(Shape::nth(i)), &rule))));
-        }
-        for seed in seeds(random_worlds / part as u64) {
-            jobs.push(Box::new(move || (format!("{name} random seed {seed}"), fails(&random(seed, 14), &rule))));
-        }
+    let rule = Rule::fixed();
+    for i in (0..FAMILY).step_by(family_step) {
+        jobs.push(Box::new(move || (format!("{:?}", Shape::nth(i)), fails(&family(Shape::nth(i)), &rule))));
+    }
+    for seed in seeds(random_worlds) {
+        jobs.push(Box::new(move || (format!("random seed {seed}"), fails(&random(seed, 14), &rule))));
     }
     let next = std::sync::atomic::AtomicUsize::new(0);
     let bad = std::sync::Mutex::new(vec![]);
@@ -488,11 +357,8 @@ fn variants() -> Vec<(&'static str, Rule)> {
         ("transitive", Rule { errand: Errand::Transitive, ..d }),
         ("edge", Rule { scope: Scope::Edge, ..d }),
         ("transitive+edge", Rule { errand: Errand::Transitive, scope: Scope::Edge, ..d }),
-        ("unit-leaves", Rule { leaves: Leaves::Unit, ..d }),
+        ("unit-lists", Rule { lists: Lists::Unit, ..d }),
         ("once", Rule { standing: false, ..d }),
-        ("listed", Rule::listed()),
-        ("listed-judged", Rule { lists: Lists::Travels(LeafKeep::Judged), ..Rule::fixed() }),
-        ("listed-named", Rule { lists: Lists::Travels(LeafKeep::Named), ..Rule::fixed() }),
     ]
 }
 
@@ -510,7 +376,7 @@ fn tally(w: &World, rule: &Rule, out: &mut BTreeMap<&'static str, usize>, first:
     if st.unsettled {
         *out.entry("unsettled").or_default() += 1;
     }
-    for f in w.p3(rule, &st).iter().chain(&w.p4(rule, &st, true)).chain(&w.p7_leaf_waits(rule, &st)) {
+    for f in w.p3(rule, &st).iter().chain(&w.p4(rule, &st, true)) {
         note(f, out);
     }
 }
@@ -654,24 +520,3 @@ pub fn show(w: &World, rule: &Rule) {
     }
 }
 
-/// Finding 34: a removal's leaf for its own thing is read only by bodies on that thing, which sit
-/// with the removal in every unit it is a body of, so it leaves with the last of them; kept with
-/// the removal for good (`Home::All`), a thing's own removals keep every list they made.
-#[test]
-fn f34_a_removals_leaf_for_its_own_thing_leaves_with_what_it_reads() {
-    let pw = paths::World::new(&[(X, A)]);
-    let mut w = World::new(pw, &[A]);
-    let (x, k) = (w.node(true, &[A]), w.node(true, &[A]));
-    w.write(x, |p| p.edge(X, 1, &[], A, K, Role::Write, &[]));
-    let c = w.write(k, |p| p.content(K, 2, &[], A));
-    w.write(x, |p| p.edge(X, 6, &[], A, K, Role::None, &[c]));
-    for (home, left) in [(Home::Far, 0), (Home::All, 1)] {
-        let rule = Rule { leaves_home: home, ..Rule::listed() };
-        let mut st = w.run(&rule, |_| {});
-        assert_eq!(st.leaves[&A].len(), 1);
-        assert_eq!(w.verdicts(&w.reader(&rule, &st, A, &Set::new()), &Set::from([c]))[&c], Verdict::Valid);
-        w.forget(&rule, &mut st, c);
-        assert_eq!(st.leaves[&A].len(), left, "{home:?}");
-        assert_eq!(w.p4(&rule, &st, false), vec![]);
-    }
-}

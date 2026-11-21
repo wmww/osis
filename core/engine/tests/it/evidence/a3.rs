@@ -1,9 +1,12 @@
-//! A3's leaves (spec/permissions.md §4, as notes/a3-spec/permissions.md drafts it: the leaf bullet;
-//! §5.1 Reading a list): held-model's hand worlds for findings 27 and 34 (same names), each a
-//! differential at every step (copies, leaves, waits on a leaf: `differ`) plus the leaf the draft's
-//! words decide; the derivation's own (an addendum leaving, a late witness, a lowering leaving a set).
+//! The derivation's leaves (`Config::leaves`; notes/a3-spec/permissions.md drafts them: the leaf
+//! bullet, §5.1 Reading a list), built unused and going at A3: the leaf form is not the design
+//! (notes/write-path-design.md §2, E4), so held-model has no oracle for them. Worlds for findings 27
+//! and 34, each a differential of the copies at every step (`assert_agrees`) plus the leaf the
+//! draft's words decide; the derivation's own (an addendum leaving, a late witness, a lowering
+//! leaving a set).
 use super::*;
 use held_model::evidence::names::*;
+use held_model::evidence::State;
 use osis_engine::evidence::LeafWhy;
 
 /// A3's derivation over a held set of the end state of `w` (set to `rule`).
@@ -23,6 +26,7 @@ fn at_end(w: &World, rule: &Rule, held: impl Fn(&State) -> Set) -> Driver {
 /// nothing. With Z granted write before the removal (the control) the removal cuts both writes:
 /// D requires the leaf, and a node lacking it waits.
 #[test]
+#[ignore = "D2: evidence rebuilt at A2 (notes/redesign-plan.md): held-model carries a lowering's list whole, so no world gives the derivation leaf pairs"]
 fn f27_a_leaf_of_a_lowering_that_cuts_nothing_is_waited_on_by_nobody() {
     for granted in [false, true] {
         let pw = paths::World::new(&[(X, A), (Y, D)]);
@@ -37,7 +41,7 @@ fn f27_a_leaf_of_a_lowering_that_cuts_nothing_is_waited_on_by_nobody() {
         w.write(x, |p| p.edge(X, 4, &[], A, Z, Role::Write, &[]));
         let c1 = w.write(z, |p| p.content(Z, 5, &[A], D));
         assert_agrees("f27", &w);
-        let rule = a3(&mut w);
+        let rule = a2(&mut w);
         let mut d = at_end(&w, &rule, |st| st.written.clone());
         let want = granted.then_some(LeafWhy::Reads);
         assert_eq!(d.ev.leaves(&D).unwrap().get(&(r, D)).copied(), want, "granted {granted}");
@@ -51,6 +55,7 @@ fn f27_a_leaf_of_a_lowering_that_cuts_nothing_is_waited_on_by_nobody() {
 /// lowering's own thing is read only by bodies there: required while c is held, gone with it (never
 /// kept at home).
 #[test]
+#[ignore = "D2: evidence rebuilt at A2 (notes/redesign-plan.md): held-model carries a lowering's list whole, so no world gives the derivation leaf pairs"]
 fn f34_a_removals_leaf_for_its_own_thing_leaves_with_what_it_reads() {
     let pw = paths::World::new(&[(X, A)]);
     let mut w = World::new(pw, &[A]);
@@ -59,7 +64,7 @@ fn f34_a_removals_leaf_for_its_own_thing_leaves_with_what_it_reads() {
     let c = w.write(k, |p| p.content(K, 2, &[], A));
     let r = w.write(x, |p| p.edge(X, 6, &[], A, K, Role::None, &[c]));
     assert_agrees("f34", &w);
-    let rule = a3(&mut w);
+    let rule = a2(&mut w);
     let mut st = w.run(&rule, |_| {});
     let mut d = Driver::a3(&w);
     d.step(&w, &st.held[x], &st.units);
@@ -68,7 +73,6 @@ fn f34_a_removals_leaf_for_its_own_thing_leaves_with_what_it_reads() {
     d.step(&w, &st.held[x], &st.units);
     d.ev.check().unwrap();
     assert_eq!(d.ev.leaves(&A).unwrap(), BTreeMap::new());
-    assert_eq!(model_leaves(&w, &rule, A, &st.units, &st.held[x]), BTreeSet::new());
 }
 
 /// An addendum is a body only while it lists a held commit resting on its removal's edge
@@ -76,6 +80,7 @@ fn f34_a_removals_leaf_for_its_own_thing_leaves_with_what_it_reads() {
 /// with c1 forgotten (and c0, which it does not list, held) the addendum brings nothing, so X's grant
 /// to Q (on the addendum's path alone) leaves D's evidence, incrementally as from scratch.
 #[test]
+#[ignore = "D2: evidence rebuilt at A2 (notes/redesign-plan.md): held-model carries a lowering's list whole, so no world gives the derivation leaf pairs"]
 fn an_addendum_leaves_with_the_last_commit_it_lists() {
     let pw = paths::World::new(&[(X, A), (Y, D)]);
     let mut w = World::new(pw, &[A, D]);
@@ -88,7 +93,7 @@ fn an_addendum_leaves_with_the_last_commit_it_lists() {
     let r = w.write(x, |p| p.edge(X, 6, &[], A, K, Role::None, &[]));
     let ad = w.write(q, |p| p.addendum(Q, 7, &[A], D, r, &[c1]));
     assert_agrees("addendum", &w);
-    let rule = a3(&mut w);
+    let rule = a2(&mut w);
     let mut st = w.run(&rule, |_| {});
     let everything = |st: &State| st.written.difference(&st.forgotten).copied().collect::<Set>();
     let mut d = Driver::a3(&w);
@@ -113,6 +118,7 @@ fn an_addendum_leaves_with_the_last_commit_it_lists() {
 /// X's grant of write to K at 1 arrives after it. Until then the removal cuts nothing (no leaf
 /// read); with the grant it cuts c, so A requires its own thing's leaf, incrementally as from scratch.
 #[test]
+#[ignore = "D2: evidence rebuilt at A2 (notes/redesign-plan.md): held-model carries a lowering's list whole, so no world gives the derivation leaf pairs"]
 fn a_late_witness_makes_a_held_removals_leaf_read() {
     let pw = paths::World::new(&[(X, A)]);
     let mut w = World::new(pw, &[A]);
@@ -121,7 +127,7 @@ fn a_late_witness_makes_a_held_removals_leaf_read() {
     let r = w.write(x, |p| p.edge(X, 6, &[], A, K, Role::None, &[c]));
     let g = w.write(x, |p| p.edge(X, 1, &[], A, K, Role::Write, &[]));
     assert_agrees("late witness", &w);
-    let rule = a3(&mut w);
+    let rule = a2(&mut w);
     let mut d = Driver::a3(&w);
     let mut seen = vec![];
     w.run(&rule, |st| {
@@ -139,6 +145,7 @@ fn a_late_witness_makes_a_held_removals_leaf_read() {
 /// D's set as a write on c's path, so D requires its leaf. Forgetting Y's grant unjoins c's path:
 /// the removal and its leaf leave D's set, though c still rests on the removal's edge.
 #[test]
+#[ignore = "D2: evidence rebuilt at A2 (notes/redesign-plan.md): held-model carries a lowering's list whole, so no world gives the derivation leaf pairs"]
 fn a_lowering_leaving_a_set_takes_its_leaves() {
     let pw = paths::World::new(&[(X, A), (Y, D)]);
     let mut w = World::new(pw, &[A, D]);
@@ -148,7 +155,7 @@ fn a_lowering_leaving_a_set_takes_its_leaves() {
     let c = w.write(k, |p| p.content(K, 2, &[A], D));
     let r = w.write(x, |p| p.edge(X, 6, &[], A, K, Role::None, &[c]));
     assert_agrees("path member", &w);
-    let rule = a3(&mut w);
+    let rule = a2(&mut w);
     let mut st = w.run(&rule, |_| {});
     let everything = |st: &State| st.written.difference(&st.forgotten).copied().collect::<Set>();
     let mut d = Driver::a3(&w);
@@ -161,5 +168,4 @@ fn a_lowering_leaving_a_set_takes_its_leaves() {
     d.step(&w, &h, &st.units);
     d.ev.check().unwrap();
     assert_eq!(d.ev.leaves(&D).unwrap().get(&(r, D)), None);
-    assert_eq!(model_leaves(&w, &rule, D, &st.units, &h), BTreeSet::new());
 }

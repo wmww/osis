@@ -28,7 +28,6 @@ pub fn fails_at(w: &World, rule: &Rule, at: &std::collections::BTreeSet<usize>) 
     out.extend(w.p3(rule, &st));
     out.extend(w.p4(rule, &st, true));
     out.extend(w.p5_order(rule, &st, 5).0);
-    out.extend(w.p7_leaf_waits(rule, &st));
     out.extend(w.p8_promotions(rule, &st, PromoteWhen::AfterPass, 0));
     out
 }

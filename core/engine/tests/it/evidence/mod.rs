@@ -3,13 +3,12 @@
 //! held-model `evidence` (`World::req` under OPEN 10's (iv), `Open10::Granted`, entry creations
 //! on, keys-open travel on: `Stage::A2`), the oracle: at every step of a world, for every node's
 //! held set and every sync ID's held entries, under every sync ID, the copies the derivation keeps
-//! incrementally and computes from scratch equal the model's required copies with A3's leaves
-//! (`Rule::listed`: leaves, addenda leaving) and without (`Rule::fixed`);
-//! with leaves, the leaves equal `World::req_leaves` and each held part waits for a leaf exactly
-//! where `World::pend_leaf` says. Hand worlds per model test naming a rule or finding (keys-open
-//! travel's in `travel.rs`, A3's in `a3.rs`); the derivation's own (a waiting path entry); count
-//! tests.
-use held_model::evidence::{self as hm, Chained, Join, LeafKeep, Leafs, Open10, Rule, Shape, Stage, State, World};
+//! incrementally and computes from scratch equal the model's required copies. The derivation's
+//! leaves (`Config::leaves`) have no oracle: held-model carries a lowering's list whole
+//! (notes/write-path-design.md §2, E4), and the leaves go at A3 (notes/redesign-plan.md). Hand
+//! worlds per model test naming a rule or finding (keys-open travel's in `travel.rs`, the leaves'
+//! own in `a3.rs`); the derivation's own (a waiting path entry); count tests.
+use held_model::evidence::{self as hm, Join, Open10, Rule, Shape, Stage, World};
 use osis_engine::evidence::{Config, CopyId, Evidence, Gives, Hop, Kind, Need, Part, Write};
 use roles_model::paths::{self, Id, Key, Rules, Set, Thing, Things};
 use roles_model::Role;
@@ -38,25 +37,6 @@ fn a2(w: &mut World) -> Rule {
     Stage::A2.set(w, Rule::fixed())
 }
 
-/// `w` set to A3's rule (`Stage::A2` over `Rule::listed`: (iv), keys-open travel, leaves read
-/// where they cut and far leaves kept at home, addenda leaving).
-fn a3(w: &mut World) -> Rule {
-    w.rules = Rules::fixed();
-    Stage::A2.set(w, Rule::listed())
-}
-
-/// The delivery a world runs under: A3's (leaves) or A2's. Each run compares both derivations
-/// (A3's, A2's) at every held set.
-fn delivery(w: &mut World, leaves: bool) -> Rule {
-    if leaves { a3(w) } else { a2(w) }
-}
-
-/// The rules a held set is compared under: A3's and A2's.
-fn compared(w: &World) -> [Rule; 2] {
-    let mut w = w.clone();
-    [a3(&mut w), a2(&mut w)]
-}
-
 /// Part `i` of the model's world as the derivation's input, over held set `h` whose chained
 /// writes are `ch`.
 fn part(w: &World, ch: &Set, i: Id) -> Part<Id, Thing, Key> {
@@ -73,7 +53,7 @@ fn part(w: &World, ch: &Set, i: Id) -> Part<Id, Thing, Key> {
             // admin; the field goes with the engine's rule
             relies: None,
             creation: w.creation(i).map(|j| (pw.cid(j), pw.commits[j].on)),
-            leaves: w.leaves_of(i).into_iter().map(|(_, t)| t).collect(),
+            leaves: vec![],
         }),
         paths::Kind::Addendum { removal, list } => Kind::Addendum { edge: pw.sets(*removal).expect("an addendum against an edge write"), lists: list.iter().map(|&j| (pw.cid(j), pw.commits[j].on)).collect() },
         _ => Kind::Content,
@@ -134,7 +114,7 @@ impl Driver {
         Driver::with(w, Config { keys_open, leaves: false })
     }
 
-    /// A3's derivation: keys-open travel and leaves.
+    /// The derivation with its leaves on (`a3.rs`).
     fn a3(w: &World) -> Driver {
         Driver::with(w, A3)
     }
@@ -198,37 +178,12 @@ fn model_copies(w: &World, rule: &Rule, s: Thing, units: &BTreeMap<Thing, Things
 /// A3's configuration: keys-open travel (Role changes travel whole, finding 31) and leaves.
 const A3: Config = Config { keys_open: true, leaves: true };
 
-/// The model's required leaves of `s` over `h` under `rule`, as (lowering commit, thing).
-fn model_leaves(w: &World, rule: &Rule, s: Thing, units: &BTreeMap<Thing, Things>, h: &Set) -> BTreeSet<(Id, Thing)> {
-    w.req_leaves(rule, s, units, h).into_iter().map(|(r, t)| (w.w.cid(r), t)).collect()
-}
-
-/// Every content-class part of `h` whose wait for a leaf (`World::pend_leaf`, holding leaves `l`)
-/// the derivation's `waits` does not match: (part, model, derivation).
-fn leaf_waits(w: &World, d: &mut Driver, h: &Set, l: &Leafs) -> (Vec<(Id, bool, bool)>, usize) {
-    let ch = Chained::new();
-    let held: BTreeSet<(Id, Thing)> = l.iter().map(|&(r, t)| (w.w.cid(r), t)).collect();
-    let mut bad = vec![];
-    let mut waiting = 0;
-    for &i in h.iter().filter(|&&i| !w.w.edge_class(i)) {
-        let model = w.pend_leaf(LeafKeep::Cuts, h, &ch, l, i);
-        let ours = d.ev.waits(&(w.w.cid(i), w.on(i)), |x| held.contains(x)).is_some();
-        waiting += usize::from(model);
-        if model != ours {
-            bad.push((i, model, ours));
-        }
-    }
-    (bad, waiting)
-}
-
-/// What a run compared: disagreements, comparisons where the model required some copy, some leaf,
-/// a part waiting on a leaf; held sets splitting a copy (not compared).
+/// What a run compared: disagreements, comparisons where the model required some copy; held sets
+/// splitting a copy (not compared).
 #[derive(Default)]
 struct Run {
     differ: Vec<String>,
     copies: usize,
-    leaves: usize,
-    waits: usize,
     split: usize,
 }
 
@@ -236,91 +191,49 @@ impl Run {
     fn add(&mut self, r: Run) {
         self.differ.extend(r.differ);
         self.copies += r.copies;
-        self.leaves += r.leaves;
-        self.waits += r.waits;
         self.split += r.split;
     }
 }
 
-/// Every disagreement over the run of `w` under `rule` (its delivery): per step, per node (its
-/// held set) and per sync ID's reader (its entries), for every sync ID, A3's derivation against
-/// the model under A3's rule (copies, leaves, waits on a leaf) and A2's against A2's rule (copies).
-fn differ(w: &World, rule: &Rule) -> Run {
+/// Every disagreement over the run of `w` under A2's rule: per step, per node (its held set) and
+/// per sync ID's reader (its entries), for every sync ID, the derivation's copies against the
+/// model's.
+fn differ(w: &World) -> Run {
     let mut out = Run::default();
-    let [ra3, ra2] = compared(w);
-    let mut nodes: Vec<[Driver; 2]> = (0..w.nodes.len()).map(|_| [Driver::a3(w), Driver::new(w, true)]).collect();
-    let mut readers: BTreeMap<Thing, [Driver; 2]> = w.sids.iter().map(|&s| (s, [Driver::a3(w), Driver::new(w, true)])).collect();
-    w.run(rule, |st| {
-        // (who, its held set and leaves, its derivations)
-        let mut held: Vec<(String, &Set, Leafs, &mut [Driver; 2])> = vec![];
+    let mut w = w.clone();
+    let rule = a2(&mut w);
+    let w = &w;
+    let mut nodes: Vec<Driver> = (0..w.nodes.len()).map(|_| Driver::new(w, true)).collect();
+    let mut readers: BTreeMap<Thing, Driver> = w.sids.iter().map(|&s| (s, Driver::new(w, true))).collect();
+    w.run(&rule, |st| {
+        let mut held: Vec<(String, &Set, &mut Driver)> = vec![];
         for (n, d) in nodes.iter_mut().enumerate() {
-            held.push((format!("node {n}"), &st.held[n], st.held_leaves[n].clone(), d));
+            held.push((format!("node {n}"), &st.held[n], d));
         }
         for (s, d) in readers.iter_mut() {
-            let h = &st.entries[s];
-            held.push((format!("reader of {s}"), h, st.leaves[s].iter().copied().filter(|l| h.contains(&l.0)).collect(), d));
+            held.push((format!("reader of {s}"), &st.entries[s], d));
         }
-        for (who, h, l, [da3, da2]) in held {
+        for (who, h, d) in held {
             let split = splits_a_copy(w, h);
             out.split += usize::from(split);
-            for (d, rule, name) in [(&mut *da3, &ra3, "a3"), (&mut *da2, &ra2, "a2")] {
-                d.step(w, h, &st.units);
-                // incremental = from scratch, the reverse indexes current
-                if let Err(e) = d.ev.check() {
-                    out.differ.push(format!("step {} {who} {name}: {e}", st.step));
-                }
-                if split {
-                    continue;
-                }
-                for &s in &w.sids {
-                    let model = model_copies(w, rule, s, &st.units, h);
-                    let inc = d.required(s);
-                    out.copies += usize::from(!model.is_empty());
-                    if inc != model {
-                        out.differ.push(format!("step {} {who} {name} sid {s}: model {model:?} derivation {inc:?}", st.step));
-                    }
-                }
+            d.step(w, h, &st.units);
+            // incremental = from scratch, the reverse indexes current
+            if let Err(e) = d.ev.check() {
+                out.differ.push(format!("step {} {who}: {e}", st.step));
             }
             if split {
                 continue;
             }
-            out.add(a3_checks(w, &ra3, st, &who, h, &l, da3));
+            for &s in &w.sids {
+                let model = model_copies(w, &rule, s, &st.units, h);
+                let inc = d.required(s);
+                out.copies += usize::from(!model.is_empty());
+                if inc != model {
+                    out.differ.push(format!("step {} {who} sid {s}: model {model:?} derivation {inc:?}", st.step));
+                }
+            }
         }
     });
-    out
-}
-
-/// A3's leaf checks over held set `h` (holding leaves `l`): per sync ID the required leaves
-/// (incremental and from scratch) against `World::req_leaves`, and per held part its wait on a
-/// leaf against `World::pend_leaf`.
-fn a3_checks(w: &World, rule: &Rule, st: &State, who: &str, h: &Set, l: &Leafs, d: &mut Driver) -> Run {
-    let mut out = Run::default();
-    for &s in &w.sids {
-        let model = model_leaves(w, rule, s, &st.units, h);
-        let inc: BTreeSet<(Id, Thing)> = d.ev.leaves(&s).unwrap_or_default().into_keys().collect();
-        let scratch: BTreeSet<(Id, Thing)> = d.ev.leaves_from_scratch(&s).unwrap_or_default().into_keys().collect();
-        out.leaves += usize::from(!model.is_empty());
-        if inc != model || scratch != model {
-            out.differ.push(format!("step {} {who} sid {s} leaves: model {model:?} derivation {inc:?} from scratch {scratch:?}", st.step));
-        }
-    }
-    let (bad, waiting) = leaf_waits(w, d, h, l);
-    out.waits += waiting;
-    if !bad.is_empty() {
-        out.differ.push(format!("step {} {who} waits (part, model, derivation): {bad:?}", st.step));
-    }
-    out
-}
-
-/// `differ` under (iv), with A3's leaves and without.
-fn differ_both(w: &World) -> Run {
-    let mut out = Run::default();
-    for leaves in [true, false] {
-        let mut w = w.clone();
-        let rule = delivery(&mut w, leaves);
-        let r = differ(&w, &rule);
-        out.add(Run { differ: r.differ.into_iter().map(|d| format!("leaves {leaves}: {d}")).collect(), ..r });
-    }
     out
 }
 
@@ -331,7 +244,7 @@ fn assert_agrees(name: &str, w: &World) -> usize {
 
 /// Asserts `w` agrees; what was compared.
 fn assert_agrees_run(name: &str, w: &World) -> Run {
-    let r = differ_both(w);
+    let r = differ(w);
     assert!(r.differ.is_empty(), "{name}: {} disagreements, first: {}", r.differ.len(), r.differ[0]);
     r
 }
@@ -340,7 +253,7 @@ fn assert_agrees_run(name: &str, w: &World) -> Run {
 
 /// The quick check (a property): every 291st family world (the model's default slice: 106 worlds
 /// over the three `Shape::mint` values), then roles-model's story world of seed 0 under each of the
-/// six unit crossings, A3's leaves on every other one.
+/// six unit crossings.
 #[test]
 #[ignore = "property"]
 fn the_derivation_agrees_with_the_model_plain_spec_permissions_4() {
@@ -348,16 +261,14 @@ fn the_derivation_agrees_with_the_model_plain_spec_permissions_4() {
     for i in (0..hm::FAMILY).step_by(97 * 3) {
         r.add(assert_agrees_run(&format!("{:?}", Shape::nth(i)), &hm::family(Shape::nth(i))));
     }
-    eprintln!("copies {}, leaves {}, waits {}", r.copies, r.leaves, r.waits);
-    assert!(r.copies > 1000 && r.leaves > 0 && r.waits > 0, "copies {}, leaves {}, waits {}", r.copies, r.leaves, r.waits);
+    eprintln!("copies {}", r.copies);
+    assert!(r.copies > 1000, "copies {}", r.copies);
     for u in 0..hm::STORY_UNITS {
-        let leaves = u % 2 == 0;
         let sim = paths::random_world(0, &Rules::fixed());
-        let mut w = hm::story_world(&sim, u);
-        let rule = delivery(&mut w, leaves);
-        let r = differ(&w, &rule);
-        assert!(r.differ.is_empty(), "story units {u} leaves {leaves}: {} disagreements, first: {}", r.differ.len(), r.differ[0]);
-        eprintln!("story units {u} leaves {leaves}: {} comparisons with copies", r.copies);
+        let w = hm::story_world(&sim, u);
+        let r = differ(&w);
+        assert!(r.differ.is_empty(), "story units {u}: {} disagreements, first: {}", r.differ.len(), r.differ[0]);
+        eprintln!("story units {u}: {} comparisons with copies", r.copies);
     }
 }
 
@@ -370,22 +281,17 @@ fn search(family_step: usize, random_worlds: u64, story: u64) {
     type Job = Box<dyn Fn() -> (String, Run) + Sync>;
     let mut jobs: Vec<Job> = vec![];
     for i in (0..hm::FAMILY).step_by(family_step) {
-        jobs.push(Box::new(move || (format!("{:?}", Shape::nth(i)), differ_both(&hm::family(Shape::nth(i))))));
+        jobs.push(Box::new(move || (format!("{:?}", Shape::nth(i)), differ(&hm::family(Shape::nth(i))))));
     }
     for seed in start..start + random_worlds {
-        jobs.push(Box::new(move || (format!("random seed {seed}"), differ_both(&hm::random(seed, 14)))));
+        jobs.push(Box::new(move || (format!("random seed {seed}"), differ(&hm::random(seed, 14)))));
     }
     for seed in start..start + story {
-        for leaves in [true, false] {
-            for u in 0..hm::STORY_UNITS {
-                jobs.push(Box::new(move || {
-                    let sim = paths::random_world(seed, &Rules::fixed());
-                    let mut w = hm::story_world(&sim, u);
-                    let rule = delivery(&mut w, leaves);
-                    let r = differ(&w, &rule);
-                    (format!("story seed {seed} units {u} leaves {leaves}"), Run { differ: r.differ.into_iter().map(|d| format!("leaves {leaves}: {d}")).collect(), ..r })
-                }));
-            }
+        for u in 0..hm::STORY_UNITS {
+            jobs.push(Box::new(move || {
+                let sim = paths::random_world(seed, &Rules::fixed());
+                (format!("story seed {seed} units {u}"), differ(&hm::story_world(&sim, u)))
+            }));
         }
     }
     let next = std::sync::atomic::AtomicUsize::new(0);
@@ -408,8 +314,8 @@ fn search(family_step: usize, random_worlds: u64, story: u64) {
     let bad = bad.into_inner().unwrap();
     assert!(bad.is_empty(), "{} worlds disagree, first: {}", bad.len(), bad[0]);
     let r = total.into_inner().unwrap();
-    eprintln!("{} worlds agree; comparisons with copies {}, with leaves {}, parts waiting on a leaf {}; {} held sets splitting a copy not compared", jobs.len(), r.copies, r.leaves, r.waits, r.split);
-    assert!(r.copies > jobs.len() && r.leaves > 0 && r.waits > 0, "copies {}, leaves {}, waits {}", r.copies, r.leaves, r.waits);
+    eprintln!("{} worlds agree; comparisons with copies {}; {} held sets splitting a copy not compared", jobs.len(), r.copies, r.split);
+    assert!(r.copies > jobs.len(), "copies {}", r.copies);
 }
 
 /// Full size (`OSIS_FULL=1`): every 17th family world, 1500 random and 60 story seeds; the

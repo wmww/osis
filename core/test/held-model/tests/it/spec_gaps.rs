@@ -81,11 +81,10 @@ fn gaps_a_split_commit_is_judged_per_part_by_each_unit() {
 
 /// A list entry names its part on its leaf's thing alone (finding 24; `wide` seed 14204407701,
 /// split, late and mint, shrunk): Z writes one commit in the split form, a part on D through
-/// [A, O] and a part on A directly; X removes Z from A listing the commit in D's leaf only (it
-/// lists what it chooses: nothing checks a list). A's reader holds no leaf of D (no edge write on
-/// D under A where keys-open travel is off) and judges Z's part on A unlisted (invalid); the judge
-/// (roles-model `paths`, `World::in_leaves`) reads an entry per leaf, so the node holding
-/// everything drops it too, at every stage.
+/// [A, O] and a part on A directly; X removes Z from A listing the commit's part on D only (it
+/// lists what it chooses: nothing checks a list). The judge (roles-model `paths`,
+/// `World::in_leaves`) reads an entry per thing, so A's reader, holding the whole list, and the
+/// node holding everything both judge Z's part on A unlisted (invalid), at every stage.
 #[test]
 fn gaps_a_list_entry_names_its_part_on_its_leafs_thing_alone() {
     let pw = paths::World::new(&[(X, A), (W, O), (Y, D)]);
@@ -101,7 +100,7 @@ fn gaps_a_list_entry_names_its_part_on_its_leafs_thing_alone() {
         assert!(f.iter().all(|f| f.prop.starts_with("P1") || f.prop == "P8-promote") && !f.iter().any(|f| f.prop == "P1" && f.id == ids[1]), "{}: {f:?}", s.name());
     }
     let mut wl = w.clone();
-    let rule = Stage::A3.set(&mut wl, Rule::fixed());
+    let rule = Stage::A2.set(&mut wl, Rule::fixed());
     let st = wl.run(&rule, |_| {});
     let full = wl.verdicts(&wl.full(&st, &Set::new()), &Set::from([ids[0], ids[1]]));
     assert_eq!((full[&ids[0]], full[&ids[1]]), (Verdict::Valid, Verdict::Invalid));
