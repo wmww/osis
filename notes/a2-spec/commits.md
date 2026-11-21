@@ -1,7 +1,7 @@
 # A2 draft: spec/commits.md
 > Summary: Draft spec text for stage A2 (not in spec, not built): spec/commits.md §4 Unjudgeable read as missing evidence (an edge of a stated path with no held edge write ordered before the part, or the latest such itself unjudgeable; **(A3)** a leaf a held lowering's root shows and the node lacks), Outside the node closure with evidence for certificates, and a new bullet Provisional: which acts wait for a complete pass; §5 What a held thing needs. Map: notes/a2-spec/README.md.
 
-Written over notes/a1-spec/commits.md. Replaces, in spec/commits.md: in §4 the Unjudgeable lead (A1's text), one sentence of Outside the node closure, Examined again's role-inputs clause; adds Provisional after Order independence; in §5 one sentence of What a held thing needs. Every other bullet *stands*.
+Written over spec/commits.md. Replaces, in spec/commits.md: in §4 the Unjudgeable lead (A1's text), one sentence of Outside the node closure, Examined again's role-inputs clause; adds Provisional after Order independence; in §5 one sentence of What a held thing needs. Every other bullet *stands*.
 
 ## 4. Verification and application
 - **Unjudgeable**: a commit is unjudgeable while its signer's `created.0` record is unknown, or while every held part of it is. A held part is unjudgeable while:

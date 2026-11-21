@@ -1,7 +1,7 @@
 # A2 draft: spec/permissions.md
 > Summary: Draft spec text for stage A2 (not in spec, not built): spec/permissions.md §4 rewritten as evidence, the closure over the paths a sync ID's held commits state, carried as certificate copies per (commit, thing); §2 Logging a lowered grant; the A3 clauses (a removal's reach, list leaves as evidence) drafted where the model checks them with the rest. Map, oracles and status: notes/a2-spec/README.md.
 
-Written over A1's draft, whose words will stand in spec/ when A2 starts: notes/a1-spec/permissions.md. Replaces, of it: §4 whole; §2 Logging a lowered grant. *Stands* marks a bullet whose words stay. **(A3)** marks a bullet A3's spec brief moves into spec/ (drafted here because held-model `evidence` checks the required set whole); until then today's words stand in its place, named at each. **(until A4)** marks what stays only as the evidence of today's account signer.
+Written over A1's draft, whose words will stand in spec/ when A2 starts: spec/permissions.md. Replaces, of it: §4 whole; §2 Logging a lowered grant. *Stands* marks a bullet whose words stay. **(A3)** marks a bullet A3's spec brief moves into spec/ (drafted here because held-model `evidence` checks the required set whole); until then today's words stand in its place, named at each. **(until A4)** marks what stays only as the evidence of today's account signer.
 
 ## 2. Role grant writes
 - **Logging a lowered grant**: a lowering has no logging rule of its own. It is an edge write on every path with that edge, so it is in the evidence (§4) of every held commit stating such a path, under each sync ID whose bodies hold such a commit; and, as every edge write, where its holder's role reaches (§4 Role changes travel).

@@ -1,5 +1,5 @@
 # A removed admin's backdated destruction of a thing it held directly stands
-> Summary: a destruction's right reads no cut on an edge into the destroyed thing ordered after it (spec/commits.md §5 Destruction; draft notes/a1-spec/permissions.md §6 Destruction; roles-model `holds`; osis-perm `paths`), so a key holding admin on T by a direct edge, stolen and removed, destroys T for good by a request backdated before its removal, unlisted. Every other purge request falls with such a cut. Against spec/requirements.md Deletion ("A purge counts only if its author had the right to make it, judged as an edit's validity is").
+> Summary: a destruction's right reads no cut on an edge into the destroyed thing ordered after it (spec/commits.md §5 Destruction; draft spec/permissions.md §6 Destruction; roles-model `holds`; osis-perm `paths`), so a key holding admin on T by a direct edge, stolen and removed, destroys T for good by a request backdated before its removal, unlisted. Every other purge request falls with such a cut. Against spec/requirements.md Deletion ("A purge counts only if its author had the right to make it, judged as an edit's validity is").
 > Priority: normal
 > Tags: security, perm
 
