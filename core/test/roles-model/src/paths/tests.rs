@@ -1515,6 +1515,28 @@ fn the_remover_keeps_what_it_received_first_in_the_story() {
     assert!(role == Admin && fails > 0);
 }
 
+/// Finding 45: the last-admin rule keeps the remover's own path against an end the thief put on
+/// it. The thief, heard before the removal, grants H admin until 7 (move 21, stamped 3, made 5);
+/// H removes X at 6. Under the rule H's own edge is timed at the removal, so the removal relies on
+/// no standing admin and does not apply with that grant held: H's list leaves it out, the removal
+/// drops it, and H stays a standing admin. Without the rule (`LastAdmin::Off`, the decided design:
+/// notes/handoff.md, The last admin is a writer's check only) the removal applies with it, H's
+/// list keeps it, and H's admin ends at 7 (`own path` fails).
+#[test]
+fn the_last_admin_rule_keeps_the_removers_own_path_against_a_heard_end() {
+    let s = Setup { b_side_x: true, ..Setup::default() };
+    let moves = [Move { kind: 21, ts: 3, made: 5 }];
+    let own_path = |rules: Rules| {
+        let m = Sim::build(&s, &rules, &moves, &mut Rng(0));
+        let mut st = Stats::default();
+        check(&m, &rules, &mut st);
+        (judge(&m.w, &rules, &m.view(H, &rules)).role(H, A), st.fails.get("own path").copied().unwrap_or(0))
+    };
+    assert_eq!(own_path(Rules::fixed()), (Admin, 0));
+    let (role, fails) = own_path(Rules { last_admin: LastAdmin::Off, ..Rules::fixed() });
+    assert!(role == Gone && fails > 0, "{role:?} {fails}");
+}
+
 /// Equivocation: X signs a twin of its removal of N5 at its `ts`, ordered first, listing H's
 /// pairing of N5 and not N5's grant to B. Received by H before the removal it is a write H's
 /// removal applies with, so H keeps it: the twin applies, the first is a no-op and N5's grant to
