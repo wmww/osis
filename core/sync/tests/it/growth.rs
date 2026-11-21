@@ -871,19 +871,17 @@ fn a_released_things_forgotten_commits_leave_no_own_entry_spec_sync_judgement_3(
 // spec/sync-ids.md §6 (Delete: a record or list blob losing to another there is deleted at a
 // store once it shows the winner), spec/permissions.md §4 (Logging certificates): writers each
 // logging a record blob of the same records every round leave a store keeping S unread holding
-// as many entries after n rounds as after 10n. Nodes 0 and 3 (one account) and 1 write thing 0,
-// node 2 keeps its sync ID S unread; each round every writer seals a record blob of S's records
-// at once, its own store holding no other (as each logs one before it holds another's).
+// as many entries after n rounds as after 10n. On deletes.rs's `four`: nodes 0 (admin), 2 and 3
+// write thing 0, node 1 keeps its sync ID S unread; each round every writer seals a record blob
+// of S's records at once, its own store holding no other (as each logs one before it holds
+// another's).
 #[test]
 fn record_blobs_at_a_store_stay_flat_spec_sync_ids_6() {
-    let mut w = crate::harness::history::world_of(0, 3, 4);
+    let (mut w, _, s) = crate::deletes::four();
     w.cap = 200_000;
-    let _ = play(&mut w, &[New(0), Grant(0, 0, 1, Gives::Writes), Grant(0, 0, 2, Gives::Syncs), Run], String::new());
-    let t = w.history.things[0].0;
-    let s = w.engine(0).sync_id_of(&t).unwrap().unwrap();
     let records: std::collections::BTreeSet<Tid> = w.engine(0).certificate_records(&s).unwrap().iter().copied().collect();
     assert!(!records.is_empty(), "S carries records");
-    let writers = [0, 1, 3];
+    let writers = [0, 2, 3];
     let mut held = Vec::new();
     for round in 0..10 {
         for i in writers {
@@ -900,7 +898,7 @@ fn record_blobs_at_a_store_stay_flat_spec_sync_ids_6() {
             w.deliver(i, osis_sync::Input::Tick);
         }
         w.run();
-        held.push(w.store(2).entries(&s).unwrap().len());
+        held.push(w.store(1).entries(&s).unwrap().len());
     }
     assert_eq!(held[0], held[9], "store entries after 1 and 10 rounds: {held:?}");
 }
