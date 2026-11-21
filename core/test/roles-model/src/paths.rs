@@ -643,17 +643,25 @@ impl World {
         }
         let marks_ok = direct.iter().all(|&k| k + 1 < all.len() && self.joins(all[k], all[k + 1]).len() >= 2);
         let well = all.iter().collect::<BTreeSet<_>>().len() == all.len() && marks_ok;
-        let rest = if well { std::iter::once((key, signer)).chain(all.windows(2).enumerate().flat_map(|(k, p)| if direct.contains(&k) { vec![(p[0], p[1])] } else { self.joins(p[0], p[1]) })).collect() } else { vec![] };
+        let rest = if well { self.path_hops(key, &all, direct) } else { vec![] };
         let i = self.commits.len();
         self.commits.push(Commit { signer, key, ts, path: path.to_vec(), on, kind, rest, well, leave, pa: 0, purge_by: PurgeBy::AuthorOrAdmin, own: false, cid: i, own_path: false, direct: direct.to_vec() });
         i
     }
-    /// One commit of several edge writes on `on` along one path (spec/commits.md §2). Its parts
-    /// take effect in holder order, but the parts on the stated path's last thing or final hop (a
-    /// self-removal of its last thing, as in a single-use link redemption, or the record edge a
-    /// descent ends with; neither changes the other's path) last. Two parts on one holder's edge are
-    /// bad input, applying nowhere (the `roles.0` delta's map keys would repeat: spec/data-model.md
-    /// deterministic CBOR).
+    /// The hops a path of members `all` (signer first) signed by `key` rests on: the key hop
+    /// (key, signer), then each consecutive pair's joining edges, a `direct` one by its direct edge.
+    fn path_hops(&self, key: Thing, all: &[Thing], direct: &[usize]) -> Vec<Edge> {
+        let joined = all.windows(2).enumerate().flat_map(|(k, p)| if direct.contains(&k) { vec![(p[0], p[1])] } else { self.joins(p[0], p[1]) });
+        all.first().map(|&s| (key, s)).into_iter().chain(joined).collect()
+    }
+    /// One commit of several edge writes on `on` along one path (spec/commits.md §2;
+    /// notes/write-path-design.md W7). Its parts take effect in holder order, but the parts on an
+    /// edge the commit's stated path (signer, members, `on`) rests on last, whatever the holders'
+    /// order: its final hop (a self-removal of its last thing, as in a single-use link redemption),
+    /// the record edge a descent ends with, or its key hop (a key removing itself acting as its
+    /// thing). Two
+    /// parts on one holder's edge are bad input, applying nowhere (the `roles.0` delta's map keys
+    /// would repeat: spec/data-model.md deterministic CBOR).
     pub fn commit(&mut self, signer: Thing, ts: u32, path: &[Thing], on: Thing, parts: Vec<Kind>) -> Vec<Id> {
         self.commit_marked(signer, ts, path, on, parts, &[])
     }
@@ -664,10 +672,15 @@ impl World {
     /// `commit_marked` signed by owner key `key`.
     #[allow(clippy::too_many_arguments)]
     pub fn commit_signed(&mut self, key: Thing, signer: Thing, ts: u32, path: &[Thing], on: Thing, mut parts: Vec<Kind>, direct: &[usize]) -> Vec<Id> {
-        let ak = *path.last().unwrap_or(&signer);
-        let last = if direct.contains(&path.len()) { Some((ak, on)) } else { self.joins(ak, on).last().copied() };
+        // the stated path's members, ending at the thing written (acting as itself, the signer)
+        let mut all = vec![signer];
+        all.extend(path);
+        if !(path.is_empty() && on == signer) {
+            all.push(on);
+        }
+        let own = self.path_hops(key, &all, direct);
         parts.sort_by_key(|k| match k {
-            Kind::Edge { holder, .. } => (*holder == ak || last == Some((*holder, on)), *holder),
+            Kind::Edge { holder, .. } => (own.contains(&(*holder, on)), *holder),
             _ => panic!("a commit of several parts carries edge writes"),
         });
         let ids: Vec<Id> = parts.into_iter().map(|k| self.put(key, signer, ts, path, on, k, direct)).collect();

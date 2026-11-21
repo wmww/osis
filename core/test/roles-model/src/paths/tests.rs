@@ -3702,6 +3702,42 @@ fn removing_a_key_drops_what_it_signed_unless_listed() {
     assert!(rd.applied.contains(&by_tk) && !rd.listed(RK, A) && rd.listed(TK, A), "{rd:?}");
 }
 
+/// W7 with the key hop: an owner key replaces itself in one commit (acting as its thing, adding the
+/// new key and removing itself), and the commit applies whichever key sorts first: its removal of
+/// its own key hop takes effect after the add. Control: the parts in holder order (the old rule),
+/// the replacement applies only where the new key sorts first.
+#[test]
+fn an_owner_key_replaces_itself_in_one_commit_in_either_key_order() {
+    let world = |old: Thing, new: Thing, w7: bool| {
+        let mut w = account();
+        w.push(H, 1, &[], A, Kind::set(old, Admin));
+        let parts = vec![Kind::set(new, Admin), Kind::set(old, Gone)];
+        let ids = if w7 {
+            w.commit_signed(old, A, 2, &[], A, parts, &[])
+        } else {
+            let mut parts = parts;
+            parts.sort_by_key(|k| match k {
+                Kind::Edge { holder, .. } => *holder,
+                _ => unreachable!(),
+            });
+            let ids: Vec<Id> = parts.into_iter().map(|k| w.push_signed(old, A, 2, &[], A, k)).collect();
+            w.group(&ids);
+            ids
+        };
+        let by_new = w.push_signed(new, A, 3, &[], A, Kind::Content);
+        let by_old = w.push_signed(old, A, 3, &[], A, Kind::Content);
+        let rd = fixed(&w, &[]);
+        let ok = ids.iter().all(|i| rd.applied.contains(i)) && rd.listed(new, A) && !rd.listed(old, A) && rd.valid.contains(&by_new) && !rd.valid.contains(&by_old);
+        (ok, rd)
+    };
+    for (old, new) in [(RK, TK), (TK, RK)] {
+        let (ok, rd) = world(old, new, true);
+        assert!(ok, "{old:#x} by {new:#x}: {rd:?}");
+    }
+    // the old order: only the replacement by a key sorting before the signing one applies
+    assert!(world(TK, RK, false).0 && !world(RK, TK, false).0);
+}
+
 /// W4 reads the key hop: a key's removal of the key that added it, listing nothing, drops that add
 /// and so its own key hop: void. Listing the add, it applies (control `-no-key-hop`: nothing rests on
 /// the key hop, so it applies dropping nothing).
