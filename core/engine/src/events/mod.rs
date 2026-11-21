@@ -187,8 +187,7 @@ type Bucket = (Option<Tid>, Option<DiagnosticKind>, Vec<u8>);
 /// Subscribers and the queue of events awaiting durability.
 #[derive(Default)]
 pub struct Events {
-    /// Subscribers; `false`: not sent `Event::Ephemeral` (`subscribe_durable`).
-    subs: Vec<(Sender<Event>, bool)>,
+    subs: Vec<Sender<Event>>,
     queued: Vec<Event>,
     seen: VecDeque<(DiagnosticKind, Option<CommitId>, Vec<Tid>, String)>,
     /// Window start and count per bucket: a peer, or a kind of local diagnostic and the remote it
@@ -209,26 +208,19 @@ impl Clone for Events {
 impl Events {
     pub fn subscribe(&mut self) -> Receiver<Event> {
         let (tx, rx) = channel();
-        self.subs.push((tx, true));
+        self.subs.push(tx);
         rx
     }
 
-    /// Tests only (world copies): `subscribe` (`durable`: `subscribe_durable`) whose receiver
-    /// holds `pending` first, the events a copied receiver had not read.
+    /// Tests only (world copies): `subscribe` whose receiver holds `pending` first, the events a
+    /// copied receiver had not read.
     #[doc(hidden)]
-    pub fn test_subscribe_with(&mut self, pending: Vec<Event>, durable: bool) -> Receiver<Event> {
+    pub fn test_subscribe_with(&mut self, pending: Vec<Event>) -> Receiver<Event> {
         let (tx, rx) = channel();
         for e in pending {
             let _ = tx.send(e);
         }
-        self.subs.push((tx, !durable));
-        rx
-    }
-
-    /// `subscribe` without `Event::Ephemeral` (node-sync: nothing to sync for them yet).
-    pub fn subscribe_durable(&mut self) -> Receiver<Event> {
-        let (tx, rx) = channel();
-        self.subs.push((tx, false));
+        self.subs.push(tx);
         rx
     }
 
@@ -251,8 +243,7 @@ impl Events {
     /// Sends every queued event, in order; drops subscribers that hung up.
     pub fn flush(&mut self) {
         for e in std::mem::take(&mut self.queued) {
-            let eph = matches!(e, Event::Ephemeral { .. });
-            self.subs.retain(|(s, all)| (eph && !*all) || s.send(e.clone()).is_ok());
+            self.subs.retain(|s| s.send(e.clone()).is_ok());
         }
     }
 
@@ -287,7 +278,7 @@ impl Events {
         }
         self.seen.push_back(key);
         let e = Event::Diagnostic(d);
-        self.subs.retain(|(s, _)| s.send(e.clone()).is_ok());
+        self.subs.retain(|s| s.send(e.clone()).is_ok());
     }
 }
 

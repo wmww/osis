@@ -132,8 +132,7 @@ pub(crate) fn reachers(core: &crate::engine::Core, c: &CommitId, m: &crate::engi
 impl Engine {
     /// The things whose sync IDs may carry a body of commit `c`: those its parts are on, the
     /// sync units holding them, and for a `sync.0` or `created.0` part on a thing with a sync ID its
-    /// publisher (`Engine::publisher`, spec/sync-ids.md §2): the one rule `sync_id_bodies_meta`'s
-    /// walk of a sync ID follows too.
+    /// publisher (`Engine::publisher`, spec/sync-ids.md §2).
     fn body_things(&mut self, c: &CommitId) -> BTreeSet<Tid> {
         let Some(v) = self.core.ix.commits.get(c).map(|m| m.view.clone()) else { return BTreeSet::new() };
         let mut out = BTreeSet::new();

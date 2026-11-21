@@ -209,7 +209,7 @@ fn a_finalize_lets_the_guest_hear_out_spec_permissions_2() {
     spread(&mut lp);
     assert!(!lp.peers[2].engine.role_duties_due().unwrap(), "lost by the time alone: no drop due");
     let r = lp.peers[2].engine.forget_lost(LostScope::Due).unwrap();
-    assert!(r.actors.is_empty(), "heard out first");
+    assert!(r.is_empty(), "heard out first");
     assert!(lp.peers[2].engine.lost_leaving().unwrap().timed.contains_key(&t));
 }
 

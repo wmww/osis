@@ -53,11 +53,6 @@ impl Freed {
         Freed { tid, link, purge_author, blind, leaf, judged: false, borne: false, memory }
     }
 
-    /// Whether it is a memory blob's (an ephemeral commit's piece).
-    pub fn memory(&self) -> bool {
-        self.memory
-    }
-
     /// The blinding a delete by level signs for: the link's salt and its thing blind.
     pub fn blinding(&self) -> ([u8; 16], [u8; 16]) {
         (self.link.salt, self.blind)
@@ -401,22 +396,6 @@ impl Engine {
             self.core.freed_waits.remove(&w);
         }
         Ok(j)
-    }
-
-    /// Judges a page of every freed row (a start, a judgment of everything), from row key
-    /// `from` on (empty: the first): its judgment, and where the next page starts (`None`: none
-    /// left). Memory per page, whatever the set's size.
-    pub fn judge_freed_page(&mut self, from: &[u8]) -> Result<(Judgment, Option<Vec<u8>>)> {
-        let page = crate::engine::SCAN_PAGE;
-        self.run(|tx| {
-            let got = tx.txn.scan_local(records::FREED, from, page)?;
-            let next = (got.len() == page).then(|| got.last().map(|(k, _)| [k.get(records::FREED.len()..).unwrap_or_default(), &[0]].concat())).flatten();
-            let mut fs = Vec::new();
-            for (k, v) in got {
-                fs.push(Freed::decode(k.get(records::FREED.len()..).unwrap_or_default(), &v)?);
-            }
-            Ok((judge(tx, fs)?, next))
-        })
     }
 
     /// The node blobs freed-set judgments wait for (`Core::freed_waits`): to fetch.

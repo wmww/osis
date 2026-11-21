@@ -559,11 +559,6 @@ impl Engine {
         self.run(|tx| certblobs::forget_blob(tx, &s, r, &b))
     }
 
-    /// Whether `b` is a freed link's blob.
-    pub fn freed(&mut self, b: &BlobId) -> Result<bool> {
-        self.is_freed(b)
-    }
-
     /// Takes a piece's bytes (a blob a held body links, `pieces`' missing) from a store entry:
     /// held here from now on (`put_blobs`).
     pub fn take_piece(&mut self, b: &BlobId, bytes: Vec<u8>) -> Result<()> {

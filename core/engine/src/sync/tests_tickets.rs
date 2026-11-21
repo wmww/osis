@@ -164,6 +164,6 @@ fn a_tickets_secret_on_a_dependent_thing_reads_nothing_and_goes_spec_permissions
     lp.advance(hour + crate::rotation::LOST_HEARD_WAIT_MS + 1);
     let e1 = &mut lp.peers[1].engine;
     e1.tick().unwrap();
-    assert!(e1.forget_lost(crate::rotation::LostScope::All).unwrap().actors.contains(&t), "T's secrets go");
+    assert!(e1.forget_lost(crate::rotation::LostScope::All).unwrap().contains(&t), "T's secrets go");
     assert_eq!(e1.get(&t, &ak).unwrap(), None, "still unread");
 }

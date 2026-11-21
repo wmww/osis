@@ -24,7 +24,7 @@ pub struct Body {
     /// The header's blind (spec/crypto.md §7).
     pub blind: [u8; 16],
     /// The opened form `[Header, signature, [Part*]]` of what the blob carries (every held part
-    /// of the commit, or a copy's parts); empty from `sync_id_bodies_meta` (`body_plaintext`).
+    /// of the commit, or a copy's parts); empty from `commit_bodies_under` (`body_plaintext`).
     pub plaintext: Vec<u8>,
     pub role_commit: bool,
     /// Its wrap's fetch order (`fetch_order`).
@@ -94,15 +94,6 @@ impl OpenedBlob {
     pub fn parts(&self) -> Vec<usize> {
         self.commit.parts.iter().map(|p| p.ai).collect()
     }
-}
-
-/// Frames the opened form of a commit as a copy: every part in one section under the blob key
-/// (tests and tools: a node seals with `Engine::seal`, per independent, or `Engine::seal_to`).
-pub fn seal_plain(plaintext: &[u8], class: osis_blob::Class, rng: &mut dyn CryptoRngCore) -> Result<Sealed> {
-    let c = CommitBlob::decode(plaintext)?;
-    let key = osis_crypto::BlobKey::fresh(rng);
-    let env = osis_commit::seal_commit(&c, &c.header, |_| (), |_, _| Some((key.secret().clone(), Vec::new())), &[], rng)?;
-    framed(key, &env, &c.header, class, rng, &c)
 }
 
 /// Frames an envelope: random salt and key, prefix from the header and the sections' aspects
@@ -509,7 +500,7 @@ impl Engine {
         (whole, if opens { self.read_secrets(t) } else { Vec::new() })
     }
 
-    /// The plaintext of a body (`sync_id_bodies_meta` leaves it out): the opened form of every
+    /// The plaintext of a body (`commit_bodies_under` leaves it out): the opened form of every
     /// held part of the commit; empty when the commit is not held any more.
     pub fn body_plaintext(&mut self, b: &Body) -> Result<Vec<u8>> {
         if !b.plaintext.is_empty() {
@@ -522,33 +513,6 @@ impl Engine {
             return Ok(osis_commit::rewrite(&c, |_| true).encode());
         }
         Ok(c.encode())
-    }
-
-    /// The bodies a sync ID must hold from its thing's sync unit (spec/sync-judgement.md §1): held
-    /// commits touching the sync unit with a part its independent may read. A sync ID also
-    /// carries the `sync.0` and `created.0` writes of the things with a sync ID it is the nearest
-    /// record-chain actor with a sync ID of (spec/sync-ids.md §2).
-    /// Without plaintexts (`body_plaintext`), from a memo per commit (`Core::bodies`): a pass after a
-    /// change looks at only the commits it changed. The commits are found through `on_thing` and
-    /// `by_aspect` (O(the closure's commits), no header decoded when the memo holds them), in ID
-    /// order.
-    pub fn sync_id_bodies_meta(&mut self, g: &Tid) -> Result<Vec<Body>> {
-        let ctx = self.body_ctx(g);
-        let core = &self.core;
-        let mut ids: BTreeSet<CommitId> = self.sync_unit(g).iter().flat_map(|t| core.on_thing(t)).collect();
-        for t in ctx.published.iter() {
-            for ak in ["sync.0", "created.0"] {
-                let Ok(ak) = osis_base::Ak::new(ak) else { continue };
-                ids.extend(core.ix.by_aspect.get(&(*t, ak)).into_iter().flatten().map(|x| x.1));
-            }
-        }
-        #[cfg(debug_assertions)]
-        debug_assert_eq!(ids, core.ix.commits.iter().filter(|(_, m)| ctx.touches(core, &m.view)).map(|(id, _)| *id).collect::<BTreeSet<_>>(), "sync ID commits by index");
-        let mut out = Vec::new();
-        for id in ids {
-            out.extend(self.commit_bodies_under(&ctx, &id)?);
-        }
-        Ok(out)
     }
 
     /// What `commit_bodies_under` needs of a sync unit's root: the unit, actor and the things its sync
@@ -620,7 +584,7 @@ impl Engine {
         h.aspects.iter().enumerate().filter(|(_, a)| ctx.holds(&self.core, &a.tid) && self.reads(ctx, &a.tid)).map(|(i, _)| i).collect()
     }
 
-    /// The body of commit `id` a sync ID of `ctx`'s sync unit must hold (`sync_id_bodies_meta`):
+    /// The body of commit `id` a sync ID of `ctx`'s sync unit must hold (spec/sync-judgement.md §1):
     /// with the parts its independent may read among those inside the sync unit (or published there),
     /// when there are any; else, for a lasting commit, its header alone.
     pub fn commit_bodies_under(&mut self, ctx: &BodyCtx, id: &CommitId) -> Result<Vec<Body>> {
@@ -961,16 +925,6 @@ impl Engine {
         }
         let Some(up) = self.core.created(g).and_then(osis_base::CreationRecord::mint_admin) else { return false };
         self.epochs(&up).is_some_and(|o| ActorEpochs::derived(&o, g).role(r).is_established(ep))
-    }
-}
-
-/// The role key of `keys` that signs `item` (the delete key, or the key its levels need).
-pub fn delete_key<'a>(keys: &'a HeadKeys, item: &osis_blob::DeleteItem) -> Option<&'a SigningSecret> {
-    match osis_blob::key_for_levels(&item.levels()) {
-        Ok(RoleKey::Delete) => keys.delete.as_ref(),
-        Ok(RoleKey::Write) => keys.write.as_ref(),
-        Ok(_) => keys.sync.as_ref().filter(|_| keys.sync_established),
-        Err(_) => None,
     }
 }
 

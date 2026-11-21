@@ -3968,11 +3968,6 @@ impl Engine {
         self.run(|tx| crate::engine::write::keep_schema(tx, &s, true))
     }
 
-    /// The node's one store of ciphertext, this engine's blobs.
-    pub fn blobs(&self) -> Arc<dyn osis_store::Ciphertext> {
-        self.blobs.clone()
-    }
-
     /// A local record of the API layer (`osis`), never synced.
     pub fn app_record(&mut self, name: &str) -> Result<Option<Vec<u8>>> {
         let k = [records::APP, name.as_bytes()].concat();
@@ -4001,12 +3996,6 @@ impl Engine {
         self.core.mint_admin(tid)
     }
 
-    /// `tid`, then its mint admins up the record chain: at
-    /// most `MAX_CHAIN_DEPTH` links (`osis_base::record_chain`).
-    pub fn record_chain(&self, tid: &Tid) -> impl Iterator<Item = Tid> + '_ {
-        self.core.record_chain(tid).filter_map(|s| s.thing())
-    }
-
     /// This node's tid.
     pub fn tid(&self) -> Tid {
         self.core.id.tid()
@@ -4029,11 +4018,6 @@ impl Engine {
         &self.core.id
     }
 
-    /// The clock the node runs on.
-    pub fn clock(&self) -> Arc<dyn Clock> {
-        self.clock.clone()
-    }
-
     /// The wall clock.
     pub fn now(&self) -> WallMs {
         self.core.now()
@@ -4049,16 +4033,11 @@ impl Engine {
         self.core.events.subscribe()
     }
 
-    /// `subscribe` without `Event::Ephemeral`.
-    pub fn subscribe_durable(&mut self) -> Receiver<Event> {
-        self.core.events.subscribe_durable()
-    }
-
     /// Tests only (world copies): a subscription whose receiver holds `pending` first
     /// (`Events::test_subscribe_with`).
     #[doc(hidden)]
-    pub fn test_subscribe_with(&mut self, pending: Vec<Event>, durable: bool) -> Receiver<Event> {
-        self.core.events.test_subscribe_with(pending, durable)
+    pub fn test_subscribe_with(&mut self, pending: Vec<Event>) -> Receiver<Event> {
+        self.core.events.test_subscribe_with(pending)
     }
 
     /// What brings back what the node could not judge since the last call, keeping it from now

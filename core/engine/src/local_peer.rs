@@ -323,8 +323,8 @@ impl Peer {
             let c: Arc<dyn Clock> = clock.clone();
             let mut engine = self.engine.test_copy(c)?;
             let pending: Vec<Event> = self.events.try_iter().collect();
-            self.events = self.engine.test_subscribe_with(pending.clone(), false);
-            let events = engine.test_subscribe_with(pending, false);
+            self.events = self.engine.test_subscribe_with(pending.clone());
+            let events = engine.test_subscribe_with(pending);
             let (backend, root) = (self.backend.test_copy(), self.root.test_copy());
             let blob_disk = (self.blob_disk.0.test_copy(), self.blob_disk.1.test_copy());
             Ok(Peer { engine, clock, backend, root, blob_disk, events, restarts: self.restarts, discarded: self.discarded.clone(), discards: self.discards, redelivered: self.redelivered, pulled_anew: self.pulled_anew.clone(), given: self.given.clone() })
@@ -383,17 +383,7 @@ impl Engine {
         Ok(Some((Package { id: *id, bytes, blobs, lists }, record)))
     }
 
-    /// Held commit `id` as the sync IDs `synced` carry it from here (`sync_bodies`, the rule
-    /// node-sync's bodies follow, spec/sync-judgement.md §1-§2): its parts the body under any of
-    /// them holds, a header alone for a header-only body; `None` where none carries a body of it.
-    pub fn package_under(&mut self, id: &CommitId, synced: &BTreeSet<osis_base::SyncId>) -> Result<Option<Package>> {
-        match self.carried_under(id, synced)? {
-            Some(parts) => self.package_of_parts(id, &parts),
-            None => Ok(None),
-        }
-    }
-
-    /// The parts of held commit `id` the bodies under the sync IDs `synced` hold (`package_under`).
+    /// The parts of held commit `id` the bodies under the sync IDs `synced` hold.
     pub fn carried_under(&mut self, id: &CommitId, synced: &BTreeSet<osis_base::SyncId>) -> Result<Option<BTreeSet<usize>>> {
         let bodies = self.sync_bodies(id)?;
         let mut parts: Option<BTreeSet<usize>> = None;

@@ -297,12 +297,6 @@ impl Engine {
         })
     }
 
-    /// `drop_old_claims` into `m`, a `sync.0` write of `t` by this admin.
-    pub fn drop_old_claims(&mut self, m: &mut Mutation, t: &Tid) -> Result<()> {
-        let g = *t;
-        self.run(|tx| drop_old_claims(tx, m, g))
-    }
-
     /// The sync ID of `t`: the greatest it owns (`flows::sync_id_of`).
     pub fn sync_id_of(&mut self, t: &Tid) -> Result<Option<SyncId>> {
         let g = *t;
@@ -310,8 +304,3 @@ impl Engine {
     }
 }
 
-/// The sync IDs `sync.0` of `g` records, owned or not, inside a transaction (unparsable: none).
-pub(crate) fn recorded_in(tx: &mut Tx<'_>, g: &Tid) -> Result<Vec<SyncId>> {
-    let Some(v) = tx.state(g, &ak("sync.0")?)?.and_then(Fragment::read) else { return Ok(Vec::new()) };
-    Ok(ct::SYNC.decode(&v).map(|m| m.into_keys().collect()).unwrap_or_default())
-}

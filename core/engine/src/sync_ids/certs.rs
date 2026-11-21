@@ -54,10 +54,6 @@ impl Certs {
         }
     }
 
-    pub fn is_empty(&self) -> bool {
-        self.commits.is_empty() && self.headers.is_empty() && self.mintings.is_empty() && self.records.is_empty() && self.accounts.as_ref().is_none_or(BTreeSet::is_empty)
-    }
-
     /// Adds `other`'s commits, headers, mintings and records.
     pub fn extend(&mut self, other: Certs) {
         for (c, p) in other.commits {
@@ -431,12 +427,6 @@ impl Engine {
                 self.cert_parts(&cs, out);
             }
         }
-    }
-
-    /// `t`'s witness (spec/commits.md §5, A thing's mintings travel with its record): its held
-    /// minting destroyed last, valued ones last of all, ties by the lowest commit ID.
-    pub fn witness(&self, t: &Tid) -> Option<crate::retention::Minting> {
-        crate::retention::destroy::witness(&self.core, t)
     }
 
     /// Every held minting of `t` with its standing (`witness` is the highest).

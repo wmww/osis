@@ -152,11 +152,6 @@ impl Engine {
         (*self.core.timelines.keyless()).clone()
     }
 
-    /// Whether actor `x` may read thing `t` (entitlement, spec/sync-judgement.md §1).
-    pub fn may_read(&self, x: &Tid, t: &Tid) -> bool {
-        self.core.may_read(x, t)
-    }
-
     /// Things with a `sync.0` state.
     pub fn things_with_sync_ids(&self) -> Vec<Tid> {
         self.core.ix.sync_recorded.iter().copied().collect()

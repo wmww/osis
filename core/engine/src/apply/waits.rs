@@ -319,13 +319,9 @@ pub(crate) struct Waits {
     refused: BTreeSet<CommitId>,
     /// Commits reading-only secrets came from.
     reading: BTreeSet<CommitId>,
-    /// Unapplied commits an awaiting entry holds, by the things their headers touch
-    /// (`Engine::awaits_on`). From headers seen, in memory: a restart fetches them again.
-    on_thing: BTreeMap<Tid, BTreeSet<CommitId>>,
-    things_of: BTreeMap<CommitId, Vec<Tid>>,
     /// Pending commits, and applied ones with parts waiting, by the records their parts await
     /// (every part's, not only the one their reason names: any arriving may let a part apply); in
-    /// memory, with `things_of`, noted at each examination that pends them.
+    /// memory (a restart fetches them again), noted at each examination that pends them.
     on_record: BTreeMap<Tid, BTreeSet<CommitId>>,
     records_of: BTreeMap<CommitId, Vec<Tid>>,
     /// Pending commits, and applied ones with parts waiting, by the things outside the node
@@ -376,19 +372,10 @@ impl Waits {
         self.reading.contains(id)
     }
 
-    /// `id` cannot be judged; `things`: its header's.
-    pub fn awaits(&mut self, id: CommitId, things: Vec<Tid>) {
-        self.make_room(&id);
-        for t in &things {
-            self.on_thing.entry(*t).or_default().insert(id);
-        }
-        self.things_of.insert(id, things);
-    }
-
     /// Parts of pending `id` wait for `reasons` (and nothing else noted before): the records
     /// they await, and the things whose entry into the node closure they await.
     pub fn parts_await<'a>(&mut self, id: CommitId, reasons: impl Iterator<Item = &'a Reason>) {
-        self.unawait_records(&id);
+        self.unawaits(&id);
         let mut records = BTreeSet::new();
         let mut entries = BTreeSet::new();
         for r in reasons {
@@ -416,28 +403,16 @@ impl Waits {
 
     /// Remembered commits stay under `MAX_REMEMBERED`, the headers of commits given directly (a peer,
     /// an inbox chain) having no entry to go with: past it the smallest ID is forgotten (it waits on no
-    /// wake, and `awaits_on` stops naming it; a restart forgets them all alike).
+    /// wake; a restart forgets them all alike).
     fn make_room(&mut self, id: &CommitId) {
-        while !self.things_of.contains_key(id) && !self.records_of.contains_key(id) && !self.entries_of.contains_key(id) && self.things_of.len().max(self.records_of.len()).max(self.entries_of.len()) >= MAX_REMEMBERED {
-            let Some(first) = self.things_of.keys().chain(self.records_of.keys()).chain(self.entries_of.keys()).min().copied() else { return };
+        while !self.records_of.contains_key(id) && !self.entries_of.contains_key(id) && self.records_of.len().max(self.entries_of.len()) >= MAX_REMEMBERED {
+            let Some(first) = self.records_of.keys().chain(self.entries_of.keys()).min().copied() else { return };
             self.unawaits(&first);
         }
     }
 
     /// `id` applied, or its last entry left.
     pub fn unawaits(&mut self, id: &CommitId) {
-        for t in self.things_of.remove(id).into_iter().flatten() {
-            if let Some(s) = self.on_thing.get_mut(&t) {
-                s.remove(id);
-                if s.is_empty() {
-                    self.on_thing.remove(&t);
-                }
-            }
-        }
-        self.unawait_records(id);
-    }
-
-    fn unawait_records(&mut self, id: &CommitId) {
         self.entries_of.remove(id);
         for t in self.records_of.remove(id).into_iter().flatten() {
             if let Some(s) = self.on_record.get_mut(&t) {
@@ -457,11 +432,6 @@ impl Waits {
     /// The things whose entry into the node closure the parts of `id` await (`parts_await`).
     pub fn entries_of(&self, id: &CommitId) -> &[Tid] {
         self.entries_of.get(id).map_or(&[], |v| v.as_slice())
-    }
-
-    /// Whether a commit touching `t` cannot be judged here (`Engine::awaits_on`).
-    pub fn awaits_on(&self, t: &Tid) -> bool {
-        self.on_thing.contains_key(t)
     }
 
 
@@ -567,10 +537,9 @@ mod tests {
         for i in 0..MAX_REMEMBERED + 10 {
             let mut c = [0u8; 32];
             c[..8].copy_from_slice(&(i as u64).to_be_bytes());
-            w.awaits(CommitId(c), vec![Tid::from_bytes([1; 15])]);
             w.parts_await(CommitId(c), [Reason::UnknownCreated(Tid::from_bytes([2; 15]))].iter());
         }
-        assert!(w.things_of.len() <= MAX_REMEMBERED && w.records_of.len() <= MAX_REMEMBERED);
-        assert_eq!(w.on_thing[&Tid::from_bytes([1; 15])].len(), w.things_of.len(), "the index follows");
+        assert!(w.records_of.len() <= MAX_REMEMBERED);
+        assert_eq!(w.on_record[&Tid::from_bytes([2; 15])].len(), w.records_of.len(), "the index follows");
     }
 }

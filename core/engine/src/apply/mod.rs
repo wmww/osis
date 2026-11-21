@@ -990,7 +990,6 @@ fn ingest_class(tx: &mut Tx<'_>, mut blob: CommitBlob, origin: Origin) -> Result
     let received = first_received(tx, &id)?;
     let _s = osis_base::costs::span("examine");
     let exam = examine(tx, &mut blob, &id, &BTreeSet::new(), origin, &mut known)?;
-    let awaits = matches!(exam, Exam::Awaits(_));
     let out = match exam {
         Exam::Ready(mut parts) => {
             let w = parts.waiting.take();
@@ -1022,16 +1021,12 @@ fn ingest_class(tx: &mut Tx<'_>, mut blob: CommitBlob, origin: Origin) -> Result
             }
             pend(tx, &id, PendingKind::Pending, known, &blob.encode(), r.clone(), Some(&blob.header))?;
             keys::read_pending_boxes(tx, &blob, &id)?;
-            if awaits {
-                tx.core.waits.awaits(id, blob.header.aspects.iter().map(|a| a.tid).collect());
-            }
             Ingested::Pending(id, r)
         }
     };
     Ok(out)
 }
 
-/// The record a wait names.
 /// What the waiting parts `w` of applied commit `id` await on their things, noted
 /// (`Waits::parts_await`): its pending copy parks under each (`waits::wakes_of`), whatever its
 /// first reason.
@@ -1809,11 +1804,6 @@ impl Engine {
         }
         let id = *id;
         self.run(|tx| keys::forget_unchecked(tx, &id))
-    }
-
-    /// Whether a commit on `t` cannot be judged here yet.
-    pub fn awaits_on(&self, t: &Tid) -> bool {
-        self.core.waits.awaits_on(t)
     }
 
     /// No entry in the sync store names a blob of commit `id` any more (sync's

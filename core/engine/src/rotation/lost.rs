@@ -5,7 +5,6 @@
 use crate::engine::{Core, Engine, Tx};
 use crate::error::{Error, Result};
 use crate::flows::now_ts;
-use crate::retention::forget::Forgotten;
 use osis_base::{Role, Tid};
 use osis_keys::{ActorEpochs, ROLES};
 use osis_perm::At;
@@ -388,12 +387,12 @@ pub(crate) fn without_frozen(core: &Core, blob: osis_commit::CommitBlob) -> osis
 /// Drops the secrets of `lost` actors (diagnostic each) and forgets what only they read; keeps
 /// what the rules keep, and erases the held copies (minus `dropped`, the user's) nothing keeps
 /// now. `rejudge`: a role commit may have changed what the held copies hang on.
-fn drop_actors(tx: &mut Tx<'_>, mut lost: Vec<Tid>, dropped: &[Tid], rejudge: bool) -> Result<(Vec<Tid>, Forgotten)> {
+fn drop_actors(tx: &mut Tx<'_>, mut lost: Vec<Tid>, dropped: &[Tid], rejudge: bool) -> Result<Vec<Tid>> {
     // an account this node was removed from: what it read as it goes too
     lost.extend(std::mem::take(&mut tx.core.left));
     let lost = with_unread_below(tx.core, lost);
     if lost.is_empty() && dropped.is_empty() && !(rejudge && !tx.core.ix.kept.is_empty()) {
-        return Ok((lost, Forgotten::default()));
+        return Ok(lost);
     }
     tx.core.touch();
     // a copy re-granted is a holder's again once a secret came too: with none, a loss would not be
@@ -448,7 +447,7 @@ fn drop_actors(tx: &mut Tx<'_>, mut lost: Vec<Tid>, dropped: &[Tid], rejudge: bo
         tx.core.events.diagnostic(crate::Diagnostic { kind: crate::DiagnosticKind::Removed, tids: vec![*a], commit: None, peer: None, detail: if kept.contains_key(a) { "lost read access: secrets dropped, a read-only copy kept" } else { "lost read access: secrets and what only they read dropped" }.into() }, tx.core.hlc.mono());
     }
     let set: BTreeSet<Tid> = lost.iter().copied().collect();
-    let f = crate::retention::forget::forget(tx, crate::retention::forget::Scope::Lost(&set), &held)?;
+    crate::retention::forget::forget(tx, crate::retention::forget::Scope::Lost(&set), &held)?;
     // a kept sync role's history (what it supersedes, its names and floor) is what the entries
     // still held say, as a load reads them: those it opened while it read went with the read
     let ak = crate::flows::ak("secrets.0")?;
@@ -457,7 +456,7 @@ fn drop_actors(tx: &mut Tx<'_>, mut lost: Vec<Tid>, dropped: &[Tid], rejudge: bo
             crate::apply::observe_state(tx, a, &ak)?;
         }
     }
-    Ok((lost, f))
+    Ok(lost)
 }
 
 /// `lost` and each independent thing below one of them by record links (through dependent
@@ -501,13 +500,6 @@ pub enum LostScope<'a> {
     Copies,
     /// The user drops these kept copies (`Engine::kept_copies`).
     Kept(&'a [Tid]),
-}
-
-/// What `Engine::forget_lost` dropped.
-#[derive(Default)]
-pub struct Dropped {
-    pub actors: Vec<Tid>,
-    pub forgotten: Forgotten,
 }
 
 /// The actors whose roles reach `a` (`reaches`): `a`, its record chain, and the holders of an
@@ -570,7 +562,7 @@ fn copies_moved(core: &Core) -> bool {
     core.ix.kept.len() != now.len() || core.ix.kept.iter().any(|(a, v)| now.get(a) != Some(v))
 }
 
-fn drop_scope(tx: &mut Tx<'_>, scope: LostScope<'_>) -> Result<Dropped> {
+fn drop_scope(tx: &mut Tx<'_>, scope: LostScope<'_>) -> Result<Vec<Tid>> {
     let (cands, rejudge): (Vec<Tid>, bool) = match scope {
         LostScope::All => (tx.core.ix.secrets.keys().copied().collect(), true),
         LostScope::Only(xs) => (xs.to_vec(), false),
@@ -591,9 +583,9 @@ fn drop_scope(tx: &mut Tx<'_>, scope: LostScope<'_>) -> Result<Dropped> {
         LostScope::Kept(xs) => xs,
         _ => &[],
     };
-    let (actors, forgotten) = drop_actors(tx, lost, dropped, rejudge)?;
+    let actors = drop_actors(tx, lost, dropped, rejudge)?;
     prune_timed(tx)?;
-    Ok(Dropped { actors, forgotten })
+    Ok(actors)
 }
 
 /// What this node lost read access to and leaves to node-sync (`Engine::lost_leaving`): through
@@ -626,7 +618,7 @@ impl Engine {
     /// through them, and forgets every thing it no longer reads by another path
     /// (spec/permissions.md §3), with a diagnostic per actor. Returns them.
     pub fn drop_lost_secrets(&mut self) -> Result<Vec<Tid>> {
-        Ok(self.forget_lost(LostScope::All)?.actors)
+        self.forget_lost(LostScope::All)
     }
 
     /// The held actors this node lost read access to with its own self-removals
@@ -716,7 +708,7 @@ impl Engine {
     /// Drops `a` if this node lost read access to it (`LostScope::Only`): sync's `Life` once
     /// `lost_due` and `lost_passed` hold. Whether it dropped.
     pub fn drop_lost(&mut self, a: &Tid) -> Result<bool> {
-        Ok(!self.forget_lost(LostScope::Only(&[*a]))?.actors.is_empty())
+        Ok(!self.forget_lost(LostScope::Only(&[*a]))?.is_empty())
     }
 
     /// Whether a held copy's marks moved with no drop to judge them (`LostScope::Copies`): a
@@ -747,20 +739,13 @@ impl Engine {
     /// pass to wait for (`lost_passed`, which sync's `Life` adds). Call it after ingesting and at
     /// the memo clock's wake (`clock_next`). Returns the actors dropped.
     pub fn role_duties(&mut self) -> Result<Vec<Tid>> {
-        Ok(self.forget_lost(LostScope::Due)?.actors)
+        self.forget_lost(LostScope::Due)
     }
 
     /// The actors whose read-only copy this node keeps (spec/permissions.md §3, Retain): no secret, no
     /// sync, no write; `get` and the rest still read what it held.
     pub fn kept_copies(&self) -> Vec<Tid> {
         self.core.ix.kept.keys().copied().collect()
-    }
-
-    /// Whether dropping the secrets of `lost` would forget `t` (erase it or keep a copy):
-    /// node-sync hears out the sync IDs whose closure holds such a thing before it drops an actor
-    /// an `until` ended (`Leaving::timed`).
-    pub fn would_forget(&self, lost: &BTreeSet<Tid>, t: &Tid) -> bool {
-        crate::retention::forget::would_forget(&self.core, lost, t)
     }
 
     /// Whether a client of this node, `actor`, reads `t` as a kept copy (notes/client-port.md §3):
@@ -788,9 +773,8 @@ impl Engine {
         false
     }
 
-    /// Drops lost actors (`scope`), with what was forgotten (node-sync drops its sync ID
-    /// sessions).
-    pub fn forget_lost(&mut self, scope: LostScope<'_>) -> Result<Dropped> {
+    /// Drops lost actors (`scope`): the actors dropped.
+    pub fn forget_lost(&mut self, scope: LostScope<'_>) -> Result<Vec<Tid>> {
         self.run(|tx| drop_scope(tx, scope))
     }
 }

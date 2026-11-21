@@ -270,13 +270,6 @@ impl Engine {
         Ok(self.store.dump()?)
     }
 
-    /// Every key the store's current tree yields: what an attacker holding the device starts
-    /// from. Shredding tests.
-    #[doc(hidden)]
-    pub fn forensic_keys(&mut self) -> Result<Vec<[u8; 32]>> {
-        Ok(self.store.forensic_keys()?)
-    }
-
     /// What an attacker holding this node's device recovers from everything `backend` (the
     /// engine's store) and `blobs` (its ciphertext store's) recorded (`osis_store::attack`): the
     /// current tree's keys, the sync ID read secrets this node's code computes now, blobs and wraps

@@ -58,11 +58,6 @@ impl<'a> Cipher<'a> {
         &mut **self.tx.get_or_insert_with(|| src.begin())
     }
 
-    /// The store itself (node sync: the hub's store), locked for this transaction.
-    pub fn store(&mut self) -> &mut dyn std::any::Any {
-        self.tx().any()
-    }
-
     /// Whether a step of the path the store keeps of sync ID `s` bears sync key `key`
     /// (spec/sync.md §3), read through the store's row stamps.
     pub fn bears(&mut self, s: &osis_base::SyncId, key: &osis_crypto::VerifyingKey) -> crate::error::Result<bool> {

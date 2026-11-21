@@ -203,13 +203,6 @@ pub struct Reference {
     pub count: u64,
 }
 
-impl Reference {
-    /// Of the live ephemeral class (an ephemeral aspect), else live durable.
-    pub fn ephemeral(&self) -> bool {
-        self.ak.ephemeral()
-    }
-}
-
 /// Count changes by target and kind, and of each ticket.
 #[derive(Default, Debug, PartialEq, Eq)]
 pub(crate) struct Delta(BTreeMap<(Tid, RefKind), i64>, BTreeMap<Ticket, i64>);

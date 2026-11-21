@@ -34,23 +34,18 @@ impl Default for Published {
     }
 }
 
-/// What an actor's sync ID publishes, as a body judgement reads it (`BodyCtx::published`): per
-/// thing asked (`contains`), whole when walked (`iter`).
+/// What an actor's sync ID publishes, as a body judgement reads it (`BodyCtx::published`), per
+/// thing asked (`contains`).
 pub struct PublishedView {
     actor: Tid,
     set: Arc<BTreeSet<Tid>>,
     pairs: Reader,
-    under: Reader,
 }
 
 impl PublishedView {
     pub fn contains(&self, t: &Tid) -> bool {
         self.pairs.read(&(self.actor, *t));
         self.set.contains(t)
-    }
-    pub fn iter(&self) -> impl Iterator<Item = &Tid> {
-        self.under.read(&self.actor);
-        self.set.iter()
     }
 }
 
@@ -130,11 +125,11 @@ impl Engine {
     pub(crate) fn published_view(&mut self, g: &Tid) -> PublishedView {
         self.follow_published();
         let p = &self.core.published;
-        // the view reads per thing or whole as it is used
+        // the view reads per thing as it is used
         let set = {
             let _u = Unrecorded::start();
             p.under.get(g).cloned().unwrap_or_default()
         };
-        PublishedView { actor: *g, set, pairs: p.pairs.reader(), under: p.under.reader() }
+        PublishedView { actor: *g, set, pairs: p.pairs.reader() }
     }
 }
