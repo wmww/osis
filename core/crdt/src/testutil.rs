@@ -33,6 +33,15 @@ pub fn rng(seed: u64) -> SeedRng {
     SeedRng { rng: Rng(eff), seed, eff }
 }
 
+/// A crdt property's seeds (notes/testing.md, Sizes): `default`, or what `OSIS_CRDT_START` and
+/// `OSIS_CRDT_SEEDS` pick; `f(seed)` for each on the seed runner, results in seed order. `test`
+/// is the libtest path, for the replay line.
+pub fn crdt_seeds<T: Send>(test: &str, default: std::ops::Range<u64>, f: impl Fn(u64) -> T + Sync) -> Vec<T> {
+    let seeds = osis_base::testenv::Seeds::from_env("OSIS_CRDT_START", "OSIS_CRDT_SEEDS", default);
+    let replay = |s: u64| format!("OSIS_CRDT_START={s} OSIS_CRDT_SEEDS=1 cargo test -p osis-crdt --lib -- --ignored --exact {test}");
+    seeds.run(test, replay, f)
+}
+
 /// The generator of a fixed-seed test: `seed` whatever `OSIS_CRDT_SEED` says (thresholds over a
 /// committed seed set must not shift with it).
 pub fn fixed(seed: u64) -> SeedRng {

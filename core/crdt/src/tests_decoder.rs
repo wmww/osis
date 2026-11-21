@@ -13,7 +13,6 @@ use crdt_model::stamp::Source as MSource;
 use crdt_model::cbor::Error as MError;
 use osis_base::Value;
 use crdt_model::wire::{Ctx, decode_delta as m_decode_delta, decode_snapshot as m_decode_snapshot};
-use proptest::prelude::*;
 
 /// Bytes worth writing where a small CBOR item sits: small uints, empty and short arrays,
 /// booleans, empty strings, a negative int, a one-byte uint head.
@@ -178,7 +177,7 @@ fn same_snapshot(bytes: &[u8]) -> Result<(), String> {
 
 /// A random history's deltas and snapshots, each mutated `per` times; the first disagreement.
 fn differential(seed: u64, types: &[Ty], per: usize) -> Result<(), String> {
-    let mut r = crate::testutil::rng(seed | 1);
+    let mut r = crate::testutil::fixed(2 * seed + 1);
     let commits = history_with(&mut r, types, (1..=3).map(|n| MSource::session(n, 0)).collect(), 3);
     let mut state = None;
     for c in &commits {
@@ -324,26 +323,19 @@ fn per() -> usize {
     if std::env::var_os("OSIS_SLOW").is_some() { 40 } else { 8 }
 }
 
-proptest! {
-    #![proptest_config(ProptestConfig::with_cases(48))]
-
-    /// §3.3 rule 7: text and list deltas and snapshots, mutated.
-    #[test]
-    fn seq_decoder_matches_model_spec_3_3(seed in any::<u64>()) {
-        let inner = Ty::Struct([(1, Ty::Register), (2, Ty::Set(Box::new(Ty::Register)))].into_iter().collect());
-        if let Err(e) = differential(seed, &[Ty::Text, Ty::List(Box::new(inner))], per()) {
-            prop_assert!(false, "{}", e);
+/// §3.3 rule 7, §2.3: even seeds text and list deltas and snapshots; odd seeds every encoding
+/// nested (registers, bags, struct, enum, set, map, sequences), and register and text at one
+/// position (snapshot `Slots`, §7); mutated.
+#[test]
+#[ignore = "property"]
+fn decoder_matches_model_plain_spec_3_3() {
+    let inner = Ty::Struct([(1, Ty::Register), (2, Ty::Set(Box::new(Ty::Register)))].into_iter().collect());
+    let (seq, sink) = ([Ty::Text, Ty::List(Box::new(inner))].to_vec(), [kitchen_sink(), Ty::Register, Ty::Text].to_vec());
+    crate::testutil::crdt_seeds("tests_decoder::decoder_matches_model_plain_spec_3_3", 0..64, |seed| {
+        if let Err(e) = differential(seed, if seed % 2 == 0 { &seq } else { &sink }, per()) {
+            panic!("{e}");
         }
-    }
-
-    /// §3.3 rule 7, §2.3: every encoding nested (registers, bags, struct, enum, set, map,
-    /// sequences), and register and text at one position (snapshot `Slots`, §7), mutated.
-    #[test]
-    fn kitchen_sink_decoder_matches_model_spec_3_3(seed in any::<u64>()) {
-        if let Err(e) = differential(seed, &[kitchen_sink(), Ty::Register, Ty::Text], per()) {
-            prop_assert!(false, "{}", e);
-        }
-    }
+    });
 }
 
 // spec/crdt.md §3.3 rule 7, §7: only a text element's creation, and that creation as a position

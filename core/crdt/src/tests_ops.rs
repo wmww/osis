@@ -787,8 +787,9 @@ fn decoded_bound_holds_dense_shapes() {
     for v in shapes {
         assert!(check_snapshot_bound(created(&v)));
     }
-    // a text: one record per character; deleted, reset
-    let n = 20_000;
+    // a text: one record per character; deleted, reset (the bound is per item: a few thousand
+    // show its ratio)
+    let n = 2_000;
     let scripts = [
         vec![Op::Insert { at: 0, items: vec![Value::Str("a".repeat(n))] }],
         vec![Op::Insert { at: 0, items: vec![Value::Str("a".repeat(n))] }, Op::Delete { at: 0, len: n }],
@@ -827,14 +828,12 @@ fn bound_value(r: &mut Rng, depth: u32) -> Value {
 }
 
 /// `decoded_bound` holds for random values held whole (set elements, map keys) and as fragments
-/// (map values, list elements). spec: none (resource bound)
+/// (map values, list elements); a run of 50 seeds or more leaves over half unpaged (paged ones
+/// are not checked; about 3 in 4 are unpaged). spec: none (resource bound)
 #[test]
 #[ignore = "property"]
 fn decoded_bound_holds_random_values_plain() {
-    let name = "tests_ops::decoded_bound_holds_random_values_plain";
-    let seeds = osis_base::testenv::Seeds::from_env("OSIS_DECODED_BOUND_START", "OSIS_DECODED_BOUND_SEEDS", 0..50);
-    let replay = |s: u64| format!("OSIS_DECODED_BOUND_START={s} OSIS_DECODED_BOUND_SEEDS=1 cargo test -p osis-crdt --lib -- --ignored --exact {name}");
-    let checked: usize = seeds.run(name, replay, |seed| {
+    let out = crate::testutil::crdt_seeds("tests_ops::decoded_bound_holds_random_values_plain", 0..50, |seed| {
         let mut r = Rng(seed.wrapping_mul(0x9e37_79b9_7f4a_7c15) | 1);
         let depth = 1 + r.below(5) as u32;
         let vs: Vec<Value> = (0..1 + r.below(20)).map(|_| bound_value(&mut r, depth)).collect();
@@ -845,9 +844,9 @@ fn decoded_bound_holds_random_values_plain() {
             Value::List(vs),
         ];
         shapes.iter().filter(|v| check_snapshot_bound(created(v))).count()
-    }).into_iter().sum();
-    // the default seeds' values are mostly unpaged; another range checks the bound alone
-    assert!(seeds.overridden || checked > 160, "{checked} of 200 unpaged");
+    });
+    let (checked, k) = (out.iter().sum::<usize>(), out.len());
+    assert!(k < 50 || checked > 2 * k, "{checked} of {} unpaged", 4 * k);
 }
 
 proptest! {

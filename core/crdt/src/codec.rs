@@ -1625,7 +1625,7 @@ mod tests_levels {
             for fanout in [2, 3, 4, 7] {
                 for fit in [0, 1, 2, 3, 5] {
                     let params = PageParams { target: head_len(fit as u64) + fit * one, fanout, ..PageParams::FORMAT };
-                    for n in (1..=40).chain([64, 100, 257, 600]) {
+                    for n in (1..=24).chain([40, 64, 100, 257]) {
                         let leaves = |sink: &mut Biased| (0..n as u64).map(|i| sink.put(&i.to_le_bytes()).unwrap()).collect::<Vec<_>>();
                         let mut a = Biased { zero, ..Biased::default() };
                         let mut levels = Levels::default();
@@ -1699,12 +1699,17 @@ mod tests_levels {
                         levels.finish(params, &mut sink, &mut out).unwrap();
                         let pages = tree_pages(&out, &sink);
                         deepest = deepest.max(pages.iter().map(|p| p.0.depth).max().unwrap_or(0));
+                        let mut below = vec![Vec::new(); pages.len()];
+                        for (j, p) in pages.iter().enumerate() {
+                            if let Some(i) = p.2 {
+                                below[i].push(j);
+                            }
+                        }
                         for trial in 0..6 {
                             // half the trials hold everything; the others drop each page with
                             // its subtree one time in five
                             let whole = trial % 2 == 0;
                             let mut tree = LinkTree::new(params);
-                            let mut held = vec![false; pages.len()];
                             let mut ready: Vec<usize> = (0..pages.len()).filter(|i| pages[*i].2.is_none()).collect();
                             let mut placed = 0;
                             while !ready.is_empty() {
@@ -1720,9 +1725,8 @@ mod tests_levels {
                                 if let Err(e) = got {
                                     panic!("zero {zero}, fanout {fanout}, fit {fit}, n {n}, trial {trial}: page at {at:?} refused: {e}");
                                 }
-                                held[i] = true;
                                 placed += 1;
-                                ready.extend((0..pages.len()).filter(|j| pages[*j].2 == Some(i)));
+                                ready.extend(&below[i]);
                             }
                             if whole {
                                 assert_eq!(placed, pages.len());

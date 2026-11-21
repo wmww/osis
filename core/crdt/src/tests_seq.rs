@@ -369,9 +369,11 @@ fn bootstrapped_undelete_of_embedded_char_spec_4_6() {
 
 /// §7 (embedding), `seq_lin`: joins at a `Slots` position that leave its register and effective
 /// reset as they are (text edits of a text upgraded from a string) follow the text slot's cached
-/// placement and read like the model (the join itself is checked against a whole pass).
+/// placement and read like the model (the join itself is checked against a whole pass); a run of
+/// 6 seeds or more follows nearly all.
 #[test]
-fn slots_join_follows_cache_spec_7() {
+#[ignore = "property"]
+fn slots_join_follows_cache_plain_spec_7() {
     use crdt_model::value::Value as MValue;
     // whether the join followed the cached placement: no whole pass, still cached
     let put = |d: MFrag, m: &mut Option<MFrag>, ours: &mut Fragment| {
@@ -388,9 +390,9 @@ fn slots_join_follows_cache_spec_7() {
         assert_eq!(ours.read(), m.as_ref().and_then(|x| x.read()).map(|v| crate::testutil::value(&v)));
         followed
     };
-    let (mut joins, mut kept) = (0, 0);
-    for seed in (1..12).step_by(2) {
-        let mut r = crate::testutil::fixed(seed);
+    let out = crate::testutil::crdt_seeds("tests_seq::slots_join_follows_cache_plain_spec_7", 0..6, |seed| {
+        let (mut joins, mut kept) = (0, 0);
+        let mut r = crate::testutil::fixed(2 * seed + 1);
         let (mut m, mut ours) = (None, Fragment::default());
         put(mops::create(&mut mw(1, 50), &Ty::Text, &MValue::Str("xy".into())), &mut m, &mut ours);
         put(mops::create(&mut mw(2, 100), &Ty::Register, &MValue::Str("abcdefghij".repeat(4))), &mut m, &mut ours);
@@ -405,8 +407,10 @@ fn slots_join_follows_cache_spec_7() {
                 kept += usize::from(followed);
             }
         }
-    }
-    assert!(joins >= 15 && kept * 10 >= joins * 9, "{kept} of {joins} followed");
+        (joins, kept)
+    });
+    let (joins, kept) = out.iter().fold((0, 0), |a, b| (a.0 + b.0, a.1 + b.1));
+    assert!(out.len() < 6 || (joins * 6 >= 15 * out.len() && kept * 10 >= joins * 9), "{kept} of {joins} followed");
 }
 
 // ---- §3.3 rule 7 for runs (writer of node 1, range [3, 6), ts 5·2^16)

@@ -235,8 +235,8 @@ mod entry_copies {
 
     /// The join laws, the model's join, and expiry (§4.7) of each part of the copies (outer
     /// creation, inner creation, the leaf write, each writer) before, after and between joins.
-    pub(super) fn check(seed: u64, depth: u32, slots: bool) {
-        let mut r = crate::testutil::rng(seed);
+    fn check(seed: u64, depth: u32, slots: bool) {
+        let mut r = crate::testutil::fixed(seed);
         let n = 2 + r.below(2);
         let kind = r.below(6);
         let ms: Vec<Frag> = (0..n).map(|_| copy(&mut r, 1, &["a", "b", "c"], depth, kind, slots)).collect();
@@ -324,12 +324,12 @@ mod entry_copies {
     }
 
     /// §5.6 with §4.1, §4.7 and §7: forged copies of one entry under several keys, flat and
-    /// nested, one encoding per position or several (a register beside an enum or a text).
+    /// nested, one encoding per position or several (a register beside an enum or a text); the
+    /// seed picks which (every shape in any four seeds).
     #[test]
-    fn forged_entry_copies_join_and_expire_alike_spec_5_6() {
-        for seed in 0..400 {
-            check(seed, (seed % 4 / 2) as u32, seed % 2 == 1);
-        }
+    #[ignore = "property"]
+    fn forged_entry_copies_join_and_expire_alike_plain_spec_5_6() {
+        crate::testutil::crdt_seeds("tests_laws::entry_copies::forged_entry_copies_join_and_expire_alike_plain_spec_5_6", 0..400, |seed| check(seed, (seed % 4 / 2) as u32, seed % 2 == 1));
     }
 
     /// §5.7 with §4.7: no creation prunes a flag. A forged embedded char's creation `a` above a

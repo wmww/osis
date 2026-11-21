@@ -729,21 +729,23 @@ impl World {
 mod tests {
     use super::*;
 
-    /// The scripts of `random_scripts_replay_spec_5_7`: 24 of `random_script`, then 8 of
-    /// `moves_script`.
-    const SCRIPTS: u64 = 32;
+    /// The script of a seed of `random_scripts_replay_plain_spec_5_7`: a `moves_script` one
+    /// seed in four, else a `random_script`.
     fn script(seed: u64) -> Script {
-        let mut r = crate::testutil::rng(2 * seed + 1);
-        if seed < 24 { random_script(&mut r, 48) } else { moves_script(&mut r, 48) }
+        let mut r = crate::testutil::fixed(2 * seed + 1);
+        if seed % 4 == 3 { moves_script(&mut r, 48) } else { random_script(&mut r, 48) }
     }
 
     /// §4.5, §4.6, §5.7, §6, §8: random scripts of local ops, model commits, undos, joins in
-    /// any order and snapshot bootstraps on three replicas pass every check of `replay`.
+    /// any order and snapshot bootstraps on three replicas pass every check of `replay`; a run
+    /// of 32 seeds or more reaches each kind of step.
     #[test]
-    fn random_scripts_replay_spec_5_7() {
+    #[ignore = "property"]
+    fn random_scripts_replay_plain_spec_5_7() {
+        let out = crate::testutil::crdt_seeds("fuzz_seq::tests::random_scripts_replay_plain_spec_5_7", 0..32, |seed| replay(&script(seed)));
+        let k = out.len();
         let mut all = Stats::default();
-        for seed in 0..SCRIPTS {
-            let x = replay(&script(seed));
+        for x in out {
             all.commits += x.commits;
             all.partial += x.partial;
             all.one_by_one += x.one_by_one;
@@ -755,7 +757,8 @@ mod tests {
             all.model_joins += x.model_joins;
             all.merged += x.merged;
         }
-        assert!(all.commits > 150 && all.partial > 40 && all.one_by_one > 40 && all.model_ops > 40 && all.model_joins > 8 && all.undos > 10 && all.restores > 2 && all.joins > 300 && all.merged > 20, "{all:?}");
+        let floor = |n: usize, per32: usize| k < 32 || n * 32 > per32 * k;
+        assert!(floor(all.commits, 150) && floor(all.partial, 40) && floor(all.one_by_one, 40) && floor(all.model_ops, 40) && floor(all.model_joins, 8) && floor(all.undos, 10) && floor(all.restores, 2) && floor(all.joins, 300) && floor(all.merged, 20), "{all:?} over {k} seeds");
     }
 
     /// §6.2: a move on a replica holding a broken cycle (shrunk from a random script) re-places
@@ -776,7 +779,7 @@ mod tests {
         replay(&s);
     }
 
-    /// Shrinks the failing script of `OSIS_SHRINK=<seed>` (as `random_scripts_replay_spec_5_7`
+    /// Shrinks the failing script of `OSIS_SHRINK=<seed>` (as `random_scripts_replay_plain_spec_5_7`
     /// makes it) by dropping steps and ops while it still panics; prints the result.
     #[test]
     #[ignore]

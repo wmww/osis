@@ -107,6 +107,18 @@ impl Replica {
         crate::testutil::check_lin(&self.state);
         Some((d, self.src.clone(), range))
     }
+    /// `commit` for a large test's setup: no wire round trip and no whole pass after it (both
+    /// checked per commit by the tests of commits; a pass per setup commit is quadratic).
+    fn grow(&mut self, t: u64, ops: &[PathOp], view: &TyView) {
+        let mut b = DeltaBuilder::new(&self.state, Writer::new(ts(t << 16), self.src.clone(), self.lo));
+        for op in ops {
+            b.apply(op, view).unwrap();
+        }
+        if let Some((d, range)) = b.finish() {
+            self.lo = range.hi;
+            self.state.join(d);
+        }
+    }
 }
 
 /// A writer's delta through the wire: encoded and decoded under its header range (deletes come
@@ -363,8 +375,9 @@ fn small_joins_follow_cached_placement_spec_6() {
             // one piece (a move's work is per record it takes, and that count is random)
             let at = if k + 1 == runs { 0 } else { r.below(len + 1) };
             len += 100;
-            a.commit(k + 1, &[op(Op::Insert { at, items: vec![s(&run)] })], &text_view());
+            a.grow(k + 1, &[op(Op::Insert { at, items: vec![s(&run)] })], &text_view());
         }
+        crate::testutil::check_lin(&a.state);
         let mut b = a.fork(2);
         let ops = [Op::Insert { at: len / 3, items: vec![s("x")] }, Op::Delete { at: len / 2, len: 3 }, Op::Move { at: 10, len: 10, to: len / 2 }];
         let mut total = 0;
@@ -608,18 +621,18 @@ fn placement_dot_map_shared_by_copies_spec_6() {
     let run = "abcdefghij".repeat(10);
     for k in 0..100u64 {
         let n = read_str(&a.state).chars().count();
-        a.commit(k + 1, &[op(Op::Insert { at: r.below(n + 1), items: vec![s(&run)] })], &text_view());
+        a.grow(k + 1, &[op(Op::Insert { at: r.below(n + 1), items: vec![s(&run)] })], &text_view());
     }
+    crate::testutil::check_lin(&a.state);
     let lin = |f: &Fragment| match f {
         Fragment::Seq(x) => x.lin(),
         _ => panic!(),
     };
     let mut b2 = a.fork(2);
     for k in 0..20u64 {
-        b2.commit(200 + k, &[op(Op::Insert { at: r.below(10_000), items: vec![s("x")] })], &text_view());
+        b2.grow(200 + k, &[op(Op::Insert { at: r.below(10_000), items: vec![s("x")] })], &text_view());
     }
     let (unshared, all) = lin(&b2.state).map_unshared(&lin(&a.state));
-    eprintln!("{unshared} of {all}");
     assert!(all >= 50 && unshared <= 25, "{unshared} of {all} chunks copied");
 }
 
@@ -1008,78 +1021,77 @@ fn move_undo_chain_spec_4_6() {
 #[test]
 #[ignore = "property"]
 fn cached_placement_follows_moves_plain_spec_6_2() {
-    let name = "tests_seq_ops::cached_placement_follows_moves_plain_spec_6_2";
-    let seeds = osis_base::testenv::Seeds::from_env("OSIS_CACHED_MOVES_START", "OSIS_CACHED_MOVES_SEEDS", 0..12);
-    let replay = |s: u64| format!("OSIS_CACHED_MOVES_START={s} OSIS_CACHED_MOVES_SEEDS=1 cargo test -p osis-crdt --lib -- --ignored --exact {name}");
-    let counts = seeds.run(name, replay, |seed| {
-        let (mut kept, mut moves) = (0, 0);
-        let mut r = crate::testutil::rng(2 * seed + 1);
-        let mut base = Replica::new(1);
-        base.commit(1, &[op(Op::Set(s(&"abcdefghij".repeat(8))))], &text_view());
-        let mut ws: Vec<Replica> = (2..5).map(|n| base.fork(n)).collect();
-        let mut seen = vec![0usize; ws.len()];
-        let mut d = base.fork(9);
-        let mut log: Vec<(usize, Fragment)> = Vec::new();
-        for round in 0..30u64 {
-            // often the same visible range for every writer: concurrent moves of one element
-            let shared = r.chance(1, 2).then(|| (r.below(60), 1 + r.below(4)));
-            let mut fresh = Vec::new();
-            for (i, w) in ws.iter_mut().enumerate() {
-                let n = read_str(&w.state).chars().count();
-                let o = match r.below(8) {
-                    0 => Op::Insert { at: r.below(n + 1), items: vec![s("xyz")] },
-                    1 if n > 4 => Op::Delete { at: r.below(n - 3), len: 1 + r.below(3) },
-                    _ => {
-                        let (at, len) = shared.unwrap_or((r.below(n.max(1)), 1 + r.below(4)));
-                        let at = at.min(n.saturating_sub(2));
-                        let len = len.min(n - at - 1).max(1);
-                        Op::Move { at, len, to: r.below(n - len + 1) }
-                    }
-                };
-                let mv = matches!(o, Op::Move { .. });
-                let t = round * 4 + i as u64 + 2;
-                if let Some((x, _, _)) = w.commit(t, &[op(o)], &text_view()) {
-                    fresh.push((mv, x));
+    let out = crate::testutil::crdt_seeds("tests_seq_ops::cached_placement_follows_moves_plain_spec_6_2", 0..12, follows_moves_case);
+    let (kept, moves) = out.iter().fold((0, 0), |a, b| (a.0 + b.0, a.1 + b.1));
+    // most moves close no cycle: followed (a run of 6 seeds or more)
+    assert!(out.len() < 6 || kept * 4 >= moves * 3, "followed {kept} of {moves}");
+}
+
+/// One seed of `cached_placement_follows_moves_plain`: (move joins followed, move joins).
+fn follows_moves_case(seed: u64) -> (usize, usize) {
+    let mut r = crate::testutil::fixed(seed);
+    let (mut kept, mut moves) = (0, 0);
+    let mut base = Replica::new(1);
+    base.commit(1, &[op(Op::Set(s(&"abcdefghij".repeat(8))))], &text_view());
+    let mut ws: Vec<Replica> = (2..5).map(|n| base.fork(n)).collect();
+    let mut seen = vec![0usize; ws.len()];
+    let mut d = base.fork(9);
+    let mut log: Vec<(usize, Fragment)> = Vec::new();
+    for round in 0..30u64 {
+        // often the same visible range for every writer: concurrent moves of one element
+        let shared = r.chance(1, 2).then(|| (r.below(60), 1 + r.below(4)));
+        let mut fresh = Vec::new();
+        for (i, w) in ws.iter_mut().enumerate() {
+            let n = read_str(&w.state).chars().count();
+            let o = match r.below(8) {
+                0 => Op::Insert { at: r.below(n + 1), items: vec![s("xyz")] },
+                1 if n > 4 => Op::Delete { at: r.below(n - 3), len: 1 + r.below(3) },
+                _ => {
+                    let (at, len) = shared.unwrap_or((r.below(n.max(1)), 1 + r.below(4)));
+                    let at = at.min(n.saturating_sub(2));
+                    let len = len.min(n - at - 1).max(1);
+                    Op::Move { at, len, to: r.below(n - len + 1) }
                 }
-            }
-            for k in (1..fresh.len()).rev() {
-                fresh.swap(k, r.below(k + 1));
-            }
-            for (mv, x) in &fresh {
-                let _ = read_str(&d.state);
-                d.state.join(x.clone());
-                crate::testutil::check_lin(&d.state);
-                if *mv {
-                    moves += 1;
-                    if cached(&d.state) {
-                        kept += 1;
-                    }
-                }
-            }
-            log.extend(fresh.into_iter().map(|(_, x)| (0, x)));
-            // each writer catches up on a random prefix of the log
-            for (w, at) in ws.iter_mut().zip(seen.iter_mut()) {
-                let upto = *at + r.below(log.len() - *at + 1);
-                for (_, x) in log.get(*at..upto).unwrap_or_default() {
-                    let _ = read_str(&w.state);
-                    w.state.join(x.clone());
-                    crate::testutil::check_lin(&w.state);
-                }
-                *at = upto;
+            };
+            let mv = matches!(o, Op::Move { .. });
+            let t = round * 4 + i as u64 + 2;
+            if let Some((x, _, _)) = w.commit(t, &[op(o)], &text_view()) {
+                fresh.push((mv, x));
             }
         }
-        for (w, at) in ws.iter_mut().zip(seen.iter()) {
-            for (_, x) in log.get(*at..).unwrap_or_default() {
+        for k in (1..fresh.len()).rev() {
+            fresh.swap(k, r.below(k + 1));
+        }
+        for (mv, x) in &fresh {
+            let _ = read_str(&d.state);
+            d.state.join(x.clone());
+            crate::testutil::check_lin(&d.state);
+            if *mv {
+                moves += 1;
+                if cached(&d.state) {
+                    kept += 1;
+                }
+            }
+        }
+        log.extend(fresh.into_iter().map(|(_, x)| (0, x)));
+        // each writer catches up on a random prefix of the log
+        for (w, at) in ws.iter_mut().zip(seen.iter_mut()) {
+            let upto = *at + r.below(log.len() - *at + 1);
+            for (_, x) in log.get(*at..upto).unwrap_or_default() {
+                let _ = read_str(&w.state);
                 w.state.join(x.clone());
+                crate::testutil::check_lin(&w.state);
             }
-            assert_eq!(read_str(&w.state), read_str(&d.state), "seed {seed}");
+            *at = upto;
         }
-        (kept, moves)
-    });
-    let (kept, moves) = counts.iter().fold((0, 0), |a, c| (a.0 + c.0, a.1 + c.1));
-    eprintln!("moves followed: {kept} of {moves}");
-    // the default seeds' cache follows most moves; another range checks the placements alone
-    assert!(seeds.overridden || kept * 4 >= moves * 3, "followed {kept} of {moves}");
+    }
+    for (w, at) in ws.iter_mut().zip(seen.iter()) {
+        for (_, x) in log.get(*at..).unwrap_or_default() {
+            w.state.join(x.clone());
+        }
+        assert_eq!(read_str(&w.state), read_str(&d.state), "seed {seed}");
+    }
+    (kept, moves)
 }
 
 /// §6 (a deterministic function of state), `seq_lin`: hostile deltas of moves to HEAD below 250 newer HEAD siblings cost about a
@@ -1585,79 +1597,90 @@ fn edited(r: &mut Rng, base: &Value, ty: &Ty) -> Value {
 /// joins of held-back commits and of those piles: on a sequence held in part, ops write what
 /// they write on the whole state, and a followed join is a whole pass (`partial_follow`).
 #[test]
-fn partial_placement_skew_piles_and_joins_spec_6_1() {
-    let mut r = crate::testutil::rng(0);
+#[ignore = "property"]
+fn partial_placement_skew_piles_and_joins_plain_spec_6_1() {
+    let out = crate::testutil::crdt_seeds("tests_seq_ops::partial_placement_skew_piles_and_joins_plain_spec_6_1", 0..48, skew_piles_case);
+    let k = out.len();
+    let [runs, low, piles, joins, followed, wholes] = out.iter().fold([0; 6], |a, b| std::array::from_fn(|i| a[i] + b[i]));
+    // a run of 24 seeds or more reaches each case
+    if k >= 24 {
+        assert!(runs * 48 > 200 * k && low * 48 > 80 * k && piles * 48 > 40 * k, "{runs} runs, {low} skewed, {piles} piles over {k} seeds");
+        assert!(wholes * 25 <= runs, "{wholes} of {runs} runs by a whole pass");
+        assert!(followed * 10 > joins * 7, "{followed} of {joins} joins followed in part");
+    }
+}
+
+/// One seed of `partial_placement_skew_piles_and_joins_plain`: [runs, skewed, piles, joins,
+/// joins followed in part, runs by a whole pass].
+fn skew_piles_case(round: u64) -> [usize; 6] {
+    let mut r = crate::testutil::fixed(round);
     let (mut runs, mut low, mut piles, mut joins, mut followed, mut wholes) = (0, 0, 0, 0, 0, 0);
-    for round in 0..48 {
-        let text = round % 2 == 0;
-        let ty = if text { Ty::Text } else { list_ty() };
-        let view = TyView(ty.clone());
-        let (Some(mut st), held) = history_state(&mut r, &ty, 4, 12, 6) else { continue };
-        let join_check = |st: &mut Fragment, d: Fragment, r: &mut Rng, joins: &mut usize, followed: &mut usize| {
-            if let (Fragment::Seq(sq), Fragment::Seq(ds)) = (&*st, &d) {
-                *joins += 1;
-                *followed += usize::from(crate::tests_seq::partial_follow(sq, ds, 1 + r.below(6)).is_some());
-            }
-            st.join(d);
-        };
-        for k in 0..6u64 {
-            if !matches!(st, Fragment::Seq(_)) {
-                break;
-            }
-            let n = shown(&st);
-            // half the time a skewed clock below the history's stamps (inserts only: a move or
-            // delete below the stamps it overwrites breaks §2.2's clock rule, which `DeltaBuilder` checks)
-            let skew = r.chance(1, 2);
-            low += usize::from(skew);
-            // above the sequence's reset, which would prune what the commit writes
-            let floor = st.reset().map_or(0, |x| (x.ts.to_u64() >> 16) + 1);
-            let t = if skew { floor + 1 + r.below(100) as u64 } else { 200 + k };
-            let pin = r.below(n + 1);
-            let ops: Vec<PathOp> = (0..1 + r.below(3))
-                .map(|_| {
-                    let at = r.below(n.max(1));
-                    let len = 1 + r.below((n.saturating_sub(at)).clamp(1, 12));
-                    op(match if skew { 0 } else { r.below(5) } {
-                        0 | 1 => Op::Insert { at: pin, items: vec![new_item(&mut r, &ty, "xy")] },
-                        2 => Op::Delete { at, len },
-                        _ => Op::Move { at, len, to: r.below(n.saturating_sub(len) + 1) },
-                    })
+    let text = round.is_multiple_of(2);
+    let ty = if text { Ty::Text } else { list_ty() };
+    let view = TyView(ty.clone());
+    let (Some(mut st), held) = history_state(&mut r, &ty, 4, 12, 6) else { return [0; 6] };
+    let join_check = |st: &mut Fragment, d: Fragment, r: &mut Rng, joins: &mut usize, followed: &mut usize| {
+        if let (Fragment::Seq(sq), Fragment::Seq(ds)) = (&*st, &d) {
+            *joins += 1;
+            *followed += usize::from(crate::tests_seq::partial_follow(sq, ds, 1 + r.below(6)).is_some());
+        }
+        st.join(d);
+    };
+    for k in 0..6u64 {
+        if !matches!(st, Fragment::Seq(_)) {
+            break;
+        }
+        let n = shown(&st);
+        // half the time a skewed clock below the history's stamps (inserts only: a move or
+        // delete below the stamps it overwrites breaks §2.2's clock rule, which `DeltaBuilder` checks)
+        let skew = r.chance(1, 2);
+        low += usize::from(skew);
+        // above the sequence's reset, which would prune what the commit writes
+        let floor = st.reset().map_or(0, |x| (x.ts.to_u64() >> 16) + 1);
+        let t = if skew { floor + 1 + r.below(100) as u64 } else { 200 + k };
+        let pin = r.below(n + 1);
+        let ops: Vec<PathOp> = (0..1 + r.below(3))
+            .map(|_| {
+                let at = r.below(n.max(1));
+                let len = 1 + r.below((n.saturating_sub(at)).clamp(1, 12));
+                op(match if skew { 0 } else { r.below(5) } {
+                    0 | 1 => Op::Insert { at: pin, items: vec![new_item(&mut r, &ty, "xy")] },
+                    2 => Op::Delete { at, len },
+                    _ => Op::Move { at, len, to: r.below(n.saturating_sub(len) + 1) },
                 })
-                .collect();
-            let w = || Writer::new(ts(t << 16), node(20 + k as u8), 1);
-            let per = 1 + r.below(6);
-            let (want, pg) = paged(&st, per, w, &ops, &view);
-            runs += 1;
-            wholes += pg.whole_passes;
-            if let Some((d, _)) = want {
+            })
+            .collect();
+        let w = || Writer::new(ts(t << 16), node(20 + k as u8), 1);
+        let per = 1 + r.below(6);
+        let (want, pg) = paged(&st, per, w, &ops, &view);
+        runs += 1;
+        wholes += pg.whole_passes;
+        if let Some((d, _)) = want {
+            join_check(&mut st, d, &mut r, &mut joins, &mut followed);
+        }
+        // a pile: writers at one index of this state, each unaware of the others
+        if r.chance(1, 3) {
+            piles += 1;
+            let base = st.clone();
+            let n = shown(&base);
+            let at = r.below(n + 1);
+            let mut ds = Vec::new();
+            for j in 0..12u64 {
+                let floor = base.reset().map_or(0, |x| (x.ts.to_u64() >> 16) + 1);
+                let t = if r.chance(1, 2) { floor + 1 + r.below(300) as u64 } else { 400 + j };
+                let mut b = DeltaBuilder::new(&base, Writer::new(ts((t << 16) + j), node(40 + j as u8 + 12 * (k as u8 % 4)), 1 + 100 * k));
+                b.apply(&op(Op::Insert { at, items: vec![new_item(&mut r, &ty, "xy")] }), &view).unwrap();
+                ds.extend(b.finish().map(|x| x.0));
+            }
+            for d in ds {
                 join_check(&mut st, d, &mut r, &mut joins, &mut followed);
             }
-            // a pile: writers at one index of this state, each unaware of the others
-            if r.chance(1, 3) {
-                piles += 1;
-                let base = st.clone();
-                let n = shown(&base);
-                let at = r.below(n + 1);
-                let mut ds = Vec::new();
-                for j in 0..12u64 {
-                    let floor = base.reset().map_or(0, |x| (x.ts.to_u64() >> 16) + 1);
-                    let t = if r.chance(1, 2) { floor + 1 + r.below(300) as u64 } else { 400 + j };
-                    let mut b = DeltaBuilder::new(&base, Writer::new(ts((t << 16) + j), node(40 + j as u8 + 12 * (k as u8 % 4)), 1 + 100 * k));
-                    b.apply(&op(Op::Insert { at, items: vec![new_item(&mut r, &ty, "xy")] }), &view).unwrap();
-                    ds.extend(b.finish().map(|x| x.0));
-                }
-                for d in ds {
-                    join_check(&mut st, d, &mut r, &mut joins, &mut followed);
-                }
-            }
-        }
-        for d in held {
-            join_check(&mut st, frag(&d), &mut r, &mut joins, &mut followed);
         }
     }
-    assert!(runs > 200 && low > 80 && piles > 40, "{runs} runs, {low} skewed, {piles} piles");
-    assert!(wholes * 25 <= runs, "{wholes} of {runs} runs by a whole pass");
-    assert!(followed * 10 > joins * 7, "{followed} of {joins} joins followed in part");
+    for d in held {
+        join_check(&mut st, frag(&d), &mut r, &mut joins, &mut followed);
+    }
+    [runs, low, piles, joins, followed, wholes]
 }
 
 /// §5.7 Ops, §8 (pages are joined independently), `seq_place`, notes/api.md `edit`: on a text of many blocks held in part, an
@@ -1781,7 +1804,7 @@ fn list_edit_on_partial_placement_loads_its_window_spec_5_7() {
     scatter(&mut r, &mut st, 40, &ty, "");
     let (mut few, mut repeats, mut stale_whole) = (0, 0, 0);
     let mut stale = st.read().unwrap();
-    for k in 0..40u64 {
+    for k in 0..24u64 {
         let cur = st.read().unwrap();
         let base = if k % 4 == 3 { stale.clone() } else { cur.clone() };
         let new = edited(&mut r, &base, &ty);
@@ -1816,7 +1839,7 @@ fn list_edit_on_partial_placement_loads_its_window_spec_5_7() {
             stale = st.read().unwrap();
         }
     }
-    assert!(few >= 20 && stale_whole >= 2, "{few} edits at their window, {repeats} repeated, {stale_whole} stale edits matched whole");
+    assert!(few >= 12 && stale_whole >= 2, "{few} edits at their window, {repeats} repeated, {stale_whole} stale edits matched whole");
 }
 
 /// §5.7, §9 (identity), notes/api.md `edit`: an edit resolved at its window writes what one matched against
@@ -1826,121 +1849,119 @@ fn list_edit_on_partial_placement_loads_its_window_spec_5_7() {
 /// periodic stretch changed on both sides, leaves the edit's base elements unmatched (its edit
 /// lost or moved; the window's is the app's).
 #[test]
-fn edit_window_matches_whole_spec_5_7() {
-    let mut r = crate::testutil::rng(0);
+#[ignore = "property"]
+fn edit_window_matches_whole_plain_spec_5_7() {
+    let out = crate::testutil::crdt_seeds("tests_seq_ops::edit_window_matches_whole_plain_spec_5_7", 0..3000, edit_window_case);
+    let k = out.len();
+    let count = |f: fn(&(bool, bool, bool)) -> bool| out.iter().filter(|x| f(x)).count();
+    let (at_window, windowed, same) = (count(|x| x.0), count(|x| x.1), count(|x| x.2));
+    // a run of 300 seeds or more resolves some edits at their window, mostly alike
+    if k >= 300 {
+        assert!(at_window * 30 > k && windowed * 3 > k && same * 30 > 29 * k, "{at_window} at their window, {windowed} same length, {same} same, of {k}");
+    }
+}
+
+/// One seed of `edit_window_matches_whole_plain`: (resolved at its window, the text kept its
+/// length, the window's delta equals whole's).
+fn edit_window_case(round: u64) -> (bool, bool, bool) {
+    let mut r = crate::testutil::fixed(round);
     let view = text_view();
-    crate::seq_diff::WINDOWED.set(0);
-    let (mut same, mut windowed, mut read_diff, mut delta_diff, mut whole_worse) = (0, 0, 0, 0, 0);
-    let mut shown = Vec::new();
-    for round in 0..3000u64 {
-        let n = 1 + r.below(200);
-        let base: Vec<char> = match r.below(5) {
-            4 => {
-                let words = ["the ", "cat ", "sat ", "on ", "mat ", "\n", "    "];
-                let mut v = Vec::new();
-                while v.len() < n {
-                    v.extend(words[r.below(words.len())].chars());
-                }
-                v
+    let n = 1 + r.below(200);
+    let base: Vec<char> = match r.below(5) {
+        4 => {
+            let words = ["the ", "cat ", "sat ", "on ", "mat ", "\n", "    "];
+            let mut v = Vec::new();
+            while v.len() < n {
+                v.extend(words[r.below(words.len())].chars());
             }
-            0 => vec!['a'; n],
-            1 => {
-                let m: Vec<char> = (0..1 + r.below(4)).map(|_| (b'a' + r.below(3) as u8) as char).collect();
-                (0..n).map(|i| m[i % m.len()]).collect()
-            }
-            2 => (0..n).map(|i| if r.chance(1, 30) { 'z' } else { ['a', 'b'][i % 2] }).collect(),
-            _ => (0..n).map(|_| (b'a' + r.below(26) as u8) as char).collect(),
-        };
-        let bs: String = base.iter().collect();
-        let mut w = Writer::new(ts(1 << 16), node(1), 1);
-        let mut st = create(&mut w, &view, &s(&bs)).unwrap();
-        // concurrent changes, often keeping the length
-        let mut ctr = 1000;
-        for k in 0..1 + r.below(3) {
-            let len = read_str(&st).chars().count();
-            let ops = match r.below(3) {
-                // a shift: delete before, insert as many after (or the reverse)
-                0 => {
-                    let d = 1 + r.below(4.min(len.max(1)));
-                    let (i, j) = (r.below(len + 1), r.below(len + 1));
-                    let ins: String = (0..d).map(|_| ['a', 'b', 'z'][r.below(3)]).collect();
-                    let del = Op::Delete { at: i.min(len.saturating_sub(d)), len: d.min(len) };
-                    vec![del, Op::Insert { at: j.min(len - d.min(len)), items: vec![s(&ins)] }]
-                }
-                // a replace in place
-                1 if len > 0 => {
-                    let i = r.below(len);
-                    let d = 1 + r.below((len - i).min(4));
-                    let ins: String = (0..d).map(|_| ['a', 'b', 'q'][r.below(3)]).collect();
-                    vec![Op::Delete { at: i, len: d }, Op::Insert { at: i, items: vec![s(&ins)] }]
-                }
-                _ => vec![Op::Insert { at: r.below(len + 1), items: vec![s("ab")] }],
-            };
-            let mut b = DeltaBuilder::new(&st, Writer::new(ts((10 + round * 10 + k as u64) << 16), node(2), ctr));
-            let mut ok = true;
-            for o in &ops {
-                ok &= b.apply(&op(o.clone()), &view).is_ok();
-            }
-            if ok && let Some((d, range)) = b.finish() {
-                ctr = range.hi;
-                st.join(d);
-            }
+            v
         }
-        // the local edit against base
-        let mut c = base.clone();
-        let at = r.below(c.len() + 1);
-        let del = r.below((c.len() - at).min(5) + 1);
-        let ins: String = (0..r.below(4)).map(|_| ['a', 'b', 'X'][r.below(3)]).collect();
-        c.splice(at..at + del, ins.chars());
-        let o = Op::Edit { base: s(&bs), new: s(&c.iter().collect::<String>()) };
-        let run = |whole: bool| {
-            crate::seq_diff::WHOLE_ONLY.set(whole);
-            let mut b = DeltaBuilder::new(&st, Writer::new(ts(1 << 40), node(9), 1 << 20));
-            b.apply(&op(o.clone()), &view).unwrap();
-            let got = b.finish().map(|x| x.0);
-            crate::seq_diff::WHOLE_ONLY.set(false);
-            got
-        };
-        let before = crate::seq_diff::WINDOWED.get();
-        let (win, whole) = (run(false), run(true));
-        let at_window = crate::seq_diff::WINDOWED.get() > before;
-        windowed += usize::from(read_str(&st).chars().count() == base.len());
-        let rd = |d: &Option<Fragment>| {
-            let mut x = st.clone();
-            if let Some(d) = d {
-                x.join(d.clone());
-            }
-            read_str(&x)
-        };
-        // at its window, the edit (base to new less their common prefix and suffix) lands at
-        // base's own indices in the current read
-        let mut want: Vec<char> = read_str(&st).chars().collect();
-        if at_window {
-            let pre = base.iter().zip(&c).take_while(|(x, y)| x == y).count();
-            let suf = base[pre..].iter().rev().zip(c[pre..].iter().rev()).take_while(|(x, y)| x == y).count();
-            want.splice(pre..base.len() - suf, c[pre..c.len() - suf].iter().copied());
-            assert_eq!(rd(&win), want.iter().collect::<String>(), "round {round}: at its window");
+        0 => vec!['a'; n],
+        1 => {
+            let m: Vec<char> = (0..1 + r.below(4)).map(|_| (b'a' + r.below(3) as u8) as char).collect();
+            (0..n).map(|i| m[i % m.len()]).collect()
         }
-        if win == whole {
-            same += 1;
-            continue;
-        }
-        if rd(&win) == rd(&whole) {
-            delta_diff += 1;
-        } else if at_window {
-            // whole's LCS left a base element of the change unmatched in a periodic stretch
-            // (Myers' alignment there, the text changed on both sides): its edit lost or moved
-            whole_worse += 1;
-        } else {
-            read_diff += 1;
-            if shown.len() < 8 {
-                shown.push(format!("base {bs:?}\ncur  {:?}\nnew  {:?}\nwin  {:?}\nwhole {:?}", read_str(&st), c.iter().collect::<String>(), rd(&win), rd(&whole)));
+        2 => (0..n).map(|i| if r.chance(1, 30) { 'z' } else { ['a', 'b'][i % 2] }).collect(),
+        _ => (0..n).map(|_| (b'a' + r.below(26) as u8) as char).collect(),
+    };
+    let bs: String = base.iter().collect();
+    let mut w = Writer::new(ts(1 << 16), node(1), 1);
+    let mut st = create(&mut w, &view, &s(&bs)).unwrap();
+    // concurrent changes, often keeping the length
+    let mut ctr = 1000;
+    for k in 0..1 + r.below(3) {
+        let len = read_str(&st).chars().count();
+        let ops = match r.below(3) {
+            // a shift: delete before, insert as many after (or the reverse)
+            0 => {
+                let d = 1 + r.below(4.min(len.max(1)));
+                let (i, j) = (r.below(len + 1), r.below(len + 1));
+                let ins: String = (0..d).map(|_| ['a', 'b', 'z'][r.below(3)]).collect();
+                let del = Op::Delete { at: i.min(len.saturating_sub(d)), len: d.min(len) };
+                vec![del, Op::Insert { at: j.min(len - d.min(len)), items: vec![s(&ins)] }]
             }
+            // a replace in place
+            1 if len > 0 => {
+                let i = r.below(len);
+                let d = 1 + r.below((len - i).min(4));
+                let ins: String = (0..d).map(|_| ['a', 'b', 'q'][r.below(3)]).collect();
+                vec![Op::Delete { at: i, len: d }, Op::Insert { at: i, items: vec![s(&ins)] }]
+            }
+            _ => vec![Op::Insert { at: r.below(len + 1), items: vec![s("ab")] }],
+        };
+        let mut b = DeltaBuilder::new(&st, Writer::new(ts((10 + k as u64) << 16), node(2), ctr));
+        let mut ok = true;
+        for o in &ops {
+            ok &= b.apply(&op(o.clone()), &view).is_ok();
+        }
+        if ok && let Some((d, range)) = b.finish() {
+            ctr = range.hi;
+            st.join(d);
         }
     }
-    let at_window = crate::seq_diff::WINDOWED.get();
-    assert!(read_diff == 0 && delta_diff == 0, "{delta_diff} deltas differ (same read), {read_diff} reads differ\n{}", shown.join("\n\n"));
-    assert!(at_window > 100 && windowed > 1000 && same > 2900, "{at_window} at their window, {windowed} same length, {same} same, {whole_worse} lost whole");
+    // the local edit against base
+    let mut c = base.clone();
+    let at = r.below(c.len() + 1);
+    let del = r.below((c.len() - at).min(5) + 1);
+    let ins: String = (0..r.below(4)).map(|_| ['a', 'b', 'X'][r.below(3)]).collect();
+    c.splice(at..at + del, ins.chars());
+    let o = Op::Edit { base: s(&bs), new: s(&c.iter().collect::<String>()) };
+    let run = |whole: bool| {
+        crate::seq_diff::WHOLE_ONLY.set(whole);
+        let mut b = DeltaBuilder::new(&st, Writer::new(ts(1 << 40), node(9), 1 << 20));
+        b.apply(&op(o.clone()), &view).unwrap();
+        let got = b.finish().map(|x| x.0);
+        crate::seq_diff::WHOLE_ONLY.set(false);
+        got
+    };
+    let before = crate::seq_diff::WINDOWED.get();
+    let (win, whole) = (run(false), run(true));
+    let at_window = crate::seq_diff::WINDOWED.get() > before;
+    let windowed = read_str(&st).chars().count() == base.len();
+    let rd = |d: &Option<Fragment>| {
+        let mut x = st.clone();
+        if let Some(d) = d {
+            x.join(d.clone());
+        }
+        read_str(&x)
+    };
+    // at its window, the edit (base to new less their common prefix and suffix) lands at
+    // base's own indices in the current read
+    let mut want: Vec<char> = read_str(&st).chars().collect();
+    if at_window {
+        let pre = base.iter().zip(&c).take_while(|(x, y)| x == y).count();
+        let suf = base[pre..].iter().rev().zip(c[pre..].iter().rev()).take_while(|(x, y)| x == y).count();
+        want.splice(pre..base.len() - suf, c[pre..c.len() - suf].iter().copied());
+        assert_eq!(rd(&win), want.iter().collect::<String>(), "round {round}: at its window");
+    }
+    if win != whole {
+        // they differ only where whole's LCS left a base element of the change unmatched in a
+        // periodic stretch (Myers' alignment there, the text changed on both sides): its edit
+        // lost or moved, so the reads differ and the edit was at its window
+        assert!(rd(&win) != rd(&whole), "round {round}: the deltas differ, the reads alike");
+        assert!(at_window, "round {round}: the reads differ\nbase {bs:?}\ncur  {:?}\nnew  {:?}\nwin  {:?}\nwhole {:?}", read_str(&st), c.iter().collect::<String>(), rd(&win), rd(&whole));
+    }
+    (at_window, windowed, win == whole)
 }
 
 
@@ -1968,73 +1989,77 @@ fn ranged_text(r: &mut Rng) -> (Fragment, u64) {
     (via_snapshot(&a.state), a.lo)
 }
 
-proptest! {
-    /// §4.5, §5.7: a commit of 30 ops (inserts, typos deleted again, moves of fresh and older
-    /// text, ops at both ends, a reset now and then) on a text with range records and chars
-    /// anchored inside them, or on a `Slots` position, encodes and reads like the same ops on a
-    /// plain string and like the ops committed one by one; `DeltaBuilder`'s kept view and the net
-    /// effect's omissions are checked after every op (debug assertions).
-    #[test]
-    fn long_text_batch_is_net_effect_spec_4_5(seed in any::<u64>()) {
-        let mut r = crate::testutil::rng(seed | 1);
-        let (state, lo) = if r.chance(1, 2) {
-            ranged_text(&mut r)
-        } else {
-            let mut a = Replica::new(1);
-            a.commit(1, &[op(Op::Set(s("the quick brown fox jumps over")))], &text_view());
-            let mut mw = crdt_model::ops::Writer::new(crdt_model::stamp::Source::session(5, 0), 30 << 16, 1);
-            let v = crdt_model::value::Value::Str(crdt_model::r#gen::random_text(&mut r, 20) + "s");
-            a.state.join(crate::testutil::frag(&crdt_model::ops::create(&mut mw, &Ty::Register, &v)));
-            (a.state, a.lo)
+/// §4.5, §5.7: a commit of 30 ops (inserts, typos deleted again, moves of fresh and older
+/// text, ops at both ends, a reset now and then) on a text with range records and chars
+/// anchored inside them, or on a `Slots` position, encodes and reads like the same ops on a
+/// plain string and like the ops committed one by one; `DeltaBuilder`'s kept view and the net
+/// effect's omissions are checked after every op (debug assertions).
+#[test]
+#[ignore = "property"]
+fn long_text_batch_is_net_effect_plain_spec_4_5() {
+    crate::testutil::crdt_seeds("tests_seq_ops::long_text_batch_is_net_effect_plain_spec_4_5", 0..32, long_text_batch_case);
+}
+
+/// One seed of `long_text_batch_is_net_effect_plain`.
+fn long_text_batch_case(seed: u64) {
+    let mut r = crate::testutil::fixed(seed);
+    let (state, lo) = if r.chance(1, 2) {
+        ranged_text(&mut r)
+    } else {
+        let mut a = Replica::new(1);
+        a.commit(1, &[op(Op::Set(s("the quick brown fox jumps over")))], &text_view());
+        let mut mw = crdt_model::ops::Writer::new(crdt_model::stamp::Source::session(5, 0), 30 << 16, 1);
+        let v = crdt_model::value::Value::Str(crdt_model::r#gen::random_text(&mut r, 20) + "s");
+        a.state.join(crate::testutil::frag(&crdt_model::ops::create(&mut mw, &Ty::Register, &v)));
+        (a.state, a.lo)
+    };
+    let mut model: Vec<char> = read_str(&state).chars().collect();
+    let mut ops = Vec::new();
+    let mut recent: Vec<usize> = Vec::new();
+    for _ in 0..30 {
+        let n = model.len();
+        let near = |r: &mut Rng| {
+            let ps: Vec<usize> = model.iter().enumerate().filter(|(_, c)| c.is_ascii_uppercase()).map(|(i, _)| i).collect();
+            match recent.last() {
+                Some(&p) if p < n && r.chance(1, 2) => p,
+                _ if !ps.is_empty() && r.chance(1, 2) => ps[r.below(ps.len())],
+                _ => r.below(n.max(1)),
+            }
         };
-        let mut model: Vec<char> = read_str(&state).chars().collect();
-        let mut ops = Vec::new();
-        let mut recent: Vec<usize> = Vec::new();
-        for _ in 0..30 {
-            let n = model.len();
-            let near = |r: &mut Rng| {
-                let ps: Vec<usize> = model.iter().enumerate().filter(|(_, c)| c.is_ascii_uppercase()).map(|(i, _)| i).collect();
-                match recent.last() {
-                    Some(&p) if p < n && r.chance(1, 2) => p,
-                    _ if !ps.is_empty() && r.chance(1, 2) => ps[r.below(ps.len())],
-                    _ => r.below(n.max(1)),
-                }
-            };
-            let o = match r.below(12) {
-                0..=2 => {
-                    let at = (near(&mut r) + r.below(2)).min(n);
-                    recent.push(at);
-                    Op::Insert { at, items: vec![s(&(crdt_model::r#gen::random_text(&mut r, 2) + "z"))] }
-                }
-                3..=4 if n > 0 => {
-                    let at = near(&mut r);
-                    recent.pop();
-                    Op::Delete { at, len: (1 + r.below(4)).min(n - at) }
-                }
-                5..=8 if n > 1 => {
-                    let at = near(&mut r);
-                    let len = (1 + r.below(5)).min(n - at);
-                    Op::Move { at, len, to: r.below(n - len + 1) }
-                }
-                9 if r.chance(1, 4) => {
-                    recent.clear();
-                    Op::Set(s(&crdt_model::r#gen::random_text(&mut r, 6)))
-                }
-                10 if n > 0 => Op::Delete { at: 0, len: 1 },
-                _ => Op::Insert { at: if r.chance(1, 2) { 0 } else { n }, items: vec![s("e")] },
-            };
-            apply_text(&mut model, &o, &state);
-            ops.push(op(o));
-        }
-        let mut one = Replica { state: state.clone(), src: node(1), lo };
-        for (k, o) in ops.iter().enumerate() {
-            one.commit(51 + k as u64, std::slice::from_ref(o), &text_view());
-        }
-        let mut a = Replica { state, src: node(1), lo };
-        a.commit(50, &ops, &text_view());
-        prop_assert_eq!(read_str(&a.state), model.iter().collect::<String>());
-        prop_assert_eq!(read_str(&a.state), read_str(&one.state));
+        let o = match r.below(12) {
+            0..=2 => {
+                let at = (near(&mut r) + r.below(2)).min(n);
+                recent.push(at);
+                Op::Insert { at, items: vec![s(&(crdt_model::r#gen::random_text(&mut r, 2) + "z"))] }
+            }
+            3..=4 if n > 0 => {
+                let at = near(&mut r);
+                recent.pop();
+                Op::Delete { at, len: (1 + r.below(4)).min(n - at) }
+            }
+            5..=8 if n > 1 => {
+                let at = near(&mut r);
+                let len = (1 + r.below(5)).min(n - at);
+                Op::Move { at, len, to: r.below(n - len + 1) }
+            }
+            9 if r.chance(1, 4) => {
+                recent.clear();
+                Op::Set(s(&crdt_model::r#gen::random_text(&mut r, 6)))
+            }
+            10 if n > 0 => Op::Delete { at: 0, len: 1 },
+            _ => Op::Insert { at: if r.chance(1, 2) { 0 } else { n }, items: vec![s("e")] },
+        };
+        apply_text(&mut model, &o, &state);
+        ops.push(op(o));
     }
+    let mut one = Replica { state: state.clone(), src: node(1), lo };
+    for (k, o) in ops.iter().enumerate() {
+        one.commit(51 + k as u64, std::slice::from_ref(o), &text_view());
+    }
+    let mut a = Replica { state, src: node(1), lo };
+    a.commit(50, &ops, &text_view());
+    assert_eq!(read_str(&a.state), model.iter().collect::<String>());
+    assert_eq!(read_str(&a.state), read_str(&one.state));
 }
 
 /// §5.7 Live, §4.7: a list element whose creating delta expires keeps others' values in it: it

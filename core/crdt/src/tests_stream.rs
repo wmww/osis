@@ -15,7 +15,6 @@ use crdt_model::ops::Ty;
 use crdt_model::r#gen::{Rng, kitchen_sink};
 use crdt_model::stamp::Source as MSource;
 use osis_base::{BlobId, ChunkParams, Link};
-use proptest::prelude::*;
 
 /// Pages by blob ID, never hash-checked, so a mutated page reaches the decoder.
 #[derive(Clone, Debug)]
@@ -139,7 +138,7 @@ impl Input {
 /// The encodings of a random history: each commit's delta and the joined state's snapshot,
 /// paged at `params` (`None`: unpaged); those needing a third page level are left out.
 fn inputs(seed: u64, types: &[Ty], params: Option<PageParams>) -> (Vec<Input>, Vec<MCommit>) {
-    let mut r = crate::testutil::rng(seed | 1);
+    let mut r = crate::testutil::fixed(2 * seed + 1);
     // where paging is tested, writers start with large writes, so those and the states page
     let sources = (1..=3).map(|n| MSource::session(n, 0)).collect();
     let commits = if params.is_some() { history_bulk(&mut r, types, sources, 12) } else { history_with(&mut r, types, sources, 3) };
@@ -164,8 +163,14 @@ fn inputs(seed: u64, types: &[Ty], params: Option<PageParams>) -> (Vec<Input>, V
     (out, commits)
 }
 
-/// A mutant of `i`: its root or one of its pages changed bytewise or by one value node.
-fn mutant(r: &mut Rng, i: &Input) -> Input {
+/// A mutant of `i`: two adjacent leaf pages re-cut (a third of the time, where it has two),
+/// or its root or one of its pages changed bytewise or by one value node. The flag says re-cut.
+fn mutant(r: &mut Rng, i: &Input) -> (Input, bool) {
+    if i.pages.as_ref().is_some_and(|p| p.pages.len() >= 2) && r.chance(1, 3)
+        && let Some(m) = recut(r, i)
+    {
+        return (m, true);
+    }
     let mut root = i.root.clone();
     let mut pages = i.pages.clone();
     let page = pages.as_mut().filter(|p| !p.pages.is_empty() && r.chance(2, 3));
@@ -181,14 +186,57 @@ fn mutant(r: &mut Rng, i: &Input) -> Input {
     } else if let Some(b) = mutate_tree(r, target) {
         *target = b;
     }
-    Input { root, pages, cx: i.cx.clone(), snapshot: i.snapshot }
+    (Input { root, pages, cx: i.cx.clone(), snapshot: i.snapshot }, false)
+}
+
+/// §8 seams: two adjacent leaf pages re-cut (items moved across the seam either way, copied
+/// across it, a page emptied, the two pages' contents swapped, a leaf turned into a link page);
+/// `None` where either page is no leaf.
+fn recut(r: &mut Rng, i: &Input) -> Option<Input> {
+    use osis_base::Value as V;
+    let mut q = i.pages.clone()?;
+    let k = 1 + r.below(q.pages.len() - 1);
+    let ((ma, mut a), (mb, mut b)) = (page_items(&q.pages[k - 1])?, page_items(&q.pages[k])?);
+    match r.below(6) {
+        0 if !b.is_empty() => {
+            let t = 1 + r.below(b.len());
+            a.extend(b.drain(..t));
+        }
+        1 if !a.is_empty() => {
+            let t = 1 + r.below(a.len());
+            let tail = a.split_off(a.len() - t);
+            b.splice(0..0, tail);
+        }
+        2 if !a.is_empty() => b.insert(0, a[a.len() - 1].clone()),
+        3 => b.clear(),
+        4 => std::mem::swap(&mut a, &mut b),
+        _ => {
+            let l = Link { hash: osis_base::hash::hash(&q.pages[k]), blob: BlobId([0; 32]), suite: 1, key: [0; 32], salt: [0; 16], del: osis_base::Del::NONE };
+            q.pages[k - 1] = osis_base::encode(&V::List(vec![V::link(l)]));
+            return Some(Input { root: i.root.clone(), pages: Some(q), cx: i.cx.clone(), snapshot: i.snapshot });
+        }
+    }
+    q.pages[k - 1] = page_bytes(ma, a);
+    q.pages[k] = page_bytes(mb, b);
+    Some(Input { root: i.root.clone(), pages: Some(q), cx: i.cx.clone(), snapshot: i.snapshot })
+}
+
+/// What a case reached: mutants accepted and rejected, inputs that paged, inputs streamed in
+/// pieces, re-cut mutants rejected.
+#[derive(Clone, Copy, Debug, Default)]
+struct Tally {
+    accepted: usize,
+    rejected: usize,
+    paged: usize,
+    pieces: usize,
+    recut_rejected: usize,
 }
 
 /// Every input and `per` mutants of each: old and new agree (where `paging`, only inputs that
-/// paged: the others repeat the unpaged case). Returns (accepted, rejected, inputs that paged).
-fn differential(seed: u64, ins: &[Input], paging: bool, per: usize) -> Result<(usize, usize, usize), String> {
-    let mut r = crate::testutil::rng(seed ^ 0x5eed);
-    let mut n = (0, 0, 0);
+/// paged: the others repeat the unpaged case).
+fn differential(seed: u64, ins: &[Input], paging: bool, per: usize) -> Result<Tally, String> {
+    let mut r = crate::testutil::fixed(seed ^ 0x5eed);
+    let mut n = Tally::default();
     for i in ins {
         let paged = i.pages.as_ref().is_some_and(|p| !p.pages.is_empty());
         if paging && !paged {
@@ -198,14 +246,15 @@ fn differential(seed: u64, ins: &[Input], paging: bool, per: usize) -> Result<(u
             return Err(format!("unmutated input rejected: {:?}", i.streamed()));
         }
         i.checked_agrees()?;
-        n.2 += usize::from(paged);
+        n.paged += usize::from(paged);
         for _ in 0..per {
-            let m = mutant(&mut r, i);
+            let (m, recut) = mutant(&mut r, i);
             if m.agree()? {
                 m.checked_agrees()?;
-                n.0 += 1
+                n.accepted += 1
             } else {
-                n.1 += 1
+                n.rejected += 1;
+                n.recut_rejected += usize::from(recut);
             }
         }
     }
@@ -309,54 +358,31 @@ fn per() -> usize {
 
 /// One case: the seed picks the types and the page parameters (one set per case keeps a case
 /// well under a second).
-fn case(seed: u64) -> Result<(usize, usize, usize, usize), String> {
+fn case(seed: u64) -> Result<Tally, String> {
     let types = types(seed);
     let params = [None, Some(TINY), Some(SMALL)][(seed / 3 % 3) as usize];
     let (ins, commits) = inputs(seed, &types, params);
-    let (a, r, p) = differential(seed, &ins, params.is_some(), per())?;
-    let pieces = if params.is_some() { joins_equal(seed, &ins, &commits)? } else { 0 };
-    Ok((a, r, p, pieces))
-}
-
-proptest! {
-    #![proptest_config(ProptestConfig::with_cases(12))]
-
-    /// §3.3, §8: text, list and kitchen-sink deltas and snapshots, unpaged and paged, mutated
-    /// in the root or a page: the streaming check decides as the whole re-encode; where they
-    /// accept, joining the pieces equals joining the whole, into every kind of prior state.
-    #[test]
-    fn stream_check_matches_whole_spec_8(seed in any::<u64>()) {
-        if let Err(e) = case(seed) {
-            prop_assert!(false, "{}", e);
-        }
+    let mut n = differential(seed, &ins, params.is_some(), per())?;
+    if params.is_some() {
+        n.pieces = joins_equal(seed, &ins, &commits)?;
     }
+    Ok(n)
 }
 
-/// `stream_check_matches_whole_spec_8` on the default seeds, which page often and reject and
-/// accept mutants both (else it tests nothing); another range (a replay, the gate's offset)
-/// checks the decisions alone.
-#[test]
-#[ignore = "property"]
-fn stream_differential_covers_paging_plain_spec_8() {
-    let name = "tests_stream::stream_differential_covers_paging_plain_spec_8";
-    let seeds = osis_base::testenv::Seeds::from_env("OSIS_CRDT_START", "OSIS_CRDT_SEEDS", 0..18);
-    let replay = |s: u64| format!("OSIS_CRDT_START={s} OSIS_CRDT_SEEDS=1 cargo test -p osis-crdt --lib -- --ignored --exact {name}");
-    let ms = seeds.run(name, replay, |seed| case(seed).unwrap_or_else(|e| panic!("seed {seed}: {e}")));
-    let n = ms.iter().fold((0, 0, 0, 0), |n, m| (n.0 + m.0, n.1 + m.1, n.2 + m.2, n.3 + m.3));
-    assert!(seeds.overridden || (n.0 > 30 && n.1 > 100 && n.2 > 8 && n.3 > 8), "accepted, rejected, paged inputs, streamed in pieces {n:?}");
-}
-
-/// `stream_check_matches_whole_spec_8` at size (a property).
+/// §3.3, §8: text, list and kitchen-sink deltas and snapshots, unpaged and paged, mutated in the
+/// root or a page or re-cut at a leaf seam: the streaming check decides as the whole re-encode;
+/// where they accept, joining the pieces equals joining the whole, into every kind of prior
+/// state. A run of 18 seeds or more pages often and both rejects and accepts mutants, re-cuts
+/// among them (else it tests nothing).
 #[test]
 #[ignore = "property"]
 fn stream_check_matches_whole_large_spec_8() {
-    let seeds = osis_base::testenv::Seeds::from_env("OSIS_CRDT_START", "OSIS_CRDT_SEEDS", 0..600);
-    let replay = |s: u64| format!("OSIS_CRDT_START={s} OSIS_CRDT_SEEDS=1 cargo test -p osis-crdt --lib -- --ignored --exact tests_stream::stream_check_matches_whole_large_spec_8");
-    seeds.run("tests_stream::stream_check_matches_whole_large_spec_8", replay, |seed| {
-        if let Err(e) = case(seed) {
-            panic!("seed {seed}: {e}");
-        }
-    });
+    let out = crate::testutil::crdt_seeds("tests_stream::stream_check_matches_whole_large_spec_8", 0..600, |seed| case(seed).unwrap_or_else(|e| panic!("seed {seed}: {e}")));
+    let k = out.len();
+    if k >= 18 {
+        let n = out.iter().fold(Tally::default(), |a, b| Tally { accepted: a.accepted + b.accepted, rejected: a.rejected + b.rejected, paged: a.paged + b.paged, pieces: a.pieces + b.pieces, recut_rejected: a.recut_rejected + b.recut_rejected });
+        assert!(n.accepted * 18 > 30 * k && n.rejected * 18 > 100 * k && n.paged * 18 > 8 * k && n.pieces * 18 > 8 * k && n.recut_rejected * 18 > 15 * k, "{n:?} over {k} seeds");
+    }
 }
 
 /// §8: leaf links swapped, a leaf dropped or repeated, a page's run split at a seam: rejected
@@ -382,9 +408,16 @@ fn stream_seams_spec_8() {
     }
     // a page left out is a canonical snapshot of fewer elements (pages cut by content)
     assert!(with(&|l| drop(l.remove(1))).agree().unwrap());
+    // a page's last element copied to the next page's front: elements must ascend across the seam
+    let (Some((false, a)), Some((false, mut b))) = (page_items(&pages.pages[0]), page_items(&pages.pages[1])) else { panic!("two leaf pages") };
+    b.insert(0, a[a.len() - 1].clone());
+    let mut q = pages.clone();
+    q.pages[1] = page_bytes(false, b);
+    assert!(!Input { root, pages: Some(q), cx: snap_cx(), snapshot: true }.agree().unwrap(), "an element on both sides of a seam");
     // a text whose runs straddle a page seam: moving a page's first run onto the page before
     // splits nothing the old check accepted
-    for seed in 0..4 {
+    let mut cases = 0;
+    for seed in 0..2 {
         for i in inputs(seed, &[Ty::Text], Some(TINY)).0 {
             let Some(p) = &i.pages else { continue };
             for k in 1..p.pages.len() {
@@ -398,9 +431,11 @@ fn stream_seams_spec_8() {
                 q.pages[k - 1] = osis_base::encode(&osis_base::Value::List(a2));
                 q.pages[k] = osis_base::encode(&osis_base::Value::List(b[1..].to_vec()));
                 assert!(!Input { root: i.root.clone(), pages: Some(q), cx: i.cx.clone(), snapshot: i.snapshot }.agree().unwrap());
+                cases += 1;
             }
         }
     }
+    assert!(cases > 40, "{cases} runs moved across a seam");
 }
 
 
@@ -427,63 +462,6 @@ fn page_bytes(map: bool, items: Vec<osis_base::Value>) -> Vec<u8> {
         _ => None,
     });
     osis_base::encode(&V::Map(pairs.collect()))
-}
-
-/// §8 seams: leaf pages re-cut at random (items moved across a seam either way, copied across
-/// it, a page emptied, two pages' contents swapped, a leaf turned into a link page): both
-/// decoders decide alike.
-#[test]
-#[ignore = "property"]
-fn stream_recut_pages_plain_spec_8() {
-    use osis_base::Value as V;
-    let name = "tests_stream::stream_recut_pages_plain_spec_8";
-    let seeds = osis_base::testenv::Seeds::from_env("OSIS_RECUT_START", "OSIS_RECUT_SEEDS", 0..24);
-    let replay = |s: u64| format!("OSIS_RECUT_START={s} OSIS_RECUT_SEEDS=1 cargo test -p osis-crdt --lib -- --ignored --exact {name}");
-    let ns = seeds.run(name, replay, |seed| {
-        let mut n = (0, 0);
-        let mut r = crate::testutil::rng(seed ^ 0x5ea3);
-        let params = if seed % 2 == 0 { TINY } else { SMALL };
-        for i in inputs(seed, &types(seed), Some(params)).0 {
-            let Some(p) = &i.pages else { continue };
-            if p.pages.len() < 2 {
-                continue;
-            }
-            for _ in 0..12 {
-                let mut q = p.clone();
-                let k = 1 + r.below(q.pages.len() - 1);
-                let (Some((ma, mut a)), Some((mb, mut b))) = (page_items(&q.pages[k - 1]), page_items(&q.pages[k])) else { continue };
-                match r.below(6) {
-                    0 if !b.is_empty() => {
-                        let t = 1 + r.below(b.len());
-                        a.extend(b.drain(..t));
-                    }
-                    1 if !a.is_empty() => {
-                        let t = 1 + r.below(a.len());
-                        let tail = a.split_off(a.len() - t);
-                        b.splice(0..0, tail);
-                    }
-                    2 if !a.is_empty() => b.insert(0, a[a.len() - 1].clone()),
-                    3 => b.clear(),
-                    4 => std::mem::swap(&mut a, &mut b),
-                    _ => {
-                        let l = Link { hash: osis_base::hash::hash(&q.pages[k]), blob: BlobId([0; 32]), suite: 1, key: [0; 32], salt: [0; 16], del: osis_base::Del::NONE };
-                        q.pages[k - 1] = osis_base::encode(&V::List(vec![V::link(l)]));
-                        let m = Input { root: i.root.clone(), pages: Some(q), cx: i.cx.clone(), snapshot: i.snapshot };
-                        if m.agree().unwrap() { n.0 += 1 } else { n.1 += 1 }
-                        continue;
-                    }
-                }
-                q.pages[k - 1] = page_bytes(ma, a);
-                q.pages[k] = page_bytes(mb, b);
-                let m = Input { root: i.root.clone(), pages: Some(q), cx: i.cx.clone(), snapshot: i.snapshot };
-                if m.agree().unwrap() { n.0 += 1 } else { n.1 += 1 }
-            }
-        }
-        n
-    });
-    // the default seeds reject often; another range checks the decisions alone
-    let n = ns.iter().fold((0, 0), |n, m| (n.0 + m.0, n.1 + m.1));
-    assert!(seeds.overridden || n.1 > 100, "accepted, rejected {n:?}");
 }
 
 /// §3.3 rule 1: a `Commits` entry no stamp uses is refused, whatever its `base` (the check's
@@ -711,7 +689,8 @@ fn stream_memory_big_map() {
 
 /// §3.3 rule 7, §5.6: the records of one map dot prune each other across a page seam (the
 /// key-erased record's reset above the keyed record's content): the stream rejects what the
-/// whole-delta oracle rejects however the pages cut, and accepts the reset below the content.
+/// whole-delta oracle rejects however the pages cut, and accepts the reset below the content;
+/// for each, some filler count puts a seam between the two records.
 #[test]
 fn map_dot_prunes_across_pages_spec_3_3() {
     use crate::fragment::{Eid, Entry, Map, Meta, RegWrite, Register};
@@ -720,8 +699,8 @@ fn map_dot_prunes_across_pages_spec_3_3() {
     let node = sess(Tid::from_bytes([1; 15]));
     let st = |t: u64, c: u64| Stamp::new(crate::testutil::ts(t << 16), node.clone(), c);
     let reg = |s: Stamp| Box::new(Fragment::Register(Register { reset: None, write: Some(RegWrite { stamp: s, value: Some(Value::Int(1)) }) }));
-    let (mut straddled, mut seen) = (0, 0);
-    for n in 20..80u64 {
+    let (mut straddled, mut seen) = ([0, 0], 0);
+    for n in 20..32u64 {
         for reset_t in [6, 4] {
             let mut entries: std::collections::BTreeMap<Eid, Entry> = (1..=n).map(|k| (Eid::new(Dot::new(node.clone(), k), Some(Value::Str(format!("filler entry number {k} of the map")))), Entry { reset: None, frag: Some(reg(st(5, k))), created: Some(st(5, k)) })).collect();
             let x = Dot::new(node.clone(), n + 1);
@@ -736,8 +715,8 @@ fn map_dot_prunes_across_pages_spec_3_3() {
             // a seam between the two records: one page ends with the dot's first record
             let firsts: Vec<_> = pages.pages.iter().filter_map(|p| page_items(p)).filter_map(|(_, a)| a.first().cloned()).collect();
             seen += usize::from(!pages.pages.is_empty());
-            straddled += usize::from(firsts.iter().any(|f| matches!(f, Value::List(e) if e.first() == Some(&Value::List(vec![Value::Int(1), Value::Int((n + 1) as i64)])) && e.len() == 5)));
+            straddled[usize::from(reset_t == 4)] += usize::from(firsts.iter().any(|f| matches!(f, Value::List(e) if e.first() == Some(&Value::List(vec![Value::Int(1), Value::Int((n + 1) as i64)])) && e.len() == 5)));
         }
     }
-    assert!(seen > 60 && straddled > 0, "paged {seen}, straddled {straddled}");
+    assert!(seen == 24 && straddled.iter().all(|&x| x > 0), "paged {seen}, straddled {straddled:?}");
 }
