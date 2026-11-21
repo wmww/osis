@@ -12,6 +12,7 @@ A property failing on main is the next task (notes/coordination.md, Known failur
 - issues/forged-text-dead-write-no-superseder.md (security: a forged text or list history fails a peer's tick with a local error; hostile input must never do that). First.
 - issues/perm-components-unapplied-vs-dropped.md (the unwired permission walk: judging by component disagrees with the single walk on one arrival order; before any A1 switch).
 - the app test of issues/app-tile-unreadable-emails-test.md.
+- issues/role-paths-shift-a-commit.md (A1's real-path property: one run writes a commit the other does not, or the oracle keys on Ts; check it is no live bug).
 - The four role-vouch story properties: decided (nothing vouches for a role write); issues/role-vouch-contested.md, To do, replaces them.
 
 ## Unlanded branches
