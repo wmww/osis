@@ -239,51 +239,49 @@ fn path_of(cx: &mut Cx, s: &SyncId) -> Option<Arc<osis_engine::sync::Path>> {
 
 /// S's credentials as the engine (read) or `unread` (kept unread) gives them.
 fn node_creds(cx: &mut Cx, unread: &Unread, s: &SyncId) -> Option<Arc<Creds>> {
-    {
-        let (_, holding) = cx.store.synced(s)?;
-        let mut c = Creds { holding: Some(holding), ..Creds::default() };
-        match holding {
-            Holding::Read => {
-                let rc = cx.engine.read_credentials(s).ok()??;
-                for (e, k) in &rc.read_secrets {
-                    c.shows.push((Shown::Read(*e, *k.expose()), Some(*e)));
-                    c.tests.push((Tested::Read(*e, k.clone()), Some(*e)));
-                }
-                for st in &rc.statics {
-                    c.shows.push((Shown::Static(*st), None));
-                }
-                // the static entries of the key actors it acts for (its link, spec/sync-opens.md §4)
-                for k in &rc.acting {
-                    c.tests.push((Tested::Static { key: k.clone(), step: None }, None));
-                }
-                // the sync proof of the newest recorded step's sync key (spec/sync-opens.md §4)
-                if let (Some(head), Some((id, p))) = (&rc.head, rc.proofs.first())
-                    && head.id() == *id
-                {
-                    c.shows.push((Shown::Proof(*p), None));
-                }
-                c.walk = rc.proofs.iter().filter(|(id, _)| rc.head.as_ref().is_none_or(|h| h.id() != *id)).map(|(_, p)| Shown::Proof(*p)).collect();
-                let path = path_of(cx, s).unwrap_or_default();
-                c.tests.extend(walk_tests(&rc, &path, &mut |id| cx.engine.claim_key(s, id).ok().flatten()));
-                if let Some(head) = &rc.head {
-                    let keys = rc.keys.get(&head.id());
-                    if let Some(k) = keys.and_then(|k| k.sync.clone()) {
-                        let e = keys.and_then(|k| k.epochs[0]);
-                        c.step = Some((k, e));
-                    }
-                }
+    let (_, holding) = cx.store.synced(s)?;
+    let mut c = Creds { holding: Some(holding), ..Creds::default() };
+    match holding {
+        Holding::Read => {
+            let rc = cx.engine.read_credentials(s).ok()??;
+            for (e, k) in &rc.read_secrets {
+                c.shows.push((Shown::Read(*e, *k.expose()), Some(*e)));
+                c.tests.push((Tested::Read(*e, k.clone()), Some(*e)));
             }
-            // at a head past its keys it holds S and shows only the secrets no step of its path
-            // bears: S is still in the sync set, so its `changed_at` moves and the peer hears a
-            // generation
-            Holding::Unread => {
-                if let Some(uc) = unread.credentials(s) {
-                    c = Creds::kept_unread(&uc);
+            for st in &rc.statics {
+                c.shows.push((Shown::Static(*st), None));
+            }
+            // the static entries of the key actors it acts for (its link, spec/sync-opens.md §4)
+            for k in &rc.acting {
+                c.tests.push((Tested::Static { key: k.clone(), step: None }, None));
+            }
+            // the sync proof of the newest recorded step's sync key (spec/sync-opens.md §4)
+            if let (Some(head), Some((id, p))) = (&rc.head, rc.proofs.first())
+                && head.id() == *id
+            {
+                c.shows.push((Shown::Proof(*p), None));
+            }
+            c.walk = rc.proofs.iter().filter(|(id, _)| rc.head.as_ref().is_none_or(|h| h.id() != *id)).map(|(_, p)| Shown::Proof(*p)).collect();
+            let path = path_of(cx, s).unwrap_or_default();
+            c.tests.extend(walk_tests(&rc, &path, &mut |id| cx.engine.claim_key(s, id).ok().flatten()));
+            if let Some(head) = &rc.head {
+                let keys = rc.keys.get(&head.id());
+                if let Some(k) = keys.and_then(|k| k.sync.clone()) {
+                    let e = keys.and_then(|k| k.epochs[0]);
+                    c.step = Some((k, e));
                 }
             }
         }
-        Some(Arc::new(c))
+        // at a head past its keys it holds S and shows only the secrets no step of its path
+        // bears: S is still in the sync set, so its `changed_at` moves and the peer hears a
+        // generation
+        Holding::Unread => {
+            if let Some(uc) = unread.credentials(s) {
+                c = Creds::kept_unread(&uc);
+            }
+        }
     }
+    Some(Arc::new(c))
 }
 
 /// A reader's walk tests (spec/sync-ids.md §6 Test): the credentials of its recorded steps,

@@ -50,6 +50,68 @@ impl Place {
         self.stale.remove(s);
         self.told.remove(s);
     }
+
+    /// Record `rec`'s place as its rows hold it. O(its members and those that left).
+    fn load(t: &mut Transaction<'_>, rec: &RecordId) -> std::result::Result<Place, osis_store::Error> {
+        let mut p = Place::default();
+        if let Some(v) = t.record_get_wide_row(rec, CURSOR, b"")? {
+            p.cursor = read_cursor(&v)?;
+        }
+        for (s, ..) in t.record_tag_rows(rec, AT_STREAM)? {
+            p.at_stream.insert(s);
+        }
+        // no connection at a load: a member not at the stream rejoins from where it stood
+        for (s, _, v) in t.record_tag_rows(rec, JOIN_FROM)? {
+            p.stopped.insert(s, read_cursor(&v)?);
+        }
+        for (s, ..) in t.record_tag_rows(rec, CLOSED)? {
+            p.closed.insert(s);
+        }
+        for (s, _, v) in t.record_tag_rows(rec, TOLD)? {
+            let head = match v.len() {
+                0 => None,
+                _ => Some(StepId(v.try_into().map_err(|_| osis_store::Error::Corrupt("streams told row"))?)),
+            };
+            p.told.insert(s, head);
+        }
+        Ok(p)
+    }
+
+    /// Writes member S's told head into record `rec`'s rows as memory holds it.
+    fn write_told(&self, t: &mut Transaction<'_>, rec: &RecordId, s: &SyncId) -> std::result::Result<(), osis_store::Error> {
+        match self.told.get(s) {
+            Some(h) => t.record_put_row(rec, TOLD, s, b"", h.map_or(Vec::new(), |h| h.0.to_vec())),
+            None => t.record_remove_row(rec, TOLD, s, b"").map(drop),
+        }
+    }
+
+    /// Writes member S's place into record `rec`'s rows as memory holds it.
+    fn write(&self, t: &mut Transaction<'_>, rec: &RecordId, s: &SyncId) -> std::result::Result<(), osis_store::Error> {
+        for (tag, on) in [(AT_STREAM, self.at_stream.contains(s)), (CLOSED, self.closed.contains(s))] {
+            match on {
+                true => t.record_put_row(rec, tag, s, b"", Vec::new())?,
+                false => drop(t.record_remove_row(rec, tag, s, b"")?),
+            }
+        }
+        match self.join_from(s) {
+            Some(c) => t.record_put_row(rec, JOIN_FROM, s, b"", opt_cursor(c)),
+            None => t.record_remove_row(rec, JOIN_FROM, s, b"").map(drop),
+        }
+    }
+
+    /// Where member `s` joins from, as stored: joining from it, or stopped there.
+    fn join_from(&self, s: &SyncId) -> Option<&Option<Cursor>> {
+        self.joining.get(s).or_else(|| self.stopped.get(s))
+    }
+
+    /// Where member `s` stands, whichever form its place takes: at the stream (its cursor), or
+    /// joining or stopped at its own. Rows holding the same position need no write.
+    fn effective(&self, s: &SyncId) -> Option<Option<Cursor>> {
+        match self.at_stream.contains(s) {
+            true => Some(self.cursor.clone()),
+            false => self.join_from(s).cloned(),
+        }
+    }
 }
 
 /// Whether this node's head of S moving may lift a refusal of code `c` it told
@@ -90,74 +152,6 @@ pub(super) fn forget_unkept(mut store: Store) -> crate::types::Result<()> {
         }
         Ok(())
     })
-}
-
-impl Place {
-    /// Record `rec`'s place as its rows hold it. O(its members and those that left).
-    fn load(t: &mut Transaction<'_>, rec: &RecordId) -> std::result::Result<Place, osis_store::Error> {
-        let mut p = Place::default();
-        if let Some(v) = t.record_get_wide_row(rec, CURSOR, b"")? {
-            p.cursor = read_cursor(&v)?;
-        }
-        for (s, ..) in t.record_tag_rows(rec, AT_STREAM)? {
-            p.at_stream.insert(s);
-        }
-        // no connection at a load: a member not at the stream rejoins from where it stood
-        for (s, _, v) in t.record_tag_rows(rec, JOIN_FROM)? {
-            p.stopped.insert(s, read_cursor(&v)?);
-        }
-        for (s, ..) in t.record_tag_rows(rec, CLOSED)? {
-            p.closed.insert(s);
-        }
-        for (s, _, v) in t.record_tag_rows(rec, TOLD)? {
-            let head = match v.len() {
-                0 => None,
-                _ => Some(StepId(v.try_into().map_err(|_| osis_store::Error::Corrupt("streams told row"))?)),
-            };
-            p.told.insert(s, head);
-        }
-        Ok(p)
-    }
-
-    /// Writes member S's told head into record `rec`'s rows as memory holds it.
-    fn write_told(&self, t: &mut Transaction<'_>, rec: &RecordId, s: &SyncId) -> std::result::Result<(), osis_store::Error> {
-        match self.told.get(s) {
-            Some(h) => t.record_put_row(rec, TOLD, s, b"", h.map_or(Vec::new(), |h| h.0.to_vec())),
-            None => t.record_remove_row(rec, TOLD, s, b"").map(drop),
-        }
-    }
-
-    /// Writes member S's place into record `rec`'s rows as memory holds it.
-    fn write(&self, t: &mut Transaction<'_>, rec: &RecordId, s: &SyncId) -> std::result::Result<(), osis_store::Error> {
-        if self.at_stream.contains(s) {
-            t.record_put_row(rec, AT_STREAM, s, b"", Vec::new())?;
-        } else {
-            t.record_remove_row(rec, AT_STREAM, s, b"")?;
-        }
-        if self.closed.contains(s) {
-            t.record_put_row(rec, CLOSED, s, b"", Vec::new())?;
-        } else {
-            t.record_remove_row(rec, CLOSED, s, b"")?;
-        }
-        match self.join_from(s) {
-            Some(c) => t.record_put_row(rec, JOIN_FROM, s, b"", opt_cursor(c)),
-            None => t.record_remove_row(rec, JOIN_FROM, s, b"").map(drop),
-        }
-    }
-
-    /// Where member `s` joins from, as stored: joining from it, or stopped there.
-    fn join_from(&self, s: &SyncId) -> Option<&Option<Cursor>> {
-        self.joining.get(s).or_else(|| self.stopped.get(s))
-    }
-
-    /// Where member `s` stands, whichever form its place takes: at the stream (its cursor), or
-    /// joining or stopped at its own. Rows holding the same position need no write.
-    fn effective(&self, s: &SyncId) -> Option<Option<Cursor>> {
-        match self.at_stream.contains(s) {
-            true => Some(self.cursor.clone()),
-            false => self.join_from(s).cloned(),
-        }
-    }
 }
 
 /// A join on this connection: its generation (a join after a member left and opened again is
@@ -347,6 +341,15 @@ impl Pulling {
 
     pub(super) fn wake(&self) -> Option<Mono> {
         self.retry_at.into_iter().chain(self.rejoin_at.values().copied()).min()
+    }
+
+    /// Queues body `b` of S for fetching in fill-order class `c` (`class`), after those of its
+    /// class queued before it, unless it is queued already.
+    fn enqueue(&mut self, (c, key): (u8, u64), s: SyncId, b: BlobId, announced: Option<(Wrap, Option<Stamp>)>) {
+        if !self.queue.values().any(|x| (x.0, x.1) == (s, b)) {
+            self.arrivals += 1;
+            self.queue.insert((c, key, u64::MAX - self.arrivals), (s, b, announced));
+        }
     }
 
     fn join(&mut self, s: SyncId, cursor: Option<Cursor>) {
@@ -779,11 +782,8 @@ impl Streams {
         let again: Vec<(SyncId, BlobId)> = p.settled.iter().filter(|(s, b)| from_start.contains(s) && ctx.store.holding(s) == Some(Holding::Unread) && ctx.store.bytes(b).ok().flatten().is_none()).copied().collect();
         for (s, b) in again {
             p.settled.remove(&(s, b));
-            if !p.queue.values().any(|x| (x.0, x.1) == (s, b))
-                && let Some(c) = class(Rank::Unopened, false)
-            {
-                p.arrivals += 1;
-                p.queue.insert((c.0, c.1, u64::MAX - p.arrivals), (s, b, None));
+            if let Some(c) = class(Rank::Unopened, false) {
+                p.enqueue(c, s, b, None);
             }
         }
         p.seq = 0;
@@ -796,26 +796,15 @@ impl Streams {
         }
         let joins: BTreeMap<SyncId, Option<Cursor>> = r.joins.iter().map(|(s, c)| (*s, c.clone().map(osis_proto::Cursor::into_bytes))).collect();
         for (s, generation) in &asked {
-            let ours = p.joins.get(s).is_some_and(|j| j.generation == *generation);
+            let Some(j) = p.joins.get_mut(s).filter(|j| j.generation == *generation) else { continue };
             match joins.get(s) {
                 // still in pages: name it again from its own cursor (SN_joindur)
-                Some(Some(c)) if !r.whole => {
-                    if let Some(j) = p.joins.get_mut(s).filter(|_| ours) {
-                        j.cursor = Some(c.clone());
-                    }
-                }
-                // not shared there (SN_joinans): out of the stream, joined again later
-                Some(None) => {
-                    if ours {
-                        p.joins.remove(s);
-                        if members.contains_key(s) {
-                            p.rejoin_at.insert(*s, ctx.mono.after(RESYNC_MS));
-                        }
-                    }
-                }
-                _ => {
-                    if ours {
-                        p.joins.remove(s);
+                Some(Some(c)) if !r.whole => j.cursor = Some(c.clone()),
+                answer => {
+                    p.joins.remove(s);
+                    // not shared there (SN_joinans): out of the stream, joined again later
+                    if answer == Some(&None) && members.contains_key(s) {
+                        p.rejoin_at.insert(*s, ctx.mono.after(RESYNC_MS));
                     }
                 }
             }
@@ -907,12 +896,8 @@ impl Streams {
                 self.take_body(ctx, conn, *s, *b, *wrap, *stamp, bytes);
             } else if let Some(c) = self.wanted(ctx, conn, s, b, wrap, *stamp) {
                 batch.owed.push((*s, *b));
-                if let Some(p) = self.pull.get_mut(&conn)
-                    && !p.queue.values().any(|x| (x.0, x.1) == (*s, *b))
-                {
-                    p.arrivals += 1;
-                    let key = (c.0, c.1, u64::MAX - p.arrivals);
-                    p.queue.insert(key, (*s, *b, Some((*wrap, *stamp))));
+                if let Some(p) = self.pull.get_mut(&conn) {
+                    p.enqueue(c, *s, *b, Some((*wrap, *stamp)));
                 }
             }
         }
@@ -1012,11 +997,7 @@ impl Streams {
         p.failed.remove(&(s, b));
         p.settled.remove(&(s, b));
         p.taken.remove(&(s, b));
-        if !p.queue.values().any(|x| (x.0, x.1) == (s, b)) {
-            p.arrivals += 1;
-            let key = (2, u64::MAX, u64::MAX - p.arrivals);
-            p.queue.insert(key, (s, b, None));
-        }
+        p.enqueue((2, u64::MAX), s, b, None);
         self.fetch(ctx, conn);
         self.track(ctx, conn);
     }
@@ -1068,6 +1049,7 @@ impl Streams {
             return;
         }
         let e = entry_of(b, wrap, stamp, bytes);
+        let src = self.pull.get(&conn).map(|p| p.src);
         let mut took = false;
         // a store or engine failure takes nothing: the body stays owed (no cursor passes it) and
         // the step fails
@@ -1090,7 +1072,6 @@ impl Streams {
                 // Pending storage); one that can never open here is not kept, nor what pends
                 // from one not kept
                 Ok(o @ (Opening::Pends | Opening::NotOpen)) if o == Opening::Pends || ctx.ground.rank(&s, &b, &wrap) != Rank::Never => {
-                    let src = self.pull.get(&conn).map(|p| p.src);
                     match ctx.store.log(&s, e, Some(bytes.to_vec()), src) {
                         Ok(Code::OK) => {}
                         Ok(_) if o == Opening::Pends => {
@@ -1109,13 +1090,11 @@ impl Streams {
                 // charged to its bringer unless stamped, so a peer's fresh encryptions of held
                 // commits fill its own budget alone
                 Ok(Opening::Held { gave }) => {
-                    let src = if gave { None } else { self.pull.get(&conn).map(|p| p.src) };
-                    if let Err(e) = ctx.store.log(&s, e, Some(bytes.to_vec()), src) {
+                    if let Err(e) = ctx.store.log(&s, e, Some(bytes.to_vec()), src.filter(|_| !gave)) {
                         return self.failed(Err(e));
                     }
                 }
                 Ok(Opening::Memory(n)) => {
-                    let src = self.pull.get(&conn).map(|p| p.src);
                     let r = ctx.store.log(&s, e, Some(bytes.to_vec()), src).and_then(|_| ctx.store.uncharge(&s, &b)).and_then(|_| ctx.store.set_memory_charge(&b, n));
                     if let Err(e) = r {
                         return self.failed(Err(e));
@@ -1312,14 +1291,11 @@ impl Streams {
                 }
             }
             let Some(p) = self.pull.get_mut(&conn) else { return };
-            for k in drop {
-                p.queue.remove(&k);
+            for k in drop.iter().chain(held.iter().map(|h| &h.0)) {
+                p.queue.remove(k);
             }
             if !held.is_empty() {
-                for (k, s, b, wrap, stamp, bytes) in held {
-                    if let Some(p) = self.pull.get_mut(&conn) {
-                        p.queue.remove(&k);
-                    }
+                for (_, s, b, wrap, stamp, bytes) in held {
                     self.take_held(ctx, conn, s, b, wrap, stamp, &bytes);
                 }
                 self.drain(ctx, conn);
