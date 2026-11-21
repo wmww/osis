@@ -187,12 +187,7 @@ impl Engine {
             let Some(h) = self.header(&k) else { continue };
             let Some(ai) = h.aspect_index(holder, "keys.0") else { continue };
             certs.commits.entry(k).or_default().insert(ai);
-            let Some(mut chain) = self.author_chain(&k, &BTreeSet::from([ai])) else { continue };
-            for (x, ps) in chain.commits.iter_mut() {
-                let Some(hx) = self.header(x) else { continue };
-                ps.retain(|i| hx.aspects.get(*i).is_some_and(|a| a.ak.as_str() != "keys.0" || a.tid == hx.signer));
-            }
-            chain.commits.retain(|_, p| !p.is_empty());
+            let Some(chain) = self.author_chain_own_keys(&k, &BTreeSet::from([ai])) else { continue };
             certs.extend(chain);
         }
         certs.records.insert(*holder);

@@ -773,12 +773,7 @@ fn make_leftover(tx: &mut Tx<'_>, c: &CommitId, ai: usize, o: &[Owned], extra: &
     let k = (a.tid, a.ak.clone());
     list_valueless(tx, &a.tid, &a.ak, o);
     let all = writes_of(&m.header, c, ai);
-    let mut body: Option<Fragment> = None;
-    let gives = crate::apply::each_held_piece(tx, c, ai, &mut |_, f| {
-        body.get_or_insert_default().join(f);
-        Ok(())
-    })?
-    .flatten();
+    let (mut body, gives) = held_body(tx, c, ai)?;
     for f in extra {
         body.get_or_insert_default().join(f.clone());
     }
@@ -854,13 +849,7 @@ fn expire_snapshot(tx: &mut Tx<'_>, c: &CommitId, ai: usize) -> Result<Option<(T
     if !m.holds(ai) || m.bare(ai) {
         return Ok(None);
     }
-    let mut body: Option<Fragment> = None;
-    let gives = crate::apply::each_held_piece(tx, c, ai, &mut |_, f| {
-        body.get_or_insert_default().join(f);
-        Ok(())
-    })?
-    .flatten();
-    let Some(mut body) = body else { return Ok(None) };
+    let (Some(mut body), gives) = held_body(tx, c, ai)? else { return Ok(None) };
     tx.core.touch();
     body.strip(&|_| true);
     put_leftover(tx, c, ai, m, body, gives)?;
@@ -873,13 +862,18 @@ fn expire_snapshot(tx: &mut Tx<'_>, c: &CommitId, ai: usize) -> Result<Option<(T
 /// value-less. Store only: the state took the copies stripped (`apply::join_into_state`), or the
 /// caller rebuilds the aspect.
 pub(crate) fn strip_carried(tx: &mut Tx<'_>, c: &CommitId, ai: usize) -> Result<()> {
+    let (Some(body), gives) = held_body(tx, c, ai)? else { return Ok(()) };
+    hold_carrier(tx, c, ai, body, gives)
+}
+
+/// Held part `ai` of `c`, its pieces joined (`None`: none held), and what it gives.
+fn held_body(tx: &mut Tx<'_>, c: &CommitId, ai: usize) -> Result<(Option<Fragment>, Option<crate::engine::Gives>)> {
     let mut body: Option<Fragment> = None;
-    let held = crate::apply::each_held_piece(tx, c, ai, &mut |_, f| {
+    let gives = crate::apply::each_held_piece(tx, c, ai, &mut |_, f| {
         body.get_or_insert_default().join(f);
         Ok(())
     })?;
-    let Some(body) = body else { return Ok(()) };
-    hold_carrier(tx, c, ai, body, held.flatten())
+    Ok((body, gives.flatten()))
 }
 
 /// Snapshot part `ai` of applied commit `c` joined as its leftover `body` (stripped while it

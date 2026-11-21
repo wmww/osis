@@ -156,47 +156,20 @@ impl Held {
     /// named on as holders, transitively (spec/permissions.md §1: paths climb record links and
     /// role edges). A change of authority at `from` changes it only there.
     pub fn reach(&self, from: &BTreeSet<Tid>) -> BTreeSet<Tid> {
-        let mut out = BTreeSet::new();
-        let mut stack: Vec<Tid> = from.iter().copied().collect();
-        while let Some(t) = stack.pop() {
-            if !out.insert(t) {
-                continue;
-            }
-            stack.extend(self.mint_admin_of(&t).copied());
-            stack.extend(self.named_on(&t).copied());
-        }
-        out
+        walk(from, |t, s| s.extend(self.mint_admin_of(t).chain(self.named_on(t))))
     }
 
     /// `from` and everything authority comes to them from: their mint admins and the
     /// holders named on them, transitively (the search `reach` answers forward). A changed edge
     /// to holder `z` changes the roles only of `upstream({z})`.
     pub fn upstream(&self, from: &BTreeSet<Tid>) -> BTreeSet<Tid> {
-        let mut out = BTreeSet::new();
-        let mut stack: Vec<Tid> = from.iter().copied().collect();
-        while let Some(t) = stack.pop() {
-            if !out.insert(t) {
-                continue;
-            }
-            if let Some(CreationRecord::Thing { admin, .. }) = self.created(&t) {
-                stack.push(*admin);
-            }
-            stack.extend(self.holders_of(&t).copied());
-        }
-        out
+        walk(from, |t, s| s.extend(self.created(t).and_then(CreationRecord::mint_admin).into_iter().chain(self.holders_of(t).copied())))
     }
 
     /// `from` and everything below them by record links: the things whose record chains hold
     /// them.
     pub fn below(&self, from: &BTreeSet<Tid>) -> BTreeSet<Tid> {
-        let mut out = BTreeSet::new();
-        let mut stack: Vec<Tid> = from.iter().copied().collect();
-        while let Some(t) = stack.pop() {
-            if out.insert(t) {
-                stack.extend(self.mint_admin_of(&t).copied());
-            }
-        }
-        out
+        walk(from, |t, s| s.extend(self.mint_admin_of(t)))
     }
 
     /// Who named whom on `t` with `role` or above, as (signer, holder), of any validity and whatever
@@ -947,6 +920,18 @@ impl Timelines {
     }
 }
 
+
+/// `from` and everything `next` (pushing the next steps from a thing) leads to, transitively.
+fn walk(from: &BTreeSet<Tid>, next: impl Fn(&Tid, &mut Vec<Tid>)) -> BTreeSet<Tid> {
+    let mut out = BTreeSet::new();
+    let mut stack: Vec<Tid> = from.iter().copied().collect();
+    while let Some(t) = stack.pop() {
+        if out.insert(t) {
+            next(&t, &mut stack);
+        }
+    }
+    out
+}
 #[cfg(test)]
 mod tests {
     use super::*;

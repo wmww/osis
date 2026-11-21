@@ -292,16 +292,7 @@ pub(crate) fn prune(tx: &mut Tx<'_>, c: &CommitId, m: &crate::engine::Meta) -> R
     if !(0..m.hold.len()).any(empty) {
         return Ok(());
     }
-    let prefix = [records::OPENED_UNDER, c.0.as_slice()].concat();
-    let mut gone = Vec::new();
-    tx.scan(&prefix, |k, _| {
-        let ai = k.get(..4).and_then(|b| b.try_into().ok()).map(u32::from_be_bytes);
-        if ai.is_some_and(|ai| empty(ai as usize)) {
-            gone.push([prefix.as_slice(), k].concat());
-        }
-        Ok(())
-    })?;
-    remove(tx, c, gone)
+    remove_where(tx, c, |k| k.get(..4).and_then(|b| b.try_into().ok()).map(u32::from_be_bytes).is_some_and(|ai| empty(ai as usize)))
 }
 
 /// One opening of a part: the part, the thing its epoch is of, the epoch, whether its delta was
@@ -490,25 +481,24 @@ pub(crate) fn part_floor(tx: &mut Tx<'_>, c: &CommitId, ai: usize, t: &Tid) -> R
 pub(crate) fn forget_thing(tx: &mut Tx<'_>, t: &Tid) -> Result<()> {
     let commits: Vec<CommitId> = tx.core.ix.opened_under.get(t).into_iter().flatten().copied().collect();
     for c in commits {
-        let prefix = [records::OPENED_UNDER, c.0.as_slice()].concat();
-        let mut gone = Vec::new();
-        tx.scan(&prefix, |k, _| {
-            if k.get(4..19) == Some(t.as_bytes().as_slice()) {
-                gone.push([prefix.as_slice(), k].concat());
-            }
-            Ok(())
-        })?;
-        remove(tx, &c, gone)?;
+        remove_where(tx, &c, |k| k.get(4..19) == Some(t.as_bytes().as_slice()))?;
     }
     Ok(())
 }
 
 /// Removes the openings of commit `c` (`Tx::remove_commit`, a pending copy thrown out).
 pub(crate) fn forget(tx: &mut Tx<'_>, c: &CommitId) -> Result<()> {
+    remove_where(tx, c, |_| true)
+}
+
+/// Removes the openings of commit `c` whose row key past the commit `drop` names.
+fn remove_where(tx: &mut Tx<'_>, c: &CommitId, drop: impl Fn(&[u8]) -> bool) -> Result<()> {
     let prefix = [records::OPENED_UNDER, c.0.as_slice()].concat();
     let mut gone = Vec::new();
     tx.scan(&prefix, |k, _| {
-        gone.push([prefix.as_slice(), k].concat());
+        if drop(k) {
+            gone.push([prefix.as_slice(), k].concat());
+        }
         Ok(())
     })?;
     remove(tx, c, gone)

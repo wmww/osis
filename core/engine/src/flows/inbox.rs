@@ -560,12 +560,7 @@ impl Engine {
         let id = *c;
         let Some(full) = self.read(|tx| tx.get_commit(&id))? else { return Ok(None) };
         let parts: crate::sync_ids::Parts = full.header.aspects.iter().enumerate().filter(|(_, a)| a.tid == *target && aks.contains(&a.ak.as_str())).map(|(i, _)| i).collect();
-        let Some(mut chain) = self.author_chain(c, &parts) else { return Ok(None) };
-        for (x, ps) in chain.commits.iter_mut() {
-            let Some(hx) = self.header(x) else { continue };
-            ps.retain(|i| hx.aspects.get(*i).is_some_and(|a| a.ak.as_str() != "keys.0" || a.tid == hx.signer));
-        }
-        chain.commits.retain(|_, p| !p.is_empty());
+        let Some(mut chain) = self.author_chain_own_keys(c, &parts) else { return Ok(None) };
         if let Some(h) = holder {
             let mut held = self.holder_piece(&h, target);
             if let Some(p) = held.commits.get_mut(c) {

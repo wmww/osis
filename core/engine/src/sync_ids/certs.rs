@@ -534,6 +534,18 @@ impl Engine {
         Some(out)
     }
 
+    /// `author_chain` with no `keys.0` part but each commit's author's own (an inbox value's,
+    /// a stranded report's).
+    pub(crate) fn author_chain_own_keys(&mut self, c: &CommitId, parts: &Parts) -> Option<Certs> {
+        let mut chain = self.author_chain(c, parts)?;
+        for (x, ps) in chain.commits.iter_mut() {
+            let Some(hx) = self.header(x) else { continue };
+            ps.retain(|i| hx.aspects.get(*i).is_some_and(|a| a.ak.as_str() != "keys.0" || a.tid == hx.signer));
+        }
+        chain.commits.retain(|_, p| !p.is_empty());
+        Some(chain)
+    }
+
     /// The commits, parts and records certificates `certs` name (spec/permissions.md §4), added to
     /// `out`: edge writes projected to their edge deltas on the chain's things, the record of
     /// each thing and the current `keys.0` of each actor, with the demotions its keysets carry,
