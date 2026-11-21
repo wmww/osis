@@ -490,3 +490,50 @@ fn box_to_an_account_names_its_epoch_spec_crypto_4() {
         }
     }
 }
+
+/// KEM decapsulations `f` runs.
+fn decaps(f: impl FnOnce()) -> u64 {
+    osis_base::costs::take();
+    f();
+    osis_base::costs::take().into_iter().filter(|c| c.0 == "kem: decapsulate").map(|c| c.2).sum()
+}
+
+// spec/crypto.md §4 (Reading-only secrets: a box proves itself by what it opens): a box at an
+// epoch whose checked secret the opener's view holds can only give that secret again, so it is
+// not opened; a box at an epoch not held, or held only for reading, is, and one that does not
+// open there is reported.
+#[test]
+fn a_held_epochs_box_is_not_opened_again_spec_crypto_4() {
+    let mut f = forked();
+    let (g, ge, s) = f.grant_reader();
+    let opener = Opener::Actor { holder: g, epochs: &ge };
+    let boxes = s.boxes.keys().filter(|k| k.holder.0 == g).count() as u64;
+    assert!(boxes >= 2);
+    // unheld: every box of G opened
+    let mut gv = ActorEpochs::default();
+    assert_eq!(decaps(|| assert!(ingest(&f.a, &s, &opener, &mut gv, None).unwrap().is_empty())), boxes);
+    // held: none opened again, the view unchanged
+    let before = gv.clone();
+    assert_eq!(decaps(|| assert!(ingest(&f.a, &s, &opener, &mut gv, None).unwrap().is_empty())), 0);
+    assert_eq!(decaps(|| assert!(ingest(&f.a, &s, &opener, &mut gv, Some(from(1))).unwrap().is_empty())), 0);
+    assert_eq!(gv, before);
+    // held for reading only: opened again, and the applied boxes make the secrets checked
+    let mut rv = ActorEpochs::default();
+    ingest(&f.a, &s, &opener, &mut rv, Some(from(1))).unwrap();
+    assert!(rv.read.held().next().is_none());
+    assert_eq!(decaps(|| assert!(ingest(&f.a, &s, &opener, &mut rv, None).unwrap().is_empty())), boxes);
+    assert_eq!(rv, before);
+    // a box that does not open at an epoch not held is reported; at one held it is not opened
+    let mut bad = s.clone();
+    let k = bad.boxes.keys().find(|k| k.holder.0 == g && k.role == Role::Read).unwrap().clone();
+    let SecretBox::Sealed(sb) = bad.boxes.get_mut(&k).unwrap() else { panic!("a sealed box") };
+    let Sealed::X25519MlKem768(bytes) = &mut sb.sealed;
+    let last = bytes.len() - 1;
+    bytes[last] ^= 1;
+    let mut fresh = ActorEpochs::default();
+    assert_eq!(ingest(&f.a, &bad, &opener, &mut fresh, None).unwrap().len(), 1);
+    let e = osis_keys::aspects::from_schema(&k.epoch).unwrap();
+    assert!(fresh.read.secret(&e).is_none());
+    assert!(ingest(&f.a, &bad, &opener, &mut gv, None).unwrap().is_empty());
+    assert_eq!(gv, before);
+}

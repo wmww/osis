@@ -39,10 +39,15 @@ pub struct Opened {
 /// Opens every box of `actor`'s `secrets.0` addressed to the opener. Boxes it cannot open (a key
 /// it does not hold, bad bytes) are returned with the reason; they are not fatal.
 pub fn open_boxes(actor: &Tid, secrets: &Secrets, opener: &Opener) -> (Vec<Opened>, Vec<(BoxKey, Error)>) {
+    open_boxes_where(actor, secrets, opener, |_| true)
+}
+
+/// `open_boxes` over the boxes whose key `try_key` takes.
+fn open_boxes_where(actor: &Tid, secrets: &Secrets, opener: &Opener, try_key: impl Fn(&BoxKey) -> bool) -> (Vec<Opened>, Vec<(BoxKey, Error)>) {
     let holder = opener.holder();
     let mut out = Vec::new();
     let mut failed = Vec::new();
-    for (k, b) in secrets.boxes.iter().filter(|(k, _)| k.holder.0 == holder) {
+    for (k, b) in secrets.boxes.iter().filter(|(k, _)| k.holder.0 == holder && try_key(k)) {
         match open_one(actor, k, b, opener) {
             Ok(Some(o)) => out.push(o),
             Ok(None) => {}
@@ -226,7 +231,19 @@ pub fn ingest_with(actor: &Tid, secrets: &Secrets, alts: &HistoryAlts, opener: &
     if unchecked.is_none() {
         observe_secrets(secrets, epochs)?;
     }
-    let (opened, failed) = open_boxes(actor, secrets, opener);
+    // Invariant: a box at an epoch whose checked secret `epochs` holds, naming it, is not opened.
+    // Opening it could only set that same secret again, a no-op: a `secrets.0` box opens only to
+    // a secret naming its key's (role, epoch) (osis-crypto checks the item, or for the symmetric
+    // form the secret, against the key, spec/crypto.md §4), and the epoch's nonce is a 32-byte
+    // KDF of that secret's roles secret, so a second secret naming it is a KDF collision; given
+    // the same secret, `set_secret` keeps it and `set_reading_secret` returns at a checked one.
+    // The held secret is checked against the epoch here rather than trusted (a key actor's fixed
+    // epoch is named by none). What is lost: the open error of a malformed box at such an epoch,
+    // which reads nothing (spec/crypto.md §4: a box proves itself by what it opens).
+    let held = |k: &BoxKey| {
+        from_schema(&k.epoch).is_ok_and(|e| epochs.role(k.role).secret(&e).is_some_and(|s| e.names(actor, k.role, s)))
+    };
+    let (opened, failed) = open_boxes_where(actor, secrets, opener, |k| !held(k));
     for o in opened {
         let re = epochs.role_mut(o.role);
         match unchecked {
