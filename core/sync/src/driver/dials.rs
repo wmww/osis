@@ -362,12 +362,7 @@ impl Dials {
             return;
         }
         let old = std::mem::replace(&mut self.configured, addrs.to_vec());
-        for a in old.iter().filter(|a| !addrs.iter().any(|b| b.key == a.key)) {
-            self.withdraw(&Why::Configured, &a.key);
-        }
-        for a in addrs {
-            self.offer(Why::Configured, a.clone(), now);
-        }
+        self.readdress(Why::Configured, &old, addrs, now);
     }
 
     /// The inbox's dial hints are now `addrs`.
@@ -376,12 +371,7 @@ impl Dials {
             return;
         }
         let old = std::mem::replace(&mut self.hinted, addrs.to_vec());
-        for a in old.iter().filter(|a| !addrs.iter().any(|b| b.key == a.key)) {
-            self.withdraw(&Why::Hint, &a.key);
-        }
-        for a in addrs {
-            self.offer(Why::Hint, a.clone(), now);
-        }
+        self.readdress(Why::Hint, &old, addrs, now);
     }
 
     /// Applies the sync IDs whose dial peers moved.
@@ -389,12 +379,18 @@ impl Dials {
         for s in src.due() {
             let new = src.peers(&s);
             let old = if new.is_empty() { self.by_sync.remove(&s) } else { self.by_sync.insert(s, new.clone()) }.unwrap_or_default();
-            for a in old.iter().filter(|a| !new.iter().any(|b| b.key == a.key)) {
-                self.withdraw(&Why::Sync(s), &a.key);
-            }
-            for a in new.iter() {
-                self.offer(Why::Sync(s), a.clone(), now);
-            }
+            self.readdress(Why::Sync(s), &old, &new, now);
+        }
+    }
+
+    /// The addresses for `why` moved from `old` to `new`: a key no longer among them is withdrawn,
+    /// each of `new` offered.
+    fn readdress(&mut self, why: Why, old: &[Address], new: &[Address], now: Mono) {
+        for a in old.iter().filter(|a| !new.iter().any(|b| b.key == a.key)) {
+            self.withdraw(&why, &a.key);
+        }
+        for a in new {
+            self.offer(why, a.clone(), now);
         }
     }
 

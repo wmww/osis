@@ -953,13 +953,14 @@ impl Store {
         // a vouched copy of a held one: off any charge, its bringer kept for when it stops vouching
         let brought = |old: &EntryRow| if vouched { from.or(old.charged).or(old.brought) } else { old.brought };
         let stamp = |old: &EntryRow| if vouched || old.stamp.is_none() { e.stamp } else { old.stamp };
+        // a held one keeps its size and gains what this copy brings
+        let merged = |old: &EntryRow| EntryRow { size: old.size, stamp: stamp(old), charged: if vouched { None } else { old.charged }, brought: brought(old), own: old.own || e.own, role: old.role || e.role, vouch: row.vouch.or(old.vouch), ..row.clone() };
         if class == Class::Ephemeral {
             if g.mem.tombstoned(s, &b) {
                 return Ok(Code::TOMBSTONED);
             }
             if let Some(old) = g.mem.read(s, &b).cloned() {
-                let new = EntryRow { size: old.size, stamp: stamp(&old), charged: if vouched { None } else { old.charged }, brought: brought(&old), own: old.own || e.own, role: old.role || e.role, vouch: row.vouch.or(old.vouch), ..row };
-                g.mem.change(s, &b, new);
+                g.mem.change(s, &b, merged(&old));
                 return Ok(Code::OK);
             }
             let Some(bytes) = bytes.or_else(|| g.mem.blobs.get(&b).cloned()) else { return Ok(Code::MALFORMED) };
@@ -996,10 +997,9 @@ impl Store {
                         entries::bytes_arrived(t, env, &b)?;
                     }
                     let old = entries::get(t, s, &b)?.unwrap_or(old);
-                    let new = EntryRow { size: old.size, role: old.role || e.role, stamp: stamp(&old), charged: if vouched { None } else { old.charged }, brought: brought(&old), own: old.own || e.own, vouch: row.vouch.or(old.vouch), ..row };
-                    entries::change(t, env, s, &b, &old, new)?;
+                    entries::change(t, env, s, &b, &old, merged(&old))?;
                 }
-                None => entries::insert(t, env, s, &b, row, bytes)?,
+                None => entries::insert(t, env, s, &b, row.clone(), bytes)?,
             }
             Ok(Code::OK)
         })

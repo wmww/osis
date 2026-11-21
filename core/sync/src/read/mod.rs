@@ -459,11 +459,7 @@ impl Read {
         }
         for ((s, c), (was, now)) in judged {
             acted = true;
-            let before = was.map(|w| w.acts).unwrap_or_default();
-            self.unowe(&s, Some(c), &before, &now.acts);
-            for a in now.acts.difference(&before).cloned().collect::<Vec<_>>() {
-                self.act(g, &s, Some(&c), a)?;
-            }
+            self.react(g, &s, c, &was.map(|w| w.acts).unwrap_or_default(), &now.acts)?;
         }
         // what the pieces newly call for, and no longer; a lost one is repaired in the own bodies
         // over it, each body's in one commit
@@ -507,11 +503,7 @@ impl Read {
         }
         for ((s, c, _), (was, now)) in toward {
             acted = true;
-            let before = was.map(|w| w.acts).unwrap_or_default();
-            self.unowe(&s, Some(c), &before, &now.acts);
-            for a in now.acts.difference(&before).cloned().collect::<Vec<_>>() {
-                self.act(g, &s, Some(&c), a)?;
-            }
+            self.react(g, &s, c, &was.map(|w| w.acts).unwrap_or_default(), &now.acts)?;
         }
         // freed links: dropped here and deleted at the sources keeping S unread that show them,
         // until no entry of them is known
@@ -574,11 +566,16 @@ impl Read {
         Ok(acted)
     }
 
-    /// The acts toward a source in `before` and not in `now` are owed no more.
-    fn unowe(&mut self, s: &SyncId, c: Option<CommitId>, before: &BTreeSet<Act>, now: &BTreeSet<Act>) {
+    /// Commit `c`'s acts at S moved from `before` to `now`: those toward a source no longer
+    /// called for are owed no more, the new ones carried out.
+    fn react(&mut self, g: &mut impl Ground, s: &SyncId, c: CommitId, before: &BTreeSet<Act>, now: &BTreeSet<Act>) -> Result<()> {
         for a in before.difference(now).filter(|a| a.toward().is_some()) {
-            self.owed.remove(&(*s, c, a.clone()));
+            self.owed.remove(&(*s, Some(c), a.clone()));
         }
+        for a in now.difference(before) {
+            self.act(g, s, Some(&c), a.clone())?;
+        }
+        Ok(())
     }
 
     /// Carries out what is owed `at` and not done on the connection its record is on now, once

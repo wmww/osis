@@ -971,7 +971,7 @@ fn k_on(w: &mut W, c: ConnId) -> Vec<Sent> {
 // away again; cid(1) comes to be covered (a Delete owed at K) and, still while K is away, must-hold
 // again: K's next connection gets no Delete. Then covered again while away: the Delete goes once
 // on the connection after. Fails with an act kept owed once the judgement no longer holds it
-// (`unowe`), which deletes a must-hold body at K.
+// (`Read::react`), which deletes a must-hold body at K.
 #[test]
 fn a_delete_owed_while_away_goes_nowhere_once_the_body_is_must_hold_again_spec_sync_judgement_3() {
     let (mut w, b1) = two_shown();
