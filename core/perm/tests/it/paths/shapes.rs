@@ -1,6 +1,6 @@
-//! The walk on input no model generator makes: the order within a commit mixing edge writes and
-//! vouches, hostile shapes (long and made-up paths, cycles, a repeated holder, extreme times;
-//! vouches, addenda and snapshots naming what they should not), and random soups of parts and
+//! The walk on input no model generator makes: the order of a commit's edge writes, hostile
+//! shapes (long and made-up paths, cycles, a repeated holder, extreme times; addenda and
+//! snapshots naming what they should not), and random soups of parts and
 //! deltas. Each must judge without panicking and read the same however its commits
 //! arrive, each update's `Changed` exact.
 //! spec/permissions.md §5.1 (draft: notes/a1-spec/permissions.md §1 Path, §5.1 step 1); the
@@ -201,7 +201,7 @@ fn hostile_shapes_judge_alike_without_panicking() {
 }
 
 /// A random soup of parts over 8 things: records with cycles, paths repeating things, any holder,
-/// value, frontier (naming any commit, held or not), remaining admin, mark; vouches; several parts
+/// value, frontier (naming any commit, held or not), remaining admin, mark; several parts
 /// per commit; ties in `ts` and signer.
 pub(super) fn soup(i: u64) -> (BTreeMap<Tid, Tid>, Vec<Commit>) {
     let mut r = Rng(i);

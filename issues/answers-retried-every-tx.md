@@ -1,5 +1,5 @@
 # Answers waiting on delete keys are recomputed every transaction
-> Summary: `vouches::write_owed` and `answer_rotations` recompute every due answer at the end of every durable transaction; one waiting for a thing's minting or delete keys (`write::MayWrite::Later`) is rebuilt in full (the removal's candidates, or the epochs' commits) only to wait again. Per-transaction cost grows with the waiting answers and their history, not with what changed. Purge-on-replace covers wait in `Indexes::cover_waits` and wake from the transaction's journals (`retention::replace::wake_covers`); answers do not.
+> Summary: `addenda::write_owed` and `answer_rotations` recompute every due answer at the end of every durable transaction; one waiting for a thing's minting or delete keys (`write::MayWrite::Later`) is rebuilt in full (the removal's candidates, or the epochs' commits) only to wait again. Per-transaction cost grows with the waiting answers and their history, not with what changed. Purge-on-replace covers wait in `Indexes::cover_waits` and wake from the transaction's journals (`retention::replace::wake_covers`); answers do not.
 > Priority: low
 > Tags: permissions, engine
 

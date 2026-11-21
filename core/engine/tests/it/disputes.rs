@@ -230,3 +230,35 @@ fn planted_removal_counts_from_when_it_applies_spec_permissions_5_1() {
     send_carried(&mut lp, 0, 2, &e);
     assert_eq!(adm(&lp), (false, true), "b's removal was first and is earlier: kept");
 }
+
+// spec/permissions.md §5.1 (Frontier): nothing but a removal's frontier decides which of the
+// removed party's role writes before it survive, whoever received them. H (peer 0) makes `t`
+// with X (peer 1) and W (peer 2) its admins; X grants K (peer 3) write, which H and W receive,
+// then L (peer 4) write, which W alone receives; H removes X. At W, which held both grants before
+// the removal: K's, listed, stands, and L's, unlisted, falls, as at H.
+#[test]
+fn a_removed_partys_grant_the_removal_does_not_list_falls_where_it_was_held_spec_perm_5_1() {
+    let (mut lp, ps) = people(5);
+    let (h, x, w, k, l) = (ps[0], ps[1], ps[2], ps[3], ps[4]);
+    let t = thing_of(&mut lp, 0, h);
+    for p in [x, w] {
+        lp.peers[0].engine.grant(&t, &p, &edge_of(Role::Admin)).unwrap();
+    }
+    spread(&mut lp);
+    lp.advance(1000);
+    lp.peers[1].engine.grant(&t, &k, &edge_of(Role::Write)).unwrap();
+    lp.sync(1, 0).unwrap();
+    lp.sync(1, 2).unwrap();
+    lp.advance(1000);
+    lp.peers[1].engine.grant(&t, &l, &edge_of(Role::Write)).unwrap();
+    lp.sync(1, 2).unwrap();
+    lp.advance(1000);
+    let roles = |lp: &LocalPeer, i: usize| [x, k, l].map(|p| lp.peers[i].engine.core.role_now(&p, &t));
+    assert_eq!(roles(&lp, 2), [Some(Role::Admin), Some(Role::Write), Some(Role::Write)], "W holds both grants");
+    lp.peers[0].engine.demote(&t, &Demotion { holder: x, new: None, retain: None }).unwrap();
+    lp.advance(1000);
+    lp.sync(0, 2).unwrap();
+    assert_eq!(roles(&lp, 2), [None, Some(Role::Write), None], "at W: X removed, K's listed grant stands, L's falls");
+    lp.sync(2, 0).unwrap();
+    assert_eq!(roles(&lp, 0), roles(&lp, 2), "H, having received L's grant from W, reads alike");
+}

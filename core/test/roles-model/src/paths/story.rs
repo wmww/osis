@@ -119,7 +119,7 @@ pub struct Move {
 /// (`Until`): X ending H's admin at the removal, backdated; X ending H's admin a tick after its own
 /// `ts`, stamped after the theft; X ending A's admin on T1 at the removal through A2, backdated (the
 /// edge above the signer's on B's removal of A2 from T1, where B makes it). 47 to 53 lower an honest
-/// admin: 47 and 48, with N5's key where X removed N5 before the theft (`Setup::n5` 3, 4), N5
+/// admin: 47 and 48, with N5's key where X removed N5 before the theft (`Setup::n5` 3), N5
 /// removing or demoting B, stamped before X's removal of N5 (the pair's first world); 49 and 50, X
 /// removing or demoting B, stamped before X's role writes; 51, X removing K from A2 where it
 /// administers A2 (`Setup::x_a2` 3, 4), backdated; 52, a made-up key Z X backdates admin to removing

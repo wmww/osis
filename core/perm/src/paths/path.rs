@@ -43,7 +43,7 @@ pub(crate) fn joins(mint: &BTreeMap<Tid, Tid>, p: Tid, q: Tid) -> Vec<(Tid, Tid)
 /// The shape of a part by `signer` on `on` along `path` marking the hops `direct`; `holder` for
 /// an edge write. Members are [S, A1..Ak, T]; a self-removal's end at its holder; content by a
 /// key actor on itself (`on` the signer, the empty path) has the members [S] and no hop. An
-/// edge-class part on its own signer is bad input: no edge write or vouch targets a key actor
+/// edge-class part on its own signer is bad input: no edge write targets a key actor
 /// (spec/permissions.md §1 Key actor). A hop marked direct is its pair's direct edge; a mark on a
 /// hop not otherwise read as a descent of two steps or more, or past the members, leaves the part
 /// not `well` (draft §1 Path, Direct mark).

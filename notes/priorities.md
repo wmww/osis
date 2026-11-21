@@ -12,7 +12,7 @@ A property failing on main is the next task (notes/coordination.md, Known failur
 - issues/forged-text-dead-write-no-superseder.md (security: a forged text or list history fails a peer's tick with a local error; hostile input must never do that). First.
 - issues/perm-components-unapplied-vs-dropped.md and issues/perm-paths-incremental-differs.md (the unwired permission walk: by component, incremental and after a forget it disagrees with the single walk in one invite world; taken with stage D's call on the walk, before any A1 switch).
 - the app test of issues/app-tile-unreadable-emails-test.md.
-- The four role-vouch story properties: decided (nothing vouches for a role write); issues/role-vouch-contested.md, To do, replaces them.
+- The two story properties' `counts:` baselines (roles-model `paths`, liveness): issues/removed-key-backdated-drop.md.
 
 ## Unlanded branches
 - `windlass-wiring-1`: the A1 debug shadow (the new permission walk beside today's on every engine and sync test; every difference in a designed class or the test fails). Reviewed, not landed: at the gate's seed offsets three differences fall in no class (a thing given a role on itself; an admin rewriting its own grant to add `invite: Admin`; STATED_CUT lapsing for a rotation's key parts), each written up on that branch, in the perm-paths note's section on the switch. Taken up after stage D of notes/redesign-plan.md, which changes the walk it shadows; then also owed: the shadow comparing only readings that moved (it is quadratic in history), snapshots and purge requests in the adapter, the saved store, its properties at several offsets.

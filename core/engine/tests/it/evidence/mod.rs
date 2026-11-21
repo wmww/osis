@@ -26,27 +26,22 @@ type Copies = BTreeSet<CopyId<Id, Thing>>;
 /// Held copies with their parts as the derivation takes them.
 type HeldCopies = BTreeMap<CopyId<Id, Thing>, Vec<Part<Id, Thing, Key>>>;
 
-/// The rules a world is judged by (as held-model's story tests).
-fn rules() -> Rules {
-    Rules::fixed()
-}
-
 /// `w` set to (iv) with entry creations.
 fn granted(w: &mut World) -> Rule {
-    w.rules = rules();
+    w.rules = Rules::fixed();
     Open10::Granted.set(w, Rule::fixed())
 }
 
 /// `w` set to A2's rule (`Stage::A2` over `Rule::fixed`: (iv), keys-open travel, no leaves).
 fn a2(w: &mut World) -> Rule {
-    w.rules = rules();
+    w.rules = Rules::fixed();
     Stage::A2.set(w, Rule::fixed())
 }
 
 /// `w` set to A3's rule (`Stage::A2` over `Rule::listed`: (iv), keys-open travel, leaves read
 /// where they cut and far leaves kept at home, addenda leaving).
 fn a3(w: &mut World) -> Rule {
-    w.rules = rules();
+    w.rules = Rules::fixed();
     Stage::A2.set(w, Rule::listed())
 }
 
@@ -355,7 +350,7 @@ fn the_derivation_agrees_with_the_model_plain_spec_permissions_4() {
     assert!(r.copies > 1000 && r.leaves > 0 && r.waits > 0, "copies {}, leaves {}, waits {}", r.copies, r.leaves, r.waits);
     for u in 0..hm::STORY_UNITS {
         let leaves = u % 2 == 0;
-        let sim = paths::random_world(0, &rules());
+        let sim = paths::random_world(0, &Rules::fixed());
         let mut w = hm::story_world(&sim, u);
         let rule = delivery(&mut w, leaves);
         let r = differ(&w, &rule);
@@ -382,7 +377,7 @@ fn search(family_step: usize, random_worlds: u64, story: u64) {
         for leaves in [true, false] {
             for u in 0..hm::STORY_UNITS {
                 jobs.push(Box::new(move || {
-                    let sim = paths::random_world(seed, &rules());
+                    let sim = paths::random_world(seed, &Rules::fixed());
                     let mut w = hm::story_world(&sim, u);
                     let rule = delivery(&mut w, leaves);
                     let r = differ(&w, &rule);

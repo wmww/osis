@@ -325,8 +325,8 @@ pub(crate) fn check_holders_parts(h: &Header, id: &CommitId, parts: &[(usize, De
     Ok(())
 }
 
-/// Sets what perm's held set reads of a held role commit (its edge writes, standing) from `parts`, its held role-class parts, replacing whatever it
-/// read of the commit before: a late part, a drop or a forget calls it again with what stays
+/// Sets what perm's held set reads of a held role commit (its edge writes, standing) from
+/// `parts`, its held role-class parts, replacing whatever it read of the commit before: a late part, a drop or a forget calls it again with what stays
 /// held, so it is a function of the parts held. A commit's edge writes apply together or
 /// not at all (spec/permissions.md §2): one whose removal resets an entry of unknown creation
 /// names a write this node lacks, so it applies none of them and stays in `unresolved` until keys

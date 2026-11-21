@@ -1,9 +1,10 @@
 //! Incremental evaluation (notes/perm-impl.md): the timeline split into connected components of
 //! things (edges join holder, target and author; a record joins a thing and its mint admin),
-//! each cached by its exact inputs. A held-set change touches only the components whose inputs changed: continued in
-//! place (`Timeline::append`, `add_leaves`), from the old walk (`Timeline::extend`), from a
-//! saved walk, or evaluated. Components are independent: no write in one can change authority
-//! in another, so the result equals one evaluation of the whole held set.
+//! each cached by its exact inputs. A held-set change touches only the components whose inputs
+//! changed: continued in place (`Timeline::append`, `add_leaves`), from the old walk
+//! (`Timeline::extend`), from a saved walk, or evaluated. Components are independent: no write
+//! in one can change authority in another, so the result equals one evaluation of the whole held
+//! set.
 
 use crate::cache::{self, Inputs, Only};
 use crate::held::HeldSet;

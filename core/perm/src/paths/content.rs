@@ -524,8 +524,7 @@ impl<S: Store> Facts<S> {
     }
 
     /// The edge writes answering `d` (draft §5.2 Content): those whose frontier names its commit,
-    /// and with `addenda` the removal parts a
-    /// valid addendum naming it vouches against. Each answers its own cut alone (`stands`).
+    /// and with `addenda` the removal parts a valid addendum naming it vouches against. Each answers its own cut alone (`stands`).
     fn answered(&self, tl: &Walk, d: &Fact, addenda: bool, counts: &mut Counts) -> BTreeSet<WriteId> {
         let mut out = BTreeSet::new();
         for n in self.namers(d, counts) {

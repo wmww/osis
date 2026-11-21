@@ -1,5 +1,5 @@
 //! The walk along stated paths against its oracle, core/test/roles-model `paths` under
-//! `Rules::purging` (vouches read by the second walk, purge rights by class, copies, own covers;
+//! `Rules::purging` (purge rights by class, copies, own covers;
 //! A1 steps 3 and 4: notes/perm-paths.md; the draft spec notes/a1-spec/permissions.md §1, §2,
 //! §5.1, §5.2, §6). For each node's view of a world (what it holds, the frontier leaves it sees,
 //! its trust set) both read: every edge-class part's status, every edge's history, the final
@@ -29,8 +29,7 @@ use roles_model::paths::{self as m, Honesty, Id, Kind, Reading, Rules, Thing, Ti
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
 
-/// The model's rules: `Rules::purging` (`Rules::fixed`, vouches counted by the first walk and
-/// read by the second, with the draft's purge readings: rights by class and selector, requests
+/// The model's rules: `Rules::purging` (`Rules::fixed` with the draft's purge readings: rights by class and selector, requests
 /// reaching copies, own covers standing with their removal).
 pub fn rules() -> Rules {
     Rules::purging()

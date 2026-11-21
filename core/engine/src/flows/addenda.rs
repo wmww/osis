@@ -3,9 +3,9 @@
 //! rule. For each explicit demotion R makes below write (below admin, for admin-only content) in
 //! this node's view (R's own node included), the content commits of the demoted node in R's
 //! window (`window`: received by R's `ts` and before R), not listed by its frontier, on each thing
-//! N it is demoted on, are its candidates (`addenda_candidates`); while one of them is one an
+//! N it is demoted on, are its candidates (`gather`); while one of them is one an
 //! addendum this node wrote now would vouch for and no counting addendum of its own vouches for
-//! it, it owes one addendum on N keyed by R listing every candidate (`addenda_owed`), written once
+//! it, it owes one addendum on N keyed by R listing every candidate (`owed`), written once
 //! N is in its node closure (`note_entered`).
 //!
 //! Invariant: what is owed is a function of the held set, the receipts and the trust set (the
@@ -353,6 +353,12 @@ fn write_entry(tx: &mut Tx<'_>, n: Tid, r: &CommitId, lists: BTreeSet<CommitId>)
 
 /// What a judgement of removal `r` at this node (account `me`) gathers (`Gathered`); `None`: it
 /// never owes (not held, not a role commit with a frontier). `count`: counts the commits scanned.
+/// The candidates (spec/permissions.md §5.2 Addenda, Writing): for each explicit demotion R makes
+/// in this node's view of a node X other than this one below write on a thing N, X's plain
+/// content commits on N or acting for N (no role-class or admin-only part), and for each below
+/// admin, X's commits with admin-only content on N that is not role-class, ordered before R,
+/// received in R's window and not listed by its frontier, no snapshot or purge request, each with
+/// the role it needs.
 fn gather(core: &Core, r: &CommitId, me: Tid, count: bool) -> Option<Gathered> {
     let mut out = Gathered::default();
     let m = core.ix.commits.get(r)?;
@@ -366,37 +372,6 @@ fn gather(core: &Core, r: &CommitId, me: Tid, count: bool) -> Option<Gathered> {
     if !out.applies {
         return Some(out);
     }
-    let scanned = |n: u64| {
-        if count {
-            osis_base::costs::count("addenda: commits scanned", n);
-        }
-    };
-    out.addenda = addenda_candidates(core, tl, r, m, &frontier, me, &scanned);
-    Some(out)
-}
-
-/// What removal `r`, gathered as `g`, owes at this node (account `me`) at `now`, per thing: the
-/// commits the addendum owed there lists (`addenda_owed`). Reads, beside `g`, only what may change
-/// while `g` holds: this node's roles, its own counting addenda, the epoch rule's counting and the
-/// commits still held (the node closure is read where the addenda are written, `writable_split`).
-fn owed(core: &Core, r: &CommitId, g: &Gathered, me: Tid, now: Ts) -> BTreeMap<Tid, BTreeSet<CommitId>> {
-    if !g.applies {
-        return BTreeMap::new();
-    }
-    // an addendum is positioned after R: applying R moved the clock past its `ts` (`Hlc::observe`)
-    debug_assert!(core.ix.commits.get(r).is_none_or(|m| now > m.view.ts), "the clock is past an applied removal's ts");
-    addenda_owed(core, &g.addenda, me, now)
-}
-
-/// Removal `r`'s addenda candidates (`Gathered::addenda`; spec/permissions.md §5.2 Addenda,
-/// Writing): for each explicit demotion R makes in this node's view of a node X other than this
-/// one below write on a thing N, X's plain content commits on N or acting for N (no role-class or
-/// admin-only part), and for each below admin, X's commits with admin-only content on N that is
-/// not role-class, ordered before R, received in R's window and not listed by its frontier, no
-/// snapshot or purge request, each with the role it needs.
-#[allow(clippy::too_many_arguments)]
-fn addenda_candidates(core: &Core, tl: &osis_perm::Timeline, r: &CommitId, m: &crate::engine::Meta, frontier: &osis_perm::Frontier, me: Tid, scanned: &dyn Fn(u64)) -> BTreeMap<Tid, BTreeMap<CommitId, BTreeSet<Role>>> {
-    let mut cands: BTreeMap<Tid, BTreeMap<CommitId, BTreeSet<Role>>> = BTreeMap::new();
     for (x, n, below) in tl.demoted_by(r) {
         let (x, n, below) = (*x, *n, *below);
         if x == me {
@@ -404,7 +379,9 @@ fn addenda_candidates(core: &Core, tl: &osis_perm::Timeline, r: &CommitId, m: &c
         }
         let held = core.ix.by_thing.get(&(n, x)).into_iter().flatten().chain(core.ix.by_actor.get(&(n, x)).into_iter().flatten());
         for c in held {
-            scanned(1);
+            if count {
+                osis_base::costs::count("addenda: commits scanned", 1);
+            }
             let Some(cm) = core.ix.commits.get(c) else { continue };
             let v = &cm.view;
             // ordered before R (at its `ts` or earlier, §5.2 Position); what the frontier lists
@@ -419,24 +396,32 @@ fn addenda_candidates(core: &Core, tl: &osis_perm::Timeline, r: &CommitId, m: &c
                 _ => false,
             };
             if listed {
-                cands.entry(n).or_default().entry(*c).or_default().insert(below);
+                out.addenda.entry(n).or_default().entry(*c).or_default().insert(below);
             }
         }
     }
-    cands
+    Some(out)
 }
 
-/// The addenda owed for candidates `cands` (`owed`): while one of them is one an addendum this
-/// node wrote now would vouch for (it holds the role it needs on N now) and no counting
-/// addendum of its own vouches for, one addendum on N listing every candidate still held.
+/// What removal `r`, gathered as `g`, owes at this node (account `me`) at `now`, per thing: while
+/// one of its candidates there is one an addendum this node wrote now would vouch for (it holds
+/// the role it needs on N now) and no counting addendum of its own vouches for, one addendum on N
+/// listing every candidate still held. Reads, beside `g`, only what may change while `g` holds:
+/// this node's roles, its own counting addenda, the epoch rule's counting and the commits still
+/// held (the node closure is read where the addenda are written, `writable_split`).
 ///
 /// Who writes each input: R and the candidates are their signers' word, judged by the walk and
 /// layer 2; every addendum on N (any writer's, a removed party's forged ones included) goes
 /// through the least fixpoint (`validity::vouching_on`), so only this node's own counting ones
 /// stop it owing.
-fn addenda_owed(core: &Core, cands: &BTreeMap<Tid, BTreeMap<CommitId, BTreeSet<Role>>>, me: Tid, now: Ts) -> BTreeMap<Tid, BTreeSet<CommitId>> {
+fn owed(core: &Core, r: &CommitId, g: &Gathered, me: Tid, now: Ts) -> BTreeMap<Tid, BTreeSet<CommitId>> {
     let mut out = BTreeMap::new();
-    for (n, cs) in cands {
+    if !g.applies {
+        return out;
+    }
+    // an addendum is positioned after R: applying R moved the clock past its `ts` (`Hlc::observe`)
+    debug_assert!(core.ix.commits.get(r).is_none_or(|m| now > m.view.ts), "the clock is past an applied removal's ts");
+    for (n, cs) in &g.addenda {
         let Some(tn) = core.timelines.get(n) else { continue };
         // an addendum written now vouches as a holder of the role a part needs
         let mine = tn.role(&me, n, osis_perm::At::now(now));

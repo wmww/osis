@@ -619,7 +619,7 @@ pub(crate) fn apply_verified(tx: &mut Tx<'_>, blob: &CommitBlob, parts: Parts, o
     if h.rotation.is_some() {
         crate::flows::signing::note_rotation_due(tx, &id)?;
     }
-    // an explicit demotion: this node judges what vouches and addenda it owes (`flows::addenda`)
+    // an explicit demotion: this node judges what addenda it owes (`flows::addenda`)
     if h.kind.is_role() && view.frontier.is_some() {
         crate::flows::addenda::note_due(tx.core, &id);
     }

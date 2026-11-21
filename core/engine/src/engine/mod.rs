@@ -4401,7 +4401,7 @@ impl Engine {
                 if changed && self.check_every_tx && !self.index_poked {
                     self.check_index();
                 }
-                // no vouch or addendum trigger missed, at the end of every durable transaction (an
+                // no addendum trigger missed, at the end of every durable transaction (an
                 // answer owed only mid-history escapes a check at the drop alone)
                 #[cfg(debug_assertions)]
                 if durable && !self.loading {

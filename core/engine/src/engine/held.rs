@@ -1,6 +1,7 @@
 //! perm's held set (notes/architecture.md §2: the node implements `HeldSet`): applied role
-//! commits by target and `created.0` records, indexed by commit and by holder, journaled for rollback, and remembering which things' inputs changed since perm last
-//! looked (`take_touched`), so the timelines re-partition only around them. A role commit of an
+//! commits by target and `created.0` records, indexed by commit and by holder, journaled for
+//! rollback, and remembering which things' inputs changed since perm last looked
+//! (`take_touched`), so the timelines re-partition only around them. A role commit of an
 //! account that does not count by the epoch rule (spec/permissions.md §5.5) stays held but no
 //! timeline reads it (`set_counted`): the filter runs before the timeline.
 //!

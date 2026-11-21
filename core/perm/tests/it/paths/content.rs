@@ -66,7 +66,7 @@ pub fn world(i: u64) -> (World, View) {
                     w.edge(s, ts, &[m::A], m::T1, m::A2, role, &l);
                 } else {
                     // one commit writing two things: a holder's edge on A and A2's on T1 (admin one
-                    // time in two, so K and Z vouch on T1 along [A2] for its part there alone)
+                    // time in two)
                     let h = PARTIES[rng.below(PARTIES.len())];
                     let a = if rng.below(2) == 0 { Role::Admin } else { Role::None };
                     let role = if role == Role::Write && rng.below(2) == 0 { Role::Admin } else { role };
@@ -126,8 +126,8 @@ pub fn run(start: u64, n: u64, disputes: bool) -> Vec<String> {
     fails
 }
 
-// spec/permissions.md §5.2: the walk reads small worlds of content, addenda, covers, purges and
-// vouches as the model does, disputes included in a share.
+// spec/permissions.md §5.2: the walk reads small worlds of content, addenda, covers and
+// purges as the model does, disputes included in a share.
 #[test]
 #[ignore = "property"]
 fn paths_content_agree_plain() {
