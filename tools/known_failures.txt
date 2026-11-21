@@ -17,3 +17,5 @@ osis-sync/differential::histories_hold_their_closure_plain rate:OSIS_SYNC_START=
 osis-sync/differential::histories_hold_their_closure_plain rate:OSIS_SYNC_START=959507911307 issues/differential-small-size-failures.md node \d+ reads thing \d+: Some\(Str\("v\d+"\)\), the model does not
 osis-sync/differential::histories_hold_their_closure_plain rate:OSIS_SYNC_START=318840271993 issues/differential-small-size-failures.md must-hold bodies a caught-up reader lacks at quiet
 osis-sync/differential::histories_hold_their_closure_plain rate:OSIS_SYNC_START=914688535823 issues/differential-small-size-failures.md must-hold bodies with no entry at quiet
+osis-engine/order::held_set_decides_plain rate:OSIS_ORDER_SEED=308989299847,OSIS_ORDER_LEN=60 issues/addenda-trigger-missed.md an addenda trigger missed
+osis-engine/order::held_set_decides_exhaustive rate:OSIS_ORDER_SEED=308989299847,OSIS_ORDER_LEN=40 issues/addenda-trigger-missed.md an addenda trigger missed
