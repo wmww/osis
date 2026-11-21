@@ -40,7 +40,7 @@ with tempfile.TemporaryDirectory(prefix="mutate-test-") as d:
     # a test binary: fails test `t` under mutation 1
     exe = os.path.join(d, "it")
     with open(exe, "w") as f:
-        f.write('#!/bin/sh\necho "cases=$PROPTEST_CASES args=$*"\n'
+        f.write('#!/bin/sh\necho "cases=$PROPTEST_CASES args=$*"\necho "running 1 test"\n'
                 'if [ "$OSIS_MUTANT" = 1 ]; then echo "test t ... FAILED"; exit 101; fi\necho "test t ... ok"\n')
     os.chmod(exe, 0o755)
     with open(env["FAKE_PLAN"], "w") as f:
@@ -76,12 +76,19 @@ with tempfile.TemporaryDirectory(prefix="mutate-test-") as d:
     with open(env["FAKE_PLAN"], "w") as f:
         json.dump([exe], f)
     with open(exe, "w") as f:
-        f.write('#!/bin/sh\nif [ "$OSIS_MUTANT" = 1 ]; then echo "test t ... FAILED"; exit 101; fi\necho "test t ... ok"\n')
+        f.write('#!/bin/sh\necho "running 1 test"\nif [ "$OSIS_MUTANT" = 1 ]; then echo "test t ... FAILED"; exit 101; fi\necho "test t ... ok"\n')
     p = mutate(src, "a < b", "a <= b", "+", src, "c", "!c", src, "d", "!d", "--", "-p", "x")
     out, err = p.communicate()
     check("grouped rows", (p.returncode, [l for l in out.splitlines() if not l.startswith("   limit ")]),
           (0, ["| `%s`: `a < b` -> `a <= b` + `%s`: `c` -> `!c` | none |" % (src, src), "| `%s`: `d` -> `!d` | t |" % src]))
     check("grouped: file put back", open(src).read(), "fn f() -> bool { a < b && c || d }\n")
+
+    # a filter matching no test is no catch, never "none"
+    with open(exe, "w") as f:
+        f.write('#!/bin/sh\necho "running 0 tests"\n')
+    p = mutate(src, "d", "!d", "--", "-p", "x")
+    out, _ = p.communicate()
+    check("no test ran", (p.returncode, [l for l in out.splitlines() if not l.startswith("   limit ")]), (0, ["| `%s`: `d` -> `!d` | no test ran |" % src]))
     with open(src, "w") as f:
         f.write("fn f() -> bool { a < b && c }\n")
 
