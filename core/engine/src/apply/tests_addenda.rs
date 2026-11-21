@@ -1319,7 +1319,7 @@ fn admin_only_content_is_not_kept_by_a_writers_addendum_spec_perm_5_2() {
     }
 }
 
-// spec/permissions.md §5.2 (addenda; writing), issues/s3-vouches-build.md (the trigger): Bob
+// spec/permissions.md §5.2 (addenda; writing), issues/s3-addenda-build.md (the trigger): Bob
 // mints t2 under t and writes on it; Carol receives the edit before t2's creation, so it waits
 // there for the record, and Alice removes Bob from t (and so t2) without it. Carol judged the
 // removal with no candidate; once the creation arrives the edit applies, received before the

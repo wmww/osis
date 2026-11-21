@@ -85,9 +85,6 @@ pub struct EHist {
     pub writes: Vec<EWrite>,
     /// [write][node] receipt time on the receiver's clock; author: its own `t`.
     pub recv: Vec<Vec<u32>>,
-    /// (demoting commit ID, listed commit ID): frontier entries beyond what the demoter received,
-    /// added by counting vouches (`crate::vouches`); empty is today's rule.
-    pub extra: Vec<(u32, u32)>,
 }
 
 /// `new` takes something from `old`: absent where `old` was not, or lower in some component.
@@ -221,28 +218,6 @@ impl EHist {
             .collect()
     }
 
-    /// Whether every op of `w` would apply against `edges` (`judge`).
-    pub fn would_apply(&self, w: &EWrite, edges: &[Option<Edge>]) -> bool {
-        self.judge(w, edges).iter().all(|&a| a != Attr::Skipped)
-    }
-
-    /// The edges of settled walk `o` just before order key `pos`: its applied ops replayed.
-    pub fn edges_before(&self, o: &EOut, pos: (u32, usize, u32)) -> Vec<Option<Edge>> {
-        let mut edges = self.genesis.clone();
-        for i in self.order() {
-            let w = &self.writes[i];
-            if (w.t, w.author, w.id) >= pos {
-                break;
-            }
-            for (k, &(x, e)) in w.ops.iter().enumerate() {
-                if o.attr[o.base[i] + k] != Attr::Skipped {
-                    edges[x] = e;
-                }
-            }
-        }
-        edges
-    }
-
     /// The timeline. `audit = false` never drops (reference for the nobody-offline check).
     pub fn eval(&self, audit: bool) -> EOut {
         self.eval_from(audit, 0).0
@@ -357,7 +332,6 @@ impl EHist {
             genesis,
             writes: keep.iter().map(|&i| self.writes[i].clone()).collect(),
             recv: keep.iter().map(|&i| self.recv[i].clone()).collect(),
-            extra: self.extra.clone(),
         }
     }
 
@@ -369,17 +343,10 @@ impl EHist {
     }
 
     /// Whether demoting commit `i`'s frontier names commit `j`: received by its author before its
-    /// `t` (its own commit counts) or added by a counting vouch (`extra`).
+    /// `t` (its own commit counts).
     pub fn listed(&self, i: usize, j: usize) -> bool {
-        let (r, c) = (&self.writes[i], &self.writes[j]);
-        self.recv[j][r.author] < r.t || j == i || self.extra.contains(&(r.id, c.id))
-    }
-
-    /// What node `v` holds before time `t`: the commits it received before `t` (its own from
-    /// their `t`), over the same genesis.
-    pub fn held_by(&self, v: usize, t: u32) -> EHist {
-        let keep: Vec<usize> = (0..self.writes.len()).filter(|&i| self.recv[i][v] < t).collect();
-        self.keep(&keep, self.genesis.clone())
+        let r = &self.writes[i];
+        self.recv[j][r.author] < r.t || j == i
     }
 
     /// What a node verifying actor `z` holds: the genesis edges and the commits
@@ -821,7 +788,7 @@ pub fn random_hist(rng: &mut Rng) -> EHist {
     let mut genesis: Vec<Option<Edge>> = (0..n).map(|_| if rng.below(4) == 0 { None } else { Some(rand_edge(rng)) }).collect();
     genesis[O] = Some(Edge { role: Role::Admin, until: NEVER, invite: Role::Admin });
     let k = 2 + rng.below(7);
-    let mut h = EHist { genesis, writes: vec![], recv: vec![], extra: vec![] };
+    let mut h = EHist { genesis, writes: vec![], recv: vec![] };
     let rt = |rng: &mut Rng, t: u32| -> u32 {
         if rng.below(3) == 0 {
             LATE
@@ -927,7 +894,7 @@ fn each_set(k: usize, genesis: &[Option<Edge>], menu: &[(EWrite, Vec<u32>)], sha
     'next: while idx < total {
         let mut x = idx;
         idx += share.1;
-        let mut h = EHist { genesis: genesis.to_vec(), writes: vec![], recv: vec![], extra: vec![] };
+        let mut h = EHist { genesis: genesis.to_vec(), writes: vec![], recv: vec![] };
         let mut prev = 0;
         for j in 0..k {
             let wi = x % menu.len();
@@ -1078,7 +1045,7 @@ pub fn random_shaped(rng: &mut Rng, who: Who, net: Net) -> EHist {
     // the record edge (spec/permissions.md §1): admin, no invite
     genesis[O] = Some(Edge { role: Role::Admin, until: NEVER, invite: Role::None });
     let k = 2 + rng.below(7);
-    let mut h = EHist { genesis, writes: vec![], recv: vec![], extra: vec![] };
+    let mut h = EHist { genesis, writes: vec![], recv: vec![] };
     while h.writes.len() < k {
         let author = rng.below(n);
         let t = 1 + rng.below(10) as u32;
@@ -1168,7 +1135,7 @@ mod tests {
         fn new(genesis: &[Option<Edge>]) -> Self {
             let mut genesis = genesis.to_vec();
             genesis[O] = e(Admin, Admin);
-            B(EHist { genesis, writes: vec![], recv: vec![], extra: vec![] })
+            B(EHist { genesis, writes: vec![], recv: vec![] })
         }
         /// Commit; `recv` lists (node, time) receipts, others get LATE.
         fn ops(&mut self, author: usize, ops: &[(usize, Option<Edge>)], t: u32, recv: &[(usize, u32)]) -> usize {

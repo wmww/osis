@@ -53,7 +53,6 @@ fn a_removed_signers_backdated_request_or_destruction_takes_nothing() {
         let r = w.edge(H, 6, &[], A, X, Gone, &[]);
         for trust in [vec![], vec![r]] {
             assert!(read(&w, &Rules::purging(), &trust).purged.is_empty(), "{names:?} {trust:?}");
-            assert!(read(&w, &Rules::purging_remake(), &trust).purged.is_empty(), "{names:?} {trust:?}");
         }
         assert!(read(&w, &Rules { purge_at_key: true, ..Rules::purging() }, &[r]).purged.contains(&h), "{names:?}");
         w.edit(r, |k| k.listing(BTreeMap::from([(T1, Set::from([q]))])));
@@ -214,7 +213,7 @@ fn a_request_made_after_the_removal_is_kept_by_no_witness() {
     assert!(!read(&w, &rules, &[r]).purged.contains(&h), "{q}");
 }
 
-/// Purge worlds at small size: the draft's purge rules, under both role rule sets, hold every
+/// Purge worlds at small size: the draft's purge rules hold every
 /// required gate but `purge witnessed` (finding 41), which its fix closes; `fixed` (the `author`
 /// class alone) fails `purge kept` (classes, selectors, copies owed); `-purge-at-key` and
 /// `-list-any-cut` fail safety.
@@ -222,19 +221,15 @@ fn a_request_made_after_the_removal_is_kept_by_no_witness() {
 #[ignore = "property"]
 fn purge_worlds_hold_plain() {
     let n = 400;
-    for rules in [Rules::purging(), Rules::purging_remake()] {
-        let st = purge_run_from(0, n, &rules);
-        st.print("paths-purge");
-        let others: u64 = st.fails.iter().filter(|(k, _)| **k != "purge witnessed").map(|(_, n)| n).sum();
-        assert!(others == 0 && st.fails.contains_key("purge witnessed"), "{:?} {:?}", st.fails, st.first);
-        for k in ["purge kept", "purge safety", "alike", "could hold", "own cover", "bodies"] {
-            assert!(st.checked.get(k).is_some_and(|n| *n > 0), "no {k} check ran");
-        }
+    let st = purge_run_from(0, n, &Rules::purging());
+    st.print("paths-purge");
+    let others: u64 = st.fails.iter().filter(|(k, _)| **k != "purge witnessed").map(|(_, n)| n).sum();
+    assert!(others == 0 && st.fails.contains_key("purge witnessed"), "{:?} {:?}", st.fails, st.first);
+    for k in ["purge kept", "purge safety", "alike", "could hold", "own cover", "bodies"] {
+        assert!(st.checked.get(k).is_some_and(|n| *n > 0), "no {k} check ran");
     }
-    for rules in [Rules { purge_addenda: true, ..Rules::purging() }, Rules { purge_addenda: true, ..Rules::purging_remake() }] {
-        let st = purge_run_from(0, n, &rules);
-        assert!(st.failures() == 0, "{:?} {:?}", st.fails, st.first);
-    }
+    let st = purge_run_from(0, n, &Rules { purge_addenda: true, ..Rules::purging() });
+    assert!(st.failures() == 0, "{:?} {:?}", st.fails, st.first);
     assert!(purge_run_from(0, n, &Rules::fixed()).fails.contains_key("purge kept"));
     assert!(purge_run_from(0, n, &Rules { purge_at_key: true, ..Rules::purging() }).fails.contains_key("purge safety"));
     assert!(purge_run_from(0, n, &Rules { own_cover: false, ..Rules::purging() }).fails.contains_key("own cover"));

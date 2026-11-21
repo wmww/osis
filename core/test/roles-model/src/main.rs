@@ -1,4 +1,4 @@
-//! Search driver for the roles model: `[samples] [edges|joint|disputes|disputes-random|digest|addenda|addenda-exh|addenda-covers|addenda-gaps|addenda-gaps-exh|addenda-gaps-no-admin|addenda-gaps-no-rewrite|forget|forget-entries|epochs|epochs-no-cutoff|epochs-own-only|epochs-void-uncounted|epochs-no-own-cover|epochs-open-carried|epochs-no-reanswer|custody|custody-exh|custody-judged|custody-roster-bare|custody-merge-random|custody-stale-shut|custody-merge-carries|custody-readd-beside|paths[-exh|-tiny[-invites][-honest]][-control|-remake] [--from K | --only K] (paths::mode_rules)|paths-purge[-variant] (paths::purge_rules)|paths-compare [--from K]|vouches|vouches-exh|vouches-off|vouches-no-rewrite|vouches-held|vouches-state|vouches-stands|vouches-state-stands|vouches-exh-off|vouches-exh-no-rewrite|vouches-exh-held|vouches-exh-state|vouches-exh-stands]`.
+//! Search driver for the roles model: `[samples] [edges|joint|disputes|disputes-random|digest|addenda|addenda-exh|addenda-covers|addenda-gaps|addenda-gaps-exh|addenda-gaps-no-admin|addenda-gaps-no-rewrite|forget|forget-entries|epochs|epochs-no-cutoff|epochs-own-only|epochs-void-uncounted|epochs-no-own-cover|epochs-open-carried|epochs-no-reanswer|custody|custody-exh|custody-judged|custody-roster-bare|custody-merge-random|custody-stale-shut|custody-merge-carries|custody-readd-beside|paths[-exh|-tiny[-invites][-honest]][-control] [--from K | --only K] (paths::mode_rules)|paths-purge[-variant] (paths::purge_rules)]`.
 
 use roles_model::{edges, joint};
 
@@ -39,11 +39,6 @@ fn main() {
                 _ => ("random", Control::None),
             };
             if run(samples, mode, control) > 0 {
-                std::process::exit(1);
-            }
-        }
-        Some(m) if m.starts_with("vouches") => {
-            if roles_model::vouches::run(samples, m) > 0 {
                 std::process::exit(1);
             }
         }
@@ -95,7 +90,7 @@ fn main() {
 
 /// `-- 0 paths[-exh|-tiny...][-control] --only K`: world K of the mode's worlds (random world K,
 /// family world K, or small world K), checked under the mode's rules: its trace, its commits in
-/// full (vouches, content and covers included), the checks made and what failed. Exit 1 when a
+/// full (content and covers included), the checks made and what failed. Exit 1 when a
 /// check fails.
 fn only(mode: &str, k: u64) -> i32 {
     use roles_model::paths::*;

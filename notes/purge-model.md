@@ -26,32 +26,30 @@ The three readings of a request whose right a later cut takes:
 - **(c) Never cut** (`-purge-at-key`: the right read at the request's key alone, "gone means gone"): a stolen key's backdated request stamped before the removal holds for good. Fails `purge safety`. Rejected: against a stolen key, "gone means gone" and "a removed key erases nothing" cannot both hold; the requirements choose the second (Deletion: "A purge counts only if its author had the right to make it, judged as an edit's validity is").
 
 ## The rule as modelled
-roles-model `paths` (`purges`, `holds`, `Names`, `Retention`; README.md, Paths, Purges): rule switches `purge_classes`, `purge_copies`, `own_cover` (the draft's readings, *taken*; `Rules::purging`, `Rules::purging_remake`), `purge_addenda` (OPEN-proposed, finding 41), `purge_at_key` (variant (c)). All off in `Rules::fixed`. The unwired walk (osis-perm `paths`, notes/perm-paths.md, Purges) builds `Rules::purging` and is compared under it (every differential, the purge worlds at every node). A destruction's right reads no cut on an edge into its own thing ordered after it (spec/commits.md §5 Destruction); the walk does not refuse edge writes on a destroyed thing (content on it reads purged). An own cover stands by an applied explicit lowering of its writer listing it whatever that lowering takes at the reading node, its path having given write just before it.
+roles-model `paths` (`purges`, `holds`, `Names`, `Retention`; README.md, Paths, Purges): rule switches `purge_classes`, `purge_copies`, `own_cover` (the draft's readings, *taken*; `Rules::purging`), `purge_addenda` (OPEN-proposed, finding 41), `purge_at_key` (variant (c)). All off in `Rules::fixed`. The unwired walk (osis-perm `paths`, notes/perm-paths.md, Purges) builds `Rules::purging` and is compared under it (every differential, the purge worlds at every node). A destruction's right reads no cut on an edge into its own thing ordered after it (spec/commits.md §5 Destruction); the walk does not refuse edge writes on a destroyed thing (content on it reads purged). An own cover stands by an applied explicit lowering of its writer listing it whatever that lowering takes at the reading node, its path having given write just before it.
 
 ## Results
 Purge worlds (`-- N paths-purge[-variant]`; module doc of `src/paths/purge.rs`): about 4 ms of CPU a world.
 
 | rule set | worlds | failing | counted (bodies) |
 |---|---|---|---|
-| `paths-purge` (`Rules::purging`, the draft) / `-remake` (`Rules::purging_remake`) | 100,000 each (checks: alike 9.0M, could hold 2.67M, purge kept 700,000, own cover 50,936) | purge witnessed 115,482 (finding 41); nothing else | restored from a body 47,116; lost to the thief's window 1,838; lost, an honest purge fell 733 |
-| `-addenda` / `-remake-addenda` (finding 41's fix) | 100,000 each | 0 | restored 6,843; lost to the thief's window 1,130; honest loss 0 |
+| `paths-purge` (`Rules::purging`, the draft) | 100,000 (checks: alike 9.0M, could hold 2.67M, purge kept 700,000, own cover 50,936) | purge witnessed 115,482 (finding 41); nothing else | restored from a body 47,116; lost to the thief's window 1,838; lost, an honest purge fell 733 |
+| `-addenda` (finding 41's fix) | 100,000 | 0 | restored 6,843; lost to the thief's window 1,130; honest loss 0 |
 | `-fixed` (`Rules::fixed`: author class, held deltas) | 8,000 | purge kept 35,952, purge witnessed 5,107, own cover 1,249, alike 1,095, purge safety 223 (an `admin`-retention delta taken by the author class), could hold 193 | |
 | `-at-key` (variant (c)) | 8,000 | purge safety 6,875, purge kept 1,836, purge witnessed 126 | |
 | `-no-copies` | 8,000 | alike 11,468, purge witnessed 9,117, purge kept 2,876 | |
 | `-no-own-cover` | 8,000 | own cover 1,102, purge kept 210, purge witnessed 9,176 | |
 
-Purge worlds read alike under both role rule sets (they carry no role write a removal drops). The gate's properties: `purge_worlds_hold_plain` (400 worlds of each rule set and control), `purge_worlds_hold_large` (4,000 of the draft and of the fix, about 16 CPU-s each). A search: `cargo run --bin roles-model -- N paths-purge[-variant] [--from K]` through `tools/heavy` (100,000 worlds about 400 CPU-s); `-- 0 paths-purge[-variant] --only K` prints world K and its checks.
+The gate's properties: `purge_worlds_hold_plain` (400 worlds of the rule and each control), `purge_worlds_hold_large` (4,000 of the draft and of the fix, about 16 CPU-s each). A search: `cargo run --bin roles-model -- N paths-purge[-variant] [--from K]` through `tools/heavy` (100,000 worlds about 400 CPU-s); `-- 0 paths-purge[-variant] --only K` prints world K and its checks.
 
 ## Finding 41: a request only a witness received falls
 X purges by whole aspect at 4; B, an admin, receives it; H, which did not, removes X at 6 listing nothing; B's addendum at 7 names it. The draft (and today's spec/permissions.md §6: "An addendum vouches for no purge request") drops it: the request falls everywhere and X's erased messages come back from any node that kept them. spec/requirements.md Permissions keeps "those of its edits the remover or another remaining writer vouches for having received by then". Fix modelled (`purge_addenda`): an addendum vouches for a request as for content, by a writer holding the role the class needs (admin for `admin`, write for `writer` and `author`), against a cut ordered after it. With it every gate holds, and no honest purge is lost by falling. The exclusion was a carve-out with no stated reason: a request is content-class, and the witness's word is weighed as for any edit (Indistinguishable pairs, below). `repro_a_request_only_a_witness_received_stands`, `an_addendum_by_a_holder_of_the_class_keeps_a_request`.
 
-Role vouches (notes/role-remake-model.md) do not enter: a request is content-class, so the open role-vouch question (issues/role-vouch-contested.md) touches purges only through the witness's own role, as content addenda.
-
 ## Indistinguishable pairs
-The vouch study's pair (two worlds with the same held commits needing opposite answers) arises where a witness's word is weighed by a standing the thief can contest. For purges:
+The role-write pair (issues/role-vouch-contested.md, Why no vouch can work: two worlds with the same held commits needing opposite answers) arises where a witness's word is weighed by a standing the thief can contest. For purges:
 - Honest X purging at 4, witnessed, removed at 6; and a thief with X's key making the same request between theft and removal, witnessed: one held set. Keeping the honest one keeps the thief's window request, exactly as content made in the window is kept (accepted; requirements: "nothing shows they were made before the removal" only for what nobody received in time). Requests made after the removal are in no honest addendum (`a_request_made_after_the_removal_is_kept_by_no_witness`).
 - Honest X purging before its removal by a thief-controlled admin; and a thief with X's key erasing after an honest admin's removal, backdated: one held set where the removal is trusted, so one reading. Which removal is honest is the role layer's fight (trust sets, disputes); the purge rule adds nothing.
-- A witness contested by a removed key's backdated lowering: the same shape as content addenda (notes/role-remake-model.md, Content addenda), settled by whatever settles the witness's role.
+- A witness contested by a removed key's backdated lowering: the same shape as content addenda, settled by whatever settles the witness's role (issues/removed-key-backdated-drop.md).
 So the purge property has no pair of its own: no weaker promise is needed beyond the content one.
 
 ## Delete keys (spec/crypto.md §7; argued, not modelled)

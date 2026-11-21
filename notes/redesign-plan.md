@@ -47,7 +47,7 @@ notes/priorities.md, First: issues/app-tile-unreadable-emails-test.md [checked: 
 
 ### P. Prune
 Net lines go down (notes/principles.md, Writing code is the cheapest part of having code). Out of spec, code, models and tests:
-- role-write vouches: `vouches.0`, the second walk, counting, the unasked writing, travel with the removal (issues/role-vouch-contested.md); roles-model `Rules::remake` and notes/role-remake-model.md;
+- role-write vouches: `vouches.0`, the second walk, counting, the unasked writing, travel with the removal (issues/role-vouch-contested.md); roles-model's making-again rule set and its note;
 - the drafts' and held-model's wait for a complete pass before a body judged invalid is dropped (drops are at once, as built);
 - the last-admin rule every node judges (a lowering naming its remaining admin, that edge as evidence);
 - whatever else these orphan. The gate is measured again afterwards (issues/test-time.md).

@@ -614,17 +614,14 @@ pub fn purge_run_from(start: u64, n: u64, rules: &Rules) -> PStats {
 }
 
 /// The rules of `paths-purge[-variant]`: the draft's (`Rules::purging`), `-fixed` (the `author`
-/// class alone), `-remake` (the proposal's role rules, the same purge readings), `-addenda` (an addendum
-/// vouches for a purge request: OPEN-proposed), `-at-key` (a request's right read at its key alone:
-/// "gone means gone"), `-no-copies`, `-no-own-cover`, `-remake-addenda`.
+/// class alone), `-addenda` (an addendum vouches for a purge request: OPEN-proposed), `-at-key` (a
+/// request's right read at its key alone: "gone means gone"), `-no-copies`, `-no-own-cover`.
 pub fn purge_rules(mode: &str) -> Option<Rules> {
     let p = Rules::purging();
     Some(match mode.strip_prefix("paths-purge")? {
         "" => p,
         "-fixed" => Rules::fixed(),
-        "-remake" => Rules::purging_remake(),
         "-addenda" => Rules { purge_addenda: true, ..p },
-        "-remake-addenda" => Rules { purge_addenda: true, ..Rules::purging_remake() },
         "-at-key" => Rules { purge_at_key: true, ..p },
         "-no-copies" => Rules { purge_copies: false, ..p },
         "-no-own-cover" => Rules { own_cover: false, ..p },
