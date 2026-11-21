@@ -4214,8 +4214,10 @@ impl Engine {
                         break;
                     }
                     // each round brings a thing in
-                    let held = tx.core.ix.closure.things().count() as u64;
-                    flows.round((), || (held + 2, format!("{held} things in the node closure")));
+                    flows.round((), || {
+                        let held = tx.core.ix.closure.things().count() as u64;
+                        (held + 2, format!("{held} things in the node closure"))
+                    });
                 }
                 #[cfg(debug_assertions)]
                 {

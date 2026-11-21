@@ -440,10 +440,12 @@ pub(crate) fn wake_entered(tx: &mut Tx<'_>) -> Result<usize> {
     Ok(n)
 }
 
-/// Whether a thing entered the node closure since `wake_entered` last looked (its feed, read
-/// without moving it) and is in it still: one a failed step's rollback took out again is not.
+/// Whether a member entered the node closure since `wake_entered` last looked (its feed, read
+/// without moving it) and is a member still: one a failed step's rollback took out again is not,
+/// so a write that fails and stays due brings no other round. O(what was logged since).
 pub(crate) fn entering(tx: &Tx<'_>) -> bool {
-    tx.core.entered.as_ref().is_some_and(|f| f.clone().added().iter().any(|(_, t)| tx.core.ix.closure.holds(t)))
+    let cl = &tx.core.ix.closure;
+    tx.core.entered.as_ref().is_some_and(|f| f.clone().added().iter().any(|(c, t)| cl.members(c).is_some_and(|m| m.contains(t))))
 }
 
 /// The parts waiting for `t` to enter the node closure count as never received: no sync ID the
