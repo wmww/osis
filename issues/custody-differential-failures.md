@@ -1,5 +1,5 @@
 # Custody differential and model failures
-> Summary: osis-engine `rotation::tests_custody::engine_agrees_with_custody_model_by_hand_spec_permissions_5_4` (by hand, not gated) fails on main at four seeds, each a different disagreement between the engine and roles-model `custody`; the model's own search `custody::tests::random_worlds_hold_large` fails at two seeds (`flip`, `writes`). None looked into, since notes/redesign-plan.md A4 deletes the machinery.
+> Summary: osis-engine `rotation::tests_custody::engine_agrees_with_custody_model_by_hand_spec_permissions_5_4` (by hand) and its gated 4-world `_plain` (KNOWN lines in tools/known_failures.txt) fail on main at four seeds, each a different disagreement between the engine and roles-model `custody`; the model's own search `custody::tests::random_worlds_hold_large` fails at two seeds (`flip`, `writes`). None looked into, since notes/redesign-plan.md A4 deletes the machinery.
 > Priority: low
 > Tags: engine, roles-model, tests
 

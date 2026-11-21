@@ -1,5 +1,5 @@
 # Test and gate time
-> Summary: Targets (Tess): default tests 4x cheaper than the 8,553 G per-test profile without losing coverage that matters (a test should cost milliseconds), and the whole gate in 10 minutes on ostrich, reached by fixing perf, not shrinking sizes. Now 6,536 G per test (1.31x), 3,192 G for the three big binaries whole (1.32x); a third of the per-test figure is fixtures rebuilt per process. Most gates fit the 10 minutes; roles-model selections at load near 50 do not. Lists where the cost goes, the ranked levers and the patterns behind them.
+> Summary: Targets (Tess): default tests 4x cheaper than the 8,553 G per-test profile without losing coverage that matters (a test should cost milliseconds), and the whole gate in 10 minutes on ostrich, reached by fixing perf, not shrinking sizes. Now 6,463 G per test (1.32x), 3,192 G for the three big binaries whole (1.32x); a third of the per-test figure is fixtures rebuilt per process. Most gates fit the 10 minutes; roles-model selections at load near 50 do not. Lists where the cost goes, the ranked levers and the patterns behind them.
 > Priority: normal
 > Tags: tests, performance, sync, engine
 
@@ -32,33 +32,32 @@ Docs-only gates (watch-3, review-prose-tests, issues-sweep) took 2-28 s. `gate.d
 - Read for waste: no property ran at a size its notes do not state (order plain 8 seeds of 60 steps and exhaustive 8 of 40, rotation and deep 100 seeds, covered 100, crdt 1,000 small); nothing here is cut without a coverage argument.
 
 ## Where it goes now
-Profile at 0d2778997, saved for the next job: `/home/ai/osis-profiles/pertest-0d2778997` (`tools/pertest.py top` / `compare` it; its binaries in `.bins/`, the cpuprof samples below in `/home/ai/osis-profiles/cpuprof-0d2778997/`, reported with `tools/cpuprof --report FILE N FILTER`).
+Profile at 0d2778997 less the custody differential's four seeds (73.3 G, 17.5 CPU-s per test; a gated `_plain` property), saved for the next job: `/home/ai/osis-profiles/pertest-0d2778997` (`tools/pertest.py top` / `compare` it; its binaries in `.bins/`, the cpuprof samples below in `/home/ai/osis-profiles/cpuprof-0d2778997/`, reported with `tools/cpuprof --report FILE N FILTER`).
 
 | binary | per test (pertest) | whole binary (icount) | morning whole |
 |---|---|---|---|
 | osis-sync `it` (613 tests) | 2,123 G | 845 G | 1,225 G |
 | engine `it` (669) | 1,776 G | 1,284 G | 1,726 G |
-| engine lib (581) | 1,664 G | 1,063 G | 1,262 G |
+| engine lib (580) | 1,591 G | 1,063 G | 1,262 G |
 | osis `it` (186) | 341 G | 350 G | |
 | held-model `it` (224) | 194 G | 194 G | |
 | osis-perm `it` (322) | 181 G | 180 G | |
 | osis-crdt lib (253) | 30 G | 30 G | |
 | roles-model (241) | 13 G | 13 G | |
 | the rest (705) | 214 G | | |
-| total (3,794 tests) | 6,536 G, 1,851 CPU-s (morning 8,553 G) | 3,192 G for the three big (morning 4,213) | |
+| total (3,793 tests) | 6,463 G, 1,834 CPU-s (morning 8,553 G) | 3,192 G for the three big (morning 4,213) | |
 
 - **Per-process fixtures are a third of the per-test figure.** The three big binaries cost 2,370 G more per test than whole (sync 1,278, engine lib 601, engine `it` 492): each test process builds its cached worlds (`history::world_of`, `LocalPeer::cached`) again. A gate pays them once per binary, so cutting the per-test figure by caching across processes would cut nothing real; making a fixture cheaper cuts both. osis-sync: 127 tests over 5 G hold 1,901 G of its 2,123 (median test 0.02 G); engine lib `rotation::*` 1,027 G over 312 tests (median 2.6 G, mostly its cached `synced`/`granted` setups).
 - By size: tests of 20 G and more 969 G (15%), 5-20 G 2,880 G (44%, 318 tests over 5 G), 1-5 G 2,326 G, under 1 G 362 G. By module: engine lib `rotation` 1,027 G, `apply` 402; osis-sync `holding` 388, `deletes` 257, `growth` 250, `delete_keys` 140, `idle` 120 (four tests of 23.7 G each, one world apiece), `opens` 113, `keep` 110; engine `it` `validity` 275, `order` 250, `scale` 175, `flows` 164, `shred` 130; perm `incremental` 101.
-- Costliest tests: engine lib `rotation::tests_custody::engine_agrees_with_custody_model_spec_permissions_5_4` 73.3 G (four fixed seeds of a random world, machinery redesign A4 deletes), osis-sync `deletes::a_purged_or_replaced_part_is_unrecoverable_from_the_sync_store_spec_commits_5` 49.0, `read::a_start_after_a_session_finds_nothing_owed_at_n_and_10n_spec_sync_judgement_3` 47.6, engine `it` `judgment::judgment_vectors_spec_permissions_5_2` 41.8, osis-sync `flows::a_raced_grant_is_resealed_at_a_complete_passs_end_spec_perm_3` 39.1, `growth::a_head_move_relists_nothing_between_a_reader_and_a_store_at_n_and_10n` 38.9, osis `commits::changes_on_as_many_things_spec_requirements_decentralization` 36.8, osis-sync `duties::sibling_removals_apart_both_hold_through_sync_spec_permissions_3` 35.5, `growth::a_write_valid_again_before_its_author_hears_comes_from_a_store_spec_permissions_6` 34.8, `growth::record_blobs_at_a_store_stay_flat_spec_sync_ids_6` 34.5; then perm `incremental::late_writes_across_kept_states` 34.4 and osis-sync tests of 18-33 G.
-- The top three under cpuprof (one thread, `CPUPROF_INSTR=2000000`; shares of samples):
-  - custody (73 G): its cached setup 9%, the debug end checks about 12% (`Engine::checked_index` 7.3%, `apply::check_states` 3.4%, `check_rebuilt` 1.1%), product work the rest: ingest 51% (signature checks 12%), `signing_due`/`rotations_due` 19%.
+- Costliest tests (the custody differential's four seeds, 73.3 G, are its gated `_plain` property): osis-sync `deletes::a_purged_or_replaced_part_is_unrecoverable_from_the_sync_store_spec_commits_5` 49.0, `read::a_start_after_a_session_finds_nothing_owed_at_n_and_10n_spec_sync_judgement_3` 47.6, engine `it` `judgment::judgment_vectors_spec_permissions_5_2` 41.8, osis-sync `flows::a_raced_grant_is_resealed_at_a_complete_passs_end_spec_perm_3` 39.1, `growth::a_head_move_relists_nothing_between_a_reader_and_a_store_at_n_and_10n` 38.9, osis `commits::changes_on_as_many_things_spec_requirements_decentralization` 36.8, osis-sync `duties::sibling_removals_apart_both_hold_through_sync_spec_permissions_3` 35.5, `growth::a_write_valid_again_before_its_author_hears_comes_from_a_store_spec_permissions_6` 34.8, `growth::record_blobs_at_a_store_stay_flat_spec_sync_ids_6` 34.5; then perm `incremental::late_writes_across_kept_states` 34.4 and osis-sync tests of 18-33 G.
+- The top tests under cpuprof (one thread, `CPUPROF_INSTR=2000000`; shares of samples):
   - purged (49 G): the forensic attack 93% (`osis_store::forensic`, ChaCha rounds 43% self), its cached fixture 5%.
   - session start (48 G): the 3-account `world_of` 22.5% (`introduce` 20%), debug end checks about 6% (`checked_index` 4.1%), product work about 70%: `Read::settle` 42% (`judge::body` 21%, `may_log` 9%), store commits 7%, `Engine::follow` 7%, key derivation from seeds 5%.
 
 ### Next levers, by evidence
 1. **Cheaper fixtures** (both measures): osis-sync's `world_of` (2/3/4 accounts about 3.6/11.7/29.4 G, nearly all `introduce`'s redeems over real sync: a fifth to a quarter of a world test) and engine lib rotation's cached setups. Per test they are most of the 2,370 G gap; whole they are paid once per binary. The cost is osis-sync's per-delivery settles (item 2 of the product levers), so this is mostly that lever seen through the fixtures; fewer distinct fixtures (tests sharing one world) also count.
 2. **osis-sync per-delivery work in the tests themselves**: read's settle is about 40% of a world test after its fixture (product levers 2 and 3); 127 sync tests over 5 G.
-3. **Seed loops and brute force left in default tests**: the custody differential's four seeds (73 G; a random generator over fixed seeds belongs in a `_plain` property, or goes with A4), the forensic attack in a sync world (49 G; Patterns, The forensic attack: run it on an engine-level world, check the sync world by what the node holds).
+3. **Seed loops and brute force left in default tests**: the forensic attack in a sync world (49 G; Patterns, The forensic attack: run it on an engine-level world, check the sync world by what the node holds).
 4. **Debug end checks**: 6-12% of the top tests, mostly the drop's `checked_index` (issues/index-check-rebuild-cost.md); the incremental forms proposed below would trim the per-transaction ones.
 5. Engine product work: ingest and signing/rotation dues dominate the rotation tests (product levers 0, 1, 5).
 - The every-transaction debug checks with a super-linear cost (proposals for their owners): `flows::addenda::missed` scans every held commit after each durable transaction, O(transactions x commits): run it in full only after a transaction that changed a role edge, a role commit's validity or held parts, or passed a removal's window end, and in full at drop, with an index of role commits with a frontier for the scan (catches the same misses while that input list is all `gather` and `owed` read: notes/engine-roles.md, Addenda). `check_walks(false)` rebuilds the whole blob-wait index after each transaction while a walk is kept: check the walks the transaction touched or whose blobs arrived, the whole index at drop. `paths::missed` is linear in what waits: leave it.

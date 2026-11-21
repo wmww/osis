@@ -2162,6 +2162,26 @@ fn tally(runs: &[Reached]) {
         count(|r| r.readd_merged),
         count(|r| r.readd_refused),
     );
+    // per world, a quarter of the rate over 44 worlds at two offsets or less; the rarer cases
+    // (X's side first, switched back, a re-add waiting, merging first or refused) only print
+    type Case = fn(&Reached) -> bool;
+    let floors: [(&str, Case, usize); 12] = [
+        ("t re-keyed", |r| r.t_rekeyed, 4),
+        ("listing cycle", |r| r.cycle, 4),
+        ("certificates", |r| r.certs, 6),
+        ("warned", |r| r.warned, 8),
+        ("lockstep", |r| r.lockstep, 8),
+        ("twin certificates", |r| r.twin_certs, 10),
+        ("own removal", |r| r.own_removal, 12),
+        ("as Z", |r| r.as_z, 20),
+        ("T re-added", |r| r.readd, 20),
+        ("X re-seals", |r| r.x_reseals, 20),
+        ("X certifies", |r| r.x_certs, 28),
+        ("left", |r| r.left, 28),
+    ];
+    for (what, f, over) in floors {
+        osis_base::testenv::reach_floor(&format!("custody worlds {what}"), runs.iter().map(|r| usize::from(f(r))), 1, over);
+    }
 }
 
 fn replay(s: u64) -> String {
@@ -2169,11 +2189,15 @@ fn replay(s: u64) -> String {
 }
 
 // spec/permissions.md §5.4-§5.5, spec/crypto.md §9: the account's nodes and readers judge a
-// forked chain, hold seeds and owe rotations as roles-model `custody` says (module doc). Quick
-// size: a few worlds.
+// forked chain, hold seeds and owe rotations as roles-model `custody` says (module doc). The
+// gate's sample: 4 worlds (40 at `OSIS_FULL=1`), `OSIS_CUSTODY_START`/`_SEEDS`; known failures:
+// issues/custody-differential-failures.md.
 #[test]
-fn engine_agrees_with_custody_model_spec_permissions_5_4() {
-    tally(&osis_base::testenv::run_seeds("rotation::tests_custody::engine_agrees_with_custody_model_spec_permissions_5_4", &(0..4).collect::<Vec<u64>>(), false, replay, custody_world));
+#[ignore = "property"]
+fn engine_agrees_with_custody_model_plain_spec_permissions_5_4() {
+    let s = osis_base::testenv::Seeds::from_env("OSIS_CUSTODY_START", "OSIS_CUSTODY_SEEDS", osis_base::testenv::large(0..40));
+    let runs = s.run("rotation::tests_custody::engine_agrees_with_custody_model_plain_spec_permissions_5_4", replay, custody_world);
+    tally(&runs);
 }
 
 /// Small size (a tenth of large) or large under `OSIS_FULL=1`; seeds: OSIS_CUSTODY_START,
