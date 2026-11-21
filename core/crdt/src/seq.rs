@@ -489,10 +489,14 @@ pub(crate) fn join_elems(s: &mut Seq, d: Seq, e: Option<&Stamp>, ch: &mut Change
 }
 
 /// Follows a copy of `lin` through joining `d` into `s`, which stays as it is (the records `d`
-/// touches are copied): whether it followed. A placement held in part notes its misses.
+/// touches are copied): whether it followed. A placement held in part notes its misses and its
+/// work, the plan of each of `d`'s records included.
 pub(crate) fn dry_follow(s: &Seq, d: &Seq, lin: Arc<Lin>) -> bool {
     if d.text != s.text || d.meta.reset.is_some() {
         return false;
+    }
+    if let Some(p) = lin.partial() {
+        p.with(|m| m.work += d.elems.len().max(1));
     }
     let mut t = Seq::new(s.text, s.meta.clone(), s.footprint(d).elems);
     t.set_lin(Some(lin));

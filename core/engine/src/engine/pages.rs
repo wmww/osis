@@ -483,7 +483,7 @@ fn ensure_set(txn: &mut Transaction<'_>, tid: &Tid, ak: &Ak, t: Table, set: &mut
 
 /// Loads the pages joining a delta touches (`touch_of`): those holding its dots (a sequence's:
 /// the pages its records span), and for a paged sequence what its placement's follow of the
-/// join needs (a dry run, `Fragment::dry_follow`, loading what it misses, a few times; the
+/// join needs (a dry run, `Fragment::dry_follow`, loading what it misses, until it follows or has done about one pass of work; the
 /// placement is then attached to the sequence, which the join follows).
 pub fn ensure_touch(txn: &mut Transaction<'_>, tid: &Tid, ak: &Ak, idx: &mut StatePages, f: &mut Fragment, touch: &PagedTouch) -> Result<bool> {
     let t = table(txn, tid, ak)?;
@@ -541,10 +541,12 @@ fn prefetch(txn: &mut Transaction<'_>, tid: &Tid, ak: &Ak, t: Table, set: &mut P
     let Some(pt) = txn.table(tid, ak, PLACE_TABLE)? else { return Ok(()) };
     let _s = osis_base::costs::span("placement prefetch");
     let at = steps(&set.path);
-    // about one whole pass's work at most, then the join drops the placement
+    // a dry run stops at its first miss, so a delta touching many places takes as many runs;
+    // each costs its plans and follow work, about one whole pass's in all at most, then the join
+    // drops the placement (laid out anew, a whole pass)
     let budget = pl.len().max(1024);
     let mut work = 0;
-    for _ in 0..PREFETCH {
+    loop {
         pl.cover(cover_of(set));
         let Some(s) = f.at_steps(&at) else { break };
         s.dry_follow(d, &pl);
@@ -713,8 +715,6 @@ fn walk(txn: &mut Transaction<'_>, tid: &Tid, ak: &Ak, t: Table, idx: &mut State
 
 /// Blocks per group row of the block list.
 const GROUP: usize = 32;
-/// Dry runs of a join per paged sequence before giving up its placement.
-const PREFETCH: usize = 8;
 /// Runs of an op on a state held in part before loading it whole.
 pub const OP_RUNS: usize = 8;
 
@@ -2606,8 +2606,41 @@ mod tests {
         assert!(received >= 16 && moves >= 15 && edits >= 12, "{received} received, {moves} moves, {edits} edits");
     }
 
+    // spec/crdt.md §5.7, §6, §8: a received delta moving a range and inserting far from both
+    // ends, in a new session: its follow misses rows, dot-map chunks and records at three places
+    // in the text, each dry run stopping at its first miss, so it takes many dry runs of little
+    // work each; the join follows the stored placement and keeps it.
+    #[test]
+    fn seq_received_move_and_insert_keeps_placement_spec_crdt_6_1() {
+        let mut rng = osis_crypto::SeededRng::from_u64(0);
+        let mut store = Store::create(Box::new(MemoryBackend::new()), Box::new(MemoryRoot::new()), StoreConfig::default(), &mut rng).unwrap();
+        let (tid, ak) = (Tid::from_bytes([9; 15]), osis_base::Ak::new("app:seq.0").unwrap());
+        let view = SeqView::Root(true);
+        let field = || vec![PathSeg::Field(1)];
+        let mut w = Writer::new(Ts::from_u64(1 << 16).unwrap(), sess(1), 1);
+        let mut st = create(&mut w, &view, &seq_value(true, 4_000)).unwrap();
+        let mut txn = store.transaction(&mut rng).unwrap();
+        let (unit, _) = write_full(&mut txn, &tid, &ak, Some(&st), false, &SALT).unwrap();
+        let ops = [Op::Move { at: 2_000, len: 4, to: 100 }, Op::Insert { at: 3_500, items: seq_items(true, 0, 3) }];
+        let mut b = DeltaBuilder::new(&st, Writer::new(Ts::from_u64(2 << 16).unwrap(), sess(2), 1));
+        for op in ops {
+            b.apply(&PathOp { path: field(), op }, &view).unwrap();
+        }
+        let (delta, _) = b.finish().unwrap();
+        let (mut f, mut idx) = open(&unit, &SALT).unwrap();
+        let t = touch_of(&delta, Some(&idx)).unwrap();
+        assert!(ensure_touch(&mut txn, &tid, &ak, &mut idx, &mut f, &t).unwrap());
+        f.join(delta.clone());
+        st.join(delta);
+        assert!(matches!(write_touched(&mut txn, &mut idx, &tid, &ak, &f, &t, Shred::No).unwrap(), Some(None)));
+        let set = idx.sets.values().find(|s| is_seq(s)).unwrap();
+        assert!(!set.whole && matches!(set.place, Place::Held(_)), "placement kept");
+        let stored = stored_place(&mut txn, &tid, &ak, set).unwrap();
+        assert!(stored.order() == place_whole_pass(&st).order());
+    }
+
     // spec/crdt.md §5.7, §6, §8: as above, the plan's choices random: `OSIS_SEQ_COLD_START`, `OSIS_SEQ_COLD_SEEDS` (2 at small
-    // size), 160 steps a seed. Fails: issues/seq-received-move-insert-drops-placement.md.
+    // size), 160 steps a seed. Fails on some seeds: issues/seq-cold-edits-follow-gaps.md.
     #[test]
     #[ignore = "property"]
     fn seq_cold_edits_keep_placement_plain_spec_crdt_6_1() {
