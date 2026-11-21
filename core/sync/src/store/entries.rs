@@ -1,11 +1,20 @@
-//! Durable entries: insert, change and remove one, with every row that goes with it (the blob
-//! index, the expiry and tombstone sweeps, usage, charges, the node log event) in the caller's
-//! transaction, so a crash keeps all of them or none.
+//! Entries: insert, change and remove one, with every row that goes with it (the blob index, the
+//! expiry and tombstone sweeps, usage, charges, the log event) in the caller's transaction, so a
+//! crash keeps all of them or none.
+//!
+//! One set of rules for both parts of the store: `t` is a transaction of the durable store or of
+//! the memory store (`Inner::ram`, in memory mode: `t.is_memory()`), which hold the same rows. What
+//! differs by part is written here by `t.is_memory()`, and nothing else does: the log (the node
+//! log, or the memory log's counter, spec/sync-streams.md §3), where charges add up (a peer's
+//! record or a connection's row, or memory: an ephemeral entry's charge goes with its source), a
+//! tombstone's lifetime (`TOMBSTONE_LIFETIME`, or `MAX_DRIFT`, spec/sync-ids.md §5), and the total
+//! of every sync ID kept unread (the durable caps' alone).
 
 use super::rows::{self, EntryRow, Source, Tombstone, Usage, R, W};
 use super::{Env, ENTRY_OVERHEAD, TOMB_OVERHEAD};
 use crate::types::{Entry, Result};
-use osis_base::{BlobId, SyncId};
+use osis_base::format::{MAX_DRIFT_MS, TOMBSTONE_LIFETIME_MS};
+use osis_base::{BlobId, SyncId, WallMs};
 use osis_engine::sync::Holding;
 use osis_store::{Shred, Transaction};
 
@@ -55,12 +64,14 @@ pub(crate) fn put_usage(t: &mut Transaction<'_>, env: &mut Env<'_>, s: &SyncId, 
         t.put_local(&rows::usage_key(s), &new.encode(), Shred::No)?;
         t.put_local(&rows::by_use_key(new.bytes, s), &[], Shred::No)?;
     }
-    if env.holding(s) == Some(Holding::Unread) && old.fixed() != new.fixed() {
+    // the durable caps' total (`Env::total`); the memory total is summed where read
+    if t.is_memory() || env.holding(s) != Some(Holding::Unread) {
+        return Ok(());
+    }
+    if old.fixed() != new.fixed() {
         env.mem.stamps.wrote(&super::UNREAD_FIXED, true);
     }
-    if env.holding(s) == Some(Holding::Unread)
-        && let Some(total) = env.total.as_mut()
-    {
+    if let Some(total) = env.total.as_mut() {
         total.add(&old, false);
         total.add(&new, true);
     }
@@ -75,19 +86,87 @@ pub(crate) fn add_usage(t: &mut Transaction<'_>, env: &mut Env<'_>, s: &SyncId, 
     put_usage(t, env, s, old, new)
 }
 
-/// What an entry row adds to its sync ID's usage: role entries count toward no cap; a deposit
-/// waiting for a stamp counts toward the deposit budget too.
-fn count(u: &mut Usage, r: &EntryRow, sign: bool) {
-    let op = |x: &mut u64, n: u64| *x = if sign { x.saturating_add(n) } else { x.saturating_sub(n) };
-    if !r.role {
-        op(&mut u.entries, 1);
-        op(&mut u.bytes, r.size + ENTRY_OVERHEAD);
-        op(&mut u.entry_bytes, r.size + ENTRY_OVERHEAD);
+/// What entry row `r` of blob `b` adds to its sync ID's usage: role entries count toward no cap;
+/// a deposit waiting for a stamp counts toward the deposit budget too. Its blob counts at what it
+/// costs held where that is more than its bytes (`Memory::estimate`, an ephemeral commit's).
+fn count(env: &Env<'_>, b: &BlobId, r: &EntryRow, sign: bool) -> impl Fn(&mut Usage) + use<> {
+    let held = env.mem.estimate.get(b).copied().unwrap_or(0).max(r.size);
+    let (role, deposited, size) = (r.role, r.deposited, r.size);
+    move |u: &mut Usage| {
+        let op = |x: &mut u64, n: u64| *x = if sign { x.saturating_add(n) } else { x.saturating_sub(n) };
+        if !role {
+            op(&mut u.entries, 1);
+            op(&mut u.bytes, held + ENTRY_OVERHEAD);
+            op(&mut u.entry_bytes, held + ENTRY_OVERHEAD);
+        }
+        if deposited {
+            op(&mut u.deposits, 1);
+            op(&mut u.deposit_bytes, size);
+        }
     }
-    if r.deposited {
-        op(&mut u.deposits, 1);
-        op(&mut u.deposit_bytes, r.size);
+}
+
+/// Entry `b` of S goes from row `old` to `new`: its charges and S's usage move.
+fn recount(t: &mut Transaction<'_>, env: &mut Env<'_>, s: &SyncId, b: &BlobId, old: &EntryRow, new: &EntryRow) -> Result<()> {
+    charge(t, env, old, s, b, false)?;
+    charge(t, env, new, s, b, true)?;
+    let (out, into) = (count(env, b, old, false), count(env, b, new, true));
+    add_usage(t, env, s, |u| {
+        out(u);
+        into(u);
+    })
+}
+
+/// How an entry's log event moves (`log`).
+enum Ev {
+    Added,
+    Deleted,
+    /// No event: an expiry serves none, nor does an entry that was never servable.
+    Gone,
+}
+
+/// Logs `ev` of entry `b` of S in `t`'s part: the node log, or the memory log.
+fn log(t: &mut Transaction<'_>, env: &mut Env<'_>, s: &SyncId, b: &BlobId, ev: Ev) -> Result<()> {
+    match (t.is_memory(), ev) {
+        (true, Ev::Added) => env.mem.event(s, b, None),
+        (true, Ev::Deleted) => env.mem.event(s, b, Some(env.now)),
+        (true, Ev::Gone) => env.mem.unlog(s, b),
+        (false, Ev::Added) => drop(t.log_added(*s, *b)?),
+        (false, Ev::Deleted) => drop(t.log_deleted(*s, *b, env.now.0)?),
+        (false, Ev::Gone) => drop(t.log_remove(s, b)?),
     }
+    Ok(())
+}
+
+/// When a tombstone made at `at` in `t`'s part ends.
+fn tomb_ends(t: &Transaction<'_>, at: WallMs) -> WallMs {
+    WallMs(at.0.saturating_add(if t.is_memory() { MAX_DRIFT_MS } else { TOMBSTONE_LIFETIME_MS }))
+}
+
+/// The sync IDs whose entries in `t`'s part name blob `b`.
+pub(crate) fn naming(t: &mut Transaction<'_>, b: &BlobId) -> Result<Vec<SyncId>> {
+    let named = t.scan_local(&[rows::BY_BLOB, &b.0].concat(), b"", usize::MAX)?;
+    Ok(named.into_iter().map(|(k, _)| SyncId(k.get(k.len().saturating_sub(16)..).and_then(|x| x.try_into().ok()).unwrap_or_default())).collect())
+}
+
+/// Sets what blob `b` costs held past its bytes (`Memory::estimate`) for every entry naming it;
+/// nothing where none does.
+pub(crate) fn set_estimate(t: &mut Transaction<'_>, env: &mut Env<'_>, b: &BlobId, n: u64) -> Result<()> {
+    let mut held = Vec::new();
+    for s in naming(t, b)? {
+        held.extend(get(t, &s, b)?.map(|r| (s, r)));
+    }
+    if held.is_empty() {
+        return Ok(());
+    }
+    for (s, r) in &held {
+        add_usage(t, env, s, count(env, b, r, false))?;
+    }
+    env.mem.estimate.insert(*b, n);
+    for (s, r) in &held {
+        add_usage(t, env, s, count(env, b, r, true))?;
+    }
+    Ok(())
 }
 
 /// Bytes charged to record `rec` so far.
@@ -100,7 +179,7 @@ pub(crate) fn conn_charge(t: &mut Transaction<'_>, c: crate::types::ConnId) -> R
     t.get_local(&rows::conn_total_key(c))?.map_or(Ok(0), |v| R::new(&v).u64())
 }
 
-fn charge(t: &mut Transaction<'_>, r: &EntryRow, s: &SyncId, b: &BlobId, sign: bool) -> Result<()> {
+fn charge(t: &mut Transaction<'_>, env: &mut Env<'_>, r: &EntryRow, s: &SyncId, b: &BlobId, sign: bool) -> Result<()> {
     // who brought an uncharged one, found again when that peer goes (`Store::gone`)
     if let Some(src) = r.brought {
         let k = rows::brought_key(src, s, b);
@@ -117,19 +196,25 @@ fn charge(t: &mut Transaction<'_>, r: &EntryRow, s: &SyncId, b: &BlobId, sign: b
     } else {
         t.remove_local(&k, Shred::No)?;
     }
-    match src {
-        Source::Record(rec) => {
-            let now = record_charge(t, &rec)?;
-            let n = if sign { now.saturating_add(r.size) } else { now.saturating_sub(r.size) };
+    let n = |now: u64| if sign { now.saturating_add(r.size) } else { now.saturating_sub(r.size) };
+    match (t.is_memory(), src) {
+        (true, _) => {
+            let c = env.mem.charges.entry(src).or_default();
+            *c = n(*c);
+            if *c == 0 {
+                env.mem.charges.remove(&src);
+            }
+        }
+        (false, Source::Record(rec)) => {
+            let n = n(record_charge(t, &rec)?);
             if n == 0 {
                 t.record_remove_wide_row(&rec, CHARGES, b"")?;
             } else {
                 t.record_put_wide_row(&rec, CHARGES, b"", W::default().u64(n).take())?;
             }
         }
-        Source::Conn(c) => {
-            let now = conn_charge(t, c)?;
-            let n = if sign { now.saturating_add(r.size) } else { now.saturating_sub(r.size) };
+        (false, Source::Conn(c)) => {
+            let n = n(conn_charge(t, c)?);
             if n == 0 {
                 t.remove_local(&rows::conn_total_key(c), Shred::No)?;
             } else {
@@ -140,24 +225,16 @@ fn charge(t: &mut Transaction<'_>, r: &EntryRow, s: &SyncId, b: &BlobId, sign: b
     Ok(())
 }
 
-/// Whether blob `b`'s bytes are held, on disk or in memory.
-pub(crate) fn bytes_len(t: &mut Transaction<'_>, env: &Env<'_>, b: &BlobId) -> Result<Option<u64>> {
-    if let Some(v) = env.mem.blobs.get(b) {
-        return Ok(Some(v.len() as u64));
-    }
-    Ok(t.blob_len(b)?)
-}
-
 /// Stores a new entry `row` of S (no entry of `b` there yet), with `bytes` when they come with it.
 pub(crate) fn insert(t: &mut Transaction<'_>, env: &mut Env<'_>, s: &SyncId, b: &BlobId, mut row: EntryRow, bytes: Option<Vec<u8>>) -> Result<()> {
     let fresh = match bytes {
-        Some(bytes) if bytes_len(t, env, b)?.is_none() => {
+        Some(bytes) if t.blob_len(b)?.is_none() => {
             t.put_blob(b, bytes)?;
             true
         }
         _ => false,
     };
-    row.size = bytes_len(t, env, b)?.unwrap_or(0);
+    row.size = t.blob_len(b)?.unwrap_or(0);
     t.put_local(&rows::entry_key(s, b), &row.encode(), Shred::Yes)?;
     t.put_local(&rows::by_blob_key(b, s), &[], Shred::No)?;
     if let Some(at) = row.expires {
@@ -167,10 +244,10 @@ pub(crate) fn insert(t: &mut Transaction<'_>, env: &mut Env<'_>, s: &SyncId, b: 
         t.put_local(&rows::deposited_key(s, b), &[], Shred::No)?;
     }
     env.mem.fed.wrote_added(&(*s, *b), true, true);
-    charge(t, &row, s, b, true)?;
-    add_usage(t, env, s, |u| count(u, &row, true))?;
+    charge(t, env, &row, s, b, true)?;
+    add_usage(t, env, s, count(env, b, &row, true))?;
     if row.size > 0 {
-        t.log_added(*s, *b)?;
+        log(t, env, s, b, Ev::Added)?;
     }
     if fresh {
         bytes_arrived(t, env, b)?;
@@ -184,12 +261,7 @@ pub(crate) fn change(t: &mut Transaction<'_>, env: &mut Env<'_>, s: &SyncId, b: 
     if *old == new {
         return Ok(());
     }
-    charge(t, old, s, b, false)?;
-    charge(t, &new, s, b, true)?;
-    add_usage(t, env, s, |u| {
-        count(u, old, false);
-        count(u, &new, true);
-    })?;
+    recount(t, env, s, b, old, &new)?;
     t.put_local(&rows::entry_key(s, b), &new.encode(), Shred::Yes)?;
     match (old.deposited, new.deposited) {
         (false, true) => t.put_local(&rows::deposited_key(s, b), &[], Shred::No)?,
@@ -201,7 +273,7 @@ pub(crate) fn change(t: &mut Transaction<'_>, env: &mut Env<'_>, s: &SyncId, b: 
         env.mem.fed.wrote_added(&(*s, *b), true, true);
     }
     if seen && new.size > 0 {
-        t.log_added(*s, *b)?;
+        log(t, env, s, b, Ev::Added)?;
     }
     Ok(())
 }
@@ -226,18 +298,13 @@ pub(crate) fn remove(t: &mut Transaction<'_>, env: &mut Env<'_>, s: &SyncId, b: 
             t.record_remove_row(&rec, rows::tag::REFUSED, s, &b.0)?;
         }
         env.mem.fed.wrote_added(&(*s, *b), true, true);
-        charge(t, row, s, b, false)?;
-        add_usage(t, env, s, |u| count(u, row, false))?;
-        match how {
-            Removal::Expired => drop(t.log_remove(s, b)?),
-            Removal::Tomb(_) | Removal::Untombed => {
-                if row.size > 0 {
-                    t.log_deleted(*s, *b, env.now.0)?;
-                } else {
-                    t.log_remove(s, b)?;
-                }
-            }
-        }
+        charge(t, env, row, s, b, false)?;
+        add_usage(t, env, s, count(env, b, row, false))?;
+        let ev = match how {
+            Removal::Tomb(_) | Removal::Untombed if row.size > 0 => Ev::Deleted,
+            _ => Ev::Gone,
+        };
+        log(t, env, s, b, ev)?;
         unref(t, env, b)?;
     }
     if let Removal::Tomb(tomb) = how {
@@ -248,7 +315,7 @@ pub(crate) fn remove(t: &mut Transaction<'_>, env: &mut Env<'_>, s: &SyncId, b: 
 
 pub(crate) fn put_tomb(t: &mut Transaction<'_>, env: &mut Env<'_>, s: &SyncId, b: &BlobId, tomb: Tombstone) -> Result<()> {
     lift(t, env, s, b)?;
-    t.put_local(&rows::tomb_at_key(tomb.at, s, b), &[], Shred::No)?;
+    t.put_local(&rows::tomb_at_key(tomb_ends(t, tomb.at), s, b), &[], Shred::No)?;
     t.put_local(&rows::tomb_key(s, b), &tomb.encode(), Shred::No)?;
     t.put_local(&[rows::TOMB_BY_BLOB, &b.0, &s.0].concat(), &[], Shred::No)?;
     add_usage(t, env, s, |u| u.bytes = u.bytes.saturating_add(TOMB_OVERHEAD))
@@ -258,20 +325,23 @@ pub(crate) fn put_tomb(t: &mut Transaction<'_>, env: &mut Env<'_>, s: &SyncId, b
 pub(crate) fn lift(t: &mut Transaction<'_>, env: &mut Env<'_>, s: &SyncId, b: &BlobId) -> Result<bool> {
     let Some(old) = tombstone(t, s, b)? else { return Ok(false) };
     t.remove_local(&rows::tomb_key(s, b), Shred::No)?;
-    t.remove_local(&rows::tomb_at_key(old.at, s, b), Shred::No)?;
+    t.remove_local(&rows::tomb_at_key(tomb_ends(t, old.at), s, b), Shred::No)?;
     t.remove_local(&[rows::TOMB_BY_BLOB, &b.0, &s.0].concat(), Shred::No)?;
     add_usage(t, env, s, |u| u.bytes = u.bytes.saturating_sub(TOMB_OVERHEAD))?;
     Ok(true)
 }
 
-/// Deletes blob `b`'s durable bytes once no entry of any sync ID names it and the engine holds it
-/// no more (spec/sync-ids.md §5: bytes once per node).
-pub(crate) fn unref(t: &mut Transaction<'_>, env: &Env<'_>, b: &BlobId) -> Result<()> {
+/// Deletes blob `b`'s bytes once no entry of any sync ID names it and the engine holds it no more
+/// (spec/sync-ids.md §5: bytes once per node).
+pub(crate) fn unref(t: &mut Transaction<'_>, env: &mut Env<'_>, b: &BlobId) -> Result<()> {
     let named = !t.scan_local(&[rows::BY_BLOB, &b.0].concat(), b"", 1)?.is_empty();
     if !named {
         env.mem.unnamed.wrote_added(b, true, true);
+        if t.is_memory() {
+            env.mem.estimate.remove(b);
+        }
     }
-    if named || t.get_local(&rows::engine_key(b))?.is_some() || env.mem.engine.contains(b) {
+    if named || t.get_local(&rows::engine_key(b))?.is_some() {
         return Ok(());
     }
     t.delete_blob(b);
@@ -282,22 +352,15 @@ pub(crate) fn unref(t: &mut Transaction<'_>, env: &Env<'_>, b: &BlobId) -> Resul
 /// whose bytes were missing becomes servable, under every sync ID (spec/sync-ids.md §5: a blob
 /// fetched under one sync ID is taken under every other naming it).
 pub(crate) fn bytes_arrived(t: &mut Transaction<'_>, env: &mut Env<'_>, b: &BlobId) -> Result<()> {
-    let Some(size) = bytes_len(t, env, b)? else { return Ok(()) };
-    let named = t.scan_local(&[rows::BY_BLOB, &b.0].concat(), b"", usize::MAX)?;
-    for (k, _) in named {
-        let s = SyncId(k.get(k.len().saturating_sub(16)..).and_then(|x| x.try_into().ok()).unwrap_or_default());
+    let Some(size) = t.blob_len(b)? else { return Ok(()) };
+    for s in naming(t, b)? {
         if let Some(old) = get(t, &s, b)?
             && old.size == 0
         {
             let new = EntryRow { size, ..old.clone() };
-            charge(t, &old, &s, b, false)?;
-            charge(t, &new, &s, b, true)?;
-            add_usage(t, env, &s, |u| {
-                count(u, &old, false);
-                count(u, &new, true);
-            })?;
+            recount(t, env, &s, b, &old, &new)?;
             t.put_local(&rows::entry_key(&s, b), &new.encode(), Shred::Yes)?;
-            t.log_added(s, *b)?;
+            log(t, env, &s, b, Ev::Added)?;
         }
     }
     Ok(())

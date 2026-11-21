@@ -1,16 +1,18 @@
-//! The store's rows: their keys and their bytes. Every row is a local record of the node's one
+//! The store's rows: their keys and their bytes. Every row is a local record of the node's
 //! ciphertext store (`osis_store::Transaction::put_local`), keyed by a two-byte tag so each kind is
 //! its own stamp family; a memo reading one row moves only when that row (or a scan's prefix)
-//! is written.
+//! is written. The memory part (`Inner::ram`) keeps the entry rows (`E X G W B T t Y x U u S`)
+//! of ephemeral entries alike; the rest are the durable store's alone.
 //!
 //! - `E/ s b` an entry (`EntryRow`).
 //! - `X/ b s` the sync IDs whose entries name blob `b`: its bytes go once none does and the
 //!   engine holds it no more.
-//! - `G/ b` the engine holds blob `b` durably (`osis_store::CipherHost::hold`).
+//! - `G/ b` the engine holds blob `b` (`osis_store::CipherHost::hold`; in the memory part, held in
+//!   memory).
 //! - `W/ src s b` an entry charged to a source (`source_bytes`): a connection's go when it closes
 //!   or at a start, a record's when the record is dropped; `V/ conn` the bytes charged to a
 //!   connection in all (a record's total is in the record).
-//! - `T/ s b` a tombstone (`Tomb`); `t/ at s b` tombstones by when they were made, for the sweep;
+//! - `T/ s b` a tombstone (`Tomb`); `t/ at s b` tombstones by when they end, for the sweep;
 //!   `Y/ b s` the sync IDs holding a tombstone of blob `b` (whether a delete of it is recent here).
 //! - `x/ T s b` entries by prefix expiry, for the sweep.
 //! - `P/ s i` step `i` of S's path from genesis (`StepRow`); `Q/ s i` its claim set while held;
@@ -247,6 +249,12 @@ pub(crate) fn tail_ids(key: &[u8]) -> Result<(SyncId, BlobId)> {
     let s: [u8; 16] = key.get(n.wrapping_sub(48)..n.wrapping_sub(32)).and_then(|x| x.try_into().ok()).ok_or_else(corrupt)?;
     let b: [u8; 32] = key.get(n.wrapping_sub(32)..).and_then(|x| x.try_into().ok()).ok_or_else(corrupt)?;
     Ok((SyncId(s), BlobId(b)))
+}
+
+/// The sync ID a key ends with.
+pub(crate) fn tail_sync(key: &[u8]) -> Result<SyncId> {
+    let s: [u8; 16] = key.get(key.len().wrapping_sub(16)..).and_then(|x| x.try_into().ok()).ok_or_else(corrupt)?;
+    Ok(SyncId(s))
 }
 
 /// Who brought an unstamped entry, where its charge lives (spec/sync-ids.md §5 Peer budget): the

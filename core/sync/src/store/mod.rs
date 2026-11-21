@@ -5,15 +5,16 @@
 //! entries (wrap or filler, stamp, deposited flag), tombstones, blob bytes once per node, the
 //! path each sync ID serves, the node log with its per-sync-ID index, usage against the caps and
 //! the deposit budget, charges against each peer's budget, and the rows a source's record keeps
-//! of what this node logged again there. Ephemeral entries, their tombstones and the memory part
-//! of the log live in memory (`memory`). It is the engine's ciphertext door
+//! of what this node logged again there. Ephemeral entries, their tombstones and bytes live in a
+//! second store kept in memory (`Inner::ram`), with the same rows and the same rules
+//! (`entries`), beside the memory part of the log (`memory`). It is the engine's ciphertext door
 //! (`osis_store::CipherHost`, `cipher`): `Store` is a cheap handle over one locked store, held by
 //! the engine's door and by `Cx`; the engine locks it only inside its own transactions, sync only
 //! between engine calls, so one step never holds both.
 //!
 //! Every operation is one transaction of the underlying store, so a crash keeps all of its rows
 //! or none (an entry and its log event, a removal and its tombstone). Every row change stamps
-//! (osis-store `Stamping`; the memory part its own `Stamps`), so memos may read it. Expiry,
+//! (osis-store `Stamping`; the memory log and feeds their own `Stamps`), so memos may read it. Expiry,
 //! tombstone ends, claim sets' `ROLE_KEEP` and the caps giving way run in `settle`. It decrypts
 //! nothing and judges no open: every secret lives above it. It learns which sync IDs the node
 //! holds, and how, from the engine's sync set, and its caps from the engine's `caps^.0`.
@@ -163,7 +164,7 @@ pub(crate) struct Env<'a> {
     pub holdings: &'a BTreeMap<SyncId, Held>,
     pub caps: &'a Caps,
     pub policy: &'a Policy,
-    pub mem: &'a Memory,
+    pub mem: &'a mut Memory,
     /// Bytes used by every sync ID kept unread; `None` until counted.
     pub total: Option<Total>,
 }
@@ -233,6 +234,12 @@ impl Env<'_> {
 /// The store's state behind its lock.
 pub(crate) struct Inner {
     store: osis_store::Store,
+    /// The memory part's rows: ephemeral entries, their tombstones and bytes, the engine's memory
+    /// holds. A store over memory whose transactions run in memory mode (rows in its overlay,
+    /// never written to its backend), lost at a restart. Not the durable store's own overlay: the
+    /// engine's transaction, suspended between its calls, may hold no memory rows, and that
+    /// store's node log and records write durably in memory mode too.
+    ram: osis_store::Store,
     rng: Box<dyn osis_crypto::NodeRng>,
     /// The engine's transaction, open between its blob calls.
     open: Option<Suspended>,
@@ -365,24 +372,53 @@ impl Inner {
         Ok(())
     }
 
-    /// Runs `f` in a transaction of its own and commits it; nothing of it stays on an error.
-    fn write<T>(&mut self, f: impl FnOnce(&mut Transaction<'_>, &mut Env<'_>) -> Result<T>) -> Result<T> {
-        debug_assert!(self.open.is_none(), "sync wrote inside the engine's transaction");
-        let Inner { store, rng, now, holdings, caps, policy, mem, total, .. } = self;
+    /// Runs `f` in a transaction of its own of the durable store, or of the memory part's
+    /// (`memory`), and commits it; nothing of it stays on an error, but what it fed or logged in
+    /// memory.
+    fn write_in<T>(&mut self, memory: bool, f: impl FnOnce(&mut Transaction<'_>, &mut Env<'_>) -> Result<T>) -> Result<T> {
+        debug_assert!(memory || self.open.is_none(), "sync wrote inside the engine's transaction");
+        self.tx(memory, true, f)
+    }
+
+    /// Runs `f` over a transaction of either part that writes nothing (dropped).
+    fn read_in<T>(&mut self, memory: bool, f: impl FnOnce(&mut Transaction<'_>, &mut Env<'_>) -> Result<T>) -> Result<T> {
+        self.tx(memory, false, f)
+    }
+
+    fn tx<T>(&mut self, memory: bool, commit: bool, f: impl FnOnce(&mut Transaction<'_>, &mut Env<'_>) -> Result<T>) -> Result<T> {
+        let Inner { store, ram, rng, now, holdings, caps, policy, mem, total, .. } = self;
         let mut env = Env { now: *now, holdings, caps, policy, mem, total: *total };
-        let mut t = store.transaction(&mut **rng)?;
+        let mut t = if memory { ram.transaction(&mut **rng)? } else { store.transaction(&mut **rng)? };
+        t.set_memory(memory);
         let r = f(&mut t, &mut env)?;
-        t.commit()?;
-        *total = env.total;
+        if commit {
+            t.commit()?;
+            *total = env.total;
+        }
         Ok(r)
     }
 
-    /// Runs `f` over a transaction that writes nothing (dropped).
+    fn write<T>(&mut self, f: impl FnOnce(&mut Transaction<'_>, &mut Env<'_>) -> Result<T>) -> Result<T> {
+        self.write_in(false, f)
+    }
+
     fn read<T>(&mut self, f: impl FnOnce(&mut Transaction<'_>, &mut Env<'_>) -> Result<T>) -> Result<T> {
-        let Inner { store, rng, now, holdings, caps, policy, mem, total, .. } = self;
-        let mut env = Env { now: *now, holdings, caps, policy, mem, total: *total };
-        let mut t = store.transaction(&mut **rng)?;
-        f(&mut t, &mut env)
+        self.read_in(false, f)
+    }
+
+    /// Entry `b` of S, with whether the memory part holds it.
+    fn find(&mut self, s: &SyncId, b: &BlobId) -> Result<Option<(bool, EntryRow)>> {
+        for memory in [true, false] {
+            if let Some(r) = self.read_in(memory, |t, _| entries::get(t, s, b))? {
+                return Ok(Some((memory, r)));
+            }
+        }
+        Ok(None)
+    }
+
+    /// `f` over each part, the durable store's first, and what each gave.
+    fn each<T>(&mut self, mut f: impl FnMut(&mut Transaction<'_>, &mut Env<'_>) -> Result<T>) -> Result<[T; 2]> {
+        Ok([self.read_in(false, &mut f)?, self.read_in(true, &mut f)?])
     }
 
     fn holding(&self, s: &SyncId) -> Option<Holding> {
@@ -448,7 +484,8 @@ impl Store {
     /// record brought that still gave nothing held go: every connection ended with the last start.
     pub fn open(backend: Box<dyn osis_store::Backend>, root: Box<dyn osis_store::RootStorage>, mut rng: Box<dyn osis_crypto::NodeRng>) -> Result<Store> {
         let store = osis_store::Store::open_or_create(backend, root, osis_store::StoreConfig::default(), &mut *rng)?;
-        let mut inner = Inner { store, rng, open: None, now: WallMs(0), holdings: BTreeMap::new(), caps: Caps::default(), policy: Policy::default(), mem: Memory::default(), total: None, past_cap: BTreeMap::new(), unheld: BTreeSet::new(), room: BTreeMap::new(), room_fx: Effects::new(ROOM_JUDGED), room_gone: BTreeSet::new(), room_conn: BTreeMap::new(), clock: Clock::default() };
+        let ram = osis_store::Store::create(Box::new(osis_store::MemoryBackend::new()), Box::new(osis_store::MemoryRoot::new()), osis_store::StoreConfig::default(), &mut *rng)?;
+        let mut inner = Inner { store, ram, rng, open: None, now: WallMs(0), holdings: BTreeMap::new(), caps: Caps::default(), policy: Policy::default(), mem: Memory::default(), total: None, past_cap: BTreeMap::new(), unheld: BTreeSet::new(), room: BTreeMap::new(), room_fx: Effects::new(ROOM_JUDGED), room_gone: BTreeSet::new(), room_conn: BTreeMap::new(), clock: Clock::default() };
         inner.write(|t, env| {
             // a start ends every connection: each one charged or bringing goes (connection
             // numbers start again, so none may name the next one given it)
@@ -460,7 +497,7 @@ impl Store {
                 }
             }
             for c in conns {
-                Self::gone_durable(t, env, Source::Conn(c))?;
+                Self::gone_from(t, env, Source::Conn(c))?;
             }
             Ok(())
         })?;
@@ -618,11 +655,7 @@ impl Store {
     // Reads
 
     pub fn entry(&self, s: &SyncId, b: &BlobId) -> Result<Option<Entry>> {
-        let mut g = self.lock();
-        if let Some(r) = g.mem.read(s, b) {
-            return Ok(Some(entries::to_entry(*b, r)));
-        }
-        g.read(|t, _| Ok(entries::get(t, s, b)?.map(|r| entries::to_entry(*b, &r))))
+        Ok(self.lock().find(s, b)?.map(|(_, r)| entries::to_entry(*b, &r)))
     }
 
     /// Whether held entry `b` of S carries a stamp that verifies under one of `keys`, in either
@@ -630,22 +663,14 @@ impl Store {
     /// (`rows::Vouch`) answers when it is one of these checks'; else the stamp is checked, and
     /// nothing is kept (a read writes nothing, so moves no reader).
     pub fn stamp_under(&self, s: &SyncId, b: &BlobId, keys: &[osis_crypto::VerifyingKey]) -> Result<bool> {
-        let mut g = self.lock();
-        let row = match g.mem.read(s, b).cloned() {
-            Some(r) => r,
-            None => match g.read(|t, _| entries::get(t, s, b))? {
-                Some(r) => r,
-                None => return Ok(false),
-            },
-        };
+        let Some((_, row)) = self.lock().find(s, b)? else { return Ok(false) };
         let Some(stamp) = row.stamp else { return Ok(false) };
         Ok(keys.iter().any(|k| rows::kept_answers(k, s, b, &row.wrap, &stamp, row.vouch)) || keys.iter().any(|k| rows::check_stamp(k, s, b, &row.wrap, &stamp, None).is_some()))
     }
 
     /// Every entry of S, durable then ephemeral (stamped reads: memo-safe). O(entries of S).
     pub fn entries(&self, s: &SyncId) -> Result<Vec<Entry>> {
-        let mut g = self.lock();
-        let mut out = g.read(|t, _| {
+        let parts = self.lock().each(|t, _| {
             let mut out = Vec::new();
             for (k, v) in t.scan_local(&[rows::ENTRY, &s.0].concat(), b"", usize::MAX)? {
                 let (_, b) = rows::tail_ids(&k)?;
@@ -653,34 +678,25 @@ impl Store {
             }
             Ok(out)
         })?;
-        out.extend(g.mem.list(s).iter().map(|(b, r)| entries::to_entry(*b, r)));
-        Ok(out)
+        Ok(parts.concat())
     }
 
     /// The deposited (unstamped) entries of S, durable then ephemeral (stamped reads). O(S's
     /// deposits), which its deposit budget and the peer budgets bound.
     pub fn deposits(&self, s: &SyncId) -> Result<Vec<Entry>> {
-        let mut g = self.lock();
-        let mut out = g.read(|t, _| {
-            let mut out = Vec::new();
-            for (k, _) in t.scan_local(&[rows::DEPOSITED, &s.0].concat(), b"", usize::MAX)? {
-                let (_, b) = rows::tail_ids(&k)?;
-                if let Some(r) = entries::get(t, s, &b)? {
-                    out.push(entries::to_entry(b, &r));
-                }
-            }
-            Ok(out)
-        })?;
-        out.extend(g.mem.list(s).iter().filter(|(_, r)| r.deposited).map(|(b, r)| entries::to_entry(*b, r)));
-        Ok(out)
+        Ok(self.all_of(&[rows::DEPOSITED, &s.0].concat())?.into_iter().map(|(_, e)| e).collect())
     }
 
     /// Every deposited entry held, with its sync ID (a start's listing). O(deposits held).
     pub fn all_deposits(&self) -> Result<Vec<(SyncId, Entry)>> {
-        let mut g = self.lock();
-        let mut out = g.read(|t, _| {
+        self.all_of(rows::DEPOSITED)
+    }
+
+    /// The entries an index under `prefix` (keys `prefix s b`) lists, durable then ephemeral.
+    fn all_of(&self, prefix: &[u8]) -> Result<Vec<(SyncId, Entry)>> {
+        let parts = self.lock().each(|t, _| {
             let mut out = Vec::new();
-            for (k, _) in t.scan_local(rows::DEPOSITED, b"", usize::MAX)? {
+            for (k, _) in t.scan_local(prefix, b"", usize::MAX)? {
                 let (s, b) = rows::tail_ids(&k)?;
                 if let Some(r) = entries::get(t, &s, &b)? {
                     out.push((s, entries::to_entry(b, &r)));
@@ -688,15 +704,13 @@ impl Store {
             }
             Ok(out)
         })?;
-        let mut mem: Vec<(SyncId, Entry)> = g.mem.entries.iter().filter(|(_, r)| r.deposited).map(|((s, b), r)| (*s, entries::to_entry(*b, r))).collect();
-        mem.sort_by_key(|(s, e)| (*s, e.blob));
-        out.extend(mem);
-        Ok(out)
+        Ok(parts.concat())
     }
 
     /// The length of blob `b`'s bytes held, if any (sizing deposits, spec/sync-inbox.md §4).
     pub fn blob_len(&self, b: &BlobId) -> Result<Option<u64>> {
-        self.lock().read(|t, env| entries::bytes_len(t, env, b))
+        let [d, m] = self.lock().each(|t, _| Ok(t.blob_len(b)?))?;
+        Ok(d.or(m))
     }
 
     /// A reader's cursor over the entries added, removed (reading absent) or whose wrap, stamp
@@ -715,54 +729,40 @@ impl Store {
     /// does (durable or in memory): what S's shred takes from this node whole (`Engine::shredding`).
     pub fn alone_under(&self, s: &SyncId) -> Result<Vec<BlobId>> {
         let mut g = self.lock();
-        let range = (*s, BlobId([0; 32]))..=(*s, BlobId([0xff; 32]));
-        let mut of_s: BTreeSet<BlobId> = g.mem.entries.range(range.clone()).map(|((_, b), _)| *b).collect();
-        of_s.extend(g.mem.tombs.range(range).map(|((_, b), _)| *b));
-        let elsewhere_mem: BTreeSet<BlobId> = of_s.iter().filter(|b| g.mem.by_blob.get(b).is_some_and(|ss| ss.iter().any(|x| x != s)) || g.mem.tombs.keys().any(|(x, y)| y == *b && x != s)).copied().collect();
-        g.read(|t, _| {
+        let [of_d, of_m] = g.each(|t, _| {
+            let mut of_s = BTreeSet::new();
             for p in [rows::ENTRY, rows::TOMB] {
                 for (k, _) in t.scan_local(&[p, &s.0[..]].concat(), b"", usize::MAX)? {
                     of_s.insert(rows::tail_ids(&k)?.1);
                 }
             }
-            let mut out = Vec::new();
-            for b in of_s {
-                if elsewhere_mem.contains(&b) {
-                    continue;
-                }
-                let mut alone = true;
+            Ok(of_s)
+        })?;
+        let of_s: BTreeSet<BlobId> = of_d.union(&of_m).copied().collect();
+        let [d, m] = g.each(|t, _| {
+            let mut alone = BTreeSet::new();
+            for b in &of_s {
+                let mut only = true;
                 for p in [rows::BY_BLOB, rows::TOMB_BY_BLOB] {
-                    alone &= t.scan_local(&[p, &b.0[..]].concat(), b"", usize::MAX)?.iter().all(|(k, _)| k.ends_with(&s.0));
+                    only &= t.scan_local(&[p, &b.0[..]].concat(), b"", usize::MAX)?.iter().all(|(k, _)| k.ends_with(&s.0));
                 }
-                if alone {
-                    out.push(b);
+                if only {
+                    alone.insert(*b);
                 }
             }
-            Ok(out)
-        })
+            Ok(alone)
+        })?;
+        Ok(d.intersection(&m).copied().collect())
     }
 
     /// Whether an entry under any sync ID names blob `b` (durable or in memory).
     pub fn named(&self, b: &BlobId) -> Result<bool> {
-        let mut g = self.lock();
-        if g.mem.by_blob.contains_key(b) {
-            return Ok(true);
-        }
-        g.read(|t, _| Ok(!t.scan_local(&[rows::BY_BLOB, &b.0].concat(), b"", 1)?.is_empty()))
+        Ok(!self.naming(b)?.is_empty())
     }
 
     /// The sync IDs whose entries name blob `b` (durable or in memory).
     pub fn naming(&self, b: &BlobId) -> Result<Vec<SyncId>> {
-        let mut g = self.lock();
-        let mut out: Vec<SyncId> = g.mem.by_blob.get(b).into_iter().flatten().copied().collect();
-        let durable = g.read(|t, _| {
-            let mut v = Vec::new();
-            for (k, _) in t.scan_local(&[rows::BY_BLOB, &b.0].concat(), b"", usize::MAX)? {
-                v.push(SyncId(k.get(k.len().saturating_sub(16)..).and_then(|x| x.try_into().ok()).unwrap_or_default()));
-            }
-            Ok(v)
-        })?;
-        out.extend(durable);
+        let mut out = self.lock().each(|t, _| entries::naming(t, b))?.concat();
         out.sort();
         out.dedup();
         Ok(out)
@@ -804,44 +804,37 @@ impl Store {
 
     /// Blob `b`'s bytes, whoever holds them.
     pub fn bytes(&self, b: &BlobId) -> Result<Option<Vec<u8>>> {
-        let mut g = self.lock();
-        if let Some(v) = g.mem.blobs.get(b) {
-            return Ok(Some(v.clone()));
-        }
-        g.read(|t, _| Ok(t.get_blob(b)?))
+        let [d, m] = self.lock().each(|t, _| Ok(t.get_blob(b)?))?;
+        Ok(d.or(m))
     }
 
     pub fn tombstone(&self, s: &SyncId, b: &BlobId) -> Result<Option<Tombstone>> {
-        let mut g = self.lock();
-        if g.mem.tombstoned(s, b) {
-            let at = g.mem.tombs.get(&(*s, *b)).copied().unwrap_or_default();
-            return Ok(Some(Tombstone { at, deleted: false, note: Vec::new() }));
-        }
-        g.read(|t, _| entries::tombstone(t, s, b))
+        let [d, m] = self.lock().each(|t, _| entries::tombstone(t, s, b))?;
+        Ok(d.or(m))
     }
 
     /// What S uses: durable and in memory.
     pub fn usage(&self, s: &SyncId) -> Result<(Usage, Usage)> {
-        let mut g = self.lock();
-        let m = g.mem.usage(s);
-        Ok((g.read(|t, _| entries::usage(t, s))?, m))
+        let [d, m] = self.lock().each(|t, _| entries::usage(t, s))?;
+        Ok((d, m))
     }
 
     /// What holding one more ephemeral commit under read S may cost now (spec/sync-compaction.md
     /// §2 Caps, at a node for what it reads): S's memory cap less what S's ephemeral entries
     /// count, each at least its bytes and an entry of a commit from another node at what it
     /// costs held (`set_memory_charge`). Own entries count their bytes too (local policy).
-    pub fn memory_room(&self, s: &SyncId) -> u64 {
-        let g = self.lock();
-        g.policy.memory_bytes.saturating_sub(g.mem.usage(s).bytes)
+    pub fn memory_room(&self, s: &SyncId) -> Result<u64> {
+        let mut g = self.lock();
+        let used = g.read_in(true, |t, _| entries::usage(t, s))?.bytes;
+        Ok(g.policy.memory_bytes.saturating_sub(used))
     }
 
     /// Blob `b`, named by ephemeral entries, is of a held commit from another node costing `n`
     /// held here (`Engine::memory_charge`): the memory usage of every sync ID an entry of it is
     /// under counts it at that, or at its bytes if more (spec/sync-compaction.md §2 Caps: each
     /// body counts at what it takes held, under each sync ID).
-    pub fn set_memory_charge(&self, b: &BlobId, n: u64) {
-        self.lock().mem.set_estimate(b, n);
+    pub fn set_memory_charge(&self, b: &BlobId, n: u64) -> Result<()> {
+        self.lock().write_in(true, |t, env| entries::set_estimate(t, env, b, n))
     }
 
     /// Whether entry `e`'s stamp verifies under S's head write key (a relay-only entry at a
@@ -932,14 +925,8 @@ impl Store {
         let vouch = match (&e.stamp, from, checked) {
             (_, _, Some(v)) => v,
             (Some(stamp), _, None) => {
-                let mem = g.mem.read(s, &b).map(|r| r.vouch);
-                g.read(|t, _| {
-                    let kept = match mem {
-                        Some(v) => v,
-                        None => entries::get(t, s, &b)?.and_then(|r| r.vouch),
-                    };
-                    head_vouch(t, s, &b, &e.wrap, stamp, kept)
-                })?
+                let kept = g.find(s, &b)?.and_then(|(_, r)| r.vouch);
+                g.read(|t, _| head_vouch(t, s, &b, &e.wrap, stamp, kept))?
             }
             _ => None,
         };
@@ -955,52 +942,40 @@ impl Store {
         let stamp = |old: &EntryRow| if vouched || old.stamp.is_none() { e.stamp } else { old.stamp };
         // a held one keeps its size and gains what this copy brings
         let merged = |old: &EntryRow| EntryRow { size: old.size, stamp: stamp(old), charged: if vouched { None } else { old.charged }, brought: brought(old), own: old.own || e.own, role: old.role || e.role, vouch: row.vouch.or(old.vouch), ..row.clone() };
-        if class == Class::Ephemeral {
-            if g.mem.tombstoned(s, &b) {
-                return Ok(Code::TOMBSTONED);
-            }
-            if let Some(old) = g.mem.read(s, &b).cloned() {
-                g.mem.change(s, &b, merged(&old));
-                return Ok(Code::OK);
-            }
-            let Some(bytes) = bytes.or_else(|| g.mem.blobs.get(&b).cloned()) else { return Ok(Code::MALFORMED) };
-            if let Some(src) = charged {
-                let size = bytes.len() as u64;
-                if g.read(|t, env| over_peer_budget(t, env, src, size))? {
-                    return Ok(Code::DEPOSIT_BUDGET_FULL);
-                }
-            }
-            g.mem.insert(s, &b, row, bytes);
-            return Ok(Code::OK);
-        }
-        g.write(|t, env| {
+        let memory = class == Class::Ephemeral;
+        let durable = match charged {
+            Some(src) => g.read(|t, _| source_charge(t, src))?,
+            None => 0,
+        };
+        g.write_in(memory, |t, env| {
             if entries::tombstone(t, s, &b)?.is_some() {
                 return Ok(Code::TOMBSTONED);
             }
-            if let Some(src) = charged
-                && entries::get(t, s, &b)?.is_none()
-            {
+            let Some(old) = entries::get(t, s, &b)? else {
                 let size = match &bytes {
                     Some(v) => Some(v.len() as u64),
-                    None => entries::bytes_len(t, env, &b)?,
+                    None => t.blob_len(&b)?,
                 };
-                if over_peer_budget(t, env, src, size.unwrap_or(0))? {
+                // an ephemeral entry is held with its bytes alone (it has no time to wait for them)
+                if memory && size.is_none() {
+                    return Ok(Code::MALFORMED);
+                }
+                if let Some(src) = charged
+                    && over_peer_budget(env, src, size.unwrap_or(0), durable)
+                {
                     return Ok(Code::DEPOSIT_BUDGET_FULL);
                 }
+                entries::insert(t, env, s, &b, row.clone(), bytes)?;
+                return Ok(Code::OK);
+            };
+            if let Some(v) = bytes
+                && t.blob_len(&b)?.is_none()
+            {
+                t.put_blob(&b, v)?;
+                entries::bytes_arrived(t, env, &b)?;
             }
-            match entries::get(t, s, &b)? {
-                Some(old) => {
-                    if let Some(v) = bytes
-                        && entries::bytes_len(t, env, &b)?.is_none()
-                    {
-                        t.put_blob(&b, v)?;
-                        entries::bytes_arrived(t, env, &b)?;
-                    }
-                    let old = entries::get(t, s, &b)?.unwrap_or(old);
-                    entries::change(t, env, s, &b, &old, merged(&old))?;
-                }
-                None => entries::insert(t, env, s, &b, row.clone(), bytes)?,
-            }
+            let old = entries::get(t, s, &b)?.unwrap_or(old);
+            entries::change(t, env, s, &b, &old, merged(&old))?;
             Ok(Code::OK)
         })
     }
@@ -1009,32 +984,24 @@ impl Store {
     /// leaving a tombstone with `note` (what the entry was). Whether it was held.
     pub fn drop_entry(&mut self, s: &SyncId, b: &BlobId, note: Vec<u8>) -> Result<bool> {
         let mut g = self.lock();
-        let now = g.now;
-        if g.mem.read(s, b).is_some() {
-            return Ok(g.mem.remove(s, b, now, true, false));
-        }
-        g.write(|t, env| entries::remove(t, env, s, b, Removal::Tomb(Tombstone { at: now, deleted: false, note })))
+        let tomb = Tombstone { at: g.now, deleted: false, note };
+        let memory = g.find(s, b)?.is_some_and(|(m, _)| m);
+        g.write_in(memory, |t, env| entries::remove(t, env, s, b, Removal::Tomb(tomb)))
     }
 
     /// Drops entry `b` of S, judged outside S's required set here, with no tombstone: judged so
     /// wrongly, it is logged or pulled again once required. Whether it was held.
     pub fn unlog_entry(&mut self, s: &SyncId, b: &BlobId) -> Result<bool> {
         let mut g = self.lock();
-        let now = g.now;
-        if g.mem.read(s, b).is_some() {
-            return Ok(g.mem.remove(s, b, now, false, false));
-        }
-        g.write(|t, env| entries::remove(t, env, s, b, Removal::Untombed))
+        let Some((memory, _)) = g.find(s, b)? else { return Ok(false) };
+        g.write_in(memory, |t, env| entries::remove(t, env, s, b, Removal::Untombed))
     }
 
     /// Ends S's tombstone of `b` (spec/sync-judgement.md §4: a part counting missing again lifts
     /// this node's own tombstones). Whether there was one.
     pub fn lift_tombstone(&mut self, s: &SyncId, b: &BlobId) -> Result<bool> {
         let mut g = self.lock();
-        if g.mem.tombs.remove(&(*s, *b)).is_some() {
-            return Ok(true);
-        }
-        g.write(|t, env| entries::lift(t, env, s, b))
+        Ok(g.write_in(true, |t, env| entries::lift(t, env, s, b))? | g.write(|t, env| entries::lift(t, env, s, b))?)
     }
 
     /// Entry `b` of S, a peer's kept uncharged, whose stamp no longer vouches (it does not verify
@@ -1043,67 +1010,38 @@ impl Store {
     /// kept (no tombstone: fetched again where present). Whether it was kept.
     pub fn charge_unvouched(&mut self, s: &SyncId, b: &BlobId) -> Result<bool> {
         let mut g = self.lock();
-        let now = g.now;
-        if let Some(old) = g.mem.read(s, b).cloned() {
-            let next = g.read(|t, env| unvouched(t, env, s, b, &old))?;
-            match &next {
-                Some(Some(new)) => g.mem.change(s, b, new.clone()),
-                Some(None) => {}
-                None => drop(g.mem.remove(s, b, now, false, false)),
-            }
-            return Ok(next.is_some());
-        }
-        g.write(|t, env| {
-            let Some(old) = entries::get(t, s, b)? else { return Ok(false) };
-            let next = unvouched(t, env, s, b, &old)?;
-            match &next {
-                Some(Some(new)) => entries::change(t, env, s, b, &old, new.clone())?,
-                Some(None) => {}
-                None => drop(entries::remove(t, env, s, b, Removal::Untombed)?),
-            }
-            Ok(next.is_some())
-        })
+        let Some((memory, old)) = g.find(s, b)? else { return Ok(false) };
+        let next = g.read(|t, env| unvouched(t, env, s, b, &old))?;
+        g.write_in(memory, |t, env| match &next {
+            Some(Some(new)) => entries::change(t, env, s, b, &old, new.clone()),
+            Some(None) => Ok(()),
+            None => entries::remove(t, env, s, b, Removal::Untombed).map(drop),
+        })?;
+        Ok(next.is_some())
     }
 
     /// Entry `b` of S gives this node something held: its charge to the peer that brought it ends.
     pub fn uncharge(&mut self, s: &SyncId, b: &BlobId) -> Result<()> {
         let mut g = self.lock();
-        if let Some(old) = g.mem.read(s, b).cloned() {
-            if let Some(src) = old.charged {
-                g.mem.change(s, b, EntryRow { charged: None, brought: Some(src), ..old });
-            }
+        let Some((memory, old)) = g.find(s, b)? else { return Ok(()) };
+        if old.charged.is_none() {
             return Ok(());
         }
-        g.write(|t, env| match entries::get(t, s, b)? {
-            Some(old) if old.charged.is_some() => entries::change(t, env, s, b, &old.clone(), EntryRow { charged: None, brought: old.charged, ..old }),
-            _ => Ok(()),
-        })
+        g.write_in(memory, |t, env| entries::change(t, env, s, b, &old, EntryRow { charged: None, brought: old.charged, ..old.clone() }))
     }
 
     /// Whether a source was recorded holding entry `b` of S (`set_elsewhere`).
     pub fn elsewhere(&self, s: &SyncId, b: &BlobId) -> Result<bool> {
-        let mut g = self.lock();
-        if g.mem.read(s, b).is_some() {
-            return Ok(g.mem.elsewhere(s, b));
-        }
-        g.read(|t, _| Ok(t.get_local(&rows::elsewhere_key(s, b))?.is_some()))
+        let [d, m] = self.lock().each(|t, _| Ok(t.get_local(&rows::elsewhere_key(s, b))?.is_some()))?;
+        Ok(d || m)
     }
 
-    /// Records that a source holds entry `b` of S (spec/sync-status.md §2: durable, kept while the
-    /// entry is), in a row of its own: no reader of the entry moves. Nothing for an entry not held.
+    /// Records that a source holds entry `b` of S (spec/sync-status.md §2: kept while the entry
+    /// is), in a row of its own: no reader of the entry moves. Nothing for an entry not held.
     pub fn set_elsewhere(&mut self, s: &SyncId, b: &BlobId) -> Result<()> {
         let mut g = self.lock();
-        if g.mem.entries.contains_key(&(*s, *b)) {
-            g.mem.set_elsewhere(s, b);
-            return Ok(());
-        }
-        g.write(|t, _| {
-            let k = rows::elsewhere_key(s, b);
-            if t.get_local(&rows::entry_key(s, b))?.is_some() && t.get_local(&k)?.is_none() {
-                t.put_local(&k, &[], Shred::No)?;
-            }
-            Ok(())
-        })
+        let Some((memory, _)) = g.find(s, b)? else { return Ok(()) };
+        g.write_in(memory, |t, _| Ok(t.put_local(&rows::elsewhere_key(s, b), &[], Shred::No)?))
     }
 
     /// A read S's served path, as its `sync.0` records it; a head move logs a head event.
@@ -1137,13 +1075,9 @@ impl Store {
         if expired(expires, g.now) {
             return Ok(Code::EXPIRED);
         }
-        let now = g.now;
         let size = bytes.len() as u64;
         let unheld = g.unheld.contains(s);
-        let held = match g.mem.read(s, &b) {
-            Some(r) => Some((r.wrap, r.stamp)),
-            None => g.read(|t, _| Ok(entries::get(t, s, &b)?.map(|r| (r.wrap, r.stamp))))?,
-        };
+        let held = g.find(s, &b)?.map(|(_, r)| (r.wrap, r.stamp));
         // held as it comes (blob, wrap and stamp): judged when it was taken
         if e.stamp.is_some() && held == Some((e.wrap, e.stamp)) {
             return Ok(Code::OK);
@@ -1165,42 +1099,28 @@ impl Store {
             Err(c) => return Ok(c),
         };
         let row = EntryRow { wrap: e.wrap, stamp: e.stamp, deposited: false, own: false, role, class, expires, size: 0, charged: None, brought: None, vouch: Some(vouch) };
-        if class == Class::Ephemeral {
-            if g.mem.tombstoned(s, &b) {
-                return Ok(Code::TOMBSTONED);
+        let short = g.write_in(class == Class::Ephemeral, |t, env| {
+            if entries::tombstone(t, s, &b)?.is_some() {
+                return Ok(Ok(Code::TOMBSTONED));
             }
-            if let Some(old) = g.mem.read(s, &b).cloned() {
-                if old.stamp.is_none() {
-                    g.mem.change(s, &b, EntryRow { size: old.size, own: old.own, ..row });
-                }
-                return Ok(Code::OK);
-            }
-            if !role && let Some(cap) = mem_room(&mut g, s, size, now) {
-                g.wait_room(s, cap, size + ENTRY_OVERHEAD, expires, from)?;
-                return Ok(Code::STORAGE_CAP);
-            }
-            g.mem.insert(s, &b, row, bytes);
-            return Ok(Code::OK);
-        }
-        let short = g.write(|t, env| {
             if let Some(old) = entries::get(t, s, &b)? {
                 if old.stamp.is_none() {
                     entries::change(t, env, s, &b, &old.clone(), EntryRow { size: old.size, own: old.own, ..row })?;
                 }
-                return Ok(None);
+                return Ok(Ok(Code::OK));
             }
             if !role && let Some(cap) = make_room(t, env, s, size + ENTRY_OVERHEAD)? {
-                return Ok(Some(cap));
+                return Ok(Err(cap));
             }
             entries::insert(t, env, s, &b, row, Some(bytes))?;
-            Ok(None)
+            Ok(Ok(Code::OK))
         })?;
         match short {
-            Some(cap) => {
+            Ok(code) => Ok(code),
+            Err(cap) => {
                 g.wait_room(s, cap, size + ENTRY_OVERHEAD, expires, from)?;
                 Ok(Code::STORAGE_CAP)
             }
-            None => Ok(Code::OK),
         }
     }
 
@@ -1221,15 +1141,15 @@ impl Store {
         if class == Class::Relay || expired(expires, g.now) {
             return Ok(Code::DECLINED);
         }
-        let now = g.now;
         let size = d.blob.len() as u64;
         let policy = g.policy.clone();
-        let mem_usage = g.mem.usage(&s);
-        let mem_held = g.mem.read(&s, &b).is_some() || g.mem.tombstoned(&s, &b);
+        let memory = class == Class::Ephemeral;
+        let held = g.read_in(memory, |t, _| Ok(entries::get(t, &s, &b)?.is_some() || entries::tombstone(t, &s, &b)?.is_some()))?;
+        let mem_usage = g.read_in(true, |t, _| entries::usage(t, &s))?;
         let unheld = g.unheld.contains(&s);
         let checked = g.read(|t, env| {
             let Some((hi, head)) = path::head(t, &s)?.filter(|_| !unheld) else { return Ok(Err(Code::RATE_LIMITED)) };
-            if mem_held || entries::get(t, &s, &b)?.is_some() || entries::tombstone(t, &s, &b)?.is_some() {
+            if held {
                 return Ok(Err(Code::OK));
             }
             let Ok(role) = osis_blob::verify_deposit(&head.keys.deposit, &s, &b, &d.wrap, &d.sig) else { return Ok(Err(Code::DECLINED)) };
@@ -1240,7 +1160,7 @@ impl Store {
                 return Ok(Err(Code::DEPOSIT_BUDGET_FULL));
             }
             if let Some(src) = from
-                && over_peer_budget(t, env, src, size)?
+                && over_peer_budget(env, src, size, source_charge(t, src)?)
             {
                 return Ok(Err(Code::DEPOSIT_BUDGET_FULL));
             }
@@ -1252,14 +1172,7 @@ impl Store {
         };
         let row = EntryRow { wrap: d.wrap, stamp: None, deposited: true, own: false, role, class, expires, size: 0, charged: from, brought: None, vouch: None };
         let caps = holding == Holding::Unread && !role;
-        if class == Class::Ephemeral {
-            if caps && mem_room(&mut g, &s, size, now).is_some() {
-                return Ok(Code::STORAGE_CAP);
-            }
-            g.mem.insert(&s, &b, row, d.blob.clone());
-            return Ok(Code::OK);
-        }
-        g.write(|t, env| {
+        g.write_in(memory, |t, env| {
             if caps && make_room(t, env, &s, size + ENTRY_OVERHEAD)?.is_some() {
                 return Ok(Code::STORAGE_CAP);
             }
@@ -1290,27 +1203,35 @@ impl Store {
         }
         let now = g.now;
         let unheld = g.unheld.contains(s);
-        // ephemeral entries are judged and removed in memory, the rest in one transaction
+        // what the memory part holds of each blob: entry, tombstone, prefix
+        let in_mem = g.read_in(true, |t, _| {
+            let mut m = BTreeMap::new();
+            for d in items {
+                m.insert(d.blob, (entries::get(t, s, &d.blob)?.is_some(), entries::tombstone(t, s, &d.blob)?.is_some(), read_prefix(t, &d.blob)?));
+            }
+            Ok(m)
+        })?;
+        // a verified Delete of an ephemeral entry removes it in the memory part, after
         let mut ephemeral = Vec::new();
+        let tomb = || Removal::Tomb(Tombstone { at: now, deleted: true, note: Vec::new() });
         let out = g.write(|t, env| {
             let Some((hi, head)) = path::head(t, s)?.filter(|_| !unheld) else { return Ok(vec![Code::UNKNOWN_SYNC_ID; items.len()]) };
             let mut out = Vec::with_capacity(items.len());
             for d in items {
                 let b = d.blob;
-                let in_mem = env.mem.read(s, &b).is_some();
-                let prefix = match env.mem.blobs.get(&b) {
-                    Some(v) => Prefix::parse(v).ok(),
+                let (mem_held, mem_tomb, mem_prefix) = in_mem.get(&b).cloned().unwrap_or_default();
+                let prefix = match mem_prefix {
+                    Some(p) => Some(p),
                     None => read_prefix(t, &b)?,
                 };
-                let held = in_mem || entries::get(t, s, &b)?.is_some();
                 let code = if d.verify(&head, prefix.as_ref()).is_ok() {
-                    if in_mem {
+                    if mem_held {
                         ephemeral.push(b);
                         Code::OK
-                    } else if held {
-                        entries::remove(t, env, s, &b, Removal::Tomb(Tombstone { at: now, deleted: true, note: Vec::new() }))?;
+                    } else if entries::get(t, s, &b)?.is_some() {
+                        entries::remove(t, env, s, &b, tomb())?;
                         Code::OK
-                    } else if d.by.is_empty() && (env.mem.tombstoned(s, &b) || entries::tombstone(t, s, &b)?.is_some()) {
+                    } else if d.by.is_empty() && (mem_tomb || entries::tombstone(t, s, &b)?.is_some()) {
                         Code::OK
                     } else {
                         Code::REFUSED
@@ -1331,9 +1252,12 @@ impl Store {
             }
             Ok(out)
         })?;
-        for b in ephemeral {
-            g.mem.remove(s, &b, now, true, false);
-        }
+        g.write_in(true, |t, env| {
+            for b in &ephemeral {
+                entries::remove(t, env, s, b, tomb())?;
+            }
+            Ok(())
+        })?;
         Ok(out)
     }
 
@@ -1484,19 +1408,19 @@ impl Store {
     /// log events, its usage, and S in every peer record (the one transaction that stops it).
     pub fn shred(&mut self, s: &SyncId) -> Result<()> {
         let mut g = self.lock();
-        let now = g.now;
-        g.write(|t, env| {
-            for (k, _) in t.scan_local(&[rows::ENTRY, &s.0].concat(), b"", usize::MAX)? {
-                let (_, b) = rows::tail_ids(&k)?;
-                entries::remove(t, env, s, &b, Removal::Expired)?;
-            }
+        let empty = |t: &mut Transaction<'_>, env: &mut Env<'_>| -> Result<()> {
+            drop_entries(t, env, s)?;
             for (k, _) in t.scan_local(&[rows::TOMB, &s.0].concat(), b"", usize::MAX)? {
                 let (_, b) = rows::tail_ids(&k)?;
                 entries::lift(t, env, s, &b)?;
             }
-            path::erase(t, env, s)?;
             let u = entries::usage(t, s)?;
-            entries::put_usage(t, env, s, u, Usage::default())?;
+            entries::put_usage(t, env, s, u, Usage::default())
+        };
+        g.write_in(true, empty)?;
+        g.write(|t, env| {
+            path::erase(t, env, s)?;
+            empty(t, env)?;
             t.log_forget(*s)?;
             // S's rows in every record go with its `changed_at` (spec/sync-opens.md §3)
             t.changed_forget(s)?;
@@ -1514,7 +1438,7 @@ impl Store {
         }
         g.room_gone.remove(s);
         g.room_conn.remove(s);
-        g.mem.forget(s, now);
+        g.mem.forget(s);
         g.mem.shreds.wrote_added(s, true, true);
         g.past_cap.remove(s);
         g.unheld.remove(s);
@@ -1667,17 +1591,12 @@ impl Store {
         if !g.unheld.insert(*s) {
             return Ok(());
         }
-        let now = g.now;
         g.write(|t, env| {
-            for (k, _) in t.scan_local(&[rows::ENTRY, &s.0].concat(), b"", usize::MAX)? {
-                let (_, b) = rows::tail_ids(&k)?;
-                entries::remove(t, env, s, &b, Removal::Expired)?;
-            }
+            drop_entries(t, env, s)?;
             t.put_local(&[rows::ANEW, &s.0].concat(), &[], Shred::No)?;
             Ok(())
         })?;
-        g.mem.drop_entries(s, now);
-        Ok(())
+        g.write_in(true, |t, env| drop_entries(t, env, s))
     }
 
     /// A source went: a connection closed, or a peer's record was dropped (spec/sync-ids.md §5
@@ -1686,8 +1605,8 @@ impl Store {
     /// again where present), and what was kept for a connection alone goes. One transaction.
     pub fn gone(&mut self, src: Source) -> Result<()> {
         let mut g = self.lock();
-        Self::gone_memory(&mut g, src);
-        g.write(|t, env| Self::gone_durable(t, env, src))?;
+        Self::gone_memory(&mut g, src)?;
+        g.write(|t, env| Self::gone_from(t, env, src))?;
         // a connection's room marks go with it
         if let Source::Conn(c) = src {
             let marked: Vec<SyncId> = g.room_conn.iter().filter(|(_, m)| m.contains_key(&c)).map(|(s, _)| *s).collect();
@@ -1715,12 +1634,12 @@ impl Store {
             }
             evicted.extend(t.records_evict(budget, in_use)?);
             for id in &evicted {
-                Self::gone_durable(t, env, Source::Record(*id))?;
+                Self::gone_from(t, env, Source::Record(*id))?;
             }
             Ok(evicted)
         })?;
         for id in &evicted {
-            Self::gone_memory(&mut g, Source::Record(*id));
+            Self::gone_memory(&mut g, Source::Record(*id))?;
         }
         // a record's room marks went with it: each full S is judged again (rare: brute force)
         if !evicted.is_empty() {
@@ -1732,23 +1651,25 @@ impl Store {
         Ok(evicted)
     }
 
-    fn gone_memory(g: &mut Inner, src: Source) {
-        let now = g.now;
-        for (s, b) in g.mem.charged_to(src) {
-            g.mem.remove(&s, &b, now, false, false);
-        }
-        g.mem.charges.remove(&src);
-        g.mem.forget_bringer(src);
+    /// `gone_from` in the memory part, and what a connection kept in memory goes.
+    fn gone_memory(g: &mut Inner, src: Source) -> Result<()> {
+        g.write_in(true, |t, env| Self::gone_from(t, env, src))?;
         if let Source::Conn(conn) = src {
             g.mem.conn_forget(|(c, ..)| *c != conn);
         }
+        Ok(())
     }
 
-    fn gone_durable(t: &mut Transaction<'_>, env: &mut Env<'_>, src: Source) -> Result<()> {
+    /// `src` went, in `t`'s part: each entry charged to it passes to its `heir`, else goes; each
+    /// it brought uncharged names its heir as bringer, or none. An ephemeral entry has no heir:
+    /// a peer's record keeps no presence of it, and it is relisted at the next join, living at
+    /// most its drift window.
+    fn gone_from(t: &mut Transaction<'_>, env: &mut Env<'_>, src: Source) -> Result<()> {
+        let heir = |t: &mut Transaction<'_>, env: &Env<'_>, s: &SyncId, b: &BlobId, size: Option<u64>| if t.is_memory() { Ok(None) } else { heir(t, env, src, s, b, size) };
         for (k, _) in t.scan_local(&[rows::CHARGED, &rows::source_bytes(src)].concat(), b"", usize::MAX)? {
             let (s, b) = rows::tail_ids(&k)?;
             let Some(old) = entries::get(t, &s, &b)? else { continue };
-            match heir(t, env, src, &s, &b, Some(old.size))? {
+            match heir(t, env, &s, &b, Some(old.size))? {
                 Some(to) => entries::change(t, env, &s, &b, &old.clone(), EntryRow { charged: Some(to), ..old })?,
                 None => drop(entries::remove(t, env, &s, &b, Removal::Untombed)?),
             }
@@ -1757,7 +1678,7 @@ impl Store {
         for (k, _) in t.scan_local(&[rows::BROUGHT, &rows::source_bytes(src)].concat(), b"", usize::MAX)? {
             let (s, b) = rows::tail_ids(&k)?;
             if let Some(old) = entries::get(t, &s, &b)? {
-                let brought = heir(t, env, src, &s, &b, None)?;
+                let brought = heir(t, env, &s, &b, None)?;
                 entries::change(t, env, &s, &b, &old.clone(), EntryRow { brought, ..old })?;
             }
         }
@@ -1847,7 +1768,8 @@ impl Store {
         g.clock.set(at);
         let now = g.now;
         let mut acted = g.mem.sweep(now);
-        acted |= g.write(|t, env| {
+        // in either part: expiries, tombstone ends
+        let entry_sweep = |t: &mut Transaction<'_>, env: &mut Env<'_>| -> Result<bool> {
             let mut acted = false;
             for (k, _) in due(t, rows::EXPIRY, Some(now.0))? {
                 let (s, b) = rows::tail_ids(&k)?;
@@ -1855,12 +1777,17 @@ impl Store {
                 entries::remove(t, env, &s, &b, Removal::Expired)?;
                 acted = true;
             }
-            for (k, _) in due(t, rows::TOMB_AT, now.0.checked_sub(TOMBSTONE_LIFETIME_MS))? {
+            for (k, _) in due(t, rows::TOMB_AT, Some(now.0))? {
                 let (s, b) = rows::tail_ids(&k)?;
                 t.remove_local(&k, Shred::No)?;
                 entries::lift(t, env, &s, &b)?;
                 acted = true;
             }
+            Ok(acted)
+        };
+        acted |= g.write_in(true, entry_sweep)?;
+        acted |= g.write(|t, env| {
+            let mut acted = entry_sweep(t, env)?;
             for (k, _) in due(t, rows::CLAIMS_DUE, Some(now.0))? {
                 let mut r = R::new(k.get(rows::CLAIMS_DUE.len() + 8..).unwrap_or_default());
                 let (s, i) = (SyncId(r.array()?), r.u32()?);
@@ -1896,18 +1823,14 @@ impl Store {
         let mut g = self.lock();
         let m = g.mem.next_due();
         let d = g
-            .read(|t, _| {
+            .each(|t, _| {
                 let first = |t: &mut Transaction<'_>, p: &[u8], add: u64| -> Result<Option<u64>> { Ok(t.scan_local(p, b"", 1)?.first().map(|(k, _)| time_of(k)).transpose()?.map(|x| x.saturating_add(add))) };
-                let all = [
-                    first(t, rows::EXPIRY, 0)?,
-                    first(t, rows::TOMB_AT, TOMBSTONE_LIFETIME_MS)?,
-                    first(t, rows::CLAIMS_DUE, 0)?,
-                    first(t, rows::AGING, TOMBSTONE_LIFETIME_MS)?,
-                    t.log_next_due()?,
-                ];
+                let all = [first(t, rows::EXPIRY, 0)?, first(t, rows::TOMB_AT, 0)?, first(t, rows::CLAIMS_DUE, 0)?, first(t, rows::AGING, TOMBSTONE_LIFETIME_MS)?, if t.is_memory() { None } else { t.log_next_due()? }];
                 Ok(all.into_iter().flatten().min().map(WallMs))
             })
             .ok()
+            .into_iter()
+            .flatten()
             .flatten();
         m.into_iter().chain(d).chain(g.clock.next().map(WallMs)).min()
     }
@@ -1953,6 +1876,14 @@ fn head_vouch(t: &mut Transaction<'_>, s: &SyncId, b: &BlobId, wrap: &[u8], stam
     Ok(rows::check_stamp(&head.keys.write, s, b, wrap, stamp, kept))
 }
 
+/// Removes every entry of S in `t`'s part, as expired (no event). O(S's entries).
+fn drop_entries(t: &mut Transaction<'_>, env: &mut Env<'_>, s: &SyncId) -> Result<()> {
+    for (k, _) in t.scan_local(&[rows::ENTRY, &s.0].concat(), b"", usize::MAX)? {
+        entries::remove(t, env, s, &rows::tail_ids(&k)?.1, Removal::Expired)?;
+    }
+    Ok(())
+}
+
 /// Where entry `b` of S that `src` brought goes when `src` does (spec/sync-ids.md §5 Peer budget):
 /// a peer's record, not `src`, whose stream showed it present, with room for its `size` when it
 /// is charged. Else nobody: the entry goes, and a stream that passed it would not bring it
@@ -1964,7 +1895,7 @@ fn heir(t: &mut Transaction<'_>, env: &Env<'_>, src: Source, s: &SyncId, b: &Blo
             continue;
         }
         if let Some(n) = size
-            && over_peer_budget(t, env, to, n)?
+            && over_peer_budget(env, to, n, source_charge(t, to)?)
         {
             continue;
         }
@@ -1984,14 +1915,15 @@ fn unvouched(t: &mut Transaction<'_>, env: &Env<'_>, s: &SyncId, b: &BlobId, old
         return Ok(Some(None));
     }
     Ok(match old.brought {
-        Some(src) if !over_peer_budget(t, env, src, old.size)? => Some(Some(EntryRow { charged: Some(src), brought: None, ..old.clone() })),
+        Some(src) if !over_peer_budget(env, src, old.size, source_charge(t, src)?) => Some(Some(EntryRow { charged: Some(src), brought: None, ..old.clone() })),
         _ => None,
     })
 }
 
-fn over_peer_budget(t: &mut Transaction<'_>, env: &Env<'_>, src: Source, size: u64) -> Result<bool> {
+/// `durable`: what it is charged durably (`source_charge`, read in the durable store).
+fn over_peer_budget(env: &Env<'_>, src: Source, size: u64, durable: u64) -> bool {
     let mem = env.mem.charges.get(&src).copied().unwrap_or(0);
-    Ok(source_charge(t, src)?.saturating_add(mem).saturating_add(size) > env.policy.peer_bytes)
+    durable.saturating_add(mem).saturating_add(size) > env.policy.peer_bytes
 }
 
 /// Bytes charged to a source by durable entries.
@@ -2002,87 +1934,84 @@ fn source_charge(t: &mut Transaction<'_>, src: Source) -> Result<u64> {
     }
 }
 
-/// Room for `add` bytes of a new entry of S kept unread (spec/sync-ids.md §6 Caps): within S's
-/// own caps, else none; past the total, the sync ID using most gives way (its oldest entries, no
-/// tombstone) until it fits. A sync ID read takes nothing from the room.
+/// Room for `add` bytes of a new entry of S kept unread in `t`'s part (spec/sync-ids.md §6 Caps):
+/// within S's own caps, else none; past the total, the sync ID using most gives way (its oldest
+/// entries, no tombstone) until it fits. A sync ID read takes nothing from the room. The caps
+/// differ by part: S's entries and bytes (per thing) and the total of bytes durably, S's bytes and
+/// the memory total in memory.
 fn make_room(t: &mut Transaction<'_>, env: &mut Env<'_>, s: &SyncId, add: u64) -> Result<Option<Cap>> {
     if env.holding(s) != Some(Holding::Unread) {
         return Ok(None);
     }
+    let ((ce, cb), total_cap, (own, all)) = match t.is_memory() {
+        false => (env.caps_of(s), env.policy.total_bytes, (Cap::Own, Cap::Total)),
+        true => ((u64::MAX, env.policy.memory_bytes), env.policy.memory_total, (Cap::Memory, Cap::MemoryTotal)),
+    };
     let u = entries::usage(t, s)?;
-    let (ce, cb) = env.caps_of(s);
     if u.entries.saturating_add(1) > ce || u.bytes.saturating_add(add) > cb {
-        return Ok(Some(Cap::Own));
+        return Ok(Some(own));
     }
-    let total = env.total(t)?.saturating_add(add);
-    if total > env.policy.total_bytes {
-        give_way(t, env, total - env.policy.total_bytes)?;
-        if env.total(t)?.saturating_add(add) > env.policy.total_bytes {
-            return Ok(Some(Cap::Total));
+    let total = part_total(t, env)?.saturating_add(add);
+    if total > total_cap {
+        give_way(t, env, total - total_cap)?;
+        if part_total(t, env)?.saturating_add(add) > total_cap {
+            return Ok(Some(all));
         }
     }
     Ok(None)
 }
 
-/// The sync IDs kept unread using most give way, oldest entries first (by the node log), until
-/// `need` bytes are freed or nothing gives. Whether anything went.
+/// The bytes every sync ID kept unread uses in `t`'s part (`Env::total` durably, kept counted).
+fn part_total(t: &mut Transaction<'_>, env: &mut Env<'_>) -> Result<u64> {
+    if !t.is_memory() {
+        return env.total(t);
+    }
+    let mut n = 0u64;
+    for (k, v) in t.scan_local(rows::USAGE, b"", usize::MAX)? {
+        if env.holding(&rows::tail_sync(&k)?) == Some(Holding::Unread) {
+            n = n.saturating_add(Usage::decode(&v)?.bytes);
+        }
+    }
+    Ok(n)
+}
+
+/// The sync IDs kept unread using most in `t`'s part give way, oldest entries first (by the node
+/// log, or the memory log), until `need` bytes are freed or nothing gives. Whether anything went.
 fn give_way(t: &mut Transaction<'_>, env: &mut Env<'_>, need: u64) -> Result<bool> {
-    let goal = env.total(t)?.saturating_sub(need);
+    let goal = part_total(t, env)?.saturating_sub(need);
     let mut acted = false;
     let mut from: Vec<u8> = Vec::new();
-    'sync_ids: while env.total(t)? > goal {
-        let Some((k, _)) = t.scan_local(rows::BY_USE, &from, PAGE)?.into_iter().find(|(k, _)| {
-            let s = SyncId(k.get(k.len() - 16..).and_then(|x| x.try_into().ok()).unwrap_or_default());
-            env.holding(&s) == Some(Holding::Unread)
-        }) else {
+    'sync_ids: while part_total(t, env)? > goal {
+        let Some((k, _)) = t.scan_local(rows::BY_USE, &from, PAGE)?.into_iter().find(|(k, _)| rows::tail_sync(k).is_ok_and(|s| env.holding(&s) == Some(Holding::Unread))) else {
             break;
         };
-        let s = SyncId(k.get(k.len() - 16..).and_then(|x| x.try_into().ok()).unwrap_or_default());
+        let s = rows::tail_sync(&k)?;
         from = [k.get(rows::BY_USE.len()..).unwrap_or_default(), &[0]].concat();
         let mut cursor: Option<Vec<u8>> = None;
         loop {
-            let r = t.log_read_sync(&s, cursor.as_deref(), PAGE)?;
-            for e in &r.events {
-                if let NodeEvent::Added(_, b) = e.event
-                    && entries::get(t, &s, &b)?.is_some_and(|row| !row.role)
-                {
+            let (page, more) = match t.is_memory() {
+                true => (env.mem.present(&s).collect(), false),
+                false => {
+                    let r = t.log_read_sync(&s, cursor.as_deref(), PAGE)?;
+                    cursor = r.cursor;
+                    (r.events.iter().filter_map(|e| if let NodeEvent::Added(_, b) = e.event { Some(b) } else { None }).collect::<Vec<_>>(), r.more)
+                }
+            };
+            for b in page {
+                if entries::get(t, &s, &b)?.is_some_and(|row| !row.role) {
                     entries::remove(t, env, &s, &b, Removal::Untombed)?;
                     acted = true;
-                    if env.total(t)? <= goal {
+                    if part_total(t, env)? <= goal {
                         break 'sync_ids;
                     }
                 }
             }
-            if !r.more {
+            if !more {
                 break;
             }
-            cursor = r.cursor;
         }
     }
     Ok(acted)
-}
-
-/// Room in memory for an ephemeral entry of `size` bytes of S (spec/sync-ids.md §6 Caps): within
-/// S's memory cap, else none; past the total, the sync ID using most memory gives way.
-fn mem_room(g: &mut Inner, s: &SyncId, size: u64, now: WallMs) -> Option<Cap> {
-    if g.holding(s) != Some(Holding::Unread) {
-        return None;
-    }
-    let add = size + ENTRY_OVERHEAD;
-    if g.mem.usage(s).bytes.saturating_add(add) > g.policy.memory_bytes {
-        return Some(Cap::Memory);
-    }
-    let unread = |g: &Inner, x: &SyncId| g.holdings.get(x).is_some_and(|(_, h)| *h == Holding::Unread);
-    loop {
-        let total: u64 = g.mem.usage.iter().filter(|(x, _)| unread(g, x)).map(|(_, u)| u.bytes).sum();
-        if total.saturating_add(add) <= g.policy.memory_total {
-            return None;
-        }
-        let Some(most) = g.mem.usage.iter().filter(|(x, _)| unread(g, x)).max_by_key(|(_, u)| u.bytes).map(|(x, _)| *x) else { return Some(Cap::MemoryTotal) };
-        let oldest = g.mem.list(&most).into_iter().find(|(_, r)| !r.role).map(|(b, _)| b);
-        let Some(b) = oldest else { return Some(Cap::MemoryTotal) };
-        g.mem.remove(&most, &b, now, false, false);
-    }
 }
 
 /// A cap that refused an entry of a sync ID kept unread for room (spec/sync-streams.md §4 Full):
@@ -2198,7 +2127,7 @@ fn judge_rooms(g: &mut Inner, fx: &mut Effects<(SyncId, Cap), bool>) -> Result<B
             if r.expires != u64::MAX && g.clock.until(Some(r.expires)) >= r.expires {
                 return Ok(true);
             }
-            g.read(|t, env| room_fits(t, env, &k.0, k.1, r.need))
+            g.read_in(matches!(k.1, Cap::Memory | Cap::MemoryTotal), |t, env| room_fits(t, env, &k.0, k.1, r.need))
         };
         if let Some((_, true)) = fx.try_settle(&k, fits)? {
             ended.insert(k.0);
@@ -2227,6 +2156,7 @@ fn room_fits(t: &mut Transaction<'_>, env: &mut Env<'_>, s: &SyncId, cap: Cap, n
 /// count kept, not read by key); the memory total whole (every byte in memory gives way).
 fn room_now(t: &mut Transaction<'_>, env: &mut Env<'_>, s: &SyncId, cap: Cap) -> Result<(u64, u64)> {
     Ok(match cap {
+        // `t` is the part the cap counts
         Cap::Own => {
             let u = entries::usage(t, s)?;
             let (ce, cb) = env.caps_of(s);
@@ -2236,7 +2166,7 @@ fn room_now(t: &mut Transaction<'_>, env: &mut Env<'_>, s: &SyncId, cap: Cap) ->
             env.mem.stamps.read(&UNREAD_FIXED);
             (u64::MAX, env.policy.total_bytes.saturating_sub(env.totals(t)?.fixed))
         }
-        Cap::Memory => (u64::MAX, env.policy.memory_bytes.saturating_sub(env.mem.usage(s).bytes)),
+        Cap::Memory => (u64::MAX, env.policy.memory_bytes.saturating_sub(entries::usage(t, s)?.bytes)),
         Cap::MemoryTotal => (u64::MAX, env.policy.memory_total),
     })
 }

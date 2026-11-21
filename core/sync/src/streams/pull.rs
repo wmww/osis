@@ -1116,11 +1116,10 @@ impl Streams {
                 }
                 Ok(Opening::Memory(n)) => {
                     let src = self.pull.get(&conn).map(|p| p.src);
-                    let r = ctx.store.log(&s, e, Some(bytes.to_vec()), src).and_then(|_| ctx.store.uncharge(&s, &b));
+                    let r = ctx.store.log(&s, e, Some(bytes.to_vec()), src).and_then(|_| ctx.store.uncharge(&s, &b)).and_then(|_| ctx.store.set_memory_charge(&b, n));
                     if let Err(e) = r {
                         return self.failed(Err(e));
                     }
-                    ctx.store.set_memory_charge(&b, n);
                 }
                 Ok(_) => took = true,
                 Err(e) => return self.failed(Err(e)),

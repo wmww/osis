@@ -146,11 +146,11 @@ struct Carriers {
 /// cap leaves (`Store::memory_room`); one held, its entry here counts at what it costs held. The
 /// one way sync opens an entry.
 pub(crate) fn open_entry(engine: &mut Engine, store: &Store, s: &SyncId, b: &BlobId, wrap: &crate::types::Wrap, bytes: &[u8]) -> Result<Opened> {
-    let o = engine.open_entry(s, b, wrap, bytes, store.memory_room(s))?;
+    let o = engine.open_entry(s, b, wrap, bytes, store.memory_room(s)?)?;
     if let Opened::Commit(c, _) = &o
         && engine.holds_memory(c)
     {
-        store.set_memory_charge(b, engine.memory_charge(c)?);
+        store.set_memory_charge(b, engine.memory_charge(c)?)?;
     }
     Ok(o)
 }
@@ -184,7 +184,7 @@ fn apply_waiting(engine: &mut Engine, store: &Store, c: &CommitId) -> Result<boo
                 Some(e) if !e.role => store.blob_len(b)?.unwrap_or(0).saturating_add(super::ENTRY_OVERHEAD),
                 _ => 0,
             };
-            let applied = engine.apply_waiting_memory(c, store.memory_room(&s).saturating_add(own))?;
+            let applied = engine.apply_waiting_memory(c, store.memory_room(&s)?.saturating_add(own))?;
             return Ok(matches!(applied, Some(osis_engine::Ingested::Applied(_))));
         }
     }

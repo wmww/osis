@@ -1134,7 +1134,7 @@ fn a_held_ephemeral_body_counts_its_charge_under_each_sync_id_spec_sync_compacti
     st.log(&r1.id, e.clone(), Some(x.clone()), None).unwrap();
     let bare = mem(&st, &r1);
     let held = bare - x.len() as u64 + 5_000;
-    st.set_memory_charge(&b, 5_000);
+    st.set_memory_charge(&b, 5_000).unwrap();
     st.log(&r2.id, e.clone(), Some(x.clone()), None).unwrap();
     assert_eq!((mem(&st, &r1), mem(&st, &r2)), (held, held), "both at the charge");
     for s in [&r1, &r2] {

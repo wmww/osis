@@ -11,6 +11,10 @@ use std::sync::Arc;
 
 type Res<T> = std::result::Result<T, Error>;
 
+fn to_store(e: crate::types::Error) -> Error {
+    e.into_store("sync store")
+}
+
 impl Inner {
     /// Runs `f` in the engine's open transaction (begun at its first use).
     fn engine_tx<R>(&mut self, f: impl FnOnce(&mut Transaction<'_>, &mut super::Env<'_>) -> crate::types::Result<R>) -> Res<R> {
@@ -24,7 +28,7 @@ impl Inner {
         *open = Some(t.suspend()?);
         // an abort of the engine's transaction counts the total again (`abort`)
         *total = env.total;
-        r.map_err(|e| e.into_store("sync store"))
+        r.map_err(to_store)
     }
 }
 
@@ -34,89 +38,77 @@ impl osis_store::CipherHost for Inner {
     }
 
     fn held(&mut self, id: &BlobId) -> Res<bool> {
-        if self.mem.engine.contains(id) {
+        let key = rows::engine_key(id);
+        if self.read_in(true, |t, _| Ok(t.get_local(&key)?.is_some())).map_err(to_store)? {
             return Ok(true);
         }
-        self.engine_tx(|t, _| Ok(t.get_local(&rows::engine_key(id))?.is_some()))
+        self.engine_tx(|t, _| Ok(t.get_local(&key)?.is_some()))
     }
 
     fn read(&mut self, id: &BlobId, offset: u64, len: usize) -> Res<Option<Vec<u8>>> {
-        if let Some(b) = self.mem.blobs.get(id) {
-            let start = usize::try_from(offset).unwrap_or(usize::MAX).min(b.len());
-            return Ok(b.get(start..start.saturating_add(len).min(b.len())).map(<[u8]>::to_vec));
+        if let Some(b) = self.read_in(true, |t, _| Ok(t.read_blob(id, offset, len)?)).map_err(to_store)? {
+            return Ok(Some(b));
         }
         self.engine_tx(|t, _| Ok(t.read_blob(id, offset, len)?))
     }
 
     fn len(&mut self, id: &BlobId) -> Res<Option<u64>> {
-        if let Some(b) = self.mem.blobs.get(id) {
-            return Ok(Some(b.len() as u64));
+        if let Some(n) = self.read_in(true, |t, _| Ok(t.blob_len(id)?)).map_err(to_store)? {
+            return Ok(Some(n));
         }
         self.engine_tx(|t, _| Ok(t.blob_len(id)?))
     }
 
+    /// Held in memory, the blob is the memory part's: no entry of the durable store names it.
     fn hold(&mut self, id: &BlobId, blob: Vec<u8>, memory: bool) -> Res<bool> {
         if self.held(id)? {
             return Ok(false);
         }
-        if memory {
-            self.mem.engine.insert(*id);
-            self.mem.blobs.entry(*id).or_insert(blob);
-            return Ok(true);
-        }
-        self.engine_tx(|t, env| {
+        let hold = |t: &mut Transaction<'_>, env: &mut super::Env<'_>| {
             if t.blob_len(id)?.is_none() {
                 t.put_blob(id, blob)?;
             }
             t.put_local(&rows::engine_key(id), &[], Shred::No)?;
             bytes_arrived(t, env, id)
-        })?;
+        };
+        match memory {
+            true => self.write_in(true, hold).map_err(to_store)?,
+            false => self.engine_tx(hold)?,
+        }
         Ok(true)
     }
 
     fn release(&mut self, id: &BlobId, memory: bool) -> Res<()> {
-        if self.mem.engine.remove(id) {
-            if !self.mem.by_blob.contains_key(id) {
-                self.mem.blobs.remove(id);
-            }
-            return Ok(());
-        }
-        if memory {
-            return Ok(());
-        }
-        self.engine_tx(|t, env| {
+        let release = |t: &mut Transaction<'_>, env: &mut super::Env<'_>| {
             t.remove_local(&rows::engine_key(id), Shred::No)?;
             unref(t, env, id)
-        })
+        };
+        match memory {
+            true => self.write_in(true, release).map_err(to_store),
+            false => self.engine_tx(release),
+        }
     }
 
     /// The engine forgot blob `id` with its commit: its own entries go under every sync ID, with
     /// no tombstone (an own entry logs a commit held here; held again, it is logged again).
     fn forgot(&mut self, id: &BlobId) -> Res<()> {
-        let now = self.now;
-        let ss: Vec<osis_base::SyncId> = self.mem.by_blob.get(id).into_iter().flatten().copied().collect();
-        for s in ss {
-            if self.mem.read(&s, id).is_some_and(|r| r.own) {
-                self.mem.remove(&s, id, now, false, false);
-            }
-        }
-        self.engine_tx(|t, env| {
-            let ss: Vec<osis_base::SyncId> = t.scan_local(&[rows::BY_BLOB, &id.0].concat(), b"", usize::MAX)?.into_iter().filter_map(|(k, _)| k.get(k.len().saturating_sub(16)..).and_then(|x| x.try_into().ok()).map(osis_base::SyncId)).collect();
-            for s in ss {
+        let forgot = |t: &mut Transaction<'_>, env: &mut super::Env<'_>| {
+            for s in super::entries::naming(t, id)? {
                 if super::entries::get(t, &s, id)?.is_some_and(|r| r.own) {
                     super::entries::remove(t, env, &s, id, super::entries::Removal::Untombed)?;
                 }
             }
             Ok(())
-        })
+        };
+        self.write_in(true, forgot).map_err(to_store)?;
+        self.engine_tx(forgot)
     }
 
     /// The engine forgot blob `id`'s commit as never received (a release, lost access): its own
     /// tombstones end, so it is fetched again where present once needed (spec/sync-judgement.md
     /// §3 Dropped bodies). A verified Delete's tombstone stays.
     fn unreceived(&mut self, id: &BlobId) -> Res<()> {
-        self.mem.tombs.retain(|(_, b), _| b != id);
-        self.engine_tx(|t, env| {
+        let unreceived = |t: &mut Transaction<'_>, env: &mut super::Env<'_>| {
             let tombed: Vec<osis_base::SyncId> = t.scan_local(&[rows::TOMB_BY_BLOB, &id.0].concat(), b"", usize::MAX)?.into_iter().filter_map(|(k, _)| k.get(k.len().saturating_sub(16)..).and_then(|x| x.try_into().ok()).map(osis_base::SyncId)).collect();
             for s in tombed {
                 if super::entries::tombstone(t, &s, id)?.is_some_and(|x| !x.deleted) {
@@ -124,7 +116,9 @@ impl osis_store::CipherHost for Inner {
                 }
             }
             Ok(())
-        })
+        };
+        self.write_in(true, unreceived).map_err(to_store)?;
+        self.engine_tx(unreceived)
     }
 
     /// S is pulled anew from every source (`N/` marked as a raise is, over a mark of some sources
@@ -171,6 +165,7 @@ impl osis_store::CipherHost for Inner {
             holdings: self.holdings.clone(),
             caps: self.caps.clone(),
             policy: self.policy.clone(),
+            ram: self.ram.test_copy()?,
             mem: self.mem.clone(),
             total: self.total,
             past_cap: self.past_cap.clone(),
