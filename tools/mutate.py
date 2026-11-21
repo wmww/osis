@@ -1,7 +1,8 @@
 #!/usr/bin/env python3
 """Mutation probes (rows of a module's mutation table): breaks a rule in code, builds the tests
 with it, puts the file back, then runs the built tests and prints one Markdown table row per
-mutation: the mutation and the tests that failed ("none": no test catches it).
+mutation: the mutation and the tests that failed ("none": no test catches it; "no test ran": the
+filter matched none).
 
 Usage: python3 tools/mutate.py FILE OLD NEW [+ FILE OLD NEW]... [FILE OLD NEW ...]... -- <cargo test args> [-- <test binary args>]
   e.g. python3 tools/mutate.py core/sync/src/read/judge.rs 'a >= b' 'a > b' -- -p osis-sync --test it -- read::
@@ -221,8 +222,9 @@ def built(muts, group, rest, cargo_args, test_args, texts, mutated, saved, sites
             ids = list(range(i, min(i + per, len(rows))))
             res = run_bins(bins, [str(k) if n > 1 else None for k in ids])
             done.update(zip(ids, res))
-        failed, out = [], []
+        failed, out, ran = [], [], 0
         for exe, rc, text in done.pop(i):
+            ran += sum(int(l.split()[1]) for l in text.splitlines() if l.startswith("running ") and l.rstrip().endswith((" test", " tests")))
             out.append(f"==== {exe} (exit {rc})\n{text}")
             fails = [l.split()[1] for l in text.splitlines() if l.startswith("test ") and l.rstrip().endswith("FAILED")]
             failed += fails
@@ -231,7 +233,8 @@ def built(muts, group, rest, cargo_args, test_args, texts, mutated, saved, sites
         log = os.path.join(out_dir, f"mutant-{i}.log")
         with open(log, "w") as f:
             f.write("".join(out))
-        print(f"{row} {', '.join(failed) if failed else 'none'} |", flush=True)
+        # a filter matching no test is no catch: say so, never "none"
+        print(f"{row} {', '.join(failed) if failed else 'none' if ran else 'no test ran'} |", flush=True)
         # every row names its log: after a mutation that does not build the rest are built again
         # and numbered anew, so mutant-<k> is not the k-th mutation given
         print(f"mutate: mutation {i}'s output: {log}", file=sys.stderr)
