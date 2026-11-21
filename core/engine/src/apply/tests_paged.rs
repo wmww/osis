@@ -1855,11 +1855,13 @@ fn honest_values_sync_through_the_fetch_walk_plain_spec_wire_6() {
         let mut r = MRng(seed + 1);
         let generated = osis_base::decode(&bulk_value(&mut r, &kitchen_sink(), 0).canonical(), &osis_base::Limits::DEFAULT).unwrap();
         let mut v = vec![(Value::Str("gen".into()), generated)];
-        // large values in two of any eight consecutive seeds
-        if seed % 8 < 2 {
-            v.push((Value::Str("lone".into()), big(seed * 100)));
-            v.push((Value::Str("list".into()), Value::List(vec![big(seed * 100 + 1), big(seed * 100 + 2)])));
-            v.push((Value::Str("map".into()), Value::Map((0..12).map(|i| (Value::Int(i), Value::List(vec![big(seed * 100 + 10 + i as u64)]))).collect())));
+        // large values in two of any eight consecutive seeds, sized by the seed's place among
+        // them (an offset seed's own number would size a value past memory)
+        let k = seed % 8;
+        if k < 2 {
+            v.push((Value::Str("lone".into()), big(k * 100)));
+            v.push((Value::Str("list".into()), Value::List(vec![big(k * 100 + 1), big(k * 100 + 2)])));
+            v.push((Value::Str("map".into()), Value::Map((0..12).map(|i| (Value::Int(i), Value::List(vec![big(k * 100 + 10 + i as u64)]))).collect())));
         }
         let v = Value::Map(v.into_iter().collect());
         let mut w = world_under(params);
