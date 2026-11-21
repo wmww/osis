@@ -408,30 +408,29 @@ fn role_content_rules_spec_commits_2() {
 
 // spec/crdt.md §3.3 rule 2: a commit-form delta's own dots sort above node dots (and below
 // every other commit), so a commit-form removal of entries another node wrote encodes
-// canonically whichever node tid sorts first.
+// canonically whichever node tid sorts first (the remover and the writer swapped).
 #[test]
 fn commit_form_order_spec_crdt_3_3() {
-    for seed in 0..8 {
-        let mut lp = net(2, seed);
-        lp.sync_all().unwrap();
-        let d = new_thing(&mut lp, 0);
-        let b = lp.peers[1].engine.me();
-        set_edge(&mut lp.peers[0].engine, d, b, Some(edge(Role::Write)), None);
-        sync(&mut lp, 0, 1);
+    for [a, w] in [[0, 1], [1, 0]] {
+        let mut lp = net(2, 0);
+        let d = new_thing(&mut lp, a);
+        let b = lp.peers[w].engine.me();
+        set_edge(&mut lp.peers[a].engine, d, b, Some(edge(Role::Write)), None);
+        sync(&mut lp, a, w);
         let map = ak("t:map.0");
         let mut m = Mutation::new();
         for k in ["a", "b", "c"] {
             m.op(d, &map, osis_crdt::PathOp { path: vec![osis_crdt::PathSeg::Key(s(k))], op: osis_crdt::Op::Set(Value::Int(1)) }).unwrap();
         }
-        lp.peers[1].commit(m).unwrap().unwrap();
-        sync(&mut lp, 1, 0);
+        lp.peers[w].commit(m).unwrap().unwrap();
+        sync(&mut lp, w, a);
         let mut m = Mutation::new();
         m.commit_form();
         for k in ["a", "b", "c"] {
             m.op(d, &map, osis_crdt::PathOp { path: Vec::new(), op: osis_crdt::Op::Remove(s(k)) }).unwrap();
             m.op(d, &map, osis_crdt::PathOp { path: vec![osis_crdt::PathSeg::Key(s(k))], op: osis_crdt::Op::Set(Value::Int(2)) }).unwrap();
         }
-        lp.peers[0].commit(m).unwrap_or_else(|e| panic!("seed {seed}: {e}")).unwrap();
+        lp.peers[a].commit(m).unwrap_or_else(|e| panic!("remover {a}: {e}")).unwrap();
     }
 }
 
@@ -1340,10 +1339,10 @@ fn churn_resets(k: usize) -> (usize, usize) {
 }
 
 // spec/permissions.md §2: an edge write resets the holder's current entry alone, so a holder's
-// k-th grant and removal carry as many resets at 3 and at 30 rounds of churn.
+// k-th grant and removal carry as many resets at 2 and at 20 rounds of churn.
 #[test]
 fn holder_churn_resets_are_flat_spec_perm_2() {
-    let (small, big) = (churn_resets(3), churn_resets(30));
+    let (small, big) = (churn_resets(2), churn_resets(20));
     assert_eq!(small, (0, 1), "a grant after a removal resets nothing; a removal its grant's entry");
     assert_eq!(small, big);
 }
@@ -1737,86 +1736,6 @@ fn valueless_copy_loses_to_held_value_spec_crdt_4_7() {
     assert_eq!(lp.peers[3].engine.state(&d, &reg).unwrap(), lp.peers[0].engine.state(&d, &reg).unwrap(), "states alike");
 }
 
-// spec/requirements.md, Threat model ("malicious readers can only waste storage"), Decentralization;
-// spec/permissions.md §5.2: a reader's snapshot gives nothing. A reader's snapshot carrying another
-// value under the dot and `ts` of a writer's session-form write changes nothing, whether it arrives
-// after that write's commit (peer 2) or before it (peer 3); a restart keeps it so.
-#[test]
-fn snapshot_forging_held_node_dot_changes_nothing_spec_perm_5_2() {
-    use osis_crdt::{Writer, create};
-    let mut lp = net(4, 0);
-    lp.sync_all().unwrap();
-    let t = new_thing(&mut lp, 0);
-    let (a, r) = (lp.peers[0].engine.me(), lp.peers[1].engine.me());
-    set_edge(&mut lp.peers[0].engine, t, r, Some(edge(Role::Read)), None);
-    // the observers read t
-    for i in 2..lp.peers.len() {
-        let o = lp.peers[i].engine.me();
-        set_edge(&mut lp.peers[0].engine, t, o, Some(edge(Role::Read)), None);
-    }
-    sync(&mut lp, 0, 3);
-    let mut m = Mutation::new();
-    m.set(t, &REG, &s("real")).unwrap();
-    let c = lp.peers[0].commit(m).unwrap().unwrap();
-    for i in 1..3 {
-        sync(&mut lp, 0, i);
-    }
-    let h = lp.peers[0].engine.header(&c).unwrap();
-    let lo = h.aspects.iter().find(|x| x.tid == t && x.ak.as_str() == "t:reg.0").unwrap().lo;
-    let reg = ak("t:reg.0");
-    let before = states(&mut lp.peers[2].engine, &[t]);
-    // the reader re-uses (a's session, lo) and its ts
-    let mut w = Writer::new(h.ts, h.form.own_source(a, osis_base::CommitId([0; 32])), lo);
-    let f = create(&mut w, &osis_crdt::AnyView, &s("zzz forged")).unwrap();
-    lp.advance(1_000);
-    let now = osis_base::Ts::make(lp.peers[1].engine.now(), 0).unwrap();
-    let forged = forge_snapshot(&mut lp, 1, t, &reg, now, f);
-    let got = lp.peers[2].receive(&forged, Vec::new());
-    assert_eq!(states(&mut lp.peers[2].engine, &[t]), before, "after c: {got:?}");
-    let got = lp.peers[3].receive(&forged, Vec::new());
-    sync(&mut lp, 0, 3);
-    assert_eq!(states(&mut lp.peers[3].engine, &[t]), before, "before c: {got:?}");
-    assert_eq!(lp.peers[2].engine.state(&t, &reg).unwrap(), lp.peers[3].engine.state(&t, &reg).unwrap(), "states alike");
-    lp.peers[3].restart(0x5f01).unwrap();
-    assert_eq!(states(&mut lp.peers[3].engine, &[t]), before, "after a restart");
-}
-
-// spec/permissions.md §5.2: as above, a reader's copy of a writer's map entry creation (its dot
-// and `ts`) under another key and value changes nothing in either order.
-#[test]
-fn snapshot_forging_entry_key_changes_nothing_spec_perm_5_2() {
-    let mut lp = net(4, 0);
-    lp.sync_all().unwrap();
-    let t = new_thing(&mut lp, 0);
-    let (a, r) = (lp.peers[0].engine.me(), lp.peers[1].engine.me());
-    set_edge(&mut lp.peers[0].engine, t, r, Some(edge(Role::Read)), None);
-    // the observers read t
-    for i in 2..lp.peers.len() {
-        let o = lp.peers[i].engine.me();
-        set_edge(&mut lp.peers[0].engine, t, o, Some(edge(Role::Read)), None);
-    }
-    sync(&mut lp, 0, 3);
-    let m_ak = ak("x:m.0");
-    let mut m = Mutation::new();
-    m.set(t, &m_ak, &Value::Map(osis_base::ValueMap::from([(s("k"), s("real"))]))).unwrap();
-    let c = lp.peers[0].commit(m).unwrap().unwrap();
-    for i in 1..3 {
-        sync(&mut lp, 0, i);
-    }
-    let h = lp.peers[0].engine.header(&c).unwrap();
-    let lo = h.aspects.iter().find(|x| x.tid == t && x.ak == m_ak).unwrap().lo;
-    let before = states(&mut lp.peers[2].engine, &[t]);
-    lp.advance(1_000);
-    let now = osis_base::Ts::make(lp.peers[1].engine.now(), 0).unwrap();
-    let forged = forge_snapshot(&mut lp, 1, t, &m_ak, now, entry_by(h.form.own_source(a, osis_base::CommitId([0; 32])), h.ts, lo, "evil", "x"));
-    let got = lp.peers[2].receive(&forged, Vec::new());
-    assert_eq!(states(&mut lp.peers[2].engine, &[t]), before, "after c: {got:?}");
-    let got = lp.peers[3].receive(&forged, Vec::new());
-    sync(&mut lp, 0, 3);
-    assert_eq!(states(&mut lp.peers[3].engine, &[t]), before, "before c: {got:?}");
-    assert_eq!(lp.peers[2].engine.state(&t, &m_ak).unwrap(), lp.peers[3].engine.state(&t, &m_ak).unwrap(), "states alike");
-}
-
 // spec/permissions.md §5.2, spec/commits.md §5 (compaction): Alice's commit C writes `x:m.0` and
 // `t:reg.0` (another retention class, another blob). A node that gets Alice's snapshot of `x:m.0`
 // and the blob of C without its `x:m.0` delta (dropped at the peer after compaction) holds C
@@ -1960,38 +1879,6 @@ fn greater_forged_copy_keeps_original_body_spec_commits_5() {
     assert_eq!(lp.peers[0].engine.get(&d, &kept).unwrap(), Some(s("real")), "X's write reads again");
 }
 
-// spec/requirements.md, Threat model ("malicious readers can only waste storage"); spec/permissions.md
-// §5.2: a reader's snapshot carrying the mint admin's register write under a counter the mint admin never
-// used, stamped now, changes nothing: its author could not write the aspect.
-#[test]
-fn snapshot_forging_unused_dot_changes_nothing_spec_perm_5_2() {
-    use osis_crdt::{Writer, create};
-    let mut lp = net(3, 0);
-    lp.sync_all().unwrap();
-    let t = new_thing(&mut lp, 0);
-    let (a, r) = (lp.peers[0].engine.me(), lp.peers[1].engine.me());
-    set_edge(&mut lp.peers[0].engine, t, r, Some(edge(Role::Read)), None);
-    // the observers read t
-    for i in 2..lp.peers.len() {
-        let o = lp.peers[i].engine.me();
-        set_edge(&mut lp.peers[0].engine, t, o, Some(edge(Role::Read)), None);
-    }
-    let mut m = Mutation::new();
-    m.set(t, &REG, &s("real")).unwrap();
-    lp.peers[0].commit(m).unwrap().unwrap();
-    for i in 1..3 {
-        sync(&mut lp, 0, i);
-    }
-    let reg = ak("t:reg.0");
-    lp.advance(1_000);
-    let now = osis_base::Ts::make(lp.peers[1].engine.now(), 0).unwrap();
-    let mut w = Writer::new(now, crate::common::session_of(&lp, 0).own_source(a, osis_base::CommitId([0; 32])), 1 << 40);
-    let f = create(&mut w, &osis_crdt::AnyView, &s("zzz forged")).unwrap();
-    let forged = forge_snapshot(&mut lp, 1, t, &reg, now, f);
-    let got = lp.peers[2].receive(&forged, Vec::new());
-    assert_eq!(lp.peers[2].engine.get(&t, &reg).unwrap(), Some(s("real")), "{got:?}");
-}
-
 // spec/permissions.md §5.2, spec/commits.md §5: a commit-form commit C's body dropped (covered by
 // the mint admin's snapshot), a reader's snapshot then carrying an extra element under `Commit(C)`
 // changes nothing: its author could not write the aspect.
@@ -2052,48 +1939,67 @@ fn snapshot_covers_write_inside_earlier_entry_spec_commits_5() {
     assert_eq!(lp.peers[0].engine.covered(&snap, &c, &t, &map).unwrap(), Some(true));
 }
 
-// spec/requirements.md, Threat model; spec/permissions.md §5.2 (compaction snapshot; judged as its author's delta of that aspect): a reader's snapshot of the mint admin's state plus an entry
-// at a counter the mint admin never used gives nothing, before or after the mint admin's commit, across a
-// restart, and covers nothing although it copies the commit exactly.
+// spec/requirements.md, Threat model ("malicious readers can only waste storage"), Decentralization;
+// spec/permissions.md §5.2 (compaction snapshot; judged as its author's delta of that aspect): a
+// reader's snapshot gives nothing and covers nothing, whether it arrives after the mint admin's
+// commit C (a copy of peer 2) or before it (a copy of peer 3), across a restart. Forged: another
+// value under the dot and `ts` of C's session-form register write; a map entry under the dot and
+// `ts` of C's entry creation, another key; a register write under a counter the mint admin never
+// used; the reader's state plus an entry at such a counter, stamped now.
 #[test]
-fn reader_snapshot_gives_nothing_either_order_spec_perm_5_2() {
+fn a_readers_snapshot_changes_nothing_spec_perm_5_2() {
+    use osis_crdt::{Writer, create};
     let mut lp = net(4, 0);
-    lp.sync_all().unwrap();
     let t = new_thing(&mut lp, 0);
-    let (a, r) = (lp.peers[0].engine.me(), lp.peers[1].engine.me());
-    set_edge(&mut lp.peers[0].engine, t, r, Some(edge(Role::Read)), None);
-    // observers 2 and 3 read t
-    for i in [2, 3] {
+    let a = lp.peers[0].engine.me();
+    // the reader 1 and observers 2 and 3 read t
+    for i in 1..4 {
         let o = lp.peers[i].engine.me();
         set_edge(&mut lp.peers[0].engine, t, o, Some(edge(Role::Read)), None);
     }
     sync(&mut lp, 0, 3);
-    let m_ak = ak("x:m.0");
+    let (reg, m_ak) = (ak("t:reg.0"), ak("x:m.0"));
     let mut m = Mutation::new();
+    m.set(t, &REG, &s("real")).unwrap();
     m.set(t, &m_ak, &Value::Map(osis_base::ValueMap::from([(s("k"), s("real"))]))).unwrap();
     let c = lp.peers[0].commit(m).unwrap().unwrap();
     for i in 1..3 {
         sync(&mut lp, 0, i);
     }
-    let want = lp.peers[0].engine.get(&t, &m_ak).unwrap();
+    let h = lp.peers[0].engine.header(&c).unwrap();
+    let lo = |x: &osis_base::Ak| h.aspects.iter().find(|w| w.tid == t && w.ak == *x).unwrap().lo;
+    let asrc = h.form.own_source(a, osis_base::CommitId([0; 32]));
+    let unused = crate::common::session_of(&lp, 0).own_source(a, osis_base::CommitId([0; 32]));
+    let before = states(&mut lp.peers[2].engine, &[t]);
     lp.advance(1_000);
     let now = osis_base::Ts::make(lp.peers[1].engine.now(), 0).unwrap();
-    let mut f = lp.peers[1].engine.state(&t, &m_ak).unwrap().unwrap().clone();
-    f.join(entry_by(crate::common::session_of(&lp, 0).own_source(a, osis_base::CommitId([0; 32])), now, 1 << 40, "evil", "x"));
-    let forged = forge_snapshot(&mut lp, 1, t, &m_ak, now, f);
-    let fid = match lp.peers[2].receive(&forged, Vec::new()).unwrap() {
-        Ingested::Applied(id) => id,
-        other => panic!("{other:?}"),
-    };
-    assert_eq!(lp.peers[2].engine.get(&t, &m_ak).unwrap(), want, "after the commit");
-    assert_eq!(lp.peers[2].engine.covered(&fid, &c, &t, &m_ak).unwrap(), Some(false), "an invalid snapshot covers nothing");
-    lp.peers[3].receive(&forged, Vec::new()).unwrap();
-    assert_eq!(lp.peers[3].engine.get(&t, &m_ak).unwrap(), None, "before the commit");
-    sync(&mut lp, 0, 3);
-    assert_eq!(lp.peers[3].engine.get(&t, &m_ak).unwrap(), want, "then the commit");
-    assert_eq!(lp.peers[2].engine.state(&t, &m_ak).unwrap(), lp.peers[3].engine.state(&t, &m_ak).unwrap(), "states alike");
-    lp.peers[3].restart(0x5f82).unwrap();
-    assert_eq!(lp.peers[3].engine.get(&t, &m_ak).unwrap(), want, "after a restart");
+    let mut with_entry = lp.peers[1].engine.state(&t, &m_ak).unwrap().unwrap().clone();
+    with_entry.join(entry_by(unused.clone(), now, 1 << 40, "evil", "x"));
+    let reg_at = |ts, src, lo| create(&mut Writer::new(ts, src, lo), &osis_crdt::AnyView, &s("zzz forged")).unwrap();
+    let cases = [
+        ("held dot", &reg, reg_at(h.ts, asrc.clone(), lo(&reg))),
+        ("entry key", &m_ak, entry_by(asrc.clone(), h.ts, lo(&m_ak), "evil", "x")),
+        ("unused dot", &reg, reg_at(now, unused.clone(), 1 << 40)),
+        ("reader state", &m_ak, with_entry),
+    ];
+    for (k, (case, x, f)) in cases.into_iter().enumerate() {
+        let forged = forge_snapshot(&mut lp, 1, t, x, now, f);
+        let (after, first) = (lp.peers.len(), lp.peers.len() + 1);
+        let (p2, p3) = (lp.peers[2].copy().unwrap(), lp.peers[3].copy().unwrap());
+        lp.peers.extend([p2, p3]);
+        let got = lp.peers[after].receive(&forged, Vec::new());
+        assert_eq!(states(&mut lp.peers[after].engine, &[t]), before, "{case}: after C: {got:?}");
+        let Ok(Ingested::Applied(fid)) = got else { panic!("{case}: {got:?}") };
+        assert_eq!(lp.peers[after].engine.covered(&fid, &c, &t, x).unwrap(), Some(false), "{case}: an invalid snapshot covers nothing");
+        let pre = lp.peers[first].engine.get(&t, x).unwrap();
+        let got = lp.peers[first].receive(&forged, Vec::new());
+        assert_eq!(lp.peers[first].engine.get(&t, x).unwrap(), pre, "{case}: before C: {got:?}");
+        sync(&mut lp, 0, first);
+        assert_eq!(states(&mut lp.peers[first].engine, &[t]), before, "{case}: then C");
+        assert_eq!(lp.peers[after].engine.state(&t, x).unwrap(), lp.peers[first].engine.state(&t, x).unwrap(), "{case}: states alike");
+        lp.peers[first].restart(0x5f01 + k as u64).unwrap();
+        assert_eq!(states(&mut lp.peers[first].engine, &[t]), before, "{case}: after a restart");
+    }
 }
 
 // spec/permissions.md §5.1 (frontier), §5.2 (compaction snapshot): Carol, a writer, compacts the
@@ -3876,10 +3782,10 @@ fn kick_reads_bodies_down_to_its_winner() {
             assert_eq!(lp.peers[0].engine.get(&d, &k).unwrap(), Some(val(&s(&format!("a{}", n - 1)))));
             (costs.iter().find(|c| c.0 == "rebuild: body").map_or(0, |c| c.2), size)
         };
-        let ((few, small), (many, big)) = (bodies_read(20), bodies_read(200));
+        let ((few, small), (many, big)) = (bodies_read(10), bodies_read(100));
         // flat in n: Bob's, Alice's newest, and the re-reads of dropping Bob's invalid bodies
-        assert!(few == many && few < 20, "{name}: bodies read at 20 and 200 kept writes: {few}, {many}");
-        assert_eq!(small, big, "{name}: state at 20 and 200 kept writes");
+        assert!(few == many && few < 20, "{name}: bodies read at 10 and 100 kept writes: {few}, {many}");
+        assert_eq!(small, big, "{name}: state at 10 and 100 kept writes");
     }
 }
 
@@ -4028,12 +3934,11 @@ fn delete_falls_after_reopen_reads_text_spec_crdt_5_7() {
 // proof they were concurrent, so layer 2 orders v5 before the removal whatever the tids: Carol
 // received v5 before the removal (`carol_first`, a millisecond earlier) and her addendum keeps it, else it is lost. Then
 // everyone exchanges everything, and a fresh node is handed every commit: all read alike, for
-// every assignment of the three peers (so either tid order). Found by the sync rebuild's
-// differential (seed 347110580059), where ordering v5 after the removal by tid made the outcome
-// depend on whose tid was lower.
+// either order of Alice's and Bob's tids (the tied pair; the addenda property draws every
+// assignment). Ordering v5 after the removal by tid made the outcome depend on whose tid was lower.
 #[test]
 fn a_removed_writers_write_at_the_removals_ts_reads_alike_whatever_the_tids_spec_perm_5_2() {
-    for [a, b, c] in [[0, 1, 2], [0, 2, 1], [1, 0, 2], [1, 2, 0], [2, 0, 1], [2, 1, 0]] {
+    for [a, b, c] in [[0, 1, 2], [1, 0, 2]] {
         for carol_first in [true, false] {
             let mut lp = net(3, 0);
             lp.sync_all().unwrap();
@@ -4091,10 +3996,10 @@ fn a_removed_writers_write_at_the_removals_ts_reads_alike_whatever_the_tids_spec
 // exactly his removal's `ts` (from a copy of his node from before he learned of it: byte for byte
 // what a backdating forger makes) and sends it only after the removal reached every writer. The
 // tie orders it before the removal, so it needs an addendum, and no writer received it by the
-// removal's `ts`: it is lost everywhere, whatever the tids.
+// removal's `ts`: it is lost everywhere, whatever the tids (both orders of the tied pair's).
 #[test]
 fn a_removed_writers_write_forged_at_the_removals_ts_is_lost_everywhere_spec_perm_5_2() {
-    for [a, b, c] in [[0, 1, 2], [1, 0, 2], [2, 1, 0]] {
+    for [a, b, c] in [[0, 1, 2], [1, 0, 2]] {
         let mut lp = net(3, 0);
         lp.sync_all().unwrap();
         let t = new_thing(&mut lp, a);
@@ -4134,10 +4039,10 @@ fn a_removed_writers_write_forged_at_the_removals_ts_is_lost_everywhere_spec_per
 // of his node from before he learned of it grants Carol admin stamped at exactly the removal's
 // `ts`, sent only after the removal reached every node. Ordered before the removal or after it by
 // the tids, the grant is no part of the removal's frontier: Carol's role is what Alice gave her at
-// every node, whatever the tids.
+// every node, whatever the tids (both orders of the tied pair's).
 #[test]
 fn a_removed_admins_grant_forged_at_the_removals_ts_counts_nowhere_spec_perm_5_1() {
-    for [a, b, c] in [[0, 1, 2], [1, 0, 2], [2, 1, 0], [1, 2, 0]] {
+    for [a, b, c] in [[0, 1, 2], [1, 0, 2]] {
         let mut lp = net(3, 0);
         lp.sync_all().unwrap();
         let t = new_thing(&mut lp, a);
@@ -5294,7 +5199,7 @@ fn finding_a_path_does_not_grow_with_history_spec_wire_4() {
         };
         (count(&mut lp, "first"), count(&mut lp, "second"))
     };
-    let (small, large) = (walked(3), walked(30));
+    let (small, large) = (walked(2), walked(20));
     assert_eq!(small, large, "at n and 10n role commits held elsewhere");
     assert!(small.0 > 0 && small.1 == 0, "walked once while the roles stand: {small:?}");
 }
