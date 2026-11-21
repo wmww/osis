@@ -440,6 +440,12 @@ pub(crate) fn wake_entered(tx: &mut Tx<'_>) -> Result<usize> {
     Ok(n)
 }
 
+/// Whether a thing entered the node closure since `wake_entered` last looked (its feed, read
+/// without moving it) and is in it still: one a failed step's rollback took out again is not.
+pub(crate) fn entering(tx: &Tx<'_>) -> bool {
+    tx.core.entered.as_ref().is_some_and(|f| f.clone().added().iter().any(|(_, t)| tx.core.ix.closure.holds(t)))
+}
+
 /// The parts waiting for `t` to enter the node closure count as never received: no sync ID the
 /// node syncs carries them (spec/commits.md §4 Pending storage, `retention::needed::uncarried`),
 /// or `t` went whole. Each leaves its commit's stored copy; a copy left with no part goes, as does

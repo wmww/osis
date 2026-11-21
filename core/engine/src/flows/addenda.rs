@@ -243,7 +243,9 @@ pub(crate) fn write_owed(tx: &mut Tx<'_>) -> Result<()> {
         return Ok(());
     }
     let Some(me) = tx.core.member() else { return Ok(()) };
-    // an addendum is content: writing one moves no component, so makes no removal due
+    // an addendum is content: writing one moves no component, so makes no removal due here; the
+    // content it makes valid may bring a thing into the node closure, and the transaction's end
+    // runs this again for what that makes due (`note_entered`)
     let due: Vec<CommitId> = tx.core.ix.addenda_due.iter().copied().collect();
     for r in due {
         osis_base::costs::count("addenda: removals judged", 1);

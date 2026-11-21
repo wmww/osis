@@ -4177,8 +4177,12 @@ impl Engine {
                 tx.core.own_secrets_due.clear();
                 // explicit demotions applied get this node's addenda (spec/permissions.md §5.2),
                 // on what the node closure holds as this transaction leaves it (a node writes only
-                // what it holds, spec/sync-set.md §2 Writing)
-                if r.is_ok() && !tx.txn.is_memory() {
+                // what it holds, spec/sync-set.md §2 Writing). The flows' own writes may bring
+                // things into the node closure (an addendum makes the content it vouches for
+                // valid, strongs included): what waits for them joins and the flows run again,
+                // until nothing enters.
+                let mut flows = osis_base::loop_guard::LoopGuard::new("Engine::run (the flows' writes bringing things into the node closure)");
+                while r.is_ok() && !tx.txn.is_memory() {
                     r = r.and_then(|v| crate::sync::units::settle(&mut tx).map(|_| v));
                     // what waits to see a thing enter the node closure joins as it enters
                     // (spec/commits.md §4 Outside the node closure), the closure settled again
@@ -4199,13 +4203,19 @@ impl Engine {
                     if r.is_ok() {
                         r = r.and_then(|v| crate::apply::carriers::settle(&mut tx).map(|_| v));
                     }
-                }
-                if r.is_ok()
-                    && !tx.txn.is_memory()
-                    && let Err(e) = crate::flows::inbox::owe_removal_notices(&mut tx).and_then(|()| crate::flows::addenda::write_owed(&mut tx)).and_then(|()| crate::flows::signing::leave_if_removed(&mut tx)).and_then(|()| crate::flows::signing::answer_rotations(&mut tx))
-                        .and_then(|()| crate::sync::dial::drop_departed(&mut tx))
-                {
-                    r = Err(e);
+                    if r.is_ok()
+                        && let Err(e) = crate::flows::inbox::owe_removal_notices(&mut tx).and_then(|()| crate::flows::addenda::write_owed(&mut tx)).and_then(|()| crate::flows::signing::leave_if_removed(&mut tx)).and_then(|()| crate::flows::signing::answer_rotations(&mut tx))
+                            .and_then(|()| crate::sync::dial::drop_departed(&mut tx))
+                    {
+                        r = Err(e);
+                    }
+                    r = r.and_then(|v| crate::sync::units::settle(&mut tx).map(|_| v));
+                    if r.is_err() || !crate::apply::entering(&tx) {
+                        break;
+                    }
+                    // each round brings a thing in
+                    let held = tx.core.ix.closure.things().count() as u64;
+                    flows.round((), || (held + 2, format!("{held} things in the node closure")));
                 }
                 #[cfg(debug_assertions)]
                 {

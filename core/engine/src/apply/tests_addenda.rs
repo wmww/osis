@@ -1320,6 +1320,32 @@ fn an_edit_received_in_time_that_applies_late_is_vouched_for_spec_perm_5_2() {
     assert_eq!(addenda(&lp, 2, t2).iter().filter(|(a, _)| *a == carol).count(), 1, "Carol vouches once it applies");
 }
 
+// spec/permissions.md §5.2 (addenda; writing), spec/sync-set.md §2 Writing: Bob mints t2 under t,
+// held by a strong on t in a commit of his own, and writes on t2; Carol receives both, Alice
+// removes Bob from t (and so t2) without them. Applying the removal, Carol drops the strong, so t2
+// is outside her node closure and the addendum owed there waits; her addendum on t makes the
+// strong count again and brings t2 back in, and she writes the one on t2 in the same transaction.
+#[test]
+fn a_thing_an_addendum_brings_into_the_closure_gets_its_addendum_then_spec_perm_5_2() {
+    let (mut lp, t) = world(3, &[Role::Write, Role::Write]);
+    let (t2, _) = lp.peers[1].engine.create_with_admin(&t).unwrap();
+    lp.advance(1000);
+    let e = write(&mut lp, 1, t2, "x:e.0", 7);
+    lp.sync(1, 2).unwrap();
+    lp.advance(1);
+    remove(&mut lp, 0, t, 1);
+    lp.sync(0, 2).unwrap();
+    let carol = lp.peers[2].engine.me();
+    let by_carol = |lp: &LocalPeer, x: Tid| addenda(lp, 2, x).iter().filter(|(a, _)| *a == carol).count();
+    assert_eq!(by_carol(&lp, t), 1, "Carol vouches for the strong on t");
+    assert!(lp.peers[2].engine.closure_holds(&t2), "the strong counts: t2 is in Carol's node closure");
+    assert_eq!(by_carol(&lp, t2), 1, "and the edit on t2 in the same transaction");
+    lp.sync_all().unwrap();
+    for p in 0..3 {
+        assert!(valid(&lp, p, &e, t2, "x:e.0"), "peer {p}: the edit stands");
+    }
+}
+
 // spec/permissions.md §5.2 (addenda; writing): what is owed is re-derived. Carol holds the
 // removal and Bob's edit but writes nothing (writing off); after a restart, her next transaction
 // writes the addendum she owes, and the edit stands at every node.
