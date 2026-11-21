@@ -830,6 +830,19 @@ pub(crate) fn play(seed: u64, steps: &[Step]) -> Played {
 /// `play`, the three peers answering removals with addenda when `addenda` (spec/permissions.md
 /// §5.2): the fresh nodes judging them still write none.
 pub(crate) fn play_with(seed: u64, steps: &[Step], addenda: bool) -> Played {
+    play_in(seed, steps, addenda, None)
+}
+
+/// The sync-set probes (`play_in`) that received a setup's commits, by everything that came
+/// before: kept by a caller playing many histories, so each such probe is built once and copied
+/// (notes/test-harnesses.md, Copied worlds). Scoped to its holder, unlike `LocalPeer::cached`: one
+/// per `now`, which a random history draws anew.
+#[derive(Default)]
+pub(crate) struct Probes(BTreeMap<String, Peer>);
+
+/// `play_with`, its sync-set probe after the setup's commits a copy of one in `probes`, built
+/// there when missing.
+pub(crate) fn play_in(seed: u64, steps: &[Step], addenda: bool, probes: Option<&mut Probes>) -> Played {
     let (mut lp, (ids, g)) = LocalPeer::cached(&format!("order::play/{seed}/{addenda}"), || setup(seed, addenda));
     let mut reader = lp.peers.pop().unwrap();
     let reader_id = reader.engine.me();
@@ -1530,12 +1543,25 @@ pub(crate) fn play_with(seed: u64, steps: &[Step], addenda: bool) -> Played {
     // the nodes under test are sent what the sync IDs they come to sync carry, as each author
     // sees it (`LocalPeer::trimmed`), never another thing's content, which would wait there
     // (spec/commits.md §4 Outside the node closure): what they sync once given everything
+    // (twice over: a pack taken before what it waits on comes again); the probe as it took the
+    // setup's packs the first time, from `probes`
     let synced: BTreeSet<osis_base::SyncId> = {
-        let mut probe = under_test(reader.copy().unwrap(), now);
-        for _ in 0..2 {
-            for pk in &packs {
+        let mut build = || {
+            let mut probe = under_test(reader.copy().unwrap(), now);
+            for pk in &packs[..base] {
                 let _ = probe.receive(&pk.bytes, pk.blobs.clone());
             }
+            probe
+        };
+        let mut probe = match probes {
+            None => build(),
+            Some(probes) => {
+                let key = format!("{seed}/{addenda}/{}/{tops:?}/{:?}/{:?}", now.0, access.iter().map(|(t, pk)| (*t, pk.id)).collect::<Vec<_>>(), packs[..base].iter().map(|pk| pk.id).collect::<Vec<_>>());
+                probes.0.entry(key).or_insert_with(build).copy().unwrap()
+            }
+        };
+        for pk in packs[base..].iter().chain(&packs) {
+            let _ = probe.receive(&pk.bytes, pk.blobs.clone());
         }
         probe.engine.sync_set().unwrap().ids.keys().copied().collect()
     };
