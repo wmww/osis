@@ -2,7 +2,8 @@
 """Tests tools/mutate.py against a fake cargo (it calls its runner the way cargo does, with cargo's
 env): each mutation runs copies of the binaries built for it, with cargo's env and OSIS_MUTANT, so
 a rebuild while a MUTATE_HEAVY run waits for the lock changes nothing it runs; the file is put back
-before the run; an OLD that is not an expression is refused before building. Exit 1 on a mismatch."""
+before the run; an OLD that is not an expression is refused before building; a mutation that does
+not build in a batch is built alone. Exit 1 on a mismatch."""
 import fcntl, json, os, subprocess, sys, tempfile
 
 sys.dont_write_bytecode = True
@@ -12,6 +13,14 @@ MUTATE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "mutate.py")
 FAKE_CARGO = r'''#!/usr/bin/env python3
 import json, os, subprocess, sys
 open(os.environ["FAKE_ARGS"], "w").write(json.dumps(sys.argv[1:]))
+# FAKE_SRC holding BADNEW inside a batch's wrapper (OnceLock) fails to build, as a closure's type does
+src = os.environ.get("FAKE_SRC")
+text = open(src).read() if src else ""
+if "OnceLock" in text and "BADNEW" in text:
+    line = next(k + 1 for k, l in enumerate(text.splitlines()) if "BADNEW" in l)
+    print(json.dumps({"reason": "compiler-message", "message": {"level": "error", "rendered": "error[E0308]: mismatched types",
+                      "spans": [{"file_name": src, "line_start": line, "line_end": line}]}}))
+    sys.exit(101)
 runner = next(v for k, v in os.environ.items() if k.startswith("CARGO_TARGET_") and k.endswith("_RUNNER")).split()
 for b in json.load(open(os.environ["FAKE_PLAN"])):
     subprocess.run([*runner, b, *sys.argv[sys.argv.index("--") + 1:]], env=dict(os.environ, PROPTEST_CASES="32"), check=True)
@@ -105,5 +114,16 @@ with tempfile.TemporaryDirectory(prefix="mutate-test-") as d:
         p = mutate(src, old, "y", src, "zz", "!zz", "--", "--lib")
         _, err = p.communicate()
         check(f"refused {old}", (p.returncode, "not an expression" in err, os.path.exists(env["FAKE_ARGS"])), (1, True, False))
+
+    # a mutation that does not build in a batch: the other built again, then it alone (a plain edit)
+    with open(src, "w") as f:
+        f.write("fn f() -> bool { a < b }\nfn g() -> u8 { BADOLD }\n")
+    with open(exe, "w") as f:
+        f.write('#!/bin/sh\necho "running 1 test"\nif [ "$OSIS_MUTANT" = 1 ]; then echo "test t ... FAILED"; exit 101; fi\necho "test t ... ok"\n')
+    p = mutate(src, "a < b", "a <= b", src, "BADOLD", "BADNEW", "--", "-p", "x", FAKE_SRC=src)
+    out, err = p.communicate()
+    check("does not build in a batch: built alone", (p.returncode, [l for l in out.splitlines() if not l.startswith("   limit ")]),
+          (0, ["| `%s`: `a < b` -> `a <= b` | none |" % src, "| `%s`: `BADOLD` -> `BADNEW` | none |" % src]))
+    check("built alone: file put back", open(src).read(), "fn f() -> bool { a < b }\nfn g() -> u8 { BADOLD }\n")
 print(f"mutate: {'ok' if ok else 'FAILED'}")
 sys.exit(0 if ok else 1)
