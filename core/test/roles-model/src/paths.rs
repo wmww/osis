@@ -2018,8 +2018,14 @@ fn candidate(w: &World, rules: &Rules, r: Id) -> bool {
 /// seeds take it, its seeds take `r`, or it is ordered before `r` and lowers a hop of `r`'s own
 /// path (where it applies `r` has no right).
 pub fn against(w: &World, rules: &Rules, v: &View, r: Id, l: Id) -> bool {
+    against_by(w, rules, r, l, &|x| seeds(w, rules, v, &Set::from([x])).into_keys().collect())
+}
+
+/// `against`, each lowering's seeds read from `seeds_of` (a caller judging many pairs over one
+/// view computes each once).
+pub fn against_by(w: &World, rules: &Rules, r: Id, l: Id, seeds_of: &dyn Fn(Id) -> Set) -> bool {
     let earlier = rules.sides != Sides::ChoiceSeeds && w.key(l) < w.key(r) && rules.lowering(w, l).is_some_and(|h| w.rests(r).contains(&h));
-    l != r && (earlier || seeds(w, rules, v, &Set::from([r])).contains_key(&l) || seeds(w, rules, v, &Set::from([l])).contains_key(&r))
+    l != r && (earlier || seeds_of(r).contains(&l) || seeds_of(l).contains(&r))
 }
 
 /// A choice of lowering `r` (F4): `r` is trusted, and no lowering that cannot stand beside it

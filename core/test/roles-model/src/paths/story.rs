@@ -992,16 +992,26 @@ impl Sim {
             if rules.sides != Sides::NoReceipt {
                 let tie = rules.sides == Sides::Tie;
                 let pool = if tie { &now } else { &before };
+                // each lowering's seeds over this update's held set, computed once
+                let memo: std::cell::RefCell<BTreeMap<Id, Set>> = Default::default();
+                let seeds_of = |x: Id| -> Set {
+                    if let Some(s) = memo.borrow().get(&x) {
+                        return s.clone();
+                    }
+                    let s: Set = seeds(w, rules, &v_now, &Set::from([x])).into_keys().collect();
+                    memo.borrow_mut().insert(x, s.clone());
+                    s
+                };
                 let cands: Vec<(Id, Vec<Id>)> = pool
                     .iter()
                     .copied()
+                    // (a seed is ordered before it, but under `Until::PastEnd`; the cheapest test first)
+                    .filter(|&r| rules.until == Until::PastEnd || arrived.iter().any(|&j| w.key(j) < w.key(r)))
                     .filter(|&r| !trust.contains(&r) && explicit(r))
                     // no side in its fight yet: nothing recorded stands against it
-                    .filter(|&r| rules.sides == Sides::Both || !trust.iter().any(|&l| against(w, rules, &v_now, r, l)))
-                    // (a seed is ordered before it, but under `Until::PastEnd`)
-                    .filter(|&r| rules.until == Until::PastEnd || arrived.iter().any(|&j| w.key(j) < w.key(r)))
+                    .filter(|&r| rules.sides == Sides::Both || !trust.iter().any(|&l| against_by(w, rules, r, l, &seeds_of)))
                     .filter_map(|r| {
-                        let late: Vec<Id> = seeds(w, rules, &v_now, &Set::from([r])).into_keys().filter(|j| arrived.contains(j)).collect();
+                        let late: Vec<Id> = seeds_of(r).into_iter().filter(|j| arrived.contains(j)).collect();
                         (!late.is_empty()).then_some((r, late))
                     })
                     .collect();
