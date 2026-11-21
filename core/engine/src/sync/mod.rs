@@ -451,7 +451,8 @@ impl Engine {
     /// `listed`; `Core::read_facts`, per sync ID and commit; `Core::held_fates`, per commit) up to date with what moved since
     /// the last call: whether any entry moved. Each refreshes itself when asked, but an `Effects`
     /// key that read an entry goes due only once the entry is written, so a module calls this
-    /// before its `due()` (the driver, before each module's settle and until it moves nothing).
+    /// before its `due()` (the driver, once per settle round before the modules, and until it
+    /// moves nothing).
     /// Not done at each transaction's end: the read things come from the sync set, a whole walk,
     /// so a burst of n transactions between two sync steps would cost n walks, not one
     /// (notes/engine.md).

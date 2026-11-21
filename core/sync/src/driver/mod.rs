@@ -737,9 +737,12 @@ impl Node {
         self.engine.report_from(osis_engine::Diagnostic { kind: osis_engine::DiagnosticKind::Connection, tids: Vec::new(), commit: None, peer: None, detail }, remote);
     }
 
-    /// Every module settled, again while one acted or the engine's per-entry values moved
-    /// (`Engine::follow`, before each module's settle: a module's `due` sees an entry move only
-    /// once it is refreshed): opens before read and inbox, so they act on this round's shared set.
+    /// Every module settled, again while one acted or the engine's per-entry values moved:
+    /// opens before read and inbox, so they act on this round's shared set. One `Engine::follow`
+    /// per round, before the modules: a module's `due` sees an entry move only once it is
+    /// refreshed, and a module that writes the engine acts, so the next round's follow refreshes
+    /// what it moved. A round ends the loop only when its follow moved nothing and no module
+    /// wrote after it.
     fn settle(&mut self, out: &mut Vec<Out>) -> Result<()> {
         let mut moved = Vec::new();
         let mut guard = osis_base::loop_guard::LoopGuard::new("node-sync settle loop (Node::settle)");
@@ -756,6 +759,7 @@ impl Node {
             if acted {
                 cx.engine.forget_unread()?;
             }
+            // the round's one follow: every module below sees what earlier rounds wrote
             acted |= acts.by(Act::Follow, cx.engine.follow()?);
             // leave first: what this node syncs, which every other module follows
             acted |= acts.by(Act::Leave, self.leave.settle(&mut crate::leave::Live { cx: &mut cx, status: &self.status })?);
@@ -766,7 +770,6 @@ impl Node {
             let mut cx = cx!(self, out);
             let sessions = &mut self.driver.sessions;
             let mut fetches = Vec::new();
-            acted |= acts.by(Act::Follow, cx.engine.follow()?);
             acted |= acts.by(Act::Read, self.read.settle(&mut cx, sessions, &self.opens, &self.streams, &self.status, &self.unread, &mut fetches)?);
             for (conn, s, b) in fetches {
                 let mut cx = cx!(self, out);
@@ -774,7 +777,6 @@ impl Node {
             }
             let mut cx = cx!(self, out);
             let sessions = &mut self.driver.sessions;
-            acted |= acts.by(Act::Follow, cx.engine.follow()?);
             acted |= acts.by(Act::Inbox, osis_base::costs::scoped("inbox", || self.inbox.settle(&mut cx, sessions, &self.opens, &self.streams, &self.status))?);
             acted |= acts.by(Act::Streams, self.streams.settle(&mut cx, sessions, &self.opens, &mut self.driver.reported)?);
             self.reports(out);
