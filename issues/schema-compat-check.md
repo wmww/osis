@@ -4,7 +4,7 @@
 > Tags: schema, cli
 
 ## What
-- Library: a function taking the earlier revisions (oldest first) and the new one, returning every violation; `osis_schema::check(old, new)` (one `Rule` per spec/versioning.md §4 item) is the base for each pair.
+- Library: a function taking the earlier revisions (oldest first) and the new one, returning every violation; `osis_schema::check(old, new)` (one `Rule` per spec/versioning.md §4 item) is the base for each pair; it is the model's (spec/versioning.md §4) and has only test callers until this lands.
 - CLI: `osis schema check FILE` parses and validates only. Extra arguments add the comparison, e.g. `--against-git` (every committed revision of FILE) or `--against OLD.osis`.
 
 ## Rules
