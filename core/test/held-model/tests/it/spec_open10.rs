@@ -289,7 +289,7 @@ fn open10_variants_agree_where_every_write_is_chained() {
 #[test]
 #[ignore = "by hand"]
 fn open10_explore() {
-    let env = |k: &str, d: usize| std::env::var(k).ok().and_then(|v| v.parse().ok()).unwrap_or(d);
+    use crate::util::env;
     let (step, n) = (env("OSIS_OPEN10_STEP", 97), env("OSIS_OPEN10_RANDOM", 100));
     let mut jobs: Vec<(Open10, String, World)> = vec![];
     for v in Open10::ALL {
@@ -300,30 +300,18 @@ fn open10_explore() {
             jobs.push((v, format!("random {seed}"), random(seed, 14)));
         }
     }
-    let out = std::sync::Mutex::new(std::collections::BTreeMap::<&str, (usize, std::collections::BTreeMap<&str, (usize, String)>)>::new());
-    let next = std::sync::atomic::AtomicUsize::new(0);
-    let threads = std::thread::available_parallelism().map_or(1, |n| n.get());
-    std::thread::scope(|sc| {
-        for _ in 0..threads {
-            sc.spawn(|| loop {
-                let Some((v, name, w)) = jobs.get(next.fetch_add(1, std::sync::atomic::Ordering::Relaxed)) else { return };
-                let mut w = w.clone();
-                let rule = v.set(&mut w, Rule::fixed());
-                let f = fails(&w, &rule);
-                let mut o = out.lock().unwrap();
-                let e = o.entry(v.name()).or_default();
-                e.0 += 1;
-                let mut seen = std::collections::BTreeSet::new();
-                for x in f {
-                    if seen.insert(x.prop) {
-                        let p = e.1.entry(x.prop).or_insert((0, format!("{name}: {x:?}")));
-                        p.0 += 1;
-                    }
-                }
-            });
-        }
+    let runs = crate::util::par_map(&jobs, |(v, name, w)| {
+        let mut w = w.clone();
+        let rule = v.set(&mut w, Rule::fixed());
+        (v, name, fails(&w, &rule))
     });
-    for (v, (worlds, props)) in out.into_inner().unwrap() {
+    let mut out = std::collections::BTreeMap::<&str, (usize, std::collections::BTreeMap<&str, (usize, String)>)>::new();
+    for (v, name, f) in runs {
+        let e = out.entry(v.name()).or_default();
+        e.0 += 1;
+        crate::util::count_props(&mut e.1, name, &f);
+    }
+    for (v, (worlds, props)) in out {
         eprintln!("{v}: {worlds} worlds");
         for (p, (k, first)) in props {
             eprintln!("  {p}: {k} worlds, first {first}");
@@ -335,7 +323,7 @@ fn open10_explore() {
 #[test]
 #[ignore = "by hand"]
 fn open10_show_random() {
-    let seed: u64 = std::env::var("OSIS_HELD_START").ok().and_then(|v| v.parse().ok()).unwrap_or(0);
+    let seed = crate::util::env("OSIS_HELD_START", 0u64);
     let mut w = random(seed, 14);
     let rule = Open10::Granted.set(&mut w, Rule::fixed());
     crate::spec_evidence::show(&w, &rule);

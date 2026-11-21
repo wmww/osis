@@ -12,33 +12,32 @@ use roles_model::paths::{self, Thing};
 use roles_model::Role;
 use std::collections::{BTreeMap, BTreeSet};
 
-/// `w` under `stage`: the failures (P0 to P10), the per-step checks at
-/// steps `at` (every step: None).
-pub fn stage_fails_at(w: &World, stage: Stage, at: Option<&Steps>) -> Vec<Fail> {
-    stage_fails_at_with(w, stage, at, |r| r)
-}
+pub type Steps = BTreeSet<usize>;
 
-/// `stage_fails_at` with `f` applied to the stage's rule.
-pub fn stage_fails_at_with(w: &World, stage: Stage, at: Option<&Steps>, f: impl Fn(Rule) -> Rule) -> Vec<Fail> {
+/// `w` under the story's rules and `stage`'s rule, `f` applied to it.
+pub fn staged(w: &World, stage: Stage, f: impl Fn(Rule) -> Rule) -> (World, Rule) {
     let mut w = w.clone();
     w.rules = crate::spec_story::rules();
     let rule = f(stage.set(&mut w, Rule::fixed()));
+    (w, rule)
+}
+
+/// `w` under `stage` (`f` on its rule): the failures (P0 to P10), the per-step checks at steps
+/// `at` (every step: None).
+pub fn stage_fails_with(w: &World, stage: Stage, at: Option<&Steps>, f: impl Fn(Rule) -> Rule) -> Vec<Fail> {
+    let (w, rule) = staged(w, stage, f);
     let all: Steps = (1..=w.events.len()).collect();
     fails_at(&w, &rule, at.unwrap_or(&all))
 }
 
-pub type Steps = BTreeSet<usize>;
-
 pub fn stage_fails(w: &World, stage: Stage) -> Vec<Fail> {
-    stage_fails_at(w, stage, None)
+    stage_fails_with(w, stage, None, |r| r)
 }
 
-/// The gap of `w` under `stage` (with `f` on its rule) at every step: what lazy delivery leaves
+/// The gap of `w` under `stage` (`f` on its rule) at every step: what lazy delivery leaves
 /// showing (`World::gap`).
 pub fn stage_gaps_with(w: &World, stage: Stage, f: impl Fn(Rule) -> Rule) -> Vec<Fail> {
-    let mut w = w.clone();
-    w.rules = crate::spec_story::rules();
-    let rule = f(stage.set(&mut w, Rule::fixed()));
+    let (w, rule) = staged(w, stage, f);
     let mut out = vec![];
     w.run(&rule, |st| out.extend(w.gap(&rule, st)));
     out
@@ -48,25 +47,12 @@ pub fn stage_gaps(w: &World, stage: Stage) -> Vec<Fail> {
     stage_gaps_with(w, stage, |r| r)
 }
 
-/// The properties `w` fails under each stage.
-fn by_stage(w: &World) -> BTreeMap<&'static str, Vec<&'static str>> {
-    by_stage_with(w, |r| r)
-}
-
-/// `stage_fails` with `f` applied to the stage's rule.
-pub fn stage_fails_with(w: &World, stage: Stage, f: impl Fn(Rule) -> Rule) -> Vec<Fail> {
-    let mut w = w.clone();
-    w.rules = crate::spec_story::rules();
-    let rule = f(stage.set(&mut w, Rule::fixed()));
-    crate::spec_open10::fails(&w, &rule)
-}
-
-/// `by_stage` with `f` applied to each stage's rule (a control).
-fn by_stage_with(w: &World, f: impl Fn(Rule) -> Rule) -> BTreeMap<&'static str, Vec<&'static str>> {
+/// The properties `w` fails under each stage, `f` on each stage's rule (a control; none: `|r| r`).
+fn by_stage(w: &World, f: impl Fn(Rule) -> Rule) -> BTreeMap<&'static str, Vec<&'static str>> {
     Stage::ALL
         .iter()
         .map(|&s| {
-            let mut p: Vec<&str> = stage_fails_with(w, s, &f).iter().map(|f| f.prop).collect();
+            let mut p: Vec<&str> = stage_fails_with(w, s, None, &f).iter().map(|f| f.prop).collect();
             p.sort();
             p.dedup();
             (s.name(), p)
@@ -82,7 +68,7 @@ fn by_stage_with(w: &World, f: impl Fn(Rule) -> Rule) -> BTreeMap<&'static str, 
 #[test]
 fn open14_with_no_honest_node_between_the_removal_is_the_gap_at_d() {
     let w = family(Shape { via_org: true, units: 0, listed: false, thief: true, regrant: false, addendum: false, raised: false, q_d: false, q_r: false, y_a: false, org_apart: true, grant: false, mint: 0 });
-    for (name, p) in by_stage(&w) {
+    for (name, p) in by_stage(&w, |r| r) {
         assert_eq!(p, Vec::<&str>::new(), "{name}");
     }
     for s in Stage::ALL {
@@ -111,7 +97,7 @@ fn open14_a_removed_writers_other_route_carried_the_removal_today() {
     w.write(k, |p| p.content(K, 2, &[], D));
     w.write(x, |p| p.edge(X, 6, &[], A, K, Role::None, &[]));
     let late = w.write(k, |p| p.content(K, 8, &[A], R));
-    for (name, p) in by_stage(&w) {
+    for (name, p) in by_stage(&w, |r| r) {
         assert_eq!(p, Vec::<&str>::new(), "{name}");
     }
     for s in Stage::ALL {
@@ -143,7 +129,7 @@ fn open14_keys_open_travel_carries_a_removal_to_the_things_reading_through_it() 
     w.write(k, |p| p.content(K, 2, &[A, O, D], R));
     w.write(y, |p| p.edge(Y, 6, &[], D, O, Role::None, &[]));
     let late = w.write(k, |p| p.content(K, 8, &[A, O, D], R));
-    for (name, p) in by_stage(&w) {
+    for (name, p) in by_stage(&w, |r| r) {
         assert_eq!(p, Vec::<&str>::new(), "{name}");
     }
     for s in Stage::ALL {
@@ -175,7 +161,7 @@ fn open17_keys_open_through_a_mint_admins_record_edge() {
     w.write(y, |p| p.edge(Y, 6, &[], D, O, Role::None, &[]));
     let late = w.write(k, |p| p.content(K, 8, &[A, O, D], R));
     for f in [(|r| r) as fn(Rule) -> Rule, grants_only] {
-        for (name, p) in by_stage_with(&w, f) {
+        for (name, p) in by_stage(&w, f) {
             assert_eq!(p, Vec::<&str>::new(), "{name}");
         }
     }
@@ -202,7 +188,7 @@ fn open17_a_removed_writers_other_route_through_a_record_edge() {
     w.write(k, |p| p.content(K, 2, &[], D));
     w.write(x, |p| p.edge(X, 6, &[], A, K, Role::None, &[]));
     w.write(k, |p| p.content(K, 8, &[A], R));
-    for (name, p) in by_stage(&w) {
+    for (name, p) in by_stage(&w, |r| r) {
         assert_eq!(p, Vec::<&str>::new(), "{name}");
     }
     for s in Stage::ALL {
@@ -217,43 +203,39 @@ pub type Job = Box<dyn Fn() -> (String, World, Option<Steps>) + Sync>;
 
 /// `f` is applied to every stage's rule but today's (a control against today as built).
 pub fn tally(jobs: &[Job], stages: &[Stage], f: impl Fn(Rule) -> Rule + Sync) -> String {
-    let out = std::sync::Mutex::new(BTreeMap::<&str, BTreeMap<&str, (usize, String)>>::new());
-    let worse = std::sync::Mutex::new(BTreeMap::<&str, (usize, String)>::new());
-    let next = std::sync::atomic::AtomicUsize::new(0);
-    let threads = std::thread::available_parallelism().map_or(1, |n| n.get());
-    std::thread::scope(|sc| {
-        for _ in 0..threads {
-            sc.spawn(|| loop {
-                let Some(j) = jobs.get(next.fetch_add(1, std::sync::atomic::Ordering::Relaxed)) else { return };
-                let (name, w, at) = j();
-                let today = stage_gaps(&w, Stage::Today).is_empty();
-                for &s in stages {
-                    let (mut f, g) = if s == Stage::Today { (stage_fails_at(&w, s, at.as_ref()), stage_gaps(&w, s)) } else { (stage_fails_at_with(&w, s, at.as_ref(), &f), stage_gaps_with(&w, s, &f)) };
-                    let worse_here = today && !g.is_empty();
-                    f.extend(g);
-                    let mut o = out.lock().unwrap();
-                    let e = o.entry(s.name()).or_default();
-                    let mut seen = BTreeSet::new();
-                    for x in &f {
-                        if seen.insert(x.prop) {
-                            e.entry(x.prop).or_insert((0, format!("{name}: {x:?}"))).0 += 1;
-                        }
-                    }
-                    if let Some(x) = f.iter().find(|x| worse_here && x.prop == "gap") {
-                        worse.lock().unwrap().entry(s.name()).or_insert((0, format!("{name}: {x:?}"))).0 += 1;
-                    }
-                }
-            });
-        }
+    let runs = crate::util::par_map(jobs, |j| {
+        let (name, w, at) = j();
+        let today = stage_gaps(&w, Stage::Today).is_empty();
+        let per: Vec<(Stage, Vec<Fail>, bool)> = stages
+            .iter()
+            .map(|&s| {
+                let fs = |r| if s == Stage::Today { r } else { f(r) };
+                let (mut f, g) = (stage_fails_with(&w, s, at.as_ref(), fs), stage_gaps_with(&w, s, fs));
+                let worse_here = today && !g.is_empty();
+                f.extend(g);
+                (s, f, worse_here)
+            })
+            .collect();
+        (name, per)
     });
+    let mut out = BTreeMap::<&str, BTreeMap<&str, (usize, String)>>::new();
+    let mut worse = BTreeMap::<&str, (usize, String)>::new();
+    for (name, per) in runs {
+        for (s, f, worse_here) in per {
+            crate::util::count_props(out.entry(s.name()).or_default(), &name, &f);
+            if let Some(x) = f.iter().find(|x| worse_here && x.prop == "gap") {
+                worse.entry(s.name()).or_insert((0, format!("{name}: {x:?}"))).0 += 1;
+            }
+        }
+    }
     let mut s = String::new();
-    for (st, props) in out.into_inner().unwrap() {
+    for (st, props) in out {
         s += &format!("{st}\n");
         for (p, (k, first)) in props {
             s += &format!("  {p}: {k} worlds, first {first}\n");
         }
     }
-    for (st, (k, first)) in worse.into_inner().unwrap() {
+    for (st, (k, first)) in worse {
         s += &format!("GAP WHERE TODAY HAS NONE {st}: {k}, first {first}\n");
     }
     s
@@ -266,7 +248,7 @@ pub fn tally(jobs: &[Job], stages: &[Stage], f: impl Fn(Rule) -> Rule + Sync) ->
 #[test]
 #[ignore = "by hand"]
 fn reach_explore() {
-    let env = |k: &str, d: usize| std::env::var(k).ok().and_then(|v| v.parse().ok()).unwrap_or(d);
+    use crate::util::env;
     let (step, n, story) = (env("OSIS_REACH_STEP", 97), env("OSIS_REACH_RANDOM", 100), env("OSIS_STORY_N", 12));
     let mut jobs: Vec<Job> = vec![];
     for i in (0..FAMILY).step_by(step) {
@@ -288,5 +270,3 @@ fn reach_explore() {
     let control = std::env::var("OSIS_REACH_CONTROL").unwrap_or_default();
     eprintln!("{}", tally(&jobs, &Stage::ALL, |r| if control == "grants" { grants_only(r) } else { r }));
 }
-
-

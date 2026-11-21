@@ -858,18 +858,14 @@ fn each_fix_is_needed_plain() {
     assert!(random(1000, &Rules { sides: Sides::Lowered, ..f }).failures() > 0, "lowered");
 }
 
-fn var(k: &str) -> Option<u64> {
-    std::env::var(k).ok().filter(|v| !v.is_empty()).map(|v| v.parse::<u64>().unwrap_or_else(|_| panic!("{k}={v:?} is not a decimal u64")))
-}
-
 /// Random worlds `OSIS_ROLES_START` (default 0) on, `OSIS_ROLES_SEEDS` many (13,000: about 215
 /// CPU-s), a thread per core, each from its own index (a larger sample is split across holds by
 /// the start, as `-- N paths --from K` splits a search).
 #[test]
 #[ignore = "property"]
 fn random_worlds_hold_large() {
-    let start = var("OSIS_ROLES_START").unwrap_or(0);
-    let n = var("OSIS_ROLES_SEEDS").unwrap_or(13_000);
+    let start = crate::env_u64("OSIS_ROLES_START").unwrap_or(0);
+    let n = crate::env_u64("OSIS_ROLES_SEEDS").unwrap_or(13_000);
     let st = random_from(start, n, &Rules::fixed());
     st.print("paths", &Rules::fixed());
     assert_holds(&st, &format!("OSIS_ROLES_START={start}"));
@@ -2440,8 +2436,8 @@ fn views_differing(m: &Sim, rules: &Rules) -> u64 {
 #[test]
 #[ignore = "by hand: Open 23's readings against fixed"]
 fn leave_readings_change_no_story_reading() {
-    let start = var("OSIS_ROLES_START").unwrap_or(0);
-    let n = var("OSIS_ROLES_SEEDS").unwrap_or(13_000);
+    let start = crate::env_u64("OSIS_ROLES_START").unwrap_or(0);
+    let n = crate::env_u64("OSIS_ROLES_SEEDS").unwrap_or(13_000);
     let mut out = vec![];
     for ln in [Drops::Part, Drops::LeaveLowers, Drops::LeaveOnGrant, Drops::Redemption] {
         let rules = Rules { drops: ln, ..Rules::fixed() };

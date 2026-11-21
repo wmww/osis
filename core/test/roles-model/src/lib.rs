@@ -224,6 +224,12 @@ pub fn family_on_every_core<T: Tally>(total: usize, stride: usize, f: impl Fn(us
     })
 }
 
+/// A test's decimal `u64` environment variable (unset or empty: None).
+#[cfg(test)]
+pub(crate) fn env_u64(k: &str) -> Option<u64> {
+    std::env::var(k).ok().filter(|v| !v.is_empty()).map(|v| v.parse::<u64>().unwrap_or_else(|_| panic!("{k}={v:?} is not a decimal u64")))
+}
+
 #[cfg(test)]
 mod stride_tests {
     use super::*;

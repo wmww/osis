@@ -9,6 +9,46 @@ pub const T: ThingId = 10; // mint admin: node 0
 pub const MINT_ADMIN: NodeId = 0;
 pub const W0: u64 = 1_000_000_000;
 
+/// `f` of every job on a thread per core, each job taken by the next free thread: the results in
+/// job order.
+pub fn par_map<'a, J: Sync, R: Send>(jobs: &'a [J], f: impl Fn(&'a J) -> R + Sync) -> Vec<R> {
+    let next = std::sync::atomic::AtomicUsize::new(0);
+    let threads = std::thread::available_parallelism().map_or(1, |n| n.get());
+    let mut out: Vec<(usize, R)> = std::thread::scope(|sc| {
+        let hs: Vec<_> = (0..threads)
+            .map(|_| {
+                sc.spawn(|| {
+                    let mut mine = vec![];
+                    loop {
+                        let i = next.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                        let Some(j) = jobs.get(i) else { return mine };
+                        mine.push((i, f(j)));
+                    }
+                })
+            })
+            .collect();
+        hs.into_iter().flat_map(|h| h.join().unwrap()).collect()
+    });
+    out.sort_by_key(|x| x.0);
+    out.into_iter().map(|x| x.1).collect()
+}
+
+/// Counts one world's failures `f` (named `name`) into `e`: per property, the worlds failing it
+/// and the first one's failure.
+pub fn count_props(e: &mut BTreeMap<&'static str, (usize, String)>, name: &str, f: &[held_model::evidence::Fail]) {
+    let mut seen = std::collections::BTreeSet::new();
+    for x in f {
+        if seen.insert(x.prop) {
+            e.entry(x.prop).or_insert((0, format!("{name}: {x:?}"))).0 += 1;
+        }
+    }
+}
+
+/// A test's environment variable `k` (unset or empty: `d`); a value that does not parse panics.
+pub fn env<T: std::str::FromStr>(k: &str, d: T) -> T {
+    std::env::var(k).ok().filter(|v| !v.is_empty()).map_or(d, |v| v.parse().unwrap_or_else(|_| panic!("{k}={v:?} does not parse")))
+}
+
 /// The ts of wall `h` hours after `W0`.
 pub fn ts(h: u64) -> u64 {
     (W0 + h * HOUR) * MS

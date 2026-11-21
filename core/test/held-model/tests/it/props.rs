@@ -21,9 +21,9 @@ const LEN: usize = 24;
 /// 3000 under `OSIS_FULL=1` (notes/testing.md, Sizes). This crate reads the environment itself:
 /// it depends on no osis crate.
 fn large() -> Vec<u64> {
-    let var = |k: &str| std::env::var(k).ok().filter(|v| !v.is_empty()).map(|v| v.parse::<u64>().unwrap_or_else(|_| panic!("{k}={v:?} is not a decimal u64")));
-    let start = var("OSIS_HELD_START").unwrap_or(0);
-    let n = var("OSIS_HELD_SEEDS").unwrap_or(if var("OSIS_FULL") == Some(1) { 3000 } else { 300 });
+    use crate::util::env;
+    let start = env("OSIS_HELD_START", 0u64);
+    let n = env("OSIS_HELD_SEEDS", if env("OSIS_FULL", 0u64) == 1 { 3000 } else { 300 });
     assert!(n > 0, "zero seeds");
     eprintln!("held-model props: seeds {start}..{}", start + n);
     (start..start + n).collect()
@@ -31,16 +31,7 @@ fn large() -> Vec<u64> {
 
 /// Runs `f` on every seed of `seeds`, a thread per core; a failing seed's panic names it.
 fn each(seeds: Vec<u64>, f: impl Fn(u64) + Sync) {
-    let next = std::sync::atomic::AtomicUsize::new(0);
-    let threads = std::thread::available_parallelism().map_or(1, |n| n.get()).min(seeds.len()).max(1);
-    std::thread::scope(|sc| {
-        for _ in 0..threads {
-            sc.spawn(|| loop {
-                let Some(&seed) = seeds.get(next.fetch_add(1, std::sync::atomic::Ordering::Relaxed)) else { return };
-                f(seed);
-            });
-        }
-    });
+    crate::util::par_map(&seeds, |&seed| f(seed));
 }
 
 /// Commit IDs of the covers `settle` writes (the generator's are below 1_000_001).

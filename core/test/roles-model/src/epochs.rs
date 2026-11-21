@@ -1223,39 +1223,22 @@ mod tests {
         assert_holds(&st, "random");
     }
 
-    fn control_fails(control: Control, kind: &str) {
-        let st = run_random(20, 1, control);
-        assert!(st.kinds.contains_key(kind), "{control:?}: {:?}", st.kinds);
-    }
-
+    /// Each control fails its property within 20 random worlds.
     #[test]
     #[ignore = "property"]
-    fn no_cutoff_fails_safety_plain() {
-        control_fails(Control::NoCutoff, "safety");
-    }
-
-    #[test]
-    #[ignore = "property"]
-    fn own_only_fails_liveness_plain() {
-        control_fails(Control::OwnOnly, "liveness");
-    }
-
-    #[test]
-    #[ignore = "property"]
-    fn void_uncounted_fails_liveness_plain() {
-        control_fails(Control::VoidUncounted, "liveness");
-    }
-
-    fn var(k: &str) -> Option<u64> {
-        std::env::var(k).ok().filter(|v| !v.is_empty()).map(|v| v.parse::<u64>().unwrap_or_else(|_| panic!("{k}={v:?} is not a decimal u64")))
+    fn controls_fail_plain() {
+        for (control, kind) in [(Control::NoCutoff, "safety"), (Control::OwnOnly, "liveness"), (Control::VoidUncounted, "liveness")] {
+            let st = run_random(20, 1, control);
+            assert!(st.kinds.contains_key(kind), "{control:?}: {:?}", st.kinds);
+        }
     }
 
     /// Worlds from `OSIS_ROLES_START` (default 0), `OSIS_ROLES_SEEDS` many (2000).
     #[test]
     #[ignore = "property"]
     fn random_worlds_hold_large() {
-        let start = var("OSIS_ROLES_START").unwrap_or(0);
-        let n = var("OSIS_ROLES_SEEDS").unwrap_or(2000);
+        let start = crate::env_u64("OSIS_ROLES_START").unwrap_or(0);
+        let n = crate::env_u64("OSIS_ROLES_SEEDS").unwrap_or(2000);
         let st = crate::each_world(0xe90c, start..start + n, |rng, st| check(&random_world(rng, Control::None), st));
         st.print("epochs");
         assert_holds(&st, &format!("OSIS_ROLES_START={start}"));

@@ -46,7 +46,7 @@ fn a_story_world_under_a_retag_holds_under_iv() {
 #[test]
 #[ignore = "by hand"]
 fn story_explore() {
-    let env = |k: &str, d: u64| std::env::var(k).ok().and_then(|v| v.parse().ok()).unwrap_or(d);
+    use crate::util::env;
     let (start, n) = (env("OSIS_HELD_START", 0), env("OSIS_STORY_N", 12));
     let vs: Vec<Open10> = match std::env::var("OSIS_EV_RULE") {
         Ok(name) => Open10::ALL.into_iter().filter(|v| v.name() == name).collect(),
@@ -60,29 +60,14 @@ fn story_explore() {
             }
         }
     }
-    let out = std::sync::Mutex::new(std::collections::BTreeMap::<&str, std::collections::BTreeMap<&str, (usize, String)>>::new());
-    let next = std::sync::atomic::AtomicUsize::new(0);
-    let threads = std::thread::available_parallelism().map_or(1, |n| n.get());
     let t0 = std::time::Instant::now();
-    std::thread::scope(|sc| {
-        for _ in 0..threads {
-            sc.spawn(|| loop {
-                let Some(&(v, seed, u)) = jobs.get(next.fetch_add(1, std::sync::atomic::Ordering::Relaxed)) else { return };
-                let sim = paths::random_world(seed, &rules());
-                let f = story_fails(&sim, u, v);
-                let mut o = out.lock().unwrap();
-                let e = o.entry(v.name()).or_default();
-                let mut seen = std::collections::BTreeSet::new();
-                for x in f {
-                    if seen.insert(x.prop) {
-                        e.entry(x.prop).or_insert((0, format!("seed {seed} units {u}: {x:?}"))).0 += 1;
-                    }
-                }
-            });
-        }
-    });
+    let runs = crate::util::par_map(&jobs, |&(v, seed, u)| (v, seed, u, story_fails(&paths::random_world(seed, &rules()), u, v)));
     eprintln!("{} jobs in {:?}", jobs.len(), t0.elapsed());
-    for (v, props) in out.into_inner().unwrap() {
+    let mut out = std::collections::BTreeMap::<&str, std::collections::BTreeMap<&str, (usize, String)>>::new();
+    for (v, seed, u, f) in runs {
+        crate::util::count_props(out.entry(v.name()).or_default(), &format!("seed {seed} units {u}"), &f);
+    }
+    for (v, props) in out {
         eprintln!("{v}");
         for (p, (k, first)) in props {
             eprintln!("  {p}: {k} worlds, first {first}");
@@ -95,7 +80,7 @@ fn story_explore() {
 /// random worlds of 14 moves and `story` story random worlds under every unit crossing, from
 /// `OSIS_HELD_START`, a thread per core.
 fn search(family_step: usize, random_worlds: u64, story: u64) {
-    let start = std::env::var("OSIS_HELD_START").ok().filter(|v| !v.is_empty()).map_or(0, |v| v.parse::<u64>().expect("OSIS_HELD_START is a decimal u64"));
+    let start = crate::util::env("OSIS_HELD_START", 0u64);
     eprintln!("open10 (iv): random seeds {start}..{}, story seeds {start}..{}", start + random_worlds, start + story);
     type Job = Box<dyn Fn() -> (String, Vec<Fail>) + Sync>;
     let mut jobs: Vec<Job> = vec![];
@@ -118,21 +103,7 @@ fn search(family_step: usize, random_worlds: u64, story: u64) {
             }));
         }
     }
-    let next = std::sync::atomic::AtomicUsize::new(0);
-    let bad = std::sync::Mutex::new(vec![]);
-    let threads = std::thread::available_parallelism().map_or(1, |n| n.get());
-    std::thread::scope(|sc| {
-        for _ in 0..threads {
-            sc.spawn(|| loop {
-                let Some(j) = jobs.get(next.fetch_add(1, std::sync::atomic::Ordering::Relaxed)) else { return };
-                let (name, f) = j();
-                if !f.is_empty() {
-                    bad.lock().unwrap().push(format!("{name}: {:?}", f[0]));
-                }
-            });
-        }
-    });
-    let bad = bad.into_inner().unwrap();
+    let bad: Vec<String> = crate::util::par_map(&jobs, |j| j()).into_iter().filter_map(|(name, f)| f.first().map(|x| format!("{name}: {x:?}"))).collect();
     assert!(bad.is_empty(), "{} worlds fail, first: {}", bad.len(), bad[0]);
 }
 

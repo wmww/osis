@@ -21,7 +21,7 @@
 //!   grants travel under its sync ID: taken-ness is not modelled, every grant counts). What of it
 //!   lies on things outside the unit is a copy, the rest bodies. A removal is in it only as
 //!   evidence of a body (notes/write-path-design.md §2, D1) or as Role changes travel puts it
-//!   (D3); nothing logs a removal anywhere for its own sake (lazy delivery: no errand, no reach).
+//!   (D3); nothing logs a removal anywhere for its own sake (lazy delivery).
 //! - **Delivery** (`Placement`): nodes sync sync IDs (`Node::syncs`, closed under the standing duty:
 //!   a node syncing S syncs every sync ID of a thing in S's unit) and hold what those carry and what
 //!   they wrote. An honest node logs under each sync ID it syncs what its own view requires there;

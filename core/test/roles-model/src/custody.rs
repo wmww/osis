@@ -2326,17 +2326,13 @@ mod tests {
         assert_holds(&st, "small family sample");
     }
 
-    fn var(k: &str) -> Option<u64> {
-        std::env::var(k).ok().filter(|v| !v.is_empty()).map(|v| v.parse::<u64>().unwrap_or_else(|_| panic!("{k}={v:?} is not a decimal u64")))
-    }
-
     /// Worlds from `OSIS_ROLES_START` (default 0), `OSIS_ROLES_SEEDS` many (2000, 20000 under
     /// `OSIS_FULL=1`).
     #[test]
     #[ignore = "property"]
     fn random_worlds_hold_large() {
-        let start = var("OSIS_ROLES_START").unwrap_or(0);
-        let n = var("OSIS_ROLES_SEEDS").unwrap_or(if var("OSIS_FULL") == Some(1) { 20_000 } else { 2000 });
+        let start = crate::env_u64("OSIS_ROLES_START").unwrap_or(0);
+        let n = crate::env_u64("OSIS_ROLES_SEEDS").unwrap_or(if crate::env_u64("OSIS_FULL") == Some(1) { 20_000 } else { 2000 });
         eprintln!("custody::random_worlds_hold_large: {n} worlds from {start}");
         let st = crate::each_world(0xc057, start..start + n, |rng, st| check(&random_world(rng, Control::None), st));
         st.print("custody");

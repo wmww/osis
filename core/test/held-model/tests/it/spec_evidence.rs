@@ -335,7 +335,7 @@ fn p1_to_p8_hold_on_a_slice_of_the_family() {
 
 /// The random worlds' seeds: `n` from `OSIS_HELD_START` (default 0).
 fn seeds(n: u64) -> std::ops::Range<u64> {
-    let start = std::env::var("OSIS_HELD_START").ok().filter(|v| !v.is_empty()).map_or(0, |v| v.parse::<u64>().expect("OSIS_HELD_START is a decimal u64"));
+    let start = crate::util::env("OSIS_HELD_START", 0u64);
     eprintln!("evidence: random seeds {start}..{}", start + n);
     start..start + n
 }
@@ -359,28 +359,15 @@ fn search(family_step: usize, random_worlds: u64) {
             (format!("random seed {seed}"), f, g, k)
         }));
     }
-    let next = std::sync::atomic::AtomicUsize::new(0);
-    let bad = std::sync::Mutex::new(vec![]);
-    let gap = std::sync::atomic::AtomicUsize::new(0);
-    let carrying = std::sync::atomic::AtomicUsize::new(0);
-    let threads = std::thread::available_parallelism().map_or(1, |n| n.get());
-    std::thread::scope(|sc| {
-        for _ in 0..threads {
-            sc.spawn(|| loop {
-                let Some(j) = jobs.get(next.fetch_add(1, std::sync::atomic::Ordering::Relaxed)) else { return };
-                let (name, f, g, k) = j();
-                gap.fetch_add(g, std::sync::atomic::Ordering::Relaxed);
-                carrying.fetch_add(k, std::sync::atomic::Ordering::Relaxed);
-                if !f.is_empty() {
-                    bad.lock().unwrap().push(format!("{name}: {:?} {:?}", props(&f), f[0]));
-                }
-            });
+    let (mut bad, mut gap, mut carrying) = (vec![], 0, 0);
+    for (name, f, g, k) in crate::util::par_map(&jobs, |j| j()) {
+        (gap, carrying) = (gap + g, carrying + k);
+        if !f.is_empty() {
+            bad.push(format!("{name}: {:?} {:?}", props(&f), f[0]));
         }
-    });
-    let bad = bad.into_inner().unwrap();
+    }
     // the gap, counted (issues/removed-key-writes-show-far.md)
-    let carrying = carrying.into_inner();
-    eprintln!("{} worlds; {} with the gap; {carrying} keysets carrying a demotion", jobs.len(), gap.into_inner());
+    eprintln!("{} worlds; {gap} with the gap; {carrying} keysets carrying a demotion", jobs.len());
     assert!(bad.is_empty(), "{} worlds fail, first: {}", bad.len(), bad[0]);
     assert!(carrying > 0, "no keyset carries a demotion: raise the rotation rate in `random`");
 }
@@ -424,38 +411,29 @@ fn tally(w: &World, rule: &Rule, out: &mut BTreeMap<&'static str, usize>, first:
 #[test]
 #[ignore = "by hand"]
 fn explore() {
-    let lines: Vec<String> = std::thread::scope(|sc| {
-        let hs: Vec<_> = variants()
-            .into_iter()
-            .map(|(name, rule)| {
-                sc.spawn(move || {
-                    let mut out = BTreeMap::<&str, usize>::new();
-                    let mut first = BTreeMap::new();
-                    let mut worlds = BTreeMap::<&str, usize>::new();
-                    for i in 0..FAMILY {
-                        let w = family(Shape::nth(i));
-                        let mut o = BTreeMap::<&str, usize>::new();
-                        let mut f1 = BTreeMap::new();
-                        tally(&w, &rule, &mut o, &mut f1);
-                        for (k, v) in o {
-                            *out.entry(k).or_default() += v;
-                            *worlds.entry(k).or_default() += 1;
-                        }
-                        for (k, v) in f1 {
-                            first.entry(k).or_insert(format!("{:?} {v}", Shape::nth(i)));
-                        }
-                    }
-                    let mut s = format!("{name}: {out:?} worlds {worlds:?}\n");
-                    for (k, v) in first {
-                        s += &format!("  {k}: {v}\n");
-                    }
-                    s
-                })
-            })
-            .collect();
-        hs.into_iter().map(|h| h.join().unwrap()).collect()
-    });
-    for l in lines {
+    for l in crate::util::par_map(&variants(), |(name, rule)| {
+        let mut out = BTreeMap::<&str, usize>::new();
+        let mut first = BTreeMap::new();
+        let mut worlds = BTreeMap::<&str, usize>::new();
+        for i in 0..FAMILY {
+            let w = family(Shape::nth(i));
+            let mut o = BTreeMap::<&str, usize>::new();
+            let mut f1 = BTreeMap::new();
+            tally(&w, &rule, &mut o, &mut f1);
+            for (k, v) in o {
+                *out.entry(k).or_default() += v;
+                *worlds.entry(k).or_default() += 1;
+            }
+            for (k, v) in f1 {
+                first.entry(k).or_insert(format!("{:?} {v}", Shape::nth(i)));
+            }
+        }
+        let mut s = format!("{name}: {out:?} worlds {worlds:?}\n");
+        for (k, v) in first {
+            s += &format!("  {k}: {v}\n");
+        }
+        s
+    }) {
         eprint!("{l}");
     }
 }
@@ -463,40 +441,31 @@ fn explore() {
 #[test]
 #[ignore = "by hand"]
 fn explore_random() {
-    let lines: Vec<String> = std::thread::scope(|sc| {
-        let hs: Vec<_> = variants()
-            .into_iter()
-            .map(|(name, rule)| {
-                sc.spawn(move || {
-                    let mut out = BTreeMap::<&str, usize>::new();
-                    let mut first = BTreeMap::new();
-                    let mut prov = 0;
-                    for seed in 0..300u64 {
-                        let w = random(seed, 12);
-                        let mut f1 = BTreeMap::new();
-                        tally(&w, &rule, &mut out, &mut f1);
-                        let st = w.run(&rule, |_| {});
-                        let (o, p) = w.p5_order(&rule, &st, 5);
-                        prov += p;
-                        for f in o {
-                            *out.entry(f.prop).or_default() += 1;
-                            f1.entry(f.prop).or_insert(format!("{f:?}"));
-                        }
-                        for (k, v) in f1 {
-                            first.entry(k).or_insert(format!("seed {seed} {v}"));
-                        }
-                    }
-                    let mut s = format!("{name}: {out:?} provisional {prov}\n");
-                    for (k, v) in first {
-                        s += &format!("  {k}: {v}\n");
-                    }
-                    s
-                })
-            })
-            .collect();
-        hs.into_iter().map(|h| h.join().unwrap()).collect()
-    });
-    for l in lines {
+    for l in crate::util::par_map(&variants(), |(name, rule)| {
+        let mut out = BTreeMap::<&str, usize>::new();
+        let mut first = BTreeMap::new();
+        let mut prov = 0;
+        for seed in 0..300u64 {
+            let w = random(seed, 12);
+            let mut f1 = BTreeMap::new();
+            tally(&w, &rule, &mut out, &mut f1);
+            let st = w.run(&rule, |_| {});
+            let (o, p) = w.p5_order(&rule, &st, 5);
+            prov += p;
+            for f in o {
+                *out.entry(f.prop).or_default() += 1;
+                f1.entry(f.prop).or_insert(format!("{f:?}"));
+            }
+            for (k, v) in f1 {
+                first.entry(k).or_insert(format!("seed {seed} {v}"));
+            }
+        }
+        let mut s = format!("{name}: {out:?} provisional {prov}\n");
+        for (k, v) in first {
+            s += &format!("  {k}: {v}\n");
+        }
+        s
+    }) {
         eprint!("{l}");
     }
 }
@@ -520,7 +489,7 @@ fn random_shape() {
 #[test]
 #[ignore = "by hand"]
 fn show_random() {
-    let seed: u64 = std::env::var("OSIS_HELD_START").ok().and_then(|v| v.parse().ok()).unwrap_or(0);
+    let seed = crate::util::env("OSIS_HELD_START", 0u64);
     let w = random(seed, 12);
     let name = std::env::var("OSIS_EV_RULE").unwrap_or_else(|_| "fixed".into());
     let rule = variants().into_iter().find(|v| v.0 == name).expect("OSIS_EV_RULE names a variant").1;
@@ -607,7 +576,7 @@ fn d4_a_reader_holding_the_removal_deposits_it_and_a_writer_promotes_it() {
 #[test]
 #[ignore = "by hand"]
 fn d4_explore() {
-    let env = |k: &str, d: usize| std::env::var(k).ok().and_then(|v| v.parse().ok()).unwrap_or(d);
+    use crate::util::env;
     let (step, n) = (env("OSIS_D4_STEP", 1), env("OSIS_D4_RANDOM", 0));
     let mut worlds: Vec<(String, Box<dyn Fn() -> World + Sync>)> = vec![];
     for i in (0..FAMILY).step_by(step) {
@@ -618,33 +587,24 @@ fn d4_explore() {
     }
     let d1 = Rule::fixed();
     let d4 = Rule { deposit: true, ..d1 };
-    let tally = std::sync::Mutex::new((0usize, 0usize, 0usize, 0usize, Vec::<String>::new(), 0usize, 0usize));
-    let next = std::sync::atomic::AtomicUsize::new(0);
-    let threads = std::thread::available_parallelism().map_or(1, |n| n.get());
-    std::thread::scope(|sc| {
-        for _ in 0..threads {
-            sc.spawn(|| loop {
-                let Some((name, f)) = worlds.get(next.fetch_add(1, std::sync::atomic::Ordering::Relaxed)) else { return };
-                let w = f();
-                let g1 = !gaps(&w, &d1).is_empty();
-                let g4 = !gaps(&w, &d4).is_empty();
-                let bad = fails(&w, &d4);
-                let mut left = vec![];
-                w.run(&d4, |st| left.extend(unpromoted(&w, &d4, st)));
-                let mut t = tally.lock().unwrap();
-                t.0 += usize::from(g1);
-                t.1 += usize::from(g4);
-                t.2 += usize::from(!bad.is_empty());
-                t.3 += usize::from(!left.is_empty());
-                t.5 += usize::from(g1 && !g4 && left.is_empty());
-                t.6 += usize::from(g1 && !g4 && !left.is_empty());
-                if !bad.is_empty() || (!left.is_empty() && t.4.len() < 5) {
-                    t.4.push(format!("{name}: {:?} unpromoted {left:?}", bad.first()));
-                }
-            });
-        }
+    let runs = crate::util::par_map(&worlds, |(name, f)| {
+        let w = f();
+        let mut left = vec![];
+        w.run(&d4, |st| left.extend(unpromoted(&w, &d4, st)));
+        (name, !gaps(&w, &d1).is_empty(), !gaps(&w, &d4).is_empty(), fails(&w, &d4), left)
     });
-    let t = tally.into_inner().unwrap();
+    let mut t = (0usize, 0usize, 0usize, 0usize, Vec::<String>::new(), 0usize, 0usize);
+    for (name, g1, g4, bad, left) in runs {
+        t.0 += usize::from(g1);
+        t.1 += usize::from(g4);
+        t.2 += usize::from(!bad.is_empty());
+        t.3 += usize::from(!left.is_empty());
+        t.5 += usize::from(g1 && !g4 && left.is_empty());
+        t.6 += usize::from(g1 && !g4 && !left.is_empty());
+        if !bad.is_empty() || (!left.is_empty() && t.4.len() < 5) {
+            t.4.push(format!("{name}: {:?} unpromoted {left:?}", bad.first()));
+        }
+    }
     eprintln!("{} worlds: the gap under D1 to D3 {}, with D4 {}; failing with D4 {}; a deposit never promoted {}; out of the gap by D4 with every deposit promoted {}, with one never promoted {}", worlds.len(), t.0, t.1, t.2, t.3, t.5, t.6);
     for l in t.4 {
         eprintln!("  {l}");
