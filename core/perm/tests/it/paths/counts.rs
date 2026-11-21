@@ -942,3 +942,54 @@ fn reach_on_hostile_shapes() {
     }
     assert!(per[0] == per[1] && per[0] <= 3 * 64 + 10, "{per:?}");
 }
+
+/// One team on A, every part in one component (each rests on an edge a held write sets): H grants
+/// Y admin (ts 1); Y grants Z (ts 2) and W (ts 3) admin; W grants V read (ts 4); Z grants `n`
+/// holders read (ts 10..).
+fn team_on_a(n: u32) -> Vec<Commit> {
+    const Y: u32 = 30;
+    const Z: u32 = 31;
+    const W: u32 = 32;
+    const V: u32 = 33;
+    let mut c = vec![write(1, H, 1, &[], A, Y, Some(Role::Admin)), write(2, Y, 2, &[], A, Z, Some(Role::Admin)), write(3, Y, 3, &[], A, W, Some(Role::Admin)), write(4, W, 4, &[], A, V, Some(Role::Read))];
+    c.extend((0..n).map(|i| write(1000 + i as u64, Z, 10 + i as u64, &[], A, holder(i), Some(Role::Read))));
+    c
+}
+
+// The budget the walk is built to (spec/requirements.md: every operation costs in proportion to
+// what it changes, never to history; issues/perm-eval-cost.md): an update's walk work is the same
+// at n and 10n edge writes wherever what it changes is the same. Over `team_on_a` (n = 100, 1000):
+// (a) a grant appended at the end; (b) a grant by Y backdated to ts 5, before Z's n grants, which
+// it changes nothing of; (c) H removing W at the end listing nothing, dropping W's grant of V (one
+// restart). Checkpoint replay (`Paths::whole`: an update replays its component from the earliest
+// key it touches, a restart from its earliest drop) meets (a) and misses (b) and (c): it walks Z's
+// n grants again each time, tenfold at 10n.
+#[test]
+fn an_update_costs_what_it_changes_at_n_and_10n() {
+    let cases = |n: u32| -> [Commit; 3] {
+        let end = 20 + n as u64;
+        [write(7, 31, end, &[], A, X, Some(Role::Read)), write(8, 30, 5, &[], A, X, Some(Role::Read)), write(9, H, end, &[], A, 32, None)]
+    };
+    let cost = |whole: bool, n: u32, c: Commit| {
+        let mut p = if whole { Paths::whole(&records(), BTreeSet::new()) } else { Paths::new(&records(), BTreeSet::new()) };
+        p.add(&team_on_a(n));
+        let before = p.counts();
+        p.add(&[c]);
+        (delta(before, p.counts()), p)
+    };
+    let mut replay = vec![];
+    for n in [100u32, 1000] {
+        let [a, b, c] = cases(n);
+        let (d, _) = cost(false, n, a.clone());
+        assert_eq!((d.steps, d.restarts), (1, 0), "appended at n {n}: {d:?}");
+        let (d, _) = cost(false, n, b.clone());
+        assert_eq!((d.steps, d.restarts), (1, 0), "backdated at n {n}: {d:?}");
+        let (d, p) = cost(false, n, c.clone());
+        assert_eq!((d.steps, d.restarts), (2, 1), "removal at n {n}: {d:?}");
+        assert_eq!(p.status(&WriteId(cid(4), 0)), Some(Status::Dropped));
+        replay.push([cost(true, n, a).0.steps, cost(true, n, b).0.steps, cost(true, n, c).0.steps]);
+    }
+    // checkpoint replay: (a) 1 at both; (b) n + 1; (c) the removal, then the replay from W's
+    // grant of V on (it, Z's n grants, the removal again): n + 3
+    assert_eq!(replay, vec![[1, 101, 103], [1, 1001, 1003]], "checkpoint replay");
+}

@@ -5,6 +5,16 @@
 
 Stage A1 (notes/redesign-plan.md): the walk's rebuild counts work per update at n and 10n edge writes with replay from a checkpoint (osis-perm `paths`: rebuild the walk; A1 brief 6); items 1 to 3 are of today's walk and are read again against the rebuild.
 
+**Checkpoint replay misses the budget** (osis-perm `paths::counts::an_update_costs_what_it_changes_at_n_and_10n`): budget, from spec/requirements.md (every operation costs in proportion to what it changes, never to history), an update's walk steps the same at n and 10n where what it changes is the same. One team on A (H grants Y; Y grants Z and W; W grants V; Z grants n holders), every part in one component under any sound partition (each rests on an edge a held write sets; key hops couple only through list writes). Steps per update at n = 100 / 1000:
+
+| update | budget (the `paths` walk by reach) | checkpoint replay (`Paths::whole`) |
+|---|---|---|
+| grant appended at the end | 1 / 1 | 1 / 1 |
+| grant by Y backdated before Z's grants, changing nothing | 1 / 1 | 101 / 1001 |
+| H removes W at the end listing nothing (drops W's grant of V, one restart) | 2 / 2 | 103 / 1003 |
+
+So "one walk per component with a checkpoint per restart point, an update replaying from the earliest key it touches" (D1's call) costs, per backdated write or removal with drops, the role history after its key (its earliest drop) in its component; an organisation is one component (`an_organisation_costs_what_reads_the_change`: > 100p against 1 + p). The rebuild waits on the coordinator's call (keep a walk by reach, rebuilt from the spec; or accept the replay and say so in the requirements' terms).
+
 Repro: osis-perm `scale::repro_late_write_rejudges_flat`, `scale::repro_evaluate_with_drops_linear` (`osis_perm::commits_walked` at 10^2 and 10^3 edge writes; notes/test-scale.md Scale checks).
 
 Done: notes/perm-impl.md (`Timelines::append`, the found-order rule for D, placed late writes and joining nodes, shared kept states) and "Walk cost" (numbers).
