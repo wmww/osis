@@ -1,6 +1,8 @@
 # Sync: design reasons
 > Summary: Why spec/sync*.md is shaped as it is at its core: one kind of node (Tess), one blob per commit, sync IDs per thing and their role keys, entitlement, sections, certificate blobs, self-certifying sync IDs, the blob prefix, stamps and first-stamped-wins, delete keys and their levels, purge-by on the wire; rejected designs at that level, policy defaults, open items. Not here: sync-key gating, claims and re-seal (notes/sync-access.md), deletion and convergence (notes/sync-convergence.md), inbox and deposits (notes/sync-inbox.md), what a node keeping S unread learns (notes/unreadable-data.md), the code (notes/sync.md and the module notes it lists).
 
+**Principle (Tess):** one kind of node; reading is a property of the pair (node, sync ID), and everything a node keeping S unread can check (stamps, delete keys, steps) is fixed by bytes it holds, never by trust in a peer.
+
 The requirements behind sync: spec/requirements.md, Data a node cannot read and Deletion. The rules: spec/sync.md and the files it maps. Byte layouts: spec/wire.md.
 
 ## Nodes (Tess)

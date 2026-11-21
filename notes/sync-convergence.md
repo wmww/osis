@@ -1,6 +1,8 @@
 # Sync convergence: compaction, purge and deletion
 > Summary: Why spec/sync-judgement.md §2-§4 and spec/sync-compaction.md §1 are shaped as they are: one judgement per body, "covered means redundant", positive uncovered, must-not-hold holds nothing, carriers and their tiebreaks, a purged body waiting for its rewrite, purge reaching snapshots, purge commits kept `ROLE_KEEP`, header-only lasting blobs, tombstones, no timed deletes, why no recycle bin; the TLC findings behind each; what it accepts; what is never judged. How the read module does it: notes/sync-read.md. Neighbours: notes/sync.md (index), notes/whole-commits.md (one blob per commit), notes/crdt.md (merge and compaction in the engine), notes/engine-validity.md, Flips against dropped data (validity flips against dropped data), notes/ephemeral.md (the memory class, spec/sync-compaction.md §2).
 
+**Principle:** convergence is the one rule: per body under a sync ID must-hold, may-hold or must-not-hold, judged alike at every node from what it checked; join, leave, compaction and repair after a bad deletion are all this rule.
+
 TLC findings S1-S18 are core/test/tla/sync/AMBIGUITIES.md's (written against the earlier spec's section numbers).
 
 ## The rule
