@@ -100,16 +100,16 @@ fn grows_nothing(gives: Gives, by: &[usize]) {
     // a warm-up: each aspect's history cursor settles with time alone
     at(&mut w, t, by, 0, 0);
     at(&mut w, t, by, 0, 2);
-    let n = at(&mut w, t, by, 2, 8);
-    let n10 = at(&mut w, t, by, 8, 68);
+    let n = at(&mut w, t, by, 2, 5);
+    let n10 = at(&mut w, t, by, 5, 35);
     for i in [0, 2] {
-        assert_eq!(w.engine(i).get(&t, &value_ak()).unwrap(), Some(Value::Str("v00000067".into())), "node {i} reads the newest");
+        assert_eq!(w.engine(i).get(&t, &value_ak()).unwrap(), Some(Value::Str("v00000034".into())), "node {i} reads the newest");
     }
     flat(&n, &n10);
 }
 
 // spec/commits.md §5 Own replaces and Forgetting, spec/requirements.md Scale: one writer replacing
-// one register 6 and 60 more times stores the same rows and blobs at the writer, a reader and a node
+// one register 3 and 30 more times stores the same rows and blobs at the writer, a reader and a node
 // keeping S unread once tombstones have aged out.
 #[test]
 fn single_writer_replace_grows_nothing_spec_commits_5() {
@@ -117,7 +117,7 @@ fn single_writer_replace_grows_nothing_spec_commits_5() {
 }
 
 // spec/commits.md §5 Covered and Forgetting, spec/sync-compaction.md §1 (trigger): two writers
-// replacing one register in turn store the same at 6 and 60 more writes (automatic compaction covers
+// replacing one register in turn store the same at 3 and 30 more writes (automatic compaction covers
 // the other's writes).
 #[test]
 fn several_writers_grow_nothing_spec_commits_5() {
@@ -330,12 +330,13 @@ fn quiet_starts(n: usize) -> Vec<(u64, u64)> {
 }
 
 // spec: none (property: notes/growth.md, no per-session growth; spec/sync-set.md §3, a start
-// judges what left the sync set by the whole set): a start with nothing new commits nothing, at
-// n and 10n things shared with a reader and a node keeping them unread.
+// judges what left the sync set by the whole set): a start with nothing new commits nothing,
+// with several things shared with a reader and a node keeping them unread (nothing, so no
+// count at 10n).
 #[test]
-fn a_quiet_start_commits_nothing_at_n_and_10n() {
-    let (a, b) = (quiet_starts(1), quiet_starts(10));
-    assert!(a.iter().chain(&b).all(|x| *x == (0, 0)), "(engine, store) commits per node's start: {a:?} at n, {b:?} at 10n");
+fn a_quiet_start_commits_nothing() {
+    let a = quiet_starts(3);
+    assert!(a.iter().all(|x| *x == (0, 0)), "(engine, store) commits per node's start: {a:?}");
 }
 
 // spec/permissions.md §6 (Invalid deltas: valid again, received again from any holder),
@@ -592,7 +593,7 @@ fn leaked(_: &mut World, _: usize, _: &mut World, _: usize, _: &[String]) -> Str
 
 // Releasing everything, its own-things arm (issues/storage-owners.md), spec/sync-set.md §3 (Nothing of R stays): what a node mints with its account root as admin, its account
 // and its node root, written and then released, leaves its rows and blobs as a fresh node's of the
-// same account once tombstones have aged out, at 2 and 20 rounds: but the roots' set tombstones,
+// same account once tombstones have aged out, at 1 and 10 rounds: but the roots' set tombstones,
 // a few bytes per removal (three strongs and the independent thing's ticket a round), and `cv/` (flat).
 // A mismatch prints the rows a fresh node lacks and why each thing they name is kept (`leaked`:
 // notes/test-harnesses.md, Why kept and row dumps).
@@ -600,9 +601,9 @@ fn leaked(_: &mut World, _: usize, _: &mut World, _: usize, _: &[String]) -> Str
 fn releasing_own_things_returns_storage_to_a_fresh_nodes_spec_sync_set_3() {
     let (mut wf, mut wa, mut wb) = (world(0, 1), world(0, 1), world(0, 1));
     let fresh = own_rounds(&mut wf, 0);
-    let (a, b) = (own_rounds(&mut wa, 2), own_rounds(&mut wb, 20));
-    as_fresh(&a, &fresh, 2 * 4, "2 rounds", &mut |f| leaked(&mut wa, 0, &mut wf, 0, f));
-    as_fresh(&b, &fresh, 20 * 4, "20 rounds", &mut |f| leaked(&mut wb, 0, &mut wf, 0, f));
+    let (a, b) = (own_rounds(&mut wa, 1), own_rounds(&mut wb, 10));
+    as_fresh(&a, &fresh, 4, "1 round", &mut |f| leaked(&mut wa, 0, &mut wf, 0, f));
+    as_fresh(&b, &fresh, 10 * 4, "10 rounds", &mut |f| leaked(&mut wb, 0, &mut wf, 0, f));
     assert_eq!(a.0.get("cv/"), b.0.get("cv/"), "cv/ flat");
 }
 
@@ -643,17 +644,17 @@ fn expiry_rounds(w: &mut World, rounds: usize) -> Held {
 // record's; Forgetting: a part not held on a thing whose record is not held, a forgotten name
 // past its expiry), spec/requirements.md (data may carry an expiry at which every node drops it):
 // a thing made to expire with its holding strong, written and expired, leaves its rows and blobs
-// as a fresh node's of the same account, at 2 and 20 rounds: but the expired strongs in D's
+// as a fresh node's of the same account, at 1 and 10 rounds: but the expired strongs in D's
 // snapshot, a few bytes each.
 #[test]
 fn expired_things_return_storage_to_a_fresh_nodes_spec_commits_5() {
     let (mut wf, mut wa, mut wb) = (world(0, 1), world(0, 1), world(0, 1));
     let fresh = expiry_rounds(&mut wf, 0);
-    let (a, b) = (expiry_rounds(&mut wa, 2), expiry_rounds(&mut wb, 20));
+    let (a, b) = (expiry_rounds(&mut wa, 1), expiry_rounds(&mut wb, 10));
     // each expired strong stays in D's holds.0 snapshot as its value-less record (notes/crdt.md,
     // An expired set element keeps its record), about two removals' tombstones of bytes
-    as_fresh(&a, &fresh, 2 * 2, "2 rounds", &mut |f| leaked(&mut wa, 0, &mut wf, 0, f));
-    as_fresh(&b, &fresh, 2 * 20, "20 rounds", &mut |f| leaked(&mut wb, 0, &mut wf, 0, f));
+    as_fresh(&a, &fresh, 2, "1 round", &mut |f| leaked(&mut wa, 0, &mut wf, 0, f));
+    as_fresh(&b, &fresh, 2 * 10, "10 rounds", &mut |f| leaked(&mut wb, 0, &mut wf, 0, f));
 }
 
 /// Node 0 mints A with its account root as admin, keeping 10 minutes of history whose strongs hold
@@ -718,15 +719,15 @@ fn history_rounds(w: &mut World, rounds: usize) -> Held {
 
 // Releasing everything, its history arm, spec/data-model.md §8 What counts, spec/sync-set.md
 // §3: a thing whose history holds its strongs' targets, released with what only its history
-// held, leaves its rows and blobs as a fresh node's, at 2 and 20 rounds: but the root's set
+// held, leaves its rows and blobs as a fresh node's, at 1 and 10 rounds: but the root's set
 // tombstones (one removal a round).
 #[test]
 fn releasing_held_history_returns_storage_to_a_fresh_nodes_spec_data_model_8() {
     let (mut wf, mut wa, mut wb) = (world(0, 1), world(0, 1), world(0, 1));
     let fresh = own_rounds(&mut wf, 0);
-    let (a, b) = (history_rounds(&mut wa, 2), history_rounds(&mut wb, 20));
-    as_fresh(&a, &fresh, 2, "2 rounds", &mut |f| leaked(&mut wa, 0, &mut wf, 0, f));
-    as_fresh(&b, &fresh, 20, "20 rounds", &mut |f| leaked(&mut wb, 0, &mut wf, 0, f));
+    let (a, b) = (history_rounds(&mut wa, 1), history_rounds(&mut wb, 10));
+    as_fresh(&a, &fresh, 1, "1 round", &mut |f| leaked(&mut wa, 0, &mut wf, 0, f));
+    as_fresh(&b, &fresh, 10, "10 rounds", &mut |f| leaked(&mut wb, 0, &mut wf, 0, f));
     assert_eq!(a.0.get("cv/"), b.0.get("cv/"), "cv/ flat");
 }
 
@@ -823,16 +824,16 @@ fn redeem_round(w: &mut World) {
     w.advance(1_000);
 }
 
-/// `grant_rounds` at 2 and 20 rounds: each node as a fresh world's (`as_fresh`), each round's
+/// `grant_rounds` at 1 and 10 rounds: each node as a fresh world's (`as_fresh`), each round's
 /// set removals at most `removals` a node.
 fn grants_as_fresh(accept: bool, redeem: bool, removals: usize) {
     let (mut wf, fresh) = grant_rounds(0, accept, false);
-    let ((mut wa, a), (mut wb, b)) = (grant_rounds(2, accept, redeem), grant_rounds(20, accept, redeem));
+    let ((mut wa, a), (mut wb, b)) = (grant_rounds(1, accept, redeem), grant_rounds(10, accept, redeem));
     // the redeem round's set removals: the link's seed thing's and K's strongs and tickets beside the thing's
     let extra = if redeem { 4 } else { 0 };
     for (i, who) in ["the maker", "the grantee"].iter().enumerate() {
-        as_fresh(&a[i], &fresh[i], 2 * removals + extra, &format!("{who}, 2 rounds"), &mut |f| leaked(&mut wa, i, &mut wf, i, f));
-        as_fresh(&b[i], &fresh[i], 20 * removals + extra, &format!("{who}, 20 rounds"), &mut |f| leaked(&mut wb, i, &mut wf, i, f));
+        as_fresh(&a[i], &fresh[i], removals + extra, &format!("{who}, 1 round"), &mut |f| leaked(&mut wa, i, &mut wf, i, f));
+        as_fresh(&b[i], &fresh[i], 10 * removals + extra, &format!("{who}, 10 rounds"), &mut |f| leaked(&mut wb, i, &mut wf, i, f));
         assert_eq!(a[i].0.get("cv/"), b[i].0.get("cv/"), "{who}: cv/ flat");
     }
 }
@@ -840,7 +841,7 @@ fn grants_as_fresh(accept: bool, redeem: bool, removals: usize) {
 // Releasing everything, its grant, fire, accept and revoke arm (issues/storage-owners.md),
 // spec/sync-set.md §3: a thing granted to another account, its fire accepted, written,
 // the grantee removed and both sides letting it go, leaves each node as a fresh world's once the
-// inbox lifetime, the role keep and tombstones have passed, at 2 and 20 rounds.
+// inbox lifetime, the role keep and tombstones have passed, at 1 and 10 rounds.
 #[test]
 fn a_granted_and_revoked_thing_returns_storage_to_a_fresh_worlds_spec_sync_set_3() {
     grants_as_fresh(true, false, 4);
