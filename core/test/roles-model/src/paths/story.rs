@@ -2547,9 +2547,10 @@ impl TinyStats {
 }
 
 /// The may-grant grants of `rd` its signer held no right to make (notes/write-path-design.md §1
-/// G1, G2), read from the reading's own history (`Reading::hist`), not from the walk's rule: each
-/// sets an edge with no current grant, its role below admin, every hop before its last giving
-/// that role and the last giving admin or that role with the flag, at its `ts`.
+/// G1, G2; Owner keys O3), read from the reading's own history (`Reading::hist`), not from the
+/// walk's rule: each sets an edge with no current grant, its role below admin, its key hop listed,
+/// every hop before its last giving that role and the last giving admin or that role with the
+/// flag, at its `ts`.
 pub fn unright_flag_grants(w: &World, rd: &Reading) -> Vec<Id> {
     // edge `e`'s value and flag just before `i` in key order (a record edge starts at admin)
     let before = |e: Edge, i: Id| -> (Role, bool) {
@@ -2568,7 +2569,7 @@ pub fn unright_flag_grants(w: &World, rd: &Reading) -> Vec<Id> {
             let Some((&last, hops)) = w.hops(i).split_last() else { return true };
             let (lr, lf) = before(last, i);
             let held = before(w.sets(i).expect("an edge write"), i).0 > Role::None;
-            held || r >= Role::Admin || hops.iter().any(|&e| before(e, i).0 < r) || !(lr == Role::Admin || (lf && lr >= r))
+            held || r >= Role::Admin || before(w.key_hop(i), i).0 != Role::Admin || hops.iter().any(|&e| before(e, i).0 < r) || !(lr == Role::Admin || (lf && lr >= r))
         })
         .collect()
 }
