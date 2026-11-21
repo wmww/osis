@@ -1,18 +1,17 @@
 //! What a connection's proof exchange shows about accounts (spec/sync-opens.md §2, connection proofs).
 
 use crate::engine::Engine;
-use crate::error::Result;
 use osis_base::CreationRecord;
 use osis_crypto::SigningSecret;
 
 impl Engine {
     /// This node's account at its open epoch, when it holds that epoch's seed: the signing key
     /// and the account's creation record. `None` before it holds one or while it does not.
-    pub fn account_prover(&self) -> Result<Option<(SigningSecret, CreationRecord)>> {
-        let Some(p) = self.core.account.get() else { return Ok(None) };
-        let Some(record) = self.core.created(&p).cloned() else { return Ok(None) };
+    pub fn account_prover(&self) -> Option<(SigningSecret, CreationRecord)> {
+        let p = self.core.account.get()?;
+        let record = self.core.created(&p).cloned()?;
         // `account_signing` refuses an open epoch whose seed is not held: none then
-        Ok(self.core.account_signing(&p).ok().flatten().map(|(_, keys)| (keys.signing.clone(), record)))
+        self.core.account_signing(&p).ok().flatten().map(|(_, keys)| (keys.signing.clone(), record))
     }
 
     /// The public key `account_prover` proves with (`None` where it gives none), read without

@@ -324,7 +324,7 @@ fn rotation_due(tx: &mut Tx<'_>, who: &Tid, a: &Tid, mode: Due, kept: &BTreeSet<
         }
         due = due || unread && boxes_rotator(tx, who, a, r)?;
         // a derived epoch this node wrote under, current until a rotation carries it
-        due = due || r == Role::Read && merge::due(tx, a)?;
+        due = due || r == Role::Read && merge::due(tx, a);
         // withdraw: an unsuperseded epoch whose names this node does not meet, by its maker,
         // or by any node that may rotate when its maker may not (or is unknown: a snapshot's
         // epoch); withdraws by several fork, which stands

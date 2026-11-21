@@ -74,13 +74,9 @@ fn derived_through(core: &Core, t: &Tid, e: &Epoch) -> Vec<(Tid, Epoch)> {
 /// (spec/crypto.md §4 Current): a rotation of read is due. Judged without writing (a read, as
 /// `Engine::role_duty_due` judges it): those a rotation's history carries are not current, and a
 /// run lets go of them (`settle`, from `rotate_below`).
-pub(crate) fn due(tx: &mut Tx<'_>, a: &Tid) -> Result<bool> {
-    let Some(written) = tx.core.ix.derived_written.get(a) else { return Ok(false) };
-    if written.is_empty() {
-        return Ok(false);
-    }
-    let written = written.clone();
-    Ok(tx.core.own_epochs(a).is_some_and(|view| written.iter().any(|e| view.read.is_current(e))))
+pub(crate) fn due(tx: &mut Tx<'_>, a: &Tid) -> bool {
+    let Some(written) = tx.core.ix.derived_written.get(a).filter(|w| !w.is_empty()).cloned() else { return false };
+    tx.core.own_epochs(a).is_some_and(|view| written.iter().any(|e| view.read.is_current(e)))
 }
 
 /// Lets go of the derived read epochs of `a` this node wrote under that a rotation's history

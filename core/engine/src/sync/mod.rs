@@ -780,7 +780,7 @@ impl Engine {
         if own_node {
             out.push((self.core.id.keys().signing.clone(), self.core.id.record().clone()));
         }
-        out.extend(self.account_prover()?);
+        out.extend(self.account_prover());
         out.extend(self.core.key_actors.values().map(|k| (k.keys().signing.clone(), k.record().clone())));
         Ok(out)
     }

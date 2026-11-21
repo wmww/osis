@@ -574,7 +574,7 @@ fn read_invalid_delta(tx: &mut Tx<'_>, id: &CommitId, author: Tid, actor: Tid, d
         return Ok(false);
     }
     let s = ct::Secrets { boxes: w.boxes, history: w.history.into_iter().collect() };
-    read_for_reading(tx, &actor, &s, osis_keys::Unchecked { author, commit: *id })
+    Ok(read_for_reading(tx, &actor, &s, osis_keys::Unchecked { author, commit: *id }))
 }
 
 /// The invalid `secrets.0` deltas on `actor` held (`read_invalid`), opened again: an opener of
@@ -600,16 +600,16 @@ pub(crate) fn reread_invalid(tx: &mut Tx<'_>, actor: &Tid) -> Result<bool> {
 
 /// Ingests `s` of `actor` for reading only, sourced from `from` (`SecretsRead::Pending`);
 /// whether it gave anything.
-fn read_for_reading(tx: &mut Tx<'_>, actor: &Tid, s: &ct::Secrets, from: osis_keys::Unchecked) -> Result<bool> {
+fn read_for_reading(tx: &mut Tx<'_>, actor: &Tid, s: &ct::Secrets, from: osis_keys::Unchecked) -> bool {
     tx.core.touch();
     if tx.core.ingest_secrets(actor, s, crate::engine::secrets::SecretsRead::Pending(from), &osis_keys::HistoryAlts::new()) {
         tx.core.waits.read_from(from.commit);
-        return Ok(true);
+        return true;
     }
     if tx.core.reading_full(actor) {
         tx.core.waits.box_refused(from.commit);
     }
-    Ok(false)
+    false
 }
 
 /// What a `secrets.0` compaction snapshot carries (spec/crypto.md §4): `state` less every entry
@@ -694,7 +694,7 @@ pub(crate) fn sealed_key(c: &CommitId, a: &Tid) -> Vec<u8> {
 /// by an applied valid box (spec/crypto.md §4).
 pub(crate) fn read_pending_boxes(tx: &mut Tx<'_>, blob: &osis_commit::CommitBlob, id: &CommitId) -> Result<()> {
     for (a, s, from) in pending_boxes(tx, blob, id)? {
-        read_for_reading(tx, &a, &s, from)?;
+        read_for_reading(tx, &a, &s, from);
     }
     Ok(())
 }
