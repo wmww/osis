@@ -22,7 +22,7 @@ It reads exactly the sync IDs this node syncs kept unread (`set::SyncsFollow`), 
 ## Work follows change
 The sync IDs by the store's feed (O(moved)); each S through one `Effects` key over its secrets and path, so a head move or a box judges only its own S. `set_unheld` runs when the verdict changes, and `set_unheld(false)` for every S that moves to read (also one not followed since a start: a copy dropped before a restart is fetched anew, notes/sync-streams.md Fetched anew).
 
-Tests: core/sync/tests/it/keep.rs (end to end over connections: removal steps registered and a copy dropped, re-grants past the head, Registers lost and sent again).
+Tests: core/sync/tests/it/keep.rs (end to end over connections: removal steps registered and a copy dropped, a step issued while a store is away, Registers lost and sent again).
 
 ## Reasons
 - **No removal message.** The head moving past every key the node holds is what a removal does to it (a removal rotates sync), and a Register is verified on its path. A late box costs a re-fetch, not data a reader holds (Tess: predictable over keeping "in case").

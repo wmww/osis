@@ -33,9 +33,10 @@
 //! memory and go with it. A record's place is held in memory as long as opens holds the record
 //! (`record_left`), so a reconnect reads and writes nothing of it per member.
 //!
-//! Not built: relay-only entries (the engine's relay path); the engine's linked blobs (`wants`:
-//! pages and header lists before apply); `Rank::Never` from the engine (a keyset without history:
-//! the facade has no call for it yet).
+//! Relay-only entries: `relay` (notes/ephemeral.md, In osis-sync).
+//!
+//! Not built: the engine's linked blobs (`wants`: pages and header lists before apply);
+//! `Rank::Never` from the engine (a keyset without history: the facade has no call for it yet).
 
 mod known;
 mod pull;

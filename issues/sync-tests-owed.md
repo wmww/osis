@@ -34,6 +34,10 @@ Each readable with `git show e1bafb8ca^:issues/<name>.md` (`refused-memory-entry
 - HN_fallany (a snapshot arriving invalid moves the fall mark as one held valid falling does): the engine's `fall_mark`.
 - `Live::fresh` (held blobs handed to `Engine::seal_body`): no World test; a mutation passing none fails no osis-sync test (the engine's `rotation::tests_reseal::facade_*` cover the contract). Cheapest found: a purge of one thing's part of a commit spanning two things, the other thing's section then logged again verbatim.
 
+- The facade's waits (notes/sync-facade.md, Pending): one small world per wait and waking event asserting the order property's `lost_wakes` empty, and a world for a refused box freed by room.
+- The facade's account piece (notes/sync-facade.md, Certificate bodies): a rotation re-derives that one `Piece::Account`, not every piece naming the account; no count test at n and 10n checks it.
+- The differential's "a fresh reader that syncs only through a node keeping S unread reads alike" as an oracle clause (notes/sync-test-harness.md): today only the simulation `sims::a_reader_through_a_node_keeping_it_unread_plain`.
+
 ## API behaviours the rebuild's deletion left untested
 Names from `git show 28641727e`; each goes through the facade.
 - libs/chat across synced nodes (libs/chat/tests/it has create, edits, purge sets, cursors on hand-carried commits, a chat made, joined by link and relayed over sync; a kick's validity flip: core/osis/tests/it/backlinks.rs): deletes and tombstones reaching a new node.
