@@ -1418,7 +1418,9 @@ fn walk(w: &World, rules: &Rules, v: &View, d0: &Set) -> Walk {
                             let Some((last, before)) = hops.split_last() else { continue };
                             let gives = if rules.flag_check { p.grantable_at(*last, c.ts) } else { p.at(*last, c.ts) };
                             let min = !rules.min_check || before.iter().all(|&e| p.at(e, c.ts) >= r);
-                            if p.at((*holder, c.on), c.ts) > Role::None || !min || gives < r {
+                            // its key hop listed (O3)
+                            let keyed = !rules.key_hop || p.at(w.key_hop(i), c.ts) == Role::Admin;
+                            if p.at((*holder, c.on), c.ts) > Role::None || !keyed || !min || gives < r {
                                 continue;
                             }
                             by_flag = true;
@@ -1636,7 +1638,7 @@ fn first_applied(w: &World, p: &Pass, edges: &[Edge]) -> Option<Key> {
 /// right (notes/write-path-design.md §1, Judging content, C2): no self-removal or finalize, every
 /// hop it rests on giving what it needs just before its key in this reading (`p`, each `until`
 /// read at its `ts`): admin (a list write also by O4), or for a write that may apply as a
-/// may-grant grant, may-grant at its role by its path (G1). Applied or dropped alike. Control
+/// may-grant grant, its key hop listed and may-grant at its role by its path (O3, G1). Applied or dropped alike. Control
 /// `Regrant::ChainedEver`: the first chained write (`first_chained_ever`).
 fn first_by_right(w: &World, rules: &Rules, p: &Pass, held: &Set, at: Role) -> BTreeMap<Edge, Key> {
     if rules.regrant == Regrant::ChainedEver {
@@ -1655,7 +1657,7 @@ fn first_by_right(w: &World, rules: &Rules, p: &Pass, held: &Set, at: Role) -> B
         let listing = p.hist.keys().chain(&records).any(|&(k, t)| t == e.1 && is_key(k) && role_at(w, p, (k, t), key) == Role::Admin);
         let admin = admin && (!w.list_write(i) || list_writes(w, i, listing));
         let hops = w.hops(i);
-        let flagged = flag_grant(w, i).is_some_and(|r| hops.split_last().is_some_and(|(l, b)| grantable_at(w, p, *l, key) >= r && b.iter().all(|&h| role_at(w, p, h, key) >= r)));
+        let flagged = role_at(w, p, w.key_hop(i), key) == Role::Admin && flag_grant(w, i).is_some_and(|r| hops.split_last().is_some_and(|(l, b)| grantable_at(w, p, *l, key) >= r && b.iter().all(|&h| role_at(w, p, h, key) >= r)));
         if admin || flagged {
             first.insert(e, key);
         }

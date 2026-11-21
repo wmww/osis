@@ -3790,3 +3790,19 @@ fn an_idle_may_grant_grant_with_no_right_moves_no_first_point_back() {
     }
 }
 
+
+/// A key that removed itself makes no may-grant grant (Owner keys O3: a commit holds its right only
+/// where its key hop is listed; G2 adds the path's may-grant to that): B, holding write with the
+/// flag on A, removes its own key, then grants N6 write on A by may-grant. It applies nowhere and,
+/// made with no right (C2), moves no first point back: N6's content before its later grant shows not.
+#[test]
+fn an_unlisted_key_makes_no_may_grant_grant() {
+    let mut w = account();
+    w.push(H, 1, &[], A, Kind::set(B, Write).may_grant());
+    w.push_signed(own_key(B), B, 2, &[], B, Kind::set(own_key(B), Gone));
+    let g = w.push(B, 3, &[], A, Kind::set(N6, Write));
+    w.push(H, 6, &[], A, Kind::set(N6, Write));
+    let c = w.content(N6, 4, &[], A);
+    let rd = fixed(&w, &[]);
+    assert!(!rd.listed(own_key(B), B) && !rd.applied.contains(&g) && rd.role(N6, A) == Write && !rd.valid.contains(&c), "{rd:?}");
+}
