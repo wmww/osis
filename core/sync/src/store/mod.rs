@@ -1441,13 +1441,8 @@ impl Store {
         };
         g.write_in(true, |t, env| {
             empty(t, env)?;
-            // every connection's source rows of S (`C/ conn s ..`)
-            for (k, _) in t.scan_local(rows::CONN_ROW, b"", usize::MAX)? {
-                if k.get(rows::CONN_ROW.len() + 8..rows::CONN_ROW.len() + 24) == Some(&s.0[..]) {
-                    t.remove_local(&k, Shred::No)?;
-                }
-            }
-            Ok(())
+            // every connection's source rows of S
+            drop_conn_rows(t, rows::CONN_ROW, |_, x| x == s)
         })?;
         g.write(|t, env| {
             path::erase(t, env, s)?;
@@ -1686,12 +1681,10 @@ impl Store {
     fn gone_memory(g: &mut Inner, src: Source) -> Result<()> {
         g.write_in(true, |t, env| {
             Self::gone_from(t, env, src)?;
-            if let Source::Conn(c) = src {
-                for (k, _) in t.scan_local(&[rows::CONN_ROW, &c.0.to_be_bytes()].concat(), b"", usize::MAX)? {
-                    t.remove_local(&k, Shred::No)?;
-                }
+            match src {
+                Source::Conn(c) => drop_conn_rows(t, &[rows::CONN_ROW, &c.0.to_be_bytes()].concat(), |_, _| true),
+                Source::Record(_) => Ok(()),
             }
-            Ok(())
         })
     }
 
@@ -1887,10 +1880,29 @@ fn source_row(t: &mut Transaction<'_>, src: Source, s: &SyncId, tag: u8, key: &[
     })
 }
 
+/// Drops the row `src` keeps of S under `tag` and `key`, and its aging row (`w/`, keyed by the
+/// time its value starts with).
 fn drop_source_row(t: &mut Transaction<'_>, src: Source, s: &SyncId, tag: u8, key: &[u8]) -> Result<()> {
+    let Some(v) = source_row(t, src, s, tag, key)? else { return Ok(()) };
+    if let Some(at) = v.get(..8).and_then(|x| x.try_into().ok()) {
+        t.remove_local(&rows::aging_key(WallMs(u64::from_be_bytes(at)), s, tag, key, src), Shred::No)?;
+    }
     match src {
         Source::Record(rec) => drop(t.record_remove_row(&rec, tag, s, key)?),
         Source::Conn(c) => drop(t.remove_local(&rows::conn_row_key(c, s, tag, key), Shred::No)?),
+    }
+    Ok(())
+}
+
+/// Drops each connection's source row under `prefix` (`C/ conn s tag key`) that `pick` names
+/// (by connection and sync ID), with its aging row.
+fn drop_conn_rows(t: &mut Transaction<'_>, prefix: &[u8], pick: impl Fn(crate::types::ConnId, &SyncId) -> bool) -> Result<()> {
+    for (k, _) in t.scan_local(prefix, b"", usize::MAX)? {
+        let mut r = R::new(k.get(rows::CONN_ROW.len()..).unwrap_or_default());
+        let (c, s, tag) = (crate::types::ConnId(r.u64()?), SyncId(r.array()?), r.u8()?);
+        if pick(c, &s) {
+            drop_source_row(t, Source::Conn(c), &s, tag, r.rest())?;
+        }
     }
     Ok(())
 }

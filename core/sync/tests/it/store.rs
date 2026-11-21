@@ -1121,10 +1121,10 @@ fn ephemeral_entries_live_in_memory_spec_sync_ids_5() {
 }
 
 // spec/sync-ids.md §6 (Caps at a node keeping S unread: S's memory cap and the memory total
-// bound what memory holds): what S's ephemeral entries, and then their tombstones, count toward
-// the memory caps is at least what the memory part holds for them (`Store::memory_held`) and not
-// a quarter more: each one, from n to 10n, and all of them at n and at 10n but for S's usage
-// rows, which S keeps whatever it holds.
+// bound what memory holds): what S's ephemeral entries (each held elsewhere), and then their
+// tombstones, count toward the memory caps is what the memory part holds for them
+// (`Store::memory_held`): exactly, each one, from n to 10n; and all of them at n and at 10n
+// within a quarter, but for S's usage rows, which S keeps whatever it holds.
 #[test]
 fn memory_caps_count_what_memory_holds_spec_sync_ids_6() {
     let s = Sid::new(10);
@@ -1135,6 +1135,8 @@ fn memory_caps_count_what_memory_holds_spec_sync_ids_6() {
         for (b, x) in &blobs {
             let e = Entry { class: Class::Ephemeral, expires: Some(WallMs(10 * MAX_DRIFT_MS)), ..stamped(&s, *b, false) };
             assert_eq!(st.take_stamped(&s.id, &e, x.clone(), &[]).unwrap(), Code::OK);
+            // counted from the start: written, it adds nothing to the count
+            st.set_elsewhere(&s.id, b).unwrap();
         }
         let entries = (st.memory_held() - held, st.usage(&s.id).unwrap().1.bytes - used);
         let items: Vec<_> = blobs.iter().map(|(b, _)| DeleteItem::sign(&s.delete(), &s.id, *b)).collect();
@@ -1146,7 +1148,7 @@ fn memory_caps_count_what_memory_holds_spec_sync_ids_6() {
     for (i, what) in ["entries", "tombstones"].iter().enumerate() {
         let ((h1, c1), (h10, c10)) = (small[i], large[i]);
         let (h, c) = (h10 - h1, c10 - c1);
-        assert!(h <= c && c <= h + h / 4, "{what} from n to 10n: memory holds {h} more, the caps count {c} more");
+        assert_eq!(h, c, "{what} from n to 10n: what memory holds more, the caps count more");
         for (held, charged) in [(h1, c1), (h10, c10)] {
             assert!(held <= charged + usage_rows && charged <= held + held / 4, "{what}: memory holds {held}, the caps count {charged}");
         }
@@ -1292,9 +1294,12 @@ fn stands_live_in_the_record_spec_sync_judgement_4() {
     assert_eq!(st.stand(src, &s.id, b"body").unwrap(), Some(stand.clone()), "a restart is no change of ground");
     assert!(st.seen_deleted(src, &s.id, &BlobId([3; 32])).unwrap());
     assert_eq!(st.stand(conn, &s.id, b"body").unwrap(), None, "the connection's went with the start");
+    let held = st.memory_held();
     st.set_stand(conn, &s.id, b"body", Some(&stand)).unwrap();
+    st.saw_deleted(conn, &s.id, &BlobId([3; 32])).unwrap();
     st.gone(Source::Conn(ConnId(9))).unwrap();
     assert_eq!(st.stand(conn, &s.id, b"body").unwrap(), None, "and with its close");
+    assert_eq!(st.memory_held(), held, "with its rows' aging rows: memory holds nothing of it");
     st.set_stand(conn, &s.id, b"body", Some(&stand)).unwrap();
     st.settle_at(WallMs(TOMBSTONE_LIFETIME_MS + 5)).unwrap();
     assert_eq!(st.stand(src, &s.id, b"body").unwrap(), None, "aged out");
@@ -1318,6 +1323,7 @@ fn shred_drops_everything_of_s_spec_sync_ids_5() {
     let rec = st.with_tx(|t| t.record_create([1; 32], &osis_store::Named::default())).unwrap();
     st.saw_deleted(Source::Record(rec), &s.id, &b2).unwrap();
     let conn = Source::Conn(ConnId(4));
+    let held = st.memory_held();
     st.saw_deleted(conn, &s.id, &b2).unwrap();
     // opens' rejoin rows in the record: S's go, another sync ID's stay
     let other = SyncId([7; 16]);
@@ -1338,6 +1344,7 @@ fn shred_drops_everything_of_s_spec_sync_ids_5() {
     assert_eq!(st.usage(&s.id).unwrap().0, osis_sync::store::Usage::default());
     assert!(!st.seen_deleted(Source::Record(rec), &s.id, &b2).unwrap());
     assert!(!st.seen_deleted(conn, &s.id, &b2).unwrap(), "a connection's rows of S go too");
+    assert_eq!(st.memory_held(), held, "with their aging rows");
 }
 
 /// Every kind of durable store operation, each one transaction: what peers bring (a stamped entry,
