@@ -325,14 +325,6 @@ impl Fragment {
         out.0
     }
 
-    /// What decides which value removals hide which set element writes here (`Hiders`), every
-    /// copy held.
-    pub fn hiders(&self) -> Hiders {
-        let mut out = Hiders::default();
-        out.note(self);
-        out
-    }
-
     /// How many write copies the fragment carries, winning or not: a sequence element's `prev`
     /// position write, a deleted text element's creation, and a write held in several records
     /// of one map dot once per record. Prune only drops, so a fragment is prune-stable (§3.3

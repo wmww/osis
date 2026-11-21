@@ -640,10 +640,6 @@ impl TreePlace {
         let (depth, last, sole) = above.map_or((0, true, true), |p| (p.depth, p.last, p.sole));
         TreePlace { depth: depth + 1, last: last && i + 1 == n, sole: sole && n == 1 }
     }
-
-    pub fn depth(self) -> usize {
-        self.depth
-    }
 }
 
 /// The one canonical tree rule of a paged position's link pages (spec/wire.md §6), checked a page
@@ -1699,7 +1695,7 @@ mod tests_levels {
                         let mut out = Vec::new();
                         levels.finish(params, &mut sink, &mut out).unwrap();
                         let pages = tree_pages(&out, &sink);
-                        deepest = deepest.max(pages.iter().map(|p| p.0.depth()).max().unwrap_or(0));
+                        deepest = deepest.max(pages.iter().map(|p| p.0.depth).max().unwrap_or(0));
                         for trial in 0..6 {
                             // half the trials hold everything; the others drop each page with
                             // its subtree one time in five

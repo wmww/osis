@@ -20,7 +20,8 @@ impl Default for Fragment {
 }
 
 /// A last-writer-wins write: its stamp, and the copy order of its payload (§4.1): of two copies
-/// of one write (equal stamps) the greater wins. Resets, `W`, flags, creations, values.
+/// of one write (equal stamps) the greater wins. Resets, `W`, flags, creations, values, value
+/// removals.
 pub(crate) trait Write {
     fn stamp(&self) -> &Stamp;
     /// Copy order against another copy of the same write.
@@ -52,6 +53,15 @@ impl Write for RegWrite {
     }
     fn copy_cmp(&self, o: &Self) -> Ordering {
         opt_value_cmp(self.value.as_ref(), o.value.as_ref())
+    }
+}
+
+impl Write for crate::fragment::Removal {
+    fn stamp(&self) -> &Stamp {
+        &self.stamp
+    }
+    fn copy_cmp(&self, o: &Self) -> Ordering {
+        self.cmp(o)
     }
 }
 
@@ -208,18 +218,10 @@ fn join_opt(s: &mut Option<Box<Fragment>>, d: Option<Box<Fragment>>, e: Option<&
     }
 }
 
-/// A value removal below `e` goes (§4.2, §5.5).
-fn prune_gone(g: &mut Option<crate::fragment::Removal>, e: Option<&Stamp>, ch: &mut Changes) {
-    if g.as_ref().is_some_and(|r| e.is_some_and(|e| r.stamp < *e)) {
-        *g = None;
-        ch.touch();
-    }
-}
-
 /// Prunes a set or bag element; `false` when the record goes (§4.2).
 fn prune_elem(el: &mut Elem, e: Option<&Stamp>, ch: &mut Changes) -> bool {
     prune_write(&mut el.reset, e, ch);
-    prune_gone(&mut el.gone, e, ch);
+    prune_write(&mut el.gone, e, ch);
     let ee = max_opt(e.cloned(), el.reset.clone());
     prune_opt(&mut el.frag, ee.as_ref(), ch);
     el.holds()
@@ -240,12 +242,9 @@ fn join_elems(s: &mut BTreeMap<Dot, Elem>, d: BTreeMap<Dot, Elem>, e: Option<&St
                     prune_opt(&mut se.frag, ee.as_ref(), ch);
                 }
                 join_opt(&mut se.frag, de.frag, ee.as_ref(), ch);
-                // a value removal is a write of its own: of copies of one dot, the greatest (§5.5)
-                if de.gone > se.gone {
-                    se.gone = de.gone;
-                    ch.touch();
-                }
-                prune_gone(&mut se.gone, e, ch);
+                // a value removal is a write of its own (§5.5)
+                join_write(&mut se.gone, de.gone, ch);
+                prune_write(&mut se.gone, e, ch);
                 if !se.holds() {
                     s.remove(&dot);
                 }

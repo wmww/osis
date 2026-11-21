@@ -250,7 +250,8 @@ fn winners_check(seed: u64, types: &[Ty], honest: bool) {
         for x in [&a, &b, &ab] {
             held.note(&x.held_writes(), |_, _| ());
         }
-        let mut hiders = a.hiders();
+        let mut hiders = Hiders::default();
+        hiders.note(&a);
         hiders.note(&b);
         for w in &dead {
             assert!(held.first_superseding(w, &hiders, |s, _| Some(s.ts)).is_some(), "a dead write dies by a write held before or after the join: {w:?} in {ab:?}");
