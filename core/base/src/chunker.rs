@@ -75,7 +75,7 @@ impl Chunker {
     }
 
     /// Scans `data` as the continuation of the current chunk. Returns `Some(i)` if the chunk ends
-    /// after `data[..i]` (the chunker is then reset; feed `data[i..]` next), `None` if all of
+    /// after `data[..i]` (a new chunk then starts; feed `data[i..]` next), `None` if all of
     /// `data` belongs to the current chunk.
     pub fn next_boundary(&mut self, data: &[u8]) -> Option<usize> {
         let gear = &*GEAR;
@@ -86,18 +86,12 @@ impl Chunker {
         for &b in data.get(skip..).unwrap_or(&[]) {
             n += 1;
             if p.step(gear, mask, &mut h, n, b) || n >= p.max {
-                self.reset();
+                *self = Chunker::new(p);
                 return Some(n - n0);
             }
         }
         (self.h, self.n) = (h, n);
         None
-    }
-
-    /// Starts a new chunk.
-    pub fn reset(&mut self) {
-        self.h = 0;
-        self.n = 0;
     }
 }
 
@@ -166,8 +160,9 @@ impl PageCutter {
         cut
     }
 
-    /// Bytes in the current page.
-    pub fn pending(&self) -> usize {
+    /// Bytes in the current page (tests).
+    #[cfg(test)]
+    fn pending(&self) -> usize {
         self.n
     }
 }
