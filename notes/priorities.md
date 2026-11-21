@@ -12,7 +12,7 @@ A property failing on main is the next task (notes/coordination.md, Known failur
 - issues/differential-small-size-failures.md (the sync differential at the gate's size on fresh seeds: four panics on main, one shrunk to a script failing every world).
 - issues/perm-components-unapplied-vs-dropped.md and issues/perm-paths-incremental-differs.md (the unwired permission walk: by component, incremental and after a forget it disagrees with the single walk in one invite world; taken with stage D's call on the walk, before any A1 switch).
 - the app test of issues/app-tile-unreadable-emails-test.md.
-- The two story properties' `counts:` baselines (roles-model `paths`, liveness): issues/removed-key-backdated-drop.md.
+- The story property's `counts:` baseline (roles-model `paths`, `dispute`: two backdated lowerings hiding each other from a node with no order): issues/masked-backdated-lowerings.md.
 
 ## Unlanded branches
 - `windlass-wiring-1`: the A1 debug shadow (the new permission walk beside today's on every engine and sync test; every difference in a designed class or the test fails). Reviewed, not landed: at the gate's seed offsets three differences fall in no class (a thing given a role on itself; an admin rewriting its own grant to add `invite: Admin`; STATED_CUT lapsing for a rotation's key parts), each written up on that branch, in the perm-paths note's section on the switch. Taken up after stage D of notes/redesign-plan.md, which changes the walk it shadows; then also owed: the shadow comparing only readings that moved (it is quadratic in history), snapshots and purge requests in the adapter, the saved store, its properties at several offsets.

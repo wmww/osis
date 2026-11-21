@@ -216,6 +216,43 @@ pub enum Regrant {
     FirstChained,
 }
 
+/// How a node records its sides (notes/write-path-design.md §1, First received).
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum Sides {
+    /// The rule: its own lowerings, each a choice (F1, F4); a lowering its walk applied before a
+    /// write that lowering leaves out arrived, where it has no side in that fight yet (F2);
+    /// nothing where they came together or the write first (F3); the counter-removal of a
+    /// recorded side told (F5).
+    Received,
+    /// Control `-no-own`: no side for its own lowering.
+    NoOwn,
+    /// Control `-no-receipt`: nothing recorded on receipt.
+    NoReceipt,
+    /// Control `-tie`: a lowering and a write it leaves out arriving in one update count as the
+    /// lowering first.
+    Tie,
+    /// Control `-unapplied`: a held lowering is recorded whether or not the walk applied it.
+    Unapplied,
+    /// Variant `-lowered` (rejected: it fails the story): a held lowering is recorded only where
+    /// the walk judged it (it took its hop down there), not where it applied taking nothing.
+    Lowered,
+    /// Control `-both`: a lowering is recorded though one that cannot stand beside it is.
+    Both,
+    /// Control `-choice-adds`: a choice (a node's own lowering among them) only adds its lowering,
+    /// leaving the other side of its fights recorded.
+    ChoiceAdds,
+    /// Control `-choice-seeds`: a choice drops only the lowerings its seeds take and those whose
+    /// seeds take it, not an earlier lowering of a hop of its own path.
+    ChoiceSeeds,
+    /// Control `-key-own`: a node's own writes are those its key signed, a thief's among them.
+    KeyOwn,
+    /// Control `-untold`: no counter-removal is reported (F5).
+    Untold,
+    /// Control `-told-all`: every explicit lowering a recorded lowering's seeds take is reported,
+    /// whether or not choosing it would change the reading.
+    ToldAll,
+}
+
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Rules {
     pub regrant: Regrant,
@@ -254,11 +291,9 @@ pub struct Rules {
     /// role write only where its own path ends no sooner with it (`writers_keep`). False (control
     /// `-no-end`): only where the removal still applies with it.
     pub own_end: bool,
-    /// The story's trust sets (`Sim::view_at`). False (the story's oracle): each trusting node
-    /// trusts every honest removal, given. True (variant `-first-received`): the sides it recorded
-    /// by first received (notes/write-path-design.md §1 F1), which fail the story's honest-side
-    /// properties as F1 is written (notes/path-model-findings.md 48).
-    pub received_trust: bool,
+    /// How a story node records its sides (`Sim::sides`; notes/write-path-design.md §1, First
+    /// received).
+    pub sides: Sides,
     /// An invite grant needs its level as an invite on its path's last edge (spec/permissions.md
     /// §2, along one path: notes/write-path-design.md §1, Edge writes). False (control
     /// `-invite-role`): a role there suffices, so any writer grants.
@@ -419,7 +454,7 @@ impl Rules {
             stands: false,
             key_order: false,
             own_end: false,
-            received_trust: false,
+            sides: Sides::Received,
             invite_check: true,
             any_fall: true,
             purge_chain: true,
@@ -455,7 +490,7 @@ impl Rules {
             stands: true,
             key_order: false,
             own_end: true,
-            received_trust: false,
+            sides: Sides::Received,
             invite_check: true,
             any_fall: true,
             purge_chain: true,
@@ -1756,6 +1791,10 @@ pub fn disputes_by(w: &World, rules: &Rules, v: &View, differs: impl Fn(&Reading
         if *holder == w.commits[r].signer || rules.lowering(w, r).is_none() || (explicit && w.leave(r)) || v.trust.contains(&r) || rd.dropper.get(&r).is_some_and(|d| v.trust.contains(d)) {
             continue;
         }
+        // trusted, a write with no seeds of its own reads as untrusted: the same walk
+        if seeds(w, rules, v, &Set::from([r])).is_empty() {
+            continue;
+        }
         let t = judge(w, rules, &v.clone().trusting_also(r));
         if explicit && t.invited.contains(&r) {
             continue;
@@ -1767,6 +1806,52 @@ pub fn disputes_by(w: &World, rules: &Rules, v: &View, differs: impl Fn(&Reading
     out
 }
 
+
+/// A dispute candidate: an explicit lowering of another holder's edge (no self-removal).
+fn candidate(w: &World, rules: &Rules, r: Id) -> bool {
+    rules.lowering(w, r).is_some() && !w.leave(r) && w.sets(r).is_some_and(|h| h.0 != w.commits[r].signer)
+}
+
+/// Lowering `l` cannot stand beside lowering `r` (notes/write-path-design.md §1 F4): `r`'s
+/// seeds take it, its seeds take `r`, or it is ordered before `r` and lowers a hop of `r`'s own
+/// path (where it applies `r` has no right).
+pub fn against(w: &World, rules: &Rules, v: &View, r: Id, l: Id) -> bool {
+    let earlier = rules.sides != Sides::ChoiceSeeds && w.key(l) < w.key(r) && rules.lowering(w, l).is_some_and(|h| w.hops(r).contains(&h));
+    l != r && (earlier || seeds(w, rules, v, &Set::from([r])).contains_key(&l) || seeds(w, rules, v, &Set::from([l])).contains_key(&r))
+}
+
+/// A choice of lowering `r` (F4): `r` is trusted, and no lowering that cannot stand beside it
+/// (`against`) stays trusted.
+pub fn choose(w: &World, rules: &Rules, v: &View, r: Id) -> View {
+    let mut out = v.clone();
+    if rules.sides != Sides::ChoiceAdds {
+        out.trust.retain(|&l| !against(w, rules, v, r, l));
+    }
+    out.trust.insert(r);
+    out
+}
+
+/// The counter-removals of a node's recorded sides (F5): the held explicit lowerings a trusted
+/// lowering's seeds take whose choice (`choose`) would change the reading. Shown beside the open
+/// disputes (`disputes`) while both are held.
+pub fn countered(w: &World, rules: &Rules, v: &View) -> Vec<Id> {
+    let active: Set = v.trust.iter().copied().filter(|i| v.held.contains(i)).collect();
+    let cands: Vec<Id> = seeds(w, rules, v, &active).into_keys().filter(|&j| candidate(w, rules, j) && !v.trust.contains(&j)).collect();
+    if rules.sides == Sides::Untold {
+        return vec![];
+    }
+    if cands.is_empty() || rules.sides == Sides::ToldAll {
+        return cands;
+    }
+    let rd = judge(w, rules, v);
+    cands
+        .into_iter()
+        .filter(|&j| {
+            let t = judge(w, rules, &choose(w, rules, v, j));
+            t.applied != rd.applied || t.valid != rd.valid || t.roles != rd.roles
+        })
+        .collect()
+}
 
 /// When a lowering's own path ends in a reading (notes/write-path-design.md §1, L3), ordered:
 /// `Nothing` (it does not apply, or is void), then any `ts`, then `Never`.

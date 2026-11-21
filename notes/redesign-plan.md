@@ -59,7 +59,7 @@ The design: notes/write-path-design.md (every rule lettered, clause by clause), 
 - **May-grant a flag** (§1 G1 to G5): a path gives may-grant at r where every hop gives r and its last hop is admin or carries the flag.
 - **The last admin** (§5 A1 to A5): a writer's check and nothing a reader judges.
 - **The remover's own path** (§1 L3; notes/path-model-findings.md Open 5, 45, 46): the writer keeps a received role write of the removed party only where the removal still applies and its own path ends no sooner. Replaces what the every-node rule did there; probed, 0 failing.
-- **A removed key's backdated lowering** (§1 F1; issues/removed-key-backdated-drop.md; finding 47): a node that held a removal before a write its list leaves out trusts the removal. Probed: the story's liveness failures go.
+- **A removed key's backdated lowering** (§1 First received, F2; finding 47): a node that held a removal before a write its list leaves out trusts the removal. Modelled: the story's liveness holds; two such lowerings still hide each other from a node with no order (issues/masked-backdated-lowerings.md).
 - **A removal's list is in the removal** (§2 E4; settles notes/a3-spec/README.md's last question for Tess): as built, carried in every copy; per-thing leaves are not the design.
 - **Lazy delivery** (§2 D1 to D3), with the reader's deposit on sight stated as D4 and not yet modelled.
 - **Public** is a well-known thing nobody can sign as (§3): four listed smells, the old first special case now following from owner keys.
@@ -69,9 +69,9 @@ Not settled:
 - Two backdated lowerings masking each other from the dispute test at a node with no order (write-path Open 2; finding 47).
 - D4 (model first).
 
-**D2 so far** (roles-model): no last-admin rule and L3 modelled (notes/path-model-findings.md 45, 46); F1 stopped at its clause (finding 48, write-path Open 9: the writer's own side, and what the story's honest-side checks promise under first received), so the story's liveness baselines stay in tools/known_failures.txt; may-grant as a flag and owner keys not started.
+**D2 so far** (roles-model): no last-admin rule and L3 modelled (notes/path-model-findings.md 45, 46); first received modelled (write-path §1 F1 to F5; findings 47, 48, 50 to 53: a node's sides from what it made and the order it received, the story's honest-side checks per node), the story's one baseline in tools/known_failures.txt the masking case (issues/masked-backdated-lowerings.md); may-grant as a flag and owner keys not started.
 
-**D2 must model** (write-path §6, the full list): roles-model `paths`: no last-admin rule; L3 by its `end`; trust sets from receipt order (F1), then the story's liveness baselines leave tools/known_failures.txt; the flag in place of levels; the key hop and list writes with the must-hold flow's hand worlds. held-model: a lowering's copy whole (leaves, their homes and the wait on a leaf go); errand and reach go and the holds-everything properties are restated against a node holding the same removals, the gap counted; keysets carrying whole demotions; D4 as a variant; owner-key list writes as evidence.
+**D2 must model** (write-path §6, the full list): roles-model `paths`: no last-admin rule; L3 by its `end`; sides from what a node made and the order it received (F1 to F5); the flag in place of levels; the key hop and list writes with the must-hold flow's hand worlds. held-model: a lowering's copy whole (leaves, their homes and the wait on a leaf go); errand and reach go and the holds-everything properties are restated against a node holding the same removals, the gap counted; keysets carrying whole demotions; D4 as a variant; owner-key list writes as evidence.
 
 **The drafts** (notes/a1-spec, a2-spec, a3-spec, notes/path-form.md) each carry a section "To recut" naming, by draft section, what the design changes; their spec text is rewritten from it after D2, with the walk (a draft written before the model is cut is written twice).
 

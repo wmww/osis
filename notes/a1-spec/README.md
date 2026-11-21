@@ -13,10 +13,10 @@ The design was restated after these drafts were written (notes/write-path-design
 | permissions §2 Path's invite, Invite grant; §5.1 a part's need "as an invite"; the edge as restored's invite | a flag in place of a level (notes/write-path-design.md §1, G1 to G5); the `roles.0` value's `invite` becomes a bool |
 | permissions §5.1 step 3, `keeps` | without the remaining-admin clause (W4) |
 | permissions §5.1 The list | gains its second clause: the remover's own path ends no sooner (L3) |
-| permissions §5.1 Trust set | unchanged in the walk; the default side is recorded by first receipt of a write the removal's list leaves out (F1: the engine's, not the walk's) |
+| permissions §5.1 Trust set | unchanged in the walk; the default side is recorded by the node's own lowerings and by first receipt of a write the removal's list leaves out, a choice drops the other side, the counter-removal is told (write-path §1 F1 to F5: the engine's, not the walk's) |
 | permissions §1 Signer; wire §4 field 1; commits §1, §3 | at A1 a key actor reads as a thing whose record holds its one key: the key hop is always listed and no list write exists, so these stand until A4, which brings the owner-key list, list writes and the key named in the header (notes/write-path-design.md, Owner keys). The walk is built with the key hop as a hop from the start |
 | Open 5, 7, 9 (the remaining admin), "For Tess before the switch" 1 | moot: no remaining admin is named |
-| Open 3 (detecting disputes) | default sides need no trial walk (F1); showing a dispute to a node with no order is still a walk per candidate, and misses two lowerings masking each other (notes/write-path-design.md Open 2) |
+| Open 3 (detecting disputes) | default sides need no trial walk (F1, F2); showing a dispute to a node with no order is still a walk per candidate, and misses two lowerings masking each other (notes/write-path-design.md Open 2) |
 | Open 16 (whom a write is by) | settled (Tess): a write acts only as things on its chain; refused otherwise |
 | Open 22 (a key actor's edge writes) | stands until A4; then no thing is a key actor and the bullet goes |
 | The walk, clause by clause | checked again against W1 to W10 after the model is cut |

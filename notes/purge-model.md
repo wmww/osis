@@ -49,7 +49,7 @@ X purges by whole aspect at 4; B, an admin, receives it; H, which did not, remov
 The role-write pair (issues/role-vouch-contested.md, Why no vouch can work: two worlds with the same held commits needing opposite answers) arises where a witness's word is weighed by a standing the thief can contest. For purges:
 - Honest X purging at 4, witnessed, removed at 6; and a thief with X's key making the same request between theft and removal, witnessed: one held set. Keeping the honest one keeps the thief's window request, exactly as content made in the window is kept (accepted; requirements: "nothing shows they were made before the removal" only for what nobody received in time). Requests made after the removal are in no honest addendum (`a_request_made_after_the_removal_is_kept_by_no_witness`).
 - Honest X purging before its removal by a thief-controlled admin; and a thief with X's key erasing after an honest admin's removal, backdated: one held set where the removal is trusted, so one reading. Which removal is honest is the role layer's fight (trust sets, disputes); the purge rule adds nothing.
-- A witness contested by a removed key's backdated lowering: the same shape as content addenda, settled by whatever settles the witness's role (issues/removed-key-backdated-drop.md).
+- A witness contested by a removed key's backdated lowering: the same shape as content addenda, settled by what settles the witness's role: the side its reader holds (notes/write-path-design.md §1, First received).
 So the purge property has no pair of its own: no weaker promise is needed beyond the content one.
 
 ## Delete keys (spec/crypto.md §7; argued, not modelled)

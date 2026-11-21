@@ -816,7 +816,7 @@ fn a_backdated_leave_undoes_nothing_the_removed_node_made() {
 // ---- The searches (properties: every roles-model gate selects them, and nothing else can move them) ----
 
 fn assert_holds(st: &Stats, what: &str) {
-    for k in ["safety", "liveness", "alike", "removal kept", "removal", "own path", "untrusted", "dispute", "safety N", "own path N"] {
+    for k in ["safety", "liveness", "alike", "removal kept", "removal", "own path", "untrusted", "dispute", "safety N", "own path N", "held first", "no order"] {
         assert!(st.checked.get(k).is_some_and(|n| *n > 0), "{what}: no {k} check ran");
     }
     for k in ["void", "idle", "one reading"] {
@@ -847,6 +847,8 @@ fn each_fix_is_needed_plain() {
         ("exempt", Rules { exempt_chain: true, ..f }),
         ("once", Rules { rewrite: false, ..f }),
         ("leave", Rules { leave_in_question: false, ..f }),
+        ("no-own", Rules { sides: Sides::NoOwn, ..f }),
+        ("no-receipt", Rules { sides: Sides::NoReceipt, ..f }),
     ];
     for (name, rules) in cases {
         assert!(random(100, &rules).failures() > 0, "{name}");
@@ -1462,19 +1464,60 @@ fn repro_an_idle_write_with_no_right_decides_nothing() {
     assert_eq!(less.observed(&w), all.observed(&w));
 }
 
-/// Finding 48: F1 as written leaves the remover on the thief's side. X, stolen, removes H at 5,
-/// honestly stamped and received by every node at once (`Setup::x_first`); H removes X at 6, its
-/// list leaving X's removal out (L3: with it the removal would not apply). H held X's removal
-/// before writing its own, so no write its list leaves out arrives after it: F1 records no side,
-/// H's walk applies X's removal at its key and H's own removal holds no right at H.
+/// F1, a node sides with its own lowering: X, stolen, removes H at 5, honestly stamped and
+/// received by every node at once (`Setup::x_first`); H removes X at 6, its list leaving X's
+/// removal out (L3: with it the removal would not apply). H wrote its removal, so it trusts it:
+/// its seeds take X's removal and H stands. B held X's removal first and records nothing for H's
+/// (F3): its walk applies X's removal, H's holds no right there and is shown as a dispute;
+/// choosing it reads as H does. Control `-no-own`: H's own walk applies X's removal and H's
+/// removal holds no right at H (finding 48).
 #[test]
-#[ignore = "notes/path-model-findings.md 48: F1 gives a remover no side for its own removal"]
-fn repro_first_received_sides_the_remover_with_its_own_removal() {
+fn a_remover_sides_with_its_own_removal() {
     let s = Setup { x_first: true, ..Setup::default() };
-    let rules = Rules { received_trust: true, ..Rules::fixed() };
+    let rules = Rules::fixed();
     let m = Sim::build(&s, &rules, &[], &mut Rng(0));
-    let rd = judge(&m.w, &rules, &m.view(H, &rules));
-    assert!(rd.applied.contains(&m.r) && rd.role(H, A) == Admin, "{rd:?}");
+    let vh = m.view(H, &rules);
+    let rd = judge(&m.w, &rules, &vh);
+    assert!(vh.trust.contains(&m.r) && rd.applied.contains(&m.r) && rd.role(H, A) == Admin && rd.role(X, A) == Gone, "{rd:?}");
+    let vb = m.view(B, &rules);
+    let rd = judge(&m.w, &rules, &vb);
+    assert!(!vb.trust.contains(&m.r) && !rd.applied.contains(&m.r) && rd.role(H, A) == Gone && rd.role(X, A) == Admin, "{:?} {rd:?}", vb.trust);
+    assert!(disputes(&m.w, &rules, &vb).contains(&m.r));
+    let rd = judge(&m.w, &rules, &choose(&m.w, &rules, &vb, m.r));
+    assert!(rd.applied.contains(&m.r) && rd.role(H, A) == Admin && rd.role(X, A) == Gone, "{rd:?}");
+    let off = Rules { sides: Sides::NoOwn, ..rules };
+    let m = Sim::build(&s, &off, &[], &mut Rng(0));
+    let rd = judge(&m.w, &off, &m.view(H, &off));
+    assert!(!rd.applied.contains(&m.r) && rd.role(H, A) == Gone, "{rd:?}");
+}
+
+/// A thief heard first keeps the nodes that heard it until their users choose (accepted:
+/// notes/disputes.md). X, stolen, demotes H to write stamped 7, heard by H and B at 5 (move 25);
+/// H removes X at 6. B held the demotion, applying, before H's removal arrived, a write ordered
+/// before it that its list leaves out: B records the demotion (F2), its seeds take H's removal,
+/// and B is told of the counter-removal (F5, `countered`). Choosing H's removal drops the record
+/// of the demotion (F4) and reads as H does. Control `-choice-adds`: the demotion stays recorded,
+/// its seeds take the removal chosen, and the choice is void.
+#[test]
+fn a_thief_heard_first_keeps_a_node_until_its_user_chooses() {
+    let s = Setup::default();
+    let rules = Rules::fixed();
+    let mv = [Move { kind: 25, ts: 7, made: 5 }];
+    let m = Sim::build(&s, &rules, &mv, &mut Rng(0));
+    let down = *m.thief.keys().next().unwrap();
+    let vh = m.view(H, &rules);
+    let rd = judge(&m.w, &rules, &vh);
+    assert!(vh.trust.contains(&m.r) && !vh.trust.contains(&down) && rd.applied.contains(&m.r) && rd.role(H, A) == Admin, "{:?} {rd:?}", vh.trust);
+    let vb = m.view(B, &rules);
+    let rd = judge(&m.w, &rules, &vb);
+    assert!(vb.trust.contains(&down) && !rd.applied.contains(&m.r) && rd.role(H, A) == Write && rd.role(X, A) == Admin, "{:?} {rd:?}", vb.trust);
+    assert_eq!(countered(&m.w, &rules, &vb), vec![m.r]);
+    let chosen = choose(&m.w, &rules, &vb, m.r);
+    let rd = judge(&m.w, &rules, &chosen);
+    assert!(!chosen.trust.contains(&down) && rd.applied.contains(&m.r) && rd.void.is_empty() && rd.role(H, A) == Admin && rd.role(X, A) == Gone, "{rd:?}");
+    let off = Rules { sides: Sides::ChoiceAdds, ..rules };
+    let rd = judge(&m.w, &off, &choose(&m.w, &off, &vb, m.r));
+    assert!(rd.void.contains(&m.r) && rd.role(H, A) == Write, "{rd:?}");
 }
 
 /// Equivocation: X signs a twin of its removal of N5 at its `ts`, ordered first, listing H's
@@ -2973,17 +3016,23 @@ fn a_removed_keys_backdated_lowering_drops_a_witness_write_for_good() {
     assert!(rd.applied.contains(&gs) && rd.dropped.contains(&down) && rd.role(A2, T1) == Write && rd.void.is_empty(), "{rd:?}");
 }
 
-/// F1 in the story (`Rules::received_trust`): H paired N5 and X removed it at 3 (`Setup::n5` 3),
-/// every node receiving it then; the thief, after the removal, backdates N5's removal of B to 2
-/// (move 47, made 9). Each node holding X's removal of N5 when the backdated write arrives records
-/// it trusted, so B's writes stand there; a node receiving both at once (F2) records nothing.
+/// F2 and F3 in the story: H paired N5 and X removed it at 3 (`Setup::n5` 3), every node
+/// receiving it then; the thief, after the removal, backdates N5's removal of B to 2 (move 47,
+/// made 9). Each node holding X's removal of N5, applying, when the backdated write arrives
+/// records it trusted, so B's writes stand there: H, B, the reader RD, and N5's own node (the
+/// write is signed with its key and is not its own). A node joining at 10 receives both in one
+/// update and records nothing (F3): its walk applies the backdated removal at its key, B's share
+/// is lost, and X's removal of N5 is shown as a dispute, which chosen reads as the others.
+/// Controls: `-no-receipt` (nothing recorded: the share is lost at RD), `-tie` (the joining node
+/// records the removal as if it had held it first).
 #[test]
 fn first_received_trusts_a_removal_held_before_a_backdated_write() {
     let s = Setup { n5: 3, ..Setup::default() };
-    let rules = Rules { received_trust: true, ..Rules::fixed() };
-    let m = Sim::build(&s, &rules, &[Move { kind: 47, ts: 2, made: 9 }], &mut Rng(0));
+    let rules = Rules::fixed();
+    let mv = [Move { kind: 47, ts: 2, made: 9 }];
+    let m = Sim::build(&s, &rules, &mv, &mut Rng(0));
     let out5 = m.out5.unwrap();
-    for n in [H, B] {
+    for n in [H, B, N5, RD] {
         let v = m.view(n, &rules);
         assert!(v.trust.contains(&out5), "node {n}: {:?}", v.trust);
         let rd = judge(&m.w, &rules, &v);
@@ -2992,8 +3041,140 @@ fn first_received_trusts_a_removal_held_before_a_backdated_write() {
     let mut st = Stats::default();
     check(&m, &rules, &mut st);
     assert_eq!(st.failures(), 0, "{:?}", st.fails);
+    let mut late = m.clone();
+    late.joins(RD, 10);
+    let v = late.view(RD, &rules);
+    let rd = judge(&late.w, &rules, &v);
+    assert!(!v.trust.contains(&out5) && !rd.applied.contains(&m.gs) && rd.role(A2, T1) == Gone, "{:?} {rd:?}", v.trust);
+    assert_eq!(disputes(&late.w, &rules, &v), vec![out5]);
+    let rd = judge(&late.w, &rules, &choose(&late.w, &rules, &v, out5));
+    assert!(rd.applied.contains(&m.gs) && rd.role(A2, T1) == Write, "{rd:?}");
+    for (sides, at, trusts) in [(Sides::NoReceipt, None, false), (Sides::Tie, Some(10), true)] {
+        let off = Rules { sides, ..rules };
+        let mut m = Sim::build(&s, &off, &mv, &mut Rng(0));
+        if let Some(at) = at {
+            m.joins(RD, at);
+        }
+        let v = m.view(RD, &off);
+        assert_eq!(v.trust.contains(&out5), trusts, "{sides:?}");
+        assert_eq!(judge(&m.w, &off, &v).applied.contains(&m.gs), trusts, "{sides:?}");
+    }
 }
 
+/// F2, one side per fight: X, stolen, demotes H to write stamped 7, heard by B at 5; H removes X
+/// at 6, and B, holding the demotion first, records it (its seeds take the removal). The thief
+/// then ends X's own admin at 2 (move 33), so the demotion holds no right and B's walk applies
+/// H's removal, and backdates an end of H's admin at 6 (move 44), a write H's removal leaves out.
+/// B has a side in that fight already: it records nothing for H's removal, reads by the walk
+/// (the removal without right once H's admin ends) and is told of the removal, which chosen
+/// applies. Control `-both`: B records the removal beside the demotion, the demotion's seeds
+/// take it, both are void, and B is shown nothing.
+#[test]
+fn a_recorded_side_keeps_the_other_side_of_its_fight_unrecorded() {
+    let mv = [Move { kind: 25, ts: 7, made: 5 }, Move { kind: 33, ts: 1, made: 7 }, Move { kind: 44, ts: 1, made: 9 }];
+    for (sides, both) in [(Sides::Received, false), (Sides::Both, true)] {
+        let rules = Rules { sides, ..Rules::fixed() };
+        let m = Sim::build(&Setup::default(), &rules, &mv, &mut Rng(0));
+        let down = *m.thief.iter().find(|(_, k)| **k == 25).unwrap().0;
+        let v = m.view(B, &rules);
+        let rd = judge(&m.w, &rules, &v);
+        assert!(v.trust.contains(&down) && !rd.applied.contains(&m.r), "{sides:?}: {:?} {rd:?}", v.trust);
+        assert_eq!(v.trust.contains(&m.r), both, "{sides:?}");
+        assert_eq!(countered(&m.w, &rules, &v), if both { vec![] } else { vec![m.r] }, "{sides:?}");
+        assert!(disputes(&m.w, &rules, &v).is_empty(), "{sides:?}");
+        let rd = judge(&m.w, &rules, &choose(&m.w, &rules, &v, m.r));
+        assert!(rd.applied.contains(&m.r) && rd.role(H, A) == Admin && rd.role(X, A) == Gone, "{sides:?}: {rd:?}");
+    }
+}
+
+/// F2, a lowering that applied is a side whether or not it took anything: X, stolen, removes H
+/// at 5 (`Setup::x_first`) and again stamped 8 (move 11), both heard by B at 5; the second applies
+/// in B's walk taking nothing (H is gone at 5). H removes X at 6, a write the second leaves out:
+/// B held the second first and records it. The thief then ends X's own admin at 2 (move 33), so
+/// B's walk applies H's removal, and backdates an end of H's admin at 6 (move 44): B has a side
+/// in that fight, records nothing for H's removal and is told of it. Variant `-lowered` (a
+/// lowering recorded only where it took its hop down): B records H's removal here, but the
+/// variant fails the story: a reader holding H's removal before any write of X's (X's grant
+/// arrives as evidence with X's backdated removal of H) applied it taking nothing, records
+/// nothing, and the backdated removal acts.
+#[test]
+fn a_lowering_that_applied_taking_nothing_is_a_side() {
+    let s = Setup { x_first: true, ..Setup::default() };
+    let mv = [Move { kind: 11, ts: 8, made: 5 }, Move { kind: 33, ts: 1, made: 7 }, Move { kind: 44, ts: 1, made: 9 }];
+    for (sides, lowered) in [(Sides::Received, false), (Sides::Lowered, true)] {
+        let rules = Rules { sides, ..Rules::fixed() };
+        let m = Sim::build(&s, &rules, &mv, &mut Rng(0));
+        let again = *m.thief.iter().find(|(_, k)| **k == 11).unwrap().0;
+        let v = m.view(B, &rules);
+        let rd = judge(&m.w, &rules, &v);
+        assert_eq!((v.trust.contains(&again), v.trust.contains(&m.r)), (!lowered, lowered), "{sides:?}: {:?}", v.trust);
+        assert_eq!(rd.applied.contains(&m.r) && rd.role(H, A) == Admin, lowered, "{sides:?}: {rd:?}");
+        assert_eq!(countered(&m.w, &rules, &v).contains(&m.r), !lowered, "{sides:?}");
+    }
+    assert!(random(300, &Rules { sides: Sides::Lowered, ..Rules::fixed() }).failures() > 0);
+}
+
+/// F4, a choice drops an earlier lowering of its own path. M minted A and paired H; H paired X
+/// and N5, and X removed N5 at 3. X, stolen, demotes H to write stamped 1, listing its own
+/// grant, and removes it stamped 5 listing nothing; H removes X at 6, naming X's removal of N5
+/// and X's removal of H (void in H's walk: its drops take X's own grant) and leaving the
+/// demotion out. A node that heard X first recorded both of X's lowerings. Choosing the honest
+/// lowerings drops both records: the demotion as a seed of H's removal, X's removal of H as an
+/// earlier lowering of the hop H's removal rests on. Control `-choice-seeds` (only the seeds,
+/// either way): X's removal of H stays recorded beside H's removal of X, its seeds take X's own
+/// grant, and X's removal of N5, unapplied in that round, loses its seeds with it.
+#[test]
+fn a_choice_drops_an_earlier_lowering_of_its_own_path() {
+    let mut w = minted_by(M);
+    w.edge(M, 0, &[], A, H, Admin, &[]);
+    let gx = w.edge(H, 1, &[], A, X, Admin, &[]);
+    let g5 = w.edge(H, 1, &[], A, N5, Admin, &[]);
+    let out5 = w.edge(X, 3, &[], A, N5, Gone, &[g5]);
+    let down = w.edge(X, 1, &[], A, H, Write, &[gx]);
+    let off = w.edge(X, 5, &[], A, H, Gone, &[]);
+    let r = w.edge(H, 6, &[], A, X, Gone, &[out5, off]);
+    let v = View::all(&w).trusting(&[down, off]);
+    let rd = judge(&w, &Rules::fixed(), &v);
+    assert!(rd.role(H, A) == Gone && rd.role(X, A) == Admin && !rd.applied.contains(&r), "{rd:?}");
+    for (sides, void) in [(Sides::Received, false), (Sides::ChoiceSeeds, true)] {
+        let rules = Rules { sides, ..Rules::fixed() };
+        let chosen = [r, out5].into_iter().fold(v.clone(), |v, c| choose(&w, &rules, &v, c));
+        assert_eq!(chosen.trust.contains(&off), void, "{sides:?}");
+        let rd = judge(&w, &rules, &chosen);
+        assert_eq!(rd.void.contains(&out5), void, "{sides:?}: {rd:?}");
+        assert!(rd.applied.contains(&r) && rd.role(H, A) == Admin && rd.role(X, A) == Gone && rd.role(N5, A) == Gone, "{sides:?}: {rd:?}");
+    }
+}
+
+/// Open 2 (notes/write-path-design.md): two removed keys' backdated lowerings of one admin mask
+/// each other from the dispute test at a node with no order. X removed N5 at 3; after H removes
+/// X, the thief backdates a demotion of B to 2 with X's key (move 50) and another with N5's (move
+/// 48). A node holding both removals first records both and keeps B's share. A node trusting
+/// nothing applies both demotions at their keys; trusting either removal alone leaves the other
+/// demotion acting, so neither is shown and B's share is lost with nothing to choose.
+#[test]
+fn two_backdated_lowerings_are_taken_where_their_removals_were_held_first() {
+    let (m, rules) = masked();
+    let v = m.view(B, &rules);
+    let rd = judge(&m.w, &rules, &v);
+    assert!(v.trust.contains(&m.r) && v.trust.contains(&m.out5.unwrap()) && rd.applied.contains(&m.gs) && rd.role(B, A) == Admin, "{:?} {rd:?}", v.trust);
+}
+
+fn masked() -> (Sim, Rules) {
+    let s = Setup { n5: 3, ..Setup::default() };
+    let rules = Rules::fixed();
+    (Sim::build(&s, &rules, &[Move { kind: 50, ts: 2, made: 7 }, Move { kind: 48, ts: 2, made: 8 }], &mut Rng(0)), rules)
+}
+
+#[test]
+#[ignore = "notes/write-path-design.md Open 2: two backdated lowerings mask each other from the dispute test"]
+fn repro_two_backdated_lowerings_mask_each_other_where_nothing_is_trusted() {
+    let (m, rules) = masked();
+    let v = m.view(N6, &rules);
+    let rd = judge(&m.w, &rules, &v);
+    assert!(!rd.applied.contains(&m.gs), "{rd:?}");
+    assert!(!disputes(&m.w, &rules, &v).is_empty(), "B's share is lost and no dispute is shown");
+}
 // ---- A cut's list answers that cut alone (notes/evidence-model-findings.md 26) ----
 
 const CT: Thing = 43;
