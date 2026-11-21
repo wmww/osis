@@ -920,7 +920,6 @@ impl Timelines {
     }
 }
 
-
 /// `from` and everything `next` (pushing the next steps from a thing) leads to, transitively.
 fn walk(from: &BTreeSet<Tid>, next: impl Fn(&Tid, &mut Vec<Tid>)) -> BTreeSet<Tid> {
     let mut out = BTreeSet::new();
@@ -932,6 +931,7 @@ fn walk(from: &BTreeSet<Tid>, next: impl Fn(&Tid, &mut Vec<Tid>)) -> BTreeSet<Ti
     }
     out
 }
+
 #[cfg(test)]
 mod tests {
     use super::*;
