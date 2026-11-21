@@ -1,7 +1,9 @@
 # Sync: inbox, deposits and fires
 > Summary: Deposits and sealed fires, engine and osis-sync `inbox` module (core/sync/src/inbox/): the deposit budget, readers' deposits and copies under a superseded stamp, one clearing rule, promotion once, what a stranger with `keys.0` can still do, no placement order; sealed fires (one fire path, opening, external fires, removal notices); the module's parts (offers, fires, account's tickets, held, register, serve, suspect, stranded, links), what is durable, seams, and what is not built.
 
-Spec: spec/sync-inbox.md, spec/sync-judgement.md §1, §3, spec/sync-ids.md §6 Steps and Register, spec/wire.md §10. Principle and parts: the module doc of core/sync/src/inbox/mod.rs (and each part's). Tickets in the walk and the account's tickets: notes/node-closure.md Tickets. Neighbours: notes/sync.md (index), notes/sync-access.md (re-seal, claims), notes/certificates.md.
+Spec: spec/sync-inbox.md, spec/sync-judgement.md §1, §3, spec/sync-ids.md §6 Steps and Register, spec/wire.md §10. Parts: the module doc of core/sync/src/inbox/mod.rs (and each part's). Tickets in the walk and the account's tickets: notes/node-closure.md Tickets. Neighbours: notes/sync.md (index), notes/sync-access.md (re-seal, claims), notes/certificates.md.
+
+**Principle:** a deposit is the one way a non-writer adds an entry: unstamped, within one budget per sync ID, readable at once by co-readers, stamped once by a writer judging its author's rights, and cleared past a bound by any delete-key holder. Everything owed a peer is its record's and goes on each of its connections once the digests agree there.
 
 ## Deposits
 - **A reader's deposits** (its account's chain certificates, its invite grant, self-removal, card) sit deposited in its own store until a writer promotes them (a body the closure carries) or logs them as its own certificate copies (spec/sync-inbox.md §4 promotes no chain certificate); co-readers pull and read them meanwhile.
