@@ -1,5 +1,5 @@
 //! The derivation's leaves (`Config::leaves`; spec/permissions.md §4 as notes/a3-spec/permissions.md
-//! drafts it: the leaf bullet, §5.1 Reading a list), built unused and going at A3: the leaf form is not the design
+//! drafts it: the leaf bullet, §5.1 Reading a list), built unused (issues/engine-evidence-trails-model.md): the leaf form is not the design
 //! (notes/write-path-design.md §2, E4), so held-model has no oracle for them. Worlds for findings 27
 //! and 34, each a differential of the copies at every step (`assert_agrees`) plus the leaf the
 //! draft's words decide; the derivation's own (an addendum leaving, a late witness, a lowering
@@ -26,7 +26,7 @@ fn at_end(w: &World, rule: &Rule, held: impl Fn(&State) -> Set) -> Driver {
 /// nothing. With Z granted write before the removal (the control) the removal cuts both writes:
 /// D requires the leaf, and a node lacking it waits.
 #[test]
-#[ignore = "D2: evidence rebuilt at A2 (notes/redesign-plan.md): held-model carries a lowering's list whole, so no world gives the derivation leaf pairs"]
+#[ignore = "issues/engine-evidence-trails-model.md: held-model carries a lowering's list whole, no oracle for leaves"]
 fn f27_a_leaf_of_a_lowering_that_cuts_nothing_is_waited_on_by_nobody() {
     for granted in [false, true] {
         let pw = paths::World::new(&[(X, A), (Y, D)]);
@@ -55,7 +55,7 @@ fn f27_a_leaf_of_a_lowering_that_cuts_nothing_is_waited_on_by_nobody() {
 /// lowering's own thing is read only by bodies there: required while c is held, gone with it (never
 /// kept at home).
 #[test]
-#[ignore = "D2: evidence rebuilt at A2 (notes/redesign-plan.md): held-model carries a lowering's list whole, so no world gives the derivation leaf pairs"]
+#[ignore = "issues/engine-evidence-trails-model.md: held-model carries a lowering's list whole, no oracle for leaves"]
 fn f34_a_removals_leaf_for_its_own_thing_leaves_with_what_it_reads() {
     let pw = paths::World::new(&[(X, A)]);
     let mut w = World::new(pw, &[A]);
@@ -80,7 +80,7 @@ fn f34_a_removals_leaf_for_its_own_thing_leaves_with_what_it_reads() {
 /// with c1 forgotten (and c0, which it does not list, held) the addendum brings nothing, so X's grant
 /// to Q (on the addendum's path alone) leaves D's evidence, incrementally as from scratch.
 #[test]
-#[ignore = "D2: evidence rebuilt at A2 (notes/redesign-plan.md): held-model carries a lowering's list whole, so no world gives the derivation leaf pairs"]
+#[ignore = "issues/engine-evidence-trails-model.md: held-model carries a lowering's list whole, no oracle for leaves"]
 fn an_addendum_leaves_with_the_last_commit_it_lists() {
     let pw = paths::World::new(&[(X, A), (Y, D)]);
     let mut w = World::new(pw, &[A, D]);
@@ -118,7 +118,7 @@ fn an_addendum_leaves_with_the_last_commit_it_lists() {
 /// X's grant of write to K at 1 arrives after it. Until then the removal cuts nothing (no leaf
 /// read); with the grant it cuts c, so A requires its own thing's leaf, incrementally as from scratch.
 #[test]
-#[ignore = "D2: evidence rebuilt at A2 (notes/redesign-plan.md): held-model carries a lowering's list whole, so no world gives the derivation leaf pairs"]
+#[ignore = "issues/engine-evidence-trails-model.md: held-model carries a lowering's list whole, no oracle for leaves"]
 fn a_late_witness_makes_a_held_removals_leaf_read() {
     let pw = paths::World::new(&[(X, A)]);
     let mut w = World::new(pw, &[A]);
@@ -145,7 +145,7 @@ fn a_late_witness_makes_a_held_removals_leaf_read() {
 /// D's set as a write on c's path, so D requires its leaf. Forgetting Y's grant unjoins c's path:
 /// the removal and its leaf leave D's set, though c still rests on the removal's edge.
 #[test]
-#[ignore = "D2: evidence rebuilt at A2 (notes/redesign-plan.md): held-model carries a lowering's list whole, so no world gives the derivation leaf pairs"]
+#[ignore = "issues/engine-evidence-trails-model.md: held-model carries a lowering's list whole, no oracle for leaves"]
 fn a_lowering_leaving_a_set_takes_its_leaves() {
     let pw = paths::World::new(&[(X, A), (Y, D)]);
     let mut w = World::new(pw, &[A, D]);

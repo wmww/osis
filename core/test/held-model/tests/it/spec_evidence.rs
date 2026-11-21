@@ -266,11 +266,11 @@ fn f5_partial_evidence_judges_before_a_complete_pass() {
     assert_eq!(w.p5_order(&Rule::fixed(), &st, 5).0, vec![]);
 }
 
-/// P2: D under its own sync ID and R's, joining R between K's write and the removal: both
-/// readers judge every write alike, by their own evidence (the removal reaches neither: the gap,
-/// alike under both).
+/// D under its own sync ID and R's, joining R between K's write and the removal: each reader
+/// judges every write as its reference does (the removal reaches neither: the gap, alike under
+/// both; P2 follows from P1 where references agree).
 #[test]
-fn p2_a_write_under_two_sync_ids_is_judged_alike_by_each() {
+fn a_write_under_two_sync_ids_is_judged_by_each_as_its_reference() {
     for units in [1, 2, 3] {
         let mut sh = Shape::nth(0);
         (sh.units, sh.thief) = (units, true);
@@ -317,10 +317,12 @@ fn p6_copies_are_shared_by_the_writes_along_a_path() {
     }
 }
 
-/// P1 to P8 over a slice of the family under the fixed rule, the gap counted: it is never
-/// empty there (the family's removal reaches D only where Q or Y holds A and D).
+/// P1 to P8 over a slice of the family under the fixed rule, the gap counted against a baseline:
+/// a rule bringing less shows as more gap, not as a failure, so the gap may only shrink (lower
+/// `GAP` when it does).
 #[test]
 fn p1_to_p8_hold_on_a_slice_of_the_family() {
+    const GAP: usize = 10;
     let mut gap = 0;
     for i in (0..FAMILY).step_by(97 * 3) {
         let sh = Shape::nth(i);
@@ -328,7 +330,7 @@ fn p1_to_p8_hold_on_a_slice_of_the_family() {
         assert_eq!(fails(&w, &Rule::fixed()), vec![], "{sh:?}");
         gap += usize::from(!gaps(&w, &Rule::fixed()).is_empty());
     }
-    assert!(gap > 0);
+    assert_eq!(gap, GAP, "worlds of the slice with the gap");
 }
 
 /// The random worlds' seeds: `n` from `OSIS_HELD_START` (default 0).

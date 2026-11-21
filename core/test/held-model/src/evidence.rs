@@ -1152,10 +1152,11 @@ pub struct Fail {
 }
 
 impl World {
-    /// P1 (and P2 for commits under several sync IDs, judged alike under each whose references
-    /// agree): the reader of each sync ID judges every body it should carry as its reference does
+    /// P1: the reader of each sync ID judges every body it should carry as its reference does
     /// (`reference`: the node holding everything but what lazy delivery has not brought; a body it
-    /// lacks is judged absent: `None`).
+    /// lacks is judged absent: `None`). A body under several sync IDs is judged alike under each
+    /// only where their references agree (else the gap at one), and there P1 at each implies it:
+    /// no check of its own.
     pub fn p1(&self, rule: &Rule, st: &State) -> Vec<Fail> {
         self.p1_trusting(rule, st, &self.trust, "P1")
     }
@@ -1168,7 +1169,6 @@ impl World {
             s
         };
         let mut out = vec![];
-        let mut seen: BTreeMap<Id, Vec<(Sid, Option<Verdict>, Verdict)>> = BTreeMap::new();
         for &s in &self.sids {
             let owed = self.owed_bodies(st, s);
             let fv = self.verdicts(&trusting(self.reference(rule, st, s, &Set::new())), &owed);
@@ -1176,7 +1176,6 @@ impl World {
             let rv = self.verdicts(&v, &owed.intersection(&v.v.held).copied().collect());
             for &i in &owed {
                 let r = rv.get(&i).copied();
-                seen.entry(i).or_default().push((s, r, fv[&i]));
                 if r.is_none() && !self.nodes[self.by[i]].honest {
                     // the thief logs its own writes where it likes
                     continue;
@@ -1184,14 +1183,6 @@ impl World {
                 if r != Some(fv[&i]) {
                     out.push(Fail { prop: if r.is_none() { "P1-carried" } else { prop }, step: st.step, sid: s, id: i, reader: r, full: Some(fv[&i]) });
                 }
-            }
-        }
-        // P2 where the references agree: sync IDs whose sources hold different removals may
-        // judge a body apart (the gap at one of them)
-        for (i, per) in seen {
-            let per: Vec<_> = per.into_iter().filter(|x| x.1.is_some()).collect();
-            if let Some((a, b)) = per.iter().flat_map(|a| per.iter().map(move |b| (a, b))).find(|(a, b)| a.2 == b.2 && a.1 != b.1) {
-                out.push(Fail { prop: "P2", step: st.step, sid: a.0, id: i, reader: a.1, full: b.1 });
             }
         }
         out
