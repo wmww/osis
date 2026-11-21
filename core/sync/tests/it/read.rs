@@ -595,9 +595,7 @@ impl W {
         v.retain(|x| x.at != at);
         v.push(SrcView { at, store, head: Some(step(0).id()), role_unheld: false });
         self.g.set_sources(s, v);
-        if self.g.conns.get(&at) != Some(&conn) {
-            self.g.conns.insert(at, conn);
-        }
+        self.g.conns.insert(at, conn);
     }
 
     fn edit_source(&mut self, at: Source, f: impl Fn(&mut SrcView)) {
@@ -712,9 +710,7 @@ impl W {
         }
         for s in [S, S2] {
             let all: BTreeSet<BlobId> = self.g.k.held.keys().filter(|(x, _)| *x == s).map(|(_, b)| *b).collect();
-            if self.g.all.get(&(K, s)) != Some(&all) {
-                self.g.all.insert((K, s), all);
-            }
+            self.g.all.insert((K, s), all);
         }
         let full = self.g.k.full;
         for s in [S, S2] {

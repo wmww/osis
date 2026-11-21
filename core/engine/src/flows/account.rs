@@ -1141,7 +1141,7 @@ impl Engine {
         let d_record = CreationRecord::Thing { admin: p, nonce: *nonce_d.nonce(), link: None, expires: None };
         let d = d_record.tid();
         self.core.account.set(Some(p));
-        self.core.accounts.insert(p, Arc::new(HeldAccount { root: d, first: signing, keys: [(signing, keys.clone())].into() }));
+        self.core.accounts.replace(p, Arc::new(HeldAccount { root: d, first: signing, keys: [(signing, keys.clone())].into() }));
         let res = self.run(|tx| create_account_in(tx, record, d_record, &keys));
         if res.is_err() {
             self.core.account.set(None);
@@ -1179,7 +1179,7 @@ impl Engine {
         }
         let was = self.core.account.get();
         self.core.account.set(Some(*p));
-        self.core.accounts.insert(*p, Arc::new(HeldAccount { root: *d, first, keys }));
+        self.core.accounts.replace(*p, Arc::new(HeldAccount { root: *d, first, keys }));
         let (p, d) = (*p, *d);
         let r = self.run(|tx| {
             match judge {

@@ -231,9 +231,7 @@ impl Read {
         }
         for c in self.bodies.due() {
             // what it read moved: a judgement outside S waits a pass begun after now
-            if self.moved.get(&c) != Some(&place) {
-                self.moved.insert(c, place);
-            }
+            self.moved.insert(c, place);
             let Some((_, now)) = self.bodies.try_settle(&c, || g.bodies(&c))? else { continue };
             let was = self.settled.insert(c, now.clone()).unwrap_or_default();
             for s in was.keys().filter(|s| !now.contains_key(*s)) {
@@ -268,9 +266,7 @@ impl Read {
             }
         }
         for k in g.entries_added()?.into_iter().chain(shown) {
-            if self.arrived.get(&k) != Some(&place) {
-                self.arrived.insert(k, place);
-            }
+            self.arrived.insert(k, place);
             self.judged.want(k);
         }
         for (at, s, c) in seen {
@@ -388,7 +384,7 @@ impl Read {
             for c in was.keys().filter(|c| !now.contains_key(*c)) {
                 self.mints.remove(&(s, *c, t));
             }
-            for (c, m) in now.iter().filter(|(c, m)| was.get(*c) != Some(*m)) {
+            for (c, m) in now.iter() {
                 self.mints.insert((s, *c, t), *m);
             }
             if now.is_empty() {

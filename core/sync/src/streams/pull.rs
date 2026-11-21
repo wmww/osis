@@ -563,9 +563,7 @@ impl Streams {
         let reopened = place.closed.remove(&s);
         place.stopped.remove(&s);
         place.at_stream.remove(&s);
-        if place.joining.get(&s) != Some(&c) {
-            place.joining.insert(s, c.clone());
-        }
+        place.joining.insert(s, c.clone());
         let moved = place.effective(&s) != was;
         if !moved && matches!(src, Source::Record(_)) {
             place.stale.insert(s);

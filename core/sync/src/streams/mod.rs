@@ -434,17 +434,15 @@ impl Streams {
             self.busy_of.insert(conn, busy);
         }
         let now = self.pull.get(&conn).filter(|p| p.caught_up() && self.followed(conn)).map(|p| p.answered_at);
-        if self.caught.contains(&conn) != now.is_some() {
-            match now {
-                Some(_) => self.caught.insert(conn),
-                None => self.caught.remove(&conn),
-            };
-        }
-        if self.caught_at.get(&conn).copied() != now {
-            match now {
-                Some(t) => self.caught_at.insert(conn, t),
-                None => self.caught_at.remove(&conn),
-            };
+        match now {
+            Some(t) => {
+                self.caught.insert(conn);
+                self.caught_at.insert(conn, t);
+            }
+            None => {
+                self.caught.remove(&conn);
+                self.caught_at.remove(&conn);
+            }
         }
     }
 

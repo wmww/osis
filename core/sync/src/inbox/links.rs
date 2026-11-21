@@ -150,10 +150,7 @@ impl Redemptions {
             None => self.ready.want(k),
             Some(_) => self.held.want(k),
         }
-        let hints = link_hints(&p.link);
-        if self.hints.get(&k) != Some(&hints) {
-            self.hints.insert(k, hints);
-        }
+        self.hints.insert(k, link_hints(&p.link));
         self.pending.insert(k, p);
         Ok(())
     }

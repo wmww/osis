@@ -104,12 +104,7 @@ impl SyncRows {
             self.ids_of.insert(*t, ids);
         }
         for s in touched {
-            let now = self.by_sync.get(&s).and_then(fold);
-            // read unrecorded: `follow_rows` runs outside every reader
-            if self.held.get(&s) == now.as_ref() {
-                continue;
-            }
-            match now {
+            match self.by_sync.get(&s).and_then(fold) {
                 Some(h) => {
                     self.held.insert(s, h);
                     self.ids.insert(s);

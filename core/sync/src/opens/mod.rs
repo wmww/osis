@@ -1005,13 +1005,10 @@ impl Opens {
     /// The stops `walk_stop` reads: S stopped on `conn` at `stop` (none: not stopped).
     fn index_stop(&mut self, conn: ConnId, s: SyncId, stop: Option<Stop>) {
         let mut at = self.stops.get(&s).cloned().unwrap_or_default();
-        let was = match stop {
+        match stop {
             Some(x) => at.insert(conn, x),
             None => at.remove(&conn),
         };
-        if was == stop {
-            return;
-        }
         if at.is_empty() {
             self.stops.remove(&s);
         } else {

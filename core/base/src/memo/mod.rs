@@ -1099,7 +1099,28 @@ impl<K: Ord + Hash, V> Stamped<K, V> {
         self.stamps.read(k);
         self.map.contains_key(k)
     }
-    pub fn insert(&mut self, k: K, v: V) -> Option<V> {
+    /// Sets `k` to `v`; a value equal to the one there changes nothing and stamps nothing.
+    pub fn insert(&mut self, k: K, v: V) -> Option<V>
+    where
+        V: PartialEq,
+    {
+        match self.map.entry(k) {
+            std::collections::btree_map::Entry::Occupied(mut e) => {
+                if *e.get() != v {
+                    self.stamps.wrote(e.key(), true);
+                }
+                Some(e.insert(v))
+            }
+            std::collections::btree_map::Entry::Vacant(e) => {
+                self.stamps.wrote(e.key(), true);
+                e.insert(v);
+                None
+            }
+        }
+    }
+    /// Sets `k` to `v`, stamped whether or not it differs: `insert` for a value that cannot be
+    /// compared (one holding secrets).
+    pub fn replace(&mut self, k: K, v: V) -> Option<V> {
         self.stamps.wrote(&k, true);
         self.map.insert(k, v)
     }
@@ -1121,7 +1142,7 @@ impl<K: Ord + Hash, V> Stamped<K, V> {
         let had = was.is_some();
         match f(was) {
             Some(v) => {
-                self.insert(k, v);
+                self.replace(k, v);
             }
             None if had => self.stamps.wrote(&k, false),
             None => {}
@@ -1393,6 +1414,9 @@ mod tests {
         m.insert(1, 10);
         assert_eq!(ask(&m, 1), Some(10));
         assert_eq!(runs("test memo"), 2, "a write and its write back each move the key");
+        m.insert(1, 10);
+        assert_eq!(ask(&m, 1), Some(10));
+        assert_eq!(runs("test memo"), 0, "a write of the value there changes nothing");
         m.remove(&3);
         assert_eq!(ask(&m, 1), Some(10));
         assert_eq!(runs("test memo"), 0, "another key left");

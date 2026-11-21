@@ -432,9 +432,7 @@ impl Status {
 
     /// A connection holds the record at `src` now: its members are sources there.
     pub fn taken(&mut self, src: Source, up: Up) {
-        if self.up.get(&src) != Some(&up) {
-            self.up.insert(src, up);
-        }
+        self.up.insert(src, up);
     }
 
     /// No connection holds the record at `src`: it keeps its members, none a source. Nothing of
@@ -535,8 +533,7 @@ impl Status {
             self.unstrand(&s);
         }
         for (s, (_, h)) in &set.ids {
-            if self.holding.get(s) != Some(h) {
-                self.holding.insert(*s, *h);
+            if self.holding.insert(*s, *h) != Some(*h) {
                 if *h == Holding::Read {
                     self.own_fx.want(*s);
                     self.wanted_fx.want(*s);

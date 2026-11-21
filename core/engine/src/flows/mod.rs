@@ -483,7 +483,7 @@ impl Engine {
     fn settle_key_actor(&mut self, t: &Tid) {
         let want = self.core.held_keys.get(t).or_else(|| self.core.followed_links.key(t)).cloned();
         match want {
-            Some(id) if !self.core.key_actors.contains_key(t) => drop(self.core.key_actors.insert(*t, id)),
+            Some(id) if !self.core.key_actors.contains_key(t) => drop(self.core.key_actors.replace(*t, id)),
             None if self.core.key_actors.contains_key(t) => drop(self.core.key_actors.remove(t)),
             _ => {}
         }
