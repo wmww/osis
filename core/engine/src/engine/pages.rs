@@ -2328,12 +2328,14 @@ mod tests {
         let mut orng = osis_crypto::SeededRng::from_u64(0);
         let mut r = |n: u64| osis_crypto::RngCore::next_u64(&mut orng) % n.max(1);
         let mut old = st.clone();
-        // writer 1's deltas, for strips of their bodies
-        let mut received: Vec<(Fragment, osis_crdt::CounterRange)> = Vec::new();
+        // writer 1's deltas, for strips of their bodies: whether each is a long insert (a reset
+        // run's: past a page), and its counters
+        let mut received: Vec<(bool, osis_crdt::CounterRange)> = Vec::new();
+        let mut long_strips = 0;
         let (mut in_place, mut kept, mut fresh_item, mut rebuilt, mut cold, mut kept_placement) = (0, 0, n, 0, 0, 0);
         let idx_of = |unit: &[u8]| open(unit, &SALT).unwrap().1;
         let mut kinds = [0usize; 3];
-        for step in 0..if reset { 48 } else { 36 } {
+        for step in 0..36 {
             ts += 1 << 16;
             // the running session (its placement invalidated already, or not) or a fresh one
             let (mut f, mut idx) = match session.take() {
@@ -2357,7 +2359,10 @@ mod tests {
                     // an expiry or purge of a received body: its writes held value-less, the
                     // whole state written again (a rebuild)
                     0 => {
-                        let (_, range) = received[r(received.len() as u64) as usize].clone();
+                        // a reset run strips a long insert where one was received
+                        let at = r(received.len() as u64) as usize;
+                        let (long, range) = received.iter().rev().find(|x| reset && x.0).copied().unwrap_or(received[at]);
+                        long_strips += usize::from(long);
                         let pred = move |d: &Dot| d.origin().src == sess(2) && (range.lo..range.hi).contains(&d.origin().ctr);
                         st.strip(&pred);
                         load_all(&mut txn, &tid, &ak, &mut idx, &mut f).unwrap();
@@ -2387,9 +2392,11 @@ mod tests {
                 let wi = if received.is_empty() { 1 } else { r(3) as usize % 2 };
                 let base = if wi == 1 { &old } else { &st };
                 let len = base.at(&field()).and_then(|s| s.visible_range(0..usize::MAX)).map_or(0, |v| v.len()) as u64;
+                let mut long = false;
                 let op = match r(8) {
                     0..=2 => {
-                        let k = if reset && wi == 1 && r(2) == 0 { 4000 } else { 1 + r(3) };
+                        long = reset && wi == 1 && r(2) == 0;
+                        let k = if long { 4000 } else { 1 + r(3) };
                         fresh_item += k;
                         Op::Insert { at: r(len + 1) as usize, items: seq_items(text, fresh_item, k) }
                     }
@@ -2422,7 +2429,7 @@ mod tests {
                 }
                 ctrs[wi] = range.hi;
                 if wi == 1 {
-                    received.push((delta.clone(), range));
+                    received.push((long, range));
                 }
                 let touch = touch_of(&delta, Some(&idx));
                 match &touch {
@@ -2514,6 +2521,7 @@ mod tests {
         assert!(rebuilt >= 4, "{rebuilt} placements rebuilt");
         assert!(cold >= 4 && kept_placement >= 20, "{cold} edits through the stored placement, {kept_placement} writes kept it");
         assert!(kinds.iter().all(|k| *k >= 1), "strip, placement invalidated, validity rebuild: {kinds:?}");
+        assert!(!reset || long_strips >= 1, "no long received insert stripped");
     }
 
     /// The placement of the sequence (field 1) of `f` by a whole pass of a fresh copy.
