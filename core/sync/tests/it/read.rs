@@ -2608,17 +2608,26 @@ fn a_move_of_its_bodies_inputs_restarts_the_wait_spec_sync_judgement_2() {
     assert_eq!(w.g.unlogged.len(), 1);
 }
 
-// spec/sync-judgement.md §3 (own store: must-hold bodies are logged), spec/permissions.md §4
-// (Logging certificates): a body this node could not wrap for S when first judged (no read epoch
-// of S's thing held yet: a contact's profile read through a redeemed link) is logged in the
-// session once it can, so a start logs no body or certificate blob the session left unlogged.
-#[test]
-fn a_body_is_logged_once_it_can_be_wrapped_spec_sync_judgement_3() {
+/// The durable commits (engine store, sync store) of one node's start, run to quiet.
+type Commits = (u64, u64);
+
+/// Node 0 makes `n` things, each kept unread by node 1 and read by node 2, run to quiet; then
+/// every node restarts cut off from the others (its first start after the session), run to
+/// quiet; then healed and run, each node restarts again cut off (a quiet start), run to quiet.
+/// Per node: the commits of its first start, the bodies it logged there that the session did
+/// not (the entries naming a commit and the own entries, certificate blobs too, per sync ID
+/// read), and the commits of its quiet start.
+fn starts(n: usize) -> Vec<(Commits, BTreeSet<(SyncId, BlobId)>, Commits)> {
     use crate::harness::Step::*;
     use crate::harness::history::{Gives, world};
     let mut w = world(0, 3);
-    let _ = crate::harness::play(&mut w, &[New(0), Grant(0, 0, 1, Gives::Syncs), Grant(0, 0, 2, Gives::Reads), Run], String::new());
-    // the entries naming a commit and the own entries (certificate blobs too), per sync ID read
+    w.cap = 2_000_000;
+    let mut steps = Vec::new();
+    for k in 0..n {
+        steps.extend([New(0), Grant(0, k, 1, Gives::Syncs), Grant(0, k, 2, Gives::Reads)]);
+    }
+    steps.push(Run);
+    let _ = crate::harness::play(&mut w, &steps, String::new());
     let bodies = |w: &mut crate::harness::World, i: usize| -> BTreeSet<(SyncId, BlobId)> {
         let mut out = BTreeSet::new();
         for (s, _) in w.store(i).syncs().into_iter().filter(|(_, (_, h))| *h == osis_engine::sync::Holding::Read) {
@@ -2630,6 +2639,7 @@ fn a_body_is_logged_once_it_can_be_wrapped_spec_sync_judgement_3() {
         }
         out
     };
+    let commits = |w: &mut crate::harness::World, i: usize| (w.engine(i).store_writes().committed, w.store(i).committed());
     let before: Vec<_> = (0..3).map(|i| bodies(&mut w, i)).collect();
     for i in 0..3 {
         w.power_off(i);
@@ -2641,46 +2651,42 @@ fn a_body_is_logged_once_it_can_be_wrapped_spec_sync_judgement_3() {
         w.power_on(i);
     }
     w.run();
-    for (i, b) in before.iter().enumerate() {
-        let new: Vec<_> = bodies(&mut w, i).difference(b).copied().collect();
-        assert!(new.is_empty(), "node {i}: bodies a start logged that the session did not: {new:?}");
-    }
-}
-
-/// Node 0 makes `n` things, each kept unread by node 1 and read by node 2, run to quiet; then
-/// every node restarts cut off from the others: the durable commits (engine store, sync store)
-/// each node's first start makes, run to quiet.
-fn first_starts(n: usize) -> Vec<(u64, u64)> {
-    use crate::harness::Step::*;
-    use crate::harness::history::{Gives, world};
-    let mut w = world(0, 3);
-    w.cap = 2_000_000;
-    let mut steps = Vec::new();
-    for k in 0..n {
-        steps.extend([New(0), Grant(0, k, 1, Gives::Syncs), Grant(0, k, 2, Gives::Reads)]);
-    }
-    steps.push(Run);
-    let _ = crate::harness::play(&mut w, &steps, String::new());
-    for i in 0..3 {
-        w.power_off(i);
-    }
-    for (i, j) in [(0, 1), (0, 2), (1, 2)] {
-        w.partition(i, j);
-    }
-    for i in 0..3 {
-        w.power_on(i);
-    }
+    let first: Vec<_> = (0..3).map(|i| (commits(&mut w, i), bodies(&mut w, i).difference(&before[i]).copied().collect())).collect();
+    w.heal();
     w.run();
-    (0..3).map(|i| (w.engine(i).store_writes().committed, w.store(i).committed())).collect()
+    let mut out = Vec::new();
+    for (i, (c, new)) in first.into_iter().enumerate() {
+        w.power_off(i);
+        for j in (0..3).filter(|j| *j != i) {
+            w.partition(i, j);
+        }
+        w.power_on(i);
+        w.run();
+        out.push((c, new, commits(&mut w, i)));
+        w.heal();
+        w.run();
+    }
+    out
 }
 
-// spec: none (property: notes/growth.md, no per-session growth; spec/sync-judgement.md §3, a node
-// logs what S must hold while it runs): a first start after a session finds nothing owed, at n
-// and 10n things shared with a reader and a node keeping them unread.
+// spec/sync-judgement.md §3 (own store: must-hold bodies are logged), spec/permissions.md §4
+// (Logging certificates), spec/sync-set.md §3: a start judges what left the sync set by the
+// whole set; a node logs what S must hold while it runs; no per-session growth (notes/growth.md).
+// A start after a session finds nothing owed. A body a node could not wrap for S when
+// first judged (no read epoch of S's thing held yet: a contact's profile read through a redeemed
+// link) is logged in the session once it can, so a first start logs no body or certificate blob
+// the session left unlogged; it commits the same at n and 10n things shared with a reader and a
+// node keeping them unread; a start with nothing new after it commits nothing.
 #[test]
-fn a_first_start_after_a_session_commits_the_same_at_n_and_10n() {
-    let (a, b) = (first_starts(1), first_starts(10));
-    assert_eq!(a, b, "(engine, store) commits per node's first start");
+fn a_start_after_a_session_finds_nothing_owed_at_n_and_10n_spec_sync_judgement_3() {
+    let (a, b) = (starts(1), starts(10));
+    for (i, (_, new, _)) in a.iter().chain(&b).enumerate() {
+        assert!(new.is_empty(), "node {}: bodies a start logged that the session did not: {new:?}", i % 3);
+    }
+    let first = |x: &[(Commits, BTreeSet<(SyncId, BlobId)>, Commits)]| x.iter().map(|y| y.0).collect::<Vec<_>>();
+    assert_eq!(first(&a), first(&b), "(engine, store) commits per node's first start at n and 10n");
+    let quiet: Vec<Commits> = a.iter().chain(&b).map(|y| y.2).collect();
+    assert!(quiet.iter().all(|x| *x == (0, 0)), "(engine, store) commits per node's quiet start: {quiet:?}");
 }
 
 

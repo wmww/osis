@@ -297,48 +297,6 @@ fn a_write_valid_again_before_its_author_hears_comes_from_a_store_spec_permissio
     assert_eq!(w.engine(2).get(&t, &key).unwrap(), Some(Value::Str("x".into())), "node 2 reads the write valid again, from node 3");
 }
 
-/// Node 0 makes `n` things, each kept unread by node 1 and read by node 2; every node then
-/// restarts once (what a start finds owed is done), then once more cut off from its peers: the
-/// durable commits (engine store, sync store) each node's second start makes, run to quiet.
-fn quiet_starts(n: usize) -> Vec<(u64, u64)> {
-    let mut w = world(0, 3);
-    w.cap = 2_000_000;
-    let mut steps = Vec::new();
-    for k in 0..n {
-        steps.extend([New(0), Grant(0, k, 1, Gives::Syncs), Grant(0, k, 2, Gives::Reads)]);
-    }
-    steps.push(Run);
-    let _ = play(&mut w, &steps, String::new());
-    for i in 0..3 {
-        w.power_off(i);
-        w.power_on(i);
-        w.run();
-    }
-    let mut out = Vec::new();
-    for i in 0..3 {
-        w.power_off(i);
-        for j in (0..3).filter(|j| *j != i) {
-            w.partition(i, j);
-        }
-        w.power_on(i);
-        w.run();
-        out.push((w.engine(i).store_writes().committed, w.store(i).committed()));
-        w.heal();
-        w.run();
-    }
-    out
-}
-
-// spec: none (property: notes/growth.md, no per-session growth; spec/sync-set.md §3, a start
-// judges what left the sync set by the whole set): a start with nothing new commits nothing,
-// with several things shared with a reader and a node keeping them unread (nothing, so no
-// count at 10n).
-#[test]
-fn a_quiet_start_commits_nothing() {
-    let a = quiet_starts(3);
-    assert!(a.iter().all(|x| *x == (0, 0)), "(engine, store) commits per node's start: {a:?}");
-}
-
 // spec/permissions.md §6 (Invalid deltas: valid again, received again from any holder),
 // spec/commits.md §5 (Forgetting: an invalid commit carrying a request goes only where the
 // request holds the right over nothing): node 1's account, lowered to read on things 0 and 1,
