@@ -6,9 +6,9 @@
 # panic) must match (tools/gate_failures.py).
 held-model/props::settled_histories_keep_their_laws_large_spec_commits_5 rate:OSIS_HELD_START=387315248891 issues/held-model-until-no-deadline.md seed \d+: output changed before its first deadline
 osis-app/fields::a_tile_tells_of_emails_it_cannot_read - issues/app-tile-unreadable-emails-test.md Err\(osis::Error::TooLarge
-roles-model/custody::tests::random_worlds_hold_large rate:OSIS_ROLES_START=647344785567 issues/custody-model-flip.md FAIL flip: node \w+ at \d+ dropped a taken revocation
-roles-model/custody::tests::random_worlds_hold_large rate:OSIS_ROLES_START=567669682357 issues/custody-model-lost-write.md FAIL writes: node \w+ settled without \w+'s write \d+ on \w+
-osis-perm/paths::single::paths_components_agree_large rate:OSIS_PERM_SEED=513418300552 issues/perm-components-unapplied-vs-dropped.md Unapplied, Some\(Dropped\)
+roles-model/custody::tests::random_worlds_hold_large rate:OSIS_ROLES_START=647344785567 issues/custody-differential-failures.md FAIL flip: node \w+ at \d+ dropped a taken revocation
+roles-model/custody::tests::random_worlds_hold_large rate:OSIS_ROLES_START=567669682357 issues/custody-differential-failures.md FAIL writes: node \w+ settled without \w+'s write \d+ on \w+
+osis-perm/paths::single::paths_components_agree_large rate:OSIS_PERM_SEED=513418300552 issues/perm-paths-incremental-differs.md Unapplied, Some\(Dropped\)
 osis-perm/paths::incremental::paths_incremental_agrees_large rate:OSIS_PERM_SEED=328756246695 issues/perm-paths-incremental-differs.md incremental and from scratch differ
 osis-perm/paths::incremental::paths_forget_agrees_large rate:OSIS_PERM_SEED=328756246695 issues/perm-paths-incremental-differs.md updated and from scratch differ
 osis-sync/differential::histories_hold_their_closure_plain rate:OSIS_SYNC_START=959507911307 issues/differential-small-size-failures.md node \d+ keeps \d+ store entries under thing \d+'s sync ID, which it does not hold
