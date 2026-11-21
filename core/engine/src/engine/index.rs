@@ -145,79 +145,34 @@ impl Rec for Arc<crate::flows::account::JudgedEpochs> {
 }
 impl Rec for super::HeldKeyset {
     fn to(&self) -> Value {
-        let kem = Value::List(self.kem_in.iter().map(Rec::to).collect());
-        let lists: Vec<osis_crypto::Epoch> = self.lists.iter().copied().collect();
-        let since = Value::List(self.since.iter().map(Rec::to).collect());
-        let names = Value::List(self.names.iter().map(|(d, a)| Value::List(vec![Value::bytes(d), Value::bytes(a.as_bytes())])).collect());
-        let left_out = by_holder_to(&self.left_out);
-        let demotions = Value::List(self.demotions.iter().map(|c| Value::bytes(&c.0)).collect());
-        Value::List(vec![lists.to(), kem, since, names, left_out, demotions, Value::Bool(self.demotes)])
+        Value::List(vec![self.lists.to(), self.kem_in.to(), self.since.to(), self.names.to(), by_holder_to(&self.left_out), self.demotions.to(), Value::Bool(self.demotes)])
     }
     fn from(v: &Value) -> Option<Self> {
         let Value::List(f) = v else { return None };
-        let [lists, kem, since, names, left_out, Value::List(demotions), Value::Bool(demotes)] = f.as_slice() else { return None };
-        let demotions = demotions.iter().map(|x| match x {
-            Value::Bytes(b) => Some(osis_base::CommitId(<[u8; 32]>::try_from(b.as_slice()).ok()?)),
-            _ => None,
-        }).collect::<Option<BTreeSet<_>>>()?;
-        let out = by_holder_from(left_out)?;
-        let Value::List(names) = names else { return None };
-        let names = names
-            .iter()
-            .map(|x| match x {
-                Value::List(p) => match p.as_slice() {
-                    [Value::Bytes(d), Value::Bytes(a)] => Some((<[u8; 32]>::try_from(d.as_slice()).ok()?, Tid::from_bytes(a.as_slice().try_into().ok()?))),
-                    _ => None,
-                },
-                _ => None,
-            })
-            .collect::<Option<BTreeSet<_>>>()?;
-        let since = match since {
-            Value::List(x) => match x.as_slice() {
-                [] => None,
-                [p] => Some(Rec::from(p)?),
-                _ => return None,
-            },
-            _ => return None,
-        };
-        let kem_in = match kem {
-            Value::List(x) => match x.as_slice() {
-                [] => None,
-                [p] => Some(Rec::from(p)?),
-                _ => return None,
-            },
-            _ => return None,
-        };
-        let lists: Vec<osis_crypto::Epoch> = Rec::from(lists)?;
-        Some(super::HeldKeyset { lists: lists.into_iter().collect(), kem_in, since, names, left_out: out, demotions, demotes: *demotes })
+        let [lists, kem_in, since, names, left_out, demotions, Value::Bool(demotes)] = f.as_slice() else { return None };
+        let (lists, kem_in, since, names, demotions) = (Rec::from(lists)?, Rec::from(kem_in)?, Rec::from(since)?, Rec::from(names)?, Rec::from(demotions)?);
+        Some(super::HeldKeyset { lists, kem_in, since, names, left_out: by_holder_from(left_out)?, demotions, demotes: *demotes })
     }
 }
 /// `[holder, epoch]` pairs of a by-holder set map.
 fn by_holder_to(x: &BTreeMap<Tid, BTreeSet<osis_crypto::Epoch>>) -> Value {
-    Value::List(x.iter().flat_map(|(m, xs)| xs.iter().map(|x| Value::List(vec![Value::bytes(m.as_bytes()), x.to()]))).collect())
+    Value::List(x.iter().flat_map(|(m, xs)| xs.iter().map(|x| (*m, *x).to())).collect())
 }
 fn by_holder_from(x: &Value) -> Option<BTreeMap<Tid, BTreeSet<osis_crypto::Epoch>>> {
-    let Value::List(x) = x else { return None };
     let mut out: BTreeMap<Tid, BTreeSet<osis_crypto::Epoch>> = BTreeMap::new();
-    for y in x {
-        let Value::List(p) = y else { return None };
-        let [Value::Bytes(m), e] = p.as_slice() else { return None };
-        out.entry(Tid::from_bytes(m.as_slice().try_into().ok()?)).or_default().insert(Rec::from(e)?);
+    for (m, e) in <Vec<(Tid, osis_crypto::Epoch)> as Rec>::from(x)? {
+        out.entry(m).or_default().insert(e);
     }
     Some(out)
 }
 impl Rec for super::SealedAt {
     fn to(&self) -> Value {
-        Value::List(vec![by_holder_to(&self.keysets), Value::List(self.by.iter().map(|c| Value::bytes(&c.0)).collect())])
+        Value::List(vec![by_holder_to(&self.keysets), self.by.to()])
     }
     fn from(v: &Value) -> Option<Self> {
         let Value::List(f) = v else { return None };
-        let [keysets, Value::List(by)] = f.as_slice() else { return None };
-        let by = by.iter().map(|x| match x {
-            Value::Bytes(b) => Some(osis_base::CommitId(<[u8; 32]>::try_from(b.as_slice()).ok()?)),
-            _ => None,
-        }).collect::<Option<BTreeSet<_>>>()?;
-        Some(super::SealedAt { keysets: by_holder_from(keysets)?, by })
+        let [keysets, by] = f.as_slice() else { return None };
+        Some(super::SealedAt { keysets: by_holder_from(keysets)?, by: Rec::from(by)? })
     }
 }
 impl Rec for BoxKey {
@@ -312,6 +267,26 @@ impl Rec for osis_crdt::Facts {
             out.insert((<Ts as Rec>::from(ts)?, <osis_crdt::Source as Rec>::from(src)?), osis_crdt::Fact { by, purge_author: Rec::from(purge_author)? });
         }
         Some(out)
+    }
+}
+impl Rec for [u8; 32] {
+    fn to(&self) -> Value {
+        Value::bytes(self)
+    }
+    fn from(v: &Value) -> Option<Self> {
+        match v {
+            Value::Bytes(b) => b.as_slice().try_into().ok(),
+            _ => None,
+        }
+    }
+}
+impl<T: Rec + Ord> Rec for BTreeSet<T> {
+    fn to(&self) -> Value {
+        Value::List(self.iter().map(Rec::to).collect())
+    }
+    fn from(v: &Value) -> Option<Self> {
+        let Value::List(x) = v else { return None };
+        x.iter().map(T::from).collect()
     }
 }
 impl<T: Rec> Rec for Vec<T> {

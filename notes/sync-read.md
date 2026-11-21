@@ -89,5 +89,5 @@ Work per change: a source's event judges that body at that source; a reader sour
 - `sole_certificate` is always false (the store's to judge); `body_facts.kept` and `covered` move with the memo clock when a keep bound passes.
 
 ## Not built
-- issues/sync-unbuilt.md (read): freed-link waits on a node blob not held (`Engine::freed_wants`) are not fetched, and a start judges no waiting row (`judge_freed_page` has no caller); freed deletes do not wait on role entries first; a thing leaving a sync unit leaves its pieces under the old sync ID; a non-writer's pieces reach a store source only as deposits.
+- issues/sync-unbuilt.md (read): freed-link waits on a node blob not held (`Engine::freed_wants`) are not fetched, and a start judges no waiting row (no paged judgment of every row is built); freed deletes do not wait on role entries first; a thing leaving a sync unit leaves its pieces under the old sync ID; a non-writer's pieces reach a store source only as deposits.
 - issues/sync-unbuilt.md (read): `SrcView::role_unheld` is always false (deletes toward a source do not wait for a role commit it lacks); a peer's entry counting as lacking for its wrap (Duplicates, spec/sync-ids.md §6 Wraps); HN_fallany (a snapshot arriving invalid moves the fall mark as one held valid falling does) lives in the engine's `fall_mark`, untested end to end.

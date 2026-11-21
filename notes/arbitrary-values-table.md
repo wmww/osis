@@ -154,7 +154,7 @@ Each only made a bug unlikely (class X); the code ends by a fixpoint, a window o
 ### Engine, keys, perm, crdt, store, schema
 | value | class | 0 / ∞ |
 |---|---|---|
-| `MAX_REMEMBERED` 4096 (`apply/waits.rs`, headers of unjudgeable commits kept for `awaits_on` and every part's record wake) | R (past it the smallest ID is forgotten: a pending one wakes by its first awaited record alone (`Wake::Record`), an applied one's slot by its carrier again) | no record wakes across parts / one peer grows memory per unjudged header without end |
+| `MAX_REMEMBERED` 4096 (`apply/waits.rs`, the records and closure entries each waiting commit's parts await, every part's record wake) | R (past it the smallest ID is forgotten: a pending one wakes by its first awaited record alone (`Wake::Record`), an applied one's slot by its carrier again) | no record wakes across parts / one peer grows memory per unjudged header without end |
 | `MAX_READING` 256, `MAX_READING_PER_AUTHOR` 64 (keys `epoch.rs`), `MAX_READING_ACTORS` 64 (engine `secrets.rs`) | R (tested; counts epochs known only from pending commits; a genuine one past it waits for its checked box) | |
 | `LOST_HEARD_WAIT_MS` = `ROLE_KEEP_MS` (`rotation/lost.rs`) | M: how long a thing lost by an `until` passing alone waits for sync to hear its sync IDs out. Past it a node out of reach loses unsent writes a renewal it has not heard would have kept, and comes back by a re-seal; before it the erase is late. No new number: past `ROLE_KEEP` such a node does not sync cleanly anyway | every offline holder loses those writes / one dead or hostile source keeps every expired share it serves on the node for good |
 | `WALK_CACHE_MIN` 64 | P | |
