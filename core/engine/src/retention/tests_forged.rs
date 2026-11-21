@@ -351,7 +351,7 @@ fn a_removal_dates_a_write_a_later_reset_prunes_spec_crdt_4_8() {
 // spec/commits.md §5, spec/crdt.md §4.8 When: a node holding a set element's write (W) gets one
 // body holding a value removal hiding it (an hour after W) and a reset of the element (three
 // hours after W) that prunes it in the join: the kill's row (when leaving is told) is due a day
-// (the kept period) after the removal, never after the reset. Fails with the payloads of the
+// (the kept period) after the removal, never after the reset. Fails with the hiders of the
 // apply not noted from the state before the join (the pruned write's value not read).
 #[test]
 fn a_kill_by_a_removal_and_a_reset_in_one_body_is_told_at_the_removal_spec_commits_5() {
