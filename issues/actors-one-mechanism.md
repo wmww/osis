@@ -88,5 +88,5 @@ Each argued from the spec and to be checked by the model; nothing here is built.
 
 ## Open
 - **Questions for Tess**: issues/owner-key-first-attach.md.
-- **The models cut to the design** (stage D2: notes/redesign-plan.md; notes/write-path-design.md §6), owner keys still to model.
+- **The models cut to the design** (stage D2: notes/redesign-plan.md; notes/write-path-design.md §6): owner-key list writes as evidence still to model in held-model.
 - **The build**: notes/redesign-plan.md, stages S3, A1 to A6.
