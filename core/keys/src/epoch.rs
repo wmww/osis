@@ -489,10 +489,6 @@ impl RoleEpochs {
         self.map.iter().filter_map(|(e, i)| i.checked().map(|s| (*e, s)))
     }
 
-    pub fn is_empty(&self) -> bool {
-        self.map.is_empty()
-    }
-
     /// Superseded by an established rotation.
     pub fn superseded(&self, e: &Epoch) -> bool {
         self.map.values().any(|i| i.established.is_some() && i.supersedes(e))
@@ -806,16 +802,11 @@ impl ActorEpochs {
                     // past the cap two base epochs with one secret derive one epoch: it never
                     // supersedes itself
                     supersedes: i.superseded_epochs().iter().map(id).filter(|x| x != de).collect(),
-                    rotations: BTreeMap::new(),
-                    snapshots: BTreeSet::new(),
-                    names: BTreeSet::new(),
-                    floor: None,
                     established: i.established.map(|_| Provenance::Derived),
                     secret: ds.clone(),
-                    roles: None,
-                    roles_reading: BTreeSet::new(),
                     reading: i.reading.clone(),
                     order: Some(o.order(e)).filter(|&x| x != de.n()),
+                    ..EpochInfo::default()
                 };
                 a.role_mut(r).map.insert(*de, info);
             }

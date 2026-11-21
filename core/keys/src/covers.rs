@@ -121,11 +121,6 @@ impl Departure {
         old.filter(|o| *o >= from).map(|o| Departure::holder(holder, from).upto(o))
     }
 
-    /// The roles it concerns.
-    pub fn roles(&self) -> BTreeSet<Role> {
-        ROLES.into_iter().filter(|r| self.concerns(*r)).collect()
-    }
-
     /// The newest write an epoch of `r` covering it names (spec/crypto.md §4, Covers): the latest
     /// of the earliest tail write that may take the holder below `r` and every tail write giving
     /// `r` or more that counts; `None` when no edge shows it or none is needed. An epoch whose
@@ -229,7 +224,8 @@ mod tests {
         assert_eq!(Departure::of_change(m, Some(Role::Sync), None), Some(Departure::holder(m, Role::Sync).upto(Role::Sync)));
         assert_eq!(Departure::of_change(m, Some(Role::Read), Some(Role::Write)), None);
         assert_eq!(Departure::of_change(m, None, None), None);
-        assert_eq!(Departure::holder(m, Role::Write).roles(), [Role::Write, Role::Admin].into_iter().collect());
-        assert_eq!(Departure::holder(m, Role::Read).upto(Role::Write).roles(), [Role::Read, Role::Write].into_iter().collect());
+        let concerns = |d: Departure| ROLES.into_iter().filter(|r| d.concerns(*r)).collect::<Vec<_>>();
+        assert_eq!(concerns(Departure::holder(m, Role::Write)), [Role::Write, Role::Admin]);
+        assert_eq!(concerns(Departure::holder(m, Role::Read).upto(Role::Write)), [Role::Read, Role::Write]);
     }
 }

@@ -134,7 +134,7 @@ impl Node {
 }
 
 /// Store-wide state kept in the top node.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub(crate) struct Meta {
     pub arity: u32,
     pub page_max: u32,
@@ -337,7 +337,7 @@ impl DirtyUnit {
 }
 
 /// A transaction's uncommitted changes.
-#[derive(Clone)]
+#[derive(Clone, Default)]
 pub(crate) struct Dirty {
     ver: u64,
     pub meta: Meta,
@@ -853,17 +853,7 @@ impl Pager {
         }
         let ver = self.next_ver;
         self.next_ver += 1;
-        Ok(Dirty {
-            ver,
-            meta: self.meta,
-            units: HashMap::new(),
-            plain_bytes: 0,
-            blobs: HashMap::new(),
-            spills: 0,
-            dead_spills: BTreeSet::new(),
-            undo: Vec::new(),
-            open: Vec::new(),
-        })
+        Ok(Dirty { ver, meta: self.meta, ..Dirty::default() })
     }
 
     pub fn alloc(&self, d: &mut Dirty) -> Result<u64, Error> {

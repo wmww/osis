@@ -638,10 +638,6 @@ impl Transaction<'_> {
         }
         self.durable_get(key)
     }
-    fn cat_put(&mut self, key: &[u8], val: Vec<u8>, shred: Shred) -> Result<(), Error> {
-        let m = self.memory;
-        self.cat_put_to(key, val, shred, m)
-    }
     /// A catalog row to memory when `mem` or already there, else to the durable store.
     pub(crate) fn cat_put_to(&mut self, key: &[u8], val: Vec<u8>, shred: Shred, mem: bool) -> Result<(), Error> {
         // the same bytes again change nothing: no reader moves
@@ -896,16 +892,12 @@ impl Transaction<'_> {
         let durable = btree::range(self, t.0, start, end, limit)?;
         Ok(if mem.is_empty() { durable } else { crate::overlay::merge(mem, durable, limit) })
     }
-    /// Every entry of a table holding rows in both layers.
-    fn merged_all(&mut self, t: Table) -> Result<Vec<KeyValue>, Error> {
-        self.table_range(t, b"", None, usize::MAX)
-    }
     pub fn table_len(&mut self, t: Table) -> Result<u64, Error> {
         self.st.s.read_owner(t.1);
         match self.pure(t) {
             Some(true) => Ok(self.mem.o.tables.get(&t.0).map_or(0, |r| r.len() as u64)),
             Some(false) => btree::len(self, t.0),
-            None => Ok(self.merged_all(t)?.len() as u64),
+            None => Ok(self.table_range(t, b"", None, usize::MAX)?.len() as u64),
         }
     }
     /// Number of keys below `key` (a position).
@@ -914,7 +906,7 @@ impl Transaction<'_> {
         match self.pure(t) {
             Some(true) => Ok(self.mem.o.tables.get(&t.0).map_or(0, |r| r.range(..key.to_vec()).count() as u64)),
             Some(false) => btree::rank(self, t.0, key),
-            None => Ok(self.merged_all(t)?.iter().filter(|(k, _)| k.as_slice() < key).count() as u64),
+            None => Ok(self.table_range(t, b"", None, usize::MAX)?.iter().filter(|(k, _)| k.as_slice() < key).count() as u64),
         }
     }
     /// The entry at position `i`.
@@ -923,7 +915,7 @@ impl Transaction<'_> {
         match self.pure(t) {
             Some(true) => Ok(self.mem.o.tables.get(&t.0).and_then(|r| r.iter().nth(i as usize)).map(|(k, v)| (k.clone(), v.clone()))),
             Some(false) => btree::nth(self, t.0, i),
-            None => Ok(self.merged_all(t)?.into_iter().nth(i as usize)),
+            None => Ok(self.table_range(t, b"", None, usize::MAX)?.into_iter().nth(i as usize)),
         }
     }
 
@@ -980,7 +972,7 @@ impl Transaction<'_> {
             PendingKind::Parked => 1,
         } | u8::from(verdict.is_some()) << 1;
         let v = W::new().u8(tag).raw(verdict.as_ref().map_or(&[][..], |v| &v[..])).raw(&received.to_be_bytes()).raw(bytes).take();
-        self.cat_put(&W::new().u8(kind::PENDING).raw(&id.0).take(), v, Shred::No)
+        self.cat_put_to(&W::new().u8(kind::PENDING).raw(&id.0).take(), v, Shred::No, self.memory)
     }
     pub fn get_pending(&mut self, id: &CommitId) -> Result<Option<Pending>, Error> {
         self.cat_get(&W::new().u8(kind::PENDING).raw(&id.0).take())?.map(|v| decode_pending(&v)).transpose()
@@ -1018,15 +1010,11 @@ impl Transaction<'_> {
             let size = k.len() + v.len();
             match k.first().copied() {
                 Some(kind::ASPECT) => add(&mut out, format!("aspect {}", ak_of(&k)), size),
-                Some(kind::TABLE) => {
-                    let name = format!("table {} {}", ak_of(&k), k.last().copied().unwrap_or(0));
-                    let root = u64_value(Some(v))?.unwrap_or(0);
-                    for (tk, tv) in self.table_range(Table(root, owner(&k)), b"", None, usize::MAX)? {
-                        add(&mut out, name.clone(), tk.len() + tv.len());
-                    }
-                }
-                Some(kind::INDEX) => {
-                    let name = format!("index {}", String::from_utf8_lossy(k.get(5..).unwrap_or_default()));
+                Some(t @ (kind::TABLE | kind::INDEX)) => {
+                    let name = match t {
+                        kind::TABLE => format!("table {} {}", ak_of(&k), k.last().copied().unwrap_or(0)),
+                        _ => format!("index {}", String::from_utf8_lossy(k.get(5..).unwrap_or_default())),
+                    };
                     let root = u64_value(Some(v))?.unwrap_or(0);
                     for (tk, tv) in self.table_range(Table(root, owner(&k)), b"", None, usize::MAX)? {
                         add(&mut out, name.clone(), tk.len() + tv.len());
@@ -1050,7 +1038,7 @@ impl Transaction<'_> {
     // Node-local records with no dedicated kind.
 
     pub fn put_local(&mut self, key: &[u8], val: &[u8], shred: Shred) -> Result<(), Error> {
-        self.cat_put(&[&[kind::LOCAL], key].concat(), val.to_vec(), shred)
+        self.cat_put_to(&[&[kind::LOCAL], key].concat(), val.to_vec(), shred, self.memory)
     }
     pub fn get_local(&mut self, key: &[u8]) -> Result<Option<Vec<u8>>, Error> {
         self.cat_get(&[&[kind::LOCAL], key].concat())

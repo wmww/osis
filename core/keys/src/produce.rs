@@ -78,9 +78,9 @@ struct Item<'a> {
     secret: &'a Secret32,
 }
 
-/// Writes `rcpt`'s boxes for `items` into `out`, one per (role, epoch), keyed with it. `None`
+/// Writes `rcpt`'s boxes for `items` into `out`, one per (role, epoch), keyed with it. False
 /// when a needed keyset is unknown.
-fn box_items(actor: &Tid, rcpt: &Recipient, items: &[Item], rng: &mut dyn CryptoRngCore, out: &mut SecretsWrite) -> Result<Option<()>, Error> {
+fn box_items(actor: &Tid, rcpt: &Recipient, items: &[Item], rng: &mut dyn CryptoRngCore, out: &mut SecretsWrite) -> Result<bool, Error> {
     let holder = rcpt.holder;
     for i in items {
         let slot = BoxSlot::Secrets { actor: *actor, holder, role: i.role, epoch: i.epoch };
@@ -94,7 +94,7 @@ fn box_items(actor: &Tid, rcpt: &Recipient, items: &[Item], rng: &mut dyn Crypto
                 ks => match own.get(&i.role) {
                     Some((es, s)) if symmetric_box(es, ks.and_then(|k| k.first()).map(|(ek, _)| ek)) => symmetric(&slot, i, s, *es)?,
                     _ => {
-                        let Some([(ek, pk)]) = ks else { return Ok(None) };
+                        let Some([(ek, pk)]) = ks else { return Ok(false) };
                         sealed(pk, &slot, Some(*ek), i, rng)?
                     }
                 },
@@ -109,7 +109,7 @@ fn box_items(actor: &Tid, rcpt: &Recipient, items: &[Item], rng: &mut dyn Crypto
         }
         out.boxes.insert(key, b);
     }
-    Ok(Some(()))
+    Ok(true)
 }
 
 /// Whether a box to an actor holder is symmetric under its secret at `own` (the holder's newest
@@ -225,14 +225,8 @@ impl Rotation {
 /// hold established or may not carry (below a cut, spec/crypto.md §4 Floors) stands: it still
 /// opens for its holder (which then adds that secret to the history where the carry rule lets
 /// it, `history_adds`), and anchors and staleness read current epochs only.
-fn removals(carried: &BTreeMap<Role, BTreeSet<Epoch>>, held_secrets: &Secrets) -> Result<BTreeSet<BoxKey>, Error> {
-    let mut out = BTreeSet::new();
-    for k in held_secrets.boxes.keys() {
-        if carried.get(&k.role).is_some_and(|c| from_schema(&k.epoch).is_ok_and(|e| c.contains(&e))) {
-            out.insert(k.clone());
-        }
-    }
-    Ok(out)
+fn removals(carried: &BTreeMap<Role, BTreeSet<Epoch>>, held_secrets: &Secrets) -> BTreeSet<BoxKey> {
+    held_secrets.boxes.keys().filter(|k| carried.get(&k.role).is_some_and(|c| from_schema(&k.epoch).is_ok_and(|e| c.contains(&e)))).cloned().collect()
 }
 
 /// Rotates `roles` of `actor` (spec/crypto.md §4, spec/permissions.md §3): per role a fresh
@@ -314,13 +308,13 @@ pub fn rotate_leaving_out(actor: &Tid, roles: &BTreeSet<Role>, held: &ActorEpoch
         let supersedes = listed.iter().copied().chain(earlier.iter().map(|(e, _)| *e)).collect();
         rotated.push(Rotated { role: r, epoch, secret, supersedes, floor });
     }
-    secrets.removed = removals(&in_history, held_secrets)?;
+    secrets.removed = removals(&in_history, held_secrets);
     let mut unboxed = Vec::new();
     for m in holders {
         // the boxing rule (spec/crypto.md §4): at a read epoch of floor at least the holder's
         let allowed = |x: &&Rotated| !held.role(x.role).has_floors() || floors.get(&x.role).is_some_and(|f| *f >= m.floor);
         let items: Vec<Item> = rotated.iter().filter(|x| x.role <= m.role).filter(allowed).map(|x| Item { role: x.role, epoch: x.epoch, secret: &x.secret }).collect();
-        if !items.is_empty() && box_items(actor, m, &items, rng, &mut secrets)?.is_none() {
+        if !items.is_empty() && !box_items(actor, m, &items, rng, &mut secrets)? {
             unboxed.push(m.holder);
         }
     }
@@ -358,6 +352,11 @@ impl HistoryBox {
             floor: self.floor,
             roles: self.roles.iter().map(|(x, rx)| (*x, rx.clone())).collect(),
         }
+    }
+
+    /// It carries a secret or roles secret no live entry lists (a history add is due).
+    pub fn adds(&self) -> bool {
+        self.earlier.keys().any(|x| !self.listed.contains(x)) || self.roles.keys().any(|x| !self.roles_listed.contains(x) && !self.listed.contains(x))
     }
 }
 
@@ -426,13 +425,6 @@ pub fn history_adds(actor: &Tid, held: &ActorEpochs, hist: &HistoryBoxes) -> Res
     Ok(out)
 }
 
-impl HistoryBox {
-    /// It carries a secret or roles secret no live entry lists (a history add is due).
-    pub fn adds(&self) -> bool {
-        self.earlier.keys().any(|x| !self.listed.contains(x)) || self.roles.keys().any(|x| !self.roles_listed.contains(x) && !self.listed.contains(x))
-    }
-}
-
 /// A grant or a re-share (spec/crypto.md §4, spec/permissions.md §3): `rcpt`'s boxes for `roles`
 /// (those at or below its role) at each of their current (established) epochs whose secret is
 /// held, with those epochs' history boxes written again from `hist` (`history_boxes`: what the
@@ -452,7 +444,7 @@ pub fn box_holder(
     if let Some(w) = &mut out {
         let re = held.role(Role::Read);
         let items: Vec<Item> = re.dropped().into_iter().filter(|_| roles.contains(&Role::Read) && rcpt.role >= Role::Read).filter(|f| re.allows(f, rcpt.floor)).filter_map(|f| re.secret(&f).map(|s| Item { role: Role::Read, epoch: f, secret: s })).collect();
-        if box_items(actor, rcpt, &items, rng, w)?.is_none() {
+        if !box_items(actor, rcpt, &items, rng, w)? {
             return Ok(None);
         }
     }
@@ -463,7 +455,7 @@ pub fn box_holder(
 /// `Ok(None)` when a needed keyset is unknown.
 pub fn box_epoch(actor: &Tid, rcpt: &Recipient, role: Role, epoch: Epoch, secret: &Secret32, rng: &mut dyn CryptoRngCore) -> Result<Option<SecretsWrite>, Error> {
     let mut out = SecretsWrite::default();
-    Ok(box_items(actor, rcpt, &[Item { role, epoch, secret }], rng, &mut out)?.map(|()| out))
+    Ok(box_items(actor, rcpt, &[Item { role, epoch, secret }], rng, &mut out)?.then_some(out))
 }
 
 /// The **tip add** (spec/crypto.md §4, Floors): boxes of the dropped epochs `epochs` (secrets
@@ -472,7 +464,7 @@ pub fn box_dropped(actor: &Tid, held: &ActorEpochs, rcpt: &Recipient, epochs: &B
     let re = held.role(Role::Read);
     let items: Vec<Item> = epochs.iter().filter(|f| re.allows(f, rcpt.floor)).filter_map(|f| re.secret(f).map(|s| Item { role: Role::Read, epoch: *f, secret: s })).collect();
     let mut out = SecretsWrite::default();
-    Ok(box_items(actor, rcpt, &items, rng, &mut out)?.map(|_| out))
+    Ok(box_items(actor, rcpt, &items, rng, &mut out)?.then_some(out))
 }
 
 /// The re-seal the trigger asks for (`reseal_needed`): `box_holder` at only the current epochs
@@ -516,7 +508,7 @@ fn box_at(
         }
     }
     let mut out = SecretsWrite::default();
-    if box_items(actor, rcpt, &items, rng, &mut out)?.is_none() {
+    if !box_items(actor, rcpt, &items, rng, &mut out)? {
         return Ok(None);
     }
     for i in &items {
