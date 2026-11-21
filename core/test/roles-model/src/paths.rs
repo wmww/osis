@@ -1013,12 +1013,13 @@ impl Need {
     }
 }
 
-/// An edge write adding a grant below admin (no self-removal, no finalize): one that may apply
-/// as a may-grant grant (G2), with its role.
+/// An edge write adding a grant (no self-removal, no finalize): one that may apply as a may-grant
+/// grant (G2), with its role. One at admin never does: a path giving may-grant at admin gives
+/// admin (G1), so it applies as an explicit write.
 pub fn flag_grant(w: &World, i: Id) -> Option<Role> {
     let c = &w.commits[i];
     match &c.kind {
-        Kind::Edge { role, until, finalize: false, .. } if !c.leave && alive((*role, *until), c.ts) > Role::None && *role < Role::Admin => Some(*role),
+        Kind::Edge { role, until, finalize: false, .. } if !c.leave && alive((*role, *until), c.ts) > Role::None => Some(*role),
         _ => None,
     }
 }
@@ -1386,14 +1387,16 @@ fn walk(w: &World, rules: &Rules, v: &View, d0: &Set) -> Walk {
             }
             p.state.insert(e, new);
             p.flag.insert(e, *may_grant);
+            // the edge as restored reads each value's role and flag with its `until` disregarded
+            let raw_grant = grantable(new.0, *may_grant);
             if explicit {
                 p.restored.insert(e, new.0);
-                p.rgrant.insert(e, after_grant);
+                p.rgrant.insert(e, raw_grant);
             } else if by_flag {
                 let r = p.restored.entry(e).or_insert(Role::None);
                 *r = (*r).max(new.0);
                 let r = p.rgrant.entry(e).or_insert(Role::None);
-                *r = (*r).max(after_grant);
+                *r = (*r).max(raw_grant);
                 p.by_flag.insert(i);
             }
             p.hist.entry(e).or_default().push((w.key(i), new));

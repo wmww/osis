@@ -1871,6 +1871,25 @@ fn a_write_clearing_the_flag_audits_the_grants_made_by_it() {
     assert!(rd.applied.contains(&z) && rd.role(Z, T1) == Role::Read);
 }
 
+/// The edge as restored reads a value's role and flag alike, its `until` disregarded (notes/
+/// write-path-design.md §1 W3): H gives N5 write with the flag; N5 grants Z read by it and writes
+/// content; H sets N5 write with the flag until 3 at 4 (ended at its own `ts`), listing both; H
+/// removes N5 at 5 listing nothing. Restored, N5's edge gave write with the flag before the
+/// removal, so it takes both: Z's grant falls as the content does.
+#[test]
+fn an_ended_value_restores_its_flag_as_its_role() {
+    let mut w = account();
+    w.push(H, 1, &[], A, Kind::set(N5, Write).may_grant());
+    let z = w.push(N5, 2, &[], A, Kind::set(Z, Role::Read));
+    let c = w.content(N5, 2, &[], A);
+    let ended = w.push(H, 4, &[], A, Kind::set(N5, Write).may_grant().until(3));
+    w.edit(ended, |k| k.listing(BTreeMap::from([(A, Set::from([z, c]))])));
+    w.edge(H, 5, &[], A, N5, Gone, &[]);
+    let rd = fixed(&w, &[]);
+    assert!(!rd.valid.contains(&c), "{rd:?}");
+    assert!(rd.dropped.contains(&z) && rd.role(Z, A) == Gone, "{rd:?}");
+}
+
 /// A lowering applied by its verdict only lowers (finding 27): N6, admin by H's grant, grants Z
 /// write and demotes it to read, which is judged (a fall from write) and applied; B removes H not
 /// listing H's grant of N6, which drops it, and the restart finds N6 with no authority. Its
