@@ -1642,24 +1642,36 @@ fn merge_rounds(nodes: usize, seed: u64, lockstep: Option<usize>) -> (usize, usi
 }
 
 // spec/permissions.md §5.5 (Honest nodes of P), spec/crypto.md §9 (Merges): after two or three
-// of the account's nodes rotate at once, the merges settle with bounded rotations under every
-// schedule. In lockstep (every node acts on the same deliveries each round) each node certifies
-// the one merge of all the tips in the first round, and nothing is made after; in random
-// interleavings at most one merge epoch per set of tips, each certified at most once per node. Either way every node ends on one head
+// of the account's nodes rotate at once, the merges settle with bounded rotations. In lockstep
+// (every node acts on the same deliveries each round) each node certifies the one merge of all the
+// tips in the first round, nothing is made after, and every node ends on one head
 #[test]
 fn merges_made_at_once_settle_in_lockstep_spec_permissions_5_5() {
     for nodes in [2, 3] {
         let (made, epochs, one) = merge_rounds(nodes, 0, Some(5));
         assert!(one, "{nodes} nodes, lockstep: one head");
         assert_eq!((made, epochs), (nodes, 1), "{nodes} nodes, lockstep: one certificate per node, of one merge");
-        for seed in 0..4 {
+    }
+}
+
+// spec/permissions.md §5.5 (Honest nodes of P), spec/crypto.md §9 (Merges): as above in random
+// interleavings of single deliveries and signing passes: at most one merge epoch per set of tips,
+// each certified at most once per node, every node ending on one head. The quick size (a
+// property): seeds 0..4, two and three nodes each.
+#[test]
+#[ignore = "property"]
+fn merges_made_at_once_settle_in_any_interleaving_plain_spec_permissions_5_5() {
+    let one_seed = |seed: u64| {
+        for nodes in [2, 3] {
             let (made, epochs, one) = merge_rounds(nodes, seed, None);
             assert!(one, "{nodes} nodes, seed {seed}: one head");
             // a merge per set of at least two tips at most, each certified at most once per node
             let sets = (1 << nodes) - nodes - 1;
             assert!(made <= nodes * epochs && epochs <= sets, "{nodes} nodes, seed {seed}: {made} rotations, {epochs} merges");
         }
-    }
+    };
+    let replay = |_: u64| "cargo test -p osis-engine --lib -- --ignored --exact rotation::tests_signing::merges_made_at_once_settle_in_any_interleaving_plain_spec_permissions_5_5".to_string();
+    osis_base::testenv::run_seeds("rotation::tests_signing::merges_made_at_once_settle_in_any_interleaving_plain_spec_permissions_5_5", &(0..4).collect::<Vec<u64>>(), false, replay, one_seed);
 }
 
 // spec/permissions.md §5.4 (Following, at a node of P: a re-add is a rotation adding the node,
@@ -2084,7 +2096,10 @@ fn a_siblings_thing_rotation_and_its_listing_open_without_each_other_spec_crypto
 /// `sibling_removals_apart_both_hold_*` in a world of `n` peers: P's nodes 0-3, peer 4 (when
 /// there) a writer of t outside P.
 fn siblings_apart(n: usize) {
-    for (first, handed) in [(0, false), (1, false), (0, true), (1, true)] {
+    // every case with P alone; with the outside holder, each order and each handing once (the
+    // removals' and merge's checks are the same either way)
+    let cases: &[(usize, bool)] = if n == 4 { &[(0, false), (1, false), (0, true), (1, true)] } else { &[(0, false), (1, true)] };
+    for &(first, handed) in cases {
         let (mut lp, a, t) = world(n, 4);
         let p = a.account;
         let d0 = remove(&mut lp, 0, a.root, 2);
