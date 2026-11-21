@@ -1890,7 +1890,9 @@ fn deepest_nested_pages_sync_through_the_fetch_walk_spec_wire_6() {
     let params = small_pages();
     let _pages = osis_crdt::PageParams::set_test(Some(params));
     let a = aks()[1].clone();
-    let level = |inner: Option<Value>, d: u64| Value::Map((0..20).map(|i| (Value::Int(i as i64), s(i, d))).chain(inner.map(|v| (Value::Str("n".into()), v))).collect());
+    // a level of a few long entries pages as well as many short ones, at a fraction of the
+    // entries a whole-state check reads at every depth
+    let level = |inner: Option<Value>, d: u64| Value::Map((0..4).map(|i| (Value::Int(i as i64), Value::Str(format!("{:?}", s(i, d)).repeat(5)))).chain(inner.map(|v| (Value::Str("n".into()), v))).collect());
     let nested = |d: u64| (0..d).fold(None, |acc, i| Some(level(acc, i))).unwrap();
     let mut w = world_under(params);
     let t = w.t;
